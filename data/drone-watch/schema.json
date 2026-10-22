@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Drone Watch receive-only settings v1",
+  "description": "All fields required; hopper_hits must also be >= hopper_channels (enforced by firmware). min_dbm is the magnitude of a negative dBm gate. Runtime preferences use settings schema v8. Copy defaults.json to /sdcard/drone-watch/settings.json before boot.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "gate_db",
+    "min_dbm",
+    "ttl_s",
+    "alert_s",
+    "approach_db10s",
+    "slice_ms",
+    "hopper_channels",
+    "hopper_hits",
+    "cadence_percent",
+    "wide_mhz",
+    "wide_hits",
+    "wifi_tolerance_us",
+    "video_percent",
+    "fpv_mhz"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "gate_db": {
+      "type": "integer",
+      "minimum": 6,
+      "maximum": 40
+    },
+    "min_dbm": {
+      "type": "integer",
+      "minimum": 30,
+      "maximum": 140
+    },
+    "ttl_s": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 600
+    },
+    "alert_s": {
+      "type": "integer",
+      "minimum": 5,
+      "maximum": 3600
+    },
+    "approach_db10s": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 20
+    },
+    "slice_ms": {
+      "type": "integer",
+      "minimum": 500,
+      "maximum": 10000
+    },
+    "hopper_channels": {
+      "type": "integer",
+      "minimum": 4,
+      "maximum": 16
+    },
+    "hopper_hits": {
+      "type": "integer",
+      "minimum": 4,
+      "maximum": 32
+    },
+    "cadence_percent": {
+      "type": "integer",
+      "minimum": 5,
+      "maximum": 40
+    },
+    "wide_mhz": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 40
+    },
+    "wide_hits": {
+      "type": "integer",
+      "minimum": 3,
+      "maximum": 16
+    },
+    "wifi_tolerance_us": {
+      "type": "integer",
+      "minimum": 1000,
+      "maximum": 20000
+    },
+    "video_percent": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 80
+    },
+    "fpv_mhz": {
+      "type": "array",
+      "minItems": 40,
+      "maxItems": 40,
+      "items": {
+        "type": "integer",
+        "minimum": 5645,
+        "maximum": 5945
+      },
+      "description": "A1..A8, B1..B8, E1..E8, F1..F8, R1..R8. Frequencies are receive only."
+    }
+  }
+}

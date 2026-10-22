@@ -58,6 +58,7 @@ long ls_ota_trial_left(ls_ota_trial_t state, int64_t end_us, int64_t now_us);
 
 #define LS_OTA_MAGIC    "LAKESHARK-OTA 1"
 #define LS_OTA_MAX_TEXT 4096
+#define LS_OTA_DATA_MAX_TEXT 16384
 #define LS_OTA_MAX_SIZE (16u * 1024u * 1024u)
 
 typedef struct {
@@ -86,7 +87,14 @@ typedef enum {
 
 ls_ota_err_t ls_ota_parse(const char *text, size_t len, const char *manifest_url,
                           ls_ota_manifest_t *out);
+/* Same envelope/parser for larger signed data catalogs; firmware OTA keeps
+ * its original 4 KiB allocation and bound. */
+ls_ota_err_t ls_ota_parse_data(const char *text, size_t len, const char *manifest_url,
+                              ls_ota_manifest_t *out);
 const char  *ls_ota_err_text(ls_ota_err_t e);
+
+/* Device verifier shared with signed data catalogs (implemented by OTA). */
+bool ls_ota_signed_by_us(const char *text, const ls_ota_manifest_t *manifest);
 
 /* The channel a manifest URL asks for: its file name less any query and
    ".txt". False when there is none. */

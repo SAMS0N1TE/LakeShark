@@ -1,6 +1,7 @@
 /* HOME: the directory, and the state of the radio behind it. */
 
 #include "../../ls_tui_screen.h"
+#include "../../ls_i18n.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -107,7 +108,7 @@ static void draw_status(tui_surface *sf, tui_rect a)
         present = true;
         ls_kv(sf, a, row++, i ? "HACKRF" : "RTL-SDR",
               radio_health_state_name(h.state), h.state == RH_OK ? good : bad);
-        snprintf(buf, sizeof(buf), "%lu B/s", (unsigned long)h.bytes_per_second);
+        snprintf(buf, sizeof(buf), ls_tr("%lu B/s"), (unsigned long)h.bytes_per_second);
         ls_kv(sf, a, row++, "STREAM", buf, h.bytes_per_second ? val : dim);
         if (h.recoveries) {
             snprintf(buf, sizeof(buf), "%u", (unsigned)h.recoveries);
@@ -116,16 +117,16 @@ static void draw_status(tui_surface *sf, tui_rect a)
     }
     if (!present) ls_kv(sf, a, row++, "SDR", "absent", bad);
 
-    snprintf(buf, sizeof(buf), "%d/s", perf_get_msgs_per_sec());
+    snprintf(buf, sizeof(buf), ls_tr("%d/s"), perf_get_msgs_per_sec());
     ls_kv(sf, a, row++, "ADS-B RATE", buf, val);
-    snprintf(buf, sizeof(buf), "%d err", perf_get_crc_err());
+    snprintf(buf, sizeof(buf), ls_tr("%d err"), perf_get_crc_err());
     ls_kv(sf, a, row++, "ADS-B CRC TOTAL", buf, perf_get_crc_err() ? dim : good);
 
     if (row < a.h - 3) row++;
     const size_t inter = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    snprintf(buf, sizeof(buf), "%u KB", (unsigned)(inter / 1024));
+    snprintf(buf, sizeof(buf), ls_tr("%u KB"), (unsigned)(inter / 1024));
     ls_kv(sf, a, row++, "INTERNAL", buf, inter < 40000 ? bad : val);
-    snprintf(buf, sizeof(buf), "%u KB",
+    snprintf(buf, sizeof(buf), ls_tr("%u KB"),
              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
     ls_kv(sf, a, row++, "PSRAM", buf, val);
 
@@ -159,7 +160,7 @@ static void draw_error(tui_surface *sf, tui_rect area, const char *error)
         tui_put_str(sf, area, area.x + 2, area.y + 2 + row, line, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
     }
     tui_put_str(sf, area, area.x + 2, area.y + area.h - 2,
-                s_error_pages > 1 ? "Tap next / ESC back" : "Tap or ESC to return", LS_ATTR_DIM);
+                ls_tr(s_error_pages > 1 ? "Tap next / ESC back" : "Tap or ESC to return"), LS_ATTR_DIM);
 }
 
 static void draw(tui_surface *sf, tui_rect area)
@@ -192,7 +193,7 @@ static void draw(tui_surface *sf, tui_rect area)
     }
     if (error) {
         s_error_banner = tui_rect_make(body.x, body.y, body.w, 3);
-        tui_put_str(sf, s_error_banner, body.x + 1, body.y, "SD app error: tap / E", TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, s_error_banner, body.x + 1, body.y, ls_tr("SD app error: tap / E"), TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
         tui_put_str(sf, s_error_banner, body.x + 1, body.y + 1, error,
                     TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
         body.y += 3; body.h -= 3;
@@ -218,7 +219,7 @@ static void draw(tui_surface *sf, tui_rect area)
     int shown = n - first; if (shown > PAGE_TILES) shown = PAGE_TILES;
     if (s_sel < first || s_sel >= first + shown) s_sel = first;
     char paging[24];
-    snprintf(paging,sizeof(paging),"PAGE %d/%d",pages?s_tile_page+1:1,pages?pages:1);
+    snprintf(paging,sizeof(paging),ls_tr("PAGE %d/%d"),pages?s_tile_page+1:1,pages?pages:1);
     ls_btn_t pager[]={
         {"< PREV",ls_tui_is_wide()?"F5":NULL,0,false,pages<=1},
         {paging,pages<=1?"SINGLE PAGE":"APP PAGES",0,true,true},

@@ -208,10 +208,16 @@ bool ls_mesh_radio_held(void);
 bool ls_mesh_radio_hold_bg(bool on);
 bool ls_mesh_radio_wanted(void);
 bool ls_mesh_radio_bg(void);
+/* RADIOS' STOP and ALLOW. Blocked, the radio is taken from every background
+   holder (they see ls_mesh_radio_wanted) and from MeshCore, and no new hold
+   is granted; a foreground holder that already has it keeps it until it
+   lets go. Runtime only. */
+void ls_mesh_radio_block(bool on);
+bool ls_mesh_radio_blocked(void);
 /* Socket status, including task lease owners while MeshCore is paused. */
 typedef struct {
     char chip[12], owner[32], mode[12];
-    bool present, receiving, transmitting, armed, held;
+    bool present, receiving, transmitting, armed, held, blocked;
 } ls_mesh_socket_t;
 void ls_mesh_socket_get(ls_mesh_socket_t *out);
 

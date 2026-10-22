@@ -2,6 +2,7 @@
 /* P25 screen. */
 
 #include "../../ls_tui_screen.h"
+#include "../../ls_i18n.h"
 #include "../../ls_radio_panel.h"
 #include "audio/audio_out.h"
 #include "scan_engine.h"
@@ -89,7 +90,7 @@ static void draw_activity(tui_surface *sf, tui_rect r, bool sync, int64_t now_us
     const uint8_t live  = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
     const uint8_t old   = TUI_ATTR(TUI_WHITE, TUI_BLACK);
 
-    tui_box(sf, r, "ACTIVITY", frame);
+    tui_box(sf, r, ls_tr("ACTIVITY"), frame);
     if (r.h < 3 || r.w < 24) return;
 
     /* Already read, by the layout above - it sizes this frame from the count,
@@ -103,15 +104,15 @@ static void draw_activity(tui_surface *sf, tui_rect r, bool sync, int64_t now_us
            receiver as a quiet channel, which is the failure this panel
            exists to make visible. */
         tui_put_str(sf, r, r.x + 2, r.y + 1,
-                    sync ? "synced, nothing heard yet"
-                         : "no sync - nothing to hear",
+                    ls_tr(sync ? "synced, nothing heard yet"
+                         : "no sync - nothing to hear"),
                     LS_ATTR_DIM);
         return;
     }
 
     if (r.h < 4) return;
     tui_put_str(sf, r, r.x + 2, r.y + 1,
-                "TALKGROUP    HEARD   AGE  SEEN IN", head);
+                ls_tr("TALKGROUP    HEARD   AGE  SEEN IN"), head);
 
     const uint32_t now_ms = (uint32_t)(now_us / 1000);
     const int rows = r.h - 3;
@@ -188,7 +189,7 @@ static void draw_iq_gauge(tui_surface *sf, tui_rect r, float level);
 
 static void draw_receiver_health(tui_surface *sf, tui_rect r)
 {
-    tui_box(sf, r, "RECEIVER HEALTH / TOTALS", TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    tui_box(sf, r, ls_tr("RECEIVER HEALTH / TOTALS"), TUI_ATTR(TUI_CYAN, TUI_BLACK));
     const uint8_t ink = TUI_ATTR(TUI_WHITE, TUI_BLACK);
     const int step = r.h >= 11 ? 2 : 1;
     /* Pair counters in short landscape panes; keep the activity width. */
@@ -204,25 +205,25 @@ static void draw_receiver_health(tui_surface *sf, tui_rect r)
         snprintf(line, sizeof(line), "%s %lu B/s  RSSI %.0f dBm", ls_rsel_name(LS_RSEL_LORA),
                  (unsigned long)P25.iq_bytes_sec, (double)P25.lora_rssi_dbm);
     else if (P25.lora_wait) {
-        snprintf(line, sizeof(line), "%s IN USE ELSEWHERE", ls_rsel_name(LS_RSEL_LORA));
+        snprintf(line, sizeof(line), ls_tr("%s IN USE ELSEWHERE"), ls_rsel_name(LS_RSEL_LORA));
         first = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
     } else
-        snprintf(line, sizeof(line), "IQ %lu B/s  AUDIO %lu samples/s",
+        snprintf(line, sizeof(line), ls_tr("IQ %lu B/s  AUDIO %lu samples/s"),
                  (unsigned long)P25.iq_bytes_sec, (unsigned long)P25.audio_samples_sec);
     tui_put_str(sf, r, r.x + 2, r.y + 1, line, first);
-    snprintf(line, sizeof(line), "SYNC %d   VOICE %d", P25.dsd_sync_count, P25.dsd_voice_count);
+    snprintf(line, sizeof(line), ls_tr("SYNC %d   VOICE %d"), P25.dsd_sync_count, P25.dsd_voice_count);
     tui_put_str(sf, r, r.x + 2, r.y + 1 + step, line, ink);
     sync_end = 4 + (int)strlen(line);
-    snprintf(line, sizeof(line), "BCH OK %d   FAIL %d", P25.dsd_bch_ok_count, P25.dsd_bch_fail_count);
+    snprintf(line, sizeof(line), ls_tr("BCH OK %d   FAIL %d"), P25.dsd_bch_ok_count, P25.dsd_bch_fail_count);
     tui_put_str(sf, r, r.x + 2, r.y + (compact ? 3 : 1 + step * 2), line, ink);
     bch_end = 4 + (int)strlen(line);
-    snprintf(line, sizeof(line), "%s errors %lu  AUDIO drops %lu",
-             P25.lora_rx || P25.lora_wait ? "Read" : "USB",
+    snprintf(line, sizeof(line), ls_tr("%s errors %lu  AUDIO drops %lu"),
+             P25.lora_rx || P25.lora_wait ? ls_tr("Read") : "USB",
              (unsigned long)P25.read_errors_total, (unsigned long)P25.audio_drops);
     tui_put_str(sf, r, r.x + (compact ? bch_end : 2),
                 r.y + (compact ? 3 : 1 + step * 3), line, ink);
     if (r.h >= 7 || compact) {
-        snprintf(line, sizeof(line), "DECODE %.1f ms / block", (double)P25.dsd_decode_ms);
+        snprintf(line, sizeof(line), ls_tr("DECODE %.1f ms / block"), (double)P25.dsd_decode_ms);
         tui_put_str(sf, r, r.x + (compact ? sync_end : 2),
                     r.y + (compact ? 2 : 1 + step * 4), line, LS_ATTR_DIM);
     }
@@ -235,6 +236,8 @@ static void draw_receiver_health(tui_surface *sf, tui_rect r)
 static int kv(tui_surface *sf, tui_rect box, int x, int y, const char *k,
               const char *v, uint8_t vattr)
 {
+    k = ls_tr(k);
+    v = ls_tr(v);
     tui_put_str(sf, box, x, y, k, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     x += (int)strlen(k) + 1;
     tui_put_str(sf, box, x, y, v, vattr);
@@ -264,7 +267,7 @@ static void draw_merged(tui_surface *sf, tui_rect r, int nac, int tg, int src,
     const uint8_t good  = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
     const uint8_t idle  = TUI_ATTR(TUI_WHITE, TUI_BLACK);
     const uint8_t warn  = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-    tui_box(sf, r, "DECODE / SIGNAL", TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    tui_box(sf, r, ls_tr("DECODE / SIGNAL"), TUI_ATTR(TUI_CYAN, TUI_BLACK));
     const int inner = r.h - 2;
     const int iw = r.w - 4;
     if (inner < 1 || iw < 16) return;
@@ -361,7 +364,7 @@ static void draw_decode(tui_surface *sf, tui_rect area)
 
     if (P25.split_enabled && area.h >= 9) {
         tui_rect roles = tui_rect_make(area.x, area.y, area.w, 5);
-        tui_box(sf, roles, "P25 SPLIT", frame);
+        tui_box(sf, roles, ls_tr("P25 SPLIT"), frame);
         char roles_line[80];
         snprintf(roles_line, sizeof(roles_line), "CC: %s site %u/%u CRC %u%%",
             P25.split_active ? "LR2021" : "RTL fallback",
@@ -446,13 +449,13 @@ static void draw_decode(tui_surface *sf, tui_rect area)
     if (below <= dial.y + dial.h - 2) {
         if (scan_engine_active()) scan_engine_status(buf, sizeof(buf));
         else if (P25.lr_iq_active)
-            snprintf(buf, sizeof(buf), "EXPERIMENTAL I/Q / CAPTURE GAPS");
+            snprintf(buf, sizeof(buf), "%s", ls_tr("EXPERIMENTAL I/Q / CAPTURE GAPS"));
         else if (P25.lora_rx && st.receiver_streaming)
-            snprintf(buf, sizeof(buf), "MANUAL / %s ONLINE", ls_rsel_name(LS_RSEL_LORA));
+            snprintf(buf, sizeof(buf), ls_tr("MANUAL / %s ONLINE"), ls_rsel_name(LS_RSEL_LORA));
         else if (P25.lora_wait && !st.receiver_streaming)
-            snprintf(buf, sizeof(buf), "%s IN USE ELSEWHERE", ls_rsel_name(LS_RSEL_LORA));
-        else snprintf(buf, sizeof(buf), "%s", st.receiver_streaming
-                      ? "MANUAL / RECEIVER ONLINE" : "NO USB RECEIVER");
+            snprintf(buf, sizeof(buf), ls_tr("%s IN USE ELSEWHERE"), ls_rsel_name(LS_RSEL_LORA));
+        else snprintf(buf, sizeof(buf), "%s", ls_tr(st.receiver_streaming
+                      ? "MANUAL / RECEIVER ONLINE" : "NO USB RECEIVER"));
         if (s_keypad) {
             const uint32_t rx = st.effective_center_known ? (uint32_t)st.effective_center_hz : freq;
             snprintf(buf, sizeof(buf), "RX %u.%04u MHz", (unsigned)(rx / 1000000u),
@@ -467,7 +470,7 @@ static void draw_decode(tui_surface *sf, tui_rect area)
     const int meter_y = dial.y + dial.h - 2;
     const int trace_h = meter_y - below - 1;
     if (trace_h >= 2) {
-        tui_put_str(sf, dial, dial.x + 2, below, "ACT", label);
+        tui_put_str(sf, dial, dial.x + 2, below, ls_tr("ACT"), label);
         ls_radio_glass_trace(&s_glass, sf, dial, dial.x + 6, below,
                              dial.w - 10, trace_h, 0.0f);
     }
@@ -518,7 +521,7 @@ static void draw_iq_gauge(tui_surface *sf, tui_rect r, float level)
     if (level < 0.0f) level = 0.0f;
     if (level > 1.0f) level = 1.0f;
 
-    tui_put_str(sf, r, r.x, r.y, "SIG",
+    tui_put_str(sf, r, r.x, r.y, ls_tr("SIG"),
                 TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
 
     char pct[6];
@@ -842,9 +845,185 @@ static const ls_opt_t OPT_P25_POLICY[] = {
     { .label = "Remove allowed TG", .kind = LS_OPT_NUMBER, .arg = 23, .num = o_p25_num, .set_num = o_p25_set_num, .lo = 1, .hi = 65535 },
 };
 static const ls_opt_ctx_t CTX_P25_POLICY = { .name = "Talkgroups", .job = LS_RSEL_P25, LS_OPT_ROWS(OPT_P25_POLICY) };
+
+/* ---- GPS sites and state packs ------------------------------------------
+   The backend (main/ls_p25_packs.c, p25_sites.c) follows the nearest site in
+   the packs on the card and fetches signed packs per state. These rows are
+   its face: the switch, where it is following now, and getting or removing
+   a state's pack. A state list is longer than a picker holds, so getting
+   one goes region first. Every value comes through the value table; the
+   download runs on the packs worker, never here. */
+static const char *const PACK_REGIONS[] = { "Northeast", "Southeast", "Midwest", "South Central",
+                                            "Mountain", "Pacific" };
+#define N_PACK_REGIONS ((int)(sizeof(PACK_REGIONS) / sizeof(PACK_REGIONS[0])))
+/* USPS code -> region, two letters then the region's digit. */
+static const char PACK_REGION_OF[] =
+    "CT0DE0MA0MD0ME0NH0NJ0NY0PA0RI0VT0DC0"
+    "AL1FL1GA1KY1MS1NC1SC1TN1VA1WV1"
+    "IA2IL2IN2KS2MI2MN2MO2ND2NE2OH2SD2WI2"
+    "AR3LA3OK3TX3"
+    "AZ4CO4ID4MT4NM4NV4UT4WY4"
+    "AK5CA5HI5OR5WA5";
+static int pack_region(const char *st)
+{
+    for (const char *p = PACK_REGION_OF; p[0] && p[1] && p[2]; p += 3)
+        if (p[0] == st[0] && p[1] == st[1]) return p[2] - '0';
+    return -1;
+}
+
+/* One catalog line: "ST|Name|free|installed-or-absent|version". */
+typedef struct { char st[3], name[28], tier[6], have[16], ver[16]; } pack_line_t;
+static int pack_lines(pack_line_t *out, int cap)
+{
+    ls_val_t v;
+    if (!ls_value_read("p25.pack.entries", &v, NULL) || v.kind != LS_VAL_TEXT || !v.s) return 0;
+    int n = 0;
+    for (const char *p = v.s; *p && n < cap;) {
+        const char *end = strchr(p, '\n');
+        if (!end) end = p + strlen(p);
+        char row[96];
+        int len = (int)(end - p) < (int)sizeof(row) - 1 ? (int)(end - p) : (int)sizeof(row) - 1;
+        memcpy(row, p, (size_t)len); row[len] = 0;
+        char *f[5] = {0}; int k = 0;
+        for (char *t = row; k < 5; k++) { f[k] = t; t = strchr(t, '|'); if (!t) { k++; break; } *t++ = 0; }
+        if (k == 5 && strlen(f[0]) == 2) {
+            pack_line_t *l = &out[n++];
+            snprintf(l->st, sizeof(l->st), "%s", f[0]); snprintf(l->name, sizeof(l->name), "%s", f[1]);
+            snprintf(l->tier, sizeof(l->tier), "%s", f[2]); snprintf(l->have, sizeof(l->have), "%s", f[3]);
+            snprintf(l->ver, sizeof(l->ver), "%s", f[4]);
+        }
+        p = *end ? end + 1 : end;
+    }
+    return n;
+}
+
+static EXT_RAM_BSS_ATTR pack_line_t s_pack[64];
+static EXT_RAM_BSS_ATTR int s_pick_map[LS_PICKER_MAX];
+static int s_pack_n, s_pick_n;
+static bool s_pick_remove;
+
+static void pack_call(const char *action, const char *st)
+{
+    ls_args_t a = { .n = st ? 1 : 0 };
+    if (st) { a.v[0].kind = LS_VAL_TEXT; a.v[0].s = st; }
+    ls_val_t out;
+    (void)ls_action_call(action, &a, &out, ls_quick_grant_builtin());
+}
+
+static void pack_state_done(int i)
+{
+    if (i < 0 || i >= s_pick_n) return;
+    const pack_line_t *l = &s_pack[s_pick_map[i]];
+    pack_call(s_pick_remove ? "p25.pack.remove" : "p25.pack.get", l->st);
+}
+
+static void pack_detail(const pack_line_t *l, char *d, size_t n)
+{
+    if (strcmp(l->have, "absent")) snprintf(d, n, "%s / on card %s", l->tier, l->have);
+    else snprintf(d, n, "%s / %s", l->tier, l->ver);
+}
+
+static void pack_region_done(int r)
+{
+    if (r < 0 || r >= N_PACK_REGIONS) return;
+    ls_picker_open(PACK_REGIONS[r], pack_state_done);
+    s_pick_n = 0;
+    for (int i = 0; i < s_pack_n && s_pick_n < LS_PICKER_MAX; i++) {
+        if (pack_region(s_pack[i].st) != r) continue;
+        char label[40], d[LS_PICKER_DETAIL];
+        snprintf(label, sizeof(label), "%s  %s", s_pack[i].st, s_pack[i].name);
+        pack_detail(&s_pack[i], d, sizeof(d));
+        s_pick_map[s_pick_n++] = i;
+        ls_picker_add(label, d);
+    }
+    ls_picker_empty_reason("No packs for this region yet");
+}
+
+static void o_pack_get(const ls_opt_t *o)
+{
+    (void)o;
+    s_pack_n = pack_lines(s_pack, 64);
+    s_pick_remove = false;
+    if (!s_pack_n) { pack_call("p25.pack.refresh", NULL); return; }
+    ls_picker_open("State pack", pack_region_done);
+    for (int r = 0; r < N_PACK_REGIONS; r++) {
+        int have = 0, total = 0;
+        for (int i = 0; i < s_pack_n; i++)
+            if (pack_region(s_pack[i].st) == r) { total++; have += strcmp(s_pack[i].have, "absent") != 0; }
+        char d[LS_PICKER_DETAIL];
+        snprintf(d, sizeof(d), "%d states, %d on card", total, have);
+        ls_picker_add(PACK_REGIONS[r], d);
+    }
+}
+
+static void o_pack_remove(const ls_opt_t *o)
+{
+    (void)o;
+    s_pack_n = pack_lines(s_pack, 64);
+    s_pick_remove = true;
+    ls_picker_open("Remove pack", pack_state_done);
+    s_pick_n = 0;
+    for (int i = 0; i < s_pack_n && s_pick_n < LS_PICKER_MAX; i++) {
+        if (!strcmp(s_pack[i].have, "absent")) continue;
+        char label[40], d[LS_PICKER_DETAIL];
+        snprintf(label, sizeof(label), "%s  %s", s_pack[i].st, s_pack[i].name);
+        pack_detail(&s_pack[i], d, sizeof(d));
+        s_pick_map[s_pick_n++] = i;
+        ls_picker_add(label, d);
+    }
+    ls_picker_empty_reason("No state packs on the card");
+}
+
+static void o_pack_refresh(const ls_opt_t *o) { (void)o; pack_call("p25.pack.refresh", NULL); }
+static void o_pack_state_show(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    ls_val_t st, pr;
+    const bool have = ls_value_read("p25.pack.state", &st, NULL) && st.kind == LS_VAL_TEXT && st.s;
+    if (ls_value_read("p25.pack.progress", &pr, NULL) && pr.f > 0.0f && pr.f < 1.0f)
+        snprintf(out, n, "%s %d%%", have ? st.s : "", (int)(pr.f * 100.0f + 0.5f));
+    else snprintf(out, n, "%s", have ? st.s : "--");
+}
+static void o_pack_count_show(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    ls_val_t c;
+    const int on = pack_lines(s_pack, 64);
+    int have = 0;
+    for (int i = 0; i < on; i++) have += strcmp(s_pack[i].have, "absent") != 0;
+    if (ls_value_read("p25.pack.count", &c, NULL) && c.i > 0) snprintf(out, n, "%d of %ld on card", have, c.i);
+    else snprintf(out, n, "%s", "refresh the list first");
+}
+
+/* Where GPS has it now: the site, its system and how far, or why not. */
+static void o_geo_show(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    ls_val_t en, st, site, sys, km;
+    if (!ls_value_read("p25.geo.enabled", &en, NULL) || !en.i) { snprintf(out, n, "%s", "off"); return; }
+    const bool s_ok = ls_value_read("p25.geo.site", &site, NULL) && site.kind == LS_VAL_TEXT && site.s && site.s[0];
+    if (s_ok && ls_value_read("p25.geo.system", &sys, NULL) && sys.kind == LS_VAL_TEXT && sys.s) {
+        if (ls_value_read("p25.geo.distance", &km, NULL)) snprintf(out, n, "%s / %s %.0f km", sys.s, site.s, (double)km.f);
+        else snprintf(out, n, "%s / %s", sys.s, site.s);
+        return;
+    }
+    snprintf(out, n, "%s", ls_value_read("p25.geo.state", &st, NULL) && st.kind == LS_VAL_TEXT && st.s ? st.s : "--");
+}
+static void o_geo_resume(const ls_opt_t *o) { (void)o; pack_call("p25.geo.resume", NULL); }
+
+static const ls_opt_t OPT_P25_SITES[] = {
+    { .label = "GPS sites",          .kind = LS_OPT_ACTION, .arg = LS_P25_SETTING_GPS_SITES, .act = o_p25_act, .show = o_p25_show },
+    { .label = "Following",          .kind = LS_OPT_ACTION, .act = o_geo_resume, .show = o_geo_show },
+    { .label = "Get a state pack",   .kind = LS_OPT_ACTION, .act = o_pack_get, .show = o_pack_count_show, .leaves = true },
+    { .label = "Remove a state pack", .kind = LS_OPT_ACTION, .act = o_pack_remove, .leaves = true },
+    { .label = "Refresh list",       .kind = LS_OPT_ACTION, .act = o_pack_refresh, .show = o_pack_state_show },
+};
+static const ls_opt_ctx_t CTX_P25_SITES = { .name = "GPS sites", .job = LS_RSEL_P25, .refresh_ms = 250,
+                                            LS_OPT_ROWS(OPT_P25_SITES) };
 static const ls_opt_t OPT_P25[] = {
     LS_CALLS_MENU,
     { .label = "Talkgroup policy", .kind = LS_OPT_MENU, .sub = &CTX_P25_POLICY },
+    { .label = "GPS sites", .kind = LS_OPT_MENU, .sub = &CTX_P25_SITES },
     { .label = "Control survey", .kind = LS_OPT_ACTION, .arg = 24, .act = o_p25_act, .show = o_p25_show },
     { .label = "Demodulation",          .kind = LS_OPT_ACTION, .arg = 0,  .act = o_p25_act, .show = o_p25_show, .radios = LS_OPT_SDR },
     { .label = "Polarity",              .kind = LS_OPT_ACTION, .arg = 1,  .act = o_p25_act, .show = o_p25_show },
@@ -1313,9 +1492,10 @@ static void draw(tui_surface *sf, tui_rect area)
         /* PORTRAIT, laid out as FM's VFO: the control row on top, the
            receiver's glass, the deck of tall cards under it, and the view
            tabs at the very bottom with KEYBOARD in the corner. The scanner
-           draws its own control row, so it is not given a second. */
+           gets the same row: its own bar is down to LISTS / SETUP / BACK,
+           so CALLS, DMR, the radio and P25 OPTIONS are reached from here. */
         const int tabs_h = 5;
-        const int ctl_h = s_page == PV_SCANNER ? 0 : area.h >= 55 ? 5 : 4;
+        const int ctl_h = area.h >= 55 ? 5 : 4;
         if (ctl_h) s_ctl_rect = tui_rect_make(area.x, area.y, area.w, ctl_h);
         s_bar = tui_rect_make(area.x, area.y + area.h - tabs_h, area.w, tabs_h);
         body = tui_rect_make(area.x, area.y + ctl_h, area.w,

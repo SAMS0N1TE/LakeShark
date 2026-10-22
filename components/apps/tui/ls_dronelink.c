@@ -10,6 +10,10 @@
  * itself (not checked here). Rate is a profile guess, not a measured rate.
  * 125ms worker polls count latched detections (lower bound), not all packets. */
 #include "ls_dronelink.h"
+#include "ls_drone_watch.h"
+#ifndef ESP_PLATFORM
+#pragma weak ls_drone_watch_lora900
+#endif
 #include "ls_detector.h"
 #include "board/ls_lora.h"
 #include "ls_mesh.h"
@@ -19,6 +23,7 @@
 static bool held, saved_rx;
 static ls_lora_cfg_t saved;
 static unsigned channel, profile;
+static bool resume;
 static int64_t hop_at, retry_at;
 static unsigned state; /* off, scanning, unavailable, conflict */
 static EXT_RAM_BSS_ATTR struct { int64_t second; uint16_t hits[6]; } channels[53];
@@ -29,7 +34,11 @@ const char *ls_dronelink_status(void) {
     return names[load_state()];
 }
 bool ls_dronelink_pending(void) {return load_state()==1;}
+static bool waiting;            /* hold_bg refused once; still registered */
+static volatile bool may_pause; /* DRONES on screen: MeshCore may be paused */
+void ls_dronelink_may_pause_mesh(bool on) {may_pause=on;}
 static void release(void) {
+    if(waiting && !held) {ls_mesh_radio_hold_bg(false);waiting=false;}
     if(!held)return;
     /* Configure parks in standby. Restore before releasing our task's lease. */
     ls_lora_configure(&saved);if(saved_rx)ls_lora_receive();
@@ -46,21 +55,29 @@ static bool tune(void) {
     cfg.cal_min_mhz=channel<40?902:863;cfg.cal_max_mhz=channel<40?928:870;
     return ls_lora_configure(&cfg)==ESP_OK && ls_lora_receive()==ESP_OK;
 }
+void ls_dronelink_suspend(void) {
+    if(held) {release();resume=true;retry_at=0;status(0);}
+}
 void ls_dronelink_tick(bool enabled,int64_t now) {
-    if(!enabled) {release();status(0);return;}
-    /* Never pause a running mesh for this optional observer. */
-    if(ls_mesh_running() || ls_mesh_radio_wanted() || (!held && ls_mesh_radio_bg())) {
+    if(!enabled) {release();resume=false;status(0);return;}
+    /* A running mesh is paused only while DRONES is on screen; a foreground
+       owner or another background holder always wins. */
+    if(ls_mesh_radio_wanted() || (!may_pause && ls_mesh_running()) ||
+       (!held && !waiting && ls_mesh_radio_bg())) {
         release();status(3);return;
     }
     if(!held) {
         if(now<retry_at)return;
-        retry_at=now+5000000;
+        retry_at=now+(waiting?100000:5000000);
         if(!ls_lora_present() || !(ls_lora_caps()&LS_LORA_CAP_LORA)) {status(2);return;}
-        if(!ls_mesh_radio_hold_bg(true)) {ls_mesh_radio_hold_bg(false);status(3);return;}
+        /* Refused: stay registered so the mesh task pauses and hands over. */
+        if(!ls_mesh_radio_hold_bg(true)) {waiting=true;status(3);return;}
+        waiting=false;
         const ls_lora_cfg_t *cfg=ls_lora_cfg();
         if(cfg)saved=*cfg;else ls_lora_cfg_default(&saved);
         saved_rx=ls_lora_is_receiving();held=true;
-        channel=profile=0;memset(channels,0,sizeof(channels));
+        if(!resume) {channel=profile=0;memset(channels,0,sizeof(channels));}
+        resume=false;
         if(!tune()) {release();status(2);return;}
         hop_at=now+250000;status(1);return;
     }
@@ -77,6 +94,10 @@ void ls_dronelink_tick(bool enabled,int64_t now) {
         unsigned hits=0;for(unsigned b=0;b<6;b++)hits+=channels[channel].hits[b];
         static const unsigned rates[]={200,100,100,50,25};
         ls_detector_drone(channel<40?915:868,channel,rates[profile],(int)rssi,hits,now);
+#ifndef ESP_PLATFORM
+        if(ls_drone_watch_lora900)
+#endif
+        ls_drone_watch_lora900(channel<40?915:868,channel<40?channel:channel-40,rssi,now);
     }
     if(now>=hop_at) {
         if(++channel==53) {channel=0;profile=(profile+1)%5;}

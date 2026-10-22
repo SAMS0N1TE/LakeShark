@@ -116,6 +116,11 @@ void ls_tui_set_cutout(int cx, int cy, int radius);
 bool ls_tui_cutout(tui_rect *cells);
 /* Landscape handedness, default clockwise. Apply before begin for safe insets. */
 void ls_tui_set_rotation_cw(bool clockwise);
+/* Told at every begin which board edge the content's top now faces, in
+   screen axes (x right, y top): (0,1) portrait, (-1,0) clockwise landscape,
+   (1,0) counter-clockwise. Instruments that point somewhere (the compass)
+   use it so their heading matches the picture. */
+void ls_tui_set_orientation_listener(void (*fn)(int ux, int uy));
 
 /* The panel's corner radius in pixels, which is how far the grid has
    to stand off its corners and NOT how far it has to stand off its edges.

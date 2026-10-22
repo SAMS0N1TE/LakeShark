@@ -1,5 +1,6 @@
 #include "adsb_app.h"
 #include "tui/ls_rid.h"
+#include "tui/ls_drone_watch.h"
 #include "tui/ls_sweep_app.h"
 #include "tui/ls_detector.h"
 #include <string.h>
@@ -54,6 +55,7 @@
 #include "ble_hci_rx_guard.h"
 #endif
 #include "settings.h"
+#include "ls_panel_ws.h"
 #include "adsb_demo.h"
 #include "tui/ls_map.h"
 /**/
@@ -1877,6 +1879,25 @@ static int cmd_ble(int argc, char **argv)
     return 0;
 }
 
+static int cmd_snd(int argc, char **argv)
+{
+    /* The power-on chirp on demand, through the same job as at boot. */
+    if (argc == 3 && !strcmp(argv[1],"test") && !strcmp(argv[2],"boot")) {
+        const bool ok = snd_boot_start(1);
+        printf("snd: boot %s\n", ok ? "queued" : "busy/unavailable");
+        return ok ? 0 : 1;
+    }
+    if (argc != 3 || strcmp(argv[1],"test")) {
+        printf("usage: snd test boot|sweep|bass|noise|tone|p25chirp|moto|radiokey|roger|chirp\n");
+        return 1;
+    }
+    int which=snd_test_from_name(argv[2]);
+    if (which<0) { printf("snd: unknown test\n"); return 1; }
+    bool ok=snd_test_start(which);
+    printf("snd: %s %s\n",snd_test_name(which),ok?"queued":"busy/unavailable");
+    return ok?0:1;
+}
+
 static int cmd_moto(int argc, char **argv)
 {
     const char *which = (argc >= 2) ? argv[1] : "all";
@@ -2187,6 +2208,18 @@ void ls_notify_alert_hw(bool ring, bool vibe)
 
 static int cmd_notify(int argc, char **argv)
 {
+    if (argc>=2 && !strcmp(argv[1],"sound")) {
+        int index=argc==3 ? settings_notification_sound_from_name(argv[2]) : -1;
+        if (index<0) {
+            printf("usage: notify sound alert|radiokey|roger|chirp|off\n");
+            return 1;
+        }
+        if (!settings_set_notification_sound(index)) {
+            printf("notify: sound setting not accepted\n"); return 1;
+        }
+        printf("notify: sound=%s\n",settings_notification_sound_names(NULL,NULL)[index]);
+        return 0;
+    }
     bool ring = ls_notify_ring();
     bool vibe = ls_notify_vibe();
     bool forced = false;
@@ -2914,7 +2947,8 @@ static int cmd_wifi(int argc, char **argv)
                     for (int i = 0; i < n; ++i) {
                         bool known = false;
                         for (int j = 0; j < saved; ++j) if (!strcmp(names[j], aps[i].ssid)) known = true;
-                        printf("%s  %d dBm  %s%s\n", aps[i].ssid, aps[i].rssi,
+                        printf("%s  %d dBm  ch %d%s  %s%s\n", aps[i].ssid, aps[i].rssi, aps[i].channel,
+                               aps[i].channel > 14 ? " (5 GHz)" : "",
                                aps[i].secure ? "secure" : "open", known ? "  [saved]" : "");
                     }
                     free(aps);
@@ -2992,6 +3026,7 @@ static bool console_start(bool full)
         { .command="detector", .help="Detector: status|start|stop|reload|test", .func=ls_detector_command },
         { .command="sweep", .help="Passive nearby signals: on|off|status|stats|list|hunt MAC|mute on|off|mute CAT|rules reload", .func=ls_sweep_command },
         { .command="rid", .help="Passive Remote ID: list | detail N | clear", .func=ls_rid_command },
+        { .command="drones", .help="Drone Watch: list | on|off | src elrs900|elrs24|hopper900|wide24|analog58|rid on|off", .func=ls_drone_watch_command },
         { .command="cellperf", .help="HackRF focused session; on/off restarts, ordinary reset returns to normal", .func=cell_performance_command },
         { .command = "status", .help = "Show mode, freq, volume, gain, mute, heap",
           .func = &cmd_status },
@@ -3040,8 +3075,10 @@ static bool console_start(bool full)
           .func = &cmd_find },
         { .command = "ant",    .help = "Antenna path: internal or external through MMCX1",
           .hint = "[int|ext]", .func = &cmd_ant },
+        { .command = "snd", .help = "Queue a synthesized sound test (respects volume and mute)",
+          .hint = "test <name>", .func = &cmd_snd },
         { .command = "notify", .help = "Post a test notice through the real path: banner, count, ring and vibrate",
-          .hint = "[ring|vibe|quiet]", .func = &cmd_notify },
+          .hint = "[ring|vibe|quiet|sound <alert|radiokey|roger|chirp|off>]", .func = &cmd_notify },
         { .command = "haptic", .help = "Vibration: play an effect, buzz for a time, or measure the motor",
           .hint = "[tick|click|confirm|alert|warn|buzz <ms> [pct]|stop|diag]",
           .func = &cmd_haptic },
@@ -3079,6 +3116,9 @@ static bool console_start(bool full)
             }
         }
         ls_ctl_register_commands();
+#if defined(LS_BOARD_PANEL_RUNTIME)
+        ls_panel_ws_register_console();
+#endif
     } else {
         (void)cmds;
         ls_ctl_register_recovery_commands();
@@ -3215,6 +3255,10 @@ void app_main(void)
     ls_rtc_seed_system_time();
 
     ls_panel_test_start();
+    /* The splash from here on, with its progress line following the stages
+       below, instead of a dark screen until compact_ui_start. */
+    compact_ui_splash_early();
+    compact_ui_boot_progress(5, "STARTING");
 
     /* Before USB, the update check and any other worker made with caps can
        end: they hand themselves to it rather than delete themselves. */
@@ -3235,6 +3279,7 @@ void app_main(void)
     }
 
     ls_safe_stage(LS_SAFE_STAGE_STORAGE);
+    compact_ui_boot_progress(12, "STORAGE");
     /* Storage is optional here, matching the card below. compact_ui_start
        owns the panel handoff, so boot always continues to it. */
     {
@@ -3265,6 +3310,7 @@ void app_main(void)
     }
 #endif
     ls_safe_stage(LS_SAFE_STAGE_CODEC);
+    compact_ui_boot_progress(24, "AUDIO");
 
 #if LS_HAS_AUDIO
     /* false, so the capture channel is built too.
@@ -3304,6 +3350,7 @@ void app_main(void)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
     ls_safe_stage(LS_SAFE_STAGE_C6);
+    compact_ui_boot_progress(30, "RADIO LINK");
 #if !CONFIG_LS_C6_LINK
     /* The T-Display-P4's C6 still carries LilyGO's factory image,
        which does not speak esp_hosted.  Attempting the link there does not
@@ -3370,8 +3417,9 @@ void app_main(void)
     /* ESP-Hosted Wi-Fi and the SX1262 mesh both need a contiguous internal
        control block.  USB host enumeration fragments that heap down to
        sub-kilobyte pieces, so reserve the always-on links first. */
+    compact_ui_boot_progress(46, "WI-FI");
     if (wifi_autojoin_ready) {
-        esp_err_t we = ls_wifi_sta_autojoin();
+        esp_err_t we = ls_wifi_sta_autojoin_boot();
         if (we == ESP_OK) {
             ESP_LOGI(TAG, "WiFi station: rejoining saved network");
         } else if (we != ESP_ERR_NOT_FOUND) {
@@ -3380,6 +3428,7 @@ void app_main(void)
     }
 
     ls_safe_stage(LS_SAFE_STAGE_BACKEND);
+    compact_ui_boot_progress(52, "RADIOS");
 #if LS_HAS_RF_SWITCH
     /* Before the radio or the mesh can transmit: a transmit in flight makes
        the switch refuse, and the stored choice was then dropped for the run. */
@@ -3393,6 +3442,7 @@ void app_main(void)
 #endif
     ls_mesh_boot();
     lakeshark_backend_start();
+    ls_drone_watch_start();
 
 #if LS_HAS_RF_SWITCH
     /* Normally already done above; this catches a refusal there and a
@@ -3402,6 +3452,7 @@ void app_main(void)
 #endif
 
     ls_safe_stage(LS_SAFE_STAGE_APPS);
+    compact_ui_boot_progress(62, "APPS");
     if(!cell_performance_active()) {
         /* Remember the receiver preference, but do not start its large USB
            stream during boot.  The first visible TUI screen will request the
@@ -3428,6 +3479,7 @@ void app_main(void)
     if(!cell_performance_active())audio_volume_set(settings_load_volume());
 
     vTaskDelay(pdMS_TO_TICKS(700));
+    compact_ui_boot_progress(70, "SPEAKER");
     if(!cell_performance_active()) {
         pa_on();
         audio_out_ensure_unmuted();
@@ -3475,8 +3527,10 @@ void app_main(void)
        long as the battery is out. Once, at boot, it costs 100 ms once.
        A failure is not an error: plenty of runs have no cell fitted. */
     (void)ls_gauge_start();
+    compact_ui_boot_progress(76, "SETTLING");
 
     vTaskDelay(pdMS_TO_TICKS(1500));
+    compact_ui_boot_progress(88, "LINKS");
     /* The Flipper link and the keyboard radios want the same two pins. */
 
 #if LS_HAS_LINK_UART
@@ -3507,6 +3561,7 @@ void app_main(void)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
     if(!cell_performance_active())ble_link_allow_telemetry(true);
+    compact_ui_boot_progress(94, "BLUETOOTH");
 
     if(cell_performance_active()) {
         ESP_LOGI(TAG,"CELL sensors: GPS=%s IMU=%s",

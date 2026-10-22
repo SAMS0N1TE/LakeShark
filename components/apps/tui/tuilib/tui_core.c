@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "tui_cyr.h"
+
 /* --- geometry --- */
 
 tui_rect tui_rect_make(int x, int y, int w, int h) {
@@ -107,6 +109,79 @@ char tui_fold_codepoint(uint32_t cp) {
     }
 }
 
+/* Cyrillic, the one script beyond Latin the cells can draw: the byte its
+   cell holds (tui_cyr.h), or 0 for any other codepoint. The Ukrainian
+   apostrophe is the ASCII one. */
+static char cyr_cell(uint32_t cp) {
+    if (cp == 0x2BC)
+        return '\'';
+    if (cp < TUI_CYR_MAP[0].cp ||
+        cp > TUI_CYR_MAP[sizeof(TUI_CYR_MAP) / sizeof(TUI_CYR_MAP[0]) - 1].cp)
+        return 0;
+    int lo = 0, hi = (int)(sizeof(TUI_CYR_MAP) / sizeof(TUI_CYR_MAP[0])) - 1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) / 2;
+        if (TUI_CYR_MAP[mid].cp == cp)
+            return (char)TUI_CYR_MAP[mid].byte;
+        if (TUI_CYR_MAP[mid].cp < cp)
+            lo = mid + 1;
+        else
+            hi = mid - 1;
+    }
+    return 0;
+}
+
+char tui_cell_codepoint_byte(uint32_t cp) {
+    const char c = cyr_cell(cp);
+    return c ? c : tui_fold_codepoint(cp);
+}
+
+int tui_cyr_slot(int ch) {
+    /* A byte stored through a signed char reads back negative on hosts
+       where char is signed. */
+    if (ch < 0 && ch >= -128)
+        ch &= 0xFF;
+    if (ch < 0 || ch > 0xFF)
+        return -1;
+    return TUI_CYR_SLOT_OF[ch];
+}
+
+uint32_t tui_cyr_slot_codepoint(int slot) {
+    return slot >= 0 && slot < TUI_CYR_SLOTS ? TUI_CYR_SLOT_CP[slot] : 0;
+}
+
+/* One UTF-8 character at *p decoded, or 0 with *p untouched when the bytes
+   there are not a complete sequence. */
+static uint32_t utf8_take(const char **p) {
+    const unsigned char *s = (const unsigned char *)*p;
+    const unsigned char b = s[0];
+    int n;
+    uint32_t cp;
+    if (b >= 0xC2 && b <= 0xDF)      { n = 1; cp = b & 0x1F; }
+    else if (b >= 0xE0 && b <= 0xEF) { n = 2; cp = b & 0x0F; }
+    else if (b >= 0xF0 && b <= 0xF4) { n = 3; cp = b & 0x07; }
+    else return 0;
+    for (int i = 1; i <= n; i++) {
+        if ((s[i] & 0xC0) != 0x80)
+            return 0;
+        cp = (cp << 6) | (s[i] & 0x3F);
+    }
+    *p += n + 1;
+    return cp;
+}
+
+size_t tui_utf8_to_cells(char *dst, size_t cap, const char *src) {
+    size_t n = 0;
+    if (!cap)
+        return 0;
+    while (*src && n + 1 < cap) {
+        const uint32_t cp = utf8_take(&src);
+        dst[n++] = cp ? tui_cell_codepoint_byte(cp) : *src++;
+    }
+    dst[n] = 0;
+    return n;
+}
+
 char tui_utf8_fold(const char **p) {
     const unsigned char *s = (const unsigned char *)*p;
     const unsigned char b = s[0];
@@ -179,7 +254,18 @@ static char put_str_cell(const char **p) {
         *p += 1;
         return (char)b;
     }
+    /* Cyrillic has cells of its own; everything else folds as before. */
+    const char *q = *p;
+    const char c = cyr_cell(utf8_take(&q));
+    if (c) {
+        *p = q;
+        return c;
+    }
     return tui_utf8_fold(p);
+}
+
+char tui_str_cell(const char **p) {
+    return put_str_cell(p);
 }
 
 int tui_utf8_cells(const char *str, size_t n) {

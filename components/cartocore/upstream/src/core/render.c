@@ -45,6 +45,7 @@ int cc_render(cc_renderer *r,const cc_ctile *map,unsigned z,int64_t left,int64_t
         }
         r->planes.colors16=r->active_colors16=r->colors16; r->planes.edges_mode=edges; r->active_edges=edges;
         r->planes.terrain_strength=r->active_terrain_strength=r->terrain_strength;
+        r->planes.zoom=(uint8_t)(z>255?255:z);
         cc_raster(&r->planes,&r->scene);
     }
     if(changed || r->mode!=mode || r->labels!=labels) {

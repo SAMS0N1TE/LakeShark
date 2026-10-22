@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "ls_icons.h"
+#include "ls_i18n.h"
 #include "esp_timer.h"
 #include "esp_attr.h"
 
@@ -109,10 +110,26 @@ static int button_want(const ls_btn_t *b, int row_h)
     return text + (row_h >= 3 ? 3 : 1);
 }
 
+/* The buttons in the interface language: a copy whose label and value are
+   ls_tr()'d, or the caller's own array in English. */
+#define TR_BTN_MAX 32
+static const ls_btn_t *tr_buttons(const ls_btn_t *btn, int n, ls_btn_t *copy)
+{
+    if (ls_i18n_lang() == LS_LANG_EN || !btn || n <= 0 || n > TR_BTN_MAX) return btn;
+    for (int i = 0; i < n; i++) {
+        copy[i] = btn[i];
+        copy[i].label = ls_tr(btn[i].label);
+        copy[i].value = ls_tr(btn[i].value);
+    }
+    return copy;
+}
+
 static int s_force_rows;
 static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
                         int focus, int slot, bool raised, bool stretch, bool single_row)
 {
+    ls_btn_t tr_copy[TR_BTN_MAX];
+    btn = tr_buttons(btn, n, tr_copy);
     if (slot < 0 || slot >= BTN_SLOTS) slot = 0;
     hit_clear(s_btn_hit[slot], &s_btn_n[slot]);
     if (!sf || n <= 0 || bar.w < 6 || bar.h < 1) return;
@@ -318,7 +335,7 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
             }
             if (!btn[i].dim && (btn[i].on || sel)) {
                 tui_put_str(sf, box, box.x + (box.w - 3) / 2, box.y + h - 1,
-                            btn[i].on ? "[*]" : "[+]", edge);
+                            ls_tr(btn[i].on ? "[*]" : "[+]"), edge);
             }
         } else if (key_hints && btn[i].key && h >= 3 && box.w >= 5) {
             char badge[] = {'[', btn[i].key, ']', 0};
@@ -371,6 +388,8 @@ void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
 bool ls_btn_compact_fits(tui_rect bar, const ls_btn_t *btn, int n)
 {
     if (!btn || n < 1 || bar.w < 6) return false;
+    ls_btn_t tr_copy[TR_BTN_MAX];
+    btn = tr_buttons(btn, n, tr_copy);
     /* The corners take their cells off both ends before anything is laid
        out, exactly as button_bar does it. */
     const int corner = ls_tui_corner_pad(bar.y);
@@ -651,22 +670,24 @@ void ls_tile_grid(tui_surface *sf, tui_rect area, const ls_tile_t *tile,
             text_y = top + icon_h;
         }
 
-        if (tile[i].name) {
-            int nw = (int)strlen(tile[i].name);
+        const char *tile_name = ls_tr(tile[i].name);
+        const char *tile_sub = ls_tr(tile[i].sub);
+        if (tile_name) {
+            int nw = (int)strlen(tile_name);
             if (nw > box.w - 2) nw = box.w - 2;
             char cut[24];
-            snprintf(cut, sizeof(cut), "%.*s", nw, tile[i].name);
+            snprintf(cut, sizeof(cut), "%.*s", nw, tile_name);
             tui_put_str(sf, box, box.x + (box.w - nw) / 2, text_y, cut, name_at);
         }
         /* text_h == 1 means the subtitle was the thing dropped to make room
            - tile[i].sub is still non-NULL, but no row was budgeted for it,
            so drawing it anyway would land on whatever the icon or the
            border owns there. */
-        if (tile[i].sub && text_h >= 2 && text_y + 1 < box.y + box.h) {
-            int sw = (int)strlen(tile[i].sub);
+        if (tile_sub && text_h >= 2 && text_y + 1 < box.y + box.h) {
+            int sw = (int)strlen(tile_sub);
             if (sw > box.w - 2) sw = box.w - 2;
             char cut[24];
-            snprintf(cut, sizeof(cut), "%.*s", sw, tile[i].sub);
+            snprintf(cut, sizeof(cut), "%.*s", sw, tile_sub);
             tui_put_str(sf, box, box.x + (box.w - sw) / 2, text_y + 1, cut, sub_at);
         }
 
@@ -675,7 +696,7 @@ void ls_tile_grid(tui_surface *sf, tui_rect area, const ls_tile_t *tile,
         if (tile[i].live && box.w >= 10) {
             tui_put_char(sf, box, box.x + box.w - 8, box.y, "|/-\\"[(esp_timer_get_time()/200000)%4],
                          TUI_ATTR(TUI_GREEN | TUI_BRIGHT,TUI_BLACK));
-            tui_put_str(sf, box, box.x + box.w - 6, box.y, "LIVE",
+            tui_put_str(sf, box, box.x + box.w - 6, box.y, ls_tr("LIVE"),
                         sel_now ? TUI_ATTR(TUI_BLACK, TUI_GREEN | TUI_BRIGHT)
                                 : TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
         }
@@ -690,8 +711,9 @@ void ls_tile_grid(tui_surface *sf, tui_rect area, const ls_tile_t *tile,
             const uint8_t dot = TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, sel_now ? hue : TUI_BLACK);
             const char g = drip_glyph();
             if (box.w >= 10) {
-                char tag[8] = { g, ' ', 'N', 'E', 'W', ' ', g, 0 };
-                tui_put_str(sf, box, box.x + box.w - 9, box.y, tag, dot);
+                char tag[16];
+                snprintf(tag, sizeof(tag), "%c %s %c", g, ls_tr("NEW"), g);
+                tui_put_str(sf, box, box.x + box.w - 2 - (int)strlen(tag), box.y, tag, dot);
             } else {
                 tui_put_char(sf, box, box.x + box.w - 2, box.y, g, dot);
             }
@@ -730,6 +752,7 @@ void ls_dither_label(tui_surface *sf, tui_rect r, int row, const char *text,
                      uint8_t attr)
 {
     if (!text || !*text) return;
+    text = ls_tr(text);
     /* Measured in cells: UTF-8 names have more bytes than letters. */
     int n = tui_utf8_cells(text, strlen(text));
     if (n > r.w) n = r.w;
@@ -740,12 +763,13 @@ void ls_dither_label(tui_surface *sf, tui_rect r, int row, const char *text,
     if (x + n < r.x + r.w) tui_put_char(sf, r, x + n, y, ' ', attr);
     const char *p = text;
     for (int i = 0; i < n && *p; i++)
-        tui_put_char(sf, r, x + i, y, tui_utf8_fold(&p), attr);
+        tui_put_char(sf, r, x + i, y, tui_str_cell(&p), attr);
 }
 
 void ls_panel_box(tui_surface *sf, tui_rect r, const char *title, uint8_t hue)
 {
     tui_box(sf, r, NULL, TUI_ATTR(hue, TUI_BLACK));
+    title = ls_tr(title);
     if (title && r.w > 6)
         tui_put_str(sf, r, r.x + 2, r.y, title,
                     TUI_ATTR(TUI_BLACK, hue | TUI_BRIGHT));
@@ -757,6 +781,8 @@ void ls_panel_notice(tui_surface *sf, tui_rect area, const char *title,
                      const char *reason, const char *remedy)
 {
     if (!sf || area.w < 12 || area.h < 4) return;
+    reason = ls_tr(reason);
+    remedy = ls_tr(remedy);
 
     const int lines = (reason ? 1 : 0) + (remedy ? 1 : 0);
     int h = lines + 4;                      /* border, air, lines, air, border */
@@ -789,6 +815,8 @@ void ls_panel_notice(tui_surface *sf, tui_rect area, const char *title,
 void ls_kv(tui_surface *sf, tui_rect r, int row, const char *label,
            const char *value, uint8_t vattr)
 {
+    label = ls_tr(label);
+    value = ls_tr(value);
     tui_put_str(sf, r, r.x + 2, r.y + row, label,
                 TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     if (!value) return;

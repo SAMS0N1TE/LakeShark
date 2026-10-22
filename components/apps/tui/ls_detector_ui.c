@@ -1,4 +1,5 @@
 #include "ls_detector_ui.h"
+#include "ls_i18n.h"
 #include "ls_braille.h"
 #include "ls_detector.h"
 #include "ls_detector_air.h"
@@ -143,21 +144,21 @@ static void options_art(tui_surface *sf,tui_rect a) {
     emblem(sf,tui_rect_make(a.x+1,a.y,13,7),s.running);
     tui_rect info=narrow?tui_rect_make(a.x,a.y+8,a.w,a.h-8):tui_rect_make(a.x+15,a.y,a.w-16,7);
     char text[80];
-    ls_safe_line(sf,info,info.y,"DETECTION POLICY",INK(TUI_CYAN|TUI_BRIGHT));
-    snprintf(text,sizeof(text),"%u rules / revision %u",s.rules,(unsigned)s.revision);
+    ls_safe_line(sf,info,info.y,ls_tr("DETECTION POLICY"),INK(TUI_CYAN|TUI_BRIGHT));
+    snprintf(text,sizeof(text),ls_tr("%u rules / revision %u"),s.rules,(unsigned)s.revision);
     ls_safe_line(sf,info,info.y+2,text,INK(TUI_WHITE));
-    ls_safe_line(sf,info,info.y+4,"Session edits / SD defaults",INK(TUI_YELLOW));
-    ls_safe_line(sf,info,info.y+6,"Tap row / < > step / BACK",LS_ATTR_DIM);
+    ls_safe_line(sf,info,info.y+4,ls_tr("Session edits / SD defaults"),INK(TUI_YELLOW));
+    ls_safe_line(sf,info,info.y+6,ls_tr("Tap row / < > step / BACK"),LS_ATTR_DIM);
     int y=a.y+(narrow?16:9);
     if(y+3<a.y+a.h) {
-        snprintf(text,sizeof(text),"%u observations / %u matches",(unsigned)s.observations,(unsigned)s.matches);
+        snprintf(text,sizeof(text),ls_tr("%u observations / %u matches"),(unsigned)s.observations,(unsigned)s.matches);
         ls_safe_line(sf,a,y,text,INK(TUI_GREEN));
-        snprintf(text,sizeof(text),"%u suppressed / %u dropped",(unsigned)s.suppressed,(unsigned)s.dropped);
+        snprintf(text,sizeof(text),ls_tr("%u suppressed / %u dropped"),(unsigned)s.suppressed,(unsigned)s.dropped);
         ls_safe_line(sf,a,y+2,text,INK(TUI_YELLOW));
     }
     if(y+10<a.y+a.h) {
-        ls_safe_line(sf,a,y+5,"SOURCES -> RULES -> ALERT QUEUES",INK(TUI_CYAN|TUI_BRIGHT));
-        ls_safe_line(sf,a,y+7,"Source lamps show enabled policy",LS_ATTR_DIM);
+        ls_safe_line(sf,a,y+5,ls_tr("SOURCES -> RULES -> ALERT QUEUES"),INK(TUI_CYAN|TUI_BRIGHT));
+        ls_safe_line(sf,a,y+7,ls_tr("Source lamps show enabled policy"),LS_ATTR_DIM);
         int x=a.x+1;
         x=ls_radio_chip(sf,a,x,y+9,"BLE",!!(s.sources&DET_BLE),TUI_CYAN);
         x=ls_radio_chip(sf,a,x,y+9,"RID",!!(s.sources&DET_RID),TUI_MAGENTA);
@@ -165,14 +166,14 @@ static void options_art(tui_surface *sf,tui_rect a) {
         ls_radio_chip(sf,a,x,y+9,"ADSB",!!(s.sources&DET_ADSB) && strcmp(s.adsb,"OFF"),TUI_BLUE|TUI_BRIGHT);
     }
     if(y+18<a.y+a.h) {
-        ls_safe_line(sf,a,y+13,"Metadata only / no raw RF capture",INK(TUI_GREEN));
-        ls_safe_line(sf,a,y+15,"No MAC address or location in log",LS_ATTR_DIM);
-        ls_safe_line(sf,a,y+17,"SWEEP recording is independent",INK(TUI_YELLOW));
+        ls_safe_line(sf,a,y+13,ls_tr("Metadata only / no raw RF capture"),INK(TUI_GREEN));
+        ls_safe_line(sf,a,y+15,ls_tr("No MAC address or location in log"),LS_ATTR_DIM);
+        ls_safe_line(sf,a,y+17,ls_tr("SWEEP recording is independent"),INK(TUI_YELLOW));
     }
     if(y+26<a.y+a.h) {
-        ls_safe_line(sf,a,y+21,"TEST reports queue acceptance",INK(TUI_CYAN));
-        ls_safe_line(sf,a,y+23,"FAILED means the sink refused",INK(TUI_RED));
-        ls_safe_line(sf,a,y+25,"BLOCKED means global policy is off",INK(TUI_YELLOW));
+        ls_safe_line(sf,a,y+21,ls_tr("TEST reports queue acceptance"),INK(TUI_CYAN));
+        ls_safe_line(sf,a,y+23,ls_tr("FAILED means the sink refused"),INK(TUI_RED));
+        ls_safe_line(sf,a,y+25,ls_tr("BLOCKED means global policy is off"),INK(TUI_YELLOW));
     }
 }
 static const char *sink_state(const ls_detector_event_t *e,unsigned bit) {
@@ -180,7 +181,7 @@ static const char *sink_state(const ls_detector_event_t *e,unsigned bit) {
 }
 static void history_plot(tui_surface *sf,tui_rect a) {
     ls_radio_bezel(sf,a," MATCH SIGNAL / dBm ");
-    ls_safe_line(sf,a,a.y+1,count?"OLDER  ------------------>  NEWER":"No samples / waiting for a match",LS_ATTR_DIM);
+    ls_safe_line(sf,a,a.y+1,ls_tr(count?"OLDER  ------------------>  NEWER":"No samples / waiting for a match"),LS_ATTR_DIM);
     int plot_w=a.w-4;tui_rect hole;
     if(ls_tui_cutout(&hole) && hole.x>a.x && a.x+a.w>hole.x &&
        a.y<hole.y+hole.h && a.y+a.h>hole.y)plot_w=hole.x-a.x-3;
@@ -199,7 +200,7 @@ static void history_plot(tui_surface *sf,tui_rect a) {
             ls_braille_put(sf,a,x,a.y+a.h-3-y,(int16_t)(0x2800|dots),INK(event_hue(e)));
         }
     }
-    ls_safe_line(sf,a,a.y+a.h-2,count?"RSSI -110..-30 / dots per match":"History fills only from real events",LS_ATTR_DIM);
+    ls_safe_line(sf,a,a.y+a.h-2,ls_tr(count?"RSSI -110..-30 / dots per match":"History fills only from real events"),LS_ATTR_DIM);
 }
 /* ---- AIRCRAFT view: the shared ADS-B table, read only ---------------------- */
 static const char *emergency_word(unsigned s) {
@@ -272,11 +273,11 @@ static float air_fresh(const ls_detector_air_t *a) {
 static void air_empty(tui_surface *sf,tui_rect inner,const ls_detector_status_t *s) {
     int y=inner.y+1;
     bool on=strcmp(s->adsb,"OFF")!=0;
-    ls_safe_line(sf,inner,y,on?"LISTENING / no aircraft in the last minute":"SOURCE OFF / no ADS-B receiver is running",INK(on?TUI_GREEN|TUI_BRIGHT:TUI_YELLOW|TUI_BRIGHT));
-    ls_safe_line(sf,inner,y+3,"DETECTOR claims no radio.",LS_ATTR_DIM);
-    ls_safe_line(sf,inner,y+5,"Start ADS-B in its own app;",INK(TUI_CYAN));
-    ls_safe_line(sf,inner,y+6,"this list then fills by itself.",INK(TUI_CYAN));
-    if(inner.h>=12)ls_safe_line(sf,inner,y+9,"[ ADS-B app ]--table-->[ DETECTOR ]",INK(TUI_BLUE|TUI_BRIGHT));
+    ls_safe_line(sf,inner,y,ls_tr(on?"LISTENING / no aircraft in the last minute":"SOURCE OFF / no ADS-B receiver is running"),INK(on?TUI_GREEN|TUI_BRIGHT:TUI_YELLOW|TUI_BRIGHT));
+    ls_safe_line(sf,inner,y+3,ls_tr("DETECTOR claims no radio."),LS_ATTR_DIM);
+    ls_safe_line(sf,inner,y+5,ls_tr("Start ADS-B in its own app;"),INK(TUI_CYAN));
+    ls_safe_line(sf,inner,y+6,ls_tr("this list then fills by itself."),INK(TUI_CYAN));
+    if(inner.h>=12)ls_safe_line(sf,inner,y+9,ls_tr("[ ADS-B app ]--table-->[ DETECTOR ]"),INK(TUI_BLUE|TUI_BRIGHT));
 }
 static void air_rows_draw(tui_surface *sf,tui_rect inner,const ls_detector_status_t *s) {
     if(!air_n) {air_empty(sf,inner,s);list_area=tui_rect_make(0,0,0,0);return;}
@@ -378,8 +379,8 @@ static void draw(tui_surface *sf,tui_rect a) {
     tui_rect number=tui_rect_make(a.x+17,a.y+2,wide?22:a.w-19,7);
     snprintf(text,sizeof(text),"%u",(unsigned)s->matches);
     ls_radio_digits_draw(sf,number,0,text,INK(TUI_WHITE|TUI_BRIGHT));
-    ls_safe_line(sf,number,number.y+6,"MATCHES / SESSION",INK(TUI_CYAN));
-    if(!wide)ls_safe_line(sf,head,a.y+9,"SOURCE POLICY",LS_ATTR_DIM);
+    ls_safe_line(sf,number,number.y+6,ls_tr("MATCHES / SESSION"),INK(TUI_CYAN));
+    if(!wide)ls_safe_line(sf,head,a.y+9,ls_tr("SOURCE POLICY"),LS_ATTR_DIM);
     int lamp_y=a.y+(wide?8:10);
     int x=a.x+(wide?43:2);
     x=ls_radio_chip(sf,head,x,lamp_y,s->running?"RUN":"OFF",s->running,TUI_GREEN);
@@ -390,11 +391,11 @@ static void draw(tui_surface *sf,tui_rect a) {
     ls_radio_chip(sf,head,x,lamp_y,"ADSB",!!(s->sources&DET_ADSB) && strcmp(s->adsb,"OFF"),TUI_WHITE|TUI_BRIGHT);
     if(wide) {
         tui_rect stats=tui_rect_make(a.x+43,a.y+2,a.w-45,7);
-        snprintf(text,sizeof(text),"%u observations    %u rules    queue %u",(unsigned)s->observations,s->rules,s->queued);
+        snprintf(text,sizeof(text),ls_tr("%u observations    %u rules    queue %u"),(unsigned)s->observations,s->rules,s->queued);
         ls_safe_line(sf,stats,stats.y,text,INK(TUI_CYAN));
-        snprintf(text,sizeof(text),"%u suppressed      %u dropped",(unsigned)s->suppressed,(unsigned)s->dropped);
+        snprintf(text,sizeof(text),ls_tr("%u suppressed      %u dropped"),(unsigned)s->suppressed,(unsigned)s->dropped);
         ls_safe_line(sf,stats,stats.y+2,text,INK(TUI_YELLOW));
-        snprintf(text,sizeof(text),"LoRa %s / ADS-B %s / lamps = policy",s->lora,s->adsb);
+        snprintf(text,sizeof(text),ls_tr("LoRa %s / ADS-B %s / lamps = policy"),ls_tr(s->lora),ls_tr(s->adsb));
         ls_safe_line(sf,stats,stats.y+4,text,LS_ATTR_DIM);
     }
     /* The same filled keys as REC and the radio deck, with explicit shortcuts. */
@@ -402,7 +403,7 @@ static void draw(tui_surface *sf,tui_rect a) {
     const char *badges="sdoa[]t";
     int cols=wide?7:4,kh=4,control_h=wide?4:8;
     int cy=a.y+a.h-control_h;
-    ls_safe_line(sf,a,cy-1,s->error[0]?s->error:test_waiting?"TEST queued / waiting for worker":"S run D detail O opts A aircraft [ ] pick T test",INK(s->error[0]?(strncmp(s->error,"No SD rules",11)?TUI_RED:TUI_YELLOW):TUI_CYAN));
+    ls_safe_line(sf,a,cy-1,ls_tr(s->error[0]?s->error:test_waiting?"TEST queued / waiting for worker":"S run D detail O opts A aircraft [ ] pick T test"),INK(s->error[0]?(strncmp(s->error,"No SD rules",11)?TUI_RED:TUI_YELLOW):TUI_CYAN));
     for(int i=0;i<7;i++) {
         int c=i%cols,r=i/cols,x0=a.x+c*a.w/cols,x1=a.x+(c+1)*a.w/cols;
         keys[i]=tui_rect_make(x0+1,cy+r*kh,x1-x0-2,kh-1);
@@ -455,7 +456,7 @@ static void draw(tui_surface *sf,tui_rect a) {
             ls_safe_line(sf,facts,y+4,text,INK(TUI_WHITE|TUI_BRIGHT));
             if(!e->test && e->source!=DET_ADSB) {
                 ls_meter_ascii(sf,facts,facts.x+2,y+5,facts.w-4,(e->rssi+110)/80.f,TUI_GREEN);
-                ls_safe_line(sf,facts,y+6,"-110 / -70 / -30 dBm",LS_ATTR_DIM);
+                ls_safe_line(sf,facts,y+6,ls_tr("-110 / -70 / -30 dBm"),LS_ATTR_DIM);
             }
             snprintf(text,sizeof(text),"#%u / revision %u",(unsigned)e->sequence,(unsigned)e->revision);
             ls_safe_line(sf,facts,y+7,text,LS_ATTR_DIM);
@@ -465,8 +466,8 @@ static void draw(tui_surface *sf,tui_rect a) {
                 snprintf(text,sizeof(text),"%s  %s",labels[i],sink_state(e,bit));
                 ls_safe_line(sf,sinks,y+2*i,text,INK(e->failed&bit?TUI_RED:e->delivered&bit?TUI_GREEN:TUI_YELLOW));
             }
-            ls_safe_line(sf,sinks,y+6,"Accepted = queued",LS_ATTR_DIM);
-            ls_safe_line(sf,sinks,y+7,"Not physical delivery",LS_ATTR_DIM);
+            ls_safe_line(sf,sinks,y+6,ls_tr("Accepted = queued"),LS_ATTR_DIM);
+            ls_safe_line(sf,sinks,y+7,ls_tr("Not physical delivery"),LS_ATTR_DIM);
             return;
         }
         ls_safe_line(sf,inner,y,e->reason,INK(hue|TUI_BRIGHT));
@@ -482,8 +483,8 @@ static void draw(tui_surface *sf,tui_rect a) {
             snprintf(text,sizeof(text),"%d dBm   /   sequence %u",e->rssi,(unsigned)e->sequence);
             ls_safe_line(sf,inner,y+4,text,INK(TUI_WHITE|TUI_BRIGHT));
             ls_meter_ascii(sf,inner,inner.x+2,y+5,inner.w-4,(e->rssi+110)/80.f,TUI_GREEN);
-            ls_safe_line(sf,inner,y+6,"-110 / -70 / -30 dBm",LS_ATTR_DIM);
-        } else ls_safe_line(sf,inner,y+4,"No radio transmission requested",INK(TUI_GREEN));
+            ls_safe_line(sf,inner,y+6,ls_tr("-110 / -70 / -30 dBm"),LS_ATTR_DIM);
+        } else ls_safe_line(sf,inner,y+4,ls_tr("No radio transmission requested"),INK(TUI_GREEN));
         y+=8;
         const char *names[]={"BANNER","VIBRATE","SD LOG"};
         for(int i=0;i<3;i++) {
@@ -492,7 +493,7 @@ static void draw(tui_surface *sf,tui_rect a) {
             ls_safe_line(sf,inner,y+i*2,text,INK(e->failed&bit?TUI_RED:e->delivered&bit?TUI_GREEN:TUI_YELLOW));
         }
         y+=7;
-        ls_safe_line(sf,inner,y,"Accepted = queued, not delivery",LS_ATTR_DIM);
+        ls_safe_line(sf,inner,y,ls_tr("Accepted = queued, not delivery"),LS_ATTR_DIM);
         snprintf(text,sizeof(text),"Entity %016" PRIx64,e->entity);ls_safe_line(sf,inner,y+2,text,LS_ATTR_DIM);
         snprintf(text,sizeof(text),"Revision %u / grouped %u",(unsigned)e->revision,(unsigned)e->coalesced);ls_safe_line(sf,inner,y+4,text,INK(TUI_CYAN));
         if(e->source==DET_LORA)snprintf(text,sizeof(text),"%u MHz ~%u Hz / %u hits/min",e->band,e->rate_guess,(unsigned)e->hits_per_min);
@@ -502,17 +503,17 @@ static void draw(tui_surface *sf,tui_rect a) {
         ls_safe_line(sf,inner,y+8,text,INK(TUI_MAGENTA));
     } else if(!count) {
         int y=inner.y+1;
-        ls_safe_line(sf,inner,y,s->running?"ARMED / waiting for rule matches":"STOPPED / tap START to monitor",INK(TUI_GREEN|TUI_BRIGHT));
-        ls_safe_line(sf,inner,y+3,"No detections recorded this session",LS_ATTR_DIM);
-        snprintf(text,sizeof(text),"%u rules / %u observations",s->rules,(unsigned)s->observations);ls_safe_line(sf,inner,y+6,text,INK(TUI_CYAN));
-        ls_safe_line(sf,inner,y+9,"BLE / Wi-Fi use SWEEP observations",LS_ATTR_DIM);
-        ls_safe_line(sf,inner,y+11,"RID requires validated messages",INK(TUI_MAGENTA));
-        snprintf(text,sizeof(text),"LoRa %s",s->lora);ls_safe_line(sf,inner,y+13,text,INK(TUI_YELLOW));
-        snprintf(text,sizeof(text),"ADS-B %s / needs another app",s->adsb);ls_safe_line(sf,inner,y+15,text,INK(TUI_BLUE|TUI_BRIGHT));
-        ls_safe_line(sf,inner,y+18,"OPTIONS selects sources and sinks",LS_ATTR_DIM);
-        ls_safe_line(sf,inner,y+20,"TEST checks enabled alert queues",INK(TUI_CYAN));
+        ls_safe_line(sf,inner,y,ls_tr(s->running?"ARMED / waiting for rule matches":"STOPPED / tap START to monitor"),INK(TUI_GREEN|TUI_BRIGHT));
+        ls_safe_line(sf,inner,y+3,ls_tr("No detections recorded this session"),LS_ATTR_DIM);
+        snprintf(text,sizeof(text),ls_tr("%u rules / %u observations"),s->rules,(unsigned)s->observations);ls_safe_line(sf,inner,y+6,text,INK(TUI_CYAN));
+        ls_safe_line(sf,inner,y+9,ls_tr("BLE / Wi-Fi use SWEEP observations"),LS_ATTR_DIM);
+        ls_safe_line(sf,inner,y+11,ls_tr("RID requires validated messages"),INK(TUI_MAGENTA));
+        snprintf(text,sizeof(text),"LoRa %s",ls_tr(s->lora));ls_safe_line(sf,inner,y+13,text,INK(TUI_YELLOW));
+        snprintf(text,sizeof(text),ls_tr("ADS-B %s / needs another app"),ls_tr(s->adsb));ls_safe_line(sf,inner,y+15,text,INK(TUI_BLUE|TUI_BRIGHT));
+        ls_safe_line(sf,inner,y+18,ls_tr("OPTIONS selects sources and sinks"),LS_ATTR_DIM);
+        ls_safe_line(sf,inner,y+20,ls_tr("TEST checks enabled alert queues"),INK(TUI_CYAN));
     } else {
-        snprintf(text,sizeof(text),"%u suppressed / %u dropped%s",(unsigned)s->suppressed,(unsigned)s->dropped,test_waiting?" / TEST queued":"");
+        snprintf(text,sizeof(text),ls_tr("%u suppressed / %u dropped%s"),(unsigned)s->suppressed,(unsigned)s->dropped,test_waiting?ls_tr(" / TEST queued"):"");
         ls_safe_line(sf,inner,inner.y,text,INK(TUI_YELLOW));
         list_area=tui_rect_make(inner.x,inner.y+2,inner.w,inner.h-2);
         row_height=4;visible=list_area.h/row_height;if(visible<1)visible=1;

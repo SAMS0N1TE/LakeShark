@@ -46,12 +46,11 @@ bool p25_geo_ready(const p25_geo_t *state, int64_t now_us)
            now_us - state->fix_us <= P25_GEO_HOLD_US;
 }
 
-int p25_geo_select(p25_geo_t *state, const p25_profile_t *profile,
+int p25_geo_select_many(p25_geo_t *state, const p25_profile_t *profiles, size_t count,
                    bool valid, double lat, double lon,
                    int64_t fix_us, int64_t now_us)
 {
-    if (!state || !profile) return -1;
-    if (!p25_geo_profile_has_sites(profile)) return -1;
+    if (!state || !profiles || !count) return -1;
 
     /* A fix has to be real, recent, and not from the future. The last of
        those is not paranoia: the clock is set from GPS, so the moment it
@@ -69,24 +68,24 @@ int p25_geo_select(p25_geo_t *state, const p25_profile_t *profile,
     double best_d = 0.0;
     double held_d = INFINITY;
 
-    for (unsigned i = 0; i < profile->control_count; ++i) {
-        if (!profile->control_has_geo[i]) continue;
-        const uint32_t radius = profile->control_radius_m[i];
-        if (radius < P25_GEO_MIN_RADIUS_M) continue;
+    for (size_t p = 0; p < count; ++p) {
+        const p25_profile_t *profile = &profiles[p];
+        for (unsigned i = 0; i < profile->control_count; ++i) {
+            const int index = (int)(p * P25_PROFILE_CONTROL_MAX + i);
+            if (!profile->control_has_geo[i]) continue;
+            const uint32_t radius = profile->control_radius_m[i];
+            if (radius < P25_GEO_MIN_RADIUS_M) continue;
 
-        const double d = p25_geo_distance_m(lat, lon,
-                                            profile->control_lat_e7[i] * 1e-7,
-                                            profile->control_lon_e7[i] * 1e-7);
-        if (!isfinite(d)) continue;
-
-        if ((int)i == held) held_d = d;
-
-        /* Nearest wins, among those actually in range. Nearest rather than
-           strongest-claimed, because the radius is somebody's estimate of
-           coverage and the distance is a fact. */
-        if (d <= (double)radius && (best < 0 || d < best_d)) {
-            best = (int)i;
-            best_d = d;
+            const double d = p25_geo_distance_m(lat, lon,
+                profile->control_lat_e7[i] * 1e-7, profile->control_lon_e7[i] * 1e-7);
+            if (!isfinite(d)) continue;
+            if (index == held) held_d = d;
+            /* Nearest in range wins; the existing held-site policy below
+             * applies across record and state boundaries too. */
+            if (d <= (double)radius && (best < 0 || d < best_d)) {
+                best = index;
+                best_d = d;
+            }
         }
     }
 
@@ -107,7 +106,7 @@ int p25_geo_select(p25_geo_t *state, const p25_profile_t *profile,
        boundary turning into a switch every few seconds, and every switch
        costs a re-acquisition of the control channel. */
     if (held >= 0 && isfinite(held_d)) {
-        const uint32_t held_radius = profile->control_radius_m[held];
+        const uint32_t held_radius = profiles[held / P25_PROFILE_CONTROL_MAX].control_radius_m[held % P25_PROFILE_CONTROL_MAX];
         if (held_d <= (double)held_radius + (double)P25_GEO_HYSTERESIS_M) {
             state->fix_us = fix_us;
             state->distance_m = (uint32_t)(held_d + 0.5);
@@ -120,4 +119,11 @@ int p25_geo_select(p25_geo_t *state, const p25_profile_t *profile,
     state->distance_m = (uint32_t)(best_d + 0.5);
     state->have_answer = true;
     return best;
+}
+
+int p25_geo_select(p25_geo_t *state, const p25_profile_t *profile,
+                   bool valid, double lat, double lon, int64_t fix_us, int64_t now_us)
+{
+    return p25_geo_select_many(state, profile, profile ? 1 : 0,
+                               valid, lat, lon, fix_us, now_us);
 }

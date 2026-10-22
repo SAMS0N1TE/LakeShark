@@ -42,6 +42,7 @@ static int          s_corner_r = 40;
 static int          s_grid_r = 40;
 static int          s_screen_w, s_screen_h;      /* logical, landscape aware */
 static bool         s_landscape, s_cw_rotation = true;
+static void tell_orientation(void);
 /* Logical pixels to native portrait storage. */
 static inline uint32_t landscape_index(int x, int y, int native_w)
 {
@@ -75,14 +76,23 @@ static volatile bool         s_look_dirty;
  * theme. All per-cell storage and both ramp banks live in PSRAM. */
 static uint16_t s_base_palette[16];
 static const uint16_t *s_cell_palette;
+/* A glass overlay over the basemap (a range ring, a route): the theme's ink
+   on the basemap's ground, so the map's colour shows behind it, not the
+   theme's black. */
+static const uint16_t *s_cell_bg_palette;
 static tui_rect s_base_rect;
 static tui_cell *s_base_rec;
 static uint8_t *s_base_front;
 static bool s_base_dirty;
 #define CELL_PALETTE (s_cell_palette ? s_cell_palette : PALETTE)
+/* Ramp bank: 0 theme, 1 basemap, 2 theme ink on basemap ground. */
+#define RAMP_BANK (s_cell_palette ? 1 : s_cell_bg_palette ? 2 : 0)
 
 static inline uint16_t attr_fg(uint8_t a) { return CELL_PALETTE[TUI_ATTR_FG(a) & 0x0F]; }
-static inline uint16_t attr_bg(uint8_t a) { return CELL_PALETTE[TUI_ATTR_BG(a) & 0x0F]; }
+static inline uint16_t attr_bg(uint8_t a)
+{
+    return (s_cell_bg_palette ? s_cell_bg_palette : CELL_PALETTE)[TUI_ATTR_BG(a) & 0x0F];
+}
 
 /* Blend fg over bg in RGB565, no division.
 
@@ -237,8 +247,8 @@ static bool blit_block(uint16_t *fb, int native_w, int x0, int y0,
 
 /* Alternating attributes used to rebuild the same sixteen colours hundreds
    of times on a screen switch. The table and validity bits live in PSRAM. */
-static EXT_RAM_BSS_ATTR uint16_t s_ramps[2][256][16];
-static EXT_RAM_BSS_ATTR bool s_ramp_valid[2][256];
+static EXT_RAM_BSS_ATTR uint16_t s_ramps[3][256][16];
+static EXT_RAM_BSS_ATTR bool s_ramp_valid[3][256];
 static const uint16_t *s_ramp;
 
 /* sRGB decode/encode over the 5- and 6-bit channels, small enough to inline
@@ -274,17 +284,17 @@ static void ramp_build(uint8_t attr)
         if (r > 0x1F) r = 0x1F;
         if (g > 0x3F) g = 0x3F;
         if (b > 0x1F) b = 0x1F;
-        s_ramps[s_cell_palette != NULL][attr][i] = (uint16_t)((r << 11) | (g << 5) | b);
+        s_ramps[RAMP_BANK][attr][i] = (uint16_t)((r << 11) | (g << 5) | b);
     }
-    s_ramp_valid[s_cell_palette != NULL][attr] = true;
+    s_ramp_valid[RAMP_BANK][attr] = true;
 }
 
 static uint32_t s_prof_ramps;
 
 static inline void ramp_for(uint8_t attr)
 {
-    if (!s_ramp_valid[s_cell_palette != NULL][attr]) { ramp_build(attr); s_prof_ramps++; }
-    s_ramp = s_ramps[s_cell_palette != NULL][attr];
+    if (!s_ramp_valid[RAMP_BANK][attr]) { ramp_build(attr); s_prof_ramps++; }
+    s_ramp = s_ramps[RAMP_BANK][attr];
 }
 
 static tui_rect s_image_rect;
@@ -344,7 +354,8 @@ void ls_tui_basemap(tui_surface *sf,tui_rect area,const uint16_t palette[16])
     if(memcmp(s_base_palette,palette,sizeof(s_base_palette)) ||
        memcmp(&s_base_rect,&area,sizeof(area))) {
         memcpy(s_base_palette,palette,sizeof(s_base_palette));
-        memset(s_ramp_valid[1],0,sizeof(s_ramp_valid[1]));s_base_dirty=true;
+        memset(s_ramp_valid[1],0,sizeof(s_ramp_valid[1]));
+        memset(s_ramp_valid[2],0,sizeof(s_ramp_valid[2]));s_base_dirty=true;
     }
     s_base_rect=area;
     for(int y=area.y;y<area.y+area.h;y++) for(int x=area.x;x<area.x+area.w;x++)
@@ -452,7 +463,13 @@ void ls_tui_put_glass(tui_surface *sf, tui_rect clip, int x, int y, int16_t ch, 
 {
     if (x < clip.x || y < clip.y || x >= clip.x + clip.w || y >= clip.y + clip.h) return;
     if(!tui_rect_contains(tui_surface_rect(sf),x,y)) return;
-    sf->back[y*sf->w+x]=(tui_cell){ch,attr};
+    tui_cell *cell=&sf->back[y*sf->w+x];
+    /* Glass shows what is under it. Over the picture that is the picture;
+       anywhere else it is the ground already drawn in the cell, so a ring or
+       a route over a character map keeps the map's colour behind it instead
+       of a black block. */
+    if(!image_cell(x,y)) attr=TUI_ATTR(TUI_ATTR_FG(attr),TUI_ATTR_BG(cell->attr));
+    *cell=(tui_cell){ch,attr};
     ls_tui_glass(x, y);
 }
 
@@ -573,6 +590,15 @@ static bool glass_coverage(uint16_t ch, bool *halo)
             s_cov[y*32+x]=ls_braille_pixel(ch,x,y,cw,chh)?15:0;
         return true;
     }
+    /* A Cyrillic letter has a byte the blocks would otherwise claim. */
+    const ls_font_t *face = s_font;
+    const int slot = tui_cyr_slot(ch);
+    if (slot >= 0) {
+        face = ls_font_cyr_page(s_font);
+        ch = (uint16_t)slot;
+        if (!face) return false;
+        goto glyph;
+    }
     if (ch == ' ') return false;
     if (ch >= 0xC0) {
         const int hw = cw / 2;
@@ -608,11 +634,12 @@ static bool glass_coverage(uint16_t ch, bool *halo)
         }
         return true;
     }
-    const ls_font_glyph_t *dsc = ls_font_glyph(s_font, ch);
+glyph:;
+    const ls_font_glyph_t *dsc = ls_font_glyph(face, (uint8_t)ch);
     if (!dsc) return false;
-    const uint8_t *bmp = &s_font->bitmap[dsc->bitmap_index];
+    const uint8_t *bmp = &face->bitmap[dsc->bitmap_index];
     const int gx = dsc->ofs_x;
-    const int gy = (s_ch - s_font->base_line) - dsc->box_h - dsc->ofs_y;
+    const int gy = (s_ch - face->base_line) - dsc->box_h - dsc->ofs_y;
     for (int y = 0; y < dsc->box_h; y++) {
         const int py = gy + y;
         if (py < 0 || py >= chh) continue;
@@ -685,11 +712,20 @@ static void blit_cell(uint16_t *fb, int native_w, int native_h,
         return;
     }
 
-    /* Blocks paint the whole cell themselves, background included. */
-    if (blit_block(fb, native_w, x0, y0, cell->ch, fg, bg)) return;
-
-    const ls_font_glyph_t *dsc = ls_font_glyph(s_font, (uint8_t)cell->ch);
-    const uint8_t *bmp = dsc ? &s_font->bitmap[dsc->bitmap_index] : NULL;
+    /* A Cyrillic letter comes from its face's Cyrillic page (tui_cyr.h);
+       its byte is one the blocks below would otherwise claim. */
+    const ls_font_t *face = s_font;
+    const ls_font_glyph_t *dsc;
+    const int slot = tui_cyr_slot(cell->ch);
+    if (slot >= 0) {
+        face = ls_font_cyr_page(s_font);
+        dsc = face ? ls_font_glyph(face, (uint8_t)slot) : NULL;
+    } else {
+        /* Blocks paint the whole cell themselves, background included. */
+        if (blit_block(fb, native_w, x0, y0, cell->ch, fg, bg)) return;
+        dsc = ls_font_glyph(s_font, (uint8_t)cell->ch);
+    }
+    const uint8_t *bmp = dsc ? &face->bitmap[dsc->bitmap_index] : NULL;
     const bool have = dsc != NULL;
     if (have) ramp_for(cell->attr);
 
@@ -725,7 +761,7 @@ static void blit_cell(uint16_t *fb, int native_w, int native_h,
     if (!have) return;
 
     const int gx = x0 + dsc->ofs_x;
-    const int gy = y0 + (s_ch - s_font->base_line) - dsc->box_h - dsc->ofs_y;
+    const int gy = y0 + (s_ch - face->base_line) - dsc->box_h - dsc->ofs_y;
 
     /* Outer loop across the framebuffer's stride, inner along it: rows in
        portrait, logical columns in landscape. */
@@ -900,7 +936,12 @@ bool ls_tui_begin(int screen_w, int screen_h)
        point of this file is that it no longer asks LVGL anything. */
     s_screen_w = screen_w > 0 ? screen_w : fb.width;
     s_screen_h = screen_h > 0 ? screen_h : fb.height;
-    s_landscape = s_screen_w > s_screen_h;
+    /* "Landscape" here means turned a quarter from the glass: the logical
+       size is the native size swapped. Judging it by w > h alone took a
+       landscape-native panel (800x480) at rotation 0 for a turned one, and
+       the turned blit then wrote rows far past its framebuffer. */
+    s_landscape = s_screen_w != s_screen_h && s_screen_w == fb.height && s_screen_h == fb.width;
+    tell_orientation();
     /* The chosen font becomes THE font here and nowhere else.
 
        This is the one moment the grid dimensions are settled, so it is the
@@ -1045,6 +1086,20 @@ bool ls_tui_cutout(tui_rect *cells)
 void ls_tui_set_rotation_cw(bool clockwise)
 {
     s_cw_rotation = clockwise;
+}
+
+static void (*s_orientation_fn)(int ux, int uy);
+void ls_tui_set_orientation_listener(void (*fn)(int ux, int uy))
+{
+    s_orientation_fn = fn;
+}
+/* landscape_index: clockwise puts logical up at the panel's native left
+   edge, counter-clockwise at its right edge. */
+static void tell_orientation(void)
+{
+    if (!s_orientation_fn) return;
+    if (!s_landscape) s_orientation_fn(0, 1);
+    else s_orientation_fn(s_cw_rotation ? -1 : 1, 0);
 }
 
 /* Takes effect on the next begin(): the grid dimensions come from the
@@ -1309,15 +1364,22 @@ int ls_tui_present(void)
             size_t i = (size_t)row * s_cols + col;
             const bool glass = glass_live(col, row, i);
             const bool base=basemap_live(col,row,i);
+            const bool on_base=!base && !glass && s_base_rec && glass_bit(s_glass_back,i) &&
+                               tui_rect_contains(s_base_rect,col,row);
+            /* s_base_front: drawn with any basemap colour, ink or ground, so a
+               cell redraws when it moves onto or off the basemap's palette. */
+            const bool tinted = base || on_base;
             if (s_back[i].ch == s_front[i].ch &&
                 s_back[i].attr == s_front[i].attr &&
                 glass == glass_bit(s_glass_front, i) &&
-                base == glass_bit(s_base_front,i) && !(s_base_dirty && base) &&
+                tinted == glass_bit(s_base_front,i) && !(s_base_dirty && tinted) &&
                 !(s_image_dirty && (glass || (s_back[i].ch < 0x100 && (uint8_t)s_back[i].ch == (uint8_t)LS_TUI_IMAGE_CELL)) &&
                   image_changed(col, row))) continue;
             s_cell_palette=base?s_base_palette:NULL;
+            s_cell_bg_palette=on_base?s_base_palette:NULL;
             blit_cell(fb.pixels, fb.width, fb.height, col, row, &s_back[i], glass);
             s_cell_palette=NULL;
+            s_cell_bg_palette=NULL;
             /* Once the ring was shown, only a changed cell inside it can
                invalidate that fact between image updates. Avoid rescanning
                the whole waterfall on every otherwise-idle present. */
@@ -1329,7 +1391,7 @@ int ls_tui_present(void)
                     image_cell_invalidated = true;
                 }
             }
-            glass_set(s_base_front,i,base);
+            glass_set(s_base_front,i,tinted);
             glass_set(s_glass_front, i, glass);
             dirty_logical(s_ox + col * s_cw, s_oy + row * s_ch + bar_row_offset(row),
                           s_cw, s_ch);
@@ -1497,8 +1559,13 @@ void ls_tui_dump(void)
 
     for (int y = 0; y < s_rows; y++) {
         printf("%3d  ", y);
-        for (int x = 0; x < s_cols; x++)
-            putchar(printable(s_back[(size_t)y * s_cols + x].ch));
+        for (int x = 0; x < s_cols; x++) {
+            const int16_t ch = s_back[(size_t)y * s_cols + x].ch;
+            /* A Cyrillic letter as the UTF-8 it is, two bytes, one column. */
+            const uint32_t cp = tui_cyr_slot_codepoint(tui_cyr_slot(ch));
+            if (cp) { putchar(0xC0 | (int)(cp >> 6)); putchar(0x80 | (int)(cp & 0x3F)); }
+            else putchar(printable(ch));
+        }
         putchar('\n');
     }
 }

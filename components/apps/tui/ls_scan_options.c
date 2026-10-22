@@ -302,9 +302,22 @@ static void o_show_channel(const ls_opt_t *o, char *out, size_t n)
     { .label = "Delete channel", .kind = LS_OPT_ACTION, .act = o_delete,            \
       .show = o_show_channel, .why_not = need_channel }
 
+/* The two list switches the old START page carried. The scanner's front now
+   starts with one tap, so these live here with the rest of how a scan runs. */
+static int  o_mixed(const ls_opt_t *o) { (void)o; return scan_engine_mixed() ? 1 : 0; }
+static void o_set_mixed(const ls_opt_t *o, int v) { (void)o; retarget(); scan_engine_set_mixed(v != 0); }
+static int  o_gps(const ls_opt_t *o) { (void)o; return scan_engine_location() ? 1 : 0; }
+static void o_set_gps(const ls_opt_t *o, int v) { (void)o; retarget(); scan_engine_set_location(v != 0); }
+#define ROW_MIXED                                                                   \
+    { .label = "Mixed P25 + FM", .kind = LS_OPT_TOGGLE, .get = o_mixed,             \
+      .set = o_set_mixed }
+#define ROW_GPS                                                                     \
+    { .label = "GPS coverage filter", .kind = LS_OPT_TOGGLE, .get = o_gps,          \
+      .set = o_set_gps }
+
 /* NFM: the autosquelch measures the noise floor the NFM squelch gates on. */
 static const ls_opt_t OPT_SCAN_FM[] = {
-    ROW_SOURCE, ROW_ZONE, ROW_HANG, ROW_THRESH,
+    ROW_SOURCE, ROW_ZONE, ROW_GPS, ROW_MIXED, ROW_HANG, ROW_THRESH,
     { .label = "Autosquelch", .kind = LS_OPT_ACTION, .act = o_autosquelch,
       .show = o_show_autosquelch },
     ROW_PRIORITY, ROW_START, ROW_STOP, ROW_STEP,
@@ -312,7 +325,7 @@ static const ls_opt_t OPT_SCAN_FM[] = {
 };
 
 static const ls_opt_t OPT_SCAN_P25[] = {
-    ROW_SOURCE, ROW_ZONE, ROW_HANG, ROW_THRESH,
+    ROW_SOURCE, ROW_ZONE, ROW_GPS, ROW_MIXED, ROW_HANG, ROW_THRESH,
     ROW_PRIORITY, ROW_START, ROW_STOP, ROW_STEP,
     ROW_CHANNEL, ROW_ENABLED, ROW_LOCKOUT, ROW_PRIO_FLAG, ROW_DELETE,
 };

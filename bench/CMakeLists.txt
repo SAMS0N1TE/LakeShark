@@ -3,7 +3,7 @@ project(lakeshark_bench C CXX)
 
 add_executable(test_character_mix_helpers tests/test_character_mix_helpers.c
     ../components/apps/tui/ls_tui_ui.c ../components/apps/tui/ls_glyph.c ../components/apps/tui/ls_icons.c
-    ../components/apps/tui/tuilib/tui_core.c)
+    ../components/apps/tui/tuilib/tui_core.c ../components/apps/tui/ls_i18n.c)
 target_include_directories(test_character_mix_helpers PRIVATE
     shims ../components/apps/tui ../components/apps ../components/lakeshark)
 target_compile_options(test_character_mix_helpers PRIVATE -ffunction-sections -fdata-sections)
@@ -20,8 +20,6 @@ add_executable(test_hamming_tables tests/test_hamming_tables.cpp
 target_include_directories(test_hamming_tables PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/lakeshark/apps/p25)
 add_test(NAME test_hamming_tables COMMAND test_hamming_tables)
-
-add_compile_definitions(LV_FONT_MONTSERRAT_14=1 LV_FONT_MONTSERRAT_16=1)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -51,6 +49,8 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_sweep_ui.c
     ${FW}/components/apps/tui/ls_rid.c
     ${FW}/components/apps/tui/ls_rid_ui.c
+    ${FW}/components/apps/tui/ls_drone_ui.c
+    ${FW}/bench/shims/ls_drone_watch_fake.c
     ${FW}/bench/shims/ls_music_view_fake.c
     ${DMR_WATCH_SRCS}
     ${FW}/components/apps/tui/experiments/rs41_store.c
@@ -229,9 +229,7 @@ include_directories(
     ${FW}/components/mbelib
     ${FW}/main
     ${FW}/components/apps
-    ${FW}/components/apps/media_gui
     ${FW}/components/apps
-    ${FW}/components/apps/file_browser
     ${FW}/components/bsp_extra/include
     ${FW}/managed_components/chmorgan__esp-file-iterator/include
 )
@@ -259,155 +257,13 @@ target_link_libraries(ls_harness PUBLIC Threads::Threads)
 
 enable_testing()
 
-add_subdirectory(${FW}/managed_components/lvgl__lvgl
-                 ${CMAKE_BINARY_DIR}/lvgl-host EXCLUDE_FROM_ALL)
-target_compile_definitions(lvgl PUBLIC LV_CONF_SKIP=1 LV_MEM_CUSTOM=1)
-target_compile_definitions(lvgl PUBLIC
-    LV_MEM_CUSTOM_INCLUDE=\"ls_lv_mem_probe.h\"
-    LV_MEM_CUSTOM_ALLOC=ls_lv_probe_malloc
-    LV_MEM_CUSTOM_FREE=ls_lv_probe_free
-    LV_MEM_CUSTOM_REALLOC=ls_lv_probe_realloc)
-add_library(ls_lv_probe STATIC shims/ls_lv_mem_probe.c)
-target_include_directories(ls_lv_probe PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/shims)
-target_link_libraries(lvgl PUBLIC ls_lv_probe)
-target_compile_options(lvgl PRIVATE -w)
-
-add_executable(test_ls_ui_layout
-    tests/test_ls_ui_layout.cpp
-    ${FW}/components/apps/ui/ls_ui.cpp
-    ${FW}/components/apps/ui/ls_ui_palette.c
-    ${FW}/components/apps/ui/ls_ui_logic.c
-    ${FW}/components/apps/ui/ls_safe_screen_hint.c)
-target_link_libraries(test_ls_ui_layout ls_harness lvgl m)
-add_test(NAME test_ls_ui_layout COMMAND test_ls_ui_layout)
-
-add_executable(test_p25_screen_fit
-    tests/test_p25_screen_fit.cpp
-    ${FW}/components/apps/ui/ls_safe_screen_hint.c
-    ${FW}/components/apps/ui/ls_ui.cpp
-    ${FW}/components/apps/ui/ls_ui_palette.c
-    ${FW}/components/apps/ui/ls_ui_logic.c
-    ${FW}/components/apps/ui/ls_spectrum_waterfall.cpp
-    ${FW}/components/apps/ui/ls_spectrum_waterfall_logic.c
-    ${FW}/components/apps/sdr_ui/lv_font_lsmono_16.c
-    ${FW}/components/apps/sdr_ui/lv_font_lsmono_14.c)
-target_include_directories(test_p25_screen_fit PRIVATE
-    ${FW}/components/apps/p25_gui)
-target_link_libraries(test_p25_screen_fit ls_harness lvgl m)
-add_test(NAME test_p25_screen_fit COMMAND test_p25_screen_fit)
-
-add_executable(test_acars_screen_fit
-    tests/test_acars_screen_fit.cpp
-    ${FW}/components/apps/acars_gui/AppACARS.cpp
-    ${APP}/acars/acars_app.c
-    ${FW}/components/apps/sdr_ui/sdr_ui.cpp
-    ${FW}/components/apps/sdr_ui/lv_font_lsmono_16.c
-    ${FW}/components/apps/sdr_ui/lv_font_lsmono_14.c
-    ${FW}/components/apps/ui/ls_ui.cpp
-    ${FW}/components/apps/ui/ls_ui_palette.c
-    ${FW}/components/apps/ui/ls_ui_logic.c
-    ${FW}/components/apps/ui/ls_safe_screen_hint.c
-    ${FW}/components/apps/ui/ls_receiver_status.c
-    ${FW}/components/apps/sdr_ui/lv_font_lsmono_16.c
-    ${FW}/components/apps/sdr_ui/lv_font_lsmono_14.c
-    ${FW}/managed_components/lvgl__lvgl/src/font/lv_font_montserrat_48.c)
-target_compile_definitions(test_acars_screen_fit PRIVATE
-    LV_FONT_MONTSERRAT_16=1 LV_FONT_MONTSERRAT_48=1)
-target_include_directories(test_acars_screen_fit PRIVATE
-    ${APP}/acars ${FW}/components/lakeshark)
-target_link_libraries(test_acars_screen_fit ls_harness lvgl m)
-add_test(NAME test_acars_screen_fit COMMAND test_acars_screen_fit)
-
-add_executable(test_home_widget
-    tests/test_home_widget.cpp
-    ${FW}/components/apps/home/AppHome.cpp
-    ${FW}/components/apps/home/home_widget_view.c
-    ${FW}/components/lakeshark/core/home_widget_pref.c
-    ${FW}/components/apps/sdr_ui/sdr_ui.cpp
-    ${FW}/components/apps/sdr_ui/lv_font_lsmono_16.c
-    ${FW}/components/apps/sdr_ui/lv_font_lsmono_14.c
-    ${FW}/components/apps/ui/ls_ui.cpp
-    ${FW}/components/apps/ui/ls_ui_palette.c
-    ${FW}/components/apps/ui/ls_ui_logic.c
-    ${FW}/components/apps/ui/ls_safe_screen_hint.c
-    ${FW}/managed_components/lvgl__lvgl/src/font/lv_font_montserrat_20.c
-    ${FW}/managed_components/lvgl__lvgl/src/font/lv_font_montserrat_32.c)
-target_compile_definitions(test_home_widget PRIVATE
-    LV_FONT_MONTSERRAT_20=1 LV_FONT_MONTSERRAT_32=1)
-target_include_directories(test_home_widget PRIVATE ${FW}/components/lakeshark)
-target_link_libraries(test_home_widget ls_harness lvgl m)
-add_test(NAME test_home_widget COMMAND test_home_widget)
-
-add_executable(test_text_entry_theme
-    tests/test_text_entry_theme.cpp
-    ${FW}/components/apps/shell/ls_text_entry.cpp
-    ${FW}/components/apps/sdr_ui/sdr_ui.cpp
-    ${FW}/components/apps/sdr_ui/lv_font_lsmono_16.c
-    ${FW}/components/apps/sdr_ui/lv_font_lsmono_14.c
-    ${FW}/components/apps/ui/ls_ui.cpp
-    ${FW}/components/apps/ui/ls_ui_palette.c
-    ${FW}/components/apps/ui/ls_ui_logic.c
-    ${FW}/components/apps/ui/ls_safe_screen_hint.c
-    ${FW}/components/apps/sdr_ui/lv_font_lsmono_16.c
-    ${FW}/components/apps/sdr_ui/lv_font_lsmono_14.c
-    ${FW}/managed_components/lvgl__lvgl/src/font/lv_font_montserrat_24.c
-    ${FW}/managed_components/lvgl__lvgl/src/font/lv_font_montserrat_32.c)
-target_compile_definitions(test_text_entry_theme PRIVATE
-    LV_FONT_MONTSERRAT_16=1 LV_FONT_MONTSERRAT_24=1 LV_FONT_MONTSERRAT_32=1)
-target_link_libraries(test_text_entry_theme ls_harness lvgl m)
-add_test(NAME test_text_entry_theme COMMAND test_text_entry_theme)
-
-add_executable(test_instrument
-    tests/test_instrument.cpp
-    ${FW}/components/apps/home/AppHome.cpp
-    ${FW}/components/apps/home/home_widget_view.c
-    ${FW}/components/apps/ui/ls_instrument.cpp
-    ${FW}/components/apps/sdr_ui/sdr_ui.cpp
-    ${FW}/components/apps/sdr_ui/lv_font_lsmono_16.c
-    ${FW}/components/apps/sdr_ui/lv_font_lsmono_14.c
-    ${FW}/components/apps/ui/ls_ui.cpp
-    ${FW}/components/apps/ui/ls_ui_palette.c
-    ${FW}/components/apps/ui/ls_ui_logic.c
-    ${FW}/components/apps/ui/ls_safe_screen_hint.c
-    ${FW}/managed_components/lvgl__lvgl/src/font/lv_font_montserrat_32.c)
-target_sources(test_instrument PRIVATE ${FW}/managed_components/lvgl__lvgl/src/font/lv_font_montserrat_20.c)
-target_compile_definitions(test_instrument PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1 LV_FONT_MONTSERRAT_20=1 LV_FONT_MONTSERRAT_32=1)
-target_include_directories(test_instrument PRIVATE ${FW}/components/lakeshark)
-target_link_libraries(test_instrument ls_harness lvgl m)
-add_test(NAME test_instrument COMMAND test_instrument)
-
-add_executable(test_lvgl_psram_allocator
-    tests/test_lvgl_psram_allocator.c
-    ${FW}/managed_components/lvgl__lvgl/src/misc/lv_mem.c
-    ${FW}/managed_components/lvgl__lvgl/src/misc/lv_gc.c)
-target_include_directories(test_lvgl_psram_allocator PRIVATE
-    ${FW}/managed_components/lvgl__lvgl)
-target_compile_definitions(test_lvgl_psram_allocator PRIVATE
-    LV_CONF_SKIP=1 LV_MEM_CUSTOM=1
-    LV_MEM_CUSTOM_INCLUDE=\"ls_lvgl_heap_test.h\")
-include(${FW}/main/ls_lvgl_allocator.cmake)
-ls_configure_lvgl_allocator(test_lvgl_psram_allocator)
-target_link_libraries(test_lvgl_psram_allocator ls_harness m)
-add_test(NAME test_lvgl_psram_allocator COMMAND test_lvgl_psram_allocator)
-
-add_executable(test_ls_ui_alloc
-    tests/test_ls_ui_alloc.cpp
-    ${FW}/components/apps/ui/ls_ui.cpp
-    ${FW}/components/apps/ui/ls_ui_palette.c
-    ${FW}/components/apps/ui/ls_ui_logic.c
-    ${FW}/components/apps/ui/ls_safe_screen_hint.c
-    ${FW}/components/apps/sdr_ui/lv_font_lsmono_16.c
-    ${FW}/components/apps/sdr_ui/lv_font_lsmono_14.c)
-target_link_libraries(test_ls_ui_alloc ls_harness lvgl m)
-add_test(NAME test_ls_ui_alloc COMMAND test_ls_ui_alloc)
-
 function(ls_add_test name)
     add_executable(${name} tests/${name}.c ${ARGN})
     target_link_libraries(${name} ls_harness m)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
-ls_add_test(test_radios_status ${FW}/components/apps/tui/tuilib/tui_core.c)
+ls_add_test(test_radios_status ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_radios_status PRIVATE ${LS_TUI_APP_INCLUDES}
     ${FW}/components/lakeshark)
 target_compile_definitions(test_radios_status PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
@@ -423,9 +279,14 @@ target_include_directories(test_radios_antenna PRIVATE
     ${FW}/components/lakeshark/board ${FW}/bench/shims)
 target_compile_definitions(test_radios_antenna PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
 
-ls_add_test(test_tui_surface ${FW}/components/apps/tui/tuilib/tui_core.c)
+ls_add_test(test_tui_surface ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_tui_surface PRIVATE
     ${FW}/components/apps/tui/tuilib)
+
+ls_add_test(test_term_vt ${FW}/components/apps/tui/ls_vt.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
+target_include_directories(test_term_vt PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/apps/tui ${FW}/components/apps/tui/tuilib)
 
 # Optional private tests, if this tree has any. The file names what it
 # registers; this line does not, so it is safe to publish either way.
@@ -479,7 +340,7 @@ target_include_directories(test_display_dim PRIVATE
 ls_add_test(test_tui_chrome
     ${FW}/components/apps/tui/ls_tui_chrome.c
     ${FW}/components/apps/tui/ls_text.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c)
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_tui_chrome PRIVATE
     ${FW}/components/apps/tui
     ${FW}/components/apps/tui/tuilib)
@@ -487,7 +348,7 @@ target_include_directories(test_tui_chrome PRIVATE
 ls_add_test(test_tui_screens
     ${FW}/components/apps/tui/ls_tui_screen.c
     ${LS_TUI_APP_SRCS}
-    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/components/apps/tui/ls_tui_chrome.c
     ${FW}/components/apps/tui/ls_theme.c
     tools/lssim_field.c
@@ -626,7 +487,7 @@ ls_add_test(test_tui_router
     ${FW}/components/apps/tui/ls_tui_screen.c
     ${FW}/components/apps/tui/ls_tui_chrome.c
     ${FW}/components/apps/tui/ls_theme.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c)
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_tui_router PRIVATE
     ${LS_TUI_APP_INCLUDES}
     ${FW}/components/apps/tui
@@ -650,7 +511,7 @@ ls_add_test(test_tui_p25_screen
     ${FW}/components/apps/tui/ls_tui_chrome.c
     ${FW}/components/apps/tui/ls_theme.c
     ${APP}/p25/p25_tg_observed.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c)
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_tui_p25_screen PRIVATE
     ${LS_TUI_APP_INCLUDES}
     ${FW}/components/apps/tui
@@ -670,7 +531,7 @@ ls_add_test(test_tui_waterfall_claim
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_tui_waterfall_claim PRIVATE
     ${LS_TUI_APP_INCLUDES})
@@ -681,7 +542,7 @@ ls_add_test(test_falls_display
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/components/apps/tui/ls_theme.c
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_falls_display PRIVATE
@@ -695,7 +556,7 @@ ls_add_test(test_tui_waterfall_scale
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/components/apps/tui/ls_theme.c
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_tui_waterfall_scale PRIVATE
@@ -707,7 +568,7 @@ ls_add_test(test_tui_waterfall_stall
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_tui_waterfall_stall PRIVATE
     ${LS_TUI_APP_INCLUDES})
@@ -732,7 +593,7 @@ ls_add_test(test_tui_picker
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_tui_picker PRIVATE ${LS_TUI_APP_INCLUDES})
 
@@ -749,7 +610,7 @@ ls_add_test(test_radio_select
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_radio_select PRIVATE ${LS_TUI_APP_INCLUDES})
 
@@ -764,7 +625,7 @@ ls_add_test(test_options
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_options PRIVATE ${LS_TUI_APP_INCLUDES})
 
@@ -781,7 +642,7 @@ ls_add_test(test_scan_shell
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/bench/tools/lssim_scan.c
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_scan_shell PRIVATE ${LS_TUI_APP_INCLUDES})
@@ -792,7 +653,7 @@ ls_add_test(test_tui_keyboard
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_tui_keyboard PRIVATE ${LS_TUI_APP_INCLUDES})
 
@@ -807,7 +668,7 @@ ls_add_test(test_tui_wireless
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_tui_wireless PRIVATE ${LS_TUI_APP_INCLUDES})
 
@@ -817,7 +678,7 @@ ls_add_test(test_tui_quick
     ${FW}/components/apps/tui/ls_value.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_tui_quick PRIVATE ${LS_TUI_APP_INCLUDES})
 
@@ -841,9 +702,12 @@ add_executable(lssim
     ${FW}/components/apps/tui/screens/ext/scr_music.c
     tools/lssim_music.c
     ${FW}/components/apps/tui/ls_splash.c
+    ${FW}/components/apps/tui/ls_splash_world.c
     shims/ls_trail_host.c
     ${FW}/components/apps/tui/ls_wordmark.c
     tools/lssim.c
+    tools/lssim_term.c
+    ${FW}/components/apps/tui/ls_vt.c
     tools/lssim_ota.c
     ${FW}/components/lakeshark/core/ls_ota_core.c
     tools/lssim_radio_preview.c
@@ -877,7 +741,7 @@ add_executable(lssim
     ${FW}/components/apps/tui/ls_notes.c
     ${FW}/components/apps/tui/ls_note_blocks.c
     ${LS_TUI_APP_SRCS}
-    ${FW}/components/apps/tui/ls_tui.c
+    ${FW}/components/apps/tui/ls_tui.c ${FW}/components/apps/tui/ls_font_cyr.c
     ${FW}/components/apps/tui/ls_tui_inset.c
     ${FW}/components/apps/tui/ls_tui_screen.c
     ${FW}/components/apps/tui/ls_tui_chrome.c
@@ -937,7 +801,7 @@ add_executable(lssim
     ${CARTO}/src/style.c
     ${FW}/components/apps/tui/ls_value_builtin.c
     ${FW}/components/apps/tui/ls_action_builtin.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${APP}/fm/fm_mode_label.c
     ${APP}/adsb/adsb_state.c
     ${APP}/p25/p25_health.c
@@ -977,12 +841,21 @@ target_sources(lssim PRIVATE ${FW}/components/lakeshark/core/ls_time.c
     ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
     ${FW}/components/lakeshark/dsp/spectrum.c)
 target_compile_definitions(lssim PRIVATE LS_TIME_HOST=1)
-target_link_libraries(lssim lvgl m)
+target_link_libraries(lssim m)
 
 # Runs the lssim above with -C, which links everything the board registers.
 ls_add_test(test_lssim_census)
 add_dependencies(test_lssim_census lssim)
 target_compile_definitions(test_lssim_census PRIVATE LSSIM_EXE="$<TARGET_FILE:lssim>")
+
+# lssim --term driven like a terminal: a key opens FM, a click opens SET, Ctrl-] quits and restores.
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME test_lssim_term_key COMMAND "${Python3_EXECUTABLE}" -I
+             "${CMAKE_CURRENT_SOURCE_DIR}/tools/term_check.py" "$<TARGET_FILE:lssim>" home --keys 2 --expect "LAKESHARK  FM")
+    add_test(NAME test_lssim_term_tap COMMAND "${Python3_EXECUTABLE}" -I
+             "${CMAKE_CURRENT_SOURCE_DIR}/tools/term_check.py" "$<TARGET_FILE:lssim>" home --tap 70:1 --expect "-SETTINGS-")
+endif()
 
 # MESH driven through lssim: taps, keys and what the mesh stub was asked to send.
 ls_add_test(test_lssim_mesh)
@@ -1051,20 +924,19 @@ target_compile_definitions(test_map PRIVATE
 target_link_libraries(test_map m)
 
 ls_add_test(test_tui_transform
-    ${FW}/components/apps/tui/ls_tui.c
+    ${FW}/components/apps/tui/ls_tui.c ${FW}/components/apps/tui/ls_font_cyr.c
     ${FW}/components/apps/tui/ls_tui_inset.c
     ${FW}/components/apps/tui/ls_font_list.c
     ${FW}/components/apps/tui/ls_theme.c
     ${FW}/components/apps/tui/ls_font_mono_24.c
     ${FW}/components/apps/tui/ls_font_mono_16.c
     ${FW}/components/apps/tui/ls_font_mono_14.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c)
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_tui_transform PRIVATE
     ${FW}/components/apps/tui
     ${FW}/components/apps/tui/tuilib
     ${FW}/components/lakeshark/board
     ${FW}/bench/shims)
-target_link_libraries(test_tui_transform lvgl)
 
 ls_add_test(test_tui_touch ${FW}/components/apps/tui/ls_tui_touch.c)
 target_include_directories(test_tui_touch PRIVATE
@@ -1076,7 +948,7 @@ target_include_directories(test_tui_touch PRIVATE
 ls_add_test(test_tui_button_centre
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c)
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_tui_button_centre PRIVATE
     ${LS_TUI_APP_INCLUDES})
 
@@ -1096,7 +968,7 @@ target_include_directories(test_board_keymap PRIVATE
 ls_add_test(test_tui_render_cost
     ${FW}/components/apps/tui/ls_tui_screen.c
     ${LS_TUI_APP_SRCS}
-    ${FW}/components/apps/tui/ls_tui.c
+    ${FW}/components/apps/tui/ls_tui.c ${FW}/components/apps/tui/ls_font_cyr.c
     ${FW}/components/apps/tui/ls_tui_inset.c
     ${FW}/components/apps/tui/ls_tui_chrome.c
     ${FW}/components/apps/tui/ls_theme.c
@@ -1105,7 +977,7 @@ ls_add_test(test_tui_render_cost
     ${FW}/components/apps/tui/ls_font_mono_14.c
     ${FW}/components/apps/tui/screens/main/scr_p25.c
     ${APP}/p25/p25_tg_observed.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c)
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_tui_render_cost PRIVATE
     ${LS_TUI_APP_INCLUDES}
     ${FW}/components/apps/tui
@@ -1114,7 +986,6 @@ target_include_directories(test_tui_render_cost PRIVATE
     ${FW}/components/lakeshark/board
     ${APP}/p25
     ${FW}/bench/shims)
-target_link_libraries(test_tui_render_cost lvgl)
 
 ls_add_test(test_lora_sx1262
     ${FW}/components/lakeshark/board/ls_lora.c
@@ -1221,7 +1092,7 @@ target_include_directories(test_rlog PRIVATE
 
 ls_add_test(test_wordmark
     ${FW}/components/apps/tui/ls_wordmark.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c)
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_wordmark PRIVATE
     ${FW}/components/apps/tui
     ${FW}/components/apps/tui/tuilib)
@@ -1317,7 +1188,7 @@ target_include_directories(test_adsb_cpr PRIVATE
 
 ls_add_test(test_tui_render_dump
     ${LS_TUI_APP_SRCS}
-    ${FW}/components/apps/tui/ls_tui.c
+    ${FW}/components/apps/tui/ls_tui.c ${FW}/components/apps/tui/ls_font_cyr.c
     ${FW}/components/apps/tui/ls_tui_inset.c
     ${FW}/components/apps/tui/ls_tui_screen.c
     ${FW}/components/apps/tui/ls_tui_chrome.c
@@ -1333,7 +1204,7 @@ ls_add_test(test_tui_render_dump
     ${FW}/components/apps/tui/screens/ext/scr_update.c
     ${FW}/components/apps/tui/ls_voice_opts.c
     ${FW}/components/apps/tui/screens/ext/scr_rec.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c)
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_sources(test_tui_render_dump PRIVATE ${FW}/components/apps/tui/screens/ext/scr_subghz.c)
 target_sources(test_tui_render_dump PRIVATE tools/lssim_field.c)
 target_sources(test_tui_p25_screen PRIVATE tools/lssim_field.c)
@@ -1348,7 +1219,6 @@ target_include_directories(test_tui_render_dump PRIVATE
     ${FW}/components/lakeshark/core
     ${APP}/p25
     ${FW}/bench/shims)
-target_link_libraries(test_tui_render_dump lvgl)
 target_sources(test_tui_render_dump PRIVATE
     ${FW}/components/apps/tui/screens/ext/scr_experiments.c
     ${FW}/components/apps/tui/ls_experiments.c
@@ -1393,7 +1263,7 @@ ls_add_test(test_fm_rx_worker
 ls_add_test(test_flex ${APP}/fm/flex.c fixtures/flex_gen.c)
 ls_add_test(test_rec_storage_label ${APP}/rec/rec_storage_label.c)
 ls_add_test(test_rec_unique_name ${APP}/rec/rec_unique_name.c)
-ls_add_test(test_files_safety ${FW}/components/apps/tui/tuilib/tui_core.c
+ls_add_test(test_files_safety ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/components/apps/tui/ls_tui_ui.c ${FW}/components/apps/tui/ls_icons.c)
 target_include_directories(test_files_safety BEFORE PRIVATE
     ${FW}/bench/tests/files_shims ${LS_TUI_APP_INCLUDES})
@@ -1449,7 +1319,6 @@ ls_add_test(test_rec_watch ${APP}/rec/rec_watch.c ${APP}/rec/rec_watch_store.c $
     ${FW}/components/lakeshark/radio/ls_sub_fsk.c
     ${FW}/components/lakeshark/radio/ls_fsk_capture.c)
 target_include_directories(test_rec_watch PRIVATE ${FW}/components/lakeshark/radio)
-ls_add_test(test_screenshot_plan ${FW}/main/screenshot_plan.c)
 ls_add_test(test_p25_dsp_modes
     ${APP}/p25/dsp_pipeline.c
     ${APP}/p25/p25_cqpsk_controls.c
@@ -1597,20 +1466,19 @@ ls_add_test(test_app_contract ${FW}/components/apps/tui/ls_app_docs.c)
 ls_add_test(test_music_transport)
 ls_add_test(test_pixel_wf
     ${FW}/components/apps/tui/ls_pixel_wf.c
-    ${FW}/components/apps/tui/ls_tui.c
+    ${FW}/components/apps/tui/ls_tui.c ${FW}/components/apps/tui/ls_font_cyr.c
     ${FW}/components/apps/tui/ls_tui_inset.c
     ${FW}/components/apps/tui/ls_font_list.c
     ${FW}/components/apps/tui/ls_theme.c
     ${FW}/components/apps/tui/ls_font_mono_24.c
     ${FW}/components/apps/tui/ls_font_mono_16.c
     ${FW}/components/apps/tui/ls_font_mono_14.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c)
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_pixel_wf PRIVATE
     ${FW}/components/apps/tui
     ${FW}/components/apps/tui/tuilib
     ${FW}/components/lakeshark/board
     ${FW}/bench/shims)
-target_link_libraries(test_pixel_wf lvgl)
 ls_add_test(test_music_spectro)
 target_include_directories(test_music_spectro PRIVATE ${FW}/components/apps/tui)
 ls_add_test(test_music_backend ${FW}/components/apps/tui/ls_music_backend.c
@@ -1631,7 +1499,7 @@ ls_add_test(test_tui_music
     ${FW}/components/apps/tui/screens/ext/scr_music.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c)
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_tui_music PRIVATE ${LS_TUI_APP_INCLUDES})
 target_include_directories(test_app_contract PRIVATE
     ${FW}/components/apps/tui)
@@ -1750,11 +1618,6 @@ ls_add_test(test_ls_flash_task
     ${FW}/main/ble_link_host_task.c)
 target_include_directories(test_ls_flash_task PRIVATE
     ${FW}/components/lakeshark/core)
-ls_add_test(test_keymap ${FW}/components/apps/shell/ls_keymap.c)
-ls_add_test(test_shell_transition
-    ${FW}/components/apps/shell/ls_transition.c)
-target_include_directories(test_shell_transition PRIVATE
-    ${FW}/components/apps/shell)
 
 ls_add_test(test_app_registry_lifecycle
     ${FW}/components/lakeshark/core/app_registry.c)
@@ -1768,18 +1631,8 @@ ls_add_test(test_p25_entry_settings
     ${FW}/components/lakeshark/core/ls_nvs_safe.c)
 target_include_directories(test_p25_entry_settings PRIVATE
     ${FW}/components/lakeshark/core)
-ls_add_test(test_ls_ui_palette
-    ${FW}/components/apps/ui/ls_ui_palette.c)
-ls_add_test(test_spectrum_waterfall
-    ${FW}/components/apps/ui/ls_spectrum_waterfall_logic.c)
-ls_add_test(test_settings_safety
-    ${FW}/components/apps/ui/ls_ui_logic.c
-    ${FW}/components/apps/settings/settings_action.c)
-ls_add_test(test_safe_screen_hint
-    ${FW}/components/apps/ui/ls_safe_screen_hint.c
-    ${FW}/components/apps/ui/ls_ui_logic.c)
 ls_add_test(test_media_playlist
-    ${FW}/components/apps/media_gui/media_playlist.c)
+    ${FW}/components/apps/tui/media_playlist.c)
 ls_add_test(test_radio_endpoint
     ${FW}/components/lakeshark/radio/radio_endpoint.c)
 ls_add_test(test_hackrf_radio
@@ -1826,85 +1679,38 @@ ls_add_test(test_iq_control_preemption ${FW}/components/lakeshark/radio/iq_app_c
 target_include_directories(test_iq_control_preemption BEFORE PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/shims/iq_critical)
 ls_add_test(test_iq_app_control
     ${FW}/components/lakeshark/radio/iq_app_control.c
-    ${FW}/components/lakeshark/radio/radio_endpoint.c
-    ${FW}/components/apps/ui/ls_receiver_status.c)
-set(TX_BROKER_SOURCES
-    ${FW}/components/lakeshark/radio/radio_endpoint.c
-    ${FW}/components/lakeshark/radio/tx_policy.c
-    ${FW}/components/lakeshark/radio/tx_broker.c
-    ${FW}/components/apps/shell/ls_tx_confirmation.c)
-ls_add_test(test_tx_broker ${TX_BROKER_SOURCES}
-    shims/tx_driver_fake.c shims/ls_input_gesture_fake.c)
-target_compile_definitions(test_tx_broker PRIVATE
-    CONFIG_LS_BOARD_P4_TOUCH_LCD_4B=1)
-ls_add_test(test_tx_headless ${TX_BROKER_SOURCES})
+    ${FW}/components/lakeshark/radio/radio_endpoint.c)
+target_include_directories(test_media_playlist PRIVATE ${FW}/components/apps/tui)
 target_compile_definitions(test_media_playlist PRIVATE
     CONFIG_AUDIO_PLAYER_ENABLE_MP3=1
     CONFIG_AUDIO_PLAYER_ENABLE_WAV=1)
 ls_add_test(test_player_state
     ${FW}/components/bsp_extra/src/bsp_extra_player_state.c)
-ls_add_test(test_media_handoff
-    ${FW}/components/apps/media_gui/ls_media_handoff.c)
-ls_add_test(test_media_lifecycle
-    ${FW}/components/apps/media_gui/ls_media_lifecycle.c)
 
-ls_add_test(test_file_iterator
-    ${FW}/managed_components/chmorgan__esp-file-iterator/file_iterator.c
-    ${FW}/components/apps/media_gui/file_iterator_delete.c
-    ${FW}/components/apps/media_gui/media_playlist.c)
-target_compile_definitions(test_file_iterator PRIVATE
-    CONFIG_AUDIO_PLAYER_ENABLE_MP3=1
-    CONFIG_AUDIO_PLAYER_ENABLE_WAV=1)
-target_compile_options(test_file_iterator PRIVATE -Wno-format)
-target_link_options(test_file_iterator PRIVATE
-    -Wl,--wrap=malloc
-    -Wl,--wrap=calloc
-    -Wl,--wrap=free
-    -Wl,--wrap=strdup)
 
 ls_add_test(test_player_open
     ${FW}/components/bsp_extra/src/bsp_extra_player_open.c
     ${FW}/components/bsp_extra/src/bsp_extra_player_state.c
-    ${FW}/managed_components/chmorgan__esp-file-iterator/file_iterator.c
-    ${FW}/components/apps/media_gui/file_iterator_delete.c)
+    ${FW}/managed_components/chmorgan__esp-file-iterator/file_iterator.c)
 target_compile_options(test_player_open PRIVATE -Wno-format)
 target_link_options(test_player_open PRIVATE
     -Wl,--wrap=fopen
     -Wl,--wrap=fclose)
 
-ls_add_test(test_file_browser_path
-    ${FW}/components/apps/file_browser/file_browser_path.c)
 
 ls_add_test(test_media_supported
-    ${FW}/components/apps/media_gui/media_playlist.c)
+    ${FW}/components/apps/tui/media_playlist.c)
+target_include_directories(test_media_supported PRIVATE ${FW}/components/apps/tui)
 target_compile_definitions(test_media_supported PRIVATE
     CONFIG_AUDIO_PLAYER_ENABLE_MP3=1
     CONFIG_AUDIO_PLAYER_ENABLE_WAV=1)
 
-ls_add_test(test_file_browser_dialog
-    ${FW}/components/apps/file_browser/ls_dialog_slot.c)
 
-ls_add_test(test_shell_back
-    ${FW}/components/apps/shell/ls_shell_nav.c)
 
-ls_add_test(test_hub_present
-    ${FW}/components/apps/shell/ls_hub_present.c)
 
-ls_add_test(test_map_wpt_select
-    ${FW}/components/apps/map_gui/map_wpt_select.c)
 
-ls_add_test(test_map_tiles_init
-    ${FW}/components/apps/map_gui/map_tiles.c)
-target_link_options(test_map_tiles_init PRIVATE
-    -Wl,--wrap=malloc
-    -Wl,--wrap=calloc
-    -Wl,--wrap=free)
 
-ls_add_test(test_map_tile_status
-    ${FW}/components/apps/map_gui/map_tile_status.c)
 
-ls_add_test(test_fm_sweep_arbitration
-    ${FW}/components/apps/fm_gui/fm_sweep_arbitration.c)
 
 ls_add_test(test_usb_autoreboot_pref
     ${FW}/components/lakeshark/core/usb_autoreboot_pref.c)
@@ -1978,6 +1784,20 @@ target_include_directories(test_ls_crash_esp BEFORE PRIVATE
     ${FW}/components/lakeshark/core)
 target_compile_definitions(test_ls_crash_esp PRIVATE CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=1)
 
+ls_add_test(test_ui_language
+    ${FW}/components/apps/tui/ls_i18n.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/ls_font_cyr.c
+    ${FW}/components/apps/tui/ls_font_mono_14.c
+    ${FW}/components/apps/tui/ls_font_mono_16.c
+    ${FW}/components/apps/tui/ls_font_mono_24.c
+    ${FW}/components/lakeshark/core/settings_schema.c)
+target_include_directories(test_ui_language PRIVATE
+    ${FW}/components/apps/tui
+    ${FW}/components/apps/tui/tuilib
+    ${FW}/components/lakeshark/core
+    ${FW}/bench/shims)
+
 ls_add_test(test_settings_schema
     ${FW}/components/lakeshark/core/settings_schema.c)
 target_include_directories(test_settings_schema PRIVATE
@@ -2015,7 +1835,7 @@ target_include_directories(test_safe_mode PRIVATE
 
 ls_add_test(test_tui_contrast
     ${FW}/components/apps/tui/ls_theme.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_tui_contrast PRIVATE ${LS_TUI_APP_INCLUDES})
 
@@ -2038,7 +1858,7 @@ target_link_options(test_labs_numbers PRIVATE -Wl,--gc-sections)
 target_include_directories(test_field PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
 ls_add_test(test_wmm ${FW}/components/apps/tui/ls_wmm.c)
 target_include_directories(test_wmm PRIVATE ${LS_TUI_APP_INCLUDES})
-ls_add_test(test_compass_art ${FW}/components/apps/tui/tuilib/tui_core.c)
+ls_add_test(test_compass_art ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_compass_art PRIVATE ${LS_TUI_APP_INCLUDES})
 ls_add_test(test_compass_live ${FW}/components/apps/tui/ls_compass_live.c ${FW}/components/apps/tui/ls_compass.c ${FW}/components/apps/tui/ls_wmm.c tests/stubs_compass_live.c)
 target_include_directories(test_compass_live PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
@@ -2273,8 +2093,8 @@ ls_add_test(test_tui_calls ${FW}/components/apps/tui/ls_calls.c
     ${FW}/components/apps/tui/ls_pixel_wf.c
     tools/lssim_music.c
     ${FW}/components/apps/tui/ls_icons.c ${FW}/components/apps/tui/ls_tui_ui.c
-    ${FW}/components/apps/tui/ls_motion.c ${FW}/components/apps/tui/tuilib/tui_core.c
-    ${FW}/components/apps/tui/ls_tui.c ${FW}/components/apps/tui/ls_tui_inset.c
+    ${FW}/components/apps/tui/ls_motion.c ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
+    ${FW}/components/apps/tui/ls_tui.c ${FW}/components/apps/tui/ls_font_cyr.c ${FW}/components/apps/tui/ls_tui_inset.c
     ${FW}/components/apps/tui/ls_theme.c ${FW}/components/apps/tui/ls_font_list.c
     ${FW}/components/apps/tui/ls_font_mono_14.c ${FW}/components/apps/tui/ls_font_mono_16.c
     ${FW}/components/apps/tui/ls_font_mono_24.c)
@@ -2358,7 +2178,7 @@ target_compile_definitions(test_lssim_rs41 PRIVATE
     RS41_ROUTE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/route.gpx")
 
 # TILES uses its production screen with explicit transfer fixtures on the host.
-target_sources(lssim PRIVATE tools/lssim_tiles.c ${FW}/components/apps/tui/screens/ext/scr_tiles.c ${FW}/components/apps/tui/ls_place_search.c)
+target_sources(lssim PRIVATE tools/lssim_tiles.c ${FW}/components/apps/tui/screens/ext/scr_tiles.c ${FW}/components/apps/tui/ls_place_search.c ${FW}/components/apps/tui/ls_globe.c)
 target_compile_definitions(lssim PRIVATE LS_TILES_HOST=1)
 
 # Real CartoCore MAP renderer, pinned in-tree unless overridden for development.
@@ -2396,7 +2216,7 @@ if(CARTOCORE_DIR)
     target_link_libraries(lssim cells_sha)
     target_sources(lssim PRIVATE ${FW}/components/apps/tui/ls_cartocore.c)
     target_include_directories(lssim PRIVATE tools "${CMAKE_CURRENT_BINARY_DIR}")
-    set_source_files_properties(${FW}/components/apps/tui/ls_cartocore.c ${FW}/components/apps/tui/tuilib/tui_core.c PROPERTIES COMPILE_OPTIONS "-fstack-usage;-fdump-ipa-cgraph;-fno-inline")
+    set_source_files_properties(${FW}/components/apps/tui/ls_cartocore.c ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c PROPERTIES COMPILE_OPTIONS "-fstack-usage;-fdump-ipa-cgraph;-fno-inline")
     target_compile_definitions(lssim PRIVATE LS_CARTOCORE_HOST=1
         LSSIM_CTILE_DEFAULT="${FW}/data/franklin_mini.ctile")
     target_link_libraries(lssim cartocore_host)
@@ -2423,7 +2243,7 @@ if(CARTOCORE_DIR)
     # belong to the separately instrumented lssim runtime, not this call graph.
     add_library(carto_stack_audit OBJECT
         ${FW}/components/apps/tui/ls_cartocore.c
-        ${FW}/components/apps/tui/tuilib/tui_core.c)
+        ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
     target_include_directories(carto_stack_audit PRIVATE
         $<TARGET_PROPERTY:lssim,INCLUDE_DIRECTORIES>)
     target_compile_definitions(carto_stack_audit PRIVATE
@@ -2459,7 +2279,7 @@ target_include_directories(test_sweep_nvs BEFORE PRIVATE ${CMAKE_CURRENT_SOURCE_
 target_include_directories(test_sweep_nvs PRIVATE ${LS_TUI_APP_INCLUDES})
 target_compile_definitions(test_sweep_nvs PRIVATE ESP_PLATFORM=1)
 
-ls_add_test(test_sweep_sound)
+ls_add_test(test_sweep_sound shims/notification_settings_fake.c)
 target_compile_options(test_sweep_sound PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(test_sweep_sound PRIVATE -Wl,--gc-sections)
 
@@ -2533,6 +2353,12 @@ add_test(NAME test_gps_ui COMMAND ${Python3_EXECUTABLE}
 target_sources(test_flipper_fm_command PRIVATE ${FW}/components/lakeshark/core/ls_uart_claim.c)
 
 ls_add_test(test_set_async)
+# scr_settings.c draws its words through ls_tr (ls_i18n.h). A library of its
+# own keeps -fwhole-program, which this suite compiles with, off that code.
+add_library(ls_i18n_host STATIC ${FW}/components/apps/tui/ls_i18n.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c)
+target_include_directories(ls_i18n_host PRIVATE ${FW}/components/apps/tui ${FW}/bench/shims)
+target_link_libraries(test_set_async ls_i18n_host)
 target_include_directories(test_set_async PRIVATE
     tests/set_shims ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark
     ${FW}/components/apps/tui ${FW}/components/lakeshark/board)
@@ -2567,7 +2393,7 @@ ls_add_test(test_map_place_search
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_map_place_search PRIVATE ${LS_TUI_APP_INCLUDES} ${CARTO}/include)
 target_compile_definitions(test_map_place_search PRIVATE LS_CARTOCORE_HOST=1)
@@ -2713,7 +2539,7 @@ endforeach()
 
 # Phase 1 DETECTOR: real parser/policy, adapters and sinks, no radio hardware.
 ls_add_test(test_detector
-    ${FW}/components/apps/tui/tuilib/tui_core.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
     ${FW}/components/apps/tui/ls_detector.c
@@ -2836,3 +2662,107 @@ add_test(NAME test_p25_vfo_ui COMMAND ${Python3_EXECUTABLE}
 # EXT_RAM_BSS_ATTR is zeroed at boot on the board; an initializer there is silently lost.
 add_test(NAME test_ext_ram_bss_no_init COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ext_ram_bss_no_init.py ${FW})
+
+# Drone Watch: real evidence engine and passive RID with fake RF/session feeds.
+ls_add_test(test_drone_watch
+    ${FW}/components/apps/tui/ls_dronelink.c
+    ${FW}/components/apps/tui/ls_rid.c
+    ${FW}/components/lakeshark/core/settings_schema.c)
+target_include_directories(test_drone_watch PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/lakeshark ${FW}/components/meshcore)
+target_compile_definitions(test_drone_watch PRIVATE
+    DRONE_DEFAULTS="${FW}/data/drone-watch/defaults.json")
+
+target_sources(test_drone_watch PRIVATE ${FW}/components/apps/tui/ls_df.c)
+target_compile_options(test_drone_watch PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_drone_watch PRIVATE -Wl,--gc-sections)
+
+ls_add_test(test_drone_watch_find)
+target_include_directories(test_drone_watch_find PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
+target_compile_options(test_drone_watch_find PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_drone_watch_find PRIVATE -Wl,--gc-sections)
+ls_add_test(test_drone_watch_detector)
+target_include_directories(test_drone_watch_detector PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
+target_compile_definitions(test_drone_watch_detector PRIVATE LS_DETECTOR_DIR="${CMAKE_CURRENT_BINARY_DIR}/drone-detector")
+target_compile_options(test_drone_watch_detector PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_drone_watch_detector PRIVATE -Wl,--gc-sections)
+set_source_files_properties(tests/test_drone_watch_find.c tests/test_drone_watch_detector.c
+    PROPERTIES COMPILE_OPTIONS "-fwhole-program")
+add_library(drone_watch_firmware_compile OBJECT ${FW}/components/apps/tui/ls_drone_watch.c)
+target_include_directories(drone_watch_firmware_compile PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/lakeshark ${FW}/components/meshcore)
+target_compile_definitions(drone_watch_firmware_compile PRIVATE ESP_PLATFORM=1)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME test_drone_watch_settings COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_drone_watch_settings.py")
+endif()
+# Backend-only notification synthesis, persistence and worker dispatch.
+ls_add_test(test_notification_sound
+    ${FW}/components/lakeshark/audio/notification_tone.c
+    ${FW}/components/lakeshark/core/settings_schema.c
+    ${FW}/components/lakeshark/core/home_widget_pref.c
+
+    ${FW}/components/lakeshark/core/p25_demod_pref_cache.c)
+target_include_directories(test_notification_sound PRIVATE
+    tests/set_shims ${FW}/components/lakeshark/core ${FW}/components/lakeshark/board)
+target_compile_definitions(test_notification_sound PRIVATE
+    NOTIFICATION_DEFAULTS="${FW}/data/audio/notification.json")
+set_source_files_properties(tests/test_notification_sound.c PROPERTIES COMPILE_OPTIONS "-fwhole-program")
+target_compile_options(test_notification_sound PRIVATE -O2 -ffunction-sections -fdata-sections)
+target_link_options(test_notification_sound PRIVATE -Wl,--gc-sections)
+
+# P25 state packs: firmware rules shared by production and tests.
+ls_add_test(test_p25_pack ${APP}/p25/p25_pack.c ${APP}/p25/p25_profile.c
+    ${APP}/p25/p25_geo.c ${APP}/p25/p25_cqpsk_controls.c
+    ${FW}/components/lakeshark/core/ls_ota_core.c)
+add_executable(p25pack_validate p25pack/validate.c ${APP}/p25/p25_pack.c
+    ${APP}/p25/p25_profile.c ${APP}/p25/p25_cqpsk_controls.c
+    ${FW}/components/lakeshark/core/ls_ota_core.c)
+target_link_libraries(p25pack_validate ls_harness m)
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+    set(P25PACK_PYTHON_EXECUTABLE "${Python3_EXECUTABLE}" CACHE FILEPATH
+        "Python interpreter with cryptography for the P25 publisher tests")
+    add_test(NAME test_p25pack_tools COMMAND ${P25PACK_PYTHON_EXECUTABLE} -B
+        ${FW}/bench/tests/test_p25pack_tools.py $<TARGET_FILE:p25pack_validate>
+        ${FW}/bench/build-p25gps-evidence)
+endif()
+
+ls_add_test(test_p25_sites_runtime ${APP}/p25/p25_pack.c ${APP}/p25/p25_profile.c
+    ${APP}/p25/p25_geo.c ${APP}/p25/p25_cqpsk_controls.c
+    ${FW}/components/lakeshark/core/ls_ota_core.c)
+target_include_directories(test_p25_sites_runtime BEFORE PRIVATE ${FW}/bench/p25pack/shims)
+ls_add_test(test_p25_packs_runtime ${APP}/p25/p25_pack.c ${APP}/p25/p25_profile.c
+    ${APP}/p25/p25_cqpsk_controls.c ${FW}/components/lakeshark/core/ls_ota_core.c
+    ${FW}/components/apps/tui/ls_value.c ${FW}/components/apps/tui/ls_action.c)
+target_include_directories(test_p25_packs_runtime BEFORE PRIVATE ${FW}/bench/p25pack/shims
+    ${FW}/components/apps/tui ${FW}/components/apps)
+add_library(p25_program_adapter_check OBJECT ${APP}/p25/p25_program_sd.c)
+target_include_directories(p25_program_adapter_check BEFORE PRIVATE ${FW}/bench/p25pack/shims
+    ${FW}/components/lakeshark/core)
+
+target_compile_definitions(test_p25_packs_runtime PRIVATE
+    TEST_PACK_EVIDENCE_DIR="${FW}/bench/build-p25gps-evidence")
+
+# The file hotspot's per-board password (main/ls_wifi_ap_pass.h).
+ls_add_test(test_wifi_ap_pass)
+target_include_directories(test_wifi_ap_pass PRIVATE ${FW}/main)
+
+if(TARGET lssim AND TARGET test_cartocore_cells)
+  add_test(NAME test_maps_states COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_maps_states.py" "$<TARGET_FILE:lssim>"
+    "${CMAKE_CURRENT_BINARY_DIR}/cells-fixture")
+  set_tests_properties(test_maps_states PROPERTIES FIXTURES_REQUIRED carto_cells_inputs)
+endif()
+
+if(TARGET lssim)
+  add_test(NAME test_maps_outlines COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_maps_outlines.py" "$<TARGET_FILE:lssim>"
+    "${CMAKE_CURRENT_BINARY_DIR}/cells-fixture")
+endif()
+
+if(EXISTS "D:/assasdad/CartoCore-t16/tools/build_us.py")
+  add_test(NAME test_maps_outlines_builder COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_maps_outlines_builder.py"
+    "D:/assasdad/CartoCore-t16/tools/build_us.py" "${CMAKE_CURRENT_BINARY_DIR}")
+endif()

@@ -45,4 +45,8 @@ file(READ "${test_dir}/identity.h" header)
 if(NOT header MATCHES "PROJECT_VER \"1.0.1-gfc9fb8101234-dirty\"")
     message(FATAL_ERROR "incremental header refresh failed")
 endif()
-message(STATUS "19 build identity checks passed")
+
+# A product version the release pattern does not take becomes "0", never passed through.
+expect("2.16.4-nano-test1" "${sha}" clean "0-gfc9fb8101234")
+
+message(STATUS "20 build identity checks passed")

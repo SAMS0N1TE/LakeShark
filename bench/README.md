@@ -81,3 +81,40 @@ cmake --build bench/build --target test_adsb_status test_detector_air test_detec
 ctest --test-dir bench/build -R '^test_(adsb_status|detector.*)$' --output-on-failure
 bench/build/lssim.exe detector --tft -k a -d   # LSSIM_DETECTOR=1 LSSIM_ADSB=1 seeds the table
 ```
+
+### Nano DSI experimental release
+
+Use ESP-IDF 5.5.4 with the Python 3.11 environment. These commands build only;
+no hardware port is opened.
+
+```powershell
+$env:IDF_PATH = 'C:\esp\v5.5.4\esp-idf'
+$env:IDF_PYTHON_ENV_PATH = 'C:\Espressif\python_env\idf5.5_py3.11_env'
+$env:CCACHE_DIR = "$PWD\.ccache"
+$env:CCACHE_TEMPDIR = "$PWD\.ccache-tmp"
+pwsh -NoProfile -File bench/build.ps1 p4-nano-dsi-c6 -Clean
+pwsh -NoProfile -File bench/build.ps1 p4-nano-v3-dsi-c6 -Clean
+pwsh -NoProfile -File bench/build.ps1 p4-nano-dsi-c5 -Clean
+pwsh -NoProfile -File bench/build.ps1 p4-nano-v3-dsi -Clean
+pwsh -NoProfile -File bench/build.ps1 p4-nano -Clean
+```
+
+Each profile has its own build directory and sdkconfig. Always use `-Clean`
+when changing silicon or companion profiles. The bundled esp_hosted checks
+its compile-time companion against the detected chip and asserts on mismatch
+(`host/drivers/transport/transport_drv.c:verify_host_config_for_slave`), so
+C5 and C6 packages must remain separate. P4 rev<3 and rev3 also require
+different bootloaders and applications.
+
+Hardware-free tests added for this release:
+
+```powershell
+python bench/tests/test_nano_panel.py
+cmake -P bench/tests/test_build_identity.cmake
+```
+
+The panel tables in `components/lakeshark/board/ls_panel_ws_tables.h` are generated from
+Waveshare's ESP32 components by a script kept outside this repository.
+The 4-DSI-TOUCH-A ST7701 command excerpt and Apache license are in `tools/vendor/`.
+The local vendor snapshot predates that panel, so the generator includes the
+separate Waveshare platform-BSP excerpt.

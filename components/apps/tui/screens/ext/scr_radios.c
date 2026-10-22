@@ -10,6 +10,7 @@
 
 #include "../../ls_tui.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_i18n.h"
 #include "../../ls_quick.h"
 #include "../../ls_options.h"
 #include "../../ls_app.h"
@@ -178,23 +179,59 @@ static radio_state_t mesh_read(void)
     return s.receiving || s.transmitting ? RS_BUSY : s.present ? RS_ON : RS_OFF;
 }
 
+/* The task holding the chip, as the app it belongs to. */
+static const char *holder_name(const char *task)
+{
+    static const struct { const char *prefix, *name; } NAMES[] = {
+        { "adsb", "ADSB" }, { "fm", "FM/P25" }, { "p25", "P25" }, { "catch", "CATCH" },
+        { "drone", "DRONES" }, { "subghz", "SUB-GHZ" }, { "exp", "EXPERIMENTS" },
+    };
+    for (size_t i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++)
+        if (!strncmp(task, NAMES[i].prefix, strlen(NAMES[i].prefix))) return NAMES[i].name;
+    return task;
+}
+
 static const char *mesh_state(void)
 {
     static char text[64];
     ls_mesh_socket_t s;
     ls_mesh_socket_get(&s);
-    snprintf(text, sizeof(text), "%s %s", s.chip,
-             s.transmitting ? "TX" : s.receiving ? "RX" : s.held ? "held" :
-             s.armed ? "armed" : "parked");
+    if (s.blocked)
+        snprintf(text, sizeof(text), "%s %s", ls_tr(s.chip), ls_tr("blocked"));
+    else if (s.held && strcmp(s.owner, "MeshCore") && strcmp(s.owner, "none"))
+        snprintf(text, sizeof(text), "%s %s %s", ls_tr(s.chip), ls_tr("held by"), holder_name(s.owner));
+    else
+        snprintf(text, sizeof(text), "%s %s", ls_tr(s.chip),
+                 ls_tr(s.transmitting ? "TX" : s.receiving ? "RX" : s.held ? "held" :
+                       s.armed ? "armed" : "parked"));
     return text;
 }
 
+static const char *mesh_action(void)
+{
+    ls_mesh_socket_t s;
+    ls_mesh_socket_get(&s);
+    if (s.blocked) return "ALLOW LORA";
+    if (s.held) return "STOP / BLOCK LORA";
+    return ls_mesh_running() ? "TURN OFF" : "TURN ON";
+}
+
+/* Held by an app (ADSB or P25 on the LoRa chip, a sweep, CATCH...), the tap
+   takes the chip back and keeps it free until ALLOW: the holder sees it
+   wanted and lets go, as it does for any other foreground use. */
 static void mesh_set(bool on)
 {
     ls_mesh_socket_t s;
     ls_mesh_socket_get(&s);
+    if (s.blocked) {
+        ls_mesh_radio_block(false);
+        s_error = "LORA allowed: apps can take it again";
+        return;
+    }
     if (s.held) {
-        snprintf(s_error_text, sizeof(s_error_text), "LORA in use by %s: stop it there", s.owner);
+        ls_mesh_radio_block(true);
+        snprintf(s_error_text, sizeof(s_error_text), ls_tr("LORA taken back from %s; ALLOW gives it back"),
+                 holder_name(s.owner));
         s_error = s_error_text;
         return;
     }
@@ -257,8 +294,8 @@ static const radio_row_t ROWS[] = {
     { "RTL-SDR", "ALLOW RX permits owner retry / app start", rtl_read, rtl_set, rtl_state, rtl_action },
     { "HackRF", "ALLOW RX permits owner retry / app start", hackrf_read, hackrf_set, hackrf_state, hackrf_action },
 #if LS_HAS_LORA
-    { "LORA", "MeshCore listens from boot",
-      mesh_read, mesh_set, mesh_state },
+    { "LORA", "MeshCore from boot; STOP frees it from any app",
+      mesh_read, mesh_set, mesh_state, mesh_action },
 #endif
     { "GPS",  "keeps a receiver fed to hold a fix",
       gps_read, gps_set, gps_state },
@@ -353,10 +390,11 @@ static void draw_one(tui_surface *sf, tui_rect a, int i, int bh)
     /* Name and state in the top border, the way every panel on this
        interface is labelled. */
     tui_put_char(sf, a, a.x + 1, a.y, ' ', edge);
-    tui_put_str(sf, a, a.x + 2, a.y, ROWS[i].name, name);
-    tui_put_char(sf, a, a.x + 2 + (int)strlen(ROWS[i].name), a.y, ' ', edge);
+    const char *row_name = ls_tr(ROWS[i].name);
+    tui_put_str(sf, a, a.x + 2, a.y, row_name, name);
+    tui_put_char(sf, a, a.x + 2 + (int)strlen(row_name), a.y, ' ', edge);
 
-    const char *w = ROWS[i].state_text ? ROWS[i].state_text() : state_word(st);
+    const char *w = ls_tr(ROWS[i].state_text ? ROWS[i].state_text() : state_word(st));
     const int wn = (int)strlen(w);
     if (a.w > wn + 8) {
         tui_put_char(sf, a, a.x + a.w - wn - 3, a.y, ' ', edge);
@@ -377,20 +415,20 @@ static void draw_one(tui_surface *sf, tui_rect a, int i, int bh)
     }
 #endif
     if (ROWS[i].set == ant_set && ls_board_hw_antenna_is_external()) {
-        snprintf(what, sizeof(what), "%s", ls_board_hw_antenna_mmcx_tx() ?
-                 "TX on MMCX1: band antenna on it" : "TX goes out the internal antenna");
+        snprintf(what, sizeof(what), "%s", ls_tr(ls_board_hw_antenna_mmcx_tx() ?
+                 "TX on MMCX1: band antenna on it" : "TX goes out the internal antenna"));
         detail = true;
     }
     if (ROWS[i].set == rtl_set || ROWS[i].set == hackrf_set) {
         ls_radio_endpoint_info_t info;
         if (ls_radio_endpoint_get(ROWS[i].set == rtl_set ? LS_RADIO_ENDPOINT_RTL_USB :
                                   LS_RADIO_ENDPOINT_HACKRF_USB, &info) == LS_RADIO_OK && info.leased) {
-            snprintf(what, sizeof(what), "Owner: %s", info.owner);
+            snprintf(what, sizeof(what), ls_tr("Owner: %s"), info.owner);
             detail = true;
         }
     }
     if (bh >= 6 || detail) {
-        if (!detail) snprintf(what, sizeof(what), "%.*s", a.w - 4, ROWS[i].what);
+        if (!detail) snprintf(what, sizeof(what), "%.*s", a.w - 4, ls_tr(ROWS[i].what));
         else if (a.w - 4 >= 0 && a.w - 4 < (int)sizeof(what)) what[a.w - 4] = '\0';
         tui_put_str(sf, a, a.x + 2, y, what, dim);
         y++;
@@ -409,8 +447,8 @@ static void draw_one(tui_surface *sf, tui_rect a, int i, int bh)
             for (int c = 1; c < a.w - 1; c++)
                 tui_put_char(sf, a, a.x + c, y + r, LS_TUI_SHADE_25, field);
 
-        const char *act = ROWS[i].action_text ? ROWS[i].action_text()
-                                             : action_word(st, can);
+        const char *act = ls_tr(ROWS[i].action_text ? ROWS[i].action_text()
+                                                    : action_word(st, can));
         const int an = (int)strlen(act);
         const int ax = a.x + (a.w - an) / 2;
         const int ay = y + (kh - 1) / 2;
@@ -443,10 +481,10 @@ static void draw(tui_surface *sf, tui_rect area)
     int loads = 0;
     for (int i = 0; i < N_ROWS; i++)
         if (!ROWS[i].no_power && !ROWS[i].at_boot) loads++;
-    snprintf(buf, sizeof(buf), "%d of %d powered", live, loads);
+    snprintf(buf, sizeof(buf), ls_tr("%d of %d powered"), live, loads);
     tui_put_str(sf, area, area.x + 2, area.y + 1, buf,
                 live ? A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : dim);
-    if (s_error) tui_put_str(sf, area, area.x + 2, area.y + 2, s_error, A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    if (s_error) tui_put_str(sf, area, area.x + 2, area.y + 2, ls_tr(s_error), A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
 
     tui_rect body = tui_rect_make(area.x + 1, area.y + 3,
                                   area.w - 2, area.h - 8);
@@ -474,9 +512,9 @@ static void draw(tui_surface *sf, tui_rect area)
         const int y = area.y + area.h - 5;
         snprintf(buf, sizeof(buf), "%d/%d",
                  s_page_first / s_page_size + 1, (N_ROWS + s_page_size - 1) / s_page_size);
-        tui_put_str(sf, area, area.x + 2, y, "< PREV", A(TUI_CYAN, TUI_BLACK));
+        tui_put_str(sf, area, area.x + 2, y, ls_tr("< PREV"), A(TUI_CYAN, TUI_BLACK));
         tui_put_str(sf, area, area.x + (area.w - (int)strlen(buf)) / 2, y, buf, A(TUI_CYAN, TUI_BLACK));
-        tui_put_str(sf, area, area.x + area.w - 8, y, "NEXT >", A(TUI_CYAN, TUI_BLACK));
+        tui_put_str(sf, area, area.x + area.w - 2 - (int)strlen(ls_tr("NEXT >")), y, ls_tr("NEXT >"), A(TUI_CYAN, TUI_BLACK));
         s_page_prev = tui_rect_make(area.x + 1, y, area.w / 2, 1);
         s_page_next = tui_rect_make(area.x + 1 + area.w / 2, y, area.w / 2 - 1, 1);
     }

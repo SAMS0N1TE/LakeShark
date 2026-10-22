@@ -17,12 +17,6 @@ jobs:
           - name: p4-wifi6
             idf_version: v5.4.3
             defaults: boards/wifi6_headless_ble.defaults
-          - name: p4-touch-lcd-43
-            idf_version: v5.4.3
-            defaults: boards/lcd43_gui.defaults
-          - name: p4-touch-lcd-4b
-            idf_version: v5.4.3
-            defaults: boards/touch_lcd_4b_gui.defaults
           - name: p4-nano-nobt
             idf_version: v5.4.3
             defaults: boards/nano_headless_nobt.defaults

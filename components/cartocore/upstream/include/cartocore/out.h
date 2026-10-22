@@ -33,4 +33,10 @@ int cc_ansi_diff(cc_buffer *b,const cc_cell *cells,const cc_cell *previous,
     int32_t cols,int32_t rows,int truecolor,cc_ansi_state *state);
 int cc_html_raster(cc_buffer *b,const cc_cell *cells,int32_t cols,int32_t rows);
 int cc_html(cc_buffer *b, const cc_cell *cells, int32_t cols, int32_t rows);
+/* Picture output: one dot per pixel, so rastered planes of cols x rows paint
+   a (cols*2) x (rows*4) RGB565 image. rgb is 0xRRGGBB per ink as ground and
+   line, river the colour of water drawn as a line, relief 0..100 the hillshade
+   strength (used only where the planes carry terrain). */
+typedef struct { uint32_t rgb[CC_INK_COUNT]; uint32_t river; int relief; } cc_pixel_style;
+void cc_pixels_rgb565(const cc_planes *p, const cc_pixel_style *s, uint16_t *out);
 #endif

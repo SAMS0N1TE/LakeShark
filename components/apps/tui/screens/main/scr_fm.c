@@ -7,6 +7,7 @@
    float array the sweep writes into - so the spectrum needs no widget, no
    canvas and no allocation, only a loop that maps bins to columns. */
 #include "../../ls_tui_screen.h"
+#include "../../ls_i18n.h"
 #include "../../ls_radio_panel.h"
 #include "../../ls_numpad.h"
 #include "../../ls_options.h"
@@ -333,6 +334,8 @@ static void seek_tune(int direction)
 static int kv(tui_surface *sf, tui_rect box, int x, int y, const char *k,
               const char *v, uint8_t vattr)
 {
+    k = ls_tr(k);
+    v = ls_tr(v);
     tui_put_str(sf, box, x, y, k, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     x += (int)strlen(k) + 1;
     tui_put_str(sf, box, x, y, v, vattr);
@@ -462,13 +465,13 @@ static void draw_level(tui_surface *sf, tui_rect box, int x0, int y, int w,
                        sig_kind_t kind, bool open, bool gate_row)
 {
     const uint8_t lab = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
-    tui_put_str(sf, box, x0, y, "SIG", lab);
+    tui_put_str(sf, box, x0, y, ls_tr("SIG"), lab);
     const int bx = x0 + 4;
     const int bw = w - 9;
     if (bw < 4) return;
     if (kind == SIG_NONE) {
         /* No reading in this mode, so no bar and no gate to mark on it. */
-        tui_put_str(sf, box, bx, y, "--", LS_ATTR_DIM);
+        tui_put_str(sf, box, bx, y, ls_tr("--"), LS_ATTR_DIM);
         return;
     }
     const float sig = sig_level(kind);
@@ -509,7 +512,7 @@ static void draw_level(tui_surface *sf, tui_rect box, int x0, int y, int w,
     tui_put_char(sf, box, bx + gate, y + 1, '^',
                  TUI_ATTR(open ? TUI_GREEN | TUI_BRIGHT : TUI_CYAN | TUI_BRIGHT,
                           TUI_BLACK));
-    tui_put_str(sf, box, x0, y + 1, "SQL",
+    tui_put_str(sf, box, x0, y + 1, ls_tr("SQL"),
                 TUI_ATTR(TUI_BLACK | TUI_BRIGHT, TUI_BLACK));
 }
 
@@ -583,7 +586,7 @@ static void draw_vfo(tui_surface *sf, tui_rect r)
     const uint8_t warn  = TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK);
     char buf[24];
 
-    tui_box(sf, r, "RECEIVER / SIGNAL", TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    tui_box(sf, r, ls_tr("RECEIVER / SIGNAL"), TUI_ATTR(TUI_CYAN, TUI_BLACK));
     const int inner = r.h - 2;
     const int iw = r.w - 4;
     if (inner < 1 || iw < 16) return;
@@ -732,7 +735,7 @@ static void draw_tape(tui_surface *sf, tui_rect a)
         snprintf(buf, sizeof(buf), "%lu rx", (unsigned long)pc.heard);
         tui_put_str(sf, a, cx, a.y + row++, buf, pc.heard ? good : dim);
     } else {
-        tui_put_str(sf, a, cx, a.y + row++, pc.sync ? "SYNC" : "no sync",
+        tui_put_str(sf, a, cx, a.y + row++, ls_tr(pc.sync ? "SYNC" : "no sync"),
                     pc.sync ? good : dim);
     }
     if (pc.baud) {
@@ -774,7 +777,7 @@ static void draw_tape(tui_surface *sf, tui_rect a)
     }
 
     if (!s_tape_n)
-        tui_put_str(sf, a, a.x + 2, a.y + 1, "no codewords yet", dim);
+        tui_put_str(sf, a, a.x + 2, a.y + 1, ls_tr("no codewords yet"), dim);
 }
 
 /* The pages list, and the page behind it. */
@@ -957,9 +960,9 @@ static void draw_page_detail(tui_surface *sf, tui_rect pane)
     const fm_page_t *pg = s_sel_missing ? NULL : page_at(s_page_sel);
     if (!pg) {
         ls_panel_box(sf, pane, "PAGE", TUI_CYAN);
-        tui_put_str(sf, pane, pane.x + 2, pane.y + 2, "that page is gone", dim);
+        tui_put_str(sf, pane, pane.x + 2, pane.y + 2, ls_tr("that page is gone"), dim);
         s_page_back = tui_rect_make(pane.x + 1, pane.y + 4, pane.w - 2, 3);
-        tui_box(sf, s_page_back, "BACK", lab);
+        tui_box(sf, s_page_back, ls_tr("BACK"), lab);
         return;
     }
 
@@ -993,15 +996,15 @@ static void draw_page_detail(tui_surface *sf, tui_rect pane)
     char buf[64];
 
     snprintf(buf, sizeof(buf), "%lu", (unsigned long)pg->address);
-    field(sf, area, y - area.y, "RIC", buf, lab, val);
+    field(sf, area, y - area.y, ls_tr("RIC"), buf, lab, val);
     y++;
 
-    field(sf, area, y - area.y, "TYPE", type_word(pg->type), lab,
+    field(sf, area, y - area.y, ls_tr("TYPE"), type_word(pg->type), lab,
           unsure ? warn : val);
     y++;
 
     snprintf(buf, sizeof(buf), "%u", (unsigned)pg->function);
-    field(sf, area, y - area.y, "FUNCTION", buf, lab, val);
+    field(sf, area, y - area.y, ls_tr("FUNCTION"), buf, lab, val);
     y++;
 
     /* The baud is on the screen for the first time. The receiver
@@ -1009,16 +1012,16 @@ static void draw_page_detail(tui_surface *sf, tui_rect pane)
        "which decoder produced this" was unanswerable from the panel - and
        it is the first question to ask about a page that reads as rubbish. */
     snprintf(buf, sizeof(buf), "%u", (unsigned)pg->baud);
-    field(sf, area, y - area.y, "BAUD", pg->baud ? buf : "-", lab, val);
+    field(sf, area, y - area.y, ls_tr("BAUD"), pg->baud ? buf : "-", lab, val);
     y++;
 
-    field(sf, area, y - area.y, "PROTOCOL",
+    field(sf, area, y - area.y, ls_tr("PROTOCOL"),
           pg->protocol == FM_PAGE_PROTOCOL_FLEX ? "FLEX" : "POCSAG", lab, val);
     y += 2;
 
     if (unsure && y < area.y + area.h - 2) {
         tui_put_str(sf, area, area.x + 2, y,
-                    "not sure this is readable - see BAUD", warn);
+                    ls_tr("not sure this is readable - see BAUD"), warn);
         y += 2;
     }
 
@@ -1081,7 +1084,7 @@ static void draw_pages(tui_surface *sf, tui_rect whole)
 
     const int count = page_count();
     if (!count) {
-        tui_put_str(sf, area, area.x + 2, area.y + 2, "listening...", dim);
+        tui_put_str(sf, area, area.x + 2, area.y + 2, ls_tr("listening..."), dim);
         /* FLEX with the chip chosen: the chip reads POCSAG only, so FLEX
            stays on the SDR, and says so rather than looking deaf. */
         if (FM.mode == FM_MODE_FLEX && ls_rsel_saved(LS_RSEL_PAGER) == LS_RSEL_LORA) {
@@ -1197,9 +1200,9 @@ static void draw_acars(tui_surface *sf, tui_rect area)
     if (s_page_open) {
         const acars_msg_out_t *msg = s_sel_missing ? NULL : acars_at(s_page_sel);
         s_page_back = tui_rect_make(area.x + 1, area.y + area.h - 4, area.w - 2, 3);
-        tui_box(sf, s_page_back, "BACK", lab);
+        tui_box(sf, s_page_back, ls_tr("BACK"), lab);
         if (!msg) {
-            tui_put_str(sf, area, area.x + 2, area.y + 4, "that message is gone", val);
+            tui_put_str(sf, area, area.x + 2, area.y + 4, ls_tr("that message is gone"), val);
             return;
         }
         snprintf(buf, sizeof(buf), "%s  LABEL %s  BLOCK %c", msg->reg, msg->label, msg->block_id);
@@ -1217,7 +1220,7 @@ static void draw_acars(tui_surface *sf, tui_rect area)
     if (s_page_sel < s_page_top) s_page_top = s_page_sel;
     if (s_page_sel >= s_page_top + rows) s_page_top = s_page_sel - rows + 1;
     if (s_page_top < 0) s_page_top = 0;
-    if (!page_count()) tui_put_str(sf, area, area.x + 2, area.y + 4, "no messages yet", val);
+    if (!page_count()) tui_put_str(sf, area, area.x + 2, area.y + 4, ls_tr("no messages yet"), val);
     for (int row = 0; row < rows; ++row) {
         const int index = s_page_top + row;
         const acars_msg_out_t *msg = acars_at(index);
@@ -1830,7 +1833,7 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
         if (s_freq_keyboard) {
             snprintf(buf, sizeof(buf), "%u.%04u MHz",
                      (unsigned)(hz / 1000000u), (unsigned)((hz % 1000000u) / 100u));
-            tui_put_str(sf, r, rx, ry, "RX", key);
+            tui_put_str(sf, r, rx, ry, ls_tr("RX"), key);
             tui_put_str(sf, r, rx + 3, ry, buf, val);
         } else {
             tune_step_label(buf, sizeof(buf));
@@ -1878,7 +1881,7 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
 
     if (s_freq_invalid) {
         const int n = (int)strlen("INVALID RANGE");
-        tui_put_str(sf, r, x0 + iw - n, wide ? last : r.y + 1, "INVALID RANGE",
+        tui_put_str(sf, r, x0 + iw - n, wide ? last : r.y + 1, ls_tr("INVALID RANGE"),
                     ((s_blink / 8) & 1) ? warn : LS_ATTR_DIM);
     }
 
@@ -1903,7 +1906,7 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
         int tw = (wide ? fig_w : iw) - 10;
         if (tw > LS_RADIO_TRACE_N) tw = LS_RADIO_TRACE_N;
         const int ty = y;
-        tui_put_str(sf, r, x0, ty, "ACT",
+        tui_put_str(sf, r, x0, ty, ls_tr("ACT"),
                     TUI_ATTR(TUI_CYAN, TUI_BLACK));
         for (int x = 0; x < tw; ++x)
             tui_put_char(sf, r, x0 + 4 + x, ty + trace_h - 1, '-', LS_ATTR_DIM);
@@ -2046,10 +2049,10 @@ static void draw_quick_controls(tui_surface *sf, tui_rect area)
                         live ? TUI_ATTR(HUE[i] | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
             tui_put_str(sf, area, area.x + 2 + (int)strlen(NAME[i]), y, edit,
                         live ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
-            tui_put_str(sf, area, s_step_down[i].x, y, "[-]",
+            tui_put_str(sf, area, s_step_down[i].x, y, ls_tr("[-]"),
                         flash_dn ? TUI_ATTR(TUI_BLACK, TUI_WHITE | TUI_BRIGHT)
                                  : live ? TUI_ATTR(HUE[i] | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
-            tui_put_str(sf, area, s_step_up[i].x, y, "[+]",
+            tui_put_str(sf, area, s_step_up[i].x, y, ls_tr("[+]"),
                         flash_up ? TUI_ATTR(TUI_BLACK, TUI_WHITE | TUI_BRIGHT)
                                  : live ? TUI_ATTR(HUE[i] | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
         }

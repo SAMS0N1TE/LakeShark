@@ -22,6 +22,7 @@ typedef enum {
 } eTaskState;
 
 void vTaskDelay(TickType_t ticks);
+TickType_t xTaskGetTickCount(void);
 /* Priority is not modelled on the host: Get reports the default, Set is a no-op. */
 UBaseType_t uxTaskPriorityGet(TaskHandle_t task);
 void vTaskPrioritySet(TaskHandle_t task, UBaseType_t priority);

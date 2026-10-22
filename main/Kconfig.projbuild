@@ -64,6 +64,15 @@ menu "LakeShark"
             initialization or verification failures retry at 20 MHz.
             Set 20000 to force the original clock. No UHS voltage switch.
 
+    config LS_PANEL_RUNTIME
+        bool "Waveshare DSI panel chosen at runtime ('panel' command)"
+        depends on LS_BOARD_P4_NANO && LAKESHARK_HEADLESS
+        default n
+        help
+            Builds in the TUI and a driver for Waveshare's MIPI-DSI panels on
+            the board's DSI connector. Nothing changes until a panel is saved
+            with 'panel set <name>'; with none the board stays headless.
+
     config LS_VBUS_EN_GPIO
         int "USB host VBUS enable GPIO (-1 if the port is hard-powered)"
         default 46 if LS_BOARD_P4_NANO
@@ -124,12 +133,11 @@ menu "LakeShark"
             boards/nano_headless_nobt.defaults for a worked example.
 
     config LAKESHARK_HEADLESS
-        bool "Headless build (UART console, no display/GUI)"
-        default n
+        bool
+        default y
         help
-            Build the headless variant: boot straight into the radio backend and
-            a UART console instead of the LVGL touch GUI. Shares the same
-            radio core (P25 / FM / ADS-B). Leave OFF for the GUI build.
+            Every board boots into the radio backend and the console; a board
+            with a panel draws the character-grid UI on top of it.
 
     config LS_C6_LINK
         bool "Bring up the ESP32-C6 co-processor at boot"
@@ -146,20 +154,6 @@ menu "LakeShark"
         help
             Enabling this option will initialize the SD card, so the SD card needs to be inserted into the slot. Additionally, if using the Video Player example, an MJPEG format video must be saved on the SD card.
 endmenu
-
-# ESP-IDF 5.5's component manager reads LVGL 9's optional-library switches
-# while it solves, though LVGL 8.4 is pinned, and stops when they do not
-# exist. They exist here, off: LVGL 8.4 defines none of them. They need
-# prompts: Kconfig leaves a hidden option that is off out of sdkconfig.json.
-config LV_USE_LIBPNG
-    bool "LVGL 9 PNG decoder (unused, LVGL 8.4)"
-    default n
-config LV_USE_LIBJPEG_TURBO
-    bool "LVGL 9 JPEG decoder (unused, LVGL 8.4)"
-    default n
-config LV_USE_LZ4
-    bool "LVGL 9 LZ4 decoder (unused, LVGL 8.4)"
-    default n
 
 config LS_EXAMPLE_APP
     bool "Show native framework example app"

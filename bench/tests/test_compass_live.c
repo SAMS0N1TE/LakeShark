@@ -752,3 +752,86 @@ LS_CASE(field_quality_without_gps_and_after_model)
     ls_compass_apply_model(&r, -14, 52, 66);
     LS_CHECK(r.quality == LS_COMPASS_GOOD);
 }
+
+/* ---- the screen's up edge: portrait top or a landscape side ---------------- */
+
+/* A board pose from its axes in NED: right, top and out of the glass. */
+static ls_imu_sample_t pose_axes(ned right, ned top, ned out)
+{
+    const ned upward = { 0, 0, -1 };
+    ls_imu_sample_t s;
+    memset(&s, 0, sizeof(s));
+    s.ax = (float)-dot3(upward, right); s.ay = (float)dot3(upward, top); s.az = (float)-dot3(upward, out);
+    const double mr = dot3(FIELD, right), mu = dot3(FIELD, top), mo = dot3(FIELD, out);
+    s.mx = (float)-mu; s.my = (float)-mr; s.mz = (float)-mo;
+    s.mag_valid = true;
+    return s;
+}
+
+LS_CASE(landscape_flat_reads_the_edge_that_is_up_on_screen)
+{
+    for (int yaw = 0; yaw < 360; yaw += 30) {
+        ls_imu_sample_t s = pose(yaw, 0, 0, NULL);   /* flat, physical top at `yaw` */
+        ls_compass_reading_t r; bool back = false;
+        /* Clockwise landscape: the left edge is up on screen, 90 left of the top. */
+        ls_compass_set_view_up(-1, 0);
+        LS_CHECK(ls_compass_solve(&s, NULL, &back, &r));
+        LS_CHECK_MSG(angle_error(r.magnetic, fmod(yaw + 270, 360)) < 0.2, "cw yaw %d got %.2f", yaw, r.magnetic);
+        /* Counter-clockwise: the right edge, 90 right of the top. */
+        ls_compass_set_view_up(1, 0);
+        LS_CHECK(ls_compass_solve(&s, NULL, &back, &r));
+        LS_CHECK_MSG(angle_error(r.magnetic, fmod(yaw + 90, 360)) < 0.2, "ccw yaw %d got %.2f", yaw, r.magnetic);
+        /* Portrait is what it always was. */
+        ls_compass_set_view_up(0, 1);
+        LS_CHECK(ls_compass_solve(&s, NULL, &back, &r));
+        LS_CHECK(angle_error(r.magnetic, yaw) < 0.2);
+    }
+}
+
+LS_CASE(landscape_held_up_reads_where_the_glass_faces)
+{
+    /* Held in front of you sideways: the screen's up edge to the sky and the
+       glass's back toward bearing B. Portrait could not read this pose at all
+       (its top edge is horizontal and its view degenerate). */
+    for (int b = 0; b < 360; b += 30) {
+        const double br = b * RAD;
+        const ned face = { cos(br), sin(br), 0 };          /* where you look */
+        const ned out = { -face.n, -face.e, 0 };            /* glass toward you */
+        for (int side = 0; side < 2; side++) {
+            const int ux = side ? 1 : -1;                   /* cw: left edge up; ccw: right edge up */
+            /* The up edge (ux * right) is world up: right = ux * up(NED -d). */
+            const ned right = { 0, 0, ux > 0 ? -1.0 : 1.0 };
+            const ned top = cross3(out, right);
+            ls_imu_sample_t s = pose_axes(right, top, out);
+            ls_compass_reading_t r; bool back = false;
+            ls_compass_set_view_up(ux, 0);
+            LS_CHECK_MSG(ls_compass_solve(&s, NULL, &back, &r), "bearing %d side %d gave no heading", b, side);
+            LS_CHECK_MSG(angle_error(r.magnetic, b) < 0.5, "bearing %d side %d got %.2f", b, side, r.magnetic);
+            LS_CHECK(r.back_axis);
+        }
+    }
+    ls_compass_set_view_up(0, 1);
+}
+
+LS_CASE(landscape_held_up_the_gyro_yaw_is_clockwise_from_above)
+{
+    /* Clockwise landscape, left edge up: in ls_imu axes x is reversed, so the
+       reaction to gravity reads +x; a clockwise turn about the vertical is a
+       rotation about the board's left edge, gyro screen +x, ls_imu -x. */
+    ls_compass_set_view_up(-1, 0);
+    const float up[3] = { 1, 0, 0 }, turn[3] = { -30, 0, 0 };
+    LS_CHECK_MSG(fabsf(ls_compass_yaw_rate(turn, up) - 30) < 1e-3f, "got %.3f", ls_compass_yaw_rate(turn, up));
+    /* Portrait cannot see that turn: its view is degenerate there. */
+    ls_compass_set_view_up(0, 1);
+    LS_CHECK(isnan(ls_compass_yaw_rate(turn, up)));
+}
+
+LS_CASE(only_the_four_screen_edges_are_accepted)
+{
+    int ux, uy;
+    ls_compass_set_view_up(0, 1);
+    ls_compass_set_view_up(1, 1);  ls_compass_view_up(&ux, &uy); LS_CHECK(ux == 0 && uy == 1);
+    ls_compass_set_view_up(0, 0);  ls_compass_view_up(&ux, &uy); LS_CHECK(ux == 0 && uy == 1);
+    ls_compass_set_view_up(-1, 0); ls_compass_view_up(&ux, &uy); LS_CHECK(ux == -1 && uy == 0);
+    ls_compass_set_view_up(0, 1);
+}

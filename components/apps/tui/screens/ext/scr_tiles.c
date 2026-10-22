@@ -7,6 +7,12 @@
 #include "../../ls_glyph.h"
 #include "../../ls_text.h"
 #include "../../ls_map.h"
+#include "../../ls_value.h"
+#include "../../ls_action.h"
+#include "../../ls_quick.h"
+#include "../../ls_i18n.h"
+#include "../../ls_globe.h"
+#include <stdlib.h>
 #include "esp_timer.h"
 #include "esp_attr.h"
 #include <math.h>
@@ -159,9 +165,207 @@ static void enter(void) {
 #endif
 }
 static void line(tui_surface *sf,tui_rect a,int y,const char *s,uint8_t at) { ls_safe_line(sf,a,y,s,at); }
+
+/* ---- US STATES ----------------------------------------------------------
+   Whole states of map cells (ls_cells_states_worker.h does the work). The
+   page is a tile map of the US, one box per state where the state roughly
+   sits, coloured by what is true now: on the card, part on it, downloading,
+   free to get, or Plus. The bar under a code is that state's cells on the
+   card, so the map fills in as a download lands; nothing moves otherwise. */
+typedef struct { char st[3]; unsigned char c, r; } us_tile_t;
+static const us_tile_t US_TILES[] = {
+    {"AK",0,0},{"ME",10,0},
+    {"WI",5,1},{"VT",9,1},{"NH",10,1},
+    {"WA",0,2},{"ID",1,2},{"MT",2,2},{"ND",3,2},{"MN",4,2},{"IL",5,2},{"MI",6,2},{"NY",8,2},{"MA",9,2},
+    {"OR",0,3},{"NV",1,3},{"WY",2,3},{"SD",3,3},{"IA",4,3},{"IN",5,3},{"OH",6,3},{"PA",7,3},{"NJ",8,3},{"CT",9,3},{"RI",10,3},
+    {"CA",0,4},{"UT",1,4},{"CO",2,4},{"NE",3,4},{"MO",4,4},{"KY",5,4},{"WV",6,4},{"VA",7,4},{"MD",8,4},{"DE",9,4},
+    {"AZ",1,5},{"NM",2,5},{"KS",3,5},{"AR",4,5},{"TN",5,5},{"NC",6,5},{"SC",7,5},{"DC",8,5},
+    {"OK",3,6},{"LA",4,6},{"MS",5,6},{"AL",6,6},{"GA",7,6},
+    {"HI",0,7},{"TX",3,7},{"FL",8,7},{"PR",10,7},
+};
+#define US_N ((int)(sizeof(US_TILES)/sizeof(US_TILES[0])))
+/* Every state is free to z12 (MAPS); Plus adds z13+ street detail (DETAIL). */
+typedef struct { char name[28]; bool known, detail; unsigned cells, have, partial; unsigned long long base, extra; } us_state_t;
+static EXT_RAM_BSS_ATTR us_state_t us_state[US_N];
+static tui_rect us_hit[US_N];
+static int us_sel=-1, us_busy=-1;
+static char us_status[128];
+static float us_progress;
+static bool us_plus; static int us_free_z=12;
+/* Everything this board is entitled to is on the card. */
+static bool us_full(const us_state_t *s) { return s->cells && s->have>=s->cells && (s->detail || !s->extra || !us_plus); }
+
+static int us_index(const char *st) { for(int i=0;i<US_N;i++) if(US_TILES[i].st[0]==st[0] && US_TILES[i].st[1]==st[1]) return i; return -1; }
+
+/* maps.states rows: "ST|name|tier|cells|bytes|installed|partial|base|detail|detail_on";
+   the tier field is legacy and ignored, and old 7-field rows are all base. */
+static bool us_load(void) {
+    memset(us_state,0,sizeof(us_state));
+    ls_val_t v; bool any=false;
+    if(ls_value_read("maps.state",&v,NULL) && v.kind==LS_VAL_TEXT && v.s) snprintf(us_status,sizeof(us_status),"%s",v.s); else us_status[0]=0;
+    us_progress=ls_value_read("maps.progress",&v,NULL)?v.f:0;
+    us_plus=ls_value_read("maps.plus",&v,NULL) && v.i;
+    if(ls_value_read("maps.free_max_zoom",&v,NULL) && v.kind==LS_VAL_INT && v.i>0 && v.i<16) us_free_z=(int)v.i;
+    const char *rows=NULL;
+    if(ls_value_read("maps.states",&v,NULL) && v.kind==LS_VAL_TEXT && v.s && v.s[0]) rows=v.s;
+#ifdef LS_TILES_HOST
+    /* lssim has no map host: a sample list so the page can be looked at. */
+    if(!rows) { rows="NH|New Hampshire|free|7|248000000|7|2|79000000|169000000|1\nVT|Vermont|free|7|190000000|3|3|61000000|129000000|0\n"
+        "ME|Maine|free|16|300000000|0|9|96000000|204000000|0\nMA|Massachusetts|free|7|260000000|7|3|83000000|177000000|0\n"
+        "CO|Colorado|plus|30|900000000|0|10|288000000|612000000|0\nTX|Texas|plus|57|2100000000|0|20|672000000|1428000000|0\n"
+        "CA|California|plus|43|1900000000|0|18|608000000|1292000000|0\nNY|New York|plus|21|800000000|0|9|256000000|544000000|0\n";
+        us_progress=0.42f; us_busy=1; us_plus=getenv("LSSIM_MAPS_TOKEN")!=NULL;
+        snprintf(us_status,sizeof(us_status),"VT: cell 4 of 7, part 2 of 3"); }
+#endif
+    if(!rows) return false;
+    for(const char *p=rows;*p;) {
+        const char *end=strchr(p,'\n'); if(!end) end=p+strlen(p);
+        char row[160]; int len=(int)(end-p)<(int)sizeof(row)-1?(int)(end-p):(int)sizeof(row)-1;
+        memcpy(row,p,(size_t)len); row[len]=0;
+        char st[3]={0},name[28]={0},tier[8]={0}; unsigned cells=0,have=0,partial=0,on=0; unsigned long long bytes=0,base=0,extra=0;
+        const int n=sscanf(row,"%2[A-Z]|%27[^|]|%7[^|]|%u|%llu|%u|%u|%llu|%llu|%u",st,name,tier,&cells,&bytes,&have,&partial,&base,&extra,&on);
+        if(n==7 || n==10) {
+            int i=us_index(st);
+            if(i>=0) { us_state_t *s=&us_state[i]; snprintf(s->name,sizeof(s->name),"%s",name); s->known=true;
+                s->cells=cells; s->have=have; s->partial=partial; any=true;
+                s->base=n==10?base:bytes; s->extra=n==10?extra:0; s->detail=n==10 && on; }
+        }
+        p=*end?end+1:end;
+    }
+    return any;
+}
+
+static uint8_t us_hue(int i,int *dither) {
+    const us_state_t *s=&us_state[i]; int d; uint8_t hue;
+    if(!s->known) { hue=0; d=-1; }
+    else if(i==us_busy) { hue=TUI_WHITE; d=LS_DITHER_MEDIUM; }
+    else if(s->cells && s->have>=s->cells && s->detail) { hue=TUI_MAGENTA; d=LS_DITHER_HEAVY; }  /* maps + Plus detail */
+    else if(s->cells && s->have>=s->cells) { hue=TUI_GREEN; d=LS_DITHER_HEAVY; }               /* maps to z12 */
+    else if(s->have) { hue=TUI_YELLOW; d=LS_DITHER_MEDIUM; }
+    else { hue=TUI_CYAN; d=LS_DITHER_LIGHT; }                                                   /* ready to get */
+    if(dither) *dither=d;
+    return hue;
+}
+/* The globe asks per region code ("US-NH"); states known to the list get
+   their install colour, everything else is outline only. */
+static uint8_t us_globe_fill(const char *code,void *ctx) {
+    (void)ctx;
+    if(strncmp(code,"US-",3)) return 0;
+    const int i=us_index(code+3); return i<0?0:us_hue(i,NULL);
+}
+static bool us_globe_on(void) {
+#ifdef LS_TILES_HOST
+    const char *sim=getenv("LSSIM_OUTLINES");
+    return ls_globe_load(sim)==LS_GLOBE_READY;
+#else
+    /* Cheap every frame: a stat, and the loader task once the file lands. */
+    return ls_globe_load(NULL)==LS_GLOBE_READY;
+#endif
+}
+#define US_VIEW_LAT 38.5f
+#define US_VIEW_LON (-96.0f)
+#define US_VIEW_ZOOM 3.1f
+static bool us_globe_world;
+
+static void us_draw(tui_surface *sf,tui_rect body) {
+    const bool any=us_load();
+    const bool working=us_progress>0.0f && us_progress<1.0f;
+    if(!working) us_busy=-1;
+    const bool wide=body.w>90;
+    tui_rect grid=body, info=body;
+    if(wide) { grid.w=body.w*3/5; info.x=grid.x+grid.w+1; info.w=body.w-grid.w-1; }
+    int tw=grid.w/11; if(tw>7) tw=7;
+    /* Taller tiles where portrait has the rows; info needs about twelve. */
+    int th=wide?grid.h/8:(body.h-12)/8; if(th>5) th=5; if(th<1) th=1;
+    const bool globe=us_globe_on();
+    if(!wide) { grid.h=globe?body.h-13:th*8; info.y=grid.y+grid.h+1; info.h=body.y+body.h-info.y; }
+    const int gx=grid.x+(grid.w-tw*11)/2;
+    if(globe) {
+        /* THE GLOBE: real borders, each state filled with what is on the
+           card. Tiles stay for a card without the outline file. */
+        memset(us_hit,0,sizeof(us_hit));
+        char sel[8]; snprintf(sel,sizeof(sel),"US-%s",us_sel>=0?US_TILES[us_sel].st:"");
+        ls_globe_draw(sf,grid,us_globe_fill,NULL,us_sel>=0?sel:NULL);
+    }
+    for(int i=0;i<US_N && !globe;i++) {
+        const us_state_t *s=&us_state[i];
+        tui_rect t=tui_rect_make(gx+US_TILES[i].c*tw,grid.y+US_TILES[i].r*th,tw-1,th);
+        us_hit[i]=t;
+        int dither; uint8_t hue=us_hue(i,&dither); if(!hue) hue=LS_FAINT_FG;
+        if(dither>=0) ls_fill_dither(sf,t,dither,hue);
+        const bool sel=i==us_sel;
+        const uint8_t face=sel?TUI_ATTR(TUI_BLACK,TUI_WHITE|TUI_BRIGHT):s->known?TUI_ATTR(TUI_WHITE|TUI_BRIGHT,dither>=0?hue:TUI_BLACK):TUI_ATTR(LS_DIM_FG,TUI_BLACK);
+        tui_put_str(sf,t,t.x+(t.w-2)/2,t.y,US_TILES[i].st,face);
+        if(th>=2 && s->known && t.w>=3) {
+            /* cells on the card, as a filament per quarter of the state */
+            const int w=t.w-1>4?4:t.w-1; const int lit=s->cells?(int)((s->have*w+s->cells-1)/s->cells):0;
+            for(int k=0;k<w;k++) tui_put_char(sf,t,t.x+(t.w-w)/2+k,t.y+1,k<lit?'|':'.',
+                TUI_ATTR(k<lit?(hue|TUI_BRIGHT):LS_FAINT_FG,TUI_BLACK));
+        }
+        /* '+': street detail is on the card too */
+        if(th>=3 && s->detail) tui_put_char(sf,t,t.x+t.w-1,t.y+th-1,'+',TUI_ATTR(TUI_MAGENTA|TUI_BRIGHT,TUI_BLACK));
+    }
+    /* the key, so the colours are read and not guessed */
+    int ky=grid.y+grid.h; if(!wide && ky<info.y) {
+        int x=grid.x; static const struct { const char *t; uint8_t h; } KEY[]={{"MAPS",TUI_GREEN},{"+DETAIL",TUI_MAGENTA},{"PART",TUI_YELLOW},{"GET",TUI_CYAN}};
+        for(unsigned k=0;k<4;k++) { tui_put_char(sf,body,x,ky,'#',TUI_ATTR(KEY[k].h|TUI_BRIGHT,TUI_BLACK)); tui_put_str(sf,body,x+2,ky,ls_tr(KEY[k].t),LS_ATTR_DIM); x+=(int)strlen(ls_tr(KEY[k].t))+4; }
+        info.y++; info.h--;
+    }
+    char text[160]; int y=info.y;
+    if(!any) {
+        line(sf,info,y++,catalog.sd?"No state list yet. REFRESH fetches it.":"No SD card. Insert a card to install maps.",LS_ATTR_DIM);
+    } else if(us_sel<0) {
+        unsigned have=0,total=0; for(int i=0;i<US_N;i++) { have+=us_state[i].have; total+=us_state[i].cells; }
+        snprintf(text,sizeof(text),"%u of %u cells on the card",have,total); line(sf,info,y++,text,INK);
+        snprintf(text,sizeof(text),"Every state free to z%d. %s",us_free_z,us_plus?"Plus: street detail on":"Plus adds street detail");
+        line(sf,info,y++,text,us_plus?TUI_ATTR(TUI_MAGENTA|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM);
+        line(sf,info,y++,"Tap a state to get or remove its maps",LS_ATTR_DIM);
+    } else {
+        const us_state_t *s=&us_state[us_sel];
+        snprintf(text,sizeof(text),"%s  %s",US_TILES[us_sel].st,s->known?s->name:"no maps yet");
+        line(sf,info,y++,text,INK);
+        if(s->known) {
+            /* Two layers, each with what it costs and whether it is here. */
+            const bool base_on=s->cells && s->have>=s->cells;
+            snprintf(text,sizeof(text),"MAPS    z0-%-2d  %4.0f MB  %s",us_free_z,s->base/1e6,
+                     base_on?"on card":s->have?"part":"free");
+            line(sf,info,y++,text,base_on?GOOD:INK);
+            if(s->extra) {
+                snprintf(text,sizeof(text),"DETAIL  z%d-16  %4.0f MB  %s",us_free_z+1,s->extra/1e6,
+                         s->detail?"on card":us_plus?"with Plus":"needs Plus");
+                line(sf,info,y++,text,s->detail||us_plus?TUI_ATTR(TUI_MAGENTA|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM);
+            }
+            snprintf(text,sizeof(text),"On the card: %u of %u cells",s->have,s->cells);
+            line(sf,info,y++,text,base_on?GOOD:LS_ATTR_DIM);
+            if(s->partial) { snprintf(text,sizeof(text),"%u border cells hold US data only",s->partial); line(sf,info,y++,text,LS_ATTR_DIM); }
+        }
+    }
+    if(working || us_status[0]) {
+        y++;
+        line(sf,info,y++,us_status[0]?us_status:"Working",working?INK:LS_ATTR_DIM);
+        if(working && y<info.y+info.h) {
+            const int w=info.w-8, lit=(int)(us_progress*w);
+            for(int i=0;i<w;i++) tui_put_char(sf,info,info.x+1+i,y,i<lit?'=':'-',i<lit?GOOD:LS_ATTR_FAINT);
+            snprintf(text,sizeof(text),"%3d%%",(int)(us_progress*100.0f+0.5f));
+            tui_put_str(sf,info,info.x+w+2,y,text,INK);
+        }
+    }
+}
+
+static void us_call(const char *act,const char *st) {
+    ls_args_t a={.n=st?1:0}; if(st) { a.v[0].kind=LS_VAL_TEXT; a.v[0].s=st; }
+    ls_val_t out; (void)ls_action_call(act,&a,&out,ls_quick_grant_builtin());
+}
+static void us_get_or_remove(void) {
+    if(us_sel<0 || !us_state[us_sel].known) return;
+    const us_state_t *s=&us_state[us_sel];
+    /* Complete for this board: remove. Maps on but Plus detail missing: get adds it. */
+    if(us_full(s)) { us_call("maps.state.remove",US_TILES[us_sel].st); return; }
+    us_busy=us_sel; us_call("maps.state.get",US_TILES[us_sel].st);
+}
 static void draw(tui_surface *sf,tui_rect a) {
     if(ls_place_search_active()) { snprintf(hint,sizeof(hint),"%s",ls_place_search_hint());ls_place_search_draw(sf,a);return; }
-    snprintf(hint,sizeof(hint),"UP/DOWN region  ENTER info  O options  BACK");
+    snprintf(hint,sizeof(hint),"%s",page==4?"TAP a state  ARROWS move  ENTER/G get or remove  R refresh  BACK":"UP/DOWN region  ENTER info  M states  O options  BACK");
     bool copied=ls_tiles_snapshot(&catalog); ls_carto_transfer_snapshot(&transfer);
     if(map_open_done(copied))return;
     ls_carto_active_file(active_file,sizeof(active_file));
@@ -174,10 +378,19 @@ static void draw(tui_surface *sf,tui_rect a) {
         for(int i=0;i<catalog.count;i++) if(!strcmp(catalog.region[i].file,transfer.file)) selected=i;
     }
     if(page==2 && transfer.state==0 && !catalog.busy) page=0;
-    ls_panel_box(sf,a,page==1?"TILES / REGION INFO":page==2?transfer.verifying?"TILES / VERIFY":transfer.receiving?"TILES / RECEIVE":"TILES / TRANSFER":page==3?"TILES / CONFIRM":"TILES / MAP REGIONS",TUI_CYAN);
-    ls_btn_t btn[4]={{.label="BACK",.key='b'},{.label="OPTIONS",.value="REGIONS",.key='o'},
+    ls_panel_box(sf,a,page==1?"TILES / REGION INFO":page==2?transfer.verifying?"TILES / VERIFY":transfer.receiving?"TILES / RECEIVE":"TILES / TRANSFER":page==3?"TILES / CONFIRM":page==4?"TILES / US STATES":"TILES / MAP REGIONS",TUI_CYAN);
+    ls_btn_t btn[5]={{.label="BACK",.key='b'},{.label="OPTIONS",.value="REGIONS",.key='o'},
         {.label="OPEN",.value="SELECTED MAP",.key='a',.dim=catalog.busy || !catalog.count || !catalog.region[selected].local_bytes},{.label="SEARCH",.value="PLACES",.key='s'}};
-    int nb=4;
+    btn[4]=(ls_btn_t){.label="STATES",.value="US MAP",.key='m'};
+    int nb=5;
+    if(page==4) {
+        const bool full=us_sel>=0 && us_full(&us_state[us_sel]);
+        const bool more=us_sel>=0 && !full && us_state[us_sel].cells && us_state[us_sel].have>=us_state[us_sel].cells;
+        btn[1]=(ls_btn_t){.label=full?"REMOVE":more?"DETAIL":"GET",.value=us_sel>=0?US_TILES[us_sel].st:"PICK A STATE",.key='g',
+                          .dim=us_sel<0 || !us_state[us_sel].known};
+        btn[2]=(ls_btn_t){.label="VIEW",.value=us_globe_world?"WORLD":"US",.key='w',.dim=ls_globe_state()!=LS_GLOBE_READY};
+        btn[3]=(ls_btn_t){.label="REFRESH",.value="STATE LIST",.key='r'}; nb=4;
+    }
     if(page==1) { btn[1]=(ls_btn_t){.label="OPEN",.value="SELECTED MAP",.key='a',.dim=!catalog.count || !catalog.region[selected].local_bytes}; btn[2]=(ls_btn_t){.label="OPTIONS",.value="REGION",.key='o'}; nb=3; }
     if(page==2) { nb=1; btn[0].label="BACK";
         if(transfer.state==2) { btn[1]=(ls_btn_t){.label="OPEN",.value="SELECTED MAP",.key='a',.dim=catalog.busy}; nb=2; } }
@@ -271,6 +484,8 @@ static void draw(tui_surface *sf,tui_rect a) {
             snprintf(text,sizeof(text),"Code: %s",transfer.code); line(sf,details,y++,text,INK);
             line(sf,details,y++,"PUT one .ctile file; expires after 5 min",LS_ATTR_DIM);
         }
+    } else if(page==4) {
+        us_draw(sf,body);
     } else if(page==3) {
         line(sf,body,body.y+3,confirm==1?"Cancel this transfer?":"Delete this region and its partial file?",INK);
         line(sf,body,body.y+5,confirm==1?"Cancelled transfers remove their partial file.":"This removes the files from the SD card.",LS_ATTR_DIM);
@@ -284,7 +499,15 @@ static bool key(ls_tk_t k,char ch) {
     if(k==LS_TK_ESC || k==LS_TK_BACKSPACE || (k==LS_TK_CHAR && (ch=='b' || ch=='B'))) { back(); return true; }
     if(k==LS_TK_CHAR) {
         if(ch=='o' || ch=='O') { ls_opt_open(page==1?&region_ctx:&ctx); return true; }
-        if(ch=='r' || ch=='R') { ls_tiles_refresh(true); return true; }
+        if(ch=='r' || ch=='R') { if(page==4) us_call("maps.refresh",NULL); else ls_tiles_refresh(true); return true; }
+        if(ch=='m' || ch=='M') { page=4; us_sel=-1; focus=-1; us_globe_world=false; ls_globe_target(US_VIEW_LAT,US_VIEW_LON,US_VIEW_ZOOM); return true; }
+        if((ch=='w' || ch=='W') && page==4) {
+            us_globe_world=!us_globe_world;
+            if(us_globe_world) ls_globe_target(US_VIEW_LAT,US_VIEW_LON,1.0f); else ls_globe_target(US_VIEW_LAT,US_VIEW_LON,US_VIEW_ZOOM);
+            return true;
+        }
+        if((ch=='+' || ch=='=' || ch=='-') && page==4) { float la,lo,z; ls_globe_view(&la,&lo,&z); ls_globe_target(la,lo,ch=='-'?z/1.5f:z*1.5f); return true; }
+        if((ch=='g' || ch=='G') && page==4) { us_get_or_remove(); return true; }
         if(ch=='v' || ch=='V') { action(&(ls_opt_t){.arg=1}); return true; }
         if(ch=='a' || ch=='A') { if(!catalog.busy && catalog.count && catalog.region[selected].local_bytes) map_open(); return true; }
         if((ch=='y' || ch=='Y') && page==3) {
@@ -296,6 +519,25 @@ static bool key(ls_tk_t k,char ch) {
     if(page==0 && (k==LS_TK_UP || k==LS_TK_DOWN) && focus<0) {
         selected+=k==LS_TK_UP?-1:1; if(selected<0) selected=0; if(selected>=catalog.count) selected=catalog.count?catalog.count-1:0; return true;
     }
+    if(page==4 && focus<0 && ls_globe_state()==LS_GLOBE_READY && (k==LS_TK_LEFT || k==LS_TK_RIGHT || k==LS_TK_UP || k==LS_TK_DOWN)) {
+        float la,lo,z; ls_globe_view(&la,&lo,&z); const float step=20.0f/z;
+        ls_globe_target(la+(k==LS_TK_UP?step:k==LS_TK_DOWN?-step:0),lo+(k==LS_TK_LEFT?-step:k==LS_TK_RIGHT?step:0),z);
+        return true;
+    }
+    if(page==4 && focus<0 && (k==LS_TK_LEFT || k==LS_TK_RIGHT || k==LS_TK_UP || k==LS_TK_DOWN)) {
+        if(us_sel<0) { us_sel=us_index("NH"); return true; }
+        const int dc=k==LS_TK_LEFT?-1:k==LS_TK_RIGHT?1:0, dr=k==LS_TK_UP?-1:k==LS_TK_DOWN?1:0;
+        int best=-1, bd=99;
+        for(int i=0;i<US_N;i++) {
+            const int c=US_TILES[i].c-US_TILES[us_sel].c, r=US_TILES[i].r-US_TILES[us_sel].r;
+            if((dc && (c*dc<=0)) || (dr && (r*dr<=0))) continue;
+            const int d=(dc?c*dc:0)+(dr?r*dr:0)+2*(dc?(r<0?-r:r):(c<0?-c:c));
+            if(d<bd) { bd=d; best=i; }
+        }
+        if(best>=0) us_sel=best;
+        return true;
+    }
+    if(page==4 && k==LS_TK_ENTER && focus<0) { us_get_or_remove(); return true; }
     if(page==1 && (k==LS_TK_UP || k==LS_TK_DOWN) && focus<0) {
         info_scroll+=k==LS_TK_UP?-1:1;
         if(info_scroll<0) info_scroll=0;
@@ -305,7 +547,7 @@ static bool key(ls_tk_t k,char ch) {
     if(k==LS_TK_TAB) { focus=focus<0?0:-1; return true; }
     if(focus>=0 && ls_btn_navigate(k,&slot,&focus,false)) return true;
     if(k==LS_TK_ENTER) {
-        if(focus>=0) { const char *keys=page==0?"boas":page==1?"bao":page==3?"by":"ba"; if(focus<(int)strlen(keys)) return key(LS_TK_CHAR,keys[focus]); }
+        if(focus>=0) { const char *keys=page==0?"boasm":page==1?"bao":page==3?"by":page==4?"bgwr":"ba"; if(focus<(int)strlen(keys)) return key(LS_TK_CHAR,keys[focus]); }
         else if(page==0 && catalog.count) { page=1; info_scroll=0; }
         return true;
     }
@@ -314,7 +556,7 @@ static bool key(ls_tk_t k,char ch) {
 static bool touch(int col,int row) {
     if(ls_place_search_active())return ls_place_search_touch(col,row);
     int b=ls_btn_hit(col,row);
-    if(b>=0) { const char *keys=page==0?"boas":page==1?"bao":page==3?"by":"ba"; if(b<(int)strlen(keys)) key(LS_TK_CHAR,keys[b]); return true; }
+    if(b>=0) { const char *keys=page==0?"boasm":page==1?"bao":page==3?"by":page==4?"bgwr":"ba"; if(b<(int)strlen(keys)) key(LS_TK_CHAR,keys[b]); return true; }
     if(page==0 && row==list_area.y-1) {
         selected+=col<list_area.x+list_area.w/2?-1:1;
         if(selected<0) selected=0;
@@ -323,6 +565,21 @@ static bool touch(int col,int row) {
     }
     if(page==0 && tui_rect_contains(list_area,col,row)) {
         int i=first+(row-list_area.y)/4; if(i<catalog.count) { selected=i; page=1; info_scroll=0; } return true;
+    }
+    if(page==4) {
+        for(int i=0;i<US_N;i++) if(us_hit[i].w>0 && tui_rect_contains(us_hit[i],col,row)) { us_sel=i; return true; }
+        if(ls_globe_state()==LS_GLOBE_READY) {
+            char code[8]; float lat,lon,la,lo,z;
+            const int level=ls_globe_hit(col,row,code,&lat,&lon);
+            ls_globe_view(&la,&lo,&z);
+            if(level==1) {           /* a state: pick it and bring it to the middle */
+                const int i=us_index(code+3); if(i>=0) us_sel=i;
+                float cl,cn; if(ls_globe_region(code,NULL,0,&cl,&cn)) ls_globe_target(cl,cn,z<US_VIEW_ZOOM?US_VIEW_ZOOM:z);
+            } else if(level==0) {    /* a country: turn to it and come closer */
+                ls_globe_target(lat,lon,z*1.6f); us_globe_world=false;
+            }
+        }
+        return true;
     }
     if(page==1 && info_max) return key(row<content_area.y+content_area.h/2?LS_TK_UP:LS_TK_DOWN,0);
     return true;

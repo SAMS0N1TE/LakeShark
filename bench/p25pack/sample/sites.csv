@@ -1,0 +1,2 @@
+state,system,sysid,wacn,nac,site,lat,lon,range_km,control_mhz,talkgroup_file
+MA,Fictional bench system,0x123,0xBEE00,0x293,Imaginary hill,42.0000000,-71.0000000,25,851.0125;852.0125,

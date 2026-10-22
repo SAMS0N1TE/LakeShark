@@ -209,6 +209,109 @@ bool ls_touch_read(uint16_t *x, uint16_t *y, bool *pressed)
     *pressed=down;
     return true;
 }
+#elif defined(LS_BOARD_PANEL_RUNTIME)
+/* GT911 on a Waveshare DSI panel (ESP32-P4-NANO connector). Registers are
+ * 16-bit big-endian addresses: product ID and range at 0x8140, the report
+ * status at 0x814E with the first point after it. The raw report is mapped to
+ * native panel pixels with the panel's swap/mirror (ls_panel_ws.h). */
+#include "ls_i2c.h"
+#include "ls_panel_ws.h"
+#include "esp_log.h"
+#include <string.h>
+static i2c_master_dev_handle_t s_dev;
+static uint16_t s_res_x, s_res_y, s_last_x, s_last_y;
+static bool s_down;
+static esp_err_t gt_read(i2c_master_dev_handle_t d, uint16_t reg, uint8_t *p, size_t n)
+{
+    const uint8_t a[2] = { reg >> 8, reg & 0xFF };
+    return i2c_master_transmit_receive(d, a, sizeof(a), p, n, 30);
+}
+static esp_err_t gt_write8(uint16_t reg, uint8_t v)
+{
+    const uint8_t b[3] = { reg >> 8, reg & 0xFF, v };
+    return i2c_master_transmit(s_dev, b, sizeof(b), 30);
+}
+static esp_err_t gt_open(uint8_t *addr, i2c_master_dev_handle_t *out)
+{
+    static const uint8_t ADDRS[] = { 0x5D, 0x14 };
+    for (size_t i = 0; i < sizeof(ADDRS); i++) {
+        if (ls_i2c_probe(LS_I2C_PRIMARY, ADDRS[i], 30) != ESP_OK) continue;
+        esp_err_t e = ls_i2c_device(LS_I2C_PRIMARY, ADDRS[i], 400000, out);
+        if (e == ESP_OK && addr) *addr = ADDRS[i];
+        return e;
+    }
+    return ESP_ERR_NOT_FOUND;
+}
+static esp_err_t gt_info(i2c_master_dev_handle_t d, char id[5], uint16_t *xr, uint16_t *yr)
+{
+    uint8_t p[10];
+    esp_err_t e = gt_read(d, 0x8140, p, sizeof(p));
+    if (e != ESP_OK) return e;
+    if (id) { memcpy(id, p, 4); id[4] = 0; }
+    if (xr) *xr = p[6] | (uint16_t)p[7] << 8;
+    if (yr) *yr = p[8] | (uint16_t)p[9] << 8;
+    return ESP_OK;
+}
+esp_err_t ls_touch_gt911_info(uint8_t *addr, char id[5], uint16_t *xres, uint16_t *yres)
+{
+    if (s_dev) return gt_info(s_dev, id, xres, yres);
+    i2c_master_dev_handle_t d = NULL;
+    esp_err_t e = gt_open(addr, &d);
+    if (e != ESP_OK) return e;
+    e = gt_info(d, id, xres, yres);
+    i2c_master_bus_rm_device(d);
+    return e;
+}
+esp_err_t ls_touch_init(void)
+{
+    if (s_dev) return ESP_OK;
+    int w, h;
+    if (!ls_panel_ws_size(&w, &h)) return ESP_ERR_INVALID_STATE;
+    uint8_t addr = 0;
+    esp_err_t e = gt_open(&addr, &s_dev);
+    if (e != ESP_OK) return e;
+    char id[5] = {0};
+    if ((e = gt_info(s_dev, id, &s_res_x, &s_res_y)) != ESP_OK) {
+        i2c_master_bus_rm_device(s_dev); s_dev = NULL;
+        return e;
+    }
+    ESP_LOGI("gt911", "GT%s at 0x%02X, range %ux%u, panel %dx%d", id, addr, s_res_x, s_res_y, w, h);
+    return ESP_OK;
+}
+static uint16_t scale(uint16_t v, uint16_t range, int native)
+{
+    uint32_t n = range ? (uint32_t)v * native / range : v;
+    return n < (uint32_t)native ? n : native - 1;
+}
+bool ls_touch_read(uint16_t *x, uint16_t *y, bool *pressed)
+{
+    if (!s_dev) return false;
+    uint8_t p[8];
+    if (gt_read(s_dev, 0x814E, p, sizeof(p)) != ESP_OK) return false;
+    if (p[0] & 0x80) {
+        const unsigned n = p[0] & 0x0F;
+        (void)gt_write8(0x814E, 0);
+        s_down = n > 0 && n <= 5;
+        if (s_down) {
+            int w = 0, h = 0;
+            ls_panel_ws_touch_map_t m = {0};
+            ls_panel_ws_size(&w, &h);
+            ls_panel_ws_touch_map(&m);
+            const uint16_t rx = p[2] | (uint16_t)p[3] << 8, ry = p[4] | (uint16_t)p[5] << 8;
+            /* swap first, scaling each raw axis to the native axis it lands on */
+            uint16_t tx = m.swap_xy ? scale(ry, s_res_y, w) : scale(rx, s_res_x, w);
+            uint16_t ty = m.swap_xy ? scale(rx, s_res_x, h) : scale(ry, s_res_y, h);
+            if (m.mirror_x) tx = (uint16_t)(w - 1 - tx);
+            if (m.mirror_y) ty = (uint16_t)(h - 1 - ty);
+            s_last_x = tx;
+            s_last_y = ty;
+        }
+    }
+    *x = s_last_x;
+    *y = s_last_y;
+    *pressed = s_down;
+    return true;
+}
 #else
 esp_err_t ls_touch_init(void) { return ESP_ERR_NOT_SUPPORTED; }
 bool ls_touch_read(uint16_t *x, uint16_t *y, bool *pressed) { (void)x;(void)y;(void)pressed; return false; }

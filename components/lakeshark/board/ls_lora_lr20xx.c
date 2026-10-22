@@ -4501,6 +4501,32 @@ const ls_lora_ops_t ls_lora_lr20xx_ops = {
 
 #else  /* no LoRa socket, or this board does not probe for an LR20xx */
 
-typedef int ls_lora_lr20xx_not_built_t;
+/* REC, P25 and the LR waterfall session link on every board and ask the
+   I/Q stream first; with no LR20xx it is never active and never starts. */
+bool lr20xx_stream_source2_active(void) { return false; }
+esp_err_t lr20xx_stream_source2_live(lr20xx_iq_sink_t sink, void *context,
+                                    lr20xx_stream_result_t *result)
+{
+    (void)sink; (void)context; (void)result;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t lr20xx_set_agc_gain(uint8_t step) { (void)step; return ESP_ERR_NOT_SUPPORTED; }
+/* The TUI's LR2021 experiments link everywhere it is built. */
+esp_err_t lr20xx_get_gfsk_rx_stats(lr20xx_gfsk_rx_stats_t *out)
+{
+    if (out) memset(out, 0, sizeof(*out));
+    return ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t lr20xx_exp_begin(lr20xx_engine_t engine, unsigned preset, unsigned channel, unsigned fec)
+{
+    (void)engine; (void)preset; (void)channel; (void)fec;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+int lr20xx_exp_poll(uint8_t *buf, size_t size, lr20xx_engine_packet_t *out)
+{
+    (void)buf; (void)size; (void)out;
+    return 0;
+}
+esp_err_t lr20xx_exp_end(void) { return ESP_OK; }
 
 #endif

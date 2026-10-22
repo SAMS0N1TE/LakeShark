@@ -131,6 +131,15 @@ float ls_compass_steady_sample(ls_compass_steady_t *s, float heading, float pitc
    the right axis is within 10 degrees of vertical (view indeterminate). */
 float ls_compass_yaw_rate(const float g[3], const float a[3]);
 
+/* Which board edge is "up" on the screen, in screen axes (x right, y top):
+   (0,1) portrait, (-1,0) clockwise landscape (left edge up), (1,0)
+   counter-clockwise landscape (right edge up). The heading is the bearing of
+   that edge when the board lies flat, and of the view through the glass when
+   it is held up; the gyro yaw follows the same axis. Anything else is
+   ignored. Default portrait. */
+void ls_compass_set_view_up(int ux, int uy);
+void ls_compass_view_up(int *ux, int *uy);
+
 /* Live, from the field worker's latest sample and the GPS. */
 void ls_compass_live(ls_compass_reading_t *out);
 

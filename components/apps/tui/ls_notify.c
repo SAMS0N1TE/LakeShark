@@ -1,5 +1,6 @@
 /* See ls_notify.h. The banner, the count, and the polling behind them. */
 #include "ls_notify.h"
+#include "ls_i18n.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -214,15 +215,18 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
 
     if (h == full) {
         /* "name: message" is split so who sent it sits in the title bar. */
-        const char *msg = s_now.body;
+        /* A fixed notice reads in the interface language; a message is
+           whatever its sender wrote. */
+        const char *body = ls_tr(s_now.body), *title = ls_tr(s_now.title);
+        const char *msg = body;
         char head[LS_NOTIFY_TITLE + LS_NOTIFY_BODY + 8];
-        const char *colon = strstr(s_now.body, ": ");
-        if (!s_now.accent && colon && colon - s_now.body < 40) {
-            snprintf(head, sizeof(head), "%s  FROM %.*s", s_now.title,
-                     (int)(colon - s_now.body), s_now.body);
+        const char *colon = strstr(body, ": ");
+        if (!s_now.accent && colon && colon - body < 40) {
+            snprintf(head, sizeof(head), ls_tr("%s  FROM %.*s"), title,
+                     (int)(colon - body), body);
             msg = colon + 2;
         } else {
-            snprintf(head, sizeof(head), "%s", s_now.title);
+            snprintf(head, sizeof(head), "%s", title);
         }
 
         /* The bar pulses red and white for its first two seconds. */
@@ -231,7 +235,7 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
                                   : A(TUI_WHITE | TUI_BRIGHT, hue);
         tui_fill(sf, tui_rect_make(r.x + 1, r.y + 1, r.w - 2, 1), ' ', bar);
         tui_put_str(sf, r, r.x + 2, r.y + 1, head, bar);
-        tui_put_str(sf, r, r.x + r.w - 5, r.y + 1, "[X]", bar);
+        tui_put_str(sf, r, r.x + r.w - 5, r.y + 1, ls_tr("[X]"), bar);
 
         /* A message longer than the line scrolls through it, pausing at
            each end so both are readable. */

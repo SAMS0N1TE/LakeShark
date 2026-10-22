@@ -36,8 +36,9 @@ code = r'''
 #define CELLS_ROOT "maps/"
 ''' + types + public + r'''
 static struct {
-    bool queue_loaded,initialized,preview_active,catalog_refresh;
-    uint32_t next_cell,queue_key,selected_key,index_size,base_size,entries;
+    bool queue_loaded,initialized,preview_active,catalog_refresh,direct,progress_loaded,want_detail;
+    uint32_t next_cell,queue_key,selected_key,index_size,base_size,entries,stride;
+    uint64_t queue_total,queue_done,queue_partial;
     int catalog;
     char queue_name[64],path[256];
     uint8_t queued[CELLS_BITS],cover[CELLS_BITS],scratch[CELLS_BITS],index_sha[32],base_sha[32];
@@ -76,6 +77,14 @@ static bool cells_record_read(const char *path,uint8_t *bits,char *name,bool *qu
     (void)path;bits[0]=2;strcpy(name,"Update");*queued=false;return true;
 }
 static void cells_publish(void) { cells_pub=cells_work; }
+/* State downloads (ls_cells_states_worker.h) are outside this test's scope. */
+static void cells_states_publish(void) {}
+typedef struct { char code[3],name[64];bool plus,partial;uint8_t cover[CELLS_BITS];unsigned count;uint64_t bytes; } cells_state_row;
+static cells_state_row cells_states[52] __attribute__((unused));
+static unsigned cells_states_count;
+static bool cells_token_load(void) { return false; }
+static bool cells_asset_valid(const char *path,const char *relative) { (void)path;(void)relative;return true; }
+static void cells_state_command(unsigned action,uint32_t key) { (void)action;(void)key; }
 static uint32_t cells_u32(const uint8_t *p) { return p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16|(uint32_t)p[3]<<24; }
 static bool carto_sd_read_at(int fd,uint64_t size,uint64_t off,void *dst,size_t n,void *unused,int zero) {
     (void)size;(void)unused;(void)zero;return lseek(fd,(long)off,SEEK_SET)>=0 && read(fd,dst,n)==(int)n;

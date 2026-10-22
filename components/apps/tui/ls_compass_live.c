@@ -23,6 +23,21 @@ static float norm(v3 a) { return sqrtf(dot(a, a)); }
 static v3 scale(v3 a, float k) { return (v3){ a.x * k, a.y * k, a.z * k }; }
 static float wrap180f(float a) { return fmodf(a + 540.0f, 360.0f) - 180.0f; }
 
+/* The board edge that is up on the screen, screen axes. Written by the UI
+   when the orientation changes, read by every heading; two small words,
+   a torn read is one frame of the old orientation. */
+static volatile int s_view_ux = 0, s_view_uy = 1;
+void ls_compass_set_view_up(int ux, int uy)
+{
+    if (!((ux == 0 && (uy == 1 || uy == -1)) || (uy == 0 && (ux == 1 || ux == -1)))) return;
+    s_view_ux = ux; s_view_uy = uy;
+}
+void ls_compass_view_up(int *ux, int *uy)
+{
+    if (ux) *ux = s_view_ux;
+    if (uy) *uy = s_view_uy;
+}
+
 /* The compass direction `axis` lies in, clockwise from north, or NAN when
    it points too nearly straight up or down to have one. */
 static float azimuth(v3 axis, v3 down, v3 north, v3 east)
@@ -85,9 +100,14 @@ bool ls_compass_solve(const ls_imu_sample_t *s, const ls_compass_cal_t *cal,
     const float g = norm(a);
     if (!isfinite(g) || g < 0.5f || g > 1.5f) return false;
     const v3 up = scale(a, 1 / g), down = scale(up, -1);
+    /* The screen's up edge u and right edge r = u turned clockwise. In
+       portrait u is the top; in landscape it is a side edge, and a heading
+       for the physical top would be 90 degrees off the dial drawn there. */
+    const float ux = (float)s_view_ux, uy = (float)s_view_uy;
+    const float upu = up.x * ux + up.y * uy, upr = up.x * uy - up.y * ux;
     out->tilt = acosf(fmaxf(-1, fminf(1, up.z))) * (float)DEG;
-    out->pitch = asinf(fmaxf(-1, fminf(1, up.y))) * (float)DEG;
-    out->roll = asinf(fmaxf(-1, fminf(1, up.x))) * (float)DEG;
+    out->pitch = asinf(fmaxf(-1, fminf(1, upu))) * (float)DEG;
+    out->roll = asinf(fmaxf(-1, fminf(1, upr))) * (float)DEG;
     /* Offset, soft iron and the magnetic basis into screen axes, as the
        calibration found them (ls_compass_field). */
     float f[3];
@@ -103,16 +123,16 @@ bool ls_compass_solve(const ls_imu_sample_t *s, const ls_compass_cal_t *cal,
     if (en < 1e-3f) return false;          /* the field is straight down */
     east = scale(east, 1 / en);
     const v3 north = cross(east, down);
-    /* One levelled view in screen coordinates: cos(pitch) * top -
+    /* One levelled view in screen coordinates: cos(pitch) * up edge -
        sin(pitch) * out. Signed up.z carries it smoothly past upright.
        Keep its length: normalizing would hide the right-edge-vertical
        singularity where pitch (and thus the view) is indeterminate. */
     bool upright = back ? *back : false;
-    if (fabsf(up.y) > 0.85f) upright = true;
-    else if (fabsf(up.y) < 0.70f) upright = false;
+    if (fabsf(upu) > 0.85f) upright = true;
+    else if (fabsf(upu) < 0.70f) upright = false;
     if (back) *back = upright;
     out->back_axis = upright;             /* label only, never a heading switch */
-    const v3 view = { 0, up.z, -up.y };
+    const v3 view = { ux * up.z, uy * up.z, -upu };
     const float deg = azimuth(view, down, north, east);
     if (!isfinite(deg)) { out->low_confidence = true; return false; }
     out->magnetic = deg;
@@ -143,9 +163,13 @@ float ls_compass_yaw_rate(const float g[3], const float a[3])
        view = right x up, so yaw = -(wy*uy + wz*uz)/(uy^2+uz^2).
        Mounting reverses x/z for both accel and gyro; products survive.
        Unlike -dot(gyro,up), this rejects rotation about the view itself. */
-    const float horizontal2 = (a[1]*a[1] + a[2]*a[2]) / (an*an);
+    /* The same along the screen's up edge u: in ls_imu axes screen x is
+       -x, so the u components of gyro and acceleration are -ux*x + uy*y. */
+    const float ux = (float)s_view_ux, uy = (float)s_view_uy;
+    const float au = -ux * a[0] + uy * a[1], gu = -ux * g[0] + uy * g[1];
+    const float horizontal2 = (au*au + a[2]*a[2]) / (an*an);
     if (horizontal2 < 0.030153690f) return NAN; /* cos(80)^2 */
-    const float w = (g[1]*a[1] + g[2]*a[2]) / (an * horizontal2);
+    const float w = (gu*au + g[2]*a[2]) / (an * horizontal2);
     return isfinite(w) ? -w : NAN;
 }
 

@@ -67,8 +67,6 @@ idf_component_register(
         bsp_extra
         esp_codec_dev
         esp_lcd
-        esp_lvgl_port
-        lvgl
         klatt_tts
 )
 
@@ -112,3 +110,15 @@ set_source_files_properties(
     PROPERTIES COMPILE_FLAGS
     "-Wno-unused-function -Wno-unused-variable -Wno-register -fno-use-cxa-atexit"
 )
+
+# Size build: the radio core stays fast. DSP, decoders, audio and radio I/O
+# keep -O2; settings, console and glue are compiled for size.
+if(CONFIG_COMPILER_OPTIMIZATION_SIZE)
+    file(GLOB_RECURSE LS_HOT_SRCS
+        ${CMAKE_CURRENT_LIST_DIR}/dsp/*.c ${CMAKE_CURRENT_LIST_DIR}/audio/*.c
+        ${CMAKE_CURRENT_LIST_DIR}/radio/*.c ${CMAKE_CURRENT_LIST_DIR}/apps/p25/*.c
+        ${CMAKE_CURRENT_LIST_DIR}/apps/fm/*.c ${CMAKE_CURRENT_LIST_DIR}/apps/adsb/*.c
+        ${CMAKE_CURRENT_LIST_DIR}/apps/dmr/*.c ${CMAKE_CURRENT_LIST_DIR}/apps/acars/*.c
+        ${CMAKE_CURRENT_LIST_DIR}/board/ls_panel.c)
+    set_source_files_properties(${LS_HOT_SRCS} PROPERTIES COMPILE_OPTIONS "-O2")
+endif()

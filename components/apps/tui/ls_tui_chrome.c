@@ -1,6 +1,9 @@
 /* See ls_tui_chrome.h for why this is arithmetic and not rendering. */
 #include "ls_tui_chrome.h"
 #include "ls_tui_screen.h"
+#include "ls_i18n.h"
+
+#include <string.h>
 
 #define GAP 2   /* columns between two neighbouring fields */
 
@@ -152,7 +155,8 @@ bool ls_tui_tab_split(int cols, int ntab, int g0, int g1, int *x, int *w)
 /* ------------------------------------------------------------- runaround */
 
 static bool is_line(int16_t ch) { return ch == '|' || ch == '+'; }
-static bool is_text(int16_t ch) { return ch > ' ' && ch < 0x7F && !is_line(ch); }
+/* Cyrillic letters are text too (tui_cyr.h), and move with their words. */
+static bool is_text(int16_t ch) { return (ch > ' ' && ch < 0x7F && !is_line(ch)) || tui_cyr_slot(ch) >= 0; }
 
 static tui_cell *at(tui_surface *sf, int c, int r)
 {
@@ -321,9 +325,9 @@ ls_tui_hint_layout_t ls_tui_hint_layout(int cols)
     /* Two spellings of the same reminder. The long one is what a landscape
        row has room for; the short one keeps the two keys that are not
        discoverable any other way. */
-    static const char LONG[]  = "F10 help  F11 turn";
+    const char *LONG = ls_tr("F10 help  F11 turn");
     static const char SHORT[] = "F10 F11";
-    const int long_len  = (int)sizeof(LONG) - 1;
+    const int long_len  = (int)strlen(LONG);
     const int short_len = (int)sizeof(SHORT) - 1;
 
     ls_tui_hint_layout_t l;

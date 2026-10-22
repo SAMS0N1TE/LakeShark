@@ -1,0 +1,24 @@
+# ESP32-P4-NANO with an ESP32-C5 companion (rev 3 board, 2026): the boot log
+# reads "Identified slave [esp32c5]". Same SDIO wiring as the C6 board, which
+# is where that identification came from, so the pins are pinned here: with a
+# C5 target Kconfig would otherwise pick the Function EV board's C5 pins.
+# CONFIG_SLAVE_IDF_TARGET_ESP32C6 is not set
+CONFIG_SLAVE_IDF_TARGET_ESP32C5=y
+# CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6 is not set
+CONFIG_ESP_HOSTED_CP_TARGET_ESP32C5=y
+CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y
+CONFIG_ESP_HOSTED_SDIO_SLOT_1=y
+CONFIG_ESP_HOSTED_SDIO_4_BIT_BUS=y
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_CLK_SLOT_1=18
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_CMD_SLOT_1=19
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D0_SLOT_1=14
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D1_4BIT_BUS_SLOT_1=15
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D2_4BIT_BUS_SLOT_1=16
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D3_4BIT_BUS_SLOT_1=17
+CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=54
+
+# No VBUS switch known on this board: Waveshare's esp32_p4_nano BSP drives
+# none, and dropping GPIO46 (the older Nano's switch) left a wedged RTL-SDR
+# wedged, then restarted the board. Without one, a wedged dongle gets a
+# root-port reset and the board stays up.
+CONFIG_LS_VBUS_EN_GPIO=-1

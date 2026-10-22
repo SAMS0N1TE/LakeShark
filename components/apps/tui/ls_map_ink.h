@@ -31,7 +31,12 @@ void ls_ink_line(int x0, int y0, int x1, int y1, uint8_t attr, uint8_t prio, int
    pixels stays round whatever the cell shape. */
 void ls_ink_ellipse(int cx, int cy, int rx, int ry, uint8_t attr, uint8_t prio, int dash);
 
-/* Whether the canvas already has a dot in this cell. */
+/* Dots drawn while on are a pulse (a ring that grows and starts again):
+   drawn like any other, but never counted by ls_ink_cell_used, so a place
+   name does not lose its slot every time one passes. */
+void ls_ink_pulse(bool on);
+
+/* Whether the canvas already has a dot in this cell, pulses aside. */
 bool ls_ink_cell_used(int col, int row);
 
 /* The highest priority of any dot in the cell, 0 when it has none. */

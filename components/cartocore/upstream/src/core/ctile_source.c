@@ -1,4 +1,5 @@
 #include "cartocore/ctile.h"
+#include "cartocore/cellset.h"
 #include <string.h>
 /* Thread-local generations avoid mutable process state and distinguish reopen
    of the same source/buffers. The owner address distinguishes opening threads. */
@@ -53,6 +54,7 @@ int cc_ctile_open_source(cc_ctile *f,cc_ctile_source *s,cc_ctile_read read,void 
 fail: memset(f,0,sizeof(*f)); return 0;
 }
 int cc_ctile_locate(const cc_ctile *f,unsigned z,uint32_t x,uint32_t y,uint64_t *off,uint32_t *len) {
+    if(f->directory_owner) return cc_cellset_resolve(f->directory_owner,z,x,y,off,len);
     uint32_t lo=0,hi=f->count; cc_ctile_source *s=f->source;
     if(!s) {
         while(lo<hi) { uint32_t m=lo+(hi-lo)/2; const uint8_t *p=f->bytes.data+64+(size_t)m*24;

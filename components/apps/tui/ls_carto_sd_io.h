@@ -10,10 +10,12 @@
 #include <unistd.h>
 /* Single-owner diagnostic; successful/failed requests count actual scratch use. */
 static size_t carto_sd_bounce_peak;
+/* At most 64 KB per read(): FatFs holds its volume lock for a whole call, and
+   a multi-MB tile read in one call kept other SD users waiting behind it. */
 static int carto_read_exact(int fd,void *buffer,size_t length) {
     uint8_t *p=buffer;
     while(length) {
-        ssize_t n=read(fd,p,length);
+        ssize_t n=read(fd,p,length>65536?65536:length);
         if(n<0 && errno==EINTR) continue;
         if(n<=0) return 0;
         p+=n; length-=(size_t)n;

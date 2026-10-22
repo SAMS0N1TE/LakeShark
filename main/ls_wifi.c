@@ -21,6 +21,10 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "ls_nvs_safe.h"
+#include "ls_wifi_ap_pass.h"
+#include "tui/ls_value.h"
+#include "tui/ls_action.h"
+#include "esp_random.h"
 #include "bsp/esp-bsp.h"
 
 #include "freertos/FreeRTOS.h"
@@ -43,7 +47,8 @@ static int s_scan_cache_count;
 static int64_t s_scan_cache_us;
 
 #define LS_AP_SSID  "LakeShark"
-#define LS_AP_PASS  "sharkbait"          /* WPA2 needs >= 8 chars */
+/* The password is each board's own: see ls_wifi_ap_pass.h. */
+#define LS_AP_NVS_NS "ls_ap"
 #define LS_AP_CHAN  6
 #define LS_AP_MAXC  2
 
@@ -90,6 +95,10 @@ static void deferred_worker(void *arg);
 static void wipe(void *p, size_t n);
 static _Atomic bool s_roam_pending, s_commit_pending, s_roam_used, s_cleanup_pending;
 static _Atomic bool s_sta_gave_up;
+/* Boot joins the preferred saved network without the 2.4 + 5 GHz scan first
+   (about 5 s of a black boot screen, 2026-10-20); if that join gives up, the
+   roam path below scans and tries the next saved network. */
+static _Atomic bool s_autojoin_noscan;
 /* Shared only while s_operation is owned. No new large internal buffers. */
 static int s_link_saved_count = -1;
 static EXT_RAM_BSS_ATTR ls_wifi_saved_t s_saved[LS_WIFI_SAVED_MAX];
@@ -382,6 +391,112 @@ static int saved_list_locked(char names[][33], int cap)
     return count;
 }
 
+/* ------------------------------------------------- hotspot password ---- */
+
+/* Made the first time it is wanted and kept in a namespace of its own, so
+   forgetting saved networks never changes it. A board whose NVS will not
+   take it still gets a random one for this boot, never a fixed word. */
+static char s_ap_pass[LS_AP_PASS_LEN + 1];
+static portMUX_TYPE s_ap_pass_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static esp_err_t ap_pass_job(void *ctx)
+{
+    const bool renew = ctx != NULL;
+    char pass[LS_AP_PASS_LEN + 1] = {0};
+    nvs_handle_t h;
+    esp_err_t e = ls_wifi_nvs_prepare(&s_nvs_flash_ready, nvs_flash_init);
+    if (e == ESP_OK) e = nvs_open(LS_AP_NVS_NS, NVS_READWRITE, &h);
+    if (e != ESP_OK) return e;
+    size_t n = sizeof(pass);
+    if (renew || nvs_get_str(h, "pass", pass, &n) != ESP_OK || !ls_ap_pass_valid(pass)) {
+        ls_ap_pass_make(pass, sizeof(pass), esp_random);
+        e = nvs_set_str(h, "pass", pass);
+        if (e == ESP_OK) e = nvs_commit(h);
+    }
+    nvs_close(h);
+    if (ls_ap_pass_valid(pass)) {
+        portENTER_CRITICAL(&s_ap_pass_mux);
+        memcpy(s_ap_pass, pass, sizeof(s_ap_pass));
+        portEXIT_CRITICAL(&s_ap_pass_mux);
+    }
+    wipe(pass, sizeof(pass));
+    return e;
+}
+
+static void ap_pass_get(char *out, size_t cap)
+{
+    if (!s_ap_pass[0]) {
+        if (ls_nvs_run(ap_pass_job, NULL, 0) != ESP_OK && !s_ap_pass[0]) {
+            char pass[LS_AP_PASS_LEN + 1];
+            ls_ap_pass_make(pass, sizeof(pass), esp_random);
+            portENTER_CRITICAL(&s_ap_pass_mux);
+            if (!s_ap_pass[0]) memcpy(s_ap_pass, pass, sizeof(s_ap_pass));
+            portEXIT_CRITICAL(&s_ap_pass_mux);
+            wipe(pass, sizeof(pass));
+            ESP_LOGW(TAG, "hotspot password not saved; this boot uses a random one");
+        }
+    }
+    portENTER_CRITICAL(&s_ap_pass_mux);
+    snprintf(out, cap, "%s", s_ap_pass);
+    portEXIT_CRITICAL(&s_ap_pass_mux);
+}
+
+void ls_wifi_ap_password(char *out, size_t cap)
+{
+    if (out && cap) ap_pass_get(out, cap);
+}
+
+/* A new password, saved, and applied at once when the hotspot is up (a
+   phone already on it has to join again with the new one). */
+esp_err_t ls_wifi_ap_password_renew(void)
+{
+    esp_err_t e = ls_nvs_run(ap_pass_job, (void *)1, 0);
+    if (e != ESP_OK) return e;
+    if (s_ap_running) {
+        wifi_config_t ap = {0};
+        if (esp_wifi_get_config(WIFI_IF_AP, &ap) == ESP_OK) {
+            char pass[LS_AP_PASS_LEN + 1];
+            ap_pass_get(pass, sizeof(pass));
+            memset(ap.ap.password, 0, sizeof(ap.ap.password));
+            strncpy((char *)ap.ap.password, pass, sizeof(ap.ap.password) - 1);
+            wipe(pass, sizeof(pass));
+            e = esp_wifi_set_config(WIFI_IF_AP, &ap);
+            wipe(&ap, sizeof(ap));
+        }
+    }
+    ESP_LOGI(TAG, "hotspot password renewed");
+    return e;
+}
+
+/* For Settings: "wifi.ap_ssid" and "wifi.ap_pass", and "wifi.ap_renew". */
+static bool v_ap_ssid(ls_val_t *o) { o->kind = LS_VAL_TEXT; o->s = LS_AP_SSID; return true; }
+static bool v_ap_pass(ls_val_t *o)
+{
+    static char shown[LS_AP_PASS_LEN + 1];
+    ap_pass_get(shown, sizeof(shown));
+    o->kind = LS_VAL_TEXT;
+    o->s = shown;
+    return true;
+}
+static bool v_ap_on(ls_val_t *o) { o->kind = LS_VAL_BOOL; o->i = s_ap_running ? 1 : 0; return true; }
+static ls_act_status_t a_ap_renew(const ls_args_t *in, ls_val_t *out)
+{
+    (void)in; (void)out;
+    return ls_wifi_ap_password_renew() == ESP_OK ? LS_ACT_OK : LS_ACT_FAILED;
+}
+
+void ls_wifi_publish(void)
+{
+    static bool done;
+    if (done) return;
+    done = true;
+    ls_value_publish("wifi.ap_ssid", NULL, v_ap_ssid);
+    ls_value_publish("wifi.ap_pass", NULL, v_ap_pass);
+    ls_value_publish("wifi.ap_on", NULL, v_ap_on);
+    ls_action_register("wifi.ap_renew", "", LS_CAP_STORE, a_ap_renew,
+                       "give the file hotspot a new random password");
+}
+
 /* ------------------------------------------------------------- events ---- */
 
 static void reconnect_cb(void *arg)
@@ -484,6 +599,11 @@ static void schedule_reconnect(void)
     esp_timer_start_once(s_reconnect_timer, (uint64_t)s_reconnect_ms * 1000ULL);
 }
 
+/* Set by STA_START. A transient scan waits for it: the netif's own STA_START
+   handler asks the co-processor for its MAC, and a blocking scan sent before
+   that left the request waiting 5 s behind the scan (seen with the C5). */
+static bool s_sta_started_ev;
+
 static void wifi_event_cb(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
@@ -495,6 +615,7 @@ static void wifi_event_cb(void *arg, esp_event_base_t base, int32_t id, void *da
                initial connect once it has set the config; connecting on
                STA_START would race a caller that has not yet written a valid
                SSID. */
+            __atomic_store_n(&s_sta_started_ev, true, __ATOMIC_RELEASE);
             break;
         case WIFI_EVENT_STA_DISCONNECTED: {
             wifi_event_sta_disconnected_t *ev = (wifi_event_sta_disconnected_t *)data;
@@ -620,7 +741,10 @@ static esp_err_t ap_start_locked(void)
 
     wifi_config_t ap = {0};
     strncpy((char *)ap.ap.ssid, LS_AP_SSID, sizeof(ap.ap.ssid) - 1);
-    strncpy((char *)ap.ap.password, LS_AP_PASS, sizeof(ap.ap.password) - 1);
+    char pass[LS_AP_PASS_LEN + 1];
+    ap_pass_get(pass, sizeof(pass));
+    strncpy((char *)ap.ap.password, pass, sizeof(ap.ap.password) - 1);
+    wipe(pass, sizeof(pass));
     ap.ap.ssid_len       = strlen(LS_AP_SSID);
     ap.ap.channel        = LS_AP_CHAN;
     ap.ap.max_connection = LS_AP_MAXC;
@@ -1011,7 +1135,7 @@ static esp_err_t sta_autojoin_excluding_locked(const char *excluded)
     if (!count) return ESP_ERR_NOT_FOUND;
     int choice = ls_wifi_saved_candidate(s_saved, LS_WIFI_SAVED_MAX, NULL, 0, excluded);
     if (choice < 0) return ESP_ERR_NOT_FOUND;
-    if (count > 1) {
+    if (count > 1 && !s_autojoin_noscan) {
         /* Scan also reduces ALL results to the strongest BSSID per saved
          * SSID, even when that SSID is beyond the UI's first 16 rows. */
         ls_wifi_scan_ap_t *aps = heap_caps_malloc(16 * sizeof(*aps),
@@ -1071,8 +1195,12 @@ static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap, bool passive)
     if (!s_ap_running && !s_sta_running) {
         if (!s_netif_sta) s_netif_sta = esp_netif_create_default_wifi_sta();
         if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) return -1;
+        __atomic_store_n(&s_sta_started_ev, false, __ATOMIC_RELEASE);
         if (esp_wifi_start() != ESP_OK) return -1;
         started_for_scan = true;
+        for (int i = 0; i < 30 && !__atomic_load_n(&s_sta_started_ev, __ATOMIC_ACQUIRE); i++)
+            vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(50));  /* let the netif handler's MAC request finish */
     } else if (!s_sta_running) {
         /* AP is up; put us into APSTA transiently. */
         if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) return -1;
@@ -1090,6 +1218,7 @@ static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap, bool passive)
 
     uint16_t n = 0;
     e = esp_wifi_scan_get_ap_num(&n);
+    ESP_LOGI(TAG, "scan: %u access points (%s)", (unsigned)n, esp_err_to_name(e));
     s_scan_cache_count = 0;
     s_scan_cache_us = esp_timer_get_time();
     memset(s_visible_saved, 0, sizeof(s_visible_saved));
@@ -1198,8 +1327,12 @@ static void status_locked(char *buf, int cap)
     char sta[96];
     sta_status_locked(sta, sizeof(sta));
     if (s_ap_running) {
-        snprintf(buf, cap, "AP \"%s\" http://%s/ sd=%s BLE OFF | %s",
-                 LS_AP_SSID, s_ip_ap,
+        /* The password is shown here on purpose: on a headless board this
+           line (console, Flipper) is the only screen there is. */
+        char pass[LS_AP_PASS_LEN + 1];
+        ap_pass_get(pass, sizeof(pass));
+        snprintf(buf, cap, "AP \"%s\" pass %s http://%s/ sd=%s BLE OFF | %s",
+                 LS_AP_SSID, pass, s_ip_ap,
                  sd_present() ? "yes" : "NO CARD", sta);
     } else {
         snprintf(buf, cap, "wifi ap off (BLE head active) | %s", sta);
@@ -1355,6 +1488,14 @@ int ls_wifi_saved_list(char names[][33], int cap)
 esp_err_t ls_wifi_sta_join_saved(const char *ssid)
 {
     return perform(WIFI_OP_JOIN_SAVED, ssid, NULL, NULL, 0);
+}
+
+esp_err_t ls_wifi_sta_autojoin_boot(void)
+{
+    s_autojoin_noscan = true;
+    esp_err_t rc = perform(WIFI_OP_AUTOJOIN, NULL, NULL, NULL, 0);
+    s_autojoin_noscan = false;
+    return rc;
 }
 
 esp_err_t ls_wifi_sta_autojoin(void)

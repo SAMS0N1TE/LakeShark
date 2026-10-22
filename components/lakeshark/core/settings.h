@@ -13,6 +13,9 @@ extern "C" {
 #define MAX_FAVOURITES 8
 
 bool     settings_init(void);
+/* RAM-only watch preferences, versioned/validated, deferred NVS writes. */
+uint32_t settings_get_drone_watch(void);
+bool settings_set_drone_watch(uint32_t value);
 /* FM VFO step in Hz; zero follows the current mode. RAM read, deferred write. */
 /* Version 1 P25 raster; zero selects the 12.5 kHz default. */
 uint32_t settings_get_p25_step(void);
@@ -75,6 +78,18 @@ bool settings_get_audio_mute(void);
 void settings_set_audio_mute(bool muted);
 int  settings_get_volume(void);
 void settings_set_volume(int pct);
+
+/* Notification sound indices are stable in schema 8; cached reads, queued writes. */
+typedef enum {
+    SETTINGS_NOTIFY_ALERT, SETTINGS_NOTIFY_RADIOKEY, SETTINGS_NOTIFY_ROGER,
+    SETTINGS_NOTIFY_CHIRP, SETTINGS_NOTIFY_OFF, SETTINGS_NOTIFY_COUNT
+} settings_notification_sound_t;
+int settings_get_notification_sound(void);
+bool settings_set_notification_sound(int index);
+/* Static display names, count and current index for a future Settings row. */
+const char *const *settings_notification_sound_names(int *count, int *current);
+bool settings_cycle_notification_sound(void);
+int settings_notification_sound_from_name(const char *name);
 
 int  settings_get_boot_sound(void);
 void settings_set_boot_sound(int mode);
@@ -178,6 +193,11 @@ void settings_set_wifi_at_boot(bool enabled);
    Off, which means no background network traffic for updates at all. */
 bool settings_get_update_check(void);
 void settings_set_update_check(bool daily);
+
+/* Settings > DEVICE > Language: 0 English (the default), 1 Ukrainian; see
+   ls_i18n.h. RAM after settings_init, so the UI may read it any time. */
+int settings_get_ui_lang(void);
+void settings_set_ui_lang(int lang);
 
 /**/
 bool settings_get_nav_autohide(void);

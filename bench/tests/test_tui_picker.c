@@ -213,6 +213,30 @@ LS_CASE(switch_picker_keeps_filter_and_cursor_after_accept) {
 
 static int preview_calls, stepped_value;
 static tui_rect preview_area;
+static void header_draw(tui_surface *sf, tui_rect r) { (void)sf; (void)r; }
+static void name_step(int index, int dir) { (void)index; (void)dir; }
+static bool screen_has(const char *s)
+{
+    char line[W + 1];
+    for (int y = 0; y < H; y++) {
+        row_text(y, line, sizeof(line));
+        if (strstr(line, s)) return true;
+    }
+    return false;
+}
+LS_CASE(a_stepped_name_is_shown_whole_when_the_row_has_room)
+{
+    /* DETECTOR's rule stepper cut every rule id to eight letters. */
+    for (int header = 0; header < 2; header++) {
+        ls_picker_open("RULES", on_done);
+        ls_picker_add(header ? "Rule (session edits)" : "Rule", "air-category-tracker");
+        ls_picker_stepper(0, name_step);
+        if (header) ls_picker_header(header_draw);
+        redraw();
+        LS_CHECK(screen_has("air-category-tracker"));
+    }
+}
+
 static void preview_draw(tui_surface *sf, tui_rect r)
 {
     preview_calls++; preview_area=r;

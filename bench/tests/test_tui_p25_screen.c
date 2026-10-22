@@ -1,6 +1,7 @@
 /* LS_TEST_SOURCES: scr_p25.c + ls_waterfall.c + p25_tg_observed.c + tui_core.c */
 
 #include "ls_test.h"
+#include "scan_engine.h"
 #include "tui_core.h"
 #include "ls_tui_screen.h"
 #include "ls_theme.h"
@@ -1055,13 +1056,20 @@ LS_CASE(the_scanner_workflow_remains_reachable_from_the_merged_screen)
     fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
     LS_CHECK(rect_has(PORTRAIT, "SCAN"));
     LS_CHECK(rect_has(PORTRAIT, "LISTS"));
-    LS_CHECK(rect_has(PORTRAIT, "SETTINGS"));
-
-    ls_scr_p25.key(LS_TK_CHAR, 's');
-    fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
-    LS_CHECK(rect_has(PORTRAIT, "CHANNEL"));
+    /* 2026-10-19: the scanner's bar is LISTS / SETUP / BACK; P25's own
+       OPTIONS stay reachable from the control row the scanner now keeps. */
+    LS_CHECK(rect_has(PORTRAIT, "SETUP"));
+    LS_CHECK(rect_has(PORTRAIT, "OPTIONS"));
+    LS_CHECK(rect_has(PORTRAIT, "LIST"));
     LS_CHECK(rect_has(PORTRAIT, "BAND"));
-    ls_scr_p25.key(LS_TK_CHAR, 'm');
+
+    /* One key starts the scan; no choice page in between. */
+    ls_scr_p25.key(LS_TK_CHAR, 's');
+    LS_CHECK(scan_engine_active());
+    fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
+    LS_CHECK(rect_has(PORTRAIT, "STOP"));
+    ls_scr_p25.key(LS_TK_CHAR, 'x');
+    LS_CHECK(!scan_engine_active());
     ls_scr_p25.key(LS_TK_CHAR, 'm');
     fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
     LS_CHECK(rect_has(PORTRAIT, "P25 / RECEIVER"));

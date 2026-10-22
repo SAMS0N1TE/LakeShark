@@ -8,11 +8,15 @@ int main(void) {
     assert(b.idle==0 && b.cache==0 && b.decoded==CARTO_CELLS_DECODED);
     assert(b.cold==CARTO_CELLS_COLD);
     assert(b.cold>=3210105u*3u/2u);
-    assert(b.cold+b.idle+b.decoded+overhead+8192u<=13u*CARTO_MIB/2u);
+    /* a dense z8 US tile decodes to 3.96 MB, a z12 view to about 4.6 MB */
+    assert(b.decoded>=4640000u);
+    assert(b.cold+b.idle+b.decoded+overhead+8192u<=23u*CARTO_MIB/2u);
     assert(carto_plan_budget(free_bytes,3u*CARTO_MIB,overhead,true,true,true,true,&b));
-    assert(b.cold==3u*CARTO_MIB);
+    assert(b.cold==3u*CARTO_MIB && b.decoded<=3u*CARTO_MIB);
     assert(carto_plan_budget(8u*CARTO_MIB,8u*CARTO_MIB,overhead,true,true,true,true,&b));
-    assert(b.cold==3u*CARTO_MIB);
+    assert(b.cold==3u*CARTO_MIB && b.decoded==CARTO_CELLS_DECODED_MIN);
+    assert(carto_plan_budget(12u*CARTO_MIB,12u*CARTO_MIB,overhead,true,true,true,true,&b));
+    assert(b.decoded==CARTO_CELLS_DECODED && b.cold>=2u*CARTO_MIB);
     assert(!carto_plan_budget(6u*CARTO_MIB,6u*CARTO_MIB,overhead,true,true,true,true,&b));
     assert(!carto_plan_budget(2u*CARTO_MIB,2u*CARTO_MIB,overhead,false,false,true,true,&b));
     assert(carto_plan_budget(free_bytes,free_bytes,overhead,false,false,true,true,&b));

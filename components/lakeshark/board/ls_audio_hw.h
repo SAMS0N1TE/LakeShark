@@ -36,6 +36,9 @@ bool      ls_audio_hw_has_mic(void);
 esp_err_t ls_audio_hw_volume(int volume, int *actual);
 esp_err_t ls_audio_hw_mute(bool mute);
 esp_err_t ls_audio_hw_reg_read(uint8_t reg, int *value);
+/* How often the speaker's DMA has run dry since boot, and when it first and
+   last did (esp_timer us). Always 0 where the vendor BSP owns the I2S. */
+uint32_t  ls_audio_hw_starved(int64_t *first_us, int64_t *last_us);
 
 /* The audio diagnostic: what every link in the chain is set to, and
    a way to change the two that could be wrong without a rebuild. Reached

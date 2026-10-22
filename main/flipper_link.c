@@ -1632,7 +1632,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
     } else if (!strcmp(cmd, "TEST")) {
         if (!a1) {
             snprintf(reply, reply_len, "+OK test=%s busy=%d\n",
-                     "sweep|bass|noise|tone|chirp|moto", snd_test_busy() ? 1 : 0);
+                     "sweep|bass|noise|tone|p25chirp|moto|radiokey|roger|chirp", snd_test_busy() ? 1 : 0);
             return;
         }
         int w = snd_test_from_name(a1);

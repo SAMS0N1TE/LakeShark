@@ -171,7 +171,7 @@ ls_act_status_t ls_quick_fire(const ls_quick_t *item, ls_cap_t granted)
 
 /* ------------------------------------------------------------- drawing -- */
 
-#define MAX_ITEMS 12
+#define MAX_ITEMS 15
 
 /* One box per control, with its name and value in the frame. */
 

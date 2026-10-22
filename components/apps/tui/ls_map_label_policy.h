@@ -9,7 +9,7 @@
 typedef struct {
     uint32_t key, used;
     int16_t dx, dy;
-    bool visible;
+    bool visible, held;
     int64_t retry;
 } map_label_memory;
 typedef struct { map_label_memory at[MAP_LABEL_MEMORY]; uint32_t tick; } map_label_history;
@@ -37,9 +37,10 @@ static inline bool map_label_choose(map_label_history *history,uint32_t key,
     if(m->visible) {
         *x=ax+m->dx;*y=ay+m->dy;
         if(free_at(ctx,*x,*y,w,rows)) return true;
-        m->visible=false;m->retry=now+MAP_LABEL_HOLD_US;return false;
+        m->visible=false;m->held=true;m->retry=now+MAP_LABEL_HOLD_US;return false;
     }
     if(now<m->retry) return false;
+    m->held=false;
     for(int i=0;i<count;i++) {
         const int *p=(const int *)spots+i*stride;
         if(!free_at(ctx,p[0],p[1],w,rows)) continue;
@@ -47,6 +48,13 @@ static inline bool map_label_choose(map_label_history *history,uint32_t key,
         m->visible=true;m->retry=0;return true;
     }
     m->retry=now+MAP_LABEL_HOLD_US;return false;
+}
+/* A name that lost its slot keeps its share of a label cap until it retries;
+ * otherwise the next name in rank fills the gap for one hold and goes again. */
+static inline bool map_label_held(const map_label_history *history,uint32_t key) {
+    for(int i=0;i<MAP_LABEL_MEMORY;i++)
+        if(history->at[i].key==key) return history->at[i].held;
+    return false;
 }
 /* Live objects have a separate bounded history: basemap names cannot evict
  * aircraft. Keys contain a domain and the object's identity, never its label

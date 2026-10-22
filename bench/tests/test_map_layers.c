@@ -1,5 +1,7 @@
 #include "ls_test.h"
 #include "../../components/apps/tui/screens/ext/scr_map.c"
+#include "../../components/apps/tui/ls_map_ink.c"
+#include "../../components/apps/tui/ls_motion.c"
 
 static uint32_t saved_layers;
 void settings_set_map_layers(uint32_t bits) { saved_layers = bits; }
@@ -98,6 +100,7 @@ void ls_tui_geometry(int *cols,int *rows,int *cw,int *ch) {
 
 static const ls_tui_theme_t *test_theme=&ls_theme_terminal_bay;
 const ls_tui_theme_t *ls_tui_active_theme(void) { return test_theme; }
+bool ls_tui_daylight(void) { return false; }
 static unsigned colour_distance(uint16_t a,uint16_t b) {
     carto_rgb x=rgb565(a),y=rgb565(b);
     return abs(x.r-y.r)+abs(x.g-y.g)+abs(x.b-y.b);
@@ -126,6 +129,39 @@ LS_CASE(all_map_themes_switch_live_and_reserve_the_data_accent)
             LS_CHECK(p->road_hi.r<p->ground.r);
         }
     }
+}
+LS_CASE(style_offers_every_palette_and_saved_choices_keep_their_meaning)
+{
+    test_theme=&ls_theme_terminal_bay;s_basemap_busy=false;
+    /* 0 and 6 follow the theme, as they have since 2.10. */
+    s_palette=STYLE_THEME;
+    LS_EQ_INT(-1,style_palette(s_palette));
+    LS_CHECK(!strcmp(palette()->name,test_theme->name));
+    s_palette=STYLE_THEME_OUTLINES;
+    LS_EQ_INT(-1,style_palette(s_palette));
+    LS_CHECK(!strcmp(palette()->name,test_theme->name));
+    LS_EQ_INT(PALETTES[PAL_VECTOR].fill,palette()->fill);
+    /* Each palette saves a code of its own that names it again, and gives
+       its own colours and tint. */
+    for(int i=0;i<N_PALETTES;i++) {
+        s_palette=palette_style(i);
+        LS_CHECK(s_palette<STYLE__COUNT && s_palette!=STYLE_THEME && s_palette!=STYLE_THEME_OUTLINES);
+        LS_EQ_INT(i,style_palette(s_palette));
+        const map_palette_t *p=palette();
+        LS_CHECK(!strcmp(p->name,PALETTES[i].name));
+        LS_EQ_INT(PALETTES[i].tint,p->tint);
+        LS_EQ_INT(carto_rgb565(PALETTES[i].ground),carto_rgb565(p->ground));
+    }
+    /* Saves from before 2.10 of 1-5 and 7 still name their palette. */
+    for(int code=1;code<=7;code++) if(code!=STYLE_THEME_OUTLINES) LS_EQ_INT(code,style_palette(code));
+    /* The CartoCore ramp follows a palette too: RED is nothing but red. */
+    s_palette=palette_style(2);
+    LS_CHECK(!strcmp(palette()->name,"RED"));
+    for(int i=0;i<16;i++) {
+        carto_rgb c=rgb565(s_cc_colours[i]);
+        LS_CHECK(c.g<=c.r/2+8 && c.b<=c.r/2+8);
+    }
+    s_palette=STYLE_THEME;
 }
 LS_CASE(map_label_caps_scale_with_zoom_and_pane_area)
 {
@@ -210,4 +246,57 @@ LS_CASE(coordinate_navigation_is_temporary_and_validated) {
     coordinates_done("42, -70 trailing");LS_CHECK(s_track);
     coordinates_done("42, -70");LS_NEAR(42,test_lat,0.001);LS_NEAR(-70,test_lon,0.001);
     LS_CHECK(!s_track && !test_follow);test_lat=43.4445;test_lon=-71.6473;
+}
+
+/* 2026-10-21, T-Display-P4 CartoCore picture: a town name flashed in a still
+   view. A ping ring blocked a name each step, and while that name waited
+   out its hold the next one in rank took its cap share and went again. */
+LS_CASE(ping_rings_never_move_a_place_name)
+{
+    tui_rect a={0,0,52,40};const int64_t was=test_now;
+    for(int k=0;k<5;k++) {
+        test_now=1000000000+k*400000;
+        ls_ink_begin(a);s_ntaken=0;
+        ping_ring(40,60,TUI_ATTR(TUI_CYAN,TUI_BLACK),2000);
+        int inked=0;
+        for(int y=0;y<a.h;y++) for(int x=0;x<a.w;x++) if(ls_ink_cell_prio(x,y)) {
+            inked++;LS_CHECK(basemap_label_slot_free(&a,x,y,1,1));
+        }
+        LS_CHECK(inked>0);
+    }
+    ls_ink_dot(40,60,TUI_ATTR(TUI_CYAN,TUI_BLACK),8);
+    LS_CHECK(!basemap_label_slot_free(&a,20,20,1,1));
+    test_now=was;
+}
+static bool test_first_blocked;
+static bool test_free_first(void *ctx,int x,int y,int w,int rows) {
+    (void)ctx;(void)x;(void)w;(void)rows;return !(test_first_blocked && y<10);
+}
+/* draw_carto_labels' cap: a placed or held name counts against it. */
+static unsigned cap_frame(map_label_history *h,int64_t now) {
+    const int first[2][2]={{4,5},{4,6}},second[1][2]={{4,30}};
+    unsigned shown=0;int drawn=0,x,y;
+    if(map_label_choose(h,1,4,5,3,1,first,2,2,now,test_free_first,NULL,&x,&y)) { drawn++;shown|=1; }
+    else if(map_label_held(h,1)) drawn++;
+    if(drawn<1 && map_label_choose(h,2,4,30,3,1,second,2,1,now,test_free_first,NULL,&x,&y)) shown|=2;
+    return shown;
+}
+LS_CASE(a_held_name_keeps_its_cap_share_so_the_next_does_not_flash)
+{
+    map_label_history h={0};
+    test_first_blocked=false;
+    LS_EQ_UINT(1,cap_frame(&h,0));
+    test_first_blocked=true;
+    for(int64_t t=100000;t<MAP_LABEL_HOLD_US;t+=100000) LS_EQ_UINT(0,cap_frame(&h,t));
+    test_first_blocked=false;
+    LS_EQ_UINT(1,cap_frame(&h,MAP_LABEL_HOLD_US+100000));
+    /* Blocked past its retry: it is no longer held, so the cap goes on. */
+    test_first_blocked=true;
+    LS_EQ_UINT(0,cap_frame(&h,MAP_LABEL_HOLD_US+200000));
+    LS_EQ_UINT(2,cap_frame(&h,2*MAP_LABEL_HOLD_US+200000));
+    LS_EQ_UINT(2,cap_frame(&h,2*MAP_LABEL_HOLD_US+300000));
+    /* A name that never had a slot is not held. */
+    map_label_history fresh={0};
+    LS_EQ_UINT(2,cap_frame(&fresh,0));
+    LS_CHECK(!map_label_held(&fresh,1));
 }

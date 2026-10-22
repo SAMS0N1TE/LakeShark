@@ -163,12 +163,12 @@ const char *ls_ota_err_text(ls_ota_err_t e)
     return "?";
 }
 
-ls_ota_err_t ls_ota_parse(const char *text, size_t len, const char *manifest_url,
-                          ls_ota_manifest_t *out)
+static ls_ota_err_t parse_bounded(const char *text, size_t len, const char *manifest_url,
+                                  ls_ota_manifest_t *out, size_t max_text)
 {
     memset(out, 0, sizeof(*out));
     const size_t ml = strlen(LS_OTA_MAGIC);
-    if (!text || len > LS_OTA_MAX_TEXT || len < ml + 1 || memcmp(text, LS_OTA_MAGIC, ml))
+    if (!text || len > max_text || len < ml + 1 || memcmp(text, LS_OTA_MAGIC, ml))
         return LS_OTA_ERR_MAGIC;
     size_t pos = ml;
     if (text[pos] == '\r') pos++;
@@ -247,6 +247,12 @@ ls_ota_err_t ls_ota_parse(const char *text, size_t len, const char *manifest_url
         return LS_OTA_ERR_URL;
     return LS_OTA_OK;
 }
+
+ls_ota_err_t ls_ota_parse(const char *text, size_t len, const char *url, ls_ota_manifest_t *out)
+{ return parse_bounded(text, len, url, out, LS_OTA_MAX_TEXT); }
+
+ls_ota_err_t ls_ota_parse_data(const char *text, size_t len, const char *url, ls_ota_manifest_t *out)
+{ return parse_bounded(text, len, url, out, LS_OTA_DATA_MAX_TEXT); }
 
 /* ------------------------------------------------- the background check */
 

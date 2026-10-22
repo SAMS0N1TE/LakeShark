@@ -50,8 +50,12 @@ static StaticSemaphore_t s_lock_memory;
 #ifndef LS_FIELD_TEST
 static TaskHandle_t s_task, s_io_task;
 #define FIELD_STACK_WORDS (8192 / sizeof(StackType_t))
+/* The journal worker also writes NOTES' map pictures, and the ROM deflate
+   under ls_tui_png_write ran its 8 KB out (a stack fault in "journal" with
+   the pc in ROM). 'tui png' gives the same encoder 16 KB. */
+#define FIELD_IO_STACK_WORDS (16384 / sizeof(StackType_t))
 static EXT_RAM_BSS_ATTR StackType_t s_field_stack[FIELD_STACK_WORDS];
-static EXT_RAM_BSS_ATTR StackType_t s_io_stack[FIELD_STACK_WORDS];
+static EXT_RAM_BSS_ATTR StackType_t s_io_stack[FIELD_IO_STACK_WORDS];
 static EXT_RAM_BSS_ATTR StackType_t s_find_stack[FIELD_STACK_WORDS];
 static DRAM_ATTR StaticTask_t s_field_tcb, s_io_tcb, s_find_tcb;
 static TaskHandle_t s_find_task;
@@ -1212,7 +1216,7 @@ bool ls_field_start(void)
        starting Journal beside the USB stream exhausted that heap before
        newlib could create fopen's lock. */
     s_io_task = xTaskCreateStaticPinnedToCore(
-        io_worker, "journal", FIELD_STACK_WORDS, NULL, 1,
+        io_worker, "journal", FIELD_IO_STACK_WORDS, NULL, 1,
         s_io_stack, &s_io_tcb, 0);
     if (!s_io_task) {
         s_live.ready = false; message("Journal worker could not start"); publish(); return false;

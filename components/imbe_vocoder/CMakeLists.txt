@@ -15,3 +15,8 @@ idf_component_register(
 # happen and fold the very checks this code is built out of. It has not done so
 # here, but that is luck rather than agreement, and the flag costs nothing.
 target_compile_options(${COMPONENT_LIB} PRIVATE -w -fwrapv)
+
+# Size build: hot code (map render / vocoders) keeps -O2.
+if(CONFIG_COMPILER_OPTIMIZATION_SIZE)
+    target_compile_options(${COMPONENT_LIB} PRIVATE -O2)
+endif()

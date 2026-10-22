@@ -2,7 +2,12 @@ Source repository: CartoCore (development repository remains authoritative)
 Revision: cd05356045383b0330ff0ffa74f4010962d8209f
 Source branch: work/terrain16-finish-20261009
 Vendored: 2026-10-10
-Local changes to copied upstream files: none (byte-for-byte copies).
+Local changes to copied upstream files (2026-10-20, the 16-colour map style;
+port to CartoCore): include/cartocore/core.h (cc_planes.zoom,
+cc_palette16_line), src/core/core.c (zoom-gated classes, two-dot main roads),
+src/core/render.c (sets zoom), src/core/style.c (16-colour ranks),
+src/out/out.c (line vs ground colour, tonal relief and forest ground,
+braille lines in quadrant mode).
 
 Taken: canonical embedded sources.cmake, all public include/cartocore headers,
 its firmware/core/output/media/inflate sources, P4 assembly, private header

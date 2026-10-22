@@ -68,6 +68,15 @@ static tui_rect s_pad_rect;
 static tui_rect s_card_rect;
 static int s_header_h;
 static bool s_controls_hidden;
+/* With the controls hidden, the one way back: a see-through chip in the
+   map's bottom right corner. */
+static tui_rect s_show_rect;
+static void controls_toggle(void)
+{
+    s_controls_hidden = !s_controls_hidden;
+    ls_tui_screen_set_bare(s_controls_hidden);
+    ls_tui_invalidate();
+}
 static tui_rect s_controls_hit;
 static char     s_note[96];
 static char     s_toast[64];
@@ -253,7 +262,10 @@ static ls_act_status_t a_map_files(const ls_args_t *in, ls_val_t *out)
         s_archive_n=(int)ls_carto_map_files(s_archives,LS_PICKER_MAX);
         qsort(s_archives,s_archive_n,sizeof(s_archives[0]),archive_order);
         ls_picker_open("CTILE MAPS",pick_archive);
-        for(int i=0;i<s_archive_n;i++) ls_picker_add(s_archives[i]+sizeof(MAP_DIR),"open map");
+        for(int i=0;i<s_archive_n;i++) {
+            const bool states=!strcmp(s_archives[i]+sizeof(MAP_DIR),"cells");
+            ls_picker_add(states?"DOWNLOADED STATES":s_archives[i]+sizeof(MAP_DIR),states?"from TILES > STATES":"open map");
+        }
         if(!s_archive_n) ls_picker_empty_reason("No cached .ctile list; reopen after map loads");
         out->kind=LS_VAL_TEXT;out->s="choose a map";return LS_ACT_OK;
     }
@@ -337,9 +349,11 @@ static void rescan(void)
     if(!s_file_error && s_have_archive) archive_view(path);
 }
 
+static void picture_release(void);
 static void leave(void)
 {
     ls_place_search_close();
+    picture_release();
 #ifdef LS_MAP_AUDIT
     s_carto_audit_count=0;s_carto_audit_bad=0;s_carto_low_masked=0;
 #endif
@@ -370,18 +384,22 @@ static void draw_placeholder(tui_surface *sf, tui_rect area, const char *why)
 
 /* Sub-pixels per cell, and why they are not the same in both axes. */
 
-#define SUB_X (cartocore_view() ? 2 : 3)
+/* Picture pixels per text cell. CartoCore's text views put one braille dot
+   (2x4 a cell) on one world pixel; its picture view draws six across a cell,
+   twice FIELD's three, and as many down as keeps the pixels square. */
+#define SUB_X (cc_picture() ? 6 : cartocore_view() ? 2 : 3)
 static bool cartocore_view(void);
+static bool cc_picture(void);
 
 static int sub_y(void)
 {
-    if(cartocore_view()) return 4;
+    if(cartocore_view() && !cc_picture()) return 4;
     int cw = 10, ch = 17;
     ls_tui_geometry(NULL, NULL, &cw, &ch);
     if (cw < 1) cw = 10;
     int sy = (SUB_X * ch + cw / 2) / cw;
     if (sy < 3) sy = 3;
-    if (sy > 8) sy = 8;
+    if (sy > (cc_picture() ? 16 : 8)) sy = cc_picture() ? 16 : 8;
     return sy;
 }
 
@@ -400,11 +418,13 @@ static uint8_t ink_attr(ls_map_ink_t k)
     }
 }
 
-typedef enum { MAP_VIEW_FIELD = 0, MAP_VIEW_COLOUR, MAP_VIEW_MONO, MAP_VIEW_CC_SMOOTH, MAP_VIEW_CC_BRAILLE, MAP_VIEW__COUNT } map_view_t;
+typedef enum { MAP_VIEW_FIELD = 0, MAP_VIEW_COLOUR, MAP_VIEW_MONO, MAP_VIEW_CC_SMOOTH, MAP_VIEW_CC_BRAILLE,
+               MAP_VIEW_CC_PICTURE, MAP_VIEW__COUNT } map_view_t;
 static map_view_t s_view;
 static bool cartocore_view(void) { return s_view>=MAP_VIEW_CC_SMOOTH; }
+static bool cc_picture(void) { return s_view==MAP_VIEW_CC_PICTURE; }
 
-static const char *const VIEW_NAME[MAP_VIEW__COUNT] = { "field", "blocks", "lines", "CartoCore smooth", "CartoCore braille" };
+static const char *const VIEW_NAME[MAP_VIEW__COUNT] = { "field", "blocks", "lines", "CartoCore smooth", "CartoCore braille", "CartoCore" };
 
 /* The map's colours. Each names what every class libcarto draws becomes,
    whether water and parks are filled or only outlined, which roads are
@@ -450,15 +470,42 @@ static const map_palette_t PALETTES[] = {
       {0, 105, 40}, {0, 66, 26}, PF_EDGE_WATER, 7, TUI_GREEN },
 };
 #define N_PALETTES ((int)(sizeof(PALETTES) / sizeof(PALETTES[0])))
-enum { PAL_NIGHT = 0, PAL_PAPER = 1 };
+enum { PAL_NIGHT = 0, PAL_PAPER = 1, PAL_VECTOR = 6 };
 
+/* The STYLE colour choice, as saved: 0 and 6 follow the TUI theme (with
+   NIGHT's fills, or VECTOR's outlines), the others name a palette. Before
+   2.10 made the theme the map's colours 0 and 6 were NIGHT and VECTOR, so
+   those two are 8 and 9 now, and every saved choice keeps its meaning. */
+enum { STYLE_THEME = 0, STYLE_THEME_OUTLINES = 6, STYLE_NIGHT = 8, STYLE_VECTOR = 9, STYLE__COUNT = 10 };
 static int s_palette;
 
-/* Class colours derive from every active TUI theme, including Daylight.
- * Map style choices affect fills/road filtering, never override a live theme. */
+/* The palette a style names, or -1 when the TUI theme gives the colours. */
+static int style_palette(int style)
+{
+    if (style == STYLE_NIGHT) return PAL_NIGHT;
+    if (style == STYLE_VECTOR) return PAL_VECTOR;
+    if (style > 0 && style < N_PALETTES && style != STYLE_THEME_OUTLINES) return style;
+    return -1;
+}
+static int palette_style(int pal) { return pal == PAL_NIGHT ? STYLE_NIGHT : pal == PAL_VECTOR ? STYLE_VECTOR : pal; }
+/* The palette in use now: NIGHT in the sun is PAPER. */
+static int palette_own(void)
+{
+    const int own = style_palette(s_palette);
+    return own == PAL_NIGHT && ls_tui_daylight() ? PAL_PAPER : own;
+}
+
+/* With the theme, class colours derive from every active TUI theme,
+ * including Daylight, and the style only sets fills and road filtering.
+ * A palette chosen in STYLE has its own colours and overlay tint. */
 static bool s_basemap_busy, s_map_crowded;
 static int s_palette_key;
 static uint16_t s_map_colours[16];
+/* The CartoCore views' own ramp. Their sixteen inks carry meaning the field
+   ramp folds away (yellow highways, a lit-slope green, river blue against
+   open-water blue), and land has to read as land: forest a clear green,
+   water a clear blue, both still well under the overlay colours. */
+static uint16_t s_cc_colours[16];
 static carto_rgb rgb565(uint16_t c) {
     return (carto_rgb){((c>>11)&31)*255/31,((c>>5)&63)*255/63,(c&31)*255/31};
 }
@@ -471,21 +518,25 @@ static const map_palette_t *palette(void)
     static const ls_tui_theme_t *previous;
     static int key=-1;
     const ls_tui_theme_t *t=ls_tui_active_theme();
-    const int next=s_palette*2+(s_basemap_busy?1:0);
+    const int own=palette_own();
+    const int next=(own+1)*2+(s_palette==STYLE_THEME_OUTLINES?40:0)+(s_basemap_busy?1:0);
     if(previous==t && key==next) return &p;
     previous=t;key=next;s_palette_key++;
-    p=PALETTES[s_palette>=0 && s_palette<N_PALETTES?s_palette:0];
-    p.name=t->name;p.tint=0;
-    carto_rgb ground=rgb565(t->palette[0]), blue=rgb565(t->palette[TUI_BLUE]);
-    carto_rgb green=rgb565(t->palette[TUI_GREEN]), white=rgb565(t->palette[TUI_WHITE]);
-    p.ground=rgb_mix(ground,blue,1,16);
-    p.water=rgb_mix(p.ground,blue,5,8);
-    p.park=rgb_mix(p.ground,green,2,8);
-    p.building=rgb_mix(p.ground,white,2,8);
-    p.road_lo=rgb_mix(p.ground,white,3,8);
-    p.road_hi=rgb_mix(p.ground,white,6,8);
-    p.major=rgb_mix(p.ground,white,7,8);
-    p.edge=p.water;
+    if(own>=0) p=PALETTES[own];
+    else {
+        p=PALETTES[s_palette==STYLE_THEME_OUTLINES?PAL_VECTOR:PAL_NIGHT];
+        p.name=t->name;p.tint=0;
+        carto_rgb ground=rgb565(t->palette[0]), blue=rgb565(t->palette[TUI_BLUE]);
+        carto_rgb green=rgb565(t->palette[TUI_GREEN]), white=rgb565(t->palette[TUI_WHITE]);
+        p.ground=rgb_mix(ground,blue,1,16);
+        p.water=rgb_mix(p.ground,blue,5,8);
+        p.park=rgb_mix(p.ground,green,2,8);
+        p.building=rgb_mix(p.ground,white,2,8);
+        p.road_lo=rgb_mix(p.ground,white,3,8);
+        p.road_hi=rgb_mix(p.ground,white,6,8);
+        p.major=rgb_mix(p.ground,white,7,8);
+        p.edge=p.water;
+    }
     if(s_basemap_busy) {
         p.water=rgb_mix(p.ground,p.water,3,4);p.park=rgb_mix(p.ground,p.park,3,4);
         p.building=rgb_mix(p.ground,p.building,3,4);
@@ -502,6 +553,40 @@ static const map_palette_t *palette(void)
     s_map_colours[3]=s_map_colours[11]=carto_rgb565(p.major);
     s_map_colours[5]=s_map_colours[13]=carto_rgb565(p.building);
     s_map_colours[1]=s_map_colours[9]=carto_rgb565(p.building);
+    if(own>=0) {
+        /* A palette's own inks in the same places, its fill rules kept: an
+           outline palette leaves water and parks as ground, its rivers in
+           the edge colour, and draws main roads only. */
+        const uint16_t g=carto_rgb565(p.ground);
+        const bool water=p.fill&PF_WATER, park=p.fill&PF_PARK, building=p.fill&PF_BUILDING, minor=p.road_min<=1;
+        for(int i=0;i<16;i++) s_cc_colours[i]=g;
+        s_cc_colours[2]=park?carto_rgb565(p.park):g;
+        s_cc_colours[10]=park?carto_rgb565(rgb_mix(p.park,p.road_hi,1,4)):g;
+        s_cc_colours[4]=s_cc_colours[6]=water?carto_rgb565(p.water):g;
+        s_cc_colours[12]=s_cc_colours[14]=carto_rgb565(water?rgb_mix(p.water,p.road_hi,1,4):p.edge);
+        s_cc_colours[8]=minor?carto_rgb565(p.road_lo):g;
+        s_cc_colours[7]=s_cc_colours[15]=minor?carto_rgb565(p.road_hi):g;
+        s_cc_colours[3]=s_cc_colours[11]=carto_rgb565(p.major);
+        s_cc_colours[5]=s_cc_colours[13]=carto_rgb565(minor?p.road_lo:p.edge);
+        s_cc_colours[1]=s_cc_colours[9]=building?carto_rgb565(p.building):g;
+    } else {
+        const uint16_t *tp=t->palette;
+        const int keep=s_basemap_busy?3:4;   /* of 4: overlays present dim it */
+        #define CC_MIX(colour,n,d) carto_rgb565(rgb_mix(p.ground,rgb_mix(p.ground,rgb565(colour),n,d),keep,4))
+        for(int i=0;i<16;i++) s_cc_colours[i]=carto_rgb565(p.ground);
+        s_cc_colours[2]=CC_MIX(tp[TUI_GREEN],9,16);              /* forest, park       */
+        s_cc_colours[10]=CC_MIX(tp[TUI_GREEN|TUI_BRIGHT],13,16); /* lit slopes         */
+        s_cc_colours[4]=s_cc_colours[6]=CC_MIX(tp[TUI_BLUE],10,16);           /* water */
+        s_cc_colours[12]=s_cc_colours[14]=CC_MIX(tp[TUI_BLUE|TUI_BRIGHT],14,16); /* rivers, shores */
+        s_cc_colours[8]=CC_MIX(tp[TUI_WHITE],7,16);              /* local roads        */
+        s_cc_colours[7]=CC_MIX(tp[TUI_WHITE],12,16);             /* secondary roads    */
+        s_cc_colours[15]=CC_MIX(tp[TUI_WHITE|TUI_BRIGHT],14,16);
+        s_cc_colours[3]=CC_MIX(tp[TUI_YELLOW],12,16);            /* highways           */
+        s_cc_colours[11]=CC_MIX(tp[TUI_YELLOW|TUI_BRIGHT],14,16);/* motorways, names   */
+        s_cc_colours[5]=s_cc_colours[13]=CC_MIX(tp[TUI_MAGENTA],9,16); /* rail, borders */
+        s_cc_colours[1]=s_cc_colours[9]=CC_MIX(tp[TUI_RED],9,16);
+        #undef CC_MIX
+    }
     return &p;
 }
 /* Warm accent is reserved for data strokes; basemap roads use neutral ink.
@@ -518,6 +603,7 @@ static ls_act_status_t a_map_view(const ls_args_t *in, ls_val_t *out)
     (void)in;
     s_view = (map_view_t)((s_view + 1) % MAP_VIEW__COUNT);
     if(!cartocore_view()) ls_carto_map_leave();
+    if(!cc_picture()) picture_release();
     layers_set(s_layers);
     out->kind = LS_VAL_TEXT;
     out->s = VIEW_NAME[s_view];
@@ -809,6 +895,80 @@ static void draw_cells(tui_surface *sf, tui_rect a,
         for (int cx = 0; cx < a.w; cx++)
             if (g[cx]) tui_put_char(sf, a, a.x + cx, a.y + cy, g[cx], at[cx]);
     }
+}
+
+/* ----------------------------------------------------- CartoCore picture -- */
+
+/* The picture view's colours are the MAP palette's (NIGHT, PAPER, the tints),
+   per CartoCore ink, so it looks like FIELD and follows STYLE the same way. */
+static uint32_t pack_rgb(carto_rgb c) { return (uint32_t)c.r << 16 | (uint32_t)c.g << 8 | (uint32_t)c.b; }
+static void picture_style(void)
+{
+    const map_palette_t *p = palette();
+    const uint32_t pal[7] = { pack_rgb(p->ground), pack_rgb(p->water), pack_rgb(p->park), pack_rgb(p->building),
+                              pack_rgb(p->road_lo), pack_rgb(p->road_hi), pack_rgb(p->major) };
+    ls_carto_map_pixel_style(pal, 70);
+}
+static double merc_y(double lat);
+
+/* The newest picture, and what is shown: that picture moved by however far
+   the view has panned since it was drawn, so a drag follows the finger while
+   the next one renders. PSRAM. */
+static uint16_t *s_pic, *s_pic_view;
+static int s_pic_w, s_pic_h;
+static uint32_t s_pic_serial, s_pic_shown;
+static double s_pic_lat, s_pic_lon;
+static unsigned s_pic_z;
+static bool s_pic_have;
+
+static bool picture_prepare(double lat, double lon, unsigned z, int pw, int ph, int tw, int th, bool labels)
+{
+    if (pw != s_pic_w || ph != s_pic_h || !s_pic || !s_pic_view) {
+        /* The image layer still points at the old picture until told otherwise. */
+        ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
+        heap_caps_free(s_pic); heap_caps_free(s_pic_view);
+        s_pic = heap_caps_malloc((size_t)pw * ph * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_pic_view = heap_caps_malloc((size_t)pw * ph * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_pic_w = pw; s_pic_h = ph; s_pic_serial = 0; s_pic_have = false;
+        if (!s_pic || !s_pic_view) return false;
+    }
+    double flat, flon; unsigned fz;
+    if (ls_carto_map_pixels(lat, lon, z, pw, ph, tw, th, labels, s_pic, &s_pic_serial, &flat, &flon, &fz)) {
+        s_pic_have = true; s_pic_lat = flat; s_pic_lon = flon; s_pic_z = fz;
+    }
+    if (!s_pic_have || s_pic_z != z) return false;
+    /* World pixels at this zoom, the picture's own unit. */
+    const double world = 256.0 * ldexp(1.0, (int)z);
+    const double ox = (lon - s_pic_lon) / 360.0 * world;
+    const double oy = (merc_y(s_pic_lat) - merc_y(lat)) * world;
+    const int dx = (int)lrint(ox), dy = (int)lrint(-oy);
+    const uint16_t ground = carto_rgb565(palette()->ground);
+    if (!dx && !dy) { memcpy(s_pic_view, s_pic, (size_t)pw * ph * 2); }
+    else for (int y = 0; y < ph; y++) {
+        uint16_t *out = s_pic_view + (size_t)y * pw;
+        const int sy = y + dy;
+        if (sy < 0 || sy >= ph) { for (int x = 0; x < pw; x++) out[x] = ground; continue; }
+        const uint16_t *in = s_pic + (size_t)sy * pw;
+        for (int x = 0; x < pw; x++) { const int sx = x + dx; out[x] = sx >= 0 && sx < pw ? in[sx] : ground; }
+    }
+    s_pic_shown++;
+    return true;
+}
+
+static void picture_release(void)
+{
+    ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
+    heap_caps_free(s_pic); heap_caps_free(s_pic_view);
+    s_pic = s_pic_view = NULL; s_pic_w = s_pic_h = 0; s_pic_have = false; s_pic_serial = 0;
+}
+
+static void picture_present(tui_surface *sf, tui_rect a, int pw, int ph)
+{
+    if (!s_pic_view || pw != s_pic_w || ph != s_pic_h) return;
+    ls_tui_image(a, s_pic_view, pw, ph, 0xC0000000u ^ s_pic_shown);
+    for (int y = a.y; y < a.y + a.h; y++)
+        for (int x = a.x; x < a.x + a.w; x++)
+            tui_put_char(sf, a, x, y, LS_TUI_IMAGE_CELL, 0);
 }
 
 /* ------------------------------------------------------- reservations -- */
@@ -1106,9 +1266,15 @@ static void draw_carto_labels(tui_surface *sf,tui_rect a) {
             {l->x,l->y+2},{l->x,l->y-2},{l->x+2,l->y},{l->x-2,l->y},
             {l->x+1,l->y+1},{l->x-1,l->y-1}};
         s_tier=1;
-        bool placed=map_label_choose(&s_label_history,map_label_key(l->text,1+s_view),
+        const uint32_t key=map_label_key(l->text,1+s_view);
+        bool placed=map_label_choose(&s_label_history,key,
             l->x,l->y,len,1,spots,2,9,esp_timer_get_time(),basemap_label_slot_free,&a,&x,&y);
-        s_tier=0;if(!placed) { l->text[0]=0;continue; }
+        s_tier=0;
+        if(!placed) {
+            /* Held names keep their share: a lesser one must not flash in. */
+            if(map_label_held(&s_label_history,key)) { drawn++;if(l->label_class>=3) minor++; }
+            l->text[0]=0;continue;
+        }
         l->attr=TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK);
         for(int k=0;k<len;k++) {
 #ifdef LS_MAP_AUDIT
@@ -1331,6 +1497,7 @@ static const ls_quick_t *quick_table(int *n)
     } else {
         memcpy(s_context,QUICK,sizeof(QUICK));s_context_n=N_QUICK;
         context_add("SELECT","j",'j');
+        context_add("HIDE","x",'x');
     }
     *n=s_context_n;return s_context;
 }
@@ -1499,7 +1666,10 @@ static void ping_ring(int cx, int cy, uint8_t attr, int period_ms)
     const double r_px = (1.5 + step) * (cw > 0 ? cw : 10);
     const int rx = (int)lround(r_px / ((cw > 0 ? cw : 10) / 2.0));
     const int ry = (int)lround(r_px / ((ch > 0 ? ch : 17) / 3.0));
+    /* A pulse: it changes every step, so it must not move a place name. */
+    ls_ink_pulse(true);
     ls_ink_ellipse(cx, cy, rx, ry, attr, 1, step < 2 ? -2 : -3);
+    ls_ink_pulse(false);
 }
 
 static int floor_div(int a, int b) { return a >= 0 ? a / b : -((b - 1 - a) / b); }
@@ -3293,35 +3463,51 @@ static void palette_load(void)
 {
     const uint32_t v = settings_get_map_layers(LAYERS_DEFAULT);
     const int p = (int)((v >> 24) & 0x0F), w = (int)((v >> 28) & 0x07);
-    s_palette = p < N_PALETTES ? p : 0;
+    s_palette = p < STYLE__COUNT ? p : STYLE_THEME;
     s_view = w < MAP_VIEW__COUNT ? (map_view_t)w : MAP_VIEW_FIELD;
 }
 
 static const char *const VIEW_WHAT[MAP_VIEW__COUNT] = {
-    "the picture itself", "coloured blocks of text cells", "outlines drawn in characters", "active CTILE, smooth quadrants", "active CTILE, smooth braille dots" };
+    "the picture itself", "coloured blocks of text cells", "outlines drawn in characters", "active CTILE, smooth quadrants", "active CTILE, smooth braille dots",
+    "active CTILE as a picture, with relief" };
+
+/* STYLE rows: the theme twice (fills, outlines), every palette, every fill,
+   then the map file. */
+enum { ROW_PALETTES = 2, ROW_VIEWS = ROW_PALETTES + N_PALETTES, ROW_FILE = ROW_VIEWS + MAP_VIEW__COUNT };
 
 static void style_pick(int i)
 {
-    if (i == N_PALETTES + MAP_VIEW__COUNT) { ls_val_t out; a_map_files(NULL, &out);ls_picker_back(open_style); return; }
-    if (i >= 0 && i < N_PALETTES) s_palette = i;
-    else if (i >= N_PALETTES && i < N_PALETTES + MAP_VIEW__COUNT) s_view = (map_view_t)(i - N_PALETTES);
-    else return;
+    const char *what;
+    if (i == ROW_FILE) { ls_val_t out; a_map_files(NULL, &out);ls_picker_back(open_style); return; }
+    if (i == 0 || i == 1) {
+        s_palette = i ? STYLE_THEME_OUTLINES : STYLE_THEME;
+        what = i ? "TUI theme colours, coast and major roads" : "TUI theme colours";
+    } else if (i >= ROW_PALETTES && i < ROW_VIEWS) {
+        s_palette = palette_style(i - ROW_PALETTES);
+        what = PALETTES[i - ROW_PALETTES].what;
+    } else if (i >= ROW_VIEWS && i < ROW_FILE) {
+        s_view = (map_view_t)(i - ROW_VIEWS);
+        what = VIEW_WHAT[s_view];
+    } else return;
     if(!cartocore_view()) ls_carto_map_leave();
     layers_set(s_layers);
-    say(i < N_PALETTES ? PALETTES[i].what : VIEW_WHAT[s_view]);
+    say(what);
 }
 
-static void theme_style_pick(int i) {
-    if(i==0 || i==1) style_pick(i?6:0);
-    else if(i>=2) style_pick(i+N_PALETTES-2);
-}
 static ls_act_status_t a_map_style(const ls_args_t *in, ls_val_t *out)
 {
     (void)in;
-    ls_picker_open("MAP STYLE", theme_style_pick);
+    ls_picker_open("MAP STYLE", style_pick);
     ls_picker_back(open_options);
-    ls_picker_add("Theme fills",s_palette<6?"[ON] follows TUI theme":"follows TUI theme");
-    ls_picker_add("Theme outlines",s_palette>=6?"[ON] PMTiles coast and major roads":"PMTiles coast and major roads");
+    const int own = style_palette(s_palette);
+    ls_picker_add("Theme fills", own < 0 && s_palette != STYLE_THEME_OUTLINES ? "[ON] follows TUI theme" : "follows TUI theme");
+    ls_picker_add("Theme outlines", s_palette == STYLE_THEME_OUTLINES ? "[ON] TUI theme, coast and main roads"
+                                                                      : "TUI theme, coast and main roads");
+    for (int i = 0; i < N_PALETTES; i++) {
+        char d[LS_PICKER_DETAIL];
+        snprintf(d, sizeof(d), "%s%s", i == own ? "[ON] " : "", PALETTES[i].what);
+        ls_picker_add(PALETTES[i].name, d);
+    }
     for (int i = 0; i < MAP_VIEW__COUNT; i++) {
         char lab[LS_PICKER_TEXT], d[LS_PICKER_DETAIL];
         snprintf(lab, sizeof(lab), "Fill: %s", VIEW_NAME[i]);
@@ -3332,7 +3518,7 @@ static ls_act_status_t a_map_style(const ls_args_t *in, ls_val_t *out)
     const char *leaf = arch ? strrchr(arch, '/') : NULL;
     ls_picker_add("Map file on the card", leaf ? leaf + 1 : "none open");
     out->kind = LS_VAL_TEXT;
-    out->s = "choose a fill; colours follow TUI theme";
+    out->s = "choose the colours (TUI theme or a map palette) and a fill";
     return LS_ACT_OK;
 }
 
@@ -3539,7 +3725,7 @@ static void register_view_action(void)
     ls_action_register("map.find", "", LS_CAP_UI, a_map_find,
                        "aircraft, nodes, markers and places to go to");
     ls_action_register("map.layers", "", LS_CAP_UI, a_map_layers, "what is drawn over the map");
-    ls_action_register("map.style", "", LS_CAP_UI, a_map_style, "map fill; colours follow TUI theme");
+    ls_action_register("map.style", "", LS_CAP_UI, a_map_style, "map colours (TUI theme or a palette) and fill");
     ls_action_register("map.mark", "", LS_CAP_UI, a_map_mark, "drop a marker at the centre");
     ls_action_register("map.draw", "", LS_CAP_UI, a_map_draw, "draw a line point by point");
     ls_action_register("map.draw_add", "", LS_CAP_UI, a_map_draw_add, "add the centre to the line");
@@ -3581,8 +3767,9 @@ void ls_map_preview(tui_surface *sf, tui_rect area, double lat, double lon)
             ls_map_center(lat,lon);ls_map_zoom_by((int)z-ls_map_zoom());
         }
         palette();
+        ls_carto_map_style(palette()->tint,palette_own()==PAL_PAPER?2:1);
         if(ls_carto_map_draw(sf,area,lat,lon,z,s_view==MAP_VIEW_CC_BRAILLE,layer(L_PLACES) && !layer(L_NOLABEL)))
-            ls_tui_basemap(sf,area,s_map_colours);
+            ls_tui_basemap(sf,area,s_cc_colours);
         return;
     }
     if (!ls_map_begin(pw,ph)) return;
@@ -3853,7 +4040,7 @@ static void draw(tui_surface *sf, tui_rect area)
     ls_map_set_tile_px(cartocore_view()?256:256 * SUB_X / (cw > 0 ? cw : 10));
     bool cc_ready=true;
     if(cartocore_view()) {
-        ls_map_external_view(body.w*2,body.h*4);
+        ls_map_external_view(body.w*SUB_X,body.h*sub_y());
         s_have_archive=false;s_opened=false;s_file_error=NULL;cells_free();
         double lat,lon;ls_map_get_center(&lat,&lon);unsigned z=ls_map_zoom();
         cc_ready=ls_carto_map_prepare(&lat,&lon,&z);
@@ -3864,8 +4051,7 @@ static void draw(tui_surface *sf, tui_rect area)
     }
 
     nodes_prepare();
-    track_selection(cartocore_view()?body.w*2:body.w*SUB_X,
-                    cartocore_view()?body.h*4:body.h*sub_y());
+    track_selection(body.w*SUB_X,body.h*sub_y());
     s_basemap_busy=(layer(L_AIR) && count_air_positions()>0) ||
         (layer(L_MESH) && s_npeers>0) || (layer(L_MARKS) && ls_marks_count()>0) ||
         s_receiver_fresh || ls_route_live()->valid;
@@ -3879,11 +4065,19 @@ static void draw(tui_surface *sf, tui_rect area)
 #ifdef LS_MAP_AUDIT
     s_carto_audit_count=0;s_carto_audit_bad=0;s_carto_low_masked=0;
 #endif
-    if(cc) {
+    if(cc && cc_picture()) {
+        double lat,lon; ls_map_get_center(&lat,&lon);
+        pw=body.w*SUB_X; ph=body.h*sub_y();
+        ls_tui_reserve(tui_rect_make(0,0,0,0));
+        picture_style();
+        cc_ok=picture_prepare(lat,lon,ls_map_zoom(),pw,ph,body.w,body.h,layer(L_PLACES) && !layer(L_NOLABEL));
+        if(!cc_ok) ls_tui_image(tui_rect_make(0,0,0,0),NULL,0,0,0);
+    } else if(cc) {
         double lat,lon; ls_map_get_center(&lat,&lon);
         pw=body.w*2; ph=body.h*4;
         ls_tui_reserve(tui_rect_make(0,0,0,0));
         ls_tui_image(tui_rect_make(0,0,0,0),NULL,0,0,0);
+        ls_carto_map_style(palette()->tint,palette_own()==PAL_PAPER?2:1);
         cc_ok=ls_carto_map_draw(sf,body,lat,lon,ls_map_zoom(),s_view==MAP_VIEW_CC_BRAILLE,layer(L_PLACES) && !layer(L_NOLABEL));
     }
     const char *why = cc?(cc_ok?NULL:ls_carto_map_status()):ls_map_status();
@@ -3951,11 +4145,14 @@ static void draw(tui_surface *sf, tui_rect area)
         draw_placeholder(sf, body, why);
         s_pad_rect = tui_rect_make(0, -1, 0, 0);
         s_card_rect = tui_rect_make(0, -1, 0, 0);
-    } else if(!cc || ls_carto_map_fresh()) {
+    } else if(!cc || cc_picture() || ls_carto_map_fresh()) {
         s_pad_rect = s_controls_hidden ? tui_rect_make(0, -1, 0, 0) : pad_rect_for(body);
         s_card_rect = card_rect_for(body);
         if(!cc) draw_cells(sf, body, px, pw, ph);
-        ls_tui_basemap(sf,body,s_map_colours);
+        if(cc_picture()) {
+            picture_present(sf, body, pw, ph);
+            ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
+        } else ls_tui_basemap(sf,body,cc?s_cc_colours:s_map_colours);
         overlay_reset(body, s_pad_rect, s_card_rect);
 
         /* Underneath to on top: rings and coverage, lines and trails, then
@@ -4023,6 +4220,20 @@ static void draw(tui_surface *sf, tui_rect area)
             TUI_ATTR(ls_route_live()->off_route ? TUI_YELLOW|TUI_BRIGHT : TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
     }
     if (ctl_h) ls_quick_draw_posture(sf, s_quick_rect, ls_tui_is_wide(), quick, nq);
+    /* The tab strip follows the controls (a selection can bring the controls
+       back without going through the toggle). */
+    ls_tui_screen_set_bare(s_controls_hidden);
+    s_show_rect = tui_rect_make(0, -1, 0, 0);
+    if (s_controls_hidden && body.w >= 10 && body.h >= 4) {
+        /* Glass: the map shows through everything but the outline and word. */
+        static const char *const CHIP[3] = { "+------+", "| SHOW |", "+------+" };
+        const int x = body.x + body.w - 9, y = body.y + body.h - 4;
+        const uint8_t at = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; CHIP[r][c]; c++)
+                if (CHIP[r][c] != ' ') ls_tui_put_glass(sf, area, x + c, y + r, CHIP[r][c], at);
+        s_show_rect = tui_rect_make(x, y, 8, 3);
+    }
 #ifdef LS_MAP_AUDIT
     s_carto_audit_bad=carto_audit_cells(sf); /* before an external modal covers MAP */
 #endif
@@ -4098,6 +4309,7 @@ static ls_act_status_t a_map_context(const ls_args_t *in,ls_val_t *out)
     const char cmd=in->v[0].s[0];
     const bool confirmed=s_delete_armed;
     s_delete_armed=false;
+    if(cmd=='x') { controls_toggle();return LS_ACT_OK; }
     if(cmd=='q') { select_none();return LS_ACT_OK; }
     if(cmd=='z') { go_selected();return LS_ACT_OK; }
     if(cmd=='c') { dm_selected();return LS_ACT_OK; }
@@ -4134,8 +4346,7 @@ static bool key(ls_tk_t k, char ch)
 {
     if(ls_place_search_active())return ls_place_search_key(k,ch);
     if (k == LS_TK_CHAR && (ch == 'x' || ch == 'X')) {
-        s_controls_hidden = !s_controls_hidden;
-        ls_tui_invalidate();
+        controls_toggle();
         return true;
     }
     int nq = 0;
@@ -4260,7 +4471,7 @@ static bool touch(int col, int row)
 {
     if(ls_place_search_active())return ls_place_search_touch(col,row);
     if (s_dragging) { s_dragging = false; return true; }
-    if (in_rect(s_controls_hit, col, row)) return key(LS_TK_CHAR, 'x');
+    if (in_rect(s_controls_hit, col, row) || in_rect(s_show_rect, col, row)) return key(LS_TK_CHAR, 'x');
     if (s_map_cells.h > 0 && row >= s_map_cells.y - s_header_h && row < s_map_cells.y &&
         col >= s_map_cells.x && col < s_map_cells.x + 20) {
         ls_val_t out;

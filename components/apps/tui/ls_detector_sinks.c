@@ -1,4 +1,5 @@
 #include "ls_detector.h"
+#include "ls_i18n.h"
 #include "ls_detector_air.h"
 #include "ls_notify.h"
 #include "ls_sweep_app.h"
@@ -52,10 +53,13 @@ uint8_t ls_detector_deliver(const ls_detector_event_t *e,uint8_t sinks) {
             strcpy(n->title,"DETECTOR");const char *category=e->test?"TEST":e->source==DET_LORA?"LoRa activity":e->source==DET_RID?"REMOTE ID":e->category<SW_CATS?ls_sweep_category(e->category):"ACTIVITY";
             char air[64]="";
             if(e->source==DET_ADSB) {category="AIRCRAFT";ls_detector_air_event_text(e,air,sizeof(air));}
-            if(e->source==DET_ADSB && e->coalesced)snprintf(n->body,sizeof(n->body),"%s %.48s +%u grouped",category,air,(unsigned)e->coalesced);
+            /* In the interface language (ls_tr only reads, so any task may
+               ask); the rule's own reason stays as its author wrote it. */
+            category=ls_tr(category);
+            if(e->source==DET_ADSB && e->coalesced)snprintf(n->body,sizeof(n->body),ls_tr("%s %.48s +%u grouped"),category,air,(unsigned)e->coalesced);
             else if(e->source==DET_ADSB)snprintf(n->body,sizeof(n->body),"%s %.48s / %.60s",category,air,e->reason);
-            else if(e->coalesced)snprintf(n->body,sizeof(n->body),"%s +%u grouped",category,(unsigned)e->coalesced);
-            else snprintf(n->body,sizeof(n->body),"%s / %s",category,e->test?"sink test":e->reason);
+            else if(e->coalesced)snprintf(n->body,sizeof(n->body),ls_tr("%s +%u grouped"),category,(unsigned)e->coalesced);
+            else snprintf(n->body,sizeof(n->body),"%s / %s",category,e->test?ls_tr("sink test"):e->reason);
             static const uint8_t colors[]={TUI_YELLOW,TUI_MAGENTA,TUI_CYAN,TUI_GREEN,TUI_RED};
             n->hue=n->accent=e->source==DET_ADSB?(ls_detector_air_alarm(e->squawk,e->emergency)?TUI_RED:TUI_BLUE|TUI_BRIGHT):e->category<5?colors[e->category]:TUI_CYAN;
             n->screen=-1;n->quiet=true;n->steady=true;
@@ -104,8 +108,8 @@ bool ls_detector_write(const ls_detector_event_t *e,uint64_t boot) {
             (unsigned)e->icao,e->callsign,(unsigned)e->squawk,(unsigned)e->emergency,alt,bit<0?"null":"\"",bit<0?"":ls_detector_air_category_name((unsigned)bit),bit<0?"":"\"");
     }
     int n=snprintf(line,sizeof(line),
-        "{\"version\":1,\"revision\":%u,\"boot\":\"%016" PRIx64 "\",\"sequence\":%u,\"uptime_us\":%" PRId64 ",\"utc\":%s,\"source\":\"%s\",\"rule_ids\":[%s],\"entity\":\"%016" PRIx64 "\",\"category\":\"%s\",\"rssi\":%s,\"validated_message\":%s,\"signal_units\":\"dBm\",\"band\":%u,\"rate_guess_hz\":%u,\"hits_per_min\":%u,%s\"gps_valid\":false,\"test\":%s,\"selected\":%u,\"allowed\":%u,\"accepted\":%u,\"failed\":%u,\"coalesced\":%u,\"dropped\":%u,\"suppressed\":%u}\n",
-        (unsigned)e->revision,boot,(unsigned)e->sequence,e->at,utc_text,e->test?"test":ls_detector_source(e->source),e->rule_ids,e->entity,ls_sweep_category(e->category),signal,e->validated?"true":"false",e->band,e->rate_guess,(unsigned)e->hits_per_min,air,e->test?"true":"false",e->selected,e->allowed,e->delivered,e->failed,(unsigned)e->coalesced,(unsigned)e->dropped,(unsigned)e->suppressed);
+        "{\"version\":1,\"revision\":%u,\"boot\":\"%016" PRIx64 "\",\"sequence\":%u,\"uptime_us\":%" PRId64 ",\"utc\":%s,\"source\":\"%s\",\"rule_ids\":[%s],\"entity\":\"%016" PRIx64 "\",\"category\":\"%s\",\"rssi\":%s,\"validated_message\":%s,\"signal_units\":\"%s\",\"band\":%u,\"rate_guess_hz\":%u,\"hits_per_min\":%u,%s\"gps_valid\":false,\"test\":%s,\"selected\":%u,\"allowed\":%u,\"accepted\":%u,\"failed\":%u,\"coalesced\":%u,\"dropped\":%u,\"suppressed\":%u}\n",
+        (unsigned)e->revision,boot,(unsigned)e->sequence,e->at,utc_text,e->test?"test":ls_detector_source(e->source),e->rule_ids,e->entity,ls_sweep_category(e->category),signal,e->validated?"true":"false",e->relative_rssi?"dB relative":"dBm",e->band,e->rate_guess,(unsigned)e->hits_per_min,air,e->test?"true":"false",e->selected,e->allowed,e->delivered,e->failed,(unsigned)e->coalesced,(unsigned)e->dropped,(unsigned)e->suppressed);
     if(n<0 || (size_t)n>=sizeof(line) || (unsigned)n>LS_DETECTOR_ROTATE)return false;
     if(batch_failed)return false;
     char name[192];path(name,sizeof(name),0);struct stat st;bool rollover=false;

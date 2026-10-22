@@ -1,10 +1,14 @@
 #include "tone.h"
 #include "audio_out.h"
 #include "speech.h"
+#include "settings.h"
+#include "notification_tone.h"
+#include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include <math.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include <ctype.h>
@@ -53,8 +57,6 @@ void snd_p25_chirp(void)
     audio_write_cue(buf, total);
 }
 
-/* The power-on chime. */
-
 /* Write a long sound at the speed it plays. */
 
 static void tone_write_paced(const int16_t *buf, int n)
@@ -66,47 +68,77 @@ static void tone_write_paced(const int16_t *buf, int n)
     audio_write_cue(buf, n);
 }
 
+/* The power-on chirp, in the manner of a Motorola data burst: a low key-up
+   thump, a frequency-shift data burst (600 baud, 700 Hz mark, 1050 Hz
+   space, phase continuous), then two go-ahead beeps at 1 kHz. Every tone is
+   a soft-clipped sine with a sub-octave under it, which is what gives it
+   weight on a small speaker. Rendered whole before any of it is queued:
+   under 0.4 s, so it sits in the ring at once and a busy boot cannot starve
+   it into crackling the way a chime computed on the fly did. */
+#define BOOT_MAX (AUDIO_RATE_HZ * 400 / 1000)
+static EXT_RAM_BSS_ATTR int16_t s_boot_buf[BOOT_MAX];
+
+typedef struct { float ph, sub; } boot_osc_t;
+
+/* One sample of the voice at hz: saturated fundamental plus sub-octave. */
+static float boot_voice(boot_osc_t *o, float hz)
+{
+    o->ph  += 2.0f * (float)M_PI * hz / AUDIO_RATE_HZ;
+    o->sub += (float)M_PI * hz / AUDIO_RATE_HZ;
+    if (o->ph  > 2.0f * (float)M_PI) o->ph  -= 2.0f * (float)M_PI;
+    if (o->sub > 2.0f * (float)M_PI) o->sub -= 2.0f * (float)M_PI;
+    return 0.80f * tanhf(2.2f * sinf(o->ph)) + 0.30f * sinf(o->sub);
+}
+
+static float boot_env(int i, int len)
+{
+    const int fade = AUDIO_RATE_HZ * 4 / 1000;
+    if (i < fade) return (float)i / fade;
+    if (i >= len - fade) return (float)(len - i) / fade;
+    return 1.0f;
+}
+
 void snd_boot(void)
 {
-    static const struct { float hz; float in_s; float amp; } VOICE[] = {
-        { 220.00f, 0.00f, 2400.0f },   /* A3  the root              */
-        { 329.63f, 0.09f, 2000.0f },   /* E4  the fifth             */
-        { 440.00f, 0.18f, 2200.0f },   /* A4  the octave            */
-        { 554.37f, 0.30f, 1500.0f },   /* C#5 the major third       */
-        { 880.00f, 0.44f,  700.0f },   /* A5  a shimmer over it     */
-    };
-    const int VOICES = (int)(sizeof(VOICE) / sizeof(VOICE[0]));
+    /* 0x5555 preamble, the MDC sync word 07 09 2A 44 6F. */
+    static const uint8_t BURST[] = { 0x55, 0x55, 0x07, 0x09, 0x2A, 0x44, 0x6F };
+    const float amp = 6000.0f;
+    memset(s_boot_buf, 0, sizeof(s_boot_buf));
+    int n = 0;
 
-    const int total   = AUDIO_RATE_HZ * 1150 / 1000;
-    const int release = AUDIO_RATE_HZ *  380 / 1000;
-    const int attack  = AUDIO_RATE_HZ *   70 / 1000;
-
-    static int16_t buf[256];
-    float ph[5] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-
-    audio_out_play_now();
-    for (int i = 0; i < total; i += 256) {
-        int chunk = total - i;
-        if (chunk > 256) chunk = 256;
-        for (int j = 0; j < chunk; j++) {
-            const int n = i + j;
-            float acc = 0.0f;
-            for (int v = 0; v < VOICES; v++) {
-                ph[v] += 2.0f * (float)M_PI * VOICE[v].hz / AUDIO_RATE_HZ;
-                if (ph[v] > 2.0f * (float)M_PI) ph[v] -= 2.0f * (float)M_PI;
-                const int start = (int)(VOICE[v].in_s * AUDIO_RATE_HZ);
-                if (n < start) continue;
-                const int age = n - start;
-                const float env = age < attack ? (float)age / (float)attack
-                                               : 1.0f;
-                acc += sinf(ph[v]) * VOICE[v].amp * env;
-            }
-            if (n >= total - release)
-                acc *= (float)(total - n) / (float)release;
-            buf[j] = (int16_t)acc;
-        }
-        tone_write_paced(buf, chunk);
+    /* Key-up: a short falling thump. */
+    const int thump = AUDIO_RATE_HZ * 35 / 1000;
+    float tp = 0.0f;
+    for (int i = 0; i < thump; i++, n++) {
+        const float t = (float)i / thump;
+        tp += 2.0f * (float)M_PI * (220.0f - 90.0f * t) / AUDIO_RATE_HZ;
+        s_boot_buf[n] = (int16_t)(sinf(tp) * amp * (1.0f - t) * (1.0f - t) * boot_env(i, thump));
     }
+    n += AUDIO_RATE_HZ * 10 / 1000;
+
+    boot_osc_t o = { 0 };
+    const int burst = (int)sizeof(BURST) * 8 * AUDIO_RATE_HZ / 600;
+    for (int i = 0; i < burst && n < BOOT_MAX; i++, n++) {
+        const int bit = i * 600 / AUDIO_RATE_HZ;
+        const bool mark = (BURST[bit / 8] >> (7 - bit % 8)) & 1;
+        s_boot_buf[n] = (int16_t)(boot_voice(&o, mark ? 700.0f : 1050.0f) * amp * boot_env(i, burst));
+    }
+    n += AUDIO_RATE_HZ * 35 / 1000;
+
+    const int beep = AUDIO_RATE_HZ * 60 / 1000;
+    for (int k = 0; k < 2; k++) {
+        o = (boot_osc_t){ 0 };
+        for (int i = 0; i < beep && n < BOOT_MAX; i++, n++)
+            s_boot_buf[n] = (int16_t)(boot_voice(&o, 1000.0f) * amp * boot_env(i, beep));
+        if (k == 0) n += AUDIO_RATE_HZ * 35 / 1000;
+    }
+
+    if (n > BOOT_MAX) n = BOOT_MAX;
+    const uint32_t room = (uint32_t)(AUDIO_RATE_HZ * 150 / 1000) * sizeof(int16_t);
+    for (int i = 0; i < 200 && audio_out_ring_avail() > room; i++)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    audio_out_play_now();
+    if (!audio_write_cue_wait(s_boot_buf, n, 500)) printf("boot chirp: not queued whole\n");
 }
 
 void snd_new_contact(void)
@@ -202,7 +234,8 @@ void snd_moto_full(void)
 #define TEST_STACK_WORDS (SND_WORKER_STACK_BYTES / sizeof(StackType_t))
 
 static const char *TEST_NAMES[SND_TEST_COUNT] = {
-    "sweep", "bass", "noise", "tone", "chirp", "moto"
+    "sweep", "bass", "noise", "tone", "p25chirp", "moto",
+    "radiokey", "roger", "chirp"
 };
 
 static QueueHandle_t s_test_q = NULL;
@@ -213,7 +246,7 @@ static StaticTask_t  s_test_tcb;
 static TaskHandle_t  s_test_task;
 static volatile bool s_test_busy = false;
 
-static int16_t s_test_buf[TEST_CHUNK];
+static EXT_RAM_BSS_ATTR int16_t s_test_buf[TEST_CHUNK];
 
 static void test_emit(int n)
 {
@@ -315,14 +348,24 @@ static void test_tone_long(float freq, float dur_s)
     }
 }
 
+/* From ls_audio_hw.h, which brings the I2S driver in with it: the counter
+   is all this file needs, and the host bench compiles this file alone. */
+uint32_t ls_audio_hw_starved(int64_t *first_us, int64_t *last_us);
+
 static void play_boot_chime(void)
 {
     audio_out_ensure_unmuted();
+    const uint32_t starved0 = ls_audio_hw_starved(NULL, NULL);
+    const TickType_t t0 = xTaskGetTickCount();
     snd_boot();
     static const int16_t sil[1600] = { 0 };
     audio_write_cue(sil, 1600);
     for (int i = 0; i < 250 && audio_out_ring_avail() > 320; i++)
         vTaskDelay(pdMS_TO_TICKS(20));
+    printf("boot chirp: at %lu ms, %lu ms to play, speaker starved %u times\n",
+           (unsigned long)(t0 * portTICK_PERIOD_MS),
+           (unsigned long)((xTaskGetTickCount() - t0) * portTICK_PERIOD_MS),
+           (unsigned)(ls_audio_hw_starved(NULL, NULL) - starved0));
 }
 
 static void sweep_pattern(unsigned category)
@@ -342,6 +385,20 @@ static void sweep_click_pattern(void) {
     if(!audio_is_muted() && audio_volume_get()>0) audio_tone(1200.0f,0.008f,1800.0f);
 }
 
+/* Only called on snd_test; shares its PSRAM chunk and the normal cue path. */
+static void notification_play(int preset)
+{
+    if (audio_is_muted() || audio_volume_get()<=0) return;
+    notification_tone_load();
+    audio_out_play_now();
+    size_t offset=0, n;
+    while ((n=notification_tone_render(preset,offset,s_test_buf,TEST_CHUNK))!=0) {
+        if (audio_is_muted() || audio_volume_get()<=0) return;
+        tone_write_paced(s_test_buf,(int)n);
+        offset+=n;
+    }
+}
+
 static void test_worker(void *arg)
 {
     (void)arg;
@@ -359,6 +416,9 @@ static void test_worker(void *arg)
         case SND_TEST_TONE:  test_tone_long(1000.0f, 1.2f); break;
         case SND_TEST_CHIRP: snd_p25_chirp(); break;
         case SND_TEST_MOTO:  snd_moto_full(); break;
+        case SND_TEST_RADIOKEY: notification_play(0); break;
+        case SND_TEST_ROGER: notification_play(1); break;
+        case SND_TEST_UPCHIRP: notification_play(2); break;
         case SND_JOB_ALERT:  snd_moto_alert(); break;
         case SND_JOB_BOOT:   play_boot_chime(); break;
         /* Never speech on this stack while there is no engine: the
@@ -416,7 +476,12 @@ bool snd_sweep_start(int category)
 bool snd_alert_start(void)
 {
     if (!s_test_q || s_test_busy) return false;
+    int sound=settings_get_notification_sound();
+    if (sound==SETTINGS_NOTIFY_OFF || audio_is_muted() || audio_volume_get()<=0) return false;
     uint8_t w = SND_JOB_ALERT;
+    if (sound==SETTINGS_NOTIFY_RADIOKEY) w=SND_TEST_RADIOKEY;
+    else if (sound==SETTINGS_NOTIFY_ROGER) w=SND_TEST_ROGER;
+    else if (sound==SETTINGS_NOTIFY_CHIRP) w=SND_TEST_UPCHIRP;
     return xQueueSend(s_test_q, &w, 0) == pdTRUE;
 }
 

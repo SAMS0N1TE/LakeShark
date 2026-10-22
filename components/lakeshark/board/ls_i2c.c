@@ -6,6 +6,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "ls_board.h"
+#if defined(LS_BOARD_I2C_FROM_BSP)
+#include "bsp/esp-bsp.h"
+#endif
 
 static const char *TAG = "ls_i2c";
 
@@ -70,7 +73,21 @@ esp_err_t ls_i2c_bus(ls_i2c_bus_id_t id, i2c_master_bus_handle_t *out)
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
     esp_err_t err = ESP_OK;
-    if (!s_bus[id]) {
+#if defined(LS_BOARD_I2C_FROM_BSP)
+    /* The Waveshare BSP already runs a controller on these pins for the
+       codec; a second one on the same pins would fight it. Share its bus. */
+    if (!s_bus[id] && id == LS_I2C_PRIMARY) {
+        err = bsp_i2c_init();
+        if (err == ESP_OK) s_bus[id] = bsp_i2c_get_handle();
+        if (err != ESP_OK || !s_bus[id]) {
+            ESP_LOGE(TAG, "BSP I2C bus unavailable: %s", esp_err_to_name(err));
+            if (err == ESP_OK) err = ESP_ERR_INVALID_STATE;
+        } else {
+            ESP_LOGI(TAG, "bus %d is the BSP's (SDA%d/SCL%d)", (int)id, BUS[id].sda, BUS[id].scl);
+        }
+    }
+#endif
+    if (err == ESP_OK && !s_bus[id]) {
         i2c_master_bus_config_t cfg = {
             .i2c_port = BUS[id].port,
             .sda_io_num = (gpio_num_t)BUS[id].sda,

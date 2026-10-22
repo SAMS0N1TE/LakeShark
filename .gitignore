@@ -155,3 +155,10 @@ sim.bmp
 /c6_firmware/sdkconfig.defaults
 /c6_firmware/idf_component.yml
 /bench/build-c6.ps1
+
+# Nano display test build cache and reproducible panel sources.
+/.ccache/
+/.ccache-tmp/
+!/tools/gen_ws_panels.py
+!/tools/vendor/
+!/docs/NANO_DISPLAY_TEST.md

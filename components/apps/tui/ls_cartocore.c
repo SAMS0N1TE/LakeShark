@@ -111,17 +111,30 @@ static void close_sd(sd_source *s) {
 /* Four file descriptors share the existing SD bounce buffer; all callbacks
  * run on the same serialized worker. No per-cell internal/DMA allocations. */
 typedef struct { int fd; uint64_t size; sd_source *owner; } sd_cell_file;
+/* carto-idle runs at idle priority; a dense cell (Miami) kept it busy for 10 s
+   of decode, raster and prefetch and IDLE0 tripped the task watchdog. Tile
+   reads and the engine's cc_yield_hook give up the CPU once per 50 ms. */
+static void carto_yield(void) {
+#ifndef LS_CARTOCORE_HOST
+    static int64_t last_yield;
+    int64_t now=esp_timer_get_time();
+    if(now-last_yield>=50000) { vTaskDelay(1); last_yield=esp_timer_get_time(); }
+#endif
+}
 static int cell_read(void *ctx,uint64_t offset,void *dst,size_t bytes) {
     sd_cell_file *f=ctx;
+    carto_yield();
     return carto_sd_read_at(f->fd,f->size,offset,dst,bytes,f->owner->bounce,f->owner->bounce_capacity);
 }
 static void cell_close(void *ctx) { sd_cell_file *f=ctx;close(f->fd);source_handles_live-=sizeof(*f);heap_caps_free(f); }
 static bool cells_file_current(uint32_t,const char *);
+static bool cells_direct_active(void);
+static bool cells_direct_ready(void);
 static int cell_open(void *ctx,uint32_t id,void **handle,uint64_t *bytes) {
     sd_source *owner=ctx;char path[256];
     const char *slash=strrchr(owner->path,'/');if(!slash) return -1;
     int prefix=(int)(slash-owner->path);
-    if(id) snprintf(path,sizeof(path),"%.*s/8-%u-%u.ctile",prefix,owner->path,(id-1)/256,(id-1)%256);
+    if(id) snprintf(path,sizeof(path),"%.*s/8-%u-%u%s.ctile",prefix,owner->path,((id-1)%65536)/256,(id-1)%256,id>65536?".detail":"");
     else snprintf(path,sizeof(path),"%.*s/overview.ctile",prefix,owner->path);
     if(!cells_file_current(id,path))return 0;
     int fd=open(path,O_RDONLY);if(fd<0) return errno==ENOENT?0:-1;
@@ -201,7 +214,7 @@ static void flush_saved(void) {
     }
 }
 static int restore_map(void);
-static int prepare_source(double,double);
+static int prepare_source(double,double,unsigned);
 static int select_map(const char *);
 static bool recover_maps(void);
 static bool source_refreshing; /* worker-owned: retain publication across cell replacement */
@@ -548,6 +561,24 @@ static int show(unsigned z)
     return result;
 }
 static int select_source(const char *path) { return select_map(path); }
+/* A state downloaded from TILES > STATES has a cell file under (lat,lon).
+   2026-10-20: MAP kept reopening the last single .ctile (central NH), so a
+   downloaded Florida was never drawn; a downloaded cell under the view now wins. */
+static bool cells_cover(double lat,double lon) {
+    struct stat st;
+    if(lat>85.05 || lat<-85.05 || lon<-180.0 || lon>=180.0) return false;
+    if(stat("/sdcard/maps/cells/catalog.ccm",&st) && stat("/sdcard/maps/cells/index.cci",&st)) return false;
+    const double pi=3.14159265358979323846;
+    unsigned x=(unsigned)floor((lon+180.0)/360.0*256.0);
+    unsigned y=(unsigned)floor((1.0-asinh(tan(lat*pi/180.0))/pi)/2.0*256.0);
+    if(x>255 || y>255) return false;
+    char path[64]; snprintf(path,sizeof(path),"/sdcard/maps/cells/8-%u-%u.ctile",x,y);
+    /* The file alone is not enough: a cell left from an older download that
+       the active catalog does not list is never read, and claiming the view
+       for it leaves only the national overview on screen. */
+    return !stat(path,&st) && cells_file_current(1u+x*256u+y,path);
+}
+static bool source_is_cells(void) { return sd_map && strstr(sd_map->path,"/sdcard/maps/cells/"); }
 #include "ls_cartocore_map_impl.h"
 static int queue_hint(void *ctx,unsigned z,uint32_t x,uint32_t y,uint64_t offset,uint32_t length) {
     (void)z; (void)x; (void)y;
@@ -626,7 +657,7 @@ static int select_map_locked(const char *requested,bool persist)
     /* Compatibility alias: the former embedded fixture is now an SD asset. */
     if(requested && !strcmp(requested,"embedded")) requested="/sdcard/maps/franklin_mini.ctile";
 #endif
-    if(requested && !strcmp(requested,"cells")) requested="/sdcard/maps/cells/index.cci";
+    if(requested && (!strcmp(requested,"cells") || !strcmp(requested,"/sdcard/maps/cells"))) { requested=cells_direct_active()?"/sdcard/maps/cells/catalog.ccm":"/sdcard/maps/cells/index.cci"; }
     if (!requested || strcmp(requested,"embedded")) {
         if (!requested) { if (map_directory(path,sizeof(path))) return 1; }
         else {
@@ -637,7 +668,7 @@ static int select_map_locked(const char *requested,bool persist)
             if (n<0 || (size_t)n>=sizeof(path)) { puts("carto: path too long"); return 1; }
         }
         if (strncmp(path,"/sdcard/",8) || strstr(path,"/../") ||
-            (!ctile_name(path) && strcmp(path,"/sdcard/maps/cells/index.cci"))) { puts("carto: expected an SD .ctile path or cells"); return 1; }
+            (!ctile_name(path) && strcmp(path,"/sdcard/maps/cells/index.cci") && strcmp(path,"/sdcard/maps/cells/catalog.ccm"))) { puts("carto: expected an SD .ctile path or cells"); return 1; }
         int fd=open(path,O_RDONLY); struct stat st;
         if (fd<0) { printf("carto: %s: %s\n",path,strerror(errno)); return 1; }
         if (fstat(fd,&st) || !S_ISREG(st.st_mode) || st.st_size<64 || (uint64_t)st.st_size>LONG_MAX) {
@@ -647,12 +678,13 @@ static int select_map_locked(const char *requested,bool persist)
         next=heap_caps_calloc(1,sizeof(*next),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
         if(!next) { close(fd); return 1; }
         next->fd=fd; next->file_size=size;
-        next->bounce_capacity=sd_bounce_bytes;
-        if(next->bounce_capacity)
-            next->bounce=heap_caps_aligned_alloc(64,next->bounce_capacity,MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA|MALLOC_CAP_8BIT);
-        if(sd_bounce_bytes && !next->bounce && sd_bounce_bytes>32768) {
-            next->bounce_capacity=32768;
-            next->bounce=heap_caps_aligned_alloc(64,next->bounce_capacity,MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA|MALLOC_CAP_8BIT);
+        /* The bounce stays allocated while MAP is open. Taken from the shared
+           DMA pool only while CARTO_DMA_KEEP stays free; a full 32 KB
+           here left NimBLE dropping advert reports for lack of memory. */
+        for(size_t n=sd_bounce_bytes;n>=8192 && !next->bounce;n/=2) {
+            if(heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA)<n+CARTO_DMA_KEEP) continue;
+            next->bounce_capacity=n;
+            next->bounce=heap_caps_aligned_alloc(64,n,MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA|MALLOC_CAP_8BIT);
         }
         if(sd_bounce_bytes && !next->bounce) {
             next->bounce_capacity=4096;
@@ -660,9 +692,11 @@ static int select_map_locked(const char *requested,bool persist)
         }
         printf("carto SD: read() %s chunk=%zu\n",next->bounce?"internal DMA -> PSRAM":"PSRAM",next->bounce?next->bounce_capacity:0);
         snprintf(next->path,sizeof(next->path),"%s",path);
-        bool cells=!strcmp(path,"/sdcard/maps/cells/index.cci");
+        bool direct=!strcmp(path,"/sdcard/maps/cells/catalog.ccm");
+        bool cells=direct || !strcmp(path,"/sdcard/maps/cells/index.cci");
+        if(direct && !cells_direct_ready()) { close_sd(next);return 1; }
         uint8_t header_bytes[64];if(!sd_read(next,0,header_bytes,64)) { close_sd(next);return 1; }
-        bool v7=header_bytes[8]==7;
+        bool v7=direct || header_bytes[8]==7;
         size_t dirbytes=cells?4096:256u*1024u,stagingbytes=v7?1:192u*1024u;
         next->directory_bytes=dirbytes;next->staging_bytes=stagingbytes;
         next->directory=heap_caps_aligned_alloc(16,dirbytes,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
@@ -676,7 +710,7 @@ static int select_map_locked(const char *requested,bool persist)
                     if(source_handles_live>source_handles_hw)source_handles_hw=source_handles_live;
                 }
                 cc_cellset_io io={next,cell_open,cell_read,cell_close};
-                ok=next->set && cc_cellset_open(next->set,sd_read,next,size,io,next->directory,dirbytes,next->staging,stagingbytes);
+                ok=next->set && (direct?cc_cellset_open_direct(next->set,io,next->directory,dirbytes,next->staging,stagingbytes):cc_cellset_open(next->set,sd_read,next,size,io,next->directory,dirbytes,next->staging,stagingbytes));
                 if(ok) next->map=next->set->map;
             } else ok=cc_ctile_open_source(&next->map,&next->source,sd_read,next,size,
                                            next->directory,dirbytes,next->staging,stagingbytes);
@@ -773,18 +807,25 @@ static int select_map_mode(const char *requested,bool persist) {
     return result;
 }
 static int select_map(const char *requested) { return select_map_mode(requested,true); }
-static int prepare_source(double lat,double lon) {
+/* The best map for the view: a downloaded state's cell under it, then a map
+   file that covers it at this zoom, then the last map used, then the
+   downloaded states' overview (the whole country, main roads and rivers
+   only), then any map file. */
+static int prepare_source(double lat,double lon,unsigned z) {
     (void)recover_maps();
     if(sd_map) return 0;
+    if(cells_cover(lat,lon) && !select_map_mode("cells",false)) return 0;
+    char covering[256];
+    if(carto_file_covering(MAP_DIR,lat,lon,z,covering,sizeof(covering)) && !select_map_mode(covering,false)) return 0;
     if(saved.path[0] && !select_map_mode(saved.path,false)) return 0;
     struct stat st;
-    if(!stat("/sdcard/maps/cells/index.cci",&st) && !select_map("cells")) return 0;
+    if((!stat("/sdcard/maps/cells/index.cci",&st) || !stat("/sdcard/maps/cells/catalog.ccm",&st)) && !select_map("cells")) return 0;
     char path[256];
     if(carto_choose_file(MAP_DIR,lat,lon,path,sizeof(path)) && !select_map(path)) return 0;
     cc_ctile map;
     return open_map(&map)?0:1; /* Only host tests have an embedded fixture. */
 }
-static int restore_map(void) { return prepare_source(centre_lat,centre_lon); }
+static int restore_map(void) { return prepare_source(centre_lat,centre_lon,saved.z); }
 static void close_hidden(void) {
     source_refreshing=false;
     xSemaphoreTake(file_lock,portMAX_DELAY);
@@ -1566,7 +1607,18 @@ int ls_cartocore_command(int argc, char **argv)
     if(argc==1 || (argc==2 && !strcmp(argv[1],"status")) ||
        (argc>=2 && !strcmp(argv[1],"hw"))) {
         if(argc>3 || (argc==3 && strcmp(argv[2],"reset"))) return 1;
-        ls_carto_hw_status(argc==3);return 0;
+        ls_carto_hw_status(argc==3);
+        /* What MAP last asked for and from where, copied under the view lock
+           (the worker may close or swap the source at any moment). */
+        if(view_lock && xSemaphoreTake(view_lock,pdMS_TO_TICKS(200))==pdTRUE) {
+            const map_request r=map_mail.request;char path[96];
+            snprintf(path,sizeof(path),"%s",sd_map?sd_map->path:"none");
+            const unsigned long us=(unsigned long)pix_render_us;
+            xSemaphoreGive(view_lock);
+            printf("carto view z%u %.5f,%.5f %dx%d %s source=%s picture=%lu us\n",r.z,r.lat,r.lon,r.cols,r.rows,
+                   r.pixels?"picture":r.braille?"braille":"quadrant",path,us);
+        } else puts("carto view: busy");
+        return 0;
     }
     if (argc==2 && !strcmp(argv[1],"pie")) {
         xSemaphoreTake(command_lock,portMAX_DELAY);
@@ -1666,6 +1718,7 @@ void ls_cartocore_register_command(void)
     file_lock=xSemaphoreCreateMutex();
     if(!file_lock) { vSemaphoreDelete(command_lock); command_lock=NULL; vSemaphoreDelete(view_lock); view_lock=NULL; return; }
     TaskHandle_t idle=NULL;
+    cc_yield_hook=carto_yield;
     if(xTaskCreatePinnedToCoreWithCaps(cache_idle,"carto-idle",16384,NULL,tskIDLE_PRIORITY,&idle,
                                      xPortGetCoreID(),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)!=pdPASS) {
         vSemaphoreDelete(file_lock); file_lock=NULL;
@@ -1686,6 +1739,7 @@ void ls_cartocore_register_command(void)
 
 #else
 #include "lssim_cells_tests.h"
+#include "lssim_outlines_tests.h"
 static void lssim_carto_boundary_test(void) {
     unsigned lo=0,hi=0,z=14;double lat=0,lon=0;
     tui_cell front[4]={{0}},back[4]={{0}};
@@ -1755,6 +1809,8 @@ void lssim_cartocore_pump(void) {
         saved_valid=path!=NULL;
         if(getenv("LSSIM_CARTO_BOUNDARY_TEST")) lssim_carto_boundary_test();
         if(getenv("LSSIM_CELLS_TEST"))lssim_cells_transactions();
+        if(getenv("LSSIM_MAPS_TEST"))lssim_maps_transactions();
+        if(getenv("LSSIM_OUTLINES_TEST"))lssim_outlines_transactions();
         if(getenv("LSSIM_CARTO_NO_MAP_TEST")) {
             cc_ctile map;
             assert(getenv("LSSIM_CARTO_NO_EMBEDDED"));

@@ -40,12 +40,16 @@ static bool         s_keyboard_light = true;
 /* Settings > DEVICE > Check for updates: Daily (true) or Off. Read by the update
    scheduler's timer, so it is RAM only; loaded once in settings_init. */
 static bool         s_update_check = true;
+/* Settings > DEVICE > Language, loaded once in settings_init. */
+static int          s_ui_lang;
 /* Accepted choices must be visible before the delayed write reaches NVS. */
 static int s_boot_sound = 1;
+static int s_notification_sound = SETTINGS_NOTIFY_ALERT;
 static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_audio_muted;
 static uint32_t s_fm_step;
 static uint32_t s_p25_step;
+static uint32_t s_drone_watch = SETTINGS_DRONE_WATCH_DEFAULT;
 static uint32_t s_wf_display = UINT32_MAX;
 static uint32_t s_map_layers;
 static bool s_map_layers_valid;
@@ -306,6 +310,14 @@ static void settings_apply_schema(void)
 
 static void settings_drop_sam_voice_keys(void);
 
+uint32_t settings_get_drone_watch(void) {return __atomic_load_n(&s_drone_watch,__ATOMIC_ACQUIRE);}
+bool settings_set_drone_watch(uint32_t value)
+{
+    if(!s_wq || !settings_drone_watch_valid(value) || !sput_u32("drone_watch_v1",value))return false;
+    __atomic_store_n(&s_drone_watch,value,__ATOMIC_RELEASE);
+    return true;
+}
+
 uint32_t settings_get_fm_step(void) { return __atomic_load_n(&s_fm_step, __ATOMIC_ACQUIRE); }
 void settings_set_fm_step(uint32_t hz)
 {
@@ -325,6 +337,7 @@ void settings_set_p25_step(uint32_t hz)
 bool settings_init(void)
 {
     __atomic_store_n(&s_boot_sound,1,__ATOMIC_RELEASE);
+    __atomic_store_n(&s_notification_sound,SETTINGS_NOTIFY_ALERT,__ATOMIC_RELEASE);
     __atomic_store_n(&s_alert_ring,true,__ATOMIC_RELEASE);
     __atomic_store_n(&s_alert_vibe,true,__ATOMIC_RELEASE);
     s_audio_muted=false;
@@ -332,6 +345,7 @@ bool settings_init(void)
     s_wf_display=UINT32_MAX;
     s_fm_step=0;
     s_p25_step=0;
+    s_drone_watch=SETTINGS_DRONE_WATCH_DEFAULT;
     s_pagers = PAGERS_DEFAULT;
     s_location = 0;
     s_last_fix = 0;
@@ -339,6 +353,7 @@ bool settings_init(void)
     __atomic_store_n(&s_ble_at_boot,true,__ATOMIC_RELEASE);
     __atomic_store_n(&s_wifi_at_boot,true,__ATOMIC_RELEASE);
     __atomic_store_n(&s_update_check,true,__ATOMIC_RELEASE);
+    __atomic_store_n(&s_ui_lang,0,__ATOMIC_RELEASE);
     home_widget_pref_init(false, 0);
     s_home_write_ready = false;
     esp_err_t err = nvs_flash_init();
@@ -362,6 +377,8 @@ bool settings_init(void)
     /**/  settings_apply_schema();
     settings_drop_sam_voice_keys();
     nvs_get_u32(s_nvs, "wf_display", &s_wf_display);
+    nvs_get_u32(s_nvs,"drone_watch_v1",&s_drone_watch);
+    if(!settings_drone_watch_valid(s_drone_watch))s_drone_watch=SETTINGS_DRONE_WATCH_DEFAULT;
     nvs_get_u32(s_nvs, "fm_step_v1", &s_fm_step);
     if (!settings_fm_step_valid(s_fm_step)) s_fm_step=0;
     nvs_get_u32(s_nvs, "p25_step_v1", &s_p25_step);
@@ -387,7 +404,14 @@ bool settings_init(void)
     uint8_t upd_check = 1;
     if(nvs_get_u8(s_nvs,"upd_check",&upd_check)==ESP_OK)
         __atomic_store_n(&s_update_check,upd_check!=0,__ATOMIC_RELEASE);
+    uint8_t ui_lang = 0;
+    if(nvs_get_u8(s_nvs,"ui_lang",&ui_lang)==ESP_OK && settings_ui_lang_valid(ui_lang))
+        __atomic_store_n(&s_ui_lang,(int)ui_lang,__ATOMIC_RELEASE);
 
+    uint8_t notification_sound = SETTINGS_NOTIFY_ALERT;
+    if (nvs_get_u8(s_nvs, "notify_snd", &notification_sound) == ESP_OK &&
+        notification_sound < SETTINGS_NOTIFY_COUNT)
+        __atomic_store_n(&s_notification_sound,notification_sound,__ATOMIC_RELEASE);
     uint8_t boot_sound = 1, alert_ring = 1, alert_vibe = 1;
     if (nvs_get_u8(s_nvs, "boot_snd", &boot_sound) == ESP_OK && boot_sound <= 2)
         __atomic_store_n(&s_boot_sound,boot_sound,__ATOMIC_RELEASE);
@@ -1320,6 +1344,17 @@ void settings_set_update_check(bool daily)
         __atomic_store_n(&s_update_check,daily,__ATOMIC_RELEASE);
 }
 
+int settings_get_ui_lang(void)
+{
+    return __atomic_load_n(&s_ui_lang,__ATOMIC_ACQUIRE);
+}
+void settings_set_ui_lang(int lang)
+{
+    if (!settings_ui_lang_valid(lang)) lang = 0;
+    if (s_nvs_ok && sput_u8("ui_lang", (uint8_t)lang))
+        __atomic_store_n(&s_ui_lang,lang,__ATOMIC_RELEASE);
+}
+
 bool settings_get_auto_rotate(void)
 {
     return __atomic_load_n(&s_auto_rotate,__ATOMIC_ACQUIRE);
@@ -1549,4 +1584,48 @@ bool settings_set_pagers(const settings_pagers_t *cfg)
     s_pagers = v;
     portEXIT_CRITICAL(&s_pagers_lock);
     return true;
+}
+
+/* Notification sound names and indices are shared by console and future UI. */
+static const char *const notification_names[SETTINGS_NOTIFY_COUNT] = {
+    "ALERT", "RADIO KEY", "ROGER", "CHIRP", "OFF"
+};
+int settings_get_notification_sound(void)
+{
+    return __atomic_load_n(&s_notification_sound,__ATOMIC_ACQUIRE);
+}
+bool settings_set_notification_sound(int index)
+{
+    if (index < 0 || index >= SETTINGS_NOTIFY_COUNT) return false;
+    if (index == settings_get_notification_sound()) return true;
+    /* Future UI callbacks must never take set_put's synchronous fallback. */
+    if (!s_wq) return false;
+    if (!sput_u8("notify_snd", (uint8_t)index)) return false;
+    __atomic_store_n(&s_notification_sound,index,__ATOMIC_RELEASE);
+    return true;
+}
+const char *const *settings_notification_sound_names(int *count, int *current)
+{
+    if (count) *count = SETTINGS_NOTIFY_COUNT;
+    if (current) *current = settings_get_notification_sound();
+    return notification_names;
+}
+bool settings_cycle_notification_sound(void)
+{
+    return settings_set_notification_sound((settings_get_notification_sound()+1) % SETTINGS_NOTIFY_COUNT);
+}
+int settings_notification_sound_from_name(const char *name)
+{
+    if (!name) return -1;
+    for (int i=0; i<SETTINGS_NOTIFY_COUNT; ++i) {
+        const char *a=name, *b=notification_names[i];
+        while (*a && *b) {
+            /* Console token radiokey and display label RADIO KEY share an index. */
+            if (*b==' ' && *a!=' ') { ++b; continue; }
+            if (toupper((unsigned char)*a)!=*b) break;
+            ++a; ++b;
+        }
+        if (!*a && !*b) return i;
+    }
+    return -1;
 }

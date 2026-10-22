@@ -286,9 +286,11 @@ const ls_app_doc_t ls_doc_music = {
 };
 
 const ls_app_doc_t ls_doc_drones = {
-    .purpose = "Passively receive nearby BLE Remote ID broadcasts. Broadcast "
-               "identities and authentication are unverified; RSSI ranks "
-               "signal strength, not bearing or distance.",
+    .purpose = "Receive-only early warning for drone links: ELRS 900 and 2.4 GHz "
+               "control, 900 MHz hoppers, 2.4 GHz wideband links, 5.8 GHz analog "
+               "FPV video with a HackRF, and BLE Remote ID. Nothing is sent or "
+               "decoded; each link is a strength and a trend, and only Remote ID "
+               "is a confirmed identity. RSSI ranks strength, not distance.",
     .records = LS_APP_RECORDS_NOTHING,
     .gps = LS_APP_GPS_NAVIGATES,
     .gps_note = "Your GPS fix provides distance and true bearing to a reported "

@@ -84,6 +84,9 @@ int ls_tui_transitions(ls_tui_transition_t out[8]);
 void ls_tui_transition_present(uint32_t present_us, int cells, uint32_t sync_us);
 
 void ls_tui_screen_show(int index);
+/* Drop the tab strip while the current screen wants its room; any screen
+   switch brings it back. */
+void ls_tui_screen_set_bare(bool on);
 
 /* "Run this receiver", or NULL for "nothing here needs one". */
 

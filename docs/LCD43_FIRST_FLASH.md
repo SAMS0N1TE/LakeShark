@@ -37,9 +37,8 @@ Building from source produces all four under `build_lcd43/`; `flash_args` in
 that directory is the authoritative offset list if this document ever drifts
 from it.
 
-```bash
-idf.py -B build_lcd43 -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/lcd43_gui.defaults" build
-```
+The LCD-4.3 touch build ends with 2.16.4. To build it, use the 2.16.4 source and its
+`lcd43_gui.defaults` board profile.
 
 ## Relationship to the upgrade package
 

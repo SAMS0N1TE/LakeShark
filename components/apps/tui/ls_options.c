@@ -11,6 +11,7 @@
 #include "ls_numpad.h"
 #include "ls_picker.h"
 #include "ls_radio_select.h"
+#include "ls_i18n.h"
 
 /* The context the list was opened on, and which table row each list row is.
    The tables are the apps' and const; this is only where the list is. */
@@ -132,15 +133,16 @@ static void fill(const ls_opt_ctx_t *ctx)
     const ls_rsel_radio_t radio = ls_opt_radio(ctx);
     const char *rname = radio < LS_RSEL_RADIOS ? ls_rsel_name(radio) : NULL;
     if (s_depth > 0) {
-        const char *parent = s_up[s_depth - 1]->name;
-        if (rname && strlen(parent) + strlen(ctx->name) + strlen(rname) + 6 < sizeof(title))
-            snprintf(title, sizeof(title), "%s > %s / %s", parent, ctx->name, rname);
+        const char *parent = ls_tr(s_up[s_depth - 1]->name);
+        const char *name = ls_tr(ctx->name);
+        if (rname && strlen(parent) + strlen(name) + strlen(rname) + 6 < sizeof(title))
+            snprintf(title, sizeof(title), "%s > %s / %s", parent, name, rname);
         else
-            snprintf(title, sizeof(title), "%s > %s", parent, ctx->name);
+            snprintf(title, sizeof(title), "%s > %s", parent, name);
     } else if (rname) {
-        snprintf(title, sizeof(title), "%s OPTIONS / %s", ctx->name, rname);
+        snprintf(title, sizeof(title), ls_tr("%s OPTIONS / %s"), ls_tr(ctx->name), rname);
     } else {
-        snprintf(title, sizeof(title), "%s OPTIONS", ctx->name);
+        snprintf(title, sizeof(title), ls_tr("%s OPTIONS"), ls_tr(ctx->name));
     }
     ls_picker_open(title, picked);
     const ls_opt_ctx_t *root=s_depth?s_up[0]:ctx;
@@ -238,7 +240,7 @@ static void number_done(double v)
         char note[LS_PICKER_DETAIL + 32], lo[16], hi[16];
         snprintf(lo, sizeof(lo), "%g", o->lo);
         snprintf(hi, sizeof(hi), "%g", o->hi);
-        snprintf(note, sizeof(note), "%s: %s to %s", o->label, lo, hi);
+        snprintf(note, sizeof(note), ls_tr("%s: %s to %s"), ls_tr(o->label), lo, hi);
         reopen(row, note);
         return;
     }
@@ -269,7 +271,7 @@ static void picked(int row)
     if (why) {
         /* The list stays, with the reason above it, and nothing changes. */
         char note[LS_PICKER_DETAIL * 2];
-        snprintf(note, sizeof(note), "%s: %s", o->label, why);
+        snprintf(note, sizeof(note), "%s: %s", ls_tr(o->label), ls_tr(why));
         reopen(row, note);
         return;
     }
@@ -289,7 +291,7 @@ static void picked(int row)
     case LS_OPT_LEVEL:
         s_edit = row;
         s_back = row;   /* a cancelled keypad brings the list back too */
-        ls_numpad_open(o->label, o->unit ? o->unit : "", o->num ? o->num(o) : 0, number_done);
+        ls_numpad_open(ls_tr(o->label), o->unit ? ls_tr(o->unit) : "", o->num ? o->num(o) : 0, number_done);
         return;
     case LS_OPT_MENU:
         if (o->sub && s_depth < DEPTH) {
@@ -306,7 +308,7 @@ static void picked(int row)
         s_edit = row;
         s_back = row;
         const char *t = o->text ? o->text(o) : "";
-        ls_keyboard_open(o->label, t ? t : "", o->max > 0 ? o->max : 32, text_done);
+        ls_keyboard_open(ls_tr(o->label), t ? t : "", o->max > 0 ? o->max : 32, text_done);
         return;
     }
     case LS_OPT_ACTION:

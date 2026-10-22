@@ -1,4 +1,8 @@
 #include "ls_df_sources.h"
+#include "ls_drone_watch.h"
+#ifndef ESP_PLATFORM
+#pragma weak ls_drone_watch_read
+#endif
 #include "ls_df_band.h"
 #include "ls_trail.h"
 
@@ -38,6 +42,7 @@
 
 typedef struct {
     bool active;
+    uint64_t drone_id, measured_hz;
     ls_dfs_t source;
     uint32_t freq[LS_DFS_CHANNELS];
     int nch;
@@ -117,15 +122,16 @@ static void unlock(void) { xSemaphoreGive(s_lock); }
 
 static bool slot_ok(int k) { return k >= 0 && k < LS_DFS_SLOTS; }
 
-static void publish_at(int k, int ch, uint32_t hz, float level, const char *unit, uint8_t flags, int64_t now)
+static void publish_at(int k, int ch, uint64_t hz, float level, const char *unit, uint8_t flags, int64_t now)
 {
     lock();
     slot_t *sl = &s.slot[k];
     sl->level = level; sl->unit = unit; sl->level_us = now; sl->updates++;
+    sl->measured_hz=hz;
     ls_dfs_reading_t *r = &s.q[(s.qhead + s.qn) % QUEUE];
     if (s.qn == QUEUE) s.qhead = (s.qhead + 1) % QUEUE;     /* the oldest goes */
     else s.qn++;
-    *r = (ls_dfs_reading_t){ .us = now, .freq_hz = hz, .level = level, .slot = (uint8_t)k,
+    *r = (ls_dfs_reading_t){ .us = now, .freq_hz = hz<=UINT32_MAX?(uint32_t)hz:0, .centre_hz=hz, .level = level, .slot = (uint8_t)k,
                              .channel = (uint8_t)ch, .flags = flags };
     unlock();
 }
@@ -171,6 +177,7 @@ static ls_rsel_radio_t radio_of(ls_dfs_t src)
 
 const char *ls_dfs_name(ls_dfs_t src)
 {
+    if(src==LS_DFS_DRONE)return "DRONE WATCH";
     if (src == LS_DFS_MESH) return "MESH";
     if (src == LS_DFS_BAND) {
         EXT_RAM_BSS_ATTR static char band[24];
@@ -183,6 +190,7 @@ const char *ls_dfs_name(ls_dfs_t src)
 
 const char *ls_dfs_unavailable(ls_dfs_t src)
 {
+    if(src==LS_DFS_DRONE)return NULL; /* cached feed; owns no radio */
     if (src == LS_DFS_MESH) {
         ls_mesh_stats_t st; ls_mesh_get_stats(&st);
         return st.running ? NULL : "MeshCore is off: open MESH to start it";
@@ -302,6 +310,18 @@ bool ls_dfs_select_slot(int k, ls_dfs_t src, uint32_t freq_hz)
 
 bool ls_dfs_select(ls_dfs_t src, uint32_t freq_hz) { return ls_dfs_select_slot(0, src, freq_hz); }
 
+bool ls_dfs_drone_target(int k,uint64_t id)
+{
+    ls_drone_watch_entry_t e;
+#ifndef ESP_PLATFORM
+    if(!ls_drone_watch_read)return false;
+#endif
+    if(!slot_ok(k) || !ls_drone_watch_read(id,&e) || !ls_dfs_select_slot(k,LS_DFS_DRONE,0))return false;
+    lock();s.slot[k].drone_id=id;
+    snprintf(s.slot[k].target_name,sizeof(s.slot[k].target_name),"Drone link %.3f MHz",e.centre_hz/1e6);
+    unlock();return true;
+}
+
 int ls_dfs_set_channels(int k, const uint32_t *hz, int n, uint32_t dwell_ms)
 {
     if (!slot_ok(k) || !hz || n < 1) return 0;
@@ -349,6 +369,7 @@ void ls_dfs_poll_slot(int k, ls_dfs_status_t *out)
     out->fresh = sl->level_us && esp_timer_get_time() - sl->level_us < FRESH_US;
     out->level = sl->level; out->unit = sl->unit ? sl->unit : "";
     out->freq_hz = sl->freq[0]; out->updates = sl->updates;
+    out->centre_hz=sl->measured_hz;
     out->channels = sl->nch ? sl->nch : 1; out->channel = sl->cur;
     memcpy(out->freqs, sl->freq, sizeof(out->freqs));
     /* BAND's channels are the emitters it has found, not a list. */
@@ -855,6 +876,20 @@ static void release(int k, ls_dfs_t running, ls_dfs_t next, bool active)
     }
 }
 
+static void step_drone(int k,uint64_t id)
+{
+    ls_drone_watch_entry_t e;
+#ifndef ESP_PLATFORM
+    if(!ls_drone_watch_read)return;
+#endif
+    int64_t now=esp_timer_get_time();
+    if(ls_drone_watch_read(id,&e) && e.last_us!=w[k].det_us && now>=e.last_us && now-e.last_us<FRESH_US) {
+        w[k].det_us=e.last_us;
+        publish_at(k,0,e.centre_hz,e.rssi_dbm,e.calibrated?"dBm":"dB",0,e.last_us);
+        status(k,"Drone Watch measured level; turn slowly between revisits");
+    } else status(k,"Waiting for this Drone Watch entry to be revisited");
+}
+
 void ls_dfs_step(void)
 {
     ls_trail(LS_TRAIL_DFS, "step");
@@ -869,6 +904,7 @@ void ls_dfs_step(void)
             release(k, w[k].running, c[k].source, c[k].active);
             w[k].running = c[k].active ? c[k].source : LS_DFS_COUNT;
             w[k].heard = w[k].field_seq = w[k].wifi_rev = 0;
+            w[k].det_us=0;
             w[k].cur = 0; w[k].tuned_hz = 0; w[k].dwell_until = 0;
             if (c[k].active) set_cur(k, 0);
         }
@@ -878,6 +914,7 @@ void ls_dfs_step(void)
         const bool targeted = c[k].target >= 0;
         ls_trail(LS_TRAIL_DFS, ls_dfs_name(c[k].source));
         switch (c[k].source) {
+        case LS_DFS_DRONE: step_drone(k,c[k].drone_id); break;
         case LS_DFS_MESH:   step_mesh(k, c[k].target_key, targeted); break;
         case LS_DFS_LORA:   step_lora(k, &c[k], retune); break;
         case LS_DFS_BAND:   step_band(k, &c[k], retune); break;

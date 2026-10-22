@@ -1,7 +1,5 @@
 CONFIG_LS_BOARD_T_DISPLAY_P4=y
 
-CONFIG_LAKESHARK_HEADLESS=y
-
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 CONFIG_PARTITION_TABLE_CUSTOM=y
@@ -111,3 +109,9 @@ CONFIG_LWIP_TCP_RECVMBOX_SIZE=24
 # app slot. boards/debug.defaults puts both back (config t-display-p4-debug).
 CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
 CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+
+# App space: compile for size; the per-frame and DSP code keeps
+# -O2 per file (components/*/CMakeLists.txt). Measured on a T-Display-P4:
+# image 4.67 -> 4.20 MB (11% free), UI CPU 6.6 -> 7.0 %, frame p95 4.0 -> 4.1 ms.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+# CONFIG_COMPILER_OPTIMIZATION_PERF is not set

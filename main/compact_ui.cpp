@@ -4,11 +4,17 @@
 #include "tui/ls_detector_ui.h"
 #include "tui/ls_sweep_app.h"
 #include "tui/ls_rid_ui.h"
+#include "tui/ls_drone_watch.h"
+#include "tui/ls_compass_live.h"
 /* T-Display: the TUI shell, the panel it owns, and its console commands. */
 #include "compact_ui.h"
 #include "ls_board.h"
 #if LS_HAS_COMPACT_UI
 #include "ls_panel.h"
+#include "ls_panel_ws.h"
+#include "tui/ls_rterm.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "ls_keypad.h"
 #include "tui/ls_map.h"
 #include "tui/ls_cartocore_map.h"
@@ -42,6 +48,7 @@
 #include "tui/ls_tui.h"
 #include "tui/ls_ui_perf.h"
 #include "tui/ls_theme.h"
+#include "tui/ls_i18n.h"
 #include "tui/ls_tui_screen.h"
 /* Notices from apps that are not the one on screen. */
 #include "tui/ls_notify.h"
@@ -66,6 +73,7 @@ extern "C" int cell_report_transport_state(const char *peer,const char *text)
 #include "tui/ls_icons.h"
 #include "audio_player.h"
 #include "tui/ls_splash.h"
+#include "esp_app_desc.h"
 #include "tui/ls_tui_density.h"
 /* For the waterfall's own numbers in 'tui cost'. */
 #include "tui/ls_waterfall.h"
@@ -110,6 +118,8 @@ extern "C" {
 }
 #include <dirent.h>
 #include <sys/stat.h>
+#include "esp_rom_crc.h"
+#include <unistd.h>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -333,6 +343,8 @@ static bool tui_live_claim(const char *mode)
 }
 static bool tui_live_p25(void)  { return tui_live_claim("P25"); }
 static bool tui_live_fm(void)   { return tui_live_claim("FM"); }
+/* A drone link heard right now. */
+static bool tui_live_drones(void) { return ls_drone_watch_count() > 0; }
 static bool tui_live_adsb(void) { return tui_live_claim("ADS-B"); }
 static bool tui_live_rec(void)  { return tui_live_claim("REC"); }
 /* The directory tile's live lamp. mesh.up is a bool published by
@@ -416,7 +428,7 @@ static bool             s_imu_ok;
    single consumer, so the indices need no lock. */
 static int64_t s_mic_down_us;   /* when MIC went down */
 
-#define TUI_INJECT_N 8
+#define TUI_INJECT_N 32   /* a remote terminal can paste, or type faster than a frame */
 /* The ring carries the CHARACTER too, not just the key code.
    Screens bind their controls to letters - the mesh screen is S/T/A, the
    waterfall is V/H - and `tui key` could only ever send F-keys and arrows.
@@ -438,6 +450,7 @@ static volatile bool s_tui_shot_req = false;
    waits; this task fills it and says so by clearing the request. */
 static volatile bool      s_tui_png_req = false;
 static uint16_t *volatile s_tui_png_buf = nullptr;
+static volatile uint32_t s_tui_png_wh;      /* w << 16 | h that s_tui_png_buf is for; 0 when the copy was refused */
 
 /* 'tui rec': the grid as a video. A PNG is 30 to 55 KB and the console
    moves about 11 KB a second, so pixels cannot be sent at 24 frames a
@@ -759,6 +772,58 @@ static volatile tui_tap_t s_tui_tap[TUI_INJECT_N];
 static volatile uint8_t   s_tui_tap_w = 0;
 static volatile uint8_t   s_tui_tap_r = 0;
 
+/* The console and the remote terminal (ls_term, its own task) both fill the
+   two rings; the UI task empties them. One writer at a time. */
+static portMUX_TYPE s_inject_mux = portMUX_INITIALIZER_UNLOCKED;
+/* Given with each push so the UI loop takes it now rather than at the end of
+   its sleep; not the task notification, which starts sessions. */
+static SemaphoreHandle_t s_tui_wake;
+
+static bool tui_push_key(ls_tk_t k, char ch)
+{
+    taskENTER_CRITICAL(&s_inject_mux);
+    const uint8_t next = (uint8_t)((s_tui_inject_w + 1) % TUI_INJECT_N);
+    const bool room = next != s_tui_inject_r;
+    if (room) {
+        s_tui_inject[s_tui_inject_w].k  = k;
+        s_tui_inject[s_tui_inject_w].ch = ch;
+        s_tui_inject_w = next;
+    }
+    taskEXIT_CRITICAL(&s_inject_mux);
+    if (room && s_tui_wake) xSemaphoreGive(s_tui_wake);
+    return room;
+}
+
+static bool tui_push_tap(int c, int r)
+{
+    taskENTER_CRITICAL(&s_inject_mux);
+    const uint8_t next = (uint8_t)((s_tui_tap_w + 1) % TUI_INJECT_N);
+    const bool room = next != s_tui_tap_r;
+    if (room) {
+        s_tui_tap[s_tui_tap_w].col = (int16_t)c;
+        s_tui_tap[s_tui_tap_w].row = (int16_t)r;
+        s_tui_tap_w = next;
+    }
+    taskEXIT_CRITICAL(&s_inject_mux);
+    if (room && s_tui_wake) xSemaphoreGive(s_tui_wake);
+    return room;
+}
+
+static void term_key(int k, char ch) { tui_push_key((ls_tk_t)k, ch); }
+static void term_tap(int c, int r) { tui_push_tap(c, r); }
+static void term_uart_write(const char *b, size_t n)
+{
+    uart_write_bytes((uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM, b, n);
+}
+static void term_uart_wait(void)
+{
+    uart_wait_tx_done((uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM, pdMS_TO_TICKS(500));
+}
+static void term_uart_baud(int baud)
+{
+    uart_set_baudrate((uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM, (uint32_t)baud);
+}
+
 /* A font change is a grid change, and the grid is settled at
    ls_tui_begin. So it is the rotation dance without the rotation: stop the
    session, and the exit path starts a fresh one that reads the new size. */
@@ -771,6 +836,10 @@ static void tui_request_regrid(void)
     s_tui_regrid_req = true;
     s_tui_stop = true;
 }
+
+/* `tui splash [frame]`: the next session plays the splash again, silently,
+   and stops on `frame` for a few seconds so it can be looked at. */
+static volatile int s_splash_replay = -1;
 
 /* A manual rotate costs TWO session rebuilds and then loses. */
 
@@ -834,8 +903,16 @@ static bool tui_apply_rotation(int quarter)
 static bool tui_logical_size(int *w, int *h)
 {
     ls_panel_fb_t fb;
-    if (!ls_panel_fb(&fb)) return false;
     const bool wide = (s_rotation & 1) != 0;
+    /* A terminal-only screen has a size for each way up and is never turned:
+       an odd quarter is its portrait. */
+    if (ls_panel_ws_term_view(wide)) {
+        if (!ls_panel_fb(&fb)) return false;
+        *w = fb.width;
+        *h = fb.height;
+        return true;
+    }
+    if (!ls_panel_fb(&fb)) return false;
     *w = wide ? fb.height : fb.width;
     *h = wide ? fb.width : fb.height;
     return true;
@@ -860,9 +937,75 @@ static inline uint32_t ph_avg(uint32_t avg, int64_t dt)
     return avg ? (avg * 7u + d) / 8u : d;
 }
 
+/* The splash while app_main is still working: the globe closes in and the
+   progress line fills as boot really gets through its stages, and both reach
+   the end together when compact_ui_start hands over. Drawn on the UI's own
+   worker before its first session, so nothing else draws meanwhile. */
+#define BOOT_SPLASH_STEP_MS 40
+static volatile int s_boot_pct;
+static const char *volatile s_boot_label;
+static volatile bool s_boot_splash_wanted, s_boot_splash_shown, s_boot_splash_handed;
+
+void compact_ui_boot_progress(int pct, const char *label)
+{
+    if (pct > 100) pct = 100;
+    if (pct > s_boot_pct) s_boot_pct = pct;
+    if (label) s_boot_label = label;
+}
+
+static void boot_splash_run(void)
+{
+    ls_tui_set_font_index(ls_tui_font_for_view(load_font_index(),
+                          ls_tui_screen_name(ls_tui_screen_current()), false));
+#ifdef LS_PANEL_CUTOUT_R
+    ls_tui_set_rotation_cw(s_rotation != 3);
+    ls_tui_set_cutout(LS_PANEL_CUTOUT_CX, LS_PANEL_CUTOUT_CY, LS_PANEL_CUTOUT_R);
+#endif
+#ifdef LS_BOARD_LCD_CORNER_R
+    ls_tui_set_corner_radius(LS_BOARD_LCD_CORNER_R);
+#endif
+    int lw = 0, lh = 0;
+    if (!tui_logical_size(&lw, &lh) || !ls_tui_begin(lw, lh)) {
+        s_boot_splash_wanted = false;       /* the first session animates as before */
+        return;
+    }
+    int cols, rows, cw, ch;
+    ls_tui_geometry(&cols, &rows, &cw, &ch);
+    tui_surface *sf = ls_tui_surface();
+    ls_splash_set_caption(esp_app_get_description()->version);
+    const int64_t t0 = esp_timer_get_time();
+    float shown = 0;
+    for (bool lit = false;; ) {
+        /* A boot that never reaches the UI must not leave the globe turning
+           over a dead board: after 30 s it finishes anyway. */
+        const int target = esp_timer_get_time() - t0 > 30000000 ? 100 : s_boot_pct;
+        /* Toward what boot has reached, quickly over a big step and never
+           past it, except a slow creep into the next few percent while one
+           stage takes its time, so the globe never stands still. */
+        const float reach = target >= 100 ? 100.0f : (float)(target + 6 > 99 ? 99 : target + 6);
+        float step = (target - shown) * 0.15f;
+        if (step < 0.12f) step = 0.12f;
+        if (shown + step > reach) step = reach > shown ? reach - shown : 0;
+        if (target >= 100 && 100.0f - shown < 0.5f) shown = 100.0f;
+        else shown += step;
+        ls_splash_set_status(s_boot_label);
+        ls_splash_draw(sf, cols, rows, (int)(shown * SPLASH_FRAMES / 100.0f), SPLASH_FRAMES);
+        ls_tui_present();
+        __atomic_add_fetch(&s_tui_beat, 1, __ATOMIC_RELAXED);   /* alive, for the stall check */
+        if (!lit) { display_ctl_reapply(); lit = true; }
+        if (shown >= 100.0f) break;
+        vTaskDelay(pdMS_TO_TICKS(BOOT_SPLASH_STEP_MS));
+    }
+    s_boot_splash_shown = true;
+    printf("tui: boot splash %lld ms\n", (esp_timer_get_time() - t0) / 1000);
+}
+
 static bool tui_session(void)
 {
 
+    /* The compass draws its dial on this screen, so it takes its heading
+       from the edge that is up on it (portrait top or a landscape side). */
+    ls_tui_set_orientation_listener(ls_compass_set_view_up);
     /* Before begin, because begin is where the cell size becomes the
        grid and nothing may change it afterwards. */
     if(!cell_performance_active() && !s_tui_rebuilding) {
@@ -889,6 +1032,10 @@ static bool tui_session(void)
         s_look_restored = true;
         ls_tui_set_theme(ls_tui_theme_at(settings_get_theme()));
         ls_tui_set_daylight(cell_performance_active()?true:settings_get_daylight());
+        /* The language, read at settings_init; a change in Settings > Device
+           goes back through the setting (no flash write on this path). */
+        ls_i18n_load(settings_get_ui_lang());
+        ls_i18n_set_saver(settings_set_ui_lang);
     }
     int lw = 0, lh = 0;
     if (!tui_logical_size(&lw, &lh) || !ls_tui_begin(lw, lh)) {
@@ -1009,8 +1156,8 @@ static bool tui_session(void)
               LS_APP_EXTRA, &ls_scr_radios, nullptr, &ls_doc_radios },
             { "link", "LINK", "Wi-Fi + BLE", LS_ICON_WIRELESS, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_wireless, nullptr, &ls_doc_link },
-            { "drones", "DRONES", "BLE Remote ID", LS_ICON_DRONE, TUI_CYAN,
-              LS_APP_EXTRA, &ls_scr_drones, nullptr, &ls_doc_drones },
+            { "drones", "DRONES", "early warning", LS_ICON_DRONE, TUI_CYAN,
+              LS_APP_EXTRA, &ls_scr_drones, tui_live_drones, &ls_doc_drones },
             { "detector", "DETECTOR", "rule matches", LS_ICON_DETECTOR, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_detector, nullptr, &ls_doc_detector },
             { "sweep", "SWEEP", "passive nearby signals", LS_ICON_SWEEP, TUI_GREEN,
@@ -1081,7 +1228,9 @@ static bool tui_session(void)
        splash. The panel still has to be lit - that was the first frame's
        job and it is not part of the animation - and it is lit from the same
        stored brightness either way. */
-    const bool rebuilt = s_tui_rebuilding;
+    const int replay = s_splash_replay;
+    s_splash_replay = -1;
+    const bool rebuilt = s_tui_rebuilding && replay < 0;
     s_tui_rebuilding = false;
     if (rebuilt) {
         const int64_t start = esp_timer_get_time();
@@ -1092,16 +1241,28 @@ static bool tui_session(void)
         display_ctl_reapply();
     }
 
-    for (int frame = 0; !rebuilt && frame <= SPLASH_FRAMES; frame++) {
+    ls_splash_set_caption(esp_app_get_description()->version);
+    const int last_frame = replay >= 0 && replay < SPLASH_FRAMES ? replay : SPLASH_FRAMES;
+    /* The boot splash already played the animation through: this session
+       draws only its last frame, the picture already on the glass, and the
+       chime and buzz go with it as they always did. */
+    const bool handed = s_boot_splash_shown && !s_boot_splash_handed && replay < 0;
+    if (handed) s_boot_splash_handed = true;
+    else ls_splash_set_status(nullptr);
+    const int first_frame = handed ? last_frame : 0;
+    for (int frame = first_frame; !rebuilt && frame <= last_frame; frame++) {
         const int64_t start = esp_timer_get_time();
         ls_splash_draw(sf, cols, rows, frame, SPLASH_FRAMES);
         ls_tui_present();
         ls_ui_perf_frame(&s_perf, start, esp_timer_get_time());
         tui_perf_service();
-        if (frame == 0) {
-            /* First frame is on the glass; safe to light it now. */
-            display_ctl_reapply();
-            /* And the chime and the buzz go with it, not before it. */
+        /* First frame is on the glass; safe to light it now. */
+        if (frame == first_frame) display_ctl_reapply();
+        if (frame == last_frame && replay < 0) {
+            /* The chime and the buzz with the splash's last frame, not its
+               first: on the first the amplifier had only just come up and
+               the radios were starting beside it, and the chime played
+               distorted. */
 
             /* NOT AFTER A BOOT THAT DID NOT FINISH. */
 
@@ -1121,7 +1282,9 @@ static bool tui_session(void)
         }
         vTaskDelay(pdMS_TO_TICKS(SPLASH_STEP_MS));
     }
-    if (!rebuilt) vTaskDelay(pdMS_TO_TICKS(SPLASH_HOLD_MS));
+    if (replay >= 0) ls_tui_dump();
+    if (!rebuilt) vTaskDelay(pdMS_TO_TICKS(replay >= 0 ? 6000 : SPLASH_HOLD_MS));
+    ls_splash_set_status(nullptr);
 
     ls_tui_invalidate();
     const int64_t first_start = esp_timer_get_time();
@@ -1276,9 +1439,14 @@ static bool tui_session(void)
         /* The last presented frame is on the glass whole here. */
         if (s_tui_png_req) {
             ls_panel_fb_t fb;
-            if (s_tui_png_buf && ls_panel_fb(&fb))
-                memcpy(s_tui_png_buf, fb.pixels,
-                       (size_t)fb.width * fb.height * sizeof(uint16_t));
+            /* Only into a buffer sized for this framebuffer: a terminal-only
+               screen changes size when it turns, and a turn between the
+               request and this copy would run past the end of it. */
+            if (s_tui_png_buf && ls_panel_fb(&fb) &&
+                ((uint32_t)fb.width << 16 | (uint32_t)fb.height) == s_tui_png_wh)
+                memcpy(s_tui_png_buf, fb.pixels, (size_t)fb.width * fb.height * sizeof(uint16_t));
+            else
+                s_tui_png_wh = 0;
             s_tui_png_req = false;
         }
         /* 'tui rec': the grid as it is on the glass, when the sender is free. */
@@ -1341,7 +1509,7 @@ static bool tui_session(void)
         if (mode >= 0) {
             const ls_app_t *app = ls_app_by_id(TUI_MODES[mode].app);
             if (app && app->screen) {
-                display_ctl_activity();
+                display_ctl_nudge();     /* from a console or a remote terminal: a dark screen stays dark */
                 ls_tui_screen_show(ls_tui_screen_index_of(app->screen));
                 if (TUI_MODES[mode].page >= 0)
                     ls_scr_fm_show_page(TUI_MODES[mode].page);
@@ -1352,7 +1520,7 @@ static bool tui_session(void)
            console tap and a thumb cannot disagree about what a cell does. */
         while (s_tui_tap_r != s_tui_tap_w) {
             ls_ui_perf_input(&s_perf, esp_timer_get_time());
-            display_ctl_activity();
+            display_ctl_nudge();
             const int c = s_tui_tap[s_tui_tap_r].col;
             const int r = s_tui_tap[s_tui_tap_r].row;
             s_tui_tap_r = (uint8_t)((s_tui_tap_r + 1) % TUI_INJECT_N);
@@ -1361,7 +1529,7 @@ static bool tui_session(void)
 
         while (s_tui_inject_r != s_tui_inject_w) {
             ls_ui_perf_input(&s_perf, esp_timer_get_time());
-            display_ctl_activity();
+            display_ctl_nudge();
             ls_tk_t k  = s_tui_inject[s_tui_inject_r].k;
             char    ch = s_tui_inject[s_tui_inject_r].ch;
             s_tui_inject_r = (uint8_t)((s_tui_inject_r + 1) % TUI_INJECT_N);
@@ -1427,6 +1595,10 @@ static bool tui_session(void)
         const int64_t ph_present = esp_timer_get_time();
         s_ph_draw_us = ph_avg(s_ph_draw_us, ph_present - ph_draw);
         ls_tui_present();
+        /* A remote terminal watching: the grid just presented, when its last
+           frame has gone. Here rather than before the input, so a key's
+           result goes out this frame and not after the next sleep. */
+        ls_rterm_capture();
         const int64_t ph_sleep = esp_timer_get_time();
         ls_ui_perf_frame(&s_perf, ph_draw, ph_sleep);
         s_ph_present_us = ph_avg(s_ph_present_us, ph_sleep - ph_present);
@@ -1455,7 +1627,9 @@ static bool tui_session(void)
             sleep_ms = 40 - spent_ms;
             if (sleep_ms < 15) sleep_ms = 15;
         }
-        vTaskDelay(pdMS_TO_TICKS(sleep_ms));
+        /* An injected key or tap ends the sleep: a remote terminal waits on it. */
+        if (s_tui_wake) xSemaphoreTake(s_tui_wake, pdMS_TO_TICKS(sleep_ms));
+        else vTaskDelay(pdMS_TO_TICKS(sleep_ms));
         s_ph_sleep_us = ph_avg(s_ph_sleep_us, esp_timer_get_time() - ph_sleep);
     }
 
@@ -1515,6 +1689,9 @@ static void tui_task(void *arg)
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         tui_perf_service();
+        /* Woken early in boot: the splash runs until compact_ui_start has
+           been reached, and the first session follows straight on. */
+        if (s_boot_splash_wanted && !s_boot_splash_shown) boot_splash_run();
         if (!s_tui_task) continue; /* A perf request can wake a stopped UI. */
         while (tui_session()) {}
         s_tui_task = nullptr;
@@ -1685,6 +1862,25 @@ static bool tui_start_session(void)
     return true;
 }
 
+void compact_ui_splash_early(void)
+{
+    if (cell_performance_active() || s_boot_splash_wanted) return;
+    if (ls_panel_start() != ESP_OK) return;     /* compact_ui_start tries again */
+    nvs_handle_t h;
+    if (nvs_open("compact_ui", NVS_READONLY, &h) == ESP_OK) {
+        uint8_t r = 0; nvs_get_u8(h, "rotation", &r); nvs_close(h); if (r < 4) s_rotation = r;
+    }
+    ls_panel_set_brightness(0);
+    display_ctl_init();                 /* default level until settings load */
+    if (!s_tui_worker) {
+        s_tui_worker = ls_flash_task_create_static(tui_task, "ls_tui",
+            sizeof(s_tui_stack), nullptr, 4, s_tui_stack, &s_tui_tcb, 1);
+        if (!s_tui_worker) return;
+    }
+    s_boot_splash_wanted = true;
+    xTaskNotifyGive(s_tui_worker);
+}
+
 static bool tui_rotate_to(int quarter)
 {
     bool was_running = (s_tui_task != nullptr);
@@ -1805,9 +2001,69 @@ static int sd_put(int argc, char **argv)
     return 0;
 }
 
+/* A path on the card, as given or under the mount; nothing that climbs out. */
+static bool sd_path(const char *in, char *out, size_t n)
+{
+    if (!in || !*in || strstr(in, "..") || strchr(in, '\\')) return false;
+    const size_t m = strlen(LS_SDCARD_MOUNT);
+    if (!strncmp(in, LS_SDCARD_MOUNT, m) && (in[m] == '/' || !in[m])) snprintf(out, n, "%s", in);
+    else snprintf(out, n, "%s/%s", LS_SDCARD_MOUNT, in[0] == '/' ? in + 1 : in);
+    return true;
+}
+
+/* 'sd get FILE': the file as base64 lines of 76, each starting '~', between
+   a begin line with its size and an end line with its CRC-32, so a remote
+   terminal can take any file off the card. 'sd rm' removes a file or an empty
+   folder, 'sd mkdir' makes one. */
+static int sd_get(const char *path)
+{
+    static const char abc[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    struct stat st;
+    FILE *f = (stat(path, &st) == 0 && !S_ISDIR(st.st_mode)) ? fopen(path, "rb") : NULL;
+    if (!f) { printf("sd: cannot open %s\n", path); return 1; }
+    printf("sd: get begin %s %lu\n", path, (unsigned long)st.st_size);
+    uint8_t in[57];
+    char line[80];
+    uint32_t crc = 0;
+    unsigned long total = 0, lines = 0;
+    size_t got;
+    while ((got = fread(in, 1, sizeof(in), f)) > 0) {
+        crc = esp_rom_crc32_le(crc, in, got);
+        total += got;
+        char *o = line;
+        *o++ = '~';
+        for (size_t i = 0; i < got; i += 3) {
+            const uint32_t v = (uint32_t)in[i] << 16 | (i + 1 < got ? (uint32_t)in[i + 1] << 8 : 0) |
+                               (i + 2 < got ? in[i + 2] : 0);
+            *o++ = abc[v >> 18 & 63];
+            *o++ = abc[v >> 12 & 63];
+            *o++ = i + 1 < got ? abc[v >> 6 & 63] : '=';
+            *o++ = i + 2 < got ? abc[v & 63] : '=';
+        }
+        *o = 0;
+        puts(line);
+        if (++lines % 32 == 0) vTaskDelay(1);
+    }
+    fclose(f);
+    printf("sd: get end %s %lu bytes crc %08lx\n", path, total, (unsigned long)crc);
+    return 0;
+}
+
 static int sd_cmd(int argc, char **argv)
 {
     if (argc >= 2 && !strcmp(argv[1], "put")) return sd_put(argc, argv);
+    if (argc >= 3 && (!strcmp(argv[1], "get") || !strcmp(argv[1], "rm") || !strcmp(argv[1], "mkdir"))) {
+        char path[280];
+        if (!ls_sdcard_mounted()) { printf("sd: not mounted\n"); return 1; }
+        if (!sd_path(argv[2], path, sizeof(path))) { printf("sd: refusing '%s'\n", argv[2]); return 1; }
+        if (!strcmp(argv[1], "get")) return sd_get(path);
+        struct stat st;
+        int rc;
+        if (!strcmp(argv[1], "mkdir")) rc = mkdir(path, 0777);
+        else rc = stat(path, &st) != 0 ? -1 : S_ISDIR(st.st_mode) ? rmdir(path) : unlink(path);
+        printf("sd: %s %s %s\n", argv[1], path, rc == 0 ? "ok" : "failed (missing, not empty, or exists)");
+        return rc == 0 ? 0 : 1;
+    }
     if (argc >= 2 && !strcmp(argv[1], "ls")) {
         const char *dir = (argc >= 3) ? argv[2] : LS_SDCARD_MOUNT;
         if (!ls_sdcard_mounted()) { printf("sd: not mounted\n"); return 1; }
@@ -1920,6 +2176,21 @@ static int tui_cmd(int argc, char **argv)
         s_tui_stop = true;
         return 0;
     }
+    /* 'tui doc': the open app's own documentation, what its [?] shows, one
+       labelled line each so a remote terminal can show it beside the screen. */
+    if (argc >= 2 && !strcmp(argv[1], "doc")) {
+        const ls_app_t *app = ls_app_current();
+        if (!app) { printf("doc: none\n"); return 0; }
+        printf("doc: %s %s\n", app->id, app->name);
+        if (app->doc && app->doc->purpose) printf("doc purpose: %s\n", app->doc->purpose);
+        if (app->screen && app->screen->hint && app->screen->hint[0]) printf("doc keys: %s\n", app->screen->hint);
+        if (app->doc && app->doc->records != LS_APP_RECORDS_NOTHING && app->doc->record_note)
+            printf("doc keeps: %s\n", app->doc->record_note);
+        if (app->doc && app->doc->gps != LS_APP_GPS_UNUSED && app->doc->gps_note)
+            printf("doc gps: %s\n", app->doc->gps_note);
+        printf("doc end\n");
+        return 0;
+    }
     /* Sweep the corner radius against the actual glass.
 
        The number the grid stands off by was inherited from the LVGL chrome
@@ -2013,11 +2284,7 @@ static int tui_cmd(int argc, char **argv)
             printf("tui: (%d,%d) is outside the %dx%d grid\n", c, r, cols, rows);
             return 1;
         }
-        const uint8_t next = (uint8_t)((s_tui_tap_w + 1) % TUI_INJECT_N);
-        if (next == s_tui_tap_r) { printf("tui: tap queue full\n"); return 1; }
-        s_tui_tap[s_tui_tap_w].col = (int16_t)c;
-        s_tui_tap[s_tui_tap_w].row = (int16_t)r;
-        s_tui_tap_w = next;
+        if (!tui_push_tap(c, r)) { printf("tui: tap queue full\n"); return 1; }
         printf("tui: tapped (%d,%d)\n", c, r);
         return 0;
     }
@@ -2063,11 +2330,7 @@ static int tui_cmd(int argc, char **argv)
                    "right, or one character for a screen's own shortcut\n");
             return 0;
         }
-        uint8_t next = (uint8_t)((s_tui_inject_w + 1) % TUI_INJECT_N);
-        if (next == s_tui_inject_r) { printf("tui: key queue full\n"); return 1; }
-        s_tui_inject[s_tui_inject_w].k  = k;
-        s_tui_inject[s_tui_inject_w].ch = ch;
-        s_tui_inject_w = next;
+        if (!tui_push_key(k, ch)) { printf("tui: key queue full\n"); return 1; }
 
         vTaskDelay(pdMS_TO_TICKS(60));
         const char *scr = ls_tui_screen_name(ls_tui_screen_current());
@@ -2204,6 +2467,14 @@ static int tui_cmd(int argc, char **argv)
         }
         return 0;
     }
+    if (argc >= 2 && !strcmp(argv[1], "splash")) {
+        if (!s_tui_task) { printf("tui: not running\n"); return 1; }
+        const int frame = argc >= 3 ? atoi(argv[2]) : SPLASH_FRAMES;
+        s_splash_replay = frame < 0 ? 0 : frame;
+        tui_request_regrid();
+        printf("tui: splash to frame %d of %d\n", s_splash_replay, SPLASH_FRAMES);
+        return 0;
+    }
     if (argc >= 2 && !strcmp(argv[1], "shot")) {
 
         if (!s_tui_task) { ls_tui_dump(); return 0; }
@@ -2230,6 +2501,7 @@ static int tui_cmd(int argc, char **argv)
         const size_t bytes = (size_t)fb.width * fb.height * sizeof(uint16_t);
         uint16_t *snap = (uint16_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
         if (!snap) { printf("tui: no PSRAM for a %u byte snapshot\n", (unsigned)bytes); return 1; }
+        s_tui_png_wh = (uint32_t)fb.width << 16 | (uint32_t)fb.height;
         s_tui_png_buf = snap;
         s_tui_png_req = true;
         for (int i = 0; i < 100 && s_tui_png_req; i++) vTaskDelay(pdMS_TO_TICKS(20));
@@ -2240,7 +2512,14 @@ static int tui_cmd(int argc, char **argv)
             return 1;
         }
         s_tui_png_buf = nullptr;
-        const bool wide = (s_rotation & 1) != 0;
+        if (s_tui_png_wh != ((uint32_t)fb.width << 16 | (uint32_t)fb.height)) {
+            heap_caps_free(snap);
+            printf("tui: the screen changed size while it was being copied - run 'tui png' again\n");
+            return 1;
+        }
+        /* A terminal-only screen is drawn unturned whichever way up it is. */
+        const char *panel = ls_panel_ws_name();
+        const bool wide = (s_rotation & 1) != 0 && !(panel && !strcmp(panel, "term"));
         const char *name = argc >= 3 ? argv[2] : "shot";
 
         /* The job lives on the heap, not this stack: if the wait below ever
@@ -3299,17 +3578,19 @@ static int display_cmd(int argc,char **argv)
     } else if (argc == 2 && !strcmp(argv[1], "rotate")) {
         tui_manual_rotation_taken();
         tui_rotate_to((s_rotation + 1) % 4);
+    } else if (argc == 2 && (!strcmp(argv[1], "off") || !strcmp(argv[1], "on"))) {
+        display_ctl_set_off(!strcmp(argv[1], "off"));
     } else if (argc == 2) {
         char *end; long deg = strtol(argv[1], &end, 10);
         if (*argv[1] && !*end && deg >= 0 && deg <= 270 && deg % 90 == 0) {
             tui_manual_rotation_taken();
             tui_rotate_to((int)(deg / 90));
         } else {
-            printf("display: rotate | 0 | 90 | 180 | 270 | brightness 5..100 | timeout 5..240 | autodim on|off\n");
+            printf("display: rotate | 0 | 90 | 180 | 270 | on | off | brightness 5..100 | timeout 5..240 | autodim on|off\n");
         }
     }
-    printf("display=%d degrees touch=%s brightness=%d%% timeout=%ds touch_age_ms=%lld\n",
-           s_rotation * 90, s_touch_ok ? "ready" : "unavailable",
+    printf("display=%d degrees screen=%s touch=%s brightness=%d%% timeout=%ds touch_age_ms=%lld\n",
+           s_rotation * 90, display_ctl_off() ? "off" : "on", s_touch_ok ? "ready" : "unavailable",
            display_ctl_get_user(), display_ctl_autodim_timeout(),
            (long long)((esp_timer_get_time() - touch_snapshot().received) / 1000));
     printf("autodim=%s%s\n", display_ctl_autodim_enabled() ? "on" : "off",
@@ -3370,8 +3651,10 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     /* Dark until the TUI has a frame up, and lit on its first present,
        so the boot reads as deliberate. there is no longer an old
        interface behind it to hide - only an empty buffer. 0 is dark, not
-       the dimmest lit level, and display_ctl_init leaves it there. */
-    ls_panel_set_brightness(0);
+       the dimmest lit level, and display_ctl_init leaves it there. With the
+       boot splash already on the glass it stays lit, and display_ctl_init
+       reads the stored brightness the session lights it to. */
+    if (!s_boot_splash_wanted) ls_panel_set_brightness(0);
     display_ctl_init();
     /* Command descriptors are immutable.  Keeping them automatic made this
        late boot function reserve all of them on the 3.5 KB IDF main stack,
@@ -3406,21 +3689,30 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
         .hint="<action> [args...]",.func=call_cmd,.argtable=nullptr};
     esp_console_cmd_register(&call_c);
     ls_ota_console_register();
-    static const esp_console_cmd_t cmd={.command="display",.help="Display: rotate | 0 | 90 | 180 | 270 | brightness 5..100 | timeout 5..240 | autodim on|off",.hint=nullptr,.func=display_cmd,.argtable=nullptr};
+    static const esp_console_cmd_t cmd={.command="display",.help="Display: rotate | 0 | 90 | 180 | 270 | on | off | brightness 5..100 | timeout 5..240 | autodim on|off",.hint=nullptr,.func=display_cmd,.argtable=nullptr};
     esp_console_cmd_register(&cmd);
 
     ls_keypad_start();
     if (ls_keypad_present()) s_rotation = 1;
     static const esp_console_cmd_t tui={.command="tui",
-        .help="TUI: 'tui' starts it, 'tui off' stops it, 'tui rotate' turns it, 'tui shot' prints the screen as text, 'tui png [name]' sends the real pixels as a PNG, 'tui tap C R' taps a cell, 'tui trans' switch history, 'tui touch' the last touches and why each did or did not tap, 'tui stalltest' proves the UI stall check (ends the run), 'tui cost' the last frame, 'tui corner [px]' the corner standoff, 'tui theme [name]' the colours, 'tui daylight on|off' black on white for the sun",
+        .help="TUI: 'tui' starts it, 'tui off' stops it, 'tui rotate' turns it, 'tui shot' prints the screen as text, 'tui png [name]' sends the real pixels as a PNG, 'tui doc' the open app's own help, 'tui tap C R' taps a cell, 'tui trans' switch history, 'tui touch' the last touches and why each did or did not tap, 'tui stalltest' proves the UI stall check (ends the run), 'tui cost' the last frame, 'tui corner [px]' the corner standoff, 'tui theme [name]' the colours, 'tui daylight on|off' black on white for the sun",
         .hint=nullptr,.func=tui_cmd,.argtable=nullptr};
     esp_console_cmd_register(&tui);
+    static const esp_console_cmd_t term={.command="term",
+        .help="This screen in a terminal on another machine: 'term serial [baud] [ack]' for host/lsterm/lsterm.py over USB, "
+              "'term net on|off' for TCP port 2323 over Wi-Fi with a password ('term net show', 'term net pass <p>', "
+              "'term net kick'), bare 'term' for who is watching",
+        .hint=nullptr,.func=ls_rterm_console,.argtable=nullptr};
+    esp_console_cmd_register(&term);
+    if (!s_tui_wake) s_tui_wake = xSemaphoreCreateBinary();
+    ls_rterm_set_input(term_key, term_tap);
+    ls_rterm_set_serial(term_uart_write, term_uart_wait, term_uart_baud);
     static const esp_console_cmd_t perf={.command="perf",
         .help="TUI/panel performance windows; perf reset clears samples",
         .hint=nullptr,.func=perf_cmd,.argtable=nullptr};
     esp_console_cmd_register(&perf);
     static const esp_console_cmd_t sd={.command="sd",
-        .help="SD card: 'sd' states, 'sd mount' retries, 'sd ls [dir]' lists, 'sd cat FILE' prints a text file, "
+        .help="SD card: 'sd' states, 'sd mount' retries, 'sd ls [dir]' lists, 'sd cat FILE' prints a text file, 'sd get FILE' sends any file as base64, 'sd rm PATH' and 'sd mkdir PATH', "
               "'sd put [dir/]<name> [base64]' writes (no payload truncates)",
         .hint=nullptr,.func=sd_cmd,.argtable=nullptr};
     esp_console_cmd_register(&sd);
@@ -3477,12 +3769,16 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     app_park();
 
     /* Boot into the TUI. it is the only interface. */
+    compact_ui_boot_progress(100, "READY");
     tui_start_session();
+    ls_rterm_start();
     ESP_LOGI("tdp_ui","LakeShark TUI ready, %d degrees",s_rotation*90);
     return ESP_OK;
 }
 #else
 esp_err_t compact_ui_start(void (*mode_changed)(const char *)) { (void)mode_changed; return ESP_ERR_NOT_SUPPORTED; }
+void compact_ui_splash_early(void) {}
+void compact_ui_boot_progress(int pct, const char *label) { (void)pct; (void)label; }
 bool compact_ui_select_mode(const char *mode) { (void)mode; return false; }
 void compact_ui_show_mode(const char *mode) { (void)mode; }
 #endif

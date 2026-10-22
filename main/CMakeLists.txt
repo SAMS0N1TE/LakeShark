@@ -6,6 +6,8 @@ else()
     set(LS_BLE_REQ "")
 endif()
 
+# bt is named outright: IDF resolves requirements before Kconfig values exist,
+# so ${LS_BLE_REQ} is empty in that pass.
 # Optional private extensions, compiled only when this tree has them.
 # Deleting the file is the whole removal -
 # compact_ui.cpp reaches it through __has_include and needs no edit.
@@ -14,31 +16,23 @@ if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/private_console.cpp)
     list(APPEND LS_PRIVATE_SRC private_console.cpp)
 endif()
 
-if(CONFIG_LAKESHARK_HEADLESS)
-    idf_component_register(
-        SRCS headless_main.c compact_ui.cpp sx1262_console.cpp ${LS_PRIVATE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c ls_survey_runtime.c ls_sweep_runtime.c ls_ota.c ls_c6_update.c ls_c6_core.c flipper_link.c flipper_link_telemetry.c flipper_link_aux.c ${LS_BLE_SRC} bsod.c ls_hosted_board.c panic_crumb.c cache_sync_lock.c console_lock.c
-        INCLUDE_DIRS .
-        PRIV_REQUIRES console esp_driver_uart esp_driver_gpio esp_timer lakeshark apps meshcore esp_lvgl_port espressif__esp_hosted
-                      esp_http_client app_update esp_app_format mbedtls nvs_flash ${LS_BLE_REQ})
-else()
-    idf_component_register(
-        SRCS main.cpp boot_splash.cpp bsod.c panic_crumb.c cache_sync_lock.c gui_link.cpp flipper_link.c flipper_link_telemetry.c flipper_link_aux.c ${LS_BLE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c ls_survey_runtime.c ls_sweep_runtime.c screenshot.c screenshot_plan.c
-        INCLUDE_DIRS .)
-endif()
+idf_component_register(
+    SRCS headless_main.c compact_ui.cpp sx1262_console.cpp ${LS_PRIVATE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c ls_survey_runtime.c ls_sweep_runtime.c ls_ota.c ls_p25_packs.c ls_c6_update.c ls_c6_core.c flipper_link.c flipper_link_telemetry.c flipper_link_aux.c ${LS_BLE_SRC} bsod.c ls_hosted_board.c panic_crumb.c cache_sync_lock.c console_lock.c
+    INCLUDE_DIRS .
+    PRIV_REQUIRES console esp_driver_uart esp_driver_gpio esp_timer lakeshark apps meshcore espressif__esp_hosted
+                  esp_http_client app_update esp_app_format mbedtls nvs_flash spi_flash bt ${LS_BLE_REQ})
 
-if(CONFIG_LAKESHARK_HEADLESS)
-    # The apps component's radio picker reads the wireless snapshot, and the
-    # headless main code does not, so the linker would pass main before
-    # anything asked for it.
-    target_link_libraries(${COMPONENT_LIB} INTERFACE "-u ls_wireless_get")
-    idf_component_get_property(LS_HOSTED_DIR espressif__esp_hosted COMPONENT_DIR)
-    target_include_directories(${COMPONENT_LIB} PRIVATE
-        "${LS_HOSTED_DIR}/host/port/esp/freertos/include")
-    # console_lock.c: TERMINAL runs commands beside the UART REPL, and
-    # esp_console_run keeps the line in one shared buffer.
-    target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_console_run")
-    target_link_libraries(${COMPONENT_LIB} INTERFACE "-u __wrap_esp_console_run")
-endif()
+# The apps component's radio picker reads the wireless snapshot, and the
+# headless main code does not, so the linker would pass main before
+# anything asked for it.
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-u ls_wireless_get")
+idf_component_get_property(LS_HOSTED_DIR espressif__esp_hosted COMPONENT_DIR)
+target_include_directories(${COMPONENT_LIB} PRIVATE
+    "${LS_HOSTED_DIR}/host/port/esp/freertos/include")
+# console_lock.c: TERMINAL runs commands beside the UART REPL, and
+# esp_console_run keeps the line in one shared buffer.
+target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_console_run")
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-u __wrap_esp_console_run")
 
 # panic_crumb.c notes each core's trap frame before IDF's panic handler runs.
 target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=panicHandler"
@@ -63,18 +57,6 @@ endif()
 # This is where the console commands live, and a console command is almost
 # entirely printf.
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wformat -Wno-format-truncation)
-
-idf_component_get_property(LVGL_LIB lvgl__lvgl COMPONENT_LIB)
-target_compile_options(
-    ${LVGL_LIB}
-    PRIVATE
-        -DLV_LVGL_H_INCLUDE_SIMPLE
-)
-
-if(CONFIG_LV_MEM_CUSTOM)
-    include(${CMAKE_CURRENT_LIST_DIR}/ls_lvgl_allocator.cmake)
-    ls_configure_lvgl_allocator(${LVGL_LIB})
-endif()
 
 spiffs_create_partition_image(storage ../spiffs FLASH_IN_PROJECT)
 

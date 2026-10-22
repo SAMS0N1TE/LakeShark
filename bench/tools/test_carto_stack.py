@@ -5,7 +5,8 @@ root=Path(__file__).resolve().parents[2]
 build=(Path(sys.argv[1]) if len(sys.argv)>1 else root/'bench/build').resolve()
 roots={'ls_cells_query','ls_cells_pick','ls_cells_action','ls_cells_server','ls_cells_snapshot','ls_carto_map_draw','ls_carto_map_limits','ls_carto_map_leave',
        'ls_cartocore_draw','ls_cartocore_dismiss','ls_carto_map_prepare',
-       'ls_carto_map_select','ls_carto_map_status','ls_carto_map_files','ls_carto_map_labels','ls_carto_map_fresh'}
+       'ls_carto_map_select','ls_carto_map_status','ls_carto_map_files','ls_carto_map_labels','ls_carto_map_fresh',
+       'ls_carto_map_pixel_style','ls_carto_map_pixels'}
 frames={}
 for filename in ('ls_cartocore.c','tui_core.c'):
     path=next(p for p in build.rglob(filename+'.su') if 'carto_stack_audit.dir' in str(p))

@@ -1,4 +1,4 @@
-/* LS_TEST_SOURCES: ${FW}/components/apps/media_gui/media_playlist.c */
+/* LS_TEST_SOURCES: ${FW}/components/apps/tui/media_playlist.c */
 /* LS_TEST_DEFINE: CONFIG_AUDIO_PLAYER_ENABLE_MP3=1 CONFIG_AUDIO_PLAYER_ENABLE_WAV=1 */
 #include "ls_test.h"
 #include "media_playlist.h"

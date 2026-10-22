@@ -16,3 +16,8 @@ idf_component_register(
     PRIV_INCLUDE_DIRS
         "compat"
 )
+
+# Size build: every MAP tile is read and inflated here, so it keeps -O2.
+if(CONFIG_COMPILER_OPTIMIZATION_SIZE)
+    target_compile_options(${COMPONENT_LIB} PRIVATE -O2)
+endif()

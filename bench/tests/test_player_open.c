@@ -1,6 +1,6 @@
 /* LS_TEST_CFLAGS: -Wno-format */
 /* LS_TEST_LINK: -Wl,--wrap=fopen -Wl,--wrap=fclose */
-/* LS_TEST_SOURCES: ${FW}/components/bsp_extra/src/bsp_extra_player_open.c ${FW}/components/bsp_extra/src/bsp_extra_player_state.c ${FW}/managed_components/chmorgan__esp-file-iterator/file_iterator.c ${FW}/components/apps/media_gui/file_iterator_delete.c */
+/* LS_TEST_SOURCES: ${FW}/components/bsp_extra/src/bsp_extra_player_open.c ${FW}/components/bsp_extra/src/bsp_extra_player_state.c ${FW}/managed_components/chmorgan__esp-file-iterator/file_iterator.c */
 /**/
 /* audio_player_play(fp) documents that it takes ownership of the FILE* only on ESP_OK - a non-OK return means the audio task never claimed it and the caller must fclose. */
 

@@ -17,6 +17,7 @@ enum {
     SEEN_CQPSK_TIMING   = 1u << 8,
     SEEN_CQPSK_CARRIER  = 1u << 9,
     SEEN_PHASE2_FOLLOW  = 1u << 10,
+    SEEN_WACN = 1u << 11, SEEN_SYSID = 1u << 12, SEEN_NAC = 1u << 13,
 };
 
 typedef enum {
@@ -379,6 +380,18 @@ static bool parse_line(p25_profile_t *profile, char *line_text,
         if (!text_valid(value, sizeof(profile->site_name), 0))
             return fail(diagnostic, line, P25_PROFILE_ERROR_VALUE_TOO_LONG);
         memcpy(profile->site_name, value, strlen(value) + 1U);
+        return true;
+    }
+    if (!strcmp(key, "wacn") || !strcmp(key, "sysid") || !strcmp(key, "nac")) {
+        bool w = !strcmp(key, "wacn"), sys = !strcmp(key, "sysid");
+        if (!singleton_once(seen, w ? SEEN_WACN : sys ? SEEN_SYSID : SEEN_NAC, diagnostic, line)) return false;
+        uint64_t id;
+        number_result_t nr = parse_u64(value, &id);
+        if (nr != NUMBER_OK) return fail(diagnostic, line, number_error(nr));
+        if (id > (w ? 0xfffffu : 0xfffu)) return fail(diagnostic, line, P25_PROFILE_ERROR_NUMBER_OVERFLOW);
+        if (w) { profile->wacn = (uint32_t)id; profile->wacn_set = true; }
+        else if (sys) { profile->sysid = (uint16_t)id; profile->sysid_set = true; }
+        else { profile->nac = (uint16_t)id; profile->nac_set = true; }
         return true;
     }
     if (strcmp(key, "control") == 0)

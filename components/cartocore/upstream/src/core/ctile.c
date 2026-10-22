@@ -527,6 +527,7 @@ int cc_ctile_tile_scene(cc_str tile,int64_t ox,int64_t oy,cc_arena *a,cc_scene *
 static void put32(uint8_t *p,uint32_t n) { p[0]=(uint8_t)n; p[1]=(uint8_t)(n>>8); p[2]=(uint8_t)(n>>16); p[3]=(uint8_t)(n>>24); }
 static void put16(uint8_t *p,int n) { p[0]=(uint8_t)n; p[1]=(uint8_t)((unsigned)n>>8); }
 int cc_ctile_decode_tile(cc_str tile,cc_arena *a,cc_str *out) {
+    if(cc_yield_hook) cc_yield_hook();
     size_t mark=a->used;
     if(zstd_tile(tile) && (!cc_zstd_decode(tile,a,&tile) || !v6(tile))) goto fail;
     if(v6(tile)) {

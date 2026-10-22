@@ -64,6 +64,17 @@ bool settings_get_ble_at_boot(void)  { return s_ble_boot; }
 void settings_set_ble_at_boot(bool v)  { s_ble_boot = v; }
 bool settings_get_wifi_at_boot(void) { return s_wifi_boot; }
 void settings_set_wifi_at_boot(bool v) { s_wifi_boot = v; }
+/* Notification sound choice, for the simulator's Settings > Sound page. */
+static int s_notify_sound;
+static const char *const s_notify_names[] = { "ALERT", "RADIO KEY", "ROGER", "CHIRP", "OFF" };
+const char *const *settings_notification_sound_names(int *count, int *current)
+{
+    if (count) *count = 5;
+    if (current) *current = s_notify_sound;
+    return s_notify_names;
+}
+bool settings_cycle_notification_sound(void) { s_notify_sound = (s_notify_sound + 1) % 5; return true; }
+bool snd_alert_start(void) { return true; }
 bool settings_get_alert_ring(void) { return s_alert_ring; }
 void settings_set_alert_ring(bool v) { s_alert_ring = v; }
 static bool s_auto_rotate = true;

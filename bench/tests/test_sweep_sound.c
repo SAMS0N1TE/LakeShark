@@ -11,10 +11,13 @@ UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t t) {return 0;}
 bool speech_available(void) {return false;}
 speech_result_t speech_say(const char *text) {LS_CHECK(false);return (speech_result_t)0;}
 uint32_t audio_out_ring_avail(void) {return 0;}
+uint32_t ls_audio_hw_starved(int64_t *first_us,int64_t *last_us) {(void)first_us;(void)last_us;return 0;}
+TickType_t xTaskGetTickCount(void) {return 0;}
 void audio_out_ensure_unmuted(void) {LS_CHECK(false);}
 bool audio_is_muted(void) {return muted;}
 int audio_volume_get(void) {return volume;}
 void audio_out_play_now(void) {notes++;}
+bool audio_write_cue_wait(const int16_t *p,int n,int t) {(void)p;(void)n;(void)t;return true;}
 void audio_write_cue(const int16_t *p,int n) {
     samples+=n;for(int i=0;i<n;i++) {int v=abs(p[i]);if(v>peak) peak=v;}
 }

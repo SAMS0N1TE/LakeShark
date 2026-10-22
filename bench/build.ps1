@@ -41,7 +41,12 @@ if ($target -eq 'esp32p4') {
 
 if ($Clean -and (Test-Path (Join-Path $root $dir))) {
     Write-Host "removing $dir" -ForegroundColor Yellow
-    Remove-Item (Join-Path $root $dir) -Recurse -Force
+    $cleanRoot = [IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
+    $cleanTarget = [IO.Path]::GetFullPath((Join-Path $root $dir))
+    if (-not $cleanTarget.StartsWith($cleanRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Build directory escapes the worktree: $cleanTarget"
+    }
+    Remove-Item -LiteralPath $cleanTarget -Recurse -Force
 }
 
 $script = @"

@@ -1,7 +1,7 @@
 /* Native-rate decoder, using the board abstraction rather than the
    Waveshare-specific BSP player (which is not the T-Display-P4 codec). */
 #include "ls_music_backend.h"
-#include "../media_gui/media_playlist.h"
+#include "media_playlist.h"
 #include "audio_player.h"
 #include "audio/audio_out.h"
 #include "audio/call_store.h"

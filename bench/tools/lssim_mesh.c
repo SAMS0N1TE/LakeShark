@@ -363,6 +363,8 @@ bool ls_mesh_radio_held(void) { return true; }
 bool ls_mesh_radio_hold_bg(bool on) { (void)on; return true; }
 bool ls_mesh_radio_wanted(void) { return false; }
 bool ls_mesh_radio_bg(void) { return false; }
+void ls_mesh_radio_block(bool on) { (void)on; }
+bool ls_mesh_radio_blocked(void) { return false; }
 
 bool ls_lora_present(void) { return false; }
 bool ls_lora_fsk_active(void) { return false; }

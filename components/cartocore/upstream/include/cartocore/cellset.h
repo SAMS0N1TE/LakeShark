@@ -1,7 +1,9 @@
 #ifndef CC_CELLSET_H
 #define CC_CELLSET_H
 #include "ctile.h"
-/* id 0 = overview.ctile; id 1+x*256+y = 8-x-y.ctile.
+#include "zoom_policy.h"
+/* id 0 = overview.ctile; id 1+x*256+y = 8-x-y.ctile (base).
+   Detail uses base id + CC_DETAIL_ID and 8-x-y.detail.ctile.
    Open: 1 success, 0 not installed, -1 I/O error. Read is exact pread.
    Index handle is separately caller-owned. At most four data handles are open.
    Immutable files/index must outlive the set; reopen + invalidate caches after
@@ -17,11 +19,16 @@ typedef struct cc_cellset {
     cc_cellset_io io; cc_ctile_read index_read; void *index_ctx;
     uint64_t index_bytes,clock;
     struct { void *handle; uint64_t bytes,age; uint32_t id; int used; } slots[4];
-    size_t opens,evictions,fallbacks; int missing;
+    size_t opens,evictions,fallbacks; int missing,indexless;
+    void *directory,*staging; size_t directory_bytes,staging_bytes;
 } cc_cellset;
 int cc_cellset_open(cc_cellset *set,cc_ctile_read index_read,void *index_ctx,uint64_t index_bytes,
                     cc_cellset_io io,void *directory,size_t directory_bytes,void *staging,size_t staging_bytes);
 void cc_cellset_close(cc_cellset *set);
+/* No global index. Ownership is the z8 ancestor; io.open enforces catalog membership.
+   A shared 4 KiB directory buffer is reused for each cell lookup. */
+int cc_cellset_open_direct(cc_cellset *set,cc_cellset_io io,void *directory,size_t directory_bytes,
+                           void *staging,size_t staging_bytes);
 /* 1 available, 0 not installed/empty, -1 I/O error; resolved offset is virtual. */
 int cc_cellset_resolve(cc_cellset *set,unsigned z,uint32_t x,uint32_t y,uint64_t *offset,uint32_t *length);
 int cc_cellset_scene(cc_cellset *set,unsigned z,int64_t left,int64_t top,int cols,int rows,

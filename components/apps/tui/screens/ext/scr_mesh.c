@@ -1,6 +1,7 @@
 /* MESH: a messaging app for the MeshCore node. */
 
 #include "../../ls_tui_screen.h"
+#include "../../ls_i18n.h"
 #include "../../ls_text.h"
 
 #include <stdio.h>
@@ -119,6 +120,7 @@ static int      s_air_total;       /* what it started at, for the bar        */
 
 static void flash(const char *m)
 {
+    m = ls_tr(m);
     snprintf(s_flash, sizeof(s_flash), "%s", m); s_flash_ttl = 50;
     if (ls_picker_active()) ls_picker_note(m);
 
@@ -243,12 +245,12 @@ static bool mesh_here(double *lat, double *lon)
 
 static const char *state_word(const ls_mesh_stats_t *st)
 {
-    if (!st->running)   return "OFFLINE";
-    if (st->held) return "RADIO HELD";
-    if (st->on_air) return "ON AIR";
-    if (st->rx_fault || !st->receiving) return "RX FAULT";
-    if (st->tx_enabled) return "ARMED";
-    return "LISTENING";
+    if (!st->running)   return ls_tr("OFFLINE");
+    if (st->held) return ls_tr("RADIO HELD");
+    if (st->on_air) return ls_tr("ON AIR");
+    if (st->rx_fault || !st->receiving) return ls_tr("RX FAULT");
+    if (st->tx_enabled) return ls_tr("ARMED");
+    return ls_tr("LISTENING");
 }
 
 static uint8_t state_hue(const ls_mesh_stats_t *st)
@@ -455,15 +457,15 @@ static void draw_feed(tui_surface *sf, tui_rect r, uint32_t now, bool with_box)
 
     const int n = ls_mesh_messages(s_msg_buf, LS_MESH_MAX_MSGS);
     if (!n) {
-        tui_put_str(sf, r, r.x + 2, top + 1, "no messages yet",
+        tui_put_str(sf, r, r.x + 2, top + 1, ls_tr("no messages yet"),
                     A(DIM_FG, TUI_BLACK));
         tui_put_str(sf, r, r.x + 2, top + 3,
-                    chat_locked()     ? "only this node can read what is sent here."
+                    ls_tr(chat_locked()     ? "only this node can read what is sent here."
                     : conv_private()  ? "only holders of this channel's key can read it."
-                                      : "anything sent here is readable by",
+                                      : "anything sent here is readable by"),
                     A(DIM_FG, TUI_BLACK));
         if (!conv_private())
-            tui_put_str(sf, r, r.x + 2, top + 4, "every MeshCore node in range.",
+            tui_put_str(sf, r, r.x + 2, top + 4, ls_tr("every MeshCore node in range."),
                         A(DIM_FG, TUI_BLACK));
         return;
     }
@@ -499,13 +501,13 @@ static void draw_compose(tui_surface *sf, tui_rect r, const ls_mesh_stats_t *st)
     tui_box(sf, r, NULL, frame);
 
     if (!st->running) {
-        tui_put_str(sf, r, r.x + 2, r.y + 1, "not running - type /start",
+        tui_put_str(sf, r, r.x + 2, r.y + 1, ls_tr("not running - type /start"),
                     A(DIM_FG, TUI_BLACK));
         return;
     }
     if (!can) {
         tui_put_str(sf, r, r.x + 2, r.y + 1,
-                    "disarmed - type /arm to transmit",
+                    ls_tr("disarmed - type /arm to transmit"),
                     A(TUI_YELLOW, TUI_BLACK));
         return;
     }
@@ -514,7 +516,7 @@ static void draw_compose(tui_surface *sf, tui_rect r, const ls_mesh_stats_t *st)
        transmit indicator. The bar is the real airtime, counted down. */
     if (s_air_frames > 0 && s_air_total > 0) {
         const int wfill = ((s_air_total - s_air_frames) * (r.w - 6)) / s_air_total;
-        tui_put_str(sf, r, r.x + 2, r.y + 1, "TX", A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, r, r.x + 2, r.y + 1, ls_tr("TX"), A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
         for (int i = 0; i < r.w - 6; i++)
             tui_put_char(sf, r, r.x + 5 + i, r.y + 1,
                          i <= wfill ? LS_TUI_BLOCK_FULL : LS_TUI_TRACE(1),
@@ -547,7 +549,7 @@ static void draw_compose(tui_surface *sf, tui_rect r, const ls_mesh_stats_t *st)
             text_x = r.x + 1 + w + 1;
         }
     } else {
-        tui_put_str(sf, r, r.x + 2, r.y + 1, ">",
+        tui_put_str(sf, r, r.x + 2, r.y + 1, ls_tr(">"),
                     A(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
     }
 
@@ -591,7 +593,7 @@ static void draw_nodes(tui_surface *sf, tui_rect r, uint32_t now, bool compact)
 
     if (!n) {
 
-        tui_put_str(sf, r, r.x + 2, r.y + 2, "listening...",
+        tui_put_str(sf, r, r.x + 2, r.y + 2, ls_tr("listening..."),
                     A(DIM_FG, TUI_BLACK));
         if (!compact && r.h > 6) {
             static const char *WHY =
@@ -680,8 +682,8 @@ static void draw_nodes(tui_surface *sf, tui_rect r, uint32_t now, bool compact)
         }
     }
     if (!compact && r.h >= 4) {
-        const char *h = ls_tui_keyboard_mode() ? "ENTER opens the node"
-                                         : "tap a node twice to open it";
+        const char *h = ls_tr(ls_tui_keyboard_mode() ? "ENTER opens the node"
+                                                : "tap a node twice to open it");
         tui_put_str(sf, r, r.x + 2, r.y + r.h - 2, h, A(DIM_FG, TUI_BLACK));
     }
 }
@@ -804,16 +806,16 @@ static void draw_inspect(tui_surface *sf, tui_rect r)
             snprintf(line, sizeof(line), "RX %.0fdBm  SNR %+.1fdB", p->reply_rssi, p->reply_snr);
             ls_safe_line(sf, s_inspect_content, y++, line, A(DIM_FG, TUI_BLACK));
         }
-    } else ls_safe_line(sf, s_inspect_content, y++, login_role ?
+    } else ls_safe_line(sf, s_inspect_content, y++, ls_tr(login_role ?
         (session ? "Logged in: TELEM and STATUS ready" : "LOGIN first (blank = guest), then TELEM") :
-        "TRACE: repeaters. TELEM: node must allow you", A(DIM_FG, TUI_BLACK));
+        "TRACE: repeaters. TELEM: node must allow you"), A(DIM_FG, TUI_BLACK));
     if (mine && p->kind == LS_INSPECT_LOGIN && p->state == LS_INSPECT_OK && session) {
         snprintf(line, sizeof(line), "ROLE %s  PERMS %02X  FW %u", session->admin ? "admin" : "guest",
             session->perms, session->fw_level);
         ls_safe_line(sf, s_inspect_content, y++, line, A(TUI_GREEN, TUI_BLACK));
     }
     if (mine && p->kind == LS_INSPECT_LOGIN && p->state == LS_INSPECT_TIMEOUT)
-        ls_safe_line(sf, s_inspect_content, y++, "No answer: out of range or password refused", A(FAINT_FG, TUI_BLACK));
+        ls_safe_line(sf, s_inspect_content, y++, ls_tr("No answer: out of range or password refused"), A(FAINT_FG, TUI_BLACK));
     if (!strcmp(path->peer, s_detail_id) && path->hop_count) {
             snprintf(line, sizeof(line), "OUT + RETURN  %u hops  tag %08lX", path->hop_count, (unsigned long)path->tag);
             ls_safe_line(sf, s_inspect_content, y++, line, A(TUI_CYAN, TUI_BLACK));
@@ -834,13 +836,13 @@ static void draw_inspect(tui_surface *sf, tui_rect r)
                     ls_bar(sf, s_inspect_content, y - s_inspect_content.y, in.x + in.w - 9, 7, (path->snr_q4[i] / 4.0f + 20) / 40);
                 y++;
             }
-            ls_safe_line(sf, s_inspect_content, y++, "RSSI: final RX only", LS_ATTR_DIM);
+            ls_safe_line(sf, s_inspect_content, y++, ls_tr("RSSI: final RX only"), LS_ATTR_DIM);
         }
     if (!strcmp(telem->peer, s_detail_id)) {
         snprintf(line, sizeof(line), "LAST SENSORS tag %08lX", (unsigned long)telem->tag);
         ls_safe_line(sf, s_inspect_content, y++, line, A(TUI_CYAN, TUI_BLACK));
         if (!telem->field_count)
-            ls_safe_line(sf, s_inspect_content, y++, "No telemetry fields returned", A(FAINT_FG, TUI_BLACK));
+            ls_safe_line(sf, s_inspect_content, y++, ls_tr("No telemetry fields returned"), A(FAINT_FG, TUI_BLACK));
         for (int i = 0; i < telem->field_count; i++) {
             const ls_inspect_field_t *f = &telem->fields[i];
             if (f->type == 100 || f->type == 118 || f->type == 133)
@@ -853,7 +855,7 @@ static void draw_inspect(tui_surface *sf, tui_rect r)
             }
         }
         if (telem->telemetry_truncated)
-            ls_safe_line(sf, s_inspect_content, y++, "Additional fields omitted or unparsed", A(FAINT_FG, TUI_BLACK));
+            ls_safe_line(sf, s_inspect_content, y++, ls_tr("Additional fields omitted or unparsed"), A(FAINT_FG, TUI_BLACK));
     }
     if (!strcmp(status->peer, s_detail_id) && status->has_status) {
         snprintf(line, sizeof(line), "STATUS tag %08lX  %.3fV", (unsigned long)status->tag, status->fields[0].value);
@@ -863,7 +865,7 @@ static void draw_inspect(tui_surface *sf, tui_rect r)
         snprintf(line, sizeof(line), "RX %lu  TX %lu packets", (unsigned long)status->rx_packets, (unsigned long)status->tx_packets);
         ls_safe_line(sf, s_inspect_content, y++, line, A(DIM_FG, TUI_BLACK));
     }
-    ls_safe_line(sf, s_inspect_content, y++, "HISTORY", A(TUI_CYAN, TUI_BLACK));
+    ls_safe_line(sf, s_inspect_content, y++, ls_tr("HISTORY"), A(TUI_CYAN, TUI_BLACK));
     for (int i = 0; i < s_inspect_view.history_count; i++) {
         const ls_inspect_history_t *h = &s_inspect_view.history[i];
         if (strcmp(h->peer, s_detail_id)) continue;
@@ -872,7 +874,7 @@ static void draw_inspect(tui_surface *sf, tui_rect r)
         ls_safe_line(sf, s_inspect_content, y++, line, A(DIM_FG, TUI_BLACK));
     }
     int max_scroll = y + s_inspect_scroll - bottom;
-    if (max_scroll > 0) ls_safe_line(sf, s_inspect_content, y++, "UP/DOWN or tap top/bottom to scroll", LS_ATTR_DIM);
+    if (max_scroll > 0) ls_safe_line(sf, s_inspect_content, y++, ls_tr("UP/DOWN or tap top/bottom to scroll"), LS_ATTR_DIM);
     if (max_scroll < 0) max_scroll = 0;
     if (s_inspect_scroll > max_scroll) s_inspect_scroll = max_scroll;
 }
@@ -903,8 +905,8 @@ static void draw_detail(tui_surface *sf, tui_rect r, uint32_t now)
     if (idx < 0) {
         tui_put_str(sf, r, r.x + 2, r.y + 2, s_detail_id, val);
         tui_put_str(sf, r, r.x + 2, r.y + 4,
-                    "this node has dropped out of the list", dim);
-        tui_put_str(sf, r, r.x + 2, r.y + 6, "ESC goes back", faint);
+                    ls_tr("this node has dropped out of the list"), dim);
+        tui_put_str(sf, r, r.x + 2, r.y + 6, ls_tr("ESC goes back"), faint);
         return;
     }
     const ls_mesh_peer_t *p = &s_peer_buf[idx];
@@ -970,18 +972,18 @@ static void draw_detail(tui_surface *sf, tui_rect r, uint32_t now)
             tui_put_str(sf, r, r.x + 2, y, s, A(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
         } else {
             tui_put_str(sf, r, r.x + 2, y,
-                        "no fix and no home set, so no range", faint);
+                        ls_tr("no fix and no home set, so no range"), faint);
         }
         y += 2;
     } else {
-        tui_put_str(sf, r, r.x + 2, y, "no position in its advert", faint);
+        tui_put_str(sf, r, r.x + 2, y, ls_tr("no position in its advert"), faint);
         y += 2;
     }
 
     /* The public key, wrapped. It is what actually identifies the node and
        the only way to check one against another device. */
     if (r.h - (y - r.y) > 8) {
-        tui_put_str(sf, r, r.x + 2, y, "PUBLIC KEY", dim);
+        tui_put_str(sf, r, r.x + 2, y, ls_tr("PUBLIC KEY"), dim);
         y++;
         const int per = (r.w - 4) / 2 * 2;      /* whole bytes per row */
         char line[80];
@@ -1016,13 +1018,13 @@ static void draw_detail(tui_surface *sf, tui_rect r, uint32_t now)
                     if (!strcmp(s_ev_buf[i].id, p->id))
                         hist[nh++] = s_ev_buf[i].rssi;
 
-            tui_put_str(sf, r, r.x + 2, y, "SIGNAL HISTORY", dim);
+            tui_put_str(sf, r, r.x + 2, y, ls_tr("SIGNAL HISTORY"), dim);
             y++;
             tui_rect g = tui_rect_make(r.x + 2, y, r.w - 4, gh - 2);
             if (nh < 2) {
                 tui_put_str(sf, r, g.x, g.y,
-                            nh ? "one frame so far - no trend yet"
-                               : "nothing from this node in the log", faint);
+                            ls_tr(nh ? "one frame so far - no trend yet"
+                               : "nothing from this node in the log"), faint);
             } else {
                 /* Fixed scale, -120 to -40 dBm, which is the whole of what a
                    SX1262 reports. An autoscaled chart of six samples three
@@ -1053,7 +1055,7 @@ static void draw_detail(tui_surface *sf, tui_rect r, uint32_t now)
                 char scale[40];
                 snprintf(scale, sizeof(scale), "-120 to -40 dBm");
                 tui_put_str(sf, r, r.x + 2, y + gh - 2, scale, faint);
-                tui_put_str(sf, r, r.x + r.w - 10, y + gh - 2, "now ->", faint);
+                tui_put_str(sf, r, r.x + r.w - 10, y + gh - 2, ls_tr("now ->"), faint);
             }
             y += gh;
         }
@@ -1537,11 +1539,12 @@ static void page_tabs(tui_surface *sf, tui_rect r)
     tui_put_char(sf, r, x - 1, r.y, '<', A(FAINT_FG, TUI_BLACK));
     for (int i = 0; i < PAGE__COUNT; i++) {
         const bool on = ((mesh_page_t)i == s_page);
-        const int w = (int)strlen(PAGE_NAMES[i]) + 2;
+        const char *page_name = ls_tr(PAGE_NAMES[i]);
+        const int w = (int)strlen(page_name) + 2;
         tui_rect tab = tui_rect_make(x, r.y, w, 1);
         s_page_tab[i] = tab;
         tui_fill(sf, tab, ' ', on ? A(TUI_BLACK, TUI_CYAN) : A(TUI_WHITE, TUI_BLACK));
-        tui_put_str(sf, r, x + 1, r.y, PAGE_NAMES[i],
+        tui_put_str(sf, r, x + 1, r.y, page_name,
                     on ? A(TUI_BLACK, TUI_CYAN) : A(TUI_CYAN, TUI_BLACK));
         x += w + 1;
     }
@@ -1549,12 +1552,12 @@ static void page_tabs(tui_surface *sf, tui_rect r)
     x += 2;
     s_opt_tab = tui_rect_make(x, r.y, 9, 1);
     tui_fill(sf, s_opt_tab, ' ', A(TUI_WHITE, TUI_BLACK));
-    tui_put_str(sf, r, x + 1, r.y, "OPTIONS", A(TUI_CYAN, TUI_BLACK));
+    tui_put_str(sf, r, x + 1, r.y, ls_tr("OPTIONS"), A(TUI_CYAN, TUI_BLACK));
     x += 9;
     if (s_flash_ttl > 0)
         tui_put_str(sf, r, x + 2, r.y, s_flash, A(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
     else
-        tui_put_str(sf, r, x + 2, r.y, "/help for commands",
+        tui_put_str(sf, r, x + 2, r.y, ls_tr("/help for commands"),
                     A(DIM_FG, TUI_BLACK));
 }
 
@@ -1666,7 +1669,7 @@ static void draw_portrait(tui_surface *sf, tui_rect area,
         tui_put_str(sf, body, body.x + LS_ICON_COLS + 3, y + 1,
                     ls_mesh_name(), val);
         tui_put_str(sf, body, body.x + LS_ICON_COLS + 3, y + 3,
-                    st->running ? st->self_id : "--------", dim);
+                    ls_tr(st->running ? st->self_id : "--------"), dim);
         pulse_at(sf, body, body.x + body.w - 5, y + 3);
         y += LS_ICON_ROWS + 1;
 
@@ -1685,12 +1688,12 @@ static void draw_portrait(tui_surface *sf, tui_rect area,
             char a[24], b[24];
             snprintf(a, sizeof(a), "%lu", (unsigned long)st->rx_packets);
             snprintf(b, sizeof(b), "%lu", (unsigned long)st->tx_packets);
-            tui_put_str(sf, body, body.x + 2,              y, "HEARD", dim);
-            tui_put_str(sf, body, body.x + body.w / 2 + 1, y, "SENT",  dim);
+            tui_put_str(sf, body, body.x + 2,              y, ls_tr("HEARD"), dim);
+            tui_put_str(sf, body, body.x + body.w / 2 + 1, y, ls_tr("SENT"),  dim);
             tui_put_str(sf, body, body.x + 2,              y + 1,
-                        st->running ? a : "--", val);
+                        ls_tr(st->running ? a : "--"), val);
             tui_put_str(sf, body, body.x + body.w / 2 + 1, y + 1,
-                        st->running ? b : "--", val);
+                        ls_tr(st->running ? b : "--"), val);
             y += 2;
             if (st->running && st->rx_packets) {
                 char sig[32];
@@ -1725,7 +1728,7 @@ static void draw_portrait(tui_surface *sf, tui_rect area,
                 ls_panel_box(sf, c, NULL, TUI_YELLOW | TUI_BRIGHT);
                 const int wfill = ((s_air_total - s_air_frames) * (c.w - 6))
                                   / s_air_total;
-                tui_put_str(sf, c, c.x + 2, c.y + 1, "TX",
+                tui_put_str(sf, c, c.x + 2, c.y + 1, ls_tr("TX"),
                             A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
                 for (int i = 0; i < c.w - 6; i++)
                     tui_put_char(sf, c, c.x + 5 + i, c.y + 1,
@@ -1795,13 +1798,13 @@ static void draw_portrait(tui_surface *sf, tui_rect area,
 
         char sub[48];
         if (!st->running) {
-            snprintf(sub, sizeof(sub), "OPTIONS starts the stack");
+            snprintf(sub, sizeof(sub), "%s", ls_tr("OPTIONS starts the stack"));
         } else if (on) {
-            snprintf(sub, sizeof(sub), "%s", st->on_air ? "radio is transmitting" : "armed - ready to transmit");
+            snprintf(sub, sizeof(sub), "%s", ls_tr(st->on_air ? "radio is transmitting" : "armed - ready to transmit"));
         } else {
             ls_mesh_radio_t rc;
             ls_mesh_get_radio(&rc);
-            snprintf(sub, sizeof(sub), "%.3f MHz at %d dBm",
+            snprintf(sub, sizeof(sub), ls_tr("%.3f MHz at %d dBm"),
                      rc.freq_hz / 1e6, (int)rc.power_dbm);
         }
         if (in.h >= 2)

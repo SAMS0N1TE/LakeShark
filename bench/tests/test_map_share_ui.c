@@ -18,6 +18,7 @@ esp_err_t ls_mesh_send_text_on(int chan,const char *text) {
 }
 void ls_notify_post(const ls_notice_t *n) { last_notice=*n; }
 void ls_tui_invalidate(void) {}
+void ls_tui_screen_set_bare(bool on) { (void)on; }
 void ls_map_get_center(double *lat,double *lon) { *lat=latitude;*lon=longitude; }
 void ls_map_center(double lat,double lon) { latitude=lat;longitude=lon; }
 void ls_map_follow_set(bool b) { (void)b; }

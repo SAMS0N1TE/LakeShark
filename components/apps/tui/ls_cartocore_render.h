@@ -1,6 +1,10 @@
 /* Shared single-owner render state; host supplies allocation/source adapters. */
 #define DECODED_BYTES (2u*1024u*1024u)
 #define CELL_BYTES (4u*1024u*1024u)
+/* Internal (= DMA-capable) RAM MAP leaves for BLE adverts, Wi-Fi and SPI. */
+#define CARTO_INTERNAL_KEEP (48u*1024u)
+/* What the SD bounce buffer leaves of the DMA pool. */
+#define CARTO_DMA_KEEP (24u*1024u)
 #include "ls_carto_budget.h"
 static bool carto_memory_failed;
 static carto_budget carto_last_budget;
@@ -66,17 +70,32 @@ static render_state *create(int cols,int rows,unsigned z,bool external,bool tile
     render_state *s=heap_caps_calloc(1,sizeof(*s),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if (!s) { carto_failure("state allocation",cols,rows,z); return NULL; }
     (void)external; /* Both console options now use split storage. */
-    s->hot_memory=heap_caps_aligned_alloc(16,hot_bytes,v7?caps:MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
-    if(!s->hot_memory) s->hot_memory=heap_caps_aligned_alloc(16,hot_bytes,caps);
     s->cols=cols; s->rows=rows; s->z=z; s->labels=1;
-    s->memory=capacity?heap_caps_aligned_alloc(16,capacity,caps):NULL;
+    /* Largest block first. The budget reads one free total and one largest
+       block, but cold and decoded need two blocks: with 16.8 MB free and a
+       6 MiB largest block, cold took the 6 MiB block and decoded never fit
+       again. Decoded steps down until it fits; cold then takes what is left. */
+    const char *step="decoded allocation";
+    size_t decoded=carto_last_budget.decoded;
+    while(!(s->decoded_memory=heap_caps_aligned_alloc(16,decoded,caps)) && map.cellset && decoded>CARTO_CELLS_DECODED_MIN)
+        decoded=decoded>2u*CARTO_CELLS_DECODED_MIN?decoded-CARTO_CELLS_DECODED_MIN:CARTO_CELLS_DECODED_MIN;
+    if(!s->decoded_memory) goto fail;
+    carto_last_budget.decoded=decoded;
+    size_t left=heap_caps_get_largest_free_block(caps);
+    left=left>64u*1024u?(left-64u*1024u)/(256u*1024u)*(256u*1024u):0;
+    if(capacity>left) capacity=left;
+    carto_last_budget.cold=capacity;
+    step="cold allocation";
+    if(capacity<2u*CARTO_MIB || !(s->memory=heap_caps_aligned_alloc(16,capacity,caps))) goto fail;
+    /* Internal RAM is the DMA pool BLE, Wi-Fi and the SPI radios share; the
+       hot arena only goes there while that pool keeps its headroom. */
+    if(!v7 && heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)>hot_bytes+CARTO_INTERNAL_KEEP)
+        s->hot_memory=heap_caps_aligned_alloc(16,hot_bytes,MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    if(!s->hot_memory) s->hot_memory=heap_caps_aligned_alloc(16,hot_bytes,caps);
     s->cells=heap_caps_aligned_alloc(16,(size_t)cols*rows*sizeof(cc_cell),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-    s->decoded_memory=heap_caps_aligned_alloc(16,carto_last_budget.decoded,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-    const char *step="hot allocation (internal and PSRAM)";
+    step="hot allocation (internal and PSRAM)";
     if(!s->hot_memory) goto fail;
-    step="cold allocation";if(!s->memory) goto fail;
     step="cell allocation";if(!s->cells) goto fail;
-    step="decoded allocation";if(!s->decoded_memory) goto fail;
     s->map=map;
     cc_arena_init(&s->arena,s->memory,capacity);
     cc_arena_init(&s->hot_arena,s->hot_memory,hot_bytes);

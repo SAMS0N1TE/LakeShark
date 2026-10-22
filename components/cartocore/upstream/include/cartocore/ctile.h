@@ -23,7 +23,7 @@ typedef struct {
     uint32_t version; int resident;
     size_t reads,bytes_read,directory_reads,blob_reads;
 } cc_ctile_source;
-typedef struct { cc_str bytes; uint32_t count; uint8_t zmin,zmax; cc_ctile_source *source; struct cc_cellset *cellset; } cc_ctile;
+typedef struct { cc_str bytes; uint32_t count; uint8_t zmin,zmax; cc_ctile_source *source; struct cc_cellset *cellset,*directory_owner; } cc_ctile;
 /* Header and directory validated at open; blobs validated on first decode.
    At least 24 directory bytes required. Smaller buffers use paged binary search.
    Source, buffers and immutable backing file must outlive all scenes/cache entries.

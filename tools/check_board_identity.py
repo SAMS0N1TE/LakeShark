@@ -11,6 +11,9 @@ NON_CODE = re.compile(
 )
 IDENTITY = re.compile(r'\bCONFIG_LS_BOARD_\w*\b')
 BOARD = Path('components/lakeshark/board')
+# Waveshare's board support, vendored when LVGL left (it was under
+# managed_components/ before, which this check never read).
+VENDOR = (Path('components/esp32_p4_wifi6_touch_lcd_4b'),)
 
 
 def references(source):
@@ -40,7 +43,7 @@ def check(root):
             raise FileNotFoundError(folder)
         for path in sorted(folder.rglob('*')):
             relative = path.relative_to(root)
-            if relative.is_relative_to(BOARD) or path.suffix not in {'.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx'}:
+            if relative.is_relative_to(BOARD) or any(relative.is_relative_to(v) for v in VENDOR) or path.suffix not in {'.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx'}:
                 continue
             if path.is_file():
                 # Vendor C sources can contain non-UTF-8 comments. Preserve

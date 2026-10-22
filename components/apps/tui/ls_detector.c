@@ -3,6 +3,7 @@
 #include "ls_detector.h"
 #include "ls_detector_air.h"
 #include "ls_dronelink.h"
+#include "ls_drone_watch.h"
 #ifndef ESP_PLATFORM
 #pragma weak ls_dronelink_tick
 #pragma weak ls_dronelink_pending
@@ -30,6 +31,8 @@ static EXT_RAM_BSS_ATTR ls_detector_rule_t rules[64], staging[64];
 static EXT_RAM_BSS_ATTR char input[LS_DETECTOR_BYTES+1];
 typedef struct { uint64_t entity; int64_t at; uint8_t source,category,section; int8_t rssi; bool validated,flood; uint16_t band,rate_guess; uint32_t hits_per_min; } observation_t;
 static EXT_RAM_BSS_ATTR observation_t queue[64];
+static EXT_RAM_BSS_ATTR observation_t watch_queue[8];
+static unsigned watch_head,watch_count;
 static EXT_RAM_BSS_ATTR ls_detector_event_t history[LS_DETECTOR_HISTORY];
 typedef struct { uint64_t entity; int64_t until; uint8_t rule; } cooldown_t;
 static EXT_RAM_BSS_ATTR cooldown_t cooldown[512];
@@ -45,7 +48,7 @@ static EXT_RAM_BSS_ATTR duplicate_t duplicates[64];
 static unsigned duplicate_at;
 static int64_t bucket_at;
 static unsigned tokens=4;
-static EXT_RAM_BSS_ATTR struct { int64_t until; uint32_t pending; } rule_window[LS_DETECTOR_RULES];
+static EXT_RAM_BSS_ATTR struct { int64_t until; uint32_t pending; } rule_window[LS_DETECTOR_RULES+1];
 static EXT_RAM_BSS_ATTR ls_detector_event_t work_event;
 static void lock(void) { xSemaphoreTake(mutex,portMAX_DELAY); }
 static void unlock(void) { xSemaphoreGive(mutex); }
@@ -84,7 +87,7 @@ static bool number(json_t *j,uint32_t *out) {
     while(j->p<j->end && isdigit((unsigned char)*j->p)) {if(++n>6 || (zero && n>1))return false;v=v*10+(*j->p++-'0');}
     *out=v;return true;
 }
-const char *ls_detector_source(unsigned s) {return s==DET_RID?"rid.ble":s==DET_BLE?"sweep.ble":s==DET_WIFI?"sweep.wifi":s==DET_LORA?"lora.dronelink":s==DET_ADSB?"adsb":"detector.summary";}
+const char *ls_detector_source(unsigned s) {return s==DET_RID?"rid.ble":s==DET_BLE?"sweep.ble":s==DET_WIFI?"sweep.wifi":s==DET_LORA?"lora.dronelink":s==DET_ADSB?"adsb":s==DET_DRONE_WATCH?"drone.watch":"detector.summary";}
 /* Aircraft watch lists: bounded, strictly spelled, no duplicates. An empty list
  * is accepted and matches nothing, so a shipped watch list can start empty. */
 static bool hex6(const char *s,uint32_t *v) {
@@ -139,7 +142,7 @@ static bool list(json_t *j,uint8_t *out,int kind) {
     if(kind==2 && take(j,']'))return true;
     do {
         char s[32];unsigned bit=0;if(!str(j,s,sizeof(s)))return false;
-        if(kind==0) {for(unsigned b=1;b<=16;b<<=1)if(!strcmp(s,ls_detector_source(b)))bit=b;}
+        if(kind==0) {for(unsigned b=1;b<=32;b<<=1)if(!strcmp(s,ls_detector_source(b)))bit=b;}
         if(kind==1) {for(unsigned c=0;c<SW_CATS;c++)if(!strcmp(s,ls_sweep_category(c)))bit=1u<<c;}
         if(kind==2) {if(!strcmp(s,"banner"))bit=1;if(!strcmp(s,"vibrate"))bit=2;if(!strcmp(s,"sd"))bit=4;}
         if(kind==3) {if(!strcmp(s,"with_you"))bit=1;if(!strcmp(s,"new"))bit=2;if(!strcmp(s,"passing"))bit=4;}
@@ -341,6 +344,16 @@ void ls_detector_drone(unsigned band,unsigned channel,unsigned rate,int rssi,uns
     }
     unlock();
 }
+bool ls_detector_watch_notice(uint64_t id,int rssi,bool calibrated,unsigned band,bool approaching,int64_t now) {
+    ls_detector_init();
+    if(!id || now<0 || !xSemaphoreTake(mutex,0))return false;
+    bool ok=watch_count<8;
+    if(ok)watch_queue[(watch_head+watch_count++)%8]=(observation_t){.entity=id,
+        .at=now,.source=DET_DRONE_WATCH,.category=SW_DRONE,.section=255,
+        .rssi=rssi<-127?-127:rssi>0?0:rssi,.band=band,.rate_guess=approaching?1:0,.validated=calibrated};
+    else __atomic_fetch_add(&dropped,1,__ATOMIC_RELAXED);
+    unlock();return ok;
+}
 static bool gate(unsigned rule,uint64_t entity,int64_t now,uint32_t seconds) {
     cooldown_t *slot=NULL;
     for(unsigned i=0;i<512;i++) {
@@ -373,33 +386,36 @@ static void finish(ls_detector_event_t *e) {
 }
 /* Lock held. A matching rule joins the event unless its per-entity cooldown or
  * its rate window holds the alert back; held matches are counted, not lost. */
-static void join(ls_detector_event_t *e,unsigned i,uint64_t key,int64_t now) {
-    const ls_detector_rule_t *r=&rules[i];
+static void join_rule(ls_detector_event_t *e,const ls_detector_rule_t *r,unsigned i,uint64_t key,int64_t now) {
     if(now<rule_window[i].until || !gate(i,key,now,r->cooldown_s)) {
         if(rule_window[i].pending<UINT32_MAX)rule_window[i].pending++;
         state.suppressed++;return;
     }
     rule_window[i].until=now+(int64_t)r->rule_cooldown_s*1000000;
     e->coalesced=UINT32_MAX-e->coalesced<rule_window[i].pending?UINT32_MAX:e->coalesced+rule_window[i].pending;
-    e->rules|=UINT64_C(1)<<i;e->selected|=r->sinks;
+    e->rules|=UINT64_C(1)<<(i<64?i:63);e->selected|=r->sinks;
     size_t ids=strlen(e->rule_ids);snprintf(e->rule_ids+ids,sizeof(e->rule_ids)-ids,"%s\"%.31s\"",ids?",":"",r->id);
     size_t n=strlen(e->reason);snprintf(e->reason+n,sizeof(e->reason)-n,"%s%s",n?",":"",r->id);
 }
+static void join(ls_detector_event_t *e,unsigned i,uint64_t key,int64_t now) {join_rule(e,&rules[i],i,key,now);}
 /* Lock held on entry and released here: counts the match, applies the global
  * token bucket and hands the event to the sinks. */
-static void emit(ls_detector_event_t *e,int64_t now) {
+static void emit_policy(ls_detector_event_t *e,int64_t now,bool builtin_watch) {
     if(!e->rules) {unlock();return;}
     state.matches++;
     /* Floods and rotating addresses use the same rule window. No second
      * timer may flush alerts around that cap. Retain rate-limited matches. */
     if(!token(now)) {
-        for(unsigned i=0;i<state.rules;i++)if(e->rules&(UINT64_C(1)<<i))
-            if(rule_window[i].pending<UINT32_MAX)rule_window[i].pending++;
+        if(builtin_watch) {if(rule_window[LS_DETECTOR_RULES].pending<UINT32_MAX)rule_window[LS_DETECTOR_RULES].pending++;}
+        else for(unsigned i=0;i<state.rules;i++)if(e->rules&(UINT64_C(1)<<i))
+                if(rule_window[i].pending<UINT32_MAX)rule_window[i].pending++;
         state.suppressed++;unlock();return;
     }
-    for(unsigned i=0;i<state.rules;i++)if(e->rules&(UINT64_C(1)<<i))rule_window[i].pending=0;
+    if(builtin_watch)rule_window[LS_DETECTOR_RULES].pending=0;
+    else for(unsigned i=0;i<state.rules;i++)if(e->rules&(UINT64_C(1)<<i))rule_window[i].pending=0;
     e->suppressed=state.suppressed;e->dropped=__atomic_load_n(&dropped,__ATOMIC_RELAXED);unlock();finish(e);
 }
+static void emit(ls_detector_event_t *e,int64_t now) {emit_policy(e,now,false);}
 /* One aircraft per table slot is re-read when it has new data, at most once a
  * second. Nothing here starts a receiver: with no ADS-B source the table is
  * empty or stale and the pass does nothing. */
@@ -449,9 +465,40 @@ void ls_detector_tick(void) {
     lock();bool lora=false;
     if(state.running && (state.sources&DET_LORA))for(unsigned i=0;i<state.rules;i++)
         if(rules[i].enabled && (rules[i].sources&DET_LORA))lora=true;
-    unlock();if(HAS_DRONELINK)ls_dronelink_tick(lora,now);
+    unlock();
+#ifdef ESP_PLATFORM
+    /* One RF task owns all LoRa calls; wireless worker only posts intent. */
+    ls_drone_watch_legacy(lora);
+#else
+    if(HAS_DRONELINK)ls_dronelink_tick(lora,now);
+#endif
     if(test) {lock();bool allow=token(now);uint8_t sinks=state.sinks;unlock();if(allow) {memset(&work_event,0,sizeof(work_event));work_event.at=now;work_event.sequence=++sequence;work_event.revision=state.revision;work_event.test=true;work_event.selected=sinks;work_event.category=255;snprintf(work_event.reason,sizeof(work_event.reason),"Operator sink test");finish(&work_event);}}
     air_pass(now);
+    for(unsigned budget=0;budget<8;budget++) {
+        lock();if(!watch_count) {unlock();break;}
+        observation_t o=watch_queue[watch_head];watch_head=(watch_head+1)%8;watch_count--;
+        ls_detector_event_t *e=&work_event;memset(e,0,sizeof(*e));
+        e->entity=o.entity;e->at=o.at;e->source=DET_DRONE_WATCH;e->category=SW_DRONE;
+        e->rssi=o.rssi;e->relative_rssi=!o.validated;e->band=o.band;e->revision=state.revision;e->sequence=++sequence;
+        state.observations++;
+        bool custom=false;
+        for(unsigned i=0;i<state.rules;i++)if(rules[i].sources==DET_DRONE_WATCH) {
+            custom=true;
+            const ls_detector_rule_t *r=&rules[i];
+            if(r->enabled && (!r->categories || (r->categories&(1u<<SW_DRONE))) &&
+               (!r->has_min_rssi || (o.validated && o.rssi>=r->min_rssi_dbm)) && !r->bands && !r->sections &&
+               !r->has_validated && !r->min_hits_per_min)join(e,i,o.entity,now);
+        }
+        if(!custom) {
+            /* Independent watch policy retains DETECTOR's persisted rule
+             * indexes. An explicit SD drone.watch rule overrides it. */
+            const ls_detector_rule_t r={.id="drone-link-nearby",.enabled=true,
+                .cooldown_s=0,.rule_cooldown_s=2,.sinks=DET_BANNER|DET_VIBRATE};
+            join_rule(e,&r,LS_DETECTOR_RULES,o.entity,now);
+        }
+        if(o.rate_guess && e->rules)snprintf(e->reason,sizeof(e->reason),"drone link nearby: approaching (RSSI rising)");
+        emit_policy(e,now,!custom);
+    }
     for(unsigned budget=0;budget<64;budget++) {
         lock();if(!state.running || !count) {unlock();break;}
         observation_t o=queue[head];head=(head+1)%64;count--;

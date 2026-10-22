@@ -22,3 +22,8 @@ idf_component_register(
 # few of its own. Kept as warnings rather than silenced, so a real one is
 # still visible in the gate's output.
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-unused-parameter)
+# Size build: MAP's FIELD views decode and draw every tile here, so it keeps
+# -O2. Built for size it drew a tile in 148 ms against 22 ms (z10, LR board).
+if(CONFIG_COMPILER_OPTIMIZATION_SIZE)
+    target_compile_options(${COMPONENT_LIB} PRIVATE -O2)
+endif()

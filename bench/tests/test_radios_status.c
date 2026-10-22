@@ -22,6 +22,7 @@ esp_err_t ls_gps_start(void) { return gps_error; }
 void ls_gps_stop(void) { }
 bool ls_mesh_running(void) { return running; }
 void ls_mesh_socket_get(ls_mesh_socket_t *out) { *out = socket_state; out->present |= running; }
+void ls_mesh_radio_block(bool on) { socket_state.blocked = on; }
 void ls_wireless_observe(bool active) { (void)active; }
 void ls_wireless_get(ls_wireless_snapshot_t *out) { *out = wireless; }
 ls_radio_err_t ls_radio_endpoint_pause(const char *id, const char *owner, bool pause)
@@ -154,12 +155,23 @@ LS_CASE(socket_owner_activity_and_named_refusal)
     LS_EQ_INT(mesh_read(), RS_BUSY); LS_CHECK(strstr(mesh_state(), "TX"));
     socket_state.transmitting = false;
     socket_state.held = true; socket_state.receiving = true;
-    strcpy(socket_state.owner, "adsb"); strcpy(socket_state.mode, "Mode S");
+    strcpy(socket_state.owner, "adsb_rx"); strcpy(socket_state.mode, "Mode S");
     running = false;
     LS_EQ_INT(mesh_read(), RS_BUSY);
+    LS_CHECK(strstr(mesh_state(), "held by ADSB"));
+    LS_CHECK(!strcmp(mesh_action(), "STOP / BLOCK LORA"));
+    /* The tap takes it back from the app and keeps it free, without
+       starting MeshCore in its place. */
     mesh_set(false);
-    LS_CHECK(s_error && strstr(s_error, "adsb"));
+    LS_CHECK(socket_state.blocked);
+    LS_CHECK(s_error && strstr(s_error, "ADSB"));
     LS_CHECK(!running);
+    socket_state.held = true; socket_state.receiving = false;   /* the block is a hold */
+    strcpy(socket_state.owner, "none");
+    LS_CHECK(strstr(mesh_state(), "blocked"));
+    LS_CHECK(!strcmp(mesh_action(), "ALLOW LORA"));
+    mesh_set(false);
+    LS_CHECK(!socket_state.blocked && !running);
     memset(&socket_state, 0, sizeof(socket_state));
 }
 

@@ -1,6 +1,7 @@
 /* the device half of the PROGRAM session - SD, PSRAM and the worker. */
 
 #include "p25_program.h"
+#include "p25_sites.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -370,8 +371,32 @@ bool p25_program_survey_active_now(void)
     return p25_program_survey_active(s_program);
 }
 
+bool p25_program_site_now(const p25_profile_t *profile, unsigned control)
+{
+    if (!p25_owner_current() || !profile || control >= profile->control_count) return false;
+    p25_program_t *p = program_session();
+    if (!p || p->state == P25_PROGRAM_BUSY || p->geo_paused) return false;
+    p->active = *profile; p->active_valid = true;
+    p->selected_control = (uint8_t)control;
+    p->state = P25_PROGRAM_LOADED;
+    snprintf(p->active_path, sizeof(p->active_path), "/sdcard/p25/sites");
+    return p25_program_reapply(p, &s_ops);
+}
+void p25_program_geo_resume_now(void)
+{
+    if (s_program) {
+        s_program->geo_paused = false;
+        memset(&s_program->geo, 0, sizeof(s_program->geo));
+        s_program->geo.chosen = -1;
+    }
+}
 int p25_program_geo_poll_now(bool may_tune)
 {
+    int packed = p25_sites_poll(may_tune);
+    p25_sites_status_t sites;
+    p25_sites_status(&sites);
+    if (sites.packs || !sites.enabled ||
+        (s_program && !strcmp(s_program->active_path, "/sdcard/p25/sites"))) return packed;
     if (!s_program || !s_program->active_valid || s_program->geo_paused ||
         !p25_geo_profile_has_sites(&s_program->active) || !ls_gps_running())
         return -1;
@@ -389,6 +414,15 @@ int p25_program_geo_poll_now(bool may_tune)
 
 void p25_program_format_geo_now(char *out, size_t out_size)
 {
+    p25_sites_status_t sites; p25_sites_status(&sites);
+    if (!sites.enabled) { snprintf(out, out_size, "GPS sites OFF"); return; }
+    if (sites.packs) {
+        if (sites.distance_km >= 0)
+            snprintf(out, out_size, "GPS sites %s: %s / %s, %.1f km", sites.state,
+                     sites.system, sites.site, (double)sites.distance_km);
+        else snprintf(out, out_size, "GPS sites %s", sites.state);
+        return;
+    }
     if (s_program && s_program->active_valid && !s_program->geo_paused &&
         p25_geo_profile_has_sites(&s_program->active) && !ls_gps_running()) {
         snprintf(out, out_size, "GEO waiting: GPS is off - open GPS to start it");
@@ -400,6 +434,12 @@ void p25_program_format_geo_now(char *out, size_t out_size)
 /* Short, space-free form of p25_program_format_geo_now for the head link. */
 void p25_program_geo_code_now(char *out, size_t out_size)
 {
+    p25_sites_status_t sites; p25_sites_status(&sites);
+    if (!sites.enabled) { snprintf(out, out_size, "off"); return; }
+    if (sites.packs) {
+        snprintf(out, out_size, "%s", !strcmp(sites.state, "no fix") ? "nofix" : sites.state);
+        return;
+    }
     const p25_program_t *p = s_program;
     if (!p || !p->active_valid || !p25_geo_profile_has_sites(&p->active))
         snprintf(out, out_size, "off");

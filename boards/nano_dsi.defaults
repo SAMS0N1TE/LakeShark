@@ -1,0 +1,9 @@
+# Nano with a Waveshare DSI panel. First boot scans the adapter and GT911,
+# then saves the detected target. The console can override the choice with
+# panel set <name>. With no supported answer, boot continues headless.
+# The plain headless profile leaves out the TUI and its internal RAM cost.
+CONFIG_LS_PANEL_RUNTIME=y
+# The TUI scans a PSRAM framebuffer across flash writes, as on the T-Display.
+CONFIG_LCD_DSI_ISR_IRAM_SAFE=y
+CONFIG_ESP_MM_CACHE_MSYNC_C2M_CHUNKED_OPS=y
+CONFIG_ESP_MM_CACHE_MSYNC_C2M_CHUNKED_OPS_MAX_LEN=0x4000

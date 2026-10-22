@@ -31,6 +31,10 @@ void lakeshark_p25_set_freq(uint32_t hz);
 void lakeshark_fm_set_mode(int mode);
 int  lakeshark_fm_get_mode(void);
 
+#include "ls_cells.h"
+static ls_act_status_t a_maps_get(const ls_args_t *in,ls_val_t *out) { (void)out;return ls_cells_state_action(false,in->v[0].s)?LS_ACT_OK:LS_ACT_BUSY; }
+static ls_act_status_t a_maps_remove(const ls_args_t *in,ls_val_t *out) { (void)out;return ls_cells_state_action(true,in->v[0].s)?LS_ACT_OK:LS_ACT_BUSY; }
+static ls_act_status_t a_maps_refresh(const ls_args_t *in,ls_val_t *out) { (void)in;(void)out;return ls_cells_action(4,0)?LS_ACT_OK:LS_ACT_BUSY; }
 /* ---- gps --------------------------------------------------------------- */
 
 /* Start or stop recording the track. */
@@ -528,6 +532,9 @@ void ls_action_register_builtin(void)
                        "zoom in or out by n steps");
     ls_action_register("map.follow", "", LS_CAP_TUNE | LS_CAP_POWER, a_map_follow,
                        "toggle live GPS following; manual pan cancels it");
+    ls_action_register("maps.state.get","s",LS_CAP_STORE,a_maps_get,"download a whole state");
+    ls_action_register("maps.state.remove","s",LS_CAP_STORE,a_maps_remove,"remove a state, retaining shared cells");
+    ls_action_register("maps.refresh","",LS_CAP_STORE,a_maps_refresh,"refresh map catalog and states");
     ls_action_register("map.here",       "",  LS_CAP_TUNE, a_map_here,
                        "centre on the GPS fix");
     ls_action_register("map.reload",     "",  LS_CAP_TUNE, a_map_reload,

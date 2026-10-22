@@ -10,6 +10,7 @@ typedef struct {
     tui_rect list_area, previous, next;
     int visible[64], count, first;
     ls_btn_t buttons[6];
+    int nbuttons;            /* how many of buttons[] the bar shows */
     char notice[64];
 } ls_radio_panel_t;
 

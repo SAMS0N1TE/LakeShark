@@ -83,6 +83,11 @@ int p25_geo_select(p25_geo_t *state, const p25_profile_t *profile,
                    bool valid, double lat, double lon,
                    int64_t fix_us, int64_t now_us);
 
+/* Across immutable pack records. Result is record * CONTROL_MAX + control;
+ * the same distance, freshness and hysteresis policy as a legacy profile. */
+int p25_geo_select_many(p25_geo_t *state, const p25_profile_t *profiles, size_t count,
+                        bool valid, double lat, double lon, int64_t fix_us, int64_t now_us);
+
 /* True while the last answer is still worth acting on. */
 bool p25_geo_ready(const p25_geo_t *state, int64_t now_us);
 

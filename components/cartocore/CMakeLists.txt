@@ -26,3 +26,8 @@ if(IDF_TARGET STREQUAL "esp32p4")
     set_source_files_properties("${CC_P4_ASM}"
         PROPERTIES COMPILE_OPTIONS "-march=rv32imafc_zicsr_zifencei_xesppie")
 endif()
+
+# Size build: hot code (map render / vocoders) keeps -O2.
+if(CONFIG_COMPILER_OPTIMIZATION_SIZE)
+    target_compile_options(${COMPONENT_LIB} PRIVATE -O2)
+endif()

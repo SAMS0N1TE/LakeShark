@@ -1,4 +1,5 @@
 #include "ls_rid_ui.h"
+#include "ls_i18n.h"
 #include "ls_rid.h"
 #include "ls_wireless.h"
 #pragma weak ls_wireless_rid_request
@@ -26,7 +27,7 @@ static ls_rid_rx_t receiver(void) {
 }
 static const char *receiver_name(void) {
     static const char *const names[]={"OFF","UNAVAILABLE","STARTING","START FAILED","PAUSED / CONNECTING","LISTENING"};
-    return names[receiver()];
+    return ls_tr(names[receiver()]);
 }
 static void receive_start(const ls_opt_t *o) {
     (void)o; if(ls_wireless_rid_request) {rx_requested=true;ls_wireless_rid_request(true);}
@@ -61,7 +62,7 @@ static const ls_opt_t OPTIONS[]={
 };
 static const ls_opt_ctx_t CTX={.name="DRONES",.job=-1,.radio=LS_RSEL_NONE,.back_to_screen=true,LS_OPT_ROWS(OPTIONS)};
 static void line(tui_surface *sf,tui_rect a,int r,const char *s,uint8_t ink) {
-    ls_safe_line(sf,a,a.y+r,s,ink);
+    ls_safe_line(sf,a,a.y+r,ls_tr(s),ink);
 }
 static void measure(char *out,size_t n,double m) {
     if(!isfinite(m)) snprintf(out,n,"--");
@@ -130,6 +131,7 @@ static const char *status_name(unsigned status) {
     return status<5?names[status]:"RESERVED";
 }
 static void detail_line(tui_surface *sf,tui_rect a,int r,const char *s,uint8_t ink) {
+    s=ls_tr(s);
     if(ls_tui_is_wide()) {
         int half=a.w/2;
         if(r>=13) {a.x+=half;a.w-=half;r-=11;} else a.w=half;
@@ -169,6 +171,7 @@ static void show_detail(tui_surface *sf,tui_rect a,int64_t now) {
     snprintf(s,sizeof(s),"Self ID: %s",d->self_id[0]?d->self_id:"--"); detail_line(sf,a,21,s,WHITE);
     snprintf(s,sizeof(s),"Auth %s / type %u page %u",d->messages&4?"SEEN, UNVERIFIED":"ABSENT",d->auth_type,d->auth_page); detail_line(sf,a,22,s,LS_ATTR_DIM);
 }
+static void draw_body(tui_surface *sf,tui_rect a,int64_t now);
 void ls_rid_draw(tui_surface *sf,tui_rect a) {
     int64_t now=esp_timer_get_time(); refresh(now);
     if(a.w<26 || a.h<18) { ls_panel_notice(sf,a,"DRONES","More screen space needed","Use a smaller font"); return; }
@@ -178,23 +181,33 @@ void ls_rid_draw(tui_surface *sf,tui_rect a) {
         {"NEXT","DRONE",']',false,detail||!count,false},ls_opt_button(&CTX) };
     ls_btn_bar_raised(sf,tui_rect_make(a.x,a.y+a.h-bar_h,a.w,bar_h),buttons,4,-1);
     a.h-=bar_h;
+    draw_body(sf,a,now);
+}
+void ls_rid_draw_body(tui_surface *sf,tui_rect a) {
+    int64_t now=esp_timer_get_time(); refresh(now);
+    if(a.w<26 || a.h<12) { ls_panel_notice(sf,a,"REMOTE ID","More screen space needed","Use a smaller font"); return; }
+    draw_body(sf,a,now);
+}
+bool ls_rid_in_detail(void) { return detail; }
+void ls_rid_close_detail(void) { detail=false; }
+static void draw_body(tui_surface *sf,tui_rect a,int64_t now) {
     if(detail) { show_detail(sf,a,now); return; }
-    char s[128]; snprintf(s,sizeof(s),"DRONES / ESP32-C6 / %d active",count); line(sf,a,0,s,CYAN);
-    snprintf(s,sizeof(s),"BLE %s / expire after 60s",receiver_name()); line(sf,a,1,s,LS_ATTR_DIM);
+    char s[128]; snprintf(s,sizeof(s),ls_tr("DRONES / ESP32-C6 / %d active"),count); line(sf,a,0,s,CYAN);
+    snprintf(s,sizeof(s),ls_tr("BLE %s / expire after 60s"),receiver_name()); line(sf,a,1,s,LS_ATTR_DIM);
     bool wide=ls_tui_is_wide();
     int radar_h=wide?a.h-3:(a.h-3)/2, radar_w=wide?a.w/2:a.w;
     radar(sf,tui_rect_make(a.x,a.y+3,radar_w,radar_h),now);
     list_area=wide?tui_rect_make(a.x+radar_w,a.y+3,a.w-radar_w,a.h-3):tui_rect_make(a.x,a.y+3+radar_h,a.w,a.h-3-radar_h);
     ls_panel_box(sf,list_area,"HEARD DRONES",TUI_CYAN);
-    snprintf(s,sizeof(s),"ID / RANGE / RSSI / AGE  [%s]",SORT[sort]); line(sf,list_area,1,s,LS_ATTR_DIM);
+    snprintf(s,sizeof(s),ls_tr("ID / RANGE / RSSI / AGE  [%s]"),ls_tr(SORT[sort])); line(sf,list_area,1,s,LS_ATTR_DIM);
     rows=(list_area.h-3)/3; if(rows<1) rows=1;
     if(!count) { line(sf,list_area,3,receiver()==LS_RID_RX_LISTENING?"Listening for Remote ID...":receiver_name(),WHITE); line(sf,list_area,5,"R Receive / O receiver options",LS_ATTR_DIM); return; }
     int start=pick/rows*rows;
     for(int i=start;i<count && i<start+rows;i++) {
         ls_rid_drone_t *d=&view[order[i]]; int r=3+(i-start)*3; char range[24];
         measure(range,sizeof(range),ranges[order[i]]);
-        snprintf(s,sizeof(s),"%c %s",i==pick?'>':' ',d->uas_id[0]?d->uas_id:"Awaiting ID"); line(sf,list_area,r,s,i==pick?CYAN:WHITE);
-        snprintf(s,sizeof(s),"  %s / %d dBm / %.0fs%s",range,d->rssi,(now-d->last_us)/1e6,ls_rid_fresh(d,1,now) && d->status==3?" / EMERGENCY":""); line(sf,list_area,r+1,s,LS_ATTR_DIM);
+        snprintf(s,sizeof(s),"%c %s",i==pick?'>':' ',d->uas_id[0]?d->uas_id:ls_tr("Awaiting ID")); line(sf,list_area,r,s,i==pick?CYAN:WHITE);
+        snprintf(s,sizeof(s),"  %s / %d dBm / %.0fs%s",range,d->rssi,(now-d->last_us)/1e6,ls_rid_fresh(d,1,now) && d->status==3?ls_tr(" / EMERGENCY"):""); line(sf,list_area,r+1,s,LS_ATTR_DIM);
     }
 }
 static void open_detail(void) {
@@ -225,15 +238,23 @@ bool ls_rid_touch(int x,int y) {
     }
     return false;
 }
+bool ls_rid_touch_body(int x,int y) {
+    if(!detail && x>=list_area.x && x<list_area.x+list_area.w && y>=list_area.y+3 && y<list_area.y+list_area.h) {
+        int i=pick/rows*rows+(y-list_area.y-3)/3;
+        if(i<count) {pick=i;open_detail();} return true;
+    }
+    return false;
+}
 bool ls_rid_notice(ls_notice_t *out) {
     uint32_t g=ls_rid_generation(); if(g==notice_generation) return false;
     uint32_t added=g-notice_generation; notice_generation=g;
     if(!alert) return false;
     snprintf(out->title,sizeof(out->title),"DRONES");
-    snprintf(out->body,sizeof(out->body),"%lu new Remote ID source%s",(unsigned long)added,added==1?"":"s");
+    /* Ukrainian says the count after a colon, which needs no plural ending. */
+    snprintf(out->body,sizeof(out->body),ls_tr("%lu new Remote ID source%s"),(unsigned long)added,
+             ls_i18n_lang()!=LS_LANG_EN||added==1?"":"s");
     out->screen=ls_tui_screen_index_of(&ls_scr_drones); out->hue=TUI_CYAN; out->accent=TUI_CYAN; out->notify_visible=true;
     return true;
 }
-static void enter(void) {detail=false;}
-static void leave(void) {if(rx_requested) receive_stop(NULL);}
-const ls_tui_screen_t ls_scr_drones={.name="DRONES",.hint="Up/Down select  Enter detail  O Options  B Back",.enter=enter,.leave=leave,.draw=ls_rid_draw,.key=ls_rid_key,.touch=ls_rid_touch};
+/* The DRONES screen (ls_drone_ui.c) carries Remote ID as one of its pages. */
+void ls_rid_leave(void) {detail=false; if(rx_requested) receive_stop(NULL);}

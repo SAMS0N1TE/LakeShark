@@ -19,6 +19,7 @@ static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_active, s_worker, s_observer;
 static bool s_find_ble_requested, s_find_ble_owned;
 static bool s_rid_requested, s_rid_owned, s_rid_failed, s_rid_retry;
+static bool s_drone_rid;
 /* LINK could not allocate a 6 KiB DRAM stack after the radio and
  * C6 started. Reserve it and keep one sleeping worker across app visits. */
 static DRAM_ATTR StackType_t s_worker_stack[6144 / sizeof(StackType_t)]
@@ -127,9 +128,10 @@ static esp_err_t perform(ls_wireless_op_t op, const char *ssid, const char *pass
 static void rid_tick(void)
 {
     portENTER_CRITICAL(&s_mux);
-    bool requested=s_rid_requested, owned=s_rid_owned, retry=s_rid_retry;
+    bool requested=s_rid_requested || s_drone_rid, owned=s_rid_owned, retry=s_rid_retry, failed=s_rid_failed;
     s_rid_retry=false;
     portEXIT_CRITICAL(&s_mux);
+    if(requested && failed && !retry)return;
     if(requested==owned && !retry) return;
     esp_err_t rc=ble_link_rid_observer(requested);
     portENTER_CRITICAL(&s_mux);
@@ -304,13 +306,22 @@ void ls_wireless_rid_request(bool on)
     if(!s_worker_task && on) {s_rid_requested=false;s_rid_failed=true;}
     portEXIT_CRITICAL(&s_mux);
 }
+void ls_wireless_drone_rid(bool on)
+{
+    portENTER_CRITICAL(&s_mux);
+    bool changed=s_drone_rid!=on;
+    s_drone_rid=on;
+    if(changed) {s_rid_failed=false;s_rid_retry=true;}
+    portEXIT_CRITICAL(&s_mux);
+    if(changed || on)start_worker();
+}
 ls_rid_rx_t ls_wireless_rid_status(void)
 {
 #if !CONFIG_LS_BLE_HEAD
     return LS_RID_RX_UNAVAILABLE;
 #else
     portENTER_CRITICAL(&s_mux);
-    bool starting=s_rid_requested && !s_rid_owned, failed=s_rid_failed;
+    bool starting=(s_rid_requested || s_drone_rid) && !s_rid_owned, failed=s_rid_failed;
     portEXIT_CRITICAL(&s_mux);
     bool running,scanning,scan_failed; ble_link_receiver(&running,&scanning,&scan_failed);
     if(scanning) return LS_RID_RX_LISTENING;

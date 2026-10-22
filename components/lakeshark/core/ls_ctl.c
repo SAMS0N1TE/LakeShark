@@ -37,6 +37,7 @@
 #include "dsd.h"
 #include "p25_iq_capture.h"
 #include "p25_program.h"
+#include "../../../main/ls_p25_packs.h"
 #include "rec_state.h"
 #include "cell_iq.h"
 #include "cell_report.h"
@@ -746,6 +747,10 @@ static int p25_imbe_command(int argc, char **argv)
 
 static int cmd_p25(int argc, char **argv)
 {
+#if CONFIG_LAKESHARK_HEADLESS
+    if (argc >= 2 && (!strcmp(argv[1], "pack") || !strcmp(argv[1], "geo")))
+        return ls_p25_packs_command(argc - 1, argv + 1);
+#endif
     if (argc >= 2 && !strcmp(argv[1], "split")) {
         if (argc != 3 || (strcmp(argv[2], "on") && strcmp(argv[2], "off") &&
                           strcmp(argv[2], "stats"))) {

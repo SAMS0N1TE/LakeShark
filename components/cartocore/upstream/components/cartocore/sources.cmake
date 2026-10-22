@@ -34,6 +34,7 @@ set(CC_CORE_SRCS
 )
 set(CC_OUT_SRCS
     "${CC_ROOT}/src/out/out.c"
+    "${CC_ROOT}/src/out/pixels.c"
 )
 set(CC_MEDIA_SRCS
     "${CC_ROOT}/src/media/render.c"

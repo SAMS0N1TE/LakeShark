@@ -14,6 +14,9 @@ typedef enum {
     SND_TEST_TONE,
     SND_TEST_CHIRP,
     SND_TEST_MOTO,
+    SND_TEST_RADIOKEY,
+    SND_TEST_ROGER,
+    SND_TEST_UPCHIRP,
     SND_TEST_COUNT,
     /* Not a test tone: a notification alert, sharing the same worker.
        Numbered past SND_TEST_COUNT on purpose so it never appears in the

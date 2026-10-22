@@ -15,6 +15,7 @@
 #include "ls_tui_chrome.h"
 #include "ls_gauge.h"
 #include "ls_tui_ui.h"
+#include "ls_i18n.h"
 
 #include "esp_timer.h"
 #ifdef ESP_PLATFORM
@@ -49,8 +50,19 @@ void ls_tui_set_locked(bool locked)
 
 bool ls_tui_locked(void) { return s_locked; }
 
+/* A screen can ask for the tab strip to go, to give its picture the room
+   (MAP with its controls hidden). Cleared on every screen switch. */
+static bool s_bare;
+void ls_tui_screen_set_bare(bool on)
+{
+    if (s_bare == on) return;
+    s_bare = on;
+    ls_tui_invalidate();
+}
+
 static int tab_rows(void)
 {
+    if (s_bare) return 0;
     /* Odd in portrait, so the strip HAS a middle row to sit a label on.
 
        Four rows is a border, two interior rows and a border, and one line of
@@ -234,6 +246,7 @@ void ls_tui_screen_show(int index)
     /* A console switch must not release a radio during draw. */
     if (s_dispatch_cb && s_dispatch_cb(index)) return;
     if (index == s_current) return;
+    s_bare = false;
     const ls_tui_screen_t *previous = s_screens[s_current];
     if (s_screens[s_current] && s_screens[s_current]->leave)
         s_screens[s_current]->leave();
@@ -367,7 +380,7 @@ static ls_tui_status_layout_t status_place(int cols, int *x0, int *x1,
         right_edge = *x1 - batt_w - 1;
     }
     const ls_tui_screen_t *s = s_screens[s_current];
-    const char *name = (s && s->name) ? s->name : "";
+    const char *name = (s && s->name) ? ls_tr(s->name) : "";
     const int brand = (int)sizeof(BRAND) - 1, nl = (int)strlen(name);
     const int ll = (int)strlen(s_status_left), rl = (int)strlen(s_status_right);
 
@@ -399,7 +412,7 @@ static void draw_status(tui_surface *sf, int cols)
     if (batt_x >= 0) draw_battery(sf, all, batt_x, bar);
 
     const ls_tui_screen_t *s = s_screens[s_current];
-    const char *name = (s && s->name) ? s->name : "";
+    const char *name = (s && s->name) ? ls_tr(s->name) : "";
 
     /* The clock uses the status band's own colours. */
     if (l.clock_x >= 0 && s_status_clock[0])
@@ -412,7 +425,7 @@ static void draw_status(tui_surface *sf, int cols)
                     l.left_x, 0, s_status_left, bar);
     if (l.right_x >= 0) tui_put_str(sf, all, l.right_x, 0, s_status_right, bar);
 
-    const char *mesh_tx = ls_scr_mesh_tx_status ? ls_scr_mesh_tx_status() : NULL;
+    const char *mesh_tx = ls_scr_mesh_tx_status ? ls_tr(ls_scr_mesh_tx_status()) : NULL;
     if (mesh_tx && l.brand_x >= 0) {
         tui_fill(sf, tui_rect_make(l.brand_x, 0, (int)sizeof(BRAND) - 1, 1), ' ', bar);
         tui_put_str(sf, all, l.brand_x, 0, mesh_tx, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED));
@@ -423,7 +436,7 @@ static void draw_status(tui_surface *sf, int cols)
     const int unread = ls_notify_unread();
     if (unread > 0 && !mesh_tx && l.brand_x >= 0) {
         char badge[12];
-        snprintf(badge, sizeof(badge), "%d MSG", unread > 99 ? 99 : unread);
+        snprintf(badge, sizeof(badge), ls_tr("%d MSG"), unread > 99 ? 99 : unread);
         for (int i = 0; i < (int)sizeof(BRAND) - 1; i++)
             tui_put_char(sf, all, l.brand_x + i, 0, ' ', bar);
 
@@ -522,7 +535,7 @@ static void draw_tabs(tui_surface *sf, int cols, int row, int height)
             snprintf(label,sizeof(label),"%s",""); /* Portrait is touch-first, independent of attached keyboard. */
             char nm[10];
             snprintf(nm, sizeof(nm), "%.*s", (w > 3) ? w - 3 : 1,
-                     s_screens[scr]->name);
+                     ls_tr(s_screens[scr]->name));
 
             tab_box(sf, tui_rect_make(x0, row, w, height),
                     scr == s_current, label, nm);
@@ -567,8 +580,8 @@ static void draw_tabs(tui_surface *sf, int cols, int row, int height)
     for (int i = 0; i < ntab; i++) {
         const int scr = tab_screen(i);
         char label[24];
-        if(s_current==0) snprintf(label,sizeof(label)," %s ",s_screens[scr]->name);
-        else snprintf(label, sizeof(label), " F%d %s ", i + 1, s_screens[scr]->name);
+        if(s_current==0) snprintf(label,sizeof(label)," %s ",ls_tr(s_screens[scr]->name));
+        else snprintf(label, sizeof(label), " F%d %s ", i + 1, ls_tr(s_screens[scr]->name));
         total += (int)strlen(label) + 1;
     }
     if (total > 0) total--;            /* no gap after the last one */
@@ -586,8 +599,8 @@ static void draw_tabs(tui_surface *sf, int cols, int row, int height)
     for (int i = 0; i < ntab && x < cols - 4; i++) {
         const int scr = tab_screen(i);
         char label[24];
-        if(s_current==0) snprintf(label,sizeof(label)," %s ",s_screens[scr]->name);
-        else snprintf(label, sizeof(label), " F%d %s ", i + 1, s_screens[scr]->name);
+        if(s_current==0) snprintf(label,sizeof(label)," %s ",ls_tr(s_screens[scr]->name));
+        else snprintf(label, sizeof(label), " F%d %s ", i + 1, ls_tr(s_screens[scr]->name));
         uint8_t a = (scr == s_current) ? here : plain;
         tui_put_str(sf, all, x, ly, label, a);
         s_tab_x0[i] = (int16_t)x;
@@ -610,7 +623,7 @@ static void draw_hints(tui_surface *sf, int cols, int row)
     tui_fill(sf, tui_rect_make(pad, row, cols-2*pad, 1), ' ', bg);
 
     const ls_tui_screen_t *s = s_screens[s_current];
-    const char *hint = (s && s->hint) ? s->hint : "";
+    const char *hint = (s && s->hint) ? ls_tr(s->hint) : "";
 
     /* The hint string is a run of "KEY label" pairs separated by two spaces.
        Colouring the key differently from its label is what makes the row
@@ -778,7 +791,7 @@ static void draw_help(tui_surface *sf, int cols, int rows)
         tui_put_str(sf, all, x + 2 + ind[i], y + 2 + i, val[i], text);
     }
     if (clipped)
-        tui_put_str(sf, all, x + 2, y + h - 2, "F10 again for the global keys",
+        tui_put_str(sf, all, x + 2, y + h - 2, ls_tr("F10 again for the global keys"),
                     text);
 }
 
@@ -810,17 +823,17 @@ void ls_tui_router_draw(tui_surface *sf)
         tui_fill(sf, all, ' ', ink);
         draw_status(sf, cols);
         int x = cols > 38 ? (cols - 38) / 2 : 1;
-        tui_put_str(sf, all, x, rows / 2 - 3, "LAKESHARK / SCREEN LOCKED", TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
-        tui_put_str(sf, all, x, rows / 2 - 1, "Receivers continue running", ink);
+        tui_put_str(sf, all, x, rows / 2 - 3, ls_tr("LAKESHARK / SCREEN LOCKED"), TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, all, x, rows / 2 - 1, ls_tr("Receivers continue running"), ink);
         tui_put_str(sf, all, x, rows / 2 + 1,
-                    s_unlock_step ? "2. Tap RIGHT half to unlock" : "1. Tap LEFT half to begin", ink);
-        tui_put_str(sf, all, x, rows / 2 + 3, "Keyboard: LEFT then RIGHT", ink);
+                    s_unlock_step ? ls_tr("2. Tap RIGHT half to unlock") : ls_tr("1. Tap LEFT half to begin"), ink);
+        tui_put_str(sf, all, x, rows / 2 + 3, ls_tr("Keyboard: LEFT then RIGHT"), ink);
         tui_rect hole;
         if (ls_tui_cutout(&hole)) ls_tui_cutout_runaround(sf, hole);
         return;
     }
     draw_status(sf, cols);
-    draw_tabs(sf, cols, 1, th);
+    if (th) draw_tabs(sf, cols, 1, th);
 
     tui_rect area = tui_rect_make(0, 1 + th, cols, rows - 1 - th - hint_rows());
 

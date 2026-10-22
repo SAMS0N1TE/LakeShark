@@ -10,6 +10,9 @@ extern "C" {
 #define LS_DETECTOR_BYTES 32768
 #define LS_DETECTOR_HISTORY 24
 enum { DET_RID=1, DET_BLE=2, DET_WIFI=4, DET_LORA=8, DET_ADSB=16 };
+/* Independent Drone Watch queue, same rules/cooldowns/sinks as DETECTOR. */
+#define DET_DRONE_WATCH 32
+bool ls_detector_watch_notice(uint64_t id,int rssi,bool calibrated,unsigned band,bool approaching,int64_t now);
 /* Aircraft predicates a rule can carry (ls_detector_rule_t.air_mask). */
 enum { DET_AIR_SQUAWK=1, DET_AIR_CALL=2, DET_AIR_ICAO=4, DET_AIR_CAT=8, DET_AIR_KM=16, DET_AIR_ALT=32, DET_AIR_EMERG=64 };
 #define LS_DETECTOR_AIR_LIST 8
@@ -42,6 +45,7 @@ typedef struct {
     uint16_t band, rate_guess;
     uint32_t hits_per_min;
     bool test, validated;
+    bool relative_rssi; /* SDR evidence uses relative dB, not calibrated dBm */
     /* Aircraft events (source adsb). Unknown altitude is INT32_MIN, unknown
      * distance LS_DETECTOR_AIR_NO_DISTANCE; neither position nor distance is
      * ever logged. */

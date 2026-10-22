@@ -9,6 +9,8 @@
 #include "ls_i2c.h"
 #include "esp_codec_dev_defaults.h"
 #include "esp_codec_dev.h"
+#include "esp_attr.h"
+#include "esp_timer.h"
 
 /* Defined in ls_audio_diag.c, which owns the runtime override; declared here
    because this is where they are used. */
@@ -85,6 +87,25 @@ static void hw_unlock(void)
     ctrl_unlock();
 }
 static i2s_chan_handle_t s_tx;
+/* Times the speaker's DMA ran out of samples: the player fell more than the
+   DMA's 96 ms behind and the codec got the zeroes auto_clear left. */
+static volatile uint32_t s_tx_starved;
+static volatile int64_t s_tx_starved_first_us, s_tx_starved_last_us;
+static IRAM_ATTR bool on_tx_starved(i2s_chan_handle_t h, i2s_event_data_t *ev, void *ctx)
+{
+    (void)h; (void)ev; (void)ctx;
+    const int64_t now = esp_timer_get_time();
+    if (!s_tx_starved) s_tx_starved_first_us = now;
+    s_tx_starved_last_us = now;
+    s_tx_starved++;
+    return false;
+}
+uint32_t ls_audio_hw_starved(int64_t *first_us, int64_t *last_us)
+{
+    if (first_us) *first_us = s_tx_starved_first_us;
+    if (last_us) *last_us = s_tx_starved_last_us;
+    return s_tx_starved;
+}
 /* The receive half. NULL on a board with no microphone declared, and
    on this one it was NULL for a different reason: nobody had asked for it. */
 static i2s_chan_handle_t s_rx;
@@ -175,6 +196,8 @@ static esp_err_t hw_init(bool speaker_only)
     };
     err = i2s_channel_init_std_mode(s_tx, &cfg);
     if (err != ESP_OK) goto fail;
+    const i2s_event_callbacks_t tx_cbs = { .on_send_q_ovf = on_tx_starved };
+    (void)i2s_channel_register_event_callback(s_tx, &tx_cbs, NULL);
     err = i2s_channel_enable(s_tx);
     if (err != ESP_OK) goto fail;
     if (s_rx) {
@@ -390,7 +413,12 @@ esp_err_t ls_audio_hw_reinit(bool swap, int volume, bool muted) { (void)swap; (v
 bool ls_audio_hw_output_is_mono(void) { return false; }
 void ls_audio_hw_deinit(void) { /* the BSP owns its own lifetime */ }
 esp_err_t ls_audio_hw_init(bool speaker_only)
-{ return speaker_only ? bsp_extra_codec_init_speaker_only() : bsp_extra_codec_init(); }
+{
+    /* The full init opens the BSP's ES7210 microphone codec and asserts when
+       it is not there, as on the Nano: boot never got past it. */
+    return speaker_only || !LS_HAS_MIC ? bsp_extra_codec_init_speaker_only()
+                                       : bsp_extra_codec_init();
+}
 esp_err_t ls_audio_hw_set_fs(uint32_t rate, uint32_t bits, i2s_slot_mode_t channels)
 { return bsp_extra_codec_set_fs(rate, bits, channels); }
 esp_err_t ls_audio_hw_write(void *data, size_t len, size_t *written, uint32_t timeout)
@@ -414,4 +442,10 @@ esp_err_t ls_audio_hw_read(void *data, size_t len, size_t *got)
 }
 
 esp_err_t ls_audio_hw_in_gain(float db) { (void)db; return ESP_ERR_NOT_SUPPORTED; }
+uint32_t ls_audio_hw_starved(int64_t *first_us, int64_t *last_us)
+{
+    if (first_us) *first_us = 0;
+    if (last_us) *last_us = 0;
+    return 0;
+}
 #endif

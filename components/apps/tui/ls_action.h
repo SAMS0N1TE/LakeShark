@@ -48,7 +48,7 @@ typedef ls_act_status_t (*ls_act_fn)(const ls_args_t *in, ls_val_t *out);
 /* The table's size. MAP and P25 register theirs when first entered, so it
    fills during use as well as at boot; `lssim -C` enters every screen and
    fails the bench when the table refuses one or has too little room left. */
-#define LS_ACTION_MAX 64
+#define LS_ACTION_MAX 96
 
 /* `path`, `sig` and `help` must outlive the program. False when the table is
    full or the signature is malformed - both build-time mistakes. A full table

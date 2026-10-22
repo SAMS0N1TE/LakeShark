@@ -5,6 +5,7 @@
    selection state of its own. That is worth preserving: the moment a view
    owns the selection, two views disagree about it. */
 #include "../../ls_tui_screen.h"
+#include "../../ls_i18n.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -84,7 +85,7 @@ static void draw_altitude_trend(tui_surface *sf, tui_rect r,
         if (a->alt_history[i] > hi) hi = a->alt_history[i];
     }
     if (!any) {
-        tui_put_str(sf, r, r.x, r.y, "no altitude history yet",
+        tui_put_str(sf, r, r.x, r.y, ls_tr("no altitude history yet"),
                     LS_ATTR_DIM);
         return;
     }
@@ -228,7 +229,7 @@ static void draw_detail(tui_surface *sf, tui_rect area,
 
     row += 1;
     if (row < area.h - 4) {
-        tui_put_str(sf, area, area.x + 2, area.y + row, "ALTITUDE, RECENT REPORTS",
+        tui_put_str(sf, area, area.x + 2, area.y + row, ls_tr("ALTITUDE, RECENT REPORTS"),
                     TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
         row += 1;
         const int trend_h = area.h - 1 - row;
@@ -392,10 +393,10 @@ static void follow_label(char *out, size_t n, double rx_lat, double rx_lon)
 
     switch (m) {
     case LS_FOLLOW_ALL:
-        snprintf(out, n, "FIT ALL %d%s", s_follow.count, nudge);
+        snprintf(out, n, ls_tr("FIT ALL %d%s"), s_follow.count, nudge);
         break;
     case LS_FOLLOW_SELECTED:
-        if (t) snprintf(out, n, "SELECTED %s", who);
+        if (t) snprintf(out, n, ls_tr("SELECTED %s"), who);
         else snprintf(out, n, "%s", adsb_select_get_icao() ? "SELECTED: no position"
                                                            : "SELECTED: none");
         break;
@@ -433,9 +434,9 @@ static void follow_row(tui_surface *sf, tui_rect area, bool live, double rx_lat,
                 on ? TUI_ATTR(TUI_BLACK, TUI_CYAN) : LS_ATTR_DIM);
 
     char text[40];
-    snprintf(text, sizeof(text), "%s %.4f, %.4f", live ? "GPS" : "HOME", rx_lat, rx_lon);
+    snprintf(text, sizeof(text), "%s %.4f, %.4f", live ? "GPS" : ls_tr_ctx("place|HOME", "HOME"), rx_lat, rx_lon);
     const int room = cx - 1 - (area.x + 2);
-    if ((int)strlen(text) > room) snprintf(text, sizeof(text), "%s", live ? "GPS" : "HOME");
+    if ((int)strlen(text) > room) snprintf(text, sizeof(text), "%s", live ? "GPS" : ls_tr_ctx("place|HOME", "HOME"));
     if ((int)strlen(text) <= room)
         tui_put_str(sf, area, area.x + 2, area.y + 1, text,
                     TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
@@ -445,7 +446,7 @@ static void draw_radar(tui_surface *sf, tui_rect area)
 {
     const uint8_t bright=TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK);
     char title[40];
-    snprintf(title,sizeof(title),"MINI MAP / %s ADS-B",ls_rsel_name(ls_rsel_effective(LS_RSEL_ADSB)));
+    snprintf(title,sizeof(title),ls_tr("MINI MAP / %s ADS-B"),ls_rsel_name(ls_rsel_effective(LS_RSEL_ADSB)));
     tui_box(sf,area,title,bright);
     if(area.w<20 || area.h<10) return;
     double lat,lon; bool live;
@@ -459,7 +460,7 @@ static void draw_radar(tui_surface *sf, tui_rect area)
     ls_map_preview(sf,body,vlat,vlon);
     char text[80];
     follow_row(sf,area,live,lat,lon);
-    tui_put_str(sf,area,area.x+2,area.y+2,"^N  alt: yellow<5k green<20k cyan  trails",LS_ATTR_DIM);
+    tui_put_str(sf,area,area.x+2,area.y+2,ls_tr("^N  alt: yellow<5k green<20k cyan  trails"),LS_ATTR_DIM);
     /* The full map's aircraft, drawn the same way here: one look for a
        plane wherever it is shown. */
     ls_map_plot_t plots[ADSB_MAX_TRACKED];
@@ -469,11 +470,11 @@ static void draw_radar(tui_surface *sf, tui_rect area)
     ls_map_preview_labels(sf,body);
     double width_nm=40075016.686*cos(vlat*M_PI/180.0)*(body.w*3)/
         (ldexp(1.0,ls_map_zoom())*ls_map_tile_px()*LS_GEO_M_PER_NM);
-    snprintf(text,sizeof(text),"%s z%d  %.1f NM across",ls_map_render_busy()?"LOADING":"OFFLINE",ls_map_zoom(),width_nm);
+    snprintf(text,sizeof(text),ls_tr("%s z%d  %.1f NM across"),ls_tr(ls_map_render_busy()?"LOADING":"OFFLINE"),ls_map_zoom(),width_nm);
     tui_put_str(sf,area,area.x+2,area.y+area.h-3,text,LS_ATTR_DIM);
     const char *why=ls_map_status();
     tui_put_str(sf,area,area.x+2,area.y+area.h-2,
-        why && !ls_map_render_busy()?"No tiles here; MAPS in full map":"Tap aircraft for details",LS_ATTR_DIM);
+        ls_tr(why && !ls_map_render_busy()?"No tiles here; MAPS in full map":"Tap aircraft for details"),LS_ATTR_DIM);
 }
 
 /* The dashboard band: what the last two minutes looked like. */
@@ -547,7 +548,7 @@ static void draw_dash(tui_surface *sf, tui_rect r, int64_t now)
     if (gw < 8 || gy <= r.y + 1) return;
 
     if (!s_traffic_len) {
-        tui_put_str(sf, r, r.x + 2, gy, "nothing sampled yet", dim);
+        tui_put_str(sf, r, r.x + 2, gy, ls_tr("nothing sampled yet"), dim);
         return;
     }
 
@@ -571,7 +572,7 @@ static void draw_dash(tui_surface *sf, tui_rect r, int64_t now)
     tui_put_str(sf, r, r.x + r.w - 2 - (int)strlen(buf), r.y + r.h - 3, buf,
                 dim);
     tui_put_str(sf, r, r.x + 2, r.y + r.h - 3,
-                s_traffic_len >= gw ? "2 min" : "since opening", dim);
+                ls_tr(s_traffic_len >= gw ? "2 min" : "since opening"), dim);
 }
 
 static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
@@ -594,7 +595,7 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
 
     int list_h = list_hh - 2;
     tui_rect list = tui_rect_make(area.x, area.y, area.w, list_hh);
-    tui_box(sf, list, "AIRCRAFT (* stale)", frame);
+    tui_box(sf, list, ls_tr("AIRCRAFT (* stale)"), frame);
 
     /* Two column sets, because one of them does not fit portrait. */
 
@@ -602,8 +603,8 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
 
     tui_fill(sf, tui_rect_make(list.x + 1, list.y + 1, list.w - 2, 1), ' ', head);
     tui_put_str(sf, list, list.x + 2, list.y + 1,
-                narrow ? "ICAO   CALLSIGN S    ALT  AGE"
-                       : "ICAO   CALLSIGN S    ALT  SPD DIR  AGE  MSGS",
+                ls_tr(narrow ? "ICAO   CALLSIGN S    ALT  AGE"
+                       : "ICAO   CALLSIGN S    ALT  SPD DIR  AGE  MSGS"),
                 head);
 
     int sel_index = 0, total = 0;
@@ -656,7 +657,7 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
     /* A sparkline of message rate, from the model's own 60-sample ring - the
        GUI kept its own copy of this and did not need to. */
     tui_rect foot = tui_rect_make(area.x, area.y + list_hh, area.w, foot_h);
-    tui_box(sf, foot, "TRAFFIC", frame);
+    tui_box(sf, foot, ls_tr("TRAFFIC"), frame);
     const uint16_t *hist = perf_history_good();
     if (hist) {
         int w = foot.w - 4;
@@ -673,7 +674,7 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
                              TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
         }
     }
-    snprintf(buf, sizeof(buf), "%d active   %d msg/s   %d crc err",
+    snprintf(buf, sizeof(buf), ls_tr("%d active   %d msg/s   %d crc err"),
              active, perf_get_msgs_per_sec(), perf_get_crc_err());
     tui_put_str(sf, foot, foot.x + 2, foot.y + 2,
                 buf, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
@@ -900,7 +901,7 @@ static const ls_opt_ctx_t CTX_ADSB = { .name = "ADS-B", .job = LS_RSEL_ADSB, .ra
 
 static void draw_weather(tui_surface *sf, tui_rect area, int64_t now)
 {
-    tui_box(sf, area, "FIS-B TEXT / W aircraft / LEFT RIGHT scroll", TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    tui_box(sf, area, ls_tr("FIS-B TEXT / W aircraft / LEFT RIGHT scroll"), TUI_ATTR(TUI_CYAN, TUI_BLACK));
     tui_rect inside = tui_rect_make(area.x + 1, area.y + 1, area.w - 2, area.h - 2);
     if (inside.w < 8 || inside.h < 2) return;
     bool have = false;
@@ -913,7 +914,7 @@ static void draw_weather(tui_surface *sf, tui_rect area, int64_t now)
         }
     }
     if (!have) {
-        tui_put_str(sf, inside, inside.x, inside.y, "No fresh FIS-B text received", LS_ATTR_DIM);
+        tui_put_str(sf, inside, inside.x, inside.y, ls_tr("No fresh FIS-B text received"), LS_ATTR_DIM);
         tui_put_str(sf, inside, inside.x, inside.y + 1, adsb_receiver_status(), LS_ATTR_DIM);
         return;
     }

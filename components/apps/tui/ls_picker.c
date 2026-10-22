@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "ls_tui_ui.h"
+#include "ls_i18n.h"
 #include "esp_attr.h"
 
 #define A(fg, bg) TUI_ATTR((fg), (bg))
@@ -113,12 +114,15 @@ void ls_picker_open(const char *title, ls_picker_done_t on_done)
 bool ls_picker_add(const char *label, const char *detail)
 {
     if (s_n >= LS_PICKER_MAX) return false;
-    snprintf(s_label[s_n], LS_PICKER_TEXT, "%s", label ? label : "");
-    snprintf(s_detail[s_n], LS_PICKER_DETAIL, "%s", detail ? detail : "");
+    /* A translation is already one byte a cell (ls_i18n.h) and is kept as
+       it is; anything else is folded. */
+    const char *tl = ls_tr(label), *td = ls_tr(detail);
+    snprintf(s_label[s_n], LS_PICKER_TEXT, "%s", tl ? tl : "");
+    snprintf(s_detail[s_n], LS_PICKER_DETAIL, "%s", td ? td : "");
     /* Place and node names can be UTF-8. Folded once here, the rows line up
        and typing "Lodz" on the keyboard finds Łódź. */
-    tui_utf8_fold_str(s_label[s_n]);
-    tui_utf8_fold_str(s_detail[s_n]);
+    if (tl == label) tui_utf8_fold_str(s_label[s_n]);
+    if (td == detail) tui_utf8_fold_str(s_detail[s_n]);
     s_n++;
     refilter();
     return true;
@@ -143,7 +147,7 @@ void ls_picker_select(int index)
 void ls_picker_set_detail(int index, const char *detail)
 {
     if (index < 0 || index >= s_n) return;
-    snprintf(s_detail[index], LS_PICKER_DETAIL, "%s", detail ? detail : "");
+    snprintf(s_detail[index], LS_PICKER_DETAIL, "%s", detail ? ls_tr(detail) : "");
 }
 
 void ls_picker_back(void (*on_back)(void)) { s_on_back = on_back; }
@@ -241,7 +245,13 @@ static void draw_row(tui_surface *sf, tui_rect a, int slot, int oi, bool sel)
     if (s_stepper[idx] && f.w >= 30) {
         /* Both art modes use large keys; headers need wider numeric values. */
         const int kw = (s_header || s_preview) ? 8 : 5;
-        const int vw = s_header ? 10 : s_preview ? 6 : 12;
+        /* The value's box grows to the value, up to what the keys and the
+           label leave: a name (a detector rule, a profile) cut to eight
+           letters could not be told from the next one. */
+        int vw = s_header ? 10 : s_preview ? 6 : 12;
+        const int want = (int)strlen(s_detail[idx]) + 2;
+        const int room = f.w - 2 * kw - (s_header ? 1 : (int)strlen(s_label[idx]) + 3);
+        if (want > vw) vw = want < room ? want : room > vw ? room : vw;
         const uint8_t key = A(TUI_BLACK, TUI_CYAN | TUI_BRIGHT);
         const tui_rect inc = tui_rect_make(f.x + f.w - kw, f.y, kw, f.h);
         const tui_rect dec = tui_rect_make(inc.x - vw - kw, f.y, kw, f.h);
@@ -250,7 +260,7 @@ static void draw_row(tui_surface *sf, tui_rect a, int slot, int oi, bool sel)
         tui_put_char(sf, f, inc.x + kw / 2, f.y + (f.h-1)/2, '>', key);
         tui_put_char(sf, f, dec.x + kw / 2, f.y + (f.h-1)/2, '<', key);
         tui_fill(sf, tui_rect_make(dec.x + kw, f.y, vw, f.h), ' ', A(TUI_WHITE, TUI_BLACK));
-        char v[16];
+        char v[LS_PICKER_DETAIL];
         snprintf(v, sizeof(v), "%.*s", vw - 2, s_detail[idx]);
         tui_put_str(sf, f, dec.x + kw + (vw - (int)strlen(v)) / 2, f.y + (f.h-1)/2, v,
                     A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
@@ -339,7 +349,7 @@ void ls_picker_draw(tui_surface *sf, tui_rect area)
         tui_put_str(sf, area, area.x + 2, y, line,
                     A(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
         char count[24];
-        snprintf(count, sizeof(count), "%d of %d", s_shown, s_n);
+        snprintf(count, sizeof(count), ls_tr("%d of %d"), s_shown, s_n);
         const int cn = (int)strlen(count);
         if (area.w - 2 - cn > (int)strlen(line) + 3)
             tui_put_str(sf, area, area.x + area.w - 2 - cn, y, count, dim);
@@ -418,7 +428,7 @@ void ls_picker_draw(tui_surface *sf, tui_rect area)
         char pos[28];
         int last = s_top + nvis;
         if (last > s_shown) last = s_shown;
-        snprintf(pos, sizeof(pos), " %d-%d of %d ", s_top + 1, last, s_shown);
+        snprintf(pos, sizeof(pos), ls_tr(" %d-%d of %d "), s_top + 1, last, s_shown);
         const int pn = (int)strlen(pos);
         /* Right end of the top border, clear of the title on the left. */
         if (area.w - 2 - pn > (int)strlen(s_title) + 4)

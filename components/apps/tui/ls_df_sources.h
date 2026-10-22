@@ -31,7 +31,7 @@ typedef enum {
     LS_DFS_NRF24, LS_DFS_WIFI, LS_DFS_BLE, LS_DFS_NFC, LS_DFS_GPS,
     /* The SX1262 sweeping a band (ls_df_band.h): each emitter it finds is
        a channel of its own. Appended: the numbers above are stored. */
-    LS_DFS_BAND, LS_DFS_COUNT
+    LS_DFS_BAND, LS_DFS_DRONE, LS_DFS_COUNT
 } ls_dfs_t;
 
 #define LS_DFS_SLOTS    2
@@ -46,6 +46,7 @@ typedef struct {
     float level;
     const char *unit;
     uint32_t freq_hz;     /* the first channel */
+    uint64_t centre_hz;   /* measured centre, including 5.8 GHz drone feeds */
     uint32_t updates;     /* bumps once per new level */
     char target[40];
     char status[96];
@@ -59,6 +60,7 @@ enum { LS_DFS_READ_OVERLOAD = 1 };
 typedef struct {
     int64_t us;
     uint32_t freq_hz;
+    uint64_t centre_hz;   /* freq_hz is zero when the centre exceeds 32 bits */
     float level;
     uint8_t slot, channel, flags;
 } ls_dfs_reading_t;
@@ -80,6 +82,8 @@ void ls_dfs_stop(void);
 void ls_dfs_poll(ls_dfs_status_t *out);
 
 bool ls_dfs_select_slot(int slot, ls_dfs_t s, uint32_t freq_hz);
+/* Follow only this cached Drone Watch entry. Does not retune/acquire radios. */
+bool ls_dfs_drone_target(int slot, uint64_t stable_id);
 void ls_dfs_stop_slot(int slot);
 void ls_dfs_poll_slot(int slot, ls_dfs_status_t *out);
 /* The channels a tunable slot scans, one at least; each dwells dwell_ms

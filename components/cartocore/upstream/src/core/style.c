@@ -50,9 +50,18 @@ uint32_t cc_palette(uint8_t ink) {
     return ink < CC_INK_COUNT ? palette[ink] : 0;
 }
 
+/* Sixteen colours, ranked so the eye reads the map in order: a black ground
+   (forest and parks are drawn as a stipple over it, in out.c), dark blue
+   water, motorways and highways bright and bold, everyday roads light,
+   minor ones dim, and nothing else louder than they are. */
 uint8_t cc_palette16(uint8_t ink) {
-    static const uint8_t indices[CC_INK_COUNT]={0,0,2,12,8,15,3,6,5,2,2,0,8,11,3,7,8,2};
+    static const uint8_t indices[CC_INK_COUNT]={0,0,0,4,8,8,3,5,5,0,0,0,0,11,7,8,8,7};
     return ink<CC_INK_COUNT?indices[ink]:0;
+}
+/* The same ink drawn as a line or a dot: water's line is the bright blue of
+   a river or a shore, its ground the dark blue of open water. */
+uint8_t cc_palette16_line(uint8_t ink) {
+    return ink==CC_WATER?12:cc_palette16(ink);
 }
 uint32_t cc_style_colour(uint8_t ink,int colors16) {
     return cc_palette(ink)|(colors16?((uint32_t)(0x80|cc_palette16(ink))<<24):0);

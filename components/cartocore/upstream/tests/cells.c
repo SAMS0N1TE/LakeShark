@@ -63,6 +63,32 @@ int main(int argc,char **argv) {
     render(&h.set.map,16,INT64_C(77)*256*256-80,INT64_C(93)*256*256-60,CC_BRAILLE,actual);
     assert(decoded.hits && !memcmp(expected,actual,sizeof(actual)));
     cc_host_cellset_close(&h);
+    /* The same scenes must resolve from each cell's directory without index.cci. */
+    char idx[1400],oldidx[1400],cat[1400];
+    snprintf(idx,sizeof(idx),"%s/index.cci",argv[1]);snprintf(oldidx,sizeof(oldidx),"%s/index.saved",argv[1]);
+    snprintf(cat,sizeof(cat),"%s/catalog.ccm",argv[1]);
+    FILE *catalog=fopen(cat,"wb");assert(catalog);
+    uint8_t ch[128]={0};memcpy(ch,"CCMAPS2",8);ch[8]=7;assert(fwrite(ch,1,128,catalog)==128);
+    for(unsigned i=0;i<7;i++) {
+        unsigned id=i?1+(76+(i-1)/2)*256+92+(i-1)%2:0;char name[80];
+        if(id)snprintf(name,sizeof(name),"8-%u-%u.ctile",(id-1)/256,(id-1)%256);else strcpy(name,"overview.ctile");
+        cc_str data=load(argv[1],name);uint8_t row[48]={0};
+        for(unsigned j=0;j<4;j++) { row[j]=(uint8_t)(id>>(8*j));row[4+j]=(uint8_t)(data.size>>(8*j)); }
+        row[44]=1;assert(fwrite(row,1,48,catalog)==48);free((void*)data.data);
+    }
+    fclose(catalog);
+    assert(!rename(idx,oldidx));assert(cc_host_cellset_open(&h,argv[1]));assert(h.set.indexless);
+    for(unsigned z=7;z<=16;z+=(z==7?1:z==8?6:1)) {
+        int64_t dx=(INT64_C(77)*256<<z)/256,dy=(INT64_C(93)*256<<z)/256;
+        render(&m,z,dx-80,dy-60,CC_BRAILLE,expected);
+        render(&h.set.map,z,dx-80,dy-60,CC_BRAILLE,actual);assert(!memcmp(expected,actual,sizeof(actual)));
+        uint64_t off;uint32_t len;
+        assert(cc_cellset_resolve(&h.set,z,(uint32_t)(dx/256),(uint32_t)(dy/256),&off,&len)==1);
+        unsigned rz=z>14?14:z;uint32_t tx=(uint32_t)(dx/256)>>(z-rz),ty=(uint32_t)(dy/256)>>(z-rz);
+        uint32_t owner=rz<8?0:1+(tx>>(rz-8))*256+(ty>>(rz-8));assert(off>>32==owner+1);
+    }
+    cc_cellset_close(&h.set);assert(cc_cellset_open_direct(&h.set,(cc_cellset_io){0},h.directory,4096,h.staging,1)==0);
+    cc_host_cellset_close(&h);assert(!rename(oldidx,idx));assert(!remove(cat));
     char path[1400],hidden[1400];snprintf(path,sizeof(path),"%s/8-77-93.ctile",argv[1]);snprintf(hidden,sizeof(hidden),"%s/8-77-93.hidden",argv[1]);assert(!rename(path,hidden));
     assert(cc_host_cellset_open(&h,argv[1]));cc_ctile overview=m;overview.zmax=7;
     int64_t cx=INT64_C(77)*256*64,cy=INT64_C(93)*256*64;

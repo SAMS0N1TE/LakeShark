@@ -61,6 +61,10 @@ typedef struct {
 typedef enum { LS_RID_RX_OFF, LS_RID_RX_UNAVAILABLE, LS_RID_RX_STARTING,
     LS_RID_RX_FAILED, LS_RID_RX_PAUSED, LS_RID_RX_LISTENING } ls_rid_rx_t;
 void ls_wireless_rid_request(bool on);
+/* Drone Watch's independent passive RID observer, ORed with the screen. */
+void ls_wireless_drone_rid(bool on);
+/* Ensure the shared observer/detector worker exists without opening a screen. */
+void ls_wireless_wake(void);
 ls_rid_rx_t ls_wireless_rid_status(void);
 /* only the worker talks to the radios; draw reads one snapshot. */
 void ls_wireless_set_active(bool active);

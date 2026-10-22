@@ -115,6 +115,6 @@ for src in [out/'lssim_cell.c',root/'components/apps/tui/screens/ext/scr_cell.c'
 line=next(l for l in ninja.splitlines() if l.startswith('build lssim.exe:'))
 old=line.split('C_EXECUTABLE_LINKER__lssim_ ',1)[1].split(' |',1)[0].split()
 objects+=[str(build/o) for o in old if o!='CMakeFiles/lssim.dir/tools/lssim.c.obj']
-libs=[str(build/p) for p in ['lib/liblvgl.a','libcells_sha.a','libcartocore_host.a','libls_lv_probe.a']]
+libs=[str(build/p) for p in ['libcells_sha.a','libcartocore_host.a']]   # LVGL went in 2.17.0
 (out/'link.rsp').write_text('\n'.join('"'+x.replace('\\','/')+'"' for x in objects+libs)+'\n-lm\n')
 subprocess.run([gcc,'@'+str(out/'link.rsp'),'-o',str(out/'lssim-cell.exe')],check=True)

@@ -12,16 +12,18 @@
 #define INK_COLS 160
 #define INK_ROWS 100
 
-/* PSRAM: three bytes a cell for the largest map pane, touched only by the
+/* PSRAM: four bytes a cell for the largest map pane, touched only by the
    UI task's draw. */
 EXT_RAM_BSS_ATTR static uint8_t s_bits[INK_COLS * INK_ROWS];
 EXT_RAM_BSS_ATTR static uint8_t s_attr[INK_COLS * INK_ROWS];
 EXT_RAM_BSS_ATTR static uint8_t s_prio[INK_COLS * INK_ROWS];
+EXT_RAM_BSS_ATTR static uint8_t s_used[INK_COLS * INK_ROWS]; /* a dot that is not a pulse */
 static tui_rect s_rect;
-static bool     s_on;
+static bool     s_on, s_pulse;
 static uint8_t  s_tint;
 
 void ls_ink_set_tint(uint8_t base) { s_tint = (uint8_t)(base & 7); }
+void ls_ink_pulse(bool on) { s_pulse = on; }
 
 static uint8_t tint_nibble(uint8_t n)
 {
@@ -46,6 +48,7 @@ bool ls_ink_begin(tui_rect cells)
     for (int r = 0; r < cells.h; r++) {
         memset(s_bits + r * INK_COLS, 0, (size_t)cells.w);
         memset(s_prio + r * INK_COLS, 0, (size_t)cells.w);
+        memset(s_used + r * INK_COLS, 0, (size_t)cells.w);
     }
     return true;
 }
@@ -56,6 +59,7 @@ void ls_ink_dot(int x, int y, uint8_t attr, uint8_t prio)
     const int col = x / 2, row = y / 3;
     const int i = row * INK_COLS + col;
     s_bits[i] |= (uint8_t)(1u << ((y % 3) * 2 + (x % 2)));
+    if (!s_pulse) s_used[i] = 1;
     if (prio >= s_prio[i]) { s_prio[i] = prio ? prio : 1; s_attr[i] = attr; }
 }
 
@@ -118,7 +122,7 @@ void ls_ink_ellipse(int cx, int cy, int rx, int ry, uint8_t attr, uint8_t prio, 
 bool ls_ink_cell_used(int col, int row)
 {
     if (!s_on || col < 0 || row < 0 || col >= s_rect.w || row >= s_rect.h) return false;
-    return s_bits[row * INK_COLS + col] != 0;
+    return s_used[row * INK_COLS + col] != 0;
 }
 
 int ls_ink_cell_prio(int col, int row)

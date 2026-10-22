@@ -1014,7 +1014,7 @@ class SpeechLevelWiringTests(unittest.TestCase):
     def test_the_player_levels_speech_after_the_equalizer(self):
         out = (ROOT/'components/lakeshark/audio/audio_out.c').read_text()
         player = self._body(out, 'static void audio_player_task(')
-        eq = player.index('audio_eq_process(')
+        eq = player.index('eq_outside_cues(')   # the equalizer, which leaves cues alone
         level = player.index('audio_speech_level_apply(')
         write = player.index('player_write(stereo')
         self.assertTrue(eq < level < write)

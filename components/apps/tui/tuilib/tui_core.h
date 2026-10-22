@@ -86,6 +86,21 @@ char tui_fold_codepoint(uint32_t cp);
    that measures and cuts text by bytes (map labels) lines up with the cells.
    A sequence cut off at the end of the string is dropped. */
 void tui_utf8_fold_str(char *s);
+/* Cyrillic. tui_put_str draws a UTF-8 Cyrillic letter in one cell: a
+   letter that looks exactly like a Latin one (A, the Cyrillic A) is that
+   Latin byte, every other letter one of the bytes no TUI glyph uses
+   (tui_cyr.h). tui_fold_codepoint and tui_utf8_fold stay ASCII-only. */
+/* The cell byte for a codepoint: its Cyrillic cell, else the ASCII fold. */
+char tui_cell_codepoint_byte(uint32_t cp);
+/* UTF-8 to one byte a cell, Cyrillic included, so text measured and cut by
+   bytes lines up with the cells. Returns the length written. */
+size_t tui_utf8_to_cells(char *dst, size_t cap, const char *src);
+/* The Cyrillic slot a cell holds (0..TUI_CYR_SLOTS-1), or -1, and the
+   codepoint it draws (0 for none). */
+int tui_cyr_slot(int ch);
+uint32_t tui_cyr_slot_codepoint(int slot);
+/* The cell tui_put_str draws for the text at *p, advancing *p past it. */
+char tui_str_cell(const char **p);
 void tui_fill(tui_surface *s, tui_rect r, char ch, uint8_t attr);
 void tui_hline(tui_surface *s, tui_rect clip, int x, int y, int len, char ch,
                uint8_t attr);

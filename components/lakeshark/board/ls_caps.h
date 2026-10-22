@@ -9,7 +9,11 @@
 #define LS_HAS_BATTERY_ADC 0
 #endif
 
-#if defined(LS_BOARD_PANEL_RM69A10) || defined(LS_BOARD_PANEL_HI8561)
+/* LS_BOARD_PANEL_RUNTIME: a DSI panel chosen on the console (ls_panel_ws.c).
+   The TUI is built in, but the board keeps its headless behaviour
+   (LS_HAS_DISPLAY stays 0): with no panel saved nothing changes. */
+#if defined(LS_BOARD_PANEL_RM69A10) || defined(LS_BOARD_PANEL_HI8561) || \
+    defined(LS_BOARD_PANEL_RUNTIME)
 #define LS_HAS_COMPACT_UI 1
 #else
 #define LS_HAS_COMPACT_UI 0
@@ -226,15 +230,16 @@
    because that is the whole of what a board needs to have one: the codec is
    already there for output and capture is the same part in a different
    mode. */
-#if defined(LS_BOARD_I2S_DIN_GPIO)
+#if defined(LS_BOARD_NO_MIC) && LS_BOARD_NO_MIC
+#define LS_HAS_MIC           0   /* a data-in pin, but no microphone codec fitted */
+#elif defined(LS_BOARD_I2S_DIN_GPIO)
 #define LS_HAS_MIC           1
 #else
 #define LS_HAS_MIC           0
 #endif
 
-/* The Waveshare GUI uses main.cpp. The compact panel adapter uses the radio
-   entry point with the same shell, so it also draws a GUI. */
-#if LS_HAS_DISPLAY && (!defined(CONFIG_LAKESHARK_HEADLESS) || LS_HAS_COMPACT_UI)
+/* A panel is driven only by the character-grid UI. */
+#if LS_HAS_DISPLAY && LS_HAS_COMPACT_UI
 #define LS_USE_DISPLAY       1
 #else
 #define LS_USE_DISPLAY       0

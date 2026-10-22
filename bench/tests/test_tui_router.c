@@ -822,7 +822,7 @@ LS_CASE(sweep_views_mute_and_drawn_touch_bounds_in_both_orientations) {
         LS_CHECK(grid_has("address may change"));LS_CHECK(ls_scr_sweep.key(LS_TK_CHAR,'v'));
         for(int i=0;i<24;i++) {uint8_t normal[6]={30+i};ls_sweep_match_t m={.category=SW_CAMERA,.label="mixed camera"};ls_sweep_observe(normal,0,0,-50,&m,now);}
         ls_scr_sweep.draw(&g_sf,a);
-        LS_CHECK(ls_scr_sweep.key(LS_TK_DOWN,0));LS_CHECK(ls_scr_sweep.key(LS_TK_CHAR,'h'));
+        LS_CHECK(ls_scr_sweep.key(LS_TK_DOWN,0));LS_CHECK(ls_scr_sweep.key(LS_TK_ENTER,0));
         for(int i=0;i<24;i++) {ls_scr_sweep.draw(&g_sf,a);LS_CHECK(ls_scr_sweep.key(LS_TK_DOWN,0));}
         tui_fill(&g_sf,tui_surface_rect(&g_sf),' ',TUI_ATTR(TUI_WHITE,TUI_BLACK));ls_scr_sweep.draw(&g_sf,a);
         LS_CHECK(grid_row("owner-nearby tags")>a.y);

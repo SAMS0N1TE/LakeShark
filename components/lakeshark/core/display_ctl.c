@@ -1,7 +1,6 @@
 #include "display_ctl.h"
 #include "display_dim.h"
 #include "settings.h"
-#include "lvgl.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
 #include "ls_board.h"
@@ -21,6 +20,7 @@ static int  s_timeout_s   = 120;
 static bool s_dimmed      = false;
 static int  s_applied_pct = -1;
 static bool s_key_dim     = true;
+static bool s_off         = false;
 
 /* The keyboard backlight follows the screen down and back, when asked to. */
 static void keypad_follow(void)
@@ -56,6 +56,7 @@ static void apply_now(int applied)
    time, and snap straight back the moment it is not idle any more. */
 static void dim_policy(uint32_t idle_ms)
 {
+    if (s_off) return;
     if (display_dim_due(s_autodim, s_timeout_s, idle_ms)) {
         if (!s_dimmed) { s_dimmed = true; keypad_follow(); }
     } else if (s_dimmed) {
@@ -75,9 +76,23 @@ static void dim_policy(uint32_t idle_ms)
 static int64_t s_last_input_us;
 static int64_t s_next_tick_us;
 
+void display_ctl_nudge(void)
+{
+    s_last_input_us = esp_timer_get_time();
+    if (s_dimmed && !s_off) {
+        s_dimmed = false;
+        keypad_follow();
+        apply_now(perceptual(s_user_pct));
+    }
+}
+
 void display_ctl_activity(void)
 {
     s_last_input_us = esp_timer_get_time();
+    if (s_off) {
+        display_ctl_set_off(false);
+        return;
+    }
     if (s_dimmed) {
         s_dimmed = false;
         keypad_follow();
@@ -94,15 +109,8 @@ void display_ctl_tick(void)
     dim_policy(idle_us > 0 ? (uint32_t)(idle_us / 1000) : 0u);
 }
 #else
-/* The LVGL boards: LVGL keeps the inactivity clock and its timer runs the
-   policy, exactly as before. */
-static void tick_cb(lv_timer_t *t)
-{
-    (void)t;
-    dim_policy(lv_disp_get_inactive_time(NULL));
-}
-
 void display_ctl_activity(void) {}
+void display_ctl_nudge(void) {}
 void display_ctl_tick(void) {}
 #endif
 
@@ -120,25 +128,36 @@ void display_ctl_init(void)
     s_last_input_us = esp_timer_get_time();
 #else
     apply_now(perceptual(s_user_pct));
-    bsp_display_lock(0);
-    lv_timer_create(tick_cb, TICK_MS, NULL);
-    bsp_display_unlock();
 #endif
 }
 
 void display_ctl_reapply(void)
 {
     s_applied_pct = -1;
-    apply_now(s_dimmed ? DIM_APPLIED_PCT : perceptual(s_user_pct));
+    apply_now(s_off ? 0 : s_dimmed ? DIM_APPLIED_PCT : perceptual(s_user_pct));
 }
 
 bool display_ctl_dimmed(void) { return s_dimmed; }
+
+void display_ctl_set_off(bool off)
+{
+    s_off = off;
+    s_dimmed = false;
+    keypad_follow();
+#if LS_HAS_COMPACT_UI
+    s_last_input_us = esp_timer_get_time();
+#endif
+    apply_now(off ? 0 : perceptual(s_user_pct));
+}
+
+bool display_ctl_off(void) { return s_off; }
 
 void display_ctl_set_user(int pct)
 {
     if (pct < 5)   pct = 5;
     if (pct > 100) pct = 100;
     s_user_pct = pct;
+    s_off      = false;
     s_dimmed   = false;
     keypad_follow();
     settings_set_brightness(pct);
@@ -156,7 +175,7 @@ void display_ctl_set_autodim(bool enabled)
        was last touched - or it would dim the instant it was enabled. */
     s_last_input_us = esp_timer_get_time();
 #endif
-    if (!enabled && s_dimmed) {
+    if (!enabled && s_dimmed && !s_off) {
         s_dimmed = false;
         keypad_follow();
         apply_now(perceptual(s_user_pct));

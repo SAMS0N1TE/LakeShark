@@ -3,6 +3,11 @@
 #include "settings_schema.h"
 #include <string.h>
 
+bool settings_drone_watch_valid(uint32_t value)
+{
+    return (value & ~0xffu) == 0x10000u;
+}
+
 settings_schema_action_t settings_schema_decide(
     settings_schema_read_status_t status,
     uint32_t stored,
@@ -75,4 +80,9 @@ bool settings_fm_step_valid(uint32_t hz)
 bool settings_p25_step_valid(uint32_t hz)
 {
     return settings_fm_step_valid(hz);
+}
+
+bool settings_ui_lang_valid(int lang)
+{
+    return lang >= 0 && lang < SETTINGS_UI_LANG_COUNT;
 }

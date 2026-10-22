@@ -15,7 +15,7 @@ extern "C" {
    bumps it - the point is that the version stamp says "this build wrote
    this".  Bump SETTINGS_SCHEMA_MIN_ADDITIVE only when the oldest version this
    build can still read from without wiping crosses a breaking cutover. */
-#define SETTINGS_SCHEMA_VERSION       7U
+#define SETTINGS_SCHEMA_VERSION       8U
 #define SETTINGS_SCHEMA_MIN_ADDITIVE  1U
 
 typedef enum {
@@ -40,6 +40,12 @@ settings_schema_action_t settings_schema_decide(
 /* Version 1 FM step preference: zero keeps the per-mode default. */
 bool settings_fm_step_valid(uint32_t hz);
 bool settings_p25_step_valid(uint32_t hz);
+/* v1 packed Drone Watch: on, alerts, six source bits. Other bits rejected. */
+#define SETTINGS_DRONE_WATCH_DEFAULT 0x100feu /* watch off until asked; alerts + all sources chosen */
+bool settings_drone_watch_valid(uint32_t value);
+/* Version 8 "ui_lang": 0 English, 1 Ukrainian. Anything else reads as English. */
+#define SETTINGS_UI_LANG_COUNT 2
+bool settings_ui_lang_valid(int lang);
 bool settings_gain_valid(const char *app_name, int gain);
 
 const char *settings_schema_action_name(settings_schema_action_t a);

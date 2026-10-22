@@ -38,6 +38,26 @@ static bool carto_choose_file(const char *dir,double lat,double lon,char *out,si
     }
     closedir(d);return found;
 }
+/* The largest map under (lat,lon) that draws zoom z (past its top zoom it is
+   drawn enlarged), for following the view off downloaded cells. Unlike
+   carto_choose_file this never falls back to a map elsewhere: following must
+   not move or zoom the view. */
+static bool carto_file_covering(const char *dir,double lat,double lon,unsigned z,char *out,size_t cap) {
+    DIR *d=opendir(dir);if(!d) return false;
+    bool found=false;uint64_t best_size=0;struct dirent *ent;
+    while((ent=readdir(d))) {
+        size_t len=strlen(ent->d_name); if(len<7 || strcasecmp(ent->d_name+len-6,".ctile")) continue;
+        char path[256];int count=snprintf(path,sizeof(path),"%s/%s",dir,ent->d_name);
+        if(count<0 || (size_t)count>=sizeof(path) || (size_t)count>=cap) continue;
+        struct stat st;if(stat(path,&st) || !S_ISREG(st.st_mode) || st.st_size<64) continue;
+        uint8_t h[64];FILE *f=fopen(path,"rb");size_t got=f?fread(h,1,sizeof(h),f):0;if(f) fclose(f);
+        if(!cc_ctile_header_check(h,got,st.st_size)) continue;
+        double w,s,e,n;if(!carto_bounds(h,&w,&s,&e,&n)) continue;
+        if(lon<w || lon>e || lat<s || lat>n || z<h[28]) continue;
+        if(!found || (uint64_t)st.st_size>best_size) { snprintf(out,cap,"%s",path);best_size=st.st_size;found=true; }
+    }
+    closedir(d);return found;
+}
 static bool carto_fit_map(const cc_ctile *map,double *lat,double *lon,unsigned *z,bool recenter) {
     const uint8_t *h=map->source?map->source->header:map->bytes.data;
     double w,s,e,n;if(!h || !carto_bounds(h,&w,&s,&e,&n)) return false;

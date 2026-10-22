@@ -1042,5 +1042,9 @@ void ls_gps_diagnostics(void) { printf("gps: board declares none\n"); }
 void ls_gps_print_sky(void) { printf("gps: board declares none\n"); }
 void ls_gps_print_raw(void) { printf("gps: board declares none\n"); }
 bool ls_gps_factory_reset(void) { return false; }
+/* The GPS screen links on every board with the TUI. */
+const char *ls_gps_sys_name(uint8_t sys) { (void)sys; return "--"; }
+const char *ls_gps_antenna_name(uint8_t antenna) { (void)antenna; return "--"; }
+void ls_gps_scan_baud(void) { printf("gps: board declares none\n"); }
 
 #endif

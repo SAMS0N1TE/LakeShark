@@ -103,7 +103,7 @@ int cc_planes_init_split(cc_planes *p, cc_arena *a, cc_arena *cold, int32_t cols
     size_t n, mark = a->used, cm=cold->used;
     if (cols < 1 || rows < 1 || cols > 16384 || rows > 16384) return 0;
     p->terrain_strength=p->terrain_active=0; p->terrain_phase_x=p->terrain_phase_y=0; p->terrain_palette_strength=-1;
-    p->palette=NULL; p->ordered=0; p->colors16=0; p->edges_mode=CC_EDGES_SMOOTH; p->native_unclipped_lines=0; p->cols = cols; p->rows = rows; n = (size_t)cols * (size_t)rows;
+    p->palette=NULL; p->ordered=0; p->zoom=0; p->colors16=0; p->edges_mode=CC_EDGES_SMOOTH; p->native_unclipped_lines=0; p->cols = cols; p->rows = rows; n = (size_t)cols * (size_t)rows;
     p->words = ((size_t)cols + CC_WORD_BITS) / CC_WORD_BITS;
     p->dots = cc_arena_alloc(a, n, 1); p->ink = cc_arena_alloc(a, n, 1);
     p->dot_priority = cc_arena_alloc(a, n, 1); p->fill = cc_arena_alloc(a, n, 1);
@@ -468,21 +468,47 @@ static void fill_bounds(cc_planes *p, const cc_path *paths, size_t count, uint8_
 void cc_fill(cc_planes *p,const cc_path *paths,size_t count,uint8_t ink,uint8_t priority) {
     fill_bounds(p,paths,count,ink,priority,NULL);
 }
+void (*cc_yield_hook)(void);
+/* What a character cell can carry at a zoom: below these, a class is texture
+   rather than information, and it buries the classes that are. */
+static int ink_shown(const cc_planes *p,uint8_t ink) {
+    if(!p->zoom) return 1;
+    switch(ink) {
+    case CC_SERVICE: return p->zoom>=13;
+    case CC_MINOR: return p->zoom>=11;
+    case CC_SECONDARY: return p->zoom>=9;
+    case CC_RAIL: return p->zoom>=10;
+    case CC_BUILDING: return p->zoom>=15;
+    default: return 1;
+    }
+}
+/* Main roads two dots wide, so they read as the skeleton of the map. */
+static int ink_bold(const cc_planes *p,uint8_t ink) {
+    return p->zoom>=8 && (ink==CC_MOTORWAY || ink==CC_MAJOR);
+}
+static void bold_line(cc_planes *p,cc_point a,cc_point b,uint8_t ink,uint8_t priority) {
+    int dx=a.x<b.x?b.x-a.x:a.x-b.x,dy=a.y<b.y?b.y-a.y:a.y-b.y;
+    if(dx>=dy) { a.y++; b.y++; } else { a.x++; b.x++; }
+    cc_line(p,a,b,ink,priority);
+}
 void cc_raster(cc_planes *p, const cc_scene *scene) {
+    unsigned yield_n=0;
     cc_planes_clear(p); p->ordered=1;
     cc_terrain_blit(p,scene); if(p->terrain_active) cc_terrain_palette(p);
     for (unsigned priority = 0; priority < 16; ++priority) {
         for (const cc_feature *f = scene->first[priority]; f; f = f->next) {
+            if(cc_yield_hook && !(++yield_n & 255u)) cc_yield_hook();
             if(f->terrain_feature && !p->terrain_strength) continue;
             if(f->bounds_valid && (f->bounds_max.x<0 || f->bounds_min.x>=p->cols*2 ||
                f->bounds_max.y<0 || f->bounds_min.y>=p->rows*4)) continue;
             uint64_t stamp=cc_profiling?cc_ticks():0,coverage=cc_profiling?cc_profiling->ticks[CC_COVERAGE]:0;
-            if (f->style.fill && f->type == 3) {
+            if (f->style.fill && f->type == 3 && ink_shown(p,f->style.fill)) {
                 if(f->raster && cc_native_rasters) native_fill(p,f);
                 else fill_bounds(p,f->paths,f->count,f->style.fill,f->style.priority,f);
             }
             if(cc_profiling) { cc_profiling->ticks[CC_FILL]+=cc_ticks()-stamp-(cc_profiling->ticks[CC_COVERAGE]-coverage); stamp=cc_ticks(); }
-            if (!f->style.line) continue;
+            if (!f->style.line || !ink_shown(p,f->style.line)) continue;
+            const int bold=ink_bold(p,f->style.line);
             for (size_t k = 0; k < f->count; ++k) {
                 const cc_path *path = &f->paths[k];
                 if (f->type == 1) {
@@ -493,7 +519,9 @@ void cc_raster(cc_planes *p, const cc_scene *scene) {
                         cc_point first=cc_path_point(path,0),previous=first;
                         for (size_t j = 1; j < path->count; ++j) {
                             cc_point next=cc_path_point(path,j);
-                            cc_line(p,previous,next,f->style.line,f->style.priority); previous=next;
+                            cc_line(p,previous,next,f->style.line,f->style.priority);
+                            if(bold) bold_line(p,previous,next,f->style.line,f->style.priority);
+                            previous=next;
                         }
                         if(path->closed) cc_line(p,previous,first,f->style.line,f->style.priority);
                     }

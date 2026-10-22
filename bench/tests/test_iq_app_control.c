@@ -1,7 +1,6 @@
 /* LS_TEST_SOURCES: ${FW}/components/lakeshark/radio/iq_app_control.c ${FW}/components/lakeshark/radio/radio_endpoint.c */
 #include "ls_test.h"
 #include "iq_app_control.h"
-#include "ui/ls_receiver_status.h"
 
 #include <string.h>
 
@@ -223,13 +222,6 @@ LS_CASE(fake_endpoint_keeps_requested_and_rounded_effective_distinct)
     LS_EQ_INT(status.requested_gain_tenths_db, 459);
     LS_EQ_INT(status.effective_gain_tenths_db, 450);
 
-    ls_receiver_presentation_t presentation;
-    ls_receiver_present(&status, &presentation);
-    LS_CHECK(strstr(presentation.frequency, "REQ 434.0709") != NULL);
-    LS_CHECK(strstr(presentation.frequency, "ACT 434.0700") != NULL);
-    LS_CHECK(strstr(presentation.gain, "REQ 45.9 dB") != NULL);
-    LS_CHECK(strstr(presentation.gain, "ACT 45.0 dB") != NULL);
-
     ls_radio_release(session);
     LS_EQ_INT(ls_radio_endpoint_unregister(id), LS_RADIO_OK);
 }
@@ -264,11 +256,6 @@ LS_CASE(fail_detach_and_reacquire_preserve_last_success_until_new_success)
     LS_EQ_INT(status.gain_state, LS_IQ_RESULT_FAILED);
     LS_EQ_INT(status.gain_error, LS_RADIO_ERR_UNSUPPORTED);
     LS_EQ_INT(status.effective_gain_tenths_db, 400);
-
-    ls_receiver_presentation_t presentation;
-    ls_receiver_present(&status, &presentation);
-    LS_CHECK(strstr(presentation.frequency, "io") != NULL);
-    LS_CHECK(strstr(presentation.gain, "unsupported") != NULL);
 
     LS_EQ_INT(ls_radio_endpoint_unregister(id), LS_RADIO_OK);
     ls_iq_control_receiver_lost(&control, LS_RADIO_ERR_DISCONNECTED);

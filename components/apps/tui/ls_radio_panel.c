@@ -2,6 +2,7 @@
 #include "ls_numpad.h"
 #include "ls_glyph.h"
 #include "ls_tui.h"
+#include "ls_i18n.h"
 #include "ls_tui_screen.h"
 #include "ls_scan_options.h"
 #include "scan_engine.h"
@@ -156,6 +157,7 @@ static void trace_draw(tui_surface *sf, tui_rect box, int x0, int y, int w, int 
 int ls_radio_chip(tui_surface *sf, tui_rect box, int x, int y, const char *text,
                   bool on, uint8_t hue)
 {
+    text = ls_tr(text);
     const int n = (int)strlen(text);
     if (x + n + 2 > box.x + box.w) return x;
     tui_rect field = tui_rect_make(x, y, n + 2, 1);
@@ -180,6 +182,7 @@ void ls_radio_filament(tui_surface *sf, tui_rect box, int x, int y, int rows, ui
    not read as one more card in a stack of cards. */
 void ls_radio_bezel(tui_surface *sf, tui_rect r, const char *title)
 {
+    title = ls_tr(title);
     const uint8_t edge = TUI_ATTR(TUI_CYAN, TUI_BLACK);
     for (int x = 0; x < r.w; ++x) {
         tui_put_char(sf, r, r.x + x, r.y, '=', edge);
@@ -199,14 +202,14 @@ void ls_radio_bezel(tui_surface *sf, tui_rect r, const char *title)
 static void meter(tui_surface *sf, tui_rect box, int x0, int y, int w,
                   const ls_radio_view_t *v, bool gate_row)
 {
-    tui_put_str(sf, box, x0, y, "SIG", TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, box, x0, y, ls_tr("SIG"), TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     const int bx = x0 + 4;
     const int bw = w - 10;
     if (bw < 6) return;
     const int segs = bw / 2;
     if (segs < 2) return;
     if (!v->has_squelch) {
-        tui_put_str(sf, box, bx, y, "--", LS_ATTR_DIM);
+        tui_put_str(sf, box, bx, y, ls_tr("--"), LS_ATTR_DIM);
     } else {
         const float sig = v->signal < 0.0f ? 0.0f : v->signal > 1.0f ? 1.0f : v->signal;
         if (sig >= s_hold) s_hold = sig;
@@ -229,7 +232,7 @@ static void meter(tui_surface *sf, tui_rect box, int x0, int y, int w,
     }
     if (!gate_row) return;
     const int g = clampi((int)(v->gate * (float)segs), 0, segs - 1);
-    tui_put_str(sf, box, x0, y + 1, "SQL", LS_ATTR_FAINT);
+    tui_put_str(sf, box, x0, y + 1, ls_tr("SQL"), LS_ATTR_FAINT);
     for (int s = 0; s < segs; ++s)
         tui_put_char(sf, box, bx + s * 2, y + 1, s == g ? '^' : '.',
                      TUI_ATTR(s == g ? (v->squelch_open ? (TUI_GREEN | TUI_BRIGHT)
@@ -330,10 +333,11 @@ void ls_radio_card_draw(tui_surface *sf, tui_rect b, ls_radio_card_t *c)
        opened the keypad - the one thing a slider must never do. The number
        now wears brackets and keeps row one; the filaments own the rows under
        it and set the value where they are pressed. */
-    tui_put_str(sf, b, b.x + 2, label_y, c->label, face);
+    const char *card_label = ls_tr(c->label);
+    tui_put_str(sf, b, b.x + 2, label_y, card_label, face);
     char field[20];
     snprintf(field, sizeof(field), "[%s]", c->value);
-    const int field_x = b.x + 2 + (int)strlen(c->label) + 1;
+    const int field_x = b.x + 2 + (int)strlen(card_label) + 1;
     tui_put_str(sf, b, field_x, label_y, field,
                 c->live ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
     int bar_x = b.x + 2;
@@ -469,6 +473,13 @@ static void deck_plan(tui_rect area, int want, int *n, int *card_h, int *cols)
             if ((area.h + 1) / (ch + 1) >= want) {
                 *n = want; *card_h = ch; *cols = 1; return;
             }
+        /* Six rows is what gives a card's keys three rows - the touch
+           minimum. Two full cards beat four short ones: the rest of the
+           controls are in SETUP. (2026-10-19, after the scanner gained its
+           start deck and P25 its control row.) */
+        if (want > 2 && (area.h + 1) / 7 >= 2) {
+            *n = (area.h + 1) / 7; *card_h = 6; *cols = 1; return;
+        }
         /* A short, wide pane - landscape with a keyboard under it - stands
            the cards in two columns rather than dropping half of them. */
         if (area.w >= 56) {
@@ -509,11 +520,18 @@ static void deck_draw(tui_surface *sf, tui_rect area, const ls_radio_view_t *v, 
     int n, card_h, cols;
     deck_plan(area, want, &n, &card_h, &cols);
     if (!n) return;
+    /* A receiver with no squelch (P25 gates on sync, not quieting) gets no
+       dead SQUELCH card: the slot goes to the next control that works. */
+    uint8_t ids[N_CARD];
+    int avail = 0;
+    for (int id = 0; id < N_CARD; ++id)
+        if (id != CARD_SQL || v->set_squelch_pct || v->has_squelch) ids[avail++] = (uint8_t)id;
+    if (n > avail) n = avail;
     s_cards = n;
     for (int i = 0; i < n; ++i) {
-        s_card_id[i] = (uint8_t)i;
+        s_card_id[i] = ids[i];
         card_t c;
-        card_fill(&c, i, v);
+        card_fill(&c, ids[i], v);
         if (card_h > 1) {
             const int rows = (n + cols - 1) / cols;
             const int used = rows * card_h + (rows - 1);
@@ -611,11 +629,11 @@ static void glass(tui_surface *sf, tui_rect r, const ls_radio_panel_t *p,
     }
     if (side.h > row) {
         tui_put_str(sf, side, side.x + (wide ? 1 : 0), side.y + row,
-                    !v->receiver.receiver_streaming        ? "RECEIVER OFFLINE"
+                    ls_tr(!v->receiver.receiver_streaming        ? "RECEIVER OFFLINE"
                     : v->receiver.tune_state == LS_IQ_RESULT_PENDING ? "TUNE PENDING"
                     : v->receiver.tune_state == LS_IQ_RESULT_FAILED  ? "TUNE FAILED"
                     : v->detail[0][0]                      ? v->detail[0]
-                                                            : "RECEIVER READY",
+                                                            : "RECEIVER READY"),
                     LS_ATTR_DIM);
         row++;
     }
@@ -746,52 +764,40 @@ static bool deck_touch(const ls_radio_view_t *v, int x, int y, char *out)
     return false;
 }
 
-static void buttons(ls_radio_panel_t *p, const ls_radio_view_t *v)
+static void buttons(ls_radio_panel_t *p, const ls_radio_view_t *v, bool deck)
 {
-    bool active = scan_engine_active(), hold = scan_engine_manual_hold();
-    ls_btn_t b[] = {{active ? (hold ? "RESUME" : "HOLD") : (v->fm ? "A / B" : "SCAN"), NULL,
-                     active  ? 'H'
-                     : v->fm ? 'A'
-                             : 'S',
-                     hold, false},
-                    {active ? "NEXT" : "TUNE", NULL, active ? 'N' : 'T', false, false},
-                    {active  ? "STOP"
-                     : v->fm ? "SCAN"
-                             : "SIGNAL",
-                     NULL,
-                     active  ? 'X'
-                     : v->fm ? 'S'
-                             : 'W',
-                     active, false},
-                    {"LISTS", NULL, 'L', false, false},
-                    /* Squelch has a card on the deck now, so the idle slot
-                       carries the one thing six buttons cannot: everything
-                       else the scanner can be told. 'q' still opens exact
-                       squelch entry from the keyboard. */
-                    {active  ? "SKIP"
-                     : v->fm ? "SETUP"
-                             : "SETTINGS",
-                     NULL,
-                     active  ? 'K'
-                     : v->fm ? 'C'
-                             : 'P',
-                     false, false},
-                    {"BACK", NULL, 'M', false, false}};
+    (void)v;
+    /* The front: the start deck does the scanning, so the bar keeps what a
+       scan is set up with. SETUP is the same list for FM and P25 ('C'). A
+       pane too short for the deck puts the scan's own keys on the bar, so a
+       scan can always be started and stopped by touch. */
+    ls_btn_t b[6] = {{"LISTS", NULL, 'L', false, false},
+                     {"SETUP", NULL, 'C', false, false},
+                     {"BACK", NULL, 'M', false, false}};
+    p->nbuttons = 3;
+    if (!deck && !scan_engine_active()) {
+        ls_btn_t s4[6] = {{"SCAN", NULL, 'S', false, false}, {"LISTS", NULL, 'L', false, false},
+                          {"SETUP", NULL, 'C', false, false}, {"BACK", NULL, 'M', false, false}};
+        memcpy(b, s4, sizeof(b));
+        p->nbuttons = 4;
+    } else if (!deck) {
+        const bool hold = scan_engine_manual_hold();
+        ls_btn_t r6[6] = {{hold ? "RESUME" : "HOLD", NULL, 'H', hold, false},
+                          {"NEXT", NULL, 'N', false, false}, {"SKIP", NULL, 'K', false, false},
+                          {"STOP", NULL, 'X', true, false},  {"LISTS", NULL, 'L', false, false},
+                          {"SETUP", NULL, 'C', false, false}};
+        memcpy(b, r6, sizeof(b));
+        p->nbuttons = 6;
+    }
     if (p->lists) {
         ls_btn_t l[] = {
             {"SAVE FREQ", NULL, 'F', false, false}, {"ENABLE", NULL, 'E', false, p->count == 0},
-            {"ZONE", NULL, 'Z', false, false},      {"SCAN TYPE", NULL, 'O', false, false},
+            {"ZONE", NULL, 'Z', false, false},
+            {scan_engine_get_source() == SCAN_SRC_BAND ? "USE LIST" : "USE BAND", NULL, 'O',
+             false, false},
             {"RANGE", NULL, 'R', false, false},     {"BACK", NULL, 'M', false, false}};
         memcpy(b, l, sizeof(b));
-    }
-    if (p->scan_choice) {
-        bool band = scan_engine_get_source() == SCAN_SRC_BAND;
-        ls_btn_t choices[] = {
-            {"CHANNEL LIST", NULL, 'C', !band, false}, {"BAND SCAN", NULL, 'B', band, false},
-            {band ? "STEP" : "MIXED AUDIO", NULL, band ? 'I' : 'X', !band && scan_engine_mixed(), false},
-            {band ? "RANGE" : "GPS FILTER", NULL, band ? 'R' : 'G', !band && scan_engine_location(), false},
-            {"START", NULL, 'S', false, false},        {"BACK", NULL, 'M', false, false}};
-        memcpy(b, choices, sizeof(b));
+        p->nbuttons = 6;
     }
     memcpy(p->buttons, b, sizeof(b));
 }
@@ -824,10 +830,10 @@ static void channel_list(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
     p->previous = tui_rect_make(a.x + 1, a.y + a.h - 4, (a.w - 2) / 2, 3);
     p->next =
         tui_rect_make(p->previous.x + p->previous.w, p->previous.y, a.w - 2 - p->previous.w, 3);
-    tui_box(sf, a, p->lists ? "SAVED CHANNELS / UP-DOWN SELECT" : "SCAN LIST", cyan);
+    tui_box(sf, a, ls_tr(p->lists ? "SAVED CHANNELS / UP-DOWN SELECT" : "SCAN LIST"), cyan);
     if (p->lists && p->count > rows) {
-        tui_box(sf, p->previous, "< PREV", cyan);
-        tui_box(sf, p->next, "NEXT >", cyan);
+        tui_box(sf, p->previous, ls_tr("< PREV"), cyan);
+        tui_box(sf, p->next, ls_tr("NEXT >"), cyan);
     }
     if (!p->count) {
         line(sf, a, 2, "No channels saved for this mode", white);
@@ -851,235 +857,6 @@ static void channel_list(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
         snprintf(text, sizeof(text), "%s %s", c->mode == SCAN_MODE_P25 ? "P25" : "FM", c->name);
         line(sf, a, 3 + n * 3, text, LS_ATTR_DIM);
     }
-}
-
-static void scan_choices(tui_surface *sf, tui_rect a, bool wide)
-{
-    bool band = scan_engine_get_source() == SCAN_SRC_BAND;
-    tui_rect list = a, range = a;
-    if (wide) {
-        list.w = (a.w - 2) / 2;
-        range.x = list.x + list.w + 2;
-        range.w = a.w - list.w - 2;
-    } else {
-        list.h = 10;
-        range.y = list.y + 11;
-        range.h = a.h - 11;
-    }
-    tui_box(sf, list, band ? "CHANNEL LIST" : "CHANNEL LIST / SELECTED", band ? cyan : amber);
-    line(sf, list, 2, "Visit saved frequencies only", white);
-    line(sf, list, 4, "Uses your enabled channels and zone", LS_ATTR_DIM);
-    line(sf, list, 6, "Manage frequencies with LISTS", LS_ATTR_DIM);
-    line(sf, list, 8, scan_engine_location() ? "GPS coverage filter ON" : "GPS coverage filter OFF", cyan);
-    tui_box(sf, range, band ? "BAND SCAN / SELECTED" : "BAND SCAN", band ? amber : cyan);
-    uint32_t lo, hi, step;
-    scan_engine_get_band(&lo, &hi, &step);
-    char text[64];
-    line(sf, range, 2, "Sweep every frequency step", white);
-    snprintf(text, sizeof(text), "FROM %.4f TO %.4f MHz", lo / 1e6, hi / 1e6);
-    line(sf, range, 4, text, white);
-    snprintf(text, sizeof(text), "STEP %.2f kHz / no list needed", step / 1000.0);
-    line(sf, range, 6, text, amber);
-    line(sf, range, 8, "RANGE chooses band / STEP changes spacing", LS_ATTR_DIM);
-}
-
-/* Large text leaves 34x41 cells in portrait and 79x17 in landscape. Keep
-   the same actions and hit testing, but spend fewer rows on decoration. */
-static void compact_panel(ls_radio_panel_t *p, const ls_radio_view_t *v,
-                          tui_surface *sf, tui_rect a)
-{
-    bool wide = a.w > 72, active = scan_engine_active();
-    a.x++;
-    a.w -= 2;
-    int bh = wide ? 4 : 10;
-    tui_rect controls = tui_rect_make(a.x, a.y + a.h - bh, a.w, bh);
-    if (!wide) {
-        /* Two columns fit SETTINGS and SCAN TYPE with padding. Letting a
-           32-column pane choose three silently truncates both labels. */
-        controls.x += (controls.w - 28) / 2;
-        controls.w = 28;
-    }
-    tui_rect body = tui_rect_make(a.x, a.y + 4, a.w, controls.y - a.y - 5);
-    tui_rect state = tui_rect_make(a.x, a.y, a.w, 3);
-    char text[96];
-    if (p->scan_choice) snprintf(text, sizeof(text), "CHOOSE SCAN / THEN START");
-    else if (p->lists) snprintf(text, sizeof(text), "SAVED CHANNELS / ZONE %d", scan_engine_get_zone());
-    else if (active) scan_engine_status(text, sizeof(text));
-    else snprintf(text, sizeof(text), "%s / %s", v->mode,
-                  v->receiver.receiver_streaming ? "MANUAL" : "NO USB RECEIVER");
-    tui_box(sf, state, NULL, cyan);
-    line(sf, state, 1, text, amber);
-    if (p->lists && !p->scan_choice) {
-        channel_list(p, v, sf, body);
-    } else if (p->scan_choice) {
-        tui_rect left = body, right = body;
-        if (wide) {
-            left.w = (body.w - 1) / 2;
-            right.x += left.w + 1;
-            right.w -= left.w + 1;
-        } else {
-            left.h = 10;
-            right.y += 11;
-            right.h -= 11;
-        }
-        bool band = scan_engine_get_source() == SCAN_SRC_BAND;
-        tui_box(sf, left, band ? "CHANNELS" : "CHANNELS / SELECTED", cyan);
-        line(sf, left, 2, "Visit saved frequencies", white);
-        line(sf, left, 4, "Manage with LISTS", LS_ATTR_DIM);
-        line(sf, left, 6, "Mixed audio: P25 I + NFM", LS_ATTR_DIM);
-        tui_box(sf, right, band ? "BAND / SELECTED" : "BAND", amber);
-        uint32_t lo, hi, step;
-        scan_engine_get_band(&lo, &hi, &step);
-        snprintf(text, sizeof(text), "%.3f - %.3f MHz", lo / 1e6, hi / 1e6);
-        line(sf, right, 2, text, white);
-        snprintf(text, sizeof(text), "Step %.2f kHz", step / 1000.0);
-        line(sf, right, 4, text, amber);
-        line(sf, right, 6, "Every step in this band", LS_ATTR_DIM);
-    } else {
-        /* The glass and the deck, the same two pieces the VFO page is made
-           of. A scan running on the stored list keeps the list in view and
-           the deck down to the two controls a scan actually needs. */
-        const int gh = glass_rows(body, wide);
-        glass(sf, tui_rect_make(body.x, body.y, body.w, gh), p, v, wide);
-        tui_rect rest = tui_rect_make(body.x, body.y + gh, body.w, body.h - gh);
-        const bool list = active && scan_engine_get_source() == SCAN_SRC_CHANNELS;
-        /* Two columns of cards fit a short wide pane, so width buys the
-           whole deck back that height could not. */
-        const int want = list ? 2 : (rest.h >= 13 || rest.w >= 56) ? 4 : 2;
-        const int dh = deck_rows(rest, want);
-        if (list && rest.h - dh >= 10) {
-            channel_list(p, v, sf, tui_rect_make(rest.x, rest.y, rest.w, rest.h - dh));
-            rest.y += rest.h - dh;
-            rest.h = dh;
-        }
-        deck_draw(sf, rest, v, want);
-    }
-    buttons(p, v);
-    if (p->scan_choice) {
-        p->buttons[0].label = "CHANNELS";
-        p->buttons[1].label = "BAND";
-        if (scan_engine_get_source() != SCAN_SRC_BAND) {
-            p->buttons[2].label = "MIXED";
-            p->buttons[3].label = "GPS";
-        }
-    }
-    ls_btn_bar_raised(sf, controls, p->buttons, 6, p->focus);
-}
-
-void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surface *sf, tui_rect a)
-{
-    ls_radio_view_t actual = *v;
-    if (scan_engine_active() && scan_engine_mixed()) {
-        const scan_channel_t *c = scan_channel_get(scan_engine_candidate());
-        if (c) {
-            actual.fm = c->mode == SCAN_MODE_NFM;
-            actual.mode = actual.fm ? "NFM / MIXED" : "P25 I / MIXED";
-            actual.frequency = c->freq_hz;
-            scan_engine_receiver_status(&actual.receiver);
-            v = &actual;
-        }
-    }
-    /* Once a frame, and only here: the activity trace advances by one reading
-       and a key lit by a tap fades. Both are animation the panel owns, so
-       neither costs the receiver anything. */
-    trace_push(v->signal, v->has_squelch);
-    if (s_flash_ttl > 0 && --s_flash_ttl == 0) s_flash = -1;
-    bool wide = a.w > 72, active = scan_engine_active();
-    if (a.w >= 32 && a.h >= (wide ? 14 : 30) && (a.w < 38 || a.h < 20)) {
-        compact_panel(p, v, sf, a);
-        return;
-    }
-    if (a.w < 38 || a.h < (wide ? 20 : 34)) {
-        ls_panel_notice(sf, a, "RADIO", "Open a larger radio view", "M: detailed controls");
-        ls_btn_clear_hits();
-        return;
-    }
-    a.x++;
-    a.w -= 2;
-    char text[96];
-    if (p->scan_choice)
-        snprintf(text, sizeof(text), "CHOOSE SCAN TYPE / THEN START");
-    else if (active) {
-        char state[64];
-        scan_engine_status(state, sizeof(state));
-        snprintf(text, sizeof(text), "%s / %s",
-                 scan_engine_get_source() == SCAN_SRC_BAND ? "BAND SCAN" : "CHANNEL LIST", state);
-    } else
-        snprintf(text, sizeof(text), "%s / %s", v->mode,
-                 v->receiver.receiver_streaming ? "MANUAL" : "NO RECEIVER / CONNECT USB SDR");
-    tui_rect status = tui_rect_make(a.x, a.y + 1, a.w, 3);
-    tui_box(sf, status, NULL, cyan);
-    line(sf, status, 1,
-         scan_engine_manual_hold()
-             ? (scan_engine_get_source() == SCAN_SRC_BAND ? "BAND SCAN / HOLD"
-                                                          : "CHANNEL LIST / HOLD")
-             : text,
-         amber);
-    int bh = wide ? 5 : 10;
-    tui_rect controls = tui_rect_make(a.x, a.y + a.h - bh, a.w, bh);
-    tui_rect body = tui_rect_make(a.x, a.y + 5, a.w, controls.y - a.y - 6);
-    if (p->scan_choice) {
-        scan_choices(sf, body, wide);
-    } else if (p->lists) {
-        uint32_t lo, hi, step;
-        scan_engine_get_band(&lo, &hi, &step);
-        snprintf(text, sizeof(text), "%s / ZONE %d / %.1fs hang",
-                 scan_engine_get_source() == SCAN_SRC_BAND ? "BAND" : "CHANNELS",
-                 scan_engine_get_zone(), scan_engine_get_hang_ms() / 1000.0);
-        line(sf, body, 0, text, amber);
-        snprintf(text, sizeof(text), "%.4f - %.4f MHz / %.1fk", lo / 1e6, hi / 1e6, step / 1000.0);
-        line(sf, body, wide ? 1 : 2, text, white);
-        line(sf, body, wide ? 2 : 4,
-             p->notice[0] ? p->notice : "Zone -1 = all / changes stop scanning", LS_ATTR_DIM);
-        body.y += wide ? 3 : 6;
-        body.h -= wide ? 3 : 6;
-        channel_list(p, v, sf, body);
-    } else {
-        /* THE GLASS AND THE DECK.
-
-           One instrument, laid out the way the VFO page lays itself out: the
-           carrier in block figures under a rail of annunciators, the meter
-           and the gate beside or below it, and the controls as cards with
-           keys a thumb can hit. A scan running on the stored list keeps the
-           list on screen - watching it hop is most of the point - and the
-           deck keeps the two controls a scan needs while the rest of them
-           wait in SETUP. */
-        const int gh = glass_rows(body, wide);
-        glass(sf, tui_rect_make(body.x, body.y, body.w, gh), p, v, wide);
-        tui_rect rest = tui_rect_make(body.x, body.y + gh, body.w, body.h - gh);
-        const bool list = active && scan_engine_get_source() == SCAN_SRC_CHANNELS;
-        /* Two columns of cards fit a short wide pane, so width buys the
-           whole deck back that height could not. */
-        const int want = list ? 2 : (rest.h >= 13 || rest.w >= 56) ? 4 : 2;
-        const int dh = deck_rows(rest, want);
-        if (list && rest.h - dh >= 10) {
-            channel_list(p, v, sf, tui_rect_make(rest.x, rest.y, rest.w, rest.h - dh));
-            rest.y += rest.h - dh;
-            rest.h = dh;
-        } else if (!list && rest.h - dh >= 6) {
-            /* Idle, with rows to spare: the band the scan would walk, so
-               BAND SCAN is never started blind. */
-            uint32_t lo, hi, step;
-            scan_engine_get_band(&lo, &hi, &step);
-            snprintf(text, sizeof(text), "BAND %.4f - %.4f MHz / %.2fk STEP",
-                     lo / 1e6, hi / 1e6, step / 1000.0);
-            tui_put_str(sf, rest, rest.x + 1, rest.y, text, LS_ATTR_DIM);
-            const int z = scan_engine_get_zone();
-            char zone[8];
-            if (z < 0) snprintf(zone, sizeof(zone), "ALL");
-            else       snprintf(zone, sizeof(zone), "%d", z);
-            /* No button's word in here: a line of text wearing a button's
-               name is a target a thumb will try and nothing will happen. */
-            snprintf(text, sizeof(text), "ZONE %s / %d SAVED CHANNELS / HANG %.1fs",
-                     zone, scan_channels_count(), scan_engine_get_hang_ms() / 1000.0);
-            tui_put_str(sf, rest, rest.x + 1, rest.y + 1, text, LS_ATTR_DIM);
-            rest.y += 3;
-            rest.h -= 3;
-        }
-        deck_draw(sf, rest, v, want);
-    }
-    buttons(p, v);
-    ls_btn_bar_raised(sf, controls, p->buttons, 6, p->focus);
 }
 
 /* Band scan presets, cycled by RANGE. A band scan steps lo, lo+step, lo+2*step
@@ -1129,6 +906,398 @@ static const band_preset_t *band_preset_next(void)
     return &band_presets[next];
 }
 
+
+/* START: the source as chosen, except a list with nothing to visit, which
+   would stop at once and look broken - that scans the band and says so. */
+static int scan_eligible(const ls_radio_view_t *v);
+static void scan_start_now(ls_radio_panel_t *p, const ls_radio_view_t *v)
+{
+    if (scan_engine_get_source() == SCAN_SRC_CHANNELS && scan_eligible(v) == 0) {
+        scan_engine_set_source(SCAN_SRC_BAND);
+        snprintf(p->notice, sizeof(p->notice), "%s", ls_tr("No saved channels: scanning the band"));
+    }
+    p->lists = p->scan_choice = false;
+    scan_engine_start();
+}
+
+/* ----------------------------------------------------------- the start deck
+
+   "Way too many buttons to just start." A scan used to be SCAN, then a page
+   choosing CHANNEL LIST or BAND SCAN, then its switches, then START. Now the
+   front of the scanner is one row of what to scan and one key that starts it:
+
+       [ LIST  12 ] [ BAND ] [ GPS ON ]      what: tap to choose, stays chosen
+       [========  SCAN 12 CHANNELS  ========]  one tap and it runs
+
+   While it runs the big key splits into the four things a scan is told:
+   HOLD NEXT SKIP STOP, the same words and keys as the VFO's TUNE card. The
+   third rail key is the list's GPS coverage filter, or the band's RANGE
+   preset when BAND is chosen. Everything else is in SETUP. */
+
+enum { SRC_LIST, SRC_BAND, SRC_THIRD, N_SRC };
+static tui_rect s_src[N_SRC];
+static tui_rect s_go[4];
+static int      s_go_n;
+
+/* The channels a list scan would visit now: this mode (or both when mixed),
+   enabled, not locked out, in the zone. What the START key promises. */
+static int scan_eligible(const ls_radio_view_t *v)
+{
+    const int zone = scan_engine_get_zone();
+    int n = 0;
+    for (int i = 0; i < scan_channels_count(); i++) {
+        const scan_channel_t *c = scan_channel_get(i);
+        if (!c || !(c->flags & SCAN_FLAG_ENABLED) || (c->flags & SCAN_FLAG_LOCKOUT)) continue;
+        if (zone >= 0 && c->zone != zone) continue;
+        if (c->mode == (v->fm ? SCAN_MODE_NFM : SCAN_MODE_P25) ||
+            (scan_engine_mixed() && c->mode <= SCAN_MODE_NFM))
+            n++;
+    }
+    return n;
+}
+
+/* Rows the start deck takes in `body` (after the glass): the tall form when
+   two cards still fit under it, a four-row band when they would not, and
+   none when even that leaves no row for a card (the bar carries SCAN). */
+static int start_deck_rows(tui_rect body, bool wide)
+{
+    const int rest = body.h - glass_rows(body, wide);
+    if (!wide && body.w >= 30 && rest >= 9 + 1 + 1 + 11) return 9;
+    if (body.w >= 30 && rest >= 4 + 1 + 1 + 1) return 4;
+    return 0;
+}
+
+static void start_deck(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surface *sf,
+                       tui_rect r, bool wide)
+{
+    for (int i = 0; i < N_SRC; i++) s_src[i] = tui_rect_make(0, -1, 0, 0);
+    s_go_n = 0;
+    if (r.w < 24 || r.h < 4) return;
+    const bool active = scan_engine_active();
+    const bool band = scan_engine_get_source() == SCAN_SRC_BAND;
+    const int n = scan_eligible(v);
+    uint32_t lo, hi, step;
+    scan_engine_get_band(&lo, &hi, &step);
+
+    /* Tall: the rail is three rows over a five-row go key. Flat (a short
+       pane): one band, rail on the left and SCAN on the right; while a scan
+       runs the band is all scan keys, since the source cannot change then. */
+    const bool flat = r.h < 9;
+    const int rail_w = r.w >= 60 ? r.w * 2 / 5 : r.w / 2;
+    tui_rect rail = flat ? tui_rect_make(r.x, r.y, active ? 0 : rail_w, r.h)
+                         : tui_rect_make(r.x, r.y, r.w, 3);
+    tui_rect go = !flat ? tui_rect_make(r.x, r.y + 4, r.w, 5)
+                : active ? r
+                         : tui_rect_make(rail.x + rail.w + 1, r.y, r.w - rail.w - 1, r.h);
+
+    char list_cap[16], third_cap[16];
+    snprintf(list_cap, sizeof(list_cap), ls_tr("LIST %d"), n);
+    if (band) snprintf(third_cap, sizeof(third_cap), "%s", ls_tr("RANGE"));
+    else snprintf(third_cap, sizeof(third_cap), "%s",
+                  ls_tr(scan_engine_location() ? "GPS ON" : "GPS OFF"));
+    const char *cap[N_SRC] = { list_cap, ls_tr("BAND"), third_cap };
+    /* Narrow keys get the short words: the count and the state move to the
+       SCAN key and the rail's lit key. */
+    if (rail.w / N_SRC < 10) { cap[0] = ls_tr("LIST"); if (!band) cap[2] = "GPS"; }
+    const uint8_t hue[N_SRC] = { TUI_BLUE, TUI_YELLOW, band ? TUI_YELLOW : TUI_CYAN };
+    for (int i = 0; i < N_SRC && rail.w >= N_SRC * 4; i++) {
+        const int x0 = rail.x + rail.w * i / N_SRC, x1 = rail.x + rail.w * (i + 1) / N_SRC;
+        s_src[i] = tui_rect_make(x0, rail.y, x1 - x0 - 1, rail.h);
+        const bool on = i == SRC_LIST ? !band : i == SRC_BAND ? band
+                      : !band && scan_engine_location();
+        ls_freq_key_draw(sf, s_src[i], cap[i], 0, hue[i], on);
+    }
+
+    if (!active) {
+        char what[48];
+        if (!band && n == 0)
+            /* Nothing to visit: say what START will do instead of failing. */
+            snprintf(what, sizeof(what), ls_tr("SCAN BAND  (list empty)"));
+        else if (band)
+            snprintf(what, sizeof(what), ls_tr("SCAN %.1f-%.1f MHz"), lo / 1e6, hi / 1e6);
+        else
+            snprintf(what, sizeof(what), ls_tr(n == 1 ? "SCAN %d CHANNEL" : "SCAN %d CHANNELS"), n);
+        if ((int)strlen(what) > go.w - 2) {
+            if (!band && n > 0) snprintf(what, sizeof(what), ls_tr("SCAN %d"), n);
+            else snprintf(what, sizeof(what), "%s", ls_tr("SCAN"));
+        }
+        s_go[0] = go;
+        s_go_n = 1;
+        ls_freq_key_draw(sf, go, what, 0, TUI_GREEN, true);
+        if (!flat && go.w >= 30) {
+            char sub[40];
+            if (band || n == 0)
+                snprintf(sub, sizeof(sub), ls_tr("%.2fk step  /  hang %.1fs"), step / 1000.0,
+                         scan_engine_get_hang_ms() / 1000.0);
+            else {
+                const int z = scan_engine_get_zone();
+                if (z < 0) snprintf(sub, sizeof(sub), ls_tr("all zones  /  hang %.1fs"),
+                                    scan_engine_get_hang_ms() / 1000.0);
+                else snprintf(sub, sizeof(sub), ls_tr("zone %d  /  hang %.1fs"), z,
+                              scan_engine_get_hang_ms() / 1000.0);
+            }
+            const int sx = go.x + (go.w - (int)strlen(sub)) / 2;
+            tui_put_str(sf, go, sx, go.y + go.h - 2, sub,
+                        TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+        }
+    } else {
+        const bool held = scan_engine_manual_hold() || scan_engine_audio_open();
+        const char *k[4] = { scan_engine_manual_hold() ? "RESUME" : "HOLD", "NEXT", "SKIP",
+                             "STOP" };
+        const uint8_t kh[4] = { TUI_RED, TUI_CYAN, TUI_CYAN, TUI_MAGENTA };
+        /* Tall: keys of three rows and, under them, where the scan is - the
+           sweep across the band, or the step through the list - read from
+           the engine each frame, so it moves only when the scan moves. */
+        const bool ruler = !wide && go.h >= 5 && go.w >= 30;
+        const int kh_rows = ruler ? go.h - 2 : go.h;
+        for (int i = 0; i < 4; i++) {
+            const int x0 = go.x + go.w * i / 4, x1 = go.x + go.w * (i + 1) / 4;
+            s_go[i] = tui_rect_make(x0, go.y, x1 - x0 - 1, kh_rows);
+            ls_freq_key_draw(sf, s_go[i], k[i], 0, kh[i], i == 0 && held);
+        }
+        s_go_n = 4;
+        if (ruler) {
+            const int y = go.y + go.h - 1;
+            char left[16], right[16];
+            float frac = 0.0f;
+            if (band) {
+                const uint32_t hz = v->receiver.effective_center_known
+                                        ? (uint32_t)v->receiver.effective_center_hz
+                                        : v->frequency;
+                frac = hi > lo ? (float)((double)((int64_t)hz - (int64_t)lo) / (double)(hi - lo))
+                               : 0.0f;
+                snprintf(left, sizeof(left), "%.1f", lo / 1e6);
+                snprintf(right, sizeof(right), "%.1f", hi / 1e6);
+            } else {
+                /* Position in the list the scan walks: candidate among the
+                   eligible channels, in list order. */
+                const int cand = scan_engine_candidate();
+                int pos = 0, seen = 0;
+                const int zone = scan_engine_get_zone();
+                for (int i = 0; i < scan_channels_count(); i++) {
+                    const scan_channel_t *c = scan_channel_get(i);
+                    if (!c || !(c->flags & SCAN_FLAG_ENABLED) || (c->flags & SCAN_FLAG_LOCKOUT)) continue;
+                    if (zone >= 0 && c->zone != zone) continue;
+                    if (!(c->mode == (v->fm ? SCAN_MODE_NFM : SCAN_MODE_P25) ||
+                          (scan_engine_mixed() && c->mode <= SCAN_MODE_NFM))) continue;
+                    if (i == cand) pos = seen;
+                    seen++;
+                }
+                frac = seen > 1 ? (float)pos / (float)(seen - 1) : 0.0f;
+                snprintf(left, sizeof(left), "CH 1");
+                snprintf(right, sizeof(right), "%d", seen);
+            }
+            if (frac < 0.0f) frac = 0.0f;
+            if (frac > 1.0f) frac = 1.0f;
+            const uint8_t dim = TUI_ATTR(TUI_CYAN, TUI_BLACK);
+            const uint8_t lab = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
+            const uint8_t cur = TUI_ATTR(held ? (TUI_RED | TUI_BRIGHT) : (TUI_YELLOW | TUI_BRIGHT),
+                                         TUI_BLACK);
+            const int lw = (int)strlen(left), rw = (int)strlen(right);
+            const int x0 = go.x + lw + 1, x1 = go.x + go.w - rw - 2;
+            tui_put_str(sf, go, go.x, y, left, lab);
+            tui_put_str(sf, go, x1 + 2, y, right, lab);
+            if (x1 > x0 + 4) {
+                tui_put_char(sf, go, x0, y, '|', dim);
+                tui_put_char(sf, go, x1, y, '|', dim);
+                for (int x = x0 + 1; x < x1; x++)
+                    tui_put_char(sf, go, x, y, (x - x0) % 8 == 0 ? '+' : '-', dim);
+                const int at = x0 + 1 + (int)(frac * (float)(x1 - x0 - 2) + 0.5f);
+                tui_put_char(sf, go, at, y, held ? '#' : '^', cur);
+            }
+        }
+    }
+    (void)p;
+}
+
+/* The deck's own taps: true when one landed. */
+static bool start_touch(ls_radio_panel_t *p, const ls_radio_view_t *v, int x, int y)
+{
+    for (int i = 0; i < N_SRC; i++) {
+        if (s_src[i].h <= 0 || !tui_rect_contains(s_src[i], x, y)) continue;
+        const bool band = scan_engine_get_source() == SCAN_SRC_BAND;
+        if (i == SRC_LIST || i == SRC_BAND) {
+            const scan_src_t want = i == SRC_LIST ? SCAN_SRC_CHANNELS : SCAN_SRC_BAND;
+            if (scan_engine_get_source() != want) {
+                scan_engine_stop();
+                scan_engine_set_source(want);
+            }
+        } else if (band) {
+            const band_preset_t *b = band_preset_next();
+            scan_engine_stop();
+            scan_engine_set_band(b->lo, b->hi, b->step);
+            snprintf(p->notice, sizeof(p->notice), "RANGE: %s", b->name);
+        } else {
+            scan_engine_stop();
+            scan_engine_set_location(!scan_engine_location());
+        }
+        return true;
+    }
+    for (int i = 0; i < s_go_n; i++) {
+        if (!tui_rect_contains(s_go[i], x, y)) continue;
+        if (s_go_n == 1) scan_start_now(p, v);
+        else {
+            static const char key[4] = { 'H', 'N', 'K', 'X' };
+            (void)ls_radio_scan_key(key[i]);
+        }
+        return true;
+    }
+    return false;
+}
+
+/* Large text leaves 34x41 cells in portrait and 79x17 in landscape. Keep
+   the same actions and hit testing, but spend fewer rows on decoration. */
+/* THE FRONT: glass, the start deck, then the list a running scan walks or
+   the cards. The VFO page is made of the same pieces, so the two pages are
+   one instrument. A scan on the stored list keeps the list in view -
+   watching it hop is most of the point - and the deck down to two cards. */
+static void front(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surface *sf,
+                  tui_rect body, bool wide)
+{
+    const bool active = scan_engine_active();
+    const int gh = glass_rows(body, wide);
+    glass(sf, tui_rect_make(body.x, body.y, body.w, gh), p, v, wide);
+    tui_rect rest = tui_rect_make(body.x, body.y + gh, body.w, body.h - gh);
+    const int sh = start_deck_rows(body, wide);
+    if (sh) {
+        start_deck(p, v, sf, tui_rect_make(rest.x, rest.y + 1, rest.w, sh), wide);
+        rest.y += sh + 2;
+        rest.h -= sh + 2;
+    } else {
+        start_deck(p, v, sf, tui_rect_make(0, 0, 0, 0), wide);
+    }
+    const bool list = active && scan_engine_get_source() == SCAN_SRC_CHANNELS;
+    /* Two columns of cards fit a short wide pane, so width buys the whole
+       deck back that height could not. */
+    const int want = list ? 2 : (rest.h >= 13 || rest.w >= 56) ? 4 : 2;
+    const int dh = deck_rows(rest, want);
+    if (list && rest.h - dh >= 10) {
+        channel_list(p, v, sf, tui_rect_make(rest.x, rest.y, rest.w, rest.h - dh));
+        rest.y += rest.h - dh;
+        rest.h = dh;
+    }
+    deck_draw(sf, rest, v, want);
+}
+
+/* The one line over everything: what the scan is doing, a notice from the
+   last tap, or the receiver's state. */
+static void status_text(const ls_radio_panel_t *p, const ls_radio_view_t *v, char *text,
+                        size_t n, bool compact)
+{
+    if (p->lists)
+        snprintf(text, n, ls_tr("SAVED CHANNELS / ZONE %d"), scan_engine_get_zone());
+    else if (scan_engine_manual_hold())
+        snprintf(text, n, "%s", ls_tr(scan_engine_get_source() == SCAN_SRC_BAND
+                                      ? "BAND SCAN / HOLD" : "CHANNEL LIST / HOLD"));
+    else if (scan_engine_active()) {
+        char state[64];
+        scan_engine_status(state, sizeof(state));
+        if (compact) snprintf(text, n, "%s", state);
+        else snprintf(text, n, "%s / %s",
+                      ls_tr(scan_engine_get_source() == SCAN_SRC_BAND ? "BAND SCAN" : "CHANNEL LIST"),
+                      state);
+    } else if (p->notice[0])
+        snprintf(text, n, "%s", p->notice);
+    else if (!v->receiver.receiver_streaming)
+        snprintf(text, n, "%s / %s", v->mode,
+                 ls_tr(compact ? "NO USB RECEIVER" : "NO RECEIVER / CONNECT USB SDR"));
+    else
+        snprintf(text, n, "%s / %s", v->mode, ls_tr("READY / TAP SCAN"));
+}
+
+static void compact_panel(ls_radio_panel_t *p, const ls_radio_view_t *v,
+                          tui_surface *sf, tui_rect a)
+{
+    const bool wide = a.w > 72;
+    a.x++;
+    a.w -= 2;
+    /* Three keys fit across in one row; the list bar keeps its two rows. A
+       pane with no room for the start deck gets the scan keys on the bar. */
+    buttons(p, v, true);
+    if (!p->lists && !start_deck_rows(tui_rect_make(a.x, a.y + 4, a.w, a.h - (wide ? 4 : 5) - 5),
+                                      wide))
+        buttons(p, v, false);
+    const int bh = p->nbuttons > 4 ? (wide ? 4 : 10) : (wide ? 4 : 5);
+    tui_rect controls = tui_rect_make(a.x, a.y + a.h - bh, a.w, bh);
+    if (!wide && p->nbuttons > 4) {
+        /* Two columns of list keys with padding: letting a 32-column pane
+           choose three silently truncates the labels. */
+        controls.x += (controls.w - 28) / 2;
+        controls.w = 28;
+    }
+    tui_rect body = tui_rect_make(a.x, a.y + 4, a.w, controls.y - a.y - 5);
+    tui_rect state = tui_rect_make(a.x, a.y, a.w, 3);
+    char text[96];
+    status_text(p, v, text, sizeof(text), true);
+    tui_box(sf, state, NULL, cyan);
+    line(sf, state, 1, text, amber);
+    if (p->lists) channel_list(p, v, sf, body);
+    else front(p, v, sf, body, wide);
+    ls_btn_bar_raised(sf, controls, p->buttons, p->nbuttons, p->focus);
+}
+
+void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surface *sf, tui_rect a)
+{
+    ls_radio_view_t actual = *v;
+    if (scan_engine_active() && scan_engine_mixed()) {
+        const scan_channel_t *c = scan_channel_get(scan_engine_candidate());
+        if (c) {
+            actual.fm = c->mode == SCAN_MODE_NFM;
+            actual.mode = actual.fm ? "NFM / MIXED" : "P25 I / MIXED";
+            actual.frequency = c->freq_hz;
+            scan_engine_receiver_status(&actual.receiver);
+            v = &actual;
+        }
+    }
+    /* Once a frame, and only here: the activity trace advances by one reading
+       and a key lit by a tap fades. Both are animation the panel owns, so
+       neither costs the receiver anything. */
+    trace_push(v->signal, v->has_squelch);
+    if (s_flash_ttl > 0 && --s_flash_ttl == 0) s_flash = -1;
+    const bool wide = a.w > 72;
+    p->scan_choice = false;
+    if (a.w >= 32 && a.h >= (wide ? 14 : 30) && (a.w < 38 || a.h < 20)) {
+        compact_panel(p, v, sf, a);
+        return;
+    }
+    if (a.w < 38 || a.h < (wide ? 20 : 34)) {
+        ls_panel_notice(sf, a, "RADIO", "Open a larger radio view", "M: detailed controls");
+        ls_btn_clear_hits();
+        return;
+    }
+    a.x++;
+    a.w -= 2;
+    char text[96];
+    status_text(p, v, text, sizeof(text), false);
+    tui_rect status = tui_rect_make(a.x, a.y + 1, a.w, 3);
+    tui_box(sf, status, NULL, cyan);
+    line(sf, status, 1, text, amber);
+    buttons(p, v, true);
+    if (!p->lists && !start_deck_rows(tui_rect_make(a.x, a.y + 5, a.w, a.h - 11), wide))
+        buttons(p, v, false);
+    const int bh = p->nbuttons > 4 ? (wide ? 5 : 10) : 5;
+    tui_rect controls = tui_rect_make(a.x, a.y + a.h - bh, a.w, bh);
+    tui_rect body = tui_rect_make(a.x, a.y + 5, a.w, controls.y - a.y - 6);
+    if (p->lists) {
+        uint32_t lo, hi, step;
+        scan_engine_get_band(&lo, &hi, &step);
+        snprintf(text, sizeof(text), "%s / ZONE %d / %.1fs hang",
+                 scan_engine_get_source() == SCAN_SRC_BAND ? "BAND" : "CHANNELS",
+                 scan_engine_get_zone(), scan_engine_get_hang_ms() / 1000.0);
+        line(sf, body, 0, text, amber);
+        snprintf(text, sizeof(text), "%.4f - %.4f MHz / %.1fk", lo / 1e6, hi / 1e6, step / 1000.0);
+        line(sf, body, wide ? 1 : 2, text, white);
+        line(sf, body, wide ? 2 : 4,
+             p->notice[0] ? p->notice : "Zone -1 = all / changes stop scanning", LS_ATTR_DIM);
+        body.y += wide ? 3 : 6;
+        body.h -= wide ? 3 : 6;
+        channel_list(p, v, sf, body);
+    } else {
+        front(p, v, sf, body, wide);
+    }
+    ls_btn_bar_raised(sf, controls, p->buttons, p->nbuttons, p->focus);
+}
+
 static char action(ls_radio_panel_t *p, const ls_radio_view_t *v, char c)
 {
     ls_radio_view_t actual = *v;
@@ -1144,42 +1313,10 @@ static char action(ls_radio_panel_t *p, const ls_radio_view_t *v, char c)
     }
     if (c >= 'a' && c <= 'z')
         c -= 32;
-    if (p->scan_choice) {
-        if (c == 'M') {
-            p->scan_choice = false;
-            return 0;
-        }
-        if (c == 'C' || c == 'B') {
-            scan_engine_stop();
-            scan_engine_set_source(c == 'C' ? SCAN_SRC_CHANNELS : SCAN_SRC_BAND);
-        } else if (c == 'X' && scan_engine_get_source() == SCAN_SRC_CHANNELS) {
-            scan_engine_set_mixed(!scan_engine_mixed());
-        } else if (c == 'G' && scan_engine_get_source() == SCAN_SRC_CHANNELS) {
-            scan_engine_set_location(!scan_engine_location());
-        } else if (c == 'S') {
-            p->scan_choice = p->lists = false;
-            scan_engine_start();
-        } else if (c == 'I' && scan_engine_get_source() == SCAN_SRC_BAND) {
-            static const uint32_t steps[] = {5000, 6250, 7500, 10000, 12500, 15000, 20000, 25000, 50000};
-            const int n = (int)(sizeof(steps) / sizeof(steps[0]));
-            uint32_t lo, hi, step;
-            scan_engine_get_band(&lo, &hi, &step);
-            int next = 0;
-            for (int i = 0; i < n; i++)
-                if (steps[i] == step) {
-                    next = (i + 1) % n;
-                    break;
-                }
-            scan_engine_set_band(lo, hi, steps[next]);
-        } else if (c == 'R' && scan_engine_get_source() == SCAN_SRC_BAND) {
-            const band_preset_t *b = band_preset_next();
-            scan_engine_set_band(b->lo, b->hi, b->step);
-        }
-        return 0;
-    }
     if (p->lists) {
         if (c == 'M') {
             p->lists = false;
+            p->notice[0] = 0;
             return 0;
         }
         if (c == 'F') {
@@ -1224,9 +1361,12 @@ static char action(ls_radio_panel_t *p, const ls_radio_view_t *v, char c)
             int z = scan_engine_get_zone() + 1;
             scan_engine_set_zone(z >= SCAN_MAX_ZONES ? -1 : z);
         } else if (c == 'O') {
+            /* USE LIST / USE BAND: what the big SCAN key will start. */
             scan_engine_stop();
-            p->scan_choice = true;
-            p->focus = -1;
+            const bool band = scan_engine_get_source() == SCAN_SRC_BAND;
+            scan_engine_set_source(band ? SCAN_SRC_CHANNELS : SCAN_SRC_BAND);
+            snprintf(p->notice, sizeof(p->notice), "%s",
+                     ls_tr(band ? "SCAN will visit the list" : "SCAN will sweep the band"));
         } else if (c == 'R') {
             scan_engine_stop();
             const band_preset_t *b = band_preset_next();
@@ -1237,31 +1377,26 @@ static char action(ls_radio_panel_t *p, const ls_radio_view_t *v, char c)
         }
         return 0;
     }
-    if (c == 'C' && v->fm) {
-        /* SETUP: hang, the threshold, the priority look, the zone, the band
-           edges, the step and the three per-channel flags - everything six
-           buttons cannot hold, in the house options list. */
+    if (c == 'C') {
+        /* SETUP: source, zone, GPS filter, mixed audio, hang, the threshold,
+           the priority look, the band and the per-channel flags - the same
+           house options list on FM and P25. */
         ls_opt_open(ls_scan_options(v->fm, s_sel_ch));
     } else if (c == 'L') {
         p->lists = true;
         p->notice[0] = 0;
     } else if (c == 'S') {
-        if (!scan_engine_active()) {
-            p->scan_choice = true;
-            p->focus = -1;
-        }
+        /* One key, one tap: START what the rail says. */
+        if (!scan_engine_active()) scan_start_now(p, v);
     } else if (!ls_radio_scan_key(c))
         return c;
+    if (c == 'X') p->notice[0] = 0;
     return 0;
 }
 
 char ls_radio_panel_key(ls_radio_panel_t *p, const ls_radio_view_t *v, ls_tk_t k, char c)
 {
     if (k == LS_TK_ESC) {
-        if (p->scan_choice) {
-            p->scan_choice = false;
-            return 0;
-        }
         if (p->lists) {
             p->lists = false;
             return 0;
@@ -1280,7 +1415,7 @@ char ls_radio_panel_key(ls_radio_panel_t *p, const ls_radio_view_t *v, ls_tk_t k
     }
     if (k == LS_TK_CHAR)
         return action(p, v, c);
-    if (k == LS_TK_ENTER && p->focus >= 0 && p->focus < 6)
+    if (k == LS_TK_ENTER && p->focus >= 0 && p->focus < p->nbuttons)
         return action(p, v, p->buttons[p->focus].key);
     ls_btn_navigate(k, &p->slot, &p->focus, false);
     return 0;
@@ -1290,7 +1425,8 @@ char ls_radio_panel_touch(ls_radio_panel_t *p, const ls_radio_view_t *v, int x, 
     /* The deck first: its keys and the gate slider are inside the body, so a
        tap there is never a tap on the bar, and the bar's own hit table only
        covers the rows it drew. */
-    if (!p->lists && !p->scan_choice) {
+    if (!p->lists) {
+        if (start_touch(p, v, x, y)) return 0;
         char pass = 0;
         if (deck_touch(v, x, y, &pass)) return pass;
     }
@@ -1315,7 +1451,7 @@ char ls_radio_panel_touch(ls_radio_panel_t *p, const ls_radio_view_t *v, int x, 
         return 0;
     }
     int hit = ls_btn_hit(x, y);
-    return hit >= 0 && hit < 6 ? action(p, v, p->buttons[hit].key) : 0;
+    return hit >= 0 && hit < p->nbuttons ? action(p, v, p->buttons[hit].key) : 0;
 }
 
 /* ------------------------------------------------ the frequency keypad -- */
@@ -1326,6 +1462,7 @@ void ls_freq_key_draw(tui_surface *sf, tui_rect k, const char *cap, char badge,
                       uint8_t hue, bool strong)
 {
     if (k.w < 3 || k.h < 1) return;
+    cap = ls_tr(cap);
     ls_fill_dither(sf, k, strong ? LS_DITHER_HEAVY : LS_DITHER_LIGHT, hue);
     const uint8_t edge = TUI_ATTR(hue, TUI_BLACK);
     const uint8_t face = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
@@ -1366,14 +1503,14 @@ void ls_freq_pad_draw(tui_surface *sf, tui_rect area, const char *entry,
     memset(keys, 0, 12 * sizeof(tui_rect));
     memset(actions, 0, 3 * sizeof(tui_rect));
 
-    tui_put_str(sf, area, area.x + 2, area.y, "FREQUENCY / MHz", edge);
+    tui_put_str(sf, area, area.x + 2, area.y, ls_tr("FREQUENCY / MHz"), edge);
     char edit[20];
     snprintf(edit, sizeof(edit), "%s%s", entry, ((blink / 8) & 1) ? "|" : "_");
-    tui_put_str(sf, area, area.x + 2, area.y + 1, "MHz", edge);
+    tui_put_str(sf, area, area.x + 2, area.y + 1, ls_tr("MHz"), edge);
     tui_put_str(sf, area, area.x + 6, area.y + 1, edit,
                 TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
     if (invalid && area.w >= 32)
-        tui_put_str(sf, area, area.x + area.w - 15, area.y + 1, "INVALID RANGE",
+        tui_put_str(sf, area, area.x + area.w - 15, area.y + 1, ls_tr("INVALID RANGE"),
                     TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
 
     const int top = area.y + 2;
@@ -1677,12 +1814,12 @@ void ls_radio_glass_meter(ls_radio_glass_t *g, tui_surface *sf, tui_rect box,
         }
     }
     const uint8_t lab = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
-    tui_put_str(sf, box, x0, y, "SIG", lab);
+    tui_put_str(sf, box, x0, y, ls_tr("SIG"), lab);
     const int bx = x0 + 4;
     const int bw = w - 10;
     if (bw < 6) return;
     if (!available) {
-        tui_put_str(sf, box, bx, y, "--", LS_ATTR_DIM);
+        tui_put_str(sf, box, bx, y, ls_tr("--"), LS_ATTR_DIM);
         return;
     }
     if (!(sig >= 0.0f)) sig = 0.0f;
@@ -1712,7 +1849,7 @@ void ls_radio_glass_meter(ls_radio_glass_t *g, tui_surface *sf, tui_rect box,
     int gate = (int)(threshold * (float)segs);
     if (gate < 0) gate = 0;
     if (gate >= segs) gate = segs - 1;
-    tui_put_str(sf, box, x0, y + rows, gate_label ? gate_label : "SQL",
+    tui_put_str(sf, box, x0, y + rows, ls_tr(gate_label ? gate_label : "SQL"),
                 TUI_ATTR(TUI_BLACK | TUI_BRIGHT, TUI_BLACK));
     tui_put_char(sf, box, bx + gate * 2, y + rows, '^',
                  TUI_ATTR(open ? (TUI_GREEN | TUI_BRIGHT) : (TUI_CYAN | TUI_BRIGHT),
@@ -1762,7 +1899,7 @@ int ls_radio_glass_frequency(ls_radio_glass_t *g, tui_surface *sf, tui_rect r,
                     tui_put_char(sf, r, cx + i, y + LCD_FIG_H - 1,
                                  LS_TUI_SHADE_75, key);
         }
-        tui_put_str(sf, r, fx + w + 2, y + LCD_FIG_H - 2, "MHz", key);
+        tui_put_str(sf, r, fx + w + 2, y + LCD_FIG_H - 2, ls_tr("MHz"), key);
         y += LCD_FIG_H;
     } else if (entry != NULL) {
         /* Too few rows for the figures - a split landscape pane - but the
@@ -1771,7 +1908,7 @@ int ls_radio_glass_frequency(ls_radio_glass_t *g, tui_surface *sf, tui_rect r,
         char line[24];
         snprintf(line, sizeof(line), "%s%s", entry,
                  ((blink / 8) & 1) ? "|" : "_");
-        tui_put_str(sf, r, x0, y, "ENT", key);
+        tui_put_str(sf, r, x0, y, ls_tr("ENT"), key);
         tui_put_str(sf, r, x0 + 4, y, line, val);
         y++;
     } else {
@@ -1814,6 +1951,7 @@ void ls_radio_glass_wipe(ls_radio_glass_t *g, tui_surface *sf, tui_rect r,
 
 void ls_radio_glass_bezel(tui_surface *sf, tui_rect r, const char *title)
 {
+    title = ls_tr(title);
     char cap[32];
     snprintf(cap, sizeof(cap), " %s ", title ? title : "");
     ls_radio_bezel(sf, r, NULL);
@@ -1829,15 +1967,16 @@ void ls_radio_glass_rail(tui_surface *sf, tui_rect r, int x0, int y, int iw,
     int x = x0;
     for (int i = 0; i < left_n; ++i) {
         if (!left[i].text) continue;
-        if (i && x + (int)strlen(left[i].text) + 3 >= x0 + iw) break;
-        x = ls_radio_glass_chip(sf, r, x, y, left[i].text, left[i].on, left[i].hue);
+        const char *t = ls_tr(left[i].text);
+        if (i && x + (int)strlen(t) + 3 >= x0 + iw) break;
+        x = ls_radio_glass_chip(sf, r, x, y, t, left[i].on, left[i].hue);
     }
     int width = 0;
-    for (int i = 0; i < right_n; ++i) width += (int)strlen(right[i].text) + 3;
+    for (int i = 0; i < right_n; ++i) width += (int)strlen(ls_tr(right[i].text)) + 3;
     int rx = x0 + iw - width + 1;
     if (rx <= x + 1) return;
     for (int i = 0; i < right_n; ++i)
-        rx = ls_radio_glass_chip(sf, r, rx, y, right[i].text, right[i].on, right[i].hue);
+        rx = ls_radio_glass_chip(sf, r, rx, y, ls_tr(right[i].text), right[i].on, right[i].hue);
 }
 
 /* One layout supplies both the unchanged paint and its touch rectangles. */
@@ -1883,6 +2022,7 @@ float ls_radio_vfo_card_bar_frac(tui_rect bar, int col)
 void ls_radio_vfo_card_draw(tui_surface *sf, tui_rect b, ls_radio_card_t *c)
 {
     c->down = c->up = c->value_rect = c->bar = tui_rect_make(0, -1, 0, 0);
+    c->label = ls_tr(c->label);
     const uint8_t h = c->live ? c->hue : (TUI_BLACK | TUI_BRIGHT);
     const uint8_t edge = TUI_ATTR(h, TUI_BLACK);
     const uint8_t face = TUI_ATTR(c->live ? (h | TUI_BRIGHT) : LS_DIM_FG, TUI_BLACK);
@@ -1990,7 +2130,7 @@ void ls_radio_tune_draw(ls_radio_tune_t *t, tui_surface *sf, tui_rect area)
     const bool portrait = !ls_tui_is_wide();
     if (active) {
         char title[64];
-        snprintf(title, sizeof(title), "SCAN  %s%lu.%04lu", held ? "HELD " : "",
+        snprintf(title, sizeof(title), ls_tr("SCAN  %s%lu.%04lu"), held ? ls_tr("HELD ") : "",
                  (unsigned long)(t->frequency() / 1000000),
                  (unsigned long)((t->frequency() % 1000000) / 100));
         if (portrait) tui_box(sf, area, title, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
@@ -1998,10 +2138,10 @@ void ls_radio_tune_draw(ls_radio_tune_t *t, tui_surface *sf, tui_rect area)
                          TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     } else if (portrait) {
         char title[64];
-        snprintf(title, sizeof(title), "TUNE  STEP %s  / STEP ,/. SEEK", step);
+        snprintf(title, sizeof(title), ls_tr("TUNE  STEP %s  / STEP ,/. SEEK"), step);
         tui_box(sf, area, title, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     } else {
-        tui_put_str(sf, area, area.x + 1, area.y, "TUNE  / STEP  ,/. SEEK  <|--+--|>",
+        tui_put_str(sf, area, area.x + 1, area.y, ls_tr("TUNE  / STEP  ,/. SEEK  <|--+--|>"),
                     TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     }
     const int inset = portrait ? 1 : 0;
@@ -2015,7 +2155,7 @@ void ls_radio_tune_draw(ls_radio_tune_t *t, tui_surface *sf, tui_rect area)
                          i == 0 ? TUI_YELLOW : TUI_CYAN,
                          active ? (i == 3 && held) : (i == 1 && dir < 0) || (i == 4 && dir > 0));
         if (portrait && i == 0)
-            tui_put_str(sf, t->keys[i], x0 + 2, area.y + 2, "STEP",
+            tui_put_str(sf, t->keys[i], x0 + 2, area.y + 2, ls_tr("STEP"),
                         TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
     }
 }

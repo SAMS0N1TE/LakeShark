@@ -41,6 +41,7 @@
 
 #include "sdkconfig.h"
 #include "ls_ota.h"
+#include "ls_p25_packs.h"
 #include "ls_c6_update.h"
 #include "ls_ota_key.h"
 #include "ls_ota_core.h"
@@ -237,7 +238,7 @@ static bool wifi_ready(void)
 /* Opened and past the headers, following up to three redirects, every one
    of them to https. *status is -1 when the server could not be reached and
    -2 for a redirect that leaves https, -3 for the total deadline; all return NULL. */
-static esp_http_client_handle_t open_url(const char *url, int timeout_ms, int64_t deadline, int64_t *length, int *status)
+static esp_http_client_handle_t open_url(const char *url, int timeout_ms, int64_t deadline, int64_t *length, int *status, const char *token)
 {
     esp_http_client_config_t cfg = {
         .url = url,
@@ -249,6 +250,7 @@ static esp_http_client_handle_t open_url(const char *url, int timeout_ms, int64_
     int bad = -1;
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) { *status = bad; return NULL; }
+    if (token && *token) esp_http_client_set_header(c, "X-LakeShark-Token", token);
     for (int hop = 0; hop < 4; hop++) {
         if (deadline) {
             const int wait = ls_ota_check_wait_ms(deadline, esp_timer_get_time());
@@ -266,6 +268,7 @@ static esp_http_client_handle_t open_url(const char *url, int timeout_ms, int64_
             bad = -2;
             break;
         }
+        if (token && *token) { bad = -2; break; }
         esp_http_client_close(c);
     }
     *status = bad;
@@ -277,9 +280,9 @@ static esp_http_client_handle_t open_url(const char *url, int timeout_ms, int64_
    other when the first cannot be reached or does not answer 200. A redirect
    off https is final. When both fail the first's *status is reported with a
    NULL handle, so the caller can tell unreachable (< 0) from a plain 404. */
-static esp_http_client_handle_t open_url_fallback(const char *url, int timeout_ms, int64_t deadline, int64_t *length, int *status)
+static esp_http_client_handle_t open_url_fallback(const char *url, int timeout_ms, int64_t deadline, int64_t *length, int *status, const char *token)
 {
-    esp_http_client_handle_t c = open_url(url, timeout_ms, deadline, length, status);
+    esp_http_client_handle_t c = open_url(url, timeout_ms, deadline, length, status, token);
     char alt[sizeof(s_url)];
     if ((c && *status == 200) || *status == -2 || *status == -3 || !ls_ota_other_host(url, alt, sizeof(alt))) return c;
     const int first = *status;
@@ -287,7 +290,7 @@ static esp_http_client_handle_t open_url_fallback(const char *url, int timeout_m
     ESP_LOGW(TAG, "%s failed (%d), trying %s", url, first, alt);
     int64_t len2 = 0;
     int st2 = 0;
-    esp_http_client_handle_t c2 = open_url(alt, timeout_ms, deadline, &len2, &st2);
+    esp_http_client_handle_t c2 = open_url(alt, timeout_ms, deadline, &len2, &st2, token);
     if (c2 && st2 == 200) { *length = len2; *status = st2; return c2; }
     if (c2) { esp_http_client_close(c2); esp_http_client_cleanup(c2); }
     *status = st2 == -3 ? st2 : first;
@@ -320,7 +323,7 @@ static bool key_accepts(size_t key, void *ctx)
     return ok;
 }
 
-static bool signed_by_us(const char *text, const ls_ota_manifest_t *m)
+bool ls_ota_signed_by_us(const char *text, const ls_ota_manifest_t *m)
 {
     uint8_t hash[32];
     if (mbedtls_sha256((const unsigned char *)text, m->signed_len, hash, 0) != 0) return false;
@@ -373,7 +376,7 @@ static bool do_check(void)
     int64_t length = 0;
     int status = 0;
     const int64_t deadline = esp_timer_get_time() + (int64_t)LS_OTA_CHECK_MAX_MS * 1000;
-    esp_http_client_handle_t c = open_url_fallback(s_url, LS_OTA_CHECK_READ_MS, deadline, &length, &status);
+    esp_http_client_handle_t c = open_url_fallback(s_url, LS_OTA_CHECK_READ_MS, deadline, &length, &status, NULL);
     const int response = ls_ota_manifest_status(status);
     if (!c || response != 1) {
         if (c) shut(c);
@@ -418,7 +421,7 @@ static bool do_check(void)
         if (e == LS_OTA_ERR_MAGIC) none = true;
         else fail(w);
     }
-    else if (!signed_by_us(text, &m))            fail("manifest not signed by LakeShark");
+    else if (!ls_ota_signed_by_us(text, &m))            fail("manifest not signed by LakeShark");
     else if (strcmp(m.board, BOARD_NAME))        fail("manifest is for another board");
     else if (!ls_ota_channel_ok(&m, s_url))      fail("manifest is for another channel");
     else                                         ok = true;
@@ -500,7 +503,7 @@ static void do_install(bool force)
 
     int64_t length = 0;
     int status = 0;
-    esp_http_client_handle_t c = open_url_fallback(s_man.url, 8000, 0, &length, &status);
+    esp_http_client_handle_t c = open_url_fallback(s_man.url, 8000, 0, &length, &status, NULL);
     if (!c) {
         fail(status == -2 ? "redirect not on https" : status < 0 ? "can't reach the update server"
                                                                   : "image not on the server");
@@ -840,7 +843,9 @@ void ls_ota_publish(void)
     static bool done;
     if (done) return;
     done = true;
+    ls_p25_packs_publish();
     ls_c6_publish();
+    ls_wifi_publish();
     ls_value_publish("ota.state", NULL, v_state);
     ls_value_publish("ota.stage", NULL, v_stage);
     ls_value_publish("ota.got", "B", v_got);
@@ -1026,4 +1031,13 @@ void ls_ota_console_register(void)
         .argtable = NULL,
     };
     esp_console_cmd_register(&c);
+}
+
+/* Data consumers share OTA's TLS trust, bounded waits and host fallback. */
+esp_http_client_handle_t ls_ota_open_data(const char *url, const char *token,
+                                        int64_t deadline, int64_t *length, int *status)
+{
+    char other[256];
+    if (!ls_ota_other_host(url, other, sizeof(other))) { *status = -2; return NULL; }
+    return open_url_fallback(url, 2000, deadline, length, status, token);
 }

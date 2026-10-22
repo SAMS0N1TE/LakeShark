@@ -11,6 +11,7 @@
 #include "call_archive.h"
 #include <direct.h>
 #include "ls_tui_density.h"
+#include "ls_i18n.h"
 /* The panel, on this machine. */
 
 #include <stdbool.h>
@@ -167,6 +168,13 @@ static int write_bmp(const char *path)
 
 /* ------------------------------------------------------------- the grid -- */
 
+static FILE *s_i18n_misses;
+static void i18n_miss(const char *en)
+{
+    fputs(en, s_i18n_misses);
+    fputc(0, s_i18n_misses);
+}
+
 static void dump_grid(FILE *f)
 {
     const tui_surface *sf = ls_tui_surface();
@@ -187,7 +195,10 @@ static void dump_grid(FILE *f)
                mojibake; they are the ones a layout question is usually
                about, so they get names a reader can count. */
             unsigned char u = (unsigned char)c;
-            if (u == (unsigned char)LS_TUI_SHADE_25)       fputc('.', f);
+            /* A Cyrillic letter (tui_cyr.h) as its UTF-8, one column. */
+            const uint32_t cy = tui_cyr_slot_codepoint(tui_cyr_slot(cp));
+            if (cy) { fputc(0xC0 | (int)(cy >> 6), f); fputc(0x80 | (int)(cy & 0x3F), f); }
+            else if (u == (unsigned char)LS_TUI_SHADE_25)  fputc('.', f);
             else if (u == (unsigned char)LS_TUI_SHADE_50)  fputc(':', f);
             else if (u == (unsigned char)LS_TUI_SHADE_75)  fputc('*', f);
             else if (u == (unsigned char)LS_TUI_SHADE_FULL) fputc('#', f);
@@ -803,6 +814,7 @@ static void usage(void)
     printf("            animation moves (default 0: one frozen instant)\n");
     printf("  -C        census: enter every screen, count the value and\n");
     printf("            action tables, exit 1 on a refusal or too little room\n");
+    printf("  LSSIM_LANG=uk draws the interface in Ukrainian\n");
     printf("  LSSIM_ACARS=1 seeds FM with decoded ACARS messages\n");
     printf("  LSSIM_SAME=1 seeds FM with a quiet test and a tornado warning\n");
     printf("  LSSIM_DMR=1 seeds clear/encrypted repeater calls (P25 key 6)\n");
@@ -932,6 +944,7 @@ int main(int argc, char **argv)
     bool landscape = false;
     bool clockwise = true;
     bool dump = false;
+    bool term = false;
     bool empty = false;
     bool daylight = false;              /* */
     int font = 0;
@@ -954,6 +967,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--ccw")) { landscape = true; clockwise = false; }
         else if (!strcmp(argv[i], "--tft")) s_tft = true;
         else if (!strcmp(argv[i], "-d")) dump = true;
+        else if (!strcmp(argv[i], "--term")) term = true;
         else if (!strcmp(argv[i], "-e")) empty = true;
         else if (!strcmp(argv[i], "-C")) census = true;
         else if (!strcmp(argv[i], "-D")) daylight = true;
@@ -983,7 +997,7 @@ int main(int argc, char **argv)
        the interface at once, and the cheapest place to find out what that
        breaks is here. */
 
-    if (timed > 0 && !s_step_us) ls_shim_time_live(1);
+    if ((timed > 0 || term) && !s_step_us) ls_shim_time_live(1);
     else           ls_shim_time_set(120000000);
 
     ls_tui_set_font_index(ls_tui_font_for_view(font, APPS[idx].screen->name, false));
@@ -1023,6 +1037,14 @@ int main(int argc, char **argv)
 
     void lssim_seed_state(void);
     lssim_seed_state();
+    /* LSSIM_LANG=uk draws the interface in Ukrainian, as Settings > Device
+       > Language does on the board. */
+    if (getenv("LSSIM_LANG") && !strcmp(getenv("LSSIM_LANG"), "uk")) ls_i18n_load(LS_LANG_UK);
+    /* LSSIM_I18N_MISSES=FILE lists every string drawn with no translation. */
+    if (getenv("LSSIM_I18N_MISSES")) {
+        s_i18n_misses = fopen(getenv("LSSIM_I18N_MISSES"), "ab");
+        if (s_i18n_misses) ls_i18n_set_miss_hook(i18n_miss);
+    }
     if (getenv("LSSIM_DMR")) seed_dmr();
     if (getenv("LSSIM_TONE")) {
         unsigned tone = (unsigned)atoi(getenv("LSSIM_TONE"));
@@ -1167,7 +1189,7 @@ int main(int argc, char **argv)
         extern uint32_t settings_get_map_layers(uint32_t);
         extern void settings_set_map_layers(uint32_t);
         uint32_t layers=settings_get_map_layers(0x7ff7);
-        settings_set_map_layers((layers&0x8fffffffU)|((uint32_t)(!strcmp(cc_fill,"braille")?4:3)<<28));
+        settings_set_map_layers((layers&0x8fffffffU)|((uint32_t)(!strcmp(cc_fill,"braille")?4:!strcmp(cc_fill,"picture")?5:3)<<28));
         double lat=43.4445,lon=-71.6473;
         const char *center=getenv("LSSIM_CARTO_CENTER");if(center) sscanf(center,"%lf,%lf",&lat,&lon);
         ls_map_center(lat,lon);
@@ -1232,6 +1254,11 @@ int main(int argc, char **argv)
     }
     ls_tui_invalidate();
     frame(settle);
+    /* --term: from here the person at the terminal drives it. */
+    if (term) {
+        int lssim_term_run(void (*frame)(int));
+        return lssim_term_run(frame);
+    }
     if (getenv("LSSIM_FM_LR") && getenv("LSSIM_LR_IQ")) {
         /* Feed after the real panel has allocated its pixel history too. */
         feed_waterfall(); frame(1);
@@ -1349,7 +1376,10 @@ int main(int argc, char **argv)
     if (splash) {
         int cols, rows;
         ls_tui_geometry(&cols, &rows, NULL, NULL);
-        ls_splash_draw(ls_tui_surface(), cols, rows, 60, 60);
+        /* LSSIM_SPLASH_FRAME=N draws frame N of 93, the board's count. */
+        const char *at = getenv("LSSIM_SPLASH_FRAME");
+        ls_splash_set_caption("2.17.0-g0000000");
+        ls_splash_draw(ls_tui_surface(), cols, rows, at ? atoi(at) : 93, 93);
         ls_tui_present();capture_frame();
     }
     if (write_bmp(out) != 0) {

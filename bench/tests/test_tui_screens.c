@@ -49,6 +49,7 @@ p25_state_t P25;
 #include "ls_skyview.h"
 #include "ls_picker.h"
 #include "ls_options.h"
+#include "ls_scan_options.h"
 /* The scanner panel, up here because cases either side of the file press its
    controls through ls_radio_panel_control_rect. */
 #include "ls_radio_panel.h"
@@ -145,6 +146,12 @@ void settings_set_antenna_external(bool v) { s_ant_ext = v; }
 void settings_set_antenna_mmcx_tx(bool tx) { (void)tx; }
 bool settings_get_antenna_mmcx_tx(void) { return false; }
 bool settings_get_alert_ring(void) { return s_alert_ring; }
+static int s_notify_sound;
+static const char *const s_notify_names[] = { "ALERT", "RADIO KEY", "ROGER", "CHIRP", "OFF" };
+const char *const *settings_notification_sound_names(int *count, int *current)
+{ if (count) *count = 5; if (current) *current = s_notify_sound; return s_notify_names; }
+bool settings_cycle_notification_sound(void) { s_notify_sound = (s_notify_sound + 1) % 5; return true; }
+bool snd_alert_start(void) { return true; }
 void settings_set_alert_ring(bool v) { s_alert_ring = v; }
 static bool s_auto_rotate = true;
 bool settings_get_auto_rotate(void) { return s_auto_rotate; }
@@ -3363,7 +3370,8 @@ LS_CASE(large_text_radio_controls_survive_both_orientations_and_submenus)
             LS_EQ_INT(escaped(panes[size]), 0);
             int x,y;
             LS_CHECK(!find_text("larger radio", &x, &y));
-            for (int i = 0; i < 6; i++) {
+            LS_CHECK(panel.nbuttons >= 3 && panel.nbuttons <= 6);
+            for (int i = 0; i < panel.nbuttons; i++) {
                 bool found = false;
                 const char *label = panel.buttons[i].label;
                 const int length = (int)strlen(label);
@@ -3457,11 +3465,11 @@ LS_CASE(radio_dashboard_saved_list_and_touch_scan_use_the_same_controls)
     LS_EQ_INT(scan_channel_tone(scan_channel_get(0)),13);
     ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'m');
     fresh();ls_radio_panel_draw(&panel,&view,&g_sf,pane);
-    int x,y;LS_CHECK(find_text("SCAN",&x,&y));
-    ls_radio_panel_touch(&panel,&view,x,y);
-    LS_CHECK(panel.scan_choice);
+    /* 2026-10-19: one tap starts. The big key names what it will scan. */
+    int x,y;LS_CHECK(find_text("SCAN 1 CHANNEL",&x,&y));
     LS_CHECK(!scan_engine_active());
-    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'s');
+    ls_radio_panel_touch(&panel,&view,x,y);
+    LS_CHECK(!panel.scan_choice);
     LS_CHECK(scan_engine_active());
     ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'h');
     LS_CHECK(scan_engine_manual_hold());
@@ -3511,19 +3519,28 @@ LS_CASE(gps_and_mixed_scan_buttons_match_touch_and_keyboard)
 {
     scan_engine_set_source(SCAN_SRC_CHANNELS);
     scan_engine_set_mixed(false); scan_engine_set_location(false);
-    ls_radio_panel_t panel={.focus=-1,.scan_choice=true};
+    ls_radio_panel_t panel={.focus=-1};
     ls_radio_view_t view={.mode="P25"};
     tui_rect pane={1,2,46,63}; fresh(); grid_for(pane);
     ls_radio_panel_draw(&panel,&view,&g_sf,pane);
-    int x,y; LS_CHECK(find_text("MIXED AUDIO",&x,&y));
+    /* GPS: the rail's third key on a list scan, one tap each way. */
+    int x,y; LS_CHECK(find_text("GPS OFF",&x,&y));
     ls_radio_panel_touch(&panel,&view,x,y);
-    LS_CHECK(scan_engine_mixed());
-    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'g');
     LS_CHECK(scan_engine_location());
     fresh();ls_radio_panel_draw(&panel,&view,&g_sf,pane);
-    LS_CHECK(find_text("GPS FILTER",&x,&y));
+    LS_CHECK(find_text("GPS ON",&x,&y));
     ls_radio_panel_touch(&panel,&view,x,y);
     LS_CHECK(!scan_engine_location());
+    /* Mixed audio and the GPS filter are both rows of SETUP, FM and P25. */
+    for (int fm = 0; fm < 2; fm++) {
+        const ls_opt_ctx_t *ctx = ls_scan_options(fm, -1);
+        bool mixed = false, gps = false;
+        for (int i = 0; i < ctx->n; i++) {
+            if (!strcmp(ctx->opt[i].label, "Mixed P25 + FM")) mixed = true;
+            if (!strcmp(ctx->opt[i].label, "GPS coverage filter")) gps = true;
+        }
+        LS_CHECK(mixed); LS_CHECK(gps);
+    }
     scan_engine_set_mixed(false);
 }
 
@@ -3703,14 +3720,22 @@ LS_CASE(a_card_without_a_setter_offers_no_slider_and_no_entry)
     fresh();
     grid_for(pane);
     ls_radio_panel_draw(&panel, &mute, &g_sf, pane);
-    LS_CHECK(!ls_radio_panel_control_rect(1, LS_RADIO_PART_BAR, NULL, NULL, NULL, NULL));
-    LS_CHECK(!ls_radio_panel_control_rect(1, LS_RADIO_PART_VALUE, NULL, NULL, NULL, NULL));
+    /* 2026-10-19: no squelch, no SQUELCH card at all (P25 gates on sync);
+       slot 1 is HANG, a live card, and nothing reaches the squelch setter. */
     int x, y, w, h;
     LS_CHECK(ls_radio_panel_control_rect(1, LS_RADIO_PART_UP, &x, &y, &w, &h));
     s_deck_sql = -1;
+    const int hang = scan_engine_get_hang_ms();
     ls_radio_panel_touch(&panel, &mute, x + w / 2, y + h / 2);
     LS_EQ_INT(s_deck_sql, -1);
+    LS_EQ_INT(scan_engine_get_hang_ms(), hang + 500);
     LS_CHECK(!ls_numpad_active());
+    for (int c = 0; c < 4; c++) {
+        int vx, vy;
+        if (!ls_radio_panel_control_rect(c, LS_RADIO_PART_VALUE, &vx, &vy, NULL, NULL)) continue;
+        LS_CHECK(!(g_back[vy * W + vx + 1].ch == 'S' && g_back[vy * W + vx + 2].ch == 'Q'));
+    }
+    LS_CHECK(!find_text("SQUELCH", &x, &y));
 }
 
 /* The same two targets, in the panes where the deck has least room. */
@@ -3958,26 +3983,36 @@ LS_CASE(fm_dashboard_bank_swap_uses_hz_and_squelch_opens_an_editor)
     ls_numpad_close();
 }
 
-LS_CASE(scan_choice_separates_saved_channels_from_frequency_steps)
+LS_CASE(scan_rail_separates_saved_channels_from_frequency_steps)
 {
+    /* 2026-10-19: no choice page. LIST and BAND are rail keys that stay
+       chosen; the big key starts whichever is lit, in one tap. */
     scan_engine_stop();scan_engine_set_source(SCAN_SRC_CHANNELS);
     scan_engine_set_band(150000000,162000000,12500);
     ls_radio_panel_t panel={.focus=-1};
     ls_radio_view_t view={.mode="P25"};
     tui_rect pane={1,2,46,63};fresh();grid_for(pane);
-    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'s');
     ls_radio_panel_draw(&panel,&view,&g_sf,pane);
-    int x,y;LS_CHECK(find_text("CHANNEL LIST",&x,&y));
-    LS_CHECK(find_text("BAND SCAN",&x,&y));
-    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'b');
+    int x,y;LS_CHECK(find_text("LIST 0",&x,&y));
+    LS_CHECK(find_text("BAND",&x,&y));
+    ls_radio_panel_touch(&panel,&view,x,y);
     LS_EQ_INT(scan_engine_get_source(),SCAN_SRC_BAND);
-    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'i');
-    uint32_t step;scan_engine_get_band(NULL,NULL,&step);LS_EQ_INT(step,15000);
-    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'c');
-    LS_EQ_INT(scan_engine_get_source(),SCAN_SRC_CHANNELS);
     LS_CHECK(!scan_engine_active());
-    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'s');
-    LS_CHECK(scan_engine_active());scan_engine_stop();
+    fresh();ls_radio_panel_draw(&panel,&view,&g_sf,pane);
+    LS_CHECK(find_text("SCAN 150.0-162.0 MHz",&x,&y));
+    LS_CHECK(find_text("LIST 0",&x,&y));
+    ls_radio_panel_touch(&panel,&view,x,y);
+    LS_EQ_INT(scan_engine_get_source(),SCAN_SRC_CHANNELS);
+    /* An empty list is not a dead key: it says so and sweeps the band. */
+    fresh();ls_radio_panel_draw(&panel,&view,&g_sf,pane);
+    LS_CHECK(find_text("list empty",&x,&y));
+    ls_radio_panel_touch(&panel,&view,x,y);
+    LS_CHECK(scan_engine_active());
+    LS_EQ_INT(scan_engine_get_source(),SCAN_SRC_BAND);
+    fresh();ls_radio_panel_draw(&panel,&view,&g_sf,pane);
+    LS_CHECK(find_text("STOP",&x,&y));
+    ls_radio_panel_touch(&panel,&view,x,y);
+    LS_CHECK(!scan_engine_active());
 }
 
 /* The band presets are a raster as much as a range. A band scan steps from its
@@ -3987,7 +4022,7 @@ LS_CASE(band_presets_sit_on_the_channel_lattice_and_cover_vhf_noaa_and_uhf)
 {
     scan_engine_stop();scan_engine_set_source(SCAN_SRC_BAND);
     scan_engine_set_band(150000000,162600000,7500);
-    ls_radio_panel_t panel={.focus=-1,.scan_choice=true};
+    ls_radio_panel_t panel={.focus=-1,.lists=true};
     ls_radio_view_t view={.mode="NFM",.fm=true};
     uint32_t lo[8],hi[8],step[8];int n=0;
     bool vhf=false,wx=false,uhf=false,exact=false;
@@ -4008,10 +4043,16 @@ LS_CASE(band_presets_sit_on_the_channel_lattice_and_cover_vhf_noaa_and_uhf)
     bool noaa=false;
     for(int i=0;i<n;i++)if(lo[i]==162400000&&hi[i]==162550000&&step[i]==25000)noaa=true;
     LS_CHECK(noaa);
-    /* 7.5 kHz is one of the steps STEP offers, so it can be stepped through. */
-    scan_engine_set_band(150000000,162600000,6250);
-    ls_radio_panel_key(&panel,&view,LS_TK_CHAR,'i');
-    uint32_t st;scan_engine_get_band(NULL,NULL,&st);LS_EQ_INT(st,7500);
+    /* 7.5 kHz is one of the steps SETUP's Band step offers, after 6.25. */
+    const ls_opt_ctx_t *ctx = ls_scan_options(true, -1);
+    bool found = false;
+    for (int i = 0; i < ctx->n; i++)
+        if (!strcmp(ctx->opt[i].label, "Band step")) {
+            for (int k = 0; k + 1 < ctx->opt[i].n; k++)
+                if (!strcmp(ctx->opt[i].names[k], "6.25 k") &&
+                    !strcmp(ctx->opt[i].names[k + 1], "7.5 k")) found = true;
+        }
+    LS_CHECK(found);
 }
 
 /* ONE HOME, SIX JOBS, AND BACK FROM ALL OF THEM.

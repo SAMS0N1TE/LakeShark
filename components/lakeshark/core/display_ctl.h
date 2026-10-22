@@ -32,6 +32,15 @@ void display_ctl_tick(void);
 void display_ctl_reapply(void);
 bool display_ctl_dimmed(void);
 
+/* The screen dark with the UI still running ('display off', or a remote
+   terminal's DISPLAY OFF): a finger, a key or a turn of the board lights it
+   again, and so does a brightness change. nudge() is input that came from
+   elsewhere (a remote terminal, a console tap): it counts for auto-dim but
+   leaves a dark screen dark. Not saved. */
+void display_ctl_set_off(bool off);
+bool display_ctl_off(void);
+void display_ctl_nudge(void);
+
 #ifdef __cplusplus
 }
 #endif

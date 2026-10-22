@@ -16,11 +16,15 @@
 #include "../../ls_notify.h"
 /* Whether speech exists, so the spoken greeting and voice are offered only then. */
 #include "audio/speech.h"
+#include "audio/tone.h"
 #include "audio/audio_out.h"
 #include "audio/audio_events.h"
 #include "../../ls_voice_opts.h"
 #include "../../ls_app.h"
 #include "../../ls_value.h"
+#include "../../ls_i18n.h"
+#include "../../ls_action.h"
+#include "../../ls_quick.h"
 
 static int s_sel;
 
@@ -55,10 +59,10 @@ static void bri_step(int dir)
 }
 
 /* ---- auto dim ---------------------------------------------------------- */
-static void dim_show(char *b, size_t n) { snprintf(b, n, "%s", display_ctl_autodim_enabled() ? "on" : "off"); }
+static void dim_show(char *b, size_t n) { snprintf(b, n, "%s", display_ctl_autodim_enabled() ? ls_tr("on") : ls_tr("off")); }
 static void dim_next(void) { display_ctl_set_autodim(!display_ctl_autodim_enabled()); }
 
-static void dimt_show(char *b, size_t n) { snprintf(b, n, "%d s", display_ctl_autodim_timeout()); }
+static void dimt_show(char *b, size_t n) { snprintf(b, n, ls_tr("%d s"), display_ctl_autodim_timeout()); }
 static void dimt_step(int dir)
 {
     static const int STEPS[] = { 15, 30, 60, 120, 240 };
@@ -85,14 +89,14 @@ static void vol_step(int dir)
 }
 static void vol_next(void) { vol_step(+1); }
 
-static void mute_show(char *b, size_t n) { snprintf(b, n, "%s", audio_is_muted() ? "MUTED" : "sound on"); }
+static void mute_show(char *b, size_t n) { snprintf(b, n, "%s", ls_tr(audio_is_muted() ? "MUTED" : "sound on")); }
 static void mute_next(void) { audio_toggle_mute(); }
 
 static void theme_show(char *b, size_t n)
 {
     const ls_tui_theme_t *t = ls_tui_get_theme();
     const char *name = t && t->name ? t->name : "?";
-    if (ls_tui_daylight()) snprintf(b, n, "%s, after Daylight", name);
+    if (ls_tui_daylight()) snprintf(b, n, ls_tr("%s, after Daylight"), name);
     else                   snprintf(b, n, "%s", name);
 }
 static void theme_next(void)
@@ -108,7 +112,7 @@ static void theme_next(void)
    a daylight high contrast mode" - "So white theme, not black". Live and
    stored, like the theme, and it never forgets which theme it is covering.
    See ls_theme.h for why it is a toggle and not a theme. */
-static void day_show(char *b, size_t n) { snprintf(b, n, "%s", ls_tui_daylight() ? "on" : "off"); }
+static void day_show(char *b, size_t n) { snprintf(b, n, "%s", ls_tui_daylight() ? ls_tr("on") : ls_tr("off")); }
 static void day_next(void)
 {
     const bool on = !ls_tui_daylight();
@@ -117,9 +121,9 @@ static void day_next(void)
 }
 
 /* ---- misc booleans ----------------------------------------------------- */
-static void usb_show(char *b, size_t n) { snprintf(b, n, "%s", app_usb_autoreboot() ? "on" : "off"); }
+static void usb_show(char *b, size_t n) { snprintf(b, n, "%s", app_usb_autoreboot() ? ls_tr("on") : ls_tr("off")); }
 static void usb_next(void) { app_set_usb_autoreboot(!app_usb_autoreboot()); }
-static void keylight_show(char *b,size_t n) { snprintf(b,n,"%s",settings_get_keyboard_light()?"on":"off"); }
+static void keylight_show(char *b,size_t n) { snprintf(b,n,"%s",ls_tr(settings_get_keyboard_light()?"on":"off")); }
 static void keylight_next(void)
 {
     const bool on=!settings_get_keyboard_light();
@@ -130,10 +134,10 @@ static void keylight_next(void)
 
 static void boot_show(char *b, size_t n)
 {
-    static const char *M[] = { "off", "chime", "spoken" };
+    static const char *M[] = { "off", "chirp", "spoken" };
     int m = settings_get_boot_sound();
     if (m == 2 && !speech_available()) m = 1;
-    snprintf(b, n, "%s", (m >= 0 && m < 3) ? M[m] : "?");
+    snprintf(b, n, "%s", (m >= 0 && m < 3) ? ls_tr(M[m]) : "?");
 }
 static void boot_next(void)
 {
@@ -143,7 +147,7 @@ static void boot_next(void)
     settings_set_boot_sound((m + 1) % modes);
 }
 
-static void keydim_show(char *b, size_t n) { snprintf(b, n, "%s", display_ctl_keyboard_dim() ? "with screen" : "off"); }
+static void keydim_show(char *b, size_t n) { snprintf(b, n, "%s", ls_tr(display_ctl_keyboard_dim() ? "with screen" : "off")); }
 static void keydim_next(void) { display_ctl_set_keyboard_dim(!display_ctl_keyboard_dim()); }
 
 /* ---- voice -------------------------------------------------------------- */
@@ -155,7 +159,7 @@ static void voice_show(char *b, size_t n)
     if (speech_available())
         snprintf(b, n, "%s %d%%", speech_voice_name(speech_voice_get()), speech_volume_get());
     else
-        snprintf(b, n, "off");
+        snprintf(b, n, "%s", ls_tr("off"));
 }
 static void voice_next(void)
 {
@@ -177,14 +181,31 @@ static void font_next(void)
 
 /* ---- alerts ------------------------------------------------------------- */
 
-static void ring_show(char *b, size_t n) { snprintf(b, n, "%s", settings_get_alert_ring() ? "on" : "off"); }
+static void ring_show(char *b, size_t n) { snprintf(b, n, "%s", settings_get_alert_ring() ? ls_tr("on") : ls_tr("off")); }
 static void ring_next(void)
 {
     const bool en = !settings_get_alert_ring();
     settings_set_alert_ring(en);
     ls_notify_set_alerts(settings_get_alert_ring(), ls_notify_vibe());
 }
-static void vibe_show(char *b, size_t n) { snprintf(b, n, "%s", settings_get_alert_vibe() ? "on" : "off"); }
+/* Which sound a notification makes. Tapping cycles it and plays the new one,
+   so the choice is heard rather than read. */
+static void nsound_show(char *b, size_t n)
+{
+    int count = 0, cur = 0;
+    const char *const *names = settings_notification_sound_names(&count, &cur);
+    if (!names || cur < 0 || cur >= count) { snprintf(b, n, "?"); return; }
+    size_t i = 0;
+    for (; names[cur][i] && i + 1 < n; i++)
+        b[i] = (char)(names[cur][i] >= 'A' && names[cur][i] <= 'Z' ? names[cur][i] + 32 : names[cur][i]);
+    b[i] = 0;
+}
+static void nsound_next(void)
+{
+    settings_cycle_notification_sound();
+    (void)snd_alert_start();
+}
+static void vibe_show(char *b, size_t n) { snprintf(b, n, "%s", settings_get_alert_vibe() ? ls_tr("on") : ls_tr("off")); }
 static void vibe_next(void)
 {
     const bool en = !settings_get_alert_vibe();
@@ -200,9 +221,9 @@ static void update_show(char *b, size_t n)
 {
     ls_val_t v;
     if (ls_value_read("ota.state", &v, NULL) && v.kind == LS_VAL_TEXT && v.s)
-        snprintf(b, n, "%s", v.s);
+        snprintf(b, n, "%s", ls_tr(v.s));
     else
-        snprintf(b, n, "not in this build");
+        snprintf(b, n, "%s", ls_tr("not in this build"));
 }
 /* ENTER opens UPDATE, which checks as it opens. */
 static void update_next(void)
@@ -215,7 +236,7 @@ static void update_next(void)
 
 /* Daily or Off. Off means the board never looks for an update by itself,
    not even a quiet one; the UPDATE app's CHECK still works. */
-static void updchk_show(char *b, size_t n) { snprintf(b, n, "%s", settings_get_update_check() ? "Daily" : "Off"); }
+static void updchk_show(char *b, size_t n) { snprintf(b, n, "%s", ls_tr(settings_get_update_check() ? "Daily" : "Off")); }
 static void updchk_next(void) { settings_set_update_check(!settings_get_update_check()); }
 
 /* Where the LoRa radio is wired: the board's socket or a module on the
@@ -227,15 +248,15 @@ static void loraport_show(char *b, size_t n)
     ls_lora_port_t next;
     ls_lora_port_saved(&next);
     const ls_lora_port_t *now = ls_lora_port();
-    const char *what = !next.header ? "onboard"
+    const char *what = ls_tr(!next.header ? "onboard"
                      : ls_lora_port_is_con1(&next) ? "header CON1"
-                     : ls_lora_port_on_socket(&next) ? "header, socket pins" : "header, own pins";
+                     : ls_lora_port_on_socket(&next) ? "header, socket pins" : "header, own pins");
     /* the whole saved port against what this boot runs: a changed table or
        TCXO waits for a reboot just as a changed pin does */
     ls_lora_port_t shown = next;
     if (!shown.header) ls_lora_port_board(&shown);
-    if (!ls_lora_port_same(&shown, now)) snprintf(b, n, "%s, reboot to apply", what);
-    else snprintf(b, n, "%s%s", what, ls_lora_port_blocks_keyboard() ? ", keyboard off" : "");
+    if (!ls_lora_port_same(&shown, now)) snprintf(b, n, ls_tr("%s, reboot to apply"), what);
+    else snprintf(b, n, "%s%s", what, ls_lora_port_blocks_keyboard() ? ls_tr(", keyboard off") : "");
 }
 static void loraport_next(void)
 {
@@ -252,11 +273,11 @@ static void loramod_show(char *b, size_t n)
     ls_lora_port_t next;
     ls_lora_port_saved(&next);
     const char *what = ls_lora_port_on_socket(&next) || ls_lora_port_is_v03(&next) ? "V0.3 / V1.0"
-                     : ls_lora_port_is_v02(&next) ? "V0.2" : "custom (lora port)";
+                     : ls_lora_port_is_v02(&next) ? "V0.2" : ls_tr("custom (lora port)");
     /* only a header port is running a table; onboard keeps it for later */
     ls_lora_port_t shown = next;
     if (!shown.header) ls_lora_port_board(&shown);
-    if (!ls_lora_port_same(&shown, ls_lora_port())) snprintf(b, n, "%s, reboot to apply", what);
+    if (!ls_lora_port_same(&shown, ls_lora_port())) snprintf(b, n, ls_tr("%s, reboot to apply"), what);
     else snprintf(b, n, "%s", what);
 }
 static void loramod_next(void)
@@ -265,13 +286,41 @@ static void loramod_next(void)
     (void)ls_lora_port_next_module(why, sizeof(why));
 }
 
-static void lock_show(char *b, size_t n) { snprintf(b, n, "lock now"); }
+/* The file hotspot: its name and this board's own password (made once and
+   kept; see ls_wifi_ap_pass.h). One tap arms, a second makes a new password -
+   a phone already joined has to join again, so it is never one stray tap. */
+static bool s_ap_armed;
+static void ap_show(char *b, size_t n)
+{
+    ls_val_t ssid, pass;
+    if (!ls_value_read("wifi.ap_pass", &pass, NULL) || pass.kind != LS_VAL_TEXT || !pass.s) {
+        snprintf(b, n, "%s", ls_tr("not in this build"));
+        return;
+    }
+    if (s_ap_armed) { snprintf(b, n, "%s", ls_tr("tap again for a new password")); return; }
+    const bool named = ls_value_read("wifi.ap_ssid", &ssid, NULL) && ssid.kind == LS_VAL_TEXT && ssid.s;
+    snprintf(b, n, "%s  %s", named ? ssid.s : "", pass.s);
+}
+static void ap_next(void)
+{
+    if (!s_ap_armed) { s_ap_armed = true; return; }
+    s_ap_armed = false;
+    ls_val_t out;
+    (void)ls_action_call("wifi.ap_renew", NULL, &out, ls_quick_grant_builtin());
+}
+
+static void lock_show(char *b, size_t n) { snprintf(b, n, "%s", ls_tr("lock now")); }
 static void lock_next(void) { ls_tui_set_locked(true); }
 
 /* Holds the screen the way it is now: the board stops turning it to match
    how it is held. Attaching the keyboard still turns it. */
-static void rotlock_show(char *b, size_t n) { snprintf(b, n, "%s", settings_get_auto_rotate() ? "off" : "on"); }
+static void rotlock_show(char *b, size_t n) { snprintf(b, n, "%s", settings_get_auto_rotate() ? ls_tr("off") : ls_tr("on")); }
 static void rotlock_next(void) { settings_set_auto_rotate(!settings_get_auto_rotate()); }
+
+/* English or Ukrainian. The change is live: the next frame is drawn in it,
+   and ls_i18n hands it to the setting (installed at boot). */
+static void lang_show(char *b, size_t n) { snprintf(b, n, "%s", ls_i18n_lang_name(ls_i18n_lang())); }
+static void lang_next(void) { ls_i18n_set_lang(ls_i18n_next(ls_i18n_lang())); }
 
 /* ---- pages ---------------------------------------------------------------
    The first page holds what gets changed often; the rest sit one level down
@@ -290,7 +339,7 @@ static void page_open(int p);
 enum { SETP_ROOT, SETP_DISPLAY, SETP_SOUND, SETP_DEVICE, SETP_COUNT };
 static int s_page = SETP_ROOT;
 
-static void back_show(char *b, size_t n) { snprintf(b, n, "< SETTINGS"); }
+static void back_show(char *b, size_t n) { snprintf(b, n, "%s", ls_tr("< SETTINGS")); }
 static void back_next(void) { page_open(SETP_ROOT); }
 
 static void display_show(char *b, size_t n)
@@ -298,7 +347,7 @@ static void display_show(char *b, size_t n)
     char theme[40];
     theme_show(theme, sizeof(theme));
     if (display_ctl_autodim_enabled())
-        snprintf(b, n, "%s, dim %d s  >", theme, display_ctl_autodim_timeout());
+        snprintf(b, n, ls_tr("%s, dim %d s  >"), theme, display_ctl_autodim_timeout());
     else
         snprintf(b, n, "%s  >", theme);
 }
@@ -309,16 +358,16 @@ static void sound_show(char *b, size_t n)
     char boot[16], voice[24];
     boot_show(boot, sizeof(boot));
     if (speech_available()) snprintf(voice, sizeof(voice), "%s", speech_voice_name(speech_voice_get()));
-    else                    snprintf(voice, sizeof(voice), "no voice");
-    snprintf(b, n, "%s, %s, alerts %s  >", boot, voice,
-             settings_get_alert_ring() ? "on" : "off");
+    else                    snprintf(voice, sizeof(voice), "%s", ls_tr("no voice"));
+    snprintf(b, n, ls_tr("%s, %s, alerts %s  >"), boot, voice,
+             settings_get_alert_ring() ? ls_tr("on") : ls_tr("off"));
 }
 static void sound_next(void) { page_open(SETP_SOUND); }
 
 static void device_show(char *b, size_t n)
 {
-    snprintf(b, n, "keys %s, USB %s  >", settings_get_keyboard_light() ? "on" : "off",
-             app_usb_autoreboot() ? "on" : "off");
+    snprintf(b, n, ls_tr("keys %s, USB %s  >"), settings_get_keyboard_light() ? ls_tr("on") : ls_tr("off"),
+             app_usb_autoreboot() ? ls_tr("on") : ls_tr("off"));
 }
 static void device_next(void) { page_open(SETP_DEVICE); }
 
@@ -345,6 +394,7 @@ static const item_t SOUND_ITEMS[] = {
     { "Boot sound",     boot_show,  boot_next, NULL },
     { "Voice",          voice_show, voice_next, NULL },
     { "Alert sound",    ring_show,  ring_next, NULL },
+    { "Notify sound",   nsound_show, nsound_next, NULL },
     { "Vibrate",        vibe_show,  vibe_next, NULL },
 };
 static const item_t DEVICE_ITEMS[] = {
@@ -353,6 +403,8 @@ static const item_t DEVICE_ITEMS[] = {
     { "Keyboard dim",   keydim_show,   keydim_next, NULL },
     { "LoRa radio",     loraport_show, loraport_next, NULL },
     { "LoRa module",    loramod_show,  loramod_next, NULL },
+    { "Language",       lang_show,     lang_next, NULL },
+    { "Hotspot",        ap_show,       ap_next, NULL },
     { "USB autoreboot", usb_show,      usb_next, NULL },
     { "Update",         update_show,   update_next, NULL },
     { "Check for updates", updchk_show, updchk_next, NULL },
@@ -364,7 +416,7 @@ static const set_page_t SET_PAGES[SETP_COUNT] = {
     [SETP_SOUND]   = { "SETTINGS > SOUND", SOUND_ITEMS,   COUNT(SOUND_ITEMS) },
     [SETP_DEVICE]  = { "SETTINGS > DEVICE", DEVICE_ITEMS,  COUNT(DEVICE_ITEMS) },
 };
-#define MAX_ITEMS 8
+#define MAX_ITEMS 10
 
 static const set_page_t *page_get(void) { return &SET_PAGES[s_page]; }
 
@@ -399,8 +451,9 @@ static void draw_one(tui_surface *sf, tui_rect a, const item_t *it, int i, bool 
     ls_panel_box(sf, a, NULL, hue);
 
     tui_put_char(sf, a, a.x + 1, a.y, ' ', edge);
-    tui_put_str(sf, a, a.x + 2, a.y, it->label, name);
-    tui_put_char(sf, a, a.x + 2 + (int)strlen(it->label), a.y, ' ', edge);
+    const char *label = ls_tr(it->label);
+    tui_put_str(sf, a, a.x + 2, a.y, label, name);
+    tui_put_char(sf, a, a.x + 2 + (int)strlen(label), a.y, ' ', edge);
 
     tui_rect field = tui_rect_make(a.x + 1, a.y + 1, a.w - 2, a.h - 2);
     if (field.h >= 1 && field.w >= 4) {
@@ -482,7 +535,10 @@ static bool key(ls_tk_t k, char ch)
     switch (k) {
     case LS_TK_UP:    s_sel = (s_sel + pg->n - 1) % pg->n; return true;
     case LS_TK_DOWN:  s_sel = (s_sel + 1) % pg->n;         return true;
-    case LS_TK_ENTER: pg->items[s_sel].next();             return true;
+    case LS_TK_ENTER:
+        if (pg->items[s_sel].next != ap_next) s_ap_armed = false;
+        pg->items[s_sel].next();
+        return true;
     case LS_TK_LEFT:
     case LS_TK_RIGHT:
         if (!pg->items[s_sel].step) return false;
@@ -509,6 +565,7 @@ static bool touch(int col, int row)
         if (col >= r.x && col < r.x + r.w &&
             row >= r.y && row < r.y + r.h) {
             s_sel = i;
+            if (pg->items[i].next != ap_next) s_ap_armed = false;
             if (pg->items[i].step) {
                 /* A level steps down from the left half of its box and up
                    from the right half, so a finger does not have to find
@@ -528,6 +585,7 @@ static bool touch(int col, int row)
 /* Settings opens on its first page every time. */
 static void enter(void)
 {
+    s_ap_armed = false;
     s_page = SETP_ROOT;
     s_sel = 0;
 }

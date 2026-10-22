@@ -33,6 +33,11 @@ extern const ls_font_t ls_font_mono_24; /* 15x26 detector view */
 extern const ls_font_t ls_font_mono_14;   /*  9x16 - 131x33 landscape */
 extern const ls_font_t ls_font_mono_16;   /* 10x17 - 115x27 landscape */
 
+/* The Cyrillic page that goes with a face (ls_font_cyr.c), indexed by the
+   slot tui_cyr_slot() gives for a cell; NULL for a face without one. Same
+   cell size and baseline as the face. */
+const ls_font_t *ls_font_cyr_page(const ls_font_t *latin);
+
 /* Glyph for a codepoint, or NULL when the font has none or it is blank.
    A blank glyph is not an error: space has no ink and needs no blit. */
 static inline const ls_font_glyph_t *ls_font_glyph(const ls_font_t *f,

@@ -130,6 +130,38 @@ static inline size_t IRAM_ATTR ring_send_locked(const void *p, size_t want)
     return sent;
 }
 
+/* Cues (boot chime, beeps, chirps) skip the equalizer. The default VOICE
+   preset high-passes at 200 Hz, adds 6 dB at 300 Hz, punch harmonics and
+   +10.6 dB make-up into a limiter, so the chime's chord clipped at every note
+   onset: the "cracking" boot tone (2026-10-20). Cue bytes are marked like
+   speech and played exactly as generated; the codec volume still applies. */
+static audio_speech_span_t s_cue_span;
+static inline size_t ring_send_cue_locked(const void *p, size_t want)
+{
+    const size_t whole = audio_pcm_write_bytes(want, xStreamBufferSpacesAvailable(s_ring));
+    if (!whole) return 0;
+    audio_speech_span_add(&s_cue_span, s_rd_bytes, s_wr_bytes,
+                          s_wr_bytes + (uint32_t)whole);
+    const size_t sent = xStreamBufferSend(s_ring, p, whole, 0);
+    s_wr_bytes += (uint32_t)sent;
+    return sent;
+}
+static inline bool in_cue(uint32_t pos)
+{
+    return (int32_t)(pos - s_cue_span.begin) >= 0 && (int32_t)(s_cue_span.end - pos) > 0;
+}
+/* The equalizer over a chunk, run by run, leaving cue samples untouched. */
+static void eq_outside_cues(int16_t *mono, int frames, uint32_t pos)
+{
+    for (int i = 0; i < frames; ) {
+        const bool cue = in_cue(pos + 2u * (uint32_t)i);
+        int j = i + 1;
+        while (j < frames && in_cue(pos + 2u * (uint32_t)j) == cue) j++;
+        if (!cue) audio_eq_process(mono + i, j - i);
+        i = j;
+    }
+}
+
 /* Speech into the ring: the same send, with the speech span marked first. */
 static inline size_t ring_send_speech_locked(const void *p, size_t want)
 {
@@ -174,9 +206,23 @@ void audio_write_cue(const int16_t *samples, int n)
     if (!s_ready || s_muted || n <= 0 || !s_ring) return;
     if (xSemaphoreTake(s_push_lock, 0) != pdTRUE) return;
     const size_t want = (size_t)n * sizeof(int16_t);
-    const size_t sent = ring_send_locked(samples, want);
+    const size_t sent = ring_send_cue_locked(samples, want);
     xSemaphoreGive(s_push_lock);
     if (sent < want) s_audio_drops++;
+}
+
+/* The same, but waits up to timeout_ms for another writer to finish instead
+   of dropping the samples. For a sound that must arrive whole. */
+bool audio_write_cue_wait(const int16_t *samples, int n, int timeout_ms)
+{
+    if (s_media_request) return false;
+    if (!s_ready || s_muted || n <= 0 || !s_ring) return false;
+    if (xSemaphoreTake(s_push_lock, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) return false;
+    const size_t want = (size_t)n * sizeof(int16_t);
+    const size_t sent = ring_send_cue_locked(samples, want);
+    xSemaphoreGive(s_push_lock);
+    if (sent < want) s_audio_drops++;
+    return sent == want;
 }
 
 /**/
@@ -450,7 +496,7 @@ static void audio_player_task(void *arg)
         int frames = (int)(got / sizeof(int16_t));
 
         if (frames > 0) {
-            audio_eq_process(mono, frames);
+            eq_outside_cues(mono, frames, pos);
             audio_speech_level_apply(&s_speech_span, pos, mono, frames, s_speech_gain);
             for (int i = 0; i < frames; i++) {
                 int16_t s = mono[i];

@@ -8,7 +8,8 @@
       "enabled": true,
       "usb_serial": "",
       "flash_mb": 16,
-      "board": "ESP32-P4-NANO"
+      "board": "ESP32-P4-NANO",
+      "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1"
     },
     {
       "name": "p4-wifi6",
@@ -17,25 +18,32 @@
       "enabled": true
     },
     {
-      "name": "p4-touch-lcd-43",
-      "dir": "build_lcd43",
-      "defaults": "sdkconfig.defaults;boards/lcd43_gui.defaults",
-      "enabled": true,
-      "usb_serial": "",
-      "flash_mb": 32,
-      "board": "ESP32-P4-WIFI6-Touch-LCD-4.3"
-    },
-    {
-      "name": "p4-touch-lcd-4b",
-      "dir": "build_4b",
-      "defaults": "sdkconfig.defaults;boards/touch_lcd_4b_gui.defaults",
-      "enabled": true
-    },
-    {
       "name": "p4-nano-nobt",
       "dir": "build_nobt",
       "defaults": "sdkconfig.defaults;boards/nano_headless_nobt.defaults",
-      "enabled": true
+      "enabled": true,
+      "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
+      "usb_serial": ""
+    },
+    {
+      "name": "p4-nano-v3",
+      "dir": "build_nano_v3",
+      "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
+      "defaults": "sdkconfig.defaults;boards/nano_headless_ble.defaults;boards/p4_rev3.defaults;boards/nano_c5.defaults",
+      "enabled": true,
+      "usb_serial": "",
+      "flash_mb": 16,
+      "board": "ESP32-P4-NANO"
+    },
+    {
+      "name": "p4-nano-v3-dsi",
+      "dir": "build_nano_v3_dsi",
+      "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
+      "defaults": "sdkconfig.defaults;boards/nano_headless_ble.defaults;boards/p4_rev3.defaults;boards/nano_c5.defaults;boards/nano_dsi.defaults",
+      "enabled": true,
+      "usb_serial": "",
+      "flash_mb": 16,
+      "board": "ESP32-P4-NANO"
     },
     {
       "name": "t-display-p4",
@@ -86,6 +94,36 @@
       "usb_serial": "5B91081095",
       "flash_mb": 16,
       "board": "T-Display-P4"
+    },
+    {
+      "name": "p4-nano-dsi-c6",
+      "dir": "build_nano_dsi_c6",
+      "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
+      "defaults": "sdkconfig.defaults;boards/nano_headless_ble.defaults;boards/nano_c6.defaults;boards/nano_dsi.defaults",
+      "enabled": true,
+      "usb_serial": "",
+      "flash_mb": 16,
+      "board": "ESP32-P4-NANO"
+    },
+    {
+      "name": "p4-nano-v3-dsi-c6",
+      "dir": "build_nano_v3_dsi_c6",
+      "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
+      "defaults": "sdkconfig.defaults;boards/nano_headless_ble.defaults;boards/p4_rev3.defaults;boards/nano_c6.defaults;boards/nano_dsi.defaults",
+      "enabled": true,
+      "usb_serial": "",
+      "flash_mb": 16,
+      "board": "ESP32-P4-NANO"
+    },
+    {
+      "name": "p4-nano-dsi-c5",
+      "dir": "build_nano_dsi_c5",
+      "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
+      "defaults": "sdkconfig.defaults;boards/nano_headless_ble.defaults;boards/nano_c5.defaults;boards/nano_dsi.defaults",
+      "enabled": true,
+      "usb_serial": "",
+      "flash_mb": 16,
+      "board": "ESP32-P4-NANO"
     }
   ],
   "smoke": "t-display-p4",

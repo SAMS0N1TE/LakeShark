@@ -9,6 +9,11 @@ static uint32_t plane_colour(const cc_planes *p,uint8_t ink) {
     uint32_t colour=p->palette[ink]&0xffffff;
     return colour|(p->colors16?((uint32_t)(0x80|cc_palette16(ink))<<24):0);
 }
+/* The colour of an ink drawn as dots rather than as ground. */
+static uint32_t plane_line_colour(const cc_planes *p,uint8_t ink) {
+    uint32_t colour=(p->palette?p->palette[ink]:cc_palette(ink))&0xffffff;
+    return colour|(p->colors16?((uint32_t)(0x80|cc_palette16_line(ink))<<24):0);
+}
 cc_edges cc_edge_defaults[4]={CC_EDGES_SMOOTH,CC_EDGES_CRISP,CC_EDGES_CRISP,CC_EDGES_CRISP};
 cc_edges cc_edges_resolve(cc_edges edges,cc_mode mode) {
     return edges==CC_EDGES_DEFAULT?cc_edge_defaults[mode]:edges;
@@ -77,51 +82,102 @@ static unsigned thin_quadrant_lines(unsigned bits) {
     unsigned top=bitcount(a)>bitcount(b)?a:b,bot=bitcount(c)>bitcount(d)?c:d;
     return (top&1)|((top&2)<<2)|((bot&1)<<2)|((bot&2)<<4);
 }
-/* Sparse ordered relief only in empty black ground. Roads, water, polygon
-   coverage and labels retain their original cells (labels paint afterwards).
-   World phase also agrees with tile-cache and staged-row encoders. */
-static void relief(const cc_planes *p,cc_mode mode,size_t i,unsigned bits,cc_cell *c) {
-    if(!p->colors16 || !p->terrain_active || !p->terrain_strength || bits ||
-       p->shade[i]>15 || p->fill[i]!=CC_LAND || p->dots[i] || p->coverage_ink[i]) return;
-    static const uint8_t order[16]={0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5};
-    unsigned x=(unsigned)(i%p->cols+p->terrain_phase_x)&3;
-    unsigned y=(unsigned)(i/p->cols+p->terrain_phase_y)&3;
-    unsigned density=(p->shade[i]+1)*(unsigned)p->terrain_strength/100;
-    if(order[y*4+x]>=density) return;
-    static const unsigned dot[4]={1,8,4,128};
-    c->codepoint=mode==CC_ASCII?'.':cc_encoder_glyph(NULL,mode,dot[(x+y)&3]);
-    c->fg=UINT32_C(0x88505050); /* ANSI BRIGHT BLACK, dim RGB for HTML */
-    c->bg=UINT32_C(0x80000000);
+static int green_ink(uint8_t ink) { return ink==CC_WOOD || ink==CC_PARK; }
+/* Land and relief in sixteen colours, from the hillshade value (8 flat,
+   0 full shadow, about 12 full light). Forest and parks are a dark green
+   ground on flat and lit slopes, lit slopes brightened with green dots and
+   slopes in shadow dropping to black with a few dark green dots, so relief
+   reads under forest and the forest still reads as forest. Bare ground stays
+   black with grey dots on lit slopes only, so flat land is clean. Roads,
+   water and labels keep their cells. The dither follows world position so
+   it holds still under a pan. */
+static void relief(const cc_planes *p,cc_mode mode,size_t i,unsigned bits,uint8_t fill,cc_cell *c) {
+    if(!p->colors16) return;
+    const int green=green_ink(fill);
+    const int ground=fill==CC_LAND || fill==CC_RESIDENTIAL || fill==CC_INDUSTRIAL || fill==CC_FARM;
+    if(!green && !ground) return;
+    int s=8;
+    if(p->terrain_active && p->terrain_strength && p->shade[i]<=15)
+        s=8+((int)p->shade[i]-8)*p->terrain_strength/100;
+    static const uint32_t rgb[16]={0x0b0f12,0,0x3f7a4a,0,0,0,0,0x9aa3a8,0x505a61,0,0x8fd99a};
+    /* Forest keeps its green down into shadow and goes black only in deep
+       shadow. The ground tone goes under roads and rivers too, or every road
+       cuts a black channel through the forest. */
+    if(green && s>=4) {
+        c->bg=UINT32_C(0x1c3a26)|(uint32_t)(0x80|2)<<24;
+        if(!bits) c->fg=c->bg;
+    }
+    /* Quadrant (MAP's smooth view) is the clean one: relief as tone only. */
+    if(bits || p->dots[i] || mode==CC_QUADRANT) return;
+    /* Green: lit slopes take bright dots, shadow darkens the green with black
+       dots, deep shadow is black with a little green left in it. */
+    int density=0; uint8_t index=8;
+    if(green) {
+        if(s>=9) { density=2*(s-8); index=10; }
+        else if(s>=6) density=0;
+        else if(s>=4) { density=(6-s)*4; index=0; }
+        else { density=s>0?s:0; index=2; }
+    } else if(s>=10) { density=3*(s-9); index=s>=12?7:8; }
+    if(density>9) density=9;
+    if(density<=0) return;
+    static const uint8_t bayer[4][4]={{0,8,2,10},{12,4,14,6},{3,11,1,9},{15,7,13,5}};
+    const unsigned col=(unsigned)(i%(size_t)p->cols)+(unsigned)p->terrain_phase_x;
+    const unsigned row=(unsigned)(i/(size_t)p->cols)+(unsigned)p->terrain_phase_y;
+    unsigned dots=0;
+    for(unsigned dy=0;dy<4;dy++) for(unsigned dx=0;dx<2;dx++)
+        if(bayer[(row*4+dy)&3][(col*2+dx)&3]<(unsigned)density) dots|=cc_dot_bit((int32_t)dx,(int32_t)dy);
+    if(!dots) return;
+    c->codepoint=mode==CC_ASCII?'.':0x2800+dots;
+    c->fg=rgb[index]|(uint32_t)(0x80|index)<<24;
 }
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((always_inline))
 #endif
 static inline void encode(const cc_encoder *e, const cc_planes *p, cc_mode mode, cc_cell *cells,const uint8_t *mask,const uint32_t *list,size_t count) {
     size_t n = (size_t)p->cols*(size_t)p->rows;
-    uint32_t palette[CC_INK_COUNT];
-    for(unsigned k=0;k<CC_INK_COUNT;k++) palette[k]=plane_colour(p,(uint8_t)k);
+    uint32_t palette[CC_INK_COUNT],lines[CC_INK_COUNT];
+    for(unsigned k=0;k<CC_INK_COUNT;k++) { palette[k]=plane_colour(p,(uint8_t)k); lines[k]=plane_line_colour(p,(uint8_t)k); }
     if(list) n=count;
     for (size_t j = 0; j < n; ++j) {
         size_t i=list?list[j]:j;
         if(mask && !mask[i]) continue;
         unsigned bits = p->dot_priority[i] >= p->fill_priority[i] ? p->dots[i] : 0;
-        uint32_t ink = palette[p->ink[i]], bg = palette[p->fill[i]];
-        if(p->edges_mode!=CC_EDGES_CRISP && p->coverage_ink[i] && p->dot_priority[i]<p->coverage_priority[i]) {
-            bits=p->coverage[i]; ink=palette[p->coverage_ink[i]]; bg=palette[p->coverage_bg[i]];
-            if(bits==255) { bg=ink; bits=0; }
+        uint32_t ink = lines[p->ink[i]], bg = palette[p->fill[i]];
+        uint8_t ground=p->fill[i];
+        int covered=p->edges_mode!=CC_EDGES_CRISP && p->coverage_ink[i] && p->dot_priority[i]<p->coverage_priority[i];
+        if(covered && p->colors16 && green_ink(p->coverage_ink[i])) {
+            /* A stipple has no edge to smooth: the cell is forest or not. */
+            ground=bitcount(p->coverage[i])>=4?p->coverage_ink[i]:p->coverage_bg[i];
+            bg=palette[ground]; covered=0;
         }
-        if(p->terrain_active && p->shade[i]<16) {
+        if(covered) {
+            /* Braille edges are dots, so they take the line colour (a bright
+               shore); quadrant edges are part of the area and keep its ground. */
+            bits=p->coverage[i]; ink=(mode==CC_QUADRANT?palette:lines)[p->coverage_ink[i]]; bg=palette[p->coverage_bg[i]];
+            if(bits==255) { bg=palette[p->coverage_ink[i]]; bits=0; }
+        }
+        if(p->terrain_active && p->shade[i]<16 && !p->colors16) {
             unsigned q=p->shade[i];
             unsigned bi=p->fill[i],fi=p->ink[i];
             if(p->edges_mode!=CC_EDGES_CRISP && p->coverage_ink[i] && p->dot_priority[i]<p->coverage_priority[i]) { fi=p->coverage_ink[i]; bi=p->coverage[i]==255?fi:p->coverage_bg[i]; }
             bg=p->terrain_colours[bi][q]; ink=p->terrain_colours[fi][q];
         }
-        if(mode==CC_QUADRANT && !(p->edges_mode!=CC_EDGES_CRISP && p->coverage_ink[i] &&
-           p->dot_priority[i]<p->coverage_priority[i])) bits=thin_quadrant_lines(bits);
+        /* Smooth keeps its solid areas and their smoothed edges, but a road
+           or a river is a line, and at quadrant size a line is a bar: draw
+           the lines in braille, one dot wide, when the zoom is known. */
+        /* The clean view carries local roads and tracks only from z12. */
+        if(mode==CC_QUADRANT && !covered && p->zoom && p->zoom<12 &&
+           (p->ink[i]==CC_MINOR || p->ink[i]==CC_SERVICE)) bits=0;
+        const int fine=mode==CC_QUADRANT && !covered && p->zoom && bits;
+        if(mode==CC_QUADRANT && !covered && !fine) bits=thin_quadrant_lines(bits);
         cc_cell c = {0x20,ink,bg};
-        c.codepoint=cc_encoder_glyph(e,mode,bits);
+        c.codepoint=fine?0x2800+bits:cc_encoder_glyph(e,mode,bits);
         if (!bits) c.fg = bg;
-        relief(p,mode,i,bits,&c);
+        relief(p,mode,i,bits,ground,&c);
+        /* A minor road through forest is lifted a step so the green does
+           not swallow it. */
+        if(p->colors16 && bits && green_ink(ground) && cc_index16(c.fg)==8)
+            c.fg=(c.fg&0xffffff)|(uint32_t)(0x80|7)<<24;
         cells[i] = c;
     }
 }
@@ -151,7 +207,7 @@ static void encode_quadrant_crisp(const cc_planes *p,cc_cell *cells,const uint32
         unsigned bits=p->dot_priority[i]>=p->fill_priority[i]?p->dots[i]:0;
         uint32_t bg=p->terrain_active && p->shade[i]<16?p->terrain_colours[p->fill[i]][p->shade[i]]:palette[p->fill[i]];
         cells[i]=(cc_cell){glyph[thin_quadrant_lines(bits)],bits?palette[p->ink[i]]:bg,bg};
-        relief(p,CC_QUADRANT,i,bits,&cells[i]);
+        relief(p,CC_QUADRANT,i,bits,p->fill[i],&cells[i]);
     }
 }
 void cc_encode_mask(const cc_encoder *e,const cc_planes *p,cc_mode mode,cc_cell *cells,const uint8_t *mask) { encode(e,p,mode,cells,mask,0,0); }

@@ -21,6 +21,7 @@ void audio_out_media_release(void);
 void audio_write_mono(const int16_t *samples, int n);
 /* Tones and chimes: same ring, but they neither stop nor discard speech. */
 void audio_write_cue(const int16_t *samples, int n);
+bool audio_write_cue_wait(const int16_t *samples, int n, int timeout_ms);
 
 /* Speech into the ring, waiting for room. False means stop speaking: muted,
    live radio has the speaker, or the player stopped taking samples. Live

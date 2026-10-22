@@ -4,9 +4,11 @@
    that knows what a P25 receiver is, and it is the half a host test of the
    registry has no use for. Same arrangement as ls_action_builtin.c. */
 #include "ls_value.h"
+#include "esp_attr.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -207,6 +209,15 @@ static bool v_mesh_rssi(ls_val_t *o)
     o->kind = LS_VAL_FLOAT; o->f = st.last_rssi; return true;
 }
 
+#include "ls_cells.h"
+static EXT_RAM_BSS_ATTR char maps_states_text[8192],maps_state_text[128],maps_outlines_text[128],maps_free_zoom_text[8];
+static bool v_maps_states(ls_val_t *o) { if(!ls_cells_maps_text(0,maps_states_text,sizeof(maps_states_text)))return false;o->kind=LS_VAL_TEXT;o->s=maps_states_text;return true; }
+static bool v_maps_progress(ls_val_t *o) { float f;if(!ls_cells_maps_progress(&f))return false;o->kind=LS_VAL_FLOAT;o->f=f;return true; }
+static bool v_maps_state(ls_val_t *o) { if(!ls_cells_maps_text(2,maps_state_text,sizeof(maps_state_text)))return false;o->kind=LS_VAL_TEXT;o->s=maps_state_text;return true; }
+static bool v_maps_outlines(ls_val_t *o) { if(!ls_cells_maps_text(3,maps_outlines_text,sizeof(maps_outlines_text)))return false;o->kind=LS_VAL_TEXT;o->s=maps_outlines_text;return true; }
+static char maps_plus_text[4];
+static bool v_maps_plus(ls_val_t *o) { if(!ls_cells_maps_text(5,maps_plus_text,sizeof(maps_plus_text)))return false;o->kind=LS_VAL_BOOL;o->i=maps_plus_text[0]=='1';return true; }
+static bool v_maps_free_max_zoom(ls_val_t *o) { if(!ls_cells_maps_text(4,maps_free_zoom_text,sizeof(maps_free_zoom_text)))return false;o->kind=LS_VAL_INT;o->i=strtol(maps_free_zoom_text,NULL,10);return true; }
 /* Publishing is idempotent: the TUI task registers on first start and a
    restart must not double the table. */
 static bool s_builtin_done;
@@ -215,6 +226,12 @@ void ls_value_publish_builtin(void)
 {
     if (s_builtin_done) return;
     s_builtin_done = true;
+    ls_value_publish("maps.free_max_zoom",NULL,v_maps_free_max_zoom);
+    ls_value_publish("maps.plus",NULL,v_maps_plus);
+    ls_value_publish("maps.states",NULL,v_maps_states);
+    ls_value_publish("maps.progress",NULL,v_maps_progress);
+    ls_value_publish("maps.state",NULL,v_maps_state);
+    ls_value_publish("maps.outlines",NULL,v_maps_outlines);
 
     ls_value_publish("p25.freq",     "MHz",  v_p25_freq);
     ls_value_publish("p25.nac",      NULL,   v_p25_nac);

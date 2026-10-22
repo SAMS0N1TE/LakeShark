@@ -166,6 +166,15 @@
         "adsb_category_in": ["rotorcraft"]
       },
       "sinks": ["banner"]
+    },
+    {
+      "id": "drone-link-nearby",
+      "enabled": true,
+      "cooldown_s": 0,
+      "rule_cooldown_s": 2,
+      "sources": ["drone.watch"],
+      "match": {"category_in": ["DRONE"]},
+      "sinks": ["banner", "vibrate"]
     }
   ]
 }

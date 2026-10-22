@@ -36,10 +36,15 @@ typedef struct { uint8_t fill, line, priority; } cc_style;
 cc_style cc_style_lookup(cc_str layer, cc_str kind);
 uint32_t cc_palette(uint8_t ink);
 uint8_t cc_palette16(uint8_t ink);
+uint8_t cc_palette16_line(uint8_t ink);
 /* RGB stays in bits 0..23; optional semantic ANSI index in bits 24..27. */
 uint32_t cc_style_colour(uint8_t ink, int colors16);
 static inline uint32_t cc_rgb(uint32_t colour) { return colour & 0xffffff; }
 static inline uint8_t cc_index16(uint32_t colour) { return (uint8_t)(colour >> 24) & 15; }
+/* Optional cooperative yield, NULL unless the host sets it: called once per
+   decoded tile and every 256 rastered features, so an embedded host can let
+   lower-priority work (and its idle watchdog) run during a long frame. */
+extern void (*cc_yield_hook)(void);
 typedef struct cc_feature {
     struct cc_feature *next,*label_next;
     cc_path *paths;
@@ -89,6 +94,9 @@ typedef struct {
     cc_edges edges_mode;
     int32_t cols, rows;
     int native_unclipped_lines; /* bounded native-tile paths only */
+    /* Map zoom being drawn, 0 when unknown. Set, it hides detail a terminal
+       cell cannot carry at that zoom and widens the main roads. */
+    uint8_t zoom;
     int ordered; /* raster owns this flag while traversing priority buckets */
     uint8_t *dots, *ink, *dot_priority, *fill, *fill_priority;
     cc_bitword *edges;

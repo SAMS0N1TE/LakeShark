@@ -467,7 +467,7 @@ esp_err_t ls_panel_blank(unsigned fade_ms)
     if (e == ESP_OK) e = esp_lcd_panel_io_tx_param(s_io, 0x28, NULL, 0);   /* display off */
     return e;
 }
-#else
+#elif !defined(LS_BOARD_PANEL_RUNTIME)   /* ls_panel_ws.c drives runtime-chosen panels */
 esp_err_t ls_panel_test_start(void) { return ESP_OK; }
 esp_err_t ls_panel_start(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_panel_set_brightness(unsigned percent) { (void)percent; return ESP_ERR_NOT_SUPPORTED; }

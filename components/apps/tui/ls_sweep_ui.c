@@ -38,6 +38,10 @@ static EXT_RAM_BSS_ATTR int row_device[128];
 static unsigned count,pick;
 static uint32_t selected;
 static bool owner_selected;
+/* What the last press did, in place of the status line for a few seconds:
+   SELECT DEVICE used to change only a one-cell marker, or nothing at all. */
+static char note[72];
+static int64_t note_until;
 static ls_sweep_device_t near_target;
 static tui_rect list_area;
 typedef enum { VIEW_LIST, VIEW_HUNT } sweep_view_t;
@@ -598,7 +602,7 @@ static void draw(tui_surface *sf,tui_rect a) {
         {s.alerts_muted?"MUTED":"MUTE","SOUND",'m',s.alerts_muted,false,false},
         {"VIEW",view_names[screen_view],'v',false,false,false},ls_opt_button(&ctx)};
     ls_btn_bar_raised_row(sf,tui_rect_make(a.x,a.y+a.h-bh,a.w,bh),b,5,-1);
-    str(sf,a,a.x+1,a.y+a.h-bh-1,a.w-2,st.status[0]?st.status:"Wi-Fi cached / no scan",VALUE);a.h-=bh+1;
+    str(sf,a,a.x+1,a.y+a.h-bh-1,a.w-2,now<note_until?note:st.status[0]?st.status:"Wi-Fi cached / no scan",VALUE);a.h-=bh+1;
     ls_gps_state_t gps;ls_gps_get(&gps);bool fix=gps.fix && now-gps.last_fix_us<5000000;
     cols_t c=layout(a);
     list_area=a;list_shown=0;mode_row=-1;for(unsigned i=0;i<128;i++) row_device[i]=-1;
@@ -613,6 +617,19 @@ static void choose(void) {
     if((owner_selected || !count) && ls_sweep_nearby_target(&near_target,esp_timer_get_time())) {owner_selected=true;pick=count;selected=UINT32_MAX;if(screen_view==VIEW_HUNT) ls_sweep_hunt(near_target.mac,near_target.radio,near_target.address_type);}
     else if(count) {owner_selected=false;if(pick>=count) pick=0;selected=view[pick].serial;if(screen_view==VIEW_HUNT) ls_sweep_hunt(view[pick].mac,view[pick].radio,view[pick].address_type);}
 }
+/* SELECT DEVICE: the next one each press, and say which. */
+static void select_next(void) {
+    const int64_t now=esp_timer_get_time();
+    ls_sweep_status_t st;ls_sweep_status(&st,now);
+    const unsigned ranks=count+(st.owner_nearby?1:0);
+    note_until=now+4000000;
+    if(!ranks) {snprintf(note,sizeof(note),"%s",st.requested?"Nothing to select: no device seen yet":"Nothing to select: START RX first");return;}
+    if(selected) {unsigned rank=owner_selected?count:pick;pick=(rank+1)%ranks;owner_selected=pick==count;}
+    choose();
+    char id[32]="near-owner";
+    if(!owner_selected && count) ls_sweep_track_id(&view[pick],id,sizeof(id));
+    snprintf(note,sizeof(note),"%s selected (%u of %u): VIEW hunts it",id,(owner_selected?count:pick)+1,ranks);
+}
 static bool key(ls_tk_t k,char c) {
     if(ls_opt_key(&ctx,c)) return true;
     if(c=='m' || c=='M') {ls_sweep_settings_t s;ls_sweep_settings_get(&s);s.alerts_muted=!s.alerts_muted;ls_sweep_settings_set(&s);return true;}
@@ -620,7 +637,8 @@ static bool key(ls_tk_t k,char c) {
     if(c=='b' || c=='B') {slow=!slow;return true;}
     if(c=='f' || c=='F') {if(selected && (count || owner_selected)) {ls_sweep_device_t *d=owner_selected?&near_target:&view[pick];ls_sweep_find_target(d->mac,d->radio,d->match.label);}return true;}
     if(c=='s' || c=='S') {ls_sweep_status_t s;ls_sweep_status(&s,esp_timer_get_time());ls_sweep_start(!s.requested);return true;}
-    if(c=='h' || c=='H' || k==LS_TK_ENTER) {choose();return true;}
+    if(c=='h' || c=='H') {select_next();return true;}
+    if(k==LS_TK_ENTER) {choose();return true;}
     if(k==LS_TK_UP || k==LS_TK_DOWN || c=='[' || c==']') {
         ls_sweep_status_t st;ls_sweep_status(&st,esp_timer_get_time());
         unsigned ranks=count+(st.owner_nearby?1:0);

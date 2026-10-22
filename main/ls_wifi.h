@@ -2,6 +2,7 @@
 #define LS_WIFI_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
 
@@ -17,6 +18,14 @@ esp_err_t ls_wifi_stop(void);
 /* Worker only. Permanently inhibits all radio operations until P4 reboot. */
 esp_err_t ls_wifi_c6_quiesce(void);
 bool      ls_wifi_running(void);
+
+/* The hotspot's password: this board's own, made once and kept (see
+   ls_wifi_ap_pass.h). Renew makes and saves a new one, applied at once when
+   the hotspot is up. Publish puts wifi.ap_ssid / wifi.ap_pass / wifi.ap_on
+   and the wifi.ap_renew action where Settings can reach them. */
+void      ls_wifi_ap_password(char *out, size_t cap);
+esp_err_t ls_wifi_ap_password_renew(void);
+void      ls_wifi_publish(void);
 
 /* Station-mode API. */
 
@@ -45,6 +54,8 @@ esp_err_t ls_wifi_sta_save(const char *ssid, const char *pass);
 int       ls_wifi_saved_list(char names[][33], int cap);
 esp_err_t ls_wifi_sta_join_saved(const char *ssid);
 esp_err_t ls_wifi_sta_autojoin(void);
+/* The same, without the scan first: the boot path. */
+esp_err_t ls_wifi_sta_autojoin_boot(void);
 /* Rejoin saved networks only when stopped or exhausted; preserve an active join. */
 esp_err_t ls_wifi_sta_ensure(void);
 bool      ls_wifi_sta_gave_up(void);

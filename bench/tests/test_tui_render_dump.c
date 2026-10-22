@@ -164,6 +164,12 @@ void settings_set_antenna_external(bool v) { s_ant_ext = v; }
 void settings_set_antenna_mmcx_tx(bool tx) { (void)tx; }
 bool settings_get_antenna_mmcx_tx(void) { return false; }
 bool settings_get_alert_ring(void) { return s_alert_ring; }
+static int s_notify_sound;
+static const char *const s_notify_names[] = { "ALERT", "RADIO KEY", "ROGER", "CHIRP", "OFF" };
+const char *const *settings_notification_sound_names(int *count, int *current)
+{ if (count) *count = 5; if (current) *current = s_notify_sound; return s_notify_names; }
+bool settings_cycle_notification_sound(void) { s_notify_sound = (s_notify_sound + 1) % 5; return true; }
+bool snd_alert_start(void) { return true; }
 void settings_set_alert_ring(bool v) { s_alert_ring = v; }
 static bool s_auto_rotate = true;
 bool settings_get_auto_rotate(void) { return s_auto_rotate; }
@@ -1123,12 +1129,14 @@ LS_CASE(basemap_palette_switches_preserve_overlays_and_release_cleanly)
     tui_fill(sf,area,LS_TUI_QUAD(1,1,1,1),TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
     ls_tui_basemap(sf,area,colours);
     ls_tui_put_glass(sf,area,4,10,0x28a5,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
-    LS_EQ_INT(2,ls_tui_present());
+    /* The two basemap cells and the overlay, whose ground is the basemap's. */
+    LS_EQ_INT(3,ls_tui_present());
     LS_CHECK(memcmp(g_ref,g_fb,sizeof(g_fb))!=0);
     memcpy(g_ref,g_fb,sizeof(g_fb));ls_tui_invalidate();ls_tui_present();
     LS_CHECK(memcmp(g_ref,g_fb,sizeof(g_fb))==0);
     ls_tui_basemap(NULL,(tui_rect){0},NULL);
-    LS_EQ_INT(2,ls_tui_present());
+    /* Released: all three go back to the theme's colours. */
+    LS_EQ_INT(3,ls_tui_present());
     ls_tui_end();
 }
 

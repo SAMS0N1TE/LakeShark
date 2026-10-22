@@ -131,6 +131,9 @@ static volatile bool  s_radio_held;
 /* Who holds it: s_radio_hold is either. A background holder (P25 or ADS-B
    left listening on the LoRa chip) gives way to the other kind. */
 static volatile bool  s_hold_fg, s_hold_bg;
+/* RADIOS' STOP: counts as a hold, so MeshCore pauses, and as a foreground
+   request, so background holders let go; no one takes the radio until ALLOW. */
+static volatile bool  s_radio_blocked;
 static ls_radio_holders_t s_fg_holders, s_bg_holders;
 static portMUX_TYPE s_hold_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -1289,7 +1292,7 @@ extern "C" ls_inspect_state_t ls_mesh_inspect_login(const char *id, const char *
 
 static void inspect_service()
 {
-    char id[17]; uint32_t tag; ls_inspect_kind_t kind;
+    char id[17]; uint32_t tag = 0; ls_inspect_kind_t kind = LS_INSPECT_TRACE;
     uint8_t route[98], count = 0, width = 1; bool known = false;
     char pw[LS_INSPECT_PASSWORD_MAX + 1] = "";
     portENTER_CRITICAL(&s_inspect_lock);
@@ -2066,9 +2069,13 @@ extern "C" bool ls_mesh_radio_hold(bool on)
 {
     const uintptr_t task = (uintptr_t)xTaskGetCurrentTaskHandle();
     portENTER_CRITICAL(&s_hold_lock);
+    if (on && s_radio_blocked && !ls_radio_holders_owns(&s_fg_holders, task)) {
+        portEXIT_CRITICAL(&s_hold_lock);
+        return false;
+    }
     const bool accepted = ls_radio_holders_set(&s_fg_holders, task, on);
     s_hold_fg = s_fg_holders.count != 0;
-    s_radio_hold = s_hold_fg || s_hold_bg;
+    s_radio_hold = s_hold_fg || s_hold_bg || s_radio_blocked;
     if (!s_radio_hold) s_radio_held = false;
     portEXIT_CRITICAL(&s_hold_lock);
     if (s_task) xTaskNotifyGive(s_task);
@@ -2080,10 +2087,10 @@ extern "C" bool ls_mesh_radio_hold_bg(bool on)
     const uintptr_t task = (uintptr_t)xTaskGetCurrentTaskHandle();
     portENTER_CRITICAL(&s_hold_lock);
     /* Foreground requests make each background holder release its own lease. */
-    const bool take = on && !s_hold_fg;
+    const bool take = on && !s_hold_fg && !s_radio_blocked;
     const bool accepted = ls_radio_holders_set(&s_bg_holders, task, take);
     s_hold_bg = s_bg_holders.count != 0;
-    s_radio_hold = s_hold_fg || s_hold_bg;
+    s_radio_hold = s_hold_fg || s_hold_bg || s_radio_blocked;
     if (!s_radio_hold) s_radio_held = false;
     const bool owns = take && ls_radio_holders_owns(&s_bg_holders, task);
     portEXIT_CRITICAL(&s_hold_lock);
@@ -2091,8 +2098,19 @@ extern "C" bool ls_mesh_radio_hold_bg(bool on)
     return accepted && (!on || (owns && mesh_paused()));
 }
 
-extern "C" bool ls_mesh_radio_wanted(void) { return s_hold_fg; }
+extern "C" bool ls_mesh_radio_wanted(void) { return s_hold_fg || s_radio_blocked; }
 extern "C" bool ls_mesh_radio_bg(void) { return s_hold_bg; }
+
+extern "C" void ls_mesh_radio_block(bool on)
+{
+    portENTER_CRITICAL(&s_hold_lock);
+    s_radio_blocked = on;
+    s_radio_hold = s_hold_fg || s_hold_bg || s_radio_blocked;
+    if (!s_radio_hold) s_radio_held = false;
+    portEXIT_CRITICAL(&s_hold_lock);
+    if (s_task) xTaskNotifyGive(s_task);
+}
+extern "C" bool ls_mesh_radio_blocked(void) { return s_radio_blocked; }
 
 extern "C" void ls_mesh_socket_get(ls_mesh_socket_t *out)
 {
@@ -2104,6 +2122,7 @@ extern "C" void ls_mesh_socket_get(ls_mesh_socket_t *out)
     uintptr_t owner = s_bg_holders.count ? s_bg_holders.task[0] :
                       s_fg_holders.count ? s_fg_holders.task[0] : 0;
     out->held = s_radio_hold;
+    out->blocked = s_radio_blocked;
     snprintf(out->owner, sizeof(out->owner), "%s", owner ?
         pcTaskGetName((TaskHandle_t)owner) : s_task ? "MeshCore" : "none");
     portEXIT_CRITICAL(&s_hold_lock);
@@ -2919,6 +2938,8 @@ extern "C" bool ls_mesh_radio_held(void) { return false; }
 extern "C" bool ls_mesh_radio_hold_bg(bool on) { (void)on; return false; }
 extern "C" bool ls_mesh_radio_wanted(void) { return false; }
 extern "C" bool ls_mesh_radio_bg(void) { return false; }
+extern "C" void ls_mesh_radio_block(bool on) { (void)on; }
+extern "C" bool ls_mesh_radio_blocked(void) { return false; }
 extern "C" int  ls_mesh_sightings(void) { return 0; }
 extern "C" bool ls_mesh_sight_clear(void) { return false; }
 

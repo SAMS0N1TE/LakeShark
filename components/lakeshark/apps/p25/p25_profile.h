@@ -44,6 +44,10 @@ typedef struct {
     char     system_name[P25_PROFILE_SYSTEM_NAME_LEN];
     char     site_name[P25_PROFILE_SITE_NAME_LEN];
 
+    /* Optional network identifiers, decimal on card; flags distinguish zero. */
+    uint32_t wacn;
+    uint16_t sysid, nac;
+    bool wacn_set, sysid_set, nac_set;
     uint64_t control_channels[P25_PROFILE_CONTROL_MAX];
     uint8_t  control_count;
     uint64_t preferred_control_hz;

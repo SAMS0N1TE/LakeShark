@@ -1,5 +1,7 @@
 #ifndef LS_P25_SETTINGS_H
 #define LS_P25_SETTINGS_H
+/* Reserved OPTIONS id; the screen owner places the row. */
+#define LS_P25_SETTING_GPS_SITES 27
 #include "lakeshark_backend.h"
 #include "p25_demod_control.h"
 #include "p25_p2_runtime.h"
@@ -56,12 +58,18 @@ static const char *const ps_names[] = {"Demodulation",
                                        "Remove allowed TG",
                                        "Control survey",
                                        "Lockout list",
-                                       "Allowed list"};
+                                       "Allowed list",
+                                       "GPS sites"};
 static void ps_value(int i, char *out, size_t n)
 {
     p25_cqpsk_config_t cfg;
     bool pending;
     switch (i) {
+    case LS_P25_SETTING_GPS_SITES: {
+        ls_val_t v;
+        snprintf(out, n, "%s", ls_value_read("p25.geo.enabled", &v, NULL) && v.i ? "ON" : "OFF");
+        break;
+    }
     case 0:
         snprintf(out, n, "%s", lakeshark_p25_mode_name());
         break;
@@ -237,6 +245,13 @@ static void ps_change(int direction, bool edit)
     }
     bool ok = true;
     switch (ps_selected) {
+    case LS_P25_SETTING_GPS_SITES: {
+        ls_args_t a = {.n = 0}; ls_val_t v;
+        if (!edit && ls_value_read("p25.geo.enabled", &v, NULL) && (v.i != 0) == (direction > 0)) return;
+        ok = ls_action_call("p25.geo.toggle", &a, &v, ls_quick_grant_builtin()) == LS_ACT_OK;
+        break;
+    }
+
     case 0: {
         p25_p2_enable(false);
         int pref = p25_demod_get_preference();

@@ -52,9 +52,25 @@ static esp_err_t sdcard_dma_info(int slot, esp_dma_mem_info_t *info)
 }
 #endif
 
+#ifdef LS_BOARD_SDCARD_LDO_CHAN
+#include "esp_ldo_regulator.h"
+/* The slot's I/O rail, held for the life of the boot like the panel's. */
+static esp_ldo_channel_handle_t s_sd_ldo;
+#endif
+
 esp_err_t ls_sdcard_mount(void)
 {
     if (s_card) return ESP_OK;
+#ifdef LS_BOARD_SDCARD_LDO_CHAN
+    if (!s_sd_ldo) {
+        esp_ldo_channel_config_t ldo = { .chan_id = LS_BOARD_SDCARD_LDO_CHAN, .voltage_mv = 3300 };
+        esp_err_t lerr = esp_ldo_acquire_channel(&ldo, &s_sd_ldo);
+        if (lerr != ESP_OK) {
+            ESP_LOGE(TAG, "SD rail (LDO %d) refused: %s", LS_BOARD_SDCARD_LDO_CHAN, esp_err_to_name(lerr));
+            return lerr;
+        }
+    }
+#endif
 
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     /* The other slot on this board is the ESP32-C6 link, and the
