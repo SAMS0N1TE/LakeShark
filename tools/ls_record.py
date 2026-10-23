@@ -112,6 +112,25 @@ def record_scene(s, seconds, baud, cmds):
     return head, data.decode("latin-1")
 
 
+def scrolled(head, strip):
+    """The picture after a "~H"/"~V" line: the last one moved, the strip in the
+    space it left. None when the strip is the wrong size."""
+    axis, shift, (x, y, w, h, iw, ih, old) = head
+    s, row = abs(shift), iw * 2
+    if axis == "H":
+        if s >= iw or len(strip) != s * ih * 2:
+            return None
+        out = bytearray()
+        for r in range(ih):
+            line, new = old[r * row:(r + 1) * row], strip[r * s * 2:(r + 1) * s * 2]
+            out += line[s * 2:] + new if shift > 0 else new + line[:row - s * 2]
+    else:
+        if s >= ih or len(strip) != s * row:
+            return None
+        out = old[s * row:] + strip if shift > 0 else strip + old[:(ih - s) * row]
+    return (x, y, w, h, iw, ih, bytes(out))
+
+
 def frames_of(head, text, images):
     """Frames as (ms, cells, glass, picture index or -1). Pictures are appended
     to images as (x, y, w, h, pixels wide, high, RGB565 little-endian bytes)."""
@@ -132,6 +151,16 @@ def frames_of(head, text, images):
                 building = ([int(x) for x in line[3:].split()], bytearray())
                 if len(building[0]) != 6:
                     raise ValueError
+            except ValueError:
+                building, bad = None, bad + 1
+        elif (line.startswith("~H ") or line.startswith("~V ")) and t is not None:
+            # A waterfall that only scrolled: the last picture moved by this
+            # many columns (H) or rows (V), and the new strip follows.
+            try:
+                shift = int(line[3:])
+                if pic < 0 or not shift:
+                    raise ValueError
+                building = ((line[1], shift, images[pic]), bytearray())
             except ValueError:
                 building, bad = None, bad + 1
         elif line.startswith("~P ") and t is not None:
@@ -164,12 +193,21 @@ def frames_of(head, text, images):
                 bad += 1
         elif line == "~E":
             if building is not None:
-                (x, y, w, h, iw, ih), px = building
-                if len(px) == iw * ih * 2:
-                    images.append((x, y, w, h, iw, ih, bytes(px)))
-                    pic = len(images) - 1
+                head_, px = building
+                if isinstance(head_[0], str):
+                    full = scrolled(head_, px)
+                    if full is None:
+                        bad += 1
+                    else:
+                        images.append(full)
+                        pic = len(images) - 1
                 else:
-                    bad += 1
+                    (x, y, w, h, iw, ih) = head_
+                    if len(px) == iw * ih * 2:
+                        images.append((x, y, w, h, iw, ih, bytes(px)))
+                        pic = len(images) - 1
+                    else:
+                        bad += 1
                 building = None
             if t is not None:
                 frames.append((t, bytes(grid), glass if pic >= 0 else bytes(nglass), pic))

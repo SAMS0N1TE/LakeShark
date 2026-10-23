@@ -15,7 +15,9 @@ static FILE *test_open_new(const char *path);
 static int test_unlink(const char *path);
 static int test_ferror(FILE *file);
 static int test_rename(const char *from, const char *to);
+static int test_mkdir(const char *path, int mode);
 #define stat(path, st) test_stat(path, st)
+#define mkdir test_mkdir
 #define fopen test_fopen
 #define rec_file_open_new test_open_new
 #define unlink test_unlink
@@ -28,6 +30,7 @@ static int test_rename(const char *from, const char *to);
 #undef unlink
 #undef ferror
 #undef rename
+#undef mkdir
 
 static struct dirent entries[310];
 static int entry_count, decoder_calls, picker_cursor, picker_count, unlinks;
@@ -79,7 +82,12 @@ static FILE *test_open_new(const char *path)
 static int test_unlink(const char *path) { unlinks++; snprintf(deleted, sizeof(deleted), "%s", path); return 0; }
 static int test_ferror(FILE *file) { return read_failed || ferror(file); }
 const char *rec_dir(void) { return ROOT "/rec"; }
-static int test_rename(const char *from, const char *to) { rename_calls++; return 0; }
+static char renamed_to[512], played[512];
+static int mkdirs;
+static int test_rename(const char *from, const char *to) { rename_calls++; snprintf(renamed_to, sizeof(renamed_to), "%s", to); return 0; }
+static int test_mkdir(const char *path, int mode) { (void)path; (void)mode; mkdirs++; return 0; }
+bool ls_media_supported_extension(const char *name) { const char *d = strrchr(name, '.'); return d && !strcasecmp(d, ".wav"); }
+bool ls_scr_music_play_file(const char *path) { snprintf(played, sizeof(played), "%s", path); return true; }
 bool ls_sdcard_mounted(void) { return true; }
 esp_err_t ls_sdcard_mount(void) { return ESP_OK; }
 esp_err_t esp_vfs_fat_info(const char *p, uint64_t *t, uint64_t *f) { return ESP_OK; }
@@ -316,6 +324,22 @@ LS_CASE(case_rename_and_depth_limit) {
 LS_CASE(options_child_back_and_steppers) {
     reset(); more_open(); LS_EQ_INT(s_menu_n, 8); option_step(0, 1); LS_EQ_INT(s_sort, SORT_OLDEST);
     more_done(5); LS_CHECK(picker_parent == more_open); picker_parent(); LS_EQ_INT(s_menu_n, 8);
+}
+LS_CASE(wav_plays_copies_and_moves_to_music) {
+    reset(); strcpy(s_path, ROOT "/lakeshark/calls/20261007");
+    strcpy(entries[0].d_name, "120000_42.wav"); strcpy(entries[1].d_name, "120000_42.wav.meta");
+    strcpy(entries[2].d_name, "120000_42.wav.keep"); entry_count = 3;
+    s_sort = SORT_NAME; load_all(); LS_EQ_STR(selected_name(), "120000_42.wav");
+    played[0] = 0; open_selected(); LS_EQ_STR(played, ROOT "/lakeshark/calls/20261007/120000_42.wav");
+    actions_open(); LS_EQ_INT(s_menu_n, 6); LS_EQ_INT(s_menu[0], 'P'); LS_EQ_INT(s_menu[1], 'C'); LS_EQ_INT(s_menu[2], 'M');
+    copy_to_music(); LS_EQ_INT(s_job, JOB_COPY); drain();
+    LS_EQ_STR(copied, ROOT "/music/120000_42.wav"); LS_EQ_STR(s_feedback, "Copied to MUSIC");
+    /* The stub finds every name, so the move steps past it to -1. */
+    unlinks = 0; move_to_music(); LS_EQ_INT(rename_calls, 1); LS_EQ_STR(renamed_to, ROOT "/music/120000_42-1.wav");
+    LS_EQ_INT(unlinks, 2); LS_EQ_STR(deleted, ROOT "/lakeshark/calls/20261007/120000_42.wav.meta");
+    strcpy(s_open_path, ROOT "/music/120000_42.wav"); s_view = VIEW_SUB;
+    actions_open(); LS_EQ_INT(s_menu_n, 4); LS_EQ_INT(s_menu[0], 'P');
+    rename_calls = 0; move_to_music(); LS_EQ_INT(rename_calls, 0); LS_EQ_STR(s_feedback, "Already in MUSIC");
 }
 LS_CASE(card_jobs_are_bounded_and_copy_cancel_removes_only_new_file) {
     reset(); entry_count = 30;

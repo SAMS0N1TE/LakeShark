@@ -477,12 +477,24 @@ static volatile bool    s_rec_busy = false;      /* a recording from command to 
    changes, at most every REC_IMAGE_US, as run-length pixels; the glass marks
    that let cells show over it go with every frame that has a picture. Both
    are copied by the TUI task with the cells, while the sender is idle. */
-#define REC_IMAGE_US   250000
+#define REC_IMAGE_US   66000
 #define REC_IMAGE_RUNS 60000        /* a picture that codes to more runs than this is not sent */
+/* A whole picture after this many strips, so a lost strip cannot last. A
+   full waterfall is ~190 KB, a second of the line: often enough to recover,
+   rare enough not to stall the take. */
+#define REC_IMAGE_FULL_EVERY 600
 static uint16_t        *s_rec_img = nullptr;     /* PSRAM copy */
 static size_t           s_rec_img_cap;
 static tui_rect         s_rec_img_rect;
 static int              s_rec_img_w, s_rec_img_h;
+static int              s_rec_img_x0, s_rec_img_y0;   /* where the ring started, at capture */
+/* The picture as last sent: a waterfall that has only scrolled since goes
+   as the shift and its new strip, not the whole picture again. */
+static uint16_t        *s_rec_sent = nullptr;
+static size_t           s_rec_sent_cap;
+static tui_rect         s_rec_sent_rect;
+static int              s_rec_sent_w, s_rec_sent_h, s_rec_sent_x0, s_rec_sent_y0, s_rec_sent_left;
+static bool             s_rec_sent_ok;
 static const uint16_t  *s_rec_img_src;
 static uint32_t         s_rec_img_serial;
 static bool             s_rec_img_on, s_rec_img_new;
@@ -552,11 +564,101 @@ static void rec_out(const char *buf, size_t n)
 }
 static const char REC_HEX[] = "0123456789abcdef";
 
+/* "~P" lines of runs over a block of the picture, row by row: six hex
+   digits a run (count 1-255, then the RGB565 value). */
+static void rec_send_runs(char *chunk, size_t chunk_cap, int x0, int y0, int w, int h)
+{
+    size_t n = 3;
+    memcpy(chunk, "~P ", 3);
+    const size_t total = (size_t)w * h;
+    auto at = [&](size_t i) { return s_rec_img[(size_t)(y0 + i / w) * s_rec_img_w + x0 + i % w]; };
+    for (size_t i = 0; i < total;) {
+        const uint16_t v = at(i);
+        size_t k = i + 1;
+        while (k < total && k - i < 255 && at(k) == v) k++;
+        const unsigned cnt = (unsigned)(k - i);
+        chunk[n++] = REC_HEX[cnt >> 4];       chunk[n++] = REC_HEX[cnt & 15];
+        chunk[n++] = REC_HEX[(v >> 12) & 15]; chunk[n++] = REC_HEX[(v >> 8) & 15];
+        chunk[n++] = REC_HEX[(v >> 4) & 15];  chunk[n++] = REC_HEX[v & 15];
+        i = k;
+        if (n + 16 > chunk_cap || i == total) {
+            chunk[n++] = '\n';
+            rec_out(chunk, n);
+            n = 0;
+            if (i < total) { memcpy(chunk, "~P ", 3); n = 3; }
+        }
+    }
+}
+
+/* A waterfall moves its ring and adds lines at one edge. When the picture
+   now is the one last sent, moved by exactly that, only the new strip goes:
+   "~H <columns>" (positive: moved left, new columns at the right; negative:
+   moved right) or "~V <rows>" likewise, then its runs. Checked row by row,
+   so a change of colours or a redraw goes whole. */
+static bool rec_send_strip(char *chunk, size_t chunk_cap)
+{
+    const int w = s_rec_img_w, h = s_rec_img_h;
+    if (!s_rec_sent_ok || s_rec_sent_left <= 0 || w != s_rec_sent_w || h != s_rec_sent_h ||
+        memcmp(&s_rec_img_rect, &s_rec_sent_rect, sizeof(tui_rect)))
+        return false;
+    const int dx = ((s_rec_img_x0 - s_rec_sent_x0) % w + w) % w, dy = ((s_rec_img_y0 - s_rec_sent_y0) % h + h) % h;
+    if ((dx != 0) == (dy != 0)) return false;           /* no move, or both: send it whole */
+    const uint16_t *now = s_rec_img, *was = s_rec_sent;
+    char head[24];
+    if (dx) {
+        for (int pass = 0; pass < 2; pass++) {
+            const int s = pass ? w - dx : dx;            /* left by dx, or right by w - dx */
+            bool same = true;
+            for (int y = 0; y < h && same; y++) {
+                const uint16_t *a = now + (size_t)y * w, *b = was + (size_t)y * w;
+                same = pass ? !memcmp(a + s, b, (size_t)(w - s) * 2) : !memcmp(a, b + s, (size_t)(w - s) * 2);
+            }
+            if (!same) continue;
+            rec_out(head, (size_t)snprintf(head, sizeof(head), "~H %d\n", pass ? -s : s));
+            rec_send_runs(chunk, chunk_cap, pass ? 0 : w - s, 0, s, h);
+            return true;
+        }
+    } else {
+        for (int pass = 0; pass < 2; pass++) {
+            const int s = pass ? h - dy : dy;
+            const bool same = pass ? !memcmp(now + (size_t)s * w, was, (size_t)(h - s) * w * 2)
+                                   : !memcmp(now, was + (size_t)s * w, (size_t)(h - s) * w * 2);
+            if (!same) continue;
+            rec_out(head, (size_t)snprintf(head, sizeof(head), "~V %d\n", pass ? -s : s));
+            rec_send_runs(chunk, chunk_cap, 0, pass ? 0 : h - s, w, s);
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Remember what went, for the next strip. */
+static void rec_keep_sent(void)
+{
+    const size_t bytes = (size_t)s_rec_img_w * s_rec_img_h * sizeof(uint16_t);
+    if (bytes > s_rec_sent_cap) {
+        heap_caps_free(s_rec_sent);
+        s_rec_sent = (uint16_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+        s_rec_sent_cap = s_rec_sent ? bytes : 0;
+    }
+    s_rec_sent_ok = s_rec_sent != nullptr;
+    if (!s_rec_sent_ok) return;
+    memcpy(s_rec_sent, s_rec_img, bytes);
+    s_rec_sent_rect = s_rec_img_rect;
+    s_rec_sent_w = s_rec_img_w; s_rec_sent_h = s_rec_img_h;
+    s_rec_sent_x0 = s_rec_img_x0; s_rec_sent_y0 = s_rec_img_y0;
+}
+
 /* The picture as "~I <x> <y> <w> <h> <pixels wide> <high>" and lines of
-   "~P" runs, six hex digits a run (count 1-255, then the RGB565 value), or
-   "~N" when there is none or it is too busy to send. */
+   "~P" runs, or a strip after "~H"/"~V" when it has only scrolled, or "~N"
+   when there is none or it is too busy to send. */
 static void rec_send_image(char *chunk, size_t chunk_cap)
 {
+    if (s_rec_img_on && rec_send_strip(chunk, chunk_cap)) {
+        s_rec_sent_left--;
+        rec_keep_sent();
+        return;
+    }
     const size_t px = (size_t)s_rec_img_w * s_rec_img_h;
     size_t runs = 0;
     if (s_rec_img_on)
@@ -565,24 +667,13 @@ static void rec_send_image(char *chunk, size_t chunk_cap)
             while (k < px && k - i < 255 && s_rec_img[k] == s_rec_img[i]) k++;
             i = k;
         }
-    if (!s_rec_img_on || runs > REC_IMAGE_RUNS) { rec_out("~N\n", 3); return; }
-    size_t n = (size_t)snprintf(chunk, 64, "~I %d %d %d %d %d %d\n~P ", s_rec_img_rect.x, s_rec_img_rect.y,
-                                s_rec_img_rect.w, s_rec_img_rect.h, s_rec_img_w, s_rec_img_h);
-    for (size_t i = 0; i < px;) {
-        size_t k = i + 1;
-        while (k < px && k - i < 255 && s_rec_img[k] == s_rec_img[i]) k++;
-        const unsigned cnt = (unsigned)(k - i), v = s_rec_img[i];
-        chunk[n++] = REC_HEX[cnt >> 4];       chunk[n++] = REC_HEX[cnt & 15];
-        chunk[n++] = REC_HEX[(v >> 12) & 15]; chunk[n++] = REC_HEX[(v >> 8) & 15];
-        chunk[n++] = REC_HEX[(v >> 4) & 15];  chunk[n++] = REC_HEX[v & 15];
-        i = k;
-        if (n + 16 > chunk_cap || i == px) {
-            chunk[n++] = '\n';
-            rec_out(chunk, n);
-            n = 0;
-            if (i < px) { memcpy(chunk, "~P ", 3); n = 3; }
-        }
-    }
+    if (!s_rec_img_on || runs > REC_IMAGE_RUNS) { s_rec_sent_ok = false; rec_out("~N\n", 3); return; }
+    char head[64];
+    rec_out(head, (size_t)snprintf(head, sizeof(head), "~I %d %d %d %d %d %d\n", s_rec_img_rect.x, s_rec_img_rect.y,
+                                   s_rec_img_rect.w, s_rec_img_rect.h, s_rec_img_w, s_rec_img_h));
+    rec_send_runs(chunk, chunk_cap, 0, 0, s_rec_img_w, s_rec_img_h);
+    s_rec_sent_left = REC_IMAGE_FULL_EVERY;
+    rec_keep_sent();
 }
 
 static void tui_rec_run(void)
@@ -670,6 +761,7 @@ static void tui_rec_run(void)
     heap_caps_free(s_rec_glass); s_rec_glass = nullptr;
     heap_caps_free(s_rec_glass_last); s_rec_glass_last = nullptr;
     heap_caps_free(s_rec_img); s_rec_img = nullptr; s_rec_img_cap = 0;
+    heap_caps_free(s_rec_sent); s_rec_sent = nullptr; s_rec_sent_cap = 0; s_rec_sent_ok = false;
     s_rec_busy = false;
 }
 
@@ -724,6 +816,7 @@ static int tui_rec_cmd(int argc, char **argv)
     s_rec_img_new = true;
     s_rec_img_src = nullptr;
     s_rec_img_us = 0;
+    s_rec_sent_ok = false;
     if (!s_rec_task) {
         /* Control block in TCM, which DMA cannot use, so the recorder takes
            nothing from the DMA memory the radios' SPI transfers need. */
@@ -1490,6 +1583,7 @@ static bool tui_session(void)
                             }
                             s_rec_img_rect = ir;
                             s_rec_img_w = iw; s_rec_img_h = ih;
+                            s_rec_img_x0 = rx0; s_rec_img_y0 = ry0;
                             s_rec_img_src = isrc; s_rec_img_serial = iser;
                         }
                         s_rec_img_new = true;

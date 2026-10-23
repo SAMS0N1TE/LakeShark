@@ -1376,9 +1376,10 @@ int main(int argc, char **argv)
     if (splash) {
         int cols, rows;
         ls_tui_geometry(&cols, &rows, NULL, NULL);
-        /* LSSIM_SPLASH_FRAME=N draws frame N of 93, the board's count. */
-        const char *at = getenv("LSSIM_SPLASH_FRAME");
-        ls_splash_set_caption("2.17.0-g0000000");
+        /* LSSIM_SPLASH_FRAME=N draws frame N of 93, the board's count;
+           LSSIM_SPLASH_CAPTION is the version line under it. */
+        const char *at = getenv("LSSIM_SPLASH_FRAME"), *caption = getenv("LSSIM_SPLASH_CAPTION");
+        ls_splash_set_caption(caption ? caption : "2.17.1-g0000000");
         ls_splash_draw(ls_tui_surface(), cols, rows, at ? atoi(at) : 93, 93);
         ls_tui_present();capture_frame();
     }

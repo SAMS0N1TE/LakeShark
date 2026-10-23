@@ -1,5 +1,32 @@
 # LakeShark release notes
 
+## 2.17.1
+
+- FILES: WAV recordings play with a tap, including P25 calls.
+- FILES: ACTIONS has PLAY, COPY TO MUSIC and MOVE TO MUSIC.
+- MUSIC: FM and P25 receive again after leaving MUSIC, without a reboot.
+
+From 2.17.0:
+
+- Terminal: the whole interface in a terminal on your computer. Over USB with `lsterm.py`, or over Wi-Fi with `term net on` and a password (plain telnet works too).
+- lsterm: the screen in a frame with a side panel. CONTROL for snapshots, recordings, screen off, mute, volume, brightness, theme and rotate. CONSOLE with completion and history. FILES for the SD card. HELP for the open app.
+- ESP32-P4-NANO: runs the full interface with no display attached; the terminal is its screen. `panel term 160x40` sets its size.
+- Boot: the Terminal Bay globe from the first second, with a progress line that follows each startup stage. The home screen arrives sooner.
+- Boot: a new radio chirp at power on.
+- MAP: a full colour picture view with shaded relief, rivers, lakes and place names.
+- MAP: HIDE next to SELECT clears the screen for the map; SHOW brings the controls back.
+- MAP: opens the most detailed map under you and stays where you put it when you pan or zoom.
+- TILES: download whole states from a globe.
+- Scanner: one tap starts FM and P25 scanning, with LIST, BAND and GPS lanes.
+- P25: GPS sites follow you to the nearest site.
+- DRONES: a receive-only early warning app.
+- Ukrainian interface.
+- Notification sounds: RADIO KEY, ROGER and CHIRP, chosen in Settings > Sound.
+- Hotspot: each board has its own password, shown in Settings > Device > Hotspot.
+- COMPASS: the heading follows the edge that is up on screen.
+- SWEEP: SELECT DEVICE steps through devices and names each one.
+- Smaller firmware, with more room for apps.
+
 ## 2.17.0
 
 - Terminal: the whole interface in a terminal on your computer. Over USB with `lsterm.py`, or over Wi-Fi with `term net on` and a password (plain telnet works too).

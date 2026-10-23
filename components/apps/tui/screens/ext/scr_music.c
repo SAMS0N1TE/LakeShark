@@ -75,6 +75,14 @@ static tui_rect rows_rect, progress_rect;
 static bool ready, library;
 static int selected, current = -1, top, source, focus = -1, row_height = 3,
                      visible_rows;
+/* A file FILES handed over, and the name of the one playing from outside
+   the music folder: a P25 call, a recording somewhere else on the card. */
+EXT_RAM_BSS_ATTR static char handed[416], outside[416];
+static bool on_track(void) { return current >= 0 || outside[0]; }
+static const char *outside_name(void) {
+  const char *slash = strrchr(outside, '/');
+  return slash ? slash + 1 : outside;
+}
 /* Kept across visits and rotations: the panel is a preference. */
 static int view = VIEW_LEVEL, palette, span_step;
 static unsigned frame;
@@ -107,6 +115,7 @@ static void volume_to_step(int direction) { ls_media_volume_step(direction); }
 static void start(int index) {
   if (ready && ls_music_play(index)) {
     selected = current = index;
+    outside[0] = 0;
     library = false;
     focus = -1;
   }
@@ -229,8 +238,10 @@ static void act(int id) {
     start(ls_music_step(selected, ls_music_count(), 1));
     break;
   case PLAY:
-    if (current >= 0 && ls_music_state() != LS_MUSIC_STOPPED)
+    if (on_track() && ls_music_state() != LS_MUSIC_STOPPED)
       ls_music_toggle();
+    else if (outside[0])
+      ls_music_play_path(outside);
     else
       start(selected);
     break;
@@ -247,6 +258,7 @@ static void act(int id) {
     mic_stopped();
     ls_music_stop();
     current=-1;
+    outside[0]=0;
     break;
   case REPAIR:
     if(ls_music_mic_repair())select_recording();
@@ -319,22 +331,55 @@ static void act(int id) {
     break;
   }
 }
+/* Play what FILES handed over. In the SD music folder it is that row of the
+   list, so NEXT and PREV go on from it; anywhere else it plays on its own. */
+static void play_handed(void) {
+  char path[sizeof(handed)];
+  snprintf(path, sizeof(path), "%s", handed);
+  handed[0] = 0;
+  if (!ready || !path[0])
+    return;
+  const char *slash = strrchr(path, '/'), *name = slash ? slash + 1 : path;
+  static const char music[] = "/sdcard/music";
+  if (slash && (size_t)(slash - path) == sizeof(music) - 1 &&
+      !strncmp(path, music, sizeof(music) - 1)) {
+    if (source != 0 && ls_music_scan(0))
+      source = 0;
+    for (int i = 0; source == 0 && i < ls_music_count(); i++)
+      if (!strcmp(ls_music_name(i), name)) {
+        start(i);
+        return;
+      }
+  }
+  if (ls_music_play_path(path)) {
+    snprintf(outside, sizeof(outside), "%s", path);
+    current = -1;
+    library = false;
+    focus = -1;
+  }
+}
 static void enter(void) {
   selected = top = 0;
   current = -1;
+  outside[0] = 0;
   focus = -1;
   library = false;
   frame = 0;
+  /* The player parks the radio. Say so, or the receiver stays parked when
+     FM or P25 is next shown: it asks for what it believes is still on. */
+  ls_tui_radio_want(NULL);
   ls_audio_view_open();
   ready = ls_music_open();
   if (ready)
     ls_music_scan(source);
+  play_handed();
 }
 static void leave(void) {
   ls_music_close();
   ls_audio_view_close();
   ready = false;
   current = -1;
+  outside[0] = 0;
 }
 
 /* Writes text at *x and moves *x past it: for lines in several colours. */
@@ -650,12 +695,12 @@ static void panel(tui_surface *sf, tui_rect p, bool playing, bool boxed) {
 
 static void title_text(char *text, size_t n, const char **artist,
                        const char **song) {
-  snprintf(text, n, "%s", ls_music_name(current >= 0 ? current : selected));
+  snprintf(text, n, "%s", outside[0] ? outside_name() : ls_music_name(current >= 0 ? current : selected));
   char *dot = strrchr(text, '.');
   if (dot)
     *dot = 0;
   char *split = strstr(text, " - ");
-  *artist = "SD MUSIC";
+  *artist = outside[0] ? "FROM FILES" : "SD MUSIC";
   *song = text;
   if (split) {
     *split = 0;
@@ -726,7 +771,7 @@ static void info_boxed(tui_surface *sf, tui_rect r, bool playing) {
   char title[24];
   snprintf(title, sizeof(title), " %s ", state_name(playing));
   ls_panel_box(sf, box, title, hue);
-  int count = ls_music_count();
+  int count = outside[0] ? 0 : ls_music_count();
   if (count > 0) {
     char n[32];
     int len = snprintf(n, sizeof(n), " TRACK %d/%d ",
@@ -758,8 +803,8 @@ static void info_boxed(tui_surface *sf, tui_rect r, bool playing) {
     tui_put_str(sf, text, tx, text.y, artist, cyan);
     tui_put_str(sf, text, tx, text.y + 1, *song ? scrolled(song, tw) : "Choose a track",
                 TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
-    elapsed = current >= 0 ? ls_music_position_ms() / 1000 : 0;
-    total = current >= 0 ? ls_music_duration_ms() / 1000 : 0;
+    elapsed = on_track() ? ls_music_position_ms() / 1000 : 0;
+    total = on_track() ? ls_music_duration_ms() / 1000 : 0;
   }
   format_line(sf, text, tx, text.y + 2);
   if (*error)
@@ -815,8 +860,8 @@ static void info_flat(tui_surface *sf, tui_rect r, bool playing) {
     ls_safe_line(sf, r, r.y + 3, artist, cyan);
     ls_safe_line(sf, r, r.y + 4, *song ? scrolled(song, r.w - 2) : "Choose a track",
                  TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
-    elapsed = current >= 0 ? ls_music_position_ms() / 1000 : 0;
-    total = current >= 0 ? ls_music_duration_ms() / 1000 : 0;
+    elapsed = on_track() ? ls_music_position_ms() / 1000 : 0;
+    total = on_track() ? ls_music_duration_ms() / 1000 : 0;
   }
   if (*error)
     ls_safe_line(sf, r, r.y + 5, error, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
@@ -830,7 +875,7 @@ static void info_flat(tui_surface *sf, tui_rect r, bool playing) {
     ls_safe_line(sf, r, r.y + 6, clock, white);
   } else
     ls_media_clock(sf, progress_rect, elapsed * 1000, total * 1000);
-  int count = ls_music_count();
+  int count = outside[0] ? 0 : ls_music_count();
   if (count > 0) {
     char n[32];
     int len = snprintf(n, sizeof(n), "TRACK %d/%d",
@@ -1125,7 +1170,7 @@ static bool touch(int x, int y) {
       act(i);
       return true;
     }
-  if (!library && current>=0 && y==progress_rect.y+1 && x>=progress_rect.x+2 && x<progress_rect.x+progress_rect.w-2) {
+  if (!library && on_track() && y==progress_rect.y+1 && x>=progress_rect.x+2 && x<progress_rect.x+progress_rect.w-2) {
     if(ls_music_seek_ms((uint64_t)(x-progress_rect.x-2)*ls_music_duration_ms()/(progress_rect.w-4)))ls_audio_view_reset();
     return true;
   }
@@ -1148,3 +1193,16 @@ const ls_tui_screen_t ls_scr_music = {
     .draw = draw,
     .key = key,
     .touch = touch};
+
+/* FILES' PLAY: open the player on a WAV wherever it is on the card. */
+bool ls_scr_music_play_file(const char *path) {
+  const int index = ls_tui_screen_index_of(&ls_scr_music);
+  if (index < 0 || !path || strlen(path) >= sizeof(handed))
+    return false;
+  snprintf(handed, sizeof(handed), "%s", path);
+  if (ls_tui_screen_current() == index)
+    play_handed();
+  else
+    ls_tui_screen_show(index);
+  return true;
+}

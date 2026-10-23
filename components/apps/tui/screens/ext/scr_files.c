@@ -83,7 +83,9 @@ typedef enum { JOB_NONE, JOB_DIR, JOB_SUB, JOB_COPY } job_t;
 static job_t s_job;
 static DIR *s_dir;
 static FILE *s_in, *s_out;
-static EXT_RAM_BSS_ATTR char s_copy_path[PATH_MAX_LEN];
+static EXT_RAM_BSS_ATTR char s_copy_path[PATH_MAX_LEN], s_copy_dir[PATH_MAX_LEN];
+static const char *s_copy_note;
+static unsigned long s_copy_limit;
 static char s_keep[256];
 static unsigned long s_job_bytes;
 static bool s_replay_menu;
@@ -94,6 +96,8 @@ static void job_step(void);
 
 static const char *ext_of(const char *name);
 static bool is_text(const char *name);
+static bool is_audio(const char *name);
+static void play_audio(void);
 
 /* A shortened path must never address a different entry on the card. */
 static bool join_path(char *out, size_t len, const char *dir, const char *name)
@@ -327,6 +331,7 @@ static void open_selected(void)
         return;
     }
     if (is_text(e->name)) { open_text(); return; }
+    if (is_audio(e->name)) { play_audio(); return; }
     char sz[16];
     size_text(e->size, sz, sizeof(sz));
     snprintf(s_feedback, sizeof(s_feedback), "%s, %s - no viewer for .%s", e->name, sz, ext_of(e->name));
@@ -338,6 +343,23 @@ static const char *open_name(void)
 {
     const char *slash = strrchr(s_open_path, '/');
     return slash ? slash + 1 : s_open_path;
+}
+
+/* Copy the open file to `to`, a block at a time from job_step. A name taken
+   there already gets -1, -2, ... rather than being written over. */
+static void copy_begin(const char *dir, const char *to, unsigned long limit, const char *note)
+{
+    FILE *in = fopen(s_open_path, "rb");
+    if (!in) { snprintf(s_feedback, sizeof(s_feedback), "Could not read the file"); return; }
+    s_in = in;
+    s_out = NULL;
+    s_copy_suffix = 0;
+    snprintf(s_copy_dir, sizeof(s_copy_dir), "%s", dir);
+    snprintf(s_copy_path, sizeof(s_copy_path), "%s", to);
+    s_copy_limit = limit;
+    s_copy_note = note;
+    s_job_bytes = 0;
+    s_job = JOB_COPY;
 }
 
 /* The Flipper's LakeShark app lists the REC folder and pulls a file from it
@@ -359,14 +381,87 @@ static void send_to_flipper(void)
     if (stat(s_open_path, &st) != 0 || st.st_size > JOB_MAX_BYTES) {
         snprintf(s_feedback, sizeof(s_feedback), "Copy too large or unreadable (limit 1 MB)"); return;
     }
-    FILE *in = fopen(s_open_path, "rb");
-    if (!in) { snprintf(s_feedback, sizeof(s_feedback), "Could not read the file"); return; }
-    s_in = in;
-    s_out = NULL;
-    s_copy_suffix = 0;
-    snprintf(s_copy_path, sizeof(s_copy_path), "%s", to);
-    s_job_bytes = 0;
-    s_job = JOB_COPY;
+    copy_begin(dir, to, JOB_MAX_BYTES, "Copied. On the Flipper: LakeShark > FILES");
+}
+
+/* ---------------------------------------------------------------- music */
+
+/* The SD folder MUSIC lists. A P25 or FM call, a mic recording kept
+   somewhere else: PLAY opens it in the player where it is; COPY and MOVE put
+   it in the list for good. */
+#define MUSIC_DIR ROOT "/music"
+#define MUSIC_MAX_BYTES (512UL * 1024 * 1024)
+extern bool ls_scr_music_play_file(const char *path);
+extern bool ls_media_supported_extension(const char *name);   /* media_playlist.h */
+
+static bool is_audio(const char *name) { return ls_media_supported_extension(name); }
+static bool in_music(void)
+{
+    const char *slash = strrchr(s_open_path, '/');
+    return slash && (size_t)(slash - s_open_path) == strlen(MUSIC_DIR) &&
+           !strncmp(s_open_path, MUSIC_DIR, strlen(MUSIC_DIR));
+}
+static bool music_dir_ready(void)
+{
+    struct stat st;
+    if (stat(MUSIC_DIR, &st) == 0 && S_ISDIR(st.st_mode)) return true;
+    if (mkdir(MUSIC_DIR, 0777) == 0) return true;
+    snprintf(s_feedback, sizeof(s_feedback), "Could not make %s", MUSIC_DIR);
+    return false;
+}
+static void play_audio(void)
+{
+    if (!ls_scr_music_play_file(s_open_path))
+        snprintf(s_feedback, sizeof(s_feedback), "MUSIC is not on this build");
+}
+static void copy_to_music(void)
+{
+    if (in_music()) { snprintf(s_feedback, sizeof(s_feedback), "Already in MUSIC"); return; }
+    struct stat st;
+    if (stat(s_open_path, &st) != 0 || (unsigned long)st.st_size > MUSIC_MAX_BYTES) {
+        snprintf(s_feedback, sizeof(s_feedback), "Too large or unreadable (limit 512 MB)"); return;
+    }
+    uint64_t total = 0, free_b = 0;
+    if (esp_vfs_fat_info(ROOT, &total, &free_b) == ESP_OK && free_b && free_b < (uint64_t)st.st_size + 65536) {
+        snprintf(s_feedback, sizeof(s_feedback), "Not enough card space for a copy"); return;
+    }
+    if (!music_dir_ready()) return;
+    char to[PATH_MAX_LEN];
+    if (!join_path(to, sizeof(to), MUSIC_DIR, open_name())) return;
+    copy_begin(MUSIC_DIR, to, MUSIC_MAX_BYTES, "Copied to MUSIC");
+}
+/* A rename on the same card: instant, whatever the size. A call's .meta and
+   .keep belong to the call list, which no longer has the call, so they go. */
+static void move_to_music(void)
+{
+    if (in_music()) { snprintf(s_feedback, sizeof(s_feedback), "Already in MUSIC"); return; }
+    if (!music_dir_ready()) return;
+    const char *base = open_name(), *dot = strrchr(base, '.');
+    const int stem = dot ? (int)(dot - base) : (int)strlen(base);
+    char to[PATH_MAX_LEN];
+    struct stat st;
+    int suffix;
+    for (suffix = 0; suffix < 1000; suffix++) {
+        char name[256];
+        const int n = suffix ? snprintf(name, sizeof(name), "%.*s-%d%s", stem, base, suffix, dot ? dot : "")
+                             : snprintf(name, sizeof(name), "%s", base);
+        if (n < 0 || (size_t)n >= sizeof(name) || !join_path(to, sizeof(to), MUSIC_DIR, name)) {
+            snprintf(s_feedback, sizeof(s_feedback), "Name too long for MUSIC"); return;
+        }
+        if (stat(to, &st) != 0 && errno == ENOENT) break;
+    }
+    if (suffix == 1000) { snprintf(s_feedback, sizeof(s_feedback), "No free name in MUSIC"); return; }
+    if (rename(s_open_path, to) != 0) { snprintf(s_feedback, sizeof(s_feedback), "Move failed (%d)", errno); return; }
+    static const char *const SIDECARS[] = {".keep", ".meta"};
+    for (unsigned i = 0; i < sizeof(SIDECARS) / sizeof(SIDECARS[0]); i++) {
+        char side[PATH_MAX_LEN + 8];
+        snprintf(side, sizeof(side), "%s%s", s_open_path, SIDECARS[i]);
+        if (stat(side, &st) == 0) unlink(side);
+    }
+    const char *slash = strrchr(to, '/');
+    snprintf(s_feedback, sizeof(s_feedback), "Moved to MUSIC: %.60s", slash ? slash + 1 : to);
+    s_view = VIEW_LIST;
+    load_dir();
 }
 
 static void replay_open(void)
@@ -483,6 +578,9 @@ static void actions_done(int i)
     case 'F': send_to_flipper(); break;
     case 'R': replay_open(); break;
     case 'T': open_text(); break;
+    case 'P': play_audio(); break;
+    case 'C': copy_to_music(); break;
+    case 'M': move_to_music(); break;
     case 'I': info_open(); break;
     case 'N':
         snprintf(s_rename_from, sizeof(s_rename_from), "%s", s_open_path);
@@ -535,6 +633,13 @@ static void actions_open(void)
                 (size_t)s_sub.edges_total, s_sub.span_us);
             menu_add('.', why ? "REPLAY REFUSED" : "REPLAY UNAVAILABLE",
                      why ? why : "Incomplete or unsupported RAW/modulation");
+        }
+    }
+    if (!dir && is_audio(open_name())) {
+        menu_add('P', "PLAY", "Open it in MUSIC, from here");
+        if (!in_music()) {
+            menu_add('C', "COPY TO MUSIC", "A copy in the MUSIC track list");
+            menu_add('M', "MOVE TO MUSIC", "Take it out of here, into MUSIC");
         }
     }
     if (!dir && is_text(open_name()) && s_view != VIEW_TEXT) menu_add('T', "VIEW AS TEXT", "The file as written");
@@ -726,7 +831,7 @@ static void job_step(void)
                     const char *base = open_name(), *dot = strrchr(base, '.');
                     const int stem = dot ? (int)(dot - base) : (int)strlen(base);
                     const int n = snprintf(name, sizeof(name), "%.*s-%d%s", stem, base, s_copy_suffix, dot ? dot : "");
-                    if (n < 0 || (size_t)n >= sizeof(name) || !join_path(s_copy_path, sizeof(s_copy_path), rec_dir(), name)) {
+                    if (n < 0 || (size_t)n >= sizeof(name) || !join_path(s_copy_path, sizeof(s_copy_path), s_copy_dir, name)) {
                         job_cancel(); snprintf(s_feedback, sizeof(s_feedback), "Copy name too long"); return;
                     }
                 }
@@ -735,21 +840,24 @@ static void job_step(void)
                 if (s_out) break;
                 if (errno != EEXIST) { job_cancel(); snprintf(s_feedback, sizeof(s_feedback), "Could not create copy"); return; }
             }
-            if (!s_out) {
-                if (s_copy_suffix > 999) { job_cancel(); snprintf(s_feedback, sizeof(s_feedback), "No free copy name"); }
+            if (!s_out && s_copy_suffix > 999) { job_cancel(); snprintf(s_feedback, sizeof(s_feedback), "No free copy name"); }
+            return;     /* the name is reserved; the copy starts next frame */
+        }
+        /* A few blocks a frame: a song is megabytes, and input still gets a
+           turn between them. */
+        for (int block = 0; block < 8; block++) {
+            const size_t n = fread(s_line, 1, sizeof(s_line), s_in);
+            s_job_bytes += n;
+            if (ferror(s_in) || s_job_bytes > s_copy_limit || (n && fwrite(s_line, 1, n, s_out) != n)) {
+                job_cancel(); snprintf(s_feedback, sizeof(s_feedback), "Copy failed"); return;
+            }
+            if (!n) {
+                fclose(s_in); s_in = NULL;
+                const bool ok = fclose(s_out) == 0; s_out = NULL; s_job = JOB_NONE;
+                if (!ok) unlink(s_copy_path);
+                snprintf(s_feedback, sizeof(s_feedback), "%s", ok ? s_copy_note : "Copy failed");
                 return;
             }
-        }
-        const size_t n = fread(s_line, 1, sizeof(s_line), s_in);
-        s_job_bytes += n;
-        if (ferror(s_in) || s_job_bytes > JOB_MAX_BYTES || (n && fwrite(s_line, 1, n, s_out) != n)) {
-            job_cancel(); snprintf(s_feedback, sizeof(s_feedback), "Copy failed"); return;
-        }
-        if (!n) {
-            fclose(s_in); s_in = NULL;
-            const bool ok = fclose(s_out) == 0; s_out = NULL; s_job = JOB_NONE;
-            if (!ok) unlink(s_copy_path);
-            snprintf(s_feedback, sizeof(s_feedback), "%s", ok ? "Copied. On the Flipper: LakeShark > FILES" : "Copy failed");
         }
     }
 }
@@ -1022,7 +1130,8 @@ static void draw(tui_surface *sf, tui_rect a)
     const bool sel_file = list && s_selected < s_count && !s_entry[s_selected].dir;
     ls_btn_t btn[] = {
         {list && at_root() ? "BACK" : "UP", list ? "FOLDER" : "LIST", 'u', false, !can_go_up()},
-        {"OPEN", list && s_selected < s_count && s_entry[s_selected].dir ? "FOLDER" : "FILE", 'o', false,
+        {sel_file && is_audio(s_entry[s_selected].name) ? "PLAY" : "OPEN",
+         list && s_selected < s_count && s_entry[s_selected].dir ? "FOLDER" : "FILE", 'o', false,
          !list || s_selected >= s_count},
         {"ACTIONS", list && s_selected < s_count && s_entry[s_selected].dir ? "FOLDER" : "FILE", 'a',
          false, list && s_selected >= s_count},

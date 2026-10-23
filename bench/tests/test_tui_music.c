@@ -12,6 +12,7 @@
 #include <stdio.h>
 
 extern const ls_tui_screen_t ls_scr_music;
+bool ls_scr_music_play_file(const char *path);
 static bool wide;
 static int rounded_height;
 static int tracks=24, last_play=-1, volume=35, closes;
@@ -26,6 +27,13 @@ int ls_music_count(void){return tracks;}
 const char *ls_music_name(int i){static const char *names[]={"Night Dive.wav","Neon Reef.wav","Shark After Dark.wav","Coral Radio.wav"};return i==5?"REC-007.wav":i>=0&&i<tracks?names[i%4]:"";}
 const char *ls_music_error(void){return "";}
 bool ls_music_play(int i){if(i<0||i>=tracks)return false;last_play=i;state=LS_MUSIC_PLAYING;return true;}
+static char played_path[512];static int screen_now,screen_shows;
+bool ls_music_play_path(const char *p){snprintf(played_path,sizeof(played_path),"%s",p);state=LS_MUSIC_PLAYING;return true;}
+int ls_tui_screen_index_of(const ls_tui_screen_t *s){return s==&ls_scr_music?3:-1;}
+int ls_tui_screen_current(void){return screen_now;}
+void ls_tui_screen_show(int i){screen_shows++;if(i!=screen_now){screen_now=i;ls_scr_music.enter();}}
+static const char *radio_wanted="FM";static int radio_wants;
+void ls_tui_radio_want(const char *m){radio_wanted=m;radio_wants++;}
 bool ls_music_seek_ms(uint32_t ms){(void)ms;return true;}
 bool ls_music_toggle(void){state=state==LS_MUSIC_PLAYING?LS_MUSIC_PAUSED:LS_MUSIC_PLAYING;return true;}
 void ls_music_stop(void){state=LS_MUSIC_STOPPED;}
@@ -483,4 +491,26 @@ LS_CASE(waterfall_options_are_one_level_down){
         }
     }
     ls_scr_music.leave();
+}
+
+/* FILES hands over a WAV: one in the music folder is that row of the list,
+   one anywhere else plays on its own under its file name. */
+LS_CASE(files_hand_over_plays_inside_and_outside_the_list){
+    tui_cell back[100*26],front[100*26];tui_surface sf;tui_surface_setup(&sf,back,front,100,26);
+    screen_now=0;last_play=-1;played_path[0]=0;
+    LS_CHECK(ls_scr_music_play_file("/sdcard/music/Neon Reef.wav"));
+    LS_EQ_INT(screen_now,3);LS_EQ_INT(last_play,1);LS_EQ_STR(played_path,"");
+    LS_CHECK(ls_scr_music_play_file("/sdcard/lakeshark/calls/20261007/120000_42.wav"));
+    LS_EQ_STR(played_path,"/sdcard/lakeshark/calls/20261007/120000_42.wav");
+    paint(&sf,100,26);int x,y;LS_CHECK(locate(back,100,26,"120000_42",&x,&y));LS_CHECK(locate(back,100,26,"FROM",&x,&y));
+    ls_scr_music.key(LS_TK_CHAR,'s');LS_EQ_INT(state,LS_MUSIC_STOPPED);
+    ls_scr_music.leave();screen_now=0;
+}
+
+/* The player parks the radio, so it has to say it wants none: otherwise FM
+   or P25 shown next asks for what it believes is still running, and stays
+   deaf. */
+LS_CASE(opening_the_player_releases_the_receiver){
+    radio_wanted="FM";radio_wants=0;
+    ls_scr_music.enter();LS_CHECK(radio_wants>=1);LS_CHECK(radio_wanted==NULL);ls_scr_music.leave();
 }

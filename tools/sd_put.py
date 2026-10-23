@@ -5,12 +5,13 @@ P25 profile is text full of newlines. Verifies the byte count the board
 reports against what was sent, and lists the card afterwards - a transfer
 that says it worked and did not is worse than one that fails.
 """
-import sys, time, base64, serial
+import re, sys, time, base64, serial
 
 local = sys.argv[1]
 remote = sys.argv[2]
 port = sys.argv[3] if len(sys.argv) > 3 else "COM13"
-CHUNK = 96                      # base64 chars per line, well inside the console's limit
+# The console takes 256 characters a line; leave a margin under it.
+CHUNK = 248 - len("sd put %s " % remote)
 
 data = open(local, "rb").read()
 
@@ -40,7 +41,8 @@ time.sleep(0.5)
 s.reset_input_buffer()
 
 
-def send(cmd, wait=2.0):
+def send(cmd, wait=2.0, until=None):
+    """The reply to cmd; returns as soon as `until` matches it, if given."""
     s.write((cmd + "\r\n").encode())
     s.flush()
     end = time.time() + wait
@@ -49,7 +51,11 @@ def send(cmd, wait=2.0):
         n = s.in_waiting
         if n:
             buf += s.read(n)
+            if until and until.search(buf.decode("utf-8", "replace")):
+                break
             end = max(end, time.time() + 0.3)
+        else:
+            time.sleep(0.002)
     return buf.decode("utf-8", "replace")
 
 
@@ -63,16 +69,19 @@ b64 = base64.b64encode(data).decode()
 # the partial group at the boundary.
 step = (CHUNK // 4) * 4
 sent = 0
+# The reply line, not the echoed base64, which has its own '+' characters.
+done = re.compile(r"\+(\d+) bytes ->[^\n]*\n")
 for i in range(0, len(b64), step):
     piece = b64[i:i + step]
-    r = send("sd put %s %s" % (remote, piece), 3.0)
-    if "+" not in r or "bytes ->" not in r:
+    r = send("sd put %s %s" % (remote, piece), 3.0, done)
+    m = done.search(r)
+    if not m:
         print("  FAILED at offset %d: %s" % (i, r.strip()[-200:]))
         s.close()
         raise SystemExit(1)
-    got = int(r.split("+")[1].split(" ")[0])
-    sent += got
-    print("  %d/%d bytes" % (sent, len(data)), flush=True)
+    sent += int(m.group(1))
+    if i // step % 50 == 0 or i + step >= len(b64):
+        print("  %d/%d bytes" % (sent, len(data)), flush=True)
 
 print("\nsent %d bytes, file is %d bytes" % (sent, len(data)))
 print(send("sd ls", 4.0).strip()[-600:])

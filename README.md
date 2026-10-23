@@ -95,6 +95,7 @@ Touchscreen, GPS, motion sensing and an optional detachable MIX-RF keyboard.
 <img src="docs/screenshots/tdp4/motion/mesh-notice.gif" width="32%" alt="Mesh message notices" />
 <img src="docs/screenshots/tdp4/gallery-20261007/experiments-port.png" width="32%" alt="EXPERIMENTS" />
 <img src="docs/screenshots/tdp4/motion/night-theme.gif" width="32%" alt="Night theme" />
+<img src="docs/screenshots/tdp4/files-to-music-20261022.png" width="32%" alt="FILES sending a P25 call to MUSIC" />
 </p>
 
 ## Applications
@@ -143,7 +144,7 @@ Touchscreen, GPS, motion sensing and an optional detachable MIX-RF keyboard.
 | App | Features |
 | --- | --- |
 | **MUSIC** | WAV playback, VFD meters, octave bands, spectrum, a pixel waterfall that shows what is hidden in a recording, and mic recording |
-| **FILES** | Browse and sort the SD card, preview `.sub` files and play recordings |
+| **FILES** | Browse the SD card, preview `.sub` files, PLAY any WAV, or COPY or MOVE it to MUSIC |
 | **UPDATE** | One-tap signed updates over Wi-Fi, and C6 firmware from the SD card |
 | **SET** | Brightness, themes, fonts, sounds, speech, Ukrainian, hotspot password and daylight mode |
 | **RADIOS** | Radio power, antenna and Wi-Fi/Bluetooth startup |
