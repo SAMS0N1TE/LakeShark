@@ -592,6 +592,6 @@ LAP_ICON_PX("..f.................",
             ".....33......33.....",
             "...f................",
             "................f...");
-LAP_APP(.id = "carrier", .name = "CARRIER", .sub = "the sky's traffic, in space", .version = "0.2",
+LAP_APP(.id = "carrier", .name = "CARRIER", .sub = "the sky's traffic, in space", .version = "0.3",
         .author = "LakeShark", .icon = LAP_ICON_PLANE, .color = LAP_YELLOW, .radio = LAP_RADIO_ADSB,
         .enter = enter, .leave = leave, .draw = draw, .touch = touch, .key = key);

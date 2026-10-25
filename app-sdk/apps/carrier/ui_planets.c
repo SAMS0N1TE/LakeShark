@@ -139,13 +139,15 @@ void ui_planets_paint(void) {
     const game_view *v = game_state();
     const game_player *p = &v->player;
     const game_contents *o = &v->contents;
-    l3_vec f = l3_quat_rotate(p->attitude, l3v(0, 0, -1)), up = l3_quat_rotate(p->attitude, l3v(0, 1, 0));
+    /* through the camera the view was drawn from: the cockpit's, or the chase camera's
+       (from the ship's own nose, a chase view's worlds were looked for in the wrong place) */
+    l3_vec f = render_fwd, up = render_up;
     l3_vec rt = l3_cross(f, up);
     float fy = ui.fy, fx = ui.fx, inv = 1 / fy, invx = 1 / fx;
     float cx = ui.dw * .5f, cy = ui.dh * .5f;
     for (int i = 0; i < o->planet_count && i < 5; i++) {
         const game_planet *g = &o->planets[i];
-        l3_vec oc = l3_sub(p->position, g->position);
+        l3_vec oc = l3_sub(render_eye, g->position);
         l3_vec t = l3_scale(oc, -1);
         float z = l3_dot(t, f), dist = sqrtf(l3_dot(oc, oc));
         int x0, x1, y0, y1;
