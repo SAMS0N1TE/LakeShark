@@ -34,6 +34,9 @@ Turn the [LILYGO T-Display P4](https://lilygo.cc/en-us/products/t-display-p4) in
 
 Apps from the SD card · App store with one-click installs · Live screen and files in the browser · Faster MAP picture
 
+<img width="48%" alt="CARRIER, an early access space game" src="docs/screenshots/apps/carrier-showcase.gif">
+<img width="48%" alt="DICE, an example app" src="docs/screenshots/apps/dice-showcase.gif">
+
 [Release notes](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.18.0) &nbsp;•&nbsp;
 [All releases](https://github.com/SAMS0N1TE/LakeShark/releases)
 
