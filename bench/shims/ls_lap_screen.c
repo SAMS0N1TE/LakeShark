@@ -90,9 +90,15 @@ static void script(int frame)
                 h->down = true; h->x = x; h->y = y;
             } else if (!strncmp(c, "up", 2)) {
                 h->down = false;
-            } else if (!strncmp(c, "key=", 4) && app->key) {   /* key=q: that letter, as a keyboard sends it */
+            } else if (!strncmp(c, "key=", 4) && app->key) {   /* key=q a letter; key=@up @down @left @right @enter */
+                lap_key_t k = LAP_KEY_CHAR;
+                if (!strncmp(c + 4, "@up", 3)) k = LAP_KEY_UP;
+                else if (!strncmp(c + 4, "@down", 5)) k = LAP_KEY_DOWN;
+                else if (!strncmp(c + 4, "@left", 5)) k = LAP_KEY_LEFT;
+                else if (!strncmp(c + 4, "@right", 6)) k = LAP_KEY_RIGHT;
+                else if (!strncmp(c + 4, "@enter", 6)) k = LAP_KEY_ENTER;
                 ls_lap_api_callback(true);
-                app->key(LAP_KEY_CHAR, c[4]);
+                app->key(k, k == LAP_KEY_CHAR ? c[4] : 0);
                 ls_lap_api_callback(false);
             } else if (!strncmp(c, "mesh", 4)) {
                 static const char *const NAMES[] = { "RIDGE RPT", "KD9XYZ", "BASECAMP" };

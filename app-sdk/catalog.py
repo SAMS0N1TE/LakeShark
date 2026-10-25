@@ -3,7 +3,7 @@
     python app-sdk/catalog.py --key STORE.pem --site SITE_DIR [app-sdk/apps/<name> ...]
 
 Each app folder has its C files and an app.json with "category",
-"description" and, for work in progress, "status": "wip". Writes SITE_DIR/apps/files/<id>-<version>.lap and rewrites
+"description"; for work in progress "status": "wip"; and optionally "thumb", "screens" and "clip" (site paths). Writes SITE_DIR/apps/files/<id>-<version>.lap and rewrites
 SITE_DIR/apps/catalog.json from what the files themselves say, so the store
 never lists a name, size or checksum the board would disagree with.
 """
@@ -50,6 +50,9 @@ def main():
             })
             if meta.get('status') == 'wip':      # the store badges it EARLY ACCESS
                 entries[-1]['status'] = 'wip'
+            for k in ('thumb', 'screens', 'clip'):  # the app page's pictures, paths in the site
+                if meta.get(k):
+                    entries[-1][k] = meta[k]
             print('%-8s %-6s %6d B  %s' % (m['id'], m['version'], len(data), name))
     cat = {'schema': 1, 'generated': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'apps': entries}
     open(os.path.join(a.site, 'apps', 'catalog.json'), 'w', encoding='utf-8', newline='\n').write(json.dumps(cat, indent=1) + '\n')
