@@ -100,6 +100,10 @@ void carrier_preview(const char *command)
         } else {
             for(int i=0;i<GAME_CONTACTS;i++) if(v->contacts[i].active && v->contacts[i].hostile) {v->selected=i;break;}
         }
+    } else if (!strcmp(command, "softfoes")) {     /* footage: hostiles one good burst from going down */
+        for(int i=0;i<GAME_CONTACTS;i++) if(v->contacts[i].active&&v->contacts[i].hostile) {v->contacts[i].hull=18;v->contacts[i].shield=0;}
+    } else if (!strcmp(command, "quiet")) {        /* footage: no message left over from before the scene */
+        memset(v->messages,0,sizeof(v->messages));v->message_count=0;
     } else if (!strcmp(command, "hurt")) {         /* footage: a badly damaged ship */
         p->hull=game_player_ship()->hull*.16f;p->shield_fore=p->shield_aft=0;
     } else if (!strcmp(command, "dbgw")) {

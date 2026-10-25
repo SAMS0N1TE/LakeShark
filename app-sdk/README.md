@@ -93,18 +93,7 @@ lssim's own `-x` taps cells. See `bench/shims/ls_lap_screen.c`.
   (`app put`, `app data`, `app end`, `app list`, `app info`, `app rm`).
 
 Store apps are signed by the store. An app from anywhere else runs too; the
-board asks once before it opens one that is not signed.
-
-## Signing your own builds
-
-```
-python app-sdk/lap.py keygen C:/keys/mine.pem
-python app-sdk/lap.py sign hello.lap --key C:/keys/mine.pem
-```
-
-Boards trust only the store's keys, so a self-signed app still gets the
-question. Keep private keys out of any repository; `keygen` refuses to write
-into one.
+board asks once before it opens one the store did not sign.
 
 ## Limits
 
