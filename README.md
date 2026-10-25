@@ -90,7 +90,7 @@ Touchscreen, GPS, motion sensing and an optional detachable MIX-RF keyboard.
 <img src="docs/screenshots/tdp4/motion/falls-hackrf-20261014.gif" width="32%" alt="FALLS with HackRF signals" />
 <img src="docs/screenshots/tdp4/motion/subghz_scan2.gif" width="32%" alt="SUB-GHZ scan" />
 <img src="docs/screenshots/tdp4/motion/subghz-lr2021-hackrf-ook-decode-20261014.gif" width="32%" alt="SUB-GHZ decoding a Flipper" />
-<img src="docs/screenshots/tdp4/motion/fm-noaa.gif" width="32%" alt="FM on NOAA weather" />
+<img src="docs/screenshots/tdp4/motion/fm-pager-20261025.gif" width="32%" alt="FM on a busy VHF channel" />
 <img src="docs/screenshots/tdp4/motion/music-bands-20261022.gif" width="32%" alt="MUSIC 2/3 octave bands" />
 <img src="docs/screenshots/tdp4/motion/mesh-notice.gif" width="32%" alt="Mesh message notices" />
 <img src="docs/screenshots/tdp4/gallery-20261007/experiments-port.png" width="32%" alt="EXPERIMENTS" />
