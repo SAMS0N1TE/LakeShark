@@ -288,6 +288,12 @@ ls_add_test(test_term_vt ${FW}/components/apps/tui/ls_vt.c
 target_include_directories(test_term_vt PRIVATE ${LS_TUI_APP_INCLUDES}
     ${FW}/components/apps/tui ${FW}/components/apps/tui/tuilib)
 
+ls_add_test(test_ws ${FW}/components/apps/tui/ls_ws.c)
+target_include_directories(test_ws PRIVATE ${FW}/components/apps/tui)
+
+ls_add_test(test_mdns ${FW}/components/apps/tui/ls_mdns.c)
+target_include_directories(test_mdns PRIVATE ${FW}/components/apps/tui)
+
 # Optional private tests, if this tree has any. The file names what it
 # registers; this line does not, so it is safe to publish either way.
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/private.cmake)
@@ -662,6 +668,7 @@ ls_add_test(test_tui_wireless
     ${FW}/components/apps/tui/ls_survey_ui.c
     ${FW}/components/apps/tui/ls_compass_art.c
     ${FW}/components/apps/tui/screens/ext/scr_wireless.c
+    ${FW}/bench/shims/ls_rterm_fake.c
     ${FW}/components/apps/tui/ls_wireless_history.c
     ${FW}/components/apps/tui/ls_keyboard.c
     ${FW}/components/apps/tui/ls_glyph.c
@@ -697,6 +704,7 @@ add_executable(lssim
     ${FW}/components/apps/tui/ls_detector_ui.c
     tools/lssim_wireless.c
     ${FW}/components/apps/tui/screens/ext/scr_wireless.c
+    ${FW}/bench/shims/ls_rterm_fake.c
     ${FW}/components/apps/tui/ls_wireless_history.c
     shims/pagers_settings_fake.c
     ${FW}/components/apps/tui/screens/ext/scr_music.c
@@ -2761,8 +2769,275 @@ if(TARGET lssim)
     "${CMAKE_CURRENT_BINARY_DIR}/cells-fixture")
 endif()
 
-if(EXISTS "D:/assasdad/CartoCore-t16/tools/build_us.py")
+# The US map builder lives in the CartoCore repository: set CARTOCORE_DIR to run its test.
+if(DEFINED ENV{CARTOCORE_DIR} AND EXISTS "$ENV{CARTOCORE_DIR}/tools/build_us.py")
   add_test(NAME test_maps_outlines_builder COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_maps_outlines_builder.py"
-    "D:/assasdad/CartoCore-t16/tools/build_us.py" "${CMAKE_CURRENT_BINARY_DIR}")
+    "$ENV{CARTOCORE_DIR}/tools/build_us.py" "${CMAKE_CURRENT_BINARY_DIR}")
 endif()
+
+# Native SD apps: only these targets are needed for the backend bench.
+set(LAP_TUI ${FW}/components/apps/tui)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/lap-probe.lap
+    COMMAND ${Python3_EXECUTABLE} ${FW}/app-sdk/lap.py build ${FW}/bench/fixtures/lap -o ${CMAKE_CURRENT_BINARY_DIR}/lap-probe.lap
+    DEPENDS ${FW}/app-sdk/lap.py ${FW}/app-sdk/exports.txt ${FW}/app-sdk/include/lakeshark_app.h ${FW}/bench/fixtures/lap/probe.c)
+add_custom_target(lap_fixture DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/lap-probe.lap)
+add_executable(test_lap_manifest tests/test_lap_manifest.c ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_signature.c ${LAP_TUI}/ls_lap.c)
+target_include_directories(test_lap_manifest PRIVATE ${LAP_TUI})
+add_dependencies(test_lap_manifest lap_fixture)
+add_test(NAME test_lap_manifest COMMAND test_lap_manifest ${CMAKE_CURRENT_BINARY_DIR}/lap-probe.lap)
+add_executable(lap_inspect tests/lap_inspect.c ${LAP_TUI}/ls_lap_manifest.c)
+target_include_directories(lap_inspect PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
+add_executable(test_lap_transfer tests/test_lap_transfer.c ${LAP_TUI}/ls_lap_transfer.c ${LAP_TUI}/ls_lap_manifest.c ${FW}/components/lakeshark/core/ls_base64.c)
+target_include_directories(test_lap_transfer PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
+add_test(NAME test_lap_transfer COMMAND test_lap_transfer)
+add_executable(test_lap_api tests/test_lap_api.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_glyph.c shims/lap_tui_core.c shims/screen_full_stub.c)
+target_include_directories(test_lap_api PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
+target_link_libraries(test_lap_api m)
+target_compile_definitions(test_lap_api PRIVATE LS_LAP_SD_ROOT="lap-sd")
+add_test(NAME test_lap_api COMMAND test_lap_api)
+
+# Optional SDK checkout location, used only by the new LAP signature test.
+set(LAP_MBEDTLS_DIR "" CACHE PATH "Mbed TLS source root for the LAP host verifier")
+if(LAP_MBEDTLS_DIR)
+    file(GLOB LAP_MBED_SOURCES ${LAP_MBEDTLS_DIR}/library/*.c)
+    add_library(lap_mbedtls STATIC ${LAP_MBED_SOURCES})
+    target_include_directories(lap_mbedtls PUBLIC ${LAP_MBEDTLS_DIR}/include ${FW}/bench/fixtures)
+    target_compile_definitions(lap_mbedtls PUBLIC MBEDTLS_CONFIG_FILE="lap_mbedtls_config.h")
+    add_executable(lap_verify tests/lap_verify.c ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_signature.c ${FW}/components/lakeshark/core/ls_signature.c)
+    target_include_directories(lap_verify PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
+    target_link_libraries(lap_verify lap_mbedtls)
+    add_test(NAME test_lap_sdk COMMAND ${Python3_EXECUTABLE} ${FW}/bench/tests/test_lap_sdk.py $<TARGET_FILE:lap_inspect> ${CMAKE_CURRENT_BINARY_DIR} $<TARGET_FILE:lap_verify>)
+else()
+    add_test(NAME test_lap_sdk COMMAND ${Python3_EXECUTABLE} ${FW}/bench/tests/test_lap_sdk.py $<TARGET_FILE:lap_inspect> ${CMAKE_CURRENT_BINARY_DIR})
+endif()
+
+if(LS_SANITIZE AND CMAKE_C_COMPILER_ID MATCHES "Clang")
+    # Stock MinGW clang accepts UBSan at link time without shipping its runtime.
+    # These new targets trap on UB, so instrumentation never silently goes unused.
+    foreach(lap_test test_lap_manifest test_lap_api test_lap_transfer lap_inspect)
+        target_compile_options(${lap_test} PRIVATE -fsanitize-trap=undefined)
+    endforeach()
+endif()
+
+if(LAP_MBEDTLS_DIR)
+    add_executable(test_lap_host tests/test_lap_host.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_signature.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_app.c ${LAP_TUI}/ls_glyph.c shims/lap_tui_core.c ${FW}/components/lakeshark/core/ls_signature.c)
+    target_include_directories(test_lap_host BEFORE PRIVATE ${FW}/bench/shims/lap ${LAP_TUI} ${FW}/components/lakeshark)
+    target_compile_definitions(test_lap_host PRIVATE ESP_PLATFORM=1 LS_LAP_HOST_TEST=1)
+    target_compile_options(test_lap_host PRIVATE -falign-functions=2)
+    target_link_libraries(test_lap_host lap_mbedtls m)
+    add_dependencies(test_lap_host lap_fixture)
+    add_test(NAME test_lap_host COMMAND test_lap_host ${CMAKE_CURRENT_BINARY_DIR}/lap-probe.lap)
+endif()
+
+target_sources(lssim PRIVATE ${LAP_TUI}/ls_lap.c shims/ls_lap_screen.c)
+target_sources(lssim PRIVATE ${APP}/adsb/adsb_demo.c fixtures/carrier_preview.c)
+# The API resolver references ADS-B for every app, including non-radio test apps.
+target_sources(test_lap_api PRIVATE ${APP}/adsb/adsb_state.c ${APP}/adsb/adsb_demo.c)
+target_sources(test_lap_api PRIVATE shims/lap_adsb_time.c)
+if(TARGET test_lap_host)
+    target_sources(test_lap_host PRIVATE ${APP}/adsb/adsb_state.c ${APP}/adsb/adsb_demo.c)
+endif()
+# The example apps, compiled for the host into lssim's APP screen so their
+# frames can be looked at (LAPSIM=<id>; see shims/ls_lap_screen.c). Each
+# app's lap_main and lap_app are renamed so they can sit side by side.
+file(GLOB LAPSIM_APP_DIRS LIST_DIRECTORIES true ${FW}/app-sdk/apps/*)
+set(LAPSIM_TABLE "")
+set(LAPSIM_DECLS "")
+set(LAPSIM_COUNT 0)
+foreach(dir ${LAPSIM_APP_DIRS})
+    if(IS_DIRECTORY ${dir})
+        get_filename_component(app ${dir} NAME)
+        file(GLOB app_src ${dir}/*.c)
+        target_sources(lssim PRIVATE ${app_src})
+        set_source_files_properties(${app_src} PROPERTIES COMPILE_DEFINITIONS
+            "lap_main=lap_main_${app};lap_app=lap_app_${app};lap_icon_px=lap_icon_px_${app};LAP_ICON_PX_ATTR=__attribute__((used))")
+        string(APPEND LAPSIM_DECLS "const lap_app_t *lap_main_${app}(void);
+extern const lap_icon_px_t lap_icon_px_${app};
+")
+        string(APPEND LAPSIM_TABLE "    {\"${app}\", lap_main_${app}, &lap_icon_px_${app}},
+")
+        math(EXPR LAPSIM_COUNT "${LAPSIM_COUNT} + 1")
+    endif()
+endforeach()
+# Host evidence only: exercise lap3d through real lap_dots and the cell renderer.
+target_sources(lssim PRIVATE fixtures/lap3d_preview.c)
+string(APPEND LAPSIM_DECLS "const lap_app_t *lap_main_lap3d(void);\nextern const lap_icon_px_t lap_icon_px_lap3d;\n")
+string(APPEND LAPSIM_TABLE "    {\"lap3d\", lap_main_lap3d, &lap_icon_px_lap3d},\n")
+math(EXPR LAPSIM_COUNT "${LAPSIM_COUNT} + 1")
+file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/lapsim_apps.c CONTENT
+"#include \"lakeshark_app.h\"
+${LAPSIM_DECLS}typedef struct { const char *id; const lap_app_t *(*main)(void); const lap_icon_px_t *icon; } lapsim_app_t;
+const lapsim_app_t lapsim_apps[] = {
+${LAPSIM_TABLE}    {0, 0, 0}};
+const int lapsim_app_count = ${LAPSIM_COUNT};
+")
+target_sources(lssim PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/lapsim_apps.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_lap_manifest.c)
+target_include_directories(lssim PRIVATE ${FW}/app-sdk/include)
+add_executable(test_lap_registry tests/test_lap_registry.c ${LAP_TUI}/ls_app.c)
+target_include_directories(test_lap_registry PRIVATE ${LAP_TUI})
+add_test(NAME test_lap_registry COMMAND test_lap_registry)
+
+add_executable(test_lap_crumb tests/test_lap_crumb.c)
+target_include_directories(test_lap_crumb BEFORE PRIVATE ${FW}/bench/shims/lap ${FW}/components/lakeshark/core)
+add_test(NAME test_lap_crumb COMMAND test_lap_crumb)
+
+# Firmware dot engine, shared verbatim by lssim, its targeted test and benchmark.
+file(GLOB LAP3D_SRCS CONFIGURE_DEPENDS ${LAP_TUI}/lap3d/*.c)
+add_library(lap3d_host STATIC ${LAP3D_SRCS})
+target_compile_options(lap3d_host PRIVATE -O2 -fstack-usage -Wdouble-promotion -Werror)
+target_link_libraries(lssim lap3d_host)
+target_link_libraries(test_lap_api lap3d_host)
+
+# CARRIER: bounded systems tests share the real app API/cache and receiver state.
+file(GLOB CARRIER_SYSTEMS ${FW}/app-sdk/apps/carrier/*.c)
+list(REMOVE_ITEM CARRIER_SYSTEMS ${FW}/app-sdk/apps/carrier/main.c)
+list(FILTER CARRIER_SYSTEMS EXCLUDE REGEX "/ui_[a-z]+\.c$")
+set(CARRIER_API_TEST_SOURCES
+    ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c
+    ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_glyph.c
+    shims/lap_tui_core.c shims/lap_adsb_time.c fixtures/carrier_io.c
+    ${APP}/adsb/adsb_state.c ${APP}/adsb/adsb_demo.c)
+add_executable(test_carrier tests/test_carrier.c ${CARRIER_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
+target_include_directories(test_carrier PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
+    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
+target_compile_options(test_carrier PRIVATE -fstack-usage)
+target_link_libraries(test_carrier lap3d_host m)
+foreach(system universe traffic trade save flight combat jump render walk)
+    add_test(NAME test_carrier_${system} COMMAND test_carrier ${system})
+endforeach()
+add_executable(test_lap_aircraft tests/test_lap_aircraft.c ${CARRIER_API_TEST_SOURCES})
+target_include_directories(test_lap_aircraft PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
+target_link_libraries(test_lap_aircraft lap3d_host m)
+add_test(NAME test_lap_aircraft COMMAND test_lap_aircraft)
+add_test(NAME test_carrier_data COMMAND ${Python3_EXECUTABLE} ${FW}/bench/tests/test_carrier_data.py)
+add_executable(test_carrier_limits tests/test_carrier_limits.c ${CARRIER_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
+target_include_directories(test_carrier_limits PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
+    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
+target_link_libraries(test_carrier_limits lap3d_host m)
+target_link_options(test_carrier_limits PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
+add_test(NAME test_carrier_limits COMMAND test_carrier_limits)
+add_test(NAME test_carrier_lssim COMMAND ${Python3_EXECUTABLE}
+    ${FW}/bench/tests/test_carrier_lssim.py $<TARGET_FILE:lssim> ${CMAKE_CURRENT_BINARY_DIR}/carrier-preview)
+add_executable(test_carrier_rescue tests/test_carrier_rescue.c ${CARRIER_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
+target_include_directories(test_carrier_rescue PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
+    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
+target_link_libraries(test_carrier_rescue lap3d_host m)
+add_test(NAME test_carrier_rescue COMMAND test_carrier_rescue)
+
+# Exploration uses the real cached app files and receiver snapshots; no UI.
+set(CARRIER_POI_SYSTEMS ${CARRIER_SYSTEMS})
+list(FILTER CARRIER_POI_SYSTEMS EXCLUDE REGEX "/render[.]c$")
+add_executable(test_carrier_poi tests/test_carrier_poi.c ${CARRIER_POI_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
+target_include_directories(test_carrier_poi PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
+    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
+target_compile_definitions(test_carrier_poi PRIVATE EXPLORE_DEFAULTS="${FW}/data/carrier/explore.json")
+target_link_libraries(test_carrier_poi lap3d_host m)
+target_link_options(test_carrier_poi PRIVATE -Wl,--wrap=lap_time
+    -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
+foreach(poi generation nebula gravity comet relics signals salvage weather scan persistence eggs config limits)
+    add_test(NAME test_carrier_poi_${poi} COMMAND test_carrier_poi ${poi})
+endforeach()
+if(TARGET test_lap_host)
+    target_link_libraries(test_lap_host lap3d_host)
+endif()
+ls_add_test(test_lap3d shims/lap3d_io.c)
+target_include_directories(test_lap3d PRIVATE ${FW}/app-sdk/include ${LAP_TUI}/lap3d)
+target_link_libraries(test_lap3d lap3d_host)
+target_link_options(test_lap3d PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
+add_executable(l3bench tools/l3bench.c shims/lap3d_io.c)
+target_include_directories(l3bench PRIVATE ${FW}/app-sdk/include)
+target_link_libraries(l3bench lap3d_host m)
+
+add_test(NAME test_lap3d_exports COMMAND ${Python3_EXECUTABLE}
+    ${FW}/bench/tests/test_lap3d_exports.py)
+
+# CartoCore L3M1 tiles as a 3D map, rendered by lap3d to PNG (host preview).
+add_executable(l3map tools/l3map.c shims/lap3d_io.c)
+target_include_directories(l3map PRIVATE ${FW}/app-sdk/include)
+target_link_libraries(l3map lap3d_host m)
+
+
+# CARRIER's hulls one by one, rendered by lap3d to PNG (host preview).
+add_executable(carrier_ships tools/carrier_ships.c shims/lap3d_io.c)
+target_include_directories(carrier_ships PRIVATE ${FW}/app-sdk/include)
+target_link_libraries(carrier_ships lap3d_host m)
+
+# Part 2: isolated deterministic sensor snapshots; existing assertions untouched.
+set(CARRIER_BACKEND_SYSTEMS ${CARRIER_SYSTEMS})
+list(FILTER CARRIER_BACKEND_SYSTEMS EXCLUDE REGEX "/(render|ui[^/]*)[.]c$")
+add_executable(test_carrier_systems tests/test_carrier_systems.c ${CARRIER_BACKEND_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
+target_include_directories(test_carrier_systems PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
+    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
+target_link_libraries(test_carrier_systems lap3d_host m)
+target_link_options(test_carrier_systems PRIVATE -Wl,--wrap=lap_wifi_aps -Wl,--wrap=lap_wifi_scan
+    -Wl,--wrap=lap_ble_scan -Wl,--wrap=lap_ble_devices -Wl,--wrap=lap_mesh_nodes -Wl,--wrap=lap_time
+    -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
+foreach(system talk missions mining beacons packs ranks events time system_config save_capacity targets)
+    add_test(NAME test_carrier_${system} COMMAND test_carrier_systems ${system})
+endforeach()
+
+# Encounter director: isolated radio/heap boundaries, production backend logic.
+add_executable(test_carrier_encounters tests/test_carrier_encounters.c ${CARRIER_BACKEND_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
+target_include_directories(test_carrier_encounters PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
+    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
+target_link_libraries(test_carrier_encounters lap3d_host m)
+target_link_options(test_carrier_encounters PRIVATE -Wl,--wrap=lap_aircraft
+    -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
+foreach(encounter cadence modes pool formations engagement departures life config)
+    add_test(NAME test_carrier_encounters_${encounter} COMMAND test_carrier_encounters ${encounter})
+endforeach()
+
+add_test(NAME test_carrier_encounters_data COMMAND ${Python3_EXECUTABLE}
+    ${FW}/bench/tests/test_carrier_encounter_data.py)
+
+# main.c owns the screen state on device; focused host tests omit that entry.
+add_executable(test_carrier_shipyard tests/test_carrier_shipyard.c ${CARRIER_BACKEND_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
+target_include_directories(test_carrier_shipyard PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
+    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
+target_link_libraries(test_carrier_shipyard lap3d_host m)
+target_link_options(test_carrier_shipyard PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
+foreach(yard offers transactions persistence insurance config)
+    add_test(NAME test_carrier_shipyard_${yard} COMMAND test_carrier_shipyard ${yard})
+endforeach()
+add_executable(test_carrier_lore tests/test_carrier_lore.c ${CARRIER_BACKEND_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
+target_include_directories(test_carrier_lore PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
+    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
+target_link_libraries(test_carrier_lore lap3d_host m)
+add_test(NAME test_carrier_lore COMMAND test_carrier_lore)
+
+# CRUISE is a backend rules module; keep renderer and heap boundaries explicit.
+add_executable(test_carrier_cruise tests/test_carrier_cruise.c ${CARRIER_BACKEND_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
+target_include_directories(test_carrier_cruise PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
+    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
+target_link_libraries(test_carrier_cruise lap3d_host m)
+target_link_options(test_carrier_cruise PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
+foreach(cruise refusals spool safety bleed eta interdiction director limits)
+    add_test(NAME test_carrier_cruise_${cruise} COMMAND test_carrier_cruise ${cruise})
+endforeach()
+
+foreach(carrier_test test_carrier test_carrier_limits test_carrier_rescue)
+    target_sources(${carrier_test} PRIVATE fixtures/carrier_screen_state.c)
+endforeach()
+
+# Public-API pilot: production backend and the same host/cache as carrier tests.
+add_executable(carrier_bot tools/carrier_bot.c ${CARRIER_BACKEND_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
+target_include_directories(carrier_bot PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
+    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
+target_compile_options(carrier_bot PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(carrier_bot lap3d_host m)
+target_link_options(carrier_bot PRIVATE -Wl,--wrap=lap_gps -Wl,--wrap=lap_time)
+add_test(NAME test_carrier_bot_smoke COMMAND carrier_bot --smoke 1
+    ${CMAKE_CURRENT_BINARY_DIR}/carrier-bot-smoke.csv ${FW}/data/carrier)
+
+# Combat's public contract, fixed pools and typed simulation rules; no screen.
+add_executable(test_carrier_combat_rules tests/test_carrier_combat_rules.c
+    ${CARRIER_BACKEND_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
+target_include_directories(test_carrier_combat_rules PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
+    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
+target_compile_options(test_carrier_combat_rules PRIVATE -O2 -Wall -Wextra)
+target_link_libraries(test_carrier_combat_rules lap3d_host m)
+target_link_options(test_carrier_combat_rules PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
+foreach(combat damage weapons mounts distributor defence modules canopy scanning hud balance persistence limits config migration reverse aim)
+    add_test(NAME test_carrier_combat_rules_${combat} COMMAND test_carrier_combat_rules ${combat})
+endforeach()

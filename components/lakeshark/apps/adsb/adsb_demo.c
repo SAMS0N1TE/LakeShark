@@ -63,6 +63,8 @@ void adsb_demo_tick(void)
         double ang        = t * rate + (double)i;
 
         a->icao      = (uint32_t)(DEMO_ICAO_BASE + i);
+        a->emitter_tc = 4; /* A1 .. A7 exercise downstream emitter consumers. */
+        a->emitter_ca = (uint8_t)(1 + i % 7);
         snprintf(a->callsign, sizeof(a->callsign), "DEMO%02d", i + 1);
         a->lat       = s_lat + (float)(radius_deg * sin(ang));
         /* Longitude degrees shrink with latitude; without this the orbits are

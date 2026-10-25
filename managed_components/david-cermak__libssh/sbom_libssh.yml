@@ -1,0 +1,8 @@
+name: libssh
+version: 0.12.2
+cpe: cpe:2.3:a:libssh:libssh:{}:*:*:*:*:*:*:*
+supplier: 'Organization: The libssh Project <https://www.libssh.org/>'
+originator: 'Organization: The libssh Project <https://www.libssh.org/>'
+description: Multiplatform C library implementing the SSHv2 protocol (client and server). Vendored via the libssh-mirror submodule (upstream release baseline libssh-0.12.0). ESP-IDF-specific deltas live outside this tree under port/ and patches/.
+url: https://www.libssh.org/
+hash: 07430deb9b97b751ec5ea5a7fc307f40bf042e0a

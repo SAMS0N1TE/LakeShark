@@ -1,3 +1,4 @@
+#include "core/ls_base64.h"
 #include "tui/apps/example_app.h"
 #include "adsb_app.h"
 #include "tui/ls_sweep_ui.h"
@@ -81,6 +82,7 @@ extern "C" int cell_report_transport_state(const char *peer,const char *text)
 #include "tui/ls_value.h"
 #include "tui/ls_action.h"
 #include "tui/ls_userapp.h"
+#include "tui/ls_lap.h"
 #include "ls_touch.h"
 #include "esp_timer.h"
 #include "soc/soc.h"
@@ -904,6 +906,14 @@ static bool tui_push_tap(int c, int r)
 
 static void term_key(int k, char ch) { tui_push_key((ls_tk_t)k, ch); }
 static void term_tap(int c, int r) { tui_push_tap(c, r); }
+/* A viewer's window size: a terminal-only screen takes it as its grid. */
+static void tui_request_regrid(void);
+static bool term_resize(int c, int r)
+{
+    if (!ls_panel_ws_term_resize(c, r)) return false;
+    tui_request_regrid();
+    return true;
+}
 static void term_uart_write(const char *b, size_t n)
 {
     uart_write_bytes((uart_port_t)CONFIG_ESP_CONSOLE_UART_NUM, b, n);
@@ -993,13 +1003,16 @@ static bool tui_apply_rotation(int quarter)
 /* The logical size the grid is built against: the panel's own
    native size, turned by the rotation - which is what lv_disp_get_hor_res
    answered for a software-rotated display, asked of the thing that knows. */
+static bool s_term_only;     /* the screen is a terminal: no glass to draw pixels on */
 static bool tui_logical_size(int *w, int *h)
 {
     ls_panel_fb_t fb;
     const bool wide = (s_rotation & 1) != 0;
+    s_term_only = false;
     /* A terminal-only screen has a size for each way up and is never turned:
        an odd quarter is its portrait. */
     if (ls_panel_ws_term_view(wide)) {
+        s_term_only = true;
         if (!ls_panel_fb(&fb)) return false;
         *w = fb.width;
         *h = fb.height;
@@ -1062,6 +1075,7 @@ static void boot_splash_run(void)
         s_boot_splash_wanted = false;       /* the first session animates as before */
         return;
     }
+    ls_tui_set_pixels_off(s_term_only);
     int cols, rows, cw, ch;
     ls_tui_geometry(&cols, &rows, &cw, &ch);
     tui_surface *sf = ls_tui_surface();
@@ -1135,6 +1149,7 @@ static bool tui_session(void)
         printf("tui: could not start\n");
         return false;
     }
+    ls_tui_set_pixels_off(s_term_only);
 
     int cols, rows, cw, ch;
     ls_tui_geometry(&cols, &rows, &cw, &ch);
@@ -1197,7 +1212,7 @@ static bool tui_session(void)
             { "falls","FALLS","spectrum",  LS_ICON_FALLS, TUI_BLUE,
               LS_APP_EXTRA, &ls_scr_falls, nullptr, &ls_doc_falls },
 #if !LS_LR_EDITION
-            { "cell", "CELL WATCH", "cell survey", LS_ICON_TOWER, TUI_CYAN,
+            { "cell", "CELL WATCH", "cell survey", LS_ICON_CELL, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_cell, nullptr, &ls_doc_cell },
 #endif
             { "mesh", "MESH", "meshcore",  LS_ICON_MESH,  TUI_CYAN,
@@ -1214,7 +1229,7 @@ static bool tui_session(void)
 
             { "rec",  "REC",  "capture",   LS_ICON_RECORD, TUI_RED,
               LS_APP_EXTRA, &ls_scr_rec, tui_live_rec, &ls_doc_rec },
-            { "subghz", "SUB-GHZ", "watch + replay", LS_ICON_RECORD, TUI_GREEN,
+            { "subghz", "SUB-GHZ", "watch + replay", LS_ICON_SUBGHZ, TUI_GREEN,
               LS_APP_EXTRA, &ls_scr_subghz, rec_watch_enabled, &ls_doc_subghz },
             { "files", "FILES", "the SD card", LS_ICON_FILES, TUI_YELLOW,
               LS_APP_EXTRA, &ls_scr_files, nullptr, &ls_doc_files },
@@ -1532,6 +1547,9 @@ static bool tui_session(void)
         /* The last presented frame is on the glass whole here. */
         if (s_tui_png_req) {
             ls_panel_fb_t fb;
+            /* A terminal-only screen draws no pixels: paint this one frame whole. */
+            const bool off = ls_tui_pixels_off();
+            if (off) { ls_tui_set_pixels_off(false); ls_tui_present(); }
             /* Only into a buffer sized for this framebuffer: a terminal-only
                screen changes size when it turns, and a turn between the
                request and this copy would run past the end of it. */
@@ -1540,6 +1558,7 @@ static bool tui_session(void)
                 memcpy(s_tui_png_buf, fb.pixels, (size_t)fb.width * fb.height * sizeof(uint16_t));
             else
                 s_tui_png_wh = 0;
+            if (off) ls_tui_set_pixels_off(true);
             s_tui_png_req = false;
         }
         /* 'tui rec': the grid as it is on the glass, when the sender is free. */
@@ -1674,6 +1693,7 @@ static bool tui_session(void)
         const int64_t ph_draw = esp_timer_get_time();
         s_ph_input_us = ph_avg(s_ph_input_us, ph_draw - ph_start);
         const uint32_t wf_before = ls_wf_full_draw_sequence();
+        ls_lap_poll();
         ls_tui_router_draw(sf);
         if (!cell_performance_active() && !s_tui_stop) {
             const int wanted = ls_tui_font_for_view(s_preferred_font,
@@ -1719,7 +1739,11 @@ static bool tui_session(void)
         else {
             const int spent_ms = (int)((esp_timer_get_time() - ph_start) / 1000);
             sleep_ms = 40 - spent_ms;
-            if (sleep_ms < 15) sleep_ms = 15;
+            /* A full-screen game draws every frame and its frames run long;
+               a 15 ms floor after a 50 ms frame was a quarter of its rate.
+               It still yields 4 ms a frame to the tasks below it. */
+            const int floor_ms = ls_tui_screen_is_full() ? 4 : 15;
+            if (sleep_ms < floor_ms) sleep_ms = floor_ms;
         }
         /* An injected key or tap ends the sleep: a remote terminal waits on it. */
         if (s_tui_wake) xSemaphoreTake(s_tui_wake, pdMS_TO_TICKS(sleep_ms));
@@ -1727,6 +1751,10 @@ static bool tui_session(void)
         s_ph_sleep_us = ph_avg(s_ph_sleep_us, esp_timer_get_time() - ph_sleep);
     }
 
+    if (!s_tui_regrid_req && s_tui_rotate_req < 0) {
+        const ls_app_t *active = ls_app_current();
+        if (active && ls_lap_by_id(active->id)) ls_tui_screen_show(0);
+    }
     ls_keypad_backlight(false);
     ls_tui_end();
     display_ctl_reapply();
@@ -2026,16 +2054,6 @@ static bool tui_rotate_to(int quarter)
    lands in the card's root or one folder directly under it. The folder is
    created if missing, which is how a user app reaches /sdcard/apps over a
    bench cable. */
-static int b64_value(char c)
-{
-    if (c >= 'A' && c <= 'Z') return c - 'A';
-    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-    if (c >= '0' && c <= '9') return c - '0' + 52;
-    if (c == '+') return 62;
-    if (c == '/') return 63;
-    return -1;
-}
-
 static int sd_put(int argc, char **argv)
 {
     if (argc < 3) { printf("sd: usage 'sd put [dir/]<name> [base64]'\n"); return 1; }
@@ -2072,24 +2090,15 @@ static int sd_put(int argc, char **argv)
     if (argc < 4) { fclose(f); printf("sd: %s truncated\n", full); return 0; }
 
     const char *in = argv[3];
-    uint32_t acc = 0;
-    int bits = 0;
+    const size_t capacity = strlen(in) / 4 * 3 + 3;
+    uint8_t *decoded = static_cast<uint8_t *>(heap_caps_malloc(capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     size_t wrote = 0;
-    for (const char *c = in; *c; ++c) {
-        if (*c == '=') break;
-        const int v = b64_value(*c);
-        if (v < 0) { fclose(f); printf("sd: bad base64 near '%c'\n", *c); return 1; }
-        acc = (acc << 6) | (uint32_t)v;
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            const uint8_t byte = (uint8_t)((acc >> bits) & 0xFF);
-            if (fwrite(&byte, 1, 1, f) != 1) {
-                fclose(f); printf("sd: write failed\n"); return 1;
-            }
-            wrote++;
-        }
+    if (!decoded || !ls_base64_decode(in, decoded, capacity, &wrote)) {
+        heap_caps_free(decoded); fclose(f); printf("sd: bad base64 or no PSRAM\n"); return 1;
     }
+    const bool ok = fwrite(decoded, 1, wrote, f) == wrote;
+    heap_caps_free(decoded);
+    if (!ok) { fclose(f); printf("sd: write failed\n"); return 1; }
     fclose(f);
     printf("sd: +%u bytes -> %s\n", (unsigned)wrote, full);
     return 0;
@@ -3194,6 +3203,21 @@ static int mesh_cmd(int argc, char **argv)
         printf("mesh: transmit %s\n", on ? "ARMED - this radio can now emit"
                                           : "disarmed");
         return 0;
+    } else if (argc >= 3 && !strcmp(argv[1], "chan")) {
+        /* 'mesh chan N #name|<base64 key>|clear': a channel slot, as the MESH screen sets one */
+        const int idx = atoi(argv[2]);
+        const char *v = argc >= 4 ? argv[3] : "";
+        if (!strcmp(v, "clear")) v = "";
+        char name[LS_MESH_CHAN_NAME];
+        snprintf(name, sizeof(name), "chan%d", idx);
+        const esp_err_t e = ls_mesh_set_channel(idx, v[0] == '#' ? NULL : name, v);
+        printf("mesh: channel %d %s\n", idx, e == ESP_OK ? (v[0] ? v : "cleared") : "refused: #name, or a base64 key of 16 or 32 bytes");
+        return e == ESP_OK ? 0 : 1;
+    } else if (argc >= 3 && !strcmp(argv[1], "send")) {
+        /* 'mesh send N': the slot typed lines go out on */
+        const esp_err_t e = ls_mesh_set_channel_active(atoi(argv[2]));
+        printf("mesh: sending on channel %d%s\n", ls_mesh_channel_active(), e == ESP_OK ? "" : " (that slot has no key)");
+        return e == ESP_OK ? 0 : 1;
     } else if (argc >= 3 && !strcmp(argv[1], "auto")) {
         /*`mesh auto listen|tx on|off`. Manual start/stop and
            tx on/off are unchanged - this only decides what happens at boot. */
@@ -3756,7 +3780,7 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     static const esp_console_cmd_t mesh_c={.command="mesh",
         .help="MeshCore in the background: 'mesh start', 'mesh' for status, "
               "'mesh tx on|off' (off at boot), 'mesh advert', 'mesh stop'.",
-        .hint="[start|stop|tx on|off|advert|peers|dm <n> <text>|role|repeat|loc|auto|radio [default]]",.func=mesh_cmd,.argtable=nullptr};
+        .hint="[start|stop|tx on|off|advert|peers|dm <n> <text>|chan <n> <#name|key|clear>|send <n>|role|repeat|loc|auto|radio [default]]",.func=mesh_cmd,.argtable=nullptr};
     esp_console_cmd_register(&mesh_c);
     static const esp_console_cmd_t labs_c={.command="labs",
         .help="LoRa Labs: 'labs' status and decoded pages, 'labs pocsag MHz [baud] [invert 0|1]' "
@@ -3783,6 +3807,7 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
         .hint="<action> [args...]",.func=call_cmd,.argtable=nullptr};
     esp_console_cmd_register(&call_c);
     ls_ota_console_register();
+    ls_lap_console_register();
     static const esp_console_cmd_t cmd={.command="display",.help="Display: rotate | 0 | 90 | 180 | 270 | on | off | brightness 5..100 | timeout 5..240 | autodim on|off",.hint=nullptr,.func=display_cmd,.argtable=nullptr};
     esp_console_cmd_register(&cmd);
 
@@ -3800,6 +3825,7 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     esp_console_cmd_register(&term);
     if (!s_tui_wake) s_tui_wake = xSemaphoreCreateBinary();
     ls_rterm_set_input(term_key, term_tap);
+    ls_rterm_set_resize(term_resize);
     ls_rterm_set_serial(term_uart_write, term_uart_wait, term_uart_baud);
     static const esp_console_cmd_t perf={.command="perf",
         .help="TUI/panel performance windows; perf reset clears samples",

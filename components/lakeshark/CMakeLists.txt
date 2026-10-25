@@ -47,6 +47,7 @@ idf_component_register(
         ${LS_APP_INCLUDES}
         nfc
     REQUIRES
+        mbedtls
         usb
         driver
         esp_driver_uart

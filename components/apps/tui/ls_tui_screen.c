@@ -1,3 +1,4 @@
+#include "esp_attr.h"
 #include "ls_board.h"
 /* Router. See ls_tui_screen.h for the contract it enforces. */
 #ifdef ESP_PLATFORM
@@ -53,12 +54,27 @@ bool ls_tui_locked(void) { return s_locked; }
 /* A screen can ask for the tab strip to go, to give its picture the room
    (MAP with its controls hidden). Cleared on every screen switch. */
 static bool s_bare;
+static bool s_full;
+bool ls_tui_screen_is_bare(void) { return s_bare; }
+
 void ls_tui_screen_set_bare(bool on)
 {
     if (s_bare == on) return;
     s_bare = on;
     ls_tui_invalidate();
 }
+
+/* Full: bare, and the status row and hint row go too - the screen owns
+   every cell (an immersive app). Cleared on every screen switch. */
+bool ls_tui_screen_is_full(void) { return s_full; }
+void ls_tui_screen_set_full(bool on)
+{
+    if (s_full == on && s_bare == on) return;
+    s_full = on;
+    s_bare = on;
+    ls_tui_invalidate();
+}
+static int status_rows(void) { return s_full ? 0 : 1; }
 
 static int tab_rows(void)
 {
@@ -79,7 +95,7 @@ static int tab_rows(void)
 
 static int hint_rows(void)
 {
-    return ls_tui_is_wide() ? 1 : 0;
+    return ls_tui_is_wide() && !s_full ? 1 : 0;
 }
 
 static const ls_tui_screen_t *s_screens[MAX_SCREENS];
@@ -162,13 +178,20 @@ uint32_t ls_tui_rebuild_ms(void)      { return s_rebuild_ms; }
 int ls_tui_screen_register(const ls_tui_screen_t *screen)
 {
     if (!screen || !screen->draw || s_count >= MAX_SCREENS) return -1;
+    for (int i = 0; i < s_count; i++)
+        if (s_screens[i] == screen) return i;
     s_screens[s_count] = screen;
     return s_count++;
 }
 
 int ls_tui_screen_count(void)   { return s_count; }
 int ls_tui_screen_current(void) { return s_current; }
-bool ls_tui_screen_holds_rotation(void) { return s_screens[s_current] && s_screens[s_current]->hold_auto_rotation; }
+static bool s_hold_rotation;
+void ls_tui_screen_hold_rotation(bool on) { s_hold_rotation = on; }
+bool ls_tui_screen_holds_rotation(void)
+{
+    return s_hold_rotation || (s_screens[s_current] && s_screens[s_current]->hold_auto_rotation);
+}
 const char *ls_tui_screen_name(int index)
 {
     if (index < 0 || index >= s_count || !s_screens[index]) return NULL;
@@ -247,6 +270,8 @@ void ls_tui_screen_show(int index)
     if (s_dispatch_cb && s_dispatch_cb(index)) return;
     if (index == s_current) return;
     s_bare = false;
+    s_full = false;
+    s_hold_rotation = false;
     const ls_tui_screen_t *previous = s_screens[s_current];
     if (s_screens[s_current] && s_screens[s_current]->leave)
         s_screens[s_current]->leave();
@@ -522,7 +547,11 @@ static void draw_tabs(tui_surface *sf, int cols, int row, int height)
         const int step = (cols - 1) / ntab;
         /* A camera hole in the strip splits it: half the tabs either side,
            an empty slot for the hole between them. */
-        int sx[LS_TUI_MAX_SCREENS], sw[LS_TUI_MAX_SCREENS], g0, g1;
+        /* Off the stack: sized for the whole directory, and the screen task
+           has little to spare under the deepest screens (FM's scanner hung
+           the board when these grew with LS_TUI_MAX_SCREENS). */
+        static EXT_RAM_BSS_ATTR int sx[LS_TUI_MAX_SCREENS], sw[LS_TUI_MAX_SCREENS];
+        int g0, g1;
         const bool split = ntab <= LS_TUI_MAX_SCREENS &&
                            hole_gap(row, height, &g0, &g1) &&
                            ls_tui_tab_split(cols, ntab, g0, g1, sx, sw);
@@ -832,10 +861,11 @@ void ls_tui_router_draw(tui_surface *sf)
         if (ls_tui_cutout(&hole)) ls_tui_cutout_runaround(sf, hole);
         return;
     }
-    draw_status(sf, cols);
+    const int sr = status_rows();
+    if (sr) draw_status(sf, cols);
     if (th) draw_tabs(sf, cols, 1, th);
 
-    tui_rect area = tui_rect_make(0, 1 + th, cols, rows - 1 - th - hint_rows());
+    tui_rect area = tui_rect_make(0, sr + th, cols, rows - sr - th - hint_rows());
 
     /* The opening animation draws instead of the screen, not over it.
        A screen half-visible behind an animation is worse than either, and
@@ -940,10 +970,10 @@ static bool router_touch_dispatch(int col, int row)
         ls_anim_cancel();
         /* The chrome was drawn during the opening. Body hit rectangles have
            not been drawn yet, so a body tap only dismisses decoration. */
-        if (row >= 1 + th && (!hint_rows() || row != rows - 1)) return true;
+        if (row >= status_rows() + th && (!hint_rows() || row != rows - 1)) return true;
     }
 
-    if (row == 0) return true; /* The status row has no touch controls. */
+    if (row == 0 && status_rows()) return true; /* The status row has no touch controls. */
     if (row >= 1 && row < 1 + th) {
         for (int i = 0; i < tab_count(); i++)
             if (col >= s_tab_x0[i] && col <= s_tab_x1[i]) {
@@ -955,7 +985,7 @@ static bool router_touch_dispatch(int col, int row)
     }
     if (hint_rows() && row == rows - 1) { s_help_open = true; return true; }
 
-    const int body_top = 1 + th, body_h = rows - 1 - th - hint_rows();
+    const int body_top = status_rows() + th, body_h = rows - status_rows() - th - hint_rows();
     if (row < body_top || row >= body_top + body_h) return false;
 
     /* A screen that drew controls hit-tests its own rects. Only a
@@ -977,6 +1007,8 @@ static bool router_touch_dispatch(int col, int row)
 
 bool ls_tui_router_key(ls_tk_t key, char ch)
 {
+    if ((key == LS_TK_WHEEL_UP || key == LS_TK_WHEEL_DOWN) && !(s_screens[s_current] && s_screens[s_current]->wheel))
+        key = key == LS_TK_WHEEL_UP ? LS_TK_UP : LS_TK_DOWN;
 #if defined(ESP_PLATFORM) && LS_HAS_CARTOCORE
     extern bool ls_cartocore_dismiss(void);
     if (key != LS_TK_NONE && ls_cartocore_dismiss()) return true;

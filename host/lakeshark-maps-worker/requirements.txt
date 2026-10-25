@@ -1,0 +1,7 @@
+numpy
+Pillow
+tifffile
+zstandard==0.23.0
+psutil
+blake3
+pyinstaller

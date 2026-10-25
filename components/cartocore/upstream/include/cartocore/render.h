@@ -14,6 +14,7 @@ typedef struct {
     cc_decoded_cache *decoded_cache; /* optional; supplied and owned by caller */
     cc_cell *output_row;
     int scene_ready;
+    int encoded; /* saved holds the cells of the current raster */
 } cc_renderer;
 int cc_renderer_init(cc_renderer *r,cc_arena *arena,int cols,int rows,cc_cell *saved);
 size_t cc_renderer_hot_bytes(int cols,int rows);
@@ -21,6 +22,8 @@ int cc_renderer_init_split(cc_renderer *r,cc_arena *hot,cc_arena *cold,int cols,
 /* Force real raster/encode work, retaining the prepared scene. Caller must not
    reset/use its arenas or decoded cache between this call and cc_render. */
 void cc_renderer_reraster(cc_renderer *r);
+/* cells NULL: raster the planes only (for cc_pixels_rgb565), no cell encode.
+   A later call that asks for cells encodes the same raster then. */
 int cc_render(cc_renderer *r,const cc_ctile *map,unsigned z,int64_t left,int64_t top,
               cc_mode mode,int labels,cc_cell *cells);
 void cc_renderer_invalidate(cc_renderer *r);

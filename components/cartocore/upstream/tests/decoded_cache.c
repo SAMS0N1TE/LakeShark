@@ -1,10 +1,12 @@
 #include "cartocore/render.h"
+#include "cartocore/out.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 static unsigned char arena_bytes[16000000],cache_bytes[4000000];
-static cc_cell cells[240*67],expected[240*67];
+static cc_cell cells[240*67],expected[240*67],untouched[240*67];
+static uint16_t px_full[480*268],px_raster[480*268];
 static unsigned read32(const uint8_t *p) { return p[0]|(unsigned)p[1]<<8|(unsigned)p[2]<<16|(unsigned)p[3]<<24; }
 static unsigned char hot_bytes[200000];
 int main(int argc,char **argv) {
@@ -75,6 +77,19 @@ int main(int argc,char **argv) {
             assert(cc_render(&r,&map,z,left,top,mode,labels,cells)); assert(!memcmp(cells,expected,sizeof(cells)));
             if(budget==2) { assert(c.hits>=hits && c.misses==miss); if(r.scene.features) assert(c.hits>hits); }
             assert(c.used<=c.size);
+            /* Raster only (MAP's picture): the same planes, no cell encode, and
+               a later request for cells at this view still encodes them. */
+            cc_pixel_style style; memset(&style,0,sizeof(style));
+            for(unsigned k=0;k<CC_INK_COUNT;k++) style.rgb[k]=0x102030u*(k+1);
+            cc_pixels_rgb565(&r.planes,&style,px_full);
+            cc_arena_init(&h,hot_bytes,sizeof(hot_bytes)); cc_arena_init(&a,arena_bytes,sizeof(arena_bytes));
+            assert(cc_renderer_init_split(&r,&h,&a,240,67,cells)); r.edges_mode=edges; r.decoded_cache=&c;
+            memset(cells,0x5a,sizeof(cells)); memcpy(untouched,cells,sizeof(cells));
+            assert(cc_render(&r,&map,z,left,top,mode,labels,NULL));
+            assert(!memcmp(cells,untouched,sizeof(cells)));
+            cc_pixels_rgb565(&r.planes,&style,px_raster); assert(!memcmp(px_full,px_raster,sizeof(px_full)));
+            assert(cc_render(&r,&map,z,left,top,mode,labels,NULL));
+            assert(cc_render(&r,&map,z,left,top,mode,labels,cells)); assert(!memcmp(cells,expected,sizeof(cells)));
         }
         if(budget==1) assert(c.evictions);
     }
@@ -83,5 +98,5 @@ int main(int argc,char **argv) {
     assert(cc_renderer_init_split(&r,&h,&a,52,70,cells)); assert(h.used<=24576);
     cc_arena_init(&h,hot_bytes,1); size_t mark2=a.used;
     assert(!cc_renderer_init_split(&r,&h,&a,52,70,cells) && !h.used && a.used==mark2);
-    free(bytes); puts("decoded cache: pinned lifetime, byte budgets, eviction, rollback, pans and warm output passed"); return 0;
+    free(bytes); puts("decoded cache: pinned lifetime, byte budgets, eviction, rollback, pans, warm output and raster-only passed"); return 0;
 }

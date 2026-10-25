@@ -1,0 +1,9 @@
+dependencies:
+  console_simple_init:
+    version: '*'
+  espressif/console_cmd_ifconfig: '*'
+  espressif/console_cmd_ping: '*'
+  idf:
+    version: '>=5.0'
+  protocol_examples_common:
+    path: ${IDF_PATH}/examples/common_components/protocol_examples_common

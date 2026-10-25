@@ -1,5 +1,25 @@
 # LakeShark release notes
 
+## 2.18.0
+
+- Apps: games and tools that run from the SD card, each with its own tile under USER on HOME.
+- App store: terminalbay.com installs, updates and removes apps over USB with one click.
+- Store apps are signed. An app from anywhere else asks once before it opens, and one that stopped the board asks again.
+- LakeShark hub: the board's screen live in the browser, the SD card as a file manager, and the console.
+- App SDK: write apps in C. SNAKE and DICE come as examples.
+- MAP picture view: three times lighter when the map is still, and a new picture after a pan arrives in under half the time.
+- 3D for apps: a dot engine with meshes, terrain, shadows, fog and cameras. ORBIT and DICE 3D show it off.
+- More example apps: PINBALL and MESHLING, with colour icons on HOME.
+- CARRIER: an early access space game. Trade, fight and explore a galaxy where live ADS-B aircraft fly as ships. Still in progress.
+- Full screen apps have a close button on the glass, and the receiver rests while an app is open.
+- The board's screen in a phone browser, served by the board at lakeshark.local.
+- LINK: a REMOTE page for using the board from a phone or a PC.
+- Desktop: one click opens LakeShark in its own window on your computer, with mouse drag, held keys and a settings panel for sound, voice, mesh and screen.
+- ESP32-P4-NANO: works as a desktop computer, the window sets its screen size, and MAP and TILES run on it with map downloads.
+- MESH: hashtag channels, plus `mesh chan` and `mesh send` on the console.
+- App installs from a computer are about four times faster.
+- New icons for LORA LABS and DETECTOR.
+
 ## 2.17.1
 
 - FILES: WAV recordings play with a tap, including P25 calls.

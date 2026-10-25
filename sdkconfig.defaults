@@ -63,3 +63,19 @@ CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV=n
 # Nothing here accepts a TLS connection: OTA, map tiles and the site are all
 # clients. Client-only drops the server handshake and the server tickets.
 CONFIG_MBEDTLS_TLS_CLIENT_ONLY=y
+# libssh (the SSH terminal, ls_rterm_ssh.c) will not build against an
+# mbedTLS without threading, and with it the SSH task and HTTPS can share
+# the crypto library safely.
+CONFIG_MBEDTLS_THREADING_C=y
+CONFIG_MBEDTLS_THREADING_ALT=n
+CONFIG_MBEDTLS_THREADING_PTHREAD=y
+
+# Native SD apps: PSRAM only, bounded custom symbol resolver.
+CONFIG_ELF_LOADER=y
+CONFIG_ELF_LOADER_LOAD_PSRAM=y
+CONFIG_ELF_LOADER_LIBC_SYMBOLS=n
+CONFIG_ELF_LOADER_ESPIDF_SYMBOLS=n
+CONFIG_ELF_LOADER_CUSTOMER_SYMBOLS=n
+CONFIG_ELF_DYNAMIC_LOAD_SHARED_OBJECT=n
+CONFIG_ELF_LOADER_NUMBER_SYMBOLS=1
+CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y

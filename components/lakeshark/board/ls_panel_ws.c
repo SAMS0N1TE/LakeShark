@@ -114,6 +114,8 @@ static const ws_panel_t CATALOG[] = {
 #define TERM_CH    17
 #define TERM_COLS  118
 #define TERM_ROWS  28
+#define TERM_COLS_MAX 200          /* 'panel term' and 'term size' stop here */
+#define TERM_ROWS_MAX 60
 /* Portrait is its own size, not the landscape one on its side: turned, a
    wide grid came out as a tall one no screen was laid out for. 510x1200 is
    the portrait the UI was drawn for (the T-Display's 52x70, near enough). */
@@ -540,8 +542,10 @@ static esp_err_t virtual_up(void)
     s_term_land_w = VIRTUAL.w = (uint16_t)((cols + 2) * TERM_CW);
     s_term_land_h = VIRTUAL.h = (uint16_t)((rows + 2) * TERM_CH);
     __atomic_store_n(&s_term_wh, (uint32_t)VIRTUAL.w << 16 | VIRTUAL.h, __ATOMIC_RELEASE);
-    /* One buffer that holds either view; ls_panel_ws_term_view picks which. */
-    size_t px = (size_t)VIRTUAL.w * VIRTUAL.h;
+    /* One buffer that holds either view, at the biggest grid 'term size' can
+       ask for, so a window that is resized never needs a new one;
+       ls_panel_ws_term_view picks which. */
+    size_t px = (size_t)((TERM_COLS_MAX + 2) * TERM_CW) * ((TERM_ROWS_MAX + 2) * TERM_CH);
     if (px < (size_t)TERM_PORTRAIT_W * TERM_PORTRAIT_H) px = (size_t)TERM_PORTRAIT_W * TERM_PORTRAIT_H;
     s_frames[s_back] = heap_caps_calloc(px, sizeof(uint16_t), MALLOC_CAP_SPIRAM);
     if (!s_frames[s_back]) return s_result = ESP_ERR_NO_MEM;
@@ -714,6 +718,22 @@ esp_err_t ls_panel_blank(unsigned fade_ms)
 }
 
 const char *ls_panel_ws_name(void) { return s_model ? s_model->name : NULL; }
+
+bool ls_panel_ws_term_resize(int cols, int rows)
+{
+    if (s_model != &VIRTUAL || cols < 40 || rows < 12 || cols > TERM_COLS_MAX || rows > TERM_ROWS_MAX) return false;
+    const uint16_t w = (uint16_t)((cols + 2) * TERM_CW), h = (uint16_t)((rows + 2) * TERM_CH);
+    if (w == s_term_land_w && h == s_term_land_h) return false;
+    s_term_land_w = VIRTUAL.w = w;
+    s_term_land_h = VIRTUAL.h = h;
+    __atomic_store_n(&s_term_wh, (uint32_t)w << 16 | h, __ATOMIC_RELEASE);
+    saved_t sv;                         /* and the next start comes up the same size */
+    saved_read(&sv);
+    sv.tcols = (uint8_t)cols;
+    sv.trows = (uint8_t)rows;
+    saved_write(&sv);
+    return true;
+}
 
 bool ls_panel_ws_term_view(bool portrait)
 {
@@ -902,6 +922,7 @@ void ls_panel_ws_register_console(void)
 const char *ls_panel_ws_name(void) { return NULL; }
 bool ls_panel_ws_size(int *w, int *h) { (void)w; (void)h; return false; }
 bool ls_panel_ws_term_view(bool portrait) { (void)portrait; return false; }
+bool ls_panel_ws_term_resize(int cols, int rows) { (void)cols; (void)rows; return false; }
 bool ls_panel_ws_touch_map(ls_panel_ws_touch_map_t *out) { (void)out; return false; }
 void ls_panel_ws_register_console(void) {}
 #endif

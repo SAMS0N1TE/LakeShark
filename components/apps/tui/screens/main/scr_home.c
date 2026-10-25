@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 
@@ -24,6 +25,10 @@
 extern const ls_tui_screen_t ls_scr_home;
 
 #define MAX_TILES LS_TUI_MAX_SCREENS
+/* Directory capacity is not a TUI stack budget. The UI task is the sole
+   caller; drawing and input reuse the same zero-init PSRAM scratch. */
+EXT_RAM_BSS_ATTR static ls_tile_t s_tiles[MAX_TILES];
+EXT_RAM_BSS_ATTR static const ls_app_t *s_apps[MAX_TILES];
 /* Last rendered capacity also drives keyboard and touch page offsets. */
 static int s_page_tiles = 6;
 #define PAGE_TILES s_page_tiles
@@ -175,8 +180,8 @@ static void draw(tui_surface *sf, tui_rect area)
         ls_btn_bar_raised_slot(sf,tui_rect_make(0,0,0,0),NULL,0,-1,LS_BTN_SLOT_QUICK);
         draw_error(sf, area, error); return;
     }
-    ls_tile_t tiles[MAX_TILES];
-    const ls_app_t *apps[MAX_TILES];
+    ls_tile_t *tiles = s_tiles;
+    const ls_app_t **apps = s_apps;
     const int n = build_tiles(tiles, apps, MAX_TILES);
     if (s_sel >= n) s_sel = n ? n - 1 : 0;
 
@@ -257,8 +262,8 @@ static bool key(ls_tk_t k, char ch)
     if (s_group == 3 && k == LS_TK_CHAR && (ch == 'e' || ch == 'E') && ls_userapp_last_error()) {
         s_error_detail = true; s_error_page = 0; return true;
     }
-    ls_tile_t tiles[MAX_TILES];
-    const ls_app_t *apps[MAX_TILES];
+    ls_tile_t *tiles = s_tiles;
+    const ls_app_t **apps = s_apps;
     const int n = build_tiles(tiles, apps, MAX_TILES);
     int cols = 1, rows = 1;
     ls_tile_shape(&cols, &rows);
@@ -331,8 +336,8 @@ static bool touch(int col, int row)
     if (hit < 0) return true;
     const int i = hit + s_tile_page * PAGE_TILES;
 
-    ls_tile_t tiles[MAX_TILES];
-    const ls_app_t *apps[MAX_TILES];
+    ls_tile_t *tiles = s_tiles;
+    const ls_app_t **apps = s_apps;
     const int n = build_tiles(tiles, apps, MAX_TILES);
     if (i >= n) return true;
 

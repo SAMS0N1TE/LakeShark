@@ -25,6 +25,9 @@ bool ls_panel_ws_size(int *w, int *h);
    size of its own, both unturned; this picks the one the framebuffer reports.
    False when the running panel is real glass. */
 bool ls_panel_ws_term_view(bool portrait);
+/* The terminal-only screen's landscape grid, live and kept for the next
+   start (40-200 x 12-60). True when it changed: the UI then regrids. */
+bool ls_panel_ws_term_resize(int cols, int rows);
 
 void ls_panel_ws_register_console(void);
 

@@ -1,0 +1,10 @@
+dependencies:
+  david-cermak/libssh:
+    version: '*'
+  espressif/console_cmd_ifconfig:
+    version: ^1.0.0
+  espressif/console_cmd_ping:
+    version: ^1.1.0
+  espressif/sock_utils: ^0.2.2
+  protocol_examples_common:
+    path: ${IDF_PATH}/examples/common_components/protocol_examples_common

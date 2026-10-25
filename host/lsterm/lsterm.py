@@ -513,7 +513,13 @@ def main():
     if args[0] == "--sim":
         here = os.path.dirname(os.path.abspath(__file__))
         exe = os.path.join(here, "..", "..", "bench", "build", "lssim.exe" if os.name == "nt" else "lssim")
-        sys.exit(os.spawnv(os.P_WAIT, exe, [exe, args[1] if len(args) > 1 else "home", "-l", "--term"]))
+        app = args[1] if len(args) > 1 else "home"
+        if app.startswith("lap:"):              # a native app built into the simulator: lap:carrier
+            os.environ["LAPSIM"], app = app[4:], "lap"
+            os.environ.setdefault("LSSIM_IMMERSIVE", "1")
+        if "--grid" in args:                    # a Nano's terminal grid, e.g. --grid 160x45
+            os.environ["LSSIM_GRID"] = args[args.index("--grid") + 1]
+        sys.exit(os.spawnv(os.P_WAIT, exe, [exe, app, "-l", "--term"]))
     baud = int(args[args.index("--baud") + 1]) if "--baud" in args else 2000000    # faster gained nothing on a T-Display-P4
     if args[0].startswith("tcp://"):
         host, _, port = args[0][6:].partition(":")

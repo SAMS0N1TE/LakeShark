@@ -452,6 +452,7 @@ static int queue_hint(void *ctx,unsigned z,uint32_t x,uint32_t y,uint64_t offset
 static int redraw(render_state *s,const char *action)
 {
     int64_t start=esp_timer_get_time();
+    s->raster_only=false; /* the console shows cells, even on MAP's picture state */
     if (!render_frame(s,CC_QUADRANT,CC_EDGES_CRISP,s->left,s->top)) {
         printf("carto: render failed z%u (map z%u..%u), arena peak=%zu\n",s->z,s->map.zmin,s->map.zmax,s->arena.peak); return 1;
     }

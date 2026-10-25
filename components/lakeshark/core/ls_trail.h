@@ -31,6 +31,9 @@ void ls_trail(ls_trail_slot_t slot, const char *tag);
 
 /* Once at boot: keeps the dead run's trail for printing, then starts over. */
 void ls_trail_boot(void);
+/* Native callback breadcrumb shares the RTC trail and reset classification. */
+void ls_trail_native_callback(const char *id); /* NULL clears after return */
+const char *ls_trail_last_native(void); /* panic/watchdog only, NULL otherwise */
 /* Prints the previous run's trail (if kept) and the live one. */
 void ls_trail_print(void);
 /* The dead run's trail on one line ("tui DIAG 812.3s, link p25 800.1s"),

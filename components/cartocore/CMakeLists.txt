@@ -20,7 +20,9 @@ idf_component_register(SRCS ${CC_IDF_SRCS} INCLUDE_DIRS ${CC_PUBLIC_INCLUDE_DIRS
 target_compile_options(${COMPONENT_LIB} PRIVATE -O2 -Wall -Wextra)
 target_compile_features(${COMPONENT_LIB} PUBLIC c_std_11)
 
-if(IDF_TARGET STREQUAL "esp32p4")
+# The PIE kernels fault on P4 rev 3 (the Nano v3.1 panicked at cc_pie_task_enter on its
+# first boot with TILES): rev 3 builds take the portable C kernels.
+if(IDF_TARGET STREQUAL "esp32p4" AND NOT (CONFIG_ESP32P4_REV_MIN_FULL GREATER_EQUAL 300))
     target_sources(${COMPONENT_LIB} PRIVATE "${CC_P4_ASM}")
     target_compile_definitions(${COMPONENT_LIB} PUBLIC CC_HAVE_ESP32P4_PIE=1)
     set_source_files_properties("${CC_P4_ASM}"

@@ -12,7 +12,7 @@ extern "C" {
 #include "ls_tui.h"
 
 /* Shared by the app directory and router so every registered app fits. */
-#define LS_TUI_MAX_SCREENS 32
+#define LS_TUI_MAX_SCREENS 64
 
 /* Keys as the screens see them. Characters arrive as themselves; everything
    else is one of these. Deliberately the same vocabulary as tui_key_t in
@@ -29,6 +29,9 @@ typedef enum {
     LS_TK_ALT, LS_TK_CTRL, LS_TK_FN, LS_TK_META, LS_TK_MIC,
 
     LS_TK_MIC_HOLD,
+    /* The mouse wheel, from a remote screen. Only a screen with .wheel set gets
+       these; every other screen gets UP and DOWN, as it always did. */
+    LS_TK_WHEEL_UP, LS_TK_WHEEL_DOWN,
 } ls_tk_t;
 
 typedef struct ls_tui_screen_s {
@@ -57,6 +60,7 @@ typedef struct ls_tui_screen_s {
        reservation is released on leave). Two such screens can diff across
        a switch; direct framebuffer writers retain the full repaint. */
     bool diff_switch;
+    bool wheel;              /* takes LS_TK_WHEEL_* rather than UP/DOWN for the mouse wheel */
 } ls_tui_screen_t;
 
 /* Registration is by pointer and the descriptor must outlive the program -
@@ -65,6 +69,9 @@ int  ls_tui_screen_register(const ls_tui_screen_t *screen);
 int  ls_tui_screen_count(void);
 int  ls_tui_screen_current(void);
 bool ls_tui_screen_holds_rotation(void);
+/* The current screen asks to keep its orientation for now, on top of its
+   hold_auto_rotation; any screen switch lets go, as with set_bare. */
+void ls_tui_screen_hold_rotation(bool on);
 /* Short name of a registered screen, or NULL when the index is out of
    range. Exists so the console can say which screen an injected key
    reached - driving this board blind over serial is the normal case. */
@@ -87,6 +94,10 @@ void ls_tui_screen_show(int index);
 /* Drop the tab strip while the current screen wants its room; any screen
    switch brings it back. */
 void ls_tui_screen_set_bare(bool on);
+/* Bare and no status or hint row either: every cell to the screen. */
+void ls_tui_screen_set_full(bool on);
+bool ls_tui_screen_is_full(void);
+bool ls_tui_screen_is_bare(void);
 
 /* "Run this receiver", or NULL for "nothing here needs one". */
 

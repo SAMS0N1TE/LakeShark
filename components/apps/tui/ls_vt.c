@@ -139,7 +139,122 @@ void ls_vt_screen_init(ls_vt_screen *s, int cols, int rows, ls_vt_cell *shown)
     s->rows = rows;
     s->shown = shown;
     s->full = true;
+    s->clear = false;
     s->fg = s->bg = 0xFFFFFFFFu;
+    s->term_cols = s->term_rows = 0;
+    s->x0 = s->y0 = 0;
+    s->quadrants = false;
+    s->bar_fg = s->bar_bg = 0xFFFFFFFFu;
+}
+
+/* --- the view: a terminal smaller than the grid ------------------------ */
+
+static bool cropped(const ls_vt_screen *s)
+{
+    return s->term_cols > 0 && (s->term_cols < s->cols || s->term_rows < s->rows);
+}
+
+void ls_vt_screen_view(const ls_vt_screen *s, int *w, int *h)
+{
+    const bool crop = cropped(s);
+    *w = crop && s->term_cols < s->cols ? s->term_cols : s->cols;
+    *h = crop && s->term_rows <= s->rows ? s->term_rows - 1 : s->rows;   /* the bar's row comes off */
+}
+
+static void clamp_view(ls_vt_screen *s)
+{
+    int w, h;
+    ls_vt_screen_view(s, &w, &h);
+    if (s->x0 > s->cols - w) s->x0 = s->cols - w;
+    if (s->y0 > s->rows - h) s->y0 = s->rows - h;
+    if (s->x0 < 0) s->x0 = 0;
+    if (s->y0 < 0) s->y0 = 0;
+}
+
+bool ls_vt_screen_resize(ls_vt_screen *s, int term_cols, int term_rows)
+{
+    if (term_cols < 10 || term_rows < 3) term_cols = term_rows = 0;   /* not a size anyone can use */
+    if (term_cols == s->term_cols && term_rows == s->term_rows) return false;
+    s->term_cols = term_cols;
+    s->term_rows = term_rows;
+    clamp_view(s);
+    s->clear = s->full = true;
+    return true;
+}
+
+void ls_vt_screen_pan(ls_vt_screen *s, int dcols, int drows)
+{
+    const int x0 = s->x0, y0 = s->y0;
+    s->x0 += dcols;
+    s->y0 += drows;
+    clamp_view(s);
+    if (s->x0 != x0 || s->y0 != y0) s->full = true;
+}
+
+/* The bar's buttons, left to right, an equal share of its width each. */
+enum { BAR_LEFT, BAR_UP, BAR_WHERE, BAR_DOWN, BAR_RIGHT };
+
+static int bar_buttons(const ls_vt_screen *s, int *b)
+{
+    int w, h, n = 0;
+    ls_vt_screen_view(s, &w, &h);
+    const bool across = w < s->cols, down = h < s->rows;
+    if (across) b[n++] = BAR_LEFT;
+    if (down) b[n++] = BAR_UP;
+    b[n++] = BAR_WHERE;
+    if (down) b[n++] = BAR_DOWN;
+    if (across) b[n++] = BAR_RIGHT;
+    return n;
+}
+
+/* The bar as text, w ASCII characters: ASCII so that no font lacks it and
+   no terminal takes a character in it for two cells. */
+static void bar_text(const ls_vt_screen *s, int w, int h, char *t)
+{
+    int b[5];
+    const int n = bar_buttons(s, b);
+    memset(t, ' ', (size_t)w);
+    for (int i = 0; i < n; i++) {
+        char label[24];
+        switch (b[i]) {
+        case BAR_LEFT:  snprintf(label, sizeof(label), "<"); break;
+        case BAR_RIGHT: snprintf(label, sizeof(label), ">"); break;
+        case BAR_UP:    snprintf(label, sizeof(label), n > 3 ? "^" : "^ UP"); break;
+        case BAR_DOWN:  snprintf(label, sizeof(label), n > 3 ? "v" : "v DOWN"); break;
+        default:
+            if (h < s->rows) snprintf(label, sizeof(label), "%d-%d/%d", s->y0 + 1, s->y0 + h, s->rows);
+            else             snprintf(label, sizeof(label), "%d-%d/%d", s->x0 + 1, s->x0 + w, s->cols);
+            break;
+        }
+        const int a = i * w / n, z = (i + 1) * w / n;
+        int len = (int)strlen(label);
+        if (len > z - a) len = z - a;
+        memcpy(t + a + (z - a - len) / 2, label, (size_t)len);
+    }
+}
+
+bool ls_vt_screen_tap(ls_vt_screen *s, int col, int row, int *gcol, int *grow)
+{
+    int w, h;
+    ls_vt_screen_view(s, &w, &h);
+    if (col < 0 || row < 0 || col >= w) return false;
+    if (row == h && cropped(s)) {
+        int b[5];
+        const int n = bar_buttons(s, b);
+        const int step_r = h / 2 > 1 ? h / 2 : 1, step_c = w / 2 > 1 ? w / 2 : 1;
+        switch (b[col * n / w]) {
+        case BAR_LEFT:  ls_vt_screen_pan(s, -step_c, 0); break;
+        case BAR_RIGHT: ls_vt_screen_pan(s, step_c, 0); break;
+        case BAR_UP:    ls_vt_screen_pan(s, 0, -step_r); break;
+        case BAR_DOWN:  ls_vt_screen_pan(s, 0, step_r); break;
+        default: break;
+        }
+        return false;
+    }
+    if (row >= h) return false;
+    *gcol = col + s->x0;
+    *grow = row + s->y0;
+    return true;
 }
 
 /* The buffer is the caller's: a whole screen wants 2 KB, but entering and
@@ -181,16 +296,48 @@ static void put_utf8(sink *k, uint32_t cp)
     put(k, u, n);
 }
 
+/* U+1FB00..1FB3B as the quadrant ls_vt_resolve would have chosen. */
+static uint32_t fold(uint32_t cp)
+{
+    if (cp < 0x1FB00u || cp > 0x1FB3Bu) return cp;
+    int bits = (int)(cp - 0x1FB00u) + 1;
+    bits += bits >= 21;
+    bits += bits >= 42;
+    return sextant(bits, true);
+}
+
+static void put_colours(sink *k, bool new_fg, bool new_bg, uint32_t f, uint32_t b)
+{
+    char seq[64];
+    if (new_fg && new_bg) {
+        put(k, seq, (size_t)snprintf(seq, sizeof(seq), "\x1b[38;2;%u;%u;%u;48;2;%u;%u;%um",
+            (unsigned)(f >> 16), (unsigned)(f >> 8 & 255), (unsigned)(f & 255),
+            (unsigned)(b >> 16), (unsigned)(b >> 8 & 255), (unsigned)(b & 255)));
+    } else if (new_fg || new_bg) {
+        const uint32_t v = new_fg ? f : b;
+        put(k, seq, (size_t)snprintf(seq, sizeof(seq), "\x1b[%d;2;%u;%u;%um", new_fg ? 38 : 48,
+            (unsigned)(v >> 16), (unsigned)(v >> 8 & 255), (unsigned)(v & 255)));
+    }
+}
+
 size_t ls_vt_render(ls_vt_screen *s, const ls_vt_cell *cells, ls_vt_out_fn out, void *ctx)
 {
     char buf[2048];
     sink k = {.buf = buf, .cap = sizeof(buf), .out = out, .ctx = ctx};
     int at_r = -1, at_c = -1;
-    uint32_t fg = s->full ? 0xFFFFFFFFu : s->fg, bg = s->full ? 0xFFFFFFFFu : s->bg;
     bool any = false;
+    if (s->clear) {
+        puts_(&k, "\x1b[?2026h\x1b[0m\x1b[2J");
+        any = true;
+        s->clear = false;
+        s->full = true;
+    }
+    uint32_t fg = s->full ? 0xFFFFFFFFu : s->fg, bg = s->full ? 0xFFFFFFFFu : s->bg;
     char seq[64];
-    for (int r = 0; r < s->rows; r++) {
-        for (int c = 0; c < s->cols; c++) {
+    int vw, vh;
+    ls_vt_screen_view(s, &vw, &vh);
+    for (int r = s->y0; r < s->y0 + vh; r++) {
+        for (int c = s->x0; c < s->x0 + vw; c++) {
             const size_t i = (size_t)r * s->cols + c;
             const ls_vt_cell *x = &cells[i];
             ls_vt_cell *was = &s->shown[i];
@@ -202,24 +349,35 @@ size_t ls_vt_render(ls_vt_screen *s, const ls_vt_cell *cells, ls_vt_out_fn out, 
                 (!bg_shows || was->bg == x->bg)) continue;
             if (!any) { puts_(&k, "\x1b[?2026h"); any = true; }
             if (r != at_r || c != at_c) {
-                put(&k, seq, (size_t)snprintf(seq, sizeof(seq), "\x1b[%d;%dH", r + 1, c + 1));
+                put(&k, seq, (size_t)snprintf(seq, sizeof(seq), "\x1b[%d;%dH", r - s->y0 + 1, c - s->x0 + 1));
             }
             const bool new_fg = fg_shows && x->fg != fg, new_bg = bg_shows && x->bg != bg;
-            if (new_fg && new_bg) {
-                put(&k, seq, (size_t)snprintf(seq, sizeof(seq), "\x1b[38;2;%u;%u;%u;48;2;%u;%u;%um",
-                    (unsigned)(x->fg >> 16), (unsigned)(x->fg >> 8 & 255), (unsigned)(x->fg & 255),
-                    (unsigned)(x->bg >> 16), (unsigned)(x->bg >> 8 & 255), (unsigned)(x->bg & 255)));
-            } else if (new_fg || new_bg) {
-                const uint32_t v = new_fg ? x->fg : x->bg;
-                put(&k, seq, (size_t)snprintf(seq, sizeof(seq), "\x1b[%d;2;%u;%u;%um", new_fg ? 38 : 48,
-                    (unsigned)(v >> 16), (unsigned)(v >> 8 & 255), (unsigned)(v & 255)));
-            }
+            put_colours(&k, new_fg, new_bg, x->fg, x->bg);
             if (new_fg) fg = x->fg;
             if (new_bg) bg = x->bg;
-            put_utf8(&k, x->cp);
+            put_utf8(&k, s->quadrants ? fold(x->cp) : x->cp);
             at_r = r; at_c = c + 1;
             *was = *x;
         }
+    }
+    /* The bar, in the colours of the grid's top line (the status bar). */
+    if (cropped(s) && (s->full || cells[0].fg != s->bar_fg || cells[0].bg != s->bar_bg)) {
+        char t[256];
+        const int w = vw < (int)sizeof(t) ? vw : (int)sizeof(t);
+        bar_text(s, w, vh, t);
+        if (!any) { puts_(&k, "\x1b[?2026h"); any = true; }
+        put(&k, seq, (size_t)snprintf(seq, sizeof(seq), "\x1b[%d;1H", vh + 1));
+        const bool new_fg = cells[0].fg != fg, new_bg = cells[0].bg != bg;
+        put_colours(&k, new_fg, new_bg, cells[0].fg, cells[0].bg);
+        fg = cells[0].fg;
+        bg = cells[0].bg;
+        /* The terminal's last cell is erased in the bar's colour, not written:
+           a terminal that wraps as soon as it is written scrolls the screen. */
+        const bool corner = vh + 1 == s->term_rows && w == s->term_cols;
+        put(&k, t, (size_t)(corner ? w - 1 : w));
+        if (corner) puts_(&k, "\x1b[X");
+        s->bar_fg = fg;
+        s->bar_bg = bg;
     }
     s->full = false;
     s->fg = fg;
@@ -236,7 +394,7 @@ size_t ls_vt_enter(ls_vt_out_fn out, void *ctx, int cols, int rows)
     char seq[48];
     /* Ask for the grid's size; terminals that allow it resize, the rest ignore it. */
     put(&k, seq, (size_t)snprintf(seq, sizeof(seq), "\x1b[8;%d;%dt", rows, cols));
-    puts_(&k, "\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[?1000h\x1b[?1006h\x1b]0;LakeShark\x07\x1b[0m\x1b[2J");
+    puts_(&k, "\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b]0;LakeShark\x07\x1b[0m\x1b[2J");
     flush(&k);
     return k.total;
 }
@@ -245,9 +403,62 @@ size_t ls_vt_leave(ls_vt_out_fn out, void *ctx)
 {
     char buf[64];
     sink k = {.buf = buf, .cap = sizeof(buf), .out = out, .ctx = ctx};
-    puts_(&k, "\x1b[?1006l\x1b[?1000l\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l");
+    puts_(&k, "\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l");
     flush(&k);
     return k.total;
+}
+
+size_t ls_vt_ask_size(ls_vt_out_fn out, void *ctx)
+{
+    /* Forward and down, not a cursor position: those stop at the edge in
+       every terminal, where one sent past it is not held there by all.
+       The cursor goes back where it was once the report is asked for. */
+    static const char ask[] = "\x1b" "7\x1b[999C\x1b[999B\x1b[6n\x1b" "8";
+    out(ctx, ask, sizeof(ask) - 1);
+    return sizeof(ask) - 1;
+}
+
+/* --- telnet ------------------------------------------------------------ */
+
+enum { TN_DATA, TN_IAC, TN_VERB, TN_SB, TN_SB_IAC };
+
+size_t ls_vt_telnet_strip(ls_vt_telnet *t, uint8_t *b, size_t n)
+{
+    size_t o = 0;
+    for (size_t i = 0; i < n; i++) {
+        const uint8_t x = b[i];
+        switch (t->state) {
+        case TN_DATA:
+            if (x == 0xFF) t->state = TN_IAC; else b[o++] = x;
+            break;
+        case TN_IAC:
+            if (x == 0xFF)      { b[o++] = x; t->state = TN_DATA; }
+            else if (x == 0xFA) { t->sb_n = 0; t->state = TN_SB; }
+            else                t->state = x >= 0xFB ? TN_VERB : TN_DATA;
+            break;
+        case TN_VERB:
+            t->state = TN_DATA;
+            break;
+        case TN_SB:
+            if (x == 0xFF) t->state = TN_SB_IAC;
+            else if (t->sb_n < (int)sizeof(t->sb)) t->sb[t->sb_n++] = x;
+            break;
+        case TN_SB_IAC:
+            if (x == 0xFF) {                       /* a 255 inside it, doubled */
+                if (t->sb_n < (int)sizeof(t->sb)) t->sb[t->sb_n++] = x;
+                t->state = TN_SB;
+                break;
+            }
+            if (t->sb_n >= 5 && t->sb[0] == 31) {  /* NAWS: width and height, 16 bits each */
+                t->cols = t->sb[1] << 8 | t->sb[2];
+                t->rows = t->sb[3] << 8 | t->sb[4];
+                t->sized = true;
+            }
+            t->state = TN_DATA;
+            break;
+        }
+    }
+    return o;
 }
 
 /* --- input ------------------------------------------------------------ */
@@ -305,15 +516,28 @@ static int take(ls_vt_input *in, ls_vt_event *ev, int *n, int max)
     params[pn] = 0;
     if (params[0] == '<' && (final == 'M' || final == 'm')) {   /* SGR mouse */
         int btn = 0, x = 0, y = 0;
-        if (sscanf(params + 1, "%d;%d;%d", &btn, &x, &y) == 3 && final == 'M') {
-            if (btn == 64)      key(ev, n, max, LS_TK_UP, 0);
-            else if (btn == 65) key(ev, n, max, LS_TK_DOWN, 0);
+        if (sscanf(params + 1, "%d;%d;%d", &btn, &x, &y) == 3 && final == 'm') {
+            if ((btn & 3) == 0 && !(btn & 64))
+                event(ev, n, max, (ls_vt_event){.type = LS_VT_EV_UP, .col = x - 1, .row = y - 1});
+        } else if (sscanf(params + 1, "%d;%d;%d", &btn, &x, &y) == 3 && final == 'M') {
+            if ((btn & 32) && (btn & 3) == 0)          /* motion with the left button held */
+                event(ev, n, max, (ls_vt_event){.type = LS_VT_EV_DRAG, .col = x - 1, .row = y - 1});
+            else if (btn & 32) {}                      /* motion with no button, or another one */
+            else if (btn == 64 || btn == 65)
+                event(ev, n, max, (ls_vt_event){.type = LS_VT_EV_KEY, .key = btn == 64 ? LS_TK_UP : LS_TK_DOWN,
+                                                .wheel = true, .col = x - 1, .row = y - 1});
             else if ((btn & ~(4 | 8 | 16)) == 0)
                 event(ev, n, max, (ls_vt_event){.type = LS_VT_EV_TAP, .col = x - 1, .row = y - 1});
         }
         return end + 1;
     }
     const int p1 = params[0] >= '0' && params[0] <= '9' ? atoi(params) : 0;
+    int rows = 0, cols = 0;
+    if (final == 'R' && in->want_size && sscanf(params, "%d;%d", &rows, &cols) == 2) {
+        in->want_size = false;                     /* the cursor report: where it stopped is the size */
+        event(ev, n, max, (ls_vt_event){.type = LS_VT_EV_SIZE, .col = cols, .row = rows});
+        return end + 1;
+    }
     switch (final) {
     case 'A': key(ev, n, max, LS_TK_UP, 0); break;
     case 'B': key(ev, n, max, LS_TK_DOWN, 0); break;

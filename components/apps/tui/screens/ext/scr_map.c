@@ -920,6 +920,12 @@ static uint32_t s_pic_serial, s_pic_shown;
 static double s_pic_lat, s_pic_lon;
 static unsigned s_pic_z;
 static bool s_pic_have;
+/* What s_pic_view was last built from. A view that has not changed keeps its
+   serial, so the image layer neither redraws nor re-compares it. */
+static bool s_pic_built;
+static uint32_t s_pic_built_serial;
+static int s_pic_built_dx, s_pic_built_dy;
+static uint16_t s_pic_built_ground;
 
 static bool picture_prepare(double lat, double lon, unsigned z, int pw, int ph, int tw, int th, bool labels)
 {
@@ -929,7 +935,7 @@ static bool picture_prepare(double lat, double lon, unsigned z, int pw, int ph, 
         heap_caps_free(s_pic); heap_caps_free(s_pic_view);
         s_pic = heap_caps_malloc((size_t)pw * ph * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         s_pic_view = heap_caps_malloc((size_t)pw * ph * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        s_pic_w = pw; s_pic_h = ph; s_pic_serial = 0; s_pic_have = false;
+        s_pic_w = pw; s_pic_h = ph; s_pic_serial = 0; s_pic_have = false; s_pic_built = false;
         if (!s_pic || !s_pic_view) return false;
     }
     double flat, flon; unsigned fz;
@@ -943,6 +949,10 @@ static bool picture_prepare(double lat, double lon, unsigned z, int pw, int ph, 
     const double oy = (merc_y(s_pic_lat) - merc_y(lat)) * world;
     const int dx = (int)lrint(ox), dy = (int)lrint(-oy);
     const uint16_t ground = carto_rgb565(palette()->ground);
+    if (s_pic_built && s_pic_built_serial == s_pic_serial && s_pic_built_dx == dx &&
+        s_pic_built_dy == dy && s_pic_built_ground == ground) return true;
+    s_pic_built = true; s_pic_built_serial = s_pic_serial;
+    s_pic_built_dx = dx; s_pic_built_dy = dy; s_pic_built_ground = ground;
     if (!dx && !dy) { memcpy(s_pic_view, s_pic, (size_t)pw * ph * 2); }
     else for (int y = 0; y < ph; y++) {
         uint16_t *out = s_pic_view + (size_t)y * pw;
@@ -960,6 +970,7 @@ static void picture_release(void)
     ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
     heap_caps_free(s_pic); heap_caps_free(s_pic_view);
     s_pic = s_pic_view = NULL; s_pic_w = s_pic_h = 0; s_pic_have = false; s_pic_serial = 0;
+    s_pic_built = false;
 }
 
 static void picture_present(tui_surface *sf, tui_rect a, int pw, int ph)

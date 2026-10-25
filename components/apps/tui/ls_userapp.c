@@ -9,6 +9,10 @@
 #include <string.h>
 
 #include "ls_app.h"
+#ifdef ESP_PLATFORM
+#include "ls_lap.h"
+#include "ls_lap_storage.h"
+#endif
 #include "ls_icons.h"
 #include "ls_tui_screen.h"
 #include "ls_tui_ui.h"
@@ -432,6 +436,12 @@ int ls_userapp_load_dir(const char *dir)
 
     /* Opening the directory is the card-present test. A missing card is the
        normal case on a board with an empty slot and must not be an error. */
+#ifdef ESP_PLATFORM
+    if (!ls_lap_recover_dir(dir)) {
+        snprintf(s_last_err, sizeof(s_last_err), "app directory recovery failed");
+        return 0;
+    }
+#endif
     DIR *d = opendir(dir);
     if (!d) return 0;
 
@@ -439,13 +449,23 @@ int ls_userapp_load_dir(const char *dir)
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         const char *dot = strrchr(ent->d_name, '.');
+#ifdef ESP_PLATFORM
+        if (dot && strcmp(dot, ".lap") == 0) {
+            char native_path[192];
+            int n = snprintf(native_path, sizeof(native_path), "%s/%s", dir, ent->d_name);
+            if (n > 0 && n < (int)sizeof(native_path) && ls_lap_scan_file(native_path) > 0) added++;
+            else snprintf(s_last_err, sizeof(s_last_err), "%s: %s", ent->d_name,
+                          ls_lap_last_error() ? ls_lap_last_error() : "path too long");
+            continue;
+        }
+#endif
         if (!dot || strcmp(dot, ".lsapp") != 0) continue;
         if (s_loaded >= LS_UA_MAX_APPS) {
 
             snprintf(s_last_err, sizeof(s_last_err),
                      "%s: directory full at %d apps", ent->d_name,
                      LS_UA_MAX_APPS);
-            break;
+            continue;
         }
         char path[160];
         snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);

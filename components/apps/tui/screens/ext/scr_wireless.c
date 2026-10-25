@@ -5,9 +5,12 @@
 #include "../../ls_wireless.h"
 #include "../../ls_survey_ui.h"
 #include "../../ls_options.h"
+#include "../../ls_rterm.h"
 #include "esp_attr.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define INK(c) TUI_ATTR((c), TUI_BLACK)
 #define WHITE INK(TUI_WHITE | TUI_BRIGHT)
@@ -158,11 +161,248 @@ static const ls_opt_t BT_OPTIONS[] = {
 };
 static const ls_opt_ctx_t BT_CTX = {.name="BLUETOOTH", .job=-1, .radio=LS_RSEL_NONE, LS_OPT_ROWS(BT_OPTIONS)};
 
+/* ---- REMOTE: the board from a phone or a PC ------------------------------ */
+
+static bool s_show_pass;
+
+static void pass_done(const char *p)
+{
+    if (!p || !*p) return;
+    if (ls_rterm_password_set(p)) {
+        s_show_pass = true;
+        snprintf(s_note, sizeof(s_note), "Password changed: browsers sign in again");
+    } else snprintf(s_note, sizeof(s_note), "A password is 6 to 23 characters");
+}
+
+static void port_done(const char *t)
+{
+    const int port = t ? atoi(t) : 0;
+    if (ls_rterm_ssh_port_set(port)) snprintf(s_note, sizeof(s_note), "SSH port %d", port);
+    else snprintf(s_note, sizeof(s_note), "A port is 1 to 65535, and not 2323");
+}
+
+static void forget_keys_done(const char *answer)
+{
+    if (!answer || strcasecmp(answer, "yes")) return;
+    snprintf(s_note, sizeof(s_note), ls_rterm_ssh_keys_clear() ? "Keys forgotten: the password again"
+                                                               : "Could not save the setting");
+}
+
+static void remote_act(char ch)
+{
+    ls_rterm_status_t st;
+    ls_rterm_status(&st);
+    s_note[0] = 0;
+    switch (ch) {
+    case 't':
+        if (!ls_rterm_net_set(!st.net_on)) snprintf(s_note, sizeof(s_note), "Could not save the setting");
+        else if (!st.net_on) s_show_pass = true;
+        break;
+    case 'h': s_show_pass = !s_show_pass; break;
+    case 'n':
+        if (ls_rterm_password_set(NULL)) {
+            s_show_pass = true;
+            snprintf(s_note, sizeof(s_note), "New password: browsers sign in again");
+        } else snprintf(s_note, sizeof(s_note), "Could not save the password");
+        break;
+    case 'o':
+        if (!ls_rterm_web_set(!st.web_on)) snprintf(s_note, sizeof(s_note), "Could not save the setting");
+        else if (!st.web_on) s_show_pass = true;
+        break;
+    case 'x':
+        if (st.web_client) { ls_rterm_web_kick(); snprintf(s_note, sizeof(s_note), "Browsers signed out"); }
+        break;
+    case 'p': ls_keyboard_open_lower("TERMINAL PASSWORD / 6-23 CHARACTERS", "", 23, pass_done); break;
+    case 'k':
+        if (st.client || st.ssh_client) { ls_rterm_kick(); snprintf(s_note, sizeof(s_note), "Disconnected"); }
+        break;
+    case 's':
+        if (!ls_rterm_ssh_set(!st.ssh_on)) snprintf(s_note, sizeof(s_note), "Could not start SSH");
+        else if (!st.ssh_on) snprintf(s_note, sizeof(s_note), "SSH on: check the key shown on the first connect");
+        break;
+    case 'r': {                              /* 'o' and 'x' are the web screen's */
+        char now[8];
+        snprintf(now, sizeof(now), "%d", st.ssh_port);
+        ls_keyboard_open_plain("SSH PORT / 1-65535", now, 5, port_done);
+        break;
+    }
+    case 'l':
+        ls_rterm_ssh_learn(!st.ssh_learn_s);
+        if (!st.ssh_learn_s) snprintf(s_note, sizeof(s_note), "Now log in once with the password");
+        break;
+    case 'f':
+        if (st.ssh_keys) ls_keyboard_open_plain("FORGET THE SSH KEYS? TYPE YES", "", 3, forget_keys_done);
+        break;
+    }
+}
+
+static void remote(tui_surface *sf, tui_rect area, bool wide)
+{
+    ls_rterm_status_t st;
+    ls_rterm_status(&st);
+    char text[96];
+    const uint8_t *ip = (const uint8_t *)&st.client_ip;
+    const int bh = wide ? 3 : 4;
+
+    /* The web screen first: the way in for a phone, no app and real touch. */
+    tui_rect web = tui_rect_make(area.x, area.y, area.w, 6);
+    ls_panel_box(sf, web, "WEB SCREEN", st.web_on ? TUI_GREEN : TUI_CYAN);
+    if (!st.web_on) {
+        line(sf, web, 1, "OFF", LS_ATTR_DIM);
+        line(sf, web, 2, "The screen in a browser: real touch, no app", WHITE);
+    } else if (!s_view.wifi_connected) {
+        line(sf, web, 1, "ON  waiting for Wi-Fi (WI-FI tab)", INK(TUI_YELLOW | TUI_BRIGHT));
+    } else {
+        /* The name first: it is what to save to a home screen, and it
+           outlives the address the router gives out today. */
+        int row = 1;
+        if (st.web_named) {
+            line(sf, web, row++, "ON   http://" LS_RTERM_WEB_NAME ".local/", INK(TUI_GREEN | TUI_BRIGHT));
+            snprintf(text, sizeof(text), "  or http://%s/", s_view.ip);
+            line(sf, web, row++, text, WHITE);
+        } else {
+            snprintf(text, sizeof(text), "ON   http://%s/", s_view.ip);
+            line(sf, web, row++, text, INK(TUI_GREEN | TUI_BRIGHT));
+        }
+    }
+    if (st.web_on) {
+        const uint8_t *wip = (const uint8_t *)&st.web_ip;
+        if (st.web_client) snprintf(text, sizeof(text), "%u.%u.%u.%u is watching", wip[0], wip[1], wip[2], wip[3]);
+        else snprintf(text, sizeof(text), "Nobody watching");
+        line(sf, web, 3, text, st.web_client ? CYAN : LS_ATTR_DIM);
+    }
+    line(sf, web, 4, "The terminal's password, asked once", LS_ATTR_DIM);
+    const int ww = area.w / 2, wy = web.y + web.h;
+    button(sf, tui_rect_make(area.x, wy, ww, bh), st.web_on ? "TURN OFF" : "TURN ON", 'O', st.web_on, false, -1);
+    button(sf, tui_rect_make(area.x + ww, wy, area.w - ww, bh), "SIGN OUT", 'X', false, !st.web_client, -1);
+
+    tui_rect box = tui_rect_make(area.x, wy + bh, area.w, 6);
+    ls_panel_box(sf, box, "NETWORK TERMINAL", st.net_on ? TUI_GREEN : TUI_CYAN);
+    if (!st.net_on) {
+        line(sf, box, 1, "OFF", LS_ATTR_DIM);
+        line(sf, box, 2, "Turn it on to use the board from a phone", WHITE);
+    } else if (!s_view.wifi_connected) {
+        line(sf, box, 1, "ON  waiting for Wi-Fi (WI-FI tab)", INK(TUI_YELLOW | TUI_BRIGHT));
+    } else {
+        snprintf(text, sizeof(text), "ON   %s   port %d", s_view.ip, st.port);
+        line(sf, box, 1, text, INK(TUI_GREEN | TUI_BRIGHT));
+    }
+    if (st.pass[0]) {
+        if (s_show_pass) snprintf(text, sizeof(text), "PASSWORD  %s", st.pass);
+        else {
+            int n = snprintf(text, sizeof(text), "PASSWORD  ");
+            for (size_t i = 0; i < strlen(st.pass) && n < (int)sizeof(text) - 1; i++) text[n++] = '*';
+            text[n] = 0;
+        }
+        line(sf, box, st.net_on ? 2 : 3, text, s_show_pass ? INK(TUI_YELLOW | TUI_BRIGHT) : WHITE);
+    }
+    if (st.net_on) {
+        if (st.client)
+            snprintf(text, sizeof(text), "%u.%u.%u.%u %s", ip[0], ip[1], ip[2], ip[3],
+                     st.authed ? "is watching" : "is at the password");
+        else snprintf(text, sizeof(text), "Nobody connected");
+        line(sf, box, 3, text, st.client ? CYAN : LS_ATTR_DIM);
+    }
+    line(sf, box, 4, "Telnet is not encrypted: your own network only", LS_ATTR_DIM);
+
+    const int by = box.y + box.h;
+    static const char keys[] = {'T', 'H', 'N', 'P', 'K'};
+    const char *labels[] = {st.net_on ? "TURN OFF" : "TURN ON", s_show_pass ? "HIDE" : "SHOW", "NEW", "SET", "KICK"};
+    const int w = area.w / 5;
+    for (int i = 0; i < 5; i++)
+        button(sf, tui_rect_make(area.x + i * w, by, i == 4 ? area.w - 4 * w : w, bh), labels[i], keys[i],
+               i == 0 && st.net_on, (i == 4 && !st.client && !st.ssh_client) || (i == 1 && !st.pass[0]), -1);
+
+    tui_rect ssh = tui_rect_make(area.x, by + bh, area.w, 6);
+    ls_panel_box(sf, ssh, "SSH", st.ssh_on ? TUI_GREEN : TUI_CYAN);
+    if (!st.ssh_on) {
+        line(sf, ssh, 1, "OFF   encrypted; a saved key needs no password", LS_ATTR_DIM);
+    } else if (!s_view.wifi_connected || !st.ssh_listening) {
+        snprintf(text, sizeof(text), "ON  port %d, waiting for Wi-Fi", st.ssh_port);
+        line(sf, ssh, 1, text, INK(TUI_YELLOW | TUI_BRIGHT));
+    } else {
+        snprintf(text, sizeof(text), "ON   %s   port %d", s_view.ip, st.ssh_port);
+        line(sf, ssh, 1, text, INK(TUI_GREEN | TUI_BRIGHT));
+    }
+    const uint8_t *sip = (const uint8_t *)&st.ssh_ip;
+    if (st.ssh_client)
+        snprintf(text, sizeof(text), "%u.%u.%u.%u %s", sip[0], sip[1], sip[2], sip[3],
+                 st.ssh_authed ? "is in" : "is logging in");
+    else snprintf(text, sizeof(text), "Nobody connected");
+    if (st.ssh_on) line(sf, ssh, 2, text, st.ssh_client ? CYAN : LS_ATTR_DIM);
+    if (st.ssh_learn_s)
+        snprintf(text, sizeof(text), "KEYS %d of %d   LEARNING %ds: log in now", st.ssh_keys, st.ssh_keys_max,
+                 st.ssh_learn_s);
+    else snprintf(text, sizeof(text), "KEYS %d of %d%s", st.ssh_keys, st.ssh_keys_max,
+                  st.ssh_keys ? "" : "   LEARN, then log in once");
+    line(sf, ssh, 3, text, st.ssh_learn_s ? INK(TUI_YELLOW | TUI_BRIGHT) : WHITE);
+    line(sf, ssh, 4, st.ssh_fp[0] ? st.ssh_fp : "Host key: made when first turned on", LS_ATTR_DIM);
+
+    const int sy = ssh.y + ssh.h;
+    static const char skeys[] = {'S', 'R', 'L', 'F'};
+    const char *slabels[] = {st.ssh_on ? "TURN OFF" : "TURN ON", "PORT", st.ssh_learn_s ? "STOP" : "LEARN", "FORGET"};
+    const int sw = area.w / 4;
+    for (int i = 0; i < 4; i++)
+        button(sf, tui_rect_make(area.x + i * sw, sy, i == 3 ? area.w - 3 * sw : sw, bh), slabels[i], skeys[i],
+               (i == 0 && st.ssh_on) || (i == 2 && st.ssh_learn_s), (i == 2 && !st.ssh_on) || (i == 3 && !st.ssh_keys), -1);
+    tui_put_str(sf, area, area.x + 1, sy + bh, s_note, WHITE);
+
+    if (sy + bh + 5 > area.y + area.h) return;
+    tui_rect usb = tui_rect_make(area.x, sy + bh + 1, area.w, 4);
+    if (usb.y + usb.h > area.y + area.h) return;
+    ls_panel_box(sf, usb, "USB SCREEN", st.serial_on ? TUI_GREEN : TUI_CYAN);
+    if (st.serial_on) {
+        line(sf, usb, 1, st.serial_z ? "ON   the website is watching (compressed)" : "ON   a PC is watching (lsterm)",
+             INK(TUI_GREEN | TUI_BRIGHT));
+        line(sf, usb, 2, "Ends by itself when the cable or page goes", LS_ATTR_DIM);
+    } else {
+        line(sf, usb, 1, "Idle", LS_ATTR_DIM);
+        line(sf, usb, 2, "terminalbay.com: CONNECT in the sidebar", WHITE);
+    }
+
+    int help_h = area.y + area.h - usb.y - usb.h;
+    if (help_h > 10) help_h = 10;
+    tui_rect help = tui_rect_make(area.x, usb.y + usb.h, area.w, help_h);
+    if (help.h < 4) return;
+    /* The web screen's steps when it is on, Termius's when only telnet is. */
+    static const char *const web_steps[] = {
+        "Safari: http://" LS_RTERM_WEB_NAME ".local/",
+        "The password once: the phone keeps it",
+        "Share, Add to Home Screen: an app",
+        "Tap the screen as you would the glass",
+        "Swipe to scroll; keys on the bar",
+        "The keyboard key raises the keyboard",
+    };
+    static const char *const telnet_steps[] = {
+        "New Host: the address above",
+        "SSH on, port as above (Telnet: 2323)",
+        "Password in the host, or LEARN its key",
+        "Charset UTF-8",
+        "The bar on the last row moves the view",
+        "Hide the keyboard with its own key",
+    };
+    const bool by_web = st.web_on || !st.net_on;
+    const char *const *steps = by_web ? web_steps : telnet_steps;
+    ls_panel_box(sf, help, by_web ? "PHONE SETUP / SAFARI" : "PHONE SETUP / TERMIUS", TUI_MAGENTA);
+    for (int i = 0; i < 6 && i + 1 < help.h - 2; i++) {
+        snprintf(text, sizeof(text), "%d %s", i + 1, steps[i]);
+        line(sf, help, i + 1, text, i == (by_web ? 1 : 2) ? INK(TUI_YELLOW | TUI_BRIGHT) : WHITE);
+    }
+    if (help.h >= 9)
+        line(sf, help, 7, by_web ? "PC: the same address in any browser" : "PC: ssh <address>, or telnet <address> 2323",
+             LS_ATTR_DIM);
+}
+
 static void act(char ch)
 {
     if (ch == 'g' || ch == 'G') { ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_drones)); return; }
     if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
-    if (ch == 'w' || ch == 'b' || ch == 'v') { s_tab = ch == 'v' ? 2 : ch == 'b'; s_hit_count = 0; s_note[0] = 0; return; }
+    if (ch == 'w' || ch == 'b' || ch == 'v' || ch == 'e') {
+        s_tab = ch == 'e' ? 3 : ch == 'v' ? 2 : ch == 'b';
+        s_hit_count = 0; s_note[0] = 0; s_show_pass = false;
+        return;
+    }
+    if (s_tab == 3) { remote_act(ch); return; }
     if (ch == '[' || ch == ']') {
         int p = s_selected / s_page_size + (ch == ']' ? 1 : -1);
         int pages = (s_view.ap_count + s_page_size - 1) / s_page_size;
@@ -361,14 +601,20 @@ static void draw(tui_surface *sf, tui_rect area)
     }
     bool wide = ls_tui_is_wide();
     int tab_h = wide ? 3 : 4, action_h = wide ? 3 : (s_tab ? 5 : 8), msg_h = wide ? 1 : 2;
-    int tab_w = area.w / 4;
+    int tab_w = area.w / 5;
     button(sf, tui_rect_make(area.x, area.y, tab_w, tab_h), "WI-FI", 'W', s_tab == 0, false, -1);
     button(sf, tui_rect_make(area.x + tab_w, area.y, tab_w, tab_h),
-           "BLUETOOTH", 'B', s_tab == 1, false, -1);
+           tab_w >= 12 ? "BLUETOOTH" : "BT", 'B', s_tab == 1, false, -1);
     button(sf, tui_rect_make(area.x + tab_w * 2, area.y, tab_w, tab_h),
            "SURVEY", 'V', s_tab == 2, false, -1);
-    button(sf, tui_rect_make(area.x + tab_w * 3, area.y, area.w - tab_w * 3, tab_h),
+    button(sf, tui_rect_make(area.x + tab_w * 3, area.y, tab_w, tab_h),
+           "REMOTE", 'E', s_tab == 3, false, -1);
+    button(sf, tui_rect_make(area.x + tab_w * 4, area.y, area.w - tab_w * 4, tab_h),
            "DRONES", 'G', false, false, -1);
+    if (s_tab == 3) {
+        remote(sf, tui_rect_make(area.x, area.y + tab_h, area.w, area.h - tab_h), wide);
+        return;
+    }
     if (s_tab == 2) {
         ls_survey_draw(sf, tui_rect_make(area.x, area.y + tab_h, area.w, area.h - tab_h));
         return;
@@ -455,7 +701,11 @@ static void draw(tui_surface *sf, tui_rect area)
 static bool key(ls_tk_t k, char ch)
 {
     if (k == LS_TK_TAB) { act(s_tab ? 'w' : 'b'); return true; }
-    if (k == LS_TK_CHAR && ch && strchr("gGvVwWbB", ch)) { act(ch); return true; }
+    if (k == LS_TK_CHAR && ch && strchr("gGvVwWbBeE", ch)) { act(ch); return true; }
+    if (s_tab == 3) {
+        if (k == LS_TK_CHAR && ch && strchr("tThHnNpPkKsSrRlLfFoOxX", ch)) { act(ch); return true; }
+        return false;
+    }
     if (s_tab == 2) return ls_survey_key(k, ch);
     if (!s_tab && (k == LS_TK_UP || k == LS_TK_DOWN)) {
         if (s_view.ap_count) s_selected = (s_selected + s_view.ap_count + (k == LS_TK_UP ? -1 : 1)) % s_view.ap_count;
@@ -483,12 +733,13 @@ static bool touch(int x, int y)
 }
 
 static void enter(void) {
+    s_show_pass = false;
     s_hit_count = 0; s_note[0] = 0; s_saved_name[0] = 0; s_saved_selected = -1;
     ls_wireless_set_active(true);
 }
 static void leave(void) { s_hit_count = 0; ls_wireless_set_active(false); }
 
 const ls_tui_screen_t ls_scr_wireless = {
-    .name = "LINK", .hint = "W Wi-Fi  B Bluetooth  V Survey  G Drones",
+    .name = "LINK", .hint = "W Wi-Fi  B Bluetooth  V Survey  E Remote  G Drones",
     .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch,
 };

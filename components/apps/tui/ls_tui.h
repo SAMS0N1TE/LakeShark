@@ -38,6 +38,11 @@ uint32_t ls_tui_present_count(void);
 /* Force the next present to redraw every cell. */
 void ls_tui_invalidate(void);
 
+/* No glass (a screen that is only a terminal): present keeps the cells and
+   draws no pixels. Turning pixels back on repaints everything. */
+void ls_tui_set_pixels_off(bool off);
+bool ls_tui_pixels_off(void);
+
 /* Sub-cell graphics. Put one of these in a cell's `ch` and the blitter
    draws it as filled rectangles instead of looking up a glyph - cheaper than a
    character and exact at the pixel. Quadrants double both resolutions, so a
@@ -134,6 +139,10 @@ int  ls_tui_corner_pad(int row);
    a grid cell. False when the pixel is outside the grid, including the inset
    margin, so a tap on a rounded corner is correctly nothing. */
 bool ls_tui_pixel_to_cell(int native_x, int native_y, int *col, int *row);
+/* The same pixel in logical pixels from the cell grid's top-left corner,
+   cell (c, r) spanning c*cell_w and r*cell_h for every row but the bars.
+   Not clipped: a finger dragged off the grid still has a position. */
+bool ls_tui_pixel_to_grid(int native_x, int native_y, int *gx, int *gy);
 
 /* Microseconds spent inside the last present, and cells drawn. */
 void ls_tui_last_cost(uint32_t *us, int *cells);

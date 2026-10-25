@@ -48,14 +48,19 @@ int cc_render(cc_renderer *r,const cc_ctile *map,unsigned z,int64_t left,int64_t
         r->planes.zoom=(uint8_t)(z>255?255:z);
         cc_raster(&r->planes,&r->scene);
     }
-    if(changed || r->mode!=mode || r->labels!=labels) {
+    if(!cells) {
+        if(changed) r->encoded=0;
+        r->map=map; r->z=z; r->left=left; r->top=top; r->mode=mode; r->valid=1;
+        return 1;
+    }
+    if(changed || !r->encoded || r->mode!=mode || r->labels!=labels) {
         uint64_t stamp=cc_profiling?cc_ticks():0;
         encode_frame(r,mode);
         if(cc_profiling) { cc_profiling->ticks[CC_ENCODE]+=cc_ticks()-stamp; stamp=cc_ticks(); }
         if(labels) cc_labels(&r->planes,&r->scene,r->saved);
         if(cc_profiling) cc_profiling->ticks[CC_LABELS]+=cc_ticks()-stamp;
     }
-    r->map=map; r->z=z; r->left=left; r->top=top; r->mode=mode; r->labels=labels; r->valid=1;
+    r->map=map; r->z=z; r->left=left; r->top=top; r->mode=mode; r->labels=labels; r->valid=1; r->encoded=1;
     if(cells!=r->saved) memcpy(cells,r->saved,(size_t)r->planes.cols*r->planes.rows*sizeof(*cells));
     return 1;
 }

@@ -32,4 +32,11 @@ set(MESH_UPSTREAM_SRCS ${MESH_SRCS})
 list(REMOVE_ITEM MESH_UPSTREAM_SRCS ls_mesh.cpp ls_mesh_inspect.c)
 set_source_files_properties(${MESH_UPSTREAM_SRCS} PROPERTIES COMPILE_OPTIONS "-w")
 
+# libssh (the SSH terminal) exports sha512_init, _update, _final and sha512
+# as well. These are the ed25519 code's own, used nowhere else: renamed here
+# so both link, with upstream/ left as it is.
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    sha512_init=mesh_sha512_init sha512_update=mesh_sha512_update
+    sha512_final=mesh_sha512_final sha512=mesh_sha512)
+
 set_source_files_properties(ls_mesh.cpp PROPERTIES COMPILE_OPTIONS "-Wno-reorder")

@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "cadence",
+    "deep_scale",
+    "safe_radius",
+    "chatter_seconds",
+    "weights",
+    "messages",
+    "chatter"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "deep_scale": {
+      "type": "number",
+      "minimum": 0.25,
+      "maximum": 1
+    },
+    "safe_radius": {
+      "type": "number",
+      "minimum": 200,
+      "maximum": 2000
+    },
+    "cadence": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "type": "integer",
+        "minimum": 10,
+        "maximum": 600
+      }
+    },
+    "chatter_seconds": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "integer",
+        "minimum": 5,
+        "maximum": 300
+      }
+    },
+    "weights": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100
+      }
+    },
+    "messages": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40,
+        "pattern": "^[ !#-\\[\\]-~]+$"
+      }
+    },
+    "chatter": {
+      "type": "array",
+      "minItems": 64,
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40,
+        "pattern": "^[ !#-\\[\\]-~]+$"
+      }
+    }
+  },
+  "$comment": "Runtime additionally checks cadence/chatter min <= max and at least one nonzero encounter weight."
+}

@@ -1,13 +1,14 @@
 #include "ls_trail.h"
 
 #include <stdio.h>
+#include <stdbool.h>
 #include <string.h>
 
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_system.h"
 
-#define TRAIL_MAGIC 0x5452414Cu   /* "TRAL" */
+#define TRAIL_MAGIC 0x54524132u   /* "TRA2": includes native callback id */
 #define TAG_LEN     12
 
 typedef struct {
@@ -19,6 +20,7 @@ typedef struct {
 typedef struct {
     uint32_t magic;
     spot_t spot[LS_TRAIL_SLOTS];
+    char native_app[32];
 } trail_t;
 
 RTC_NOINIT_ATTR static trail_t s_live;
@@ -35,6 +37,22 @@ void ls_trail(ls_trail_slot_t slot, const char *tag)
     s->tag[TAG_LEN - 1] = '\0';
     s->count++;
     s->at_ms = esp_log_timestamp();
+}
+
+void ls_trail_native_callback(const char *id)
+{
+    if (s_live.magic != TRAIL_MAGIC) return;
+    snprintf(s_live.native_app, sizeof(s_live.native_app), "%s", id ? id : "");
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+}
+
+const char *ls_trail_last_native(void)
+{
+    if (s_prev_reset != ESP_RST_PANIC && s_prev_reset != ESP_RST_WDT &&
+        s_prev_reset != ESP_RST_INT_WDT && s_prev_reset != ESP_RST_TASK_WDT &&
+        s_prev_reset != ESP_RST_CPU_LOCKUP) return NULL;
+    s_prev.native_app[31] = 0;
+    return s_prev.native_app[0] ? s_prev.native_app : NULL;
 }
 
 void ls_trail_boot(void)

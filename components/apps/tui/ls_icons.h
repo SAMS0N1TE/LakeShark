@@ -1,4 +1,5 @@
-/* Pixel art for the directory, drawn out of quadrant cells. */
+/* Pixel art for the directory: colour dots packed into sextant cells, two
+   colours a cell, the way COMPASS draws (icons/app_icons.py). */
 
 #ifndef LS_ICONS_H
 #define LS_ICONS_H
@@ -48,13 +49,33 @@ typedef enum {
     LS_ICON_DRONE,      /* DRONES: four rotors around a central body */
     LS_ICON_SWEEP,      /* SWEEP: a radar ring, beam and contact */
     LS_ICON_DETECTOR,   /* DETECTOR: a warning triangle */
+    /* New numbers go last: native apps name built-in icons by number. */
+    LS_ICON_CELL,       /* CELL WATCH: a handset and its bars, not P25's mast */
+    LS_ICON_SUBGHZ,     /* SUB-GHZ: a key fob and its burst, not REC's lamp */
     LS_ICON__COUNT
 } ls_icon_t;
 
-/* 10x6 cells at (x, y), clipped to `clip`. */
+/* 10x6 cells at (x, y), clipped to `clip`. The icon's accent is the
+   attribute's colour: its foreground, or its background when the foreground
+   is black (a selected tile); clear dots are its background. */
 
 void ls_icon_draw(tui_surface *sf, tui_rect clip, int x, int y,
                   int icon, uint8_t attr);
+
+/* Character art for an icon the firmware does not have: six rows of up to ten
+   printable ASCII characters, as a native app's manifest carries it. `slot`
+   (0..LS_ICON_ART_MAX-1) is the caller's; setting it again replaces the art.
+   Returns an icon number ls_icon_draw takes, or `fallback` when the slot is
+   out of range or the art is empty. The art is copied. */
+#define LS_ICON_ART_FIRST 64
+#define LS_ICON_ART_MAX   24
+int ls_icon_art(int slot, const char art[LS_ICON_ROWS][LS_ICON_COLS + 1], int fallback);
+/* The same for a colour icon in dots, 20 x 18, colours 0-15, 0xFF clear. */
+int ls_icon_px(int slot, const uint8_t px[LS_ICON_ROWS * 3][LS_ICON_COLS * 2], int fallback);
+/* Draw such an icon: each cell keeps its two commonest colours as a sextant,
+   as COMPASS does; clear dots are the attribute's background. */
+void ls_icon_draw_px(tui_surface *sf, tui_rect clip, int x, int y,
+                     const uint8_t px[LS_ICON_ROWS * 3][LS_ICON_COLS * 2], uint8_t attr);
 
 #ifdef __cplusplus
 }

@@ -26,6 +26,7 @@
 #include "ls_theme.h"
 #include "ls_tui.h"
 #include "ls_tui_screen.h"
+#include "ls_lap_sys.h"
 
 static void out_stdout(void *ctx, const char *b, size_t n)
 {
@@ -138,6 +139,12 @@ int lssim_term_run(void (*frame)(int))
     ls_vt_enter(out_stdout, NULL, cols, rows);
     int quiet = 0;
     bool run = true;
+    /* The mouse as a finger: a press holds it down (a lap app's stick
+       follows it), a release that never left the cell is the tap. */
+    int cw = 10, ch = 17;
+    ls_tui_geometry(NULL, NULL, &cw, &ch);
+    bool m_down = false, m_moved = false;
+    int m_col = 0, m_row = 0;
     while (run) {
         uint8_t bytes[256];
         ls_vt_event ev[64];
@@ -148,7 +155,20 @@ int lssim_term_run(void (*frame)(int))
         for (int i = 0; i < n; i++) {
             if (ev[i].type == LS_VT_EV_QUIT) run = false;
             else if (ev[i].type == LS_VT_EV_REDRAW) scr.full = true;
-            else if (ev[i].type == LS_VT_EV_TAP) ls_tui_router_touch(ev[i].col, ev[i].row);
+            else if (ev[i].type == LS_VT_EV_TAP) {
+                m_down = true;
+                m_moved = false;
+                m_col = ev[i].col;
+                m_row = ev[i].row;
+                ls_lap_sys_host_finger(m_col * cw + cw / 2, m_row * ch + ch / 2, cw, ch, true);
+            } else if (ev[i].type == LS_VT_EV_DRAG && m_down) {
+                m_moved |= ev[i].col != m_col || ev[i].row != m_row;
+                ls_lap_sys_host_finger(ev[i].col * cw + cw / 2, ev[i].row * ch + ch / 2, cw, ch, true);
+            } else if (ev[i].type == LS_VT_EV_UP && m_down) {
+                m_down = false;
+                ls_lap_sys_host_finger(ev[i].col * cw + cw / 2, ev[i].row * ch + ch / 2, cw, ch, false);
+                if (!m_moved) ls_tui_router_touch(m_col, m_row);
+            }
             else if (ev[i].type == LS_VT_EV_KEY) ls_tui_router_key((ls_tk_t)ev[i].key, ev[i].ch);
         }
         frame(1);

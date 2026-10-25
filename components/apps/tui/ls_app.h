@@ -88,6 +88,8 @@ typedef struct {
 
     /* Required. See ls_app_doc_t: registration fails without it. */
     const ls_app_doc_t *doc;
+    /* Optional selector for apps sharing one screen; called on the UI task. */
+    void (*select)(const char *id);
 } ls_app_t;
 
 /* Registers the app and its screen together, so the two lists cannot get out
@@ -106,6 +108,9 @@ int  ls_app_register(const ls_app_t *app);
 /* A short phrase for `rc`, to append after "name: ". Never NULL. */
 const char *ls_app_register_why(int rc);
 
+/* UI task only, for installed user-app metadata. Shared screen stays registered. */
+bool ls_app_update(const ls_app_t *app);
+bool ls_app_unregister(const char *id);
 int  ls_app_count(void);
 const ls_app_t *ls_app_at(int index);
 const ls_app_t *ls_app_by_id(const char *id);

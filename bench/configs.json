@@ -41,7 +41,7 @@
       "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/nano_headless_ble.defaults;boards/p4_rev3.defaults;boards/nano_c5.defaults;boards/nano_dsi.defaults",
       "enabled": true,
-      "usb_serial": "",
+      "usb_serial": "5B91065109",
       "flash_mb": 16,
       "board": "ESP32-P4-NANO"
     },

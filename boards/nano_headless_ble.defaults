@@ -24,3 +24,10 @@ CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=12
 CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=16
 CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
+# As on the T-Display: the host is task-context on the hosted VHCI transport,
+# so its pools need no DMA RAM. In internal RAM they left the Nano 951 bytes
+# after boot, too little for an app to load.
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+# TLS in PSRAM, as on the T-Display: in internal RAM a map download's HTTPS
+# session failed to allocate and TILES said only "Connect failed".
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y

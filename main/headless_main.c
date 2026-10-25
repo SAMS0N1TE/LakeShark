@@ -3128,6 +3128,8 @@ static bool console_start(bool full)
     extern void ls_cartocore_register_command(void);
     ls_cartocore_register_command();
 #endif
+    extern void console_fast_install(const char *prompt);
+    console_fast_install(repl_cfg.prompt);
     esp_err_t serr = esp_console_start_repl(repl);
     if (serr != ESP_OK) {
         ESP_LOGE(TAG, "console REPL would not start: %s", esp_err_to_name(serr));

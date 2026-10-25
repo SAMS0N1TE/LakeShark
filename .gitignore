@@ -162,3 +162,6 @@ sim.bmp
 !/tools/gen_ws_panels.py
 !/tools/vendor/
 !/docs/NANO_DISPLAY_TEST.md
+
+# Native ELF loader is fetched from its pinned IDF component dependency.
+/managed_components/espressif__elf_loader/

@@ -47,10 +47,10 @@ add_compile_options(
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-enum-enum-conversion")
 
-set(LS_PRODUCT_VERSION "2.17.1")
+set(LS_PRODUCT_VERSION "2.18.0")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/ls_build_identity.cmake")
 set(PROJECT_VER "${LS_PRODUCT_VERSION}")
-set(LS_PROJECT_VERSION "2.17.1")
+set(LS_PROJECT_VERSION "2.18.0")
 project(lakeshark VERSION ${LS_PROJECT_VERSION})
 
 # Selective placement avoids moving the whole FreeRTOS kernel back to SRAM.
@@ -106,6 +106,9 @@ set(LS_SIZE_OPT_COMPONENTS
 foreach(ls_cold_comp IN LISTS LS_SIZE_OPT_COMPONENTS)
     idf_component_get_property(ls_cold_lib ${ls_cold_comp} COMPONENT_LIB)
     if(ls_cold_lib)
-        target_compile_options(${ls_cold_lib} PRIVATE -Os)
+        get_target_property(ls_cold_type ${ls_cold_lib} TYPE)
+        if(NOT ls_cold_type STREQUAL "INTERFACE_LIBRARY")
+            target_compile_options(${ls_cold_lib} PRIVATE -Os)
+        endif()
     endif()
 endforeach()

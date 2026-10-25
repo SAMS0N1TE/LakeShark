@@ -17,6 +17,7 @@ typedef struct {
     size_t tile_fallbacks;
     cc_ctile coarse_map; unsigned coarse_frames; int coarse;
     int cols,rows,labels; unsigned z; int64_t left,top;
+    bool raster_only; /* MAP's picture: planes only, no cells */
     struct { uint64_t offset; uint32_t length; } hints[64];
     unsigned hint_count,hint_next;
 } render_state;
@@ -145,7 +146,9 @@ static int render_frame(render_state *s,cc_mode mode,cc_edges edges,int64_t left
     }
 #endif
     s->renderer.edges_mode=edges; s->tiles.edges_mode=edges;
-    if (s->cell_memory && !(left%2) && !(top%4)) {
+    /* The raster cache holds cells, never planes: a picture cannot use it. */
+    cc_cell *const out=s->raster_only?NULL:s->cells;
+    if (out && s->cell_memory && !(left%2) && !(top%4)) {
         cc_renderer_invalidate(&s->renderer);
         s->arena.used=s->renderer.mark;
         if (cc_cell_cache_render(&s->tiles,&s->map,s->z,left,top,s->cols,s->rows,mode,0,s->labels,&s->arena,s->cells)) { carto_hw_sample(s);return 1; }
@@ -163,7 +166,7 @@ static int render_frame(render_state *s,cc_mode mode,cc_edges edges,int64_t left
     }
 #endif
     s->coarse=0;
-    int ok=cc_render(&s->renderer,&s->map,s->z,left,top,mode,s->labels,s->cells);
+    int ok=cc_render(&s->renderer,&s->map,s->z,left,top,mode,s->labels,out);
     if(!ok && s->map.cellset) {
         /* Same virtual source, lower source zoom, requested display projection.
            A stable copy outlives retained renderer state. Missing cells still
@@ -173,7 +176,7 @@ static int render_frame(render_state *s,cc_mode mode,cc_edges edges,int64_t left
         while(!ok && detail>s->map.zmin) {
             s->coarse_map.zmax=--detail;
             cc_renderer_invalidate(&s->renderer);
-            ok=cc_render(&s->renderer,&s->coarse_map,s->z,left,top,mode,s->labels,s->cells);
+            ok=cc_render(&s->renderer,&s->coarse_map,s->z,left,top,mode,s->labels,out);
         }
         if(ok) { s->coarse=1;s->coarse_frames++; }
     }

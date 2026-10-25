@@ -1361,7 +1361,7 @@ static void o_chan_show(const ls_opt_t *o, char *out, size_t n)
     const int count = ls_mesh_channels(c, LS_MESH_MAX_CHANNELS);
     if (o->arg >= count) { snprintf(out, n, "--"); return; }
     if (c[o->arg].fixed) snprintf(out, n, "public");
-    else snprintf(out, n, "%s", c[o->arg].psk[0] ? "key set" : "no key");
+    else snprintf(out, n, "%s", !c[o->arg].psk[0] ? "no key" : c[o->arg].name[0] == '#' ? c[o->arg].name : "key set");
 }
 static const char *o_chan_why(const ls_opt_t *o)
 {
@@ -2010,13 +2010,14 @@ static void setup_number_done(double value)
    that row, and an overlay has to say it.  */
 static void open_field_edit(int field)
 {
-    char title[24];
+    char title[32];
     if (field >= CHAN_FIELD_BASE) {
         ls_mesh_chan_t c[LS_MESH_MAX_CHANNELS];
         ls_mesh_channels(c, LS_MESH_MAX_CHANNELS);
         const int idx = field - CHAN_FIELD_BASE;
-        snprintf(s_edit, sizeof(s_edit), "%s", c[idx].psk);
-        snprintf(title, sizeof(title), "CHANNEL %d KEY", idx);
+        /* a hashtag channel opens on its name, the easy thing to type */
+        snprintf(s_edit, sizeof(s_edit), "%s", c[idx].name[0] == '#' ? c[idx].name : c[idx].psk[0] ? c[idx].psk : "#");
+        snprintf(title, sizeof(title), "CH %d: #NAME OR KEY", idx);
     } else {
         field_value(field, s_edit, sizeof(s_edit));
         snprintf(title, sizeof(title), "%s", FIELDS[field].label);
@@ -2038,9 +2039,12 @@ static void apply_field(void)
         const int idx = s_field - CHAN_FIELD_BASE;
         char name[LS_MESH_CHAN_NAME];
         snprintf(name, sizeof(name), "chan%d", idx);
-        const esp_err_t e = ls_mesh_set_channel(idx, name, s_edit);
-        option_flash(e == ESP_OK ? (s_edit[0] ? "channel key saved" : "channel cleared")
-                          : "key must be base64, 16 or 32 bytes");
+        if (!strcmp(s_edit, "#")) s_edit[0] = 0;          /* left as it opened: clear */
+        const bool tag = s_edit[0] == '#';
+        const esp_err_t e = ls_mesh_set_channel(idx, tag ? NULL : name, s_edit);
+        option_flash(e != ESP_OK ? "type #name, or a base64 key of 16 or 32 bytes"
+                     : tag ? "joined: anyone with this #name hears it"
+                     : s_edit[0] ? "channel key saved" : "channel cleared");
         return;
     }
 

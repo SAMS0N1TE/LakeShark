@@ -148,6 +148,14 @@ menu "LakeShark"
             Requires compatible ESP-Hosted firmware on the ESP32-C6.
             Disable when the co-processor uses a different protocol.
 
+    config LS_SSH
+        bool "SSH for the network terminal"
+        default y
+        help
+            'term ssh on' serves the screen over SSH (libssh, about 230 KB).
+            Off, telnet and the web screen still work; the T-Display builds
+            turn it off to fit their app slot.
+
     config EXAMPLE_ENABLE_SD_CARD
         bool "Enable SD Card"
         default n

@@ -473,10 +473,10 @@ bool snd_sweep_start(int category)
     return xQueueSend(s_test_q, &w, 0) == pdTRUE;
 }
 
-bool snd_alert_start(void)
+bool snd_notification_start(int sound)
 {
     if (!s_test_q || s_test_busy) return false;
-    int sound=settings_get_notification_sound();
+    if (sound < SETTINGS_NOTIFY_ALERT || sound >= SETTINGS_NOTIFY_OFF) return false;
     if (sound==SETTINGS_NOTIFY_OFF || audio_is_muted() || audio_volume_get()<=0) return false;
     uint8_t w = SND_JOB_ALERT;
     if (sound==SETTINGS_NOTIFY_RADIOKEY) w=SND_TEST_RADIOKEY;
@@ -484,6 +484,8 @@ bool snd_alert_start(void)
     else if (sound==SETTINGS_NOTIFY_CHIRP) w=SND_TEST_UPCHIRP;
     return xQueueSend(s_test_q, &w, 0) == pdTRUE;
 }
+
+bool snd_alert_start(void) { return snd_notification_start(settings_get_notification_sound()); }
 
 bool snd_boot_start(int mode)
 {

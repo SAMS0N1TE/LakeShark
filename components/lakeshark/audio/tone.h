@@ -37,6 +37,8 @@ bool        snd_test_busy(void);
 /* Play the notification alert without blocking the caller. False when
    something is already playing. See tone.c. */
 bool        snd_alert_start(void);
+/* Explicit SETTINGS_NOTIFY_* preset, same queue/volume/mute policy. */
+bool        snd_notification_start(int sound);
 /* Category 0..4; current volume and mute, no unmute or gain changes. */
 bool        snd_sweep_start(int category);
 bool        snd_sweep_click(void);

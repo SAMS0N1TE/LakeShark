@@ -1032,6 +1032,21 @@ void ls_tui_geometry(int *cols, int *rows, int *cw, int *ch)
     if (ch)   *ch = s_ch;
 }
 
+/* No glass (a Nano whose screen is a terminal): the cells are the screen,
+   and turning them into pixels nobody sees cost a game 5 ms a frame. */
+static bool s_pixels_off;
+void ls_tui_set_pixels_off(bool off)
+{
+    if (s_pixels_off && !off) {
+        s_pixels_off = false;
+        ls_tui_invalidate();
+        s_look_dirty = true;            /* the margin too: nothing was painted */
+        return;
+    }
+    s_pixels_off = off;
+}
+bool ls_tui_pixels_off(void) { return s_pixels_off; }
+
 void ls_tui_invalidate(void)
 {
     /* A cell that cannot occur forces every comparison to differ. */
@@ -1350,10 +1365,12 @@ int ls_tui_present(void)
     bool margin = false;
     if (s_look_dirty) {
         look_apply();
-        paint_margin(fb.pixels, fb.width);
-        margin = true;
+        if (!s_pixels_off) {
+            paint_margin(fb.pixels, fb.width);
+            margin = true;
+        }
     }
-    s_image_shifted = !margin && s_image_dirty && image_can_shift();
+    s_image_shifted = !s_pixels_off && !margin && s_image_dirty && image_can_shift();
     if (s_image_shifted) image_shift(fb.pixels, fb.width);
     int drawn = 0;
     bool image_cell_invalidated = false;
@@ -1377,7 +1394,7 @@ int ls_tui_present(void)
                   image_changed(col, row))) continue;
             s_cell_palette=base?s_base_palette:NULL;
             s_cell_bg_palette=on_base?s_base_palette:NULL;
-            blit_cell(fb.pixels, fb.width, fb.height, col, row, &s_back[i], glass);
+            if (!s_pixels_off) blit_cell(fb.pixels, fb.width, fb.height, col, row, &s_back[i], glass);
             s_cell_palette=NULL;
             s_cell_bg_palette=NULL;
             /* Once the ring was shown, only a changed cell inside it can
@@ -1393,8 +1410,9 @@ int ls_tui_present(void)
             }
             glass_set(s_base_front,i,tinted);
             glass_set(s_glass_front, i, glass);
-            dirty_logical(s_ox + col * s_cw, s_oy + row * s_ch + bar_row_offset(row),
-                          s_cw, s_ch);
+            if (!s_pixels_off)
+                dirty_logical(s_ox + col * s_cw, s_oy + row * s_ch + bar_row_offset(row),
+                              s_cw, s_ch);
             if (row == 0) s_bar_row_drawn[0] = true;
             if (row == s_rows - 1) s_bar_row_drawn[1] = true;
             s_front[i] = s_back[i];
@@ -1429,7 +1447,7 @@ int ls_tui_present(void)
     s_image_shifted = false;
     s_image_dirty = false;
     s_base_dirty = false;
-    if (drawn || margin) {
+    if ((drawn || margin) && !s_pixels_off) {
         if (margin) s_bar_sig[0] = s_bar_sig[1] = UINT32_MAX;
         paint_bar_ends(fb.pixels,fb.width);
     }
@@ -1521,6 +1539,25 @@ bool ls_tui_pixel_to_cell(int native_x, int native_y, int *col, int *row)
     (void)top_text; (void)top_end;
     if (col) *col = c;
     if (row) *row = r;
+    return true;
+}
+
+bool ls_tui_pixel_to_grid(int native_x, int native_y, int *gx, int *gy)
+{
+    if (!s_back) return false;
+    int lx, ly;
+    if (!s_landscape) {
+        lx = native_x;
+        ly = native_y;
+    } else if (s_cw_rotation) {
+        lx = s_screen_w - 1 - native_y;
+        ly = native_x;
+    } else {
+        lx = native_y;
+        ly = s_screen_h - 1 - native_x;
+    }
+    if (gx) *gx = lx - s_ox;
+    if (gy) *gy = ly - s_oy;
     return true;
 }
 

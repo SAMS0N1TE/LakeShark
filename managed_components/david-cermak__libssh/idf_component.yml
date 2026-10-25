@@ -1,0 +1,8 @@
+dependencies:
+  espressif/sock_utils:
+    version: '*'
+  idf: '>=5.2'
+description: The component provides a general purpose SSH connectivity
+license: LGPL-2.1
+url: https://github.com/david-cermak/libssh
+version: 0.12.2

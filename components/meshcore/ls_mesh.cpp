@@ -7,6 +7,7 @@
 #include "ls_mesh_pacing.h"
 
 #include <string.h>
+#include <ctype.h>
 #include <new>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -72,12 +73,13 @@ static int b64_decode(const char *in, uint8_t *out, int out_max)
 {
     static const char *TBL =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    int acc = 0, bits = 0, n = 0;
+    unsigned acc = 0;                            /* only the low 14 bits are ever needed */
+    int bits = 0, n = 0;
     for (const char *p = in; *p; p++) {
         if (*p == '=' || *p == ' ' || *p == '\r' || *p == '\n') continue;
         const char *q = strchr(TBL, *p);
         if (!q) return -1;                       /* not base64 at all */
-        acc = (acc << 6) | (int)(q - TBL);
+        acc = ((acc << 6) | (unsigned)(q - TBL)) & 0x3FFFu;
         bits += 6;
         if (bits >= 8) {
             bits -= 8;
@@ -86,6 +88,39 @@ static int b64_decode(const char *in, uint8_t *out, int out_max)
         }
     }
     return n;
+}
+
+static void b64_encode(const uint8_t *in, int n, char *out, size_t cap)
+{
+    static const char *TBL =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t o = 0;
+    for (int i = 0; i < n && o + 5 <= cap; i += 3) {
+        const uint32_t v = (uint32_t)in[i] << 16 | (i + 1 < n ? (uint32_t)in[i + 1] << 8 : 0) |
+                           (i + 2 < n ? in[i + 2] : 0);
+        out[o++] = TBL[v >> 18 & 63];
+        out[o++] = TBL[v >> 12 & 63];
+        out[o++] = i + 1 < n ? TBL[v >> 6 & 63] : '=';
+        out[o++] = i + 2 < n ? TBL[v & 63] : '=';
+    }
+    out[o] = 0;
+}
+
+/* A hashtag channel, as the MeshCore apps make them: the secret is the first
+   16 bytes of SHA-256 of the name with its '#', so anyone who types the same
+   name is on it. Lower case, so #Carrier and #carrier are one channel. */
+static bool hashtag_key(const char *tag, char *b64, size_t cap)
+{
+    char name[LS_MESH_CHAN_NAME];
+    size_t n = 0;
+    for (const char *p = tag; *p && n + 1 < sizeof(name); p++)
+        if (*p != ' ') name[n++] = (char)tolower((unsigned char)*p);
+    name[n] = 0;
+    if (n < 2 || name[0] != '#') return false;
+    uint8_t key[16];
+    mesh::Utils::sha256(key, sizeof(key), (const uint8_t *)name, (int)n);
+    b64_encode(key, sizeof(key), b64, cap);
+    return true;
 }
 
 static void chan_build(int i)
@@ -2256,6 +2291,16 @@ extern "C" esp_err_t ls_mesh_set_channel(int idx, const char *name, const char *
         return mesh_call([&]() -> int { return ls_mesh_set_channel(idx, name, psk_b64); });
     if (idx < 1 || idx >= LS_MESH_MAX_CHANNELS) return ESP_ERR_INVALID_ARG;
 
+    char tag_name[LS_MESH_CHAN_NAME], tag_key[LS_MESH_CHAN_PSK];
+    if (psk_b64 && psk_b64[0] == '#') {          /* a hashtag channel: the key comes from the name */
+        if (!hashtag_key(psk_b64, tag_key, sizeof(tag_key))) return ESP_ERR_INVALID_ARG;
+        size_t n = 0;
+        for (const char *p = psk_b64; *p && n + 1 < sizeof(tag_name); p++)
+            if (*p != ' ') tag_name[n++] = (char)tolower((unsigned char)*p);
+        tag_name[n] = 0;
+        name = tag_name;
+        psk_b64 = tag_key;
+    }
     if (psk_b64) {
         if (*psk_b64) {
             uint8_t key[32];

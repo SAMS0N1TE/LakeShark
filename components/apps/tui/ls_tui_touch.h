@@ -36,6 +36,20 @@ bool ls_tui_touch_poll(ls_tui_touch_t *out);
    on now. For a control that follows a drag, which never becomes a tap. */
 bool ls_tui_touch_held(int *start_col, int *start_row, int *col, int *row);
 
+/* The finger in logical grid pixels (ls_tui_pixel_to_grid), for controls
+   that need more than a cell: where it is, where it went down, and when
+   (esp_timer microseconds). False while no finger is down. */
+bool ls_tui_touch_px(int *x, int *y, int *x0, int *y0, int64_t *since_us);
+/* Finished touches that were not taps, counted, and the last one in grid
+   pixels: start and end. A screen compares the count with the one it saw. */
+uint32_t ls_tui_touch_drags(int *x0, int *y0, int *x1, int *y1);
+
+/* A finger from a remote screen's mouse (ls_rterm.c): its cell, and grid pixels:
+   held, it is what ls_tui_touch_px and ls_tui_touch_held report while the
+   glass has none; let go, it counts as a drag when it moved. Taps still
+   go through the tap queue. Any task. */
+void ls_tui_touch_remote(int col, int row, int gx, int gy, bool down);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,0 +1,7 @@
+name: 'libssh'
+supplier: 'Person: David Cermak <https://github.com/david-cermak/libssh>'
+originator: 'Person: David Cermak <https://github.com/david-cermak/libssh>'
+description: ESP-IDF component wrapping upstream libssh with an mbedtls crypto backend. Provides SSH2 client/server connectivity for ESP32-class devices; ESP-IDF compatibility shims live under port/.
+manifests:
+  - path: sbom_libssh.yml
+    dest: libssh-mirror

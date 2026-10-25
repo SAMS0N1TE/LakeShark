@@ -1,0 +1,153 @@
+diff --git a/include/libssh/sntrup761.h b/include/libssh/sntrup761.h
+--- libssh-mirror/include/libssh/sntrup761.h
++++ libssh-mirror/include/libssh/sntrup761.h
+@@ -31,7 +31,7 @@
+ extern "C" {
+ #endif
+
+-#ifdef HAVE_CURVE25519
++#if defined(HAVE_CURVE25519) && !defined(WITHOUT_SNTRUP761)
+ #define HAVE_SNTRUP761 1
+ #endif
+
+diff --git a/src/client.c b/src/client.c
+--- libssh-mirror/src/client.c
++++ libssh-mirror/src/client.c
+@@ -306,6 +306,7 @@
+             rc = ssh_client_sntrup761x25519_init(session);
+             break;
+ #endif
++#ifdef HAVE_MLKEM
+         case SSH_KEX_MLKEM768X25519_SHA256:
+         case SSH_KEX_MLKEM768NISTP256_SHA256:
+ #ifdef HAVE_MLKEM1024
+@@ -313,6 +314,7 @@
+ #endif
+             rc = ssh_client_hybrid_mlkem_init(session);
+             break;
++#endif /* HAVE_MLKEM */
+         default:
+             rc = SSH_ERROR;
+         }
+diff --git a/src/kex.c b/src/kex.c
+--- libssh-mirror/src/kex.c
++++ libssh-mirror/src/kex.c
+@@ -105,6 +105,7 @@
+ #define SNTRUP761X25519 ""
+ #endif /* HAVE_SNTRUP761 */
+
++#ifdef HAVE_MLKEM
+ #ifdef HAVE_MLKEM1024
+ #define HYBRID_MLKEM "mlkem768x25519-sha256," \
+                      "mlkem768nistp256-sha256," \
+@@ -113,6 +114,9 @@
+ #define HYBRID_MLKEM "mlkem768x25519-sha256," \
+                      "mlkem768nistp256-sha256,"
+ #endif /* HAVE_MLKEM1024 */
++#else
++#define HYBRID_MLKEM ""
++#endif /* HAVE_MLKEM */
+
+ #ifdef HAVE_ECC
+ #define ECDH "ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,"
+@@ -1003,6 +1007,7 @@
+         return SSH_KEX_SNTRUP761X25519_SHA512_OPENSSH_COM;
+     } else if (strcmp(kex, "sntrup761x25519-sha512") == 0) {
+         return SSH_KEX_SNTRUP761X25519_SHA512;
++#ifdef HAVE_MLKEM
+     } else if (strcmp(kex, "mlkem768x25519-sha256") == 0) {
+         return SSH_KEX_MLKEM768X25519_SHA256;
+     } else if (strcmp(kex, "mlkem768nistp256-sha256") == 0) {
+@@ -1011,6 +1016,7 @@
+     } else if (strcmp(kex, "mlkem1024nistp384-sha384") == 0) {
+         return SSH_KEX_MLKEM1024NISTP384_SHA384;
+ #endif
++#endif /* HAVE_MLKEM */
+     }
+     /* should not happen. We should be getting only valid names at this stage */
+     return 0;
+@@ -1065,6 +1071,7 @@
+         ssh_client_sntrup761x25519_remove_callbacks(session);
+         break;
+ #endif
++#ifdef HAVE_MLKEM
+     case SSH_KEX_MLKEM768X25519_SHA256:
+     case SSH_KEX_MLKEM768NISTP256_SHA256:
+ #ifdef HAVE_MLKEM1024
+@@ -1072,6 +1079,9 @@
+ #endif
+         ssh_client_hybrid_mlkem_remove_callbacks(session);
+         break;
++#endif /* HAVE_MLKEM */
++    default:
++        break;
+     }
+ }
+
+@@ -1671,6 +1681,7 @@
+         }
+         break;
+ #endif /* HAVE_SNTRUP761 */
++#ifdef HAVE_MLKEM
+     case SSH_KEX_MLKEM768X25519_SHA256:
+     case SSH_KEX_MLKEM768NISTP256_SHA256:
+ #ifdef HAVE_MLKEM1024
+@@ -1687,6 +1698,7 @@
+             goto error;
+         }
+         break;
++#endif /* HAVE_MLKEM */
+     default:
+         /* Handle unsupported kex types - this should not happen in normal operation */
+         rc = SSH_ERROR;
+@@ -1701,6 +1713,7 @@
+                              session->next_crypto->shared_secret,
+                              SHA512_DIGEST_LEN);
+         break;
++#ifdef HAVE_MLKEM
+     case SSH_KEX_MLKEM768X25519_SHA256:
+     case SSH_KEX_MLKEM768NISTP256_SHA256:
+ #ifdef HAVE_MLKEM1024
+@@ -1708,6 +1721,7 @@
+ #endif
+         rc = ssh_buffer_pack(buf, "S", session->next_crypto->hybrid_shared_secret);
+         break;
++#endif /* HAVE_MLKEM */
+     default:
+         rc = ssh_buffer_pack(buf, "B", session->next_crypto->shared_secret);
+         break;
+@@ -1930,6 +1944,7 @@
+         k_string = ssh_make_padded_bignum_string(crypto->shared_secret,
+                                                  crypto->digest_len);
+         break;
++#ifdef HAVE_MLKEM
+     case SSH_KEX_MLKEM768X25519_SHA256:
+     case SSH_KEX_MLKEM768NISTP256_SHA256:
+ #ifdef HAVE_MLKEM1024
+@@ -1937,6 +1952,7 @@
+ #endif
+         k_string = ssh_string_copy(crypto->hybrid_shared_secret);
+         break;
++#endif /* HAVE_MLKEM */
+     default:
+         k_string = ssh_make_bignum_string(crypto->shared_secret);
+         break;
+diff --git a/src/wrapper.c b/src/wrapper.c
+--- libssh-mirror/src/wrapper.c
++++ libssh-mirror/src/wrapper.c
+@@ -625,6 +625,7 @@
+         ssh_server_sntrup761x25519_init(session);
+         break;
+ #endif
++#ifdef HAVE_MLKEM
+     case SSH_KEX_MLKEM768X25519_SHA256:
+     case SSH_KEX_MLKEM768NISTP256_SHA256:
+ #ifdef HAVE_MLKEM1024
+@@ -632,6 +633,7 @@
+ #endif
+         ssh_server_hybrid_mlkem_init(session);
+         break;
++#endif /* HAVE_MLKEM */
+     default:
+         ssh_set_error(session,
+                       SSH_FATAL,

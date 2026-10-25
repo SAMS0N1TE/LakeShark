@@ -10,6 +10,9 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # TLS in PSRAM. One HTTPS session wants more internal RAM than the board has
 # free once the radios are up.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# No SSH: libssh is ~230 KB and the 4.5 MB OTA app slot cannot spare it.
+# Telnet and the web screen still serve the network terminal.
+# CONFIG_LS_SSH is not set
 
 CONFIG_LS_VBUS_EN_GPIO=-1
 

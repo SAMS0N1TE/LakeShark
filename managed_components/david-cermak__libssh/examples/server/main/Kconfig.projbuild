@@ -1,0 +1,40 @@
+menu "SSH Server Example Configuration"
+
+    config EXAMPLE_DEFAULT_PORT
+        string "SSH server port"
+        default "2222"
+        help
+            TCP port the SSH server binds to.
+
+    config EXAMPLE_DEBUG_LEVEL
+        string "Log verbosity (1-4)"
+        default "1"
+        help
+            libssh log verbosity level as a string. Increase for more verbose logs.
+
+    config EXAMPLE_ALLOW_PASSWORD_AUTH
+        bool "Enable password authentication"
+        default n
+        help
+            Allow SSH password authentication.
+
+    config EXAMPLE_ALLOW_PUBLICKEY_AUTH
+        bool "Enable public-key authentication"
+        default y
+        help
+            Allow SSH public-key authentication.
+
+    config EXAMPLE_DEFAULT_USERNAME
+        string "Default username"
+        default "user"
+        help
+            Username required by the example server.
+
+    config EXAMPLE_DEFAULT_PASSWORD
+        string "Default password"
+        depends on EXAMPLE_ALLOW_PASSWORD_AUTH
+        default "password"
+        help
+            Password for the default user (only used if password auth is enabled).
+
+endmenu

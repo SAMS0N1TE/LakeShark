@@ -819,6 +819,12 @@ class Frame:
     def mouse(self, b, x, y, up):
         gx, gy = x - self.scr.ox + 1, y - self.scr.oy + 1
         on_board = 1 <= gx <= self.scr.cols and 1 <= gy <= self.scr.rows
+        held = getattr(self, "board_held", False)
+        if held and ((b & 32 and b & 3 == 0) or (up and b & 3 == 0)):
+            # a press on the board drags there, off its edge too, and lets go there
+            gx, gy = max(1, min(self.scr.cols, gx)), max(1, min(self.scr.rows, gy))
+            self.board_held = not up
+            return b"\x1b[<%d;%d;%d%s" % (b, gx, gy, b"m" if up else b"M")
         if b & 32:                                       # motion: what the mouse is over
             self.hover = None
             if not on_board and self.panel:
@@ -832,6 +838,8 @@ class Frame:
                 self.focus = "board"
                 if self.tab == "CONSOLE" or self.prompt:
                     self.prompt = None
+            if not up and b == 0:
+                self.board_held = True
             return b"\x1b[<%d;%d;%d%s" % (b, gx, gy, b"m" if up else b"M")
         if not self.panel:
             return b""

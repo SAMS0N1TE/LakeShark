@@ -1,0 +1,25 @@
+menu "libssh"
+
+    config LIBSSH_SNTRUP761
+        bool "Enable SNTRUP761 (post-quantum) key exchange"
+        default n
+        help
+            Enable the sntrup761x25519-sha512 hybrid key exchange
+            algorithm. This adds significant stack usage due to the
+            SNTRUP761 cryptographic operations. Disable to reduce the
+            memory footprint on constrained devices.
+
+    config LIBSSH_MLKEM
+        bool "Enable ML-KEM (post-quantum) key exchange"
+        default n
+        help
+            Enable ML-KEM (Module-Lattice-based Key Exchange Mechanism)
+            hybrid key exchange algorithms: mlkem768x25519-sha256 and
+            mlkem768nistp256-sha256.
+
+            The ML-KEM implementation adds significant code size (~80 KB)
+            and stack usage (~40 KB) due to the libcrux cryptographic
+            library. Disable to reduce the memory footprint on
+            constrained devices.
+
+endmenu

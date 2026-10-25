@@ -1,0 +1,2224 @@
+diff --git a/ConfigureChecks.cmake b/ConfigureChecks.cmake
+index 4e32ea53..8812fd6b 100644
+--- libssh-mirror/ConfigureChecks.cmake
++++ libssh-mirror/ConfigureChecks.cmake
+@@ -246,8 +246,13 @@ if (MBEDTLS_FOUND)
+     set(HAVE_ECC 1)
+
+     set(CMAKE_REQUIRED_INCLUDES "${MBEDTLS_INCLUDE_DIR}/mbedtls")
+-    check_include_file(chacha20.h HAVE_MBEDTLS_CHACHA20_H)
+-    check_include_file(poly1305.h HAVE_MBEDTLS_POLY1305_H)
++    if (MBEDTLS_VERSION VERSION_GREATER_EQUAL "4.0.0")
++        check_include_file(mbedtls/private/chacha20.h HAVE_MBEDTLS_CHACHA20_H)
++        check_include_file(mbedtls/private/poly1305.h HAVE_MBEDTLS_POLY1305_H)
++    else ()
++        check_include_file(chacha20.h HAVE_MBEDTLS_CHACHA20_H)
++        check_include_file(poly1305.h HAVE_MBEDTLS_POLY1305_H)
++    endif ()
+     if (MBEDTLS_VERSION VERSION_LESS "3.0.0")
+         check_symbol_exists(MBEDTLS_ECP_DP_CURVE25519_ENABLED "config.h" HAVE_MBEDTLS_CURVE25519)
+     else()
+diff --git a/include/libssh/crypto.h b/include/libssh/crypto.h
+index dd7fa2e8..f0d3e345 100644
+--- libssh-mirror/include/libssh/crypto.h
++++ libssh-mirror/include/libssh/crypto.h
+@@ -31,7 +31,7 @@
+ #ifdef HAVE_LIBGCRYPT
+ #include <gcrypt.h>
+ #elif defined(HAVE_LIBMBEDCRYPTO)
+-#include <mbedtls/gcm.h>
++#include "libssh/libmbedcrypto.h"
+ #endif
+ #include "libssh/wrapper.h"
+
+diff --git a/include/libssh/libmbedcrypto.h b/include/libssh/libmbedcrypto.h
+index 71ebcccd..354a67bd 100644
+--- libssh-mirror/include/libssh/libmbedcrypto.h
++++ libssh-mirror/include/libssh/libmbedcrypto.h
+@@ -27,13 +27,26 @@
+ #include "config.h"
+
+ #ifdef HAVE_LIBMBEDCRYPTO
++#include <mbedtls/version.h>
++#ifndef MBEDTLS_VERSION_MAJOR
++#include <mbedtls/build_info.h>
++#endif
+
+-#include <mbedtls/md.h>
++#if MBEDTLS_VERSION_MAJOR >= 4
++#ifndef MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
++#define MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
++#endif /* MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS */
++#include <mbedtls/private/bignum.h>
++#include <mbedtls/private/cipher.h>
++#else /* MBEDTLS_VERSION_MAJOR < 4 */
+ #include <mbedtls/bignum.h>
+-#include <mbedtls/pk.h>
+ #include <mbedtls/cipher.h>
+-#include <mbedtls/entropy.h>
+ #include <mbedtls/ctr_drbg.h>
++#include <mbedtls/entropy.h>
++#include <mbedtls/gcm.h>
++#endif /* MBEDTLS_VERSION_MAJOR */
++#include <mbedtls/md.h>
++#include <mbedtls/pk.h>
+ #include <mbedtls/platform.h>
+
+ typedef mbedtls_md_context_t *SHACTX;
+@@ -41,7 +54,12 @@ typedef mbedtls_md_context_t *SHA256CTX;
+ typedef mbedtls_md_context_t *SHA384CTX;
+ typedef mbedtls_md_context_t *SHA512CTX;
+ typedef mbedtls_md_context_t *MD5CTX;
++#if MBEDTLS_VERSION_MAJOR >= 4
++struct ssh_mbedtls_hmac_context;
++typedef struct ssh_mbedtls_hmac_context *HMACCTX;
++#else
+ typedef mbedtls_md_context_t *HMACCTX;
++#endif
+
+ #define SHA_DIGEST_LENGTH 20
+ #define SHA_DIGEST_LEN SHA_DIGEST_LENGTH
+@@ -133,8 +151,15 @@ int ssh_mbedcry_hex2bn(bignum *dest, char *data);
+     } \
+     } while(0)
+
++#if MBEDTLS_VERSION_MAJOR < 4
++
++#define SSH_MBEDTLS_RNG     mbedtls_ctr_drbg_random
++#define SSH_MBEDTLS_RNG_CTX ssh_get_mbedtls_ctr_drbg_context()
++
+ mbedtls_ctr_drbg_context *ssh_get_mbedtls_ctr_drbg_context(void);
+
++#endif /* MBEDTLS_VERSION_MAJOR */
++
+ int ssh_mbedtls_random(void *where, int len, int strong);
+
+ ssh_string make_ecpoint_string(const mbedtls_ecp_group *g, const
+diff --git a/include/libssh/mbedcrypto_v4.h b/include/libssh/mbedcrypto_v4.h
+new file mode 100644
+index 00000000..22e1d237
+--- /dev/null
++++ libssh-mirror/include/libssh/mbedcrypto_v4.h
+@@ -0,0 +1,125 @@
++#ifndef MBEDCRYPTO_V4_H
++#define MBEDCRYPTO_V4_H
++
++#include <stddef.h>
++
++#include <mbedtls/version.h>
++#ifndef MBEDTLS_VERSION_MAJOR
++#include <mbedtls/build_info.h>
++#endif
++
++#if MBEDTLS_VERSION_MAJOR >= 4
++
++#define SSH_MBEDTLS_RSA_KEY_PAIR_BUF_SIZE \
++    PSA_KEY_EXPORT_RSA_KEY_PAIR_MAX_SIZE(PSA_VENDOR_RSA_MAX_KEY_BITS)
++#define SSH_MBEDTLS_RSA_PUBKEY_BUF_SIZE \
++    PSA_KEY_EXPORT_RSA_PUBLIC_KEY_MAX_SIZE(PSA_VENDOR_RSA_MAX_KEY_BITS)
++
++#ifndef MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
++#define MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
++#endif
++
++#include "mbedtls/asn1.h"
++#include "mbedtls/asn1write.h"
++#include "mbedtls/md.h"
++#include "mbedtls/pk.h"
++#include "mbedtls/private/bignum.h"
++#include "mbedtls/private/chacha20.h"
++#include "mbedtls/private/cipher.h"
++#include "mbedtls/private/ecdsa.h"
++#include "mbedtls/private/ecp.h"
++#include "mbedtls/private/gcm.h"
++#include "mbedtls/private/pk_private.h"
++#include "mbedtls/private/poly1305.h"
++#include "mbedtls/private/rsa.h"
++#include "psa/crypto.h"
++#include "psa/crypto_extra.h"
++#include "psa/crypto_sizes.h"
++
++/* 3DES removed in mbedTLS v4; keep compile-time symbols for legacy tables. */
++#ifndef MBEDTLS_CIPHER_DES_EDE3_CBC
++#define MBEDTLS_CIPHER_DES_EDE3_CBC MBEDTLS_CIPHER_NONE
++#endif
++#ifndef MBEDTLS_CIPHER_DES_EDE3_ECB
++#define MBEDTLS_CIPHER_DES_EDE3_ECB MBEDTLS_CIPHER_NONE
++#endif
++#ifndef MBEDTLS_CIPHER_DES_CBC
++#define MBEDTLS_CIPHER_DES_CBC MBEDTLS_CIPHER_NONE
++#endif
++#ifndef MBEDTLS_CIPHER_DES_ECB
++#define MBEDTLS_CIPHER_DES_ECB MBEDTLS_CIPHER_NONE
++#endif
++
++#ifndef MBEDTLS_PK_RSA_ALT
++#define MBEDTLS_PK_RSA_ALT MBEDTLS_PK_NONE
++#endif
++#ifndef MBEDTLS_PK_ECKEY_DH
++#define MBEDTLS_PK_ECKEY_DH MBEDTLS_PK_ECKEY
++#endif
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++int ssh_mbedtls_initialized(void);
++int ssh_mbedtls_rng(void *ctx, unsigned char *output, size_t len);
++
++#define SSH_MBEDTLS_RNG     ssh_mbedtls_rng
++#define SSH_MBEDTLS_RNG_CTX NULL
++
++void ssh_mbedtls_strerror(int errnum, char *buffer, size_t buflen);
++
++int ssh_mbedtls_pk_is_rsa(const mbedtls_pk_context *pk);
++
++int ssh_mbedtls_pk_dup(const mbedtls_pk_context *src,
++                       mbedtls_pk_context *dst,
++                       int public_only);
++
++int ssh_mbedtls_rsa_export_from_pk(const mbedtls_pk_context *pk,
++                                   mbedtls_mpi *N,
++                                   mbedtls_mpi *P,
++                                   mbedtls_mpi *Q,
++                                   mbedtls_mpi *D,
++                                   mbedtls_mpi *E);
++
++int ssh_mbedtls_rsa_export_iqmp_from_pk(const mbedtls_pk_context *pk,
++                                        mbedtls_mpi *IQMP);
++
++int ssh_mbedtls_pk_build_rsa_pubkey(mbedtls_pk_context *pk,
++                                    const unsigned char *n,
++                                    size_t nlen,
++                                    const unsigned char *e,
++                                    size_t elen);
++
++int ssh_mbedtls_pk_build_rsa_privkey(mbedtls_pk_context *pk,
++                                     const unsigned char *n,
++                                     size_t nlen,
++                                     const unsigned char *e,
++                                     size_t elen,
++                                     const unsigned char *d,
++                                     size_t dlen,
++                                     const unsigned char *p,
++                                     size_t plen,
++                                     const unsigned char *q,
++                                     size_t qlen);
++
++int ssh_mbedtls_pk_generate_rsa(mbedtls_pk_context *pk, int bits);
++
++int ssh_mbedtls_pk_to_ecdsa(const mbedtls_pk_context *pk,
++                            mbedtls_ecdsa_context *ecdsa);
++
++int ssh_mbedtls_ecdh_compute_shared(mbedtls_ecp_group *grp,
++                                    mbedtls_mpi *z,
++                                    const mbedtls_ecp_point *Q,
++                                    const mbedtls_mpi *d,
++                                    int (*f_rng)(void *,
++                                                 unsigned char *,
++                                                 size_t),
++                                    void *p_rng);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* MBEDTLS_VERSION_MAJOR >= 4 */
++#endif /* MBEDCRYPTO_V4_H */
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index a46f585b..ecb1cd81 100644
+--- libssh-mirror/src/CMakeLists.txt
++++ libssh-mirror/src/CMakeLists.txt
+@@ -210,6 +210,7 @@ elseif (WITH_MBEDTLS)
+         threads/mbedtls.c
+         libmbedcrypto.c
+         mbedcrypto_missing.c
++        mbedcrypto_v4.c
+         pki_mbedcrypto.c
+         ecdh_mbedcrypto.c
+         getrandom_mbedcrypto.c
+diff --git a/src/curve25519_mbedcrypto.c b/src/curve25519_mbedcrypto.c
+index f328f7b7..30cfd8ba 100644
+--- libssh-mirror/src/curve25519_mbedcrypto.c
++++ libssh-mirror/src/curve25519_mbedcrypto.c
+@@ -26,19 +26,22 @@
+ #include "libssh/curve25519.h"
+
+ #include "libssh/crypto.h"
++#include "libssh/libmbedcrypto.h"
+ #include "libssh/priv.h"
+ #include "libssh/session.h"
+ #include "mbedcrypto-compat.h"
+
++#if MBEDTLS_VERSION_MAJOR >= 4
++#include "libssh/mbedcrypto_v4.h"
++#else
+ #include <mbedtls/ecdh.h>
+-#include <mbedtls/error.h>
++#endif
+
+ int ssh_curve25519_init(ssh_session session)
+ {
+     ssh_curve25519_pubkey *pubkey_loc = NULL;
+     mbedtls_ecdh_context ecdh_ctx;
+     mbedtls_ecdh_params *ecdh_params = NULL;
+-    mbedtls_ctr_drbg_context *ctr_drbg = NULL;
+     int rc, ret = SSH_ERROR;
+     char error_buf[128];
+
+@@ -48,12 +51,10 @@ int ssh_curve25519_init(ssh_session session)
+         pubkey_loc = &session->next_crypto->curve25519_client_pubkey;
+     }
+
+-    ctr_drbg = ssh_get_mbedtls_ctr_drbg_context();
+-
+     mbedtls_ecdh_init(&ecdh_ctx);
+     rc = mbedtls_ecdh_setup(&ecdh_ctx, MBEDTLS_ECP_DP_CURVE25519);
+     if (rc != 0) {
+-        mbedtls_strerror(rc, error_buf, sizeof(error_buf));
++        ssh_mbedtls_strerror(rc, error_buf, sizeof(error_buf));
+         SSH_LOG(SSH_LOG_TRACE, "Failed to setup X25519 context: %s", error_buf);
+         goto out;
+     }
+@@ -63,10 +64,10 @@ int ssh_curve25519_init(ssh_session session)
+     rc = mbedtls_ecdh_gen_public(&ecdh_params->MBEDTLS_ECDH_PRIVATE(grp),
+                                  &ecdh_params->MBEDTLS_ECDH_PRIVATE(d),
+                                  &ecdh_params->MBEDTLS_ECDH_PRIVATE(Q),
+-                                 mbedtls_ctr_drbg_random,
+-                                 ctr_drbg);
++                                 SSH_MBEDTLS_RNG,
++                                 SSH_MBEDTLS_RNG_CTX);
+     if (rc != 0) {
+-        mbedtls_strerror(rc, error_buf, sizeof(error_buf));
++        ssh_mbedtls_strerror(rc, error_buf, sizeof(error_buf));
+         SSH_LOG(SSH_LOG_TRACE,
+                 "Failed to generate X25519 keypair: %s",
+                 error_buf);
+@@ -77,7 +78,7 @@ int ssh_curve25519_init(ssh_session session)
+                                      session->next_crypto->curve25519_privkey,
+                                      CURVE25519_PRIVKEY_SIZE);
+     if (rc != 0) {
+-        mbedtls_strerror(rc, error_buf, sizeof(error_buf));
++        ssh_mbedtls_strerror(rc, error_buf, sizeof(error_buf));
+         SSH_LOG(SSH_LOG_TRACE,
+                 "Failed to write X25519 private key: %s",
+                 error_buf);
+@@ -89,7 +90,7 @@ int ssh_curve25519_init(ssh_session session)
+         *pubkey_loc,
+         CURVE25519_PUBKEY_SIZE);
+     if (rc != 0) {
+-        mbedtls_strerror(rc, error_buf, sizeof(error_buf));
++        ssh_mbedtls_strerror(rc, error_buf, sizeof(error_buf));
+         SSH_LOG(SSH_LOG_TRACE,
+                 "Failed to write X25519 public key: %s",
+                 error_buf);
+@@ -109,7 +110,6 @@ int curve25519_do_create_k(ssh_session session, ssh_curve25519_pubkey k)
+     int rc, ret = SSH_ERROR;
+     mbedtls_ecdh_context ecdh_ctx;
+     mbedtls_ecdh_params *ecdh_params = NULL;
+-    mbedtls_ctr_drbg_context *ctr_drbg = NULL;
+     char error_buf[128];
+
+     if (session->server) {
+@@ -118,12 +118,10 @@ int curve25519_do_create_k(ssh_session session, ssh_curve25519_pubkey k)
+         peer_pubkey_loc = &session->next_crypto->curve25519_server_pubkey;
+     }
+
+-    ctr_drbg = ssh_get_mbedtls_ctr_drbg_context();
+-
+     mbedtls_ecdh_init(&ecdh_ctx);
+     rc = mbedtls_ecdh_setup(&ecdh_ctx, MBEDTLS_ECP_DP_CURVE25519);
+     if (rc != 0) {
+-        mbedtls_strerror(rc, error_buf, sizeof(error_buf));
++        ssh_mbedtls_strerror(rc, error_buf, sizeof(error_buf));
+         SSH_LOG(SSH_LOG_TRACE, "Failed to setup X25519 context: %s", error_buf);
+         goto out;
+     }
+@@ -134,7 +132,7 @@ int curve25519_do_create_k(ssh_session session, ssh_curve25519_pubkey k)
+                                     session->next_crypto->curve25519_privkey,
+                                     CURVE25519_PRIVKEY_SIZE);
+     if (rc != 0) {
+-        mbedtls_strerror(rc, error_buf, sizeof(error_buf));
++        ssh_mbedtls_strerror(rc, error_buf, sizeof(error_buf));
+         SSH_LOG(SSH_LOG_TRACE, "Failed to read private key: %s", error_buf);
+         goto out;
+     }
+@@ -144,7 +142,7 @@ int curve25519_do_create_k(ssh_session session, ssh_curve25519_pubkey k)
+         *peer_pubkey_loc,
+         CURVE25519_PUBKEY_SIZE);
+     if (rc != 0) {
+-        mbedtls_strerror(rc, error_buf, sizeof(error_buf));
++        ssh_mbedtls_strerror(rc, error_buf, sizeof(error_buf));
+         SSH_LOG(SSH_LOG_TRACE, "Failed to read peer public key: %s", error_buf);
+         goto out;
+     }
+@@ -153,19 +151,19 @@ int curve25519_do_create_k(ssh_session session, ssh_curve25519_pubkey k)
+         &ecdh_params->MBEDTLS_ECDH_PRIVATE(Qp).MBEDTLS_ECDH_PRIVATE(Z),
+         1);
+     if (rc != 0) {
+-        mbedtls_strerror(rc, error_buf, sizeof(error_buf));
++        ssh_mbedtls_strerror(rc, error_buf, sizeof(error_buf));
+         SSH_LOG(SSH_LOG_TRACE, "Failed to set Z coordinate: %s", error_buf);
+         goto out;
+     }
+
+-    rc = mbedtls_ecdh_compute_shared(&ecdh_params->MBEDTLS_ECDH_PRIVATE(grp),
+-                                     &ecdh_params->MBEDTLS_ECDH_PRIVATE(z),
+-                                     &ecdh_params->MBEDTLS_ECDH_PRIVATE(Qp),
+-                                     &ecdh_params->MBEDTLS_ECDH_PRIVATE(d),
+-                                     mbedtls_ctr_drbg_random,
+-                                     ctr_drbg);
++    rc = ssh_mbedtls_ecdh_compute_shared(&ecdh_params->MBEDTLS_ECDH_PRIVATE(grp),
++                                        &ecdh_params->MBEDTLS_ECDH_PRIVATE(z),
++                                        &ecdh_params->MBEDTLS_ECDH_PRIVATE(Qp),
++                                        &ecdh_params->MBEDTLS_ECDH_PRIVATE(d),
++                                        SSH_MBEDTLS_RNG,
++                                        SSH_MBEDTLS_RNG_CTX);
+     if (rc != 0) {
+-        mbedtls_strerror(rc, error_buf, sizeof(error_buf));
++        ssh_mbedtls_strerror(rc, error_buf, sizeof(error_buf));
+         SSH_LOG(SSH_LOG_TRACE,
+                 "Failed to compute shared secret: %s",
+                 error_buf);
+@@ -176,7 +174,7 @@ int curve25519_do_create_k(ssh_session session, ssh_curve25519_pubkey k)
+                                      k,
+                                      CURVE25519_PUBKEY_SIZE);
+     if (rc != 0) {
+-        mbedtls_strerror(rc, error_buf, sizeof(error_buf));
++        ssh_mbedtls_strerror(rc, error_buf, sizeof(error_buf));
+         SSH_LOG(SSH_LOG_TRACE, "Failed to write shared secret: %s", error_buf);
+         goto out;
+     }
+diff --git a/src/ecdh_mbedcrypto.c b/src/ecdh_mbedcrypto.c
+index 7d013b74..733618a5 100644
+--- libssh-mirror/src/ecdh_mbedcrypto.c
++++ libssh-mirror/src/ecdh_mbedcrypto.c
+@@ -32,9 +32,13 @@
+ #include "libssh/bignum.h"
+ #include "libssh/libmbedcrypto.h"
+
++#include "mbedcrypto-compat.h"
++#if MBEDTLS_VERSION_MAJOR >= 4
++#include "libssh/mbedcrypto_v4.h"
++#else
+ #include <mbedtls/ecdh.h>
+ #include <mbedtls/ecp.h>
+-#include "mbedcrypto-compat.h"
++#endif
+
+ #ifdef HAVE_ECDH
+
+@@ -61,7 +65,6 @@ int ssh_ecdh_init(ssh_session session)
+     int rc;
+     mbedtls_ecp_group grp;
+     mbedtls_ecp_group_id curve;
+-    mbedtls_ctr_drbg_context *ctr_drbg = NULL;
+     mbedtls_ecp_keypair *ecdh_privkey = NULL;
+     ssh_string pubkey = NULL;
+     ssh_string *pubkey_loc = NULL;
+@@ -72,8 +75,6 @@ int ssh_ecdh_init(ssh_session session)
+         pubkey_loc = &session->next_crypto->ecdh_client_pubkey;
+     }
+
+-    ctr_drbg = ssh_get_mbedtls_ctr_drbg_context();
+-
+     curve = ecdh_kex_type_to_curve(session->next_crypto->kex_type);
+     if (curve == MBEDTLS_ECP_DP_NONE) {
+         return SSH_ERROR;
+@@ -104,8 +105,8 @@ int ssh_ecdh_init(ssh_session session)
+     rc = mbedtls_ecp_gen_keypair(&grp,
+                                  &ecdh_privkey->MBEDTLS_PRIVATE(d),
+                                  &ecdh_privkey->MBEDTLS_PRIVATE(Q),
+-                                 mbedtls_ctr_drbg_random,
+-                                 ctr_drbg);
++                                 SSH_MBEDTLS_RNG,
++                                 SSH_MBEDTLS_RNG_CTX);
+     if (rc != 0) {
+         rc = SSH_ERROR;
+         goto out;
+@@ -161,11 +162,8 @@ int ecdh_build_k(ssh_session session)
+     mbedtls_ecp_point pubkey;
+     int rc;
+     mbedtls_ecp_group_id curve;
+-    mbedtls_ctr_drbg_context *ctr_drbg = NULL;
+     mbedtls_ecp_keypair *ecdh_privkey = NULL;
+
+-    ctr_drbg = ssh_get_mbedtls_ctr_drbg_context();
+-
+     curve = ecdh_kex_type_to_curve(session->next_crypto->kex_type);
+     if (curve == MBEDTLS_ECP_DP_NONE) {
+         return SSH_ERROR;
+@@ -204,12 +202,12 @@ int ecdh_build_k(ssh_session session)
+     mbedtls_mpi_init(session->next_crypto->shared_secret);
+
+     ecdh_privkey = session->next_crypto->ecdh_privkey;
+-    rc = mbedtls_ecdh_compute_shared(&grp,
+-                     session->next_crypto->shared_secret,
+-                     &pubkey,
+-                     &ecdh_privkey->MBEDTLS_PRIVATE(d),
+-                     mbedtls_ctr_drbg_random,
+-                     ctr_drbg);
++    rc = ssh_mbedtls_ecdh_compute_shared(&grp,
++                                         session->next_crypto->shared_secret,
++                                         &pubkey,
++                                         &ecdh_privkey->MBEDTLS_PRIVATE(d),
++                                         SSH_MBEDTLS_RNG,
++                                         SSH_MBEDTLS_RNG_CTX);
+     if (rc != 0) {
+         rc = SSH_ERROR;
+         goto out;
+diff --git a/src/getrandom_mbedcrypto.c b/src/getrandom_mbedcrypto.c
+index 7e87b6a6..850a17d9 100644
+--- libssh-mirror/src/getrandom_mbedcrypto.c
++++ libssh-mirror/src/getrandom_mbedcrypto.c
+@@ -26,6 +26,7 @@
+ #include "libssh/crypto.h"
+ #include "mbedcrypto-compat.h"
+
++#if MBEDTLS_VERSION_MAJOR < 4
+ mbedtls_ctr_drbg_context ssh_mbedtls_ctr_drbg;
+
+ int
+@@ -41,10 +42,11 @@ ssh_mbedtls_random(void *where, int len, int strong)
+     } else {
+         rc = mbedtls_ctr_drbg_random(&ssh_mbedtls_ctr_drbg, where, len);
+     }
+-
+     return !rc;
+ }
+
++#endif /* MBEDTLS_VERSION_MAJOR < 4 */
++
+ int
+ ssh_get_random(void *where, int len, int strong)
+ {
+diff --git a/src/libmbedcrypto.c b/src/libmbedcrypto.c
+index d52ec3df..a6df81ad 100644
+--- libssh-mirror/src/libmbedcrypto.c
++++ libssh-mirror/src/libmbedcrypto.c
+@@ -23,19 +23,26 @@
+
+ #include "config.h"
+
++#ifdef HAVE_LIBMBEDCRYPTO
+ #include "libssh/wrapper.h"
+ #include "libssh/crypto.h"
+ #include "libssh/priv.h"
+ #include "libssh/misc.h"
+ #include "mbedcrypto-compat.h"
++
+ #if defined(MBEDTLS_CHACHA20_C) && defined(MBEDTLS_POLY1305_C)
+ #include "libssh/bytearray.h"
+ #include "libssh/chacha20-poly1305-common.h"
++#if MBEDTLS_VERSION_MAJOR < 4
+ #include <mbedtls/chacha20.h>
+ #include <mbedtls/poly1305.h>
+ #endif
++#endif /* defined(MBEDTLS_CHACHA20_C) && defined(MBEDTLS_POLY1305_C) */
++
++#if MBEDTLS_VERSION_MAJOR >= 4
++#include "libssh/mbedcrypto_v4.h"
++#else /* MBEDTLS_VERSION_MAJOR < 4 */
+
+-#ifdef HAVE_LIBMBEDCRYPTO
+ #include <mbedtls/md.h>
+ #ifdef MBEDTLS_GCM_C
+ #include <mbedtls/gcm.h>
+@@ -44,12 +51,9 @@
+ static mbedtls_entropy_context ssh_mbedtls_entropy;
+ extern mbedtls_ctr_drbg_context ssh_mbedtls_ctr_drbg;
+
+-static int libmbedcrypto_initialized = 0;
++#endif /* MBEDTLS_VERSION_MAJOR < 4 */
+
+-void ssh_reseed(void)
+-{
+-    mbedtls_ctr_drbg_reseed(&ssh_mbedtls_ctr_drbg, NULL, 0);
+-}
++static int libmbedcrypto_initialized = 0;
+
+ int ssh_kdf(struct ssh_crypto_struct *crypto,
+             unsigned char *key, size_t key_len,
+@@ -60,6 +64,18 @@ int ssh_kdf(struct ssh_crypto_struct *crypto,
+                              key_type, output, requested_len);
+ }
+
++#if MBEDTLS_VERSION_MAJOR >= 4
++int ssh_mbedtls_initialized(void)
++{
++    return libmbedcrypto_initialized;
++}
++#else /* MBEDTLS_VERSION_MAJOR < 4 */
++
++void ssh_reseed(void)
++{
++    mbedtls_ctr_drbg_reseed(&ssh_mbedtls_ctr_drbg, NULL, 0);
++}
++
+ HMACCTX hmac_init(const void *key, size_t len, enum ssh_hmac_e type)
+ {
+     HMACCTX ctx = NULL;
+@@ -126,6 +142,8 @@ int hmac_final(HMACCTX c, unsigned char *hashmacbuf, size_t *len)
+     return rc;
+ }
+
++#endif /* MBEDTLS_VERSION_MAJOR < 4 */
++
+ static int
+ cipher_init(struct ssh_cipher_struct *cipher,
+             mbedtls_operation_t operation,
+@@ -1066,12 +1084,20 @@ struct ssh_cipher_struct *ssh_get_ciphertab(void)
+ int ssh_crypto_init(void)
+ {
+     UNUSED_VAR(size_t i);
++#if MBEDTLS_VERSION_MAJOR < 4
+     int rc;
++#endif
+
+     if (libmbedcrypto_initialized) {
+         return SSH_OK;
+     }
+
++#if MBEDTLS_VERSION_MAJOR >= 4
++    if (psa_crypto_init() != PSA_SUCCESS) {
++        return SSH_ERROR;
++    }
++    libmbedcrypto_initialized = 1;
++#else
+     mbedtls_entropy_init(&ssh_mbedtls_entropy);
+     mbedtls_ctr_drbg_init(&ssh_mbedtls_ctr_drbg);
+
+@@ -1079,7 +1105,10 @@ int ssh_crypto_init(void)
+             &ssh_mbedtls_entropy, NULL, 0);
+     if (rc != 0) {
+         mbedtls_ctr_drbg_free(&ssh_mbedtls_ctr_drbg);
++        mbedtls_entropy_free(&ssh_mbedtls_entropy);
++        return SSH_ERROR;
+     }
++#endif
+
+ #if !(defined(MBEDTLS_CHACHA20_C) && defined(MBEDTLS_POLY1305_C))
+     for (i = 0; ssh_ciphertab[i].name != NULL; i++) {
+@@ -1095,15 +1124,19 @@ int ssh_crypto_init(void)
+     }
+ #endif
+
++#if MBEDTLS_VERSION_MAJOR < 4
+     libmbedcrypto_initialized = 1;
++#endif
+
+     return SSH_OK;
+ }
+
++#if MBEDTLS_VERSION_MAJOR < 4
+ mbedtls_ctr_drbg_context *ssh_get_mbedtls_ctr_drbg_context(void)
+ {
+     return &ssh_mbedtls_ctr_drbg;
+ }
++#endif
+
+ void ssh_crypto_finalize(void)
+ {
+@@ -1111,8 +1144,12 @@ void ssh_crypto_finalize(void)
+         return;
+     }
+
++#if MBEDTLS_VERSION_MAJOR >= 4
++    mbedtls_psa_crypto_free();
++#else /* MBEDTLS_VERSION_MAJOR < 4 */
+     mbedtls_ctr_drbg_free(&ssh_mbedtls_ctr_drbg);
+     mbedtls_entropy_free(&ssh_mbedtls_entropy);
++#endif
+
+     libmbedcrypto_initialized = 0;
+ }
+diff --git a/src/mbedcrypto-compat.h b/src/mbedcrypto-compat.h
+index f028854f..bcef4d3b 100644
+--- libssh-mirror/src/mbedcrypto-compat.h
++++ libssh-mirror/src/mbedcrypto-compat.h
+@@ -1,17 +1,20 @@
+ #ifndef MBEDCRYPTO_COMPAT_H
+ #define MBEDCRYPTO_COMPAT_H
+
+-/* mbedtls/version.h should be available for both v2 and v3
+- * v3 defines the version inside build_info.h so if it isn't defined
+- * in version.h we should have v3
+- */
+-#include <mbedtls/cipher.h>
+ #include <mbedtls/version.h>
+
+ #ifndef MBEDTLS_VERSION_MAJOR
+ #include <mbedtls/build_info.h>
+ #endif /* MBEDTLS_VERSION_MAJOR */
+
++/*
++ * Heavy v4-only headers (private RSA/ECP/…) live in mbedcrypto_v4.h.
++ * Include that file explicitly only from translation units that need it.
++ */
++#if MBEDTLS_VERSION_MAJOR < 4
++#include <mbedtls/cipher.h>
++#endif
++
+ #if MBEDTLS_VERSION_MAJOR < 3
+
+ static inline size_t
+@@ -53,4 +56,17 @@ typedef mbedtls_ecdh_context_mbed mbedtls_ecdh_params;
+ #endif /* HAVE_MBEDTLS_CURVE25519 */
+
+ #endif /* MBEDTLS_VERSION_MAJOR < 3 */
++
++#if MBEDTLS_VERSION_MAJOR >= 4
++void ssh_mbedtls_strerror(int errnum, char *buffer, size_t buflen);
++#else
++#include <mbedtls/error.h>
++static inline void ssh_mbedtls_strerror(int errnum, char *buffer, size_t buflen)
++{
++    mbedtls_strerror(errnum, buffer, buflen);
++}
++/* On v2/v3, delegate to the library-provided mbedtls_ecdh_compute_shared. */
++#define ssh_mbedtls_ecdh_compute_shared mbedtls_ecdh_compute_shared
++#endif
++
+ #endif /* MBEDCRYPTO_COMPAT_H */
+diff --git a/src/mbedcrypto_missing.c b/src/mbedcrypto_missing.c
+index 2c1a8d7a..b7f888bf 100644
+--- libssh-mirror/src/mbedcrypto_missing.c
++++ libssh-mirror/src/mbedcrypto_missing.c
+@@ -23,8 +23,12 @@
+
+ #include "config.h"
+
+-#include "libssh/priv.h"
+ #include "libssh/libmbedcrypto.h"
++#include "libssh/priv.h"
++#include "mbedcrypto-compat.h"
++#if MBEDTLS_VERSION_MAJOR >= 4
++#include "libssh/mbedcrypto_v4.h"
++#endif
+
+ #ifdef HAVE_LIBMBEDCRYPTO
+ bignum ssh_mbedcry_bn_new(void)
+@@ -89,8 +93,8 @@ int ssh_mbedcry_rand(bignum rnd, int bits, int top, int bottom)
+     }
+     rc = mbedtls_mpi_fill_random(rnd,
+                                  len,
+-                                 mbedtls_ctr_drbg_random,
+-                                 ssh_get_mbedtls_ctr_drbg_context());
++                                 SSH_MBEDTLS_RNG,
++                                 SSH_MBEDTLS_RNG_CTX);
+     if (rc != 0) {
+         return 0;
+     }
+diff --git a/src/mbedcrypto_v4.c b/src/mbedcrypto_v4.c
+new file mode 100644
+index 00000000..52dc596e
+--- /dev/null
++++ libssh-mirror/src/mbedcrypto_v4.c
+@@ -0,0 +1,830 @@
++/*
++ * mbedTLS v4 / PSA helpers for libssh.
++ */
++
++#include "config.h"
++
++#include "libssh/libmbedcrypto.h"
++#include "libssh/mbedcrypto_v4.h"
++#include "libssh/wrapper.h"
++
++#if defined(HAVE_LIBMBEDCRYPTO) && MBEDTLS_VERSION_MAJOR >= 4
++
++#include "psa/crypto.h"
++#include <stdio.h>
++#include <string.h>
++
++/*
++ * Internal mbedTLS symbols not exposed in public headers.
++ * Verified against TF-PSA-Crypto v4.0.0 / v4.1.0. If linking fails after an
++ * mbedTLS update, check drivers/builtin/src/rsa.c (parse helpers) and
++ * extras/pk_rsa.c / extras/pk.c (PK import helpers).
++ */
++int mbedtls_rsa_parse_pubkey(mbedtls_rsa_context *rsa,
++                             const unsigned char *key,
++                             size_t keylen);
++int mbedtls_rsa_parse_key(mbedtls_rsa_context *rsa,
++                          const unsigned char *key,
++                          size_t keylen);
++
++int mbedtls_pk_rsa_set_key(mbedtls_pk_context *pk,
++                           const unsigned char *key,
++                           size_t key_len);
++int mbedtls_pk_rsa_set_pubkey(mbedtls_pk_context *pk,
++                              const unsigned char *key,
++                              size_t key_len);
++int mbedtls_pk_set_pubkey_from_prv(mbedtls_pk_context *pk);
++
++static int ssh_mbedtls_rsa_compute_crt(const mbedtls_mpi *P,
++                                       const mbedtls_mpi *Q,
++                                       const mbedtls_mpi *D,
++                                       mbedtls_mpi *DP,
++                                       mbedtls_mpi *DQ,
++                                       mbedtls_mpi *QP)
++{
++    mbedtls_mpi P1, Q1;
++    int rc;
++
++    mbedtls_mpi_init(&P1);
++    mbedtls_mpi_init(&Q1);
++
++    rc = mbedtls_mpi_sub_int(&P1, P, 1);
++    if (rc != 0) {
++        goto out;
++    }
++    rc = mbedtls_mpi_sub_int(&Q1, Q, 1);
++    if (rc != 0) {
++        goto out;
++    }
++    rc = mbedtls_mpi_mod_mpi(DP, D, &P1);
++    if (rc != 0) {
++        goto out;
++    }
++    rc = mbedtls_mpi_mod_mpi(DQ, D, &Q1);
++    if (rc != 0) {
++        goto out;
++    }
++    rc = mbedtls_mpi_inv_mod(QP, Q, P);
++
++out:
++    mbedtls_mpi_free(&P1);
++    mbedtls_mpi_free(&Q1);
++    return rc;
++}
++
++static int ssh_mbedtls_rsa_write_pubkey_der(const mbedtls_mpi *N,
++                                            const mbedtls_mpi *E,
++                                            unsigned char *buf,
++                                            size_t buf_len,
++                                            unsigned char **out,
++                                            size_t *out_len)
++{
++    unsigned char *p = buf + buf_len;
++    size_t len = 0;
++    int ret;
++
++    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, E));
++    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, N));
++    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(&p, buf, len));
++    MBEDTLS_ASN1_CHK_ADD(len,
++                         mbedtls_asn1_write_tag(&p,
++                                                buf,
++                                                MBEDTLS_ASN1_CONSTRUCTED |
++                                                    MBEDTLS_ASN1_SEQUENCE));
++
++    *out = p;
++    *out_len = len;
++    return 0;
++}
++
++static int ssh_mbedtls_rsa_write_privkey_der(const mbedtls_mpi *N,
++                                             const mbedtls_mpi *E,
++                                             const mbedtls_mpi *D,
++                                             const mbedtls_mpi *P,
++                                             const mbedtls_mpi *Q,
++                                             const mbedtls_mpi *DP,
++                                             const mbedtls_mpi *DQ,
++                                             const mbedtls_mpi *QP,
++                                             unsigned char *buf,
++                                             size_t buf_len,
++                                             unsigned char **out,
++                                             size_t *out_len)
++{
++    unsigned char *p = buf + buf_len;
++    size_t len = 0;
++    int ret;
++
++    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, QP));
++    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, DQ));
++    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, DP));
++    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, Q));
++    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, P));
++    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, D));
++    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, E));
++    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, N));
++    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_int(&p, buf, 0));
++    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(&p, buf, len));
++    MBEDTLS_ASN1_CHK_ADD(len,
++                         mbedtls_asn1_write_tag(&p,
++                                                buf,
++                                                MBEDTLS_ASN1_CONSTRUCTED |
++                                                    MBEDTLS_ASN1_SEQUENCE));
++
++    *out = p;
++    *out_len = len;
++    return 0;
++}
++
++static int ssh_mbedtls_rsa_copy_mpis(const mbedtls_rsa_context *rsa,
++                                     mbedtls_mpi *N,
++                                     mbedtls_mpi *P,
++                                     mbedtls_mpi *Q,
++                                     mbedtls_mpi *D,
++                                     mbedtls_mpi *E)
++{
++    int rc;
++
++    if (N != NULL) {
++        rc = mbedtls_mpi_copy(N, &rsa->MBEDTLS_PRIVATE(N));
++        if (rc != 0) {
++            return rc;
++        }
++    }
++    if (P != NULL) {
++        rc = mbedtls_mpi_copy(P, &rsa->MBEDTLS_PRIVATE(P));
++        if (rc != 0) {
++            return rc;
++        }
++    }
++    if (Q != NULL) {
++        rc = mbedtls_mpi_copy(Q, &rsa->MBEDTLS_PRIVATE(Q));
++        if (rc != 0) {
++            return rc;
++        }
++    }
++    if (D != NULL) {
++        rc = mbedtls_mpi_copy(D, &rsa->MBEDTLS_PRIVATE(D));
++        if (rc != 0) {
++            return rc;
++        }
++    }
++    if (E != NULL) {
++        rc = mbedtls_mpi_copy(E, &rsa->MBEDTLS_PRIVATE(E));
++        if (rc != 0) {
++            return rc;
++        }
++    }
++    return 0;
++}
++
++static int ssh_mbedtls_pk_load_rsa(const mbedtls_pk_context *pk,
++                                   mbedtls_rsa_context *rsa,
++                                   int private_key)
++{
++    const unsigned char *key = NULL;
++    size_t key_len = 0;
++    psa_status_t status;
++
++    if (pk == NULL) {
++        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++    }
++
++    if (private_key) {
++        unsigned char buf[SSH_MBEDTLS_RSA_KEY_PAIR_BUF_SIZE];
++        int rc;
++
++        if (mbedtls_svc_key_id_is_null(pk->MBEDTLS_PRIVATE(priv_id))) {
++            return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++        }
++
++        status = psa_export_key(pk->MBEDTLS_PRIVATE(priv_id),
++                                buf,
++                                sizeof(buf),
++                                &key_len);
++        if (status != PSA_SUCCESS) {
++            return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++        }
++
++        rc = mbedtls_rsa_parse_key(rsa, buf, key_len);
++        mbedtls_platform_zeroize(buf, sizeof(buf));
++        return rc;
++    }
++
++    if (pk->MBEDTLS_PRIVATE(pub_raw_len) > 0) {
++        key = pk->MBEDTLS_PRIVATE(pub_raw);
++        key_len = pk->MBEDTLS_PRIVATE(pub_raw_len);
++        return mbedtls_rsa_parse_pubkey(rsa, key, key_len);
++    }
++
++    if (!mbedtls_svc_key_id_is_null(pk->MBEDTLS_PRIVATE(priv_id))) {
++        unsigned char buf[SSH_MBEDTLS_RSA_PUBKEY_BUF_SIZE];
++        int rc;
++
++        status = psa_export_public_key(pk->MBEDTLS_PRIVATE(priv_id),
++                                       buf,
++                                       sizeof(buf),
++                                       &key_len);
++        if (status != PSA_SUCCESS) {
++            return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++        }
++
++        rc = mbedtls_rsa_parse_pubkey(rsa, buf, key_len);
++        mbedtls_platform_zeroize(buf, sizeof(buf));
++        return rc;
++    }
++
++    return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++}
++
++int ssh_mbedtls_pk_is_rsa(const mbedtls_pk_context *pk)
++{
++    psa_key_type_t psa_type;
++    int can_do_rsa;
++
++    if (pk == NULL) {
++        return 0;
++    }
++
++    can_do_rsa = mbedtls_pk_can_do(pk, MBEDTLS_PK_RSA);
++    if (can_do_rsa) {
++        return 1;
++    }
++
++    psa_type = pk->MBEDTLS_PRIVATE(psa_type);
++    return PSA_KEY_TYPE_IS_RSA(psa_type) != 0;
++}
++
++int ssh_mbedtls_rng(void *ctx, unsigned char *output, size_t len)
++{
++    int initialized;
++
++    (void)ctx;
++    initialized = ssh_mbedtls_initialized();
++    if (!initialized) {
++        return -1;
++    }
++    return psa_generate_random(output, len) == PSA_SUCCESS ? 0 : -1;
++}
++
++int ssh_mbedtls_rsa_export_from_pk(const mbedtls_pk_context *pk,
++                                   mbedtls_mpi *N,
++                                   mbedtls_mpi *P,
++                                   mbedtls_mpi *Q,
++                                   mbedtls_mpi *D,
++                                   mbedtls_mpi *E)
++{
++    mbedtls_rsa_context rsa;
++    int need_private;
++    int rc;
++
++    mbedtls_rsa_init(&rsa);
++    need_private = (P != NULL) || (Q != NULL) || (D != NULL);
++    rc = ssh_mbedtls_pk_load_rsa(pk, &rsa, need_private);
++    if (rc == 0) {
++        rc = ssh_mbedtls_rsa_copy_mpis(&rsa, N, P, Q, D, E);
++    }
++    mbedtls_rsa_free(&rsa);
++    return rc;
++}
++
++int ssh_mbedtls_rsa_export_iqmp_from_pk(const mbedtls_pk_context *pk,
++                                        mbedtls_mpi *IQMP)
++{
++    mbedtls_rsa_context rsa;
++    int rc;
++
++    if (IQMP == NULL) {
++        return MBEDTLS_ERR_RSA_BAD_INPUT_DATA;
++    }
++
++    mbedtls_rsa_init(&rsa);
++    rc = ssh_mbedtls_pk_load_rsa(pk, &rsa, 1);
++    if (rc == 0) {
++        rc = mbedtls_mpi_copy(IQMP, &rsa.MBEDTLS_PRIVATE(QP));
++    }
++    mbedtls_rsa_free(&rsa);
++    return rc;
++}
++
++static int ssh_mbedtls_pk_dup_pubkey_raw(const mbedtls_pk_context *src,
++                                         mbedtls_pk_context *dst)
++{
++    const mbedtls_pk_info_t *info = NULL;
++    int rc;
++
++    if (src->MBEDTLS_PRIVATE(pub_raw_len) == 0) {
++        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++    }
++
++    info = mbedtls_pk_info_from_type(mbedtls_pk_get_type(src));
++    if (info == NULL) {
++        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++    }
++
++    rc = mbedtls_pk_setup(dst, info);
++    if (rc != 0) {
++        return rc;
++    }
++
++    if (src->MBEDTLS_PRIVATE(pub_raw_len) > MBEDTLS_PK_MAX_PUBKEY_RAW_LEN) {
++        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++    }
++
++    memcpy(dst->MBEDTLS_PRIVATE(pub_raw),
++           src->MBEDTLS_PRIVATE(pub_raw),
++           src->MBEDTLS_PRIVATE(pub_raw_len));
++    dst->MBEDTLS_PRIVATE(pub_raw_len) = src->MBEDTLS_PRIVATE(pub_raw_len);
++    dst->MBEDTLS_PRIVATE(psa_type) = src->MBEDTLS_PRIVATE(psa_type);
++    dst->MBEDTLS_PRIVATE(bits) = src->MBEDTLS_PRIVATE(bits);
++#if defined(PSA_WANT_KEY_TYPE_ECC_PUBLIC_KEY)
++    dst->MBEDTLS_PRIVATE(ec_family) = src->MBEDTLS_PRIVATE(ec_family);
++#endif
++    return 0;
++}
++
++int ssh_mbedtls_pk_dup(const mbedtls_pk_context *src,
++                       mbedtls_pk_context *dst,
++                       int public_only)
++{
++    if (src == NULL || mbedtls_pk_get_type(src) == MBEDTLS_PK_NONE) {
++        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++    }
++
++    if (!mbedtls_svc_key_id_is_null(src->MBEDTLS_PRIVATE(priv_id))) {
++        if (public_only) {
++            return mbedtls_pk_copy_public_from_psa(
++                src->MBEDTLS_PRIVATE(priv_id),
++                dst);
++        }
++        return mbedtls_pk_copy_from_psa(src->MBEDTLS_PRIVATE(priv_id), dst);
++    }
++
++    if (public_only) {
++        return ssh_mbedtls_pk_dup_pubkey_raw(src, dst);
++    }
++
++    return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++}
++
++/*
++ * TF-PSA-Crypto v4 removes mbedtls_rsa_import_raw/complete from the public
++ * API. Import RSA keys by encoding PKCS#1 DER and loading it through the
++ * internal mbedtls_pk_rsa_set_key() / mbedtls_pk_rsa_set_pubkey() helpers.
++ */
++static int ssh_mbedtls_pk_import_rsa_pkcs1(mbedtls_pk_context *pk,
++                                           const unsigned char *der,
++                                           size_t der_len,
++                                           int private_key)
++{
++    const mbedtls_pk_info_t *info = NULL;
++    int rc;
++
++    mbedtls_pk_free(pk);
++    mbedtls_pk_init(pk);
++
++    info = mbedtls_pk_info_from_type(MBEDTLS_PK_RSA);
++    if (info == NULL) {
++        return MBEDTLS_ERR_PK_FEATURE_UNAVAILABLE;
++    }
++
++    rc = mbedtls_pk_setup(pk, info);
++    if (rc != 0) {
++        return rc;
++    }
++
++    if (private_key) {
++        rc = mbedtls_pk_rsa_set_key(pk, der, der_len);
++        if (rc != 0) {
++            mbedtls_pk_free(pk);
++            return rc;
++        }
++        return mbedtls_pk_set_pubkey_from_prv(pk);
++    }
++
++    rc = mbedtls_pk_rsa_set_pubkey(pk, der, der_len);
++    if (rc != 0) {
++        mbedtls_pk_free(pk);
++    }
++    return rc;
++}
++
++int ssh_mbedtls_pk_build_rsa_pubkey(mbedtls_pk_context *pk,
++                                    const unsigned char *n,
++                                    size_t nlen,
++                                    const unsigned char *e,
++                                    size_t elen)
++{
++    unsigned char buf[SSH_MBEDTLS_RSA_PUBKEY_BUF_SIZE];
++    unsigned char *der = NULL;
++    size_t der_len = 0;
++    mbedtls_mpi N, E;
++    int rc;
++
++    mbedtls_mpi_init(&N);
++    mbedtls_mpi_init(&E);
++
++    rc = mbedtls_mpi_read_binary(&N, n, nlen);
++    if (rc != 0) {
++        goto out;
++    }
++    rc = mbedtls_mpi_read_binary(&E, e, elen);
++    if (rc != 0) {
++        goto out;
++    }
++
++    rc = ssh_mbedtls_rsa_write_pubkey_der(&N,
++                                          &E,
++                                          buf,
++                                          sizeof(buf),
++                                          &der,
++                                          &der_len);
++    if (rc != 0) {
++        goto out;
++    }
++
++    rc = ssh_mbedtls_pk_import_rsa_pkcs1(pk, der, der_len, 0);
++
++out:
++    mbedtls_mpi_free(&N);
++    mbedtls_mpi_free(&E);
++    return rc;
++}
++
++int ssh_mbedtls_pk_build_rsa_privkey(mbedtls_pk_context *pk,
++                                     const unsigned char *n,
++                                     size_t nlen,
++                                     const unsigned char *e,
++                                     size_t elen,
++                                     const unsigned char *d,
++                                     size_t dlen,
++                                     const unsigned char *p,
++                                     size_t plen,
++                                     const unsigned char *q,
++                                     size_t qlen)
++{
++    unsigned char buf[SSH_MBEDTLS_RSA_KEY_PAIR_BUF_SIZE];
++    unsigned char *der = NULL;
++    size_t der_len = 0;
++    mbedtls_mpi N, E, D, P, Q, DP, DQ, QP;
++    int rc;
++
++    mbedtls_mpi_init(&N);
++    mbedtls_mpi_init(&E);
++    mbedtls_mpi_init(&D);
++    mbedtls_mpi_init(&P);
++    mbedtls_mpi_init(&Q);
++    mbedtls_mpi_init(&DP);
++    mbedtls_mpi_init(&DQ);
++    mbedtls_mpi_init(&QP);
++
++    rc = mbedtls_mpi_read_binary(&N, n, nlen);
++    if (rc != 0) {
++        goto out;
++    }
++    rc = mbedtls_mpi_read_binary(&E, e, elen);
++    if (rc != 0) {
++        goto out;
++    }
++    rc = mbedtls_mpi_read_binary(&D, d, dlen);
++    if (rc != 0) {
++        goto out;
++    }
++    rc = mbedtls_mpi_read_binary(&P, p, plen);
++    if (rc != 0) {
++        goto out;
++    }
++    rc = mbedtls_mpi_read_binary(&Q, q, qlen);
++    if (rc != 0) {
++        goto out;
++    }
++
++    rc = ssh_mbedtls_rsa_compute_crt(&P, &Q, &D, &DP, &DQ, &QP);
++    if (rc != 0) {
++        goto out;
++    }
++
++    rc = ssh_mbedtls_rsa_write_privkey_der(&N,
++                                           &E,
++                                           &D,
++                                           &P,
++                                           &Q,
++                                           &DP,
++                                           &DQ,
++                                           &QP,
++                                           buf,
++                                           sizeof(buf),
++                                           &der,
++                                           &der_len);
++    if (rc != 0) {
++        goto out;
++    }
++
++    rc = ssh_mbedtls_pk_import_rsa_pkcs1(pk, der, der_len, 1);
++
++out:
++    mbedtls_platform_zeroize(buf, sizeof(buf));
++    mbedtls_mpi_free(&N);
++    mbedtls_mpi_free(&E);
++    mbedtls_mpi_free(&D);
++    mbedtls_mpi_free(&P);
++    mbedtls_mpi_free(&Q);
++    mbedtls_mpi_free(&DP);
++    mbedtls_mpi_free(&DQ);
++    mbedtls_mpi_free(&QP);
++    return rc;
++}
++
++int ssh_mbedtls_pk_generate_rsa(mbedtls_pk_context *pk, int bits)
++{
++    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
++    mbedtls_svc_key_id_t key_id = MBEDTLS_SVC_KEY_ID_INIT;
++    psa_status_t status;
++    int rc;
++
++    psa_set_key_type(&attr, PSA_KEY_TYPE_RSA_KEY_PAIR);
++    psa_set_key_bits(&attr, (size_t)bits);
++    psa_set_key_usage_flags(
++        &attr,
++        PSA_KEY_USAGE_SIGN_HASH | PSA_KEY_USAGE_SIGN_MESSAGE |
++            PSA_KEY_USAGE_VERIFY_HASH | PSA_KEY_USAGE_VERIFY_MESSAGE |
++            PSA_KEY_USAGE_EXPORT | PSA_KEY_USAGE_COPY);
++    psa_set_key_algorithm(&attr, PSA_ALG_RSA_PKCS1V15_SIGN(PSA_ALG_ANY_HASH));
++#if defined(MBEDTLS_PSA_CRYPTO_C)
++    psa_set_key_enrollment_algorithm(&attr, PSA_ALG_RSA_PSS(PSA_ALG_ANY_HASH));
++#endif
++
++    status = psa_generate_key(&attr, &key_id);
++    psa_reset_key_attributes(&attr);
++    if (status != PSA_SUCCESS) {
++        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++    }
++
++    rc = mbedtls_pk_copy_from_psa(key_id, pk);
++    psa_destroy_key(key_id);
++    return rc;
++}
++
++#if defined(PSA_WANT_KEY_TYPE_ECC_PUBLIC_KEY)
++static mbedtls_ecp_group_id
++ssh_mbedtls_psa_ec_to_group_id(psa_ecc_family_t family, size_t bits)
++{
++    if (family == PSA_ECC_FAMILY_SECP_R1) {
++        switch (bits) {
++        case 256:
++            return MBEDTLS_ECP_DP_SECP256R1;
++        case 384:
++            return MBEDTLS_ECP_DP_SECP384R1;
++        case 521:
++            return MBEDTLS_ECP_DP_SECP521R1;
++        default:
++            break;
++        }
++    }
++    return MBEDTLS_ECP_DP_NONE;
++}
++#endif /* PSA_WANT_KEY_TYPE_ECC_PUBLIC_KEY */
++
++int ssh_mbedtls_pk_to_ecdsa(const mbedtls_pk_context *pk,
++                            mbedtls_ecdsa_context *ecdsa)
++{
++#if defined(PSA_WANT_KEY_TYPE_ECC_PUBLIC_KEY)
++    unsigned char priv[PSA_KEY_EXPORT_ECC_KEY_PAIR_MAX_SIZE(
++        PSA_VENDOR_ECC_MAX_CURVE_BITS)];
++    size_t priv_len = 0;
++    mbedtls_ecp_group_id gid;
++    psa_status_t status;
++    int rc;
++
++    if (pk == NULL ||
++        mbedtls_svc_key_id_is_null(pk->MBEDTLS_PRIVATE(priv_id))) {
++        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++    }
++
++    gid = ssh_mbedtls_psa_ec_to_group_id(pk->MBEDTLS_PRIVATE(ec_family),
++                                         pk->MBEDTLS_PRIVATE(bits));
++    if (gid == MBEDTLS_ECP_DP_NONE) {
++        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++    }
++
++    status = psa_export_key(pk->MBEDTLS_PRIVATE(priv_id),
++                            priv,
++                            sizeof(priv),
++                            &priv_len);
++    if (status != PSA_SUCCESS) {
++        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
++    }
++
++    mbedtls_ecdsa_init(ecdsa);
++    rc = mbedtls_ecp_read_key(gid, ecdsa, priv, priv_len);
++    if (rc != 0) {
++        goto fail;
++    }
++
++    if (pk->MBEDTLS_PRIVATE(pub_raw_len) > 0) {
++        rc = mbedtls_ecp_point_read_binary(&ecdsa->MBEDTLS_PRIVATE(grp),
++                                           &ecdsa->MBEDTLS_PRIVATE(Q),
++                                           pk->MBEDTLS_PRIVATE(pub_raw),
++                                           pk->MBEDTLS_PRIVATE(pub_raw_len));
++        if (rc != 0) {
++            goto fail;
++        }
++    }
++
++    mbedtls_platform_zeroize(priv, sizeof(priv));
++    return 0;
++
++fail:
++    mbedtls_ecdsa_free(ecdsa);
++    mbedtls_platform_zeroize(priv, sizeof(priv));
++    return rc;
++#else
++    (void)pk;
++    (void)ecdsa;
++    return MBEDTLS_ERR_PK_FEATURE_UNAVAILABLE;
++#endif /* PSA_WANT_KEY_TYPE_ECC_PUBLIC_KEY */
++}
++
++#if defined(MBEDTLS_ECP_C)
++int ssh_mbedtls_ecdh_compute_shared(mbedtls_ecp_group *grp,
++                                    mbedtls_mpi *z,
++                                    const mbedtls_ecp_point *Q,
++                                    const mbedtls_mpi *d,
++                                    int (*f_rng)(void *,
++                                                 unsigned char *,
++                                                 size_t),
++                                    void *p_rng)
++{
++    int ret = -1;
++    mbedtls_ecp_point P;
++
++    mbedtls_ecp_point_init(&P);
++
++    ret = mbedtls_ecp_mul_restartable(grp, &P, d, Q, f_rng, p_rng, NULL);
++    if (ret != 0) {
++        goto cleanup;
++    }
++
++    if (mbedtls_ecp_is_zero(&P)) {
++        ret = MBEDTLS_ERR_ECP_BAD_INPUT_DATA;
++        goto cleanup;
++    }
++
++    ret = mbedtls_mpi_copy(z, &P.MBEDTLS_PRIVATE(X));
++
++cleanup:
++    mbedtls_ecp_point_free(&P);
++    return ret;
++}
++#endif /* MBEDTLS_ECP_C */
++
++void ssh_mbedtls_strerror(int errnum, char *buffer, size_t buflen)
++{
++    if (buffer == NULL || buflen == 0) {
++        return;
++    }
++
++    if (errnum == 0) {
++        (void)snprintf(buffer, buflen, "SUCCESS");
++        return;
++    }
++
++    (void)snprintf(buffer, buflen, "error -0x%04x", -errnum);
++}
++
++int ssh_mbedtls_random(void *where, int len, int strong)
++{
++    (void)strong;
++    if (!ssh_mbedtls_initialized()) {
++        return 0;
++    }
++    return psa_generate_random(where, (size_t)len) == PSA_SUCCESS;
++}
++
++void ssh_reseed(void)
++{
++    /* No-op for PSA */
++}
++
++struct ssh_mbedtls_hmac_context {
++    psa_mac_operation_t op;
++    psa_key_id_t key_id;
++    size_t mac_size;
++};
++
++static psa_algorithm_t ssh_hmac_type_to_psa(enum ssh_hmac_e type)
++{
++    switch (type) {
++    case SSH_HMAC_SHA1:
++        return PSA_ALG_HMAC(PSA_ALG_SHA_1);
++    case SSH_HMAC_SHA256:
++        return PSA_ALG_HMAC(PSA_ALG_SHA_256);
++    case SSH_HMAC_SHA512:
++        return PSA_ALG_HMAC(PSA_ALG_SHA_512);
++    default:
++        return 0;
++    }
++}
++
++static void ssh_mbedtls_hmac_cleanup(struct ssh_mbedtls_hmac_context *ctx)
++{
++    if (ctx == NULL) {
++        return;
++    }
++
++    psa_mac_abort(&ctx->op);
++    if (ctx->key_id != PSA_KEY_ID_NULL) {
++        psa_destroy_key(ctx->key_id);
++    }
++    free(ctx);
++}
++
++HMACCTX hmac_init(const void *key, size_t len, enum ssh_hmac_e type)
++{
++    struct ssh_mbedtls_hmac_context *ctx = NULL;
++    psa_algorithm_t alg;
++    psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
++    psa_status_t status;
++
++    ctx = calloc(1, sizeof(*ctx));
++    if (ctx == NULL) {
++        return NULL;
++    }
++
++    alg = ssh_hmac_type_to_psa(type);
++    if (alg == 0) {
++        goto error;
++    }
++
++    ctx->mac_size = PSA_MAC_LENGTH(PSA_KEY_TYPE_HMAC, len * 8, alg);
++    if (ctx->mac_size == 0) {
++        switch (type) {
++        case SSH_HMAC_SHA1:
++            ctx->mac_size = SHA_DIGEST_LENGTH;
++            break;
++        case SSH_HMAC_SHA256:
++            ctx->mac_size = SHA256_DIGEST_LENGTH;
++            break;
++        case SSH_HMAC_SHA512:
++            ctx->mac_size = SHA512_DIGEST_LENGTH;
++            break;
++        default:
++            goto error;
++        }
++    }
++
++    psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_MESSAGE);
++    psa_set_key_algorithm(&attributes, alg);
++    psa_set_key_type(&attributes, PSA_KEY_TYPE_HMAC);
++    psa_set_key_bits(&attributes, len * 8);
++
++    status = psa_import_key(&attributes, key, len, &ctx->key_id);
++    if (status != PSA_SUCCESS) {
++        goto error;
++    }
++
++    status = psa_mac_sign_setup(&ctx->op, ctx->key_id, alg);
++    if (status != PSA_SUCCESS) {
++        goto error;
++    }
++
++    return ctx;
++
++error:
++    ssh_mbedtls_hmac_cleanup(ctx);
++    return NULL;
++}
++
++/* libssh HMAC wrappers return 1 on success, 0 on failure. */
++int hmac_update(HMACCTX c, const void *data, size_t len)
++{
++    psa_status_t status;
++
++    status = psa_mac_update(&c->op, data, len);
++    if (status != PSA_SUCCESS) {
++        ssh_mbedtls_hmac_cleanup(c);
++        return 0;
++    }
++    return 1;
++}
++
++int hmac_final(HMACCTX c, unsigned char *hashmacbuf, size_t *len)
++{
++    psa_status_t status;
++    size_t mac_len = 0;
++    int ret = 0;
++
++    status = psa_mac_sign_finish(&c->op, hashmacbuf, c->mac_size, &mac_len);
++    if (status == PSA_SUCCESS && mac_len <= c->mac_size) {
++        *len = mac_len;
++        ret = 1;
++    } else {
++        psa_mac_abort(&c->op);
++    }
++    if (c->key_id != PSA_KEY_ID_NULL) {
++        psa_destroy_key(c->key_id);
++    }
++    free(c);
++    return ret;
++}
++
++#endif /* HAVE_LIBMBEDCRYPTO && MBEDTLS_VERSION_MAJOR >= 4 */
+diff --git a/src/pki_mbedcrypto.c b/src/pki_mbedcrypto.c
+index 01a9ca80..81ca5570 100644
+--- libssh-mirror/src/pki_mbedcrypto.c
++++ libssh-mirror/src/pki_mbedcrypto.c
+@@ -24,16 +24,21 @@
+ #include "config.h"
+
+ #ifdef HAVE_LIBMBEDCRYPTO
+-#include <mbedtls/pk.h>
+ #include <mbedtls/error.h>
+ #include "mbedcrypto-compat.h"
++#if MBEDTLS_VERSION_MAJOR >= 4
++#include "libssh/mbedcrypto_v4.h"
++#endif
++
++#include <mbedtls/pk.h>
+
+-#include "libssh/priv.h"
+-#include "libssh/pki.h"
+-#include "libssh/pki_priv.h"
+-#include "libssh/buffer.h"
+ #include "libssh/bignum.h"
++#include "libssh/buffer.h"
++#include "libssh/libmbedcrypto.h"
+ #include "libssh/misc.h"
++#include "libssh/pki.h"
++#include "libssh/pki_priv.h"
++#include "libssh/priv.h"
+
+ #define MAX_PASSPHRASE_SIZE 1024
+ #define MAX_KEY_SIZE 32
+@@ -107,9 +112,6 @@ ssh_key pki_private_key_from_base64(const char *b64_key, const char *passphrase,
+     /* mbedtls pk_parse_key expects strlen to count the 0 byte */
+     size_t b64len = strlen(b64_key) + 1;
+     unsigned char tmp[MAX_PASSPHRASE_SIZE] = {0};
+-#if MBEDTLS_VERSION_MAJOR > 2
+-    mbedtls_ctr_drbg_context *ctr_drbg = ssh_get_mbedtls_ctr_drbg_context();
+-#endif
+
+     pk = malloc(sizeof(mbedtls_pk_context));
+     if (pk == NULL) {
+@@ -134,10 +136,10 @@ ssh_key pki_private_key_from_base64(const char *b64_key, const char *passphrase,
+                 b64len,
+                 tmp,
+                 strnlen((const char *)tmp, MAX_PASSPHRASE_SIZE)
+-#if MBEDTLS_VERSION_MAJOR > 2
++#if MBEDTLS_VERSION_MAJOR > 2 && MBEDTLS_VERSION_MAJOR < 4
+                     ,
+-                mbedtls_ctr_drbg_random,
+-                ctr_drbg
++                SSH_MBEDTLS_RNG,
++                SSH_MBEDTLS_RNG_CTX
+ #endif
+             );
+         } else {
+@@ -146,10 +148,10 @@ ssh_key pki_private_key_from_base64(const char *b64_key, const char *passphrase,
+                                          b64len,
+                                          NULL,
+                                          0
+-#if MBEDTLS_VERSION_MAJOR > 2
++#if MBEDTLS_VERSION_MAJOR > 2 && MBEDTLS_VERSION_MAJOR < 4
+                                          ,
+-                                         mbedtls_ctr_drbg_random,
+-                                         ctr_drbg
++                                         SSH_MBEDTLS_RNG,
++                                         SSH_MBEDTLS_RNG_CTX
+ #endif
+             );
+         }
+@@ -159,16 +161,16 @@ ssh_key pki_private_key_from_base64(const char *b64_key, const char *passphrase,
+                                      b64len,
+                                      (const unsigned char *)passphrase,
+                                      strnlen(passphrase, MAX_PASSPHRASE_SIZE)
+-#if MBEDTLS_VERSION_MAJOR > 2
++#if MBEDTLS_VERSION_MAJOR > 2 && MBEDTLS_VERSION_MAJOR < 4
+                                          ,
+-                                     mbedtls_ctr_drbg_random,
+-                                     ctr_drbg
++                                     SSH_MBEDTLS_RNG,
++                                     SSH_MBEDTLS_RNG_CTX
+ #endif
+         );
+     }
+     if (valid != 0) {
+         char error_buf[100];
+-        mbedtls_strerror(valid, error_buf, 100);
++        ssh_mbedtls_strerror(valid, error_buf, 100);
+         SSH_LOG(SSH_LOG_WARN, "Parsing private key %s", error_buf);
+         goto fail;
+     }
+@@ -189,16 +191,25 @@ ssh_key pki_private_key_from_base64(const char *b64_key, const char *passphrase,
+         break;
+     case MBEDTLS_PK_ECKEY:
+     case MBEDTLS_PK_ECDSA: {
++#if MBEDTLS_VERSION_MAJOR < 4
++        mbedtls_ecp_keypair *keypair = NULL;
++#endif
+         /* type will be set later */
+-        mbedtls_ecp_keypair *keypair = mbedtls_pk_ec(*pk);
+-
+         key->ecdsa = malloc(sizeof(mbedtls_ecdsa_context));
+         if (key->ecdsa == NULL) {
+             goto fail;
+         }
+
++#if MBEDTLS_VERSION_MAJOR >= 4
++        if (ssh_mbedtls_pk_to_ecdsa(pk, key->ecdsa) != 0) {
++            goto fail;
++        }
++#else
++        keypair = mbedtls_pk_ec(*pk);
++
+         mbedtls_ecdsa_init(key->ecdsa);
+         mbedtls_ecdsa_from_keypair(key->ecdsa, keypair);
++#endif
+         key->pk = pk;
+
+         key->ecdsa_nid = pki_key_ecdsa_to_nid(key->ecdsa);
+@@ -240,6 +251,33 @@ int pki_privkey_build_rsa(ssh_key key,
+                           ssh_string p,
+                           ssh_string q)
+ {
++#if MBEDTLS_VERSION_MAJOR >= 4
++    int rc;
++
++    key->pk = malloc(sizeof(mbedtls_pk_context));
++    if (key->pk == NULL) {
++        return SSH_ERROR;
++    }
++    mbedtls_pk_init(key->pk);
++
++    rc = ssh_mbedtls_pk_build_rsa_privkey(key->pk,
++                                          ssh_string_data(n),
++                                          ssh_string_len(n),
++                                          ssh_string_data(e),
++                                          ssh_string_len(e),
++                                          ssh_string_data(d),
++                                          ssh_string_len(d),
++                                          ssh_string_data(p),
++                                          ssh_string_len(p),
++                                          ssh_string_data(q),
++                                          ssh_string_len(q));
++    if (rc != 0) {
++        mbedtls_pk_free(key->pk);
++        SAFE_FREE(key->pk);
++        return SSH_ERROR;
++    }
++    return SSH_OK;
++#else
+     mbedtls_rsa_context *rsa = NULL;
+     const mbedtls_pk_info_t *pk_info = NULL;
+     int rc;
+@@ -288,10 +326,32 @@ fail:
+     mbedtls_pk_free(key->pk);
+     SAFE_FREE(key->pk);
+     return SSH_ERROR;
++#endif /* MBEDTLS_VERSION_MAJOR >= 4 */
+ }
+
+ int pki_pubkey_build_rsa(ssh_key key, ssh_string e, ssh_string n)
+ {
++#if MBEDTLS_VERSION_MAJOR >= 4
++    int rc;
++
++    key->pk = malloc(sizeof(mbedtls_pk_context));
++    if (key->pk == NULL) {
++        return SSH_ERROR;
++    }
++    mbedtls_pk_init(key->pk);
++
++    rc = ssh_mbedtls_pk_build_rsa_pubkey(key->pk,
++                                         ssh_string_data(n),
++                                         ssh_string_len(n),
++                                         ssh_string_data(e),
++                                         ssh_string_len(e));
++    if (rc != 0) {
++        mbedtls_pk_free(key->pk);
++        SAFE_FREE(key->pk);
++        return SSH_ERROR;
++    }
++    return SSH_OK;
++#else
+     mbedtls_rsa_context *rsa = NULL;
+     const mbedtls_pk_info_t *pk_info = NULL;
+ #if MBEDTLS_VERSION_MAJOR > 2
+@@ -365,13 +425,16 @@ exit:
+     mbedtls_mpi_free(&E);
+ #endif
+     return rc;
++#endif /* MBEDTLS_VERSION_MAJOR >= 4 */
+ }
+
+ ssh_key pki_key_dup(const ssh_key key, int demote)
+ {
+     ssh_key new = NULL;
+     int rc;
++#if MBEDTLS_VERSION_MAJOR < 4
+     const mbedtls_pk_info_t *pk_info = NULL;
++#endif
+ #if MBEDTLS_VERSION_MAJOR > 2
+     mbedtls_mpi N;
+     mbedtls_mpi E;
+@@ -395,6 +458,23 @@ ssh_key pki_key_dup(const ssh_key key, int demote)
+
+     switch(key->type) {
+         case SSH_KEYTYPE_RSA: {
++#if MBEDTLS_VERSION_MAJOR >= 4
++            int public_only;
++
++            new->pk = malloc(sizeof(mbedtls_pk_context));
++            if (new->pk == NULL) {
++                goto fail;
++            }
++            mbedtls_pk_init(new->pk);
++
++            public_only = demote || !(key->flags & SSH_KEY_FLAG_PRIVATE);
++            rc = ssh_mbedtls_pk_dup(key->pk, new->pk, public_only);
++            if (rc != 0) {
++                mbedtls_pk_free(new->pk);
++                SAFE_FREE(new->pk);
++                goto fail;
++            }
++#else
+             mbedtls_rsa_context *rsa, *new_rsa;
+
+             new->pk = malloc(sizeof(mbedtls_pk_context));
+@@ -498,6 +578,7 @@ ssh_key pki_key_dup(const ssh_key key, int demote)
+                 goto fail;
+             }
+ #endif
++#endif /* MBEDTLS_VERSION_MAJOR >= 4 */
+
+             break;
+         }
+@@ -562,7 +643,9 @@ cleanup:
+ int pki_key_generate_rsa(ssh_key key, int parameter)
+ {
+     int rc;
++#if MBEDTLS_VERSION_MAJOR < 4
+     const mbedtls_pk_info_t *info = NULL;
++#endif
+
+     if (parameter == 0) {
+         parameter = RSA_DEFAULT_KEY_SIZE;
+@@ -575,6 +658,9 @@ int pki_key_generate_rsa(ssh_key key, int parameter)
+
+     mbedtls_pk_init(key->pk);
+
++#if MBEDTLS_VERSION_MAJOR >= 4
++    rc = ssh_mbedtls_pk_generate_rsa(key->pk, parameter);
++#else
+     info = mbedtls_pk_info_from_type(MBEDTLS_PK_RSA);
+     rc = mbedtls_pk_setup(key->pk, info);
+     if (rc != 0) {
+@@ -583,8 +669,8 @@ int pki_key_generate_rsa(ssh_key key, int parameter)
+
+     if (mbedtls_pk_can_do(key->pk, MBEDTLS_PK_RSA)) {
+         rc = mbedtls_rsa_gen_key(mbedtls_pk_rsa(*key->pk),
+-                                 mbedtls_ctr_drbg_random,
+-                                 ssh_get_mbedtls_ctr_drbg_context(),
++                                 SSH_MBEDTLS_RNG,
++                                 SSH_MBEDTLS_RNG_CTX,
+                                  parameter,
+                                  65537);
+         if (rc != 0) {
+@@ -592,6 +678,12 @@ int pki_key_generate_rsa(ssh_key key, int parameter)
+             return SSH_ERROR;
+         }
+     }
++#endif
++    if (rc != 0) {
++        mbedtls_pk_free(key->pk);
++        SAFE_FREE(key->pk);
++        return SSH_ERROR;
++    }
+
+     return SSH_OK;
+ }
+@@ -621,11 +713,20 @@ int pki_key_compare(const ssh_key k1, const ssh_key k2, enum ssh_keycmp_e what)
+
+     switch (ssh_key_type_plain(k1->type)) {
+         case SSH_KEYTYPE_RSA: {
++#if MBEDTLS_VERSION_MAJOR < 4
+             mbedtls_rsa_context *rsa1, *rsa2;
+             if (!mbedtls_pk_can_do(k1->pk, MBEDTLS_PK_RSA) ||
+                 !mbedtls_pk_can_do(k2->pk, MBEDTLS_PK_RSA)) {
+                 break;
+             }
++#else
++            int k1_is_rsa = ssh_mbedtls_pk_is_rsa(k1->pk);
++            int k2_is_rsa = ssh_mbedtls_pk_is_rsa(k2->pk);
++
++            if (!k1_is_rsa || !k2_is_rsa) {
++                break;
++            }
++#endif
+
+             if (mbedtls_pk_get_type(k1->pk) != mbedtls_pk_get_type(k2->pk) ||
+                 mbedtls_pk_get_bitlen(k1->pk) !=
+@@ -635,7 +736,39 @@ int pki_key_compare(const ssh_key k1, const ssh_key k2, enum ssh_keycmp_e what)
+             }
+
+             if (what == SSH_KEY_CMP_PUBLIC) {
+-#if MBEDTLS_VERSION_MAJOR > 2
++#if MBEDTLS_VERSION_MAJOR >= 4
++                rc = ssh_mbedtls_rsa_export_from_pk(k1->pk,
++                                                    &N1,
++                                                    NULL,
++                                                    NULL,
++                                                    NULL,
++                                                    &E1);
++                if (rc != 0) {
++                    rc = 1;
++                    goto cleanup;
++                }
++
++                rc = ssh_mbedtls_rsa_export_from_pk(k2->pk,
++                                                    &N2,
++                                                    NULL,
++                                                    NULL,
++                                                    NULL,
++                                                    &E2);
++                if (rc != 0) {
++                    rc = 1;
++                    goto cleanup;
++                }
++
++                if (mbedtls_mpi_cmp_mpi(&N1, &N2) != 0) {
++                    rc = 1;
++                    goto cleanup;
++                }
++
++                if (mbedtls_mpi_cmp_mpi(&E1, &E2) != 0) {
++                    rc = 1;
++                    goto cleanup;
++                }
++#elif MBEDTLS_VERSION_MAJOR > 2
+                 rsa1 = mbedtls_pk_rsa(*k1->pk);
+                 rc = mbedtls_rsa_export(rsa1, &N1, NULL, NULL, NULL, &E1);
+                 if (rc != 0) {
+@@ -673,7 +806,49 @@ int pki_key_compare(const ssh_key k1, const ssh_key k2, enum ssh_keycmp_e what)
+                 }
+ #endif
+             } else if (what == SSH_KEY_CMP_PRIVATE) {
+-#if MBEDTLS_VERSION_MAJOR > 2
++#if MBEDTLS_VERSION_MAJOR >= 4
++                rc = ssh_mbedtls_rsa_export_from_pk(k1->pk,
++                                                    &N1,
++                                                    &P1,
++                                                    &Q1,
++                                                    NULL,
++                                                    &E1);
++                if (rc != 0) {
++                    rc = 1;
++                    goto cleanup;
++                }
++
++                rc = ssh_mbedtls_rsa_export_from_pk(k2->pk,
++                                                    &N2,
++                                                    &P2,
++                                                    &Q2,
++                                                    NULL,
++                                                    &E2);
++                if (rc != 0) {
++                    rc = 1;
++                    goto cleanup;
++                }
++
++                if (mbedtls_mpi_cmp_mpi(&N1, &N2) != 0) {
++                    rc = 1;
++                    goto cleanup;
++                }
++
++                if (mbedtls_mpi_cmp_mpi(&E1, &E2) != 0) {
++                    rc = 1;
++                    goto cleanup;
++                }
++
++                if (mbedtls_mpi_cmp_mpi(&P1, &P2) != 0) {
++                    rc = 1;
++                    goto cleanup;
++                }
++
++                if (mbedtls_mpi_cmp_mpi(&Q1, &Q2) != 0) {
++                    rc = 1;
++                    goto cleanup;
++                }
++#elif MBEDTLS_VERSION_MAJOR > 2
+                 rsa1 = mbedtls_pk_rsa(*k1->pk);
+                 rc = mbedtls_rsa_export(rsa1, &N1, &P1, &Q1, NULL, &E1);
+                 if (rc != 0) {
+@@ -918,16 +1093,28 @@ ssh_string pki_key_to_blob(const ssh_key key, enum ssh_key_e type)
+
+     switch (key->type) {
+     case SSH_KEYTYPE_RSA: {
+-        mbedtls_rsa_context *rsa = NULL;
+         mbedtls_mpi *E_ptr = NULL, *N_ptr = NULL;
++#if MBEDTLS_VERSION_MAJOR < 4
++        mbedtls_rsa_context *rsa = NULL;
+
+         if (mbedtls_pk_can_do(key->pk, MBEDTLS_PK_RSA) == 0) {
++#else
++        if (!ssh_mbedtls_pk_is_rsa(key->pk)) {
++#endif
++
+             SSH_BUFFER_FREE(buffer);
+             return NULL;
+         }
+
++#if MBEDTLS_VERSION_MAJOR >= 4
++        rc = ssh_mbedtls_rsa_export_from_pk(key->pk, &N, NULL, NULL, NULL, &E);
++        if (rc != 0) {
++            goto out;
++        }
++        E_ptr = &E;
++        N_ptr = &N;
++#elif MBEDTLS_VERSION_MAJOR > 2
+         rsa = mbedtls_pk_rsa(*key->pk);
+-#if MBEDTLS_VERSION_MAJOR > 2
+         rc = mbedtls_rsa_export(rsa, &N, NULL, NULL, NULL, &E);
+         if (rc != 0) {
+             goto out;
+@@ -936,6 +1123,8 @@ ssh_string pki_key_to_blob(const ssh_key key, enum ssh_key_e type)
+         E_ptr = &E;
+         N_ptr = &N;
+ #else
++        rsa = mbedtls_pk_rsa(*key->pk);
++
+         E_ptr = &rsa->E;
+         N_ptr = &rsa->N;
+ #endif
+@@ -975,7 +1164,23 @@ ssh_string pki_key_to_blob(const ssh_key key, enum ssh_key_e type)
+                 goto out;
+             }
+
+-#if MBEDTLS_VERSION_MAJOR > 2
++#if MBEDTLS_VERSION_MAJOR >= 4
++            rc = ssh_mbedtls_rsa_export_from_pk(key->pk, NULL, &P, &Q, &D, NULL);
++            if (rc != 0) {
++                goto out;
++            }
++            rc = ssh_mbedtls_rsa_export_iqmp_from_pk(key->pk, &IQMP);
++            if (rc != 0) {
++                goto out;
++            }
++
++            P_ptr = &P;
++            Q_ptr = &Q;
++            D_ptr = &D;
++            IQMP_ptr = &IQMP;
++#elif MBEDTLS_VERSION_MAJOR > 2
++            rsa = mbedtls_pk_rsa(*key->pk);
++
+             rc = mbedtls_rsa_export(rsa, NULL, &P, &Q, &D, NULL);
+             if (rc != 0) {
+                 goto out;
+@@ -991,6 +1196,8 @@ ssh_string pki_key_to_blob(const ssh_key key, enum ssh_key_e type)
+             D_ptr = &D;
+             IQMP_ptr = &IQMP;
+ #else
++            rsa = mbedtls_pk_rsa(*key->pk);
++
+             P_ptr = &rsa->P;
+             Q_ptr = &rsa->Q;
+             D_ptr = &rsa->D;
+@@ -1470,9 +1677,13 @@ static ssh_string rsa_do_sign_hash(const unsigned char *digest,
+ #if MBEDTLS_VERSION_MAJOR > 2
+                          sig_size,
+ #endif
+-                         &slen,
+-                         mbedtls_ctr_drbg_random,
+-                         ssh_get_mbedtls_ctr_drbg_context());
++                         &slen
++#if MBEDTLS_VERSION_MAJOR < 4
++                         ,
++                         SSH_MBEDTLS_RNG,
++                         SSH_MBEDTLS_RNG_CTX
++#endif
++    );
+
+     if (ok != 0) {
+         SAFE_FREE(sig);
+@@ -1542,8 +1753,8 @@ ssh_signature pki_do_sign_hash(const ssh_key privkey,
+                                     &privkey->ecdsa->MBEDTLS_PRIVATE(d),
+                                     hash,
+                                     hlen,
+-                                    mbedtls_ctr_drbg_random,
+-                                    ssh_get_mbedtls_ctr_drbg_context());
++                                    SSH_MBEDTLS_RNG,
++                                    SSH_MBEDTLS_RNG_CTX);
+             if (rc != 0) {
+                 ssh_signature_free(sig);
+                 return NULL;
+@@ -1732,7 +1943,7 @@ int pki_verify_data_signature(ssh_signature signature,
+                                    ssh_string_len(signature->rsa_sig));
+             if (rc != 0) {
+                 char error_buf[100];
+-                mbedtls_strerror(rc, error_buf, 100);
++                ssh_mbedtls_strerror(rc, error_buf, 100);
+                 SSH_LOG(SSH_LOG_TRACE, "RSA error: %s", error_buf);
+                 return SSH_ERROR;
+             }
+@@ -1751,7 +1962,7 @@ int pki_verify_data_signature(ssh_signature signature,
+                     signature->ecdsa_sig.s);
+             if (rc != 0) {
+                 char error_buf[100];
+-                mbedtls_strerror(rc, error_buf, 100);
++                ssh_mbedtls_strerror(rc, error_buf, 100);
+                 SSH_LOG(SSH_LOG_TRACE, "ECDSA error: %s", error_buf);
+                 return SSH_ERROR;
+
+@@ -1975,8 +2186,8 @@ int pki_key_generate_ecdsa(ssh_key key, int parameter)
+
+     ok = mbedtls_ecdsa_genkey(key->ecdsa,
+                               pki_key_ecdsa_nid_to_mbed_gid(key->ecdsa_nid),
+-                              mbedtls_ctr_drbg_random,
+-                              ssh_get_mbedtls_ctr_drbg_context());
++                              SSH_MBEDTLS_RNG,
++                              SSH_MBEDTLS_RNG_CTX);
+
+     if (ok != 0) {
+         mbedtls_ecdsa_free(key->ecdsa);
+diff --git a/tests/client/torture_algorithms.c b/tests/client/torture_algorithms.c
+index f0f8ac05..ee133247 100644
+--- libssh-mirror/tests/client/torture_algorithms.c
++++ libssh-mirror/tests/client/torture_algorithms.c
+@@ -436,6 +436,8 @@ static void torture_algorithms_aes256_gcm_mac(void **state)
+     test_algorithm(s->ssh.session, NULL/*kex*/, "aes256-gcm@openssh.com", "hmac-sha1");
+ }
+
++/* no 3DES on mbedTLS v4 */
++#if !(defined(HAVE_LIBMBEDCRYPTO) && MBEDTLS_VERSION_MAJOR >= 4)
+ static void torture_algorithms_3des_cbc_hmac_sha1(void **state) {
+     struct torture_state *s = *state;
+
+@@ -495,6 +497,7 @@ static void torture_algorithms_3des_cbc_hmac_sha2_512_etm(void **state) {
+
+     test_algorithm(s->ssh.session, NULL/*kex*/, "3des-cbc", "hmac-sha2-512-etm@openssh.com");
+ }
++#endif
+
+ #if defined(HAVE_BLOWFISH) && defined(OPENSSH_BLOWFISH_CBC)
+ static void torture_algorithms_blowfish_cbc_hmac_sha1(void **state) {
+@@ -977,6 +980,9 @@ int torture_run_tests(void) {
+         cmocka_unit_test_setup_teardown(torture_algorithms_aes256_gcm,
+                                         session_setup,
+                                         session_teardown),
++#if defined(HAVE_LIBMBEDCRYPTO) && MBEDTLS_VERSION_MAJOR >= 4
++    /* no 3DES on mbedTLS v4 */
++#else
+         cmocka_unit_test_setup_teardown(torture_algorithms_3des_cbc_hmac_sha1,
+                                         session_setup,
+                                         session_teardown),
+@@ -995,6 +1001,7 @@ int torture_run_tests(void) {
+         cmocka_unit_test_setup_teardown(torture_algorithms_3des_cbc_hmac_sha2_512_etm,
+                                         session_setup,
+                                         session_teardown),
++#endif
+ #if defined(HAVE_BLOWFISH) && defined(OPENSSH_BLOWFISH_CBC)
+         cmocka_unit_test_setup_teardown(torture_algorithms_blowfish_cbc_hmac_sha1,
+                                         session_setup,
+diff --git a/tests/external_override/CMakeLists.txt b/tests/external_override/CMakeLists.txt
+index fcce52c7..ff9be539 100644
+--- libssh-mirror/tests/external_override/CMakeLists.txt
++++ libssh-mirror/tests/external_override/CMakeLists.txt
+@@ -35,9 +35,12 @@ elseif (WITH_MBEDTLS)
+         ${libssh_SOURCE_DIR}/src/getrandom_mbedcrypto.c
+         ${libssh_SOURCE_DIR}/src/md_mbedcrypto.c
+     )
+-    set(override_libs
+-        ${MBEDTLS_CRYPTO_LIBRARY}
+-    )
++    if (TARGET MbedTLS::mbedcrypto)
++        set(override_libs MbedTLS::mbedcrypto)
++    else ()
++        set(override_libs ${MBEDTLS_CRYPTO_LIBRARY})
++        include_directories(${MBEDTLS_INCLUDE_DIR})
++    endif ()
+ else ()
+     set (override_src
+         ${libssh_SOURCE_DIR}/src/getrandom_crypto.c
+diff --git a/tests/pkd/pkd_hello.c b/tests/pkd/pkd_hello.c
+index feedaf34..e2724d3f 100644
+--- libssh-mirror/tests/pkd/pkd_hello.c
++++ libssh-mirror/tests/pkd/pkd_hello.c
+@@ -437,32 +437,39 @@ static int torture_pkd_setup_ecdsa_521(void **state) {
+     f(client, ecdsa_521_aes128_gcm,    ciphercmd(AES128_GCM),      setup_ecdsa_521,  teardown, LIBSSH_ECDSA_521_TESTKEY) \
+     f(client, ecdsa_521_aes256_gcm,    ciphercmd(AES256_GCM),      setup_ecdsa_521,  teardown, LIBSSH_ECDSA_521_TESTKEY)
+
++#if defined(HAVE_LIBMBEDCRYPTO) && MBEDTLS_VERSION_MAJOR >= 4
++#define PKDTESTS_CIPHER_OPENSSHONLY_3DES_BASED(f, client, ciphercmd) /* no 3DES on mbedTLS v4 */
++#else
++#define PKDTESTS_CIPHER_OPENSSHONLY_3DES_BASED(f, client, ciphercmd) \
++    f(client, rsa_3des_cbc,            ciphercmd("3des-cbc"),      setup_rsa,        teardown, LIBSSH_RSA_TESTKEY) \
++    f(client, ed25519_3des_cbc,        ciphercmd("3des-cbc"),      setup_ed25519,    teardown, LIBSSH_ED25519_TESTKEY) \
++    f(client, ecdsa_256_3des_cbc,      ciphercmd("3des-cbc"),      setup_ecdsa_256,  teardown, LIBSSH_ECDSA_256_TESTKEY) \
++    f(client, ecdsa_384_3des_cbc,      ciphercmd("3des-cbc"),      setup_ecdsa_384,  teardown, LIBSSH_ECDSA_384_TESTKEY) \
++    f(client, ecdsa_521_3des_cbc,      ciphercmd("3des-cbc"),      setup_ecdsa_521,  teardown, LIBSSH_ECDSA_521_TESTKEY)
++#endif
++
+ #define PKDTESTS_CIPHER_OPENSSHONLY(f, client, ciphercmd) \
+     /* Ciphers. */ \
+     PKDTESTS_CIPHER_OPENSSHONLY_FIPS(f, client, ciphercmd) \
+-    f(client, rsa_3des_cbc,            ciphercmd("3des-cbc"),      setup_rsa,        teardown, LIBSSH_RSA_TESTKEY) \
++    PKDTESTS_CIPHER_OPENSSHONLY_3DES_BASED(f, client, ciphercmd) \
+     f(client, rsa_aes128_cbc,          ciphercmd("aes128-cbc"),    setup_rsa,        teardown, LIBSSH_RSA_TESTKEY) \
+     f(client, rsa_aes192_cbc,          ciphercmd("aes192-cbc"),    setup_rsa,        teardown, LIBSSH_RSA_TESTKEY) \
+     f(client, rsa_aes256_cbc,          ciphercmd("aes256-cbc"),    setup_rsa,        teardown, LIBSSH_RSA_TESTKEY) \
+     f(client, rsa_aes192_ctr,          ciphercmd("aes192-ctr"),    setup_rsa,        teardown, LIBSSH_RSA_TESTKEY) \
+-    f(client, ed25519_3des_cbc,        ciphercmd("3des-cbc"),      setup_ed25519,    teardown, LIBSSH_ED25519_TESTKEY) \
+     f(client, ed25519_aes128_cbc,      ciphercmd("aes128-cbc"),    setup_ed25519,    teardown, LIBSSH_ED25519_TESTKEY) \
+     f(client, ed25519_aes256_cbc,      ciphercmd("aes256-cbc"),    setup_ed25519,    teardown, LIBSSH_ED25519_TESTKEY) \
+     f(client, ed25519_aes192_cbc,      ciphercmd("aes192-cbc"),    setup_ed25519,    teardown, LIBSSH_ED25519_TESTKEY) \
+     f(client, ed25519_aes192_ctr,      ciphercmd("aes192-ctr"),    setup_ed25519,    teardown, LIBSSH_ED25519_TESTKEY) \
+     f(client, ed25519_aes128_gcm,      ciphercmd(AES128_GCM),      setup_ed25519,    teardown, LIBSSH_ED25519_TESTKEY) \
+     f(client, ed25519_aes256_gcm,      ciphercmd(AES256_GCM),      setup_ed25519,    teardown, LIBSSH_ED25519_TESTKEY) \
+-    f(client, ecdsa_256_3des_cbc,      ciphercmd("3des-cbc"),      setup_ecdsa_256,  teardown, LIBSSH_ECDSA_256_TESTKEY) \
+     f(client, ecdsa_256_aes128_cbc,    ciphercmd("aes128-cbc"),    setup_ecdsa_256,  teardown, LIBSSH_ECDSA_256_TESTKEY) \
+     f(client, ecdsa_256_aes192_cbc,    ciphercmd("aes192-cbc"),    setup_ecdsa_256,  teardown, LIBSSH_ECDSA_256_TESTKEY) \
+     f(client, ecdsa_256_aes256_cbc,    ciphercmd("aes256-cbc"),    setup_ecdsa_256,  teardown, LIBSSH_ECDSA_256_TESTKEY) \
+     f(client, ecdsa_256_aes192_ctr,    ciphercmd("aes192-ctr"),    setup_ecdsa_256,  teardown, LIBSSH_ECDSA_256_TESTKEY) \
+-    f(client, ecdsa_384_3des_cbc,      ciphercmd("3des-cbc"),      setup_ecdsa_384,  teardown, LIBSSH_ECDSA_384_TESTKEY) \
+     f(client, ecdsa_384_aes128_cbc,    ciphercmd("aes128-cbc"),    setup_ecdsa_384,  teardown, LIBSSH_ECDSA_384_TESTKEY) \
+     f(client, ecdsa_384_aes192_cbc,    ciphercmd("aes192-cbc"),    setup_ecdsa_384,  teardown, LIBSSH_ECDSA_384_TESTKEY) \
+     f(client, ecdsa_384_aes256_cbc,    ciphercmd("aes256-cbc"),    setup_ecdsa_384,  teardown, LIBSSH_ECDSA_384_TESTKEY) \
+     f(client, ecdsa_384_aes192_ctr,    ciphercmd("aes192-ctr"),    setup_ecdsa_384,  teardown, LIBSSH_ECDSA_384_TESTKEY) \
+-    f(client, ecdsa_521_3des_cbc,      ciphercmd("3des-cbc"),      setup_ecdsa_521,  teardown, LIBSSH_ECDSA_521_TESTKEY) \
+     f(client, ecdsa_521_aes128_cbc,    ciphercmd("aes128-cbc"),    setup_ecdsa_521,  teardown, LIBSSH_ECDSA_521_TESTKEY) \
+     f(client, ecdsa_521_aes192_cbc,    ciphercmd("aes192-cbc"),    setup_ecdsa_521,  teardown, LIBSSH_ECDSA_521_TESTKEY) \
+     f(client, ecdsa_521_aes256_cbc,    ciphercmd("aes256-cbc"),    setup_ecdsa_521,  teardown, LIBSSH_ECDSA_521_TESTKEY) \
+diff --git a/tests/unittests/torture_packet.c b/tests/unittests/torture_packet.c
+index 80e96b4c..e579efa3 100644
+--- libssh-mirror/tests/unittests/torture_packet.c
++++ libssh-mirror/tests/unittests/torture_packet.c
+@@ -10,6 +10,13 @@
+ #include "libssh/socket.h"
+ #include "libssh/callbacks.h"
+
++#if defined(HAVE_LIBMBEDCRYPTO)
++#include <mbedtls/version.h>
++#ifndef MBEDTLS_VERSION_MAJOR
++#include <mbedtls/build_info.h>
++#endif
++#endif
++
+ #include "socket.c"
+
+ uint8_t test_data[]="\x02"
+@@ -275,6 +282,8 @@ static void torture_packet_aes256_cbc_etm(UNUSED_PARAM(void **state))
+     }
+ }
+
++/* no 3DES on mbedTLS v4 */
++#if !(defined(HAVE_LIBMBEDCRYPTO) && MBEDTLS_VERSION_MAJOR >= 4)
+ static void torture_packet_3des_cbc(UNUSED_PARAM(void **state))
+ {
+     int i;
+@@ -302,6 +311,7 @@ static void torture_packet_3des_cbc_etm(UNUSED_PARAM(void **state))
+         torture_packet("3des-cbc", "hmac-sha1-etm@openssh.com", "none", i);
+     }
+ }
++#endif /* !(defined(HAVE_LIBMBEDCRYPTO) && MBEDTLS_VERSION_MAJOR >= 4) */
+
+ static void torture_packet_chacha20(void **state)
+ {
+@@ -371,8 +381,11 @@ int torture_run_tests(void) {
+         cmocka_unit_test(torture_packet_aes128_cbc_etm),
+         cmocka_unit_test(torture_packet_aes192_cbc_etm),
+         cmocka_unit_test(torture_packet_aes256_cbc_etm),
++#if !(defined(HAVE_LIBMBEDCRYPTO) && MBEDTLS_VERSION_MAJOR >= 4)
++        /* no 3DES on mbedTLS v4 */
+         cmocka_unit_test(torture_packet_3des_cbc),
+         cmocka_unit_test(torture_packet_3des_cbc_etm),
++#endif
+         cmocka_unit_test(torture_packet_chacha20),
+         cmocka_unit_test(torture_packet_aes128_gcm),
+         cmocka_unit_test(torture_packet_aes256_gcm),

@@ -69,7 +69,7 @@
 
 static int NATIVE_W = 568, NATIVE_H = 1232, CORNER_R = 72;
 static bool s_tft;
-static uint16_t g_fb[568 * 1232];
+static uint16_t g_fb[200 * 10 * 60 * 17];     /* the biggest LSSIM_GRID, 200x60; the T-Display is 568 x 1232 */
 
 bool ls_panel_fb(ls_panel_fb_t *out)
 {
@@ -223,6 +223,7 @@ extern const ls_app_doc_t ls_doc_tiles;
    a radio stack this tool has no use for. Kept in the same order so a screen
    index here means what it means on the board. */
 extern const ls_tui_screen_t lssim_p25_preview, lssim_fm_preview, ls_scr_wireless;
+extern const ls_tui_screen_t ls_lap_screen;
 /* The two design previews exist only in the simulator, so they carry a
    simulator doc rather than one of the real ones. */
 static const ls_app_doc_t sim_preview_doc = {
@@ -270,12 +271,12 @@ static const ls_app_t APPS[] = {
     { "journal", "JOURNAL", "field notes", LS_ICON_JOURNAL, TUI_GREEN, LS_APP_EXTRA, &ls_scr_journal, NULL, &ls_doc_journal },
     { "notes", "NOTES", "field notes", LS_ICON_JOURNAL, TUI_GREEN, LS_APP_EXTRA, &ls_scr_notes, NULL, &ls_doc_notes },
     { "compass", "COMPASS", "bearings", LS_ICON_COMPASS, TUI_YELLOW, LS_APP_EXTRA, &ls_scr_compass, NULL, &ls_doc_compass },
-    { "subghz", "SUB-GHZ", "passive watch", LS_ICON_RECORD, TUI_GREEN, LS_APP_EXTRA, &ls_scr_subghz, NULL, &ls_doc_subghz },
+    { "subghz", "SUB-GHZ", "passive watch", LS_ICON_SUBGHZ, TUI_GREEN, LS_APP_EXTRA, &ls_scr_subghz, NULL, &ls_doc_subghz },
     { "music", "MUSIC", "player", LS_ICON_MUSIC, TUI_CYAN, LS_APP_EXTRA, &ls_scr_music, NULL, &ls_doc_music },
     { "mixrf", "MIX-RF", "keyboard radios", LS_ICON_CHIP, TUI_CYAN, LS_APP_EXTRA, &ls_scr_mixrf, NULL, &ls_doc_mixrf },
     { "p25-design", "P25 DESIGN", "preview", LS_ICON_TOWER, TUI_CYAN, LS_APP_EXTRA, &lssim_p25_preview, NULL, &sim_preview_doc },
     { "fm-design", "FM DESIGN", "preview", LS_ICON_WAVE, TUI_CYAN, LS_APP_EXTRA, &lssim_fm_preview, NULL, &sim_preview_doc },
-    { "link", "LINK", "wireless", LS_ICON_TOWER, TUI_CYAN,
+    { "link", "LINK", "wireless", LS_ICON_WIRELESS, TUI_CYAN,
       LS_APP_EXTRA, &ls_scr_wireless, NULL, &ls_doc_link },
 
     { "drones", "DRONES", "BLE Remote ID", LS_ICON_DRONE, TUI_CYAN,
@@ -287,6 +288,8 @@ static const ls_app_t APPS[] = {
 #if defined(CONFIG_LS_EXAMPLE_APP) && CONFIG_LS_EXAMPLE_APP
     LS_EXAMPLE_APP_ENTRY,
 #endif
+    { "lap", "APP", "native backend", LS_ICON_CHIP, TUI_GREEN,
+      LS_APP_USER, &ls_lap_screen, NULL, &sim_preview_doc },
 };
 #define N_APPS ((int)(sizeof(APPS) / sizeof(APPS[0])))
 
@@ -643,6 +646,13 @@ static void seed_calls(bool empty) {
 }
 /* Capture every presented frame, including worker stalls and failed renders. */
 static void capture_frame(void) {
+    /* Every presented frame as a picture, for looking at animation. */
+    {
+        const char *d = getenv("LSSIM_FRAMES");
+        static unsigned n;
+        char p[1024];
+        if (d) { snprintf(p, sizeof(p), "%s/%04u.bmp", d, n++); write_bmp(p); }
+    }
     /* Opt-in invariant for every presented frame, including app openings and
        OPTIONS. Spaces are painted cells too: check background, not text. */
     if (getenv("LSSIM_STATUS_AUDIT")) {
@@ -925,6 +935,69 @@ static int play(const char *in, const char *out)
     return frames ? 0 : 1;
 }
 
+/* `lssim atlas -o lsfont.bin`: every glyph of every font, drawn by the
+   board's own renderer and read back as coverage, for a viewer that draws
+   cells itself (the cell feed, web/screen.js). Layout: "LSF1", a font count,
+   then per font its cell width and height and 512 glyphs of w*h bytes
+   (0 = background, 255 = ink): codes 0-255, then braille U+2800-28FF. */
+static int font_atlas(const char *out)
+{
+    FILE *f = fopen(out, "wb");
+    if (!f) { printf("lssim: cannot write %s\n", out); return 1; }
+    const int nf = ls_tui_font_count();
+    fwrite("LSF1", 1, 4, f);
+    fputc(nf, f);
+    for (int fi = 0; fi < nf; fi++) {
+        ls_tui_set_font_index(fi);
+        NATIVE_W = 2000;           /* 129 columns of the widest font; g_fb holds 2000 x 1020 */
+        NATIVE_H = 1000;
+        CORNER_R = 0;
+        ls_tui_set_corner_radius(0);
+        if (!ls_tui_begin(NATIVE_W, NATIVE_H)) { printf("lssim: begin failed\n"); fclose(f); return 1; }
+        int cols = 0, rows = 0, cw = 0, ch = 0;
+        ls_tui_geometry(&cols, &rows, &cw, &ch);
+        const ls_tui_theme_t *th = ls_tui_theme_effective(ls_tui_get_theme(), ls_tui_daylight());
+        int ink = 15, ground = 0;                         /* the most and least green: the widest ramp */
+        for (int i = 0; i < 16; i++) {
+            if (((th->palette[i] >> 5) & 63) > ((th->palette[ink] >> 5) & 63)) ink = i;
+            if (((th->palette[i] >> 5) & 63) < ((th->palette[ground] >> 5) & 63)) ground = i;
+        }
+        const int gi = (th->palette[ink] >> 5) & 63, gb = (th->palette[ground] >> 5) & 63;
+        tui_surface *sf = ls_tui_surface();
+        for (int i = 0; i < cols * rows; i++) sf->back[i] = (tui_cell){' ', (uint8_t)(ground << 4 | ground)};
+        if (cols < 130 || rows < 20) { printf("lssim: grid %dx%d too small\n", cols, rows); fclose(f); return 1; }
+        for (int g = 0; g < 512; g++) {
+            const int code = g < 256 ? g : 0x2800 + g - 256;
+            sf->back[(2 + (g / 64) * 2) * cols + 1 + (g % 64) * 2] = (tui_cell){(int16_t)code, (uint8_t)(ground << 4 | ink)};
+        }
+        ls_tui_invalidate();
+        ls_tui_present();
+        fputc(cw, f);
+        fputc(ch, f);
+        uint8_t *cov = malloc((size_t)cw * ch);
+        for (int g = 0; g < 512; g++) {
+            const int col = 1 + (g % 64) * 2, row = 2 + (g / 64) * 2;
+            int x0 = -1, y0 = -1, c = 0, r = 0;      /* the cell's first pixel, found the way a tap is */
+            for (int y = 0; y < NATIVE_H && y0 < 0; y++)
+                if (ls_tui_pixel_to_cell(col * cw + cw / 2, y, &c, &r) && r == row) y0 = y;
+            for (int x = 0; x < NATIVE_W && x0 < 0; x++)
+                if (ls_tui_pixel_to_cell(x, y0 + 1, &c, &r) && c == col) x0 = x;
+            for (int y = 0; y < ch; y++)
+                for (int x = 0; x < cw; x++) {
+                    const int gp = (g_fb[(size_t)(y0 + y) * NATIVE_W + x0 + x] >> 5) & 63;
+                    int a = gi != gb ? (gp - gb) * 255 / (gi - gb) : 0;
+                    cov[y * cw + x] = (uint8_t)(a < 0 ? 0 : a > 255 ? 255 : a);
+                }
+            fwrite(cov, 1, (size_t)cw * ch, f);
+        }
+        free(cov);
+        printf("lssim: font %d %dx%d, ink %d ground %d\n", fi, cw, ch, ink, ground);
+    }
+    fclose(f);
+    printf("lssim: atlas -> %s\n", out);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) { usage(); return 1; }
@@ -985,6 +1058,7 @@ int main(int argc, char **argv)
         else { usage(); return 1; }
     }
 
+    if (!strcmp(want, "atlas")) return font_atlas(strcmp(out, "sim.bmp") ? out : "lsfont.bin");
     const bool splash = !strcmp(want, "splash");
     const int idx = app_by_id(splash ? "home" : !strcmp(want,"calls")?"p25":want);
     if (idx < 0) { printf("lssim: no app '%s'\n", want); usage(); return 1; }
@@ -1008,6 +1082,16 @@ int main(int argc, char **argv)
         NATIVE_H = LS_BOARD_LCD_V_RES;
         CORNER_R = LS_BOARD_LCD_CORNER_R;
         ls_tui_set_cutout(LS_PANEL_CUTOUT_CX, LS_PANEL_CUTOUT_CY, LS_PANEL_CUTOUT_R);
+    }
+    /* LSSIM_GRID=160x45: a grid like a Nano's terminal panel ('panel term',
+       40-200 x 12-60), for a desktop window. */
+    const char *grid = getenv("LSSIM_GRID");
+    int gc = 0, gr = 0;
+    if (grid && sscanf(grid, "%dx%d", &gc, &gr) == 2 && gc >= 40 && gr >= 12 && gc <= 200 && gr <= 60) {
+        NATIVE_W = gc * 10;
+        NATIVE_H = gr * 17;
+        CORNER_R = 0;
+        landscape = false;
     }
     ls_tui_set_rotation_cw(clockwise);
     ls_tui_set_corner_radius(CORNER_R);
@@ -1140,8 +1224,11 @@ int main(int argc, char **argv)
     }
     lssim_ota_publish();          /* what main/ls_ota.c publishes on the board */
     _Static_assert(N_APPS <= LS_TUI_MAX_SCREENS, "Simulator apps must fit the registry");
+    void ls_lap_sim_tile(ls_app_t *tile);
     for (int i = 0; i < N_APPS; i++) {
-        int rc = ls_app_register(&APPS[i]);
+        ls_app_t app = APPS[i];
+        if (!strcmp(app.id, "lap")) ls_lap_sim_tile(&app);
+        int rc = ls_app_register(&app);
         if (rc < 0) { fprintf(stderr,"lssim: app %s refused: %s\n",APPS[i].id,ls_app_register_why(rc)); return 1; }
     }
     ls_notify_add_probe(ls_rid_notice);
@@ -1379,7 +1466,7 @@ int main(int argc, char **argv)
         /* LSSIM_SPLASH_FRAME=N draws frame N of 93, the board's count;
            LSSIM_SPLASH_CAPTION is the version line under it. */
         const char *at = getenv("LSSIM_SPLASH_FRAME"), *caption = getenv("LSSIM_SPLASH_CAPTION");
-        ls_splash_set_caption(caption ? caption : "2.17.1-g0000000");
+        ls_splash_set_caption(caption ? caption : "2.18.0-g0000000");
         ls_splash_draw(ls_tui_surface(), cols, rows, at ? atoi(at) : 93, 93);
         ls_tui_present();capture_frame();
     }

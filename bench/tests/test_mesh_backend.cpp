@@ -360,3 +360,24 @@ LS_CASE(outbox_and_leases_notify_sleeping_mesh_owner)
     LS_EQ_UINT(ls_shim_task_notify_count(), before + 3);
     stop_port(); reset_port();
 }
+
+LS_CASE(hashtag_channel_key_comes_from_the_name)
+{
+    reset_port();
+    /* The bench's SHA-256 is a stand-in, so this checks the folding and the
+       16-byte key; on the board "#carrier" gives WjMr0wM9QS94RcTR3c7mBA==. */
+    char key[LS_MESH_CHAN_PSK], low[LS_MESH_CHAN_PSK];
+    LS_CHECK(hashtag_key("#Carrier", key, sizeof(key)));
+    LS_CHECK(hashtag_key("#carrier", low, sizeof(low)));
+    LS_EQ_STR(key, low);
+    LS_EQ_INT((int)strlen(key), 24);                 /* 16 bytes of base64 */
+    LS_CHECK(!hashtag_key("carrier", key, sizeof(key)));
+    LS_CHECK(!hashtag_key("#", key, sizeof(key)));
+    LS_EQ_INT(ls_mesh_set_channel(1, NULL, "#Car rier"), ESP_OK);
+    ls_mesh_chan_t c[LS_MESH_MAX_CHANNELS];
+    LS_CHECK(ls_mesh_channels(c, LS_MESH_MAX_CHANNELS) >= 2);
+    LS_EQ_STR(c[1].name, "#carrier");
+    LS_EQ_STR(c[1].psk, low);
+    LS_EQ_INT(ls_mesh_set_channel(1, NULL, "#"), ESP_ERR_INVALID_ARG);
+    reset_port();
+}

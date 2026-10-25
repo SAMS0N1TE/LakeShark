@@ -24,7 +24,7 @@
 #endif
 
 /* CartoCore and cell-map storage are enabled on this board profile. */
-#if defined(CONFIG_LS_BOARD_T_DISPLAY_P4) && CONFIG_LS_BOARD_T_DISPLAY_P4
+#if (defined(CONFIG_LS_BOARD_T_DISPLAY_P4) && CONFIG_LS_BOARD_T_DISPLAY_P4) || defined(LS_BOARD_PANEL_RUNTIME)   /* and a Nano with the TUI */
 #define LS_HAS_CARTOCORE 1
 #else
 #define LS_HAS_CARTOCORE 0

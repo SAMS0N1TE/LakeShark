@@ -30,11 +30,11 @@ Turn the [LILYGO T-Display P4](https://lilygo.cc/en-us/products/t-display-p4) in
 
 ---
 
-**NEW IN v2.17**
+**NEW IN v2.18**
 
-Remote terminal · Full colour MAP · Boot globe · One-tap scanner · DRONES · Ukrainian interface
+Apps from the SD card · App store with one-click installs · Live screen and files in the browser · Faster MAP picture
 
-[Release notes](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.17.0) &nbsp;•&nbsp;
+[Release notes](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.18.0) &nbsp;•&nbsp;
 [All releases](https://github.com/SAMS0N1TE/LakeShark/releases)
 
 </div>
@@ -78,7 +78,7 @@ Touchscreen, GPS, motion sensing and an optional detachable MIX-RF keyboard.
 </div>
 
 <p align="center">
-<img src="docs/screenshots/tdp4/home-20261014.png" width="32%" alt="HOME" />
+<img src="docs/screenshots/tdp4/home-20261025.png" width="32%" alt="HOME" />
 <img src="docs/screenshots/tdp4/motion/p25-call-20261022.gif" width="32%" alt="P25 decoding a call" />
 <img src="docs/screenshots/tdp4/motion/music-scan-20261014.gif" width="32%" alt="MUSIC analyzer and waterfall" />
 <img src="docs/screenshots/tdp4/motion/music-waterfall-smooth-20261022.gif" width="32%" alt="MUSIC waterfall drawing a picture hidden in a WAV" />
@@ -160,8 +160,19 @@ The whole interface in a terminal on your computer, with keys and mouse clicks.
 
 - **USB:** `python host/lsterm/lsterm.py` (or add the port, `COM5`).
 - **Wi-Fi:** `term net on` on the board prints a password, then `python host/lsterm/lsterm.py tcp://<board-ip>` or `telnet <board-ip> 2323`.
+- **SSH (ESP32-P4-NANO builds):** `term ssh on` (or LINK > REMOTE), then `ssh <board-ip>`. Encrypted; the same password, or a key the board learns once (LEARN on the REMOTE page, then one password login) or reads from `lakeshark/authorized_keys` on the SD card.
 
 Its side panel has snapshots, recordings, screen off, volume, a console and the SD card. [lsterm guide](host/lsterm/README.md)
+
+### Apps
+
+Games and tools that run from the SD card, each with its own tile under USER on HOME.
+
+- **Store:** open the [LakeShark hub](https://terminalbay.com/?m=lakeshark-hub) in Chrome or Edge, connect the board with USB and press INSTALL.
+- **By hand:** copy a `.lap` file into `/apps` on the SD card.
+- **Your own:** write one in C with the [app SDK](app-sdk/README.md). DICE, SNAKE, PINBALL and MESHLING are the examples.
+
+The hub also shows the board's screen live, browses and copies files on the SD card, and runs the console, all in the browser.
 
 ---
 
@@ -207,7 +218,7 @@ The Touch-LCD-4.3 (480 × 800), Touch-LCD-4B and Smart 86 Box (720 × 720) build
 | **LR2021 I/Q TX** | Short custom waveforms, including P25 test tones and temperature packets. [Research](docs/LR2021_IQ_TX.md) |
 | **LR2021 I/Q replay** | 433 MHz captures. OOK replay verified; FSK not yet verified over the air |
 | **C6 firmware update** | From the SD card. Recovery still needs the UART header. [Details](c6_firmware/README.md) |
-| **Wi-Fi terminal** | TCP port 2323 with a password. USB is the tested link |
+| **Wi-Fi terminal** | Telnet on 2323 with a password. SSH on 22 on ESP32-P4-NANO builds. USB is the tested link |
 | **LoRa bearing plots** | RSSI by compass heading. Not validated direction finding |
 | **Location scanning** | Mixed P25/FM lists, GPS filtering and CSV/JSON import. [Details](docs/LOCATION_SCAN.md) |
 | **RadioReference adapter** | Needs an approved API key and Premium account. Live sign-in unverified |

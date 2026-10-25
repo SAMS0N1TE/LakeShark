@@ -41,6 +41,7 @@
 
 #include "sdkconfig.h"
 #include "ls_ota.h"
+#include "core/ls_signature.h"
 #include "ls_p25_packs.h"
 #include "ls_c6_update.h"
 #include "ls_ota_key.h"
@@ -313,14 +314,7 @@ typedef struct {
 static bool key_accepts(size_t key, void *ctx)
 {
     const sig_ctx_t *c = ctx;
-    mbedtls_pk_context pk;
-    mbedtls_pk_init(&pk);
-    const char *pem = LS_OTA_PUBLIC_KEYS[key];
-    const bool ok =
-        mbedtls_pk_parse_public_key(&pk, (const unsigned char *)pem, strlen(pem) + 1) == 0
-        && mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, c->hash, 32, c->m->sig, c->m->sig_len) == 0;
-    mbedtls_pk_free(&pk);
-    return ok;
+    return ls_signature_verify(LS_OTA_PUBLIC_KEYS[key], c->hash, c->m->sig, c->m->sig_len);
 }
 
 bool ls_ota_signed_by_us(const char *text, const ls_ota_manifest_t *m)

@@ -42,6 +42,14 @@ bool ls_tui_pixel_to_cell(int nx, int ny, int *col, int *row)
     return true;
 }
 
+/* The grid starts at the panel's corner in this test. */
+bool ls_tui_pixel_to_grid(int nx, int ny, int *gx, int *gy)
+{
+    if (gx) *gx = nx;
+    if (gy) *gy = ny;
+    return true;
+}
+
 /* ------------------------------------------------------------- helpers -- */
 
 /* Put the finger on the centre of a cell. */

@@ -381,7 +381,7 @@ static void map_service_locked(void) {
     }
     bool ok=false;
     if(shown) {
-        shown->z=r.z;shown->labels=r.pixels?0:r.labels;centre_lat=r.lat;centre_lon=r.lon;
+        shown->z=r.z;shown->labels=r.pixels?0:r.labels;shown->raster_only=r.pixels;centre_lat=r.lat;centre_lon=r.lon;
         origin(r.cols,r.rows,r.z,&shown->left,&shown->top);
         cc_mode mode=r.braille?CC_BRAILLE:CC_QUADRANT;
         const int64_t render_start=esp_timer_get_time();

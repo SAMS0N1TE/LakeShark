@@ -1097,7 +1097,7 @@ static void apps_once(void)
           LS_APP_EXTRA, &ls_scr_notes, NULL, &ls_doc_notes },
         { "compass", "COMPASS", "bearings", LS_ICON_COMPASS, TUI_YELLOW,
           LS_APP_EXTRA, &ls_scr_compass, NULL, &ls_doc_compass },
-        { "subghz", "SUB-GHZ", "watch", LS_ICON_RECORD, TUI_GREEN,
+        { "subghz", "SUB-GHZ", "watch", LS_ICON_SUBGHZ, TUI_GREEN,
           LS_APP_EXTRA, &ls_scr_subghz, NULL, &ls_doc_subghz },
         { "update", "UPDATE", "firmware", LS_ICON_UPDATE, TUI_CYAN,
           LS_APP_EXTRA, &ls_scr_update, NULL, &ls_doc_update },

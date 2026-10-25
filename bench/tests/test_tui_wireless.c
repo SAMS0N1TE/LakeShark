@@ -4,6 +4,7 @@
 #include "ls_keyboard.h"
 #include "ls_options.h"
 #include "ls_survey.h"
+#include "ls_rterm.h"
 #include "esp_timer.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -99,7 +100,7 @@ LS_CASE(wifi_and_bluetooth_buttons_work_in_both_orientations)
         LS_CHECK(tap("[D] LEAVE")); LS_EQ_INT(operation, LS_WIRELESS_LEAVE);
         operation = LS_WIRELESS_NONE;
         ls_scr_wireless.key(LS_TK_CHAR, 'f'); LS_EQ_INT(operation, LS_WIRELESS_NONE);
-        LS_CHECK(tap("[B] BLUETOOTH")); draw();
+        LS_CHECK(tap("[B] BLUETOOTH") || tap("[B] BT")); draw();   /* BT when five tabs are narrow */
         LS_CHECK(tap("[S] SCAN")); LS_EQ_INT(operation, LS_WIRELESS_BT_RESCAN);
         LS_CHECK(tap("[D] STOP")); LS_EQ_INT(operation, LS_WIRELESS_BT_STOP);
         ls_scr_wireless.leave(); LS_CHECK(!active);
@@ -143,6 +144,45 @@ LS_CASE(manual_ssid_password_and_cancel_use_the_shared_keyboard)
     LS_CHECK(tap("[M] MANUAL"));
     ls_keyboard_key(LS_TK_ESC, 0);
     LS_EQ_INT(operation, LS_WIRELESS_NONE);
+}
+
+static void type_field(const char *text)
+{
+    while (ls_keyboard_text() && ls_keyboard_text()[0]) ls_keyboard_key(LS_TK_BACKSPACE, 0);
+    for (const char *p = text; *p; p++) ls_keyboard_key(LS_TK_CHAR, *p);
+    ls_keyboard_key(LS_TK_ENTER, 0);
+}
+
+LS_CASE(remote_ssh_buttons_port_learn_and_forget)
+{
+    setup(false);
+    ls_scr_wireless.key(LS_TK_CHAR, 'e'); draw();
+    ls_rterm_status_t st;
+    /* 'o' is the web screen's, not the port's. */
+    ls_scr_wireless.key(LS_TK_CHAR, 'o');
+    LS_CHECK(!ls_keyboard_active());
+    LS_CHECK(tap("PORT"));
+    LS_CHECK(ls_keyboard_active());
+    type_field("2323");                         /* telnet's: refused */
+    ls_rterm_status(&st); LS_EQ_INT(st.ssh_port, 22);
+    ls_scr_wireless.key(LS_TK_CHAR, 'r');
+    LS_CHECK(ls_keyboard_active());
+    type_field("2222");
+    ls_rterm_status(&st); LS_EQ_INT(st.ssh_port, 2222);
+    draw();
+    LS_CHECK(tap("LEARN"));
+    ls_rterm_status(&st); LS_CHECK(st.ssh_learn_s > 0);
+    draw();
+    LS_CHECK(tap("STOP"));
+    ls_rterm_status(&st); LS_EQ_INT(st.ssh_learn_s, 0);
+    LS_CHECK(st.ssh_keys > 0);
+    LS_CHECK(tap("FORGET"));
+    type_field("no");
+    ls_rterm_status(&st); LS_CHECK(st.ssh_keys > 0);
+    LS_CHECK(tap("FORGET"));
+    type_field("Yes");
+    ls_rterm_status(&st); LS_EQ_INT(st.ssh_keys, 0);
+    ls_scr_wireless.leave();
 }
 
 LS_CASE(unchanged_snapshot_draws_identical_cells)

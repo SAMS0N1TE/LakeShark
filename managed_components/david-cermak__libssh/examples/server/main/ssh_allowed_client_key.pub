@@ -1,0 +1,4 @@
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDr3C8b1uapPE9a+MjPoYMnaIpqfACKAzDxyqwIBn3Br user@client
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF... user@host
+// Multiple keys should be separated by a single '\n' character, one key per line
+// Add more allowed client's public keys here

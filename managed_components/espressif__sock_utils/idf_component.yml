@@ -1,0 +1,11 @@
+dependencies:
+  idf:
+    version: '>=5.0'
+description: The component provides helper implementation of common system/socket
+  utilities
+repository: git://github.com/espressif/esp-protocols.git
+repository_info:
+  commit_sha: f3f3e23becab01b8d95b02f1920bc53438ff4462
+  path: components/sock_utils
+url: https://github.com/espressif/esp-protocols/tree/master/components/sock_utils
+version: 0.2.2

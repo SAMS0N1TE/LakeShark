@@ -53,16 +53,44 @@ void ls_vt_sample_image(tui_rect cells, int cols, const uint16_t *src, int w, in
 
 typedef void (*ls_vt_out_fn)(void *ctx, const char *bytes, size_t n);
 
-/* What one terminal shows, so a frame sends only the cells that changed. */
+/* What one terminal shows, so a frame sends only the cells that changed.
+
+   A terminal smaller than the grid (a phone: 52 x 70 does not fit) shows
+   the part of it at x0, y0, and a bar on the row under that to move it:
+   UP and DOWN, LEFT and RIGHT when it is narrower too, and where it is.
+   Nothing is ever written outside the terminal's own window: a terminal
+   that scrolls on a cursor sent past its bottom, rather than holding it
+   there, would otherwise push the picture off the top. */
 typedef struct {
-    int cols, rows;
+    int cols, rows;                 /* the grid */
     ls_vt_cell *shown;            /* cols * rows, owned by the caller */
     bool full;                      /* repaint every cell next time */
+    bool clear;                     /* erase the terminal first: what it shows changed shape */
     uint32_t fg, bg;                /* the terminal's colours after the last frame; a full repaint forgets them */
+    int term_cols, term_rows;       /* the terminal's window; 0 when it has not said */
+    int x0, y0;                     /* the grid cell in the terminal's top left */
+    bool quadrants;                 /* sextants out as quadrants, for a font that may not have them */
+    uint32_t bar_fg, bar_bg;        /* the bar as last drawn */
 } ls_vt_screen;
 
-/* Set up a screen over caller storage; the first render repaints all of it. */
+/* Set up a screen over caller storage; the first render repaints all of it.
+   The terminal is taken to be as big as the grid until ls_vt_screen_resize. */
 void ls_vt_screen_init(ls_vt_screen *s, int cols, int rows, ls_vt_cell *shown);
+
+/* The terminal's size, when it says (telnet NAWS, or a cursor report).
+   True when that changes what it shows; the next render erases and repaints. */
+bool ls_vt_screen_resize(ls_vt_screen *s, int term_cols, int term_rows);
+
+/* The grid cells the terminal shows, w x h from x0, y0. Less than the grid
+   when it is smaller, and then the bar is on terminal row h. */
+void ls_vt_screen_view(const ls_vt_screen *s, int *w, int *h);
+
+/* Move the view by whole cells, kept inside the grid. */
+void ls_vt_screen_pan(ls_vt_screen *s, int dcols, int drows);
+
+/* A tap at a terminal cell, 0-based. True with the grid cell under it; a
+   tap on the bar moves the view instead, and like one off the grid is false. */
+bool ls_vt_screen_tap(ls_vt_screen *s, int col, int row, int *gcol, int *grow);
 
 /* Write the cells that differ from what the terminal shows, inside one
    synchronized update. Returns the bytes written. */
@@ -73,21 +101,49 @@ size_t ls_vt_render(ls_vt_screen *s, const ls_vt_cell *cells, ls_vt_out_fn out, 
 size_t ls_vt_enter(ls_vt_out_fn out, void *ctx, int cols, int rows);
 size_t ls_vt_leave(ls_vt_out_fn out, void *ctx);
 
+/* Ask the terminal its size: the cursor as far right and down as it goes,
+   then where it is. Set ls_vt_input.want_size so the answer is an
+   LS_VT_EV_SIZE and not a key. */
+size_t ls_vt_ask_size(ls_vt_out_fn out, void *ctx);
+
+/* Telnet's option talk taken out of what a client sends, keeping the window
+   size it gives in a NAWS subnegotiation (RFC 1073). */
+typedef struct {
+    int state;
+    uint8_t sb[8];
+    int sb_n;
+    int cols, rows;                 /* the client's window; 0 until it says */
+    bool sized;                     /* a NAWS size has come */
+} ls_vt_telnet;
+
+/* IAC DO NAWS: the server asking a client for its window size. */
+#define LS_VT_TELNET_DO_NAWS "\xff\xfd\x1f"
+
+/* Strip in place; returns the bytes left. A sequence cut between two reads
+   carries on in the next. */
+size_t ls_vt_telnet_strip(ls_vt_telnet *t, uint8_t *b, size_t n);
+
 /* --- input ------------------------------------------------------------ */
 
-enum { LS_VT_EV_KEY = 1, LS_VT_EV_TAP, LS_VT_EV_QUIT, LS_VT_EV_REDRAW };
+/* A left press is LS_VT_EV_TAP. A terminal in button-event mode (?1002)
+   then sends LS_VT_EV_DRAG while the button moves held and LS_VT_EV_UP when
+   it lets go, so a client that sends those can steer a drag, not just tap. */
+enum { LS_VT_EV_KEY = 1, LS_VT_EV_TAP, LS_VT_EV_QUIT, LS_VT_EV_REDRAW, LS_VT_EV_SIZE,
+       LS_VT_EV_DRAG, LS_VT_EV_UP };
 
 typedef struct {
     int type;
     int key;                        /* ls_tk_t for LS_VT_EV_KEY */
     char ch;                        /* the character for LS_TK_CHAR */
-    int col, row;                   /* LS_VT_EV_TAP, 0-based cells */
+    bool wheel;                     /* the key is the mouse wheel's */
+    int col, row;                   /* LS_VT_EV_TAP, 0-based cells; LS_VT_EV_SIZE, the size */
 } ls_vt_event;
 
 typedef struct {
     uint8_t buf[32];
     int n;
     uint8_t last;                   /* the byte before, so CR LF is one Enter */
+    bool want_size;                 /* a cursor report is due (ls_vt_ask_size), not F3 */
 } ls_vt_input;
 
 /* Feed raw terminal bytes; up to `max` events come out. An escape sequence

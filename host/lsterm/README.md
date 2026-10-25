@@ -11,7 +11,9 @@ The board draws the screen. lsterm only carries the bytes, so it also works insi
   - `python lsterm.py tcp://<board-ip>`
   - or plain `telnet <board-ip> 2323`
   - The link is not encrypted. Use it on your own network. `term net off` turns it off.
+  - **A phone** (Termius or any telnet app) works too. The board asks the app for its window size. When the window is smaller than the grid, you see the part that fits, with a bar on the bottom row: tap **^ UP** or **v DOWN** (and **<** or **>** in a narrow window) to move. A mouse wheel scrolls it too. The middle shows which rows you are looking at. Fine pixel art comes as quadrant blocks, which every font has.
 - **No board:** `python lsterm.py --sim`. This runs the firmware's own screens in the simulator, which needs `bench/build/lssim.exe` built.
+  - A native app: `python lsterm.py --sim lap:carrier`. Add `--grid 160x45` for a desktop-sized screen, like a Nano's `panel term`.
 
 **Keys:**
 - Ctrl-] leaves.
@@ -19,7 +21,7 @@ The board draws the screen. lsterm only carries the bytes, so it also works insi
 - Ctrl-P takes a snapshot, Ctrl-R starts and stops a recording.
 - Ctrl-T console, Ctrl-F files, Ctrl-G help, Ctrl-K back to the board.
 - F1 to F11, the arrows, Enter, Esc and Tab do what they do on the board.
-- A mouse click is a tap.
+- A mouse click is a tap. Holding the button and moving is a drag, as a finger on the glass: sliders, and the stick in a game.
 
 ## The frame and its panel
 
@@ -61,3 +63,23 @@ The ESP32-P4-NANO DSI image runs the full interface even with nothing on the DSI
 - `panel none` goes back to the plain headless board.
 
 USB needs `pip install pyserial`.
+
+## In a browser window
+
+`python lsweb.py` (or `python lsweb.py COM5`) serves the board's screen on http://127.0.0.1:8770/ over USB. Nothing listens beyond this computer, so there is no password.
+
+- The page draws the board's own cells with the board's own font (`lsfont.bin.gz`, made by `lssim atlas`), so it shows exactly what the glass would, at every frame the board draws.
+- On a Nano with no display the board's grid follows the window: resize it and the screen fits.
+- Mouse: click to tap, hold and move to drag, the wheel scrolls. Keys go to the board.
+- `?fit=0` on the address keeps the board's grid as it is.
+
+## LakeShark on the desktop (one click)
+
+`python lsdesk.py --install` puts a **LakeShark** shortcut on the desktop and in the Start menu. Clicking it:
+
+- finds the board: the one used last, else the only one plugged in, else the one that answers as a Nano;
+- starts the screen bridge and opens it as an app window of its own (Edge or Chrome, no tabs or address bar);
+- when the board is unplugged, the window says so and waits; plug it back in, into any USB port, and it carries on;
+- closing the window stops the bridge.
+
+`~/.lsdesk.json` remembers the board (`"board"`, its USB serial number) and lists ports never to open (`"skip"`, COM names or serial numbers). A log is kept in `%LOCALAPPDATA%\LakeShark\lsdesk.log`. `http://127.0.0.1:8770/status` says whether a board and a window are connected.

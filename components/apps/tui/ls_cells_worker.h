@@ -399,12 +399,18 @@ static bool cells_download(unsigned kind,const char *remote,const char *relative
     dl.in=cells_fopen(dl.url+7,"rb");if(!dl.in || fseek(dl.in,(long)local_offset,SEEK_SET)) { cells_download_fail("Server file unavailable; will retry");return false; }
 #else
     dl.range[0]=0;
-    esp_http_client_config_t cfg={.url=dl.url,.timeout_ms=1500,.crt_bundle_attach=esp_crt_bundle_attach,
+    /* 4 s: a TLS handshake over a hosted C5/C6 link can outlast 1.5 s on its own. */
+    esp_http_client_config_t cfg={.url=dl.url,.timeout_ms=4000,.crt_bundle_attach=esp_crt_bundle_attach,
         .buffer_size=1024,.event_handler=cells_http_event,.keep_alive_enable=true};
     dl.http=esp_http_client_init(&cfg);if(!dl.http) { cells_download_fail("HTTP allocation failed");return false; }
     if(local_offset) { char range[64];snprintf(range,sizeof(range),"bytes=%llu-",(unsigned long long)local_offset);esp_http_client_set_header(dl.http,"Range",range); }
     cells_token_load();if(cells_token[0])esp_http_client_set_header(dl.http,"X-LakeShark-Token",cells_token);
-    if(esp_http_client_open(dl.http,0)!=ESP_OK || esp_http_client_fetch_headers(dl.http)<0) { cells_download_fail("Connect failed; partial retained");return false; }
+    const esp_err_t opened=esp_http_client_open(dl.http,0);
+    if(opened!=ESP_OK || esp_http_client_fetch_headers(dl.http)<0) {
+        char why[80];snprintf(why,sizeof(why),"Connect failed (%s); partial retained",opened!=ESP_OK?esp_err_to_name(opened):"no reply");
+        printf("cells: %s %s, internal free %u\n",why,dl.url,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        cells_download_fail(why);return false;
+    }
     int status=esp_http_client_get_status_code(dl.http);
     if(status==200 && local_offset) {
         fclose(dl.out);dl.out=cells_fopen(dl.part,"r+b");dl.offset=dl.segment_start;
