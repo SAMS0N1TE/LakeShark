@@ -11,7 +11,6 @@
 - 3D for apps: a dot engine with meshes, terrain, shadows, fog and cameras. ORBIT and DICE 3D show it off.
 - More example apps: PINBALL and MESHLING, with colour icons on HOME.
 - CARRIER: an early access space game. Trade, fight and explore a galaxy where live ADS-B aircraft fly as ships. Still in progress.
-- Full screen apps have a close button on the glass, and the receiver rests while an app is open.
 - The board's screen in a phone browser, served by the board at lakeshark.local.
 - LINK: a REMOTE page for using the board from a phone or a PC.
 - Desktop: one click opens LakeShark in its own window on your computer, with mouse drag, held keys and a settings panel for sound, voice, mesh and screen.
