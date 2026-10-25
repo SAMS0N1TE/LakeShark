@@ -90,9 +90,10 @@ static void script(int frame)
                 h->down = true; h->x = x; h->y = y;
             } else if (!strncmp(c, "up", 2)) {
                 h->down = false;
-            } else if (!strncmp(c, "key=", 4) && app->key) {   /* key=q a letter; key=@up @down @left @right @enter */
+            } else if (!strncmp(c, "key=", 4) && app->key) {   /* key=q a letter; key=@up @down @left @right @enter @tab */
                 lap_key_t k = LAP_KEY_CHAR;
-                if (!strncmp(c + 4, "@up", 3)) k = LAP_KEY_UP;
+                if (!strncmp(c + 4, "@tab", 4)) k = LAP_KEY_TAB;
+                else if (!strncmp(c + 4, "@up", 3)) k = LAP_KEY_UP;
                 else if (!strncmp(c + 4, "@down", 5)) k = LAP_KEY_DOWN;
                 else if (!strncmp(c + 4, "@left", 5)) k = LAP_KEY_LEFT;
                 else if (!strncmp(c + 4, "@right", 6)) k = LAP_KEY_RIGHT;

@@ -405,6 +405,100 @@ float ui_fov(void) {
     return 2 * atanf(tanf(UI_FOV * CG_RAD * .5f) / fmaxf(1, ui.zoom)) / CG_RAD;
 }
 
+/* Your drive seen from the chase camera, which sits behind and above: engines read as
+   white-hot nozzles in blue halos with short flickering flames, and the exhaust they
+   leave hangs in space as puffs that cool from white through blue to grey. One long
+   line pointing back at the camera (3 hull lengths behind) used to project as a stick
+   across the bottom of the view; the flames stay short, and a puff is only ever a dot. */
+#define PUFFS 120
+static struct { l3_vec at, vel; float age, life; } puffs[PUFFS];
+static int puffs_n, puffs_head;
+static uint32_t puffs_ms;
+static float puffs_owed;
+
+static float hull_rear(int cls) {       /* how far the hull reaches behind its centre, mesh units */
+    static float rear[SH_COUNT];
+    if (cls < 0 || cls >= SH_COUNT) return 1;
+    if (rear[cls] == 0) {
+        const l3_mesh *m = game_mesh((game_class)cls);
+        rear[cls] = .5f;
+        for (int k = 0; m && k < m->nv; k++) rear[cls] = fmaxf(rear[cls], m->v[k].z);
+    }
+    return rear[cls];
+}
+
+static void plume(l3_scene *sc, const game_player *p, float mr) {
+    const uint32_t now = lap_millis();
+    const float dt = puffs_n ? fminf(.1f, (now - puffs_ms) / 1000.f) : 0;
+    puffs_ms = now;
+    const int cls = game_player_class();
+    const l3_vec nose = l3_quat_rotate(p->attitude, l3v(0, 0, -1));   /* the hull's, not the trailing camera's */
+    const l3_vec side = l3_quat_rotate(p->attitude, l3v(1, 0, 0)), lift = l3_quat_rotate(p->attitude, l3v(0, 1, 0));
+    const l3_vec back = l3_scale(nose, -1);
+    const float th = fmaxf(0, p->throttle), boost = p->boost_left > 0 || p->cruising ? 1 : 0;
+    const float heat = fminf(1.4f, th + boost * .5f);
+    /* two engines a fifth of the way out along the wings, at the back of the hull (pose scale mr / 2) */
+    const float out = fminf(wingspan(cls) * mr * .5f * .2f, mr * .35f);
+    /* just behind the hull: any further in and the deck hides them from a camera above */
+    const l3_vec rear = l3_add(p->position, l3_scale(back, hull_rear(cls) * mr * .5f * 1.1f + mr * .05f));
+    const l3_vec noz[2] = {l3_add(rear, l3_scale(side, -out)), l3_add(rear, l3_scale(side, out))};
+
+    /* puffs: born at a nozzle, blown backwards, slowing and spreading as they cool */
+    if (heat > .02f) {
+        puffs_owed += dt * (30 + heat * 80);
+        for (; puffs_owed >= 1; puffs_owed -= 1) {
+            uint32_t h = cg_hash(now * 2654435761u + (uint32_t)puffs_head * 40503u);
+            float jx = ((h & 255) / 255.f - .5f) * mr * .16f, jy = ((h >> 8 & 255) / 255.f - .5f) * mr * .16f;
+            int k = puffs_head;
+            puffs_head = (puffs_head + 1) % PUFFS;
+            if (puffs_n < PUFFS) puffs_n++;
+            puffs[k].at = l3_add(noz[h >> 24 & 1], l3_add(l3_scale(side, jx), l3_scale(lift, jy)));
+            puffs[k].vel = l3_add(l3_scale(back, mr * (.9f + heat * 1.6f)), l3_add(l3_scale(side, jx * 3), l3_scale(lift, jy * 3)));
+            puffs[k].age = 0;
+            puffs[k].life = .6f + (h >> 16 & 255) / 255.f * .7f;
+        }
+    } else puffs_owed = 0;
+    for (int i = 0; i < puffs_n; i++) {
+        if (puffs[i].age >= puffs[i].life) continue;
+        puffs[i].age += dt;
+        puffs[i].at = l3_add(puffs[i].at, l3_scale(puffs[i].vel, dt));
+        puffs[i].vel = l3_scale(puffs[i].vel, 1 - fminf(1, dt * 1.8f));
+        float a = puffs[i].age / puffs[i].life;
+        if (a >= 1 || l3_dot(l3_sub(puffs[i].at, render_eye), render_fwd) < mr * .6f) continue;
+        uint8_t ink = a < .1f ? 15 : a < .25f ? 14 : a < .5f ? 12 : a < .78f ? LAP_BLUE : 8;
+        l3_point(sc, puffs[i].at, a < .15f ? 3 : a < .45f ? 2 : 1, ink);
+    }
+
+    if (heat <= .02f) return;
+    const float zmin = mr * .9f;
+    for (int e = 0; e < 2; e++) {
+        const l3_vec n = noz[e];
+        const float flick = .82f + .12f * sinf(now * .043f + e * 2.1f) + .1f * sinf(now * .127f + e * 0.7f);
+        const float len = mr * (.18f + heat * .5f) * flick;
+        const float zt = l3_dot(l3_sub(n, render_eye), render_fwd);
+        /* the nozzle's halo: light blue round deep blue. Points keep their dots against
+           later points; lines drawn later win over both. */
+        l3_point(sc, n, 3 + heat * 2 * flick, 12);
+        l3_point(sc, n, 4 + heat * 3 * flick, LAP_BLUE);
+        /* the flame: six blue tongues fanned round a white core, the core drawn last
+           so the white-hot root shows through */
+        for (int s = 6; s >= 0; s--) {
+            float ang = s * (2 * CG_PI / 6) + e, r = s ? .3f : 0;
+            float ox = cosf(ang) * r, oy = sinf(ang) * r;
+            l3_vec root = l3_add(n, l3_add(l3_scale(side, ox * mr * .25f), l3_scale(lift, oy * mr * .25f)));
+            float l = len * (s ? .55f + .2f * sinf(now * .09f + s * 1.7f + e) : 1);
+            l3_vec dir = l3_norm(l3_add(back, l3_add(l3_scale(side, ox * .6f), l3_scale(lift, oy * .6f))));
+            l3_vec tip = l3_add(root, l3_scale(dir, l));
+            float ze = l3_dot(l3_sub(tip, render_eye), render_fwd);     /* never reach back to the camera */
+            if (ze < zmin && zt > zmin) tip = l3_add(root, l3_scale(l3_sub(tip, root), (zt - zmin) / (zt - ze)));
+            l3_vec a = l3_add(root, l3_scale(l3_sub(tip, root), .4f));
+            l3_line(sc, root, a, s ? 14 : 15);
+            l3_line(sc, a, tip, s ? LAP_BLUE : 12);
+        }
+        l3_point(sc, n, 1 + heat * flick, 15);       /* overdrawn by nothing after it */
+    }
+}
+
 /* Where the view looks from: the cockpit, or (render_view 1) a chase camera
    behind and above the ship that shows its own hull. The screen side projects
    every mark through the same eye and basis (ui_project). */
@@ -470,12 +564,8 @@ void game_render(l3_scene *sc) {
         if (render_view == 1) {         /* your own hull, with its drive lit by the throttle */
             l3_xform t = l3_pose(p->position, p->attitude, mr * .5f);
             l3_draw_mesh(sc, game_mesh(game_player_class()), &t, m_steel);
-            const l3_vec nose = l3_quat_rotate(p->attitude, l3v(0, 0, -1));   /* the hull's, not the trailing camera's */
-            l3_vec tail = l3_add(p->position, l3_scale(nose, -mr * .9f));
-            float th = fmaxf(0, p->throttle);
-            if (th > .02f)
-                l3_line(sc, tail, l3_add(tail, l3_scale(nose, -mr * (.6f + th * 2.2f))), th > .6f ? 15 : 12);
-        }
+            plume(sc, p, mr);
+        } else puffs_n = 0;
         if (render_extra) render_extra(sc);
         effects(sc);
     }
