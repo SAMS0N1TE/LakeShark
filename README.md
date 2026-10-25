@@ -277,6 +277,8 @@ The field-map design drew on [Cardputer offgrid map](https://github.com/yuiseki/
 **[Roadmap](https://terminalbay.com/?m=lakeshark-roadmap)** &nbsp;•&nbsp;
 **[Suggest a feature](https://terminalbay.com/?m=lakeshark-roadmap#ask)**
 
+Contact: [support@terminalbay.com](mailto:support@terminalbay.com)
+
 LakeShark is licensed under [GPL-3.0](LICENSE). Third-party components retain their respective licenses. [Third-party license inventory](docs/THIRD_PARTY_NOTICES.md)
 
 <sub>Radio reception and transmission are subject to local laws and regulations.</sub>
