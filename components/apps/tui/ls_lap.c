@@ -2,6 +2,7 @@
 #include "ls_lap_api.h"
 #include "ls_lap_signature.h"
 #include "ls_lap_sys.h"
+#include "ls_lap_net.h"
 #include <stdio.h>
 #include <string.h>
 #ifdef ESP_PLATFORM
@@ -557,6 +558,8 @@ static void ls_lap_select(const char *id) {
     if (s.visible)
         close_active();
     s.desired = desired;
+    if (desired >= 0 && (s.apps[desired].manifest.flags & LAP_CAP_NETWORK))
+        s.apps[desired].needs_confirmation = true;
     s.opened_ms = (uint32_t)(esp_timer_get_time() / 1000);
     s.status.state = desired >= 0 ? LS_LAP_LOADING : LS_LAP_IDLE;
     if (desired >= 0)
@@ -670,6 +673,7 @@ void ls_lap_poll(void) {
                 if (!strcmp(s.app->radio, RADIOS[i]))
                     ls_tui_radio_want(RADIOS[i]);
         ls_lap_sys_begin();
+        ls_lap_net_begin((s.app->flags & LAP_CAP_NETWORK) != 0);
         if (s.app->enter) {
             before();
             s.app->enter();

@@ -151,6 +151,7 @@ lap_mesh_send_state
 lap_mesh_seq
 lap_millis
 lap_motion
+lap_net_status
 lap_palette
 lap_put_cell
 lap_put_glass
@@ -168,6 +169,11 @@ lap_sd_size
 lap_sd_write
 lap_sound
 lap_swipe
+lap_tcp_close
+lap_tcp_connect
+lap_tcp_recv
+lap_tcp_send
+lap_tcp_state
 lap_time
 lap_tone
 lap_tone_busy

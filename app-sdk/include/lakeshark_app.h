@@ -33,7 +33,7 @@ extern "C" {
 /* An app built against major M runs on firmware whose major is M and whose
    minor is at least the app's minor. */
 #define LAP_API_MAJOR 1
-#define LAP_API_MINOR 2 /* lap3d.h: firmware dot engine is available in API 1.2. */
+#define LAP_API_MINOR 3 /* API 1.3: permission-gated asynchronous TCP. */
 #define LAP_MAGIC     0x3150414Cu   /* "LAP1" */
 
 /* ---- colours and cells ------------------------------------------------ */
@@ -117,7 +117,7 @@ typedef struct {
     char author[24];
     uint8_t icon;               /* LAP_ICON_*, used when icon_art is empty */
     uint8_t color;              /* LAP_* colour of the tile */
-    uint8_t flags;              /* reserved, 0 */
+    uint8_t flags;              /* LAP_CAP_* capabilities, approved before enter */
     uint8_t reserved;
     char icon_art[LAP_ICON_H][LAP_ICON_W + 1];  /* optional 10x6 ASCII picture */
 
@@ -137,6 +137,40 @@ typedef struct {
 #define LAP_RADIO_P25  "P25"
 #define LAP_RADIO_ADSB "ADS-B"
 #define LAP_RADIO_REC  "REC"
+
+/* API 1.3: asks on EVERY launch, including signed apps. BACK denies and
+   leaves the app closed. Old apps without this flag cannot use TCP. */
+#define LAP_CAP_NETWORK 1u
+
+typedef struct {
+    bool connected;            /* LINK station interface has IPv4; worker snapshot */
+    bool allowed;              /* this launch has NETWORK permission */
+    char ip[16];               /* local IPv4, empty when disconnected */
+} lap_net_status_t;
+enum {
+    LAP_TCP_PENDING = 0, LAP_TCP_CONNECTED = 1,
+    LAP_NET_EINVAL = -1, LAP_NET_EACCES = -2, LAP_NET_EBUSY = -3,
+    LAP_NET_EAGAIN = -4, LAP_NET_EDNS = -5, LAP_NET_ETIMEOUT = -6,
+    LAP_NET_EIO = -7, LAP_NET_EOF = -8, LAP_NET_ENETDOWN = -9
+};
+/* All calls return immediately. Two outbound IPv4 sockets per app. No Wi-Fi
+   credentials or join operation: first connect using LINK. Connect returns
+   a handle >=0 or an error; poll state until CONNECTED or a negative error.
+   Timeout (1..30000 ms) covers asynchronous DNS + connect, not stream lifetime.
+   Host is DNS name or numeric IPv4, <=253 chars. IPv6/TLS/listening unsupported.
+   send copies up to 4096 bytes into a bounded queue and returns bytes accepted
+   (may be partial), EAGAIN if full/pending. Acceptance is not delivery.
+   recv copies up to 4096 bytes, EAGAIN when empty/pending, 0 on peer EOF after
+   queued bytes drain. Check negative errors; retry EAGAIN in later frames.
+   Buffers/host/status must be app globals or app malloc allocations, not stack.
+   Close invalidates the handle immediately; worker releases it asynchronously.
+   Closing the app closes every socket and discards queued bytes. */
+int lap_net_status(lap_net_status_t *out);
+int lap_tcp_connect(const char *host, int port, uint32_t timeout_ms);
+int lap_tcp_state(int handle);
+int lap_tcp_send(int handle, const void *buf, size_t len);
+int lap_tcp_recv(int handle, void *buf, size_t len);
+void lap_tcp_close(int handle);
 
 /* Declares the app: manifest fields and callbacks, in any order. */
 #define LAP_APP(...)                                                              \

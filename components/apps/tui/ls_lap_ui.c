@@ -112,7 +112,17 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
         sign(sf, body, body.x, y, crashed ? TUI_RED | TUI_BRIGHT : TUI_YELLOW | TUI_BRIGHT);
         const int tx = body.x + 10;
         tui_rect text = tui_rect_make(tx, y, body.x + body.w - tx, 6);
-        if (crashed) {
+        if (app && (app->manifest.flags & LAP_CAP_NETWORK)) {
+            tui_put_str(sf, text, tx, y, "ALLOW NETWORK ACCESS?", TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+            if (crashed) tui_put_str(sf, text, tx, y + 1, "It stopped the board last time", TUI_ATTR(TUI_RED, TUI_BLACK));
+            static const char *const why[] = {
+                "This app can connect to devices and servers",
+                "using the network already joined in LINK.",
+                "Allow only apps you trust. Permission lasts",
+                "until this app closes; BACK denies access.",
+            };
+            lines(sf, body, y + 6, why, 4, TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        } else if (crashed) {
             tui_put_str(sf, text, tx, y, "IT STOPPED THE BOARD", TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
             tui_put_str(sf, text, tx, y + 1, "LAST TIME IT RAN", TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
             static const char *const why[] = {
@@ -136,7 +146,7 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
         }
         const int bh = 4, by = area.y + area.h - bh - 1;
         ls_btn_t b[2] = {
-            { crashed ? "OPEN AGAIN" : "OPEN ANYWAY", "ENTER", '\r', false, false, false },
+            { app && (app->manifest.flags & LAP_CAP_NETWORK) ? "ALLOW & OPEN" : crashed ? "OPEN AGAIN" : "OPEN ANYWAY", "ENTER", '\r', false, false, false },
             { "BACK", "ESC", 0, false, false, false },
         };
         ls_btn_bar_raised_slot(sf, tui_rect_make(area.x + 1, by, area.w - 2, bh), b, 2, -1, LS_BTN_SLOT_SCREEN);

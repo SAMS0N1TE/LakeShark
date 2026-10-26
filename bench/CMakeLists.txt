@@ -2791,7 +2791,7 @@ target_include_directories(lap_inspect PRIVATE ${LAP_TUI} ${FW}/components/lakes
 add_executable(test_lap_transfer tests/test_lap_transfer.c ${LAP_TUI}/ls_lap_transfer.c ${LAP_TUI}/ls_lap_manifest.c ${FW}/components/lakeshark/core/ls_base64.c)
 target_include_directories(test_lap_transfer PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
 add_test(NAME test_lap_transfer COMMAND test_lap_transfer)
-add_executable(test_lap_api tests/test_lap_api.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_glyph.c shims/lap_tui_core.c shims/screen_full_stub.c)
+add_executable(test_lap_api tests/test_lap_api.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_net.c ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_glyph.c shims/lap_tui_core.c shims/screen_full_stub.c)
 target_include_directories(test_lap_api PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
 target_link_libraries(test_lap_api m)
 target_compile_definitions(test_lap_api PRIVATE LS_LAP_SD_ROOT="lap-sd")
@@ -2821,7 +2821,7 @@ if(LS_SANITIZE AND CMAKE_C_COMPILER_ID MATCHES "Clang")
 endif()
 
 if(LAP_MBEDTLS_DIR)
-    add_executable(test_lap_host tests/test_lap_host.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_signature.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_app.c ${LAP_TUI}/ls_glyph.c shims/lap_tui_core.c ${FW}/components/lakeshark/core/ls_signature.c)
+    add_executable(test_lap_host tests/test_lap_host.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_net.c ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_signature.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_app.c ${LAP_TUI}/ls_glyph.c shims/lap_tui_core.c ${FW}/components/lakeshark/core/ls_signature.c)
     target_include_directories(test_lap_host BEFORE PRIVATE ${FW}/bench/shims/lap ${LAP_TUI} ${FW}/components/lakeshark)
     target_compile_definitions(test_lap_host PRIVATE ESP_PLATFORM=1 LS_LAP_HOST_TEST=1)
     target_compile_options(test_lap_host PRIVATE -falign-functions=2)
@@ -2872,7 +2872,7 @@ const lapsim_app_t lapsim_apps[] = {
 ${LAPSIM_TABLE}    {0, 0, 0}};
 const int lapsim_app_count = ${LAPSIM_COUNT};
 ")
-target_sources(lssim PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/lapsim_apps.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_lap_manifest.c)
+target_sources(lssim PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/lapsim_apps.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_net.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_lap_manifest.c)
 target_include_directories(lssim PRIVATE ${FW}/app-sdk/include)
 add_executable(test_lap_registry tests/test_lap_registry.c ${LAP_TUI}/ls_app.c)
 target_include_directories(test_lap_registry PRIVATE ${LAP_TUI})
@@ -2894,7 +2894,7 @@ file(GLOB CARRIER_SYSTEMS ${FW}/app-sdk/apps/carrier/*.c)
 list(REMOVE_ITEM CARRIER_SYSTEMS ${FW}/app-sdk/apps/carrier/main.c)
 list(FILTER CARRIER_SYSTEMS EXCLUDE REGEX "/ui_[a-z]+\.c$")
 set(CARRIER_API_TEST_SOURCES
-    ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c
+    ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_net.c
     ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_glyph.c
     shims/lap_tui_core.c shims/lap_adsb_time.c fixtures/carrier_io.c
     ${APP}/adsb/adsb_state.c ${APP}/adsb/adsb_demo.c)
@@ -3041,3 +3041,21 @@ target_link_options(test_carrier_combat_rules PRIVATE -Wl,--wrap=malloc -Wl,--wr
 foreach(combat damage weapons mounts distributor defence modules canopy scanning hud balance persistence limits config migration reverse aim)
     add_test(NAME test_carrier_combat_rules_${combat} COMMAND test_carrier_combat_rules ${combat})
 endforeach()
+
+# The same TCP service on desktop loopback and device.
+add_executable(test_lap_net tests/test_lap_net.c ${LAP_TUI}/ls_lap_net.c)
+target_include_directories(test_lap_net PRIVATE ${LAP_TUI})
+add_test(NAME test_lap_net COMMAND test_lap_net)
+add_executable(test_lap_net_dns tests/test_lap_net.c ${LAP_TUI}/ls_lap_net.c)
+target_include_directories(test_lap_net_dns PRIVATE ${LAP_TUI})
+target_compile_definitions(test_lap_net_dns PRIVATE LS_LAP_NET_TEST_DNS=1)
+add_test(NAME test_lap_net_dns COMMAND test_lap_net_dns)
+if(WIN32)
+  get_property(lap_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(t IN LISTS lap_targets)
+    get_target_property(lap_sources ${t} SOURCES)
+    if("${lap_sources}" MATCHES "ls_lap_net\\.c")
+      target_link_libraries(${t} ws2_32)
+    endif()
+  endforeach()
+endif()

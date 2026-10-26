@@ -78,7 +78,7 @@ class Elf:
         if s[1]!=1 or s[5]!=228 or not s[2]&2 or s[4]%4: raise ValueError('invalid .lap_app')
         self.prefix=d[s[4]:s[4]+198]
         magic,major,minor=struct.unpack_from('<IHH',self.prefix)
-        if (magic,major)!=(0x3150414c,1) or minor>2: raise ValueError('unsupported LAP API')
+        if (magic,major)!=(0x3150414c,1) or minor>3: raise ValueError('unsupported LAP API')
         self.manifest={'magic':magic,'api_major':major,'api_minor':minor}
         off=8
         for name,n in [('id',32),('name',16),('sub',32),('version',16),('author',24)]:
@@ -88,7 +88,7 @@ class Elf:
         if not re.fullmatch(r'[a-z0-9_.-]{1,31}',self.manifest['id']) or self.manifest['id'] in ('.','..') or not self.manifest['name']:
             raise ValueError('invalid id/name')
         icon,color,flags,reserved=self.prefix[128:132]
-        if icon>12 or color>15 or flags or reserved: raise ValueError('invalid icon/color/reserved')
+        if icon>12 or color>15 or flags & ~1 or (flags and minor<3) or reserved: raise ValueError('invalid icon/color/reserved')
         art=[]
         for y in range(6):
             row=self.prefix[132+y*11:143+y*11]

@@ -18,6 +18,7 @@ Every `.c` file in the folder is compiled into the app. The examples:
 |---|---|
 | `apps/dice` | 3D in dots the way COMPASS draws, the motion sensor (tilt and shake), physics, tones and haptics |
 | `apps/snake` | smooth animation between steps, a pad that answers on touch-down, swipes, a best score kept in a file |
+| `apps/tcp_probe` | API 1.3 asynchronous outbound TCP using the joined LINK network |
 | `apps/meshling` | the radios: MeshCore nodes, packets and messages, Bluetooth and Wi-Fi scans, the clock, a saved pet |
 
 ## An app
@@ -63,6 +64,70 @@ device:
 Nothing in 1.1 blocks the screen: the mesh and the card are worked by the app
 worker and handed over as copies. An app built with this SDK says API 1.1 and
 needs firmware 2.19.
+
+## Outbound networking (API 1.3, experimental 2.18.1-rc1)
+
+Declare `.flags = LAP_CAP_NETWORK` in `LAP_APP`. LakeShark asks **on every
+launch**, for signed and unsigned apps, before any app code runs. BACK leaves
+the app closed. Apps without this capability receive `LAP_NET_EACCES` from
+`lap_tcp_connect`, even when they import the networking functions directly.
+Permission expires when the app closes. This is a gate on the SDK API;
+native machine-code apps run with firmware privilege and are **not sandboxed**.
+Only install native apps you trust.
+
+Join Wi-Fi in LINK first. `lap_net_status` returns a worker-refreshed snapshot
+of the LINK station's IPv4 address and this launch's permission; it never
+returns SSIDs, passwords, or other credentials. These calls do not join a
+network or alter LINK settings. The first snapshot may be empty until the worker
+runs; requesting status wakes it. AP-only operation reports disconnected.
+Losing the station address closes live sockets with `LAP_NET_ENETDOWN`.
+
+| Call | Result |
+|---|---|
+| `lap_tcp_connect(host, port, timeout_ms)` | Immediate handle >=0, or negative error. Starts DNS/connect in the background; timeout 1–30000 ms covers both. |
+| `lap_tcp_state(handle)` | `LAP_TCP_PENDING`, `LAP_TCP_CONNECTED`, or a negative terminal error. |
+| `lap_tcp_send(handle, buf, len)` | Bytes copied into the TX queue, possibly fewer than requested; retry remaining bytes later. `LAP_NET_EAGAIN` means pending/full. |
+| `lap_tcp_recv(handle, buf, len)` | Bytes copied from the RX queue; `LAP_NET_EAGAIN` means pending/empty; zero means peer EOF after buffered data drains. |
+| `lap_tcp_close(handle)` | Immediately invalidates this handle and schedules socket cleanup. |
+
+All calls return without waiting for network I/O. Poll from draw/key callbacks
+and return each frame. DNS runs asynchronously on the lwIP task; connect,
+send, receive, and close run on the app IO worker. There are two outbound IPv4
+TCP sockets and a 4096-byte queue in each direction per socket. Each send/recv
+accepts at most 4096 bytes. Host names are at most 253 ASCII characters; numeric
+IPv4 also works. There is no listening, UDP, IPv6, TLS or SSH implementation.
+
+Use **app globals or app malloc buffers** for host names, status and data;
+stack addresses are rejected by ownership checks. A send result acknowledges
+queue acceptance, not delivery. Drain receive data even if state reports EOF
+or an error. Close every handle you no longer need; terminal states retain
+the slot until close. App exit closes all sockets and drops queued sends.
+A canceled/timed-out DNS request may retain a slot until its late callback
+returns; repeated immediate reconnects can temporarily return `LAP_NET_EBUSY`.
+
+Build the working example:
+
+```
+python app-sdk/lap.py build app-sdk/apps/tcp_probe -o tcp_probe.lap
+python app-sdk/lap.py info tcp_probe.lap
+```
+
+Copy it to `/apps` on the SD card, join Wi-Fi in LINK, open TCP PROBE and allow
+network access. It fetches a plain HTTP response from `example.com:80` and
+shows the connection state and text. To test a local service, edit `host`, the
+port passed to `lap_tcp_connect`, and `request` in
+`apps/tcp_probe/main.c`, then rebuild. For a local HTTP test server, run
+`python -m http.server 8080 --bind 0.0.0.0` on a reachable PC, use that PC's LAN
+IPv4 and port 8080, and retain an HTTP GET request. This is an HTTP test server,
+not an encrypted channel.
+
+An app-supplied SSH library can adapt its nonblocking transport to these calls;
+it must handle EAGAIN and partial writes and implement its own cryptography,
+host-key verification and authentication. Whether it fits the 512 KiB ELF /
+4 MiB app allocation limit depends on the library and enabled algorithms.
+The firmware's existing inbound screen SSH service is separate from this API.
+Apps built with this SDK advertise API 1.3; older firmware rejects them clearly.
+Existing API 1.0–1.2 apps keep their descriptor layout and remain compatible.
 
 ## Drawing in dots
 

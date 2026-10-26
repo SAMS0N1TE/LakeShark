@@ -1,6 +1,7 @@
 /* See ls_lap_sys.h. */
 #include "ls_lap_sys.h"
 #include "ls_lap_api.h"
+#include "ls_lap_net.h"
 #include <errno.h>
 #include <math.h>
 #include <stdio.h>
@@ -14,7 +15,7 @@
 #define SD_LIST_MAX 256
 
 static void (*wake_io)(void);
-void ls_lap_sys_set_wake(void (*wake)(void)) { wake_io = wake; }
+void ls_lap_sys_set_wake(void (*wake)(void)) { wake_io = wake; ls_lap_net_set_wake(wake); }
 
 /* ---- paths -------------------------------------------------------------- */
 
@@ -709,6 +710,7 @@ int lap_ble_devices(lap_ble_dev_t *out, int max)
 
 void ls_lap_sys_begin(void)
 {
+    ls_lap_net_begin(false);
     memset(&sys, 0, sizeof(sys));
     memset(&finger, 0, sizeof(finger));
     memset(&imu, 0, sizeof(imu));
@@ -755,6 +757,7 @@ lifted:
 
 void ls_lap_sys_end(void)
 {
+    ls_lap_net_end();
     if (!sys.open) return;
     sys.open = false;
     jobs_abandon();
@@ -772,9 +775,10 @@ void ls_lap_sys_end(void)
 
 bool ls_lap_sys_service(void)
 {
+    const bool net = ls_lap_net_service();
     const bool a = jobs_service();
     const bool b = mesh_service();
-    return a || b;
+    return net || a || b;
 }
 
 /* ====================================================================== */
@@ -855,6 +859,7 @@ int lap_ble_devices(lap_ble_dev_t *out, int max)
 }
 void ls_lap_sys_begin(void)
 {
+    ls_lap_net_begin(false);
     memset(&finger, 0, sizeof(finger));
     tones.head = tones.tail = 0;
 }
@@ -876,6 +881,6 @@ void ls_lap_sys_frame(tui_rect area)
     tones.tail = tones.head;                    /* the bench has no speaker */
     (void)swipe_of;
 }
-void ls_lap_sys_end(void) { jobs_abandon(); }
-bool ls_lap_sys_service(void) { return jobs_service(); }
+void ls_lap_sys_end(void) { ls_lap_net_end(); jobs_abandon(); }
+bool ls_lap_sys_service(void) { const bool net = ls_lap_net_service(); return jobs_service() || net; }
 #endif

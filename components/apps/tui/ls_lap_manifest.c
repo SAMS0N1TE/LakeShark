@@ -127,7 +127,8 @@ bool ls_lap_fields_valid(const lap_app_t *m, char *why, size_t cap) {
                 return fail(why, cap, "icon art must be printable ASCII");
         }
     }
-    if (m->flags || m->reserved || m->color > 15 || m->icon > 12)
+    if ((m->flags & ~LAP_CAP_NETWORK) || (m->flags && m->api_minor < 3) ||
+        m->reserved || m->color > 15 || m->icon > 12)
         return fail(why, cap, "invalid reserved/icon/color field");
     if (why && cap)
         why[0] = 0;
