@@ -295,6 +295,8 @@ Contact: [support@terminalbay.com](mailto:support@terminalbay.com)
 
 LakeShark is licensed under [GPL-3.0](LICENSE). Third-party components retain their respective licenses. [Third-party license inventory](docs/THIRD_PARTY_NOTICES.md)
 
+AI-assisted development and source-derived reimplementations: [AI use and attribution policy](AI_USE.md).
+
 <sub>Radio reception and transmission are subject to local laws and regulations.</sub>
 
 </div>
