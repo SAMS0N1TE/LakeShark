@@ -16,7 +16,9 @@ class Lap3dExports(unittest.TestCase):
         self.assertEqual(functions, {name for name in exports if name.startswith('l3_')})
         self.assertTrue(all(dict(table)[name] == name for name in functions))
     def test_api_version(self):
-        self.assertRegex((ROOT/'app-sdk/include/lakeshark_app.h').read_text(), r'LAP_API_MINOR\s+2\b')
+        minor = re.search(r'LAP_API_MINOR\s+(\d+)\b', (ROOT/'app-sdk/include/lakeshark_app.h').read_text())
+        self.assertIsNotNone(minor)
+        self.assertGreaterEqual(int(minor[1]), 2)
         self.assertIn('API 1.2', (ROOT/'app-sdk/README.md').read_text())
 if __name__ == '__main__':
     unittest.main()

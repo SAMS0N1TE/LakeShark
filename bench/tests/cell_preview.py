@@ -118,6 +118,8 @@ objects+=[str(build/o) for o in old if o!='CMakeFiles/lssim.dir/tools/lssim.c.ob
 # the libraries lssim links, as the build file names them (lap3d joined in 2.18.0)
 link_block=ninja[ninja.index(line):].split('\n\n',1)[0]
 link=re.search(r'^\s*LINK_LIBRARIES = (.*)$',link_block,re.M)
-libs=[str(build/w) for w in (link.group(1).split() if link else []) if w.endswith('.a')]
+libs=[str(build/w) if w.endswith('.a') else w
+      for w in (link.group(1).split() if link else [])
+      if w.endswith('.a') or w.startswith('-l')]
 (out/'link.rsp').write_text('\n'.join('"'+x.replace('\\','/')+'"' for x in objects+libs)+'\n-lm\n')
 subprocess.run([gcc,'@'+str(out/'link.rsp'),'-o',str(out/'lssim-cell.exe')],check=True)

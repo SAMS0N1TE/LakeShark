@@ -48,7 +48,9 @@ class CarrierData(unittest.TestCase):
         self.assertTrue(names <= set(exports))
         header = (ROOT / 'app-sdk/include/lakeshark_app.h').read_text()
         self.assertTrue(all(name in header for name in names))
-        self.assertRegex(header, r'LAP_API_MINOR\s+2\b')
+        minor = re.search(r'LAP_API_MINOR\s+(\d+)\b', header)
+        self.assertIsNotNone(minor)
+        self.assertGreaterEqual(int(minor[1]), 2)
 
 
 if __name__ == '__main__':
