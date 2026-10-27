@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/media/LakeShark-banner-light1.png">
-    <source media="(prefers-color-scheme: light)" srcset="docs/media/LakeShark-banner-dark1.png">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/LakeShark-banner-dark1.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/media/LakeShark-banner-light1.png">
     <img src="docs/media/LakeShark-banner-light.png" alt="LakeShark" width="900">
   </picture>
 </p>
