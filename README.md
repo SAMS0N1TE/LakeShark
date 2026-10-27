@@ -1,67 +1,124 @@
-<div align="center">
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/LakeShark-banner-light1.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/media/LakeShark-banner-dark1.png">
+    <img src="docs/media/LakeShark-banner-light.png" alt="LakeShark" width="900">
+  </picture>
+</p>
 
-![lakeshark_banner](assets/lakeshark-banner-light.png#gh-light-mode-only)
-![lakeshark_banner_dark](assets/lakeshark-banner-dark.png#gh-dark-mode-only)
-
-### A handheld SDR. Powered by a LoRa chip, RTLSDR, and HackRF.
-
-**P25 Digital Voice · FM Radio · ADS-B Aircraft · Pagers · MeshCore · RF Tools**
-
-Turn the [LILYGO T-Display P4](https://lilygo.cc/en-us/products/t-display-p4) into an open-source handheld radio multitool.
-
-**[Install LakeShark](https://terminalbay.com/?m=lakeshark)** &nbsp;•&nbsp;
-**[See it in action](https://terminalbay.com/?m=lakeshark-showcase)** &nbsp;•&nbsp;
-**[Documentation](https://terminalbay.com/?m=wiki)**
-
----
-
-## A LoRa chip. A whole new radio.
-
-**The onboard LR2021 receives P25 voice, aircraft and pagers. No external SDR required.**
-
-| DIGITAL VOICE | AIRCRAFT | SIGNALS |
-| :---: | :---: | :---: |
-| **P25 Phase I** | **1090 MHz ADS-B** | **FM + POCSAG** |
-| Hear digital radio | Track aircraft live | Listen, decode and visualize |
-
-**Raw I/Q capture · Live waterfalls · Software demodulation · Experimental I/Q transmission**
-
-**[Explore LR2021-SDR →](https://github.com/SAMS0N1TE/lr2021-sdr)**
-
----
-
-**NEW IN v2.18**
-
-Apps from the SD card · App store with one-click installs · Live screen and files in the browser · Faster MAP picture
-
-<img width="48%" alt="CARRIER, an early access space game" src="docs/screenshots/apps/carrier-0.4.gif">
-<img width="48%" alt="DICE, an example app" src="docs/screenshots/apps/dice-showcase.gif">
-
-[Release notes](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.18.0) &nbsp;•&nbsp;
-[All releases](https://github.com/SAMS0N1TE/LakeShark/releases)
-
-</div>
-
-## Hardware
-
-| Hardware | Capabilities |
-| --- | --- |
-| **T-Display P4 + LR2021** | Onboard P25 voice, FM, ADS-B, pagers, MeshCore and LoRa tools |
-| **T-Display P4 + SX1262** | MeshCore, LoRa and POCSAG. Add an RTL-SDR for FM, P25 and ADS-B |
-| **RTL-SDR Blog V3/V4** | External SDR reception, P25 Phase I trunking and sub-GHz captures |
-| **MIX-RF keyboard** | Optional physical controls, CC1101, nRF24 and NFC |
-
-**Install** from Chrome or Edge with the [browser installer](https://terminalbay.com/?m=lakeshark). Already installed? The **UPDATE** app updates over Wi-Fi in one tap.
-
-> **Power:** power the P4 from its own USB-C input, never from the keyboard's 5V USB output. That causes repeated power cycling.
-
-## LakeShark Pager coming soon
+<h3 align="center">A handheld SDR powered by a LoRa chip, RTL-SDR, and HackRF</h3>
 
 <p align="center">
+  <strong>P25 Digital Voice · FM Radio · ADS-B Aircraft · Pagers · MeshCore · RF Tools</strong>
+</p>
+
+<p align="center">
+  Turn the <a href="https://lilygo.cc/en-us/products/t-display-p4">LILYGO T-Display P4</a>
+  into an open-source handheld radio multitool.
+</p>
+
+<p align="center">
+  <strong><a href="https://terminalbay.com/?m=lakeshark">Install LakeShark</a></strong>
+  &nbsp;·&nbsp;
+  <strong><a href="https://terminalbay.com/?m=lakeshark-showcase">See it in action</a></strong>
+  &nbsp;·&nbsp;
+  <strong><a href="https://terminalbay.com/?m=wiki">Documentation</a></strong>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/LakeShark-divider-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/media/LakeShark-divider-light.png">
+    <img src="docs/media/LakeShark-divider-light.png" alt="" width="900">
+  </picture>
+</p>
+
+<h2 align="center">A LoRa chip. A whole new radio.</h2>
+
+<p align="center"><strong>The onboard LR2021 receives P25 voice, aircraft and pagers. No external SDR required.</strong></p>
+
 <table align="center">
-  <tr>
-    <th colspan="2">LakeShark Pager MK1</th>
-  </tr>
+  <thead>
+    <tr>
+      <th align="center">DIGITAL VOICE</th>
+      <th align="center">AIRCRAFT</th>
+      <th align="center">SIGNALS</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td align="center"><strong>P25 Phase I</strong></td>
+      <td align="center"><strong>1090 MHz ADS-B</strong></td>
+      <td align="center"><strong>FM + POCSAG</strong></td>
+    </tr>
+    <tr>
+      <td align="center">Hear digital radio</td>
+      <td align="center">Track aircraft live</td>
+      <td align="center">Listen, decode and visualize</td>
+    </tr>
+  </tbody>
+</table>
+
+<p align="center"><strong>Raw I/Q capture · Live waterfalls · Software demodulation · Experimental I/Q transmission</strong></p>
+
+<p align="center"><strong><a href="https://github.com/SAMS0N1TE/lr2021-sdr">Explore LR2021-SDR →</a></strong></p>
+
+---
+
+<h2 align="center">New in v2.18</h2>
+
+<p align="center">Apps from the SD card · App store with one-click installs · Live screen and files in the browser · Faster MAP picture</p>
+
+<p align="center">
+  <img width="48%" alt="CARRIER, an early access space game" src="docs/screenshots/apps/carrier-0.4.gif">
+  <img width="48%" alt="DICE, an example app" src="docs/screenshots/apps/dice-showcase.gif">
+</p>
+
+<p align="center">
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.18.0">Release notes</a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases">All releases</a>
+</p>
+
+---
+
+<h2 align="center">Hardware</h2>
+
+<table align="center">
+  <thead>
+    <tr>
+      <th>Hardware</th>
+      <th>Capabilities</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>T-Display P4 + LR2021</strong></td>
+      <td>Onboard P25 voice, FM, ADS-B, pagers, MeshCore and LoRa tools</td>
+    </tr>
+    <tr>
+      <td><strong>T-Display P4 + SX1262</strong></td>
+      <td>MeshCore, LoRa and POCSAG. Add an RTL-SDR for FM, P25 and ADS-B</td>
+    </tr>
+    <tr>
+      <td><strong>RTL-SDR Blog V3/V4</strong></td>
+      <td>External SDR reception, P25 Phase I trunking and sub-GHz captures</td>
+    </tr>
+    <tr>
+      <td><strong>MIX-RF keyboard</strong></td>
+      <td>Optional physical controls, CC1101, nRF24 and NFC</td>
+    </tr>
+  </tbody>
+</table>
+
+<p align="center"><strong>Install</strong> from Chrome or Edge with the <a href="https://terminalbay.com/?m=lakeshark">browser installer</a>. Already installed? The <strong>UPDATE</strong> app updates over Wi-Fi in one tap.</p>
+
+<blockquote><p align="center"><strong>Power:</strong> power the P4 from its own USB-C input, never from the keyboard's 5V USB output. That causes repeated power cycling.</p></blockquote>
+
+<h2 align="center">LakeShark Pager (coming soon)</h2>
+
+<table align="center">
+  <tr><th colspan="2">MK1</th></tr>
   <tr>
     <td colspan="2" align="center">
       <img src="docs/media/Pager_MK1.jpg" alt="LakeShark Pager MK1" width="650">
@@ -72,32 +129,23 @@ Apps from the SD card · App store with one-click installs · Live screen and fi
     <th>MK2 · Angled view</th>
   </tr>
   <tr>
-    <td align="center">
-      <img src="docs/media/Pager1_MK2.png" alt="LakeShark Pager MK2, front view" width="325">
-    </td>
-    <td align="center">
-      <img src="docs/media/Pager1_MK2_2.png" alt="LakeShark Pager MK2, angled view" width="325">
-    </td>
+    <td align="center"><img src="docs/media/Pager1_MK2.png" alt="LakeShark Pager MK2, front view" width="325"></td>
+    <td align="center"><img src="docs/media/Pager1_MK2_2.png" alt="LakeShark Pager MK2, angled view" width="325"></td>
   </tr>
 </table>
 
-</div>
-
 ---
 
-<h2 align="center">}<((((-- Meet the LakeShark</h2>
+<h2 align="center">Meet the LakeShark</h2>
 
 <p align="center">
-  <img width="100%" alt="LakeShark on the LILYGO T-Display P4" src="assets/lakeshark-tdp4.jpg" />
+  <img width="900" alt="LakeShark on the LILYGO T-Display P4" src="assets/lakeshark-tdp4.jpg">
 </p>
 
-<div align="center">
-
-**LILYGO T-Display P4 · 4.1" AMOLED · ESP32-P4 · LR2021 or SX1262**
-
-Touchscreen, GPS, motion sensing and an optional detachable MIX-RF keyboard.
-
-</div>
+<p align="center">
+  <strong>LILYGO T-Display P4 · 4.1&quot; AMOLED · ESP32-P4 · LR2021 or SX1262</strong><br>
+  Touchscreen, GPS, motion sensing, and an optional detachable MIX-RF keyboard.
+</p>
 
 <p align="center">
 <img src="docs/screenshots/tdp4/home-20261025.png" width="32%" alt="HOME" />
@@ -206,24 +254,42 @@ The **Waveshare ESP32-P4-NANO** and **ESP32-P4-WIFI6** run the same receivers wi
 
 ### Flipper Zero control head
 
-<div align="center">
-
-**Your Flipper becomes the display and controls. LakeShark handles the radio.**
+<p align="center">
+  <strong>Your Flipper becomes the display and controls. LakeShark handles the radio.</strong>
+</p>
 
 The [LakeShark-Flipper app](https://github.com/SAMS0N1TE/LakeShark-Flipper) connects over Bluetooth, with no pairing code, or GPIO.
 
-| | |
-| :---: | :---: |
-| ![map](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/9eff8f06eb8899a3ac1b6058837897c3fe8bbbda/docs/screenshots/adsb_map.png) | ![traffic](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/9eff8f06eb8899a3ac1b6058837897c3fe8bbbda/docs/screenshots/adsb_traffic.png) |
-| Offline aircraft map | ADS-B traffic |
-| ![launcher](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/9eff8f06eb8899a3ac1b6058837897c3fe8bbbda/docs/screenshots/launcher.png) | ![p25](https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/9eff8f06eb8899a3ac1b6058837897c3fe8bbbda/docs/screenshots/p25_vfo.png) |
-| App launcher | P25 radio |
+<table align="center">
+  <thead>
+    <tr>
+      <th align="center">Offline aircraft map</th>
+      <th align="center">ADS-B traffic</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td align="center"><img src="https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/9eff8f06eb8899a3ac1b6058837897c3fe8bbbda/docs/screenshots/adsb_map.png" alt="Offline aircraft map" /></td>
+      <td align="center"><img src="https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/9eff8f06eb8899a3ac1b6058837897c3fe8bbbda/docs/screenshots/adsb_traffic.png" alt="ADS-B traffic" /></td>
+    </tr>
+    <tr>
+      <td align="center">App launcher</td>
+      <td align="center">P25 radio</td>
+    </tr>
+    <tr>
+      <td align="center"><img src="https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/9eff8f06eb8899a3ac1b6058837897c3fe8bbbda/docs/screenshots/launcher.png" alt="App launcher" /></td>
+      <td align="center"><img src="https://raw.githubusercontent.com/SAMS0N1TE/LakeShark-Flipper/9eff8f06eb8899a3ac1b6058837897c3fe8bbbda/docs/screenshots/p25_vfo.png" alt="P25 radio" /></td>
+    </tr>
+  </tbody>
+</table>
 
-<img width="700" alt="LakeShark Flipper bench setup" src="assets/lakeshark-flipper-bench.jpg" />
+<p align="center">
+  <img width="700" alt="LakeShark Flipper bench setup" src="assets/lakeshark-flipper-bench.jpg">
+</p>
 
-**[Flipper setup guide →](https://terminalbay.com/?m=wiki#flipper/Home)**
-
-</div>
+<p align="center">
+  <strong><a href="https://terminalbay.com/?m=wiki#flipper/Home">Flipper setup guide →</a></strong>
+</p>
 
 ### Waveshare touch boards
 
@@ -233,17 +299,52 @@ The Touch-LCD-4.3 (480 × 800), Touch-LCD-4B and Smart 86 Box (720 × 720) build
 
 ## Experimental features
 
-| Feature | Status |
-| --- | --- |
-| **P25 Phase II** | Grant following, bench-tested with public recordings; live RF unverified. Off after restart. [Details](docs/P25_PHASE2.md) |
-| **HackRF One** | FM, POCSAG, ACARS, P25, recording and ADS-B. Pagers verified; live P25 unconfirmed. [Status](docs/HACKRF_BRINGUP.md) |
-| **LR2021 I/Q TX** | Short custom waveforms, including P25 test tones and temperature packets. [Research](docs/LR2021_IQ_TX.md) |
-| **LR2021 I/Q replay** | 433 MHz captures. OOK replay verified; FSK not yet verified over the air |
-| **C6 firmware update** | From the SD card. Recovery still needs the UART header. [Details](c6_firmware/README.md) |
-| **Wi-Fi terminal** | Telnet on 2323 with a password. SSH on 22 on ESP32-P4-NANO builds. USB is the tested link |
-| **LoRa bearing plots** | RSSI by compass heading. Not validated direction finding |
-| **Location scanning** | Mixed P25/FM lists, GPS filtering and CSV/JSON import. [Details](docs/LOCATION_SCAN.md) |
-| **RadioReference adapter** | Needs an approved API key and Premium account. Live sign-in unverified |
+<table align="center">
+  <thead>
+    <tr>
+      <th>Feature</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>P25 Phase II</strong></td>
+      <td>Grant following, bench-tested with public recordings; live RF unverified. Off after restart. <a href="docs/P25_PHASE2.md">Details</a></td>
+    </tr>
+    <tr>
+      <td><strong>HackRF One</strong></td>
+      <td>FM, POCSAG, ACARS, P25, recording and ADS-B. Pagers verified; live P25 unconfirmed. <a href="docs/HACKRF_BRINGUP.md">Status</a></td>
+    </tr>
+    <tr>
+      <td><strong>LR2021 I/Q TX</strong></td>
+      <td>Short custom waveforms, including P25 test tones and temperature packets. <a href="docs/LR2021_IQ_TX.md">Research</a></td>
+    </tr>
+    <tr>
+      <td><strong>LR2021 I/Q replay</strong></td>
+      <td>433 MHz captures. OOK replay verified; FSK not yet verified over the air</td>
+    </tr>
+    <tr>
+      <td><strong>C6 firmware update</strong></td>
+      <td>From the SD card. Recovery still needs the UART header. <a href="c6_firmware/README.md">Details</a></td>
+    </tr>
+    <tr>
+      <td><strong>Wi-Fi terminal</strong></td>
+      <td>Telnet on 2323 with a password. SSH on 22 on ESP32-P4-NANO builds. USB is the tested link</td>
+    </tr>
+    <tr>
+      <td><strong>LoRa bearing plots</strong></td>
+      <td>RSSI by compass heading. Not validated direction finding</td>
+    </tr>
+    <tr>
+      <td><strong>Location scanning</strong></td>
+      <td>Mixed P25/FM lists, GPS filtering and CSV/JSON import. <a href="docs/LOCATION_SCAN.md">Details</a></td>
+    </tr>
+    <tr>
+      <td><strong>RadioReference adapter</strong></td>
+      <td>Needs an approved API key and Premium account. Live sign-in unverified</td>
+    </tr>
+  </tbody>
+</table>
 
 ---
 
@@ -277,45 +378,110 @@ idf.py -B build_nano -D SDKCONFIG=build_nano/sdkconfig -D SDKCONFIG_DEFAULTS="sd
 
 ## Credits and open-source projects
 
-| Project | Contribution |
-| --- | --- |
-| [rtl-sdr / librtlsdr](https://osmocom.org/projects/rtl-sdr) | Osmocom. RTL-SDR driver foundation. GPL-2.0+ |
-| [xtrsdr](https://github.com/XTR1984/xtrsdr) | XTR1984. ESP32-optimized librtlsdr implementation, essential to this project |
-| [OP25](https://github.com/boatbod/op25) | Pavel Yazev's fixed-point `imbe_vocoder`. Experimental Phase II work by Max H. Parke, Graham J. Norbury and contributors. GPL-3.0+ |
-| [libmodes](https://github.com/watson/libmodes) / [dump1090](https://github.com/antirez/dump1090) | Thomas Watson and Salvatore Sanfilippo. Mode S decoder lineage. BSD-2-Clause |
-| [ADS-B Scope](https://github.com/jstockdale/T-Display-P4/tree/adsb) | John Stockdale and Off by One, Inc. Original implementation and single-frame CPR reference |
-| [DSD](https://github.com/szechyjs/dsd) / [dsd-fme](https://github.com/lwvmobile/dsd-fme) | szechyjs and lwvmobile. P25 symbol and framing foundations. ISC-style notices |
-| [mbelib](https://github.com/szechyjs/mbelib) | szechyjs. Fallback vocoder. ISC |
-| [ESP-IDF](https://github.com/espressif/esp-idf) | Espressif. Embedded development framework |
-| [LILYGO device drivers](https://github.com/Xinyuan-LilyGO/lilygo_device_driver) | T-Display P4 and MIX-RF hardware drivers, wiring and power examples |
-| [MeshCore](https://github.com/meshcore-dev/MeshCore) | Scott Powell / Ripple Radios and contributors. Mesh radio stack |
-| [CartoTUI](https://github.com/SAMS0N1TE/CartoTUI) / [ZeroMesh](https://github.com/SAMS0N1TE/ZeroMesh) | libcarto rendering and embedded PMTiles reader |
-| [PMTiles](https://github.com/protomaps/PMTiles) | Protomaps. Seekable, single-file offline map storage |
-| [OpenStreetMap](https://www.openstreetmap.org/copyright) | Open map data. ODbL |
-| [Flipper Zero firmware](https://github.com/flipperdevices/flipperzero-firmware) | Flipper Devices and contributors. Control-head platform and Crypto1 helpers |
-| [DejaVu](https://dejavu-fonts.github.io/) | Interface fonts |
-| [Waveshare](https://github.com/waveshareteam) | ESP32-P4 board support and hardware examples |
+<table align="center">
+  <thead>
+    <tr>
+      <th>Project</th>
+      <th>Contribution</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><a href="https://osmocom.org/projects/rtl-sdr">rtl-sdr / librtlsdr</a></td>
+      <td>Osmocom. RTL-SDR driver foundation. GPL-2.0+</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/XTR1984/xtrsdr">xtrsdr</a></td>
+      <td>XTR1984. ESP32-optimized librtlsdr implementation, essential to this project</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/boatbod/op25">OP25</a></td>
+      <td>Pavel Yazev's fixed-point <code>imbe_vocoder</code>. Experimental Phase II work by Max H. Parke, Graham J. Norbury and contributors. GPL-3.0+</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/watson/libmodes">libmodes</a> / <a href="https://github.com/antirez/dump1090">dump1090</a></td>
+      <td>Thomas Watson and Salvatore Sanfilippo. Mode S decoder lineage. BSD-2-Clause</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/jstockdale/T-Display-P4/tree/adsb">ADS-B Scope</a></td>
+      <td>John Stockdale and Off by One, Inc. Original implementation and single-frame CPR reference</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/szechyjs/dsd">DSD</a> / <a href="https://github.com/lwvmobile/dsd-fme">dsd-fme</a></td>
+      <td>szechyjs and lwvmobile. P25 symbol and framing foundations. ISC-style notices</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/szechyjs/mbelib">mbelib</a></td>
+      <td>szechyjs. Fallback vocoder. ISC</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/espressif/esp-idf">ESP-IDF</a></td>
+      <td>Espressif. Embedded development framework</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/Xinyuan-LilyGO/lilygo_device_driver">LILYGO device drivers</a></td>
+      <td>T-Display P4 and MIX-RF hardware drivers, wiring and power examples</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/meshcore-dev/MeshCore">MeshCore</a></td>
+      <td>Scott Powell / Ripple Radios and contributors. Mesh radio stack</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/SAMS0N1TE/CartoTUI">CartoTUI</a> / <a href="https://github.com/SAMS0N1TE/ZeroMesh">ZeroMesh</a></td>
+      <td>libcarto rendering and embedded PMTiles reader</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/protomaps/PMTiles">PMTiles</a></td>
+      <td>Protomaps. Seekable, single-file offline map storage</td>
+    </tr>
+    <tr>
+      <td><a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a></td>
+      <td>Open map data. ODbL</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/flipperdevices/flipperzero-firmware">Flipper Zero firmware</a></td>
+      <td>Flipper Devices and contributors. Control-head platform and Crypto1 helpers</td>
+    </tr>
+    <tr>
+      <td><a href="https://dejavu-fonts.github.io/">DejaVu</a></td>
+      <td>Interface fonts</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/waveshareteam">Waveshare</a></td>
+      <td>ESP32-P4 board support and hardware examples</td>
+    </tr>
+  </tbody>
+</table>
 
 The field-map design drew on [Cardputer offgrid map](https://github.com/yuiseki/m5-cardputer-offgrid-tiny-map) by yuiseki and [HikePod](https://github.com/nongxl/HikePod) by nongxl. No source code was copied from either.
 
-<div align="center">
-
 ---
 
-### Open source. Built for experimentation.
+<p align="center"><strong>Open source. Built for experimentation.</strong></p>
 
-**[Install](https://terminalbay.com/?m=lakeshark)** &nbsp;•&nbsp;
-**[Documentation](https://terminalbay.com/?m=wiki)** &nbsp;•&nbsp;
-**[Releases](https://github.com/SAMS0N1TE/LakeShark/releases)** &nbsp;•&nbsp;
-**[Roadmap](https://terminalbay.com/?m=lakeshark-roadmap)** &nbsp;•&nbsp;
-**[Suggest a feature](https://terminalbay.com/?m=lakeshark-roadmap#ask)**
+<p align="center">
+  <a href="https://terminalbay.com/?m=lakeshark">Install</a>
+  &nbsp;·&nbsp;
+  <a href="https://terminalbay.com/?m=wiki">Documentation</a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases">Releases</a>
+  &nbsp;·&nbsp;
+  <a href="https://terminalbay.com/?m=lakeshark-roadmap">Roadmap</a>
+  &nbsp;·&nbsp;
+  <a href="https://terminalbay.com/?m=lakeshark-roadmap#ask">Suggest a feature</a>
+</p>
 
-Contact: [support@terminalbay.com](mailto:support@terminalbay.com)
+<p align="center">Contact: <a href="mailto:support@terminalbay.com">support@terminalbay.com</a></p>
 
-LakeShark is licensed under [GPL-3.0](LICENSE). Third-party components retain their respective licenses. [Third-party license inventory](docs/THIRD_PARTY_NOTICES.md)
+<p align="center">
+  LakeShark is licensed under <a href="LICENSE">GPL-3.0</a>.
+  Third-party components retain their respective licenses.
+  <a href="docs/THIRD_PARTY_NOTICES.md">Third-party license inventory</a>.
+</p>
 
-AI-assisted development and source-derived reimplementations: [AI use and attribution policy](AI_USE.md).
+<p align="center">
+  AI-assisted development and source-derived reimplementations:
+  <a href="AI_USE.md">AI use and attribution policy</a>.
+</p>
 
-<sub>Radio reception and transmission are subject to local laws and regulations.</sub>
-
-</div>
+<p align="center"><sub>Radio reception and transmission are subject to local laws and regulations.</sub></p>
