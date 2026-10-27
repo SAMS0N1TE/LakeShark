@@ -73,10 +73,10 @@ Apps from the SD card · App store with one-click installs · Live screen and fi
   </tr>
   <tr>
     <td align="center">
-      <img src="docs/media/Pager_MK2.png" alt="LakeShark Pager MK2, front view" width="325">
+      <img src="docs/media/Pager1_MK2.png" alt="LakeShark Pager MK2, front view" width="325">
     </td>
     <td align="center">
-      <img src="docs/media/Pager_MK2_2.png" alt="LakeShark Pager MK2, angled view" width="325">
+      <img src="docs/media/Pager1_MK2_2.png" alt="LakeShark Pager MK2, angled view" width="325">
     </td>
   </tr>
 </table>
