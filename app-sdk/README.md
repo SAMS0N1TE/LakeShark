@@ -113,10 +113,9 @@ python app-sdk/lap.py info tcp_probe.lap
 ```
 
 Copy it to `/apps` on the SD card, join Wi-Fi in LINK, open TCP PROBE and allow
-network access. It fetches a plain HTTP response from `example.com:80` and
-shows the connection state and text. To test a local service, edit `host`, the
-port passed to `lap_tcp_connect`, and `request` in
-`apps/tcp_probe/main.c`, then rebuild. For a local HTTP test server, run
+network access. It sends an HTTP request to `example.com:80` and shows each
+step and PASS or FAIL. To test a local service, edit `host`, `port` and
+`request` in `apps/tcp_probe/main.c`, then rebuild. For a local HTTP test server, run
 `python -m http.server 8080 --bind 0.0.0.0` on a reachable PC, use that PC's LAN
 IPv4 and port 8080, and retain an HTTP GET request. This is an HTTP test server,
 not an encrypted channel.

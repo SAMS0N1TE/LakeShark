@@ -83,7 +83,8 @@ int main(void) {
         int d1 = lap_tcp_connect(app.host, port, 1), d2 = lap_tcp_connect(app.host, port, 1000);
         assert(d1 >= 0 && d2 >= 0); ls_lap_net_service();
         assert(dns[0].ctx && dns[1].ctx);
-        pause_ms(5); ls_lap_net_service();
+        /* Past Windows' ~15 ms tick, or the 1 ms deadline can read as unexpired. */
+        pause_ms(40); ls_lap_net_service();
         assert(lap_tcp_state(d1) == LAP_NET_ETIMEOUT);
         ls_lap_net_end(); ls_lap_net_begin(true); ls_lap_net_service();
         assert(lap_tcp_connect(app.host, port, 1000) == LAP_NET_EBUSY);
