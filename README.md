@@ -55,12 +55,31 @@ Apps from the SD card · App store with one-click installs · Live screen and fi
 
 > **Power:** power the P4 from its own USB-C input, never from the keyboard's 5V USB output. That causes repeated power cycling.
 
-<div align="center">
+## LakeShark Pager coming soon
 
-<img width="48%" alt="LakeShark P4 case, plastic" src="assets/lakeshark_p4_plastic.gif">
-<img width="48%" alt="LakeShark P4 case, clear acrylic" src="assets/lakeshark_p4_acrylic.gif">
-
-**[Handheld case renders →](https://terminalbay.com/?m=lakeshark-showcase#renders/01)**
+<p align="center">
+<table align="center">
+  <tr>
+    <th colspan="2">LakeShark Pager MK1</th>
+  </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="docs/media/Pager_MK1.jpg" alt="LakeShark Pager MK1" width="650">
+    </td>
+  </tr>
+  <tr>
+    <th>MK2 · Front</th>
+    <th>MK2 · Angled view</th>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="docs/media/Pager_MK2.png" alt="LakeShark Pager MK2, front view" width="325">
+    </td>
+    <td align="center">
+      <img src="docs/media/Pager_MK2_2.png" alt="LakeShark Pager MK2, angled view" width="325">
+    </td>
+  </tr>
+</table>
 
 </div>
 
