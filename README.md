@@ -75,7 +75,7 @@
 
 <h2 align="center">New in v2.18</h2>
 
-<p align="center">Apps from the SD card · App store with one-click installs · Live screen and files in the browser · Faster MAP picture</p>
+<p align="center">Apps from the SD card · <a href="https://terminalbay.com/?m=lakeshark-apps">App store with one-click installs</a> · Live screen and files in the browser · Faster MAP picture</p>
 
 <p align="center">
   <img width="48%" alt="CARRIER, an early access space game" src="docs/screenshots/apps/carrier-0.4.gif">
