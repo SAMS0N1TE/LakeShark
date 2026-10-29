@@ -61,7 +61,7 @@
 
 <h2 align="center">New in v2.19</h2>
 
-<p align="center">Folders on HOME · TIME MACHINE · DIGI: FT8, FT4 and WSPR · HF on the RTL-SDR and HackRF · METERS · P25 on the LR2021 with RAM to spare</p>
+<p align="center">Folders on HOME · DIGI: FT8, FT4 and WSPR · HF on the RTL-SDR and HackRF · METERS · P25 on the LR2021 with RAM to spare</p>
 
 <p align="center">
   <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.19.0">Release notes</a>
