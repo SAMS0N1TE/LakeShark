@@ -175,6 +175,58 @@
       "sources": ["drone.watch"],
       "match": {"category_in": ["DRONE"]},
       "sinks": ["banner", "vibrate"]
+    },
+    {
+      "id": "p25-emergency",
+      "enabled": true,
+      "rule_cooldown_s": 0,
+      "sources": ["p25"],
+      "match": {"emergency": true},
+      "sinks": ["banner", "vibrate", "tone"]
+    },
+    {
+      "id": "p25-talkgroups",
+      "sources": ["p25"],
+      "match": {"talkgroup_in": [1234, 5678]},
+      "sinks": ["banner"]
+    },
+    {
+      "id": "pager-keywords",
+      "sources": ["pocsag"],
+      "match": {"text_contains_any_ci": ["FIRE", "RESCUE"]},
+      "sinks": ["banner", "tts"]
+    },
+    {
+      "id": "pager-capcodes",
+      "sources": ["pocsag"],
+      "match": {"capcode_in": [1234567]},
+      "sinks": ["banner"]
+    },
+    {
+      "id": "subghz-new-433",
+      "sources": ["rec.watch", "rec.catch"],
+      "match": {"frequency_khz": [433050, 434790], "novel_pattern": true},
+      "sinks": ["banner"]
+    },
+    {
+      "id": "mesh-new-node",
+      "cooldown_s": 600,
+      "sources": ["mesh.peer"],
+      "match": {"event_in": ["new"]},
+      "sinks": ["banner"]
+    },
+    {
+      "id": "mesh-emergency",
+      "rule_cooldown_s": 0,
+      "sources": ["mesh.alert"],
+      "match": {"emergency": true},
+      "sinks": ["banner", "vibrate", "tts"]
+    },
+    {
+      "id": "share-remote-id",
+      "sources": ["rid.ble"],
+      "match": {"validated_message": true},
+      "sinks": ["banner", "mesh"]
     }
   ]
 }

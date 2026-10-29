@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <math.h>
 #include "rec_lr_ook.h"
+#include "ls_textpack.h"
 
 bool rec_lr_iq_rate_supported(uint32_t rate)
 { return rate==4800 || rate==9600 || rate==19200 || rate==38400 || rate==76800 || rate==125000; }
@@ -424,7 +425,7 @@ bool rec_lr_iq_dump(const uint8_t *iq,size_t bytes,uint32_t hz,rec_lr_iq_dump_em
 {
     if(!iq || !bytes || bytes%4 || bytes>REC_LR_IQ_BYTES || !emit)return false;
     char line[160];
-    snprintf(line,sizeof(line),"LRIQ-BEGIN bytes=%lu rate=%u freq=%lu format=IQ16LE\n",
+    LS_SNPRINTF(t_rec_lr_iq_lriq_begin_bytes_lu, line,sizeof(line),"LRIQ-BEGIN bytes=%lu rate=%u freq=%lu format=IQ16LE\n",
              (unsigned long)bytes,REC_LR_IQ_RATE,(unsigned long)hz);
     if(!emit(ctx,line))return false;
     static const char b64[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -446,7 +447,7 @@ bool rec_lr_iq_dump(const uint8_t *iq,size_t bytes,uint32_t hz,rec_lr_iq_dump_em
         line[k++]='\n';line[k]=0;
         if(!emit(ctx,line))return false;
     }
-    snprintf(line,sizeof(line),"LRIQ-END crc32=%08lX\n",(unsigned long)(crc^0xffffffffu));
+    LS_SNPRINTF(t_rec_lr_iq_lriq_end_crc32_08lx, line,sizeof(line),"LRIQ-END crc32=%08lX\n",(unsigned long)(crc^0xffffffffu));
     return emit(ctx,line);
 }
 
@@ -458,7 +459,7 @@ bool rec_lr_iq_save(const char *path,uint32_t hz,const uint8_t *iq,size_t bytes)
     if(!path || !iq || hz<104000000u || hz>2740000000u || !bytes || bytes%4 || bytes>REC_LR_IQ_BYTES)return false;
     FILE *f=rec_file_open_new(path);
     if(!f)return false;
-    bool ok=fprintf(f,"Filetype: LakeShark SubGhz IQ File\nVersion: 1\nFrequency: %lu\nProtocol: LR2021_IQ\nSampleRate: 125000\nSamples: %lu\n",
+    bool ok=LS_FPRINTF(t_rec_lr_iq_filetype_lakeshark_subghz_iq, f,"Filetype: LakeShark SubGhz IQ File\nVersion: 1\nFrequency: %lu\nProtocol: LR2021_IQ\nSampleRate: 125000\nSamples: %lu\n",
         (unsigned long)hz,(unsigned long)(bytes/4))>0;
     static const char hex[]="0123456789ABCDEF";
     char line[139];

@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 static void copy_str(char *dst, size_t cap, const char *src)
 {
@@ -434,13 +435,13 @@ void p25_program_format_geo(const p25_program_t *program, int64_t now_us,
     if (!out || out_size == 0) return;
     if (!program || !program->active_valid ||
         !p25_geo_profile_has_sites(&program->active))
-        snprintf(out, out_size, "GEO off (no site coordinates)");
+        LS_SNPUTS(t_p25_program_geo_off_no_site, out, out_size, "GEO off (no site coordinates)");
     else if (program->geo_paused)
-        snprintf(out, out_size, "GEO paused (control chosen by hand)");
+        LS_SNPUTS(t_p25_program_geo_paused_control_chosen, out, out_size, "GEO paused (control chosen by hand)");
     else if (!p25_geo_ready(&program->geo, now_us))
-        snprintf(out, out_size, "GEO waiting for a GPS fix");
+        LS_SNPUTS(t_p25_program_geo_waiting_for_a, out, out_size, "GEO waiting for a GPS fix");
     else
-        snprintf(out, out_size, "GEO site %u of %u, %.1f km",
+        LS_SNPRINTF(t_p25_program_geo_site_u_of, out, out_size, "GEO site %u of %u, %.1f km",
                  (unsigned)program->selected_control + 1u,
                  (unsigned)program->active.control_count,
                  program->geo.distance_m / 1000.0);

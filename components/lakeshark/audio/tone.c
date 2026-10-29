@@ -12,6 +12,8 @@
 #include <stdint.h>
 #include <string.h>
 #include <ctype.h>
+#include "ls_cold.h"
+#include "ls_textpack.h"
 
 void audio_tone(float freq, float dur_s, float amp)
 {
@@ -248,13 +250,13 @@ static volatile bool s_test_busy = false;
 
 static EXT_RAM_BSS_ATTR int16_t s_test_buf[TEST_CHUNK];
 
-static void test_emit(int n)
+LS_COLD static void test_emit(int n)
 {
     audio_out_play_now();
     tone_write_paced(s_test_buf, n);
 }
 
-static void test_sweep(void)
+LS_COLD static void test_sweep(void)
 {
     const float f0 = 70.0f, f1 = 4500.0f, dur = 4.0f;
     const int total = (int)(AUDIO_RATE_HZ * dur);
@@ -278,7 +280,7 @@ static void test_sweep(void)
     }
 }
 
-static void test_bass(void)
+LS_COLD static void test_bass(void)
 {
     static const float steps[] = { 70.0f, 90.0f, 110.0f, 150.0f, 200.0f, 260.0f, 340.0f, 450.0f };
     const int nsteps = (int)(sizeof(steps) / sizeof(steps[0]));
@@ -304,7 +306,7 @@ static void test_bass(void)
     }
 }
 
-static void test_noise(void)
+LS_COLD static void test_noise(void)
 {
     const int total = (int)(AUDIO_RATE_HZ * 2.5f);
     uint32_t lcg = 0x1234567u;
@@ -330,7 +332,7 @@ static void test_noise(void)
 }
 
 /* A tone longer than the ring, written at the speed it plays. */
-static void test_tone_long(float freq, float dur_s)
+LS_COLD static void test_tone_long(float freq, float dur_s)
 {
     const int total = (int)(AUDIO_RATE_HZ * dur_s);
     static int16_t buf[256];
@@ -362,7 +364,7 @@ static void play_boot_chime(void)
     audio_write_cue(sil, 1600);
     for (int i = 0; i < 250 && audio_out_ring_avail() > 320; i++)
         vTaskDelay(pdMS_TO_TICKS(20));
-    printf("boot chirp: at %lu ms, %lu ms to play, speaker starved %u times\n",
+    LS_PRINTF(t_tone_boot_chirp_at_lu, "boot chirp: at %lu ms, %lu ms to play, speaker starved %u times\n",
            (unsigned long)(t0 * portTICK_PERIOD_MS),
            (unsigned long)((xTaskGetTickCount() - t0) * portTICK_PERIOD_MS),
            (unsigned)(ls_audio_hw_starved(NULL, NULL) - starved0));
@@ -399,7 +401,7 @@ static void notification_play(int preset)
     }
 }
 
-static void test_worker(void *arg)
+LS_COLD static void test_worker(void *arg)
 {
     (void)arg;
     uint8_t which;
@@ -441,7 +443,7 @@ static void test_worker(void *arg)
     }
 }
 
-void snd_test_init(void)
+LS_COLD void snd_test_init(void)
 {
     if (s_test_q) return;
     s_test_q = xQueueCreateStatic(2, sizeof(uint8_t), s_test_q_store, &s_test_q_ctrl);
@@ -450,7 +452,7 @@ void snd_test_init(void)
                                     NULL, 4, s_test_stack, &s_test_tcb);
 }
 
-bool snd_test_start(int which)
+LS_COLD bool snd_test_start(int which)
 {
     if (which < 0 || which >= SND_TEST_COUNT) return false;
     if (!s_test_q || s_test_busy) return false;
@@ -461,19 +463,19 @@ bool snd_test_start(int which)
 
 /* The audible half of a notification, and why it is here. */
 
-bool snd_sweep_click(void) {
+LS_COLD bool snd_sweep_click(void) {
     if(!s_test_q || s_test_busy || audio_is_muted() || audio_volume_get()<=0) return false;
     uint8_t w=75;return xQueueSend(s_test_q,&w,0)==pdTRUE;
 }
 
-bool snd_sweep_start(int category)
+LS_COLD bool snd_sweep_start(int category)
 {
     if (category < 0 || category > 4 || !s_test_q || s_test_busy || audio_is_muted() || audio_volume_get() <= 0) return false;
     uint8_t w = (uint8_t)(70 + category);
     return xQueueSend(s_test_q, &w, 0) == pdTRUE;
 }
 
-bool snd_notification_start(int sound)
+LS_COLD bool snd_notification_start(int sound)
 {
     if (!s_test_q || s_test_busy) return false;
     if (sound < SETTINGS_NOTIFY_ALERT || sound >= SETTINGS_NOTIFY_OFF) return false;
@@ -487,7 +489,7 @@ bool snd_notification_start(int sound)
 
 bool snd_alert_start(void) { return snd_notification_start(settings_get_notification_sound()); }
 
-bool snd_boot_start(int mode)
+LS_COLD bool snd_boot_start(int mode)
 {
     if (mode != 1 && mode != 2) return false;
     if (!s_test_q || s_test_busy) return false;
@@ -498,7 +500,7 @@ bool snd_boot_start(int mode)
     return xQueueSend(s_test_q, &w, 0) == pdTRUE;
 }
 
-unsigned snd_test_stack_unused(void)
+LS_COLD unsigned snd_test_stack_unused(void)
 {
     if (!s_test_task) return 0;
     return (unsigned)uxTaskGetStackHighWaterMark(s_test_task) *
@@ -507,13 +509,13 @@ unsigned snd_test_stack_unused(void)
 
 bool snd_test_busy(void) { return s_test_busy; }
 
-const char *snd_test_name(int which)
+LS_COLD const char *snd_test_name(int which)
 {
     if (which < 0 || which >= SND_TEST_COUNT) return "?";
     return TEST_NAMES[which];
 }
 
-int snd_test_from_name(const char *s)
+LS_COLD int snd_test_from_name(const char *s)
 {
     if (!s || !*s) return -1;
     for (int i = 0; i < SND_TEST_COUNT; i++) {

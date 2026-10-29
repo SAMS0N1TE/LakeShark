@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ls_textpack.h"
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 #endif
@@ -277,7 +278,7 @@ static void source_line(tui_surface *sf, tui_rect a, int x, int y,
   char l[16], r[16], line[48];
   db_text(l, sizeof(l), source_db[0]);
   db_text(r, sizeof(r), source_db[1]);
-  int n = snprintf(line, sizeof(line), "%s SOURCE  L %s  R %s", marks, l, r);
+  int n = LS_SNPRINTF(t_ls_audio_view_s_source_l_s, line, sizeof(line), "%s SOURCE  L %s  R %s", marks, l, r);
   if (n > a.w - 2)
     return;
   if (x < 0)
@@ -347,7 +348,7 @@ static void meters_across(tui_surface *sf, tui_rect a) {
   char line[64], l[16], r[16];
   db_text(l, sizeof(l), hold_db[0]);
   db_text(r, sizeof(r), hold_db[1]);
-  snprintf(line, sizeof(line), "PEAK HOLD   L %s   R %s", l, r);
+  LS_SNPRINTF(t_ls_audio_view_peak_hold_l_s, line, sizeof(line), "PEAK HOLD   L %s   R %s", l, r);
   tui_put_str(sf, a, x0, y, line, white);
   source_line(sf, a, x0, y + 1, "v^");
   balance(sf, a, y + 2);
@@ -412,7 +413,7 @@ static void meters_up(tui_surface *sf, tui_rect a) {
   char l[16], r[16], line[48];
   db_text(l, sizeof(l), hold_db[0]);
   db_text(r, sizeof(r), hold_db[1]);
-  snprintf(line, sizeof(line), "PEAK HOLD  L %s  R %s", l, r);
+  LS_SNPRINTF(t_ls_audio_view_peak_hold_l_s_2, line, sizeof(line), "PEAK HOLD  L %s  R %s", l, r);
   center(sf, a, base + 2, line, LS_ATTR_DIM);
   balance(sf, a, base + 3);
   source_line(sf, a, -1, base + 4, "<>");
@@ -680,7 +681,7 @@ static void waterfall_view(tui_surface *sf, tui_rect a, bool live) {
   ls_music_format(&f);
   const unsigned rate = f.rate_hz ? f.rate_hz : 44100;
   if (!wf_size(plot.w * cw, plot.h * ch)) {
-    ls_safe_line(sf, a, a.y + a.h / 2, "Not enough PSRAM for this view",
+    ls_safe_line(sf, a, a.y + a.h / 2, LS_TEXT(t_ls_audio_view_not_enough_psram_for, "Not enough PSRAM for this view"),
                  LS_ATTR_DIM);
     return;
   }
@@ -825,6 +826,6 @@ void ls_audio_view_draw(tui_surface *sf, tui_rect r, int mode, int scheme,
   if (view != VIEW_WATERFALL)
     wf_release_image();
   if (!vis && view == VIEW_SCAN)
-    ls_safe_line(sf, r, r.y + r.h / 2, "Not enough PSRAM for this view",
+    ls_safe_line(sf, r, r.y + r.h / 2, LS_TEXT(t_ls_audio_view_not_enough_psram_for, "Not enough PSRAM for this view"),
                  LS_ATTR_DIM);
 }

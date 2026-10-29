@@ -50,9 +50,16 @@ size_t p25_lr_frontend_process(p25_lr_frontend_t *s, const uint8_t *iq,
     if (need == SIZE_MAX || need > capacity_pairs ||
         (bytes && !iq) || (need && !out)) return SIZE_MAX;
     size_t written = 0;
+    /* Decided once a call, not per sample: step is a double, and the P4
+       compares doubles in software. */
+    const bool mix = s->step != 0;
+    /* phase / 48 for every phase the resampler reaches, from the same
+       division, so the output is unchanged. */
+    static float weight[49];
+    if (weight[48] == 0) for (unsigned p = 0; p <= 48; ++p) weight[p] = p / 48.0f;
     for (size_t k = 0; k < bytes; k += 4) {
         float i = read_sample(iq+k), q = read_sample(iq+k+2), v[2];
-        if (s->step != 0) {
+        if (mix) {
             float c = (float)cos(s->angle), sn = (float)sin(s->angle);
             float rotated = i*c + q*sn;
             q = q*c - i*sn; i = rotated;
@@ -76,7 +83,7 @@ size_t p25_lr_frontend_process(p25_lr_frontend_t *s, const uint8_t *iq,
             s->phase = 25; s->have_previous = true;
         } else {
             while (s->phase <= 48) {
-                float f = s->phase / 48.0f;
+                float f = weight[s->phase];
                 for (unsigned c = 0; c < 2; ++c)
                     out[2*written+c] = s->previous[c] + f*(v[c]-s->previous[c]);
                 written++; s->phase += 25;

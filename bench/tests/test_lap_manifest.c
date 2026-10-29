@@ -44,6 +44,17 @@ int main(int argc, char **argv) {
     assert(!strcmp(app.id, "probe") && app.magic == LAP_MAGIC && !app.enter && !app.draw);
     assert(ls_lap_preflight(bytes, n, why, sizeof(why)));
     size_t checks = 2;
+    /* A capability cannot hide in an older manifest or unknown flag bit. */
+    lap_app_t capability = app;
+    capability.flags = LAP_CAP_NETWORK;
+    assert(ls_lap_fields_valid(&capability, why, sizeof(why)));
+    capability.api_minor = 4;                                   /* past this firmware (2.2) */
+    assert(!ls_lap_fields_valid(&capability, why, sizeof(why)));
+    capability.api_minor = 5; capability.flags = 2;
+    assert(!ls_lap_fields_valid(&capability, why, sizeof(why)));
+    capability.flags = 0; capability.api_minor = 0;
+    assert(ls_lap_fields_valid(&capability, why, sizeof(why)));
+    checks += 4;
     /* The colour icon: '.' clear, hex digits colours, row by row. */
     uint8_t px[LAP_PX_H][LAP_PX_W];
     {

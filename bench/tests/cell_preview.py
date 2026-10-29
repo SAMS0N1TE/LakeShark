@@ -113,11 +113,22 @@ for src in [out/'lssim_cell.c',root/'components/apps/tui/screens/ext/scr_cell.c'
     subprocess.run([gcc,*args,'-c',str(src),'-o',str(obj)],check=True)
     objects.append(str(obj))
 line=next(l for l in ninja.splitlines() if l.startswith('build lssim.exe:'))
-old=line.split('C_EXECUTABLE_LINKER__lssim_ ',1)[1].split(' |',1)[0].split()
+rule, inputs = line.split(': ', 1)[1].split(' ', 1)
+old=inputs.split(' |',1)[0].split()
 objects+=[str(build/o) for o in old if o!='CMakeFiles/lssim.dir/tools/lssim.c.obj']
+# C++ audio dependencies make CMake select a C++ linker even though the
+# replacement CELL sources above are C. Follow that choice for the same runtime.
+linker = gcc
+if rule.startswith('CXX_EXECUTABLE_LINKER_'):
+    cxx = re.search(r'^CMAKE_CXX_COMPILER:[^=]+=(.+)$', cache.read_text(), re.M) if cache.exists() else None
+    linker = cxx.group(1).strip() if cxx else shutil.which('g++')
+    if not linker or not pathlib.Path(linker).is_file():
+        raise RuntimeError('Configured host C++ linker is unavailable')
 # the libraries lssim links, as the build file names them (lap3d joined in 2.18.0)
 link_block=ninja[ninja.index(line):].split('\n\n',1)[0]
 link=re.search(r'^\s*LINK_LIBRARIES = (.*)$',link_block,re.M)
-libs=[str(build/w) for w in (link.group(1).split() if link else []) if w.endswith('.a')]
+libs=[str(build/w) if w.endswith('.a') else w
+      for w in (link.group(1).split() if link else [])
+      if w.endswith('.a') or w.startswith('-l')]
 (out/'link.rsp').write_text('\n'.join('"'+x.replace('\\','/')+'"' for x in objects+libs)+'\n-lm\n')
-subprocess.run([gcc,'@'+str(out/'link.rsp'),'-o',str(out/'lssim-cell.exe')],check=True)
+subprocess.run([linker,'@'+str(out/'link.rsp'),'-o',str(out/'lssim-cell.exe')],check=True)

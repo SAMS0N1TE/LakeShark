@@ -22,6 +22,7 @@
 #include "../../ls_tui_ui.h"
 #include "../../ls_radio_select.h"
 #include "../../ls_options.h"
+#include "../../ls_rffe_ui.h"
 #include "../../ls_voice_opts.h"
 #include "lakeshark_backend.h"
 #include "ls_lora.h"
@@ -31,6 +32,7 @@
 #include "core/perf.h"
 #include "core/settings.h"
 #include "ls_gps.h"
+#include "ls_textpack.h"
 
 static bool s_radar_only;
 static tui_rect s_tools;
@@ -159,7 +161,7 @@ static void draw_detail(tui_surface *sf, tui_rect area,
     int row = 1;
     snprintf(buf, sizeof(buf), "%.8s", a->callsign[0] ? a->callsign : "unknown");
     ls_kv(sf, area, row++, "CALLSIGN", buf, val);
-    snprintf(buf, sizeof(buf), "%s q%u 1090:%llds UAT:%llds",
+    LS_SNPRINTF(t_scr_adsb_s_q_u_1090, buf, sizeof(buf), "%s q%u 1090:%llds UAT:%llds",
         adsb_state_source_label(a, now), a->uat_qualifier,
         (long long)((a->sources & 1) ? (now - a->source_seen_us[0]) / 1000000 : -1),
         (long long)((a->sources & 2) ? (now - a->source_seen_us[1]) / 1000000 : -1));
@@ -220,7 +222,7 @@ static void draw_detail(tui_surface *sf, tui_rect area,
     if (age < 0) age = 0;
     int tracked = (int)((now - a->first_seen_us) / 1000000);
     if (tracked < 0) tracked = 0;
-    snprintf(buf, sizeof(buf), "%ds ago, tracked %ds", age, tracked);
+    LS_SNPRINTF(t_scr_adsb_ds_ago_tracked_ds, buf, sizeof(buf), "%ds ago, tracked %ds", age, tracked);
     ls_kv(sf, area, row++, "LAST SEEN", buf, age > 15 ? warn : val);
 
     snprintf(buf, sizeof(buf), "%d ok, %d crc err",
@@ -451,7 +453,7 @@ static void draw_radar(tui_surface *sf, tui_rect area)
     if(area.w<20 || area.h<10) return;
     double lat,lon; bool live;
     if(!radar_center(&lat,&lon,&live)) {
-        ls_panel_notice(sf,area,"SET HOME","GPS, coordinates or map","Saved for next time");
+        ls_panel_notice(sf,area,"SET HOME",LS_TEXT(t_scr_adsb_gps_coordinates_or_map, "GPS, coordinates or map"),"Saved for next time");
         return;
     }
     const tui_rect body=tui_rect_make(area.x+1,area.y+3,area.w-2,area.h-6);
@@ -531,14 +533,14 @@ static void draw_dash(tui_surface *sf, tui_rect r, int64_t now)
 
     char buf[96];
     if (have_centre)
-        snprintf(buf, sizeof(buf),
+        LS_SNPRINTF(t_scr_adsb_with_position_d_peak, buf, sizeof(buf),
                  "with position %d   peak %d   furthest %.0f nm",
                  with_pos, peak, far_nm);
     else
         /* No centre is not a range of zero. The radar says the same thing in
            its own panel; saying "0 nm" here would be a measurement nobody
            took. */
-        snprintf(buf, sizeof(buf),
+        LS_SNPRINTF(t_scr_adsb_with_position_d_peak_2, buf, sizeof(buf),
                  "with position %d   peak %d   no fix, so no range",
                  with_pos, peak);
     tui_put_str(sf, r, r.x + 2, r.y + 1, buf, live ? val : dim);
@@ -638,10 +640,10 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
             now - a->heading_ts_us > ADSB_FIELD_STALE_US ? "*" : "");
         else strcpy(hdg, "?");
         if (narrow)
-            snprintf(buf, sizeof(buf), "%06lX %-8s %.1s %6s %4d",
+            LS_SNPRINTF(t_scr_adsb_06lx_8s_1s_6s, buf, sizeof(buf), "%06lX %-8s %.1s %6s %4d",
                      (unsigned long)a->icao, call, adsb_state_source_label(a, now), alt, age);
         else
-            snprintf(buf, sizeof(buf), "%06lX %-8s %.1s %6s %4s %3s %4d %5lu",
+            LS_SNPRINTF(t_scr_adsb_06lx_8s_1s_6s_2, buf, sizeof(buf), "%06lX %-8s %.1s %6s %4s %3s %4d %5lu",
                      (unsigned long)a->icao, call, adsb_state_source_label(a, now), alt, speed,
                      hdg, age, (unsigned long)a->msg_count);
         uint8_t at = (shown - 1 == sel_index) ? sel
@@ -796,6 +798,7 @@ static const ls_opt_t OPT_ADSB[] = {
     { .label = "GAIN", .kind = LS_OPT_LEVEL, .radios = LS_OPT_RADIO(LS_RSEL_SDR_HACKRF), .num = o_gain,
       .set_num = o_set_gain, .lo = 0, .hi = 113, .step = 2,
       .unit = "dB, LNA + VGA, amp above 102; 0 is 48", .show = o_show_hackrf_gain },
+    LS_RFFE_MENUS,
     { .label = "GAIN STEP", .kind = LS_OPT_NUMBER, .radios = (LS_OPT_LORA | LS_OPT_RADIO(LS_RSEL_ADSB_DUAL)), .num = o_step, .set_num = o_set_step,
       .lo = 0, .hi = LS_LORA_MODES_GAIN_MAX, .unit = "1 to 13, 0 is automatic (13)", .show = o_show_step },
     { .label = "BOOST", .kind = LS_OPT_LEVEL, .radios = (LS_OPT_LORA | LS_OPT_RADIO(LS_RSEL_ADSB_DUAL)), .num = o_boost, .set_num = o_set_boost,
@@ -842,9 +845,9 @@ static void o_quality(const ls_opt_t *o, char *out, size_t n)
     else if (o->arg == 1) snprintf(out, n, "%s", adsb_active_source_name());
     else if (adsb_active_source() == ADSB_SRC_LORA) {
         adsb_chip_diag_snapshot(&d);
-        if (o->arg == 2) snprintf(out, n, "%.1f trig/s %.1f ok/s",
+        if (o->arg == 2) LS_SNPRINTF(t_scr_adsb_1f_trig_s_1f, out, n, "%.1f trig/s %.1f ok/s",
                                   (double)d.trigger_per_s, (double)d.decoded_per_s);
-        else snprintf(out, n, "%lu chips %lu CRC %lu IO",
+        else LS_SNPRINTF(t_scr_adsb_lu_chips_lu_crc, out, n, "%lu chips %lu CRC %lu IO",
                       (unsigned long)d.bad_chips, (unsigned long)d.bad_crc,
                       (unsigned long)d.errors);
     } else if (o->arg == 2) snprintf(out, n, "%d trig/s %d ok/s",
@@ -880,7 +883,7 @@ static void o_uat_quality(const ls_opt_t *o, char *out, size_t n)
     (void)o;
     uat_stats_t stats;
     adsb_uat_stats(&stats);
-    snprintf(out, n, "%lu DN %lu UP %lu bad", (unsigned long)(stats.short_frames + stats.long_frames),
+    LS_SNPRINTF(t_scr_adsb_lu_dn_lu_up, out, n, "%lu DN %lu UP %lu bad", (unsigned long)(stats.short_frames + stats.long_frames),
         (unsigned long)stats.uplink_frames, (unsigned long)stats.bad_frames);
 }
 static const ls_opt_t OPT_WEATHER[] = {
@@ -919,7 +922,7 @@ static void draw_weather(tui_surface *sf, tui_rect area, int64_t now)
         return;
     }
     char line[80];
-    snprintf(line, sizeof(line), "%s %s issued %s / received %llds ago",
+    LS_SNPRINTF(t_scr_adsb_s_s_issued_s, line, sizeof(line), "%s %s issued %s / received %llds ago",
         s_weather_text.type, s_weather_text.location, s_weather_text.issued,
         (long long)((now - s_weather_text.received_us) / 1000000));
     tui_put_str(sf, inside, inside.x, inside.y, line, TUI_ATTR(TUI_CYAN, TUI_BLACK));

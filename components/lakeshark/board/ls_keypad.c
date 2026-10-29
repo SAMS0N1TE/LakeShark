@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "ls_textpack.h"
 
 static const char *TAG = "ls_keypad";
 
@@ -446,7 +447,7 @@ void ls_keypad_diagnostics(void)
 {
     bus_init_pins();
     bool ack = probe();
-    printf("keypad addr=0x%02x sda=%d scl=%d ack=%s present=%s matrix=%dx%d\n",
+    LS_PRINTF(t_ls_keypad_keypad_addr_0x_02x, "keypad addr=0x%02x sda=%d scl=%d ack=%s present=%s matrix=%dx%d\n",
            ADDR, (int)SDA_PIN, (int)SCL_PIN, ack ? "yes" : "no",
            s_present ? "yes" : "no",
            LS_BOARD_KEYPAD_COLS, LS_BOARD_KEYPAD_ROWS);
@@ -466,7 +467,7 @@ void ls_keypad_diagnostics(void)
             if (hit) { printf("  device at 0x%02x\n", a); found++; }
         }
         if (found)
-            printf("keypad: bus works, %d device(s), but no TCA8418 at 0x34.\n"
+            LS_PRINTF(t_ls_keypad_keypad_bus_works_d, "keypad: bus works, %d device(s), but no TCA8418 at 0x34.\n"
                    "        Pins and driver are fine; the part is not there.\n", found);
         else
             printf("keypad: nothing on the bus at all. The 1x4 lead is out, or\n"
@@ -479,7 +480,7 @@ void ls_keypad_diagnostics(void)
     uint8_t cfg = 0, ec = 0;
     reg_read(REG_CFG, &cfg);
     reg_read(REG_KEY_LCK_EC, &ec);
-    printf("keypad cfg=0x%02x queued=%u\n", (unsigned)cfg, (unsigned)(ec & 0x0F));
+    LS_PRINTF(t_ls_keypad_keypad_cfg_0x_02x, "keypad cfg=0x%02x queued=%u\n", (unsigned)cfg, (unsigned)(ec & 0x0F));
 }
 
 #else  /* board declares no keypad */

@@ -92,11 +92,11 @@ static void post(const ls_notice_t *n, bool alert)
 void ls_notify_post(const ls_notice_t *n) { post(n, true); }
 void ls_notify_post_quiet(const ls_notice_t *n) { post(n, false); }
 
-void ls_detector_banner_poll(void);
-#pragma weak ls_detector_banner_poll
+void ls_seen_banner_poll(void);
+#pragma weak ls_seen_banner_poll
 void ls_notify_poll(int visible)
 {
-    if(ls_detector_banner_poll) ls_detector_banner_poll();
+    if(ls_seen_banner_poll) ls_seen_banner_poll();
     s_frame++;
     if (s_ttl > 0) {
         s_ttl--;
@@ -142,6 +142,7 @@ bool ls_notify_ring(void) { return s_ring; }
 bool ls_notify_vibe(void) { return s_vibe; }
 
 void ls_notify_set_alerts(bool ring, bool vibe) { s_ring = ring; s_vibe = vibe; }
+void ls_notify_tone(void) { ls_notify_alert_hw(s_ring, false); }
 
 #ifndef LS_NOTIFY_EXTERNAL_ALERT_HW
 __attribute__((weak))

@@ -21,10 +21,12 @@
 #include "esp_timer.h"
 
 #include "apps/fm/fm_state.h"
+#include "radio/ls_radio_hf.h"
 #include "lakeshark_backend.h"
 #include "p25_state.h"
 #include "audio/audio_out.h"
 #include "ls_mesh.h"
+#include "ls_textpack.h"
 
 bool lakeshark_fm_set_freq(uint32_t hz);
 void lakeshark_p25_set_freq(uint32_t hz);
@@ -143,24 +145,24 @@ static void home_feedback(const char *title,const char *message)
 static void home_save(double lat, double lon)
 {
     if (!isfinite(lat) || !isfinite(lon) || fabs(lat)>85 || fabs(lon)>180) {
-        home_feedback("HOME UNCHANGED", "Use latitude -85..85, longitude -180..180");
+        home_feedback("HOME UNCHANGED", LS_TEXT(t_ls_action_builtin_use_latitude_85_85, "Use latitude -85..85, longitude -180..180"));
         return;
     }
     if (!settings_set_home((float)lat, (float)lon)) {
-        home_feedback("SAVE FAILED", "Home unchanged; try again");
+        home_feedback("SAVE FAILED", LS_TEXT(t_ls_action_builtin_home_unchanged_try_again, "Home unchanged; try again"));
         return;
     }
     ls_map_follow_set(false);
     ls_map_center(lat, lon);
     char message[48];
-    snprintf(message,sizeof(message),"%.5f, %.5f (remembered)",lat,lon);
+    LS_SNPRINTF(t_ls_action_builtin_5f_5f_remembered, message,sizeof(message),"%.5f, %.5f (remembered)",lat,lon);
     home_feedback("HOME SAVED",message);
 }
 static void home_coordinates(const char *text)
 {
     double lat,lon;
     if (!location_parse_pair(text,&lat,&lon)) {
-        home_feedback("HOME UNCHANGED","Enter decimal latitude, longitude");return;
+        home_feedback("HOME UNCHANGED",LS_TEXT(t_ls_action_builtin_enter_decimal_latitude_longitude, "Enter decimal latitude, longitude"));return;
     }
     home_save(lat,lon);
 }
@@ -198,10 +200,10 @@ static ls_act_status_t a_map_home(const ls_args_t *in, ls_val_t *out)
     ls_picker_add("Use my GPS position","fresh fix only");
     float lat=0,lon=0;char saved[48];
     if(settings_get_home(&lat,&lon)) snprintf(saved,sizeof(saved),"saved %.4f, %.4f",(double)lat,(double)lon);
-    else snprintf(saved,sizeof(saved),"no GPS or map needed");
-    ls_picker_add("Enter latitude, longitude",saved);
-    ls_picker_add("Choose a place on the map","then SET HOME");
-    ls_picker_add("Save map center as home","pan map first; remembered after restart");
+    else LS_SNPUTS(t_ls_action_builtin_no_gps_or_map, saved, sizeof(saved), "no GPS or map needed");
+    ls_picker_add(LS_TEXT(t_ls_action_builtin_enter_latitude_longitude, "Enter latitude, longitude"),saved);
+    ls_picker_add(LS_TEXT(t_ls_action_builtin_choose_a_place_on, "Choose a place on the map"),"then SET HOME");
+    ls_picker_add(LS_TEXT(t_ls_action_builtin_save_map_center_as, "Save map center as home"),LS_TEXT(t_ls_action_builtin_pan_map_first_remembered, "pan map first; remembered after restart"));
     out->kind=LS_VAL_TEXT;out->s="Choose how to set home";
     return LS_ACT_OK;
 }
@@ -313,11 +315,20 @@ static ls_act_status_t a_wf_peak(const ls_args_t *in, ls_val_t *out)
 
 /* ---- tune -------------------------------------------------------------- */
 
+/* AM mode tunes from 500 kHz (HF: direct sampling, the Blog V4's
+   upconverter or the HackRF); every other FM mode keeps the tuner's 24 MHz
+   floor, so NFM is never pointed at a shortwave band by a slip of the keypad.
+   SHORTWAVE and `hf` get to HF from any mode (fm_hf_tune). */
+static uint32_t fm_floor_hz(void)
+{
+    return FM.mode == FM_MODE_AM ? LS_HF_MIN_HZ : LS_RTL_TUNER_MIN_HZ;
+}
+
 static ls_act_status_t a_fm_freq(const ls_args_t *in, ls_val_t *out)
 {
     float mhz = in->v[0].kind == LS_VAL_INT ? (float)in->v[0].i : in->v[0].f;
 
-    if (mhz < 24.0f || mhz > 1766.0f) return LS_ACT_BADARG;
+    if (mhz < fm_floor_hz() / 1e6f || mhz > 1766.0f) return LS_ACT_BADARG;
     scan_engine_stop();
     lakeshark_fm_set_freq((uint32_t)(mhz * 1e6f + 0.5f));
     out->kind = LS_VAL_FLOAT; out->f = mhz;
@@ -327,7 +338,7 @@ static ls_act_status_t a_fm_freq(const ls_args_t *in, ls_val_t *out)
 static ls_act_status_t a_fm_freq_hz(const ls_args_t *in, ls_val_t *out)
 {
     const int32_t hz = in->v[0].i;
-    if (hz < 24000000 || hz > 1766000000) return LS_ACT_BADARG;
+    if (hz < (int32_t)fm_floor_hz() || hz > 1766000000) return LS_ACT_BADARG;
     scan_engine_stop();
     lakeshark_fm_set_freq((uint32_t)hz);
     out->kind = LS_VAL_INT;
@@ -522,76 +533,76 @@ void ls_action_register_builtin(void)
     done = true;
 
     ls_action_register("gps.on",         "b", LS_CAP_POWER, a_gps_on,
-                       "bring the GPS receiver up or take it down");
+                       LS_TEXT(t_ls_action_builtin_bring_the_gps_receiver, "bring the GPS receiver up or take it down"));
     ls_action_register("track.rec",      "b", LS_CAP_STORE, a_track_rec,
-                       "record where this unit goes, onto the card");
+                       LS_TEXT(t_ls_action_builtin_record_where_this_unit, "record where this unit goes, onto the card"));
 
     ls_action_register("map.home", "", LS_CAP_TUNE | LS_CAP_POWER, a_map_home,
-                       "Set home from GPS or the map center");
+                       LS_TEXT(t_ls_action_builtin_set_home_from_gps, "Set home from GPS or the map center"));
     ls_action_register("map.zoom",       "i", LS_CAP_TUNE, a_map_zoom,
-                       "zoom in or out by n steps");
+                       LS_TEXT(t_ls_action_builtin_zoom_in_or_out, "zoom in or out by n steps"));
     ls_action_register("map.follow", "", LS_CAP_TUNE | LS_CAP_POWER, a_map_follow,
-                       "toggle live GPS following; manual pan cancels it");
-    ls_action_register("maps.state.get","s",LS_CAP_STORE,a_maps_get,"download a whole state");
-    ls_action_register("maps.state.remove","s",LS_CAP_STORE,a_maps_remove,"remove a state, retaining shared cells");
-    ls_action_register("maps.refresh","",LS_CAP_STORE,a_maps_refresh,"refresh map catalog and states");
+                       LS_TEXT(t_ls_action_builtin_toggle_live_gps_following, "toggle live GPS following; manual pan cancels it"));
+    ls_action_register("maps.state.get","s",LS_CAP_STORE,a_maps_get,LS_TEXT(t_ls_action_builtin_download_a_whole_state, "download a whole state"));
+    ls_action_register("maps.state.remove","s",LS_CAP_STORE,a_maps_remove,LS_TEXT(t_ls_action_builtin_remove_a_state_retaining, "remove a state, retaining shared cells"));
+    ls_action_register("maps.refresh","",LS_CAP_STORE,a_maps_refresh,LS_TEXT(t_ls_action_builtin_refresh_map_catalog_and, "refresh map catalog and states"));
     ls_action_register("map.here",       "",  LS_CAP_TUNE, a_map_here,
-                       "centre on the GPS fix");
+                       LS_TEXT(t_ls_action_builtin_centre_on_the_gps, "centre on the GPS fix"));
     ls_action_register("map.reload",     "",  LS_CAP_TUNE, a_map_reload,
-                       "look for a .pmtiles archive on the card again");
+                       LS_TEXT(t_ls_action_builtin_look_for_a_pmtiles, "look for a .pmtiles archive on the card again"));
 
     ls_action_register("ui.screen",      "i", LS_CAP_UI,   a_ui_screen,
-                       "show screen by index");
+                       LS_TEXT(t_ls_action_builtin_show_screen_by_index, "show screen by index"));
     ls_action_register("ui.next",        "",  LS_CAP_UI,   a_ui_next,
                        "next screen");
     ls_action_register("ui.prev",        "",  LS_CAP_UI,   a_ui_prev,
                        "previous screen");
 
     ls_action_register("wf.palette",     "i", LS_CAP_UI,   a_wf_palette,
-                       "0 heat, 1 ice, 2 phosphor, 3 neon");
+                       LS_TEXT(t_ls_action_builtin_0_heat_1_ice, "0 heat, 1 ice, 2 phosphor, 3 neon"));
     ls_action_register("wf.split",       "i", LS_CAP_UI,   a_wf_split,
-                       "spectrum's share of the pane: 0,25,50,75,100");
+                       LS_TEXT(t_ls_action_builtin_spectrum_s_share_of, "spectrum's share of the pane: 0,25,50,75,100"));
     ls_action_register("wf.range",       "i", LS_CAP_UI,   a_wf_range,
-                       "contrast window, 4..16 sixteenths");
+                       LS_TEXT(t_ls_action_builtin_contrast_window_4_16, "contrast window, 4..16 sixteenths"));
     ls_action_register("wf.ref",         "i", LS_CAP_UI,   a_wf_ref,
-                       "reference shift, -8..8 sixteenths");
+                       LS_TEXT(t_ls_action_builtin_reference_shift_8_8, "reference shift, -8..8 sixteenths"));
     ls_action_register("wf.pause",       "b", LS_CAP_UI,   a_wf_pause,
                        "freeze the history");
     ls_action_register("wf.peak",        "b", LS_CAP_UI,   a_wf_peak,
-                       "spectrum keeps a decaying maximum");
+                       LS_TEXT(t_ls_action_builtin_spectrum_keeps_a_decaying, "spectrum keeps a decaying maximum"));
 
     ls_action_register("fm.freq",        "f", LS_CAP_TUNE, a_fm_freq,
                        "tune FM, MHz");
     ls_action_register("fm.freq_hz",     "i", LS_CAP_TUNE, a_fm_freq_hz,
                        "tune FM, Hz");
     ls_action_register("fm.submode",     "s", LS_CAP_TUNE, a_fm_submode,
-                       "listen|scan|pocsag|acars|flex|wfm|am|same|aprs|ais");
+                       LS_TEXT(t_ls_action_builtin_listen_scan_pocsag_acars, "listen|scan|pocsag|acars|flex|wfm|am|same|aprs|ais"));
     ls_action_register("p25.freq",       "f", LS_CAP_TUNE, a_p25_freq,
                        "tune P25, MHz");
     ls_action_register("p25.tune",       "",  LS_CAP_TUNE, a_p25_tune,
-                       "open the keypad to type a P25 frequency");
+                       LS_TEXT(t_ls_action_builtin_open_the_keypad_to, "open the keypad to type a P25 frequency"));
     ls_action_register("fm.tune",        "",  LS_CAP_TUNE, a_fm_tune,
-                       "open the keypad to type an FM frequency");
+                       LS_TEXT(t_ls_action_builtin_open_the_keypad_to_2, "open the keypad to type an FM frequency"));
     ls_action_register("p25.gain",       "f", LS_CAP_TUNE, a_p25_gain,
                        "front end gain, dB");
-    ls_action_register("p25.lriq", "i", LS_CAP_TUNE, a_p25_lriq, "LR2021 P25 IQ receive (enabled only)");
+    ls_action_register("p25.lriq", "i", LS_CAP_TUNE, a_p25_lriq, LS_TEXT(t_ls_action_builtin_lr2021_p25_iq_receive, "LR2021 P25 IQ receive (enabled only)"));
     ls_action_register("fm.gain",        "f", LS_CAP_TUNE, a_fm_gain,
                        "front end gain, dB");
     ls_action_register("fm.sql",         "f", LS_CAP_TUNE, a_fm_sql,
-                       "squelch threshold, 0..100 percent of IQ level");
+                       LS_TEXT(t_ls_action_builtin_squelch_threshold_0_100, "squelch threshold, 0..100 percent of IQ level"));
     ls_action_register("audio.volume",   "i", LS_CAP_TUNE, a_audio_volume,
                        "volume 0..100");
 
     ls_action_register("mesh.start",     "",  LS_CAP_TUNE, a_mesh_start,
-                       "bring MeshCore up in the background (receive only)");
+                       LS_TEXT(t_ls_action_builtin_bring_meshcore_up_in, "bring MeshCore up in the background (receive only)"));
 
     ls_action_register("mesh.advert",    "",  LS_CAP_TX,   a_mesh_advert,
-                       "flood a self-advert - requires 'mesh tx on'");
+                       LS_TEXT(t_ls_action_builtin_flood_a_self_advert, "flood a self-advert - requires 'mesh tx on'"));
     /* Also LS_CAP_TX: putting text on the air is transmitting, and a user
        app cannot do it for the same reason it cannot advertise. */
     ls_action_register("mesh.send",      "s", LS_CAP_TX,   a_mesh_send,
-                       "send text on the public channel - requires 'mesh tx on'");
+                       LS_TEXT(t_ls_action_builtin_send_text_on_the, "send text on the public channel - requires 'mesh tx on'"));
 
     ls_action_register("mesh.name",      "s", LS_CAP_STORE, a_mesh_name,
-                       "set this node's name, persisted");
+                       LS_TEXT(t_ls_action_builtin_set_this_node_s, "set this node's name, persisted"));
 }

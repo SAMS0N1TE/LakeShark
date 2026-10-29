@@ -2,14 +2,17 @@
 #include "tui/apps/example_app.h"
 #include "adsb_app.h"
 #include "tui/ls_sweep_ui.h"
-#include "tui/ls_detector_ui.h"
 #include "tui/ls_sweep_app.h"
 #include "tui/ls_rid_ui.h"
 #include "tui/ls_drone_watch.h"
+#include "digi_engine.h"
 #include "tui/ls_compass_live.h"
+#include "tui/ls_tmach_decode.h"
+#include "core/ls_tmach.h"
 /* T-Display: the TUI shell, the panel it owns, and its console commands. */
 #include "compact_ui.h"
 #include "ls_board.h"
+#include "ls_textpack.h"
 #if LS_HAS_COMPACT_UI
 #include "ls_panel.h"
 #include "ls_panel_ws.h"
@@ -18,6 +21,7 @@
 #include "freertos/semphr.h"
 #include "ls_keypad.h"
 #include "tui/ls_map.h"
+#include "tui/ls_rffe_ui.h"
 #include "tui/ls_cartocore_map.h"
 #include "ls_keymap.h"
 #include "ls_spi.h"
@@ -25,9 +29,16 @@
 #include "ls_lora.h"
 #include "ls_lora_port.h"
 #include "ls_lora_lr20xx.h"
+#include "lr_wf_session.h"
+extern "C" {
+#include "lr_iq_spectrum.h"   /* a C header without its own guards */
+}
+#include "lr_ddc.h"
+#include <math.h>
 #include "adsb_app.h"
 #include "tui/ls_field.h"
 #include "tui/ls_experiments.h"
+#include "tui/ls_meters.h"
 #include "rec_watch.h"
 #include "sx1262_console.h"
 #if defined(__has_include)
@@ -71,6 +82,7 @@ extern "C" int cell_report_transport_state(const char *peer,const char *text)
 #include "tui/ls_tui_png.h"
 #include "tui/ls_app.h"
 #include "tui/ls_app_docs.h"
+#include "tui/ls_rfs_run.h"
 #include "tui/ls_icons.h"
 #include "audio_player.h"
 #include "tui/ls_splash.h"
@@ -117,6 +129,7 @@ extern "C" {
    what every link is set to. */
 #include "ls_audio_hw.h"
 #include "tone.h"
+#include "audio_out.h"
 }
 #include <dirent.h>
 #include <sys/stat.h>
@@ -158,7 +171,7 @@ static bool s_touch_ok;
 static RTC_NOINIT_ATTR StackType_t
     s_touch_stack[TOUCH_TASK_STACK_BYTES / sizeof(StackType_t)]
     __attribute__((aligned(16)));
-static DRAM_ATTR StaticTask_t s_touch_tcb;
+static StaticTask_t s_touch_tcb;
 struct TouchSample { uint16_t x,y; bool pressed; int64_t received; };
 static TouchSample s_touch={};
 static portMUX_TYPE s_touch_lock=portMUX_INITIALIZER_UNLOCKED;
@@ -179,6 +192,10 @@ static TouchSample touch_snapshot()
 #define TOUCH_EDGES 16
 static TouchSample s_edge[TOUCH_EDGES];
 static unsigned s_edge_head, s_edge_tail;
+/* Given with each injected key or tap, and each touch edge, so the UI loop
+   takes it now rather than at the end of its 40 ms sleep; not the task
+   notification, which starts sessions. */
+static SemaphoreHandle_t s_tui_wake;
 static void touch_task(void *)
 {
     TouchSample sample={};
@@ -193,11 +210,15 @@ static void touch_task(void *)
         sample.received=now;
         if(sample.pressed){last_x=sample.x;last_y=sample.y;}
         else {sample.x=last_x;sample.y=last_y;}
+        bool queued=false;
         portENTER_CRITICAL(&s_touch_lock);
         s_touch=sample;
-        if(sample.pressed!=was && s_edge_head-s_edge_tail<TOUCH_EDGES)
+        if(sample.pressed!=was && s_edge_head-s_edge_tail<TOUCH_EDGES) {
             s_edge[s_edge_head++%TOUCH_EDGES]=sample;
+            queued=true;
+        }
         portEXIT_CRITICAL(&s_touch_lock);
+        if(queued && s_tui_wake) xSemaphoreGive(s_tui_wake);
         was=sample.pressed;
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -347,6 +368,14 @@ static bool tui_live_p25(void)  { return tui_live_claim("P25"); }
 static bool tui_live_fm(void)   { return tui_live_claim("FM"); }
 /* A drone link heard right now. */
 static bool tui_live_drones(void) { return ls_drone_watch_count() > 0; }
+/* DIGI is listening (it keeps decoding and logging in the background). */
+static bool tui_live_digi(void) { return digi_running(); }
+extern "C" const ls_tui_screen_t ls_scr_digi;
+#if defined(CONFIG_LS_RX_HEAD) && CONFIG_LS_RX_HEAD
+extern "C" const ls_tui_screen_t ls_scr_radio;
+extern "C" const ls_app_doc_t ls_doc_radio;
+#endif
+extern "C" const ls_app_doc_t ls_doc_digi;
 static bool tui_live_adsb(void) { return tui_live_claim("ADS-B"); }
 static bool tui_live_rec(void)  { return tui_live_claim("REC"); }
 /* The directory tile's live lamp. mesh.up is a bool published by
@@ -357,6 +386,16 @@ static bool tui_live_mesh(void)  { return tui_live_from("mesh.up"); }
 /* Lock-free: HOME draws this on the UI task and the update check polls it on
    the esp_timer task, and the sweep mutex is held across SD reads. */
 static bool tui_live_sweep(void) { return ls_sweep_running(); }
+/* TIME MACHINE is live while it is keeping samples. Its status only try-locks,
+   and the recorder holds that lock for much of every frame while it runs, so a
+   busy lock keeps the last answer instead of reading as "not live". */
+static bool tui_live_tmach(void)
+{
+    static bool last;
+    ls_tm_status_t st;
+    if (ls_tm_status(&st)) last = st.recording;
+    return last;
+}
 /* Lit when there is a fix, not when the receiver is merely talking: the tile is a glance and a fix is the thing worth glancing at. */
 
 static bool tui_live_gps(void)   { return tui_live_from("gps.on"); }
@@ -380,7 +419,7 @@ static void tui_print_runtime_share(void)
 
     const TaskHandle_t task = s_tui_task;
     if (!task) {
-        printf("tui: task runtime unavailable (not running)\n");
+        fputs(LS_TEXT(msg_compact_ui_tui_task_runtime_unavailable, "tui: task runtime unavailable (not running)\n"), stdout);
         s_have_sample = false;
         return;
     }
@@ -397,15 +436,15 @@ static void tui_print_runtime_share(void)
             const uint32_t runtime_delta =
                 (uint32_t)status.ulRunTimeCounter - s_sample_runtime;
             const uint64_t pct = (uint64_t)runtime_delta * 100u / elapsed_us;
-            printf("tui: task ran %lu%% of one core over %lu.%03lu s\n",
+            LS_PRINTF(fmt_compact_ui_tui_task_ran_one, "tui: task ran %lu%% of one core over %lu.%03lu s\n",
                    (unsigned long)(pct > 100u ? 100u : pct),
                    (unsigned long)(elapsed_us / 1000000u),
                    (unsigned long)((elapsed_us / 1000u) % 1000u));
         } else {
-            printf("tui: runtime sample interval exceeded ESP Timer wrap window; baseline reset\n");
+            fputs(LS_TEXT(msg_compact_ui_tui_runtime_sample_interval, "tui: runtime sample interval exceeded ESP Timer wrap window; baseline reset\n"), stdout);
         }
     } else {
-        printf("tui: runtime baseline captured; run tui cost again in a few seconds\n");
+        fputs(LS_TEXT(msg_compact_ui_tui_runtime_baseline_captured, "tui: runtime baseline captured; run tui cost again in a few seconds\n"), stdout);
     }
 
     s_sample_task = task;
@@ -788,11 +827,11 @@ static int tui_rec_cmd(int argc, char **argv)
     }
     if (s_rec_busy) { printf("tui: rec is already running\n"); return 1; }
     tui_surface *sf = ls_tui_surface();
-    if (!s_tui_task || !sf) { printf("tui: not running - nothing on the glass\n"); return 1; }
+    if (!s_tui_task || !sf) { fputs(LS_TEXT(msg_compact_ui_tui_not_running_nothing, "tui: not running - nothing on the glass\n"), stdout); return 1; }
     const int seconds = argc >= 3 ? atoi(argv[2]) : 20;
     const int baud = argc >= 4 ? atoi(argv[3]) : 2000000;
     if (seconds < 1 || seconds > 600 || baud < 115200 || baud > 2500000) {
-        printf("tui: rec <1-600 seconds> [115200-2500000 baud]\n");
+        fputs(LS_TEXT(msg_compact_ui_tui_rec_1_600, "tui: rec <1-600 seconds> [115200-2500000 baud]\n"), stdout);
         return 1;
     }
     s_rec_cols = sf->w; s_rec_rows = sf->h;
@@ -838,7 +877,7 @@ static int tui_rec_cmd(int argc, char **argv)
     int cw = 0, ch = 0;
     ls_tui_geometry(nullptr, nullptr, &cw, &ch);
     const ls_tui_theme_t *theme = ls_tui_get_theme();
-    printf("tui: rec begin cols %d rows %d cw %d ch %d font %d theme %s daylight %d rotation %d seconds %d baud %d\n",
+    LS_PRINTF(fmt_compact_ui_tui_rec_begin_cols, "tui: rec begin cols %d rows %d cw %d ch %d font %d theme %s daylight %d rotation %d seconds %d baud %d\n",
            s_rec_cols, s_rec_rows, cw, ch, ls_tui_font_index(), theme && theme->name ? theme->name : "-",
            ls_tui_daylight() ? 1 : 0, s_rotation, seconds, baud);
     fflush(stdout);
@@ -870,10 +909,6 @@ static volatile uint8_t   s_tui_tap_r = 0;
 /* The console and the remote terminal (ls_term, its own task) both fill the
    two rings; the UI task empties them. One writer at a time. */
 static portMUX_TYPE s_inject_mux = portMUX_INITIALIZER_UNLOCKED;
-/* Given with each push so the UI loop takes it now rather than at the end of
-   its sleep; not the task notification, which starts sessions. */
-static SemaphoreHandle_t s_tui_wake;
-
 static bool tui_push_key(ls_tk_t k, char ch)
 {
     taskENTER_CRITICAL(&s_inject_mux);
@@ -1178,15 +1213,17 @@ static bool tui_session(void)
        a tick you notice becomes a tick you resent. */
     ls_tui_set_tap_cb([] { ls_haptic_play(LS_HAPTIC_TICK); });
     ls_tui_touch_set_source(s_touch_ok ? tui_touch_source : nullptr);
+    /* Front-end warnings (bias-T on, amp forced) as banners. */
+    ls_rffe_ui_init();
 
     extern const ls_tui_screen_t ls_scr_home, ls_scr_p25, ls_scr_fm,
                                  ls_scr_adsb, ls_scr_falls, ls_scr_mesh,
                                  ls_scr_rec, ls_scr_diag, ls_scr_settings,
                                  ls_scr_map, ls_scr_tiles, ls_scr_gps, ls_scr_radios, ls_scr_wireless,
                                  ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf, ls_scr_cell,
-                                 ls_scr_notes, ls_scr_compass, ls_scr_music,
+                                 ls_scr_notes, ls_scr_compass, ls_scr_music, ls_scr_rfsurvey, ls_scr_fox,
                                  ls_scr_files, ls_scr_experiments, ls_scr_terminal,
-                                 ls_scr_update;
+                                 ls_scr_update, ls_scr_tmach, ls_scr_meters;
     extern const ls_app_doc_t ls_doc_tiles;
     if (ls_app_count() == 0) {
         ls_wireless_set_active(false);
@@ -1226,6 +1263,10 @@ static bool tui_session(void)
               LS_APP_EXTRA, &ls_scr_notes, nullptr, &ls_doc_notes },
             { "compass", "COMPASS", "bearings", LS_ICON_COMPASS, TUI_YELLOW,
               LS_APP_EXTRA, &ls_scr_compass, nullptr, &ls_doc_compass },
+            { "rfsurvey", "RF SURVEY", "heat map", LS_ICON_HEAT, TUI_MAGENTA,
+              LS_APP_EXTRA, &ls_scr_rfsurvey, ls_rfs_running, &ls_doc_rfsurvey },
+            { "fox", "FOX HUNT", "find a TX", LS_ICON_FOX, TUI_YELLOW,
+              LS_APP_EXTRA, &ls_scr_fox, nullptr, &ls_doc_fox },
 
             { "rec",  "REC",  "capture",   LS_ICON_RECORD, TUI_RED,
               LS_APP_EXTRA, &ls_scr_rec, tui_live_rec, &ls_doc_rec },
@@ -1266,10 +1307,16 @@ static bool tui_session(void)
               LS_APP_EXTRA, &ls_scr_wireless, nullptr, &ls_doc_link },
             { "drones", "DRONES", "early warning", LS_ICON_DRONE, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_drones, tui_live_drones, &ls_doc_drones },
-            { "detector", "DETECTOR", "rule matches", LS_ICON_DETECTOR, TUI_CYAN,
-              LS_APP_EXTRA, &ls_scr_detector, nullptr, &ls_doc_detector },
+            { "digi", "DIGI", "FT8 FT4 WSPR", LS_ICON_DIGI, TUI_GREEN,
+              LS_APP_EXTRA, &ls_scr_digi, tui_live_digi, &ls_doc_digi },
             { "sweep", "SWEEP", "passive nearby signals", LS_ICON_SWEEP, TUI_GREEN,
               LS_APP_EXTRA, &ls_scr_sweep, tui_live_sweep, &ls_doc_sweep },
+            { "tmach", "TIME MACHINE", "rewind the air", LS_ICON_TMACH, TUI_MAGENTA,
+              LS_APP_EXTRA, &ls_scr_tmach, tui_live_tmach, &ls_doc_tmach },
+#if defined(CONFIG_LS_RX_HEAD) && CONFIG_LS_RX_HEAD
+            { "radio", "RADIO", "receiver + decoders", LS_ICON_RADIO, TUI_GREEN,
+              LS_APP_EXTRA, &ls_scr_radio, nullptr, &ls_doc_radio },
+#endif
 #if defined(CONFIG_LS_EXAMPLE_APP) && CONFIG_LS_EXAMPLE_APP
             LS_EXAMPLE_APP_ENTRY,
 #endif
@@ -1284,6 +1331,18 @@ static bool tui_session(void)
             if (rc < 0)
                 ESP_LOGE("tdp_ui", "could not register app %s: %s",
                          APPS[i].id, ls_app_register_why(rc));
+        }
+        /* METERS draws its own tile, a register over a dial, in the last
+           character-art slot (user apps fill from the first). */
+        if (!cell_performance_active()) {
+            static const char METER_ART[LS_ICON_ROWS][LS_ICON_COLS + 1] = {
+                " .------. ", "| [0562] |", "|  .--.  |", "| ( /  ) |", "|  '--'  |", " '------' ",
+            };
+            const ls_app_t meters = { "meters", "METERS", "utility meters",
+                ls_icon_art(LS_ICON_ART_MAX - 1, METER_ART, LS_ICON_SUBGHZ), TUI_YELLOW,
+                LS_APP_EXTRA, &ls_scr_meters, nullptr, &ls_doc_meters };
+            const int rc = ls_app_register(&meters);
+            if (rc < 0) ESP_LOGE("tdp_ui", "could not register app meters: %s", ls_app_register_why(rc));
         }
 
         {
@@ -1378,7 +1437,7 @@ static bool tui_session(void)
 
             const ls_safe_boot_t *sb = ls_safe_boot_result();
             if (sb && sb->faults > 0) {
-                printf("tui: last boot failed at '%s' - starting silent\n",
+                LS_PRINTF(fmt_compact_ui_tui_last_boot_failed, "tui: last boot failed at '%s' - starting silent\n",
                        ls_safe_stage_name((ls_safe_stage_t)sb->prev_stage));
             } else {
                 if(!cell_performance_active())snd_boot_start(settings_get_boot_sound());
@@ -1405,7 +1464,7 @@ static bool tui_session(void)
     printf("tui: first paint  %d cells  %lu us\n", full, (unsigned long)us);
 
     s_imu_ok = (ls_imu_start() == ESP_OK) && ls_imu_present();
-    printf("tui: holding the screen - %s to rotate, 'tui off' to exit\n",
+    LS_PRINTF(fmt_compact_ui_tui_holding_the_screen, "tui: holding the screen - %s to rotate, 'tui off' to exit\n",
            s_imu_ok ? "turn it over or press F11" : "press F11");
 
     ls_keypad_backlight(settings_get_keyboard_light());
@@ -1745,7 +1804,7 @@ static bool tui_session(void)
             const int floor_ms = ls_tui_screen_is_full() ? 4 : 15;
             if (sleep_ms < floor_ms) sleep_ms = floor_ms;
         }
-        /* An injected key or tap ends the sleep: a remote terminal waits on it. */
+        /* An injected key or tap, or a touch edge, ends the sleep. */
         if (s_tui_wake) xSemaphoreTake(s_tui_wake, pdMS_TO_TICKS(sleep_ms));
         else vTaskDelay(pdMS_TO_TICKS(sleep_ms));
         s_ph_sleep_us = ph_avg(s_ph_sleep_us, esp_timer_get_time() - ph_sleep);
@@ -1791,7 +1850,7 @@ static bool tui_session(void)
         s_tui_stop = false;
         return true;
     } else {
-        printf("tui: stopped - nothing else draws the panel; 'tui' starts it again\n");
+        fputs(LS_TEXT(msg_compact_ui_tui_stopped_nothing_else, "tui: stopped - nothing else draws the panel; 'tui' starts it again\n"), stdout);
     }
     return false;
 }
@@ -1800,9 +1859,9 @@ static bool tui_session(void)
  * spent 39 ms comparing an unchanged grid. Reserve DRAM and reuse one task
  * across rotation/regrid, so neither memory pressure nor overlap with the
  * previous session changes stack placement. A stopped UI sleeps here. */
-static DRAM_ATTR StackType_t s_tui_stack[6144 / sizeof(StackType_t)]
+static StackType_t s_tui_stack[6144 / sizeof(StackType_t)]
     __attribute__((aligned(16)));
-static DRAM_ATTR StaticTask_t s_tui_tcb;
+static StaticTask_t s_tui_tcb;
 static TaskHandle_t s_tui_worker;
 
 static void tui_task(void *arg)
@@ -1853,7 +1912,7 @@ static int perf_cmd(int argc, char **argv)
     const uint16_t p95 = ls_ui_perf_percentile(&s_perf_snapshot.frame, 95);
     const uint16_t max = ls_ui_perf_percentile(&s_perf_snapshot.frame, 100);
     const uint16_t input = ls_ui_perf_percentile(&s_perf_snapshot.input, 95);
-    printf("fps=%.1f frame_ms_p50=%.1f frame_ms_p95=%.1f frame_ms_max=%.1f "
+    LS_PRINTF(fmt_compact_ui_fps_frame_ms_p50, "fps=%.1f frame_ms_p50=%.1f frame_ms_p95=%.1f frame_ms_max=%.1f "
            "panel_hz=%.1f input_ms_p95=%.1f late_frames=%lu screen=%s\n",
            s_perf_snapshot.fps_x10 / 10.0, p50 / 10.0, p95 / 10.0, max / 10.0,
            elapsed > 0 ? refreshes * 1000000.0 / elapsed : 0.0, input / 10.0,
@@ -1959,7 +2018,7 @@ static bool tui_start_session(void)
             esp_timer_start_periodic(beat_timer, 1000000);
     }
     if (!stall_task) {
-        static DRAM_ATTR StackType_t stack[3072 / sizeof(StackType_t)];
+        static StackType_t stack[3072 / sizeof(StackType_t)];
         static StaticTask_t tcb;
         stall_task = xTaskCreateStaticPinnedToCore(tui_stall_task, "tui_stall", sizeof(stack),
                                                    nullptr, configMAX_PRIORITIES - 2, stack, &tcb, tskNO_AFFINITY);
@@ -2056,14 +2115,14 @@ static bool tui_rotate_to(int quarter)
    bench cable. */
 static int sd_put(int argc, char **argv)
 {
-    if (argc < 3) { printf("sd: usage 'sd put [dir/]<name> [base64]'\n"); return 1; }
+    if (argc < 3) { fputs(LS_TEXT(msg_compact_ui_sd_usage_sd_put, "sd: usage 'sd put [dir/]<name> [base64]'\n"), stdout); return 1; }
     const char *name = argv[2];
     /* One separator at most, never leading, never trailing, and no '..',
        so the widest a name can reach is <mount>/<dir>/<file>. */
     const char *slash = strchr(name, '/');
     if (!*name || strstr(name, "..") || strchr(name, '\\') ||
         (slash && (slash == name || !slash[1] || strchr(slash + 1, '/')))) {
-        printf("sd: refusing '%s' - <name> or <dir>/<name>, nothing deeper\n",
+        LS_PRINTF(fmt_compact_ui_sd_refusing_name_or, "sd: refusing '%s' - <name> or <dir>/<name>, nothing deeper\n",
                name);
         return 1;
     }
@@ -2168,7 +2227,14 @@ static int sd_cmd(int argc, char **argv)
         return rc == 0 ? 0 : 1;
     }
     if (argc >= 2 && !strcmp(argv[1], "ls")) {
-        const char *dir = (argc >= 3) ? argv[2] : LS_SDCARD_MOUNT;
+        /* a folder on the card the way get/mkdir/rm take it: 'music' or '/sdcard/music'
+           (opened as given, 'sd ls music' looked outside the card and failed) */
+        char where[200];
+        const char *dir = LS_SDCARD_MOUNT;
+        if (argc >= 3) {
+            if (!sd_path(argv[2], where, sizeof(where))) { printf("sd: refusing '%s'\n", argv[2]); return 1; }
+            dir = where;
+        }
         if (!ls_sdcard_mounted()) { printf("sd: not mounted\n"); return 1; }
 
         DIR *d = opendir(dir);
@@ -2236,7 +2302,7 @@ static int audio_cmd(int argc, char **argv)
 #else
     if (argc == 1) {
         ls_audio_diag_report();
-        printf("  music    decoder stack minimum free=%lu bytes (0: not measured)\n",
+        LS_PRINTF(fmt_compact_ui_music_decoder_stack_minimum, "  music    decoder stack minimum free=%lu bytes (0: not measured)\n",
                (unsigned long)audio_player_stack_free_bytes());
         return 0;
     }
@@ -2252,6 +2318,20 @@ static int audio_cmd(int argc, char **argv)
         printf("audio: %s\n", e == ESP_OK ? "re-initialised" : esp_err_to_name(e));
         return 0;
     }
+    /* Wakes the parked audio clocks with nothing to hear, and they park
+       again two seconds later: anything heard is the park or unpark itself. */
+    if (!strcmp(argv[1], "silence")) {
+        static EXT_RAM_BSS_ATTR int16_t zeros[1600];   /* copied into the ring, not DMA'd */
+        for (int i = 0; i < 10; i++) audio_write_mono(zeros, 1600);
+        printf("audio: 1 s of silence queued\n");
+        return 0;
+    }
+    if (!strcmp(argv[1], "idlepark")) {
+        if (argc >= 3) audio_out_idle_park_set(!strcmp(argv[2], "on"));
+        if (!audio_out_idle_park_get()) ls_audio_hw_park(false);
+        printf("audio: idle park %s\n", audio_out_idle_park_get() ? "on" : "off");
+        return 0;
+    }
     if (argc >= 3 && !strcmp(argv[1], "pa")) {
         ls_audio_diag_pa(!strcmp(argv[2], "on"));
         return 0;
@@ -2259,13 +2339,13 @@ static int audio_cmd(int argc, char **argv)
     if (!strcmp(argv[1], "tone")) {
 
         if (!snd_test_start(snd_test_from_name("sweep")))
-            printf("audio: the test tone is already playing\n");
+            fputs(LS_TEXT(msg_compact_ui_audio_the_test_tone, "audio: the test tone is already playing\n"), stdout);
         else
             printf("audio: tone started\n");
         return 0;
     }
-    printf("audio: 'audio' reports the chain, then swap | reinit | "
-           "pa on|off | tone\n");
+    fputs(LS_TEXT(msg_compact_ui_audio_audio_reports_the, "audio: 'audio' reports the chain, then swap | reinit | "
+           "pa on|off | tone | silence | idlepark on|off\n"), stdout);
     return 0;
 #endif
 }
@@ -2285,12 +2365,12 @@ static int tui_cmd(int argc, char **argv)
         const ls_app_t *app = ls_app_current();
         if (!app) { printf("doc: none\n"); return 0; }
         printf("doc: %s %s\n", app->id, app->name);
-        if (app->doc && app->doc->purpose) printf("doc purpose: %s\n", app->doc->purpose);
+        if (app->doc && app->doc->purpose) printf("doc purpose: %s\n", ls_text_str(app->doc->purpose));
         if (app->screen && app->screen->hint && app->screen->hint[0]) printf("doc keys: %s\n", app->screen->hint);
         if (app->doc && app->doc->records != LS_APP_RECORDS_NOTHING && app->doc->record_note)
-            printf("doc keeps: %s\n", app->doc->record_note);
+            printf("doc keeps: %s\n", ls_text_str(app->doc->record_note));
         if (app->doc && app->doc->gps != LS_APP_GPS_UNUSED && app->doc->gps_note)
-            printf("doc gps: %s\n", app->doc->gps_note);
+            printf("doc gps: %s\n", ls_text_str(app->doc->gps_note));
         printf("doc end\n");
         return 0;
     }
@@ -2307,7 +2387,7 @@ static int tui_cmd(int argc, char **argv)
         }
         int cols = 0, rows = 0, cw = 0, ch = 0;
         ls_tui_geometry(&cols, &rows, &cw, &ch);
-        printf("tui: corner radius %d px, grid %dx%d cells of %dx%d\n",
+        LS_PRINTF(fmt_compact_ui_tui_corner_radius_px, "tui: corner radius %d px, grid %dx%d cells of %dx%d\n",
                ls_tui_corner_radius(), cols, rows, cw, ch);
         return 0;
     }
@@ -2336,7 +2416,7 @@ static int tui_cmd(int argc, char **argv)
             if (t) printf("  %-14s %s\n", t->name, t->desc);
         }
         /* Daylight is not in that list, on purpose; say where it is. */
-        printf("  daylight is laid over any of these: 'tui daylight on|off'\n");
+        fputs(LS_TEXT(msg_compact_ui_daylight_is_laid_over, "  daylight is laid over any of these: 'tui daylight on|off'\n"), stdout);
         return 0;
     }
 
@@ -2354,7 +2434,7 @@ static int tui_cmd(int argc, char **argv)
         }
         const ls_tui_theme_t *chosen = ls_tui_get_theme();
         const ls_tui_theme_t *drawn = ls_tui_active_theme();
-        printf("tui: daylight %s - drawing %s, %s underneath%s\n",
+        LS_PRINTF(fmt_compact_ui_tui_daylight_drawing_underneath, "tui: daylight %s - drawing %s, %s underneath%s\n",
                ls_tui_daylight() ? "on" : "off",
                drawn ? drawn->name : "?", chosen ? chosen->name : "?",
                s_tui_task ? "" : " - no session running, it shows at the next");
@@ -2429,8 +2509,8 @@ static int tui_cmd(int argc, char **argv)
             ch = argv[2][0];
         }
         if (k == LS_TK_NONE) {
-            printf("tui: key is f1..f11, esc, tab, enter, up, down, left, "
-                   "right, or one character for a screen's own shortcut\n");
+            fputs(LS_TEXT(msg_compact_ui_tui_key_is_f1, "tui: key is f1..f11, esc, tab, enter, up, down, left, "
+                   "right, or one character for a screen's own shortcut\n"), stdout);
             return 0;
         }
         if (!tui_push_key(k, ch)) { printf("tui: key queue full\n"); return 1; }
@@ -2459,7 +2539,7 @@ static int tui_cmd(int argc, char **argv)
         t = esp_timer_get_time();
         ls_panel_fb_present();
         const int64_t wb_us = esp_timer_get_time() - t;
-        printf("tui: membench %u KB  memset %lld us (%lld MB/s)  line-read %lld us  writeback %lld us\n",
+        LS_PRINTF(fmt_compact_ui_tui_membench_kb_memset, "tui: membench %u KB  memset %lld us (%lld MB/s)  line-read %lld us  writeback %lld us\n",
                (unsigned)(bytes / 1024), (long long)set_us,
                set_us ? (long long)(bytes / set_us) : 0LL, (long long)rd_us, (long long)wb_us);
         (void)sum;
@@ -2467,7 +2547,7 @@ static int tui_cmd(int argc, char **argv)
         return 0;
     }
     if (argc >= 2 && !strcmp(argv[1], "stalltest")) {
-        printf("tui stalltest: the UI stops drawing; the stall check reports at %d s and ends the run at %d s\n",
+        LS_PRINTF(fmt_compact_ui_tui_stalltest_the_ui, "tui stalltest: the UI stops drawing; the stall check reports at %d s and ends the run at %d s\n",
                TUI_STALL_WARN_S, TUI_STALL_ABORT_S);
         __atomic_store_n(&s_tui_stall_test, true, __ATOMIC_RELEASE);
         return 0;
@@ -2475,10 +2555,10 @@ static int tui_cmd(int argc, char **argv)
     if (argc >= 2 && !strcmp(argv[1], "touch")) {
         ls_tui_touch_event_t e[16];
         const int n = ls_tui_touch_history(e, 16);
-        printf("tui touch: last %d, oldest first; a tap must come up within 32 px of where it went down\n", n);
+        LS_PRINTF(fmt_compact_ui_tui_touch_last_oldest, "tui touch: last %d, oldest first; a tap must come up within 32 px of where it went down\n", n);
         for (int i = 0; i < n; i++) {
             const int dx = e[i].x1 - e[i].x0, dy = e[i].y1 - e[i].y0;
-            printf("  down %4d,%4d  up %4d,%4d  moved %+4d,%+4d  cell %3d,%3d  %s\n",
+            LS_PRINTF(fmt_compact_ui_down_up_moved_cell, "  down %4d,%4d  up %4d,%4d  moved %+4d,%+4d  cell %3d,%3d  %s\n",
                    e[i].x0, e[i].y0, e[i].x1, e[i].y1, dx, dy, e[i].col, e[i].row,
                    e[i].tap ? "TAP" : e[i].col < 0 ? "off grid" : "refused: moved");
         }
@@ -2487,9 +2567,9 @@ static int tui_cmd(int argc, char **argv)
     if (argc >= 2 && !strcmp(argv[1], "trans")) {
         ls_tui_transition_t t[8];
         const int n = ls_tui_transitions(t);
-        printf("tui trans: request -> presented frame (first includes splash); worst includes draw+present\n");
+        fputs(LS_TEXT(msg_compact_ui_tui_trans_request_presented, "tui trans: request -> presented frame (first includes splash); worst includes draw+present\n"), stdout);
         for (int i = 0; i < n; i++) {
-            printf("%s -> %s first=%.3f ms last=%.3f ms frames=%u worst=%u us cells=%u writeback=%u us total_writeback=%u us draw=%u us raster_diff=%u us %s\n",
+            LS_PRINTF(fmt_compact_ui_first_ms_last_ms, "%s -> %s first=%.3f ms last=%.3f ms frames=%u worst=%u us cells=%u writeback=%u us total_writeback=%u us draw=%u us raster_diff=%u us %s\n",
                    ls_tui_screen_name(t[i].from), ls_tui_screen_name(t[i].to),
                    t[i].first_us / 1000.0, t[i].last_us / 1000.0,
                    (unsigned)t[i].frames, (unsigned)t[i].worst_us,
@@ -2512,7 +2592,7 @@ static int tui_cmd(int argc, char **argv)
         {
             uint32_t pus = 0, psync = 0, pramps = 0; int pcells = 0;
             ls_tui_peak_cost(&pus, &pcells, &psync, &pramps);
-            printf("tui: peak frame %d cells %lu us (writeback %lu us, %lu ramp builds)\n",
+            LS_PRINTF(fmt_compact_ui_tui_peak_frame_cells, "tui: peak frame %d cells %lu us (writeback %lu us, %lu ramp builds)\n",
                    pcells, (unsigned long)pus, (unsigned long)psync, (unsigned long)pramps);
         }
         /* And how often the loop actually comes round, which is what
@@ -2521,12 +2601,12 @@ static int tui_cmd(int argc, char **argv)
                (unsigned long)(s_loop_avg_us / 1000u),
                (unsigned long)((s_loop_avg_us % 1000u) / 100u));
         /* And where that time goes. */
-        printf("tui: frame split  input %lu us (imu %lu)  draw %lu  present %lu  "
+        LS_PRINTF(fmt_compact_ui_tui_frame_split_input, "tui: frame split  input %lu us (imu %lu)  draw %lu  present %lu  "
                "sleep %lu\n",
                (unsigned long)s_ph_input_us, (unsigned long)s_ph_imu_us,
                (unsigned long)s_ph_draw_us, (unsigned long)s_ph_present_us,
                (unsigned long)s_ph_sleep_us);
-        printf("tui: frames on core 0 %lu, core 1 %lu since the last look\n",
+        LS_PRINTF(fmt_compact_ui_tui_frames_on_core, "tui: frames on core 0 %lu, core 1 %lu since the last look\n",
                (unsigned long)s_ph_core_frames[0],
                (unsigned long)s_ph_core_frames[1]);
         s_ph_core_frames[0] = s_ph_core_frames[1] = 0;
@@ -2535,12 +2615,12 @@ static int tui_cmd(int argc, char **argv)
     defined(CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER)
         tui_print_runtime_share();
 #else
-        printf("tui: task runtime stats unavailable in this build\n");
+        fputs(LS_TEXT(msg_compact_ui_tui_task_runtime_stats, "tui: task runtime stats unavailable in this build\n"), stdout);
 #endif
         if (ls_lora_scanning()) {
             ls_lora_scan_prof_t p;
             ls_lora_scan_profile(&p);
-            printf("tui: lora sweep, a bin  standby %lu  tune %lu  rx %lu  "
+            LS_PRINTF(fmt_compact_ui_tui_lora_sweep_a, "tui: lora sweep, a bin  standby %lu  tune %lu  rx %lu  "
                    "settle %lu  rssi %lu us\n",
                    (unsigned long)p.standby_us, (unsigned long)p.tune_us,
                    (unsigned long)p.rx_us, (unsigned long)p.settle_us,
@@ -2549,14 +2629,14 @@ static int tui_cmd(int argc, char **argv)
         if (ls_wf_owner() != LS_WF_OWNER_NONE) {
             ls_wf_stats_t w;
             ls_wf_stats(&w);
-            printf("tui: waterfall %s  %dx%d  a row every %lu ms  draw %lu us  "
+            LS_PRINTF(fmt_compact_ui_tui_waterfall_a_row, "tui: waterfall %s  %dx%d  a row every %lu ms  draw %lu us  "
                    "%lu dropped\n", ls_wf_source_name(), (int)w.bins,
                    (int)w.rows, (unsigned long)w.row_ms,
                    (unsigned long)w.draw_us, (unsigned long)w.dropped);
             /* And what that row LOOKED like, because "the waterfall looks
                wrong" needs a number or it stays an argument. at_floor is
                the black-spot count: bins the renderer drew as nothing. */
-            printf("tui: waterfall levels %u/16 used, %u..%u, "
+            LS_PRINTF(fmt_compact_ui_tui_waterfall_levels_16, "tui: waterfall levels %u/16 used, %u..%u, "
                    "%u of %u bins at floor, %u saturated  (window %u-%u)\n",
                    (unsigned)w.levels_used, (unsigned)w.level_lo,
                    (unsigned)w.level_hi, (unsigned)w.at_floor,
@@ -2587,7 +2667,7 @@ static int tui_cmd(int argc, char **argv)
             vTaskDelay(pdMS_TO_TICKS(20));
         if (s_tui_shot_req) {
             s_tui_shot_req = false;
-            printf("tui: the screen task did not answer - is it wedged?\n");
+            fputs(LS_TEXT(msg_compact_ui_tui_the_screen_task, "tui: the screen task did not answer - is it wedged?\n"), stdout);
             return 1;
         }
         return 0;
@@ -2598,7 +2678,7 @@ static int tui_cmd(int argc, char **argv)
        and the end line carries the size and CRC-32 for the receiver. */
     if (argc >= 2 && !strcmp(argv[1], "rec")) return tui_rec_cmd(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "png")) {
-        if (!s_tui_task) { printf("tui: not running - nothing on the glass\n"); return 1; }
+        if (!s_tui_task) { fputs(LS_TEXT(msg_compact_ui_tui_not_running_nothing_2, "tui: not running - nothing on the glass\n"), stdout); return 1; }
         ls_panel_fb_t fb;
         if (!ls_panel_fb(&fb)) { printf("tui: no framebuffer\n"); return 1; }
         const size_t bytes = (size_t)fb.width * fb.height * sizeof(uint16_t);
@@ -2611,13 +2691,13 @@ static int tui_cmd(int argc, char **argv)
         if (s_tui_png_req) {
             /* The task may yet be copying into it, so it is not freed. */
             s_tui_png_req = false;
-            printf("tui: the screen task did not answer - is it wedged?\n");
+            fputs(LS_TEXT(msg_compact_ui_tui_the_screen_task_2, "tui: the screen task did not answer - is it wedged?\n"), stdout);
             return 1;
         }
         s_tui_png_buf = nullptr;
         if (s_tui_png_wh != ((uint32_t)fb.width << 16 | (uint32_t)fb.height)) {
             heap_caps_free(snap);
-            printf("tui: the screen changed size while it was being copied - run 'tui png' again\n");
+            fputs(LS_TEXT(msg_compact_ui_tui_the_screen_changed, "tui: the screen changed size while it was being copied - run 'tui png' again\n"), stdout);
             return 1;
         }
         /* A terminal-only screen is drawn unturned whichever way up it is. */
@@ -2656,7 +2736,7 @@ static int tui_cmd(int argc, char **argv)
         }
         if (!ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(180000))) {
             /* Still running on them, so none of its memory is freed. */
-            printf("tui: png end %s 0 bytes crc 00000000 - the encoder did not finish\n", name);
+            LS_PRINTF(fmt_compact_ui_tui_png_end_0, "tui: png end %s 0 bytes crc 00000000 - the encoder did not finish\n", name);
             return 1;
         }
         for (int i = 0; i < 100 && eTaskGetState(enc) != eSuspended; i++)
@@ -2683,9 +2763,9 @@ static int tui_cmd(int argc, char **argv)
     }
     if (s_tui_task) { printf("tui: already running\n"); return 0; }
     if (argc >= 2 && !strcmp(argv[1], "flip")) {
-        printf("tui: flip is not available - the blitter writes the clockwise "
+        fputs(LS_TEXT(msg_compact_ui_tui_flip_is_not, "tui: flip is not available - the blitter writes the clockwise "
                "transform only, and inverting just the touch mapping made "
-               "taps land mirrored. Use 'tui rotate' to turn the screen.\n");
+               "taps land mirrored. Use 'tui rotate' to turn the screen.\n"), stdout);
         return 0;
     }
     if (!tui_start_session()) { printf("tui: could not create task\n"); return 1; }
@@ -2771,7 +2851,7 @@ static int labs_cmd(int argc, char **argv)
         const int baud = argc >= 4 ? atoi(argv[3]) : 1200;
         const bool invert = argc >= 5 && !strcmp(argv[4], "1");
         if (mhz < 150.0 || mhz > 959.0 || (baud != 1200 && baud != 2400)) {
-            printf("labs pocsag MHz [1200|2400] [invert 0|1], 150-959 MHz\n");
+            fputs(LS_TEXT(msg_compact_ui_labs_pocsag_mhz_1200, "labs pocsag MHz [1200|2400] [invert 0|1], 150-959 MHz\n"), stdout);
             return 1;
         }
         if (!ls_field_start()) { printf("labs: field worker would not start\n"); return 1; }
@@ -2796,7 +2876,7 @@ static int labs_cmd(int argc, char **argv)
     ls_field_state_t *st = (ls_field_state_t *)heap_caps_malloc(sizeof(*st), MALLOC_CAP_SPIRAM);
     if (!st) { printf("labs: no memory\n"); return 1; }
     ls_field_snapshot(st);
-    printf("labs: %s mode %d %.4f MHz %s rx=%lu bad=%lu pages=%lu\n",
+    LS_PRINTF(fmt_compact_ui_labs_mode_mhz_rx, "labs: %s mode %d %.4f MHz %s rx=%lu bad=%lu pages=%lu\n",
            st->direct ? "DIRECT" : "idle", (int)st->mode, st->config.freq_hz / 1e6,
            st->config.invert_iq ? "inverted" : "normal", (unsigned long)st->rx,
            (unsigned long)st->bad, (unsigned long)st->pages);
@@ -2809,23 +2889,172 @@ static int labs_cmd(int argc, char **argv)
     return 0;
 }
 
+#if LS_HAS_LORA_LR20XX_PROBE
+/* `lora lrwide [on|off|<offset kHz>|status]`: the LR I/Q session's wide mode
+   (576k IQ8, LO below the channel, down-converted to 125k). A setting only;
+   a running FM/waterfall stream moves to it by restarting itself. */
+static int lrwide_cmd(int argc, char **argv)
+{
+    lr_wf_wide_status w;
+    lr_wf_wide_get(&w);
+    if (argc == 3 && strcmp(argv[2], "status")) {
+        bool on = w.on;
+        int32_t offset = w.offset_hz;
+        char *end = nullptr;
+        if (!strcmp(argv[2], "on")) on = true;
+        else if (!strcmp(argv[2], "off")) on = false;
+        else {
+            const long khz = strtol(argv[2], &end, 10);
+            if (!*argv[2] || *end) {
+                puts(LS_TEXT(msg_compact_ui_usage_lora_lrwide_on, "usage: lora lrwide [on|off|<offset kHz>|status]")); return 1;
+            }
+            on = true; offset = (int32_t)(khz * 1000);
+        }
+        if (lr_wf_set_wide(on, offset) != ESP_OK) {
+            printf("lrwide: offset %+ld kHz outside +-%d..%d\n", (long)offset / 1000,
+                   LR_WF_WIDE_OFFSET_MIN_HZ / 1000, LR_WF_WIDE_OFFSET_MAX_HZ / 1000);
+            return 1;
+        }
+        lr_wf_wide_get(&w);
+    } else if (argc > 3) {
+        puts(LS_TEXT(msg_compact_ui_usage_lora_lrwide_on_2, "usage: lora lrwide [on|off|<offset kHz>|status]")); return 1;
+    }
+    LS_PRINTF(fmt_compact_ui_lrwide_setting_offset_khz, "lrwide: setting=%s offset=%+ld kHz (LO = channel - offset) | stream: %s",
+           w.on ? "on" : "off", (long)w.offset_hz / 1000,
+           !w.active ? "none" : w.wide ? "wide source0 576k iq8" : "narrow source2 125k iq16");
+    if (w.active)
+        printf(" channel=%lu LO=%lu", (unsigned long)w.channel_hz, (unsigned long)w.lo_hz);
+    LS_PRINTF(fmt_compact_ui_lrwide_ddc_cycles_pair, "\nlrwide: ddc=%lu.%02lu cycles/pair expand=%lu.%02lu cycles/pair (last ~1 s) "
+           "queue_hw=%lu/%lu drops=%lu fifo_ovf=%lu fifo_full=%lu\n",
+           (unsigned long)(w.ddc_mcycles / 1000), (unsigned long)(w.ddc_mcycles % 1000 / 10),
+           (unsigned long)(w.expand_mcycles / 1000), (unsigned long)(w.expand_mcycles % 1000 / 10),
+           (unsigned long)w.queue_high_water, (unsigned long)w.queue_slots,
+           (unsigned long)w.queue_drops, (unsigned long)w.fifo_overflows, (unsigned long)w.fifo_full);
+    LS_PRINTF(fmt_compact_ui_lrwide_runs_switches_in, "lrwide: runs=%lu switches=%lu in=%lu out=%lu ddc_dropped=%lu (counters since the last change)\n",
+           (unsigned long)w.runs, (unsigned long)w.switches, (unsigned long)w.in_pairs,
+           (unsigned long)w.out_pairs, (unsigned long)w.ddc_dropped);
+    lr_span_stats_t sp;
+    lr_span_stats(&sp);
+    printf("lrwide: retunes=%lu last=%lu us worst=%lu us | span view %s lines=%lu windows=%lu "
+           "last LO=%lu channel=%lu (saved WIDE I/Q: %s)\n",
+           (unsigned long)w.retunes, (unsigned long)w.retune_us, (unsigned long)w.retune_max_us,
+           sp.on ? "on" : "off", (unsigned long)sp.lines, (unsigned long)sp.windows,
+           (unsigned long)sp.last.lo_hz, (unsigned long)sp.last.channel_hz,
+           settings_get_lr_wide() ? "on" : "off");
+    if (w.bad_at_us)
+        LS_PRINTF(fmt_compact_ui_lrwide_last_loss_at, "lrwide: last loss at %lu us into the run: drain_gap=%lu us wake_late=%lu us "
+               "drain=%lu us peak_fifo=%lu\n",
+               (unsigned long)w.bad_at_us, (unsigned long)w.bad_drain_gap_us,
+               (unsigned long)w.bad_wake_late_us, (unsigned long)w.bad_drain_us,
+               (unsigned long)w.bad_peak_fifo);
+    if (w.bad_at_us)
+        LS_PRINTF(fmt_compact_ui_lrwide_worst_steps_in, "lrwide: worst steps in that run: level=%lu us read=%lu us (busy %lu us) publish=%lu us agc=%lu us\n",
+               (unsigned long)w.bad_level_us, (unsigned long)w.bad_read_us, (unsigned long)w.bad_busy_us,
+               (unsigned long)w.bad_publish_us, (unsigned long)w.bad_agc_us);
+    return 0;
+}
+#endif
+
+/* `lora lrddc bench [in_hz] [offset_hz]`: times lr_ddc_process the way the
+   wide session runs it (state in PSRAM, 512-pair int16 blocks at IQ8 scale)
+   over one second of synthetic input and prints cycles per input pair. DSP
+   only, no radio; blocks this console for the run (well under a second).
+   "best" is the quickest block, free of preemption by other tasks. */
+static int lrddc_cmd(int argc, char **argv)
+{
+    if (argc < 3 || argc > 5 || strcmp(argv[2], "bench")) {
+        LS_PRINTF(fmt_compact_ui_usage_lora_lrddc_bench, "usage: lora lrddc bench [in_hz] [offset_hz]   (default 576000 %d)\n",
+               LR_WF_WIDE_DEFAULT_HZ);
+        return 1;
+    }
+    const uint32_t in_hz = argc > 3 ? (uint32_t)strtoul(argv[3], nullptr, 10) : 576000u;
+    const int32_t offset = argc > 4 ? (int32_t)strtol(argv[4], nullptr, 10) : LR_WF_WIDE_DEFAULT_HZ;
+    enum { BLOCK = 512, BLOCKS = 16, OUT_CAP = 260 };
+    const uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    lr_ddc_t *d = (lr_ddc_t *)heap_caps_malloc(sizeof(lr_ddc_t), caps);
+    int16_t *src = (int16_t *)heap_caps_malloc(BLOCKS * BLOCK * 4, caps);
+    int16_t *in = (int16_t *)heap_caps_malloc(BLOCK * 4, caps);
+    int16_t *out = (int16_t *)heap_caps_malloc(OUT_CAP * 4, caps);
+    int rc = 0;
+    if (!d || !src || !in || !out) {
+        puts("lrddc: out of PSRAM");
+        rc = 1;
+    } else if (!lr_ddc_init(d, in_hz, offset, LR_DDC_OUT_HZ)) {
+        LS_PRINTF(fmt_compact_ui_lrddc_hz_offset_refused, "lrddc: %lu Hz offset %+ld refused (in 250k..2M, |offset| <= in/2 - 62.5k)\n",
+               (unsigned long)in_hz, (long)offset);
+        rc = 1;
+    } else {
+        /* The channel tone 3 kHz up, a strong neighbour 180 kHz below, noise:
+           IQ8 values times 256, as lr20xx_iq_expand8 delivers them. */
+        uint32_t lcg = 12345;
+        const float w1 = 2 * (float)M_PI * (float)(offset + 3000) / (float)in_hz;
+        const float w2 = 2 * (float)M_PI * (float)(offset - 180000) / (float)in_hz;
+        for (int k = 0; k < BLOCKS * BLOCK; ++k) {
+            float re = 40 * cosf(w1 * k) + 30 * cosf(w2 * k);
+            float im = 40 * sinf(w1 * k) + 30 * sinf(w2 * k);
+            lcg = lcg * 1664525u + 1013904223u; re += (int)(lcg >> 28) - 8;
+            lcg = lcg * 1664525u + 1013904223u; im += (int)(lcg >> 28) - 8;
+            src[2 * k] = (int16_t)(lrintf(re) * 256);
+            src[2 * k + 1] = (int16_t)(lrintf(im) * 256);
+        }
+        for (int b = 0; b < BLOCKS; ++b) { /* warm the caches and the filter */
+            memcpy(in, src + 2 * BLOCK * b, BLOCK * 4);
+            lr_ddc_process(d, in, BLOCK, out, OUT_CAP);
+        }
+        uint64_t cycles = 0;
+        uint32_t best = UINT32_MAX, pairs = 0, outs = 0;
+        for (unsigned b = 0; pairs < in_hz; ++b) {
+            memcpy(in, src + 2 * BLOCK * (b % BLOCKS), BLOCK * 4);
+            const uint32_t c0 = esp_cpu_get_cycle_count();
+            const size_t n = lr_ddc_process(d, in, BLOCK, out, OUT_CAP);
+            const uint32_t dt = esp_cpu_get_cycle_count() - c0;
+            cycles += dt;
+            if (dt < best) best = dt;
+            pairs += BLOCK; outs += (uint32_t)n;
+        }
+        const uint32_t mean_m = (uint32_t)(cycles * 1000 / pairs);
+        const uint32_t best_m = (uint32_t)((uint64_t)best * 1000 / BLOCK);
+        const uint32_t mhz = esp_rom_get_cpu_ticks_per_us();
+        const uint64_t load_x10 = (uint64_t)mean_m * in_hz / 1000 / 100000; /* Mcycles/s x10 */
+        LS_PRINTF(fmt_compact_ui_lrddc_in_offset_mix, "lrddc: in=%lu offset=%+ld | mix %s, CIC5 /%lu, %u taps x %u %s rows\n",
+               (unsigned long)in_hz, (long)offset,
+               d->quarter > 0 ? "+in/4 (sign and swap)" : d->quarter < 0 ? "-in/4 (sign and swap)"
+               : d->dc_on ? "oscillator + DC block" : "oscillator",
+               (unsigned long)d->decim, (unsigned)d->nt, (unsigned)d->rows,
+               d->exact ? "exact" : "blended");
+        LS_PRINTF(fmt_compact_ui_lrddc_cycles_pair_mean, "lrddc: %lu.%02lu cycles/pair mean, %lu.%02lu best block; %lu pairs in, %lu out, "
+               "dropped %lu; %lu.%lu Mcycles/s = %lu%% of a %lu MHz core\n",
+               (unsigned long)(mean_m / 1000), (unsigned long)(mean_m % 1000 / 10),
+               (unsigned long)(best_m / 1000), (unsigned long)(best_m % 1000 / 10),
+               (unsigned long)pairs, (unsigned long)outs, (unsigned long)d->dropped,
+               (unsigned long)(load_x10 / 10), (unsigned long)(load_x10 % 10),
+               (unsigned long)(mhz ? load_x10 * 10 / mhz : 0), (unsigned long)mhz);
+    }
+    heap_caps_free(d); heap_caps_free(src); heap_caps_free(in); heap_caps_free(out);
+    return rc;
+}
+
 static int lora_cmd(int argc, char **argv)
 {
     /* Where the radio is wired: settings only, so it goes before anything
        that wants the radio itself. */
     if (argc >= 2 && !strcmp(argv[1], "port")) return ls_lora_port_command(argc, argv);
+    /* DSP timing only, no radio: safe beside a live stream. */
+    if (argc >= 2 && !strcmp(argv[1], "lrddc")) return lrddc_cmd(argc, argv);
 #if LS_HAS_LORA_LR20XX_PROBE
+    /* Also only a setting, read by the live stream's own owner task. */
+    if (argc >= 2 && !strcmp(argv[1], "lrwide")) return lrwide_cmd(argc, argv);
     /* lrgain only reads or sets the next session's mode: safe beside live IQ. */
     if (lr20xx_stream_source2_active() && !(argc >= 2 && !strcmp(argv[1], "lrgain"))) {
-        puts("lora: live IQ owns the radio; switch away from LR2021 in RADIO first");
+        puts(LS_TEXT(msg_compact_ui_lora_live_iq_owns, "lora: live IQ owns the radio; switch away from LR2021 in RADIO first"));
         return 1;
     }
     const int lr_clock = lr20xx_clock_command(argc, argv);
     if (lr_clock >= 0) return lr_clock;
 #endif
-    if (ls_field_owned()) { printf("LoRa Labs owns the radio; turn DIRECT off first\n"); return 1; }
+    if (ls_field_owned()) { fputs(LS_TEXT(msg_compact_ui_lora_labs_owns_the, "LoRa Labs owns the radio; turn DIRECT off first\n"), stdout); return 1; }
     if (argc > 1 && !strcmp(argv[1], "sxprobe")) {
-        if (ls_mesh_running()) { puts("lora: MeshCore owns the radio - 'mesh stop' first"); return 1; }
+        if (ls_mesh_running()) { puts(LS_TEXT(msg_compact_ui_lora_meshcore_owns_the, "lora: MeshCore owns the radio - 'mesh stop' first")); return 1; }
         return ls_lora_sx126x_probe_command(argc, argv);
     }
     if (argc > 1 && (!strcmp(argv[1], "pocsag") || !strcmp(argv[1], "fsk")))
@@ -2841,8 +3070,8 @@ static int lora_cmd(int argc, char **argv)
 
     if (argc >= 2 && ls_mesh_running() &&
         (!strcmp(argv[1], "rx") || !strcmp(argv[1], "tx") || !strcmp(argv[1], "config"))) {
-        printf("lora: MeshCore owns the radio - 'mesh stop' first, "
-               "or use 'mesh' to see what it is hearing\n");
+        fputs(LS_TEXT(msg_compact_ui_lora_meshcore_owns_the_2, "lora: MeshCore owns the radio - 'mesh stop' first, "
+               "or use 'mesh' to see what it is hearing\n"), stdout);
 
         return 1;
     }
@@ -2896,8 +3125,8 @@ static int lora_cmd(int argc, char **argv)
         }
         if (!ls_mesh_radio_held()) {
             ls_mesh_radio_hold(false);
-            printf("lora: the mesh would not release the radio within a "
-                   "second - a transmit may be stuck; try again\n");
+            fputs(LS_TEXT(msg_compact_ui_lora_the_mesh_would, "lora: the mesh would not release the radio within a "
+                   "second - a transmit may be stuck; try again\n"), stdout);
             return 1;
         }
         if (!ls_lora_cfg()) {
@@ -2916,7 +3145,7 @@ static int lora_cmd(int argc, char **argv)
         const int got = ls_lora_scan_sweep(dbm, bins);
         const int64_t us = esp_timer_get_time() - t0;
 
-        printf("lora: %.3f-%.3f MHz, %d bins, one pass in %lld us "
+        LS_PRINTF(fmt_compact_ui_lora_mhz_bins_one, "lora: %.3f-%.3f MHz, %d bins, one pass in %lld us "
                "(%lld us a bin)\n",
                lo / 1e6, hi / 1e6, got, (long long)us,
                (long long)(got ? us / got : 0));
@@ -2931,7 +3160,7 @@ static int lora_cmd(int argc, char **argv)
                         (double)lo_db, (double)hi_db);
         ls_lora_scan_prof_t pr;
         ls_lora_scan_profile(&pr);
-        printf("lora: per bin - standby %lu, tune %lu, rx %lu, settle %lu, "
+        LS_PRINTF(fmt_compact_ui_lora_per_bin_standby, "lora: per bin - standby %lu, tune %lu, rx %lu, settle %lu, "
                "rssi %lu us\n",
                (unsigned long)pr.standby_us, (unsigned long)pr.tune_us,
                (unsigned long)pr.rx_us, (unsigned long)pr.settle_us,
@@ -2961,7 +3190,7 @@ static int lora_cmd(int argc, char **argv)
         printf("lora: configure %s\n", esp_err_to_name(err));
         if (err != ESP_OK) return 1;
         const ls_lora_cfg_t *c = ls_lora_cfg();
-        printf("lora: %.4f MHz SF%u BW%lu Hz CR4/%u %+d dBm sync 0x%02X "
+        LS_PRINTF(fmt_compact_ui_lora_mhz_sf_bw, "lora: %.4f MHz SF%u BW%lu Hz CR4/%u %+d dBm sync 0x%02X "
                "airtime(16B)=%lu ms\n",
                c->freq_hz / 1e6, (unsigned)c->sf, (unsigned long)c->bw_hz,
                (unsigned)c->cr, (int)c->power_dbm, (unsigned)c->sync_word,
@@ -3002,7 +3231,7 @@ static int lora_cmd(int argc, char **argv)
         }
         float floor_dbm = 0;
         ls_lora_rssi_inst(&floor_dbm);
-        printf("lora: %u packet%s, %u crc/header error%s, floor %.1f dBm\n",
+        LS_PRINTF(fmt_compact_ui_lora_packet_crc_header, "lora: %u packet%s, %u crc/header error%s, floor %.1f dBm\n",
                got, got == 1 ? "" : "s", bad, bad == 1 ? "" : "s", floor_dbm);
         return 0;
     }
@@ -3030,8 +3259,8 @@ static int lora_cmd(int argc, char **argv)
         return 0;
     }
     ls_lora_diagnostics();
-    if (argc < 2) printf("lora: also 'lora config [MHz [sf [bw_kHz [cr [dBm]]]]]', "
-                         "'lora rx [secs]', 'lora tx [text]'\n");
+    if (argc < 2) fputs(LS_TEXT(msg_compact_ui_lora_also_lora_config, "lora: also 'lora config [MHz [sf [bw_kHz [cr [dBm]]]]]', "
+                         "'lora rx [secs]', 'lora tx [text]'\n"), stdout);
     return 0;
 }
 /* The Mode S session's live tuning, as `ls_lora_modes_tuning` holds it. */
@@ -3040,7 +3269,7 @@ static bool adsb_print_tuning(void)
     ls_lora_modes_tuning_t t;
     const esp_err_t err = ls_lora_modes_tuning(&t);
     if (err != ESP_OK) {
-        printf("adsb lr: no Mode S session on the LoRa chip (%s) - ADS-B has to be running "
+        LS_PRINTF(fmt_compact_ui_adsb_lr_no_mode, "adsb lr: no Mode S session on the LoRa chip (%s) - ADS-B has to be running "
                "from the lr-chip source\n", esp_err_to_name(err));
         return false;
     }
@@ -3049,7 +3278,7 @@ static bool adsb_print_tuning(void)
     else                  snprintf(gain, sizeof(gain), "step %d (fixed)", t.gain_step);
     if (t.thresh_override) snprintf(thr, sizeof(thr), "override %d dB", t.thresh_level);
     else                   snprintf(thr, sizeof(thr), "chip's own");
-    printf("adsb lr: gain %s, boost %d, rx bw %.1f kHz, detection threshold %s "
+    LS_PRINTF(fmt_compact_ui_adsb_lr_gain_boost, "adsb lr: gain %s, boost %d, rx bw %.1f kHz, detection threshold %s "
            "(runtime only, not saved)\n", gain, t.boost, t.rx_bw_hz / 1000.0, thr);
     return true;
 }
@@ -3063,8 +3292,8 @@ static int adsb_tuned(esp_err_t err, const char *what)
     }
     adsb_chip_diag_reset();
     adsb_print_tuning();
-    printf("adsb lr: counters cleared; `adsb chips` shows this setting's trigger and decode rates "
-           "after a few seconds\n");
+    fputs(LS_TEXT(msg_compact_ui_adsb_lr_counters_cleared, "adsb lr: counters cleared; `adsb chips` shows this setting's trigger and decode rates "
+           "after a few seconds\n"), stdout);
     return 0;
 }
 
@@ -3086,7 +3315,7 @@ static int adsb_lr_cmd(int argc, char **argv)
     const char *what = argv[2];
     long v;
     if (!strcmp(what, "gain")) {
-        if (argc < 4) { printf("adsb lr gain <0..13|auto>   (0 or auto: the chip's AGC)\n"); return 1; }
+        if (argc < 4) { fputs(LS_TEXT(msg_compact_ui_adsb_lr_gain_0, "adsb lr gain <0..13|auto>   (0 or auto: the chip's AGC)\n"), stdout); return 1; }
         if (!strcmp(argv[3], "auto")) v = 0;
         else if (!adsb_parse_long(argv[3], 0, LS_LORA_MODES_GAIN_MAX, &v)) {
             printf("adsb lr gain <0..13|auto>\n");
@@ -3102,7 +3331,7 @@ static int adsb_lr_cmd(int argc, char **argv)
         char *end = nullptr;
         const double khz = argc >= 4 ? strtod(argv[3], &end) : 0.0;
         if (argc < 4 || end == argv[3] || *end || khz <= 0.0) {
-            printf("adsb lr bw <kHz>   (nearest rung of 3077 2857 2667 2222 1333 1111 889 769 741 714 667 615 571 556 533 513)\n");
+            fputs(LS_TEXT(msg_compact_ui_adsb_lr_bw_khz, "adsb lr bw <kHz>   (nearest rung of 3077 2857 2667 2222 1333 1111 889 769 741 714 667 615 571 556 533 513)\n"), stdout);
             return 1;
         }
         uint32_t chosen = 0;
@@ -3115,7 +3344,7 @@ static int adsb_lr_cmd(int argc, char **argv)
             int raw = 0;
             const esp_err_t err = ls_lora_modes_read_threshold(&raw);
             if (err != ESP_OK) { printf("adsb lr: threshold read failed: %s\n", esp_err_to_name(err)); return 1; }
-            printf("adsb lr: detection threshold field %d (level %d dB, level = field - 64); "
+            LS_PRINTF(fmt_compact_ui_adsb_lr_detection_threshold, "adsb lr: detection threshold field %d (level %d dB, level = field - 64); "
                    "`adsb lr thresh <-64..63|auto>` sets it\n", raw, raw - 64);
             return 0;
         }
@@ -3123,7 +3352,7 @@ static int adsb_lr_cmd(int argc, char **argv)
         if (!adsb_parse_long(argv[3], -64, 63, &v)) { printf("adsb lr thresh <-64..63|auto>\n"); return 1; }
         return adsb_tuned(ls_lora_modes_set_threshold((int)v, false), "threshold");
     }
-    printf("adsb lr [gain <0..13|auto> | bw <kHz> | boost <0..7> | thresh [<-64..63>|auto]]\n");
+    fputs(LS_TEXT(msg_compact_ui_adsb_lr_gain_0_2, "adsb lr [gain <0..13|auto> | bw <kHz> | boost <0..7> | thresh [<-64..63>|auto]]\n"), stdout);
     return 1;
 }
 
@@ -3147,9 +3376,9 @@ static int adsb_cmd(int argc, char **argv)
     }
     if (argc >= 2 && !strcmp(argv[1], "lr")) return adsb_lr_cmd(argc, argv);
     printf("adsb: source %s\n", adsb_active_source_name());
-    printf("adsb: 'adsb chips' prints the last 8 raw chip frames from the LR20xx, the counters and "
+    fputs(LS_TEXT(msg_compact_ui_adsb_adsb_chips_prints, "adsb: 'adsb chips' prints the last 8 raw chip frames from the LR20xx, the counters and "
            "rates and the tuning, 'adsb chips reset' clears them; 'adsb lr gain|bw|boost|thresh' "
-           "tunes the running session\n");
+           "tunes the running session\n"), stdout);
     return 0;
 }
 
@@ -3167,7 +3396,7 @@ static int rtc_cmd(int argc, char **argv)
             printf("rtc: set %s\n", esp_err_to_name(err));
             if (err == ESP_OK) ls_rtc_seed_system_time();
         } else {
-            printf("rtc: set takes UNIX epoch seconds after 2025-01-01\n");
+            fputs(LS_TEXT(msg_compact_ui_rtc_set_takes_unix, "rtc: set takes UNIX epoch seconds after 2025-01-01\n"), stdout);
             return 1;
         }
     } else if (argc >= 2 && !strcmp(argv[1], "sync")) {
@@ -3283,16 +3512,16 @@ static int mesh_cmd(int argc, char **argv)
         if      (!strcmp(argv[2], "off"))    r.share_loc = 0;
         else if (!strcmp(argv[2], "gps"))    r.share_loc = 1;
         else if (!strcmp(argv[2], "manual")) {
-            if (argc != 5) { printf("mesh: loc manual <latitude> <longitude>\n"); return 1; }
+            if (argc != 5) { fputs(LS_TEXT(msg_compact_ui_mesh_loc_manual_latitude, "mesh: loc manual <latitude> <longitude>\n"), stdout); return 1; }
             char *lat_end, *lon_end;
             double lat = strtod(argv[3], &lat_end), lon = strtod(argv[4], &lon_end);
             if (lat_end == argv[3] || *lat_end || lon_end == argv[4] || *lon_end ||
                 !(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180)) {
-                printf("mesh: latitude -90..90, longitude -180..180\n"); return 1;
+                fputs(LS_TEXT(msg_compact_ui_mesh_latitude_90_90, "mesh: latitude -90..90, longitude -180..180\n"), stdout); return 1;
             }
             r.lat_e6 = (int32_t)(lat * 1e6); r.lon_e6 = (int32_t)(lon * 1e6); r.share_loc = 2;
         }
-        else { printf("mesh: loc off|gps|manual <latitude> <longitude>\n"); return 1; }
+        else { fputs(LS_TEXT(msg_compact_ui_mesh_loc_off_gps, "mesh: loc off|gps|manual <latitude> <longitude>\n"), stdout); return 1; }
         esp_err_t err = ls_mesh_set_radio(&r);
         printf("mesh: location %s: %s\n", argv[2], esp_err_to_name(err));
         return err == ESP_OK ? 0 : 1;
@@ -3317,21 +3546,21 @@ static int mesh_cmd(int argc, char **argv)
         const char *who = (argc >= 3) ? argv[2] : "all";
         const int n = ls_mesh_forget_peer(who);
         if (!n && strcasecmp(who, "all"))
-            printf("mesh: no node here with id %s - 'mesh peers' lists them\n",
+            LS_PRINTF(fmt_compact_ui_mesh_no_node_here, "mesh: no node here with id %s - 'mesh peers' lists them\n",
                    who);
         else
-            printf("mesh: forgot %d, on the card as well as in memory\n", n);
+            LS_PRINTF(fmt_compact_ui_mesh_forgot_on_the, "mesh: forgot %d, on the card as well as in memory\n", n);
         return 0;
     } else if (argc >= 3 && !strcmp(argv[1], "contact")) {
 
         esp_err_t e = ls_mesh_add_contact(argv[2], argc >= 4 ? argv[3] : NULL);
         if (e == ESP_ERR_INVALID_SIZE) {
-            printf("mesh: the public key is 64 hex characters\n");
+            fputs(LS_TEXT(msg_compact_ui_mesh_the_public_key, "mesh: the public key is 64 hex characters\n"), stdout);
             return 1;
         }
         if (e != ESP_OK) { printf("mesh: contact %s\n", esp_err_to_name(e)); return 1; }
-        printf("mesh: contact added - it will show as never heard until it "
-               "actually transmits\n");
+        fputs(LS_TEXT(msg_compact_ui_mesh_contact_added_it, "mesh: contact added - it will show as never heard until it "
+               "actually transmits\n"), stdout);
         return 0;
     } else if (argc >= 2 && !strcmp(argv[1], "peers")) {
         /* One peer at a time. The whole table is about 1.1 KB and
@@ -3368,19 +3597,19 @@ static int mesh_cmd(int argc, char **argv)
            heard yet" is true and sends nobody anywhere. */
         if (!shown) {
             printf("mesh: nothing heard yet\n");
-            printf("mesh: a node enters this list when IT advertises - an "
+            fputs(LS_TEXT(msg_compact_ui_mesh_a_node_enters, "mesh: a node enters this list when IT advertises - an "
                    "advert from here announces us and asks for nothing, so a "
-                   "silent peer stays invisible\n");
-            printf("mesh: if it stays empty, check the far end matches the "
+                   "silent peer stays invisible\n"), stdout);
+            fputs(LS_TEXT(msg_compact_ui_mesh_if_it_stays, "mesh: if it stays empty, check the far end matches the "
                    "radio line above. Mismatched SF or bandwidth is "
                    "orthogonal: zero packets AND zero bad, identical to an "
-                   "empty room\n");
+                   "empty room\n"), stdout);
         }
         return 0;
     } else if (argc >= 2 && !strcmp(argv[1], "advert")) {
         esp_err_t err = ls_mesh_advertise();
         if (err == ESP_ERR_NOT_ALLOWED) {
-            printf("mesh: transmit is disarmed - 'mesh tx on' first\n");
+            fputs(LS_TEXT(msg_compact_ui_mesh_transmit_is_disarmed, "mesh: transmit is disarmed - 'mesh tx on' first\n"), stdout);
             return 1;
         }
         printf("mesh: advert %s\n", esp_err_to_name(err));
@@ -3397,14 +3626,14 @@ static int mesh_cmd(int argc, char **argv)
             printf("mesh: stored radio settings cleared: %s\n",
                    esp_err_to_name(err));
             if (err == ESP_OK)
-                printf("mesh: running the built-in preset now - "
-                       "'mesh' to see it\n");
+                fputs(LS_TEXT(msg_compact_ui_mesh_running_the_built, "mesh: running the built-in preset now - "
+                       "'mesh' to see it\n"), stdout);
             return err == ESP_OK ? 0 : 1;
         }
         printf("mesh: radio settings are %s\n",
                ls_mesh_radio_stored() ? "STORED and override the build"
                                       : "the built-in preset");
-        printf("mesh: 'mesh radio default' clears a stored override\n");
+        fputs(LS_TEXT(msg_compact_ui_mesh_mesh_radio_default, "mesh: 'mesh radio default' clears a stored override\n"), stdout);
         return 0;
     }
     ls_mesh_diagnostics();
@@ -3433,9 +3662,9 @@ static int mixrf_cmd(int argc,char **argv)
         else if(!strcmp(argv[1],"cards"))ok=ls_mixrf_card_scan(on);
         else if(!strcmp(argv[1],"cc")){ls_mixrf_status_t s;ls_mixrf_snapshot(&s);ok=ls_mixrf_receive(on,s.frequency?s.frequency:433920000);}
         if(ok)return 0;
-        printf("mixrf: request unavailable; use probe and check status\n");return 1;
+        fputs(LS_TEXT(msg_compact_ui_mixrf_request_unavailable_use, "mixrf: request unavailable; use probe and check status\n"), stdout);return 1;
     }
-    printf("mixrf [status|probe|stop|cc on/off|scan on/off|nfc on/off|cards on/off]\n");return 1;
+    fputs(LS_TEXT(msg_compact_ui_mixrf_status_probe_stop, "mixrf [status|probe|stop|cc on/off|scan on/off|nfc on/off|cards on/off]\n"), stdout);return 1;
 }
 static int gps_cmd(int argc, char **argv)
 {
@@ -3444,8 +3673,8 @@ static int gps_cmd(int argc, char **argv)
     if (argc >= 2 && !strcmp(argv[1], "raw"))  { ls_gps_print_raw(); return 0; }
     if (argc >= 2 && !strcmp(argv[1], "reset")) {
         if (!ls_gps_factory_reset()) { printf("gps: no receiver to reset\n"); return 1; }
-        printf("gps: factory reset sent; the module is set up again in a few seconds "
-               "(check with 'gps' and 'gps raw')\n");
+        fputs(LS_TEXT(msg_compact_ui_gps_factory_reset_sent, "gps: factory reset sent; the module is set up again in a few seconds "
+               "(check with 'gps' and 'gps raw')\n"), stdout);
         return 0;
     }
     ls_gps_diagnostics();
@@ -3469,8 +3698,8 @@ static int keys_bl_sweep(void)
     };
     const int n = (int)(sizeof(step) / sizeof(step[0]));
 
-    printf("keys: sweeping the backlight. Listen, and note which line is\n");
-    printf("      followed by silence. About %d seconds.\n\n",
+    fputs(LS_TEXT(msg_compact_ui_keys_sweeping_the_backlight, "keys: sweeping the backlight. Listen, and note which line is\n"), stdout);
+    LS_PRINTF(fmt_compact_ui_followed_by_silence_about, "      followed by silence. About %d seconds.\n\n",
            (4000 + 4000 + 4000 + 3500 * 7) / 1000);
 
     for (int i = 0; i < n; i++) {
@@ -3507,7 +3736,7 @@ static int keys_bl_cmd(int argc, char **argv)
     if (argc >= 3 && !strcmp(argv[2], "sweep")) return keys_bl_sweep();
 
     if (argc < 3) {
-        printf("keys bl sweep | off | on | <duty 0..100> [freq_hz]\n");
+        fputs(LS_TEXT(msg_compact_ui_keys_bl_sweep_off, "keys bl sweep | off | on | <duty 0..100> [freq_hz]\n"), stdout);
         printf("  now: %lu Hz achieved, duty %d%%\n",
                (unsigned long)ls_keypad_backlight_freq(),
                ls_keypad_backlight_duty());
@@ -3532,7 +3761,7 @@ static int keys_bl_cmd(int argc, char **argv)
     const uint32_t freq = (argc >= 4) ? (uint32_t)strtoul(argv[3], nullptr, 0)
                                       : ls_keypad_backlight_freq();
     const esp_err_t e = ls_keypad_backlight_tune(freq, pct * 1023 / 100);
-    printf("keys: %d%% at %lu Hz asked -> %lu Hz achieved: %s\n",
+    LS_PRINTF(fmt_compact_ui_keys_hz_asked_hz, "keys: %d%% at %lu Hz asked -> %lu Hz achieved: %s\n",
            pct, (unsigned long)freq,
            (unsigned long)ls_keypad_backlight_freq(), esp_err_to_name(e));
     /* Achieved, not asked, is the number that matters: LEDC rounds to what
@@ -3572,10 +3801,10 @@ static int map_cmd(int argc, char **argv)
         const double lat = atof(argv[2]), lon = atof(argv[3]);
         const int z = ls_map_zoom_covering(lat, lon);
         if (z < 0)
-            printf("map: %.5f %.5f is outside this archive at every zoom\n",
+            LS_PRINTF(fmt_compact_ui_map_is_outside_this, "map: %.5f %.5f is outside this archive at every zoom\n",
                    lat, lon);
         else
-            printf("map: %.5f %.5f has a tile at z%d (currently z%d)\n",
+            LS_PRINTF(fmt_compact_ui_map_has_a_tile, "map: %.5f %.5f has a tile at z%d (currently z%d)\n",
                    lat, lon, z, ls_map_zoom());
         return 0;
     }
@@ -3603,15 +3832,15 @@ static int map_cmd(int argc, char **argv)
     ls_map_zoom_range(&zlo, &zhi);
     printf("map: z%d  %.5f %.5f  tile %d px\n",
            ls_map_zoom(), lat, lon, ls_map_tile_px());
-    printf("map: archive declares z%d..z%d, last render took tiles from z%d\n",
+    LS_PRINTF(fmt_compact_ui_map_archive_declares_z, "map: archive declares z%d..z%d, last render took tiles from z%d\n",
            zlo, zhi, ls_map_source_zoom());
     printf("map: last render  %d of %d tiles  %lu us\n",
            st.tiles_drawn, st.tiles_wanted, (unsigned long)st.render_us);
     printf("map:   frame in %s\n",
            ls_map_frame_is_internal() ? "internal RAM" : "PSRAM");
-    printf("map:   scratch peak %d points of 65536 (%d KB of the arena)\n",
+    LS_PRINTF(fmt_compact_ui_map_scratch_peak_points, "map:   scratch peak %d points of 65536 (%d KB of the arena)\n",
            st.scratch_peak, (int)(st.scratch_peak * 8 / 1024));
-    printf("map:   fetch  %lu us   raster %lu us   arena %lu bytes\n",
+    LS_PRINTF(fmt_compact_ui_map_fetch_us_raster, "map:   fetch  %lu us   raster %lu us   arena %lu bytes\n",
            (unsigned long)st.fetch_us, (unsigned long)st.raster_us,
            (unsigned long)st.arena_peak);
     if (st.tiles_drawn > 0)
@@ -3627,7 +3856,7 @@ static int map_cmd(int argc, char **argv)
        ran out of memory or ran out of tiles worth keeping. */
     uint32_t held = 0, budget = 0;
     ls_map_tile_cache_bytes(&held, &budget);
-    printf("map: tile store %d tiles, %lu of %lu KB, %lu hits, %lu misses",
+    LS_PRINTF(fmt_compact_ui_map_tile_store_tiles, "map: tile store %d tiles, %lu of %lu KB, %lu hits, %lu misses",
            slots, (unsigned long)(held / 1024u),
            (unsigned long)(budget / 1024u),
            (unsigned long)hits, (unsigned long)misses);
@@ -3704,16 +3933,16 @@ static int display_cmd(int argc,char **argv)
             tui_manual_rotation_taken();
             tui_rotate_to((int)(deg / 90));
         } else {
-            printf("display: rotate | 0 | 90 | 180 | 270 | on | off | brightness 5..100 | timeout 5..240 | autodim on|off\n");
+            fputs(LS_TEXT(msg_compact_ui_display_rotate_0_90, "display: rotate | 0 | 90 | 180 | 270 | on | off | brightness 5..100 | timeout 5..240 | autodim on|off\n"), stdout);
         }
     }
-    printf("display=%d degrees screen=%s touch=%s brightness=%d%% timeout=%ds touch_age_ms=%lld\n",
+    LS_PRINTF(fmt_compact_ui_display_degrees_screen_touch, "display=%d degrees screen=%s touch=%s brightness=%d%% timeout=%ds touch_age_ms=%lld\n",
            s_rotation * 90, display_ctl_off() ? "off" : "on", s_touch_ok ? "ready" : "unavailable",
            display_ctl_get_user(), display_ctl_autodim_timeout(),
            (long long)((esp_timer_get_time() - touch_snapshot().received) / 1000));
     printf("autodim=%s%s\n", display_ctl_autodim_enabled() ? "on" : "off",
            display_ctl_dimmed() ? ", dimmed now" : "");
-    printf("autorotate=%s imu=%s keyboard=%s pose=%d held=%d\n",
+    LS_PRINTF(fmt_compact_ui_autorotate_imu_keyboard_pose, "autorotate=%s imu=%s keyboard=%s pose=%d held=%d\n",
            settings_get_auto_rotate()?"on":"off",s_imu_ok?"ready":"unavailable",
            ls_keypad_present()?"present":"absent",(int)ls_imu_pose(),s_manual_held);
     { uint32_t us = 0; int cells = 0; ls_tui_last_cost(&us, &cells);
@@ -3755,10 +3984,17 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     s_started = true;
     e=ls_touch_init();
     s_touch_ok=e==ESP_OK;
-    /* Poll on a small internal-RAM stack, and let input processing copy one
-     * snapshot. */
+    /* Poll on a PSRAM stack, and let input processing copy one snapshot.
+     * The static stack is LP SRAM (RTC_NOINIT, 0x5010xxxx), uncached: the
+     * I2C driver's calls ran against it and the 100 Hz poll cost 6-7% of
+     * core 1 on an idle screen. PSRAM is cached and never short; this task
+     * reads I2C only and never writes flash, which a PSRAM stack forbids.
+     * The LP stack stays as the fallback. */
+    StackType_t *touch_stack=(StackType_t *)heap_caps_malloc(TOUCH_TASK_STACK_BYTES,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if(!touch_stack) touch_stack=s_touch_stack;
     if(s_touch_ok && !xTaskCreateStaticPinnedToCore(touch_task,"tdp_touch",
-            sizeof(s_touch_stack), nullptr, 2, s_touch_stack, &s_touch_tcb, 1)) {
+            TOUCH_TASK_STACK_BYTES, nullptr, 2, touch_stack, &s_touch_tcb, 1)) {
         s_touch_ok=false; e=ESP_ERR_NO_MEM;
     }
     ESP_LOGI("tdp_ui","touch: %s",esp_err_to_name(e));
@@ -3778,49 +4014,54 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
        late boot function reserve all of them on the 3.5 KB IDF main stack,
        on top of console_start's full command table. */
     static const esp_console_cmd_t mesh_c={.command="mesh",
-        .help="MeshCore in the background: 'mesh start', 'mesh' for status, "
-              "'mesh tx on|off' (off at boot), 'mesh advert', 'mesh stop'.",
-        .hint="[start|stop|tx on|off|advert|peers|dm <n> <text>|chan <n> <#name|key|clear>|send <n>|role|repeat|loc|auto|radio [default]]",.func=mesh_cmd,.argtable=nullptr};
+        .help=LS_TXT(con_compact_ui_mesh_help, "MeshCore in the background: 'mesh start', 'mesh' for status, "
+              "'mesh tx on|off' (off at boot), 'mesh advert', 'mesh stop'."),
+        .hint=LS_TXT(con_compact_ui_mesh_hint, "[start|stop|tx on|off|advert|peers|dm <n> <text>|chan <n> <#name|key|clear>|send <n>|role|repeat|loc|auto|radio [default]]"),.func=mesh_cmd,.argtable=nullptr};
     esp_console_cmd_register(&mesh_c);
     static const esp_console_cmd_t labs_c={.command="labs",
-        .help="LoRa Labs: 'labs' status and decoded pages, 'labs pocsag MHz [baud] [invert 0|1]' "
-              "pages on the LoRa chip, 'labs off' hands the radio back",
+        .help=LS_TXT(con_compact_ui_labs_help, "LoRa Labs: 'labs' status and decoded pages, 'labs pocsag MHz [baud] [invert 0|1]' "
+              "pages on the LoRa chip, 'labs off' hands the radio back"),
         .hint=nullptr,.func=labs_cmd,.argtable=nullptr};
     esp_console_cmd_register(&labs_c);
     ls_exp_register_builtin();
     static const esp_console_cmd_t exp_c={.command="exp",
-        .help="Experiments: 'exp' lists them, 'exp <id>' its readout, "
-              "'exp <id> start [args]', 'exp <id> stop' or 'exp stop'",
+        .help=LS_TXT(con_compact_ui_exp_help, "Experiments: 'exp' lists them, 'exp <id>' its readout, "
+              "'exp <id> start [args]', 'exp <id> stop' or 'exp stop'"),
         .hint=nullptr,.func=ls_exp_console,.argtable=nullptr};
     esp_console_cmd_register(&exp_c);
+    static const esp_console_cmd_t meters_c={.command="meters",
+        .help="METERS: utility meters heard by any radio; 'meters' lists them, "
+              "'meters pin|unpin <id>', 'meters name <id> <text>'",
+        .hint=nullptr,.func=ls_meters_command,.argtable=nullptr};
+    esp_console_cmd_register(&meters_c);
     static const esp_console_cmd_t gauge_c={.command="gauge",
-        .help="Battery fuel gauge: voltage, current, learned charge, temperature.",
+        .help=LS_TXT(con_compact_ui_gauge_help, "Battery fuel gauge: voltage, current, learned charge, temperature."),
         .hint=nullptr,.func=gauge_cmd,.argtable=nullptr};
     esp_console_cmd_register(&gauge_c);
     static const esp_console_cmd_t rtc_c={.command="rtc",
-        .help="Real-time clock: bare 'rtc' reads it, 'rtc set <unix>' writes "
-              "it, 'rtc sync' stores the system clock into it.",
-        .hint="[set <unix>|sync]",.func=rtc_cmd,.argtable=nullptr};
+        .help=LS_TXT(con_compact_ui_rtc_help, "Real-time clock: bare 'rtc' reads it, 'rtc set <unix>' writes "
+              "it, 'rtc sync' stores the system clock into it."),
+        .hint=LS_TXT(con_compact_ui_rtc_hint, "[set <unix>|sync]"),.func=rtc_cmd,.argtable=nullptr};
     esp_console_cmd_register(&rtc_c);
     static const esp_console_cmd_t call_c={.command="call",
-        .help="Invoke a named action. Bare 'call' lists them.",
-        .hint="<action> [args...]",.func=call_cmd,.argtable=nullptr};
+        .help=LS_TXT(con_compact_ui_call_help, "Invoke a named action. Bare 'call' lists them."),
+        .hint=LS_TXT(con_compact_ui_call_hint, "<action> [args...]"),.func=call_cmd,.argtable=nullptr};
     esp_console_cmd_register(&call_c);
     ls_ota_console_register();
     ls_lap_console_register();
-    static const esp_console_cmd_t cmd={.command="display",.help="Display: rotate | 0 | 90 | 180 | 270 | on | off | brightness 5..100 | timeout 5..240 | autodim on|off",.hint=nullptr,.func=display_cmd,.argtable=nullptr};
+    static const esp_console_cmd_t cmd={.command="display",.help=LS_TXT(con_compact_ui_display_help, "Display: rotate | 0 | 90 | 180 | 270 | on | off | brightness 5..100 | timeout 5..240 | autodim on|off"),.hint=nullptr,.func=display_cmd,.argtable=nullptr};
     esp_console_cmd_register(&cmd);
 
     ls_keypad_start();
     if (ls_keypad_present()) s_rotation = 1;
     static const esp_console_cmd_t tui={.command="tui",
-        .help="TUI: 'tui' starts it, 'tui off' stops it, 'tui rotate' turns it, 'tui shot' prints the screen as text, 'tui png [name]' sends the real pixels as a PNG, 'tui doc' the open app's own help, 'tui tap C R' taps a cell, 'tui trans' switch history, 'tui touch' the last touches and why each did or did not tap, 'tui stalltest' proves the UI stall check (ends the run), 'tui cost' the last frame, 'tui corner [px]' the corner standoff, 'tui theme [name]' the colours, 'tui daylight on|off' black on white for the sun",
+        .help=LS_TXT(con_compact_ui_tui_help, "TUI: 'tui' starts it, 'tui off' stops it, 'tui rotate' turns it, 'tui shot' prints the screen as text, 'tui png [name]' sends the real pixels as a PNG, 'tui doc' the open app's own help, 'tui tap C R' taps a cell, 'tui trans' switch history, 'tui touch' the last touches and why each did or did not tap, 'tui stalltest' proves the UI stall check (ends the run), 'tui cost' the last frame, 'tui corner [px]' the corner standoff, 'tui theme [name]' the colours, 'tui daylight on|off' black on white for the sun"),
         .hint=nullptr,.func=tui_cmd,.argtable=nullptr};
     esp_console_cmd_register(&tui);
     static const esp_console_cmd_t term={.command="term",
-        .help="This screen in a terminal on another machine: 'term serial [baud] [ack]' for host/lsterm/lsterm.py over USB, "
+        .help=LS_TXT(con_compact_ui_term_help, "This screen in a terminal on another machine: 'term serial [baud] [ack]' for host/lsterm/lsterm.py over USB, "
               "'term net on|off' for TCP port 2323 over Wi-Fi with a password ('term net show', 'term net pass <p>', "
-              "'term net kick'), bare 'term' for who is watching",
+              "'term net kick'), bare 'term' for who is watching"),
         .hint=nullptr,.func=ls_rterm_console,.argtable=nullptr};
     esp_console_cmd_register(&term);
     if (!s_tui_wake) s_tui_wake = xSemaphoreCreateBinary();
@@ -3828,36 +4069,40 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     ls_rterm_set_resize(term_resize);
     ls_rterm_set_serial(term_uart_write, term_uart_wait, term_uart_baud);
     static const esp_console_cmd_t perf={.command="perf",
-        .help="TUI/panel performance windows; perf reset clears samples",
+        .help=LS_TXT(con_compact_ui_perf_help, "TUI/panel performance windows; perf reset clears samples"),
         .hint=nullptr,.func=perf_cmd,.argtable=nullptr};
     esp_console_cmd_register(&perf);
     static const esp_console_cmd_t sd={.command="sd",
-        .help="SD card: 'sd' states, 'sd mount' retries, 'sd ls [dir]' lists, 'sd cat FILE' prints a text file, 'sd get FILE' sends any file as base64, 'sd rm PATH' and 'sd mkdir PATH', "
-              "'sd put [dir/]<name> [base64]' writes (no payload truncates)",
+        .help=LS_TXT(con_compact_ui_sd_help, "SD card: 'sd' states, 'sd mount' retries, 'sd ls [dir]' lists, 'sd cat FILE' prints a text file, 'sd get FILE' sends any file as base64, 'sd rm PATH' and 'sd mkdir PATH', "
+              "'sd put [dir/]<name> [base64]' writes (no payload truncates)"),
         .hint=nullptr,.func=sd_cmd,.argtable=nullptr};
     esp_console_cmd_register(&sd);
-    static const esp_console_cmd_t mixrf={.command="mixrf",.help="Keyboard radios: probe, status, cc/scan/nfc on/off, stop",
+    static const esp_console_cmd_t mixrf={.command="mixrf",.help=LS_TXT(con_compact_ui_mixrf_help, "Keyboard radios: probe, status, cc/scan/nfc on/off, stop"),
         .hint=nullptr,.func=mixrf_cmd,.argtable=nullptr};
     esp_console_cmd_register(&mixrf);
     static const esp_console_cmd_t gps={.command="gps",
-        .help="GPS: report fix, sentence health, tracked satellites, C/N0 and antenna. 'gps sky' lists each satellite, 'gps raw' prints the last lines as received, 'gps baud' listens at each rate and dumps the wire, 'gps reset' puts the receiver back to factory settings and sets it up again",
+        .help=LS_TXT(con_compact_ui_gps_help, "GPS: report fix, sentence health, tracked satellites, C/N0 and antenna. 'gps sky' lists each satellite, 'gps raw' prints the last lines as received, 'gps baud' listens at each rate and dumps the wire, 'gps reset' puts the receiver back to factory settings and sets it up again"),
         .hint=nullptr,.func=gps_cmd,.argtable=nullptr};
     esp_console_cmd_register(&gps);
     static const esp_console_cmd_t lora={.command="lora",
-        .help="SX1262: status, config, rx, tx, scan, pocsag, fsk, fsktx, "
+        .help=LS_TXT(con_compact_ui_lora_help, "SX1262: status, config, rx, tx, scan, pocsag, fsk, fsktx, "
               "fskls, fskplay, fsksave; 'lora port' says where the radio is wired "
-              "(onboard socket or a module on the header)",
+              "(onboard socket or a module on the header)"),
         .hint=nullptr,.func=lora_cmd,.argtable=nullptr};
     esp_console_cmd_register(&lora);
     static const esp_console_cmd_t adsbc={.command="adsb",
-        .help="ADS-B on the LoRa chip: 'adsb chips' prints the last 8 raw Mode S frames with "
+        .help=LS_TXT(con_compact_ui_adsb_help, "ADS-B on the LoRa chip: 'adsb chips' prints the last 8 raw Mode S frames with "
               "level and verdict, the counters, trigger and decode rates and the first-bad-bit "
               "histogram ('adsb chips reset' clears them); 'adsb lr gain <0..13|auto>', "
               "'adsb lr bw <kHz>', 'adsb lr boost <0..7>' and 'adsb lr thresh [<dB>|auto]' tune "
-              "the running session, runtime only",
+              "the running session, runtime only"),
         .hint=nullptr,.func=adsb_cmd,.argtable=nullptr};
     esp_console_cmd_register(&adsbc);
     uat_console_register();
+    /* TIME MACHINE: taps on every receiver, its worker, replay, 	m. */
+    ls_tm_init();
+    ls_tmach_decode_register();
+    ls_tm_console_register();
     /* Anything proprietary registers itself and is reached only through the
        include guard, so removing it is deleting files and nothing else;
        the list of what goes is kept with those files. */
@@ -3867,22 +4112,22 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
 #  endif
 #endif
     static const esp_console_cmd_t spi={.command="spi",
-        .help="SPI: 'spi' reports the bus, 'spi up' creates it",
+        .help=LS_TXT(con_compact_ui_spi_help, "SPI: 'spi' reports the bus, 'spi up' creates it"),
         .hint=nullptr,.func=spi_cmd,.argtable=nullptr};
     esp_console_cmd_register(&spi);
     static const esp_console_cmd_t audio={.command="audio",
-        .help="Audio: report the codec, I2S pins and amplifier, and try each "
-              "one - 'audio swap', 'audio pa on|off', 'audio tone'",
+        .help=LS_TXT(con_compact_ui_audio_help, "Audio: report the codec, I2S pins and amplifier, and try each "
+              "one - 'audio swap', 'audio pa on|off', 'audio tone'"),
         .hint=nullptr,.func=audio_cmd,.argtable=nullptr};
     esp_console_cmd_register(&audio);
     static const esp_console_cmd_t mapc={.command="map",
-        .help="Map: the last render's cost, split into fetching tiles and "
-              "rasterising them",
+        .help=LS_TXT(con_compact_ui_map_help, "Map: the last render's cost, split into fetching tiles and "
+              "rasterising them"),
         .hint=nullptr,.func=map_cmd,.argtable=nullptr};
     esp_console_cmd_register(&mapc);
     static const esp_console_cmd_t keys={.command="keys",
-        .help="Keypad: probe, 'keys watch' to print events for 10 seconds, "
-              "'keys bl sweep' to chase the backlight whine",
+        .help=LS_TXT(con_compact_ui_keys_help, "Keypad: probe, 'keys watch' to print events for 10 seconds, "
+              "'keys bl sweep' to chase the backlight whine"),
         .hint=nullptr,.func=keys_cmd,.argtable=nullptr};
     esp_console_cmd_register(&keys);
 

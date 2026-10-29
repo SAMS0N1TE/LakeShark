@@ -18,8 +18,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "ls_textpack.h"
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
+#include "esp_heap_caps.h"
+#include "ff.h"
+#include "ls_sdcard.h"
 #else
 #define EXT_RAM_BSS_ATTR
 #endif
@@ -84,7 +88,7 @@ static void finish(call_writer_t *w, bool discard)
         FILE *f = fopen(side, "w");
         if (!f) ok = false;
         else {
-            int n = fprintf(f, "%lld,%lu,%lu,%lu,%lu,%lu,%u,%.8f,%.8f\n",
+            int n = LS_FPRINTF(t_call_store_lld_lu_lu_lu, f, "%lld,%lu,%lu,%lu,%lu,%lu,%u,%.8f,%.8f\n",
                 (long long)w->meta.time, (unsigned long)ms,
                 (unsigned long)w->meta.hz, (unsigned long)w->meta.talkgroup,
                 (unsigned long)w->meta.source, (unsigned long)w->meta.rate,
@@ -93,6 +97,11 @@ static void finish(call_writer_t *w, bool discard)
             if (fclose(f)) ok = false;
         }
         if (ok && rename(w->temporary, w->path)) ok = false;
+        if (ok) {
+            w->done = (call_entry_t){ .meta = w->meta, .duration_ms = ms, .bytes = w->bytes + 44 };
+            snprintf(w->done.path, sizeof(w->done.path), "%s", w->path);
+            w->finished = true;
+        }
     }
     if (!ok) { remove(w->temporary); remove(side); if (!discard) w->errors++; }
 }
@@ -200,10 +209,32 @@ bool call_store_delete(const char *root,const char *path) {
     xSemaphoreGive(s_lease_lock);
     return true;
 }
+/* The list holds the newest calls only, and names already say which those
+   are: YYYYMMDD folders, HHMMSS_ names (a collision suffix sorts after its
+   base). So the walk keeps the newest names first, with room to spare for
+   calls whose sidecar is missing, and only those are opened. Opening a
+   sidecar, a keep marker and a stat for every recording was three directory
+   searches per file - about 45 s on a full card, and the writer records
+   nothing while it scans. */
+typedef struct { char day[9]; char name[CALL_PATH_MAX - 16]; } call_name_t;
+static bool name_newer(const call_name_t *a, const char *day, const char *name)
+{
+    const int d = strcmp(a->day, day);
+    return d > 0 || (d == 0 && strcmp(a->name, name) > 0);
+}
 int call_store_scan(const char *root, call_entry_t *entries, int capacity)
 {
-    int count = 0;
-    DIR *days = opendir(root); if (!days) return 0;
+    if (capacity <= 0) return 0;
+    const int keep = capacity * 2;
+#ifdef ESP_PLATFORM
+    call_name_t *names = heap_caps_malloc(sizeof(*names) * keep, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!names) names = malloc(sizeof(*names) * keep);
+#else
+    call_name_t *names = malloc(sizeof(*names) * keep);
+#endif
+    if (!names) return 0;
+    int found = 0;
+    DIR *days = opendir(root); if (!days) { free(names); return 0; }
     struct dirent *day;
     while ((day = readdir(days))) {
         if (!day_name(day->d_name)) continue;
@@ -211,16 +242,34 @@ int call_store_scan(const char *root, call_entry_t *entries, int capacity)
         DIR *files = opendir(dir); if (!files) continue;
         struct dirent *file;
         while ((file = readdir(files))) {
-            if (!wav_name(file->d_name)) continue;
+            if (!wav_name(file->d_name) || strlen(file->d_name) >= sizeof(names[0].name)) continue;
+            int at = 0;
+            while (at < found && name_newer(&names[at], day->d_name, file->d_name)) ++at;
+            if (at >= keep) continue;
+            if (found < keep) ++found;
+            memmove(names + at + 1, names + at, (found - at - 1) * sizeof(*names));
+            snprintf(names[at].day, sizeof(names[at].day), "%.8s", day->d_name);
+            snprintf(names[at].name, sizeof(names[at].name), "%s", file->d_name);
+        }
+        closedir(files);
+    }
+    closedir(days);
+    int count = 0;
+    for (int c = 0; c < found; ++c) {
+        {
             call_entry_t e = {0};
-            int n = snprintf(e.path, sizeof(e.path), "%s/%s", dir, file->d_name);
+            int n = snprintf(e.path, sizeof(e.path), "%s/%s/%s", root, names[c].day, names[c].name);
             if (n < 0 || n >= (int)sizeof(e.path)) continue;
             char side[CALL_PATH_MAX + 8]; snprintf(side, sizeof(side), "%s.meta", e.path);
             FILE *f = fopen(side, "r"); if (!f) continue;
             long long stamp; unsigned ms, hz, tg, src, rate, gps;
-            int got = fscanf(f, "%lld,%u,%u,%u,%u,%u,%u,%lf,%lf", &stamp, &ms,
+            /* sscanf on the line, not fscanf: that would link newlib's FILE
+               scanner (8 KB) for this one call. The writer's line is < 120. */
+            char line[160]; size_t len = fread(line, 1, sizeof(line) - 1, f);
+            fclose(f); line[len] = 0;
+            int got = sscanf(line, "%lld,%u,%u,%u,%u,%u,%u,%lf,%lf", &stamp, &ms,
                 &hz, &tg, &src, &rate, &gps, &e.meta.lat, &e.meta.lon);
-            fclose(f); if (got != 9) continue;
+            if (got != 9) continue;
             e.meta.time = stamp; e.meta.hz = hz; e.meta.talkgroup = tg;
             e.meta.source = src; e.meta.rate = rate; e.meta.gps = gps != 0;
             e.duration_ms = ms;
@@ -234,9 +283,9 @@ int call_store_scan(const char *root, call_entry_t *entries, int capacity)
             memmove(entries + at + 1, entries + at, (count - at - 1) * sizeof(e));
             entries[at] = e;
         }
-        closedir(files);
     }
-    closedir(days); return count;
+    free(names);
+    return count;
 }
 /* Civil date to epoch day, rejecting malformed archive directory names. */
 static int64_t epoch_day(const char *name)
@@ -278,9 +327,37 @@ void call_store_retain(const char *root, int64_t today, unsigned keep)
     closedir(days);
 }
 
+#ifdef ESP_PLATFORM
+/* One f_readdir pass: each entry carries its size, where a stat is a
+   directory search per file. False when the card has no FATFS path. */
+static bool size_ff(const char *root, uint64_t *out)
+{
+    char base[CALL_PATH_MAX];
+    if (!ls_sdcard_ff_path(root, base, sizeof(base))) return false;
+    FF_DIR days, files;
+    FILINFO di, fi;
+    if (f_opendir(&days, base) != FR_OK) return false;
+    uint64_t bytes = 0;
+    while (f_readdir(&days, &di) == FR_OK && di.fname[0]) {
+        if (!(di.fattrib & AM_DIR) || !day_name(di.fname)) continue;
+        char dir[CALL_PATH_MAX + 16];
+        snprintf(dir, sizeof(dir), "%s/%.8s", base, di.fname);
+        if (f_opendir(&files, dir) != FR_OK) continue;
+        while (f_readdir(&files, &fi) == FR_OK && fi.fname[0])
+            if (fi.fname[0] != '.' && !(fi.fattrib & AM_DIR)) bytes += fi.fsize;
+        f_closedir(&files);
+    }
+    f_closedir(&days);
+    *out = bytes;
+    return true;
+}
+#endif
 uint64_t call_store_size(const char *root)
 {
     uint64_t bytes = 0;
+#ifdef ESP_PLATFORM
+    if (size_ff(root, &bytes)) return bytes;
+#endif
     DIR *days = opendir(root); if (!days) return 0;
     struct dirent *day;
     while ((day = readdir(days))) {

@@ -9,6 +9,7 @@
 #include "esp_timer.h"
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 static ls_nfc_suite_status_t card;
 static unsigned selected_block;
 static bool detail,key_b;
@@ -29,12 +30,12 @@ static void action(int i){
  if(i==1)ok=ls_nfc_suite_start(true);
  if(i==2)ls_nfc_suite_stop();
  if(i==3)detail=!detail;
- if(i==4||i==5){key_b=i==5;char title[40];if(card.identified)snprintf(title,sizeof(title),"SECTOR %u KEY %c / 12 HEX",ls_classic_sector(selected_block),key_b?'B':'A');else snprintf(title,sizeof(title),"DEFAULT KEY %c / 12 HEX",key_b?'B':'A');ls_keyboard_open(title,"",12,key_done);}
+ if(i==4||i==5){key_b=i==5;char title[40];if(card.identified)LS_SNPRINTF(t_scr_nfc_sector_u_key_c, title,sizeof(title),"SECTOR %u KEY %c / 12 HEX",ls_classic_sector(selected_block),key_b?'B':'A');else LS_SNPRINTF(t_scr_nfc_default_key_c_12, title,sizeof(title),"DEFAULT KEY %c / 12 HEX",key_b?'B':'A');ls_keyboard_open(title,"",12,key_done);}
  if(i==6)ok=ls_nfc_suite_save();
- if(i==7){char note[240],uid[32]={0};for(unsigned n=0;n<card.uid_len;n++)snprintf(uid+n*2,sizeof(uid)-n*2,"%02X",card.uid[n]);snprintf(note,sizeof(note),"NFC UID %s ATQA %04X SAK %02X. Verified blocks %u/%u; authentication attempts %lu, successful %lu. Unread bytes remain unknown.",uid,card.atqa,card.sak,card.read_blocks,card.blocks,(unsigned long)card.attempts,(unsigned long)card.auth_ok);ok=ls_field_mark_radio("NFC card survey",note,LS_FIELD_NFC,13560000,card.read_blocks);}
+ if(i==7){char note[240],uid[32]={0};for(unsigned n=0;n<card.uid_len;n++)snprintf(uid+n*2,sizeof(uid)-n*2,"%02X",card.uid[n]);LS_SNPRINTF(fmt_scr_nfc_nfc_uid_atqa_sak, note,sizeof(note),"NFC UID %s ATQA %04X SAK %02X. Verified blocks %u/%u; authentication attempts %lu, successful %lu. Unread bytes remain unknown.",uid,card.atqa,card.sak,card.read_blocks,card.blocks,(unsigned long)card.attempts,(unsigned long)card.auth_ok);ok=ls_field_mark_radio("NFC card survey",note,LS_FIELD_NFC,13560000,card.read_blocks);}
  if(!ok){
   if(i==0 || i==1 || i==6){ls_nfc_suite_snapshot(&card);snprintf(feedback,sizeof(feedback),"%s",card.status);}
-  else snprintf(feedback,sizeof(feedback),"Not accepted: finish/stop current operation or identify a card first");
+  else LS_SNPUTS(t_scr_nfc_not_accepted_finish_stop, feedback, sizeof(feedback), "Not accepted: finish/stop current operation or identify a card first");
  }
 }
 static void enter(void){focus=-1;slot=0;selected_block=0;detail=false;feedback[0]=0;}
@@ -53,16 +54,16 @@ static void draw(tui_surface *sf,tui_rect a){
  }
  ls_btn_t buttons[]={{"SCAN","ID",'i',false,card.busy},{"READ","A + B",'r',card.reading,card.busy},{"STOP","KEEP",'x',false,!card.busy},{"VIEW",detail?"HEX":"MAP",'v',detail,false},{"KEY A","SET",'a',false,card.busy},{"KEY B","SET",'b',false,card.busy},{"SAVE","SD",'s',false,card.busy||!card.identified},{"MARK","JOURNAL",'j',false,!card.identified}};
  int h=ls_btn_raised_height(a,8);ls_btn_bar_raised(sf,tui_rect_make(a.x,a.y,a.w,h),buttons,8,focus);
- tui_rect box=tui_rect_make(a.x,a.y+h,a.w,a.h-h-2);ls_panel_box(sf,box,"NFC / CARD WORKBENCH",TUI_CYAN);
+ tui_rect box=tui_rect_make(a.x,a.y+h,a.w,a.h-h-2);ls_panel_box(sf,box,LS_TEXT(t_scr_nfc_nfc_card_workbench, "NFC / CARD WORKBENCH"),TUI_CYAN);
  ls_motion_busy(sf,box,card.busy);
  char line[112],uid[32]={0};for(unsigned n=0;n<card.uid_len;n++)snprintf(uid+n*2,sizeof(uid)-n*2,"%02X",card.uid[n]);
- snprintf(line,sizeof(line),"UID %s  ATQA %04X  SAK %02X",card.identified?uid:"--",card.atqa,card.sak);tui_put_str(sf,box,box.x+2,box.y+1,card.identified?line:"UID --  ATQA --  SAK --",LS_ATTR_DIM);
+ LS_SNPRINTF(t_scr_nfc_uid_s_atqa_04x, line,sizeof(line),"UID %s  ATQA %04X  SAK %02X",card.identified?uid:"--",card.atqa,card.sak);tui_put_str(sf,box,box.x+2,box.y+1,card.identified?line:"UID --  ATQA --  SAK --",LS_ATTR_DIM);
  snprintf(line,sizeof(line),portrait?"%u/%u read | auth %lu/%lu | E%lu N%lu":"%u/%u blocks read | %lu auth OK / %lu attempts | %lu errors / %lu NAKs",card.read_blocks,card.blocks,(unsigned long)card.auth_ok,(unsigned long)card.attempts,(unsigned long)card.errors,(unsigned long)card.naks);tui_put_str(sf,box,box.x+2,box.y+2,line,LS_ATTR_DIM);
- if(!card.identified){tui_put_str(sf,box,box.x+2,box.y+4,"SCAN verifies the UID and memory layout.",LS_ATTR_DIM);tui_put_str(sf,box,box.x+2,box.y+6,"READ uses Key A/B. Default: FFFFFFFFFFFF.",LS_ATTR_DIM);tui_put_str(sf,box,box.x+2,box.y+8,"Set your keys with KEY A/B. Colours are live.",LS_ATTR_DIM);}
- else if(!card.blocks)tui_put_str(sf,box,box.x+2,box.y+4,"Identity verified. Memory protocol unsupported; no blocks invented.",LS_ATTR_DIM);
+ if(!card.identified){tui_put_str(sf,box,box.x+2,box.y+4,LS_TEXT(t_scr_nfc_scan_verifies_the_uid, "SCAN verifies the UID and memory layout."),LS_ATTR_DIM);tui_put_str(sf,box,box.x+2,box.y+6,LS_TEXT(t_scr_nfc_read_uses_key_a, "READ uses Key A/B. Default: FFFFFFFFFFFF."),LS_ATTR_DIM);tui_put_str(sf,box,box.x+2,box.y+8,LS_TEXT(t_scr_nfc_set_your_keys_with, "Set your keys with KEY A/B. Colours are live."),LS_ATTR_DIM);}
+ else if(!card.blocks)tui_put_str(sf,box,box.x+2,box.y+4,LS_TEXT(t_scr_nfc_identity_verified_memory_protocol, "Identity verified. Memory protocol unsupported; no blocks invented."),LS_ATTR_DIM);
  else {
   unsigned sector=ls_classic_sector(selected_block),first=ls_classic_first(sector),count=ls_classic_count(sector);
-  snprintf(line,sizeof(line),"Block %03u / sector %02u / %s | Key A %s  B %s",selected_block,sector,selected_block==first+count-1?"TRAILER":selected_block==0?"MANUFACTURER":"DATA",card.sector_keys[sector]&1?"verified":"unverified",card.sector_keys[sector]&2?"verified":"unverified");if(portrait)snprintf(line,sizeof(line),"B%03u S%02u %s | A:%s B:%s",selected_block,sector,selected_block==first+count-1?"TRAILER":selected_block==0?"MFR":"DATA",card.sector_keys[sector]&1?"OK":"?",card.sector_keys[sector]&2?"OK":"?");tui_put_str(sf,box,box.x+2,box.y+3,line,LS_ATTR_DIM);
+  LS_SNPRINTF(t_scr_nfc_block_03u_sector_02u, line,sizeof(line),"Block %03u / sector %02u / %s | Key A %s  B %s",selected_block,sector,selected_block==first+count-1?"TRAILER":selected_block==0?"MANUFACTURER":"DATA",card.sector_keys[sector]&1?"verified":"unverified",card.sector_keys[sector]&2?"verified":"unverified");if(portrait)LS_SNPRINTF(t_scr_nfc_b_03u_s_02u, line,sizeof(line),"B%03u S%02u %s | A:%s B:%s",selected_block,sector,selected_block==first+count-1?"TRAILER":selected_block==0?"MFR":"DATA",card.sector_keys[sector]&1?"OK":"?",card.sector_keys[sector]&2?"OK":"?");tui_put_str(sf,box,box.x+2,box.y+3,line,LS_ATTR_DIM);
   if(detail){
    uint8_t data[16]={0};uint16_t mask=0;ls_nfc_suite_block(selected_block,data,&mask);
    for(unsigned row=0;row<2;row++){
@@ -70,7 +71,7 @@ static void draw(tui_surface *sf,tui_rect a){
     for(unsigned col=0;col<8;col++){unsigned b=row*8+col;bool valid=mask&(1u<<b);pos+=snprintf(hex+pos,sizeof(hex)-pos,valid?"%02X ":"?? ",data[b]);ascii[col]=valid?(data[b]>=32&&data[b]<127?data[b]:'.'):'?';}ascii[8]=0;
     snprintf(line,sizeof(line),"%s  |%s|",hex,ascii);tui_put_str(sf,box,box.x+2,box.y+6+row*2,line,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
    }
-   tui_put_str(sf,box,box.x+2,box.y+11,"?? = unread or non-readable bytes",LS_ATTR_DIM);
+   tui_put_str(sf,box,box.x+2,box.y+11,LS_TEXT(t_scr_nfc_unread_or_non_readable, "?? = unread or non-readable bytes"),LS_ATTR_DIM);
    if(selected_block==first+count-1 && (mask&0x03c0)==0x03c0){
     unsigned c1=data[7]>>4,c2=data[8]&15,c3=data[8]>>4;
     bool valid=((data[6]&15)^c1)==15 && ((data[6]>>4)^c2)==15 && ((data[7]&15)^c3)==15;

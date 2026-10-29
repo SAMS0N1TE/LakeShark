@@ -79,6 +79,10 @@ void ls_iq_control_set_initial(ls_iq_control_t *control, uint32_t center_hz,
                                int gain_tenths_db, uint32_t bandwidth_hz);
 void ls_iq_control_request_tune(ls_iq_control_t *control, uint32_t center_hz,
                                 bool fast);
+/* Cancel only this generation before its owner admits hardware I/O. No
+ * receiver operation; newer operator requests are preserved. */
+bool ls_iq_control_cancel_tune(ls_iq_control_t *control,uint32_t generation,
+                              uint64_t *effective_center_hz);
 void ls_iq_control_request_gain(ls_iq_control_t *control,
                                 int gain_tenths_db);
 void ls_iq_control_request_bandwidth(ls_iq_control_t *control,

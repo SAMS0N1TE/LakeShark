@@ -75,13 +75,46 @@ void dmr_gen_burst(uint8_t out_burst[33],
                    const dmr_lc_t *lc)
 {
     uint8_t lc_bits[12];
+    dmr_gen_lc_bits(lc, lc_bits);
+    lc_sign(lc_bits, data_type);
+    dmr_gen_data_burst(out_burst, sync_pattern, colour_code, data_type, lc_bits);
+}
+
+void dmr_gen_lc_signed(const uint8_t lc9[9], uint8_t data_type, uint8_t bits96[12])
+{
+    memset(bits96, 0, 12);
+    memcpy(bits96, lc9, 9);
+    lc_sign(bits96, data_type);
+}
+
+void dmr_gen_voice_burst(uint8_t out_burst[33], const uint8_t *sync_pattern,
+                         uint16_t emb, uint32_t fragment, unsigned fill)
+{
+    memset(out_burst, 0, 33);
+    /* Something that looks like vocoder output and is not all one value. */
+    uint32_t x = 0x9E3779B9u ^ (fill * 0x85EBCA6Bu);
+    for (unsigned i = 0; i < DMR_BURST_BITS; i++) {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        wr_bit(out_burst, i, (int)(x & 1u));
+    }
+    for (unsigned i = 0; i < 48; i++) {
+        int bit;
+        if (sync_pattern) bit = (sync_pattern[i / 8] >> (7 - (i % 8))) & 1;
+        else if (i < 8)   bit = (emb >> (15 - i)) & 1;
+        else if (i < 40)  bit = (int)((fragment >> (31 - (i - 8))) & 1u);
+        else              bit = (emb >> (7 - (i - 40))) & 1;
+        wr_bit(out_burst, 108u + i, bit);
+    }
+}
+
+void dmr_gen_data_burst(uint8_t out_burst[33], const uint8_t sync_pattern[6],
+                        uint8_t colour_code, uint8_t data_type,
+                        const uint8_t block[12])
+{
     uint8_t coded[DMR_BPTC_BITS / 8 + 1];
 
     memset(out_burst, 0, 33);
-
-    dmr_gen_lc_bits(lc, lc_bits);
-    lc_sign(lc_bits, data_type);
-    dmr_bptc_encode(lc_bits, coded);
+    dmr_bptc_encode(block, coded);
 
     /* Split the 196-bit BPTC block back into info1 (98 bits) + info2. */
     for (unsigned i = 0; i < 98; i++)

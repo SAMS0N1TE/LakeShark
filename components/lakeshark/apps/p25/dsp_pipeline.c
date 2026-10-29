@@ -203,19 +203,27 @@ static int lpf_decimate(dsp_state_t *s, float fi, float fq, float *oi, float *oq
     s->fir_buf_q[s->fir_idx] = fq;
     s->decim_count++;
     if (s->decim_count < DSP_DECIMATION) {
-        s->fir_idx = (s->fir_idx + 1) % DSP_FIR_TAPS;
+        /* A compare, not % 31: this runs on every 240 kHz sample. */
+        if (++s->fir_idx == DSP_FIR_TAPS) s->fir_idx = 0;
         return 0;
     }
     s->decim_count = 0;
 
+    /* Newest to the start of the ring, then its end to the oldest: the
+       same taps in the same order as one wrapping walk, without a branch
+       on every tap. */
     float si = 0, sq = 0;
-    int idx = s->fir_idx;
-    for (int t = 0; t < DSP_FIR_TAPS; t++) {
-        si += s->fir_coeffs[t] * s->fir_buf_i[idx];
-        sq += s->fir_coeffs[t] * s->fir_buf_q[idx];
-        if (--idx < 0) idx = DSP_FIR_TAPS - 1;
+    const int idx = s->fir_idx;
+    int t = 0;
+    for (int j = idx; j >= 0; --j, ++t) {
+        si += s->fir_coeffs[t] * s->fir_buf_i[j];
+        sq += s->fir_coeffs[t] * s->fir_buf_q[j];
     }
-    s->fir_idx = (s->fir_idx + 1) % DSP_FIR_TAPS;
+    for (int j = DSP_FIR_TAPS - 1; t < DSP_FIR_TAPS; --j, ++t) {
+        si += s->fir_coeffs[t] * s->fir_buf_i[j];
+        sq += s->fir_coeffs[t] * s->fir_buf_q[j];
+    }
+    if (++s->fir_idx == DSP_FIR_TAPS) s->fir_idx = 0;
     *oi = si; *oq = sq;
     return 1;
 }
@@ -250,13 +258,12 @@ static const float rrc_sym_taps[51] = {
 static float rrc_filter(dsp_state_t *s, float sample)
 {
     s->rrc_buf[s->rrc_idx] = sample;
+    /* Two straight runs, as lpf_decimate: same order, no per-tap branch. */
     float acc = 0;
-    int idx = s->rrc_idx;
-    for (int t = 0; t < 51; t++) {
-        acc += rrc_sym_taps[t] * s->rrc_buf[idx];
-        if (--idx < 0) idx = 50;
-    }
-    s->rrc_idx = (s->rrc_idx + 1) % 51;
+    int t = 0;
+    for (int j = s->rrc_idx; j >= 0; --j, ++t) acc += rrc_sym_taps[t] * s->rrc_buf[j];
+    for (int j = 50; t < 51; --j, ++t) acc += rrc_sym_taps[t] * s->rrc_buf[j];
+    if (++s->rrc_idx == 51) s->rrc_idx = 0;
     return acc;
 }
 
@@ -840,13 +847,17 @@ static int process_iq(dsp_state_t *s, const uint8_t *iq_data, const float *float
         s->cic_acc_q = 0;
         s->cic_count = 0;
 
-        {
-            /* Map nco_phase ∈ [-2π, +2π] to LUT index [0, 256). */
+        /* Nothing to mix while no loop has moved the NCO (C4FM never does):
+           a rotation by zero is the sample itself. */
+        if (s->nco_step_rad != 0.0f || s->nco_phase != 0.0f) {
+            /* Map nco_phase ∈ [-2π, +2π] to LUT index [0, 256). Single
+               precision: double here was software arithmetic at 240 kHz,
+               about half of P25's demodulator time on the P4. */
             static const int NCO_LUT_SIZE = 256;
             extern const float nco_sin_lut[];   /* defined below */
-            double p = s->nco_phase;
-            if (p < 0) p += 6.283185307;
-            int idx = (int)(p * (NCO_LUT_SIZE / 6.283185307));
+            float p = s->nco_phase;
+            if (p < 0) p += 6.283185307f;
+            int idx = (int)(p * (NCO_LUT_SIZE / 6.283185307f));
             idx &= (NCO_LUT_SIZE - 1);
             int idx_cos = (idx + NCO_LUT_SIZE / 4) & (NCO_LUT_SIZE - 1);
             float nc = nco_sin_lut[idx_cos];  /* cos(p) = sin(p + π/2) */
@@ -856,8 +867,8 @@ static int process_iq(dsp_state_t *s, const uint8_t *iq_data, const float *float
             ai = ai2; aq = aq2;
             s->nco_phase += s->nco_step_rad;
             /* Wrap to keep phase bounded. */
-            if (s->nco_phase >  6.283185307) s->nco_phase -= 6.283185307;
-            if (s->nco_phase < -6.283185307) s->nco_phase += 6.283185307;
+            if (s->nco_phase >  6.283185307f) s->nco_phase -= 6.283185307f;
+            if (s->nco_phase < -6.283185307f) s->nco_phase += 6.283185307f;
         }
 
         /* From here, everything runs at 240 kHz exactly as before */
@@ -918,7 +929,7 @@ static int process_iq(dsp_state_t *s, const uint8_t *iq_data, const float *float
             double target_step = s->nco_dc_avg / (double)DSP_DECIMATION;
             /* Preserve the retired path's ~2 ms smoothing time at twice
              * its discriminator sample rate. */
-            s->nco_step_rad += 0.01 * (target_step - s->nco_step_rad);
+            s->nco_step_rad += (float)(0.01 * (target_step - s->nco_step_rad));
             /* use the 51-tap, beta=0.2 RRC designed for the live
              * 48 kHz / 10-sps boundary. The retired 21-tap table covered
              * only the old 24 kHz / 5-sps stream and distorted the timing

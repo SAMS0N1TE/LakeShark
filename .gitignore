@@ -57,6 +57,9 @@ serial*.txt
 !/docs/REPLAY_AND_AIRCRAFT.md
 !/docs/screenshots/
 /tools/*
+!/tools/observation_catalog.py
+!/docs/OBSERVATION_CATALOG.md
+!/docs/RECEIVER_TRIALS.md
 !/tools/carto_catalog.py
 !/tools/carto_push.py
 !/tools/cell_console.py
@@ -65,6 +68,7 @@ serial*.txt
 !/tools/cell_lab.ps1
 !/tools/test_cell_archive.py
 !/tools/gen_cell_font.py
+!/tools/ota_github_assets.py
 !/tools/p25_profile.example
 !/tools/p25_profile_franklin_nh_to_west_dennis_ma.example
 !/tools/scanlist_nh_ma.lscan

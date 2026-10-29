@@ -12,6 +12,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 static bool wanted, configured;
@@ -57,9 +58,9 @@ void p25_p2_describe(char *text, unsigned capacity) {
   if (!p25_p2_enabled())
     snprintf(text, capacity, "OFF (experimental)");
   else if (!ids)
-    snprintf(text, capacity, "EXP: need WACN/SYS/NAC");
+    LS_SNPUTS(t_p25_p2_runtime_exp_need_wacn_sys, text, capacity, "EXP: need WACN/SYS/NAC");
   else
-    snprintf(text, capacity, "EXP S%u %s V%lu A%lu %luus", s.slot + 1,
+    LS_SNPRINTF(t_p25_p2_runtime_exp_s_u_s, text, capacity, "EXP S%u %s V%lu A%lu %luus", s.slot + 1,
              s.clear_confirmed ? "CLEAR"
              : s.synchronized  ? "MUTED"
                                : "HUNT",
@@ -78,6 +79,7 @@ static void output(const int16_t *pcm, size_t count, void *context) {
     archive_ptt = current.mac_opcodes[P25P2_MAC_PTT]; archive_end = ends;
     call_archive_audio(CALL_P25_P2, last_hz, current.talkgroup, current.source,
         current.clear_confirmed && current.algorithm == 0x80, pcm, (unsigned)count);
+    p25_voice_peak_note(&P25, pcm, (int)count);
     audio_write_p25_voice(pcm, (int)count);
   }
 }

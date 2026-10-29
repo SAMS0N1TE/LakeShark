@@ -57,10 +57,37 @@ bool p25_tg_observed_record(uint64_t hz, uint16_t nac, uint16_t tg,
         s_seen.rows[index].talkgroup = tg;
     }
     p25_tg_observed_row_t *row = &s_seen.rows[index];
+    /* Advance the minute ring, clearing the minutes nothing was heard in. A
+       row new to its slot was zeroed above, so its newest_minute of 0 only
+       clears buckets that are already clear. */
+    const uint32_t minute = now / 60000u;
+    if (minute != row->newest_minute) {
+        uint32_t gap = minute - row->newest_minute;
+        if (gap > P25_TG_OBSERVED_MINUTES) gap = P25_TG_OBSERVED_MINUTES;
+        for (uint32_t k = 0; k < gap; ++k)
+            row->minute[(minute - k) % P25_TG_OBSERVED_MINUTES] = 0;
+        row->newest_minute = minute;
+    }
+    if (row->minute[minute % P25_TG_OBSERVED_MINUTES] != UINT8_MAX)
+        ++row->minute[minute % P25_TG_OBSERVED_MINUTES];
     row->last_seen_ms = now;
     if (row->hits != UINT32_MAX) ++row->hits;
     row->sources |= source;
     ++s_seen.generation;
     give();
     return true;
+}
+
+unsigned p25_tg_observed_minute_hits(const p25_tg_observed_row_t *row,
+                                     uint32_t now_ms, unsigned ago)
+{
+    if (!row || ago >= P25_TG_OBSERVED_MINUTES) return 0;
+    const uint32_t now_minute = now_ms / 60000u;
+    if (ago > now_minute) return 0;
+    const uint32_t m = now_minute - ago;
+    /* Only minutes inside the ring the row last advanced, never one after
+       it: a record clock that went backwards reads as no history. */
+    if (m > row->newest_minute ||
+        row->newest_minute - m >= P25_TG_OBSERVED_MINUTES) return 0;
+    return row->minute[m % P25_TG_OBSERVED_MINUTES];
 }

@@ -56,6 +56,12 @@ typedef struct {
        renderer has none), and its colour. */
     int mark1;
     uint16_t mark_colour;
+    /* Retained colour inputs, in the owner's PSRAM context. Larger palettes
+       still work through the uncached path; existing RF/audio maps use <=16. */
+    ls_pwf_stop_t colour_stops[16];
+    int colour_count;
+    float colour_lo, colour_hi;
+    bool colours_valid;
 } ls_pwf_t;
 
 /* (Re)size: a new size or bin count starts an empty history. False when

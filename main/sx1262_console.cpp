@@ -15,6 +15,7 @@
 #include <cctype>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "ls_textpack.h"
 
 static bool number(const char *s, double *out)
 {
@@ -28,9 +29,9 @@ int sx1262_receive_command(int argc, char **argv)
     const bool paging = argc > 1 && !strcmp(argv[1], "pocsag");
     if ((paging && (argc < 4 || argc > 6)) ||
         (!paging && (argc < 8 || argc > 9))) {
-        printf("lora pocsag MHz baud [seconds=30] [invert=0]\n"
+        LS_FPUTS(msg_sx1262_console_lora_pocsag_mhz_baud, "lora pocsag MHz baud [seconds=30] [invert=0]\n"
                "lora fsk MHz baud deviation_Hz bandwidth_Hz sync_hex bytes [seconds=30]\n"
-               "  RX only; reports channel RSSI floor/peak. LR2021 HF: 1900-2200, 2400-2500 MHz\n");
+               "  RX only; reports channel RSSI floor/peak. LR2021 HF: 1900-2200, 2400-2500 MHz\n", stdout);
         return 1;
     }
     double mhz = 0, baud = 0, seconds = 30, dev = 4500, bw = 19500, bytes = 64;
@@ -55,7 +56,7 @@ int sx1262_receive_command(int argc, char **argv)
         dev < 600 || dev > max_dev || bw < 4800 || bw > max_bw ||
         bytes < 1 || bytes > 255 || floor(bytes) != bytes ||
         (paging && !(native && baud == 512) && baud != 1200 && baud != 2400)) {
-        printf("lora: invalid receive settings; POCSAG supports 512/1200/2400 baud\n");
+        LS_FPUTS(msg_sx1262_console_lora_invalid_receive_settings, "lora: invalid receive settings; POCSAG supports 512/1200/2400 baud\n", stdout);
         return 1;
     }
     uint32_t sync = inverted ? ~0x7cd215d8u : 0x7cd215d8u;
@@ -101,13 +102,13 @@ int sx1262_receive_command(int argc, char **argv)
     cfg.stream_sync_prefix = native;
     esp_err_t err = ls_lora_fsk_begin(&cfg);
     if (err == ESP_OK) {
-        printf("lora: experimental %s RX %.6f MHz %u baud, %.0f seconds\n",
+        LS_PRINTF(fmt_sx1262_console_lora_experimental_rx_mhz, "lora: experimental %s RX %.6f MHz %u baud, %.0f seconds\n",
                paging ? "POCSAG" : "FSK", mhz, (unsigned)cfg.bitrate, seconds);
         /* Said before the session rather than after it: the receiver will
            happily read a longer frame, the capture ring will not hold one,
            and finding that out at the end costs the whole session. */
         if (!paging && bytes > LS_FSK_CAPTURE_BYTES)
-            printf("lora: frames will be printed but not filed - a capture "
+            LS_PRINTF(fmt_sx1262_console_lora_frames_will_be, "lora: frames will be printed but not filed - a capture "
                    "holds %d bytes\n", LS_FSK_CAPTURE_BYTES);
         const int64_t end = esp_timer_get_time() + (int64_t)(seconds * 1e6);
         int64_t previous = 0;
@@ -164,7 +165,7 @@ int sx1262_receive_command(int argc, char **argv)
                        bytes are all on the line above either way, so nothing
                        is lost that was not already unreplayable. */
                     if (n > LS_FSK_CAPTURE_BYTES) {
-                        printf("  -> not filed, %d bytes over the %d a capture"
+                        LS_PRINTF(fmt_sx1262_console_not_filed_bytes_over, "  -> not filed, %d bytes over the %d a capture"
                                " holds\n", n - LS_FSK_CAPTURE_BYTES,
                                LS_FSK_CAPTURE_BYTES);
                     } else {
@@ -195,7 +196,7 @@ int sx1262_receive_command(int argc, char **argv)
             vTaskDelay(pdMS_TO_TICKS(5));
         }
         if (looks)
-            printf("lora: channel floor %.1f dBm, peak %.1f dBm over %u looks\n",
+            LS_PRINTF(fmt_sx1262_console_lora_channel_floor_dbm, "lora: channel floor %.1f dBm, peak %.1f dBm over %u looks\n",
                    (double)floor_dbm, (double)peak_dbm, looks);
         printf("lora: %u packets, %u read errors", packets, errors);
         if (paging) printf(", %lu pages, %lu BCH errors",
@@ -225,11 +226,11 @@ int sx1262_receive_command(int argc, char **argv)
 static int fsk_transmit_command(int argc, char **argv)
 {
     if (argc != 10) {
-        printf("lora fsktx MHz baud deviation_Hz bandwidth_Hz sync_hex "
+        LS_FPUTS(msg_sx1262_console_lora_fsktx_mhz_baud, "lora fsktx MHz baud deviation_Hz bandwidth_Hz sync_hex "
                "preamble_bits dBm payload_hex\n"
                "  sync_hex is 32 bits, sent ahead of the payload\n"
                "  preamble_bits is a multiple of 8, 8..1024\n"
-               "  payload_hex is an even number of hex digits, 1..255 bytes\n");
+               "  payload_hex is an even number of hex digits, 1..255 bytes\n", stdout);
         return 1;
     }
 
@@ -244,15 +245,15 @@ static int fsk_transmit_command(int argc, char **argv)
     char *end;
     const unsigned long long sync = strtoull(argv[6], &end, 16);
     if (end == argv[6] || *end || sync > 0xffffffffull) {
-        printf("lora: sync word must be up to 32 bits of hex\n");
+        LS_FPUTS(msg_sx1262_console_lora_sync_word_must, "lora: sync word must be up to 32 bits of hex\n", stdout);
         return 1;
     }
 
     const char *hex = argv[9];
     const size_t digits = strlen(hex);
     if (digits == 0 || digits % 2 || digits > 510) {
-        printf("lora: payload must be an even number of hex digits, "
-               "1..255 bytes\n");
+        LS_FPUTS(msg_sx1262_console_lora_payload_must_be, "lora: payload must be an even number of hex digits, "
+               "1..255 bytes\n", stdout);
         return 1;
     }
     uint8_t payload[255];
@@ -278,7 +279,7 @@ static int fsk_transmit_command(int argc, char **argv)
     /* Refused here rather than by a session that starts and then hears
        nothing: the modem needs the signal to fit inside the filter. */
     if (baud + 2 * dev > bw) {
-        printf("lora: %.0f Hz of signal will not fit a %.0f Hz filter - "
+        LS_PRINTF(fmt_sx1262_console_lora_hz_of_signal, "lora: %.0f Hz of signal will not fit a %.0f Hz filter - "
                "raise the bandwidth\n", baud + 2 * dev, bw);
         return 1;
     }
@@ -310,7 +311,7 @@ static int fsk_transmit_command(int argc, char **argv)
     esp_err_t err = ls_lora_fsk_begin(&cfg);
     if (err == ESP_OK) {
         const unsigned bits = (unsigned)(preamble + 32 + bytes * 8);
-        printf("lora: FSK TX %.6f MHz, %u baud, %.1f kHz deviation, "
+        LS_PRINTF(fmt_sx1262_console_lora_fsk_tx_mhz, "lora: FSK TX %.6f MHz, %u baud, %.1f kHz deviation, "
                "%u-bit preamble, sync %08lX, %d dBm\n",
                mhz, (unsigned)cfg.bitrate, dev / 1000.0,
                (unsigned)cfg.preamble_bits, (unsigned long)cfg.sync_word,
@@ -350,7 +351,7 @@ int sx1262_transmit_command(int argc, char **argv)
 
 static void capture_print(int index, const ls_fsk_capture_t *c)
 {
-    printf("  [%d] %.4f MHz  %u baud  %.1f kHz dev  sync %08lX  %.0f dBm",
+    LS_PRINTF(fmt_sx1262_console_mhz_baud_khz_dev, "  [%d] %.4f MHz  %u baud  %.1f kHz dev  sync %08lX  %.0f dBm",
            index, c->freq_hz / 1e6, (unsigned)c->bitrate,
            c->deviation_hz / 1000.0, (unsigned long)c->sync_word,
            (double)c->rssi_dbm);
@@ -372,7 +373,7 @@ static int capture_list_command(void)
 {
     const int n = ls_fsk_capture_count();
     if (!n) {
-        printf("lora: nothing captured - run 'lora fsk' first\n");
+        LS_FPUTS(msg_sx1262_console_lora_nothing_captured_run, "lora: nothing captured - run 'lora fsk' first\n", stdout);
         return 1;
     }
     printf("lora: %d capture(s)\n", n);
@@ -381,7 +382,7 @@ static int capture_list_command(void)
         if (ls_fsk_capture_get(i, &c)) capture_print(i, &c);
     }
     const uint32_t lost = ls_fsk_capture_evicted();
-    if (lost) printf("lora: %lu older capture(s) dropped, the ring holds %d\n",
+    if (lost) LS_PRINTF(fmt_sx1262_console_lora_older_capture_s, "lora: %lu older capture(s) dropped, the ring holds %d\n",
                      (unsigned long)lost, LS_FSK_CAPTURE_MAX);
     return 0;
 }
@@ -389,7 +390,7 @@ static int capture_list_command(void)
 static int capture_play_command(int argc, char **argv)
 {
     if (argc < 3) {
-        printf("lora fskplay <index> [dBm -9..22] [repeats 1-10]\n");
+        LS_FPUTS(msg_sx1262_console_lora_fskplay_index_dbm, "lora fskplay <index> [dBm -9..22] [repeats 1-10]\n", stdout);
         return 1;
     }
     char *end;
@@ -407,7 +408,7 @@ static int capture_play_command(int argc, char **argv)
 
     ls_fsk_capture_t c;
     if (!ls_fsk_capture_get((int)index, &c)) {
-        printf("lora: no capture %ld - 'lora fskls' lists them\n", index);
+        LS_PRINTF(fmt_sx1262_console_lora_no_capture_lora, "lora: no capture %ld - 'lora fskls' lists them\n", index);
         return 1;
     }
     if (ls_lora_scanning() || (ls_lora_fsk_active() && !ls_mesh_radio_bg())) {
@@ -466,9 +467,9 @@ static int capture_play_command(int argc, char **argv)
 static int capture_save_command(int argc, char **argv)
 {
     if (argc < 3) {
-        printf("lora fsksave <index> [name]\n"
+        LS_FPUTS(msg_sx1262_console_lora_fsksave_index_name, "lora fsksave <index> [name]\n"
                "  writes /sdcard/subghz/<name>.sub - a Flipper RAW file with\n"
-               "  a custom 2-FSK preset, so the SubGhz app can replay it\n");
+               "  a custom 2-FSK preset, so the SubGhz app can replay it\n", stdout);
         return 1;
     }
     char *end;
@@ -477,7 +478,7 @@ static int capture_save_command(int argc, char **argv)
 
     ls_fsk_capture_t c;
     if (!ls_fsk_capture_get((int)index, &c)) {
-        printf("lora: no capture %ld - 'lora fskls' lists them\n", index);
+        LS_PRINTF(fmt_sx1262_console_lora_no_capture_lora_2, "lora: no capture %ld - 'lora fskls' lists them\n", index);
         return 1;
     }
 
@@ -511,7 +512,7 @@ static int capture_save_command(int argc, char **argv)
     FILE *f = fopen(path, "wx");
     if (!f) {
         heap_caps_free(text);
-        printf("lora: %s already exists, or the card is not writable\n", path);
+        LS_PRINTF(fmt_sx1262_console_lora_already_exists_or, "lora: %s already exists, or the card is not writable\n", path);
         return 1;
     }
     const bool ok = fwrite(text, 1, want, f) == want && fflush(f) == 0 &&
@@ -520,14 +521,14 @@ static int capture_save_command(int argc, char **argv)
     heap_caps_free(text);
     if (!ok || !closed) {
         unlink(path);
-        printf("lora: write to %s did not complete - discarded\n", path);
+        LS_PRINTF(fmt_sx1262_console_lora_write_to_did, "lora: write to %s did not complete - discarded\n", path);
         return 1;
     }
 
     printf("lora: %s, %u bytes\n", path, (unsigned)want);
-    printf("  %.4f MHz, %u baud, %.1f kHz deviation, custom 2-FSK preset\n",
+    LS_PRINTF(fmt_sx1262_console_mhz_baud_khz_deviation, "  %.4f MHz, %u baud, %.1f kHz deviation, custom 2-FSK preset\n",
            c.freq_hz / 1e6, (unsigned)c.bitrate, c.deviation_hz / 1000.0);
-    printf("  copy to the Flipper at /ext/subghz/ and play it from SubGhz\n");
+    LS_FPUTS(msg_sx1262_console_copy_to_the_flipper, "  copy to the Flipper at /ext/subghz/ and play it from SubGhz\n", stdout);
     return 0;
 }
 

@@ -19,6 +19,11 @@ extern "C" {
    than the canvas can hold; every other call is then a no-op. */
 bool ls_ink_begin(tui_rect cells);
 
+/* The same canvas in braille: two dots across and four down a cell, 0..2w-1
+   by 0..4h-1, flushed as braille characters. For screens drawing their
+   own pictures (RF SURVEY's heat, FOX HUNT's scope); MAP keeps sextants. */
+bool ls_ink_begin_braille(tui_rect cells);
+
 /* In dots from the rectangle's top left: 0..2w-1 across, 0..3h-1 down.
    A cell takes the attribute of the highest priority dot written into it,
    the later one on a tie. */

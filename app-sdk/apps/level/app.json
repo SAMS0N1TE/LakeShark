@@ -1,0 +1,4 @@
+{
+  "category": "radio",
+  "description": "CARRIER LEVEL from EXPERIMENTS: the level of one frequency, a 12.5 kHz channel read every 2 ms on any radio the board has (LR2021, RTL-SDR, HackRF): now, over the last second and since START, with a bar."
+}

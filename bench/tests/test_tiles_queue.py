@@ -71,6 +71,7 @@ static void select_map(const char *s) { (void)s; }
 static void save_view(void) {}
 static void cells_preview(void) {}
 static void cells_init(void) {}
+static void cells_retry_reset(const char *relative) { (void)relative; }
 static int64_t esp_timer_get_time(void) { return 0; }
 static bool cells_delete(uint32_t key) { (void)key;deletes++;return true; }
 static bool cells_record_read(const char *path,uint8_t *bits,char *name,bool *queued) {

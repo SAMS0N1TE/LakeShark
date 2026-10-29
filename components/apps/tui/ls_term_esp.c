@@ -21,6 +21,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "linenoise/linenoise.h"
+#include "ls_textpack.h"
 
 /* The REPL task runs commands in 4 KB with about 1.4 KB to spare. */
 #define TERM_STACK 4608
@@ -59,8 +60,8 @@ static ssize_t cap_write(void *cookie, const char *buf, size_t n)
 static void report(esp_err_t e, int rc)
 {
     char note[64];
-    if (e == ESP_ERR_NOT_FOUND)          snprintf(note, sizeof(note), "unknown command ('help' lists them)\n");
-    else if (e == ESP_ERR_INVALID_STATE) snprintf(note, sizeof(note), "the console is not running\n");
+    if (e == ESP_ERR_NOT_FOUND)          LS_SNPUTS(t_ls_term_esp_unknown_command_help_lists, note, sizeof(note), "unknown command ('help' lists them)\n");
+    else if (e == ESP_ERR_INVALID_STATE) LS_SNPUTS(t_ls_term_esp_the_console_is_not, note, sizeof(note), "the console is not running\n");
     else if (e != ESP_OK && e != ESP_ERR_INVALID_ARG) snprintf(note, sizeof(note), "could not run: %s\n", esp_err_to_name(e));
     else if (e == ESP_OK && rc)          snprintf(note, sizeof(note), "(exit %d)\n", rc);
     else return;

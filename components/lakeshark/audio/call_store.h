@@ -20,6 +20,10 @@ typedef struct {
     call_meta_t meta;
     uint32_t bytes, errors;
     bool failed;
+    /* Set when a call was completed on the card: the list entry for it, so
+       the archive adds it without rescanning. The archive clears it. */
+    bool finished;
+    call_entry_t done;
     /* Writers are allocated in PSRAM on the board. Keep stdio's buffer here. */
     char buffer[4096];
 } call_writer_t;

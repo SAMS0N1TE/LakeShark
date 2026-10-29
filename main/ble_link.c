@@ -1464,7 +1464,7 @@ static esp_err_t link_start(void)
     /* ble_hs_startup_go restores the NimBLE security database on this
        task. The matching e176126 coredump names nimble_host and shows the
        restore -> nvs_get -> esp_flash_read chain with SP=0x30101050 in P4 TCM.
-       A fixed 5120-byte DRAM_ATTR stack is reserved by ble_link_host_task. */
+       A fixed 5120-byte internal-RAM stack is reserved by ble_link_host_task. */
     if (!ble_link_host_task_start(host_task, configMAX_PRIORITIES - 4,
                                   NIMBLE_CORE)) {
         s_stack_up = false;

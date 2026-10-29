@@ -1041,7 +1041,11 @@ LS_CASE(stopping_the_dispatcher_drops_the_session_without_touching_the_bus)
     LS_EQ_UINT(ls_lora_caps() & LS_LORA_CAP_MODES_RX, 0);
     uint8_t buf[28];
     LS_EQ_INT(ls_lora_modes_poll(buf, sizeof(buf), NULL), -1);
-    LS_EQ_INT(ls_lora_modes_begin(1090000000u, 13), ESP_ERR_NOT_SUPPORTED);
+    /* A new session finds the part afresh, as a configure does: the mesh
+       stops it, and ADS-B or P25 still want it after that. */
+    LS_EQ_INT(ls_lora_modes_begin(1090000000u, 13), ESP_OK);
+    LS_CHECK(ls_lora_present());
+    LS_CHECK(ls_lora_modes_active());
 }
 
 LS_CASE(the_packet_status_reads_both_levels_with_their_half_decibel_bits)

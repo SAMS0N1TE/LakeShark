@@ -90,15 +90,15 @@ LS_CASE(app_ids_are_unique_and_lower_case)
     }
 }
 
-/* The four apps below are the ones a reader is most likely to assume record
+/* The apps below are the ones a reader is most likely to assume record
    something, because their whole subject is an observation. They do not. The
    assertions exist so that the day one of them starts recording, this test
    fails and the contract is updated in the same commit - rather than the
-   overlay quietly telling an operator that P25 keeps nothing while it fills
+   overlay quietly telling an operator that an app keeps nothing while it fills
    the card. */
 LS_CASE(the_receivers_that_keep_nothing_are_pinned_as_keeping_nothing)
 {
-    static const char *const silent[] = { "fm", "adsb", "falls" };
+    static const char *const silent[] = { "adsb", "falls" };
     for (unsigned i = 0; i < sizeof(silent) / sizeof(silent[0]); i++) {
         const ls_app_doc_t *d = NULL;
         for (int j = 0; j < ls_app_docs_count; j++)
@@ -107,6 +107,20 @@ LS_CASE(the_receivers_that_keep_nothing_are_pinned_as_keeping_nothing)
         LS_CHECK_MSG(d != NULL, silent[i]);
         LS_CHECK_MSG(d->records == LS_APP_RECORDS_NOTHING, silent[i]);
     }
+}
+
+LS_CASE(fm_discloses_optional_audio_and_same_archives_without_payload_claims)
+{
+    LS_CHECK(ls_doc_fm.records == LS_APP_RECORDS_AUTOMATIC);
+    LS_CHECK(strstr(ls_doc_fm.record_note, "CALLS recording") != NULL);
+    LS_CHECK(strstr(ls_doc_fm.record_note, "enabled by default") != NULL);
+    LS_CHECK(strstr(ls_doc_fm.record_note, "WAV plus metadata") != NULL);
+    LS_CHECK(strstr(ls_doc_fm.record_note, "Optional SAME") != NULL);
+    LS_CHECK(strstr(ls_doc_fm.record_note, "same.log") != NULL);
+    LS_CHECK(strstr(ls_doc_fm.record_note, "not archived") != NULL);
+    LS_CHECK(ls_doc_fm.gps == LS_APP_GPS_STAMPS);
+    LS_CHECK(strstr(ls_doc_fm.gps_note, "five seconds") != NULL);
+    LS_CHECK(strstr(ls_doc_fm.gps_note, "no receiver position") != NULL);
 }
 
 LS_CASE(everything_that_keeps_an_observation_carries_a_position)

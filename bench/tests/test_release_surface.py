@@ -26,7 +26,7 @@ class ReleaseSurfaceTests(unittest.TestCase):
         docs = [p for p in docs if 'PREVIEW_' not in p.name]
         for path in docs:
             for link in re.findall(r'\]\(([^)]+)\)', path.read_text(encoding='utf-8')):
-                if '://' in link or link.startswith('#'):
+                if '://' in link or link.startswith(('#', 'mailto:')):
                     continue
                 target = link.split('#', 1)[0]
                 with self.subTest(document=path.name, link=link):

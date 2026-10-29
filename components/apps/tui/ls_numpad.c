@@ -6,6 +6,7 @@
 
 #include "ls_glyph.h"
 #include "ls_tui_ui.h"
+#include "ls_textpack.h"
 
 #define A(fg, bg) TUI_ATTR((fg), (bg))
 
@@ -190,7 +191,7 @@ void ls_numpad_draw(tui_surface *sf, tui_rect area)
 
     if (area.h > 20)
         tui_put_str(sf, area, area.x + 2, area.y + area.h - 2,
-                    "type it, or ESC to go back", dim);
+                    LS_TEXT(t_ls_numpad_type_it_or_esc, "type it, or ESC to go back"), dim);
 }
 
 /* ----------------------------------------------------------------- input -- */

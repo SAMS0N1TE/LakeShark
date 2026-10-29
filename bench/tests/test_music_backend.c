@@ -11,8 +11,14 @@ static bool muted,hw_muted,missing;
 static audio_player_config_t config;
 static audio_player_cb_t callback;
 static audio_player_state_t state;
-uint32_t audio_player_position_ms(void){return 0;}
+static uint32_t player_position;
+uint32_t audio_player_position_ms(void){return player_position;}
 uint32_t audio_player_duration_ms(void){return 0;}
+esp_err_t audio_player_speed(unsigned p){return p>=500 && p<=2000?ESP_OK:ESP_ERR_INVALID_ARG;}
+unsigned audio_player_speed_get(void){return 1000;}
+esp_err_t audio_player_loop(uint32_t a,uint32_t b,bool on){return !on || b>a?ESP_OK:ESP_ERR_INVALID_ARG;}
+bool audio_player_loop_get(uint32_t *a,uint32_t *b){if(a)*a=0;if(b)*b=0;return false;}
+esp_err_t audio_player_service(void){if(config.service_fn)config.service_fn();return ESP_OK;}
 static file_iterator_instance_t list;
 static char *names[]={"test.wav"};
 void lakeshark_radio_park(void){parks++;}
@@ -74,7 +80,7 @@ file_iterator_instance_t *ls_media_playlist_open(const char*root){list.count=1;l
 void ls_media_playlist_close(file_iterator_instance_t*p){(void)p;}
 size_t file_iterator_get_count(file_iterator_instance_t*p){return p->count;}
 const char*file_iterator_get_name_from_index(file_iterator_instance_t*p,size_t i){return p->list[i];}
-static void reset(void){delete_result=0;ls_music_close();ls_music_set_warm(false);volume=35;acquire_result=new_result=play_result=0;leases=releases=created=closed=parks=0;muted=missing=false;}
+static void reset(void){player_position=0;delete_result=0;ls_music_close();ls_music_set_warm(false);volume=35;acquire_result=new_result=play_result=0;leases=releases=created=closed=parks=0;muted=missing=false;}
 LS_CASE(acquisition_failure_never_starts_decoder){reset();acquire_result=ESP_FAIL;LS_CHECK(!ls_music_open());LS_EQ_INT(created,0);LS_EQ_INT(releases,0);LS_CHECK(*ls_music_error());reset();}
 LS_CASE(decoder_allocation_failure_returns_lease){reset();new_result=ESP_ERR_NO_MEM;LS_CHECK(!ls_music_open());LS_EQ_INT(releases,1);reset();}
 LS_CASE(close_timeout_retains_lease_until_decoder_stops){reset();LS_CHECK(ls_music_open());delete_result=ESP_FAIL;ls_music_close();LS_EQ_INT(releases,0);LS_CHECK(ls_music_open());LS_EQ_INT(created,1);delete_result=0;ls_music_close();LS_EQ_INT(releases,1);reset();}
@@ -140,6 +146,7 @@ static void feed_sine(unsigned rate,double hz,double amplitude,double hz2,double
         }
         config.write_fn(pcm,sizeof(pcm),&written,100);
     }
+    player_position+=(uint32_t)((uint64_t)frames*1000/rate);
 }
 static int loudest(const float *db,int n){int best=0;for(int i=1;i<n;i++)if(db[i]>db[best])best=i;return best;}
 LS_CASE(spectrum_places_tones_in_their_bands_at_true_level){
@@ -353,6 +360,34 @@ LS_CASE(archive_path_play_preserves_volume_and_mute_and_closes_failed_file)
 }
 
 esp_err_t audio_player_seek_ms(uint32_t ms){(void)ms;return ESP_OK;}
+LS_CASE(generator_works_without_mic_and_keeps_mute_and_volume) {
+    reset();volume=30;muted=true;has_mic=false;LS_CHECK(ls_music_open());
+    LS_CHECK(ls_music_tone_start(LS_GEN_SINE,440,880,1000,-24));
+    LS_CHECK(ls_music_tone_active());LS_EQ_INT(ls_music_mic_state(),LS_MIC_TONE);
+    for(int i=0;i<24;i++)LS_CHECK(ls_music_mic_step());
+    ls_audio_analysis *a=ls_music_analysis();LS_CHECK(a!=NULL);ls_audio_analysis_process(a,4);
+    const ls_aa_result *r=ls_audio_analysis_result(a);LS_CHECK(fabsf(r->peak_hz-440)<5);
+    LS_EQ_INT(volume,30);LS_CHECK(muted);
+    LS_CHECK(!ls_music_mic_start(false));LS_CHECK(!ls_music_tone_active());
+    has_mic=true;reset();
+}
+LS_CASE(source_analysis_keeps_pitch_under_varispeed_and_follows_seek){
+    reset();LS_CHECK(ls_music_open());state=AUDIO_PLAYER_STATE_PLAYING;player_position=0;
+    config.source_format_fn(44100,16,2);config.clk_set_fn(88200,16,I2S_SLOT_MODE_STEREO);
+    int16_t pcm[512];size_t written;
+    for(unsigned at=0;at<16384;at+=256){
+        for(unsigned i=0;i<256;i++)pcm[2*i]=pcm[2*i+1]=(int16_t)(12000*sin(6.28318530718*1000*(at+i)/44100));
+        config.write_fn(pcm,sizeof(pcm),&written,100);ls_audio_analysis_process(ls_music_analysis(),2);
+    }
+    const ls_aa_result *r=ls_audio_analysis_result(ls_music_analysis());LS_CHECK(fabsf(r->peak_hz-1000)<5);
+    player_position=30000;config.source_format_fn(44100,16,2);
+    for(unsigned at=0;at<4096;at+=256){
+        for(unsigned i=0;i<256;i++)pcm[2*i]=pcm[2*i+1]=(int16_t)(12000*sin(6.28318530718*1000*(at+i)/44100));
+        config.write_fn(pcm,sizeof(pcm),&written,100);ls_audio_analysis_process(ls_music_analysis(),2);
+    }
+    LS_EQ_INT(ls_audio_analysis_origin_ms(ls_music_analysis()),30000);LS_CHECK(r->time_ms>=30000);
+    player_position=0;reset();
+}
 
 LS_CASE(read_failure_finalizes_before_off_and_allows_safe_restart){
     reset();LS_CHECK(ls_music_open());LS_CHECK(ls_music_mic_start(true));mic_feed(2);

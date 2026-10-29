@@ -19,10 +19,10 @@ typedef struct {
     SemaphoreHandle_t done;
 } ls_nvs_job_t;
 
-static DRAM_ATTR StackType_t s_worker_stack[LS_NVS_WORKER_STACK_BYTES]
+static StackType_t s_worker_stack[LS_NVS_WORKER_STACK_BYTES]
     __attribute__((aligned(16)));
-static DRAM_ATTR StaticTask_t s_worker_tcb;
-static DRAM_ATTR StaticSemaphore_t s_worker_lock_storage;
+static StaticTask_t s_worker_tcb;
+static StaticSemaphore_t s_worker_lock_storage;
 static SemaphoreHandle_t s_worker_lock;
 
 static void ls_nvs_worker(void *arg)

@@ -10,6 +10,11 @@
 /* The whole lap_app_t on the RV32 target: manifest, five callbacks, radio. */
 #define LS_LAP_DESCRIPTOR_BYTES 228u
 #define LS_LAP_MAX_MEMORY (4u * 1024u * 1024u)
+/* What this firmware runs: every 1.x app up to 1.3, and 2.x up to 2.2. */
+#define LS_LAP_API1_MINOR 3u
+#define LS_LAP_API2_MINOR 2u
+#define LS_LAP_CAPS_API2 (LAP_CAP_NETWORK | LAP_CAP_RADIO_RX | LAP_CAP_RADIO_TX)
+#define LS_LAP_CAPS_API21 (LS_LAP_CAPS_API2 | LAP_CAP_SERVICE)   /* a 2.0 manifest cannot claim SERVICE */
 /* Return exactly n bytes or false. The parser never requests outside [0,size). */
 typedef bool (*ls_lap_read_fn)(void *ctx, size_t offset, void *out, size_t n);
 typedef struct {

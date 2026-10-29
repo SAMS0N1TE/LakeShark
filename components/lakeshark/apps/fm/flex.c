@@ -4,10 +4,12 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "ls_time.h"
+#include "ls_decoded.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "ls_cold.h"
 
 static const char *TAG = "flex";
 
@@ -268,11 +270,15 @@ static void process_block(flex_ctx_t *c)
     c->n_pages++;
     ESP_LOGI(TAG, "flex page RIC=%lu type=%c '%s'",
              (unsigned long)pg.address, pg.type, pg.text);
+    ls_decoded_t ev = { .kind = LS_DECODED_PAGE, .address = pg.address, .at_us = esp_timer_get_time() };
+    snprintf(ev.from, sizeof(ev.from), "FLEX");
+    snprintf(ev.text, sizeof(ev.text), "%s", pg.text);
+    ls_decoded_publish(&ev);
 
     reset_hunt(c);
 }
 
-flex_ctx_t *flex_create(fm_state_t *out, ls_flex_mode_t mode)
+LS_COLD flex_ctx_t *flex_create(fm_state_t *out, ls_flex_mode_t mode)
 {
     /* Four contexts run in parallel for rate/level detection. Their slicer
        and 256-bit deinterleave state are ordinary task data, never DMA/ISR

@@ -51,6 +51,8 @@ bool ls_btn_compact_fits(tui_rect bar, const ls_btn_t *btn, int n);
 int ls_btn_raised_height(tui_rect area, int n);
 /* Stretch each row to the usable width, insetting only its own corners. */
 void ls_btn_bar_transport(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus);
+/* The same in a hit slot of the caller's choosing: one wide key over a bar. */
+void ls_btn_bar_transport_slot(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus,int slot);
 void ls_btn_bar_raised(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
                        int focus);
 /* Keep a single raised row; caller must budget enough width for its labels. */
@@ -92,6 +94,7 @@ typedef struct {
     uint8_t     hue;     /* TUI_* colour the tile is drawn in           */
     bool        live;    /* something is happening in there right now   */
     bool        badge;   /* something new inside: a dot and NEW         */
+    uint8_t     more;    /* a folder: how many apps sit behind this one */
 } ls_tile_t;
 
 /* A grid of large tiles filling `area`. Column count follows the width, so

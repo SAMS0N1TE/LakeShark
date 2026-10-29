@@ -10,7 +10,13 @@ extern "C" {
 
 typedef struct pocsag_ctx pocsag_ctx_t;
 
-/* A NULL output counts pages without rendering, storing or logging text. */
+/* Each finished page goes to the sink (on the decoding task); a NULL sink
+   counts pages without rendering, storing or logging text. */
+typedef void (*pocsag_page_fn)(void *user, const fm_page_t *pg);
+pocsag_ctx_t *pocsag_create_sink(pocsag_page_fn sink, void *user, int baud);
+/* The FM page ring as the sink: pocsag_create(out) is
+   pocsag_create_sink(pocsag_page_to_fm, out). */
+void          pocsag_page_to_fm(void *fm_state, const fm_page_t *pg);
 pocsag_ctx_t *pocsag_create(fm_state_t *out, int baud);
 void          pocsag_destroy(pocsag_ctx_t *c);
 void          pocsag_set_baud(pocsag_ctx_t *c, int baud);
@@ -20,6 +26,10 @@ void          pocsag_seam(pocsag_ctx_t *c);
 void          pocsag_sample_rate(pocsag_ctx_t *c, int rate);
 typedef void (*pocsag_cw_fn)(void *arg, uint32_t cw, int idx, int result);
 void          pocsag_observe(pocsag_ctx_t *c, pocsag_cw_fn fn, void *arg);
+/* A quiet decoder keeps its pages in `out` and does not publish them onto
+   the decoded bus (core/ls_decoded.h): TIME MACHINE's replay publishes its
+   own, stamped with when they were on the air. */
+void          pocsag_quiet(pocsag_ctx_t *c, bool quiet);
 
 void          pocsag_process(pocsag_ctx_t *c, const float *demod, int n);
 

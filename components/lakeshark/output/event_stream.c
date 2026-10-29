@@ -9,6 +9,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "ls_textpack.h"
 
 #define STREAM_LINE_MAX     384
 #define STREAM_QUEUE_DEPTH  16
@@ -71,7 +72,7 @@ static void emit_contact(const event_t *e)
 {
     char buf[STREAM_LINE_MAX];
     const evt_contact_t *c = &e->u.contact;
-    int n = snprintf(buf, sizeof(buf),
+    int n = LS_SNPRINTF(t_event_stream_t_lld_k_s, buf, sizeof(buf),
         "{\"t\":%lld,\"k\":\"%s\",\"app\":\"%s\","
         "\"icao\":\"%06lX\",\"cs\":\"%s\","
         "\"alt\":%d,\"vel\":%d,\"hdg\":%d,\"vs\":%d,"

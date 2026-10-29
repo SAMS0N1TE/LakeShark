@@ -33,3 +33,10 @@ endif()
 if(CONFIG_COMPILER_OPTIMIZATION_SIZE)
     target_compile_options(${COMPONENT_LIB} PRIVATE -O2)
 endif()
+
+# zstd's long-offset ("prefetch") sequence decoder runs only for windows past
+# 16 MB or with a cold dictionary. Every frame here goes through cc_zstd_header,
+# which refuses windows over 64 KB, and nothing loads a dictionary, so that
+# decoder is never reached: build zstd with the short decoder alone (about 9 KB).
+set_property(SOURCE "${CC_ROOT}/src/core/zstd.c" APPEND PROPERTY
+    COMPILE_DEFINITIONS ZSTD_FORCE_DECOMPRESS_SEQUENCES_SHORT=1)

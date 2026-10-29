@@ -21,6 +21,7 @@
 #include "p25_symbol_synth.h"
 
 #include "p25p1_heuristics.h"
+#include "ls_textpack.h"
 
 static void
 print_datascope(dsd_opts* opts, dsd_state* state, int* sbuf2)
@@ -55,10 +56,10 @@ print_datascope(dsd_opts* opts, dsd_state* state, int* sbuf2)
     {
       state->symbolcnt = 0;
       printf ("\n");
-      printf ("Demod mode:     %s                Nac:                     %4X\n", modulation, state->nac);
-      printf ("Frame Type:    %s        Talkgroup:            %7i\n", state->ftype, state->lasttg);
-      printf ("Frame Subtype: %s       Source:          %12i\n", state->fsubtype, state->lastsrc);
-      printf ("TDMA activity:  %s %s     Voice errors: %s\n", state->slot0light, state->slot1light, state->err_str);
+      LS_PRINTF(t_dsd_dibit_demod_mode_s_nac, "Demod mode:     %s                Nac:                     %4X\n", modulation, state->nac);
+      LS_PRINTF(t_dsd_dibit_frame_type_s_talkgroup, "Frame Type:    %s        Talkgroup:            %7i\n", state->ftype, state->lasttg);
+      LS_PRINTF(t_dsd_dibit_frame_subtype_s_source, "Frame Subtype: %s       Source:          %12i\n", state->fsubtype, state->lastsrc);
+      LS_PRINTF(t_dsd_dibit_tdma_activity_s_s, "TDMA activity:  %s %s     Voice errors: %s\n", state->slot0light, state->slot1light, state->err_str);
       printf ("+----------------------------------------------------------------+\n");
       for (i = 0; i < 10; i++)
         {

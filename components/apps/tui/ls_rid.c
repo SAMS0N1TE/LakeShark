@@ -1,8 +1,8 @@
 /* Independently written from public ASTM F3411 byte-layout tables.
  * Sources and receiver limitations: bench/REMOTE_ID.md. */
 #include "ls_rid.h"
-#include "ls_detector.h"
-#pragma weak ls_detector_observe
+#include "ls_seen.h"
+#pragma weak ls_seen_observe
 #include "ls_ble_ad.h"
 #include "esp_attr.h"
 #include <math.h>
@@ -13,6 +13,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
+#include "ls_textpack.h"
 static StaticSemaphore_t lock_memory;
 static SemaphoreHandle_t mutex;
 static unsigned once;
@@ -164,7 +165,7 @@ bool ls_rid_advert(const uint8_t mac[6],uint8_t at,int rssi,const uint8_t *data,
         }
     }
     unlock();
-    if(heard && ls_detector_observe) ls_detector_observe(mac,at,DET_RID,2,rssi,true,false,255,now);
+    if(heard && ls_seen_observe) ls_seen_observe(mac,at,LS_SEEN_RID,2,rssi,true,false,255,now);
     return heard;
 }
 size_t ls_rid_snapshot(ls_rid_drone_t *out,size_t cap,int64_t now) {
@@ -196,27 +197,27 @@ void ls_rid_clear(void) { lock(); memset(drones,0,sizeof(drones)); unlock(); }
 uint32_t ls_rid_generation(void) { lock(); uint32_t g=generation; unlock(); return g; }
 int ls_rid_command(int argc,char **argv) {
     static EXT_RAM_BSS_ATTR ls_rid_drone_t view[LS_RID_MAX];
-    if(argc==2 && !strcmp(argv[1],"clear")) { ls_rid_clear(); puts("Remote ID table cleared"); return 0; }
+    if(argc==2 && !strcmp(argv[1],"clear")) { ls_rid_clear(); LS_PUTS(t_ls_rid_remote_id_table_cleared, "Remote ID table cleared"); return 0; }
     size_t n=ls_rid_snapshot(view,LS_RID_MAX,esp_timer_get_time());
     bool detail=argc==3 && !strcmp(argv[1],"detail");
     char *end=NULL; long pick=detail ? strtol(argv[2],&end,10) : 0;
     if((argc!=1 && !detail) || (detail && (!argv[2][0] || *end || pick<1 || pick>(long)n))) {
-        puts("rid | rid detail N (1-based) | rid clear"); return 1;
+        LS_PUTS(t_ls_rid_rid_rid_detail_n, "rid | rid detail N (1-based) | rid clear"); return 1;
     }
     for(size_t i=0;i<n;i++) {
         if(detail && (long)i+1!=pick) continue;
         ls_rid_drone_t *d=&view[i];
-        printf("%u %s %02X:%02X:%02X:%02X:%02X:%02X RSSI %d age %.1fs status %u\n",(unsigned)i+1,
+        LS_PRINTF(t_ls_rid_u_s_02x_02x, "%u %s %02X:%02X:%02X:%02X:%02X:%02X RSSI %d age %.1fs status %u\n",(unsigned)i+1,
             d->uas_id[0]?d->uas_id:"pending ID",d->mac[5],d->mac[4],d->mac[3],d->mac[2],d->mac[1],d->mac[0],
             d->rssi,(esp_timer_get_time()-d->last_us)/1e6,d->status);
         if(detail) {
-            printf("position %s %.7f %.7f; geo %.1f baro %.1f height %.1f m (%s)\n",d->position_valid?"valid":"unknown",d->lat,d->lon,d->geo_m,d->baro_m,d->height_m,d->height_agl?"AGL":"takeoff");
-            printf("speed %.2f vertical %.2f m/s track %.1f; location age %.1fs\n",d->speed_mps,d->vertical_mps,d->track_deg,d->location_us?(esp_timer_get_time()-d->location_us)/1e6:NAN);
-            printf("operator %s %.7f %.7f type %u altitude %.1f; ID %s\n",d->operator_valid?"valid":"unknown",d->operator_lat,d->operator_lon,d->operator_location_type,d->operator_geo_m,d->operator_id);
-            printf("area %u radius %u m floor %.1f ceiling %.1f; class type %u category %u class %u\n",d->area_count,d->area_radius_m,d->area_floor_m,d->area_ceiling_m,d->classification_type,d->category,d->class_id);
-            printf("self %s; authentication %s type %u page %u (unverified); version %u counter %u messages %04x\n",d->self_id,(d->messages&4)?"seen":"absent",d->auth_type,d->auth_page,d->version,d->counter,d->messages);
+            LS_PRINTF(t_ls_rid_position_s_7f_7f, "position %s %.7f %.7f; geo %.1f baro %.1f height %.1f m (%s)\n",d->position_valid?"valid":"unknown",d->lat,d->lon,d->geo_m,d->baro_m,d->height_m,d->height_agl?"AGL":"takeoff");
+            LS_PRINTF(t_ls_rid_speed_2f_vertical_2f, "speed %.2f vertical %.2f m/s track %.1f; location age %.1fs\n",d->speed_mps,d->vertical_mps,d->track_deg,d->location_us?(esp_timer_get_time()-d->location_us)/1e6:NAN);
+            LS_PRINTF(t_ls_rid_operator_s_7f_7f, "operator %s %.7f %.7f type %u altitude %.1f; ID %s\n",d->operator_valid?"valid":"unknown",d->operator_lat,d->operator_lon,d->operator_location_type,d->operator_geo_m,d->operator_id);
+            LS_PRINTF(t_ls_rid_area_u_radius_u, "area %u radius %u m floor %.1f ceiling %.1f; class type %u category %u class %u\n",d->area_count,d->area_radius_m,d->area_floor_m,d->area_ceiling_m,d->classification_type,d->category,d->class_id);
+            LS_PRINTF(t_ls_rid_self_s_authentication_s, "self %s; authentication %s type %u page %u (unverified); version %u counter %u messages %04x\n",d->self_id,(d->messages&4)?"seen":"absent",d->auth_type,d->auth_page,d->version,d->counter,d->messages);
         }
     }
-    if(!n) puts("No Remote ID broadcasts in the last 60 seconds");
+    if(!n) LS_PUTS(t_ls_rid_no_remote_id_broadcasts, "No Remote ID broadcasts in the last 60 seconds");
     return 0;
 }

@@ -9,6 +9,8 @@
 #include "scan_channels.h"
 #include <stdio.h>
 #include <string.h>
+#include "ls_cold.h"
+#include "ls_textpack.h"
 
 static const uint8_t cyan = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
 static const uint8_t amber = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
@@ -666,7 +668,7 @@ bool ls_radio_panel_control_rect(int card, int part, int *x, int *y, int *w, int
    owns: a screen that handed over a setter is driven directly, and one that
    has not is driven through the quick controls it already answers, so the
    deck works either way and the keyboard keeps doing what it always did. */
-static bool deck_touch(const ls_radio_view_t *v, int x, int y, char *out)
+LS_COLD static bool deck_touch(const ls_radio_view_t *v, int x, int y, char *out)
 {
     *out = 0;
     const int sql_now = (int)(v->gate * 100.0f + 0.5f);
@@ -836,8 +838,8 @@ static void channel_list(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
         tui_box(sf, p->next, ls_tr("NEXT >"), cyan);
     }
     if (!p->count) {
-        line(sf, a, 2, "No channels saved for this mode", white);
-        line(sf, a, 4, "LISTS > SAVE FREQ, or choose BAND", LS_ATTR_DIM);
+        line(sf, a, 2, LS_TEXT(t_ls_radio_panel_no_channels_saved_for, "No channels saved for this mode"), white);
+        line(sf, a, 4, LS_TEXT(t_ls_radio_panel_lists_save_freq_or, "LISTS > SAVE FREQ, or choose BAND"), LS_ATTR_DIM);
     }
     for (int n = 0; n < rows && p->first + n < p->count; n++) {
         int pos = p->first + n, idx = p->visible[pos];
@@ -847,7 +849,7 @@ static void channel_list(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
         char text[64];
         bool current =
             scan_engine_get_source() == SCAN_SRC_CHANNELS && scan_engine_candidate() == idx;
-        snprintf(text, sizeof(text), "%c %s %lu.%04lu  Z%d %s",
+        LS_SNPRINTF(t_ls_radio_panel_c_s_lu_04lu, text, sizeof(text), "%c %s %lu.%04lu  Z%d %s",
                  p->lists ? (pos == p->selected ? '>' : ' ') : (current ? '>' : ' '),
                  c->flags & SCAN_FLAG_ENABLED ? "[x]" : "[ ]",
                  (unsigned long)(c->freq_hz / 1000000),
@@ -1111,7 +1113,7 @@ static void start_deck(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surfac
 }
 
 /* The deck's own taps: true when one landed. */
-static bool start_touch(ls_radio_panel_t *p, const ls_radio_view_t *v, int x, int y)
+LS_COLD static bool start_touch(ls_radio_panel_t *p, const ls_radio_view_t *v, int x, int y)
 {
     for (int i = 0; i < N_SRC; i++) {
         if (s_src[i].h <= 0 || !tui_rect_contains(s_src[i], x, y)) continue;
@@ -1261,7 +1263,7 @@ void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
         return;
     }
     if (a.w < 38 || a.h < (wide ? 20 : 34)) {
-        ls_panel_notice(sf, a, "RADIO", "Open a larger radio view", "M: detailed controls");
+        ls_panel_notice(sf, a, "RADIO", LS_TEXT(t_ls_radio_panel_open_a_larger_radio, "Open a larger radio view"), LS_TEXT(t_ls_radio_panel_m_detailed_controls, "M: detailed controls"));
         ls_btn_clear_hits();
         return;
     }
@@ -1281,11 +1283,11 @@ void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
     if (p->lists) {
         uint32_t lo, hi, step;
         scan_engine_get_band(&lo, &hi, &step);
-        snprintf(text, sizeof(text), "%s / ZONE %d / %.1fs hang",
+        LS_SNPRINTF(t_ls_radio_panel_s_zone_d_1fs, text, sizeof(text), "%s / ZONE %d / %.1fs hang",
                  scan_engine_get_source() == SCAN_SRC_BAND ? "BAND" : "CHANNELS",
                  scan_engine_get_zone(), scan_engine_get_hang_ms() / 1000.0);
         line(sf, body, 0, text, amber);
-        snprintf(text, sizeof(text), "%.4f - %.4f MHz / %.1fk", lo / 1e6, hi / 1e6, step / 1000.0);
+        LS_SNPRINTF(t_ls_radio_panel_4f_4f_mhz_1fk, text, sizeof(text), "%.4f - %.4f MHz / %.1fk", lo / 1e6, hi / 1e6, step / 1000.0);
         line(sf, body, wide ? 1 : 2, text, white);
         line(sf, body, wide ? 2 : 4,
              p->notice[0] ? p->notice : "Zone -1 = all / changes stop scanning", LS_ATTR_DIM);
@@ -1298,7 +1300,7 @@ void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
     ls_btn_bar_raised(sf, controls, p->buttons, p->nbuttons, p->focus);
 }
 
-static char action(ls_radio_panel_t *p, const ls_radio_view_t *v, char c)
+LS_COLD static char action(ls_radio_panel_t *p, const ls_radio_view_t *v, char c)
 {
     ls_radio_view_t actual = *v;
     if (scan_engine_active() && scan_engine_mixed()) {
@@ -1326,7 +1328,7 @@ static char action(ls_radio_panel_t *p, const ls_radio_view_t *v, char c)
             if (zone < 0)
                 zone = 0;
             if (v->fm && strcmp(v->mode, "NFM")) {
-                snprintf(p->notice, sizeof(p->notice), "Select NFM before saving a scan channel");
+                LS_SNPUTS(t_ls_radio_panel_select_nfm_before_saving, p->notice, sizeof(p->notice), "Select NFM before saving a scan channel");
                 return 0;
             }
             char name[16];
@@ -1341,14 +1343,14 @@ static char action(ls_radio_panel_t *p, const ls_radio_view_t *v, char c)
                 }
             }
             if (idx >= 0)
-                snprintf(p->notice, sizeof(p->notice), "Already saved in zone %d", zone);
+                LS_SNPRINTF(t_ls_radio_panel_already_saved_in_zone, p->notice, sizeof(p->notice), "Already saved in zone %d", zone);
             else {
                 idx = scan_channel_add(name, v->frequency, mode, zone);
                 snprintf(p->notice, sizeof(p->notice),
                          idx >= 0 ? "Channel saved" : "Could not save channel / list full");
                 if (idx >= 0 && v->fm && v->tone_required &&
                     !scan_channel_set_tone(idx, v->tone_required))
-                    snprintf(p->notice, sizeof(p->notice), "Could not save receive tone");
+                    LS_SNPUTS(t_ls_radio_panel_could_not_save_receive, p->notice, sizeof(p->notice), "Could not save receive tone");
             }
         } else if (c == 'E' && p->count) {
             scan_engine_stop();
@@ -1372,7 +1374,7 @@ static char action(ls_radio_panel_t *p, const ls_radio_view_t *v, char c)
             const band_preset_t *b = band_preset_next();
             scan_engine_set_band(b->lo, b->hi, b->step);
             scan_engine_set_source(SCAN_SRC_BAND);
-            snprintf(p->notice, sizeof(p->notice), "RANGE: %s / %.1fk step", b->name,
+            LS_SNPRINTF(t_ls_radio_panel_range_s_1fk_step, p->notice, sizeof(p->notice), "RANGE: %s / %.1fk step", b->name,
                      b->step / 1000.0);
         }
         return 0;
@@ -1420,7 +1422,7 @@ char ls_radio_panel_key(ls_radio_panel_t *p, const ls_radio_view_t *v, ls_tk_t k
     ls_btn_navigate(k, &p->slot, &p->focus, false);
     return 0;
 }
-char ls_radio_panel_touch(ls_radio_panel_t *p, const ls_radio_view_t *v, int x, int y)
+LS_COLD char ls_radio_panel_touch(ls_radio_panel_t *p, const ls_radio_view_t *v, int x, int y)
 {
     /* The deck first: its keys and the gate slider are inside the body, so a
        tap there is never a tap on the bar, and the bar's own hit table only
@@ -1599,6 +1601,11 @@ void ls_freq_entry_delete(char *entry)
 /* Parse MHz as integer Hz, with at most six fractional places. */
 bool ls_freq_entry_hz(const char *entry, uint32_t *out)
 {
+    return ls_freq_entry_hz_min(entry, 24000000u, out);
+}
+
+bool ls_freq_entry_hz_min(const char *entry, uint32_t min_hz, uint32_t *out)
+{
     uint64_t whole = 0, frac = 0;
     bool dot = false, digit = false;
     unsigned places = 0;
@@ -1617,7 +1624,7 @@ bool ls_freq_entry_hz(const char *entry, uint32_t *out)
     if (!digit) return false;
     while (places++ < 6) { frac *= 10; }
     const uint64_t hz = whole * 1000000u + frac;
-    if (hz < 24000000u || hz > 1766000000u) return false;
+    if (hz < min_hz || hz > 1766000000u) return false;
     *out = (uint32_t)hz;
     return true;
 }
@@ -2102,6 +2109,8 @@ bool ls_radio_scan_key(int c)
 
 void ls_radio_tune_step_label(uint32_t hz, char *out, size_t n)
 {
+    /* HF steps go down to 10 Hz, where "0.01k" reads worse than the Hz. */
+    if (hz < 1000u) { snprintf(out, n, "%uHz", (unsigned)hz); return; }
     snprintf(out, n, hz >= 1000000u ? "%gM" : "%gk",
              hz / (hz >= 1000000u ? 1000000.0 : 1000.0));
 }
@@ -2180,7 +2189,7 @@ int ls_radio_tune_hit(const ls_radio_tune_t *t, int col, int row)
     return -1;
 }
 
-bool ls_radio_tune_touch(ls_radio_tune_t *t, int col, int row)
+LS_COLD bool ls_radio_tune_touch(ls_radio_tune_t *t, int col, int row)
 {
     int i = ls_radio_tune_hit(t, col, row);
     if (i < 0) return false;

@@ -20,6 +20,9 @@ EXT_RAM_BSS_ATTR static uint8_t s_prio[INK_COLS * INK_ROWS];
 EXT_RAM_BSS_ATTR static uint8_t s_used[INK_COLS * INK_ROWS]; /* a dot that is not a pulse */
 static tui_rect s_rect;
 static bool     s_on, s_pulse;
+/* Braille: two dots across and four down a cell instead of sextants. */
+static bool     s_braille;
+static int      s_dy = 3;
 static uint8_t  s_tint;
 
 void ls_ink_set_tint(uint8_t base) { s_tint = (uint8_t)(base & 7); }
@@ -44,6 +47,7 @@ bool ls_ink_begin(tui_rect cells)
 {
     s_on = cells.w > 0 && cells.h > 0 && cells.w <= INK_COLS && cells.h <= INK_ROWS;
     s_rect = cells;
+    s_braille = false; s_dy = 3;
     if (!s_on) return false;
     for (int r = 0; r < cells.h; r++) {
         memset(s_bits + r * INK_COLS, 0, (size_t)cells.w);
@@ -53,12 +57,22 @@ bool ls_ink_begin(tui_rect cells)
     return true;
 }
 
+bool ls_ink_begin_braille(tui_rect cells)
+{
+    const bool ok = ls_ink_begin(cells);
+    s_braille = true; s_dy = 4;
+    return ok;
+}
+
 void ls_ink_dot(int x, int y, uint8_t attr, uint8_t prio)
 {
-    if (!s_on || x < 0 || y < 0 || x >= s_rect.w * 2 || y >= s_rect.h * 3) return;
-    const int col = x / 2, row = y / 3;
+    if (!s_on || x < 0 || y < 0 || x >= s_rect.w * 2 || y >= s_rect.h * s_dy) return;
+    const int col = x / 2, row = y / s_dy;
     const int i = row * INK_COLS + col;
-    s_bits[i] |= (uint8_t)(1u << ((y % 3) * 2 + (x % 2)));
+    /* Unicode braille numbers its dots down the left column, then the
+       right, and the bottom pair last. */
+    static const uint8_t BRAILLE[4][2] = { { 0, 3 }, { 1, 4 }, { 2, 5 }, { 6, 7 } };
+    s_bits[i] |= (uint8_t)(1u << (s_braille ? BRAILLE[y % 4][x % 2] : (y % 3) * 2 + (x % 2)));
     if (!s_pulse) s_used[i] = 1;
     if (prio >= s_prio[i]) { s_prio[i] = prio ? prio : 1; s_attr[i] = attr; }
 }
@@ -75,7 +89,7 @@ void ls_ink_line(int x0, int y0, int x1, int y1, uint8_t attr, uint8_t prio, int
     if (!s_on) return;
     /* A line wholly off one side of the canvas draws nothing; long ones
        from far off the pane are clipped to a sane length first. */
-    const int w = s_rect.w * 2, h = s_rect.h * 3;
+    const int w = s_rect.w * 2, h = s_rect.h * s_dy;
     if ((x0 < 0 && x1 < 0) || (y0 < 0 && y1 < 0) || (x0 >= w && x1 >= w) || (y0 >= h && y1 >= h)) return;
     int dx = abs(x1 - x0), dy = -abs(y1 - y0);
     if (dx > 4 * w || -dy > 4 * h) return;
@@ -104,7 +118,7 @@ void ls_ink_ellipse(int cx, int cy, int rx, int ry, uint8_t attr, uint8_t prio, 
        this part has an FPU for. */
     const float c = cosf(6.2831853f / steps), s = sinf(6.2831853f / steps);
     float ux = 0.0f, uy = 1.0f;
-    const int w = s_rect.w * 2, h = s_rect.h * 3;
+    const int w = s_rect.w * 2, h = s_rect.h * s_dy;
     int px = 0x7FFFFFFF, py = 0, k = 0;
     for (int i = 0; i < steps; i++) {
         const int x = cx + (int)lrintf(rx * ux);
@@ -143,7 +157,8 @@ void ls_ink_flush(tui_surface *sf, tui_rect skip)
             if (skip.h > 0 && x >= skip.x && x < skip.x + skip.w &&
                 y >= skip.y && y < skip.y + skip.h) continue;
             uint16_t glyph=LS_TUI_SEXT(b);
-            if(s_prio[r*INK_COLS+c]<=3) {
+            if (s_braille) glyph = (uint16_t)(0x2800 | b);
+            else if(s_prio[r*INK_COLS+c]<=3) {
                 static const uint8_t dots[6]={1,8,2,16,4,32};
                 glyph=0x2800;for(int k=0;k<6;k++) if(b&(1u<<k)) glyph|=dots[k];
             }

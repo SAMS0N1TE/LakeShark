@@ -1,0 +1,1 @@
+{ "category": "radio", "description": "SDK 2.0 example: a Morse (CW) decoder written as an app. Reads I/Q, mixes the chosen tone down, keys on its envelope and decodes the letters, with an optional sidetone." }

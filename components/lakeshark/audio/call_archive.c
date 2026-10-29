@@ -1,7 +1,9 @@
 #include "call_archive.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <time.h>
+#include "ls_cold.h"
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
@@ -84,8 +86,32 @@ void call_archive_set_option(call_option_t option, int value)
     atomic_store(&options[option], value); atomic_store(&save_options, true);
     wake_writer();
 }
+bool call_archive_ready(void){return atomic_load(&ready);}
+#ifdef ESP_PLATFORM
+static esp_err_t read_fm_saved(void *context)
+{
+    bool *enabled=context;*enabled=true;
+    nvs_handle_t h;esp_err_t e=nvs_open("call_archive",NVS_READONLY,&h);
+    if(e==ESP_ERR_NVS_NOT_FOUND)return ESP_OK;
+    if(e!=ESP_OK)return e;
+    int32_t value=1;e=nvs_get_i32(h,"opt1",&value);nvs_close(h);
+    if(e==ESP_ERR_NVS_NOT_FOUND)return ESP_OK;
+    if(e!=ESP_OK)return e;
+    if(value!=0&&value!=1)return ESP_ERR_INVALID_STATE;
+    *enabled=value!=0;return ESP_OK;
+}
+#endif
+bool call_archive_fm_saved_option(bool *enabled)
+{
+    if(!enabled)return false;
+#ifdef ESP_PLATFORM
+    return ls_nvs_run(read_fm_saved,enabled,3072)==ESP_OK;
+#else
+    *enabled=call_archive_option(CALL_OPT_FM)!=0;return true;
+#endif
+}
 const char *call_archive_talkgroups(void) { return group_text; }
-bool call_archive_set_talkgroups(const char *text)
+LS_COLD bool call_archive_set_talkgroups(const char *text)
 {
     unsigned parsed[CALL_TGS], count = 0;
     if (strlen(text) >= sizeof(group_text)) return false;
@@ -195,17 +221,17 @@ void call_archive_refresh(void)
     wake_writer();
 }
 int call_archive_count(void) { LOCK(); int n = recent_count; UNLOCK(); return n; }
-bool call_archive_entry(int index, call_entry_t *entry)
+LS_COLD bool call_archive_entry(int index, call_entry_t *entry)
 {
     LOCK(); bool ok = recent && index >= 0 && index < recent_count;
     if (ok) *entry = recent[index];
     UNLOCK(); return ok;
 }
-bool call_archive_protect(const char *path,bool protect) {
+LS_COLD bool call_archive_protect(const char *path,bool protect) {
     if(!atomic_load(&ready) || !path || strlen(path)>=sizeof(protection))return false;
     LOCK();bool ok=!protection[0];if(ok){strcpy(protection,path);protect_value=protect;}UNLOCK();if(ok)wake_writer();return ok;
 }
-bool call_archive_delete(const char *path)
+LS_COLD bool call_archive_delete(const char *path)
 {
     if (!atomic_load(&ready) || strlen(path) >= sizeof(deletion)) return false;
     LOCK(); bool ok = !deletion[0]; if (ok) strcpy(deletion, path); UNLOCK(); if (ok) wake_writer(); return ok;
@@ -280,6 +306,34 @@ bool call_archive_card_space(uint64_t *total, uint64_t *free)
 }
 #endif
 #if defined(ESP_PLATFORM) || defined(CALL_ARCHIVE_HOST_TEST)
+/* A call the writer just completed goes straight into the list, newest
+   first as a rescan orders it, and its bytes onto the archive total. A
+   rescan after every call kept the writer off the card for seconds on a
+   full archive - long enough to miss the start of the next call. */
+static void recent_insert(const call_entry_t *e)
+{
+    LOCK();
+    int at = 0;
+    while (at < recent_count && (recent[at].meta.time > e->meta.time ||
+        (recent[at].meta.time == e->meta.time && strcmp(recent[at].path, e->path) > 0))) ++at;
+    if (at < CALL_RECENT_MAX) {
+        const int n = recent_count < CALL_RECENT_MAX ? recent_count + 1 : CALL_RECENT_MAX;
+        memmove(recent + at + 1, recent + at, (size_t)(n - at - 1) * sizeof(*recent));
+        recent[at] = *e;
+        recent_count = n;
+    }
+    storage.archive += e->bytes;
+    UNLOCK();
+}
+/* What the writer spends its time on (`sd` prints it): passes, passes with
+   work, card space checks and directory rescans with their total time. */
+static uint32_t s_dbg_loops, s_dbg_worked, s_dbg_checks, s_dbg_scans;
+static uint64_t s_dbg_check_us, s_dbg_scan_us;
+#ifdef ESP_PLATFORM
+#define DBG_US() esp_timer_get_time()
+#else
+#define DBG_US() 0
+#endif
 static bool service_once(const char *root)
 {
     static int64_t retained_day = -1;
@@ -324,7 +378,9 @@ static bool service_once(const char *root)
         written >= 65536 || ((recording || atomic_load(&paused)) &&
         (uint32_t)(now - checked_ms) >= 1000)) {
         uint64_t total = 0, free = 0;
+        const int64_t c0 = DBG_US();
         bool valid = call_archive_card_space(&total, &free) && total && free <= total;
+        s_dbg_checks++; s_dbg_check_us += (uint64_t)(DBG_US() - c0);
         uint64_t floor = total / 20;
         if (floor < 1000000000ULL) floor = 1000000000ULL;
         bool low = !valid || free < floor;
@@ -336,7 +392,6 @@ static bool service_once(const char *root)
     }
     for (unsigned i = 0; i < CALL_INPUTS; ++i) {
         const call_block_t *b = call_recorder_peek(&recorders[i]);
-        bool ending = b && (b->event == CALL_END || b->event == CALL_ABORT);
         if (atomic_load(&paused)) {
             if (b) { call_recorder_consume(&recorders[i]); worked = true; }
         } else {
@@ -344,7 +399,10 @@ static bool service_once(const char *root)
             worked |= call_store_step(&writers[i], &recorders[i], root);
             if (writers[i].bytes > before) written += writers[i].bytes - before;
         }
-        if (ending) atomic_store(&refresh, true);
+        if (writers[i].finished) {
+            writers[i].finished = false;
+            recent_insert(&writers[i].done);
+        }
     }
     if (!worked) {
 #ifdef ESP_PLATFORM
@@ -354,10 +412,12 @@ static bool service_once(const char *root)
         }
 #endif
         if (atomic_exchange(&refresh, false)) {
+            const int64_t s0 = DBG_US();
             uint64_t bytes = call_store_size(root);
             int n = call_store_scan(root, scanning, CALL_RECENT_MAX);
             LOCK(); call_entry_t *swap = recent; recent = scanning; scanning = swap;
             recent_count = n; storage.archive = bytes; UNLOCK();
+            s_dbg_scans++; s_dbg_scan_us += (uint64_t)(DBG_US() - s0);
         }
     }
     unsigned total = 0;
@@ -365,10 +425,19 @@ static bool service_once(const char *root)
     static unsigned previous;
     if (total > previous) atomic_fetch_add(&errors, total - previous);
     previous = total;
-    return worked;
+    s_dbg_loops++; if (worked) s_dbg_worked++;    return worked;
 }
 #endif
 #ifdef ESP_PLATFORM
+void call_archive_debug_print(void)
+{
+    call_archive_storage_t st; call_archive_storage(&st);
+    printf("calls: passes=%lu worked=%lu checks=%lu (%llu ms) rescans=%lu (%llu ms) paused=%d valid=%d\n",
+           (unsigned long)s_dbg_loops, (unsigned long)s_dbg_worked,
+           (unsigned long)s_dbg_checks, (unsigned long long)(s_dbg_check_us / 1000),
+           (unsigned long)s_dbg_scans, (unsigned long long)(s_dbg_scan_us / 1000),
+           (int)atomic_load(&paused), (int)st.valid);
+}
 static void worker(void *arg)
 {
     (void)arg;
@@ -400,7 +469,7 @@ bool call_archive_test_pump(const char *root)
 unsigned call_archive_test_wakes(void) { return test_wakes; }
 #endif
 
-void call_archive_init(void)
+LS_COLD void call_archive_init(void)
 {
     if (atomic_load(&ready)) return;
     writers = allocate(sizeof(*writers) * CALL_INPUTS);

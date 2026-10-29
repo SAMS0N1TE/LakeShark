@@ -17,9 +17,9 @@ if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/private_console.cpp)
 endif()
 
 idf_component_register(
-    SRCS headless_main.c compact_ui.cpp sx1262_console.cpp ${LS_PRIVATE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c ls_survey_runtime.c ls_sweep_runtime.c ls_ota.c ls_p25_packs.c ls_c6_update.c ls_c6_core.c flipper_link.c flipper_link_telemetry.c flipper_link_aux.c ${LS_BLE_SRC} bsod.c ls_hosted_board.c panic_crumb.c cache_sync_lock.c console_lock.c console_fast.c
+    SRCS headless_main.c compact_ui.cpp sx1262_console.cpp ${LS_PRIVATE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c ls_survey_runtime.c ls_sweep_runtime.c ls_ota.c ls_p25_packs.c ls_c6_update.c ls_c6_core.c flipper_link.c flipper_link_telemetry.c flipper_link_aux.c ${LS_BLE_SRC} bsod.c ls_hosted_board.c panic_crumb.c cache_sync_lock.c console_lock.c console_fast.c ls_console_text.c
     INCLUDE_DIRS .
-    PRIV_REQUIRES console esp_driver_uart esp_driver_gpio esp_timer lakeshark apps meshcore espressif__esp_hosted
+    PRIV_REQUIRES ls_textpack console esp_driver_uart esp_driver_gpio esp_timer lakeshark apps meshcore espressif__esp_hosted
                   esp_http_client app_update esp_app_format mbedtls nvs_flash spi_flash bt ${LS_BLE_REQ})
 
 # The apps component's radio picker reads the wireless snapshot, and the
@@ -33,6 +33,14 @@ target_include_directories(${COMPONENT_LIB} PRIVATE
 # esp_console_run keeps the line in one shared buffer.
 target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_console_run")
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-u __wrap_esp_console_run")
+
+# ls_console_text.c: command help written as LS_TXT(...) is a text-pack tag
+# where components/ls_textpack packs (same condition as there); the wrapper hands
+# the console the text.
+if(CONFIG_LS_BOARD_T_DISPLAY_P4 OR CONFIG_LS_PANEL_RUNTIME)
+    target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_console_cmd_register")
+    target_link_libraries(${COMPONENT_LIB} INTERFACE "-u __wrap_esp_console_cmd_register")
+endif()
 
 # panic_crumb.c notes each core's trap frame before IDF's panic handler runs.
 target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=panicHandler"

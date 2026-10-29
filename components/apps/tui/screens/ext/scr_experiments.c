@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include "ls_textpack.h"
 
 #define LIVE_MAX 24
 
@@ -67,7 +68,7 @@ static bool sensor_probe(ls_notice_t *n)
     if (!lr433_history_alert(name, sizeof(name), &c)) return false;
     snprintf(n->title, sizeof(n->title), "SENSOR ALERT");
     bool f = lr433_history_fahrenheit();
-    snprintf(n->body, sizeof(n->body), "%s: %.1f %c above threshold", name, (double)(f ? c * 1.8f + 32 : c), f ? 'F' : 'C');
+    LS_SNPRINTF(t_scr_experiments_s_1f_c_above, n->body, sizeof(n->body), "%s: %.1f %c above threshold", name, (double)(f ? c * 1.8f + 32 : c), f ? 'F' : 'C');
     n->accent = TUI_YELLOW | TUI_BRIGHT;
     n->haptic_only = true;
     return true;
@@ -115,10 +116,10 @@ static void open_page(int i)
 static void save_note(const ls_experiment_t *e)
 {
     s_note_wait = false;
-    if (!e) { snprintf(s_feedback, sizeof(s_feedback), "Nothing running to save"); return; }
+    if (!e) { LS_SNPUTS(t_scr_experiments_nothing_running_to_save, s_feedback, sizeof(s_feedback), "Nothing running to save"); return; }
     const char *st = ls_notes_status();
     if (!strncmp(st, "No SD", 5) || !strncmp(st, "SAVE FAILED", 11)) {
-        snprintf(s_feedback, sizeof(s_feedback), "NOTES unavailable: no SD card");
+        LS_SNPUTS(t_scr_experiments_notes_unavailable_no_sd, s_feedback, sizeof(s_feedback), "NOTES unavailable: no SD card");
         return;
     }
     EXT_RAM_BSS_ATTR static char lines[LIVE_MAX][LS_EXP_LINE];
@@ -132,7 +133,7 @@ static void save_note(const ls_experiment_t *e)
         s_note_wait = true;
         snprintf(s_feedback, sizeof(s_feedback), "SAVING TO NOTES...");
     } else {
-        snprintf(s_feedback, sizeof(s_feedback), "NOTES is busy; try again");
+        LS_SNPUTS(t_scr_experiments_notes_is_busy_try, s_feedback, sizeof(s_feedback), "NOTES is busy; try again");
     }
 }
 
@@ -144,7 +145,7 @@ static void note_progress(void)
     if (!strncmp(st, "Saving", 6) || !strncmp(st, "Still saving", 12)) return;
     s_note_wait = false;
     if (!strncmp(st, "SAVE FAILED", 11) || !strncmp(st, "No SD", 5))
-        snprintf(s_feedback, sizeof(s_feedback), "NOTES unavailable: SAVE FAILED, check SD");
+        LS_SNPUTS(t_scr_experiments_notes_unavailable_save_failed, s_feedback, sizeof(s_feedback), "NOTES unavailable: SAVE FAILED, check SD");
     else
         snprintf(s_feedback, sizeof(s_feedback), "SAVED TO NOTES");
 }
@@ -172,7 +173,7 @@ static void action(char k)
             if (rs41_store_copy(s_sonde_detail,&s_sonde,esp_timer_get_time()) && s_sonde.fix_us) {
                 ls_route_live_clear();
                 ls_compass_set_target(s_sonde.report.lat,s_sonde.report.lon,s_sonde.report.serial);
-                snprintf(s_feedback,sizeof(s_feedback),"COMPASS target: %s / last received fix",s_sonde.report.serial);
+                LS_SNPRINTF(t_scr_experiments_compass_target_s_last, s_feedback,sizeof(s_feedback),"COMPASS target: %s / last received fix",s_sonde.report.serial);
             }
             return;
         }
@@ -190,8 +191,8 @@ static void action(char k)
     }
     for (int i = 0; i < s_bar_n; i++)
         if (s_bar_keys[i] == k && s_bar_dim[i]) {
-            if (k == 'r') snprintf(s_feedback, sizeof(s_feedback), "Stop it to change the radio");
-            if (k == 'n') snprintf(s_feedback, sizeof(s_feedback), "Nothing running to save");
+            if (k == 'r') LS_SNPUTS(t_scr_experiments_stop_it_to_change, s_feedback, sizeof(s_feedback), "Stop it to change the radio");
+            if (k == 'n') LS_SNPUTS(t_scr_experiments_nothing_running_to_save, s_feedback, sizeof(s_feedback), "Nothing running to save");
             return;
         }
     s_feedback[0] = 0;
@@ -379,7 +380,7 @@ static void draw_history(tui_surface *sf, tui_rect a)
             long long age = lr433_history_now() - s_sensor.last_seen;
             if (age < 0) age = 0;
             if (lr433_proto_class(s_sensor.proto) == LR433_TPMS && !s_sensor.own)
-                snprintf(line, sizeof(line), "MY TPMS ID off / %lldm ago", age / 60);
+                LS_SNPRINTF(t_scr_experiments_my_tpms_id_off, line, sizeof(line), "MY TPMS ID off / %lldm ago", age / 60);
             else {
                 bool f = lr433_history_fahrenheit();
                 char value[48];
@@ -411,7 +412,7 @@ static void draw_history(tui_surface *sf, tui_rect a)
         snprintf(line, sizeof(line), "%s%s / %u points", (s_graph == 4 && fahrenheit ? "PRESSURE psi" : field[s_graph]), s_graph == 0 ? lr433_history_fahrenheit() ? " F" : " C" : "", s_sensor.count);
         tui_put_str(sf, in, in.x, in.y + 1, line, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
         if (isfinite(last)) {
-            snprintf(line, sizeof(line), "MIN %.1f MAX %.1f TREND %+.1f", (double)lo, (double)hi, (double)(last - first));
+            LS_SNPRINTF(t_scr_experiments_min_1f_max_1f, line, sizeof(line), "MIN %.1f MAX %.1f TREND %+.1f", (double)lo, (double)hi, (double)(last - first));
             tui_put_str(sf, in, in.x, in.y + 2, line, LS_ATTR_DIM);
             tui_rect graph = tui_rect_make(in.x, in.y + 4, in.w, in.h - 5);
             if (graph.h > 0) {
@@ -449,10 +450,10 @@ static void draw_history(tui_surface *sf, tui_rect a)
 static void sonde_range(char *out, size_t cap, const rs41_sonde_t *s, int64_t now)
 {
     ls_gps_get(&s_sonde_gps);
-    if (!s->fix_us) { snprintf(out,cap,"waiting for GPS position"); return; }
+    if (!s->fix_us) { LS_SNPUTS(t_scr_experiments_waiting_for_gps_position, out, cap, "waiting for GPS position"); return; }
     if (!s_sonde_gps.fix || !s_sonde_gps.last_fix_us || now < s_sonde_gps.last_fix_us ||
         now-s_sonde_gps.last_fix_us > 10000000 || !isfinite(s_sonde_gps.lat_deg) || !isfinite(s_sonde_gps.lon_deg)) {
-        snprintf(out,cap,"range needs fresh receiver GPS"); return;
+        LS_SNPUTS(t_scr_experiments_range_needs_fresh_receiver, out, cap, "range needs fresh receiver GPS"); return;
     }
     double bearing, metres;
     ls_geo_bearing_range(s_sonde_gps.lat_deg,s_sonde_gps.lon_deg,s->report.lat,s->report.lon,&bearing,&metres);
@@ -588,9 +589,9 @@ static void draw_sondes(tui_surface *sf, tui_rect a)
             int idx = s_sonde_first+j, y = in.y+3*j;
             if (!rs41_store_copy(s_sonde_order[idx],&s_sonde,now)) continue;
             const bool pick = idx == s_sonde_sel;
-            snprintf(line,sizeof(line),"%s / frame %u / %llds ago",s_sonde.report.serial,s_sonde.report.frame,(long long)((now-s_sonde.heard_us)/1000000));
+            LS_SNPRINTF(t_scr_experiments_s_frame_u_llds, line,sizeof(line),"%s / frame %u / %llds ago",s_sonde.report.serial,s_sonde.report.frame,(long long)((now-s_sonde.heard_us)/1000000));
             sonde_line(sf,in,y,line,pick,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK),TUI_ATTR(TUI_BLACK,TUI_CYAN|TUI_BRIGHT));
-            if (s_sonde.fix_us) snprintf(line,sizeof(line),"ALT %.0f m / CLIMB %+.1f m/s / fix %llds",s_sonde.report.alt,(double)s_sonde.report.climb,(long long)((now-s_sonde.fix_us)/1000000));
+            if (s_sonde.fix_us) LS_SNPRINTF(t_scr_experiments_alt_0f_m_climb, line,sizeof(line),"ALT %.0f m / CLIMB %+.1f m/s / fix %llds",s_sonde.report.alt,(double)s_sonde.report.climb,(long long)((now-s_sonde.fix_us)/1000000));
             else snprintf(line,sizeof(line),"ALT -- / CLIMB --");
             sonde_line(sf,in,y+1,line,pick,LS_ATTR_DIM,TUI_ATTR(TUI_BLACK,TUI_CYAN));
             sonde_range(range,sizeof(range),&s_sonde,now);
@@ -600,21 +601,21 @@ static void draw_sondes(tui_surface *sf, tui_rect a)
     } else {
         sonde_range(range,sizeof(range),&s_sonde,now);
         tui_put_str(sf,in,in.x,in.y,range,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
-        snprintf(line,sizeof(line),"FIX %llds ago / BATT %.1f V / #%u",s_sonde.fix_us ? (long long)((now-s_sonde.fix_us)/1000000) : -1,(double)s_sonde.report.battery,s_sonde.report.frame);
+        LS_SNPRINTF(t_scr_experiments_fix_llds_ago_batt, line,sizeof(line),"FIX %llds ago / BATT %.1f V / #%u",s_sonde.fix_us ? (long long)((now-s_sonde.fix_us)/1000000) : -1,(double)s_sonde.report.battery,s_sonde.report.frame);
         tui_put_str(sf,in,in.x,in.y+1,line,LS_ATTR_DIM);
-        if (s_sonde.fix_us) snprintf(line,sizeof(line),"%.5f %.5f / %.0f m / %+.1f m/s",s_sonde.report.lat,s_sonde.report.lon,s_sonde.report.alt,(double)s_sonde.report.climb);
+        if (s_sonde.fix_us) LS_SNPRINTF(t_scr_experiments_5f_5f_0f_m, line,sizeof(line),"%.5f %.5f / %.0f m / %+.1f m/s",s_sonde.report.lat,s_sonde.report.lon,s_sonde.report.alt,(double)s_sonde.report.climb);
         else snprintf(line,sizeof(line),"Position pending");
         tui_put_str(sf,in,in.x,in.y+2,line,LS_ATTR_DIM);
         float lo = INFINITY, hi = -INFINITY;
         for (unsigned i = 0; i < s_sonde.count; ++i) { float v = s_sonde.track[i].alt; if (v < lo) lo = v; if (v > hi) hi = v; }
         if (s_sonde.count && in.h > 6) {
-            snprintf(line,sizeof(line),"ALTITUDE m / %.0f..%.0f / %u points",(double)lo,(double)hi,s_sonde.count);
+            LS_SNPRINTF(t_scr_experiments_altitude_m_0f_0f, line,sizeof(line),"ALTITUDE m / %.0f..%.0f / %u points",(double)lo,(double)hi,s_sonde.count);
             tui_put_str(sf,in,in.x,in.y+3,line,LS_ATTR_DIM);
             tui_rect graph = tui_rect_make(in.x,in.y+4,in.w,in.h-5);
             draw_profile(sf,graph,&s_sonde,now-s_sonde.fix_us < 10000000);
             const long long dur = s_sonde.count > 1 ? (long long)((s_sonde.track[s_sonde.count-1].us-s_sonde.track[0].us)/1000000) : 0;
             tui_put_str(sf,in,in.x,in.y+in.h-1,"OLDER",LS_ATTR_DIM);
-            snprintf(line,sizeof(line),"%lldm%02llds / last fix NEWER",dur/60,dur%60);
+            LS_SNPRINTF(t_scr_experiments_lldm_02llds_last_fix, line,sizeof(line),"%lldm%02llds / last fix NEWER",dur/60,dur%60);
             if ((int)strlen(line)+8 < in.w) tui_put_str(sf,in,in.x+in.w-(int)strlen(line),in.y+in.h-1,line,LS_ATTR_DIM);
         }
     }
@@ -711,7 +712,7 @@ static void draw(tui_surface *sf, tui_rect a)
     if (a.w < 24 || a.h < 12) {
         s_bar_n = 0;
         s_rows_hit = tui_rect_make(0, 0, 0, 0);
-        ls_panel_notice(sf, a, "EXPERIMENTS", "Enlarge the pane", "A running one keeps going");
+        ls_panel_notice(sf, a, "EXPERIMENTS", "Enlarge the pane", LS_TEXT(t_scr_experiments_a_running_one_keeps, "A running one keeps going"));
         return;
     }
     if (e) draw_page(sf, a, e);

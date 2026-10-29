@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 const char *scan_journal_kind_name(scan_journal_kind_t kind)
 {
@@ -58,7 +59,7 @@ int scan_journal_format_json(const scan_journal_record_t *r,
         snprintf(latitude, sizeof(latitude), "%.7f", r->latitude);
         snprintf(longitude, sizeof(longitude), "%.7f", r->longitude);
     }
-    int n = snprintf(out, capacity,
+    int n = LS_SNPRINTF(t_scan_journal_codec_schema_u_event_s, out, capacity,
         "{\"schema\":%u,\"event\":\"%s\",\"session_id\":%lu,\"sequence\":%lu,"
         "\"uptime_ms\":%llu,\"unix_time\":%lld,\"source\":\"%s\","
         "\"mode\":%d,\"channel\":\"%s\",\"reason\":\"%s\","

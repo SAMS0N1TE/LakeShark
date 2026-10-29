@@ -498,3 +498,61 @@ LS_CASE(counter_clockwise_rotates_every_pixel_path)
     free(cw);
     ls_tui_set_rotation_cw(true);
 }
+
+/* A doubled source is an independent scaled-path oracle for a native-size
+   picture: every pair of rows and columns holds the same source pixel. */
+LS_CASE(native_images_match_scaled_images_at_ring_wrap_and_clipped_edges)
+{
+    uint16_t *native = malloc(sizeof(g_fb));
+    LS_CHECK(native != NULL);
+    if (!native) return;
+    const int saved_font = ls_tui_font_index();
+    for (int font = 0; font < ls_tui_font_count(); font++) {
+        ls_tui_set_font_index(font);
+        for (int rotation = -1; rotation <= 1; rotation++) {
+            ls_tui_set_rotation_cw(rotation > 0);
+            LS_CHECK(ls_tui_begin(rotation ? 1232 : 568, rotation ? 568 : 1232));
+            int cols, rows, cw, ch;
+            ls_tui_geometry(&cols, &rows, &cw, &ch);
+            for (int edge = 0; edge < 2; edge++) {
+                const tui_rect cells = edge ? tui_rect_make(cols - 4, rows - 4, 6, 6)
+                                             : tui_rect_make(3, 6, 8, 6);
+                const int w = cells.w * cw, h = cells.h * ch;
+                uint16_t *picture = malloc((size_t)w * h * sizeof(*picture));
+                uint16_t *doubled = malloc((size_t)w * h * 4 * sizeof(*doubled));
+                LS_CHECK(picture && doubled);
+                if (!picture || !doubled) { free(picture); free(doubled); continue; }
+                for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+                    const uint16_t pixel = (uint16_t)(x * 719 + y * 3001 + 1);
+                    picture[(size_t)y * w + x] = pixel;
+                    for (int dy = 0; dy < 2; dy++) for (int dx = 0; dx < 2; dx++)
+                        doubled[(size_t)(2 * y + dy) * (2 * w) + 2 * x + dx] = pixel;
+                }
+                for (int wrap = 0; wrap < 2; wrap++) for (int glass = 0; glass < 2; glass++) {
+                    const int ox = wrap ? w - cw / 2 : 0, oy = wrap ? h - ch / 2 : 0;
+                    for (int scale = 1; scale <= 2; scale++) {
+                        tui_surface *sf = ls_tui_surface();
+                        tui_frame_begin(sf);
+                        ls_tui_image_ring(cells, scale == 1 ? picture : doubled,
+                                          w * scale, h * scale, ox * scale, oy * scale,
+                                          -1, -1, (uint32_t)(scale + 2 * glass + 4 * wrap));
+                        tui_fill(sf, cells, LS_TUI_IMAGE_CELL, TUI_ATTR(TUI_WHITE, TUI_BLACK));
+                        if (glass) ls_tui_put_glass(sf, cells, cells.x + 2, cells.y + 2,
+                                                   'X', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+                        ls_tui_invalidate();
+                        ls_tui_present();
+                        if (scale == 1) memcpy(native, g_fb, sizeof(g_fb));
+                        else LS_CHECK_MSG(!memcmp(native, g_fb, sizeof(g_fb)),
+                            "font %d rotation %d edge %d wrap %d glass %d", font, rotation, edge, wrap, glass);
+                    }
+                }
+                ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
+                free(picture); free(doubled);
+            }
+            ls_tui_end();
+        }
+    }
+    ls_tui_set_font_index(saved_font);
+    ls_tui_set_rotation_cw(true);
+    free(native);
+}

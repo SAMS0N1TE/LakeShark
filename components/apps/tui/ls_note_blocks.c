@@ -8,6 +8,7 @@
 #include "esp_timer.h"
 #include "ls_value.h"
 #include "core/ls_time.h"
+#include "ls_textpack.h"
 
 static size_t done(char *out, size_t cap, int n)
 {
@@ -29,7 +30,7 @@ size_t ls_note_fmt_gps(char *out, size_t cap, const ls_gps_state_t *g, bool fres
     }
     char when[16] = "";
     if (g->year) snprintf(when, sizeof(when), "  %02u:%02u:%02uZ", g->hour, g->minute, g->second);
-    return done(out, cap, snprintf(out, cap,
+    return done(out, cap, LS_SNPRINTF(t_ls_note_blocks_gps_6f_6f_alt, out, cap,
         "> GPS %.6f, %.6f  alt %.0f m  hdop %.1f  %u sats%s\n",
         g->lat_deg, g->lon_deg, g->alt_m, g->hdop, g->sats_used, when));
 }
@@ -37,10 +38,10 @@ size_t ls_note_fmt_gps(char *out, size_t cap, const ls_gps_state_t *g, bool fres
 size_t ls_note_fmt_heading(char *out, size_t cap, float magnetic, float true_deg,
                            float tilt_deg, bool calibrated)
 {
-    if (!isfinite(magnetic)) return done(out, cap, snprintf(out, cap, "> HEADING unavailable\n"));
+    if (!isfinite(magnetic)) return done(out, cap, LS_SNPUTS(t_ls_note_blocks_heading_unavailable, out, cap, "> HEADING unavailable\n"));
     char t[24] = "";
     if (isfinite(true_deg)) snprintf(t, sizeof(t), "  %03.0f T", fmodf(true_deg + 360, 360));
-    return done(out, cap, snprintf(out, cap, "> HEADING %03.0f M%s  tilt %.0f  %s\n",
+    return done(out, cap, LS_SNPRINTF(t_ls_note_blocks_heading_03_0f_m, out, cap, "> HEADING %03.0f M%s  tilt %.0f  %s\n",
         fmodf(magnetic + 360, 360), t, isfinite(tilt_deg) ? tilt_deg : 0,
         calibrated ? "calibrated" : "UNCALIBRATED"));
 }
@@ -48,7 +49,7 @@ size_t ls_note_fmt_heading(char *out, size_t cap, float magnetic, float true_deg
 size_t ls_note_fmt_map(char *out, size_t cap, double lat, double lon, int zoom,
                        const char *picture)
 {
-    return done(out, cap, snprintf(out, cap, "> MAP %.6f, %.6f  z%d%s%s\n",
+    return done(out, cap, LS_SNPRINTF(t_ls_note_blocks_map_6f_6f_z, out, cap, "> MAP %.6f, %.6f  z%d%s%s\n",
         lat, lon, zoom, picture && picture[0] ? "  " : "", picture ? picture : ""));
 }
 
@@ -63,7 +64,7 @@ size_t ls_note_fmt_bearing(char *out, size_t cap, float true_deg, float spread_d
     if (isfinite(spread_deg)) snprintf(spread, sizeof(spread), " +/-%.0f", spread_deg);
     char lvl[24] = "";
     if (isfinite(level)) snprintf(lvl, sizeof(lvl), "  %.0f %s", level, unit ? unit : "");
-    return done(out, cap, snprintf(out, cap, "> BEARING %03.0f T%s  %s%s%s\n",
+    return done(out, cap, LS_SNPRINTF(t_ls_note_blocks_bearing_03_0f_t, out, cap, "> BEARING %03.0f T%s  %s%s%s\n",
         fmodf(true_deg + 360, 360), spread, source ? source : "", lvl, where));
 }
 
@@ -72,7 +73,7 @@ size_t ls_note_fmt_sensors(char *out, size_t cap, float ax, float ay, float az,
 {
     char bat[20] = "";
     if (isfinite(battery_v) && battery_v > 0) snprintf(bat, sizeof(bat), "  battery %.2f V", battery_v);
-    return done(out, cap, snprintf(out, cap,
+    return done(out, cap, LS_SNPRINTF(t_ls_note_blocks_sensors_accel_2f_2f, out, cap,
         "> SENSORS accel %+.2f %+.2f %+.2f g  field %.0f uT  %.0f C%s\n",
         ax, ay, az, field_ut, temp_c, bat));
 }

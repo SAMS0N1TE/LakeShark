@@ -8,8 +8,11 @@
 #include "ls_gauge.h"
 #include "ls_notes.h"
 #include "ls_df_sources.h"
+#include "ls_rfs_run.h"
 #include "ls_keypad.h"
 #include "apps/fm/pocsag.h"
+#include "ls_rx_head.h"
+#include "rx_pocsag.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -30,6 +33,7 @@
 #include "radio/radio_endpoint.h"
 #include "core/perf.h"
 #include "core/ls_time.h"
+#include "ls_textpack.h"
 
 #define LOG_LIMIT (16u * 1024u * 1024u)
 #define QUEUE_CAP 4
@@ -57,7 +61,7 @@ static TaskHandle_t s_task, s_io_task;
 static EXT_RAM_BSS_ATTR StackType_t s_field_stack[FIELD_STACK_WORDS];
 static EXT_RAM_BSS_ATTR StackType_t s_io_stack[FIELD_IO_STACK_WORDS];
 static EXT_RAM_BSS_ATTR StackType_t s_find_stack[FIELD_STACK_WORDS];
-static DRAM_ATTR StaticTask_t s_field_tcb, s_io_tcb, s_find_tcb;
+static StaticTask_t s_field_tcb, s_io_tcb, s_find_tcb;
 static TaskHandle_t s_find_task;
 #endif
 static bool s_started, s_stop, s_want, s_record, s_loaded, s_have_saved, s_saved_rx;
@@ -161,7 +165,7 @@ static void imu_trace_note(int64_t us, const ls_imu_sample_t *s, bool fresh)
 
 void ls_field_imu_trace(float seconds)
 {
-    if (!s_lock) { printf("compass trace: field worker not started (open COMPASS)\n"); return; }
+    if (!s_lock) { LS_FPUTS(msg_ls_field_compass_trace_field_worker, "compass trace: field worker not started (open COMPASS)\n", stdout); return; }
     lock();
     const int n = s_trace_n, head = s_trace_head;
     memcpy(s_trace_copy, s_trace, sizeof(s_trace));
@@ -171,7 +175,7 @@ void ls_field_imu_trace(float seconds)
     const bool have = ls_field_compass_cal(&cal);
     const int64_t last = s_trace_copy[(head - 1 + IMU_TRACE) % IMU_TRACE].us;
     const int64_t from = last - (int64_t)(seconds * 1e6f);
-    printf("compass trace: %d samples, calibration %s. ms  fresh  accel g  |a|  gyro dps  mag uT  |m|  heading dip tilt back\n",
+    LS_PRINTF(fmt_ls_field_compass_trace_samples_calibration, "compass trace: %d samples, calibration %s. ms  fresh  accel g  |a|  gyro dps  mag uT  |m|  heading dip tilt back\n",
            n, have ? "applied" : "NONE");
     bool back = false;
     for (int k = 0; k < n; k++) {
@@ -181,7 +185,7 @@ void ls_field_imu_trace(float seconds)
                               .mx = t->m[0], .my = t->m[1], .mz = t->m[2], .mag_valid = t->mag_valid };
         ls_compass_reading_t r;
         const bool ok = ls_compass_solve(&s, have ? &cal : NULL, &back, &r);
-        printf("T %7lld %c %+5.2f %+5.2f %+5.2f %4.2f  %+7.1f %+7.1f %+7.1f  %+6.1f %+6.1f %+6.1f %5.1f  %6.1f %5.1f %4.0f %d%s\n",
+        LS_PRINTF(fmt_ls_field_t, "T %7lld %c %+5.2f %+5.2f %+5.2f %4.2f  %+7.1f %+7.1f %+7.1f  %+6.1f %+6.1f %+6.1f %5.1f  %6.1f %5.1f %4.0f %d%s\n",
                (long long)((t->us - last) / 1000), t->fresh ? 'F' : 'r', t->a[0], t->a[1], t->a[2],
                sqrtf(t->a[0] * t->a[0] + t->a[1] * t->a[1] + t->a[2] * t->a[2]), t->g[0], t->g[1], t->g[2],
                t->m[0], t->m[1], t->m[2], sqrtf(t->m[0] * t->m[0] + t->m[1] * t->m[1] + t->m[2] * t->m[2]),
@@ -199,7 +203,7 @@ void ls_field_compass_still(unsigned seconds)
     bool back = false;
     const int64_t start = esp_timer_get_time(), measure = start + 4000000;
     const int64_t end = measure + (int64_t)seconds*1000000;
-    printf("compass still: keep board still; 4 s acquisition, then %u s (60 s required for PASS)\n", seconds);
+    LS_PRINTF(fmt_ls_field_compass_still_keep_board, "compass still: keep board still; 4 s acquisition, then %u s (60 s required for PASS)\n", seconds);
     /* Include the endpoint observation. A stale stream has a bounded timeout
        and cannot borrow the requested duration to claim 60 s of data. */
     while (esp_timer_get_time() < end + 350000) {
@@ -224,17 +228,17 @@ void ls_field_compass_still(unsigned seconds)
         vTaskDelay(pdMS_TO_TICKS(50));
     }
     const float elapsed = first_sample ? (last_sample-first_sample)/1e6f : 0;
-    printf("compass still: %s span=%.2f s n=%lu moving=%lu missing=%lu range=%.2f net=%+.2f deg\n",
+    LS_PRINTF(fmt_ls_field_compass_still_span_s, "compass still: %s span=%.2f s n=%lu moving=%lu missing=%lu range=%.2f net=%+.2f deg\n",
         ls_compass_still_pass(&stats, elapsed) ? "PASS" : "FAIL", elapsed,
         (unsigned long)stats.n,(unsigned long)stats.moving,(unsigned long)stats.missing,
         stats.hi-stats.lo,stats.angle-stats.first);
-    printf("compass still: gyro mean/sd %.2f/%.2f %.2f/%.2f %.2f/%.2f dps; field %.2f/%.2f uT; dip %.2f/%.2f deg\n",
+    LS_PRINTF(fmt_ls_field_compass_still_gyro_mean, "compass still: gyro mean/sd %.2f/%.2f %.2f/%.2f %.2f/%.2f dps; field %.2f/%.2f uT; dip %.2f/%.2f deg\n",
         stats.mean[0],sqrt(stats.m2[0]/fmax(1,stats.n)),
         stats.mean[1],sqrt(stats.m2[1]/fmax(1,stats.n)),
         stats.mean[2],sqrt(stats.m2[2]/fmax(1,stats.n)),
         stats.mean[3],sqrt(stats.m2[3]/fmax(1,stats.n)),
         stats.mean[4],sqrt(stats.m2[4]/fmax(1,stats.n)));
-    printf("compass still: gyro %s; bias %.2f %.2f %.2f dps (heading stability is not absolute accuracy)\n",
+    LS_PRINTF(fmt_ls_field_compass_still_gyro_bias, "compass still: gyro %s; bias %.2f %.2f %.2f dps (heading stability is not absolute accuracy)\n",
         fusion.gyro_healthy ? "qualified" : "rejected/unconverged",fusion.rest[0],fusion.rest[1],fusion.rest[2]);
 }
 
@@ -362,20 +366,20 @@ static void load_notes(void)
     char name[160];
     if (!path(name, sizeof(name), "entries.bin")) return;
     FILE *f = fopen(name, "rb");
-    if (!f) { storage("No saved notes; SD saves begin with your first note"); return; }
+    if (!f) { storage(LS_TEXT(t_ls_field_no_saved_notes_sd, "No saved notes; SD saves begin with your first note")); return; }
     uint32_t header[3];
     size_t count;
     while ((count = fread(header, 1, sizeof(header), f)) > 0) {
         if (count == sizeof(header) && !s_valid_bytes &&
             (header[0] != 0x4a4c5301u || header[1] != sizeof(s_disk))) {
-            storage("Unrecognised journal format; archive kept read-only");
+            storage(LS_TEXT(t_ls_field_unrecognised_journal_format_archive, "Unrecognised journal format; archive kept read-only"));
             s_incompatible = true;
             fclose(f); return;
         }
         if (count != sizeof(header) || header[0] != 0x4a4c5301u || header[1] != sizeof(s_disk) ||
             fread(&s_disk, sizeof(s_disk), 1, f) != 1 ||
             checksum(&s_disk, sizeof(s_disk)) != header[2]) {
-            storage("Journal tail damaged; earlier notes recovered");
+            storage(LS_TEXT(t_ls_field_journal_tail_damaged_earlier, "Journal tail damaged; earlier notes recovered"));
             s_damaged = true;
             fclose(f); return;
         }
@@ -396,10 +400,10 @@ static bool save_note(ls_journal_entry_t *entry)
     struct stat st;
     bool exists = stat(name, &st) == 0;
     if (s_incompatible || (!s_damaged && exists && st.st_size != s_valid_bytes)) {
-        storage("Different SD archive; note kept in RAM"); return false;
+        storage(LS_TEXT(t_ls_field_different_sd_archive_note, "Different SD archive; note kept in RAM")); return false;
     }
     if (exists && (uint64_t)st.st_size + sizeof(*entry) + 12 > LOG_LIMIT) {
-        storage("Journal full; export before starting a new archive"); return false;
+        storage(LS_TEXT(t_ls_field_journal_full_export_before, "Journal full; export before starting a new archive")); return false;
     }
 #ifdef _WIN32
     mkdir(s_directory);
@@ -407,11 +411,11 @@ static bool save_note(ls_journal_entry_t *entry)
     mkdir(s_directory, 0775);
 #endif
     FILE *f = fopen(name, s_damaged ? "r+b" : "ab");
-    if (!f) { storage("SD unavailable; note kept in RAM"); return false; }
+    if (!f) { storage(LS_TEXT(t_ls_field_sd_unavailable_note_kept, "SD unavailable; note kept in RAM")); return false; }
     if (s_damaged) {
         /* Only the incomplete suffix after verified records is discarded. */
         if (ftruncate(fileno(f), s_valid_bytes) || fseek(f, 0, SEEK_END)) {
-            fclose(f); storage("Cannot repair journal tail; note kept in RAM"); return false;
+            fclose(f); storage(LS_TEXT(t_ls_field_cannot_repair_journal_tail, "Cannot repair journal tail; note kept in RAM")); return false;
         }
         s_damaged = false;
     }
@@ -419,24 +423,24 @@ static bool save_note(ls_journal_entry_t *entry)
     bool ok = fwrite(header, sizeof(header), 1, f) == 1 && fwrite(entry, sizeof(*entry), 1, f) == 1;
     long end = ftell(f);
     if (fclose(f) != 0) ok = false;
-    if (!ok) { s_damaged = true; storage("SD write failed; note kept in RAM"); return false; }
+    if (!ok) { s_damaged = true; storage(LS_TEXT(t_ls_field_sd_write_failed_note, "SD write failed; note kept in RAM")); return false; }
     s_valid_bytes = end;
     entry->saved = true;
     /* Human-readable exports are independent of the recovery log. */
     if (path(name, sizeof(name), "notes.md") && (f = fopen(name, "ab")) != NULL) {
-        fprintf(f, "\n## %s\n\nEntry %lu | uptime %.3f s | %s\n\n%s\n\n",
+        LS_FPRINTF(t_ls_field_s_entry_lu_uptime, f, "\n## %s\n\nEntry %lu | uptime %.3f s | %s\n\n%s\n\n",
                 entry->title, (unsigned long)entry->id, entry->sample.time_us / 1e6,
                 ls_field_source_name(entry->sample.source), entry->text);
         if (entry->sample.gps_valid)
-            fprintf(f, "GPS: %.7f, %.7f; %.1f m\n\n", entry->sample.lat, entry->sample.lon, entry->sample.alt_m);
+            LS_FPRINTF(t_ls_field_gps_7f_7f_1f, f, "GPS: %.7f, %.7f; %.1f m\n\n", entry->sample.lat, entry->sample.lon, entry->sample.alt_m);
         if (entry->sample.signal_valid) {
-            fprintf(f, "Radio: %lu Hz, %.1f dBm", (unsigned long)entry->sample.frequency, entry->sample.rssi);
+            LS_FPRINTF(t_ls_field_radio_lu_hz_1f, f, "Radio: %lu Hz, %.1f dBm", (unsigned long)entry->sample.frequency, entry->sample.rssi);
             if (isfinite(entry->sample.snr)) fprintf(f, ", %.1f dB SNR", entry->sample.snr);
             fputs("\n\n", f);
         }
-        if (fclose(f) != 0) { storage("Note saved; Markdown export failed"); return true; }
-        storage("Saved to SD /journal; Markdown export ready");
-    } else storage("Note saved; Markdown export unavailable");
+        if (fclose(f) != 0) { storage(LS_TEXT(t_ls_field_note_saved_markdown_export, "Note saved; Markdown export failed")); return true; }
+        storage(LS_TEXT(t_ls_field_saved_to_sd_journal, "Saved to SD /journal; Markdown export ready"));
+    } else storage(LS_TEXT(t_ls_field_note_saved_markdown_export_2, "Note saved; Markdown export unavailable"));
     return true;
 }
 
@@ -446,16 +450,16 @@ static bool save_sample(const ls_field_sample_t *p)
     if (!path(name, sizeof(name), "samples.csv")) return false;
     struct stat st;
     bool empty = stat(name, &st) != 0;
-    if (!empty && (uint64_t)st.st_size > LOG_LIMIT - 1024) { storage("Sample log full; recording stopped"); return false; }
+    if (!empty && (uint64_t)st.st_size > LOG_LIMIT - 1024) { storage(LS_TEXT(t_ls_field_sample_log_full_recording, "Sample log full; recording stopped")); return false; }
 #ifdef _WIN32
     mkdir(s_directory);
 #else
     mkdir(s_directory, 0775);
 #endif
     FILE *f = fopen(name, "ab");
-    if (!f) { storage("SD unavailable; recording stopped"); return false; }
-    if (empty) fputs("uptime_us,utc,source,gps_valid,lat,lon,alt_m,imu_valid,mag_valid,heading,ax,ay,az,gx,gy,gz,mx,my,mz,radio_valid,signal_valid,hz,rssi,snr,packets\n", f);
-    int n = fprintf(f, "%lld,%s,%s,%d,%.7f,%.7f,%.2f,%d,%d,%.2f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%lu,%.1f,%.1f,%lu\n",
+    if (!f) { storage(LS_TEXT(t_ls_field_sd_unavailable_recording_stopped, "SD unavailable; recording stopped")); return false; }
+    if (empty) LS_FPUTS(t_ls_field_uptime_us_utc_source, "uptime_us,utc,source,gps_valid,lat,lon,alt_m,imu_valid,mag_valid,heading,ax,ay,az,gx,gy,gz,mx,my,mz,radio_valid,signal_valid,hz,rssi,snr,packets\n", f);
+    int n = LS_FPRINTF(fmt_ls_field_fmt, f, "%lld,%s,%s,%d,%.7f,%.7f,%.2f,%d,%d,%.2f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%lu,%.1f,%.1f,%lu\n",
         (long long)p->time_us, p->utc, ls_field_source_name(p->source), p->gps_valid, p->lat, p->lon, p->alt_m,
         p->imu_valid, p->imu.mag_valid, p->heading, p->imu.ax, p->imu.ay, p->imu.az, p->imu.gx, p->imu.gy, p->imu.gz,
         p->imu.mx, p->imu.my, p->imu.mz, p->radio_valid, p->signal_valid, (unsigned long)p->frequency, p->rssi, p->snr, (unsigned long)p->packets);
@@ -478,7 +482,7 @@ static bool save_packet(const ls_field_sample_t *p, const uint8_t *data, int len
     struct stat st;
     bool empty = stat(name, &st) != 0;
     if (!empty && (uint64_t)st.st_size > LOG_LIMIT - 1024) {
-        storage("Packet log full; recording stopped");
+        storage(LS_TEXT(t_ls_field_packet_log_full_recording, "Packet log full; recording stopped"));
         return false;
     }
 #ifdef _WIN32
@@ -487,16 +491,16 @@ static bool save_packet(const ls_field_sample_t *p, const uint8_t *data, int len
     mkdir(s_directory, 0775);
 #endif
     FILE *f = fopen(name, "ab");
-    if (!f) { storage("SD unavailable; recording stopped"); return false; }
-    if (empty) fputs("uptime_us,utc,source,hz,rssi,snr,gps_valid,lat,lon,len,hex\n", f);
-    int n = fprintf(f, "%lld,%s,%s,%lu,%.1f,%.1f,%d,%.7f,%.7f,%d,",
+    if (!f) { storage(LS_TEXT(t_ls_field_sd_unavailable_recording_stopped, "SD unavailable; recording stopped")); return false; }
+    if (empty) LS_FPUTS(t_ls_field_uptime_us_utc_source_2, "uptime_us,utc,source,hz,rssi,snr,gps_valid,lat,lon,len,hex\n", f);
+    int n = LS_FPRINTF(t_ls_field_lld_s_s_lu, f, "%lld,%s,%s,%lu,%.1f,%.1f,%d,%.7f,%.7f,%d,",
         (long long)p->time_us, p->utc, ls_field_source_name(p->source),
         (unsigned long)p->frequency, p->rssi, p->snr,
         p->gps_valid, p->lat, p->lon, len);
     for (int i = 0; i < len && n > 0; i++) n = fprintf(f, "%02X", data[i]);
     if (n > 0) n = fprintf(f, "\n");
     bool ok = fclose(f) == 0 && n > 0;
-    if (!ok) storage("SD write failed; recording stopped");
+    if (!ok) storage(LS_TEXT(t_ls_field_sd_write_failed_recording, "SD write failed; recording stopped"));
     return ok;
 }
 
@@ -520,13 +524,13 @@ static bool restore(void)
     if (err == ESP_OK && ls_lora_fsk_active() && !ls_mesh_radio_bg()) err = ls_lora_fsk_end();
     if (err == ESP_OK && s_have_saved) err = ls_lora_configure(&s_saved);
     if (err == ESP_OK && s_have_saved && s_saved_rx) err = ls_lora_receive();
-    if (err != ESP_OK) { message("Restore failed; radio held. Toggle DIRECT off to retry"); return false; }
+    if (err != ESP_OK) { message(LS_TEXT(t_ls_field_restore_failed_radio_held, "Restore failed; radio held. Toggle DIRECT off to retry")); return false; }
     pocsag_stop();
     ls_mesh_radio_hold(false);
     s_hold_acquired = s_radio_owned = false;
     s_live.direct = s_live.busy = false;
     s_have_saved = false;
-    message("Mesh control restored");
+    message(LS_TEXT(t_ls_field_mesh_control_restored, "Mesh control restored"));
     return true;
 }
 
@@ -552,26 +556,37 @@ static bool restore(void)
 /* The paging decoder, alive only while POCSAG mode is. fm_state_t carries a
    sixteen-entry page ring and is far too big for internal RAM, which is why
    the console puts it in PSRAM too. */
+/* The decoder is the RX HEAD's POCSAG plugin (rx/rx_pocsag.h) on a stream of
+   the chip's bytes or batches: one loop at the chip's bit rate. */
 static fm_state_t   *s_pocsag_state;
-static pocsag_ctx_t *s_pocsag;
+static EXT_RAM_BSS_ATTR ls_rx_head_t s_pager;
+static void         *s_pocsag;      /* the plugin's state, NULL when stopped */
 static int64_t       s_pocsag_last;
 static bool s_pocsag_stream;
 
 static void pocsag_stop(void)
 {
-    if (s_pocsag) { pocsag_destroy(s_pocsag); s_pocsag = NULL; }
+    if (s_pocsag) { ls_rx_head_detach_all(&s_pager); s_pocsag = NULL; }
     if (s_pocsag_state) { heap_caps_free(s_pocsag_state); s_pocsag_state = NULL; }
     s_pocsag_last = 0;
 }
 
 static bool pocsag_ready(int baud)
 {
-    if (s_pocsag) { pocsag_set_baud(s_pocsag, baud); return true; }
+    if (s_pocsag) return rx_pocsag_prepare(s_pocsag, baud);
     s_pocsag_state = heap_caps_calloc(1, sizeof(*s_pocsag_state),
                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_pocsag_state) { message("No PSRAM for the paging decoder"); return false; }
-    s_pocsag = pocsag_create(s_pocsag_state, baud);
-    if (!s_pocsag) { pocsag_stop(); message("Paging decoder unavailable"); return false; }
+    if (!s_pocsag_state) { message(LS_TEXT(t_ls_field_no_psram_for_the, "No PSRAM for the paging decoder")); return false; }
+    const ls_rx_stream_t chip = { .center_hz = s_live.config.freq_hz, .front = LS_RX_FRONT_NONE,
+                                  .inputs = LS_RX_BITS | LS_RX_BATCH };
+    char why[48];
+    ls_rx_head_init(&s_pager, &chip);
+    if (ls_rx_head_attach(&s_pager, &rx_pocsag, why, sizeof(why)) >= 0)
+        s_pocsag = ls_rx_head_state(&s_pager, &rx_pocsag);
+    if (s_pocsag) rx_pocsag_bind(s_pocsag, s_pocsag_state);
+    if (!s_pocsag || !rx_pocsag_prepare(s_pocsag, baud)) {
+        pocsag_stop(); message(LS_TEXT(t_ls_field_paging_decoder_unavailable, "Paging decoder unavailable")); return false;
+    }
     s_pocsag_last = 0;
     /* The counts belong to this session, not the last one. */
     s_live.pages = 0; s_live.page_log_count = 0;
@@ -589,10 +604,13 @@ static void pocsag_feed(const uint8_t *data, int len, int64_t now)
     const bool contiguous = s_pocsag_last &&
         llabs(now - s_pocsag_last - period) <= period / 10 + 20000;
     s_pocsag_last = now;
-    const uint32_t before = pocsag_n_pages(s_pocsag);
-    if (s_pocsag_stream) pocsag_process_bits(s_pocsag, data, (size_t)len);
-    else pocsag_process_batch(s_pocsag, data, len, s_live.config.invert_iq, contiguous);
-    const uint32_t after = pocsag_n_pages(s_pocsag);
+    const uint32_t before = rx_pocsag_pages(s_pocsag);
+    const ls_rx_block_t b = { .input = s_pocsag_stream ? LS_RX_BITS : LS_RX_BATCH,
+        .data = data, .n = (uint32_t)len, .rate_hz = baud, .at_us = now,
+        .flags = (uint8_t)((s_live.config.invert_iq ? LS_RX_B_INVERTED : 0) |
+                           (contiguous ? LS_RX_B_CONTIGUOUS : 0)) };
+    ls_rx_head_feed(&s_pager, &b);
+    const uint32_t after = rx_pocsag_pages(s_pocsag);
     s_live.pages = after;
     if (after == before || s_pocsag_state->page_count <= 0) return;
 
@@ -682,7 +700,7 @@ static void finish_calibration(void)
     const char *rejected = fitted ? ls_compass_cal_upgrade(&cal, prev.valid ? &prev.cal : NULL, expected) : NULL;
     if (rejected) {
         s_live.calibration_failed = true;
-        snprintf(s_live.compass_status, sizeof(s_live.compass_status), "Calibration refused: %s", rejected);
+        LS_SNPRINTF(t_ls_field_calibration_refused_s, s_live.compass_status, sizeof(s_live.compass_status), "Calibration refused: %s", rejected);
         return;
     }
     if (fitted) {
@@ -691,11 +709,11 @@ static void finish_calibration(void)
         s_live.calibrating = false;
         s_live.calibration_failed = false;
         memset(s_live.bearing_count, 0, sizeof(s_live.bearing_count));
-        snprintf(s_live.compass_status, sizeof(s_live.compass_status), "Calibration complete; hold flat to use compass");
+        LS_SNPUTS(t_ls_field_calibration_complete_hold_flat, s_live.compass_status, sizeof(s_live.compass_status), "Calibration complete; hold flat to use compass");
     } else if (s_guide.step == LS_COMPASS_STEPS) {
         s_live.calibration_failed = true;
-        snprintf(s_live.compass_status, sizeof(s_live.compass_status), "Readings did not agree; move away from metal and retry");
-    } else snprintf(s_live.compass_status, sizeof(s_live.compass_status), "Follow the picture; each position advances itself");
+        LS_SNPUTS(t_ls_field_readings_did_not_agree, s_live.compass_status, sizeof(s_live.compass_status), "Readings did not agree; move away from metal and retry");
+    } else LS_SNPUTS(t_ls_field_follow_the_picture_each, s_live.compass_status, sizeof(s_live.compass_status), "Follow the picture; each position advances itself");
 }
 
 static void sample(int64_t now)
@@ -717,7 +735,7 @@ static void sample(int64_t now)
             static const uint8_t days[]={31,28,31,30,31,30,31,31,30,31,30,31};
             const bool leap=gps.year%4==0 && (gps.year%100!=0 || gps.year%400==0);
             if(gps.day<=days[gps.month-1]+(gps.month==2 && leap))
-                snprintf(p->utc, sizeof(p->utc), "%04u-%02u-%02uT%02u:%02u:%02uZ", gps.year,
+                LS_SNPRINTF(t_ls_field_04u_02u_02ut_02u, p->utc, sizeof(p->utc), "%04u-%02u-%02uT%02u:%02u:%02uZ", gps.year,
                          gps.month, gps.day, gps.hour, gps.minute, gps.second);
         }
     }
@@ -743,7 +761,7 @@ static void sample(int64_t now)
                in the directions soft iron needs. Faces that do not fit fail
                here rather than after another half minute of waving. */
             if (ls_compass_tumble_begin(&s_fit))
-                snprintf(s_live.compass_status, sizeof(s_live.compass_status), "Wave it in a figure eight, turning it over as you go");
+                LS_SNPUTS(t_ls_field_wave_it_in_a, s_live.compass_status, sizeof(s_live.compass_status), "Wave it in a figure eight, turning it over as you go");
             else { s_guide.step = LS_COMPASS_STEPS; finish_calibration(); }
         } else if (ls_compass_tumble_done(&s_fit)) {
             s_guide.step = LS_COMPASS_STEPS; finish_calibration();
@@ -808,7 +826,7 @@ void ls_field_step(void)
         if(s_live.calibrating) {
             s_live.calibrating=false;s_live.calibration_failed=false;
             ls_compass_begin(&s_fit);ls_compass_guide_begin(&s_guide);
-            snprintf(s_live.compass_status,sizeof(s_live.compass_status),"Setup changed; calibration cancelled. Restart for this setup.");
+            LS_SNPUTS(t_ls_field_setup_changed_calibration_cancelled, s_live.compass_status, sizeof(s_live.compass_status), "Setup changed; calibration cancelled. Restart for this setup.");
         }
     }
     s_live.calibration_keyboard=profile!=0;
@@ -823,13 +841,13 @@ void ls_field_step(void)
         if (!s_live.busy) {
             /* P25 or ADS-B left listening on the chip gives it up when asked. */
             if (!ls_lora_present() || (ls_lora_fsk_active() && !ls_mesh_radio_bg()) || ls_lora_scanning()) {
-                message("Radio absent or in use; DIRECT unavailable");
+                message(LS_TEXT(t_ls_field_radio_absent_or_in, "Radio absent or in use; DIRECT unavailable"));
                 lock(); s_want = s_falls_want = false; unlock(); publish(); return;
             }
             s_live.busy = true; s_hold_since = now;
             ls_mesh_radio_hold(true);
             s_hold_acquired = true;
-            message("Waiting for mesh radio");
+            message(LS_TEXT(t_ls_field_waiting_for_mesh_radio, "Waiting for mesh radio"));
         }
         if (ls_mesh_radio_held()) {
             s_radio_owned = true;
@@ -837,10 +855,10 @@ void ls_field_step(void)
             s_have_saved = previous != NULL;
             if (previous) s_saved = *previous;
             s_saved_rx = ls_lora_is_receiving();
-            if (configure()) { s_live.direct = true; s_live.busy = false; message("Direct control; mesh paused"); }
-            else { lock(); s_want = s_falls_want = false; unlock(); message("Radio setup failed; restoring mesh"); restore(); }
+            if (configure()) { s_live.direct = true; s_live.busy = false; message(LS_TEXT(t_ls_field_direct_control_mesh_paused, "Direct control; mesh paused")); }
+            else { lock(); s_want = s_falls_want = false; unlock(); message(LS_TEXT(t_ls_field_radio_setup_failed_restoring, "Radio setup failed; restoring mesh")); restore(); }
         } else if (now - s_hold_since > 3000000) {
-            lock(); s_want = s_falls_want = false; unlock(); restore(); message("Mesh busy; direct request timed out");
+            lock(); s_want = s_falls_want = false; unlock(); restore(); message(LS_TEXT(t_ls_field_mesh_busy_direct_request, "Mesh busy; direct request timed out"));
         }
     }
     lock();
@@ -856,10 +874,10 @@ void ls_field_step(void)
                 s_live.calibration_failed = false;
                 s_live.calibration_step = s_live.calibration_hold = 0;
                 s_live.calibration_aligned = false;
-                snprintf(s_live.compass_status, sizeof(s_live.compass_status), "Follow the picture; each position advances itself");
+                LS_SNPUTS(t_ls_field_follow_the_picture_each, s_live.compass_status, sizeof(s_live.compass_status), "Follow the picture; each position advances itself");
             } else if (c->value == 2) {
                 s_live.calibrating = false;
-                snprintf(s_live.compass_status, sizeof(s_live.compass_status), "Calibration cancelled; previous values retained");
+                LS_SNPUTS(t_ls_field_calibration_cancelled_previous_values, s_live.compass_status, sizeof(s_live.compass_status), "Calibration cancelled; previous values retained");
             } else if (s_live.calibrating) {
                 if (s_fit.tumble) s_guide.step = LS_COMPASS_STEPS;
                 finish_calibration();
@@ -867,8 +885,8 @@ void ls_field_step(void)
         } else if (c->kind == CMD_CLEAR) {
             memset(s_live.bearing_count, 0, sizeof(s_live.bearing_count));
             for (int i = 0; i < LS_FIELD_BINS; i++) s_live.trace[i] = s_live.spectrum[i] = -140;
-            s_live.spectrum_us=0;message("Plot cleared; radio counters retained");
-        } else if (s_live.transmitting) message("Transmission in progress; control unchanged");
+            s_live.spectrum_us=0;message(LS_TEXT(t_ls_field_plot_cleared_radio_counters, "Plot cleared; radio counters retained"));
+        } else if (s_live.transmitting) message(LS_TEXT(t_ls_field_transmission_in_progress_control, "Transmission in progress; control unchanged"));
         else if (c->kind == CMD_CONFIG || c->kind == CMD_MODE || c->kind == CMD_FSK || c->kind == CMD_SPAN) {
             ls_lora_cfg_t old = s_live.config; ls_lab_mode_t mode = s_live.mode;
             ls_fsk_cfg_t old_fsk = s_live.fsk, old_gfsk = s_gfsk_saved;
@@ -888,7 +906,7 @@ void ls_field_step(void)
                 s_live.config = old; s_live.mode = mode; s_live.fsk = old_fsk; s_gfsk_saved = old_gfsk;
                 s_span_lo = old_lo; s_span_hi = old_hi;
                 if (s_live.direct && !configure()) { lock(); s_want = s_falls_want = false; unlock(); restore(); }
-                message("Setting rejected; previous configuration retained");
+                message(LS_TEXT(t_ls_field_setting_rejected_previous_configuration, "Setting rejected; previous configuration retained"));
             } else {
                 memset(s_live.bearing_count, 0, sizeof(s_live.bearing_count));
                 for (int i = 0; i < LS_FIELD_BINS; i++) s_live.trace[i] = s_live.spectrum[i] = -140;
@@ -900,7 +918,7 @@ void ls_field_step(void)
                nothing to call. */
             if (!s_live.direct || !want || s_live.mode == LS_LAB_SPECTRUM ||
                 LS_LAB_IS_FSK(s_live.mode))
-                message("SEND needs DIRECT packet or bearing mode");
+                message(LS_TEXT(t_ls_field_send_needs_direct_packet, "SEND needs DIRECT packet or bearing mode"));
             else {
                 const uint32_t airtime = ls_lora_airtime_ms((int)strlen(c->entry.text));
                 const ls_lora_cfg_t *cfg = ls_lora_cfg();
@@ -914,14 +932,14 @@ void ls_field_step(void)
                         s_live.transmitting = true; s_live.tx++;
                         s_tx_deadline = now + ((int64_t)airtime + 2000) * 1000;
                         message("Sending one packet");
-                    } else message("Radio refused packet");
+                    } else message(LS_TEXT(t_ls_field_radio_refused_packet, "Radio refused packet"));
                 }
             }
         }
     }
     if (s_live.transmitting) {
-        if (ls_lora_send_done()) { s_live.transmitting = false; ls_lora_receive(); message("Packet finished; receiving"); }
-        else if (now > s_tx_deadline) { s_live.transmitting = false; configure(); message("TX timeout; receiver reset"); }
+        if (ls_lora_send_done()) { s_live.transmitting = false; ls_lora_receive(); message(LS_TEXT(t_ls_field_packet_finished_receiving, "Packet finished; receiving")); }
+        else if (now > s_tx_deadline) { s_live.transmitting = false; configure(); message(LS_TEXT(t_ls_field_tx_timeout_receiver_reset, "TX timeout; receiver reset")); }
     }
     if (s_live.direct && !s_live.transmitting && s_live.mode != LS_LAB_SPECTRUM) {
         uint8_t packet[260]; float rssi = NAN, snr = NAN;
@@ -935,14 +953,14 @@ void ls_field_step(void)
                 : fsk ? ls_lora_fsk_poll(packet, sizeof(packet), &rssi)
                     : ls_lora_poll(packet, sizeof(packet), &rssi, &snr);
         if (n > 0) {
-            if (paging_stream && restarted) pocsag_seam(s_pocsag);
-            const uint32_t frames_before = pocsag_n_frames(s_pocsag);
+            if (paging_stream && restarted) ls_rx_head_reset(&s_pager, LS_RX_RESET_GAP);
+            const uint32_t frames_before = rx_pocsag_frames(s_pocsag);
             s_live.rx += paging_stream ? 0 : 1;
             s_live.packet_len = paging_stream ? 0 : n < 64 ? n : 64;
             memcpy(s_live.packet, packet, s_live.packet_len);
             detected(now,s_live.config.freq_hz,rssi,snr,false);
             if (s_live.mode == LS_LAB_POCSAG) pocsag_feed(packet, n, now);
-            if (paging_stream) s_live.rx += pocsag_n_frames(s_pocsag) - frames_before;
+            if (paging_stream) s_live.rx += rx_pocsag_frames(s_pocsag) - frames_before;
             /* The whole packet, not the 64 bytes the live view keeps. Its
                position comes from the last sample; its radio figures come
                from this reception rather than that heartbeat. */
@@ -1010,11 +1028,11 @@ static bool mirror_to_notes(const ls_journal_entry_t *e)
     const ls_field_sample_t *p = &e->sample;
     int n = snprintf(body, sizeof(body), "# %s\n%s\n\n%s\n", e->title, p->utc[0] ? p->utc : "from JOURNAL", e->text);
     if (p->gps_valid && n > 0 && (size_t)n < sizeof(body))
-        n += snprintf(body + n, sizeof(body) - (size_t)n, "> GPS %.6f, %.6f  alt %.0f m\n", p->lat, p->lon, p->alt_m);
+        n += LS_SNPRINTF(t_ls_field_gps_6f_6f_alt, body + n, sizeof(body) - (size_t)n, "> GPS %.6f, %.6f  alt %.0f m\n", p->lat, p->lon, p->alt_m);
     if (p->radio_valid && n > 0 && (size_t)n < sizeof(body)) {
         char level[24] = "";
         if (p->signal_valid) snprintf(level, sizeof(level), "  %.0f dBm", p->rssi);
-        n += snprintf(body + n, sizeof(body) - (size_t)n, "> RADIO %s  %.4f MHz%s\n",
+        n += LS_SNPRINTF(t_ls_field_radio_s_4f_mhz, body + n, sizeof(body) - (size_t)n, "> RADIO %s  %.4f MHz%s\n",
                       ls_field_source_name(p->source), p->frequency / 1e6, level);
     }
     if (p->imu_valid && isfinite(p->heading) && n > 0 && (size_t)n < sizeof(body))
@@ -1134,7 +1152,7 @@ static void io_step(void)
     bool full = s_count == LS_JOURNAL_CAP && !s_entries[0].saved;
     unlock();
     if (have_note) {
-        if (!s_disk.id && full) storage("RAM full; existing unsaved notes retained");
+        if (!s_disk.id && full) storage(LS_TEXT(t_ls_field_ram_full_existing_unsaved, "RAM full; existing unsaved notes retained"));
         else {
             const bool fresh = !s_disk.id;
             if (!s_disk.id) s_disk.id = s_next_id++;
@@ -1176,7 +1194,10 @@ static void find_worker(void *arg)
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     for (;;) {
         ls_dfs_step();
-        vTaskDelay(pdMS_TO_TICKS(ls_dfs_any_active() ? 25 : 200));
+        /* RF SURVEY and the FOX HUNT log read the same receivers and write
+           the card here, off the UI task. */
+        ls_rfs_step();
+        vTaskDelay(pdMS_TO_TICKS(ls_dfs_any_active() || ls_rfs_busy() ? 25 : 200));
     }
 }
 
@@ -1206,7 +1227,7 @@ bool ls_field_start(void)
         .rx_boost_step = (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM) ? 8 : 0 };
     s_gfsk_saved = s_live.fsk;
     for (int i = 0; i < LS_FIELD_BINS; i++) s_live.trace[i] = s_live.spectrum[i] = -140;
-    message("Mesh keeps control until DIRECT is enabled");
+    message(LS_TEXT(t_ls_field_mesh_keeps_control_until, "Mesh keeps control until DIRECT is enabled"));
     storage("Journal ready");
     s_live.ready = true;
     publish();
@@ -1219,14 +1240,14 @@ bool ls_field_start(void)
         io_worker, "journal", FIELD_IO_STACK_WORDS, NULL, 1,
         s_io_stack, &s_io_tcb, 0);
     if (!s_io_task) {
-        s_live.ready = false; message("Journal worker could not start"); publish(); return false;
+        s_live.ready = false; message(LS_TEXT(t_ls_field_journal_worker_could_not, "Journal worker could not start")); publish(); return false;
     }
     s_task = xTaskCreateStaticPinnedToCore(
         worker, "field", FIELD_STACK_WORDS, NULL, 2,
         s_field_stack, &s_field_tcb, 0);
     if (!s_task) {
         vTaskDelete(s_io_task); s_io_task = NULL;
-        s_live.ready = false; message("Field worker could not start"); publish(); return false;
+        s_live.ready = false; message(LS_TEXT(t_ls_field_field_worker_could_not, "Field worker could not start")); publish(); return false;
     }
     s_find_task = xTaskCreateStaticPinnedToCore(
         find_worker, "find", FIELD_STACK_WORDS, NULL, 1,
@@ -1306,30 +1327,30 @@ bool ls_field_configure_fsk(const ls_fsk_cfg_t *cfg)
 bool ls_field_calibrate(int action) { if (action < 0 || action > 2) return false; command *c = reserve(); if (!c) return false; c->kind = CMD_CAL; c->value = action; return commit(); }
 void ls_field_compass_report(void)
 {
-    if (!s_lock) { printf("compass: field worker not started (open COMPASS)\n"); return; }
+    if (!s_lock) { LS_FPUTS(msg_ls_field_compass_field_worker_not, "compass: field worker not started (open COMPASS)\n", stdout); return; }
     lock(); const int active = s_profile; compass_profile pr[2]; memcpy(pr, s_profiles, sizeof(pr));
     const bool loaded = s_loaded; const float expected = s_expected_ut;
     const bool discarded[2] = {s_learn_discarded[0], s_learn_discarded[1]}; unlock();
-    printf("compass: active profile %s, files %s\n", active ? "keyboard" : "standalone",
+    LS_PRINTF(t_ls_field_compass_active_profile_s, "compass: active profile %s, files %s\n", active ? "keyboard" : "standalone",
            loaded ? "read" : "NOT read yet");
     printf("compass: selection = lowest fit error within 20%% of reference; generation breaks ties\n");
-    printf("compass: learner defaults OFF, session-only; legacy records ignored, removed %d/%d\n",
+    LS_PRINTF(fmt_ls_field_compass_learner_defaults_off, "compass: learner defaults OFF, session-only; legacy records ignored, removed %d/%d\n",
            discarded[0], discarded[1]);
     for (int profile = 0; profile < 2; profile++) {
-        printf("compass: %-10s valid %d saved %d version %u written %u\n", profile ? "keyboard" : "standalone",
+        LS_PRINTF(fmt_ls_field_compass_valid_saved_version, "compass: %-10s valid %d saved %d version %u written %u\n", profile ? "keyboard" : "standalone",
                pr[profile].valid, pr[profile].saved, (unsigned)pr[profile].version, (unsigned)pr[profile].written);
         for (int slot = 0; slot < 2; slot++) {
             char name[160], leaf[40];
             snprintf(leaf, sizeof(leaf), "compass-%s%d.cal", profile ? "kbd" : "solo", slot);
             if (!path(name, sizeof(name), leaf)) continue;
             FILE *f = fopen(name, "rb"); compass_record record;
-            if (!f) { printf("compass:   %s: absent\n", leaf); continue; }
+            if (!f) { LS_PRINTF(t_ls_field_compass_s_absent, "compass:   %s: absent\n", leaf); continue; }
             const bool whole = fread(&record, sizeof(record), 1, f) == 1;
             fclose(f);
-            if (!whole) { printf("compass:   %s: short\n", leaf); continue; }
+            if (!whole) { LS_PRINTF(t_ls_field_compass_s_short, "compass:   %s: short\n", leaf); continue; }
             const char *problem = ls_compass_cal_upgrade(&record.cal,
                 pr[profile].valid ? &pr[profile].cal : NULL, expected);
-            printf("compass:   %s: magic %s gen %u sum %s cal %s  radius %.1f error %.3f basis %d %d %d\n", leaf,
+            LS_PRINTF(fmt_ls_field_compass_magic_gen_sum, "compass:   %s: magic %s gen %u sum %s cal %s  radius %.1f error %.3f basis %d %d %d\n", leaf,
                    record.magic == 0x43414c10u + (unsigned)profile ? "ok" : "OLD",
                    (unsigned)record.generation,
                    record.sum == checksum(&record, sizeof(record) - sizeof(record.sum)) ? "ok" : "BAD",
@@ -1374,7 +1395,7 @@ void ls_field_compass_learn(int action)
 
 void ls_field_compass_learn_report(void)
 {
-    if (!s_lock) { printf("compass learn: field worker not started (open COMPASS)\n"); return; }
+    if (!s_lock) { LS_FPUTS(msg_ls_field_compass_learn_field_worker, "compass learn: field worker not started (open COMPASS)\n", stdout); return; }
     lock();
     const ls_compass_learn_t l = s_learn_pub;
     const bool off = s_learn_off; const float amps = s_learn_amps; const int prof = s_learn_profile;
@@ -1382,25 +1403,25 @@ void ls_field_compass_learn_report(void)
     float corr[3];
     lock(); memcpy(corr, s_learn_applied, sizeof(corr)); unlock();
     const bool ok = corr[0] || corr[1] || corr[2];
-    printf("compass learn: %s, %s profile, used %lu refused %lu relearns %lu\n",
+    LS_PRINTF(fmt_ls_field_compass_learn_profile_used, "compass learn: %s, %s profile, used %lu refused %lu relearns %lu\n",
            off ? "OFF" : !l.started ? "waiting" : ok ? "applied" : "learning",
            prof == 1 ? "keyboard" : prof == 0 ? "standalone" : "no", (unsigned long)l.used,
            (unsigned long)l.refused, (unsigned long)l.relearns);
-    printf("compass learn: drift %+.1f %+.1f %+.1f uT (sd %.1f %.1f %.1f)\n", l.x[0], l.x[1], l.x[2],
+    LS_PRINTF(fmt_ls_field_compass_learn_drift_ut, "compass learn: drift %+.1f %+.1f %+.1f uT (sd %.1f %.1f %.1f)\n", l.x[0], l.x[1], l.x[2],
            sqrtf(l.P[0][0]), sqrtf(l.P[1][1]), sqrtf(l.P[2][2]));
-    printf("compass learn: per amp %+.1f %+.1f %+.1f uT/A (sd %.1f %.1f %.1f), current %+.3f A, seen %+.3f..%+.3f A\n",
+    LS_PRINTF(fmt_ls_field_compass_learn_per_amp, "compass learn: per amp %+.1f %+.1f %+.1f uT/A (sd %.1f %.1f %.1f), current %+.3f A, seen %+.3f..%+.3f A\n",
            l.x[3], l.x[4], l.x[5], sqrtf(l.P[3][3]), sqrtf(l.P[4][4]), sqrtf(l.P[5][5]), amps,
            isfinite(l.amps_lo) ? l.amps_lo : NAN, isfinite(l.amps_hi) ? l.amps_hi : NAN);
-    printf("compass learn: vertical %.1f uT of radius %.1f (dip %.1f), fit rms %.2f uT, heading sd %.1f deg\n",
+    LS_PRINTF(fmt_ls_field_compass_learn_vertical_ut, "compass learn: vertical %.1f uT of radius %.1f (dip %.1f), fit rms %.2f uT, heading sd %.1f deg\n",
            l.x[6], l.radius, l.radius > 0 ? asinf(fmaxf(-1, fminf(1, l.x[6] / l.radius))) * 57.29578f : NAN,
            sqrtf(l.res2), ls_compass_learn_accuracy(&l, amps));
     int16_t ma = 0; int64_t age = 0;
-    if (ls_gauge_peek(&ma, &age)) printf("compass learn: gauge %+d mA, read %.1f s ago\n", ma, age / 1e6);
-    else printf("compass learn: gauge not read yet, the current term waits for it\n");
+    if (ls_gauge_peek(&ma, &age)) LS_PRINTF(t_ls_field_compass_learn_gauge_d, "compass learn: gauge %+d mA, read %.1f s ago\n", ma, age / 1e6);
+    else LS_FPUTS(msg_ls_field_compass_learn_gauge_not, "compass learn: gauge not read yet, the current term waits for it\n", stdout);
     int sec = 0; for (int i = 0; i < 8; i++) sec += (l.sectors >> i) & 1;
-    printf("compass learn: field seen from %d of 8 directions (%d needed), axes applied %c%c%c\n", sec, LS_CL_SECTORS,
+    LS_PRINTF(fmt_ls_field_compass_learn_field_seen, "compass learn: field seen from %d of 8 directions (%d needed), axes applied %c%c%c\n", sec, LS_CL_SECTORS,
            l.applied & 1 ? 'x' : '-', l.applied & 2 ? 'y' : '-', l.applied & 4 ? 'z' : '-');
-    if (ok) printf("compass learn: taking off %+.1f %+.1f %+.1f uT now\n", corr[0], corr[1], corr[2]);
+    if (ok) LS_PRINTF(fmt_ls_field_compass_learn_taking_off, "compass learn: taking off %+.1f %+.1f %+.1f uT now\n", corr[0], corr[1], corr[2]);
     printf("compass learn: session-only; physical limits +/-20%% field, +/-15 deg known dip\n");
 }
 
@@ -1453,7 +1474,7 @@ bool ls_field_mark_lora(void)
     ls_journal_entry_t *entry = &s_notes[(s_note_head + s_note_count++) % QUEUE_CAP];
     memset(entry, 0, sizeof(*entry));
     snprintf(entry->title, sizeof(entry->title), "LoRa observation");
-    snprintf(entry->text, sizeof(entry->text), "%s; SF%u, BW %lu Hz, CR 4/%u", s_public.status,
+    LS_SNPRINTF(t_ls_field_s_sf_u_bw, entry->text, sizeof(entry->text), "%s; SF%u, BW %lu Hz, CR 4/%u", s_public.status,
              s_public.config.sf, (unsigned long)s_public.config.bw_hz, s_public.config.cr);
     entry->sample = s_public.sample;
     if (s_public.direct) {

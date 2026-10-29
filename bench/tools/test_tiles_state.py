@@ -144,6 +144,8 @@ int main(void) {
 gcc = shutil.which('gcc') or 'C:/mingw64/bin/gcc.exe'
 exe = out / 'test.exe'
 subprocess.run([gcc, '-std=gnu11', '-Wall', '-Wextra', '-Werror',
-                '-I', str(root / 'components/apps/tui'), str(out / 'test.c'),
+                '-I', str(root / 'components/apps/tui'),
+                '-I', str(root / 'components/ls_textpack/include'), '-include', 'ls_textpack.h',
+                str(out / 'test.c'),
                 '-o', str(exe)], check=True)
 subprocess.run([str(exe)], check=True)

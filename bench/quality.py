@@ -797,6 +797,13 @@ def _under_private_surface(path):
     return False
 
 
+def local_document_target(link):
+    # URI schemes do not all have // (mailto: and tel: are common examples).
+    if re.match(r'^[A-Za-z][A-Za-z0-9+.-]*:', link) or link.startswith(('#', '//')):
+        return None
+    return link.split('#', 1)[0]
+
+
 class ReleaseSurfaceTests(unittest.TestCase):
     def test_excluded_protocol_has_no_production_entrypoint(self):
         """Nothing outside the private surface may mention the protocol.
@@ -903,11 +910,19 @@ class ReleaseSurfaceTests(unittest.TestCase):
         docs = [p for p in docs if 'PREVIEW_' not in p.name]
         for path in docs:
             for link in re.findall(r'\]\(([^)]+)\)', path.read_text(encoding='utf-8')):
-                if '://' in link or link.startswith('#'):
+                target = local_document_target(link)
+                if target is None:
                     continue
-                target = link.split('#', 1)[0]
                 with self.subTest(document=path.name, link=link):
                     self.assertTrue((path.parent / target).is_file())
+
+    def test_document_links_distinguish_uri_schemes_from_local_paths(self):
+        for link in ('mailto:maintainer@example.com', 'tel:+15555550123',
+                     'https://example.com/doc', '//example.com/doc', '#setup'):
+            with self.subTest(link=link):
+                self.assertIsNone(local_document_target(link))
+        self.assertEqual(local_document_target('docs/README.md#setup'), 'docs/README.md')
+        self.assertEqual(local_document_target('../PORTING.md'), '../PORTING.md')
 
 
 
@@ -1206,6 +1221,9 @@ class TrackedReferenceTests(unittest.TestCase):
             'docs/TDP4_RC_CHECKLIST.md still names it',
         'tools/package_lcd43_app.py': 'deleted by the v2.0.0 release; LCD43 docs still name it',
         'bench/HANDOFF_NEXT.md': 'a bench note this tree does not carry',
+        'bench/build-size.csv': 'what size_gate.ps1 -Record writes, in its usage line',
+        'docs/media/LakeShark-divider-dark.png': 'the public README names it; not uploaded yet',
+        'docs/media/LakeShark-divider-light.png': 'the public README names it; not uploaded yet',
         'bench/HARDWARE_2026-09-09.md': 'a bench note this tree does not carry',
         'bench/NFC.md': 'a bench note this tree does not carry',
         'bench/P25_ACCEPTANCE.md': 'a bench note this tree does not carry',
@@ -1245,15 +1263,39 @@ class TrackedReferenceTests(unittest.TestCase):
                     continue
                 if (base / ref).as_posix() in tracked or ref in tracked:
                     continue
+                # A new relative build input can exist before it is staged.
+                # Keep it in the inventory for ignore checks under its actual
+                # path instead of inventing a missing repository-root path.
+                if (ROOT / base / ref).exists():
+                    ref = (base / ref).as_posix()
                 refs.setdefault(ref, set()).add(name)
         return refs
+
+    def test_untracked_relative_references_keep_their_actual_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / '.git').mkdir()
+            (root / 'bench/tools').mkdir(parents=True)
+            (root / 'bench/tools/pending.c').write_text('/* pending input */')
+            (root / 'bench/CMakeLists.txt').write_text(
+                'tools/pending.c tools/missing.py')
+            listing = subprocess.CompletedProcess([], 0, stdout='bench/CMakeLists.txt\0')
+            with patch.dict(globals(), ROOT=root, PRIVATE_SURFACE=[]), \
+                    patch('shutil.which', return_value='git'), \
+                    patch.object(subprocess, 'run', return_value=listing):
+                refs = self._refs()
+            self.assertEqual(refs, {
+                'bench/tools/pending.c': {'bench/CMakeLists.txt'},
+                'tools/missing.py': {'bench/CMakeLists.txt'},
+            })
 
     def test_no_named_file_is_ignored(self):
         refs = self._refs()
         out = subprocess.run(['git', '-c', 'core.quotePath=false', 'check-ignore',
                               '--no-index', '-z', '--stdin'], cwd=ROOT,
                              input='\0'.join(refs), capture_output=True, text=True).stdout
-        ignored = {p: sorted(refs[p]) for p in out.split('\0') if p}
+        ignored = {p: sorted(refs[p]) for p in out.split('\0')
+                   if p and p not in self.KNOWN_MISSING}
         self.assertEqual(ignored, {}, 'named by tracked files but ignored by '
                          '.gitignore - add a "!" line and commit the file')
 
@@ -1320,8 +1362,11 @@ class AppContractTests(unittest.TestCase):
         return out
 
     def _records(self):
-        """Doc symbol -> its .records value, read from ls_app_docs.c."""
-        text = (ROOT / 'components/apps/tui/ls_app_docs.c').read_bytes().decode('latin-1')
+        """Doc symbol -> its .records value, read from ls_app_docs.c and from
+        the screens that keep their doc beside them (DIGI, RADIO)."""
+        tui = ROOT / 'components/apps/tui'
+        paths = [tui / 'ls_app_docs.c'] + sorted((tui / 'screens').rglob('*.c'))
+        text = '\n'.join(p.read_bytes().decode('latin-1') for p in paths)
         out = {}
         for m in re.finditer(
                 r'const\s+ls_app_doc_t\s+(ls_doc_\w+)\s*=\s*\{(.*?)\n\};',

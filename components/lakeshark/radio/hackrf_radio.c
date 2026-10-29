@@ -4,6 +4,7 @@
 #include "hackrf_radio.h"
 #include <math.h>
 #include <string.h>
+#include "ls_cold.h"
 
 static uint32_t get_le32(const uint8_t *p)
 { return (uint32_t)p[0] | (uint32_t)p[1]<<8 | (uint32_t)p[2]<<16 | (uint32_t)p[3]<<24; }
@@ -92,6 +93,16 @@ uint32_t ls_hackrf_filter_bandwidth(uint32_t requested_hz,
     return selected;
 }
 
+int ls_hackrf_gain_from_setting(int tenths)
+{
+    /* Twice the dB up to the RTL's 49.6, then the rest of the way to the
+       top along a gentler slope: monotonic, every setting still reachable. */
+    if (tenths <= 0) return 0;
+    if (tenths <= 496) return tenths * 2;
+    if (tenths >= 1130) return 1130;
+    return 992 + (tenths - 496) * (1130 - 992) / (1130 - 496);
+}
+
 unsigned ls_hackrf_decimation(uint32_t rate_hz)
 {
     if (rate_hz == 0 || rate_hz > LS_HACKRF_HW_MAX_RATE) return 0;
@@ -107,7 +118,7 @@ unsigned ls_hackrf_shift(unsigned factor)
     return factor >= 5 ? 2 : factor >= 3 ? 1 : 0;
 }
 
-void ls_hackrf_cic_init(ls_hackrf_cic_t *c, unsigned factor, unsigned shift)
+LS_COLD void ls_hackrf_cic_init(ls_hackrf_cic_t *c, unsigned factor, unsigned shift)
 {
     if (!c) return;
     memset(c, 0, sizeof(*c));
@@ -127,6 +138,16 @@ void ls_hackrf_cic_init(ls_hackrf_cic_t *c, unsigned factor, unsigned shift)
     c->agc_q8 = 256;
 }
 
+LS_COLD void ls_hackrf_cic_start(ls_hackrf_cic_t *c, unsigned factor, int32_t agc_q8)
+{
+    if (!c) return;
+    const unsigned shift = ls_hackrf_shift(factor);
+    ls_hackrf_cic_init(c, factor, shift);
+    c->agc = true;
+    if (agc_q8 > 0) c->agc_q8 = agc_q8;
+    c->dc_block = shift == 0;
+}
+
 static uint8_t cic_out(ls_hackrf_cic_t *c, int rail)
 {
     uint32_t y = c->integ[rail][2];
@@ -137,6 +158,12 @@ static uint8_t cic_out(ls_hackrf_cic_t *c, int rail)
     }
     /* Bounded by 182 * 256 * factor^3, so back to a signed value is exact. */
     int64_t scaled = ((int64_t)(int32_t)y * c->inv + ((int64_t)1 << 31)) >> 32;
+    if (c->dc_block) {
+        /* |scaled| <= 128 * factor / 2, so Q16 stays inside 32 bits. */
+        int32_t *dc = &c->dc_q16[rail];
+        *dc += (int32_t)((scaled * 65536 - *dc) >> 10);
+        scaled -= (*dc + 32768) >> 16;
+    }
     if (c->agc) {
         scaled = (scaled * c->agc_q8) >> 8;
         const int32_t mag = (int32_t)(scaled < 0 ? -scaled : scaled);

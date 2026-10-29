@@ -135,6 +135,16 @@ bool ls_ota_resolve(const char *base, const char *ref, char *out, size_t cap);
    that is not https, or an `out` too small. */
 bool ls_ota_other_host(const char *url, char *out, size_t cap);
 
+/* The third place, tried after both hosts: the newest release on GitHub,
+   for networks that reach neither host. A URL on either host maps to that
+   release's asset named after its path, flattened, the query dropped:
+   /tdp4/stable.txt is tdp4-stable.txt, /tdp4/2.18.0/lakeshark.bin is
+   tdp4-2.18.0-lakeshark.bin. The manifest's signature and the image's hash
+   decide there as they do on the hosts. False, `out` untouched, for any
+   other URL, an empty path or an `out` too small. */
+#define LS_OTA_GITHUB_LATEST "https://github.com/SAMS0N1TE/LakeShark/releases/latest/download/"
+bool ls_ota_github_url(const char *url, char *out, size_t cap);
+
 /* ------------------------------------------------- the background check
 
    One quiet look at the manifest, so the board can say an update exists. It

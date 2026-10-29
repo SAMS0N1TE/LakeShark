@@ -5,6 +5,7 @@
 #include "../../ls_text.h"
 
 #include <stdio.h>
+#include "ls_textpack.h"
 /* strtol and strtod, for the frequency and location fields. Implicit before
    this: the firmware build gets stdlib.h through an IDF header and never
    complained, so strtod was declared to return int and a typed latitude
@@ -204,10 +205,10 @@ static void conv_follow(void)
         for (int i = 0; i < pn; i++)
             if (!strcasecmp(s_peer_buf[i].id, m->peer)) { name = s_peer_buf[i].name; break; }
         chat_lock_to(m->peer, name);
-        flash("DM - replies go to its sender");
+        flash(LS_TEXT(t_scr_mesh_dm_replies_go_to, "DM - replies go to its sender"));
     } else if (!m->direct && m->chan != 0) {
         s_conv_chan = m->chan;
-        flash("replies go on that channel");
+        flash(LS_TEXT(t_scr_mesh_replies_go_on_that, "replies go on that channel"));
     }
 }
 
@@ -674,7 +675,7 @@ static void draw_nodes(tui_surface *sf, tui_rect r, uint32_t now, bool compact)
                 tui_put_str(sf, r, r.x + 2, y + 1, s_peer_buf[i].name, dim);
         } else {
             char meta[48];
-            snprintf(meta, sizeof(meta), "%s  %4.0f dBm  %4.1f dB  x%lu",
+            LS_SNPRINTF(t_scr_mesh_s_4_0f_dbm, meta, sizeof(meta), "%s  %4.0f dBm  %4.1f dB  x%lu",
                      age, (double)s_peer_buf[i].rssi, (double)s_peer_buf[i].snr,
                      (unsigned long)s_peer_buf[i].adverts);
             tui_put_str(sf, r, r.x + 2 + 18, y, meta, dim);
@@ -799,25 +800,25 @@ static void draw_inspect(tui_surface *sf, tui_rect r)
     s_inspect_content = tui_rect_make(in.x, in.y + 2, in.w, bottom - in.y - 2);
     int y = s_inspect_content.y - s_inspect_scroll;
     if (mine && p->state != LS_INSPECT_IDLE) {
-        snprintf(line, sizeof(line), "%s %s tag %08lX %lums", inspect_kind(p->kind, false), inspect_state(p->state),
+        LS_SNPRINTF(t_scr_mesh_s_s_tag_08lx, line, sizeof(line), "%s %s tag %08lX %lums", inspect_kind(p->kind, false), inspect_state(p->state),
             (unsigned long)p->tag, (unsigned long)p->rtt_ms);
         ls_safe_line(sf, s_inspect_content, y++, line, A(DIM_FG, TUI_BLACK));
         if (p->state == LS_INSPECT_OK) {
-            snprintf(line, sizeof(line), "RX %.0fdBm  SNR %+.1fdB", p->reply_rssi, p->reply_snr);
+            LS_SNPRINTF(t_scr_mesh_rx_0fdbm_snr_1fdb, line, sizeof(line), "RX %.0fdBm  SNR %+.1fdB", p->reply_rssi, p->reply_snr);
             ls_safe_line(sf, s_inspect_content, y++, line, A(DIM_FG, TUI_BLACK));
         }
     } else ls_safe_line(sf, s_inspect_content, y++, ls_tr(login_role ?
         (session ? "Logged in: TELEM and STATUS ready" : "LOGIN first (blank = guest), then TELEM") :
         "TRACE: repeaters. TELEM: node must allow you"), A(DIM_FG, TUI_BLACK));
     if (mine && p->kind == LS_INSPECT_LOGIN && p->state == LS_INSPECT_OK && session) {
-        snprintf(line, sizeof(line), "ROLE %s  PERMS %02X  FW %u", session->admin ? "admin" : "guest",
+        LS_SNPRINTF(t_scr_mesh_role_s_perms_02x, line, sizeof(line), "ROLE %s  PERMS %02X  FW %u", session->admin ? "admin" : "guest",
             session->perms, session->fw_level);
         ls_safe_line(sf, s_inspect_content, y++, line, A(TUI_GREEN, TUI_BLACK));
     }
     if (mine && p->kind == LS_INSPECT_LOGIN && p->state == LS_INSPECT_TIMEOUT)
         ls_safe_line(sf, s_inspect_content, y++, ls_tr("No answer: out of range or password refused"), A(FAINT_FG, TUI_BLACK));
     if (!strcmp(path->peer, s_detail_id) && path->hop_count) {
-            snprintf(line, sizeof(line), "OUT + RETURN  %u hops  tag %08lX", path->hop_count, (unsigned long)path->tag);
+            LS_SNPRINTF(t_scr_mesh_out_return_u_hops, line, sizeof(line), "OUT + RETURN  %u hops  tag %08lX", path->hop_count, (unsigned long)path->tag);
             ls_safe_line(sf, s_inspect_content, y++, line, A(TUI_CYAN, TUI_BLACK));
             int pulse = (s_blink / 3) % path->hop_count;
             for (int i = 0; i < path->hop_count; i++) {
@@ -839,7 +840,7 @@ static void draw_inspect(tui_surface *sf, tui_rect r)
             ls_safe_line(sf, s_inspect_content, y++, ls_tr("RSSI: final RX only"), LS_ATTR_DIM);
         }
     if (!strcmp(telem->peer, s_detail_id)) {
-        snprintf(line, sizeof(line), "LAST SENSORS tag %08lX", (unsigned long)telem->tag);
+        LS_SNPRINTF(t_scr_mesh_last_sensors_tag_08lx, line, sizeof(line), "LAST SENSORS tag %08lX", (unsigned long)telem->tag);
         ls_safe_line(sf, s_inspect_content, y++, line, A(TUI_CYAN, TUI_BLACK));
         if (!telem->field_count)
             ls_safe_line(sf, s_inspect_content, y++, ls_tr("No telemetry fields returned"), A(FAINT_FG, TUI_BLACK));
@@ -858,11 +859,11 @@ static void draw_inspect(tui_surface *sf, tui_rect r)
             ls_safe_line(sf, s_inspect_content, y++, ls_tr("Additional fields omitted or unparsed"), A(FAINT_FG, TUI_BLACK));
     }
     if (!strcmp(status->peer, s_detail_id) && status->has_status) {
-        snprintf(line, sizeof(line), "STATUS tag %08lX  %.3fV", (unsigned long)status->tag, status->fields[0].value);
+        LS_SNPRINTF(t_scr_mesh_status_tag_08lx_3fv, line, sizeof(line), "STATUS tag %08lX  %.3fV", (unsigned long)status->tag, status->fields[0].value);
         ls_safe_line(sf, s_inspect_content, y++, line, A(TUI_CYAN, TUI_BLACK));
         snprintf(line, sizeof(line), "UP %lus  AIR %lus", (unsigned long)status->uptime_s, (unsigned long)status->airtime_s);
         ls_safe_line(sf, s_inspect_content, y++, line, A(TUI_GREEN, TUI_BLACK));
-        snprintf(line, sizeof(line), "RX %lu  TX %lu packets", (unsigned long)status->rx_packets, (unsigned long)status->tx_packets);
+        LS_SNPRINTF(t_scr_mesh_rx_lu_tx_lu, line, sizeof(line), "RX %lu  TX %lu packets", (unsigned long)status->rx_packets, (unsigned long)status->tx_packets);
         ls_safe_line(sf, s_inspect_content, y++, line, A(DIM_FG, TUI_BLACK));
     }
     ls_safe_line(sf, s_inspect_content, y++, ls_tr("HISTORY"), A(TUI_CYAN, TUI_BLACK));
@@ -925,7 +926,7 @@ static void draw_detail(tui_surface *sf, tui_rect r, uint32_t now)
        agree at a glance. */
     {
         char s[48];
-        snprintf(s, sizeof(s), "%.0f dBm   SNR %.1f dB", (double)p->rssi,
+        LS_SNPRINTF(t_scr_mesh_0f_dbm_snr_1f, s, sizeof(s), "%.0f dBm   SNR %.1f dB", (double)p->rssi,
                  (double)p->snr);
         tui_put_str(sf, r, r.x + 2, y, s, val);
         sigmeter(sf, r, r.x + r.w - 8, y, 6, p->rssi, TUI_MAGENTA);
@@ -934,7 +935,7 @@ static void draw_detail(tui_surface *sf, tui_rect r, uint32_t now)
     {
         char age[8], s[64];
         age_str(age, sizeof(age), p->last_heard, now);
-        snprintf(s, sizeof(s), "heard %s ago, %lu adverts", age,
+        LS_SNPRINTF(t_scr_mesh_heard_s_ago_lu, s, sizeof(s), "heard %s ago, %lu adverts", age,
                  (unsigned long)p->adverts);
         tui_put_str(sf, r, r.x + 2, y, s, dim);
         y++;
@@ -963,10 +964,10 @@ static void draw_detail(tui_surface *sf, tui_rect r, uint32_t now)
             double brg, rng_m;
             ls_geo_bearing_range(clat, clon, plat, plon, &brg, &rng_m);
             if (rng_m < 1000.0)
-                snprintf(s, sizeof(s), "%.0f m %s  (%.0f deg)", rng_m,
+                LS_SNPRINTF(t_scr_mesh_0f_m_s_0f, s, sizeof(s), "%.0f m %s  (%.0f deg)", rng_m,
                          ls_geo_compass(brg), brg);
             else
-                snprintf(s, sizeof(s), "%.1f km / %.1f mi %s  (%.0f deg)",
+                LS_SNPRINTF(t_scr_mesh_1f_km_1f_mi, s, sizeof(s), "%.1f km / %.1f mi %s  (%.0f deg)",
                          rng_m / 1000.0, rng_m / LS_GEO_M_PER_MILE,
                          ls_geo_compass(brg), brg);
             tui_put_str(sf, r, r.x + 2, y, s, A(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
@@ -1174,14 +1175,14 @@ static void field_value(int i, char *out, size_t cap)
 static int32_t s_manual_lat;
 static void manual_lon_done(double value)
 {
-    if (!isfinite(value) || value < -180 || value > 180) { option_flash("longitude -180..180; unchanged"); return; }
+    if (!isfinite(value) || value < -180 || value > 180) { option_flash(LS_TEXT(t_scr_mesh_longitude_180_180_unchanged, "longitude -180..180; unchanged")); return; }
     ls_mesh_radio_t r; ls_mesh_get_radio(&r);
     r.lat_e6 = s_manual_lat; r.lon_e6 = (int32_t)llround(value * 1e6); r.share_loc = 2;
     option_flash(ls_mesh_set_radio(&r) == ESP_OK ? "manual location saved" : "location failed");
 }
 static void manual_lat_done(double value)
 {
-    if (!isfinite(value) || value < -90 || value > 90) { option_flash("latitude -90..90; unchanged"); return; }
+    if (!isfinite(value) || value < -90 || value > 90) { option_flash(LS_TEXT(t_scr_mesh_latitude_90_90_unchanged, "latitude -90..90; unchanged")); return; }
     s_manual_lat = (int32_t)llround(value * 1e6);
     ls_mesh_radio_t r; ls_mesh_get_radio(&r);
     ls_numpad_open("LONGITUDE", "degrees -180..180", r.lon_e6 / 1e6, manual_lon_done);
@@ -1341,7 +1342,7 @@ static void o_send_on(const ls_opt_t *o)
             return;
         }
     }
-    option_flash("no channel has a key");
+    option_flash(LS_TEXT(t_scr_mesh_no_channel_has_a, "no channel has a key"));
 }
 static void o_send_on_show(const ls_opt_t *o, char *out, size_t n)
 {
@@ -1873,7 +1874,7 @@ static void act_stop(void)
 
 static void act_set_tx(bool on)
 {
-    if (!ls_mesh_running()) { flash("not running - /start"); return; }
+    if (!ls_mesh_running()) { flash(LS_TEXT(t_scr_mesh_not_running_start, "not running - /start")); return; }
     ls_mesh_set_tx(on);
     flash(on ? "TRANSMIT ARMED" : "transmit disarmed");
 }
@@ -1881,20 +1882,20 @@ static void act_set_tx(bool on)
 static bool act_send(void)
 {
     if (!s_compose_len) return true;
-    if (!ls_mesh_running()) { flash("not running - /start; draft kept"); return true; }
+    if (!ls_mesh_running()) { flash(LS_TEXT(t_scr_mesh_not_running_start_draft, "not running - /start; draft kept")); return true; }
 
     esp_err_t err;
     if (chat_locked()) {
         if (!ls_mesh_peer_known(s_lock_id)) {
-            flash("not heard since boot - waiting for its advert");
+            flash(LS_TEXT(t_scr_mesh_not_heard_since_boot, "not heard since boot - waiting for its advert"));
             return true;
         }
         err = ls_mesh_send_dm_id(s_lock_id, s_compose);
     } else {
         err = ls_mesh_send_text_on(conv_chan(), s_compose);
     }
-    if (err == ESP_ERR_NOT_ALLOWED) { flash("disarmed - type /arm"); return true; }
-    if (err == ESP_ERR_NOT_FOUND)   { flash("that node is not in the list"); return true; }
+    if (err == ESP_ERR_NOT_ALLOWED) { flash(LS_TEXT(t_scr_mesh_disarmed_type_arm, "disarmed - type /arm")); return true; }
+    if (err == ESP_ERR_NOT_FOUND)   { flash(LS_TEXT(t_scr_mesh_that_node_is_not, "that node is not in the list")); return true; }
     if (err != ESP_OK)              { flash("send failed"); return true; }
     flash("message queued");
     s_compose_len = 0; s_compose[0] = 0;
@@ -1936,7 +1937,7 @@ static void detail_act(int which)
 
     const int n = ls_mesh_peers(s_peer_buf, LS_MESH_MAX_PEERS);
     const int idx = detail_index(n);
-    if (idx < 0) { flash("that node is no longer in the list"); return; }
+    if (idx < 0) { flash(LS_TEXT(t_scr_mesh_that_node_is_no, "that node is no longer in the list")); return; }
     const ls_mesh_peer_t *p = &s_peer_buf[idx];
 
     switch (which) {
@@ -1945,7 +1946,7 @@ static void detail_act(int which)
         chat_lock_to(p->id, p->name);
         s_detail = false; s_inspect_page = false;
         s_page = PAGE_CHAT;
-        flash("chat locked - ESC or tap the name to leave");
+        flash(LS_TEXT(t_scr_mesh_chat_locked_esc_or, "chat locked - ESC or tap the name to leave"));
         return;
     case 1: {
         /* The backend takes the whole public key: the 16-character id
@@ -1958,14 +1959,14 @@ static void detail_act(int which)
         return;
     }
     case 2: {
-        if (!p->has_loc) { flash("this node sends no position"); return; }
+        if (!p->has_loc) { flash(LS_TEXT(t_scr_mesh_this_node_sends_no, "this node sends no position")); return; }
 
         /* Do not navigate to a map that cannot draw this node. */
 
         const double nlat = p->lat_e6 / 1e6, nlon = p->lon_e6 / 1e6;
         const int z = ls_map_zoom_covering(nlat, nlon);
         if (z < 0) {
-            flash("that node is outside this map archive");
+            flash(LS_TEXT(t_scr_mesh_that_node_is_outside, "that node is outside this map archive"));
             return;
         }
         if (z != ls_map_zoom()) ls_map_zoom_by(z - ls_map_zoom());
@@ -1974,7 +1975,7 @@ static void detail_act(int which)
         const int si = (app && app->screen) ? ls_tui_screen_index_of(app->screen)
                                             : -1;
         if (si >= 0) ls_tui_screen_show(si);
-        else flash("this build has no map screen");
+        else flash(LS_TEXT(t_scr_mesh_this_build_has_no, "this build has no map screen"));
         return;
     }
     case 3:
@@ -2092,7 +2093,7 @@ static void apply_field(void)
         const double value = strtod(s_edit, &end);
         const double limit = s_field == F_LAT ? 90 : 180;
         if (end == s_edit || *end || !isfinite(value) || value < -limit || value > limit) {
-            option_flash("coordinate outside range"); return;
+            option_flash(LS_TEXT(t_scr_mesh_coordinate_outside_range, "coordinate outside range")); return;
         }
         if (s_field == F_LAT) r.lat_e6 = (int32_t)llround(value * 1e6);
         else r.lon_e6 = (int32_t)llround(value * 1e6);
@@ -2122,14 +2123,14 @@ static bool slash(const char *text)
 
     if (!strncasecmp(cmd, "help", 4)) {
         ls_picker_open("MESH HELP", NULL);
-        ls_picker_add("/start", "Start listening, disarmed");
-        ls_picker_add("/stop", "Stop and cancel queued sends");
-        ls_picker_add("/arm /disarm", "Enable or disable transmit");
-        ls_picker_add("/advert", "Queue our node announcement");
-        ls_picker_add("/name X", "Save this node's name");
-        ls_picker_add("/to X", "Reply to node id or name");
-        ls_picker_add("/pub", "Return to the channel");
-        ls_picker_add("/options", "Node, radio and boot settings");
+        ls_picker_add("/start", LS_TEXT(t_scr_mesh_start_listening_disarmed, "Start listening, disarmed"));
+        ls_picker_add("/stop", LS_TEXT(t_scr_mesh_stop_and_cancel_queued, "Stop and cancel queued sends"));
+        ls_picker_add("/arm /disarm", LS_TEXT(t_scr_mesh_enable_or_disable_transmit, "Enable or disable transmit"));
+        ls_picker_add("/advert", LS_TEXT(t_scr_mesh_queue_our_node_announcement, "Queue our node announcement"));
+        ls_picker_add("/name X", LS_TEXT(t_scr_mesh_save_this_node_s, "Save this node's name"));
+        ls_picker_add("/to X", LS_TEXT(t_scr_mesh_reply_to_node_id, "Reply to node id or name"));
+        ls_picker_add("/pub", LS_TEXT(t_scr_mesh_return_to_the_channel, "Return to the channel"));
+        ls_picker_add("/options", LS_TEXT(t_scr_mesh_node_radio_and_boot, "Node, radio and boot settings"));
         ls_picker_add("/radio", "Open radio settings");
         return true;
     }
@@ -2143,7 +2144,7 @@ static bool slash(const char *text)
     if (!strncasecmp(cmd, "to ", 3)) {
         const char *want = cmd + 3;
         while (*want == ' ') want++;
-        if (!*want) { flash("/to <node id or name>"); return true; }
+        if (!*want) { flash(LS_TEXT(t_scr_mesh_to_node_id_or, "/to <node id or name>")); return true; }
 
         const int n = ls_mesh_peers(s_peer_buf, LS_MESH_MAX_PEERS);
         int found = -1, hits = 0;
@@ -2156,10 +2157,10 @@ static bool slash(const char *text)
                 hits++;
             }
         }
-        if (hits == 0) { flash("no node here by that name"); return true; }
-        if (hits > 1)  { flash("more than one node matches - use the id"); return true; }
+        if (hits == 0) { flash(LS_TEXT(t_scr_mesh_no_node_here_by, "no node here by that name")); return true; }
+        if (hits > 1)  { flash(LS_TEXT(t_scr_mesh_more_than_one_node, "more than one node matches - use the id")); return true; }
         chat_lock_to(s_peer_buf[found].id, s_peer_buf[found].name);
-        flash("chat locked - /pub or tap the name to leave");
+        flash(LS_TEXT(t_scr_mesh_chat_locked_pub_or, "chat locked - /pub or tap the name to leave"));
         return true;
     }
     if (!strncasecmp(cmd, "options", 7)) { ls_opt_open(&CTX_MESH); return true; }
@@ -2180,7 +2181,7 @@ static bool slash(const char *text)
         flash(ls_mesh_set_name(arg) == ESP_OK ? "name saved" : "bad name");
         return true;
     }
-    flash("unknown command - /help");
+    flash(LS_TEXT(t_scr_mesh_unknown_command_help, "unknown command - /help"));
     return true;
 }
 
@@ -2412,7 +2413,7 @@ static bool touch(int col, int row)
         if (s_tx_rect.h > 0 && row >= s_tx_rect.y &&
             row < s_tx_rect.y + s_tx_rect.h) {
             if (!ls_mesh_running()) {
-                flash("not running - start it in OPTIONS or type /start");
+                flash(LS_TEXT(t_scr_mesh_not_running_start_it, "not running - start it in OPTIONS or type /start"));
                 return true;
             }
             act_set_tx(!ls_mesh_tx_enabled());

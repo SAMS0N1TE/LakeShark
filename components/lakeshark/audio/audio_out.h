@@ -19,6 +19,9 @@ void audio_out_media_release(void);
 
 /* Live radio audio (FM, P25 voice): it takes the speaker from speech. */
 void audio_write_mono(const int16_t *samples, int n);
+/* One listener for that live audio as it arrives, before mute and volume:
+   native apps (lap_audio_listen). Runs on the receiver's task; must not block. */
+void audio_out_set_tap(void (*tap)(const int16_t *samples, int n));
 /* Tones and chimes: same ring, but they neither stop nor discard speech. */
 void audio_write_cue(const int16_t *samples, int n);
 bool audio_write_cue_wait(const int16_t *samples, int n, int timeout_ms);
@@ -58,6 +61,12 @@ esp_err_t audio_out_reinit(bool swap);
 void audio_out_reprime(void);
 
 void audio_out_play_now(void);
+/* Whether the player parks the I2S clocks after 2 s of silence (default on). */
+void audio_out_idle_park_set(bool on);
+bool audio_out_idle_park_get(void);
+/* Held: no idle park whatever the setting, for an app whose sounds come in
+   bursts (games). Each burst after a park woke the clocks and the rail again. */
+void audio_out_park_hold(bool hold);
 
 uint32_t audio_drops_get(void);
 uint32_t audio_underruns_get(void);

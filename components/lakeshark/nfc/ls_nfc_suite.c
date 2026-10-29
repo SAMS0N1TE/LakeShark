@@ -3,6 +3,7 @@
 #include "ls_board.h"
 #include <string.h>
 #include <stdio.h>
+#include "ls_textpack.h"
 #if (defined(LS_BOARD_MIX_CC_CS) && defined(ESP_PLATFORM)) || defined(LS_NFC_SUITE_HOST)
 #include "ls_mixrf_control.h"
 #include "esp_attr.h"
@@ -26,7 +27,7 @@ void ls_nfc_suite_snapshot(ls_nfc_suite_status_t *out){if(out){portENTER_CRITICA
 bool ls_nfc_suite_block(unsigned b,uint8_t out[16],uint16_t *mask){if(b>=256 || !out || !mask)return false;portENTER_CRITICAL(&guard);bool ok=b<s.blocks;if(ok){memcpy(out,memory[b],16);*mask=known[b];}portEXIT_CRITICAL(&guard);return ok;}
 static int hex(char c){return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:c>='A'&&c<='F'?c-'A'+10:-1;}
 bool ls_nfc_suite_key(bool b,const char *text){if(!text || strlen(text)!=12)return false;uint8_t k[6];for(unsigned i=0;i<6;i++){int a=hex(text[i*2]),v=hex(text[i*2+1]);if(a<0||v<0)return false;k[i]=a*16+v;}portENTER_CRITICAL(&guard);bool ok=!s.busy;if(ok)memcpy(keys[b],k,6);portEXIT_CRITICAL(&guard);return ok;}
-bool ls_nfc_suite_save(void){ls_mixrf_status_t radio;ls_mixrf_snapshot(&radio);if(!ls_mixrf_suite_allowed(&radio)){message("Stop CC1101 and nRF24 before SD export");return false;}portENTER_CRITICAL(&guard);bool ok=!s.busy&&s.identified;if(ok){request=3;s.busy=true;cancel=false;}portEXIT_CRITICAL(&guard);return ok;}
+bool ls_nfc_suite_save(void){ls_mixrf_status_t radio;ls_mixrf_snapshot(&radio);if(!ls_mixrf_suite_allowed(&radio)){message(LS_TEXT(t_ls_nfc_suite_stop_cc1101_and_nrf24, "Stop CC1101 and nRF24 before SD export"));return false;}portENTER_CRITICAL(&guard);bool ok=!s.busy&&s.identified;if(ok){request=3;s.busy=true;cancel=false;}portEXIT_CRITICAL(&guard);return ok;}
 bool ls_nfc_suite_sector_key(unsigned sector,bool b,const char *text){
  if(sector>=40 || !text || strlen(text)!=12)return false;
  uint8_t k[6];for(unsigned i=0;i<6;i++){int a=hex(text[i*2]),v=hex(text[i*2+1]);if(a<0||v<0)return false;k[i]=a*16+v;}
@@ -71,7 +72,7 @@ static bool decrypt(ls_crypto1_t *c,const uint8_t *in,unsigned bits,uint8_t *out
 static bool authenticate(const ls_nfc_suite_io_t *io,unsigned block,unsigned key_b,ls_crypto1_t *c){
  uint8_t uid[10],len,sak;uint16_t atqa;
  if(!selected(io,uid,&len,&sak,&atqa))return false;
- if(len!=s.uid_len || memcmp(uid,s.uid,len) || sak!=s.sak){message("Card changed or selection failed; retained prior data");return false;}
+ if(len!=s.uid_len || memcmp(uid,s.uid,len) || sak!=s.sak){message(LS_TEXT(t_ls_nfc_suite_card_changed_or_selection, "Card changed or selection failed; retained prior data"));return false;}
  portENTER_CRITICAL(&guard);s.attempts++;portEXIT_CRITICAL(&guard);
  uint8_t tx[20]={key_b?0x61:0x60,(uint8_t)block},rx[32];unsigned bits=0;append_crc(tx,2);
  if(io->exchange(tx,32,rx,sizeof(rx),&bits,false)||bits!=32)return false;
@@ -96,25 +97,25 @@ static int read_block(const ls_nfc_suite_io_t *io,ls_crypto1_t *c,unsigned block
 }
 static void export_card(void){
  char path[96];mkdir("/sdcard/nfc",0775);
- snprintf(path,sizeof(path),"/sdcard/nfc/card-%08lx-%08lx.txt",(unsigned long)esp_random(),(unsigned long)esp_random());
- FILE *f=fopen(path,"wx");if(!f){message("SD export failed; card data remains in memory");return;}
- fprintf(f,"LakeShark NFC capture v1\nUID:");for(unsigned i=0;i<s.uid_len;i++)fprintf(f," %02X",s.uid[i]);
- fprintf(f,"\nATQA: %04X\nSAK: %02X\nBlocks: %u\nRead: %u\nUnknown bytes: ?? (Key A is never readable from the card)\n",s.atqa,s.sak,s.blocks,s.read_blocks);
+ LS_SNPRINTF(t_ls_nfc_suite_sdcard_nfc_card_08lx, path,sizeof(path),"/sdcard/nfc/card-%08lx-%08lx.txt",(unsigned long)esp_random(),(unsigned long)esp_random());
+ FILE *f=fopen(path,"wx");if(!f){message(LS_TEXT(t_ls_nfc_suite_sd_export_failed_card, "SD export failed; card data remains in memory"));return;}
+ LS_FPUTS(t_ls_nfc_suite_lakeshark_nfc_capture_v1, "LakeShark NFC capture v1\nUID:", f);for(unsigned i=0;i<s.uid_len;i++)fprintf(f," %02X",s.uid[i]);
+ LS_FPRINTF(t_ls_nfc_suite_atqa_04x_sak_02x, f,"\nATQA: %04X\nSAK: %02X\nBlocks: %u\nRead: %u\nUnknown bytes: ?? (Key A is never readable from the card)\n",s.atqa,s.sak,s.blocks,s.read_blocks);
  for(unsigned b=0;b<s.blocks;b++){fprintf(f,"%03u [%u] ",b,s.block_state[b]);for(unsigned i=0;i<16;i++){if(known[b]&(1u<<i))fprintf(f,"%02X ",memory[b][i]);else fputs("?? ",f);}fputc('\n',f);}
  bool ok=!ferror(f);if(fclose(f))ok=false;if(ok)saved=true;message(ok?path:"SD export incomplete; retry after checking card");
 }
 void ls_nfc_suite_step(const ls_nfc_suite_io_t *io){
  portENTER_CRITICAL(&guard);unsigned req=request;request=0;bool stop=cancel;portEXIT_CRITICAL(&guard);
- if(stop){io->end();message("Stopped; verified blocks retained");portENTER_CRITICAL(&guard);s.busy=false;s.reading=false;for(unsigned b=0;b<s.blocks;b++)if(s.block_state[b]==LS_CARD_ACTIVE)s.block_state[b]=LS_CARD_UNREAD;portEXIT_CRITICAL(&guard);return;}
+ if(stop){io->end();message(LS_TEXT(t_ls_nfc_suite_stopped_verified_blocks_retained, "Stopped; verified blocks retained"));portENTER_CRITICAL(&guard);s.busy=false;s.reading=false;for(unsigned b=0;b<s.blocks;b++)if(s.block_state[b]==LS_CARD_ACTIVE)s.block_state[b]=LS_CARD_UNREAD;portEXIT_CRITICAL(&guard);return;}
  if(req==3){export_card();portENTER_CRITICAL(&guard);s.busy=false;portEXIT_CRITICAL(&guard);return;}
  if(req){
   portENTER_CRITICAL(&guard);s.busy=true;s.reading=req==2;portEXIT_CRITICAL(&guard);
-  message("Selecting card: validating UID, BCC and SAK CRC");
+  message(LS_TEXT(t_ls_nfc_suite_selecting_card_validating_uid, "Selecting card: validating UID, BCC and SAK CRC"));
   uint8_t uid[10],len,sak;uint16_t atqa;
-  if(!selected(io,uid,&len,&sak,&atqa)){io->end();message("No valid selection; previous capture retained");portENTER_CRITICAL(&guard);s.busy=false;s.reading=false;portEXIT_CRITICAL(&guard);return;}
+  if(!selected(io,uid,&len,&sak,&atqa)){io->end();message(LS_TEXT(t_ls_nfc_suite_no_valid_selection_previous, "No valid selection; previous capture retained"));portENTER_CRITICAL(&guard);s.busy=false;s.reading=false;portEXIT_CRITICAL(&guard);return;}
   portENTER_CRITICAL(&guard);
   bool same=s.identified && s.uid_len==len && !memcmp(s.uid,uid,len) && s.sak==sak;
-  if(!same && s.read_blocks && !saved){s.busy=s.reading=false;portEXIT_CRITICAL(&guard);io->end();message("Different card; SAVE prior verified capture before replacing");return;}
+  if(!same && s.read_blocks && !saved){s.busy=s.reading=false;portEXIT_CRITICAL(&guard);io->end();message(LS_TEXT(t_ls_nfc_suite_different_card_save_prior, "Different card; SAVE prior verified capture before replacing"));return;}
   if(!same){memset(sector_key_set,0,sizeof(sector_key_set));memset(&s,0,sizeof(s));memset(known,0,sizeof(known));saved=false;}
   s.reading=req==2;s.identified=true;memcpy(s.uid,uid,len);s.uid_len=len;s.sak=sak;s.atqa=atqa;
   s.blocks=sak==8?64:sak==0x18?256:sak==9?20:0;s.sectors=sak==8?16:sak==0x18?40:sak==9?5:0;sector=0;
@@ -125,7 +126,7 @@ void ls_nfc_suite_step(const ls_nfc_suite_io_t *io){
  unsigned first=ls_classic_first(sector),count=ls_classic_count(sector);bool authenticated=false;
  for(unsigned k=0;k<2;k++){
   portENTER_CRITICAL(&guard);bool abort=cancel;s.current=first;if(s.block_state[first]!=LS_CARD_READ)s.block_state[first]=LS_CARD_ACTIVE;portEXIT_CRITICAL(&guard);if(abort)break;
-  char text[96];snprintf(text,sizeof(text),"Sector %u/%u: authenticating Key %c",sector+1,s.sectors,'A'+k);message(text);
+  char text[96];LS_SNPRINTF(t_ls_nfc_suite_sector_u_u_authenticating, text,sizeof(text),"Sector %u/%u: authenticating Key %c",sector+1,s.sectors,'A'+k);message(text);
   ls_crypto1_t crypto;
   bool auth=false;
   for(unsigned retry=0;retry<2 && !auth;retry++){
@@ -147,7 +148,7 @@ void ls_nfc_suite_step(const ls_nfc_suite_io_t *io){
  io->end();portENTER_CRITICAL(&guard);
  for(unsigned b=first;b<first+count;b++)if(s.block_state[b]==LS_CARD_ACTIVE || (!authenticated && s.block_state[b]==LS_CARD_UNREAD))s.block_state[b]=authenticated?LS_CARD_UNREAD:LS_CARD_AUTH_FAILED;
  sector++;bool done=sector>=s.sectors;if(done){s.busy=false;s.reading=false;}portEXIT_CRITICAL(&guard);
- if(done){char text[96];snprintf(text,sizeof(text),"Read finished: %u/%u blocks verified",s.read_blocks,s.blocks);message(text);}
+ if(done){char text[96];LS_SNPRINTF(t_ls_nfc_suite_read_finished_u_u, text,sizeof(text),"Read finished: %u/%u blocks verified",s.read_blocks,s.blocks);message(text);}
 }
 #else
 bool ls_nfc_suite_start(bool read){(void)read;return false;}

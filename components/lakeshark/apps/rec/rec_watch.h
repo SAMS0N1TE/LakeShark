@@ -192,6 +192,10 @@ typedef struct {
     /* The other family: run-length OOK, which the PWM reader cannot see
        because it sends no long preamble space. */
     subghz_nrz_t nrz[REC_WATCH_SLOTS];
+    /* What rtl_433's decoders (rec_ism) made of the pattern, one line, or ""
+       when none knew it: "ERT-SCM 12345678 339972". A device identity where
+       the rest of the list is only a timing pattern. */
+    char ism[REC_WATCH_SLOTS][40];
 } rec_watch_status_t;
 bool rec_watch_start(void);
 bool rec_watch_enable(bool on);
@@ -214,7 +218,7 @@ bool rec_watch_enabled(void);
 void rec_watch_snapshot(rec_watch_status_t *out);
 /* The copy rec_watch_snapshot makes while it holds the lock, on its own so it
    can be tested: the runtime that calls it needs FreeRTOS and never reaches
-   the bench. Copies the scalars and the first `count` entries of the three
+   the bench. Copies the scalars and the first `count` entries of the
    per-slot arrays, which is all publish() ever populates - the slots past it
    hold whatever a longer catalog left behind, in the source as much as in the
    destination. Returns the bytes moved, which is the point of doing it this

@@ -13,6 +13,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 #define INK(c) TUI_ATTR((c),TUI_BLACK)
 #define WHITE INK(TUI_WHITE|TUI_BRIGHT)
 #define CYAN INK(TUI_CYAN|TUI_BRIGHT)
@@ -124,7 +125,7 @@ static void radar(tui_surface *sf,tui_rect a,int64_t now) {
     }
     ls_dots_blit(sf,pic,dots,w);
     tui_put_char(sf,a,pic.x+pic.w/2,pic.y+pic.h/2,'@',WHITE);
-    line(sf,a,a.h-2,"GPS bearing / else RSSI rank only",LS_ATTR_DIM);
+    line(sf,a,a.h-2,LS_TEXT(t_ls_rid_ui_gps_bearing_else_rssi, "GPS bearing / else RSSI rank only"),LS_ATTR_DIM);
 }
 static const char *status_name(unsigned status) {
     static const char *const names[]={"UNDECLARED","ON GROUND","AIRBORNE","EMERGENCY","RID FAILURE"};
@@ -143,38 +144,38 @@ static void show_detail(tui_surface *sf,tui_rect a,int64_t now) {
     bool flight=ls_rid_fresh(d,1,now), system=ls_rid_fresh(d,4,now), operator=ls_rid_fresh(d,5,now);
     uint8_t flight_ink=flight?WHITE:LS_ATTR_DIM, system_ink=system?WHITE:LS_ATTR_DIM;
     const char *history=flight?"":" / STALE";
-    ls_panel_box(sf,a,"DRONE DETAIL / UNVERIFIED",TUI_CYAN);
+    ls_panel_box(sf,a,LS_TEXT(t_ls_rid_ui_drone_detail_unverified, "DRONE DETAIL / UNVERIFIED"),TUI_CYAN);
     if(ls_tui_is_wide()) ls_panel_box(sf,tui_rect_make(a.x+a.w/2,a.y,a.w-a.w/2,a.h),"OPERATOR / SYSTEM",TUI_CYAN);
     detail_line(sf,a,2,d->uas_id[0]?d->uas_id:"Awaiting Basic ID",WHITE);
-    snprintf(s,sizeof(s),"%02X:%02X:%02X:%02X:%02X:%02X / %d dBm",d->mac[5],d->mac[4],d->mac[3],d->mac[2],d->mac[1],d->mac[0],d->rssi); detail_line(sf,a,4,s,CYAN);
-    snprintf(s,sizeof(s),"Seen %.0fs ago / %s%s",(now-d->last_us)/1e6,(d->messages&2)?(flight?status_name(d->status):"FLIGHT STALE"):"FLIGHT --",now-d->last_us>=60000000LL?" / EXPIRED":""); detail_line(sf,a,5,s,WHITE);
+    LS_SNPRINTF(t_ls_rid_ui_02x_02x_02x_02x, s,sizeof(s),"%02X:%02X:%02X:%02X:%02X:%02X / %d dBm",d->mac[5],d->mac[4],d->mac[3],d->mac[2],d->mac[1],d->mac[0],d->rssi); detail_line(sf,a,4,s,CYAN);
+    LS_SNPRINTF(t_ls_rid_ui_seen_0fs_ago_s, s,sizeof(s),"Seen %.0fs ago / %s%s",(now-d->last_us)/1e6,(d->messages&2)?(flight?status_name(d->status):"FLIGHT STALE"):"FLIGHT --",now-d->last_us>=60000000LL?" / EXPIRED":""); detail_line(sf,a,5,s,WHITE);
     snprintf(s,sizeof(s),"UA %s %.5f, %.5f%s",d->position_valid?"GPS":"--",d->lat,d->lon,history); detail_line(sf,a,7,s,flight_ink);
     measure(x,sizeof(x),d->geo_m); measure(y,sizeof(y),d->baro_m);
     snprintf(s,sizeof(s),"GEO %s / BARO %s%s",x,y,history); detail_line(sf,a,8,s,flight_ink);
     measure(x,sizeof(x),d->height_m); snprintf(s,sizeof(s),"HEIGHT %s / %s%s",x,d->height_agl?"AGL":"ABOVE TAKEOFF",history); detail_line(sf,a,9,s,flight_ink);
-    snprintf(s,sizeof(s),"Speed %.1f %s / track %.0f deg%s",d->speed_mps*(units?2.23694:1),units?"mph":"m/s",d->track_deg,history); detail_line(sf,a,10,s,flight_ink);
-    snprintf(s,sizeof(s),"Vertical %.1f %s / fix age %.0fs%s",d->vertical_mps*(units?3.28084:1),units?"ft/s":"m/s",(d->messages&2)?(now-d->location_us)/1e6:NAN,history); detail_line(sf,a,11,s,LS_ATTR_DIM);
-    snprintf(s,sizeof(s),"Operator %s %.5f, %.5f%s",d->operator_valid?"GPS":"--",d->operator_lat,d->operator_lon,system?"":" / STALE"); detail_line(sf,a,13,s,system_ink);
+    LS_SNPRINTF(t_ls_rid_ui_speed_1f_s_track, s,sizeof(s),"Speed %.1f %s / track %.0f deg%s",d->speed_mps*(units?2.23694:1),units?"mph":"m/s",d->track_deg,history); detail_line(sf,a,10,s,flight_ink);
+    LS_SNPRINTF(t_ls_rid_ui_vertical_1f_s_fix, s,sizeof(s),"Vertical %.1f %s / fix age %.0fs%s",d->vertical_mps*(units?3.28084:1),units?"ft/s":"m/s",(d->messages&2)?(now-d->location_us)/1e6:NAN,history); detail_line(sf,a,11,s,LS_ATTR_DIM);
+    LS_SNPRINTF(t_ls_rid_ui_operator_s_5f_5f, s,sizeof(s),"Operator %s %.5f, %.5f%s",d->operator_valid?"GPS":"--",d->operator_lat,d->operator_lon,system?"":" / STALE"); detail_line(sf,a,13,s,system_ink);
     const char *type=d->operator_location_type==0?"TAKEOFF":d->operator_location_type==1?"LIVE GNSS":d->operator_location_type==2?"FIXED":"UNKNOWN";
     measure(x,sizeof(x),d->operator_geo_m);
-    if(d->messages&16) snprintf(s,sizeof(s),"%s / GEO %s / System %.0fs%s",type,x,(now-d->system_us)/1e6,system?"":" STALE");
+    if(d->messages&16) LS_SNPRINTF(t_ls_rid_ui_s_geo_s_system, s,sizeof(s),"%s / GEO %s / System %.0fs%s",type,x,(now-d->system_us)/1e6,system?"":" STALE");
     else snprintf(s,sizeof(s),"System -- / GEO --");
     detail_line(sf,a,14,s,LS_ATTR_DIM);
-    if(d->messages&32) snprintf(s,sizeof(s),"Operator ID: %s / %.0fs%s",d->operator_id[0]?d->operator_id:"--",(now-d->operator_us)/1e6,operator?"":" STALE");
+    if(d->messages&32) LS_SNPRINTF(t_ls_rid_ui_operator_id_s_0fs, s,sizeof(s),"Operator ID: %s / %.0fs%s",d->operator_id[0]?d->operator_id:"--",(now-d->operator_us)/1e6,operator?"":" STALE");
     else snprintf(s,sizeof(s),"Operator ID: --");
     detail_line(sf,a,15,s,operator?WHITE:LS_ATTR_DIM);
-    measure(x,sizeof(x),d->area_radius_m); snprintf(s,sizeof(s),"Area: %u aircraft / radius %s",d->area_count,x); detail_line(sf,a,17,s,system_ink);
-    measure(y,sizeof(y),d->area_floor_m); measure(z,sizeof(z),d->area_ceiling_m); snprintf(s,sizeof(s),"Floor %s / ceiling %s",y,z); detail_line(sf,a,18,s,system_ink);
-    if(d->system_version) snprintf(s,sizeof(s),"Class type %u / category %u / class %u",d->classification_type,d->category,d->class_id);
-    else snprintf(s,sizeof(s),"Class type %u / category -- / class --",d->classification_type);
+    measure(x,sizeof(x),d->area_radius_m); LS_SNPRINTF(t_ls_rid_ui_area_u_aircraft_radius, s,sizeof(s),"Area: %u aircraft / radius %s",d->area_count,x); detail_line(sf,a,17,s,system_ink);
+    measure(y,sizeof(y),d->area_floor_m); measure(z,sizeof(z),d->area_ceiling_m); LS_SNPRINTF(t_ls_rid_ui_floor_s_ceiling_s, s,sizeof(s),"Floor %s / ceiling %s",y,z); detail_line(sf,a,18,s,system_ink);
+    if(d->system_version) LS_SNPRINTF(t_ls_rid_ui_class_type_u_category, s,sizeof(s),"Class type %u / category %u / class %u",d->classification_type,d->category,d->class_id);
+    else LS_SNPRINTF(t_ls_rid_ui_class_type_u_category_2, s,sizeof(s),"Class type %u / category -- / class --",d->classification_type);
     detail_line(sf,a,19,s,system_ink);
     snprintf(s,sizeof(s),"Self ID: %s",d->self_id[0]?d->self_id:"--"); detail_line(sf,a,21,s,WHITE);
-    snprintf(s,sizeof(s),"Auth %s / type %u page %u",d->messages&4?"SEEN, UNVERIFIED":"ABSENT",d->auth_type,d->auth_page); detail_line(sf,a,22,s,LS_ATTR_DIM);
+    LS_SNPRINTF(t_ls_rid_ui_auth_s_type_u, s,sizeof(s),"Auth %s / type %u page %u",d->messages&4?"SEEN, UNVERIFIED":"ABSENT",d->auth_type,d->auth_page); detail_line(sf,a,22,s,LS_ATTR_DIM);
 }
 static void draw_body(tui_surface *sf,tui_rect a,int64_t now);
 void ls_rid_draw(tui_surface *sf,tui_rect a) {
     int64_t now=esp_timer_get_time(); refresh(now);
-    if(a.w<26 || a.h<18) { ls_panel_notice(sf,a,"DRONES","More screen space needed","Use a smaller font"); return; }
+    if(a.w<26 || a.h<18) { ls_panel_notice(sf,a,"DRONES",LS_TEXT(t_ls_rid_ui_more_screen_space_needed, "More screen space needed"),"Use a smaller font"); return; }
     int bar_h=ls_tui_is_wide()?3:5;
     ls_btn_t buttons[]={ {detail?"BACK":"DETAIL",detail?"LIST":"SELECTED",detail?'b':'d',false,!detail&&!count,false},
         {receiver()==LS_RID_RX_LISTENING?"PREV":"RECEIVE",receiver()==LS_RID_RX_LISTENING?"DRONE":"START / R",receiver()==LS_RID_RX_LISTENING?'[':'r',false,detail || (receiver()==LS_RID_RX_LISTENING && !count),false},
@@ -185,7 +186,7 @@ void ls_rid_draw(tui_surface *sf,tui_rect a) {
 }
 void ls_rid_draw_body(tui_surface *sf,tui_rect a) {
     int64_t now=esp_timer_get_time(); refresh(now);
-    if(a.w<26 || a.h<12) { ls_panel_notice(sf,a,"REMOTE ID","More screen space needed","Use a smaller font"); return; }
+    if(a.w<26 || a.h<12) { ls_panel_notice(sf,a,"REMOTE ID",LS_TEXT(t_ls_rid_ui_more_screen_space_needed, "More screen space needed"),"Use a smaller font"); return; }
     draw_body(sf,a,now);
 }
 bool ls_rid_in_detail(void) { return detail; }
@@ -201,13 +202,13 @@ static void draw_body(tui_surface *sf,tui_rect a,int64_t now) {
     ls_panel_box(sf,list_area,"HEARD DRONES",TUI_CYAN);
     snprintf(s,sizeof(s),ls_tr("ID / RANGE / RSSI / AGE  [%s]"),ls_tr(SORT[sort])); line(sf,list_area,1,s,LS_ATTR_DIM);
     rows=(list_area.h-3)/3; if(rows<1) rows=1;
-    if(!count) { line(sf,list_area,3,receiver()==LS_RID_RX_LISTENING?"Listening for Remote ID...":receiver_name(),WHITE); line(sf,list_area,5,"R Receive / O receiver options",LS_ATTR_DIM); return; }
+    if(!count) { line(sf,list_area,3,receiver()==LS_RID_RX_LISTENING?"Listening for Remote ID...":receiver_name(),WHITE); line(sf,list_area,5,LS_TEXT(t_ls_rid_ui_r_receive_o_receiver, "R Receive / O receiver options"),LS_ATTR_DIM); return; }
     int start=pick/rows*rows;
     for(int i=start;i<count && i<start+rows;i++) {
         ls_rid_drone_t *d=&view[order[i]]; int r=3+(i-start)*3; char range[24];
         measure(range,sizeof(range),ranges[order[i]]);
         snprintf(s,sizeof(s),"%c %s",i==pick?'>':' ',d->uas_id[0]?d->uas_id:ls_tr("Awaiting ID")); line(sf,list_area,r,s,i==pick?CYAN:WHITE);
-        snprintf(s,sizeof(s),"  %s / %d dBm / %.0fs%s",range,d->rssi,(now-d->last_us)/1e6,ls_rid_fresh(d,1,now) && d->status==3?ls_tr(" / EMERGENCY"):""); line(sf,list_area,r+1,s,LS_ATTR_DIM);
+        LS_SNPRINTF(t_ls_rid_ui_s_d_dbm_0fs, s,sizeof(s),"  %s / %d dBm / %.0fs%s",range,d->rssi,(now-d->last_us)/1e6,ls_rid_fresh(d,1,now) && d->status==3?ls_tr(" / EMERGENCY"):""); line(sf,list_area,r+1,s,LS_ATTR_DIM);
     }
 }
 static void open_detail(void) {

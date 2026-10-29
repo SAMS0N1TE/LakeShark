@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 static bool s_busy, s_latched;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -233,7 +234,7 @@ static ls_act_status_t start(const char *path, bool force, bool probe)
 #else
     if (__atomic_exchange_n(&s_busy, true, __ATOMIC_ACQ_REL)) return LS_ACT_BUSY;
     if (__atomic_load_n(&s_latched, __ATOMIC_ACQUIRE)) {
-        puts("c6: radios inhibited; reboot P4 before another update. See c6 status for boot state.");
+        LS_PUTS(msg_ls_c6_update_c6_radios_inhibited_reboot, "c6: radios inhibited; reboot P4 before another update. See c6 status for boot state.");
         __atomic_store_n(&s_busy, false, __ATOMIC_RELEASE);
         return LS_ACT_BUSY;
     }

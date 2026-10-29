@@ -14,7 +14,7 @@
 #ifndef ESP_PLATFORM
 #pragma weak ls_drone_watch_lora900
 #endif
-#include "ls_detector.h"
+#include "ls_seen.h"
 #include "board/ls_lora.h"
 #include "ls_mesh.h"
 #include <string.h>
@@ -93,7 +93,7 @@ void ls_dronelink_tick(bool enabled,int64_t now) {
         uint16_t *bin=&channels[channel].hits[second%6];if(*bin<65535)(*bin)++;
         unsigned hits=0;for(unsigned b=0;b<6;b++)hits+=channels[channel].hits[b];
         static const unsigned rates[]={200,100,100,50,25};
-        ls_detector_drone(channel<40?915:868,channel,rates[profile],(int)rssi,hits,now);
+        ls_seen_drone(channel<40?915:868,channel,rates[profile],(int)rssi,hits,now);
 #ifndef ESP_PLATFORM
         if(ls_drone_watch_lora900)
 #endif

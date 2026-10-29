@@ -33,6 +33,7 @@ extern void audio_beep_request(beep_kind_t kind);
 
 #include "p25p1_check_nid.h"
 #include "p25_tsbk.h"
+#include "ls_textpack.h"
 
 extern int autoscan_bch_ok_flag;
 extern int dsd_bch_fail_counter;
@@ -340,7 +341,7 @@ processFrame(dsd_opts *opts, dsd_state *state)
         sprintf(state->fsubtype, "              ");
         if (opts->errorbars == 1) {
             printFrameInfo(opts, state);
-            printf(" duid:%s *Unknown DUID*\n", duid);
+            LS_PRINTF(t_dsd_frame_duid_s_unknown_duid, " duid:%s *Unknown DUID*\n", duid);
         }
     }
 

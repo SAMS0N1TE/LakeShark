@@ -12,6 +12,40 @@
 #include "ls_field.h"
 #include <string.h>
 
+#ifdef LS_RECEIVER_DIAG_STUB
+#include "receiver_diagnostics.h"
+ls_receiver_diag_t ls_test_receiver_snapshot;
+bool ls_test_receiver_snapshot_ok;
+unsigned ls_test_receiver_snapshot_calls;
+bool lakeshark_receiver_snapshot(ls_receiver_diag_t *out)
+{
+    ++ls_test_receiver_snapshot_calls;
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (ls_test_receiver_snapshot_ok) *out = ls_test_receiver_snapshot;
+    return ls_test_receiver_snapshot_ok;
+}
+static ls_receiver_trial_t s_test_trial;
+bool lakeshark_receiver_trial_action(const char *action)
+{
+    if (!strcmp(action,"reset")) memset(&s_test_trial,0,sizeof(s_test_trial));
+    else if (!strcmp(action,"baseline")) {
+        if (!ls_test_receiver_snapshot_ok) return false;
+        ls_receiver_trial_baseline(&s_test_trial,&ls_test_receiver_snapshot);
+    } else if (!strcmp(action,"compare")) {
+        if (!s_test_trial.baseline_set || !ls_test_receiver_snapshot_ok) return false;
+        ls_receiver_trial_compare(&s_test_trial,&ls_test_receiver_snapshot,
+                                  ls_test_receiver_snapshot.captured_us);
+    } else if (strcmp(action,"status")) return false;
+    return true;
+}
+bool lakeshark_receiver_trial_snapshot(ls_receiver_trial_t *out)
+{
+    if (!out) return false;
+    *out=s_test_trial; return true;
+}
+#endif
+
 /* DRONES needs a position even in router tests without a field worker.
  * These targets use an explicitly invalid fix; real provider builds omit it. */
 
@@ -266,7 +300,7 @@ speech_voice_t speech_voice_get(void) { return s_voice; }
 speech_voice_t speech_voice_step(int dir)
 { s_voice = (speech_voice_t)((s_voice + SPEECH_VOICE_COUNT + dir) % SPEECH_VOICE_COUNT); return s_voice; }
 const char *speech_voice_name(speech_voice_t v)
-{ return v == SPEECH_VOICE_DARK ? "dark" : v == SPEECH_VOICE_FEMALE ? "female" : "glitch"; }
+{ return v == SPEECH_VOICE_DARK ? "dark" : v == SPEECH_VOICE_FEMALE ? "female" : v == SPEECH_VOICE_CALM ? "calm" : "glitch"; }
 speech_result_t speech_say_async(const char *t) { (void)t; return SPEECH_UNAVAILABLE; }
 void speech_cancel(void) {}
 int  speech_volume_get(void) { return s_speech_pct; }
@@ -314,6 +348,9 @@ void ls_mesh_socket_get(ls_mesh_socket_t *out)
 /* Simulator has no raw hardware FIFO. */
 esp_err_t lr_wf_start(uint32_t hz) { (void)hz; return ESP_ERR_NOT_SUPPORTED; }
 void lr_wf_stop(void) {}
+esp_err_t lr_wf_set_wide(bool on, int32_t offset_hz) { (void)on; (void)offset_hz; return ESP_OK; }
+#include "lr_wf_session.h"
+void lr_wf_wide_get(lr_wf_wide_status *out) { memset(out, 0, sizeof(*out)); }
 #endif
 
 __attribute__((weak)) void ls_tui_last_cost(uint32_t *us, int *cells)
@@ -323,3 +360,6 @@ __attribute__((weak)) void ls_tui_last_cost(uint32_t *us, int *cells)
 #include "ls_lora.h"
 __attribute__((weak)) ls_lora_chip_t ls_lora_chip(void) { return LS_LORA_CHIP_SX126X; }
 __attribute__((weak)) uint32_t ls_lora_caps(void) { return LS_LORA_CAP_LORA | LS_LORA_CAP_FSK; }
+static uint32_t s_fm_bcast_stub;
+uint32_t settings_get_fm_bcast(uint32_t fallback) { return s_fm_bcast_stub ? s_fm_bcast_stub : fallback; }
+void settings_set_fm_bcast(uint32_t value) { s_fm_bcast_stub = value; }

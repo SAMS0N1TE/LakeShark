@@ -18,6 +18,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 static EXT_RAM_BSS_ATTR ls_tiles_catalog catalog;
 static ls_carto_transfer transfer;
@@ -316,10 +317,10 @@ static void us_draw(tui_surface *sf,tui_rect body) {
         line(sf,info,y++,catalog.sd?"No state list yet. REFRESH fetches it.":"No SD card. Insert a card to install maps.",LS_ATTR_DIM);
     } else if(us_sel<0) {
         unsigned have=0,total=0; for(int i=0;i<US_N;i++) { have+=us_state[i].have; total+=us_state[i].cells; }
-        snprintf(text,sizeof(text),"%u of %u cells on the card",have,total); line(sf,info,y++,text,INK);
-        snprintf(text,sizeof(text),"Every state free to z%d. %s",us_free_z,us_plus?"Plus: street detail on":"Plus adds street detail");
+        LS_SNPRINTF(t_scr_tiles_u_of_u_cells, text,sizeof(text),"%u of %u cells on the card",have,total); line(sf,info,y++,text,INK);
+        LS_SNPRINTF(t_scr_tiles_every_state_free_to, text,sizeof(text),"Every state free to z%d. %s",us_free_z,us_plus?"Plus: street detail on":"Plus adds street detail");
         line(sf,info,y++,text,us_plus?TUI_ATTR(TUI_MAGENTA|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM);
-        line(sf,info,y++,"Tap a state to get or remove its maps",LS_ATTR_DIM);
+        line(sf,info,y++,LS_TEXT(t_scr_tiles_tap_a_state_to, "Tap a state to get or remove its maps"),LS_ATTR_DIM);
     } else {
         const us_state_t *s=&us_state[us_sel];
         snprintf(text,sizeof(text),"%s  %s",US_TILES[us_sel].st,s->known?s->name:"no maps yet");
@@ -327,17 +328,17 @@ static void us_draw(tui_surface *sf,tui_rect body) {
         if(s->known) {
             /* Two layers, each with what it costs and whether it is here. */
             const bool base_on=s->cells && s->have>=s->cells;
-            snprintf(text,sizeof(text),"MAPS    z0-%-2d  %4.0f MB  %s",us_free_z,s->base/1e6,
+            LS_SNPRINTF(t_scr_tiles_maps_z0_2d_4, text,sizeof(text),"MAPS    z0-%-2d  %4.0f MB  %s",us_free_z,s->base/1e6,
                      base_on?"on card":s->have?"part":"free");
             line(sf,info,y++,text,base_on?GOOD:INK);
             if(s->extra) {
-                snprintf(text,sizeof(text),"DETAIL  z%d-16  %4.0f MB  %s",us_free_z+1,s->extra/1e6,
+                LS_SNPRINTF(t_scr_tiles_detail_z_d_16, text,sizeof(text),"DETAIL  z%d-16  %4.0f MB  %s",us_free_z+1,s->extra/1e6,
                          s->detail?"on card":us_plus?"with Plus":"needs Plus");
                 line(sf,info,y++,text,s->detail||us_plus?TUI_ATTR(TUI_MAGENTA|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM);
             }
-            snprintf(text,sizeof(text),"On the card: %u of %u cells",s->have,s->cells);
+            LS_SNPRINTF(t_scr_tiles_on_the_card_u, text,sizeof(text),"On the card: %u of %u cells",s->have,s->cells);
             line(sf,info,y++,text,base_on?GOOD:LS_ATTR_DIM);
-            if(s->partial) { snprintf(text,sizeof(text),"%u border cells hold US data only",s->partial); line(sf,info,y++,text,LS_ATTR_DIM); }
+            if(s->partial) { LS_SNPRINTF(t_scr_tiles_u_border_cells_hold, text,sizeof(text),"%u border cells hold US data only",s->partial); line(sf,info,y++,text,LS_ATTR_DIM); }
         }
     }
     if(working || us_status[0]) {
@@ -408,15 +409,15 @@ static void draw(tui_surface *sf,tui_rect a) {
         if(visible<1) visible=1;
         if(selected<first) first=selected;
         if(selected>=first+visible) first=selected-visible+1;
-        char paging[96]; snprintf(paging,sizeof(paging),"< PREV   %d / %d REGIONS   NEXT >",catalog.count?selected+1:0,catalog.count);
+        char paging[96]; LS_SNPRINTF(t_scr_tiles_prev_d_d_regions, paging,sizeof(paging),"< PREV   %d / %d REGIONS   NEXT >",catalog.count?selected+1:0,catalog.count);
         line(sf,body,body.y+1,paging,INK);
         for(int i=first;i<catalog.count && i<first+visible;i++) {
             ls_tile_region *r=&catalog.region[i]; int y=list_area.y+(i-first)*4;
             tui_rect row=tui_rect_make(list_area.x,y,list_area.w,4);
             if(i==selected) ls_fill_dither(sf,row,LS_DITHER_LIGHT,TUI_CYAN);
             char text[200]; snprintf(text,sizeof(text),"%s%s%s",i==selected?"> ":"  ",r->name,!strcmp(r->file,active_file)?" [ACTIVE]":""); line(sf,row,y,text,INK);
-            snprintf(text,sizeof(text),"  %s%s  |  %.2f MB  z%d-%d",STATES[r->status],r->verified?" verified":"",r->bytes/1e6,r->zmin,r->zmax); line(sf,row,y+1,text,r->status==1?GOOD:LS_ATTR_DIM);
-            snprintf(text,sizeof(text),"  %.2f,%.2f to %.2f,%.2f",r->bbox[0],r->bbox[1],r->bbox[2],r->bbox[3]); line(sf,row,y+2,text,LS_ATTR_DIM);
+            LS_SNPRINTF(t_scr_tiles_s_s_2f_mb, text,sizeof(text),"  %s%s  |  %.2f MB  z%d-%d",STATES[r->status],r->verified?" verified":"",r->bytes/1e6,r->zmin,r->zmax); line(sf,row,y+1,text,r->status==1?GOOD:LS_ATTR_DIM);
+            LS_SNPRINTF(t_scr_tiles_2f_2f_to_2f, text,sizeof(text),"  %.2f,%.2f to %.2f,%.2f",r->bbox[0],r->bbox[1],r->bbox[2],r->bbox[3]); line(sf,row,y+2,text,LS_ATTR_DIM);
         }
         if(!catalog.count) line(sf,list_area,list_area.y+2,catalog.sd?"No regions. REFRESH or RECEIVE to add maps.":"No SD card. Insert a card to install maps.",LS_ATTR_DIM);
         if(catalog.count && (body.w>90 || storage.y-list_area.y-list_area.h>=8)) {
@@ -428,20 +429,20 @@ static void draw(tui_surface *sf,tui_rect a) {
             globe(sf,tui_rect_make(preview.x+1,preview.y+2,preview.w-2,preview.h-4),catalog.region[selected].status==1?1:0);
             line(sf,preview,preview.y+preview.h-1,STATES[catalog.region[selected].status],LS_ATTR_DIM);
         }
-        char text[160]; snprintf(text,sizeof(text),"SD %.2f GB free / %.2f GB used",catalog.free/1e9,(catalog.total-catalog.free)/1e9);
+        char text[160]; LS_SNPRINTF(t_scr_tiles_sd_2f_gb_free, text,sizeof(text),"SD %.2f GB free / %.2f GB used",catalog.free/1e9,(catalog.total-catalog.free)/1e9);
         line(sf,storage,storage.y,catalog.sd?text:"SD unavailable",LS_ATTR_DIM);
         ls_bar(sf,storage,1,storage.x+1,storage.w-2,catalog.total?(float)(catalog.total-catalog.free)/catalog.total:0);
-        snprintf(text,sizeof(text),"MAPS %.2f MB  |  %d regions",catalog.maps/1e6,catalog.count); line(sf,storage,storage.y+3,text,INK);
+        LS_SNPRINTF(t_scr_tiles_maps_2f_mb_d, text,sizeof(text),"MAPS %.2f MB  |  %d regions",catalog.maps/1e6,catalog.count); line(sf,storage,storage.y+3,text,INK);
     } else if(page==1 && catalog.count) {
         ls_tile_region *r=&catalog.region[selected]; int y=body.y-info_scroll; char text[200];
         line(sf,body,y++,r->name,INK); line(sf,body,y++,STATES[r->status],r->status==1?GOOD:LS_ATTR_DIM); y++;
         line(sf,body,y++,r->verified?"SHA256 verified":"SHA256 unverified",r->verified?GOOD:LS_ATTR_DIM);
         line(sf,body,y++,r->file,LS_ATTR_DIM);
-        snprintf(text,sizeof(text),"Size %.3f MB  |  on SD %.3f MB",r->bytes/1e6,r->local_bytes/1e6); line(sf,body,y++,text,LS_ATTR_DIM);
-        if(r->partial_bytes) { snprintf(text,sizeof(text),"Partial download %.3f MB",r->partial_bytes/1e6); line(sf,body,y++,text,LS_ATTR_DIM); }
+        LS_SNPRINTF(t_scr_tiles_size_3f_mb_on, text,sizeof(text),"Size %.3f MB  |  on SD %.3f MB",r->bytes/1e6,r->local_bytes/1e6); line(sf,body,y++,text,LS_ATTR_DIM);
+        if(r->partial_bytes) { LS_SNPRINTF(t_scr_tiles_partial_download_3f_mb, text,sizeof(text),"Partial download %.3f MB",r->partial_bytes/1e6); line(sf,body,y++,text,LS_ATTR_DIM); }
         snprintf(text,sizeof(text),"Zoom %d to %d",r->zmin,r->zmax); line(sf,body,y++,text,INK); y++;
-        snprintf(text,sizeof(text),"West / East  %.5f / %.5f",r->bbox[0],r->bbox[2]); line(sf,body,y++,text,LS_ATTR_DIM);
-        snprintf(text,sizeof(text),"South / North  %.5f / %.5f",r->bbox[1],r->bbox[3]); line(sf,body,y++,text,LS_ATTR_DIM); y++;
+        LS_SNPRINTF(t_scr_tiles_west_east_5f_5f, text,sizeof(text),"West / East  %.5f / %.5f",r->bbox[0],r->bbox[2]); line(sf,body,y++,text,LS_ATTR_DIM);
+        LS_SNPRINTF(t_scr_tiles_south_north_5f_5f, text,sizeof(text),"South / North  %.5f / %.5f",r->bbox[1],r->bbox[3]); line(sf,body,y++,text,LS_ATTR_DIM); y++;
         char wrapped[6][128]; int n=ls_wrap_text(r->description,body.w-4,(char *)wrapped,sizeof(wrapped[0]),6);
         for(int i=0;i<n;i++) line(sf,body,y++,wrapped[i],LS_ATTR_DIM);
         y++;
@@ -468,8 +469,8 @@ static void draw(tui_surface *sf,tui_rect a) {
         if(transfer.total) snprintf(text,sizeof(text),"%.2f / %.2f MB",transfer.bytes/1e6,transfer.total/1e6);
         else snprintf(text,sizeof(text),"%s",transfer.receiving?"Waiting for laptop push":"Preparing transfer");
         line(sf,details,y++,text,LS_ATTR_DIM);
-        if(transfer.total && rate>0) snprintf(text,sizeof(text),"%.2f MB/s  |  ETA %.0f s",rate/1e6,(transfer.total-transfer.bytes)/rate);
-        else snprintf(text,sizeof(text),"Waiting for bytes...");
+        if(transfer.total && rate>0) LS_SNPRINTF(t_scr_tiles_2f_mb_s_eta, text,sizeof(text),"%.2f MB/s  |  ETA %.0f s",rate/1e6,(transfer.total-transfer.bytes)/rate);
+        else LS_SNPUTS(t_scr_tiles_waiting_for_bytes, text, sizeof(text), "Waiting for bytes...");
         line(sf,details,y++,text,INK);
         snprintf(text,sizeof(text),"%llu bytes",(unsigned long long)transfer.bytes); line(sf,details,y++,text,LS_ATTR_DIM);
         line(sf,details,y++,transfer.message[0]?transfer.message:"BACK to cancel (confirmation)",transfer.state==3?TUI_ATTR(TUI_RED|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM);
@@ -480,9 +481,9 @@ static void draw(tui_surface *sf,tui_rect a) {
         }
         if(transfer.receiving) {
             extern void ls_tiles_address(char *,size_t); char ip[40]; ls_tiles_address(ip,sizeof(ip));
-            snprintf(text,sizeof(text),"http://%s:%d/maps/NAME.ctile",ip,transfer.port); line(sf,details,y++,text,INK);
+            LS_SNPRINTF(t_scr_tiles_http_s_d_maps, text,sizeof(text),"http://%s:%d/maps/NAME.ctile",ip,transfer.port); line(sf,details,y++,text,INK);
             snprintf(text,sizeof(text),"Code: %s",transfer.code); line(sf,details,y++,text,INK);
-            line(sf,details,y++,"PUT one .ctile file; expires after 5 min",LS_ATTR_DIM);
+            line(sf,details,y++,LS_TEXT(t_scr_tiles_put_one_ctile_file, "PUT one .ctile file; expires after 5 min"),LS_ATTR_DIM);
         }
     } else if(page==4) {
         us_draw(sf,body);

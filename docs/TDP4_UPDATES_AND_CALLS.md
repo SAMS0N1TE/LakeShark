@@ -18,7 +18,9 @@ up files first. See [First flash](TDP4_FIRST_FLASH.md).
 4. Keep power connected while the download, checks and install finish. The board
    restarts into the new build.
 
-Builds come from ota.terminalbay.com. The board checks the signed update offer
+Builds come from ota.terminalbay.com, then lakeshark-ota.pages.dev if that
+cannot be reached, then the newest GitHub release for networks that block
+both. A download that stalls moves on to the next. The board checks the signed update offer
 and the downloaded image. An invalid download is not selected for boot. If a
 new build fails to start, the board returns to the previous build.
 

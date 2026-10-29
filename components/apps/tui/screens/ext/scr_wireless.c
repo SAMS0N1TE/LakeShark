@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include "ls_textpack.h"
 
 #define INK(c) TUI_ATTR((c), TUI_BLACK)
 #define WHITE INK(TUI_WHITE | TUI_BRIGHT)
@@ -58,7 +59,7 @@ static void button(tui_surface *sf, tui_rect r, const char *label, char key,
 static void request(ls_wireless_op_t op, const char *ssid, const char *pass)
 {
     if (ls_wireless_request(op, ssid, pass)) s_note[0] = 0;
-    else snprintf(s_note, sizeof(s_note), "A connection update is already running");
+    else LS_SNPUTS(t_scr_wireless_a_connection_update_is, s_note, sizeof(s_note), "A connection update is already running");
 }
 
 static void password_open(bool retry);
@@ -94,7 +95,7 @@ static void forget_done(const char *answer)
             request(LS_WIRELESS_FORGET, s_forget_name, NULL);
             return;
         }
-    snprintf(s_note, sizeof(s_note), "That saved network is no longer present");
+    LS_SNPUTS(t_scr_wireless_that_saved_network_is, s_note, sizeof(s_note), "That saved network is no longer present");
 }
 
 static void ssid_done(const char *ssid)
@@ -170,15 +171,15 @@ static void pass_done(const char *p)
     if (!p || !*p) return;
     if (ls_rterm_password_set(p)) {
         s_show_pass = true;
-        snprintf(s_note, sizeof(s_note), "Password changed: browsers sign in again");
-    } else snprintf(s_note, sizeof(s_note), "A password is 6 to 23 characters");
+        LS_SNPUTS(t_scr_wireless_password_changed_browsers_sign, s_note, sizeof(s_note), "Password changed: browsers sign in again");
+    } else LS_SNPUTS(t_scr_wireless_a_password_is_6, s_note, sizeof(s_note), "A password is 6 to 23 characters");
 }
 
 static void port_done(const char *t)
 {
     const int port = t ? atoi(t) : 0;
     if (ls_rterm_ssh_port_set(port)) snprintf(s_note, sizeof(s_note), "SSH port %d", port);
-    else snprintf(s_note, sizeof(s_note), "A port is 1 to 65535, and not 2323");
+    else LS_SNPUTS(t_scr_wireless_a_port_is_1, s_note, sizeof(s_note), "A port is 1 to 65535, and not 2323");
 }
 
 static void forget_keys_done(const char *answer)
@@ -195,30 +196,30 @@ static void remote_act(char ch)
     s_note[0] = 0;
     switch (ch) {
     case 't':
-        if (!ls_rterm_net_set(!st.net_on)) snprintf(s_note, sizeof(s_note), "Could not save the setting");
+        if (!ls_rterm_net_set(!st.net_on)) LS_SNPUTS(t_scr_wireless_could_not_save_the, s_note, sizeof(s_note), "Could not save the setting");
         else if (!st.net_on) s_show_pass = true;
         break;
     case 'h': s_show_pass = !s_show_pass; break;
     case 'n':
         if (ls_rterm_password_set(NULL)) {
             s_show_pass = true;
-            snprintf(s_note, sizeof(s_note), "New password: browsers sign in again");
-        } else snprintf(s_note, sizeof(s_note), "Could not save the password");
+            LS_SNPUTS(t_scr_wireless_new_password_browsers_sign, s_note, sizeof(s_note), "New password: browsers sign in again");
+        } else LS_SNPUTS(t_scr_wireless_could_not_save_the_2, s_note, sizeof(s_note), "Could not save the password");
         break;
     case 'o':
-        if (!ls_rterm_web_set(!st.web_on)) snprintf(s_note, sizeof(s_note), "Could not save the setting");
+        if (!ls_rterm_web_set(!st.web_on)) LS_SNPUTS(t_scr_wireless_could_not_save_the, s_note, sizeof(s_note), "Could not save the setting");
         else if (!st.web_on) s_show_pass = true;
         break;
     case 'x':
         if (st.web_client) { ls_rterm_web_kick(); snprintf(s_note, sizeof(s_note), "Browsers signed out"); }
         break;
-    case 'p': ls_keyboard_open_lower("TERMINAL PASSWORD / 6-23 CHARACTERS", "", 23, pass_done); break;
+    case 'p': ls_keyboard_open_lower(LS_TEXT(t_scr_wireless_terminal_password_6_23, "TERMINAL PASSWORD / 6-23 CHARACTERS"), "", 23, pass_done); break;
     case 'k':
         if (st.client || st.ssh_client) { ls_rterm_kick(); snprintf(s_note, sizeof(s_note), "Disconnected"); }
         break;
     case 's':
         if (!ls_rterm_ssh_set(!st.ssh_on)) snprintf(s_note, sizeof(s_note), "Could not start SSH");
-        else if (!st.ssh_on) snprintf(s_note, sizeof(s_note), "SSH on: check the key shown on the first connect");
+        else if (!st.ssh_on) LS_SNPUTS(t_scr_wireless_ssh_on_check_the, s_note, sizeof(s_note), "SSH on: check the key shown on the first connect");
         break;
     case 'r': {                              /* 'o' and 'x' are the web screen's */
         char now[8];
@@ -228,10 +229,10 @@ static void remote_act(char ch)
     }
     case 'l':
         ls_rterm_ssh_learn(!st.ssh_learn_s);
-        if (!st.ssh_learn_s) snprintf(s_note, sizeof(s_note), "Now log in once with the password");
+        if (!st.ssh_learn_s) LS_SNPUTS(t_scr_wireless_now_log_in_once, s_note, sizeof(s_note), "Now log in once with the password");
         break;
     case 'f':
-        if (st.ssh_keys) ls_keyboard_open_plain("FORGET THE SSH KEYS? TYPE YES", "", 3, forget_keys_done);
+        if (st.ssh_keys) ls_keyboard_open_plain(LS_TEXT(t_scr_wireless_forget_the_ssh_keys, "FORGET THE SSH KEYS? TYPE YES"), "", 3, forget_keys_done);
         break;
     }
 }
@@ -249,9 +250,9 @@ static void remote(tui_surface *sf, tui_rect area, bool wide)
     ls_panel_box(sf, web, "WEB SCREEN", st.web_on ? TUI_GREEN : TUI_CYAN);
     if (!st.web_on) {
         line(sf, web, 1, "OFF", LS_ATTR_DIM);
-        line(sf, web, 2, "The screen in a browser: real touch, no app", WHITE);
+        line(sf, web, 2, LS_TEXT(t_scr_wireless_the_screen_in_a, "The screen in a browser: real touch, no app"), WHITE);
     } else if (!s_view.wifi_connected) {
-        line(sf, web, 1, "ON  waiting for Wi-Fi (WI-FI tab)", INK(TUI_YELLOW | TUI_BRIGHT));
+        line(sf, web, 1, LS_TEXT(t_scr_wireless_on_waiting_for_wi, "ON  waiting for Wi-Fi (WI-FI tab)"), INK(TUI_YELLOW | TUI_BRIGHT));
     } else {
         /* The name first: it is what to save to a home screen, and it
            outlives the address the router gives out today. */
@@ -267,11 +268,11 @@ static void remote(tui_surface *sf, tui_rect area, bool wide)
     }
     if (st.web_on) {
         const uint8_t *wip = (const uint8_t *)&st.web_ip;
-        if (st.web_client) snprintf(text, sizeof(text), "%u.%u.%u.%u is watching", wip[0], wip[1], wip[2], wip[3]);
+        if (st.web_client) LS_SNPRINTF(t_scr_wireless_u_u_u_u, text, sizeof(text), "%u.%u.%u.%u is watching", wip[0], wip[1], wip[2], wip[3]);
         else snprintf(text, sizeof(text), "Nobody watching");
         line(sf, web, 3, text, st.web_client ? CYAN : LS_ATTR_DIM);
     }
-    line(sf, web, 4, "The terminal's password, asked once", LS_ATTR_DIM);
+    line(sf, web, 4, LS_TEXT(t_scr_wireless_the_terminal_s_password, "The terminal's password, asked once"), LS_ATTR_DIM);
     const int ww = area.w / 2, wy = web.y + web.h;
     button(sf, tui_rect_make(area.x, wy, ww, bh), st.web_on ? "TURN OFF" : "TURN ON", 'O', st.web_on, false, -1);
     button(sf, tui_rect_make(area.x + ww, wy, area.w - ww, bh), "SIGN OUT", 'X', false, !st.web_client, -1);
@@ -280,9 +281,9 @@ static void remote(tui_surface *sf, tui_rect area, bool wide)
     ls_panel_box(sf, box, "NETWORK TERMINAL", st.net_on ? TUI_GREEN : TUI_CYAN);
     if (!st.net_on) {
         line(sf, box, 1, "OFF", LS_ATTR_DIM);
-        line(sf, box, 2, "Turn it on to use the board from a phone", WHITE);
+        line(sf, box, 2, LS_TEXT(t_scr_wireless_turn_it_on_to, "Turn it on to use the board from a phone"), WHITE);
     } else if (!s_view.wifi_connected) {
-        line(sf, box, 1, "ON  waiting for Wi-Fi (WI-FI tab)", INK(TUI_YELLOW | TUI_BRIGHT));
+        line(sf, box, 1, LS_TEXT(t_scr_wireless_on_waiting_for_wi, "ON  waiting for Wi-Fi (WI-FI tab)"), INK(TUI_YELLOW | TUI_BRIGHT));
     } else {
         snprintf(text, sizeof(text), "ON   %s   port %d", s_view.ip, st.port);
         line(sf, box, 1, text, INK(TUI_GREEN | TUI_BRIGHT));
@@ -303,7 +304,7 @@ static void remote(tui_surface *sf, tui_rect area, bool wide)
         else snprintf(text, sizeof(text), "Nobody connected");
         line(sf, box, 3, text, st.client ? CYAN : LS_ATTR_DIM);
     }
-    line(sf, box, 4, "Telnet is not encrypted: your own network only", LS_ATTR_DIM);
+    line(sf, box, 4, LS_TEXT(t_scr_wireless_telnet_is_not_encrypted, "Telnet is not encrypted: your own network only"), LS_ATTR_DIM);
 
     const int by = box.y + box.h;
     static const char keys[] = {'T', 'H', 'N', 'P', 'K'};
@@ -316,9 +317,9 @@ static void remote(tui_surface *sf, tui_rect area, bool wide)
     tui_rect ssh = tui_rect_make(area.x, by + bh, area.w, 6);
     ls_panel_box(sf, ssh, "SSH", st.ssh_on ? TUI_GREEN : TUI_CYAN);
     if (!st.ssh_on) {
-        line(sf, ssh, 1, "OFF   encrypted; a saved key needs no password", LS_ATTR_DIM);
+        line(sf, ssh, 1, LS_TEXT(t_scr_wireless_off_encrypted_a_saved, "OFF   encrypted; a saved key needs no password"), LS_ATTR_DIM);
     } else if (!s_view.wifi_connected || !st.ssh_listening) {
-        snprintf(text, sizeof(text), "ON  port %d, waiting for Wi-Fi", st.ssh_port);
+        LS_SNPRINTF(t_scr_wireless_on_port_d_waiting, text, sizeof(text), "ON  port %d, waiting for Wi-Fi", st.ssh_port);
         line(sf, ssh, 1, text, INK(TUI_YELLOW | TUI_BRIGHT));
     } else {
         snprintf(text, sizeof(text), "ON   %s   port %d", s_view.ip, st.ssh_port);
@@ -331,7 +332,7 @@ static void remote(tui_surface *sf, tui_rect area, bool wide)
     else snprintf(text, sizeof(text), "Nobody connected");
     if (st.ssh_on) line(sf, ssh, 2, text, st.ssh_client ? CYAN : LS_ATTR_DIM);
     if (st.ssh_learn_s)
-        snprintf(text, sizeof(text), "KEYS %d of %d   LEARNING %ds: log in now", st.ssh_keys, st.ssh_keys_max,
+        LS_SNPRINTF(t_scr_wireless_keys_d_of_d, text, sizeof(text), "KEYS %d of %d   LEARNING %ds: log in now", st.ssh_keys, st.ssh_keys_max,
                  st.ssh_learn_s);
     else snprintf(text, sizeof(text), "KEYS %d of %d%s", st.ssh_keys, st.ssh_keys_max,
                   st.ssh_keys ? "" : "   LEARN, then log in once");
@@ -354,10 +355,10 @@ static void remote(tui_surface *sf, tui_rect area, bool wide)
     if (st.serial_on) {
         line(sf, usb, 1, st.serial_z ? "ON   the website is watching (compressed)" : "ON   a PC is watching (lsterm)",
              INK(TUI_GREEN | TUI_BRIGHT));
-        line(sf, usb, 2, "Ends by itself when the cable or page goes", LS_ATTR_DIM);
+        line(sf, usb, 2, LS_TEXT(t_scr_wireless_ends_by_itself_when, "Ends by itself when the cable or page goes"), LS_ATTR_DIM);
     } else {
         line(sf, usb, 1, "Idle", LS_ATTR_DIM);
-        line(sf, usb, 2, "terminalbay.com: CONNECT in the sidebar", WHITE);
+        line(sf, usb, 2, LS_TEXT(t_scr_wireless_terminalbay_com_connect_in, "terminalbay.com: CONNECT in the sidebar"), WHITE);
     }
 
     int help_h = area.y + area.h - usb.y - usb.h;
@@ -443,9 +444,9 @@ static void act(char ch)
         if (s_saved_selected >= 0) {
             char title[96];
             snprintf(s_forget_name, sizeof(s_forget_name), "%s", s_saved_name);
-            snprintf(title, sizeof(title), "FORGET %s / TYPE YES", s_forget_name);
+            LS_SNPRINTF(t_scr_wireless_forget_s_type_yes, title, sizeof(title), "FORGET %s / TYPE YES", s_forget_name);
             ls_keyboard_open(title, "", 3, forget_done);
-        } else snprintf(s_note, sizeof(s_note), "Select a saved network to forget");
+        } else LS_SNPUTS(t_scr_wireless_select_a_saved_network, s_note, sizeof(s_note), "Select a saved network to forget");
         break;
     }
 }
@@ -497,7 +498,7 @@ static void trace(tui_surface *sf, tui_rect a, bool bt, bool traffic)
 
 static void saved_networks(tui_surface *sf, tui_rect a)
 {
-    char title[48]; snprintf(title, sizeof(title), "SAVED / %d / K SELECT", s_view.saved_count);
+    char title[48]; LS_SNPRINTF(t_scr_wireless_saved_d_k_select, title, sizeof(title), "SAVED / %d / K SELECT", s_view.saved_count);
     ls_panel_box(sf, a, title, TUI_CYAN);
     int rows = a.h - 3;
     if (rows <= 0) return;
@@ -526,7 +527,7 @@ static void saved_networks(tui_surface *sf, tui_rect a)
 
 static void networks(tui_surface *sf, tui_rect a)
 {
-    ls_panel_box(sf, a, "NEARBY / TAP TO JOIN", TUI_CYAN);
+    ls_panel_box(sf, a, LS_TEXT(t_scr_wireless_nearby_tap_to_join, "NEARBY / TAP TO JOIN"), TUI_CYAN);
     int row_h = ls_tui_is_wide() && ls_tui_keyboard_mode() ? 3 : 4;
     int nav_h = ls_tui_is_wide() && ls_tui_keyboard_mode() ? 3 : 4;
     s_page_size = (a.h - 3 - nav_h) / row_h;
@@ -545,7 +546,7 @@ static void networks(tui_surface *sf, tui_rect a)
         char text[64];
         snprintf(text, sizeof(text), "%c %.32s", selected ? '>' : ' ', ap->ssid);
         line(sf, r, 0, text, WHITE);
-        snprintf(text, sizeof(text), "  %d dBm  CH %d  %s%s", ap->rssi, ap->channel,
+        LS_SNPRINTF(t_scr_wireless_d_dbm_ch_d, text, sizeof(text), "  %d dBm  CH %d  %s%s", ap->rssi, ap->channel,
                  ap->secure ? "PASSWORD" : "OPEN", ap->saved ? " / SAVED" : "");
         line(sf, r, 1, text, INK(TUI_YELLOW | TUI_BRIGHT));
         if (s_hit_count < HIT_MAX) s_hits[s_hit_count++] = (hit_t){r, 'j', start + i};
@@ -560,7 +561,7 @@ static void networks(tui_surface *sf, tui_rect a)
 
 static void activity(tui_surface *sf, tui_rect a)
 {
-    ls_panel_box(sf, a, "FLIPPER CONTROL HEAD", TUI_CYAN);
+    ls_panel_box(sf, a, LS_TEXT(t_scr_wireless_flipper_control_head, "FLIPPER CONTROL HEAD"), TUI_CYAN);
     bool moving = s_view.bt_state > 0 && !s_view.bt_ready;
     const ls_wireless_history_t *h = &s_view.history;
     if (h->count) {
@@ -596,7 +597,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if (s_selected >= s_view.ap_count) s_selected = 0;
     s_hit_count = 0;
     if (area.w < 32 || area.h < 22) {
-        ls_panel_notice(sf, area, "LINK", "More screen space needed", "Use a smaller display font");
+        ls_panel_notice(sf, area, "LINK", LS_TEXT(t_scr_wireless_more_screen_space_needed, "More screen space needed"), LS_TEXT(t_scr_wireless_use_a_smaller_display, "Use a smaller display font"));
         return;
     }
     bool wide = ls_tui_is_wide();
@@ -637,18 +638,18 @@ static void draw(tui_surface *sf, tui_rect area)
             state += n;
             while (*state == ' ') state++;
         }
-        if (s_view.wifi_connected) snprintf(text, sizeof(text), "IP %s  %d dBm  CH %d", s_view.ip, s_view.wifi_rssi, s_view.channel);
-        else snprintf(text, sizeof(text), "Station mode / saved reconnect");
+        if (s_view.wifi_connected) LS_SNPRINTF(t_scr_wireless_ip_s_d_dbm, text, sizeof(text), "IP %s  %d dBm  CH %d", s_view.ip, s_view.wifi_rssi, s_view.channel);
+        else LS_SNPUTS(t_scr_wireless_station_mode_saved_reconnect, text, sizeof(text), "Station mode / saved reconnect");
     } else {
         snprintf(text, sizeof(text), "%s  %s", s_view.bt_available ? s_view.bt_status : "Bluetooth unavailable", s_view.bt_state ? s_view.peer : "");
         line(sf, status, 1, text, WHITE);
         if (s_view.bt_signal) snprintf(text, sizeof(text), "%s  %d dBm", s_view.address, s_view.bt_rssi);
-        else snprintf(text, sizeof(text), "LakeShark app on Flipper / BLE");
+        else LS_SNPUTS(t_scr_wireless_lakeshark_app_on_flipper, text, sizeof(text), "LakeShark app on Flipper / BLE");
     }
     line(sf, status, s_tab ? 2 : status.h - 2, text, INK(TUI_YELLOW | TUI_BRIGHT));
-    if (s_tab) snprintf(text, sizeof(text), "RX %lu commands  TX %lu frames  drop %lu",
+    if (s_tab) LS_SNPRINTF(t_scr_wireless_rx_lu_commands_tx, text, sizeof(text), "RX %lu commands  TX %lu frames  drop %lu",
         (unsigned long)s_view.rx, (unsigned long)s_view.tx, (unsigned long)s_view.drops);
-    else snprintf(text, sizeof(text), "Tap a network or use MANUAL for a hidden SSID");
+    else LS_SNPUTS(t_scr_wireless_tap_a_network_or, text, sizeof(text), "Tap a network or use MANUAL for a hidden SSID");
     if (!wide && s_tab) line(sf, status, 4, text, LS_ATTR_DIM);
     tui_rect content = tui_rect_make(area.x, status.y + status.h, area.w,
         area.h - tab_h - status.h - action_h - msg_h);

@@ -1,6 +1,7 @@
 /* US FAN FSK PHY header and frame counts; nearby utility dependent. */
 #include "exp_lorafam.h"
 #include <stdlib.h>
+#include "ls_textpack.h"
 extern const ls_experiment_t exp_wisun;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static EXT_RAM_BSS_ATTR lf_view_t s_view;
@@ -65,7 +66,7 @@ static bool configure(int argc, char **argv, char *why, size_t n)
     if (!*argv[1] || *end || ch<0 || ch>(mode==2 ? 41 : 128)) goto bad;
     portENTER_CRITICAL(&s_lock); s_mode=mode; s_channel=(unsigned)ch; portEXIT_CRITICAL(&s_lock); return true;
 bad:
-    snprintf(why,n,"mode 1b/2a channel 0..128; mode 3 0..41"); return false;
+    LS_SNPUTS(t_exp_wisun_mode_1b_2a_channel, why, n, "mode 1b/2a channel 0..128; mode 3 0..41"); return false;
 }
 static int get(const ls_opt_t *o) { portENTER_CRITICAL(&s_lock); int v=o->arg ? s_fec : s_mode; portEXIT_CRITICAL(&s_lock); return v; }
 static void restart(void) { if (ls_exp_running()==&exp_wisun) ls_exp_start(&exp_wisun); }

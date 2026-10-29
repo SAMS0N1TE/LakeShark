@@ -16,6 +16,7 @@
 #include <math.h>
 #include <string.h>
 #include <stdatomic.h>
+#include "ls_cold.h"
 
 static const char *TAG = "audio_out";
 
@@ -30,9 +31,15 @@ static const char *TAG = "audio_out";
 #define PREBUF_BYTES    (AUDIO_RATE_HZ * PREBUF_MS / 1000 * (int)sizeof(int16_t))
 #define CHUNK_FRAMES    256
 #define IDLE_DROP_US    400000
+/* Silence this long parks the I2S clocks (ls_audio_hw_park); the next
+   write starts them again. */
+#define PARK_IDLE_US    2000000
 
 static volatile int      s_volume = 35;
 static volatile bool     s_muted  = false;
+/* Off: the clocks keep running on silence, as before parking existed. */
+static volatile bool     s_idle_park = true;
+static volatile bool     s_park_hold = false;
 static bool              s_ready  = false;
 static atomic_bool       s_media_request = false, s_media_owned = false;
 /* Selected settings and codec restoration are one transaction. */
@@ -112,13 +119,16 @@ static unsigned s_reinit_state;
 static bool s_reinit_swap;
 static esp_err_t s_reinit_result;
 
-void audio_out_speech_level_set(int pct) { s_speech_gain = audio_speech_gain(pct); }
+LS_COLD void audio_out_speech_level_set(int pct) { s_speech_gain = audio_speech_gain(pct); }
 
 uint32_t audio_drops_get(void)     { return s_audio_drops; }
 uint32_t audio_underruns_get(void) { return s_underruns; }
 uint32_t audio_out_ring_avail(void){ return s_ring ? (uint32_t)xStreamBufferBytesAvailable(s_ring) : 0; }
 
 void audio_out_play_now(void) { s_play_now = true; }
+void audio_out_idle_park_set(bool on) { s_idle_park = on; }
+bool audio_out_idle_park_get(void) { return s_idle_park; }
+void audio_out_park_hold(bool hold) { s_park_hold = hold; }
 
 static inline size_t IRAM_ATTR ring_send_locked(const void *p, size_t want)
 {
@@ -174,9 +184,16 @@ static inline size_t ring_send_speech_locked(const void *p, size_t want)
     return sent;
 }
 
+/* Native apps listening to the receiver (lap_audio_listen). Set once. */
+static void (*volatile s_tap)(const int16_t *samples, int n);
+void audio_out_set_tap(void (*tap)(const int16_t *samples, int n)) { s_tap = tap; }
+
 void audio_write_mono(const int16_t *samples, int n)
 {
     if (s_media_request) return;
+    /* Before mute and volume: an app hears the receiver even when the speaker is off. */
+    void (*tap)(const int16_t *, int) = s_tap;
+    if (tap && samples && n > 0) tap(samples, n);
     if (!s_ready || s_muted || n <= 0 || !s_ring) return;
 
     /* Live radio audio claims the speaker. */
@@ -410,6 +427,24 @@ static void __attribute__((noinline)) player_write(const void *buf, size_t bytes
     }
 }
 
+/* Nothing to play: write silence, or once idle for PARK_IDLE_US, park the
+   clocks and wait without writing. */
+static void __attribute__((noinline)) player_idle(const int16_t *silence, int64_t *idle_since)
+{
+    const int64_t now = esp_timer_get_time();
+    if (*idle_since < 0) *idle_since = now;
+    /* Parked: the hardware layer switches the amplifier off once the codec
+       has settled. */
+    if (ls_audio_hw_parked()) {
+        (void)ls_audio_hw_park(true);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        return;
+    }
+    if (s_idle_park && !s_park_hold && now - *idle_since >= PARK_IDLE_US &&
+        ls_audio_hw_park(true) == ESP_OK) return;
+    player_write(silence, CHUNK_FRAMES * 2 * sizeof(int16_t));
+}
+
 static void audio_player_task(void *arg)
 {
     (void)arg;
@@ -419,6 +454,7 @@ static void audio_player_task(void *arg)
     bool     playing   = false;
     int64_t  last_data = 0;
     int64_t  waiting_since = -1;
+    int64_t  idle_since = -1;
 
 #if AUDIO_DIAG_TONE == 1
     {
@@ -478,9 +514,10 @@ static void audio_player_task(void *arg)
             if (audio_prebuffer_ready(avail, force, esp_timer_get_time(),
                                       &waiting_since)) {
                 playing = true;
+                idle_since = -1;
                 last_data = esp_timer_get_time();
             } else {
-                player_write(silence, CHUNK_FRAMES * 2 * sizeof(int16_t));
+                player_idle(silence, &idle_since);
                 continue;
             }
         }
@@ -515,7 +552,7 @@ static void audio_player_task(void *arg)
     }
 }
 
-esp_err_t audio_out_init(void)
+LS_COLD esp_err_t audio_out_init(void)
 {
     if (s_ready) return ESP_OK;
 

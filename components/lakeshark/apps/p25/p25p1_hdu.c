@@ -20,6 +20,7 @@
 #include "p25p1_hdu.h"
 #include "p25p1_check_hdu.h"
 #include "p25p1_heuristics.h"
+#include "ls_textpack.h"
 
 int
 read_dibit (dsd_opts* opts, dsd_state* state, char* output, int* status_count, int* analog_signal, int* did_read_status)
@@ -465,7 +466,7 @@ processHDU(dsd_opts* opts, dsd_state* state)
     {
       algidhex = strtol (algid, NULL, 2);
       kidhex = strtol (kid, NULL, 2);
-      printf ("mi: %s algid: $%x kid: $%x\n", mi, algidhex, kidhex);
+      LS_PRINTF(t_p25p1_hdu_mi_s_algid_x, "mi: %s algid: $%x kid: $%x\n", mi, algidhex, kidhex);
     }
   if (opts->p25lc == 1)
     {

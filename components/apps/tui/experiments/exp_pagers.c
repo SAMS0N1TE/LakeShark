@@ -33,7 +33,10 @@
 #include "pager_iq.h"
 #include "pager_iq_radio.h"
 #include "pocsag.h"
+#include "ls_rx_head.h"
+#include "rx_pocsag.h"
 #include "settings.h"
+#include "ls_textpack.h"
 
 #define MHZ_LO 150.0
 #define MHZ_HI 1100.0
@@ -153,7 +156,8 @@ static void stream_stats(bool baseline)
 
 /* The packet decoder and the optional message log. */
 static fm_state_t *s_text_state;
-static pocsag_ctx_t *s_text;
+static EXT_RAM_BSS_ATTR ls_rx_head_t s_text_head;   /* the POCSAG plugin on batches */
+static void *s_text;                                 /* its state, NULL when off */
 static EXT_RAM_BSS_ATTR uint32_t s_plan_hz[PGR_CH_MAX];
 
 /* ------------------------------------------------------------- view -- */
@@ -466,7 +470,7 @@ static void begin_listen(int64_t now)
    the ones already held. */
 static void take_pages(uint32_t hz, uint32_t before)
 {
-    const uint32_t after = pocsag_n_pages(s_text);
+    const uint32_t after = rx_pocsag_pages(s_text);
     int fresh = (int)(after - before);
     if (fresh <= 0 || s_text_state->page_count <= 0) return;
     if (fresh > PAGES) fresh = PAGES;
@@ -510,10 +514,12 @@ static bool take_batch(int64_t now, chan_t *c, const pgr_probe_t *p, const uint8
         const int64_t period = 544LL * 1000000 / p->baud;
         const bool contiguous = k ? prev_ok :
             (s_last_batch_us && llabs(now - s_last_batch_us - period) <= period / 10 + 20000);
-        const uint32_t before = pocsag_n_pages(s_text);
-        pocsag_set_baud(s_text, p->baud);
-        pocsag_process_batch(s_text, data, PGR_BATCH_BYTES, p->inverted, contiguous);
-        c->pages += pocsag_n_pages(s_text) - before;
+        const uint32_t before = rx_pocsag_pages(s_text);
+        const ls_rx_block_t b = { .input = LS_RX_BATCH, .data = data, .n = PGR_BATCH_BYTES,
+            .rate_hz = (uint32_t)p->baud, .at_us = now,
+            .flags = (uint8_t)((p->inverted ? LS_RX_B_INVERTED : 0) | (contiguous ? LS_RX_B_CONTIGUOUS : 0)) };
+        ls_rx_head_feed(&s_text_head, &b);
+        c->pages += rx_pocsag_pages(s_text) - before;
         if (s_text_on) take_pages(c->hz, before);
     }
     s_last_batch_us = now;
@@ -564,7 +570,7 @@ static void on_packet(int64_t now, const uint8_t *data)
 
 static void text_free(void)
 {
-    if (s_text) { pocsag_destroy(s_text); s_text = NULL; }
+    if (s_text) { ls_rx_head_detach_all(&s_text_head); s_text = NULL; }
     if (s_text_state) { heap_caps_free(s_text_state); s_text_state = NULL; }
 }
 
@@ -572,20 +578,20 @@ static bool pagers_start(char *why, size_t n)
 {
     load_settings();
     const uint32_t caps = ls_lora_caps();
-    if (!(caps & LS_LORA_CAP_FSK)) { snprintf(why, n, "No FSK receiver on this chip"); return false; }
-    if (!(caps & LS_LORA_CAP_RSSI_INST)) { snprintf(why, n, "This chip gives no RSSI reading"); return false; }
+    if (!(caps & LS_LORA_CAP_FSK)) { LS_SNPUTS(t_exp_pagers_no_fsk_receiver_on, why, n, "No FSK receiver on this chip"); return false; }
+    if (!(caps & LS_LORA_CAP_RSSI_INST)) { LS_SNPUTS(t_exp_pagers_this_chip_gives_no, why, n, "This chip gives no RSSI reading"); return false; }
 
     const int method = s_once_method >= 0 ? s_once_method : s_set_method;
     s_once_method = -1;
     s_iq_on = method == 3;
     if (s_iq_on && ((!s_once_hz && s_set_plan != PGR_PLAN_N) ||
         pgr_probe_is_flex(s_once_hz ? s_once_probe : s_set_probe))) {
-        snprintf(why, n, "IQ needs ONE FREQ and a POCSAG probe or AUTO"); return false;
+        LS_SNPUTS(t_exp_pagers_iq_needs_one_freq, why, n, "IQ needs ONE FREQ and a POCSAG probe or AUTO"); return false;
     }
     s_stream_on = method != 1 && (caps & LS_LORA_CAP_FSK_STREAM);
     s_native_on = s_stream_on && method == 0;
     if (method == 2 && !(caps & LS_LORA_CAP_FSK_STREAM)) {
-        snprintf(why, n, "This chip has no FSK stream receiver"); return false;
+        LS_SNPUTS(t_exp_pagers_this_chip_has_no, why, n, "This chip has no FSK stream receiver"); return false;
     }
     if (method == 2 || s_iq_on) s_stream_on = true;
     const uint32_t once = s_once_hz;
@@ -593,7 +599,7 @@ static bool pagers_start(char *why, size_t n)
         s_set_plan = PGR_PLAN_N; s_set_hz = once; s_set_probe = s_once_probe;
         s_set_method = method;
     }
-    if (!save_settings()) { snprintf(why, n, "Start settings could not be saved"); return false; }
+    if (!save_settings()) { LS_SNPUTS(t_exp_pagers_start_settings_could_not, why, n, "Start settings could not be saved"); return false; }
     s_once_hz = 0;
     s_fixed_probe = once ? s_once_probe : s_set_plan == PGR_PLAN_N ? s_set_probe : -1;
     s_rx_bw = once && s_once_bw ? s_once_bw : FILTER_HZ;
@@ -647,15 +653,21 @@ static bool pagers_start(char *why, size_t n)
     s_text_on = s_set_text;
     if (s_text_on) {
         s_text_state = heap_caps_calloc(1, sizeof(*s_text_state), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_text_state) { snprintf(why, n, "No PSRAM for the paging decoder"); return false; }
+        if (!s_text_state) { LS_SNPUTS(t_exp_pagers_no_psram_for_the, why, n, "No PSRAM for the paging decoder"); return false; }
     }
 
     if (!s_stream_on) {
-        s_text = pocsag_create(s_text_state, 1200);
-        if (!s_text) { text_free(); snprintf(why, n, "No memory for the paging decoder"); return false; }
+        const ls_rx_stream_t chip = { .front = LS_RX_FRONT_NONE, .inputs = LS_RX_BATCH };
+        ls_rx_head_init(&s_text_head, &chip);
+        if (ls_rx_head_attach(&s_text_head, &rx_pocsag, why, n) >= 0)
+            s_text = ls_rx_head_state(&s_text_head, &rx_pocsag);
+        if (s_text) rx_pocsag_bind(s_text, s_text_state);
+        if (!s_text || !rx_pocsag_prepare(s_text, 1200)) {
+            text_free(); LS_SNPUTS(t_exp_pagers_no_memory_for_the, why, n, "No memory for the paging decoder"); return false;
+        }
     }
     if (s_stream_on && !pgr_stream_init(&s_stream, s_text_state)) {
-        text_free(); snprintf(why, n, "No memory for the stream decoder"); return false;
+        text_free(); LS_SNPUTS(t_exp_pagers_no_memory_for_the_2, why, n, "No memory for the stream decoder"); return false;
     }
 
     /* The first channel is opened here so a chip that refuses the session
@@ -664,7 +676,7 @@ static bool pagers_start(char *why, size_t n)
     if (err != ESP_OK) {
         pgr_stream_free(&s_stream);
         text_free();
-        snprintf(why, n, "%.4f MHz refused: %s", s_ch[0].hz / 1e6, esp_err_to_name(err));
+        LS_SNPRINTF(t_exp_pagers_4f_mhz_refused_s, why, n, "%.4f MHz refused: %s", s_ch[0].hz / 1e6, esp_err_to_name(err));
         return false;
     }
     const int64_t now = esp_timer_get_time();
@@ -956,7 +968,7 @@ static void row_line(char *out, const row_t *r, int64_t at)
     fmt_ber(ber, sizeof(ber), r);
     fmt_caps(caps, sizeof(caps), r);
     char line[96];
-    snprintf(line, sizeof(line), "%8.4f %-4s %-6s%5s %5s %5s %3s %4s",
+    LS_SNPRINTF(t_exp_pagers_8_4f_4s_6s, line, sizeof(line), "%8.4f %-4s %-6s%5s %5s %5s %3s %4s",
              r->hz / 1e6, kind_name(r->kind), rate, syncs, frames, ber, caps, age);
     snprintf(out, LS_EXP_LINE, "%.*s", LS_EXP_LINE - 1, line);
 }
@@ -965,14 +977,14 @@ static int pagers_lines(char (*out)[LS_EXP_LINE], int max)
 {
     view_t *v = heap_caps_malloc(sizeof(*v), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!v) {
-        if (max > 0) snprintf(out[0], LS_EXP_LINE, "no memory for the readout");
+        if (max > 0) LS_SNPUTS(t_exp_pagers_no_memory_for_the_3, out[0], LS_EXP_LINE, "no memory for the readout");
         return max > 0 ? 1 : 0;
     }
     portENTER_CRITICAL(&s_lock);
     *v = s_view;
     portEXIT_CRITICAL(&s_lock);
     int n = 0;
-    if (s_save_failed && n < max) snprintf(out[n++], LS_EXP_LINE, "Settings not saved; retry OPTIONS");
+    if (s_save_failed && n < max) LS_SNPUTS(t_exp_pagers_settings_not_saved_retry, out[n++], LS_EXP_LINE, "Settings not saved; retry OPTIONS");
 
     if (!v->started) {
         load_settings();
@@ -983,11 +995,11 @@ static int pagers_lines(char (*out)[LS_EXP_LINE], int max)
         }
         if (n < max) {
             if (s_set_method == 3)
-                snprintf(out[n++], LS_EXP_LINE, "IQ: POCSAG 512/1200/2400, N+I");
+                LS_SNPUTS(t_exp_pagers_iq_pocsag_512_1200, out[n++], LS_EXP_LINE, "IQ: POCSAG 512/1200/2400, N+I");
             else if (plan == PGR_PLAN_N && s_set_probe >= 0)
                 snprintf(out[n++], LS_EXP_LINE, "probe %s only", pgr_probe(s_set_probe)->tag);
             else
-                snprintf(out[n++], LS_EXP_LINE, "POCSAG 512/1200/2400 N+I, FLEX sync");
+                LS_SNPUTS(t_exp_pagers_pocsag_512_1200_2400, out[n++], LS_EXP_LINE, "POCSAG 512/1200/2400 N+I, FLEX sync");
         }
         if (n < max) snprintf(out[n++], LS_EXP_LINE, "message text %s", s_set_text ? "SHOWN" : "off");
         heap_caps_free(v);
@@ -997,49 +1009,49 @@ static int pagers_lines(char (*out)[LS_EXP_LINE], int max)
     if (n < max) {
         if (v->single) snprintf(out[n++], LS_EXP_LINE, "ONE FREQ  %.4f MHz", v->cur_hz / 1e6);
         else if (v->have_floor)
-            snprintf(out[n++], LS_EXP_LINE, "SCAN %s %d ch  pass %d  floor %.0f",
+            LS_SNPRINTF(t_exp_pagers_scan_s_d_ch, out[n++], LS_EXP_LINE, "SCAN %s %d ch  pass %d  floor %.0f",
                      pgr_plan_name((pgr_plan_t)v->plan), v->n, v->pass, (double)v->floor);
-        else snprintf(out[n++], LS_EXP_LINE, "SCAN %s %d ch  surveying", pgr_plan_name((pgr_plan_t)v->plan), v->n);
+        else LS_SNPRINTF(t_exp_pagers_scan_s_d_ch_2, out[n++], LS_EXP_LINE, "SCAN %s %d ch  surveying", pgr_plan_name((pgr_plan_t)v->plan), v->n);
     }
     if (n < max) {
         static const char *const ST[] = { "hop", "check", "listen", "stopped" };
         char lvl[16] = "";
         if (v->have_now) snprintf(lvl, sizeof(lvl), "%.0f dBm", (double)v->now);
-        if (v->st == ST_STOPPED) snprintf(out[n++], LS_EXP_LINE, "stopped after pass %d", v->pass);
-        else snprintf(out[n++], LS_EXP_LINE, "NOW %8.4f %-6s %-6s %s", v->cur_hz / 1e6, v->tag, ST[v->st % 4], lvl);
+        if (v->st == ST_STOPPED) LS_SNPRINTF(t_exp_pagers_stopped_after_pass_d, out[n++], LS_EXP_LINE, "stopped after pass %d", v->pass);
+        else LS_SNPRINTF(t_exp_pagers_now_8_4f_6s, out[n++], LS_EXP_LINE, "NOW %8.4f %-6s %-6s %s", v->cur_hz / 1e6, v->tag, ST[v->st % 4], lvl);
     }
     if (n < max)
-        snprintf(out[n++], LS_EXP_LINE, "POCSAG %d  FLEX %d  CARRIER %d  QUIET %d",
+        LS_SNPRINTF(t_exp_pagers_pocsag_d_flex_d, out[n++], LS_EXP_LINE, "POCSAG %d  FLEX %d  CARRIER %d  QUIET %d",
                  v->n_kind[K_POCSAG], v->n_kind[K_FLEX], v->n_kind[K_CARRIER], v->n_kind[K_QUIET]);
     if (n < max) {
-        snprintf(out[n++], LS_EXP_LINE, "%s frames %lu pages %lu err %lu",
+        LS_SNPRINTF(t_exp_pagers_s_frames_lu_pages, out[n++], LS_EXP_LINE, "%s frames %lu pages %lu err %lu",
                  v->iq ? "IQ" : v->stream ? "STREAM" : "PACKET", (unsigned long)v->total_frames,
                  (unsigned long)v->total_pages, (unsigned long)(v->read_errors + v->total_bad));
         if (v->iq && n < max)
-            snprintf(out[n++], LS_EXP_LINE, "125k IQ > 25k demod, gaps %lu", (unsigned long)v->seams);
+            LS_SNPRINTF(t_exp_pagers_125k_iq_25k_demod, out[n++], LS_EXP_LINE, "125k IQ > 25k demod, gaps %lu", (unsigned long)v->seams);
         if (v->stream && !v->native && !v->iq && n < max)
-            snprintf(out[n++], LS_EXP_LINE, "trim %+d Hz bias %+.2f gaps %lu",
+            LS_SNPRINTF(t_exp_pagers_trim_d_hz_bias, out[n++], LS_EXP_LINE, "trim %+d Hz bias %+.2f gaps %lu",
                      v->trim_hz, (double)v->bias, (unsigned long)v->seams);
         if (v->stream && n < max)
-            snprintf(out[n++], LS_EXP_LINE, "bytes %llu starts %lu restarts %lu",
+            LS_SNPRINTF(t_exp_pagers_bytes_llu_starts_lu, out[n++], LS_EXP_LINE, "bytes %llu starts %lu restarts %lu",
                      (unsigned long long)v->stream_bytes, (unsigned long)v->stream_starts,
                      (unsigned long)v->stream_restarts);
         if (v->stream && !v->iq && n < max)
-            snprintf(out[n++], LS_EXP_LINE, "chip sync-ok +%lu sync-fail +%lu",
+            LS_SNPRINTF(t_exp_pagers_chip_sync_ok_lu, out[n++], LS_EXP_LINE, "chip sync-ok +%lu sync-fail +%lu",
                      (unsigned long)v->sync_ok, (unsigned long)v->sync_fail);
     }
     if (n < max)
-        snprintf(out[n++], LS_EXP_LINE, "BCH ok %lu fixed %lu lost %lu",
+        LS_SNPRINTF(t_exp_pagers_bch_ok_lu_fixed, out[n++], LS_EXP_LINE, "BCH ok %lu fixed %lu lost %lu",
             (unsigned long)(v->total_cw - v->total_fixed - v->total_bad),
             (unsigned long)v->total_fixed, (unsigned long)v->total_bad);
     if (v->n_rows && n < max)
-        snprintf(out[n++], LS_EXP_LINE, "MHZ      KIND RATE   SYNC   FRM   BER CAP LAST");
+        LS_SNPUTS(t_exp_pagers_mhz_kind_rate_sync, out[n++], LS_EXP_LINE, "MHZ      KIND RATE   SYNC   FRM   BER CAP LAST");
     for (int i = 0; i < v->n_rows && n < max; i++) row_line(out[n++], &v->rows[i], v->at_us);
     if (!v->n_rows && n < max) snprintf(out[n++], LS_EXP_LINE, "%s", v->iq ? "Waiting for POCSAG sync" : "nothing above the floor yet");
 
     if (v->have_focus && n < max) {
         const row_t *f = &v->focus;
-        snprintf(out[n++], LS_EXP_LINE, "%.4f BCH ok %lu fixed %lu lost %lu",
+        LS_SNPRINTF(t_exp_pagers_4f_bch_ok_lu, out[n++], LS_EXP_LINE, "%.4f BCH ok %lu fixed %lu lost %lu",
                  f->hz / 1e6, (unsigned long)(f->codewords - f->fixed - f->bad),
                  (unsigned long)f->fixed, (unsigned long)f->bad);
         if (n < max) {
@@ -1051,7 +1063,7 @@ static int pagers_lines(char (*out)[LS_EXP_LINE], int max)
                 }
             char line[96];
             if (v->iq) snprintf(line, sizeof(line), "  heard as %s, I/Q", seen);
-            else snprintf(line, sizeof(line), "  heard as %s, peak %.0f dBm", seen, (double)f->peak);
+            else LS_SNPRINTF(t_exp_pagers_heard_as_s_peak, line, sizeof(line), "  heard as %s, peak %.0f dBm", seen, (double)f->peak);
             snprintf(out[n++], LS_EXP_LINE, "%.*s", LS_EXP_LINE - 1, line);
         }
     }
@@ -1062,9 +1074,9 @@ static int pagers_lines(char (*out)[LS_EXP_LINE], int max)
                      p->type ? p->type : '?', p->text);
         }
     } else if (v->n_kind[K_POCSAG] && n < max) {
-        snprintf(out[n++], LS_EXP_LINE, "message text off (OPTIONS)");
+        LS_SNPUTS(t_exp_pagers_message_text_off_options, out[n++], LS_EXP_LINE, "message text off (OPTIONS)");
     }
-    if (v->hop_errors && n < max) snprintf(out[n++], LS_EXP_LINE, "sessions refused %lu", (unsigned long)v->hop_errors);
+    if (v->hop_errors && n < max) LS_SNPRINTF(t_exp_pagers_sessions_refused_lu, out[n++], LS_EXP_LINE, "sessions refused %lu", (unsigned long)v->hop_errors);
     heap_caps_free(v);
     return n;
 }
@@ -1118,10 +1130,10 @@ static bool pagers_configure(int argc, char **argv, char *why, size_t n)
     if (argc == 1 && (!strcmp(argv[0], "uhf") || !strcmp(argv[0], "onsite"))) {
         s_set_plan = !strcmp(argv[0], "uhf") ? PGR_PLAN_UHF : PGR_PLAN_ONSITE;
         if (save_settings()) return true;
-        snprintf(why, n, "Start settings could not be saved"); return false;
+        LS_SNPUTS(t_exp_pagers_start_settings_could_not, why, n, "Start settings could not be saved"); return false;
     }
     if (argc < 1 || argc > 6 || !parse_mhz(argv[0], &mhz)) {
-        snprintf(why, n, "%.0f-%.0f MHz [iq|stream|sign|packet|probe [BW [dev [detect 0|8|16|24|32 [batches 1-3]]]]] | uhf | onsite",
+        LS_SNPRINTF(t_exp_pagers_0f_0f_mhz_iq, why, n, "%.0f-%.0f MHz [iq|stream|sign|packet|probe [BW [dev [detect 0|8|16|24|32 [batches 1-3]]]]] | uhf | onsite",
                  MHZ_LO, MHZ_HI);
         return false;
     }
@@ -1137,26 +1149,26 @@ static bool pagers_configure(int argc, char **argv, char *why, size_t n)
     if (argc >= 2) {
         for (int i = 0; i < PGR_N_PROBES; i++)
             if (!strcmp(argv[1], pgr_probe(i)->tag)) probe = i;
-        if (probe < 0) { snprintf(why, n, "method: iq, stream, sign, packet; probe: 512N/I, 1200N/I, 2400N/I, FLEXN/I"); return false; }
+        if (probe < 0) { LS_SNPUTS(t_exp_pagers_method_iq_stream_sign, why, n, "method: iq, stream, sign, packet; probe: 512N/I, 1200N/I, 2400N/I, FLEXN/I"); return false; }
         dev = pgr_probe(probe)->deviation_hz;
     }
     for (int i = 2; i < argc && i < 4; i++) {
         char *end;
         const unsigned long v = strtoul(argv[i], &end, 10);
         if (end == argv[i] || *end || v < 600 || v > 200000) {
-            snprintf(why, n, "BW/deviation must be 600-200000 Hz"); return false;
+            LS_SNPUTS(t_exp_pagers_bw_deviation_must_be, why, n, "BW/deviation must be 600-200000 Hz"); return false;
         }
         if (i == 2) bw = (uint32_t)v; else dev = (uint32_t)v;
     }
     if (probe >= 0 && bw < pgr_probe(probe)->baud + 2 * dev) {
-        snprintf(why, n, "filter must contain bitrate + 2*deviation"); return false;
+        LS_SNPUTS(t_exp_pagers_filter_must_contain_bitrate, why, n, "filter must contain bitrate + 2*deviation"); return false;
     }
     int detect = -1;
     if (argc >= 5) {
         char *end;
         const unsigned long v = strtoul(argv[4], &end, 10);
         if (end == argv[4] || *end || v > 32 || v % 8) {
-            snprintf(why, n, "detect bits: 0 (off), 8, 16, 24 or 32"); return false;
+            LS_SNPUTS(t_exp_pagers_detect_bits_0_off, why, n, "detect bits: 0 (off), 8, 16, 24 or 32"); return false;
         }
         detect = (int)v;
     }
@@ -1165,10 +1177,10 @@ static bool pagers_configure(int argc, char **argv, char *why, size_t n)
         char *end;
         const unsigned long v = strtoul(argv[5], &end, 10);
         if (end == argv[5] || *end || v < 1 || v > BURST_MAX) {
-            snprintf(why, n, "batches: 1 (default), 2 or 3"); return false;
+            LS_SNPUTS(t_exp_pagers_batches_1_default_2, why, n, "batches: 1 (default), 2 or 3"); return false;
         }
         if (v > 1 && pgr_probe_is_flex(probe)) {
-            snprintf(why, n, "batches 2-3 need a fixed POCSAG probe, not FLEX"); return false;
+            LS_SNPUTS(t_exp_pagers_batches_2_3_need, why, n, "batches 2-3 need a fixed POCSAG probe, not FLEX"); return false;
         }
         batches = (uint8_t)v;
     }

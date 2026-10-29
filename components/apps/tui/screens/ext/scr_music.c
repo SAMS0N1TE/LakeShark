@@ -2,13 +2,16 @@
    of four readings of the audio: stereo peak meters of what is heard, a
    2/3-octave band display, a fine scan of thin bars, and a pixel
    spectrogram for finding what is in a recording. Landscape gives the
-   panel most of the width, portrait most of the height.
+   panel most of the width, portrait most of the height. Six analysis layers
+   follow those original four views.
 
    The chrome is the house style: framed tiles on a dithered field in the
    colour of what they do, boxed panels with their title in the border, and
    the transport drawn as pictures when a key is tall enough to carry one. */
 #include "../../ls_music_backend.h"
 #include "../../ls_audio_view.h"
+#include "../../ls_audio_layers.h"
+#include "../../ls_music_options.h"
 #include "../../ls_icons.h"
 #include "../../ls_media_widgets.h"
 #include "../../ls_music_transport.h"
@@ -22,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ls_textpack.h"
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 #endif
@@ -39,6 +43,8 @@ enum {
   TAB_BANDS,
   TAB_SCAN,
   TAB_WATERFALL,
+  TAB_WAVE, TAB_SPECTRO, TAB_MELODIC, TAB_SPECTRUM, TAB_SCOPE, TAB_TOOLS,
+  MORE,
   COLOUR,
   SPAN,
   TONE,
@@ -57,16 +63,16 @@ enum {
 /* The key each control answers to, drawn on it while a keyboard is fitted. */
 static const char *const KEYS[ACTIONS] = {
     "B", "P", "N", "-", "M", "+", "L", "I", "W", "1", "2", "3", "4",
-    "C", "Z", "E", "D", "R", "ESC", "U", "J", "O", "S", "", "H", "A"};
-enum { VIEW_LEVEL, VIEW_BANDS, VIEW_SCAN, VIEW_WATERFALL, VIEWS };
+    "5", "6", "7", "8", "9", "0", "V", "C", "Z", "E", "D", "R", "ESC", "U", "J", "O", "S", "", "H", "A"};
+enum { VIEW_LEVEL, VIEW_BANDS, VIEW_SCAN, VIEW_WATERFALL, VIEW_WAVE, VIEW_SPECTRO, VIEW_MELODIC, VIEW_SPECTRUM, VIEW_SCOPE, VIEW_TOOLS, VIEWS };
 static const char *const VIEW_NAME[VIEWS] = {"LEVEL", "BANDS", "SCAN",
-                                             "WATERFALL"};
-static const char *const VIEW_SHORT[VIEWS] = {"LVL", "BND", "SCN", "WF"};
+                                             "WATERFALL", "WAVE", "SPECTRO", "MELODIC", "SPECTRUM", "SCOPE", "TOOLS"};
+static const char *const VIEW_SHORT[VIEWS] = {"LVL", "BND", "SCN", "WF", "WAV", "SPG", "MEL", "SPC", "SCP", "TLS"};
 static const char *const VIEW_TITLE[VIEWS] = {
-    " PEAK LEVEL ", " SPECTRUM 2/3 OCTAVE ", " SCAN ", " WATERFALL "};
+    " PEAK LEVEL ", " SPECTRUM 2/3 OCTAVE ", " SCAN ", " WATERFALL ", " WAVE ", " SPECTRO ", " MELODIC ", " SPECTRUM ", " SCOPE ", " TOOLS "};
 /* Each reading has its colour: its tab, and the frame of its panel. */
 static const uint8_t VIEW_HUE[VIEWS] = {TUI_GREEN, TUI_YELLOW, TUI_MAGENTA,
-                                        TUI_CYAN};
+                                        TUI_CYAN, TUI_CYAN, TUI_MAGENTA, TUI_YELLOW, TUI_GREEN, TUI_CYAN, TUI_YELLOW};
 /* Screen state that only the UI task touches lives in PSRAM: internal RAM
    is what boot runs out of, and the radio's endpoint needs it. */
 EXT_RAM_BSS_ATTR static tui_rect hits[ACTIONS];
@@ -86,6 +92,8 @@ static const char *outside_name(void) {
 /* Kept across visits and rotations: the panel is a preference. */
 static int view = VIEW_LEVEL, palette, span_step;
 static unsigned frame;
+static ls_audio_layers *layers;
+EXT_RAM_BSS_ATTR static char layer_footer[80];
 #define PALETTES 5
 #define SCAN_FLOOR_DB (-84.0f)
 #define SCAN_TOP_DB (-12.0f)
@@ -220,6 +228,9 @@ static const ls_opt_t OPT_MUSIC[] = {
     {.label="VIEW",.kind=LS_OPT_CYCLE,.arg=TAB_LEVEL,.names=VIEW_NAME,.n=VIEWS,.step=1,.get=o_get,.set=o_set},
     {.label="COLOUR",.kind=LS_OPT_CYCLE,.arg=COLOUR,.names=PALETTE_NAME,.n=PALETTES,.step=1,.get=o_get,.set=o_set},
     {.label="SPAN",.kind=LS_OPT_LEVEL,.arg=SPAN,.lo=0,.hi=2,.step=1,.num=o_num,.set_num=o_set_num,.show=o_show},
+    {.label="PLAYBACK",.kind=LS_OPT_MENU,.sub=&ls_music_playback_options},
+    {.label="ANALYSIS",.kind=LS_OPT_MENU,.sub=&ls_music_analysis_options},
+    {.label="GENERATOR",.kind=LS_OPT_MENU,.sub=&ls_music_generator_options},
     {.label="WATERFALL",.kind=LS_OPT_MENU,.sub=&CTX_WATERFALL},
     MUSIC_ROW("TONE", TONE),
     MUSIC_ROW("SOURCE", SOURCE), MUSIC_ROW("STOP", STOP),
@@ -283,12 +294,17 @@ static void act(int id) {
   case TAB_BANDS:
   case TAB_SCAN:
   case TAB_WATERFALL:
+  case TAB_WAVE: case TAB_SPECTRO: case TAB_MELODIC: case TAB_SPECTRUM: case TAB_SCOPE: case TAB_TOOLS:
     view = VIEW_LEVEL + (id - TAB_LEVEL);
+    break;
+  case MORE:
+    view=(view+1)%VIEWS;
     break;
   case COLOUR:
     palette = (palette + 1) % PALETTES;
     break;
   case SPAN:
+    if(view>=VIEW_WAVE){ls_audio_layers_zoom(layers);break;}
     span_step = (span_step + 1) % 3;
     ls_audio_view_reset();
     break;
@@ -369,6 +385,8 @@ static void enter(void) {
      FM or P25 is next shown: it asks for what it believes is still on. */
   ls_tui_radio_want(NULL);
   ls_audio_view_open();
+  layers=ls_audio_layers_new();
+  ls_music_options_cursor(layers);
   ready = ls_music_open();
   if (ready)
     ls_music_scan(source);
@@ -377,6 +395,8 @@ static void enter(void) {
 static void leave(void) {
   ls_music_close();
   ls_audio_view_close();
+  ls_audio_layers_free(layers);layers=NULL;
+  ls_music_options_cursor(NULL);
   ready = false;
   current = -1;
   outside[0] = 0;
@@ -583,10 +603,13 @@ static void strip(tui_surface *sf, tui_rect r, bool waterfall, float lo_db,
   tui_put_str(sf, r, r.x + 1, r.y, waterfall ? "COLOUR MAP" : "LEVEL KEY", cyan);
 }
 static void tabs(tui_surface *sf, tui_rect t) {
-  int tw = t.w / VIEWS;
+  int first=(view/4)*4;
+  int count=VIEWS-first<4?VIEWS-first:4;
+  int tw = t.w / count;
   bool full = tw - 2 >= 9;
-  for (int i = 0; i < VIEWS; i++) {
-    int x = t.x + i * tw, w = i == VIEWS - 1 ? t.w - i * tw : tw - 1;
+  for (int j = 0; j < count; j++) {
+    int i=first+j;
+    int x = t.x + j * tw, w = j == count - 1 ? t.w - j * tw : tw - 1;
     button(sf, TAB_LEVEL + i, tui_rect_make(x, t.y, w, 3),
            full ? VIEW_NAME[i] : VIEW_SHORT[i], i == view, true);
   }
@@ -635,14 +658,17 @@ static void panel(tui_surface *sf, tui_rect p, bool playing, bool boxed) {
   if (p.w < 20 || p.h < 12)
     return;
   ls_panel_box(sf, p, VIEW_TITLE[view], VIEW_HUE[view]);
+  hits[MORE]=tui_rect_make(p.x+p.w-10,p.y,9,1);enabled[MORE]=true;
+  tui_fill(sf,hits[MORE],' ',TUI_ATTR(TUI_BLACK,TUI_CYAN));
+  tui_put_str(sf,hits[MORE],hits[MORE].x,hits[MORE].y," VIEW > ",TUI_ATTR(TUI_BLACK,TUI_CYAN));
   tui_rect in = tui_rect_make(p.x + 1, p.y + 1, p.w - 2, p.h - 2);
   /* Tabs beside the format lines when there is room, above them when not;
      with the format in the now-playing box above, the tabs have the row. */
   const int info_w = boxed ? 0 : 25;
-  bool beside = boxed || in.w - info_w >= VIEWS * 11;
+  bool beside = boxed || in.w - info_w >= 4 * 11;
   int tabs_w = beside ? in.w - info_w : in.w;
-  if (tabs_w > VIEWS * 12 && !boxed)
-    tabs_w = VIEWS * 12;
+  if (tabs_w > 4 * 12 && !boxed)
+    tabs_w = 4 * 12;
   tabs(sf, tui_rect_make(in.x + in.w - tabs_w, in.y, tabs_w, 3));
   if (!boxed) {
     int info_y = beside ? in.y : in.y + 3;
@@ -655,14 +681,20 @@ static void panel(tui_surface *sf, tui_rect p, bool playing, bool boxed) {
   tui_rect controls_row = tui_rect_make(body.x, body.y + body.h - 3, body.w, 3);
   char line[96];
   unsigned rate = rate_now();
+  if(view>=VIEW_WAVE){
+    ls_audio_layers_draw(layers,sf,body,view-VIEW_WAVE,ls_music_analysis(),ls_music_overview(),ls_music_tools(),ls_music_position_ms(),wf_hold);
+    LS_SNPRINTF(t_scr_music_v_view_h_s, layer_footer,sizeof(layer_footer),"V view  H %s  Z zoom  O options  %.1fx varispeed",wf_hold?"HELD":"hold",ls_music_speed_get()/1000.0);
+    ls_safe_line(sf,in,in.y+in.h-1,layer_footer,LS_ATTR_DIM);
+    return;
+  }
   switch (view) {
   case VIEW_LEVEL:
     ls_audio_view_draw(sf, body, view, palette, span_step, playing);
-    snprintf(line, sizeof(line), "OUTPUT dBFS AFTER VOLUME  <> SOURCE BEFORE IT");
+    LS_SNPUTS(t_scr_music_output_dbfs_after_volume, line, sizeof(line), "OUTPUT dBFS AFTER VOLUME  <> SOURCE BEFORE IT");
     break;
   case VIEW_BANDS:
     ls_audio_view_draw(sf, body, view, palette, span_step, playing);
-    snprintf(line, sizeof(line), "FFT %d HANN  %.1f Hz/BIN  %s",
+    LS_SNPRINTF(t_scr_music_fft_d_hann_1f, line, sizeof(line), "FFT %d HANN  %.1f Hz/BIN  %s",
              LS_MUSIC_FFT_SIZE, (double)rate / LS_MUSIC_FFT_SIZE, source_name());
     break;
   case VIEW_SCAN: {
@@ -671,7 +703,7 @@ static void panel(tui_surface *sf, tui_rect p, bool playing, bool boxed) {
     char lo[8], hi[8];
     freq_text(lo, sizeof(lo), SCAN_LO_HZ);
     freq_text(hi, sizeof(hi), scan_top_hz());
-    snprintf(line, sizeof(line), "%s - %s Hz LOG  FFT %d  %s", lo, hi,
+    LS_SNPRINTF(t_scr_music_s_s_hz_log, line, sizeof(line), "%s - %s Hz LOG  FFT %d  %s", lo, hi,
              LS_MUSIC_FFT_SIZE, source_name());
     break;
   }
@@ -681,7 +713,7 @@ static void panel(tui_surface *sf, tui_rect p, bool playing, bool boxed) {
     strip(sf, controls_row, true, (float)wf_floor, (float)(wf_floor + wf_range));
     char hi[12];
     ls_spectro_khz(hi, sizeof(hi), rate / 2.0f / TOP_DIV[wf_top]);
-    snprintf(line, sizeof(line), "FFT %d  %.1f Hz/BIN  %.0f LINES/S  %s 0-%s",
+    LS_SNPRINTF(t_scr_music_fft_d_1f_hz, line, sizeof(line), "FFT %d  %.1f Hz/BIN  %.0f LINES/S  %s 0-%s",
              LS_MUSIC_FFT_SIZE, (double)rate / LS_MUSIC_FFT_SIZE,
              (double)rate / ls_audio_view_hop(span_step),
              wf_axis ? "LOG" : "LIN", hi);
@@ -722,6 +754,7 @@ static const char *scrolled(const char *song, int width) {
 static const char *state_name(bool playing) {
   ls_music_mic_t mic = ls_music_mic_state();
   return mic == LS_MIC_RECORDING               ? "RECORDING"
+         : mic == LS_MIC_TONE                  ? "GENERATOR"
          : mic == LS_MIC_LIVE                  ? "LISTENING"
          : playing                             ? "PLAYING"
          : ls_music_state() == LS_MUSIC_PAUSED ? "PAUSED"
@@ -730,6 +763,7 @@ static const char *state_name(bool playing) {
 static uint8_t state_hue(bool playing) {
   ls_music_mic_t mic = ls_music_mic_state();
   return mic == LS_MIC_RECORDING               ? TUI_RED
+         : mic == LS_MIC_TONE                  ? TUI_YELLOW
          : mic == LS_MIC_LIVE                  ? TUI_MAGENTA
          : playing                             ? TUI_GREEN
          : ls_music_state() == LS_MUSIC_PAUSED ? TUI_YELLOW
@@ -748,7 +782,7 @@ static void top_keys(tui_surface *sf, int x, int y, int bw, int h) {
 }
 static void clock_text(char *out, size_t n, uint32_t elapsed_ms,
                        uint32_t total_ms) {
-  snprintf(out, n, "%02u:%02u / %02u:%02u", (unsigned)(elapsed_ms / 60000),
+  LS_SNPRINTF(t_scr_music_02u_02u_02u_02u, out, n, "%02u:%02u / %02u:%02u", (unsigned)(elapsed_ms / 60000),
            (unsigned)(elapsed_ms / 1000 % 60), (unsigned)(total_ms / 60000),
            (unsigned)(total_ms / 1000 % 60));
 }
@@ -788,10 +822,10 @@ static void info_boxed(tui_surface *sf, tui_rect r, bool playing) {
   unsigned elapsed, total;
   if (mic != LS_MIC_OFF) {
     const char *path = ls_music_mic_file(), *name = strrchr(path, '/');
-    tui_put_str(sf, text, tx, text.y, "MICROPHONE",
+    tui_put_str(sf, text, tx, text.y, mic == LS_MIC_TONE ? "GENERATOR" : "MICROPHONE",
                 TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, TUI_BLACK));
     tui_put_str(sf, text, tx, text.y + 1,
-                mic == LS_MIC_RECORDING ? (name ? name + 1 : path)
+                mic == LS_MIC_TONE ? "Tone generator, obeys mute" : mic == LS_MIC_RECORDING ? (name ? name + 1 : path)
                                         : "Live input, not recorded",
                 TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
     elapsed = mic == LS_MIC_RECORDING ? ls_music_mic_ms() / 1000 : 0;
@@ -846,9 +880,9 @@ static void info_flat(tui_surface *sf, tui_rect r, bool playing) {
   const char *error = ls_music_error();
   if (mic != LS_MIC_OFF) {
     const char *path = ls_music_mic_file(), *name = strrchr(path, '/');
-    ls_safe_line(sf, r, r.y + 3, "MICROPHONE", TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, TUI_BLACK));
+    ls_safe_line(sf, r, r.y + 3, mic == LS_MIC_TONE ? "GENERATOR" : "MICROPHONE", TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, TUI_BLACK));
     ls_safe_line(sf, r, r.y + 4,
-                 mic == LS_MIC_RECORDING ? (name ? name + 1 : path)
+                 mic == LS_MIC_TONE ? "Tone generator, obeys mute" : mic == LS_MIC_RECORDING ? (name ? name + 1 : path)
                                          : "Live input, not recorded",
                  white);
     elapsed = mic == LS_MIC_RECORDING ? ls_music_mic_ms() / 1000 : 0;
@@ -903,7 +937,7 @@ static void draw_library(tui_surface *sf, tui_rect r) {
                TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
   if (ls_tui_keyboard_mode())
     ls_safe_line(sf, tui_rect_make(r.x, r.y, r.w - 13, r.h), r.y + 2,
-                 "UP/DOWN select  ENTER play  LEFT/RIGHT prev/next",
+                 LS_TEXT(t_scr_music_up_down_select_enter, "UP/DOWN select  ENTER play  LEFT/RIGHT prev/next"),
                  LS_ATTR_DIM);
   else {
     char n[32];
@@ -927,7 +961,7 @@ static void draw_library(tui_surface *sf, tui_rect r) {
     tui_put_str(sf, box, box.x + box.w - 2 - len, box.y, n, cyan);
   }
   if (!count)
-    ls_safe_line(sf, rows_rect, rows_rect.y + 1, "No WAV tracks. Use RESCAN.",
+    ls_safe_line(sf, rows_rect, rows_rect.y + 1, LS_TEXT(t_scr_music_no_audio_tracks_use, "No audio tracks. Use RESCAN."),
                  LS_ATTR_DIM);
   for (int i = 0; i < visible_rows && top + i < count; i++) {
     int index = top + i, y = rows_rect.y + i * row_height;
@@ -1118,14 +1152,17 @@ static bool key(ls_tk_t key, char ch) {
     act(REC);
     break;
   case 'v':
-    act(TAB_LEVEL + (view + 1) % VIEWS);
+    act(MORE);
     break;
   case '1':
   case '2':
   case '3':
   case '4':
+  case '5': case '6': case '7': case '8': case '9':
     act(TAB_LEVEL + (ch - '1'));
     break;
+  case '0':
+    act(TAB_TOOLS);break;
   case 'c':
     act(COLOUR);
     break;
@@ -1170,6 +1207,7 @@ static bool touch(int x, int y) {
       act(i);
       return true;
     }
+  if(!library && view>=VIEW_WAVE && ls_audio_layers_touch(layers,x,y))return true;
   if (!library && on_track() && y==progress_rect.y+1 && x>=progress_rect.x+2 && x<progress_rect.x+progress_rect.w-2) {
     if(ls_music_seek_ms((uint64_t)(x-progress_rect.x-2)*ls_music_duration_ms()/(progress_rect.w-4)))ls_audio_view_reset();
     return true;
@@ -1187,7 +1225,7 @@ static bool touch(int x, int y) {
 }
 const ls_tui_screen_t ls_scr_music = {
     .name = "MUSIC",
-    .hint = "1-4/V view  C colour  H hold  A axis  O options  SPACE play  I mic  W rec  L tracks  +/- vol",
+    .hint = "1-0/V view  C colour  H hold  A axis  O options  SPACE play  I mic  W rec  L tracks  +/- vol",
     .enter = enter,
     .leave = leave,
     .draw = draw,

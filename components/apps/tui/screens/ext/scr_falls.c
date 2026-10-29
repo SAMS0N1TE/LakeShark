@@ -21,6 +21,7 @@
 #include "apps/fm/fm_state.h"
 #include "p25_state.h"
 #include "apps/fm/fm_mode_label.h"
+#include "ls_textpack.h"
 
 /* The SDRs and the LoRa chip draw a spectrum; the other radios use honest
    passive data views until their spectrum adapters are available. */
@@ -172,7 +173,7 @@ static void pick(ls_wf_src_t src)
     /* Choosing a radio starts it. The screen still starts nothing on
        its own - see the note on ls_wf_source_start. */
     if (!ls_wf_source_start(src)) {
-        snprintf(s_flash,sizeof(s_flash),"Source could not start"); s_flash_ttl=90; return;
+        LS_SNPUTS(t_scr_falls_source_could_not_start, s_flash, sizeof(s_flash), "Source could not start"); s_flash_ttl=90; return;
     }
     if(s_data>=0) ls_field_watch(false);
     s_data=-1;
@@ -208,7 +209,7 @@ static void picked(ls_rsel_radio_t radio)
     if (data < 0) return;
     if (!show_data(data)) {
         ls_rsel_set(LS_RSEL_WATERFALL, in_use());
-        snprintf(s_flash,sizeof(s_flash),"Stop recording before changing its source");
+        LS_SNPUTS(t_scr_falls_stop_recording_before_changing, s_flash, sizeof(s_flash), "Stop recording before changing its source");
         s_flash_ttl=90; return;
     }
     s_flash[0]=0; s_flash_ttl=0;
@@ -332,9 +333,9 @@ static void draw_data(tui_surface *sf, tui_rect area)
                                source->field == LS_FIELD_NRF24 ? "Run the nRF24 survey in MIX-RF" :
                                source->field == LS_FIELD_NFC ? "Run the NFC adapter in MIX-RF" :
                                "Start the radio link provider in MIX-RF";
-        tui_put_str(sf,area,area.x+1,area.y+3,"No fresh receiver data",LS_ATTR_DIM);
+        tui_put_str(sf,area,area.x+1,area.y+3,LS_TEXT(t_scr_falls_no_fresh_receiver_data, "No fresh receiver data"),LS_ATTR_DIM);
         int row = draw_wrapped(sf,area,5,provider);
-        draw_wrapped(sf,area,row,"Then return here for passive readings");
+        draw_wrapped(sf,area,row,LS_TEXT(t_scr_falls_then_return_here_for, "Then return here for passive readings"));
         return;
     }
     ls_kv(sf,area,3,"SOURCE",ls_rsel_name(source->radio),LS_ATTR_DIM);
@@ -378,7 +379,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if (ls_wf_source_get() == LS_WF_SRC_P25 && in_use() == LS_RSEL_LORA &&
         !P25.lr_iq_active) {
         ls_panel_notice(sf, body, "P25 / LR2021",
-                        "LR IQ acquiring", "waiting for the IQ stream");
+                        "LR IQ acquiring", LS_TEXT(t_scr_falls_waiting_for_the_iq, "waiting for the IQ stream"));
         return;
     }
     /* Keep HOLD reachable while the shared display is paused. */

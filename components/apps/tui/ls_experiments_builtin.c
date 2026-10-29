@@ -7,10 +7,7 @@
 void ls_exp_register_builtin(void)
 {
     EXP(exp_aviation);
-    EXP(exp_burst);
-    EXP(exp_carrier);
     EXP(exp_dfm17);
-    EXP(exp_iridium);
     EXP(exp_loramon);
     EXP(exp_lr433);
     EXP(exp_p25site);

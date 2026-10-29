@@ -158,6 +158,17 @@ void     rec_scout_peak(uint32_t *hz_out, float *level_out);
    frame rate. */
 uint32_t rec_scout_sweeps(void);
 
+/* A second reader of REC's SDR stream: `tap` sees every block rec_rx reads,
+   on rec_rx, after REC's own slicer. One at a time; NULL removes it, and
+   returns once rec_rx is no longer inside the old one. For a decoder that
+   needs I/Q (rec_ism_rx.c), not for anything slow. */
+typedef void (*rec_iq_tap_fn)(const uint8_t *iq, size_t bytes, void *ctx);
+void rec_set_iq_tap(rec_iq_tap_fn tap, void *ctx);
+/* Tune REC's receiver without saving the frequency, for a caller that
+   borrows REC and gives the old one back. False while WATCH or an I/Q job
+   holds the frequency. */
+bool rec_tune_transient(uint32_t hz);
+
 void rec_set_mod(int mod);
 int  rec_get_mod(void);
 void rec_set_autosave(bool on);

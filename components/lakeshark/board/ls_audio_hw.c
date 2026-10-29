@@ -121,6 +121,83 @@ static void channels_enable(void)
     if (s_tx) i2s_channel_enable(s_tx);
     if (s_rx) i2s_channel_enable(s_rx);
 }
+/* Parked: both channels disabled while nothing plays, so the word and bit
+   clocks stop. Left running on silence they put a 16 kHz comb across the
+   LR2021's receive band (151.553, 151.569, 151.585 MHz ...). A write, a
+   read, a rate change or a teardown starts them again first. */
+static bool s_parked;
+static volatile int64_t s_last_read_us;
+#define PARK_AFTER_READ_US 1000000
+#if CONFIG_IDF_TARGET_ESP32P4
+#include "hal/i2s_ll.h"
+#include "esp_private/periph_ctrl.h"
+/* Disabled channels still leave MCLK running (in full duplex it follows
+   whichever channel was set up last), and the ES8311 keeps counting off it:
+   a 64 kHz comb, MCLK/64, at 151.553, 151.617, 152.577 MHz ... Gating the
+   I2S0 module clocks stops MCLK as well. */
+static void module_clocks(bool on)
+{
+    PERIPH_RCC_ATOMIC() {
+        if (on) {
+            i2s_ll_tx_enable_clock(&I2S0);
+            if (s_rx) { i2s_ll_rx_enable_clock(&I2S0); }
+        } else {
+            i2s_ll_tx_disable_clock(&I2S0);
+            if (s_rx) { i2s_ll_rx_disable_clock(&I2S0); }
+        }
+    }
+}
+#else
+static void module_clocks(bool on) { (void)on; }
+#endif
+/* XL9535 IO6 switches the OUT_5V audio rail: the NS4150 amplifier and the
+   RT9080 that makes the ES8311's analog 3.3 V (LilyGO lilygo_device_driver,
+   t_display_p4 SetEs8311OperatingMode).
+   The ES8311's output steps when its clocks start, muted or not, and with
+   the rail up that is a snap from the speaker: at boot, and on an unpark
+   once the clocks have been stopped for about a second. So the rail is off
+   when the clocks start after a long park, and comes on once the codec has
+   run on silence for AMP_SETTLE_MS.
+   The rail goes off AMP_OFF_AFTER_MS after the clocks stop. With the codec
+   still clocked, or right as the clocks stop, that snapped on every park;
+   0.5 s later it was still above the room (21-41 against 12-31), 1, 2 and
+   4 s later at it (17-31). At 600 ms it still snapped a couple of seconds
+   after each P25 call, by ear; 2 s is inside the quiet range. Measured with
+   the SX board's microphone beside the speaker (bench/lr151/RESULTS.md).
+   An unpark inside AMP_KEEP_MS of the park keeps the rail up (0.3-0.5 s:
+   quiet). Later, with the rail still up, the clocks starting under it
+   snapped (1.5 s: 44-74), so the rail goes off first, with the codec long
+   settled, and comes back AMP_SETTLE_MS after the clocks (10-21). */
+static bool s_amp_on = true;
+#ifdef LS_BOARD_XL_AUDIO_PWR_EN
+#include "ls_xl9535.h"
+static void amp(bool on) { (void)ls_xl9535_out(LS_BOARD_XL_AUDIO_PWR_EN, on); s_amp_on = on; }
+#else
+static void amp(bool on) { (void)on; }
+#endif
+#define AMP_SETTLE_MS    150
+#define AMP_OFF_AFTER_MS 2000
+#define AMP_KEEP_MS      1000
+#define DAC_MUTE_MS      20
+static int64_t s_parked_at_us;
+/* The mute last asked for through ls_audio_hw_mute, restored after an unpark;
+   the DAC is held muted across every clock and amplifier change. */
+static bool s_out_mute;
+static void dac_mute(bool mute) { if (s_dev) esp_codec_dev_set_out_mute(s_dev, mute); }
+static void unpark(void)
+{
+    if (!s_parked) return;
+    if (s_amp_on && esp_timer_get_time() - s_parked_at_us >= AMP_KEEP_MS * 1000LL) amp(false);
+    module_clocks(true);
+    channels_enable();
+    vTaskDelay(pdMS_TO_TICKS(AMP_SETTLE_MS));
+    if (!s_amp_on) {
+        amp(true);
+        vTaskDelay(pdMS_TO_TICKS(DAC_MUTE_MS));
+    }
+    dac_mute(s_out_mute);
+    __atomic_store_n(&s_parked, false, __ATOMIC_RELEASE);
+}
 static const audio_codec_data_if_t *s_data;
 static const audio_codec_ctrl_if_t *s_ctrl;
 static const audio_codec_gpio_if_t *s_gpio;
@@ -129,6 +206,7 @@ bool ls_audio_hw_output_is_mono(void) { return true; } /* ES8311 */
 
 static void codec_cleanup(void)
 {
+    unpark();
     /* A close of an open device has already disabled the channels. */
     const bool disabled = s_dev && s_dev_open;
     if (s_dev) { esp_codec_dev_close(s_dev); esp_codec_dev_delete(s_dev); s_dev = NULL; }
@@ -157,6 +235,7 @@ static esp_err_t hw_init(bool speaker_only)
 {
     (void)speaker_only;
     if (s_dev) return ESP_OK;
+    amp(false);
     i2c_master_bus_handle_t bus;
     esp_err_t err = ls_i2c_bus(LS_BOARD_CODEC_I2C_BUS, &bus);
     if (err != ESP_OK) return err;
@@ -242,15 +321,19 @@ static esp_err_t hw_init(bool speaker_only)
     if (!s_dev) goto fail;
     err = hw_set_fs(16000, 16, I2S_SLOT_MODE_STEREO);
     if (err != ESP_OK) goto fail;
+    vTaskDelay(pdMS_TO_TICKS(AMP_SETTLE_MS));
+    amp(true);
     return ESP_OK;
 fail:
     codec_cleanup();
+    amp(true);
     return err;
 }
 
 static esp_err_t hw_set_fs(uint32_t rate, uint32_t bits, i2s_slot_mode_t channels)
 {
     if (!s_dev) return ESP_ERR_INVALID_STATE;
+    unpark();
     esp_codec_dev_sample_info_t fs = {
         .sample_rate = rate, .bits_per_sample = bits, .channel = channels,
     };
@@ -327,6 +410,8 @@ static esp_err_t hw_volume(int volume, int *actual)
 static esp_err_t hw_mute(bool mute)
 {
     if (!s_dev) return ESP_ERR_INVALID_STATE;
+    s_out_mute = mute;
+    if (s_parked) return ESP_OK;   /* applied by the unpark */
     return esp_codec_dev_set_out_mute(s_dev, mute) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL;
 }
 
@@ -351,9 +436,51 @@ esp_err_t ls_audio_hw_set_fs(uint32_t rate, uint32_t bits, i2s_slot_mode_t chann
     hw_unlock();
     return err;
 }
+esp_err_t ls_audio_hw_park(bool park)
+{
+    if (!hw_lock()) return ESP_ERR_TIMEOUT;
+    esp_err_t err = ESP_OK;
+    if (!park) {
+        unpark();
+    } else if (!s_dev) {
+        err = ESP_ERR_INVALID_STATE;
+    } else if (s_parked) {
+        /* Called again while parked: the rail goes off once the codec has
+           settled. */
+        if (s_amp_on &&
+            esp_timer_get_time() - s_parked_at_us >= AMP_OFF_AFTER_MS * 1000LL)
+            amp(false);
+    } else {
+        /* A microphone reader works in windows with gaps between them;
+           parking in a gap would cost it the next window's start. */
+        if (s_rx && esp_timer_get_time() - s_last_read_us < PARK_AFTER_READ_US) {
+            err = ESP_ERR_INVALID_STATE;
+        } else {
+            dac_mute(true);
+            vTaskDelay(pdMS_TO_TICKS(DAC_MUTE_MS));
+            if (s_tx) i2s_channel_disable(s_tx);
+            if (s_rx) i2s_channel_disable(s_rx);
+            module_clocks(false);
+            s_parked_at_us = esp_timer_get_time();
+            __atomic_store_n(&s_parked, true, __ATOMIC_RELEASE);
+        }
+    }
+    hw_unlock();
+    return err;
+}
+bool ls_audio_hw_parked(void) { return __atomic_load_n(&s_parked, __ATOMIC_ACQUIRE); }
+
+/* Parking takes every lock, so it cannot land inside a transfer; a transfer
+   that finds the channels parked drops its lock and unparks first. */
 esp_err_t ls_audio_hw_write(void *data, size_t len, size_t *written, uint32_t timeout)
 {
     if (!data_lock(&s_tx_lock)) return ESP_ERR_TIMEOUT;
+    if (ls_audio_hw_parked()) {
+        data_unlock(s_tx_lock);
+        esp_err_t err = ls_audio_hw_park(false);
+        if (err != ESP_OK) return err;
+        if (!data_lock(&s_tx_lock)) return ESP_ERR_TIMEOUT;
+    }
     esp_err_t err = hw_write(data, len, written, timeout);
     data_unlock(s_tx_lock);
     return err;
@@ -361,7 +488,15 @@ esp_err_t ls_audio_hw_write(void *data, size_t len, size_t *written, uint32_t ti
 esp_err_t ls_audio_hw_read(void *data, size_t len, size_t *got)
 {
     if (!data_lock(&s_rx_lock)) return ESP_ERR_TIMEOUT;
+    if (ls_audio_hw_parked()) {
+        data_unlock(s_rx_lock);
+        esp_err_t err = ls_audio_hw_park(false);
+        if (err != ESP_OK) return err;
+        if (!data_lock(&s_rx_lock)) return ESP_ERR_TIMEOUT;
+    }
+    s_last_read_us = esp_timer_get_time();
     esp_err_t err = hw_read(data, len, got);
+    s_last_read_us = esp_timer_get_time();
     data_unlock(s_rx_lock);
     return err;
 }
@@ -442,6 +577,8 @@ esp_err_t ls_audio_hw_read(void *data, size_t len, size_t *got)
 }
 
 esp_err_t ls_audio_hw_in_gain(float db) { (void)db; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t ls_audio_hw_park(bool park) { (void)park; return ESP_ERR_NOT_SUPPORTED; }
+bool ls_audio_hw_parked(void) { return false; }
 uint32_t ls_audio_hw_starved(int64_t *first_us, int64_t *last_us)
 {
     if (first_us) *first_us = 0;

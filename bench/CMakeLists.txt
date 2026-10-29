@@ -28,6 +28,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(FW  ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(APP ${FW}/components/lakeshark/apps)
+# LS_TEXT/LS_TXT (components/ls_textpack): on the host they are the literal itself.
+include_directories(${FW}/components/ls_textpack/include)
 
 set(P2 ${FW}/components/p25_phase2)
 file(GLOB P2_SOURCES ${P2}/upstream/*.c ${P2}/upstream/*.cc)
@@ -40,10 +42,13 @@ target_link_libraries(p25p2_replay p25_phase2_host m)
 set(CARTO ${FW}/components/libcarto/upstream)
 set(PMT   ${FW}/components/pmtiles)
 
-set(DMR_WATCH_SRCS
+set(DMR_CORE_SRCS
     ${APP}/dmr/dmr_sync.c ${APP}/dmr/dmr_slot.c ${APP}/dmr/dmr_bptc.c
     ${APP}/dmr/dmr_lc.c ${APP}/dmr/dmr_burst.c ${APP}/dmr/dmr_framer.c
-    ${APP}/dmr/dmr_watch.c ${APP}/dmr/dmr_listen.c)
+    ${APP}/dmr/dmr_csbk.c ${APP}/dmr/dmr_emb.c ${APP}/dmr/dmr_symsync.c)
+set(DMR_WATCH_SRCS
+    ${DMR_CORE_SRCS}
+    ${APP}/dmr/dmr_watch.c ${APP}/dmr/dmr_report.c ${APP}/dmr/dmr_listen.c)
 set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_sweep.c
     ${FW}/components/apps/tui/ls_sweep_ui.c
@@ -55,6 +60,8 @@ set(LS_TUI_APP_SRCS
     ${DMR_WATCH_SRCS}
     ${FW}/components/apps/tui/experiments/rs41_store.c
     ${FW}/components/apps/tui/ls_audio_view.c
+    ${FW}/components/apps/tui/ls_audio_layers.c
+    ${FW}/components/apps/tui/ls_music_options.c
     ${FW}/components/apps/tui/ls_pixel_wf.c
     ${FW}/components/apps/tui/ls_calls.c
     ${FW}/components/lakeshark/audio/call_archive.c
@@ -125,7 +132,6 @@ set(LS_EXP_SRCS
     ${APP}/adsb/uat_weather.c
     ${FW}/components/apps/tui/experiments/exp_uat.c
     ${APP}/adsb/uat_decode.c
-    ${FW}/components/apps/tui/experiments/exp_carrier.c
     ${FW}/components/apps/tui/experiments/exp_rs41.c
     ${FW}/components/apps/tui/experiments/rs41_decode.c
     ${FW}/components/apps/tui/experiments/rs41_stream.c
@@ -139,16 +145,19 @@ set(LS_EXP_SRCS
     ${FW}/components/apps/tui/experiments/pager_iq.c
     ${FW}/components/apps/tui/experiments/pager_iq_radio.c
     ${APP}/fm/pocsag.c
-    ${FW}/components/apps/tui/experiments/exp_burst.c
-    ${FW}/components/apps/tui/experiments/exp_iridium.c
+    ${FW}/components/lakeshark/rx/ls_rx_head.c
+    ${FW}/components/lakeshark/rx/rx_pocsag.c
     ${FW}/components/apps/tui/experiments/exp_rf.c
     ${FW}/components/apps/tui/experiments/exp_survey.c
     ${FW}/components/apps/tui/experiments/exp_lr433.c
     ${FW}/components/apps/tui/experiments/lr433_dec.c
+    ${APP}/rec/rec_ism.c
+    ${APP}/rec/rec_fsk.c
     ${FW}/components/apps/tui/experiments/sensor_history.c
     ${FW}/components/apps/tui/experiments/lr433_history.c)
 
 set(LS_TUI_APP_INCLUDES
+    ${FW}/components/lakeshark/rx
     ${FW}/components/lakeshark/core
     ${FW}/components/lakeshark/radio
     ${FW}/components/lakeshark/nfc
@@ -235,6 +244,7 @@ include_directories(
 )
 
 add_library(ls_harness STATIC
+    ${FW}/components/lakeshark/board/ls_lora_iq.c
     harness/ls_test.c
     harness/shim_impl.c
     shims/pagers_settings_fake.c
@@ -263,7 +273,8 @@ function(ls_add_test name)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
-ls_add_test(test_radios_status ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
+ls_add_test(test_radios_status ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
+    shims/lap_service_none.c)
 target_include_directories(test_radios_status PRIVATE ${LS_TUI_APP_INCLUDES}
     ${FW}/components/lakeshark)
 target_compile_definitions(test_radios_status PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
@@ -371,6 +382,9 @@ ls_add_test(test_tui_screens
     ${FW}/components/apps/tui/screens/ext/scr_journal.c
     ${FW}/components/apps/tui/screens/ext/scr_notes.c
     ${FW}/components/apps/tui/screens/ext/scr_compass.c
+    ${FW}/components/apps/tui/ls_fox.c
+    ${FW}/components/apps/tui/ls_fox_run.c
+    ${FW}/components/apps/tui/ls_rfsim.c
     ${FW}/components/apps/tui/ls_compass_art.c
     ${FW}/components/apps/tui/ls_df.c
     ${FW}/components/apps/tui/ls_df_fit.c
@@ -404,6 +418,8 @@ ls_add_test(test_tui_screens
     ${APP}/fm/fm_tone.c
     ${APP}/acars/acars_app.c
     ${FW}/components/apps/tui/screens/main/scr_fm.c
+    ${FW}/components/apps/tui/rx_panels/rx_pages.c
+    ${FW}/components/apps/tui/rx_panels/rx_tape.c
     ${FW}/components/apps/tui/screens/main/fm_same_view.c
     ${FW}/components/apps/tui/screens/main/fm_aprs_view.c
     ${FW}/components/apps/tui/screens/main/fm_ais_view.c
@@ -420,7 +436,8 @@ ls_add_test(test_tui_screens
     ${APP}/adsb/adsb_state.c
     ${APP}/p25/p25_health.c
     ${FW}/components/lakeshark/radio/radio_endpoint.c
-    ${FW}/components/lakeshark/radio/radio_health.c)
+    ${FW}/components/lakeshark/radio/radio_health.c
+    shims/fm_pager_voice_fake.c)
 target_include_directories(test_tui_screens PRIVATE
     ${LS_TUI_APP_INCLUDES}
     ${FW}/components/apps/tui
@@ -450,8 +467,9 @@ ls_add_test(test_exp_pagers
     ${FW}/components/apps/tui/ls_experiments.c
     ${FW}/components/apps/tui/experiments/exp_pagers.c
     ${FW}/components/apps/tui/experiments/pager_recon.c
-    ${APP}/fm/pocsag.c)
-target_include_directories(test_exp_pagers PRIVATE
+    ${APP}/fm/pocsag.c
+    ${FW}/components/lakeshark/rx/ls_rx_head.c ${FW}/components/lakeshark/rx/rx_pocsag.c)
+target_include_directories(test_exp_pagers PRIVATE ${FW}/components/lakeshark/rx
     ${LS_TUI_APP_INCLUDES} ${FW}/components/apps/tui/experiments)
 
 ls_add_test(test_exp_p25site
@@ -461,13 +479,19 @@ ls_add_test(test_exp_p25site
 target_include_directories(test_exp_p25site PRIVATE
     ${LS_TUI_APP_INCLUDES} ${FW}/components/apps/tui/experiments)
 
-foreach(exp_id burst iridium survey)
-    ls_add_test(test_exp_${exp_id}
-        ${FW}/components/apps/tui/ls_experiments.c
-        ${FW}/components/apps/tui/experiments/exp_rf.c
-        ${FW}/components/apps/tui/experiments/exp_${exp_id}.c)
-    target_include_directories(test_exp_${exp_id} PRIVATE ${LS_TUI_APP_INCLUDES})
-endforeach()
+ls_add_test(test_exp_survey
+    ${FW}/components/apps/tui/ls_experiments.c
+    ${FW}/components/apps/tui/experiments/exp_rf.c
+    ${FW}/components/apps/tui/experiments/exp_survey.c)
+target_include_directories(test_exp_survey PRIVATE ${LS_TUI_APP_INCLUDES})
+# BURST SCOPE, CARRIER LEVEL and IRIDIUM BURSTS are SD apps
+# (app-sdk/apps/burst, carrier, iridium): their engines as the apps build them.
+ls_add_test(test_burst_app ${FW}/app-sdk/apps/burst/scope.c)
+target_include_directories(test_burst_app PRIVATE ${FW}/app-sdk/apps/burst)
+ls_add_test(test_carrier_app ${FW}/app-sdk/apps/level/meter.c)
+target_include_directories(test_carrier_app PRIVATE ${FW}/app-sdk/apps/level)
+ls_add_test(test_iridium_app ${FW}/app-sdk/apps/iridium/irid.c)
+target_include_directories(test_iridium_app PRIVATE ${FW}/app-sdk/apps/iridium)
 
 ls_add_test(test_exp_lr433
     ${LS_EXP_SRCS}
@@ -475,6 +499,16 @@ ls_add_test(test_exp_lr433
     ${FW}/bench/shims/ls_scan_fake.c
     ${FW}/bench/shims/ls_exp_others_fake.c)
 target_include_directories(test_exp_lr433 PRIVATE ${LS_TUI_APP_INCLUDES})
+
+# ISM: lr433's decoders behind an SDR front end (rec_ism.c).
+ls_add_test(test_rec_ism ${APP}/rec/rec_ism.c ${APP}/rec/rec_fsk.c
+    ${FW}/components/apps/tui/experiments/lr433_dec.c)
+target_include_directories(test_rec_ism PRIVATE ${LS_TUI_APP_INCLUDES})
+
+# METERS: the store, rate of change and the pins file.
+ls_add_test(test_meters ${FW}/components/apps/tui/ls_meters.c
+    ${FW}/components/apps/tui/experiments/lr433_dec.c)
+target_include_directories(test_meters PRIVATE ${LS_TUI_APP_INCLUDES})
 
 ls_add_test(test_sensor_history
     ${FW}/components/apps/tui/experiments/sensor_history.c
@@ -514,6 +548,7 @@ ls_add_test(test_tui_p25_screen
     ${FW}/components/apps/tui/ls_tui_screen.c
     ${LS_TUI_APP_SRCS}
     ${FW}/components/apps/tui/screens/main/scr_p25.c
+    ${FW}/components/apps/tui/screens/main/p25_calls_live.c
     ${FW}/components/apps/tui/ls_tui_chrome.c
     ${FW}/components/apps/tui/ls_theme.c
     ${APP}/p25/p25_tg_observed.c
@@ -578,12 +613,54 @@ ls_add_test(test_tui_waterfall_stall
     ${FW}/bench/shims/tui_hw_stubs.c)
 target_include_directories(test_tui_waterfall_stall PRIVATE
     ${LS_TUI_APP_INCLUDES})
+ls_add_test(test_wf_span_mark
+    ${FW}/components/apps/tui/ls_waterfall.c
+    ${FW}/components/apps/tui/ls_pixel_wf.c
+    ${FW}/components/apps/tui/ls_motion.c
+    ${FW}/components/apps/tui/ls_tui_ui.c
+    ${FW}/components/apps/tui/ls_icons.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
+    ${FW}/components/apps/tui/ls_theme.c
+    ${FW}/bench/shims/tui_hw_stubs.c)
+target_include_directories(test_wf_span_mark PRIVATE
+    ${LS_TUI_APP_INCLUDES})
+target_compile_definitions(test_wf_span_mark PRIVATE LS_TUI_CORNER_STUB=1 LS_WF_SETTINGS_FAKE=1 LS_TUI_IMAGE_STUB=1)
 
 ls_add_test(test_lr_wf_session
     ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
     ${FW}/components/lakeshark/dsp/spectrum.c
+    ${FW}/components/lakeshark/dsp/lr_ddc.c
+    ${FW}/bench/shims/lr_wf_wide_stubs.c
+    ${APP}/p25/lr2021_iq_queue.c)
+# Wide mode of the same session: 576k IQ8 route, lr_ddc to 125k, switching.
+ls_add_test(test_lr_wf_wide
+    ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
+    ${FW}/components/lakeshark/dsp/spectrum.c
+    ${FW}/components/lakeshark/dsp/lr_ddc.c
+    ${APP}/p25/lr2021_iq_queue.c)
+# The session lock: readers and starts wait while a stop frees the session.
+ls_add_test(test_lr_wf_lock
+    ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
+    ${FW}/components/lakeshark/dsp/spectrum.c
+    ${FW}/components/lakeshark/dsp/lr_ddc.c
+    ${FW}/bench/shims/lr_wf_wide_stubs.c
+    ${APP}/p25/lr2021_iq_queue.c)
+# In-session retune (P25 grant follow) and the WIDE SPAN spectrum feed.
+ls_add_test(test_lr_wf_retune
+    ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
+    ${FW}/components/lakeshark/dsp/spectrum.c
+    ${FW}/components/lakeshark/dsp/lr_ddc.c
     ${APP}/p25/lr2021_iq_queue.c)
 ls_add_test(test_lr_iq_spectrum ${FW}/components/lakeshark/dsp/spectrum.c)
+# -O2 like the firmware's dsp/ sources, so the timing note is meaningful.
+ls_add_test(test_lr_ddc ${FW}/components/lakeshark/dsp/lr_ddc.c)
+target_compile_options(test_lr_ddc PRIVATE -O2)
+# HF demodulators (AM/SAM/USB/LSB/CW, blanker, AGC) on synthesized IQ.
+ls_add_test(test_hf_demod ${FW}/components/lakeshark/dsp/hf_demod.c)
+target_compile_options(test_hf_demod PRIVATE -O2)
+# HF band plan, settings word and the RTL HF path choice.
+ls_add_test(test_fm_hf ${APP}/fm/fm_hf.c)
+target_include_directories(test_fm_hf PRIVATE ${APP}/fm ${FW}/components/lakeshark/radio)
 ls_add_test(test_wf_source ${FW}/components/apps/tui/ls_wf_source.c
     ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
     ${FW}/components/lakeshark/dsp/spectrum.c)
@@ -697,11 +774,10 @@ target_include_directories(test_ls_registry PRIVATE ${FW}/components/apps/tui)
 ls_add_test(test_ls_ota_core ${FW}/components/lakeshark/core/ls_ota_core.c)
 
 add_executable(lssim
-    tools/lssim_detector.c
-    ${FW}/components/apps/tui/ls_detector.c
-    ${FW}/components/apps/tui/ls_detector_sinks.c
-    ${FW}/components/apps/tui/ls_detector_air.c
-    ${FW}/components/apps/tui/ls_detector_ui.c
+    tools/lssim_digi.c
+    ${FW}/components/apps/tui/screens/ext/scr_digi.c
+    ${APP}/digi/digi_engine.c
+    ${APP}/digi/digi_ftx_tables.c
     tools/lssim_wireless.c
     ${FW}/components/apps/tui/screens/ext/scr_wireless.c
     ${FW}/bench/shims/ls_rterm_fake.c
@@ -759,10 +835,13 @@ add_executable(lssim
     ${FW}/components/apps/tui/ls_font_mono_14.c
     ${FW}/components/apps/tui/screens/main/scr_home.c
     ${FW}/components/apps/tui/screens/main/scr_p25.c
+    ${FW}/components/apps/tui/screens/main/p25_calls_live.c
     ${APP}/p25/p25_tg_observed.c
     ${APP}/fm/fm_tone.c
     ${APP}/acars/acars_app.c
     ${FW}/components/apps/tui/screens/main/scr_fm.c
+    ${FW}/components/apps/tui/rx_panels/rx_pages.c
+    ${FW}/components/apps/tui/rx_panels/rx_tape.c
     ${FW}/components/apps/tui/screens/main/fm_same_view.c
     ${FW}/components/apps/tui/screens/main/fm_aprs_view.c
     ${FW}/components/apps/tui/screens/main/fm_ais_view.c
@@ -789,6 +868,15 @@ add_executable(lssim
     ${FW}/components/apps/tui/ls_map_motion.c
     ${FW}/components/apps/tui/ls_follow.c
     ${FW}/components/apps/tui/screens/ext/scr_map.c
+    ${FW}/components/apps/tui/screens/ext/scr_rfsurvey.c
+    ${FW}/components/apps/tui/screens/ext/scr_fox.c
+    ${FW}/components/apps/tui/ls_rfs.c
+    ${FW}/components/apps/tui/ls_rfs_run.c
+    ${FW}/components/apps/tui/ls_rfsim.c
+    ${FW}/components/apps/tui/ls_fox.c
+    ${FW}/components/apps/tui/ls_fox_run.c
+    ${FW}/components/apps/tui/ls_rfmap.c
+    tools/lssim_rfs.c
     ${FW}/components/apps/tui/ls_map.c
     ${FW}/components/apps/tui/ls_map_ink.c
     ${FW}/components/apps/tui/ls_map_marks.c
@@ -818,6 +906,7 @@ add_executable(lssim
     ${FW}/components/lakeshark/radio/radio_health.c
     tools/lssim_state.c)
 target_include_directories(lssim PRIVATE
+    ${APP}/digi
     ${FW}/components/meshcore
     ${LS_TUI_APP_INCLUDES}
     ${PMT}/upstream
@@ -844,12 +933,21 @@ target_compile_definitions(lssim PRIVATE LS_CALLS_HOST_AUDIO=1 CALL_ARCHIVE_HOST
     CONFIG_LS_BOARD_T_DISPLAY_P4=1
     LS_WF_SOURCE_REAL
     LS_MAP_AUDIT
+    LS_RFS_DIR="${CMAKE_CURRENT_BINARY_DIR}/sim-sd/rfsurvey"
+    LS_FOX_DIR="${CMAKE_CURRENT_BINARY_DIR}/sim-sd/fox"
     LSSIM_PMTILES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/carto/franklin_z12.pmtiles")
+# The SDR front-end options (FRONT END in every SDR app). RF LAB is an SD
+# app now (app-sdk/apps/rflab); test_rflab checks its measurement.
+target_sources(lssim PRIVATE
+    ${FW}/components/apps/tui/ls_rffe_ui.c
+    ${FW}/components/lakeshark/radio/radio_frontend.c
+    shims/rffe_settings_fake.c)
 target_sources(lssim PRIVATE ${FW}/components/lakeshark/core/ls_time.c
     ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
     ${FW}/components/lakeshark/dsp/spectrum.c)
 target_compile_definitions(lssim PRIVATE LS_TIME_HOST=1)
-target_link_libraries(lssim m)
+target_link_libraries(lssim m music_decode_host)
+target_sources(lssim PRIVATE tools/lssim_music_layers.c)
 
 # Runs the lssim above with -C, which links everything the board registers.
 ls_add_test(test_lssim_census)
@@ -984,6 +1082,7 @@ ls_add_test(test_tui_render_cost
     ${FW}/components/apps/tui/ls_font_mono_16.c
     ${FW}/components/apps/tui/ls_font_mono_14.c
     ${FW}/components/apps/tui/screens/main/scr_p25.c
+    ${FW}/components/apps/tui/screens/main/p25_calls_live.c
     ${APP}/p25/p25_tg_observed.c
     ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_tui_render_cost PRIVATE
@@ -1005,6 +1104,27 @@ target_include_directories(test_lora_sx1262 PRIVATE
     ${FW}/components/lakeshark/board
     ${FW}/bench/shims)
 target_compile_definitions(test_lora_sx1262 PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+
+ls_add_test(test_lr_iq_routes
+    ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_port.c
+    ${FW}/components/lakeshark/board/ls_lora_sx126x.c
+    ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
+    ${FW}/components/lakeshark/board/ls_spi.c)
+target_include_directories(test_lr_iq_routes PRIVATE ${FW}/components/lakeshark/board ${FW}/bench/shims)
+target_compile_definitions(test_lr_iq_routes PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+ls_add_test(test_lr_iq_live_gain
+    ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_port.c
+    ${FW}/components/lakeshark/board/ls_lora_sx126x.c
+    ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
+    ${FW}/components/lakeshark/board/ls_spi.c)
+target_include_directories(test_lr_iq_live_gain PRIVATE ${FW}/components/lakeshark/board ${FW}/bench/shims)
+target_compile_definitions(test_lr_iq_live_gain PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+ls_add_test(test_lr_iq_transport)
+target_include_directories(test_lr_iq_transport PRIVATE ${FW}/components/lakeshark/board)
+ls_add_test(test_lr_iq_wide)
+target_include_directories(test_lr_iq_wide PRIVATE ${FW}/components/lakeshark/board)
 
 ls_add_test(test_lr20xx_proto
     ${FW}/components/lakeshark/board/ls_lora.c
@@ -1205,6 +1325,7 @@ ls_add_test(test_tui_render_dump
     ${FW}/components/apps/tui/ls_font_mono_16.c
     ${FW}/components/apps/tui/ls_font_mono_14.c
     ${FW}/components/apps/tui/screens/main/scr_p25.c
+    ${FW}/components/apps/tui/screens/main/p25_calls_live.c
     ${APP}/p25/p25_tg_observed.c
     ${FW}/components/apps/tui/screens/main/scr_home.c
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
@@ -1233,6 +1354,8 @@ target_sources(test_tui_render_dump PRIVATE
     ${FW}/components/apps/tui/ls_notes.c
     ${FW}/components/apps/tui/experiments/exp_lr433.c
     ${FW}/components/apps/tui/experiments/lr433_dec.c
+    ${APP}/rec/rec_ism.c
+    ${APP}/rec/rec_fsk.c
     ${FW}/components/apps/tui/experiments/sensor_history.c
     ${FW}/components/apps/tui/experiments/lr433_history.c
     fixtures/sensor_ui_fake.c)
@@ -1283,6 +1406,12 @@ ls_add_test(test_rec_list_format ${APP}/rec/rec_list_format.c)
 ls_add_test(test_rec_sidecar     ${APP}/rec/rec_sidecar.c)
 ls_add_test(test_df_fit ${FW}/components/apps/tui/ls_df_fit.c ${FW}/components/apps/tui/ls_df.c)
 target_include_directories(test_df_fit PRIVATE ${LS_TUI_APP_INCLUDES})
+# RF SURVEY and FOX HUNT cores.
+ls_add_test(test_rfsurvey ${FW}/components/apps/tui/ls_rfs.c)
+target_include_directories(test_rfsurvey PRIVATE ${LS_TUI_APP_INCLUDES})
+target_compile_definitions(test_rfsurvey PRIVATE LS_RFS_PLANS_FILE="${FW}/data/rfsurvey/plans.json")
+ls_add_test(test_fox ${FW}/components/apps/tui/ls_fox.c ${FW}/components/apps/tui/ls_df_fit.c ${FW}/components/apps/tui/ls_df.c)
+target_include_directories(test_fox PRIVATE ${LS_TUI_APP_INCLUDES})
 ls_add_test(test_df_band ${FW}/components/apps/tui/ls_df_band.c)
 target_include_directories(test_df_band PRIVATE ${LS_TUI_APP_INCLUDES})
 ls_add_test(test_df_cal ${FW}/components/apps/tui/ls_df_cal.c)
@@ -1349,6 +1478,8 @@ ls_add_test(test_p25_cqpsk_baseline
     fixtures/lsm_gen.c)
 ls_add_test(test_p25_lr_iq ${APP}/p25/p25_lr_iq.c)
 ls_add_test(test_p25_lr_frontend ${APP}/p25/p25_lr_frontend.c)
+ls_add_test(test_p25_lr_wide ${APP}/p25/p25_lr_wide.c ${APP}/p25/lr2021_iq_queue.c)
+target_include_directories(test_p25_lr_wide PRIVATE ${APP}/p25)
 add_executable(lr2021_lab tools/lr2021_lab.c)
 target_link_libraries(lr2021_lab PRIVATE m)
 add_test(NAME lr2021_offline_lab COMMAND lr2021_lab selftest)
@@ -1472,6 +1603,32 @@ target_link_options(test_p25_diag_disabled PRIVATE
 ls_add_test(test_p25_lcw ${APP}/p25/p25_lcw.c)
 ls_add_test(test_app_contract ${FW}/components/apps/tui/ls_app_docs.c)
 ls_add_test(test_music_transport)
+add_library(music_decode_host STATIC
+    ${FW}/components/chmorgan__esp-audio-player/codecs/ls_decode.c
+    ${FW}/components/chmorgan__esp-audio-player/audio_wav.cpp)
+target_include_directories(music_decode_host PUBLIC
+    ${FW}/components/chmorgan__esp-audio-player/codecs shims)
+target_link_libraries(music_decode_host PUBLIC m)
+add_executable(test_music_decode tests/test_music_decode.c)
+target_link_libraries(test_music_decode music_decode_host)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/music_worker.inc
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/music_worker_extract.py
+    ${FW}/components/chmorgan__esp-audio-player/audio_player.cpp ${CMAKE_CURRENT_BINARY_DIR}/music_worker.inc
+    DEPENDS ${FW}/components/chmorgan__esp-audio-player/audio_player.cpp tests/music_worker_extract.py)
+add_executable(test_music_player tests/test_music_player.cpp ${CMAKE_CURRENT_BINARY_DIR}/music_worker.inc)
+target_include_directories(test_music_player PRIVATE ${CMAKE_CURRENT_BINARY_DIR} ${FW}/components/chmorgan__esp-audio-player)
+target_link_libraries(test_music_player music_decode_host)
+add_test(NAME test_music_player COMMAND test_music_player ${CMAKE_CURRENT_BINARY_DIR}/music-fixtures)
+set_tests_properties(test_music_player PROPERTIES FIXTURES_REQUIRED music_audio)
+add_executable(test_music_marks tests/test_music_marks.c ${FW}/components/apps/tui/ls_music_marks.c)
+target_include_directories(test_music_marks PRIVATE ${FW}/components/apps/tui)
+add_test(NAME test_music_marks COMMAND test_music_marks ${CMAKE_CURRENT_BINARY_DIR}/music-fixtures)
+set_tests_properties(test_music_marks PROPERTIES FIXTURES_REQUIRED music_audio)
+add_test(NAME music_fixtures COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/music_fixtures.py ${CMAKE_CURRENT_BINARY_DIR}/music-fixtures)
+set_tests_properties(music_fixtures PROPERTIES FIXTURES_SETUP music_audio)
+add_test(NAME test_music_decode COMMAND test_music_decode ${CMAKE_CURRENT_BINARY_DIR}/music-fixtures)
+set_tests_properties(test_music_decode PROPERTIES FIXTURES_REQUIRED music_audio)
 ls_add_test(test_pixel_wf
     ${FW}/components/apps/tui/ls_pixel_wf.c
     ${FW}/components/apps/tui/ls_tui.c ${FW}/components/apps/tui/ls_font_cyr.c
@@ -1490,6 +1647,10 @@ target_include_directories(test_pixel_wf PRIVATE
 ls_add_test(test_music_spectro)
 target_include_directories(test_music_spectro PRIVATE ${FW}/components/apps/tui)
 ls_add_test(test_music_backend ${FW}/components/apps/tui/ls_music_backend.c
+    ${FW}/components/apps/tui/ls_music_marks.c
+    ${FW}/components/apps/tui/ls_audio_analysis.c
+    ${FW}/components/apps/tui/ls_audio_overview.c
+    ${FW}/components/apps/tui/ls_audio_tools.c ${APP}/fm/aprs.c ${APP}/fm/fm_tone.c
     ${FW}/components/lakeshark/audio/call_store.c
     ${FW}/components/lakeshark/audio/call_recorder.c
     ${FW}/components/lakeshark/audio/call_archive.c)
@@ -1498,17 +1659,46 @@ target_include_directories(test_music_backend BEFORE PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/shims/music
     ${FW}/components/apps/tui ${FW}/components/lakeshark)
 target_link_options(test_music_backend PRIVATE -Wl,--wrap=fopen -Wl,--wrap=fclose -Wl,--wrap=fseek -Wl,--wrap=fwrite -Wl,--wrap=fflush -Wl,--wrap=audio_player_get_state)
+target_link_libraries(test_music_backend music_decode_host)
 ls_add_test(test_wav_decoder ${FW}/components/chmorgan__esp-audio-player/audio_wav.cpp)
 target_include_directories(test_wav_decoder PRIVATE ${FW}/components/chmorgan__esp-audio-player)
 target_include_directories(test_music_transport PRIVATE ${FW}/components/apps/tui)
 ls_add_test(test_tui_music
     ${FW}/components/apps/tui/ls_audio_view.c
+    ${FW}/components/apps/tui/ls_audio_layers.c
+    ${FW}/components/apps/tui/ls_music_options.c
     ${FW}/components/apps/tui/ls_pixel_wf.c
     ${FW}/components/apps/tui/screens/ext/scr_music.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
     ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_tui_music PRIVATE ${LS_TUI_APP_INCLUDES})
+target_link_libraries(test_tui_music music_decode_host)
+target_compile_definitions(test_tui_music PRIVATE LS_MUSIC_FIXTURES="${CMAKE_CURRENT_BINARY_DIR}/music-fixtures")
+set_tests_properties(test_tui_music PROPERTIES FIXTURES_REQUIRED music_audio)
+add_custom_target(music_tests DEPENDS test_music_backend test_music_spectro
+    test_music_transport test_tui_music test_music_decode test_music_player test_music_marks)
+add_executable(test_music_analysis tests/test_music_analysis.c ${FW}/components/apps/tui/ls_audio_analysis.c)
+target_include_directories(test_music_analysis PRIVATE ${FW}/components/apps/tui)
+target_compile_options(test_music_analysis PRIVATE -O2)
+target_link_libraries(test_music_analysis m)
+add_test(NAME test_music_analysis COMMAND test_music_analysis)
+add_dependencies(music_tests test_music_analysis)
+add_executable(test_music_overview tests/test_music_overview.c
+    ${FW}/components/apps/tui/ls_audio_overview.c ${FW}/components/apps/tui/ls_audio_analysis.c)
+target_include_directories(test_music_overview PRIVATE ${FW}/components/apps/tui)
+target_compile_options(test_music_overview PRIVATE -O2)
+target_link_libraries(test_music_overview music_decode_host)
+add_test(NAME test_music_overview COMMAND test_music_overview ${CMAKE_CURRENT_BINARY_DIR}/music-fixtures)
+set_tests_properties(test_music_overview PROPERTIES FIXTURES_REQUIRED music_audio)
+add_dependencies(music_tests test_music_overview)
+add_executable(test_music_tools tests/test_music_tools.c ${FW}/components/apps/tui/ls_audio_tools.c
+    ${FW}/components/apps/tui/ls_audio_analysis.c ${APP}/fm/aprs.c ${APP}/fm/fm_tone.c)
+target_include_directories(test_music_tools PRIVATE ${FW}/components/apps/tui ${APP}/fm)
+target_compile_options(test_music_tools PRIVATE -O2)
+target_link_libraries(test_music_tools m)
+add_test(NAME test_music_tools COMMAND test_music_tools)
+add_dependencies(music_tests test_music_tools)
 target_include_directories(test_app_contract PRIVATE
     ${FW}/components/apps/tui)
 
@@ -1530,14 +1720,9 @@ ls_add_test(test_dmr_framer
     ${APP}/dmr/dmr_lc.c
     ${APP}/dmr/dmr_burst.c
     ${APP}/dmr/dmr_framer.c)
-ls_add_test(test_dmr_watch
-    ${APP}/dmr/dmr_sync.c
-    ${APP}/dmr/dmr_slot.c
-    ${APP}/dmr/dmr_bptc.c
-    ${APP}/dmr/dmr_lc.c
-    ${APP}/dmr/dmr_burst.c
-    ${APP}/dmr/dmr_framer.c
-    ${APP}/dmr/dmr_watch.c)
+ls_add_test(test_dmr_watch ${DMR_WATCH_SRCS})
+ls_add_test(test_dmr_fec ${DMR_CORE_SRCS})
+ls_add_test(test_dmr_calls ${DMR_WATCH_SRCS})
 ls_add_test(test_subghz_nrz ${APP}/subghz/subghz_nrz.c)
 ls_add_test(test_subghz_file ${APP}/subghz/subghz_file.c)
 target_include_directories(test_subghz_file PRIVATE ${APP}/subghz)
@@ -1549,20 +1734,17 @@ ls_add_test(test_subghz_pwm
     ${APP}/rec/rec_ook24.c)
 target_include_directories(test_subghz_pwm PRIVATE
     ${APP}/subghz ${APP}/rec)
-ls_add_test(test_dmr_over_iq
-    ${APP}/dmr/dmr_sync.c
-    ${APP}/dmr/dmr_slot.c
-    ${APP}/dmr/dmr_bptc.c
-    ${APP}/dmr/dmr_lc.c
-    ${APP}/dmr/dmr_burst.c
-    ${APP}/dmr/dmr_framer.c
-    ${APP}/dmr/dmr_watch.c
+set(DMR_IQ_SRCS
+    ${DMR_WATCH_SRCS}
     ${APP}/p25/dsp_pipeline.c
     ${APP}/p25/dsd_filters.c
     ${APP}/p25/p25_cqpsk_controls.c
     ${APP}/p25/p25_demod_control.c
     fixtures/dmr_iq_gen.c)
+ls_add_test(test_dmr_over_iq ${DMR_IQ_SRCS})
 target_include_directories(test_dmr_over_iq PRIVATE ${APP}/dmr ${APP}/p25)
+ls_add_test(test_dmr_sweep ${DMR_IQ_SRCS})
+target_include_directories(test_dmr_sweep PRIVATE ${APP}/dmr ${APP}/p25)
 ls_add_test(test_wifi_sta ${FW}/main/ls_wifi_sta_core.c)
 ls_add_test(test_ble_hci_rx_guard ${FW}/main/ble_hci_rx_guard.c
     shims/hci_rx_fake.c)
@@ -1588,6 +1770,8 @@ ls_add_test(test_cell_scan ${APP}/cell/cell_core.c)
 target_include_directories(test_cell_scan PRIVATE ${APP}/cell)
 if(Python3_Interpreter_FOUND)
     add_test(NAME test_cell_review COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cell_review.py")
+    # cell_preview.py relinks this build's lssim objects; it defaults to bench/build.
+    set_tests_properties(test_cell_review PROPERTIES ENVIRONMENT "LS_CELL_BUILD=${CMAKE_CURRENT_BINARY_DIR}")
     add_test(NAME test_cell_worker COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cell_worker.py")
 endif()
 ls_add_test(test_cell_sweep ${FW}/components/lakeshark/dsp/ls_sweep.c ${FW}/components/lakeshark/dsp/ls_sweep_core.c)
@@ -1645,6 +1829,8 @@ ls_add_test(test_radio_endpoint
     ${FW}/components/lakeshark/radio/radio_endpoint.c)
 ls_add_test(test_hackrf_radio
     ${FW}/components/lakeshark/radio/hackrf_radio.c)
+ls_add_test(test_hackrf_decim
+    ${FW}/components/lakeshark/radio/hackrf_radio.c)
 ls_add_test(test_usb_descriptors)
 target_include_directories(test_usb_descriptors PRIVATE ${FW}/components/lakeshark/board)
 ls_add_test(test_imu_pose_policy)
@@ -1667,6 +1853,13 @@ ls_add_test(test_radio_control_fault
 ls_add_test(test_radio_ppm
     ${FW}/components/lakeshark/radio/radio_endpoint.c
     ${FW}/components/lakeshark/radio/radio_health.c)
+# SDR front ends (bias-T, PPM by dongle, AGC/amp/stages) through the registry.
+ls_add_test(test_radio_frontend
+    ${FW}/components/lakeshark/radio/radio_frontend.c
+    ${FW}/components/lakeshark/radio/radio_endpoint.c)
+# RF LAB readings on synthetic I/Q.
+ls_add_test(test_rflab ${FW}/app-sdk/apps/rflab/rflab_meas.c)
+target_include_directories(test_rflab PRIVATE ${FW}/app-sdk/apps/rflab)
 ls_add_test(test_usb_port_cycle
     ${FW}/components/lakeshark/radio/usb_port_cycle.c)
 # boot recovery cycles the port for a device that is attached and silent,
@@ -1849,11 +2042,16 @@ target_include_directories(test_tui_contrast PRIVATE ${LS_TUI_APP_INCLUDES})
 
 ls_add_test(test_fm_tone ${APP}/fm/fm_tone.c)
 ls_add_test(test_fm_am ${APP}/fm/fm_dsp.c)
+ls_add_test(test_wfm_rds ${APP}/fm/fm_dsp.c ${FW}/components/lakeshark/dsp/wfm_mpx.c
+    ${FW}/components/lakeshark/dsp/rds.c)
 # A diagnostic, like p25_iq_replay: an FM-rate IQ capture through NFM and POCSAG.
 add_executable(fm_iq_replay tools/fm_iq_replay.c ${APP}/fm/pocsag.c ${APP}/fm/fm_dsp.c)
 target_link_libraries(fm_iq_replay ls_harness m)
 
-ls_add_test(test_field ${FW}/components/apps/tui/ls_field.c ${FW}/components/apps/tui/ls_compass.c ${FW}/components/apps/tui/ls_compass_learn.c ${FW}/components/apps/tui/ls_notes.c)
+ls_add_test(test_field shims/pocsag_rest_fake.c
+    ${FW}/components/lakeshark/rx/ls_rx_head.c ${FW}/components/lakeshark/rx/rx_pocsag.c
+    ${FW}/components/lakeshark/core/ls_decoded.c
+    ${FW}/components/apps/tui/ls_field.c ${FW}/components/apps/tui/ls_compass.c ${FW}/components/apps/tui/ls_compass_learn.c ${FW}/components/apps/tui/ls_notes.c)
 ls_add_test(test_labs_limits)
 target_include_directories(test_labs_limits PRIVATE ${LS_TUI_APP_INCLUDES}
     ${FW}/components/lakeshark ${FW}/components/meshcore)
@@ -2013,6 +2211,9 @@ set(P25_VOICE_REPLAY_SOURCES
 add_executable(p25_voice_replay tools/p25_voice_replay.c ${APP}/p25/p25_lr_frontend.c ${P25_VOICE_REPLAY_SOURCES})
 ls_add_test(test_mbe_hamming ${FW}/components/mbelib/ecc.c)
 ls_add_test(test_imbe_chase ${APP}/p25/imbe_chase.c ${FW}/components/mbelib/ecc.c)
+# The Golay syndrome tables built at start-up equal the constants they replaced.
+ls_add_test(test_golay_tables ${FW}/components/mbelib/ecc.c)
+target_link_libraries(test_golay_tables p25_phase2_host)
 target_include_directories(p25_voice_replay PRIVATE ${FW}/components/imbe_vocoder)
 target_link_libraries(p25_voice_replay ls_harness m)
 
@@ -2096,7 +2297,7 @@ ls_add_test(test_call_archive_idle ${FW}/components/lakeshark/audio/call_archive
     ${FW}/components/lakeshark/audio/call_recorder.c ${FW}/components/lakeshark/audio/call_store.c)
 target_compile_definitions(test_call_archive_idle PRIVATE CALL_ARCHIVE_HOST_TEST=1)
 
-ls_add_test(test_tui_calls ${FW}/components/apps/tui/ls_calls.c
+ls_add_test(test_tui_calls ${FW}/components/apps/tui/ls_calls.c ${FW}/components/apps/tui/ls_glyph.c
     ${FW}/components/apps/tui/ls_audio_view.c
     ${FW}/components/apps/tui/ls_pixel_wf.c
     tools/lssim_music.c
@@ -2108,6 +2309,19 @@ ls_add_test(test_tui_calls ${FW}/components/apps/tui/ls_calls.c
     ${FW}/components/apps/tui/ls_font_mono_24.c)
 target_include_directories(test_tui_calls PRIVATE ${LS_TUI_APP_INCLUDES})
 target_compile_definitions(test_tui_calls PRIVATE CALLS_RENDER_TEST=1 LS_CALLS_HOST_AUDIO=1)
+ls_add_test(test_tui_p25_calls ${FW}/components/apps/tui/ls_calls.c ${FW}/components/apps/tui/ls_glyph.c
+    ${FW}/components/apps/tui/screens/main/p25_calls_live.c ${APP}/p25/p25_tg_observed.c
+    ${FW}/components/apps/tui/ls_audio_view.c
+    ${FW}/components/apps/tui/ls_pixel_wf.c
+    tools/lssim_music.c
+    ${FW}/components/apps/tui/ls_icons.c ${FW}/components/apps/tui/ls_tui_ui.c
+    ${FW}/components/apps/tui/ls_motion.c ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
+    ${FW}/components/apps/tui/ls_tui.c ${FW}/components/apps/tui/ls_font_cyr.c ${FW}/components/apps/tui/ls_tui_inset.c
+    ${FW}/components/apps/tui/ls_theme.c ${FW}/components/apps/tui/ls_font_list.c
+    ${FW}/components/apps/tui/ls_font_mono_14.c ${FW}/components/apps/tui/ls_font_mono_16.c
+    ${FW}/components/apps/tui/ls_font_mono_24.c)
+target_include_directories(test_tui_p25_calls PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/lakeshark ${APP}/p25)
 ls_add_test(test_survey ${FW}/components/apps/tui/ls_survey.c)
 target_include_directories(test_survey PRIVATE ${FW}/components/apps/tui)
 
@@ -2131,7 +2345,8 @@ foreach(route_ui_target test_tui_router test_tui_p25_screen test_tui_render_cost
     target_sources(${route_ui_target} PRIVATE shims/ls_route_hw_fake.c)
 endforeach()
 target_sources(test_tui_screens PRIVATE shims/ls_route_hw_fake.c)
-target_compile_definitions(test_tui_screens PRIVATE LS_ROUTE_FAKE_START_ONLY=1)
+target_compile_definitions(test_tui_screens PRIVATE LS_ROUTE_FAKE_START_ONLY=1
+    LS_FOX_DIR="${CMAKE_CURRENT_BINARY_DIR}/sim-sd/fox")
 
 ls_add_test(test_lssim_route)
 add_dependencies(test_lssim_route lssim)
@@ -2274,7 +2489,10 @@ ls_add_test(test_sweep ${FW}/components/apps/tui/ls_sweep.c ${FW}/components/app
 target_include_directories(test_sweep PRIVATE ${LS_TUI_APP_INCLUDES})
 
 target_sources(lssim PRIVATE tools/lssim_sweep.c)
-ls_add_test(test_sweep_runtime ${FW}/main/ls_sweep_runtime.c ${FW}/components/apps/tui/ls_sweep.c ${FW}/components/apps/tui/ls_rid.c)
+target_sources(lssim PRIVATE tools/lssim_meters.c ${FW}/components/apps/tui/ls_meters.c
+    ${FW}/components/apps/tui/ls_meters_rt.c ${FW}/components/apps/tui/screens/ext/scr_meters.c)
+ls_add_test(test_sweep_runtime ${FW}/main/ls_sweep_runtime.c ${FW}/components/apps/tui/ls_sweep.c ${FW}/components/apps/tui/ls_rid.c
+    ${FW}/components/apps/tui/ls_seen.c)
 ls_add_test(test_sdio_rx_watchdog)
 ls_add_test(test_ble_link_observer ${FW}/main/ble_link_observer.c ${FW}/components/apps/tui/ls_rid.c)
 target_include_directories(test_ble_link_observer PRIVATE ${FW}/main ${LS_TUI_APP_INCLUDES})
@@ -2326,6 +2544,10 @@ ls_add_test(test_wifi_store ${FW}/main/ls_wifi_sta_core.c)
 
 # Host fixtures use repo-relative paths, as does verify.ps1's historical runner.
 # Declare the cwd so direct CTest and the release gate exercise the same graph.
+# Some write scratch files under bench/build (route GPX, lssim -o images), which
+# only exists when that is the build directory; a build made elsewhere (the
+# release worktrees) failed test_route_live and test_lssim_mesh_inspect on it.
+file(MAKE_DIRECTORY "${FW}/bench/build")
 get_property(LS_REGISTERED_TESTS DIRECTORY PROPERTY TESTS)
 foreach(LS_TEST IN LISTS LS_REGISTERED_TESTS)
     get_property(LS_TEST_CWD TEST ${LS_TEST} PROPERTY WORKING_DIRECTORY)
@@ -2347,7 +2569,8 @@ target_include_directories(test_adsb_rx PRIVATE
 ls_add_test(test_subghz_runtime tests/subghz_runtime/radio_fake.c
     ${APP}/rec/rec_lr_iq.c ${APP}/rec/rec_sidecar.c
     ${APP}/subghz/subghz_file.c
-    ${APP}/rec/rec_ook24.c ${APP}/rec/rec_watch.c ${APP}/rec/rec_lr_ook.c ${FW}/components/lakeshark/radio/ls_fsk_capture.c)
+    ${APP}/rec/rec_ook24.c ${APP}/rec/rec_watch.c ${APP}/rec/rec_lr_ook.c ${FW}/components/lakeshark/radio/ls_fsk_capture.c
+    ${APP}/rec/rec_ism.c ${APP}/rec/rec_fsk.c ${FW}/components/apps/tui/experiments/lr433_dec.c)
 target_include_directories(test_subghz_runtime PRIVATE tests/subghz_runtime)
 target_compile_options(test_subghz_runtime PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(test_subghz_runtime PRIVATE -Wl,--gc-sections)
@@ -2397,6 +2620,19 @@ target_compile_options(test_mesh_backend PRIVATE -ffunction-sections -fdata-sect
 target_link_options(test_mesh_backend PRIVATE -Wl,--gc-sections)
 add_test(NAME test_mesh_backend COMMAND test_mesh_backend)
 
+# The ed25519 base table computed at run time (components/meshcore), against
+# upstream's constant table and RFC 8032.
+set(MESH_HOST_ED_NO_GE ${MESH_HOST_ED})
+list(FILTER MESH_HOST_ED_NO_GE EXCLUDE REGEX "/ge\.c$")
+ls_add_test(test_ed25519_base tests/ed25519_ge_upstream.c
+    ${FW}/components/meshcore/ls_ed25519_base.c ${MESH_HOST_ED_NO_GE})
+target_include_directories(test_ed25519_base PRIVATE
+    ${FW}/components/meshcore/upstream/ed25519 ${FW}/components/meshcore)
+if(LS_SANITIZE)
+    set_source_files_properties(tests/ed25519_ge_upstream.c ${FW}/components/meshcore/ls_ed25519_base.c
+        PROPERTIES COMPILE_OPTIONS "-fno-sanitize=shift")
+endif()
+
 ls_add_test(test_map_place_search
     ${FW}/components/apps/tui/ls_motion.c
     ${FW}/components/apps/tui/ls_tui_ui.c
@@ -2414,6 +2650,10 @@ target_compile_options(test_tiles_open PRIVATE -ffunction-sections -fdata-sectio
 target_link_options(test_tiles_open PRIVATE -Wl,--gc-sections)
 if(Python3_Interpreter_FOUND)
     add_test(NAME test_tiles_queue COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_tiles_queue.py")
+    add_test(NAME test_tiles_queue_budget COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_tiles_queue_budget.py")
+    add_test(NAME test_cells_progress_budget COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cells_progress_budget.py")
+    add_test(NAME test_cells_retry COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cells_retry.py"
+        "${CMAKE_C_COMPILER}" "${CMAKE_CURRENT_BINARY_DIR}/cells-retry")
     add_test(NAME test_tiles_state COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tiles_state.py")
 endif()
 
@@ -2422,6 +2662,7 @@ ls_add_test(test_rec_catch_core ${APP}/rec/rec_catch_core.c ${APP}/subghz/subghz
 add_test(NAME test_rec_catch_ui COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rec_catch_ui.py $<TARGET_FILE:lssim>)
 ls_add_test(test_rec_catch_runtime ${APP}/rec/rec_catch_core.c ${APP}/rec/rec_catch_chan.c
+    ${APP}/rec/rec_ism.c ${APP}/rec/rec_fsk.c
     ${APP}/subghz/subghz_file.c ${FW}/components/lakeshark/radio/ls_sub_fsk.c
     ${FW}/components/apps/tui/experiments/lr433_dec.c)
 target_include_directories(test_rec_catch_runtime PRIVATE ${FW}/components/lakeshark)
@@ -2483,30 +2724,66 @@ add_executable(test_pager_iq_radio tests/test_pager_iq_radio.c
     ${FW}/components/apps/tui/experiments/pager_iq_radio.c
     ${FW}/components/apps/tui/experiments/pager_iq.c
     ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
-    ${FW}/components/lakeshark/dsp/spectrum.c)
+    ${FW}/components/lakeshark/dsp/spectrum.c
+    ${FW}/bench/shims/lr_wf_session_off.c)
 target_include_directories(test_pager_iq_radio PRIVATE
-    ${FW}/components/apps/tui/experiments ${FW}/components/lakeshark/dsp)
+    ${FW}/components/apps/tui/experiments ${FW}/components/lakeshark/dsp
+    ${FW}/components/lakeshark/radio)
 target_compile_definitions(test_pager_iq_radio PRIVATE ESP_PLATFORM=1)
 target_link_libraries(test_pager_iq_radio PRIVATE Threads::Threads m)
 add_test(NAME test_pager_iq_radio COMMAND test_pager_iq_radio)
 set_tests_properties(test_pager_iq_radio PROPERTIES TIMEOUT 30)
+# The same adapter with WIDE I/Q on: the shared LR session as its producer.
+add_executable(test_pager_iq_wide tests/test_pager_iq_wide.c
+    ${FW}/components/apps/tui/experiments/pager_iq_radio.c
+    ${FW}/components/apps/tui/experiments/pager_iq.c
+    ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
+    ${FW}/components/lakeshark/dsp/spectrum.c)
+target_include_directories(test_pager_iq_wide PRIVATE
+    ${FW}/components/apps/tui/experiments ${FW}/components/lakeshark/dsp
+    ${FW}/components/lakeshark/radio)
+target_compile_definitions(test_pager_iq_wide PRIVATE ESP_PLATFORM=1)
+target_link_libraries(test_pager_iq_wide PRIVATE m)
+add_test(NAME test_pager_iq_wide COMMAND test_pager_iq_wide)
 
 ls_add_test(test_fm_lr ${APP}/fm/fm_lr_dsp.c ${APP}/fm/fm_dsp.c)
+ls_add_test(test_fm_lr_dc ${APP}/fm/fm_lr_dsp.c ${APP}/fm/fm_dsp.c)
 
 add_library(fm_lr_backend_compile OBJECT ${APP}/fm/app_fm.c)
 target_include_directories(fm_lr_backend_compile PRIVATE
-    ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark
-    ${APP}/acars ${FW}/components/acars ${FW}/components/meshcore)
+    ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark ${FW}/components/lakeshark/rx
+    ${APP}/acars ${FW}/components/acars ${FW}/components/meshcore ${APP}/digi)
 
 ls_add_test(test_fm_lr_runtime ${APP}/fm/fm_lr_dsp.c ${APP}/fm/fm_dsp.c
-    ${APP}/fm/fm_tone.c)
+    ${APP}/fm/fm_tone.c shims/digi_sink_stub.c
+    ${FW}/components/lakeshark/rx/ls_rx_head.c ${FW}/components/lakeshark/core/ls_decoded.c
+    ${FW}/components/lakeshark/rx/ls_rx_front.c ${FW}/components/lakeshark/rx/rx_voice.c
+    shims/rx_fm_plugins_host.c shims/lr_wf_session_off.c)
 target_include_directories(test_fm_lr_runtime PRIVATE
-    ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark
-    ${APP}/acars ${FW}/components/acars ${FW}/components/meshcore)
+    ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark ${FW}/components/lakeshark/rx
+    ${APP}/acars ${FW}/components/acars ${FW}/components/meshcore ${APP}/digi)
 target_compile_options(test_fm_lr_runtime PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(test_fm_lr_runtime PRIVATE -Wl,--gc-sections)
 
 set_source_files_properties(tests/test_fm_lr_runtime.c PROPERTIES COMPILE_OPTIONS "-fwhole-program")
+
+# RX HEAD (components/lakeshark/rx): plugin contract, head core and front.
+set(RX ${FW}/components/lakeshark/rx)
+set(RX_CORE_SRCS ${RX}/ls_rx_head.c ${RX}/ls_rx_front.c ${APP}/fm/fm_lr_dsp.c ${APP}/fm/fm_dsp.c
+    ${FW}/components/lakeshark/core/ls_decoded.c)
+set(RX_INCLUDES ${RX} ${APP}/fm ${FW}/components/lakeshark ${FW}/components/lakeshark/core)
+ls_add_test(test_rx_head ${RX_CORE_SRCS})
+target_include_directories(test_rx_head PRIVATE ${RX_INCLUDES})
+ls_add_test(test_rx_exp ${RX_CORE_SRCS} ${FW}/components/apps/tui/rx_panels/rx_exp.c)
+target_include_directories(test_rx_exp PRIVATE ${RX_INCLUDES} ${FW}/components/apps/tui)
+ls_add_test(test_rx_pocsag_plugin ${RX_CORE_SRCS} ${RX}/rx_pocsag.c ${APP}/fm/pocsag.c)
+target_include_directories(test_rx_pocsag_plugin PRIVATE ${RX_INCLUDES} fixtures)
+ls_add_test(test_rx_multi ${RX_CORE_SRCS} ${RX}/rx_pocsag.c ${RX}/rx_voice.c ${APP}/fm/pocsag.c
+    ${APP}/fm/fm_tone.c ${RX}/rx_fm_data.c ${APP}/fm/flex.c ${APP}/fm/aprs.c ${APP}/fm/aprs_store.c
+    ${APP}/fm/same.c ${APP}/fm/same_store.c ${APP}/fm/ais.c ${APP}/fm/ais_store.c
+    ${APP}/acars/acars.c ${APP}/acars/acars_msk.c ${APP}/acars/acars_resample.c ${APP}/acars/acars_app.c
+    ${APP}/fm/fm_lifecycle.c)
+target_include_directories(test_rx_multi PRIVATE ${RX_INCLUDES} fixtures ${APP}/acars)
 # Existing pager adapter now taps checked IQ; link that dependency on host too.
 target_sources(test_pager_iq_radio PRIVATE
     ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
@@ -2545,68 +2822,22 @@ foreach(boundary ls_lora_hw_lock spi_device_transmit spi_device_polling_transmit
     target_link_options(test_tui_screens PRIVATE "-Wl,--wrap=${boundary}")
 endforeach()
 
-# Phase 1 DETECTOR: real parser/policy, adapters and sinks, no radio hardware.
-ls_add_test(test_detector
-    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
-    ${FW}/components/apps/tui/ls_tui_ui.c
-    ${FW}/components/apps/tui/ls_icons.c
-    ${FW}/components/apps/tui/ls_detector.c
-    ${FW}/components/apps/tui/ls_detector_sinks.c
-    ${FW}/components/apps/tui/ls_detector_air.c
-    ${APP}/adsb/adsb_state.c
-    ${FW}/components/apps/tui/ls_detector_ui.c
-    ${FW}/components/apps/tui/ls_notify.c
-    ${FW}/components/apps/tui/ls_sweep.c
-    ${FW}/components/apps/tui/ls_rid.c)
-target_include_directories(test_detector PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
-target_compile_definitions(test_detector PRIVATE
-    LS_DETECTOR_DIR="${CMAKE_CURRENT_BINARY_DIR}/detector-test"
-    LS_DETECTOR_ROTATE=4096
-    LS_NOTIFY_EXTERNAL_ALERT_HW=1)
-target_compile_options(test_detector PRIVATE -ffunction-sections -fdata-sections)
-target_link_options(test_detector PRIVATE -Wl,--gc-sections)
-if(Python3_Interpreter_FOUND)
-    add_test(NAME test_detector_json COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_detector_json.py"
-        "${CMAKE_CURRENT_BINARY_DIR}/detector-test/events")
-    set_tests_properties(test_detector_json PROPERTIES DEPENDS test_detector)
-    add_test(NAME test_detector_ui_sim COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_detector_ui_sim.py" "$<TARGET_FILE:lssim>")
-endif()
-
-ls_add_test(test_detector_runtime
-    ${FW}/components/apps/tui/ls_detector.c
-    ${FW}/components/apps/tui/ls_detector_air.c
-    ${APP}/adsb/adsb_state.c
-    ${FW}/components/apps/tui/ls_sweep.c
-    ${FW}/components/apps/tui/ls_rid.c
-    ${FW}/main/ls_sweep_runtime.c)
-target_include_directories(test_detector_runtime PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
-target_compile_definitions(test_detector_runtime PRIVATE
-    LS_DETECTOR_DIR="${CMAKE_CURRENT_BINARY_DIR}/detector-runtime"
-    LS_SWEEP_DIR="${CMAKE_CURRENT_BINARY_DIR}/detector-sweep-runtime")
-
-# DETECTOR aircraft rules: the real decoder fills the shared table, no receiver.
-ls_add_test(test_detector_air
-    ${FW}/components/apps/tui/ls_detector.c
-    ${FW}/components/apps/tui/ls_detector_air.c
-    ${FW}/components/apps/tui/ls_sweep.c
-    ${FW}/components/apps/tui/ls_rid.c
-    ${APP}/adsb/mode-s.c
-    ${APP}/adsb/adsb_decode.c
-    ${APP}/adsb/adsb_state.c)
-target_include_directories(test_detector_air PRIVATE ${LS_TUI_APP_INCLUDES}
-    ${FW}/components/lakeshark ${APP}/adsb ${FW}/components/lakeshark/audio)
-target_compile_definitions(test_detector_air PRIVATE
-    LS_DETECTOR_DIR="${CMAKE_CURRENT_BINARY_DIR}/detector-air"
-    LS_SWEEP_DIR="${CMAKE_CURRENT_BINARY_DIR}/detector-air-sweep")
+# DETECTOR is an SD app (app-sdk/apps/detector): its engine as the app builds
+# it, and the rules file the board ships, read by repo-relative path.
+ls_add_test(test_detector_app ${FW}/app-sdk/apps/detector/det_engine.c)
+target_include_directories(test_detector_app PRIVATE ${FW}/app-sdk/apps/detector)
+set_tests_properties(test_detector_app PROPERTIES WORKING_DIRECTORY ${FW})
+# What the board hands a detector app (SDK 2.2 lap_seen_*): the queue, the
+# pseudonyms and drone watch's own alert when no app takes it.
+ls_add_test(test_seen ${FW}/components/apps/tui/ls_seen.c)
+target_include_directories(test_seen PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
 
 ls_add_test(test_ble_range ${FW}/main/ble_link_legacy.c)
 target_include_directories(test_ble_range PRIVATE ${FW}/main)
 
 ls_add_test(test_dronelink ${FW}/components/apps/tui/ls_dronelink.c)
 target_include_directories(test_dronelink PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark ${FW}/components/meshcore)
-set_tests_properties(test_detector test_ble_range test_dronelink PROPERTIES WORKING_DIRECTORY "${FW}")
+set_tests_properties(test_ble_range test_dronelink PROPERTIES WORKING_DIRECTORY "${FW}")
 ls_add_test(test_map_share
     ${FW}/components/apps/tui/ls_map_share.c
     ${FW}/components/apps/tui/ls_map_marks.c
@@ -2656,6 +2887,18 @@ target_include_directories(test_acars PRIVATE ${FW}/bench/fixtures ${APP}/acars)
 
 # FM glass displays the real DSP squelch threshold, including on the host.
 target_sources(lssim PRIVATE ${APP}/fm/fm_dsp.c)
+# The FM screen's HF rows, band picker and scope read the HF settings module.
+target_sources(lssim PRIVATE ${APP}/fm/fm_hf.c)
+# RADIO, the RX HEAD's screen (CONFIG_LS_RX_HEAD), over FM's real plugins.
+target_sources(lssim PRIVATE ${FW}/components/apps/tui/screens/main/scr_radio.c
+    ${FW}/components/apps/tui/rx_panels/ls_rx_panels.c ${FW}/components/apps/tui/rx_panels/rx_exp.c
+    ${FW}/components/lakeshark/rx/ls_rx_front.c ${FW}/components/lakeshark/rx/rx_voice.c
+    ${APP}/fm/fm_lr_dsp.c)
+target_include_directories(lssim PRIVATE ${FW}/components/lakeshark/rx)
+set_source_files_properties(${FW}/components/apps/tui/screens/main/scr_radio.c tools/lssim.c
+    tools/lssim_state.c PROPERTIES COMPILE_DEFINITIONS CONFIG_LS_RX_HEAD=1)
+target_sources(test_tui_screens PRIVATE ${APP}/fm/fm_hf.c ${APP}/fm/fm_spectrum.c
+    ${FW}/components/lakeshark/dsp/spectrum.c)
 
 add_test(NAME test_fm_vfo_ui COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fm_vfo_ui.py $<TARGET_FILE:lssim>)
@@ -2689,12 +2932,7 @@ ls_add_test(test_drone_watch_find)
 target_include_directories(test_drone_watch_find PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
 target_compile_options(test_drone_watch_find PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(test_drone_watch_find PRIVATE -Wl,--gc-sections)
-ls_add_test(test_drone_watch_detector)
-target_include_directories(test_drone_watch_detector PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark)
-target_compile_definitions(test_drone_watch_detector PRIVATE LS_DETECTOR_DIR="${CMAKE_CURRENT_BINARY_DIR}/drone-detector")
-target_compile_options(test_drone_watch_detector PRIVATE -ffunction-sections -fdata-sections)
-target_link_options(test_drone_watch_detector PRIVATE -Wl,--gc-sections)
-set_source_files_properties(tests/test_drone_watch_find.c tests/test_drone_watch_detector.c
+set_source_files_properties(tests/test_drone_watch_find.c
     PROPERTIES COMPILE_OPTIONS "-fwhole-program")
 add_library(drone_watch_firmware_compile OBJECT ${FW}/components/apps/tui/ls_drone_watch.c)
 target_include_directories(drone_watch_firmware_compile PRIVATE ${LS_TUI_APP_INCLUDES}
@@ -2729,6 +2967,8 @@ add_executable(p25pack_validate p25pack/validate.c ${APP}/p25/p25_pack.c
 target_link_libraries(p25pack_validate ls_harness m)
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_FOUND)
+    add_test(NAME test_observation_catalog COMMAND ${Python3_EXECUTABLE} -B
+        ${FW}/bench/tests/test_observation_catalog.py)
     set(P25PACK_PYTHON_EXECUTABLE "${Python3_EXECUTABLE}" CACHE FILEPATH
         "Python interpreter with cryptography for the P25 publisher tests")
     add_test(NAME test_p25pack_tools COMMAND ${P25PACK_PYTHON_EXECUTABLE} -B
@@ -2791,7 +3031,7 @@ target_include_directories(lap_inspect PRIVATE ${LAP_TUI} ${FW}/components/lakes
 add_executable(test_lap_transfer tests/test_lap_transfer.c ${LAP_TUI}/ls_lap_transfer.c ${LAP_TUI}/ls_lap_manifest.c ${FW}/components/lakeshark/core/ls_base64.c)
 target_include_directories(test_lap_transfer PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
 add_test(NAME test_lap_transfer COMMAND test_lap_transfer)
-add_executable(test_lap_api tests/test_lap_api.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_glyph.c shims/lap_tui_core.c shims/screen_full_stub.c)
+add_executable(test_lap_api tests/test_lap_api.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_net.c ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_glyph.c shims/lap_tui_core.c shims/screen_full_stub.c)
 target_include_directories(test_lap_api PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
 target_link_libraries(test_lap_api m)
 target_compile_definitions(test_lap_api PRIVATE LS_LAP_SD_ROOT="lap-sd")
@@ -2821,22 +3061,31 @@ if(LS_SANITIZE AND CMAKE_C_COMPILER_ID MATCHES "Clang")
 endif()
 
 if(LAP_MBEDTLS_DIR)
-    add_executable(test_lap_host tests/test_lap_host.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_signature.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_app.c ${LAP_TUI}/ls_glyph.c shims/lap_tui_core.c ${FW}/components/lakeshark/core/ls_signature.c)
+    add_executable(test_lap_host tests/test_lap_host.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_net.c ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_signature.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_app.c ${LAP_TUI}/ls_glyph.c shims/lap_tui_core.c ${FW}/components/lakeshark/core/ls_signature.c)
     target_include_directories(test_lap_host BEFORE PRIVATE ${FW}/bench/shims/lap ${LAP_TUI} ${FW}/components/lakeshark)
     target_compile_definitions(test_lap_host PRIVATE ESP_PLATFORM=1 LS_LAP_HOST_TEST=1)
     target_compile_options(test_lap_host PRIVATE -falign-functions=2)
     target_link_libraries(test_lap_host lap_mbedtls m)
     add_dependencies(test_lap_host lap_fixture)
     add_test(NAME test_lap_host COMMAND test_lap_host ${CMAKE_CURRENT_BINARY_DIR}/lap-probe.lap)
+    # API 2.1: background services through the same loader and adapters.
+    add_executable(test_lap_service tests/test_lap_service.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_net.c ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_signature.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_app.c ${LAP_TUI}/ls_glyph.c shims/lap_tui_core.c ${FW}/components/lakeshark/core/ls_signature.c)
+    target_include_directories(test_lap_service BEFORE PRIVATE ${FW}/bench/shims/lap ${LAP_TUI} ${FW}/components/lakeshark)
+    target_compile_definitions(test_lap_service PRIVATE ESP_PLATFORM=1 LS_LAP_HOST_TEST=1)
+    target_compile_options(test_lap_service PRIVATE -falign-functions=2)
+    target_link_libraries(test_lap_service lap_mbedtls m)
+    add_dependencies(test_lap_service lap_fixture)
+    add_test(NAME test_lap_service COMMAND test_lap_service ${CMAKE_CURRENT_BINARY_DIR}/lap-probe.lap)
 endif()
 
 target_sources(lssim PRIVATE ${LAP_TUI}/ls_lap.c shims/ls_lap_screen.c)
-target_sources(lssim PRIVATE ${APP}/adsb/adsb_demo.c fixtures/carrier_preview.c)
+target_sources(lssim PRIVATE ${APP}/adsb/adsb_demo.c)
 # The API resolver references ADS-B for every app, including non-radio test apps.
 target_sources(test_lap_api PRIVATE ${APP}/adsb/adsb_state.c ${APP}/adsb/adsb_demo.c)
 target_sources(test_lap_api PRIVATE shims/lap_adsb_time.c)
 if(TARGET test_lap_host)
     target_sources(test_lap_host PRIVATE ${APP}/adsb/adsb_state.c ${APP}/adsb/adsb_demo.c)
+    target_sources(test_lap_service PRIVATE ${APP}/adsb/adsb_state.c ${APP}/adsb/adsb_demo.c)
 endif()
 # The example apps, compiled for the host into lssim's APP screen so their
 # frames can be looked at (LAPSIM=<id>; see shims/ls_lap_screen.c). Each
@@ -2872,8 +3121,25 @@ const lapsim_app_t lapsim_apps[] = {
 ${LAPSIM_TABLE}    {0, 0, 0}};
 const int lapsim_app_count = ${LAPSIM_COUNT};
 ")
-target_sources(lssim PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/lapsim_apps.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_lap_manifest.c)
+target_sources(lssim PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/lapsim_apps.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_net.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_lap_manifest.c)
 target_include_directories(lssim PRIVATE ${FW}/app-sdk/include)
+
+# Shared receiver assessment and bounded read-only observation receipts.
+target_sources(test_tui_screens PRIVATE ${FW}/components/lakeshark/radio/receiver_diagnostics.c)
+target_sources(lssim PRIVATE ${FW}/components/lakeshark/radio/receiver_diagnostics.c)
+target_compile_definitions(test_tui_screens PRIVATE LS_RECEIVER_DIAG_STUB=1)
+target_compile_definitions(lssim PRIVATE LS_RECEIVER_DIAG_STUB=1)
+ls_add_test(test_iq_observation ${FW}/components/lakeshark/radio/iq_observation.c)
+ls_add_test(test_iq_mission ${FW}/components/lakeshark/radio/iq_mission.c
+    ${FW}/components/lakeshark/radio/iq_observation.c)
+ls_add_test(test_observation_export
+    ${FW}/components/apps/tui/ls_observation_export.c
+    ${FW}/components/lakeshark/radio/iq_mission.c
+    ${FW}/components/lakeshark/radio/iq_observation.c)
+target_include_directories(test_observation_export PRIVATE ${FW}/components/apps/tui)
+target_link_options(test_observation_export PRIVATE -Wl,--wrap=calloc -Wl,--wrap=esp_timer_get_time)
+target_sources(test_fm_lr_runtime PRIVATE ${FW}/components/lakeshark/radio/iq_observation.c
+    ${FW}/components/lakeshark/radio/iq_mission.c)
 add_executable(test_lap_registry tests/test_lap_registry.c ${LAP_TUI}/ls_app.c)
 target_include_directories(test_lap_registry PRIVATE ${LAP_TUI})
 add_test(NAME test_lap_registry COMMAND test_lap_registry)
@@ -2889,57 +3155,19 @@ target_compile_options(lap3d_host PRIVATE -O2 -fstack-usage -Wdouble-promotion -
 target_link_libraries(lssim lap3d_host)
 target_link_libraries(test_lap_api lap3d_host)
 
-# CARRIER: bounded systems tests share the real app API/cache and receiver state.
-file(GLOB CARRIER_SYSTEMS ${FW}/app-sdk/apps/carrier/*.c)
-list(REMOVE_ITEM CARRIER_SYSTEMS ${FW}/app-sdk/apps/carrier/main.c)
-list(FILTER CARRIER_SYSTEMS EXCLUDE REGEX "/ui_[a-z]+\.c$")
-set(CARRIER_API_TEST_SOURCES
-    ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c
+# App API tests on the real app cache and receiver state, no drawing.
+set(LAP_API_TEST_SOURCES
+    ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_net.c
     ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_glyph.c
     shims/lap_tui_core.c shims/lap_adsb_time.c fixtures/carrier_io.c
     ${APP}/adsb/adsb_state.c ${APP}/adsb/adsb_demo.c)
-add_executable(test_carrier tests/test_carrier.c ${CARRIER_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
-target_include_directories(test_carrier PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
-    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
-target_compile_options(test_carrier PRIVATE -fstack-usage)
-target_link_libraries(test_carrier lap3d_host m)
-foreach(system universe traffic trade save flight combat jump render walk)
-    add_test(NAME test_carrier_${system} COMMAND test_carrier ${system})
-endforeach()
-add_executable(test_lap_aircraft tests/test_lap_aircraft.c ${CARRIER_API_TEST_SOURCES})
+add_executable(test_lap_aircraft tests/test_lap_aircraft.c ${LAP_API_TEST_SOURCES})
 target_include_directories(test_lap_aircraft PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
 target_link_libraries(test_lap_aircraft lap3d_host m)
 add_test(NAME test_lap_aircraft COMMAND test_lap_aircraft)
-add_test(NAME test_carrier_data COMMAND ${Python3_EXECUTABLE} ${FW}/bench/tests/test_carrier_data.py)
-add_executable(test_carrier_limits tests/test_carrier_limits.c ${CARRIER_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
-target_include_directories(test_carrier_limits PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
-    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
-target_link_libraries(test_carrier_limits lap3d_host m)
-target_link_options(test_carrier_limits PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
-add_test(NAME test_carrier_limits COMMAND test_carrier_limits)
-add_test(NAME test_carrier_lssim COMMAND ${Python3_EXECUTABLE}
-    ${FW}/bench/tests/test_carrier_lssim.py $<TARGET_FILE:lssim> ${CMAKE_CURRENT_BINARY_DIR}/carrier-preview)
-add_executable(test_carrier_rescue tests/test_carrier_rescue.c ${CARRIER_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
-target_include_directories(test_carrier_rescue PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
-    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
-target_link_libraries(test_carrier_rescue lap3d_host m)
-add_test(NAME test_carrier_rescue COMMAND test_carrier_rescue)
-
-# Exploration uses the real cached app files and receiver snapshots; no UI.
-set(CARRIER_POI_SYSTEMS ${CARRIER_SYSTEMS})
-list(FILTER CARRIER_POI_SYSTEMS EXCLUDE REGEX "/render[.]c$")
-add_executable(test_carrier_poi tests/test_carrier_poi.c ${CARRIER_POI_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
-target_include_directories(test_carrier_poi PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
-    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
-target_compile_definitions(test_carrier_poi PRIVATE EXPLORE_DEFAULTS="${FW}/data/carrier/explore.json")
-target_link_libraries(test_carrier_poi lap3d_host m)
-target_link_options(test_carrier_poi PRIVATE -Wl,--wrap=lap_time
-    -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
-foreach(poi generation nebula gravity comet relics signals salvage weather scan persistence eggs config limits)
-    add_test(NAME test_carrier_poi_${poi} COMMAND test_carrier_poi ${poi})
-endforeach()
 if(TARGET test_lap_host)
     target_link_libraries(test_lap_host lap3d_host)
+    target_link_libraries(test_lap_service lap3d_host)
 endif()
 ls_add_test(test_lap3d shims/lap3d_io.c)
 target_include_directories(test_lap3d PRIVATE ${FW}/app-sdk/include ${LAP_TUI}/lap3d)
@@ -2958,86 +3186,273 @@ target_include_directories(l3map PRIVATE ${FW}/app-sdk/include)
 target_link_libraries(l3map lap3d_host m)
 
 
-# CARRIER's hulls one by one, rendered by lap3d to PNG (host preview).
-add_executable(carrier_ships tools/carrier_ships.c shims/lap3d_io.c)
-target_include_directories(carrier_ships PRIVATE ${FW}/app-sdk/include)
-target_link_libraries(carrier_ships lap3d_host m)
-
-# Part 2: isolated deterministic sensor snapshots; existing assertions untouched.
-set(CARRIER_BACKEND_SYSTEMS ${CARRIER_SYSTEMS})
-list(FILTER CARRIER_BACKEND_SYSTEMS EXCLUDE REGEX "/(render|ui[^/]*)[.]c$")
-add_executable(test_carrier_systems tests/test_carrier_systems.c ${CARRIER_BACKEND_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
-target_include_directories(test_carrier_systems PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
-    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
-target_link_libraries(test_carrier_systems lap3d_host m)
-target_link_options(test_carrier_systems PRIVATE -Wl,--wrap=lap_wifi_aps -Wl,--wrap=lap_wifi_scan
-    -Wl,--wrap=lap_ble_scan -Wl,--wrap=lap_ble_devices -Wl,--wrap=lap_mesh_nodes -Wl,--wrap=lap_time
-    -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
-foreach(system talk missions mining beacons packs ranks events time system_config save_capacity targets)
-    add_test(NAME test_carrier_${system} COMMAND test_carrier_systems ${system})
+# The same TCP service on desktop loopback and device.
+add_executable(test_lap_net tests/test_lap_net.c ${LAP_TUI}/ls_lap_net.c)
+target_include_directories(test_lap_net PRIVATE ${LAP_TUI})
+add_test(NAME test_lap_net COMMAND test_lap_net)
+add_executable(test_lap_net_dns tests/test_lap_net.c ${LAP_TUI}/ls_lap_net.c)
+target_include_directories(test_lap_net_dns PRIVATE ${LAP_TUI})
+target_compile_definitions(test_lap_net_dns PRIVATE LS_LAP_NET_TEST_DNS=1)
+add_test(NAME test_lap_net_dns COMMAND test_lap_net_dns)
+if(WIN32)
+  get_property(lap_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(t IN LISTS lap_targets)
+    get_target_property(lap_sources ${t} SOURCES)
+    if("${lap_sources}" MATCHES "ls_lap_net\\.c")
+      target_link_libraries(${t} ws2_32)
+    endif()
+  endforeach()
+endif()
+add_library(music_analysis_host STATIC
+    ${FW}/components/apps/tui/ls_audio_analysis.c
+    ${FW}/components/apps/tui/ls_audio_overview.c
+    ${FW}/components/apps/tui/ls_audio_tools.c
+    ${APP}/fm/aprs.c ${APP}/fm/fm_tone.c)
+target_include_directories(music_analysis_host PUBLIC ${FW}/components/apps/tui)
+target_compile_options(music_analysis_host PRIVATE -O2)
+target_link_libraries(music_analysis_host PUBLIC music_decode_host)
+foreach(music_screen_target test_tui_screens test_tui_router test_tui_p25_screen
+        test_tui_render_cost test_tui_render_dump lssim test_tui_music)
+    target_link_libraries(${music_screen_target} music_analysis_host)
 endforeach()
 
-# Encounter director: isolated radio/heap boundaries, production backend logic.
-add_executable(test_carrier_encounters tests/test_carrier_encounters.c ${CARRIER_BACKEND_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
-target_include_directories(test_carrier_encounters PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
-    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
-target_link_libraries(test_carrier_encounters lap3d_host m)
-target_link_options(test_carrier_encounters PRIVATE -Wl,--wrap=lap_aircraft
-    -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
-foreach(encounter cadence modes pool formations engagement departures life config)
-    add_test(NAME test_carrier_encounters_${encounter} COMMAND test_carrier_encounters ${encounter})
+# Bounded operator RX plans and software-observed, epoch-bound IQ windows.
+ls_add_test(test_iq_coverage ${FW}/components/lakeshark/radio/iq_coverage.c)
+ls_add_test(test_rx_plan ${FW}/components/lakeshark/radio/rx_plan.c)
+ls_add_test(test_rx_plan_console ${FW}/components/apps/tui/ls_rx_plan_console.c
+    ${FW}/components/lakeshark/radio/rx_plan.c)
+target_include_directories(test_rx_plan_console PRIVATE ${FW}/components/apps/tui)
+target_link_options(test_rx_plan_console PRIVATE -Wl,--wrap=calloc)
+ls_add_test(test_coverage_export ${FW}/components/apps/tui/ls_coverage_export.c
+    ${FW}/components/lakeshark/radio/iq_coverage.c
+    ${FW}/components/lakeshark/radio/iq_observation.c)
+target_include_directories(test_coverage_export PRIVATE ${FW}/components/apps/tui)
+target_link_options(test_coverage_export PRIVATE -Wl,--wrap=calloc)
+target_sources(test_fm_lr_runtime PRIVATE ${FW}/components/lakeshark/radio/rx_plan.c
+    ${FW}/components/lakeshark/radio/iq_coverage.c
+    ${FW}/components/lakeshark/radio/iq_app_control.c
+    ${APP}/fm/fm_lifecycle.c)
+add_test(NAME test_iq_provenance COMMAND ${Python3_EXECUTABLE} -B
+    ${FW}/bench/tests/test_iq_provenance.py)
+
+# API 2.0 for native apps (components/apps/tui/ls_lap_radio.h): radio
+# sessions, receiver audio, decoded events, actions and notices. The app API's
+# export table names them, so every target that links ls_lap_api.c or
+# ls_lap_sys.c links this layer too, with the bench's simulated radio; the FM
+# decoders publish what they hear through core/ls_decoded.c.
+add_executable(test_lap_radio tests/test_lap_radio.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c
+    ${LAP_TUI}/ls_lap_net.c ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_glyph.c
+    shims/lap_tui_core.c shims/screen_full_stub.c ${APP}/adsb/adsb_state.c ${APP}/adsb/adsb_demo.c
+    shims/lap_adsb_time.c)
+target_include_directories(test_lap_radio PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
+target_link_libraries(test_lap_radio lap3d_host m $<$<BOOL:${WIN32}>:ws2_32>)
+target_compile_definitions(test_lap_radio PRIVATE LS_LAP_SD_ROOT="lap-sd")
+add_test(NAME test_lap_radio COMMAND test_lap_radio ${FW}/bench/fixtures/lap_api13_exports.txt
+    ${FW}/app-sdk/exports.txt)
+# API 2.1: the board's controls for apps, services and lap_emit. The lap2
+# loop below adds the API layer and the recording widget stand-ins.
+add_executable(test_lap_kit tests/test_lap_kit.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c
+    ${LAP_TUI}/ls_lap_net.c ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_glyph.c
+    shims/lap_tui_core.c shims/screen_full_stub.c ${APP}/adsb/adsb_state.c ${APP}/adsb/adsb_demo.c
+    shims/lap_adsb_time.c)
+target_include_directories(test_lap_kit PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
+target_link_libraries(test_lap_kit lap3d_host m $<$<BOOL:${WIN32}>:ws2_32>)
+target_compile_definitions(test_lap_kit PRIVATE LS_LAP_SD_ROOT="lap-sd")
+add_test(NAME test_lap_kit COMMAND test_lap_kit ${FW}/bench/fixtures/lap_api13_exports.txt
+    ${FW}/bench/fixtures/lap_api20_exports.txt ${FW}/app-sdk/exports.txt ${FW}/app-sdk/include/lakeshark_ui.h)
+get_property(lap2_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(t IN LISTS lap2_targets)
+  get_target_property(lap2_type ${t} TYPE)
+  if(NOT lap2_type STREQUAL "EXECUTABLE")
+    continue()
+  endif()
+  get_target_property(lap2_sources ${t} SOURCES)
+  set(lap2_add "")
+  if("${lap2_sources}" MATCHES "ls_lap_api\.c|ls_lap_sys\.c")
+    list(APPEND lap2_add ${LAP_TUI}/ls_lap_radio.c ${LAP_TUI}/ls_lap_radio_sim.c ${LAP_TUI}/ls_lap_audio.c
+         ${LAP_TUI}/ls_lap_events.c ${LAP_TUI}/ls_lap_grants.c)
+    # API 2.2: what the board's watchers see, behind lap_seen_*.
+    if(NOT "${lap2_sources}" MATCHES "ls_seen\\.c")
+      list(APPEND lap2_add ${LAP_TUI}/ls_seen.c)
+    endif()
+    # API 2.1: services and the board's controls. lssim draws them with the
+    # real widgets; the other targets get recording stand-ins.
+    list(APPEND lap2_add ${LAP_TUI}/ls_lap_service.c ${LAP_TUI}/ls_lap_kit.c)
+    target_include_directories(${t} PRIVATE ${FW}/components/lakeshark/core ${FW}/components/lakeshark/radio)
+    if(NOT "${lap2_sources}" MATCHES "ls_options\\.c")
+      list(APPEND lap2_add ${FW}/bench/shims/lap_kit_widgets.c)
+    elseif(NOT "${lap2_sources}" MATCHES "tui_controls\\.c")
+      list(APPEND lap2_add ${LAP_TUI}/tuilib/tui_controls.c ${LAP_TUI}/tuilib/tui_widgets.c)   # tui_sparkline
+    endif()
+    if(NOT "${lap2_sources}" MATCHES "dsp/spectrum\.c")
+      list(APPEND lap2_add ${FW}/components/lakeshark/dsp/spectrum.c)
+    endif()
+    if(NOT "${lap2_sources}" MATCHES "ls_lap_storage\.c")
+      list(APPEND lap2_add ${LAP_TUI}/ls_lap_storage.c)
+    endif()
+  endif()
+  if("${lap2_sources}" MATCHES "ls_lap_api\.c|ls_lap_sys\.c|fm/pocsag\.c|fm/flex\.c|fm/aprs_store\.c|fm/ais_store\.c")
+    if(NOT "${lap2_sources}" MATCHES "core/ls_decoded\.c")
+      list(APPEND lap2_add ${FW}/components/lakeshark/core/ls_decoded.c)
+    endif()
+  endif()
+  if(lap2_add)
+    target_sources(${t} PRIVATE ${lap2_add})
+  endif()
 endforeach()
 
-add_test(NAME test_carrier_encounters_data COMMAND ${Python3_EXECUTABLE}
-    ${FW}/bench/tests/test_carrier_encounter_data.py)
+# Digital modes (FT8 / FT4 / WSPR): codecs and slot decoders, host round trips.
+set(DIGI_CORE
+    ${APP}/digi/digi_fft.c ${APP}/digi/digi_ftx.c ${APP}/digi/digi_ftx_tables.c
+    ${APP}/digi/digi_msg.c)
+ls_add_test(test_digi_ftx ${DIGI_CORE})
+target_include_directories(test_digi_ftx PRIVATE ${APP}/digi)
+ls_add_test(test_digi_wspr ${APP}/digi/digi_fft.c ${APP}/digi/digi_wspr.c)
+target_include_directories(test_digi_wspr PRIVATE ${APP}/digi)
+ls_add_test(test_digi_engine ${DIGI_CORE} ${APP}/digi/digi_engine.c)
+target_include_directories(test_digi_engine PRIVATE ${APP}/digi)
 
-# main.c owns the screen state on device; focused host tests omit that entry.
-add_executable(test_carrier_shipyard tests/test_carrier_shipyard.c ${CARRIER_BACKEND_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
-target_include_directories(test_carrier_shipyard PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
-    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
-target_link_libraries(test_carrier_shipyard lap3d_host m)
-target_link_options(test_carrier_shipyard PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
-foreach(yard offers transactions persistence insurance config)
-    add_test(NAME test_carrier_shipyard_${yard} COMMAND test_carrier_shipyard ${yard})
-endforeach()
-add_executable(test_carrier_lore tests/test_carrier_lore.c ${CARRIER_BACKEND_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
-target_include_directories(test_carrier_lore PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
-    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
-target_link_libraries(test_carrier_lore lap3d_host m)
-add_test(NAME test_carrier_lore COMMAND test_carrier_lore)
+# TIME MACHINE: the stage, decimating ring and tape; clips REC can read and a
+# page decoded from one; the timeline that reads ls_decoded.
+set(TMACH ${FW}/components/lakeshark/core)
+ls_add_test(test_tmach_ring ${TMACH}/ls_tmach_ring.c)
+# pocsag.c publishes its pages onto core/ls_decoded.c (SDK 2.0).
+ls_add_test(test_tmach_clip ${TMACH}/ls_tmach_clip.c ${TMACH}/ls_tmach_ring.c
+    ${APP}/rec/rec_sidecar.c ${APP}/fm/fm_dsp.c ${APP}/fm/pocsag.c
+    ${FW}/components/apps/tui/experiments/pager_iq.c ${TMACH}/ls_decoded.c)
+target_include_directories(test_tmach_clip PRIVATE ${APP}/rec ${APP}/fm
+    ${FW}/components/apps/tui/experiments ${CMAKE_CURRENT_SOURCE_DIR}/fixtures)
+ls_add_test(test_tmach_timeline ${TMACH}/ls_tmach_timeline.c ${TMACH}/ls_decoded.c)
+# ls_decoded readers: bounded scans per critical section, same answers.
+ls_add_test(test_decoded_next ${TMACH}/ls_decoded.c)
+# lssim draws TIME MACHINE from the real worker, fed by LSSIM_TMACH.
+target_sources(lssim PRIVATE ${TMACH}/ls_tmach.c ${TMACH}/ls_tmach_ring.c ${TMACH}/ls_tmach_clip.c
+    ${TMACH}/ls_tmach_timeline.c
+    ${FW}/components/apps/tui/screens/ext/scr_tmach.c)
+get_target_property(lssim_sources lssim SOURCES)
+if(NOT "${lssim_sources}" MATCHES "core/ls_decoded\.c")
+    target_sources(lssim PRIVATE ${TMACH}/ls_decoded.c)
+endif()
+if(NOT "${lssim_sources}" MATCHES "rec/rec_sidecar\\.c")
+    target_sources(lssim PRIVATE ${APP}/rec/rec_sidecar.c)
+endif()
+# The worker end to end: taps, WHAT WAS THAT?, the clip, the timeline link,
+# and replay through the real pager chains.
+ls_add_test(test_tmach_service ${TMACH}/ls_tmach.c ${TMACH}/ls_tmach_ring.c ${TMACH}/ls_tmach_clip.c
+    ${TMACH}/ls_tmach_timeline.c ${TMACH}/ls_decoded.c ${APP}/rec/rec_sidecar.c
+    ${FW}/components/apps/tui/ls_tmach_decode.c ${APP}/fm/fm_dsp.c ${APP}/fm/pocsag.c
+    ${APP}/fm/fm_mode_label.c ${FW}/components/apps/tui/experiments/pager_iq.c)
+target_include_directories(test_tmach_service PRIVATE ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark
+    ${APP}/rec ${APP}/fm ${APP}/p25 ${FW}/components/apps/tui/experiments ${CMAKE_CURRENT_SOURCE_DIR}/fixtures)
+target_compile_definitions(test_tmach_service PRIVATE TMACH_DEFAULTS="${FW}/data/tmach/config.json")
 
-# CRUISE is a backend rules module; keep renderer and heap boundaries explicit.
-add_executable(test_carrier_cruise tests/test_carrier_cruise.c ${CARRIER_BACKEND_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
-target_include_directories(test_carrier_cruise PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
-    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
-target_link_libraries(test_carrier_cruise lap3d_host m)
-target_link_options(test_carrier_cruise PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
-foreach(cruise refusals spool safety bleed eta interdiction director limits)
-    add_test(NAME test_carrier_cruise_${cruise} COMMAND test_carrier_cruise ${cruise})
-endforeach()
+# FM broadcast extras on the FM screen: stereo/RDS station card, airband and
+# CB scanner, SSTV pictures, weather channels.
+set(FM_BCAST_UI_SRCS
+    ${FW}/components/apps/tui/screens/main/fm_rds_view.c
+    ${FW}/components/apps/tui/screens/main/fm_air_view.c
+    ${FW}/components/apps/tui/screens/main/fm_sstv_view.c
+    ${APP}/fm/air_scan.c
+    ${APP}/fm/fm_bcast.c
+    ${FW}/components/lakeshark/dsp/rds.c)
+target_sources(test_tui_screens PRIVATE ${FM_BCAST_UI_SRCS} shims/fm_sstv_palette_stub.c)
+target_sources(lssim PRIVATE ${FM_BCAST_UI_SRCS} tools/lssim_bcast.c
+    ${FW}/components/apps/tui/screens/main/fm_sstv_palette.c ${APP}/sstv/sstv.c)
+ls_add_test(test_air_scan ${APP}/fm/air_scan.c)
+ls_add_test(test_sstv ${APP}/sstv/sstv.c)
+target_include_directories(test_sstv PRIVATE ${APP}/sstv)
+ls_add_test(test_fm_bcast ${APP}/fm/fm_bcast.c ${FW}/components/lakeshark/dsp/rds.c)
+target_include_directories(test_fm_bcast PRIVATE ${FW}/components/lakeshark/core)
+# app_fm.c on the host: the broadcast extras it calls on the LR path.
+target_sources(test_fm_lr_runtime PRIVATE shims/fm_bcast_glue_stub.c)
 
-foreach(carrier_test test_carrier test_carrier_limits test_carrier_rescue)
-    target_sources(${carrier_test} PRIVATE fixtures/carrier_screen_state.c)
-endforeach()
+# Text packs (components/ls_textpack) as the T-Display builds them: the generator
+# over the firmware sources (and test_ls_textpack.c's own ids), CartoCore's zstd
+# decoder, and the Ukrainian table packed. Every packed string must equal the
+# literal the compiler reads; the language suite runs again on the packed table.
+if(TARGET cartocore_host)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+endif()
+if(TARGET cartocore_host AND Python3_Interpreter_FOUND)
+    set(LS_TEXT_GEN ${FW}/components/ls_textpack/gen/textpack_gen.py)
+    set(LS_TEXT_GEN_OUT ${CMAKE_CURRENT_BINARY_DIR}/ls_textpack_gen)
+    set(LS_TEXT_SCAN ${FW}/main ${FW}/components/apps ${FW}/components/lakeshark
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ls_textpack.c
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ls_textpack_printf.c)
+    file(GLOB_RECURSE LS_TEXT_SCANNED CONFIGURE_DEPENDS
+         ${FW}/main/*.c ${FW}/main/*.cpp ${FW}/main/*.h
+         ${FW}/components/apps/*.c ${FW}/components/apps/*.cpp ${FW}/components/apps/*.h
+         ${FW}/components/lakeshark/*.c ${FW}/components/lakeshark/*.cpp ${FW}/components/lakeshark/*.h)
+    add_custom_command(
+        OUTPUT ${LS_TEXT_GEN_OUT}/ls_textpack_ids.h ${LS_TEXT_GEN_OUT}/ls_textpack_data.c ${LS_TEXT_GEN_OUT}/ls_textpack_src.c
+        COMMAND ${Python3_EXECUTABLE} ${LS_TEXT_GEN} text --root=${FW} --src-table ${LS_TEXT_GEN_OUT} ${LS_TEXT_SCAN}
+        DEPENDS ${LS_TEXT_GEN} ${FW}/components/ls_textpack/gen/lszstd.py ${LS_TEXT_SCANNED}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ls_textpack.c
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ls_textpack_printf.c
+        VERBATIM)
+    add_custom_command(
+        OUTPUT ${LS_TEXT_GEN_OUT}/ls_i18n_pack.c ${LS_TEXT_GEN_OUT}/ls_i18n_pack.h
+        COMMAND ${Python3_EXECUTABLE} ${LS_TEXT_GEN} i18n ${FW}/components/apps/tui/ls_i18n_uk.h
+                ${LS_TEXT_GEN_OUT}/ls_i18n_pack.c ${LS_TEXT_GEN_OUT}/ls_i18n_pack.h
+        DEPENDS ${LS_TEXT_GEN} ${FW}/components/ls_textpack/gen/lszstd.py ${FW}/components/apps/tui/ls_i18n_uk.h
+        VERBATIM)
+    add_library(ls_text_packed STATIC ${FW}/components/ls_textpack/ls_textpack.c
+        ${LS_TEXT_GEN_OUT}/ls_textpack_data.c ${LS_TEXT_GEN_OUT}/ls_i18n_pack.c)
+    target_include_directories(ls_text_packed PUBLIC ${FW}/components/ls_textpack/include ${LS_TEXT_GEN_OUT})
+    target_compile_definitions(ls_text_packed PUBLIC LS_TEXT_PACKED=1)
+    target_link_libraries(ls_text_packed PUBLIC cartocore_host)
 
-# Public-API pilot: production backend and the same host/cache as carrier tests.
-add_executable(carrier_bot tools/carrier_bot.c ${CARRIER_BACKEND_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
-target_include_directories(carrier_bot PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
-    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
-target_compile_options(carrier_bot PRIVATE -O2 -Wall -Wextra)
-target_link_libraries(carrier_bot lap3d_host m)
-target_link_options(carrier_bot PRIVATE -Wl,--wrap=lap_gps -Wl,--wrap=lap_time)
-add_test(NAME test_carrier_bot_smoke COMMAND carrier_bot --smoke 1
-    ${CMAKE_CURRENT_BINARY_DIR}/carrier-bot-smoke.csv ${FW}/data/carrier)
+    ls_add_test(test_ls_textpack ${LS_TEXT_GEN_OUT}/ls_textpack_src.c)
+    target_link_libraries(test_ls_textpack ls_text_packed)
+    # LS_PRINTF / LS_FPRINTF / LS_SNPRINTF through the packed wrappers
+    ls_add_test(test_ls_textpack_printf)
+    target_link_libraries(test_ls_textpack_printf ls_text_packed)
 
-# Combat's public contract, fixed pools and typed simulation rules; no screen.
-add_executable(test_carrier_combat_rules tests/test_carrier_combat_rules.c
-    ${CARRIER_BACKEND_SYSTEMS} ${CARRIER_API_TEST_SOURCES})
-target_include_directories(test_carrier_combat_rules PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
-    ${FW}/app-sdk/apps/carrier ${FW}/app-sdk/include)
-target_compile_options(test_carrier_combat_rules PRIVATE -O2 -Wall -Wextra)
-target_link_libraries(test_carrier_combat_rules lap3d_host m)
-target_link_options(test_carrier_combat_rules PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc)
-foreach(combat damage weapons mounts distributor defence modules canopy scanning hud balance persistence limits config migration reverse aim)
-    add_test(NAME test_carrier_combat_rules_${combat} COMMAND test_carrier_combat_rules ${combat})
-endforeach()
+    # ls_i18n.c as the T-Display compiles it: a wrapper, so the many plain
+    # builds of ls_i18n.c in this directory stay plain
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/ls_i18n_packed_copy.c
+         "#define LS_I18N_PACKED 1\n#include \"${FW}/components/apps/tui/ls_i18n.c\"\n")
+    ls_add_test(test_ls_i18n_pack
+        ${CMAKE_CURRENT_BINARY_DIR}/ls_i18n_packed_copy.c
+        ${FW}/components/apps/tui/tuilib/tui_core.c)
+    target_include_directories(test_ls_i18n_pack PRIVATE
+        ${FW}/components/apps/tui ${FW}/components/apps/tui/tuilib ${FW}/bench/shims)
+    target_link_libraries(test_ls_i18n_pack ls_text_packed)
+
+
+    # the existing language suite, unchanged, over the packed table
+    add_executable(test_ui_language_packed tests/test_ui_language.c
+        ${CMAKE_CURRENT_BINARY_DIR}/ls_i18n_packed_copy.c
+        ${FW}/components/apps/tui/tuilib/tui_core.c
+        ${FW}/components/apps/tui/ls_font_cyr.c
+        ${FW}/components/apps/tui/ls_font_mono_14.c
+        ${FW}/components/apps/tui/ls_font_mono_16.c
+        ${FW}/components/apps/tui/ls_font_mono_24.c
+        ${FW}/components/lakeshark/core/settings_schema.c)
+    target_link_libraries(test_ui_language_packed ls_harness m ls_text_packed)
+    target_include_directories(test_ui_language_packed PRIVATE
+        ${FW}/components/apps/tui
+        ${FW}/components/apps/tui/tuilib
+        ${FW}/components/lakeshark/core
+        ${FW}/bench/shims)
+    add_test(NAME test_ui_language_packed COMMAND test_ui_language_packed)
+
+    # glyph bitmaps from the generated font files, against the originals
+    set(LS_FONT_SRCS ls_font_mono_14.c ls_font_mono_16.c ls_font_mono_24.c ls_font_cyr.c)
+    set(LS_FONT_IN)
+    set(LS_FONT_GEN)
+    foreach(f ${LS_FONT_SRCS})
+        list(APPEND LS_FONT_IN ${FW}/components/apps/tui/${f})
+        list(APPEND LS_FONT_GEN ${LS_TEXT_GEN_OUT}/fonts/${f})
+    endforeach()
+    add_custom_command(OUTPUT ${LS_FONT_GEN}
+        COMMAND ${Python3_EXECUTABLE} ${LS_TEXT_GEN} fonts ${LS_TEXT_GEN_OUT}/fonts ${LS_FONT_IN}
+        DEPENDS ${LS_TEXT_GEN} ${FW}/components/ls_textpack/gen/lszstd.py ${LS_FONT_IN}
+        VERBATIM)
+    ls_add_test(test_ls_fontpack ${LS_FONT_GEN})
+    target_include_directories(test_ls_fontpack PRIVATE ${FW}/components/apps/tui ${FW}/bench/shims)
+    target_link_libraries(test_ls_fontpack ls_text_packed)
+
+    # the encoder itself, against libzstd when this Python has it (3.14+)
+    add_test(NAME test_lszstd COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lszstd.py")
+endif()

@@ -163,6 +163,14 @@ menu "LakeShark"
             Enabling this option will initialize the SD card, so the SD card needs to be inserted into the slot. Additionally, if using the Video Player example, an MJPEG format video must be saved on the SD card.
 endmenu
 
+config LS_RX_HEAD
+    bool "RADIO: one receiver head with decoder plugins (preview)"
+    default n
+    help
+        Register the RADIO screen: FM's receiver as the RX HEAD, its decoders
+        as plugins with their own panels, the shared rail, waterfall strip and
+        deck. FM keeps its own screen either way.
+
 config LS_EXAMPLE_APP
     bool "Show native framework example app"
     default n

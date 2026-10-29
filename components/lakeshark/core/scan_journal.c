@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "ls_textpack.h"
 
 #define JOURNAL_QUEUE_DEPTH 24
 #define JOURNAL_LINE_MAX 512
@@ -47,7 +48,7 @@ static bool write_record(FILE *file, scan_journal_policy_t *policy,
     if (n < 0 || !scan_journal_policy_can_write(policy, (size_t)n + 1)) {
         policy->storage_ok = false;
         policy->write_errors++;
-        publish_policy(policy, "journal full or free-space reserve reached; scanner continues");
+        publish_policy(policy, LS_TEXT(t_scan_journal_journal_full_or_free, "journal full or free-space reserve reached; scanner continues"));
         return false;
     }
     size_t a = fwrite(line, 1, (size_t)n, file);
@@ -76,13 +77,13 @@ static FILE *open_session(const scan_journal_record_t *record,
         (mkdir("/sdcard/lakeshark/scan", 0775) != 0 && errno != EEXIST)) {
         policy->storage_ok = false;
         policy->write_errors++;
-        publish_policy(policy, "journal directory failed; scanner continues");
+        publish_policy(policy, LS_TEXT(t_scan_journal_journal_directory_failed_scanner, "journal directory failed; scanner continues"));
         return NULL;
     }
     char path[112];
     FILE *file = NULL;
     for (unsigned suffix = 0; suffix < 100 && !file; ++suffix) {
-        snprintf(path, sizeof(path),
+        LS_SNPRINTF(t_scan_journal_sdcard_lakeshark_scan_scan, path, sizeof(path),
                  "/sdcard/lakeshark/scan/scan_%08llx_%012llx_%04lx_%02u.jsonl",
                  (unsigned long long)(uint64_t)record->unix_time,
                  (unsigned long long)record->uptime_ms,
@@ -94,7 +95,7 @@ static FILE *open_session(const scan_journal_record_t *record,
     if (!file) {
         policy->storage_ok = false;
         policy->write_errors++;
-        publish_policy(policy, "journal open failed; scanner continues");
+        publish_policy(policy, LS_TEXT(t_scan_journal_journal_open_failed_scanner, "journal open failed; scanner continues"));
         return NULL;
     }
     portENTER_CRITICAL(&s_lock);
@@ -171,7 +172,7 @@ static bool enqueue(const scan_journal_record_t *record)
     __atomic_add_fetch(&s_dropped, 1, __ATOMIC_ACQ_REL);
     portENTER_CRITICAL(&s_lock);
     s_status.queue_dropped = s_dropped;
-    snprintf(s_status.detail, sizeof(s_status.detail), "event queue overflow; scanner continues");
+    LS_SNPUTS(t_scan_journal_event_queue_overflow_scanner, s_status.detail, sizeof(s_status.detail), "event queue overflow; scanner continues");
     portEXIT_CRITICAL(&s_lock);
     return false;
 }

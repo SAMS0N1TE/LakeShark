@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 uint64_t rec_space_estimate_bytes(int edges)
 {
@@ -20,7 +21,7 @@ int rec_space_format_shortage(char *out, size_t len,
                               uint64_t needed, uint64_t available)
 {
     if (!out || len == 0) return 0;
-    int n = snprintf(out, len,
+    int n = LS_SNPRINTF(t_rec_space_need_llu_b_only, out, len,
                      "need %llu B, only %llu B free",
                      (unsigned long long)needed,
                      (unsigned long long)available);

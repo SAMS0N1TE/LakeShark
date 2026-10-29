@@ -269,6 +269,26 @@ LS_CASE(the_other_known_host_is_swapped_in_both_directions)
     LS_EQ_STR(out, "https://lakeshark-ota.pages.dev");
 }
 
+LS_CASE(github_is_the_third_place_with_the_path_flattened)
+{
+    char out[160];
+    LS_CHECK(ls_ota_github_url("https://ota.terminalbay.com/tdp4/stable.txt", out, sizeof(out)));
+    LS_EQ_STR(out, "https://github.com/SAMS0N1TE/LakeShark/releases/latest/download/tdp4-stable.txt");
+    LS_CHECK(ls_ota_github_url("https://lakeshark-ota.pages.dev/tdp4lr/2.18.0/lakeshark.bin?x=1#y", out, sizeof(out)));
+    LS_EQ_STR(out, "https://github.com/SAMS0N1TE/LakeShark/releases/latest/download/tdp4lr-2.18.0-lakeshark.bin");
+    LS_CHECK(ls_ota_github_url("https://ota.terminalbay.com//tdp4//test.txt", out, sizeof(out)));
+    LS_EQ_STR(out, "https://github.com/SAMS0N1TE/LakeShark/releases/latest/download/tdp4-test.txt");
+    char keep[160] = "keep";
+    LS_CHECK(!ls_ota_github_url("https://example.com/tdp4/stable.txt", keep, sizeof(keep)));
+    LS_CHECK(!ls_ota_github_url("https://ota.terminalbay.com.evil.net/x.txt", keep, sizeof(keep)));
+    LS_CHECK(!ls_ota_github_url("http://ota.terminalbay.com/tdp4/stable.txt", keep, sizeof(keep)));
+    LS_CHECK(!ls_ota_github_url("https://ota.terminalbay.com", keep, sizeof(keep)));
+    LS_CHECK(!ls_ota_github_url("https://ota.terminalbay.com/tdp4/", keep, sizeof(keep)));
+    LS_CHECK(!ls_ota_github_url("https://ota.terminalbay.com/tdp4/stable.txt", keep, 70));
+    LS_CHECK(!ls_ota_github_url(NULL, keep, sizeof(keep)));
+    LS_EQ_STR(keep, "keep");
+}
+
 LS_CASE(an_unknown_host_or_http_or_a_small_buffer_gets_no_swap)
 {
     char out[96] = "keep";

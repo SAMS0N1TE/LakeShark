@@ -21,6 +21,8 @@
 #include "lr433_dec.h"
 #include "lr433_history.h"
 #include "fsk_packet.h"
+#include "rec_ism.h"
+#include "rec_watch.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -32,6 +34,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "ls_lora.h"
+#include "ls_textpack.h"
 #ifdef ESP_PLATFORM
 #include "lr_wf_session.h"
 #include "ls_mesh.h"
@@ -243,6 +246,10 @@ static void take(int i, const uint8_t *buf, int n, float rssi, int64_t now)
     };
     const int k = lr433_decode(&cap, &s_work, s_msgs, (int)(sizeof(s_msgs) / sizeof(s_msgs[0])));
     for (int j = 0; j < k; j++) {
+        /* Everyone else who wants decoded devices (METERS), before the
+           TPMS readings are blanked for the table below. */
+        const rec_ism_msg_t pub = { .m = s_msgs[j], .hz = tuned_hz(p), .rssi = rssi, .source = REC_SOURCE_SX1262 };
+        rec_ism_publish(&pub, now);
         lr433_history_receive(&s_msgs[j]);
         if (lr433_proto_class(s_msgs[j].proto) == LR433_TPMS && !lr433_history_owned(&s_msgs[j]))
             s_msgs[j].kpa = s_msgs[j].temp_c = NAN;
@@ -512,7 +519,7 @@ static bool lr433_start(char *why, size_t n)
         if (s_on[i]) s_n_on++;
     }
     if (!s_n_on) {
-        snprintf(why, n, "This chip has no OOK or FSK receiver for %s", SEL_NAMES[sel]);
+        LS_SNPRINTF(t_exp_lr433_this_chip_has_no, why, n, "This chip has no OOK or FSK receiver for %s", SEL_NAMES[sel]);
         return false;
     }
     portENTER_CRITICAL(&s_lock);
@@ -689,7 +696,7 @@ static int lr433_lines(char (*out)[LS_EXP_LINE], int max)
                 const int64_t rem = since + (int64_t)s_dwell_s * 1000000 - now;
                 snprintf(left, sizeof(left), " %lds", (long)(rem > 0 ? (rem + 999999) / 1000000 : 0));
             }
-            snprintf(out[n++], LS_EXP_LINE, "NOW  %-8s %.4f MHz%s", PLAN[cur].name, tuned_hz(&PLAN[cur]) / 1e6, left);
+            LS_SNPRINTF(t_exp_lr433_now_8s_4f_mhz, out[n++], LS_EXP_LINE, "NOW  %-8s %.4f MHz%s", PLAN[cur].name, tuned_hz(&PLAN[cur]) / 1e6, left);
         } else {
             snprintf(out[n++], LS_EXP_LINE, "NOW  -- %.40s", fail[0] ? fail : "not listening");
         }
@@ -707,7 +714,7 @@ static int lr433_lines(char (*out)[LS_EXP_LINE], int max)
         snprintf(out[n++], LS_EXP_LINE, "%s", line);
     }
     if (n < max)
-        snprintf(out[n++], LS_EXP_LINE, "HEARD %lu bursts, %lu decoded, %d device%s", (unsigned long)caps,
+        LS_SNPRINTF(t_exp_lr433_heard_lu_bursts_lu, out[n++], LS_EXP_LINE, "HEARD %lu bursts, %lu decoded, %d device%s", (unsigned long)caps,
                  (unsigned long)decoded, ndev, ndev == 1 ? "" : "s");
 
     /* What keyed and did not decode keeps its lines at the bottom. */
@@ -718,7 +725,7 @@ static int lr433_lines(char (*out)[LS_EXP_LINE], int max)
     const int tail = unk_lines + (tpms_note ? 1 : 0);
 
     if (ndev && n < max - tail)
-        snprintf(out[n++], LS_EXP_LINE, "%-9s %-9s %-15s %4s %3s %3s", "DEVICE", "ID", "READING", "dBm", "N", "AGO");
+        LS_SNPRINTF(t_exp_lr433_9s_9s_15s_4s, out[n++], LS_EXP_LINE, "%-9s %-9s %-15s %4s %3s %3s", "DEVICE", "ID", "READING", "dBm", "N", "AGO");
     for (int k = 0; k < ndev && n < max - tail; k++) {
         heard_t d;
         portENTER_CRITICAL(&s_lock);
@@ -733,7 +740,7 @@ static int lr433_lines(char (*out)[LS_EXP_LINE], int max)
         /* a packet's level is dB over the floor (I/Q is uncalibrated) */
         else if (d.proto == PROTO_PACKET) snprintf(lvl, sizeof(lvl), "+%.0f", (double)d.rssi);
         else snprintf(lvl, sizeof(lvl), "%.0f", (double)d.rssi);
-        snprintf(out[n++], LS_EXP_LINE, "%-9.9s %-9.9s %-15.15s %4.4s %3lu %3.3s",
+        LS_SNPRINTF(t_exp_lr433_9_9s_9_9s, out[n++], LS_EXP_LINE, "%-9.9s %-9.9s %-15.15s %4.4s %3lu %3.3s",
                  d.proto == PROTO_PACKET ? "FSK-PKT" : lr433_proto_label(d.proto),
                  id, rd, lvl, (unsigned long)(d.count > 999 ? 999 : d.count), ago);
     }
@@ -746,11 +753,11 @@ static int lr433_lines(char (*out)[LS_EXP_LINE], int max)
         else snprintf(last, sizeof(last), "%.0f", (double)unk[i].last);
         if (isnan(unk[i].max)) snprintf(top, sizeof(top), "--");
         else snprintf(top, sizeof(top), "%.0f", (double)unk[i].max);
-        snprintf(out[n++], LS_EXP_LINE, "%-8.8s %5lu  last %4.4s max %4.4s dBm %4.4s", PLAN[i].name,
+        LS_SNPRINTF(t_exp_lr433_8_8s_5lu_last, out[n++], LS_EXP_LINE, "%-8.8s %5lu  last %4.4s max %4.4s dBm %4.4s", PLAN[i].name,
                  (unsigned long)(unk[i].bursts > 99999 ? 99999 : unk[i].bursts), last, top, ago);
     }
     if (tpms_note && n < max)
-        snprintf(out[n++], LS_EXP_LINE, "TPMS send about once a minute while driving");
+        LS_SNPUTS(t_exp_lr433_tpms_send_about_once, out[n++], LS_EXP_LINE, "TPMS send about once a minute while driving");
     return n;
 }
 
@@ -782,7 +789,7 @@ static bool lr433_configure(int argc, char **argv, char *why, size_t n)
         offset = (int32_t)llround(off);
     }
     if (!ok) {
-        snprintf(why, n, "all|315|433|915|ert [dwell %d-%d s] [centre MHz]", DWELL_MIN, DWELL_MAX);
+        LS_SNPRINTF(t_exp_lr433_all_315_433_915, why, n, "all|315|433|915|ert [dwell %d-%d s] [centre MHz]", DWELL_MIN, DWELL_MAX);
         return false;
     }
     s_sel = sel;
@@ -863,6 +870,16 @@ static const ls_opt_t OPTS[] = {
       .lo = -OFFSET_MAX_KHZ, .hi = OFFSET_MAX_KHZ, .unit = "kHz off each band's frequency", .show = o_show_offset },
 };
 
+/* METERS keeps its pins file on this worker too; weak, so a build or a
+   bench without METERS links. */
+__attribute__((weak)) bool ls_meters_upkeep(void) { return false; }
+static bool lr433_upkeep(void)
+{
+    const bool history = lr433_history_service();
+    const bool meters = ls_meters_upkeep();
+    return history || meters;
+}
+
 const ls_experiment_t exp_lr433 = {
     .id = "lr433",
     .name = "LR433",
@@ -876,5 +893,5 @@ const ls_experiment_t exp_lr433 = {
     .configure = lr433_configure,
     .opts = OPTS,
     .n_opts = (int)(sizeof(OPTS) / sizeof(OPTS[0])),
-    .maintenance = lr433_history_service,
+    .maintenance = lr433_upkeep,
 };

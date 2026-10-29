@@ -38,6 +38,7 @@
 
 #include "esp_err.h"
 #include "ls_lora.h"
+#include "ls_lora_iq.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -261,8 +262,8 @@ esp_err_t lr20xx_capture_source2(uint32_t *words, uint32_t *scratch,
                                size_t capacity, lr20xx_capture_result_t *result);
 
 /* Streaming source 2 through RX FIFO, currently restricted to LoRa BW31.25k.
-   Synchronous, allocates 1536 bytes before locking, IDF >=5.5. Holds radio lock,
-   uses 16 MHz polling SPI,
+   Synchronous, allocates 5120 bytes before locking, IDF >=5.5. Holds radio lock,
+   uses selectable 16/26.67 MHz SPI (DMA for long P4 FIFO frames),
    restores 2 MHz and prior LoRa/RX state on exit. duration_ms: 1..250.
    Callback runs under the lock; copy/process promptly, no blocking, logging,
    allocation or radio calls. Return false to stop normally. Bytes are IQ16 LE.
@@ -271,6 +272,20 @@ esp_err_t lr20xx_capture_source2(uint32_t *words, uint32_t *scratch,
    appropriately prioritized task; other device work can cause overruns. */
 typedef bool (*lr20xx_iq_sink_t)(void *context, const uint8_t *iq_le,
                                  size_t bytes, uint64_t first_pair);
+/* General stream sink; metadata applies to every block, first_pair counts
+   pairs in that format. Same lock/latency rules as the source-2 sink above. */
+typedef bool (*lr20xx_iq_block_sink_t)(void *context, const uint8_t *iq, size_t bytes,
+        uint64_t first_pair, uint32_t sample_rate_hz, lr20xx_iq_format_t format);
+typedef struct {
+    lr20xx_iq_route_t route;
+    uint8_t code; /* FSK input filter and source-1 divider; source 0 uses 0x11. */
+    uint32_t frequency_hz;
+    uint8_t gain; /* 0 chip AGC, 1..13 fixed; written again after SetRx. */
+    lr20xx_rx_path_t path;
+    /* Use the host I/Q gain setting (`lora lrgain`, auto by default) as the
+       source-2 stream does, in place of `gain`; IQ8 peaks drive the auto. */
+    bool host_gain;
+} lr20xx_iq_config_t;
 typedef struct {
     uint64_t bytes;
     uint32_t polls, max_fifo_level, sample_rate_hz;
@@ -287,11 +302,25 @@ typedef struct {
     int64_t max_wake_isr_lateness_us; /* Timer callback timestamp minus requested deadline. */
     int64_t max_wake_resume_us; /* Task resume timestamp minus timer callback timestamp. */
     uint32_t max_wake_fifo_level, wakes; /* First poll after each blocking wait. */
+    lr20xx_iq_format_t format;
+    uint8_t route_bytes[11];
+    uint32_t spi_hz, overflows, underflows;
+    int64_t first_fifo_error_us; /* -1 if none, otherwise relative to acquisition. */
+    int64_t max_drain_gap_us;
+    /* Longest single step of a drain: the two-frame level query, one FIFO
+       read, a flag check plus publish, the host gain step. */
+    int64_t max_level_us, max_read_us, max_publish_us, max_agc_us;
+    int64_t max_busy_us; /* longest BUSY wait before a FIFO read (part of read) */
 } lr20xx_stream_result_t;
+/* Checked bounded session, 1..120000 ms; all routes use the same drain loop.
+   Source 2 remains IQ16/125k. Raw routes use FSK and direct SetRx.
+   Claims the live ownership flag and refuses another owner without waiting. */
+esp_err_t lr20xx_stream(const lr20xx_iq_config_t *config, unsigned duration_ms,
+        lr20xx_iq_block_sink_t sink, void *context, lr20xx_stream_result_t *result);
 esp_err_t lr20xx_stream_source2(unsigned duration_ms, lr20xx_iq_sink_t sink,
                               void *context, lr20xx_stream_result_t *result);
 /* Experimental continuous-session API, 1..60000 ms. No periodic resets.
-   Publishes ~1 KiB blocks after checking FIFO error flags; a later failure
+   Publishes <=1 KiB blocks after checking FIFO error flags every >=4096 B; a later failure
    discards only the unpublished tail. false REJECTS a block and ends capture.
    Only true-accepted blocks count toward validated_bytes. The sink must only
    copy to a bounded queue, never run DSP, block, allocate or call radio APIs.
@@ -303,6 +332,8 @@ esp_err_t lr20xx_stream_source2_checked(unsigned duration_ms, lr20xx_iq_sink_t s
 
 #define LR20XX_LIVE_WAKE_US 400u
 #define LR20XX_LIVE_SLEEP_LEVEL 256u
+/* Shortest sleep worth taking on a wide (above 500 kB/s) stream. */
+#define LR20XX_FAST_MIN_SLEEP_US 50u
 
 /* Checked blocks until the sink rejects a block. Requires extended 1024-byte
    FIFO and a dedicated internal-RAM task; reserves notification index 0.
@@ -310,6 +341,11 @@ esp_err_t lr20xx_stream_source2_checked(unsigned duration_ms, lr20xx_iq_sink_t s
    Caller must stop/join this owner before retuning or freeing sink storage. */
 esp_err_t lr20xx_stream_source2_live(lr20xx_iq_sink_t sink, void *context,
                                     lr20xx_stream_result_t *result);
+/* The same continuous checked session on any route of lr20xx_stream: runs
+   until the sink rejects a block or the FIFO fails. Same task, ownership
+   and sink rules as source2_live; lr20xx_stream_source2_active() covers it. */
+esp_err_t lr20xx_stream_live(const lr20xx_iq_config_t *config, lr20xx_iq_block_sink_t sink,
+                             void *context, lr20xx_stream_result_t *result);
 /* Advisory ownership flag: direct diagnostics must not wait on a live owner. */
 bool lr20xx_stream_source2_active(void);
 

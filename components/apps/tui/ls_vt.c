@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "ls_tui_screen.h"
+#include "ls_textpack.h"
 
 static uint32_t rgb888(uint16_t c)
 {
@@ -310,7 +311,7 @@ static void put_colours(sink *k, bool new_fg, bool new_bg, uint32_t f, uint32_t 
 {
     char seq[64];
     if (new_fg && new_bg) {
-        put(k, seq, (size_t)snprintf(seq, sizeof(seq), "\x1b[38;2;%u;%u;%u;48;2;%u;%u;%um",
+        put(k, seq, (size_t)LS_SNPRINTF(t_ls_vt_38_2_u_u, seq, sizeof(seq), "\x1b[38;2;%u;%u;%u;48;2;%u;%u;%um",
             (unsigned)(f >> 16), (unsigned)(f >> 8 & 255), (unsigned)(f & 255),
             (unsigned)(b >> 16), (unsigned)(b >> 8 & 255), (unsigned)(b & 255)));
     } else if (new_fg || new_bg) {
@@ -394,7 +395,7 @@ size_t ls_vt_enter(ls_vt_out_fn out, void *ctx, int cols, int rows)
     char seq[48];
     /* Ask for the grid's size; terminals that allow it resize, the rest ignore it. */
     put(&k, seq, (size_t)snprintf(seq, sizeof(seq), "\x1b[8;%d;%dt", rows, cols));
-    puts_(&k, "\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b]0;LakeShark\x07\x1b[0m\x1b[2J");
+    puts_(&k, LS_TEXT(t_ls_vt_1049h_25l_7l_1000h, "\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b]0;LakeShark\x07\x1b[0m\x1b[2J"));
     flush(&k);
     return k.total;
 }
@@ -403,7 +404,7 @@ size_t ls_vt_leave(ls_vt_out_fn out, void *ctx)
 {
     char buf[64];
     sink k = {.buf = buf, .cap = sizeof(buf), .out = out, .ctx = ctx};
-    puts_(&k, "\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l");
+    puts_(&k, LS_TEXT(t_ls_vt_1006l_1002l_1000l_0m, "\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l"));
     flush(&k);
     return k.total;
 }

@@ -176,6 +176,23 @@ int IRAM_ATTR fm_demod_wide(fm_dsp_t *s, const uint8_t *iq, int iq_len,
     return out;
 }
 
+int fm_demod_disc(fm_dsp_t *s, const uint8_t *iq, int iq_len,
+                  int16_t *disc, int max)
+{
+    int out = 0;
+    for (int off = 0; off < iq_len && out < max; off += FM_DSP_CHUNK) {
+        int n = iq_len - off;
+        if (n > FM_DSP_CHUNK) n = FM_DSP_CHUNK;
+        load_iq(s, iq + off, n);
+        fm_demod(s);
+        int take = s->result_len;
+        if (take > max - out) take = max - out;
+        memcpy(disc + out, s->result, (size_t)take * sizeof(int16_t));
+        out += take;
+    }
+    return out;
+}
+
 int IRAM_ATTR fm_demod_iq(fm_dsp_t *s, const uint8_t *iq, int iq_len,
                           float *demod_out, int max)
 {

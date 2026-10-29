@@ -91,7 +91,8 @@ int main(void) {
         src = pathlib.Path(d) / 'worker.c'
         exe = pathlib.Path(d) / 'worker.exe'
         src.write_text(harness)
-        subprocess.run([compiler, '-std=c11', str(src), '-o', str(exe)], check=True)
+        subprocess.run([compiler, '-std=c11', '-I', str(ROOT / 'components/ls_textpack/include'), '-include', 'ls_textpack.h',
+                        str(src), '-o', str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 
 

@@ -6,6 +6,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 /* Below this a floor has not been learned yet (a bin with no reading when the
    floors were primed). The first real reading becomes its floor. */
@@ -344,7 +345,7 @@ size_t ls_search_dump_line(const ls_search_t *s, const int8_t *last,
 
     static const char hex[] = "0123456789abcdef";
     uint64_t hz0 = s->start_hz + (uint64_t)s->bin_hz * first + s->bin_hz / 2u;
-    int n = snprintf(out, cap, "SEARCH-DUMP D %lu %lu %lu %lu F",
+    int n = LS_SNPRINTF(t_ls_search_core_search_dump_d_lu, out, cap, "SEARCH-DUMP D %lu %lu %lu %lu F",
                      (unsigned long)s->pass,
                      (unsigned long)hz0, (unsigned long)s->bin_hz,
                      (unsigned long)count);

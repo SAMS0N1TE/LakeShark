@@ -2,6 +2,8 @@
 #include <math.h>
 #include <string.h>
 #include "esp_timer.h"
+#include "ls_decoded.h"
+#include <stdio.h>
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
@@ -76,6 +78,10 @@ void ais_store_receive(const ais_vessel_t *p, void *user)
     (void)user;
     if (!p || !p->mmsi) return;
     int64_t now = esp_timer_get_time();
+    ls_decoded_t ev = { .kind = LS_DECODED_AIS, .address = p->mmsi, .at_us = now,
+                        .has_pos = (p->fields & AIS_POSITION) && p->position, .lat = p->lat, .lon = p->lon };
+    snprintf(ev.from, sizeof(ev.from), "%s", p->name);
+    ls_decoded_publish(&ev);
     lock(); last_heard = now; prune(now);
     int found = -1;
     for (int i = 0; i < count; ++i) if (p->mmsi == vessels[i].mmsi) { found = i; break; }

@@ -26,6 +26,7 @@
 #include <time.h>
 /**/
 #include <stdlib.h>
+#include "ls_textpack.h"
 
 extern volatile float    p25_rx_power;
 
@@ -766,14 +767,12 @@ static void autosq_sample(const scan_channel_t *c, int *samples, int *n)
 static void do_autosquelch(void)
 {
     if (s_fg_mode != SCAN_MODE_NFM) {
-        snprintf(s_status, sizeof(s_status),
-                 "autosql needs the FM app (squelch is an NFM idea)");
+        LS_SNPUTS(t_scan_engine_autosql_needs_the_fm, s_status, sizeof(s_status), "autosql needs the FM app (squelch is an NFM idea)");
         return;
     }
     /**/
     if (!nfm_wait_listen(800)) {
-        snprintf(s_status, sizeof(s_status),
-                 "autosql: FM never reached LISTEN - not calibrating");
+        LS_SNPUTS(t_scan_engine_autosql_fm_never_reached, s_status, sizeof(s_status), "autosql: FM never reached LISTEN - not calibrating");
         ESP_LOGW(TAG, "autosql: FM submode stuck at %d, refusing to calibrate",
                  (int)FM.mode);
         return;
@@ -814,7 +813,7 @@ static void do_autosquelch(void)
 
     s_autosq_busy = false;
     if (n < 3) {
-        snprintf(s_status, sizeof(s_status),
+        LS_SNPRINTF(t_scan_engine_autosql_only_d_noise, s_status, sizeof(s_status),
                  "autosql: only %d noise readings - need at least 3, squelch unchanged", n);
         ESP_LOGW(TAG, "autosql: %d noise readings, refusing to set squelch "
                       "from a measurement that did not happen", n);
@@ -833,7 +832,7 @@ static void do_autosquelch(void)
     lakeshark_fm_set_squelch(want);
     ESP_LOGW(TAG, "autosql: noise floor=%d%% (median of %d, %d..%d) margin=%d -> squelch=%d",
              floor_pct, n, samples[0], samples[n - 1], s_autosq_margin, want);
-    snprintf(s_status, sizeof(s_status),
+    LS_SNPRINTF(t_scan_engine_autosql_floor_d_n, s_status, sizeof(s_status),
              "autosql floor=%d n=%d -> sq=%d", floor_pct, n, want);
 }
 
@@ -888,11 +887,11 @@ static int candidate_count(void) { return candidate_count_if(true); }
 static void empty_reason(char *buf, size_t n)
 {
     if (s_location && !scan_engine_location_ready()) {
-        snprintf(buf, n, "GPS fix required / scan paused"); return;
+        LS_SNPUTS(t_scan_engine_gps_fix_required_scan, buf, n, "GPS fix required / scan paused"); return;
     }
-    if (s_location) { snprintf(buf, n, "no enabled channels in GPS range/zone"); return; }
+    if (s_location) { LS_SNPUTS(t_scan_engine_no_enabled_channels_in, buf, n, "no enabled channels in GPS range/zone"); return; }
     int total = scan_channels_count();
-    if (total <= 0) { snprintf(buf, n, "no channels - add one"); return; }
+    if (total <= 0) { LS_SNPUTS(t_scan_engine_no_channels_add_one, buf, n, "no channels - add one"); return; }
 
     int lock = 0, off = 0, zone = 0, mode = 0, unsupported = 0, skip = 0;
     for (int i = 0; i < total; i++) {
@@ -907,10 +906,10 @@ static void empty_reason(char *buf, size_t n)
         if (sess_skipped(i))                 { skip++; continue; }
     }
     if (unsupported)
-        snprintf(buf, n, "%d ch unsupported by receiver; %dlock %doff %dzone %dskip",
+        LS_SNPRINTF(t_scan_engine_d_ch_unsupported_by, buf, n, "%d ch unsupported by receiver; %dlock %doff %dzone %dskip",
                  unsupported, lock, off, zone, skip);
     else
-        snprintf(buf, n, "%d ch none eligible: %dlock %doff %dzone %dmode %dskip",
+        LS_SNPRINTF(t_scan_engine_d_ch_none_eligible, buf, n, "%d ch none eligible: %dlock %doff %dzone %dmode %dskip",
                  total, lock, off, zone, mode, skip);
 }
 
@@ -978,7 +977,7 @@ static int priority_sample(void)
                 sess_skip(i);
                 s_order_pos = 0;
                 s_scan_error = LS_RADIO_OK;
-                snprintf(s_status, sizeof(s_status), "skip unsupported %.4f",
+                LS_SNPRINTF(t_scan_engine_skip_unsupported_4f, s_status, sizeof(s_status), "skip unsupported %.4f",
                          c->freq_hz / 1e6);
                 continue;
             }
@@ -1129,7 +1128,7 @@ static void scan_task(void *arg)
             int n = band_steps();
             if (n <= 0) {
                 s_cur = -1;
-                snprintf(s_status, sizeof(s_status),
+                LS_SNPRINTF(t_scan_engine_band_4f_4f_step, s_status, sizeof(s_status),
                          "band %.4f-%.4f step %lu - empty range",
                          s_band_start / 1e6, s_band_stop / 1e6,
                          (unsigned long)s_band_step);
@@ -1207,7 +1206,7 @@ static void scan_task(void *arg)
                     s_candidate = -1;
                     s_hold_candidate = -1;
                     s_scan_error = LS_RADIO_OK;
-                    snprintf(s_status, sizeof(s_status), "skip unsupported %.4f",
+                    LS_SNPRINTF(t_scan_engine_skip_unsupported_4f, s_status, sizeof(s_status), "skip unsupported %.4f",
                              c->freq_hz / 1e6);
                     continue;
                 }
@@ -1413,7 +1412,7 @@ void scan_engine_start(void)
     s_journal_last_error = 0;
     s_journal_receiver_gap = false;
     s_journal_summary_due = esp_timer_get_time() + 60000000;
-    snprintf(s_status, sizeof(s_status), "waiting for first actual tune");
+    LS_SNPUTS(t_scan_engine_waiting_for_first_actual, s_status, sizeof(s_status), "waiting for first actual tune");
     s_enabled      = s_task_ready;
     if (s_enabled) {
         scan_journal_record_t r = journal_record(SCAN_JOURNAL_SESSION_START,
@@ -1566,7 +1565,7 @@ void scan_engine_status(char *buf, size_t n)
     scan_feedback_input_t input;
     feedback_input(&input);
     if (s_enabled && s_location && !scan_engine_location_ready() && s_cur < 0) {
-        snprintf(buf, n, "GPS fix required / paused"); return;
+        LS_SNPUTS(t_scan_engine_gps_fix_required_paused, buf, n, "GPS fix required / paused"); return;
     }
     scan_feedback_format(&input,
                          s_src == SCAN_SRC_BAND ? "BAND" : "PRESET",

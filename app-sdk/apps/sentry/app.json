@@ -1,0 +1,1 @@
+{ "category": "radio", "description": "SDK 2.1 service example: watches one channel for a carrier and keeps watching after you leave it. Posts a notice when a carrier comes up and puts each up and down on the board's decoded timeline. STOP it in RADIOS." }

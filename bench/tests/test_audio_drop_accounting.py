@@ -23,6 +23,8 @@ static bool s_media_request, s_muted, s_ready=true, s_live_seen;
 static void *s_ring=(void*)1, *s_push_lock=(void*)2;
 static uint32_t s_live_tick, s_speech_end, s_rd_bytes, s_skip_to, s_tts_yielded;
 static _Atomic uint32_t s_audio_drops;
+/* App SDK receiver tap (audio_out_set_tap); none installed here. */
+static void (*volatile s_tap)(const int16_t *samples, int n);
 static int lock_available=1, lock_takes, lock_gives, sends, writes, delays;
 static int codec_error;
 static size_t accepted=320;

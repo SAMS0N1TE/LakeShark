@@ -2,6 +2,9 @@
 #define LS_MUSIC_BACKEND_H
 #include <stdbool.h>
 #include <stdint.h>
+#include "ls_audio_analysis.h"
+#include "ls_audio_overview.h"
+#include "ls_audio_tools.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -18,6 +21,14 @@ bool ls_music_play_path(const char *path);
 bool ls_music_is_open(void);
 bool ls_music_toggle(void);
 bool ls_music_seek_ms(uint32_t ms);
+bool ls_music_speed_set(unsigned permille); /* 500..2000, varispeed */
+unsigned ls_music_speed_get(void);
+bool ls_music_loop_set(uint32_t a_ms,uint32_t b_ms,bool enabled);
+bool ls_music_loop_get(uint32_t *a_ms,uint32_t *b_ms);
+bool ls_music_marker_add(void);
+void ls_music_markers_clear(void);
+unsigned ls_music_marker_count(void);
+bool ls_music_marker_get(unsigned index,uint32_t *at_ms);
 void ls_music_stop(void);
 ls_music_state_t ls_music_state(void);
 int ls_music_volume(void);
@@ -62,10 +73,20 @@ typedef struct {
     bool mono_out; /* the board plays both source channels as one */
 } ls_music_format_t;
 bool ls_music_format(ls_music_format_t *out);
+/* UI-owned consumer; the audio worker only appends source PCM. */
+ls_audio_analysis *ls_music_analysis(void);
+ls_audio_overview *ls_music_overview(void);
+ls_audio_tools *ls_music_tools(void);
+bool ls_music_tone_start(ls_gen_kind kind,unsigned start_hz,unsigned end_hz,unsigned duration_ms,int dbfs);
+bool ls_music_tone_active(void);
+/* Radio WAV capture needs a shared PCM tap before audio_write_mono's
+   media/mute checks (P25 reaches it via audio_write_p25_voice). MUSIC
+   currently parks RF and owns the exclusive media lease, so it does not
+   expose a radio-record action. Existing archived call WAVs are playable. */
 /* The microphone as a source: live into the meters and plots, and with
    `record` also into a mono WAV in the SD music folder. Starting it stops
    playback; playing a track stops it. */
-typedef enum { LS_MIC_OFF, LS_MIC_LIVE, LS_MIC_RECORDING } ls_music_mic_t;
+typedef enum { LS_MIC_OFF, LS_MIC_LIVE, LS_MIC_RECORDING, LS_MIC_TONE } ls_music_mic_t;
 bool ls_music_mic_start(bool record);
 void ls_music_mic_stop(void);
 bool ls_music_mic_repair(void);

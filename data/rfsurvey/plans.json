@@ -1,0 +1,15 @@
+{
+  "schema": "lakeshark.rfsurvey.plans",
+  "version": 1,
+  "plans": [
+    { "name": "MURS",
+      "channels": [
+        { "hz": 151820000, "bw": 11250, "label": "MURS1" },
+        { "hz": 151880000, "bw": 11250, "label": "MURS2" },
+        { "hz": 151940000, "bw": 11250, "label": "MURS3" },
+        { "hz": 154570000, "bw": 20000, "label": "MURS4" },
+        { "hz": 154600000, "bw": 20000, "label": "MURS5" } ] },
+    { "name": "2M HAM", "range": { "lo": 144000000, "hi": 148000000, "cells": 16 } },
+    { "name": "70CM HAM", "range": { "lo": 420000000, "hi": 450000000, "cells": 16 } }
+  ]
+}

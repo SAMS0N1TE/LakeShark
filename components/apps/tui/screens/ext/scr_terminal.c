@@ -11,6 +11,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 #define A(fg, bg) TUI_ATTR(fg, bg)
 
@@ -43,7 +44,7 @@ static void run(const char *text)
     while (*text == ' ') text++;
     snprintf(line, sizeof(line), "%s", text);
     if (ls_term_busy()) {
-        snprintf(s_note, sizeof(s_note), "still running '%.40s'", s_last);
+        LS_SNPRINTF(t_scr_terminal_still_running_40s, s_note, sizeof(s_note), "still running '%.40s'", s_last);
         return;
     }
     char echo[LS_TERM_INPUT_MAX + 16];
@@ -58,11 +59,11 @@ static void run(const char *text)
     ls_term_out(echo);
     if (!s_runner) s_runner = ls_term_start();
     if (!s_runner) {
-        ls_term_out("no internal memory for the command runner; close a radio app and try again\n");
+        ls_term_out(LS_TEXT(t_scr_terminal_no_internal_memory_for, "no internal memory for the command runner; close a radio app and try again\n"));
         return;
     }
     snprintf(s_last, sizeof(s_last), "%s", line);
-    if (!ls_term_submit(line)) ls_term_out("the command runner is not ready\n");
+    if (!ls_term_submit(line)) ls_term_out(LS_TEXT(t_scr_terminal_the_command_runner_is, "the command runner is not ready\n"));
 }
 
 static void history(int dir)
@@ -91,7 +92,7 @@ static void complete(void)
         ls_term_out("\n");
         s_back = 0;
     } else {
-        snprintf(s_note, sizeof(s_note), "no command starts '%.30s'", s_in);
+        LS_SNPRINTF(t_scr_terminal_no_command_starts_30s, s_note, sizeof(s_note), "no command starts '%.30s'", s_in);
     }
 }
 
@@ -199,7 +200,7 @@ static void enter(void)
     s_runner = ls_term_start();
     if (!s_greeted) {
         s_greeted = true;
-        ls_term_out("TERMINAL: the console's commands, run here. 'help' lists them.\n");
+        ls_term_out(LS_TEXT(t_scr_terminal_terminal_the_console_s, "TERMINAL: the console's commands, run here. 'help' lists them.\n"));
     }
     s_note[0] = '\0';
 }
@@ -215,7 +216,7 @@ static void draw(tui_surface *sf, tui_rect a)
     s_out_hit = s_in_hit = tui_rect_make(0, 0, 0, 0);
     if (a.w < 24 || a.h < 10) {
         s_bar_n = 0;
-        ls_panel_notice(sf, a, "TERMINAL", "Enlarge the pane", "A running command keeps going");
+        ls_panel_notice(sf, a, "TERMINAL", "Enlarge the pane", LS_TEXT(t_scr_terminal_a_running_command_keeps, "A running command keeps going"));
         return;
     }
     const bool busy = ls_term_busy();

@@ -6,6 +6,7 @@
 #include "esp_timer.h"
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 typedef struct { const char *path; char *message; size_t capacity; } request_t;
 static EXT_RAM_BSS_ATTR scan_channel_t staged[SCAN_MAX_CHANNELS];
@@ -40,9 +41,9 @@ static esp_err_t import_worker(void *arg)
 {
     request_t *r = arg;
     FILE *f = fopen(r->path, "rb");
-    if (!f) { snprintf(r->message, r->capacity, "Import file not found"); return ESP_FAIL; }
+    if (!f) { LS_SNPUTS(t_scan_import_file_import_file_not_found, r->message, r->capacity, "Import file not found"); return ESP_FAIL; }
     if (fseek(f, 0, SEEK_END) || ftell(f) > 4 * 1024 * 1024 || ftell(f) <= 0 || fseek(f, 0, SEEK_SET)) {
-        fclose(f); snprintf(r->message, r->capacity, "Import must be 1 byte..4 MB"); return ESP_FAIL;
+        fclose(f); LS_SNPUTS(t_scan_import_file_import_must_be_1, r->message, r->capacity, "Import must be 1 byte..4 MB"); return ESP_FAIL;
     }
     scan_channel_t *rows = heap_caps_calloc(SCAN_MAX_CHANNELS, sizeof(*rows), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!rows) { fclose(f); snprintf(r->message, r->capacity, "No import memory"); return ESP_ERR_NO_MEM; }
@@ -69,7 +70,7 @@ static esp_err_t import_worker(void *arg)
         scan_engine_stop();
         ok = scan_channels_replace(rows, count);
         snprintf(r->message, r->capacity, ok ? "Imported %d channels; scan stopped" : "Import save failed; list retained", count);
-    } else snprintf(r->message, r->capacity, "Rejected import at line %d; list retained", number);
+    } else LS_SNPRINTF(t_scan_import_file_rejected_import_at_line, r->message, r->capacity, "Rejected import at line %d; list retained", number);
     heap_caps_free(rows);
     return ok ? ESP_OK : ESP_FAIL;
 }
@@ -77,10 +78,10 @@ bool scan_import_file(const char *path, char *message, size_t capacity)
 {
     if (!message || !capacity) return false;
     if (!path || strncmp(path, "/sdcard/", 8) || strstr(path, "..") || strlen(path) > 96) {
-        snprintf(message, capacity, "Use an SD path without '..'"); return false;
+        LS_SNPUTS(t_scan_import_file_use_an_sd_path, message, capacity, "Use an SD path without '..'"); return false;
     }
     request_t request = {path, message, capacity};
-    snprintf(message, capacity, "Import worker unavailable");
+    LS_SNPUTS(t_scan_import_file_import_worker_unavailable, message, capacity, "Import worker unavailable");
     esp_err_t err = ls_nvs_call(import_worker, &request, 0);
     return err == ESP_OK;
 }

@@ -5,10 +5,12 @@
 
 #include <string.h>
 #include "esp_attr.h"
+#include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "ls_cold.h"
 
 #define LS_RADIO_MAX_ENDPOINTS 8
 #define LS_RADIO_MAX_WAITERS   4
@@ -46,6 +48,7 @@ struct endpoint_slot {
     uint32_t packet_formats;
     ls_radio_range_t frequency_ranges[LS_RADIO_MAX_FREQUENCY_RANGES];
     size_t frequency_range_count;
+    bool tuner_model_known;
     ls_radio_range_t sample_rate_ranges[LS_RADIO_MAX_RATE_RANGES];
     size_t sample_rate_range_count;
     ls_radio_driver_ops_t ops;
@@ -54,11 +57,15 @@ struct endpoint_slot {
     ls_radio_packet_config_t actual_packet;
     uint64_t bytes_read;
     uint64_t packets_read;
+    uint64_t diagnostic_context_epoch, diagnostic_counter_epoch;
+    unsigned diagnostic_controls;
+    bool diagnostic_counter_overflow;
     ls_radio_err_t last_error;
     uint32_t control_io_errors;
     SemaphoreHandle_t control_lock;
     SemaphoreHandle_t quiesced;
     ls_radio_session_t session;
+    uint32_t fe_ctls;
 };
 
 static EXT_RAM_BSS_ATTR endpoint_slot_t s_endpoints[LS_RADIO_MAX_ENDPOINTS];
@@ -66,6 +73,15 @@ static SemaphoreHandle_t s_registry_lock;
 static volatile int s_registry_init;
 /**/
 static uint32_t s_generation;
+static uint64_t s_diagnostic_epoch;
+
+/* Registry lock held. Saturation stays unknown for the rest of this boot. */
+static uint64_t diagnostic_epoch_next(void)
+{
+    if (s_diagnostic_epoch != UINT64_MAX) ++s_diagnostic_epoch;
+    return s_diagnostic_epoch;
+}
+static ls_radio_iq_tap_fn s_iq_tap;
 
 typedef struct {
     ls_radio_endpoint_event_fn callback;
@@ -74,7 +90,7 @@ typedef struct {
 
 static endpoint_subscriber_t s_subscribers[LS_RADIO_MAX_SUBSCRIBERS];
 
-static ls_radio_err_t ensure_registry(void)
+LS_COLD static ls_radio_err_t ensure_registry(void)
 {
     if (__atomic_load_n(&s_registry_init, __ATOMIC_ACQUIRE) != 2) {
         int expected = 0;
@@ -142,7 +158,7 @@ static endpoint_slot_t *find_slot_locked(const char *endpoint_id)
     return NULL;
 }
 
-static endpoint_slot_t *alloc_slot_locked(const char *endpoint_id)
+LS_COLD static endpoint_slot_t *alloc_slot_locked(const char *endpoint_id)
 {
     endpoint_slot_t *reusable = NULL;
     for (size_t i = 0; i < LS_RADIO_MAX_ENDPOINTS; ++i) {
@@ -157,7 +173,7 @@ static endpoint_slot_t *alloc_slot_locked(const char *endpoint_id)
     return reusable;
 }
 
-static bool endpoint_matches(const endpoint_slot_t *slot,
+LS_COLD static bool endpoint_matches(const endpoint_slot_t *slot,
                              const ls_radio_requirements_t *requirements)
 {
     if (!slot->present ||
@@ -194,7 +210,7 @@ static void note_quiesced_locked(endpoint_slot_t *slot)
         xSemaphoreGive(slot->quiesced);
 }
 
-static void wait_quiesced(endpoint_slot_t *slot)
+LS_COLD static void wait_quiesced(endpoint_slot_t *slot)
 {
     for (;;) {
         xSemaphoreTake(s_registry_lock, portMAX_DELAY);
@@ -235,6 +251,10 @@ static ls_radio_err_t session_enter(ls_radio_session_t *session,
         error = LS_RADIO_ERR_STOPPED;
     else {
         ++slot->in_flight;
+        if (!require_streaming) {
+            ++slot->diagnostic_controls;
+            slot->diagnostic_context_epoch = diagnostic_epoch_next();
+        }
         *out_slot = slot;
     }
     xSemaphoreGive(s_registry_lock);
@@ -252,6 +272,9 @@ static ls_radio_err_t session_leave(endpoint_slot_t *slot,
         error = LS_RADIO_ERR_DISCONNECTED;
     else if (read_call && slot->stopping)
         error = LS_RADIO_ERR_STOPPED;
+    if (read_call && error == LS_RADIO_OK &&
+        UINT64_MAX - slot->bytes_read < bytes_read)
+        slot->diagnostic_counter_overflow = true;
     if (read_call && error == LS_RADIO_OK)
         slot->bytes_read += bytes_read;
     if (read_call && error == LS_RADIO_OK)
@@ -261,6 +284,8 @@ static ls_radio_err_t session_leave(endpoint_slot_t *slot,
     if (error != LS_RADIO_OK)
         slot->last_error = error;
     if (slot->in_flight > 0) --slot->in_flight;
+    if (!read_call && slot->diagnostic_controls > 0)
+        --slot->diagnostic_controls;
     note_quiesced_locked(slot);
     xSemaphoreGive(s_registry_lock);
     return error;
@@ -273,7 +298,7 @@ static ls_radio_err_t session_leave(endpoint_slot_t *slot,
    the RTL's stop is host-side and always succeeds, so counting it would
    clear the run between every failed open. Counted while the operation is
    still in flight, so the slot cannot be re-registered under the count. */
-static ls_radio_err_t session_leave_control(endpoint_slot_t *slot,
+LS_COLD static ls_radio_err_t session_leave_control(endpoint_slot_t *slot,
                                             ls_radio_err_t driver_error)
 {
     xSemaphoreTake(s_registry_lock, portMAX_DELAY);
@@ -290,7 +315,7 @@ static ls_radio_err_t session_leave_control(endpoint_slot_t *slot,
     return session_leave(slot, driver_error, false, 0, 0);
 }
 
-static void fill_info(const endpoint_slot_t *slot,
+LS_COLD static void fill_info(const endpoint_slot_t *slot,
                       ls_radio_endpoint_info_t *out)
 {
     memset(out, 0, sizeof(*out));
@@ -302,6 +327,7 @@ static void fill_info(const endpoint_slot_t *slot,
     out->iq_formats = slot->iq_formats;
     out->packet_formats = slot->packet_formats;
     out->frequency_range_count = slot->frequency_range_count;
+    out->tuner_model_known=slot->tuner_model_known;
     memcpy(out->frequency_ranges, slot->frequency_ranges,
            slot->frequency_range_count * sizeof(slot->frequency_ranges[0]));
     out->sample_rate_range_count = slot->sample_rate_range_count;
@@ -316,11 +342,19 @@ static void fill_info(const endpoint_slot_t *slot,
     out->actual_packet = slot->actual_packet;
     out->bytes_read = slot->bytes_read;
     out->packets_read = slot->packets_read;
+    out->diagnostic_context_epoch = slot->diagnostic_context_epoch;
+    out->diagnostic_counter_epoch = slot->diagnostic_counter_epoch;
+    out->diagnostic_context_known = slot->present && !slot->removing &&
+        !slot->stopping && !slot->pause_pending && !slot->diagnostic_controls &&
+        slot->diagnostic_context_epoch != UINT64_MAX;
+    out->diagnostic_counter_known = !slot->diagnostic_counter_overflow &&
+        slot->diagnostic_counter_epoch != UINT64_MAX;
     out->last_error = slot->last_error;
     out->control_io_errors = slot->control_io_errors;
+    out->fe_ctls = slot->fe_ctls;
 }
 
-static void publish_endpoint_event(ls_radio_endpoint_event_kind_t kind,
+LS_COLD static void publish_endpoint_event(ls_radio_endpoint_event_kind_t kind,
                                    const char *endpoint_id,
                                    uint32_t capabilities)
 {
@@ -340,7 +374,7 @@ static void publish_endpoint_event(ls_radio_endpoint_event_kind_t kind,
             subscribers[i].callback(&event, subscribers[i].user);
 }
 
-ls_radio_err_t ls_radio_endpoint_register(const ls_radio_endpoint_t *endpoint)
+LS_COLD ls_radio_err_t ls_radio_endpoint_register(const ls_radio_endpoint_t *endpoint)
 {
     if (!endpoint || !endpoint->endpoint_id || !endpoint->endpoint_id[0] ||
         !endpoint->name || !endpoint->ops || endpoint->capabilities == 0 ||
@@ -414,6 +448,10 @@ ls_radio_err_t ls_radio_endpoint_register(const ls_radio_endpoint_t *endpoint)
     slot->waiters = 0;
     slot->bytes_read = 0;
     slot->packets_read = 0;
+    slot->diagnostic_context_epoch = diagnostic_epoch_next();
+    slot->diagnostic_counter_epoch = slot->diagnostic_context_epoch;
+    slot->diagnostic_controls = 0;
+    slot->diagnostic_counter_overflow = false;
     slot->last_error = LS_RADIO_OK;
     slot->control_io_errors = 0;
     __atomic_add_fetch(&s_generation, 1, __ATOMIC_RELEASE);
@@ -422,9 +460,11 @@ ls_radio_err_t ls_radio_endpoint_register(const ls_radio_endpoint_t *endpoint)
     slot->iq_formats = endpoint->iq_formats;
     slot->packet_formats = endpoint->packet_formats;
     slot->frequency_range_count = endpoint->frequency_range_count;
+    slot->tuner_model_known=endpoint->tuner_model_known;
     slot->sample_rate_range_count = endpoint->sample_rate_range_count;
     slot->ops = *endpoint->ops;
     slot->driver_ctx = endpoint->driver_ctx;
+    slot->fe_ctls = endpoint->ops->fe_ctl ? endpoint->fe_ctls : 0;
     memset(&slot->actual_iq, 0, sizeof(slot->actual_iq));
     memset(&slot->actual_packet, 0, sizeof(slot->actual_packet));
     memset(&slot->session, 0, sizeof(slot->session));
@@ -447,7 +487,7 @@ ls_radio_err_t ls_radio_endpoint_register(const ls_radio_endpoint_t *endpoint)
     return LS_RADIO_OK;
 }
 
-ls_radio_err_t ls_radio_endpoint_unregister(const char *endpoint_id)
+LS_COLD ls_radio_err_t ls_radio_endpoint_unregister(const char *endpoint_id)
 {
     if (!endpoint_id || ensure_registry() != LS_RADIO_OK)
         return LS_RADIO_ERR_INVALID;
@@ -466,6 +506,7 @@ ls_radio_err_t ls_radio_endpoint_unregister(const char *endpoint_id)
      * left. This prevents detach from turning a blocked read into a UAF. */
     slot->present = false;
     slot->removing = true;
+    slot->diagnostic_context_epoch = diagnostic_epoch_next();
     slot->streaming = false;
     slot->stopping = true;
     slot->last_error = LS_RADIO_ERR_DISCONNECTED;
@@ -482,6 +523,7 @@ ls_radio_err_t ls_radio_endpoint_unregister(const char *endpoint_id)
     xSemaphoreTake(s_registry_lock, portMAX_DELAY);
     slot->driver_ctx = NULL;
     memset(&slot->ops, 0, sizeof(slot->ops));
+    slot->fe_ctls = 0;
     slot->removing = false;
     __atomic_add_fetch(&s_generation, 1, __ATOMIC_RELEASE);
     xSemaphoreGive(s_registry_lock);
@@ -506,7 +548,7 @@ uint32_t ls_radio_endpoint_generation(void)
     return __atomic_load_n(&s_generation, __ATOMIC_ACQUIRE);
 }
 
-ls_radio_err_t ls_radio_endpoint_info(size_t index,
+LS_COLD ls_radio_err_t ls_radio_endpoint_info(size_t index,
                                       ls_radio_endpoint_info_t *out)
 {
     if (!out || ensure_registry() != LS_RADIO_OK)
@@ -526,7 +568,7 @@ ls_radio_err_t ls_radio_endpoint_info(size_t index,
     return found ? LS_RADIO_OK : LS_RADIO_ERR_UNAVAILABLE;
 }
 
-ls_radio_err_t ls_radio_endpoint_get(const char *endpoint_id,
+LS_COLD ls_radio_err_t ls_radio_endpoint_get(const char *endpoint_id,
                                      ls_radio_endpoint_info_t *out)
 {
     if (!endpoint_id || !out || ensure_registry() != LS_RADIO_OK)
@@ -538,7 +580,7 @@ ls_radio_err_t ls_radio_endpoint_get(const char *endpoint_id,
     return slot ? LS_RADIO_OK : LS_RADIO_ERR_UNAVAILABLE;
 }
 
-ls_radio_err_t ls_radio_endpoint_try_get(const char *endpoint_id,
+LS_COLD ls_radio_err_t ls_radio_endpoint_try_get(const char *endpoint_id,
                                          ls_radio_endpoint_info_t *out)
 {
     if (!endpoint_id || !out) return LS_RADIO_ERR_INVALID;
@@ -552,7 +594,7 @@ ls_radio_err_t ls_radio_endpoint_try_get(const char *endpoint_id,
     return slot ? LS_RADIO_OK : LS_RADIO_ERR_UNAVAILABLE;
 }
 
-bool ls_radio_endpoint_available(
+LS_COLD bool ls_radio_endpoint_available(
     const ls_radio_requirements_t *requirements)
 {
     if (!requirements || requirements->required_caps == 0 ||
@@ -576,7 +618,7 @@ bool ls_radio_endpoint_available(
     return available;
 }
 
-int ls_radio_endpoint_subscribe(ls_radio_endpoint_event_fn callback,
+LS_COLD int ls_radio_endpoint_subscribe(ls_radio_endpoint_event_fn callback,
                                 void *user)
 {
     if (!callback || ensure_registry() != LS_RADIO_OK) return -1;
@@ -594,7 +636,7 @@ int ls_radio_endpoint_subscribe(ls_radio_endpoint_event_fn callback,
     return result;
 }
 
-ls_radio_err_t ls_radio_endpoint_recover(const char *endpoint_id)
+LS_COLD ls_radio_err_t ls_radio_endpoint_recover(const char *endpoint_id)
 {
     if (!endpoint_id || !endpoint_id[0] ||
         ensure_registry() != LS_RADIO_OK)
@@ -614,6 +656,7 @@ ls_radio_err_t ls_radio_endpoint_recover(const char *endpoint_id)
         return LS_RADIO_ERR_UNSUPPORTED;
     }
     slot->removing = true;
+    slot->diagnostic_context_epoch = diagnostic_epoch_next();
     ls_radio_err_t (*recover)(void *) = slot->ops.recover;
     void *driver_ctx = slot->driver_ctx;
     xSemaphoreGive(s_registry_lock);
@@ -629,7 +672,71 @@ ls_radio_err_t ls_radio_endpoint_recover(const char *endpoint_id)
     return error;
 }
 
-ls_radio_err_t ls_radio_acquire(const char *owner,
+/* Front-end calls need no lease: a bias-T or a reference correction belongs
+   to the device whoever is streaming from it. They count as in flight, so
+   an unplug waits for them before the driver context goes, and they take
+   the control lock, so they never interleave with a retune's transfers. */
+LS_COLD static endpoint_slot_t *fe_enter(const char *endpoint_id, ls_radio_err_t *error)
+{
+    *error = LS_RADIO_OK;
+    if (!endpoint_id || !endpoint_id[0] || ensure_registry() != LS_RADIO_OK) {
+        *error = LS_RADIO_ERR_INVALID;
+        return NULL;
+    }
+    xSemaphoreTake(s_registry_lock, portMAX_DELAY);
+    endpoint_slot_t *slot = find_slot_locked(endpoint_id);
+    if (!slot || !slot->present) *error = LS_RADIO_ERR_UNAVAILABLE;
+    else if (slot->removing) *error = LS_RADIO_ERR_BUSY;
+    else ++slot->in_flight;
+    xSemaphoreGive(s_registry_lock);
+    return *error == LS_RADIO_OK ? slot : NULL;
+}
+
+LS_COLD static void fe_leave(endpoint_slot_t *slot)
+{
+    xSemaphoreTake(s_registry_lock, portMAX_DELAY);
+    if (slot->in_flight > 0) --slot->in_flight;
+    note_quiesced_locked(slot);
+    xSemaphoreGive(s_registry_lock);
+}
+
+LS_COLD ls_radio_err_t ls_radio_endpoint_fe(const char *endpoint_id,
+                                    ls_radio_fe_ctl_t ctl, bool write,
+                                    int *value)
+{
+    if (!value || (unsigned)ctl >= LS_RADIO_FE_CTLS) return LS_RADIO_ERR_INVALID;
+    ls_radio_err_t error;
+    endpoint_slot_t *slot = fe_enter(endpoint_id, &error);
+    if (!slot) return error;
+    xSemaphoreTake(slot->control_lock, portMAX_DELAY);
+    if (!(slot->fe_ctls & LS_RADIO_FE_BIT(ctl)) || !slot->ops.fe_ctl)
+        error = LS_RADIO_ERR_UNSUPPORTED;
+    else
+        error = slot->ops.fe_ctl(slot->driver_ctx, ctl, write, value);
+    xSemaphoreGive(slot->control_lock);
+    fe_leave(slot);
+    return error;
+}
+
+LS_COLD int ls_radio_endpoint_fe_gains(const char *endpoint_id, int *tenths, int max)
+{
+    if (!tenths || max <= 0) return 0;
+    ls_radio_err_t error;
+    endpoint_slot_t *slot = fe_enter(endpoint_id, &error);
+    if (!slot) return 0;
+    xSemaphoreTake(slot->control_lock, portMAX_DELAY);
+    int n = slot->ops.fe_gains ? slot->ops.fe_gains(slot->driver_ctx, tenths, max) : 0;
+    xSemaphoreGive(slot->control_lock);
+    fe_leave(slot);
+    return n < 0 ? 0 : n > max ? max : n;
+}
+
+void ls_radio_endpoint_set_iq_tap(ls_radio_iq_tap_fn tap)
+{
+    __atomic_store_n(&s_iq_tap, tap, __ATOMIC_RELEASE);
+}
+
+LS_COLD ls_radio_err_t ls_radio_acquire(const char *owner,
                                 const ls_radio_requirements_t *requirements,
                                 ls_radio_session_t **out)
 {
@@ -663,6 +770,7 @@ ls_radio_err_t ls_radio_acquire(const char *owner,
         return matched_busy ? LS_RADIO_ERR_BUSY : LS_RADIO_ERR_UNAVAILABLE;
     }
     choice->leased = true;
+    choice->diagnostic_context_epoch = diagnostic_epoch_next();
     choice->session.endpoint = choice;
     choice->session.active = true;
     choice->session.closing = false;
@@ -674,7 +782,7 @@ ls_radio_err_t ls_radio_acquire(const char *owner,
     return LS_RADIO_OK;
 }
 
-void ls_radio_release(ls_radio_session_t *session)
+LS_COLD void ls_radio_release(ls_radio_session_t *session)
 {
     if (!session || ensure_registry() != LS_RADIO_OK) return;
     xSemaphoreTake(s_registry_lock, portMAX_DELAY);
@@ -684,6 +792,7 @@ void ls_radio_release(ls_radio_session_t *session)
         return;
     }
     session->closing = true;
+    slot->diagnostic_context_epoch = diagnostic_epoch_next();
     slot->stopping = true;
     bool present = slot->present;
     void (*cancel_read)(void *) = slot->ops.cancel_read;
@@ -726,7 +835,7 @@ void ls_radio_release(ls_radio_session_t *session)
     xSemaphoreGive(s_registry_lock);
 }
 
-ls_radio_err_t ls_radio_iq_configure(ls_radio_session_t *session,
+LS_COLD ls_radio_err_t ls_radio_iq_configure(ls_radio_session_t *session,
                                      const ls_radio_iq_config_t *requested,
                                      ls_radio_iq_config_t *actual)
 {
@@ -769,7 +878,7 @@ ls_radio_err_t ls_radio_iq_configure(ls_radio_session_t *session,
     return error;
 }
 
-ls_radio_err_t ls_radio_iq_set_gain(ls_radio_session_t *session,
+LS_COLD ls_radio_err_t ls_radio_iq_set_gain(ls_radio_session_t *session,
                                     ls_radio_gain_mode_t mode,
                                     int tenths_db,
                                     int *actual_tenths_db)
@@ -804,7 +913,7 @@ ls_radio_err_t ls_radio_iq_set_gain(ls_radio_session_t *session,
     return error;
 }
 
-ls_radio_err_t ls_radio_iq_set_ppm(ls_radio_session_t *session, int ppm)
+LS_COLD ls_radio_err_t ls_radio_iq_set_ppm(ls_radio_session_t *session, int ppm)
 {
     if (ppm < -200 || ppm > 200) return LS_RADIO_ERR_INVALID;
     endpoint_slot_t *slot;
@@ -827,7 +936,7 @@ ls_radio_err_t ls_radio_iq_set_ppm(ls_radio_session_t *session, int ppm)
     return error;
 }
 
-ls_radio_err_t ls_radio_iq_start(ls_radio_session_t *session)
+LS_COLD ls_radio_err_t ls_radio_iq_start(ls_radio_session_t *session)
 {
     endpoint_slot_t *slot;
     ls_radio_err_t error = session_enter(session, LS_RADIO_RX_IQ_U8,
@@ -862,19 +971,48 @@ ls_radio_err_t ls_radio_iq_start(ls_radio_session_t *session)
     return error;
 }
 
+static ls_radio_iq_capture_fn s_capture_tap;
+
+void ls_radio_endpoint_set_capture_tap(ls_radio_iq_capture_fn tap)
+{
+    __atomic_store_n(&s_capture_tap, tap, __ATOMIC_RELEASE);
+}
+
 ls_radio_err_t ls_radio_iq_read(ls_radio_session_t *session, void *dst,
                                 size_t bytes, uint32_t timeout_ms,
                                 size_t *read_bytes)
 {
+    return ls_radio_iq_read_observed(session,dst,bytes,timeout_ms,read_bytes,NULL);
+}
+
+ls_radio_err_t ls_radio_iq_read_observed(ls_radio_session_t *session,void *dst,
+    size_t bytes,uint32_t timeout_ms,size_t *read_bytes,ls_radio_iq_read_receipt_t *r)
+{
+    if(r)memset(r,0,sizeof(*r));
     if (!dst || bytes == 0 || !read_bytes) return LS_RADIO_ERR_INVALID;
     *read_bytes = 0;
     endpoint_slot_t *slot;
     ls_radio_err_t error = session_enter(session, LS_RADIO_RX_IQ_U8,
                                          true, &slot);
     if (error != LS_RADIO_OK) return error;
+    const ls_radio_iq_capture_fn cap = __atomic_load_n(&s_capture_tap, __ATOMIC_ACQUIRE);
+    ls_radio_iq_config_t tuned;
     xSemaphoreTake(s_registry_lock, portMAX_DELAY);
     bool iq_stream = slot->stream_kind == 1;
+    uint64_t context=slot->diagnostic_context_epoch;
+    bool stable=slot->diagnostic_controls==0 && !slot->stopping && context!=UINT64_MAX;
+    if(r){
+        r->context_epoch=context;r->configured_center_hz=slot->actual_iq.center_hz;
+        r->nominal_rate_hz=slot->actual_iq.sample_rate_hz;
+    }
+    const uint64_t center_hz = slot->actual_iq.center_hz;
+    const uint32_t rate_hz = slot->actual_iq.sample_rate_hz;
+    if (cap) tuned = slot->actual_iq;
     xSemaphoreGive(s_registry_lock);
+    ls_radio_iq_transport_t before={0};
+    if(r && slot->ops.iq_transport_status)
+        (void)slot->ops.iq_transport_status(slot->driver_ctx,&before);
+    if(r)r->read_started_us=(uint64_t)esp_timer_get_time();
     if (!iq_stream)
         error = LS_RADIO_ERR_BUSY;
     else if (!slot->ops.iq_read)
@@ -882,10 +1020,47 @@ ls_radio_err_t ls_radio_iq_read(ls_radio_session_t *session, void *dst,
     else
         error = slot->ops.iq_read(slot->driver_ctx, dst, bytes, timeout_ms,
                                   read_bytes);
-    return session_leave(slot, error, true, *read_bytes, 0);
+    if(r){
+        r->read_finished_us=(uint64_t)esp_timer_get_time();
+        if(slot->ops.iq_transport_status)
+            (void)slot->ops.iq_transport_status(slot->driver_ctx,&r->transport);
+        xSemaphoreTake(s_registry_lock,portMAX_DELAY);
+        r->known=stable && slot->present && !slot->stopping && !slot->diagnostic_controls &&
+            context==slot->diagnostic_context_epoch && before.known && r->transport.known &&
+            before.epoch==r->transport.epoch && r->transport.epoch!=UINT64_MAX &&
+            error==LS_RADIO_OK && *read_bytes && !(*read_bytes&1u);
+        xSemaphoreGive(s_registry_lock);
+    }
+    /* RF LAB's observer, then TIME MACHINE's copy; neither blocks. */
+    ls_radio_iq_tap_fn tap = __atomic_load_n(&s_iq_tap, __ATOMIC_ACQUIRE);
+    if (tap && error == LS_RADIO_OK && *read_bytes)
+        tap(slot->endpoint_id, (const uint8_t *)dst, *read_bytes, center_hz, rate_hz);
+    if (cap && error == LS_RADIO_OK && *read_bytes)
+        cap(slot->endpoint_id, &tuned, dst, *read_bytes);
+    return session_leave(slot,error,true,*read_bytes,0);
 }
 
-ls_radio_err_t ls_radio_iq_retune(ls_radio_session_t *session,
+bool ls_radio_iq_receipt_current(ls_radio_session_t *session,
+    const ls_radio_iq_read_receipt_t *r)
+{
+    if(!r || !r->known)return false;
+    endpoint_slot_t *slot;
+    if(session_enter(session,LS_RADIO_RX_IQ_U8,true,&slot)!=LS_RADIO_OK)return false;
+    ls_radio_iq_transport_t transport={0};
+    if(slot->ops.iq_transport_status)
+        (void)slot->ops.iq_transport_status(slot->driver_ctx,&transport);
+    xSemaphoreTake(s_registry_lock,portMAX_DELAY);
+    bool current=slot->present && !slot->stopping && !slot->diagnostic_controls &&
+        slot->diagnostic_context_epoch==r->context_epoch && transport.known &&
+        transport.fifo_reset_known && transport.epoch==r->transport.epoch &&
+        !transport.counters_saturated;
+    if(slot->in_flight>0)--slot->in_flight;
+    note_quiesced_locked(slot);
+    xSemaphoreGive(s_registry_lock);
+    return current;
+}
+
+LS_COLD ls_radio_err_t ls_radio_iq_retune(ls_radio_session_t *session,
                                   uint64_t center_hz, bool fast,
                                   uint64_t *actual_hz)
 {
@@ -920,7 +1095,7 @@ ls_radio_err_t ls_radio_iq_retune(ls_radio_session_t *session,
     return error;
 }
 
-ls_radio_err_t ls_radio_iq_get_health(ls_radio_session_t *session,
+LS_COLD ls_radio_err_t ls_radio_iq_get_health(ls_radio_session_t *session,
                                       ls_radio_iq_health_t *out)
 {
     if (!out) return LS_RADIO_ERR_INVALID;
@@ -942,7 +1117,7 @@ ls_radio_err_t ls_radio_iq_get_health(ls_radio_session_t *session,
     return error;
 }
 
-ls_radio_err_t ls_radio_iq_stop(ls_radio_session_t *session)
+LS_COLD ls_radio_err_t ls_radio_iq_stop(ls_radio_session_t *session)
 {
     endpoint_slot_t *slot;
     ls_radio_err_t error = session_enter(session, LS_RADIO_RX_IQ_U8,
@@ -979,12 +1154,15 @@ ls_radio_err_t ls_radio_iq_stop(ls_radio_session_t *session)
         slot->stopping = false;
     }
     xSemaphoreGive(s_registry_lock);
+    /* The stream has ended: what comes next is not contiguous with it. */
+    const ls_radio_iq_capture_fn cap = __atomic_load_n(&s_capture_tap, __ATOMIC_ACQUIRE);
+    if (cap && was_streaming) cap(slot->endpoint_id, NULL, NULL, 0);
     error = session_leave(slot, error, false, 0, 0);
     xSemaphoreGive(slot->control_lock);
     return error;
 }
 
-ls_radio_err_t ls_radio_packet_rx_configure(
+LS_COLD ls_radio_err_t ls_radio_packet_rx_configure(
     ls_radio_session_t *session,
     const ls_radio_packet_config_t *requested,
     ls_radio_packet_config_t *actual)
@@ -1029,7 +1207,7 @@ ls_radio_err_t ls_radio_packet_rx_configure(
     return error;
 }
 
-ls_radio_err_t ls_radio_packet_rx_start(ls_radio_session_t *session)
+LS_COLD ls_radio_err_t ls_radio_packet_rx_start(ls_radio_session_t *session)
 {
     endpoint_slot_t *slot;
     ls_radio_err_t error = session_enter(session, LS_RADIO_RX_PACKET,
@@ -1089,7 +1267,7 @@ ls_radio_err_t ls_radio_packet_rx_read(ls_radio_session_t *session,
                          error == LS_RADIO_OK ? 1 : 0);
 }
 
-ls_radio_err_t ls_radio_packet_rx_stop(ls_radio_session_t *session)
+LS_COLD ls_radio_err_t ls_radio_packet_rx_stop(ls_radio_session_t *session)
 {
     endpoint_slot_t *slot;
     ls_radio_err_t error = session_enter(session, LS_RADIO_RX_PACKET,
@@ -1127,7 +1305,7 @@ ls_radio_err_t ls_radio_packet_rx_stop(ls_radio_session_t *session)
     return error;
 }
 
-ls_radio_err_t ls_radio_endpoint_pause(const char *endpoint_id,
+LS_COLD ls_radio_err_t ls_radio_endpoint_pause(const char *endpoint_id,
                                       const char *owner, bool paused)
 {
     if (!endpoint_id || !owner || ensure_registry() != LS_RADIO_OK)
@@ -1144,6 +1322,8 @@ ls_radio_err_t ls_radio_endpoint_pause(const char *endpoint_id,
     }
     ++slot->in_flight;
     slot->pause_pending = true;
+    ++slot->diagnostic_controls;
+    slot->diagnostic_context_epoch = diagnostic_epoch_next();
     slot->paused = paused;
     xSemaphoreGive(s_registry_lock);
     xSemaphoreTake(slot->control_lock, portMAX_DELAY);
@@ -1172,7 +1352,7 @@ ls_radio_err_t ls_radio_endpoint_pause(const char *endpoint_id,
     return error;
 }
 
-const char *ls_radio_err_name(ls_radio_err_t error)
+LS_COLD const char *ls_radio_err_name(ls_radio_err_t error)
 {
     switch (error) {
     case LS_RADIO_OK:               return "ok";

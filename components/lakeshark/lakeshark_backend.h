@@ -6,6 +6,7 @@
 #include <stddef.h>
 
 #include "radio_endpoint.h"
+#include "receiver_diagnostics.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,6 +37,9 @@ int      lakeshark_fm_get_mode(void);
    it is holding, so the readout says why nothing moved. */
 bool     lakeshark_fm_tune(int delta_hz);
 bool     lakeshark_fm_set_freq(uint32_t hz);
+/* HF on `hz` (500 kHz up): AM mode, lock released, squelch open. The demod
+   comes from fm_hf.h; fm_hf_tune() sets it and calls this. */
+void     lakeshark_fm_hf_tune(uint32_t hz);
 /* A locked carrier remains authoritative across FM submodes and survives a
    spectrum sweep.  The sweep may retune transiently, but returning to a live
    demodulator restores this exact frequency. */
@@ -52,6 +56,12 @@ void     lakeshark_fm_set_gain_live(int tenths);
 void     lakeshark_fm_gain_delta(int dt);
 int      lakeshark_fm_gain_tenths(void);
 void     lakeshark_fm_set_baud(int baud);
+/* POCSAG mode keeps the channel audible beside the decoder. */
+void     lakeshark_fm_pager_voice(bool on);
+/* FM's receiver as an RX HEAD stream (rx/ls_rx_head.h), for the RADIO
+   screen: read the plugin descriptors only, never their state. */
+struct ls_rx_head;
+const struct ls_rx_head *lakeshark_fm_rx_head(void);
 int      lakeshark_fm_get_baud(void);
 void     lakeshark_fm_squelch_delta(int d);
 void     lakeshark_fm_set_squelch(int v);
@@ -71,6 +81,14 @@ const char *lakeshark_recovery_take_app(void);
 /* Bounded, read-only receiver snapshot for console diagnostics.  The text
    preserves unavailable values as '?' and never changes tuning or counters. */
 int lakeshark_receiver_status(char *out, size_t len);
+/* UI copy: PSRAM workspace, no registry/health wait, no radio operations.
+   Every call clears unavailable fields, including when allocation fails. */
+bool lakeshark_receiver_snapshot(ls_receiver_diag_t *out);
+/* Shared operator-controlled diagnostic trial, metadata only. Action is one
+ * of baseline, compare, reset, status. No tune/start/stop is performed. */
+bool lakeshark_receiver_trial_action(const char *action);
+bool lakeshark_receiver_trial_snapshot(ls_receiver_trial_t *out);
+int lakeshark_receiver_trial_command(int argc, char **argv);
 
 void        lakeshark_radio_recover(const char *endpoint_id);
 

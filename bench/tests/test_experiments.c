@@ -1,5 +1,5 @@
 /* LS_TEST_SOURCES: ls_experiments.c, ls_experiments_builtin.c,
-   experiments/exp_carrier.c, experiments/exp_dfm17.c,
+   the built-in experiments (experiments/exp_dfm17.c and the rest),
    experiments/dfm_decode.c and ls_geo.c against a faked socket and LoRa
    chip: the list, one experiment at a time, start failures and their
    reasons, the `exp` console command, and the readout plumbing */
@@ -30,7 +30,7 @@ void ls_exp_hw_radio_give(void) { s_gives++; }
    ls_exp_service where the task would. */
 bool ls_exp_hw_wake(void) { s_wakes++; return false; }
 
-/* The LoRa chip CARRIER LEVEL drives. */
+/* The LoRa chip the built-in experiments drive. */
 static uint32_t s_caps = LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST;
 static esp_err_t s_begin_err;
 static bool s_fsk;
@@ -57,7 +57,7 @@ int ls_lora_fsk_poll(uint8_t *buf, size_t size, float *rssi)
     s_fsk_polls++;
     return 0;
 }
-/* LR433, built in beside CARRIER LEVEL, opens OOK sessions. */
+/* LR433 opens OOK sessions. */
 esp_err_t ls_lora_ook_begin(const ls_ook_cfg_t *cfg) { (void)cfg; return ESP_ERR_NOT_SUPPORTED; }
 int ls_lora_ook_poll(uint8_t *buf, size_t size, float *rssi) { (void)buf; (void)size; (void)rssi; return -1; }
 esp_err_t ls_lora_ook_end(void) { return ESP_OK; }
@@ -234,20 +234,22 @@ LS_CASE(the_list_stops_at_its_capacity)
     LS_EQ_INT(ls_exp_count(), LS_EXP_MAX);
 }
 
-LS_CASE(the_builtins_register_once_and_carrier_is_among_them)
+LS_CASE(the_builtins_register_once_and_radiosonde_is_among_them)
 {
     ls_exp_forget();
     ls_exp_register_builtin();
     ls_exp_register_builtin();
-    const ls_experiment_t *c = ls_exp_find("carrier");
+    const ls_experiment_t *c = ls_exp_find("dfm17");
     LS_CHECK(c != NULL);
     int seen = 0;
     for (int i = 0; i < ls_exp_count(); i++) if (ls_exp_at(i) == c) seen++;
     LS_EQ_INT(seen, 1);
-    LS_EQ_STR(c->name, "CARRIER LEVEL");
-    LS_EQ_INT(c->maturity, LS_EXP_WORKS);
-    LS_EQ_INT(c->n_opts, 1);
+    LS_EQ_STR(c->name, "RADIOSONDE");
+    LS_EQ_INT(c->maturity, LS_EXP_TRYING);
+    LS_EQ_INT(c->n_opts, 3);
     LS_CHECK(!c->no_radio);
+    /* BURST SCOPE, CARRIER LEVEL and IRIDIUM BURSTS are SD apps now. */
+    LS_CHECK(!ls_exp_find("carrier") && !ls_exp_find("burst") && !ls_exp_find("iridium"));
 }
 
 /* ------------------------------------------------------------ running -- */
@@ -489,131 +491,6 @@ LS_CASE(the_console_lists_starts_and_stops)
     LS_EQ_INT(run_console("exp stop"), 0);
     LS_EQ_INT(R.stops, 1);
     LS_CHECK(!ls_exp_busy());
-}
-
-/* ------------------------------------------------------- CARRIER LEVEL -- */
-
-static const ls_experiment_t *carrier(void)
-{
-    ls_exp_forget();
-    ls_exp_register_builtin();
-    return ls_exp_find("carrier");
-}
-
-LS_CASE(carrier_takes_one_frequency_in_range)
-{
-    fresh();
-    const ls_experiment_t *c = carrier();
-    char why[64];
-    char *ok[] = { "433.92" }, *low[] = { "100" }, *high[] = { "1200" }, *junk[] = { "4x" };
-    char *two[] = { "433", "434" };
-    LS_CHECK(c->configure(1, ok, why, sizeof(why)));
-    LS_CHECK(!c->configure(1, low, why, sizeof(why)));
-    LS_EQ_STR(why, "one frequency, 150-1100 MHz");
-    LS_CHECK(!c->configure(1, high, why, sizeof(why)));
-    LS_CHECK(!c->configure(1, junk, why, sizeof(why)));
-    LS_CHECK(!c->configure(2, two, why, sizeof(why)));
-    LS_NEAR(c->opts[0].num(&c->opts[0]), 433.92, 1e-6);
-}
-
-LS_CASE(carrier_opens_a_narrow_fsk_session_and_reads_the_level)
-{
-    fresh();
-    const ls_experiment_t *c = carrier();
-    LS_EQ_INT(run_console("exp carrier start 868.3"), 0);
-    LS_CHECK(ls_exp_running() == c);
-    LS_EQ_INT(s_begins, 1);
-    LS_EQ_UINT(s_cfg.freq_hz, 868300000u);
-    LS_EQ_UINT(s_cfg.bitrate, 4800);
-    LS_EQ_UINT(s_cfg.deviation_hz, 2400);
-    LS_EQ_UINT(s_cfg.bandwidth_hz, 14600);
-    LS_EQ_UINT(s_cfg.payload_bytes, 8);
-    LS_CHECK(s_cfg.sync_word != 0);
-
-    static char out[12][LS_EXP_LINE];
-    int n = ls_exp_read_lines(c, out, 12);
-    LS_EQ_INT(n, 6);
-    LS_EQ_STR(out[0], "FREQ    868.3000 MHz");
-    LS_EQ_STR(out[1], "NOW     -100.0 dBm");
-    LS_EQ_STR(out[2], "1 SEC   --");
-
-    /* The start read once already. Six readings at -100 in the first half
-       second and six at -90 in the second; the last lands one second after
-       the start and closes that second. */
-    for (int i = 0; i < 5; i++) { ls_exp_service(); ls_shim_time_advance(100000); }
-    s_rssi = -90.0f;
-    for (int i = 0; i < 5; i++) { ls_exp_service(); ls_shim_time_advance(100000); }
-    n = ls_exp_read_lines(c, out, 12);
-    LS_EQ_STR(out[2], "1 SEC   --");
-    ls_exp_service();
-    n = ls_exp_read_lines(c, out, 12);
-    LS_EQ_STR(out[1], "NOW      -90.0 dBm");
-    LS_EQ_STR(out[2], "1 SEC   avg  -95.0 min -100.0 max  -90.0");
-    LS_EQ_STR(out[3], "START   avg  -95.0 min -100.0 max  -90.0");
-    LS_EQ_STR(out[4], "-130 [############..................] -30");
-    LS_EQ_STR(out[5], "READS   12  errors 0");
-    /* The FIFO was looked at as it went. */
-    LS_CHECK(s_fsk_polls >= 9);
-
-    /* Out of receive: counted, and listening again. */
-    s_rssi_err = ESP_ERR_INVALID_STATE;
-    ls_exp_service();
-    LS_EQ_INT(s_rearms, 1);
-    n = ls_exp_read_lines(c, out, 12);
-    LS_EQ_STR(out[5], "READS   12  errors 1");
-
-    LS_EQ_INT(run_console("exp carrier stop"), 0);
-    LS_EQ_INT(s_ends, 1);
-    LS_CHECK(!s_fsk);
-}
-
-LS_CASE(carrier_options_retune_a_running_session)
-{
-    fresh();
-    const ls_experiment_t *c = carrier();
-    ls_exp_start(c);
-    ls_exp_service();
-    LS_CHECK(ls_exp_running() == c);
-    c->opts[0].set_num(&c->opts[0], 162.025);
-    LS_CHECK(ls_exp_busy());
-    LS_CHECK(ls_exp_wanted() == c);
-    ls_exp_service();
-    LS_EQ_INT(s_ends, 1);
-    LS_EQ_INT(s_begins, 2);
-    LS_EQ_UINT(s_cfg.freq_hz, 162025000u);
-    char shown[32];
-    c->opts[0].show(&c->opts[0], shown, sizeof(shown));
-    LS_EQ_STR(shown, "162.0250 MHz");
-    ls_exp_stop();
-    ls_exp_service();
-
-    /* Stopped, a change waits for the next start. */
-    c->opts[0].set_num(&c->opts[0], 915.0);
-    LS_CHECK(!ls_exp_busy());
-    LS_EQ_INT(s_begins, 2);
-}
-
-LS_CASE(carrier_refuses_a_chip_without_fsk_or_a_session_the_chip_refuses)
-{
-    fresh();
-    const ls_experiment_t *c = carrier();
-    char st[64];
-    s_caps = LS_LORA_CAP_LORA;
-    ls_exp_start(c);
-    ls_exp_service();
-    LS_CHECK(ls_exp_running() == NULL);
-    state_of(c, st);
-    LS_EQ_STR(st, "No FSK receiver on this chip");
-    LS_EQ_INT(s_begins, 0);
-
-    s_caps = LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST;
-    s_begin_err = ESP_ERR_INVALID_ARG;
-    ls_exp_start(c);
-    ls_exp_service();
-    LS_CHECK(ls_exp_running() == NULL);
-    state_of(c, st);
-    LS_CHECK_MSG(strstr(st, "refused") != NULL, "got [%s]", st);
-    LS_EQ_INT(s_takes, s_gives);
 }
 
 /* ------------------------------------------------------------ NOTE -- */

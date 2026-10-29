@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 #define PERF_TICKET UINT32_C(0x48495246)
 /* One explicitly requested software restart. Consume before startup so a
@@ -22,11 +23,11 @@ bool cell_performance_active(void) {return active;}
 void cell_performance_reboot(bool enable)
 {
     cell_iq_status_t capture;cell_iq_get_status(&capture);
-    if(capture.busy){puts("CELL PERFORMANCE: wait for the current capture to finish");return;}
+    if(capture.busy){LS_PUTS(t_cell_performance_cell_performance_wait_for, "CELL PERFORMANCE: wait for the current capture to finish");return;}
     cell_monitor_wait_stopped();
     ticket=enable?PERF_TICKET:0;
     ticket_inverse=enable?~PERF_TICKET:0;
-    printf("CELL PERFORMANCE: restarting into %s\n",enable?"HackRF high-rate session":"normal OS");
+    LS_PRINTF(t_cell_performance_cell_performance_restarting_into, "CELL PERFORMANCE: restarting into %s\n",enable?"HackRF high-rate session":"normal OS");
     fflush(stdout);
     esp_restart();
 }
@@ -34,6 +35,6 @@ int cell_performance_command(int argc,char **argv)
 {
     if(argc==2 && !strcmp(argv[1],"on"))cell_performance_reboot(true);
     else if(argc==2 && !strcmp(argv[1],"off"))cell_performance_reboot(false);
-    else printf("CELL PERFORMANCE: %s; cellperf on|off restarts. GPS, IMU, LoRa and display retained; C6/BLE and audio paused.\n",active?"HIGH RATE":"NORMAL");
+    else LS_PRINTF(t_cell_performance_cell_performance_s_cellperf, "CELL PERFORMANCE: %s; cellperf on|off restarts. GPS, IMU, LoRa and display retained; C6/BLE and audio paused.\n",active?"HIGH RATE":"NORMAL");
     return 0;
 }

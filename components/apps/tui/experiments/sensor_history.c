@@ -1,6 +1,7 @@
 #include "sensor_history.h"
 #include <math.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 void sh_init(sh_store_t *s)
 {
@@ -145,7 +146,7 @@ bool sh_csv(FILE *f, const sh_sensor_t *s, const sh_reading_t *r)
     if (s->hidden || (lr433_proto_class(s->proto) == LR433_TPMS && !s->own)) return false;
     if (fprintf(f, "%lld,%u,", (long long)r->time, s->proto) < 0 || !quoted(f, s->id) ||
         fprintf(f, ",%d,", s->channel) < 0 || !quoted(f, s->name)) return false;
-    return fprintf(f, ",%.3f,%.3f,%.3f,%.3f,%.3f,%d\n", (double)r->temp_c,
+    return LS_FPRINTF(t_sensor_history_3f_3f_3f_3f, f, ",%.3f,%.3f,%.3f,%.3f,%.3f,%d\n", (double)r->temp_c,
         (double)r->humidity, (double)r->rain_mm, (double)r->wind_ms, (double)r->kpa,
         r->battery_ok < 0 ? -1 : !r->battery_ok) >= 0;
 }

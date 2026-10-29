@@ -113,11 +113,23 @@ bool ls_lora_hw_locked_by_me(void);
 esp_err_t ls_lora_hw_transmit(spi_transaction_t *t);
 /* Modulo byte count of attempted wire transfers; caller holds radio lock. */
 uint32_t ls_lora_hw_spi_bytes(void);
-/* Capture-only 16 MHz transfers (IDF >=5.5), CPU FIFO on P4. Caller must hold the
+/* Capture-only selectable 16/26.67 MHz transfers (IDF >=5.5). Caller must hold the
    radio lock throughout and disable before unlocking. The next transfer
    after disabling restores the normal 2 MHz device clock. */
 esp_err_t ls_lora_hw_capture_fast(bool enable);
 bool ls_lora_hw_capture_active(void);
+uint32_t ls_lora_hw_capture_hz(void);
+esp_err_t ls_lora_hw_capture_set_hz(uint32_t hz);
+/* Long FIFO frames by DMA (true) or CPU registers. DMA syncs the cache, and
+   esp_cache_msync holds one global mutex for the whole sync: a big display
+   framebuffer sync on another task stalled a top-priority capture read for
+   about 2 ms. */
+void ls_lora_hw_capture_set_dma(bool dma);
+/* DMA asked for and its buffers held: what FIFO reads really use. */
+bool ls_lora_hw_capture_dma_ready(void);
+bool ls_lora_hw_capture_dma(void);
+/* io must have 1024 bytes of padded internal storage; RX FIFO frames only. */
+esp_err_t ls_lora_hw_capture_frame(uint8_t *io, size_t n);
 /* Command lock must cover fill, transfer and reply copy. */
 esp_err_t ls_lora_hw_transfer_bytes(const uint8_t *tx, uint8_t *rx, size_t n);
 unsigned  ls_lora_hw_unguarded(void);

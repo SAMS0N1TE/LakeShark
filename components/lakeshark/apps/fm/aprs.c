@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ls_cold.h"
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 #endif
@@ -44,7 +45,7 @@ static int minute_digits(int d[4])
 }
 static int digit_or_space(uint8_t c)
 { return c == ' ' ? -2 : c >= '0' && c <= '9' ? c-'0' : -1; }
-static size_t position(const uint8_t *p, size_t n, aprs_packet_t *o)
+LS_COLD static size_t position(const uint8_t *p, size_t n, aprs_packet_t *o)
 {
     if (n >= 19 && (p[7] == 'N' || p[7] == 'S')) {
         int la[] = {digit_or_space(p[2]), digit_or_space(p[3]), digit_or_space(p[5]), digit_or_space(p[6])};
@@ -73,7 +74,7 @@ static size_t position(const uint8_t *p, size_t n, aprs_packet_t *o)
     if (!coordinate(o, 90 - lat / 380926.0, -180 + lon / 190463.0)) return 0;
     o->table = p[0]; o->symbol = p[9]; return 13;
 }
-static void weather(const uint8_t *p, size_t n, aprs_packet_t *o)
+LS_COLD static void weather(const uint8_t *p, size_t n, aprs_packet_t *o)
 {
     o->weather = true;
     if (o->kind == APRS_POSITION) o->kind = APRS_WEATHER;
@@ -107,7 +108,7 @@ static void weather(const uint8_t *p, size_t n, aprs_packet_t *o)
     }
     o->wind_valid = direction && speed_known;
 }
-bool aprs_parse(const char *src, const char *dst, const uint8_t *p, size_t n, aprs_packet_t *o)
+LS_COLD bool aprs_parse(const char *src, const char *dst, const uint8_t *p, size_t n, aprs_packet_t *o)
 {
     if (!src || !dst || !p || !n || !o) return false;
     memset(o, 0, sizeof(*o));
@@ -288,7 +289,7 @@ void aprs_reset(aprs_ctx_t *s)
     s->sample_phase = 0; s->samples = 0; s->last_valid = false;
     s->dc = 0;
 }
-aprs_ctx_t *aprs_create(aprs_callback_t cb, void *user)
+LS_COLD aprs_ctx_t *aprs_create(aprs_callback_t cb, void *user)
 {
 #ifdef ESP_PLATFORM
     aprs_ctx_t *s = heap_caps_calloc(1, sizeof(*s), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);

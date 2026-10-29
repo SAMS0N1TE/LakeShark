@@ -5,6 +5,7 @@
 #include "esp_attr.h"
 
 #include "ls_anim.h"
+#include "ls_textpack.h"
 
 #define MAX_APPS LS_TUI_MAX_SCREENS
 
@@ -22,11 +23,15 @@ static bool     s_main_prefix = true;
 static bool doc_is_complete(const ls_app_doc_t *d)
 {
     if (!d) return false;
-    if (!d->purpose || !d->purpose[0]) return false;
+    /* the fields may be LS_TXT tags (ls_textpack.h) */
+    const char *purpose = ls_text_str(d->purpose);
+    const char *record_note = ls_text_str(d->record_note);
+    const char *gps_note = ls_text_str(d->gps_note);
+    if (!purpose || !purpose[0]) return false;
     if (d->records != LS_APP_RECORDS_NOTHING &&
-        (!d->record_note || !d->record_note[0])) return false;
+        (!record_note || !record_note[0])) return false;
     if (d->gps != LS_APP_GPS_UNUSED &&
-        (!d->gps_note || !d->gps_note[0])) return false;
+        (!gps_note || !gps_note[0])) return false;
     return true;
 }
 

@@ -2,7 +2,7 @@
    a socket that is always free, no worker task (whoever waits, or the
    simulator's frame loop, services the request), and a LoRa chip whose FSK
    and OOK sessions open and whose RSSI is a made-up carrier near -100 dBm, so
-   the CARRIER LEVEL page has numbers to lay out. */
+   the experiment pages have numbers to lay out. */
 #include "ls_experiments.h"
 #include "ls_lora.h"
 

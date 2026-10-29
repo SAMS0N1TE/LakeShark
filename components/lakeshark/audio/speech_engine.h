@@ -19,6 +19,7 @@ typedef enum {
     SPEECH_VOICE_GLITCH = 0,
     SPEECH_VOICE_DARK   = 1,
     SPEECH_VOICE_FEMALE = 2,
+    SPEECH_VOICE_CALM   = 3,
     SPEECH_VOICE_COUNT
 } speech_voice_t;
 

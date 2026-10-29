@@ -12,6 +12,10 @@ void call_archive_storage(call_archive_storage_t *out);
 /* SD worker only; host tests supply the card query. */
 bool call_archive_card_space(uint64_t *total, uint64_t *free);
 void call_archive_init(void);
+bool call_archive_ready(void);
+/* Read stored/default FM policy without starting the archive/retention worker.
+ * False means the safe NVS read failed; it never means recording is disabled. */
+bool call_archive_fm_saved_option(bool *enabled);
 /* Decoder-owned entry points: no filesystem access or waiting. */
 void call_archive_audio(call_input_t input, uint32_t hz, uint32_t tg,
                         uint32_t source, bool clear, const int16_t *pcm, unsigned n);

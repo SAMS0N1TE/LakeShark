@@ -17,6 +17,7 @@
 
 #include "ls_board.h"
 #include "ls_uart_claim.h"
+#include "ls_textpack.h"
 
 static const char *TAG = "ls_gps";
 
@@ -433,7 +434,7 @@ int ls_gps_describe_sky(char *out, size_t cap, const ls_gps_state_t *g,
 
     char when[40];
     if (g->first_fix_us)
-        snprintf(when, sizeof(when), "first fix after %lld s",
+        LS_SNPRINTF(t_ls_gps_first_fix_after_lld, when, sizeof(when), "first fix after %lld s",
                  (long long)((g->first_fix_us - g->start_us + 500000) / 1000000));
     else if (g->start_us)
         snprintf(when, sizeof(when), "no fix after %lld s",
@@ -442,9 +443,9 @@ int ls_gps_describe_sky(char *out, size_t cap, const ls_gps_state_t *g,
         snprintf(when, sizeof(when), "no fix");
 
     if (!g->sats_tracked)
-        return snprintf(out, cap, "tracked 0, no C/N0, antenna %s, %s",
+        return LS_SNPRINTF(t_ls_gps_tracked_0_no_c, out, cap, "tracked 0, no C/N0, antenna %s, %s",
                         ls_gps_antenna_name(g->antenna), when);
-    return snprintf(out, cap,
+    return LS_SNPRINTF(t_ls_gps_tracked_u_s_c, out, cap,
                     "tracked %u (%s), C/N0 best %u, top-4 mean %u dB-Hz, "
                     "antenna %s, %s",
                     (unsigned)g->sats_tracked, systems, (unsigned)g->cn0_best,
@@ -836,7 +837,7 @@ void ls_gps_scan_baud(void)
         return;
     }
 
-    printf("gps: listening on GPIO%d for 1200 ms at each rate\n",
+    LS_PRINTF(t_ls_gps_gps_listening_on_gpio, "gps: listening on GPIO%d for 1200 ms at each rate\n",
            LS_BOARD_GPS_RX_GPIO);
 
     for (unsigned r = 0; r < sizeof(RATES) / sizeof(RATES[0]); r++) {
@@ -884,7 +885,7 @@ void ls_gps_scan_baud(void)
            the correct rate reads near 100 %; a wrong one lands around 40 %
            because framing errors scatter bytes across the whole range. */
         int pct = total ? (printable * 100 / total) : 0;
-        printf("gps: %6d  %5d bytes  %3d%% ascii  %2d '$'  %2d eol  %s\n",
+        LS_PRINTF(t_ls_gps_gps_6d_5d_bytes, "gps: %6d  %5d bytes  %3d%% ascii  %2d '$'  %2d eol  %s\n",
                RATES[r], total, pct, dollars, eol, sample);
     }
 
@@ -935,7 +936,7 @@ void ls_gps_diagnostics(void)
     ls_gps_state_t *g = &s_console;
     ls_gps_get(g);
 
-    printf("gps: uart%d rx=GPIO%d tx=GPIO%d %d baud  bytes=%lu sentences=%lu csum_err=%lu\n",
+    LS_PRINTF(t_ls_gps_gps_uart_d_rx, "gps: uart%d rx=GPIO%d tx=GPIO%d %d baud  bytes=%lu sentences=%lu csum_err=%lu\n",
            (int)s_port, LS_BOARD_GPS_RX_GPIO, LS_BOARD_GPS_TX_GPIO,
            (int)s_baud,
            (unsigned long)g->bytes, (unsigned long)g->sentences,
@@ -947,18 +948,18 @@ void ls_gps_diagnostics(void)
                    "and held awake, so this is a pin or a rail, not a sky "
                    "problem.\n");
         else
-            printf("gps: %lu bytes but no framed sentence - wrong baud rate "
+            LS_PRINTF(t_ls_gps_gps_lu_bytes_but, "gps: %lu bytes but no framed sentence - wrong baud rate "
                    "or the wrong pin is picking up crosstalk.\n",
                    (unsigned long)g->bytes);
         printf("gps: module %s\n", link_words());
         return;
     }
 
-    printf("gps: alive, %u sats visible, %u used, quality %u, hdop %.1f\n",
+    LS_PRINTF(t_ls_gps_gps_alive_u_sats, "gps: alive, %u sats visible, %u used, quality %u, hdop %.1f\n",
            g->sats_visible, g->sats_used, g->quality, (double)g->hdop);
 
     if (g->fix)
-        printf("gps: fix %.6f %.6f  alt %.0f m  %.1f kts  %04u-%02u-%02u "
+        LS_PRINTF(t_ls_gps_gps_fix_6f_6f, "gps: fix %.6f %.6f  alt %.0f m  %.1f kts  %04u-%02u-%02u "
                "%02u:%02u:%02uZ\n",
                g->lat_deg, g->lon_deg, (double)g->alt_m, (double)g->speed_kts,
                g->year, g->month, g->day, g->hour, g->minute, g->second);
@@ -985,7 +986,7 @@ void ls_gps_print_sky(void)
         return;
     }
 
-    printf("gps: %u in the table, %u tracked; -- is not reported\n",
+    LS_PRINTF(t_ls_gps_gps_u_in_the, "gps: %u in the table, %u tracked; -- is not reported\n",
            (unsigned)g->sat_count, (unsigned)g->sats_tracked);
     printf("gps: system   prn  elev  azim  c/n0  used\n");
     for (int i = 0; i < g->sat_count && i < LS_GPS_MAX_SATS; i++) {
@@ -997,7 +998,7 @@ void ls_gps_print_sky(void)
             snprintf(az, sizeof(az), "%u", (unsigned)s->azimuth);
         }
         if (s->snr) snprintf(cn, sizeof(cn), "%u", (unsigned)s->snr);
-        printf("gps: %-7s  %3u  %4s  %4s  %4s  %s\n",
+        LS_PRINTF(t_ls_gps_gps_7s_3u_4s, "gps: %-7s  %3u  %4s  %4s  %4s  %s\n",
                ls_gps_sys_name(s->sys), (unsigned)s->prn, el, az, cn,
                s->used ? "yes" : "-");
     }
@@ -1021,7 +1022,7 @@ void ls_gps_print_raw(void)
         printf("gps: nothing framed yet\n");
         return;
     }
-    printf("gps: the last %d lines as received, oldest first\n", n);
+    LS_PRINTF(t_ls_gps_gps_the_last_d, "gps: the last %d lines as received, oldest first\n", n);
     for (int i = 0; i < n; i++) printf("gps: %s\n", copy[i]);
 }
 

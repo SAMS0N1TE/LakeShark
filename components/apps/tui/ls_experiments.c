@@ -11,6 +11,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "ls_textpack.h"
 
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 #define LOCK()   portENTER_CRITICAL(&s_mux)
@@ -203,7 +204,7 @@ static void begin(const ls_experiment_t *e)
             return;
         }
         if (!s_held && !ls_exp_hw_radio_take()) {
-            fail(e, "MeshCore would not release the LoRa radio");
+            fail(e, LS_TEXT(t_ls_experiments_meshcore_would_not_release, "MeshCore would not release the LoRa radio"));
             return;
         }
         s_held = true;
@@ -316,7 +317,7 @@ static void print_state(const ls_experiment_t *e)
 int ls_exp_console(int argc, char **argv)
 {
     if (argc < 2) {
-        printf("exp: %d experiment%s; 'exp <id> start [args]', 'exp <id> stop', 'exp <id>'\n",
+        LS_PRINTF(t_ls_experiments_exp_d_experiment_s, "exp: %d experiment%s; 'exp <id> start [args]', 'exp <id> stop', 'exp <id>'\n",
                s_n, s_n == 1 ? "" : "s");
         for (int i = 0; i < s_n; i++) {
             char state[80];
@@ -335,7 +336,7 @@ int ls_exp_console(int argc, char **argv)
         return settled ? 0 : 1;
     }
     const ls_experiment_t *e = ls_exp_find(argv[1]);
-    if (!e) { printf("exp: no experiment '%s'; 'exp' lists them\n", argv[1]); return 1; }
+    if (!e) { LS_PRINTF(t_ls_experiments_exp_no_experiment_s, "exp: no experiment '%s'; 'exp' lists them\n", argv[1]); return 1; }
     if (argc == 2) {
         printf("exp: %s, %s - %s\n", e->name, ls_exp_maturity_name(e->maturity), e->sub ? e->sub : "");
         if (e->lr2021_only) printf("exp: LR2021 radios only\n");
@@ -346,7 +347,7 @@ int ls_exp_console(int argc, char **argv)
     }
     if (!strcmp(argv[2], "start")) {
         if (argc > 3) {
-            if (!e->configure) { printf("exp: %s takes no arguments\n", e->id); return 1; }
+            if (!e->configure) { LS_PRINTF(t_ls_experiments_exp_s_takes_no, "exp: %s takes no arguments\n", e->id); return 1; }
             char why[96] = "";
             if (!e->configure(argc - 3, argv + 3, why, sizeof(why))) {
                 printf("exp: %s: %s\n", e->id, why[0] ? why : "bad arguments");
@@ -361,12 +362,12 @@ int ls_exp_console(int argc, char **argv)
         return settled && ls_exp_running() == e ? 0 : 1;
     }
     if (!strcmp(argv[2], "stop")) {
-        if (ls_exp_running() != e) { printf("exp: %s is not running\n", e->id); return 1; }
+        if (ls_exp_running() != e) { LS_PRINTF(t_ls_experiments_exp_s_is_not, "exp: %s is not running\n", e->id); return 1; }
         ls_exp_stop();
         const bool settled = ls_exp_settle(3000);
         print_state(e);
         return settled ? 0 : 1;
     }
-    printf("exp: '%s' is not start or stop\n", argv[2]);
+    LS_PRINTF(t_ls_experiments_exp_s_is_not_2, "exp: '%s' is not start or stop\n", argv[2]);
     return 1;
 }

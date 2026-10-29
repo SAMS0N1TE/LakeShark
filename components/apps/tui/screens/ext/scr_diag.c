@@ -27,6 +27,7 @@
 #include "core/perf.h"
 #include "radio/radio_endpoint.h"
 #include "radio/radio_health.h"
+#include "lakeshark_backend.h"
 #include "board/ls_lora.h"
 #include "board/ls_gps.h"
 #include "board/ls_imu.h"
@@ -35,6 +36,7 @@
 #include "freertos/task.h"
 #include "board/ls_gauge.h"
 #include "ls_mesh.h"
+#include "ls_textpack.h"
 
 /* Which number just moved, as opposed to which has ever moved. */
 
@@ -43,6 +45,18 @@
 /* PSRAM: only the draw path reads it, and the startup code zeroes it. */
 static EXT_RAM_BSS_ATTR ls_fresh_t s_row_fresh[DIAG_ROW_KEYS];
 static EXT_RAM_BSS_ATTR ls_radio_endpoint_info_t s_endpoint;
+static EXT_RAM_BSS_ATTR ls_receiver_diag_t s_receiver;
+static bool s_receiver_ok;
+static EXT_RAM_BSS_ATTR ls_receiver_trial_t s_trial;
+static tui_rect s_trial_hit[3];
+static tui_rect s_trial_open_hit;
+static const char *const s_trial_action[] = {"baseline", "compare", "reset"};
+static bool s_trial_action_failed;
+
+static void trial_action(int action)
+{
+    s_trial_action_failed = !lakeshark_receiver_trial_action(s_trial_action[action]);
+}
 
 static uint32_t text_token(const char *t)
 {
@@ -147,6 +161,7 @@ typedef enum {
     D_ALERTS,
     D_SENSORS,
     D_ERRORS,
+    D_TRIAL,
     D__COUNT,
 } diag_detail_t;
 
@@ -239,6 +254,12 @@ static void detail_tick(int64_t now_us)
         }
     } else if (s_detail == D_ALERTS) {
         hw_refresh();
+    } else if (s_detail == D_ENDPOINT) {
+        /* One bounded metadata copy per second, never a radio request. An
+           unavailable refresh replaces old known flags instead of silently
+           presenting the last receiver's counters as current evidence. */
+        memset(&s_receiver, 0, sizeof(s_receiver));
+        s_receiver_ok = lakeshark_receiver_snapshot(&s_receiver);
     }
 }
 
@@ -249,7 +270,7 @@ static void self_test(void)
     ls_notice_t n;
     memset(&n, 0, sizeof(n));
     snprintf(n.title, sizeof(n.title), "SELF TEST");
-    snprintf(n.body, sizeof(n.body), "if the alerts are on, this rings and buzzes");
+    LS_SNPUTS(t_scr_diag_if_the_alerts_are, n.body, sizeof(n.body), "if the alerts are on, this rings and buzzes");
     n.hue = TUI_CYAN;
     /* A system notice: kept out of the unread count, so the test can neither
        clear real messages nor leave a MSG badge behind. */
@@ -301,6 +322,11 @@ static bool on_key(ls_tk_t key, char ch)
 
     if (ch == 't' || ch == 'T') { self_test(); return true; }
     if (ch == 's' || ch == 'S') { check_sd(); return true; }
+    if (s_detail == D_ENDPOINT || s_detail == D_TRIAL) {
+        if (ch == 'b' || ch == 'B') { trial_action(0); s_detail=D_TRIAL; return true; }
+        if (ch == 'c' || ch == 'C') { trial_action(1); s_detail=D_TRIAL; return true; }
+        if (ch == 'x' || ch == 'X') { trial_action(2); s_detail=D_TRIAL; return true; }
+    }
 
     switch (ch) {
     case 'e': case 'E': s_detail = D_ENDPOINT; s_detail_us = 0; return true;
@@ -334,6 +360,11 @@ static bool on_touch(int col, int row)
         if (hit(s_back_hit, col, row)) { s_clear_armed = false; s_detail = D_NONE; return true; }
         if (s_detail == D_ERRORS && hit(s_clear_hit, col, row)) { err_clear(); return true; }
         if (s_detail == D_ERRORS && hit(s_next_hit, col, row)) { err_step(1); return true; }
+        if (s_detail == D_ENDPOINT && hit(s_trial_open_hit,col,row)) { s_detail=D_TRIAL; return true; }
+        if (s_detail == D_TRIAL)
+            for (int i=0;i<3;i++) if (hit(s_trial_hit[i],col,row)) {
+                trial_action(i); return true;
+            }
         return true;                    /* see the note below */
     }
 
@@ -357,7 +388,7 @@ static bool on_touch(int col, int row)
 /* --------------------------------------------------- detail -- */
 
 static const char *const DETAIL_TITLE[D__COUNT] = {
-    "", "ENDPOINT", "MEMORY", "ALERTS", "RADIOS AND SENSORS", "ERROR LOG",
+    "", "ENDPOINT", "MEMORY", "ALERTS", "RADIOS AND SENSORS", "ERROR LOG", "RECEIVER TRIAL",
 };
 
 static void group(tui_surface *sf, tui_rect a, int y, const char *t)
@@ -394,6 +425,105 @@ static bool diag_radio_health(radio_health_snapshot_t *out)
     return radio_health_get_for_endpoint(&s_endpoint, out);
 }
 
+static int text_rows(tui_surface *sf, tui_rect a, int y, int rows,
+                     const char *text, uint8_t attr, bool from_end);
+
+static int reception_check(tui_surface *sf, tui_rect a, uint8_t val,
+                           uint8_t bad, uint8_t dim)
+{
+    char buf[96];
+    const ls_receiver_diag_t *s = &s_receiver;
+    ls_receiver_check_t check = ls_receiver_diag_assess(s_receiver_ok ? s : NULL);
+    const uint8_t attr = check.level == LS_RECEIVER_CHECK_ATTENTION ? bad
+                       : check.level == LS_RECEIVER_CHECK_UNKNOWN ? dim : val;
+    int y = 1;
+    group(sf, a, y++, "RECEPTION CHECK");
+    snprintf(buf, sizeof(buf), "%s / %s", s->app_known && s->app[0] ? s->app : "?",
+             s->demod[0] ? s->demod : "?");
+    row(sf, a, y++, "app / mode", buf, val);
+    row(sf, a, y++, "state", check.title, attr);
+    y += text_rows(sf, a, y, 2, check.reason, dim, false);
+    snprintf(buf, sizeof(buf), "NEXT: %s", check.next);
+    y += text_rows(sf, a, y, 2, buf, val, false);
+    if (s->requested_frequency_known)
+        snprintf(buf, sizeof(buf), "%.6f MHz", (double)s->requested_frequency_hz / 1e6);
+    else strcpy(buf, "unavailable");
+    row(sf, a, y++, "requested", buf, s->requested_frequency_known ? val : dim);
+    if (s->effective_frequency_known)
+        snprintf(buf, sizeof(buf), "%.6f MHz", (double)s->effective_frequency_hz / 1e6);
+    else strcpy(buf, "unavailable");
+    row(sf, a, y++, "applied", buf, s->effective_frequency_known ? val : dim);
+    if (s->iq_rate_known)
+        snprintf(buf, sizeof(buf), "%lu B/s", (unsigned long)s->iq_bytes_per_second);
+    else strcpy(buf, "unavailable");
+    row(sf, a, y++, "IQ to app", buf, s->iq_rate_known ? val : dim);
+    if (s->valid_count_known)
+        snprintf(buf, sizeof(buf), "%lu", (unsigned long)s->valid_count);
+    else strcpy(buf, "unavailable");
+    row(sf, a, y++, "valid total", buf, s->valid_count_known ? val : dim);
+    y += text_rows(sf, a, y, 2, LS_TEXT(t_scr_diag_totals_are_history_not, "Totals are history, not RF validation."), dim, false);
+    s_trial_open_hit=tui_rect_make(0,-1,0,0);
+    if (a.w>4 && y<a.h-1) {
+        s_trial_open_hit=tui_rect_make(a.x+2,a.y+y,a.w-4,1);
+        tui_put_str(sf,s_trial_open_hit,a.x+2,a.y+y,
+                    LS_TEXT(t_scr_diag_b_c_x_before, "B/C/X BEFORE / AFTER TRIAL"),val);
+        y++;
+    }
+    return y + 1;
+}
+
+static void detail_trial(tui_surface *sf,tui_rect a,uint8_t val,uint8_t dim)
+{
+    char buf[96];
+    int y=1;
+    group(sf,a,y++,LS_TEXT(t_scr_diag_manual_before_after, "MANUAL BEFORE / AFTER"));
+    memset(&s_trial,0,sizeof(s_trial));
+    const bool have_trial = lakeshark_receiver_trial_snapshot(&s_trial);
+    row(sf,a,y++,"trial",s_trial_action_failed ? "unavailable; retry action" :
+        have_trial ? ls_receiver_trial_state(&s_trial) : "busy; retry",val);
+    if (have_trial && s_trial.compared)
+        LS_SNPRINTF(t_scr_diag_changed_lu_unknown_lu, buf,sizeof(buf),"changed %lu / unknown %lu",
+            (unsigned long)s_trial.changed,(unsigned long)s_trial.unknown);
+    else strcpy(buf,"unavailable until compared");
+    row(sf,a,y++,"key masks",buf,dim);
+    if (have_trial && (s_trial.delta_known & LS_TRIAL_IQ))
+        LS_SNPRINTF(t_scr_diag_llu_bytes_endpoint, buf,sizeof(buf),"%llu bytes (endpoint)",(unsigned long long)s_trial.iq_delta);
+    else strcpy(buf,"unavailable");
+    row(sf,a,y++,"IQ delta",buf,val);
+    if (have_trial && (s_trial.delta_known & LS_TRIAL_VALID))
+        snprintf(buf,sizeof(buf),"%lu (counter only)",(unsigned long)s_trial.valid_delta);
+    else strcpy(buf,"epoch/count unavailable");
+    row(sf,a,y++,"valid delta",buf,dim);
+    char before[24],after[24];
+    strcpy(before,"?"); strcpy(after,"?");
+    if (have_trial && s_trial.baseline_set && s_trial.before.sample_rate_known)
+        snprintf(before,sizeof(before),"%lu",(unsigned long)s_trial.before.sample_rate_hz);
+    if (have_trial && s_trial.compared && s_trial.after.sample_rate_known)
+        snprintf(after,sizeof(after),"%lu",(unsigned long)s_trial.after.sample_rate_hz);
+    snprintf(buf,sizeof(buf),"%s / %s",before,after);
+    row(sf,a,y++,"rate B / A",buf,dim);
+    strcpy(before,"?"); strcpy(after,"?");
+    if (have_trial && s_trial.baseline_set && s_trial.before.captured_known)
+        snprintf(before,sizeof(before),"%llu",(unsigned long long)s_trial.before.captured_us);
+    if (have_trial && s_trial.compared && s_trial.after.captured_known)
+        snprintf(after,sizeof(after),"%llu",(unsigned long long)s_trial.after.captured_us);
+    snprintf(buf,sizeof(buf),"%s / %s",before,after);
+    row(sf,a,y++,"uptime us",buf,dim);
+    y += text_rows(sf,a,y,2,LS_TEXT(t_scr_diag_save_baseline_wait_then, "Save baseline, wait, then compare. Receipt retains this pair until reset or a new baseline."),dim,false);
+    static const char *const label[] = {"B SAVE","C COMP","X RESET"};
+    const int w=(a.w-4)/3;
+    for (int i=0;i<3;i++) {
+        s_trial_hit[i]=tui_rect_make(0,-1,0,0);
+        if (w<10 || y+3>=a.h) continue;
+        tui_rect button=tui_rect_make(a.x+2+i*w,a.y+y,w,3);
+        ls_panel_box(sf,button,NULL,TUI_CYAN);
+        tui_put_str(sf,button,button.x+1,button.y+1,label[i],val);
+        s_trial_hit[i]=button;
+    }
+    if (w>=10 && y+3<a.h) y+=3;
+    y += text_rows(sf,a,y,2,LS_TEXT(t_scr_diag_change_settings_yourself_rebaseline, "Change settings yourself; rebaseline after changes. No RF proof."),dim,false);
+}
+
 /* Everything the endpoint registry and the health record know. */
 
 static void detail_endpoint(tui_surface *sf, tui_rect a, uint8_t val,
@@ -405,15 +535,14 @@ static void detail_endpoint(tui_surface *sf, tui_rect a, uint8_t val,
     memset(&rh, 0, sizeof(rh));
     const bool have = diag_radio_health(&rh);
 
-    int y = 1;
+    int y = reception_check(sf, a, val, bad, dim);
 
     group(sf, a, y++, "HEALTH RECORD");
     if (!have) {
-        /* again, in the place that has room to say it properly: no
-           record means nothing has DRIVEN this endpoint yet, which is the
-           normal state whenever the receiver is parked. */
-        row(sf, a, y++, "record", "none - nothing has driven it yet", dim);
-        row(sf, a, y++, "meaning", "parked, not absent", dim);
+        /* A missing health sample does not establish physical absence or
+           prove that this endpoint has never been driven. */
+        row(sf, a, y++, "record", "unavailable", dim);
+        row(sf, a, y++, "meaning", LS_TEXT(t_scr_diag_health_has_not_been, "health has not been sampled"), dim);
     } else {
         row(sf, a, y++, "endpoint",
             rh.endpoint_id[0] ? rh.endpoint_id : "?", val);
@@ -423,13 +552,15 @@ static void detail_endpoint(tui_surface *sf, tui_rect a, uint8_t val,
             : (rh.state == RH_FAILED || rh.state == RH_STALLED) ? bad : val);
         snprintf(buf, sizeof(buf), "%u B/s", (unsigned)rh.bytes_per_second);
         row(sf, a, y++, "throughput", buf, rh.bytes_per_second ? good : dim);
-        snprintf(buf, sizeof(buf), "%d s", rh.stall_s);
-        row(sf, a, y++, "stalled", buf, rh.stall_s ? bad : good);
-        snprintf(buf, sizeof(buf), "%u", (unsigned)rh.recoveries);
-        row(sf, a, y++, "recoveries", buf, count_attr(rh.recoveries));
-        snprintf(buf, sizeof(buf), "%u up / %u down",
-                 (unsigned)rh.attaches, (unsigned)rh.detaches);
-        row(sf, a, y++, "attach", buf, dim);
+        if (a.h >= 36) {
+            snprintf(buf, sizeof(buf), "%d s", rh.stall_s);
+            row(sf, a, y++, "stalled", buf, rh.stall_s ? bad : good);
+            snprintf(buf, sizeof(buf), "%u", (unsigned)rh.recoveries);
+            row(sf, a, y++, "recoveries", buf, count_attr(rh.recoveries));
+            snprintf(buf, sizeof(buf), "%u up / %u down",
+                     (unsigned)rh.attaches, (unsigned)rh.detaches);
+            row(sf, a, y++, "attach", buf, dim);
+        }
     }
 
     /* Who has it. A parked receiver and a receiver another app is using look
@@ -443,7 +574,7 @@ static void detail_endpoint(tui_surface *sf, tui_rect a, uint8_t val,
     group(sf, a, y++, "DECLARED ENDPOINTS");
     const size_t n = ls_radio_endpoint_count();
     if (!n) {
-        row(sf, a, y, "none", "this build declares no receiver", dim);
+        row(sf, a, y, "none", LS_TEXT(t_scr_diag_this_build_declares_no, "this build declares no receiver"), dim);
         return;
     }
     for (size_t i = 0; i < n && y < a.h - 2; i++) {
@@ -461,7 +592,7 @@ static void detail_endpoint(tui_surface *sf, tui_rect a, uint8_t val,
             snprintf(what, sizeof(what), "streaming to %.24s",
                      s_endpoint.owner[0] ? s_endpoint.owner : "?");
         } else if (s_endpoint.leased) {
-            snprintf(what, sizeof(what), "held by %.24s, stopped",
+            LS_SNPRINTF(t_scr_diag_held_by_24s_stopped, what, sizeof(what), "held by %.24s, stopped",
                      s_endpoint.owner[0] ? s_endpoint.owner : "?");
         } else {
             snprintf(what, sizeof(what), "plugged in, idle");
@@ -474,7 +605,7 @@ static void detail_endpoint(tui_surface *sf, tui_rect a, uint8_t val,
         if (s_endpoint.present && y < a.h - 2) {
             char seen[48];
             human_bytes(buf, sizeof(buf), s_endpoint.bytes_read);
-            snprintf(seen, sizeof(seen), "%.16s in %llu packets", buf,
+            LS_SNPRINTF(t_scr_diag_16s_in_llu_packets, seen, sizeof(seen), "%.16s in %llu packets", buf,
                      (unsigned long long)s_endpoint.packets_read);
             row(sf, a, y++, "  read", seen, s_endpoint.bytes_read ? good : dim);
         }
@@ -492,7 +623,7 @@ static void detail_memory(tui_surface *sf, tui_rect a, uint8_t val,
         { "psram",    MALLOC_CAP_SPIRAM },
     };
 
-    group(sf, a, 1, "FREE / LARGEST BLOCK / LOWEST EVER");
+    group(sf, a, 1, LS_TEXT(t_scr_diag_free_largest_block_lowest, "FREE / LARGEST BLOCK / LOWEST EVER"));
     for (int i = 0; i < 3; i++) {
         multi_heap_info_t hi;
         heap_caps_get_info(&hi, POOL[i].caps);
@@ -502,7 +633,7 @@ static void detail_memory(tui_surface *sf, tui_rect a, uint8_t val,
         /* Padded, because three numbers under one heading are a table and a
            table that does not line up has to be read a row at a time. */
         char line[64];
-        snprintf(line, sizeof(line), "%-9.9s %-9.9s %-9.9s", buf, b2, b3);
+        LS_SNPRINTF(t_scr_diag_9_9s_9_9s, line, sizeof(line), "%-9.9s %-9.9s %-9.9s", buf, b2, b3);
         /* A largest block far under the free total is fragmentation, and it
            is what actually refuses a big allocation. */
         const bool tight = hi.minimum_free_bytes &&
@@ -514,11 +645,11 @@ static void detail_memory(tui_surface *sf, tui_rect a, uint8_t val,
     /* And which way each of them has been going, which is the
        question a single reading cannot answer and the reason this page was
        worth adding the DMA pool to. */
-    group(sf, a, 6, "WHAT THE TRACES COVER");
+    group(sf, a, 6, LS_TEXT(t_scr_diag_what_the_traces_cover, "WHAT THE TRACES COVER"));
     const int held = ls_trend_len(ls_vitals_internal());
     if (held > 1) {
         const uint32_t watched = ls_vitals_watched_s();
-        snprintf(buf, sizeof(buf), "%d samples over %lu s",
+        LS_SNPRINTF(t_scr_diag_d_samples_over_lu, buf, sizeof(buf), "%d samples over %lu s",
                  held, (unsigned long)watched);
         row(sf, a, 7, "window", buf, dim);
 
@@ -548,8 +679,8 @@ static void detail_memory(tui_surface *sf, tui_rect a, uint8_t val,
     }
 
     group(sf, a, 11, "WHY IT MATTERS HERE");
-    row(sf, a, 12, "psram", "flash calls need a safe stack", dim);
-    row(sf, a, 13, "dma", "driver buffers need DMA capable RAM", dim);
+    row(sf, a, 12, "psram", LS_TEXT(t_scr_diag_flash_calls_need_a, "flash calls need a safe stack"), dim);
+    row(sf, a, 13, "dma", LS_TEXT(t_scr_diag_driver_buffers_need_dma, "driver buffers need DMA capable RAM"), dim);
 }
 
 /* The motor's own report, in full, and what it is being asked for.
@@ -606,7 +737,7 @@ static void detail_alerts(tui_surface *sf, tui_rect a, uint8_t val,
         ls_notify_vibe() ? good : dim);
     /* The measured reason the pulse length matters, on the page where
        somebody is asking why they cannot feel it. */
-    row(sf, a, 12, "note", "below 20 ms the LRA never starts", dim);
+    row(sf, a, 12, "note", LS_TEXT(t_scr_diag_below_20_ms_the, "below 20 ms the LRA never starts"), dim);
 }
 
 static void detail_sensors(tui_surface *sf, tui_rect a, uint8_t val,
@@ -624,7 +755,7 @@ static void detail_sensors(tui_surface *sf, tui_rect a, uint8_t val,
                               s_imu.az * s_imu.az);
         /* Screen axes, named, because the mounting has been got wrong
            twice and both times the argument was conducted in the dark. */
-        snprintf(buf, sizeof(buf), "%+.2f %+.2f %+.2f  |a| %.2f",
+        LS_SNPRINTF(t_scr_diag_2f_2f_2f_a, buf, sizeof(buf), "%+.2f %+.2f %+.2f  |a| %.2f",
                  (double)s_imu.ax, (double)s_imu.ay, (double)s_imu.az,
                  (double)g);
         /* At rest the magnitude is gravity whichever way it is held, so a
@@ -640,7 +771,7 @@ static void detail_sensors(tui_surface *sf, tui_rect a, uint8_t val,
         if (s_imu.mag_valid) {
             const float m = sqrtf(s_imu.mx * s_imu.mx + s_imu.my * s_imu.my +
                                   s_imu.mz * s_imu.mz);
-            snprintf(buf, sizeof(buf), "%+.0f %+.0f %+.0f  |m| %.0f",
+            LS_SNPRINTF(t_scr_diag_0f_0f_0f_m, buf, sizeof(buf), "%+.0f %+.0f %+.0f  |m| %.0f",
                      (double)s_imu.mx, (double)s_imu.my, (double)s_imu.mz,
                      (double)m);
             /* 25 to 65 uT is the earth's field; far outside it means
@@ -654,7 +785,7 @@ static void detail_sensors(tui_surface *sf, tui_rect a, uint8_t val,
                 row(sf, a, 5, "heading", buf, val);
             } else row(sf, a, 5, "heading", "unavailable", dim);
         } else {
-            row(sf, a, 4, "mag uT", "the magnetometer did not answer", bad);
+            row(sf, a, 4, "mag uT", LS_TEXT(t_scr_diag_the_magnetometer_did_not, "the magnetometer did not answer"), bad);
         }
     }
 
@@ -671,7 +802,7 @@ static void detail_sensors(tui_surface *sf, tui_rect a, uint8_t val,
         if (!ls_gps_running()) {
             row(sf, a, 8, "state", "not reading", dim);
         } else {
-            snprintf(buf, sizeof(buf), "%s  %u used / %u seen",
+            LS_SNPRINTF(t_scr_diag_s_u_used_u, buf, sizeof(buf), "%s  %u used / %u seen",
                      gp.fix ? "fix" : gp.alive ? "searching" : "silent",
                      (unsigned)gp.sats_used, (unsigned)gp.sats_visible);
             row(sf, a, 8, "state", buf,
@@ -680,7 +811,7 @@ static void detail_sensors(tui_surface *sf, tui_rect a, uint8_t val,
         /*'s own note, and the reason these three are worth a row:
            bytes climbing with sentences flat means the baud rate is wrong,
            and both climbing with no fix means the antenna is the suspect. */
-        snprintf(buf, sizeof(buf), "%lu B  %lu ok  %lu bad",
+        LS_SNPRINTF(t_scr_diag_lu_b_lu_ok, buf, sizeof(buf), "%lu B  %lu ok  %lu bad",
                  (unsigned long)gp.bytes, (unsigned long)gp.sentences,
                  (unsigned long)gp.checksum_errors);
         row(sf, a, 9, "wire", buf,
@@ -704,7 +835,7 @@ static void detail_sensors(tui_surface *sf, tui_rect a, uint8_t val,
             row(sf, a, 13, "mesh", ms.running ? "paused" : "stopped", dim);
             row(sf, a, 14, "airtime", "unavailable", dim);
         } else {
-            snprintf(buf, sizeof(buf), "%lu rx  %lu bad  %lu tx",
+            LS_SNPRINTF(t_scr_diag_lu_rx_lu_bad, buf, sizeof(buf), "%lu rx  %lu bad  %lu tx",
                      (unsigned long)ms.rx_packets, (unsigned long)ms.rx_bad,
                      (unsigned long)ms.tx_packets);
             row(sf, a, 13, "packets", buf, ms.rx_bad ? val : good);
@@ -713,7 +844,7 @@ static void detail_sensors(tui_surface *sf, tui_rect a, uint8_t val,
                spreading factor mismatch gives zero packets AND zero CRC errors,
                which is byte for byte what an empty room gives. */
             if (!ms.rx_packets && !ms.rx_bad)
-                row(sf, a, 15, "note", "silent is also what a wrong SF gives",
+                row(sf, a, 15, "note", LS_TEXT(t_scr_diag_silent_is_also_what, "silent is also what a wrong SF gives"),
                     dim);
             else {
                 snprintf(buf, sizeof(buf), "%.0f dBm  %.1f dB",
@@ -721,7 +852,7 @@ static void detail_sensors(tui_surface *sf, tui_rect a, uint8_t val,
                 row(sf, a, 15, "last heard", buf, val);
             }
 
-            snprintf(buf, sizeof(buf), "%lu ms used  %lu ms left",
+            LS_SNPRINTF(t_scr_diag_lu_ms_used_lu, buf, sizeof(buf), "%lu ms used  %lu ms left",
                      (unsigned long)ms.airtime_ms,
                      (unsigned long)ms.tx_budget_ms);
             row(sf, a, 14, "airtime", buf, ms.tx_budget_ms ? good : bad);
@@ -739,12 +870,12 @@ static void detail_sensors(tui_surface *sf, tui_rect a, uint8_t val,
                      (int)gz.milliamps);
             row(sf, a, 18, "pack", buf, gz.milliamps ? val : dim);
 
-            snprintf(buf, sizeof(buf), "%u %%  (gauge %u %%)  %.1f C",
+            LS_SNPRINTF(t_scr_diag_u_gauge_u_1f, buf, sizeof(buf), "%u %%  (gauge %u %%)  %.1f C",
                      (unsigned)gz.percent, (unsigned)gz.learned_percent,
                      gz.temp_c10 / 10.0);
             row(sf, a, 19, "charge", buf, dim);
             if (gz.milliamps == 0)
-                row(sf, a, 20, "note", "not sourcing - this is the charger",
+                row(sf, a, 20, "note", LS_TEXT(t_scr_diag_not_sourcing_this_is, "not sourcing - this is the charger"),
                     dim);
         }
     }
@@ -814,10 +945,10 @@ static void detail_errors(tui_surface *sf, tui_rect a, uint8_t val,
     if (s_err_page >= n) {
         group(sf, a, 1, "THIS RUN SO FAR");
         if (n) {
-            snprintf(buf, sizeof(buf), "%d saved  (N to see them)", n);
+            LS_SNPRINTF(t_scr_diag_d_saved_n_to, buf, sizeof(buf), "%d saved  (N to see them)", n);
             row(sf, a, 2, "saved", buf, bad);
         } else {
-            row(sf, a, 2, "saved", "none since the last clear", good);
+            row(sf, a, 2, "saved", LS_TEXT(t_scr_diag_none_since_the_last, "none since the last clear"), good);
         }
         row(sf, a, 3, "coredump", ls_crash_present() ? "stored, 'crash' reads it" : "none",
             ls_crash_present() ? val : dim);
@@ -828,10 +959,10 @@ static void detail_errors(tui_surface *sf, tui_rect a, uint8_t val,
         return;
     }
 
-    snprintf(buf, sizeof(buf), "SAVED ERROR %d OF %d", s_err_page + 1, n);
+    LS_SNPRINTF(t_scr_diag_saved_error_d_of, buf, sizeof(buf), "SAVED ERROR %d OF %d", s_err_page + 1, n);
     group(sf, a, 1, buf);
     if (!s_err_ok) {
-        row(sf, a, 2, "record", "unreadable (another build's?)", bad);
+        row(sf, a, 2, "record", LS_TEXT(t_scr_diag_unreadable_another_build_s, "unreadable (another build's?)"), bad);
         return;
     }
     snprintf(buf, sizeof(buf), "#%lu", (unsigned long)s_err_rec.seq);
@@ -867,7 +998,8 @@ static void draw_detail(tui_surface *sf, tui_rect a, int64_t now_us)
     const uint8_t bad   = TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK);
     const uint8_t dim   = TUI_ATTR(TUI_WHITE, TUI_BLACK);
 
-    if (s_detail == D_SENSORS || s_detail == D_ALERTS) detail_tick(now_us);
+    if (s_detail == D_SENSORS || s_detail == D_ALERTS || s_detail == D_ENDPOINT)
+        detail_tick(now_us);
 
     tui_box(sf, a, DETAIL_TITLE[s_detail], frame);
 
@@ -882,6 +1014,7 @@ static void draw_detail(tui_surface *sf, tui_rect a, int64_t now_us)
     case D_ALERTS:   detail_alerts(sf, body, val, good, bad, dim);   break;
     case D_SENSORS:  detail_sensors(sf, body, val, good, bad, dim);  break;
     case D_ERRORS:   detail_errors(sf, body, val, good, bad, dim);   break;
+    case D_TRIAL:    detail_trial(sf,body,val,dim); break;
     default: break;
     }
 
@@ -959,7 +1092,7 @@ static void draw_list(tui_surface *sf, tui_rect left)
         if (present)
             row(sf, left, 2, "endpoint", "attached, parked", val);
         else if (n)
-            row(sf, left, 2, "endpoint", "declared, not plugged in", dim);
+            row(sf, left, 2, "endpoint", LS_TEXT(t_scr_diag_declared_not_plugged_in, "declared, not plugged in"), dim);
         else
             row(sf, left, 2, "endpoint", "none attached", dim);
     } else {
@@ -1078,7 +1211,7 @@ static void draw_list(tui_surface *sf, tui_rect left)
         }
     }
 
-    snprintf(buf, sizeof(buf), "sound %s   vibrate %s",
+    LS_SNPRINTF(t_scr_diag_sound_s_vibrate_s, buf, sizeof(buf), "sound %s   vibrate %s",
              ls_notify_ring() ? "on" : "off",
              ls_notify_vibe() ? "on" : "off");
     row(sf, left, 18, "set to", buf,
@@ -1180,7 +1313,7 @@ static void draw_list(tui_surface *sf, tui_rect left)
                     row(sf, left, 27, "battery", "no gauge reading", dim);
                 } else if (gz.milliamps == 0) {
 
-                    snprintf(buf, sizeof(buf), "%.2f V, not sourcing (USB)",
+                    LS_SNPRINTF(t_scr_diag_2f_v_not_sourcing, buf, sizeof(buf), "%.2f V, not sourcing (USB)",
                              gz.millivolts / 1000.0);
                     row(sf, left, 27, "battery", buf, dim);
                 } else {
@@ -1258,6 +1391,7 @@ static void draw(tui_surface *sf, tui_rect area)
         s_band[D_SENSORS]  = tui_rect_make(left.x + 1, left.y + 23,
                                            left.w - 2, 5);
         s_band[D_ERRORS]   = tui_rect_make(0, -1, 0, 0);  /* the row on the right */
+        s_band[D_TRIAL]    = tui_rect_make(0, -1, 0, 0);
         s_err_hit          = tui_rect_make(0, -1, 0, 0);  /* until it is drawn */
         /* A band that does not fit the pane is not offered: the rows it
            would open on are not being drawn either. */
@@ -1342,7 +1476,7 @@ static void draw(tui_surface *sf, tui_rect area)
 
     if (right.h >= 24) {
         tui_put_str(sf, right, right.x + 2, right.y + 13,
-                    "STORAGE AND FIRMWARE", TUI_ATTR(TUI_CYAN, TUI_BLACK));
+                    LS_TEXT(t_scr_diag_storage_and_firmware, "STORAGE AND FIRMWARE"), TUI_ATTR(TUI_CYAN, TUI_BLACK));
 
         const bool checking = __atomic_load_n(&s_sd_busy, __ATOMIC_ACQUIRE);
         if (checking) {
@@ -1351,14 +1485,14 @@ static void draw(tui_surface *sf, tui_rect area)
             const unsigned long age = (unsigned long)((esp_timer_get_time() - s_sd_us) / 1000000);
             if (s_sd_answer == ESP_OK) {
                 human_bytes(b2, sizeof(b2), s_sd_free);
-                snprintf(buf, sizeof(buf), "ok %lu s ago, %s free", age, b2);
+                LS_SNPRINTF(t_scr_diag_ok_lu_s_ago, buf, sizeof(buf), "ok %lu s ago, %s free", age, b2);
                 row(sf, right, 14, "sd card", buf,
                     s_sd_total && s_sd_free * 20 < s_sd_total ? val : good);
             } else {
                 if (s_sd_answer == ESP_ERR_NOT_SUPPORTED)
                     snprintf(buf, sizeof(buf), "no slot, %lu s ago", age);
                 else
-                    snprintf(buf, sizeof(buf), "failed %lu s ago: %s", age,
+                    LS_SNPRINTF(t_scr_diag_failed_lu_s_ago, buf, sizeof(buf), "failed %lu s ago: %s", age,
                              esp_err_to_name(s_sd_answer));
                 row(sf, right, 14, "sd card", buf, bad);
             }
@@ -1411,7 +1545,7 @@ static void draw(tui_surface *sf, tui_rect area)
                    healthy unit is a row that never says anything, and this
                    panel has better uses for a line. */
                 if (sb->faults || sb->power_events) {
-                    snprintf(buf, sizeof(buf), "%lu failed start%s  %lu power",
+                    LS_SNPRINTF(t_scr_diag_lu_failed_start_s, buf, sizeof(buf), "%lu failed start%s  %lu power",
                              (unsigned long)sb->faults,
                              sb->faults == 1 ? "" : "s",
                              (unsigned long)sb->power_events);
@@ -1430,7 +1564,7 @@ static void draw(tui_surface *sf, tui_rect area)
     /* Rotations, and what the last rebuild cost. A number that grows with
        every turn says the teardown is leaving something behind; one that
        stays flat says to look at the receiver instead. */
-    snprintf(buf, sizeof(buf), "%u turns  last %u ms",
+    LS_SNPRINTF(t_scr_diag_u_turns_last_u, buf, sizeof(buf), "%u turns  last %u ms",
              (unsigned)ls_tui_rebuild_count(), (unsigned)ls_tui_rebuild_ms());
     row(sf, right, right.h - 5, "rebuild", buf,
         ls_tui_rebuild_ms() > 400 ? bad : ls_tui_rebuild_ms() > 200 ? val : good);
@@ -1442,10 +1576,10 @@ static void draw(tui_surface *sf, tui_rect area)
     int tc = -1, tr = -1;
     ls_tui_touch_stats(&reads, &taps, &tc, &tr);
     if (taps)
-        snprintf(buf, sizeof(buf), "%lu reads  %lu taps  last %d,%d",
+        LS_SNPRINTF(t_scr_diag_lu_reads_lu_taps, buf, sizeof(buf), "%lu reads  %lu taps  last %d,%d",
                  (unsigned long)reads, (unsigned long)taps, tc, tr);
     else
-        snprintf(buf, sizeof(buf), "%lu reads  no taps yet",
+        LS_SNPRINTF(t_scr_diag_lu_reads_no_taps, buf, sizeof(buf), "%lu reads  no taps yet",
                  (unsigned long)reads);
     row(sf, right, right.h - 3, "touch", buf,
         taps ? good : reads ? val : dim);

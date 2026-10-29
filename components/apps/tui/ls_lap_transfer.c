@@ -2,6 +2,7 @@
 #include "core/ls_base64.h"
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 void ls_lap_transfer_init(ls_lap_transfer_t *s, ls_lap_transfer_io_t io) {
     memset(s, 0, sizeof(*s));
     s->io = io;
@@ -54,7 +55,7 @@ bool ls_lap_transfer_command(ls_lap_transfer_t *s, int argc, const char *const *
     if (strcmp(cmd, "put") && strcmp(cmd, "data") && strcmp(cmd, "end"))
         return false;
     if (ls_lap_transfer_expire(s, ms)) {
-        snprintf(reply, cap, "APP ERR timeout upload expired");
+        LS_SNPUTS(t_ls_lap_transfer_app_err_timeout_upload, reply, cap, "APP ERR timeout upload expired");
         return true;
     }
     const char *code = "args", *why = "invalid upload arguments";
@@ -86,7 +87,7 @@ bool ls_lap_transfer_command(ls_lap_transfer_t *s, int argc, const char *const *
             goto bad;
         }
         s->active = true;
-        snprintf(reply, cap, "APP OK put chunk=72 next=0");
+        LS_SNPUTS(t_ls_lap_transfer_app_ok_put_chunk, reply, cap, "APP OK put chunk=72 next=0");
         return true;
     }
     if (!s->active) {
@@ -122,7 +123,7 @@ bool ls_lap_transfer_command(ls_lap_transfer_t *s, int argc, const char *const *
         s->received += n;
         s->seq++;
         s->last_ms = ms;
-        snprintf(reply, cap, "APP OK data next=%lu received=%lu", (unsigned long)s->seq,
+        LS_SNPRINTF(t_ls_lap_transfer_app_ok_data_next, reply, cap, "APP OK data next=%lu received=%lu", (unsigned long)s->seq,
                  (unsigned long)s->received);
         return true;
     }

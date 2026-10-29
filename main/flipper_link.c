@@ -47,9 +47,8 @@
 #include "tui/ls_rid.h"
 #include "tui/ls_field.h"
 #include "tui/ls_radio_select.h"
-#include "tui/ls_detector.h"
-#include "tui/ls_detector_air.h"
 #include "freertos/semphr.h"
+#include "ls_textpack.h"
 
 static const char *TAG = "fl_link";
 
@@ -221,22 +220,6 @@ int flipper_link_eq_snapshot(char *buf, size_t len)
     if (n < 0) return 0;
     if ((size_t)n >= len) n = (int)len - 1;
 
-    /* DETECTOR rides this line so a head learns of an alert in a pocket
-       without asking: the match counter moves, the head then fetches it.
-       Sent whenever DETECTOR can be read, stopped as well as running: a head
-       told "running" that then hears nothing when it is stopped keeps showing
-       it as on. A busy lock just skips one tick. */
-    ls_detector_status_t det;
-    size_t det_n = 0;
-    if (ls_detector_snapshot(&det, NULL, 0, &det_n)) {
-        char tail[48];
-        int t = snprintf(tail, sizeof(tail), " dtm=%lu dth=%u dtr=%d\n",
-                         (unsigned long)det.matches, det.recent, det.running ? 1 : 0);
-        if (t > 0 && (size_t)n + (size_t)t < len) {
-            memcpy(buf + n - 1, tail, (size_t)t + 1);   /* over the old newline */
-            n += t - 1;
-        }
-    }
     return n;
 }
 
@@ -306,7 +289,7 @@ static void mesh_summary_reply(char *reply, size_t reply_len)
     char name[LS_MESH_NAME_MAX + 4];
     snprintf(name, sizeof(name), "%s", ls_mesh_name());
     sanitize(name);
-    snprintf(reply, reply_len,
+    LS_SNPRINTF(fmt_flipper_link_s_run_st_tx, reply, reply_len,
              "%%M s run=%d st=%s tx=%d rx=%lu bad=%lu sent=%lu rssi=%.0f snr=%.1f "
              "pr=%d ms=%lu ch=%d nm=%s id=%s\n",
              ms.running ? 1 : 0, mesh_state_word(&ms), ms.tx_enabled ? 1 : 0,
@@ -426,7 +409,7 @@ static void handle_mesh(int argc, char **argv, char *reply, size_t reply_len)
         ls_mesh_stats_t ms;
         memset(&ms, 0, sizeof(ms));
         ls_mesh_get_stats(&ms);
-        snprintf(reply, reply_len,
+        LS_SNPRINTF(fmt_flipper_link_ok_run_tx_rx, reply, reply_len,
                  "+OK run=%d tx=%d rx=%lu bad=%lu sent=%lu rssi=%.0f snr=%.1f "
                  "air=%lu budget=%lu peers=%d id=%s\n",
                  ms.running ? 1 : 0, ms.tx_enabled ? 1 : 0,
@@ -479,75 +462,12 @@ static void handle_mesh(int argc, char **argv, char *reply, size_t reply_len)
 }
 
 /* ---- DETECTOR for the head ---------------------------------------------
-   DET | DET S     %A s run= rules= hits= sup= drop= hist= adsb=
-   DET <k>         %A a <k> <total> <age_s> <alarm> <source> <text...>  k=0 newest
-   DET RUN <0|1>   start or stop it, then the status
-   The match counter also rides the eq line (dtm=, dth=, dtr=). */
-#define DET_LINK_EVENTS 6
-static void det_status_reply(char *reply, size_t reply_len, const ls_detector_status_t *st)
-{
-    char adsb[sizeof(st->adsb)];
-    snprintf(adsb, sizeof(adsb), "%s", st->adsb[0] ? st->adsb : "OFF");
-    sanitize(adsb);
-    snprintf(reply, reply_len,
-             "%%A s run=%d rules=%u hits=%lu sup=%lu drop=%lu hist=%u adsb=%s\n",
-             st->running ? 1 : 0, st->rules, (unsigned long)st->matches,
-             (unsigned long)st->suppressed, (unsigned long)st->dropped, st->recent, adsb);
-}
-
+   DETECTOR is an SD app now (SDK 2.2); the board has no detector of its own
+   to report, so DET answers that and the eq line carries no dt fields. */
 static void handle_det(int argc, char **argv, char *reply, size_t reply_len)
 {
-    static EXT_RAM_BSS_ATTR ls_detector_event_t events[DET_LINK_EVENTS];
-    const char *sub = argc > 1 ? argv[1] : NULL;
-    int32_t k = 0;
-    if (sub && !strcasecmp(sub, "RUN")) {
-        if (argc != 3 || (strcmp(argv[2], "0") && strcmp(argv[2], "1"))) {
-            snprintf(reply, reply_len, "-ERR det run <0|1>\n");
-            return;
-        }
-        ls_detector_start(argv[2][0] == '1');
-        sub = NULL;
-    }
-    const bool row = sub && !strcasecmp(sub, "S") ? false : sub != NULL;
-    if (row && (argc != 2 || !parse_i32(sub, &k) || k < 0)) {
-        snprintf(reply, reply_len, "-ERR det [s|<n>|run <0|1>]\n");
-        return;
-    }
-    ls_detector_status_t st;
-    size_t n = 0;
-    big_lock(true);
-    const bool ok = ls_detector_snapshot(&st, row ? events : NULL, row ? DET_LINK_EVENTS : 0, &n);
-    if (!ok) {
-        big_lock(false);
-        snprintf(reply, reply_len, "-ERR det busy\n");
-        return;
-    }
-    if (!row) {
-        det_status_reply(reply, reply_len, &st);
-    } else if ((size_t)k >= n) {
-        snprintf(reply, reply_len, "%%A a %ld %u -1 0 - -\n", (long)k, (unsigned)n);
-    } else {
-        const ls_detector_event_t *e = &events[k];       /* newest first */
-        char text[MESH_LINK_TEXT + 1], src[20];
-        bool alarm = false;
-        if (e->test) {
-            snprintf(text, sizeof(text), "Operator test");
-        } else if (e->source == DET_ADSB) {
-            char air[48];
-            ls_detector_air_event_text(e, air, sizeof(air));
-            wire_text(text, sizeof(text), air);
-            alarm = ls_detector_air_alarm(e->squawk, e->emergency);
-        } else {
-            wire_text(text, sizeof(text), e->reason);
-        }
-        snprintf(src, sizeof(src), "%s", e->test ? "test" : ls_detector_source(e->source));
-        sanitize(src);
-        const int64_t now = esp_timer_get_time();
-        const int age = e->at > 0 && now >= e->at ? (int)((now - e->at) / 1000000) : -1;
-        snprintf(reply, reply_len, "%%A a %ld %u %d %d %s %s\n", (long)k, (unsigned)n,
-                 age, alarm ? 1 : 0, src, text);
-    }
-    big_lock(false);
+    (void)argc; (void)argv;
+    snprintf(reply, reply_len, "-ERR det unavailable: DETECTOR is an SD app\n");
 }
 
 static int build_telemetry_fm(char *buf, size_t len)
@@ -615,7 +535,7 @@ static void eq_reply(char *reply, size_t reply_len)
 {
     audio_eq_cfg_t eq;
     audio_eq_get(&eq);
-    snprintf(reply, reply_len,
+    LS_SNPRINTF(fmt_flipper_link_ok_eq_hp_bass, reply, reply_len,
              "+OK eq=%s hp=%d bass=%+d treb=%+d punch=%d loud=%d\n",
              audio_eq_preset_name(eq.preset), eq.hp10 * 10,
              eq.bass_db, eq.treb_db, eq.punch, eq.loud);
@@ -748,7 +668,7 @@ int flipper_link_scan_snapshot(char *buf, size_t len)
        operator starts a sweep, leaves to transmit, and comes back. */
     rec_scan_bin_t hit;
     const bool have_hit = rec_watch_scan_result(&hit, 1) > 0;
-    int w = snprintf(buf, len, "& xon=%d xn=%d xlo=%lu xhi=%lu xfl=%d xpk=%lu xpd=%d xev=%d "
+    int w = LS_SNPRINTF(fmt_flipper_link_xon_xn_xlo_xhi, buf, len, "& xon=%d xn=%d xlo=%lu xhi=%lu xfl=%d xpk=%lu xpd=%d xev=%d "
                                "xht=%lu xhd=%d xsp=%s\n",
                      busy ? 1 : 0, n, (unsigned long)bins[0].hz,
                      (unsigned long)bins[n - 1].hz, (int)floor_dbm,
@@ -1002,7 +922,7 @@ static void psys_reply(char *reply, size_t reply_len)
              ps && ps->active_valid ? ps->active.system_name : "-");
     sanitize(system);
     p25_program_geo_code_now(geo, sizeof(geo));
-    snprintf(reply, reply_len,
+    LS_SNPRINTF(fmt_flipper_link_ok_psys_p2f_p2g, reply, reply_len,
              "+OK psys p2f=%d p2g=%lu pf=%s sys=%s geo=%s nu=%lu unac=%03X\n",
              p25_get_phase2_follow() ? 1 : 0,
              (unsigned long)P25.p25_phase2_grant_count,
@@ -1659,7 +1579,7 @@ static void handle_line(char *line, char *reply, size_t reply_len)
         /*'s own distinction, carried to the head: bytes climbing with
            sentences flat is a baud rate, both climbing with no fix is the
            antenna, and neither is "the GPS is broken". */
-        snprintf(reply, reply_len,
+        LS_SNPRINTF(fmt_flipper_link_ok_on_fix_alive, reply, reply_len,
                  "+OK on=%d fix=%d alive=%d used=%u seen=%u "
                  "lat=%.5f lon=%.5f bytes=%lu ok=%lu bad=%lu\n",
                  ls_gps_running() ? 1 : 0, g.fix ? 1 : 0, g.alive ? 1 : 0,
@@ -1786,7 +1706,7 @@ int flipper_link_scan_rx(int dwell_ms)
         return -1;
     }
 
-    printf("scanning %d pins, %d ms each (drive the head so it keeps talking)\n",
+    LS_PRINTF(fmt_flipper_link_scanning_pins_ms_each, "scanning %d pins, %d ms each (drive the head so it keeps talking)\n",
            N_SCAN_PINS, dwell_ms);
 
     int best = -1;
@@ -1864,7 +1784,7 @@ int flipper_link_probe_rx(void)
     esp_log_level_t gpio_lvl = esp_log_level_get("gpio");
     esp_log_level_set("gpio", ESP_LOG_WARN);
 
-    printf("probing %d header pins with a pull-down.\n"
+    LS_PRINTF(fmt_flipper_link_probing_header_pins_with, "probing %d header pins with a pull-down.\n"
            "  ~100%% = something external is driving it high (an idle UART TX)\n"
            "  <100%% = that line is also carrying traffic\n"
            "     0%% = nothing connected, or the far end is unpowered\n",
@@ -1894,23 +1814,23 @@ int flipper_link_probe_rx(void)
     }
 
     if (best >= 0) {
-        printf("probe: GPIO%d is being driven (%d%%). %d pin(s) driven in total.\n",
+        LS_PRINTF(fmt_flipper_link_probe_gpio_is_being, "probe: GPIO%d is being driven (%d%%). %d pin(s) driven in total.\n",
                best, best_pct, found);
         if (best != saved.rx_gpio) {
-            printf("probe: the link expects RX on GPIO%d - the wire is on the "
+            LS_PRINTF(fmt_flipper_link_probe_the_link_expects, "probe: the link expects RX on GPIO%d - the wire is on the "
                    "wrong pin. `link pins %d %d` to adopt it.\n",
                    saved.rx_gpio, best, saved.tx_gpio);
         } else {
-            printf("probe: that is the configured RX pin - wiring is good.\n");
+            LS_FPUTS(msg_flipper_link_probe_that_is_the, "probe: that is the configured RX pin - wiring is good.\n", stdout);
         }
     } else {
-        printf("probe: every pin followed the pull-down - the head's TX is not "
+        LS_FPUTS(msg_flipper_link_probe_every_pin_followed, "probe: every pin followed the pull-down - the head's TX is not "
                "reaching any P4 header pin.\n"
                "       The P4 cannot see C6_IO12/C6_IO13/C6_U0RXD/C6_U0TXD at "
                "all (those belong to the on-board ESP32-C6), so a jumper one or\n"
                "       two positions off the mark looks exactly like this. "
                "Count header positions against the Waveshare pinout, and check "
-               "the head is powered with its app open.\n");
+               "the head is powered with its app open.\n", stdout);
     }
 
     esp_log_level_set("gpio", gpio_lvl);
@@ -1924,14 +1844,14 @@ int flipper_link_probe_rx(void)
 int flipper_link_scan_rx(int dwell_ms)
 {
     (void)dwell_ms;
-    printf("this board declares no wired head-link pins - nothing to scan.\n"
-           "  see LS_BOARD_LINK_SCAN_PINS in components/lakeshark/board/variants/\n");
+    LS_FPUTS(msg_flipper_link_this_board_declares_no, "this board declares no wired head-link pins - nothing to scan.\n"
+           "  see LS_BOARD_LINK_SCAN_PINS in components/lakeshark/board/variants/\n", stdout);
     return -1;
 }
 
 int flipper_link_probe_rx(void)
 {
-    printf("this board declares no wired head-link pins - nothing to probe.\n");
+    LS_FPUTS(msg_flipper_link_this_board_declares_no_2, "this board declares no wired head-link pins - nothing to probe.\n", stdout);
     return -1;
 }
 

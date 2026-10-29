@@ -63,6 +63,11 @@ CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV=n
 # Nothing here accepts a TLS connection: OTA, map tiles and the site are all
 # clients. Client-only drops the server handshake and the server tickets.
 CONFIG_MBEDTLS_TLS_CLIENT_ONLY=y
+# The hosts it talks to (ota.terminalbay.com: GlobalSign, the Pages map host
+# and GitHub's asset hosts: ISRG, github.com: USERTrust) all chain to roots
+# in IDF's common bundle; the full one is three times the size.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=n
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 # libssh (the SSH terminal, ls_rterm_ssh.c) will not build against an
 # mbedTLS without threading, and with it the SSH task and HTTPS can share
 # the crypto library safely.

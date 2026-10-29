@@ -25,6 +25,7 @@ void ls_shim_keypad(int present);
 #include "p25_state.h"
 p25_state_t P25;
 #include "radio/radio_health.h"
+#include "radio/receiver_diagnostics.h"
 #include "apps/fm/fm_state.h"
 #include "apps/acars/acars_app.h"
 #include "apps/fm/fm_mode_label.h"
@@ -382,6 +383,7 @@ bool lakeshark_fm_set_freq(uint32_t hz)
 }
 void lakeshark_fm_set_baud(int baud){if(baud==0)FM.pocsag_auto=true;else{FM.pocsag_auto=false;FM.pocsag_baud=baud;}}
 uint32_t lakeshark_fm_frequency_lock_hz(void){return s_fm_frequency_lock_hz;}
+int lakeshark_fm_squelch_get(void){return FM.squelch_tenths;}
 extern int ls_test_wf_pumps, ls_test_wf_releases;
 const char *ls_wf_source_label(ls_wf_src_t src) { static const char *names[]={"AUTO","P25","FM","LORA"}; return names[src]; }
 const char *ls_wf_source_blocked(ls_wf_src_t src) { (void)src; return NULL; }
@@ -1336,7 +1338,7 @@ LS_CASE(home_landscape_tiles_keep_their_labels)
     draw_pane(&ls_scr_home, PANES[0]);   /* landscape body, 113x24 */
 
     static const char *const NAMES[] = { "SET", "DIAG", "REC", "FM", "ADSB", "LORA LABS", "NOTES" };
-    static const char GROUP[] = {'s','s','f','r','r','r','f'};
+    static const char GROUP[] = {'s','s','r','r','r','r','f'};
     for (unsigned i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++) {
         ls_scr_home.key((ls_tk_t)(LS_TK_F1+(GROUP[i]=='s'?2:GROUP[i]=='f'?1:0)), 0);
         fresh();
@@ -2995,6 +2997,102 @@ static void diag_fresh(void)
     ls_shim_task_execute_on_create(pdFALSE);
     fresh();
     draw_pane(&ls_scr_diag, DIAG_PANE);
+}
+
+extern ls_receiver_diag_t ls_test_receiver_snapshot;
+extern bool ls_test_receiver_snapshot_ok;
+extern unsigned ls_test_receiver_snapshot_calls;
+
+LS_CASE(diag_trial_actions_and_unknown_before_after_fit_and_preserve_receiver)
+{
+    static const tui_rect panes[]={ {1,4,52,66},{0,4,118,27},{0,4,78,23},{0,4,39,40} };
+    ls_test_receiver_snapshot_ok=true;
+    memset(&ls_test_receiver_snapshot,0,sizeof(ls_test_receiver_snapshot));
+    for (unsigned i=0;i<sizeof(panes)/sizeof(panes[0]);i++) {
+        diag_fresh(); ls_scr_diag.key(LS_TK_CHAR,'e');
+        LS_CHECK(ls_scr_diag.key(LS_TK_CHAR,'x'));
+        fresh(); draw_pane(&ls_scr_diag,panes[i]);
+        LS_CHECK(diag_has(panes[i],"NO BASELINE"));
+        LS_CHECK(diag_has(panes[i],"? / ?"));
+        LS_CHECK(!diag_has(panes[i],"0 / 0"));
+        LS_CHECK(diag_has(panes[i],"unavailable until"));
+        LS_CHECK(ls_scr_diag.key(LS_TK_CHAR,'b'));
+        fresh(); draw_pane(&ls_scr_diag,panes[i]);
+        LS_CHECK(diag_has(panes[i],"BASELINE SAVED"));
+        LS_CHECK(diag_has(panes[i],"? / ?"));
+        LS_EQ_INT(0,border_breaks(panes[i],NULL,NULL,NULL));
+        LS_EQ_INT(0,escaped(panes[i]));
+        LS_CHECK(ls_scr_diag.key(LS_TK_CHAR,'c'));
+        fresh(); draw_pane(&ls_scr_diag,panes[i]);
+        LS_CHECK(diag_has(panes[i],"TIME UNKNOWN"));
+        LS_EQ_INT(ls_test_receiver_snapshot.rx_state,LS_RECEIVER_RX_UNKNOWN);
+    }
+    ls_scr_diag.key(LS_TK_CHAR,'x');
+    ls_scr_diag.key(LS_TK_ESC,0);
+    ls_test_receiver_snapshot_ok=false;
+}
+
+LS_CASE(diag_reception_check_is_read_only_cached_and_clears_failed_refresh)
+{
+    memset(&ls_test_receiver_snapshot, 0, sizeof(ls_test_receiver_snapshot));
+    ls_test_receiver_snapshot_ok = true;
+    ls_test_receiver_snapshot.app_known = true;
+    strcpy(ls_test_receiver_snapshot.app, "FM");
+    strcpy(ls_test_receiver_snapshot.demod, "NFM");
+    ls_test_receiver_snapshot.rx_state = LS_RECEIVER_RX_ACTIVE;
+    ls_test_receiver_snapshot.iq_rate_known = true;
+    ls_test_receiver_snapshot.iq_bytes_per_second = 491520;
+    ls_test_receiver_snapshot.valid_count_known = true;
+    ls_test_receiver_snapshot.requested_frequency_known = true;
+    ls_test_receiver_snapshot.requested_frequency_hz = 851012500;
+    ls_shim_time_set(1000000);
+    diag_fresh();
+    const unsigned calls = ls_test_receiver_snapshot_calls;
+    ls_scr_diag.key(LS_TK_CHAR, 'e');
+    fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+    LS_EQ_INT(calls + 1, ls_test_receiver_snapshot_calls);
+    LS_CHECK(diag_has(DIAG_PANE, "RECEPTION CHECK"));
+    LS_CHECK(diag_has(DIAG_PANE, "FM / NFM"));
+    LS_CHECK(diag_has(DIAG_PANE, "SAMPLES FLOWING"));
+    LS_CHECK(diag_has(DIAG_PANE, "491520 B/s"));
+    LS_CHECK(diag_has(DIAG_PANE, "851.012500 MHz"));
+    LS_CHECK(diag_has(DIAG_PANE, "frequency, mode and antenna"));
+    LS_CHECK(diag_has(DIAG_PANE, "not RF validation"));
+    ls_shim_time_advance(500000);
+    fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+    LS_EQ_INT(calls + 1, ls_test_receiver_snapshot_calls);
+    ls_test_receiver_snapshot_ok = false;
+    ls_shim_time_advance(600000);
+    fresh(); draw_pane(&ls_scr_diag, DIAG_PANE);
+    LS_EQ_INT(calls + 2, ls_test_receiver_snapshot_calls);
+    LS_CHECK(diag_has(DIAG_PANE, "STATE UNAVAILABLE"));
+    LS_CHECK(!diag_has(DIAG_PANE, "491520 B/s"));
+    LS_CHECK(!diag_has(DIAG_PANE, "851.012500 MHz"));
+    ls_scr_diag.key(LS_TK_ESC, 0);
+}
+
+LS_CASE(diag_reception_reason_and_action_fit_portrait_and_landscape)
+{
+    static const tui_rect panes[] = {
+        {1, 4, 52, 66}, {0, 4, 118, 27}, {0, 4, 78, 23}, {0, 4, 39, 40}
+    };
+    memset(&ls_test_receiver_snapshot, 0, sizeof(ls_test_receiver_snapshot));
+    ls_test_receiver_snapshot_ok = true;
+    ls_test_receiver_snapshot.parked_known = true;
+    ls_test_receiver_snapshot.parked = true;
+    ls_shim_time_set(3000000);
+    for (unsigned i = 0; i < sizeof(panes) / sizeof(panes[0]); ++i) {
+        diag_fresh();
+        ls_scr_diag.key(LS_TK_CHAR, 'e');
+        fresh(); draw_pane(&ls_scr_diag, panes[i]);
+        LS_CHECK(diag_has(panes[i], "RECEIVER PARKED"));
+        LS_CHECK(diag_has(panes[i], "NEXT:"));
+        LS_CHECK(diag_has(panes[i], "Open FM"));
+        LS_CHECK(diag_has(panes[i], "unavailable"));
+        LS_EQ_INT(0, border_breaks(panes[i], NULL, NULL, NULL));
+    }
+    ls_test_receiver_snapshot_ok = false;
+    ls_scr_diag.key(LS_TK_ESC, 0);
 }
 
 extern bool ls_test_sd_mounted;
@@ -4717,6 +4815,41 @@ static const ls_app_doc_t k_fixture_doc = {
     .gps     = LS_APP_GPS_UNUSED,
 };
 
+LS_CASE(home_folder_folds_children_and_opens_by_key_and_touch)
+{
+    apps_once();
+    /* A built-in cannot be unregistered, so REC stays a folder for every
+       case run after this one. Cases run bottom up, and the paging case
+       below opens whatever leads page 2 - REC - so it must stay below. */
+    static const ls_app_t kid={.id="tmach",.name="TIME MACHINE",.cat=LS_APP_EXTRA,.screen=&ls_scr_fm,.doc=&k_fixture_doc};
+    if(!ls_app_by_id("tmach")) ls_app_register(&kid);
+    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
+    ls_anim_cancel();
+    int x,y;
+    for(int p=0;p<2;p++) {
+        ls_scr_home.key(LS_TK_F1,0);
+        fresh();draw_pane(&ls_scr_home,PANES[p]);
+        LS_CHECK(find_text("[+1]",&x,&y));
+        LS_CHECK(!find_text("TIME MACHINE",&x,&y));
+        LS_CHECK(ls_scr_home.key(LS_TK_CHAR,'r'));
+        LS_CHECK(ls_scr_home.key(LS_TK_ENTER,0));
+        LS_EQ_INT(ls_tui_screen_index_of(&ls_scr_home),ls_tui_screen_current());
+        fresh();draw_pane(&ls_scr_home,PANES[p]);
+        LS_CHECK(find_text("< BACK",&x,&y));
+        LS_CHECK(find_text("TIME MACHINE",&x,&y));
+        LS_CHECK(ls_scr_home.touch(x,y-2));
+        LS_CHECK(ls_tui_screen_current()!=ls_tui_screen_index_of(&ls_scr_home));
+        ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
+        ls_anim_cancel();
+        fresh();draw_pane(&ls_scr_home,PANES[p]);
+        LS_CHECK(find_text("< BACK",&x,&y));
+        LS_CHECK(ls_scr_home.touch(x,y));
+        fresh();draw_pane(&ls_scr_home,PANES[p]);
+        LS_CHECK(find_text("RADIO",&x,&y));
+        LS_CHECK(!find_text("< BACK",&x,&y));
+    }
+}
+
 LS_CASE(home_later_page_returns_and_sky_landscape_has_referenced_table)
 {
     apps_once();
@@ -4731,8 +4864,9 @@ LS_CASE(home_later_page_returns_and_sky_landscape_has_referenced_table)
     ls_scr_home.key(LS_TK_F6,0);
     fresh();draw_pane(&ls_scr_home,small);
     int x,y;LS_CHECK(find_text("PAGE 2/",&x,&y));
+    /* Whichever app leads page 2; the page is what has to survive. */
     ls_scr_home.key(LS_TK_CHAR,'1');
-    LS_CHECK(!strcmp(ls_tui_screen_name(ls_tui_screen_current()),"FM"));
+    LS_CHECK(ls_tui_screen_current()!=ls_tui_screen_index_of(&ls_scr_home));
     ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
     fresh();draw_pane(&ls_scr_home,small);
     LS_CHECK(find_text("PAGE 2/",&x,&y));

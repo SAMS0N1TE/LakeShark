@@ -24,6 +24,7 @@
 #include "../../ls_options.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "ls_textpack.h"
 static int s_sky_selected, s_sky_count;
 static bool s_sky_mode=true, s_sky_drawn;
 static tui_rect s_view_hit, s_options_hit;
@@ -75,7 +76,7 @@ static void storage_action(const ls_opt_t *o)
     s_busy=true;
     if(xTaskCreatePinnedToCore(storage_task,"gps_export",4096,(void *)(intptr_t)o->arg,3,NULL,tskNO_AFFINITY)!=pdPASS) {
         s_busy=false;
-        snprintf(s_result,sizeof(s_result),"No memory for SD worker");
+        LS_SNPUTS(t_scr_gps_no_memory_for_sd, s_result, sizeof(s_result), "No memory for SD worker");
     }
 }
 static const char *storage_blocked(const ls_opt_t *o)
@@ -180,13 +181,13 @@ static void state_line(char *out, size_t n, const ls_gps_state_t *g)
 {
     switch (view_of(g)) {
     case VIEW_OFF:
-        snprintf(out, n, "READER OFF / G starts the receiver");
+        LS_SNPUTS(t_scr_gps_reader_off_g_starts, out, n, "READER OFF / G starts the receiver");
         break;
     case VIEW_LISTENING:
-        snprintf(out, n, "LISTENING / no sentences yet");
+        LS_SNPUTS(t_scr_gps_listening_no_sentences_yet, out, n, "LISTENING / no sentences yet");
         break;
     default:
-        snprintf(out, n, "%s / %u used, %u tracked, %u seen", state_word(g),
+        LS_SNPRINTF(t_scr_gps_s_u_used_u, out, n, "%s / %u used, %u tracked, %u seen", state_word(g),
                  g->sats_used, g->sats_tracked, g->sats_visible);
         break;
     }
@@ -234,7 +235,7 @@ static void draw_position(tui_surface *sf, tui_rect pos,
 
     field(sf,pos,7,"ANTENNA",ls_gps_antenna_name(g->antenna),g->antenna>=LS_GPS_ANT_OPEN?A(TUI_RED,TUI_BLACK):dim);
     if(g->year) {
-        snprintf(buf,sizeof(buf),"%04u-%02u-%02u %02u:%02u:%02uZ",g->year,g->month,g->day,g->hour,g->minute,g->second);
+        LS_SNPRINTF(t_scr_gps_04u_02u_02u_02u, buf,sizeof(buf),"%04u-%02u-%02u %02u:%02u:%02uZ",g->year,g->month,g->day,g->hour,g->minute,g->second);
         field(sf,pos,6,"UTC",buf,dim);
     }
     /* A stopped reader keeps its last fix; it is not a position now. */
@@ -277,7 +278,7 @@ static void draw_sky(tui_surface *sf, tui_rect sky, const ls_gps_state_t *g)
     char buf[48];
 
     ls_panel_box(sf, sky, "SKY", TUI_CYAN);
-    snprintf(buf, sizeof(buf), "%u used, %u tracked, %u seen",
+    LS_SNPRINTF(t_scr_gps_u_used_u_tracked, buf, sizeof(buf), "%u used, %u tracked, %u seen",
              g->sats_used, g->sats_tracked, g->sats_visible);
     field(sf, sky, 1, "SATELLITES", buf, val);
     char systems[100] = "";
@@ -289,7 +290,7 @@ static void draw_sky(tui_surface *sf, tui_rect sky, const ls_gps_state_t *g)
     char lines[2][64];
     int n=ls_wrap_text(at?systems:"No constellation tracked",sky.w-4,(char *)lines,sizeof(lines[0]),2);
     for(int i=0;i<n;i++) tui_put_str(sf,sky,sky.x+2,sky.y+2+i,lines[i],dim);
-    snprintf(buf,sizeof(buf),"C/N0 best %u, top-4 %u dB-Hz",g->cn0_best,g->cn0_top4);
+    LS_SNPRINTF(t_scr_gps_c_n0_best_u, buf,sizeof(buf),"C/N0 best %u, top-4 %u dB-Hz",g->cn0_best,g->cn0_top4);
     tui_put_str(sf,sky,sky.x+2,sky.y+4,buf,val);
 }
 
@@ -390,8 +391,8 @@ static void draw(tui_surface *sf, tui_rect area)
     char health[80];
     const esp_err_t track_error=ls_track_rec_error();
     if(track_error!=ESP_OK)
-        snprintf(health,sizeof(health),"TRACK FAILED: %s / resume %s",track_error==ESP_ERR_NOT_FOUND?"no SD card":esp_err_to_name(track_error),ls_track_rec_requested()?"ON":"OFF");
-    else snprintf(health,sizeof(health),"TRACK %s / %d points",ls_track_rec_running()?(ls_gps_fix_current(&g,esp_timer_get_time())?"RECORDING":"WAIT FIX"):"STOPPED",ls_track_points());
+        LS_SNPRINTF(t_scr_gps_track_failed_s_resume, health,sizeof(health),"TRACK FAILED: %s / resume %s",track_error==ESP_ERR_NOT_FOUND?"no SD card":esp_err_to_name(track_error),ls_track_rec_requested()?"ON":"OFF");
+    else LS_SNPRINTF(t_scr_gps_track_s_d_points, health,sizeof(health),"TRACK %s / %d points",ls_track_rec_running()?(ls_gps_fix_current(&g,esp_timer_get_time())?"RECORDING":"WAIT FIX"):"STOPPED",ls_track_points());
     tui_put_str(sf,summary,summary.x+2,summary.y+1,health,A(ls_track_rec_running()?TUI_GREEN:TUI_YELLOW,TUI_BLACK));
     uint32_t seconds=0;bool epoch=false;
     char stamp[LS_TIME_STAMP_MAX];
@@ -408,7 +409,7 @@ static void draw(tui_surface *sf, tui_rect area)
             strftime(stamp,sizeof(stamp),"%Y-%m-%dT%H:%M:%SZ",&utc);
         } else ls_time_render_stamp_at(stamp,sizeof(stamp),0,(int64_t)seconds*1000000);
         snprintf(health,sizeof(health),"LAST POINT %s",stamp);
-    } else snprintf(health,sizeof(health),"LAST POINT -- / none saved");
+    } else LS_SNPUTS(t_scr_gps_last_point_none_saved, health, sizeof(health), "LAST POINT -- / none saved");
     tui_put_str(sf,summary,summary.x+2,summary.y+2,s_busy?"Working on SD card":s_result[0]?s_result:health,LS_ATTR_DIM);
     s_options_hit=tui_rect_make(summary.x+2,summary.y+3,11,1);
     tui_put_str(sf,summary,s_options_hit.x,s_options_hit.y,"[ OPTIONS ]",A(TUI_CYAN,TUI_BLACK));

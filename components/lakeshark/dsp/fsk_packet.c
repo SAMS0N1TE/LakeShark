@@ -3,6 +3,8 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "ls_cold.h"
+#include "ls_textpack.h"
 
 #define PI_F 3.14159265f
 
@@ -489,7 +491,7 @@ int fsk_pkt_from_edges(const int32_t *edges, size_t n, fsk_pkt_t *out, int max)
     return found;
 }
 
-int fsk_pkt_describe(const fsk_pkt_t *p, char *out, size_t n)
+LS_COLD int fsk_pkt_describe(const fsk_pkt_t *p, char *out, size_t n)
 {
     if (!p || !out || !n) return 0;
     static const char *const CRC[] = { "", "CRC", "CRC CCITT", "CRC SX1231" };
@@ -501,13 +503,13 @@ int fsk_pkt_describe(const fsk_pkt_t *p, char *out, size_t n)
     char sync[16];
     snprintf(sync, sizeof(sync), "%04lX%s", (unsigned long)p->sync, p->sync_repeats > 1 ? "x2" : "");
     if (p->crc_kind == FSK_CRC_NONE)
-        return snprintf(out, n, "2-FSK %lu bd sync %s%s %u B %s, no CRC", (unsigned long)(p->baud_std ? p->baud_std : p->baud),
+        return LS_SNPRINTF(t_fsk_packet_2_fsk_lu_bd, out, n, "2-FSK %lu bd sync %s%s %u B %s, no CRC", (unsigned long)(p->baud_std ? p->baud_std : p->baud),
                         sync, p->inverted ? " inv" : "", p->len, hex);
-    return snprintf(out, n, "2-FSK %lu bd sync %s%s%s %u B %s %s %04X ok", (unsigned long)(p->baud_std ? p->baud_std : p->baud),
+    return LS_SNPRINTF(t_fsk_packet_2_fsk_lu_bd_2, out, n, "2-FSK %lu bd sync %s%s%s %u B %s %s %04X ok", (unsigned long)(p->baud_std ? p->baud_std : p->baud),
                     sync, p->inverted ? " inv" : "", p->whitened ? " PN9" : "", p->len, hex, CRC[p->crc_kind], p->crc);
 }
 
-int fsk_pkt_describe_short(const fsk_pkt_t *p, char *out, size_t n)
+LS_COLD int fsk_pkt_describe_short(const fsk_pkt_t *p, char *out, size_t n)
 {
     if (!p || !out || !n) return 0;
     char hex[3 * 6 + 4];
@@ -515,7 +517,7 @@ int fsk_pkt_describe_short(const fsk_pkt_t *p, char *out, size_t n)
     const int show = p->len > 6 ? 6 : p->len;
     for (int i = 0; i < show; i++) h += (size_t)snprintf(hex + h, sizeof(hex) - h, i ? " %02X" : "%02X", p->data[i]);
     if (p->len > show) snprintf(hex + h, sizeof(hex) - h, " ..");
-    return snprintf(out, n, "%lu bd %04lX%s | %s | %s", (unsigned long)(p->baud_std ? p->baud_std : p->baud),
+    return LS_SNPRINTF(t_fsk_packet_lu_bd_04lx_s, out, n, "%lu bd %04lX%s | %s | %s", (unsigned long)(p->baud_std ? p->baud_std : p->baud),
                     (unsigned long)p->sync, p->sync_repeats > 1 ? "x2" : "", hex,
                     p->crc_kind == FSK_CRC_NONE ? "no CRC" : "CRC ok");
 }

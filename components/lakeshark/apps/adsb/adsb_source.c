@@ -9,6 +9,8 @@
 
 #include "adsb_decode.h"
 #include "ls_lora.h"
+#include "ls_cold.h"
+#include "ls_textpack.h"
 
 /* ------------------------------------------------------- chip-frame log -- */
 
@@ -98,7 +100,7 @@ void adsb_chip_diag_record(const uint8_t *chips, int nbytes, int rssi_tenths,
     portEXIT_CRITICAL(&s_diag_mux);
 }
 
-void adsb_chip_diag_snapshot(adsb_chip_diag_t *out)
+LS_COLD void adsb_chip_diag_snapshot(adsb_chip_diag_t *out)
 {
     if (!out) return;
     memset(out, 0, sizeof(*out));
@@ -146,7 +148,7 @@ void adsb_chip_diag_snapshot(adsb_chip_diag_t *out)
     portEXIT_CRITICAL(&s_diag_mux);
 }
 
-int adsb_chip_diag_format_rec(const adsb_chip_rec_t *rec, char *out, size_t size)
+LS_COLD int adsb_chip_diag_format_rec(const adsb_chip_rec_t *rec, char *out, size_t size)
 {
     if (!rec || !out || !size) return 0;
     char rssi[16];
@@ -177,14 +179,14 @@ int adsb_chip_diag_format_rec(const adsb_chip_rec_t *rec, char *out, size_t size
 int adsb_chip_diag_format_counts(const adsb_chip_diag_t *d, char *out, size_t size)
 {
     if (!d || !out || !size) return 0;
-    return snprintf(out, size,
+    return LS_SNPRINTF(t_adsb_source_frames_lu_decoded_lu, out, size,
                     "frames=%lu decoded=%lu bad_chips=%lu bad_crc=%lu errors=%lu clean_pairs=%lu",
                     (unsigned long)d->frames, (unsigned long)d->decoded,
                     (unsigned long)d->bad_chips, (unsigned long)d->bad_crc,
                     (unsigned long)d->errors, (unsigned long)d->clean);
 }
 
-int adsb_chip_diag_format_hist(const adsb_chip_diag_t *d, char *out, size_t size)
+LS_COLD int adsb_chip_diag_format_hist(const adsb_chip_diag_t *d, char *out, size_t size)
 {
     if (!d || !out || !size) return 0;
     int n = 0;
@@ -198,25 +200,25 @@ int adsb_chip_diag_format_rates(const adsb_chip_diag_t *d, char *out, size_t siz
 {
     if (!d || !out || !size) return 0;
     if (d->rate_window_s <= 0)
-        return snprintf(out, size, "rates: n/a, no whole second counted yet");
-    return snprintf(out, size,
+        return LS_SNPUTS(t_adsb_source_rates_n_a_no, out, size, "rates: n/a, no whole second counted yet");
+    return LS_SNPRINTF(t_adsb_source_triggers_1f_s_decoded, out, size,
                     "triggers %.1f/s, decoded %.1f/s (last %d s); since start %.1f/s and %.1f/s over %lu s",
                     d->trigger_per_s, d->decoded_per_s, d->rate_window_s,
                     d->avg_trigger_per_s, d->avg_decoded_per_s, (unsigned long)d->elapsed_s);
 }
 
-void adsb_chip_diag_print(void)
+LS_COLD void adsb_chip_diag_print(void)
 {
     adsb_chip_diag_t d;
     adsb_chip_diag_snapshot(&d);
     char line[160];
     adsb_chip_diag_format_counts(&d, line, sizeof(line));
-    printf("adsb chips: %s (since boot or `adsb chips reset`)\n", line);
+    LS_PRINTF(t_adsb_source_adsb_chips_s_since, "adsb chips: %s (since boot or `adsb chips reset`)\n", line);
     adsb_chip_diag_format_rates(&d, line, sizeof(line));
     printf("adsb chips: %s\n", line);
     adsb_chip_diag_format_hist(&d, line, sizeof(line));
-    printf("adsb chips: first invalid pair at message bit, counts per 8 bits: %s\n", line);
-    printf("adsb chips: last %lu frame%s, oldest first (28 chip bytes after the preamble)\n",
+    LS_PRINTF(t_adsb_source_adsb_chips_first_invalid, "adsb chips: first invalid pair at message bit, counts per 8 bits: %s\n", line);
+    LS_PRINTF(t_adsb_source_adsb_chips_last_lu, "adsb chips: last %lu frame%s, oldest first (28 chip bytes after the preamble)\n",
            (unsigned long)d.n_recs, d.n_recs == 1 ? "" : "s");
     for (uint32_t i = 0; i < d.n_recs; i++) {
         adsb_chip_diag_format_rec(&d.recs[i], line, sizeof(line));

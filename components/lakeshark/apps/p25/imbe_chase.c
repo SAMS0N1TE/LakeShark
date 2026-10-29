@@ -2,7 +2,7 @@
 
 /* mbelib's tables (ecc_const.h, defined in ecc.c) */
 extern const int golayGenerator[12];
-extern const int golayMatrix[2048];
+extern int golayMatrix[2048];   /* built at start-up (mbelib ecc.c) */
 extern const int hammingGenerator[4];
 extern const int hammingMatrix[16];
 

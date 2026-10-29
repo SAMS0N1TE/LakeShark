@@ -10,6 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "usb/usb_host.h"
+#include "radio_endpoint.h"
 
 #ifndef portMAX_DELAY
 #define portMAX_DELAY (TickType_t)0xffffffffUL
@@ -67,6 +68,7 @@ int esp_libusb_stream_read_timeout(unsigned char *dst, int max,
 void esp_libusb_stream_reset(void);
 uint32_t esp_libusb_stream_avail(void);
 uint64_t esp_libusb_stream_dropped(void);
+bool esp_libusb_stream_evidence(ls_radio_iq_transport_t *out);
 int esp_libusb_stream_slots(void);
 uint32_t esp_libusb_total_bytes(void);
 bool esp_libusb_streaming(void);

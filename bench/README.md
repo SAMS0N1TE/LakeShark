@@ -10,7 +10,11 @@ pwsh -NoProfile -File bench/verify.ps1 -Level full
 
 The host gate runs decoder and UI tests, C++ header checks and source guards. The smoke gate also builds T-Display-P4. The full gate builds every enabled configuration in `bench/configs.json`.
 
-Use `-Filter pocsag` to select tests or `-Sanitize` for address and undefined-behavior checks with a supported compiler.
+Use `-Filter pocsag` for harness case filtering, or `-TestRegex '^test_music_analysis$'`
+to select registered CTest names (including required fixtures). The latter reports
+selected/total counts, rejects invalid or empty selections, and retains the standard
+source guards and requested firmware build. Omit both for the complete suite.
+Use `-Sanitize` for address and undefined-behavior checks with a supported compiler.
 
 Firmware builds require ESP-IDF 5.5.4 with the patches in `bench/patches/` (`bench/patch-idf.ps1 -IdfPath <esp-idf> -Apply`). Set `IDF_PATH` to the local installation.
 
@@ -21,6 +25,11 @@ pwsh -NoProfile -File bench/build.ps1 p4-touch-lcd-43
 ```
 
 Host tests do not verify RF reception or physical hardware.
+
+The host-side [observation catalog](../docs/OBSERVATION_CATALOG.md) combines
+existing SD stores into a searchable offline view and JSONL export. Run
+`python -B bench/tests/test_observation_catalog.py` for its parser, identity,
+privacy, bounds and native LR2021-to-SigMF conversion checks.
 
 Preview the HI8561 layout around the camera hole:
 

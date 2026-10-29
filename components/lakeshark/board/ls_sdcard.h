@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #include "esp_err.h"
 
@@ -26,6 +27,11 @@ bool ls_sdcard_size(uint64_t *total, uint64_t *free_bytes);
 esp_err_t ls_sdcard_check(uint64_t *total, uint64_t *free_bytes);
 
 const char *ls_sdcard_name(void);
+
+/* FATFS's own path ("N:/x") for a path under LS_SDCARD_MOUNT, so a walk can
+   use f_readdir, which carries each file's size, instead of a stat (a
+   directory search) per file. False when nothing is mounted. */
+bool ls_sdcard_ff_path(const char *path, char *out, size_t n);
 
 void ls_sdcard_diagnostics(void);
 

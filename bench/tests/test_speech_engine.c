@@ -94,6 +94,9 @@ LS_CASE(every_announcement_renders_within_the_arena)
         { "lost",    lost },
         { "position", pos },
         { "more",    "AND 7 MORE." },
+        { "fsd",     "Frame shift drive charging." },        /* CARRIER's ship computer */
+        { "aligned", "Aligned. Frame shift ready." },
+        { "route",   "Route plotted to Esker Reach." },
     };
     for (int v = 0; v < SPEECH_VOICE_COUNT; v++) {
         for (size_t i = 0; i < sizeof(P) / sizeof(P[0]); i++) {

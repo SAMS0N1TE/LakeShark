@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 #define CRUMB_MAGIC 0x4C534352u
 
@@ -153,7 +154,7 @@ bool panic_crumb_text(char *out, size_t n)
         const crumb_t *c = &s_last[core];
         if (c->magic != CRUMB_MAGIC) continue;
         any = true;
-        snprintf(line, sizeof(line), "core%d %s mcause %lx pc %08lx tval %lx ra %08lx sp %08lx\n", core,
+        LS_SNPRINTF(t_panic_crumb_core_d_s_mcause, line, sizeof(line), "core%d %s mcause %lx pc %08lx tval %lx ra %08lx sp %08lx\n", core,
                  c->how == 1 ? "int" : "exc", (unsigned long)c->mcause, (unsigned long)c->mepc,
                  (unsigned long)c->mtval, (unsigned long)c->ra, (unsigned long)c->sp);
         k += (size_t)snprintf(out + k, n - k, "%s", line);
@@ -222,9 +223,9 @@ void panic_crumb_register_command(void)
 {
     const esp_console_cmd_t cmd = {
         .command = "crumb",
-        .help = "Trap cause and PC of each core at the last panic, even one that hung; "
-                "'log' prints the saved error records, 'clear' empties them",
-        .hint = "[log|clear|selftest panic|hang]",
+        .help = LS_TXT(con_panic_crumb_crumb_help, "Trap cause and PC of each core at the last panic, even one that hung; "
+                "'log' prints the saved error records, 'clear' empties them"),
+        .hint = LS_TXT(con_panic_crumb_crumb_hint, "[log|clear|selftest panic|hang]"),
         .func = &cmd_crumb,
     };
     esp_console_cmd_register(&cmd);

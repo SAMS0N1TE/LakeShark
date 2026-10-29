@@ -14,6 +14,7 @@
 #include "ls_panel.h"
 #include "ls_panel_ws.h"
 #include "ls_board.h"
+#include "ls_textpack.h"
 
 #if defined(LS_BOARD_PANEL_RUNTIME)
 #include "ls_i2c.h"
@@ -911,8 +912,8 @@ void ls_panel_ws_register_console(void)
 {
     static const esp_console_cmd_t cmd = {
         .command = "panel",
-        .help = "DSI display on the connector: status, list, scan, set <name>, none, term <cols>x<rows>, touch map, bright",
-        .hint = "[status|list|scan|set <name>|none|term <c>x<r>|touch ..|bright <n>]",
+        .help = LS_TXT(con_ls_panel_ws_panel_help, "DSI display on the connector: status, list, scan, set <name>, none, term <cols>x<rows>, touch map, bright"),
+        .hint = LS_TXT(con_ls_panel_ws_panel_hint, "[status|list|scan|set <name>|none|term <c>x<r>|touch ..|bright <n>]"),
         .func = &cmd_panel,
     };
     esp_console_cmd_register(&cmd);

@@ -22,6 +22,8 @@ size_t ls_lap_api_bytes(void);
 unsigned ls_lap_api_bad_frees(void);
 const char *ls_lap_api_error(void);
 bool ls_lap_api_inside(void); /* on the screen task, inside an app callback */
+/* Inside draw(): the surface and the app's area (absolute cells), for the shared controls. */
+bool ls_lap_api_canvas(tui_surface **sf, tui_rect *area);
 /* The loaded image, for ls_lap_api_owns; kept across begin/cleanup. */
 void ls_lap_api_set_image(const void *base, size_t bytes);
 bool ls_lap_api_owns(const void *p, size_t n);

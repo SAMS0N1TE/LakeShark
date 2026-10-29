@@ -57,7 +57,7 @@ static void lssim_maps_split_transactions(void) {
     cells_state_command(7,('C'<<8)|'O');cells_queue_step();assert(dl.active && strstr(dl.relative,".detail.ctile"));
     cells_download_step();uint64_t offset=dl.offset;assert(offset>0);
     putenv("LSSIM_MAPS_TOKEN=");cells_step();assert(!dl.active && cw.queue_loaded);
-    putenv("LSSIM_MAPS_TOKEN=fixture-entitlement");dl.retry=0;
+    putenv("LSSIM_MAPS_TOKEN=fixture-entitlement");cells_retry_reset(NULL);
     cells_queue_step();assert(dl.active && dl.offset==offset);
     steps=0;while(cw.queue_loaded && steps++<200) { if(dl.active)cells_download_step();else cells_queue_step(); }
     assert(!cw.queue_loaded && steps<200);
@@ -93,14 +93,14 @@ static void lssim_maps_transactions(void) {
     cells_queue_step();assert(dl.active && dl.kind==6 && dl.part_count==26 && dl.offset==0);
     for(unsigned i=0;i<3;i++)assert(!cells_download_step());
     uint64_t saved_offset=dl.offset;assert(saved_offset>0 && saved_offset<part);
-    cells_download_fail("test interruption");dl.retry=0;cells_queue_step();assert(dl.active && dl.offset==saved_offset);
+    cells_download_fail("test interruption");cells_retry_reset(NULL);cells_queue_step();assert(dl.active && dl.offset==saved_offset);
     /* Resume inside a late part, not just p0. */
     unsigned advance=0;
     while(dl.offset<=24u*part && advance++<8000) {
         if(dl.active)cells_download_step();else cells_queue_step();
     }
     assert(dl.active && dl.offset>=24u*part && dl.offset<25u*part);
-    saved_offset=dl.offset;cells_download_fail("late part interruption");dl.retry=0;
+    saved_offset=dl.offset;cells_download_fail("late part interruption");cells_retry_reset(NULL);
     cells_queue_step();assert(dl.active && dl.offset==saved_offset && strstr(dl.remote,".p24"));
     unsigned steps=0;while(cw.queue_loaded && steps++<8000) {
         if(dl.active)cells_download_step();else cells_queue_step();
@@ -132,7 +132,7 @@ static void lssim_maps_transactions(void) {
     FILE *f=fopen(remote,"r+b");assert(f);int c=fgetc(f);rewind(f);fputc(c^1,f);fclose(f);
     cells_state_command(7,('N'<<8)|'H');steps=0;
     while(steps++<8000) {
-        if(dl.active)cells_download_step();else { if(dl.retry)break;cells_queue_step(); }
+        if(dl.active)cells_download_step();else { if(!cells_retry_ready(dl.relative))break;cells_queue_step(); }
     }
     assert(strstr(cells_work.message,"SHA256"));assert(!cells_present(1+77*256+93,size));
     assert(stat(CELLS_ROOT "cells/8-77-93.ctile.part",&file_stat));

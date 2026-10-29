@@ -40,6 +40,7 @@
 #include "ls_version.h"
 
 #include "bsp/esp-bsp.h"
+#include "ls_textpack.h"
 /* statvfs() is not available in ESP-IDF v5.5.4's picolibc, so
    the "free bytes" probe reads through the FATFS and SPIFFS VFS info calls
    directly.  esp_vfs_fat_info takes a mount base_path, not a path inside
@@ -67,7 +68,7 @@ static ls_iq_control_t s_radio_control;
 static volatile bool s_active  = false;
 static volatile bool s_running = false;
 static EXT_RAM_BSS_ATTR StackType_t s_rx_stack[REC_RX_STACK_WORDS];
-static DRAM_ATTR StaticTask_t s_rx_tcb;
+static StaticTask_t s_rx_tcb;
 
 static int32_t *s_edge;
 static int      s_edges;
@@ -154,6 +155,20 @@ static volatile bool     s_scout_ready = false;
 static volatile uint32_t s_scout_sweeps = 0;
 static volatile uint32_t s_scout_peak_hz = 0;
 static volatile float    s_scout_peak_lev = 0.0f;
+
+/* The I/Q tap (rec_set_iq_tap). */
+static rec_iq_tap_fn s_tap;
+static void *s_tap_ctx;
+static bool s_tap_busy;
+
+void rec_set_iq_tap(rec_iq_tap_fn tap, void *ctx)
+{
+    __atomic_store_n(&s_tap, (rec_iq_tap_fn)NULL, __ATOMIC_SEQ_CST);
+    /* rec_rx may be inside the old tap; wait it out, briefly. */
+    for (int i = 0; i < 50 && __atomic_load_n(&s_tap_busy, __ATOMIC_ACQUIRE); i++) vTaskDelay(1);
+    s_tap_ctx = ctx;
+    __atomic_store_n(&s_tap, tap, __ATOMIC_SEQ_CST);
+}
 
 static inline uint32_t samples_to_us(uint32_t n)
 {
@@ -537,6 +552,12 @@ static void rec_rx_task(void *arg)
 
         /**/
         slice_block(iq, (int)got);
+        {
+            __atomic_store_n(&s_tap_busy, true, __ATOMIC_SEQ_CST);
+            const rec_iq_tap_fn tap = __atomic_load_n(&s_tap, __ATOMIC_SEQ_CST);
+            if (tap) tap(iq, got, s_tap_ctx);
+            __atomic_store_n(&s_tap_busy, false, __ATOMIC_RELEASE);
+        }
         if (rec_watch_enabled() && rec_watch_source() == REC_SOURCE_RTL && (s_phase == REC_DONE || s_phase == REC_IDLE)) {
             rec_reset_capture();
             s_phase = REC_ARMED;
@@ -851,6 +872,14 @@ bool rec_set_freq(uint32_t hz)
 
 uint32_t rec_get_freq(void) { return s_freq_hz; }
 
+bool rec_tune_transient(uint32_t hz)
+{
+    if (rec_watch_enabled() || rec_watch_iq_status(NULL,0)) return false;
+    s_freq_hz = hz;
+    ls_iq_control_request_tune(&s_radio_control, hz, false);
+    return true;
+}
+
 void rec_set_gain(int tenths)
 {
     const int most = ls_rsel_gain_max(LS_RSEL_SUBGHZ_READ);
@@ -1085,7 +1114,7 @@ static int rec_save_impl(const char *name, char *path_out, size_t path_len)
         return -2;
     }
 
-    fprintf(f, "Filetype: Flipper SubGhz RAW File\n");
+    LS_FPUTS(t_app_rec_filetype_flipper_subghz_raw, "Filetype: Flipper SubGhz RAW File\n", f);
     fprintf(f, "Version: 1\n");
     fprintf(f, "Frequency: %lu\n",
             (unsigned long)(s_cap_freq_hz ? s_cap_freq_hz : s_freq_hz));
@@ -1119,7 +1148,7 @@ static int rec_save_impl(const char *name, char *path_out, size_t path_len)
         fprintf(f, "# Recorded: %s\n", stamp);
     }
     if (s_cap_mod == REC_MOD_FSK)
-        fprintf(f, "# LakeShark: 2-FSK %lu baud, deviation %lu Hz measured\n",
+        LS_FPRINTF(t_app_rec_lakeshark_2_fsk_lu, f, "# LakeShark: 2-FSK %lu baud, deviation %lu Hz measured\n",
                 (unsigned long)s_cap_bitrate, (unsigned long)s_cap_dev_hz);
 
     int per_line = 0;
@@ -1203,7 +1232,7 @@ typedef struct {
 } rec_save_job_t;
 
 static EXT_RAM_BSS_ATTR StackType_t s_save_stack[REC_SAVE_STACK_WORDS];
-static DRAM_ATTR StaticTask_t s_save_tcb;
+static StaticTask_t s_save_tcb;
 static TaskHandle_t s_save_worker;
 static rec_save_job_t s_save_job;
 static portMUX_TYPE s_save_lock = portMUX_INITIALIZER_UNLOCKED;

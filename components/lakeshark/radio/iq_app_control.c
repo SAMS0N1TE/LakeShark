@@ -98,6 +98,23 @@ void ls_iq_control_request_gain(ls_iq_control_t *control,
     control_unlock(control);
 }
 
+bool ls_iq_control_cancel_tune(ls_iq_control_t *control,uint32_t generation,uint64_t *effective)
+{
+    if(!control)return false;
+    control_lock(control);
+    bool cancelled=control->tune_generation==generation && control->tune_state==LS_IQ_RESULT_PENDING;
+    if(cancelled) {
+        __atomic_fetch_and(&control->pending,~(uint32_t)LS_IQ_CONTROL_TUNE,__ATOMIC_RELEASE);
+        bool known=control->effective_center_known && control->effective_center_hz<=UINT32_MAX;
+        control->center_hz=known?(uint32_t)control->effective_center_hz:0;
+        control->tune_state=known?LS_IQ_RESULT_EFFECTIVE:LS_IQ_RESULT_UNKNOWN;
+        control->tune_error=LS_RADIO_OK;
+        ++control->tune_generation;
+        if(effective)*effective=known?control->effective_center_hz:0;
+    }
+    control_unlock(control);return cancelled;
+}
+
 void ls_iq_control_request_bandwidth(ls_iq_control_t *control,
                                      uint32_t bandwidth_hz)
 {

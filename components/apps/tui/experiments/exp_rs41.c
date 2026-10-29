@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "ls_textpack.h"
 extern const ls_experiment_t exp_rs41;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_hz = 403000000;
@@ -41,7 +42,7 @@ static esp_err_t listen(bool inverted)
 }
 static bool start(char *why, size_t n)
 {
-    if (!(ls_lora_caps() & LS_LORA_CAP_FSK_STREAM)) { snprintf(why,n,"Needs LR2021 FSK streaming"); return false; }
+    if (!(ls_lora_caps() & LS_LORA_CAP_FSK_STREAM)) { LS_SNPUTS(t_exp_rs41_needs_lr2021_fsk_streaming, why, n, "Needs LR2021 FSK streaming"); return false; }
     rs41_init(&s_decoder); s_run_hz = frequency(); s_good_us = 0; s_pol_locked = false;
     portENTER_CRITICAL(&s_lock); memset(&s_stats,0,sizeof(s_stats)); portEXIT_CRITICAL(&s_lock);
     esp_err_t err = listen(false);
@@ -103,7 +104,7 @@ static bool configure(int argc, char **argv, char *why, size_t n)
 {
     char *end = NULL; double v = argc == 1 ? strtod(argv[0],&end) : 0;
     if (argc != 1 || end == argv[0] || *end || !isfinite(v) || v < 400 || v > 406) {
-        snprintf(why,n,"frequency 400.000-406.000 MHz"); return false;
+        LS_SNPUTS(t_exp_rs41_frequency_400_000_406, why, n, "frequency 400.000-406.000 MHz"); return false;
     }
     set_frequency(v); return true;
 }

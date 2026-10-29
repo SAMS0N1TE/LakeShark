@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "ls_textpack.h"
 
 /* Metres per degree of latitude. Constant enough: the earth is 0.3 percent
    out of round and this is used for a threshold comparison. */
@@ -106,7 +107,7 @@ int ls_track_gpx_point(char *out, size_t cap, const ls_track_pt_t *p)
     sats[0] = 0;
     if (p->sats) snprintf(sats, sizeof(sats), "<sat>%u</sat>", (unsigned)p->sats);
 
-    const int n = snprintf(out, cap,
+    const int n = LS_SNPRINTF(t_ls_track_trkpt_lat_s_lon, out, cap,
                            "<trkpt lat=\"%s\" lon=\"%s\">"
                            "<ele>%d</ele>%s%s</trkpt>\n",
                            lat, lon, (int)p->alt_m, when, sats);
@@ -123,7 +124,7 @@ int ls_track_gpx_waypoint(char *out, size_t cap, const ls_track_pt_t *p,
     fmt_deg(lat, sizeof(lat), p->lat_e7);
     fmt_deg(lon, sizeof(lon), p->lon_e7);
 
-    const int n = snprintf(out, cap,
+    const int n = LS_SNPRINTF(t_ls_track_wpt_lat_s_lon, out, cap,
                            "<wpt lat=\"%s\" lon=\"%s\">"
                            "<name>%s</name><desc>%s</desc></wpt>\n",
                            lat, lon,
@@ -136,7 +137,7 @@ int ls_track_gpx_waypoint(char *out, size_t cap, const ls_track_pt_t *p,
 int ls_track_gpx_header(char *out, size_t cap, const char *name)
 {
     if (!out || !cap) return 0;
-    const int n = snprintf(out, cap,
+    const int n = LS_SNPRINTF(t_ls_track_xml_version_1_0, out, cap,
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         "<gpx version=\"1.1\" creator=\"LakeShark\" "
         "xmlns=\"http://www.topografix.com/GPX/1/1\">\n"
@@ -149,7 +150,7 @@ int ls_track_gpx_header(char *out, size_t cap, const char *name)
 int ls_track_gpx_trk_open(char *out, size_t cap, const char *name)
 {
     if (!out || !cap) return 0;
-    const int n = snprintf(out, cap, "<trk><name>%s</name><trkseg>\n",
+    const int n = LS_SNPRINTF(t_ls_track_trk_name_s_name, out, cap, "<trk><name>%s</name><trkseg>\n",
                            name && *name ? name : "track");
     if (n < 0 || (size_t)n >= cap) { out[0] = 0; return 0; }
     return n;

@@ -12,6 +12,7 @@
 
 #include "ls_board.h"
 #include "ls_i2c.h"
+#include "ls_textpack.h"
 
 static const char *TAG = "ls_gauge";
 
@@ -148,23 +149,23 @@ void ls_gauge_diagnostics(void)
     ls_gauge_t g;
     esp_err_t err = ls_gauge_read(&g);
     if (err == ESP_ERR_INVALID_STATE) {
-        printf("gauge: answers at 0x%02X but reports no pack - is a battery "
+        LS_PRINTF(t_ls_gauge_gauge_answers_at_0x, "gauge: answers at 0x%02X but reports no pack - is a battery "
                "connected?\n", LS_BOARD_GAUGE_I2C_ADDR);
         return;
     }
     if (err != ESP_OK) {
-        printf("gauge: not answering at 0x%02X (%s)\n",
+        LS_PRINTF(t_ls_gauge_gauge_not_answering_at, "gauge: not answering at 0x%02X (%s)\n",
                LS_BOARD_GAUGE_I2C_ADDR, esp_err_to_name(err));
         return;
     }
-    printf("gauge: %u mV  %d mA  %u%% from voltage (gauge learned %u%%)  "
+    LS_PRINTF(t_ls_gauge_gauge_u_mv_d, "gauge: %u mV  %d mA  %u%% from voltage (gauge learned %u%%)  "
            "%d.%d C  %u/%u mAh  %s\n",
            (unsigned)g.millivolts, (int)g.milliamps, (unsigned)g.percent,
            (unsigned)g.learned_percent,
            g.temp_c10 / 10, (g.temp_c10 < 0 ? -g.temp_c10 : g.temp_c10) % 10,
            (unsigned)g.remaining_mah, (unsigned)g.full_mah,
            g.charging ? "charging" : "discharging");
-    printf("gauge: the percentage is the rest voltage (%d mV after %d mOhm) "
+    LS_PRINTF(t_ls_gauge_gauge_the_percentage_is, "gauge: the percentage is the rest voltage (%d mV after %d mOhm) "
            "on a Li-ion curve; the gauge was never configured for this cell.\n",
            ls_gauge_rest_mv(g.millivolts, g.milliamps), LS_GAUGE_PACK_MOHM);
 }

@@ -9,6 +9,7 @@
 #include "../../../main/ls_c6_core.h"
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 EXT_RAM_BSS_ATTR static char s_path[192];
 static bool s_force, s_confirm;
@@ -151,7 +152,7 @@ static void emblem(tui_surface *sf, tui_rect r, uint8_t hue, long sent, long siz
     }
     /* Slot fill advances only on acknowledged bytes; stopped data is still. */
     int yy = y+height+2, bw = w-4;
-    ls_safe_line(sf,r,yy,"SD  >  P4  >  INACTIVE SLOT",TUI_ATTR(TUI_CYAN,TUI_BLACK));
+    ls_safe_line(sf,r,yy,LS_TEXT(t_ls_c6_view_sd_p4_inactive_slot, "SD  >  P4  >  INACTIVE SLOT"),TUI_ATTR(TUI_CYAN,TUI_BLACK));
     if (yy+2 < r.y+r.h) {
         ls_meter_ascii(sf,r,x+2,yy+2,bw,size>0?(float)sent/size:0,hue);
         tui_put_str(sf,r,x+2,yy+1,"0",LS_ATTR_DIM);
@@ -210,21 +211,21 @@ void ls_c6_view_draw(tui_surface *sf, tui_rect a)
     char old[32], image[32], current[32], line[240], status[240];
     text_value("c6.old",old,sizeof(old)); text_value("c6.image",image,sizeof(image));
     text_value("c6.new",current,sizeof(current)); text_value("c6.state",status,sizeof(status));
-    if (unavailable) snprintf(status,sizeof(status),"C6 updater unavailable in this build.");
+    if (unavailable) LS_SNPUTS(t_ls_c6_view_c6_updater_unavailable_in, status, sizeof(status), "C6 updater unavailable in this build.");
     int y = detail.y;
     y=paragraph(sf,detail,y,done ? "VERIFIED VERSION CHANGE" : "VERSION / PREFLIGHT",TUI_CYAN|TUI_BRIGHT);
     snprintf(line,sizeof(line),done ? "%s -> %s" : "Running C6   %s",old,current);
     y=paragraph(sf,detail,y,line,TUI_WHITE|TUI_BRIGHT);
     snprintf(line,sizeof(line),"SD image     %s",image);
     y=paragraph(sf,detail,y,line,TUI_MAGENTA|TUI_BRIGHT);
-    snprintf(line,sizeof(line),"%ld / %ld bytes acknowledged",sent,size);
+    LS_SNPRINTF(t_ls_c6_view_ld_ld_bytes_acknowledged, line,sizeof(line),"%ld / %ld bytes acknowledged",sent,size);
     y=paragraph(sf,detail,y+1,line,TUI_CYAN);
     y=paragraph(sf,detail,y,status,failed ? TUI_RED|TUI_BRIGHT : TUI_WHITE);
     if(s_notice[0]) y=paragraph(sf,detail,y,s_notice,TUI_RED|TUI_BRIGHT);
     if (s_confirm) {
         y=paragraph(sf,detail,y+1,"INSTALL PLAN",TUI_MAGENTA|TUI_BRIGHT);
-        y=paragraph(sf,detail,y,"Recheck SD + SHA-256 + power; stop Wi-Fi/BLE; write inactive C6 slot; restart C6 and verify its version.",TUI_WHITE);
-        y=paragraph(sf,detail,y+1,"Wi-Fi/BLE stay OFF until you reboot P4.",TUI_YELLOW|TUI_BRIGHT);
+        y=paragraph(sf,detail,y,LS_TEXT(t_ls_c6_view_recheck_sd_sha_256, "Recheck SD + SHA-256 + power; stop Wi-Fi/BLE; write inactive C6 slot; restart C6 and verify its version."),TUI_WHITE);
+        y=paragraph(sf,detail,y+1,LS_TEXT(t_ls_c6_view_wi_fi_ble_stay, "Wi-Fi/BLE stay OFF until you reboot P4."),TUI_YELLOW|TUI_BRIGHT);
         y=paragraph(sf,detail,y,s_force ? "FORCE ON: same/older version permitted once." : "Only a newer version is allowed.",TUI_YELLOW);
     } else {
         y=paragraph(sf,detail,y+1,failed ? "RECOVERY / NEXT STEP" : "CHECKS / SAFETY",hue|TUI_BRIGHT);
@@ -233,7 +234,7 @@ void ls_c6_view_draw(tui_surface *sf, tui_rect a)
         y=paragraph(sf,detail,y,done ? "Reboot P4 to use Wi-Fi/BLE again." :
                     "Provisioned two-slot layout required. Keep power connected.",TUI_YELLOW);
     }
-    y=paragraph(sf,detail,y+1,"If C6 fails to boot: USB-UART recovery on the C6 header. After radio shutdown, reboot P4 before retry.",TUI_YELLOW);
+    y=paragraph(sf,detail,y+1,LS_TEXT(t_ls_c6_view_if_c6_fails_to, "If C6 fails to boot: USB-UART recovery on the C6 header. After radio shutdown, reboot P4 before retry."),TUI_YELLOW);
     if (y+3 < detail.y+detail.h) {
         y=paragraph(sf,detail,y+1,"IMAGE ON SD",TUI_CYAN|TUI_BRIGHT);
         y=paragraph(sf,detail,y,s_path,TUI_WHITE);

@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "ls_textpack.h"
 
 #if LS_HAS_AUDIO
 
@@ -41,7 +42,7 @@ void ls_audio_diag_report(void)
 #if defined(LS_BOARD_CODEC_I2C_BUS) && defined(LS_BOARD_CODEC_I2C_ADDR)
     const esp_err_t probe = ls_i2c_probe(LS_BOARD_CODEC_I2C_BUS,
                                          LS_BOARD_CODEC_I2C_ADDR, 100);
-    printf("  codec    ES8311 @ 0x%02x on bus %d: %s\n",
+    LS_PRINTF(t_ls_audio_diag_codec_es8311_0x_02x, "  codec    ES8311 @ 0x%02x on bus %d: %s\n",
            LS_BOARD_CODEC_I2C_ADDR, (int)LS_BOARD_CODEC_I2C_BUS, ok_str(probe));
 #else
     printf("  codec    this board declares no codec I2C bus or address\n");
@@ -58,7 +59,7 @@ void ls_audio_diag_report(void)
 #ifdef LS_BOARD_XL_AUDIO_PWR_EN
     bool pa = false;
     const esp_err_t pae = ls_xl9535_get(LS_BOARD_XL_AUDIO_PWR_EN, &pa);
-    printf("  amp      XL9535 IO6 (PWR_EN) reads %s%s\n",
+    LS_PRINTF(t_ls_audio_diag_amp_xl9535_io6_pwr, "  amp      XL9535 IO6 (PWR_EN) reads %s%s\n",
            pae == ESP_OK ? (pa ? "HIGH" : "LOW") : "unreadable",
            pae == ESP_OK ? "" : " - expander not answering");
 #else
@@ -76,18 +77,18 @@ void ls_audio_diag_report(void)
     if (gain_err == ESP_OK && mute_err == ESP_OK) {
         const int volume = audio_volume_get();
         const int expected = volume ? 91 + volume : 0;
-        printf("  DAC      reg32=0x%02x expected=0x%02x %s; reg31=0x%02x mute=%s\n",
+        LS_PRINTF(t_ls_audio_diag_dac_reg32_0x_02x, "  DAC      reg32=0x%02x expected=0x%02x %s; reg31=0x%02x mute=%s\n",
                gain, expected, gain == expected ? "MATCH" : "MISMATCH",
                mute, (mute & 0x60) ? "on" : "off");
     } else {
-        printf("  DAC      readback failed: volume=%s mute=%s\n",
+        LS_PRINTF(t_ls_audio_diag_dac_readback_failed_volume, "  DAC      readback failed: volume=%s mute=%s\n",
                ok_str(gain_err), ok_str(mute_err));
     }
 #endif
     const ls_safe_boot_t *boot = ls_safe_boot_result();
     int boot_sound = -1;
     (void)ls_nvs_call(read_boot_sound, &boot_sound, 0);
-    printf("  startup  sound=%d prior_faults=%lu\n", boot_sound,
+    LS_PRINTF(t_ls_audio_diag_startup_sound_d_prior, "  startup  sound=%d prior_faults=%lu\n", boot_sound,
            boot ? (unsigned long)boot->faults : 0UL);
 
     printf("  try:  audio swap   audio pa on|off   audio tone\n");
@@ -102,7 +103,7 @@ esp_err_t ls_audio_diag_pa(bool on)
 {
 #ifdef LS_BOARD_XL_AUDIO_PWR_EN
     const esp_err_t e = ls_xl9535_out(LS_BOARD_XL_AUDIO_PWR_EN, on);
-    printf("audio: amp enable -> %s (%s)\n", on ? "HIGH" : "LOW", ok_str(e));
+    LS_PRINTF(t_ls_audio_diag_audio_amp_enable_s, "audio: amp enable -> %s (%s)\n", on ? "HIGH" : "LOW", ok_str(e));
     return e;
 #else
     (void)on;

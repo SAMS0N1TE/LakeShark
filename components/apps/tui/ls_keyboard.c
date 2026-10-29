@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "ls_tui_ui.h"
+#include "ls_textpack.h"
 
 #define A(fg, bg) TUI_ATTR((fg), (bg))
 
@@ -321,7 +322,7 @@ void ls_keyboard_draw(tui_surface *sf, tui_rect full)
     const int pad_h = (area.y + area.h - 1) - pad_y;
     if (physical) {
         tui_put_str(sf, area, area.x + 2, area.y + area.h - 2,
-                    "keyboard attached: type, ENTER to accept, ESC to cancel", A(DIM_FG, TUI_BLACK));
+                    LS_TEXT(t_ls_keyboard_keyboard_attached_type_enter, "keyboard attached: type, ENTER to accept, ESC to cancel"), A(DIM_FG, TUI_BLACK));
         if (s_secret) s_hit_n = SLOT_REVEAL + 1;      /* SHOW PASSWORD still taps */
         return;
     }
@@ -332,7 +333,7 @@ void ls_keyboard_draw(tui_surface *sf, tui_rect full)
     if (pad_h < 4 * KEY_MIN) {
 
         tui_put_str(sf, area, area.x + 2, area.y + area.h - 2,
-                    "type it, ENTER to send, ESC to go back", A(DIM_FG, TUI_BLACK));
+                    LS_TEXT(t_ls_keyboard_type_it_enter_to, "type it, ENTER to send, ESC to go back"), A(DIM_FG, TUI_BLACK));
         return;
     }
 

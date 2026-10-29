@@ -4,8 +4,12 @@
 #include "../../ls_motion.h"
 #include "../../ls_tui_ui.h"
 #include "esp_attr.h"
+#include "apps/fm/fm_bcast.h"
+#include "apps/fm/fm_state.h"
+#include "lakeshark_backend.h"
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 extern const ls_tui_screen_t ls_scr_fm;
 static EXT_RAM_BSS_ATTR same_alert_t shown, notice;
 static int selected;
@@ -62,11 +66,36 @@ static const ls_opt_t locations[] = { FIPS_ROW(1), FIPS_ROW(2), FIPS_ROW(3),
 static const ls_opt_ctx_t location_options = {
     .name = "MY LOCATIONS", .job = -1, LS_OPT_ROWS(locations)
 };
+/* NOAA Weather Radio: which of the seven, the strongest in one look, and
+   the speaker (fm_wx.c). */
+static const char *const WX_NAMES[] = {
+    "WX1 162.550", "WX2 162.400", "WX3 162.475", "WX4 162.425",
+    "WX5 162.450", "WX6 162.500", "WX7 162.525",
+};
+static const char *const WX_SPEAKER[] = { "OFF", "ON", "ALERTS ONLY" };
+static int wx_channel_get(const ls_opt_t *o)
+{ (void)o; return air_channel_find(air_preset(AIR_PRESET_WX), FM.freq_hz); }
+static void wx_channel_set(const ls_opt_t *o, int v)
+{
+    (void)o;
+    const uint32_t hz = air_channel_hz(air_preset(AIR_PRESET_WX), v);
+    if (!hz) return;
+    lakeshark_fm_frequency_lock(false);
+    lakeshark_fm_set_freq(hz);
+}
+static void wx_find(const ls_opt_t *o) { (void)o; fm_air_request(FM_AIR_REQ_WX_FIND, 0); }
+static int wx_speaker_get(const ls_opt_t *o) { (void)o; return fm_bcast_wx_audio(); }
+static void wx_speaker_set(const ls_opt_t *o, int v) { (void)o; fm_bcast_set_wx_audio(v); }
 static const ls_opt_t options[] = {
     { .label = "MY LOCATIONS", .kind = LS_OPT_MENU, .sub = &location_options },
     { .label = "ONLY MY LOCATIONS", .kind = LS_OPT_TOGGLE, .arg = 0, .get = option_get, .set = option_set },
     { .label = "INCLUDE TESTS", .kind = LS_OPT_TOGGLE, .arg = 1, .get = option_get, .set = option_set },
-    { .label = "LOG TO SD", .kind = LS_OPT_TOGGLE, .arg = 2, .get = option_get, .set = option_set }
+    { .label = "LOG TO SD", .kind = LS_OPT_TOGGLE, .arg = 2, .get = option_get, .set = option_set },
+    { .label = "WEATHER CHANNEL", .kind = LS_OPT_CYCLE, .names = WX_NAMES, .n = 7, .step = 1,
+      .get = wx_channel_get, .set = wx_channel_set },
+    { .label = "FIND STRONGEST", .kind = LS_OPT_ACTION, .radios = LS_OPT_SDR, .act = wx_find },
+    { .label = "WEATHER SPEAKER", .kind = LS_OPT_CYCLE, .names = WX_SPEAKER, .n = 3,
+      .get = wx_speaker_get, .set = wx_speaker_set },
 };
 const ls_opt_ctx_t fm_same_options = {
     .name = "SAME", .job = LS_RSEL_FM, LS_OPT_ROWS(options)
@@ -80,6 +109,56 @@ static void move(int step)
 }
 static void line(tui_surface *sf, tui_rect a, int row, const char *text, uint8_t attr)
 { ls_safe_line(sf, tui_rect_make(a.x + 2, a.y, a.w - 4, a.h - 1), a.y + row, text, attr); }
+/* The weather channel and what the speaker is doing, one line. */
+static void draw_wx_line(tui_surface *sf, tui_rect a, int row)
+{
+    fm_wx_status_t w;
+    fm_wx_status(&w);
+    const int ch = air_channel_find(air_preset(AIR_PRESET_WX), FM.freq_hz);
+    char buf[64];
+    static const char *const SAY[] = { "off", "on", "on alerts" };
+    snprintf(buf, sizeof(buf), "%s  speaker %s", ch >= 0 ? WX_NAMES[ch] : "off the WX plan",
+             SAY[fm_bcast_wx_audio()]);
+    line(sf, a, row, buf, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    if (w.alert_open) {
+        static const char *const lamp[] = { "((!)) ALERT ON AIR", "( ! ) ALERT ON AIR" };
+        const char *s = lamp[ls_motion_phase(2, 900)];
+        tui_put_str(sf, a, a.x + a.w - 3 - (int)strlen(s), a.y + row, s, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+    } else if (w.finding) {
+        tui_put_str(sf, a, a.x + a.w - 12, a.y + row, "looking...", TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    }
+}
+
+/* All seven transmitters as the last FIND heard them: the strongest is
+   the one to listen to. */
+static void draw_wx(tui_surface *sf, tui_rect a, int row)
+{
+    fm_wx_status_t w;
+    fm_wx_status(&w);
+    draw_wx_line(sf, a, row);
+    const int ch = air_channel_find(air_preset(AIR_PRESET_WX), FM.freq_hz);
+    int any = 0;
+    for (int i = 0; i < 7; ++i) any |= w.level[i];
+    const int x0 = a.x + 2, bw = a.w - 4 - 18;
+    for (int i = 0; i < 7 && bw > 4; ++i) {
+        const int y = a.y + row + 2 + i;
+        tui_put_char(sf, a, x0, y, i == ch ? '>' : ' ', TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, a, x0 + 1, y, WX_NAMES[i], i == ch ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+        const int lit = w.level[i] * bw / 40;
+        for (int k = 0; k < bw; ++k)
+            tui_put_char(sf, a, x0 + 13 + k, y, k < lit ? '|' : '.',
+                         TUI_ATTR(k < lit ? (i == ch ? TUI_GREEN | TUI_BRIGHT : TUI_GREEN) : TUI_BLACK | TUI_BRIGHT, TUI_BLACK));
+        if (w.level[i]) {
+            char db[8];
+            snprintf(db, sizeof(db), "%2d dB", w.level[i]);
+            tui_put_str(sf, a, x0 + 13 + bw + 1, y, db, LS_ATTR_DIM);
+        }
+    }
+    if (!any)
+        tui_put_str(sf, a, x0 + 1, a.y + row + 10, w.found_none ? "nothing above the floor here"
+                    : "OPTIONS > FIND STRONGEST measures all seven", LS_ATTR_DIM);
+}
+
 void fm_same_draw(tui_surface *sf, tui_rect a)
 {
     move(0);
@@ -89,10 +168,11 @@ void fm_same_draw(tui_surface *sf, tui_rect a)
     ls_btn_bar_raised_slot(sf, buttons, controls, 3, -1, LS_BTN_SLOT_WATERFALL);
     ls_panel_box(sf, list, detail ? "SAME / ALERT" : "SAME / RECEIVED ALERTS", TUI_CYAN);
     if (!same_store_get(selected, &shown)) {
-        line(sf, list, 2, "Listening / NOAA 162.400 - 162.550", LS_ATTR_DIM);
-        line(sf, list, 4, "520.83 baud / waiting for repeated headers", LS_ATTR_DIM);
+        draw_wx(sf, list, 2);
+        line(sf, list, 12, LS_TEXT(t_fm_same_view_520_83_baud_waiting, "520.83 baud / waiting for repeated headers"), LS_ATTR_DIM);
         ls_motion_busy(sf, list, true); return;
     }
+    if (!detail) draw_wx_line(sf, list, 1);
     char buf[96];
     if (!detail) {
         int start = selected >= list.h - 3 ? selected - list.h + 4 : 0;
@@ -118,12 +198,12 @@ void fm_same_draw(tui_surface *sf, tui_rect a)
     } else if (shown.test) line(sf, list, 3, same_event_name(shown.event), attr);
     snprintf(buf, sizeof(buf), "FROM %s / %s", shown.originator, shown.sender);
     line(sf, list, 4, buf, LS_ATTR_DIM);
-    snprintf(buf, sizeof(buf), "ISSUED day %03u / %02u:%02u UTC", shown.day, shown.hour, shown.minute);
+    LS_SNPRINTF(t_fm_same_view_issued_day_03u_02u, buf, sizeof(buf), "ISSUED day %03u / %02u:%02u UTC", shown.day, shown.hour, shown.minute);
     line(sf, list, 5, buf, LS_ATTR_DIM);
-    snprintf(buf, sizeof(buf), "VALID %u h %02u min / %s", shown.valid_minutes / 60,
+    LS_SNPRINTF(t_fm_same_view_valid_u_h_02u, buf, sizeof(buf), "VALID %u h %02u min / %s", shown.valid_minutes / 60,
              shown.valid_minutes % 60, shown.ended ? "ended" : "received");
     line(sf, list, 6, buf, LS_ATTR_DIM);
-    line(sf, list, 7, "LOCATIONS / PSSCCC (state + county)", LS_ATTR_DIM);
+    line(sf, list, 7, LS_TEXT(t_fm_same_view_locations_pssccc_state_county, "LOCATIONS / PSSCCC (state + county)"), LS_ATTR_DIM);
     /* Pack all 31 counties into clipped rows so the short posture stays readable. */
     int row = 8, used = 0; buf[0] = 0;
     for (int i = 0; i < shown.location_count; ++i) {

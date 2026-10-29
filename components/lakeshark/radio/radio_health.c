@@ -11,6 +11,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "ls_textpack.h"
 
 static const char *TAG = "rhealth";
 
@@ -205,7 +206,7 @@ static void tick_endpoint(const ls_radio_endpoint_info_t *info, int64_t now)
     if (!info->present) {
         slot->present = false;
         if (slot->state != RH_ABSENT)
-            go(slot, RH_ABSENT, now, "endpoint unavailable");
+            go(slot, RH_ABSENT, now, LS_TEXT(t_radio_health_endpoint_unavailable, "endpoint unavailable"));
         xSemaphoreGive(s_health_lock);
         return;
     }
@@ -225,7 +226,7 @@ static void tick_endpoint(const ls_radio_endpoint_info_t *info, int64_t now)
         slot->fault_pending = false;
         slot->last_change_us = now - RH_STALL_S * 1000000LL;
         stalled_s = RH_STALL_S;
-        go(slot, RH_STALLED, now, "driver reported an endpoint fault");
+        go(slot, RH_STALLED, now, LS_TEXT(t_radio_health_driver_reported_an_endpoint, "driver reported an endpoint fault"));
     }
 
     /* A device can enumerate and then answer no control request at
@@ -247,10 +248,10 @@ static void tick_endpoint(const ls_radio_endpoint_info_t *info, int64_t now)
             power_cycle = s_hooks.power_cycle;
             copy_string(action_id, sizeof(action_id), slot->endpoint_id);
             go(slot, RH_POWER_CYCLING, now,
-               "endpoint does not answer control requests");
+               LS_TEXT(t_radio_health_endpoint_does_not_answer, "endpoint does not answer control requests"));
         } else {
             go(slot, RH_FAILED, now,
-               "endpoint does not answer control requests");
+               LS_TEXT(t_radio_health_endpoint_does_not_answer, "endpoint does not answer control requests"));
         }
     } else switch (slot->state) {
     case RH_ABSENT:
@@ -268,52 +269,52 @@ static void tick_endpoint(const ls_radio_endpoint_info_t *info, int64_t now)
             slot->recover_tries = 0;
         }
         if (stalled_s >= RH_STALL_S)
-            go(slot, RH_STALLED, now, "no endpoint progress");
+            go(slot, RH_STALLED, now, LS_TEXT(t_radio_health_no_endpoint_progress, "no endpoint progress"));
         break;
     case RH_STALLED:
         if (!expected) {
             slot->last_change_us = now;
             go(slot, RH_SETTLING, now, "endpoint is idle");
         } else if (stalled_s == 0) {
-            go(slot, RH_OK, now, "endpoint progress resumed");
+            go(slot, RH_OK, now, LS_TEXT(t_radio_health_endpoint_progress_resumed, "endpoint progress resumed"));
         } else if (slot->recover_tries < RH_RECOVER_TRIES &&
                    s_hooks.request_recovery) {
             ++slot->recover_tries;
             ++slot->recoveries;
             request_recovery = s_hooks.request_recovery;
             copy_string(action_id, sizeof(action_id), slot->endpoint_id);
-            go(slot, RH_RECOVERING, now, "requested endpoint recovery");
+            go(slot, RH_RECOVERING, now, LS_TEXT(t_radio_health_requested_endpoint_recovery, "requested endpoint recovery"));
         } else if (s_hooks.power_cycle &&
                    s_hooks.power_cycle_endpoint_id &&
                    strcmp(slot->endpoint_id,
                           s_hooks.power_cycle_endpoint_id) == 0) {
             power_cycle = s_hooks.power_cycle;
             copy_string(action_id, sizeof(action_id), slot->endpoint_id);
-            go(slot, RH_POWER_CYCLING, now, "endpoint power cycle");
+            go(slot, RH_POWER_CYCLING, now, LS_TEXT(t_radio_health_endpoint_power_cycle, "endpoint power cycle"));
         } else {
-            go(slot, RH_FAILED, now, "endpoint recovery exhausted");
+            go(slot, RH_FAILED, now, LS_TEXT(t_radio_health_endpoint_recovery_exhausted, "endpoint recovery exhausted"));
         }
         break;
     case RH_RECOVERING:
         if (stalled_s == 0 && expected)
-            go(slot, RH_OK, now, "recovery restored progress");
+            go(slot, RH_OK, now, LS_TEXT(t_radio_health_recovery_restored_progress, "recovery restored progress"));
         else if (in_state_ms >= RH_RECOVER_WAIT_MS)
-            go(slot, RH_STALLED, now, "recovery did not restore progress");
+            go(slot, RH_STALLED, now, LS_TEXT(t_radio_health_recovery_did_not_restore, "recovery did not restore progress"));
         break;
     case RH_POWER_CYCLING:
         if (in_state_ms >= RH_RECOVER_WAIT_MS) {
             slot->recover_tries = 0;
             slot->last_change_us = now;
-            go(slot, RH_SETTLING, now, "power cycle wait complete");
+            go(slot, RH_SETTLING, now, LS_TEXT(t_radio_health_power_cycle_wait_complete, "power cycle wait complete"));
         }
         break;
     case RH_FAILED:
         if (stalled_s == 0 && expected) {
             slot->recover_tries = 0;
-            go(slot, RH_OK, now, "endpoint recovered independently");
+            go(slot, RH_OK, now, LS_TEXT(t_radio_health_endpoint_recovered_independently, "endpoint recovered independently"));
         } else if (in_state_ms >= RH_FAILED_RETRY_S * 1000LL) {
             slot->recover_tries = 0;
-            go(slot, RH_STALLED, now, "retrying endpoint recovery");
+            go(slot, RH_STALLED, now, LS_TEXT(t_radio_health_retrying_endpoint_recovery, "retrying endpoint recovery"));
         }
         break;
     }
@@ -324,7 +325,7 @@ static void tick_endpoint(const ls_radio_endpoint_info_t *info, int64_t now)
         xSemaphoreTake(s_health_lock, portMAX_DELAY);
         slot = find_slot_locked(action_id, false);
         if (slot) go(slot, RH_FAILED, esp_timer_get_time(),
-                     "endpoint power cycle rejected");
+                     LS_TEXT(t_radio_health_endpoint_power_cycle_rejected, "endpoint power cycle rejected"));
         xSemaphoreGive(s_health_lock);
     }
 }
@@ -391,14 +392,14 @@ int radio_health_report(const char *endpoint_id, char *buf, size_t len)
     bool have_endpoint = endpoint_id &&
         ls_radio_endpoint_get(endpoint_id, &info) == LS_RADIO_OK;
     if (!have_health)
-        return snprintf(buf, len, "%s health=unknown present=%s stream=%s",
+        return LS_SNPRINTF(t_radio_health_s_health_unknown_present, buf, len, "%s health=unknown present=%s stream=%s",
                         endpoint_id ? endpoint_id : "radio",
                         have_endpoint ? (info.present ? "1" : "0") : "?",
                         have_endpoint ? (info.streaming ? "1" : "0") : "?");
     /* ctlio is the run of control requests the device has failed.
        The incident's line read "ok ... stream=0" while every register access
        failed; a diagnostic that goes quiet during a fault has it backwards. */
-    return snprintf(buf, len,
+    return LS_SNPRINTF(t_radio_health_s_s_present_d, buf, len,
                     "%s %s present=%d stream=%d bps=%lu stall=%ds ctlio=%lu "
                     "rec=%lu attach=%lu detach=%lu",
                     health.endpoint_id, radio_health_state_name(health.state),

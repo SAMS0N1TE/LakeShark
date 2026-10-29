@@ -66,3 +66,14 @@ bool dmr_framer_bit(dmr_framer_t *f, int bit, dmr_burst_frame_t *out)
     f->since_hit     = 0;
     return true;
 }
+
+bool dmr_framer_peek(const dmr_framer_t *f, dmr_burst_frame_t *out)
+{
+    if (!f || !out || f->filled < DMR_BURST_BITS) return false;
+    memcpy(out->burst, f->window + 3, DMR_BURST_BITS / 8);
+    memcpy(out->cach, f->window, 3);
+    out->have_cach   = f->filled >= DMR_BURST_BITS + 24u;
+    out->class_id    = DMR_SYNC_NONE;
+    out->sync_errors = DMR_SYNC_BITS;
+    return true;
+}

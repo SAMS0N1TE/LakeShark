@@ -99,6 +99,14 @@ static inline bool ls_lora_packet_rx_hz_ok(uint32_t caps, uint32_t hz)
 ls_lora_chip_t ls_lora_chip(void);
 const char    *ls_lora_chip_name(void);   /* "none", "SX126x", "LR2021", ... */
 uint32_t       ls_lora_caps(void);        /* 0 until a part has answered      */
+/* The part that answered this boot, as the three above report it while it is
+   bound, and still while the mesh has it parked (stopped, in reset): what is
+   in the socket, for choosing a radio. A configure, or the start of an FSK,
+   OOK, Mode S or sweep session, starts a parked part again. "none" / 0 until
+   one answers, and again once a start finds the socket empty. */
+ls_lora_chip_t ls_lora_fitted(void);
+const char    *ls_lora_fitted_name(void);
+uint32_t       ls_lora_fitted_caps(void);
 
 /* Release reset, wait for the part, and identify it: an LR20xx first (GetStatus
    then GetVersion), then an SX126x. Returns ESP_ERR_NOT_FOUND when nothing

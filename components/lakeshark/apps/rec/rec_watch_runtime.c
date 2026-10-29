@@ -10,6 +10,9 @@
 #include "settings.h"
 #include "ls_sub_fsk.h"
 #include "subghz_file.h"
+#include "ls_det_signal.h"
+#pragma weak ls_seen_signal
+#include "rec_ism.h"
 #include "esp_timer.h"
 #include "esp_attr.h"
 #include "esp_random.h"
@@ -18,9 +21,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "ls_decoded.h"
+#include "ls_tmach_ring.h"
+#include "ls_textpack.h"
 
 typedef struct {
     rec_source_t source;
@@ -153,7 +160,7 @@ static uint32_t source_received[REC_SOURCE_COUNT],source_dropped[REC_SOURCE_COUN
 static const char *DIR="/sdcard/subghz";
 #define REC_WATCH_STACK_WORDS (6144 / sizeof(StackType_t))
 static EXT_RAM_BSS_ATTR StackType_t s_worker_stack[REC_WATCH_STACK_WORDS];
-static DRAM_ATTR StaticTask_t s_worker_tcb;
+static StaticTask_t s_worker_tcb;
 
 /* The mesh owns the SX1262 between sessions, so a watch on it has to ask.
 
@@ -166,6 +173,36 @@ __attribute__((weak)) bool ls_mesh_radio_held(void){return true;}
 
 __attribute__((weak)) bool rec_watch_notify(const char *peer, const char *text)
 { (void)peer; (void)text; return false; }
+
+/* rtl_433's decoders over every filed capture (rec_ism), whichever radio
+   heard it. The label is kept per catalog slot by event id, so a slot reused
+   for another pattern loses it. */
+static EXT_RAM_BSS_ATTR rec_ism_work_t s_ism_work;
+static EXT_RAM_BSS_ATTR lr433_msg_t s_ism_msgs[4];
+static EXT_RAM_BSS_ATTR struct { uint32_t id; char text[40]; } s_ism_label[REC_WATCH_SLOTS];
+
+static void ism_decode(const capture_t *cap, int slot)
+{
+    /* A demodulating source says how it heard the capture. One that times
+       edges does not: REC's slicer may have been on the amplitude or the
+       frequency, so both families get a look. */
+    int k;
+    if (cap->has_mod) {
+        k = rec_ism_decode_edges(cap->pulse, cap->edges, cap->mod.deviation_hz != 0, &s_ism_work, s_ism_msgs, 4);
+    } else {
+        k = rec_ism_decode_edges(cap->pulse, cap->edges, false, &s_ism_work, s_ism_msgs, 4);
+        k += rec_ism_decode_edges(cap->pulse, cap->edges, true, &s_ism_work, s_ism_msgs + k, 4 - k);
+    }
+    const int64_t now = esp_timer_get_time();
+    for (int i = 0; i < k; i++) {
+        const rec_ism_msg_t m = { .m = s_ism_msgs[i], .hz = cap->hz, .rssi = NAN, .source = (uint8_t)cap->source };
+        rec_ism_publish(&m, now);
+    }
+    if (k > 0 && slot >= 0 && slot < REC_WATCH_SLOTS) {
+        s_ism_label[slot].id = s_catalog->record[slot].event.id;
+        rec_ism_describe(&s_ism_msgs[0], s_ism_label[slot].text, sizeof(s_ism_label[slot].text));
+    }
+}
 
 static void publish(void)
 {
@@ -190,6 +227,9 @@ static void publish(void)
         s_status.decoded[n] = decoded[i];
         s_status.pwm[n] = pwm[i];
         s_status.nrz[n] = nrz[i];
+        if (s_ism_label[i].id && s_ism_label[i].id == s_catalog->record[i].event.id)
+            memcpy(s_status.ism[n], s_ism_label[i].text, sizeof(s_status.ism[n]));
+        else s_status.ism[n][0] = 0;
     }
     s_status.ready=true;
     portEXIT_CRITICAL(&s_lock);
@@ -207,6 +247,27 @@ static void consume_capture(capture_t *cap, capture_flow_t *flow)
     memcpy(peer,s_status.peer,sizeof(peer));
     if(slot<0){s_status.dropped++;source_dropped[cap->source]++;} else {s_status.received++;source_received[cap->source]++;s_status.pending_save=true;}
     portEXIT_CRITICAL(&s_lock);
+    if(slot>=0 && novel) {
+        /* Something new on the air: onto the decoded timeline. The
+           capture's own clock (ms) is when it was heard. */
+        ls_decoded_t ev={.kind=LS_DECODED_REC,.at_us=(int64_t)cap->ms*1000,.freq_hz=cap->hz,
+            .radio=cap->source==REC_SOURCE_SX1262 && ls_lora_chip()==LS_LORA_CHIP_LR20XX?LS_TM_RADIO_LR2021:
+                   cap->source==REC_SOURCE_RTL?LS_TM_RADIO_RTL:LS_TM_RADIO_NONE};
+        snprintf(ev.from,sizeof(ev.from),"%s",rec_source_name(cap->source));
+        rec_ook24_t code;
+        if(rec_decode_ook24(cap->pulse,cap->edges,&code))
+            LS_SNPRINTF(t_rec_watch_runtime_ook24_06lx_u_frames, ev.text,sizeof(ev.text),"OOK24 %06lX, %u frames",(unsigned long)code.value,code.repeats);
+        else snprintf(ev.text,sizeof(ev.text),"%s, %d edges",cap->has_mod?"FSK burst":"burst",cap->edges);
+        ls_decoded_publish(&ev);
+    }
+    if(slot>=0 && ls_seen_signal) {  /* a detector app: frequency, pattern, new or repeat */
+        rec_ook24_t ook;
+        ls_det_signal_t sig={.source=DET_REC,.a=cap->hz,.b=s_catalog->record[slot].event.id,.flag=novel};
+        if(rec_decode_ook24(cap->pulse,cap->edges,&ook))snprintf(sig.text,sizeof(sig.text),"OOK24");
+        else snprintf(sig.text,sizeof(sig.text),"%s",rec_source_name(cap->source));
+        ls_seen_signal(&sig);
+    }
+    ism_decode(cap,slot);
     rec_ook24_t qualified;
     bool confirmed=slot>=0 && ((novel && rec_decode_ook24(cap->pulse,cap->edges,&qualified)) || s_catalog->record[slot].event.count==2);
     if(confirmed && enabled && peer[0]) {
@@ -215,9 +276,9 @@ static void consume_capture(capture_t *cap, capture_flow_t *flow)
             rec_ook24_t decoded;
             const char *source=rec_source_name(cap->source);
             if(rec_decode_ook24(cap->pulse,cap->edges,&decoded))
-                snprintf(text,sizeof(text),"%s OOK24 %06lX %.4fMHz (%u matching frames)",
+                LS_SNPRINTF(t_rec_watch_runtime_s_ook24_06lx_4fmhz, text,sizeof(text),"%s OOK24 %06lX %.4fMHz (%u matching frames)",
                     source,(unsigned long)decoded.value,cap->hz/1e6,decoded.repeats);
-            else snprintf(text,sizeof(text),"%s RAW #%lu %.4fMHz %d edges",source,
+            else LS_SNPRINTF(t_rec_watch_runtime_s_raw_lu_4fmhz, text,sizeof(text),"%s RAW #%lu %.4fMHz %d edges",source,
                 (unsigned long)s_catalog->record[slot].event.id,cap->hz/1e6,cap->edges);
             flow->last_alert=now;flow->attempted_alert=true;
             bool ok=rec_watch_notify(peer,text);
@@ -323,7 +384,7 @@ static void worker(void *arg)
                 rec_watch_enable_owned(false);
                 portENTER_CRITICAL(&s_lock);
             }
-            if(cancelled)snprintf(result,sizeof(result),"Scan stopped: %d found",s_scan_n);
+            if(cancelled)LS_SNPRINTF(t_rec_watch_runtime_scan_stopped_d_found, result,sizeof(result),"Scan stopped: %d found",s_scan_n);
             snprintf(s_status.export_status,sizeof(s_status.export_status),"%s",result);
             snprintf(s_status.scan_result,sizeof(s_status.scan_result),"%s",result);
             s_catch_armed=false;s_scan_busy=false;s_status.scan_generation++;
@@ -420,7 +481,7 @@ bool rec_watch_start(void)
         heap_caps_free(s_checkpoint);s_checkpoint=NULL;
         portENTER_CRITICAL(&s_lock);
         s_starting=false;
-        snprintf(s_status.storage,sizeof(s_status.storage),"Monitor allocation failed");
+        LS_SNPUTS(t_rec_watch_runtime_monitor_allocation_failed, s_status.storage, sizeof(s_status.storage), "Monitor allocation failed");
         portEXIT_CRITICAL(&s_lock);
     }
     return ok;
@@ -476,7 +537,7 @@ bool rec_watch_fsk_set(const rec_fsk_mod_t *in)
 
 #define REC_FSK_STACK_WORDS (4096 / sizeof(StackType_t))
 static EXT_RAM_BSS_ATTR StackType_t s_fsk_stack[REC_FSK_STACK_WORDS];
-static DRAM_ATTR StaticTask_t s_fsk_tcb;
+static StaticTask_t s_fsk_tcb;
 static volatile bool s_fsk_run,s_fsk_exited;
 static TaskHandle_t s_fsk_task;
 
@@ -533,7 +594,7 @@ static bool fsk_session(bool on)
             vTaskDelay(pdMS_TO_TICKS(10));
         if((s_scan_busy && !s_catch_armed) || !ls_mesh_radio_held()){
             ls_mesh_radio_hold(false);
-            snprintf(s_fsk_error,sizeof(s_fsk_error),"Mesh would not release the radio");
+            LS_SNPUTS(t_rec_watch_runtime_mesh_would_not_release, s_fsk_error, sizeof(s_fsk_error), "Mesh would not release the radio");
             return false;
         }
         ls_fsk_cfg_t cfg={0};
@@ -571,7 +632,7 @@ static bool fsk_session(bool on)
             s_fsk_run=false;
             ls_lora_fsk_end();
             ls_mesh_radio_hold(false);
-            snprintf(s_fsk_error,sizeof(s_fsk_error),"No memory for the receive task");
+            LS_SNPUTS(t_rec_watch_runtime_no_memory_for_the, s_fsk_error, sizeof(s_fsk_error), "No memory for the receive task");
             return false;
         }
         return true;
@@ -629,14 +690,14 @@ static bool lr_ook_session(bool on)
             vTaskDelay(pdMS_TO_TICKS(10));
         if((s_scan_busy && !s_catch_armed) || !ls_mesh_radio_held()) {
             ls_mesh_radio_hold(false);
-            snprintf(s_fsk_error,sizeof(s_fsk_error),"Mesh would not release the radio");
+            LS_SNPUTS(t_rec_watch_runtime_mesh_would_not_release, s_fsk_error, sizeof(s_fsk_error), "Mesh would not release the radio");
             return false;
         }
         const rec_lr_ook_cfg_t cfg={.min_pulse_us=60,.gap_us=30000,.min_edges=6};
         rec_lr_ook_init(&s_lr_ook,&cfg);
         if(lr_wf_start_consumer(rec_get_freq(),lr_ook_consume,NULL)!=ESP_OK) {
             ls_mesh_radio_hold(false);
-            snprintf(s_fsk_error,sizeof(s_fsk_error),"LR2021 stream busy; close its waterfall first");
+            LS_SNPUTS(t_rec_watch_runtime_lr2021_stream_busy_close, s_fsk_error, sizeof(s_fsk_error), "LR2021 stream busy; close its waterfall first");
             return false;
         }
         s_lr_run=true;
@@ -664,7 +725,7 @@ static bool rec_watch_enable_owned(bool on)
     /* A sweep or a LEARN run owns the SX1262 until it ends; starting a
        receive session under it would be two tasks driving one radio. */
     if(on && ((s_scan_busy && !s_catch_armed) || s_learn_busy || s_scan_min || s_learn_secs || s_iq_busy || s_replay_busy || s_replay_id || s_replay_path[0])) {
-        snprintf(s_fsk_error,sizeof(s_fsk_error),"Stop SCAN before WATCH");
+        LS_SNPUTS(t_rec_watch_runtime_stop_scan_before_watch, s_fsk_error, sizeof(s_fsk_error), "Stop SCAN before WATCH");
         return false;
     }
     if (rec_watch_source() == REC_SOURCE_CC1101 && !ls_mixrf_capture(on, rec_get_freq())) {
@@ -704,7 +765,7 @@ bool rec_watch_enable(bool on)
             else s_status.enabled=false;
             s_watch_waiting=false;
             portEXIT_CRITICAL(&s_lock);
-            if(on)snprintf(s_fsk_error,sizeof(s_fsk_error),"Radio busy - try again");
+            if(on)LS_SNPUTS(t_rec_watch_runtime_radio_busy_try_again, s_fsk_error, sizeof(s_fsk_error), "Radio busy - try again");
             return !on;
         }
         portEXIT_CRITICAL(&s_lock);
@@ -827,7 +888,7 @@ static bool replay_refused(uint32_t hz,int dbm,size_t edges,uint64_t span_us,
                            char *result,size_t len)
 {
     const char *why=subghz_tx_refusal(hz,dbm,edges,span_us);
-    if(why)snprintf(result,len,"Replay refused: %.3f MHz, %s",hz/1e6,why);
+    if(why)LS_SNPRINTF(t_rec_watch_runtime_replay_refused_3f_mhz, result,len,"Replay refused: %.3f MHz, %s",hz/1e6,why);
     return why!=NULL;
 }
 static void replay(uint32_t id,int dbm,char *result,size_t len)
@@ -835,11 +896,11 @@ static void replay(uint32_t id,int dbm,char *result,size_t len)
     const rec_watch_record_t *r=NULL;
     for(int i=0;i<REC_WATCH_SLOTS;i++)
         if(s_catalog->record[i].event.id==id) r=&s_catalog->record[i];
-    if(!r){snprintf(result,len,"Replay: no capture #%lu",(unsigned long)id);return;}
+    if(!r){LS_SNPRINTF(t_rec_watch_runtime_replay_no_capture_lu, result,len,"Replay: no capture #%lu",(unsigned long)id);return;}
     /* An OOK pattern is timings, so any radio's capture can be sent by a
        radio that keys OOK; only an FSK one needs the LoRa chip that made it. */
     if(r->event.bitrate && !rec_source_can_replay((rec_source_t)r->event.source)) {
-        snprintf(result,len,"Replay: %s cannot transmit",
+        LS_SNPRINTF(t_rec_watch_runtime_replay_s_cannot_transmit, result,len,"Replay: %s cannot transmit",
                  rec_source_name((rec_source_t)r->event.source));
         return;
     }
@@ -876,14 +937,14 @@ static void send_fsk(const char *what,uint32_t freq_hz,uint32_t bitrate,
     static EXT_RAM_BSS_ATTR uint8_t payload[LS_FSK_CAPTURE_BYTES];
     const size_t n=ls_fsk_payload_from_raw(pulse,(size_t)edges,
         bitrate,preamble_bits,payload,sizeof(payload));
-    if(!n){snprintf(result,len,"Replay: could not rebuild the frame");return;}
+    if(!n){LS_SNPUTS(t_rec_watch_runtime_replay_could_not_rebuild, result, len, "Replay: could not rebuild the frame");return;}
 
     const int64_t deadline=esp_timer_get_time()+1000000;
     while(!ls_mesh_radio_hold(true) && esp_timer_get_time()<deadline)
         vTaskDelay(pdMS_TO_TICKS(10));
     if(!ls_mesh_radio_held()) {
         ls_mesh_radio_hold(false);
-        snprintf(result,len,"Replay: mesh would not release the radio");
+        LS_SNPUTS(t_rec_watch_runtime_replay_mesh_would_not, result, len, "Replay: mesh would not release the radio");
         return;
     }
     ls_fsk_cfg_t cfg={0};
@@ -908,7 +969,7 @@ static void send_fsk(const char *what,uint32_t freq_hz,uint32_t bitrate,
         if(err==ESP_OK)err=ended;
     }
     ls_mesh_radio_hold(false);
-    if(err==ESP_OK) snprintf(result,len,"Sent %s, %u bytes at %d dBm",
+    if(err==ESP_OK) LS_SNPRINTF(t_rec_watch_runtime_sent_s_u_bytes, result,len,"Sent %s, %u bytes at %d dBm",
         what,(unsigned)n,dbm);
     else snprintf(result,len,"%s",err==ESP_ERR_INVALID_STATE?
         "Replay: LoRa session busy; stop its receiver first":err==ESP_ERR_TIMEOUT?
@@ -958,7 +1019,7 @@ static void send_ook(const char *what,uint32_t freq_hz,const int32_t *pulse,int 
         vTaskDelay(pdMS_TO_TICKS(10));
     if(!ls_mesh_radio_held()) {
         ls_mesh_radio_hold(false);
-        snprintf(result,len,"Replay: mesh would not release the radio");
+        LS_SNPUTS(t_rec_watch_runtime_replay_mesh_would_not, result, len, "Replay: mesh would not release the radio");
         return;
     }
     /* The FSK session only places the frequency and the power; the burst
@@ -979,7 +1040,7 @@ static void send_ook(const char *what,uint32_t freq_hz,const int32_t *pulse,int 
         if(err==ESP_OK)err=ended;
     }
     ls_mesh_radio_hold(false);
-    if(err==ESP_OK) snprintf(result,len,"Sent %s once on LR2021 OOK at %d dBm",what,dbm);
+    if(err==ESP_OK) LS_SNPRINTF(t_rec_watch_runtime_sent_s_once_on, result,len,"Sent %s once on LR2021 OOK at %d dBm",what,dbm);
     else snprintf(result,len,"%s",err==ESP_ERR_INVALID_STATE?
         "Replay: LoRa session busy; stop its receiver first":err==ESP_ERR_TIMEOUT?
         "Replay timed out; check radio connection":"Replay on LR2021 failed");
@@ -991,7 +1052,7 @@ static void replay_file(const char *path,int dbm,char *result,size_t len)
     static EXT_RAM_BSS_ATTR char line[SUBGHZ_FILE_LINE_BYTES];
     static EXT_RAM_BSS_ATTR subghz_file_t f;
     if(!subghz_file_load(path,&f,edges,REC_WATCH_EDGES,line,sizeof(line))) {
-        snprintf(result,len,"Replay: not a readable .sub file");
+        LS_SNPUTS(t_rec_watch_runtime_replay_not_a_readable, result, len, "Replay: not a readable .sub file");
         return;
     }
     if(!strcmp(f.protocol,"LR2021_IQ")) {iq_replay(path,dbm,result,len);return;}
@@ -1013,7 +1074,7 @@ static void replay_file(const char *path,int dbm,char *result,size_t len)
         return;
     }
     if(!subghz_file_is_fsk(&f)) {
-        snprintf(result,len,"Replay: incomplete or unsupported RAW/modulation");
+        LS_SNPUTS(t_rec_watch_runtime_replay_incomplete_or_unsupported, result, len, "Replay: incomplete or unsupported RAW/modulation");
         return;
     }
     const char *name=strrchr(path,'/');
@@ -1092,12 +1153,12 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,int nb,char 
     }
     if(!ls_mesh_radio_held()) {
         ls_mesh_radio_hold(false);
-        snprintf(result,len,"Scan: mesh would not release the radio");
+        LS_SNPUTS(t_rec_watch_runtime_scan_mesh_would_not, result, len, "Scan: mesh would not release the radio");
         return;
     }
     if(ls_lora_scan_begin(min_hz,max_hz)!=ESP_OK) {
         ls_mesh_radio_hold(false);
-        snprintf(result,len,"Scan: the receiver refused that range");
+        LS_SNPUTS(t_rec_watch_runtime_scan_the_receiver_refused, result, len, "Scan: the receiver refused that range");
         return;
     }
     static EXT_RAM_BSS_ATTR float peak[REC_SCAN_BINS];
@@ -1225,7 +1286,7 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,int nb,char 
                        sweep; a buzz for every burst is fine, a DM is not. */
                     if(alerts && peer[0] && fresh_hits) {
                         char text[80];
-                        snprintf(text,sizeof(text),"SubGHz: %.4f MHz at %.0f dBm",
+                        LS_SNPRINTF(t_rec_watch_runtime_subghz_4f_mhz_at, text,sizeof(text),"SubGHz: %.4f MHz at %.0f dBm",
                                  fresh_hz/1e6,(double)fresh_dbm);
                         rec_watch_notify(peer,text);
                     }
@@ -1269,11 +1330,11 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,int nb,char 
         s_scan[j+1]=k;
     }
     if(s_scan_stop_req && !s_catch_armed) {
-        snprintf(result,len,"Scan stopped: %d found",s_scan_n);return;
+        LS_SNPRINTF(t_rec_watch_runtime_scan_stopped_d_found, result,len,"Scan stopped: %d found",s_scan_n);return;
     }
-    if(s_scan_n) snprintf(result,len,"Scan: %d pass%s, %d found, strongest %.0f dBm",
+    if(s_scan_n) LS_SNPRINTF(t_rec_watch_runtime_scan_d_pass_s, result,len,"Scan: %d pass%s, %d found, strongest %.0f dBm",
         passes,passes==1?"":"es",s_scan_n,(double)s_scan[0].dbm);
-    else snprintf(result,len,"Scan: %d pass%s, nothing crossed %.0f dB over the floor",
+    else LS_SNPRINTF(fmt_rec_watch_runtime_scan_pass_nothing_crossed, result,len,"Scan: %d pass%s, nothing crossed %.0f dB over the floor",
         passes,passes==1?"":"es",(double)rec_watch_scan_threshold());
 }
 
@@ -1432,7 +1493,7 @@ static void learn_run(uint32_t hz,uint32_t secs,char *result,size_t len)
     }
     if(!ls_mesh_radio_held()) {
         ls_mesh_radio_hold(false);
-        snprintf(result,len,"Learn: mesh would not release the radio");
+        LS_SNPUTS(t_rec_watch_runtime_learn_mesh_would_not, result, len, "Learn: mesh would not release the radio");
         return;
     }
 
@@ -1469,14 +1530,14 @@ static void learn_run(uint32_t hz,uint32_t secs,char *result,size_t len)
         s_learn.sync_word=sync_from(best,best_len);
         s_learn.confidence=(uint8_t)(best_agreed*100/LEARN_KEEP);
         s_learn.valid=s_learn.sync_word!=0;
-        snprintf(s_learn.note,sizeof(s_learn.note),"%s deviation, %d of %d agreed",
+        LS_SNPRINTF(t_rec_watch_runtime_s_deviation_d_of, s_learn.note,sizeof(s_learn.note),"%s deviation, %d of %d agreed",
                  measured?"measured":"assumed",best_agreed,LEARN_KEEP);
-        snprintf(result,len,"Learn: %lu baud, sync %08lX, %u%% confident",
+        LS_SNPRINTF(t_rec_watch_runtime_learn_lu_baud_sync, result,len,"Learn: %lu baud, sync %08lX, %u%% confident",
             (unsigned long)best_rate,(unsigned long)s_learn.sync_word,
             s_learn.confidence);
     } else {
-        snprintf(s_learn.note,sizeof(s_learn.note),"nothing repeated at any rate");
-        snprintf(result,len,"Learn: heard nothing consistent - press it repeatedly");
+        LS_SNPUTS(t_rec_watch_runtime_nothing_repeated_at_any, s_learn.note, sizeof(s_learn.note), "nothing repeated at any rate");
+        LS_SNPUTS(t_rec_watch_runtime_learn_heard_nothing_consistent, result, len, "Learn: heard nothing consistent - press it repeatedly");
     }
 }
 
@@ -1505,7 +1566,7 @@ bool rec_watch_request_export(uint32_t id)
     bool ok=id && found && s_status.ready && !s_status.exporting;
     if(ok) {
         s_export_id=id;s_status.exporting=true;
-        snprintf(s_status.export_status,sizeof(s_status.export_status),"Export queued; saving selected pattern");
+        LS_SNPUTS(t_rec_watch_runtime_export_queued_saving_selected, s_status.export_status, sizeof(s_status.export_status), "Export queued; saving selected pattern");
     }
     portEXIT_CRITICAL(&s_lock);return ok;
 }

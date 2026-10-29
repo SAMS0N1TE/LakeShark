@@ -5,11 +5,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <limits.h>
-#ifdef ESP_PLATFORM
-#include "esp_attr.h"
-#else
-#define DRAM_ATTR
-#endif
+#include "ls_textpack.h"
 #ifdef _WIN32
 #include <io.h>
 #define fsync _commit
@@ -19,20 +15,20 @@
    transfer behind one sector-sized internal buffer instead of asking the
    fragmented runtime heap for a large bounce allocation.  The watch runtime
    serializes restore, checkpoint and export on its single I/O worker. */
-static DRAM_ATTR uint8_t s_watch_io[512];
+static uint8_t s_watch_io[512];
 
 bool rec_watch_export(const char *dir, const rec_watch_catalog_t *c, uint32_t id,
                       uint64_t free_bytes, char *result, size_t result_size)
 {
     if (!result || !result_size) return false;
-    snprintf(result,result_size,"Export failed: invalid pattern");
+    LS_SNPUTS(t_rec_watch_store_export_failed_invalid_pattern, result, result_size, "Export failed: invalid pattern");
     if (!dir || !c || !id) return false;
     const rec_watch_record_t *r=NULL;
     for (int i=0;i<REC_WATCH_SLOTS;i++) if(c->record[i].event.id==id) r=&c->record[i];
     if (!r || !r->event.frequency || r->event.edges<6 || r->event.edges>REC_WATCH_EDGES) return false;
     for (int i=0;i<r->event.edges;i++) if(!r->pulse[i] || r->pulse[i]==INT32_MIN) return false;
     if (free_bytes==UINT64_MAX || free_bytes<REC_WATCH_RESERVE+65536u) {
-        snprintf(result,result_size,"Export refused: SD missing or low space");return false;
+        LS_SNPUTS(t_rec_watch_store_export_refused_sd_missing, result, result_size, "Export refused: SD missing or low space");return false;
     }
     /* What the preset will say, settled before anything is created: a
        modulation the CC1101 cannot be given is a file that would load,
@@ -42,7 +38,7 @@ bool rec_watch_export(const char *dir, const rec_watch_catalog_t *c, uint32_t id
     char preset[320];
     const size_t preset_len = ls_sub_preset_text(&mod, preset, sizeof(preset));
     if (!preset_len || preset_len >= sizeof(preset)) {
-        snprintf(result,result_size,
+        LS_SNPRINTF(t_rec_watch_store_export_refused_lu_baud, result,result_size,
                  "Export refused: %lu baud %lu Hz is not a modulation a "
                  "Flipper can be given",
                  (unsigned long)r->event.bitrate,
@@ -50,20 +46,20 @@ bool rec_watch_export(const char *dir, const rec_watch_catalog_t *c, uint32_t id
         return false;
     }
     char path[256],name[64];
-    snprintf(name,sizeof(name),"pattern-%016llx-%lu.sub",(unsigned long long)c->archive_id,(unsigned long)id);
+    LS_SNPRINTF(t_rec_watch_store_pattern_016llx_lu_sub, name,sizeof(name),"pattern-%016llx-%lu.sub",(unsigned long long)c->archive_id,(unsigned long)id);
     if(snprintf(path,sizeof(path),"%s/%s",dir,name)>=(int)sizeof(path)) return false;
     int fd=open(path,O_WRONLY|O_CREAT|O_EXCL,0664);
-    if(fd<0) {snprintf(result,result_size,"Export refused: file exists or SD unavailable");return false;}
+    if(fd<0) {LS_SNPUTS(t_rec_watch_store_export_refused_file_exists, result, result_size, "Export refused: file exists or SD unavailable");return false;}
     FILE *f=fdopen(fd,"w");
     if(!f) {close(fd);unlink(path);return false;}
     setvbuf(f,(char *)s_watch_io,_IOFBF,sizeof(s_watch_io));
-    bool ok=fprintf(f,"Filetype: Flipper SubGhz RAW File\nVersion: 1\nFrequency: %lu\n",
+    bool ok=LS_FPRINTF(t_rec_watch_store_filetype_flipper_subghz_raw, f,"Filetype: Flipper SubGhz RAW File\nVersion: 1\nFrequency: %lu\n",
         (unsigned long)r->event.frequency)>0;
     if(ok) ok=fputs(preset,f)>=0;
     /* The numbers the preset was built from, so the file says what it is
        to somebody reading it and not only to a radio. */
     if(ok && r->event.bitrate)
-        ok=fprintf(f,"# %lu baud, %lu Hz deviation, sync %08lX, "
+        ok=LS_FPRINTF(t_rec_watch_store_lu_baud_lu_hz, f,"# %lu baud, %lu Hz deviation, sync %08lX, "
             "%u-bit preamble\n",
             (unsigned long)r->event.bitrate,
             (unsigned long)r->event.deviation_hz,
@@ -79,8 +75,8 @@ bool rec_watch_export(const char *dir, const rec_watch_catalog_t *c, uint32_t id
     if(ok && fsync(fileno(f))!=0) ok=false;
     if(fclose(f)!=0) ok=false;
     if(!ok) unlink(path);
-    if(ok) snprintf(result,result_size,"Saved #%lu .sub in /subghz",(unsigned long)id);
-    else snprintf(result,result_size,"Export failed: SD write error");
+    if(ok) LS_SNPRINTF(t_rec_watch_store_saved_lu_sub_in, result,result_size,"Saved #%lu .sub in /subghz",(unsigned long)id);
+    else LS_SNPUTS(t_rec_watch_store_export_failed_sd_write, result, result_size, "Export failed: SD write error");
     return ok;
 }
 /* Two fixed-size generations. A failed write leaves the other intact.
@@ -157,7 +153,7 @@ static bool quarantine_invalid(const char *dir, int slot)
     if (access(path,F_OK)!=0) return true;
     for (unsigned suffix=0;suffix<100;suffix++) {
         int n=suffix
-            ? snprintf(quarantine,sizeof(quarantine),"%s/watch%d.invalid.%u",dir,slot,suffix)
+            ? LS_SNPRINTF(t_rec_watch_store_s_watch_d_invalid, quarantine,sizeof(quarantine),"%s/watch%d.invalid.%u",dir,slot,suffix)
             : snprintf(quarantine,sizeof(quarantine),"%s/watch%d.invalid",dir,slot);
         if(n<0 || n>=(int)sizeof(quarantine)) return false;
         if(access(quarantine,F_OK)==0) continue;

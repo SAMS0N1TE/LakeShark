@@ -4,6 +4,7 @@
    ROLL or fling a finger across the tray to throw them. The face that ends
    up on top is the face that counts: physics, not a random number painted on.
    Uses API 1.1: lap_motion, lap_touch, lap_swipe, lap_tone, lap_haptic. */
+#define LAP_TARGET_API_1   /* built as API 1.3: runs on 2.18 / 2.19 firmware too */
 #include "lakeshark_app.h"
 #include "lap_canvas.h"
 #include <math.h>

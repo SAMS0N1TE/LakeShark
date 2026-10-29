@@ -33,6 +33,10 @@ bool ls_media_supported_extension(const char *name)
     if (!name) return false;
     const char *extension = strrchr(name, '.');
     if (!extension) return false;
+#if defined(CONFIG_AUDIO_PLAYER_ENABLE_STREAMING) && CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+    if (ascii_extension_equal(extension,".mp3") || ascii_extension_equal(extension,".flac") ||
+        ascii_extension_equal(extension,".ogg")) return true;
+#endif
 
 #if defined(CONFIG_AUDIO_PLAYER_ENABLE_MP3) && CONFIG_AUDIO_PLAYER_ENABLE_MP3
     if (ascii_extension_equal(extension, ".mp3")) return true;

@@ -33,6 +33,7 @@
 #include "freertos/FreeRTOS.h"
 #include "ls_lora.h"
 #include "p25_sitefind.h"
+#include "ls_textpack.h"
 
 #define MHZ_LO 150.0
 #define MHZ_HI 1100.0
@@ -296,13 +297,13 @@ static int load_profile(char *why, size_t n)
     FILE *f = fopen(PROFILE_PATH, "rb");
     if (!f) { snprintf(why, n, "No profile at %s", PROFILE_PATH); return 0; }
     char *text = heap_caps_malloc(PROFILE_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!text) { fclose(f); snprintf(why, n, "No PSRAM to read the profile"); return 0; }
+    if (!text) { fclose(f); LS_SNPUTS(t_exp_p25site_no_psram_to_read, why, n, "No PSRAM to read the profile"); return 0; }
     const size_t len = fread(text, 1, PROFILE_MAX, f);
     fclose(f);
     const int got = p25sf_profile_parse(text, len, (uint32_t)(MHZ_LO * 1e6), (uint32_t)(MHZ_HI * 1e6),
                                         s_parsed, CH_MAX);
     heap_caps_free(text);
-    if (!got) snprintf(why, n, "No control= line in %.0f-%.0f MHz in the profile", MHZ_LO, MHZ_HI);
+    if (!got) LS_SNPRINTF(t_exp_p25site_no_control_line_in, why, n, "No control= line in %.0f-%.0f MHz in the profile", MHZ_LO, MHZ_HI);
     return got;
 }
 
@@ -320,7 +321,7 @@ static bool p25_start(char *why, size_t n)
     s_once_detect = 0;
 
     const uint32_t caps = ls_lora_caps();
-    if (!(caps & LS_LORA_CAP_FSK)) { snprintf(why, n, "No FSK receiver on this chip"); return false; }
+    if (!(caps & LS_LORA_CAP_FSK)) { LS_SNPUTS(t_exp_p25site_no_fsk_receiver_on, why, n, "No FSK receiver on this chip"); return false; }
     int got;
     if (once || s_set_src == SRC_ONE) {
         memset(&s_parsed[0], 0, sizeof(s_parsed[0]));
@@ -348,7 +349,7 @@ static bool p25_start(char *why, size_t n)
     s_session = false;
     const esp_err_t err = open_session(s_ch[0].ch.hz, pol_of(&s_ch[0]));
     if (err != ESP_OK) {
-        snprintf(why, n, "%.4f MHz refused: %s", s_ch[0].ch.hz / 1e6, esp_err_to_name(err));
+        LS_SNPRINTF(t_exp_p25site_4f_mhz_refused_s, why, n, "%.4f MHz refused: %s", s_ch[0].ch.hz / 1e6, esp_err_to_name(err));
         return false;
     }
     const int64_t now = esp_timer_get_time();
@@ -449,7 +450,7 @@ static int p25_lines(char (*out)[LS_EXP_LINE], int max)
 {
     view_t *v = heap_caps_malloc(sizeof(*v), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!v) {
-        if (max > 0) snprintf(out[0], LS_EXP_LINE, "no memory for the readout");
+        if (max > 0) LS_SNPUTS(t_exp_p25site_no_memory_for_the, out[0], LS_EXP_LINE, "no memory for the readout");
         return max > 0 ? 1 : 0;
     }
     portENTER_CRITICAL(&s_lock);
@@ -462,16 +463,16 @@ static int p25_lines(char (*out)[LS_EXP_LINE], int max)
             if (s_set_src == SRC_ONE) snprintf(out[n++], LS_EXP_LINE, "ONE FREQ %.4f MHz", s_set_hz / 1e6);
             else snprintf(out[n++], LS_EXP_LINE, "PROFILE %s", PROFILE_PATH);
         }
-        if (n < max) snprintf(out[n++], LS_EXP_LINE, "C4FM sign bits at 4800 bps, sync %06X/%06X",
+        if (n < max) LS_SNPRINTF(t_exp_p25site_c4fm_sign_bits_at, out[n++], LS_EXP_LINE, "C4FM sign bits at 4800 bps, sync %06X/%06X",
                               (unsigned)P25SF_SYNC_NORMAL, (unsigned)P25SF_SYNC_INVERTED);
-        if (n < max) snprintf(out[n++], LS_EXP_LINE, "NID taken within %d bits of a codeword", P25SF_MAX_DIST);
+        if (n < max) LS_SNPRINTF(t_exp_p25site_nid_taken_within_d, out[n++], LS_EXP_LINE, "NID taken within %d bits of a codeword", P25SF_MAX_DIST);
         heap_caps_free(v);
         return n;
     }
 
     if (n < max) {
         if (v->single) snprintf(out[n++], LS_EXP_LINE, "ONE FREQ  %.4f MHz", v->focus.hz / 1e6);
-        else snprintf(out[n++], LS_EXP_LINE, "PROFILE %d ch  dwell %d s  pass %d", v->n, v->dwell_s, v->pass);
+        else LS_SNPRINTF(t_exp_p25site_profile_d_ch_dwell, out[n++], LS_EXP_LINE, "PROFILE %d ch  dwell %d s  pass %d", v->n, v->dwell_s, v->pass);
     }
     if (n < max) {
         char lvl[16] = "";
@@ -479,12 +480,12 @@ static int p25_lines(char (*out)[LS_EXP_LINE], int max)
         if (v->st == ST_STOPPED) snprintf(out[n++], LS_EXP_LINE, "stopped");
         else {
             char line[96];
-            snprintf(line, sizeof(line), "NOW %8.4f %s  %s%s%s", v->focus.hz / 1e6,
+            LS_SNPRINTF(t_exp_p25site_now_8_4f_s, line, sizeof(line), "NOW %8.4f %s  %s%s%s", v->focus.hz / 1e6,
                      v->pol ? "inverted" : "normal", v->focus.label, v->focus.label[0] ? "  " : "", lvl);
             snprintf(out[n++], LS_EXP_LINE, "%.*s", LS_EXP_LINE - 1, line);
         }
     }
-    if (n < max) snprintf(out[n++], LS_EXP_LINE, "MHZ      NAC WANT  NIDS  BAD POL RSSI LAST");
+    if (n < max) LS_SNPUTS(t_exp_p25site_mhz_nac_want_nids, out[n++], LS_EXP_LINE, "MHZ      NAC WANT  NIDS  BAD POL RSSI LAST");
     for (int i = 0; i < v->n_rows && n < max; i++) {
         const row_t *r = &v->rows[i];
         char nac[6], want[6], pol[4], rssi[8], age[8];
@@ -500,14 +501,14 @@ static int p25_lines(char (*out)[LS_EXP_LINE], int max)
             else if (s < 3600) snprintf(age, sizeof(age), "%dm", (int)(s / 60));
             else snprintf(age, sizeof(age), "%dh", (int)(s / 3600));
         }
-        snprintf(out[n++], LS_EXP_LINE, "%8.4f %3s %4s %5lu %4lu %3s %4s %4s", r->hz / 1e6, nac, want,
+        LS_SNPRINTF(t_exp_p25site_8_4f_3s_4s, out[n++], LS_EXP_LINE, "%8.4f %3s %4s %5lu %4lu %3s %4s %4s", r->hz / 1e6, nac, want,
                  (unsigned long)r->nids, (unsigned long)r->bad, pol, rssi, age);
     }
 
     /* The channel in hand, in detail. */
     const row_t *f = &v->focus;
     if (f->syncs && n < max)
-        snprintf(out[n++], LS_EXP_LINE, "%.4f syncs %lu  dist 0/1/2 %lu/%lu/%lu", f->hz / 1e6,
+        LS_SNPRINTF(t_exp_p25site_4f_syncs_lu_dist, out[n++], LS_EXP_LINE, "%.4f syncs %lu  dist 0/1/2 %lu/%lu/%lu", f->hz / 1e6,
                  (unsigned long)f->syncs, (unsigned long)f->dist[0], (unsigned long)f->dist[1],
                  (unsigned long)f->dist[2]);
     if (f->nids && n < max) {
@@ -529,8 +530,8 @@ static int p25_lines(char (*out)[LS_EXP_LINE], int max)
         snprintf(out[n++], LS_EXP_LINE, "%s", line);
     }
     if (f->nids && f->want >= 0 && n < max && f->nac[0] != (uint16_t)f->want)
-        snprintf(out[n++], LS_EXP_LINE, "profile expects NAC %03X here", (unsigned)f->want);
-    if (v->hop_errors && n < max) snprintf(out[n++], LS_EXP_LINE, "sessions refused %lu", (unsigned long)v->hop_errors);
+        LS_SNPRINTF(t_exp_p25site_profile_expects_nac_03x, out[n++], LS_EXP_LINE, "profile expects NAC %03X here", (unsigned)f->want);
+    if (v->hop_errors && n < max) LS_SNPRINTF(t_exp_p25site_sessions_refused_lu, out[n++], LS_EXP_LINE, "sessions refused %lu", (unsigned long)v->hop_errors);
     heap_caps_free(v);
     return n;
 }
@@ -590,7 +591,7 @@ static bool p25_configure(int argc, char **argv, char *why, size_t n)
     s_once_detect = 0;
     if (argc == 1 && !strcmp(argv[0], "profile")) { s_set_src = SRC_PROFILE; return true; }
     if (argc < 1 || argc > 5 || !parse_mhz(argv[0], &hz)) {
-        snprintf(why, n, "%.0f-%.0f MHz [auto|N|I [BW_Hz [dev_Hz [detect 0|8|16|24|32]]]] | profile",
+        LS_SNPRINTF(t_exp_p25site_0f_0f_mhz_auto, why, n, "%.0f-%.0f MHz [auto|N|I [BW_Hz [dev_Hz [detect 0|8|16|24|32]]]] | profile",
                  MHZ_LO, MHZ_HI);
         return false;
     }
@@ -599,26 +600,26 @@ static bool p25_configure(int argc, char **argv, char *why, size_t n)
         if (same_text(argv[1], "auto")) pol = -1;
         else if (same_text(argv[1], "N")) pol = 0;
         else if (same_text(argv[1], "I")) pol = 1;
-        else { snprintf(why, n, "polarity: auto, N or I"); return false; }
+        else { LS_SNPUTS(t_exp_p25site_polarity_auto_n_or, why, n, "polarity: auto, N or I"); return false; }
     }
     uint32_t bw = BW_DEFAULT, dev = DEV_DEFAULT, detect = 0;
     if (argc >= 3 && (!parse_uint(argv[2], BW_MAX, &bw) || !bw)) {
-        snprintf(why, n, "BW_Hz: whole Hz, at most %u", BW_MAX);
+        LS_SNPRINTF(t_exp_p25site_bw_hz_whole_hz, why, n, "BW_Hz: whole Hz, at most %u", BW_MAX);
         return false;
     }
     if (argc >= 4 && (!parse_uint(argv[3], DEV_MAX, &dev) || dev < DEV_MIN)) {
-        snprintf(why, n, "dev_Hz: whole Hz, %u-%u", DEV_MIN, DEV_MAX);
+        LS_SNPRINTF(t_exp_p25site_dev_hz_whole_hz, why, n, "dev_Hz: whole Hz, %u-%u", DEV_MIN, DEV_MAX);
         return false;
     }
     /* The rung the part will use, as its own begin checks it. */
     const uint32_t need = SYMBOL_RATE + 2 * dev, rung = ls_lora_fsk_bw_snap(bw);
     if (bw < need || rung < need) {
-        snprintf(why, n, "filter %u Hz (rung %u) must hold %u + 2*%u Hz", (unsigned)bw, (unsigned)rung,
+        LS_SNPRINTF(t_exp_p25site_filter_u_hz_rung, why, n, "filter %u Hz (rung %u) must hold %u + 2*%u Hz", (unsigned)bw, (unsigned)rung,
                  SYMBOL_RATE, (unsigned)dev);
         return false;
     }
     if (argc == 5 && (!parse_uint(argv[4], 32, &detect) || detect % 8)) {
-        snprintf(why, n, "detect bits: 0 (off), 8, 16, 24 or 32");
+        LS_SNPUTS(t_exp_p25site_detect_bits_0_off, why, n, "detect bits: 0 (off), 8, 16, 24 or 32");
         return false;
     }
     s_once_pol = pol;

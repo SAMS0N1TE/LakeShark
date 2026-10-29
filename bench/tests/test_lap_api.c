@@ -1,6 +1,7 @@
 #include "ls_lap_api.h"
 #include "ls_lap_storage.h"
 #include "ls_lap_sys.h"
+#include "ls_lap_net.h"
 #include "ls_value.h"
 #include <assert.h>
 #include <stdio.h>
@@ -52,6 +53,8 @@ int main(void) {
     const ls_lap_export_t *e = ls_lap_exports(&count);
     assert(count >= 65);
     for (size_t i = 0; i < count; i++) {
+        if (!e[i].address || ls_lap_resolve(e[i].name) != e[i].address)
+            fprintf(stderr, "unresolved export: %s\n", e[i].name);
         assert(e[i].address && ls_lap_resolve(e[i].name) == e[i].address);
         if (i)
             assert(strcmp(e[i - 1].name, e[i].name) < 0);
@@ -319,6 +322,28 @@ int main(void) {
         rmdir("lap-sd");
         checks++;
     }
+    /* The real generation allocator, not just the loopback test adapter. */
+    ls_lap_api_begin("net-test", 44, 0);
+    ls_lap_api_callback(true);
+    ls_lap_net_begin(false);
+    assert(lap_tcp_connect("localhost", 80, 1000) == LAP_NET_EACCES);
+    ls_lap_net_begin(true);
+    assert(lap_tcp_connect("localhost", 80, 1000) == LAP_NET_EINVAL);
+    char *host = ls_lap_malloc(32);
+    strcpy(host, "localhost");
+    int net_handle = lap_tcp_connect(host, 80, 1000);
+    assert(net_handle >= 0);
+    ls_lap_free(host); /* worker uses its own hostname copy */
+    lap_net_status_t *ns = ls_lap_malloc(sizeof(*ns));
+    assert(lap_net_status(ns) == 0 && ns->allowed);
+    ls_lap_free(ns);
+    assert(lap_net_status(ns) == LAP_NET_EINVAL);
+    ls_lap_net_end();
+    assert(lap_tcp_state(net_handle) == LAP_NET_EINVAL);
+    ls_lap_net_service();
+    ls_lap_api_callback(false);
+    ls_lap_api_cleanup();
+    checks++;
     printf("test_lap_api: %u cases passed\n", checks);
     return 0;
 }

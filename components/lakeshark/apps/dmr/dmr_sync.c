@@ -9,6 +9,17 @@ static const uint8_t k_bs_data [6] = { 0xDF, 0xF5, 0x7D, 0x75, 0xDF, 0x5D };
 static const uint8_t k_ms_voice[6] = { 0x7F, 0x7D, 0x5D, 0xD5, 0x7D, 0xFD };
 static const uint8_t k_ms_data [6] = { 0xD5, 0xD7, 0xF7, 0x7F, 0xD7, 0x57 };
 
+const uint8_t *dmr_sync_pattern(dmr_sync_class_t c)
+{
+    switch (c) {
+    case DMR_SYNC_BS_VOICE: return k_bs_voice;
+    case DMR_SYNC_BS_DATA:  return k_bs_data;
+    case DMR_SYNC_MS_VOICE: return k_ms_voice;
+    case DMR_SYNC_MS_DATA:  return k_ms_data;
+    default:                return NULL;
+    }
+}
+
 static uint8_t popcount8(uint8_t v)
 {
     v = (uint8_t)(v - ((v >> 1) & 0x55u));

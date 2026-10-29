@@ -17,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "linenoise/linenoise.h"
+#include "ls_textpack.h"
 
 #define UART CONFIG_ESP_CONSOLE_UART_NUM
 /* The driver hands bytes over a FIFO (120) at a time, ~10 ms apart at
@@ -70,7 +71,7 @@ static void run_lines(void)
         int ret;
         const esp_err_t err = esp_console_run(line, &ret);
         if (err == ESP_ERR_NOT_FOUND) printf("Unrecognized command\n");
-        else if (err == ESP_OK && ret != ESP_OK) printf("Command returned non-zero error code: 0x%x (%s)\n", ret, esp_err_to_name(ret));
+        else if (err == ESP_OK && ret != ESP_OK) LS_PRINTF(t_console_fast_command_returned_non_zero, "Command returned non-zero error code: 0x%x (%s)\n", ret, esp_err_to_name(ret));
         else if (err != ESP_OK && err != ESP_ERR_INVALID_ARG) printf("Internal error: %s\n", esp_err_to_name(err));
         fputs(s_prompt, stdout);
         fflush(stdout);

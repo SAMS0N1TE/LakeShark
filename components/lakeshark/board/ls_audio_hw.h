@@ -39,6 +39,11 @@ esp_err_t ls_audio_hw_reg_read(uint8_t reg, int *value);
 /* How often the speaker's DMA has run dry since boot, and when it first and
    last did (esp_timer us). Always 0 where the vendor BSP owns the I2S. */
 uint32_t  ls_audio_hw_starved(int64_t *first_us, int64_t *last_us);
+/* Stop (true) or restart (false) the I2S clocks while nothing plays. A write
+   or read restarts them by itself. Parking is refused within a second of a
+   microphone read. Not supported where the vendor BSP owns the I2S. */
+esp_err_t ls_audio_hw_park(bool park);
+bool      ls_audio_hw_parked(void);
 
 /* The audio diagnostic: what every link in the chain is set to, and
    a way to change the two that could be wrong without a rebuild. Reached

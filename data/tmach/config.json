@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "enabled": true,
+  "budget_kb": 4096,
+  "keep_hz": 60000,
+  "source": "auto",
+  "autoclip": false,
+  "clip_s": 30,
+  "max_rate": 1300000
+}

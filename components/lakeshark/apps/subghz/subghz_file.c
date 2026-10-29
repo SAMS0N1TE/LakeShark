@@ -8,6 +8,7 @@
 #include <ctype.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include "ls_textpack.h"
 
 bool subghz_file_save(const char *path,const subghz_file_t *f,const int32_t *edges,int count,const char *preset_lines)
 {
@@ -18,7 +19,7 @@ bool subghz_file_save(const char *path,const subghz_file_t *f,const int32_t *edg
     if(fd<0) return false;
     FILE *out=fdopen(fd,"w");
     if(!out) {close(fd);unlink(path);return false;}
-    bool ok=fprintf(out,"Filetype: Flipper SubGhz RAW File\nVersion: 1\nFrequency: %lu\n",
+    bool ok=LS_FPRINTF(t_subghz_file_filetype_flipper_subghz_raw, out,"Filetype: Flipper SubGhz RAW File\nVersion: 1\nFrequency: %lu\n",
         (unsigned long)f->freq_hz)>=0;
     if(ok) ok=preset_lines?fputs(preset_lines,out)>=0:fprintf(out,"Preset: %s\n",f->preset)>=0;
     if(ok) ok=fputs("Protocol: RAW\n",out)>=0;

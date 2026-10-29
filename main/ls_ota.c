@@ -78,6 +78,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 static const char *TAG = "ota";
 
@@ -264,7 +265,8 @@ static esp_http_client_handle_t open_url(const char *url, int timeout_ms, int64_
         if (deadline && !ls_ota_check_wait_ms(deadline, esp_timer_get_time())) { bad = -3; break; }
         if (*status < 300 || *status >= 400) return c;
         if (hop == 3 || esp_http_client_set_redirection(c) != ESP_OK) break;
-        char next[sizeof(s_url)];
+        /* GitHub's release assets end on a signed URL several hundred bytes long. */
+        char next[1024];
         if (esp_http_client_get_url(c, next, sizeof(next)) != ESP_OK || strncmp(next, "https://", 8)) {
             bad = -2;
             break;
@@ -277,25 +279,50 @@ static esp_http_client_handle_t open_url(const char *url, int timeout_ms, int64_
     return NULL;
 }
 
-/* open_url, and for a URL on one of the two update hosts, one more try on the
-   other when the first cannot be reached or does not answer 200. A redirect
-   off https is final. When both fail the first's *status is reported with a
-   NULL handle, so the caller can tell unreachable (< 0) from a plain 404. */
-static esp_http_client_handle_t open_url_fallback(const char *url, int timeout_ms, int64_t deadline, int64_t *length, int *status, const char *token)
+/* Where a URL on the update hosts can be fetched, in order: itself, the
+   other host, the newest GitHub release (ls_ota_github_url). A URL on no
+   update host is only itself. Returns how many. */
+#define SOURCES 3
+static int sources(const char *url, char out[SOURCES][256])
 {
-    esp_http_client_handle_t c = open_url(url, timeout_ms, deadline, length, status, token);
-    char alt[sizeof(s_url)];
-    if ((c && *status == 200) || *status == -2 || *status == -3 || !ls_ota_other_host(url, alt, sizeof(alt))) return c;
-    const int first = *status;
-    if (c) { esp_http_client_close(c); esp_http_client_cleanup(c); }
-    ESP_LOGW(TAG, "%s failed (%d), trying %s", url, first, alt);
-    int64_t len2 = 0;
-    int st2 = 0;
-    esp_http_client_handle_t c2 = open_url(alt, timeout_ms, deadline, &len2, &st2, token);
-    if (c2 && st2 == 200) { *length = len2; *status = st2; return c2; }
-    if (c2) { esp_http_client_close(c2); esp_http_client_cleanup(c2); }
-    *status = st2 == -3 ? st2 : first;
-    return NULL;
+    snprintf(out[0], sizeof(out[0]), "%s", url);
+    if (!ls_ota_other_host(url, out[1], sizeof(out[1]))) return 1;
+    return ls_ota_github_url(url, out[2], sizeof(out[2])) ? 3 : 2;
+}
+
+/* open_url on each source in turn until one answers 200: for a URL on the
+   update hosts, the other host and then GitHub when the first cannot be
+   reached or does not answer 200. A redirect off https, a token (data
+   catalogs are not on GitHub) and the deadline are final. When all fail
+   the first's *status is reported with a NULL handle, so the caller can
+   tell unreachable (< 0) from a plain 404. *via (may be NULL) is the
+   source that answered: 0 the URL, 1 the other host, 2 GitHub. */
+static esp_http_client_handle_t open_url_fallback(const char *url, int timeout_ms, int64_t deadline, int64_t *length, int *status, const char *token, int *via)
+{
+    char (*alt)[256] = malloc(SOURCES * 256);
+    if (!alt) { *status = -1; return NULL; }
+    const int n = sources(url, alt);
+    const int last = token && *token && n > 2 ? 2 : n;
+    int first = 0;
+    esp_http_client_handle_t c = NULL;
+    for (int i = 0; i < last; i++) {
+        int64_t len = 0;
+        int st = 0;
+        if (i) ESP_LOGW(TAG, "%s failed (%d), trying %s", alt[i - 1], i == 1 ? first : *status, alt[i]);
+        c = open_url(alt[i], timeout_ms, deadline, &len, &st, token);
+        if (!i) first = st;
+        *status = st;
+        if (c && st == 200) {
+            *length = len;
+            if (via) *via = i;
+            break;
+        }
+        if (c) { esp_http_client_close(c); esp_http_client_cleanup(c); c = NULL; }
+        if (st == -2 || st == -3) break;
+    }
+    free(alt);
+    if (!c && *status != -3 && *status != -2) *status = first;
+    return c;
 }
 
 static void shut(esp_http_client_handle_t c)
@@ -370,7 +397,8 @@ static bool do_check(void)
     int64_t length = 0;
     int status = 0;
     const int64_t deadline = esp_timer_get_time() + (int64_t)LS_OTA_CHECK_MAX_MS * 1000;
-    esp_http_client_handle_t c = open_url_fallback(s_url, LS_OTA_CHECK_READ_MS, deadline, &length, &status, NULL);
+    int via = 0;
+    esp_http_client_handle_t c = open_url_fallback(s_url, LS_OTA_CHECK_READ_MS, deadline, &length, &status, NULL, &via);
     const int response = ls_ota_manifest_status(status);
     if (!c || response != 1) {
         if (c) shut(c);
@@ -397,9 +425,12 @@ static bool do_check(void)
         n += (size_t)r;
     }
     /* The image's relative URL is beside the manifest as it was finally
-       served, which a redirect may have moved. */
+       served, which a redirect may have moved. From GitHub it is beside the
+       host's copy instead, so the image is looked for on the hosts first
+       and then as its own GitHub asset. */
     char base[sizeof(s_url)];
-    if (esp_http_client_get_url(c, base, sizeof(base)) != ESP_OK) snprintf(base, sizeof(base), "%s", s_url);
+    if (via == 2 || esp_http_client_get_url(c, base, sizeof(base)) != ESP_OK) snprintf(base, sizeof(base), "%s", s_url);
+    if (via) ESP_LOGW(TAG, "manifest from %s", via == 2 ? "GitHub" : "the other update host");
     shut(c);
     text[n] = 0;
 
@@ -490,28 +521,27 @@ static esp_err_t slot_abort(void *ctx) { return esp_ota_abort(((slot_job_t *)ctx
 static esp_err_t slot_end(void *ctx)   { return esp_ota_end(((slot_job_t *)ctx)->h); }
 static esp_err_t slot_boot(void *ctx)  { return esp_ota_set_boot_partition(((slot_job_t *)ctx)->part); }
 
-static void do_install(bool force)
+/* One attempt at the image from one source into a fresh slot. NULL when the
+   slot holds the whole image with the right hash, else why not; *network
+   says the source let it down (unreachable, stalled, cut short, another
+   file) rather than the board, so the next source is worth a try. Every
+   failure gives the slot back. */
+static const char *download(const char *url, slot_job_t *out, bool *network)
 {
-    if (!do_check()) return;
-    if (s_nothing || (s_state != LS_OTA_ST_AVAILABLE && !force)) return;
-
+    *network = true;
     int64_t length = 0;
     int status = 0;
-    esp_http_client_handle_t c = open_url_fallback(s_man.url, 8000, 0, &length, &status, NULL);
-    if (!c) {
-        fail(status == -2 ? "redirect not on https" : status < 0 ? "can't reach the update server"
-                                                                  : "image not on the server");
-        return;
+    esp_http_client_handle_t c = open_url(url, 8000, 0, &length, &status, NULL);
+    if (!c || status != 200) {
+        if (c) shut(c);
+        return status == -2 ? "redirect not on https" : status < 0 ? "can't reach the update server"
+                                                                  : "image not on the server";
     }
     /* No length (chunked, or IDF's 0 for unknown) is not a wrong length: the
        byte count and the hash below still decide. */
-    if (status != 200 || (length > 0 && length != (int64_t)s_man.size)) {
-        shut(c);
-        fail(status != 200 ? "image not on the server" : "image size differs");
-        return;
-    }
+    if (length > 0 && length != (int64_t)s_man.size) { shut(c); return "image size differs"; }
     uint8_t *buf = malloc(CHUNK);
-    if (!buf) { shut(c); fail("no memory"); return; }
+    if (!buf) { shut(c); *network = false; return "no memory"; }
 
     slot_job_t j = { 0 };
     esp_err_t e = ls_nvs_run(slot_begin, &j, 0);
@@ -519,9 +549,9 @@ static void do_install(bool force)
         if (e == ESP_OK) ls_nvs_run(slot_abort, &j, 0);
         free(buf);
         shut(c);
-        fail(e == ESP_ERR_NOT_FOUND ? "no update slot: install once by USB"
-             : e != ESP_OK ? "could not open the slot" : "image too big for the slot");
-        return;
+        *network = false;
+        return e == ESP_ERR_NOT_FOUND ? "no update slot: install once by USB"
+             : e != ESP_OK ? "could not open the slot" : "image too big for the slot";
     }
 
     s_percent = 0;
@@ -563,17 +593,42 @@ static void do_install(bool force)
     mbedtls_sha256_free(&sha);
     free(buf);
 
-    if (!why && e != ESP_OK)                        why = "flash write failed";
+    if (!why && e != ESP_OK)                        { why = "flash write failed"; *network = false; }
     else if (!why && (longer || got != s_man.size)) why = "download cut short";
     if (!why) {
         s_state = LS_OTA_ST_VERIFYING;
         if (memcmp(digest, s_man.sha256, sizeof(digest))) why = "image hash wrong";
     }
-    if (why) {                                      /* every failure gives the slot back */
+    if (why) {
         ls_nvs_run(slot_abort, &j, 0);
-        fail(why);
-        return;
+        return why;
     }
+    *out = j;
+    return NULL;
+}
+
+static void do_install(bool force)
+{
+    if (!do_check()) return;
+    if (s_nothing || (s_state != LS_OTA_ST_AVAILABLE && !force)) return;
+
+    /* The image's own URL, then the other update host, then GitHub: a
+       source that cannot be reached, stalls or serves another file hands
+       over to the next. The hash decides on every one of them. */
+    char (*src)[256] = malloc(SOURCES * 256);
+    if (!src) { fail("no memory"); return; }
+    const int n = sources(s_man.url, src);
+    slot_job_t j = { 0 };
+    const char *why = "can't reach the update server";
+    for (int i = 0; i < n; i++) {
+        if (i) ESP_LOGW(TAG, "image from %s failed (%s), trying %s", src[i - 1], why, src[i]);
+        bool network = true;
+        why = download(src[i], &j, &network);
+        if (!why || !network) break;
+    }
+    free(src);
+    if (why) { fail(why); return; }
+    esp_err_t e;
     if ((e = ls_nvs_run(slot_end, &j, 0)) != ESP_OK) {
         fail(e == ESP_ERR_OTA_VALIDATE_FAILED ? "image rejected" : "could not finish the slot");
         return;
@@ -935,7 +990,7 @@ static int ota_cmd(int argc, char **argv)
         for (int i = 0; i < 900 && __atomic_load_n(&s_busy, __ATOMIC_ACQUIRE); i++)
             vTaskDelay(pdMS_TO_TICKS(100));
         if (__atomic_load_n(&s_busy, __ATOMIC_ACQUIRE)) {
-            printf("ota: still checking after 90 s; `ota` shows the result\n");
+            LS_FPUTS(msg_ls_ota_ota_still_checking_after, "ota: still checking after 90 s; `ota` shows the result\n", stdout);
             return 1;
         }
         print_state();
@@ -946,7 +1001,7 @@ static int ota_cmd(int argc, char **argv)
     if (!strcmp(sub, "url")) {
         if (argc > 2) {
             if (__atomic_load_n(&s_busy, __ATOMIC_ACQUIRE)) {
-                printf("ota: busy; change the manifest when the job is done\n");
+                LS_FPUTS(msg_ls_ota_ota_busy_change_the, "ota: busy; change the manifest when the job is done\n", stdout);
                 return 1;
             }
             const bool def = !strcmp(argv[2], "default") || !strcmp(argv[2], OLD_DEFAULT_URL);
@@ -965,7 +1020,7 @@ static int ota_cmd(int argc, char **argv)
         return 0;
     }
     if (!strcmp(sub, "restart")) {
-        if (!restart_left()) { printf("ota: nothing written is waiting to restart\n"); return 1; }
+        if (!restart_left()) { LS_FPUTS(msg_ls_ota_ota_nothing_written_is, "ota: nothing written is waiting to restart\n", stdout); return 1; }
         s_restart_now = true;
         printf("ota: restarting\n");
         return 0;
@@ -977,19 +1032,19 @@ static int ota_cmd(int argc, char **argv)
         return e != ESP_OK;
     }
     if (*sub) {
-        printf("usage: ota [check | install [force] | restart | url [URL|default] | valid]\n");
+        LS_FPUTS(msg_ls_ota_usage_ota_check_install, "usage: ota [check | install [force] | restart | url [URL|default] | valid]\n", stdout);
         return 1;
     }
     slots_t s = { 0 };
     ls_nvs_run(read_slots, &s, 3072);
     char ip[20];
     ls_wifi_sta_ip(ip, sizeof(ip));
-    printf("ota: running %s from %s (%s); boots %s; next %s\n", running_build(),
+    LS_PRINTF(fmt_ls_ota_ota_running_from_boots, "ota: running %s from %s (%s); boots %s; next %s\n", running_build(),
            s.run ? s.run->label : "?", s.have_st ? st_name(s.st) : "no record",
            s.boot ? s.boot->label : "?", s.next ? s.next->label : "none");
     printf("ota: manifest %s\n", s_url);
     if (s_failed[0]) printf("ota: last build that did not start: %s\n", s_failed);
-    printf("ota: wifi %s %s; task stack left %u; internal free %u\n",
+    LS_PRINTF(fmt_ls_ota_ota_wifi_task_stack, "ota: wifi %s %s; task stack left %u; internal free %u\n",
            ls_wifi_sta_connected() ? "up" : "down", ip, s_stack_left,
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     print_state();
@@ -1007,7 +1062,7 @@ static int ota_cmd(int argc, char **argv)
         printf(", next in %s (at uptime %s), uptime now %s\n", in, at, up);
     }
     else                     printf(", due now, waiting for a clear moment\n");
-    printf("ota: background runs %d, last stopped by%s%s%s%s%s; newer build %s; announced %s\n", s_bg_runs,
+    LS_PRINTF(fmt_ls_ota_ota_background_runs_last, "ota: background runs %d, last stopped by%s%s%s%s%s; newer build %s; announced %s\n", s_bg_runs,
            s_bg_blockers & LS_OTA_BG_BUSY_JOB ? " job" : "", s_bg_blockers & LS_OTA_BG_BUSY_RF ? " rf" : "",
            s_bg_blockers & LS_OTA_BG_LOW_HEAP ? " heap" : "", s_bg_blockers & LS_OTA_BG_NO_WIFI ? " wifi" : "",
            s_bg_blockers ? "" : " nothing", s_notify ? "known" : "none", s_announced[0] ? s_announced : "none");
@@ -1018,9 +1073,9 @@ void ls_ota_console_register(void)
 {
     static const esp_console_cmd_t c = {
         .command = "ota",
-        .help = "Updates over WiFi: 'ota' states, 'ota check', 'ota install [force]', "
-                "'ota restart', 'ota url [URL|default]', 'ota valid'",
-        .hint = "[check|install [force]|restart|url [URL|default]|valid]",
+        .help = LS_TXT(con_ls_ota_ota_help, "Updates over WiFi: 'ota' states, 'ota check', 'ota install [force]', "
+                "'ota restart', 'ota url [URL|default]', 'ota valid'"),
+        .hint = LS_TXT(con_ls_ota_ota_hint, "[check|install [force]|restart|url [URL|default]|valid]"),
         .func = ota_cmd,
         .argtable = NULL,
     };
@@ -1033,5 +1088,5 @@ esp_http_client_handle_t ls_ota_open_data(const char *url, const char *token,
 {
     char other[256];
     if (!ls_ota_other_host(url, other, sizeof(other))) { *status = -2; return NULL; }
-    return open_url_fallback(url, 2000, deadline, length, status, token);
+    return open_url_fallback(url, 2000, deadline, length, status, token, NULL);
 }

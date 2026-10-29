@@ -3,6 +3,7 @@
 set(MESH_SRCS
     ls_mesh.cpp
     ls_mesh_inspect.c
+    ls_ed25519_base.c
     upstream/src/Dispatcher.cpp
     upstream/src/Identity.cpp
     upstream/src/Mesh.cpp
@@ -29,8 +30,14 @@ idf_component_register(
 )
 
 set(MESH_UPSTREAM_SRCS ${MESH_SRCS})
-list(REMOVE_ITEM MESH_UPSTREAM_SRCS ls_mesh.cpp ls_mesh_inspect.c)
+list(REMOVE_ITEM MESH_UPSTREAM_SRCS ls_mesh.cpp ls_mesh_inspect.c ls_ed25519_base.c)
 set_source_files_properties(${MESH_UPSTREAM_SRCS} PROPERTIES COMPILE_OPTIONS "-w")
+
+# ls_ed25519_base.c builds the base-point table at run time and provides
+# ge_scalarmult_base; ge.c's own is renamed, so nothing references its 30 KB
+# constant table and --gc-sections drops it.
+set_source_files_properties(upstream/ed25519/ge.c PROPERTIES
+    COMPILE_DEFINITIONS ge_scalarmult_base=ls_upstream_ge_scalarmult_base)
 
 # libssh (the SSH terminal) exports sha512_init, _update, _final and sha512
 # as well. These are the ed25519 code's own, used nowhere else: renamed here

@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <dirent.h>
+#include "ls_textpack.h"
 
 static QueueHandle_t jobs;
 static atomic_bool enabled = true;
@@ -57,7 +58,7 @@ static void load(void)
     p25_pack_db_t *db = heap_caps_calloc(1, sizeof(*db), MALLOC_CAP_SPIRAM);
     char *buf = heap_caps_malloc(P25_PACK_MAX_BYTES + 1, MALLOC_CAP_SPIRAM);
     p25_profile_parse_scratch_t *scratch = heap_caps_malloc(sizeof(*scratch), MALLOC_CAP_SPIRAM);
-    if (!db || !buf || !scratch) { error("No PSRAM for site packs"); goto done; }
+    if (!db || !buf || !scratch) { error(LS_TEXT(t_p25_sites_no_psram_for_site, "No PSRAM for site packs")); goto done; }
     error("");
     DIR *d = opendir("/sdcard/p25/sites");
     if (d) {
@@ -67,7 +68,7 @@ static void load(void)
                 char st[3] = {entry->d_name[0], entry->d_name[1], 0};
                 if (p25_pack_state_valid(st)) {
                     char final[64], backup[80];
-                    snprintf(final, sizeof(final), "/sdcard/p25/sites/%s.txt", st);
+                    LS_SNPRINTF(t_p25_sites_sdcard_p25_sites_s, final, sizeof(final), "/sdcard/p25/sites/%s.txt", st);
                     snprintf(backup, sizeof(backup), "%s.bak", final);
                     FILE *present = fopen(final, "rb");
                     if (present) fclose(present);
@@ -80,14 +81,14 @@ static void load(void)
             if (strlen(entry->d_name) != 6 || strcmp(entry->d_name + 2, ".txt")) continue;
             char state[3] = {entry->d_name[0], entry->d_name[1], 0};
             if (!p25_pack_state_valid(state)) continue;
-            char path[64]; snprintf(path, sizeof(path), "/sdcard/p25/sites/%s", entry->d_name);
+            char path[64]; LS_SNPRINTF(t_p25_sites_sdcard_p25_sites_s_2, path, sizeof(path), "/sdcard/p25/sites/%s", entry->d_name);
             FILE *f = fopen(path, "rb");
-            if (!f) { error("Cannot read a site pack"); continue; }
+            if (!f) { error(LS_TEXT(t_p25_sites_cannot_read_a_site, "Cannot read a site pack")); continue; }
             size_t len = fread(buf, 1, P25_PACK_MAX_BYTES + 1, f);
             bool bad = ferror(f); fclose(f);
             p25_profile_diagnostic_t diag;
             if (bad || !p25_pack_parse(db, scratch, buf, len, &config, &diag))
-                error("Pack invalid or capacity exceeded; pack skipped");
+                error(LS_TEXT(t_p25_sites_pack_invalid_or_capacity, "Pack invalid or capacity exceeded; pack skipped"));
         }
         closedir(d);
     }
@@ -100,12 +101,12 @@ static void worker(void *arg)
 {
     (void)arg;
     job_t j = {0};
-    if (ls_nvs_run(preference, &j, 0) != ESP_OK) error("GPS preference could not be read");
+    if (ls_nvs_run(preference, &j, 0) != ESP_OK) error(LS_TEXT(t_p25_sites_gps_preference_could_not, "GPS preference could not be read"));
     load();
     for (;;) {
         if (xQueueReceive(jobs, &j, portMAX_DELAY) != pdTRUE) continue;
         if (j.op == 1) {
-            if (ls_nvs_run(preference, &j, 0) != ESP_OK) error("GPS preference could not be saved");
+            if (ls_nvs_run(preference, &j, 0) != ESP_OK) error(LS_TEXT(t_p25_sites_gps_preference_could_not_2, "GPS preference could not be saved"));
         } else load();
     }
 }
@@ -115,7 +116,7 @@ void p25_sites_init(void)
     strcpy(status.state, "no packs");
     status.distance_km = -1;
     jobs = xQueueCreate(4, sizeof(job_t));
-    if (!jobs) { error("No site worker queue"); return; }
+    if (!jobs) { error(LS_TEXT(t_p25_sites_no_site_worker_queue, "No site worker queue")); return; }
     if (xTaskCreatePinnedToCoreWithCaps(worker, "p25_sites", 4096, NULL, 3, NULL,
                                            tskNO_AFFINITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         vQueueDelete(jobs); jobs = NULL; error("No site worker task");

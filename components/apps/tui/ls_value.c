@@ -1,5 +1,6 @@
 /* See ls_value.h. Read-only, cheap, bounded. */
 #include "ls_value.h"
+#include "ls_textpack.h"
 
 /* The registry only. Everything that knows what a P25 receiver or a
    mesh node is lives in ls_value_builtin.c, the way ls_action and
@@ -35,7 +36,7 @@ bool ls_value_publish(const char *path, const char *unit, ls_val_fn fn)
         if (strcmp(s_val[i].path, path) == 0) { s_val[i].fn = fn; return true; }
     if (s_count >= LS_VALUE_MAX) {
         s_refused++;
-        printf("ls_value: table full, %s not published\n", path);
+        LS_PRINTF(t_ls_value_ls_value_table_full, "ls_value: table full, %s not published\n", path);
         return false;
     }
     s_val[s_count].path = path;

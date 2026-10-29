@@ -56,6 +56,10 @@ typedef struct {
     bool     scaled;
     bool     iq;        /* LR IQ levels are dBFS, not swept RSSI in dBm. */
     bool     gap;       /* Retain a capture-gap marker in this history row. */
+    /* The tuned channel when it is not the centre (the LR wide span: LO in
+       the middle, channel 144 kHz up). The marker lands on it when it first
+       appears or moves; 0 leaves the marker alone. */
+    uint32_t mark_hz;
 } ls_wf_feed_t;
 
 typedef enum {

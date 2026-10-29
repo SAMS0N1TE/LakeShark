@@ -29,9 +29,9 @@ int ls_lora_activity(float *r) {LS_CHECK(lease);*r=-65;return activity;}
 esp_err_t ls_lora_scan_begin(uint32_t lo,uint32_t hi) {(void)lo;(void)hi;LS_CHECK(lease);return ESP_OK;}
 int ls_lora_scan_pass(float *out,int n,bool *done) {LS_CHECK(lease);for(int i=0;i<n;i++)out[i]=-110;*done=true;return scan_ok?n:0;}
 esp_err_t ls_lora_scan_end(void) {LS_CHECK(lease);return ESP_OK;}
-void ls_detector_drone(unsigned b,unsigned c,unsigned r,int dbm,unsigned h,int64_t us) {(void)b;(void)c;(void)r;(void)dbm;(void)h;(void)us;}
-void ls_detector_observe(const uint8_t *a,uint8_t t,uint8_t s,uint8_t c,int r,bool v,bool f,uint8_t sec,int64_t us) {(void)a;(void)t;(void)s;(void)c;(void)r;(void)v;(void)f;(void)sec;(void)us;}
-bool ls_detector_watch_notice(uint64_t id,int rssi,bool calibrated,unsigned band,bool approaching,int64_t us) {
+void ls_seen_drone(unsigned b,unsigned c,unsigned r,int dbm,unsigned h,int64_t us) {(void)b;(void)c;(void)r;(void)dbm;(void)h;(void)us;}
+void ls_seen_observe(const uint8_t *a,uint8_t t,uint8_t s,uint8_t c,int r,bool v,bool f,uint8_t sec,int64_t us) {(void)a;(void)t;(void)s;(void)c;(void)r;(void)v;(void)f;(void)sec;(void)us;}
+bool ls_seen_drone_watch(uint64_t id,int rssi,bool calibrated,unsigned band,bool approaching,int64_t us) {
     LS_CHECK(id && rssi<=0 && band && us>=0);if(!accept)return false;notices++;approaches+=approaching;return true;
 }
 ls_radio_err_t ls_radio_acquire(const char *owner,const ls_radio_requirements_t *req,ls_radio_session_t **out) {

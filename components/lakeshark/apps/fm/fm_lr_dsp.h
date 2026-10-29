@@ -8,13 +8,22 @@
 #define FM_LR_TAPS 81
 typedef struct {
     float taps[FM_LR_TAPS], noise_scale;
+    bool dc_block;                /* setting: kept across fm_lr_reset    */
     float i[FM_LR_TAPS], q[FM_LR_TAPS];
     float noise_power;
     float prev_i, prev_q, prev_d;
     float am_dc, am_acc;          /* AM: carrier level and the 32k -> 16k pair */
+    float dc_i, dc_q;             /* the DC blocker's running mean        */
     unsigned pos, decim, phase, am_n;
     bool have;
 } fm_lr_dsp_t;
+/* The narrow (source 2) path puts the chip's LO, and its DC leakage, at
+ * 0 Hz in the channel. A one-pole DC blocker on the 125k input takes it
+ * out: corner about 2.4 Hz, 65 ms to settle, a few multiplies a sample.
+ * Off after init; app_fm turns it on for narrow runs only, since the wide
+ * path's down-converter already left the LO 144 kHz away. */
+#define FM_LR_DC_SHIFT 13          /* mean += (x - mean) / 2^13 */
+void fm_lr_set_dc_block(fm_lr_dsp_t *s, bool on);
 /* Modes the LR2021's I/Q carries: narrowband FM listening, AM voice (airband),
    and the decoders that read the FM discriminator: pagers, APRS, SAME and
    ACARS. (The chip's own FSK engine heard nothing of a +61 dB pager at

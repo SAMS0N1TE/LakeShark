@@ -5,6 +5,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
+#include "ls_cold.h"
 
 #define GATE_WINDOW_US (10 * 1000000LL)
 
@@ -42,7 +43,7 @@ static void extra_reset(int slot, uint32_t icao)
     e->emergency = e->emergency_pending = 0;
 }
 
-void adsb_state_init(void)
+LS_COLD void adsb_state_init(void)
 {
     memset(s_aircraft, 0, sizeof(s_aircraft));
     for (int i = 0; i < ADSB_MAX_TRACKED; i++) extra_reset(i, 0);

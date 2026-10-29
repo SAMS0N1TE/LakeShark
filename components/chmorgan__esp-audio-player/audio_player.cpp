@@ -39,6 +39,9 @@
 #include "audio_player.h"
 
 #include "audio_wav.h"
+#ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+#include "codecs/ls_decode.h"
+#endif
 #if defined(CONFIG_AUDIO_PLAYER_ENABLE_MP3)
 #include "audio_mp3.h"
 #endif
@@ -53,6 +56,7 @@ typedef enum {
     AUDIO_PLAYER_REQUEST_STOP,               /**< stop playback */
     AUDIO_PLAYER_REQUEST_SHUTDOWN_THREAD,    /**< shutdown audio playback thread */
     AUDIO_PLAYER_REQUEST_SEEK,
+    AUDIO_PLAYER_REQUEST_SERVICE,
     AUDIO_PLAYER_REQUEST_MAX
 } audio_player_event_type_t;
 
@@ -66,6 +70,9 @@ typedef struct {
 
 typedef enum {
     FILE_TYPE_UNKNOWN,
+#ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+    FILE_TYPE_STREAM,
+#endif
 #if defined(CONFIG_AUDIO_PLAYER_ENABLE_MP3)
     FILE_TYPE_MP3,
 #endif
@@ -82,6 +89,9 @@ typedef struct audio_instance {
     TaskHandle_t task_handle;
 
     decode_data output;
+#ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+    ls_decode *stream;
+#endif
 
     QueueHandle_t event_queue;
 
@@ -106,6 +116,23 @@ static audio_instance_t instance;
 static std::atomic<uint32_t> stack_free_bytes;
 static std::atomic<uint32_t> position_ms, duration_ms;
 static std::atomic<bool> seekable;
+static std::atomic<unsigned> speed_permille{1000};
+static std::atomic<uint32_t> loop_a,loop_b;
+static std::atomic<bool> loop_enabled;
+esp_err_t audio_player_speed(unsigned value) {
+    if(value<500 || value>2000)return ESP_ERR_INVALID_ARG;
+    speed_permille=value;return ESP_OK;
+}
+unsigned audio_player_speed_get(void){return speed_permille.load();}
+esp_err_t audio_player_loop(uint32_t a,uint32_t b,bool on) {
+    if(on && b<=a)return ESP_ERR_INVALID_ARG;
+    loop_enabled=false;loop_a=a;loop_b=b;loop_enabled=on;return ESP_OK;
+}
+bool audio_player_loop_get(uint32_t *a,uint32_t *b) {
+    if(a)*a=loop_a.load();
+    if(b)*b=loop_b.load();
+    return loop_enabled.load();
+}
 static std::atomic<uint32_t> stop_serial, stop_done;
 uint32_t audio_player_position_ms(void) { return position_ms.load(); }
 uint32_t audio_player_duration_ms(void) { return duration_ms.load(); }
@@ -249,6 +276,15 @@ static esp_err_t mono_to_stereo(uint32_t output_bits_per_sample, decode_data &ad
 }
 
 static void seek_file(audio_instance_t *i, FILE *fp, uint32_t ms, uint64_t &frames) {
+#ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+    if(i->stream) {
+        uint64_t at=(uint64_t)ms*ls_decode_rate(i->stream)/1000;
+        if(ls_decode_seek(i->stream,at)) {
+            frames=ls_decode_position(i->stream);position_ms=frames*1000/ls_decode_rate(i->stream);
+        }
+        return;
+    }
+#endif
 #if defined(CONFIG_AUDIO_PLAYER_ENABLE_WAV)
     uint32_t actual;
     if (seek_wav(fp,&i->wav_data,ms,&actual)) {
@@ -270,6 +306,15 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
     position_ms=0; duration_ms=0;seekable=false;
 
     FILE_TYPE file_type = FILE_TYPE_UNKNOWN;
+#ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+    if(i->config.service_fn)i->config.service_fn();
+    i->stream=ls_decode_open(fp);
+    if(i->stream) {
+        file_type=FILE_TYPE_STREAM;seekable=true;
+        uint64_t ms=ls_decode_frames(i->stream)*1000/ls_decode_rate(i->stream);
+        duration_ms=ms>UINT32_MAX?UINT32_MAX:(uint32_t)ms;
+    }
+#endif
 
 #if defined(CONFIG_AUDIO_PLAYER_ENABLE_MP3)
     if(is_mp3(fp)) {
@@ -305,12 +350,17 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
     }
 
     do {
+#ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+        if(i->config.service_fn)i->config.service_fn();
+#endif
         /* Process audio event sent from other task */
         if (pdPASS == xQueuePeek(i->event_queue, &audio_event, 0)) {
             LOGI_2("event in queue");
             if(audio_event.type==AUDIO_PLAYER_REQUEST_SEEK) {
                 xQueueReceive(i->event_queue,&audio_event,0);
-#if defined(CONFIG_AUDIO_PLAYER_ENABLE_WAV)
+#ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+                if(file_type==FILE_TYPE_STREAM)seek_file(i,fp,audio_event.seek_ms,played_frames);
+#elif defined(CONFIG_AUDIO_PLAYER_ENABLE_WAV)
                 if(file_type==FILE_TYPE_WAV)seek_file(i,fp,audio_event.seek_ms,played_frames);
 #endif
                 continue;
@@ -324,12 +374,17 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
                 // wait until an event is received that will cause playback to resume,
                 // stop, or change file
                 while(1) {
+#ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+                    if(i->config.service_fn)i->config.service_fn();
+#endif
                     xQueuePeek(i->event_queue, &audio_event, portMAX_DELAY);
 
                     if(audio_event.type==AUDIO_PLAYER_REQUEST_SEEK) {
                         xQueueReceive(i->event_queue,&audio_event,0);
-#if defined(CONFIG_AUDIO_PLAYER_ENABLE_WAV)
-                        if(file_type==FILE_TYPE_WAV)seek_file(i,fp,audio_event.seek_ms,played_frames);
+#ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+                if(file_type==FILE_TYPE_STREAM)seek_file(i,fp,audio_event.seek_ms,played_frames);
+#elif defined(CONFIG_AUDIO_PLAYER_ENABLE_WAV)
+                if(file_type==FILE_TYPE_WAV)seek_file(i,fp,audio_event.seek_ms,played_frames);
 #endif
                         continue;
                     }
@@ -371,6 +426,25 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
         DECODE_STATUS decode_status = DECODE_STATUS_ERROR;
 
         switch(file_type) {
+#ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+            case FILE_TYPE_STREAM: {
+                unsigned rate=ls_decode_rate(i->stream),channels=ls_decode_channels(i->stream);
+                uint32_t a=loop_a.load(),b=loop_b.load();
+                bool looping=loop_enabled.load() && b>a && b<=duration_ms.load();
+                if(looping && (played_frames*1000/rate<a || played_frames*1000/rate>=b))
+                    seek_file(i,fp,a,played_frames);
+                size_t frames=i->output.samples_capacity/(channels*2);
+                if(looping) {
+                    uint64_t end=(uint64_t)b*rate/1000;
+                    if(end>played_frames && frames>end-played_frames)frames=(size_t)(end-played_frames);
+                }
+                i->output.frame_count=ls_decode_read(i->stream,(int16_t*)i->output.samples,frames);
+                i->output.fmt={ (int)rate,16,channels };
+                decode_status=i->output.frame_count?DECODE_STATUS_CONTINUE:
+                    ls_decode_failed(i->stream)?DECODE_STATUS_ERROR:DECODE_STATUS_DONE;
+                break;
+            }
+#endif
 #if defined(CONFIG_AUDIO_PLAYER_ENABLE_MP3)
             case FILE_TYPE_MP3:
                 decode_status = decode_mp3(i->mp3_decoder, fp, &i->output, &i->mp3_data);
@@ -392,6 +466,10 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
             if(i->config.source_format_fn)
                 i->config.source_format_fn(i->output.fmt.sample_rate,
                     i->output.fmt.bits_per_sample, i->output.fmt.channels);
+            const unsigned program_rate=(unsigned)i->output.fmt.sample_rate;
+#ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+            i->output.fmt.sample_rate=(int)((uint64_t)program_rate*speed_permille.load()/1000);
+#endif
             // if mono, convert to stereo as es8311 requires stereo input
             // even though it is mono output
             if(i->output.fmt.channels ==  1) {
@@ -434,7 +512,7 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
 
             i->config.write_fn(i->output.samples, bytes_to_write, &i2s_bytes_written, portMAX_DELAY);
             played_frames += i2s_bytes_written / (i2s_format.channels*(i2s_format.bits_per_sample/8));
-            position_ms=played_frames*1000/i2s_format.sample_rate;
+            position_ms=played_frames*1000/program_rate;
             if(bytes_to_write != i2s_bytes_written) {
                 ESP_LOGE(TAG, "to write %d != written %d", bytes_to_write, i2s_bytes_written);
             }
@@ -448,6 +526,9 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
     } while (true);
 
 clean_up:
+#ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+    ls_decode_close(i->stream);i->stream=NULL;
+#endif
     seekable=false;
     return ret;
 }
@@ -534,6 +615,10 @@ static esp_err_t audio_send_event(audio_instance_t *i, audio_player_event_t even
     return ESP_OK;
 }
 
+esp_err_t audio_player_service(void) {
+    audio_player_event_t event={};event.type=AUDIO_PLAYER_REQUEST_SERVICE;
+    return audio_send_event(&instance,event);
+}
 esp_err_t audio_player_seek_ms(uint32_t ms) {
     if(!seekable)return ESP_ERR_NOT_SUPPORTED;
     if(instance.state!=AUDIO_PLAYER_STATE_PLAYING && instance.state!=AUDIO_PLAYER_STATE_PAUSE)return ESP_ERR_INVALID_STATE;
@@ -626,7 +711,11 @@ esp_err_t audio_player_new(audio_player_config_t config)
     /* LakeShark: a 4608-byte PCM output buffer for WAV playback. */
     instance.output.samples_capacity = 2304;
     instance.output.samples_capacity_max = instance.output.samples_capacity * 2;
+    #ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+    instance.output.samples=static_cast<uint8_t*>(heap_caps_malloc(instance.output.samples_capacity_max,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
+#else
     instance.output.samples = static_cast<uint8_t*>(malloc(instance.output.samples_capacity_max));
+#endif
     LOGI_1("samples_capacity %d bytes", instance.output.samples_capacity_max);
     int ret = ESP_OK;
     ESP_GOTO_ON_FALSE(NULL != instance.output.samples, ESP_ERR_NO_MEM, cleanup,
@@ -651,12 +740,20 @@ esp_err_t audio_player_new(audio_player_config_t config)
     task_val = xTaskCreatePinnedToCoreWithCaps(
         (TaskFunction_t)        audio_task,
                                 "Audio Task",
+#ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+                                32 * 1024,
+#else
                                 3 * 1024,
+#endif
                                 &instance,
         (UBaseType_t)           instance.config.priority,
                                 &instance.task_handle,
         (BaseType_t)            instance.config.coreID,
+#ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
         MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+#endif
 
     ESP_GOTO_ON_FALSE(pdPASS == task_val, ESP_ERR_NO_MEM, cleanup,
         TAG, "Failed create audio task");

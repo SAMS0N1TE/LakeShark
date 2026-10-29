@@ -1,6 +1,7 @@
 #include "p25_iq_capture.h"
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 static bool number(const char *s, uint32_t *value)
 {
@@ -26,7 +27,7 @@ int p25_iq_capture_command(int argc, char **argv, uint32_t now_ms)
         else {
             uint32_t gain_bits;
             memcpy(&gain_bits, &s.receiver.demod_gain, sizeof(gain_bits));
-            printf("P25IQ state=%s reason=%s session=%lu requested=%lu captured=%lu "
+            LS_PRINTF(t_p25_iq_capture_command_p25iq_state_s_reason, "P25IQ state=%s reason=%s session=%lu requested=%lu captured=%lu "
                    "armed_ms=%lu first_ms=%lu last_ms=%lu format=u8-iq "
                    "frequency=%lu rate=%lu bandwidth=%lu generation=%lu "
                    "gain_tenths=%ld mode=%ld demod_gain_bits=%08lx\n",
@@ -63,7 +64,7 @@ int p25_iq_capture_command(int argc, char **argv, uint32_t now_ms)
                     hex[2*i+1] = digits[byte & 15];
                 }
                 hex[2*size] = 0;
-                printf("P25IQ offset=%lu bytes=%u hex=%s\n", (unsigned long)offset,
+                LS_PRINTF(t_p25_iq_capture_command_p25iq_offset_lu_bytes, "P25IQ offset=%lu bytes=%u hex=%s\n", (unsigned long)offset,
                        (unsigned)size, hex);
                 return 0;
             }

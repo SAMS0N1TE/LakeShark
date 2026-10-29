@@ -200,10 +200,18 @@ size_t rec_watch_status_copy(rec_watch_status_t *dst,
         const size_t events  = (size_t)count * sizeof(dst->event[0]);
         const size_t preview = (size_t)count * sizeof(dst->preview[0]);
         const size_t decoded = (size_t)count * sizeof(dst->decoded[0]);
+        /* The readings of the same slots, which the list draws beside them:
+           left behind, the screen showed whatever its copy last held. */
+        const size_t pwm     = (size_t)count * sizeof(dst->pwm[0]);
+        const size_t nrz     = (size_t)count * sizeof(dst->nrz[0]);
+        const size_t ism     = (size_t)count * sizeof(dst->ism[0]);
         memcpy(dst->event,   src->event,   events);
         memcpy(dst->preview, src->preview, preview);
         memcpy(dst->decoded, src->decoded, decoded);
-        moved += events + preview + decoded;
+        memcpy(dst->pwm,     src->pwm,     pwm);
+        memcpy(dst->nrz,     src->nrz,     nrz);
+        memcpy(dst->ism,     src->ism,     ism);
+        moved += events + preview + decoded + pwm + nrz + ism;
     }
     return moved;
 }

@@ -54,6 +54,12 @@ const char *ls_wf_preset_none(ls_wf_src_t src);
 /* The band a LoRa sweep covers. Defaults to the 902-928 MHz ISM
    band this board's mesh lives in; the console can move it anywhere the part
    tunes, which is 150 to 960 MHz. */
+/* LR WIDE SPAN: while the LR session runs its wide route, LR I/Q rows show
+   the whole 576 kHz around the LO, the channel marked 144 kHz above the
+   middle, instead of the 125 kHz channel. Narrow runs keep the channel view.
+   Saved by the LR FRONT END row (settings_set_lr_span), applied here. */
+void ls_wf_source_lr_span(bool on);
+bool ls_wf_source_lr_span_get(void);
 /* App-specific narrow view; cleared on release. Zero follows the radio. */
 void ls_wf_source_view(uint32_t center_hz);
 void ls_wf_source_lora_band(uint32_t min_hz, uint32_t max_hz);

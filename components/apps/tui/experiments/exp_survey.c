@@ -18,6 +18,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "ls_lora.h"
+#include "ls_textpack.h"
 
 extern const ls_experiment_t exp_survey;
 
@@ -100,10 +101,10 @@ static void view(int64_t now)
     const exp_survey_chunk_t *cur = &s_chunk[w.cur];
     char band[24];
     fmt_band(band, sizeof(band), &cur->span);
-    snprintf(t[n++], LS_EXP_LINE, "CHUNK %d/%d %s MHz  CYCLE %lu", w.cur + 1, w.n, band,
+    LS_SNPRINTF(t_exp_survey_chunk_d_d_s, t[n++], LS_EXP_LINE, "CHUNK %d/%d %s MHz  CYCLE %lu", w.cur + 1, w.n, band,
              (unsigned long)w.cycles + 1);
     const double secs = (now - w.t_start) / 1e6;
-    snprintf(t[n++], LS_EXP_LINE, "ROWS %lu  %.1f/s  +%d dB  errors %lu", (unsigned long)w.rows,
+    LS_SNPRINTF(t_exp_survey_rows_lu_1f_s, t[n++], LS_EXP_LINE, "ROWS %lu  %.1f/s  +%d dB  errors %lu", (unsigned long)w.rows,
              secs > 0 ? w.rows / secs : 0.0, s_thresh_db, (unsigned long)w.errors);
 
     /* Each chunk with something in it, in frequency order; the rest in one
@@ -111,7 +112,7 @@ static void view(int64_t now)
     exp_survey_emitter_t top[TOP_LINES];
     int ntop = 0, quiet = 0, seen = 0;
     float qlo = 0, qhi = 0;
-    snprintf(t[n++], LS_EXP_LINE, "BAND     FLOOR STRONGEST: MHz/dBm/duty");
+    LS_SNPUTS(t_exp_survey_band_floor_strongest_mhz, t[n++], LS_EXP_LINE, "BAND     FLOOR STRONGEST: MHz/dBm/duty");
     for (int c = 0; c < w.n; c++) {
         const exp_survey_chunk_t *k = &s_chunk[c];
         if (!k->rows) continue;
@@ -143,17 +144,17 @@ static void view(int64_t now)
                           (double)e[i].peak_dbm, (double)(e[i].duty * 100.0f));
         snprintf(t[n++], LS_EXP_LINE, "%s", line);
     }
-    if (!seen) snprintf(t[n++], LS_EXP_LINE, "  waiting for the first row");
-    else if (quiet) snprintf(t[n++], LS_EXP_LINE, "quiet: %d of %d, floors %.0f..%.0f dBm", quiet,
+    if (!seen) LS_SNPUTS(t_exp_survey_waiting_for_the_first, t[n++], LS_EXP_LINE, "  waiting for the first row");
+    else if (quiet) LS_SNPRINTF(t_exp_survey_quiet_d_of_d, t[n++], LS_EXP_LINE, "quiet: %d of %d, floors %.0f..%.0f dBm", quiet,
                              seen, (double)qlo, (double)qhi);
 
     if (ntop) {
-        snprintf(t[n++], LS_EXP_LINE, "TOP      MHz   dBm  duty  first-last");
+        LS_SNPUTS(t_exp_survey_top_mhz_dbm_duty, t[n++], LS_EXP_LINE, "TOP      MHz   dBm  duty  first-last");
         for (int i = 0; i < ntop; i++) {
             char a[10], b[10];
             exp_fmt_clock(top[i].first_s, a, sizeof(a));
             exp_fmt_clock(top[i].last_s, b, sizeof(b));
-            snprintf(t[n++], LS_EXP_LINE, "%11.3f %5.0f %4.0f%%  %s-%s", top[i].hz / 1e6,
+            LS_SNPRINTF(t_exp_survey_11_3f_5_0f, t[n++], LS_EXP_LINE, "%11.3f %5.0f %4.0f%%  %s-%s", top[i].hz / 1e6,
                      (double)top[i].peak_dbm, (double)(top[i].duty * 100.0f), a, b);
         }
     }
@@ -184,11 +185,11 @@ static bool survey_start(char *why, size_t n)
     s_text_n = 0;
     portEXIT_CRITICAL(&s_lock);
     const uint32_t caps = ls_lora_caps();
-    if (!(caps & LS_LORA_CAP_RSSI_INST)) { snprintf(why, n, "This chip gives no RSSI reading"); return false; }
+    if (!(caps & LS_LORA_CAP_RSSI_INST)) { LS_SNPUTS(t_exp_survey_this_chip_gives_no, why, n, "This chip gives no RSSI reading"); return false; }
     static EXT_RAM_BSS_ATTR exp_span_t spans[CHUNKS_MAX];
     const int nc = plan(caps, spans, CHUNKS_MAX);
     if (!nc) {
-        snprintf(why, n, "Nothing in the list is in this radio's reach");
+        LS_SNPUTS(t_exp_survey_nothing_in_the_list, why, n, "Nothing in the list is in this radio's reach");
         return false;
     }
     esp_err_t err = ls_lora_scan_begin(spans[0].lo_hz, spans[0].hi_hz);
@@ -201,7 +202,7 @@ static bool survey_start(char *why, size_t n)
         if (ls_lora_configure(&c) == ESP_OK) err = ls_lora_scan_begin(spans[0].lo_hz, spans[0].hi_hz);
     }
     if (err != ESP_OK) {
-        snprintf(why, n, "The sweep was refused: %s", esp_err_to_name(err));
+        LS_SNPRINTF(t_exp_survey_the_sweep_was_refused, why, n, "The sweep was refused: %s", esp_err_to_name(err));
         return false;
     }
     memset(&w, 0, sizeof(w));
@@ -262,7 +263,7 @@ static int survey_lines(char (*out)[LS_EXP_LINE], int max)
     /* Never run: what the next start covers. */
     n = 0;
     if (s_custom_lo) {
-        if (n < max) snprintf(out[n++], LS_EXP_LINE, "RANGE %.0f-%.0f MHz (start all: back to the list)",
+        if (n < max) LS_SNPRINTF(t_exp_survey_range_0f_0f_mhz, out[n++], LS_EXP_LINE, "RANGE %.0f-%.0f MHz (start all: back to the list)",
                               s_custom_lo / 1e6, s_custom_hi / 1e6);
     } else {
         const uint32_t m = groups(), caps = ls_lora_caps();
@@ -282,7 +283,7 @@ static int survey_lines(char (*out)[LS_EXP_LINE], int max)
         }
         if (n < max) snprintf(out[n++], LS_EXP_LINE, "%s", line);
     }
-    if (n < max) snprintf(out[n++], LS_EXP_LINE, "%d rows on each chunk of 50 MHz or less, +%d dB",
+    if (n < max) LS_SNPRINTF(t_exp_survey_d_rows_on_each, out[n++], LS_EXP_LINE, "%d rows on each chunk of 50 MHz or less, +%d dB",
                           s_looks, s_thresh_db);
     return n;
 }
@@ -303,13 +304,13 @@ static bool survey_configure(int argc, char **argv, char *why, size_t n)
     if (argc == 1 && !strcmp(argv[0], "all")) { s_custom_lo = s_custom_hi = 0; return true; }
     double lo, hi;
     if (argc != 2 || !parse_mhz(argv[0], &lo) || !parse_mhz(argv[1], &hi) || hi - lo < 1.0) {
-        snprintf(why, n, "<lo MHz> <hi MHz>, 150-2500, or 'all'");
+        LS_SNPUTS(t_exp_survey_lo_mhz_hi_mhz, why, n, "<lo MHz> <hi MHz>, 150-2500, or 'all'");
         return false;
     }
     exp_span_t probe[1];
     if (!exp_survey_plan((uint32_t)(lo * 1e6 + 0.5), (uint32_t)(hi * 1e6 + 0.5), ls_lora_caps(),
                          CHUNK_MAX_HZ, probe, 1)) {
-        snprintf(why, n, "%.0f-%.0f MHz is out of this radio's reach", lo, hi);
+        LS_SNPRINTF(t_exp_survey_0f_0f_mhz_is, why, n, "%.0f-%.0f MHz is out of this radio's reach", lo, hi);
         return false;
     }
     s_custom_lo = (uint32_t)(lo * 1e6 + 0.5);

@@ -20,6 +20,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 #define INK(c)  TUI_ATTR((c), TUI_BLACK)
 #define BRIGHT(c) INK((c) | TUI_BRIGHT)
@@ -352,7 +353,7 @@ static void bands_page(tui_surface *sf, tui_rect a, int64_t now)
 static void find_page(tui_surface *sf, tui_rect a, int64_t now)
 {
     const ls_drone_watch_entry_t *e = picked();
-    ls_panel_box(sf, a, "FIND / WALK TOWARD THE STRONGEST", TUI_MAGENTA);
+    ls_panel_box(sf, a, LS_TEXT(t_ls_drone_ui_find_walk_toward_the, "FIND / WALK TOWARD THE STRONGEST"), TUI_MAGENTA);
     if (!e) {
         put(sf, a, a.x + 2, a.y + 2, ls_tr("Nothing to find yet."), BRIGHT(TUI_GREEN));
         put(sf, a, a.x + 2, a.y + 3, ls_tr("A link heard on WATCH shows here."), LS_ATTR_DIM);
@@ -436,7 +437,7 @@ static void draw(tui_surface *sf, tui_rect a)
 {
     const int64_t now = esp_timer_get_time();
     refresh(now);
-    if (a.w < 30 || a.h < 16) { ls_panel_notice(sf, a, "DRONES", "More screen space needed", "Use a smaller font"); return; }
+    if (a.w < 30 || a.h < 16) { ls_panel_notice(sf, a, "DRONES", LS_TEXT(t_ls_drone_ui_more_screen_space_needed, "More screen space needed"), "Use a smaller font"); return; }
     const bool wide = ls_tui_is_wide();
     const int bar_h = wide ? 3 : 8;   /* portrait: two rows of thumb-sized keys */
     ls_btn_t b[] = {

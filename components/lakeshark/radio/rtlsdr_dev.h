@@ -25,6 +25,11 @@ usb_port_cycle_result_t rtl_adapter_port_reset(void);
 bool rtl_adapter_port_reset_possible(void);
 /* usb_port_attach_t: whether anything is plugged into the root port. */
 int rtl_adapter_port_attached(void);
+/* The signal path the dongle is on now (ls_rtl_path_t, ls_radio_hf.h):
+   tuner, direct sampling or the Blog V4 upconverter; NONE with no dongle. */
+int rtl_adapter_hf_path(void);
+/* Whether the dongle reported itself as an RTL-SDR Blog V4. */
+bool rtl_adapter_blog_v4(void);
 
 #ifdef __cplusplus
 }

@@ -52,6 +52,11 @@ typedef enum {
     /* New numbers go last: native apps name built-in icons by number. */
     LS_ICON_CELL,       /* CELL WATCH: a handset and its bars, not P25's mast */
     LS_ICON_SUBGHZ,     /* SUB-GHZ: a key fob and its burst, not REC's lamp */
+    LS_ICON_HEAT,       /* RF SURVEY: heat on the ground, and the walk */
+    LS_ICON_FOX,        /* FOX HUNT: bearings crossing in their ellipse */
+    LS_ICON_DIGI,       /* DIGI: the FT8 Costas array, tones stepping     */
+    LS_ICON_TMACH,      /* TIME MACHINE: a dial turning back over a burst */
+    LS_ICON_RADIO,      /* RADIO: a handheld receiver, not FM's wave        */
     LS_ICON__COUNT
 } ls_icon_t;
 

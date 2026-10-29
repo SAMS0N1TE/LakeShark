@@ -3,10 +3,12 @@
 #include "esp_attr.h"
 
 /* a permanent 16 KiB FM stack remained reserved while P25 allocated another 16 KiB cache-safe DSD stack. */
+/* Plain static: .bss is internal RAM already. DRAM_ATTR would put the stack
+   in .data and store 16 KiB of zeros in the app image. */
 
-static DRAM_ATTR StackType_t s_decode_stack[LS_RADIO_DECODE_STACK_BYTES]
+static StackType_t s_decode_stack[LS_RADIO_DECODE_STACK_BYTES]
     __attribute__((aligned(16)));
-static DRAM_ATTR StaticTask_t s_decode_tcb;
+static StaticTask_t s_decode_tcb;
 static TaskHandle_t s_decode_task;
 static TaskFunction_t s_run;
 

@@ -801,8 +801,6 @@ LS_CASE(gps_reply_rejects_stale_and_stopped_fixes)
 /* ------------------------------------- receiver identity, MESH and DET */
 
 #include "tui/ls_radio_select.h"
-#include "tui/ls_detector.h"
-#include "tui/ls_detector_air.h"
 
 /* What the RADIO picker answers, as a fixture. */
 static ls_rsel_radio_t s_rx_radio = LS_RSEL_SDR_RTL;
@@ -1058,83 +1056,17 @@ LS_CASE(the_head_sends_a_canned_mesh_message_only_when_the_board_allows)
 }
 
 /* ---- DETECTOR ---- */
-static ls_detector_status_t s_det;
-static ls_detector_event_t s_det_events[3];
-static size_t s_det_n;
-static bool s_det_busy, s_det_started;
-
-bool ls_detector_snapshot(ls_detector_status_t *out, ls_detector_event_t *events,
-                          size_t cap, size_t *n)
+/* DETECTOR is an SD app (SDK 2.2): the head is told so, and the eq line
+   carries no dt fields for a detector the board no longer has. */
+LS_CASE(the_head_hears_detector_is_an_sd_app)
 {
-    if (s_det_busy) return false;
-    *out = s_det;
-    *n = s_det_n < cap ? s_det_n : cap;
-    if (events) for (size_t i = 0; i < *n; i++) events[i] = s_det_events[i];
-    return true;
-}
-void ls_detector_start(bool on) { s_det_started = on; s_det.running = on; }
-const char *ls_detector_source(unsigned s) { return s == DET_ADSB ? "adsb" : "rid.ble"; }
-void ls_detector_air_event_text(const ls_detector_event_t *e, char *out, size_t cap)
-{ snprintf(out, cap, "%s sq%04u", e->callsign, e->squawk); }
-bool ls_detector_air_alarm(unsigned squawk, unsigned emergency)
-{ return emergency || squawk == 7700; }
-
-LS_CASE(the_head_reads_detector_status_and_alerts)
-{
-    char r[384];
-    memset(&s_det, 0, sizeof(s_det));
-    memset(s_det_events, 0, sizeof(s_det_events));
-    s_det.running = true; s_det.rules = 9; s_det.matches = 2; s_det.recent = 2;
-    snprintf(s_det.adsb, sizeof(s_det.adsb), "RTL 1090");
-    s_det_n = 2; s_det_busy = false;
-    ask("DET", r, sizeof(r));
-    LS_EQ_STR("%A s run=1 rules=9 hits=2 sup=0 drop=0 hist=2 adsb=RTL_1090\n", r);
+    char r[160], line[96];
     ask("DET S", r, sizeof(r));
-    LS_CHECK(!strncmp(r, "%A s run=1", 10));
-
-    ls_shim_time_set(100 * 1000000LL);
-    s_det_events[0].source = DET_ADSB; s_det_events[0].squawk = 7700;
-    snprintf(s_det_events[0].callsign, sizeof(s_det_events[0].callsign), "UAL123");
-    s_det_events[0].at = 90 * 1000000LL;
-    s_det_events[1].source = DET_RID; s_det_events[1].at = 40 * 1000000LL;
-    snprintf(s_det_events[1].reason, sizeof(s_det_events[1].reason), "remote-id");
-    ask("DET 0", r, sizeof(r));
-    LS_EQ_STR("%A a 0 2 10 1 adsb UAL123 sq7700\n", r);
-    ask("DET 1", r, sizeof(r));
-    LS_EQ_STR("%A a 1 2 60 0 rid.ble remote-id\n", r);
-    ask("DET 2", r, sizeof(r));
-    LS_EQ_STR("%A a 2 2 -1 0 - -\n", r);
-    s_det_busy = true;
-    ask("DET 0", r, sizeof(r));
-    LS_CHECK_MSG(!strncmp(r, "-ERR det busy", 13), "a busy detector must not read as no alerts");
-    s_det_busy = false;
-    ask("DET -1", r, sizeof(r));
-    LS_CHECK(!strncmp(r, "-ERR", 4));
-    ask("DET RUN 0", r, sizeof(r));
-    LS_CHECK(!s_det_started && strstr(r, "run=0"));
+    LS_CHECK(!strncmp(r, "-ERR det unavailable", 20));
     ask("DET RUN 1", r, sizeof(r));
-    LS_CHECK(s_det_started && strstr(r, "run=1"));
-    ask("DET RUN 2", r, sizeof(r));
     LS_CHECK(!strncmp(r, "-ERR", 4));
-}
-
-LS_CASE(the_eq_line_always_carries_the_detector_state_and_stop_is_seen)
-{
-    char line[96];
-    memset(&s_det, 0, sizeof(s_det));
-    s_det_busy = false;
     flipper_link_eq_snapshot(line, sizeof(line));
-    LS_CHECK_MSG(strstr(line, "dtm=0 dth=0 dtr=0"),
-                 "a stopped detector must say it is stopped, or the head keeps showing it on");
-    s_det.running = true; s_det.matches = 4294967295u; s_det.recent = 24;
-    int n = flipper_link_eq_snapshot(line, sizeof(line));
-    LS_CHECK(strstr(line, "dtm=4294967295 dth=24 dtr=1") != NULL);
-    LS_CHECK(n == (int)strlen(line) && one_line(line));
-    LS_CHECK(strncmp(line, "& eq=", 5) == 0);
-    s_det_busy = true;
-    flipper_link_eq_snapshot(line, sizeof(line));
-    LS_CHECK_MSG(strstr(line, "eq=") && !strstr(line, "dtm="), "a busy lock must only skip the tail");
-    s_det_busy = false;
+    LS_CHECK(strstr(line, "eq=") && !strstr(line, "dtm=") && !strstr(line, "dtr="));
 }
 
 /* ---- channels, direct messages and the transmit switch ---- */
@@ -1310,19 +1242,3 @@ LS_CASE(the_head_arms_and_disarms_transmit_and_is_told_what_happened)
     memset(&g_mesh, 0, sizeof(g_mesh));
 }
 
-LS_CASE(a_detector_stopped_from_the_console_is_seen_on_the_next_eq_line)
-{
-    char line[96];
-    memset(&s_det, 0, sizeof(s_det));
-    s_det_busy = false;
-    s_det.running = true; s_det.matches = 0;
-    flipper_link_eq_snapshot(line, sizeof(line));
-    LS_CHECK(strstr(line, "dtr=1"));
-    ls_detector_start(false);                              /* what `detector stop` does */
-    flipper_link_eq_snapshot(line, sizeof(line));
-    LS_CHECK_MSG(strstr(line, "dtr=0"), "the stop was not reported to the head");
-    /* and DET S says the same thing */
-    char r[160];
-    ask("DET S", r, sizeof(r));
-    LS_CHECK(strstr(r, "run=0"));
-}

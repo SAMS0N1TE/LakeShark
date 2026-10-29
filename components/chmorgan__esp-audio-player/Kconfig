@@ -1,4 +1,7 @@
 menu "Audio playback"
+    config AUDIO_PLAYER_ENABLE_STREAMING
+        bool "Stream MP3, FLAC, Ogg and WAV from PSRAM decoders"
+        default y
 
     config AUDIO_PLAYER_ENABLE_WAV
         bool "Enable wav file playback"

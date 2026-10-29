@@ -11,8 +11,11 @@ set(requires "")
 
 # LakeShark distributes the WAV player without the Helix decoder.
 
-if(CONFIG_AUDIO_PLAYER_ENABLE_WAV)
+if(CONFIG_AUDIO_PLAYER_ENABLE_WAV OR CONFIG_AUDIO_PLAYER_ENABLE_STREAMING)
     list(APPEND srcs "audio_wav.cpp")
+endif()
+if(CONFIG_AUDIO_PLAYER_ENABLE_STREAMING)
+    list(APPEND srcs "codecs/ls_decode.c")
 endif()
 
 idf_component_register(SRCS "${srcs}"

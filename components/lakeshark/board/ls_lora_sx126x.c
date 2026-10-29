@@ -20,6 +20,7 @@
 #include "ls_board.h"
 #include "ls_spi.h"
 #include "ls_xl9535.h"
+#include "ls_textpack.h"
 
 static const char *TAG = "ls_lora";
 
@@ -976,18 +977,18 @@ static void sx_diagnostics(void)
     uint8_t st = 0;
     const esp_err_t st_err = sx_status(&st);
     if (st_err != ESP_OK)
-        printf("lora: status read failed: %s (zeros below are not the part's)\n",
+        LS_PRINTF(fmt_ls_lora_sx126x_lora_status_read_failed, "lora: status read failed: %s (zeros below are not the part's)\n",
                esp_err_to_name(st_err));
-    if (s_rearm) printf("lora: receive not armed yet - retried on every poll\n");
+    if (s_rearm) fputs(LS_TEXT(msg_ls_lora_sx126x_lora_receive_not_armed, "lora: receive not armed yet - retried on every poll\n"), stdout);
     /* 0x0740 is the LoRa sync word. Its reset value is known, so reading it
        distinguishes a working SPI path from a wire that merely is not shorted. */
     uint8_t sync[2] = { 0, 0 };
     sx_read_reg(0x0740, sync, sizeof(sync));
-    printf("lora: status=0x%02X mode=%u cmd=%u syncword=0x%02X%02X busy=%d\n",
+    LS_PRINTF(fmt_ls_lora_sx126x_lora_status_0x_mode, "lora: status=0x%02X mode=%u cmd=%u syncword=0x%02X%02X busy=%d\n",
            st, (unsigned)((st >> 4) & 7), (unsigned)((st >> 1) & 7),
            sync[0], sync[1], ls_lora_hw_busy_level());
-    printf("lora: DIO1 is expander IO17 - polled over I2C, ~10 ms floor. "
-           "Receive is fine; anything with a turnaround deadline is not.\n");
+    fputs(LS_TEXT(msg_ls_lora_sx126x_lora_dio1_is_expander, "lora: DIO1 is expander IO17 - polled over I2C, ~10 ms floor. "
+           "Receive is fine; anything with a turnaround deadline is not.\n"), stdout);
 }
 
 static uint32_t sx_caps(void)
@@ -1136,10 +1137,10 @@ int ls_lora_sx126x_probe_command(int argc, char **argv)
     }
     const uint32_t points = ok ? (stop - start) / step + 1u : 0;
     if (!ok || argc > 10 || points > SXPROBE_MAX_POINTS) {
-        puts("usage: lora sxprobe <start_kHz 1000..4095000> [stop_kHz] [step_kHz] "
+        puts(LS_TEXT(msg_ls_lora_sx126x_usage_lora_sxprobe_start, "usage: lora sxprobe <start_kHz 1000..4095000> [stop_kHz] [step_kHz] "
              "[bw Hz from the FSK table, or 0xNN raw code] [boost|save|0xNN rx gain] "
              "[reads 1..64] [settle_us 0..20000] [none|once|each image cal]   "
-             "(receive only, at most 2001 points)");
+             "(receive only, at most 2001 points)"));
         return 1;
     }
     /* After `mesh stop` the part has been forgotten; bring it back the way
@@ -1157,7 +1158,7 @@ int ls_lora_sx126x_probe_command(int argc, char **argv)
     if (s_fsk_active || s_scanning || s_tx_busy || s_probe_active) {
         ls_lora_hw_unlock();
         free(rows);
-        puts("sxprobe: the radio is busy (FSK session, sweep or transmit) - stop it first");
+        puts(LS_TEXT(msg_ls_lora_sx126x_sxprobe_the_radio_is, "sxprobe: the radio is busy (FSK session, sweep or transmit) - stop it first"));
         return 1;
     }
     const bool had_cfg = s_cfg_valid, was_rx = s_rx_mode || s_rearm;
@@ -1227,18 +1228,18 @@ int ls_lora_sx126x_probe_command(int argc, char **argv)
     }
     ls_lora_hw_unlock();
 
-    printf("sxprobe: start=%lu stop=%lu step=%lu kHz bw=%lu code=0x%02X gain=0x%02X "
+    LS_PRINTF(fmt_ls_lora_sx126x_sxprobe_start_stop_step, "sxprobe: start=%lu stop=%lu step=%lu kHz bw=%lu code=0x%02X gain=0x%02X "
            "readback=0x%02X/0x%02X reads=%lu settle_us=%lu cal=%s modst=0x%02X setup=%s "
            "points=%lu elapsed_ms=%lld\n",
            (unsigned long)start, (unsigned long)stop, (unsigned long)step, (unsigned long)bw,
            bw_code_v, gain, gain_rb, gain_end, (unsigned long)reads, (unsigned long)settle,
            cal_mode == 0 ? "none" : cal_mode == 1 ? "once" : "each", st_mod,
            esp_err_to_name(err), (unsigned long)done, (long long)(elapsed / 1000));
-    puts("sxp,khz,err_cal,err_rx,st_cal,st_rx,n,avg_dbm,max_dbm,min_dbm,us");
+    puts(LS_TEXT(msg_ls_lora_sx126x_sxp_khz_err_cal, "sxp,khz,err_cal,err_rx,st_cal,st_rx,n,avg_dbm,max_dbm,min_dbm,us"));
     for (uint32_t i = 0; i < done; i++) {
         const sxprobe_row_t *r = &rows[i];
         if (r->reads)
-            printf("sxp,%lu,%04X,%04X,%02X,%02X,%u,%.1f,%.1f,%.1f,%lu\n",
+            LS_PRINTF(fmt_ls_lora_sx126x_sxp, "sxp,%lu,%04X,%04X,%02X,%02X,%u,%.1f,%.1f,%.1f,%lu\n",
                    (unsigned long)r->khz, r->err_cal, r->err_rx, r->st_cal, r->st_rx,
                    r->reads, -(float)r->rsum / (2.0f * r->reads), -(float)r->rmin / 2.0f,
                    -(float)r->rmax / 2.0f, (unsigned long)r->us);

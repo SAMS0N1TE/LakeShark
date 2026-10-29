@@ -141,6 +141,7 @@ bool ls_dfs_target_label(int i, char *l, size_t lc, char *d, size_t dc)
 }
 bool ls_dfs_target_pick(int i) { (void)i; return true; }
 void ls_dfs_step(void) {}
+bool ls_dfs_any_active(void) { return s_slot[0].active || s_slot[1].active; }
 
 bool ls_dfs_target_address(const uint8_t mac[6],const char *label) {
     if(!mac || (s_slot[0].src!=LS_DFS_BLE && s_slot[0].src!=LS_DFS_WIFI)) return false;

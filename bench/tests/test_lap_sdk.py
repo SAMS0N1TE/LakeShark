@@ -63,6 +63,21 @@ class NativeSDK(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'needs'):
             e.check(set())
 
+    def test_network_capability_and_example(self):
+        f=lap.build(ROOT/'app-sdk/apps/tcp_probe',BUILD/'tcp_probe.lap')
+        raw=f.read_bytes();e=lap.Elf(raw)
+        self.assertEqual(e.manifest['api_minor'],3)
+        self.assertEqual(e.manifest['flags'],1)
+        self.assertEqual(subprocess.run([str(INSPECT),str(f)],capture_output=True).returncode,0)
+        offset=e.sections[e.names.index('.lap_app')][4]
+        for minor,flags,valid in [(3,1,True),(2,1,False),(3,2,False),(0,0,True),(2,0,True)]:
+            b=bytearray(raw);lap.struct.pack_into('<H',b,offset+6,minor);b[offset+130]=flags
+            path=BUILD/'network-manifest.lap';path.write_bytes(b)
+            if valid:self.assertEqual(lap.Elf(b).manifest['flags'],flags)
+            else:
+                with self.assertRaises(ValueError):lap.Elf(b)
+            self.assertEqual(subprocess.run([str(INSPECT),str(path)],capture_output=True).returncode==0,valid)
+
     def test_signing(self):
         from cryptography.hazmat.primitives.asymmetric import ec
         from cryptography.hazmat.primitives import hashes,serialization

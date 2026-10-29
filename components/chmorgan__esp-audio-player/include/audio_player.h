@@ -21,6 +21,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
@@ -47,9 +48,15 @@ audio_player_state_t audio_player_get_state();
 uint32_t audio_player_stack_free_bytes(void);
 /* Decoded PCM accepted by the output; excludes time spent paused. */
 uint32_t audio_player_position_ms(void);
-/* Queue a seek for PCM WAV; preserves pause and never touches the file from UI. */
+/* Queue a seek for streamed audio; preserves pause and keeps file IO on worker. */
 esp_err_t audio_player_seek_ms(uint32_t ms);
 uint32_t audio_player_duration_ms(void);
+/* Varispeed changes pitch as well as speed. 500..2000 permille. */
+esp_err_t audio_player_speed(unsigned permille);
+unsigned audio_player_speed_get(void);
+esp_err_t audio_player_loop(uint32_t a_ms,uint32_t b_ms,bool enabled);
+bool audio_player_loop_get(uint32_t *a_ms,uint32_t *b_ms);
+esp_err_t audio_player_service(void);
 
 typedef enum {
     AUDIO_PLAYER_CALLBACK_EVENT_IDLE, /**< Player is idle, not playing audio */
@@ -143,6 +150,7 @@ typedef struct {
     UBaseType_t priority; /*< FreeRTOS task priority */
     BaseType_t coreID; /*< ESP32 core ID */
     void (*file_close_fn)(FILE *file); /* optional file close + lease release; defaults to fclose */
+    void (*service_fn)(void); /* small file/transport jobs, decoder worker only */
 } audio_player_config_t;
 
 /**

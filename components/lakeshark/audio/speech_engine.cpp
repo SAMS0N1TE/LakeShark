@@ -93,6 +93,34 @@ void make_voice(tts::VoiceParams &vp, speech_voice_t v)
             if (!std::strcmp(p.ipa, "o"))      { p.f1 = 480; p.f2 = 1180; }   /* GOAT, fronted */
         }
     }
+    if (v == SPEECH_VOICE_CALM) {
+        /* A ship's computer you would trust: a warm, unhurried woman with a gentle
+           fall through each line and a soft lift on the stressed word, glided not
+           stepped. A slightly open, relaxed source and a little breath take the
+           edge off; southern British vowels, no r after them. */
+        vp.f0_start = 200.0f;
+        vp.f0_end = 178.0f;
+        vp.final_fall_hz = 16.0f;
+        vp.f0_accent_hz = 14.0f;
+        vp.f0_flutter_hz = 1.2f;
+        vp.f0_step_semitones = 0.0f;
+        vp.formant_scale = 1.10f;
+        vp.duration_scale = 1.14f;
+        vp.stress_len_scale = 1.06f;
+        vp.glottal_open = 0.40f;
+        vp.glottal_close = 0.11f;
+        vp.breath = 0.06f;
+        vp.formant_smooth_ms = 14.0f;
+        vp.non_rhotic = 1.0f;
+        vp.bw_f0_coef = 0.5f;
+        vp.output_gain = 0.040f;
+        vp.tail_ms = 90.0f;
+        for (auto &p : vp.phones) {
+            if (!std::strcmp(p.ipa, "ɝ")) { p.f2 = 1400; p.f3 = 2500; }  /* NURSE, no r */
+            if (!std::strcmp(p.ipa, "ɑ")) { p.f1 = 650; p.f2 = 920; }    /* LOT, rounded */
+            if (!std::strcmp(p.ipa, "o"))      { p.f1 = 480; p.f2 = 1180; }   /* GOAT, fronted */
+        }
+    }
 }
 
 /* Output stage, in the order it was tuned: bass lift, then either a 6-bit
@@ -115,6 +143,23 @@ struct Effect {
 
     float step(float x, speech_voice_t v)
     {
+        if (v == SPEECH_VOICE_CALM) {
+            /* CALM: only the deep rumble out (below ~110 Hz), the same gentle press,
+               a fixed 2 ms echo for a cabin's warmth rather than FEMALE's swept
+               metal, and a darker low pass so no consonant bites. */
+            bass += 0.043f * (x - bass);
+            x -= bass;
+            const float a = std::fabs(x);
+            env = a > env ? a : env * 0.999f;
+            constexpr float kKnee = 0.18f;
+            if (env > kKnee) x *= std::pow(kKnee / env, 2.0f / 3.0f);
+            x *= 2.1f;
+            line[n % kComb] = x;
+            x = 0.86f * x + 0.14f * line[(n + kComb - 32) % kComb];
+            ++n;
+            lowpass += 0.62f * (x - lowpass);
+            return std::clamp(lowpass, -0.98f, 0.98f);
+        }
         if (v == SPEECH_VOICE_FEMALE) {
             bass += 0.07f * (x - bass);   /* below ~180 Hz out: thin, like a PA */
             x -= bass;
@@ -321,6 +366,7 @@ extern "C" const char *speech_voice_name(speech_voice_t voice)
     case SPEECH_VOICE_GLITCH: return "glitch";
     case SPEECH_VOICE_DARK:   return "dark";
     case SPEECH_VOICE_FEMALE: return "female";
+    case SPEECH_VOICE_CALM:   return "calm";
     default:                  return "?";
     }
 }

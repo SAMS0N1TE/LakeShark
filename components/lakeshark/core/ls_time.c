@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/time.h>
 #include <time.h>
+#include "ls_textpack.h"
 
 #if !LS_TIME_HOST
 #include "esp_log.h"
@@ -31,7 +32,12 @@ static volatile bool s_synced = false;
 
 bool ls_time_is_synced(void) { return s_synced; }
 
-void ls_time_note_set(void) { s_synced = true; }
+/* Who set the clock last: 0 nobody, 1 RTC (or another local source), 2 SNTP. */
+static volatile int s_source = 0;
+
+void ls_time_note_set(void) { s_synced = true; if (s_source != 2) s_source = 1; }
+
+int ls_time_source(void) { return s_synced ? s_source : 0; }
 
 void ls_time_test_set_synced(bool synced) { s_synced = synced; }
 
@@ -52,7 +58,7 @@ size_t ls_time_render_stamp_at(char *out, size_t cap,
 #else
         gmtime_r(&real_time, &tm);
 #endif
-        int n = snprintf(out, cap, "%04d-%02d-%02dT%02d:%02d:%02dZ",
+        int n = LS_SNPRINTF(t_ls_time_04d_02d_02dt_02d, out, cap, "%04d-%02d-%02dT%02d:%02d:%02dZ",
                          tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                          tm.tm_hour, tm.tm_min, tm.tm_sec);
         if (n < 0) { out[0] = '\0'; return 0; }
@@ -147,6 +153,7 @@ static void sntp_sync_notif(struct timeval *now)
         return;
     }
     s_synced = true;
+    s_source = 2;
     struct tm tm;
     gmtime_r(&s, &tm);
     ESP_LOGW(TAG, "wall clock set: %04d-%02d-%02dT%02d:%02d:%02dZ",

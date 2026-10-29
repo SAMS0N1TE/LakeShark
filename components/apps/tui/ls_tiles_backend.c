@@ -1,6 +1,7 @@
 #include "ls_board.h"
 /* SD and network operations live off the render/input task. */
 #include "sdkconfig.h"
+#include "ls_textpack.h"
 #if defined(ESP_PLATFORM) && LS_HAS_CARTOCORE
 #include "ls_tiles.h"
 #include "esp_http_client.h"
@@ -116,11 +117,11 @@ static void scan(ls_tiles_catalog *d) {
     /* Mount presence and capacity query are separate facts. */
     d->sd=ls_sdcard_mounted(); d->maps=0; d->total=d->free=0;
     if(d->sd && !ls_sdcard_size(&d->total,&d->free))
-        error(d,ESP_FAIL,"SD mounted; capacity query failed");
+        error(d,ESP_FAIL,LS_TEXT(t_ls_tiles_backend_sd_mounted_capacity_query, "SD mounted; capacity query failed"));
     for(int i=0;i<d->count;i++) { d->region[i].status=0; d->region[i].verified=false; d->region[i].local_bytes=0; d->region[i].partial_bytes=0; }
-    if(!d->sd) { error(d,ESP_ERR_NOT_FOUND,"No SD; insert a card"); return; }
+    if(!d->sd) { error(d,ESP_ERR_NOT_FOUND,LS_TEXT(t_ls_tiles_backend_no_sd_insert_a, "No SD; insert a card")); return; }
     DIR *dir=opendir("/sdcard/maps");
-    if(!dir) { if(errno!=ENOENT) error(d,ESP_FAIL,"Cannot scan SD maps directory"); return; }
+    if(!dir) { if(errno!=ENOENT) error(d,ESP_FAIL,LS_TEXT(t_ls_tiles_backend_cannot_scan_sd_maps, "Cannot scan SD maps directory")); return; }
     struct dirent *e;
     while((e=readdir(dir))) {
         char name[128],path[272]; struct stat st;
@@ -133,7 +134,7 @@ static void scan(ls_tiles_catalog *d) {
         d->maps+=st.st_size;
         int i; for(i=0;i<d->count;i++) if(!strcmp(d->region[i].file,name)) break;
         if(i==d->count) {
-            if(i==LS_TILES_MAX) { snprintf(d->message,sizeof(d->message),"Region limit: first 48 shown"); continue; }
+            if(i==LS_TILES_MAX) { LS_SNPUTS(t_ls_tiles_backend_region_limit_first_48, d->message, sizeof(d->message), "Region limit: first 48 shown"); continue; }
             d->count++; memset(&d->region[i],0,sizeof(d->region[i]));
             snprintf(d->region[i].file,sizeof(d->region[i].file),"%s",name);
             snprintf(d->region[i].name,sizeof(d->region[i].name),"%.*s",(int)strlen(name)-6,name);
@@ -218,9 +219,9 @@ static bool parse(ls_tiles_catalog *d,const char *json) {
     cJSON_Delete(root); return true;
 }
 static bool catalog_download(ls_tiles_catalog *d) {
-    if(!ls_wifi_sta_connected()) { error(d,ESP_ERR_INVALID_STATE,"No WiFi; showing saved regions"); return false; }
+    if(!ls_wifi_sta_connected()) { error(d,ESP_ERR_INVALID_STATE,LS_TEXT(t_ls_tiles_backend_no_wifi_showing_saved, "No WiFi; showing saved regions")); return false; }
     char *buf=heap_caps_malloc(65537,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-    if(!buf) { error(d,ESP_ERR_NO_MEM,"Catalog buffer allocation failed"); return false; }
+    if(!buf) { error(d,ESP_ERR_NO_MEM,LS_TEXT(t_ls_tiles_backend_catalog_buffer_allocation_failed, "Catalog buffer allocation failed")); return false; }
     esp_http_client_config_t cfg={.url=BASE "catalog.json",.crt_bundle_attach=esp_crt_bundle_attach,
         .timeout_ms=5000,.disable_auto_redirect=true,.buffer_size=2048};
     esp_http_client_handle_t c=esp_http_client_init(&cfg);
@@ -233,7 +234,7 @@ static bool catalog_download(ls_tiles_catalog *d) {
             int status=esp_http_client_get_status_code(c);
             if(headers<0) { err=ESP_FAIL; why="Catalog HTTP headers failed"; }
             else if(status!=200) {
-                err=ESP_FAIL; snprintf(d->message,sizeof(d->message),"Catalog HTTP %d; saved regions shown",status);
+                err=ESP_FAIL; LS_SNPRINTF(t_ls_tiles_backend_catalog_http_d_saved, d->message,sizeof(d->message),"Catalog HTTP %d; saved regions shown",status);
                 why=NULL;
             } else {
                 int n=0;
@@ -255,11 +256,11 @@ static bool catalog_download(ls_tiles_catalog *d) {
                 if(written && !closed) {
                     unlink("/sdcard/maps/catalog.json");
                     if(rename("/sdcard/maps/catalog.json.part","/sdcard/maps/catalog.json"))
-                        error(d,ESP_FAIL,"Catalog loaded; saving cache failed");
-                } else error(d,ESP_FAIL,"Catalog loaded; writing cache failed");
-            } else error(d,ESP_FAIL,"Catalog loaded; cannot write SD cache");
+                        error(d,ESP_FAIL,LS_TEXT(t_ls_tiles_backend_catalog_loaded_saving_cache, "Catalog loaded; saving cache failed"));
+                } else error(d,ESP_FAIL,LS_TEXT(t_ls_tiles_backend_catalog_loaded_writing_cache, "Catalog loaded; writing cache failed"));
+            } else error(d,ESP_FAIL,LS_TEXT(t_ls_tiles_backend_catalog_loaded_cannot_write, "Catalog loaded; cannot write SD cache"));
         }
-    } else { d->last_error=err; if(why) snprintf(d->message,sizeof(d->message),"%s; saved regions shown",why); }
+    } else { d->last_error=err; if(why) LS_SNPRINTF(t_ls_tiles_backend_s_saved_regions_shown, d->message,sizeof(d->message),"%s; saved regions shown",why); }
     stage(S_LOG,"catalog-log","");
     ESP_LOGI("tiles","catalog: %s (error=%s)",d->message,esp_err_to_name(d->last_error));
     free(buf); return ok;
@@ -269,12 +270,12 @@ typedef struct { int action; bool online; ls_tile_region r; } request;
 static void work(void *arg) {
     stage(S_ALLOC,"state-alloc","");
     request *q=arg; ls_tiles_catalog *d=heap_caps_calloc(1,sizeof(*d),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-    if(!d) { publish_error(ESP_ERR_NO_MEM,"Tiles state allocation failed"); goto done; }
+    if(!d) { publish_error(ESP_ERR_NO_MEM,LS_TEXT(t_ls_tiles_backend_tiles_state_allocation_failed, "Tiles state allocation failed")); goto done; }
     stage(S_LOCK,"catalog-lock",""); xSemaphoreTake(lock,portMAX_DELAY); *d=data; xSemaphoreGive(lock);
     d->message[0]=0; d->last_error=ESP_OK;
     ls_carto_transfer t; stage(S_TRANSFER,"transfer-snapshot",""); ls_carto_transfer_snapshot(&t);
     if(q->action<0) {
-        if(t.state==1) { error(d,ESP_ERR_INVALID_STATE,"Transfer active; refresh after it finishes"); goto publish; }
+        if(t.state==1) { error(d,ESP_ERR_INVALID_STATE,LS_TEXT(t_ls_tiles_backend_transfer_active_refresh_after, "Transfer active; refresh after it finishes")); goto publish; }
         d->count=0;
         /* Publish presence before any FAT/VFS operation (including cache open). */
         d->sd=ls_sdcard_mounted(); d->maps=0; d->total=d->free=0;
@@ -285,14 +286,14 @@ static void work(void *arg) {
             if(b) {
                 size_t n=fread(b,1,65536,f); b[n]=0;
                 if(ferror(f) || n==65536 || memchr(b,0,n) || !parse(d,b))
-                    error(d,ESP_ERR_INVALID_RESPONSE,"Saved catalog unreadable or invalid");
+                    error(d,ESP_ERR_INVALID_RESPONSE,LS_TEXT(t_ls_tiles_backend_saved_catalog_unreadable_or, "Saved catalog unreadable or invalid"));
                 free(b);
-            } else error(d,ESP_ERR_NO_MEM,"Saved catalog buffer allocation failed");
+            } else error(d,ESP_ERR_NO_MEM,LS_TEXT(t_ls_tiles_backend_saved_catalog_buffer_allocation, "Saved catalog buffer allocation failed"));
             fclose(f);
         }
         if(ls_sdcard_mounted()) mkdir("/sdcard/maps",0777);
         scan(d);
-        if(!d->message[0]) snprintf(d->message,sizeof(d->message),"Saved regions loaded");
+        if(!d->message[0]) LS_SNPUTS(t_ls_tiles_backend_saved_regions_loaded, d->message, sizeof(d->message), "Saved regions loaded");
         /* Publish local maps before potentially slow HTTPS. */
         stage(S_PUBLISH,"publish",""); xSemaphoreTake(lock,portMAX_DELAY); data=*d; xSemaphoreGive(lock);
         if(q->online) { catalog_download(d); scan(d); }
@@ -303,25 +304,25 @@ static void work(void *arg) {
             uint64_t total,free_b; char url[256]; snprintf(url,sizeof(url),BASE "%s",q->r.file);
             if(!ls_sdcard_size(&total,&free_b)) error(d,ESP_FAIL,
                 ls_sdcard_mounted()?"Cannot query SD free space":"No SD; insert a card");
-            else if(free_b<q->r.bytes+65536) error(d,ESP_ERR_NO_MEM,"Disk full; delete a region first");
-            else if((stage(S_FETCH,"carto-fetch",q->r.file),ls_cartocore_fetch(url,q->r.file,q->r.sha256,q->r.bytes))) error(d,ESP_FAIL,"Cannot download; check WiFi / active transfer");
+            else if(free_b<q->r.bytes+65536) error(d,ESP_ERR_NO_MEM,LS_TEXT(t_ls_tiles_backend_disk_full_delete_a, "Disk full; delete a region first"));
+            else if((stage(S_FETCH,"carto-fetch",q->r.file),ls_cartocore_fetch(url,q->r.file,q->r.sha256,q->r.bytes))) error(d,ESP_FAIL,LS_TEXT(t_ls_tiles_backend_cannot_download_check_wifi, "Cannot download; check WiFi / active transfer"));
         } else if(q->action==1) {
             uint64_t total,free_b; char *args[]={"carto","recv"};
             if(!ls_sdcard_size(&total,&free_b)) error(d,ESP_FAIL,
                 ls_sdcard_mounted()?"Cannot query SD free space":"No SD; insert a card");
-            else if((stage(S_COMMAND,"carto-recv",""),ls_cartocore_command(2,args))) error(d,ESP_FAIL,"Cannot receive; check WiFi / active transfer");
+            else if((stage(S_COMMAND,"carto-recv",""),ls_cartocore_command(2,args))) error(d,ESP_FAIL,LS_TEXT(t_ls_tiles_backend_cannot_receive_check_wifi, "Cannot receive; check WiFi / active transfer"));
         } else if(q->action==2) {
             char *open[]={"carto","open",path}; char z[8]; int zoom=14;
             if(zoom<q->r.zmin) zoom=q->r.zmin;
             if(zoom>q->r.zmax) zoom=q->r.zmax;
             snprintf(z,sizeof(z),"%d",zoom); char *show[]={"carto","show",z};
-            if((stage(S_COMMAND,"carto-open",path),ls_cartocore_command(3,open)) || (stage(S_COMMAND,"carto-show",path),ls_cartocore_command(3,show))) error(d,ESP_FAIL,"Cannot open: invalid map / insufficient PSRAM");
+            if((stage(S_COMMAND,"carto-open",path),ls_cartocore_command(3,open)) || (stage(S_COMMAND,"carto-show",path),ls_cartocore_command(3,show))) error(d,ESP_FAIL,LS_TEXT(t_ls_tiles_backend_cannot_open_invalid_map, "Cannot open: invalid map / insufficient PSRAM"));
             else snprintf(d->message,sizeof(d->message),"Map opened");
         } else if(q->action==3) {
-            if(t.state==1) error(d,ESP_ERR_INVALID_STATE,"Transfer active; finish or cancel first");
+            if(t.state==1) error(d,ESP_ERR_INVALID_STATE,LS_TEXT(t_ls_tiles_backend_transfer_active_finish_or, "Transfer active; finish or cancel first"));
             else {
                 bool ok=ls_carto_unlink(path)==0 || errno==ENOENT;
-                if(!ok && errno==EBUSY) error(d,ESP_ERR_INVALID_STATE,"Active map; open embedded before deleting");
+                if(!ok && errno==EBUSY) error(d,ESP_ERR_INVALID_STATE,LS_TEXT(t_ls_tiles_backend_active_map_open_embedded, "Active map; open embedded before deleting"));
                 else {
                     char side[288]; snprintf(side,sizeof(side),"%s.sha",path); unlink(side);
                     strcat(path,".part"); ok=(unlink(path)==0 || errno==ENOENT) && ok;
@@ -329,7 +330,7 @@ static void work(void *arg) {
                 }
             }
         } else if(q->action==4) {
-            if(ls_carto_verify(&q->r)) error(d,ESP_FAIL,"Verification failed or cancelled");
+            if(ls_carto_verify(&q->r)) error(d,ESP_FAIL,LS_TEXT(t_ls_tiles_backend_verification_failed_or_cancelled, "Verification failed or cancelled"));
             else snprintf(d->message,sizeof(d->message),"SHA256 verified");
             scan(d);
         }
@@ -352,7 +353,7 @@ static bool queue(int action,bool online,const ls_tile_region *r) {
     if(action==2) { xSemaphoreTake(lock,portMAX_DELAY);data.open_state=1;xSemaphoreGive(lock); }
     if(action==0 || action==1 || action==4) {
         ls_carto_transfer t; ls_carto_transfer_snapshot(&t);
-        if(t.state==1) { publish_error(ESP_ERR_INVALID_STATE,"Transfer active; finish or cancel first"); atomic_store(&busy,false); return false; }
+        if(t.state==1) { publish_error(ESP_ERR_INVALID_STATE,LS_TEXT(t_ls_tiles_backend_transfer_active_finish_or, "Transfer active; finish or cancel first")); atomic_store(&busy,false); return false; }
         ls_carto_transfer_clear();
     }
     request *q=heap_caps_calloc(1,sizeof(*q),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT); if(q) { q->action=action; q->online=online; if(r) q->r=*r;
@@ -378,21 +379,21 @@ void ls_tiles_diagnostics(void) {
     id=atomic_load_explicit(&stage_id,memory_order_relaxed); since=stage_us;
     memcpy(label,stage_label,sizeof(label)); memcpy(file,stage_file,sizeof(file));
     portEXIT_CRITICAL(&stage_mux);
-    printf("carto tiles: stage=%s for %lld ms id=%u file=%s\n",label,
+    LS_PRINTF(t_ls_tiles_backend_carto_tiles_stage_s, "carto tiles: stage=%s for %lld ms id=%u file=%s\n",label,
         (long long)((esp_timer_get_time()-since)/1000),id,file);
-    printf("screen snapshots: succeeded=%u failed=%u\n",
+    LS_PRINTF(t_ls_tiles_backend_screen_snapshots_succeeded_u, "screen snapshots: succeeded=%u failed=%u\n",
         atomic_load(&snapshot_ok),atomic_load(&snapshot_failed));
     /* No indefinite diagnostic wait and no console I/O under the state lock. */
     if(xSemaphoreTake(lock,pdMS_TO_TICKS(10))!=pdTRUE) {
-        printf("carto tiles: busy=%d catalog lock unavailable\n",atomic_load(&busy)); return;
+        LS_PRINTF(t_ls_tiles_backend_carto_tiles_busy_d, "carto tiles: busy=%d catalog lock unavailable\n",atomic_load(&busy)); return;
     }
     int count=data.count,last_error=data.last_error; bool sd=data.sd;
     uint64_t maps=data.maps,total=data.total,free_b=data.free; char message[96];
     memcpy(message,data.message,sizeof(message)); xSemaphoreGive(lock);
-    printf("carto tiles: busy=%d sd=%d count=%d maps=%llu total=%llu free=%llu\n",
+    LS_PRINTF(t_ls_tiles_backend_carto_tiles_busy_d_2, "carto tiles: busy=%d sd=%d count=%d maps=%llu total=%llu free=%llu\n",
         atomic_load(&busy),sd,count,(unsigned long long)maps,
         (unsigned long long)total,(unsigned long long)free_b);
-    printf("message: %s\nlast error: %s (0x%x)\n",message,
+    LS_PRINTF(t_ls_tiles_backend_message_s_last_error, "message: %s\nlast error: %s (0x%x)\n",message,
         esp_err_to_name(last_error),(unsigned)last_error);
 }
 void ls_tiles_expected(const char *file,char sha[65],uint64_t *bytes) {

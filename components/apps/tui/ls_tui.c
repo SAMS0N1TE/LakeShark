@@ -15,6 +15,8 @@
 #include "ls_theme.h"
 
 #include "ls_panel.h"
+#include "ls_cold.h"
+#include "ls_textpack.h"
 
 static const char *TAG = "ls_tui";
 
@@ -541,6 +543,44 @@ static void blit_image_cell(uint16_t *fb, int native_w, int col, int row,
                             int x0, int y0)
 {
     s_image_copy_bytes += (uint32_t)s_cw * s_ch * sizeof(uint16_t);
+    /* Full-image paints used the scaled sampler even when source pixels
+       already matched the panel. The same divides/modulos were repeated for
+       every cell of RF/audio waterfalls and native map images. Keep exact
+       pixel coordinates here; the scaled path below remains the fallback. */
+    if (s_image_w == s_image_rect.w * s_cw && s_image_h == s_image_rect.h * s_ch) {
+        int nx = s_cw < 32 ? s_cw : 32, ny = s_ch < 32 ? s_ch : 32;
+        if (nx > s_screen_w - x0) nx = s_screen_w - x0;
+        if (ny > s_screen_h - y0) ny = s_screen_h - y0;
+        int sx = (col - s_image_rect.x) * s_cw + s_image_x0;
+        int sy = (row - s_image_rect.y) * s_ch + s_image_y0;
+        if (sx >= s_image_w) sx -= s_image_w;
+        if (sy >= s_image_h) sy -= s_image_h;
+        if (s_landscape) {
+            for (int x = 0; x < nx; x++) {
+                uint16_t *run = fb + landscape_index(x0 + x, y0, native_w);
+                int source_x = sx + x;
+                if (source_x >= s_image_w) source_x -= s_image_w;
+                const uint16_t *src = s_image + (size_t)sy * s_image_w + source_x;
+                const int first = ny < s_image_h - sy ? ny : s_image_h - sy;
+                for (int y = 0; y < first; y++)
+                    run[s_cw_rotation ? y : -y] = src[(size_t)y * s_image_w];
+                src = s_image + source_x;
+                for (int y = first; y < ny; y++)
+                    run[s_cw_rotation ? y : -y] = src[(size_t)(y - first) * s_image_w];
+            }
+        } else if (nx > 0) {
+            const int first = nx < s_image_w - sx ? nx : s_image_w - sx;
+            for (int y = 0; y < ny; y++) {
+                int source_y = sy + y;
+                if (source_y >= s_image_h) source_y -= s_image_h;
+                uint16_t *run = fb + (size_t)(y0 + y) * native_w + x0;
+                const uint16_t *src = s_image + (size_t)source_y * s_image_w;
+                memcpy(run, src + sx, (size_t)first * sizeof(*run));
+                if (first < nx) memcpy(run + first, src, (size_t)(nx - first) * sizeof(*run));
+            }
+        }
+        return;
+    }
     {
         const int iw = s_image_rect.w * s_cw, ih = s_image_rect.h * s_ch;
         /* Source coordinates once per cell, not a divide per pixel, and the
@@ -791,7 +831,7 @@ static void blit_cell(uint16_t *fb, int native_w, int native_h,
    present or in begin, on the task that owns the framebuffer. The palette
    the blitter indexes, the ramp built from it and the front grid all change
    together here, so no cell can be marked drawn in colours that have gone. */
-static void look_apply(void)
+LS_COLD static void look_apply(void)
 {
     s_look_dirty = false;
     s_draw = ls_tui_theme_effective(s_theme, s_daylight);
@@ -925,7 +965,7 @@ static void paint_bar_ends(uint16_t *fb,int native_w)
     }
 }
 
-bool ls_tui_begin(int screen_w, int screen_h)
+LS_COLD bool ls_tui_begin(int screen_w, int screen_h)
 {
     ls_panel_fb_t fb;
     if (!ls_panel_fb(&fb)) {
@@ -1000,7 +1040,7 @@ bool ls_tui_begin(int screen_w, int screen_h)
     return true;
 }
 
-void ls_tui_end(void)
+LS_COLD void ls_tui_end(void)
 {
     /* The marks first: begin calls this after the grid size has already
        changed, and clearing them at the new size would overrun the old. */
@@ -1020,7 +1060,7 @@ tui_surface *ls_tui_surface(void) { return s_back ? &s_surface : NULL; }
 
 void ls_tui_remote_geometry(void)
 {
-    printf("HUBSCREEN width=%d height=%d x=%d y=%d cols=%d rows=%d cw=%d ch=%d\n",
+    LS_PRINTF(t_ls_tui_hubscreen_width_d_height, "HUBSCREEN width=%d height=%d x=%d y=%d cols=%d rows=%d cw=%d ch=%d\n",
            s_screen_w, s_screen_h, s_ox, s_oy, s_cols, s_rows, s_cw, s_ch);
 }
 
@@ -1579,11 +1619,11 @@ static char printable(int16_t ch)
     return '?';
 }
 
-void ls_tui_dump(void)
+LS_COLD void ls_tui_dump(void)
 {
     if (!s_back) { printf("tui: no grid\n"); return; }
 
-    printf("tui: %dx%d cells, %s, %s\n", s_cols, s_rows,
+    LS_PRINTF(t_ls_tui_tui_dx_d_cells, "tui: %dx%d cells, %s, %s\n", s_cols, s_rows,
            s_font ? s_font->name : "?",
            s_landscape ? "landscape" : "portrait");
 

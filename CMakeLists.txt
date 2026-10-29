@@ -47,10 +47,10 @@ add_compile_options(
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-enum-enum-conversion")
 
-set(LS_PRODUCT_VERSION "2.18.0")
+set(LS_PRODUCT_VERSION "2.19.0")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/ls_build_identity.cmake")
 set(PROJECT_VER "${LS_PRODUCT_VERSION}")
-set(LS_PROJECT_VERSION "2.18.0")
+set(LS_PROJECT_VERSION "2.19.0")
 project(lakeshark VERSION ${LS_PROJECT_VERSION})
 
 # Selective placement avoids moving the whole FreeRTOS kernel back to SRAM.
@@ -112,3 +112,93 @@ foreach(ls_cold_comp IN LISTS LS_SIZE_OPT_COMPONENTS)
         endif()
     endif()
 endforeach()
+
+# C++ exceptions stay on (CONFIG_COMPILER_CXX_EXCEPTIONS) for the one place
+# that catches: speech_engine.cpp catches std::bad_alloc out of klatt_tts.
+# The C++ in these components never catches, so an exception thrown there
+# ends in std::terminate either way; without unwind tables and landing pads
+# they are about 30 KB smaller. ezpwd (P25 Phase II Reed-Solomon) is built
+# with EZPWD_NO_EXCEPTS: its checks (a constant table, codeword sizes fixed
+# by P25) abort or return an error where they would have thrown.
+set(LS_NO_EXCEPT_COMPONENTS
+    main meshcore imbe_vocoder p25_phase2 chmorgan__esp-audio-player nvs_flash)
+foreach(ls_ne_comp IN LISTS LS_NO_EXCEPT_COMPONENTS)
+    idf_component_get_property(ls_ne_lib ${ls_ne_comp} COMPONENT_LIB)
+    if(ls_ne_lib)
+        target_compile_options(${ls_ne_lib} PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>)
+    endif()
+endforeach()
+
+# Size build: the code compiled for size also calls shared register
+# save/restore routines (libgcc millicode, linked into IRAM by IDF) in place
+# of inline prologues and epilogues: about 3% less code for a few cycles per
+# call. The per-frame, DSP and radio files keep -O2 and add -mno-save-restore
+# (components/apps and components/lakeshark CMakeLists.txt). The IDF list is
+# LS_SIZE_OPT_COMPONENTS above; the audio decoders, klatt_tts and the vocoders
+# are left alone.
+if(CONFIG_COMPILER_OPTIMIZATION_SIZE)
+    set(LS_SAVE_RESTORE_COMPONENTS apps lakeshark main meshcore ${LS_SIZE_OPT_COMPONENTS})
+    foreach(ls_sr_comp IN LISTS LS_SAVE_RESTORE_COMPONENTS)
+        idf_component_get_property(ls_sr_lib ${ls_sr_comp} COMPONENT_LIB)
+        if(ls_sr_lib)
+            get_target_property(ls_sr_type ${ls_sr_lib} TYPE)
+            if(NOT ls_sr_type STREQUAL "INTERFACE_LIBRARY")
+                target_compile_options(${ls_sr_lib} PRIVATE -msave-restore)
+            endif()
+        endif()
+    endforeach()
+    # More cold libraries, none on a sample or frame path: TLS and
+    # certificates (handshakes, OTA), the FAT and VFS layers (file calls, not
+    # the SD transfers underneath), OTA partition writes, and the text packs.
+    # mbedtls builds three CMake targets of its own beside the IDF wrapper.
+    set(LS_SAVE_RESTORE_MORE fatfs vfs wear_levelling app_update esp_https_ota
+        esp_partition ls_textpack mbedtls)
+    foreach(ls_sr_comp IN LISTS LS_SAVE_RESTORE_MORE)
+        idf_component_get_property(ls_sr_lib ${ls_sr_comp} COMPONENT_LIB)
+        if(ls_sr_lib)
+            get_target_property(ls_sr_type ${ls_sr_lib} TYPE)
+            if(NOT ls_sr_type STREQUAL "INTERFACE_LIBRARY")
+                target_compile_options(${ls_sr_lib} PRIVATE -msave-restore)
+            endif()
+        endif()
+    endforeach()
+    foreach(ls_sr_lib mbedcrypto mbedx509 mbedtls)
+        if(TARGET ${ls_sr_lib})
+            target_compile_options(${ls_sr_lib} PRIVATE -msave-restore)
+        endif()
+    endforeach()
+endif()
+
+# esp_hosted's protobuf-c tables name every message, field and enum value,
+# about 40 KB of strings. Nothing reads them: packing goes by number and
+# protobuf-c's unpack error macro is built empty. The library compiles a copy
+# with the names blank (cmake/ls_pb_strip_names.py); the RpcId value names
+# stay, because rpc_core.c logs them on a timeout.
+idf_component_get_property(ls_hosted_lib espressif__esp_hosted COMPONENT_LIB)
+if(ls_hosted_lib)
+    get_target_property(ls_hosted_srcs ${ls_hosted_lib} SOURCES)
+    list(FILTER ls_hosted_srcs INCLUDE REGEX "/esp_hosted_rpc\\.pb-c\\.c$")
+    list(LENGTH ls_hosted_srcs ls_pb_n)
+    if(ls_pb_n EQUAL 1)
+        list(GET ls_hosted_srcs 0 ls_pb_src)
+        set(ls_pb_tool "${CMAKE_CURRENT_LIST_DIR}/cmake/ls_pb_strip_names.py")
+        set(ls_pb_out "${CMAKE_BINARY_DIR}/ls_hosted/esp_hosted_rpc.pb-c.c")
+        idf_build_get_property(ls_python PYTHON)
+        execute_process(COMMAND ${ls_python} ${ls_pb_tool} ${ls_pb_src} ${ls_pb_out}
+                rpc_id__enum_values_by_number
+            RESULT_VARIABLE ls_pb_rc)
+        if(NOT ls_pb_rc EQUAL 0)
+            message(FATAL_ERROR "ls_pb_strip_names.py failed on ${ls_pb_src}")
+        endif()
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${ls_pb_tool} ${ls_pb_src})
+        get_target_property(ls_hosted_all ${ls_hosted_lib} SOURCES)
+        list(TRANSFORM ls_hosted_all REPLACE "^.*/esp_hosted_rpc\\.pb-c\\.c$" "${ls_pb_out}")
+        set_property(TARGET ${ls_hosted_lib} PROPERTY SOURCES ${ls_hosted_all})
+    endif()
+endif()
+
+idf_component_get_property(ls_p2_lib p25_phase2 COMPONENT_LIB)
+if(ls_p2_lib)
+    target_compile_definitions(${ls_p2_lib} PRIVATE EZPWD_NO_EXCEPTS)
+endif()

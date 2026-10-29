@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 #define MAX_LINE 400
 
@@ -115,6 +116,30 @@ bool ls_ota_other_host(const char *url, char *out, size_t cap)
     else return false;
     const int n = snprintf(out, cap, "%s%s%s", HTTPS, to, host + hl);
     return n > 0 && (size_t)n < cap;
+}
+
+bool ls_ota_github_url(const char *url, char *out, size_t cap)
+{
+    static const char HTTPS[] = "https://";
+    if (!url || !out || !cap || strncmp(url, HTTPS, sizeof(HTTPS) - 1)) return false;
+    const char *host = url + sizeof(HTTPS) - 1;
+    const size_t hl = strcspn(host, "/?#");
+    if (!((hl == strlen(LS_OTA_HOST_PRIMARY) && !memcmp(host, LS_OTA_HOST_PRIMARY, hl)) ||
+          (hl == strlen(LS_OTA_HOST_FALLBACK) && !memcmp(host, LS_OTA_HOST_FALLBACK, hl))))
+        return false;
+    const char *path = host + hl;
+    while (*path == '/') path++;
+    const size_t pl = strcspn(path, "?#");
+    const size_t base = strlen(LS_OTA_GITHUB_LATEST);
+    if (!pl || path[pl - 1] == '/' || base + pl + 1 > cap) return false;
+    memcpy(out, LS_OTA_GITHUB_LATEST, base);
+    size_t n = base;
+    for (size_t i = 0; i < pl; i++) {
+        if (path[i] == '/' && n > base && out[n - 1] == '-') continue;   /* a//b is a-b */
+        out[n++] = path[i] == '/' ? '-' : path[i];
+    }
+    out[n] = 0;
+    return true;
 }
 
 bool ls_ota_verify_any(size_t nkeys, ls_ota_key_fn verify, void *ctx)
@@ -300,7 +325,7 @@ bool ls_ota_notice_new(const char *newer, const char *announced)
 bool ls_ota_toast_text(const char *version, char *out, size_t cap)
 {
     if (!version || !version[0] || !out || !cap) return false;
-    const int n = snprintf(out, cap, "%s available: SYSTEM > UPDATE", version);
+    const int n = LS_SNPRINTF(t_ls_ota_core_s_available_system_update, out, cap, "%s available: SYSTEM > UPDATE", version);
     return n > 0 && (size_t)n < cap;
 }
 

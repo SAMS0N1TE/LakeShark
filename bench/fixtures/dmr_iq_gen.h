@@ -19,9 +19,21 @@
 extern "C" {
 #endif
 
+typedef enum {
+    DMR_IQ_RAMP = 0,     /* raised-cosine step confined to 30% of a symbol */
+    DMR_IQ_RRC,          /* root raised cosine, alpha 0.2, as ETSI 5.1.1   */
+} dmr_iq_shape_t;
+
 typedef struct {
     float noise_sd;      /* per-component, in LSB of the 8-bit sample */
     float freq_off_hz;   /* carrier error the receiver has to live with */
+    /* Only read by dmr_iq_render_stream(). */
+    dmr_iq_shape_t shape;
+    int   invert;        /* transmit the spectrum the other way round     */
+    float clock_ppm;     /* transmitter symbol clock error                 */
+    float cn_db;         /* carrier to noise in 12.5 kHz; overrides noise_sd
+                            when non-zero                                  */
+    float start_sym;     /* first symbol's offset from sample 0, symbols   */
 } dmr_iq_channel_t;
 
 /* Render `bits` (MSB first in bits[0]) as 4FSK and append the IQ to `iq`.
@@ -34,6 +46,26 @@ int dmr_iq_render_bits(const uint8_t *bits, int n_bits,
  * trackers settle before a burst arrives. */
 int dmr_iq_render_idle(int symbols, const dmr_iq_channel_t *ch,
                        ls_rng_t *rng, uint8_t *iq, int iq_max);
+
+/* Symbol-stream building. Each appends deviations in Hz to `dev` at `at` and
+ * returns the new length, or -1 if `max` would be exceeded. */
+int dmr_iq_dev_bits(float *dev, int at, int max, const uint8_t *bits, int n_bits);
+int dmr_iq_dev_idle(float *dev, int at, int max, int symbols);
+/* Random dibits, what a payload looks like to the timing loop. */
+int dmr_iq_dev_random(float *dev, int at, int max, int symbols, ls_rng_t *rng);
+/* No carrier at all - the gap a mobile leaves between its bursts, where
+ * the discriminator sees only noise. */
+#define DMR_IQ_OFF 1.0e9f
+int dmr_iq_dev_off(float *dev, int at, int max, int symbols);
+
+/* Render a whole symbol stream as float IQ at 240 kHz, interleaved, nominal
+ * amplitude 0.7 - what dsp_process_float_iq() takes, which is the LR2021
+ * path. Shaping is filtered across the whole stream, so the filter tails of
+ * one burst run into the next the way they do on air. Returns complex
+ * samples written, or 0 if `max_pairs` is too small. */
+int dmr_iq_render_stream(const float *dev, int n_sym,
+                         const dmr_iq_channel_t *ch, ls_rng_t *rng,
+                         float *iq, int max_pairs);
 
 #ifdef __cplusplus
 }

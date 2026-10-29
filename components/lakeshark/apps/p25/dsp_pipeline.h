@@ -99,8 +99,10 @@ typedef struct {
     float  ft_prev_i;
     float  ft_prev_q;
 
-    double nco_phase;
-    double nco_step_rad;
+    /* float: the P4's FPU is single precision, and this runs at 240 kHz. A
+       256-entry table needs nowhere near double's resolution. */
+    float nco_phase;
+    float nco_step_rad;
     double nco_dc_avg;
 
     float  c4fm_dc_avg;

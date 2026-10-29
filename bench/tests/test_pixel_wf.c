@@ -32,6 +32,47 @@ void ls_panel_fb_present_rows(int y0, int y1) {
 
 static const ls_pwf_stop_t STOPS[] = {{0, 0, 0, 0}, {80, 0, 40, 200}, {160, 0, 220, 90},
                                       {220, 250, 220, 0}, {255, 255, 255, 255}};
+
+LS_CASE(colour_setup_tracks_contents_range_count_and_large_palettes)
+{
+    ls_pwf_t p = {0};
+    ls_pwf_stop_t stops[17];
+    for (int n = 1; n <= 17; n++) {
+        for (int i = 0; i < n; i++)
+            stops[i] = (ls_pwf_stop_t){(uint8_t)(i * 255 / (n > 1 ? n - 1 : 1)),
+                                      (uint8_t)(i * 51), (uint8_t)(255 - i * 9), (uint8_t)(i * 17)};
+        for (int change = 0; change < 8; change++) {
+            const float lo = change == 1 ? -40 : change == 2 ? 40 : 0;
+            const float hi = change == 3 ? 128 : change == 4 ? 0 : 255;
+            /* Same storage, changed fields: retaining only the pointer loses
+               live theme/palette updates from the RF caller's stack. */
+            if (change >= 5) {
+                stops[n / 2].r ^= 0xff;
+                stops[n / 2].g ^= 0x55;
+                stops[n / 2].b ^= 0xaa;
+            }
+            ls_pwf_t cold = {0};
+            ls_pwf_colours(&cold, stops, n, lo, hi);
+            uint16_t previous[256];
+            memcpy(previous, p.lut, sizeof(previous));
+            p.redraw = false;
+            ls_pwf_colours(&p, stops, n, lo, hi);
+            LS_CHECK(!memcmp(p.lut, cold.lut, sizeof(p.lut)));
+            LS_EQ_INT(p.redraw, memcmp(previous, cold.lut, sizeof(previous)) != 0);
+            p.redraw = false;
+            ls_pwf_colours(&p, stops, n, lo, hi);
+            LS_CHECK(!p.redraw && !memcmp(p.lut, cold.lut, sizeof(p.lut)));
+        }
+    }
+    /* Stop positions can change without changing their number or address. */
+    ls_pwf_colours(&p, STOPS, 5, 0, 255);
+    memcpy(stops, STOPS, sizeof(STOPS));
+    stops[1].at++;
+    ls_pwf_t cold = {0};
+    ls_pwf_colours(&cold, stops, 5, 0, 255);
+    ls_pwf_colours(&p, stops, 5, 0, 255);
+    LS_CHECK(!memcmp(p.lut, cold.lut, sizeof(p.lut)));
+}
 static uint32_t s_line;
 /* A line that differs from every other: a moving tone over a textured floor. */
 static void push(ls_pwf_t *p)

@@ -8,6 +8,7 @@
  */
 #include "ls_panel.h"
 #include "ls_board.h"
+#include "ls_textpack.h"
 
 #if defined(LS_BOARD_PANEL_RM69A10) || defined(LS_BOARD_PANEL_HI8561)
 #if defined(LS_BOARD_PANEL_HI8561)
@@ -134,15 +135,15 @@ void ls_panel_diagnostics(void)
     const uint32_t a = ls_panel_refresh_count();
     vTaskDelay(pdMS_TO_TICKS(1000));
     const uint32_t b = ls_panel_refresh_count();
-    printf("panel: %lu refreshes, %lu in the last second, framebuffer %s\n",
+    LS_PRINTF(t_ls_panel_panel_lu_refreshes_lu, "panel: %lu refreshes, %lu in the last second, framebuffer %s\n",
            (unsigned long)b, (unsigned long)(b - a),
            s_frames[s_back] ? "ready" : "missing");
-    printf("panel: late=%lu max_gap=%lu us expected=%lu us at=%lu us\n",
+    LS_PRINTF(t_ls_panel_panel_late_lu_max, "panel: late=%lu max_gap=%lu us expected=%lu us at=%lu us\n",
            (unsigned long)__atomic_load_n(&s_late_frames, __ATOMIC_RELAXED),
            (unsigned long)__atomic_load_n(&s_max_gap_us, __ATOMIC_RELAXED),
            (unsigned long)s_frame_us,
            (unsigned long)__atomic_load_n(&s_max_gap_at_us,__ATOMIC_RELAXED));
-    printf("panel: pixel_clock=%u MHz performance=%u\n",s_pixel_clock_mhz,cell_performance_active());
+    LS_PRINTF(t_ls_panel_panel_pixel_clock_u, "panel: pixel_clock=%u MHz performance=%u\n",s_pixel_clock_mhz,cell_performance_active());
 }
 
 #if defined(LS_BOARD_PANEL_HI8561)

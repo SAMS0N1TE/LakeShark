@@ -71,54 +71,187 @@ written by the same hand that wrote the decoder has not been tested.
 
 ## DMR
 
-The DMR stack - sync detection, framer, Golay slot type, BPTC, link control -
-had no caller outside its own tests. Nothing fed it a symbol.
-
 DMR is 4FSK at 4800 symbols per second, the same rate as C4FM P25, so every
-DMR burst on a channel already passes through the P25 frame-sync hunt and is
-discarded. `getFrameSync()` now offers each symbol, with the slicer thresholds
-it was measured against, to an observer. `dmr_watch` attaches to that and
-frames both polarities at once, because which way round the discriminator sits
-is not known in advance.
+DMR burst on a channel already passes through the P25 receiver and is
+discarded. `dmr_watch` reads it on the way past. It never steers the radio
+and touches no P25 state.
 
-The seam is a function pointer, not a direct call, so the P25 sources do not
-gain a link dependency on every decoder that wants a copy of the stream. The
-observer steers nothing and touches no P25 state.
+### Where it gets its symbols
+
+It used to be offered each symbol the P25 frame-sync hunt sliced, through an
+observer in `getFrameSync()`. That only ran while P25 was hunting, used a
+symbol clock tuned for P25, and could not be tested from IQ, because driving
+`getSymbol()` needs the `dsd_opts`/`dsd_state` the frame-sync loop owns.
+
+Now the P25 receive loop hands `dmr_watch_samples()` the C4FM discriminator
+output - 48 kHz, after the RRC matched filter, exactly what goes into the
+P25 sample ring - and the watcher recovers its own timing (`dmr_symsync.c`):
+
+- a Gardner detector on linearly interpolated strobes, which needs no
+  decisions and so works before the levels are known, with a period term held
+  within 0.5% of 10 samples a symbol;
+- the +3 and -3 levels tracked from outer-symbol decisions, the DC between
+  them, so a carrier offset moves both and is followed. A side of the eye
+  that has stopped seeing outer symbols - what noise before a mobile keys up
+  leaves behind - snaps to the extreme of the last 16 symbols.
+
+A burst is not found by the bit framer on this path. Every symbol, the last
+24 strobe values in the sync slot are correlated against the base station and
+mobile sync shapes, normalised so neither levels nor DC matter (the sync is
+twelve +3 and twelve -3). A local peak above 0.6 is a candidate: the watcher
+lays a straight symbol grid through the sync, tries each half-sample phase
+within half a symbol, keeps the one that opens the eye widest across the
+sync, takes the levels from it and re-slices the whole 288-bit window. The
+candidate is a burst only if the re-sliced sync then matches within 5 of 48
+bits - the framer's own test. The grid is straight because a loop still
+pulling in from noise wanders by most of a symbol across the 54 symbols ahead
+of the sync, where 100 ppm of clock error moves a straight line by a
+seventieth of one. What the sync measured is fed back: all of the levels,
+half of the phase.
+
+The observer seam in the P25 sources is still there; `lakeshark_backend.c`
+now sets it to NULL so the watcher is never fed from two tasks.
+`dmr_watch_symbol()` still works for anything that wants to hand it sliced
+symbols (the symbol-level tests do).
+
+### Polarity
+
+DMR's voice and data syncs are each other's negation: BS voice through an
+inverted discriminator is BS data, symbol for symbol, and the same for MS. So
+a sync cannot say which way round the receiver is. Both readings are framed,
+counted once, and the first checked block - an LC, CSBK or data header CRC,
+or an embedded LC - fixes the polarity. After that the other reading only gets
+a quiet look for a checked block of its own.
+
+The second framer this replaced complemented both bits of each dibit, which
+turns +3 into -1. No receiver does that, and a burst that really arrived
+upside down could never have framed - the old test fed it bits inverted the
+same wrong way, so it agreed with itself.
+
+### What is decoded
+
+- **Full LC** (voice header, terminator): RS(12,9) checked under the
+  data-type mask, and if that fails, one octet corrected. The two are counted
+  apart (`lc`, `rs-fixed`).
+- **Voice superframes**: burst A has the sync; B-F do not, so they are read
+  576 bits on from A, one frame each. On the sample path they are re-sliced
+  too, on a straight line through the loop's strobes across their own window,
+  moved by the correction A's sync measured, at A's eye height and the
+  tracker's centre. Sliced on the raw strobes and tracked levels, the
+  embedded fragments came out wrong on a noiseless signal: an idle burst's
+  ninety-odd +1 symbols in the other slot narrowed the tracker's eye. EMB is checked as QR(16,7,6) (the
+  (17,9) quadratic residue generator shortened to 15 bits plus even parity;
+  only codewords within one bit are followed). B-E's fragments are joined by
+  LCSS into the embedded LC: seven Hamming(16,11,4) rows, column parity and
+  the 5-bit checksum.
+- **Talker alias** (FLCO 4 header, 5-7 blocks; 7-bit, ISO 8859-1, UTF-8,
+  UTF-16BE) and **GPS Info** (FLCO 8) from either kind of LC.
+- **CSBK**: BS outbound activation, unit-to-unit voice request and answer,
+  preamble, with names for channel timing and NACK; others by opcode.
+- **Data header**: format, SAP, group/individual, source and destination,
+  blocks to follow, and class/type/status for a response. The blocks that
+  follow are not reassembled.
+
+### Calls
+
+Per slot: source, destination, group or private, colour code, encrypted,
+start, last burst, end and why - terminator, 1.5 s without a burst, or a
+different talker taking the slot. A call first heard through its embedded LC
+is marked late entry; one whose identity needed RS correction is marked
+until an exact LC arrives. Alias and GPS belong to the call. A mobile has no
+CACH, so mobile slots are numbered by timing: the first heard is slot 1, one
+half a frame off it slot 2.
+
+There is no DMR call archive; the call archive is P25's.
 
 ### `dmr`
 
-Read-only. Reports symbols seen, bursts framed, Slot Type and BPTC outcomes,
-the last burst's class and colour code, and the last link control.
+Read-only. The text comes from `dmr_watch_format()`, so the bench tests it.
+From `test_dmr_calls`, which feeds symbols with the clock frozen - on the
+board `timing=own` and the call has a duration:
 
-**Only the link control counts as evidence.** A sync match inside its 5-bit
+    dmr symbols=9216 bursts=39 slot_type=34 bptc ok=1 fail=0 lc=1
+    checked: lc rs-fixed=0 embedded=5 (fail 0) csbk=0 data hdr=0 voice B-F=25
+    last burst: BS data errors=0 cc=5 polarity=normal timing=P25
+    last LC: flco=0 fid=0 src=2621441 dst=9 opts=0x00
+    slot 1: LIVE group 2621441 -> TG 9 cc=5 0.0s
+            alias "N0CALL Bob"
+            gps 52.52000 13.40500 err=1
+    slot 2: no call
+    verdict: DMR - 1 link control block(s) decoded
+
+**Only link control counts as evidence.** A sync match inside its 5-bit
 threshold happens on noise; the Slot Type's Golay accepts about a third of
 random words inside its correction radius; and BPTC corrects its way to a
 clean block often enough to have done so on a P25 channel on this bench. The
-RS parity behind the link control is 24 bits checked against a data-type mask,
-which noise does not pass. The verdict line says which number to read:
+RS parity behind a full link control is 24 bits checked against a data-type
+mask, which noise does not pass, so one exact LC is enough. A corrected LC
+passes about one random word in 5500 and an embedded LC rests on a 5-bit
+checksum behind its Hamming rows, so one of those is not - two are. CSBK and
+data header CRCs are 16 bits; they are shown and set the polarity, but are
+not counted. With nothing checked the line is unchanged:
 
     verdict: no DMR - 35 sync hit(s), 1 through BPTC, none carried a valid
     link control
 
 That is the correct answer for 154.7850, which is P25.
 
+### Measured
+
+`test_dmr_sweep` renders 40 voice LC headers as RRC-shaped 4FSK IQ (alpha
+0.2, as ETSI specifies) with Gaussian noise, runs them through the board's
+C4FM demodulator and the watcher, and prints raw BER and LC success against
+C/N in 12.5 kHz. LC decode holds at 90% or better from:
+
+| Stream | 0 Hz | +1 kHz | -1 kHz |
+|---|---|---|---|
+| repeater (BS sync, CACH, continuous) | 8 dB | 8 dB | 8 dB |
+| mobile (one slot keyed, no CACH) | 7 dB | | |
+
+A call joined late, identified only by its embedded LC (six superframes a
+point, five of six or better): 11 dB. Four bursts' fragments have to come
+through Hamming(16,11) a row at a time with no BPTC behind them, so it sits
+above the full LC.
+
+`test_dmr_over_iq` frames and decodes from IQ, asserting exact LCs and the
+right identity, clean; inverted; at +-1 kHz with 20 dB C/N; inverted at
+-1 kHz, 18 dB, 100 ppm clock error and a fractional start together; a
+mobile burst out of 400 symbols of no carrier; a call joined mid-superframe,
+either way up, identified from all three of its embedded LCs; and the older
+ramp-shaped unsigned 8-bit fixture this test used to sample at one fixed
+phase. An idle carrier and dead air produce nothing.
+
+At 0 Hz the raw BER floors near 1e-3 where at +-1 kHz it reaches zero. That
+is upstream of DMR - most likely the pipeline's IQ DC blocker taking part of
+an FM carrier that sits on DC - and BPTC absorbs it, but it would cost
+anything uncoded.
+
 ### Not proven
 
-The board has never been pointed at an actual DMR transmitter. Everything
-below the symbol stream is tested; the RF path is not.
+The board has never been pointed at an actual DMR transmitter. Every number
+above comes from IQ this bench generated, through the real demodulator; the
+RF path, a real transmitter's deviation and filtering, and the LR2021's own
+front end are not in it.
 
-Framing from IQ is also not proven. Symbol timing recovery lives in
-`getSymbol()`, which needs the `dsd_opts`/`dsd_state` the frame-sync loop
-owns. `test_dmr_over_iq` subsamples at a fixed phase instead, which leaves
-about 7% of bits wrong on a noiseless signal - marginal against a 48-bit sync
-match - so it asserts that the burst is recoverable at the right polarity, not
-that it frames. `test_dmr_watch` covers framing, from symbols.
+The vectors for RS, BPTC and Slot Type come from MMDVM-Host's encoders (see
+`bench/fixtures/dmr_reference_vectors.md`). Those for CSBK, data header,
+talker alias, GPS and the embedded LC were built from the ETSI field layouts
+in a separate script, with Python's own CRC-CCITT - independent of these
+decoders' code, not of this reading of the standard. Talker alias's octet
+formats starting on the octet after the length field is that reading; so is
+the checksum's bit order in the embedded LC.
+
+Not decoded: AMBE+2 voice (patent-encumbered, deliberately absent), the
+data blocks after a data header, CACH short LC, Tier III and manufacturer
+CSBKs beyond their opcode, and privacy beyond the service-options bit.
 
 Two things that cost time and are worth knowing: the C4FM path needs the gain
 the P25 app computes, `-9000`. At unity the discriminator output rounds to
 zero and the pipeline returns silence, which reads exactly like a dead
-demodulator. And that gain is negative, so C4FM arrives inverted - which is
-what the second framer is for.
+demodulator. And that gain is negative. Through it, the bench's +1944 Hz
+symbol comes out positive - normal polarity - but which way round a real
+transmitter arrives through the LR2021 has not been seen, which is one more
+reason polarity is settled by content rather than assumed.
 
 ## Radios at boot
 

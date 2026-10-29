@@ -18,8 +18,9 @@
 extern "C" {
 #endif
 
-extern const ls_app_doc_t ls_doc_detector;
+extern const ls_app_doc_t ls_doc_meters;
 extern const ls_app_doc_t ls_doc_sweep;
+extern const ls_app_doc_t ls_doc_tmach;
 extern const ls_app_doc_t ls_doc_drones;
 extern const ls_app_doc_t ls_doc_home;
 extern const ls_app_doc_t ls_doc_music;
@@ -34,6 +35,8 @@ extern const ls_app_doc_t ls_doc_experiments;
 extern const ls_app_doc_t ls_doc_journal;
 extern const ls_app_doc_t ls_doc_notes;
 extern const ls_app_doc_t ls_doc_compass;
+extern const ls_app_doc_t ls_doc_rfsurvey;
+extern const ls_app_doc_t ls_doc_fox;
 extern const ls_app_doc_t ls_doc_rec;
 extern const ls_app_doc_t ls_doc_subghz;
 extern const ls_app_doc_t ls_doc_files;

@@ -7,6 +7,7 @@
 #include "esp_timer.h"
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 static EXT_RAM_BSS_ATTR ais_vessel_t opened, vessels[AIS_VESSELS];
 static EXT_RAM_BSS_ATTR ls_gps_state_t gps;
 static EXT_RAM_BSS_ATTR int rows[AIS_VESSELS];
@@ -118,27 +119,27 @@ void fm_ais_draw(tui_surface *sf, tui_rect a)
     if (detail) {
         bool found = false;
         for (int i = 0; i < count; ++i) if (vessels[i].mmsi == opened.mmsi) { opened = vessels[i]; found = true; break; }
-        if (!found) { line(sf, list, 4, "Vessel expired / BACK returns to list", LS_ATTR_DIM); return; }
+        if (!found) { line(sf, list, 4, LS_TEXT(t_fm_ais_view_vessel_expired_back_returns, "Vessel expired / BACK returns to list"), LS_ATTR_DIM); return; }
         double km, brg; visible(&opened, &o, now, &km, &brg);
         snprintf(b, sizeof(b), "%s / %09lu", opened.name[0] ? opened.name : "VESSEL", (unsigned long)opened.mmsi);
         line(sf, list, 4, b, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
-        snprintf(b, sizeof(b), "%s / type %u / call %s", opened.message == 4 ? "BASE STATION" : type_name(opened.ship_type),
+        LS_SNPRINTF(t_fm_ais_view_s_type_u_call, b, sizeof(b), "%s / type %u / call %s", opened.message == 4 ? "BASE STATION" : type_name(opened.ship_type),
                  opened.ship_type, opened.callsign[0] ? opened.callsign : "--");
         line(sf, list, 5, b, LS_ATTR_DIM);
-        if (opened.position) snprintf(b, sizeof(b), "%.5f / %.5f / pos %llds", opened.lat, opened.lon, (long long)((now-opened.position_us)/1000000));
-        else snprintf(b, sizeof(b), "Position unavailable");
+        if (opened.position) LS_SNPRINTF(t_fm_ais_view_5f_5f_pos_llds, b, sizeof(b), "%.5f / %.5f / pos %llds", opened.lat, opened.lon, (long long)((now-opened.position_us)/1000000));
+        else LS_SNPUTS(t_fm_ais_view_position_unavailable, b, sizeof(b), "Position unavailable");
         line(sf, list, 6, b, LS_ATTR_DIM);
         motion(&opened, speed, sizeof(speed));
         if (opened.heading < 360) snprintf(b, sizeof(b), "%s / HDG %03u", speed, opened.heading);
         else snprintf(b, sizeof(b), "%s / HDG ---", speed);
         line(sf, list, 7, b, LS_ATTR_DIM);
-        if (km >= 0) snprintf(b, sizeof(b), "%.1f km / %03.0f %s / %llds ago", km, brg, ls_geo_compass(brg), (long long)((now-opened.heard_us)/1000000));
-        else snprintf(b, sizeof(b), "Range needs fresh GPS / %llds ago", (long long)((now-opened.heard_us)/1000000));
+        if (km >= 0) LS_SNPRINTF(t_fm_ais_view_1f_km_03_0f, b, sizeof(b), "%.1f km / %03.0f %s / %llds ago", km, brg, ls_geo_compass(brg), (long long)((now-opened.heard_us)/1000000));
+        else LS_SNPRINTF(t_fm_ais_view_range_needs_fresh_gps, b, sizeof(b), "Range needs fresh GPS / %llds ago", (long long)((now-opened.heard_us)/1000000));
         line(sf, list, 8, b, LS_ATTR_DIM);
         static const char *const nav[] = { "UNDER WAY / ENGINE", "AT ANCHOR", "NOT UNDER COMMAND", "RESTRICTED MANOEUVRE",
             "CONSTRAINED BY DRAUGHT", "MOORED", "AGROUND", "FISHING", "UNDER WAY / SAIL", "RESERVED", "RESERVED",
             "TOWING ASTERN", "PUSHING / TOWING", "RESERVED", "AIS SART", "UNAVAILABLE" };
-        snprintf(b, sizeof(b), "NAV %s / %s / MSG %u", nav[opened.nav_status & 15], opened.channel ? "88B" : "87B", opened.message);
+        LS_SNPRINTF(t_fm_ais_view_nav_s_s_msg, b, sizeof(b), "NAV %s / %s / MSG %u", nav[opened.nav_status & 15], opened.channel ? "88B" : "87B", opened.message);
         line(sf, list, 9, b, LS_ATTR_DIM);
         snprintf(b, sizeof(b), "DEST %s", opened.destination[0] ? opened.destination : "--"); line(sf, list, 10, b, LS_ATTR_DIM);
         return;
@@ -160,7 +161,7 @@ void fm_ais_draw(tui_surface *sf, tui_rect a)
         snprintf(b, sizeof(b), "  %s %s %lldm", speed, distance, (long long)((now-p->heard_us)/60000000));
         line(sf, list, 5+2*(i-start), b, attr);
     }
-    if (!row_count) line(sf, list, 4, "Waiting for AIS / 9600 GMSK", LS_ATTR_DIM);
+    if (!row_count) line(sf, list, 4, LS_TEXT(t_fm_ais_view_waiting_for_ais_9600, "Waiting for AIS / 9600 GMSK"), LS_ATTR_DIM);
 }
 static void open(void)
 {

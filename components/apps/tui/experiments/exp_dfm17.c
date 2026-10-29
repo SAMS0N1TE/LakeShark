@@ -27,6 +27,7 @@
 #include "ls_gps.h"
 #include "ls_lora.h"
 #include "settings.h"
+#include "ls_textpack.h"
 
 #define MHZ_LO 400.0
 #define MHZ_HI 406.0
@@ -268,7 +269,7 @@ static void publish_tried(int64_t now)
 static bool dfm17_start(char *why, size_t n)
 {
     const uint32_t caps = ls_lora_caps();
-    if (!(caps & LS_LORA_CAP_FSK)) { snprintf(why, n, "No FSK receiver on this chip"); return false; }
+    if (!(caps & LS_LORA_CAP_FSK)) { LS_SNPUTS(t_exp_dfm17_no_fsk_receiver_on, why, n, "No FSK receiver on this chip"); return false; }
     s_auto_run = s_auto;
     s_filter_run = s_filter >= 0 && s_filter < N_FILTERS ? s_filter : 1;
     s_listening = s_scanning = false;
@@ -298,7 +299,7 @@ static bool dfm17_start(char *why, size_t n)
     } else {
         err = listen_on(s_hz, false);
         if (err != ESP_OK) {
-            snprintf(why, n, "%.3f MHz refused: %s", s_hz / 1e6, esp_err_to_name(err));
+            LS_SNPRINTF(t_exp_dfm17_3f_mhz_refused_s, why, n, "%.3f MHz refused: %s", s_hz / 1e6, esp_err_to_name(err));
             return false;
         }
         s_dwell_t = now;
@@ -589,7 +590,7 @@ static bool dfm17_configure(int argc, char **argv, char *why, size_t n)
         return true;
     }
     if (argc != 1 || !parse_mhz(argv[0], &mhz)) {
-        snprintf(why, n, "a frequency, %.0f-%.0f MHz, or auto", MHZ_LO, MHZ_HI);
+        LS_SNPRINTF(t_exp_dfm17_a_frequency_0f_0f, why, n, "a frequency, %.0f-%.0f MHz, or auto", MHZ_LO, MHZ_HI);
         return false;
     }
     s_hz = (uint32_t)(mhz * 1e6 + 0.5);

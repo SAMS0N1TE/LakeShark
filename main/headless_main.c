@@ -2,7 +2,12 @@
 #include "tui/ls_rid.h"
 #include "tui/ls_drone_watch.h"
 #include "tui/ls_sweep_app.h"
-#include "tui/ls_detector.h"
+#include "tui/ls_observation_export.h"
+#include "tui/ls_rx_plan_console.h"
+#include "tui/ls_coverage_export.h"
+#include "tui/ls_rfs_run.h"
+#include "tui/ls_fox_run.h"
+#include "tui/ls_rfsim.h"
 #include <string.h>
 #include "ls_trail.h"
 #include <strings.h>
@@ -14,6 +19,7 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "esp_log.h"
+#include "esp_intr_alloc.h"
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"
 #include "esp_console.h"
@@ -45,6 +51,8 @@
 #include "fm_state.h"
 #include "acars_app.h"
 #include "fm_mode_label.h"
+#include "fm_hf.h"
+#include "ls_radio_hf.h"
 #include "audio_out.h"
 #include "tone.h"
 #include "flipper_link.h"
@@ -60,6 +68,7 @@
 #include "tui/ls_map.h"
 /**/
 #include "radio_health.h"
+#include "radio_frontend.h"
 #include "rtlsdr_dev.h"
 #include "usb_boot_retry.h"
 /* rtlsdr_stream_* live here; esp_libusb.h is private to the radio component. */
@@ -104,6 +113,7 @@
 #include "tui/ls_field.h"
 #include "tui/ls_compass_live.h"
 #include "tui/ls_df_sources.h"
+#include "ls_textpack.h"
 
 static const char *TAG = "headless";
 
@@ -597,7 +607,7 @@ static int cmd_p2(int argc,char **argv)
               (!strcmp(argv[2],"on") || !strcmp(argv[2],"off"))) {
         p25_set_phase2_follow(!strcmp(argv[2],"on"));
     } else if(argc>1 && strcmp(argv[1],"status")) {
-        printf("p2 on|off|status|follow on|off|config <WACN hex> <SYS hex> <NAC hex> <slot 1-2>\n");return 1;
+        LS_FPUTS(msg_headless_main_p2_on_off_status, "p2 on|off|status|follow on|off|config <WACN hex> <SYS hex> <NAC hex> <slot 1-2>\n", stdout);return 1;
     }
     char text[256];p25_p2_describe(text,sizeof(text));printf("p2: %s\n",text);
     p25_p2_follow_describe(text,sizeof(text));printf("p2: %s\n",text);return 0;
@@ -617,7 +627,7 @@ static int cmd_status(int argc, char **argv)
         reported_hz = rx.effective_center_known ? rx.effective_center_hz : 0;
         if (rx.effective_gain_known) reported_gain = rx.effective_gain_tenths_db;
     }
-    printf("mode=%s  freq=%.4f MHz  vol=%d  gain=%.1f dB  mute=%d  fmmode=%s  "
+    LS_PRINTF(fmt_headless_main_mode_freq_mhz_vol, "mode=%s  freq=%.4f MHz  vol=%d  gain=%.1f dB  mute=%d  fmmode=%s  "
            "feed=%s  free_int=%u  free_psram=%u  screen_lock=%s  scan=%s  gps_filter=%s\n",
            reported_mode, reported_hz / 1e6,
            audio_volume_get(), reported_gain / 10.0,
@@ -635,7 +645,7 @@ static int cmd_status(int argc, char **argv)
                (unsigned long)as->n_bad_crc, (unsigned long)as->n_synced);
     }
     if (FM.mode == FM_MODE_LISTEN || FM.mode == FM_MODE_AM)
-        printf("listen: lr=%d iq=%d%% audio=%d%% squelch=%s noise=%d\n", (int)FM.lr_iq_active,
+        LS_PRINTF(fmt_headless_main_listen_lr_iq_noise, "listen: lr=%d iq=%d%% audio=%d%% squelch=%s noise=%d\n", (int)FM.lr_iq_active,
                (int)(FM.iq_level * 100.0f), (int)(FM.audio_level * 100.0f),
                FM.squelch_open ? "open" : "shut", (int)(FM.noise * 1000.0f));
     /**/
@@ -665,8 +675,8 @@ static int cmd_hackrf(int argc, char **argv)
 static int cmd_rtl(int argc, char **argv)
 {
     if (argc >= 2 && !strcmp(argv[1], "detach")) {
-        printf("simulating a dongle detach - the device object will be torn down.\n"
-               "A VBUS cycle, a root-port reset ('rtl reset') or a replug brings it back.\n");
+        LS_FPUTS(msg_headless_main_simulating_a_dongle_detach, "simulating a dongle detach - the device object will be torn down.\n"
+               "A VBUS cycle, a root-port reset ('rtl reset') or a replug brings it back.\n", stdout);
         /* Park and free BEFORE marking the device gone, which is what 's rtlsdr_dev_teardown() exists to do. */
 
         rtlsdr_dev_teardown();
@@ -685,7 +695,7 @@ static int cmd_rtl(int argc, char **argv)
             return 0;
         }
         if (r == SDRPWR_NOTHING_ENUMERATED) {
-            printf("nothing is enumerated on the USB host port for a %s to act "
+            LS_PRINTF(fmt_headless_main_nothing_is_enumerated_on, "nothing is enumerated on the USB host port for a %s to act "
                    "on - replug the dongle\n", SDR_CYCLE_NOUN);
             return 0;
         }
@@ -715,13 +725,13 @@ static int cmd_feed(int argc, char **argv)
 static int cmd_fm(int argc, char **argv)
 {
     if (argc < 2) {
-        printf("fm submode=%s (listen|scan|pocsag|wfm|am|acars|flex|same|aprs|ais)\n",
+        LS_PRINTF(fmt_headless_main_fm_submode_listen_scan, "fm submode=%s (listen|scan|pocsag|wfm|am|acars|flex|same|aprs|ais)\n",
                fm_mode_command_name((fm_mode_t)lakeshark_fm_get_mode()));
         return 0;
     }
     fm_mode_t mode;
     if (!fm_mode_parse(argv[1], &mode)) {
-        printf("usage: fm listen|scan|pocsag|wfm|am|acars|flex|same|aprs|ais\n");
+        LS_FPUTS(msg_headless_main_usage_fm_listen_scan, "usage: fm listen|scan|pocsag|wfm|am|acars|flex|same|aprs|ais\n", stdout);
         return 0;
     }
     if (s_mode != FM_IDX) select_mode(FM_IDX);
@@ -731,6 +741,94 @@ static int cmd_fm(int argc, char **argv)
     lakeshark_fm_set_mode((int)mode);
     pa_on();
     printf("mode=FM submode=%s\n", fm_mode_command_name(mode));
+    return 0;
+}
+
+/* `hf` - shortwave on the FM app's AM mode (fm_hf.h). One status line with
+   no arguments; `hf <kHz> [am|sam|usb|lsb|cw|ssb]` tunes, the band plan's
+   demod when none is named; the rest set one thing each. */
+static void hf_status(void)
+{
+    const fm_hf_settings_t *h = fm_hf_get();
+    ls_iq_control_status_t st;
+    fm_get_receiver_status(&st);
+    const bool am = lakeshark_fm_get_mode() == FM_MODE_AM;
+    const uint32_t hz = lakeshark_fm_get_freq();
+    const int band = fm_hf_band_find(hz);
+    LS_PRINTF(fmt_headless_main_hf_khz_hz_rit, "HF %s %.3f kHz %s %lu Hz rit=%+d pitch=%u agc=%s nb=%s step=%lu "
+           "band=%s rx=%s centre=%.3f kHz rtl=%s%s lvl=%.1f dBFS gain=%.0f dB "
+           "sam=%+.1f Hz blanked=%lu sql=%d.%d%% %s\n",
+           am && fm_hf_chain(true, hz, h->demod) ? "on" : "off", hz / 1e3,
+           fm_hf_demod_label(h->demod), (unsigned long)fm_hf_filter_hz(h), h->rit_hz,
+           h->pitch_hz, fm_hf_agc_label(h->agc), fm_hf_nb_label(h->nb),
+           (unsigned long)fm_hf_step_at(hz), band >= 0 ? fm_hf_band(band)->name : "-",
+           st.receiver_streaming ? "streaming" : "stopped",
+           st.effective_center_known ? st.effective_center_hz / 1e3 : 0.0,
+           ls_rtl_path_name((ls_rtl_path_t)rtl_adapter_hf_path()),
+           rtl_adapter_blog_v4() ? "(BlogV4)" : "",
+           FM.hf_active ? FM.hf_level_db : -150.0f, FM.hf_gain_db, FM.hf_sam_hz,
+           (unsigned long)FM.hf_blanked, lakeshark_fm_squelch_get() / 10,
+           lakeshark_fm_squelch_get() % 10, FM.squelch_open ? "open" : "mute");
+}
+
+static int cmd_hf(int argc, char **argv)
+{
+    if (argc < 2 || !strcmp(argv[1], "status")) { hf_status(); return 0; }
+    const char *k = argv[1];
+    if (!strcmp(k, "bands")) {
+        for (int i = 0; i < fm_hf_band_count(); ++i) {
+            const fm_hf_band_t *b = fm_hf_band(i);
+            printf("%2d %-10s %8.1f-%-8.1f kHz %s\n", i, b->name, b->lo_hz / 1e3,
+                   b->hi_hz / 1e3, fm_hf_demod_label(b->demod));
+        }
+        return 0;
+    }
+    if (!strcmp(k, "band") && argc >= 3) {
+        int i = -1;
+        for (int j = 0; j < fm_hf_band_count(); ++j)
+            if (!strcasecmp(argv[2], fm_hf_band(j)->name)) i = j;
+        if (i < 0) i = atoi(argv[2]);
+        if (s_mode != FM_IDX) select_mode(FM_IDX);
+        if (!fm_hf_band_apply(i)) { printf("no band %s (hf bands)\n", argv[2]); return 0; }
+        pa_on();
+    } else if (!strcmp(k, "rit") && argc >= 3) {
+        if (!strcmp(argv[2], "+")) fm_hf_rit_step(1);
+        else if (!strcmp(argv[2], "-")) fm_hf_rit_step(-1);
+        else fm_hf_set_rit(atoi(argv[2]));
+    } else if (!strcmp(k, "agc") && argc >= 3) {
+        fm_hf_set_agc(!strcasecmp(argv[2], "fast") ? 0 : !strcasecmp(argv[2], "off") ? 2 : 1);
+    } else if (!strcmp(k, "nb") && argc >= 3) {
+        fm_hf_set_nb(!strcasecmp(argv[2], "high") ? 2 : !strcasecmp(argv[2], "low") ? 1 : 0);
+    } else if (!strcmp(k, "filter") && argc >= 3) {
+        fm_hf_set_narrow(!strcasecmp(argv[2], "narrow"));
+    } else if (!strcmp(k, "pitch") && argc >= 3) {
+        fm_hf_set_pitch(atoi(argv[2]));
+    } else if (!strcmp(k, "step") && argc >= 3) {
+        fm_hf_set_step((uint32_t)atoi(argv[2]));
+    } else if (!strcmp(k, "demod") && argc >= 3) {
+        int d;
+        if (!fm_hf_demod_parse(argv[2], lakeshark_fm_get_freq(), &d)) {
+            printf("usage: hf demod am|sam|usb|lsb|cw|ssb\n"); return 0;
+        }
+        fm_hf_set_demod(d);
+    } else {
+        const double khz = atof(k);
+        const uint32_t hz = (uint32_t)(khz * 1000.0 + 0.5);
+        if (hz < LS_HF_MIN_HZ || hz > 1766000000u) {
+            LS_FPUTS(msg_headless_main_usage_hf_khz_am, "usage: hf [<kHz> [am|sam|usb|lsb|cw|ssb]] | bands | band <n|name> |"
+                   " rit <Hz|+|-> | agc fast|slow|off | nb off|low|high |"
+                   " filter wide|narrow | pitch <Hz> | step <Hz> | demod <m>\n", stdout);
+            return 0;
+        }
+        int d = FM_HF_DEMOD_COUNT;
+        if (argc >= 3 && !fm_hf_demod_parse(argv[2], hz, &d)) {
+            printf("unknown demod '%s' (am|sam|usb|lsb|cw|ssb)\n", argv[2]); return 0;
+        }
+        if (s_mode != FM_IDX) select_mode(FM_IDX);
+        fm_hf_tune(hz, d);
+        pa_on();
+    }
+    hf_status();
     return 0;
 }
 
@@ -764,7 +862,7 @@ static int cmd_freq(int argc, char **argv)
         bool valid = mhz >= 1 && mhz <= 2000;
         if (rec_watch_source() == REC_SOURCE_CC1101)
             valid = (mhz >= 300 && mhz <= 348) || (mhz >= 387 && mhz <= 464) || (mhz >= 779 && mhz <= 928);
-        if (!valid) { printf("Frequency outside recorder source range\n"); return 0; }
+        if (!valid) { LS_FPUTS(msg_headless_main_frequency_outside_recorder_source, "Frequency outside recorder source range\n", stdout); return 0; }
         rec_set_freq((uint32_t)(mhz * 1e6 + 0.5));
         printf("freq=%.4f MHz\n", rec_get_freq() / 1e6);
         return 0;
@@ -1256,7 +1354,7 @@ static void hl_sys_info(char *out, size_t len)
        the Flipper side is enough to tie an observation back to a commit. */
     ls_version_info_t vi;
     ls_version_get(&vi);
-    snprintf(out, len,
+    LS_SNPRINTF(fmt_headless_main_up_rst_ver_dirty, out, len,
              "up=%lus rst=%s ver=%s dirty=%d idf=%s int=%u dma=%u psram=%u "
              "mode=%s rtl=%d c6=%d c6fw=%s hostfw=%d.%d.%d board=%s",
              (unsigned long)up, reset_reason_name(),
@@ -1311,11 +1409,11 @@ static int cmd_link(int argc, char **argv)
            pins reads as a link that is merely switched off, and sent me
            looking for a cable that cannot exist. This board's variant header
            leaves LS_BOARD_LINK_*_GPIO undefined, so say that instead. */
-        printf("link=unsupported on this board - no link UART pins defined\n");
+        LS_FPUTS(msg_headless_main_link_unsupported_on_this, "link=unsupported on this board - no link UART pins defined\n", stdout);
         (void)cfg; (void)rx; (void)tx; (void)bad;
         return 0;
 #endif
-        printf("link=%s uart=%d rx_gpio=%d tx_gpio=%d baud=%lu tel=%dHz "
+        LS_PRINTF(fmt_headless_main_link_uart_rx_gpio, "link=%s uart=%d rx_gpio=%d tx_gpio=%d baud=%lu tel=%dHz "
                "verbose=%d  rx_lines=%lu tx_lines=%lu bad=%lu\n",
                flipper_link_running() ? "on" : "off",
                cfg.uart_num, cfg.rx_gpio, cfg.tx_gpio,
@@ -1327,7 +1425,7 @@ static int cmd_link(int argc, char **argv)
 
     if (!strcmp(argv[1], "on")) {
         if (flipper_link_running()) { printf("already on\n"); return 0; }
-        if(ls_keypad_present()) {printf("link: keyboard radios own the expansion pins\n");return 1;}
+        if(ls_keypad_present()) {LS_FPUTS(msg_headless_main_link_keyboard_radios_own, "link: keyboard radios own the expansion pins\n", stdout);return 1;}
         esp_err_t e = flipper_link_start(&cfg, &s_link_host);
         printf("link start: %s\n", esp_err_to_name(e));
     } else if (!strcmp(argv[1], "off")) {
@@ -1351,10 +1449,10 @@ static int cmd_link(int argc, char **argv)
         cfg.tx_gpio = atoi(argv[3]);
         printf("reconfigure: %s\n", esp_err_to_name(flipper_link_reconfigure(&cfg)));
     } else {
-        printf("usage: link [on|off|verbose <0|1>|baud <n>|tel <hz>|pins <rx> <tx>"
+        LS_FPUTS(msg_headless_main_usage_link_on_off, "usage: link [on|off|verbose <0|1>|baud <n>|tel <hz>|pins <rx> <tx>"
                "|scan [ms]|probe]\n"
                "  probe = pull-down continuity test: finds the head's TX wire\n"
-               "          even if it landed on the wrong header pin.\n");
+               "          even if it landed on the wrong header pin.\n", stdout);
     }
     return 0;
 }
@@ -1420,22 +1518,22 @@ static int cmd_rec(int argc, char **argv)
         }
         bool busy=rec_watch_iq_status(result,sizeof(result));printf("I/Q busy=%d %s\n",busy,result);
         busy=rec_watch_replay_status(result,sizeof(result));printf("Replay busy=%d %s\n",busy,result);
-        puts("rec iq arm <MHz> | stop | status | info <path.sub> | dump <path.sub> | test <MHz> <-9..10 dBm> [rate] [fsk] | replay <path.sub> <-9..10 dBm> [rate]\nrates: 4800|9600|19200|38400|76800|125000; replay IQ rate rises to fit bandwidth");return 0;
+        LS_PUTS(msg_headless_main_rec_iq_arm_mhz, "rec iq arm <MHz> | stop | status | info <path.sub> | dump <path.sub> | test <MHz> <-9..10 dBm> [rate] [fsk] | replay <path.sub> <-9..10 dBm> [rate]\nrates: 4800|9600|19200|38400|76800|125000; replay IQ rate rises to fit bandwidth");return 0;
     }
     if (argc >= 2 && !strcmp(argv[1], "watch")) {
         rec_watch_status_t *watch=heap_caps_malloc(sizeof(*watch),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
         if(!watch) {printf("watch: snapshot allocation failed\n");return 1;}
         rec_watch_snapshot(watch);
-        printf("watch: ready=%d enabled=%d patterns=%d captures=%lu skipped=%lu\n",
+        LS_PRINTF(fmt_headless_main_watch_ready_enabled_patterns, "watch: ready=%d enabled=%d patterns=%d captures=%lu skipped=%lu\n",
             watch->ready,watch->enabled,watch->count,(unsigned long)watch->received,(unsigned long)watch->dropped);
-        printf("watch: %s; alerts=%d queued=%lu refused=%lu limited=%lu\n",watch->storage,
+        LS_PRINTF(fmt_headless_main_watch_alerts_queued_refused, "watch: %s; alerts=%d queued=%lu refused=%lu limited=%lu\n",watch->storage,
             watch->alerts,(unsigned long)watch->alert_sent,(unsigned long)watch->alert_failed,(unsigned long)watch->alert_suppressed);
         heap_caps_free(watch);return 0;
     }
     if (argc < 2 || !strcmp(argv[1], "status")) {
         rec_status_t s;
         rec_get_status(&s);
-        printf("rec %s  %.4f MHz  gain=%.1f dB  edges=%d span=%lu us  captures=%lu\n",
+        LS_PRINTF(fmt_headless_main_rec_mhz_gain_db, "rec %s  %.4f MHz  gain=%.1f dB  edges=%d span=%lu us  captures=%lu\n",
                rec_phase_name(s.phase), s.freq_hz / 1e6, s.gain_tenths / 10.0,
                s.edges, (unsigned long)s.span_us, (unsigned long)s.captures);
         printf("    mag now=%d floor=%d thresh=%d   last=%s\n",
@@ -1446,7 +1544,7 @@ static int cmd_rec(int argc, char **argv)
             char bw[16];
             if (s.bw_hz) snprintf(bw, sizeof(bw), "%.0f kHz", s.bw_hz / 1000.0);
             else         snprintf(bw, sizeof(bw), "auto");
-            printf("    bw=%s minp=%lu us maxspan=%lu ms minedges=%d\n",
+            LS_PRINTF(fmt_headless_main_bw_minp_us_maxspan, "    bw=%s minp=%lu us maxspan=%lu ms minedges=%d\n",
                    bw, (unsigned long)s.min_pulse_us,
                    (unsigned long)(s.max_span_us / 1000u), s.min_edges);
         }
@@ -1455,7 +1553,7 @@ static int cmd_rec(int argc, char **argv)
                rec_end_reason_name(s.end_reason),
                (unsigned long)s.min_mark_us, (unsigned long)s.max_mark_us,
                (unsigned long)s.baud_est);
-        printf("    mod=%s autosave=%s  capture: %s %.4f MHz dev=%lu Hz rate=%lu\n",
+        LS_PRINTF(fmt_headless_main_mod_autosave_capture_mhz, "    mod=%s autosave=%s  capture: %s %.4f MHz dev=%lu Hz rate=%lu\n",
                s.mod == REC_MOD_FSK ? "fsk" : "ook", s.autosave ? "on" : "off",
                s.cap_mod == REC_MOD_FSK ? "fsk" : "ook", s.cap_freq_hz / 1e6,
                (unsigned long)s.cap_dev_hz, (unsigned long)s.cap_bitrate);
@@ -1475,13 +1573,13 @@ static int cmd_rec(int argc, char **argv)
                    rec_dir(), human, (unsigned long long)s.bytes_free);
         }
         if (app_current_index() < 0 || strcmp(s_modes[s_mode].name, "REC") != 0) {
-            printf("    note: not in REC mode - run 'mode rec' first\n");
+            LS_FPUTS(msg_headless_main_note_not_in_rec, "    note: not in REC mode - run 'mode rec' first\n", stdout);
         }
         static EXT_RAM_BSS_ATTR char scanline[192];
         if (flipper_link_scan_snapshot(scanline, sizeof(scanline)) > 0)
             printf("    sweep %s", scanline + 2);
-        printf("usage: rec <freq <MHz>|gain <dB>|thresh <n>|gap <ms>|bw <kHz>|minp <us>|"
-               "maxspan <ms>|minedges <n>|mod ook|fsk|autosave on|off|arm|stop|save <name>|list|cat|rm>\n");
+        LS_FPUTS(msg_headless_main_usage_rec_freq_mhz, "usage: rec <freq <MHz>|gain <dB>|thresh <n>|gap <ms>|bw <kHz>|minp <us>|"
+               "maxspan <ms>|minedges <n>|mod ook|fsk|autosave on|off|arm|stop|save <name>|list|cat|rm>\n", stdout);
         return 0;
     }
 
@@ -1489,7 +1587,7 @@ static int cmd_rec(int argc, char **argv)
 #if !LS_HAS_USB_SDR
         /* This recorder times edges from an SDR; LakeShark LR has none, and
            armed it would wait on nothing. */
-        printf("rec arm records from an SDR and LakeShark LR has none: "
+        LS_PRINTF(fmt_headless_main_rec_arm_records_from, "rec arm records from an SDR and LakeShark LR has none: "
                "'rec iq arm %.4f' records the LR2021's I/Q\n", rec_get_freq() / 1e6);
         return 1;
 #else
@@ -1507,7 +1605,7 @@ static int cmd_rec(int argc, char **argv)
         if (!hub.receiver_streaming) {
             rec_status_t st;
             rec_get_status(&st);
-            printf("no SDR is streaming (%s): plug in an RTL-SDR or HackRF%s\n",
+            LS_PRINTF(fmt_headless_main_no_sdr_is_streaming, "no SDR is streaming (%s): plug in an RTL-SDR or HackRF%s\n",
                    ls_radio_err_name(st.receiver_error),
                    ls_lora_chip() == LS_LORA_CHIP_LR20XX ? ", or 'rec iq arm <MHz>' for the LR2021" : "");
         }
@@ -1527,7 +1625,7 @@ static int cmd_rec(int argc, char **argv)
         printf("rec freq=%.4f MHz\n", rec_get_freq() / 1e6);
     } else if (!strcmp(argv[1], "gap") && argc >= 3) {
         rec_set_gap_ms(atoi(argv[2]));
-        printf("rec gap=%d ms (silence that ends one transmission)\n", rec_get_gap_ms());
+        LS_PRINTF(fmt_headless_main_rec_gap_ms_silence, "rec gap=%d ms (silence that ends one transmission)\n", rec_get_gap_ms());
     /**/
     } else if (!strcmp(argv[1], "bw") && argc >= 3) {
         rec_set_bw((uint32_t)(atof(argv[2]) * 1000.0 + 0.5));
@@ -1535,18 +1633,18 @@ static int cmd_rec(int argc, char **argv)
         else              printf("rec bw=auto\n");
     } else if (!strcmp(argv[1], "minp") && argc >= 3) {
         rec_set_min_pulse((uint32_t)atoi(argv[2]));
-        printf("rec minp=%lu us (shorter transitions merge into the previous edge)\n",
+        LS_PRINTF(fmt_headless_main_rec_minp_us_shorter, "rec minp=%lu us (shorter transitions merge into the previous edge)\n",
                (unsigned long)rec_get_min_pulse());
     } else if (!strcmp(argv[1], "maxspan") && argc >= 3) {
         rec_set_max_span((uint32_t)atoi(argv[2]) * 1000u);
         printf("rec maxspan=%lu ms\n", (unsigned long)(rec_get_max_span() / 1000u));
     } else if (!strcmp(argv[1], "minedges") && argc >= 3) {
         rec_set_min_edges(atoi(argv[2]));
-        printf("rec minedges=%d (fewer is treated as a blip and discarded)\n",
+        LS_PRINTF(fmt_headless_main_rec_minedges_fewer_is, "rec minedges=%d (fewer is treated as a blip and discarded)\n",
                rec_get_min_edges());
     } else if (!strcmp(argv[1], "thresh") && argc >= 3) {
         rec_set_thresh(atoi(argv[2]));
-        printf("rec thresh=%d (%s) - watch 'mag now' with no signal, set above that\n",
+        LS_PRINTF(fmt_headless_main_rec_thresh_watch_mag, "rec thresh=%d (%s) - watch 'mag now' with no signal, set above that\n",
                rec_get_thresh(), rec_get_thresh() > 0 ? "fixed" : "auto");
     } else if (!strcmp(argv[1], "gain") && argc >= 3) {
         rec_set_gain((int)(atof(argv[2]) * 10 + 0.5));
@@ -1557,7 +1655,7 @@ static int cmd_rec(int argc, char **argv)
         if (n > 0) printf("wrote %s (%d edges)\n", path, n);
         else if (n == -1) printf("nothing captured yet\n");
         /**/
-        else if (n == -3) printf("capture still running - wait for it to end\n");
+        else if (n == -3) LS_FPUTS(msg_headless_main_capture_still_running_wait, "capture still running - wait for it to end\n", stdout);
         /**/
         else if (n == -4) {
             rec_status_t sst;
@@ -1584,8 +1682,8 @@ static int cmd_rec(int argc, char **argv)
     } else if (!strcmp(argv[1], "rm") && argc >= 3) {
         printf("%s\n", rec_remove(argv[2]) == 0 ? "removed" : "not found");
     } else {
-        printf("usage: rec <freq <MHz>|gain <dB>|thresh <n>|gap <ms>|bw <kHz>|minp <us>|"
-               "maxspan <ms>|minedges <n>|mod ook|fsk|autosave on|off|arm|stop|save <name>|list|cat|rm>\n");
+        LS_FPUTS(msg_headless_main_usage_rec_freq_mhz_2, "usage: rec <freq <MHz>|gain <dB>|thresh <n>|gap <ms>|bw <kHz>|minp <us>|"
+               "maxspan <ms>|minedges <n>|mod ook|fsk|autosave on|off|arm|stop|save <name>|list|cat|rm>\n", stdout);
     }
     return 0;
 }
@@ -1599,26 +1697,26 @@ static int cmd_beep(int argc, char **argv)
     /* Say where the amplifier's power actually comes from. */
 
 #if defined(LS_BOARD_PA_EN_GPIO) && (LS_BOARD_PA_EN_GPIO >= 0)
-    printf("boot chime played (vol=%d mute=%d pa=GPIO%d ring_avail=%lu)\n",
+    LS_PRINTF(fmt_headless_main_boot_chime_played_vol, "boot chime played (vol=%d mute=%d pa=GPIO%d ring_avail=%lu)\n",
            audio_volume_get(), audio_is_muted(), PA_CTRL_GPIO,
            (unsigned long)audio_out_ring_avail());
 #elif defined(LS_BOARD_XL_AUDIO_PWR_EN)
-    printf("boot chime played (vol=%d mute=%d pa=XL9535 IO6 ring_avail=%lu)\n",
+    LS_PRINTF(fmt_headless_main_boot_chime_played_vol_2, "boot chime played (vol=%d mute=%d pa=XL9535 IO6 ring_avail=%lu)\n",
            audio_volume_get(), audio_is_muted(),
            (unsigned long)audio_out_ring_avail());
 #else
-    printf("boot chime played (vol=%d mute=%d no PA control ring_avail=%lu)\n",
+    LS_PRINTF(fmt_headless_main_boot_chime_played_vol_3, "boot chime played (vol=%d mute=%d no PA control ring_avail=%lu)\n",
            audio_volume_get(), audio_is_muted(),
            (unsigned long)audio_out_ring_avail());
 #endif
 
-    printf("beep: %lu block(s) dropped since boot - any at all is a sound "
+    LS_PRINTF(fmt_headless_main_beep_block_s_dropped, "beep: %lu block(s) dropped since boot - any at all is a sound "
            "written faster than it plays\n",
            (unsigned long)audio_drops_get());
     /* And how close the sound worker has come to the end of its
        stack. That number would have named the boot crash in one line; it
        took a capture on the UART instead. */
-    printf("beep: sound worker stack %u of %u bytes never used\n",
+    LS_PRINTF(fmt_headless_main_beep_sound_worker_stack, "beep: sound worker stack %u of %u bytes never used\n",
            snd_test_stack_unused(), (unsigned)SND_WORKER_STACK_BYTES);
     return 0;
 }
@@ -1655,7 +1753,7 @@ static void c6_print_versions(void)
     esp_hosted_coprocessor_fwver_t v = { 0 };
     int e = esp_hosted_get_coprocessor_fwversion(&v);
     if (e != 0) {
-        printf("c6 slave firmware  : unreachable (rc=%d) - is the C6 up? try 'c6 up'\n", e);
+        LS_PRINTF(fmt_headless_main_c6_slave_firmware_unreachable, "c6 slave firmware  : unreachable (rc=%d) - is the C6 up? try 'c6 up'\n", e);
         return;
     }
     printf("c6 slave firmware  : %lu.%lu.%lu\n",
@@ -1671,16 +1769,16 @@ static void c6_print_versions(void)
 
     if ((uint32_t)ESP_HOSTED_VERSION_MAJOR_1 != v.major1 ||
         (uint32_t)ESP_HOSTED_VERSION_MINOR_1 != v.minor1) {
-        printf("c6 MISMATCH on major.minor - this is the documented cause of RPC and "
+        LS_FPUTS(msg_headless_main_c6_mismatch_on_major, "c6 MISMATCH on major.minor - this is the documented cause of RPC and "
                "HCI timeouts. Reflash the C6 with the matching esp_hosted slave "
-               "build.\n");
+               "build.\n", stdout);
     } else if ((uint32_t)ESP_HOSTED_VERSION_PATCH_1 != v.patch1) {
-        printf("c6 patch levels differ (host %d, slave %lu). esp_hosted only enforces "
+        LS_PRINTF(fmt_headless_main_c6_patch_levels_differ, "c6 patch levels differ (host %d, slave %lu). esp_hosted only enforces "
                "major.minor, but 2.12.9 against 2.12.3 passed that and the transport "
                "still framed packets differently - reflash the C6.\n",
                ESP_HOSTED_VERSION_PATCH_1, (unsigned long)v.patch1);
     } else {
-        printf("c6 host and co-processor firmware are in step.\n");
+        LS_FPUTS(msg_headless_main_c6_host_and_co, "c6 host and co-processor firmware are in step.\n", stdout);
     }
 }
 
@@ -1690,7 +1788,7 @@ static int cmd_c6(int argc, char **argv)
         /* Say where the enable actually is. */
 
 #if defined(LS_BOARD_XL_C6_EN)
-        printf("c6 en=%d (XL9535 IO14)  1=C6 running, 0=in reset\n",
+        LS_PRINTF(fmt_headless_main_c6_en_xl9535_io14, "c6 en=%d (XL9535 IO14)  1=C6 running, 0=in reset\n",
                c6_read_en());
 #elif defined(LS_BOARD_C6_EN_GPIO) && (LS_BOARD_C6_EN_GPIO >= 0)
         printf("c6 en=%d (GPIO%d)  1=C6 running, 0=in reset\n",
@@ -1699,14 +1797,14 @@ static int cmd_c6(int argc, char **argv)
         printf("c6 en=%d (this board declares no enable line)\n", c6_read_en());
 #endif
         c6_print_versions();
-        printf("usage: c6 <0|1|up [force]|ver|reset|release|update [path] [force]|status>\n"
+        LS_FPUTS(msg_headless_main_usage_c6_0_1, "usage: c6 <0|1|up [force]|ver|reset|release|update [path] [force]|status>\n"
                "  0/1      drive EN low/high and hold it\n"
                "  up       connect ESP-Hosted (matching slave firmware required)\n"
                "  ver      host vs co-processor firmware versions\n"
                "  reset    pulse EN low 200ms then high, rebooting the C6\n"
                "  release  stop driving; let the board pull-up hold it\n"
                "  update   install a C6 application image from the SD card\n"
-               "  status   progress and result of the last update\n");
+               "  status   progress and result of the last update\n", stdout);
         return 0;
     }
 
@@ -1717,20 +1815,20 @@ static int cmd_c6(int argc, char **argv)
     } else if (!strcmp(argv[1], "up")) {
 #if !CONFIG_LS_C6_LINK
         if (argc < 3 || strcmp(argv[2], "force")) {
-            printf("c6: disabled in this build; install matching ESP-Hosted "
-                   "slave firmware before enabling the link.\n");
+            LS_FPUTS(msg_headless_main_c6_disabled_in_this, "c6: disabled in this build; install matching ESP-Hosted "
+                   "slave firmware before enabling the link.\n", stdout);
             return 0;
         }
 #endif
         int e = esp_hosted_connect_to_slave();
         printf("c6: esp_hosted_connect_to_slave -> %d\n", e);
-        if (e) printf("c6: check slave firmware and SDIO slot 1 wiring.\n");
+        if (e) LS_FPUTS(msg_headless_main_c6_check_slave_firmware, "c6: check slave firmware and SDIO slot 1 wiring.\n", stdout);
     } else if (!strcmp(argv[1], "reset")) {
         c6_drive(0);
         vTaskDelay(pdMS_TO_TICKS(200));
         c6_drive(1);
         vTaskDelay(pdMS_TO_TICKS(50));
-        printf("c6: EN pulsed low->high (C6 rebooting)\n");
+        LS_FPUTS(msg_headless_main_c6_en_pulsed_low, "c6: EN pulsed low->high (C6 rebooting)\n", stdout);
     } else if (!strcmp(argv[1], "release")) {
         c6_release();
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -1754,13 +1852,13 @@ static int cmd_ble(int argc, char **argv)
         ble_link_stats(&rx, &tx, &drops);
         uint32_t heap_us, snapshot_us, write_us;
         ble_link_perf_stats(&heap_us, &snapshot_us, &write_us);
-        printf("ble timing max: heap=%lu snapshot=%lu write=%lu us\n",
+        LS_PRINTF(fmt_headless_main_ble_timing_max_heap, "ble timing max: heap=%lu snapshot=%lu write=%lu us\n",
                (unsigned long)heap_us, (unsigned long)snapshot_us,
                (unsigned long)write_us);
         /* Show the pinned peer and whether this board currently holds
            a link, so `ble` alone answers "which board am I talking to". */
         bool pinned = ble_link_get_pinned(pin, sizeof(pin));
-        printf("ble=%s filter=\"%s\" peer=%s [%s] pin=%s conn=%d tel=%dHz  "
+        LS_PRINTF(fmt_headless_main_ble_filter_peer_pin, "ble=%s filter=\"%s\" peer=%s [%s] pin=%s conn=%d tel=%dHz  "
                "rx_lines=%lu tx_frames=%lu drops=%lu\n",
                ble_link_state_name(), filt,
                name[0] ? name : "-", addr[0] ? addr : "-",
@@ -1780,9 +1878,9 @@ static int cmd_ble(int argc, char **argv)
             ble_link_rx_debug(&th, &ss, &se, &foreign);
             uint32_t nrx = 0, nbytes = 0;
             ble_link_notify_stats(&nrx, &nbytes);
-            printf("ble rx path: notify handle=%u service=%u..%u  ignored=%lu\n",
+            LS_PRINTF(fmt_headless_main_ble_rx_path_notify, "ble rx path: notify handle=%u service=%u..%u  ignored=%lu\n",
                    th, ss, se, (unsigned long)foreign);
-            printf("ble rx raw : notifications=%lu bytes=%lu -> lines=%lu%s\n",
+            LS_PRINTF(fmt_headless_main_ble_rx_raw_notifications, "ble rx raw : notifications=%lu bytes=%lu -> lines=%lu%s\n",
                    (unsigned long)nrx, (unsigned long)nbytes, (unsigned long)rx,
                    (nrx && rx > nrx)
                        ? "   (more lines than notifications: the head packs "
@@ -1791,7 +1889,7 @@ static int cmd_ble(int argc, char **argv)
                        ? "   (more notifications than lines: partial frames)"
                        : "");
             if (rx == 0 && tx > 50) {
-                printf("*** the head has never sent us a line. It receives fine "
+                LS_PRINTF(fmt_headless_main_the_head_has_never, "*** the head has never sent us a line. It receives fine "
                        "(%lu frames out), so this is the Flipper->P4 direction: "
                        "either the app is not notifying, or it notifies on a "
                        "handle outside %u..%u (see 'ignored' above).\n",
@@ -1799,16 +1897,16 @@ static int cmd_ble(int argc, char **argv)
             }
         }
         if (ble_link_passkey_pending()) {
-            printf("*** PAIRING: the head is showing a 6-digit code - "
-                   "enter it with:  ble passkey <code>\n");
+            LS_FPUTS(msg_headless_main_pairing_the_head_is, "*** PAIRING: the head is showing a 6-digit code - "
+                   "enter it with:  ble passkey <code>\n", stdout);
         }
         /**/
         if (ble_link_stock_head_seen() && rx == 0) {
-            printf("*** a Flipper is on the air advertising its own BLE "
-                   "profile, not ours - open the LakeShark app on it\n");
+            LS_FPUTS(msg_headless_main_a_flipper_is_on, "*** a Flipper is on the air advertising its own BLE "
+                   "profile, not ours - open the LakeShark app on it\n", stdout);
         }
-        printf("usage: ble <on|off|rescan|passkey <code>|name <substr>|tel <hz>|"
-               "verbose <0|1>|pin [addr]|unpin|forget|show>\n");
+        LS_FPUTS(msg_headless_main_usage_ble_on_off, "usage: ble <on|off|rescan|passkey <code>|name <substr>|tel <hz>|"
+               "verbose <0|1>|pin [addr]|unpin|forget|show>\n", stdout);
         return 0;
     }
 
@@ -1824,9 +1922,9 @@ static int cmd_ble(int argc, char **argv)
 
         esp_err_t e = ble_link_submit_passkey((uint32_t)strtoul(argv[2], NULL, 10));
         if (e == ESP_ERR_INVALID_STATE) {
-            printf("ble: nothing is waiting for a passkey right now\n");
+            LS_FPUTS(msg_headless_main_ble_nothing_is_waiting, "ble: nothing is waiting for a passkey right now\n", stdout);
         } else if (e == ESP_ERR_INVALID_ARG) {
-            printf("ble: the passkey is 6 digits (0-999999)\n");
+            LS_FPUTS(msg_headless_main_ble_the_passkey_is, "ble: the passkey is 6 digits (0-999999)\n", stdout);
         } else {
             printf("ble passkey: %s\n", esp_err_to_name(e));
         }
@@ -1835,19 +1933,19 @@ static int cmd_ble(int argc, char **argv)
         const char *addr = (argc >= 3) ? argv[2] : NULL;
         esp_err_t e = ble_link_pin_peer(addr);
         if (e == ESP_ERR_INVALID_ARG) {
-            printf("ble: pin needs an address like aa:bb:cc:dd:ee:ff\n");
+            LS_FPUTS(msg_headless_main_ble_pin_needs_an, "ble: pin needs an address like aa:bb:cc:dd:ee:ff\n", stdout);
         } else if (e == ESP_ERR_NOT_FOUND) {
-            printf("ble: nothing connected - pin an explicit address, or wait "
-                   "for a link\n");
+            LS_FPUTS(msg_headless_main_ble_nothing_connected_pin, "ble: nothing connected - pin an explicit address, or wait "
+                   "for a link\n", stdout);
         } else {
             char cur[24];
             ble_link_get_pinned(cur, sizeof(cur));
-            printf("ble pin=%s (persists across reboot; other advertisers with "
+            LS_PRINTF(fmt_headless_main_ble_pin_persists_across, "ble pin=%s (persists across reboot; other advertisers with "
                    "our service are ignored)\n", cur);
         }
     } else if (!strcmp(argv[1], "unpin")) {
         ble_link_unpin_peer();
-        printf("ble unpinned (scanner falls back to any matching device)\n");
+        LS_FPUTS(msg_headless_main_ble_unpinned_scanner_falls, "ble unpinned (scanner falls back to any matching device)\n", stdout);
     /* Manual escape hatch for a bond left in NVS by older firmware that
        still asked for bonding + Secure Connections against a GapPairingNone
        head.  New firmware never initiates pairing, so the auto-wipe on AUTHREQ
@@ -1873,8 +1971,8 @@ static int cmd_ble(int argc, char **argv)
         ble_link_set_verbose(atoi(argv[2]) != 0);
         printf("ble verbose=%s\n", argv[2]);
     } else {
-        printf("usage: ble <on|off|rescan|passkey <code>|name <substr>|tel <hz>|"
-               "verbose <0|1>|pin [addr]|unpin|forget|show>\n");
+        LS_FPUTS(msg_headless_main_usage_ble_on_off_2, "usage: ble <on|off|rescan|passkey <code>|name <substr>|tel <hz>|"
+               "verbose <0|1>|pin [addr]|unpin|forget|show>\n", stdout);
     }
     return 0;
 }
@@ -1888,7 +1986,7 @@ static int cmd_snd(int argc, char **argv)
         return ok ? 0 : 1;
     }
     if (argc != 3 || strcmp(argv[1],"test")) {
-        printf("usage: snd test boot|sweep|bass|noise|tone|p25chirp|moto|radiokey|roger|chirp\n");
+        LS_FPUTS(msg_headless_main_usage_snd_test_boot, "usage: snd test boot|sweep|bass|noise|tone|p25chirp|moto|radiokey|roger|chirp\n", stdout);
         return 1;
     }
     int which=snd_test_from_name(argv[2]);
@@ -1910,24 +2008,24 @@ static int cmd_moto(int argc, char **argv)
     else if (!strcmp(which, "all"))   snd_moto_full();
     else { printf("usage: moto [on|alert|bonk|all]\n"); return 0; }
 
-    printf("played %s (vol=%d, unmute if you hear nothing)\n", which, audio_volume_get());
+    LS_PRINTF(fmt_headless_main_played_vol_unmute_if, "played %s (vol=%d, unmute if you hear nothing)\n", which, audio_volume_get());
     return 0;
 }
 
 static int cmd_log(int argc, char **argv)
 {
     if (argc < 2) {
-        printf("usage: log <tag|*> <none|error|warn|info|debug|verbose>\n"
+        LS_FPUTS(msg_headless_main_usage_log_tag_none, "usage: log <tag|*> <none|error|warn|info|debug|verbose>\n"
                "       log <level>            same as: log * <level>\n\n"
-               "Turned down by this firmware (they are hot paths):\n");
+               "Turned down by this firmware (they are hot paths):\n", stdout);
         for (size_t i = 0; i < sizeof(LOG_QUIET_TAGS) / sizeof(LOG_QUIET_TAGS[0]); i++) {
             printf("  %s\n", LOG_QUIET_TAGS[i]);
         }
-        printf("\nExamples:\n"
+        LS_FPUTS(msg_headless_main_examples_log_nimble_debug, "\nExamples:\n"
                "  log NimBLE debug   see every GATT write again\n"
                "  log * warn         quiet everything while timing something\n"
                "  log ble_link info  just this module\n"
-               "Levels are runtime filters only - nothing is compiled out.\n");
+               "Levels are runtime filters only - nothing is compiled out.\n", stdout);
         return 0;
     }
 
@@ -1946,7 +2044,7 @@ static int cmd_log(int argc, char **argv)
             return 0;
         }
     }
-    printf("unknown level '%s' (none|error|warn|info|debug|verbose)\n", lvl_s);
+    LS_PRINTF(fmt_headless_main_unknown_level_none_error, "unknown level '%s' (none|error|warn|info|debug|verbose)\n", lvl_s);
     return 0;
 }
 
@@ -1977,14 +2075,14 @@ static void i2c_scan_bus(ls_i2c_bus_id_t id, const char *name)
     if (!found && !ghosts) printf(" (nothing answered)");
     printf("\n");
     if (ghosts)
-        printf("  %-9s %d address(es) marked ? answered twice of three - a "
+        LS_PRINTF(fmt_headless_main_address_es_marked_answered, "  %-9s %d address(es) marked ? answered twice of three - a "
                "device on a marginal bus, or noise\n", "", ghosts);
 }
 
 static int cmd_i2c_read(int argc, char **argv)
 {
     if (argc < 4) {
-        printf("usage: i2c read <primary|secondary> <addr> <reg> [count]\n");
+        LS_FPUTS(msg_headless_main_usage_i2c_read_primary, "usage: i2c read <primary|secondary> <addr> <reg> [count]\n", stdout);
         return 1;
     }
     ls_i2c_bus_id_t id;
@@ -2037,7 +2135,7 @@ static int cmd_i2c(int argc, char **argv)
     }
     if (argc > 1) {
         if (argc != 2 || strcmp(argv[1], "reset-touch") != 0) {
-            printf("usage: i2c [reset-touch | read <bus> <addr> <reg> [n]]\n");
+            LS_FPUTS(msg_headless_main_usage_i2c_reset_touch, "usage: i2c [reset-touch | read <bus> <addr> <reg> [n]]\n", stdout);
             return 1;
         }
         esp_err_t err = ls_board_hw_touch_reset();
@@ -2051,7 +2149,7 @@ static int cmd_i2c(int argc, char **argv)
     printf("  expander @ 0x%02x: %s\n", LS_BOARD_IO_EXPANDER_ADDR,
            ls_board_hw_ready() ? "up" : "NOT RESPONDING");
 #else
-    printf("  expander: none declared for this board\n");
+    LS_FPUTS(msg_headless_main_expander_none_declared_for, "  expander: none declared for this board\n", stdout);
 #endif
     return 0;
 }
@@ -2084,7 +2182,7 @@ static int cmd_compass(int argc, char **argv)
         char *end = NULL;
         const long seconds = argc > 2 ? strtol(argv[2], &end, 10) : 60;
         if (argc > 3 || seconds < 1 || seconds > 600 || (end && *end)) {
-            printf("usage: compass still [1..600 seconds], default 60\n"); return 1;
+            LS_FPUTS(msg_headless_main_usage_compass_still_1, "usage: compass still [1..600 seconds], default 60\n", stdout); return 1;
         }
         ls_field_compass_still((unsigned)seconds); return 0;
     }
@@ -2103,7 +2201,7 @@ static int cmd_compass(int argc, char **argv)
     if (!have) printf("compass: no calibration for this setup (%s)\n",
                       ls_keypad_present() ? "keyboard" : "standalone");
     else {
-        printf("compass: %s profile  offset %+.1f %+.1f %+.1f uT  radius %.1f  error %.3f\n",
+        LS_PRINTF(fmt_headless_main_compass_profile_offset_ut, "compass: %s profile  offset %+.1f %+.1f %+.1f uT  radius %.1f  error %.3f\n",
                ls_keypad_present() ? "keyboard" : "standalone",
                cal.offset[0], cal.offset[1], cal.offset[2], cal.radius, cal.error);
         for (int i = 0; i < 3; i++)
@@ -2113,27 +2211,27 @@ static int cmd_compass(int argc, char **argv)
     }
     ls_imu_sample_t s;
     if (ls_imu_start() != ESP_OK || !ls_imu_read(&s)) { printf("compass: no IMU sample\n"); return 0; }
-    printf("compass: accel %+.2f %+.2f %+.2f g  mag %+.1f %+.1f %+.1f uT\n",
+    LS_PRINTF(fmt_headless_main_compass_accel_g_mag, "compass: accel %+.2f %+.2f %+.2f g  mag %+.1f %+.1f %+.1f uT\n",
            s.ax, s.ay, s.az, s.mx, s.my, s.mz);
     ls_compass_reading_t r; bool back = false;
     if (ls_compass_solve(&s, have ? &cal : NULL, &back, &r))
-        printf("compass: heading %.0f M  dip %.1f  field %.1f uT  tilt %.0f\n",
+        LS_PRINTF(fmt_headless_main_compass_heading_m_dip, "compass: heading %.0f M  dip %.1f  field %.1f uT  tilt %.0f\n",
                r.magnetic, r.dip, r.field_ut, r.tilt);
     else printf("compass: no heading from this sample\n");
     ls_compass_live(&r);
-    printf("compass: FIELD %s  corrected %.1f / cal %.1f uT  dip %.1f / expected %.1f deg%s\n",
+    LS_PRINTF(fmt_headless_main_compass_field_corrected_cal, "compass: FIELD %s  corrected %.1f / cal %.1f uT  dip %.1f / expected %.1f deg%s\n",
            ls_compass_quality_name(r.quality), r.field_ut, r.cal_ut, r.dip, r.expected_dip,
            r.quality == LS_COMPASS_DISTURBED ? "  magnet or metal nearby, or recalibrate" : "");
     /* What FIND is listening to, and where the LoRa radio really is. */
     ls_dfs_status_t d;
     ls_dfs_poll(&d);
-    printf("find: %s %s  %.4f MHz  level %.1f %s  %s  (%lu levels)  %s\n", ls_dfs_name(d.source),
+    LS_PRINTF(fmt_headless_main_find_mhz_level_levels, "find: %s %s  %.4f MHz  level %.1f %s  %s  (%lu levels)  %s\n", ls_dfs_name(d.source),
            d.active ? "active" : "idle", d.freq_hz / 1e6, d.level, d.unit ? d.unit : "",
            d.fresh ? "fresh" : "STALE", (unsigned long)d.updates, d.status);
     ls_field_state_t *f = heap_caps_malloc(sizeof(*f), MALLOC_CAP_SPIRAM);
     if (f) {
         ls_field_snapshot(f);
-        printf("find: lora %s  %.4f MHz  sf%u bw%lu  mode %d  antenna %s\n", f->direct ? "held (direct)" : "with Mesh",
+        LS_PRINTF(fmt_headless_main_find_lora_mhz_sf, "find: lora %s  %.4f MHz  sf%u bw%lu  mode %d  antenna %s\n", f->direct ? "held (direct)" : "with Mesh",
                f->config.freq_hz / 1e6, (unsigned)f->config.sf, (unsigned long)f->config.bw_hz, (int)f->mode,
                ls_board_hw_antenna_is_external() ? "EXTERNAL" : "internal");
         heap_caps_free(f);
@@ -2177,12 +2275,12 @@ static int cmd_imu(int argc, char **argv)
 #if LS_HAS_IMU
         printf("imu: mounted %d deg from the screen\n", LS_BOARD_IMU_MOUNT_DEG);
 #endif
-        printf("imu: screen  right %+6.3f  up %+6.3f  out %+6.3f g  |a|=%.3f\n",
+        LS_PRINTF(fmt_headless_main_imu_screen_right_up, "imu: screen  right %+6.3f  up %+6.3f  out %+6.3f g  |a|=%.3f\n",
                s.ax, s.ay, s.az, g);
         printf("imu: gyro  %+7.2f %+7.2f %+7.2f dps\n", s.gx, s.gy, s.gz);
         if (s.mag_valid) {
             const float m = sqrtf(s.mx * s.mx + s.my * s.my + s.mz * s.mz);
-            printf("imu: mag   %+7.1f %+7.1f %+7.1f uT  |m|=%.1f  heading %.0f\n",
+            LS_PRINTF(fmt_headless_main_imu_mag_ut_m, "imu: mag   %+7.1f %+7.1f %+7.1f uT  |m|=%.1f  heading %.0f\n",
                    s.mx, s.my, s.mz, m, (double)ls_imu_heading());
         } else {
             printf("imu: mag   not answering\n");
@@ -2211,7 +2309,7 @@ static int cmd_notify(int argc, char **argv)
     if (argc>=2 && !strcmp(argv[1],"sound")) {
         int index=argc==3 ? settings_notification_sound_from_name(argv[2]) : -1;
         if (index<0) {
-            printf("usage: notify sound alert|radiokey|roger|chirp|off\n");
+            LS_FPUTS(msg_headless_main_usage_notify_sound_alert, "usage: notify sound alert|radiokey|roger|chirp|off\n", stdout);
             return 1;
         }
         if (!settings_set_notification_sound(index)) {
@@ -2230,9 +2328,9 @@ static int cmd_notify(int argc, char **argv)
         else if (!strcmp(argv[i], "quiet")) { ring = vibe = false; forced = true; }
         else {
             printf("usage: notify [ring|vibe|quiet]\n");
-            printf("notify: posts a test notice through the real path.\n");
-            printf("        no argument uses your stored settings; the words\n");
-            printf("        force one half on for this notice only.\n");
+            LS_FPUTS(msg_headless_main_notify_posts_a_test, "notify: posts a test notice through the real path.\n", stdout);
+            LS_FPUTS(msg_headless_main_no_argument_uses_your, "        no argument uses your stored settings; the words\n", stdout);
+            LS_FPUTS(msg_headless_main_force_one_half_on, "        force one half on for this notice only.\n", stdout);
             return 0;
         }
     }
@@ -2254,10 +2352,10 @@ static int cmd_notify(int argc, char **argv)
     printf("notify: posted.  ring=%s vibe=%s%s\n",
            ring ? "on" : "off", vibe ? "on" : "off",
            forced ? "  (forced for this notice only)" : "");
-    printf("notify: %d unread.  Expect a banner on the panel for six seconds.\n",
+    LS_PRINTF(fmt_headless_main_notify_unread_expect_a, "notify: %d unread.  Expect a banner on the panel for six seconds.\n",
            ls_notify_unread());
     if (vibe && !ls_haptic_present())
-        printf("notify: vibrate is on but no haptic driver came up - nothing will buzz\n");
+        LS_FPUTS(msg_headless_main_notify_vibrate_is_on, "notify: vibrate is on but no haptic driver came up - nothing will buzz\n", stdout);
     return 0;
 }
 
@@ -2306,13 +2404,13 @@ static int cmd_ant(int argc, char **argv)
                                            : "RX ONLY - transmits go out the internal antenna");
     uint32_t moved = 0, returned = 0;
     ls_board_hw_antenna_tx_counts(&moved, &returned);
-    printf("ant: since boot %lu transmits moved to internal, %lu returns to MMCX1\n",
+    LS_PRINTF(fmt_headless_main_ant_since_boot_transmits, "ant: since boot %lu transmits moved to internal, %lu returns to MMCX1\n",
            (unsigned long)moved, (unsigned long)returned);
-    printf("ant: both stored, so they come back this way after a reboot\n");
+    LS_FPUTS(msg_headless_main_ant_both_stored_so, "ant: both stored, so they come back this way after a reboot\n", stdout);
     if (ext && mmcx_tx)
-        printf("ant: MMCX1 must have an antenna for the transmit band on it - "
+        LS_FPUTS(msg_headless_main_ant_mmcx1_must_have, "ant: MMCX1 must have an antenna for the transmit band on it - "
                "the vendor warns that transmitting into an open port may "
-               "damage the RF front end. MMCX2 is not connected.\n");
+               "damage the RF front end. MMCX2 is not connected.\n", stdout);
     return 0;
 #endif
 }
@@ -2335,26 +2433,26 @@ static int cmd_haptic(int argc, char **argv)
            board that has the part, and ls_haptic_start() has already refused
            on one that does not. */
 #if LS_HAS_HAPTIC
-        printf("haptic: AW86224 at 0x%02X, driving %d Hz from the board header\n",
+        LS_PRINTF(fmt_headless_main_haptic_aw86224_at_0x, "haptic: AW86224 at 0x%02X, driving %d Hz from the board header\n",
                LS_BOARD_HAPTIC_I2C_ADDR, LS_BOARD_HAPTIC_F0_HZ);
 #endif
         printf("haptic: coil %.2f ohms   supply %.2f V\n",
                (double)d.lra_ohms, (double)d.vdd_v);
         if (d.lra_ohms < 1.0f)
-            printf("haptic: that is too low for an LRA - open circuit, or no motor fitted\n");
+            LS_FPUTS(msg_headless_main_haptic_that_is_too, "haptic: that is too low for an LRA - open circuit, or no motor fitted\n", stdout);
         else if (d.lra_ohms > 60.0f)
-            printf("haptic: that is high for an LRA - check the measurement gain\n");
+            LS_FPUTS(msg_headless_main_haptic_that_is_high, "haptic: that is high for an LRA - check the measurement gain\n", stdout);
         if (d.f0_hz > 0.0f) {
-            printf("haptic: tracked resonance %.1f Hz during the last buzz\n",
+            LS_PRINTF(fmt_headless_main_haptic_tracked_resonance_hz, "haptic: tracked resonance %.1f Hz during the last buzz\n",
                    (double)d.f0_hz);
             /* And the header it is being compared against, which
                only a board that declares a motor has. */
 #if LS_HAS_HAPTIC
-            printf("haptic: if that disagrees with %d Hz, the header is what is wrong\n",
+            LS_PRINTF(fmt_headless_main_haptic_if_that_disagrees, "haptic: if that disagrees with %d Hz, the header is what is wrong\n",
                    LS_BOARD_HAPTIC_F0_HZ);
 #endif
         } else {
-            printf("haptic: nothing tracked yet - run 'haptic buzz' first\n");
+            LS_FPUTS(msg_headless_main_haptic_nothing_tracked_yet, "haptic: nothing tracked yet - run 'haptic buzz' first\n", stdout);
         }
         if (d.over_current || d.over_temp || d.under_voltage)
             printf("haptic: FAULT%s%s%s\n",
@@ -2392,7 +2490,7 @@ static int cmd_haptic(int argc, char **argv)
 
     printf("haptic: effects -");
     for (int i = 0; i < LS_HAPTIC_EFFECT_COUNT; i++) printf(" %s", names[i]);
-    printf("\nhaptic: also 'buzz <ms> [percent]', 'stop', 'diag'\n");
+    LS_FPUTS(msg_headless_main_haptic_also_buzz_ms, "\nhaptic: also 'buzz <ms> [percent]', 'stop', 'diag'\n", stdout);
     return 0;
 }
 
@@ -2442,10 +2540,10 @@ static int cmd_mic(int argc, char **argv)
     const double rms = n ? sqrt(sum / (double)n) : 0.0;
     free(buf);
 
-    printf("mic: %u ms, %u samples  peak %ld  rms %.0f  (full scale 32767)\n",
+    LS_PRINTF(fmt_headless_main_mic_ms_samples_peak, "mic: %u ms, %u samples  peak %ld  rms %.0f  (full scale 32767)\n",
            (unsigned)ms, (unsigned)n, (long)peak, rms);
     if (peak == 0)
-        printf("mic: silent - the ADC is clocked and returning nothing\n");
+        LS_FPUTS(msg_headless_main_mic_silent_the_adc, "mic: silent - the ADC is clocked and returning nothing\n", stdout);
     return 0;
 }
 
@@ -2460,7 +2558,7 @@ static int cmd_track(int argc, char **argv)
         if (e != ESP_OK) { printf("track: %s\n", esp_err_to_name(e)); return 1; }
         float mv; uint32_t gap;
         ls_track_get_rule(&mv, &gap);
-        printf("track: recording - a point every %.0f m of movement or %lu s\n",
+        LS_PRINTF(fmt_headless_main_track_recording_a_point, "track: recording - a point every %.0f m of movement or %lu s\n",
                (double)mv, (unsigned long)gap);
         return 0;
     }
@@ -2471,8 +2569,8 @@ static int cmd_track(int argc, char **argv)
     }
     if (argc >= 2 && !strcmp(argv[1], "clear")) {
         if (!ls_track_clear()) {
-            printf("track: refused - stop recording first, or there is no "
-                   "card\n");
+            LS_FPUTS(msg_headless_main_track_refused_stop_recording, "track: refused - stop recording first, or there is no "
+                   "card\n", stdout);
             return 1;
         }
         printf("track: cleared\n");
@@ -2484,20 +2582,20 @@ static int cmd_track(int argc, char **argv)
                                       where, sizeof(where));
         /* The two failures send somebody to two different places. */
         if (n == LS_TRACK_EXPORT_NO_LOG) {
-            printf("track: there is no track log on the card - nothing has "
-                   "been recorded on this unit\n");
+            LS_FPUTS(msg_headless_main_track_there_is_no, "track: there is no track log on the card - nothing has "
+                   "been recorded on this unit\n", stdout);
             return 1;
         }
-        if (n < 0)  { printf("track: could not write the file - check the "
-                             "card has room\n"); return 1; }
-        if (n == 0) { printf("track: the log is there and empty - nothing "
-                             "recorded yet\n"); return 0; }
+        if (n < 0)  { LS_FPUTS(msg_headless_main_track_could_not_write, "track: could not write the file - check the "
+                             "card has room\n", stdout); return 1; }
+        if (n == 0) { LS_FPUTS(msg_headless_main_track_the_log_is, "track: the log is there and empty - nothing "
+                             "recorded yet\n", stdout); return 0; }
         printf("track: %d points to %s\n", n, where);
         return 0;
     }
     if (argc >= 2 && !strcmp(argv[1], "nodes")) {
 
-        printf("track: %d node sighting(s) held - each is a node heard at a "
+        LS_PRINTF(fmt_headless_main_track_node_sighting_s, "track: %d node sighting(s) held - each is a node heard at a "
                "place where we had a fix\n", ls_mesh_sightings());
         if (argc >= 3 && !strcmp(argv[2], "clear"))
             printf("track: %s\n",
@@ -2510,25 +2608,25 @@ static int cmd_track(int argc, char **argv)
 
     float mv; uint32_t gap;
     ls_track_get_rule(&mv, &gap);
-    printf("track: %s, %d points, a point every %.0f m or %lu s\n",
+    LS_PRINTF(fmt_headless_main_track_points_a_point, "track: %s, %d points, a point every %.0f m or %lu s\n",
            ls_track_rec_running() ? "RECORDING" : "stopped",
            ls_track_points(), (double)mv, (unsigned long)gap);
     /* The two things that stop a track being a track, said before
        they are asked about. A recorder with no sky writes nothing and looks
        identical to one that is broken. */
     if (!ls_gps_running())
-        printf("track: the receiver is not running - 'track on' starts it\n");
+        LS_FPUTS(msg_headless_main_track_the_receiver_is, "track: the receiver is not running - 'track on' starts it\n", stdout);
     else {
         ls_gps_state_t g;
         ls_gps_get(&g);
         if (!g.fix)
-            printf("track: no fix yet (%u sats seen) - nothing is being "
+            LS_PRINTF(fmt_headless_main_track_no_fix_yet, "track: no fix yet (%u sats seen) - nothing is being "
                    "recorded until there is one\n", (unsigned)g.sats_visible);
     }
     if (ls_mesh_sightings())
-        printf("track: %d node sighting(s) export as waypoints alongside it\n",
+        LS_PRINTF(fmt_headless_main_track_node_sighting_s_2, "track: %d node sighting(s) export as waypoints alongside it\n",
                ls_mesh_sightings());
-    printf("track: 'track on|off|clear|export [path]|rule <m> <s>|nodes [clear]'\n");
+    LS_FPUTS(msg_headless_main_track_track_on_off, "track: 'track on|off|clear|export [path]|rule <m> <s>|nodes [clear]'\n", stdout);
     return 0;
 }
 
@@ -2605,12 +2703,17 @@ static void top_probe_task(void *arg)
     vTaskDelete(NULL);
 }
 
+static int top_intr_dump(void)
+{
+    return esp_intr_dump(stdout) == ESP_OK ? 0 : 1;
+}
+
 static int top_irq(void)
 {
     top_probe_t p[2];
     memset(p, 0, sizeof(p));
     uint32_t *psram = heap_caps_malloc(TOP_PSRAM_BYTES, MALLOC_CAP_SPIRAM);
-    if (!psram) printf("top: no PSRAM for the bus test - interrupts only\n");
+    if (!psram) LS_FPUTS(msg_headless_main_top_no_psram_for, "top: no PSRAM for the bus test - interrupts only\n", stdout);
 
     bool ran[2] = { false, false };
     for (int core = 0; core < 2; core++) {
@@ -2634,16 +2737,16 @@ static int top_irq(void)
     }
     free(psram);
 
-    printf("top irq: %lu ms on each core at the highest priority\n",
+    LS_PRINTF(fmt_headless_main_top_irq_ms_on, "top irq: %lu ms on each core at the highest priority\n",
            (unsigned long)(TOP_IRQ_WINDOW_US / 1000u));
     for (int core = 0; core < 2; core++) {
         if (!ran[core]) continue;
         const uint32_t pm = p[core].stolen_us * 1000u / TOP_IRQ_WINDOW_US;
-        printf("  core %d  interrupts took %lu.%lu%%  (%lu of them, longest %lu us)\n",
+        LS_PRINTF(fmt_headless_main_core_interrupts_took_of, "  core %d  interrupts took %lu.%lu%%  (%lu of them, longest %lu us)\n",
                core, (unsigned long)(pm / 10u), (unsigned long)(pm % 10u),
                (unsigned long)p[core].gaps, (unsigned long)p[core].worst_us);
         if (psram && p[core].wr_us && p[core].rd_us)
-            printf("          psram   write %lu MB/s  read %lu MB/s\n",
+            LS_PRINTF(fmt_headless_main_psram_write_mb_s, "          psram   write %lu MB/s  read %lu MB/s\n",
                    (unsigned long)(TOP_PSRAM_BYTES / p[core].wr_us),
                    (unsigned long)(TOP_PSRAM_BYTES / p[core].rd_us));
     }
@@ -2653,6 +2756,12 @@ static int top_irq(void)
 static int cmd_top(int argc, char **argv)
 {
     if (argc >= 2 && !strcmp(argv[1], "irq")) return top_irq();
+    if (argc >= 2 && !strcmp(argv[1], "intr")) return top_intr_dump();
+    /* `top force [ms]`: snapshot during an LR20xx capture too. The capture
+       loses its FIFO deadline once per snapshot (one gap, one restart);
+       that is the price of seeing what P25 or FM on the LR costs. */
+    const bool force = argc >= 2 && !strcmp(argv[1], "force");
+    if (force) { --argc; ++argv; }
     int ms = (argc >= 2) ? atoi(argv[1]) : 1000;
     if (ms < 200)  ms = 200;
     if (ms > 5000) ms = 5000;
@@ -2666,7 +2775,7 @@ static int cmd_top(int argc, char **argv)
     top_seen_t   *seen = heap_caps_malloc(cap * sizeof(*seen), MALLOC_CAP_SPIRAM);
     top_row_t    *rows = heap_caps_malloc(cap * sizeof(*rows), MALLOC_CAP_SPIRAM);
     if (!ts || !seen || !rows) {
-        printf("top: no memory for a snapshot (internal free %u)\n",
+        LS_PRINTF(fmt_headless_main_top_no_memory_for, "top: no memory for a snapshot (internal free %u)\n",
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         free(ts);
         free(seen);
@@ -2675,27 +2784,29 @@ static int cmd_top(int argc, char **argv)
     }
 
     configRUN_TIME_COUNTER_TYPE t0 = 0, t1 = 0;
-    if (!ls_lora_diagnostic_try_begin()) {
+    const bool held0 = ls_lora_diagnostic_try_begin();
+    if (!held0 && !force) {
         /* A live LR20xx capture owns the radio; never wait behind it or scan
            every task stack while its FIFO service deadline is running. */
-        printf("top: task snapshot deferred during radio capture\n");
+        LS_FPUTS(msg_headless_main_top_task_snapshot_deferred, "top: task snapshot deferred during radio capture\n", stdout);
         free(ts); free(seen); free(rows);
         return 0;
     }
     const UBaseType_t n0 = uxTaskGetSystemState(ts, cap, &t0);
-    ls_lora_diagnostic_try_end();
+    if (held0) ls_lora_diagnostic_try_end();
     for (UBaseType_t i = 0; i < n0; i++) {
         seen[i].h  = ts[i].xHandle;
         seen[i].rt = (uint32_t)ts[i].ulRunTimeCounter;
     }
     vTaskDelay(pdMS_TO_TICKS(ms));
-    if (!ls_lora_diagnostic_try_begin()) {
-        printf("top: second task snapshot deferred during radio capture\n");
+    const bool held1 = ls_lora_diagnostic_try_begin();
+    if (!held1 && !force) {
+        LS_FPUTS(msg_headless_main_top_second_task_snapshot, "top: second task snapshot deferred during radio capture\n", stdout);
         free(ts); free(seen); free(rows);
         return 0;
     }
     const UBaseType_t n1 = uxTaskGetSystemState(ts, cap, &t1);
-    ls_lora_diagnostic_try_end();
+    if (held1) ls_lora_diagnostic_try_end();
     const uint32_t span = (uint32_t)(t1 - t0);
 
     int nr = 0;
@@ -2724,7 +2835,7 @@ static int cmd_top(int argc, char **argv)
     }
     qsort(rows, (size_t)nr, sizeof(*rows), top_row_cmp);
 
-    printf("top: %d ms, each task's share of one core (under 0.1%% not shown)\n", ms);
+    LS_PRINTF(fmt_headless_main_top_ms_each_task, "top: %d ms, each task's share of one core (under 0.1%% not shown)\n", ms);
     printf("  %-16s %-4s %4s %7s\n", "task", "core", "prio", "cpu");
     for (int i = 0; i < nr; i++) {
         const uint32_t pm = (uint32_t)((uint64_t)rows[i].used * 1000u / span);
@@ -2757,8 +2868,8 @@ static int cmd_adsbdemo(int argc, char **argv)
         adsb_demo_set(atoi(argv[1]));
     }
     const int n = adsb_demo_count();
-    if (n) printf("%d SYNTHETIC aircraft - generated, not received. `adsbdemo 0` removes them.\n", n);
-    else   printf("demo aircraft off. `adsbdemo <1-8>` creates some; ADS-B must be running.\n");
+    if (n) LS_PRINTF(fmt_headless_main_synthetic_aircraft_generated_not, "%d SYNTHETIC aircraft - generated, not received. `adsbdemo 0` removes them.\n", n);
+    else   LS_FPUTS(msg_headless_main_demo_aircraft_off_adsbdemo, "demo aircraft off. `adsbdemo <1-8>` creates some; ADS-B must be running.\n", stdout);
     return 0;
 }
 
@@ -2769,7 +2880,7 @@ static int cmd_memory(int argc, char **argv)
     heap_caps_get_info(&internal, MALLOC_CAP_INTERNAL);
     heap_caps_get_info(&dma, MALLOC_CAP_DMA);
     heap_caps_get_info(&psram, MALLOC_CAP_SPIRAM);
-    printf("memory: internal_free=%u internal_largest=%u internal_min=%u "
+    LS_PRINTF(fmt_headless_main_memory_internal_free_internal, "memory: internal_free=%u internal_largest=%u internal_min=%u "
            "dma_free=%u dma_largest=%u dma_min=%u psram_free=%u\n",
            (unsigned)internal.total_free_bytes, (unsigned)internal.largest_free_block,
            (unsigned)internal.minimum_free_bytes, (unsigned)dma.total_free_bytes,
@@ -2792,7 +2903,7 @@ static int cmd_heap(int argc, char **argv)
         }
         /* EACH STAGE'S COST ON ITS OWN ROW. */
 
-        printf("heap: what each boot stage cost, in bytes\n");
+        LS_FPUTS(msg_headless_main_heap_what_each_boot, "heap: what each boot stage cost, in bytes\n", stdout);
         printf("  %-14s %12s %10s %10s\n",
                "stage", "free after", "internal", "dma");
         for (int i = 0; i < n; i++) {
@@ -2812,10 +2923,10 @@ static int cmd_heap(int argc, char **argv)
     }
 
     if (argc >= 2 && !strcmp(argv[1], "dma")) {
-        printf("heap: DMA-capable regions, as the allocator sees them\n");
+        LS_FPUTS(msg_headless_main_heap_dma_capable_regions, "heap: DMA-capable regions, as the allocator sees them\n", stdout);
         heap_caps_print_heap_info(MALLOC_CAP_DMA);
-        printf("\nheap: and internal, for comparison - a region that is in\n"
-               "      both lists is DMA-capable, one only here is not\n");
+        LS_FPUTS(msg_headless_main_heap_and_internal_for, "\nheap: and internal, for comparison - a region that is in\n"
+               "      both lists is DMA-capable, one only here is not\n", stdout);
         heap_caps_print_heap_info(MALLOC_CAP_INTERNAL);
         return 0;
     }
@@ -2844,17 +2955,17 @@ static int cmd_heap(int argc, char **argv)
     if (ls_cpu_busy(&core0_pct, &core1_pct)) {
         printf("cpu busy : core0=%d%% core1=%d%%\n", core0_pct, core1_pct);
     } else {
-        printf("cpu busy : core0=-- core1=-- (first sample; run heap again)\n");
+        LS_FPUTS(msg_headless_main_cpu_busy_core0_core1, "cpu busy : core0=-- core1=-- (first sample; run heap again)\n", stdout);
     }
 
-    printf("usb iq   : %d transfer slots in flight, %llu B dropped, ring avail=%u\n",
+    LS_PRINTF(fmt_headless_main_usb_iq_transfer_slots, "usb iq   : %d transfer slots in flight, %llu B dropped, ring avail=%u\n",
            rtlsdr_stream_slots(),
            (unsigned long long)rtlsdr_stream_dropped(),
            (unsigned)rtlsdr_stream_avail());
 
     uint32_t done = 0, dropped = 0, commits = 0;
     settings_write_stats(&done, &dropped, &commits);
-    printf("nvs      : %lu writes in %lu commits, %lu dropped\n",
+    LS_PRINTF(fmt_headless_main_nvs_writes_in_commits, "nvs      : %lu writes in %lu commits, %lu dropped\n",
            (unsigned long)done, (unsigned long)commits, (unsigned long)dropped);
 
     UBaseType_t n = uxTaskGetNumberOfTasks();
@@ -2875,7 +2986,7 @@ static int cmd_heap(int argc, char **argv)
         free(ts);
     } else if (ts) {
         free(ts);
-        printf("tasks    : stack details busy; retry when radio is idle\n");
+        LS_FPUTS(msg_headless_main_tasks_stack_details_busy, "tasks    : stack details busy; retry when radio is idle\n", stdout);
     }
     return 0;
 }
@@ -2901,7 +3012,7 @@ static int cmd_fl(int argc, char **argv)
         if (i > 1) strlcat(line, " ", sizeof(line));
         strlcat(line, argv[i], sizeof(line));
     }
-    if (!line[0]) { printf("usage: fl <protocol line>   e.g. fl FREQ 851.0125\n"); return 0; }
+    if (!line[0]) { LS_FPUTS(msg_headless_main_usage_fl_protocol_line, "usage: fl <protocol line>   e.g. fl FREQ 851.0125\n", stdout); return 0; }
 
     char reply[256] = { 0 };
     flipper_link_inject(line, reply, sizeof(reply));
@@ -2966,8 +3077,8 @@ static int cmd_wifi(int argc, char **argv)
     else if (!strcmp(op, "leave") && argc == 2) rc = ls_wifi_sta_leave();
     else if (!strcmp(op, "forget") && argc == 3)
         rc = !strcmp(argv[2], "all") ? ls_wifi_sta_forget_all() : ls_wifi_sta_forget_ssid(argv[2]);
-    else printf("wifi status|list|scan|add <ssid> [pass]|join <ssid> [pass]|connect|forget <ssid>|all|leave\n"
-                "Example: wifi add \"My Net\" pass\n");
+    else LS_FPUTS(msg_headless_main_wifi_status_list_scan, "wifi status|list|scan|add <ssid> [pass]|join <ssid> [pass]|connect|forget <ssid>|all|leave\n"
+                "Example: wifi add \"My Net\" pass\n", stdout);
     if (!strcmp(op, "add") || !strcmp(op, "join")) {
         for (int i = 3; i < argc; ++i) {
             volatile char *secret = argv[i];
@@ -3023,88 +3134,102 @@ static bool console_start(bool full)
        immutable descriptors in flash instead; normal boot subsequently has
        to initialize the complete compact UI on this same task. */
     static const esp_console_cmd_t cmds[] = {
-        { .command="detector", .help="Detector: status|start|stop|reload|test", .func=ls_detector_command },
-        { .command="sweep", .help="Passive nearby signals: on|off|status|stats|list|hunt MAC|mute on|off|mute CAT|rules reload", .func=ls_sweep_command },
-        { .command="rid", .help="Passive Remote ID: list | detail N | clear", .func=ls_rid_command },
-        { .command="drones", .help="Drone Watch: list | on|off | src elrs900|elrs24|hopper900|wide24|analog58|rid on|off", .func=ls_drone_watch_command },
-        { .command="cellperf", .help="HackRF focused session; on/off restarts, ordinary reset returns to normal", .func=cell_performance_command },
-        { .command = "status", .help = "Show mode, freq, volume, gain, mute, heap",
+        { .command="observations", .help=LS_TXT(con_headless_main_observations_help, "Read-only bounded JSONL receipt: scanner log, detector, CALLS, FM delivered IQ; no RF coverage claim"), .hint=LS_TXT(con_headless_main_observations_hint, "[json]"), .func=ls_observation_command },
+        { .command="rx-plan", .help=LS_TXT(con_headless_main_rx_plan_help, "Bounded receive-only RTL USB FM LISTEN schedule; existing receiver required"), .hint=LS_TXT(con_headless_main_rx_plan_hint, "load|show|start|stop|json"), .func=ls_rx_plan_command },
+        { .command="rx-coverage", .help=LS_TXT(con_headless_main_rx_coverage_help, "Track software read/DSP intervals; physical RF continuity unknown"), .hint=LS_TXT(con_headless_main_rx_coverage_hint, "[start|stop|status|json]"), .func=ls_coverage_command },
+        { .command="receiver-trial", .help=LS_TXT(con_headless_main_receiver_trial_help, "Save/compare read-only receiver snapshots; never changes RF settings"), .hint=LS_TXT(con_headless_main_receiver_trial_hint, "[baseline|compare|reset|status|json]"), .func=lakeshark_receiver_trial_command },
+        { .command="sweep", .help=LS_TXT(con_headless_main_sweep_help, "Passive nearby signals: on|off|status|stats|list|hunt MAC|mute on|off|mute CAT|rules reload"), .func=ls_sweep_command },
+        { .command="rfsurvey", .help=LS_TXT(con_headless_main_rfsurvey_help, "RF SURVEY: status | start [sim|rtl|hackrf|lora|sweep|iq|iqwide|cc1101] [plan=N] [range=LO:HI:N] [step=M] [cell=M] [thresh=DB] | stop | replay [FILE] [ROWS/S] | export [FILE] | files | plans"), .func=ls_rfs_command },
+        { .command="fox", .help=LS_TXT(con_headless_main_fox_help, "FOX HUNT bearings: fox | fox add BEARING [SPREAD] | undo | new | load"), .func=ls_fox_command },
+        { .command="rfsim", .help=LS_TXT(con_headless_main_rfsim_help, "Simulated position and transmitters for RF SURVEY and FOX HUNT: here LAT LON | walk LAT LON [COURSE] [M/S] | fox LAT LON | off"), .func=ls_rfsim_command },
+        { .command="rid", .help=LS_TXT(con_headless_main_rid_help, "Passive Remote ID: list | detail N | clear"), .func=ls_rid_command },
+        { .command="drones", .help=LS_TXT(con_headless_main_drones_help, "Drone Watch: list | on|off | src elrs900|elrs24|hopper900|wide24|analog58|rid on|off"), .func=ls_drone_watch_command },
+        { .command="cellperf", .help=LS_TXT(con_headless_main_cellperf_help, "HackRF focused session; on/off restarts, ordinary reset returns to normal"), .func=cell_performance_command },
+        { .command = "status", .help = LS_TXT(con_headless_main_status_help, "Show mode, freq, volume, gain, mute, heap"),
           .func = &cmd_status },
-        { .command = "p2", .help = "Experimental Phase II manual voice: on|off|status|config WACN SYS NAC slot", .func = &cmd_p2 },
+        { .command = "p2", .help = LS_TXT(con_headless_main_p2_help, "Experimental Phase II manual voice: on|off|status|config WACN SYS NAC slot"), .func = &cmd_p2 },
         /**/
-        { .command = "rtl", .help = "RTL health; 'rtl reset' resets the dongle, 'rtl detach' simulates an unplug",
+        { .command = "rtl", .help = LS_TXT(con_headless_main_rtl_help, "RTL health; 'rtl reset' resets the dongle, 'rtl detach' simulates an unplug"),
           .func = &cmd_rtl },
-        { .command = "hackrf", .help = "HackRF: rates, gain, levels either side of the decimator; 'hackrf dump' prints one read's samples, 'hackrf snap' the last four seconds; 'hackrf ppm <n>' sets the reference correction",
+        { .command = "hackrf", .help = LS_TXT(con_headless_main_hackrf_help, "HackRF: rates, gain, levels either side of the decimator; 'hackrf dump' prints one read's samples, 'hackrf snap' the last four seconds; 'hackrf ppm <n>' sets the reference correction"),
           .func = &cmd_hackrf },
-        { .command = "mode",   .help = "Switch mode", .hint = "p25|adsb|fm|rec|next",
+        { .command = "bias", .help = LS_TXT(con_headless_main_bias_help, "Antenna-port DC (bias-T): bias [rtl|hackrf] on|off|status|pin|unpin. Off at every plug-in unless pinned"),
+          .func = &ls_bias_command },
+        { .command = "rffe", .help = LS_TXT(con_headless_main_rffe_help, "SDR front end: rffe [rtl|hackrf] [ppm N|dagc follow|on|off|offset on|off|amp auto|on|off|lna auto|N|vga auto|N|gains]"),
+          .func = &ls_rffe_command },
+        { .command = "mode",   .help = LS_TXT(con_headless_main_mode_help, "Switch mode"), .hint = LS_TXT(con_headless_main_mode_hint, "p25|adsb|fm|rec|next"),
           .func = &cmd_mode },
-        { .command = "fm",     .help = "FM sub-mode (hops into FM)",
-          .hint = "listen|scan|pocsag|wfm|am|acars|flex|same|aprs|ais", .func = &cmd_fm },
-        { .command = "wifi", .help = "Saved Wi-Fi networks; wifi add \"My Net\" pass", .func = &cmd_wifi },
-        { .command = "vol",    .help = "Volume 0-100 (or +n / -n)", .hint = "<n|+n|-n>",
+        { .command = "hf",     .help = LS_TXT(con_headless_main_hf_help, "Shortwave: tune, demod, status (hops into FM, AM mode)"),
+          .hint = LS_TXT(con_headless_main_hf_hint, "[<kHz> [am|sam|usb|lsb|cw|ssb]] | bands | band <n> | rit | agc | nb | filter"),
+          .func = &cmd_hf },
+        { .command = "fm",     .help = LS_TXT(con_headless_main_fm_help, "FM sub-mode (hops into FM)"),
+          .hint = LS_TXT(con_headless_main_fm_hint, "listen|scan|pocsag|wfm|am|acars|flex|same|aprs|ais"), .func = &cmd_fm },
+        { .command = "wifi", .help = LS_TXT(con_headless_main_wifi_help, "Saved Wi-Fi networks; wifi add \"My Net\" pass"), .func = &cmd_wifi },
+        { .command = "vol",    .help = LS_TXT(con_headless_main_vol_help, "Volume 0-100 (or +n / -n)"), .hint = LS_TXT(con_headless_main_vol_hint, "<n|+n|-n>"),
           .func = &cmd_vol },
-        { .command = "freq",   .help = "Tune the current mode", .hint = "<MHz>",
+        { .command = "freq",   .help = LS_TXT(con_headless_main_freq_help, "Tune the current mode"), .hint = LS_TXT(con_headless_main_freq_hint, "<MHz>"),
           .func = &cmd_freq },
-        { .command = "gain",   .help = "RF gain in dB, or 'auto'", .hint = "<dB|auto>",
+        { .command = "gain",   .help = LS_TXT(con_headless_main_gain_help, "RF gain in dB, or 'auto'"), .hint = LS_TXT(con_headless_main_gain_hint, "<dB|auto>"),
           .func = &cmd_gain },
-        { .command = "feed",   .help = "ADS-B JSON feed to console (CartoTUI)",
-          .hint = "on|off", .func = &cmd_feed },
-        { .command = "mute",   .help = "System mute: toggle or on/off", .func = &cmd_mute },
-        { .command = "rec",    .help = "OOK recorder - captures to a Flipper SubGhz .sub file",
-          .hint = "<freq MHz|gain <dB>|arm|stop|save <name>|list|cat <name>|rm <name>>",
+        { .command = "feed",   .help = LS_TXT(con_headless_main_feed_help, "ADS-B JSON feed to console (CartoTUI)"),
+          .hint = LS_TXT(con_headless_main_feed_hint, "on|off"), .func = &cmd_feed },
+        { .command = "mute",   .help = LS_TXT(con_headless_main_mute_help, "System mute: toggle or on/off"), .func = &cmd_mute },
+        { .command = "rec",    .help = LS_TXT(con_headless_main_rec_help, "OOK recorder - captures to a Flipper SubGhz .sub file"),
+          .hint = LS_TXT(con_headless_main_rec_hint, "<freq MHz|gain <dB>|arm|stop|save <name>|list|cat <name>|rm <name>>"),
           .func = &cmd_rec },
-        { .command = "beep",   .help = "Play the boot chime - proves the speaker path",
+        { .command = "beep",   .help = LS_TXT(con_headless_main_beep_help, "Play the boot chime - proves the speaker path"),
           .func = &cmd_beep },
-        { .command = "ble",    .help = "BLE control head link (P4 is central)",
-          .hint = "<on|off|rescan|passkey <code>|name <s>|tel <hz>|"
-                  "verbose <0|1>|pin [addr]|unpin|forget|show>",
+        { .command = "ble",    .help = LS_TXT(con_headless_main_ble_help, "BLE control head link (P4 is central)"),
+          .hint = LS_TXT(con_headless_main_ble_hint, "<on|off|rescan|passkey <code>|name <s>|tel <hz>|"
+                  "verbose <0|1>|pin [addr]|unpin|forget|show>"),
           .func = &cmd_ble },
-        { .command = "c6",     .help = "ESP32-C6 co-processor: enable line, transport, firmware versions, SD update",
-          .hint = "<0|1|up|ver|reset|release|update [path] [force]|status>", .func = &cmd_c6 },
-        { .command = "link",   .help = "Flipper serial head control",
-          .hint = "[on|off|verbose <0|1>|baud <n>|tel <hz>|pins <rx> <tx>]",
+        { .command = "c6",     .help = LS_TXT(con_headless_main_c6_help, "ESP32-C6 co-processor: enable line, transport, firmware versions, SD update"),
+          .hint = LS_TXT(con_headless_main_c6_hint, "<0|1|up|ver|reset|release|update [path] [force]|status>"), .func = &cmd_c6 },
+        { .command = "link",   .help = LS_TXT(con_headless_main_link_help, "Flipper serial head control"),
+          .hint = LS_TXT(con_headless_main_link_hint, "[on|off|verbose <0|1>|baud <n>|tel <hz>|pins <rx> <tx>]"),
           .func = &cmd_link },
-        { .command = "moto",   .help = "Motorola-style radio alerts on the speaker",
-          .hint = "[on|alert|bonk|all]", .func = &cmd_moto },
-        { .command = "i2c",    .help = "I2C: scan the buses, or 'i2c read <bus> <addr> <reg> [n]' to identify a part",
+        { .command = "moto",   .help = LS_TXT(con_headless_main_moto_help, "Motorola-style radio alerts on the speaker"),
+          .hint = LS_TXT(con_headless_main_moto_hint, "[on|alert|bonk|all]"), .func = &cmd_moto },
+        { .command = "i2c",    .help = LS_TXT(con_headless_main_i2c_help, "I2C: scan the buses, or 'i2c read <bus> <addr> <reg> [n]' to identify a part"),
           .func = &cmd_i2c },
-        { .command = "mic",    .help = "Microphone: capture and report the level. 'mic <ms> [gain dB]'",
+        { .command = "mic",    .help = LS_TXT(con_headless_main_mic_help, "Microphone: capture and report the level. 'mic <ms> [gain dB]'"),
           .func = &cmd_mic },
-        { .command = "find",   .help = "COMPASS FIND: what it hears, its hit log, and control of it",
-          .hint = "[status|log|src <radio> [2]|off2|ch <MHz,...> [2]|show <1-8|A-H>|clear|view <v>|method <m>|set <k> <v>]",
+        { .command = "find",   .help = LS_TXT(con_headless_main_find_help, "COMPASS FIND: what it hears, its hit log, and control of it"),
+          .hint = LS_TXT(con_headless_main_find_hint, "[status|log|src <radio> [2]|off2|ch <MHz,...> [2]|show <1-8|A-H>|clear|view <v>|method <m>|set <k> <v>]"),
           .func = &cmd_find },
-        { .command = "ant",    .help = "Antenna path: internal or external through MMCX1",
-          .hint = "[int|ext]", .func = &cmd_ant },
-        { .command = "snd", .help = "Queue a synthesized sound test (respects volume and mute)",
-          .hint = "test <name>", .func = &cmd_snd },
-        { .command = "notify", .help = "Post a test notice through the real path: banner, count, ring and vibrate",
-          .hint = "[ring|vibe|quiet|sound <alert|radiokey|roger|chirp|off>]", .func = &cmd_notify },
-        { .command = "haptic", .help = "Vibration: play an effect, buzz for a time, or measure the motor",
-          .hint = "[tick|click|confirm|alert|warn|buzz <ms> [pct]|stop|diag]",
+        { .command = "ant",    .help = LS_TXT(con_headless_main_ant_help, "Antenna path: internal or external through MMCX1"),
+          .hint = LS_TXT(con_headless_main_ant_hint, "[int|ext]"), .func = &cmd_ant },
+        { .command = "snd", .help = LS_TXT(con_headless_main_snd_help, "Queue a synthesized sound test (respects volume and mute)"),
+          .hint = LS_TXT(con_headless_main_snd_hint, "test <name>"), .func = &cmd_snd },
+        { .command = "notify", .help = LS_TXT(con_headless_main_notify_help, "Post a test notice through the real path: banner, count, ring and vibrate"),
+          .hint = LS_TXT(con_headless_main_notify_hint, "[ring|vibe|quiet|sound <alert|radiokey|roger|chirp|off>]"), .func = &cmd_notify },
+        { .command = "haptic", .help = LS_TXT(con_headless_main_haptic_help, "Vibration: play an effect, buzz for a time, or measure the motor"),
+          .hint = LS_TXT(con_headless_main_haptic_hint, "[tick|click|confirm|alert|warn|buzz <ms> [pct]|stop|diag]"),
           .func = &cmd_haptic },
-        { .command = "track",  .help = "GPS track: 'track on|off' records to the card, 'track export' writes GPX, 'track rule <m> <s>' sets how often a point is kept",
+        { .command = "track",  .help = LS_TXT(con_headless_main_track_help, "GPS track: 'track on|off' records to the card, 'track export' writes GPX, 'track rule <m> <s>' sets how often a point is kept"),
           .func = &cmd_track },
-        { .command = "imu",    .help = "Nine-axis sensor: accel, gyro, magnetometer, heading and pose. 'imu <n>' repeats",
+        { .command = "imu",    .help = LS_TXT(con_headless_main_imu_help, "Nine-axis sensor: accel, gyro, magnetometer, heading and pose. 'imu <n>' repeats"),
           .func = &cmd_imu },
-        { .command = "compass", .help = "Compass state; still [secs] stability test (default 60), trace [secs], learn [on|off|forget]",
+        { .command = "compass", .help = LS_TXT(con_headless_main_compass_help, "Compass state; still [secs] stability test (default 60), trace [secs], learn [on|off|forget]"),
           .func = &cmd_compass },
-        { .command = "trail",  .help = "Where each busy task last was: this run, and the run a watchdog reset ended",
+        { .command = "trail",  .help = LS_TXT(con_headless_main_trail_help, "Where each busy task last was: this run, and the run a watchdog reset ended"),
           .func = &cmd_trail },
-        { .command = "memory", .help = "Allocator headroom without task/stack enumeration", .func = &cmd_memory },
-        { .command = "heap",   .help = "Internal/DMA/PSRAM free, USB IQ slots, NVS write stats. 'heap dma' dumps the regions, 'heap stages' the boot profile",
+        { .command = "memory", .help = LS_TXT(con_headless_main_memory_help, "Allocator headroom without task/stack enumeration"), .func = &cmd_memory },
+        { .command = "heap",   .help = LS_TXT(con_headless_main_heap_help, "Internal/DMA/PSRAM free, USB IQ slots, NVS write stats. 'heap dma' dumps the regions, 'heap stages' the boot profile"),
           .func = &cmd_heap },
         /**/
-        { .command = "top",    .help = "Which task has the CPU: each task's share of a core over a second ('top <ms>'). 'top irq' measures what interrupts take on each core and the PSRAM bus rate",
+        { .command = "top",    .help = LS_TXT(con_headless_main_top_help, "Which task has the CPU: each task's share of a core over a second ('top <ms>'). 'top irq' measures what interrupts take on each core and the PSRAM bus rate"),
           .func = &cmd_top },
-        { .command = "log",   .help = "Runtime log level per tag (hot tags are quiet by default)",
-          .hint = "<tag|*> <none|error|warn|info|debug|verbose>", .func = &cmd_log },
-        { .command = "tel",    .help = "Print the flipper-link telemetry frame N times (0.5s apart)",
-          .hint = "[n]", .func = &cmd_tel },
-        { .command = "fl",     .help = "Run one flipper-link protocol line locally",
-          .hint = "<PING|FREQ|VOL|GAIN|DEMOD|...>", .func = &cmd_fl },
-        { .command = "adsbdemo", .help = "Synthetic aircraft around home or the map centre, for testing",
-          .hint = "<0-8>", .func = &cmd_adsbdemo },
+        { .command = "log",   .help = LS_TXT(con_headless_main_log_help, "Runtime log level per tag (hot tags are quiet by default)"),
+          .hint = LS_TXT(con_headless_main_log_hint, "<tag|*> <none|error|warn|info|debug|verbose>"), .func = &cmd_log },
+        { .command = "tel",    .help = LS_TXT(con_headless_main_tel_help, "Print the flipper-link telemetry frame N times (0.5s apart)"),
+          .hint = LS_TXT(con_headless_main_tel_hint, "[n]"), .func = &cmd_tel },
+        { .command = "fl",     .help = LS_TXT(con_headless_main_fl_help, "Run one flipper-link protocol line locally"),
+          .hint = LS_TXT(con_headless_main_fl_hint, "<PING|FREQ|VOL|GAIN|DEMOD|...>"), .func = &cmd_fl },
+        { .command = "adsbdemo", .help = LS_TXT(con_headless_main_adsbdemo_help, "Synthetic aircraft around home or the map centre, for testing"),
+          .hint = LS_TXT(con_headless_main_adsbdemo_hint, "<0-8>"), .func = &cmd_adsbdemo },
     };
+    ls_text_warm();     /* text packs decoded here, on the boot task (ls_textpack.h) */
     esp_console_register_help_command();
     uat_console_register();
     if (full) {
@@ -3116,6 +3241,8 @@ static bool console_start(bool full)
             }
         }
         ls_ctl_register_commands();
+        extern void digi_console_register(void);
+        digi_console_register();
 #if defined(LS_BOARD_PANEL_RUNTIME)
         ls_panel_ws_register_console();
 #endif

@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ls_textpack.h"
 extern const ls_experiment_t exp_aviation;
 static volatile int s_band = 1090;
 static volatile uint32_t s_dme = 1000000000u;
@@ -181,7 +182,7 @@ static int lines(char (*out)[LS_EXP_LINE], int max)
                  band == 1030   ? "SSR"
                  : band == 1090 ? (view ? "A/C framing" : "Mode S DF")
                                 : "DME/TACAN");
-    if (n < max) snprintf(out[n++], LS_EXP_LINE, "CLASS     last sec   last minute captures");
+    if (n < max) LS_SNPUTS(t_exp_aviation_class_last_sec_last, out[n++], LS_EXP_LINE, "CLASS     last sec   last minute captures");
     const char *names[] = {"unknown", "Mode A", "Mode C", "Mode S", "A/C reply", "X pair", "Y pair"};
     for (int i = 0; i < 7 && n < max; i++)
         if (i == 0 || (band == 1030 && i >= 1 && i <= 3) || (band == 1090 && i == 4) || (band == 0 && i >= 5))
@@ -191,7 +192,7 @@ static int lines(char (*out)[LS_EXP_LINE], int max)
         for (int group = 0; group < 16 && n < max - 2; group++) {
             int a = 8 + group * 2, b = a + 1;
             if (minute[a] || minute[b] || group == 8)
-                snprintf(out[n++], LS_EXP_LINE, "DF%02d %lu/s m%lu  DF%02d %lu/s m%lu", group * 2,
+                LS_SNPRINTF(t_exp_aviation_df_02d_lu_s, out[n++], LS_EXP_LINE, "DF%02d %lu/s m%lu  DF%02d %lu/s m%lu", group * 2,
                          (unsigned long)rate[a], (unsigned long)minute[a], group * 2 + 1,
                          (unsigned long)rate[b], (unsigned long)minute[b]);
         }
@@ -199,13 +200,13 @@ static int lines(char (*out)[LS_EXP_LINE], int max)
         uint32_t sum = 0;
         for (int i = 8; i < 40; i++)
             sum += minute[i];
-        snprintf(out[n++], LS_EXP_LINE, "DF last minute %lu (5s S / 5s A/C)", (unsigned long)sum);
+        LS_SNPRINTF(t_exp_aviation_df_last_minute_lu, out[n++], LS_EXP_LINE, "DF last minute %lu (5s S / 5s A/C)", (unsigned long)sum);
     }
     if (n < max) {
         if (have)
-            snprintf(out[n++], LS_EXP_LINE, "PEAK %.0f dBm  errors %lu", (double)peak, (unsigned long)errors);
+            LS_SNPRINTF(t_exp_aviation_peak_0f_dbm_errors, out[n++], LS_EXP_LINE, "PEAK %.0f dBm  errors %lu", (double)peak, (unsigned long)errors);
         else
-            snprintf(out[n++], LS_EXP_LINE, "PEAK -- dBm  errors %lu", (unsigned long)errors);
+            LS_SNPRINTF(t_exp_aviation_peak_dbm_errors_lu, out[n++], LS_EXP_LINE, "PEAK -- dBm  errors %lu", (unsigned long)errors);
     }
     if (n < max)
         snprintf(out[n++], LS_EXP_LINE,
@@ -228,7 +229,7 @@ static bool configure(int argc, char **argv, char *why, size_t n)
             return true;
         }
     }
-    snprintf(why, n, "start 1030 | 1090 | dme MHz (962-1213)");
+    LS_SNPUTS(t_exp_aviation_start_1030_1090_dme, why, n, "start 1030 | 1090 | dme MHz (962-1213)");
     return false;
 }
 static void restart(void)

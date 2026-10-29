@@ -13,6 +13,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 static int button_focus=-1, button_slot;
 EXT_RAM_BSS_ATTR static ls_field_state_t s;
@@ -77,7 +78,7 @@ static void source_done(ls_rsel_radio_t r)
 }
 static void pick_source(void)
 {
-    if(s_rec_source) { snprintf(s_feedback,sizeof(s_feedback),"REC's RADIO above changes the radio"); return; }
+    if(s_rec_source) { LS_SNPUTS(t_scr_journal_rec_s_radio_above, s_feedback, sizeof(s_feedback), "REC's RADIO above changes the radio"); return; }
     ls_rsel_open(LS_RSEL_JOURNAL, source_done);
 }
 static void action(int i)
@@ -114,8 +115,8 @@ static void sensors(tui_surface *sf, tui_rect a, const ls_field_sample_t *p)
     ls_kv(sf, a, 6, "MOTION", line, LS_ATTR_DIM);
     if (p->imu_valid) {
         snprintf(line, sizeof(line), "%+.2f %+.2f %+.2f g", p->imu.ax, p->imu.ay, p->imu.az); ls_kv(sf, a, 7, "ACCEL", line, LS_ATTR_DIM);
-        snprintf(line, sizeof(line), "%+.1f %+.1f %+.1f d/s", p->imu.gx, p->imu.gy, p->imu.gz); ls_kv(sf, a, 8, "GYRO", line, LS_ATTR_DIM);
-        snprintf(line, sizeof(line), "%+.1f %+.1f %+.1f uT", p->imu.mx, p->imu.my, p->imu.mz); ls_kv(sf, a, 9, "MAG", line, LS_ATTR_DIM);
+        LS_SNPRINTF(t_scr_journal_1f_1f_1f_d, line, sizeof(line), "%+.1f %+.1f %+.1f d/s", p->imu.gx, p->imu.gy, p->imu.gz); ls_kv(sf, a, 8, "GYRO", line, LS_ATTR_DIM);
+        LS_SNPRINTF(t_scr_journal_1f_1f_1f_ut, line, sizeof(line), "%+.1f %+.1f %+.1f uT", p->imu.mx, p->imu.my, p->imu.mz); ls_kv(sf, a, 9, "MAG", line, LS_ATTR_DIM);
         if (p->imu.mag_valid && isfinite(p->heading)) snprintf(line, sizeof(line), "%.0f magnetic", p->heading); else snprintf(line, sizeof(line), "not available");
         ls_kv(sf, a, 10, "HEADING", line, LS_ATTR_DIM);
         float length = sqrtf(p->imu.ax*p->imu.ax + p->imu.ay*p->imu.ay + p->imu.az*p->imu.az);
@@ -123,7 +124,7 @@ static void sensors(tui_surface *sf, tui_rect a, const ls_field_sample_t *p)
     }
     if (p->signal_valid) {
         if (p->frequency) snprintf(line, sizeof(line), "%.4f MHz  %.1f dBm", p->frequency / 1e6, p->rssi);
-        else snprintf(line, sizeof(line), "%.1f dBm; no fixed channel", p->rssi);
+        else LS_SNPRINTF(t_scr_journal_1f_dbm_no_fixed, line, sizeof(line), "%.1f dBm; no fixed channel", p->rssi);
         ls_kv(sf, a, a.h - 3, "SIGNAL", line, LS_ATTR_DIM);
     }
 }
@@ -182,10 +183,10 @@ static void draw(tui_surface *sf, tui_rect a)
         int rows = s_list.h / 3; if (rows < 1) rows = 1;
         int first = s_selected / rows * rows;
         if (!s.journal_count) {
-            tui_put_str(sf, panel, panel.x + 2, panel.y + 3, "A notebook for the field.", LS_ATTR_DIM);
-            tui_put_str(sf, panel, panel.x + 2, panel.y + 5, "Write a note, mark a place,", LS_ATTR_DIM);
-            tui_put_str(sf, panel, panel.x + 2, panel.y + 6, "or record a walk with sensors.", LS_ATTR_DIM);
-            tui_put_str(sf, panel, panel.x + 2, panel.y + 8, "Radio attachments are optional.", LS_ATTR_DIM);
+            tui_put_str(sf, panel, panel.x + 2, panel.y + 3, LS_TEXT(t_scr_journal_a_notebook_for_the, "A notebook for the field."), LS_ATTR_DIM);
+            tui_put_str(sf, panel, panel.x + 2, panel.y + 5, LS_TEXT(t_scr_journal_write_a_note_mark, "Write a note, mark a place,"), LS_ATTR_DIM);
+            tui_put_str(sf, panel, panel.x + 2, panel.y + 6, LS_TEXT(t_scr_journal_or_record_a_walk, "or record a walk with sensors."), LS_ATTR_DIM);
+            tui_put_str(sf, panel, panel.x + 2, panel.y + 8, LS_TEXT(t_scr_journal_radio_attachments_are_optional, "Radio attachments are optional."), LS_ATTR_DIM);
         }
         for (int i = 0; i < rows && ls_field_entry(first + i, &s_entry); i++) {
             int y = s_list.y + i * 3;
@@ -210,7 +211,7 @@ static void draw(tui_surface *sf, tui_rect a)
     if(!s.record_rows) snprintf(stamp,sizeof(stamp),"--");
     else if(s.record_saved_utc[0]) snprintf(stamp,sizeof(stamp),"%s",s.record_saved_utc);
     else ls_time_render_stamp_at(stamp,sizeof(stamp),0,s.record_saved_us);
-    char status[100];snprintf(status,sizeof(status),"CSV %s | %lu rows / %lu errors",
+    char status[100];LS_SNPRINTF(t_scr_journal_csv_s_lu_rows, status,sizeof(status),"CSV %s | %lu rows / %lu errors",
         s.record_errors?"WRITE FAILED":s.recording?(s.record_saved_us?"SAVING":"WAIT WRITE"):"STOPPED",
         (unsigned long)s.record_rows,(unsigned long)s.record_errors);
     ls_safe_line(sf, a, a.y + a.h - 3, status, LS_ATTR_DIM);

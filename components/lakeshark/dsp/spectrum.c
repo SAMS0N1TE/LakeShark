@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "esp_attr.h"
+#include "ls_cold.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -16,7 +17,7 @@
 /* Independent callers keep their context in PSRAM. */
 static EXT_RAM_BSS_ATTR spectrum_t s_default;
 
-void spectrum_context_init(spectrum_t *s)
+LS_COLD void spectrum_context_init(spectrum_t *s)
 {
     if (s->ready) return;
 
@@ -138,7 +139,7 @@ bool spectrum_context_read_db(spectrum_t *s, float *out, int n)
     return true;
 }
 
-void spectrum_init(void) { spectrum_context_init(&s_default); }
+LS_COLD void spectrum_init(void) { spectrum_context_init(&s_default); }
 void spectrum_reset(void) { spectrum_context_reset(&s_default); }
 bool spectrum_read_db(float *out, int n)
 { return spectrum_context_read_db(&s_default, out, n); }

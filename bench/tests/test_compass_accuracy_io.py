@@ -38,12 +38,16 @@ def run(source, sources=(), compile_only=False):
                     'components/lakeshark/core', 'components/lakeshark/nfc',
                     'components/lakeshark/radio', 'components/lakeshark/audio',
                     'components/meshcore', 'components/lakeshark/apps/fm', 'components/lakeshark/apps/p25',
-                    'components/libcarto/upstream/include']:
+                    'components/libcarto/upstream/include',
+                    'components/lakeshark/rx', 'components/ls_textpack/include']:
             cmd += ['-I', str(ROOT / inc)]
+        cmd += ['-include', 'ls_textpack.h']
         cmd += [str(p / 'test.c')] + [str(ROOT / f) for f in sources]
         cmd += ['-lm', '-o', str(p / 'test.exe')]
         if compile_only:
-            cmd += ['-c', '-Wno-missing-field-initializers']
+            # ls_field.c's UTC stamp range-checks every field first (20 chars into
+            # 24); gcc's -Wformat-truncation does not follow those checks.
+            cmd += ['-c', '-Wno-missing-field-initializers', '-Wno-format-truncation']
         built = subprocess.run(cmd, capture_output=True, text=True)
         if built.returncode:
             raise AssertionError(built.stdout + built.stderr)

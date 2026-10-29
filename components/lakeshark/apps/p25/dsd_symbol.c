@@ -20,7 +20,9 @@
  */
 
 #include "dsd.h"
+#include "esp_attr.h"
 #include "esp_task_wdt.h"
+#include "ls_cold.h"
 
 static inline short median_of_5(short p0, short p1, short p2, short p3, short p4)
 {
@@ -37,19 +39,20 @@ static inline short median_of_5(short p0, short p1, short p2, short p3, short p4
     return c;
 }
 
+/* Diagnostic traces (1.2 KB): PSRAM, so they cost the DMA pool nothing. */
 #define TIMING_TRACE_LEN 40
-static int timing_trace_jit[TIMING_TRACE_LEN];
-static int timing_trace_sym[TIMING_TRACE_LEN];
+static EXT_RAM_BSS_ATTR int timing_trace_jit[TIMING_TRACE_LEN];
+static EXT_RAM_BSS_ATTR int timing_trace_sym[TIMING_TRACE_LEN];
 static int timing_trace_idx = 0;
 static int timing_trace_armed = 0;
 
 #define RAW_TRACE_LEN TIMING_TRACE_LEN
 #define RAW_TRACE_SAMPLES 5
-static short raw_trace_samples[RAW_TRACE_LEN][RAW_TRACE_SAMPLES];
-static int   raw_trace_sum[RAW_TRACE_LEN];
-static int   raw_trace_symbol[RAW_TRACE_LEN];
+static EXT_RAM_BSS_ATTR short raw_trace_samples[RAW_TRACE_LEN][RAW_TRACE_SAMPLES];
+static EXT_RAM_BSS_ATTR int   raw_trace_sum[RAW_TRACE_LEN];
+static EXT_RAM_BSS_ATTR int   raw_trace_symbol[RAW_TRACE_LEN];
 static int   raw_trace_idx = 0;
-static int   raw_trace_valid[RAW_TRACE_LEN];
+static EXT_RAM_BSS_ATTR int   raw_trace_valid[RAW_TRACE_LEN];
 
 void dsd_raw_trace_reset(void)
 {
@@ -71,7 +74,7 @@ void dsd_timing_trace_reset(void)
 
 extern void sys_log(unsigned char color, const char *fmt, ...);
 
-void dsd_timing_trace_dump(const char *tag)
+LS_COLD void dsd_timing_trace_dump(const char *tag)
 {
     int n = timing_trace_idx;
     if (n <= 0) return;

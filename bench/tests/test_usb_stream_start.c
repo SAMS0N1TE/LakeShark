@@ -150,9 +150,21 @@ LS_CASE(stream_loss_counts_ring_full_and_failed_transfers)
     LS_EQ_UINT(esp_libusb_stream_avail(),256*1024);
     LS_EQ_UINT(esp_libusb_stream_dropped(),5*16384);
     LS_EQ_UINT(esp_libusb_stream_dropped(),5*16384); /* Snapshot, not consumption. */
+    ls_radio_iq_transport_t evidence;
+    LS_CHECK(esp_libusb_stream_evidence(&evidence));
+    LS_EQ_UINT(evidence.ring_rejected_bytes,4*16384);
+    LS_EQ_UINT(evidence.transfer_error_events,1);
+    LS_EQ_UINT(evidence.submission_error_events,0);
+    uint64_t first_epoch=evidence.epoch;
+    esp_libusb_stream_reset();
+    LS_CHECK(esp_libusb_stream_evidence(&evidence));
+    LS_EQ_UINT(evidence.flush_discarded_bytes,256*1024);
+    LS_EQ_UINT(esp_libusb_stream_avail(),0);
     ls_shim_task_set_state(eSuspended);esp_libusb_stream_stop();
     LS_EQ_INT(esp_libusb_stream_start(&driver,0x81),0);
     LS_EQ_UINT(esp_libusb_stream_dropped(),0);
+    LS_CHECK(esp_libusb_stream_evidence(&evidence));LS_CHECK(evidence.epoch>first_epoch);
+    LS_EQ_UINT(evidence.ring_rejected_bytes,0);LS_EQ_UINT(evidence.transfer_error_events,0);
     ls_shim_task_set_state(eSuspended);esp_libusb_stream_stop();
 }
 
@@ -161,14 +173,20 @@ LS_CASE(usb_buffers_wait_for_delayed_flush_callbacks_before_reuse)
     ls_shim_task_fail_create(pdFALSE);s_fail_transfer_alloc=false;s_hold_completions=false;
     class_driver_t driver={.dev_hdl=(usb_device_handle_t)0x2468};
     LS_EQ_INT(esp_libusb_stream_start(&driver,0x81),0);
+    ls_radio_iq_transport_t before,after;
+    LS_CHECK(esp_libusb_stream_evidence(&before));
     unsigned allocated=s_allocs,freed=s_frees,submitted=s_submits;
     s_hold_completions=true;ls_shim_task_set_state(eSuspended);
     esp_libusb_stream_stop();
+    LS_CHECK(!esp_libusb_stream_evidence(&after));
     LS_EQ_UINT(s_frees,freed);LS_EQ_INT(esp_libusb_stream_slots(),TEST_STREAM_SLOTS);
     LS_EQ_INT(esp_libusb_stream_start(&driver,0x81),ESP_LIBUSB_ERR_BUSY);
+    LS_CHECK(!esp_libusb_stream_evidence(&after));
     LS_EQ_UINT(s_submits,submitted);LS_EQ_UINT(s_allocs,allocated);
     complete_usb();s_hold_completions=false;
     LS_EQ_INT(esp_libusb_stream_start(&driver,0x81),0);
+    LS_CHECK(esp_libusb_stream_evidence(&after));LS_CHECK(after.epoch>before.epoch);
+    LS_EQ_UINT(after.transfer_error_events,0); /* old canceled callbacks gained no new-epoch credit */
     LS_EQ_UINT(s_frees,freed+TEST_STREAM_SLOTS);LS_EQ_INT(esp_libusb_stream_slots(),TEST_STREAM_SLOTS);
     ls_shim_task_set_state(eSuspended);esp_libusb_stream_stop();
     LS_EQ_UINT(s_frees,freed+2*TEST_STREAM_SLOTS);

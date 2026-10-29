@@ -18,6 +18,7 @@
 #include "carto/style.h"
 
 #include "zeromesh_pmtiles.h"
+#include "ls_cold.h"
 
 
 /* Tile pixels. 256 is what the archives are cut at and what libcarto's
@@ -349,7 +350,7 @@ bool ls_map_begin(int px_w, int px_h)
     return true;
 }
 
-void ls_map_set_tile_px(int px)
+LS_COLD void ls_map_set_tile_px(int px)
 {
     if (px < 16) px = 16;
     if (px > TILE_PX_NATURAL) px = TILE_PX_NATURAL;
@@ -381,7 +382,7 @@ const char *ls_map_check_archive(const char *path)
 const char *ls_map_open_error(void) { return s_open_error; }
 const char *ls_map_archive(void) { return s_pm ? s_path : NULL; }
 
-bool ls_map_open(const char *path)
+LS_COLD bool ls_map_open(const char *path)
 {
     s_open_error = ls_map_check_archive(path);
     if (s_open_error) {
@@ -560,7 +561,7 @@ void ls_map_follow_fix(bool valid, double lat, double lon, int64_t stamp, int64_
     }
 }
 
-void ls_map_center(double lat, double lon)
+LS_COLD void ls_map_center(double lat, double lon)
 {
     if (!isfinite(lat) || !isfinite(lon)) return;
     /* Freshness/unset is validated by callers; explicit saved 0,0 is valid. */
@@ -603,7 +604,7 @@ void ls_map_zoom_limits(int *lo, int *hi)
     if (hi) *hi = max_source < 19 ? max_source + 3 : 22;
 }
 
-void ls_map_zoom_by(int dz)
+LS_COLD void ls_map_zoom_by(int dz)
 {
     int z = s_zoom + dz, lo, hi;
     ls_map_zoom_limits(&lo, &hi);
@@ -639,7 +640,7 @@ static bool tile_at(int z, double lat, double lon, uint32_t *tx, uint32_t *ty)
 
 #define ZOOM_SEARCH_SPAN 3
 
-int ls_map_zoom_covering(double lat, double lon)
+LS_COLD int ls_map_zoom_covering(double lat, double lon)
 {
     if (!s_pm) return -1;
 
@@ -670,7 +671,7 @@ int ls_map_zoom_covering(double lat, double lon)
     return -1;
 }
 
-void ls_map_pan(int dx_px, int dy_px)
+LS_COLD void ls_map_pan(int dx_px, int dy_px)
 {
     if (!dx_px && !dy_px) return;
     ls_map_follow_set(false);

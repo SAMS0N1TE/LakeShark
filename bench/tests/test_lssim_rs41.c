@@ -124,9 +124,9 @@ LS_CASE(sonde_detail_shows_its_own_keys)
 LS_CASE(experiment_touch_pages_and_list_recovery_hint)
 {
     run("experiments","-k b -x @up,90:26",true);
-    LS_CHECK(strstr(output,"2/2 (14)")); LS_CHECK(strstr(output,"Z-WAVE SNIFFER"));
+    LS_CHECK(strstr(output,"2/2 (11)")); LS_CHECK(strstr(output,"Z-WAVE SNIFFER"));
     run("experiments","-k b -x @up,90:26,5:26",true);
-    LS_CHECK(strstr(output,"1/2 (14)")); LS_CHECK(strstr(output,"AVIATION PULSES"));
+    LS_CHECK(strstr(output,"1/2 (11)")); LS_CHECK(strstr(output,"AVIATION PULSES"));
     LS_CHECK(!strstr(output,"Z-WAVE SNIFFER"));
     for (int wide = 0; wide < 2; ++wide) {
         run("experiments","-k h",wide);

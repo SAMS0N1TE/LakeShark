@@ -43,6 +43,7 @@ void ls_pwf_free(ls_pwf_t *p)
     p->first = p->last = NULL;
     p->w = p->h = p->bins = p->lines = p->freq_px = 0;
     p->hist_capacity = p->pixel_capacity = p->axis_capacity = 0;
+    p->colours_valid = false;
 }
 
 void ls_pwf_clear(ls_pwf_t *p)
@@ -129,6 +130,15 @@ static uint16_t stop_colour(const ls_pwf_stop_t *s, int n, int at)
 void ls_pwf_colours(ls_pwf_t *p, const ls_pwf_stop_t *stops, int n, float lo, float hi)
 {
     if (!p || !stops || n < 1) return;
+    /* RF/audio draw calls repeat the same setup every frame. Comparing only
+       the finished table still rebuilt 256 interpolated colours each time.
+       Compare the input bytes: RF passes mutable, stack-local stops, so a
+       pointer key would miss theme changes. No extra pixel buffers or RAM
+       allocations; this bounded state lives with the PSRAM renderer. */
+    const bool cacheable = n <= (int)(sizeof(p->colour_stops) / sizeof(p->colour_stops[0]));
+    if (cacheable && p->colours_valid && p->colour_count == n &&
+        p->colour_lo == lo && p->colour_hi == hi &&
+        !memcmp(p->colour_stops, stops, (size_t)n * sizeof(*stops))) return;
     uint16_t lut[256];
     const float range = hi - lo > 1e-3f ? hi - lo : 1e-3f;
     for (int c = 0; c < 256; c++) {
@@ -139,6 +149,13 @@ void ls_pwf_colours(ls_pwf_t *p, const ls_pwf_stop_t *stops, int n, float lo, fl
     if (memcmp(lut, p->lut, sizeof(lut))) {
         memcpy(p->lut, lut, sizeof(lut));
         p->redraw = true;
+    }
+    p->colours_valid = cacheable;
+    if (cacheable) {
+        memcpy(p->colour_stops, stops, (size_t)n * sizeof(*stops));
+        p->colour_count = n;
+        p->colour_lo = lo;
+        p->colour_hi = hi;
     }
 }
 

@@ -1,11 +1,11 @@
 
 if(CMAKE_SCRIPT_MODE_FILE)
     file(GLOB_RECURSE LS_SRCS
-        board/*.c core/*.c radio/*.c audio/*.c audio/*.cpp output/*.c dsp/*.c nfc/*.c
+        board/*.c core/*.c radio/*.c audio/*.c audio/*.cpp output/*.c dsp/*.c nfc/*.c rx/*.c
         apps/*/*.c apps/*/*.cpp apps/*/*.S)
 else()
     file(GLOB_RECURSE LS_SRCS CONFIGURE_DEPENDS
-        board/*.c core/*.c radio/*.c audio/*.c audio/*.cpp output/*.c dsp/*.c nfc/*.c
+        board/*.c core/*.c radio/*.c audio/*.c audio/*.cpp output/*.c dsp/*.c nfc/*.c rx/*.c
         apps/*/*.c apps/*/*.cpp apps/*/*.S)
 endif()
 
@@ -44,9 +44,11 @@ idf_component_register(
         audio
         output
         dsp
+        rx
         ${LS_APP_INCLUDES}
         nfc
     REQUIRES
+        ls_textpack
         mbedtls
         usb
         driver
@@ -109,7 +111,7 @@ set_source_files_properties(
     apps/p25/p25p1_check_ldu.cpp
     apps/p25/Hamming.cpp
     PROPERTIES COMPILE_FLAGS
-    "-Wno-unused-function -Wno-unused-variable -Wno-register -fno-use-cxa-atexit"
+    "-Wno-unused-function -Wno-unused-variable -Wno-register -fno-use-cxa-atexit -fno-exceptions"
 )
 
 # Size build: the radio core stays fast. DSP, decoders, audio and radio I/O
@@ -121,5 +123,34 @@ if(CONFIG_COMPILER_OPTIMIZATION_SIZE)
         ${CMAKE_CURRENT_LIST_DIR}/apps/fm/*.c ${CMAKE_CURRENT_LIST_DIR}/apps/adsb/*.c
         ${CMAKE_CURRENT_LIST_DIR}/apps/dmr/*.c ${CMAKE_CURRENT_LIST_DIR}/apps/acars/*.c
         ${CMAKE_CURRENT_LIST_DIR}/board/ls_panel.c)
-    set_source_files_properties(${LS_HOT_SRCS} PROPERTIES COMPILE_OPTIONS "-O2")
+    # In those folders but never on a sample or buffer path: settings and
+    # profile parsing, stores, SD programs, tuner register setup, health and
+    # diagnostics reports. Measured -O2 -> -Os: about 27 KB.
+    foreach(f radio/receiver_diagnostics.c radio/radio_health.c radio/iq_mission.c
+              radio/rx_plan.c radio/librtlsdr.c radio/tuner_e4k.c radio/tuner_fc0012.c
+              radio/tuner_fc0013.c radio/tuner_fc2580.c radio/tuner_r82xx.c
+              apps/p25/p25_profile.c apps/p25/p25_program.c apps/p25/p25_program_sd.c
+              apps/p25/p25_sites.c apps/p25/p25_geo.c apps/p25/p25_p2_bench.c
+              apps/p25/p25_cqpsk_controls.c apps/fm/aprs_store.c apps/fm/ais_store.c
+              apps/adsb/uat_weather.c audio/call_store.c
+              # control traffic, not samples: the transmit-token broker, P25
+              # trunking messages (tens a second), the scan controller and
+              # the health snapshot published at UI rate. About 7 KB.
+              radio/tx_broker.c apps/p25/p25_tsbk.c apps/p25/scan_ctrl.c
+              apps/p25/p25_health.c
+              # settings, console commands, NVS and SD stores, retry and
+              # policy bookkeeping, the ADS-B demo: run on a command, a key
+              # or a timer, never on a sample or a buffer.
+              radio/radio_frontend.c radio/tx_policy.c radio/radio_open_retry.c
+              radio/usb_boot_retry.c radio/usb_port_cycle.c radio/iq_app_control.c
+              apps/fm/same_store.c apps/fm/fm_bcast_cmd.c apps/fm/fm_mode_label.c
+              apps/fm/fm_lifecycle.c apps/p25/p25_iq_capture_command.c
+              apps/p25/scan_ctrl_nvs.c apps/p25/p25_entry_settings.c
+              apps/p25/p25_tg_roster.c apps/p25/p25_pack.c apps/p25/p25_p2_follow.c
+              apps/adsb/uat_console.c apps/adsb/adsb_demo.c apps/dmr/dmr_report.c)
+        list(REMOVE_ITEM LS_HOT_SRCS ${CMAKE_CURRENT_LIST_DIR}/${f})
+    endforeach()
+    # -mno-save-restore: the component is built with -msave-restore (root
+    # CMakeLists.txt); the hot files keep inline prologues.
+    set_source_files_properties(${LS_HOT_SRCS} PROPERTIES COMPILE_OPTIONS "-O2;-mno-save-restore")
 endif()

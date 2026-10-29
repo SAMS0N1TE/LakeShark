@@ -10,6 +10,8 @@
 #include "../../ls_df.h"
 #include "../../ls_df_fit.h"
 #include "../../ls_df_sources.h"
+#include "../../ls_fox_run.h"
+#include "../../ls_rfsim.h"
 #include "../../ls_df_cal.h"
 #include "../../ls_df_hits.h"
 #include "../../ls_df_view.h"
@@ -37,6 +39,7 @@
 #include <string.h>
 #include <strings.h>
 #include <time.h>
+#include "ls_textpack.h"
 
 enum { P_DIAL, P_FIND, P_GOTO, P_LEVEL, P_COUNT };
 static const char *const PAGE_NAMES[P_COUNT] = { "DIAL", "FIND", "GO TO", "LEVEL" };
@@ -190,6 +193,10 @@ static const char *cardinal(float deg)
 
 static bool position(double *lat, double *lon)
 {
+    /* The simulated position first, when one is set on the console (rfsim),
+       so FIND's bearings can be placed indoors. */
+    uint16_t sim = 0;
+    if (ls_rfsim_mode() != LS_RFSIM_OFF && ls_rf_where(lat, lon, &sim, NULL)) return true;
     ls_field_sample_t p; ls_field_sample_snapshot(&p);
     if (!p.gps_valid) return false;
     *lat = p.lat; *lon = p.lon; return true;
@@ -312,10 +319,10 @@ __attribute__((noinline)) static void info_lines(tui_surface *sf, tui_rect a, in
         s_r.quality == LS_COMPASS_DISTURBED ? TUI_RED : TUI_YELLOW) | TUI_BRIGHT, TUI_BLACK);
     snprintf(line, sizeof(line), "FIELD %s", ls_compass_quality_name(s_r.quality)); LINE(quality_ink);
     if (s_r.quality == LS_COMPASS_DISTURBED) {
-        snprintf(line, sizeof(line), "magnet or metal nearby,"); LINE(quality_ink);
+        LS_SNPUTS(t_scr_compass_magnet_or_metal_nearby, line, sizeof(line), "magnet or metal nearby,"); LINE(quality_ink);
         snprintf(line, sizeof(line), "or recalibrate (K)"); LINE(quality_ink);
     } else if (s_r.quality == LS_COMPASS_UNCALIBRATED) {
-        snprintf(line, sizeof(line), "K RECALIBRATE before navigating"); LINE(quality_ink);
+        LS_SNPUTS(t_scr_compass_k_recalibrate_before_navigating, line, sizeof(line), "K RECALIBRATE before navigating"); LINE(quality_ink);
     }
     snprintf(line, sizeof(line), "%s NORTH  %s%s", true_mode() ? "TRUE" : "MAGNETIC",
              !s_r.valid ? "waiting for a heading" : s_r.back_axis ? "sighting the back" : "board top",
@@ -323,24 +330,24 @@ __attribute__((noinline)) static void info_lines(tui_surface *sf, tui_rect a, in
     LINE(TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     /* Strength against the calibration's own figure when there is one:
        that is what the interference check uses (ls_compass_apply_model). */
-    if (isfinite(s_r.declination)) snprintf(line, sizeof(line), "DECL %+.1f  DIP %.0f/%.0f  %.0f/%.0f uT",
+    if (isfinite(s_r.declination)) LS_SNPRINTF(t_scr_compass_decl_1f_dip_0f, line, sizeof(line), "DECL %+.1f  DIP %.0f/%.0f  %.0f/%.0f uT",
                                             s_r.declination, s_r.dip, s_r.expected_dip, s_r.field_ut,
                                             isfinite(s_r.cal_ut) ? s_r.cal_ut : s_r.expected_ut);
-    else snprintf(line, sizeof(line), "DIP %.0f  %.0f uT  true north needs a GPS fix once", s_r.dip, s_r.field_ut);
+    else LS_SNPRINTF(fmt_scr_compass_dip_ut_true_north, line, sizeof(line), "DIP %.0f  %.0f uT  true north needs a GPS fix once", s_r.dip, s_r.field_ut);
     LINE(LS_ATTR_DIM);
     float el = NAN; const float sun = sun_azimuth(&el);
-    if (isfinite(sun)) { snprintf(line, sizeof(line), "SUN %03.0f %s  %.0f deg up", to_dial(sun), ref(), el); LINE(TUI_ATTR(TUI_YELLOW, TUI_BLACK)); }
-    snprintf(line, sizeof(line), "BACK %03.0f  TILT %.0f", isfinite(h) ? fmodf(h + 180.0f, 360.0f) : 0.0f, s_r.tilt);
+    if (isfinite(sun)) { LS_SNPRINTF(t_scr_compass_sun_03_0f_s, line, sizeof(line), "SUN %03.0f %s  %.0f deg up", to_dial(sun), ref(), el); LINE(TUI_ATTR(TUI_YELLOW, TUI_BLACK)); }
+    LS_SNPRINTF(t_scr_compass_back_03_0f_tilt, line, sizeof(line), "BACK %03.0f  TILT %.0f", isfinite(h) ? fmodf(h + 180.0f, 360.0f) : 0.0f, s_r.tilt);
     LINE(LS_ATTR_DIM);
     if (isfinite(s_lock) && isfinite(h)) {
         const float off = fmodf(locked_heading() - h + 540.0f, 360.0f) - 180.0f;
-        snprintf(line, sizeof(line), "LOCK %03.0f  steer %s %.0f", locked_heading(), off >= 0 ? "right" : "left", fabsf(off));
+        LS_SNPRINTF(t_scr_compass_lock_03_0f_steer, line, sizeof(line), "LOCK %03.0f  steer %s %.0f", locked_heading(), off >= 0 ? "right" : "left", fabsf(off));
         LINE(TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, TUI_BLACK));
     }
     double tb, tm; char tn[40];
     if (target_nav(&tb, &tm, tn, sizeof(tn))) {
         char d[24]; distance_text(tm, d, sizeof(d));
-        snprintf(line, sizeof(line), "%.20s  %03.0f %s  %s", tn, to_dial((float)tb), ref(), d);
+        LS_SNPRINTF(t_scr_compass_20s_03_0f_s, line, sizeof(line), "%.20s  %03.0f %s  %s", tn, to_dial((float)tb), ref(), d);
         LINE(TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
     }
 #undef LINE
@@ -642,11 +649,11 @@ __attribute__((noinline)) static void compare_and_learn(int64_t now)
     s_auto.truth = truth ? (float)b : NAN; s_auto.range_m = truth ? (float)m : NAN;
     if (!s_auto_on) snprintf(s_auto.why, sizeof(s_auto.why), "off");
     else if (!truth) snprintf(s_auto.why, sizeof(s_auto.why), "%s", why ? why : "no truth");
-    else if (m < 30) snprintf(s_auto.why, sizeof(s_auto.why), "beacon under 30 m away");
+    else if (m < 30) LS_SNPUTS(t_scr_compass_beacon_under_30_m, s_auto.why, sizeof(s_auto.why), "beacon under 30 m away");
     else if (s_cmp.fit.bins && s_cmp.peak.coverage < 330)
-        snprintf(s_auto.why, sizeof(s_auto.why), "turn a full circle (%d of 360)", s_cmp.peak.coverage);
+        LS_SNPRINTF(t_scr_compass_turn_a_full_circle, s_auto.why, sizeof(s_auto.why), "turn a full circle (%d of 360)", s_cmp.peak.coverage);
     else if (sw->samples < s_auto.samples + 30 || now - s_auto.us < 20000000)
-        snprintf(s_auto.why, sizeof(s_auto.why), "waiting for a fresh circle");
+        LS_SNPUTS(t_scr_compass_waiting_for_a_fresh, s_auto.why, sizeof(s_auto.why), "waiting for a fresh circle");
     else {
         ls_df_fit_t check;
         const bool fits = !s_pat[0].circles ||
@@ -654,7 +661,7 @@ __attribute__((noinline)) static void compare_and_learn(int64_t now)
         if (fits && ls_df_pattern_learn(&s_pat[0], sw, (float)b)) {
             s_auto.added++;
             snprintf(s_auto.why, sizeof(s_auto.why), "learnt circle %u", (unsigned)s_pat[0].circles);
-        } else snprintf(s_auto.why, sizeof(s_auto.why), "circle refused: unlike the pattern");
+        } else LS_SNPUTS(t_scr_compass_circle_refused_unlike_the, s_auto.why, sizeof(s_auto.why), "circle refused: unlike the pattern");
         s_auto.samples = sw->samples; s_auto.us = now;
     }
     /* Saved at most once a minute, and only when it grew. */
@@ -766,7 +773,7 @@ __attribute__((noinline)) static void update_find(void)
         if (ls_df_cal_circle(&s_cal, &s_est)) {
             ls_df_pattern_learn(&s_pat_cal, &s_sw[0], s_cal.mark);
             ls_df_cal_result_t r; ls_df_cal_result(&s_cal, &r);
-            char t[64]; snprintf(t, sizeof(t), "Circle %d: %+.0f deg%s", r.circles,
+            char t[64]; LS_SNPRINTF(t_scr_compass_circle_d_0f_deg, t, sizeof(t), "Circle %d: %+.0f deg%s", r.circles,
                                  s_cal.offset[(s_cal.next + LS_DF_CAL_CIRCLES - 1) % LS_DF_CAL_CIRCLES],
                                  r.ready ? "  - agree, SAVE CAL" : "");
             say(t);
@@ -915,7 +922,7 @@ __attribute__((noinline)) static void draw_find_view(tui_surface *sf, tui_rect a
         labels[r] = names[r];
     }
     EXT_RAM_BSS_ATTR static char title[48];
-    snprintf(title, sizeof(title), "HEAT  channel %c over time, newest on top", track_tag(s_sel));
+    LS_SNPRINTF(t_scr_compass_heat_channel_c_over, title, sizeof(title), "HEAT  channel %c over time, newest on top", track_tag(s_sel));
     hm = (ls_df_heat_t){ .title = title, .rows = s_hist_n, .cells = cells[0], .labels = labels, .selected = -1,
                          .heading = heading, .pick = pick_b };
     ls_df_heat_draw(sf, rest, &hm);
@@ -1009,7 +1016,7 @@ static void cal_step(void)
         if (!isfinite(h)) { say("No heading yet"); return; }
         ls_df_cal_mark(&s_cal, h);
         clear_track(0); memset(&s_est, 0, sizeof(s_est)); s_peak = NAN;
-        char t[64]; snprintf(t, sizeof(t), "Beacon at %03.0f. Turn slowly, full circles", h);
+        char t[64]; LS_SNPRINTF(t_scr_compass_beacon_at_03_0f, t, sizeof(t), "Beacon at %03.0f. Turn slowly, full circles", h);
         say(t);
         return;
     }
@@ -1027,9 +1034,9 @@ static void cal_step(void)
     cal_end();
     char t[96];
     if (s_method == LS_DF_FIT)
-        snprintf(t, sizeof(t), "Saved: %s pattern from %u circles for FIT", ls_dfs_name(calibrated), (unsigned)circles);
+        LS_SNPRINTF(t_scr_compass_saved_s_pattern_from, t, sizeof(t), "Saved: %s pattern from %u circles for FIT", ls_dfs_name(calibrated), (unsigned)circles);
     else
-        snprintf(t, sizeof(t), "Saved: %s %s corrected by %+.1f deg, and a pattern for FIT", ls_dfs_name(calibrated),
+        LS_SNPRINTF(fmt_scr_compass_saved_corrected_by_deg, t, sizeof(t), "Saved: %s %s corrected by %+.1f deg, and a pattern for FIT", ls_dfs_name(calibrated),
                  method_name(), -r.offset);
     say(t);
 }
@@ -1041,13 +1048,13 @@ static void cal_remark(void)
     ls_df_pattern_clear(&s_pat_cal);
     s_recent_n = 0;
     clear_track(0); memset(&s_est, 0, sizeof(s_est)); s_peak = NAN;
-    say("Aim the board's top at the beacon again, then MARK");
+    say(LS_TEXT(t_scr_compass_aim_the_board_s, "Aim the board's top at the beacon again, then MARK"));
 }
 
 static void cal_cancel(void)
 {
     cal_end();
-    say("Calibration cancelled; the saved correction is unchanged");
+    say(LS_TEXT(t_scr_compass_calibration_cancelled_the_saved, "Calibration cancelled; the saved correction is unchanged"));
 }
 
 /* The side panel while calibrating. */
@@ -1056,36 +1063,36 @@ __attribute__((noinline)) static int cal_lines(tui_surface *sf, tui_rect side, i
     EXT_RAM_BSS_ATTR static char line[120];
     const uint8_t head = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK), dim = LS_ATTR_DIM;
     const uint8_t good = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK), warn = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-    snprintf(line, sizeof(line), "BEACON CALIBRATION  %.2f MHz  %s%s  %s", s_dfs_freq / 1e6,
+    LS_SNPRINTF(t_scr_compass_beacon_calibration_2f_mhz, line, sizeof(line), "BEACON CALIBRATION  %.2f MHz  %s%s  %s", s_dfs_freq / 1e6,
              ls_dfs_name(s_dfs_source), s_dfs_source == LS_DFS_LORA && s_cal_hz != BEACON_915 ? " (EXT ANT)" : "",
              method_name());
     ls_safe_line(sf, side, y++, line, head);
     if (s_cal.phase == LS_DF_CAL_AIM) {
-        snprintf(line, sizeof(line), "1 Flipper: LakeShark > DF Beacon, %s > OK", s_cal_hz == BEACON_915 ? "915" : "433");
+        LS_SNPRINTF(t_scr_compass_1_flipper_lakeshark_df, line, sizeof(line), "1 Flipper: LakeShark > DF Beacon, %s > OK", s_cal_hz == BEACON_915 ? "915" : "433");
         ls_safe_line(sf, side, y++, line, dim);
         ls_safe_line(sf, side, y++, "  set it down 5-10 m away, in the open", dim);
         ls_safe_line(sf, side, y++, "2 Aim the board's top at it, then MARK", warn);
         return y;
     }
     ls_df_cal_result_t r; ls_df_cal_result(&s_cal, &r);
-    snprintf(line, sizeof(line), "Beacon at %03.0f. Circle %d: turned %d of 360, %.0f dB", s_cal.mark,
+    LS_SNPRINTF(fmt_scr_compass_beacon_at_circle_turned, line, sizeof(line), "Beacon at %03.0f. Circle %d: turned %d of 360, %.0f dB", s_cal.mark,
              r.circles + 1, s_est.coverage, s_est.contrast);
     ls_safe_line(sf, side, y++, line, dim);
     if (!s_dfs.fresh) ls_safe_line(sf, side, y++, "No level: is the beacon on?", warn);
     else if (s_turn_rate > LS_DF_CAL_TURN_MAX) {
-        snprintf(line, sizeof(line), "TOO FAST: %.0f deg/s, keep under %.0f", s_turn_rate, LS_DF_CAL_TURN_MAX);
+        LS_SNPRINTF(t_scr_compass_too_fast_0f_deg, line, sizeof(line), "TOO FAST: %.0f deg/s, keep under %.0f", s_turn_rate, LS_DF_CAL_TURN_MAX);
         ls_safe_line(sf, side, y++, line, warn);
     } else {
-        snprintf(line, sizeof(line), "Turning %.0f deg/s: good", s_turn_rate);
+        LS_SNPRINTF(t_scr_compass_turning_0f_deg_s, line, sizeof(line), "Turning %.0f deg/s: good", s_turn_rate);
         ls_safe_line(sf, side, y++, line, dim);
     }
     if (r.circles) {
-        snprintf(line, sizeof(line), "Offset %+.1f  spread %.1f  from %d circle%s", r.offset, r.spread,
+        LS_SNPRINTF(t_scr_compass_offset_1f_spread_1f, line, sizeof(line), "Offset %+.1f  spread %.1f  from %d circle%s", r.offset, r.spread,
                  r.circles, r.circles == 1 ? "" : "s");
         ls_safe_line(sf, side, y++, line, r.ready ? good : dim);
     }
     if (s_est.coverage >= LS_DF_CAL_COVERAGE && s_est.contrast < LS_DF_CAL_CONTRAST) {
-        snprintf(line, sizeof(line), "Only %.0f dB between directions: hold it to your chest, or go outside",
+        LS_SNPRINTF(fmt_scr_compass_only_db_between_directions, line, sizeof(line), "Only %.0f dB between directions: hold it to your chest, or go outside",
                  s_est.contrast);
         ls_safe_line(sf, side, y++, line, warn);
     }
@@ -1119,7 +1126,7 @@ __attribute__((noinline)) static void draw_log(tui_surface *sf, tui_rect side)
     const int64_t now = esp_timer_get_time();
     int y = side.y;
     const int total = ls_df_log_count(&s_log);
-    snprintf(line, sizeof(line), "HIT LOG %d/%lu  over %.0f dB  sure at %.0fx",
+    LS_SNPRINTF(t_scr_compass_hit_log_d_lu, line, sizeof(line), "HIT LOG %d/%lu  over %.0f dB  sure at %.0fx",
              total, (unsigned long)s_log.total, OPTV(O_THRESH), OPTV(O_SPIKE));
     ls_safe_line(sf, side, y++, line, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     ls_safe_line(sf, side, y++, " # AGE  CH FREQ/SRC    PEAK  SNR  BRG  N  FLAGS", TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
@@ -1141,7 +1148,7 @@ __attribute__((noinline)) static void draw_log(tui_surface *sf, tui_rect side)
         const int secs = (int)((now - h->last_us) / 1000000);
         if (secs < 100) snprintf(age, sizeof(age), "%3ds", secs);
         else snprintf(age, sizeof(age), "%3dm", secs / 60 > 999 ? 999 : secs / 60);
-        snprintf(line, sizeof(line), "%2d %s  %c %-10.10s %6.1f %4.0f %s %2u  %s", i + 1, age, track_tag(h->track),
+        LS_SNPRINTF(t_scr_compass_2d_s_c_10, line, sizeof(line), "%2d %s  %c %-10.10s %6.1f %4.0f %s %2u  %s", i + 1, age, track_tag(h->track),
                  where, h->peak, h->snr, brg, h->count > 99 ? 99 : h->count, flags);
         uint8_t at = hit_believed(h) ? TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM;
         if (h->flags) at = TUI_ATTR(TUI_YELLOW, TUI_BLACK);
@@ -1154,14 +1161,14 @@ __attribute__((noinline)) static void draw_log(tui_surface *sf, tui_rect side)
     if (p) {
         char where[16]; hit_where(p, where, sizeof(where));
         const float noise = ls_df_log_noise(&s_log, p->track);
-        snprintf(line, sizeof(line), "#%d %s ch%c %.1f, +%.0f over %.0f, %ux %.1fs",
+        LS_SNPRINTF(t_scr_compass_d_s_ch_c, line, sizeof(line), "#%d %s ch%c %.1f, +%.0f over %.0f, %ux %.1fs",
                  s_log_pick + 1, where, track_tag(p->track), p->peak, p->snr, noise, p->count,
                  (double)(p->last_us - p->start_us) / 1e6);
         ls_safe_line(sf, side, y++, line, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
         const ls_df_estimate_t *e = &s_te[p->track];
-        if (e->valid) snprintf(line, sizeof(line), " facing %03.0f%s; ch%c lobe %03.0f%s +/-%.0f",
+        if (e->valid) LS_SNPRINTF(t_scr_compass_facing_03_0f_s, line, sizeof(line), " facing %03.0f%s; ch%c lobe %03.0f%s +/-%.0f",
                                 to_dial(p->heading), ref(), track_tag(p->track), to_dial(e->bearing), ref(), e->spread);
-        else snprintf(line, sizeof(line), " facing %03.0f%s; turn a circle for ch%c",
+        else LS_SNPRINTF(t_scr_compass_facing_03_0f_s_2, line, sizeof(line), " facing %03.0f%s; turn a circle for ch%c",
                       to_dial(p->heading), ref(), track_tag(p->track));
         ls_safe_line(sf, side, y++, line, LS_ATTR_DIM);
     } else {
@@ -1241,7 +1248,7 @@ __attribute__((noinline)) static void draw_find(tui_surface *sf, tui_rect body)
     const bool fresh = isfinite(cur) && now - s_tlev[s_sel].last_us < (int64_t)(lap_hold_s(s_sel / LS_DFS_CHANNELS) * 1e6f);
     char tag[8] = "";
     if (scanning) snprintf(tag, sizeof(tag), "CH %c  ", track_tag(s_sel));
-    if (fresh && isfinite(s_peak)) snprintf(line, sizeof(line), "%s%6.1f %s   PEAK %.1f", tag, cur, s_dfs.unit, s_peak);
+    if (fresh && isfinite(s_peak)) LS_SNPRINTF(t_scr_compass_s_6_1f_s, line, sizeof(line), "%s%6.1f %s   PEAK %.1f", tag, cur, s_dfs.unit, s_peak);
     else if (fresh) snprintf(line, sizeof(line), "%s%6.1f %s", tag, cur, s_dfs.unit);
     else snprintf(line, sizeof(line), "%s  --   %s", tag, s_dfs.active ? "no level yet" : "");
     ls_safe_line(sf, side, y++, line, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
@@ -1256,9 +1263,9 @@ __attribute__((noinline)) static void draw_find(tui_surface *sf, tui_rect body)
     y++;
     /* Calibrating, the panel above already says how the circle is going. */
     if (!cal) {
-        snprintf(line, sizeof(line), "TURNED %d of 360  CONTRAST %.0f dB", s_est.coverage, s_est.contrast);
+        LS_SNPRINTF(t_scr_compass_turned_d_of_360, line, sizeof(line), "TURNED %d of 360  CONTRAST %.0f dB", s_est.coverage, s_est.contrast);
         ls_safe_line(sf, side, y++, line, LS_ATTR_DIM);
-        if (s_est.valid) snprintf(line, sizeof(line), "SIGNAL AT %03.0f %s  +/-%.0f", to_dial(s_est.bearing), ref(), s_est.spread);
+        if (s_est.valid) LS_SNPRINTF(t_scr_compass_signal_at_03_0f, line, sizeof(line), "SIGNAL AT %03.0f %s  +/-%.0f", to_dial(s_est.bearing), ref(), s_est.spread);
         else snprintf(line, sizeof(line), "%s", s_method == LS_DF_PEAK ? "Turn slowly through a full circle" :
                                           "Board to your chest, turn a full circle");
         ls_safe_line(sf, side, y++, line, TUI_ATTR((s_est.valid ? TUI_GREEN : TUI_YELLOW) | TUI_BRIGHT, TUI_BLACK));
@@ -1266,15 +1273,15 @@ __attribute__((noinline)) static void draw_find(tui_surface *sf, tui_rect body)
             const ls_df_fit_t *ft = &s_tf[s_sel];
             const ls_df_pattern_t *pat = &s_pat[s_sel / LS_DFS_CHANNELS];
             if (ft->valid && isfinite(ft->match))
-                snprintf(line, sizeof(line), "LEARNT PATTERN (%u)  match %.2f  depth %.0f dB", (unsigned)pat->circles,
+                LS_SNPRINTF(t_scr_compass_learnt_pattern_u_match, line, sizeof(line), "LEARNT PATTERN (%u)  match %.2f  depth %.0f dB", (unsigned)pat->circles,
                          ft->match, ft->depth);
             else if (ft->valid)
-                snprintf(line, sizeof(line), "CURVE FIT  explains %.0f%%  depth %.0f dB%s", 100 * fmaxf(0, ft->r2), ft->depth,
+                LS_SNPRINTF(t_scr_compass_curve_fit_explains_0f, line, sizeof(line), "CURVE FIT  explains %.0f%%  depth %.0f dB%s", 100 * fmaxf(0, ft->r2), ft->depth,
                          pat->circles ? "" : "  no pattern yet");
-            else snprintf(line, sizeof(line), "FIT: %d dirs heard, widest gap %d", ft->bins, ft->gap);
+            else LS_SNPRINTF(t_scr_compass_fit_d_dirs_heard, line, sizeof(line), "FIT: %d dirs heard, widest gap %d", ft->bins, ft->gap);
             ls_safe_line(sf, side, y++, line, LS_ATTR_DIM);
             if (ft->valid && ft->ambiguous) {
-                snprintf(line, sizeof(line), "OR %03.0f %s: front and back look alike", to_dial(ft->alt), ref());
+                LS_SNPRINTF(t_scr_compass_or_03_0f_s, line, sizeof(line), "OR %03.0f %s: front and back look alike", to_dial(ft->alt), ref());
                 ls_safe_line(sf, side, y++, line, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
             }
         }
@@ -1292,7 +1299,7 @@ __attribute__((noinline)) static void draw_find(tui_surface *sf, tui_rect body)
             const ls_df_hit_t *h = ls_df_log_at(&s_log, i);
             if (!hit_believed(h)) continue;
             char where[16]; hit_where(h, where, sizeof(where));
-            snprintf(line, sizeof(line), "LAST HIT %s ch %c  %.0f dB over  facing %03.0f  %ds ago", where,
+            LS_SNPRINTF(fmt_scr_compass_last_hit_ch_db, line, sizeof(line), "LAST HIT %s ch %c  %.0f dB over  facing %03.0f  %ds ago", where,
                      track_tag(h->track), h->snr, isfinite(h->heading) ? to_dial(h->heading) : 0.0f,
                      (int)((now - h->last_us) / 1000000));
             ls_safe_line(sf, side, y++, line, TUI_ATTR(TUI_GREEN, TUI_BLACK));
@@ -1309,11 +1316,11 @@ __attribute__((noinline)) static void draw_find(tui_surface *sf, tui_rect body)
         ls_safe_line(sf, side, y++, line, LS_ATTR_DIM);
     }
     if (!cal && isfinite(s_df_offset)) {
-        snprintf(line, sizeof(line), "Corrected %+.1f deg by beacon calibration", -s_df_offset);
+        LS_SNPRINTF(t_scr_compass_corrected_1f_deg_by, line, sizeof(line), "Corrected %+.1f deg by beacon calibration", -s_df_offset);
         ls_safe_line(sf, side, y++, line, LS_ATTR_DIM);
     }
     if (s_fix.valid) {
-        snprintf(line, sizeof(line), "FIX %.5f, %.5f  +/-%.0f m", s_fix.lat, s_fix.lon, s_fix.radius_m);
+        LS_SNPRINTF(t_scr_compass_fix_5f_5f_0f, line, sizeof(line), "FIX %.5f, %.5f  +/-%.0f m", s_fix.lat, s_fix.lon, s_fix.radius_m);
         ls_safe_line(sf, side, y++, line, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
     }
     if (!s_r.calibrated)
@@ -1354,14 +1361,14 @@ __attribute__((noinline)) static void draw_goto(tui_surface *sf, tui_rect body)
     const float h = shown_heading();
     if (isfinite(h)) {
         const float off = fmodf(bearing - h + 540.0f, 360.0f) - 180.0f;
-        if (fabsf(off) < 5) snprintf(line, sizeof(line), ">>> STRAIGHT AHEAD <<<");
+        if (fabsf(off) < 5) LS_SNPUTS(t_scr_compass_straight_ahead, line, sizeof(line), ">>> STRAIGHT AHEAD <<<");
         else snprintf(line, sizeof(line), "%s %.0f deg %s", off > 0 ? "TURN RIGHT" : "TURN LEFT", fabsf(off), off > 0 ? "-->" : "<--");
         ls_safe_line(sf, side, y++, line, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
     }
     EXT_RAM_BSS_ATTR static ls_gps_state_t g; ls_gps_get(&g);
     if (g.fix && g.speed_kts > 0.8f) {
         const double ms = g.speed_kts * 0.514444;
-        snprintf(line, sizeof(line), "%.1f km/h  about %.0f min", ms * 3.6, tm / ms / 60.0);
+        LS_SNPRINTF(t_scr_compass_1f_km_h_about, line, sizeof(line), "%.1f km/h  about %.0f min", ms * 3.6, tm / ms / 60.0);
         ls_safe_line(sf, side, y++, line, LS_ATTR_DIM);
     }
 }
@@ -1389,11 +1396,11 @@ __attribute__((noinline)) static void draw_level(tui_surface *sf, tui_rect body)
     tui_put_str(sf, box, px - 1, py - 1, " _ ", TUI_ATTR(hue, TUI_BLACK));
     tui_put_str(sf, box, px - 1, py, "(O)", TUI_ATTR(hue, TUI_BLACK));
     EXT_RAM_BSS_ATTR static char line[100];
-    snprintf(line, sizeof(line), "PITCH %+5.1f   ROLL %+5.1f   TILT %.1f", s_r.pitch, s_r.roll, s_r.tilt);
+    LS_SNPRINTF(t_scr_compass_pitch_5_1f_roll, line, sizeof(line), "PITCH %+5.1f   ROLL %+5.1f   TILT %.1f", s_r.pitch, s_r.roll, s_r.tilt);
     ls_safe_line(sf, body, body.y + body.h - 6, line, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
     ls_safe_line(sf, body, body.y + body.h - 5, level ? "LEVEL" : "Lay it on the surface; the bubble shows the high side",
                  TUI_ATTR(hue, TUI_BLACK));
-    snprintf(line, sizeof(line), "Stood on an edge, TILT is the slope: %.1f deg, %.0f%% grade",
+    LS_SNPRINTF(fmt_scr_compass_stood_on_an_edge, line, sizeof(line), "Stood on an edge, TILT is the slope: %.1f deg, %.0f%% grade",
              90 - s_r.tilt, tanf((90 - s_r.tilt) * 0.0174533f) * 100);
     if (s_r.tilt > 45) ls_safe_line(sf, body, body.y + body.h - 4, line, LS_ATTR_DIM);
 }
@@ -1483,7 +1490,7 @@ static void mark_note(void)
     ls_note_live_gps(line, sizeof(line));
     n += (size_t)snprintf(body + n, sizeof(body) - n, "%s", line);
     if (isfinite(s_lock) && n < sizeof(body))
-        n += (size_t)snprintf(body + n, sizeof(body) - n, "Locked bearing %03.0f %s\n", locked_heading(), ref());
+        n += (size_t)LS_SNPRINTF(t_scr_compass_locked_bearing_03_0f, body + n, sizeof(body) - n, "Locked bearing %03.0f %s\n", locked_heading(), ref());
     say(ls_notes_mark("Compass mark", body) ? "Saved to NOTES" : "NOTES is busy; try again");
 }
 
@@ -1498,10 +1505,10 @@ static void more_done(int i)
     else if (i == M_CAL) { ls_scr_labs_request_calibration(); open_app("labs"); }
     else if (i == M_LOCK) { s_lock = NAN; say("Lock cleared"); }
     else if (i == M_TARGET) { ls_compass_clear_target(); say("Target cleared"); }
-    else if (i == M_BEARINGS) { s_bearing_count = 0; memset(&s_fix, 0, sizeof(s_fix)); say("Saved bearings cleared"); }
+    else if (i == M_BEARINGS) { s_bearing_count = 0; memset(&s_fix, 0, sizeof(s_fix)); say(LS_TEXT(t_scr_compass_saved_bearings_cleared, "Saved bearings cleared")); }
     else if (i == M_DFCAL) { show_page(P_FIND); cal_start(BEACON_915); }
     else if (i == M_DFCLEAR) { settings_set_df_offset((int)s_dfs_source, (int)s_method, NAN); s_df_offset = NAN;
-                               say("FIND correction cleared for this radio and method"); }
+                               say(LS_TEXT(t_scr_compass_find_correction_cleared_for, "FIND correction cleared for this radio and method")); }
 }
 
 static void open_more(void)
@@ -1511,17 +1518,17 @@ static void open_more(void)
     ls_picker_add(s_magnetic ? "Use true north" : "Use magnetic north",
                   isfinite(s_r.declination) ? "declination from the World Magnetic Model" : "true north needs one GPS fix, or HOME");
     ls_picker_add(s_simple ? "3D style" : "Simple style", s_simple ? "the lit, tilting instrument" : "the flat ASCII ring");
-    ls_picker_add("Calibrate", "six positions and a figure eight, in LORA LABS");
+    ls_picker_add("Calibrate", LS_TEXT(t_scr_compass_six_positions_and_a, "six positions and a figure eight, in LORA LABS"));
     ls_picker_add("Clear the lock", isfinite(s_lock) ? "stop steering to it" : "no lock set");
     ls_picker_add("Clear the target", ls_compass_target(NULL, NULL, NULL, 0) ? "stop following it" : "no target set");
     char d[40]; snprintf(d, sizeof(d), "%d kept", s_bearing_count);
-    ls_picker_add("Clear saved bearings", d);
-    ls_picker_add("Calibrate FIND with a beacon", "the Flipper's DF Beacon, 915 MHz");
+    ls_picker_add(LS_TEXT(t_scr_compass_clear_saved_bearings, "Clear saved bearings"), d);
+    ls_picker_add(LS_TEXT(t_scr_compass_calibrate_find_with_a, "Calibrate FIND with a beacon"), LS_TEXT(t_scr_compass_the_flipper_s_df, "the Flipper's DF Beacon, 915 MHz"));
     char c[48];
     if (isfinite(s_df_offset)) snprintf(c, sizeof(c), "%s %s: %+.1f deg", ls_dfs_name(s_dfs_source),
                                         method_name(), -s_df_offset);
     else snprintf(c, sizeof(c), "none for %s", ls_dfs_name(s_dfs_source));
-    ls_picker_add("Clear FIND correction", c);
+    ls_picker_add(LS_TEXT(t_scr_compass_clear_find_correction, "Clear FIND correction"), c);
 }
 
 /* ---- LOOKS ---- */
@@ -1544,8 +1551,8 @@ static void looks_done(int i)
 static void open_looks(void)
 {
     ls_picker_open("LOOKS", looks_done);
-    ls_picker_add("Signal fill inside the card", FILL_NAMES[s_fill]);
-    ls_picker_add("Green trail of directions heard", s_trail ? "on" : "off");
+    ls_picker_add(LS_TEXT(t_scr_compass_signal_fill_inside_the, "Signal fill inside the card"), FILL_NAMES[s_fill]);
+    ls_picker_add(LS_TEXT(t_scr_compass_green_trail_of_directions, "Green trail of directions heard"), s_trail ? "on" : "off");
     ls_picker_add("Direction letters", s_white_letters ? "white" : "orange");
     ls_picker_add("Style", s_simple ? "simple: the flat ASCII ring" : "3D: the lit, tilting instrument");
 }
@@ -1665,18 +1672,18 @@ static void find_settings(void)
     }
     char d[40];
     snprintf(d, sizeof(d), "%s", s_src2 < LS_DFS_COUNT ? ls_dfs_name(s_src2) : "off");
-    ls_picker_add("Second radio at once", d);
+    ls_picker_add(LS_TEXT(t_scr_compass_second_radio_at_once, "Second radio at once"), d);
     snprintf(d, sizeof(d), s_src2 < LS_DFS_COUNT ? "%d channel%s" : "turn a second radio on", s_nch[1], s_nch[1] == 1 ? "" : "s");
-    ls_picker_add("Second radio's channels", d);
+    ls_picker_add(LS_TEXT(t_scr_compass_second_radio_s_channels, "Second radio's channels"), d);
     snprintf(d, sizeof(d), "%d kept", ls_df_log_count(&s_log));
     ls_picker_add("Clear the hit log", d);
-    ls_picker_add("Calibrate FIND with a beacon", "the Flipper's DF Beacon, 915 MHz");
+    ls_picker_add(LS_TEXT(t_scr_compass_calibrate_find_with_a, "Calibrate FIND with a beacon"), LS_TEXT(t_scr_compass_the_flipper_s_df, "the Flipper's DF Beacon, 915 MHz"));
     if (isfinite(s_df_offset)) snprintf(d, sizeof(d), "%s: %+.1f deg", ls_dfs_name(s_dfs_source), -s_df_offset);
     else snprintf(d, sizeof(d), "none for %s", ls_dfs_name(s_dfs_source));
-    ls_picker_add("Clear FIND correction", d);
+    ls_picker_add(LS_TEXT(t_scr_compass_clear_find_correction, "Clear FIND correction"), d);
     snprintf(d, sizeof(d), "%d kept", s_bearing_count);
-    ls_picker_add("Clear saved bearings", d);
-    ls_picker_add("Compass options", "north, style, calibration");
+    ls_picker_add(LS_TEXT(t_scr_compass_clear_saved_bearings, "Clear saved bearings"), d);
+    ls_picker_add("Compass options", LS_TEXT(t_scr_compass_north_style_calibration, "north, style, calibration"));
 }
 
 /* ---- OPTIONS ---- */
@@ -1698,7 +1705,7 @@ static void o_more_show(const ls_opt_t *o, char *out, size_t n)
         break;
     case M_TARGET: snprintf(out, n, "%s", ls_compass_target(NULL, NULL, NULL, 0) ? "following one" : "none set"); break;
     case M_BEARINGS: snprintf(out, n, "%d kept", s_bearing_count); break;
-    case M_DFCAL: snprintf(out, n, "Flipper DF Beacon, 915"); break;
+    case M_DFCAL: LS_SNPUTS(t_scr_compass_flipper_df_beacon_915, out, n, "Flipper DF Beacon, 915"); break;
     case M_DFCLEAR:
         if (isfinite(s_df_offset)) snprintf(out, n, "%s: %+.1f deg", ls_dfs_name(s_dfs_source), -s_df_offset);
         else snprintf(out, n, "none for %s", ls_dfs_name(s_dfs_source));
@@ -1777,10 +1784,10 @@ static void apply_channels(int k)
 static void channel_freq_done(double mhz)
 {
     const int k = s_edit_slot;
-    if (!(mhz > 1 && mhz <= UINT32_MAX / 1e6)) { say("Range: above 1, up to 4294.967295 MHz"); return; }
+    if (!(mhz > 1 && mhz <= UINT32_MAX / 1e6)) { say(LS_TEXT(t_scr_compass_range_above_1_up, "Range: above 1, up to 4294.967295 MHz")); return; }
     const uint32_t hz = (uint32_t)llround(mhz * 1e6);
     if (!ls_dfs_in_range(slot_source(k), hz)) {
-        char t[64]; snprintf(t, sizeof(t), "%s cannot tune to %.4f MHz", ls_dfs_name(slot_source(k)), mhz);
+        char t[64]; LS_SNPRINTF(t_scr_compass_s_cannot_tune_to, t, sizeof(t), "%s cannot tune to %.4f MHz", ls_dfs_name(slot_source(k)), mhz);
         say(t); return;
     }
     if (s_edit_ch < 0) { if (s_nch[k] < LS_DFS_CHANNELS) s_ch[k][s_nch[k]++] = hz; }
@@ -1793,7 +1800,7 @@ enum { CE_SHOW, CE_CHANGE, CE_REMOVE };
 static void channel_edit_done(int i)
 {
     const int k = s_edit_slot, c = s_edit_ch;
-    if (i == CE_SHOW) { s_sel = k * LS_DFS_CHANNELS + c; say("Showing that channel's lobe"); }
+    if (i == CE_SHOW) { s_sel = k * LS_DFS_CHANNELS + c; say(LS_TEXT(t_scr_compass_showing_that_channel_s, "Showing that channel's lobe")); }
     else if (i == CE_CHANGE) ls_numpad_open("FREQUENCY", "MHz", s_ch[k][c] / 1e6, channel_freq_done);
     else if (i == CE_REMOVE && s_nch[k] > 1) {
         memmove(&s_ch[k][c], &s_ch[k][c + 1], sizeof(uint32_t) * (s_nch[k] - c - 1));
@@ -1825,10 +1832,10 @@ static void preset_done(int i)
     int n = 0;
     for (int c = 0; c < PRESETS[i].n; c++)
         if (ls_dfs_in_range(slot_source(k), PRESETS[i].hz[c])) s_ch[k][n++] = PRESETS[i].hz[c];
-    if (!n) { say("This radio reaches none of those"); channels_open(k); return; }
+    if (!n) { say(LS_TEXT(t_scr_compass_this_radio_reaches_none, "This radio reaches none of those")); channels_open(k); return; }
     s_nch[k] = n; s_sel = k * LS_DFS_CHANNELS;
     apply_channels(k);
-    char t[64]; snprintf(t, sizeof(t), "Scanning %d of %d channels", n, PRESETS[i].n);
+    char t[64]; LS_SNPRINTF(t_scr_compass_scanning_d_of_d, t, sizeof(t), "Scanning %d of %d channels", n, PRESETS[i].n);
     say(t);
 }
 
@@ -1840,7 +1847,7 @@ static void presets_open(void)
         for (int c = 0; c < PRESETS[i].n; c++) n += ls_dfs_in_range(slot_source(s_edit_slot), PRESETS[i].hz[c]);
         char d[40];
         if (n == PRESETS[i].n) snprintf(d, sizeof(d), "%d channel%s", n, n == 1 ? "" : "s");
-        else snprintf(d, sizeof(d), "%d of %d in this radio's range", n, PRESETS[i].n);
+        else LS_SNPRINTF(t_scr_compass_d_of_d_in, d, sizeof(d), "%d of %d in this radio's range", n, PRESETS[i].n);
         ls_picker_add(PRESETS[i].name, d);
     }
 }
@@ -1853,18 +1860,18 @@ static void channels_done(int i)
         s_edit_ch = i;
         char title[32]; snprintf(title, sizeof(title), "CH %c  %.4f MHz", track_tag(k * LS_DFS_CHANNELS + i), s_ch[k][i] / 1e6);
         ls_picker_open(title, channel_edit_done);
-        ls_picker_add("Show this channel", "its lobe on the dial, its PEAK readout");
-        ls_picker_add("Change the frequency", "");
+        ls_picker_add("Show this channel", LS_TEXT(t_scr_compass_its_lobe_on_the, "its lobe on the dial, its PEAK readout"));
+        ls_picker_add(LS_TEXT(t_scr_compass_change_the_frequency, "Change the frequency"), "");
         ls_picker_add("Remove it", s_nch[k] > 1 ? "" : "the last channel stays");
         return;
     }
     i -= s_nch[k];
     if (i == 0) {
-        if (s_nch[k] >= LS_DFS_CHANNELS) { say("Eight channels is the most"); channels_open(k); return; }
+        if (s_nch[k] >= LS_DFS_CHANNELS) { say(LS_TEXT(t_scr_compass_eight_channels_is_the, "Eight channels is the most")); channels_open(k); return; }
         s_edit_ch = -1;
         ls_numpad_open("ADD CHANNEL", "MHz", s_ch[k][s_nch[k] - 1] / 1e6, channel_freq_done);
     } else if (i == 1) presets_open();
-    else if (i == 2 && s_nch[k] > 1) { s_nch[k] = 1; s_sel = k * LS_DFS_CHANNELS; apply_channels(k); say("One frequency, no scanning"); }
+    else if (i == 2 && s_nch[k] > 1) { s_nch[k] = 1; s_sel = k * LS_DFS_CHANNELS; apply_channels(k); say(LS_TEXT(t_scr_compass_one_frequency_no_scanning, "One frequency, no scanning")); }
 }
 
 static void channels_open(int k)
@@ -1884,8 +1891,8 @@ static void channels_open(int k)
         ls_picker_add(label, d);
     }
     ls_picker_add("Add a channel", s_nch[k] < LS_DFS_CHANNELS ? "scan up to eight" : "eight is the most");
-    ls_picker_add("Scan presets", "FRS, MURS, weather, ISM, LoRa");
-    if (s_nch[k] > 1) ls_picker_add("One frequency only", "keep the first, stop scanning");
+    ls_picker_add("Scan presets", LS_TEXT(t_scr_compass_frs_murs_weather_ism, "FRS, MURS, weather, ISM, LoRa"));
+    if (s_nch[k] > 1) ls_picker_add("One frequency only", LS_TEXT(t_scr_compass_keep_the_first_stop, "keep the first, stop scanning"));
 }
 
 /* ---- FIND ---- */
@@ -1911,11 +1918,11 @@ static void pick_source_done(int i)
     }
     s_sel = 0;
     find_start();
-    if (!s_dfs2.active && s_src2 < LS_DFS_COUNT && ls_dfs_conflict(1, s_src2)) say("Second radio off: it shares hardware with this one");
+    if (!s_dfs2.active && s_src2 < LS_DFS_COUNT && ls_dfs_conflict(1, s_src2)) say(LS_TEXT(t_scr_compass_second_radio_off_it, "Second radio off: it shares hardware with this one"));
     clear_all();
     load_df_offset();
-    if (s_find_on) say("Now turn slowly through a full circle");
-    else say("That radio would not start");
+    if (s_find_on) say(LS_TEXT(t_scr_compass_now_turn_slowly_through, "Now turn slowly through a full circle"));
+    else say(LS_TEXT(t_scr_compass_that_radio_would_not, "That radio would not start"));
 }
 
 static void pick_source(void)
@@ -1933,8 +1940,8 @@ static void pick_source(void)
     for (int k = 0; k < 2; k++) {
         const ls_dfs_t rx = cal_receiver(HZ[k]);
         char d[48], label[40];
-        snprintf(label, sizeof(label), "FLIPPER BEACON %s: CALIBRATE", k ? "433" : "915");
-        if (rx == LS_DFS_COUNT) snprintf(d, sizeof(d), "no receiver for %s MHz", k ? "433.92" : "915");
+        LS_SNPRINTF(t_scr_compass_flipper_beacon_s_calibrate, label, sizeof(label), "FLIPPER BEACON %s: CALIBRATE", k ? "433" : "915");
+        if (rx == LS_DFS_COUNT) LS_SNPRINTF(t_scr_compass_no_receiver_for_s, d, sizeof(d), "no receiver for %s MHz", k ? "433.92" : "915");
         else snprintf(d, sizeof(d), "%s on %s", k ? "433.92" : "915.00", ls_dfs_name(rx));
         ls_picker_add(label, d);
     }
@@ -1949,13 +1956,13 @@ static void target_done(int i)
 static void pick_target(void)
 {
     ls_picker_open("FOLLOW", target_done);
-    ls_picker_add("Everything heard", "any packet, advert or scan result");
+    ls_picker_add("Everything heard", LS_TEXT(t_scr_compass_any_packet_advert_or, "any packet, advert or scan result"));
     const int n = ls_dfs_target_count();
     for (int i = 0; i < n && i < 40; i++) {
         char label[40], detail[48];
         if (ls_dfs_target_label(i, label, sizeof(label), detail, sizeof(detail))) ls_picker_add(label, detail);
     }
-    if (!n) ls_picker_empty_reason("Nothing heard yet: wait a few seconds");
+    if (!n) ls_picker_empty_reason(LS_TEXT(t_scr_compass_nothing_heard_yet_wait, "Nothing heard yet: wait a few seconds"));
 }
 
 static void save_bearing(void)
@@ -1978,8 +1985,10 @@ static void save_bearing(void)
     EXT_RAM_BSS_ATTR static char line[200], title[48];
     ls_note_fmt_bearing(line, sizeof(line), bearing, spread, b.source, sw->top, st->unit, b.lat, b.lon, placed);
     snprintf(title, sizeof(title), "Bearing: %s %.10s", b.source, st->tunable ? "" : st->target);
-    if (!ls_notes_mark(title, line)) { say("NOTES is busy; bearing kept, try again"); return; }
+    if (!ls_notes_mark(title, line)) { say(LS_TEXT(t_scr_compass_notes_is_busy_bearing, "NOTES is busy; bearing kept, try again")); return; }
     if (placed) {
+        /* FOX HUNT and MAP draw the same bearings. */
+        ls_fox_keep(&b);
         if (s_bearing_count == LS_DF_BEARINGS) { memmove(s_bearings, s_bearings + 1, sizeof(s_bearings[0]) * (LS_DF_BEARINGS - 1)); s_bearing_count--; }
         s_bearings[s_bearing_count++] = b;
     }
@@ -1990,15 +1999,15 @@ static void save_bearing(void)
 static void make_fix(void)
 {
     if (!ls_df_triangulate(s_bearings, s_bearing_count, &s_fix)) {
-        say("These bearings do not cross: take one from further round"); return;
+        say(LS_TEXT(t_scr_compass_these_bearings_do_not, "These bearings do not cross: take one from further round")); return;
     }
     ls_compass_set_target(s_fix.lat, s_fix.lon, "DF fix");
     char body[200];
-    snprintf(body, sizeof(body), "> FIX %.6f, %.6f  +/-%.0f m  from %d bearings\n", s_fix.lat, s_fix.lon, s_fix.radius_m, s_fix.used);
+    LS_SNPRINTF(t_scr_compass_fix_6f_6f_0f, body, sizeof(body), "> FIX %.6f, %.6f  +/-%.0f m  from %d bearings\n", s_fix.lat, s_fix.lon, s_fix.radius_m, s_fix.used);
     if (!ls_notes_mark("Transmitter fix", body)) {
-        say("GO TO target set; NOTES is busy, retry FIX"); return;
+        say(LS_TEXT(t_scr_compass_go_to_target_set, "GO TO target set; NOTES is busy, retry FIX")); return;
     }
-    say("Fix saved to NOTES and set as the GO TO target");
+    say(LS_TEXT(t_scr_compass_fix_saved_to_notes, "Fix saved to NOTES and set as the GO TO target"));
 }
 
 /* The log as a note: the newest rows that fit. */
@@ -2006,14 +2015,14 @@ static void save_log(void)
 {
     EXT_RAM_BSS_ATTR static char body[1200];
     const int64_t now = esp_timer_get_time();
-    int n = snprintf(body, sizeof(body), "Hits over %.0f dB, believed at %.0f reads. Bearings %s.\n\n"
+    int n = LS_SNPRINTF(t_scr_compass_hits_over_0f_db, body, sizeof(body), "Hits over %.0f dB, believed at %.0f reads. Bearings %s.\n\n"
                      " # AGE  CH FREQ/SRC    PEAK  SNR  BRG  N  FLAGS\n", OPTV(O_THRESH), OPTV(O_SPIKE),
                      true_mode() ? "true" : "magnetic");
     for (int i = 0; i < ls_df_log_count(&s_log) && n < (int)sizeof(body) - 80; i++) {
         const ls_df_hit_t *h = ls_df_log_at(&s_log, i);
         char where[16], flags[24];
         hit_where(h, where, sizeof(where)); hit_flags(h, flags, sizeof(flags));
-        n += snprintf(body + n, sizeof(body) - n, "%2d %3ds  %c %-10.10s %6.1f %4.0f %03.0f %2u  %s\n", i + 1,
+        n += LS_SNPRINTF(fmt_scr_compass_fmt, body + n, sizeof(body) - n, "%2d %3ds  %c %-10.10s %6.1f %4.0f %03.0f %2u  %s\n", i + 1,
                       (int)((now - h->last_us) / 1000000), track_tag(h->track), where, h->peak, h->snr,
                       isfinite(h->heading) ? to_dial(h->heading) : 0.0f, h->count > 99 ? 99 : h->count, flags);
     }
@@ -2203,7 +2212,7 @@ static void enter(void)
         sweep_target_pending=false;s_dfs_source=sweep_target_radio?LS_DFS_WIFI:LS_DFS_BLE;s_src2=LS_DFS_COUNT;
         if(s_find_on) find_stop();
         show_page(P_FIND);
-        if(s_find_on && ls_dfs_target_address(sweep_target_mac,sweep_target_label)) say("SWEEP target: turn slowly for bearing");
+        if(s_find_on && ls_dfs_target_address(sweep_target_mac,sweep_target_label)) say(LS_TEXT(t_scr_compass_sweep_target_turn_slowly, "SWEEP target: turn slowly for bearing"));
     }
     ls_field_start(); ls_field_watch(true);
     s_spring.started = false; s_last_us = 0;
@@ -2244,7 +2253,7 @@ static void find_requests(void)
             int n = 0;
             for (int i = 0; i < s_rq_n; i++) if (ls_dfs_in_range(slot_source(k), s_rq_hz[i])) s_ch[k][n++] = s_rq_hz[i];
             if (n) { s_nch[k] = n; s_sel = k * LS_DFS_CHANNELS; apply_channels(k); }
-            else say("That radio reaches none of those");
+            else say(LS_TEXT(t_scr_compass_that_radio_reaches_none, "That radio reaches none of those"));
         }
         else if (kind == RQ_CLEAR) { clear_all(); ls_df_log_clear(&s_log); s_log_pick = -1; }
         else if (kind == RQ_LOGCLEAR) { ls_df_log_clear(&s_log); s_log_pick = -1; }
@@ -2281,14 +2290,14 @@ static void report_track(int t, int64_t now)
     char est[32];
     if (e->valid) snprintf(est, sizeof(est), "%05.1fT +/-%.0f", e->bearing, e->spread);
     else snprintf(est, sizeof(est), "---");
-    printf("find:  %c %10.4f  last %7.1f (%4.1fs)  noise %7.1f  over %5.1f  peak %7.1f  bins %2d  cov %3d  con %4.1f  est %s%s\n",
+    LS_PRINTF(fmt_scr_compass_find_last_noise_over, "find:  %c %10.4f  last %7.1f (%4.1fs)  noise %7.1f  over %5.1f  peak %7.1f  bins %2d  cov %3d  con %4.1f  est %s%s\n",
            track_tag(t), f / 1e6, s_tlev[t].last,
            s_tlev[t].last_us ? (double)(now - s_tlev[t].last_us) / 1e6 : -1.0, noise,
            isfinite(noise) && isfinite(s_tlev[t].last) ? s_tlev[t].last - noise : NAN,
            track_peak(t, now), (int)(sw->samples ? e->coverage / 5 : 0), e->coverage, e->contrast, est,
            t == s_sel ? "  <- shown" : "");
     if (s_tlev[t].clip_us && now - s_tlev[t].clip_us < 2000000)
-        printf("find:    %c CLIPPING: filed at their level, so the lobe reads flatter than it is\n", track_tag(t));
+        LS_PRINTF(fmt_scr_compass_find_clipping_filed_at, "find:    %c CLIPPING: filed at their level, so the lobe reads flatter than it is\n", track_tag(t));
 }
 
 /* Ground truth, when there is some: FIND is following a mesh node that
@@ -2335,11 +2344,11 @@ static const char *fmt_fit(const ls_df_fit_t *f, int which)
 {
     EXT_RAM_BSS_ATTR static char b[2][56];
     char *o = b[which & 1];
-    if (!f->valid) snprintf(o, 56, "--- (%d dirs, gap %d)", f->bins, f->gap);
+    if (!f->valid) LS_SNPRINTF(t_scr_compass_d_dirs_gap_d, o, 56, "--- (%d dirs, gap %d)", f->bins, f->gap);
     else if (isfinite(f->match))
-        snprintf(o, 56, "%05.1fT sd %.0f match %.2f%s", f->bearing, f->sigma, f->match, f->ambiguous ? " AMBIG" : "");
+        LS_SNPRINTF(t_scr_compass_05_1ft_sd_0f, o, 56, "%05.1fT sd %.0f match %.2f%s", f->bearing, f->sigma, f->match, f->ambiguous ? " AMBIG" : "");
     else
-        snprintf(o, 56, "%05.1fT sd %.0f r2 %.2f %.0fdB%s", f->bearing, f->sigma, f->r2, f->depth, f->ambiguous ? " AMBIG" : "");
+        LS_SNPRINTF(t_scr_compass_05_1ft_sd_0f_2, o, 56, "%05.1fT sd %.0f r2 %.2f %.0fdB%s", f->bearing, f->sigma, f->r2, f->depth, f->ambiguous ? " AMBIG" : "");
     return o;
 }
 
@@ -2348,11 +2357,11 @@ static void report_band(void)
     ls_dfs_band_status_t b;
     if (!ls_dfs_band_status(&b)) return;
     const int64_t now = esp_timer_get_time();
-    printf("find: band %.3f-%.3f MHz  passes %lu  floor %.1f dBm  emitters found %lu\n", b.lo_hz / 1e6, b.hi_hz / 1e6,
+    LS_PRINTF(fmt_scr_compass_find_band_mhz_passes, "find: band %.3f-%.3f MHz  passes %lu  floor %.1f dBm  emitters found %lu\n", b.lo_hz / 1e6, b.hi_hz / 1e6,
            (unsigned long)b.passes, b.floor, (unsigned long)b.opened);
     for (int t = 0; t < 8; t++)
         if (b.track[t].live)
-            printf("find:   %c %9.4f MHz  %6.1f dBm  peak %6.1f  +%4.1f over its background  %lu passes  %.1fs ago\n",
+            LS_PRINTF(fmt_scr_compass_find_mhz_dbm_peak, "find:   %c %9.4f MHz  %6.1f dBm  peak %6.1f  +%4.1f over its background  %lu passes  %.1fs ago\n",
                    track_tag(t), b.track[t].hz / 1e6, b.track[t].level, b.track[t].peak, b.track[t].over,
                    (unsigned long)b.track[t].passes, (double)(now - b.track[t].last_us) / 1e6);
 }
@@ -2363,22 +2372,22 @@ static void report_truth(void)
     const char *why;
     ls_dfs_beacon_t bc;
     if (ls_dfs_beacon(&bc))
-        printf("find: LS DF beacon: %lu packets, last %.1f s ago, seq %u, %.1f dBm, %s, %u sats, TX %d dBm\n",
+        LS_PRINTF(fmt_scr_compass_find_ls_df_beacon, "find: LS DF beacon: %lu packets, last %.1f s ago, seq %u, %.1f dBm, %s, %u sats, TX %d dBm\n",
                (unsigned long)bc.packets, (double)(esp_timer_get_time() - bc.us) / 1e6, bc.seq, bc.rssi,
                bc.fix ? "GPS fix" : "no GPS fix", bc.sats, bc.tx_dbm);
-    printf("find: compare  peak %s  fit %s  learnt %s\n", fmt_est(&s_cmp.peak), fmt_fit(&s_cmp.fit, 0),
+    LS_PRINTF(t_scr_compass_find_compare_peak_s, "find: compare  peak %s  fit %s  learnt %s\n", fmt_est(&s_cmp.peak), fmt_fit(&s_cmp.fit, 0),
            fmt_fit(&s_cmp.learnt, 1));
-    if (!truth_bearing(&b, &m, &why)) { printf("find: truth: none - %s\n", why); return; }
+    if (!truth_bearing(&b, &m, &why)) { LS_PRINTF(t_scr_compass_find_truth_none_s, "find: truth: none - %s\n", why); return; }
     const ls_df_estimate_t *e = &s_te[s_sel];
-    printf("find: truth %s %05.1fT at %.0f m (GPS both ends)", s_dfs.source == LS_DFS_LORA ? "LS DF beacon" : s_dfs.target, b, m);
-    if (e->valid) printf("  estimate %05.1fT  error %+.1f\n", e->bearing, fmod(e->bearing - b + 540.0, 360.0) - 180.0);
+    LS_PRINTF(fmt_scr_compass_find_truth_at_m, "find: truth %s %05.1fT at %.0f m (GPS both ends)", s_dfs.source == LS_DFS_LORA ? "LS DF beacon" : s_dfs.target, b, m);
+    if (e->valid) LS_PRINTF(t_scr_compass_estimate_05_1ft_error, "  estimate %05.1fT  error %+.1f\n", e->bearing, fmod(e->bearing - b + 540.0, 360.0) - 180.0);
     else printf("  estimate none yet\n");
     #define ERR(x) (fmod((x) - b + 540.0, 360.0) - 180.0)
-    printf("find: truth errors  peak %+.1f  fit %+.1f  learnt %+.1f\n",
+    LS_PRINTF(fmt_scr_compass_find_truth_errors_peak, "find: truth errors  peak %+.1f  fit %+.1f  learnt %+.1f\n",
            s_cmp.peak.valid ? ERR(s_cmp.peak.bearing) : NAN, s_cmp.fit.valid ? ERR(s_cmp.fit.bearing) : NAN,
            s_cmp.learnt.valid ? ERR(s_cmp.learnt.bearing) : NAN);
     #undef ERR
-    if (m < 30) printf("find: truth: under 30 m, a few metres of GPS error is a wide angle\n");
+    if (m < 30) LS_FPUTS(msg_scr_compass_find_truth_under_30, "find: truth: under 30 m, a few metres of GPS error is a wide angle\n", stdout);
 }
 
 extern const ls_tui_screen_t ls_scr_compass;
@@ -2399,14 +2408,14 @@ bool ls_scr_compass_console(int argc, char **argv)
         if (argc > 2 && !strcmp(argv[2], "on")) s_auto_on = true;
         else if (argc > 2 && !strcmp(argv[2], "off")) s_auto_on = false;
         else if (argc > 2 && !strcmp(argv[2], "forget")) {
-            if (s_rq_kind != RQ_NONE) { printf("find: the last change is still waiting for the screen\n"); return false; }
+            if (s_rq_kind != RQ_NONE) { LS_FPUTS(msg_scr_compass_find_the_last_change, "find: the last change is still waiting for the screen\n", stdout); return false; }
             s_rq_kind = RQ_FORGET;
         }
         const ls_df_pattern_t *p = &s_pat[0];
-        printf("find: learn %s  pattern %u circles (%u this session)  %s\n", s_auto_on ? "on" : "off",
+        LS_PRINTF(fmt_scr_compass_find_learn_pattern_circles, "find: learn %s  pattern %u circles (%u this session)  %s\n", s_auto_on ? "on" : "off",
                (unsigned)p->circles, (unsigned)s_auto.added, s_auto.why[0] ? s_auto.why : "-");
         if (p->circles) {
-            printf("find: pattern dB by where the board faces, from the transmitter, 10 deg steps:\n find: ");
+            LS_FPUTS(msg_scr_compass_find_pattern_db_by, "find: pattern dB by where the board faces, from the transmitter, 10 deg steps:\n find: ", stdout);
             for (int k = 0; k < LS_DF_PAT_BINS; k++) printf("%+.0f%s", p->g[k], k == LS_DF_PAT_BINS - 1 ? "\n" : " ");
         }
         return true;
@@ -2415,38 +2424,38 @@ bool ls_scr_compass_console(int argc, char **argv)
         const int64_t now = esp_timer_get_time();
         /* The screen's index depends on which apps this build registers. */
         char closed[48];
-        snprintf(closed, sizeof(closed), "FIND not open (call ui.screen %d, tui key 2)",
+        LS_SNPRINTF(t_scr_compass_find_not_open_call, closed, sizeof(closed), "FIND not open (call ui.screen %d, tui key 2)",
                  ls_tui_screen_index_of(&ls_scr_compass));
-        printf("find: %s  method %s  view %s%s\n", s_page == P_FIND && s_find_on ? "FIND running" : closed,
+        LS_PRINTF(t_scr_compass_find_s_method_s, "find: %s  method %s  view %s%s\n", s_page == P_FIND && s_find_on ? "FIND running" : closed,
                method_name(), VIEW_NAMES[s_view], s_logmode ? "  LOG" : "");
-        printf("find: heading raw %.1f  shown %.1f  %s  gyro %.1f deg/s  turn %.1f deg/s  tilt %.0f%s\n",
+        LS_PRINTF(fmt_scr_compass_find_heading_raw_shown, "find: heading raw %.1f  shown %.1f  %s  gyro %.1f deg/s  turn %.1f deg/s  tilt %.0f%s\n",
                raw_heading(), shown_heading(), ref(), s_rate, s_turn_rate, s_r.tilt, s_r.interference ? "  MAG CAUTION" : "");
-        printf("find: fusion %s  yaw %+.1f deg/s  bias %+.2f deg/s  gyro/mag agree %+.2f  glitches %lu%s\n",
+        LS_PRINTF(fmt_scr_compass_find_fusion_yaw_deg, "find: fusion %s  yaw %+.1f deg/s  bias %+.2f deg/s  gyro/mag agree %+.2f  glitches %lu%s\n",
                s_steady.gyro_used ? "GYRO+MAG" : "MAG ONLY", s_yaw, s_steady.bias, s_steady.agree,
                (unsigned long)s_steady.glitches,
                s_steady.agree <= -0.5f ? "  GYRO TURNS AGAINST THE MAGNETOMETER: axis fault, gyro left out" : "");
-        printf("find: gyro at rest %+.2f %+.2f %+.2f deg/s%s  still %.1f s%s\n",
+        LS_PRINTF(fmt_scr_compass_find_gyro_at_rest, "find: gyro at rest %+.2f %+.2f %+.2f deg/s%s  still %.1f s%s\n",
                s_steady.rest[0], s_steady.rest[1], s_steady.rest[2],
                s_steady.rest_known ? "" : " (unqualified: hold still >=3 s; gyro SD must be <=1 dps)",
                s_steady.resting ? s_steady.still_s : 0.0f, s_steady.sat_s > 0 ? "  GYRO AT FULL SCALE" : "");
-        printf("find: hold %.0f s  fall %.1f dB/s  forget %.0f s  hit %.0f dB over  sure at %.0f  dwell %.0f ms\n",
+        LS_PRINTF(fmt_scr_compass_find_hold_s_fall, "find: hold %.0f s  fall %.1f dB/s  forget %.0f s  hit %.0f dB over  sure at %.0f  dwell %.0f ms\n",
                OPTV(O_HOLD), OPTV(O_DECAY), OPTV(O_FORGET), OPTV(O_THRESH), OPTV(O_SPIKE), OPTV(O_DWELL));
         report_band();
         report_truth();
         for (int k = 0; k < LS_DFS_SLOTS; k++) {
             const ls_dfs_status_t *st = slot_status(k);
             if (!st->active) { if (k) printf("find: slot 2 off\n"); continue; }
-            printf("find: slot %d %s  %d ch  on %d  %s  [%s]\n", k + 1, ls_dfs_name(st->source), st->channels,
+            LS_PRINTF(t_scr_compass_find_slot_d_s, "find: slot %d %s  %d ch  on %d  %s  [%s]\n", k + 1, ls_dfs_name(st->source), st->channels,
                    st->channel + 1, st->unit, st->status);
             for (int c = 0; c < (st->channels ? st->channels : 1); c++) report_track(k * LS_DFS_CHANNELS + c, now);
         }
         const int total = ls_df_log_count(&s_log);
-        printf("find: hits %d kept, %lu since clear\n", total, (unsigned long)s_log.total);
+        LS_PRINTF(t_scr_compass_find_hits_d_kept, "find: hits %d kept, %lu since clear\n", total, (unsigned long)s_log.total);
         const int rows = !strcmp(verb, "log") ? total : (total < 5 ? total : 5);
         for (int i = 0; i < rows; i++) {
             const ls_df_hit_t *h = ls_df_log_at(&s_log, i);
             char where[16], flags[24]; hit_where(h, where, sizeof(where)); hit_flags(h, flags, sizeof(flags));
-            printf("find:  #%-2d %5.1fs ago  %c %-10s peak %6.1f  +%4.1f dB  facing %5.1f  %3ux over %4.1fs  %s\n",
+            LS_PRINTF(t_scr_compass_find_2d_5_1fs, "find:  #%-2d %5.1fs ago  %c %-10s peak %6.1f  +%4.1f dB  facing %5.1f  %3ux over %4.1fs  %s\n",
                    i + 1, (double)(now - h->last_us) / 1e6, track_tag(h->track), where, h->peak, h->snr,
                    h->heading, h->count, (double)(h->last_us - h->start_us) / 1e6, flags);
         }
@@ -2454,13 +2463,13 @@ bool ls_scr_compass_console(int argc, char **argv)
     }
     /* A change is applied by FIND's own frame, so FIND has to be on screen. */
     if (s_page != P_FIND || !s_find_on) {
-        printf("find: open FIND first: call ui.screen %d, then tui key 2\n", ls_tui_screen_index_of(&ls_scr_compass));
+        LS_PRINTF(fmt_scr_compass_find_open_find_first, "find: open FIND first: call ui.screen %d, then tui key 2\n", ls_tui_screen_index_of(&ls_scr_compass));
         return false;
     }
-    if (s_rq_kind != RQ_NONE) { printf("find: the last change is still waiting for the screen\n"); return false; }
+    if (s_rq_kind != RQ_NONE) { LS_FPUTS(msg_scr_compass_find_the_last_change_2, "find: the last change is still waiting for the screen\n", stdout); return false; }
     if (!strcmp(verb, "src") && argc > 2) {
         const int src = parse_source(argv[2]);
-        if (src < 0 || (src == LS_DFS_COUNT && !slot)) { printf("find: no radio called %s\n", argv[2]); return false; }
+        if (src < 0 || (src == LS_DFS_COUNT && !slot)) { LS_PRINTF(t_scr_compass_find_no_radio_called, "find: no radio called %s\n", argv[2]); return false; }
         s_rq_slot = slot; s_rq_arg = src; s_rq_kind = RQ_SRC;
     } else if (!strcmp(verb, "off2")) {
         s_rq_slot = 1; s_rq_arg = LS_DFS_COUNT; s_rq_kind = RQ_SRC;
@@ -2471,7 +2480,7 @@ bool ls_scr_compass_console(int argc, char **argv)
             char *end;
             const double mhz = strtod(tok, &end);
             if (*end || !(mhz > 1 && mhz <= UINT32_MAX / 1e6)) {
-                printf("find: frequency must be above 1, up to 4294.967295 MHz\n"); return false;
+                LS_FPUTS(msg_scr_compass_find_frequency_must_be, "find: frequency must be above 1, up to 4294.967295 MHz\n", stdout); return false;
             }
             s_rq_hz[s_rq_n++] = (uint32_t)llround(mhz * 1e6);
         }
@@ -2496,16 +2505,16 @@ bool ls_scr_compass_console(int argc, char **argv)
         static const char *const KEYS[O_TUNED] = { "hold", "fall", "forget", "hit", "sure", "blips", "dwell", "lobes" };
         int id = -1;
         for (int i = 0; i < O_TUNED; i++) if (!strcmp(argv[2], KEYS[i])) id = i;
-        if (id < 0) { printf("find: set hold|fall|forget|hit|sure|blips|dwell|lobes <value>\n"); return false; }
+        if (id < 0) { LS_FPUTS(msg_scr_compass_find_set_hold_fall, "find: set hold|fall|forget|hit|sure|blips|dwell|lobes <value>\n", stdout); return false; }
         const float want = (float)atof(argv[3]);
         int best = 0;
         for (int v = 1; v < OPT[id].n; v++) if (fabsf(OPT[id].v[v] - want) < fabsf(OPT[id].v[best] - want)) best = v;
         s_rq_arg = id; s_rq_val = best; s_rq_kind = RQ_SETTING;
         printf("find: %s -> %g %s\n", argv[2], OPT[id].v[best], OPT[id].unit);
     } else {
-        printf("find [status|log]  |  src <radio> [2]  off2  ch <MHz,MHz,...> [2]  show <1-8|A-H>\n"
+        LS_FPUTS(msg_scr_compass_find_status_log_src, "find [status|log]  |  src <radio> [2]  off2  ch <MHz,MHz,...> [2]  show <1-8|A-H>\n"
                "     clear  logclear  view <dial|radar|heat>  method <peak|null|fit>  set <name> <value>\n"
-               "     learn [on|off|forget]\n");
+               "     learn [on|off|forget]\n", stdout);
         return false;
     }
     return true;

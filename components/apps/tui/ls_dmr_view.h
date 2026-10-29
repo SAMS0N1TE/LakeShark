@@ -118,7 +118,9 @@ static void draw_dmr(tui_surface *sf, tui_rect area)
         snprintf(line, sizeof(line), "%s %u", c->lc.flco == 0 ? "TG" : "DST",
                  (unsigned)c->lc.destination);
         ls_safe_line(sf, pane, pane.y + 2, line, cyan);
-        snprintf(line, sizeof(line), "SRC %u", (unsigned)c->lc.source);
+        /* Talker alias, when the radio sends one: what the operator typed. */
+        snprintf(line, sizeof(line), "SRC %u%s%s", (unsigned)c->lc.source,
+                 c->alias.text[0] ? "  " : "", c->alias.text);
         ls_safe_line(sf, pane, pane.y + 3, line, LS_ATTR_DIM);
         uint32_t ms = dmr_call_duration_ms(c, now);
         snprintf(line, sizeof(line), "%u.%us  %s", (unsigned)(ms / 1000),

@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 /**/
 bool rec_files_append(char *out, size_t len, size_t *used,
@@ -59,7 +60,7 @@ bool rec_files_append_row(char *out, size_t len, size_t *used,
     /* Field separator is two spaces so the AppREC walker's `strchr(p, ' ')`
        still finds the end of the name at the first single-space boundary,
        and the entry separator stays ", " for its strstr walker. */
-    int w = snprintf(out + *used, avail, "%s%s  %lu.%04lu MHz  %s",
+    int w = LS_SNPRINTF(t_rec_list_format_s_s_lu_04lu, out + *used, avail, "%s%s  %lu.%04lu MHz  %s",
                      *used ? ", " : "", name, mhz_int, mhz_frac, tm);
     if (w < 0 || (size_t)w >= avail) {
         out[*used] = '\0';

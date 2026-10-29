@@ -7,7 +7,7 @@
  * coding/interleaving is not an SX1280 ELRS decoder. Activity only. */
 #include "ls_drone_watch.h"
 #include "ls_dronelink.h"
-#include "ls_detector.h"
+#include "ls_seen.h"
 #include "ls_rid.h"
 #include "ls_wireless.h"
 #include "ls_df.h"
@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 typedef struct {
     unsigned version, gate_db, min_dbm, ttl_s, alert_s, approach_db10s,
@@ -144,8 +145,8 @@ bool ls_drone_watch_configure(const char *json,size_t len) {
        c.hopper_hits<c.hopper_channels || c.hopper_hits>32 || c.cadence_percent<5 || c.cadence_percent>40 ||
        c.wide_mhz<10 || c.wide_mhz>40 || c.wide_hits<3 || c.wide_hits>16 ||
        c.wifi_tolerance_us<1000 || c.wifi_tolerance_us>20000 || c.video_percent<10 || c.video_percent>80)return false;
-    lock();cfg=c;snprintf(view.config,sizeof(view.config),"v1 configuration loaded");
-    for(unsigned i=0;i<LS_DW_SOURCES;i++)if(!view.reason[i][0])snprintf(view.reason[i],sizeof(view.reason[i]),"waiting for source slice");
+    lock();cfg=c;LS_SNPUTS(t_ls_drone_watch_v1_configuration_loaded, view.config, sizeof(view.config), "v1 configuration loaded");
+    for(unsigned i=0;i<LS_DW_SOURCES;i++)if(!view.reason[i][0])LS_SNPUTS(t_ls_drone_watch_waiting_for_source_slice, view.reason[i], sizeof(view.reason[i]), "waiting for source slice");
     unlock();return true;
 }
 size_t ls_drone_watch_snapshot(ls_drone_watch_entry_t *out,size_t cap) {
@@ -240,7 +241,7 @@ static void observe(ls_dw_source_t source,uint64_t key,uint64_t hz,float level,
         (!t->announced || now-t->notice_us>=(int64_t)cfg.alert_s*1000000);
     ls_drone_watch_notice_fn fn=notice_fn;void *ctx=notice_ctx;
     /* Queue-only call. No sinks, disk, sound or slow work under this lock. */
-    if(alert && ls_detector_watch_notice(id,(int)level,calibrated,e->band_mhz,approaching,now)) {
+    if(alert && ls_seen_drone_watch(id,(int)level,calibrated,e->band_mhz,approaching,now)) {
         t->notice_us=now;t->announced=true;t->approach_announced=approaching;
     } else {if(alert)view.dropped++;alert=false;}
     unlock();if(alert && fn)fn(id,approaching,ctx);
@@ -425,14 +426,14 @@ static void sdr_step(int64_t now) {
             .gain_mode=LS_RADIO_GAIN_MANUAL,.gain_tenths_db=160},actual;
         if(ls_radio_iq_configure(sdr,&c,&actual)!=LS_RADIO_OK || actual.center_hz!=hz-200000 ||
            actual.sample_rate_hz!=2000000 || ls_radio_iq_start(sdr)!=LS_RADIO_OK) {
-            release();state(LS_DW_ANALOG58,false,"HackRF configure/start failed");return;
+            release();state(LS_DW_ANALOG58,false,LS_TEXT(t_ls_drone_watch_hackrf_configure_start_failed, "HackRF configure/start failed"));return;
         }
         flush=2;iq_bytes=0;
     }
     size_t got=0;
     ls_radio_err_t err=ls_radio_iq_read(sdr,iq+iq_bytes,sizeof(iq)-iq_bytes,5,&got);
     if(got>sizeof(iq)-iq_bytes || (got&1) || (err!=LS_RADIO_OK && err!=LS_RADIO_ERR_TIMEOUT)) {
-        release();state(LS_DW_ANALOG58,false,"HackRF disconnected/read failed");return;
+        release();state(LS_DW_ANALOG58,false,LS_TEXT(t_ls_drone_watch_hackrf_disconnected_read_failed, "HackRF disconnected/read failed"));return;
     }
     iq_bytes+=got;if(iq_bytes<sizeof(iq))return;iq_bytes=0;
     if(flush) {flush--;return;}
@@ -452,11 +453,11 @@ static void sdr_step(int64_t now) {
     float carrier=ls_df_iq_band_db(iq,2048,2000000,200000,25000);
     if(rails<82 && level>-45 && carrier>-40)
         ls_drone_watch_analog(fpv_channel,envelope,8192,2000000,level,false,now);
-    state(LS_DW_ANALOG58,true,"HackRF RX: carrier/line-rate evidence; relative dB");
+    state(LS_DW_ANALOG58,true,LS_TEXT(t_ls_drone_watch_hackrf_rx_carrier_line, "HackRF RX: carrier/line-rate evidence; relative dB"));
     fpv_channel=(fpv_channel+1)%40;
     uint64_t actual=0;hz=(uint64_t)cfg.fpv_mhz[fpv_channel]*1000000;
     if(ls_radio_iq_retune(sdr,hz-200000,true,&actual)!=LS_RADIO_OK || actual!=hz-200000) {
-        release();state(LS_DW_ANALOG58,false,"HackRF retune failed");return;
+        release();state(LS_DW_ANALOG58,false,LS_TEXT(t_ls_drone_watch_hackrf_retune_failed, "HackRF retune failed"));return;
     }
     flush=2;
 }
@@ -471,7 +472,7 @@ void ls_drone_watch_step(int64_t now) {
     if(!(prefs()&0x7cu) && !old) {release();turn=LS_DW_SOURCES;return;}
     if(turn==LS_DW_SOURCES || now-turn_at>=(int64_t)cfg.slice_ms*1000 ||
        (turn<LS_DW_SOURCES && !enabled(turn) && !(turn==LS_DW_ELRS900 && old))) {
-        if(turn<LS_DW_SOURCES)state(turn,false,"waiting for round-robin slice");
+        if(turn<LS_DW_SOURCES)state(turn,false,LS_TEXT(t_ls_drone_watch_waiting_for_round_robin, "waiting for round-robin slice"));
         release();
         unsigned previous=turn;
         unsigned next=turn==LS_DW_SOURCES?0:(turn+1)%5;
@@ -501,23 +502,23 @@ void ls_drone_watch_step(int64_t now) {
             const ls_lora_cfg_t *c=ls_lora_cfg();if(c)saved=*c;else ls_lora_cfg_default(&saved);
             saved_rx=ls_lora_is_receiving();packet=true;fallback=!tune_elrs();
             if(fallback) {ls_lora_configure(&saved);if(saved_rx)ls_lora_receive();packet=false;}
-            else {elrs_hop_at=now+250000;state(turn,true,"SF5..8/BW812.5k preamble only; coding differs from SX1280");return;}
+            else {elrs_hop_at=now+250000;state(turn,true,LS_TEXT(t_ls_drone_watch_sf5_8_bw812_5k, "SF5..8/BW812.5k preamble only; coding differs from SX1280"));return;}
         }
         if(packet) {
             float level;int flags=ls_lora_activity(&level);
-            if(flags<0) {release();state(turn,false,"HF activity read failed");return;}
+            if(flags<0) {release();state(turn,false,LS_TEXT(t_ls_drone_watch_hf_activity_read_failed, "HF activity read failed"));return;}
             if(flags&3)ls_drone_watch_activity(LS_DW_ELRS24,2400400000u+elrs_channel*1000000u,level,now);
             if(now>=elrs_hop_at) {
                 elrs_channel=(elrs_channel+1)%80;if(!elrs_channel)elrs_sf=(elrs_sf+1)%4;
                 elrs_hop_at=now+250000;
-                if(!tune_elrs()) {release();state(turn,false,"HF parameters unsupported; retry RSSI next slice");fallback=true;}
+                if(!tune_elrs()) {release();state(turn,false,LS_TEXT(t_ls_drone_watch_hf_parameters_unsupported_retry, "HF parameters unsupported; retry RSSI next slice"));fallback=true;}
             }
             return;
         }
     }
     if(!scan) {
         uint32_t lo=hf?2400000000u:860000000u,hi=hf?2483500000u:930000000u;
-        if(ls_lora_scan_begin(lo,hi)!=ESP_OK) {release();state(turn,false,"RSSI sweep unavailable");return;}
+        if(ls_lora_scan_begin(lo,hi)!=ESP_OK) {release();state(turn,false,LS_TEXT(t_ls_drone_watch_rssi_sweep_unavailable, "RSSI sweep unavailable"));return;}
         scan=true;
     }
     bool done=false;unsigned n=hf?84:71;
@@ -536,12 +537,12 @@ static void worker(void *arg) {
     (void)arg;
     bool ok=ls_drone_watch_configure(_binary_defaults_json_start,
         (size_t)(_binary_defaults_json_end-_binary_defaults_json_start)-1);
-    if(!ok) {state(LS_DW_ELRS900,false,"embedded configuration invalid");vTaskDelete(NULL);return;}
+    if(!ok) {state(LS_DW_ELRS900,false,LS_TEXT(t_ls_drone_watch_embedded_configuration_invalid, "embedded configuration invalid"));vTaskDelete(NULL);return;}
     /* Boot-only SD read, on RF worker, never on render/console tasks. */
     static EXT_RAM_BSS_ATTR char json[4097];
     FILE *f=fopen("/sdcard/drone-watch/settings.json","rb");
     if(f) {size_t n=fread(json,1,sizeof(json),f);bool read_ok=!ferror(f);fclose(f);
-        if(!read_ok || !ls_drone_watch_configure(json,n)) {lock();snprintf(view.config,sizeof(view.config),"SD schema rejected; embedded v1 retained");unlock();}}
+        if(!read_ok || !ls_drone_watch_configure(json,n)) {lock();LS_SNPUTS(t_ls_drone_watch_sd_schema_rejected_embedded, view.config, sizeof(view.config), "SD schema rejected; embedded v1 retained");unlock();}}
     for(;;) {
         ls_drone_watch_step(esp_timer_get_time());
         uint32_t p=prefs();bool active=((p&1) && (p&0x7c)) || __atomic_load_n(&legacy,__ATOMIC_ACQUIRE);
@@ -574,13 +575,13 @@ int ls_drone_watch_command(int argc,char **argv) {
          * console's internal stack or hold the lock across console output. */
         for(unsigned i=0;i<LS_DW_ENTRIES;i++) {
             lock();ls_drone_watch_entry_t e=tracks[i].pub;unlock();if(!e.id)continue;
-            printf("%016llx %s %s %.3f MHz %.1f %s peak %.1f trend %+.1f dB/10s %.2f hits/s confidence %u\n",
+            LS_PRINTF(t_ls_drone_watch_016llx_s_s_3f, "%016llx %s %s %.3f MHz %.1f %s peak %.1f trend %+.1f dB/10s %.2f hits/s confidence %u\n",
                 (unsigned long long)e.id,ls_drone_watch_source(e.source),e.channel,e.centre_hz/1e6,
                 e.rssi_dbm,e.calibrated?"dBm":"dB relative",e.peak_dbm,e.db_per_10s,e.hits_per_second,(unsigned)e.confidence);
         }
     } else {
         ls_drone_watch_status_t s;if(!ls_drone_watch_status(&s))return 1;
-        printf("DRONE WATCH %s alerts %s cycle %lu ms; %s\n",s.enabled?"ON":"OFF",s.alerts?"ON":"OFF",(unsigned long)s.cycle_ms,s.config);
+        LS_PRINTF(t_ls_drone_watch_drone_watch_s_alerts, "DRONE WATCH %s alerts %s cycle %lu ms; %s\n",s.enabled?"ON":"OFF",s.alerts?"ON":"OFF",(unsigned long)s.cycle_ms,s.config);
         for(unsigned i=0;i<LS_DW_SOURCES;i++)printf("%s: %s %s\n",ls_drone_watch_source(i),s.running[i]?"RUN":"SKIP",s.reason[i]);
     }
     return 0;

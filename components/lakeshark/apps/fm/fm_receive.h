@@ -25,6 +25,35 @@ static inline ls_radio_err_t fm_receive_block(ls_radio_session_t *session,
     return LS_RADIO_ERR_TIMEOUT;
 }
 
+static inline ls_radio_err_t fm_receive_block_observed(ls_radio_session_t *session,
+    uint8_t *iq,size_t bytes,bool (*active)(void),int64_t (*now)(void),
+    ls_radio_iq_read_receipt_t *receipt)
+{
+    if(!receipt)return LS_RADIO_ERR_INVALID;
+    memset(receipt,0,sizeof(*receipt));
+    const int64_t deadline=now()+100000;
+    size_t got=0;bool first=true,mixed=false;
+    for(unsigned reads=0;reads<64 && now()<deadline;++reads){
+        if(!active())return LS_RADIO_ERR_STOPPED;
+        size_t part=0;ls_radio_iq_read_receipt_t r;
+        ls_radio_err_t error=ls_radio_iq_read_observed(session,iq+got,bytes-got,20,&part,&r);
+        if(error!=LS_RADIO_OK && error!=LS_RADIO_ERR_TIMEOUT)return error;
+        if(error==LS_RADIO_OK && part){
+            if(part>bytes-got)return LS_RADIO_ERR_IO;
+            if(first){*receipt=r;first=false;}
+            else if(!r.known || receipt->context_epoch!=r.context_epoch ||
+                receipt->transport.epoch!=r.transport.epoch ||
+                receipt->configured_center_hz!=r.configured_center_hz ||
+                receipt->nominal_rate_hz!=r.nominal_rate_hz)mixed=true;
+            receipt->read_finished_us=r.read_finished_us;
+            receipt->transport=r.transport;
+            receipt->known=receipt->known && r.known && !mixed;
+            got+=part;if(got==bytes)return LS_RADIO_OK;
+        }
+    }
+    receipt->known=false;return LS_RADIO_ERR_TIMEOUT;
+}
+
 static inline bool fm_receive_switch(ls_radio_session_t **session,
                                      const char *held, const char *wanted)
 {

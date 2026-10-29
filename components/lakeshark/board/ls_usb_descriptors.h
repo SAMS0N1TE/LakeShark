@@ -15,9 +15,9 @@
  * Reserve aligned storage before task stacks can fragment the DMA heap. */
 #define LS_USB_DESCRIPTOR_SLOTS 8
 #define LS_USB_DESCRIPTOR_BYTES 512
-static DRAM_ATTR uint8_t s_ls_usb_descriptors[LS_USB_DESCRIPTOR_SLOTS]
+static uint8_t s_ls_usb_descriptors[LS_USB_DESCRIPTOR_SLOTS]
     [LS_USB_DESCRIPTOR_BYTES] __attribute__((aligned(512)));
-static DRAM_ATTR uint32_t s_ls_usb_descriptor_used;
+static uint32_t s_ls_usb_descriptor_used;
 
 static inline void *ls_usb_descriptor_calloc(size_t alignment, size_t n,
                                             size_t size, uint32_t caps)

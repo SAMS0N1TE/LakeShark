@@ -32,6 +32,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include "ls_textpack.h"
 
 #define ROOT "/sdcard"
 #define MAX_ENTRIES 256
@@ -273,10 +274,10 @@ static void decode_sub(void)
 static bool text_read(long offset)
 {
     FILE *f = fopen(s_open_path, "rb");
-    if (!f) { snprintf(s_feedback, sizeof(s_feedback), "Could not open the file"); return false; }
+    if (!f) { LS_SNPUTS(t_scr_files_could_not_open_the, s_feedback, sizeof(s_feedback), "Could not open the file"); return false; }
     long total;
     if (fseek(f, 0, SEEK_END) != 0 || (total = ftell(f)) < 0 || fseek(f, offset, SEEK_SET) != 0) {
-        fclose(f); snprintf(s_feedback, sizeof(s_feedback), "Could not seek in the file"); return false;
+        fclose(f); LS_SNPUTS(t_scr_files_could_not_seek_in, s_feedback, sizeof(s_feedback), "Could not seek in the file"); return false;
     }
     const size_t n = fread(s_text, 1, TEXT_MAX, f);
     const bool ok = !ferror(f);
@@ -302,7 +303,7 @@ static void open_selected(void)
     const entry_t *e = &s_entry[s_selected];
     if (e->dir) {
         if (s_depth == DEPTH_MAX) {
-            snprintf(s_feedback, sizeof(s_feedback), "Folder depth limit reached");
+            LS_SNPUTS(t_scr_files_folder_depth_limit_reached, s_feedback, sizeof(s_feedback), "Folder depth limit reached");
             return;
         }
         if (strlen(s_path) + strlen(e->name) + 2 >= sizeof(s_path)) {
@@ -321,10 +322,10 @@ static void open_selected(void)
     if (!strcasecmp(ext_of(e->name), "sub")) {
         struct stat st;
         if (stat(s_open_path, &st) != 0 || st.st_size > JOB_MAX_BYTES) {
-            snprintf(s_feedback, sizeof(s_feedback), "Capture too large or unreadable (limit 1 MB)"); return;
+            LS_SNPUTS(t_scr_files_capture_too_large_or, s_feedback, sizeof(s_feedback), "Capture too large or unreadable (limit 1 MB)"); return;
         }
         s_in = fopen(s_open_path, "r");
-        if (!s_in) { snprintf(s_feedback, sizeof(s_feedback), "Could not open capture"); return; }
+        if (!s_in) { LS_SNPUTS(t_scr_files_could_not_open_capture, s_feedback, sizeof(s_feedback), "Could not open capture"); return; }
         subghz_file_begin(&s_sub);
         s_job = JOB_SUB;
         s_job_bytes = 0;
@@ -334,7 +335,7 @@ static void open_selected(void)
     if (is_audio(e->name)) { play_audio(); return; }
     char sz[16];
     size_text(e->size, sz, sizeof(sz));
-    snprintf(s_feedback, sizeof(s_feedback), "%s, %s - no viewer for .%s", e->name, sz, ext_of(e->name));
+    LS_SNPRINTF(t_scr_files_s_s_no_viewer, s_feedback, sizeof(s_feedback), "%s, %s - no viewer for .%s", e->name, sz, ext_of(e->name));
 }
 
 /* --------------------------------------------------------------- actions */
@@ -350,7 +351,7 @@ static const char *open_name(void)
 static void copy_begin(const char *dir, const char *to, unsigned long limit, const char *note)
 {
     FILE *in = fopen(s_open_path, "rb");
-    if (!in) { snprintf(s_feedback, sizeof(s_feedback), "Could not read the file"); return; }
+    if (!in) { LS_SNPUTS(t_scr_files_could_not_read_the, s_feedback, sizeof(s_feedback), "Could not read the file"); return; }
     s_in = in;
     s_out = NULL;
     s_copy_suffix = 0;
@@ -368,20 +369,20 @@ static void send_to_flipper(void)
 {
     const char *dir = rec_dir();
     if (!dir || strncmp(dir, ROOT, strlen(ROOT))) {
-        snprintf(s_feedback, sizeof(s_feedback), "No card folder for the Flipper to read");
+        LS_SNPUTS(t_scr_files_no_card_folder_for, s_feedback, sizeof(s_feedback), "No card folder for the Flipper to read");
         return;
     }
     char to[PATH_MAX_LEN];
     if (!join_path(to, sizeof(to), dir, open_name())) return;
     if (!strcmp(to, s_open_path)) {
-        snprintf(s_feedback, sizeof(s_feedback), "Already there: Flipper > LakeShark > FILES");
+        LS_SNPUTS(t_scr_files_already_there_flipper_lakeshark, s_feedback, sizeof(s_feedback), "Already there: Flipper > LakeShark > FILES");
         return;
     }
     struct stat st;
     if (stat(s_open_path, &st) != 0 || st.st_size > JOB_MAX_BYTES) {
-        snprintf(s_feedback, sizeof(s_feedback), "Copy too large or unreadable (limit 1 MB)"); return;
+        LS_SNPUTS(t_scr_files_copy_too_large_or, s_feedback, sizeof(s_feedback), "Copy too large or unreadable (limit 1 MB)"); return;
     }
-    copy_begin(dir, to, JOB_MAX_BYTES, "Copied. On the Flipper: LakeShark > FILES");
+    copy_begin(dir, to, JOB_MAX_BYTES, LS_TEXT(t_scr_files_copied_on_the_flipper, "Copied. On the Flipper: LakeShark > FILES"));
 }
 
 /* ---------------------------------------------------------------- music */
@@ -412,18 +413,18 @@ static bool music_dir_ready(void)
 static void play_audio(void)
 {
     if (!ls_scr_music_play_file(s_open_path))
-        snprintf(s_feedback, sizeof(s_feedback), "MUSIC is not on this build");
+        LS_SNPUTS(t_scr_files_music_is_not_on, s_feedback, sizeof(s_feedback), "MUSIC is not on this build");
 }
 static void copy_to_music(void)
 {
     if (in_music()) { snprintf(s_feedback, sizeof(s_feedback), "Already in MUSIC"); return; }
     struct stat st;
     if (stat(s_open_path, &st) != 0 || (unsigned long)st.st_size > MUSIC_MAX_BYTES) {
-        snprintf(s_feedback, sizeof(s_feedback), "Too large or unreadable (limit 512 MB)"); return;
+        LS_SNPUTS(t_scr_files_too_large_or_unreadable, s_feedback, sizeof(s_feedback), "Too large or unreadable (limit 512 MB)"); return;
     }
     uint64_t total = 0, free_b = 0;
     if (esp_vfs_fat_info(ROOT, &total, &free_b) == ESP_OK && free_b && free_b < (uint64_t)st.st_size + 65536) {
-        snprintf(s_feedback, sizeof(s_feedback), "Not enough card space for a copy"); return;
+        LS_SNPUTS(t_scr_files_not_enough_card_space, s_feedback, sizeof(s_feedback), "Not enough card space for a copy"); return;
     }
     if (!music_dir_ready()) return;
     char to[PATH_MAX_LEN];
@@ -446,11 +447,11 @@ static void move_to_music(void)
         const int n = suffix ? snprintf(name, sizeof(name), "%.*s-%d%s", stem, base, suffix, dot ? dot : "")
                              : snprintf(name, sizeof(name), "%s", base);
         if (n < 0 || (size_t)n >= sizeof(name) || !join_path(to, sizeof(to), MUSIC_DIR, name)) {
-            snprintf(s_feedback, sizeof(s_feedback), "Name too long for MUSIC"); return;
+            LS_SNPUTS(t_scr_files_name_too_long_for, s_feedback, sizeof(s_feedback), "Name too long for MUSIC"); return;
         }
         if (stat(to, &st) != 0 && errno == ENOENT) break;
     }
-    if (suffix == 1000) { snprintf(s_feedback, sizeof(s_feedback), "No free name in MUSIC"); return; }
+    if (suffix == 1000) { LS_SNPUTS(t_scr_files_no_free_name_in, s_feedback, sizeof(s_feedback), "No free name in MUSIC"); return; }
     if (rename(s_open_path, to) != 0) { snprintf(s_feedback, sizeof(s_feedback), "Move failed (%d)", errno); return; }
     static const char *const SIDECARS[] = {".keep", ".meta"};
     for (unsigned i = 0; i < sizeof(SIDECARS) / sizeof(SIDECARS[0]); i++) {
@@ -459,7 +460,7 @@ static void move_to_music(void)
         if (stat(side, &st) == 0) unlink(side);
     }
     const char *slash = strrchr(to, '/');
-    snprintf(s_feedback, sizeof(s_feedback), "Moved to MUSIC: %.60s", slash ? slash + 1 : to);
+    LS_SNPRINTF(t_scr_files_moved_to_music_60s, s_feedback, sizeof(s_feedback), "Moved to MUSIC: %.60s", slash ? slash + 1 : to);
     s_view = VIEW_LIST;
     load_dir();
 }
@@ -469,7 +470,7 @@ static void replay_open(void)
     if(ls_scr_rec_replay_file(s_open_path,&s_sub,s_edges))return;
     const char *why=subghz_tx_refusal(s_sub.freq_hz,0,(size_t)s_sub.edges_total,s_sub.span_us);
     if(why)snprintf(s_feedback,sizeof(s_feedback),"Replay refused: %s",why);
-    else snprintf(s_feedback,sizeof(s_feedback),"Replay busy or file unsupported");
+    else LS_SNPUTS(t_scr_files_replay_busy_or_file, s_feedback, sizeof(s_feedback), "Replay busy or file unsupported");
 }
 
 static void delete_done(int i)
@@ -498,11 +499,11 @@ static void rename_done(const char *name)
     if (!name || !name[0]) return;
     const size_t len = strlen(name);
     if (len > 255 || strpbrk(name, "\\/:*?\"<>|") || name[len - 1] == '.' || name[len - 1] == ' ') {
-        snprintf(s_feedback, sizeof(s_feedback), "Invalid FAT filename (1-255 characters)");
+        LS_SNPUTS(t_scr_files_invalid_fat_filename_1, s_feedback, sizeof(s_feedback), "Invalid FAT filename (1-255 characters)");
         return;
     }
     for (const unsigned char *p = (const unsigned char *)name; *p; p++)
-        if (*p < 32 || *p == 127) { snprintf(s_feedback, sizeof(s_feedback), "Invalid filename character"); return; }
+        if (*p < 32 || *p == 127) { LS_SNPUTS(t_scr_files_invalid_filename_character, s_feedback, sizeof(s_feedback), "Invalid filename character"); return; }
     char to[PATH_MAX_LEN];
     if (!join_path(to, sizeof(to), s_path, name)) return;
     if (!strcmp(to, s_rename_from)) return;
@@ -512,26 +513,26 @@ static void rename_done(const char *name)
         char temp[PATH_MAX_LEN];
         int suffix;
         for (suffix = 0; suffix < 1000; suffix++) {
-            snprintf(temp, sizeof(temp), "%s/.ls-rename-%d.tmp", s_path, suffix);
+            LS_SNPRINTF(t_scr_files_s_ls_rename_d, temp, sizeof(temp), "%s/.ls-rename-%d.tmp", s_path, suffix);
             FILE *reserved = rec_file_open_new(temp);
             if (reserved) {
-                if (fclose(reserved) != 0) { unlink(temp); snprintf(s_feedback, sizeof(s_feedback), "Could not reserve rename path"); return; }
+                if (fclose(reserved) != 0) { unlink(temp); LS_SNPUTS(t_scr_files_could_not_reserve_rename, s_feedback, sizeof(s_feedback), "Could not reserve rename path"); return; }
                 break;
             }
-            if (errno != EEXIST) { snprintf(s_feedback, sizeof(s_feedback), "Could not reserve rename path"); return; }
+            if (errno != EEXIST) { LS_SNPUTS(t_scr_files_could_not_reserve_rename, s_feedback, sizeof(s_feedback), "Could not reserve rename path"); return; }
         }
         if (suffix == 1000) { snprintf(s_feedback, sizeof(s_feedback), "No free rename path"); return; }
         /* The reserved destination belongs to this rename, never another file. */
         if (rename(s_rename_from, temp) != 0) {
-            unlink(temp); snprintf(s_feedback, sizeof(s_feedback), "Could not stage case rename"); return;
+            unlink(temp); LS_SNPUTS(t_scr_files_could_not_stage_case, s_feedback, sizeof(s_feedback), "Could not stage case rename"); return;
         }
         result = rename(temp, to);
         if (result != 0 && rename(temp, s_rename_from) != 0) {
-            snprintf(s_feedback, sizeof(s_feedback), "Rename recovery file: .ls-rename-%d.tmp", suffix); return;
+            LS_SNPRINTF(t_scr_files_rename_recovery_file_ls, s_feedback, sizeof(s_feedback), "Rename recovery file: .ls-rename-%d.tmp", suffix); return;
         }
     } else {
         if (stat(to, &st) == 0 || errno != ENOENT) {
-            snprintf(s_feedback, sizeof(s_feedback), "Destination exists or cannot be checked"); return;
+            LS_SNPUTS(t_scr_files_destination_exists_or_cannot, s_feedback, sizeof(s_feedback), "Destination exists or cannot be checked"); return;
         }
         result = rename(s_rename_from, to);
     }
@@ -590,8 +591,8 @@ static void actions_done(int i)
         char title[48];
         snprintf(title, sizeof(title), "DELETE %s?", open_name());
         ls_picker_open(title, delete_done);
-        ls_picker_add("DELETE", "It cannot be brought back");
-        ls_picker_add("CANCEL", "Leave it on the card");
+        ls_picker_add("DELETE", LS_TEXT(t_scr_files_it_cannot_be_brought, "It cannot be brought back"));
+        ls_picker_add("CANCEL", LS_TEXT(t_scr_files_leave_it_on_the, "Leave it on the card"));
         ls_picker_select(1);
         break;
     }
@@ -615,19 +616,19 @@ static void actions_open(void)
     s_menu_n = 0;
     ls_picker_open(title, actions_done);
     if (sub) {
-        menu_add('F', "SEND TO FLIPPER", "Copy where the Flipper app reads");
-        if (s_view == VIEW_LIST) menu_add('O', "OPEN CAPTURE / REPLAY", "Load and validate before replay");
+        menu_add('F', "SEND TO FLIPPER", LS_TEXT(t_scr_files_copy_where_the_flipper, "Copy where the Flipper app reads"));
+        if (s_view == VIEW_LIST) menu_add('O', LS_TEXT(t_scr_files_open_capture_replay, "OPEN CAPTURE / REPLAY"), LS_TEXT(t_scr_files_load_and_validate_before, "Load and validate before replay"));
         if (s_view == VIEW_SUB && subghz_file_is_iq(&s_sub))
-            menu_add('R', "REPLAY", "Open in REC / LR2021 I/Q");
+            menu_add('R', "REPLAY", LS_TEXT(t_scr_files_open_in_rec_lr2021, "Open in REC / LR2021 I/Q"));
         else if (s_view == VIEW_SUB && subghz_file_is_cc_fsk(&s_sub))
-            menu_add('R', "REPLAY", "Open in RECORD / CC1101 FSK");
+            menu_add('R', "REPLAY", LS_TEXT(t_scr_files_open_in_record_cc1101, "Open in RECORD / CC1101 FSK"));
         else if (s_view == VIEW_SUB && subghz_file_is_fsk(&s_sub)) {
             char where[40];
             snprintf(where, sizeof(where), "Open in RECORD / %s", ls_rsel_name(LS_RSEL_LORA));
             menu_add('R', "REPLAY", where);
         }
         else if (s_view == VIEW_SUB && subghz_file_is_ook(&s_sub))
-            menu_add('R', "REPLAY", "Open in RECORD / CC1101");
+            menu_add('R', "REPLAY", LS_TEXT(t_scr_files_open_in_record_cc1101_2, "Open in RECORD / CC1101"));
         else if (s_view == VIEW_SUB) {
             const char *why = subghz_tx_refusal(s_sub.freq_hz, 0,
                 (size_t)s_sub.edges_total, s_sub.span_us);
@@ -636,14 +637,14 @@ static void actions_open(void)
         }
     }
     if (!dir && is_audio(open_name())) {
-        menu_add('P', "PLAY", "Open it in MUSIC, from here");
+        menu_add('P', "PLAY", LS_TEXT(t_scr_files_open_it_in_music, "Open it in MUSIC, from here"));
         if (!in_music()) {
-            menu_add('C', "COPY TO MUSIC", "A copy in the MUSIC track list");
-            menu_add('M', "MOVE TO MUSIC", "Take it out of here, into MUSIC");
+            menu_add('C', "COPY TO MUSIC", LS_TEXT(t_scr_files_a_copy_in_the, "A copy in the MUSIC track list"));
+            menu_add('M', "MOVE TO MUSIC", LS_TEXT(t_scr_files_take_it_out_of, "Take it out of here, into MUSIC"));
         }
     }
     if (!dir && is_text(open_name()) && s_view != VIEW_TEXT) menu_add('T', "VIEW AS TEXT", "The file as written");
-    menu_add('I', "INFO", "Size, date, where it is");
+    menu_add('I', "INFO", LS_TEXT(t_scr_files_size_date_where_it, "Size, date, where it is"));
     menu_add('N', "RENAME", "Type a new name");
     menu_add('D', "DELETE", dir ? "Only if the folder is empty" : "Remove it from the card");
 }
@@ -683,7 +684,7 @@ static void goto_path(const char *path)
     s_selected = 0;
     s_view = VIEW_LIST;
     load_dir();
-    if (s_read_failed) snprintf(s_feedback, sizeof(s_feedback), "%s is not on this card", path);
+    if (s_read_failed) LS_SNPRINTF(t_scr_files_s_is_not_on, s_feedback, sizeof(s_feedback), "%s is not on this card", path);
 }
 static const char *const GOTO_PATH[] = {ROOT, ROOT "/lakeshark", ROOT "/subghz", ROOT "/journal", ROOT "/maps"};
 static void more_done(int i)
@@ -712,7 +713,7 @@ static void more_done(int i)
     if (id == 'C') {
         uint64_t total = 0, free_b = 0;
         if (esp_vfs_fat_info(ROOT, &total, &free_b) == ESP_OK)
-            snprintf(s_feedback, sizeof(s_feedback), "Card: %.1f GB free of %.1f GB",
+            LS_SNPRINTF(t_scr_files_card_1f_gb_free, s_feedback, sizeof(s_feedback), "Card: %.1f GB free of %.1f GB",
                      free_b / 1073741824.0, total / 1073741824.0);
         else snprintf(s_feedback, sizeof(s_feedback), "No card mounted");
     }
@@ -734,13 +735,13 @@ static void more_open(void)
     ls_picker_open("OPTIONS", more_done);
     menu_add('S', "SORT", SORT_NAME_TEXT[s_sort]);
     ls_picker_stepper(0, option_step);
-    menu_add('1', "CAPTURES", "REC recordings - what the Flipper reads");
-    menu_add('2', "SUB-GHZ", "Watch exports and archives");
-    menu_add('3', "JOURNAL", "Field notes and tracks");
+    menu_add('1', "CAPTURES", LS_TEXT(t_scr_files_rec_recordings_what_the, "REC recordings - what the Flipper reads"));
+    menu_add('2', "SUB-GHZ", LS_TEXT(t_scr_files_watch_exports_and_archives, "Watch exports and archives"));
+    menu_add('3', "JOURNAL", LS_TEXT(t_scr_files_field_notes_and_tracks, "Field notes and tracks"));
     menu_add('0', "CARD ROOT", ROOT);
     menu_add('F', "SHOW", FILTER_LABEL[s_filter]);
     ls_picker_stepper(s_menu_n - 1, option_step);
-    menu_add('R', "REFRESH", "Read the folder again");
+    menu_add('R', "REFRESH", LS_TEXT(t_scr_files_read_the_folder_again, "Read the folder again"));
     menu_add('C', "CARD SPACE", "How full it is");
 }
 
@@ -814,12 +815,12 @@ static void job_step(void)
                 if (ok) {
                     decode_sub(); s_scroll = 0; s_view = VIEW_SUB;
                     if (s_replay_menu) actions_open();
-                } else snprintf(s_feedback, sizeof(s_feedback), "Not a readable SubGhz file - use VIEW AS TEXT");
+                } else LS_SNPUTS(t_scr_files_not_a_readable_subghz, s_feedback, sizeof(s_feedback), "Not a readable SubGhz file - use VIEW AS TEXT");
                 s_replay_menu = false;
                 return;
             }
             s_job_bytes += strlen(s_line);
-            if (s_job_bytes > JOB_MAX_BYTES) { job_cancel(); snprintf(s_feedback, sizeof(s_feedback), "Capture exceeds 1 MB limit"); return; }
+            if (s_job_bytes > JOB_MAX_BYTES) { job_cancel(); LS_SNPUTS(t_scr_files_capture_exceeds_1_mb, s_feedback, sizeof(s_feedback), "Capture exceeds 1 MB limit"); return; }
             if (!strchr(s_line, '\n') && !feof(s_in)) s_sub.invalid = true;
             subghz_file_line(&s_sub, s_line, s_edges, MAX_EDGES);
         }
@@ -838,7 +839,7 @@ static void job_step(void)
                 /* Reserve only a new name, including against concurrent writers. */
                 s_out = rec_file_open_new(s_copy_path);
                 if (s_out) break;
-                if (errno != EEXIST) { job_cancel(); snprintf(s_feedback, sizeof(s_feedback), "Could not create copy"); return; }
+                if (errno != EEXIST) { job_cancel(); LS_SNPUTS(t_scr_files_could_not_create_copy, s_feedback, sizeof(s_feedback), "Could not create copy"); return; }
             }
             if (!s_out && s_copy_suffix > 999) { job_cancel(); snprintf(s_feedback, sizeof(s_feedback), "No free copy name"); }
             return;     /* the name is reserved; the copy starts next frame */
@@ -949,7 +950,7 @@ static void draw_sub(tui_surface *sf, tui_rect p)
              s_sub.protocol[0] ? s_sub.protocol : "?");
     tui_put_str(sf, in, x, y++, line, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
     if(!strcmp(s_sub.protocol,"LR2021_IQ")) {
-        snprintf(line,sizeof(line),"IQ16LE / %lu S/s / %lu pairs / %.2f ms",
+        LS_SNPRINTF(t_scr_files_iq16le_lu_s_s, line,sizeof(line),"IQ16LE / %lu S/s / %lu pairs / %.2f ms",
             (unsigned long)s_sub.iq_rate,(unsigned long)s_sub.iq_samples,s_sub.iq_samples*0.008);
         tui_put_str(sf,in,x,y++,line,LS_ATTR_DIM);
         tui_put_str(sf,in,x,y++,subghz_file_is_iq(&s_sub)?"LR2021 I/Q replay; requires matching sidecar":"Invalid or truncated I/Q recording",LS_ATTR_DIM);
@@ -957,7 +958,7 @@ static void draw_sub(tui_surface *sf, tui_rect p)
     }
     /* What the file is, whether or not it may be replayed. */
     if (s_sub.bitrate && s_sub.deviation_hz && !strstr(s_sub.preset, "Ook"))
-        snprintf(line, sizeof(line), "2-FSK %lu baud, %.1f kHz dev, sync %08lX",
+        LS_SNPRINTF(t_scr_files_2_fsk_lu_baud, line, sizeof(line), "2-FSK %lu baud, %.1f kHz dev, sync %08lX",
                  (unsigned long)s_sub.bitrate, s_sub.deviation_hz / 1000.0,
                  (unsigned long)s_sub.sync_word);
     else
@@ -981,7 +982,7 @@ static void draw_sub(tui_surface *sf, tui_rect p)
     int ov_rows = left - hist_rows - 3;
     if (ov_rows > 24) ov_rows = 24;
     if (ov_rows >= 2) {
-        snprintf(line, sizeof(line), "WHOLE CAPTURE  %.2f ms a row   # on  _ off",
+        LS_SNPRINTF(t_scr_files_whole_capture_2f_ms, line, sizeof(line), "WHOLE CAPTURE  %.2f ms a row   # on  _ off",
                  s_sub.span_us / 1000.0 / ov_rows);
         tui_put_str(sf, in, x, y++, line, LS_ATTR_DIM);
         sub_overview(sf, tui_rect_make(x, y, w, ov_rows));
@@ -1051,8 +1052,8 @@ static void draw_list(tui_surface *sf, tui_rect p)
         tui_put_str(sf, p, p.x + p.w - n - 2, p.y + 1, how, LS_ATTR_DIM);
     }
     if (s_read_failed) {
-        tui_put_str(sf, p, s_list.x, s_list.y + 1, "No card, or this folder cannot be read.", LS_ATTR_DIM);
-        tui_put_str(sf, p, s_list.x, s_list.y + 2, "REFRESH tries again.", LS_ATTR_DIM);
+        tui_put_str(sf, p, s_list.x, s_list.y + 1, LS_TEXT(t_scr_files_no_card_or_this, "No card, or this folder cannot be read."), LS_ATTR_DIM);
+        tui_put_str(sf, p, s_list.x, s_list.y + 2, LS_TEXT(t_scr_files_refresh_tries_again, "REFRESH tries again."), LS_ATTR_DIM);
         return;
     }
     if (!s_count) {
@@ -1100,7 +1101,7 @@ static void draw(tui_surface *sf, tui_rect a)
 {
     if (s_job != JOB_NONE) {
         char progress[80];
-        snprintf(progress, sizeof(progress), "%s %lu %s - BACK or tap to cancel",
+        LS_SNPRINTF(t_scr_files_s_lu_s_back, progress, sizeof(progress), "%s %lu %s - BACK or tap to cancel",
                  s_job == JOB_DIR ? "Reading folder" : s_job == JOB_SUB ? "Loading capture" : "Copying",
                  s_job_bytes, s_job == JOB_DIR ? "entries" : "bytes");
         ls_panel_box(sf, a, "FILES", TUI_CYAN);
@@ -1143,7 +1144,7 @@ static void draw(tui_surface *sf, tui_rect a)
     tui_rect panel = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - 1);
     char title[80];
     if (list) snprintf(title, sizeof(title), "FILES  %s%d", s_truncated ? "first " : "", s_count);
-    else if (s_view == VIEW_TEXT) snprintf(title, sizeof(title), "TEXT %ld-%ld/%ld bytes", s_text_offset, s_text_offset + (long)s_text_len, s_text_total);
+    else if (s_view == VIEW_TEXT) LS_SNPRINTF(t_scr_files_text_ld_ld_ld, title, sizeof(title), "TEXT %ld-%ld/%ld bytes", s_text_offset, s_text_offset + (long)s_text_len, s_text_total);
     else snprintf(title, sizeof(title), "CAPTURE");
     ls_panel_box(sf, panel, title, TUI_CYAN);
     if (s_view == VIEW_SUB) draw_sub(sf, panel);

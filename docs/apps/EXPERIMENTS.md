@@ -38,10 +38,7 @@ start and say so.
 | Name | Badge | Listens for |
 |---|---|---|
 | AVIATION PULSES | TRYING, LR2021 only | 1030 MHz SSR interrogations, 1090 MHz replies and DME pulse pairs |
-| BURST SCOPE | TRYING | Burst length, gap and rhythm on one frequency: key fobs, tyre sensors, toll readers |
-| CARRIER LEVEL | WORKS | The signal level of one frequency, 150 to 1100 MHz |
 | RADIOSONDE | TRYING | DFM-17 weather balloons at 400 to 406 MHz, with their telemetry |
-| IRIDIUM BURSTS | TRYING, LR2021 only | Satellite bursts at 1616 to 1626.5 MHz |
 | LORA MONITOR | TRYING, LR2021 only | MeshCore or Meshtastic traffic on one US mesh frequency, four spreading factors at once |
 | LR433 | TRYING | Tyre pressure sensors, weather sensors and utility meters at 315 to 928 MHz |
 | P25 SITE FINDER | TRYING | P25 Phase 1 sites: the NAC and frame type, VHF and UHF |
@@ -52,13 +49,15 @@ start and say so.
 | WI-SUN METERS | TRYING, LR2021 only | US Wi-SUN smart meter traffic, 2-FSK modes 1b, 2a and 3 |
 | Z-WAVE SNIFFER | TRYING, LR2021 only | US Z-Wave traffic on the R1, R2 and R3 channels |
 
+BURST SCOPE, CARRIER LEVEL and IRIDIUM BURSTS are SD apps now
+(`app-sdk/apps/burst`, `carrier` and `iridium`, from the store). They read
+I/Q from the radio picked under RADIO (the LR2021 or an SDR) and give levels
+in dB relative to that radio's full scale.
+
 Some notes on what each one offers in OPTIONS:
 
 - **AVIATION PULSES**: VIEW (1030 SSR, 1090 REPLIES, DME/TACAN), DME PRESET and DME FREQUENCY (962 to 1213 MHz).
-- **BURST SCOPE**: PLACE presets for fobs, tyre sensors and toll readers, FREQUENCY, FILTER and THRESHOLD (3 to 40 dB over the floor). Energy and timing only.
-- **CARRIER LEVEL**: FREQUENCY.
 - **RADIOSONDE**: FREQUENCY (400 to 406 MHz), AUTO SWEEP and FILTER (12, 24 or 36 kHz). Launches are usually near 00Z and 12Z.
-- **IRIDIUM BURSTS**: PLAN (the simplex channels or the whole band), DWELL and THRESHOLD.
 - **LORA MONITOR**: PRESET (Mesh US, LongFast US, LongFast high SF).
 - **LR433**: BANDS (ALL, 315 TPMS, 433, 915, ERT METERS), DWELL (2 to 600 s), UNITS (PSI / F or KPA / C), OOK GAIN, HISTORY and CLEAR. An SX1262 runs the FSK sessions; the OOK and meter sessions need an LR2021.
 - **P25 SITE FINDER**: CHANNELS (PROFILE from the P25 profile on the card, or ONE FREQ), FREQUENCY and DWELL.

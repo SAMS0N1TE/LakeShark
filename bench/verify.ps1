@@ -4,15 +4,28 @@ param(
     [ValidateSet('host', 'smoke', 'full')] [string] $Level = 'host',
     [switch] $Sanitize,
     [switch] $Quiet,
-    [string] $Filter
+    [string] $Filter,
+    [string] $TestRegex,
+    [ValidateSet('all','music')] [string] $Group = 'all'
 )
 
 $ErrorActionPreference = 'Stop'
+if ($PSBoundParameters.ContainsKey('TestRegex') -and [string]::IsNullOrWhiteSpace($TestRegex)) {
+    throw '-TestRegex must not be empty.'
+}
+if ($TestRegex -and ($Filter -or $Group -ne 'all')) {
+    throw '-TestRegex cannot be combined with -Filter or -Group music.'
+}
+if ($TestRegex) {
+    try { [void][regex]::new($TestRegex) }
+    catch { throw "Invalid -TestRegex: $($_.Exception.Message)" }
+}
 $bench = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root  = Split-Path -Parent $bench
 $cfg   = Get-Content (Join-Path $bench 'configs.json') -Raw | ConvertFrom-Json
 
 $script:failures = @()
+$script:selectedCTestCount = $script:totalCTestCount = 0
 
 function Say([string] $m, [string] $colour = 'Gray') {
     if (-not $Quiet) { Write-Host $m -ForegroundColor $colour }
@@ -43,6 +56,21 @@ function Invoke-HostBench {
     if ($LASTEXITCODE -ne 0) {
         $script:failures += "cmake configure failed`n$($conf -join "`n")"
         return
+    }
+
+    if ($TestRegex) {
+        # Let CTest resolve the regex and required fixtures before building.
+        # Case filtering below remains a separate harness-only operation.
+        $selectedInventory = & ctest --test-dir $buildDir --show-only=json-v1 -R $TestRegex 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "CTest rejected -TestRegex: $($selectedInventory -join "`n")" }
+        $selectedTests = @((($selectedInventory -join "`n") | ConvertFrom-Json).tests)
+        if ($selectedTests.Count -eq 0) { throw "-TestRegex matched no registered CTests: $TestRegex" }
+        $allInventory = & ctest --test-dir $buildDir --show-only=json-v1 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "CTest inventory failed: $($allInventory -join "`n")" }
+        $allTests = @((($allInventory -join "`n") | ConvertFrom-Json).tests)
+        $script:selectedCTestCount = $selectedTests.Count
+        $script:totalCTestCount = $allTests.Count
+        Say "    CTest selection: $($selectedTests.Count)/$($allTests.Count) registered tests (including required fixtures); regex=$TestRegex" 'Cyan'
     }
 
     $build = & cmake --build $buildDir 2>&1
@@ -98,7 +126,9 @@ function Invoke-HostBench {
 
     try {
         if (-not $Filter) {
-            $out = & ctest --test-dir $buildDir --output-on-failure --no-tests=error 2>&1
+            $ctestArgs = @('--test-dir', $buildDir, '--output-on-failure', '--no-tests=error')
+            if ($TestRegex) { $ctestArgs += @('-R', $TestRegex) }
+            $out = & ctest @ctestArgs 2>&1
             $rc = $LASTEXITCODE
             $out | ForEach-Object { Say "    $_" }
             if ($rc -ne 0) { $script:failures += "host CTest failed`n$($out -join "`n")" }
@@ -355,6 +385,11 @@ exit `$LASTEXITCODE
         if ($rc -eq 0) {
             $sz = $out | Select-String -Pattern 'bytes.*free|Project build complete' | Select-Object -Last 1
             Say "    PASS  $($c.name)" 'Green'
+            # The app must fit ota_0, or an update over Wi-Fi cannot land.
+            & pwsh -NoProfile -File (Join-Path $bench 'size_gate.ps1') $c.name
+            if ($LASTEXITCODE -ne 0) {
+                $script:failures += "firmware $($c.name) is larger than the ota_0 slot"
+            }
         } else {
             Say "    FAIL  $($c.name)" 'Red'
 
@@ -418,6 +453,24 @@ function Invoke-ModuleShadowCheck {
     if ($LASTEXITCODE -ne 0) { $script:failures += "module shadow`n$out" }
 }
 
+# The steps below use repo-relative paths (tools/, bench/quality.py); the
+# release gate starts this script from its own folder, not the worktree.
+Push-Location $root
+try {
+
+if ($Group -eq 'music') {
+    if ($Level -ne 'host') { throw 'The music group is a targeted host-only gate.' }
+    $musicBuild = Join-Path $bench 'build'
+    & cmake -G Ninja -S $bench -B $musicBuild
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    & cmake --build $musicBuild --target music_tests -j 6
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    & ctest --test-dir $musicBuild -R '^test_(music_.*|tui_music)$' --output-on-failure --no-tests=error
+    $musicResult = $LASTEXITCODE
+    if (-not $musicResult) { Say 'VERIFY OK (group=music, host only); hardware not verified' 'Green' }
+    exit $musicResult
+}
+
 $started = Get-Date
 
 Invoke-HostBench
@@ -448,7 +501,8 @@ $secs = [int]((Get-Date) - $started).TotalSeconds
 
 if ($script:failures.Count -eq 0) {
     Say ""
-    Say "VERIFY OK  (level=$Level, ${secs}s); hardware release clearance NOT established" 'Green'
+    $testScope = $TestRegex ? "; CTest selection=$script:selectedCTestCount/$script:totalCTestCount" : ''
+    Say "VERIFY OK  (level=$Level, ${secs}s$testScope); hardware release clearance NOT established" 'Green'
     exit 0
 }
 
@@ -456,3 +510,4 @@ Say ""
 Say "VERIFY FAILED  (level=$Level, ${secs}s)" 'Red'
 foreach ($f in $script:failures) { Write-Host "--- $f" -ForegroundColor Red }
 exit 1
+} finally { Pop-Location }

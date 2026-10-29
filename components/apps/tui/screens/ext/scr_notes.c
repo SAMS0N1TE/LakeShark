@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "ls_textpack.h"
 
 typedef enum { V_LIST, V_READ, V_EDIT, V_MAP } view_t;
 
@@ -143,8 +144,8 @@ static void poll_saves(void)
         int result = ls_notes_result(s_png_ticket);
         if (result) {
             s_png_ticket = 0;
-            if (result > 0) { insert_line(s_map_line); s_view = V_EDIT; say("Map picture saved beside the note"); }
-            else say("MAP PICTURE FAILED: SAVE to retry");
+            if (result > 0) { insert_line(s_map_line); s_view = V_EDIT; say(LS_TEXT(t_scr_notes_map_picture_saved_beside, "Map picture saved beside the note")); }
+            else say(LS_TEXT(t_scr_notes_map_picture_failed_save, "MAP PICTURE FAILED: SAVE to retry"));
         }
     }
     if (s_trash_ticket) {
@@ -175,7 +176,7 @@ static bool can_replace(void)
 {
     poll_saves();
     if (s_save_ticket || s_png_ticket || s_trash_ticket || (s_loaded && s_tb.dirty)) {
-        save_now(); say("Unsaved note kept: wait for save or retry DONE"); return false;
+        save_now(); say(LS_TEXT(t_scr_notes_unsaved_note_kept_wait, "Unsaved note kept: wait for save or retry DONE")); return false;
     }
     return true;
 }
@@ -232,7 +233,7 @@ static void leave_editor(void)
 
 static void insert_line(const char *line)
 {
-    if (!line || !line[0]) { say("Nothing live to insert right now"); return; }
+    if (!line || !line[0]) { say(LS_TEXT(t_scr_notes_nothing_live_to_insert, "Nothing live to insert right now")); return; }
     s_done_requested = false;
     /* Data lines start on a line of their own. */
     if (s_tb.cursor > 0 && s_text[s_tb.cursor - 1] != '\n') ls_textbuf_insert_char(&s_tb, '\n');
@@ -251,7 +252,7 @@ static void begin_map_capture(void)
     s_map_lat = lat; s_map_lon = lon;
     ls_map_center(lat, lon);
     s_view = V_MAP;
-    say("Arrows/tap edges pan. TAB buttons.");
+    say(LS_TEXT(t_scr_notes_arrows_tap_edges_pan, "Arrows/tap edges pan. TAB buttons."));
 }
 
 static void insert_done(int i)
@@ -272,7 +273,7 @@ static void insert_done(int i)
     case INS_MAP:     begin_map_capture(); break;
     case INS_SENSORS: {
         ls_field_sample_t p; ls_field_sample_snapshot(&p);
-        if (!p.imu_valid) { say("Motion sensor not answering"); break; }
+        if (!p.imu_valid) { say(LS_TEXT(t_scr_notes_motion_sensor_not_answering, "Motion sensor not answering")); break; }
         const float field = sqrtf(p.imu.mx * p.imu.mx + p.imu.my * p.imu.my + p.imu.mz * p.imu.mz);
         ls_note_fmt_sensors(line, sizeof(line), p.imu.ax, p.imu.ay, p.imu.az, field, p.imu.temp_c, NAN);
         insert_line(line); break; }
@@ -285,27 +286,27 @@ static void insert_done(int i)
 static void open_insert(void)
 {
     ls_picker_open("INSERT AT CURSOR", insert_done);
-    ls_picker_add("Time", "now, UTC when the clock is set");
-    ls_picker_add("GPS position", "fix, altitude, accuracy");
-    ls_picker_add("Heading", "compass, magnetic and true");
-    ls_picker_add("Map picture", "saved beside the note as PNG");
-    ls_picker_add("Sensors", "motion, magnetic field, temperature");
-    ls_picker_add("Checklist item", "- [ ] tap it in the reader to tick");
+    ls_picker_add("Time", LS_TEXT(t_scr_notes_now_utc_when_the, "now, UTC when the clock is set"));
+    ls_picker_add("GPS position", LS_TEXT(t_scr_notes_fix_altitude_accuracy, "fix, altitude, accuracy"));
+    ls_picker_add("Heading", LS_TEXT(t_scr_notes_compass_magnetic_and_true, "compass, magnetic and true"));
+    ls_picker_add("Map picture", LS_TEXT(t_scr_notes_saved_beside_the_note, "saved beside the note as PNG"));
+    ls_picker_add("Sensors", LS_TEXT(t_scr_notes_motion_magnetic_field_temperature, "motion, magnetic field, temperature"));
+    ls_picker_add("Checklist item", LS_TEXT(t_scr_notes_tap_it_in_the, "- [ ] tap it in the reader to tick"));
     ls_picker_add("Heading line", "## a section title");
     ls_picker_add("Divider", "---");
     const char *labels[6];
     s_radio_n = ls_note_radio_groups(s_radio_group, labels, 6);
     for (int k = 0; k < s_radio_n; k++) {
         char label[32]; snprintf(label, sizeof(label), "Radio: %s", labels[k]);
-        ls_picker_add(label, "what that radio is reporting now");
+        ls_picker_add(label, LS_TEXT(t_scr_notes_what_that_radio_is, "what that radio is reporting now"));
     }
-    if (!s_radio_n) ls_picker_add("Radio", "no radio is reporting yet");
+    if (!s_radio_n) ls_picker_add("Radio", LS_TEXT(t_scr_notes_no_radio_is_reporting, "no radio is reporting yet"));
 }
 
 static void save_map_picture(void)
 {
-    if (s_png_ticket) { say("Picture saving; please wait"); return; }
-    if (ls_map_render_busy()) { say("Map still drawing; SAVE again in a moment"); return; }
+    if (s_png_ticket) { say(LS_TEXT(t_scr_notes_picture_saving_please_wait, "Picture saving; please wait")); return; }
+    if (ls_map_render_busy()) { say(LS_TEXT(t_scr_notes_map_still_drawing_save, "Map still drawing; SAVE again in a moment")); return; }
     int w = 0, h = 0;
     const uint16_t *px = ls_map_render(&w, &h);
     double lat, lon; ls_map_get_center(&lat, &lon);
@@ -316,14 +317,14 @@ static void save_map_picture(void)
            save_now() skips a note with none, so a picture taken before
            anything was typed used to be dropped for want of a name. */
         if (s_new) { s_tb.dirty = true; save_now(); }
-        if (!s_info.stem[0]) { say("The card is busy; SAVE again for the picture"); return; }
+        if (!s_info.stem[0]) { say(LS_TEXT(t_scr_notes_the_card_is_busy, "The card is busy; SAVE again for the picture")); return; }
         char leaf[LS_NOTE_STEM + 16] = "";
         ls_notes_picture_leaf(s_info.stem, leaf, sizeof(leaf));
         char file[LS_NOTE_STEM + 24];
         snprintf(file, sizeof(file), "%s.png", leaf);
-        if (!ls_notes_save_png_tracked(leaf, px, w, h, &s_png_ticket)) { say("A picture is still being written; try again"); return; }
+        if (!ls_notes_save_png_tracked(leaf, px, w, h, &s_png_ticket)) { say(LS_TEXT(t_scr_notes_a_picture_is_still, "A picture is still being written; try again")); return; }
         ls_note_fmt_map(line, sizeof(line), lat, lon, ls_map_zoom(), file);
-        snprintf(s_map_line, sizeof(s_map_line), "%s", line); say("Saving map picture; please wait");
+        snprintf(s_map_line, sizeof(s_map_line), "%s", line); say(LS_TEXT(t_scr_notes_saving_map_picture_please, "Saving map picture; please wait"));
         return;
     }
     /* No frame to save: keep the place, and say why from the map itself. */
@@ -331,7 +332,7 @@ static void save_map_picture(void)
     s_view = V_EDIT; insert_line(line);
     const char *why = ls_map_status();
     char msg[96];
-    snprintf(msg, sizeof(msg), "No picture (%s): position saved", why ? why : "no map frame");
+    LS_SNPRINTF(t_scr_notes_no_picture_s_position, msg, sizeof(msg), "No picture (%s): position saved", why ? why : "no map frame");
     say(msg);
 }
 
@@ -584,7 +585,7 @@ static void filter_done(const char *text) { snprintf(s_filter, sizeof(s_filter),
 
 static void toggle_check_at(int offset)
 {
-    if (s_trash_ticket) { say("Moving note; please wait"); return; }
+    if (s_trash_ticket) { say(LS_TEXT(t_scr_notes_moving_note_please_wait, "Moving note; please wait")); return; }
     if (offset < 0 || offset + 5 > s_tb.len || strncmp(s_text + offset, "- [", 3)) return;
     char *mark = s_text + offset + 3;
     if (*mark == ' ') *mark = 'x'; else if (*mark == 'x' || *mark == 'X') *mark = ' '; else return;
@@ -606,7 +607,7 @@ static void list_action(int i)
 
 static void read_action(int i)
 {
-    if (s_trash_ticket) { say("Moving note; please wait"); return; }
+    if (s_trash_ticket) { say(LS_TEXT(t_scr_notes_moving_note_please_wait, "Moving note; please wait")); return; }
     s_feedback[0] = 0;
     if (i == 0) edit_note();
     else if (i == 1 && s_info.has_place && can_replace()) { ls_map_center(s_info.lat, s_info.lon); open_app("map"); }
@@ -616,7 +617,7 @@ static void read_action(int i)
     } else if (i == 3 && can_replace()) {
         const int64_t now = esp_timer_get_time();
         if (s_trash_armed_us && now - s_trash_armed_us < 4000000) {
-            if (ls_notes_trash_tracked(s_info.stem, &s_trash_ticket)) say("Moving to notes/trash...");
+            if (ls_notes_trash_tracked(s_info.stem, &s_trash_ticket)) say(LS_TEXT(t_scr_notes_moving_to_notes_trash, "Moving to notes/trash..."));
             s_trash_armed_us = 0;
         } else s_trash_armed_us = now;
     } else if (i == 4 && can_replace()) { s_view = V_LIST; s_loaded = false; }
@@ -633,7 +634,7 @@ static void edit_action(int i)
 static void map_action(int i)
 {
     s_feedback[0] = 0;
-    if (s_png_ticket) { say("Picture saving; please wait"); return; }
+    if (s_png_ticket) { say(LS_TEXT(t_scr_notes_picture_saving_please_wait, "Picture saving; please wait")); return; }
     if (i == 0) save_map_picture();
     else if (i == 1) ls_map_zoom_by(-1);
     else if (i == 2) ls_map_zoom_by(1);
@@ -720,7 +721,7 @@ static bool key(ls_tk_t k, char ch)
                 }
                 s_read_scroll = rows;
                 button_focus = -1;
-                say("ENTER ticks selected item; SPACE selects next");
+                say(LS_TEXT(t_scr_notes_enter_ticks_selected_item, "ENTER ticks selected item; SPACE selects next"));
             }
             return true;
         }

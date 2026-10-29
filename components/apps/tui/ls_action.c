@@ -11,6 +11,7 @@
 #include <stdio.h>
 
 #include "esp_attr.h"
+#include "ls_textpack.h"
 
 typedef struct {
     const char *path;
@@ -61,7 +62,7 @@ bool ls_action_register(const char *path, const char *sig, ls_cap_t needs,
     }
     if (s_count >= LS_ACTION_MAX) {
         s_refused++;
-        printf("ls_action: table full, %s not registered\n", path);
+        LS_PRINTF(t_ls_action_ls_action_table_full, "ls_action: table full, %s not registered\n", path);
         return false;
     }
     s_tab[s_count++] = (entry_t){ path, sig, help, needs, fn };

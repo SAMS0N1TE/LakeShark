@@ -7,6 +7,23 @@ void fm_lr_reset(fm_lr_dsp_t *s)
     memset((char *)s + offsetof(fm_lr_dsp_t, i), 0,
            sizeof(*s) - offsetof(fm_lr_dsp_t, i));
 }
+void fm_lr_set_dc_block(fm_lr_dsp_t *s, bool on)
+{
+    if (s->dc_block != on) { s->dc_i = s->dc_q = 0; }
+    s->dc_block = on;
+}
+/* One input pair into the filter history, through the DC blocker when on. */
+static inline void push_pair(fm_lr_dsp_t *s, float re, float im)
+{
+    re /= 32768.0f; im /= 32768.0f;
+    if (s->dc_block) {
+        const float k = 1.0f / (float)(1u << FM_LR_DC_SHIFT);
+        s->dc_i += (re - s->dc_i) * k; s->dc_q += (im - s->dc_q) * k;
+        re -= s->dc_i; im -= s->dc_q;
+    }
+    s->i[s->pos] = re; s->q[s->pos] = im;
+    s->pos = (s->pos+1)%FM_LR_TAPS;
+}
 void fm_lr_init(fm_lr_dsp_t *s, unsigned channel_hz)
 {
     memset(s, 0, sizeof(*s));
@@ -32,8 +49,7 @@ int fm_lr_demod(fm_lr_dsp_t *s, fm_dsp_t *fm, const uint8_t *iq,
         float im = (int16_t)((unsigned)iq[b+2] | ((unsigned)iq[b+3]<<8));
         float level = fmaxf(fabsf(re), fabsf(im))/32768.0f;
         if (level > peak) peak = level;
-        s->i[s->pos] = re/32768.0f; s->q[s->pos] = im/32768.0f;
-        s->pos = (s->pos+1)%FM_LR_TAPS;
+        push_pair(s, re, im);
         if (++s->decim < 4) continue;
         s->decim = 0; re = im = 0;
         unsigned j = s->pos;
@@ -72,8 +88,7 @@ int fm_lr_demod_env(fm_lr_dsp_t *s, fm_dsp_t *fm, const uint8_t *iq,
         float im = (int16_t)((unsigned)iq[b+2] | ((unsigned)iq[b+3]<<8));
         float level = fmaxf(fabsf(re), fabsf(im))/32768.0f;
         if (level > peak) peak = level;
-        s->i[s->pos] = re/32768.0f; s->q[s->pos] = im/32768.0f;
-        s->pos = (s->pos+1)%FM_LR_TAPS;
+        push_pair(s, re, im);
         if (++s->decim < 4) continue;
         s->decim = 0; re = im = 0;
         unsigned j = s->pos;
@@ -106,8 +121,7 @@ int fm_lr_demod_am(fm_lr_dsp_t *s, fm_dsp_t *fm, const uint8_t *iq,
         float im = (int16_t)((unsigned)iq[b+2] | ((unsigned)iq[b+3]<<8));
         float level = fmaxf(fabsf(re), fabsf(im))/32768.0f;
         if (level > peak) peak = level;
-        s->i[s->pos] = re/32768.0f; s->q[s->pos] = im/32768.0f;
-        s->pos = (s->pos+1)%FM_LR_TAPS;
+        push_pair(s, re, im);
         if (++s->decim < 4) continue;
         s->decim = 0; re = im = 0;
         unsigned j = s->pos;

@@ -16,6 +16,9 @@ extern "C" {
 void ls_lap_sys_begin(void);
 void ls_lap_sys_frame(tui_rect area);
 void ls_lap_sys_end(void);
+/* API 2.1: the screen closed but a service keeps the app loaded: only the
+ * screen is given back (lists, waterfall, brightness, rotation, full screen). */
+void ls_lap_sys_hide(void);
 bool ls_lap_sys_immersive(void);      /* the app took the whole screen, close button too */
 /* lap_io worker: mesh refresh and sends, card jobs. True when it did work
  * and wants to be called again soon. */
@@ -39,6 +42,7 @@ typedef struct {
     int mesh_nodes;
     lap_mesh_node_t nodes[12];
     lap_mesh_self_t self;
+    uint8_t chan_private;       /* bit n: lap_mesh_channel_private(n) */
     int wifi_count;
     lap_wifi_ap_t aps[16];
     int ble_count;

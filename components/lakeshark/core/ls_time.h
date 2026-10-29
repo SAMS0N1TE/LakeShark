@@ -60,6 +60,10 @@ size_t ls_time_render_filename_at(char *out, size_t cap, const char *label,
 
 void ls_time_note_set(void);
 
+/* What set the wall clock: 0 nothing yet, 1 the RTC at boot (or another
+   local source through ls_time_note_set), 2 SNTP. */
+int ls_time_source(void);
+
 /* Test-only. Force the sync flag on or off. Not for firmware callers. */
 void ls_time_test_set_synced(bool synced);
 

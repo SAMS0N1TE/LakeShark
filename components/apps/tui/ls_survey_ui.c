@@ -8,6 +8,7 @@
 #include "esp_attr.h"
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 #define WHITE TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK)
 #define CYAN TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK)
@@ -114,7 +115,7 @@ static void heading(tui_surface *sf, tui_rect a)
     x=ls_radio_chip(sf,rail,x,rail.y,"RX",hot,TUI_CYAN);
     x=ls_radio_chip(sf,rail,x,rail.y,s_view.gps_fresh?"GPS FIX":"GPS WAIT",true,s_view.gps_fresh?TUI_GREEN:TUI_YELLOW);
     ls_radio_chip(sf,rail,x,rail.y,s_view.utc_valid?"UTC OK":"UTC WAIT",true,s_view.utc_valid?TUI_GREEN:TUI_YELLOW);
-    snprintf(line,sizeof(line),"+%u/min  %02u:%02u:%02u  %u rows",s_view.new_minute,
+    LS_SNPRINTF(t_ls_survey_ui_u_min_02u_02u, line,sizeof(line),"+%u/min  %02u:%02u:%02u  %u rows",s_view.new_minute,
         s_view.elapsed_s/3600,s_view.elapsed_s/60%60,s_view.elapsed_s%60,s_view.rows);
     text(sf,rail,wide?2:1,line,WHITE);
     if(wide) text(sf,rail,4,s_view.status[0]?s_view.status:"S START / O OPTIONS",LS_ATTR_DIM);
@@ -123,20 +124,20 @@ static void heading(tui_surface *sf, tui_rect a)
 static void options_preview(tui_surface *sf, tui_rect a)
 {
     char line[64];
-    ls_panel_box(sf,a,"SURVEY / RECORDING PLAN",TUI_CYAN);
+    ls_panel_box(sf,a,LS_TEXT(t_ls_survey_ui_survey_recording_plan, "SURVEY / RECORDING PLAN"),TUI_CYAN);
     emblem(sf,tui_rect_make(a.x+2,a.y+2,11,5),false);
     tui_put_str(sf,a,a.x+15,a.y+2,"PASSIVE",WHITE);
     tui_put_str(sf,a,a.x+15,a.y+4,"Wi-Fi + BLE",CYAN);
     text(sf,a,8,s_options.only_fix?"GPS fix required for rows":"Rows allowed without GPS",TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK));
     snprintf(line,sizeof(line),"Wi-Fi %s / BLE %s",s_options.wifi?"ON":"OFF",s_options.ble?"ON":"OFF");
     text(sf,a,10,line,WHITE);
-    snprintf(line,sizeof(line),"Scan every %us / keep %u sessions",s_options.interval_s,s_options.keep);
+    LS_SNPRINTF(t_ls_survey_ui_scan_every_us_keep, line,sizeof(line),"Scan every %us / keep %u sessions",s_options.interval_s,s_options.keep);
     text(sf,a,12,line,TUI_ATTR(TUI_MAGENTA|TUI_BRIGHT,TUI_BLACK));
-    text(sf,a,14,"Tap < > to step / value to type",LS_ATTR_DIM);
-    text(sf,a,16,"BACK / Esc returns to survey",LS_ATTR_DIM);
+    text(sf,a,14,LS_TEXT(t_ls_survey_ui_tap_to_step_value, "Tap < > to step / value to type"),LS_ATTR_DIM);
+    text(sf,a,16,LS_TEXT(t_ls_survey_ui_back_esc_returns_to, "BACK / Esc returns to survey"),LS_ATTR_DIM);
     if(a.h>20) {
-        text(sf,a,18,"START records observations to CSV",CYAN);
-        text(sf,a,20,"STOP flushes the session to SD",TUI_ATTR(TUI_YELLOW,TUI_BLACK));
+        text(sf,a,18,LS_TEXT(t_ls_survey_ui_start_records_observations_to, "START records observations to CSV"),CYAN);
+        text(sf,a,20,LS_TEXT(t_ls_survey_ui_stop_flushes_the_session, "STOP flushes the session to SD"),TUI_ATTR(TUI_YELLOW,TUI_BLACK));
     }
 }
 
@@ -156,21 +157,21 @@ static void stats(tui_surface *sf, tui_rect a)
     char line[100];
     bool tall=a.h>=20;
     ls_panel_box(sf,a,"RADIO MIX / 0..100%",TUI_CYAN);
-    snprintf(line,sizeof(line),"Wi-Fi %u +%u/min | BLE %u +%u/min",s_view.wifi,s_view.wifi_minute,s_view.ble,s_view.ble_minute);
+    LS_SNPRINTF(t_ls_survey_ui_wi_fi_u_u, line,sizeof(line),"Wi-Fi %u +%u/min | BLE %u +%u/min",s_view.wifi,s_view.wifi_minute,s_view.ble,s_view.ble_minute);
     text(sf,a,1,line,WHITE);
     int y=2;
     if(tall) {
-        text(sf,a,y++,"NEW / MINUTE     Wi-Fi + BLE",LS_ATTR_DIM);
+        text(sf,a,y++,LS_TEXT(t_ls_survey_ui_new_minute_wi_fi, "NEW / MINUTE     Wi-Fi + BLE"),LS_ATTR_DIM);
         mix_row(sf,a,y++,"Wi-Fi",s_view.wifi_minute,s_view.new_minute,TUI_CYAN);
         mix_row(sf,a,y++,"BLE",s_view.ble_minute,s_view.new_minute,TUI_MAGENTA);
-        text(sf,a,y++,"AUTHENTICATION / Wi-Fi share",LS_ATTR_DIM);
+        text(sf,a,y++,LS_TEXT(t_ls_survey_ui_authentication_wi_fi_share, "AUTHENTICATION / Wi-Fi share"),LS_ATTR_DIM);
     }
     mix_row(sf,a,y++,"OPEN",s_view.security[0],s_view.wifi,TUI_RED);
     mix_row(sf,a,y++,"WEP",s_view.security[1],s_view.wifi,TUI_YELLOW);
     mix_row(sf,a,y++,"WPA",s_view.security[2],s_view.wifi,TUI_MAGENTA);
     mix_row(sf,a,y++,"WPA2",s_view.security[3],s_view.wifi,TUI_CYAN);
     mix_row(sf,a,y++,"WPA3",s_view.security[4],s_view.wifi,TUI_GREEN);
-    if(tall) text(sf,a,y++,"TOP CHANNELS / relative to busiest",LS_ATTR_DIM);
+    if(tall) text(sf,a,y++,LS_TEXT(t_ls_survey_ui_top_channels_relative_to, "TOP CHANNELS / relative to busiest"),LS_ATTR_DIM);
     for(int i=0;i<3;i++) {
         char label[12];
         if(s_view.top_count[i]) snprintf(label,sizeof(label),"CH %u",s_view.top_channel[i]);
@@ -178,12 +179,12 @@ static void stats(tui_surface *sf, tui_rect a)
         mix_row(sf,a,y++,label,s_view.top_count[i],s_view.top_count[0],TUI_GREEN);
     }
     if(tall) {
-        snprintf(line,sizeof(line),"SD %s%llu MiB free / %u rows",s_view.sd_known?"":"? ",
+        LS_SNPRINTF(t_ls_survey_ui_sd_s_llu_mib, line,sizeof(line),"SD %s%llu MiB free / %u rows",s_view.sd_known?"":"? ",
             (unsigned long long)(s_view.free_bytes/(1024*1024)),s_view.rows);
         inner(sf,a,y+1,line,WHITE);
-        snprintf(line,sizeof(line),"Cache %u / evicted %u",s_view.cached,s_view.dropped);
+        LS_SNPRINTF(t_ls_survey_ui_cache_u_evicted_u, line,sizeof(line),"Cache %u / evicted %u",s_view.cached,s_view.dropped);
         inner(sf,a,y+2,line,LS_ATTR_DIM);
-        inner(sf,a,y+3,"Totals recount evicted addresses",LS_ATTR_DIM);
+        inner(sf,a,y+3,LS_TEXT(t_ls_survey_ui_totals_recount_evicted_addresses, "Totals recount evicted addresses"),LS_ATTR_DIM);
     }
 }
 
@@ -228,25 +229,25 @@ void ls_survey_draw(tui_surface *sf, tui_rect a)
     if (s_details) {
         display_name(name, s_detail.name);
         text(sf, s_list, 1, name[0] ? name : "(no advertised name / hidden SSID)", WHITE);
-        snprintf(line, sizeof(line), "%s %02x:%02x:%02x:%02x:%02x:%02x", s_detail.kind == LS_SURVEY_WIFI ? "Wi-Fi" : "BLE",
+        LS_SNPRINTF(t_ls_survey_ui_s_02x_02x_02x, line, sizeof(line), "%s %02x:%02x:%02x:%02x:%02x:%02x", s_detail.kind == LS_SURVEY_WIFI ? "Wi-Fi" : "BLE",
                  s_detail.addr[0], s_detail.addr[1], s_detail.addr[2], s_detail.addr[3], s_detail.addr[4], s_detail.addr[5]);
         text(sf, s_list, 2, line, CYAN);
-        if (s_detail.kind == LS_SURVEY_WIFI) snprintf(line, sizeof(line), "%d dBm  CH %u  Auth %u", s_detail.rssi, s_detail.channel, s_detail.auth);
-        else snprintf(line, sizeof(line), "%d dBm  Address type %u", s_detail.rssi, s_detail.addr_type);
+        if (s_detail.kind == LS_SURVEY_WIFI) LS_SNPRINTF(t_ls_survey_ui_d_dbm_ch_u, line, sizeof(line), "%d dBm  CH %u  Auth %u", s_detail.rssi, s_detail.channel, s_detail.auth);
+        else LS_SNPRINTF(t_ls_survey_ui_d_dbm_address_type, line, sizeof(line), "%d dBm  Address type %u", s_detail.rssi, s_detail.addr_type);
         text(sf, s_list, 3, line, WHITE);
-        snprintf(line, sizeof(line), "First %lu  Last %lu (%s)", (unsigned long)s_detail.first_s, (unsigned long)s_detail.last_s, s_detail.epoch ? "UTC seconds" : "uptime");
+        LS_SNPRINTF(t_ls_survey_ui_first_lu_last_lu, line, sizeof(line), "First %lu  Last %lu (%s)", (unsigned long)s_detail.first_s, (unsigned long)s_detail.last_s, s_detail.epoch ? "UTC seconds" : "uptime");
         text(sf, s_list, 4, line, LS_ATTR_DIM);
         if (s_detail.positioned) snprintf(line, sizeof(line), "Best: %.6f, %.6f", s_detail.lat, s_detail.lon);
-        else snprintf(line, sizeof(line), "Best signal has no fresh GPS position");
+        else LS_SNPUTS(t_ls_survey_ui_best_signal_has_no, line, sizeof(line), "Best signal has no fresh GPS position");
         text(sf, s_list, 5, line, WHITE);
-        snprintf(line,sizeof(line),"%u sightings / strongest recorded signal",s_detail.samples);
+        LS_SNPRINTF(t_ls_survey_ui_u_sightings_strongest_recorded, line,sizeof(line),"%u sightings / strongest recorded signal",s_detail.samples);
         text(sf,s_list,6,line,LS_ATTR_DIM);
         ls_meter_ascii(sf,s_list,s_list.x+2,s_list.y+8,s_list.w-12,
             (s_detail.rssi+100)/80.0f,TUI_GREEN);
-        text(sf,s_list,9,"-100 / -60 / -20 dBm",LS_ATTR_DIM);
+        text(sf,s_list,9,LS_TEXT(t_ls_survey_ui_100_60_20_dbm, "-100 / -60 / -20 dBm"),LS_ATTR_DIM);
         if(s_list.h>15) {
-            text(sf,s_list,12,"SIGNAL / -100 to -20 dBm",CYAN);
-            text(sf,s_list,14,"Position belongs to the best signal",WHITE);
+            text(sf,s_list,12,LS_TEXT(t_ls_survey_ui_signal_100_to_20, "SIGNAL / -100 to -20 dBm"),CYAN);
+            text(sf,s_list,14,LS_TEXT(t_ls_survey_ui_position_belongs_to_the, "Position belongs to the best signal"),WHITE);
             text(sf,s_list,13,s_detail.kind==LS_SURVEY_BLE?"Random BLE addresses rotate":"BSSID identifies this access point",LS_ATTR_DIM);
         }
     } else {
@@ -264,13 +265,13 @@ void ls_survey_draw(tui_surface *sf, tui_rect a)
         text(sf, s_list, 1, line, LS_ATTR_DIM);
         if (!count) {
             inner(sf,s_list,s_top,"READY TO EXPLORE",CYAN);
-            inner(sf,s_list,s_top+2,"S START / passive Wi-Fi + BLE",WHITE);
-            inner(sf,s_list,s_top+4,"GPS stamps the strongest sighting",LS_ATTR_DIM);
-            inner(sf,s_list,s_top+5,"O OPTIONS / choose radios + logging",LS_ATTR_DIM);
+            inner(sf,s_list,s_top+2,LS_TEXT(t_ls_survey_ui_s_start_passive_wi, "S START / passive Wi-Fi + BLE"),WHITE);
+            inner(sf,s_list,s_top+4,LS_TEXT(t_ls_survey_ui_gps_stamps_the_strongest, "GPS stamps the strongest sighting"),LS_ATTR_DIM);
+            inner(sf,s_list,s_top+5,LS_TEXT(t_ls_survey_ui_o_options_choose_radios, "O OPTIONS / choose radios + logging"),LS_ATTR_DIM);
             if(fits(s_list,s_top+11)) {
-                text(sf,s_list,s_top+7,"1  Check GPS FIX and UTC lamps",TUI_ATTR(TUI_GREEN,TUI_BLACK));
-                text(sf,s_list,s_top+9,"2  START / new addresses count up",CYAN);
-                text(sf,s_list,s_top+11,"3  STOP / flush and save session",TUI_ATTR(TUI_MAGENTA,TUI_BLACK));
+                text(sf,s_list,s_top+7,LS_TEXT(t_ls_survey_ui_1_check_gps_fix, "1  Check GPS FIX and UTC lamps"),TUI_ATTR(TUI_GREEN,TUI_BLACK));
+                text(sf,s_list,s_top+9,LS_TEXT(t_ls_survey_ui_2_start_new_addresses, "2  START / new addresses count up"),CYAN);
+                text(sf,s_list,s_top+11,LS_TEXT(t_ls_survey_ui_3_stop_flush_and, "3  STOP / flush and save session"),TUI_ATTR(TUI_MAGENTA,TUI_BLACK));
             }
         }
         for (int i = 0; i < s_rows; i++) {
@@ -281,7 +282,7 @@ void ls_survey_draw(tui_surface *sf, tui_rect a)
             display_name(name, e.name);
             snprintf(line, sizeof(line), "%c %s %.32s", start + i == s_pick ? '>' : ' ', e.kind == LS_SURVEY_WIFI ? "W" : "B", name[0] ? name : "(unnamed)");
             text(sf, row, 0, line, WHITE);
-            snprintf(line, sizeof(line), "%d dBm  %02x:%02x:%02x:%02x:%02x:%02x %s", e.rssi,
+            LS_SNPRINTF(t_ls_survey_ui_d_dbm_02x_02x, line, sizeof(line), "%d dBm  %02x:%02x:%02x:%02x:%02x:%02x %s", e.rssi,
                 e.addr[0], e.addr[1], e.addr[2], e.addr[3], e.addr[4], e.addr[5], e.positioned ? "GPS" : "--");
             text(sf, row, 1, line, CYAN);
         }
@@ -290,7 +291,7 @@ void ls_survey_draw(tui_surface *sf, tui_rect a)
     snprintf(line, sizeof(line), "File: %s", s_view.path[0] ?
         (filename ? filename + 1 : s_view.path) : "waiting for GPS UTC");
     text(sf, a, a.h - bar_h - 3, line, LS_ATTR_DIM);
-    snprintf(line,sizeof(line),"SD %s%llu MiB free | %u rows | %u evicted",s_view.sd_known?"":"? ",
+    LS_SNPRINTF(t_ls_survey_ui_sd_s_llu_mib_2, line,sizeof(line),"SD %s%llu MiB free | %u rows | %u evicted",s_view.sd_known?"":"? ",
         (unsigned long long)(s_view.free_bytes/(1024*1024)),s_view.rows,s_view.dropped);
     text(sf,a,a.h-bar_h-2,line,WHITE);
     /* Portrait has no rail row for the status, so a refusal or result takes
@@ -298,7 +299,7 @@ void ls_survey_draw(tui_surface *sf, tui_rect a)
     if (!ls_tui_is_wide() && s_view.status[0])
         text(sf, a, a.h - bar_h - 1, s_view.status, TUI_ATTR(TUI_YELLOW, TUI_BLACK));
     else
-        text(sf, a, a.h - bar_h - 1, "S run  R sort  O options  D detail  [ ] page", LS_ATTR_DIM);
+        text(sf, a, a.h - bar_h - 1, LS_TEXT(t_ls_survey_ui_s_run_r_sort, "S run  R sort  O options  D detail  [ ] page"), LS_ATTR_DIM);
     ls_btn_t buttons[] = {
         {s_view.busy ? "SAVING" : s_view.running ? "STOP" : "START", NULL, 's', s_view.running, s_view.busy, false},
         {"SORT", NULL, 'r', false, false, false},

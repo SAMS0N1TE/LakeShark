@@ -7,12 +7,17 @@
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
+#include "diskio_sdmmc.h"
 #include "driver/sdmmc_host.h"
 #include "esp_heap_caps.h"
 #include "esp_idf_version.h"
 #include "soc/soc_caps.h"
 
 #include "ls_board.h"
+#include "ls_textpack.h"
+#include <stdio.h>
+/* The call recorder's writer statistics, when it is linked in. */
+void call_archive_debug_print(void) __attribute__((weak));
 
 static const char *TAG = "ls_sdcard";
 
@@ -193,8 +198,8 @@ void ls_sdcard_diagnostics(void)
     if (!s_card) {
         const esp_err_t err = ls_sdcard_mount();
         if (err != ESP_OK) {
-            printf("sd: not mounted (%s)\n", esp_err_to_name(err));
-            printf("sd: SDIO1 clk %d cmd %d d0-d3 %d %d %d %d\n",
+            LS_PRINTF(t_ls_sdcard_sd_not_mounted_s, "sd: not mounted (%s)\n", esp_err_to_name(err));
+            LS_PRINTF(t_ls_sdcard_sd_sdio1_clk_d, "sd: SDIO1 clk %d cmd %d d0-d3 %d %d %d %d\n",
                    LS_BOARD_SDIO_CLK_GPIO, LS_BOARD_SDIO_CMD_GPIO,
                    LS_BOARD_SDIO_D0_GPIO, LS_BOARD_SDIO_D1_GPIO,
                    LS_BOARD_SDIO_D2_GPIO, LS_BOARD_SDIO_D3_GPIO);
@@ -205,9 +210,21 @@ void ls_sdcard_diagnostics(void)
     uint64_t total = 0, freeb = 0;
     ls_sdcard_size(&total, &freeb);
     printf("sd: %s at %s\n", s_name, LS_SDCARD_MOUNT);
-    printf("sd: %llu MB free of %llu MB\n",
+    LS_PRINTF(t_ls_sdcard_sd_llu_mb_free, "sd: %llu MB free of %llu MB\n",
            freeb / (1024 * 1024), total / (1024 * 1024));
     sdmmc_card_print_info(stdout, s_card);
+    if (call_archive_debug_print) call_archive_debug_print();
+}
+
+bool ls_sdcard_ff_path(const char *path, char *out, size_t n)
+{
+    const size_t m = strlen(LS_SDCARD_MOUNT);
+    if (!s_card || !path || strncmp(path, LS_SDCARD_MOUNT, m) || (path[m] && path[m] != '/'))
+        return false;
+    const BYTE pdrv = ff_diskio_get_pdrv_card(s_card);
+    if (pdrv == 0xFF) return false;
+    const int w = snprintf(out, n, "%u:%s", (unsigned)pdrv, path[m] ? path + m : "/");
+    return w > 0 && (size_t)w < n;
 }
 
 #else  /* the board declares no SDIO pins */
@@ -226,6 +243,10 @@ esp_err_t ls_sdcard_check(uint64_t *total, uint64_t *free_bytes)
 {
     ls_sdcard_size(total, free_bytes);
     return ESP_ERR_NOT_SUPPORTED;
+}
+bool ls_sdcard_ff_path(const char *path, char *out, size_t n)
+{
+    (void)path; (void)out; (void)n; return false;
 }
 void ls_sdcard_diagnostics(void)
 {

@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "esp_attr.h"
+#include "ls_textpack.h"
 
 static bool place(double lat,double lon)
 {
@@ -31,7 +32,7 @@ bool ls_share_encode(const ls_share_item_t *s,unsigned part,char *out,size_t cap
     out[0]=0;
     if(!total || part<1 || part>(unsigned)total) return false;
     static EXT_RAM_BSS_ATTR char buf[LS_SHARE_TEXT+1];
-    int n=snprintf(buf,sizeof(buf),"%s %s [LS1 %08x %u/%d] ",
+    int n=LS_SNPRINTF(t_ls_map_share_s_s_ls1_08x, buf,sizeof(buf),"%s %s [LS1 %08x %u/%d] ",
         s->line ? "RTE" : "WPT",s->name,(unsigned)s->id,part,total);
     int start=(part-1)*LS_SHARE_PART_POINTS;
     for(int i=start;i<s->n && i<start+LS_SHARE_PART_POINTS;i++) {

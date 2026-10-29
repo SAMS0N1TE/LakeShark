@@ -1,0 +1,4 @@
+{
+  "category": "radio",
+  "description": "IRIDIUM BURSTS from EXPERIMENTS: hops Iridium's simplex channels at 1626 MHz (or the whole 1616-1626.5 MHz band) on the LR2021 or an SDR, counts the satellites' TDMA bursts per channel and traces which channel was strongest each cycle as the Doppler shift moves it. Energy and timing only. Needs open sky."
+}

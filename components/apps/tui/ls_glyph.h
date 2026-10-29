@@ -18,6 +18,8 @@ extern "C" {
 /* True when `c` has a stroke figure: 0-9 and A-Z, either case. Anything else
    - punctuation, a space - has to be drawn as ordinary text. */
 bool ls_glyph_has(char c);
+/* The figure itself: five rows of three, 'X' for a stroke; NULL as above. */
+const char *const *ls_glyph_figure(char c);
 
 void ls_glyph_draw(tui_surface *sf, tui_rect a, char c, uint8_t at);
 /* The same figure and sizing, with ASCII strokes instead of solid cells. */

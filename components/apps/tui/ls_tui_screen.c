@@ -35,7 +35,9 @@ static portMUX_TYPE s_trans_mux = portMUX_INITIALIZER_UNLOCKED;
 #include "ls_anim.h"
 #include "ls_app.h"
 #include "ls_text.h"
+#include "ls_textpack.h"
 #include "ls_theme.h"
+#include "ls_cold.h"
 
 #define MAX_SCREENS LS_TUI_MAX_SCREENS
 
@@ -262,7 +264,7 @@ void ls_tui_transition_present(uint32_t present_us, int cells, uint32_t sync_us)
     TRANS_UNLOCK();
 }
 
-void ls_tui_screen_show(int index)
+LS_COLD void ls_tui_screen_show(int index)
 {
     if (index < 0 || index >= s_count) return;
     if (index != s_current) transition_request(index);
@@ -707,7 +709,7 @@ static int help_row(char lbl[][HELP_LBL_MAX], char val[][HELP_VAL_MAX],
 /* Wrapped text under an optional label. Continuation lines carry no label but
    keep the indent, so the value column stays a column instead of the second
    line starting back at the frame. */
-static int help_wrapped(char lbl[][HELP_LBL_MAX], char val[][HELP_VAL_MAX],
+LS_COLD static int help_wrapped(char lbl[][HELP_LBL_MAX], char val[][HELP_VAL_MAX],
                         uint8_t *ind, int n, const char *l, const char *text,
                         int width, uint8_t indent)
 {
@@ -760,7 +762,8 @@ static void draw_help(tui_surface *sf, int cols, int rows)
     int n = 0;
 
     if (doc) {
-        n = help_wrapped(lbl, val, ind, n, "", doc->purpose, w - 4, 0);
+        /* doc fields may be LS_TXT tags (ls_textpack.h) */
+        n = help_wrapped(lbl, val, ind, n, "", ls_text_str(doc->purpose), w - 4, 0);
         n = help_row(lbl, val, ind, n, "", "", 0);
         /* The screen's own hint line, not a second copy of it. */
         if (app->screen && app->screen->hint && app->screen->hint[0]) {
@@ -775,11 +778,11 @@ static void draw_help(tui_surface *sf, int cols, int rows)
         snprintf(line, sizeof(line), "%s - %s", records_word(doc->records),
                  doc->records == LS_APP_RECORDS_NOTHING
                      ? "this one is for looking at"
-                     : doc->record_note);
+                     : ls_text_str(doc->record_note));
         n = help_wrapped(lbl, val, ind, n, "KEEPS", line, wrapw, (uint8_t)lblw);
         snprintf(line, sizeof(line), "%s - %s", gps_word(doc->gps),
                  doc->gps == LS_APP_GPS_UNUSED ? "not needed here"
-                                               : doc->gps_note);
+                                               : ls_text_str(doc->gps_note));
         n = help_wrapped(lbl, val, ind, n, "GPS", line, wrapw, (uint8_t)lblw);
         n = help_row(lbl, val, ind, n, "", "", 0);
     }
@@ -931,7 +934,7 @@ void ls_tui_set_tap_cb(void (*cb)(void)) { s_tap_cb = cb; }
 
 static bool router_touch_dispatch(int col, int row);
 
-bool ls_tui_router_touch(int col, int row)
+LS_COLD bool ls_tui_router_touch(int col, int row)
 {
 #if defined(ESP_PLATFORM) && LS_HAS_CARTOCORE
     extern bool ls_cartocore_dismiss(void);
@@ -942,7 +945,7 @@ bool ls_tui_router_touch(int col, int row)
     return took;
 }
 
-static bool router_touch_dispatch(int col, int row)
+LS_COLD static bool router_touch_dispatch(int col, int row)
 {
     if (s_locked) {
         int cols, rows;
@@ -1005,7 +1008,7 @@ static bool router_touch_dispatch(int col, int row)
     return false;
 }
 
-bool ls_tui_router_key(ls_tk_t key, char ch)
+LS_COLD bool ls_tui_router_key(ls_tk_t key, char ch)
 {
     if ((key == LS_TK_WHEEL_UP || key == LS_TK_WHEEL_DOWN) && !(s_screens[s_current] && s_screens[s_current]->wheel))
         key = key == LS_TK_WHEEL_UP ? LS_TK_UP : LS_TK_DOWN;

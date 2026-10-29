@@ -47,7 +47,10 @@ void ls_rsel_hw(ls_rsel_hw_t *out)
     out->present[LS_RSEL_SDR_HACKRF] = endpoint_present(LS_RADIO_ENDPOINT_HACKRF_USB,
                                                         out->sdr_owner[1], sizeof(out->sdr_owner[1]),
                                                         &out->sdr_seen[1]);
-    out->present[LS_RSEL_LORA] = ls_lora_present();
+    /* The socket's part, bound or parked by the mesh: whoever picks it
+       starts it again (ls_lora.h). */
+    out->present[LS_RSEL_LORA] = ls_lora_present() ||
+                                 (ls_lora_fitted_caps() & LS_LORA_CAP_LORA);
     out->present[LS_RSEL_CC1101] = m.cc;
     out->present[LS_RSEL_NRF24] = m.nrf;
     out->present[LS_RSEL_NFC] = m.nfc;
@@ -64,9 +67,9 @@ void ls_rsel_hw(ls_rsel_hw_t *out)
     /* On the board, on its own UART: whether it is switched on is the GPS
        app's business, not whether it is there. */
     out->present[LS_RSEL_GPS] = true;
-    out->lora_caps = ls_lora_caps();
-    out->lora_lr20xx = ls_lora_chip() == LS_LORA_CHIP_LR20XX;
-    out->lora_name = ls_lora_chip_name();
+    out->lora_caps = ls_lora_present() ? ls_lora_caps() : ls_lora_fitted_caps();
+    out->lora_lr20xx = ls_lora_fitted() == LS_LORA_CHIP_LR20XX;
+    out->lora_name = ls_lora_fitted_name();
 }
 
 void ls_rsel_hw_restart(void)

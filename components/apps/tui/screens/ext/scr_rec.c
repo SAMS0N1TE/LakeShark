@@ -23,6 +23,7 @@
 #include "../../ls_field.h"
 #include "core/ls_time.h"
 #include "core/ls_track_log.h"
+#include "ls_textpack.h"
 
 extern const ls_tui_screen_t ls_scr_subghz;
 extern const ls_tui_screen_t ls_scr_rec;
@@ -322,11 +323,11 @@ static void draw_level(tui_surface *sf, tui_rect a, const rec_hub_status_t *st,
     chart(sf, a, a.x + 1, a.y + 1, a.w - 2, h, s_mag, s_thresh, lo, top,
           threshold, on, hot, val);
 
-    snprintf(buf, sizeof(buf), "level %d  trigger %d",
+    LS_SNPRINTF(t_scr_rec_level_d_trigger_d, buf, sizeof(buf), "level %d  trigger %d",
              level, threshold);
     tui_put_str(sf, a, a.x + 2, a.y + a.h - 4, buf,
                 (threshold > 0 && level >= threshold) ? hot : dim);
-    snprintf(buf, sizeof(buf), "scale %d-%d raw; yellow = trigger", lo, top);
+    LS_SNPRINTF(t_scr_rec_scale_d_d_raw, buf, sizeof(buf), "scale %d-%d raw; yellow = trigger", lo, top);
     tui_put_str(sf, a, a.x + 2, a.y + a.h - 3, buf, dim);
     tui_put_str(sf, a, a.x + 2, a.y + a.h - 2,
                 !st->receiver_streaming ? "RX stopped: no live level" :
@@ -353,10 +354,10 @@ static void draw_rate(tui_surface *sf, tui_rect a, const rec_hub_status_t *st)
 
     const int now = (s_head >= 0) ? s_rate[s_head] : 0;
     char cap[80];
-    snprintf(cap, sizeof(cap), "%d KiB/s  auto %d-%d", now, lo, top);
+    LS_SNPRINTF(t_scr_rec_d_kib_s_auto, cap, sizeof(cap), "%d KiB/s  auto %d-%d", now, lo, top);
     tui_put_str(sf, a, a.x + 2, a.y + a.h - 4, cap, dim);
     const int visible = s_filled < a.w - 2 ? s_filled : a.w - 2;
-    snprintf(cap, sizeof(cap), "%.1fs ago <-- time --> now",
+    LS_SNPRINTF(t_scr_rec_1fs_ago_time_now, cap, sizeof(cap), "%.1fs ago <-- time --> now",
              visible > 1 ? (visible - 1) * (SAMPLE_US / 1000000.0) : 0.0);
     tui_put_str(sf, a, a.x + 2, a.y + a.h - 3, cap, dim);
     tui_put_str(sf, a, a.x + 2, a.y + a.h - 2,
@@ -388,7 +389,7 @@ static void capture_toggle(void)
 {
     if(lr_raw()) {
         if(rec_watch_iq_status(NULL,0))rec_watch_iq_stop();
-        else if(!rec_watch_iq_record(rec_get_freq()))snprintf(iq_notice,sizeof(iq_notice),"I/Q: receiver busy/loading or frequency outside 150-1000 MHz");
+        else if(!rec_watch_iq_record(rec_get_freq()))LS_SNPUTS(t_scr_rec_i_q_receiver_busy, iq_notice, sizeof(iq_notice), "I/Q: receiver busy/loading or frequency outside 150-1000 MHz");
         else iq_notice[0]=0;
         return;
     }
@@ -545,7 +546,7 @@ static void replay_play(void)
         snprintf(player.result,sizeof(player.result),"%s",rec_watch_error()[0]?rec_watch_error():"Recorder loading; retry when ready");return;
     }
     player.waiting=true;player.started=esp_timer_get_time();player.finished=0;
-    snprintf(player.result,sizeof(player.result),"Queued - waiting for radio worker");
+    LS_SNPUTS(t_scr_rec_queued_waiting_for_radio, player.result, sizeof(player.result), "Queued - waiting for radio worker");
 }
 /* Weak: builds without FILES still link, and simply have nowhere to go. */
 void ls_scr_files_return_to(int screen) __attribute__((weak));
@@ -573,7 +574,7 @@ static void replay_draw(tui_surface *sf,tui_rect a)
     replay_poll();replay_trace=tui_rect_make(0,0,0,0);
     if(!player.loaded) {
         ls_panel_notice(sf,a,"REPLAY",player_embedded?"SAVED > pick a file":"FILES > capture > ACTIONS > REPLAY",
-                        "Load a file, then press PLAY ONCE");return;
+                        LS_TEXT(t_scr_rec_load_a_file_then, "Load a file, then press PLAY ONCE"));return;
     }
     char power[24];snprintf(power,sizeof(power),"%+d dBm",replay_dbm());
     ls_btn_t controls[]={
@@ -599,15 +600,15 @@ static void replay_draw(tui_surface *sf,tui_rect a)
     const char *name=strrchr(player.path,'/');name=name?name+1:player.path;
     char text[112];
     tui_put_str(sf,a,a.x+2,a.y+1,name,TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
-    snprintf(text,sizeof(text),"%.4f MHz  |  %s  |  %+.0f dBm nominal",player.file.freq_hz/1e6,subghz_file_is_iq(&player.file)?"I/Q 125 kS/s":ook?"RAW OOK":"RAW FSK",(double)replay_dbm());
+    LS_SNPRINTF(t_scr_rec_4f_mhz_s_0f, text,sizeof(text),"%.4f MHz  |  %s  |  %+.0f dBm nominal",player.file.freq_hz/1e6,subghz_file_is_iq(&player.file)?"I/Q 125 kS/s":ook?"RAW OOK":"RAW FSK",(double)replay_dbm());
     tui_put_str(sf,a,a.x+2,a.y+2,text,ink);
-    if(subghz_file_is_iq(&player.file))snprintf(text,sizeof(text),"%.2f ms | %lu I/Q pairs | auto replay rate",player.file.span_us/1000.,(unsigned long)player.file.iq_samples);
-    else snprintf(text,sizeof(text),"%.2f ms  |  %d edges  |  one transmission",player.file.span_us/1000.,player.file.edges);
+    if(subghz_file_is_iq(&player.file))LS_SNPRINTF(t_scr_rec_2f_ms_lu_i, text,sizeof(text),"%.2f ms | %lu I/Q pairs | auto replay rate",player.file.span_us/1000.,(unsigned long)player.file.iq_samples);
+    else LS_SNPRINTF(t_scr_rec_2f_ms_d_edges, text,sizeof(text),"%.2f ms  |  %d edges  |  one transmission",player.file.span_us/1000.,player.file.edges);
     tui_put_str(sf,a,a.x+2,a.y+3,text,LS_ATTR_DIM);
     if(a.h>=15 && player.n && player.preview_us) {
         replay_trace=tui_rect_make(a.x+3,a.y+6,a.w-6,a.h-12);
         if(replay_trace.h>12)replay_trace.h=12;
-        tui_put_str(sf,a,a.x+2,a.y+5,"STORED PULSES: HIGH / LOW",ink);
+        tui_put_str(sf,a,a.x+2,a.y+5,LS_TEXT(t_scr_rec_stored_pulses_high_low, "STORED PULSES: HIGH / LOW"),ink);
         /* This sweep indicates worker activity, not measured RF position.
            Pulse geometry stays fixed while the palette and cursor move. */
         const int sweep_ms=350;
@@ -651,13 +652,13 @@ static void replay_draw(tui_surface *sf,tui_rect a)
             for(int y=replay_trace.y;y<replay_trace.y+replay_trace.h;y++)
                 tui_put_char(sf,a,replay_trace.x+head,y,y==head_y?'+':':',glow_ink);
         }
-        snprintf(text,sizeof(text),"0 -> %.2f ms  (first %d/%d edges)",player.preview_us/1000.,player.n,player.file.edges);
+        LS_SNPRINTF(t_scr_rec_0_2f_ms_first, text,sizeof(text),"0 -> %.2f ms  (first %d/%d edges)",player.preview_us/1000.,player.n,player.file.edges);
         tui_put_str(sf,a,a.x+2,replay_trace.y+replay_trace.h,text,LS_ATTR_DIM);
         int32_t v=player.edges[player.selected];
-        snprintf(text,sizeof(text),"Tap trace: #%d %s %lu us",player.selected+1,v>0?"HIGH":"LOW",(unsigned long)(v<0?-(int64_t)v:v));
+        LS_SNPRINTF(t_scr_rec_tap_trace_d_s, text,sizeof(text),"Tap trace: #%d %s %lu us",player.selected+1,v>0?"HIGH":"LOW",(unsigned long)(v<0?-(int64_t)v:v));
         tui_put_str(sf,a,a.x+2,replay_trace.y+replay_trace.h+1,text,ink);
     }
-    if(player.waiting)snprintf(text,sizeof(text),"%c Working %.1fs - one bounded send",ls_motion_pip(true),(esp_timer_get_time()-player.started)/1e6);
+    if(player.waiting)LS_SNPRINTF(t_scr_rec_c_working_1fs_one, text,sizeof(text),"%c Working %.1fs - one bounded send",ls_motion_pip(true),(esp_timer_get_time()-player.started)/1e6);
     else snprintf(text,sizeof(text),"%s",player.result[0]?player.result:"READY - press PLAY ONCE to transmit");
     uint8_t level=ls_fresh_level(&replay_flash,1500);
     uint8_t result_color=player.waiting || !player.result[0]?TUI_CYAN:
@@ -668,7 +669,7 @@ static void replay_draw(tui_surface *sf,tui_rect a)
         unsigned long rate=0;const char *at=strstr(player.result,"rate=");
         if(strstr(player.result,"path=OOK-regen"))hint="OOK rebuilt from edges";
         else if(at && sscanf(at,"rate=%lu",&rate)==1) {
-            snprintf(text,sizeof(text),"I/Q at %lu S/s; carrier centered, gaps zeroed",rate);hint=text;
+            LS_SNPRINTF(t_scr_rec_i_q_at_lu, text,sizeof(text),"I/Q at %lu S/s; carrier centered, gaps zeroed",rate);hint=text;
         } else hint="OOK from edges or I/Q at auto rate";
     }
     tui_put_str(sf,a,a.x+2,a.y+a.h-2,hint,LS_ATTR_DIM);
@@ -725,7 +726,7 @@ static void recorder_source_done(ls_rsel_radio_t radio)
     }
     if(captures(radio) && !ls_scr_subghz_choose_source(radio)) {
         ls_rsel_set(LS_RSEL_REC,was);
-        recorder_refusal("Radio selection refused; stop the current operation");
+        recorder_refusal(LS_TEXT(t_scr_rec_radio_selection_refused_stop, "Radio selection refused; stop the current operation"));
         return;
     }
     /* The hosted screen changes only when the kind of recording does: a
@@ -871,7 +872,7 @@ void ls_rec_tools_draw(tui_surface *sf,tui_rect a)
 {
     if(!lr_raw()){draw(sf,a);return;}
     char result[112],freq[64],packet[64];bool busy=rec_watch_iq_status(result,sizeof(result));
-    snprintf(freq,sizeof(freq),"%.4f MHz / IQ16LE / 125 kS/s / AGC",rec_get_freq()/1e6);
+    LS_SNPRINTF(t_scr_rec_4f_mhz_iq16le_125, freq,sizeof(freq),"%.4f MHz / IQ16LE / 125 kS/s / AGC",rec_get_freq()/1e6);
     /* a decoded packet says more than the file name it was saved under */
     if(!busy && !iq_notice[0] && rec_watch_iq_packet(packet+4,sizeof(packet)-4)) {memcpy(packet,"FSK ",4);snprintf(result,sizeof(result),"%s",packet);}
     ls_panel_notice(sf,a,"LR2021 RAW I/Q",freq,iq_notice[0]?iq_notice:result[0]?result:"ARM: waits for signal, saves up to 262 ms to SD");

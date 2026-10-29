@@ -1,0 +1,1 @@
+{ "category": "radio", "description": "SDK 2.1 example: a spectrum analyser on any radio the board has (RTL-SDR, HackRF, LR2021), built on the board's own controls: a braille peak-hold trace over the shared waterfall, the RADIO list, the TUNE keypad and a layered OPTIONS list. Tap a signal to centre it." }

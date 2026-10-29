@@ -1,5 +1,6 @@
 /* lap3d scene ownership and allocation-free frame recording. */
 #include "l3_private.h"
+#include "ls_cold.h"
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -71,7 +72,7 @@ bool l3_reserve(l3_scene *s, int commands, int vertices, int triangles) {
     s->valid = false; s->have_frame = false;
     return true;
 }
-bool l3_resize(l3_scene *s, int w, int h) {
+LS_COLD bool l3_resize(l3_scene *s, int w, int h) {
     if (!s || s->recording || w < 1 || h < 1 || w > 1024 || h > 1024)
         return false;
     if (s->w == w * 2 && s->h == h * 3) {

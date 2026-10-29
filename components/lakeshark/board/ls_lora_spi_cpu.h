@@ -19,7 +19,11 @@ static esp_err_t IRAM_ATTR capture_cpu_transmit(spi_transaction_t *t)
     spi_ll_enable_miso(hw, true);
     spi_ll_set_mosi_bitlen(hw, t->length);
     spi_ll_set_miso_bitlen(hw, t->length);
+#ifdef SPI_TRANS_CS_KEEP_ACTIVE
+    spi_ll_master_keep_cs(hw, (t->flags & SPI_TRANS_CS_KEEP_ACTIVE) != 0);
+#else
     spi_ll_master_keep_cs(hw, false);
+#endif
     /* LL's word writer reads a padded final word; both transport buffers have
        that padding (inline 4 bytes or the 260-byte packet allocation). */
     spi_ll_write_buffer(hw, tx, t->length);

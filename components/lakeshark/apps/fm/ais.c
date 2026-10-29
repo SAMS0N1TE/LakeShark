@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ls_cold.h"
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 #endif
@@ -49,7 +50,7 @@ static void position(const uint8_t *p, unsigned at, ais_vessel_t *o)
     o->lat = signed_field(p, at+28, 27)/600000.0;
     o->position = fabs(o->lat) <= 90 && fabs(o->lon) <= 180;
 }
-bool ais_parse(const uint8_t *p, size_t bits, ais_vessel_t *o)
+LS_COLD bool ais_parse(const uint8_t *p, size_t bits, ais_vessel_t *o)
 {
     if (!p || !o || bits < 38) return false;
     unsigned type = field(p, 0, 6), minimum;
@@ -138,7 +139,7 @@ void ais_reset(ais_ctx_t *ctx)
     memset(ctx->channel, 0, sizeof(ctx->channel));
     ctx->cosine = 1; ctx->sine = 0; ctx->oscillator = 0;
 }
-ais_ctx_t *ais_create(ais_receive_fn receive, void *user)
+LS_COLD ais_ctx_t *ais_create(ais_receive_fn receive, void *user)
 {
 #ifdef ESP_PLATFORM
     ais_ctx_t *ctx = heap_caps_calloc(1, sizeof(*ctx), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);

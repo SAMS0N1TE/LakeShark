@@ -7,9 +7,9 @@
 #include "esp_attr.h"
 #include "ls_flash_task.h"
 
-static DRAM_ATTR StackType_t s_host_stack[BLE_LINK_HOST_STACK_BYTES]
+static StackType_t s_host_stack[BLE_LINK_HOST_STACK_BYTES]
     __attribute__((aligned(16)));
-static DRAM_ATTR StaticTask_t s_host_tcb;
+static StaticTask_t s_host_tcb;
 static TaskHandle_t s_host_task;
 
 TaskHandle_t ble_link_host_task_start(TaskFunction_t fn,

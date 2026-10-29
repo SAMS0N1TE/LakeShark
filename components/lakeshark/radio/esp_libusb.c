@@ -14,6 +14,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include <string.h>
+#include "ls_cold.h"
 
 static class_adsb_dev *adsbdev;
 
@@ -25,7 +26,7 @@ static unsigned s_ctl_init;
 static portMUX_TYPE s_ctrl_state = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_ctrl_generation, s_ctrl_completed;
 
-esp_err_t init_adsb_dev(void)
+LS_COLD esp_err_t init_adsb_dev(void)
 {
     unsigned expected = 0;
     while (!__atomic_compare_exchange_n(&s_ctl_init, &expected, 1, false,
@@ -313,21 +314,49 @@ static usb_device_handle_t s_sdev;
 static unsigned char      s_sep;
 static volatile bool      s_streaming;
 static uint64_t           s_sdropped;
+static ls_radio_iq_transport_t s_stream_evidence;
+static uint64_t s_stream_epoch;
 static portMUX_TYPE s_drop_lock = portMUX_INITIALIZER_UNLOCKED;
+static void evidence_add(uint64_t *counter,uint64_t amount)
+{
+    if(UINT64_MAX-*counter<amount){*counter=UINT64_MAX;s_stream_evidence.counters_saturated=true;}
+    else *counter+=amount;
+}
+static void evidence_new_epoch(uint64_t discarded)
+{
+    portENTER_CRITICAL(&s_drop_lock);
+    if(s_stream_epoch!=UINT64_MAX)++s_stream_epoch;
+    s_stream_evidence=(ls_radio_iq_transport_t){.known=s_stream_epoch!=UINT64_MAX,
+        .epoch=s_stream_epoch,.flush_discarded_bytes=discarded,
+        .counters_saturated=s_stream_epoch==UINT64_MAX};
+    portEXIT_CRITICAL(&s_drop_lock);
+}
 static void stream_drop(uint32_t bytes)
 {
     portENTER_CRITICAL(&s_drop_lock);
     s_sdropped+=bytes;
     portEXIT_CRITICAL(&s_drop_lock);
 }
+static void stream_ring_rejected(uint32_t bytes)
+{
+    portENTER_CRITICAL(&s_drop_lock);
+    evidence_add(&s_stream_evidence.ring_rejected_bytes,bytes);
+    portEXIT_CRITICAL(&s_drop_lock);stream_drop(bytes);
+}
+static void stream_transfer_error(void)
+{
+    portENTER_CRITICAL(&s_drop_lock);
+    evidence_add(&s_stream_evidence.transfer_error_events,1);
+    portEXIT_CRITICAL(&s_drop_lock);stream_drop(STREAM_XFER_LEN);
+}
 static QueueHandle_t      s_squeue;
-static DRAM_ATTR StaticQueue_t s_squeue_ctrl;
-static DRAM_ATTR uint8_t s_squeue_store[STREAM_QUEUE_LEN * sizeof(int)];
+static StaticQueue_t s_squeue_ctrl;
+static uint8_t s_squeue_store[STREAM_QUEUE_LEN * sizeof(int)];
 static TaskHandle_t       s_spump;
-static DRAM_ATTR StackType_t
+static StackType_t
     s_spump_stack[STREAM_PUMP_STACK_BYTES / sizeof(StackType_t)]
         __attribute__((aligned(16)));
-static DRAM_ATTR StaticTask_t s_spump_tcb;
+static StaticTask_t s_spump_tcb;
 
 /**/
 #define LS_STREAM_JOIN_MS 2000
@@ -336,7 +365,7 @@ uint32_t esp_libusb_total_bytes(void) { return s_total_rx; }
 bool     esp_libusb_streaming(void)   { return s_streaming; }
 
 /**/
-void esp_libusb_note_device_gone(usb_device_handle_t device)
+LS_COLD void esp_libusb_note_device_gone(usb_device_handle_t device)
 {
     /**/
     bool bulk_gone = s_bulk_dev == device;
@@ -373,7 +402,7 @@ static void stream_push(const uint8_t *buf, uint32_t len)
     uint32_t head  = s_shead;
     uint32_t tail  = __atomic_load_n(&s_stail, __ATOMIC_ACQUIRE);
     uint32_t space = STREAM_RING_SIZE - (head - tail);
-    if (len > space) { stream_drop(len); return; }
+    if (len > space) { stream_ring_rejected(len); return; }
     uint32_t off   = head % STREAM_RING_SIZE;
     uint32_t first = STREAM_RING_SIZE - off;
     if (first >= len) {
@@ -395,6 +424,9 @@ static bool stream_submit(int slot)
     uint32_t bit=1u<<slot;
     if(__atomic_fetch_or(&s_stream_pending,bit,__ATOMIC_ACQ_REL)&bit)return false;
     if(usb_host_transfer_submit(s_sxfer[slot])==ESP_OK)return true;
+    portENTER_CRITICAL(&s_drop_lock);
+    evidence_add(&s_stream_evidence.submission_error_events,1);
+    portEXIT_CRITICAL(&s_drop_lock);
     __atomic_fetch_and(&s_stream_pending,~bit,__ATOMIC_RELEASE);
     return false;
 }
@@ -418,7 +450,7 @@ static void stream_xfer_cb(usb_transfer_t *t)
         if(t->status == USB_TRANSFER_STATUS_COMPLETED && t->actual_num_bytes > 0)
             stream_push(t->data_buffer, (uint32_t)t->actual_num_bytes);
         else if(t->status != USB_TRANSFER_STATUS_COMPLETED)
-            stream_drop(STREAM_XFER_LEN);
+            stream_transfer_error();
     }
     __atomic_fetch_and(&s_stream_pending,~(1u<<slot),__ATOMIC_RELEASE);
     if (s_streaming && !s_repriming) {
@@ -446,6 +478,10 @@ static bool stream_reprime(void)
     usb_host_endpoint_halt(s_sdev, s_sep);
     usb_host_endpoint_flush(s_sdev, s_sep);
     if(!stream_completions_drained(250) || !s_streaming) {s_repriming=false;return false;}
+    /* A recovered pipe is a new software epoch. No FIFO reset was proved by
+     * this path, so the adapter's old post-reset binding no longer matches. */
+    evidence_new_epoch(0);
+    esp_libusb_stream_reset();
     if (s_squeue) xQueueReset(s_squeue);
     usb_host_endpoint_clear(s_sdev, s_sep);
     s_repriming=false;
@@ -522,7 +558,7 @@ static bool stream_pump_join(uint32_t timeout_ms)
     return true;
 }
 
-int esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint)
+LS_COLD int esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint)
 {
     /* RTL and HackRF endpoints may coexist, but the current USB
      * transport has one transfer pool and one PSRAM ring. Refuse a second
@@ -567,7 +603,9 @@ int esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint)
     }
 
     xQueueReset(s_squeue);
+    uint64_t discarded=esp_libusb_stream_avail();
     s_shead = s_stail = 0;
+    evidence_new_epoch(discarded);
     portENTER_CRITICAL(&s_drop_lock);s_sdropped=0;portEXIT_CRITICAL(&s_drop_lock);
     s_repriming=false;
     s_sdev = driver_obj->dev_hdl; s_sep = endpoint;
@@ -624,7 +662,7 @@ int esp_libusb_stream_start(class_driver_t *driver_obj, unsigned char endpoint)
 }
 
 /**/
-void esp_libusb_stream_stop(void)
+LS_COLD void esp_libusb_stream_stop(void)
 {
     /**/
     if (!s_streaming && !s_spump && esp_libusb_stream_slots() == 0) return;
@@ -698,8 +736,12 @@ int esp_libusb_stream_read_timeout(uint8_t *dst, int max,
 
 void esp_libusb_stream_reset(void)
 {
-    __atomic_store_n(&s_stail, __atomic_load_n(&s_shead, __ATOMIC_ACQUIRE),
-                     __ATOMIC_RELEASE);
+    const uint32_t head=__atomic_load_n(&s_shead,__ATOMIC_ACQUIRE);
+    const uint32_t tail=__atomic_load_n(&s_stail,__ATOMIC_ACQUIRE);
+    portENTER_CRITICAL(&s_drop_lock);
+    evidence_add(&s_stream_evidence.flush_discarded_bytes,head-tail);
+    portEXIT_CRITICAL(&s_drop_lock);
+    __atomic_store_n(&s_stail,head,__ATOMIC_RELEASE);
 }
 
 uint32_t esp_libusb_stream_avail(void)
@@ -713,6 +755,14 @@ uint64_t esp_libusb_stream_dropped(void)
     uint64_t bytes=s_sdropped;
     portEXIT_CRITICAL(&s_drop_lock);
     return bytes;
+}
+
+LS_COLD bool esp_libusb_stream_evidence(ls_radio_iq_transport_t *out)
+{
+    if(!out)return false;
+    portENTER_CRITICAL(&s_drop_lock);*out=s_stream_evidence;portEXIT_CRITICAL(&s_drop_lock);
+    out->known=out->known && s_streaming && !s_repriming;
+    return out->known;
 }
 
 int esp_libusb_stream_slots(void)

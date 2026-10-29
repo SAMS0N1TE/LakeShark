@@ -2,12 +2,17 @@
 #include "pocsag.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 /**/
 #include "ls_time.h"
+#include "ls_decoded.h"
+#include "ls_det_signal.h"
+#pragma weak ls_seen_signal
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "ls_cold.h"
 
 static const char *TAG = "pocsag";
 
@@ -20,12 +25,14 @@ static const char *TAG = "pocsag";
 typedef enum { ST_HUNT = 0, ST_BATCH } pstate_t;
 
 struct pocsag_ctx {
-    fm_state_t *out;
+    pocsag_page_fn sink;
+    void *sink_user;
     int   baud;
 
     int sample_rate;
     pocsag_cw_fn observe;
     void *observe_arg;
+    bool quiet;             /* replay: pages stay in out, off the decoded bus */
     float inc;
     float acc;
     float thr;
@@ -147,7 +154,7 @@ static void flush_message(pocsag_ctx_t *c)
     if (!c->have_addr) { c->nbits = 0; return; }
 
     c->n_pages++;
-    if (!c->out) { c->nbits = 0; c->have_addr = 0; return; }
+    if (!c->sink) { c->nbits = 0; c->have_addr = 0; return; }
 
     fm_page_t pg;
     memset(&pg, 0, sizeof(pg));
@@ -215,12 +222,20 @@ static void flush_message(pocsag_ctx_t *c)
         }
     }
 
-    fm_state_t *o = c->out;
-    o->pages[o->page_head] = pg;
-    o->page_head = (o->page_head + 1) % FM_PAGE_LOG_MAX;
-    if (o->page_count < FM_PAGE_LOG_MAX) o->page_count++;
+    c->sink(c->sink_user, &pg);
     ESP_LOGI(TAG, "page RIC=%lu F=%d %c '%s'",
              (unsigned long)pg.address, pg.function, pg.type, pg.text);
+    if (!c->quiet) {
+        ls_decoded_t ev = { .kind = LS_DECODED_PAGE, .address = pg.address, .at_us = esp_timer_get_time() };
+        snprintf(ev.from, sizeof(ev.from), "POCSAG");
+        snprintf(ev.text, sizeof(ev.text), "%s", pg.text);
+        ls_decoded_publish(&ev);
+    }
+    if (!c->quiet && ls_seen_signal) {               /* a detector app: capcode and keywords */
+        ls_det_signal_t sig = { .source = DET_POCSAG, .a = pg.address, .b = pg.function };
+        snprintf(sig.text, sizeof(sig.text), "%.63s", pg.text);
+        ls_seen_signal(&sig);
+    }
 
     c->nbits = 0;
     c->have_addr = 0;
@@ -254,11 +269,27 @@ static void process_codeword(pocsag_ctx_t *c, uint32_t cw, int idx)
     }
 }
 
+void pocsag_page_to_fm(void *fm_state, const fm_page_t *pg)
+{
+    fm_state_t *o = fm_state;
+    o->pages[o->page_head] = *pg;
+    o->page_head = (o->page_head + 1) % FM_PAGE_LOG_MAX;
+    if (o->page_count < FM_PAGE_LOG_MAX) o->page_count++;
+}
+
 pocsag_ctx_t *pocsag_create(fm_state_t *out, int baud)
 {
-    pocsag_ctx_t *c = calloc(1, sizeof(*c));
+    return pocsag_create_sink(out ? pocsag_page_to_fm : NULL, out, baud);
+}
+
+LS_COLD pocsag_ctx_t *pocsag_create_sink(pocsag_page_fn sink, void *user, int baud)
+{
+    /* PSRAM: the radio head allocates its decoders there (ls_rx_plugin.h). */
+    pocsag_ctx_t *c = heap_caps_calloc(1, sizeof(*c), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!c) c = calloc(1, sizeof(*c));
     if (!c) return NULL;
-    c->out = out;
+    c->sink = sink;
+    c->sink_user = user;
     c->sample_rate = FM_DEMOD_RATE;
     pocsag_set_baud(c, baud);
     pocsag_reset(c);
@@ -267,7 +298,7 @@ pocsag_ctx_t *pocsag_create(fm_state_t *out, int baud)
 
 void pocsag_destroy(pocsag_ctx_t *c) { if (c) free(c); }
 
-void pocsag_set_baud(pocsag_ctx_t *c, int baud)
+LS_COLD void pocsag_set_baud(pocsag_ctx_t *c, int baud)
 {
     if (baud != 512 && baud != 1200 && baud != 2400) baud = 1200;
     c->baud = baud;
@@ -280,6 +311,8 @@ void pocsag_sample_rate(pocsag_ctx_t *c, int rate)
     c->sample_rate = rate;
     c->inc = (float)c->baud / (float)rate;
 }
+
+void pocsag_quiet(pocsag_ctx_t *c, bool quiet) { c->quiet = quiet; }
 
 void pocsag_observe(pocsag_ctx_t *c, pocsag_cw_fn fn, void *arg)
 {
@@ -297,7 +330,7 @@ void pocsag_seam(pocsag_ctx_t *c)
     c->synced = false;
 }
 
-void pocsag_reset(pocsag_ctx_t *c)
+LS_COLD void pocsag_reset(pocsag_ctx_t *c)
 {
     pocsag_seam(c);
     c->n_frames = 0; c->n_pages = 0; c->n_cwerr = 0;

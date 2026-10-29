@@ -526,6 +526,76 @@ def subghz():                      # SUB-GHZ: a key fob sending
     ], {'c': '7'})
 
 
+def heat():                        # RF SURVEY: heat on the ground where it was walked, and you
+    i = Ic()
+    LV = ["1122211000",
+          "1234321100",
+          "2344432110",
+          "1234321221",
+          "0122211232",
+          "0011100121"]
+    INK = {1: '4', 2: '6', 3: 'b', 4: '9'}
+    for r, row in enumerate(LV):
+        for c, ch in enumerate(row):
+            v = int(ch)
+            for dx in range(2):
+                for dy in range(3):
+                    if v > 1 or (dx + dy) % 2 == 0: i.set(2 * c + dx, 3 * r + dy, INK.get(v))
+    i.rect(2, 15, 2, 3, 'f')
+    i.line(4, 16, 13, 16, A)
+    return i
+
+
+def fox():                         # FOX HUNT: bearing lines crossing inside their ellipse
+    i = Ic()
+    i.disc(13, 6, 5.2, '1', ry=4.2)
+    i.ring(13, 6, 5.2, '9', 1.4, ry=4.2)
+    for d in (0, 1):
+        i.line(0, 17 - d, 13, 6 - d, A)
+    i.line(19, 17, 13, 6, a)
+    i.line(1, 0, 13, 6, a)
+    for k in (-2, -1, 0, 1, 2):
+        i.set(13 + k, 6 + k, 'f'); i.set(13 + k, 6 - k, 'f')
+    return i
+
+
+def digi():                        # DIGI: the FT8 Costas array, seven tones stepping
+    i = Ic()
+    for c, t in enumerate((3, 1, 4, 0, 6, 5, 2)):
+        x = c * 3
+        for tt in range(8):
+            y = 1 + (7 - tt) * 2
+            if tt == t:
+                i.rect(x, y, 2, 2, A)
+            else:
+                i.set(x, y + 1, '8')
+    return i
+
+
+def tmach():                       # TIME MACHINE: a dial turning back over a frozen burst
+    i = Ic()
+    i.ring(10, 9.5, 8, '7', 1.3, a0=150, a1=100)     # open at the top left, where it turns back
+    for x, y0, y1 in ((4, 3, 3), (5, 2, 4), (6, 1, 5), (7, 1, 5)):   # the head, pointing back
+        i.line(x, y0, x, y1, A)
+    i.line(4, 10, 15, 10, 'a')                        # the quiet line it keeps
+    for x, h in ((6, 1), (8, 3), (10, 5), (12, 3), (14, 1)):    # and the burst on it
+        i.line(x, 10 - h, x, 10 + h, A)
+    return i
+
+
+def radio():                       # RADIO: a handheld receiver, not FM's bare wave
+    i = Ic()
+    i.rect(5, 0, 2, 6, '7')                           # the whip
+    i.rect(11, 3, 2, 2, '7')                          # the tuning knob
+    i.rect(3, 5, 13, 13, '8'); i.frame(3, 5, 13, 13, '7')
+    i.rect(5, 7, 9, 4, a)                             # the display
+    for x, h in ((6, 0), (7, 1), (8, 0), (9, 1), (10, 0), (11, 1), (12, 0)):
+        i.line(x, 9 - h, x, 9, A)                     # a carrier on it
+    for y in (13, 15):
+        i.line(5, y, 13, y, '4')                      # the speaker grille
+    return i
+
+
 ICONS = [  # (enum name, function, sample hue for the preview)
     ('SHARK', shark, 6), ('TOWER', tower, 2), ('WAVE', wave, 3), ('PLANE', plane, 5),
     ('RECORD', record, 1), ('FALLS', falls, 4), ('MAP', map_, 2), ('FILES', files, 3),
@@ -534,6 +604,8 @@ ICONS = [  # (enum name, function, sample hue for the preview)
     ('LABS', labs, 6), ('JOURNAL', journal, 2), ('COMPASS', compass, 3), ('MUSIC', music, 5),
     ('EXPERIMENT', experiment, 5), ('TERMINAL', terminal, 2), ('UPDATE', update, 6), ('TILES', tiles, 6),
     ('DRONE', drone, 6), ('SWEEP', sweep, 2), ('DETECTOR', detector, 3), ('CELL', cell, 6), ('SUBGHZ', subghz, 2),
+    ('HEAT', heat, 5), ('FOX', fox, 3),
+    ('DIGI', digi, 2), ('TMACH', tmach, 5), ('RADIO', radio, 3),
 ]
 
 

@@ -2,6 +2,7 @@
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
 #include "esp_console.h"
+#include "ls_textpack.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -9,6 +10,8 @@
 #include "ls_app.h"
 #include "ls_lap.h"
 #include "ls_lap_api.h"
+#include "ls_lap_radio.h"
+#include "ls_lap_service.h"
 #include "ls_lap_signature.h"
 #include "ls_lap_storage.h"
 #include "ls_lap_transfer.h"
@@ -71,7 +74,7 @@ static bool finish(void *ctx, const char *name, size_t size, const uint8_t expec
     FILE *f = NULL;
     if (!s.incoming || fclose(s.incoming)) {
         s.incoming = NULL;
-        snprintf(why, cap, "incoming close failed");
+        LS_SNPUTS(t_ls_lap_console_incoming_close_failed, why, cap, "incoming close failed");
         goto done;
     }
     s.incoming = NULL;
@@ -85,13 +88,13 @@ static bool finish(void *ctx, const char *name, size_t size, const uint8_t expec
     if (stat(INCOMING, &st) || st.st_size != (long)size ||
         !(bytes = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)) ||
         !(f = fopen(INCOMING, "rb")) || fread(bytes, 1, size, f) != size) {
-        snprintf(why, cap, "cannot read incoming");
+        LS_SNPUTS(t_ls_lap_console_cannot_read_incoming, why, cap, "cannot read incoming");
         goto done;
     }
     fclose(f);
     f = NULL;
     if (mbedtls_sha256(bytes, size, actual, 0) || memcmp(actual, expected, 32)) {
-        snprintf(why, cap, "incoming readback SHA256 mismatch");
+        LS_SNPUTS(t_ls_lap_console_incoming_readback_sha256_mismatch, why, cap, "incoming readback SHA256 mismatch");
         goto done;
     }
     size_t elf_size;
@@ -109,13 +112,13 @@ static bool finish(void *ctx, const char *name, size_t size, const uint8_t expec
     snprintf(s.candidate.path, sizeof(s.candidate.path), "/sdcard/apps/%s", name);
     lease = ls_lap_maintenance_begin(s.candidate.manifest.id);
     if (!lease) {
-        snprintf(why, cap, "native app open or refresh pending");
+        LS_SNPUTS(t_ls_lap_console_native_app_open_or, why, cap, "native app open or refresh pending");
         goto done;
     }
     const ls_lap_info_t *existing = ls_lap_by_id(s.candidate.manifest.id);
     int installed = 0;
     if (!existing && ls_app_by_id(s.candidate.manifest.id)) {
-        snprintf(why, cap, "id belongs to a built-in app");
+        LS_SNPUTS(t_ls_lap_console_id_belongs_to_a, why, cap, "id belongs to a built-in app");
         goto done;
     }
     if ((!existing || !existing->installed) && ls_app_count() >= LS_TUI_MAX_SCREENS) {
@@ -129,16 +132,16 @@ static bool finish(void *ctx, const char *name, size_t size, const uint8_t expec
         installed++;
         if (ls_lap_name_equal(a->path, s.candidate.path) &&
             strcmp(a->manifest.id, s.candidate.manifest.id)) {
-            snprintf(why, cap, "filename belongs to another id");
+            LS_SNPUTS(t_ls_lap_console_filename_belongs_to_another, why, cap, "filename belongs to another id");
             goto done;
         }
     }
     if (existing && existing->installed && !ls_lap_name_equal(existing->path, s.candidate.path)) {
-        snprintf(why, cap, "id already installed under another filename");
+        LS_SNPUTS(t_ls_lap_console_id_already_installed_under, why, cap, "id already installed under another filename");
         goto done;
     }
     if ((!existing || !existing->installed) && installed >= LS_LAP_MAX_APPS) {
-        snprintf(why, cap, "native directory full");
+        LS_SNPUTS(t_ls_lap_console_native_directory_full, why, cap, "native directory full");
         goto done;
     }
     s.candidate.size = size;
@@ -149,14 +152,14 @@ static bool finish(void *ctx, const char *name, size_t size, const uint8_t expec
     s.candidate.needs_confirmation = existing && existing->needs_confirmation;
     memcpy(s.candidate.sha256, actual, 32);
     if (!ls_lap_replace(INCOMING, s.candidate.path)) {
-        snprintf(why, cap, "atomic rename failed");
+        LS_SNPUTS(t_ls_lap_console_atomic_rename_failed, why, cap, "atomic rename failed");
         goto done;
     }
     ok = ls_lap_publish(&s.candidate);
     if (ok)
         lease = false;
     else
-        snprintf(why, cap, "installed; refresh applies at next boot");
+        LS_SNPUTS(t_ls_lap_console_installed_refresh_applies_at, why, cap, "installed; refresh applies at next boot");
 done:
     if (f)
         fclose(f);
@@ -186,20 +189,21 @@ static void print_info(const ls_lap_info_t *a) {
     char hash[17];
     for (int i = 0; i < 8; i++)
         snprintf(hash + i * 2, 3, "%02x", a->sha256[i]);
-    printf("APP OK app id=%s name=%s version=%s size=%lu signed=%s sha256=%s\n", a->manifest.id,
+    LS_PRINTF(t_ls_lap_console_app_ok_app_id, "APP OK app id=%s name=%s version=%s size=%lu signed=%s sha256=%s\n", a->manifest.id,
            name, version, (unsigned long)a->size, a->is_signed ? "yes" : "no", hash);
 }
 static void inspect_info(const ls_lap_info_t *a) {
     char why[96] = {0};
     if (!ls_lap_inspect_file(a->path, &s.candidate, why, sizeof(why)) ||
         memcmp(&a->manifest, &s.candidate.manifest, LS_LAP_MANIFEST_BYTES)) {
-        printf("APP ERR verify %.31s %s\n", a->manifest.id,
+        LS_PRINTF(t_ls_lap_console_app_err_verify_31s, "APP ERR verify %.31s %s\n", a->manifest.id,
                why[0] ? why : "manifest changed since scan");
         return;
     }
     print_info(&s.candidate);
 }
 static bool data_name(const char *name) { return ls_lap_plain_name(name, 48); }
+static void rx_line(const char *text) { puts(text); }
 
 static int command(int argc, char **argv) {
     xSemaphoreTake(mutex, portMAX_DELAY);
@@ -210,11 +214,28 @@ static int command(int argc, char **argv) {
         goto done;
     }
     if (ls_lap_transfer_expire(&s.transfer, now())) {
-        puts("APP ERR timeout upload expired");
+        LS_PUTS(t_ls_lap_console_app_err_timeout_upload, "APP ERR timeout upload expired");
+        goto done;
+    }
+    if (argc == 2 && !strcmp(argv[1], "rx")) {   /* API 2.0: radios and the open app's session */
+        ls_lap_radio_describe(rx_line);
+        goto done;
+    }
+    if (argc == 2 && !strcmp(argv[1], "svc")) {   /* API 2.1: the background service, if any */
+        ls_lap_service_info_t v;
+        if (ls_lap_services(&v, 1) > 0)
+            LS_PRINTF(t_ls_lap_console_app_ok_svc_id, "APP OK svc id=%s screen=%s period_ms=%lu ticks=%lu last_us=%lu worst_us=%lu over=%lu\n", v.id,
+                   v.shown ? "open" : "closed", (unsigned long)v.period_ms, (unsigned long)v.stats.ticks,
+                   (unsigned long)v.stats.last_us, (unsigned long)v.stats.worst_us, (unsigned long)v.stats.over);
+        puts("APP OK svc end");
+        goto done;
+    }
+    if (argc == 3 && !strcmp(argv[1], "stop")) {
+        puts(ls_lap_service_request_stop(argv[2]) ? "APP OK stop queued" : "APP ERR absent no service by that id");
         goto done;
     }
     if (ls_lap_catalog_busy()) {
-        puts("APP ERR busy tile refresh pending");
+        LS_PUTS(t_ls_lap_console_app_err_busy_tile, "APP ERR busy tile refresh pending");
         goto done;
     }
     if (argc == 2 && !strcmp(argv[1], "list")) {
@@ -229,34 +250,34 @@ static int command(int argc, char **argv) {
         if (a && a->installed) {
             inspect_info(a);
             if (ls_lap_is_open(a->manifest.id))
-                printf("APP OK runtime heap=%lu limit=4194304 bad_free=%u stack_unused=%u\n",
+                LS_PRINTF(t_ls_lap_console_app_ok_runtime_heap, "APP OK runtime heap=%lu limit=4194304 bad_free=%u stack_unused=%u\n",
                        (unsigned long)ls_lap_api_bytes(), ls_lap_api_bad_frees(),
                        ls_lap_stack_unused());
         } else
-            puts("APP ERR absent unknown app id");
+            LS_PUTS(t_ls_lap_console_app_err_absent_unknown, "APP ERR absent unknown app id");
         goto done;
     }
     if ((argc == 3 || (argc == 4 && !strcmp(argv[3], "all"))) && !strcmp(argv[1], "rm")) {
         const ls_lap_info_t *a = ls_lap_by_id(argv[2]);
         if (!a || !a->installed) {
-            puts("APP ERR absent unknown app id");
+            LS_PUTS(t_ls_lap_console_app_err_absent_unknown, "APP ERR absent unknown app id");
             goto done;
         }
         if (!ls_lap_maintenance_begin(a->manifest.id)) {
-            puts("APP ERR busy native app open or refresh pending");
+            LS_PUTS(t_ls_lap_console_app_err_busy_native, "APP ERR busy native app open or refresh pending");
             goto done;
         }
         s.candidate = *a;
         s.candidate.installed = false;
         if (remove(a->path)) {
             ls_lap_maintenance_end();
-            puts("APP ERR io app removal failed");
+            LS_PUTS(t_ls_lap_console_app_err_io_app, "APP ERR io app removal failed");
             goto done;
         }
         bool data_ok = true;
         if (argc == 4) {
             char dir[128];
-            snprintf(dir, sizeof(dir), "/sdcard/apps_data/%s", a->manifest.id);
+            LS_SNPRINTF(t_ls_lap_console_sdcard_apps_data_s, dir, sizeof(dir), "/sdcard/apps_data/%s", a->manifest.id);
             if (!ls_lap_recover_dir(dir))
                 data_ok = false;
             DIR *d = opendir(dir);
@@ -281,14 +302,14 @@ static int command(int argc, char **argv) {
         }
         if (!ls_lap_publish(&s.candidate)) {
             ls_lap_maintenance_end();
-            puts("APP ERR refresh removed; restart to refresh");
+            LS_PUTS(t_ls_lap_console_app_err_refresh_removed, "APP ERR refresh removed; restart to refresh");
         } else if (!data_ok)
-            puts("APP ERR data app removed; some data files remain");
+            LS_PUTS(t_ls_lap_console_app_err_data_app, "APP ERR data app removed; some data files remain");
         else
-            puts("APP OK rm refresh=queued");
+            LS_PUTS(t_ls_lap_console_app_ok_rm_refresh, "APP OK rm refresh=queued");
         goto done;
     }
-    puts("APP ERR args use list|put|data|end|rm|info");
+    LS_PUTS(t_ls_lap_console_app_err_args_use, "APP ERR args use list|put|data|end|rm|info|rx|svc|stop");
 done:
     xSemaphoreGive(mutex);
     return 0;
@@ -296,7 +317,7 @@ done:
 void ls_lap_console_expire(void) {
     if (mutex && xSemaphoreTake(mutex, 0) == pdTRUE) {
         if (ls_lap_transfer_expire(&s.transfer, now()))
-            puts("APP ERR timeout upload expired");
+            LS_PUTS(t_ls_lap_console_app_err_timeout_upload, "APP ERR timeout upload expired");
         xSemaphoreGive(mutex);
     }
 }
@@ -310,7 +331,7 @@ void ls_lap_console_register(void) {
         return;
     cancel(NULL); /* discard any interrupted transfer on boot */
     const esp_console_cmd_t cmd = {
-        .command = "app", .help = "Native SD apps: list|put|data|end|rm|info", .func = command};
+        .command = "app", .help = LS_TXT(con_ls_lap_console_app_help, "Native SD apps: list|put|data|end|rm|info|rx"), .func = command};
     if (esp_console_cmd_register(&cmd) == ESP_OK)
         s.initialized = true;
 }

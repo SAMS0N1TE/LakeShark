@@ -52,9 +52,14 @@
 #include "ls_map_marks.h"
 #include "ls_cartocore_map.h"
 #include "ls_carto_sd_io.h"
+#include "ls_cold.h"
+/* Digest files and map selection run when a map is chosen or checked. */
+LS_COLD_BEGIN
 #include "ls_carto_digest.h"
 #include "ls_cartocore_select.h"
+LS_COLD_END
 #include "cartocore/cellset.h"
+#include "ls_textpack.h"
 
 static SemaphoreHandle_t view_lock, command_lock, file_lock;
 static tui_cell *view;
@@ -111,9 +116,9 @@ static void close_sd(sd_source *s) {
 /* Four file descriptors share the existing SD bounce buffer; all callbacks
  * run on the same serialized worker. No per-cell internal/DMA allocations. */
 typedef struct { int fd; uint64_t size; sd_source *owner; } sd_cell_file;
-/* carto-idle runs at idle priority; a dense cell (Miami) kept it busy for 10 s
-   of decode, raster and prefetch and IDLE0 tripped the task watchdog. Tile
-   reads and the engine's cc_yield_hook give up the CPU once per 50 ms. */
+/* A dense cell (Miami) keeps carto-idle busy for 10 s of decode, raster and
+   prefetch. Tile reads and the engine's cc_yield_hook give up the CPU once
+   per 50 ms, so IDLE0 (below the worker) feeds the task watchdog. */
 static void carto_yield(void) {
 #ifndef LS_CARTOCORE_HOST
     static int64_t last_yield;
@@ -134,7 +139,7 @@ static int cell_open(void *ctx,uint32_t id,void **handle,uint64_t *bytes) {
     sd_source *owner=ctx;char path[256];
     const char *slash=strrchr(owner->path,'/');if(!slash) return -1;
     int prefix=(int)(slash-owner->path);
-    if(id) snprintf(path,sizeof(path),"%.*s/8-%u-%u%s.ctile",prefix,owner->path,((id-1)%65536)/256,(id-1)%256,id>65536?".detail":"");
+    if(id) LS_SNPRINTF(t_ls_cartocore_s_8_u_u, path,sizeof(path),"%.*s/8-%u-%u%s.ctile",prefix,owner->path,((id-1)%65536)/256,(id-1)%256,id>65536?".detail":"");
     else snprintf(path,sizeof(path),"%.*s/overview.ctile",prefix,owner->path);
     if(!cells_file_current(id,path))return 0;
     int fd=open(path,O_RDONLY);if(fd<0) return errno==ENOENT?0:-1;
@@ -159,7 +164,7 @@ static carto_saved saved={.version=1,.z=14,.lat=43.4445,.lon=-71.6473,.terrain_o
 static bool saved_loaded, saved_valid;
 static atomic_bool saved_dirty, terrain_changed;
 /* These two callbacks run only through the existing DRAM-stack dispatcher. */
-static esp_err_t load_saved_job(void *ctx) {
+LS_COLD static esp_err_t load_saved_job(void *ctx) {
     (void)ctx;
     nvs_handle_t h;
     esp_err_t e=nvs_open("cartocore",NVS_READONLY,&h);
@@ -175,14 +180,14 @@ static esp_err_t load_saved_job(void *ctx) {
     }
     return e;
 }
-void ls_cartocore_boot_init(void) {
+LS_COLD void ls_cartocore_boot_init(void) {
     if(saved_loaded) return;
     /* Boot calls this before console/UI/idle tasks exist. Never lazy-load NVS. */
     saved_loaded=true;
     (void)ls_nvs_run(load_saved_job,NULL,0);
     ls_marks_defer_io();
 }
-static esp_err_t save_saved_job(void *ctx) {
+LS_COLD static esp_err_t save_saved_job(void *ctx) {
     const carto_saved *record=ctx;
     nvs_handle_t h;
     esp_err_t e=nvs_open("cartocore",NVS_READWRITE,&h);
@@ -210,7 +215,7 @@ static void flush_saved(void) {
     esp_err_t e=ls_nvs_call(save_saved_job,&record,0);
     if(e!=ESP_OK) {
         atomic_store(&saved_dirty,true); retry_after=esp_timer_get_time()+5000000;
-        printf("carto: deferred NVS save failed: %s\n",esp_err_to_name(e));
+        LS_PRINTF(t_ls_cartocore_carto_deferred_nvs_save, "carto: deferred NVS save failed: %s\n",esp_err_to_name(e));
     }
 }
 static int restore_map(void);
@@ -222,9 +227,9 @@ static void close_hidden(void);
 
 static size_t internal_free(void) { return heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); }
 static size_t dma_free(void) { return heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA); }
-static void heaps(const char *where)
+LS_COLD static void heaps(const char *where)
 {
-    printf("carto heap %s internal=%zu DMA=%zu largest_DMA=%zu\n", where,
+    LS_PRINTF(fmt_ls_cartocore_carto_heap_internal_dma, "carto heap %s internal=%zu DMA=%zu largest_DMA=%zu\n", where,
            internal_free(), dma_free(), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
 }
 static int open_map(cc_ctile *map)
@@ -249,17 +254,17 @@ static int cmp_double(const void *a, const void *b)
     double x=*(const double *)a, y=*(const double *)b;
     return (x>y)-(x<y);
 }
-static void stats(const char *stage, double *times, int n)
+LS_COLD static void stats(const char *stage, double *times, int n)
 {
     qsort(times, n, sizeof(*times), cmp_double);
-    printf("  %-8s median=%.2f p90=%.2f us\n", stage,
+    LS_PRINTF(t_ls_cartocore_8s_median_2f_p90, "  %-8s median=%.2f p90=%.2f us\n", stage,
            (times[(n-1)/2]+times[n/2])/2, times[(9*n+9)/10-1]);
 }
 
 #include "ls_cartocore_render.h"
 static render_state *shown;
 /* Retained across close/rotation; values are bytes, idle may alias cold. */
-void ls_carto_hw_status(bool reset) {
+LS_COLD void ls_carto_hw_status(bool reset) {
     if(!view_lock) return;
     xSemaphoreTake(view_lock,portMAX_DELAY);
     carto_hw_sample(shown);
@@ -276,7 +281,7 @@ void ls_carto_hw_status(bool reset) {
         }
         carto_hw_sample(shown);
     }
-    printf("carto hw cold=%zu decoded=%zu idle=%zu hot=%zu cache=%zu cell_handles=%zu directory=%zu staging=%zu bounce=%zu cold_cap=%zu decoded_cap=%zu idle_alloc=%zu coarse_frames=%u%s\n",
+    LS_PRINTF(fmt_ls_cartocore_carto_hw_cold_decoded, "carto hw cold=%zu decoded=%zu idle=%zu hot=%zu cache=%zu cell_handles=%zu directory=%zu staging=%zu bounce=%zu cold_cap=%zu decoded_cap=%zu idle_alloc=%zu coarse_frames=%u%s\n",
         carto_hw.cold,carto_hw.decoded,carto_hw.idle,carto_hw.hot,carto_hw.cache,
         source_handles_hw,source_directory_hw,source_staging_hw,carto_sd_bounce_peak,shown?shown->arena.size:0,
         shown?shown->decoded.size:0,shown && shown->idle_memory?shown->idle_arena.size:0,
@@ -287,21 +292,21 @@ static atomic_bool map_owned;
 static atomic_bool map_prepared;
 static void map_service(void);
 static void map_invalidate_frame(void);
-static int bench_one(int cols,int rows,unsigned z,cc_mode mode,cc_edges edges,int n,bool external,bool tilecache)
+LS_COLD static int bench_one(int cols,int rows,unsigned z,cc_mode mode,cc_edges edges,int n,bool external,bool tilecache)
 {
     cc_ctile map;
-    if(!open_map(&map) && select_map("/sdcard/maps/franklin_mini.ctile")) {
-        puts("carto bench: missing /sdcard/maps/franklin_mini.ctile; install it on SD or open a map first");
+    if(!open_map(&map) && select_map(LS_TEXT(t_ls_cartocore_sdcard_maps_franklin_mini, "/sdcard/maps/franklin_mini.ctile"))) {
+        LS_PUTS(msg_ls_cartocore_carto_bench_missing_sdcard, "carto bench: missing /sdcard/maps/franklin_mini.ctile; install it on SD or open a map first");
         return 0;
     }
     int ok=0; size_t before=internal_free(),dma_before=dma_free();
-    printf("carto bench %dx%d z%u %s %s N=%d arena=%s decoded=%u cell_cache=%u PSRAM\n",
+    LS_PRINTF(fmt_ls_cartocore_carto_bench_z_n, "carto bench %dx%d z%u %s %s N=%d arena=%s decoded=%u cell_cache=%u PSRAM\n",
            cols,rows,z,mode==CC_BRAILLE?"braille":"quadrant",edges==CC_EDGES_CRISP?"crisp":"smooth",
            n,"split (HOT internal preferred, COLD PSRAM)",DECODED_BYTES,tilecache?CELL_BYTES:0);
     heaps("before");
     render_state *s=create(cols,rows,z,external,tilecache);
     double *times=heap_caps_malloc((size_t)n*(CC_STAGES+1)*sizeof(*times),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-    if (!s || !times) { puts("  unavailable: allocation/map/planes failed"); goto done; }
+    if (!s || !times) { LS_PUTS(msg_ls_cartocore_unavailable_allocation_map_planes, "  unavailable: allocation/map/planes failed"); goto done; }
     const double ticks_per_us=esp_clk_cpu_freq()/1000000.0;
     static const char *const workload[]={"cold-first-frame","warm-same-view","1-cell-pan","zoom-change"};
     static const char *const names[]={"lookup","decode","lines","fill","coverage","labels","encode"};
@@ -347,7 +352,7 @@ static int bench_one(int cols,int rows,unsigned z,cc_mode mode,cc_edges edges,in
             int rendered=render_frame(s,mode,edges,left,top);
             times[i]=(double)(esp_timer_get_time()-start); cc_profiling=NULL;
             xSemaphoreGive(view_lock);
-            if (!rendered) { printf("  render failed arena=%zu peak=%zu\n",s->arena.size,s->arena.peak); goto done; }
+            if (!rendered) { LS_PRINTF(t_ls_cartocore_render_failed_arena_zu, "  render failed arena=%zu peak=%zu\n",s->arena.size,s->arena.peak); goto done; }
             for (int k=0;k<CC_STAGES;k++) times[(k+1)*n+i]=prof.ticks[k]/ticks_per_us;
             if(w==2 && tilecache) {
                 while(s->tiles.pending) {
@@ -360,7 +365,7 @@ static int bench_one(int cols,int rows,unsigned z,cc_mode mode,cc_edges edges,in
             }
             vTaskDelay(1);
         }
-        printf("  %s arena capacity=%zu peak=%zu used=%zu decoded used=%zu peak=%zu hits=%zu misses=%zu evictions=%zu bypasses=%zu cell hits=%zu misses=%zu evictions=%zu fallbacks=%zu frame=%zu\n",
+        LS_PRINTF(fmt_ls_cartocore_arena_capacity_peak_used, "  %s arena capacity=%zu peak=%zu used=%zu decoded used=%zu peak=%zu hits=%zu misses=%zu evictions=%zu bypasses=%zu cell hits=%zu misses=%zu evictions=%zu fallbacks=%zu frame=%zu\n",
                workload[w],s->arena.size,s->arena.peak,s->arena.used,s->decoded.used,s->decoded.peak,
                s->decoded.hits,s->decoded.misses,s->decoded.evictions,s->decoded.bypasses,
                s->tiles.hits,s->tiles.misses,s->tiles.evictions,s->tile_fallbacks,(size_t)cols*rows*sizeof(cc_cell));
@@ -371,7 +376,7 @@ static int bench_one(int cols,int rows,unsigned z,cc_mode mode,cc_edges edges,in
     ok=1;
 done:
     cc_profiling=NULL; heap_caps_free(times); release(s); heaps("after");
-    printf("  heap delta internal=%ld DMA=%ld (after-before)\n",(long)internal_free()-(long)before,(long)dma_free()-(long)dma_before);
+    LS_PRINTF(fmt_ls_cartocore_heap_delta_internal_dma, "  heap delta internal=%ld DMA=%ld (after-before)\n",(long)internal_free()-(long)before,(long)dma_free()-(long)dma_before);
     return ok;
 }
 
@@ -424,7 +429,7 @@ static bool frame_commit(render_state *s,bool console,double lat,double lon,bool
     f->console=console;f->braille=braille;f->labels=labels;f->count=count;
     if(count) memcpy(f->names,names,count*sizeof(*names));
 #ifdef LS_CARTOCORE_HOST
-    if(getenv("LSSIM_CELLS_MEMORY"))printf("cells render: arena peak=%zu/%zu idle=%zu hot=%zu decoded=%zu frame=%zu free_psram=%zu coarse=%d detail=%u\n",s->arena.peak,s->arena.size,s->idle_memory?s->idle_arena.size:0,s->hot_arena.size,s->decoded.peak,n*sizeof(tui_cell)*2,heap_caps_get_free_size(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT),s->coarse,s->coarse?s->coarse_map.zmax:s->map.zmax);
+    if(getenv("LSSIM_CELLS_MEMORY"))LS_PRINTF(fmt_ls_cartocore_cells_render_arena_peak, "cells render: arena peak=%zu/%zu idle=%zu hot=%zu decoded=%zu frame=%zu free_psram=%zu coarse=%d detail=%u\n",s->arena.peak,s->arena.size,s->idle_memory?s->idle_arena.size:0,s->hot_arena.size,s->decoded.peak,n*sizeof(tui_cell)*2,heap_caps_get_free_size(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT),s->coarse,s->coarse?s->coarse_map.zmax:s->map.zmax);
 #endif
     f->generation=++frame_generation;
     while(!frame_take()) vTaskDelay(1);
@@ -454,17 +459,17 @@ static int redraw(render_state *s,const char *action)
     int64_t start=esp_timer_get_time();
     s->raster_only=false; /* the console shows cells, even on MAP's picture state */
     if (!render_frame(s,CC_QUADRANT,CC_EDGES_CRISP,s->left,s->top)) {
-        printf("carto: render failed z%u (map z%u..%u), arena peak=%zu\n",s->z,s->map.zmin,s->map.zmax,s->arena.peak); return 1;
+        LS_PRINTF(fmt_ls_cartocore_carto_render_failed_z, "carto: render failed z%u (map z%u..%u), arena peak=%zu\n",s->z,s->map.zmin,s->map.zmax,s->arena.peak); return 1;
     }
     if(!frame_commit(s,true,centre_lat,centre_lon,false,s->labels,NULL,0)) {
-        puts("carto: display buffer allocation failed; previous frame retained");return 1;
+        LS_PUTS(msg_ls_cartocore_carto_display_buffer_allocation, "carto: display buffer allocation failed; previous frame retained");return 1;
     }
     if(!atomic_load(&dismiss_pending)) atomic_store(&view_active,true);
     if(s->map.source && strcmp(action,"later")) {
         s->hint_count=s->hint_next=0;
         cc_ctile_prefetch_hint(&s->map,s->z,s->left,s->top,s->cols,s->rows,0,0,queue_hint,s);
     }
-    printf("carto %s z%u grid=%dx%d frame=%lld us cache_pending=%d arena_peak=%zu decoded=%zu/%u cell_cache=%u PSRAM\n",
+    LS_PRINTF(fmt_ls_cartocore_carto_z_grid_frame, "carto %s z%u grid=%dx%d frame=%lld us cache_pending=%d arena_peak=%zu decoded=%zu/%u cell_cache=%u PSRAM\n",
            action,s->z,s->cols,s->rows,(long long)(esp_timer_get_time()-start),s->tiles.pending,s->arena.peak,s->decoded.used,(unsigned)s->decoded.size,s->cell_memory?CELL_BYTES:0);
     if(strcmp(action,"later")) {
         double scale=256.0*(1u<<s->z),pi=3.14159265358979323846;
@@ -485,8 +490,10 @@ static void cache_step(void) {
     static bool boot_recovered;
     static int64_t recovery_after;
     ls_marks_io_step();
-    cells_service();
+    /* MAP first: a cells step can run long (catalog install, queue checks),
+       and MAP sat on "opening map..." behind it with nothing allocated. */
     map_service();
+    cells_service();
     bool closed=false;
     if(xSemaphoreTake(view_lock,0)==pdTRUE) {
         if(atomic_exchange(&dismiss_pending,false)) {
@@ -500,16 +507,16 @@ static void cache_step(void) {
             shown->tiles.terrain_strength=shown->renderer.terrain_strength;
             cc_renderer_invalidate(&shown->renderer); cc_cell_cache_clear(&shown->tiles);
             if(map_owned) map_invalidate_frame();
-            if(!map_owned && redraw(shown,"terrain")) puts("carto: terrain redraw failed");
+            if(!map_owned && redraw(shown,"terrain")) LS_PUTS(t_ls_cartocore_carto_terrain_redraw_failed, "carto: terrain redraw failed");
         }
         if(shown && shown->tiles.pending) {
             int64_t start=esp_timer_get_time();
             size_t cells=cc_cell_cache_step(&shown->tiles,128,&shown->idle_arena);
             if(!cells && shown->tiles.pending) {
                 shown->tiles.pending=0;
-                puts("carto idle fill unavailable; direct rendering retained");
+                LS_PUTS(msg_ls_cartocore_carto_idle_fill_unavailable, "carto idle fill unavailable; direct rendering retained");
             } else if(!shown->tiles.pending) {
-                printf("carto idle cache ready last_step=%lld us; later frame follows\n",(long long)(esp_timer_get_time()-start));
+                LS_PRINTF(fmt_ls_cartocore_carto_idle_cache_ready, "carto idle cache ready last_step=%lld us; later frame follows\n",(long long)(esp_timer_get_time()-start));
                 if(!map_owned) redraw(shown,"later");
             }
         }
@@ -548,9 +555,9 @@ static void cache_idle(void *arg) {
 #endif
 static int show(unsigned z)
 {
-    if(restore_map()) { puts("carto: no map installed; download a region in TILES"); return 1; }
+    if(restore_map()) { LS_PUTS(msg_ls_cartocore_carto_no_map_installed, "carto: no map installed; download a region in TILES"); return 1; }
     int cols,rows; ls_tui_geometry(&cols,&rows,NULL,NULL);
-    if (cols<1 || rows<1 || cols>400 || rows>200) { puts("carto: TUI not ready or grid too large"); return 1; }
+    if (cols<1 || rows<1 || cols>400 || rows>200) { LS_PUTS(t_ls_cartocore_carto_tui_not_ready, "carto: TUI not ready or grid too large"); return 1; }
     render_state *s=create(cols,rows,z,true,true);
     if (!s) { puts(carto_memory_failed?"carto: not enough memory for map":"carto: map unavailable"); return 1; }
     xSemaphoreTake(view_lock,portMAX_DELAY);
@@ -573,7 +580,7 @@ static bool cells_cover(double lat,double lon) {
     unsigned x=(unsigned)floor((lon+180.0)/360.0*256.0);
     unsigned y=(unsigned)floor((1.0-asinh(tan(lat*pi/180.0))/pi)/2.0*256.0);
     if(x>255 || y>255) return false;
-    char path[64]; snprintf(path,sizeof(path),"/sdcard/maps/cells/8-%u-%u.ctile",x,y);
+    char path[64]; LS_SNPRINTF(t_ls_cartocore_sdcard_maps_cells_8, path,sizeof(path),"/sdcard/maps/cells/8-%u-%u.ctile",x,y);
     /* The file alone is not enough: a cell left from an older download that
        the active catalog does not list is never read, and claiming the view
        for it leaves only the national overview on screen. */
@@ -588,11 +595,11 @@ static int queue_hint(void *ctx,unsigned z,uint32_t x,uint32_t y,uint64_t offset
     s->hints[s->hint_count].offset=offset; s->hints[s->hint_count++].length=length;
     return 1;
 }
-static int move_view(int dx,int dy,int z)
+LS_COLD static int move_view(int dx,int dy,int z)
 {
     xSemaphoreTake(view_lock,portMAX_DELAY);
     int result=1;
-    if (!shown || !view || !atomic_load(&view_active)) puts("carto: show a view first");
+    if (!shown || !view || !atomic_load(&view_active)) LS_PUTS(t_ls_cartocore_carto_show_a_view, "carto: show a view first");
     else {
         int64_t left=shown->left,top=shown->top; unsigned oldz=shown->z;
         if (z) {
@@ -608,7 +615,7 @@ static int move_view(int dx,int dy,int z)
         if(!result && shown->map.source)
             cc_ctile_prefetch_hint(&shown->map,shown->z,shown->left,shown->top,
                                   shown->cols,shown->rows,dx*2,dy*4,queue_hint,shown);
-        if (result) { shown->left=left; shown->top=top; shown->z=oldz; puts("carto: render failed; previous view retained"); }
+        if (result) { shown->left=left; shown->top=top; shown->z=oldz; LS_PUTS(msg_ls_cartocore_carto_render_failed_previous, "carto: render failed; previous view retained"); }
     }
     xSemaphoreGive(view_lock); return result;
 }
@@ -666,14 +673,14 @@ static int select_map_locked(const char *requested,bool persist)
             if (!strncmp(requested,"/maps/",6)) n=snprintf(path,sizeof(path),"/sdcard%s",requested);
             else if (requested[0]=='/') n=snprintf(path,sizeof(path),"%s",requested);
             else n=snprintf(path,sizeof(path),MAP_DIR "/%s",requested);
-            if (n<0 || (size_t)n>=sizeof(path)) { puts("carto: path too long"); return 1; }
+            if (n<0 || (size_t)n>=sizeof(path)) { LS_PUTS(t_ls_cartocore_carto_path_too_long, "carto: path too long"); return 1; }
         }
         if (strncmp(path,"/sdcard/",8) || strstr(path,"/../") ||
-            (!ctile_name(path) && strcmp(path,"/sdcard/maps/cells/index.cci") && strcmp(path,"/sdcard/maps/cells/catalog.ccm"))) { puts("carto: expected an SD .ctile path or cells"); return 1; }
+            (!ctile_name(path) && strcmp(path,"/sdcard/maps/cells/index.cci") && strcmp(path,"/sdcard/maps/cells/catalog.ccm"))) { LS_PUTS(msg_ls_cartocore_carto_expected_an_sd, "carto: expected an SD .ctile path or cells"); return 1; }
         int fd=open(path,O_RDONLY); struct stat st;
         if (fd<0) { printf("carto: %s: %s\n",path,strerror(errno)); return 1; }
         if (fstat(fd,&st) || !S_ISREG(st.st_mode) || st.st_size<64 || (uint64_t)st.st_size>LONG_MAX) {
-            close(fd); puts("carto: invalid file size"); return 1;
+            close(fd); LS_PUTS(t_ls_cartocore_carto_invalid_file_size, "carto: invalid file size"); return 1;
         }
         size=(size_t)st.st_size;
         next=heap_caps_calloc(1,sizeof(*next),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
@@ -691,7 +698,7 @@ static int select_map_locked(const char *requested,bool persist)
             next->bounce_capacity=4096;
             next->bounce=heap_caps_aligned_alloc(64,next->bounce_capacity,MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA|MALLOC_CAP_8BIT);
         }
-        printf("carto SD: read() %s chunk=%zu\n",next->bounce?"internal DMA -> PSRAM":"PSRAM",next->bounce?next->bounce_capacity:0);
+        LS_PRINTF(t_ls_cartocore_carto_sd_read_s, "carto SD: read() %s chunk=%zu\n",next->bounce?"internal DMA -> PSRAM":"PSRAM",next->bounce?next->bounce_capacity:0);
         snprintf(next->path,sizeof(next->path),"%s",path);
         bool direct=!strcmp(path,"/sdcard/maps/cells/catalog.ccm");
         bool cells=direct || !strcmp(path,"/sdcard/maps/cells/index.cci");
@@ -716,7 +723,7 @@ static int select_map_locked(const char *requested,bool persist)
             } else ok=cc_ctile_open_source(&next->map,&next->source,sd_read,next,size,
                                            next->directory,dirbytes,next->staging,stagingbytes);
         }
-        if(!ok) { close_sd(next);puts("carto: streaming open failed; active map retained");return 1; }
+        if(!ok) { close_sd(next);LS_PUTS(msg_ls_cartocore_carto_streaming_open_failed, "carto: streaming open failed; active map retained");return 1; }
         if(!v7 && next->source.max_blob>next->source.staging_capacity) {
             heap_caps_free(next->staging);
             next->staging=heap_caps_aligned_alloc(16,next->source.max_blob,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
@@ -728,12 +735,12 @@ static int select_map_locked(const char *requested,bool persist)
         double minlon=bbox_degrees(header+12),minlat=bbox_degrees(header+16);
         double maxlon=bbox_degrees(header+20),maxlat=bbox_degrees(header+24);
         if (minlon>maxlon || minlat>maxlat || minlon< -180 || maxlon>180 || minlat< -85.05112878 || maxlat>85.05112878) {
-            close_sd(next); puts("carto: invalid geographic bbox; active map retained"); return 1;
+            close_sd(next); LS_PUTS(msg_ls_cartocore_carto_invalid_geographic_bbox, "carto: invalid geographic bbox; active map retained"); return 1;
         }
         lon=(minlon+maxlon)/2; lat=(minlat+maxlat)/2;
     }
     if(xSemaphoreTake(view_lock,pdMS_TO_TICKS(2000))!=pdTRUE) {
-        close_sd(next); puts("carto open: map view lock timeout; active map retained"); return 1;
+        close_sd(next); LS_PUTS(msg_ls_cartocore_carto_open_map_view, "carto open: map view lock timeout; active map retained"); return 1;
     }
     map_owned=false; map_prepared=false;
     if(!source_refreshing) { atomic_store(&view_active,false); atomic_store(&dismiss_pending,false);frames_clear(); }
@@ -746,7 +753,7 @@ static int select_map_locked(const char *requested,bool persist)
     source_refreshing=false;
     xSemaphoreGive(view_lock);
     int64_t elapsed=esp_timer_get_time()-start;
-    printf("carto open %s bytes=%zu load=%.3f ms %.2f MB/s centre=%.7f,%.7f\n",
+    LS_PRINTF(fmt_ls_cartocore_carto_open_bytes_load, "carto open %s bytes=%zu load=%.3f ms %.2f MB/s centre=%.7f,%.7f\n",
            next?path:"embedded",size,elapsed/1000.0,elapsed>0?(double)size/elapsed:0.0,lat,lon);
     return 0;
 }
@@ -768,20 +775,20 @@ static bool recover_maps(void) {
                     snprintf(pending,sizeof(pending),MAP_DIR "/%s",e->d_name);
                     snprintf(path,sizeof(path),MAP_DIR "/%.*s",(int)n-8,e->d_name);
                     snprintf(side,sizeof(side),"%s.sha",pending);
-                    FILE *f=fopen(side,"r"); long long size,mtime; char extra;
-                    int fields=f?fscanf(f,"%lld %lld %64s %c",&size,&mtime,hex,&extra):0;
+                    FILE *f=fopen(side,"r"); long long size,mtime;
+                    int fields=f?carto_digest_scan(f,&size,&mtime,hex):0;
                     if(f) fclose(f);
                     if(fields!=3 || stat(pending,&st) || !carto_digest_cached(pending,&st,hex)) {
-                        printf("carto: pending verification metadata invalid: %s\n",pending); continue;
+                        LS_PRINTF(fmt_ls_cartocore_carto_pending_verification_metadata, "carto: pending verification metadata invalid: %s\n",pending); continue;
                     }
                     uint8_t header[64]; f=fopen(pending,"rb");
                     size_t got=f?fread(header,1,64,f):0; if(f) fclose(f);
                     if(!cc_ctile_header_check(header,got,st.st_size)) {
-                        printf("carto: pending header invalid: %s\n",pending); continue;
+                        LS_PRINTF(t_ls_cartocore_carto_pending_header_invalid, "carto: pending header invalid: %s\n",pending); continue;
                     }
                     if(!publish_locked(pending,path,true,hex)) {
-                        unlink(side); printf("carto: installed pending %s\n",path);
-                    } else printf("carto: pending swap failed: %s: %s\n",path,strerror(errno));
+                        unlink(side); LS_PRINTF(t_ls_cartocore_carto_installed_pending_s, "carto: installed pending %s\n",path);
+                    } else LS_PRINTF(t_ls_cartocore_carto_pending_swap_failed, "carto: pending swap failed: %s: %s\n",path,strerror(errno));
                     continue;
                 }
                 if(n<5 || strcasecmp(e->d_name+n-4,".bak")) continue;
@@ -801,7 +808,7 @@ void ls_carto_recover(void) { (void)recover_maps(); }
 static int select_map_mode(const char *requested,bool persist) {
     /* Host fixture selection can release a retained source during recovery. */
     if(!requested || strcmp(requested,"embedded")) ls_carto_recover();
-    if(xSemaphoreTake(file_lock,pdMS_TO_TICKS(2000))!=pdTRUE) { puts("carto open: map file lock timeout"); return 1; }
+    if(xSemaphoreTake(file_lock,pdMS_TO_TICKS(2000))!=pdTRUE) { LS_PUTS(t_ls_cartocore_carto_open_map_file, "carto open: map file lock timeout"); return 1; }
     int result=select_map_locked(requested,persist);
     xSemaphoreGive(file_lock);
     if(!result) (void)recover_maps();
@@ -857,7 +864,7 @@ static int publish_locked(const char *part,const char *path,bool force,const cha
     }
     if(exists) unlink(backup);
     if(!stat(path,&st) && !carto_digest_write(path,&st,digest))
-        puts("carto: saved map; digest cache unavailable (VERIFY to retry)");
+        LS_PUTS(msg_ls_cartocore_carto_saved_map_digest, "carto: saved map; digest cache unavailable (VERIFY to retry)");
     result=0;
 done:
     return result;
@@ -901,7 +908,7 @@ static int publish_map(const char *part,const char *path,bool force,const char *
         xSemaphoreTake(view_lock,portMAX_DELAY);
         source_refreshing=false; centre_lat=lat; centre_lon=lon;
         xSemaphoreGive(view_lock);
-        if(failed) puts("carto: source reopen failed; MAP will retry saved selection");
+        if(failed) LS_PUTS(msg_ls_cartocore_carto_source_reopen_failed, "carto: source reopen failed; MAP will retry saved selection");
     }
     xSemaphoreGive(file_lock); xSemaphoreGive(command_lock);
     errno=publish_errno; return result;
@@ -909,6 +916,10 @@ unlock:
     xSemaphoreGive(view_lock); xSemaphoreGive(file_lock); xSemaphoreGive(command_lock);
     return -1;
 }
+/* From here to the end: the cells library worker (downloads, catalogs,
+   uploads), transfers, the SD bench and the console. Network and SD bound,
+   or run on a command; none of it draws a frame. */
+LS_COLD_BEGIN
 #include "ls_cells_worker.h"
 
 #ifndef LS_CARTOCORE_HOST
@@ -934,7 +945,7 @@ static int goto_view(double lat,double lon)
         result=redraw(shown,"goto");
         if (result) { shown->left=left; shown->top=top; centre_lat=oldlat; centre_lon=oldlon; }
     }
-    if (!result) { save_view(); printf("carto centre=%.7f,%.7f\n",lat,lon); }
+    if (!result) { save_view(); LS_PRINTF(t_ls_cartocore_carto_centre_7f_7f, "carto centre=%.7f,%.7f\n",lat,lon); }
     xSemaphoreGive(view_lock); return result;
 }
 
@@ -954,7 +965,7 @@ void ls_carto_transfer_snapshot(ls_carto_transfer *out) {
 void ls_carto_transfer_cancel(void) {
     atomic_store(&transfer_cancel,true);
     portENTER_CRITICAL(&transfer_mux);
-    snprintf(transfer.message,sizeof(transfer.message),"Stopping transfer...");
+    LS_SNPUTS(t_ls_cartocore_stopping_transfer, transfer.message, sizeof(transfer.message), "Stopping transfer...");
     portEXIT_CRITICAL(&transfer_mux);
 }
 static void transfer_begin(const char *file,uint64_t total) {
@@ -1021,7 +1032,7 @@ int ls_carto_verify(const ls_tile_region *r) {
     transfer_begin(r->file,r->local_bytes);
     transfer_stage("verify");
     portENTER_CRITICAL(&transfer_mux); transfer.verifying=true;
-    snprintf(transfer.message,sizeof(transfer.message),"Verifying SHA256; BACK to cancel");
+    LS_SNPUTS(t_ls_cartocore_verifying_sha256_back_to, transfer.message, sizeof(transfer.message), "Verifying SHA256; BACK to cancel");
     portEXIT_CRITICAL(&transfer_mux);
     char path[272],hex[65]; snprintf(path,sizeof(path),MAP_DIR "/%s",r->file);
     const char *why="Cannot verify SD file"; bool ok=false;
@@ -1069,9 +1080,9 @@ static bool fetch_wifi(void)
 {
     char ip[20]; ls_wifi_sta_ip(ip,sizeof(ip));
     if (!ls_wifi_sta_connected() || !ip[0]) {
-        puts("carto fetch: WiFi is not connected (station IP required)"); return false;
+        LS_PUTS(msg_ls_cartocore_carto_fetch_wifi_is, "carto fetch: WiFi is not connected (station IP required)"); return false;
     }
-    printf("carto fetch: board IP %s\n",ip); return true;
+    LS_PRINTF(t_ls_cartocore_carto_fetch_board_ip, "carto fetch: board IP %s\n",ip); return true;
 }
 static void fetch_worker(void *arg)
 {
@@ -1089,7 +1100,7 @@ static void fetch_worker(void *arg)
     uint64_t limit=TRANSFER_CAP;
     uint64_t bytes=0; int64_t start=esp_timer_get_time(),last_data=start,last_report=start;
     struct stat st;
-    printf("carto fetch: starting %s -> %s\n",j->url,j->path); fflush(stdout);
+    LS_PRINTF(t_ls_cartocore_carto_fetch_starting_s, "carto fetch: starting %s -> %s\n",j->url,j->path); fflush(stdout);
     transfer_stage("recovery");
     if(!recover_maps()) { why="Map lock timeout during recovery"; goto done; }
     if(atomic_load(&transfer_cancel)) { why="Cancelled before download"; goto done; }
@@ -1121,10 +1132,10 @@ static void fetch_worker(void *arg)
     int64_t length=esp_http_client_fetch_headers(client);
     int status=esp_http_client_get_status_code(client);
     if (status!=200 || (length<0 && !esp_http_client_is_chunked_response(client))) {
-        printf("carto fetch: HTTP status %d\n",status); why="HTTP headers/status rejected"; goto done;
+        LS_PRINTF(t_ls_cartocore_carto_fetch_http_status, "carto fetch: HTTP status %d\n",status); why="HTTP headers/status rejected"; goto done;
     }
     if(length>0 && ((uint64_t)length>limit || (j->expected && (uint64_t)length!=j->expected))) { why="HTTP length / catalog size rejected"; goto done; }
-    printf("carto fetch: length=%lld (0 means unknown)\n",(long long)length);
+    LS_PRINTF(t_ls_cartocore_carto_fetch_length_lld, "carto fetch: length=%lld (0 means unknown)\n",(long long)length);
     last_data=esp_timer_get_time();
     download_start=last_data;
     transfer_stage("download");
@@ -1157,7 +1168,7 @@ static void fetch_worker(void *arg)
         if (length>0 && bytes>(uint64_t)length) { why="HTTP length exceeded"; goto done; }
         int percent=length>0?(int)(bytes*100/(uint64_t)length):-1;
         if (now-last_report>=5000000) {
-            printf("carto fetch: %llu bytes",(unsigned long long)bytes);
+            LS_PRINTF(t_ls_cartocore_carto_fetch_llu_bytes, "carto fetch: %llu bytes",(unsigned long long)bytes);
             if (percent>=0) printf(" %d%%",percent);
             printf(" %.1f s\n",(now-start)/1e6); fflush(stdout);
             last_report=now;
@@ -1195,10 +1206,10 @@ done:
     transfer_end(success,why);
     double seconds=(esp_timer_get_time()-start)/1e6;
     char ip[20]; ls_wifi_sta_ip(ip,sizeof(ip));
-    printf("carto fetch: %s %s bytes=%llu seconds=%.3f MB/s=%.2f IP=%s\n",
+    LS_PRINTF(fmt_ls_cartocore_carto_fetch_bytes_seconds, "carto fetch: %s %s bytes=%llu seconds=%.3f MB/s=%.2f IP=%s\n",
            success?"saved":why,j->path,(unsigned long long)bytes,seconds,
            seconds>0?bytes/seconds/1e6:0.0,ip[0]?ip:"disconnected");
-    printf("carto fetch timing: setup=%.3f HTTP-read=%.3f (%u calls) SD-write=%.3f (%u calls) SHA=%.3f finish=%.3f s\n",
+    LS_PRINTF(fmt_ls_cartocore_carto_fetch_timing_setup, "carto fetch timing: setup=%.3f HTTP-read=%.3f (%u calls) SD-write=%.3f (%u calls) SHA=%.3f finish=%.3f s\n",
            download_start?(download_start-start)/1e6:seconds,read_us/1e6,read_calls,
            write_us/1e6,write_calls,hash_us/1e6,
            finish_start?(esp_timer_get_time()-finish_start)/1e6:0.0);
@@ -1230,7 +1241,7 @@ static int fetch_start_expected(int argc,char **argv,const char *sha,uint64_t ex
     for (const unsigned char *p=(const unsigned char *)name;*p;p++)
         if (!isalnum(*p) && *p!='.' && *p!='_' && *p!='-') goto bad;
     if (!fetch_wifi()) return 1;
-    if (atomic_exchange(&fetch_running,true)) { puts("carto fetch: download already running"); return 1; }
+    if (atomic_exchange(&fetch_running,true)) { LS_PUTS(t_ls_cartocore_carto_fetch_download_already, "carto fetch: download already running"); return 1; }
     fetch_job *j=heap_caps_calloc(1,sizeof(*j),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if (j) {
         strcpy(j->url,url); snprintf(j->path,sizeof(j->path),MAP_DIR "/%s",name); j->force=force; j->expected=expected;
@@ -1240,12 +1251,12 @@ static int fetch_start_expected(int argc,char **argv,const char *sha,uint64_t ex
          * Keep this larger stack out of scarce internal/DMA RAM. */
         if (xTaskCreateWithCaps(fetch_worker,"carto-fetch",24576,j,tskIDLE_PRIORITY+1,NULL,
                                 MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)==pdPASS) {
-            puts("carto fetch: queued; console remains available"); return 0;
+            LS_PUTS(msg_ls_cartocore_carto_fetch_queued_console, "carto fetch: queued; console remains available"); return 0;
         }
     }
-    free(j); atomic_store(&fetch_running,false); transfer_end(false,"Worker allocation failed"); puts("carto fetch: worker allocation failed"); return 1;
+    free(j); atomic_store(&fetch_running,false); transfer_end(false,LS_TEXT(t_ls_cartocore_worker_allocation_failed, "Worker allocation failed")); LS_PUTS(t_ls_cartocore_carto_fetch_worker_allocation, "carto fetch: worker allocation failed"); return 1;
 bad:
-    puts("carto fetch URL [NAME] [-f] (http:// or https://; NAME must be a plain filename)"); return 1;
+    LS_PUTS(msg_ls_cartocore_carto_fetch_url_name, "carto fetch URL [NAME] [-f] (http:// or https://; NAME must be a plain filename)"); return 1;
 }
 int ls_cartocore_fetch(const char *url,const char *name,const char *sha,uint64_t bytes) {
     char *args[]={"carto","fetch",(char *)url,(char *)name,"-f"};
@@ -1265,7 +1276,7 @@ static void worker(void *arg)
     else if (j->operation==1) j->result=select_map(j->path);
     else if (j->operation==5) {
         close_hidden(); j->result=0;
-        puts("carto hidden; SD source released; selection saved");
+        LS_PUTS(msg_ls_cartocore_carto_hidden_sd_source, "carto hidden; SD source released; selection saved");
     }
     else if (j->operation==2) j->result=map_directory(NULL,0);
     else if (j->operation==3) j->result=goto_view(j->lat,j->lon);
@@ -1284,7 +1295,7 @@ static void worker(void *arg)
             successes+=bench_one(j->cols,j->rows,j->z,j->mode,j->edges,j->n,ram,cache);
         j->result=successes?0:1;
     }
-    if(j->operation!=6)printf("carto worker stack unused=%u bytes\n",(unsigned)uxTaskGetStackHighWaterMark(NULL));
+    if(j->operation!=6)LS_PRINTF(t_ls_cartocore_carto_worker_stack_unused, "carto worker stack unused=%u bytes\n",(unsigned)uxTaskGetStackHighWaterMark(NULL));
     xSemaphoreGive(j->done);
     vTaskSuspend(NULL);
 }
@@ -1307,7 +1318,7 @@ typedef struct {
 } recv_job;
 static esp_err_t recv_reject(httpd_req_t *req,httpd_err_code_t code,const char *message)
 {
-    printf("carto recv: rejected: %s\n",message);
+    LS_PRINTF(t_ls_cartocore_carto_recv_rejected_s, "carto recv: rejected: %s\n",message);
     httpd_resp_set_hdr(req,"Connection","close");
     httpd_resp_send_err(req,code,message);
     return ESP_FAIL; /* Do not drain an untrusted body after rejecting its URI. */
@@ -1350,7 +1361,7 @@ static esp_err_t recv_asset(httpd_req_t *req,recv_job *j,const char *name) {
     char sha[65],offset_text[32];uint64_t offset=0;
     if(!cells_safe_asset(name) || !req->content_len || req->content_len>j->limit ||
        httpd_req_get_hdr_value_str(req,"X-Carto-SHA256",sha,sizeof(sha))!=ESP_OK)
-        return recv_reject(req,HTTPD_400_BAD_REQUEST,"Invalid asset or missing SHA256");
+        return recv_reject(req,HTTPD_400_BAD_REQUEST,LS_TEXT(t_ls_cartocore_invalid_asset_or_missing, "Invalid asset or missing SHA256"));
     if(esp_timer_get_time()>=j->deadline || atomic_load(&j->done))return recv_reject(req,HTTPD_408_REQ_TIMEOUT,"Receiver expired");
     if(xSemaphoreTake(command_lock,pdMS_TO_TICKS(1500))!=pdTRUE)return recv_reject(req,HTTPD_500_INTERNAL_SERVER_ERROR,"Map worker busy");
     if(upload.active) { xSemaphoreGive(command_lock);return recv_reject(req,HTTPD_500_INTERNAL_SERVER_ERROR,"Asset writer busy"); }
@@ -1419,21 +1430,21 @@ static esp_err_t recv_put(httpd_req_t *req)
         strcpy(params,query+1);
         esp_err_t auth=httpd_query_key_value(params,"code",supplied,sizeof(supplied));
         if(auth!=ESP_OK && auth!=ESP_ERR_NOT_FOUND)
-            return recv_reject(req,HTTPD_403_FORBIDDEN,"Invalid session code");
+            return recv_reject(req,HTTPD_403_FORBIDDEN,LS_TEXT(t_ls_cartocore_invalid_session_code, "Invalid session code"));
         force=httpd_query_key_value(params,"f",value,sizeof(value))==ESP_OK && !strcmp(value,"1");
     }
     if(!supplied[0]) {
         if(httpd_req_get_hdr_value_len(req,"X-Carto-Code")!=32 ||
            httpd_req_get_hdr_value_str(req,"X-Carto-Code",supplied,sizeof(supplied))!=ESP_OK)
-            return recv_reject(req,HTTPD_403_FORBIDDEN,"Session code missing or invalid");
+            return recv_reject(req,HTTPD_403_FORBIDDEN,LS_TEXT(t_ls_cartocore_session_code_missing_or, "Session code missing or invalid"));
     }
-    if(strcmp(supplied,j->code)) return recv_reject(req,HTTPD_403_FORBIDDEN,"Session code required");
+    if(strcmp(supplied,j->code)) return recv_reject(req,HTTPD_403_FORBIDDEN,LS_TEXT(t_ls_cartocore_session_code_required, "Session code required"));
     if(!recv_station_socket(req,j->ip))
-        return recv_reject(req,HTTPD_403_FORBIDDEN,"Station interface required");
+        return recv_reject(req,HTTPD_403_FORBIDDEN,LS_TEXT(t_ls_cartocore_station_interface_required, "Station interface required"));
     if(!strncmp(req->uri,"/maps/",6) && !query && (strchr(name,'/')))return recv_asset(req,j,name);
     if (strncmp(req->uri,"/maps/",6) || len<7 || len>=128 || name[0]=='.' ||
         memcmp(name+len-6,".ctile",6))
-        return recv_reject(req,HTTPD_400_BAD_REQUEST,"Expected /maps/NAME.ctile");
+        return recv_reject(req,HTTPD_400_BAD_REQUEST,LS_TEXT(t_ls_cartocore_expected_maps_name_ctile, "Expected /maps/NAME.ctile"));
     for (size_t i=0;i<len;i++) {
         unsigned char c=name[i];
         if (!((c>='A' && c<='Z') || (c>='a' && c<='z') ||
@@ -1441,7 +1452,7 @@ static esp_err_t recv_put(httpd_req_t *req)
             return recv_reject(req,HTTPD_400_BAD_REQUEST,"Invalid filename");
     }
     if (j->claimed || atomic_load(&j->done)) {
-        puts("carto recv: rejected: Receiver already used");
+        LS_PUTS(msg_ls_cartocore_carto_recv_rejected_receiver, "carto recv: rejected: Receiver already used");
         httpd_resp_set_status(req,"503 Service Unavailable");
         httpd_resp_set_hdr(req,"Connection","close");
         httpd_resp_sendstr(req,"Receiver already used");
@@ -1495,7 +1506,7 @@ static esp_err_t recv_put(httpd_req_t *req)
         bytes+=(size_t)n; transfer_progress(bytes,req->content_len);
         int percent=(int)((uint64_t)bytes*100/req->content_len);
         if (percent>=next_percent) {
-            printf("carto recv: %zu bytes %d%% %.1f s\n",bytes,percent,(esp_timer_get_time()-start)/1e6);
+            LS_PRINTF(t_ls_cartocore_carto_recv_zu_bytes, "carto recv: %zu bytes %d%% %.1f s\n",bytes,percent,(esp_timer_get_time()-start)/1e6);
             fflush(stdout); next_percent=(percent/10+1)*10;
         }
     }
@@ -1516,13 +1527,13 @@ done:
     if(own_part) unlink(part);
     transfer_end(success,why);
     double seconds=(esp_timer_get_time()-start)/1e6;
-    printf("carto recv: %s %s bytes=%zu seconds=%.3f MB/s=%.2f\n",
+    LS_PRINTF(fmt_ls_cartocore_carto_recv_bytes_seconds, "carto recv: %s %s bytes=%zu seconds=%.3f MB/s=%.2f\n",
            why,path,bytes,seconds,seconds>0?bytes/seconds/1e6:0.0);
     httpd_resp_set_status(req,status);
     httpd_resp_set_type(req,"text/plain");
     httpd_resp_set_hdr(req,"Connection","close");
     esp_err_t result=httpd_resp_sendstr(req,why);
-    printf("carto recv stack unused=%u bytes\n",(unsigned)uxTaskGetStackHighWaterMark(NULL));
+    LS_PRINTF(t_ls_cartocore_carto_recv_stack_unused, "carto recv stack unused=%u bytes\n",(unsigned)uxTaskGetStackHighWaterMark(NULL));
     atomic_store(&j->done,true);
     return success?result:ESP_FAIL; /* Close rejected/incomplete request bodies. */
 }
@@ -1531,15 +1542,15 @@ static void recv_supervisor(void *arg)
     recv_job *j=arg;
     while (!atomic_load(&j->done) && !atomic_load(&transfer_cancel) && esp_timer_get_time()<j->deadline)
         vTaskDelay(pdMS_TO_TICKS(100));
-    if (!atomic_load(&j->done)) puts("carto recv: receiver timeout; stopping");
+    if (!atomic_load(&j->done)) LS_PUTS(t_ls_cartocore_carto_recv_receiver_timeout, "carto recv: receiver timeout; stopping");
     while(httpd_stop(j->server)!=ESP_OK) {
-        puts("carto recv: stop failed; retaining handler context and retrying");
+        LS_PUTS(msg_ls_cartocore_carto_recv_stop_failed, "carto recv: stop failed; retaining handler context and retrying");
         vTaskDelay(pdMS_TO_TICKS(100));
     }
     if (!atomic_load(&j->done)) transfer_end(false,atomic_load(&transfer_cancel)?"Cancelled":"Receiver timeout"); /* Joins the handler before freeing its context. */
     heap_caps_free(j->buf);
     heaps("recv-after");
-    printf("carto recv heap delta internal=%ld DMA=%ld (after-before; supervisor still allocated)\n",
+    LS_PRINTF(fmt_ls_cartocore_carto_recv_heap_delta, "carto recv heap delta internal=%ld DMA=%ld (after-before; supervisor still allocated)\n",
            (long)internal_free()-(long)j->internal_before,(long)dma_free()-(long)j->dma_before);
     free(j); atomic_store(&fetch_running,false);
     vTaskDelete(NULL);
@@ -1549,12 +1560,12 @@ static int recv_start(int argc,char **argv)
     int port=8080,seconds=300;
     if (argc>4 || (argc>=3 && !number(argv[2],1,65535,&port)) ||
         (argc==4 && !number(argv[3],1,86400,&seconds))) {
-        puts("carto recv [PORT] [SECONDS] (defaults 8080, 300)"); return 1;
+        LS_PUTS(msg_ls_cartocore_carto_recv_port_seconds, "carto recv [PORT] [SECONDS] (defaults 8080, 300)"); return 1;
     }
     char ip[20]; ls_wifi_sta_ip(ip,sizeof(ip));
-    if (!ls_wifi_sta_connected() || !ip[0]) { puts("carto recv: WiFi is down (station IP required)"); return 1; }
+    if (!ls_wifi_sta_connected() || !ip[0]) { LS_PUTS(msg_ls_cartocore_carto_recv_wifi_is, "carto recv: WiFi is down (station IP required)"); return 1; }
     /* Share the download guard so these two SD writers cannot collide. */
-    if (atomic_exchange(&fetch_running,true)) { puts("carto recv: transfer already running"); return 1; }
+    if (atomic_exchange(&fetch_running,true)) { LS_PUTS(t_ls_cartocore_carto_recv_transfer_already, "carto recv: transfer already running"); return 1; }
     transfer_begin("Laptop push",0);
     transfer_stage("receiver start");
     portENTER_CRITICAL(&transfer_mux); transfer.receiving=true; transfer.port=port; portEXIT_CRITICAL(&transfer_mux);
@@ -1590,18 +1601,18 @@ static int recv_start(int argc,char **argv)
     err=httpd_register_uri_handler(j->server,&uri);
     if (err!=ESP_OK) goto fail;
     /* Print before starting the supervisor, which can finish and free j. */
-    printf("carto recv: board IP %s port=%d timeout=%d s stack=%s\n",ip,port,seconds,
+    LS_PRINTF(fmt_ls_cartocore_carto_recv_board_ip, "carto recv: board IP %s port=%d timeout=%d s stack=%s\n",ip,port,seconds,
            (cfg.task_caps&MALLOC_CAP_SPIRAM)?"PSRAM":"internal");
-    printf("curl --fail --upload-file FILE.ctile \"http://%s:%d/maps/FILE.ctile?code=%s\"\n",ip,port,j->code);
-    printf("carto recv: code=%s max=%llu bytes; append &f=1 to overwrite; one map PUT or multiple asset PUTs, 10s idle timeout\n",j->code,(unsigned long long)j->limit);
+    LS_PRINTF(fmt_ls_cartocore_curl_fail_upload_file, "curl --fail --upload-file FILE.ctile \"http://%s:%d/maps/FILE.ctile?code=%s\"\n",ip,port,j->code);
+    LS_PRINTF(fmt_ls_cartocore_carto_recv_code_max, "carto recv: code=%s max=%llu bytes; append &f=1 to overwrite; one map PUT or multiple asset PUTs, 10s idle timeout\n",j->code,(unsigned long long)j->limit);
     transfer_stage("waiting for upload");
     if (xTaskCreate(recv_supervisor,"carto-recv",3072,j,tskIDLE_PRIORITY+1,NULL)==pdPASS) return 0;
     err=ESP_ERR_NO_MEM;
 fail:
     if (j) { if (j->server) while(httpd_stop(j->server)!=ESP_OK) vTaskDelay(pdMS_TO_TICKS(100)); heap_caps_free(j->buf); free(j); }
     atomic_store(&fetch_running,false);
-    transfer_end(false,"Receiver start failed");
-    printf("carto recv: start failed: %s\n",esp_err_to_name(err)); heaps("recv-after"); return 1;
+    transfer_end(false,LS_TEXT(t_ls_cartocore_receiver_start_failed, "Receiver start failed"));
+    LS_PRINTF(t_ls_cartocore_carto_recv_start_failed, "carto recv: start failed: %s\n",esp_err_to_name(err)); heaps("recv-after"); return 1;
 }
 int ls_cartocore_command(int argc, char **argv)
 {
@@ -1616,7 +1627,7 @@ int ls_cartocore_command(int argc, char **argv)
             snprintf(path,sizeof(path),"%s",sd_map?sd_map->path:"none");
             const unsigned long us=(unsigned long)pix_render_us;
             xSemaphoreGive(view_lock);
-            printf("carto view z%u %.5f,%.5f %dx%d %s source=%s picture=%lu us\n",r.z,r.lat,r.lon,r.cols,r.rows,
+            LS_PRINTF(fmt_ls_cartocore_carto_view_z_source, "carto view z%u %.5f,%.5f %dx%d %s source=%s picture=%lu us\n",r.z,r.lat,r.lon,r.cols,r.rows,
                    r.pixels?"picture":r.braille?"braille":"quadrant",path,us);
         } else puts("carto view: busy");
         return 0;
@@ -1624,7 +1635,7 @@ int ls_cartocore_command(int argc, char **argv)
     if (argc==2 && !strcmp(argv[1],"pie")) {
         xSemaphoreTake(command_lock,portMAX_DELAY);
         int enabled=cc_arch_task_enable();
-        printf("carto pie: IDF task ownership %s\n",enabled?"enabled":"unavailable");
+        LS_PRINTF(t_ls_cartocore_carto_pie_idf_task, "carto pie: IDF task ownership %s\n",enabled?"enabled":"unavailable");
         int ok=cc_arch_selftest(stdout);
         cc_arch_bench(stdout);
         xSemaphoreGive(command_lock);
@@ -1634,7 +1645,7 @@ int ls_cartocore_command(int argc, char **argv)
         ls_carto_transfer t; ls_carto_transfer_snapshot(&t);
         static const char *states[]={"idle","running","saved","failed"};
         int64_t now=esp_timer_get_time();
-        printf("carto xfer: state=%s stage=%s bytes=%llu/%llu target=%s age=%.1fs stage_age=%.1fs writer=%d\nlast error: %s\n",
+        LS_PRINTF(fmt_ls_cartocore_carto_xfer_state_stage, "carto xfer: state=%s stage=%s bytes=%llu/%llu target=%s age=%.1fs stage_age=%.1fs writer=%d\nlast error: %s\n",
             t.state>=0 && t.state<=3?states[t.state]:"unknown",t.stage[0]?t.stage:"idle",
             (unsigned long long)t.bytes,(unsigned long long)t.total,t.file,
             t.start_us?(now-t.start_us)/1e6:0.0,t.stage_us?(now-t.stage_us)/1e6:0.0,
@@ -1694,46 +1705,51 @@ int ls_cartocore_command(int argc, char **argv)
     if (xTaskCreatePinnedToCoreWithCaps(worker,"carto",16384,&j,tskIDLE_PRIORITY+1,&task,
                                      xPortGetCoreID(),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)!=pdPASS) {
         vSemaphoreDelete(j.done); xSemaphoreGive(command_lock);
-        puts("carto: worker allocation failed"); return 1;
+        LS_PUTS(t_ls_cartocore_carto_worker_allocation_failed, "carto: worker allocation failed"); return 1;
     }
     xSemaphoreTake(j.done,portMAX_DELAY);
     vTaskSuspend(task);
     vTaskDeleteWithCaps(task);
     vSemaphoreDelete(j.done);
     if(j.operation!=6)heaps("command-after");
-    if(j.operation!=6)printf("carto command heap delta internal=%ld DMA=%ld (after-before; concurrent system activity may vary)\n",
+    if(j.operation!=6)LS_PRINTF(fmt_ls_cartocore_carto_command_heap_delta, "carto command heap delta internal=%ld DMA=%ld (after-before; concurrent system activity may vary)\n",
            (long)internal_free()-(long)before,(long)dma_free()-(long)dma_before);
     xSemaphoreGive(command_lock); return j.result;
 usage:
-    if(argc>=2 && !strcmp(argv[1],"show")) puts("carto show: invalid arguments; expected optional zoom 0..22");
-    puts("carto sdbench [MB] | carto pie | carto recv [PORT] [SECONDS] | carto fetch URL [NAME] [-f] | carto open [PATH|cells] | carto ls | carto tiles | carto xfer | carto goto LAT LON | carto bench [cols rows z braille|quadrant smooth|crisp N] | carto show [0..22] | carto pan DX DY | carto zoom 0..16 | carto hide");
+    if(argc>=2 && !strcmp(argv[1],"show")) LS_PUTS(msg_ls_cartocore_carto_show_invalid_arguments, "carto show: invalid arguments; expected optional zoom 0..22");
+    LS_PUTS(msg_ls_cartocore_carto_sdbench_mb_carto, "carto sdbench [MB] | carto pie | carto recv [PORT] [SECONDS] | carto fetch URL [NAME] [-f] | carto open [PATH|cells] | carto ls | carto tiles | carto xfer | carto goto LAT LON | carto bench [cols rows z braille|quadrant smooth|crisp N] | carto show [0..22] | carto pan DX DY | carto zoom 0..16 | carto hide");
     return 1;
 }
 void ls_cartocore_register_command(void)
 {
     if (view_lock) return; /* console-start retries must not leak a mutex */
     view_lock=xSemaphoreCreateMutex();
-    if (!view_lock) { puts("carto: view mutex unavailable"); return; }
+    if (!view_lock) { LS_PUTS(t_ls_cartocore_carto_view_mutex_unavailable, "carto: view mutex unavailable"); return; }
     command_lock=xSemaphoreCreateMutex();
-    if (!command_lock) { vSemaphoreDelete(view_lock); view_lock=NULL; puts("carto: command mutex unavailable"); return; }
+    if (!command_lock) { vSemaphoreDelete(view_lock); view_lock=NULL; LS_PUTS(t_ls_cartocore_carto_command_mutex_unavailable, "carto: command mutex unavailable"); return; }
     file_lock=xSemaphoreCreateMutex();
     if(!file_lock) { vSemaphoreDelete(command_lock); command_lock=NULL; vSemaphoreDelete(view_lock); view_lock=NULL; return; }
     TaskHandle_t idle=NULL;
     cc_yield_hook=carto_yield;
-    if(xTaskCreatePinnedToCoreWithCaps(cache_idle,"carto-idle",16384,NULL,tskIDLE_PRIORITY,&idle,
+    /* One above idle, like the "carto" command worker. At idle priority it
+       shared IDLE0's ready list, and IDF's best-effort round robin (the list
+       index moves for both cores) can pass IDLE0 over for seconds while it
+       works: the task watchdog fired on dense cells. Above it, IDLE0 runs
+       whenever the worker sleeps: every turn, and every 50 ms (carto_yield). */
+    if(xTaskCreatePinnedToCoreWithCaps(cache_idle,"carto-idle",16384,NULL,tskIDLE_PRIORITY+1,&idle,
                                      xPortGetCoreID(),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)!=pdPASS) {
         vSemaphoreDelete(file_lock); file_lock=NULL;
         vSemaphoreDelete(command_lock); command_lock=NULL;
-        vSemaphoreDelete(view_lock); view_lock=NULL; puts("carto: idle worker allocation failed"); return;
+        vSemaphoreDelete(view_lock); view_lock=NULL; LS_PUTS(t_ls_cartocore_carto_idle_worker_allocation, "carto: idle worker allocation failed"); return;
     }
-    const esp_console_cmd_t command={.command="carto",.help="SD CartoCore bench and quadrant display",
-                                   .hint="sdbench|pie|tiles|xfer|recv|fetch|open|ls|goto|bench|show|pan|zoom|hide",.func=ls_cartocore_command};
+    const esp_console_cmd_t command={.command="carto",.help=LS_TXT(con_ls_cartocore_carto_help, "SD CartoCore bench and quadrant display"),
+                                   .hint=LS_TXT(con_ls_cartocore_carto_hint, "sdbench|pie|tiles|xfer|recv|fetch|open|ls|goto|bench|show|pan|zoom|hide"),.func=ls_cartocore_command};
     esp_err_t err=esp_console_cmd_register(&command);
     if (err!=ESP_OK) {
         vTaskDeleteWithCaps(idle); vSemaphoreDelete(view_lock); view_lock=NULL;
         vSemaphoreDelete(file_lock); file_lock=NULL;
         vSemaphoreDelete(command_lock); command_lock=NULL;
-        printf("carto: command registration failed: %s\n",esp_err_to_name(err));
+        LS_PRINTF(t_ls_cartocore_carto_command_registration_failed, "carto: command registration failed: %s\n",esp_err_to_name(err));
     }
 }
 
@@ -1757,7 +1773,7 @@ static void lssim_carto_boundary_test(void) {
     assert(!ls_carto_map_draw(&sf,area,lat,lon,z,false,true));
     ls_carto_map_leave();assert(!sd_map && !shown && !view);
     carto_host_worker=true;
-    puts("PASS: busy view lock, asynchronous request and cancelled startup are RAM-only");
+    LS_PUTS(msg_ls_cartocore_pass_busy_view_lock, "PASS: busy view lock, asynchronous request and cancelled startup are RAM-only");
 }
 static void lssim_carto_console_test(void) {
     tui_surface *sf=ls_tui_surface();size_t bytes=(size_t)sf->w*sf->h*sizeof(tui_cell);
@@ -1785,7 +1801,7 @@ static void lssim_carto_console_test(void) {
     ls_carto_hw_status(false);ls_carto_hw_status(true);
     assert(carto_hw.cold==shown->arena.used && carto_hw.decoded==shown->decoded.used);
     free(previous);ls_cartocore_dismiss();cache_step();
-    puts("PASS: carto show zoom/pan, busy render/publication locks and poisoned failed frame retain complete cells");
+    LS_PUTS(msg_ls_cartocore_pass_carto_show_zoom, "PASS: carto show zoom/pan, busy render/publication locks and poisoned failed frame retain complete cells");
 }
 bool lssim_carto_frame_info(tui_rect *area,unsigned *z,unsigned *generation,bool *fresh) {
     *area=ui_map_area;*z=frames[frame_front].z;*generation=frames[frame_front].generation;
@@ -1819,12 +1835,12 @@ void lssim_cartocore_pump(void) {
             assert(show(14) && !shown && !atomic_load(&view_active));
             assert(!bench_one(20,10,14,CC_QUADRANT,CC_EDGES_SMOOTH,1,true,false));
             assert(!sd_map && !shown);
-            puts("PASS: no-map console and missing SD bench fixture");
+            LS_PUTS(msg_ls_cartocore_pass_no_map_console, "PASS: no-map console and missing SD bench fixture");
         }
         if(getenv("LSSIM_CARTO_SD_BENCH_TEST")) {
             assert(bench_one(20,10,14,CC_QUADRANT,CC_EDGES_SMOOTH,1,true,false));
             assert(sd_map && strstr(sd_map->path,"franklin_mini.ctile"));
-            puts("PASS: bench loads SD fixture without embedded map");
+            LS_PUTS(msg_ls_cartocore_pass_bench_loads_sd, "PASS: bench loads SD fixture without embedded map");
         }
     }
     static bool console_tested;
@@ -1842,9 +1858,10 @@ void lssim_cartocore_pump(void) {
     bool wanted=atomic_load(&map_wanted);
     cache_step();
     if(owned_last_turn && !wanted && !atomic_load(&view_active)) {
-        assert(!sd_map && !shown && !view);puts("PASS: MAP leave released source and arenas on worker");
+        assert(!sd_map && !shown && !view);LS_PUTS(msg_ls_cartocore_pass_map_leave_released, "PASS: MAP leave released source and arenas on worker");
     }
     owned_last_turn=wanted;
     carto_host_worker=false;
 }
 #endif
+LS_COLD_END

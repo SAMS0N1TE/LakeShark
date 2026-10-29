@@ -29,6 +29,7 @@
 #include "ls_lora.h"
 #include "ls_radio_select.h"
 #include "radio/radio_endpoint.h"
+#include "ls_textpack.h"
 
 #define FRESH_US     1500000
 #define SDR_OFFSET   200000        /* tune beside the target, away from DC */
@@ -232,7 +233,7 @@ const char *ls_dfs_conflict(int slot, ls_dfs_t src)
     if (hardware(src) == 0) snprintf(why, sizeof(why), "shares the %s with", ls_rsel_name(LS_RSEL_LORA));
     else snprintf(why, sizeof(why), "%s", WHY[hardware(src)]);
     EXT_RAM_BSS_ATTR static char line[80];
-    snprintf(line, sizeof(line), "%s %s the other slot's %s", ls_dfs_name(src), why, ls_dfs_name(other));
+    LS_SNPRINTF(t_ls_df_sources_s_s_the_other, line, sizeof(line), "%s %s the other slot's %s", ls_dfs_name(src), why, ls_dfs_name(other));
     return line;
 }
 
@@ -424,7 +425,7 @@ int ls_dfs_target_count(void)
 
 static void addr_text(const uint8_t a[6], char *out, size_t cap)
 {
-    snprintf(out, cap, "%02X:%02X:%02X:%02X:%02X:%02X", a[5], a[4], a[3], a[2], a[1], a[0]);
+    LS_SNPRINTF(t_ls_df_sources_02x_02x_02x_02x, out, cap, "%02X:%02X:%02X:%02X:%02X:%02X", a[5], a[4], a[3], a[2], a[1], a[0]);
 }
 
 bool ls_dfs_target_label(int i, char *label, size_t lcap, char *detail, size_t dcap)
@@ -517,7 +518,7 @@ static void step_lora(int k, const slot_t *c, bool retune)
         ls_field_mode(LS_LAB_PACKETS);
         ls_field_direct(true);
         w[k].tuned_hz = 0;
-        status(k, "Taking the LoRa radio from Mesh");
+        status(k, LS_TEXT(t_ls_df_sources_taking_the_lora_radio, "Taking the LoRa radio from Mesh"));
     }
     const uint32_t want = c->freq[w[k].cur];
     if (w[k].tuned_hz != want) {
@@ -597,7 +598,7 @@ static void step_sdr(int k, const slot_t *c, bool hackrf, bool retune)
     s_hackrf = hackrf;
     const uint32_t rate = hackrf ? 2000000 : 1024000;
     const uint32_t first = c->freq[w[k].cur];
-    if (!first) { status(k, "Set a frequency to measure"); return; }
+    if (!first) { status(k, LS_TEXT(t_ls_df_sources_set_a_frequency_to, "Set a frequency to measure")); return; }
     if (!s_session) {
         const uint64_t centre = first - SDR_OFFSET;
         ls_radio_requirements_t req = { .required_caps = LS_RADIO_RX_IQ_U8,
@@ -611,10 +612,10 @@ static void step_sdr(int k, const slot_t *c, bool hackrf, bool retune)
             const char *app = borrowed_value(&level, &f);
             if (app && f == first) {
                 publish(k, w[k].cur, f, level, "dB", 0);
-                char line[96]; snprintf(line, sizeof(line), "%s has the SDR: following its level at %.4f MHz", app, f / 1e6);
+                char line[96]; LS_SNPRINTF(t_ls_df_sources_s_has_the_sdr, line, sizeof(line), "%s has the SDR: following its level at %.4f MHz", app, f / 1e6);
                 status(k, line);
             } else {
-                char line[96]; snprintf(line, sizeof(line), "SDR busy (%s); close the app using it", ls_radio_err_name(err));
+                char line[96]; LS_SNPRINTF(t_ls_df_sources_sdr_busy_s_close, line, sizeof(line), "SDR busy (%s); close the app using it", ls_radio_err_name(err));
                 status(k, line);
             }
             return;
@@ -623,7 +624,7 @@ static void step_sdr(int k, const slot_t *c, bool hackrf, bool retune)
         ls_radio_iq_config_t cfg = { .center_hz = centre, .sample_rate_hz = rate, .bandwidth_hz = rate,
             .gain_mode = LS_RADIO_GAIN_MANUAL, .gain_tenths_db = s_sdr_gain }, actual;
         if (ls_radio_iq_configure(s_session, &cfg, &actual) != LS_RADIO_OK || ls_radio_iq_start(s_session) != LS_RADIO_OK) {
-            status(k, "The SDR would not tune there"); sdr_close(); return;
+            status(k, LS_TEXT(t_ls_df_sources_the_sdr_would_not, "The SDR would not tune there")); sdr_close(); return;
         }
         s_streaming = true; s_sdr_centre = centre;
         s_sdr_gain = actual.gain_tenths_db > 0 ? actual.gain_tenths_db : s_sdr_gain;
@@ -631,15 +632,15 @@ static void step_sdr(int k, const slot_t *c, bool hackrf, bool retune)
         s_sdr_flush = 2;                   /* the tuner settles after a start */
         w[k].dwell_until = esp_timer_get_time() + (int64_t)c->dwell_ms * 1000;
         if (!s_iq) s_iq = heap_caps_malloc(2 * SDR_PAIRS, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        status(k, "Measuring the channel");
+        status(k, LS_TEXT(t_ls_df_sources_measuring_the_channel, "Measuring the channel"));
     }
-    if (!s_iq) { status(k, "No memory for samples"); return; }
+    if (!s_iq) { status(k, LS_TEXT(t_ls_df_sources_no_memory_for_samples, "No memory for samples")); return; }
     size_t got = 0, n = 0;
     while (got < 2 * SDR_PAIRS) {
         if (ls_radio_iq_read(s_session, s_iq + got, 2 * SDR_PAIRS - got, 100, &n) != LS_RADIO_OK || !n) break;
         got += n;
     }
-    if (got < 2 * SDR_PAIRS) { status(k, "The SDR stopped delivering samples"); sdr_close(); return; }
+    if (got < 2 * SDR_PAIRS) { status(k, LS_TEXT(t_ls_df_sources_the_sdr_stopped_delivering, "The SDR stopped delivering samples")); sdr_close(); return; }
     /* Samples queued before a change belong to the old centre or gain. */
     if (s_sdr_flush > 0) { s_sdr_flush--; return; }
     /* A rail-to-rail sample says the front end is overloaded, and near
@@ -678,9 +679,9 @@ static void step_sdr(int k, const slot_t *c, bool hackrf, bool retune)
         s_sdr_gain_us = now;
     }
     char line[96];
-    if (overload && s_sdr_gain == 0) snprintf(line, sizeof(line), "OVERLOADED at 0 dB gain: step away or use a smaller antenna");
-    else if (c->nch > 1) snprintf(line, sizeof(line), "%d of %d channels per capture, gain %.1f dB", measured, c->nch, s_sdr_gain / 10.0);
-    else snprintf(line, sizeof(line), "Channel level, 25 kHz wide, gain %.1f dB", s_sdr_gain / 10.0);
+    if (overload && s_sdr_gain == 0) LS_SNPUTS(t_ls_df_sources_overloaded_at_0_db, line, sizeof(line), "OVERLOADED at 0 dB gain: step away or use a smaller antenna");
+    else if (c->nch > 1) LS_SNPRINTF(t_ls_df_sources_d_of_d_channels, line, sizeof(line), "%d of %d channels per capture, gain %.1f dB", measured, c->nch, s_sdr_gain / 10.0);
+    else LS_SNPRINTF(t_ls_df_sources_channel_level_25_khz, line, sizeof(line), "Channel level, 25 kHz wide, gain %.1f dB", s_sdr_gain / 10.0);
     status(k, line);
     /* The rest of the list needs another centre: go there after a dwell. */
     if (measured < c->nch && now >= w[k].dwell_until) {
@@ -749,8 +750,8 @@ static void step_wifi(int k, const char *ssid, bool targeted)
     if (!targeted) {
         if (s_wsnap.wifi_connected && s_wsnap.wifi_signal && s_wsnap.now_ms != w[k].wifi_ms) {
             w[k].wifi_ms = s_wsnap.now_ms; publish(k, 0, 0, (float)s_wsnap.wifi_rssi, "dBm", 0);
-            status(k, "The network this board is joined to");
-        } else if (!s_wsnap.wifi_connected) status(k, "Pick a network: not joined to one");
+            status(k, LS_TEXT(t_ls_df_sources_the_network_this_board, "The network this board is joined to"));
+        } else if (!s_wsnap.wifi_connected) status(k, LS_TEXT(t_ls_df_sources_pick_a_network_not, "Pick a network: not joined to one"));
         return;
     }
     const int64_t now = esp_timer_get_time();
@@ -762,10 +763,10 @@ static void step_wifi(int k, const char *ssid, bool targeted)
     for (int i = 0; i < s_wsnap.ap_count; i++)
         if (!strcmp(s_wsnap.aps[i].ssid, ssid)) {
             publish(k, 0, 0, (float)s_wsnap.aps[i].rssi, "dBm", 0);
-            status(k, "One level per scan, about every 3 s: turn slowly");
+            status(k, LS_TEXT(t_ls_df_sources_one_level_per_scan, "One level per scan, about every 3 s: turn slowly"));
             return;
         }
-    status(k, "Network not in the last scan");
+    status(k, LS_TEXT(t_ls_df_sources_network_not_in_the, "Network not in the last scan"));
 }
 
 static void step_wifi_address(int k,const uint8_t address[6]) {
@@ -773,20 +774,20 @@ static void step_wifi_address(int k,const uint8_t address[6]) {
     const int64_t now=esp_timer_get_time();
     ls_wireless_get(&s_wsnap);
     if(now-s_wifi_scan_us>WIFI_SCAN_US) {
-        if(s_wsnap.busy) status(k,"Wi-Fi busy / waiting to scan");
+        if(s_wsnap.busy) status(k,LS_TEXT(t_ls_df_sources_wi_fi_busy_waiting, "Wi-Fi busy / waiting to scan"));
         else {
             s_wifi_scan_us=now;
             status(k,ls_wireless_request(LS_WIRELESS_SCAN,NULL,NULL)?"Wi-Fi scan requested / turn slowly":"Wi-Fi scan unavailable / retrying");
         }
     }
     int64_t seen=0;int n=ls_wifi_scan_cached(aps,64,&seen);
-    if(n<0) {status(k,"Wi-Fi cache busy / waiting");return;}
+    if(n<0) {status(k,LS_TEXT(t_ls_df_sources_wi_fi_cache_busy, "Wi-Fi cache busy / waiting"));return;}
     if(seen==w[k].wifi_address_us || now-seen>5000000) return;
     w[k].wifi_address_us=seen;
     for(int i=0;i<n;i++) if(!memcmp(aps[i].bssid,address,6)) {
-        publish_at(k,0,0,aps[i].rssi,"dBm",0,seen);status(k,"SWEEP BSSID: one level per scan");return;
+        publish_at(k,0,0,aps[i].rssi,"dBm",0,seen);status(k,LS_TEXT(t_ls_df_sources_sweep_bssid_one_level, "SWEEP BSSID: one level per scan"));return;
     }
-    status(k,"SWEEP address not in last scan");
+    status(k,LS_TEXT(t_ls_df_sources_sweep_address_not_in, "SWEEP address not in last scan"));
 }
 
 static void step_ble(int k, const uint8_t *addr, bool targeted)
@@ -795,15 +796,15 @@ static void step_ble(int k, const uint8_t *addr, bool targeted)
     if (!targeted) {
         if (s_wsnap.bt_ready && s_wsnap.bt_signal && s_wsnap.now_ms != w[k].wifi_ms) {
             w[k].wifi_ms = s_wsnap.now_ms; publish(k, 0, 0, (float)s_wsnap.bt_rssi, "dBm", 0);
-            status(k, "The connected Bluetooth peer");
-        } else status(k, "Pick a device heard advertising");
+            status(k, LS_TEXT(t_ls_df_sources_the_connected_bluetooth_peer, "The connected Bluetooth peer"));
+        } else status(k, LS_TEXT(t_ls_df_sources_pick_a_device_heard, "Pick a device heard advertising"));
         return;
     }
     ls_ble_heard_t d;
     if (ls_ble_heard_find(addr, &d) && d.adverts != w[k].heard && esp_timer_get_time() - d.last_us < FRESH_US) {
         w[k].heard = d.adverts;
         publish(k, 0, 0, (float)d.rssi, "dBm", 0);
-        status(k, "One level per advert heard");
+        status(k, LS_TEXT(t_ls_df_sources_one_level_per_advert, "One level per advert heard"));
     }
 }
 
@@ -832,7 +833,7 @@ static void step_band(int k, const slot_t *c, bool retune)
         ls_dfb_reset(&band, lo, hi);
         w[k].heard = 0;
         char line[96];
-        snprintf(line, sizeof(line), "Learning %.3f-%.3f MHz: what is always there", lo / 1e6, hi / 1e6);
+        LS_SNPRINTF(t_ls_df_sources_learning_3f_3f_mhz, line, sizeof(line), "Learning %.3f-%.3f MHz: what is always there", lo / 1e6, hi / 1e6);
         status(k, line);
         lock(); memset(&s_band_pub, 0, sizeof(s_band_pub)); s_band_pub.lo_hz = lo; s_band_pub.hi_hz = hi; unlock();
     }
@@ -854,8 +855,8 @@ static void step_band(int k, const slot_t *c, bool retune)
     }
     unlock();
     char line[96];
-    if (band.passes <= LS_DFB_WARM) snprintf(line, sizeof(line), "Learning the band: pass %lu of %d", (unsigned long)band.passes, LS_DFB_WARM);
-    else snprintf(line, sizeof(line), "%d emitter%s on %.3f-%.3f MHz, floor %.0f dBm", live, live == 1 ? "" : "s",
+    if (band.passes <= LS_DFB_WARM) LS_SNPRINTF(t_ls_df_sources_learning_the_band_pass, line, sizeof(line), "Learning the band: pass %lu of %d", (unsigned long)band.passes, LS_DFB_WARM);
+    else LS_SNPRINTF(t_ls_df_sources_d_emitter_s_on, line, sizeof(line), "%d emitter%s on %.3f-%.3f MHz, floor %.0f dBm", live, live == 1 ? "" : "s",
                   lo / 1e6, hi / 1e6, band.floor);
     status(k, line);
 }
@@ -886,8 +887,8 @@ static void step_drone(int k,uint64_t id)
     if(ls_drone_watch_read(id,&e) && e.last_us!=w[k].det_us && now>=e.last_us && now-e.last_us<FRESH_US) {
         w[k].det_us=e.last_us;
         publish_at(k,0,e.centre_hz,e.rssi_dbm,e.calibrated?"dBm":"dB",0,e.last_us);
-        status(k,"Drone Watch measured level; turn slowly between revisits");
-    } else status(k,"Waiting for this Drone Watch entry to be revisited");
+        status(k,LS_TEXT(t_ls_df_sources_drone_watch_measured_level, "Drone Watch measured level; turn slowly between revisits"));
+    } else status(k,LS_TEXT(t_ls_df_sources_waiting_for_this_drone, "Waiting for this Drone Watch entry to be revisited"));
 }
 
 void ls_dfs_step(void)

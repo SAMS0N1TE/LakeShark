@@ -22,6 +22,12 @@ typedef struct {
     bool last_retune_fast;
     unsigned retune_count;
     unsigned recover_count;
+    const char *diagnostic_endpoint;
+    bool diagnostic_pending_unknown;
+    ls_radio_iq_transport_t transport;
+    ls_radio_session_t *diagnostic_session;
+    bool retune_during_read,epoch_during_read;
+    unsigned read_calls,epoch_change_on_read;
 } fake_radio_t;
 
 static const ls_radio_range_t s_iq_freq[] = {{24000000, 1766000000}};
@@ -36,6 +42,7 @@ static void fake_init(fake_radio_t *fake)
     memset(fake, 0, sizeof(*fake));
     pthread_mutex_init(&fake->lock, NULL);
     pthread_cond_init(&fake->changed, NULL);
+    fake->transport=(ls_radio_iq_transport_t){.known=true,.fifo_reset_known=true,.epoch=1};
 }
 
 static void fake_destroy(fake_radio_t *fake)
@@ -92,6 +99,13 @@ static ls_radio_err_t fake_read(void *ctx, void *dst, size_t bytes,
     bool cancelled = fake->cancelled;
     pthread_mutex_unlock(&fake->lock);
     if (cancelled) return LS_RADIO_ERR_STOPPED;
+    if(fake->retune_during_read){
+        uint64_t actual;
+        LS_EQ_INT(ls_radio_iq_retune(fake->diagnostic_session,101000000,false,&actual),LS_RADIO_OK);
+    }
+    ++fake->read_calls;
+    if(fake->epoch_during_read || fake->read_calls==fake->epoch_change_on_read)
+        ++fake->transport.epoch;
     size_t amount = bytes < 4 ? bytes : 4;
     memset(dst, 0x80, amount);
     *read_bytes = amount;
@@ -102,6 +116,12 @@ static ls_radio_err_t fake_retune(void *ctx, uint64_t requested, bool fast,
                                   uint64_t *actual)
 {
     fake_radio_t *fake = ctx;
+    if (fake->diagnostic_endpoint) {
+        ls_radio_endpoint_info_t info;
+        fake->diagnostic_pending_unknown =
+            ls_radio_endpoint_get(fake->diagnostic_endpoint,&info) == LS_RADIO_OK &&
+            !info.diagnostic_context_known;
+    }
     if (fake->tune_error != LS_RADIO_OK) return fake->tune_error;
     fake->last_retune_fast = fast;
     ++fake->retune_count;
@@ -174,11 +194,15 @@ static ls_radio_err_t fake_get_health(void *ctx, ls_radio_iq_health_t *out)
     return LS_RADIO_OK;
 }
 
+static bool fake_transport(void *ctx,ls_radio_iq_transport_t *out)
+{*out=((fake_radio_t*)ctx)->transport;return out->known;}
+
 static const ls_radio_driver_ops_t s_fake_ops = {
     .iq_configure = fake_configure,
     .iq_set_gain = fake_gain,
     .iq_start = fake_start,
     .iq_read = fake_read,
+    .iq_transport_status=fake_transport,
     .iq_retune = fake_retune,
     .iq_stop = fake_stop,
     .packet_rx_configure = fake_packet_configure,
@@ -248,6 +272,97 @@ static void configure_and_start(ls_radio_session_t *session)
     LS_EQ_UINT(actual.bandwidth_hz, 2000000);
     LS_EQ_INT(ls_radio_iq_start(session), LS_RADIO_OK);
     LS_EQ_INT(ls_radio_iq_start(session), LS_RADIO_ERR_BUSY);
+}
+
+LS_CASE(diagnostic_epochs_detect_hidden_controls_failures_restarts_and_slot_reuse)
+{
+    const char *id="test.iq.epochs";
+    fake_radio_t fake; fake_init(&fake); fake.diagnostic_endpoint=id;
+    LS_EQ_INT(register_iq(id,&fake),LS_RADIO_OK);
+    ls_radio_requirements_t req=iq_requirements(2000000); req.preferred_endpoint_id=id;
+    ls_radio_session_t *session=NULL;
+    LS_EQ_INT(ls_radio_acquire("diag",&req,&session),LS_RADIO_OK);
+    configure_and_start(session);
+    ls_radio_endpoint_info_t a,b;
+    LS_EQ_INT(ls_radio_endpoint_get(id,&a),LS_RADIO_OK);
+    LS_CHECK(a.diagnostic_context_known && a.diagnostic_counter_known);
+    uint64_t hz=0;
+    LS_EQ_INT(ls_radio_iq_retune(session,100000000,false,&hz),LS_RADIO_OK);
+    LS_CHECK(fake.diagnostic_pending_unknown);
+    LS_EQ_INT(ls_radio_iq_retune(session,a.actual_iq.center_hz,false,&hz),LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_endpoint_get(id,&b),LS_RADIO_OK);
+    LS_CHECK(b.diagnostic_context_epoch>a.diagnostic_context_epoch);
+    LS_EQ_UINT(b.actual_iq.center_hz,a.actual_iq.center_hz);
+    LS_EQ_UINT(b.diagnostic_counter_epoch,a.diagnostic_counter_epoch);
+    a=b; fake.tune_error=LS_RADIO_ERR_IO;
+    LS_EQ_INT(ls_radio_iq_retune(session,101000000,false,&hz),LS_RADIO_ERR_IO);
+    LS_EQ_INT(ls_radio_endpoint_get(id,&b),LS_RADIO_OK);
+    LS_CHECK(b.diagnostic_context_known);
+    LS_CHECK(b.diagnostic_context_epoch>a.diagnostic_context_epoch);
+    a=b; fake.tune_error=LS_RADIO_OK;
+    LS_EQ_INT(ls_radio_iq_stop(session),LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_iq_start(session),LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_endpoint_get(id,&b),LS_RADIO_OK);
+    LS_CHECK(b.diagnostic_context_epoch>a.diagnostic_context_epoch);
+    LS_EQ_UINT(b.diagnostic_counter_epoch,a.diagnostic_counter_epoch);
+    a=b;
+    uint8_t bytes[4]; size_t got=0;
+    LS_EQ_INT(ls_radio_iq_read(session,bytes,sizeof(bytes),0,&got),LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_endpoint_get(id,&b),LS_RADIO_OK);
+    LS_EQ_UINT(b.diagnostic_context_epoch,a.diagnostic_context_epoch);
+    LS_EQ_UINT(b.bytes_read,a.bytes_read+4);
+    ls_radio_release(session);
+    LS_EQ_INT(ls_radio_endpoint_get(id,&b),LS_RADIO_OK);
+    LS_CHECK(b.diagnostic_context_epoch>a.diagnostic_context_epoch);
+    LS_EQ_INT(ls_radio_endpoint_unregister(id),LS_RADIO_OK);
+    LS_EQ_INT(register_iq(id,&fake),LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_endpoint_get(id,&b),LS_RADIO_OK);
+    LS_CHECK(b.diagnostic_counter_epoch>a.diagnostic_counter_epoch);
+    LS_CHECK(b.diagnostic_context_epoch>a.diagnostic_context_epoch);
+    LS_EQ_UINT(b.bytes_read,0); LS_CHECK(b.diagnostic_counter_known);
+    LS_EQ_INT(ls_radio_endpoint_unregister(id),LS_RADIO_OK);
+    fake_destroy(&fake);
+}
+
+static bool observed_active(void){return true;}
+static int64_t s_observed_now;
+static int64_t observed_now(void){s_observed_now+=1000;return s_observed_now;}
+
+LS_CASE(observed_reads_and_post_dsp_checks_reject_context_or_transport_changes)
+{
+    fake_radio_t fake;fake_init(&fake);
+    const char *id="test.iq.observed";
+    LS_EQ_INT(register_iq(id,&fake),LS_RADIO_OK);
+    ls_radio_requirements_t req=iq_requirements(2000000);req.preferred_endpoint_id=id;
+    ls_radio_session_t *session=NULL;LS_EQ_INT(ls_radio_acquire("fm",&req,&session),LS_RADIO_OK);
+    fake.diagnostic_session=session;configure_and_start(session);
+    uint8_t bytes[4];size_t got=0;ls_radio_iq_read_receipt_t r;
+    LS_EQ_INT(ls_radio_iq_read_observed(session,bytes,sizeof(bytes),0,&got,&r),LS_RADIO_OK);
+    LS_CHECK(r.known && r.transport.fifo_reset_known);
+    LS_EQ_UINT(r.configured_center_hz,1090000000);LS_EQ_UINT(r.nominal_rate_hz,2000000);
+    LS_CHECK(ls_radio_iq_receipt_current(session,&r));
+    int gain;LS_EQ_INT(ls_radio_iq_set_gain(session,LS_RADIO_GAIN_MANUAL,200,&gain),LS_RADIO_OK);
+    LS_CHECK(!ls_radio_iq_receipt_current(session,&r));
+    fake.retune_during_read=true;
+    LS_EQ_INT(ls_radio_iq_read_observed(session,bytes,sizeof(bytes),0,&got,&r),LS_RADIO_OK);
+    LS_CHECK(!r.known);fake.retune_during_read=false;
+    fake.epoch_during_read=true;
+    LS_EQ_INT(ls_radio_iq_read_observed(session,bytes,sizeof(bytes),0,&got,&r),LS_RADIO_OK);
+    LS_CHECK(!r.known);fake.epoch_during_read=false;
+    LS_EQ_INT(ls_radio_iq_read_observed(session,bytes,sizeof(bytes),0,&got,&r),LS_RADIO_OK);
+    LS_CHECK(r.known);++fake.transport.epoch;
+    LS_CHECK(!ls_radio_iq_receipt_current(session,&r));
+    fake.transport.known=false;
+    LS_EQ_INT(ls_radio_iq_read_observed(session,bytes,sizeof(bytes),0,&got,&r),LS_RADIO_OK);
+    LS_CHECK(!r.known);
+    fake.transport.known=true;fake.read_calls=0;fake.epoch_change_on_read=2;
+    uint8_t assembled[8];s_observed_now=0;
+    LS_EQ_INT(fm_receive_block_observed(session,assembled,sizeof(assembled),observed_active,observed_now,&r),LS_RADIO_OK);
+    LS_CHECK(!r.known); /* two successful parts, different epoch: reject whole block */
+    fake.epoch_change_on_read=0;s_observed_now=0;
+    LS_EQ_INT(fm_receive_block_observed(session,assembled,sizeof(assembled),observed_active,observed_now,&r),LS_RADIO_OK);
+    LS_CHECK(r.known);
+    ls_radio_release(session);LS_EQ_INT(ls_radio_endpoint_unregister(id),LS_RADIO_OK);fake_destroy(&fake);
 }
 
 LS_CASE(capability_and_constraint_selection)

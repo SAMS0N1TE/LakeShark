@@ -1,7 +1,8 @@
-/* The arithmetic the RF experiments share: finding bursts in a stream of
-   RSSI readings and timing them, and the band survey's bookkeeping. Pure:
-   no radio, no clock, no locks; every time is handed in, so the bench can
-   drive all of it with made-up series. */
+/* BAND SURVEY's arithmetic: the plan of chunks a radio can sweep and each
+   chunk's bookkeeping. Pure: no radio, no clock, no locks; every time is
+   handed in, so the bench can drive all of it with made-up series. The
+   burst timing BURST SCOPE and IRIDIUM BURSTS used is in their SD apps
+   (app-sdk/apps/burst/burst_det.h). */
 
 #ifndef EXP_RF_H
 #define EXP_RF_H
@@ -14,104 +15,8 @@
 extern "C" {
 #endif
 
-/* ----------------------------------------------------------- bursts -- */
-
-/* One burst: when it rose above the floor, how long it stayed, how strong. */
-typedef struct {
-    int64_t  start_us;
-    uint32_t len_us;
-    float    peak_dbm;
-    float    floor_dbm;   /* the floor it was measured against */
-    bool     cut;         /* a hole in the readings ended it, not the signal */
-} exp_burst_t;
-
-/* The detector. Quiet readings set the noise: its average (the floor) and
-   its spread, the average distance of a reading from that average. A burst
-   opens on two readings in a row over the floor by `thresh_db` or by four
-   spreads, whichever is more - single readings in a wide filter swing by
-   ten dB on noise alone - and one under that by less than `hyst_db` keeps
-   it open. While a burst is open the noise estimate stands still. */
-typedef struct {
-    float   thresh_db;
-    float   hyst_db;
-    int64_t max_gap_us;  /* a gap in the readings longer than this ends an open burst */
-    int64_t max_len_us;  /* a level held longer than this is the new floor, not a burst */
-    float   floor_dbm;
-    float   spread_db;   /* mean absolute deviation of quiet readings */
-    int     pending;     /* readings in a row over the threshold, not yet a burst */
-    int64_t pending_us;
-    float   pending_peak;
-    bool    seeded, open;
-    int64_t start_us, last_above_us, last_us;
-    float   peak_dbm;
-    float   dt_us;       /* the usual spacing of the readings */
-} exp_burst_det_t;
-
-/* 3 dB of hysteresis, a 5 ms gap and a 2 s level by default. */
-void exp_burst_det_init(exp_burst_det_t *d, float thresh_db);
-/* One reading. True, with the burst in *out, when one ended: at most one a
-   call. A burst that ends for want of readings is marked cut. */
-bool exp_burst_det_feed(exp_burst_det_t *d, int64_t t_us, float dbm, exp_burst_t *out);
-/* End an open burst now, at its last reading over the floor, as cut: for a
-   listener that is about to look somewhere else. */
-bool exp_burst_det_flush(exp_burst_det_t *d, exp_burst_t *out);
-
-/* The last EXP_BURST_RING bursts and totals over all of them. */
-#define EXP_BURST_RING 64
-typedef struct {
-    exp_burst_t ring[EXP_BURST_RING];
-    int      n, head;          /* head: where the next one goes */
-    uint32_t count;
-    float    peak_dbm;
-} exp_burst_log_t;
-
-void exp_burst_log_reset(exp_burst_log_t *l);
-void exp_burst_log_add(exp_burst_log_t *l, const exp_burst_t *b);
-/* k = 0 is the newest; NULL past the oldest kept. */
-const exp_burst_t *exp_burst_log_at(const exp_burst_log_t *l, int k);
-
-/* The rhythm of the bursts kept: the commonest start-to-start interval, to
-   within 5 % (and 0.2 ms), and how many intervals are a whole multiple of
-   it, one to eight, which is what a periodic sender with missed bursts
-   looks like. */
-typedef struct {
-    int      intervals;     /* start-to-start intervals between kept bursts */
-    uint32_t mode_us;       /* 0 with fewer than two intervals */
-    int      mode_hits;     /* intervals within tolerance of the mode */
-    int      period_hits;   /* within tolerance of 1..8 times it */
-    uint32_t median_len_us;
-} exp_burst_rhythm_t;
-void exp_burst_rhythm(const exp_burst_log_t *l, exp_burst_rhythm_t *out);
-
-/* Log-spaced histogram buckets for display. Lengths: under 0.1, 0.3, 1, 3,
-   10, 30, 100 ms, and over. Intervals: under 1, 3, 10, 30, 100, 300 ms, 1,
-   3 s, and over. */
-#define EXP_LEN_BUCKETS 8
-#define EXP_GAP_BUCKETS 9
-int  exp_len_bucket(uint32_t us);
-int  exp_gap_bucket(uint32_t us);
-extern const char *const EXP_LEN_LABEL[EXP_LEN_BUCKETS];
-extern const char *const EXP_GAP_LABEL[EXP_GAP_BUCKETS];
-/* Both histograms over the bursts kept. */
-void exp_burst_hist(const exp_burst_log_t *l, uint32_t len[EXP_LEN_BUCKETS],
-                    uint32_t gap[EXP_GAP_BUCKETS]);
-
-/* A strip of `cells` characters for the last `span_us` before `now_us`:
-   '#' where a kept burst covers any of the cell, '.' where nothing did, and
-   ' ' before `since_us`, when nothing was listening. Terminated; `out`
-   holds cells + 1. */
-void exp_burst_strip(const exp_burst_log_t *l, int64_t now_us, int64_t span_us,
-                     int64_t since_us, char *out, int cells);
-
-/* "12.3ms", "840us", "1.25s": a duration in six characters or fewer. */
-void exp_fmt_us(uint32_t us, char *out, size_t n);
 /* "4:07" up to 99 minutes, "3h12" after. */
 void exp_fmt_clock(uint32_t s, char *out, size_t n);
-
-/* How long after a retune a reading through a `bw_hz` filter is worth
-   having: the sweep's measured 300 us at 500 kHz, longer as the filter
-   narrows, never shorter. */
-uint32_t exp_settle_us(uint32_t bw_hz);
 
 /* ------------------------------------------------------- band survey -- */
 

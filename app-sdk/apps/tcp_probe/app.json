@@ -1,0 +1,4 @@
+{
+  "category": "tools",
+  "description": "API 1.3 outbound TCP example. Requests network permission, uses the Wi-Fi already joined in LINK, sends an HTTP request and shows whether it worked."
+}

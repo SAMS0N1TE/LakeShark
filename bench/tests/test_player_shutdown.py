@@ -91,31 +91,53 @@ int main(){
 #define atomic_load(p) (p)->load()
 using esp_err_t=int;
 constexpr int ESP_OK=0;
-static std::atomic<bool> s_mic_run{true},s_mic_busy{true};
+static std::atomic<bool> s_mic_run{true},s_mic_busy{true},s_generate{true};
 static void *s_mic_task=(void*)1,*s_mic_stack=(void*)2,*s_mic_tcb=(void*)3,*s_mic_buf=(void*)4;
 static bool s_up=true;
 static void *s_list=(void*)5;
+static void *s_overview=(void*)6,*s_marks=(void*)7,*s_analysis=(void*)8,*s_tools=(void*)9,*s_generator=(void*)10;
 static const char *s_error;
 static int delays,finish_after,closes,frees,deletes,decoder_deletes,releases,spectra,lists;
+static int overview_frees,marks_frees,analysis_frees,tools_frees,generator_frees,decoder_result;
+static bool overview_busy;
 static void mic_close_file(){++closes;}
 static void vTaskDelay(int){if(++delays==finish_after){mic_close_file();s_mic_busy=false;}}
 static void vTaskDelete(void*){if(s_mic_busy)abort();++deletes;}
 static void heap_caps_free(void *p){if(p)++frees;}
-static int audio_player_delete(){++decoder_deletes;return 0;}
+static int audio_player_delete(){++decoder_deletes;return decoder_result;}
 static void audio_out_media_release(){++releases;}
 static void spectrum_close(){++spectra;}
 static void ls_media_playlist_close(void*){++lists;}
 static void music_heap_checkpoint(const char*,int){}
+static bool ls_audio_overview_free(void *p){if(s_mic_busy)abort();if(p && overview_busy)return false;if(p)++overview_frees;return true;}
+static void ls_music_marks_free(void *p){if(s_up || s_mic_busy || s_overview)abort();if(p)++marks_frees;}
+static void ls_audio_analysis_free(void *p){if(s_up || s_mic_busy || s_overview)abort();if(p)++analysis_frees;}
+static void ls_audio_tools_free(void *p){if(s_up || s_mic_busy || s_overview)abort();if(p)++tools_frees;}
+static void ls_audio_generator_free(void *p){if(s_up || s_mic_busy)abort();if(p)++generator_frees;}
 """ + body('void ls_music_mic_stop(void)') + body('static void mic_release(void)') + body('void ls_music_close(void)') + r"""
 #define CHECK(x) do{if(!(x)){fprintf(stderr,"line%d: %s\n",__LINE__,#x);return 2;}}while(0)
 int main(){
  ls_music_close();
  CHECK(!s_mic_run && s_mic_busy && closes==0 && frees==0 && deletes==0);
  CHECK(s_up && releases==0 && spectra==0 && decoder_deletes==0 && lists==0);
- delays=0;finish_after=2;ls_music_close();
+ CHECK(s_generate && overview_frees==0 && marks_frees==0 && analysis_frees==0 && tools_frees==0 && generator_frees==0);
+ /* The overview worker can also refuse shutdown; retain every dependent resource. */
+ delays=0;finish_after=2;overview_busy=true;ls_music_close();
  CHECK(!s_mic_busy && !s_mic_task && !s_mic_buf && frees==3 && deletes==1);
- CHECK(!s_up && releases==1 && spectra==1 && decoder_deletes==1 && lists==1);
- puts("microphone timeout retains file, buffers, spectrum and lease until worker completion");
+ CHECK(!s_generate && s_up && s_overview && overview_frees==0 && decoder_deletes==0);
+ CHECK(releases==0 && spectra==0 && lists==0 && marks_frees==0 && analysis_frees==0 && tools_frees==0 && generator_frees==0);
+ /* Once analysis stops, a decoder timeout must still retain PCM consumers and lease. */
+ overview_busy=false;decoder_result=-1;ls_music_close();
+ CHECK(!s_overview && overview_frees==1 && decoder_deletes==1 && s_up);
+ CHECK(releases==0 && spectra==0 && lists==0 && marks_frees==0 && analysis_frees==0 && tools_frees==0 && generator_frees==0);
+ decoder_result=0;ls_music_close();
+ CHECK(!s_up && releases==1 && spectra==1 && decoder_deletes==2 && lists==1);
+ CHECK(!s_list && !s_marks && !s_analysis && !s_tools && !s_generator);
+ CHECK(overview_frees==1 && marks_frees==1 && analysis_frees==1 && tools_frees==1 && generator_frees==1);
+ ls_music_close();
+ CHECK(frees==3 && deletes==1 && decoder_deletes==2 && releases==1 && spectra==1);
+ CHECK(overview_frees==1 && marks_frees==1 && analysis_frees==1 && tools_frees==1 && generator_frees==1);
+ puts("microphone, overview and decoder timeouts retain dependent resources; retry frees each resource once");
 }
 """
         with tempfile.TemporaryDirectory() as directory:

@@ -10,6 +10,7 @@
 #include "ls_board_hw.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "driver/gpio.h"
@@ -266,6 +267,54 @@ unsigned ls_lora_hw_unguarded(void) { return __atomic_load_n(&s_unguarded, __ATO
 
 static bool s_capture_fast;
 static uint32_t s_capture_clock_pending;
+static uint32_t s_capture_hz = 26666666u;
+#if defined(ESP_PLATFORM) && CONFIG_IDF_TARGET_ESP32P4
+static uint8_t *s_capture_tx, *s_capture_rx;
+#endif
+uint32_t ls_lora_hw_capture_hz(void) { return s_capture_hz; }
+/* DMA FIFO reads by default: 62-byte register chunks cost about 0.7 us a
+   byte, so narrow FM at 500 kB/s kept core 0 near 70% busy and any other
+   load overflowed the 2 ms FIFO. `lora lrdma off` goes back to registers. */
+static bool s_capture_dma = true;
+void ls_lora_hw_capture_set_dma(bool dma) { s_capture_dma = dma; }
+bool IRAM_ATTR ls_lora_hw_capture_dma(void) { return s_capture_dma; }
+
+/* lr2021-sdr radio.c: aligned internal buffers avoid P4 DMA bounce copies.
+   Taken once when the radio's SPI device is added, before any app has used
+   up internal RAM, and kept for good: asked for at each capture start, 2 KiB
+   of DMA-capable RAM failed every P25 retune with NO_MEM. Without them
+   capture_fifo_transmit reads by CPU registers, so a capture never fails for
+   want of them; ls_lora_hw_capture_dma_ready() says which is in effect. */
+static void capture_dma_reserve(void)
+{
+#if defined(ESP_PLATFORM) && CONFIG_IDF_TARGET_ESP32P4
+    if (s_capture_tx && s_capture_rx) return;
+    free(s_capture_tx); free(s_capture_rx);
+    s_capture_tx = spi_bus_dma_memory_alloc(SPI2_HOST, 1024, 0);
+    s_capture_rx = spi_bus_dma_memory_alloc(SPI2_HOST, 1024, 0);
+    if (!s_capture_tx || !s_capture_rx) {
+        free(s_capture_tx); free(s_capture_rx);
+        s_capture_tx = s_capture_rx = NULL;
+        ESP_LOGW(TAG, "no DMA buffers for I/Q capture: FIFO reads by CPU registers");
+    }
+#endif
+}
+bool ls_lora_hw_capture_dma_ready(void)
+{
+#if defined(ESP_PLATFORM) && CONFIG_IDF_TARGET_ESP32P4
+    return s_capture_dma && s_capture_tx && s_capture_rx;
+#else
+    return false;
+#endif
+}
+esp_err_t ls_lora_hw_capture_set_hz(uint32_t hz)
+{
+    if (!ls_lora_hw_locked_by_me() || s_capture_fast) return ESP_ERR_INVALID_STATE;
+    if (hz != 16000000u && hz != 26666666u) return ESP_ERR_INVALID_ARG;
+    s_capture_hz = hz;
+    return ESP_OK;
+}
+
 esp_err_t ls_lora_hw_capture_fast(bool enable)
 {
     if (!ls_lora_hw_locked_by_me()) return ESP_ERR_INVALID_STATE;
@@ -276,22 +325,29 @@ esp_err_t ls_lora_hw_capture_fast(bool enable)
 #endif
     if (enable) {
         if (s_capture_fast) return ESP_ERR_INVALID_STATE;
+#if defined(ESP_PLATFORM) && CONFIG_IDF_TARGET_ESP32P4
+        if (s_capture_dma) capture_dma_reserve();   /* a retry if boot had no room */
+#endif
         const esp_err_t err = spi_device_acquire_bus(s_dev, portMAX_DELAY);
-        if (err != ESP_OK) return err;
+        if (err != ESP_OK) {
+            return err;
+        }
 #if defined(ESP_PLATFORM) && CONFIG_IDF_TARGET_ESP32P4
         /* Let IDF select this device, clock source, CS and timing once. No
            buffers/data phases: setup_priv_desc cannot enter DMA cache sync.
            The acquired bus excludes the ISR and every other device until exit. */
-        spi_transaction_t prime = { .override_freq_hz = 16000000u };
+        spi_transaction_t prime = { .override_freq_hz = s_capture_hz };
         esp_err_t prime_err = spi_device_polling_transmit(s_dev, &prime);
         if (prime_err != ESP_OK) {
             spi_device_release_bus(s_dev);
             return prime_err;
         }
 #endif
-    } else if (s_capture_fast) spi_device_release_bus(s_dev);
+    } else if (s_capture_fast) {
+        spi_device_release_bus(s_dev);
+    }
     s_capture_fast = enable;
-    s_capture_clock_pending = enable ? 16000000u : 2000000u;
+    s_capture_clock_pending = enable ? s_capture_hz : 2000000u;
     return ESP_OK;
 }
 
@@ -302,6 +358,10 @@ bool IRAM_ATTR ls_lora_hw_capture_active(void) { return s_capture_fast; }
 #if defined(ESP_PLATFORM) && CONFIG_IDF_TARGET_ESP32P4
 #include "ls_lora_spi_cpu.h"
 #endif
+
+#include "ls_lora_spi_capture.h"
+esp_err_t IRAM_ATTR ls_lora_hw_capture_frame(uint8_t *io, size_t n)
+{ return capture_fifo_transmit(io, n); }
 
 esp_err_t IRAM_ATTR ls_lora_hw_transmit(spi_transaction_t *t)
 {
@@ -358,6 +418,14 @@ static void tx_route_settle(void);
 #endif
 static const ls_lora_ops_t *s_ops = LS_LORA_OPS_UNBOUND;
 static ls_lora_chip_t s_chip = LS_LORA_CHIP_NONE;
+/* The part that answered this boot, kept through ls_lora_stop() and a park.
+   The mesh parks the radio when it stops or fails to start, and a parked
+   LR2021 is still the board's radio: P25 and the RADIO picker read this, and
+   the first session that wants the part starts it again. Forgotten only when
+   a start finds nothing in the socket. */
+static ls_lora_chip_t s_fitted = LS_LORA_CHIP_NONE;
+static const char *s_fitted_name = "none";
+static uint32_t s_fitted_caps;
 
 static void tx_route_settle(void)
 {
@@ -375,7 +443,7 @@ spi_device_handle_t IRAM_ATTR ls_lora_hw_dev(void) { return s_dev; }
 uint8_t * IRAM_ATTR ls_lora_hw_pkt(void) { return s_pkt; }
 /* The command lock protects the descriptor, inline DMA storage and packet
    buffer, including copyback. Callers may have external-RAM stacks. */
-static DRAM_ATTR spi_transaction_t s_transfer __attribute__((aligned(4)));
+static spi_transaction_t s_transfer __attribute__((aligned(4)));
 
 esp_err_t IRAM_ATTR ls_lora_hw_transfer_bytes(const uint8_t *tx, uint8_t *rx, size_t n)
 {
@@ -517,6 +585,13 @@ esp_err_t ls_lora_hw_reset(void)
     return err;
 }
 
+static void note_fitted(void)
+{
+    s_fitted = s_chip;
+    s_fitted_name = ls_lora_chip_name();
+    s_fitted_caps = s_ops->caps();
+}
+
 /* Which part answered, binding its backend. NOT_FOUND when none did; the
    caller resets and asks again before believing that. `last` says whether
    this is the final look, so that only it logs as an error. */
@@ -540,6 +615,7 @@ static esp_err_t identify_locked(bool last)
             s_ops = &ls_lora_lr20xx_ops;
             s_chip = LS_LORA_CHIP_LR20XX;
             s_present = true;
+            note_fitted();
             ESP_LOGI(TAG, "%s up: FW %u.%u, stat 0x%04X (chip mode %u)",
                      ls_lora_chip_name(), (unsigned)info.fw_major,
                      (unsigned)info.fw_minor, (unsigned)info.stat,
@@ -595,6 +671,7 @@ static esp_err_t identify_locked(bool last)
     s_ops = &ls_lora_sx126x_ops;
     s_chip = LS_LORA_CHIP_SX126X;
     s_present = true;
+    note_fitted();
     ESP_LOGI(TAG, "SX1262 up: status 0x%02X (mode %u, cmd %u)",
              st, (unsigned)((st >> 4) & 7), (unsigned)((st >> 1) & 7));
     return ESP_OK;
@@ -684,6 +761,7 @@ static esp_err_t start_locked(void)
         err = ls_spi_device(LS_SPI_RADIO, s_cs_pin, 0,
                             2 * 1000 * 1000, 1, &s_dev);
         if (err != ESP_OK) return err;
+        capture_dma_reserve();
     }
 
     /* ls_board_hw parks the radio in reset at boot, deliberately. Releasing
@@ -709,11 +787,24 @@ static esp_err_t start_locked(void)
             vTaskDelay(pdMS_TO_TICKS(20));
         }
         err = reset_part_locked(START_SETTLE_MS[attempt]);
-        if (err != ESP_OK) return err;      /* BUSY never fell: nothing to look at */
+        if (err != ESP_OK) break;           /* BUSY never fell: nothing to look at */
         err = identify_locked(last);
-        if (err != ESP_ERR_NOT_FOUND) return err;
+        if (err != ESP_ERR_NOT_FOUND) break;
+    }
+    if (err == ESP_ERR_TIMEOUT || err == ESP_ERR_NOT_FOUND || err == ESP_ERR_NOT_SUPPORTED) {
+        /* Nothing answered: the socket is empty now, whatever it held. */
+        s_fitted = LS_LORA_CHIP_NONE;
+        s_fitted_name = "none";
+        s_fitted_caps = 0;
     }
     return err;
+}
+
+/* A part parked since it answered is started again for whoever wants it
+   now. Lock held. */
+static bool bound_locked(void)
+{
+    return s_present || (s_fitted != LS_LORA_CHIP_NONE && start_locked() == ESP_OK);
 }
 
 /* The reset pulse, the identification and the bind are one sequence: held
@@ -762,6 +853,9 @@ void ls_lora_tx_cancel_request(void)
 }
 
 ls_lora_chip_t ls_lora_chip(void) { return s_chip; }
+ls_lora_chip_t ls_lora_fitted(void) { return s_fitted; }
+const char *ls_lora_fitted_name(void) { return s_fitted_name; }
+uint32_t ls_lora_fitted_caps(void) { return s_fitted_caps; }
 
 const char *ls_lora_chip_name(void)
 {
@@ -848,7 +942,7 @@ esp_err_t ls_lora_rssi_inst(float *dbm) { LOCKED_RET(esp_err_t, s_ops->rssi_inst
 uint32_t ls_lora_airtime_ms(int len) { return s_ops->airtime_ms(len); }
 
 esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg)
-{ LOCKED_RET(esp_err_t, s_ops->fsk_begin(cfg)); }
+{ LOCKED_RET(esp_err_t, bound_locked() ? s_ops->fsk_begin(cfg) : ESP_ERR_NOT_SUPPORTED); }
 int ls_lora_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm)
 { LOCKED_RET(int, s_ops->fsk_poll(buf, size, rssi_dbm)); }
 esp_err_t ls_lora_fsk_send(const uint8_t *data, size_t len)
@@ -887,7 +981,7 @@ esp_err_t ls_lora_scan_begin(uint32_t min_hz, uint32_t max_hz)
     TaskHandle_t me = xTaskGetCurrentTaskHandle();
     esp_err_t err = ESP_ERR_INVALID_STATE;
     if (!s_scan_owner || s_scan_owner == me) {
-        err = s_ops->scan_begin(min_hz, max_hz);
+        err = bound_locked() ? s_ops->scan_begin(min_hz, max_hz) : ESP_ERR_NOT_SUPPORTED;
         if (err == ESP_OK) s_scan_owner = me;
         else if (!s_ops->scanning()) s_scan_owner = NULL;
     }
@@ -930,7 +1024,7 @@ void ls_lora_scan_profile(ls_lora_scan_prof_t *out) { s_ops->scan_profile(out); 
 esp_err_t ls_lora_modes_begin(uint32_t freq_hz, int gain_step)
 {
     ls_lora_hw_lock();
-    const esp_err_t e = (!s_present || !s_ops->modes_begin) ? ESP_ERR_NOT_SUPPORTED
+    const esp_err_t e = (!bound_locked() || !s_ops->modes_begin) ? ESP_ERR_NOT_SUPPORTED
                                                             : s_ops->modes_begin(freq_hz, gain_step);
     ls_lora_hw_unlock();
     return e;
@@ -1015,7 +1109,7 @@ esp_err_t ls_lora_modes_read_threshold(int *raw)
 esp_err_t ls_lora_ook_begin(const ls_ook_cfg_t *cfg)
 {
     ls_lora_hw_lock();
-    const esp_err_t e = (!s_present || !s_ops->ook_begin) ? ESP_ERR_NOT_SUPPORTED : s_ops->ook_begin(cfg);
+    const esp_err_t e = (!bound_locked() || !s_ops->ook_begin) ? ESP_ERR_NOT_SUPPORTED : s_ops->ook_begin(cfg);
     ls_lora_hw_unlock();
     return e;
 }
@@ -1072,6 +1166,9 @@ bool      ls_lora_present(void) { return false; }
 ls_lora_chip_t ls_lora_chip(void) { return LS_LORA_CHIP_NONE; }
 const char *ls_lora_chip_name(void) { return "none"; }
 uint32_t  ls_lora_caps(void) { return 0; }
+ls_lora_chip_t ls_lora_fitted(void) { return LS_LORA_CHIP_NONE; }
+const char *ls_lora_fitted_name(void) { return "none"; }
+uint32_t  ls_lora_fitted_caps(void) { return 0; }
 esp_err_t ls_lora_status(uint8_t *out) { (void)out; return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_lora_read_reg(uint16_t a, uint8_t *b, size_t l)
 { (void)a; (void)b; (void)l; return ESP_ERR_NOT_SUPPORTED; }

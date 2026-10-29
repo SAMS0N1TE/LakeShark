@@ -30,8 +30,10 @@ def run(source, extra=()):
         src = pathlib.Path(tmp) / 'cell.c'
         exe = pathlib.Path(tmp) / 'cell.exe'
         src.write_text(source)
-        dirs = [CELL, ROOT/'components/lakeshark/board', ROOT/'components/lakeshark/radio', ROOT/'bench/shims']
+        dirs = [CELL, ROOT/'components/lakeshark/board', ROOT/'components/lakeshark/radio', ROOT/'bench/shims',
+                ROOT/'components/ls_textpack/include']
         subprocess.run([compiler, '-std=gnu11', '-Wall', '-Werror', *['-I'+str(p) for p in dirs],
+                        '-include', 'ls_textpack.h',
                         str(src), *map(str, extra), '-lm', '-o', str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 
@@ -165,7 +167,8 @@ uint32_t esp_rom_crc32_le(uint32_t crc,const uint8_t *p,uint32_t n);
 """)
             (pathlib.Path(tmp)/'esp_rom_crc.h').write_text('')
             dirs = [pathlib.Path(tmp), CELL, ROOT/'components/lakeshark/board',
-                    ROOT/'components/lakeshark/radio', ROOT/'components/lakeshark/dsp', ROOT/'bench/shims']
+                    ROOT/'components/lakeshark/radio', ROOT/'components/lakeshark/dsp', ROOT/'bench/shims',
+                    ROOT/'components/ls_textpack/include']
             for src in [CELL/'cell_iq.c', ROOT/'components/lakeshark/dsp/ls_sweep.c']:
                 subprocess.run([compiler,'-std=gnu11','-Werror=implicit-function-declaration',
                     *['-I'+str(p) for p in dirs], '-include',str(prelude),'-fsyntax-only',str(src)],check=True)

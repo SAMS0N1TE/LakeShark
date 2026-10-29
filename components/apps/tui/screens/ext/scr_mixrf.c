@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 static int button_focus=-1, button_slot;
 extern const ls_tui_screen_t ls_scr_nfc;
@@ -80,9 +81,9 @@ static void radio_chosen(ls_rsel_radio_t r)
 static void cards_open(void)
 {
     ls_mixrf_snapshot(&state);
-    if(!state.nfc || state.busy){snprintf(feedback,sizeof(feedback),"NFC reader unavailable; use PROBE");return;}
+    if(!state.nfc || state.busy){LS_SNPUTS(t_scr_mixrf_nfc_reader_unavailable_use, feedback, sizeof(feedback), "NFC reader unavailable; use PROBE");return;}
     card_suite=true;ls_scr_nfc.enter();
-    snprintf(hint,sizeof(hint),"I scan  R read  A/B keys  S save  J mark  Esc back");
+    LS_SNPUTS(t_scr_mixrf_i_scan_r_read, hint, sizeof(hint), "I scan  R read  A/B keys  S save  J mark  Esc back");
 }
 static void nfc_mode(int i)
 {
@@ -100,32 +101,32 @@ static void action(int i)
         else {ls_mixrf_snapshot(&state);snprintf(feedback,sizeof(feedback),"%s",ls_mixrf_cc_refusal(&state));}}
     else if(i==2) {cards_open();}
     else if(i==3 && view_nfc && state.card_scanning) {
-        char text[192];snprintf(text,sizeof(text),"NFC-A detector: %s, last ATQA %04X; %lu polls, %lu valid responses. Card UID and sectors not read.",state.card_present?"card present":"no current response",state.card_atqa,(unsigned long)state.card_polls,(unsigned long)state.card_hits);
-        bool ok=ls_field_mark_radio("NFC card observation",text,LS_FIELD_NFC,13560000,0);
+        char text[192];LS_SNPRINTF(t_scr_mixrf_nfc_a_detector_s, text,sizeof(text),"NFC-A detector: %s, last ATQA %04X; %lu polls, %lu valid responses. Card UID and sectors not read.",state.card_present?"card present":"no current response",state.card_atqa,(unsigned long)state.card_polls,(unsigned long)state.card_hits);
+        bool ok=ls_field_mark_radio(LS_TEXT(t_scr_mixrf_nfc_card_observation, "NFC card observation"),text,LS_FIELD_NFC,13560000,0);
         snprintf(feedback,sizeof(feedback),"%s",ok?"Note queued; check Journal save status":"Journal busy");
     } else if(i==3 && view_nfc) {
-        char text[128];snprintf(text,sizeof(text),"Passive NFC field %s; %lu sampled arrivals.",state.nfc_field?"present":"absent",(unsigned long)state.nfc_events);
-        bool ok=ls_field_mark_radio("NFC field observation",text,LS_FIELD_NFC,13560000,0);
+        char text[128];LS_SNPRINTF(t_scr_mixrf_passive_nfc_field_s, text,sizeof(text),"Passive NFC field %s; %lu sampled arrivals.",state.nfc_field?"present":"absent",(unsigned long)state.nfc_events);
+        bool ok=ls_field_mark_radio(LS_TEXT(t_scr_mixrf_nfc_field_observation, "NFC field observation"),text,LS_FIELD_NFC,13560000,0);
         snprintf(feedback,sizeof(feedback),"%s",ok?"Note queued; check Journal save status":"Journal busy");
     } else if(i==3 && view_24 && state.sweeps) {
         unsigned peak=0;
         for(unsigned n=1;n<LS_MIXRF_CHANNELS;n++)if(state.occupancy[n]>state.occupancy[peak])peak=n;
-        char text[192];snprintf(text,sizeof(text),"2.4 GHz energy survey: %lu sweeps, %lu threshold hits. "
+        char text[192];LS_SNPRINTF(t_scr_mixrf_2_4_ghz_energy, text,sizeof(text),"2.4 GHz energy survey: %lu sweeps, %lu threshold hits. "
             "Highest recent activity at %u MHz: %u%% of smoothed samples. RPD threshold about -64 dBm; no packets decoded.",
             (unsigned long)state.sweeps,(unsigned long)state.energy_hits,2400+peak,state.occupancy[peak]*100/255);
         bool ok=ls_field_mark_radio("2.4 GHz observation",text,LS_FIELD_NRF24,2400000000u+peak*1000000u,0);
         snprintf(feedback,sizeof(feedback),"%s",ok?"Note queued; check Journal save status":"Journal busy");
     } else if(i==3 && state.receiving) {
-        char text[160];snprintf(text,sizeof(text),"CC1101 channel energy at %.4f MHz: approximately %.1f dBm. "
+        char text[160];LS_SNPRINTF(t_scr_mixrf_cc1101_channel_energy_at, text,sizeof(text),"CC1101 channel energy at %.4f MHz: approximately %.1f dBm. "
             "Receiver estimate, not calibrated; no packet decoded.",state.frequency/1e6,state.rssi);
         bool ok=ls_field_mark_radio("CC1101 observation",text,LS_FIELD_CC1101,state.frequency,0);
         snprintf(feedback,sizeof(feedback),"%s",ok?"Note queued; check Journal save status":"Journal busy");
     } else if(i==4) {bool on=!scan_enabled;if(ls_mixrf_scan(on)){scan_enabled=on;view_24=true;view_nfc=false;}
         else {ls_mixrf_snapshot(&state);snprintf(feedback,sizeof(feedback),state.scan_owner!=LS_MIXRF_OWNER_NONE?"nRF24 in use by %s":"nRF24 unavailable",ls_mixrf_owner_name(state.scan_owner));}}
     else if(i==5){ls_rsel_radio_t r=view_nfc?LS_RSEL_CC1101:view_24?LS_RSEL_NFC:LS_RSEL_NRF24;radio_chosen(r);ls_rsel_set(LS_RSEL_MIXRF,r);}
-    else if(i==6){ls_picker_open("NFC OBSERVATION MODE",nfc_mode);
-        ls_picker_add("OFF","No NFC observation");ls_picker_add("SCAN","Active NFC-A card requests");
-        ls_picker_add("FIELD","Passive external reader field");
+    else if(i==6){ls_picker_open(LS_TEXT(t_scr_mixrf_nfc_observation_mode, "NFC OBSERVATION MODE"),nfc_mode);
+        ls_picker_add("OFF","No NFC observation");ls_picker_add("SCAN",LS_TEXT(t_scr_mixrf_active_nfc_a_card, "Active NFC-A card requests"));
+        ls_picker_add("FIELD",LS_TEXT(t_scr_mixrf_passive_external_reader_field, "Passive external reader field"));
         ls_picker_select(state.nfc_requested?2:state.card_requested?1:0);}
     else if(i==7){ls_mixrf_receive(false,frequency);ls_mixrf_scan(false);ls_mixrf_nfc_watch(false);ls_mixrf_card_scan(false);enabled=scan_enabled=nfc_enabled=false;}
     else if(i==8)ls_rsel_open(LS_RSEL_MIXRF,radio_chosen);
@@ -135,7 +136,7 @@ static void enter(void)
 {
     button_focus=-1;button_slot=0;card_suite=false;
     radio_chosen(ls_rsel_get(LS_RSEL_MIXRF));
-    snprintf(hint,sizeof(hint),"M monitor  R radio  O options  C cards  J mark  N NFC mode");
+    LS_SNPUTS(t_scr_mixrf_m_monitor_r_radio, hint, sizeof(hint), "M monitor  R radio  O options  C cards  J mark  N NFC mode");
     ls_rsel_track(LS_RSEL_MIXRF,viewed);
     ls_field_start();ls_field_watch(true);ls_field_provider(LS_FIELD_CC1101,provider);
     ls_field_provider(LS_FIELD_NRF24,provider_24);ls_field_provider(LS_FIELD_NFC,provider_nfc);ls_mixrf_start();
@@ -147,8 +148,8 @@ static void leave(void){card_suite=false;ls_field_watch(false);}
 static void draw(tui_surface *sf,tui_rect a)
 {
     if(card_suite){ls_scr_nfc.draw(sf,a);return;}
-    if(a.w<30 || a.h<17){ls_panel_notice(sf,a,"MIX-RF","Enlarge the pane","Receive monitor keeps its state");return;}
-    snprintf(hint,sizeof(hint),"M monitor  R radio  O options  C cards  J mark  N NFC mode");
+    if(a.w<30 || a.h<17){ls_panel_notice(sf,a,"MIX-RF","Enlarge the pane",LS_TEXT(t_scr_mixrf_receive_monitor_keeps_its, "Receive monitor keeps its state"));return;}
+    LS_SNPUTS(t_scr_mixrf_m_monitor_r_radio, hint, sizeof(hint), "M monitor  R radio  O options  C cards  J mark  N NFC mode");
     ls_mixrf_snapshot(&state);
     enabled=state.receive_requested && state.cc_owner==LS_MIXRF_OWNER_MONITOR;scan_enabled=state.scan_requested && state.scan_owner==LS_MIXRF_OWNER_MONITOR;nfc_enabled=state.card_requested;
     if(state.samples!=last_samples) {
@@ -170,7 +171,7 @@ static void draw(tui_surface *sf,tui_rect a)
     if(a.h<22 && a.w>=72) h=6;
     ls_btn_bar_raised(sf,tui_rect_make(a.x,a.y,a.w,h),buttons,nb,button_focus);
     tui_rect panel=tui_rect_make(a.x,a.y+h,a.w,a.h-h-2);
-    ls_panel_box(sf,panel,"KEYBOARD RADIOS / RECEIVE",TUI_CYAN);
+    ls_panel_box(sf,panel,LS_TEXT(t_scr_mixrf_keyboard_radios_receive, "KEYBOARD RADIOS / RECEIVE"),TUI_CYAN);
     ls_motion_busy(sf,panel,state.busy || state.receiving || state.scanning || state.card_scanning);
     tui_rect chart=panel;
     bool wide=panel.w>=90;
@@ -185,9 +186,9 @@ static void draw(tui_surface *sf,tui_rect a)
     if(state.nfc)snprintf(line,sizeof(line),"identified ID %02X",state.nfc_identity);
     else snprintf(line,sizeof(line),"%s",state.busy?"probing":"unavailable");
     ls_kv(sf,panel,5,"NFC",line,LS_ATTR_DIM);
-    if(view_nfc && state.nfc_requested)snprintf(line,sizeof(line),"%lu samples / %lu arrivals",(unsigned long)state.nfc_samples,(unsigned long)state.nfc_events);
-    else if(view_nfc)snprintf(line,sizeof(line),"%lu polls / %lu replies",(unsigned long)state.card_polls,(unsigned long)state.card_hits);
-    else if(view_24)snprintf(line,sizeof(line),"%lu sweeps / %lu hits",(unsigned long)state.sweeps,(unsigned long)state.energy_hits);
+    if(view_nfc && state.nfc_requested)LS_SNPRINTF(t_scr_mixrf_lu_samples_lu_arrivals, line,sizeof(line),"%lu samples / %lu arrivals",(unsigned long)state.nfc_samples,(unsigned long)state.nfc_events);
+    else if(view_nfc)LS_SNPRINTF(t_scr_mixrf_lu_polls_lu_replies, line,sizeof(line),"%lu polls / %lu replies",(unsigned long)state.card_polls,(unsigned long)state.card_hits);
+    else if(view_24)LS_SNPRINTF(t_scr_mixrf_lu_sweeps_lu_hits, line,sizeof(line),"%lu sweeps / %lu hits",(unsigned long)state.sweeps,(unsigned long)state.energy_hits);
     else snprintf(line,sizeof(line),"%.4f MHz",(state.receive_requested?state.frequency:frequency)/1e6);
     ls_kv(sf,panel,a.h<22?6:7,view_nfc?"13.56 MHz":view_24?"SURVEY":"MONITOR",line,LS_ATTR_DIM);
     if(view_nfc && !state.nfc_requested && (state.card_requested || state.card_polls)){
@@ -204,7 +205,7 @@ static void draw(tui_surface *sf,tui_rect a)
         const char *banner=state.card_present?"((( CARD DETECTED )))":state.card_scanning?"[ MOVE CARD SLOWLY / HOLD 1 SECOND ]":state.nfc_watching?(state.nfc_field?"[ EXTERNAL FIELD PRESENT ]":"[ WAITING FOR READER FIELD ]"):"[ NFC DETECTOR OFF ]";
         tui_put_str(sf,chart,chart.x+2,top,banner,state.card_present?TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM);
         if(!state.nfc_requested){
-        tui_put_str(sf,chart,chart.x+2,top+1,"RX level 0 <--------------------> 15",LS_ATTR_DIM);
+        tui_put_str(sf,chart,chart.x+2,top+1,LS_TEXT(t_scr_mixrf_rx_level_0_15, "RX level 0 <--------------------> 15"),LS_ATTR_DIM);
         int rows=bottom-top-2;
         if(rows>LS_MIXRF_CARD_HISTORY)rows=LS_MIXRF_CARD_HISTORY;
         int width=chart.w-8;
@@ -220,8 +221,8 @@ static void draw(tui_surface *sf,tui_rect a)
                 tui_put_char(sf,chart,chart.x+4+x,y,x<fill?(age<3?'#':':'):'.',x<fill?TUI_ATTR(color|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM);
             tui_put_char(sf,chart,chart.x+chart.w-3,y,result==3?'C':result==2?'R':result==1?'!':'-',TUI_ATTR(color|TUI_BRIGHT,TUI_BLACK));
         }
-        tui_put_str(sf,chart,chart.x+2,chart.y+chart.h-3,"! noise  R reply  C confirmed / newest below",LS_ATTR_DIM);
-        tui_put_str(sf,chart,chart.x+2,chart.y+chart.h-2,"13.56 MHz RX history / uncalibrated level",LS_ATTR_DIM);
+        tui_put_str(sf,chart,chart.x+2,chart.y+chart.h-3,LS_TEXT(t_scr_mixrf_noise_r_reply_c, "! noise  R reply  C confirmed / newest below"),LS_ATTR_DIM);
+        tui_put_str(sf,chart,chart.x+2,chart.y+chart.h-2,LS_TEXT(t_scr_mixrf_13_56_mhz_rx, "13.56 MHz RX history / uncalibrated level"),LS_ATTR_DIM);
         }
     } else if(!view_nfc && chart.h>(wide?13:20)) {
         int bottom=chart.y+chart.h-5,height=wide?chart.h-7:chart.h-16;

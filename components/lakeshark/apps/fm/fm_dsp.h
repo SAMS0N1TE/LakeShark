@@ -80,6 +80,10 @@ int  fm_demod_to_audio(fm_dsp_t *s, const float *demod, int n,
 
 int  fm_demod_wide(fm_dsp_t *s, const uint8_t *iq, int iq_len,
                    int16_t *pcm16k, int max);
+/* The raw wideband discriminator at FM_RTL_RATE (pi = 16384), before
+   de-emphasis or decimation: the stereo multiplex wfm_mpx.c reads. */
+int  fm_demod_disc(fm_dsp_t *s, const uint8_t *iq, int iq_len,
+                   int16_t *disc, int max);
 
 /* The AM envelope at FM_DEMOD_RATE as a float, carrier removed and divided
    by it (100% modulation swings +-1). ACARS's MSK tones ride an AM carrier,

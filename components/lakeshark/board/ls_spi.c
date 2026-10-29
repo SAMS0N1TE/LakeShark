@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "ls_board.h"
+#include "ls_textpack.h"
 
 static const char *TAG = "ls_spi";
 
@@ -71,9 +72,8 @@ esp_err_t ls_spi_bus(ls_spi_bus_id_t id)
             .sclk_io_num = BUS[id].sclk,
             .quadwp_io_num = -1,
             .quadhd_io_num = -1,
-            /* Big enough for a CC1101 or ST25R3916 FIFO burst in one go.
-               Larger costs DMA-capable memory for no gain here. */
-            .max_transfer_sz = 512,
+            /* LR2021 capture DMA needs one cache-aligned FIFO frame. */
+            .max_transfer_sz = LS_HAS_LORA_LR20XX_PROBE ? 1024 : 512,
         };
         err = spi_bus_initialize(BUS[id].host, &cfg, SPI_DMA_CH_AUTO);
         if (err == ESP_OK) {
@@ -148,7 +148,7 @@ void ls_spi_diagnostics(void)
             printf("spi bus %d: board declares no pins\n", i);
             continue;
         }
-        printf("spi bus %d: sclk=%d mosi=%d miso=%d host=SPI%d up=%s devices=%d\n",
+        LS_PRINTF(t_ls_spi_spi_bus_d_sclk, "spi bus %d: sclk=%d mosi=%d miso=%d host=SPI%d up=%s devices=%d\n",
                i, BUS[i].sclk, BUS[i].mosi, BUS[i].miso, (int)BUS[i].host + 1,
                s_up[i] ? "yes" : "no", s_devices[i]);
     }

@@ -1,6 +1,7 @@
 /* Native-rate decoder, using the board abstraction rather than the
    Waveshare-specific BSP player (which is not the T-Display-P4 codec). */
 #include "ls_music_backend.h"
+#include "ls_music_marks.h"
 #include "media_playlist.h"
 #include "audio_player.h"
 #include "audio/audio_out.h"
@@ -13,6 +14,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include "esp_attr.h"
+#include "ls_textpack.h"
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
@@ -70,11 +72,28 @@ typedef struct {
     float window_power;
 } spectrum_t;
 static spectrum_t *s_spectrum;
+static ls_audio_analysis *s_analysis;
+static ls_audio_overview *s_overview;
+static ls_audio_tools *s_tools;
+static ls_audio_generator *s_generator;
+static atomic_bool s_generate;
+ls_audio_tools *ls_music_tools(void){return s_overview?s_tools:NULL;}
+static void tools_service(void *user){(void)user;ls_audio_tools_pull(s_tools,s_analysis,4096);}
+ls_audio_analysis *ls_music_analysis(void){return s_analysis;}
+ls_audio_overview *ls_music_overview(void){return ls_music_mic_state()==LS_MIC_OFF?s_overview:NULL;}
 static atomic_uint s_ring_end, s_ring_fill;
 static atomic_uint s_rate, s_bits, s_channels, s_slots, s_epoch;
 static bool s_new_source;
+static atomic_uint s_source_rate;
+EXT_RAM_BSS_ATTR static uint32_t s_expected_source_ms;
+EXT_RAM_BSS_ATTR static uint64_t s_expected_source_frames;
+static ls_music_marks *s_marks;
+static void transport_service(void) {
+    if(s_marks && !ls_music_marks_service(s_marks))s_error="Marker save failed";
+}
 static void analysis_reset(void)
 {
+    ls_audio_analysis_reset(s_analysis);
     atomic_store(&s_ring_fill,0);atomic_store(&s_ring_end,0);
     atomic_store(&s_peak[0],0);atomic_store(&s_peak[1],0);
     atomic_fetch_add(&s_epoch,1);
@@ -282,6 +301,10 @@ static esp_err_t write_pcm(void *data,size_t len,size_t *written,uint32_t timeou
     int16_t *pcm=data;
     const bool mono=atomic_load(&s_slots)==1;
     const size_t step=mono?1:2,count=len/sizeof(*pcm);
+    unsigned source_rate=atomic_load(&s_source_rate);
+    if(!source_rate)source_rate=atomic_load(&s_rate);
+    ls_audio_analysis_append(s_analysis,pcm,count/step,(unsigned)step,source_rate);
+    if(source_rate){s_expected_source_frames+=count/step;s_expected_source_ms=(uint32_t)(s_expected_source_frames*1000/source_rate);}
     unsigned peaks[2]={0,0};
     bool warm=atomic_load(&s_warm);
     int16_t mix[128];
@@ -395,6 +418,13 @@ bool ls_music_mic_step(void)
 {
     int16_t *buf=s_mic_buf;
     if(!buf)return false;
+    if(atomic_load(&s_generate)) {
+        ls_audio_generator_render(s_generator,buf,MIC_FRAMES,2,MIC_RATE);
+        size_t written=0,bytes=MIC_FRAMES*2*sizeof(*buf);
+        bool ok=write_pcm(buf,bytes,&written,250)==ESP_OK && written==bytes;
+        if(!ok){s_error="Tone output failed";atomic_store(&s_mic_run,false);}
+        return ok;
+    }
     size_t got=0;
     if(ls_audio_hw_read(buf,MIC_FRAMES*2*sizeof(*buf),&got)!=ESP_OK || !got) {
         s_error="Microphone read failed";atomic_store(&s_mic_run,false);mic_close_file();
@@ -404,6 +434,7 @@ bool ls_music_mic_step(void)
         return false;
     }
     size_t frames=got/(2*sizeof(*buf));
+    ls_audio_analysis_append(s_analysis,buf,frames,2,MIC_RATE);
     unsigned peaks[2]={0,0};
     for(size_t i=0;i<frames;i++) {
         int32_t l=buf[2*i],r=buf[2*i+1];
@@ -431,13 +462,14 @@ void ls_music_mic_stop(void)
 #endif
     if(atomic_load(&s_mic_busy)){s_error="Microphone busy: audio retained";return;}
     mic_close_file();
+    atomic_store(&s_generate,false);
 }
-bool ls_music_mic_start(bool record)
+static bool capture_start(bool record,bool synth)
 {
     if(!s_up || !s_spectrum)return false;
     if(atomic_load(&s_mic_busy)) {
         if(!atomic_load(&s_mic_run)){s_error="Microphone busy: audio retained";return false;}
-        if(!record || s_mic_file)return true;
+        if(atomic_load(&s_generate)==synth && (!record || s_mic_file))return true;
         ls_music_mic_stop();
         if(atomic_load(&s_mic_busy))return false;
     }
@@ -450,10 +482,12 @@ bool ls_music_mic_start(bool record)
 #endif
         if(!s_mic_buf){s_error="Microphone memory unavailable";return false;}
     }
-    if(!ls_audio_hw_has_mic()){s_error="No microphone on this board";return false;}
+    if(!synth && !ls_audio_hw_has_mic()){s_error="No microphone on this board";return false;}
     if(ls_audio_hw_set_fs(MIC_RATE,16,I2S_SLOT_MODE_STEREO)!=ESP_OK){s_error="Microphone clock failed";return false;}
-    ls_audio_hw_in_gain(MIC_GAIN_DB);
+    if(!synth)ls_audio_hw_in_gain(MIC_GAIN_DB);
+    else ls_audio_hw_mute(audio_is_muted());
     analysis_reset();
+    atomic_store(&s_source_rate,MIC_RATE);
     atomic_store(&s_rate,MIC_RATE);atomic_store(&s_bits,16);atomic_store(&s_channels,1);atomic_store(&s_slots,2);
     if(record && !mic_open_file()){s_error="Cannot create a file on the card";return false;}
 #ifdef ESP_PLATFORM
@@ -473,6 +507,7 @@ bool ls_music_mic_start(bool record)
     }
 #endif
     s_error="";
+    atomic_store(&s_generate,synth);
     atomic_store(&s_mic_busy,true);
     atomic_store(&s_mic_run,true);
 #ifdef ESP_PLATFORM
@@ -480,6 +515,12 @@ bool ls_music_mic_start(bool record)
 #endif
     return true;
 }
+bool ls_music_mic_start(bool record){return capture_start(record,false);}
+bool ls_music_tone_start(ls_gen_kind kind,unsigned start,unsigned end,unsigned duration,int dbfs) {
+    if(!s_generator || !ls_audio_generator_set(s_generator,kind,start,end,duration,dbfs))return false;
+    return capture_start(false,true);
+}
+bool ls_music_tone_active(void){return atomic_load(&s_mic_busy) && atomic_load(&s_generate);}
 /* With the app closing: stop the worker, and once it is parked waiting for
    the next start, delete it and give its memory back. */
 static void mic_release(void)
@@ -499,7 +540,7 @@ static void mic_release(void)
 }
 ls_music_mic_t ls_music_mic_state(void)
 {
-    return !atomic_load(&s_mic_busy)?LS_MIC_OFF:s_mic_file?LS_MIC_RECORDING:LS_MIC_LIVE;
+    return !atomic_load(&s_mic_busy)?LS_MIC_OFF:atomic_load(&s_generate)?LS_MIC_TONE:s_mic_file?LS_MIC_RECORDING:LS_MIC_LIVE;
 }
 const char *ls_music_mic_file(void){return s_mic_path;}
 uint32_t ls_music_mic_ms(void){return (uint32_t)((uint64_t)s_mic_bytes*1000/(MIC_RATE*2));}
@@ -519,7 +560,11 @@ static esp_err_t clock_set(uint32_t rate, uint32_t bits, i2s_slot_mode_t channel
 {
     s_alpha=4096u*1885u/(rate+1885u); /* approximately 300 Hz */
     s_low[0]=s_low[1]=0;
-    if(rate!=atomic_load(&s_rate))analysis_reset();
+    if(rate!=atomic_load(&s_rate)){
+        /* Output varispeed changes the legacy audible plots, not source PCM. */
+        atomic_store(&s_ring_fill,0);atomic_store(&s_ring_end,0);
+        atomic_store(&s_peak[0],0);atomic_store(&s_peak[1],0);atomic_fetch_add(&s_epoch,1);
+    }
     atomic_store(&s_rate,rate);atomic_store(&s_bits,bits);
     atomic_store(&s_slots,channels==I2S_SLOT_MODE_MONO?1u:2u);
     esp_err_t err = ls_audio_hw_set_fs(rate, bits, channels);
@@ -528,9 +573,15 @@ static esp_err_t clock_set(uint32_t rate, uint32_t bits, i2s_slot_mode_t channel
 }
 static void source_format(uint32_t rate,uint32_t bits,unsigned channels)
 {
-    if(s_new_source || rate!=atomic_load(&s_rate))analysis_reset();
+    uint32_t now=audio_player_position_ms();
+    int64_t gap=(int64_t)now-s_expected_source_ms;
+    if(s_new_source || rate!=atomic_load(&s_source_rate) || gap>2 || gap< -2){
+        analysis_reset();ls_audio_analysis_reset_at(s_analysis,now);
+        s_expected_source_frames=(uint64_t)now*rate/1000;
+    }
+    s_expected_source_ms=now;
     s_new_source=false;
-    atomic_store(&s_rate,rate);atomic_store(&s_bits,bits);atomic_store(&s_channels,channels);
+    atomic_store(&s_source_rate,rate);atomic_store(&s_bits,bits);atomic_store(&s_channels,channels);
 }
 static void event(audio_player_cb_ctx_t *ctx)
 {
@@ -549,7 +600,8 @@ bool ls_music_open(void)
     music_heap_checkpoint("after media acquire", err);
     if (err != ESP_OK) { spectrum_close(); s_error = "Audio busy / unavailable"; return false; }
     audio_player_config_t config = {.mute_fn=mute, .clk_set_fn=clock_set,
-        .write_fn=write_pcm, .source_format_fn=source_format, .priority=5, .coreID=1, .file_close_fn=call_store_playback_close};
+        .write_fn=write_pcm, .source_format_fn=source_format, .priority=5, .coreID=1,
+        .file_close_fn=call_store_playback_close, .service_fn=transport_service};
     err = audio_player_new(config);
     music_heap_checkpoint("after player new", err);
     if (err != ESP_OK) {
@@ -558,6 +610,12 @@ bool ls_music_open(void)
         spectrum_close();
         s_error = "Decoder memory unavailable"; return false;
     }
+    s_marks=ls_music_marks_new(LS_TEXT(t_ls_music_backend_sdcard_music_analysis, "/sdcard/music/.analysis"));
+    s_analysis=ls_audio_analysis_new();
+    s_tools=ls_audio_tools_new();
+    s_generator=ls_audio_generator_new();
+    s_overview=ls_audio_overview_new(LS_TEXT(t_ls_music_backend_sdcard_music_analysis, "/sdcard/music/.analysis"));
+    ls_audio_overview_set_service(s_overview,tools_service,NULL);
     s_up = true;
     atomic_store(&s_peak[0],0);atomic_store(&s_peak[1],0);
     audio_player_callback_register(event, NULL);
@@ -568,6 +626,8 @@ void ls_music_close(void)
 {
     mic_release();
     if(atomic_load(&s_mic_busy)){s_error="Microphone busy: audio retained";return;}
+    if(!ls_audio_overview_free(s_overview)){s_error="Analysis busy: audio retained";return;}
+    s_overview=NULL;
     if (s_up) {
         music_heap_checkpoint("before player delete", -1);
         esp_err_t err = audio_player_delete();
@@ -583,6 +643,10 @@ void ls_music_close(void)
     music_heap_checkpoint("before playlist close", -1);
     ls_media_playlist_close(s_list); s_list = NULL;
     music_heap_checkpoint("after playlist close", -1);
+    ls_music_marks_free(s_marks);s_marks=NULL;
+    ls_audio_analysis_free(s_analysis);s_analysis=NULL;
+    ls_audio_tools_free(s_tools);s_tools=NULL;
+    ls_audio_generator_free(s_generator);s_generator=NULL;
 }
 bool ls_music_scan(int source)
 {
@@ -609,7 +673,7 @@ const char *ls_music_name(int index)
 }
 const char *ls_music_error(void) {
     static char save_error[112];
-    if(atomic_load(&s_save_failed)){snprintf(save_error,sizeof(save_error),"Save failed: %s; OPTIONS > REPAIR WAV",s_mic_path);return save_error;}
+    if(atomic_load(&s_save_failed)){LS_SNPRINTF(t_ls_music_backend_save_failed_s_options, save_error,sizeof(save_error),"Save failed: %s; OPTIONS > REPAIR WAV",s_mic_path);return save_error;}
     return atomic_load(&s_bad_format) ? "Unsupported or damaged audio file" : s_error; }
 bool ls_music_play(int index)
 {
@@ -628,12 +692,26 @@ bool ls_music_play_path(const char *path)
     if(atomic_load(&s_mic_busy))return false;
     if(audio_player_stop_wait(500)!=ESP_OK){s_error="Decoder busy: audio retained";return false;}
     s_new_source=true;
+    audio_player_loop(0,0,false);
+    if(s_marks)ls_music_marks_prepare(s_marks,path);
     FILE *fp = call_store_playback_open(path);
     if (!fp) { s_error="Track unavailable; rescan card"; return false; }
     if (audio_player_play(fp) != ESP_OK) { call_store_playback_close(fp); s_error="Player queue busy"; return false; }
+    if(s_overview)ls_audio_overview_request(s_overview,path,false);
     s_error=""; atomic_store(&s_bad_format,false); return true;
 }
 bool ls_music_seek_ms(uint32_t ms) { return s_up && audio_player_seek_ms(ms)==ESP_OK; }
+bool ls_music_speed_set(unsigned value){return s_up && audio_player_speed(value)==ESP_OK;}
+unsigned ls_music_speed_get(void){return audio_player_speed_get();}
+bool ls_music_loop_set(uint32_t a,uint32_t b,bool enabled){return s_up && audio_player_loop(a,b,enabled)==ESP_OK;}
+bool ls_music_loop_get(uint32_t *a,uint32_t *b){return s_up && audio_player_loop_get(a,b);}
+bool ls_music_marker_add(void){
+    if(!s_up || !ls_music_marks_add(s_marks,ls_music_position_ms()))return false;
+    return audio_player_service()==ESP_OK;
+}
+void ls_music_markers_clear(void){if(s_marks){ls_music_marks_clear(s_marks);audio_player_service();}}
+unsigned ls_music_marker_count(void){return ls_music_marks_count(s_marks);}
+bool ls_music_marker_get(unsigned index,uint32_t *at){return ls_music_marks_get(s_marks,index,at);}
 bool ls_music_toggle(void)
 {
     if (!s_up) return false;

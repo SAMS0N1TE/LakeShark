@@ -153,6 +153,10 @@ bool p25_ui_policy(p25_ui_policy_t kind, uint16_t value)
 {
     if (kind == P25_UI_LIST_MODE) { P25.list_mode = value; return true; }
     if (kind == P25_UI_HOLD_SET) { P25.hold_tg = value; return true; }
+    if (kind == P25_UI_LOCKOUT_ADD) {
+        if (!value || P25.lockout_count == 64) return false;
+        P25.lockout[P25.lockout_count++] = value; return true;
+    }
     if (kind == P25_UI_ALLOW_ADD && P25.allow_count < 64) {
         P25.allow[P25.allow_count++] = value; return true;
     }
@@ -161,4 +165,18 @@ bool p25_ui_policy(p25_ui_policy_t kind, uint16_t value)
         P25.allow[i] = P25.allow[--P25.allow_count]; return true;
     }
     return false;
+}
+
+/* Names for the CALLS fixture, as a names file on the card would give them.
+   Generic service names; no real system is described. */
+const char *p25_calls_host_alias(uint16_t tg)
+{
+    static const struct { uint16_t tg; const char *name; } NAMES[] = {
+        { 1041, "FIRE DISP" }, { 1043, "FIRE TAC 2" }, { 2051, "EMS NORTH" },
+        { 2104, "PD CENTRAL" }, { 2110, "PD SOUTH" }, { 3301, "PUBLIC WORKS" },
+        { 4005, "SCHOOL BUSES" }, { 5120, "COUNTY INTEROP" },
+    };
+    for (unsigned i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++)
+        if (NAMES[i].tg == tg) return NAMES[i].name;
+    return NULL;
 }

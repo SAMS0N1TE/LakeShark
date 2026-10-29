@@ -29,4 +29,6 @@ void esp_timer_isr_dispatch_need_yield(void);
 void ls_shim_timer_wait_hook(void (*hook)(void), int64_t late_us);
 bool ls_shim_timer_notify_wait(void);
 unsigned ls_shim_timer_count(void);
+/* Microseconds until the timer being waited on is due; 0 when none is armed. */
+int64_t ls_shim_timer_wait_remaining(void);
 #endif

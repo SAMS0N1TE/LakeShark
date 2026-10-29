@@ -3,8 +3,10 @@
 #include "ls_lap_ui.h"
 #include "ls_tui_ui.h"
 #include "ls_icons.h"
+#include "ls_lap_grants.h"
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 static bool s_asking;   /* the last draw put up OPEN / BACK */
 
@@ -103,8 +105,8 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
     if (st && st->state == LS_LAP_RUNNING) {
         /* Running without a draw callback: it works in the background. */
         ls_safe_line(sf, body, y, "RUNNING", TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
-        ls_safe_line(sf, body, y + 2, "This app draws nothing; it keeps working while", LS_ATTR_DIM);
-        ls_safe_line(sf, body, y + 3, "it is open. ESC returns to HOME.", LS_ATTR_DIM);
+        ls_safe_line(sf, body, y + 2, LS_TEXT(t_ls_lap_ui_this_app_draws_nothing, "This app draws nothing; it keeps working while"), LS_ATTR_DIM);
+        ls_safe_line(sf, body, y + 3, LS_TEXT(t_ls_lap_ui_it_is_open_esc, "it is open. ESC returns to HOME."), LS_ATTR_DIM);
         return;
     }
 
@@ -112,8 +114,35 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
         sign(sf, body, body.x, y, crashed ? TUI_RED | TUI_BRIGHT : TUI_YELLOW | TUI_BRIGHT);
         const int tx = body.x + 10;
         tui_rect text = tui_rect_make(tx, y, body.x + body.w - tx, 6);
-        if (crashed) {
-            tui_put_str(sf, text, tx, y, "IT STOPPED THE BOARD", TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+        if (app && (app->manifest.flags & LS_LAP_GRANT_CAPS) && !ls_lap_grant_has(app, app->manifest.flags)) {
+            const bool send = app->manifest.flags & LAP_CAP_RADIO_TX, net = app->manifest.flags & LAP_CAP_NETWORK;
+            const bool rx = app->manifest.flags & LAP_CAP_RADIO_RX, svc = app->manifest.flags & LAP_CAP_SERVICE;
+            tui_put_str(sf, text, tx, y, !rx ? "ALLOW BACKGROUND SERVICE?" : send ? "ALLOW RADIO RECEIVE + SEND?" : "ALLOW RADIO ACCESS?",
+                        TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+            if (crashed) tui_put_str(sf, text, tx, y + 1, LS_TEXT(t_ls_lap_ui_it_stopped_the_board, "It stopped the board last time"), TUI_ATTR(TUI_RED, TUI_BLACK));
+            const char *const why[] = {
+                rx ? "This app can tune the radios, read their" : "This app can keep working after you",
+                rx ? "samples and audio, and hear what the" : "leave it, and post notices.",
+                rx ? "decoders hear (pages, APRS, AIS, mesh)." : "RADIOS lists it, with STOP.",
+                send ? "It can send on the mesh when TRANSMIT is armed."
+                   : "It cannot transmit.",
+                net ? "It also asks for the network, every launch."
+                    : "Asked once for this version; BACK denies.",
+                "It keeps running after it closes (STOP in RADIOS).",
+            };
+            lines(sf, body, y + 6, why, rx && svc ? 6 : 5, TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        } else if (app && (app->manifest.flags & LAP_CAP_NETWORK)) {
+            tui_put_str(sf, text, tx, y, LS_TEXT(t_ls_lap_ui_allow_network_access, "ALLOW NETWORK ACCESS?"), TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+            if (crashed) tui_put_str(sf, text, tx, y + 1, LS_TEXT(t_ls_lap_ui_it_stopped_the_board, "It stopped the board last time"), TUI_ATTR(TUI_RED, TUI_BLACK));
+            static const char *const why[] = {
+                "This app can connect to devices and servers",
+                "using the network already joined in LINK.",
+                "Allow only apps you trust. Permission lasts",
+                "until this app closes; BACK denies access.",
+            };
+            lines(sf, body, y + 6, why, 4, TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        } else if (crashed) {
+            tui_put_str(sf, text, tx, y, LS_TEXT(t_ls_lap_ui_it_stopped_the_board_2, "IT STOPPED THE BOARD"), TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
             tui_put_str(sf, text, tx, y + 1, "LAST TIME IT RAN", TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
             static const char *const why[] = {
                 "The board restarted while this app",
@@ -125,7 +154,7 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
             lines(sf, body, y + 6, why, 5, TUI_ATTR(TUI_WHITE, TUI_BLACK));
         } else {
             tui_put_str(sf, text, tx, y, "NOT FROM THE STORE", TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
-            tui_put_str(sf, text, tx, y + 1, "no LakeShark signature", TUI_ATTR(TUI_YELLOW, TUI_BLACK));
+            tui_put_str(sf, text, tx, y + 1, LS_TEXT(t_ls_lap_ui_no_lakeshark_signature, "no LakeShark signature"), TUI_ATTR(TUI_YELLOW, TUI_BLACK));
             static const char *const why[] = {
                 "An app runs with the whole board: the card,",
                 "the screen, every value the radios publish.",
@@ -136,7 +165,7 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
         }
         const int bh = 4, by = area.y + area.h - bh - 1;
         ls_btn_t b[2] = {
-            { crashed ? "OPEN AGAIN" : "OPEN ANYWAY", "ENTER", '\r', false, false, false },
+            { app && (app->manifest.flags & LAP_CAP_NETWORK) ? "ALLOW & OPEN" : crashed ? "OPEN AGAIN" : "OPEN ANYWAY", "ENTER", '\r', false, false, false },
             { "BACK", "ESC", 0, false, false, false },
         };
         ls_btn_bar_raised_slot(sf, tui_rect_make(area.x + 1, by, area.w - 2, bh), b, 2, -1, LS_BTN_SLOT_SCREEN);

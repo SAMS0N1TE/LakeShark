@@ -29,7 +29,7 @@ static void lssim_outlines_transactions(void) {
     }
     snprintf(path,sizeof(path),"%s/old.json",fixtures);assert(cells_states_parse(path,true));
     assert(cells_states_count==1 && !cells_outlines.bytes && !cells_outlines_needed());
-    dl.retry=0;cells_step();assert(!strcmp(cells_work.outlines,"missing"));
+    cells_retry_reset(NULL);cells_step();assert(!strcmp(cells_work.outlines,"missing"));
     snprintf(path,sizeof(path),"%s/full.json",fixtures);assert(cells_states_parse(path,true));
     assert(cells_states_count==52 && cells_outlines.bytes==106);
     printf("PASS: outlines parse, compatibility, missing/size/SHA decisions, download, corruption and atomic rejection\n");

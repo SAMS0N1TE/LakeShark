@@ -450,6 +450,11 @@ void ls_btn_bar_transport(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n
     button_bar(sf,bar,btn,n,focus,LS_BTN_SLOT_SCREEN,true,true,false);
 }
 
+void ls_btn_bar_transport_slot(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus,int slot)
+{
+    button_bar(sf,bar,btn,n,focus,slot,true,true,false);
+}
+
 void ls_btn_bar_raised_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn,
                             int n, int focus, int slot)
 {
@@ -689,6 +694,21 @@ void ls_tile_grid(tui_surface *sf, tui_rect area, const ls_tile_t *tile,
             char cut[24];
             snprintf(cut, sizeof(cut), "%.*s", sw, tile_sub);
             tui_put_str(sf, box, box.x + (box.w - sw) / 2, text_y + 1, cut, sub_at);
+        }
+
+        /* A folder is a stack: the next card peeks out in the row of air
+           below, and the count sits in the bottom border. The column of air
+           beside a tile is one cell, too narrow for an edge of its own. */
+        if (tile[i].more) {
+            const uint8_t edge = TUI_ATTR(hue, TUI_BLACK);
+            tui_hline(sf, area, box.x + 2, box.y + box.h, box.w - 4, '-', edge);
+            tui_put_char(sf, area, box.x + 1, box.y + box.h, '\'', edge);
+            tui_put_char(sf, area, box.x + box.w - 2, box.y + box.h, '\'', edge);
+            char tag[8];
+            snprintf(tag, sizeof(tag), "[+%u]", (unsigned)tile[i].more);
+            if (box.w >= 10)
+                tui_put_str(sf, box, box.x + box.w - 6, box.y + box.h - 1, tag,
+                            TUI_ATTR(hue == TUI_YELLOW ? TUI_WHITE | TUI_BRIGHT : TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
         }
 
         /* A live app says so in words, in its top border. */

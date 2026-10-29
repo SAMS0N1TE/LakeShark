@@ -1,6 +1,7 @@
 #include "fm_lr_dsp.h"
 #include "ls_lora.h"
 #include "../../ls_calls.h"
+#include "ls_textpack.h"
 /* FM screen: VFO on one page, decoded pages on another.
 
    `FM` is a plain global like `P25`, and `FM.scan_db[256]` is a bare
@@ -11,6 +12,7 @@
 #include "../../ls_radio_panel.h"
 #include "../../ls_numpad.h"
 #include "../../ls_options.h"
+#include "../../ls_rffe_ui.h"
 #include "scan_engine.h"
 #include "settings.h"
 #include "scan_channels.h"
@@ -19,6 +21,10 @@
 #include "fm_same_view.h"
 #include "fm_aprs_view.h"
 #include "fm_ais_view.h"
+#include "fm_rds_view.h"
+#include "fm_air_view.h"
+#include "fm_sstv_view.h"
+#include "apps/fm/fm_bcast.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -28,6 +34,11 @@
 #include "apps/acars/acars_app.h"
 #include "apps/fm/aprs_store.h"
 #include "apps/fm/fm_mode_label.h"
+#include "apps/fm/fm_hf.h"
+#include "apps/fm/fm_spectrum.h"
+#include "radio/ls_radio_hf.h"
+#include "hf_demod.h"
+#include "../../ls_braille.h"
 #include "audio/audio_out.h"
 #include "lakeshark_backend.h"
 
@@ -41,6 +52,8 @@
 #include "../../ls_waterfall.h"
 #include "../../ls_glyph.h"
 #include "../../ls_wf_source.h"
+#include "../../rx_panels/rx_pages.h"
+#include "../../rx_panels/rx_tape.h"
 
 static bool s_details;
 static char s_hint[96] = "LEFT/RIGHT tune  UP/DOWN controls  M details";
@@ -196,6 +209,62 @@ static void radio_chosen(ls_rsel_radio_t radio)
 
 static void open_radio(void) { ls_rsel_fm_context(FM.freq_hz, fm_lr_mode(FM.mode)); ls_rsel_open(fm_job(), radio_chosen); }
 
+
+/* SHORTWAVE. HF is AM mode handing its audio to the HF demodulators
+   (fm_hf.h): below 30 MHz, or any SSB/CW/SAM. The screen keeps every shared
+   control and changes what the glass says: the sideband on the rail, the
+   demod line, and a passband scope where the activity trace sits. */
+static bool hf_on(void)
+{
+    return FM.freq_hz >= LS_HF_MIN_HZ &&
+           fm_hf_chain(FM.mode == FM_MODE_AM, FM.freq_hz, fm_hf_get()->demod);
+}
+
+/* What the MODE key and the rail call the receiver now. */
+static const char *mode_word(void)
+{
+    static char word[12];
+    if (scan_engine_seek_direction() < 0) return "SEEK <";
+    if (scan_engine_seek_direction() > 0) return "SEEK >";
+    if (FM.mode == FM_MODE_SCAN) return "SWEEP";
+    if (hf_on()) {
+        snprintf(word, sizeof(word), "HF %s", fm_hf_demod_label(fm_hf_get()->demod));
+        return word;
+    }
+    return fm_mode_label(FM.mode);
+}
+
+/* The band the dial is in, for the BAND key; "HF" between bands. */
+static const char *hf_band_word(void)
+{
+    const int b = fm_hf_band_find(FM.freq_hz);
+    return b >= 0 ? fm_hf_band(b)->name : "HF";
+}
+
+static void hf_band_picked(int index)
+{
+    if (s_lora_pager) { s_pager_leaving = true; lora_pager_stop(true); }
+    lakeshark_fm_frequency_lock(false);
+    if (!fm_hf_band_apply(index)) return;
+    s_page = 0;
+    ls_wf_source_release();
+}
+
+/* Every band, named with the demod and dial it lands on: one tap to a
+   station from anywhere in FM. */
+static void open_hf_band_picker(void)
+{
+    ls_picker_open("SHORTWAVE BAND", hf_band_picked);
+    const int cur = hf_on() ? fm_hf_band_find(FM.freq_hz) : -1;
+    for (int i = 0; i < fm_hf_band_count(); ++i) {
+        const fm_hf_band_t *b = fm_hf_band(i);
+        char detail[24];
+        snprintf(detail, sizeof(detail), "%s%s %.3f", i == cur ? "* " : "",
+                 fm_hf_demod_label(b->demod), b->dial_hz / 1e6);
+        ls_picker_add(b->name, detail);
+    }
+}
+
 static int mode_page(fm_mode_t mode)
 {
     if (mode == FM_MODE_SCAN) return 2;
@@ -230,6 +299,7 @@ static bool choose_mode(fm_mode_t mode)
 static void mode_picked(int index)
 {
     if (index >= 0 && index < N_MODES) choose_mode(FM_MODES[index]);
+    else if (index == N_MODES) open_hf_band_picker();
 }
 
 static void open_mode_picker(void)
@@ -237,7 +307,10 @@ static void open_mode_picker(void)
     ls_picker_open(FM.mode==FM_MODE_SCAN ? "STOP SWEEP / MODE" : "RECEIVER MODE", mode_picked);
     for (int i = 0; i < N_MODES; ++i)
         ls_picker_add(fm_mode_label(FM_MODES[i]),
-                      FM.mode == FM_MODES[i] ? "selected" : FM.mode==FM_MODE_SCAN ? "stops sweep" : "select mode");
+                      FM.mode == FM_MODES[i] && !hf_on() ? "selected"
+                      : FM.mode==FM_MODE_SCAN ? "stops sweep" : "select mode");
+    /* Last, so every mode keeps its row: HF opens straight onto the bands. */
+    ls_picker_add("SHORTWAVE", hf_on() ? "selected - pick a band" : "HF bands: AM SSB CW");
 }
 
 static const ls_quick_t QUICK[] = {
@@ -265,6 +338,7 @@ static const ls_quick_t QUICK[] = {
 
 static uint32_t tune_step_hz(void)
 {
+    if (hf_on()) return fm_hf_step_at(FM.freq_hz);
     uint32_t chosen = settings_get_fm_step();
     if (chosen) return chosen;
     if (FM.mode == FM_MODE_WFM) return 100000;
@@ -286,7 +360,8 @@ static bool tune_step(int direction)
 {
     scan_engine_stop();
     int64_t hz = (int64_t)FM.freq_hz + direction * (int64_t)tune_step_hz();
-    if (hz < 24000000) hz = 24000000;
+    const int64_t floor_hz = FM.mode == FM_MODE_AM ? LS_HF_MIN_HZ : LS_RTL_TUNER_MIN_HZ;
+    if (hz < floor_hz) hz = floor_hz;
     if (hz > 1766000000) hz = 1766000000;
     ls_args_t args = {0};
     args.n = 1;
@@ -305,14 +380,17 @@ static bool tune_step(int direction)
 
 static void cycle_tune_step(void)
 {
-    settings_set_fm_step(ls_radio_tune_step_next(tune_step_hz()));
+    /* HF has its own raster, down to 10 Hz for SSB and CW. */
+    if (hf_on()) fm_hf_set_step(fm_hf_step_next(tune_step_hz()));
+    else settings_set_fm_step(ls_radio_tune_step_next(tune_step_hz()));
 }
 
 static void seek_tune(int direction)
 {
     if (scan_engine_seek_direction()) { scan_engine_stop(); return; }
     /* Seek uses normal LISTEN and its qualified squelch, as the scanner does. */
-    uint32_t lo = FM.lr_iq_active ? 104000000u : 24000000u;
+    uint32_t lo = FM.lr_iq_active ? 104000000u
+                : FM.mode == FM_MODE_AM ? LS_HF_MIN_HZ : LS_RTL_TUNER_MIN_HZ;
     uint32_t hi = 1766000000u;
     if (FM.scan_stop_hz > FM.scan_start_hz && FM.freq_hz >= FM.scan_start_hz &&
         FM.freq_hz <= FM.scan_stop_hz) {
@@ -340,13 +418,6 @@ static int kv(tui_surface *sf, tui_rect box, int x, int y, const char *k,
     x += (int)strlen(k) + 1;
     tui_put_str(sf, box, x, y, v, vattr);
     return x + (int)strlen(v) + 3;
-}
-
-static void field(tui_surface *sf, tui_rect a, int row, const char *l,
-                  const char *v, uint8_t la, uint8_t va)
-{
-    tui_put_str(sf, a, a.x + 2, a.y + row, l, la);
-    tui_put_str(sf, a, a.x + 12, a.y + row, v, va);
 }
 
 /* WHAT EACH MODE CAN SAY ABOUT THE SIGNAL AND THE SQUELCH.
@@ -390,18 +461,29 @@ static float sig_level(sig_kind_t kind)
     return s;
 }
 
+/* HF's squelch opens at a level on the dB meter: say the level. */
+static bool hf_squelch_text(char *out, size_t n)
+{
+    if (!hf_on()) return false;
+    if (lakeshark_fm_squelch_get() <= 0) snprintf(out, n, "OPEN");
+    else snprintf(out, n, "%.0fdB", (double)fm_hf_squelch_dbfs(lakeshark_fm_squelch_get()));
+    return true;
+}
+
 static void squelch_text(char *out, size_t n)
 {
+    if (hf_squelch_text(out, n)) return;
     switch (sig_kind()) {
-    case SIG_QUIETING: snprintf(out, n, "%d%%", FM.squelch_tenths); break;
-    case SIG_CARRIER:  snprintf(out, n, "%d.%d%%", FM.squelch_tenths / 10,
-                                FM.squelch_tenths % 10); break;
+    case SIG_QUIETING: snprintf(out, n, "%d%%", lakeshark_fm_squelch_get()); break;
+    case SIG_CARRIER:  snprintf(out, n, "%d.%d%%", lakeshark_fm_squelch_get() / 10,
+                                lakeshark_fm_squelch_get() % 10); break;
     default:           snprintf(out, n, "--"); break;
     }
 }
 
 static const char *squelch_hint(void)
 {
+    if (hf_on()) return "0 open; 1-100 is -110 to -20 dBFS";
     return FM.mode == FM_MODE_AM ? "carrier level, tenths of a percent"
                                  : "0 opens on anything, 100 on nothing";
 }
@@ -412,14 +494,7 @@ static const char *squelch_hint(void)
    chip is counted in the ls_field snapshot, which has packets heard and pages
    but no lock and no codeword errors. Every other mode runs no pager decoder,
    and then there is nothing to show. */
-typedef struct {
-    bool     on;
-    bool     chip;      /* packets heard and pages, no lock or error count */
-    bool     tape;      /* counts codewords, which is what the tape draws  */
-    bool     sync;
-    int      baud;      /* 0 where the decoder reports no rate             */
-    uint32_t pages, errs, heard;
-} pager_counts_t;
+typedef rx_pager_counts_t pager_counts_t;
 
 static pager_counts_t pager_counts(void)
 {
@@ -435,6 +510,9 @@ static pager_counts_t pager_counts(void)
         c.baud = FM.pocsag_lock_baud ? FM.pocsag_lock_baud : FM.pocsag_baud;
         c.pages = FM.pocsag_pages;
         c.errs = FM.pocsag_cw_errs;
+        c.frames = FM.pocsag_frames;
+        c.addr = FM.pocsag_addr;
+        c.msg = FM.pocsag_msg;
     } else if (FM.mode == FM_MODE_FLEX) {
         c.on = true;
         c.sync = FM.flex_sync;
@@ -504,8 +582,8 @@ static void draw_level(tui_surface *sf, tui_rect box, int x0, int y, int w,
        squelch is open, below it the audio is muted. */
     /* On the bar's quieting scale (1 - noise), the gate's own curve: 0 and the
        low settings sit at the far left, open on anything. AM gates on level. */
-    const float open_below = FM.mode == FM_MODE_AM ? (float)(100 - FM.squelch_tenths) * 0.01f
-                                                   : fm_nfm_squelch_gate(FM.squelch_tenths);
+    const float open_below = FM.mode == FM_MODE_AM ? (float)(100 - lakeshark_fm_squelch_get()) * 0.01f
+                                                   : fm_nfm_squelch_gate(lakeshark_fm_squelch_get());
     int gate = (int)((1.0f - open_below) * (float)bw);
     if (gate < 0) gate = 0;
     if (gate >= bw) gate = bw - 1;
@@ -556,6 +634,11 @@ static int draw_extra(tui_surface *sf, tui_rect box, int x, int y, bool step_too
             x = kv(sf, box, x, y, "SYNC", pc.sync ? "LOCKED" : "hunting",
                    pc.sync ? good : dim);
         }
+    } else if (FM.mode == FM_MODE_WFM) {
+        /* The station's name and type, as RDS gives them. */
+        char station[40];
+        fm_rds_glass_line(station, sizeof(station));
+        if (station[0]) x = kv(sf, box, x, y, "RDS", station, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
     } else if (FM.mode == FM_MODE_LISTEN && FM.tone_show) {
         const bool lock = FM.tone_detected.selection != 0;
         fm_tone_label(FM.tone_detected.selection, buf, sizeof(buf));
@@ -566,7 +649,8 @@ static int draw_extra(tui_surface *sf, tui_rect box, int x, int y, bool step_too
     /* The step [ and ] move by: nowhere else says it. */
     if (step_too && FM.mode != FM_MODE_SCAN && x + 12 <= box.x + box.w - 2) {
         const uint32_t step = tune_step_hz();
-        if (step % 1000u) snprintf(buf, sizeof(buf), "%u.%uk", (unsigned)(step / 1000u),
+        if (step < 1000u) snprintf(buf, sizeof(buf), "%uHz", (unsigned)step);
+        else if (step % 1000u) snprintf(buf, sizeof(buf), "%u.%uk", (unsigned)(step / 1000u),
                                    (unsigned)(step % 1000u / 100u));
         else snprintf(buf, sizeof(buf), "%uk", (unsigned)(step / 1000u));
         x = kv(sf, box, x, y, "STEP", buf, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
@@ -629,7 +713,7 @@ static void draw_vfo(tui_surface *sf, tui_rect r)
     }
     if (FM.lr_iq_active) {
         char loss[80];
-        snprintf(loss, sizeof(loss), "LR IQ lost >=%lu gaps %lu audio %lu",
+        LS_SNPRINTF(t_scr_fm_lr_iq_lost_lu, loss, sizeof(loss), "LR IQ lost >=%lu gaps %lu audio %lu",
             (unsigned long)FM.lr_lost_pairs, (unsigned long)FM.lr_gaps,
             (unsigned long)FM.lr_audio_drops);
         /* The gate's row is available in the compact landscape VFO too. */
@@ -637,157 +721,23 @@ static void draw_vfo(tui_surface *sf, tui_rect r)
     } else if (!wide && y <= last) draw_extra(sf, r, x0, y, true);
 }
 
-/* The codeword tape. */
-
-#define TAPE_MAX 256
-
-static uint8_t  s_tape[TAPE_MAX];
-static int      s_tape_n;                  /* marks held, up to TAPE_MAX */
-static uint32_t s_seen_frames, s_seen_addr, s_seen_msg, s_seen_err;
-static bool     s_seen_valid;
-
-enum { TAPE_IDLE = 0, TAPE_ADDR, TAPE_MSG, TAPE_ERR };
-
-static void tape_push(uint8_t mark, int n)
-{
-    /* A burst is capped: a counter that jumped by thousands because the
-       screen was away means the tape cannot show what happened in between,
-       and filling it entirely with one mark would claim that it can. */
-    if (n > TAPE_MAX / 4) n = TAPE_MAX / 4;
-    for (int i = 0; i < n; i++) {
-        if (s_tape_n < TAPE_MAX) {
-            s_tape[s_tape_n++] = mark;
-        } else {
-            memmove(s_tape, s_tape + 1, TAPE_MAX - 1);
-            s_tape[TAPE_MAX - 1] = mark;
-        }
-    }
-}
-
-static void tape_sample(void)
-{
-    /* Only POCSAG on an SDR counts codewords. Anywhere else the tape holds
-       nothing, and the next time it does it starts from that count. */
-    if (!pager_counts().tape) { s_tape_n = 0; s_seen_valid = false; return; }
-
-    const uint32_t f = FM.pocsag_frames, a = FM.pocsag_addr;
-    const uint32_t m = FM.pocsag_msg,    e = FM.pocsag_cw_errs;
-
-    if (!s_seen_valid) {
-        s_seen_valid = true;
-        s_seen_frames = f; s_seen_addr = a; s_seen_msg = m; s_seen_err = e;
-        return;
-    }
-
-    /* Counters only go up, and a decoder restart takes them back to zero.
-       Treating that as a huge negative delta would push nothing; treating it
-       as a huge positive one would fill the tape. Re-baseline instead. */
-    if (f < s_seen_frames || a < s_seen_addr ||
-        m < s_seen_msg || e < s_seen_err) {
-        s_tape_n = 0;
-        s_seen_frames = f; s_seen_addr = a; s_seen_msg = m; s_seen_err = e;
-        return;
-    }
-
-    const uint32_t d_addr = a - s_seen_addr;
-    const uint32_t d_msg  = m - s_seen_msg;
-    const uint32_t d_err  = e - s_seen_err;
-    uint32_t d_frame = f - s_seen_frames;
-
-    /* The interesting ones first, then whatever frames are left over as
-       idle - so a batch that carried one address among fifteen idles reads
-       as one address among fifteen idles. */
-    tape_push(TAPE_ERR,  (int)d_err);
-    tape_push(TAPE_ADDR, (int)d_addr);
-    tape_push(TAPE_MSG,  (int)d_msg);
-
-    const uint32_t named = d_addr + d_msg + d_err;
-    if (d_frame > named) d_frame -= named; else d_frame = 0;
-    /* A frame is sixteen codewords; the tape is codewords. */
-    tape_push(TAPE_IDLE, (int)(d_frame * 16));
-
-    s_seen_frames = f; s_seen_addr = a; s_seen_msg = m; s_seen_err = e;
-}
-
+/* The codeword tape: rx_panels/rx_tape.c, shared with the RADIO head. */
+static EXT_RAM_BSS_ATTR rx_tape_t s_tape;
+static void tape_sample(void) { const pager_counts_t pc = pager_counts(); rx_tape_sample(&s_tape, &pc); }
 static void draw_tape(tui_surface *sf, tui_rect a)
 {
-    const uint8_t dim = LS_ATTR_DIM;
-    const uint8_t yel  = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t wht  = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t red  = TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t good = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
-    char buf[48];
-
-    ls_panel_box(sf, a, "STREAM", TUI_CYAN);
-    if (a.h < 5 || a.w < 24) return;
-
-    /* The counters go on the right, against the frame, so the tape gets the
-       width. Sync first: it is the one that decides whether any of the rest
-       means anything. */
-    const int cw = 13;
-    const int tw = a.w - 2 - cw;
-    if (tw < 8) return;
-
     const pager_counts_t pc = pager_counts();
-    const int cx = a.x + tw + 2;
-    int row = 1;
-    if (pc.chip) {
-        snprintf(buf, sizeof(buf), "%lu rx", (unsigned long)pc.heard);
-        tui_put_str(sf, a, cx, a.y + row++, buf, pc.heard ? good : dim);
-    } else {
-        tui_put_str(sf, a, cx, a.y + row++, ls_tr(pc.sync ? "SYNC" : "no sync"),
-                    pc.sync ? good : dim);
-    }
-    if (pc.baud) {
-        snprintf(buf, sizeof(buf), "%d bd", pc.baud);
-        tui_put_str(sf, a, cx, a.y + row++, buf, dim);
-    }
-    snprintf(buf, sizeof(buf), "%lu pg", (unsigned long)pc.pages);
-    tui_put_str(sf, a, cx, a.y + row++, buf, pc.pages ? yel : dim);
-    if (!pc.chip && row < a.h - 2) {
-        snprintf(buf, sizeof(buf), "%lu err", (unsigned long)pc.errs);
-        tui_put_str(sf, a, cx, a.y + row++, buf, pc.errs ? red : dim);
-    }
-
-    if (!pc.tape) {
-        snprintf(buf, sizeof(buf), "%.*s", tw - 1, "tape: POCSAG on an SDR");
-        tui_put_str(sf, a, a.x + 2, a.y + 1, buf, dim);
-        return;
-    }
-
-    const int rows = a.h - 2;
-    const int cap  = rows * tw;
-    int start = s_tape_n - cap;
-    if (start < 0) start = 0;
-
-    for (int i = start; i < s_tape_n; i++) {
-        const int at = i - start;
-        const int x = a.x + 1 + (at % tw);
-        const int y = a.y + 1 + (at / tw);
-        if (y >= a.y + a.h - 1) break;
-
-        char ch; uint8_t attr;
-        switch (s_tape[i]) {
-        case TAPE_ADDR: ch = 'A'; attr = yel;  break;
-        case TAPE_MSG:  ch = '#'; attr = wht;  break;
-        case TAPE_ERR:  ch = 'X'; attr = red;  break;
-        default:        ch = '.'; attr = dim;  break;
-        }
-        tui_put_char(sf, a, x, y, ch, attr);
-    }
-
-    if (!s_tape_n)
-        tui_put_str(sf, a, a.x + 2, a.y + 1, ls_tr("no codewords yet"), dim);
+    rx_tape_draw(&s_tape, &pc, sf, a);
 }
 
 /* The pages list, and the page behind it. */
 
-static int  s_page_sel;
-static int  s_page_top;          /* first list row shown                  */
-static bool s_page_open;         /* the full view of the selected page    */
-static tui_rect s_page_rect;     /* where the list landed, for taps       */
-static tui_rect s_page_back;     /* the BACK target on the detail view    */
-static tui_rect s_pager_hit[3];
+/* The list and its selection: rx_panels/rx_pages.c, shared with the RADIO
+   head. This screen's source is the FM ring, the chip's pages or ACARS. */
+static rx_pages_t s_pv;
+static int page_count(void);
+static const fm_page_t *page_at(int i);
+static const rx_pages_src_t FM_PAGES = { .count = page_count, .at = page_at };
 
 /* Newest first, which is the order the list shows and the order a selection
    index means. */
@@ -838,229 +788,20 @@ static int page_count(void)
     return n;
 }
 
-/* HOLDING THE SELECTION ON ITS MESSAGE.
-
-   The selection is an index into a newest-first list, so each page that
-   arrives moves every message one place down and the index then names the
-   next newer one: a page being read turned into another under the reader.
-   While anything but the newest is selected, or a page is open, the message's
-   own time and address are kept as well, and found again before the next
-   draw, key or tap. Messages only move down the list, so the search starts
-   where the selection was; an open message that has left the list shows
-   an expired state until explicit navigation. */
-static int64_t  s_sel_ts;
-static uint32_t s_sel_addr;
-static bool     s_sel_held;
-static bool     s_sel_missing;
-
-static void pager_refind(void)
-{
-    if (!s_sel_held) return;
-    s_sel_missing = true;
-    const int count = page_count();
-    for (int i = s_page_sel; i < count; i++) {
-        const fm_page_t *p = page_at(i);
-        if (p && p->ts_us == s_sel_ts && p->address == s_sel_addr) {
-            s_page_top += i - s_page_sel;
-            s_page_sel = i;
-            s_sel_missing = false;
-            return;
-        }
-    }
-}
-
-static void pager_remember(void)
-{
-    if (s_page_open && s_sel_missing) return;
-    const fm_page_t *p = (s_page_sel > 0 || s_page_open) ? page_at(s_page_sel)
-                                                         : NULL;
-    s_sel_missing = false;
-    s_sel_held = p != NULL;
-    if (p) { s_sel_ts = p->ts_us; s_sel_addr = p->address; }
-}
-
-static void pager_move(int delta)
-{
-    if (delta) s_sel_missing = false;
-    const int count = page_count();
-    s_page_sel += delta;
-    if (s_page_sel >= count) s_page_sel = count - 1;
-    if (s_page_sel < 0) s_page_sel = 0;
-}
-
-static int draw_pager_controls(tui_surface *sf, tui_rect area)
-{
-    memset(s_pager_hit, 0, sizeof(s_pager_hit));
-    const int height = ls_tui_is_wide() ? 3 : 5;
-    if (area.w < 24 || area.h < height + 4) return 0;
-    pager_move(0);
-    const int count = page_count();
-    char center[32];
-    snprintf(center, sizeof(center), "%s %d/%d", s_page_open ? "LIST" : "OPEN",
-             count ? s_page_sel + 1 : 0, count);
-    const char *labels[] = {"UP", center, "DOWN"};
-    const bool enabled[] = {s_page_sel > 0, count > 0, s_page_sel + 1 < count};
-    for (int i = 0; i < 3; ++i) {
-        int x0 = area.x + area.w * i / 3;
-        int x1 = area.x + area.w * (i + 1) / 3;
-        tui_rect box = tui_rect_make(x0, area.y + area.h - height, x1 - x0, height);
-        s_pager_hit[i] = box;
-        uint8_t attr = enabled[i] ? TUI_ATTR(TUI_BLACK, TUI_CYAN)
-                                  : TUI_ATTR(TUI_WHITE, TUI_BLACK);
-        tui_box(sf, box, NULL, TUI_ATTR(enabled[i] ? TUI_CYAN : TUI_WHITE, TUI_BLACK));
-        for (int y = box.y + 1; y < box.y + box.h - 1; ++y)
-            for (int x = box.x + 1; x < box.x + box.w - 1; ++x)
-                tui_put_char(sf, box, x, y, ' ', attr);
-        tui_put_str(sf, box, box.x + (box.w - (int)strlen(labels[i])) / 2,
-                    box.y + box.h / 2, labels[i], attr);
-    }
-    return height + 1;
-}
-
-/* One row per page in landscape, three in portrait: the same measurement the
-   mesh node list and the mesh settings use, and for the same reason - one row
-   of a 10x17 cell is 1.3 mm and not a target. */
-static int page_row_h(void) { return ls_tui_is_wide() ? 1 : 3; }
-
-/* Which page a row belongs to. Draw and hit test both go through this so
-   they cannot disagree about where a row is. */
-static int page_at_row(tui_rect r, int row)
-{
-    const int i = (row - r.y - 1) / page_row_h();
-    return i >= 0 ? s_page_top + i : -1;
-}
-
-static const char *type_word(char t)
-{
-    switch (t) {
-    case 'A': return "ALPHANUMERIC";
-    case 'N': return "NUMERIC";
-    case 'T': return "TONE ONLY";
-    default:  return "NOT SURE - see below";
-    }
-}
-
-/* The page, whole.
-
-   Wrapped at a word where there is one, because a message broken mid-word
-   every forty characters is harder to read than the truncation it replaced.
-   Everything the decoder recorded is on here: a page that looks wrong is
-   either the wrong baud or the wrong classification, and those are the two
-   fields that say which. */
-static void draw_page_detail(tui_surface *sf, tui_rect pane)
-{
-    const uint8_t lab   = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t val   = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t txt   = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t dim   = TUI_ATTR(TUI_WHITE, TUI_BLACK);
-    const uint8_t warn  = TUI_ATTR(TUI_YELLOW, TUI_BLACK);
-
-    s_page_back = tui_rect_make(0, -1, 0, 0);
-
-    const fm_page_t *pg = s_sel_missing ? NULL : page_at(s_page_sel);
-    if (!pg) {
-        ls_panel_box(sf, pane, "PAGE", TUI_CYAN);
-        tui_put_str(sf, pane, pane.x + 2, pane.y + 2, ls_tr("that page is gone"), dim);
-        s_page_back = tui_rect_make(pane.x + 1, pane.y + 4, pane.w - 2, 3);
-        tui_box(sf, s_page_back, ls_tr("BACK"), lab);
-        return;
-    }
-
-    /* Wrapped FIRST, so the box can be the size of what is in it.
-
-       A box stretched over the whole pane with a line of text near the top
-       is the fault recorded on the P25 spectrum notice: forty-five
-       rows of empty rectangle whose bottom edge lands on the page buttons.
-       A page is six fields and a couple of lines; it should look like it. */
-#define DETAIL_LINES 8
-    char wrap[DETAIL_LINES][96];
-    int nlines = 0;
-    {
-
-        nlines = ls_wrap_text(pg->text, pane.w - 4,
-                              (char *)wrap, sizeof(wrap[0]), DETAIL_LINES);
-        if (!nlines) snprintf(wrap[nlines++], sizeof(wrap[0]), "%s", "(no text)");
-    }
-
-    const bool unsure = (pg->type == '?');
-    const int bh = ls_tui_is_wide() ? 1 : 3;
-    /* border, five fields, blank, the unsure line, the message, blank, the
-       way back, border. */
-    int want = 1 + 5 + 1 + (unsure ? 2 : 0) + nlines + 1 + bh + 1;
-    if (want > pane.h) want = pane.h;
-
-    tui_rect area = tui_rect_make(pane.x, pane.y, pane.w, want);
-    ls_panel_box(sf, area, "PAGE", TUI_CYAN);
-
-    int y = area.y + 1;
-    char buf[64];
-
-    snprintf(buf, sizeof(buf), "%lu", (unsigned long)pg->address);
-    field(sf, area, y - area.y, ls_tr("RIC"), buf, lab, val);
-    y++;
-
-    field(sf, area, y - area.y, ls_tr("TYPE"), type_word(pg->type), lab,
-          unsure ? warn : val);
-    y++;
-
-    snprintf(buf, sizeof(buf), "%u", (unsigned)pg->function);
-    field(sf, area, y - area.y, ls_tr("FUNCTION"), buf, lab, val);
-    y++;
-
-    /* The baud is on the screen for the first time. The receiver
-       runs three decoders at once and they all write this one list, so
-       "which decoder produced this" was unanswerable from the panel - and
-       it is the first question to ask about a page that reads as rubbish. */
-    snprintf(buf, sizeof(buf), "%u", (unsigned)pg->baud);
-    field(sf, area, y - area.y, ls_tr("BAUD"), pg->baud ? buf : "-", lab, val);
-    y++;
-
-    field(sf, area, y - area.y, ls_tr("PROTOCOL"),
-          pg->protocol == FM_PAGE_PROTOCOL_FLEX ? "FLEX" : "POCSAG", lab, val);
-    y += 2;
-
-    if (unsure && y < area.y + area.h - 2) {
-        tui_put_str(sf, area, area.x + 2, y,
-                    ls_tr("not sure this is readable - see BAUD"), warn);
-        y += 2;
-    }
-
-    for (int i = 0; i < nlines && y < area.y + area.h - 1 - bh; i++, y++)
-        tui_put_str(sf, area, area.x + 2, y, wrap[i], txt);
-
-    /* A way back that is a target, not a key. Portrait has no
-       keyboard, so ESC is not available and a page you cannot leave is worse
-       than no page. */
-    if (area.h > bh + 4) {
-        s_page_back = tui_rect_make(area.x + 2, area.y + area.h - 1 - bh,
-                                    area.w - 4, bh);
-        ls_fill_dither(sf, s_page_back, LS_DITHER_LIGHT, TUI_CYAN);
-        ls_dither_label(sf, s_page_back, (bh - 1) / 2, "BACK TO THE LIST",
-                        TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
-    }
-#undef DETAIL_LINES
-}
-
 static void draw_pages(tui_surface *sf, tui_rect whole)
 {
-    const uint8_t frame = TUI_ATTR(TUI_CYAN, TUI_BLACK);
-    const uint8_t sel   = TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT);
-    const uint8_t addr  = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t body  = TUI_ATTR(TUI_WHITE, TUI_BLACK);
-    const uint8_t dim = LS_ATTR_DIM;
-
-    pager_refind();
+    rx_pages_refind(&s_pv, &FM_PAGES);
     tape_sample();
 
-    s_page_rect = tui_rect_make(0, -1, 0, 0);
-    s_page_back = tui_rect_make(0, -1, 0, 0);
-    whole.h -= draw_pager_controls(sf, whole);
+    s_pv.list = tui_rect_make(0, -1, 0, 0);
+    s_pv.back = tui_rect_make(0, -1, 0, 0);
+    whole.h -= rx_pages_controls(&s_pv, &FM_PAGES, sf, whole);
 
     /* The full view takes the whole pane. It is one message and it
        wants the width and the height; the tape above it answers a different
        question and can wait. */
-    if (s_page_open) {
-        draw_page_detail(sf, whole);
+    if (s_pv.open) {
+        rx_pages_detail(&s_pv, &FM_PAGES, sf, whole);
         return;
     }
 
@@ -1076,82 +817,15 @@ static void draw_pages(tui_surface *sf, tui_rect whole)
         area = tui_rect_make(whole.x, whole.y + th, whole.w, whole.h - th);
     }
 
-    char box[40];
+    char box[40], why[64];
     if (s_lora_pager) snprintf(box, sizeof(box), "DECODED PAGES / %s", ls_rsel_name(LS_RSEL_LORA));
     else snprintf(box, sizeof(box), "DECODED PAGES");
-    tui_box(sf, area, box, frame);
-    s_page_rect = area;
-
-    const int count = page_count();
-    if (!count) {
-        tui_put_str(sf, area, area.x + 2, area.y + 2, ls_tr("listening..."), dim);
-        /* FLEX with the chip chosen: the chip reads POCSAG only, so FLEX
-           stays on the SDR, and says so rather than looking deaf. */
-        if (FM.mode == FM_MODE_FLEX && ls_rsel_saved(LS_RSEL_PAGER) == LS_RSEL_LORA) {
-            char why[64];
-            snprintf(why, sizeof(why), "FLEX needs an SDR; the %s reads POCSAG",
-                     ls_rsel_name(LS_RSEL_LORA));
-            tui_put_str(sf, area, area.x + 2, area.y + 3, why, dim);
-        }
-        return;
-    }
-
-    const int rh = page_row_h();
-    /* The last interior row carries the hint, so it is not a list row. */
-    const int rows = (area.h - 3) / rh;
-    if (rows < 1) return;
-
-    /* The window follows the selection instead of the selection
-       running off the end of the window. Without this the list showed the
-       newest `rows` pages and nothing else could ever be reached - which is
-       the "scrolling messages as they get cut" half of the report. */
-    if (s_page_sel < 0) s_page_sel = 0;
-    if (s_page_sel > count - 1) s_page_sel = count - 1;
-    if (s_page_sel < s_page_top) s_page_top = s_page_sel;
-    if (s_page_sel >= s_page_top + rows) s_page_top = s_page_sel - rows + 1;
-    if (s_page_top > count - rows) s_page_top = count - rows;
-    if (s_page_top < 0) s_page_top = 0;
-
-    for (int r = 0; r < rows; r++) {
-        const int i = s_page_top + r;
-        const fm_page_t *pg = page_at(i);
-        if (!pg) break;
-
-        const int top = area.y + 1 + r * rh;
-        const int y = top + (rh - 1) / 2;
-        const bool on = (i == s_page_sel);
-
-        if (on) {
-            tui_fill(sf, tui_rect_make(area.x + 1, top, area.w - 2, rh), ' ', sel);
-        } else if (rh > 1) {
-
-            ls_fill_dither(sf, tui_rect_make(area.x + 1, top, area.w - 2, rh),
-                           LS_DITHER_LIGHT, TUI_CYAN);
-        }
-
-        char line[160];
-        snprintf(line, sizeof(line), "%-9lu %c %.*s", (unsigned long)pg->address,
-                 pg->type ? pg->type : '?', area.w - 16, pg->text);
-        tui_put_str(sf, area, area.x + 2, y, line, on ? sel : body);
-        if (!on) {
-            char id[12];
-            snprintf(id, sizeof(id), "%-9lu", (unsigned long)pg->address);
-            tui_put_str(sf, area, area.x + 2, y, id, addr);
-        }
-    }
-
-    /* Where you are in the list, and how to open one. A count that only
-       appears when something is off screen: a list that fits has nothing to
-       say about its own position. */
-    char hint[64];
-    if (count > rows)
-        snprintf(hint, sizeof(hint), "%d-%d of %d   %s", s_page_top + 1,
-                 s_page_top + rows, count,
-                 ls_tui_is_wide() ? "ENTER opens it" : "tap twice to open");
-    else
-        snprintf(hint, sizeof(hint), "%s",
-                 ls_tui_is_wide() ? "ENTER opens it" : "tap a page twice to open it");
-    tui_put_str(sf, area, area.x + 2, area.y + area.h - 2, hint, dim);
+    /* FLEX with the chip chosen: the chip reads POCSAG only, so FLEX
+       stays on the SDR, and says so rather than looking deaf. */
+    const bool flex_sdr = FM.mode == FM_MODE_FLEX && ls_rsel_saved(LS_RSEL_PAGER) == LS_RSEL_LORA;
+    if (flex_sdr) LS_SNPRINTF(t_scr_fm_flex_needs_an_sdr, why, sizeof(why), "FLEX needs an SDR; the %s reads POCSAG",
+                           ls_rsel_name(LS_RSEL_LORA));
+    rx_pages_list(&s_pv, &FM_PAGES, sf, area, box, flex_sdr ? why : NULL);
 }
 
 static void draw_sweep(tui_surface *sf, tui_rect area)
@@ -1172,7 +846,7 @@ static void draw_sweep(tui_surface *sf, tui_rect area)
            is not there. */
         char line[48];
         if (FM.mode == FM_MODE_SCAN && FM.scan_tunes > 0)
-            snprintf(line, sizeof(line), "sweeping: tune %d of %d",
+            LS_SNPRINTF(t_scr_fm_sweeping_tune_d_of, line, sizeof(line), "sweeping: tune %d of %d",
                      FM.scan_idx + 1, FM.scan_tunes);
         else
             snprintf(line, sizeof(line), "%s", ls_tui_is_wide() ? "W starts the band sweep" : "Tap RUN SWEEP to start");
@@ -1184,50 +858,50 @@ static void draw_sweep(tui_surface *sf, tui_rect area)
 
 static void draw_acars(tui_surface *sf, tui_rect area)
 {
-    pager_refind();
+    rx_pages_refind(&s_pv, &FM_PAGES);
     const uint8_t val = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
     const uint8_t lab = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
     char buf[96];
     const acars_state_t *state = acars_app_state();
-    s_page_rect = s_page_back = tui_rect_make(0, -1, 0, 0);
-    area.h -= draw_pager_controls(sf, area);
+    s_pv.list = s_pv.back = tui_rect_make(0, -1, 0, 0);
+    area.h -= rx_pages_controls(&s_pv, &FM_PAGES, sf, area);
     ls_panel_box(sf, area, "MESSAGES", TUI_CYAN);
-    snprintf(buf, sizeof(buf), "DELIVERED %lu  BAD CRC %lu",
+    LS_SNPRINTF(t_scr_fm_delivered_lu_bad_crc, buf, sizeof(buf), "DELIVERED %lu  BAD CRC %lu",
              (unsigned long)state->n_delivered, (unsigned long)state->n_bad_crc);
     tui_put_str(sf, area, area.x + 2, area.y + 1, buf, lab);
     snprintf(buf, sizeof(buf), "SYNC %lu", (unsigned long)state->n_synced);
     tui_put_str(sf, area, area.x + 2, area.y + 2, buf, lab);
-    if (s_page_open) {
-        const acars_msg_out_t *msg = s_sel_missing ? NULL : acars_at(s_page_sel);
-        s_page_back = tui_rect_make(area.x + 1, area.y + area.h - 4, area.w - 2, 3);
-        tui_box(sf, s_page_back, ls_tr("BACK"), lab);
+    if (s_pv.open) {
+        const acars_msg_out_t *msg = s_pv.missing ? NULL : acars_at(s_pv.sel);
+        s_pv.back = tui_rect_make(area.x + 1, area.y + area.h - 4, area.w - 2, 3);
+        tui_box(sf, s_pv.back, ls_tr("BACK"), lab);
         if (!msg) {
             tui_put_str(sf, area, area.x + 2, area.y + 4, ls_tr("that message is gone"), val);
             return;
         }
-        snprintf(buf, sizeof(buf), "%s  LABEL %s  BLOCK %c", msg->reg, msg->label, msg->block_id);
+        LS_SNPRINTF(t_scr_fm_s_label_s_block, buf, sizeof(buf), "%s  LABEL %s  BLOCK %c", msg->reg, msg->label, msg->block_id);
         tui_put_str(sf, area, area.x + 2, area.y + 4, buf, lab);
         static EXT_RAM_BSS_ATTR char wrap[16][96];
         int width = area.w - 4;
         if (width > 95) width = 95;
         const int lines = ls_wrap_text(msg->text, width, (char *)wrap, 96, 16);
-        for (int i = 0; i < lines && area.y + 6 + i < s_page_back.y; ++i)
+        for (int i = 0; i < lines && area.y + 6 + i < s_pv.back.y; ++i)
             tui_put_str(sf, area, area.x + 2, area.y + 6 + i, wrap[i], val);
         return;
     }
-    s_page_rect = tui_rect_make(area.x, area.y + 3, area.w, area.h - 3);
-    const int rows = (s_page_rect.h - 2) / page_row_h();
-    if (s_page_sel < s_page_top) s_page_top = s_page_sel;
-    if (s_page_sel >= s_page_top + rows) s_page_top = s_page_sel - rows + 1;
-    if (s_page_top < 0) s_page_top = 0;
+    s_pv.list = tui_rect_make(area.x, area.y + 3, area.w, area.h - 3);
+    const int rows = (s_pv.list.h - 2) / rx_pages_row_h();
+    if (s_pv.sel < s_pv.top) s_pv.top = s_pv.sel;
+    if (s_pv.sel >= s_pv.top + rows) s_pv.top = s_pv.sel - rows + 1;
+    if (s_pv.top < 0) s_pv.top = 0;
     if (!page_count()) tui_put_str(sf, area, area.x + 2, area.y + 4, ls_tr("no messages yet"), val);
     for (int row = 0; row < rows; ++row) {
-        const int index = s_page_top + row;
+        const int index = s_pv.top + row;
         const acars_msg_out_t *msg = acars_at(index);
         if (!msg) break;
         snprintf(buf, sizeof(buf), "%s %s %s", msg->reg, msg->label, msg->text);
-        tui_put_str(sf, area, area.x + 2, s_page_rect.y + 1 + row * page_row_h(),
-                    buf, index == s_page_sel ? TUI_ATTR(TUI_BLACK, TUI_CYAN) : val);
+        tui_put_str(sf, area, area.x + 2, s_pv.list.y + 1 + row * rx_pages_row_h(),
+                    buf, index == s_pv.sel ? TUI_ATTR(TUI_BLACK, TUI_CYAN) : val);
     }
 }
 
@@ -1247,6 +921,44 @@ static const ls_btn_t PAGES[] = {
 static bool pager_mode(void)
 {
     return FM.mode == FM_MODE_POCSAG || FM.mode == FM_MODE_FLEX || FM.mode == FM_MODE_SAME || FM.mode == FM_MODE_APRS || FM.mode == FM_MODE_AIS || FM.mode == FM_MODE_ACARS;
+}
+
+/* The broadcast extras' second page (fm_rds_view.c and friends): drawn,
+   keyed and touched by their own files, never by the pager list. */
+/* SSTV shows on LISTEN with the option on, and on AM while no channel scan
+   is running (the scan's page is AM's otherwise). */
+static bool sstv_page(void)
+{
+    if (!fm_bcast_opt(FM_BC_SSTV)) return false;
+    if (FM.mode == FM_MODE_LISTEN) return true;
+    if (FM.mode != FM_MODE_AM) return false;
+    fm_air_status_t air;
+    fm_air_status(&air);
+    return air.preset == AIR_PRESET_OFF;
+}
+static bool own_page(void)
+{
+    return FM.mode == FM_MODE_WFM || FM.mode == FM_MODE_AM || sstv_page();
+}
+static const char *own_tab(void)
+{
+    if (sstv_page()) return "PICTURE";
+    return FM.mode == FM_MODE_AM ? fm_air_tab() : "STATION";
+}
+static void own_draw(tui_surface *sf, tui_rect body)
+{
+    if (sstv_page()) { fm_sstv_draw(sf, body); return; }
+    if (FM.mode == FM_MODE_AM) fm_air_draw(sf, body);
+    else fm_rds_draw(sf, body);
+}
+static bool own_key(ls_tk_t k, char ch)
+{
+    return !sstv_page() && FM.mode == FM_MODE_AM && fm_air_key(k, ch);
+}
+static bool own_touch(int col, int row)
+{
+    if (!sstv_page() && FM.mode == FM_MODE_AM) return fm_air_touch(col, row);
+    return true;
 }
 
 static tui_rect s_bar;
@@ -1309,7 +1021,10 @@ static void freq_entry_delete(void)
 /* Parse MHz as integer Hz, with at most six fractional places. */
 static bool freq_entry_hz(uint32_t *out)
 {
-    return ls_freq_entry_hz(s_freq_entry, out);
+    /* HF frequencies are typed in AM mode (SHORTWAVE puts it there); NFM
+       and the decoders keep the tuner's 24 MHz floor. */
+    return ls_freq_entry_hz_min(s_freq_entry, FM.mode == FM_MODE_AM ? LS_HF_MIN_HZ
+                                                                     : LS_RTL_TUNER_MIN_HZ, out);
 }
 
 static void freq_entry_tune(void)
@@ -1412,13 +1127,14 @@ static void o_show_gain(const ls_opt_t *o, char *out, size_t n)
     else snprintf(out, n, "%d.%d dB", FM.gain_tenths / 10, FM.gain_tenths % 10);
 }
 
-static double o_squelch(const ls_opt_t *o) { (void)o; return FM.squelch_tenths; }
+static double o_squelch(const ls_opt_t *o) { (void)o; return lakeshark_fm_squelch_get(); }
 static void o_set_squelch(const ls_opt_t *o, double v) { (void)o; set_squelch(v); }
 static void o_show_squelch(const ls_opt_t *o, char *out, size_t n)
 {
     (void)o;
-    if (FM.mode == FM_MODE_AM) snprintf(out, n, "%d.%d%%", FM.squelch_tenths / 10, FM.squelch_tenths % 10);
-    else snprintf(out, n, "%d%%", FM.squelch_tenths);
+    if (hf_squelch_text(out, n)) return;
+    if (FM.mode == FM_MODE_AM) snprintf(out, n, "%d.%d%%", lakeshark_fm_squelch_get() / 10, lakeshark_fm_squelch_get() % 10);
+    else snprintf(out, n, "%d%%", lakeshark_fm_squelch_get());
 }
 
 /* The SDR's decoders run 512, 1200 and 2400 at once on AUTO; the chip hears
@@ -1530,6 +1246,9 @@ static const ls_opt_ctx_t CTX_TONE = {
 static const char *const LR_CHANNELS[] = { "12.5 kHz", "25 kHz" };
 static int o_lr_channel(const ls_opt_t *o) { (void)o; return FM.lr_channel_hz == 12500 ? 0 : 1; }
 static void o_set_lr_channel(const ls_opt_t *o, int value) { (void)o; FM.lr_channel_hz = value ? 25000 : 12500; }
+/* SSTV listens on NFM, AM and the HF chain's USB/LSB alike. */
+#define OPT_SSTV { .label = "SSTV PICTURES", .kind = LS_OPT_TOGGLE, .get = fm_sstv_opt_get, \
+                   .set = fm_sstv_opt_set }
 static const ls_opt_t OPT_NFM[] = {
     { .label = "CHANNEL", .kind = LS_OPT_CYCLE, .radios = LS_OPT_LORA,
       .names = LR_CHANNELS, .n = 2, .get = o_lr_channel, .set = o_set_lr_channel },
@@ -1538,14 +1257,108 @@ static const ls_opt_t OPT_NFM[] = {
     { .label = "SQUELCH", .kind = LS_OPT_LEVEL, .step = 1, .show = o_show_squelch, .num = o_squelch, .set_num = o_set_squelch,
       .lo = 0, .hi = 100, .unit = "0 opens on anything, 100 on nothing" },
     OPT_GAIN,
+    LS_RFFE_MENUS,
+    OPT_SSTV,
 };
+/* HF rows. They sit on AM's list because HF is AM mode on the HF chain;
+   while the chain is off (plain AM on airband) all but DEMOD say why not,
+   and DEMOD is how SSB on VHF gets there. */
+static const char *hf_only(const ls_opt_t *o)
+{
+    (void)o;
+    return hf_on() ? NULL : "below 30 MHz, or SSB/CW";
+}
+static const char *const HF_DEMODS[] = { "AM", "SAM", "USB", "LSB", "CW" };
+static int o_hf_demod(const ls_opt_t *o) { (void)o; return fm_hf_get()->demod; }
+static void o_set_hf_demod(const ls_opt_t *o, int v) { (void)o; fm_hf_set_demod(v); }
+static int o_hf_narrow(const ls_opt_t *o) { (void)o; return fm_hf_get()->narrow; }
+static void o_set_hf_narrow(const ls_opt_t *o, int v) { (void)o; fm_hf_set_narrow(v != 0); }
+static void o_show_hf_filter(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    const uint32_t w = fm_hf_filter_hz(fm_hf_get());
+    if (w < 1000) snprintf(out, n, "%u Hz", (unsigned)w);
+    else snprintf(out, n, "%u.%u kHz", (unsigned)(w / 1000), (unsigned)(w % 1000 / 100));
+}
+static const char *const HF_AGCS[] = { "FAST", "SLOW", "OFF" };
+static int o_hf_agc(const ls_opt_t *o) { (void)o; return fm_hf_get()->agc; }
+static void o_set_hf_agc(const ls_opt_t *o, int v) { (void)o; fm_hf_set_agc(v); }
+static const char *const HF_NBS[] = { "OFF", "LOW", "HIGH" };
+static int o_hf_nb(const ls_opt_t *o) { (void)o; return fm_hf_get()->nb; }
+static void o_set_hf_nb(const ls_opt_t *o, int v) { (void)o; fm_hf_set_nb(v); }
+static double o_hf_rit(const ls_opt_t *o) { (void)o; return fm_hf_get()->rit_hz; }
+static void o_set_hf_rit(const ls_opt_t *o, double v) { (void)o; fm_hf_set_rit((int)(v >= 0 ? v + 0.5 : v - 0.5)); }
+static void o_show_hf_rit(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    snprintf(out, n, "%+d Hz", fm_hf_get()->rit_hz);
+}
+static double o_hf_pitch(const ls_opt_t *o) { (void)o; return fm_hf_get()->pitch_hz; }
+static void o_set_hf_pitch(const ls_opt_t *o, double v) { (void)o; fm_hf_set_pitch((int)(v + 0.5)); }
+static const char *cw_only(const ls_opt_t *o)
+{
+    (void)o;
+    return fm_hf_get()->demod == FM_HF_CW ? NULL : "CW only";
+}
+static void o_hf_bands(const ls_opt_t *o) { (void)o; open_hf_band_picker(); }
+static void o_show_hf_band(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    snprintf(out, n, "%s", hf_on() ? hf_band_word() : "--");
+}
+static const ls_opt_t OPT_HF_MORE[] = {
+    { .label = "AGC", .kind = LS_OPT_CYCLE, .names = HF_AGCS, .n = 3,
+      .get = o_hf_agc, .set = o_set_hf_agc, .why_not = hf_only, .step = 1 },
+    { .label = "NOISE BLANKER", .kind = LS_OPT_CYCLE, .names = HF_NBS, .n = 3,
+      .get = o_hf_nb, .set = o_set_hf_nb, .why_not = hf_only, .step = 1 },
+    { .label = "CW PITCH", .kind = LS_OPT_LEVEL, .step = 10, .num = o_hf_pitch,
+      .set_num = o_set_hf_pitch, .lo = FM_HF_PITCH_MIN_HZ, .hi = FM_HF_PITCH_MAX_HZ,
+      .unit = "Hz the CW carrier is heard at", .why_not = cw_only },
+};
+static const ls_opt_ctx_t CTX_HF_MORE = {
+    .name = "HF", .job = LS_RSEL_FM, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_HF_MORE)
+};
+#define OPT_HF_DEMOD { .label = "DEMOD", .kind = LS_OPT_CYCLE, .names = HF_DEMODS, \
+                       .n = FM_HF_DEMOD_COUNT, .get = o_hf_demod, .set = o_set_hf_demod, .step = 1 }
+/* The airband / CB channel scanner: on both AM lists, since CB on 27 MHz
+   is on the HF chain until a scan starts and the scanner takes the LO. */
+#define OPT_AIR_SCAN { .label = "CHANNEL SCAN", .kind = LS_OPT_MENU, .radios = LS_OPT_SDR, \
+                       .sub = &fm_air_options, .show = fm_air_options_show }
+/* Plain AM (airband) keeps its list; DEMOD at the end is the way to SSB or
+   CW on VHF, which moves the receiver onto the HF chain and its own list. */
 static const ls_opt_t OPT_AM[] = {
     LS_CALLS_MENU,
     { .label = "SQUELCH", .kind = LS_OPT_LEVEL, .step = 1, .show = o_show_squelch, .num = o_squelch, .set_num = o_set_squelch,
       .lo = 0, .hi = 100, .unit = "carrier level, tenths of a percent" },
     OPT_GAIN,
+    OPT_HF_DEMOD,
+    LS_RFFE_MENUS,
+    OPT_AIR_SCAN,
+    OPT_SSTV,
 };
-static const ls_opt_t OPT_GAIN_ONLY[] = { OPT_GAIN };
+/* HF: what is changed while tuning first, the rest a level down. */
+static const ls_opt_t OPT_HF[] = {
+    OPT_HF_DEMOD,
+    { .label = "FILTER", .kind = LS_OPT_TOGGLE, .get = o_hf_narrow, .set = o_set_hf_narrow,
+      .show = o_show_hf_filter, .why_not = hf_only },
+    { .label = "CLARIFIER", .kind = LS_OPT_LEVEL, .step = FM_HF_RIT_STEP_HZ,
+      .num = o_hf_rit, .set_num = o_set_hf_rit, .show = o_show_hf_rit,
+      .lo = -FM_HF_RIT_MAX_HZ, .hi = FM_HF_RIT_MAX_HZ,
+      .unit = "Hz, moves what is heard, not the dial", .why_not = hf_only },
+    { .label = "BAND", .kind = LS_OPT_ACTION, .act = o_hf_bands, .show = o_show_hf_band,
+      .leaves = true },
+    { .label = "SQUELCH", .kind = LS_OPT_LEVEL, .step = 1, .show = o_show_squelch, .num = o_squelch, .set_num = o_set_squelch,
+      .lo = 0, .hi = 100, .unit = "0 open; 1-100 is -110 to -20 dBFS" },
+    OPT_GAIN,
+    { .label = "AGC / BLANKER", .kind = LS_OPT_MENU, .sub = &CTX_HF_MORE },
+    LS_CALLS_MENU,
+    LS_RFFE_MENUS,
+    OPT_AIR_SCAN,
+    OPT_SSTV,
+};
+static const ls_opt_t OPT_GAIN_ONLY[] = { OPT_GAIN, LS_RFFE_MENUS };
+static int o_pager_voice(const ls_opt_t *o) { (void)o; return FM.pager_voice; }
+static void o_set_pager_voice(const ls_opt_t *o, int v) { (void)o; lakeshark_fm_pager_voice(v != 0); }
 static const ls_opt_t OPT_POCSAG[] = {
     { .label = "BAUD", .kind = LS_OPT_CYCLE, .radios = LS_OPT_SDR, .arg = 0,
       .names = BAUD_SDR, .n = 4, .get = o_baud, .set = o_set_baud, .show = o_show_baud },
@@ -1553,17 +1366,22 @@ static const ls_opt_t OPT_POCSAG[] = {
       .names = BAUD_CHIP, .n = 3, .get = o_baud, .set = o_set_baud, .show = o_show_baud },
     { .label = "POLARITY", .kind = LS_OPT_CYCLE, .radios = LS_OPT_LORA,
       .names = POLARITY, .n = 3, .get = o_polarity, .set = o_set_polarity, .show = o_show_polarity },
+    /* The RX HEAD runs the voice beside the decoder: hear the channel too. */
+    { .label = "HEAR CHANNEL", .kind = LS_OPT_TOGGLE, .radios = LS_OPT_SDR | LS_OPT_LORA,
+      .get = o_pager_voice, .set = o_set_pager_voice },
     OPT_GAIN,
+    LS_RFFE_MENUS,
 };
 static const ls_opt_t OPT_ACARS[] = {
     { .label = "CHANNEL", .kind = LS_OPT_CYCLE, .names = ACARS_CH, .n = 3,
       .get = o_acars, .set = o_set_acars, .show = o_show_acars },
     OPT_GAIN,
+    LS_RFFE_MENUS,
 };
 
 static const ls_opt_ctx_t CTX_NFM    = { .name = "NFM", .job = LS_RSEL_FM, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_NFM) };
-static const ls_opt_ctx_t CTX_WFM    = { .name = "WFM", .job = LS_RSEL_FM, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_GAIN_ONLY) };
 static const ls_opt_ctx_t CTX_AM     = { .name = "AM", .job = LS_RSEL_FM, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_AM) };
+static const ls_opt_ctx_t CTX_HF     = { .name = "HF", .job = LS_RSEL_FM, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_HF) };
 static const ls_opt_ctx_t CTX_POCSAG = { .name = "POCSAG", .job = LS_RSEL_PAGER, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_POCSAG) };
 static const ls_opt_ctx_t CTX_FLEX   = { .name = "FLEX", .job = LS_RSEL_PAGER, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_GAIN_ONLY) };
 static const ls_opt_ctx_t CTX_ACARS  = { .name = "ACARS", .job = LS_RSEL_ACARS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_ACARS) };
@@ -1573,8 +1391,8 @@ static const ls_opt_ctx_t *fm_options(void)
 {
     switch (FM.mode) {
     case FM_MODE_LISTEN: return &CTX_NFM;
-    case FM_MODE_WFM:    return &CTX_WFM;
-    case FM_MODE_AM:     return &CTX_AM;
+    case FM_MODE_WFM:    return &fm_wfm_options;
+    case FM_MODE_AM:     return hf_on() ? &CTX_HF : &CTX_AM;
     case FM_MODE_POCSAG: return &CTX_POCSAG;
     case FM_MODE_FLEX:   return &CTX_FLEX;
     case FM_MODE_ACARS:  return &CTX_ACARS;
@@ -1612,13 +1430,14 @@ static int draw_controls(tui_surface *sf, tui_rect area, bool vfo)
     const bool wide = ls_tui_is_wide();
     /* APRS sits on one channel, so name it; the sweep presets are for the rest. */
     if (FM.mode == FM_MODE_APRS) snprintf(band, sizeof(band), "%.2f", aprs_frequency() / 1e6);
-    else snprintf(band, sizeof(band), "%s", FM.mode == FM_MODE_AIS ? "87B/88B" : ls_wf_preset_current(LS_WF_SRC_FM));
+    else snprintf(band, sizeof(band), "%s", FM.mode == FM_MODE_AIS ? "87B/88B"
+                  : hf_on() ? hf_band_word() : ls_wf_preset_current(LS_WF_SRC_FM));
     const bool opts = ls_opt_count(fm_options()) > 0;
     ls_btn_t buttons[CTL__COUNT];
     s_ctl_n = 0;
 #define CTL(id, ...) do { buttons[s_ctl_n] = (ls_btn_t)__VA_ARGS__; \
                           s_ctl_id[s_ctl_n++] = (uint8_t)(id); } while (0)
-    CTL(CTL_MODE, {"MODE", scan_engine_seek_direction() < 0 ? "SEEK <" : scan_engine_seek_direction() > 0 ? "SEEK >" : FM.mode == FM_MODE_SCAN ? "SWEEP" : fm_mode_label(FM.mode), 'e', false, false, false});
+    CTL(CTL_MODE, {"MODE", mode_word(), 'e', false, false, false});
     CTL(CTL_BAND, {"BAND", band, 'n', false, false, false});
     if (!vfo) {
         CTL(CTL_VOLUME, {wide ? "VOL" : "VOLUME", vol, 'v', false, false, false});
@@ -1669,7 +1488,7 @@ static void open_volume_entry(void)
 
 static void open_squelch_entry(void)
 {
-    ls_numpad_open("SQUELCH", squelch_hint(), FM.squelch_tenths, set_squelch);
+    ls_numpad_open("SQUELCH", squelch_hint(), lakeshark_fm_squelch_get(), set_squelch);
 }
 
 static void open_gain_entry(void)
@@ -1690,7 +1509,7 @@ static bool control_action(int slot)
     if (slot < 0 || slot >= s_ctl_n) return false;
     switch (s_ctl_id[slot]) {
     case CTL_MODE:    open_mode_picker(); return true;
-    case CTL_BAND:    open_band_picker(); return true;
+    case CTL_BAND:    if (hf_on()) open_hf_band_picker(); else open_band_picker(); return true;
     case CTL_VOLUME:  open_volume_entry(); return true;
     case CTL_SQUELCH: open_squelch_entry(); return true;
     case CTL_LOCK:    toggle_frequency_lock(); return true;
@@ -1742,9 +1561,10 @@ static void step_value(int i, char *out, size_t n)
         else snprintf(out, n, "%d.%d", FM.gain_tenths / 10, FM.gain_tenths % 10);
         break;
     default:
+        if (hf_squelch_text(out, n)) break;
         if (FM.mode == FM_MODE_AM)
-            snprintf(out, n, "%d.%d%%", FM.squelch_tenths / 10, FM.squelch_tenths % 10);
-        else if (mode_has_squelch()) snprintf(out, n, "%d%%", FM.squelch_tenths);
+            snprintf(out, n, "%d.%d%%", lakeshark_fm_squelch_get() / 10, lakeshark_fm_squelch_get() % 10);
+        else if (mode_has_squelch()) snprintf(out, n, "%d%%", lakeshark_fm_squelch_get());
         else snprintf(out, n, "--");
         break;
     }
@@ -1774,9 +1594,7 @@ static void lcd_rail(tui_surface *sf, tui_rect r, int x0, int y, int iw)
     const bool tone = FM.mode == FM_MODE_LISTEN && FM.tone_show &&
                       FM.tone_detected.selection != 0;
     const ls_radio_chip_t left[] = {
-        { scan_engine_seek_direction() < 0 ? "SEEK <"
-          : scan_engine_seek_direction() > 0 ? "SEEK >"
-          : FM.mode == FM_MODE_SCAN ? "SWEEP" : fm_mode_label(FM.mode), true, TUI_YELLOW },
+        { mode_word(), true, hf_on() ? TUI_MAGENTA : TUI_YELLOW },
         { radio.value, true, TUI_BLUE }
     };
     const ls_radio_chip_t right[] = {
@@ -1784,7 +1602,165 @@ static void lcd_rail(tui_surface *sf, tui_rect r, int x0, int y, int iw)
         { "MUTE", audio_is_muted(), TUI_RED },
         { "TONE", tone, TUI_MAGENTA }
     };
-    ls_radio_glass_rail(sf, r, x0, y, iw, left, 2, right, 3);
+    /* WFM has no tone gate: its lamps are the pilot and the RDS lock. */
+    const ls_radio_chip_t wfm[] = {
+        { "LOCK", lakeshark_fm_frequency_locked(), TUI_GREEN },
+        { "MUTE", audio_is_muted(), TUI_RED },
+        { "STEREO", fm_rds_stereo(), TUI_GREEN },
+        { "RDS", fm_rds_synced(), TUI_CYAN }
+    };
+    if (FM.mode == FM_MODE_WFM) ls_radio_glass_rail(sf, r, x0, y, iw, left, 2, wfm, 4);
+    else ls_radio_glass_rail(sf, r, x0, y, iw, left, 2, right, 3);
+}
+
+/* THE HF LINE: band, demod and filter, AGC, blanker, clarifier, in the
+   colours they are on the scope below. The band is coloured for what lives
+   there - broadcasting, amateurs, CB, the time stations. */
+static int draw_hf_line(tui_surface *sf, tui_rect r, int x, int y, int w)
+{
+    static const uint8_t KIND[] = { TUI_YELLOW, TUI_GREEN, TUI_MAGENTA, TUI_CYAN };
+    const fm_hf_settings_t *h = fm_hf_get();
+    const int end = x + w;
+    char buf[24];
+    const int b = fm_hf_band_find(FM.freq_hz);
+    if (b >= 0) {
+        const fm_hf_band_t *band = fm_hf_band(b);
+        const uint8_t hue = band->kind < 4 ? KIND[band->kind] : TUI_WHITE;
+        tui_put_str(sf, r, x, y, band->name, TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
+        x += (int)strlen(band->name) + 2;
+    }
+    o_show_hf_filter(NULL, buf, sizeof(buf));
+    char dm[32];
+    snprintf(dm, sizeof(dm), "%s %s", fm_hf_demod_label(h->demod), buf);
+    if (x + (int)strlen(dm) <= end) {
+        tui_put_str(sf, r, x, y, dm, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        x += (int)strlen(dm) + 2;
+    }
+    if (x + 8 <= end) x = kv(sf, r, x, y, "AGC", fm_hf_agc_label(h->agc),
+                             TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    if (x + 7 <= end && h->nb)
+        x = kv(sf, r, x, y, "NB", fm_hf_nb_label(h->nb), TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+    if (x + 9 <= end && h->rit_hz) {
+        snprintf(buf, sizeof(buf), "%+d", h->rit_hz);
+        x = kv(sf, r, x, y, "RIT", buf, TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, TUI_BLACK));
+    }
+    return x;
+}
+
+/* THE PASSBAND SCOPE, where NFM keeps its activity trace.
+
+   +-12 kHz of the real spectrum around the dial in braille columns (the FFT
+   the waterfall already runs, 1 kHz a bin, so it moves only when the band
+   does), over the filter drawn as a skirt: '_' outside, '/' '\' at the edges
+   and '=' across what is heard, with the carrier '|' and, when the clarifier
+   is off centre, a '^' where the passband has moved to. The demod and width
+   sit inside the passband they name. */
+/* PSRAM: internal RAM is the DMA pool. */
+EXT_RAM_BSS_ATTR static float s_hf_bins[FM_SPECTRUM_BINS];
+EXT_RAM_BSS_ATTR static float s_hf_cols[2 * 96];
+static void draw_hf_scope(tui_surface *sf, tui_rect r, int x0, int y0, int w, int h)
+{
+    if (w < 16 || h < 2) return;
+    const fm_hf_settings_t *st = fm_hf_get();
+    /* Wide enough to see the neighbours, narrow enough that the passband
+       is more than a few columns: +-12 kHz for AM, 6 for SSB, 3 for CW. */
+    const int half = st->demod == FM_HF_CW ? 3000
+                          : st->demod == FM_HF_USB || st->demod == FM_HF_LSB ? 6000 : 12000;
+    const int base = y0 + h - 1;          /* the skirt row */
+    const int rows = h - 1;               /* braille rows above it */
+    int32_t lo, hi;
+    hf_demod_passband((hf_demod_mode_t)st->demod, fm_hf_filter_hz(st), &lo, &hi);
+    lo += st->rit_hz;
+    hi += st->rit_hz;
+    const double hz_per_col = 2.0 * half / (double)w;
+
+    /* The spectrum, from the shared FFT; flat and still when it is not running. */
+    fm_spectrum_enable(true);
+    fm_spectrum_snapshot_t snap;
+    const bool live = fm_spectrum_read(s_hf_bins, FM_SPECTRUM_BINS,
+                                       (uint32_t)(esp_timer_get_time() / 1000), &snap) &&
+                      snap.span_hz > 0;
+    if (live && rows > 0) {
+        /* Scale to what is on screen: the quietest column is the floor. */
+        float lo_v = 1.0f, hi_v = 0.0f;
+        float *col = s_hf_cols;
+        const int cap = (int)(sizeof(s_hf_cols) / sizeof(s_hf_cols[0]));
+        const int n = 2 * w < cap ? 2 * w : cap;
+        for (int c = 0; c < n; ++c) {
+            const double off = -half + (c + 0.5) * half * 2.0 / n;
+            const double f = (double)FM.freq_hz + off - (double)snap.center_hz;
+            const double bin = f / ((double)snap.span_hz / FM_SPECTRUM_BINS) + FM_SPECTRUM_BINS / 2;
+            int b0 = (int)bin;
+            const float t = (float)(bin - b0);
+            if (b0 < 0) b0 = 0;
+            if (b0 > FM_SPECTRUM_BINS - 2) b0 = FM_SPECTRUM_BINS - 2;
+            const float v = s_hf_bins[b0] * (1.0f - t) + s_hf_bins[b0 + 1] * t;
+            col[c] = v;
+            if (v < lo_v) lo_v = v;
+            if (v > hi_v) hi_v = v;
+        }
+        if (hi_v < lo_v + 0.15f) hi_v = lo_v + 0.15f;
+        const int dots = rows * 4;
+        for (int x = 0; x < w && 2 * x + 1 < n; ++x) {
+            const double off = -half + (x + 0.5) * hz_per_col;
+            const bool in = off >= lo && off <= hi;
+            const uint8_t ink = TUI_ATTR(in ? TUI_GREEN | TUI_BRIGHT : TUI_CYAN, TUI_BLACK);
+            int lv[2];
+            for (int k = 0; k < 2; ++k) {
+                lv[k] = (int)((col[2 * x + k] - lo_v) / (hi_v - lo_v) * (float)dots + 0.5f);
+                if (lv[k] < 1) lv[k] = 1;   /* the floor is a line of dots */
+            }
+            for (int row = 0; row < rows; ++row) {
+                const int below = (rows - 1 - row) * 4;
+                int bits = 0;
+                for (int k = 0; k < 2; ++k) {
+                    int hgt = lv[k] - below;
+                    if (hgt > 4) hgt = 4;
+                    if (hgt > 0) bits |= ls_braille_column((unsigned)hgt, k);
+                }
+                if (bits) ls_braille_put(sf, r, x0 + x, y0 + row, (int16_t)(0x2800 | bits), ink);
+            }
+        }
+    } else if (rows > 0) {
+        tui_put_str(sf, r, x0, y0 + rows - 1, ls_tr("no spectrum yet"), LS_ATTR_DIM);
+    }
+
+    /* The skirt, the carrier and the clarifier. */
+    int run0 = -1, run1 = -1;
+    for (int x = 0; x < w; ++x) {
+        const double a = -half + x * hz_per_col, b = a + hz_per_col;
+        char g = '_';
+        uint8_t c = TUI_ATTR(TUI_BLACK | TUI_BRIGHT, TUI_BLACK);
+        if (b > lo && a < hi) {
+            const bool left = a <= lo, right = b >= hi;
+            g = left ? '/' : right ? '\\' : '=';
+            c = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+            if (!left && !right) { if (run0 < 0) run0 = x; run1 = x; }
+        }
+        if (a <= 0.0 && b > 0.0) { g = '|'; c = TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, TUI_BLACK); }
+        else if (st->rit_hz && a <= st->rit_hz && b > st->rit_hz) {
+            g = '^'; c = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
+        }
+        tui_put_char(sf, r, x0 + x, base, g, c);
+    }
+    /* The demod inside its own passband when it fits, else under the scale. */
+    char name[16];
+    snprintf(name, sizeof(name), "%s", fm_hf_demod_label(st->demod));
+    const int nl = (int)strlen(name);
+    const int dial_x = (int)(half / hz_per_col);
+    if (run0 >= 0 && run1 - run0 + 1 >= nl + 2) {
+        int nx = run0 + (run1 - run0 + 1 - nl) / 2;
+        if (nx <= dial_x && nx + nl > dial_x) nx = dial_x + 1 <= run1 - nl ? dial_x + 1 : nx;
+        tui_put_str(sf, r, x0 + nx, base, name, TUI_ATTR(TUI_BLACK, TUI_YELLOW));
+    }
+    if (w >= 30) {
+        char edge[8];
+        snprintf(edge, sizeof(edge), "-%dk", half / 1000);
+        tui_put_str(sf, r, x0, base, edge, TUI_ATTR(TUI_BLUE | TUI_BRIGHT, TUI_BLACK));
+        edge[0] = '+';
+        tui_put_str(sf, r, x0 + w - (int)strlen(edge), base, edge,
+                    TUI_ATTR(TUI_BLUE | TUI_BRIGHT, TUI_BLACK));
+    }
 }
 
 /* Portrait stacks the glass; landscape has width to spare and no height, so
@@ -1835,6 +1811,14 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
                      (unsigned)(hz / 1000000u), (unsigned)((hz % 1000000u) / 100u));
             tui_put_str(sf, r, rx, ry, ls_tr("RX"), key);
             tui_put_str(sf, r, rx + 3, ry, buf, val);
+        } else if (hf_on()) {
+            /* HF reads to the 10 Hz: the figures stop at 100 Hz. */
+            tune_step_label(buf, sizeof(buf));
+            int x = kv(sf, r, rx, ry, "STEP", buf, val);
+            snprintf(buf, sizeof(buf), "%.2f kHz", FM.freq_hz / 1e3);
+            if (x + 16 <= rx + rw) x = kv(sf, r, x, ry, "DIAL", buf, val);
+            if (x + 10 <= rx + rw && lakeshark_fm_frequency_locked())
+                kv(sf, r, x, ry, "LOCK", "ON", good);
         } else {
             tune_step_label(buf, sizeof(buf));
             int x = kv(sf, r, rx, ry, "STEP", buf, val);
@@ -1856,17 +1840,23 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
         const char *carrier = receiver ? receiver
                             : kind == SIG_NONE ? "--"
                             : open ? "OPEN" : "closed";
-        int x = kv(sf, r, rx, ry, "CARRIER", carrier,
-                   receiver ? warn : open ? good : dim);
-        if (open && ((s_blink / 12) & 1))
-            tui_put_char(sf, r, x - 2, ry, LS_TUI_SHADE_FULL, good);
-        if (!wide) {
-            snprintf(buf, sizeof(buf), "%lu B/s", (unsigned long)FM.iq_bytes_sec);
-            kv(sf, r, x, ry, "IQ", buf, val);
+        /* HF: the meter and the scope say what CARRIER would, so the row goes
+           to the passband scope - unless the receiver has something wrong to
+           report, which always gets its row. */
+        if (!hf_on() || receiver) {
+            int x = kv(sf, r, rx, ry, "CARRIER", carrier,
+                       receiver ? warn : open ? good : dim);
+            if (open && ((s_blink / 12) & 1))
+                tui_put_char(sf, r, x - 2, ry, LS_TUI_SHADE_FULL, good);
+            if (!wide && !hf_on()) {
+                snprintf(buf, sizeof(buf), "%lu B/s", (unsigned long)FM.iq_bytes_sec);
+                kv(sf, r, x, ry, "IQ", buf, val);
+            }
+            ry++;
         }
-        ry++;
+        if (hf_on() && ry <= last) { draw_hf_line(sf, r, rx, ry, rw); ry++; }
         if (ry <= last) {
-            if (wide) {
+            if (wide && !hf_on()) {
                 snprintf(buf, sizeof(buf), "%lu B/s", (unsigned long)FM.iq_bytes_sec);
                 kv(sf, r, rx, ry, "IQ", buf, val);
                 ry++;
@@ -1886,7 +1876,7 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
     }
 
     if (FM.lr_iq_active && y <= last) {
-        snprintf(buf, sizeof(buf), "LR IQ lost %lu gaps %lu",
+        LS_SNPRINTF(t_scr_fm_lr_iq_lost_lu_2, buf, sizeof(buf), "LR IQ lost %lu gaps %lu",
                  (unsigned long)FM.lr_lost_pairs, (unsigned long)FM.lr_gaps);
         tui_put_str(sf, r, x0, y++, buf, dim);
     }
@@ -1894,7 +1884,8 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
     /* The meter last, against the bottom rule, where the eye expects an
        instrument on a radio, with the trace in whatever is left between the
        readouts and it. */
-    const int meter_rows = (last - y) >= 5 ? 2 : 1;
+    /* HF gives the meter's second row to the scope above it. */
+    const int meter_rows = (last - y) >= 5 && !hf_on() ? 2 : 1;
     int meter_y = last - meter_rows;
     if (meter_y < y) meter_y = y;
     /* One row of breathing room before the meter below, none before this:
@@ -1902,7 +1893,14 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
        rather than leaving it as a blank line nothing else claims. */
     int trace_h = meter_y - y - 1;
     if (trace_h > 6) trace_h = 6;
-    if (trace_h >= 2 && iw > 26) {
+    /* The scope takes every row down to the meter: on HF it is the
+       instrument, and landscape has only two to give it. */
+    const int scope_h = meter_y - y > 7 ? 7 : meter_y - y;
+    if (hf_on() && scope_h >= 2 && iw > 26) {
+        int tw = wide ? fig_w : iw;
+        if (tw > 96) tw = 96;
+        draw_hf_scope(sf, r, x0, y, tw, scope_h);
+    } else if (trace_h >= 2 && iw > 26) {
         int tw = (wide ? fig_w : iw) - 10;
         if (tw > LS_RADIO_TRACE_N) tw = LS_RADIO_TRACE_N;
         const int ty = y;
@@ -1911,7 +1909,7 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
         for (int x = 0; x < tw; ++x)
             tui_put_char(sf, r, x0 + 4 + x, ty + trace_h - 1, '-', LS_ATTR_DIM);
         ls_radio_glass_trace(&s_glass, sf, r, x0 + 4, ty, tw, trace_h,
-                             FM.squelch_tenths * 0.01f);
+                             lakeshark_fm_squelch_get() * 0.01f);
     }
     if (meter_y + meter_rows <= last)
         /* Landscape's tone/IQ readouts own the right column, including
@@ -1919,7 +1917,7 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
         ls_radio_glass_meter(&s_glass, sf, r, x0, meter_y, wide ? fig_w : iw, meter_rows,
                              kind == SIG_NONE ? 0.0f : sig_level(kind),
                              kind != SIG_NONE, open, meter_y + meter_rows <= last,
-                             FM.squelch_tenths * 0.01f, "SQL");
+                             lakeshark_fm_squelch_get() * 0.01f, "SQL");
 }
 
 /* ========================================================== THE DECK === */
@@ -1945,7 +1943,7 @@ static void draw_step_card(tui_surface *sf, tui_rect b, int i, uint8_t hue)
         .label = NAME[i], .value = value, .hue = hue,
         .live = i == 2 ? mode_has_squelch() : i == 1 ? fm_gain_live() : true,
         .frac = i == 0 ? audio_volume_get() / 100.0f
-              : i == 1 ? FM.gain_tenths / 496.0f : FM.squelch_tenths / 100.0f,
+              : i == 1 ? FM.gain_tenths / 496.0f : lakeshark_fm_squelch_get() / 100.0f,
         .key_down = q->key_down, .key_up = q->key,
         .flash_down = s_step_flash == i && !s_step_flash_up && s_step_flash_ttl > 0,
         .flash_up = s_step_flash == i && s_step_flash_up && s_step_flash_ttl > 0
@@ -2119,13 +2117,13 @@ static bool step_touch(int col, int row)
 
 static void show_page(int i)
 {
-    s_page_open=false;
+    s_pv.open=false;
     s_freq_keyboard = false;
     s_freq_invalid = false;
     /* A tab that is not on offer does nothing at all. Falling back to VFO
        would stop a running sweep, which is the same reaching-over this
        change exists to remove. */
-    if (i == 1 && !pager_mode()) return;
+    if (i == 1 && !pager_mode() && !own_page()) return;
     if (i==3) {s_details=false;ls_wf_source_release();return;}
     s_page = i;
     s_last_mode = (int)FM.mode;
@@ -2175,7 +2173,7 @@ static void radio_view(void)
     s_view.set_volume_pct = panel_set_volume_pct;
     s_view.set_squelch_pct = panel_set_squelch_pct;
         s_view.signal = kind == SIG_NONE ? 0.0f : sig_level(kind);
-        s_view.gate = (float)FM.squelch_tenths * 0.01f;
+        s_view.gate = (float)lakeshark_fm_squelch_get() * 0.01f;
         s_view.squelch_open = kind != SIG_NONE && FM.squelch_open;
         s_view.has_squelch = kind != SIG_NONE;
     }
@@ -2183,13 +2181,13 @@ static void radio_view(void)
     char sql[12];
     squelch_text(sql, sizeof(sql));
     snprintf(s_view.detail[0],64,"CARRIER %s",s_view.receiver.receiver_streaming?(!s_view.has_squelch?"--":FM.squelch_open?"OPEN":"CLOSED"):"OFFLINE");
-    snprintf(s_view.detail[1],64,"SQL %s  GAIN %.1f dB",sql,FM.gain_tenths/10.0);
+    LS_SNPRINTF(t_scr_fm_sql_s_gain_1f, s_view.detail[1],64,"SQL %s  GAIN %.1f dB",sql,FM.gain_tenths/10.0);
     snprintf(s_view.detail[2],64,"VOL %d  STEP %.1fk",audio_volume_get(),tune_step_hz()/1000.0);
-    snprintf(s_view.detail[3],64,"%s / MORE: mode, waterfall, pager",
+    LS_SNPRINTF(t_scr_fm_s_more_mode_waterfall, s_view.detail[3],64,"%s / MORE: mode, waterfall, pager",
              lakeshark_fm_frequency_locked() ? "FREQ LOCKED" : "FREQ FREE");
     if (FM.lr_iq_active) {
         snprintf(s_view.detail[1],64,"LR IQ %s / SQL %s", FM.lr_channel_hz == 12500 ? "12.5k" : "25k", sql);
-        snprintf(s_view.detail[3],64,"Lost >=%lu gaps %lu audio %lu",
+        LS_SNPRINTF(t_scr_fm_lost_lu_gaps_lu, s_view.detail[3],64,"Lost >=%lu gaps %lu audio %lu",
             (unsigned long)FM.lr_lost_pairs, (unsigned long)FM.lr_gaps,
             (unsigned long)FM.lr_audio_drops);
     }
@@ -2210,7 +2208,7 @@ static void set_squelch(double value)
 static void radio_action(char c)
 {
     if(c=='M') {s_details=true;return;}
-    if(c=='Q') {ls_numpad_open("SQUELCH",squelch_hint(),FM.squelch_tenths,set_squelch);return;}
+    if(c=='Q') {ls_numpad_open("SQUELCH",squelch_hint(),lakeshark_fm_squelch_get(),set_squelch);return;}
     if(c=='A') {
         scan_engine_stop();
         uint32_t previous=FM.freq_hz;
@@ -2252,7 +2250,7 @@ static void draw(tui_surface *sf, tui_rect area)
 {
     ls_rsel_fm_context(FM.freq_hz, fm_lr_mode(FM.mode));
     if (ls_calls_active()) {
-        snprintf(s_hint, sizeof(s_hint), "UP/DOWN calls  P play  S stop  D delete  O options  ESC back");
+        LS_SNPUTS(t_scr_fm_up_down_calls_p, s_hint, sizeof(s_hint), "UP/DOWN calls  P play  S stop  D delete  O options  ESC back");
         ls_wf_source_release(); ls_calls_draw(sf, area); return;
     }
     lora_pager_sync();
@@ -2264,15 +2262,15 @@ static void draw(tui_surface *sf, tui_rect area)
               "E mode  T tune  K lock  N band  W sweep  R radio  0 scanner"):
              "LEFT/RIGHT tune  UP/DOWN controls  M details  R radio",
              ls_opt_count(fm_options()) ? "  O options" : "");
-    if (s_details && s_page == 0) snprintf(s_hint,sizeof(s_hint), "LEFT/RIGHT step  ,/. seek  / STEP  T freq  O options");
+    if (s_details && s_page == 0) LS_SNPUTS(t_scr_fm_left_right_step_seek, s_hint, sizeof(s_hint), "LEFT/RIGHT step  ,/. seek  / STEP  T freq  O options");
     if (s_details && s_page == 0 && scan_engine_active())
-        snprintf(s_hint, sizeof(s_hint), "N next K skip H hold/resume X stop ,/. seek / STEP");
-    if (FM.lr_iq_active && s_page != 0) snprintf(s_hint, sizeof(s_hint), "LR IQ lost >=%lu / gaps %lu / audio drops %lu",
+        LS_SNPUTS(t_scr_fm_n_next_k_skip, s_hint, sizeof(s_hint), "N next K skip H hold/resume X stop ,/. seek / STEP");
+    if (FM.lr_iq_active && s_page != 0) LS_SNPRINTF(t_scr_fm_lr_iq_lost_lu_3, s_hint, sizeof(s_hint), "LR IQ lost >=%lu / gaps %lu / audio drops %lu",
         (unsigned long)FM.lr_lost_pairs, (unsigned long)FM.lr_gaps,
         (unsigned long)FM.lr_audio_drops);
     if (ls_rsel_saved(LS_RSEL_FM) == LS_RSEL_LORA &&
         !ls_lora_rx_range_ok(ls_lora_caps(), FM.freq_hz, FM.freq_hz))
-        snprintf(s_hint, sizeof(s_hint), "LR2021: 104-2740 MHz; below 104 MHz needs an SDR");
+        LS_SNPUTS(t_scr_fm_lr2021_104_2740_mhz, s_hint, sizeof(s_hint), "LR2021: 104-2740 MHz; below 104 MHz needs an SDR");
     if (!s_details) { radio_view(); ls_radio_panel_draw(&s_radio,&s_view,sf,area); return; }
     s_blink++;
     if (s_last_mode != (int)FM.mode) {
@@ -2365,9 +2363,13 @@ static void draw(tui_surface *sf, tui_rect area)
     else if (s_page == 1 && FM.mode == FM_MODE_AIS) fm_ais_draw(sf, body);
     else if (s_page == 1 && FM.mode == FM_MODE_APRS) fm_aprs_draw(sf, body);
     else if (s_page == 1 && FM.mode == FM_MODE_SAME) fm_same_draw(sf, body);
+    else if (s_page == 1 && own_page()) own_draw(sf, body);
     else if (s_page == 1) draw_pages(sf, body);
     else if (s_page == 2) draw_spectrum_page(sf, body);
     else draw_lcd(sf, body);
+    /* The picture's colours belong to its own cells: off its page the grid
+       has the theme's back. */
+    if (!(s_page == 1 && sstv_page())) fm_sstv_view_idle();
     if (s_quick_rect.h > 0) draw_quick_controls(sf, s_quick_rect);
     if (wide && s_kbd_btn.h > 0) draw_kbd_toggle(sf, s_kbd_btn);
 
@@ -2376,8 +2378,9 @@ static void draw(tui_surface *sf, tui_rect area)
     ls_btn_t b[N_PAGES];
     int nb = 0;
     for (int i = 0; i < N_PAGES; i++) {
-        if (i == 1 && !pager_mode()) continue;   /* PAGER decodes or it hides */
+        if (i == 1 && !pager_mode() && !own_page()) continue;   /* PAGER decodes or it hides */
         b[nb] = PAGES[i];
+        if (i == 1 && own_page()) b[nb].label = own_tab();
         if (i == 1 && FM.mode == FM_MODE_ACARS) b[nb].label = "MESSAGES";
         if (i == 1 && FM.mode == FM_MODE_SAME) b[nb].label = "ALERTS";
         if (i == 1 && FM.mode == FM_MODE_APRS) b[nb].label = "STATIONS";
@@ -2411,6 +2414,7 @@ static void leave(void)
 {
     s_freq_keyboard = false;
     s_freq_invalid = false;
+    fm_sstv_view_idle();
     ls_calls_leave(); ls_wf_source_release(); lora_pager_stop(false);
 }
 
@@ -2432,8 +2436,8 @@ static void enter(void)
     s_details=true;
     s_last_mode = (int)FM.mode;
     s_page = mode_page(FM.mode);
-    s_page_open = false;
-    s_sel_held = s_sel_missing = false;
+    s_pv.open = false;
+    s_pv.held = s_pv.missing = false;
 }
 
 static bool key_in(ls_tk_t k, char ch)
@@ -2481,8 +2485,9 @@ static bool key_in(ls_tk_t k, char ch)
         if (k == LS_TK_CHAR && (ch == 'u' || ch == 'a' || ch == 'd'))
             return fm_same_key(ch == 'u' ? LS_TK_UP : ch == 'd' ? LS_TK_DOWN : LS_TK_ENTER);
     }
+    if (s_page == 1 && own_page() && own_key(k, ch)) return true;
     /* An open page is closed before ESC does anything else. */
-    if (k==LS_TK_ESC && s_page==1 && s_page_open) { s_page_open=false; return true; }
+    if (k==LS_TK_ESC && s_page==1 && s_pv.open) { s_pv.open=false; return true; }
     if (k==LS_TK_ESC) return false;
     if (k==LS_TK_CHAR && ch=='0') { s_details=false; ls_wf_source_release(); return true; }
     if (s_page == 2 &&
@@ -2496,7 +2501,7 @@ static bool key_in(ls_tk_t k, char ch)
             open_mode_picker(); return true;
         }
         if (ch == 'k' || ch == 'K') { toggle_frequency_lock(); return true; }
-        if (ch == 'n' || ch == 'N') { open_band_picker(); return true; }
+        if (ch == 'n' || ch == 'N') { if (hf_on()) open_hf_band_picker(); else open_band_picker(); return true; }
         if (ch == 'v' || ch == 'V') { open_volume_entry(); return true; }
         if (ch == 'q' || ch == 'Q') { open_squelch_entry(); return true; }
         if (ch == 'w' || ch == 'W') { toggle_sweep(); return true; }
@@ -2528,24 +2533,16 @@ static bool key_in(ls_tk_t k, char ch)
     /* The open page owns its keys while it is up. UP/DOWN walk to the next
        message without going back to the list first, which is what reading a
        run of pages actually looks like. */
-    if (s_page == 1 && s_page_open) {
-        switch (k) {
-        case LS_TK_UP:    pager_move(-1); return true;
-        case LS_TK_DOWN:  pager_move(1); return true;
-        default: return true;
-        }
-    }
+    if (s_page == 1 && s_pv.open) return rx_pages_key(&s_pv, &FM_PAGES, k);
 
     switch (k) {
     case LS_TK_LEFT:  if (s_page > 0) show_page(s_page - 1); return true;
     case LS_TK_RIGHT: if (s_page < N_PAGES - 1) show_page(s_page + 1); return true;
-    case LS_TK_UP:    if (s_page == 1) pager_move(-1); return true;
-    case LS_TK_DOWN:
-        if (s_page == 1) pager_move(1);
+    case LS_TK_UP: case LS_TK_DOWN:
+        if (s_page == 1) rx_pages_key(&s_pv, &FM_PAGES, k);
         return true;
     case LS_TK_ENTER:
-        if (s_page == 1 && page_count() > 0) { s_page_open = true; return true; }
-        return false;
+        return s_page == 1 && rx_pages_key(&s_pv, &FM_PAGES, k);
     default: return false;
     }
 }
@@ -2580,39 +2577,8 @@ static bool touch_in(int col, int row)
     if (s_page == 1 && FM.mode == FM_MODE_AIS) return fm_ais_touch(col, row);
     if (s_page == 1 && FM.mode == FM_MODE_APRS) return fm_aprs_touch(col, row);
     if (s_page == 1 && FM.mode == FM_MODE_SAME) return fm_same_touch(col, row);
-    if (s_page == 1) {
-        for (int i = 0; i < 3; ++i) {
-            if (!tui_rect_contains(s_pager_hit[i], col, row)) continue;
-            if (i == 0) pager_move(-1);
-            else if (i == 2) pager_move(1);
-            else if (page_count() > 0) s_page_open = !s_page_open;
-            return true;
-        }
-    }
-
-    /* The open page: its BACK target, and nothing else - a stray tap
-       must not lose the message you opened. */
-    if (s_page == 1 && s_page_open) {
-        if (tui_rect_contains(s_page_back,col,row))
-            s_page_open = false;
-        return true;
-    }
-
-    /* A page in the list: the first tap picks it and a second tap on
-       the same one opens it. The rule the settings fields and the mesh node
-       list already use - one tap must never fire an action, because a tap
-       that both moves the cursor and does something is one you cannot take
-       back. */
-    if (s_page == 1 && s_page_rect.h > 0 &&
-        row > s_page_rect.y && row < s_page_rect.y + s_page_rect.h - 1 &&
-        col >= s_page_rect.x && col < s_page_rect.x + s_page_rect.w) {
-        const int i = page_at_row(s_page_rect, row);
-        if (i >= 0 && i < page_count()) {
-            if (i == s_page_sel) s_page_open = true;
-            else                 s_page_sel = i;
-        }
-        return true;
-    }
+    if (s_page == 1 && own_page()) return own_touch(col, row);
+    if (s_page == 1 && rx_pages_touch(&s_pv, &FM_PAGES, col, row)) return true;
     return false;
 }
 
@@ -2620,17 +2586,17 @@ static bool touch_in(int col, int row)
    after, whichever of the many places in them moved it. */
 static bool key(ls_tk_t k, char ch)
 {
-    pager_refind();
+    rx_pages_refind(&s_pv, &FM_PAGES);
     const bool handled = key_in(k, ch);
-    pager_remember();
+    rx_pages_remember(&s_pv, &FM_PAGES);
     return handled;
 }
 
 static bool touch(int col, int row)
 {
-    pager_refind();
+    rx_pages_refind(&s_pv, &FM_PAGES);
     const bool handled = touch_in(col, row);
-    pager_remember();
+    rx_pages_remember(&s_pv, &FM_PAGES);
     return handled;
 }
 

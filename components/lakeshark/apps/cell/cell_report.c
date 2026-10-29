@@ -12,6 +12,7 @@
 #include <math.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "ls_textpack.h"
 
 static portMUX_TYPE lock=portMUX_INITIALIZER_UNLOCKED;
 static char target[17],last_text[49];
@@ -129,9 +130,9 @@ void cell_report_status(char *text,size_t size)
 int cell_report_command(int argc,char **argv)
 {
     cell_report_init();
-    if(argc==3 && !strcmp(argv[1],"target"))printf("CELLREPORT target %s\n",cell_report_target(argv[2])?"saved":"rejected");
+    if(argc==3 && !strcmp(argv[1],"target"))LS_PRINTF(t_cell_report_cellreport_target_s, "CELLREPORT target %s\n",cell_report_target(argv[2])?"saved":"rejected");
     else if(argc==2 && !strcmp(argv[1],"off"))printf("CELLREPORT off %s\n",cell_report_target("")?"saved":"failed");
     else if(argc==2 && !strcmp(argv[1],"test")) {cell_status_t s;cell_monitor_get(&s);emit(&s,'T',false);}
-    else if(argc!=1 && !(argc==2 && !strcmp(argv[1],"status")))puts("cellreport target <16-hex-peer> | off | test | status");
+    else if(argc!=1 && !(argc==2 && !strcmp(argv[1],"status")))LS_PUTS(t_cell_report_cellreport_target_16_hex, "cellreport target <16-hex-peer> | off | test | status");
     char text[100];cell_report_status(text,sizeof(text));puts(text);return 0;
 }

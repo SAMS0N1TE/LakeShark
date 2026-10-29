@@ -203,7 +203,32 @@ typedef struct {
     uint32_t p25_lcw_fec_reject_count;
     bool lr_iq_requested, lr_iq_active;
     uint32_t lr_iq_good, lr_iq_bad, lr_iq_gaps, lr_iq_fifo_overruns, lr_iq_sample_rate;
+    /* LR hops (start or retune to the first block of the new channel), per
+       path: [0] narrow (P25's own capture), [1] wide (the shared session). */
+    bool lr_iq_wide;
+    uint32_t lr_iq_hops[2], lr_iq_hop_us[2], lr_iq_hop_max_us[2];
+    /* Share of one core over the last second, in tenths of a percent: the LR
+       front end and the demodulator behind it (`p25 lr`). */
+    uint32_t lr_fe_permille, lr_dsp_permille;
+    /* Loudest sample of the last decoded voice block handed to the speaker,
+       0..32768. The CALLS voice trace reads it while voice_active_until_us
+       says the call is live; nothing else depends on it. */
+    uint16_t voice_peak;
+    /* The loudest of those since `p25 lr` last read it: a call's voice
+       level after the fact. */
+    uint16_t voice_peak_max;
 } p25_state_t;
+
+static inline void p25_voice_peak_note(p25_state_t *state, const int16_t *pcm, int n)
+{
+    unsigned high = 0;
+    for (int i = 0; i < n; ++i) {
+        const unsigned v = pcm[i] < 0 ? (unsigned)-(int)pcm[i] : (unsigned)pcm[i];
+        if (v > high) high = v;
+    }
+    state->voice_peak = (uint16_t)high;
+    if (high > state->voice_peak_max) state->voice_peak_max = (uint16_t)high;
+}
 
 static inline bool p25_nac_valid(const p25_state_t *state)
 {
@@ -244,7 +269,10 @@ void p25_p2_follow_describe(char *text, unsigned capacity);
  * key on the currently-followed grant TG, falling back to the last-decoded
  * dsd_tg when the follower is on control. Return true on success. */
 typedef enum {
-    P25_UI_ALLOW_ADD, P25_UI_ALLOW_REMOVE, P25_UI_LIST_MODE, P25_UI_HOLD_SET
+    P25_UI_ALLOW_ADD, P25_UI_ALLOW_REMOVE, P25_UI_LIST_MODE, P25_UI_HOLD_SET,
+    /* Lock out one named talkgroup (CALLS acts on the call it shows, which
+       need not be the follower's current one). */
+    P25_UI_LOCKOUT_ADD
 } p25_ui_policy_t;
 bool p25_ui_policy(p25_ui_policy_t kind, uint16_t value);
 bool p25_ui_hold_toggle(void);

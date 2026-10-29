@@ -1,10 +1,12 @@
 /* Clean-room implementation from public specifications: Bluetooth SIG company IDs, IEEE OUIs, ASTM F3411. */
 #include "ls_sweep_app.h"
 #include "ls_rid.h"
-#include "ls_detector.h"
-#pragma weak ls_detector_running
-#pragma weak ls_detector_observe
-static bool detector(void) {return ls_detector_running && ls_detector_running();}
+#include "ls_seen.h"
+#include "ls_textpack.h"
+#pragma weak ls_seen_wanted
+#pragma weak ls_seen_observe
+/* A detector app watches SWEEP's categories: it raises the alerts. */
+static bool detector(void) {return ls_seen_wanted && (ls_seen_wanted()&(LS_SEEN_BLE|LS_SEEN_WIFI));}
 #include "ls_ble_ad.h"
 #include "esp_attr.h"
 #include "esp_timer.h"
@@ -298,7 +300,7 @@ bool ls_sweep_parse_ble(const uint8_t *ad,size_t len,ls_sweep_match_t *out) {
             match(out,SW_TRACKER,"Google Find Hub","Google");out->state=p[2]==0x41?SW_STATE_SEPARATED:SW_STATE_NEAR;found=true;break;
         }
     }
-    if(!found && samsung && contains(name,"SmartTag")) {match(out,SW_TRACKER,"SmartTag name + company","Samsung");found=true;}
+    if(!found && samsung && contains(name,"SmartTag")) {match(out,SW_TRACKER,LS_TEXT(t_ls_sweep_smarttag_name_company, "SmartTag name + company"),"Samsung");found=true;}
     if(found) {if(dult_state>=0) out->state=dult_state;out->immediate_alert=false;return true;} /* Never ring network tags. */
     lock();
     for(unsigned r=0;r<rule_count && !found;r++) {
@@ -343,7 +345,7 @@ static bool valid_settings(const ls_sweep_settings_t *o) {
 static bool settings_save(const ls_sweep_settings_t *value) {
 #ifdef ESP_PLATFORM
     nvs_job_t j={.save=true,.value=*value};
-    if(ls_nvs_run(nvs_job,&j,0)!=ESP_OK) {lock();snprintf(status.status,sizeof(status.status),"Settings active / NVS save failed");unlock();return false;}
+    if(ls_nvs_run(nvs_job,&j,0)!=ESP_OK) {lock();LS_SNPUTS(t_ls_sweep_settings_active_nvs_save, status.status, sizeof(status.status), "Settings active / NVS save failed");unlock();return false;}
 #endif
     return true;
 }
@@ -466,7 +468,7 @@ void ls_sweep_observe(const uint8_t mac[6],uint8_t radio,uint8_t type,int rssi,c
         near_signal.match=*m;near_signal.rssi=rssi<-127?-127:rssi>0?0:rssi;near_signal.seen_us=now;
         signal_sample(&near_signal,now,dt);near_sequence++;
         if(detector() && settings.hunt && radio==settings.hunt_radio && type==settings.hunt_type && !memcmp(mac,settings.hunt_mac,6)) hunt_consumed=near_sequence;
-        if(ls_detector_observe) ls_detector_observe(mac,type,radio?DET_WIFI:DET_BLE,m->category,rssi,false,storm,SW_PASSING,now);
+        if(ls_seen_observe) ls_seen_observe(mac,type,radio?LS_SEEN_WIFI:LS_SEEN_BLE,m->category,rssi,false,storm,SW_PASSING,now);
         unlock();return;
     }
     /* A crowded room is not evidence of spoofing. Quiet audio only. */
@@ -493,7 +495,7 @@ void ls_sweep_observe(const uint8_t mac[6],uint8_t radio,uint8_t type,int rssi,c
     signal_sample(slot,now,dt);
     if(detector() && settings.hunt && slot->radio==settings.hunt_radio && slot->address_type==settings.hunt_type && !memcmp(slot->mac,settings.hunt_mac,6)) hunt_consumed=slot->adverts;
     if(ls_sweep_section(slot,now,status.gps_fix)==SW_WITH_YOU) slot->with_you=true;
-    if(ls_detector_observe) ls_detector_observe(mac,type,radio?DET_WIFI:DET_BLE,m->category,rssi,false,storm,ls_sweep_section(slot,now,status.gps_fix),now);
+    if(ls_seen_observe) ls_seen_observe(mac,type,radio?LS_SEEN_WIFI:LS_SEEN_BLE,m->category,rssi,false,storm,ls_sweep_section(slot,now,status.gps_fix),now);
     if(!slot->alerted_us || now-slot->alerted_us>=30000000) {
         if(status.requested && settings.logging && log_count<8) log_queue[log_count++]=*slot;
         if(!storm && now-tracker_window>=3000000) {tracker_window=now;tracker_beeps=0;}
@@ -521,7 +523,7 @@ void ls_sweep_ble(const uint8_t mac[6],uint8_t type,int rssi,const uint8_t *ad,s
         if(spam && !hit) {
             /* Collapse traffic-rate heuristics to one row, not one per spoofed MAC. */
             static const uint8_t burst[6]={0xff,0xff,0xff,0xff,0xff,0xff};
-            memset(&m,0,sizeof(m));match(&m,SW_ATTACK,"BLE advert burst (heuristic)","Unverified");ls_sweep_observe(burst,0,0,rssi,&m,now);return;
+            memset(&m,0,sizeof(m));match(&m,SW_ATTACK,LS_TEXT(t_ls_sweep_ble_advert_burst_heuristic, "BLE advert burst (heuristic)"),"Unverified");ls_sweep_observe(burst,0,0,rssi,&m,now);return;
         }
     }
     if(hit) ls_sweep_observe(mac,0,type,rssi,&m,now);
@@ -590,7 +592,7 @@ int ls_sweep_alert(int64_t now) {
 }
 void ls_sweep_clear(void) {lock();memset(table,0,sizeof(table));memset(recent,0,sizeof(recent));memset(unique,0,sizeof(unique));memset(nearby,0,sizeof(nearby));memset(&near_signal,0,sizeof(near_signal));memset(rate_count,0,sizeof(rate_count));status.last_advert_us=0;status.gps_fix=false;queued=log_count=0;storm=false;flood_until=last_sound=hunt_sound=tracker_window=0;tracker_beeps=spam_count=0;unlock();}
 void ls_sweep_mac_text(char *s,const ls_sweep_device_t *d) {
-    const uint8_t *p=d->mac;snprintf(s,18,"%02X:%02X:%02X:%02X:%02X:%02X",p[d->radio?0:5],p[d->radio?1:4],p[d->radio?2:3],p[d->radio?3:2],p[d->radio?4:1],p[d->radio?5:0]);
+    const uint8_t *p=d->mac;LS_SNPRINTF(t_ls_sweep_02x_02x_02x_02x, s,18,"%02X:%02X:%02X:%02X:%02X:%02X",p[d->radio?0:5],p[d->radio?1:4],p[d->radio?2:3],p[d->radio?3:2],p[d->radio?4:1],p[d->radio?5:0]);
 }
 int ls_sweep_command(int argc,char **argv) {
     ls_sweep_init();
@@ -615,19 +617,19 @@ int ls_sweep_command(int argc,char **argv) {
         for(unsigned i=0;i<LS_SWEEP_CAP;i++) if(table[i].serial) {char s[18];uint8_t printed[6];ls_sweep_mac_text(s,&table[i]);hexbytes(s,printed,6);if(!memcmp(mac,printed,6)) {memcpy(raw,table[i].mac,6);radio=table[i].radio;type=table[i].address_type;found=true;break;}}
         unlock();return found && ls_sweep_hunt(raw,radio,type)?0:1;
     }
-    if(argc==1 || (argc==2 && !strcmp(argv[1],"status"))) {ls_sweep_status_t s;ls_sweep_status(&s,esp_timer_get_time());ls_sweep_settings_t o;ls_sweep_settings_get(&o);printf("SWEEP %s / %s / %s / %u rules / flood=%u / %s\n",o.alerts_muted?"MUTED":"SOUND",s.requested?"requested":"off",s.running?"running":"idle",s.rules,s.flood,s.status);return 0;}
+    if(argc==1 || (argc==2 && !strcmp(argv[1],"status"))) {ls_sweep_status_t s;ls_sweep_status(&s,esp_timer_get_time());ls_sweep_settings_t o;ls_sweep_settings_get(&o);LS_PRINTF(t_ls_sweep_sweep_s_s_s, "SWEEP %s / %s / %s / %u rules / flood=%u / %s\n",o.alerts_muted?"MUTED":"SOUND",s.requested?"requested":"off",s.running?"running":"idle",s.rules,s.flood,s.status);return 0;}
     if(argc==2 && !strcmp(argv[1],"stats")) {
         ls_sweep_stats_t s;ls_sweep_transport_stats_t t;
         ls_sweep_stats(&s,esp_timer_get_time());ls_sweep_transport_stats(&t);
-        printf("SWEEP RX adverts_in=%lu sweep_in=%lu dispatched=%lu ring_drops=%lu overflow=%lu invalid=%lu ring=%u/%u high_water=%u transport=%s\n",
+        LS_PRINTF(t_ls_sweep_sweep_rx_adverts_in, "SWEEP RX adverts_in=%lu sweep_in=%lu dispatched=%lu ring_drops=%lu overflow=%lu invalid=%lu ring=%u/%u high_water=%u transport=%s\n",
             (unsigned long)t.adverts_in,(unsigned long)s.adverts_in,(unsigned long)t.dispatched,(unsigned long)t.ring_drops,
             (unsigned long)t.ring_overflow,(unsigned long)t.invalid_reports,t.ring_size,t.ring_capacity,t.ring_high_water,t.available?"BLE":"unavailable");
-        printf("SWEEP scanning=%s while_connected=%s\n",t.scanning?"yes":"no",t.while_connected?"yes":"no");
-        printf("SWEEP accepted CAMERA=%lu BODYCAM=%lu DRONE=%lu TRACKER=%lu ATTACK=%lu\n",
+        LS_PRINTF(t_ls_sweep_sweep_scanning_s_while, "SWEEP scanning=%s while_connected=%s\n",t.scanning?"yes":"no",t.while_connected?"yes":"no");
+        LS_PRINTF(t_ls_sweep_sweep_accepted_camera_lu, "SWEEP accepted CAMERA=%lu BODYCAM=%lu DRONE=%lu TRACKER=%lu ATTACK=%lu\n",
             (unsigned long)s.accepted[0],(unsigned long)s.accepted[1],(unsigned long)s.accepted[2],(unsigned long)s.accepted[3],(unsigned long)s.accepted[4]);
-        printf("SWEEP table=%u/%u evictions_capacity=%lu expiries=%lu category_changes=%lu flood_entries=%lu alerts_suppressed=%lu passing_timeout_s=60 with_you_timeout_s=900\n",
+        LS_PRINTF(t_ls_sweep_sweep_table_u_u, "SWEEP table=%u/%u evictions_capacity=%lu expiries=%lu category_changes=%lu flood_entries=%lu alerts_suppressed=%lu passing_timeout_s=60 with_you_timeout_s=900\n",
             s.table_size,s.capacity,(unsigned long)s.evicted_capacity,(unsigned long)s.expiries,(unsigned long)s.category_changes,(unsigned long)s.flood_entries,(unsigned long)s.alerts_suppressed);
-        printf("SWEEP unique_addresses_min=%u unique_cap=1024 unique_saturated=%lu filter_duplicates=%u duplicates_suppressed=%s scan_interval_units=%u scan_window_units=%u (0=NimBLE default)\n",
+        LS_PRINTF(t_ls_sweep_sweep_unique_addresses_min, "SWEEP unique_addresses_min=%u unique_cap=1024 unique_saturated=%lu filter_duplicates=%u duplicates_suppressed=%s scan_interval_units=%u scan_window_units=%u (0=NimBLE default)\n",
             s.unique_addresses_min,(unsigned long)s.unique_saturated,t.filter_duplicates,t.available?"0":"unavailable",t.scan_interval_units,t.scan_window_units);
         return 0;
     }
@@ -642,5 +644,5 @@ int ls_sweep_command(int argc,char **argv) {
         size_t n=ls_sweep_snapshot(v,LS_SWEEP_CAP,esp_timer_get_time());
         for(size_t i=0;i<n;i++) {char s[18];ls_sweep_mac_text(s,&v[i]);printf("%s %s %s %s %d dBm\n",s,ls_sweep_category(v[i].match.category),v[i].match.label,v[i].match.vendor,v[i].rssi);}free(v);return 0;
     }
-    puts("sweep on|off|status|stats|list|hunt <mac|off>|mute on|off|mute CAMERA|BODYCAM|DRONE|TRACKER|ATTACK|rules reload");return 1;
+    LS_PUTS(t_ls_sweep_sweep_on_off_status, "sweep on|off|status|stats|list|hunt <mac|off>|mute on|off|mute CAMERA|BODYCAM|DRONE|TRACKER|ATTACK|rules reload");return 1;
 }

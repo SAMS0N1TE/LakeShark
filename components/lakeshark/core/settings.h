@@ -22,6 +22,8 @@ uint32_t settings_get_p25_step(void);
 void settings_set_p25_step(uint32_t hz);
 uint32_t settings_get_fm_step(void);
 void settings_set_fm_step(uint32_t hz);
+uint32_t settings_get_fm_mode(void);   /* UINT32_MAX until a mode is saved */
+void settings_set_fm_mode(uint32_t mode);
 
 uint32_t settings_get_freq(const app_t *a);
 void     settings_set_freq(const app_t *a, uint32_t hz);
@@ -65,6 +67,13 @@ bool settings_set_last_fix(float lat, float lon);
    write only when the value changed. */
 int  settings_get_radio_choice(int job);
 bool settings_set_radio_choice(int job, int radio);
+/* The SDR front ends (radio_frontend.h owns both layouts): one word of
+   settings, and the RTL-SDR reference corrections by dongle. Read from RAM
+   loaded at boot, so safe from any task; a write is queued only on change. */
+uint32_t settings_get_rffe(void);
+bool     settings_set_rffe(uint32_t packed);
+uint64_t settings_get_rtl_ppm_table(void);
+bool     settings_set_rtl_ppm_table(uint64_t packed);
 
 int  settings_get_brightness(void);
 void settings_set_brightness(int pct);
@@ -121,6 +130,16 @@ bool settings_get_lr_tcxo(void);
 bool settings_set_lr_tcxo(bool tcxo);
 bool settings_get_lr_dcdc(void);
 bool settings_set_lr_dcdc(bool dcdc);
+/* LR FRONT END > WIDE I/Q: the LR2021's 576k route, LO 144 kHz below the
+   channel, for every app on the shared LR session (FM family, REC, the
+   waterfall, the pager lab, P25 when it follows). Default off. Applied to
+   the session at settings_init and by the setter. */
+bool settings_get_lr_wide(void);
+bool settings_set_lr_wide(bool on);
+/* The waterfall's LR view with WIDE I/Q on: the whole 576k span instead of
+   the 125k channel. Default off. */
+bool settings_get_lr_span(void);
+bool settings_set_lr_span(bool on);
 /* Where the LoRa radio is wired (ls_lora_port.c packs it): false when
    nothing was ever saved. */
 bool settings_get_lora_port(uint64_t *a, uint64_t *b);
@@ -144,6 +163,14 @@ void settings_set_compass_options(int options);
 /* Waterfall preferences packed by the widget; missing uses fallback. */
 uint32_t settings_get_waterfall(uint32_t fallback);
 void settings_set_waterfall(uint32_t value);
+/* FM's HF settings as fm_hf_pack() words them (fm_hf.h, versioned and
+   checked by fm_hf_unpack); `fallback` when none was saved. */
+uint32_t settings_get_fm_hf(uint32_t fallback);
+void settings_set_fm_hf(uint32_t packed);
+/* FM broadcast/listening options as fm_bcast.c packs them; `fallback`
+   when none was saved. */
+uint32_t settings_get_fm_bcast(uint32_t fallback);
+void settings_set_fm_bcast(uint32_t value);
 uint32_t settings_get_map_layers(uint32_t fallback);  /* MAP overlay layer bits */
 void settings_set_map_layers(uint32_t layers);
 /* The ADS-B mini map's FOLLOW mode, 0 to 15 as the screen numbers it, or -1

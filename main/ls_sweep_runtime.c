@@ -1,8 +1,6 @@
 /* Runs on the existing wireless worker. Never takes another app's radio. */
 #include "tui/ls_sweep_app.h"
-#include "tui/ls_detector.h"
-#pragma weak ls_detector_running
-#pragma weak ls_detector_status
+#include "tui/ls_seen.h"
 #include "ls_wifi.h"
 #include "ls_gps.h"
 #include <math.h>
@@ -25,10 +23,10 @@ static EXT_RAM_BSS_ATTR ls_sweep_device_t event;
 void ls_sweep_wake(void) {ls_wireless_wake();}
 void ls_sweep_tick(void) {
     ls_sweep_status_t s;int64_t now=esp_timer_get_time();ls_sweep_status(&s,now);
-    ls_detector_status_t detector={0};
-    if(ls_detector_status) ls_detector_status(&detector);
-    bool need_ble=s.requested || (detector.running && (detector.sources&(DET_RID|DET_BLE)));
-    s.requested |= detector.running && detector.sources;
+    /* A detector app watching Remote ID or SWEEP's categories keeps the scan up. */
+    const uint32_t seen=ls_seen_wanted();
+    bool need_ble=s.requested || (seen&(LS_SEEN_RID|LS_SEEN_BLE));
+    s.requested |= (seen&(LS_SEEN_RID|LS_SEEN_BLE|LS_SEEN_WIFI))!=0;
     if(ls_sweep_reload_pending()) {
         bool ok=ls_sweep_rules_reload();ls_sweep_runtime_status(started,ok?"SD rules reloaded":"Rules rejected / previous rules retained");
     }

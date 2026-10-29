@@ -14,6 +14,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "ls_cold.h"
 #if __has_include("freertos/idf_additions.h")
 #include "freertos/idf_additions.h"
 #endif
@@ -148,11 +149,11 @@ static void load_work(void)
     if (ok) { s_next = b; s_next_ready = 1; }
     else { bundle_free(&b); s_state = s_b.nreg ? LS_GLOBE_READY : LS_GLOBE_FAILED; }
 }
-static void loader(void *arg) { (void)arg; load_work(); vTaskDeleteWithCaps(NULL); }
+LS_COLD static void loader(void *arg) { (void)arg; load_work(); vTaskDeleteWithCaps(NULL); }
 
 int ls_globe_state(void) { return s_state; }
 
-int ls_globe_load(const char *path)
+LS_COLD int ls_globe_load(const char *path)
 {
     if (s_next_ready) {           /* swap on the UI task, never under a draw */
         bundle_free(&s_b); s_b = s_next; memset(&s_next, 0, sizeof(s_next));

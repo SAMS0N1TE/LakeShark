@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include "ls_textpack.h"
 #ifdef _WIN32
 #include <direct.h>
 #define mkdir(p, mode) _mkdir(p)
@@ -211,7 +212,7 @@ void lr433_history_receive(const lr433_msg_t *m)
             snprintf(q->name, sizeof(q->name), "%s", d->name);
             q->proto = d->proto; q->channel = d->channel; q->own = d->own; q->reading = d->raw;
             s_csv_count++;
-        } else if (appended) snprintf(s_status, sizeof(s_status), "History: CSV queue full (ring kept)");
+        } else if (appended) LS_SNPUTS(t_lr433_history_history_csv_queue_full, s_status, sizeof(s_status), "History: CSV queue full (ring kept)");
     }
     portEXIT_CRITICAL(&s_lock);
 }

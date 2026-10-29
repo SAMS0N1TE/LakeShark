@@ -2,6 +2,7 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include "ls_textpack.h"
 
 void ls_survey_init(ls_survey_session_t *s, ls_survey_entry_t *table, unsigned cap, bool only_fix)
 {
@@ -110,10 +111,10 @@ unsigned ls_survey_security(unsigned auth)
 bool ls_survey_header(FILE *f, const char *release, const char *board)
 {
     if (!f) return false;
-    fputs("WigleWifi-1.6,appRelease=", f); fputs(release, f);
-    fputs(",model=ESP32-P4,release=ESP-IDF,device=LakeShark,display=TUI,board=", f);
+    LS_FPUTS(t_ls_survey_wiglewifi_1_6_apprelease, "WigleWifi-1.6,appRelease=", f); fputs(release, f);
+    LS_FPUTS(t_ls_survey_model_esp32_p4_release, ",model=ESP32-P4,release=ESP-IDF,device=LakeShark,display=TUI,board=", f);
     fputs(board, f);
-    fputs(",brand=LakeShark,star=Sol,body=3,subBody=0\n"
+    LS_FPUTS(t_ls_survey_brand_lakeshark_star_sol, ",brand=LakeShark,star=Sol,body=3,subBody=0\n"
           "MAC,SSID,AuthMode,FirstSeen,Channel,Frequency,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,RCOIs,MfgrId,Type\n", f);
     return !ferror(f);
 }
@@ -134,7 +135,7 @@ bool ls_survey_row(FILE *f, const ls_survey_entry_t *o, const ls_survey_fix_t *g
     if (!gmtime_r(&t, &tm)) return false;
 #endif
     address(f, o); fputc(',', f); quoted(f, o->name);
-    fprintf(f, ",%s,%04d-%02d-%02d %02d:%02d:%02d,%u,%u,%d,",
+    LS_FPRINTF(t_ls_survey_s_04d_02d_02d, f, ",%s,%04d-%02d-%02d %02d:%02d:%02d,%u,%u,%d,",
         o->kind == LS_SURVEY_WIFI ? ls_survey_auth(o->auth) : "[BLE]",
         tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
         o->kind == LS_SURVEY_WIFI ? o->channel : 0,
@@ -203,7 +204,7 @@ bool ls_survey_filename(char *out, size_t cap, uint32_t seconds, bool epoch)
 #else
         if (!gmtime_r(&t, &tm)) return false;
 #endif
-        n = snprintf(out, cap, "%04d%02d%02d_%02d%02d%02d.csv", tm.tm_year + 1900,
+        n = LS_SNPRINTF(t_ls_survey_04d_02d_02d_02d, out, cap, "%04d%02d%02d_%02d%02d%02d.csv", tm.tm_year + 1900,
                      tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
     } else return false;
     return n >= 0 && (size_t)n < cap;

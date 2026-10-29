@@ -9,6 +9,7 @@
 #include "esp_timer.h"
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 static EXT_RAM_BSS_ATTR aprs_packet_t shown, opened;
 static EXT_RAM_BSS_ATTR aprs_packet_t stations[APRS_STATIONS];
 static EXT_RAM_BSS_ATTR ls_gps_state_t gps;
@@ -125,7 +126,7 @@ void fm_aprs_draw(tui_surface *sf, tui_rect a)
     bool live = last > 0 && now >= last && now-last < 2500000;
     static const char *const pulse[] = { "[>    ]", "[ >   ]", "[  >  ]", "[   > ]", "[    >]", "[   < ]", "[  <  ]", "[ <   ]" };
     char b[192];
-    snprintf(b, sizeof(b), "%s %s / 1200 baud RX", live ? pulse[ls_motion_phase(8, 1000)] : "[  .  ]",
+    LS_SNPRINTF(t_fm_aprs_view_s_s_1200_baud, b, sizeof(b), "%s %s / 1200 baud RX", live ? pulse[ls_motion_phase(8, 1000)] : "[  .  ]",
              live ? "PACKET HEARD" : "LISTENING");
     line(sf, list, 2, b, live ? TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
     ls_motion_busy(sf, list, live);
@@ -137,15 +138,15 @@ void fm_aprs_draw(tui_surface *sf, tui_rect a)
                 opened = stations[i]; found = true; break;
             }
         }
-        if (!found) { line(sf, list, 4, "Station expired / BACK returns to list", LS_ATTR_DIM); return; }
+        if (!found) { line(sf, list, 4, LS_TEXT(t_fm_aprs_view_station_expired_back_returns, "Station expired / BACK returns to list"), LS_ATTR_DIM); return; }
         double km, brg; visible(&opened, &o, now, &km, &brg);
         snprintf(b, sizeof(b), "%c %s %s / %s", opened.symbol, opened.call, opened.name, kind(&opened));
         line(sf, list, 4, b, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
         if (opened.position) snprintf(b, sizeof(b), "%s%.5f / %.5f", opened.ambiguous ? "~ " : "", opened.lat, opened.lon);
-        else snprintf(b, sizeof(b), "No position in this packet");
+        else LS_SNPUTS(t_fm_aprs_view_no_position_in_this, b, sizeof(b), "No position in this packet");
         line(sf, list, 5, b, LS_ATTR_DIM);
-        if (km >= 0) snprintf(b, sizeof(b), "%.1f km / %03.0f %s / %llds ago", km, brg, ls_geo_compass(brg), (long long)((now-opened.heard_us)/1000000));
-        else snprintf(b, sizeof(b), "Range needs fresh GPS / %llds ago", (long long)((now-opened.heard_us)/1000000));
+        if (km >= 0) LS_SNPRINTF(t_fm_aprs_view_1f_km_03_0f, b, sizeof(b), "%.1f km / %03.0f %s / %llds ago", km, brg, ls_geo_compass(brg), (long long)((now-opened.heard_us)/1000000));
+        else LS_SNPRINTF(t_fm_aprs_view_range_needs_fresh_gps, b, sizeof(b), "Range needs fresh GPS / %llds ago", (long long)((now-opened.heard_us)/1000000));
         line(sf, list, 6, b, LS_ATTR_DIM);
         if (opened.kind == APRS_MESSAGE) { snprintf(b, sizeof(b), "TO %s", opened.recipient); line(sf, list, 7, b, LS_ATTR_DIM); }
         else if (opened.weather) {
@@ -170,11 +171,11 @@ void fm_aprs_draw(tui_surface *sf, tui_rect a)
         double km, brg; visible(&shown, &o, now, &km, &brg);
         char distance[32];
         if (km >= 0) snprintf(distance, sizeof(distance), "%.0fkm %03.0f", km, brg); else snprintf(distance, sizeof(distance), "--km ---");
-        snprintf(b, sizeof(b), "%c %c %-11s %s %lldm%s", i == selected ? '>' : ' ', shown.symbol,
+        LS_SNPRINTF(t_fm_aprs_view_c_c_11s_s, b, sizeof(b), "%c %c %-11s %s %lldm%s", i == selected ? '>' : ' ', shown.symbol,
                  shown.call, distance, (long long)((now-shown.heard_us)/60000000), shown.weather ? " WX" : "");
         line(sf, list, 4+i-start, b, i == selected ? TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT) : LS_ATTR_DIM);
     }
-    if (!row_count) line(sf, list, 4, "Waiting for AX.25 UI packets / NFM", LS_ATTR_DIM);
+    if (!row_count) line(sf, list, 4, LS_TEXT(t_fm_aprs_view_waiting_for_ax_25, "Waiting for AX.25 UI packets / NFM"), LS_ATTR_DIM);
 }
 static void open(void)
 {

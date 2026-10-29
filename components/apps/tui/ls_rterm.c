@@ -30,6 +30,7 @@
 #include "ls_tui_screen.h"
 #include "ls_tui_touch.h"
 #include "miniz.h"
+#include "ls_textpack.h"
 
 #define TERM_PORT      2323
 #define TERM_CELLS_MAX 8192           /* the largest grid any font and rotation gives, with room */
@@ -595,7 +596,7 @@ static void session_word(session_t *s, const char *verb, const char *arg, void (
     if (!strcmp(verb, "size") && arg) {          /* the viewer's window: a grid to fill it */
         int c = 0, r = 0;
         if (sscanf(arg, "%d %d", &c, &r) == 2 && s_resize)
-            printf("term: size %dx%d %s\n", c, r, s_resize(c, r) ? "regrid" : "kept");
+            LS_PRINTF(t_ls_rterm_term_size_dx_d, "term: size %dx%d %s\n", c, r, s_resize(c, r) ? "regrid" : "kept");
     }
     if (!strcmp(verb, "ack") && s->unacked > 0) {
         s->unacked--;
@@ -732,7 +733,7 @@ static void net_password(const uint8_t *b, size_t n)
             }
             vTaskDelay(pdMS_TO_TICKS(1000));
             if (++s_tries >= 3) { net_say("\r\nno\r\n"); net_close(); return; }
-            net_say("\r\nwrong password\r\npassword: ");
+            net_say(LS_TEXT(t_ls_rterm_wrong_password_password, "\r\nwrong password\r\npassword: "));
         } else if (b[i] >= 0x20 && b[i] < 0x7F && s_line_n < (int)sizeof(s_line) - 1) {
             s_line[s_line_n++] = (char)b[i];
         } else if ((b[i] == 0x7F || b[i] == 0x08) && s_line_n) {
@@ -922,7 +923,7 @@ static void web_begin(int i, const char *arg, int64_t now)
     int cols = 0, rows = 0;
     ls_tui_geometry(&cols, &rows, NULL, NULL);
     char msg[48];
-    snprintf(msg, sizeof(msg), "term: web begin cols %d rows %d%s", cols, rows, s_web.cells ? " cells" : "");
+    LS_SNPRINTF(t_ls_rterm_term_web_begin_cols, msg, sizeof(msg), "term: web begin cols %d rows %d%s", cols, rows, s_web.cells ? " cells" : "");
     ws_say(i, msg);
 }
 
@@ -963,7 +964,7 @@ static const char MANIFEST[] =
 static void http_reply(int i, const char *status)
 {
     char head[160];
-    const int n = snprintf(head, sizeof(head), "HTTP/1.1 %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", status);
+    const int n = LS_SNPRINTF(t_ls_rterm_http_1_1_s, head, sizeof(head), "HTTP/1.1 %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", status);
     send_all(s_wc[i].fd, head, (size_t)n);
     wc_close(i);
 }
@@ -987,7 +988,7 @@ static void http_answer(int i, int64_t now)
             return;
         }
         ls_ws_accept(key, acc);
-        const int n = snprintf(head, sizeof(head),
+        const int n = LS_SNPRINTF(t_ls_rterm_http_1_1_101, head, sizeof(head),
                                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
                                "Connection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", acc);
         if (!send_all(c->fd, head, (size_t)n)) { wc_close(i); return; }
@@ -1020,7 +1021,7 @@ static void http_answer(int i, int64_t now)
         }
     }
     char head[320];
-    const int n = snprintf(head, sizeof(head),
+    const int n = LS_SNPRINTF(t_ls_rterm_http_1_1_200, head, sizeof(head),
                            "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %u\r\n%s%s%s%s"
                            "Cache-Control: %s\r\nConnection: close\r\n\r\n",
                            f->type, (unsigned)size, f->gz ? "Content-Encoding: gzip\r\n" : "",
@@ -1535,7 +1536,7 @@ int ls_rterm_console(int argc, char **argv)
             want_z |= !strcmp(argv[a], "z");
             want_cells |= !strcmp(argv[a], "cells");
         }
-        printf("term: serial begin cols %d rows %d baud %d%s\n", cols, rows, baud, want_cells ? " cells" : "");
+        LS_PRINTF(t_ls_rterm_term_serial_begin_cols, "term: serial begin cols %d rows %d baud %d%s\n", cols, rows, baud, want_cells ? " cells" : "");
         fflush(stdout);
         if (s_ser_wait) s_ser_wait();
         xSemaphoreTake(s_mu, portMAX_DELAY);
@@ -1570,7 +1571,7 @@ int ls_rterm_console(int argc, char **argv)
             if (!ensure_started()) { printf("term: no memory\n"); return 1; }
             s_net_enabled = true;
             if (!save_settings()) printf("term: could not save the setting\n");
-            printf("term: network terminal on, port %d, password %s (not encrypted: use it on your own network)\n",
+            LS_PRINTF(t_ls_rterm_term_network_terminal_on, "term: network terminal on, port %d, password %s (not encrypted: use it on your own network)\n",
                    TERM_PORT, s_pass);
             return 0;
         }
@@ -1582,7 +1583,7 @@ int ls_rterm_console(int argc, char **argv)
         }
         if (!strcmp(what, "pass") && argc >= 4) {
             if (strlen(argv[3]) < 6 || strlen(argv[3]) >= sizeof(s_pass)) {
-                printf("term: a password is 6 to %d characters\n", (int)sizeof(s_pass) - 1);
+                LS_PRINTF(t_ls_rterm_term_a_password_is, "term: a password is 6 to %d characters\n", (int)sizeof(s_pass) - 1);
                 return 1;
             }
             snprintf(s_pass, sizeof(s_pass), "%s", argv[3]);
@@ -1632,17 +1633,17 @@ int ls_rterm_console(int argc, char **argv)
         return 1;
     }
     const uint32_t ip = ntohl(s_client_ip);
-    printf("term: serial %s, network %s on port %d, %s\n", s_ser.on ? "on" : "off",
+    LS_PRINTF(t_ls_rterm_term_serial_s_network, "term: serial %s, network %s on port %d, %s\n", s_ser.on ? "on" : "off",
            s_net_enabled ? "on" : "off", TERM_PORT,
            s_client < 0 ? "nobody connected" : s_authed ? "a client is watching" : "a client is at the password");
     if (s_client >= 0)
-        printf("term: client %lu.%lu.%lu.%lu\n", (unsigned long)(ip >> 24), (unsigned long)(ip >> 16 & 255),
+        LS_PRINTF(t_ls_rterm_term_client_lu_lu, "term: client %lu.%lu.%lu.%lu\n", (unsigned long)(ip >> 24), (unsigned long)(ip >> 16 & 255),
                (unsigned long)(ip >> 8 & 255), (unsigned long)(ip & 255));
     const uint32_t wip = ntohl(s_web_ip);
-    printf("term: web screen %s on port %d%s, ", s_web_enabled ? "on" : "off", WEB_PORT,
+    LS_PRINTF(t_ls_rterm_term_web_screen_s, "term: web screen %s on port %d%s, ", s_web_enabled ? "on" : "off", WEB_PORT,
            s_mdns >= 0 ? " as " LS_RTERM_WEB_NAME ".local" : "");
     if (s_web.on)
-        printf("%lu.%lu.%lu.%lu is watching\n", (unsigned long)(wip >> 24), (unsigned long)(wip >> 16 & 255),
+        LS_PRINTF(t_ls_rterm_lu_lu_lu_lu, "%lu.%lu.%lu.%lu is watching\n", (unsigned long)(wip >> 24), (unsigned long)(wip >> 16 & 255),
                (unsigned long)(wip >> 8 & 255), (unsigned long)(wip & 255));
     else printf("nobody watching\n");
     return 0;

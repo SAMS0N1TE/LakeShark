@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 enum { CAPACITY = 8192, CHUNK = 208, MAX_SYMBOLS = 2000000 };
 typedef struct {
@@ -161,14 +162,14 @@ int p25_p2_bench_command(int argc, char **argv)
         if (active) active->finish = true;
         portEXIT_CRITICAL(&lock);
     } else if (argc != 3 || strcmp(argv[2], "status")) {
-        puts("p2 test begin WACN SYS NAC slot | data count packed_hex | end | status"); return 1;
+        LS_PUTS(t_p25_p2_bench_p2_test_begin_wacn, "p2 test begin WACN SYS NAC slot | data count packed_hex | end | status"); return 1;
     }
     portENTER_CRITICAL(&lock);
     result_t r = result;
     bool running = active != NULL;
     unsigned queued = active ? active->queued : 0;
     portEXIT_CRITICAL(&lock);
-    printf("P2TEST run=%u failed=%u queued=%u accepted=%lu symbols=%lu voice=%lu audio=%lu muted=%lu samples=%lu nonzero=%lu peak=%lu energy=%llu decode_us=%llu max_us=%lu stack_free=%lu\n",
+    LS_PRINTF(t_p25_p2_bench_p2test_run_u_failed, "P2TEST run=%u failed=%u queued=%u accepted=%lu symbols=%lu voice=%lu audio=%lu muted=%lu samples=%lu nonzero=%lu peak=%lu energy=%llu decode_us=%llu max_us=%lu stack_free=%lu\n",
            running, r.failed, queued, (unsigned long)r.accepted, (unsigned long)r.decoder.symbols,
            (unsigned long)r.decoder.voice_frames, (unsigned long)r.decoder.audio_frames,
            (unsigned long)r.decoder.muted_frames, (unsigned long)r.samples, (unsigned long)r.nonzero,

@@ -4,6 +4,8 @@
 #include "ls_music_backend.h"
 #include "ls_options.h"
 #include "ls_audio_view.h"
+#include "ls_audio_layers.h"
+#include "ls_music_options.h"
 #include "ls_spectro.h"
 #include "esp_timer.h"
 #include <math.h>
@@ -13,6 +15,21 @@
 
 extern const ls_tui_screen_t ls_scr_music;
 bool ls_scr_music_play_file(const char *path);
+static ls_audio_analysis *analysis;
+ls_audio_analysis *ls_music_analysis(void){return analysis;}
+ls_audio_overview *ls_music_overview(void){return NULL;}
+ls_audio_tools *ls_music_tools(void){return NULL;}
+static unsigned speed=1000;static uint32_t loop_a,loop_b;static bool looping;
+bool ls_music_speed_set(unsigned v){speed=v;return true;}
+unsigned ls_music_speed_get(void){return speed;}
+bool ls_music_loop_set(uint32_t a,uint32_t b,bool on){loop_a=a;loop_b=b;looping=on;return true;}
+bool ls_music_loop_get(uint32_t *a,uint32_t *b){*a=loop_a;*b=loop_b;return looping;}
+bool ls_music_marker_add(void){return true;}
+void ls_music_markers_clear(void){}
+unsigned ls_music_marker_count(void){return 0;}
+bool ls_music_marker_get(unsigned i,uint32_t *at){(void)i;(void)at;return false;}
+bool ls_music_tone_start(ls_gen_kind k,unsigned a,unsigned b,unsigned t,int db){(void)k;(void)a;(void)b;(void)t;(void)db;return true;}
+bool ls_music_tone_active(void){return false;}
 static bool wide;
 static int rounded_height;
 static int tracks=24, last_play=-1, volume=35, closes;
@@ -20,8 +37,8 @@ static ls_music_state_t state;
 static unsigned format_epoch;
 bool ls_tui_is_wide(void){return wide;}
 int ls_tui_corner_pad(int row){return rounded_height && row>=rounded_height-4?5:0;}
-bool ls_music_open(void){state=LS_MUSIC_STOPPED;return true;}
-void ls_music_close(void){state=LS_MUSIC_STOPPED;closes++;}
+bool ls_music_open(void){if(!analysis)analysis=ls_audio_analysis_new();state=LS_MUSIC_STOPPED;return true;}
+void ls_music_close(void){ls_audio_analysis_free(analysis);analysis=NULL;state=LS_MUSIC_STOPPED;closes++;}
 bool ls_music_scan(int source){(void)source;state=LS_MUSIC_STOPPED;return true;}
 int ls_music_count(void){return tracks;}
 const char *ls_music_name(int i){static const char *names[]={"Night Dive.wav","Neon Reef.wav","Shark After Dark.wav","Coral Radio.wav"};return i==5?"REC-007.wav":i>=0&&i<tracks?names[i%4]:"";}
@@ -98,7 +115,7 @@ static void exercise(int w,int h) {
     ls_scr_music.enter();paint(&sf,w,h);
     /* A button where the row can spell it, and the key everywhere. */
     if(!wide){opened=NULL;tap_label(&sf,back+1,w,h,"OPTIONS");
-        LS_CHECK(opened && !strcmp(opened->name,"MUSIC") && opened->n==8);}
+        LS_CHECK(opened && !strcmp(opened->name,"MUSIC") && opened->n==11);}
     opened=NULL;LS_CHECK(ls_scr_music.key(LS_TK_CHAR,'o'));LS_CHECK(opened!=NULL);
     tap_label(&sf,back+1,w,h,"PLAY");LS_EQ_INT(last_play,0);LS_EQ_INT(state,LS_MUSIC_PLAYING);
     tap_label(&sf,back+1,w,h,"PAUSE");LS_EQ_INT(state,LS_MUSIC_PAUSED);
@@ -271,7 +288,7 @@ static void view_switch(int w,int h,int w2,int h2){
     ls_scr_music.leave();ls_scr_music.enter();paint(&sf,w2,h2);
     LS_CHECK(contains(back,w2,h2," WATERFALL "));
     LS_CHECK(ls_scr_music.key(LS_TK_CHAR,'v'));paint(&sf,w2,h2);
-    LS_CHECK(contains(back,w2,h2,"PEAK LEVEL"));
+    LS_CHECK(contains(back,w2,h2," WAVE "));
     LS_CHECK(ls_scr_music.key(LS_TK_CHAR,'3'));paint(&sf,w2,h2);
     LS_CHECK(contains(back,w2,h2," SCAN "));
     ls_scr_music.key(LS_TK_CHAR,'1');ls_scr_music.key(LS_TK_CHAR,'z');ls_scr_music.key(LS_TK_CHAR,'z');
@@ -513,4 +530,64 @@ LS_CASE(files_hand_over_plays_inside_and_outside_the_list){
 LS_CASE(opening_the_player_releases_the_receiver){
     radio_wanted="FM";radio_wants=0;
     ls_scr_music.enter();LS_CHECK(radio_wants>=1);LS_CHECK(radio_wanted==NULL);ls_scr_music.leave();
+}
+
+static void feed_real_tone(ls_audio_analysis *a,float hz){
+    int16_t pcm[512];
+    for(unsigned at=0;at<44100;at+=256){
+        for(unsigned i=0;i<256;i++)pcm[2*i]=pcm[2*i+1]=(int16_t)(16000*sin(6.28318530718*hz*(at+i)/44100));
+        ls_audio_analysis_append(a,pcm,256,2,44100);ls_audio_analysis_process(a,2);
+    }
+}
+LS_CASE(new_layers_use_pcm_and_cursor_and_hold){
+    ls_audio_analysis *a=ls_audio_analysis_new();ls_audio_layers *p=ls_audio_layers_new();LS_CHECK(a&&p);
+    ls_aa_config c=ls_audio_analysis_defaults();c.log_axis=false;c.lo_hz=1;c.hi_hz=20000;ls_audio_analysis_configure(a,&c);
+    feed_real_tone(a,1000);
+    tui_cell *back=calloc(80*30+2,sizeof(*back)),*front=calloc(80*30+2,sizeof(*front));tui_surface sf;
+    back[0].ch='A';back[80*30+1].ch='Z';tui_surface_setup(&sf,back+1,front+1,80,30);
+    for(int layer=0;layer<LS_LAYERS;layer++){
+        tui_frame_begin(&sf);ls_audio_layers_draw(p,&sf,tui_rect_make(0,0,80,30),layer,a,NULL,NULL,1000,false);
+        LS_CHECK(contains(back+1,80,30,"Hz"));LS_CHECK(contains(back+1,80,30,"dBFS"));
+        if(layer!=LS_LAYER_TOOLS)LS_CHECK(image_px&&image_w==800&&image_h==(layer==LS_LAYER_SPECTRUM?21:23)*17);
+        if(layer==LS_LAYER_SPECTRUM){
+            /* A real 1 kHz tone lies 5% across this linear 1..20 kHz axis. */
+            int top_at=-1;for(int x=32;x<49;x++)for(int y=0;y<image_h/3;y++)if(image_px[y*image_w+x]==0x07ff)top_at=x;
+            LS_CHECK(top_at>=32&&top_at<49);
+        }
+        LS_EQ_INT(back[0].ch,'A');LS_EQ_INT(back[80*30+1].ch,'Z');
+    }
+    ls_audio_layers_draw(p,&sf,tui_rect_make(0,0,80,30),LS_LAYER_SPECTRO,a,NULL,NULL,1000,false);
+    uint32_t serial=image_serial;feed_real_tone(a,2000);
+    ls_audio_layers_draw(p,&sf,tui_rect_make(0,0,80,30),LS_LAYER_SPECTRO,a,NULL,NULL,1000,true);
+    LS_EQ_INT(image_serial,serial);
+    LS_CHECK(ls_audio_layers_touch(p,40,10));LS_CHECK(ls_audio_layers_frequency(p)>10000);
+    ls_audio_layers_free(p);ls_audio_analysis_free(a);free(back);free(front);
+}
+LS_CASE(file_wave_zoom_and_precise_cursor_slice){
+    char source[512],cache[512];snprintf(source,sizeof(source),"%s/tone.wav",LS_MUSIC_FIXTURES);snprintf(cache,sizeof(cache),"%s/ui-cache",LS_MUSIC_FIXTURES);
+    ls_audio_overview *o=ls_audio_overview_new(cache);LS_CHECK(o&&ls_audio_overview_request(o,source,false));
+    for(int i=0;i<1000&&!ls_audio_overview_ready(o);i++)ls_audio_overview_step(o,2048);
+    LS_CHECK(ls_audio_overview_ready(o));
+    ls_audio_analysis *a=ls_audio_analysis_new();ls_audio_layers *p=ls_audio_layers_new();feed_real_tone(a,1000);
+    tui_cell back[80*30],front[80*30];tui_surface sf;tui_surface_setup(&sf,back,front,80,30);tui_frame_begin(&sf);
+    ls_audio_layers_draw(p,&sf,tui_rect_make(0,0,80,30),LS_LAYER_WAVE,a,o,NULL,1000,false);
+    LS_CHECK(ls_audio_layers_touch(p,20,27));LS_CHECK(ls_audio_layers_time(p)>490&&ls_audio_layers_time(p)<520);
+    ls_audio_layers_zoom(p);
+    ls_audio_layers_draw(p,&sf,tui_rect_make(0,0,80,30),LS_LAYER_WAVE,a,o,NULL,1500,false);
+    LS_CHECK(contains(back,80,30,"FILE 2x"));
+    ls_audio_overview_step(o,1);
+    ls_audio_layers_draw(p,&sf,tui_rect_make(0,0,80,30),LS_LAYER_SPECTRUM,a,o,NULL,1500,false);
+    LS_CHECK(contains(back,80,30,"SLICE"));
+    LS_CHECK(ls_audio_layers_time(p)<520);
+    ls_audio_layers_free(p);ls_audio_analysis_free(a);LS_CHECK(ls_audio_overview_free(o));
+}
+LS_CASE(all_ten_views_are_reachable_and_options_have_safe_defaults){
+    tui_cell back[52*70],front[52*70];tui_surface sf;tui_surface_setup(&sf,back,front,52,70);
+    ls_scr_music.enter();feed_real_tone(analysis,440);
+    const char *titles[]={" WAVE "," SPECTRO "," MELODIC "," SPECTRUM "," SCOPE "," TOOLS "};
+    for(int i=0;i<6;i++){LS_CHECK(ls_scr_music.key(LS_TK_CHAR,i==5?'0':(char)('5'+i)));paint(&sf,52,70);LS_CHECK(contains(back,52,70,titles[i]));LS_CHECK(contains(back,52,70,"dBFS"));}
+    const ls_opt_t *fft=&ls_music_analysis_options.opt[0];fft->set(fft,4);LS_EQ_INT(ls_audio_analysis_config(analysis).fft_size,4096);
+    const ls_opt_t *speed_opt=&ls_music_playback_options.opt[0];speed_opt->set_num(speed_opt,9);LS_EQ_INT(speed,2000);speed_opt->set_num(speed_opt,0);LS_EQ_INT(speed,500);
+    const ls_opt_t *level=&ls_music_generator_options.opt[4];LS_CHECK(level->num(level)==-24);level->set_num(level,1);LS_CHECK(level->num(level)==-12);level->set_num(level,-24);
+    ls_scr_music.key(LS_TK_CHAR,'1');ls_scr_music.leave();
 }

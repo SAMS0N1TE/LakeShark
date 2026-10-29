@@ -2,8 +2,14 @@
 #include "ls_lap_api.h"
 #include "ls_lap_signature.h"
 #include "ls_lap_sys.h"
+#include "ls_lap_net.h"
+#include "ls_lap_radio.h"
+#include "ls_lap_grants.h"
+#include "ls_lap_service.h"
+#include "ls_lap_kit.h"
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 #ifdef ESP_PLATFORM
 #include "core/ls_trail.h"
 #include "esp_attr.h"
@@ -99,7 +105,7 @@ static bool digest(ls_lap_reader_t *r, uint8_t hash[32]) {
 static void crash_boot(void) {
     const char *id = ls_trail_last_native();
     if (id && !s.crash[0])
-        snprintf(s.crash, sizeof(s.crash), "%.31s stopped the board", id);
+        LS_SNPRINTF(t_ls_lap_31s_stopped_the_board, s.crash, sizeof(s.crash), "%.31s stopped the board", id);
 }
 static int register_info(const ls_lap_info_t *a) {
     int slot = -1;
@@ -119,11 +125,11 @@ static int register_info(const ls_lap_info_t *a) {
     if (slot < 0)
         slot = s.count;
     if (slot >= LS_LAP_MAX_APPS) {
-        snprintf(s.error, sizeof(s.error), "native directory full at 24 apps");
+        LS_SNPUTS(t_ls_lap_native_directory_full_at, s.error, sizeof(s.error), "native directory full at 24 apps");
         return -1;
     }
     if (!exists && ls_app_by_id(a->manifest.id)) {
-        snprintf(s.error, sizeof(s.error), "duplicate app id %.31s", a->manifest.id);
+        LS_SNPRINTF(t_ls_lap_duplicate_app_id_31s, s.error, sizeof(s.error), "duplicate app id %.31s", a->manifest.id);
         return -1;
     }
     if (!a->installed) {
@@ -196,7 +202,7 @@ static bool read_info(const char *path, ls_lap_info_t *a, bool verify, char *why
     bool ok = false;
     if (!path || strlen(path) >= sizeof(a->path) || stat(path, &st) || st.st_size < 52 ||
         (uint64_t)st.st_size > LS_LAP_MAX_BYTES || !(f = fopen(path, "rb"))) {
-        snprintf(why, cap, "invalid size/path or unreadable app");
+        LS_SNPUTS(t_ls_lap_invalid_size_path_or, why, cap, "invalid size/path or unreadable app");
         return false;
     }
     memset(a, 0, sizeof(*a));
@@ -230,10 +236,11 @@ bool ls_lap_inspect_file(const char *path, ls_lap_info_t *out, char *why, size_t
 }
 int ls_lap_scan_file(const char *path) {
     crash_boot();
+    ls_lap_grants_load(LS_LAP_GRANTS_PATH);   /* the boot scan already reads the card */
     int rc = -1;
     ls_lap_info_t *a = heap_caps_calloc(1, sizeof(*a), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!a) {
-        snprintf(s.error, sizeof(s.error), "no PSRAM for app metadata");
+        LS_SNPUTS(t_ls_lap_no_psram_for_app, s.error, sizeof(s.error), "no PSRAM for app metadata");
         return -1;
     }
     if (!read_info(path, a, false, s.error, sizeof(s.error)))
@@ -241,10 +248,10 @@ int ls_lap_scan_file(const char *path) {
     const char *crashed = ls_trail_last_native();
     a->needs_confirmation = (crashed && !strcmp(crashed, a->manifest.id)) || !a->signature_present;
     if (a->needs_confirmation)
-        snprintf(s.crash, sizeof(s.crash), "%.15s stopped the board", a->manifest.name);
+        LS_SNPRINTF(t_ls_lap_15s_stopped_the_board, s.crash, sizeof(s.crash), "%.15s stopped the board", a->manifest.name);
     const ls_lap_info_t *other = ls_lap_by_id(a->manifest.id);
     if (other && other->installed) {
-        snprintf(s.error, sizeof(s.error), "duplicate app id %.31s", a->manifest.id);
+        LS_SNPRINTF(t_ls_lap_duplicate_app_id_31s, s.error, sizeof(s.error), "duplicate app id %.31s", a->manifest.id);
         goto done;
     }
     rc = register_info(a);
@@ -325,6 +332,39 @@ static void radio_release(void) {
     ls_tui_radio_want(s_radio_held);
     s_radio_held[0] = 0;
 }
+/* API 2.1: how the shared controls and the service tick call into the app. */
+static bool code_ok(uintptr_t fn) { return fn && executable(fn); }
+static const ls_lap_guard_t guard = {code_ok, before, after};
+
+/* A service keeps the app loaded while its screen is closed. */
+static bool hidden(void) { return s.entered && !ls_lap_service_shown(); }
+static bool hint_given;               /* the "keeps running" notice, once a launch */
+static void close_active(void);
+static void request(int op);
+/* Ends the service. With the screen closed the app goes too: its `stopped`
+   callback, then everything an app close gives back. */
+static void service_kill(const char *why) {
+    const bool was = ls_lap_service_on();
+    void (*stopped)(void) = ls_lap_service_off(why);
+    if (was && why) {
+        char line[64];
+        snprintf(line, sizeof(line), "stopped: %s", why);
+        ls_lap_service_notice(line);
+    }
+    if (!hidden())
+        return;
+    if (stopped && code_ok((uintptr_t)stopped)) {
+        before();
+        stopped();
+        after();
+    }
+    ls_lap_sys_end();
+    s.entered = false;
+    ls_lap_service_set_shown(true);
+    if (atomic_load_explicit(&operation, memory_order_acquire) == IO_READY)
+        request(IO_CLEAN);
+}
+
 static void unload(void) {
     ls_lap_api_log_service();
     ls_lap_api_cleanup();
@@ -400,11 +440,11 @@ static int relocate_internal(esp_elf_t *elf, const uint8_t *data) {
                     ESP_LOGW("lap", "linking left %u of %u stack bytes", j.spare, (unsigned)RELOC_STACK);
             }
             else
-                snprintf(s.work_error, sizeof(s.work_error), "ELF relocation timed out");
+                LS_SNPUTS(t_ls_lap_elf_relocation_timed_out, s.work_error, sizeof(s.work_error), "ELF relocation timed out");
             vTaskDelete(t);
         }
     } else
-        snprintf(s.work_error, sizeof(s.work_error), "memory is short: stop a radio app (RADIOS) and open again");
+        LS_SNPUTS(t_ls_lap_memory_is_short_stop, s.work_error, sizeof(s.work_error), "memory is short: stop a radio app (RADIOS) and open again");
     heap_caps_free(stack);
     heap_caps_free(tcb);
     return rc;
@@ -428,7 +468,7 @@ static bool load(void) {
     bool signed_app;
     ls_lap_api_begin(a->manifest.id, ++s.generation, s.opened_ms);
     if (!digest(&r, hash) || (a->signature_checked && memcmp(hash, a->sha256, 32))) {
-        snprintf(s.work_error, sizeof(s.work_error), "app changed since scan");
+        LS_SNPUTS(t_ls_lap_app_changed_since_scan, s.work_error, sizeof(s.work_error), "app changed since scan");
         goto done;
     }
     if (!ls_lap_signature(&r, ls_lap_verify_release, NULL, &elf_size, &signed_app, s.work_error,
@@ -439,7 +479,7 @@ static bool load(void) {
     lap_app_t current_manifest;
     if (!ls_lap_manifest(data, elf_size, &current_manifest, s.work_error, sizeof(s.work_error)) ||
         memcmp(&current_manifest, &a->manifest, LS_LAP_MANIFEST_BYTES)) {
-        snprintf(s.work_error, sizeof(s.work_error), "app manifest changed since scan");
+        LS_SNPUTS(t_ls_lap_app_manifest_changed_since, s.work_error, sizeof(s.work_error), "app manifest changed since scan");
         goto done;
     }
     elf_set_symbol_resolver(ls_lap_resolve);
@@ -451,7 +491,7 @@ static bool load(void) {
     }
     /* RISC-V loader 1.3.5 adds svaddr when applying relocations: require zero base. */
     if (s.elf.svaddr || !esp_ptr_external_ram(s.elf.psegment)) {
-        snprintf(s.work_error, sizeof(s.work_error), "ELF must execute in PSRAM with zero base");
+        LS_SNPUTS(t_ls_lap_elf_must_execute_in, s.work_error, sizeof(s.work_error), "ELF must execute in PSRAM with zero base");
         goto done;
     }
     s.nexec = 0;
@@ -489,7 +529,7 @@ done:
     heap_caps_free(data);
     if (!ok) {
         if (!s.work_error[0])
-            snprintf(s.work_error, sizeof(s.work_error), "cannot read app into PSRAM");
+            LS_SNPUTS(t_ls_lap_cannot_read_app_into, s.work_error, sizeof(s.work_error), "cannot read app into PSRAM");
         unload();
     }
     return ok;
@@ -516,6 +556,7 @@ static void io_task(void *arg) {
         ls_lap_api_log_service();
         io_service();
         busy = ls_lap_sys_service();
+        ls_lap_grants_save(LS_LAP_GRANTS_PATH);   /* only when a grant changed */
     }
 }
 static void wake_io(void) {
@@ -529,6 +570,7 @@ bool ls_lap_start_worker(void) {
     if (worker) {
         ls_lap_api_set_wake(wake_io);
         ls_lap_sys_set_wake(wake_io);
+        ls_lap_radio_set_wake(wake_io);
     }
     return worker != NULL;
 }
@@ -537,7 +579,7 @@ static void request(int op) {
     xTaskNotifyGive(worker);
 }
 static void close_active(void) {
-    if (s.entered && s.app && s.app->leave) {
+    if (s.entered && s.app && s.app->leave && !hidden()) {
         before();
         s.app->leave();
         after();
@@ -545,6 +587,7 @@ static void close_active(void) {
     if (s.entered)
         ls_lap_sys_end();
     s.entered = false;
+    ls_lap_service_set_shown(true);
     ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
     if (atomic_load_explicit(&operation, memory_order_acquire) == IO_READY)
         request(IO_CLEAN);
@@ -554,9 +597,25 @@ static void ls_lap_select(const char *id) {
     for (int i = 0; i < s.count; i++)
         if (!strcmp(id, s.apps[i].manifest.id))
             desired = i;
+    if (hidden() && desired == s.active) {
+        /* Its service kept it loaded: the screen comes back as it was. */
+        s.desired = desired;
+        radio_hold(&s.apps[desired].manifest);
+        return;
+    }
+    if (hidden()) {
+        char why[48];
+        snprintf(why, sizeof(why), "%.15s opened", desired >= 0 ? s.apps[desired].manifest.name : "an app");
+        service_kill(why);
+    }
     if (s.visible)
         close_active();
     s.desired = desired;
+    if (desired >= 0 && (s.apps[desired].manifest.flags & LAP_CAP_NETWORK))
+        s.apps[desired].needs_confirmation = true;
+    /* Radio access is asked once per install, then remembered. */
+    if (desired >= 0 && !ls_lap_grant_has(&s.apps[desired], s.apps[desired].manifest.flags))
+        s.apps[desired].needs_confirmation = true;
     s.opened_ms = (uint32_t)(esp_timer_get_time() / 1000);
     s.status.state = desired >= 0 ? LS_LAP_LOADING : LS_LAP_IDLE;
     if (desired >= 0)
@@ -567,16 +626,40 @@ static void enter(void) {
     s.visible = true;
     ls_lap_poll();
 }
+/* The screen closes with a service running: the app's leave() runs, the
+   screen is given back, and the app stays loaded for its tick. */
+static bool hide(void) {
+    if (!s.entered || s.status.state != LS_LAP_RUNNING || !s.app || !ls_lap_service_on() ||
+        ls_lap_api_exit_requested())
+        return false;
+    if (s.app->leave) {
+        before();
+        s.app->leave();
+        after();
+    }
+    ls_lap_service_set_shown(false); /* leave() has run: close_active must not run it again */
+    if (!ls_lap_service_on())        /* it stopped its service on the way out */
+        return false;
+    ls_lap_sys_hide();
+    ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
+    if (!hint_given) {
+        hint_given = true;
+        ls_lap_service_notice(LS_TEXT(t_ls_lap_keeps_running_stop_in, "keeps running; STOP in RADIOS"));
+    }
+    return true;
+}
 static void leave(void) {
     s.visible = false;
     s.desired = -1;
-    close_active();
+    if (!hide())
+        close_active();
     radio_release();
 }
 bool ls_lap_confirm(const char *id) {
     for (int i = 0; i < s.count; i++)
         if (id && !strcmp(id, s.apps[i].manifest.id)) {
             s.apps[i].needs_confirmation = false;
+            ls_lap_grant_set(&s.apps[i], s.apps[i].manifest.flags);
             if (s.visible && s.desired == i && s.status.needs_confirmation) {
                 s.status.state = LS_LAP_IDLE;
                 s.status.needs_confirmation = false;
@@ -591,6 +674,25 @@ void ls_lap_poll(void) {
         atomic_store(&pending, false);
         ls_lap_maintenance_end();
     }
+    if (s.entered && s.status.state == LS_LAP_RUNNING && s.app) {
+        if (ls_lap_service_take_stop())
+            service_kill("STOP pressed");
+        else if (ls_lap_service_poll() < 0)
+            service_kill(ls_lap_service_why()[0] ? ls_lap_service_why() : NULL);
+        if (hidden() && ls_lap_api_exit_requested())
+            service_kill(NULL);
+    }
+    if (s.visible && hidden() && s.desired == s.active && s.app) {
+        /* Shown again: the app is entered again with everything it kept. */
+        ls_lap_service_set_shown(true);
+        ls_lap_kit_begin();
+        s_entered_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        if (s.app->enter) {
+            before();
+            s.app->enter();
+            after();
+        }
+    }
     int op = atomic_load_explicit(&operation, memory_order_acquire);
     if (op == IO_CLEANED) {
         if (s.work_error[0])
@@ -601,7 +703,7 @@ void ls_lap_poll(void) {
         if (s.status.state != LS_LAP_FAILED || s.desired != s.active)
             s.status.state = LS_LAP_IDLE;
     }
-    if (op == IO_READY && (!s.visible || s.desired != s.active)) {
+    if (op == IO_READY && (!s.visible || s.desired != s.active) && !hidden()) {
         request(IO_CLEAN);
         return;
     }
@@ -621,7 +723,7 @@ void ls_lap_poll(void) {
         }
         int free_gate = 0;
         if (!atomic_compare_exchange_strong(&gate, &free_gate, 1)) {
-            snprintf(s.error, sizeof(s.error), "app install in progress");
+            LS_SNPUTS(t_ls_lap_app_install_in_progress, s.error, sizeof(s.error), "app install in progress");
             s.status.state = LS_LAP_FAILED;
             return;
         }
@@ -652,7 +754,7 @@ void ls_lap_poll(void) {
             !executable((uintptr_t)s.app->draw) || !executable((uintptr_t)s.app->key) ||
             !executable((uintptr_t)s.app->touch)) {
             s.app = NULL;
-            snprintf(s.error, sizeof(s.error), "app descriptor differs from scanned manifest");
+            LS_SNPUTS(t_ls_lap_app_descriptor_differs_from, s.error, sizeof(s.error), "app descriptor differs from scanned manifest");
             s.status.state = LS_LAP_FAILED;
             request(IO_CLEAN);
             return;
@@ -669,14 +771,18 @@ void ls_lap_poll(void) {
             for (unsigned i = 0; i < sizeof(RADIOS) / sizeof(RADIOS[0]); i++)
                 if (!strcmp(s.app->radio, RADIOS[i]))
                     ls_tui_radio_want(RADIOS[i]);
+        ls_lap_set_guard(&guard);
+        hint_given = false;
         ls_lap_sys_begin();
+        ls_lap_net_begin((s.app->flags & LAP_CAP_NETWORK) != 0);
+        ls_lap_radio_begin(s.app);   /* granted: the board asked before loading it */
         if (s.app->enter) {
             before();
             s.app->enter();
             after();
         }
     }
-    if (s.entered && ls_lap_api_exit_requested())
+    if (s.entered && s.visible && ls_lap_api_exit_requested())
         ls_tui_screen_show(0);
 }
 /* A full-screen app has hidden the tab strip, so the board keeps a way
@@ -714,7 +820,7 @@ static void draw_paused(tui_surface *sf) {
         return;
     const char *who = s_radio_held;
     char line[96];
-    snprintf(line, sizeof(line), " %s PAUSED UNTIL THIS APP CLOSES ", who);
+    LS_SNPRINTF(t_ls_lap_s_paused_until_this, line, sizeof(line), " %s PAUSED UNTIL THIS APP CLOSES ", who);
     const tui_rect r = tui_rect_make(s.area.x, s.area.y, s.area.w - CLOSE_W - 1, 1);
     if (r.w < 8)
         return;

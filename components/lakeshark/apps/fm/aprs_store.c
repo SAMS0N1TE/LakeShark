@@ -2,6 +2,8 @@
 #include <math.h>
 #include <string.h>
 #include "esp_timer.h"
+#include "ls_decoded.h"
+#include <stdio.h>
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
@@ -83,6 +85,11 @@ void aprs_store_receive(const aprs_packet_t *p, void *user)
     (void)user;
     if (!p) return;
     int64_t now = esp_timer_get_time();
+    /* Every packet as heard, before this table's own filters. */
+    ls_decoded_t ev = { .kind = LS_DECODED_APRS, .has_pos = p->position, .lat = p->lat, .lon = p->lon, .at_us = now };
+    snprintf(ev.from, sizeof(ev.from), "%s", p->name[0] ? p->name : p->call);
+    snprintf(ev.text, sizeof(ev.text), "%s", p->text);
+    ls_decoded_publish(&ev);
     lock(); last_heard = now; prune(now);
     if (p->kind == APRS_MESSAGE && !options.messages) { unlock(); return; }
     int found = -1;

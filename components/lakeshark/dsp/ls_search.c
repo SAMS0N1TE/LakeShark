@@ -25,6 +25,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "ls_textpack.h"
 
 static const char *TAG = "ls_search";
 
@@ -140,7 +141,7 @@ static void log_hit(job_t *j, const char *ev, const ls_search_hit_t *h,
                     float duty)
 {
     char line[240];
-    snprintf(line, sizeof(line),
+    LS_SNPRINTF(t_ls_search_ev_s_f_hz, line, sizeof(line),
              "{\"ev\":\"%s\",\"f_hz\":%lu,\"db\":%.1f,\"path\":\"%s\","
              "\"const\":%s,\"count\":%lu,\"duty\":%.2f,\"first_s\":%lu,"
              "\"last_s\":%lu,\"unix\":%lld}",
@@ -159,7 +160,7 @@ static void on_hit(const ls_search_hit_t *h, ls_search_hit_kind_t kind,
 {
     job_t *j = (job_t *)user;
     if (kind == LS_SEARCH_HIT_NEW) {
-        printf("search: %.4f MHz  +%.0f dB  %s%s  pass %lu\n", h->freq_hz / 1e6,
+        LS_PRINTF(t_ls_search_search_4f_mhz_0f, "search: %.4f MHz  +%.0f dB  %s%s  pass %lu\n", h->freq_hz / 1e6,
                (double)h->max_db, ls_search_path_name(h->path),
                h->constant ? " const" : "", (unsigned long)j->core.pass);
         fflush(stdout);
@@ -182,7 +183,7 @@ static void run_job(void)
     log_open(j);
     if (j->log) {
         char line[160];
-        snprintf(line, sizeof(line),
+        LS_SNPRINTF(t_ls_search_ev_start_lo_hz, line, sizeof(line),
                  "{\"ev\":\"start\",\"lo_hz\":%llu,\"hi_hz\":%llu,"
                  "\"bin_hz\":%u,\"gain_tenths\":%d,\"unix\":%lld}",
                  (unsigned long long)j->plan.start_hz,
@@ -234,7 +235,7 @@ static void run_job(void)
             log_hit(j, "end", &j->core.hit[idx[i]],
                     ls_search_duty(&j->core, &j->core.hit[idx[i]]));
         char line[120];
-        snprintf(line, sizeof(line),
+        LS_SNPRINTF(t_ls_search_ev_stop_reason_s, line, sizeof(line),
                  "{\"ev\":\"stop\",\"reason\":\"%s\",\"passes\":%lu,"
                  "\"hits\":%lu}", why, (unsigned long)j->core.pass,
                  (unsigned long)j->core.n_hits);
@@ -242,7 +243,7 @@ static void run_job(void)
     }
     if (j->log) { fclose(j->log); j->log = NULL; }
 
-    printf("search: stopped - %s  %lu passes  %lu hits\n", why,
+    LS_PRINTF(t_ls_search_search_stopped_s_lu, "search: stopped - %s  %lu passes  %lu hits\n", why,
            (unsigned long)j->core.pass, (unsigned long)j->core.n_hits);
 
     s_why = why;
@@ -348,7 +349,7 @@ void ls_search_run_stop(void)
     s_stop_req = true;
     /* The stop is seen between reads and retunes; a retune is the long one. */
     for (int i = 0; i < 300 && s_busy; i++) vTaskDelay(pdMS_TO_TICKS(10));
-    if (s_busy) printf("search: still handing the receiver back\n");
+    if (s_busy) LS_FPUTS(msg_ls_search_search_still_handing_the, "search: still handing the receiver back\n", stdout);
 }
 
 void ls_search_run_clear(void)
@@ -364,8 +365,8 @@ bool ls_search_run_active(void) { return s_busy; }
 void ls_search_run_report(void)
 {
     if (!s_ever) {
-        printf("search: not run yet.  `search start [lo_MHz hi_MHz]`, "
-               "default 136-174\n");
+        LS_FPUTS(msg_ls_search_search_not_run_yet, "search: not run yet.  `search start [lo_MHz hi_MHz]`, "
+               "default 136-174\n", stdout);
         return;
     }
 
@@ -394,22 +395,22 @@ void ls_search_run_report(void)
     xSemaphoreGive(s_lock);
 
     if (running)
-        printf("search: running %.4f-%.4f MHz  pass %lu  %.1f s/pass  "
+        LS_PRINTF(t_ls_search_search_running_4f_4f, "search: running %.4f-%.4f MHz  pass %lu  %.1f s/pass  "
                "%lu tunes  gain %d.%d dB%s\n", lo / 1e6, hi / 1e6,
                (unsigned long)pass, pass_ms / 1000.0, (unsigned long)tunes,
                LS_SEARCH_GAIN_TENTHS / 10, LS_SEARCH_GAIN_TENTHS % 10,
                pass <= LS_SEARCH_WARMUP ? "  WARMING UP, no hits yet" : "");
     else
-        printf("search: stopped (%s)  %.4f-%.4f MHz  %lu passes\n",
+        LS_PRINTF(t_ls_search_search_stopped_s_4f, "search: stopped (%s)  %.4f-%.4f MHz  %lu passes\n",
                why, lo / 1e6, hi / 1e6, (unsigned long)pass);
-    printf("search: %lu hits, %lu constant (always there: spurs, steady "
+    LS_PRINTF(t_ls_search_search_lu_hits_lu, "search: %lu hits, %lu constant (always there: spurs, steady "
            "carriers)\n", (unsigned long)n_hits, (unsigned long)n_const);
 
     if (!n) return;
-    printf("  %10s  %5s  %5s  %5s  %6s  %5s  %8s  %8s\n", "MHz", "+dB", "seen",
+    LS_PRINTF(t_ls_search_10s_5s_5s_5s, "  %10s  %5s  %5s  %5s  %6s  %5s  %8s  %8s\n", "MHz", "+dB", "seen",
            "duty", "path", "const", "first s", "last s");
     for (uint32_t i = 0; i < n; i++)
-        printf("  %10.4f  %5.1f  %5lu  %4.0f%%  %6s  %5s  %8lu  %8lu\n",
+        LS_PRINTF(t_ls_search_10_4f_5_1f, "  %10.4f  %5.1f  %5lu  %4.0f%%  %6s  %5s  %8lu  %8lu\n",
                top[i].freq_hz / 1e6, (double)top[i].max_db,
                (unsigned long)top[i].count, (double)(duty[i] * 100.0f),
                ls_search_path_name(top[i].path), top[i].constant ? "yes" : "-",
@@ -424,7 +425,7 @@ void ls_search_run_report(void)
 void ls_search_run_dump(void)
 {
     if (!s_ever) {
-        printf("search: nothing to dump, `search start` first\n");
+        LS_FPUTS(msg_ls_search_search_nothing_to_dump, "search: nothing to dump, `search start` first\n", stdout);
         return;
     }
 
@@ -440,7 +441,7 @@ void ls_search_run_dump(void)
     char *line = malloc(cap);
     if (!line) { printf("search: out of memory for the dump\n"); return; }
 
-    printf("SEARCH-DUMP v1 lo=%llu hi=%llu bin=%u hop=%u dc=%u tunes=%u "
+    LS_PRINTF(t_ls_search_search_dump_v1_lo, "SEARCH-DUMP v1 lo=%llu hi=%llu bin=%u hop=%u dc=%u tunes=%u "
            "pass=%lu gain=%d enc=(hex/2)-100 00=none\n",
            (unsigned long long)plan.start_hz, (unsigned long long)plan.stop_hz,
            (unsigned)plan.bin_hz, (unsigned)plan.hop_hz,
@@ -498,11 +499,11 @@ int ls_search_command(int argc, char **argv)
         uint64_t lo = LS_SEARCH_DEFAULT_LO_HZ, hi = LS_SEARCH_DEFAULT_HI_HZ;
         if (argc == 4) {
             if (!parse_hz(argv[2], &lo) || !parse_hz(argv[3], &hi)) {
-                printf("SEARCH refused: could not read the frequency range\n");
+                LS_FPUTS(msg_ls_search_search_refused_could_not, "SEARCH refused: could not read the frequency range\n", stdout);
                 return 1;
             }
         } else if (argc != 2) {
-            printf("SEARCH refused: usage: search start [lo_MHz hi_MHz]\n");
+            LS_FPUTS(msg_ls_search_search_refused_usage_search, "SEARCH refused: usage: search start [lo_MHz hi_MHz]\n", stdout);
             return 1;
         }
         ls_radio_err_t e = ls_search_run_start(lo, hi);
@@ -510,7 +511,7 @@ int ls_search_command(int argc, char **argv)
             printf("SEARCH refused: %s\n", refusal(e));
             return 1;
         }
-        printf("SEARCH started %.6g-%.6g MHz\n", lo / 1e6, hi / 1e6);
+        LS_PRINTF(t_ls_search_search_started_6g_6g, "SEARCH started %.6g-%.6g MHz\n", lo / 1e6, hi / 1e6);
         return 0;
     }
     if (argc >= 2 && !strcmp(argv[1], "stop"))  { ls_search_run_stop();  return 0; }
@@ -522,7 +523,7 @@ int ls_search_command(int argc, char **argv)
     }
     if (argc == 1) { ls_search_run_report(); return 0; }
 
-    printf("usage: search [start [lo_MHz hi_MHz] | stop | clear | dump]\n"
-           "       search start            136-174 MHz\n");
+    LS_FPUTS(msg_ls_search_usage_search_start_lo, "usage: search [start [lo_MHz hi_MHz] | stop | clear | dump]\n"
+           "       search start            136-174 MHz\n", stdout);
     return 1;
 }

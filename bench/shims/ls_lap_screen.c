@@ -14,15 +14,14 @@
  *   N:rx=K              K more packets heard
  *   N:ble=K             K Bluetooth devices about
  *   N:hour=H            the clock reads H:00 (default noon)
- *   N:pet=NAME          MESHLING preview: egg, hatchling, sprout, relay, swarm,
- *                      scanner, nexus, drifter, relic; or happy, hungry, sleep,
- *                      chomp, dex, room, save (host only, real branch inputs)
  * LAPSIM_PROFILE=1 measures just app->draw with a high-resolution host clock,
  * reporting batches of 100 frames. It excludes BMP capture and presentation.
  * Without LAPSIM it is the plain fallback the board's host stub draws. */
 #include "ls_lap.h"
 #include "ls_lap_api.h"
 #include "ls_lap_sys.h"
+#include "ls_lap_radio.h"
+#include "ls_lap_service.h"
 #include "ls_tui_screen.h"
 #include "ls_app.h"
 #include "ls_icons.h"
@@ -45,8 +44,6 @@ extern uint32_t (*ls_lap_api_host_clock)(void);
 
 static const lap_app_t *app;
 static int frame_no;
-extern void meshling_preview(const char *command);
-extern void carrier_preview(const char *command);
 
 static double profile_us(void)
 {
@@ -118,20 +115,6 @@ static void script(int frame)
                 for (int i = 0; i < h->ble_count; i++) h->ble[i] = (lap_ble_dev_t){ .addr = { 1, 2, 3, 4, 5, (uint8_t)i }, .rssi = -70, .age_ms = 1000 };
             } else if (sscanf(c, "hour=%d", &x) == 1) {
                 h->t.hour = x;
-            } else if (!strncmp(c, "pet=", 4) && !strcmp(app->id, "meshling")) {
-                char command[24];
-                if (sscanf(c + 4, "%23[^;]", command) == 1) {
-                    ls_lap_api_callback(true);
-                    meshling_preview(command);
-                    ls_lap_api_callback(false);
-                }
-            } else if (!strncmp(c, "carrier=", 8) && !strcmp(app->id, "carrier")) {
-                char command[24];
-                if (sscanf(c + 8, "%23[^;]", command) == 1) {
-                    ls_lap_api_callback(true);
-                    carrier_preview(command);
-                    ls_lap_api_callback(false);
-                }
             } else if (sscanf(c, "swipe=%c", &d) == 1) {
                 h->swipe = d == 'U' ? LAP_SWIPE_UP : d == 'D' ? LAP_SWIPE_DOWN : d == 'L' ? LAP_SWIPE_LEFT : LAP_SWIPE_RIGHT;
             }
@@ -179,6 +162,10 @@ static void enter(void)
     ls_lap_api_begin(app->id, 1, clock_ms());
     ls_lap_api_files_load("lapsim-data");
     ls_lap_sys_begin();
+    ls_lap_radio_begin(app);     /* the simulator grants what the app declares; radios are SIM */
+    /* The apps are linked into lssim itself, so their globals are not in a loaded image:
+       let the API's ownership checks accept any address, as the image range would on the board. */
+    ls_lap_api_set_image((const void *)1, SIZE_MAX - 1);
     frame_no = 0;
     if (app->enter) { ls_lap_api_callback(true); app->enter(); ls_lap_api_callback(false); }
     /* ADS-B apps exercise the real receiver's synthetic producer on the host. */
@@ -209,6 +196,7 @@ static void draw(tui_surface *sf, tui_rect area)
         adsb_demo_tick(); demo_last = demo_now;
     }
     ls_lap_sys_frame(area);
+    ls_lap_service_poll();       /* API 2.1: a service's tick, as ls_lap_poll runs it on the board */
     ls_lap_api_draw_begin(sf, area);
     ls_lap_api_callback(true);
     const bool profiling = getenv("LAPSIM_PROFILE") != NULL;

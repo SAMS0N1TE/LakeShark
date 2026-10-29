@@ -1,6 +1,7 @@
 #include "p25_acquisition.h"
 #include "dsd.h"
 #include "p25_receive.h"
+#include "ls_textpack.h"
 
 bool p25_acquisition_prepare(p25_acquisition_gate_t *gate,
     dsd_opts *opts, dsd_state *state, uint32_t generation,
@@ -66,7 +67,7 @@ size_t p25_acquisition_format(const p25_acquisition_status_t *s,
                               char *out, size_t capacity)
 {
     if (!s || !out || !capacity) return 0;
-    int n = snprintf(out, capacity,
+    int n = LS_SNPRINTF(t_p25_acquisition_p25_acquisition_decoder_ms, out, capacity,
         "P25 acquisition: decoder_ms=%lu iq_ms=%lu tune_state=%lu\n"
         "gate: generation=%lu resets=%lu pending_waits=%lu failed_waits=%lu "
         "discard_sync=%lu discard_frame=%lu accepted_sync=%lu\n"

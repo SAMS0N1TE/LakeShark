@@ -45,12 +45,16 @@ static int symbol_for(int hi, int lo)
     return SYM_M3;
 }
 
+/* An inverted discriminator negates the symbol: +3 arrives as -3, +1 as -1.
+   This once complemented both bits instead, which turns +3 into -1 - no
+   receiver produces that, and the watcher's matching framer could never
+   have framed a burst that really arrived upside down. */
 static void feed_bits(const uint8_t *bits, unsigned count, bool invert)
 {
     for (unsigned i = 0; i + 1 < count; i += 2) {
-        int hi = rd_bit(bits, i), lo = rd_bit(bits, i + 1);
-        if (invert) { hi = !hi; lo = !lo; }
-        dmr_watch_symbol(symbol_for(hi, lo), CENTER, UMID, LMID);
+        const int hi = rd_bit(bits, i), lo = rd_bit(bits, i + 1);
+        const int sym = symbol_for(hi, lo);
+        dmr_watch_symbol(invert ? -sym : sym, CENTER, UMID, LMID);
     }
 }
 

@@ -20,7 +20,7 @@ esp_err_t ls_lora_configure(const ls_lora_cfg_t *c) {
 }
 esp_err_t ls_lora_receive(void) {LS_CHECK(lease);rx=true;return ESP_OK;}
 int ls_lora_activity(float *r) {LS_CHECK(lease);polls++;*r=level;return flags;}
-void ls_detector_drone(unsigned b,unsigned channel,unsigned r,int rssi,unsigned h,int64_t now) {
+void ls_seen_drone(unsigned b,unsigned channel,unsigned r,int rssi,unsigned h,int64_t now) {
     (void)channel;(void)now;LS_CHECK(rssi==-65);observed++;band=b;rate=r;hits=h;
 }
 LS_CASE(dronelink_lease_hopping_hits_and_failures) {

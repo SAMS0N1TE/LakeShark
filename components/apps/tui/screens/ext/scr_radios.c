@@ -13,8 +13,10 @@
 #include "../../ls_i18n.h"
 #include "../../ls_quick.h"
 #include "../../ls_options.h"
+#include "../../ls_rffe_ui.h"
 #include "../../ls_app.h"
 #include "../../ls_wireless.h"
+#include "../../ls_lap_service.h"
 
 /* ls_board.h and not ls_caps.h: the caps header has an #error in it saying
    exactly that, which is the right way for a header to be private. */
@@ -30,6 +32,7 @@
 
 #if LS_HAS_LORA
 #include "ls_mesh.h"
+#include "../../ls_radio_select.h"
 #endif
 
 #define A(fg, bg) TUI_ATTR((fg), (bg))
@@ -71,6 +74,15 @@ static void mmcx_use_set(const ls_opt_t *o, int v)
 static const char *const MMCX_USE_NAMES[] = { "RX ONLY", "RX+TX" };
 static void options_back(const ls_opt_t *o)
 { (void)o; ls_opt_close(); }
+static const char *lr_only(const ls_opt_t *o)
+{
+    (void)o;
+#if LS_HAS_LORA
+    ls_rsel_hw_t hw; ls_rsel_hw(&hw); return hw.lora_lr20xx ? NULL : "LR2021 boards";
+#else
+    return "LR2021 boards";
+#endif
+}
 #if LS_HAS_C6
 static int ble_boot_get(const ls_opt_t *o) { (void)o; return settings_get_ble_at_boot(); }
 static void ble_boot_set(const ls_opt_t *o, int v) { (void)o; settings_set_ble_at_boot(v != 0); }
@@ -89,6 +101,10 @@ static const ls_opt_t RADIO_OPTIONS[] = {
     { .label = "WI-FI AT BOOT", .kind = LS_OPT_TOGGLE,
       .names = WARNING_NAMES, .get = wifi_boot_get, .set = wifi_boot_set },
 #endif
+    /* The SDRs' front ends, the same lists every app on them opens. */
+    { .label = "RTL-SDR FRONT END", .kind = LS_OPT_MENU, .sub = &ls_rffe_ctx_rtl },
+    { .label = "HACKRF FRONT END", .kind = LS_OPT_MENU, .sub = &ls_rffe_ctx_hackrf },
+    { .label = "LR2021 FRONT END", .kind = LS_OPT_MENU, .sub = &ls_rffe_ctx_lr, .why_not = lr_only },
     { .label = "BACK", .kind = LS_OPT_ACTION, .act = options_back, .leaves = true },
 };
 static const ls_opt_ctx_t RADIO_CONTEXT = {
@@ -274,6 +290,28 @@ static const char *ant_action(void)
     return ls_board_hw_antenna_is_external() ? "USE INTERNAL" : "USE MMCX1";
 }
 
+/* A native app's background service (SDK 2.1): it may hold a radio and
+   keeps running after its screen closed, so it is listed with the radios,
+   with the one thing the owner may want to do to it. */
+static ls_lap_service_info_t s_svc;
+static bool svc_get(void) { return ls_lap_services(&s_svc, 1) > 0; }
+static radio_state_t svc_read(void) { return svc_get() ? RS_BUSY : RS_ABSENT; }
+static void svc_set(bool on) { (void)on; ls_lap_service_request_stop(NULL); }
+static const char *svc_state(void)
+{
+    static char t[24];
+    if (!svc_get()) return "none running";
+    snprintf(t, sizeof(t), "%.15s %s", s_svc.name, s_svc.shown ? "open" : "behind");
+    return t;
+}
+static const char *svc_action(void)
+{
+    static char t[24];
+    if (!svc_get()) return "none";
+    snprintf(t, sizeof(t), "STOP %.15s", s_svc.name);
+    return t;
+}
+
 #if LS_HAS_C6
 /* The worker owns the C6; keep its snapshot off the TUI stack. */
 static EXT_RAM_BSS_ATTR ls_wireless_snapshot_t s_wireless;
@@ -301,6 +339,8 @@ static const radio_row_t ROWS[] = {
       gps_read, gps_set, gps_state },
     { "ANTENNA", "internal, or MMCX1 for receive",
       ant_read, ant_set, ant_state, ant_action, true },
+    { "APP SERVICE", "a native app working in the background",
+      svc_read, svc_set, svc_state, svc_action, true },
 #if LS_HAS_C6
     { "BLE",  "Live C6 / runtime controls in LINK",
       ble_read, open_link, ble_state, link_action },
@@ -414,6 +454,12 @@ static void draw_one(tui_surface *sf, tui_rect a, int i, int bh)
         detail = true;
     }
 #endif
+    if (ROWS[i].set == svc_set && svc_get()) {
+        snprintf(what, sizeof(what), ls_tr("every %lu ms, %lu ticks, worst %lu us"),
+                 (unsigned long)s_svc.period_ms, (unsigned long)s_svc.stats.ticks,
+                 (unsigned long)s_svc.stats.worst_us);
+        detail = true;
+    }
     if (ROWS[i].set == ant_set && ls_board_hw_antenna_is_external()) {
         snprintf(what, sizeof(what), "%s", ls_tr(ls_board_hw_antenna_mmcx_tx() ?
                  "TX on MMCX1: band antenna on it" : "TX goes out the internal antenna"));

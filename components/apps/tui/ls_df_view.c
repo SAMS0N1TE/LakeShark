@@ -7,6 +7,7 @@
 #include "esp_attr.h"
 #include "ls_tui.h"
 #include "ls_tui_ui.h"
+#include "ls_textpack.h"
 
 #define RAD 0.017453292519943295f
 #define MAX_DOTS (160 * 120)
@@ -106,7 +107,7 @@ void ls_df_radar_draw(tui_surface *sf, tui_rect area, const ls_df_radar_t *rd)
     if (ch < 1) ch = 17;
     tui_put_str(sf, area, area.x + 1, area.y, "RADAR  top up", TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
     EXT_RAM_BSS_ATTR static char scale[40];
-    snprintf(scale, sizeof(scale), "rings %.0f/%.0f/%.0f dB over noise", LS_DF_VIEW_SCALE_DB / 3,
+    LS_SNPRINTF(t_ls_df_view_rings_0f_0f_0f, scale, sizeof(scale), "rings %.0f/%.0f/%.0f dB over noise", LS_DF_VIEW_SCALE_DB / 3,
              LS_DF_VIEW_SCALE_DB * 2 / 3, LS_DF_VIEW_SCALE_DB);
     if ((int)strlen(scale) + 16 <= area.w) tui_put_str(sf, area, area.x + area.w - 1 - (int)strlen(scale), area.y, scale, LS_ATTR_DIM);
     tui_rect pic = tui_rect_make(area.x, area.y + 1, area.w, area.h - 1);
@@ -221,7 +222,7 @@ int ls_df_heat_draw(tui_surface *sf, tui_rect area, const ls_df_heat_t *h)
     tui_put_str(sf, area, area.x, y, "top ^", LS_ATTR_DIM);
     y++;
     EXT_RAM_BSS_ATTR static char legend[64];
-    snprintf(legend, sizeof(legend), " .:-=+*#%%@  0 to %.0f dB over noise, blank unheard", LS_DF_VIEW_SCALE_DB);
+    LS_SNPRINTF(t_ls_df_view_0_to_0f_db, legend, sizeof(legend), " .:-=+*#%%@  0 to %.0f dB over noise, blank unheard", LS_DF_VIEW_SCALE_DB);
     ls_safe_line(sf, area, y++, legend, LS_ATTR_DIM);
     return y - area.y;
 }

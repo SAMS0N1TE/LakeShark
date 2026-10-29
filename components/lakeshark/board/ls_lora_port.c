@@ -6,6 +6,7 @@
 
 #include "ls_board.h"
 #include "settings.h"
+#include "ls_textpack.h"
 #ifdef ESP_PLATFORM
 #include "ls_nvs_safe.h"
 #include "nvs.h"
@@ -173,14 +174,14 @@ bool ls_lora_port_check(const ls_lora_port_t *p, char *why, size_t n)
            them is how it is tested without another module. */
         const bool socket = (i == 0 && g == board.cs) || (i == 1 && g == board.busy);
         if (!socket && listed(BOARD_PINS, g)) {
-            snprintf(why, n, "%s: GPIO %d is the board's own (bus, display, audio, SD or GPS)", pins[i].name, g);
+            LS_SNPRINTF(fmt_ls_lora_port_gpio_is_the_board, why, n, "%s: GPIO %d is the board's own (bus, display, audio, SD or GPS)", pins[i].name, g);
             return false;
         }
         for (size_t j = 0; j < i; j++)
-            if (pins[j].pin == g) { snprintf(why, n, "%s and %s are both GPIO %d", pins[j].name, pins[i].name, g); return false; }
+            if (pins[j].pin == g) { LS_SNPRINTF(t_ls_lora_port_s_and_s_are, why, n, "%s and %s are both GPIO %d", pins[j].name, pins[i].name, g); return false; }
     }
     if (p->rst == LS_LORA_PORT_RST_BOARD && p->header && p->cs != board.cs) {
-        snprintf(why, n, "rst=board resets the board's socket, not a header module: give it a GPIO");
+        LS_SNPUTS(t_ls_lora_port_rst_board_resets_the, why, n, "rst=board resets the board's socket, not a header module: give it a GPIO");
         return false;
     }
     if (p->irq_dio != LS_LORA_PORT_NONE && (p->irq_dio < LR_DIO_MIN || p->irq_dio > LR_DIO_MAX)) {
@@ -188,14 +189,14 @@ bool ls_lora_port_check(const ls_lora_port_t *p, char *why, size_t n)
         return false;
     }
     if (p->tcxo_code > 7) { snprintf(why, n, "tcxo: code 0-7"); return false; }
-    if (p->rfsw_n > LS_LORA_PORT_RFSW_MAX) { snprintf(why, n, "rfsw: at most %d entries", LS_LORA_PORT_RFSW_MAX); return false; }
+    if (p->rfsw_n > LS_LORA_PORT_RFSW_MAX) { LS_SNPRINTF(t_ls_lora_port_rfsw_at_most_d, why, n, "rfsw: at most %d entries", LS_LORA_PORT_RFSW_MAX); return false; }
     for (int i = 0; i < p->rfsw_n; i++) {
         const int d = p->rfsw[i].dio;
         if (d < LR_DIO_MIN || d > LR_DIO_MAX) { snprintf(why, n, "rfsw: DIO%d-%d", LR_DIO_MIN, LR_DIO_MAX); return false; }
-        if (d == p->irq_dio) { snprintf(why, n, "rfsw: DIO%d is the interrupt", d); return false; }
-        if (p->rfsw[i].config & ~0x1Fu) { snprintf(why, n, "rfsw: config is 5 bits (00-1F)"); return false; }
+        if (d == p->irq_dio) { LS_SNPRINTF(t_ls_lora_port_rfsw_dio_d_is, why, n, "rfsw: DIO%d is the interrupt", d); return false; }
+        if (p->rfsw[i].config & ~0x1Fu) { LS_SNPUTS(t_ls_lora_port_rfsw_config_is_5, why, n, "rfsw: config is 5 bits (00-1F)"); return false; }
         /* the driver never transmits on the HF path */
-        if (p->rfsw[i].config & RFSW_TX_HF) { snprintf(why, n, "rfsw: DIO%d sets the HF transmit state, which is refused", d); return false; }
+        if (p->rfsw[i].config & RFSW_TX_HF) { LS_SNPRINTF(fmt_ls_lora_port_rfsw_dio_sets_the, why, n, "rfsw: DIO%d sets the HF transmit state, which is refused", d); return false; }
         for (int j = 0; j < i; j++)
             if (p->rfsw[j].dio == d) { snprintf(why, n, "rfsw: DIO%d twice", d); return false; }
     }
@@ -216,9 +217,9 @@ static bool num(const char *s, long lo, long hi, long *out)
 bool ls_lora_port_parse(int argc, char **argv, const ls_lora_port_t *base,
                         ls_lora_port_t *out, char *why, size_t n)
 {
-    if (argc < 1) { snprintf(why, n, "onboard | header cs=N busy=N rst=N ..."); return false; }
+    if (argc < 1) { LS_SNPUTS(t_ls_lora_port_onboard_header_cs_n, why, n, "onboard | header cs=N busy=N rst=N ..."); return false; }
     if (!strcmp(argv[0], "onboard")) {
-        if (argc != 1) { snprintf(why, n, "onboard takes nothing more"); return false; }
+        if (argc != 1) { LS_SNPUTS(t_ls_lora_port_onboard_takes_nothing_more, why, n, "onboard takes nothing more"); return false; }
         ls_lora_port_board(out);
         return true;
     }
@@ -234,7 +235,7 @@ bool ls_lora_port_parse(int argc, char **argv, const ls_lora_port_t *base,
 #endif
         char key[8];
         const char *eq = strchr(argv[i], '=');
-        if (!eq || eq == argv[i] || (size_t)(eq - argv[i]) >= sizeof(key)) { snprintf(why, n, "'%s': want key=value", argv[i]); return false; }
+        if (!eq || eq == argv[i] || (size_t)(eq - argv[i]) >= sizeof(key)) { LS_SNPRINTF(t_ls_lora_port_s_want_key_value, why, n, "'%s': want key=value", argv[i]); return false; }
         memcpy(key, argv[i], (size_t)(eq - argv[i]));
         key[eq - argv[i]] = 0;
         const char *v = eq + 1;
@@ -255,7 +256,7 @@ bool ls_lora_port_parse(int argc, char **argv, const ls_lora_port_t *base,
                 dv = (v[0] - '0') * 10 + (dot[1] - '0');
             else if (!dot) num(v, 0, 99, &dv);
             const int code = ls_lora_port_tcxo_code((int)dv);
-            if (code < 0) { snprintf(why, n, "tcxo: 1.6 1.7 1.8 2.2 2.4 2.7 3.0 or 3.3"); return false; }
+            if (code < 0) { LS_SNPUTS(t_ls_lora_port_tcxo_1_6_1, why, n, "tcxo: 1.6 1.7 1.8 2.2 2.4 2.7 3.0 or 3.3"); return false; }
             out->tcxo_code = (uint8_t)code;
         } else if (!strcmp(key, "rfsw")) {
             /* "6:08,7:00,8:06,10:08" - DIO, then the config byte in hex */
@@ -264,18 +265,18 @@ bool ls_lora_port_parse(int argc, char **argv, const ls_lora_port_t *base,
             while (*s) {
                 char *end = NULL;
                 const long d = strtol(s, &end, 10);
-                if (end == s || *end != ':') { snprintf(why, n, "rfsw: DIO:hex,DIO:hex"); return false; }
+                if (end == s || *end != ':') { LS_SNPUTS(t_ls_lora_port_rfsw_dio_hex_dio, why, n, "rfsw: DIO:hex,DIO:hex"); return false; }
                 s = end + 1;
                 const long c = strtol(s, &end, 16);
-                if (end == s || (*end && *end != ',')) { snprintf(why, n, "rfsw: DIO:hex,DIO:hex"); return false; }
-                if (out->rfsw_n >= LS_LORA_PORT_RFSW_MAX) { snprintf(why, n, "rfsw: at most %d entries", LS_LORA_PORT_RFSW_MAX); return false; }
+                if (end == s || (*end && *end != ',')) { LS_SNPUTS(t_ls_lora_port_rfsw_dio_hex_dio, why, n, "rfsw: DIO:hex,DIO:hex"); return false; }
+                if (out->rfsw_n >= LS_LORA_PORT_RFSW_MAX) { LS_SNPRINTF(t_ls_lora_port_rfsw_at_most_d, why, n, "rfsw: at most %d entries", LS_LORA_PORT_RFSW_MAX); return false; }
                 out->rfsw[out->rfsw_n].dio = (uint8_t)(d < 0 || d > 255 ? 255 : d);
                 out->rfsw[out->rfsw_n].config = (uint8_t)(c < 0 || c > 255 ? 255 : c);
                 out->rfsw_n++;
                 s = *end ? end + 1 : end;
             }
         } else {
-            snprintf(why, n, "'%s': cs busy rst irq dio tcxo rfsw", argv[i]);
+            LS_SNPRINTF(t_ls_lora_port_s_cs_busy_rst, why, n, "'%s': cs busy rst irq dio tcxo rfsw", argv[i]);
             return false;
         }
     }
@@ -296,7 +297,7 @@ void ls_lora_port_describe(const ls_lora_port_t *p, char *out, size_t n)
     for (int i = 0; i < p->rfsw_n && at + 8 < sizeof(sw); i++)
         at += (size_t)snprintf(sw + at, sizeof(sw) - at, "%s%u:%02X", i ? "," : "", p->rfsw[i].dio, p->rfsw[i].config);
     const int dv = ls_lora_port_tcxo_dv(p->tcxo_code);
-    snprintf(out, n, "header cs=%d busy=%d rst=%s irq=%s dio=%s tcxo=%d.%d rfsw=%s", p->cs, p->busy, rst, irq, dio,
+    LS_SNPRINTF(fmt_ls_lora_port_header_cs_busy_rst, out, n, "header cs=%d busy=%d rst=%s irq=%s dio=%s tcxo=%d.%d rfsw=%s", p->cs, p->busy, rst, irq, dio,
              dv / 10, dv % 10, p->rfsw_n ? sw : "none");
 }
 
@@ -369,7 +370,7 @@ bool ls_lora_port_save(const ls_lora_port_t *p, char *why, size_t n)
     if (!ls_lora_port_check(p, why, n)) return false;
     uint64_t a, b;
     ls_lora_port_pack(p, &a, &b);
-    if (!settings_set_lora_port(a, b)) { snprintf(why, n, "could not save to NVS"); return false; }
+    if (!settings_set_lora_port(a, b)) { LS_SNPUTS(t_ls_lora_port_could_not_save_to, why, n, "could not save to NVS"); return false; }
     return true;
 }
 
@@ -461,7 +462,7 @@ bool ls_lora_port_next_module(char *why, size_t n)
     }
     if (!ls_lora_port_is_v02(&p) && !ls_lora_port_is_v03(&p)) {
         /* custom pins or a custom table: never overwritten from here */
-        snprintf(why, n, "custom settings: change them with 'lora port header ...'");
+        LS_SNPUTS(t_ls_lora_port_custom_settings_change_them, why, n, "custom settings: change them with 'lora port header ...'");
         return false;
     }
     con1_table(&p, !ls_lora_port_is_v02(&p));
@@ -520,7 +521,7 @@ static void print_keyboard(const ls_lora_port_t *p)
     if (!kb) return;
     printf("lora port: GPIO");
     for (int g = 0; g <= GPIO_MAX; g++) if (kb & (1ull << g)) printf(" %d", g);
-    printf(" %s the keyboard's, so the keyboard and MixRF stay off in header mode\n",
+    LS_PRINTF(fmt_ls_lora_port_the_keyboard_s_so, " %s the keyboard's, so the keyboard and MixRF stay off in header mode\n",
            __builtin_popcountll(kb) > 1 ? "are" : "is");
 }
 
@@ -535,14 +536,14 @@ static void print_nvs(void)
     nvs_stats_t st;
     memset(&st, 0, sizeof(st));
     if (ls_nvs_run(nvs_stats_job, &st, 0) == ESP_OK)
-        printf("lora port: settings store %u of %u entries used, %u free\n",
+        LS_PRINTF(fmt_ls_lora_port_lora_port_settings_store, "lora port: settings store %u of %u entries used, %u free\n",
                (unsigned)st.used_entries, (unsigned)st.total_entries, (unsigned)st.free_entries);
 #endif
 }
 
 static void print_socket_note(void)
 {
-    puts("lora port: cs and busy are the onboard socket's own lines, so this is the onboard radio; "
+    LS_PUTS(msg_ls_lora_port_lora_port_cs_and, "lora port: cs and busy are the onboard socket's own lines, so this is the onboard radio; "
          "give a header module's pins with 'lora port header cs=N busy=N rst=N'");
 }
 
@@ -552,7 +553,7 @@ static void print_socket_note(void)
 static void print_tcxo_note(const ls_lora_port_t *p)
 {
     if (p->header && ls_lora_port_is_con1(p))
-        puts("lora port: tcxo has no effect on LilyGO's T-LR2021 modules, their TCXO is always powered");
+        LS_PUTS(msg_ls_lora_port_lora_port_tcxo_has, "lora port: tcxo has no effect on LilyGO's T-LR2021 modules, their TCXO is always powered");
 }
 
 int ls_lora_port_command(int argc, char **argv)
@@ -564,22 +565,22 @@ int ls_lora_port_command(int argc, char **argv)
     const bool saved = ls_lora_port_saved(&next);
     if (argc <= 2) {
         ls_lora_port_describe(now, line, sizeof(line));
-        printf("lora port: this boot %s\n", line);
+        LS_PRINTF(t_ls_lora_port_lora_port_this_boot, "lora port: this boot %s\n", line);
         ls_lora_port_t eff = next;
         if (!eff.header) ls_lora_port_board(&eff);
         ls_lora_port_describe(&eff, line, sizeof(line));
-        printf("lora port: next boot %s%s\n", line, saved ? "" : " (nothing saved)");
+        LS_PRINTF(t_ls_lora_port_lora_port_next_boot, "lora port: next boot %s%s\n", line, saved ? "" : " (nothing saved)");
         if (eff.header && ls_lora_port_on_socket(&eff)) print_socket_note();
         print_tcxo_note(&eff);
         if (saved && !next.header && !ls_lora_port_on_socket(&next)) {
             ls_lora_port_t h = next;
             h.header = true;
             ls_lora_port_describe(&h, line, sizeof(line));
-            printf("lora port: header pins kept: %s\n", line);
+            LS_PRINTF(t_ls_lora_port_lora_port_header_pins, "lora port: header pins kept: %s\n", line);
         }
         print_keyboard(now);
         print_nvs();
-        puts("usage: lora port onboard | header [con1|v02] [cs=N busy=N rst=N|board irq=N|none dio=5-11|none "
+        LS_PUTS(msg_ls_lora_port_usage_lora_port_onboard, "usage: lora port onboard | header [con1|v02] [cs=N busy=N rst=N|board irq=N|none dio=5-11|none "
              "tcxo=1.6..3.3 rfsw=DIO:hex,...]");
         return 0;
     }
@@ -589,7 +590,7 @@ int ls_lora_port_command(int argc, char **argv)
         ls_lora_port_t want = next;
         want.header = false;
         if (!ls_lora_port_save(&want, why, sizeof(why))) { printf("lora port: %s\n", why); return 1; }
-        printf("lora port: saved onboard socket - reboot to use it\n");
+        LS_FPUTS(msg_ls_lora_port_lora_port_saved_onboard, "lora port: saved onboard socket - reboot to use it\n", stdout);
         return 0;
     }
     /* A header line starts from what was saved, so changing one pin does not
@@ -606,7 +607,7 @@ int ls_lora_port_command(int argc, char **argv)
         return 1;
     }
     ls_lora_port_describe(&want, line, sizeof(line));
-    printf("lora port: saved %s - reboot to use it\n", line);
+    LS_PRINTF(t_ls_lora_port_lora_port_saved_s, "lora port: saved %s - reboot to use it\n", line);
     if (ls_lora_port_on_socket(&want)) print_socket_note();
     print_tcxo_note(&want);
     print_keyboard(&want);

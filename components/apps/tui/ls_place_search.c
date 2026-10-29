@@ -6,6 +6,7 @@
 #include "esp_attr.h"
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 static EXT_RAM_BSS_ATTR ls_cells_view view;
 static EXT_RAM_BSS_ATTR char query[64],text[256];
 static bool opened,jump,typing;
@@ -135,18 +136,18 @@ void ls_place_search_draw(tui_surface *sf,tui_rect a) {
     } else if(page==1) {
         LINE(view.picked.name,ink);
         snprintf(text,sizeof(text),"%s / %s",kind(view.picked.kind),view.picked.parent);LINE(text,LS_ATTR_DIM);
-        snprintf(text,sizeof(text),"%u cells / %u installed / %u unavailable",view.cells,view.installed,view.unavailable);LINE(text,ink);
-        snprintf(text,sizeof(text),"Download %.2f MB / SD free %.2f GB",view.bytes/1e6,view.free/1e9);LINE(text,ink);
-        if(view.picked.kind==3) { snprintf(text,sizeof(text),"City radius: %u km   < > to adjust",radius);LINE(text,LS_ATTR_DIM); }
+        LS_SNPRINTF(t_ls_place_search_u_cells_u_installed, text,sizeof(text),"%u cells / %u installed / %u unavailable",view.cells,view.installed,view.unavailable);LINE(text,ink);
+        LS_SNPRINTF(t_ls_place_search_download_2f_mb_sd, text,sizeof(text),"Download %.2f MB / SD free %.2f GB",view.bytes/1e6,view.free/1e9);LINE(text,ink);
+        if(view.picked.kind==3) { LS_SNPRINTF(t_ls_place_search_city_radius_u_km, text,sizeof(text),"City radius: %u km   < > to adjust",radius);LINE(text,LS_ATTR_DIM); }
         LINE(notice[0]?notice:view.message,LS_ATTR_DIM);
-        if(view.downloading) { snprintf(text,sizeof(text),"%.2f / %.2f MB - continues after BACK",view.done/1e6,view.total/1e6);LINE(text,ink); }
+        if(view.downloading) { LS_SNPRINTF(t_ls_place_search_2f_2f_mb_continues, text,sizeof(text),"%.2f / %.2f MB - continues after BACK",view.done/1e6,view.total/1e6);LINE(text,ink); }
         for(unsigned i=0;i<view.preview_count && i<4;i++) { unsigned c=view.preview[i];
             snprintf(text,sizeof(text),"8/%u/%u  %s",c/256,c%256,view.present[i]==1?"INSTALLED":view.present[i]==2?"UNAVAILABLE":"DOWNLOAD");LINE(text,LS_ATTR_DIM); }
         ls_tiles_search_globe(sf,tui_rect_make(body.x,y,body.w,body.y+body.h-y),view.total?(float)view.done/view.total:0,view.picked.lat,view.picked.lon);
     } else if(page==5) {
         LINE(view.queue_name[0]?view.queue_name:"MAP DOWNLOADS",ink);
         LINE(notice[0]?notice:view.message,LS_ATTR_DIM);
-        snprintf(text,sizeof(text),"Current file: %.2f / %.2f MB",view.done/1e6,view.total/1e6);LINE(text,ink);
+        LS_SNPRINTF(t_ls_place_search_current_file_2f_2f, text,sizeof(text),"Current file: %.2f / %.2f MB",view.done/1e6,view.total/1e6);LINE(text,ink);
         LINE(view.queued?"Queue saved on SD; safe to leave TILES":"No queued places",LS_ATTR_DIM);
         ls_tiles_search_globe(sf,tui_rect_make(body.x,y,body.w,body.y+body.h-y),view.total?(float)view.done/view.total:0,view.queue_lat,view.queue_lon);
     } else if(page==2) {

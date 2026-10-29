@@ -1,6 +1,7 @@
 /* The one waterfall. See ls_waterfall.h for why there is only one. */
 #include "ls_waterfall.h"
 #include "ls_options.h"
+#include "ls_rffe_ui.h"
 #include "ls_motion.h"
 #include "settings.h"
 
@@ -15,6 +16,8 @@
 /* ls_tui_daylight: which way round the ground is. */
 #include "ls_theme.h"
 #include "ls_pixel_wf.h"
+#include "ls_cold.h"
+#include "ls_textpack.h"
 
 /* ------------------------------------------------------------------ state */
 
@@ -48,6 +51,8 @@ static EXT_RAM_BSS_ATTR uint8_t  s_peak[LS_WF_BINS_MAX];
 
 static bool     s_marker_initial;
 static int      s_marker = -1;           /* display column, -1 for none     */
+static int      s_marker_on_mark = -1;   /* column the feed's mark_hz placed */
+static uint8_t  s_marker_on_mark_zoom;
 /* Display-only crop. This survives source claims so the shared instrument
    presents one consistent zoom across FM, P25, and swept sources. */
 static uint8_t  s_zoom = 1;
@@ -68,7 +73,7 @@ static uint32_t cfg_packed(void)
         | ((uint32_t)s_cfg.peak_hold << 27) | ((uint32_t)s_cfg.grain << 28)
         | ((uint32_t)s_cfg.paused << 30);
 }
-static void cfg_load(void)
+LS_COLD static void cfg_load(void)
 {
     if (s_cfg_loaded) return;
     s_cfg_loaded = true;
@@ -341,7 +346,7 @@ void ls_wf_claim(ls_wf_owner_t owner, const char *label)
     s_decim_n = 0;
     s_have_feed = false;
     s_have_preview = false;
-    s_marker = -1;
+    s_marker = -1; s_marker_on_mark = -1;
     s_marker_initial = owner == LS_WF_OWNER_FM || owner == LS_WF_OWNER_P25;
     memset(s_peak, 0, sizeof(s_peak));
     memset(&s_st, 0, sizeof(s_st));
@@ -375,6 +380,9 @@ void ls_wf_push(ls_wf_owner_t owner, const float *bins, int n,
     if (!ensure_hist())                      { s_st.dropped++; return; }
     s_have_preview = false;
 
+    /* A channel mark that is new, or moved (a retune), takes the marker. */
+    if (feed && feed->mark_hz && (!s_have_feed || feed->mark_hz != s_feed.mark_hz))
+        s_marker_initial = true;
     if (feed) { s_feed = *feed; s_have_feed = true; }
     if (feed && feed->gap) { s_pending_gap = true; s_acc_primed = false; }
 
@@ -683,14 +691,14 @@ static void draw_stall(tui_surface *sf, tui_rect r)
     char msg[48];
     uint8_t at;
     if (s_cfg.paused) {
-        snprintf(msg, sizeof(msg), " HELD - press HOLD to run ");
+        LS_SNPUTS(t_ls_waterfall_held_press_hold_to, msg, sizeof(msg), " HELD - press HOLD to run ");
         at = TUI_ATTR(TUI_BLACK, TUI_YELLOW);
     } else if (s_last_push_us &&
                (esp_timer_get_time() - s_last_push_us) / 1000 >
                    (int64_t)stall_after_ms()) {
         const uint32_t ms =
             (uint32_t)((esp_timer_get_time() - s_last_push_us) / 1000);
-        snprintf(msg, sizeof(msg), " no rows for %u.%us ",
+        LS_SNPRINTF(t_ls_waterfall_no_rows_for_u, msg, sizeof(msg), " no rows for %u.%us ",
                  (unsigned)(ms / 1000), (unsigned)((ms % 1000) / 100));
         at = TUI_ATTR(TUI_BLACK, TUI_RED);
     } else {
@@ -763,9 +771,27 @@ static void draw_scale(tui_surface *sf, tui_rect r)
     tui_put_str(sf, r, r.x + r.w - (int)strlen(hi), r.y, hi, a);
 }
 
+/* The column a frequency falls in on the visible band: ls_wf_marker_hz's
+   inverse, so a mark set from hz reads back as that hz. */
+static int col_for_hz(uint32_t hz, int w)
+{
+    uint32_t center, span;
+    visible_band(&center, &span);
+    if (!span || w <= 0) return w > 0 ? w / 2 : 0;
+    const int64_t off = (int64_t)hz - ((int64_t)center - span / 2);
+    int64_t c = off * w / span;
+    if (c < 0) c = 0;
+    if (c > w - 1) c = w - 1;
+    return (int)c;
+}
+
 uint32_t ls_wf_marker_hz(void)
 {
     if (s_marker < 0 || s_marker >= s_plot_rect.w || !s_have_feed || !s_feed.span_hz) return 0;
+    /* Still on the channel mark: the channel itself, not its column's middle
+       (a 576 kHz span is ~5 kHz a column). */
+    if (s_marker == s_marker_on_mark && s_zoom == s_marker_on_mark_zoom && s_feed.mark_hz)
+        return s_feed.mark_hz;
     const int w = s_plot_rect.w > 0 ? s_plot_rect.w : 1;
     uint32_t center, span;
     visible_band(&center, &span);
@@ -853,7 +879,7 @@ static void draw_readout(tui_surface *sf, tui_rect r)
         }
         char mhz[16];
         fmt_mhz(mhz, sizeof(mhz), hz);
-        snprintf(buf, sizeof(buf), "MARK %s MHz  %s  SPACE tune", mhz, lvl);
+        LS_SNPRINTF(t_ls_waterfall_mark_s_mhz_s, buf, sizeof(buf), "MARK %s MHz  %s  SPACE tune", mhz, lvl);
         tui_put_str(sf, r, r.x, r.y, buf, hot);
         text_end += (int)strlen(buf);
     } else if (s_have_feed && s_feed.note) {
@@ -870,7 +896,7 @@ static void draw_readout(tui_surface *sf, tui_rect r)
        whether it is doing that. */
 
     const bool feeding = ls_fresh(&s_feed_fresh, s_seq, FEED_FADE_MS) > 0;
-    snprintf(buf, sizeof(buf), "%c %s  %dx%d  %lu us  row %lu ms  %lu drop",
+    LS_SNPRINTF(t_ls_waterfall_c_s_dx_d, buf, sizeof(buf), "%c %s  %dx%d  %lu us  row %lu ms  %lu drop",
              ls_motion_pip(feeding),
              s_label[0] ? s_label : "-", s_st.bins, s_st.rows,
              (unsigned long)s_st.draw_us, (unsigned long)s_st.row_ms,
@@ -972,7 +998,7 @@ static void build_buttons(ls_btn_t *b, char v[LS_WF_BTNS][12])
 static const char *s_tune_reason;
 void ls_wf_tune_reason(const char *reason) { s_tune_reason = reason; }
 
-static void act(int i)
+LS_COLD static void act(int i)
 {
     cfg_load();
     bool save = true;
@@ -1083,6 +1109,7 @@ static const ls_opt_t OPT_WF[] = {
     WF_CHOICE("PEAK", 6, LS_OPT_TOGGLE, NULL, 2), WF_LEVEL("SPLIT", 0, 0, 100, 25),
     WF_CHOICE("HOLD", 7, LS_OPT_TOGGLE, NULL, 2),
     WF_CHOICE("ZOOM", 10, LS_OPT_CYCLE, ZOOM_NAME, 3),
+    LS_RFFE_MENUS,
 };
 #undef WF_LEVEL
 #undef WF_CHOICE
@@ -1090,7 +1117,7 @@ static const ls_opt_ctx_t CTX_WF = { .name = "WATERFALL", .job = LS_RSEL_WATERFA
                                      LS_OPT_ROWS(OPT_WF), .tag = "DISPLAY" };
 const ls_opt_ctx_t *ls_wf_options(void) { cfg_load(); return &CTX_WF; }
 
-bool ls_wf_key(ls_tk_t key, char ch)
+LS_COLD bool ls_wf_key(ls_tk_t key, char ch)
 {
     if (key == LS_TK_CHAR && ch == ' ') { act(10); return true; }
     ls_btn_t b[LS_WF_BTNS];
@@ -1307,7 +1334,7 @@ static void layout_and_draw(tui_surface *sf, tui_rect area, bool chrome)
         chrome = false;
         s_bar_rect = tui_rect_make(0, -1, 0, 0);
         tui_put_str(sf, area, area.x + 2, area.y + area.h - 1,
-                    "B shows the controls",
+                    LS_TEXT(t_ls_waterfall_b_shows_the_controls, "B shows the controls"),
                     LS_ATTR_DIM);
         body = tui_rect_make(area.x, area.y, area.w, area.h - 1);
     }
@@ -1349,7 +1376,13 @@ static void layout_and_draw(tui_surface *sf, tui_rect area, bool chrome)
     const int fall_h = body.h - spec_h;
 
     s_plot_rect = tui_rect_make(body.x + 1, body.y, body.w - 2, body.h);
-    if (s_marker_initial) { s_marker=s_plot_rect.w/2; s_marker_initial=false; }
+    if (s_marker_initial) {
+        s_marker = s_have_feed && s_feed.mark_hz ? col_for_hz(s_feed.mark_hz, s_plot_rect.w)
+                                                 : s_plot_rect.w/2;
+        s_marker_initial=false;
+        s_marker_on_mark = s_have_feed && s_feed.mark_hz ? s_marker : -1;
+        s_marker_on_mark_zoom = s_zoom;
+    }
     if (s_marker >= s_plot_rect.w) s_marker=s_plot_rect.w-1;
 
     if (spec_h > 0)
@@ -1412,7 +1445,7 @@ const char *ls_wf_idle_reason(void)
 }
 const ls_wf_cfg_t *ls_wf_cfg(void)   { cfg_load(); return &s_cfg; }
 
-void ls_wf_cfg_set(const ls_wf_cfg_t *cfg)
+LS_COLD void ls_wf_cfg_set(const ls_wf_cfg_t *cfg)
 {
     if (!cfg) return;
     cfg_load();

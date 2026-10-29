@@ -11,6 +11,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 static EXT_RAM_BSS_ATTR struct {
     uint32_t sync[2], valid[2], bad, corrected, errors;
@@ -153,47 +154,47 @@ static int lines(char (*out)[LS_EXP_LINE], int max)
     have_fix = s.have_fix;
     portEXIT_CRITICAL(&lock);
     int n = 0;
-    if (n < max) snprintf(out[n++], LS_EXP_LINE, "978 MHz 1.041667 Mbps FSK  +/-312.5 kHz");
+    if (n < max) LS_SNPUTS(t_exp_uat_978_mhz_1_041667, out[n++], LS_EXP_LINE, "978 MHz 1.041667 Mbps FSK  +/-312.5 kHz");
     if (n < max)
         snprintf(out[n++], LS_EXP_LINE, "WINDOW %s / 1s",
                  window == 0   ? "basic 30B"
                  : window == 1 ? "long 48B"
                                : "uplink prefix 48B");
     for (int p = 0; p < 2 && n < max; p++)
-        snprintf(out[n++], LS_EXP_LINE, "%s SYNC %lu  listen %.1fs", p ? "UP" : "DN", (unsigned long)sync[p],
+        LS_SNPRINTF(t_exp_uat_s_sync_lu_listen, out[n++], LS_EXP_LINE, "%s SYNC %lu  listen %.1fs", p ? "UP" : "DN", (unsigned long)sync[p],
                  listen[p] / 1e6);
     for (int p = 0; p < 2 && n < max; p++) {
         if (have[p])
-            snprintf(out[n++], LS_EXP_LINE, "%s sync RSSI %.0f dBm", p ? "UP" : "DN", (double)rssi[p]);
+            LS_SNPRINTF(t_exp_uat_s_sync_rssi_0f, out[n++], LS_EXP_LINE, "%s sync RSSI %.0f dBm", p ? "UP" : "DN", (double)rssi[p]);
         else
             snprintf(out[n++], LS_EXP_LINE, "%s sync RSSI --", p ? "UP" : "DN");
     }
     if (n < max)
-        snprintf(out[n++], LS_EXP_LINE, "RS basic %lu long %lu bad %lu", (unsigned long)valid[0],
+        LS_SNPRINTF(t_exp_uat_rs_basic_lu_long, out[n++], LS_EXP_LINE, "RS basic %lu long %lu bad %lu", (unsigned long)valid[0],
                  (unsigned long)valid[1], (unsigned long)bad);
     if (n < max)
-        snprintf(out[n++], LS_EXP_LINE, "Corrected %lu symbols; radio errors %lu", (unsigned long)corrected,
+        LS_SNPRINTF(t_exp_uat_corrected_lu_symbols_radio, out[n++], LS_EXP_LINE, "Corrected %lu symbols; radio errors %lu", (unsigned long)corrected,
                  (unsigned long)errors);
     if (n < max) {
         if (have_peak)
-            snprintf(out[n++], LS_EXP_LINE, "RSSI sampled peak %.0f dBm", (double)peak);
+            LS_SNPRINTF(t_exp_uat_rssi_sampled_peak_0f, out[n++], LS_EXP_LINE, "RSSI sampled peak %.0f dBm", (double)peak);
         else
-            snprintf(out[n++], LS_EXP_LINE, "RSSI sampled peak --");
+            LS_SNPUTS(t_exp_uat_rssi_sampled_peak, out[n++], LS_EXP_LINE, "RSSI sampled peak --");
     }
     if (n < max) {
         if (have_fix)
-            snprintf(out[n++], LS_EXP_LINE, "ADDRESS %06lX qualifier %u type %u", (unsigned long)fix.address,
+            LS_SNPRINTF(t_exp_uat_address_06lx_qualifier_u, out[n++], LS_EXP_LINE, "ADDRESS %06lX qualifier %u type %u", (unsigned long)fix.address,
                      fix.qualifier, fix.type);
         else
-            snprintf(out[n++], LS_EXP_LINE, "ADDRESS -- (awaiting valid RS frame)");
+            LS_SNPUTS(t_exp_uat_address_awaiting_valid_rs, out[n++], LS_EXP_LINE, "ADDRESS -- (awaiting valid RS frame)");
     }
     if (n < max) {
         if (have_fix && fix.position)
-            snprintf(out[n++], LS_EXP_LINE, "POSITION %+.5f %+.5f", fix.lat, fix.lon);
+            LS_SNPRINTF(t_exp_uat_position_5f_5f, out[n++], LS_EXP_LINE, "POSITION %+.5f %+.5f", fix.lat, fix.lon);
         else
             snprintf(out[n++], LS_EXP_LINE, "POSITION --");
     }
-    if (n < max) snprintf(out[n++], LS_EXP_LINE, "32-bit sync capture counts; uplink prefix only");
+    if (n < max) LS_SNPUTS(t_exp_uat_32_bit_sync_capture, out[n++], LS_EXP_LINE, "32-bit sync capture counts; uplink prefix only");
     return n;
 }
 const ls_experiment_t exp_uat = {.id = "uat",

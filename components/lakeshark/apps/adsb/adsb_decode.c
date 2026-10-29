@@ -13,6 +13,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
+#include "ls_cold.h"
 
 static const char *TAG = "adsb_decode";
 
@@ -661,7 +662,7 @@ void adsb_periodic_age(int64_t now_us)
     perf_set_active_count(adsb_state_active_count());
 }
 
-void adsb_inject_fake_aircraft(void)
+LS_COLD void adsb_inject_fake_aircraft(void)
 {
     static int s_test_seq = 0;
 

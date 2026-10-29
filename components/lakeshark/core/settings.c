@@ -22,6 +22,7 @@
 #include "ls_nvs_safe.h"
 #include "ls_flash_task.h"
 #include "esp_attr.h"
+#include "lr_wf_session.h"
 
 static const char  *TAG      = "settings";
 static const char  *NS       = "sdr-tool";
@@ -48,12 +49,16 @@ static int s_notification_sound = SETTINGS_NOTIFY_ALERT;
 static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_audio_muted;
 static uint32_t s_fm_step;
+static uint32_t s_fm_mode = UINT32_MAX;
 static uint32_t s_p25_step;
 static uint32_t s_drone_watch = SETTINGS_DRONE_WATCH_DEFAULT;
 static uint32_t s_wf_display = UINT32_MAX;
 static uint32_t s_map_layers;
 static bool s_map_layers_valid;
+static uint32_t s_fm_hf;
+static bool s_fm_hf_valid;
 static bool         s_lr_tcxo = true, s_lr_dcdc;
+static unsigned     s_lr_iq;   /* "lr_iq" bits: 1 WIDE I/Q, 2 span view */
 static uint64_t     s_lr_port_a, s_lr_port_b;
 static bool         s_lr_port_have;
 static uint64_t s_location;
@@ -63,6 +68,9 @@ static portMUX_TYPE s_location_lock = portMUX_INITIALIZER_UNLOCKED;
    receive tasks, some with PSRAM stacks, so it is loaded once at boot and
    every read after that is this word. */
 static uint64_t s_radio_choice = LS_RSEL_PACKED_NONE;
+/* radio_frontend.h's two words; 0 is every default. */
+static uint32_t s_rffe;
+static uint64_t s_rtl_ppm;
 static portMUX_TYPE s_radio_choice_lock = portMUX_INITIALIZER_UNLOCKED;
 
 /* One versioned u64 keeps the full start choice atomic in NVS. */
@@ -87,8 +95,8 @@ typedef struct {
 static QueueHandle_t   s_wq = NULL;
 static StaticQueue_t   s_wq_ctrl;
 static uint8_t         s_wq_store[SET_Q_DEPTH * sizeof(set_write_t)];
-static DRAM_ATTR StackType_t s_worker_stack[SET_STACK_WORDS] __attribute__((aligned(16)));
-static DRAM_ATTR StaticTask_t s_worker_tcb;
+static StackType_t s_worker_stack[SET_STACK_WORDS] __attribute__((aligned(16)));
+static StaticTask_t s_worker_tcb;
 static uint32_t        s_writes_done = 0, s_writes_dropped = 0, s_commits = 0;
 
 static esp_err_t nvs_apply(const set_write_t *w)
@@ -326,6 +334,15 @@ void settings_set_fm_step(uint32_t hz)
     (void)sput_u32("fm_step_v1", hz);
 }
 
+/* FM sub-mode (LISTEN, POCSAG, ...) across reboots; UINT32_MAX = never saved. */
+uint32_t settings_get_fm_mode(void) { return __atomic_load_n(&s_fm_mode, __ATOMIC_ACQUIRE); }
+void settings_set_fm_mode(uint32_t mode)
+{
+    if (__atomic_load_n(&s_fm_mode, __ATOMIC_ACQUIRE) == mode) return;
+    __atomic_store_n(&s_fm_mode, mode, __ATOMIC_RELEASE);
+    (void)sput_u32("fm_mode_v1", mode);
+}
+
 uint32_t settings_get_p25_step(void) { return __atomic_load_n(&s_p25_step, __ATOMIC_ACQUIRE); }
 void settings_set_p25_step(uint32_t hz)
 {
@@ -342,8 +359,10 @@ bool settings_init(void)
     __atomic_store_n(&s_alert_vibe,true,__ATOMIC_RELEASE);
     s_audio_muted=false;
     s_map_layers_valid=false;
+    s_fm_hf_valid=false;
     s_wf_display=UINT32_MAX;
     s_fm_step=0;
+    s_fm_mode=UINT32_MAX;
     s_p25_step=0;
     s_drone_watch=SETTINGS_DRONE_WATCH_DEFAULT;
     s_pagers = PAGERS_DEFAULT;
@@ -381,14 +400,20 @@ bool settings_init(void)
     if(!settings_drone_watch_valid(s_drone_watch))s_drone_watch=SETTINGS_DRONE_WATCH_DEFAULT;
     nvs_get_u32(s_nvs, "fm_step_v1", &s_fm_step);
     if (!settings_fm_step_valid(s_fm_step)) s_fm_step=0;
+    nvs_get_u32(s_nvs, "fm_mode_v1", &s_fm_mode);
     nvs_get_u32(s_nvs, "p25_step_v1", &s_p25_step);
     if (!settings_p25_step_valid(s_p25_step)) s_p25_step=0;
     s_map_layers_valid=nvs_get_u32(s_nvs,"map_layers",&s_map_layers)==ESP_OK;
+    s_fm_hf_valid=nvs_get_u32(s_nvs,"fm_hf_v1",&s_fm_hf)==ESP_OK;
     uint8_t lr_tcxo = 1, lr_dcdc = 0;
     if (nvs_get_u8(s_nvs, "lr_tcxo", &lr_tcxo) != ESP_OK || lr_tcxo > 1) lr_tcxo = 1;
     if (nvs_get_u8(s_nvs, "lr_dcdc", &lr_dcdc) != ESP_OK || lr_dcdc > 1) lr_dcdc = 0;
     __atomic_store_n(&s_lr_tcxo, lr_tcxo != 0, __ATOMIC_RELEASE);
     __atomic_store_n(&s_lr_dcdc, lr_dcdc != 0, __ATOMIC_RELEASE);
+    uint8_t lr_iq = 0;
+    if (nvs_get_u8(s_nvs, "lr_iq", &lr_iq) != ESP_OK) lr_iq = 0;
+    __atomic_store_n(&s_lr_iq, lr_iq & 3u, __ATOMIC_RELEASE);
+    if (lr_iq & 1u) lr_wf_set_wide(true, LR_WF_WIDE_DEFAULT_HZ);
     s_lr_port_have = nvs_get_u64(s_nvs, "lr_port", &s_lr_port_a) == ESP_OK &&
                      nvs_get_u64(s_nvs, "lr_rfsw", &s_lr_port_b) == ESP_OK;
 
@@ -461,6 +486,15 @@ bool settings_init(void)
     if (nvs_get_u64(s_nvs, "rsel_v1", &radio_choice) == ESP_OK) {
         portENTER_CRITICAL(&s_radio_choice_lock);
         s_radio_choice = radio_choice;
+        portEXIT_CRITICAL(&s_radio_choice_lock);
+    }
+    uint32_t rffe = 0;
+    if (nvs_get_u32(s_nvs, "rffe_v1", &rffe) == ESP_OK)
+        __atomic_store_n(&s_rffe, rffe, __ATOMIC_RELEASE);
+    uint64_t rtl_ppm = 0;
+    if (nvs_get_u64(s_nvs, "rtlppm_v1", &rtl_ppm) == ESP_OK) {
+        portENTER_CRITICAL(&s_radio_choice_lock);
+        s_rtl_ppm = rtl_ppm;
         portEXIT_CRITICAL(&s_radio_choice_lock);
     }
 
@@ -799,6 +833,28 @@ bool settings_set_radio_choice(int job, int radio)
     return now == was || sput_u64("rsel_v1", now);
 }
 
+uint32_t settings_get_rffe(void) { return __atomic_load_n(&s_rffe, __ATOMIC_ACQUIRE); }
+bool settings_set_rffe(uint32_t packed)
+{
+    if (__atomic_exchange_n(&s_rffe, packed, __ATOMIC_ACQ_REL) == packed) return true;
+    return sput_u32("rffe_v1", packed);
+}
+uint64_t settings_get_rtl_ppm_table(void)
+{
+    portENTER_CRITICAL(&s_radio_choice_lock);
+    const uint64_t v = s_rtl_ppm;
+    portEXIT_CRITICAL(&s_radio_choice_lock);
+    return v;
+}
+bool settings_set_rtl_ppm_table(uint64_t packed)
+{
+    portENTER_CRITICAL(&s_radio_choice_lock);
+    const uint64_t was = s_rtl_ppm;
+    s_rtl_ppm = packed;
+    portEXIT_CRITICAL(&s_radio_choice_lock);
+    return was == packed || sput_u64("rtlppm_v1", packed);
+}
+
 int settings_get_brightness(void)
 {
     if (!s_nvs_ok) return 80;
@@ -990,6 +1046,25 @@ bool settings_set_lr_dcdc(bool dcdc)
     __atomic_store_n(&s_lr_dcdc, dcdc, __ATOMIC_RELEASE);
     return true;
 }
+/* "lr_iq": bit 0 WIDE I/Q, bit 1 the waterfall's span view. */
+static bool lr_iq_put(unsigned bit, bool on)
+{
+    unsigned v = __atomic_load_n(&s_lr_iq, __ATOMIC_ACQUIRE);
+    v = on ? v | bit : v & ~bit;
+    if (!s_nvs_ok || !sput_u8("lr_iq", (uint8_t)v)) return false;
+    __atomic_store_n(&s_lr_iq, v, __ATOMIC_RELEASE);
+    return true;
+}
+bool settings_get_lr_wide(void) { return __atomic_load_n(&s_lr_iq, __ATOMIC_ACQUIRE) & 1u; }
+bool settings_set_lr_wide(bool on)
+{
+    if (!lr_iq_put(1u, on)) return false;
+    /* The offset stays where the console left it (lora lrwide <kHz>). */
+    lr_wf_wide_status w; lr_wf_wide_get(&w);
+    return lr_wf_set_wide(on, w.offset_hz) == ESP_OK;
+}
+bool settings_get_lr_span(void) { return __atomic_load_n(&s_lr_iq, __ATOMIC_ACQUIRE) & 2u; }
+bool settings_set_lr_span(bool on) { return lr_iq_put(2u, on); }
 /* Before settings_init() - the keypad's bring-up asks whether the header
    is the radio's - the two words come straight from NVS, on a DRAM stack. */
 typedef struct { uint64_t a, b; } port_peek_t;
@@ -1109,6 +1184,41 @@ void settings_set_waterfall(uint32_t value)
 {
     __atomic_store_n(&s_wf_display, value, __ATOMIC_RELEASE);
     (void)sput_u32("wf_display", value);
+}
+uint32_t settings_get_fm_hf(uint32_t fallback)
+{
+    return __atomic_load_n(&s_fm_hf_valid,__ATOMIC_ACQUIRE) ?
+        __atomic_load_n(&s_fm_hf,__ATOMIC_RELAXED) : fallback;
+}
+void settings_set_fm_hf(uint32_t packed)
+{
+    if (__atomic_load_n(&s_fm_hf_valid,__ATOMIC_ACQUIRE) &&
+        __atomic_load_n(&s_fm_hf,__ATOMIC_RELAXED) == packed) return;
+    __atomic_store_n(&s_fm_hf,packed,__ATOMIC_RELAXED);
+    __atomic_store_n(&s_fm_hf_valid,true,__ATOMIC_RELEASE);
+    if(s_nvs_ok && s_wq) sput_u32("fm_hf_v1",packed);
+}
+
+/* FM broadcast and listening options, packed by fm_bcast.c. */
+static uint32_t s_fm_bcast = UINT32_MAX;
+static bool s_fm_bcast_loaded;
+uint32_t settings_get_fm_bcast(uint32_t fallback)
+{
+    if (!__atomic_load_n(&s_fm_bcast_loaded, __ATOMIC_ACQUIRE) && s_nvs) {
+        uint32_t v = UINT32_MAX;
+        if (nvs_get_u32(s_nvs, "fm_bcast_v1", &v) == ESP_OK)
+            __atomic_store_n(&s_fm_bcast, v, __ATOMIC_RELEASE);
+        __atomic_store_n(&s_fm_bcast_loaded, true, __ATOMIC_RELEASE);
+    }
+    const uint32_t v = __atomic_load_n(&s_fm_bcast, __ATOMIC_ACQUIRE);
+    return v == UINT32_MAX ? fallback : v;
+}
+void settings_set_fm_bcast(uint32_t value)
+{
+    if (__atomic_load_n(&s_fm_bcast, __ATOMIC_ACQUIRE) == value) return;
+    __atomic_store_n(&s_fm_bcast, value, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_fm_bcast_loaded, true, __ATOMIC_RELEASE);
+    (void)sput_u32("fm_bcast_v1", value);
 }
 uint32_t settings_get_map_layers(uint32_t fallback)
 {

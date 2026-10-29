@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 static const char *TAG = "audio_evt";
 
@@ -111,7 +112,7 @@ static bool handle_msg(const audio_msg_t *m)
 {
     if (m->kind == AUDIO_EVT_NONE) {
         audio_out_ensure_unmuted();
-        return announce("TEST. THIS IS THE A D S B VOICE CHECK.", AUDIO_EVT_NONE);
+        return announce(LS_TEXT(t_audio_events_test_this_is_the, "TEST. THIS IS THE A D S B VOICE CHECK."), AUDIO_EVT_NONE);
     }
 
     if (m->kind != AUDIO_EVT_BOOT &&

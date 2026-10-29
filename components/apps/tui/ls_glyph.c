@@ -55,6 +55,7 @@ static const char *const *figure(char c)
 }
 
 bool ls_glyph_has(char c) { return figure(c) != NULL; }
+const char *const *ls_glyph_figure(char c) { return figure(c); }
 
 static void draw(tui_surface *sf, tui_rect a, char c, uint8_t at, bool lines)
 {

@@ -1,6 +1,7 @@
 /* See ls_lap_api.h. API calls have no effect outside a host callback. */
 #include "ls_lap_api.h"
 #include "../../../app-sdk/include/lap3d.h"
+#include "../../../app-sdk/include/lakeshark_ui.h"
 #include "ls_glyph.h"
 #include "ls_lap_storage.h"
 #include "ls_value.h"
@@ -16,6 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "ls_cold.h"
+#include "ls_textpack.h"
 #ifdef _WIN32
 #include <direct.h>
 #define MAKE_DIR(p) _mkdir(p)
@@ -167,12 +170,12 @@ void *ls_lap_malloc(size_t n) {
     if (!s.generation || !n)
         return NULL;
     if (n > LS_LAP_MAX_MEMORY || n + sizeof(block) > LS_LAP_MAX_MEMORY - bytes_used) {
-        error("app memory cap is 4 MB");
+        error(LS_TEXT(t_ls_lap_api_app_memory_cap_is, "app memory cap is 4 MB"));
         return NULL;
     }
     block *b = ALLOC(sizeof(block) + n);
     if (!b) {
-        error("PSRAM allocation refused");
+        error(LS_TEXT(t_ls_lap_api_psram_allocation_refused, "PSRAM allocation refused"));
         return NULL;
     }
     b->h.next = s.blocks;
@@ -224,14 +227,14 @@ void *ls_lap_realloc(void *p, size_t n) {
     }
     if (n > LS_LAP_MAX_MEMORY ||
         n + sizeof(block) > LS_LAP_MAX_MEMORY - (bytes_used - b->h.size - sizeof(block))) {
-        error("app memory cap is 4 MB");
+        error(LS_TEXT(t_ls_lap_api_app_memory_cap_is, "app memory cap is 4 MB"));
         return NULL;
     }
     block **prev = find(p);
     size_t old = b->h.size;
     block *q = RESIZE(b, n + sizeof(block));
     if (!q) {
-        error("PSRAM allocation refused");
+        error(LS_TEXT(t_ls_lap_api_psram_allocation_refused, "PSRAM allocation refused"));
         return NULL;
     }
     q->h.size = n;
@@ -249,6 +252,13 @@ void ls_lap_api_cleanup(void) {
     s.generation = 0;
 }
 static bool draw(void) { return inside() && s.surface; }
+bool ls_lap_api_canvas(tui_surface **sf, tui_rect *area) {
+    if (!draw())
+        return false;
+    *sf = s.surface;
+    *area = s.area;
+    return true;
+}
 static int16_t cell(int16_t c) {
     return ((c >= 32 && c <= 126) || (c >= 0x80 && c <= 0x9f) || (c >= 0xc0 && c <= 0xff) ||
             (c >= 0x2800 && c <= 0x28ff))
@@ -517,7 +527,7 @@ void lap_exit(void) {
     if (inside())
         s.exit = true;
 }
-void lap_log(const char *fmt, ...) {
+LS_COLD void lap_log(const char *fmt, ...) {
     if (!inside() || !fmt)
         return;
     unsigned head = atomic_load_explicit(&s.log_head, memory_order_relaxed);
@@ -581,7 +591,7 @@ bool lap_value_float(const char *path, float *out) {
         return false;
     return true;
 }
-void lap_sound(int which) {
+LS_COLD void lap_sound(int which) {
 #ifdef ESP_PLATFORM
     /* Existing notification worker honours board volume/mute. */
     if (!inside())
@@ -617,29 +627,29 @@ static cache *lookup(const char *name) {
 static void path(char out[128], const char *name) {
     snprintf(out, 128, "%.40s/%.31s/%.48s", s.data_root, s.id, name ? name : "");
 }
-bool ls_lap_api_files_load(const char *root) {
+LS_COLD bool ls_lap_api_files_load(const char *root) {
     if (!root || strlen(root) > 40) {
-        error("app data root too long");
+        error(LS_TEXT(t_ls_lap_api_app_data_root_too, "app data root too long"));
         return false;
     }
     snprintf(s.data_root, sizeof(s.data_root), "%s", root);
     char dir[128];
     path(dir, NULL);
     if (MAKE_DIR(root) && errno != EEXIST) {
-        error("cannot create apps_data");
+        error(LS_TEXT(t_ls_lap_api_cannot_create_apps_data, "cannot create apps_data"));
         return false;
     }
     if (MAKE_DIR(dir) && errno != EEXIST) {
-        error("cannot create app data folder");
+        error(LS_TEXT(t_ls_lap_api_cannot_create_app_data, "cannot create app data folder"));
         return false;
     }
     if (!ls_lap_recover_dir(dir)) {
-        error("app data recovery failed");
+        error(LS_TEXT(t_ls_lap_api_app_data_recovery_failed, "app data recovery failed"));
         return false;
     }
     DIR *d = opendir(dir);
     if (!d) {
-        error("cannot read app data folder");
+        error(LS_TEXT(t_ls_lap_api_cannot_read_app_data, "cannot read app data folder"));
         return false;
     }
     struct dirent *e;
@@ -661,7 +671,7 @@ bool ls_lap_api_files_load(const char *root) {
         c->next = s.files;
         s.files = c;
         if (st.st_size < 0 || (uint64_t)st.st_size > LS_LAP_MAX_MEMORY) {
-            error("app data exceeds 4 MB cache");
+            error(LS_TEXT(t_ls_lap_api_app_data_exceeds_4, "app data exceeds 4 MB cache"));
             ok = false;
             break;
         }
@@ -676,12 +686,12 @@ bool ls_lap_api_files_load(const char *root) {
         if (f)
             fclose(f);
         if (!ok)
-            error("cannot cache app data");
+            error(LS_TEXT(t_ls_lap_api_cannot_cache_app_data, "cannot cache app data"));
     }
     closedir(d);
     return ok;
 }
-bool ls_lap_api_files_flush(void) {
+LS_COLD bool ls_lap_api_files_flush(void) {
     bool ok = true;
     memset(s.fd, 0, sizeof(s.fd));
     for (cache *c = s.files; c; c = c->next)
@@ -708,10 +718,10 @@ bool ls_lap_api_files_flush(void) {
             }
         }
     if (!ok)
-        error("app data flush failed");
+        error(LS_TEXT(t_ls_lap_api_app_data_flush_failed, "app data flush failed"));
     return ok;
 }
-int lap_file_open(const char *name, const char *mode) {
+LS_COLD int lap_file_open(const char *name, const char *mode) {
     if (!inside() || !filename(name) || !mode || !mode[0] || mode[1] || !strchr("rwa", mode[0]))
         return -1;
     int fd = 0;
@@ -740,7 +750,7 @@ int lap_file_open(const char *name, const char *mode) {
     s.fd[fd] = (handle){c, *mode == 'a' ? c->size : 0, *mode};
     return fd;
 }
-int lap_file_read(int fd, void *buf, size_t n) {
+LS_COLD int lap_file_read(int fd, void *buf, size_t n) {
     if (!inside() || fd < 0 || fd >= 4 || !buf || !s.fd[fd].file || s.fd[fd].mode != 'r')
         return -1;
     handle *h = &s.fd[fd];
@@ -754,7 +764,7 @@ int lap_file_read(int fd, void *buf, size_t n) {
     h->pos += n;
     return (int)n;
 }
-int lap_file_write(int fd, const void *buf, size_t n) {
+LS_COLD int lap_file_write(int fd, const void *buf, size_t n) {
     if (!inside() || fd < 0 || fd >= 4 || !buf || !s.fd[fd].file || s.fd[fd].mode == 'r' ||
         n > INT_MAX)
         return -1;
@@ -763,7 +773,7 @@ int lap_file_write(int fd, const void *buf, size_t n) {
     if (h->mode == 'a')
         h->pos = c->size;
     if (n > LS_LAP_MAX_MEMORY || h->pos > LS_LAP_MAX_MEMORY - n) {
-        error("app memory cap is 4 MB");
+        error(LS_TEXT(t_ls_lap_api_app_memory_cap_is, "app memory cap is 4 MB"));
         return -1;
     }
     size_t end = h->pos + n;
@@ -786,7 +796,7 @@ void lap_file_close(int fd) {
     if (inside() && fd >= 0 && fd < 4)
         memset(&s.fd[fd], 0, sizeof(handle));
 }
-bool lap_file_remove(const char *name) {
+LS_COLD bool lap_file_remove(const char *name) {
     if (!inside() || !filename(name))
         return false;
     cache *c = lookup(name);
@@ -799,7 +809,7 @@ bool lap_file_remove(const char *name) {
     c->dirty = true;
     return true;
 }
-long lap_file_size(const char *name) {
+LS_COLD long lap_file_size(const char *name) {
     if (!inside() || !filename(name))
         return -1;
     cache *c = lookup(name);

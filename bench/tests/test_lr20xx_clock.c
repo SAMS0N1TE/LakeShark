@@ -425,7 +425,14 @@ static bool live_snapshot_guard_checked;
 static void live_wait_observe(void)
 {
     fk_capture_advance();
-    LS_CHECK((unsigned)fk.fifo_n <= LR20XX_LIVE_SLEEP_LEVEL);
+    /* The loop sleeps on headroom at every rate (500 kB/s included), so the
+       level at a sleep may exceed 256 bytes. What must hold: a sleep is never
+       longer than the wake cap, and woken on time it never fills the FIFO
+       (500 B/ms here, 2 us a byte). */
+    const int64_t sleep_us = ls_shim_timer_wait_remaining();
+    LS_CHECK(sleep_us > 0 && sleep_us <= (int64_t)LR20XX_LIVE_WAKE_US);
+    LS_CHECK((unsigned)fk.fifo_n < 1024u);
+    LS_CHECK(sleep_us <= (int64_t)(1024u - (unsigned)fk.fifo_n) * 2);
     ++live_waits;
 }
 static bool live_timed_sink(void *context, const uint8_t *bytes, size_t n, uint64_t first)
@@ -444,8 +451,8 @@ static bool live_timed_sink(void *context, const uint8_t *bytes, size_t n, uint6
 }
 LS_CASE(live_stream_subtick_wait_drains_continuous_fifo_despite_scheduling_delay)
 {
-    /* 256-byte sleep threshold: (1024-256)/500 B/ms = 1536 us of headroom, less the
-       400 us sleep, so a wake up to ~1100 us late survives; 2500 us does not. */
+    /* The loop sleeps at most 400 us and at most a quarter of the headroom, so a
+       wake 1000 us late survives at 500 kB/s; 2500 us late does not. */
     const unsigned delays[] = {0, 1000, 2500};
     for (unsigned scenario = 0; scenario < 3; ++scenario) {
         const unsigned late = delays[scenario];

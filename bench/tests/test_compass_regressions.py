@@ -37,6 +37,8 @@ static bool position(double *lat,double *lon){*lat=1;*lon=2;return gps;}
 static void clear_track(int t){(void)t;clears++;s_sw[0].samples=0;}
 static void say(const char *m){snprintf(message,sizeof(message),"%s",m);}
 static bool ls_notes_mark(const char *t,const char *b){(void)t;(void)b;notes++;return accept;}
+static int foxes;
+static void ls_fox_keep(const ls_df_bearing_t *b){(void)b;foxes++;}
 #define ls_note_fmt_bearing(...) ((void)0)
 bool ls_df_triangulate(const ls_df_bearing_t *b,int n,ls_df_fix_t *f){(void)b;(void)n;f->valid=true;return true;}
 static void ls_compass_set_target(double lat,double lon,const char *name){(void)lat;(void)lon;(void)name;targets++;}
@@ -44,7 +46,8 @@ static void ls_compass_set_target(double lat,double lon,const char *name){(void)
 int main(void){
  save_bearing();CHECK(notes==1 && !clears && s_sw[0].samples==42 && s_est.valid && !s_bearing_count);
  CHECK(strstr(message,"kept"));gps=true;save_bearing();CHECK(!s_bearing_count && !clears);
- accept=true;save_bearing();CHECK(s_bearing_count==1 && clears==1 && !s_est.valid);
+ CHECK(!foxes);
+ accept=true;save_bearing();CHECK(s_bearing_count==1 && clears==1 && !s_est.valid && foxes==1);
  accept=false;make_fix();CHECK(targets==1 && strstr(message,"busy") && !strstr(message,"saved"));
  accept=true;make_fix();CHECK(targets==2 && strstr(message,"saved"));return 0;
 }

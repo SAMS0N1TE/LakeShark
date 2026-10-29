@@ -10,6 +10,7 @@
 #include "ls_board.h"
 #include "ls_i2c.h"
 #include "core/ls_time.h"
+#include "ls_textpack.h"
 
 static const char *TAG = "ls_rtc";
 
@@ -178,7 +179,7 @@ void ls_rtc_diagnostics(void)
 {
     esp_err_t err = ls_rtc_start();
     if (err != ESP_OK) {
-        printf("rtc: not answering at 0x%02X (%s)\n",
+        LS_PRINTF(t_ls_rtc_rtc_not_answering_at, "rtc: not answering at 0x%02X (%s)\n",
                LS_BOARD_RTC_I2C_ADDR, esp_err_to_name(err));
         return;
     }
@@ -190,14 +191,14 @@ void ls_rtc_diagnostics(void)
         return;
     }
     if (err != ESP_OK) {
-        printf("rtc: present but read failed: %s\n", esp_err_to_name(err));
+        LS_PRINTF(t_ls_rtc_rtc_present_but_read, "rtc: present but read failed: %s\n", esp_err_to_name(err));
         return;
     }
     struct tm tm;
     gmtime_r(&t, &tm);
     char buf[32];
     strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
-    printf("rtc: %s (unix %lld)\n", buf, (long long)t);
+    LS_PRINTF(t_ls_rtc_rtc_s_unix_lld, "rtc: %s (unix %lld)\n", buf, (long long)t);
 }
 
 #else  /* board declares no RTC */

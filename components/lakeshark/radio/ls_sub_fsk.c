@@ -2,6 +2,7 @@
 
 #include "ls_sub_fsk.h"
 #include "esp_attr.h"
+#include "ls_textpack.h"
 
 /* These scratch buffers are ~7.8 KB and were plain statics, which puts them
    in internal .bss. This board has about 8 KB of internal heap left by the
@@ -12,8 +13,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "ls_cold.h"
 
-uint8_t ls_cc1101_deviatn(uint32_t deviation_hz, uint32_t *actual_hz)
+LS_COLD uint8_t ls_cc1101_deviatn(uint32_t deviation_hz, uint32_t *actual_hz)
 {
     /* Search rather than solve: there are 24 encodable values and picking
        the nearest by inspection is both exact and obviously correct, which
@@ -43,7 +45,7 @@ uint8_t ls_cc1101_deviatn(uint32_t deviation_hz, uint32_t *actual_hz)
     return best;
 }
 
-void ls_cc1101_drate(uint32_t bitrate, uint8_t *drate_e, uint8_t *drate_m,
+LS_COLD void ls_cc1101_drate(uint32_t bitrate, uint8_t *drate_e, uint8_t *drate_m,
                      uint32_t *actual)
 {
     uint8_t best_e = 0, best_m = 0;
@@ -226,7 +228,7 @@ static size_t preset_bytes(const ls_fsk_capture_t *capture, uint8_t *out,
     return n;
 }
 
-size_t ls_sub_preset_text(const ls_sub_mod_t *mod, char *out, size_t len)
+LS_COLD size_t ls_sub_preset_text(const ls_sub_mod_t *mod, char *out, size_t len)
 {
     if (!out || !len) return 0;
 
@@ -236,8 +238,7 @@ size_t ls_sub_preset_text(const ls_sub_mod_t *mod, char *out, size_t len)
        keying - knowing how fast it was keyed does not change what the
        modulator has to do. */
     if (!mod || !mod->deviation_hz)
-        return (size_t)snprintf(out, len,
-                                "Preset: FuriHalSubGhzPresetOok650Async\n");
+        return (size_t)LS_SNPUTS(t_ls_sub_fsk_preset_furihalsubghzpresetook650async, out, len, "Preset: FuriHalSubGhzPresetOok650Async\n");
 
     /* Frequency keyed, so it needs a preset built for it. The bounds are
        the radio's own, the same ones ls_lora_fsk_begin enforces: a capture

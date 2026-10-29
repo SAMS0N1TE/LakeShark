@@ -80,6 +80,8 @@ bool ls_notify_vibe(void);
 void ls_notify_set_alerts(bool ring, bool vibe);
 
 void ls_notify_alert_hw(bool ring, bool vibe);
+/* The notification sound alone, as the ring setting allows; TUI task. */
+void ls_notify_tone(void);
 
 #ifdef __cplusplus
 }

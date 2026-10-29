@@ -13,6 +13,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 /* SWEEP screen.
 
@@ -246,7 +247,7 @@ static void bearing(tui_surface *sf,tui_rect clip,int x,int w,int y,const char *
     double distance=6371000*2*atan2(sqrt(h),sqrt(fmax(0,1-h)));
     double angle=fmod(atan2(sin(dl)*cos(l2),cos(l1)*sin(l2)-sin(l1)*cos(l2)*cos(dl))/rad+360,360);
     /* Same two columns as the TARGET facts it is listed with. */
-    char t[64];snprintf(t,sizeof(t),"%03.0f deg  %.0f m  GPS",angle,distance);
+    char t[64];LS_SNPRINTF(t_ls_sweep_ui_03_0f_deg_0f, t,sizeof(t),"%03.0f deg  %.0f m  GPS",angle,distance);
     str(sf,clip,x,y,9,name,NOTE);str(sf,clip,x+10,y,w-10,t,VALUE);
 }
 /* Stroke figures from the house glyph set, plus a minus bar. */
@@ -289,7 +290,7 @@ static int header(tui_surface *sf,tui_rect a,const cols_t *c,const ls_sweep_sett
     if(box.x+2+(int)strlen(t)<jx) str(sf,a,box.x+2,box.y+3,(int)strlen(t),t,NOTE);
     int view_end=box.x+2+(int)strlen(t),xr=box.x+box.w-2;
     if(st->flood) {xr-=7;str(sf,a,xr,box.y+3,7," FLOOD ",ALERT);xr-=1;}
-    snprintf(t,sizeof(t)," BLE %s / WiFi CACHE ",st->running?"RX":st->requested?"WAIT":"OFF");
+    LS_SNPRINTF(t_ls_sweep_ui_ble_s_wifi_cache, t,sizeof(t)," BLE %s / WiFi CACHE ",st->running?"RX":st->requested?"WAIT":"OFF");
     if(xr-(int)strlen(t)<=view_end) snprintf(t,sizeof(t)," BLE %s CACHE ",st->running?"RX":st->requested?"WAIT":"OFF");
     int rl=(int)strlen(t);str(sf,a,xr-rl,box.y+3,rl,t,NOTE);
     return box.y+box.h;
@@ -308,7 +309,7 @@ static void sub_text(char *t,size_t n,const ls_sweep_device_t *d,unsigned sectio
         else snprintf(moved,sizeof(moved),"moved %.0f m",d->moved_m);
         if(ls_sweep_alarm(d,fix)) {*badge=true;snprintf(t,n,"%ldm  %s",m,moved);return;}
         if(fix) snprintf(t,n,"with you %ldm  %s",m,moved);
-        else snprintf(t,n,"with you %ldm (time only)",m);
+        else LS_SNPRINTF(t_ls_sweep_ui_with_you_ldm_time, t,n,"with you %ldm (time only)",m);
         return;
     }
     if(d->places) snprintf(t,n,"%s  %u places",d->match.vendor,d->places);
@@ -425,7 +426,7 @@ static void draw_list(tui_surface *sf,tui_rect a,const cols_t *c,int y,const ls_
     }
     if(st->owner_nearby) {
         if(y>bottom) y=bottom;
-        char t[64];snprintf(t,sizeof(t),"owner-nearby tags: %u (rotating, not tracked)",st->owner_nearby);
+        char t[64];LS_SNPRINTF(t_ls_sweep_ui_owner_nearby_tags_u, t,sizeof(t),"owner-nearby tags: %u (rotating, not tracked)",st->owner_nearby);
         if(owner_selected) tui_put_char(sf,a,c->x,y,'>',VALUE);
         str(sf,a,c->id,y,c->x+c->w-c->id,t,NOTE);
         if(y-a.y>=0 && y-a.y<128) row_device[y-a.y]=-2;
@@ -435,7 +436,7 @@ static void draw_list(tui_surface *sf,tui_rect a,const cols_t *c,int y,const ls_
         /* The page footer is a rule like the section heads, naming what is
            off the page above and below. */
         unsigned below=count-start-list_shown;char t[48];
-        if(start && below) snprintf(t,sizeof(t)," %u above  %u below ",start,below);
+        if(start && below) LS_SNPRINTF(t_ls_sweep_ui_u_above_u_below, t,sizeof(t)," %u above  %u below ",start,below);
         else if(start) snprintf(t,sizeof(t)," %u above ",start);
         else snprintf(t,sizeof(t)," %u below ",below);
         for(int i=0;i<c->w;i++) tui_put_char(sf,a,c->x+i,bottom,'-',CHROME);
@@ -595,7 +596,7 @@ static void draw(tui_surface *sf,tui_rect a) {
     }
     for(unsigned i=0;i<count;i++) if(view[i].serial==selected) {pick=i;found=true;break;}
     if(!found) {selected=0;pick=0;owner_selected=false;screen_view=VIEW_LIST;if(s.hunt) ls_sweep_hunt(NULL,0,0);}
-    if(a.w<26 || a.h<18) {ls_panel_notice(sf,a,"SWEEP","More screen space needed","Use a smaller font");return;}
+    if(a.w<26 || a.h<18) {ls_panel_notice(sf,a,"SWEEP",LS_TEXT(t_ls_sweep_ui_more_screen_space_needed, "More screen space needed"),"Use a smaller font");return;}
     int bh=ls_tui_is_wide()?3:5;
     ls_btn_t b[]={ {st.requested?"STOP":"START","RX",'s',false,false,false},
         {screen_view==VIEW_HUNT?"FIND":"SELECT",screen_view==VIEW_HUNT?"TURN FOR BEARING":"DEVICE",screen_view==VIEW_HUNT?'f':'h',false,!count && !st.owner_nearby,false},
@@ -628,7 +629,7 @@ static void select_next(void) {
     choose();
     char id[32]="near-owner";
     if(!owner_selected && count) ls_sweep_track_id(&view[pick],id,sizeof(id));
-    snprintf(note,sizeof(note),"%s selected (%u of %u): VIEW hunts it",id,(owner_selected?count:pick)+1,ranks);
+    LS_SNPRINTF(t_ls_sweep_ui_s_selected_u_of, note,sizeof(note),"%s selected (%u of %u): VIEW hunts it",id,(owner_selected?count:pick)+1,ranks);
 }
 static bool key(ls_tk_t k,char c) {
     if(ls_opt_key(&ctx,c)) return true;

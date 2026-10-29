@@ -4,6 +4,7 @@
 #include <math.h>
 #include <string.h>
 #include <ctype.h>
+#include "ls_cold.h"
 
 static const char *TAG = "audio_eq";
 
@@ -79,7 +80,7 @@ static inline float bq_run(bq_t *f, float x)
     return y;
 }
 
-static void mk_highpass(bq_t *f, float f0, float q)
+LS_COLD static void mk_highpass(bq_t *f, float f0, float q)
 {
     float w0 = 2.0f * (float)M_PI * f0 / s_fs;
     float cw = cosf(w0), sw = sinf(w0);
@@ -88,7 +89,7 @@ static void mk_highpass(bq_t *f, float f0, float q)
                1.0f + al, -2.0f * cw, 1.0f - al);
 }
 
-static void mk_peaking(bq_t *f, float f0, float q, float db)
+LS_COLD static void mk_peaking(bq_t *f, float f0, float q, float db)
 {
     float A  = powf(10.0f, db / 40.0f);
     float w0 = 2.0f * (float)M_PI * f0 / s_fs;
@@ -98,7 +99,7 @@ static void mk_peaking(bq_t *f, float f0, float q, float db)
                1.0f + al / A, -2.0f * cw, 1.0f - al / A);
 }
 
-static void mk_highshelf(bq_t *f, float f0, float s, float db)
+LS_COLD static void mk_highshelf(bq_t *f, float f0, float s, float db)
 {
     float A  = powf(10.0f, db / 40.0f);
     float w0 = 2.0f * (float)M_PI * f0 / s_fs;
@@ -114,7 +115,7 @@ static void mk_highshelf(bq_t *f, float f0, float s, float db)
             (A + 1.0f) - (A - 1.0f) * cw - be);
 }
 
-static void mk_bandpass(bq_t *f, float f0, float q)
+LS_COLD static void mk_bandpass(bq_t *f, float f0, float q)
 {
     float w0 = 2.0f * (float)M_PI * f0 / s_fs;
     float cw = cosf(w0), sw = sinf(w0);
@@ -142,7 +143,7 @@ static void clamp_cfg(audio_eq_cfg_t *c)
     if (c->loud > AUDIO_EQ_LOUD_MAX) c->loud = AUDIO_EQ_LOUD_MAX;
 }
 
-static void rebuild(void)
+LS_COLD static void rebuild(void)
 {
     clamp_cfg(&s_cfg);
 
@@ -217,7 +218,7 @@ void audio_eq_get(audio_eq_cfg_t *out)
     if (out) *out = s_cfg;
 }
 
-void audio_eq_set(const audio_eq_cfg_t *in)
+LS_COLD void audio_eq_set(const audio_eq_cfg_t *in)
 {
     if (!in) return;
 
@@ -257,7 +258,7 @@ const char *audio_eq_preset_name(int preset)
     return EQ_NAMES[preset];
 }
 
-int audio_eq_preset_from_name(const char *s)
+LS_COLD int audio_eq_preset_from_name(const char *s)
 {
     if (!s || !*s) return -1;
     for (int i = 0; i < AUDIO_EQ_PRESET_COUNT; i++) {

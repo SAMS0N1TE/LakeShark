@@ -18,6 +18,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "nvs.h"
+#include "ls_textpack.h"
 
 static const char *TAG = "errlog";
 #define NS "errlog"
@@ -201,7 +202,7 @@ void ls_errlog_boot(bool panicked, const char *crumb)
     ls_trail_text(rec.trail, sizeof(rec.trail));
     /* only a panic writes a dump; after a watchdog reset a stored one is older */
     if (esp_reset_reason() == ESP_RST_PANIC && ls_crash_present())
-        snprintf(rec.dump, sizeof(rec.dump), "coredump written: 'crash' reads it");
+        LS_SNPUTS(t_ls_errlog_esp_coredump_written_crash_reads, rec.dump, sizeof(rec.dump), "coredump written: 'crash' reads it");
     snprintf(rec.tail, sizeof(rec.tail), "%s", s_prev);
     if (ls_errlog_save(&rec))
         ESP_LOGW(TAG, "the run before ended (%s): saved as error #%lu ('crumb log', DIAG)",
@@ -213,13 +214,13 @@ void ls_errlog_boot(bool panicked, const char *crumb)
 void ls_errlog_print_all(void)
 {
     const int n = ls_errlog_count();
-    printf("errors saved: %d of %lu since the last clear (newest first)\n", n,
+    LS_PRINTF(t_ls_errlog_esp_errors_saved_d_of, "errors saved: %d of %lu since the last clear (newest first)\n", n,
            (unsigned long)ls_errlog_total());
     EXT_RAM_BSS_ATTR static ls_errlog_rec_t rec;
     EXT_RAM_BSS_ATTR static char text[1200];
     for (int i = 0; i < n; i++) {
         if (!ls_errlog_get(i, &rec)) {
-            printf("(record %d unreadable)\n", i);
+            LS_PRINTF(t_ls_errlog_esp_record_d_unreadable, "(record %d unreadable)\n", i);
             continue;
         }
         ls_errlog_format(&rec, text, sizeof(text));

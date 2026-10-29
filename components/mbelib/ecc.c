@@ -18,6 +18,57 @@
 #include <math.h>
 #include "ecc_const.h"
 
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#else
+#define EXT_RAM_BSS_ATTR
+#endif
+
+/* LakeShark: golayMatrix was a 2048-entry constant table (8 KB of flash).
+   Entry s is the data part (the 12 bits above the 11 check bits) of the one
+   error pattern of weight 0..3 whose syndrome is s, the syndrome being the
+   check bits golayGenerator gives the data bits, XOR the received check
+   bits; Golay (23,12) is perfect, so those 2048 patterns hit every syndrome
+   once. Built before app_main, into PSRAM; bench test_golay_tables checks it
+   against the old table. */
+EXT_RAM_BSS_ATTR int golayMatrix[2048];
+
+static void
+mbe_golay_put (unsigned long e)
+{
+  int i, check = 0;
+  int data = (int) (e >> 11);
+
+  for (i = 0; i < 12; i++)
+    {
+      if (data & (1 << (11 - i)))
+        {
+          check ^= golayGenerator[i];
+        }
+    }
+  golayMatrix[(check ^ (int) e) & 0x7ff] = data;
+}
+
+__attribute__((constructor)) static void
+mbe_golay_build (void)
+{
+  int i, j, k;
+
+  mbe_golay_put (0);
+  for (i = 0; i < 23; i++)
+    {
+      mbe_golay_put (1ul << i);
+      for (j = i + 1; j < 23; j++)
+        {
+          mbe_golay_put ((1ul << i) | (1ul << j));
+          for (k = j + 1; k < 23; k++)
+            {
+              mbe_golay_put ((1ul << i) | (1ul << j) | (1ul << k));
+            }
+        }
+    }
+}
+
 void
 mbe_checkGolayBlock (long int *block)
 {

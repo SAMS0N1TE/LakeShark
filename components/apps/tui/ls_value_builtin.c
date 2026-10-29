@@ -15,6 +15,7 @@
 
 #include "p25_state.h"
 #include "apps/fm/fm_state.h"
+#include "lakeshark_backend.h"
 #include "apps/fm/fm_mode_label.h"
 #include "apps/adsb/adsb_state.h"
 #include "core/perf.h"
@@ -87,7 +88,7 @@ RD_FLT (v_fm_gain,    FM.gain_tenths / 10.0f)
    fm.squelch - that one is whether the squelch is currently open. A control
    that steps a setting has to read the setting, and reading the bool would
    have stepped from 0 or 1 dB every time. */
-RD_FLT (v_fm_sql,     (float)FM.squelch_tenths)
+RD_FLT (v_fm_sql,     (float)lakeshark_fm_squelch_get())
 RD_FLT (v_p25_gain,   P25.rtl_gain_tenths / 10.0f)
 
 /* Whether the track recorder is running, and how much it has. */

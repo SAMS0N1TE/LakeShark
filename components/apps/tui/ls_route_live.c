@@ -8,6 +8,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 EXT_RAM_BSS_ATTR static ls_route_point_t s_points[LS_ROUTE_CAP];
 EXT_RAM_BSS_ATTR static ls_gps_state_t s_gps;
@@ -94,8 +95,8 @@ void ls_route_guidance(char *out, size_t cap)
 {
     const ls_route_t *r=ls_route_live();
     if (!r->valid) { if (cap) out[0]=0; return; }
-    if (r->arrived) { snprintf(out,cap,"ROUTE  ARRIVED  [O] options"); return; }
-    if (!r->located) { snprintf(out,cap,"%c ROUTE  WAIT GPS  [O] options",ls_motion_pip(true)); return; }
-    snprintf(out,cap,"%c %s %03d  %.0fm left  XTE %.0fm",ls_motion_pip(true),
+    if (r->arrived) { LS_SNPUTS(t_ls_route_live_route_arrived_o_options, out, cap, "ROUTE  ARRIVED  [O] options"); return; }
+    if (!r->located) { LS_SNPRINTF(t_ls_route_live_c_route_wait_gps, out,cap,"%c ROUTE  WAIT GPS  [O] options",ls_motion_pip(true)); return; }
+    LS_SNPRINTF(t_ls_route_live_c_s_03d_0fm, out,cap,"%c %s %03d  %.0fm left  XTE %.0fm",ls_motion_pip(true),
         r->off_route ? "OFF ROUTE" : "ROUTE", (int)lround(r->bearing)%360, r->remaining_m,r->cross_m);
 }

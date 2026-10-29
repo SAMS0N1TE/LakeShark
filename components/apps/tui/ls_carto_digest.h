@@ -14,13 +14,22 @@ static inline bool carto_digest_remove(const char *path) {
     char side[272]; snprintf(side,sizeof(side),"%s.sha",path);
     return unlink(side)==0 || errno==ENOENT;
 }
+/* The whole record through sscanf: fscanf would link newlib's FILE scanner,
+   8 KB of app flash, for this one line. A record longer than 255 bytes is
+   not one carto_digest_write made, and reads as invalid. */
+static inline int carto_digest_scan(FILE *f,long long *size,long long *mtime,char hex[65]) {
+    char buf[256],extra; size_t n=fread(buf,1,sizeof(buf)-1,f);
+    if(n==sizeof(buf)-1 && fgetc(f)!=EOF) return 0;
+    buf[n]=0;
+    return sscanf(buf,"%lld %lld %64s %c",size,mtime,hex,&extra);
+}
 static inline bool carto_digest_cached(const char *path,const struct stat *st,const char *expected) {
     if(strlen(path)>263) return false;
-    char side[272],hex[65],extra; long long size,mtime;
+    char side[272],hex[65]; long long size,mtime;
     if(strlen(expected)!=64) return false;
     snprintf(side,sizeof(side),"%s.sha",path);
     FILE *f=fopen(side,"r"); if(!f) return false;
-    int n=fscanf(f,"%lld %lld %64s %c",&size,&mtime,hex,&extra);
+    int n=carto_digest_scan(f,&size,&mtime,hex);
     bool ok=n==3 && !ferror(f) && size==(long long)st->st_size &&
         mtime==(long long)st->st_mtime && strlen(hex)==64 && !strcasecmp(hex,expected);
     fclose(f); return ok;

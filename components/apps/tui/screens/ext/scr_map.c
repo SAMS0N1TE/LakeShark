@@ -1,5 +1,6 @@
 #include "../../ls_cells.h"
 #include "../../ls_cartocore_map.h"
+#include "ls_textpack.h"
 #ifdef LS_MAP_AUDIT
 static size_t s_carto_audit_count;
 static int s_carto_audit_bad,s_carto_low_masked;
@@ -30,6 +31,7 @@ static int s_carto_audit_bad,s_carto_low_masked;
 #include "../../ls_map_marks.h"
 #include "../../ls_map_share.h"
 #include "../../ls_map_share_ui.h"
+#include "../../ls_rfmap.h"
 #include <time.h>
 #include "../../ls_motion.h"
 #include "../../ls_map_motion.h"
@@ -41,6 +43,7 @@ static int s_carto_audit_bad,s_carto_low_masked;
 #include "../../ls_tui.h"
 #include "../../ls_tui_touch.h"
 #include "../../ls_tui_ui.h"
+#include "ls_cold.h"
 #include "../../ls_stroke.h"
 #include "carto/style.h"
 #include "carto/raster.h"
@@ -71,6 +74,8 @@ static bool s_controls_hidden;
 /* With the controls hidden, the one way back: a see-through chip in the
    map's bottom right corner. */
 static tui_rect s_show_rect;
+/* Set-up, archives, layers and leaving: run on a key or on entering MAP. */
+LS_COLD_BEGIN
 static void controls_toggle(void)
 {
     s_controls_hidden = !s_controls_hidden;
@@ -107,6 +112,10 @@ enum {
     L_ROUTE   = 1u << 12,
     L_AIS     = 1u << 13,
     L_SONDE   = 1u << 14,
+    /* Off bits, so the overlays show on a map whose layers were saved before
+       they existed: RF SURVEY's heat and the FOX HUNT bearings. */
+    L_RF_HIDE  = 1u << 15,
+    L_FOX_HIDE = 1u << 16,
 };
 #define LAYERS_DEFAULT (L_AIR | L_TRAILS | L_MESH | L_MARKS | L_RINGS | \
                         L_PLACES | L_LINKS | L_VECTORS | L_APRS | L_ROUTE | L_AIS | L_SONDE)
@@ -115,6 +124,8 @@ static uint32_t s_layers = LAYERS_DEFAULT;
 static bool     s_layers_loaded;
 
 static bool layer(uint32_t bit) { return (s_layers & bit) != 0; }
+/* What a LAYERS row shows: on, for the two that are stored as off bits. */
+static bool layer_shown(uint32_t bit) { return layer(bit) != ((bit & (L_RF_HIDE | L_FOX_HIDE)) != 0); }
 
 #define LAYER_BITS 0x00FFFFFFu
 
@@ -266,7 +277,7 @@ static ls_act_status_t a_map_files(const ls_args_t *in, ls_val_t *out)
             const bool states=!strcmp(s_archives[i]+sizeof(MAP_DIR),"cells");
             ls_picker_add(states?"DOWNLOADED STATES":s_archives[i]+sizeof(MAP_DIR),states?"from TILES > STATES":"open map");
         }
-        if(!s_archive_n) ls_picker_empty_reason("No cached .ctile list; reopen after map loads");
+        if(!s_archive_n) ls_picker_empty_reason(LS_TEXT(t_scr_map_no_cached_ctile_list, "No cached .ctile list; reopen after map loads"));
         out->kind=LS_VAL_TEXT;out->s="choose a map";return LS_ACT_OK;
     }
     s_archive_n = 0;
@@ -369,6 +380,8 @@ static void leave(void)
     ls_carto_map_leave();
     ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
 }
+
+LS_COLD_END
 
 /* --------------------------------------------------------------- draw --- */
 
@@ -872,8 +885,8 @@ static void draw_cells(tui_surface *sf, tui_rect a,
     ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
     if (!cells_fit(a.w, a.h)) {
 
-        ls_panel_notice(sf, a, "MAP", "no memory to lay the map out in cells",
-                        "close an app and come back");
+        ls_panel_notice(sf, a, "MAP", LS_TEXT(t_scr_map_no_memory_to_lay, "no memory to lay the map out in cells"),
+                        LS_TEXT(t_scr_map_close_an_app_and, "close an app and come back"));
         return;
     }
 
@@ -2537,7 +2550,7 @@ static void cover_update(void)
         memset(s_cover_nm, 0, sizeof(s_cover_nm));
         s_cover_epoch=now;
         s_cover_lat = lat; s_cover_lon = lon; s_cover_max = 0;
-        say("Coverage reset: fresh direct positions from now");
+        say(LS_TEXT(t_scr_map_coverage_reset_fresh_direct, "Coverage reset: fresh direct positions from now"));
     }
     for (int slot = 0; slot < ADSB_MAX_TRACKED; slot++) {
         const adsb_aircraft_t *ac = adsb_state_get(slot);
@@ -2902,7 +2915,7 @@ static int card_lines(char lines[][40], int max, char *title, size_t tcap)
         snprintf(title, tcap, "%.8s", ac->callsign[0] ? ac->callsign : "AIRCRAFT");
         snprintf(lines[n++], 40, "%06lX q%u %s", (unsigned long)ac->icao, ac->address_qualifier, adsb_state_source_label(ac, esp_timer_get_time()));
         snprintf(lines[n++], 40, "ALT  %d ft %+d", ac->altitude, ac->vert_rate);
-        snprintf(lines[n++], 40, "SPD  %d kt  HDG %03d", ac->velocity, ac->heading);
+        LS_SNPRINTF(t_scr_map_spd_d_kt_hdg, lines[n++], 40, "SPD  %d kt  HDG %03d", ac->velocity, ac->heading);
         const int sq = adsb_state_squawk(slot);
         if (sq) snprintf(lines[n++], 40, "SQK  %04d%s", sq, squawk_emergency(sq) ? " EMERGENCY" : "");
         if (ac->pos_valid && have_rx) {
@@ -2923,7 +2936,7 @@ static int card_lines(char lines[][40], int max, char *title, size_t tcap)
         char ago[12];
         age_words(ago, sizeof(ago), node_age(p));
         snprintf(lines[n++], 40, p->last_heard ? "HEARD %s ago" : "saved contact", ago);
-        if(p->last_heard) snprintf(lines[n++], 40, "SIG  %.0f dBm  SNR %.1f", (double)p->rssi, (double)p->snr);
+        if(p->last_heard) LS_SNPRINTF(t_scr_map_sig_0f_dbm_snr, lines[n++], 40, "SIG  %.0f dBm  SNR %.1f", (double)p->rssi, (double)p->snr);
         if (p->has_loc && have_rx) {
             range_words(rng, sizeof(rng), rlat, rlon, p->lat_e6 / 1e6, p->lon_e6 / 1e6);
             snprintf(lines[n++], 40, "RNG  %s", rng);
@@ -2996,6 +3009,9 @@ static void draw_card(tui_surface *sf, tui_rect r)
     }
 }
 
+/* Pickers, marker and line editing, sharing and the actions: each runs on
+   a tap, a key or a received message, never per frame. */
+LS_COLD_BEGIN
 /* ------------------------------------------------------------- pickers -- */
 
 /* Everything worth going to, in one list: aircraft and nodes nearest the
@@ -3009,7 +3025,7 @@ static void coordinates_done(const char *text) {
     double lat,lon;char tail;
     if(sscanf(text," %lf , %lf %c",&lat,&lon,&tail)!=2 ||
         !isfinite(lat) || !isfinite(lon) || fabs(lat)>85 || fabs(lon)>180) {
-        say("Use latitude, longitude (lat +/-85, lon +/-180)");return;
+        say(LS_TEXT(t_scr_map_use_latitude_longitude_lat, "Use latitude, longitude (lat +/-85, lon +/-180)"));return;
     }
     select_none();jump_to(lat,lon);
 }
@@ -3046,15 +3062,15 @@ static ls_act_status_t a_map_find(const ls_args_t *in, ls_val_t *out)
     (void)in;
     s_ngoto = 0;
     ls_picker_open("GO TO", goto_pick);
-    goto_add(255,0,0,0,NULL,"SEARCH PLACES","Country, state or city");
-    goto_add(254,0,0,0,NULL,"COORDINATES","Temporary latitude, longitude");
+    goto_add(255,0,0,0,NULL,"SEARCH PLACES",LS_TEXT(t_scr_map_country_state_or_city, "Country, state or city"));
+    goto_add(254,0,0,0,NULL,"COORDINATES",LS_TEXT(t_scr_map_temporary_latitude_longitude, "Temporary latitude, longitude"));
     if(s_receiver_fresh) goto_add(0,0,s_receiver.lat_deg,s_receiver.lon_deg,NULL,"RECEIVER","live GPS position");
     float hl,ho;
     if(settings_get_home(&hl,&ho)) goto_add(0,0,hl,ho,NULL,"HOME","saved home");
     double good_lat,good_lon;
     if(s_have_covered_view) { good_lat=s_covered_lat;good_lon=s_covered_lon; }
     if(s_have_covered_view || ls_map_last_good(&good_lat,&good_lon,NULL))
-        goto_add(0,0,good_lat,good_lon,NULL,"LAST COVERED VIEW","last map view with tiles");
+        goto_add(0,0,good_lat,good_lon,NULL,"LAST COVERED VIEW",LS_TEXT(t_scr_map_last_map_view_with, "last map view with tiles"));
     double clat, clon;
     ls_map_get_center(&clat, &clon);
     double rlat = clat, rlon = clon;
@@ -3128,7 +3144,7 @@ static ls_act_status_t a_map_find(const ls_args_t *in, ls_val_t *out)
             goto_add(0, 0, lat, lon, NULL, lb->text, detail);
         }
     }
-    if (!s_ngoto) ls_picker_empty_reason("nothing to go to yet: no aircraft, nodes, markers or places in view");
+    if (!s_ngoto) ls_picker_empty_reason(LS_TEXT(t_scr_map_nothing_to_go_to, "nothing to go to yet: no aircraft, nodes, markers or places in view"));
     static char note[40];
     snprintf(note, sizeof(note), "%d to choose from", s_ngoto);
     out->kind = LS_VAL_TEXT;
@@ -3217,7 +3233,7 @@ static void received_open(uint32_t id)
         const ls_sketch_t *l=ls_sketch_at(i);
         if(l->id==id) { select_mark(SEL_LINE,i);jump_to(l->lat[0],l->lon[0]);goto shown; }
     }
-    say("received item was deleted");return;
+    say(LS_TEXT(t_scr_map_received_item_was_deleted, "received item was deleted"));return;
 shown:
     layers_set(s_layers|L_MARKS);s_card_hidden=false;
 }
@@ -3239,7 +3255,7 @@ bool ls_scr_map_receive(const ls_mesh_msg_t *m,ls_notice_t *out)
     if(i<0) {
         memset(out,0,sizeof(*out));
         snprintf(out->title,sizeof(out->title),"MAP FULL");
-        snprintf(out->body,sizeof(out->body),"%s sent a %s; no room. Free space and ask for a resend.",sender,s_share_in.line ? "route" : "marker");
+        LS_SNPRINTF(t_scr_map_s_sent_a_s, out->body,sizeof(out->body),"%s sent a %s; no room. Free space and ask for a resend.",sender,s_share_in.line ? "route" : "marker");
         out->accent=TUI_YELLOW;out->screen=-1;return true;
     }
     memset(out,0,sizeof(*out));
@@ -3266,8 +3282,8 @@ void ls_scr_map_share_poll(void)
             ls_mesh_send_text_on(s_dest[s_send_dest].chan,text);
     if(err!=ESP_OK || s_send_part==s_send_total) {
         ls_notice_t n={.title="MAP SEND",.screen=-1,.accent=TUI_MAGENTA,.notify_visible=true};
-        if(err==ESP_OK) snprintf(n.body,sizeof(n.body),"Queued %d/%d parts. See MESH for delivery status.",s_send_part,s_send_total);
-        else snprintf(n.body,sizeof(n.body),"Stopped: %d/%d queued. %s",s_send_part-1,s_send_total,
+        if(err==ESP_OK) LS_SNPRINTF(t_scr_map_queued_d_d_parts, n.body,sizeof(n.body),"Queued %d/%d parts. See MESH for delivery status.",s_send_part,s_send_total);
+        else LS_SNPRINTF(t_scr_map_stopped_d_d_queued, n.body,sizeof(n.body),"Stopped: %d/%d queued. %s",s_send_part-1,s_send_total,
             !ls_mesh_tx_enabled() ? "TRANSMIT disarmed" : esp_err_to_name(err));
         ls_notify_post(&n);s_send_part=0;
     } else { s_send_part++;s_send_after=now+1000000; }
@@ -3276,15 +3292,15 @@ static void destination_nav(int i,int dir);
 static void destination_pick(int i)
 {
     if(i<0 || i>=s_ndest) return;
-    if(!ls_mesh_tx_enabled()) { ls_picker_note("TRANSMIT disarmed; arm in MESH");return; }
+    if(!ls_mesh_tx_enabled()) { ls_picker_note(LS_TEXT(t_scr_map_transmit_disarmed_arm_in, "TRANSMIT disarmed; arm in MESH"));return; }
     ls_picker_close();
     s_send_dest=i;s_send_part=1;s_send_after=0;
-    say("Sharing queued; MESH reports delivery");
+    say(LS_TEXT(t_scr_map_sharing_queued_mesh_reports, "Sharing queued; MESH reports delivery"));
 }
 static void destination_nav(int i,int dir) { if(dir<0) open_edit();else destination_pick(i); }
 static void send_selected(void)
 {
-    if(s_send_part) { say("a share is already being sent");return; }
+    if(s_send_part) { say(LS_TEXT(t_scr_map_a_share_is_already, "a share is already being sent"));return; }
     memset(&s_share_out,0,sizeof(s_share_out));
     static uint32_t serial;
     s_share_out.id=(uint32_t)esp_timer_get_time() ^ ++serial;
@@ -3300,7 +3316,7 @@ static void send_selected(void)
     } else return;
     /* Brackets are protocol delimiters; preserve a readable display name. */
     for(char *p=s_share_out.name;*p;p++) if(*p=='[' || *p==']') *p='-';
-    s_send_total=ls_share_parts(&s_share_out);if(!s_send_total) { say("item cannot be encoded");return; }
+    s_send_total=ls_share_parts(&s_share_out);if(!s_send_total) { say(LS_TEXT(t_scr_map_item_cannot_be_encoded, "item cannot be encoded"));return; }
     ls_picker_open("SEND TO",destination_pick);ls_picker_keep_open();ls_picker_back(open_edit);ls_picker_navigation(destination_nav);s_ndest=0;
     char detail[40];snprintf(detail,sizeof(detail),"send %d part%s",s_send_total,s_send_total==1 ? "" : "s");
     ls_picker_note(ls_mesh_tx_enabled() ? detail : "TRANSMIT disarmed; arm in MESH");
@@ -3314,18 +3330,18 @@ static void send_selected(void)
     for(int i=0;i<n;i++) if(channels[i].fixed || channels[i].psk[0]) {
         s_dest[s_ndest++].chan=i;ls_picker_add(channels[i].name,"CHANNEL");
     }
-    ls_picker_empty_reason("no contacts or configured channels");
+    ls_picker_empty_reason(LS_TEXT(t_scr_map_no_contacts_or_configured, "no contacts or configured channels"));
 }
 static void dm_done(const char *text)
 {
     if(!text || !*text) return;
-    if(!ls_mesh_tx_enabled()) { say("TRANSMIT disarmed; nothing sent");return; }
+    if(!ls_mesh_tx_enabled()) { say(LS_TEXT(t_scr_map_transmit_disarmed_nothing_sent, "TRANSMIT disarmed; nothing sent"));return; }
     esp_err_t err=ls_mesh_send_dm_id(s_dm_id,text);
     say(err==ESP_OK ? "DM queued; see MESH for delivery" : esp_err_to_name(err));
 }
 static void dm_selected(void)
 {
-    if(s_sel!=SEL_NODE) { say("B selects a mesh peer first");return; }
+    if(s_sel!=SEL_NODE) { say(LS_TEXT(t_scr_map_b_selects_a_mesh, "B selects a mesh peer first"));return; }
     snprintf(s_dm_id,sizeof(s_dm_id),"%s",s_sel_node);
     ls_keyboard_open("MESH DM", "",LS_SHARE_TEXT,dm_done);
 }
@@ -3352,7 +3368,7 @@ static void edit_done(int i)
             break;
         case 4: {
             char body[96];
-            snprintf(body, sizeof(body), "> MAP %.6f, %.6f  z%d", m->lat, m->lon, ls_map_zoom());
+            LS_SNPRINTF(t_scr_map_map_6f_6f_z, body, sizeof(body), "> MAP %.6f, %.6f  z%d", m->lat, m->lon, ls_map_zoom());
             say(ls_notes_mark(m->name, body) ? "saved to NOTES" : "NOTES could not take it");
             break;
         }
@@ -3375,7 +3391,7 @@ static void edit_done(int i)
     case 1: ls_keyboard_open("LINE NAME", s->name, LS_MARK_NAME - 1, rename_done); break;
     case 2: {
         char body[96];
-        snprintf(body, sizeof(body), "> MAP %.6f, %.6f  z%d\n%.2f mi, %d points", s->lat[0], s->lon[0],
+        LS_SNPRINTF(t_scr_map_map_6f_6f_z_2, body, sizeof(body), "> MAP %.6f, %.6f  z%d\n%.2f mi, %d points", s->lat[0], s->lon[0],
                  ls_map_zoom(), ls_sketch_length_m(s) / LS_GEO_M_PER_MILE, s->n);
         say(ls_notes_mark(s->name, body) ? "saved to NOTES" : "NOTES could not take it");
         break;
@@ -3395,7 +3411,7 @@ static void open_edit(void)
         s_edit_index = s_sel_index;
         ls_picker_open(ls_marks_at(s_sel_index)->name, edit_done);
         ls_picker_add("Go to it", "centre the map");
-        ls_picker_add("Navigate with COMPASS", "sets the GO TO target");
+        ls_picker_add(LS_TEXT(t_scr_map_navigate_with_compass, "Navigate with COMPASS"), LS_TEXT(t_scr_map_sets_the_go_to, "sets the GO TO target"));
         ls_picker_add("Rename", "");
         ls_picker_add("Change symbol", ls_mark_icon_name(ls_marks_at(s_sel_index)->icon));
         ls_picker_add("Save to NOTES", "as a MAP line");
@@ -3410,7 +3426,7 @@ static void open_edit(void)
         ls_picker_open(ls_sketch_at(s_sel_index)->name, edit_done);
         ls_picker_add("Go to its start", "centre the map");
         ls_picker_add("Rename", "");
-        ls_picker_add("Save to NOTES", "start point and length");
+        ls_picker_add("Save to NOTES", LS_TEXT(t_scr_map_start_point_and_length, "start point and length"));
         ls_picker_add("DELETE", "confirm once");
         ls_picker_add("SEND over MeshCore",ls_mesh_tx_enabled() ? "choose DM or channel" : "TRANSMIT disarmed");
         ls_picker_add("SAVE received item",ls_sketch_at(s_sel_index)->origin.received ? "keep on SD" : "already local");
@@ -3436,6 +3452,8 @@ static const struct { uint32_t bit; const char *name; const char *what; } LAYER_
     { L_MARKS,   "Markers, lines", "placed by hand" },
     { L_RINGS,   "Range rings",    "distance from here" },
     { L_COVER,   "Coverage",       "furthest aircraft by bearing" },
+    { L_RF_HIDE, "RF survey heat", "levels where RF SURVEY walked" },
+    { L_FOX_HIDE,"Fox hunt",       "bearings, fix and its ellipse" },
     { L_PLACES,  "Place names",    "from the map" },
 };
 #define N_LAYER_ROWS ((int)(sizeof(LAYER_ROWS) / sizeof(LAYER_ROWS[0])))
@@ -3445,7 +3463,7 @@ static void layer_pick(int i)
     if (i < 0 || i >= N_LAYER_ROWS) return;
     layers_set(s_layers ^ LAYER_ROWS[i].bit);
     char d[LS_PICKER_DETAIL];
-    snprintf(d,sizeof(d),"%s  %s",layer(LAYER_ROWS[i].bit)?"[ON] ":"[off]",LAYER_ROWS[i].what);
+    snprintf(d,sizeof(d),"%s  %s",layer_shown(LAYER_ROWS[i].bit)?"[ON] ":"[off]",LAYER_ROWS[i].what);
     ls_picker_set_detail(i,d);
 }
 
@@ -3456,7 +3474,7 @@ static ls_act_status_t a_map_layers(const ls_args_t *in, ls_val_t *out)
     ls_picker_keep_open();ls_picker_back(open_options);
     for (int i = 0; i < N_LAYER_ROWS; i++) {
         char d[LS_PICKER_DETAIL];
-        snprintf(d, sizeof(d), "%s  %s", layer(LAYER_ROWS[i].bit) ? "[ON] " : "[off]", LAYER_ROWS[i].what);
+        snprintf(d, sizeof(d), "%s  %s", layer_shown(LAYER_ROWS[i].bit) ? "[ON] " : "[off]", LAYER_ROWS[i].what);
         ls_picker_add(LAYER_ROWS[i].name, d);
     }
     out->kind = LS_VAL_TEXT;
@@ -3527,7 +3545,7 @@ static ls_act_status_t a_map_style(const ls_args_t *in, ls_val_t *out)
     }
     const char *arch = ls_map_archive();
     const char *leaf = arch ? strrchr(arch, '/') : NULL;
-    ls_picker_add("Map file on the card", leaf ? leaf + 1 : "none open");
+    ls_picker_add(LS_TEXT(t_scr_map_map_file_on_the, "Map file on the card"), leaf ? leaf + 1 : "none open");
     out->kind = LS_VAL_TEXT;
     out->s = "choose the colours (TUI theme or a map palette) and a fill";
     return LS_ACT_OK;
@@ -3560,7 +3578,7 @@ static ls_act_status_t a_map_draw(const ls_args_t *in, ls_val_t *out)
     (void)in;
     ls_sketch_begin();
     if (!layer(L_MARKS)) layers_set(s_layers | L_MARKS);
-    say("DRAW: tap map or A ADD POINT; O FINISH; C CANCEL");
+    say(LS_TEXT(t_scr_map_draw_tap_map_or, "DRAW: tap map or A ADD POINT; O FINISH; C CANCEL"));
     out->kind = LS_VAL_TEXT;
     out->s = "drawing a line";
     return LS_ACT_OK;
@@ -3638,7 +3656,7 @@ static void route_pick(int i)
 {
     if (i<0 || i>s_route_n) return;
     bool ok=ls_route_live_load(i ? s_routes[i-1] : NULL,i==0);
-    if (!ok) { say("route unavailable, invalid, or too large"); return; }
+    if (!ok) { say(LS_TEXT(t_scr_map_route_unavailable_invalid_or, "route unavailable, invalid, or too large")); return; }
     layers_set(s_layers|L_ROUTE);
     const ls_route_t *r=ls_route_live();
     s_track=false;
@@ -3663,7 +3681,7 @@ static ls_act_status_t a_map_route(const ls_args_t *in, ls_val_t *out)
     }
     qsort(s_routes,s_route_n,sizeof(s_routes[0]),archive_order);
     ls_picker_open("ROUTE",route_pick);
-    ls_picker_add("BACKTRACK","reverse current / last recorded walk");
+    ls_picker_add("BACKTRACK",LS_TEXT(t_scr_map_reverse_current_last_recorded, "reverse current / last recorded walk"));
     for (int i=0;i<s_route_n;i++) ls_picker_add(s_routes[i]+sizeof(ROUTE_DIR),"follow GPX");
     out->kind=LS_VAL_TEXT;out->s="GPX: SD /lakeshark/routes; or BACKTRACK";
     return LS_ACT_OK;
@@ -3679,7 +3697,7 @@ static void open_marks(void) {
         const ls_mark_t *m=ls_marks_at(i);
         ls_picker_add(m->name,m->origin.received ? "RECEIVED / unsaved" : "edit / send");
     }
-    ls_picker_empty_reason("K places a marker at the crosshair");
+    ls_picker_empty_reason(LS_TEXT(t_scr_map_k_places_a_marker, "K places a marker at the crosshair"));
 }
 static void open_lines(void) {
     ls_picker_open("LINES / ROUTES",line_pick);ls_picker_back(open_options);ls_picker_navigation(lines_nav);
@@ -3687,7 +3705,7 @@ static void open_lines(void) {
         const ls_sketch_t *l=ls_sketch_at(i);
         ls_picker_add(l->name,l->origin.received ? "RECEIVED / unsaved" : "edit / send");
     }
-    ls_picker_empty_reason("D draws a line; ENTER adds points; O finishes");
+    ls_picker_empty_reason(LS_TEXT(t_scr_map_d_draws_a_line, "D draws a line; ENTER adds points; O finishes"));
 }
 static void options_pick(int i) {
     ls_val_t out;
@@ -3709,10 +3727,10 @@ static void open_options(void) {
     ls_picker_add("Map files","SD archives");
     ls_picker_add("Guidance","route settings");
     ls_picker_add("Retry saving marks",ls_marks_save_status());
-    ls_picker_add("Reset coverage","fresh direct receptions from now");
-    ls_picker_add("Markers", "select / edit / send");
+    ls_picker_add("Reset coverage",LS_TEXT(t_scr_map_fresh_direct_receptions_from, "fresh direct receptions from now"));
+    ls_picker_add("Markers", LS_TEXT(t_scr_map_select_edit_send, "select / edit / send"));
     ls_picker_add("Lines / routes", "select / send");
-    ls_picker_add("Clear all markers", "confirm once; lines kept");
+    ls_picker_add("Clear all markers", LS_TEXT(t_scr_map_confirm_once_lines_kept, "confirm once; lines kept"));
     ls_picker_navigation(options_nav);
 }
 static ls_act_status_t a_route_options(const ls_args_t *in, ls_val_t *out)
@@ -3728,24 +3746,26 @@ static void register_view_action(void)
     static bool done;
     if (done) return;
     done = ls_action_register("map.view", "", LS_CAP_UI, a_map_view,
-                              "field, blocks, or line art");
-    ls_action_register("map.context", "s", LS_CAP_UI, a_map_context, "selected map item controls");
-    ls_action_register("map.route", "", LS_CAP_UI, a_map_route, "follow GPX or backtrack a walk");
-    ls_action_register("map.route_options", "", LS_CAP_UI, a_route_options, "route guidance settings");
+                              LS_TEXT(t_scr_map_field_blocks_or_line, "field, blocks, or line art"));
+    ls_action_register("map.context", "s", LS_CAP_UI, a_map_context, LS_TEXT(t_scr_map_selected_map_item_controls, "selected map item controls"));
+    ls_action_register("map.route", "", LS_CAP_UI, a_map_route, LS_TEXT(t_scr_map_follow_gpx_or_backtrack, "follow GPX or backtrack a walk"));
+    ls_action_register("map.route_options", "", LS_CAP_UI, a_route_options, LS_TEXT(t_scr_map_route_guidance_settings, "route guidance settings"));
     ls_action_register("map.files", "", LS_CAP_UI, a_map_files, "choose an SD map");
     ls_action_register("map.find", "", LS_CAP_UI, a_map_find,
-                       "aircraft, nodes, markers and places to go to");
-    ls_action_register("map.layers", "", LS_CAP_UI, a_map_layers, "what is drawn over the map");
-    ls_action_register("map.style", "", LS_CAP_UI, a_map_style, "map colours (TUI theme or a palette) and fill");
-    ls_action_register("map.mark", "", LS_CAP_UI, a_map_mark, "drop a marker at the centre");
-    ls_action_register("map.draw", "", LS_CAP_UI, a_map_draw, "draw a line point by point");
-    ls_action_register("map.draw_add", "", LS_CAP_UI, a_map_draw_add, "add the centre to the line");
-    ls_action_register("map.draw_undo", "", LS_CAP_UI, a_map_draw_undo, "remove the last point");
+                       LS_TEXT(t_scr_map_aircraft_nodes_markers_and, "aircraft, nodes, markers and places to go to"));
+    ls_action_register("map.layers", "", LS_CAP_UI, a_map_layers, LS_TEXT(t_scr_map_what_is_drawn_over, "what is drawn over the map"));
+    ls_action_register("map.style", "", LS_CAP_UI, a_map_style, LS_TEXT(t_scr_map_map_colours_tui_theme, "map colours (TUI theme or a palette) and fill"));
+    ls_action_register("map.mark", "", LS_CAP_UI, a_map_mark, LS_TEXT(t_scr_map_drop_a_marker_at, "drop a marker at the centre"));
+    ls_action_register("map.draw", "", LS_CAP_UI, a_map_draw, LS_TEXT(t_scr_map_draw_a_line_point, "draw a line point by point"));
+    ls_action_register("map.draw_add", "", LS_CAP_UI, a_map_draw_add, LS_TEXT(t_scr_map_add_the_centre_to, "add the centre to the line"));
+    ls_action_register("map.draw_undo", "", LS_CAP_UI, a_map_draw_undo, LS_TEXT(t_scr_map_remove_the_last_point, "remove the last point"));
     ls_action_register("map.draw_done", "", LS_CAP_UI, a_map_draw_done, "keep the line");
     ls_action_register("map.draw_cancel", "", LS_CAP_UI, a_map_draw_cancel, "discard the line");
     ls_action_register("map.track", "", LS_CAP_UI, a_map_track,
-                       "follow the selection, or GPS with nothing selected");
+                       LS_TEXT(t_scr_map_follow_the_selection_or, "follow the selection, or GPS with nothing selected"));
 }
+
+LS_COLD_END
 
 /* --------------------------------------------------------- the preview -- */
 
@@ -3967,6 +3987,26 @@ static void route_line(double x0,double y0,double x1,double y1,int pw,int ph,uin
     px_dot(x0+hi*dx,y0+hi*dy,&bx,&by);
     ls_ink_line(ax,ay,bx,by,attr,4,0);
 }
+/* RF SURVEY heat and FOX HUNT bearings (ls_rfmap.h), placed by this
+   frame's projection. */
+static int s_rf_pw, s_rf_ph;
+static tui_rect s_rf_legend;
+static bool rf_dot(double lat, double lon, int *x, int *y)
+{
+    double fx, fy;
+    if (!frame_px(lat, lon, s_rf_pw, s_rf_ph, &fx, &fy)) return false;
+    px_dot(fx, fy, x, y);
+    return true;
+}
+
+static void rf_canvas(tui_rect a, int pw, int ph, int64_t now)
+{
+    s_rf_pw = pw; s_rf_ph = ph;
+    const ls_rfmap_frame_t f = { .dot = rf_dot, .w = a.w * 2, .h = a.h * 3, .now_us = now };
+    if (!layer(L_RF_HIDE)) ls_rfmap_heat(&f);
+    if (!layer(L_FOX_HIDE)) ls_rfmap_fox(&f);
+}
+
 static void route_canvas(int pw,int ph)
 {
     const ls_route_t *r=ls_route_live();
@@ -4121,7 +4161,7 @@ static void draw(tui_surface *sf, tui_rect area)
     char rings[16] = "";
     if (s_ring_nm > 0) snprintf(rings, sizeof(rings), "  rings %gnm", s_ring_nm);
     if (ls_tui_is_wide()) {
-        snprintf(title, sizeof(title), "[%s %s/S]  AIR %d  MESH %d  MARK %d%s  vec %ds  GPS %s",
+        LS_SNPRINTF(t_scr_map_s_s_s_air, title, sizeof(title), "[%s %s/S]  AIR %d  MESH %d  MARK %d%s  vec %ds  GPS %s",
                  palette()->name, VIEW_NAME[s_view], count_air_positions(), nmesh, ls_marks_count(),
                  rings, s_vector_s, gps);
         tui_put_str(sf, heading, area.x, area.y, title, head);
@@ -4144,6 +4184,7 @@ static void draw(tui_surface *sf, tui_rect area)
 
     s_nhits = 0;
     s_ntaken = 0;
+    s_rf_legend = tui_rect_make(0, -1, 0, 0);
     if (!px && !cc_ok) {
         ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
         draw_placeholder(sf, body, why ? why : "the map has not been started");
@@ -4173,6 +4214,7 @@ static void draw(tui_surface *sf, tui_rect area)
         s_nplaced = 0;
         rings_canvas(sf, body, pw, ph, false);
         cover_canvas(pw, ph);
+        rf_canvas(body, pw, ph, now);
         route_canvas(pw,ph);
         marks_canvas(body, pw, ph, now);
         nodes_canvas(body, pw, ph);
@@ -4201,6 +4243,8 @@ static void draw(tui_surface *sf, tui_rect area)
         rings_canvas(sf, body, pw, ph, true);
         if (!cc && layer(L_PLACES) && !layer(L_NOLABEL)) draw_labels(sf, body, SUB_X, sub_y(), s_pad_rect);
         draw_card(sf, s_card_rect);
+        s_rf_legend = ls_rfmap_legend(sf, body, !layer(L_RF_HIDE) && ls_rfmap_has_heat(),
+                                      !layer(L_FOX_HIDE) && ls_rfmap_has_fox());
 
         s_map_cells = body;
 
@@ -4250,6 +4294,8 @@ static void draw(tui_surface *sf, tui_rect area)
 #endif
 }
 
+/* Input handlers: one call per key or tap. */
+LS_COLD_BEGIN
 /* --------------------------------------------------------------- input -- */
 
 static int pan_step(void)
@@ -4283,7 +4329,7 @@ static void cycle_air(int dir)
         while (j > 0 && dist[j - 1] > d) { dist[j] = dist[j - 1]; order[j] = order[j - 1]; j--; }
         dist[j] = d; order[j] = s;
     }
-    if (!m) { say("no aircraft with a position"); return; }
+    if (!m) { say(LS_TEXT(t_scr_map_no_aircraft_with_a, "no aircraft with a position")); return; }
     int at = -1;
     for (int k = 0; k < m; k++) if (s_sel == SEL_AIR && adsb_state_key(adsb_state_get(order[k])) == s_sel_icao) at = k;
     const int next = at < 0 ? (dir > 0 ? 0 : m - 1) : (at + dir + m) % m;
@@ -4326,7 +4372,7 @@ static ls_act_status_t a_map_context(const ls_args_t *in,ls_val_t *out)
     if(cmd=='c') { dm_selected();return LS_ACT_OK; }
     if(cmd=='j' || cmd=='p') {
         int count=ls_marks_count()+ls_sketch_count();
-        if(!count) { say("no items; MARK places one");return LS_ACT_OK; }
+        if(!count) { say(LS_TEXT(t_scr_map_no_items_mark_places, "no items; MARK places one"));return LS_ACT_OK; }
         int at=s_sel==SEL_MARK ? s_sel_index : s_sel==SEL_LINE ? ls_marks_count()+s_sel_index : -1;
         at=at<0 ? 0 : (at+(cmd=='p' ? count-1 : 1))%count;
         select_mark(at<ls_marks_count() ? SEL_MARK : SEL_LINE,
@@ -4376,7 +4422,7 @@ static bool key(ls_tk_t k, char ch)
     if(k==LS_TK_CHAR && (ch=='j' || ch=='J')) {
         const ls_mark_t *m=s_sel==SEL_MARK ? ls_marks_at(s_sel_index) : NULL;
         int i=ls_marks_next(m ? m->id : 0);
-        if(i<0) say("no markers; K places one");
+        if(i<0) say(LS_TEXT(t_scr_map_no_markers_k_places, "no markers; K places one"));
         else { select_mark(SEL_MARK,i);s_card_hidden=false;layers_set(s_layers|L_MARKS); }
         return true;
     }
@@ -4388,7 +4434,7 @@ static bool key(ls_tk_t k, char ch)
             select_node(s_map_peers[i].id);jump_to(s_map_peers[i].lat_e6/1e6,s_map_peers[i].lon_e6/1e6);
             layers_set(s_layers|L_MESH);s_card_hidden=false;return true;
         }
-        say("no mesh peers advertising a location");return true;
+        say(LS_TEXT(t_scr_map_no_mesh_peers_advertising, "no mesh peers advertising a location"));return true;
     }
     if(k==LS_TK_CHAR && (ch=='c' || ch=='C')) { dm_selected();return true; }
     if (k == LS_TK_CHAR && (ch == 'n'  || ch == 'N')) {
@@ -4483,6 +4529,7 @@ static bool touch(int col, int row)
     if(ls_place_search_active())return ls_place_search_touch(col,row);
     if (s_dragging) { s_dragging = false; return true; }
     if (in_rect(s_controls_hit, col, row) || in_rect(s_show_rect, col, row)) return key(LS_TK_CHAR, 'x');
+    if (s_rf_legend.h > 0 && in_rect(s_rf_legend, col, row)) { ls_rfmap_pick(); return true; }
     if (s_map_cells.h > 0 && row >= s_map_cells.y - s_header_h && row < s_map_cells.y &&
         col >= s_map_cells.x && col < s_map_cells.x + 20) {
         ls_val_t out;
@@ -4522,7 +4569,7 @@ static bool touch(int col, int row)
     if (ls_sketch_drawing()) {
         double lat, lon;
         frame_ll(fx, fy, s_pw, s_ph, &lat, &lon);
-        if (!ls_sketch_add_point(lat, lon)) say("no room for another point");
+        if (!ls_sketch_add_point(lat, lon)) say(LS_TEXT(t_scr_map_no_room_for_another, "no room for another point"));
         return true;
     }
 
@@ -4549,6 +4596,8 @@ static bool touch(int col, int row)
 /* Called by the map.reload action, which is how the console and a card app
    reach the same rescan the button does. */
 const char *ls_scr_map_reload(void) { rescan(); return s_file_error; }
+
+LS_COLD_END
 
 const ls_tui_screen_t ls_scr_map = {
     .name = "MAP",

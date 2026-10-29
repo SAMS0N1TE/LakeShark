@@ -51,6 +51,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 
 /* ------------------------------------------------------------ bit tools -- */
 
@@ -858,7 +859,7 @@ static int f007th_at(ctx_t *c, const uint8_t *bits, unsigned len, unsigned pos)
     const int temp_raw = ((b[2] & 0x0f) << 8) | b[3];
     const float temp_f = (temp_raw - 400) * 0.1f;
     if (b[4] > 100 || temp_f < -40.0f || temp_f >= 344.0f) return 0;
-    lr433_msg_t *m = msg_new(c, LR433_P_AMBIENT_F007TH, "Ambientweather-F007TH");
+    lr433_msg_t *m = msg_new(c, LR433_P_AMBIENT_F007TH, LS_TEXT(t_lr433_dec_ambientweather_f007th, "Ambientweather-F007TH"));
     snprintf(m->id, sizeof(m->id), "%d", b[1]);
     m->channel = (int8_t)(((b[2] & 0x70) >> 4) + 1);
     m->battery_ok = (b[2] & 0x80) == 0;

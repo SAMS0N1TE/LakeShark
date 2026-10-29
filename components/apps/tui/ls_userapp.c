@@ -19,6 +19,7 @@
 #include "ls_value.h"
 #include "ls_waterfall.h"
 #include "ls_wf_source.h"
+#include "ls_textpack.h"
 
 /* --------------------------------------------------------------- parsing */
 
@@ -109,14 +110,14 @@ bool ls_userapp_parse(const char *text, size_t len, ls_ua_model_t *out,
 
         if (KEY_IS("version")) {
             if (val_n != 1 || val[0] != '1') {
-                fail(err, line_no, "only version=1 is understood");
+                fail(err, line_no, LS_TEXT(t_ls_userapp_only_version_1_is, "only version=1 is understood"));
                 return false;
             }
             have_version = true;
             continue;
         }
         if (!have_version) {
-            fail(err, line_no, "version=1 must come first");
+            fail(err, line_no, LS_TEXT(t_ls_userapp_version_1_must_come, "version=1 must come first"));
             return false;
         }
 
@@ -172,11 +173,11 @@ bool ls_userapp_parse(const char *text, size_t len, ls_ua_model_t *out,
             split_bar(val, val_n, &lab, &lab_n, &path, &path_n);
 
             if (needs_path && (!path || !path_n)) {
-                fail(err, line_no, "expected LABEL|value.path");
+                fail(err, line_no, LS_TEXT(t_ls_userapp_expected_label_value_path, "expected LABEL|value.path"));
                 return false;
             }
             if (lab_n >= LS_UA_STR || path_n >= LS_UA_STR) {
-                fail(err, line_no, "label or path is too long");
+                fail(err, line_no, LS_TEXT(t_ls_userapp_label_or_path_is, "label or path is too long"));
                 return false;
             }
 
@@ -374,7 +375,7 @@ static bool load_one(const char *path, const char *fname)
     const bool over = !feof(f);
     fclose(f);
     if (over) {
-        snprintf(s_last_err, sizeof(s_last_err), "%s: larger than %d KB", fname, LS_UA_MAX_BYTES / 1024);
+        LS_SNPRINTF(t_ls_userapp_s_larger_than_d, s_last_err, sizeof(s_last_err), "%s: larger than %d KB", fname, LS_UA_MAX_BYTES / 1024);
         return false;
     }
     buf[n] = 0;
@@ -388,8 +389,8 @@ static bool load_one(const char *path, const char *fname)
 
     const int slot = s_loaded;
     snprintf(s_id[slot], sizeof(s_id[slot]), "user.%d", slot);
-    snprintf(s_hint[slot], sizeof(s_hint[slot]), "user app  ESC  directory");
-    snprintf(s_purpose[slot], sizeof(s_purpose[slot]),
+    LS_SNPUTS(t_ls_userapp_user_app_esc_directory, s_hint[slot], sizeof(s_hint[slot]), "user app  ESC  directory");
+    LS_SNPRINTF(t_ls_userapp_a_user_app_described, s_purpose[slot], sizeof(s_purpose[slot]),
              "A user app, described by %s on the card. It shows the values "
              "that file names, as they change, and keeps nothing of its own.",
              fname);
@@ -438,7 +439,7 @@ int ls_userapp_load_dir(const char *dir)
        normal case on a board with an empty slot and must not be an error. */
 #ifdef ESP_PLATFORM
     if (!ls_lap_recover_dir(dir)) {
-        snprintf(s_last_err, sizeof(s_last_err), "app directory recovery failed");
+        LS_SNPUTS(t_ls_userapp_app_directory_recovery_failed, s_last_err, sizeof(s_last_err), "app directory recovery failed");
         return 0;
     }
 #endif
@@ -462,7 +463,7 @@ int ls_userapp_load_dir(const char *dir)
         if (!dot || strcmp(dot, ".lsapp") != 0) continue;
         if (s_loaded >= LS_UA_MAX_APPS) {
 
-            snprintf(s_last_err, sizeof(s_last_err),
+            LS_SNPRINTF(t_ls_userapp_s_directory_full_at, s_last_err, sizeof(s_last_err),
                      "%s: directory full at %d apps", ent->d_name,
                      LS_UA_MAX_APPS);
             continue;

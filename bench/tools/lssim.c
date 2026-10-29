@@ -1,7 +1,8 @@
 #include "ls_map_share_ui.h"
 #include "apps/example_app.h"
 #include "ls_sweep_ui.h"
-#include "ls_detector_ui.h"
+#include "ls_meters.h"
+extern const ls_tui_screen_t ls_scr_meters;
 #include "ls_sweep_app.h"
 #include "ls_rid_ui.h"
 #include "ls_rid.h"
@@ -57,6 +58,8 @@
 #include "apps/fm/ais_store.h"
 #include "dmr_watch.h"
 #include "dmr_gen.h"
+#include "ls_tmach.h"
+#include "ls_decoded.h"
 
 /* ---------------------------------------------------------- the panel -- */
 
@@ -216,14 +219,19 @@ extern const ls_tui_screen_t ls_scr_home, ls_scr_p25, ls_scr_fm, ls_scr_adsb,
                              ls_scr_gps, ls_scr_map, ls_scr_falls,
                              ls_scr_mesh, ls_scr_radios, ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf,
                              ls_scr_notes, ls_scr_compass, ls_scr_music, ls_scr_experiments,
-                             ls_scr_terminal, ls_scr_update, ls_scr_tiles;
+                             ls_scr_terminal, ls_scr_update, ls_scr_tiles, ls_scr_rfsurvey, ls_scr_fox;
 extern const ls_app_doc_t ls_doc_tiles;
+extern const ls_tui_screen_t ls_scr_digi;
+extern const ls_app_doc_t ls_doc_digi;
+extern const ls_tui_screen_t ls_scr_radio;
+extern const ls_app_doc_t ls_doc_radio;
 
 /* The same table compact_ui.cpp registers, minus the ones whose screens pull
    a radio stack this tool has no use for. Kept in the same order so a screen
    index here means what it means on the board. */
 extern const ls_tui_screen_t lssim_p25_preview, lssim_fm_preview, ls_scr_wireless;
 extern const ls_tui_screen_t ls_lap_screen;
+extern const ls_tui_screen_t ls_scr_tmach;
 /* The two design previews exist only in the simulator, so they carry a
    simulator doc rather than one of the real ones. */
 static const ls_app_doc_t sim_preview_doc = {
@@ -271,6 +279,8 @@ static const ls_app_t APPS[] = {
     { "journal", "JOURNAL", "field notes", LS_ICON_JOURNAL, TUI_GREEN, LS_APP_EXTRA, &ls_scr_journal, NULL, &ls_doc_journal },
     { "notes", "NOTES", "field notes", LS_ICON_JOURNAL, TUI_GREEN, LS_APP_EXTRA, &ls_scr_notes, NULL, &ls_doc_notes },
     { "compass", "COMPASS", "bearings", LS_ICON_COMPASS, TUI_YELLOW, LS_APP_EXTRA, &ls_scr_compass, NULL, &ls_doc_compass },
+    { "rfsurvey", "RF SURVEY", "heat map", LS_ICON_HEAT, TUI_MAGENTA, LS_APP_EXTRA, &ls_scr_rfsurvey, NULL, &ls_doc_rfsurvey },
+    { "fox", "FOX HUNT", "find a TX", LS_ICON_FOX, TUI_YELLOW, LS_APP_EXTRA, &ls_scr_fox, NULL, &ls_doc_fox },
     { "subghz", "SUB-GHZ", "passive watch", LS_ICON_SUBGHZ, TUI_GREEN, LS_APP_EXTRA, &ls_scr_subghz, NULL, &ls_doc_subghz },
     { "music", "MUSIC", "player", LS_ICON_MUSIC, TUI_CYAN, LS_APP_EXTRA, &ls_scr_music, NULL, &ls_doc_music },
     { "mixrf", "MIX-RF", "keyboard radios", LS_ICON_CHIP, TUI_CYAN, LS_APP_EXTRA, &ls_scr_mixrf, NULL, &ls_doc_mixrf },
@@ -281,10 +291,18 @@ static const ls_app_t APPS[] = {
 
     { "drones", "DRONES", "BLE Remote ID", LS_ICON_DRONE, TUI_CYAN,
       LS_APP_EXTRA, &ls_scr_drones, NULL, &ls_doc_drones },
+    { "meters", "METERS", "utility meters", LS_ICON_SUBGHZ, TUI_YELLOW,
+      LS_APP_EXTRA, &ls_scr_meters, NULL, &ls_doc_meters },
     { "sweep", "SWEEP", "passive nearby signals", LS_ICON_SWEEP, TUI_GREEN,
       LS_APP_EXTRA, &ls_scr_sweep, NULL, &ls_doc_sweep },
-    { "detector", "DETECTOR", "rule matches", LS_ICON_DETECTOR, TUI_CYAN,
-      LS_APP_EXTRA, &ls_scr_detector, NULL, &ls_doc_detector },
+    { "digi", "DIGI", "FT8 FT4 WSPR", LS_ICON_DIGI, TUI_GREEN,
+      LS_APP_EXTRA, &ls_scr_digi, NULL, &ls_doc_digi },
+    { "tmach", "TIME MACHINE", "rewind the air", LS_ICON_TMACH, TUI_MAGENTA,
+      LS_APP_EXTRA, &ls_scr_tmach, NULL, &ls_doc_tmach },
+#if defined(CONFIG_LS_RX_HEAD) && CONFIG_LS_RX_HEAD
+    { "radio", "RADIO", "receiver + decoders", LS_ICON_WAVE, TUI_GREEN,
+      LS_APP_EXTRA, &ls_scr_radio, NULL, &ls_doc_radio },
+#endif
 #if defined(CONFIG_LS_EXAMPLE_APP) && CONFIG_LS_EXAMPLE_APP
     LS_EXAMPLE_APP_ENTRY,
 #endif
@@ -294,6 +312,84 @@ static const ls_app_t APPS[] = {
 #define N_APPS ((int)(sizeof(APPS) / sizeof(APPS[0])))
 
 /* ------------------------------------------------------------- feeding -- */
+
+/* TIME MACHINE: 30 s of a pager channel at FM's 256k CU8 through the real
+   taps, stage, ring and tape - a noise floor, three bursts (two decoded,
+   one not), a retune - then what the decoders said, and one clip saved
+   into TEMP the way WHAT WAS THAT? saves it. LSSIM_TMACH=saving stops the
+   clip half written. */
+static void seed_tmach(void)
+{
+    char dir[200];
+    snprintf(dir, sizeof(dir), "%s/lssim_tmach", getenv("TEMP") ? getenv("TEMP") : ".");
+    _mkdir(dir);
+    for (int n = 1; n < 100; n++) {            /* the same clip number every run */
+        static const char *const EXT[] = { "cs8", "cs16", "json" };
+        for (int e = 0; e < 3; e++) {
+            char p[240];
+            snprintf(p, sizeof(p), "%s/tm%04d.%s", dir, n, EXT[e]);
+            remove(p);
+        }
+    }
+    ls_tm_set_clip_dir(dir);
+    ls_tm_init();
+    const int64_t now = esp_timer_get_time();
+    ls_tm_service(now);
+    static uint8_t buf[16384];
+    const uint32_t rate = 256000;
+    const int pairs = (int)sizeof(buf) / 2;
+    const struct { double from, to, amp; } burst[] = { {-25.9, -25.1, 70}, {-18.6, -18.1, 40}, {-7.8, -6.9, 90} };
+    uint32_t noise = 12345;
+    double phase = 0;
+    int64_t t = now - 30000000;
+    while (t < now) {
+        const double ts = (t - now) / 1e6;
+        const ls_tm_src_t src = { .center_hz = ts < -12.0 ? 152600000 : 152840000, .rate_hz = rate,
+                                  .gain_tenths = 400, .fmt = LS_TM_FMT_CU8, .radio = LS_TM_RADIO_RTL };
+        for (int k = 0; k < pairs; k++) {
+            const double tk = ts + (double)k / rate;
+            double amp = 2.5;
+            for (unsigned b = 0; b < sizeof(burst) / sizeof(burst[0]); b++)
+                if (tk >= burst[b].from && tk < burst[b].to) amp = burst[b].amp * (0.8 + 0.2 * sin(tk * 9));
+            phase += 6.283185307 * (((k / 213) & 1) ? 4500.0 : -4500.0) / rate;
+            noise = noise * 1664525u + 1013904223u;
+            const double ni = ((int)(noise >> 24) - 128) / 32.0, nq = ((int)((noise >> 16) & 255) - 128) / 32.0;
+            buf[2 * k] = (uint8_t)lround(128 + amp * cos(phase) + ni);
+            buf[2 * k + 1] = (uint8_t)lround(128 + amp * sin(phase) + nq);
+        }
+        t += (int64_t)pairs * 1000000 / rate;
+        ls_tm_tap(LS_TM_Q_SDR, &src, buf, sizeof(buf), t);
+        ls_tm_service(t);
+    }
+    struct { uint16_t kind; double ago; uint32_t address, hz; uint8_t radio; const char *from, *text; } ev[] = {
+        { LS_DECODED_DETECT, 610, 0, 0, 0, "BLE", "tracker moving with you, 6 min" },
+        { LS_DECODED_ADSB, 190, 0xA1B2C3, 1090000000, LS_TM_RADIO_RTL, "UAL442", "" },
+        { LS_DECODED_AIS, 125, 366123456, 162025000, LS_TM_RADIO_LR2021, "SEA TEST", "under way, 7.5 kn" },
+        { LS_DECODED_REC, 52, 0, 433920000, LS_TM_RADIO_LR2021, "LR2021", "OOK24 A1B2C3, 5 frames" },
+        { LS_DECODED_APRS, 41, 0, 144390000, LS_TM_RADIO_LR2021, "N0CALL-9", "wx 12C 4 kt NW" },
+        { LS_DECODED_PAGE, 25.4, 1234568, 0, 0, "POCSAG 1200", "UNIT 4 RESPOND STATION 2" },
+        { LS_DECODED_P25, 15, 4512, 851012500, LS_TM_RADIO_HACKRF, "TG 4512", "unit 1704" },
+        { LS_DECODED_PAGE, 7.3, 1234568, 0, 0, "POCSAG 1200", "CALL 555 0142 RE TEST" },
+    };
+    for (unsigned i = 0; i < sizeof(ev) / sizeof(ev[0]); i++) {
+        ls_decoded_t d;
+        memset(&d, 0, sizeof(d));
+        d.kind = ev[i].kind; d.address = ev[i].address; d.freq_hz = ev[i].hz; d.radio = ev[i].radio;
+        d.at_us = now - (int64_t)(ev[i].ago * 1e6);
+        snprintf(d.from, sizeof(d.from), "%s", ev[i].from);
+        snprintf(d.text, sizeof(d.text), "%s", ev[i].text);
+        ls_decoded_publish(&d);
+        if (d.kind == LS_DECODED_ADSB) for (int k = 1; k < 14; k++) { d.at_us += 10000000; ls_decoded_publish(&d); }
+    }
+    ls_tm_service(now);
+    /* WHAT WAS THAT?, as the key does it. */
+    const bool half = !strcmp(getenv("LSSIM_TMACH"), "saving");
+    if (ls_tm_what_was_that())
+        for (int k = 0; k < (half ? 2 : 200); k++) ls_tm_service(now);
+    ls_tm_status_t st;
+    if (ls_tm_status(&st)) printf("lssim: tmach %.1f s held, %lu ticks, %lu rows, %s\n", st.held_s,
+                                  (unsigned long)st.tick_count, (unsigned long)st.tl_count, st.note);
+}
 
 /* The two screens nobody has ever seen work. */
 
@@ -313,7 +409,44 @@ static void feed_waterfall(void)
             ls_wf_source_select(LS_WF_SRC_FM);
         }
         lr_spec_enable(true); lr_spec_begin(center);
+        /* LSSIM_LR_SPAN: the wide route as well, 576k around an LO 144 kHz
+           under the channel: the LO's leak in the middle, the channel's
+           carrier wandering at +144k, a steady neighbour at +60k and a
+           pager-like burst at -190k every few rows. */
+        const bool span = getenv("LSSIM_LR_SPAN") != NULL;
+        static int16_t wide[2 * 512];
+        uint64_t wide_n = 0;
+        if (span) {
+            if (!getenv("LSSIM_FM_LR")) {
+                ls_rsel_set(LS_RSEL_WATERFALL, LS_RSEL_LORA);
+                ls_wf_source_select(LS_WF_SRC_LORA);
+            }
+            ls_wf_source_lr_span(true); lr_span_enable(true);
+        }
         for (int row = 0; row < 100; ++row) {
+            if (span) {
+                for (int block = 0; block < 45; ++block) {
+                    for (int k = 0; k < 512; ++k, ++wide_n) {
+                        noise = noise * 1664525u + 1013904223u;
+                        const double t = (double)wide_n / 576000;
+                        double i = 900 + (int)(noise & 511) - 256, q = -500 + (int)((noise >> 9) & 511) - 256;
+                        const double ch = 6.283185307179586 * (144000 + 2500 * sin(6.283185307179586 * 0.7 * row / 10)) * t;
+                        i += 6000 * cos(ch); q += 6000 * sin(ch);
+                        const double nb = 6.283185307179586 * 60000 * t;
+                        i += 1500 * cos(nb); q += 1500 * sin(nb);
+                        if (row % 12 < 4) {
+                            const double pg = 6.283185307179586 * (-190000 + ((wide_n >> 8) & 1 ? 4500 : -4500)) * t;
+                            i += 9000 * cos(pg); q += 9000 * sin(pg);
+                        }
+                        wide[2 * k] = (int16_t)i; wide[2 * k + 1] = (int16_t)q;
+                    }
+                    lr_span_feed(wide, 512, center - 144000, center, 576000,
+                                 (uint32_t)(esp_timer_get_time() / 1000), true);
+                    ls_shim_time_advance(3000);
+                }
+                ls_wf_source_pump();
+                continue;
+            }
             if (row == 75) pair += 2000;
             for (int block = 0; block < 45; ++block) {
                 for (int k = 0; k < 320; ++k) {
@@ -632,16 +765,27 @@ static void seed_calls(bool empty) {
     if(empty)calls_root="bench/build/calls-empty";
     _mkdir(calls_root);char dir[256];snprintf(dir,sizeof(dir),"%s/20261008",calls_root);_mkdir(dir);
     call_archive_init();call_archive_set_option(CALL_OPT_DAYS,0);
+    /* A small trunked system's last hour and a half, newest first, with one
+       NOAA weather recording from FM among them. */
+    static const struct { unsigned tg, unit, ms, ago_s; } CALLS[] = {
+        {2104,3301118, 9400,  64}, {1041, 220158,14200, 190}, {1041, 220311, 6100, 251},
+        {   0,      0,30000, 540}, {3301,4410027,21500, 731}, {2110,3302240, 4800, 905},
+        {1043, 220158,33000,1322}, {2104,3301118, 7700,1861}, {4005,6602001,12300,2655},
+        {1041, 220402,18900,3480}, {2110,3302240, 3200,4511}, {5120,9900120,41000,5790},
+    };
     for(int i=0;i<(empty?0:12);i++) {
         char path[320];snprintf(path,sizeof(path),"%s/1200%02d_%d.wav",dir,i,i+42);
         FILE *f=fopen(path,"wb");if(!f)continue;
-        uint8_t h[44];unsigned rate=i%3?8000:16000;unsigned bytes=rate*2*(i+12);call_wav_header(h,rate,bytes);fwrite(h,1,44,f);
+        const bool fm=!CALLS[i].tg;
+        uint8_t h[44];unsigned rate=fm?16000:8000;unsigned bytes=rate*2*CALLS[i].ms/1000;call_wav_header(h,rate,bytes);fwrite(h,1,44,f);
         for(unsigned n=0;n<bytes;n++)fputc(0,f);
         fclose(f);
         char meta[328];snprintf(meta,sizeof(meta),"%s.meta",path);f=fopen(meta,"w");
-        if(f){fprintf(f,"%lld,%u,%u,%u,%u,%u,0,0,0",(long long)fixture_time-i*3600,(i+12)*1000,i%3?851012500:162550000,i%3?(i==1?65535:42+i):0,i%3?1234567+i:0,rate);fclose(f);}
+        if(f){fprintf(f,"%lld,%u,%u,%u,%u,%u,0,0,0",(long long)fixture_time-CALLS[i].ago_s,CALLS[i].ms,fm?162550000:851262500,CALLS[i].tg,CALLS[i].unit,rate);fclose(f);}
     }
     for(int i=0;i<3;i++)call_archive_test_pump(calls_root);
+    void lssim_seed_p25_calls(void);
+    if(!empty)lssim_seed_p25_calls();
     ls_calls_open("P25");calls_fixture=true;
 }
 /* Capture every presented frame, including worker stalls and failed renders. */
@@ -705,8 +849,6 @@ static void frame(int n)
         if (s_step_us) ls_shim_time_advance(s_step_us);
         lssim_cartocore_pump();
         lssim_tick_state();
-        void lssim_detector_work(void);
-        lssim_detector_work();
         label_track_tick();
         /* The notes store's worker, which on the board is the field I/O task. */
         for (int k = 0; k < 4; k++) ls_notes_io_step();
@@ -741,8 +883,6 @@ static void time_frames(int n, bool moving)
         if (moving) ls_tui_router_key((i & 1) ? LS_TK_RIGHT : LS_TK_LEFT, 0);
         lssim_cartocore_pump();
         lssim_tick_state();
-        void lssim_detector_work(void);
-        lssim_detector_work();
         tui_frame_begin(sf);
         ls_tui_router_draw(sf);
         ls_tui_present();capture_frame();
@@ -829,6 +969,7 @@ static void usage(void)
     printf("  LSSIM_SAME=1 seeds FM with a quiet test and a tornado warning\n");
     printf("  LSSIM_DMR=1 seeds clear/encrypted repeater calls (P25 key 6)\n");
     printf("  LSSIM_TONE=1..258 seeds a detected receive tone in FM\n");
+    printf("  LSSIM_HF=usb|lsb|am|sam|cw seeds shortwave in FM (AM mode on the HF chain)\n");
     printf("  LSSIM_UAT_IQ=FILE.cu8 decodes recorded/synthetic 978 IQ before rendering\n");
     printf("  LSSIM_RS41=1 seeds EXPERIMENTS and MAP with sonde flight tracks\n");
     printf("  LSSIM_AIS=1 seeds FM and MAP with receive-only vessels\n");
@@ -1121,6 +1262,7 @@ int main(int argc, char **argv)
 
     void lssim_seed_state(void);
     lssim_seed_state();
+    { void lssim_rfs_seed(void); lssim_rfs_seed(); }
     /* LSSIM_LANG=uk draws the interface in Ukrainian, as Settings > Device
        > Language does on the board. */
     if (getenv("LSSIM_LANG") && !strcmp(getenv("LSSIM_LANG"), "uk")) ls_i18n_load(LS_LANG_UK);
@@ -1130,6 +1272,12 @@ int main(int argc, char **argv)
         if (s_i18n_misses) ls_i18n_set_miss_hook(i18n_miss);
     }
     if (getenv("LSSIM_DMR")) seed_dmr();
+    if (getenv("LSSIM_HF")) {
+        /* A band with a voice in the passband, in the demod named. */
+        void lssim_seed_hf(const char *demod);
+        lssim_seed_hf(getenv("LSSIM_HF"));
+    }
+    if (getenv("LSSIM_TMACH")) seed_tmach();
     if (getenv("LSSIM_TONE")) {
         unsigned tone = (unsigned)atoi(getenv("LSSIM_TONE"));
         FM.mode = FM_MODE_LISTEN;
@@ -1152,6 +1300,34 @@ int main(int argc, char **argv)
             snprintf(v.destination, sizeof(v.destination), "BOSTON");
             ais_store_receive(&v, NULL);
         }
+    }
+    /* POCSAG with pages in the ring, and HEAR CHANNEL on: the RX HEAD's
+       pager + voice preset. */
+    if (getenv("LSSIM_PAGER")) {
+        static const struct { uint32_t ric; char type; uint16_t baud; const char *text; } P[] = {
+            { 1234560, 'A', 1200, "ENGINE 7 RESPOND 114 MAPLE ST SMOKE SHOWING" },
+            { 1847203, 'N', 1200, "555-0142" },
+            { 1234567, 'A', 512,  "MEDIC 3 TRANSPORT COMPLETE, BACK IN SERVICE" },
+            { 2044161, 'T', 2400, "(tone)" },
+            { 1500002, 'A', 1200, "DPW CREW 2 WATER MAIN BREAK RT 3 AND ELM" },
+        };
+        FM.mode = FM_MODE_POCSAG;
+        FM.freq_hz = FM_FREQ_POCSAG;
+        FM.pocsag_auto = true;
+        FM.pager_voice = true;
+        FM.pocsag_frames = 420; FM.pocsag_addr = 38; FM.pocsag_msg = 121;
+        FM.pocsag_cw_errs = 7;
+        FM.audio_level = 0.38f; FM.noise = 0.31f;
+        for (int i = 0; i < (int)(sizeof(P) / sizeof(P[0])); i++) {
+            fm_page_t *pg = &FM.pages[FM.page_head];
+            memset(pg, 0, sizeof(*pg));
+            pg->ts_us = 1000000LL * (i + 1); pg->address = P[i].ric; pg->type = P[i].type;
+            pg->baud = P[i].baud; pg->function = P[i].type == 'N' ? 0 : 3;
+            snprintf(pg->text, sizeof(pg->text), "%s", P[i].text);
+            FM.page_head = (FM.page_head + 1) % FM_PAGE_LOG_MAX;
+            if (FM.page_count < FM_PAGE_LOG_MAX) FM.page_count++;
+        }
+        FM.pocsag_pages = (uint32_t)FM.page_count;
     }
     if (getenv("LSSIM_ACARS")) {
         FM.mode = FM_MODE_ACARS;
@@ -1195,6 +1371,10 @@ int main(int argc, char **argv)
         same_store_notice(&a);
     }
 
+    /* LSSIM_WFM, LSSIM_AIR, LSSIM_SSTV, LSSIM_WX: the broadcast extras. */
+    extern void lssim_bcast_seed(void);
+    lssim_bcast_seed();
+
     ls_value_publish_builtin();
     ls_action_register_builtin();
     void lssim_ota_publish(void);
@@ -1235,8 +1415,11 @@ int main(int argc, char **argv)
     ls_sweep_init();
     void lssim_sweep_seed(void);
     lssim_sweep_seed();
-    void lssim_detector_seed(void);
-    lssim_detector_seed();
+    ls_meters_begin();
+    void lssim_meters_seed(void);
+    lssim_meters_seed();
+    void lssim_digi_seed(void);
+    lssim_digi_seed();
 
     /* The same four the firmware puts on the strip, by the same ids.
        A simulator whose navigation differs from the board's is a simulator
@@ -1438,7 +1621,7 @@ int main(int argc, char **argv)
         n.hue = TUI_CYAN;
         n.screen = -1;
         if (getenv("LSSIM_NOTICE_DETECTOR")) {
-            /* The DETECTOR sink's notice, as ls_detector_sinks.c posts it. */
+            /* A detector's notice, as lap_alert posts one. */
             snprintf(n.title, sizeof(n.title), "%s", "DETECTOR");
             n.hue = n.accent = TUI_BLUE | TUI_BRIGHT;
             n.quiet = n.steady = true;

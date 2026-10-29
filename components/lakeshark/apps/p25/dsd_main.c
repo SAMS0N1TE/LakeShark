@@ -26,25 +26,12 @@
 #define USE_OP25_VOCODER 1
 #include "imbe_shim.h"
 #include "imbe_chase.h"
+#include "ls_cold.h"
 
 volatile int p25_voice_gate = 99;
 
 #define DSD_MALLOC(sz) heap_caps_malloc((sz), MALLOC_CAP_SPIRAM)
 
-static inline void *dsd_malloc_fast(size_t sz)
-{
-
-    /* Leave DMA-capable memory available for Bluetooth and USB app switches. */
-    const uint32_t dma_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT;
-    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > sz + 24576 &&
-        heap_caps_get_free_size(dma_caps) > sz + 8192 &&
-        heap_caps_get_largest_free_block(dma_caps) > sz + 4096) {
-        void *p = heap_caps_malloc(sz, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        if (p) return p;
-    }
-    return heap_caps_malloc(sz, MALLOC_CAP_SPIRAM);
-}
-#define DSD_MALLOC_FAST(sz) dsd_malloc_fast((sz))
 
 static const char *TAG_DSD = "DSD_INIT";
 
@@ -101,7 +88,7 @@ void initOpts(dsd_opts *opts)
         }                                                                        \
     } while (0)
 
-void initState(dsd_state *state)
+LS_COLD void initState(dsd_state *state)
 {
     int i;
     memset(&state->acquisition_hunt, 0, sizeof(state->acquisition_hunt));
@@ -109,10 +96,10 @@ void initState(dsd_state *state)
     if (!state->dibit_buf) { ESP_LOGE(TAG_DSD, "dibit_buf alloc FAILED"); return; }
     state->dibit_buf_p = state->dibit_buf + 200;
     state->repeat = 0;
-    DSD_KEEP(audio_out_buf, short, 2000, DSD_MALLOC_FAST);
+    DSD_KEEP(audio_out_buf, short, 2000, DSD_MALLOC);
     if (!state->audio_out_buf) { ESP_LOGE(TAG_DSD, "audio_out_buf alloc FAILED"); return; }
     state->audio_out_buf_p = state->audio_out_buf;
-    DSD_KEEP(audio_out_float_buf, float, 2000, DSD_MALLOC_FAST);
+    DSD_KEEP(audio_out_float_buf, float, 2000, DSD_MALLOC);
     if (!state->audio_out_float_buf) { ESP_LOGE(TAG_DSD, "float_buf alloc FAILED"); return; }
     state->audio_out_float_buf_p = state->audio_out_float_buf;
     state->audio_out_temp_buf_p = state->audio_out_temp_buf;
@@ -186,9 +173,9 @@ void initState(dsd_state *state)
     state->p25_ess_pending = 0;
     state->p25_ess_doubted = 0;
     state->currentslot = 0;
-    DSD_KEEP(cur_mp, mbe_parms, 1, DSD_MALLOC_FAST);
-    DSD_KEEP(prev_mp, mbe_parms, 1, DSD_MALLOC_FAST);
-    DSD_KEEP(prev_mp_enhanced, mbe_parms, 1, DSD_MALLOC_FAST);
+    DSD_KEEP(cur_mp, mbe_parms, 1, DSD_MALLOC);
+    DSD_KEEP(prev_mp, mbe_parms, 1, DSD_MALLOC);
+    DSD_KEEP(prev_mp_enhanced, mbe_parms, 1, DSD_MALLOC);
 
     mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
     state->p25kid = 0;

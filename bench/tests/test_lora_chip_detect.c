@@ -160,6 +160,37 @@ LS_CASE(an_lr20xx_never_gets_an_sx126x_configure_even_if_the_caller_starts_nothi
     }
 }
 
+LS_CASE(a_parked_lr2021_is_still_the_fitted_radio_and_comes_back_when_wanted)
+{
+    /* The mesh parks the chip when it stops. P25 and RADIO then read the
+       socket as empty and fell back to an SDR the LR board does not have. */
+    up(FK_LR);
+    LS_EQ_INT(ls_lora_start(), ESP_OK);
+    LS_EQ_INT(ls_lora_park(), ESP_OK);
+    LS_CHECK(!ls_lora_present());
+    LS_EQ_INT(ls_lora_chip(), LS_LORA_CHIP_NONE);
+    LS_EQ_INT(ls_lora_fitted(), LS_LORA_CHIP_LR20XX);
+    LS_EQ_STR(ls_lora_fitted_name(), "LR2021");
+    LS_CHECK(ls_lora_fitted_caps() & LS_LORA_CAP_LORA);
+
+    ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg);
+    LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+    LS_CHECK(ls_lora_present());
+    LS_EQ_INT(ls_lora_chip(), LS_LORA_CHIP_LR20XX);
+}
+
+LS_CASE(a_start_that_finds_the_socket_empty_forgets_the_fitted_part)
+{
+    up(FK_LR);
+    LS_EQ_INT(ls_lora_start(), ESP_OK);
+    fk_install(FK_ALL_00);                /* includes ls_lora_stop() */
+    LS_EQ_INT(ls_lora_fitted(), LS_LORA_CHIP_LR20XX);
+    LS_EQ_INT(ls_lora_start(), ESP_ERR_NOT_FOUND);
+    LS_EQ_INT(ls_lora_fitted(), LS_LORA_CHIP_NONE);
+    LS_EQ_STR(ls_lora_fitted_name(), "none");
+    LS_EQ_UINT(ls_lora_fitted_caps(), 0);
+}
+
 LS_CASE(an_sx1262_still_configures_and_receives_after_the_probe_change)
 {
     up(FK_SX_ECHO);

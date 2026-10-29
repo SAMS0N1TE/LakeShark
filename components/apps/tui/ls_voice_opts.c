@@ -8,6 +8,7 @@
 #include "audio/audio_out.h"
 #include "audio/speech.h"
 #include "core/settings.h"
+#include "ls_textpack.h"
 
 static void sample(const char *text)
 {
@@ -70,7 +71,7 @@ static void o_test(const ls_opt_t *o)
         audio_out_ensure_unmuted();
         audio_events_play_test();
         break;
-    case TEST_MESH: sample("MESSAGE FROM LAKESHARK. MESH VOICE CHECK."); break;
+    case TEST_MESH: sample(LS_TEXT(t_ls_voice_opts_message_from_lakeshark_mesh, "MESSAGE FROM LAKESHARK. MESH VOICE CHECK.")); break;
     default:        sample("RECEIVER READY."); break;
     }
 }

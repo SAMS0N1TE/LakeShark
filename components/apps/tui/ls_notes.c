@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "core/ls_time.h"
+#include "ls_textpack.h"
 #ifdef ESP_PLATFORM
 #include "ls_tui_png.h"
 #include <unistd.h>
@@ -48,7 +49,7 @@ static SemaphoreHandle_t s_lock;
 static void defaults(void)
 {
     if (!s_dir[0]) snprintf(s_dir, sizeof(s_dir), "/sdcard/notes");
-    if (!s_status[0]) snprintf(s_status, sizeof(s_status), "Notes not opened yet");
+    if (!s_status[0]) LS_SNPUTS(t_ls_notes_notes_not_opened_yet, s_status, sizeof(s_status), "Notes not opened yet");
 }
 
 static void lock(void) { xSemaphoreTake(s_lock, portMAX_DELAY); }
@@ -269,7 +270,7 @@ bool ls_notes_load(const char *stem, char *buf, size_t cap)
     char path[160];
     if (!stem || !buf || cap < 2 || !path_of(path, sizeof(path), stem, ".md")) return false;
     bool ok = read_file(path, buf, cap);
-    if (!ok) { buf[0] = 0; status("Cannot open: note too large or SD read failed"); }
+    if (!ok) { buf[0] = 0; status(LS_TEXT(t_ls_notes_cannot_open_note_too, "Cannot open: note too large or SD read failed")); }
     return ok;
 }
 
@@ -337,7 +338,7 @@ static void scan(void)
     lock(); s_scanning = true; unlock();
     ensure_dir(s_dir);
     DIR *d = opendir(s_dir);
-    if (!d) { status("No SD card or notes folder"); lock(); s_scanning = false; unlock(); return; }
+    if (!d) { status(LS_TEXT(t_ls_notes_no_sd_card_or, "No SD card or notes folder")); lock(); s_scanning = false; unlock(); return; }
     struct dirent *entry;
     while ((entry = readdir(d))) {
         size_t n = strlen(entry->d_name);
@@ -365,7 +366,7 @@ static void scan(void)
     }
     closedir(d);
     char line[80];
-    snprintf(line, sizeof(line), "%d note%s on the card", found, found == 1 ? "" : "s");
+    LS_SNPRINTF(t_ls_notes_d_note_s_on, line, sizeof(line), "%d note%s on the card", found, found == 1 ? "" : "s");
     status(line);
     lock(); s_scanning = false; s_generation++; unlock();
 }
@@ -521,7 +522,7 @@ bool ls_notes_save_tracked(const char *stem, const char *text, uint32_t *ticket)
 {
     if (!s_started || !stem || !stem[0] || !text || strlen(text) >= LS_NOTE_TEXT_MAX) return false;
     int slot = take_slot(text);
-    if (slot < 0) { status("Still saving; try again in a moment"); return false; }
+    if (slot < 0) { status(LS_TEXT(t_ls_notes_still_saving_try_again, "Still saving; try again in a moment")); return false; }
     op_t op = { .kind = OP_SAVE, .slot = slot };
     snprintf(op.stem, sizeof(op.stem), "%s", stem);
     if (!enqueue_tracked(&op, ticket)) { give_slot(slot); return false; }

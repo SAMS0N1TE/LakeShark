@@ -1,6 +1,9 @@
 /* See ls_lap_sys.h. */
 #include "ls_lap_sys.h"
 #include "ls_lap_api.h"
+#include "ls_lap_net.h"
+#include "ls_lap_radio.h"
+#include "ls_lap_kit.h"
 #include <errno.h>
 #include <math.h>
 #include <stdio.h>
@@ -14,7 +17,7 @@
 #define SD_LIST_MAX 256
 
 static void (*wake_io)(void);
-void ls_lap_sys_set_wake(void (*wake)(void)) { wake_io = wake; }
+void ls_lap_sys_set_wake(void (*wake)(void)) { wake_io = wake; ls_lap_net_set_wake(wake); }
 
 /* ---- paths -------------------------------------------------------------- */
 
@@ -324,6 +327,7 @@ static struct {
     uint32_t noise;
     bool immersive;                 /* lap_immersive: no board close button either */
     bool spoke;                     /* lap_say used: hush it when the app closes */
+    bool park_held;                 /* lap_tone used: audio clocks kept running until it closes */
 } sys;
 
 /* ---- the screen ---------------------------------------------------------- */
@@ -423,6 +427,9 @@ static void tones_service(void)
         const note_t n = tones.q[tones.tail++ % TONES];
         const int total = AUDIO_RATE_HZ * n.ms / 1000, edge = AUDIO_RATE_HZ * 3 / 1000;
         const float amp = 60.0f * n.volume, step = (float)n.hz / AUDIO_RATE_HZ;
+        /* A game's sounds come seconds apart: parked between them, every one
+           started on clocks and a rail just woken, and snapped. */
+        if (!sys.park_held) { sys.park_held = true; audio_out_park_hold(true); }
         audio_out_play_now();
         for (int i = 0; i < total; i += 256) {
             const int chunk = total - i < 256 ? total - i : 256;
@@ -444,7 +451,8 @@ static void tones_service(void)
                 const float env = at < edge ? (float)at / edge : total - at < edge ? (float)(total - at) / edge : 1;
                 buf[k] = (int16_t)(v * amp * env);
             }
-            audio_write_cue(buf, chunk);
+            /* Dropped on a busy lock, a chunk cut the note mid-wave: a click. */
+            audio_write_cue_wait(buf, chunk, 5);
         }
         sys.audio_until_us += (int64_t)n.ms * 1000;
     }
@@ -493,7 +501,10 @@ typedef struct {
     lap_mesh_node_t node[LS_MESH_MAX_PEERS];
     lap_mesh_msg_t msg[LS_MESH_MAX_MSGS];
     uint32_t seq;
+    uint8_t chan_private;           /* bit n: slot n is keyed, not public, not a hashtag */
+    char chan_name[4][16];
 } mesh_view_t;
+EXT_RAM_BSS_ATTR static ls_mesh_chan_t mesh_chans[4];
 EXT_RAM_BSS_ATTR static mesh_view_t mesh_shown, mesh_fresh;
 EXT_RAM_BSS_ATTR static ls_mesh_msg_t mesh_raw[LS_MESH_MAX_MSGS];
 static SemaphoreHandle_t mesh_lock;
@@ -546,6 +557,18 @@ int lap_mesh_messages(lap_mesh_msg_t *out, int max)
     const int skip = n > max ? n - max : 0;     /* keep the newest */
     n -= skip;
     return mesh_copy(out, mesh_shown.msg + skip, (size_t)n * sizeof(*out)) ? n : 0;
+}
+bool lap_mesh_channel_private(int slot, char *name, size_t cap)
+{
+    if (!ls_lap_api_inside() || slot < 1 || slot > 3 || (name && (!cap || !ls_lap_api_owns(name, cap)))) return false;
+    mesh_want();
+    uint8_t bits = 0;
+    char shown[16] = "";
+    if (!mesh_copy(&bits, &mesh_shown.chan_private, sizeof(bits)) ||
+        !mesh_copy(shown, mesh_shown.chan_name[slot], sizeof(shown)))
+        return false;
+    if (name) snprintf(name, cap, "%.15s", shown);
+    return (bits >> slot) & 1;
 }
 uint32_t lap_mesh_seq(void)
 {
@@ -603,6 +626,14 @@ static void mesh_refresh(void)
             n->snr = p.snr;
             n->heard_s = clock > p.last_heard ? clock - p.last_heard : 0;
             n->adverts = p.adverts;
+        }
+        /* The public key every MeshCore node ships with is no secret. */
+        const int c = ls_mesh_channels(mesh_chans, 4);
+        for (int i = 1; i < c && i < 4; i++) {
+            snprintf(v->chan_name[i], sizeof(v->chan_name[i]), "%s", mesh_chans[i].name);
+            if (mesh_chans[i].psk[0] && strcmp(mesh_chans[i].psk, "izOH6cXN6mrJ5e26oRXNcg==") &&
+                mesh_chans[i].name[0] != '#')
+                v->chan_private |= (uint8_t)(1u << i);
         }
         const int m = ls_mesh_messages(mesh_raw, LS_MESH_MAX_MSGS);
         for (int i = 0; i < m; i++) {
@@ -709,6 +740,8 @@ int lap_ble_devices(lap_ble_dev_t *out, int max)
 
 void ls_lap_sys_begin(void)
 {
+    ls_lap_net_begin(false);
+    ls_lap_radio_begin(NULL);            /* nothing granted until ls_lap.c says */
     memset(&sys, 0, sizeof(sys));
     memset(&finger, 0, sizeof(finger));
     memset(&imu, 0, sizeof(imu));
@@ -716,6 +749,7 @@ void ls_lap_sys_begin(void)
     finger.drags = ls_tui_touch_drags(NULL, NULL, NULL, NULL);
     mesh_out.state = 0;
     sys.open = true;
+    ls_lap_kit_begin();
 }
 
 void ls_lap_sys_frame(tui_rect area)
@@ -753,8 +787,31 @@ lifted:
     tones_service();
 }
 
+/* The screen bits of ending, for an app whose service keeps it loaded with
+   its screen closed: its lists and keypads, the waterfall, the glass and
+   the board's brightness and rotation go back; its radio, jobs and scans
+   stay. */
+void ls_lap_sys_hide(void)
+{
+    ls_lap_kit_end();
+    if (!sys.open) return;
+    if (sys.bright_set) display_ctl_reapply();
+    sys.bright_set = false;
+    sys.keep_awake = false;
+    if (sys.spoke) speech_cancel();
+    sys.spoke = false;
+    if (sys.park_held) audio_out_park_hold(false);
+    sys.park_held = false;
+    ls_tui_screen_set_full(false);
+    ls_tui_screen_set_bare(false);
+    ls_tui_screen_hold_rotation(false);
+}
+
 void ls_lap_sys_end(void)
 {
+    ls_lap_kit_end();
+    ls_lap_net_end();
+    ls_lap_radio_end();                  /* the worker closes the session and frees the radio */
     if (!sys.open) return;
     sys.open = false;
     jobs_abandon();
@@ -764,6 +821,8 @@ void ls_lap_sys_end(void)
     if (sys.ble) ls_wireless_find_ble(false);
     if (sys.wifi) ls_wireless_set_active(false);
     if (sys.spoke) speech_cancel();
+    if (sys.park_held) audio_out_park_hold(false);
+    sys.park_held = false;
     ls_tui_screen_set_full(false);
     ls_tui_screen_set_bare(false);
     ls_tui_screen_hold_rotation(false);
@@ -772,9 +831,11 @@ void ls_lap_sys_end(void)
 
 bool ls_lap_sys_service(void)
 {
+    const bool net = ls_lap_net_service();
     const bool a = jobs_service();
     const bool b = mesh_service();
-    return a || b;
+    const bool radio = ls_lap_radio_service();
+    return net || a || b || radio;
 }
 
 /* ====================================================================== */
@@ -836,6 +897,12 @@ bool lap_mesh_send(int channel, const char *text) { return ls_lap_api_inside() &
 bool lap_mesh_dm(const char *id, const char *text) { return ls_lap_api_inside() && id && strlen(id) == 16 && text && strlen(text) <= 150; }
 bool lap_mesh_advert(void) { return ls_lap_api_inside(); }
 int lap_mesh_send_state(void) { return 0; }
+bool lap_mesh_channel_private(int slot, char *name, size_t cap)
+{
+    if (!ls_lap_api_inside() || slot < 1 || slot > 3) return false;
+    if (name && cap) snprintf(name, cap, "%s", host.chan_private & (1u << slot) ? "private" : "");
+    return (host.chan_private >> slot) & 1;
+}
 bool lap_wifi_scan(void) { return ls_lap_api_inside(); }
 int lap_wifi_aps(lap_wifi_ap_t *out, int max)
 {
@@ -855,8 +922,11 @@ int lap_ble_devices(lap_ble_dev_t *out, int max)
 }
 void ls_lap_sys_begin(void)
 {
+    ls_lap_net_begin(false);
+    ls_lap_radio_begin(NULL);
     memset(&finger, 0, sizeof(finger));
     tones.head = tones.tail = 0;
+    ls_lap_kit_begin();
 }
 static tui_rect host_area;
 void ls_lap_sys_host_finger(int gx, int gy, int cw, int ch, bool down)
@@ -875,7 +945,14 @@ void ls_lap_sys_frame(tui_rect area)
     if (host.swipe) { finger.swipe = host.swipe; host.swipe = 0; }
     tones.tail = tones.head;                    /* the bench has no speaker */
     (void)swipe_of;
+    ls_lap_radio_service();                     /* no worker here: one pass a frame */
 }
-void ls_lap_sys_end(void) { jobs_abandon(); }
-bool ls_lap_sys_service(void) { return jobs_service(); }
+void ls_lap_sys_end(void) { ls_lap_kit_end(); ls_lap_net_end(); ls_lap_radio_end(); jobs_abandon(); }
+void ls_lap_sys_hide(void) { ls_lap_kit_end(); }
+bool ls_lap_sys_service(void)
+{
+    const bool net = ls_lap_net_service();
+    const bool radio = ls_lap_radio_service();
+    return jobs_service() || net || radio;
+}
 #endif

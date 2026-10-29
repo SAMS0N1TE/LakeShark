@@ -21,6 +21,7 @@
 #include "p25p1_ldu.h"
 #include "p25p1_check_ldu.h"
 #include "p25p1_hdu.h"
+#include "ls_textpack.h"
 
 void
 processLDU2 (dsd_opts * opts, dsd_state * state)
@@ -425,6 +426,6 @@ processLDU2 (dsd_opts * opts, dsd_state * state)
 
   if (opts->p25enc == 1)
     {
-      printf ("mi: %s algid: $%x kid: $%x\n", mi, algidhex, kidhex);
+      LS_PRINTF(t_p25p1_ldu2_mi_s_algid_x, "mi: %s algid: $%x kid: $%x\n", mi, algidhex, kidhex);
     }
 }

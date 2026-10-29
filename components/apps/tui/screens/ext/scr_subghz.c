@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include "ls_textpack.h"
 
 static int button_focus=-1, button_slot;
 /* Defined below, beside the other source helpers, but the banner draws
@@ -154,7 +155,7 @@ static void state_banner(tui_surface *sf, tui_rect r,
            than read. */
         static EXT_RAM_BSS_ATTR rec_scan_bin_t tmp[REC_SCAN_BINS];
         const int freqs = rec_watch_scan_result(tmp, REC_SCAN_BINS);
-        snprintf(line, sizeof(line), " %d DETECTED  %d FREQ  %s ",
+        LS_SNPRINTF(t_scr_subghz_d_detected_d_freq, line, sizeof(line), " %d DETECTED  %d FREQ  %s ",
                  events, freqs > 0 ? freqs : 0, sweep_hits ? "CLOSE" : "VIEW >");
         const bool blink = hit_flash_on();
         const uint8_t hue = events ? TUI_GREEN : TUI_CYAN;
@@ -163,7 +164,7 @@ static void state_banner(tui_surface *sf, tui_rect r,
         tui_put_str(sf, r, r.x + 1, r.y + 1, line, at);
         det_hit = tui_rect_make(r.x, r.y, (int)strlen(line) + 2, 2);
     } else {
-        snprintf(line, sizeof(line), "%lu:%02lu   %d capture%s   heard %lu",
+        LS_SNPRINTF(t_scr_subghz_lu_02lu_d_capture, line, sizeof(line), "%lu:%02lu   %d capture%s   heard %lu",
                  (unsigned long)(up / 60), (unsigned long)(up % 60),
                  s->count, s->count == 1 ? "" : "s",
                  (unsigned long)s->received);
@@ -209,13 +210,13 @@ static const double bands[]={152.600,154.785,315.000,433.920,868.350,915.000};
 static void tune(double mhz)
 {
     if(rec_watch_source()==REC_SOURCE_CC1101 && !((mhz>=300 && mhz<=348)||(mhz>=387 && mhz<=464)||(mhz>=779 && mhz<=928))) {
-        snprintf(feedback,sizeof(feedback),"CC1101: 300-348 / 387-464 / 779-928 MHz");return;
+        LS_SNPUTS(t_scr_subghz_cc1101_300_348_387, feedback, sizeof(feedback), "CC1101: 300-348 / 387-464 / 779-928 MHz");return;
     }
-    if(!isfinite(mhz) || mhz<1 || mhz>4294) {snprintf(feedback,sizeof(feedback),"Frequency outside receiver range");return;}
+    if(!isfinite(mhz) || mhz<1 || mhz>4294) {LS_SNPUTS(t_scr_subghz_frequency_outside_receiver_range, feedback, sizeof(feedback), "Frequency outside receiver range");return;}
     if(rec_watch_enabled()) {snprintf(feedback,sizeof(feedback),"Stop WATCH before changing frequency");return;}
     rec_disarm();
     if(!rec_set_freq((uint32_t)(mhz*1e6+.5)))
-        snprintf(feedback,sizeof(feedback),"Frequency refused by selected receiver");
+        LS_SNPUTS(t_scr_subghz_frequency_refused_by_selected, feedback, sizeof(feedback), "Frequency refused by selected receiver");
 }
 static void peer_done(int i)
 {
@@ -225,9 +226,9 @@ static void peer_done(int i)
 static void setup_value(double value)
 {
     static const double low[]={0,2,4,10,6},high[]={255,2000,10000,30000,4096};
-    if(rec_watch_enabled()) {snprintf(feedback,sizeof(feedback),"Stop WATCH before changing capture setup");return;}
+    if(rec_watch_enabled()) {LS_SNPUTS(t_scr_subghz_stop_watch_before_changing, feedback, sizeof(feedback), "Stop WATCH before changing capture setup");return;}
     if(setup_item<0 || setup_item>4 || !isfinite(value) || value<low[setup_item] || value>high[setup_item]) {
-        snprintf(feedback,sizeof(feedback),"Value outside the displayed range");return;
+        LS_SNPUTS(t_scr_subghz_value_outside_the_displayed, feedback, sizeof(feedback), "Value outside the displayed range");return;
     }
     rec_disarm();
     int n=(int)(value+.5);
@@ -249,7 +250,7 @@ static void fsk_value(double value)
     if(rec_watch_enabled()){snprintf(feedback,sizeof(feedback),"Stop WATCH first");return;}
     if(fsk_item<0 || fsk_item>4 || !isfinite(value) ||
        value<low[fsk_item] || value>high[fsk_item]) {
-        snprintf(feedback,sizeof(feedback),"Value outside the displayed range");return;
+        LS_SNPUTS(t_scr_subghz_value_outside_the_displayed, feedback, sizeof(feedback), "Value outside the displayed range");return;
     }
     rec_fsk_mod_t m; rec_watch_fsk_get(&m);
     switch(fsk_item) {
@@ -260,11 +261,11 @@ static void fsk_value(double value)
     default: m.sync_word=(uint32_t)value; break;
     }
     if(!rec_watch_fsk_set(&m)) {
-        snprintf(feedback,sizeof(feedback),"Refused - check the rate and deviation");
+        LS_SNPUTS(t_scr_subghz_refused_check_the_rate, feedback, sizeof(feedback), "Refused - check the rate and deviation");
         return;
     }
     rec_watch_fsk_get(&m);
-    snprintf(feedback,sizeof(feedback),"%lu bd  %.1f kHz dev  %u kHz bw  sync %08lX",
+    LS_SNPRINTF(t_scr_subghz_lu_bd_1f_khz, feedback,sizeof(feedback),"%lu bd  %.1f kHz dev  %u kHz bw  sync %08lX",
         (unsigned long)m.bitrate,m.deviation_hz/1000.0,
         (unsigned)m.bandwidth_khz,(unsigned long)m.sync_word);
 }
@@ -307,15 +308,15 @@ static void fsk_setup_open(void)
     ls_picker_add("Bandwidth",d2);
     ls_picker_add("Preamble",d3);
     ls_picker_add("Sync word",d4);
-    ls_picker_add("Restore defaults","4800 / 25k / 2DD42DD4");
+    ls_picker_add("Restore defaults",LS_TEXT(t_scr_subghz_4800_25k_2dd42dd4, "4800 / 25k / 2DD42DD4"));
 }
 static void setup_done(int i)
 {
-    if(rec_watch_enabled()) {snprintf(feedback,sizeof(feedback),"Stop WATCH before changing capture setup");return;}
+    if(rec_watch_enabled()) {LS_SNPUTS(t_scr_subghz_stop_watch_before_changing, feedback, sizeof(feedback), "Stop WATCH before changing capture setup");return;}
     if(i==5) {
         rec_disarm();rec_set_thresh(0);rec_set_gap_ms(30);rec_set_min_pulse(40);
         rec_set_max_span(8000000);rec_set_min_edges(6);
-        snprintf(feedback,sizeof(feedback),"Capture defaults restored");return;
+        LS_SNPUTS(t_scr_subghz_capture_defaults_restored, feedback, sizeof(feedback), "Capture defaults restored");return;
     }
     if(i<0 || i>4)return;
     setup_item=i;
@@ -356,7 +357,7 @@ static const char *disabled_reason(char c)
                      s.exporting?"An export is already running":NULL;
     case 'd': {
         EXT_RAM_BSS_ATTR static char rtl_only[48];
-        snprintf(rtl_only,sizeof(rtl_only),"READ RAW records with the %s or %s",ls_rsel_name(LS_RSEL_SDR_RTL),ls_rsel_name(LS_RSEL_SDR_HACKRF));
+        LS_SNPRINTF(t_scr_subghz_read_raw_records_with, rtl_only,sizeof(rtl_only),"READ RAW records with the %s or %s",ls_rsel_name(LS_RSEL_SDR_RTL),ls_rsel_name(LS_RSEL_SDR_HACKRF));
         return rec_watch_source()!=REC_SOURCE_RTL && !(rec_watch_source()==REC_SOURCE_SX1262 && ls_lora_chip()==LS_LORA_CHIP_LR20XX)?rtl_only:
                watching?"Stop WATCH in READ first":NULL;
     }
@@ -406,9 +407,9 @@ static void replay_power_done(int index)
     const rec_watch_event_t *e = &s.event[selected];
     const int dbm=e->source==REC_SOURCE_CC1101?OOK_DBM[index]:REPLAY_DBM[index];
     if (!rec_watch_request_replay(e->id, dbm))
-        snprintf(feedback,sizeof(feedback),"Stop WATCH before replaying");
+        LS_SNPUTS(t_scr_subghz_stop_watch_before_replaying, feedback, sizeof(feedback), "Stop WATCH before replaying");
     else
-        snprintf(feedback,sizeof(feedback),"Sending #%lu at %d dBm...",
+        LS_SNPRINTF(t_scr_subghz_sending_lu_at_d, feedback,sizeof(feedback),"Sending #%lu at %d dBm...",
                  (unsigned long)e->id, dbm);
 }
 static void replay_power_open(void)
@@ -422,7 +423,7 @@ static void replay_power_open(void)
     };
     if (selected<s.count && s.event[selected].source==REC_SOURCE_CC1101) {
         static const char *const O[]={"-10 dBm","0 dBm","5 dBm","10 dBm"};
-        ls_picker_open("CC1101 NOMINAL POWER",replay_power_done);
+        ls_picker_open(LS_TEXT(t_scr_subghz_cc1101_nominal_power, "CC1101 NOMINAL POWER"),replay_power_done);
         for(int i=0;i<4;i++)ls_picker_add(O[i],"Send RAW OOK once");
         return;
     }
@@ -441,7 +442,7 @@ static void capture_menu_done(int index)
     case 'R': replay_power_open(); break;
     case 'S':
         if (!rec_watch_request_export(e->id))
-            snprintf(feedback,sizeof(feedback),"Export busy or capture unavailable");
+            LS_SNPUTS(t_scr_subghz_export_busy_or_capture, feedback, sizeof(feedback), "Export busy or capture unavailable");
         break;
     case 'P':
         if (!rec_watch_request_pin(e->id,!e->pinned))
@@ -604,7 +605,7 @@ static void hits_table(tui_surface *sf, tui_rect r)
                                                   : rec_watch_scan_floor();
     char line[110];
 
-    snprintf(line, sizeof(line), "DETECTIONS  %d bursts on %d freq, over %.0f dB",
+    LS_SNPRINTF(t_scr_subghz_detections_d_bursts_on, line, sizeof(line), "DETECTIONS  %d bursts on %d freq, over %.0f dB",
              rec_watch_scan_events(), n, (double)rec_watch_scan_threshold());
     tui_put_str(sf, r, r.x, r.y, line,
                 TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
@@ -615,7 +616,7 @@ static void hits_table(tui_surface *sf, tui_rect r)
                     "Leave SCAN running and transmit.", LS_ATTR_DIM);
         return;
     }
-    snprintf(line, sizeof(line), "%-11s %7s %5s %5s %8s",
+    LS_SNPRINTF(t_scr_subghz_11s_7s_5s_5s, line, sizeof(line), "%-11s %7s %5s %5s %8s",
              "MHz", "dBm", "over", "seen", "last");
     tui_put_str(sf, r, r.x, r.y + 1, line, LS_ATTR_DIM);
 
@@ -638,7 +639,7 @@ static void hits_table(tui_surface *sf, tui_rect r)
             if (s_ago < 60) snprintf(age, sizeof(age), "%lus", (unsigned long)s_ago);
             else snprintf(age, sizeof(age), "%lum", (unsigned long)(s_ago / 60));
         }
-        snprintf(line, sizeof(line), "%-11.4f %7.0f %5.0f %5lu %8s",
+        LS_SNPRINTF(t_scr_subghz_11_4f_7_0f, line, sizeof(line), "%-11.4f %7.0f %5.0f %5lu %8s",
                  hit[i].hz / 1e6, (double)hit[i].dbm, (double)over,
                  (unsigned long)hit[i].seen, age);
         /* The strongest is what a glance should land on. */
@@ -684,7 +685,7 @@ static void gate_follow_drag(void)
     }
     gate_dragging = true;
     rec_watch_scan_preview_threshold(gate_db_at_row(r));
-    snprintf(feedback, sizeof(feedback), "Detect above %.0f dB over the floor",
+    LS_SNPRINTF(t_scr_subghz_detect_above_0f_db, feedback, sizeof(feedback), "Detect above %.0f dB over the floor",
              (double)rec_watch_scan_threshold());
 }
 
@@ -916,9 +917,9 @@ static void spectrum(tui_surface *sf, tui_rect r)
        string picked at runtime is not something the compiler can keep
        checking for us. */
     const int hits = rec_watch_scan_hits();
-    if (hits) snprintf(line, sizeof(line), "%d found  floor %.0f dBm",
+    if (hits) LS_SNPRINTF(t_scr_subghz_d_found_floor_0f, line, sizeof(line), "%d found  floor %.0f dBm",
                        hits, (double)floor_dbm);
-    else      snprintf(line, sizeof(line), "nothing yet  floor %.0f dBm",
+    else      LS_SNPRINTF(t_scr_subghz_nothing_yet_floor_0f, line, sizeof(line), "nothing yet  floor %.0f dBm",
                        (double)floor_dbm);
     if ((int)strlen(line) + 2 < r.w)
         tui_put_str(sf, r, r.x + r.w - 1 - (int)strlen(line), r.y + r.h - 2,
@@ -954,17 +955,17 @@ static void detection_done(int index)
     case 'C':
         if (rec_watch_scan_busy()) {
             if (rec_watch_scan_catch(hz))
-                snprintf(feedback, sizeof(feedback), "Stopping the sweep to capture %.4f MHz", hz / 1e6);
-            else snprintf(feedback,sizeof(feedback),"Capture frequency refused by selected receiver");
+                LS_SNPRINTF(t_scr_subghz_stopping_the_sweep_to, feedback, sizeof(feedback), "Stopping the sweep to capture %.4f MHz", hz / 1e6);
+            else LS_SNPUTS(t_scr_subghz_capture_frequency_refused_by, feedback, sizeof(feedback), "Capture frequency refused by selected receiver");
             sweep_hits = false;
             return;
         }
         if (rec_watch_enabled()) {
-            snprintf(feedback, sizeof(feedback), "Stop WATCH before retuning");
+            LS_SNPUTS(t_scr_subghz_stop_watch_before_retuning, feedback, sizeof(feedback), "Stop WATCH before retuning");
             return;
         }
         if(!rec_set_freq(hz)) {
-            snprintf(feedback,sizeof(feedback),"Frequency refused by selected receiver");return;
+            LS_SNPUTS(t_scr_subghz_frequency_refused_by_selected, feedback, sizeof(feedback), "Frequency refused by selected receiver");return;
         }
         source_frequency[rec_watch_source()]=hz;
         sweep_hits = false;
@@ -972,11 +973,11 @@ static void detection_done(int index)
         break;
     case 'T':
         if (rec_watch_scan_busy() || rec_watch_enabled()) {
-            snprintf(feedback, sizeof(feedback), "Stop the sweep or WATCH before tuning");
+            LS_SNPUTS(t_scr_subghz_stop_the_sweep_or, feedback, sizeof(feedback), "Stop the sweep or WATCH before tuning");
             return;
         }
         if(!rec_set_freq(hz)) {
-            snprintf(feedback,sizeof(feedback),"Frequency refused by selected receiver");return;
+            LS_SNPUTS(t_scr_subghz_frequency_refused_by_selected, feedback, sizeof(feedback), "Frequency refused by selected receiver");return;
         }
         source_frequency[rec_watch_source()]=hz;
         sweep_hits = false;
@@ -985,10 +986,10 @@ static void detection_done(int index)
     case 'N': {
         /* Look closer: a narrow sweep centred on it, where nearly every
            burst lands. */
-        if (rec_watch_scan_busy()) { rec_watch_scan_stop(); snprintf(feedback, sizeof(feedback), "Stop the sweep, then ZOOM again"); return; }
+        if (rec_watch_scan_busy()) { rec_watch_scan_stop(); LS_SNPUTS(t_scr_subghz_stop_the_sweep_then, feedback, sizeof(feedback), "Stop the sweep, then ZOOM again"); return; }
         const uint32_t half = 150000u;
         if (rec_watch_request_scan(hz > half ? hz - half : hz, hz + half, 0, 8))
-            snprintf(feedback, sizeof(feedback), "Sweeping %.4f MHz +/-150 kHz", hz / 1e6);
+            LS_SNPRINTF(t_scr_subghz_sweeping_4f_mhz_150, feedback, sizeof(feedback), "Sweeping %.4f MHz +/-150 kHz", hz / 1e6);
         sweep_hits = false;
         break;
     }
@@ -1003,7 +1004,7 @@ static void detection_open(uint32_t hz)
     for (int i = 0; i < n; i++) if (bins[i].hz == hz) b = &bins[i];
     char title[40], seen[40];
     snprintf(title, sizeof(title), "DETECTION %.4f MHz", hz / 1e6);
-    if (b) snprintf(seen, sizeof(seen), "%.0f dBm peak, seen %lu times", (double)b->dbm, (unsigned long)b->seen);
+    if (b) LS_SNPRINTF(t_scr_subghz_0f_dbm_peak_seen, seen, sizeof(seen), "%.0f dBm peak, seen %lu times", (double)b->dbm, (unsigned long)b->seen);
     else seen[0] = 0;
     det_selected_hz = hz;
     menu_n = 0;
@@ -1012,7 +1013,7 @@ static void detection_open(uint32_t hz)
        at, replayed or sent: a sweep only knows that energy was there. */
     menu_add('C', "CAPTURE IT", rec_watch_scan_busy() ? "Stop, tune, start WATCH" : "Tune and start WATCH");
     menu_add('T', "TUNE HERE", seen[0] ? seen : "Point the receiver at it");
-    menu_add('N', "ZOOM IN", "Sweep +/-150 kHz around it");
+    menu_add('N', "ZOOM IN", LS_TEXT(t_scr_subghz_sweep_150_khz_around, "Sweep +/-150 kHz around it"));
 }
 
 static void scan_result_done(int index)
@@ -1022,10 +1023,10 @@ static void scan_result_done(int index)
     if(index<0 || index>=n)return;
     if(rec_watch_enabled()){snprintf(feedback,sizeof(feedback),"Stop WATCH first");return;}
     if(!rec_set_freq(bins[index].hz)) {
-        snprintf(feedback,sizeof(feedback),"Frequency refused by selected receiver");return;
+        LS_SNPUTS(t_scr_subghz_frequency_refused_by_selected, feedback, sizeof(feedback), "Frequency refused by selected receiver");return;
     }
     source_frequency[rec_watch_source()]=bins[index].hz;
-    snprintf(feedback,sizeof(feedback),"Tuned to %.4f MHz (%.0f dBm)",
+    LS_SNPRINTF(t_scr_subghz_tuned_to_4f_mhz, feedback,sizeof(feedback),"Tuned to %.4f MHz (%.0f dBm)",
              bins[index].hz/1e6,(double)bins[index].dbm);
 }
 static void scan_results_open(void)
@@ -1034,7 +1035,7 @@ static void scan_results_open(void)
     const int n=rec_watch_scan_result(bins,REC_SCAN_BINS);
     const float floor_dbm=rec_watch_scan_floor();
     ls_picker_open("SCAN RESULTS",scan_result_done);
-    ls_picker_empty_reason("No sweep yet - run SCAN first");
+    ls_picker_empty_reason(LS_TEXT(t_scr_subghz_no_sweep_yet_run, "No sweep yet - run SCAN first"));
     for(int i=0;i<n && i<12;i++) {
         char label[24],detail[20];
         snprintf(label,sizeof(label),"%.4f MHz",bins[i].hz/1e6);
@@ -1098,7 +1099,7 @@ static void scan_range_done(int index)
     else {
         /* A new sweep opens on the band, not on what the last one found. */
         sweep_hits=false;
-        snprintf(feedback,sizeof(feedback),"Sweeping %.3f-%.3f MHz, %d bins - SCAN again to stop",
+        LS_SNPRINTF(fmt_scr_subghz_sweeping_mhz_bins_scan, feedback,sizeof(feedback),"Sweeping %.3f-%.3f MHz, %d bins - SCAN again to stop",
                  lo/1e6,hi/1e6,bins);
     }
 }
@@ -1129,9 +1130,9 @@ static void learn_open(void)
        trying seven bit rates. Every one of them needs the transmitter to be
        transmitting, so the instruction matters as much as the button. */
     if(!rec_watch_request_learn(30))
-        snprintf(feedback,sizeof(feedback),"Stop WATCH before learning");
+        LS_SNPUTS(t_scr_subghz_stop_watch_before_learning, feedback, sizeof(feedback), "Stop WATCH before learning");
     else
-        snprintf(feedback,sizeof(feedback),"Learning for 30s - keep pressing the remote");
+        LS_SNPUTS(t_scr_subghz_learning_for_30s_keep, feedback, sizeof(feedback), "Learning for 30s - keep pressing the remote");
 }
 /* Pick from a list rather than cycle.
 
@@ -1206,12 +1207,12 @@ static void on_hit_open(void)
 static void scan_threshold_set(double db)
 {
     if(!isfinite(db) || db<REC_SCAN_DETECT_MIN || db>REC_SCAN_DETECT_MAX) {
-        snprintf(feedback,sizeof(feedback),"Enter %.0f-%.0f dB over the floor",
+        LS_SNPRINTF(t_scr_subghz_enter_0f_0f_db, feedback,sizeof(feedback),"Enter %.0f-%.0f dB over the floor",
                  (double)REC_SCAN_DETECT_MIN,(double)REC_SCAN_DETECT_MAX);
         return;
     }
     rec_watch_scan_set_threshold((float)db);
-    snprintf(feedback,sizeof(feedback),"Detect above %.0f dB over the floor",
+    LS_SNPRINTF(t_scr_subghz_detect_above_0f_db, feedback,sizeof(feedback),"Detect above %.0f dB over the floor",
              (double)rec_watch_scan_threshold());
 }
 /* Which receiver is listening: the RADIO list every app shows, with the
@@ -1227,7 +1228,7 @@ bool ls_scr_subghz_choose_source(ls_rsel_radio_t radio)
     if(want==now){ls_rsel_set(LS_RSEL_SUBGHZ_READ,radio);return true;}
     if(rec_watch_enabled() || rec_watch_scan_busy() || rec_watch_learn_busy() || rec_watch_replay_status(NULL,0)) {
         ls_rsel_set(LS_RSEL_SUBGHZ_READ,rec_source_radio(now));
-        snprintf(feedback,sizeof(feedback),"Stop %s before changing source",
+        LS_SNPRINTF(t_scr_subghz_stop_s_before_changing, feedback,sizeof(feedback),"Stop %s before changing source",
             rec_watch_enabled()?"WATCH":rec_watch_scan_busy()?"SCAN":rec_watch_learn_busy()?"LEARN":"replay");
         return false;
     }
@@ -1236,7 +1237,7 @@ bool ls_scr_subghz_choose_source(ls_rsel_radio_t radio)
     if(rec_watch_select_source(want)) {
         ls_rsel_set(LS_RSEL_SUBGHZ_READ,radio);
         if(!rec_set_freq(source_frequency[want]))rec_set_freq(433920000u);
-        snprintf(feedback,sizeof(feedback),"%s selected; WATCH starts capture",source_name());
+        LS_SNPRINTF(t_scr_subghz_s_selected_watch_starts, feedback,sizeof(feedback),"%s selected; WATCH starts capture",source_name());
         return true;
     }
     ls_rsel_set(LS_RSEL_SUBGHZ_READ,rec_source_radio(now));
@@ -1271,7 +1272,7 @@ static void tune_open(void)
         menu_add((char)('0'+j),label,WHAT[j]);
     }
     if(rec_watch_scan_result(NULL,0)>0)
-        menu_add('V',"FROM THE LAST SWEEP","Tune to a peak it found");
+        menu_add('V',"FROM THE LAST SWEEP",LS_TEXT(t_scr_subghz_tune_to_a_peak, "Tune to a peak it found"));
 }
 
 /* ONE HOME, AND EVERYTHING ONE PRESS FROM IT.
@@ -1428,7 +1429,7 @@ static void action(char c)
             snprintf(feedback,sizeof(feedback),"%s",why);
         }
     } else if(c=='c') {
-        if(selected>=s.count){snprintf(feedback,sizeof(feedback),"Nothing captured yet");return;}
+        if(selected>=s.count){LS_SNPUTS(t_scr_subghz_nothing_captured_yet, feedback, sizeof(feedback), "Nothing captured yet");return;}
         const rec_watch_event_t *e=&s.event[selected];
         char title[40];
         snprintf(title,sizeof(title),"CAPTURE #%lu",(unsigned long)e->id);
@@ -1438,10 +1439,10 @@ static void action(char c)
            receiver that cannot transmit, or one with no modulation recorded,
            has nothing to send it under. */
         if(!e->bitrate || rec_source_can_replay((rec_source_t)e->source))
-            menu_add('R',"REPLAY","Send it again - pick the power");
-        menu_add('S',"SAVE .SUB","Flipper file on the card");
+            menu_add('R',"REPLAY",LS_TEXT(t_scr_subghz_send_it_again_pick, "Send it again - pick the power"));
+        menu_add('S',"SAVE .SUB",LS_TEXT(t_scr_subghz_flipper_file_on_the, "Flipper file on the card"));
         menu_add('P',e->pinned?"UNPIN":"PIN",e->pinned?"Allow eviction":"Keep it");
-        menu_add('J',"JOURNAL","Mark with GPS and time");
+        menu_add('J',"JOURNAL",LS_TEXT(t_scr_subghz_mark_with_gps_and, "Mark with GPS and time"));
     } else if(c=='m' || c=='o') {
         ls_opt_open(subghz_options());
     } else if(c=='i') {notes=!notes;
@@ -1472,15 +1473,15 @@ static void action(char c)
         } else learn_open();
     } else if(c=='A') {
         rec_learn_t r;
-        if(!rec_watch_learn_result(&r)){snprintf(feedback,sizeof(feedback),"Nothing learned yet - LISTEN first");return;}
+        if(!rec_watch_learn_result(&r)){LS_SNPUTS(t_scr_subghz_nothing_learned_yet_listen, feedback, sizeof(feedback), "Nothing learned yet - LISTEN first");return;}
         if(!rec_watch_learn_apply()){snprintf(feedback,sizeof(feedback),"Stop WATCH first");return;}
-        snprintf(feedback,sizeof(feedback),"Applied %lu baud, sync %08lX",
+        LS_SNPRINTF(t_scr_subghz_applied_lu_baud_sync, feedback,sizeof(feedback),"Applied %lu baud, sync %08lX",
                  (unsigned long)r.bitrate,(unsigned long)r.sync_word);
     } else if(c=='O') {
         saved_open();
     } else if(c=='U') {
         saved_reload();
-        snprintf(feedback,sizeof(feedback),"%d file%s on the card",saved_files,saved_files==1?"":"s");
+        LS_SNPRINTF(t_scr_subghz_d_file_s_on, feedback,sizeof(feedback),"%d file%s on the card",saved_files,saved_files==1?"":"s");
     } else if(c=='f') tune_open();
     else if(c=='p' && selected<s.count) {
         if(!rec_watch_request_pin(s.event[selected].id,!s.event[selected].pinned))
@@ -1488,20 +1489,20 @@ static void action(char c)
     } else if(c=='a') {
         memset(peers,0,sizeof(peers));
         ls_picker_open("DETECTION DM TARGET",peer_done);
-        ls_picker_add("OFF","No detection messages");
+        ls_picker_add("OFF",LS_TEXT(t_scr_subghz_no_detection_messages, "No detection messages"));
         ls_mesh_peer_t peer;
         for(int j=0;j<LS_MESH_MAX_PEERS && ls_mesh_peer_at(j,&peer);j++) {
             snprintf(peers[j],sizeof(peers[j]),"%s",peer.id);
-            ls_picker_add(peer.name[0]?peer.name:peer.id,"New patterns; max one/min; Mesh TX must be armed");
+            ls_picker_add(peer.name[0]?peer.name:peer.id,LS_TEXT(t_scr_subghz_new_patterns_max_one, "New patterns; max one/min; Mesh TX must be armed"));
         }
     } else if(c=='e' && selected<s.count) {
-        if(!rec_watch_request_export(s.event[selected].id)) snprintf(feedback,sizeof(feedback),"Export busy or pattern unavailable");
+        if(!rec_watch_request_export(s.event[selected].id)) LS_SNPUTS(t_scr_subghz_export_busy_or_pattern, feedback, sizeof(feedback), "Export busy or pattern unavailable");
     } else if(c=='j' && selected<s.count) {
         const rec_watch_event_t *e=&s.event[selected];
         char title[48],text[480];
         snprintf(title,sizeof(title),"SubGHz pattern #%lu",(unsigned long)e->id);
         /* What actually made the recording, named from its source. */
-        snprintf(text,sizeof(text),"%s; not a decoded device identity. "
+        LS_SNPRINTF(fmt_scr_subghz_not_a_decoded_device, text,sizeof(text),"%s; not a decoded device identity. "
             "%.4f MHz, %u edges, %.2f ms, %lu observations. "
             "First: boot %08lx uptime %llu ms. Last: boot %08lx uptime %llu ms. "
             "GPS and motion attachment describe this bookmark, not the original capture. "
@@ -1511,7 +1512,7 @@ static void action(char c)
             (unsigned long)e->count,(unsigned long)e->first_boot,(unsigned long long)e->first_ms,
             (unsigned long)e->last_boot,(unsigned long long)e->last_ms);
         size_t used=strlen(text);
-        if(s.decoded[selected].repeats)snprintf(text+used,sizeof(text)-used," OOK24 payload %06lX, %u matching frames.",(unsigned long)s.decoded[selected].value,s.decoded[selected].repeats);
+        if(s.decoded[selected].repeats)LS_SNPRINTF(t_scr_subghz_ook24_payload_06lx_u, text+used,sizeof(text)-used," OOK24 payload %06lX, %u matching frames.",(unsigned long)s.decoded[selected].value,s.decoded[selected].repeats);
         bool ok=ls_field_mark_radio(title,text,e->source==REC_SOURCE_CC1101?LS_FIELD_CC1101:e->source==REC_SOURCE_SX1262?LS_FIELD_LORA:LS_FIELD_RTL,e->frequency,e->count);
         snprintf(feedback,sizeof(feedback),"%s",ok?"Note queued; check Journal save status":"Journal busy; try again shortly");
     } else if(c=='d') {
@@ -1583,6 +1584,7 @@ static void waveform(tui_surface *sf,tui_rect a)
     if(pulse_selected>=n)pulse_selected=0;
     char text[110];
     snprintf(text,sizeof(text),"%s #%lu / %s",ls_rsel_name(rec_source_radio((rec_source_t)e->source)),(unsigned long)e->id,
+       s.ism[selected][0]?s.ism[selected]:
        e->end_reason==REC_END_SPAN || e->end_reason==REC_END_EDGES?"TRUNCATED":s.decoded[selected].repeats?"OOK24 VERIFIED":e->count>1?"REPEAT MATCH":"RAW CANDIDATE");
     tui_put_str(sf,a,a.x+2,a.y+1,text,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
     int w=a.w-10;if(w<2)return;
@@ -1604,12 +1606,12 @@ static void waveform(tui_surface *sf,tui_rect a)
         } else tui_put_char(sf,a,pulse_hit.x+x,y,'-',color);
         previous=y;previous_edge=edge;
     }
-    snprintf(text,sizeof(text),"0 -> %.2f ms | first %d/%u edges",pulse_total/1000.,n,e->edges);
+    LS_SNPRINTF(t_scr_subghz_0_2f_ms_first, text,sizeof(text),"0 -> %.2f ms | first %d/%u edges",pulse_total/1000.,n,e->edges);
     tui_put_str(sf,a,a.x+2,a.y+6,text,LS_ATTR_DIM);
-    snprintf(text,sizeof(text),"Tap trace: #%d %s %lu us",pulse_selected+1,s.preview[selected][pulse_selected]>0?"HIGH":"LOW",(unsigned long)(s.preview[selected][pulse_selected]<0?-(int64_t)s.preview[selected][pulse_selected]:s.preview[selected][pulse_selected]));
+    LS_SNPRINTF(t_scr_subghz_tap_trace_d_s, text,sizeof(text),"Tap trace: #%d %s %lu us",pulse_selected+1,s.preview[selected][pulse_selected]>0?"HIGH":"LOW",(unsigned long)(s.preview[selected][pulse_selected]<0?-(int64_t)s.preview[selected][pulse_selected]:s.preview[selected][pulse_selected]));
     tui_put_str(sf,a,a.x+2,a.y+7,text,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
     if(a.h>10) {
-        snprintf(text,sizeof(text),"Range %lu..%lu us / %s",(unsigned long)low,(unsigned long)high,e->end_reason==REC_END_GAP?"GAP end":"LIMIT end");
+        LS_SNPRINTF(t_scr_subghz_range_lu_lu_us, text,sizeof(text),"Range %lu..%lu us / %s",(unsigned long)low,(unsigned long)high,e->end_reason==REC_END_GAP?"GAP end":"LIMIT end");
         tui_put_str(sf,a,a.x+2,a.y+8,text,LS_ATTR_DIM);
     }
     if(a.h>12)tui_put_str(sf,a,a.x+2,a.y+10,"| = transition(s) within one time cell",LS_ATTR_DIM);
@@ -1618,8 +1620,8 @@ static void waveform(tui_surface *sf,tui_rect a)
         char what[64];
         subghz_pwm_format(&s.pwm[selected], what, sizeof(what));
         if(!what[0]) subghz_nrz_format(&s.nrz[selected], what, sizeof(what));
-        if(what[0]) snprintf(text,sizeof(text),"%s / %u frames / %u us unit",what,s.decoded[selected].repeats,s.decoded[selected].unit_us);
-        else snprintf(text,sizeof(text),"OOK24 %06lX / %u frames / %u us unit",(unsigned long)s.decoded[selected].value,s.decoded[selected].repeats,s.decoded[selected].unit_us);
+        if(what[0]) LS_SNPRINTF(t_scr_subghz_s_u_frames_u, text,sizeof(text),"%s / %u frames / %u us unit",what,s.decoded[selected].repeats,s.decoded[selected].unit_us);
+        else LS_SNPRINTF(t_scr_subghz_ook24_06lx_u_frames, text,sizeof(text),"OOK24 %06lX / %u frames / %u us unit",(unsigned long)s.decoded[selected].value,s.decoded[selected].repeats,s.decoded[selected].unit_us);
         tui_put_str(sf,a,a.x+2,a.y+9,text,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
     }
 }
@@ -1737,33 +1739,37 @@ static void draw_read(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,
     for(int i=0;i<rows && first+i<s.count;i++) {
         const rec_watch_event_t *e=&s.event[first+i];int y=list.y+i*2;
         if(first+i==selected)ls_fill_dither(sf,tui_rect_make(list.x,y,list.w,2),LS_DITHER_LIGHT,TUI_CYAN);
-        snprintf(line,sizeof(line),"%s #%lu %.4fMHz x%lu",e->last_boot==s.boot_id?"[RX]":"[SD]",(unsigned long)e->id,e->frequency/1e6,(unsigned long)e->count);
+        LS_SNPRINTF(t_scr_subghz_s_lu_4fmhz_x, line,sizeof(line),"%s #%lu %.4fMHz x%lu",e->last_boot==s.boot_id?"[RX]":"[SD]",(unsigned long)e->id,e->frequency/1e6,(unsigned long)e->count);
         tui_put_str(sf,list,list.x,y,line,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
         char what[64];
         subghz_pwm_format(&s.pwm[first+i], what, sizeof(what));
         if(!what[0]) subghz_nrz_format(&s.nrz[first+i], what, sizeof(what));
         const char *heard=ls_rsel_name(rec_source_radio((rec_source_t)e->source));
-        if(what[0])snprintf(line,sizeof(line),"%s %s / %u repeats",heard,what,s.decoded[first+i].repeats);
-        else if(s.decoded[first+i].repeats)snprintf(line,sizeof(line),"%s OOK24 %06lX / %u repeats",heard,(unsigned long)s.decoded[first+i].value,s.decoded[first+i].repeats);
+        /* A device rtl_433's decoders know comes first: it is an identity,
+           the rest are timing patterns. */
+        const bool device=s.ism[first+i][0]!=0;
+        if(device)snprintf(line,sizeof(line),"%s %s",heard,s.ism[first+i]);
+        else if(what[0])snprintf(line,sizeof(line),"%s %s / %u repeats",heard,what,s.decoded[first+i].repeats);
+        else if(s.decoded[first+i].repeats)LS_SNPRINTF(t_scr_subghz_s_ook24_06lx_u, line,sizeof(line),"%s OOK24 %06lX / %u repeats",heard,(unsigned long)s.decoded[first+i].value,s.decoded[first+i].repeats);
         else snprintf(line,sizeof(line),"%s %u edges %.1fms",e->end_reason!=REC_END_GAP?"LIMIT":e->count>1?"REPEAT":"RAW?",e->edges,e->span_us/1000.);
-        tui_put_str(sf,list,list.x,y+1,line,LS_ATTR_DIM);
+        tui_put_str(sf,list,list.x,y+1,line,device?TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM);
     }
     if(notes) {
         tui_rect info=tui_rect_make(body.x+1,body.y+1,body.w-2,body.h-2);
         tui_fill(sf,info,' ',LS_ATTR_DIM);
         ls_panel_box(sf,info,"WHAT THE LIST MEANS",TUI_CYAN);
         tui_put_str(sf,info,info.x+2,info.y+1,s.storage,LS_ATTR_DIM);
-        snprintf(line,sizeof(line),"Loss: %lu skipped / CC buffer overflows %lu",(unsigned long)s.dropped,(unsigned long)cc->raw_overflows);
+        LS_SNPRINTF(t_scr_subghz_loss_lu_skipped_cc, line,sizeof(line),"Loss: %lu skipped / CC buffer overflows %lu",(unsigned long)s.dropped,(unsigned long)cc->raw_overflows);
         tui_put_str(sf,info,info.x+2,info.y+2,line,LS_ATTR_DIM);
         tui_put_str(sf,info,info.x+2,info.y+3,"RAW? unverified / REPEAT timing match",LS_ATTR_DIM);
         tui_put_str(sf,info,info.x+2,info.y+4,"[SD] earlier boot / [RX] this boot",LS_ATTR_DIM);
         tui_put_str(sf,info,info.x+2,info.y+5,"Pattern match is not a device identity.",LS_ATTR_DIM);
-        if(cc_source) snprintf(line,sizeof(line),"CC: 650kHz OOK / 40us filter / 30ms gap");
-        else if(lr_ook()) snprintf(line,sizeof(line),"%s: OOK from its I/Q stream / 30ms gap",source_name());
-        else if(rec_watch_source()==REC_SOURCE_SX1262) snprintf(line,sizeof(line),"%s: 2-FSK, rate and deviation in OPTIONS",source_name());
-        else snprintf(line,sizeof(line),"%s: configurable OOK pulse capture",source_name());
+        if(cc_source) LS_SNPUTS(t_scr_subghz_cc_650khz_ook_40us, line, sizeof(line), "CC: 650kHz OOK / 40us filter / 30ms gap");
+        else if(lr_ook()) LS_SNPRINTF(t_scr_subghz_s_ook_from_its, line,sizeof(line),"%s: OOK from its I/Q stream / 30ms gap",source_name());
+        else if(rec_watch_source()==REC_SOURCE_SX1262) LS_SNPRINTF(t_scr_subghz_s_2_fsk_rate, line,sizeof(line),"%s: 2-FSK, rate and deviation in OPTIONS",source_name());
+        else LS_SNPRINTF(t_scr_subghz_s_configurable_ook_pulse, line,sizeof(line),"%s: configurable OOK pulse capture",source_name());
         tui_put_str(sf,info,info.x+2,info.y+6,line,LS_ATTR_DIM);
-        snprintf(line,sizeof(line),"DM queued %lu / refused %lu / limited %lu",(unsigned long)s.alert_sent,(unsigned long)s.alert_failed,(unsigned long)s.alert_suppressed);
+        LS_SNPRINTF(t_scr_subghz_dm_queued_lu_refused, line,sizeof(line),"DM queued %lu / refused %lu / limited %lu",(unsigned long)s.alert_sent,(unsigned long)s.alert_failed,(unsigned long)s.alert_suppressed);
         tui_put_str(sf,info,info.x+2,info.y+7,line,LS_ATTR_DIM);
     }
     ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:s.export_status[0]?s.export_status:
@@ -1801,12 +1807,12 @@ static void draw_analyze(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,u
         ls_wf_source_view(rec_get_freq());
         ls_wf_source_pump();
         ls_wf_draw_mini(sf, body);
-        ls_safe_line(sf,a,a.y+a.h-1, "LR IQ / 125 kHz   SCAN for wide sweep", LS_ATTR_DIM);
+        ls_safe_line(sf,a,a.y+a.h-1, LS_TEXT(t_scr_subghz_lr_iq_125_khz, "LR IQ / 125 kHz   SCAN for wide sweep"), LS_ATTR_DIM);
         return;
     }
     iq_view_stop();
     char title[40];
-    if(sweep_hits) snprintf(title,sizeof(title),"ANALYZER / DETECTIONS");
+    if(sweep_hits) LS_SNPUTS(t_scr_subghz_analyzer_detections, title, sizeof(title), "ANALYZER / DETECTIONS");
     else snprintf(title,sizeof(title),"ANALYZER / %s SWEEP",ls_rsel_name(LS_RSEL_LORA));
     ls_panel_box(sf,body,title,TUI_CYAN);
     if(sweeping)hit_flash_poll();
@@ -1827,7 +1833,7 @@ static void draw_analyze(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,u
     tui_put_str(sf,w,w.x,w.y+4,"2. Press the transmitter a few times",LS_ATTR_DIM);
     tui_put_str(sf,w,w.x,w.y+5,"3. Tap what it found: capture, tune, zoom",LS_ATTR_DIM);
     char where[64];
-    snprintf(where,sizeof(where),"Sweeps on the %s; mesh pauses meanwhile.",ls_rsel_name(LS_RSEL_LORA));
+    LS_SNPRINTF(t_scr_subghz_sweeps_on_the_s, where,sizeof(where),"Sweeps on the %s; mesh pauses meanwhile.",ls_rsel_name(LS_RSEL_LORA));
     tui_put_str(sf,w,w.x,w.y+7,where,LS_ATTR_DIM);
     ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:"SCAN starts a sweep",LS_ATTR_DIM);
 }
@@ -1873,10 +1879,10 @@ static void draw_saved(tui_surface *sf,tui_rect a)
         if(i==saved_sel)ls_fill_dither(sf,tui_rect_make(saved_list.x,y,saved_list.w,2),LS_DITHER_LIGHT,TUI_CYAN);
         if(i<s.count) {
             const rec_watch_event_t *e=&s.event[i];
-            snprintf(line,sizeof(line),"#%lu  %.4f MHz  x%lu%s",(unsigned long)e->id,e->frequency/1e6,
+            LS_SNPRINTF(t_scr_subghz_lu_4f_mhz_x, line,sizeof(line),"#%lu  %.4f MHz  x%lu%s",(unsigned long)e->id,e->frequency/1e6,
                      (unsigned long)e->count,e->pinned?"  PINNED":"");
             tui_put_str(sf,saved_list,saved_list.x,y,line,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
-            snprintf(line,sizeof(line),"%s  %u edges  %.1f ms",ls_rsel_name(rec_source_radio((rec_source_t)e->source)),
+            LS_SNPRINTF(t_scr_subghz_s_u_edges_1f, line,sizeof(line),"%s  %u edges  %.1f ms",ls_rsel_name(rec_source_radio((rec_source_t)e->source)),
                      e->edges,e->span_us/1000.);
             tui_put_str(sf,saved_list,saved_list.x,y+1,line,LS_ATTR_DIM);
         } else {
@@ -1923,7 +1929,7 @@ static void draw_raw(tui_surface *sf,tui_rect a)
     const char *no=disabled_reason('d');
     if(no) {
         char how[48];
-        snprintf(how,sizeof(how),"Tap RADIO and pick the SDR");
+        LS_SNPUTS(t_scr_subghz_tap_radio_and_pick, how, sizeof(how), "Tap RADIO and pick the SDR");
         ls_panel_notice(sf,a,"READ RAW",no,how);
         return;
     }
@@ -1979,16 +1985,16 @@ static void draw_learn(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,uin
     } else if(have) {
         char v[80];
         tui_put_str(sf,w,w.x,w.y,"WHAT IT HEARD",TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
-        snprintf(v,sizeof(v),"Bit rate    %lu baud",(unsigned long)r.bitrate);
+        LS_SNPRINTF(t_scr_subghz_bit_rate_lu_baud, v,sizeof(v),"Bit rate    %lu baud",(unsigned long)r.bitrate);
         tui_put_str(sf,w,w.x,w.y+2,v,TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
-        snprintf(v,sizeof(v),"Deviation   %.1f kHz",r.deviation_hz/1000.0);
+        LS_SNPRINTF(t_scr_subghz_deviation_1f_khz, v,sizeof(v),"Deviation   %.1f kHz",r.deviation_hz/1000.0);
         tui_put_str(sf,w,w.x,w.y+3,v,TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
         snprintf(v,sizeof(v),"Sync word   %08lX",(unsigned long)r.sync_word);
         tui_put_str(sf,w,w.x,w.y+4,v,TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
         snprintf(v,sizeof(v),"Confidence  %u%%",r.confidence);
         tui_put_str(sf,w,w.x,w.y+5,v,TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
         tui_put_str(sf,w,w.x,w.y+6,r.note,LS_ATTR_DIM);
-        snprintf(v,sizeof(v),"APPLY sets the %s to receive it.",ls_rsel_name(LS_RSEL_LORA));
+        LS_SNPRINTF(t_scr_subghz_apply_sets_the_s, v,sizeof(v),"APPLY sets the %s to receive it.",ls_rsel_name(LS_RSEL_LORA));
         tui_put_str(sf,w,w.x,w.y+8,v,LS_ATTR_DIM);
     } else {
         tui_put_str(sf,w,w.x,w.y,"Work out how a transmitter talks:",TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
@@ -2015,7 +2021,7 @@ static void settings_value(int row,char *out,size_t len)
     case 2:
         if(rec_watch_source()==REC_SOURCE_SX1262){rec_watch_fsk_get(&m);snprintf(out,len,"%lu bd %.0fk dev",(unsigned long)m.bitrate,m.deviation_hz/1000.0);}
         else if(rec_watch_source()==REC_SOURCE_CC1101)snprintf(out,len,"fixed");
-        else snprintf(out,len,"gap %d ms, min %d edges",rec_get_gap_ms(),rec_get_min_edges());
+        else LS_SNPRINTF(t_scr_subghz_gap_d_ms_min, out,len,"gap %d ms, min %d edges",rec_get_gap_ms(),rec_get_min_edges());
         break;
     case 3: snprintf(out,len,"%.0f dB over floor",(double)rec_watch_scan_threshold()); break;
     case 4: snprintf(out,len,"%s",ON_HIT_NAME[(int)rec_watch_scan_on_hit_get()]); break;
@@ -2100,7 +2106,7 @@ void ls_scr_subghz_show(int which)
 
 static void draw(tui_surface *sf,tui_rect a)
 {
-    if(a.w<24 || a.h<17) {ls_panel_notice(sf,a,"SUB-GHZ","Enlarge the pane","WATCH keeps its state");return;}
+    if(a.w<24 || a.h<17) {ls_panel_notice(sf,a,"SUB-GHZ","Enlarge the pane",LS_TEXT(t_scr_subghz_watch_keeps_its_state, "WATCH keeps its state"));return;}
     rec_watch_snapshot(&s);
     static uint32_t scan_generation,learn_generation;
     if(s.scan_generation!=scan_generation) {
@@ -2313,7 +2319,7 @@ static bool touch(int x,int y)
         }
         if(rec_watch_scan_busy() && gate_hit.h>0 && tui_rect_contains(gate_hit,x,y)) {
             gate_set_from_row(y);
-            snprintf(feedback,sizeof(feedback),"Detect above %.0f dB over the floor",
+            LS_SNPRINTF(t_scr_subghz_detect_above_0f_db, feedback,sizeof(feedback),"Detect above %.0f dB over the floor",
                      (double)rec_watch_scan_threshold());
         }
         return true;

@@ -24,6 +24,7 @@ def run_c(source):
         path = pathlib.Path(tmp)
         (path / 'test.c').write_text(source)
         subprocess.run([shutil.which('gcc'), '-std=c11', '-Wall', '-Wextra',
+                        '-I', str(ROOT / 'components/ls_textpack/include'), '-include', 'ls_textpack.h',
                         str(path / 'test.c'), '-o', str(path / 'test.exe')], check=True,
                        capture_output=True, text=True)
         result = subprocess.run([str(path / 'test.exe')], capture_output=True, text=True)

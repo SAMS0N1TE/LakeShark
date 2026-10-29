@@ -3,8 +3,9 @@
 #include "ls_sweep_core.h"
 
 #include <string.h>
+#include "ls_cold.h"
 
-bool ls_sweep_plan(uint64_t start_hz, uint64_t stop_hz, uint32_t bin_hz,
+LS_COLD bool ls_sweep_plan(uint64_t start_hz, uint64_t stop_hz, uint32_t bin_hz,
                    uint32_t sample_rate_hz, ls_sweep_plan_t *out)
 {
     if (!out) return false;
@@ -48,7 +49,7 @@ bool ls_sweep_plan(uint64_t start_hz, uint64_t stop_hz, uint32_t bin_hz,
     return true;
 }
 
-bool ls_sweep_plan_overlap(uint64_t start_hz, uint64_t stop_hz, uint32_t bin_hz,
+LS_COLD bool ls_sweep_plan_overlap(uint64_t start_hz, uint64_t stop_hz, uint32_t bin_hz,
                            uint32_t sample_rate_hz, uint32_t usable_pct,
                            uint32_t dc_guard_hz, uint32_t hop_hz,
                            ls_sweep_plan_t *out)

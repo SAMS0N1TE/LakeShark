@@ -4,6 +4,7 @@
 #include "cartocore/places.h"
 #include "mbedtls/sha256.h"
 #include "ls_cells_json.h"
+#include <time.h>
 static FILE *cells_fopen(const char *path,const char *mode) {
     FILE *f=fopen(path,mode);if(f)setvbuf(f,NULL,_IONBF,0);return f;
 }
@@ -56,7 +57,7 @@ static EXT_RAM_BSS_ATTR struct {
     char server[256],country[3],credit[160],queue_name[64];
     uint32_t selected_key,queue_key,next_cell,serial,generation;
     uint64_t queue_total,queue_done,queue_partial;bool progress_loaded,want_detail;
-    unsigned picked,radius,hint_attempts;bool initialized,base_open,query_pending,queue_loaded,catalog_refresh,preview_active;
+    unsigned picked,radius,hint_attempts;bool initialized,base_open,query_pending,queue_loaded,catalog_refresh,states_refresh,preview_active;
     int catalog;bool direct;uint32_t stride,entries,index_size,base_size;uint8_t index_sha[32],base_sha[32];
     char path[256],temp[272],backup[280];
 } cw;
@@ -337,10 +338,80 @@ static bool cells_file_current(uint32_t id,const char *path) {
     if((!cw.direct && !cells_matches(CELLS_ROOT "cells/index.cci",cw.index_size,cw.index_sha)))return false;
     uint32_t size;uint8_t sha[32];return cells_entry(id,&size,sha) && cells_matches(path,size,sha);
 }
+/* Failure records survive dl's per-attempt reset, including joined .pN parts.
+ * Only failed assets allocate PSRAM; never evict a permanent stop automatically. */
+typedef struct cells_retry {
+    struct cells_retry *next;
+    char relative[64];unsigned failures;int status;int64_t at;
+} cells_retry;
+static cells_retry *cells_retries;
+static bool cells_retry_oom;
+static cells_retry *cells_retry_find(const char *relative) {
+    for(cells_retry *r=cells_retries;r;r=r->next)if(!strcmp(r->relative,relative))return r;
+    return NULL;
+}
+static void cells_retry_reset(const char *relative) {
+    for(cells_retry **p=&cells_retries;*p;) {
+        cells_retry *r=*p;
+        if(!relative || !strcmp(r->relative,relative)) { *p=r->next;heap_caps_free(r); }
+        else p=&r->next;
+    }
+    if(!relative)cells_retry_oom=false;
+}
+static void cells_retry_message(const cells_retry *r) {
+    char why[128];
+    if(r->status)snprintf(why,sizeof(why),"Map server %s %s; tap REFRESH to try again",
+        r->status==404 || r->status==410?"missing":"rejected",r->relative);
+    else snprintf(why,sizeof(why),"Invalid map %s (SHA256 / format / size); tap REFRESH",r->relative);
+    cells_message(why);
+}
+static bool cells_retry_ready(const char *relative) {
+    if(cells_retry_oom) { cells_work.downloading=false;cells_message("Map retry memory unavailable; tap REFRESH to try again");return false; }
+    cells_retry *r=cells_retry_find(relative);
+    if(r && r->at==INT64_MAX) { cells_retry_message(r);cells_work.downloading=false;return false; }
+    if(r && esp_timer_get_time()<r->at) { cells_work.downloading=false;return false; }
+    return true;
+}
+/* A hard 15 minute cap after +/-20% jitter. Server minimums may exceed it. */
+static int64_t cells_retry_delay(unsigned failures,uint32_t random) {
+    int64_t base=5000000;
+    while(failures>1 && base<900000000) { base*=2;failures--; }
+    if(base>900000000)base=900000000;
+    int64_t delay=base-base/5+(int64_t)((uint64_t)random*(uint64_t)(2*(base/5))/UINT32_MAX);
+    return delay>900000000?900000000:delay;
+}
+#ifndef LS_CARTOCORE_HOST
+/* Retry-After exposes both delta-seconds and IMF-fixdate through ON_HEADER. */
+static int64_t cells_retry_after(const char *value) {
+    while(*value==' ' || *value=='\t')value++;
+    if(*value>='0' && *value<='9') {
+        uint64_t seconds=0;
+        do { unsigned digit=(unsigned)(*value++-'0');
+            if(seconds>((uint64_t)INT64_MAX/1000000-digit)/10)return INT64_MAX;
+            seconds=seconds*10+digit;
+        } while(*value>='0' && *value<='9');
+        while(*value==' ' || *value=='\t')value++;
+        return *value?0:(int64_t)seconds*1000000;
+    }
+    int day,year,hour,minute,second,end=0;char month[4];
+    if(sscanf(value,"%*3s, %2d %3s %4d %2d:%2d:%2d GMT%n",&day,month,&year,&hour,&minute,&second,&end)!=6 || !end)return 0;
+    while(value[end]==' ' || value[end]=='\t')end++;
+    if(value[end] || year<1970 || year>9999 || hour<0 || hour>23 || minute<0 || minute>59 || second<0 || second>59)return 0;
+    static const char months[]="JanFebMarAprMayJunJulAugSepOctNovDec";
+    static const unsigned days[]={31,28,31,30,31,30,31,31,30,31,30,31};
+    unsigned m=0;while(m<12 && memcmp(month,months+3*m,3))m++;
+    bool leap=year%4==0 && (year%100!=0 || year%400==0);
+    if(m==12 || day<1 || (unsigned)day>days[m]+(m==1 && leap))return 0;
+    int64_t count=(int64_t)(year-1970)*365+(year-1)/4-1969/4-(year-1)/100+1969/100+(year-1)/400-1969/400;
+    for(unsigned i=0;i<m;i++)count+=days[i]+(i==1 && leap);
+    int64_t seconds=(count+day-1)*86400+hour*3600+minute*60+second-(int64_t)time(NULL);
+    return seconds>0?seconds*1000000:0;
+}
+#endif
 static EXT_RAM_BSS_ATTR struct {
     char relative[64],remote[96],path[128],part[144],meta[160],url[384],range[80];
     uint64_t size,offset;uint8_t sha[32];unsigned kind;bool active;uint32_t part_bytes,part_count;uint64_t segment_start,segment_end;
-    FILE *out,*in;int64_t retry;
+    FILE *out,*in;int64_t retry_after;
 #ifndef LS_CARTOCORE_HOST
     esp_http_client_handle_t http;
 #endif
@@ -349,6 +420,8 @@ static EXT_RAM_BSS_ATTR struct {
 static esp_err_t cells_http_event(esp_http_client_event_t *event) {
     if(event->event_id==HTTP_EVENT_ON_HEADER && !strcasecmp(event->header_key,"Content-Range"))
         snprintf(dl.range,sizeof(dl.range),"%s",event->header_value);
+    if(event->event_id==HTTP_EVENT_ON_HEADER && !strcasecmp(event->header_key,"Retry-After"))
+        dl.retry_after=cells_retry_after(event->header_value);
     return ESP_OK;
 }
 #endif
@@ -360,12 +433,43 @@ static void cells_download_close(void) {
     if(dl.http) { esp_http_client_close(dl.http);esp_http_client_cleanup(dl.http);dl.http=NULL; }
 #endif
 }
-static void cells_download_fail(const char *why) {
-    if(dl.kind==8)snprintf(cells_work.outlines,sizeof(cells_work.outlines),"%s",why);
-    cells_download_close();dl.active=false;cells_work.downloading=false;dl.retry=esp_timer_get_time()+5000000;cells_message(why);
+static void cells_download_failed(const char *why,int status,bool permanent) {
+    cells_retry *r=cells_retry_find(dl.relative);
+    if(!r) {
+        r=heap_caps_calloc(1,sizeof(*r),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+        if(r) { snprintf(r->relative,sizeof(r->relative),"%s",dl.relative);r->next=cells_retries;cells_retries=r; }
+        else cells_retry_oom=true; /* Fail closed if a stop cannot be remembered. */
+    }
+    if(r) {
+        if(r->failures<9)r->failures++;
+        r->status=status;
+        if(permanent)r->at=INT64_MAX;
+        else {
+#ifdef LS_CARTOCORE_HOST
+            uint32_t random=(uint32_t)rand();random=random*65537u+(uint32_t)rand();
+#else
+            uint32_t random=esp_random();
+#endif
+            int64_t delay=cells_retry_delay(r->failures,random),now=esp_timer_get_time();
+            /* Honour Retry-After, but at most an hour: a date against an unset clock reads as decades. */
+            int64_t asked=dl.retry_after>3600000000LL?3600000000LL:dl.retry_after;
+            if((status==429 || status==503) && delay<asked)delay=asked;
+            if(status==429 && delay<60000000)delay=60000000;
+            r->at=delay>INT64_MAX-now?INT64_MAX:now+delay;
+        }
+    }
+    cells_download_close();dl.active=false;cells_work.downloading=false;cells_message(why);
+    if(permanent && r)cells_retry_message(r);
+    if(dl.kind==8)snprintf(cells_work.outlines,sizeof(cells_work.outlines),"%s",cells_work.message);
 }
+static void cells_download_fail(const char *why) { cells_download_failed(why,0,false); }
+#ifndef LS_CARTOCORE_HOST
+static void cells_download_http_fail(int status) {
+    cells_download_failed("HTTP rejected download; partial retained",status,status>=400 && status<500 && status!=408 && status!=429);
+}
+#endif
 static bool cells_download(unsigned kind,const char *remote,const char *relative,uint64_t size,const uint8_t *sha) {
-    if(dl.active || esp_timer_get_time()<dl.retry || !cells_safe_asset(relative))return false;
+    if(dl.active || !cells_safe_asset(relative) || !cells_retry_ready(relative))return false;
     uint32_t asset_id=0;
     if(kind==6) { unsigned x,y;if(sscanf(remote,"cells/8/%u/%u.ctile",&x,&y)!=2 || x>255 || y>255)return false;asset_id=1+x*256+y+(strstr(remote,".detail.ctile")?65536:0);
         if(!cells_id_allowed(asset_id)) { cells_message("LakeShark Plus token required");return false; } }
@@ -406,7 +510,8 @@ static bool cells_download(unsigned kind,const char *remote,const char *relative
     if(local_offset) { char range[64];snprintf(range,sizeof(range),"bytes=%llu-",(unsigned long long)local_offset);esp_http_client_set_header(dl.http,"Range",range); }
     cells_token_load();if(cells_token[0])esp_http_client_set_header(dl.http,"X-LakeShark-Token",cells_token);
     const esp_err_t opened=esp_http_client_open(dl.http,0);
-    if(opened!=ESP_OK || esp_http_client_fetch_headers(dl.http)<0) {
+    int64_t length=opened==ESP_OK?esp_http_client_fetch_headers(dl.http):-1;
+    if(opened!=ESP_OK || length<0) {
         char why[80];snprintf(why,sizeof(why),"Connect failed (%s); partial retained",opened!=ESP_OK?esp_err_to_name(opened):"no reply");
         printf("cells: %s %s, internal free %u\n",why,dl.url,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         cells_download_fail(why);return false;
@@ -418,15 +523,16 @@ static bool cells_download(unsigned kind,const char *remote,const char *relative
     } else if(status==206) {
         unsigned long long first,last,total;
         if(sscanf(dl.range,"bytes %llu-%llu/%llu",&first,&last,&total)!=3 || first!=local_offset ||
-           last<first || !size || total!=dl.segment_end-dl.segment_start || last>=total) { cells_download_fail("Invalid HTTP Range response");return false; }
-    } else if(status!=200) { cells_download_fail("HTTP rejected download; partial retained");return false; }
+           last<first || !size || total!=dl.segment_end-dl.segment_start || last>=total) { cells_download_failed("Invalid HTTP Range response",0,true);return false; }
+    } else if(status!=200) { cells_download_http_fail(status);return false; }
+    if(size && length>0 && (uint64_t)length!=dl.segment_end-dl.offset) { cells_download_failed("Size mismatch; old asset retained",0,true);return false; }
 #endif
     dl.active=true;cells_work.downloading=true;cells_work.done=dl.offset;cells_work.total=size;
     cells_message("Downloading; safe to leave TILES");return true;
 }
 static unsigned cells_download_step(void) {
     if(!dl.active)return 0;
-    if(dl.size && dl.offset==dl.size && !dl.out) { dl.active=false;return dl.kind; }
+    if(dl.size && dl.offset==dl.size && !dl.out) { dl.active=false;cells_retry_reset(dl.relative);return dl.kind; }
     size_t wanted=sizeof(cw.buf);if(dl.size && wanted>dl.segment_end-dl.offset)wanted=(size_t)(dl.segment_end-dl.offset);
     int got=0;
     if(wanted) {
@@ -436,10 +542,17 @@ static unsigned cells_download_step(void) {
         got=esp_http_client_read(dl.http,(char*)cw.buf,(int)wanted);
 #endif
     }
-    if(got<0 || (got==0 && dl.size && dl.offset<dl.size)) { cells_download_fail("Interrupted; partial retained for resume");return 0; }
+    if(got<0 || (got==0 && dl.size && dl.offset<dl.size)) {
+#ifdef LS_CARTOCORE_HOST
+        bool complete=got==0 && feof(dl.in);
+#else
+        bool complete=got==0 && esp_http_client_is_complete_data_received(dl.http);
+#endif
+        cells_download_failed(complete?"Size mismatch; old asset retained":"Interrupted; partial retained for resume",0,complete);return 0;
+    }
     if(got && fwrite(cw.buf,1,(size_t)got,dl.out)!=(size_t)got) { cells_download_fail("SD write failed; partial retained");return 0; }
     dl.offset+=(unsigned)got;if(dl.kind==6)cw.queue_partial=dl.offset;cells_work.done=dl.offset;cells_work.total=dl.size;
-    if(!dl.size && dl.offset>(dl.kind==1?8u:1u)*1024u*1024u) { cells_download_fail("Metadata exceeds size limit");return 0; }
+    if(!dl.size && dl.offset>(dl.kind==1?8u:1u)*1024u*1024u) { cells_download_failed("Metadata exceeds size limit",0,true);return 0; }
     if(dl.part_bytes && dl.offset==dl.segment_end && dl.offset<dl.size) {
         bool saved=!fflush(dl.out);cells_download_close();dl.active=false;
         if(!saved)cells_download_fail("SD write failed; partial retained");
@@ -447,11 +560,12 @@ static unsigned cells_download_step(void) {
     }
     if(got && (!dl.size || dl.offset<dl.size))return 0;
     bool ok=!fflush(dl.out);cells_download_close();
+    if(!ok) { cells_download_fail("SD write failed; partial retained");return 0; }
     if(dl.size)ok=ok && cells_hash(dl.part,dl.sha,dl.size);
     ok=ok && cells_asset_valid(dl.part,dl.relative);
-    if(!ok) { unlink(dl.part);cells_download_fail("SHA256 / format check failed; old asset retained");return 0; }
+    if(!ok) { unlink(dl.part);cells_download_failed("SHA256 / format check failed; old asset retained",0,true);return 0; }
     if(!cells_install(dl.part,dl.path)) { cells_download_fail("Atomic install failed; partial retained");return 0; }
-    unlink(dl.meta);dl.active=false;cells_work.downloading=false;
+    unlink(dl.meta);dl.active=false;cells_work.downloading=false;cells_retry_reset(dl.relative);
     if(dl.kind==6) { cw.queue_done+=dl.size;cw.queue_partial=0; }
     if(dl.size)(void)cells_matches(dl.path,dl.size,dl.sha);
     cells_message("Installed and verified");return dl.kind;
@@ -591,20 +705,40 @@ static void cells_queue_step(void) {
     }
     uint32_t size;uint8_t sha[32];
     if(!cw.progress_loaded) {
-        cw.queue_done=cw.queue_total=cw.queue_partial=0;
-        for(unsigned at=0;at<(cw.want_detail?131072u:65536u);at++)if(cw.queued[(at%65536)/8]&(1u<<(at&7))) {
-            if(cells_entry(at+1,&size,sha)) { cw.queue_total+=size;if(cells_present(at+1,size))cw.queue_done+=size; }
+        /* A thousand-cell queue's stat() calls alone held the worker for
+           seconds: after 200 ms this walk too resumes next turn. It starts
+           over when the queue, its detail level or the catalog changes. */
+        static unsigned walk_at;static uint32_t walk_key;static int walk_catalog;static bool walk_detail;
+        const unsigned walk_end=cw.want_detail?131072u:65536u;
+        if(!walk_at || walk_key!=cw.queue_key || walk_catalog!=cw.catalog || walk_detail!=cw.want_detail) {
+            walk_at=0;walk_key=cw.queue_key;walk_catalog=cw.catalog;walk_detail=cw.want_detail;
+            cw.queue_done=cw.queue_total=cw.queue_partial=0;
         }
-        cw.progress_loaded=true;
+        const int64_t walk_began=esp_timer_get_time();
+        for(;walk_at<walk_end;walk_at++)if(cw.queued[(walk_at%65536)/8]&(1u<<(walk_at&7))) {
+            /* Progress only: size, not SHA. Hashing every queued cell here held
+               the worker, and MAP behind it on "opening map...", for minutes
+               after a catalog refresh; the walk below verifies each cell. */
+            if(cells_entry(walk_at+1,&size,sha)) { struct stat st;char name[64],path[96];
+                cells_name(walk_at+1,name,sizeof(name),false);snprintf(path,sizeof(path),CELLS_ROOT "%s",name);
+                cw.queue_total+=size;if(!stat(path,&st) && st.st_size==(off_t)size)cw.queue_done+=size; }
+            if(esp_timer_get_time()-walk_began>200000 && walk_at+1<walk_end) { walk_at++;return; }
+        }
+        walk_at=0;cw.progress_loaded=true;
     }
     if(!cells_entry(0,&size,sha)) { cells_message("Catalog has no overview");return; }
     if(!cells_present(0,size)) { cells_download(5,"cells/overview.ctile","cells/overview.ctile",size,sha);return; }
+    const int64_t began=esp_timer_get_time();
     while(cw.next_cell<(cw.want_detail?131072u:65536u)) {
         unsigned at=cw.next_cell;
         if(!(cw.queued[(at%65536)/8]&(1u<<(at&7)))) { cw.next_cell++;continue; }
         if(at>=65536 && !cells_entry(at+1,&size,sha)) { cw.next_cell++;continue; }
         if(!cells_entry(at+1,&size,sha)) { cells_work.downloading=false;cells_message("Blocked: queued cell absent from catalog");return; }
-        if(cells_present(at+1,size)) { cw.next_cell++;continue; }
+        if(cells_present(at+1,size)) {
+            /* A cell not hashed since the last catalog can take seconds; after
+               200 ms the walk resumes next turn so MAP gets the worker. */
+            cw.next_cell++;if(esp_timer_get_time()-began>200000)return;continue;
+        }
         char remote[64],local[64];cells_name(at+1,remote,sizeof(remote),true);cells_name(at+1,local,sizeof(local),false);
         cw.next_cell=at;cells_download(6,remote,local,size,sha);return;
     }
@@ -706,6 +840,7 @@ static void cells_step(void) {
     }
     if(command) {
         cells_command *q=&cells_command_work;
+        if(q->action==1 || q->action==3 || q->action==4 || q->action==7)cells_retry_reset(NULL);
         if(q->action==1) {
             bool known=false;for(unsigned i=0;i<cells_work.library_count;i++)if(cells_work.keys[i]==q->key)known=true;
             if(!known && cells_work.library_count>=LS_CELLS_PLACES)cells_message("32 places limit; delete a place first");
@@ -726,6 +861,7 @@ static void cells_step(void) {
     if(cells_request.serial!=cw.serial) {
         cw.serial=cells_request.serial;
         if(cells_request.action==6 && cells_url_valid(cells_request.url)) {
+            cells_retry_reset(NULL);
             snprintf(cw.server,sizeof(cw.server),"%s",cells_request.url);snprintf(cells_work.server,sizeof(cells_work.server),"%s",cw.server);cells_config_save();cw.catalog_refresh=true;
         } else if(cells_request.action==0) {
             cw.preview_active=false;cells_work.picked.name[0]=0;
@@ -738,19 +874,20 @@ static void cells_step(void) {
             cells_download_fail("LakeShark Plus token required");cells_publish();return;
         }
         unsigned done=cells_download_step();
-        if(done==1) { cw.catalog_refresh=false;cells_catalog();if(cw.direct)cells_download(7,"cells/states.json","cells/states.json",0,NULL);if(cw.preview_active)cells_preview(); }
-        if(done==7) { cells_states_parse(CELLS_ROOT "cells/states.json",true);cells_states_publish(); }
+        if(done==1) { cw.catalog_refresh=false;cells_catalog();if(cw.direct) { cw.states_refresh=true;cells_download(7,"cells/states.json","cells/states.json",0,NULL); }if(cw.preview_active)cells_preview(); }
+        if(done==7) { cw.states_refresh=false;cells_states_parse(CELLS_ROOT "cells/states.json",true);cells_states_publish(); }
         if(done==8) { cells_outlines_pending=false;snprintf(cells_work.outlines,sizeof(cells_work.outlines),"ready"); }
         if(done==2) { cw.base_open=false;cw.query_pending=true; }
         if(done==3) { cells_attach(cw.shard.iso2);if(cw.preview_active)cells_preview();else cw.query_pending=true; }
     } else if(cw.catalog_refresh)cells_download(1,"cells/catalog.ccm","cells/catalog.ccm",0,NULL);
-    else if(cells_outlines_pending && esp_timer_get_time()>=dl.retry) {
+    else if(cw.states_refresh)cells_download(7,"cells/states.json","cells/states.json",0,NULL);
+    else if(cells_outlines_pending && cells_retry_ready("outlines.lso")) {
         if(!cells_outlines_needed()) {
             cells_outlines_pending=false;
             snprintf(cells_work.outlines,sizeof(cells_work.outlines),"%s",cells_outlines.bytes?"ready":"missing");
         } else if(cells_download(8,"places/outlines.lso","outlines.lso",cells_outlines.bytes,cells_outlines.sha))
             snprintf(cells_work.outlines,sizeof(cells_work.outlines),"downloading");
-        else if(esp_timer_get_time()>=dl.retry)cells_download_fail("error: cannot start outline download");
+        else if(cells_retry_ready("outlines.lso"))cells_download_fail("error: cannot start outline download");
     }
     else if(cw.query_pending)cells_search();
     else if(cw.preview_active && cw.catalog<0)cells_preview();

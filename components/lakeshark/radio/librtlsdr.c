@@ -1646,8 +1646,12 @@ int rtlsdr_reset_buffer(rtlsdr_dev_t *dev)
     if (!dev)
         return -1;
 
-    rtlsdr_write_reg(dev, USBB, USB_EPA_CTL, 0x1002, 2);
-    rtlsdr_write_reg(dev, USBB, USB_EPA_CTL, 0x0000, 2);
+    /* A claimed FIFO reset must have both complete USB control writes. The
+     * old unconditional success could label failed resets as fresh samples. */
+    if (rtlsdr_write_reg(dev, USBB, USB_EPA_CTL, 0x1002, 2) != 2)
+        return -1;
+    if (rtlsdr_write_reg(dev, USBB, USB_EPA_CTL, 0x0000, 2) != 2)
+        return -1;
 
     return 0;
 }

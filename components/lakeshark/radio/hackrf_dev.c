@@ -18,7 +18,10 @@
 #include "freertos/task.h"
 #include "hackrf_radio.h"
 #include "radio_endpoint.h"
+#include "radio_frontend.h"
 #include "settings.h"
+#include "ls_cold.h"
+#include "ls_textpack.h"
 
 #define HACKRF_USB_VID             UINT16_C(0x1d50)
 #define HACKRF_USB_PID_JAWBREAKER  UINT16_C(0x604b)
@@ -35,6 +38,9 @@ enum {
     HACKRF_REQ_SET_AMP_ENABLE = 17,
     HACKRF_REQ_SET_LNA_GAIN = 19,
     HACKRF_REQ_SET_VGA_GAIN = 20,
+    /* Antenna port power (the bias-T), wValue 1 on, 0 off; HackRF USB
+       protocol, vendor request 23. There is no request to read it back. */
+    HACKRF_REQ_ANTENNA_ENABLE = 23,
     HACKRF_REQ_GET_M0_STATE = 41,
 };
 
@@ -59,6 +65,14 @@ typedef struct {
     unsigned decim;
     uint32_t shift_hz;    /* the radio is tuned this far above the centre */
     volatile int ppm;     /* reference error; see settings_hackrf_ppm_get */
+    /* Front end (radio_frontend.h): the bias-T as last commanded, the amp
+       mode and fixed stages, and the gain the app last asked for, so a
+       front-end change can re-split it. */
+    bool bias;
+    int amp_mode, lna_fix, vga_fix;
+    ls_radio_gain_mode_t asked_mode;
+    int asked_tenths;
+    bool gain_set;
     ls_hackrf_cic_t cic;
     uint8_t *raw;
 } hackrf_dev_t;
@@ -234,18 +248,27 @@ static ls_radio_err_t set_bandwidth(hackrf_dev_t *dev, uint32_t bandwidth_hz)
     return error;
 }
 
-static ls_radio_err_t hackrf_iq_set_gain(void *ctx,
+LS_COLD static ls_radio_err_t hackrf_iq_set_gain(void *ctx,
                                          ls_radio_gain_mode_t mode,
                                          int tenths_db,
                                          int *actual_tenths_db)
 {
     hackrf_dev_t *dev = (hackrf_dev_t *)ctx;
     if (!dev || !actual_tenths_db) return LS_RADIO_ERR_INVALID;
-    if (mode == LS_RADIO_GAIN_AUTO) tenths_db = HACKRF_AUTO_GAIN_TENTHS;
+    const int asked = tenths_db;
+    /* AUTO is mapped to HackRF dB below; its number means nothing here. */
+    if (mode == LS_RADIO_GAIN_AUTO) tenths_db = 0;
     if (tenths_db < 0 || tenths_db > 1130) return LS_RADIO_ERR_UNSUPPORTED;
+    /* Settings are on the RTL's scale; AUTO is already in HackRF dB. */
+    tenths_db = mode == LS_RADIO_GAIN_AUTO ? HACKRF_AUTO_GAIN_TENTHS
+                                           : ls_hackrf_gain_from_setting(tenths_db);
 
-    bool amp = tenths_db > 1020;
+    /* The front end may pin the amp either way and fix a stage; the gain
+       asked for is then spread over what is left free. All on "by gain",
+       this is the split it always was. */
+    bool amp = dev->amp_mode == 2 || (dev->amp_mode == 0 && tenths_db > 1020);
     int remaining = tenths_db - (amp ? 110 : 0);
+    if (remaining < 0) remaining = 0;
     /* About half to the LNA (8 dB steps, at most 40) and the rest to the
        VGA (2 dB steps, at most 62). Filling the LNA first left 40 dB as
        LNA 40 + VGA 0, which starves the baseband and reads as a dead radio. */
@@ -255,6 +278,17 @@ static ls_radio_err_t hackrf_iq_set_gain(void *ctx,
     if (vga > 620) {
         vga = 620;
         lna = ((remaining - vga) / 80) * 80;
+        if (lna > 400) lna = 400;
+    }
+    if (dev->lna_fix >= 0 && dev->vga_fix >= 0) {
+        lna = dev->lna_fix * 10; vga = dev->vga_fix * 10;
+    } else if (dev->lna_fix >= 0) {
+        lna = dev->lna_fix * 10;
+        vga = remaining > lna ? ((remaining - lna) / 20) * 20 : 0;
+        if (vga > 620) vga = 620;
+    } else if (dev->vga_fix >= 0) {
+        vga = dev->vga_fix * 10;
+        lna = remaining > vga ? ((remaining - vga) / 80) * 80 : 0;
         if (lna > 400) lna = 400;
     }
 
@@ -269,6 +303,9 @@ static ls_radio_err_t hackrf_iq_set_gain(void *ctx,
     if (error != LS_RADIO_OK) return error;
 
     dev->gain_tenths_db = lna + vga + (amp ? 110 : 0);
+    dev->asked_mode = mode;
+    dev->asked_tenths = asked;
+    dev->gain_set = true;
     s_stats.lna_db = lna / 10;
     s_stats.vga_db = vga / 10;
     s_stats.amp = amp;
@@ -276,7 +313,7 @@ static ls_radio_err_t hackrf_iq_set_gain(void *ctx,
     return LS_RADIO_OK;
 }
 
-static ls_radio_err_t hackrf_iq_configure(
+LS_COLD static ls_radio_err_t hackrf_iq_configure(
     void *ctx, const ls_radio_iq_config_t *requested,
     ls_radio_iq_config_t *actual)
 {
@@ -304,10 +341,7 @@ static ls_radio_err_t hackrf_iq_configure(
     dev->decim = decim;
     dev->out_rate_hz = requested->sample_rate_hz;
     dev->shift_hz = decim > 1 ? ls_hackrf_shift(decim) * requested->sample_rate_hz : 0;
-    if (decim > 1) {
-        ls_hackrf_cic_init(&dev->cic, decim, ls_hackrf_shift(decim));
-        dev->cic.agc = true;
-    }
+    if (decim > 1) ls_hackrf_cic_start(&dev->cic, decim, 0);
     /* The analog filter is set for the radio's rate; the CIC does the rest. */
     uint32_t bandwidth = ls_hackrf_filter_bandwidth(
         decim > 1 ? 0 : requested->bandwidth_hz, hw_rate);
@@ -342,20 +376,17 @@ static ls_radio_err_t hackrf_iq_start(void *ctx)
              dev->sample_rate_hz * 2,
              262144000.0 / (dev->sample_rate_hz * 2));
     dev->dropped_at_start = esp_libusb_stream_dropped();
-    if (dev->decim > 1) {
-        /* The AGC keeps its level across a restart or retune; the filter
-           state does not survive the gap in the stream. */
-        const int32_t level = dev->cic.agc_q8;
-        ls_hackrf_cic_init(&dev->cic, dev->decim, ls_hackrf_shift(dev->decim));
-        dev->cic.agc = true;
-        dev->cic.agc_q8 = level > 0 ? level : 256;
-    }
+    /* The AGC keeps its level across a restart or retune; the filter
+       state does not survive the gap in the stream. */
+    if (dev->decim > 1) ls_hackrf_cic_start(&dev->cic, dev->decim, dev->cic.agc_q8);
     ls_radio_err_t error = control_out(dev, HACKRF_REQ_SET_TRANSCEIVER_MODE,
                                        HACKRF_MODE_RECEIVE, 0, NULL, 0);
     if (error != LS_RADIO_OK) {
         esp_libusb_stream_stop_for(&dev->usb);
         return error;
     }
+    /* Firmware may drop antenna power on a mode change; say it again. */
+    if (dev->bias) (void)control_out(dev, HACKRF_REQ_ANTENNA_ENABLE, 1, 0, NULL, 0);
     dev->streaming = true;
     return LS_RADIO_OK;
 }
@@ -392,12 +423,7 @@ static ls_radio_err_t hackrf_iq_read(void *ctx, void *dst, size_t bytes,
                stream up again from here. Refusing every read after one
                overflow left a receiver dead for good. */
             dev->dropped_at_start = esp_libusb_stream_dropped();
-            if (dev->decim > 1) {
-                const int32_t level = dev->cic.agc_q8;
-                ls_hackrf_cic_init(&dev->cic, dev->decim, ls_hackrf_shift(dev->decim));
-                dev->cic.agc = true;
-                dev->cic.agc_q8 = level;
-            }
+            if (dev->decim > 1) ls_hackrf_cic_start(&dev->cic, dev->decim, dev->cic.agc_q8);
             if (s_stats.overflows++ == 0)
                 ESP_LOGW(TAG, "IQ ring overflow: the app is reading too slowly; a gap is reported");
             return LS_RADIO_ERR_IO;
@@ -450,14 +476,9 @@ static ls_radio_err_t hackrf_iq_retune(void *ctx, uint64_t center_hz,
     ls_radio_err_t error = set_frequency(dev, center_hz);
     if (error != LS_RADIO_OK) return error;
     esp_libusb_stream_reset();
-    if (dev->decim > 1) {
-        /* The AGC keeps its level across a restart or retune; the filter
-           state does not survive the gap in the stream. */
-        const int32_t level = dev->cic.agc_q8;
-        ls_hackrf_cic_init(&dev->cic, dev->decim, ls_hackrf_shift(dev->decim));
-        dev->cic.agc = true;
-        dev->cic.agc_q8 = level > 0 ? level : 256;
-    }
+    /* The AGC keeps its level across a restart or retune; the filter
+       state does not survive the gap in the stream. */
+    if (dev->decim > 1) ls_hackrf_cic_start(&dev->cic, dev->decim, dev->cic.agc_q8);
     *actual_hz = dev->center_hz;
     return LS_RADIO_OK;
 }
@@ -517,6 +538,44 @@ static ls_radio_err_t hackrf_recover(void *ctx)
     return error == ESP_OK ? LS_RADIO_OK : LS_RADIO_ERR_IO;
 }
 
+static ls_radio_err_t hackrf_regain(hackrf_dev_t *dev)
+{
+    if (!dev->gain_set) return LS_RADIO_OK;
+    int actual = 0;
+    return hackrf_iq_set_gain(dev, dev->asked_mode, dev->asked_tenths, &actual);
+}
+
+LS_COLD static ls_radio_err_t hackrf_fe_ctl(void *ctx, ls_radio_fe_ctl_t ctl, bool write, int *value)
+{
+    hackrf_dev_t *dev = (hackrf_dev_t *)ctx;
+    if (!dev || !value) return LS_RADIO_ERR_INVALID;
+    int *field;
+    switch (ctl) {
+    case LS_RADIO_FE_BIAS_T:
+        if (!write) { *value = dev->bias; return LS_RADIO_OK; }
+        if (control_out(dev, HACKRF_REQ_ANTENNA_ENABLE, *value ? 1 : 0, 0, NULL, 0) != LS_RADIO_OK)
+            return LS_RADIO_ERR_IO;
+        dev->bias = *value != 0;
+        ESP_LOGW(TAG, "antenna power %s", dev->bias ? "ON: DC on the antenna port" : "off");
+        return LS_RADIO_OK;
+    case LS_RADIO_FE_PPM:
+        if (!write) { *value = dev->ppm; return LS_RADIO_OK; }
+        if (*value < -200 || *value > 200) return LS_RADIO_ERR_INVALID;
+        dev->ppm = *value;      /* radio_frontend saves it */
+        return dev->center_hz ? set_frequency(dev, dev->center_hz) : LS_RADIO_OK;
+    case LS_RADIO_FE_AMP:    field = &dev->amp_mode; break;
+    case LS_RADIO_FE_LNA_DB: field = &dev->lna_fix; break;
+    case LS_RADIO_FE_VGA_DB: field = &dev->vga_fix; break;
+    default: return LS_RADIO_ERR_UNSUPPORTED;
+    }
+    if (!write) { *value = *field; return LS_RADIO_OK; }
+    const int was = *field;
+    *field = *value;
+    ls_radio_err_t error = hackrf_regain(dev);
+    if (error != LS_RADIO_OK) *field = was;
+    return error;
+}
+
 static const ls_radio_driver_ops_t s_hackrf_ops = {
     .iq_configure = hackrf_iq_configure,
     .iq_set_gain = hackrf_iq_set_gain,
@@ -527,6 +586,7 @@ static const ls_radio_driver_ops_t s_hackrf_ops = {
     .cancel_read = hackrf_cancel_read,
     .recover = hackrf_recover,
     .iq_get_health = hackrf_iq_get_health,
+    .fe_ctl = hackrf_fe_ctl,
 };
 
 static ls_radio_err_t register_endpoint(hackrf_dev_t *dev)
@@ -543,6 +603,9 @@ static ls_radio_err_t register_endpoint(hackrf_dev_t *dev)
         .sample_rate_range_count = 1,
         .ops = &s_hackrf_ops,
         .driver_ctx = dev,
+        .fe_ctls = LS_RADIO_FE_BIT(LS_RADIO_FE_BIAS_T) | LS_RADIO_FE_BIT(LS_RADIO_FE_PPM) |
+                   LS_RADIO_FE_BIT(LS_RADIO_FE_AMP) | LS_RADIO_FE_BIT(LS_RADIO_FE_LNA_DB) |
+                   LS_RADIO_FE_BIT(LS_RADIO_FE_VGA_DB),
     };
     return ls_radio_endpoint_register(&endpoint);
 }
@@ -574,12 +637,13 @@ bool hackrf_adapter_note_removed(usb_device_handle_t device)
     esp_libusb_note_device_gone(device);
     if (!matches) return false;
     (void)ls_radio_endpoint_unregister(LS_RADIO_ENDPOINT_HACKRF_USB);
+    ls_rffe_note(LS_RFFE_HACKRF, LS_RADIO_FE_BIAS_T, 0, false);
     close_device(dev, true);
     finish_lifecycle(false);
     return true;
 }
 
-static void setup_task(void *arg)
+LS_COLD static void setup_task(void *arg)
 {
     hackrf_setup_arg_t *setup = (hackrf_setup_arg_t *)arg;
     hackrf_dev_t *dev = calloc(1, sizeof(*dev));
@@ -617,6 +681,19 @@ static void setup_task(void *arg)
 
     if (init_adsb_dev() != ESP_OK) { close_device(dev, false); goto done; }
     dev->ppm = settings_hackrf_ppm_get();
+    ls_rffe_note(LS_RFFE_HACKRF, LS_RADIO_FE_PPM, dev->ppm, false);
+    dev->amp_mode = ls_rffe_saved(LS_RFFE_HACKRF, LS_RADIO_FE_AMP);
+    dev->lna_fix = ls_rffe_saved(LS_RFFE_HACKRF, LS_RADIO_FE_LNA_DB);
+    dev->vga_fix = ls_rffe_saved(LS_RFFE_HACKRF, LS_RADIO_FE_VGA_DB);
+    /* Antenna power off at every attach - a port reset need not cut VBUS -
+       unless it is pinned on at plug-in. */
+    {
+        const bool pinned = ls_rffe_saved(LS_RFFE_HACKRF, LS_RADIO_FE_BIAS_T) != 0;
+        dev->bias = control_out(dev, HACKRF_REQ_ANTENNA_ENABLE, pinned ? 1 : 0, 0, NULL, 0) == LS_RADIO_OK &&
+                    pinned;
+        if (dev->bias) ESP_LOGW(TAG, "antenna power ON at plug-in (pinned)");
+        ls_rffe_note(LS_RFFE_HACKRF, LS_RADIO_FE_BIAS_T, dev->bias, dev->bias);
+    }
     ls_radio_err_t error = LS_RADIO_ERR_BUSY;
     for (int attempt = 0; attempt < 200; ++attempt) {
         portENTER_CRITICAL(&s_lifecycle);
@@ -691,7 +768,7 @@ void hackrf_adapter_probe_async(uint8_t dev_addr,
 
 /* The console's view of the HackRF: rates, gain, and the levels either
    side of the decimator. */
-void ls_hackrf_print_status(void)
+LS_COLD void ls_hackrf_print_status(void)
 {
     hackrf_dev_t *dev = s_dev;
     if (!dev) { printf("hackrf: not attached\n"); return; }
@@ -703,27 +780,27 @@ void ls_hackrf_print_status(void)
         int n = esp_libusb_control_transfer(&dev->usb, CTRL_IN, HACKRF_REQ_GET_M0_STATE,
                                             0, 0, wire, sizeof(wire), HACKRF_CONTROL_TIMEOUT_MS);
         if (ls_hackrf_decode_m0_state(wire, n > 0 ? (size_t)n : 0, &m0))
-            printf("m0: shortfalls %lu  longest %lu  bytes in %lu  out %lu\n",
+            LS_PRINTF(t_hackrf_dev_m0_shortfalls_lu_longest, "m0: shortfalls %lu  longest %lu  bytes in %lu  out %lu\n",
                    (unsigned long)m0.num_shortfalls, (unsigned long)m0.longest_shortfall,
                    (unsigned long)m0.m0_count, (unsigned long)m0.m4_count);
         else
             printf("m0: no answer (%d)\n", n);
     }
-    printf("hackrf: %s  radio %lu S/s  out %lu S/s  decim %u  shift %lu Hz  centre %llu Hz\n",
+    LS_PRINTF(t_hackrf_dev_hackrf_s_radio_lu, "hackrf: %s  radio %lu S/s  out %lu S/s  decim %u  shift %lu Hz  centre %llu Hz\n",
            dev->streaming ? "streaming" : "idle", (unsigned long)dev->sample_rate_hz,
            (unsigned long)dev->out_rate_hz, dev->decim, (unsigned long)dev->shift_hz,
            (unsigned long long)dev->center_hz);
-    printf("ppm: %d  ring overflows %lu\n", dev->ppm, (unsigned long)s_stats.overflows);
+    LS_PRINTF(t_hackrf_dev_ppm_d_ring_overflows, "ppm: %d  ring overflows %lu\n", dev->ppm, (unsigned long)s_stats.overflows);
     if (s_stats.timed)
-        printf("per read: ring %llu us  decimator %llu us  (%lu reads)\n",
+        LS_PRINTF(t_hackrf_dev_per_read_ring_llu, "per read: ring %llu us  decimator %llu us  (%lu reads)\n",
                (unsigned long long)(s_stats.read_us / s_stats.timed),
                (unsigned long long)(s_stats.cic_us / s_stats.timed), (unsigned long)s_stats.timed);
-    printf("gain: lna %d vga %d amp %s  (asked %d.%d dB)\n", s_stats.lna_db, s_stats.vga_db,
+    LS_PRINTF(t_hackrf_dev_gain_lna_d_vga, "gain: lna %d vga %d amp %s  (asked %d.%d dB)\n", s_stats.lna_db, s_stats.vga_db,
            s_stats.amp ? "on" : "off", dev->gain_tenths_db / 10, dev->gain_tenths_db % 10);
-    printf("radio side: mean_square %lu  dc_milli %ld/%ld  (%lu bytes)\n",
+    LS_PRINTF(t_hackrf_dev_radio_side_mean_square, "radio side: mean_square %lu  dc_milli %ld/%ld  (%lu bytes)\n",
            (unsigned long)s_stats.raw_ms, (long)s_stats.raw_dc_i, (long)s_stats.raw_dc_q,
            (unsigned long)s_stats.raw_bytes);
-    printf("app side:   mean_square %lu  agc x%ld.%02ld  env %ld  (%lu bytes, %lu reads)\n",
+    LS_PRINTF(t_hackrf_dev_app_side_mean_square, "app side:   mean_square %lu  agc x%ld.%02ld  env %ld  (%lu bytes, %lu reads)\n",
            (unsigned long)s_stats.out_ms, (long)(dev->cic.agc_q8 / 256),
            (long)(dev->cic.agc_q8 % 256 * 100 / 256), (long)dev->cic.agc_env,
            (unsigned long)s_stats.out_bytes, (unsigned long)s_stats.reads);
@@ -743,7 +820,7 @@ static void emit(const uint8_t *buf, size_t size, size_t start, size_t n)
         for (int b = 0; b < 8; ++b) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
     }
     crc ^= 0xFFFFFFFFu;
-    printf("hackrf: png begin iq %u\n", (unsigned)n);
+    LS_PRINTF(t_hackrf_dev_hackrf_png_begin_iq, "hackrf: png begin iq %u\n", (unsigned)n);
     char line[80];
     unsigned lines = 0;
     for (size_t i = 0; i < n; i += 57) {
@@ -764,7 +841,7 @@ static void emit(const uint8_t *buf, size_t size, size_t start, size_t n)
         printf("%s\n", line);
         if (++lines % 32 == 0) vTaskDelay(pdMS_TO_TICKS(30));   /* let the UART drain */
     }
-    printf("hackrf: png end iq %u bytes crc %08lx\n", (unsigned)n, (unsigned long)crc);
+    LS_PRINTF(t_hackrf_dev_hackrf_png_end_iq, "hackrf: png end iq %u bytes crc %08lx\n", (unsigned)n, (unsigned long)crc);
 }
 
 /* One read's samples either side of the decimator, as hex lines
@@ -821,5 +898,5 @@ void ls_hackrf_set_ppm(int ppm)
         s_dev->ppm = ppm;
         if (s_dev->center_hz) (void)set_frequency(s_dev, s_dev->center_hz);
     }
-    printf("hackrf: ppm %d saved%s\n", ppm, s_dev ? ", retuned" : "");
+    LS_PRINTF(t_hackrf_dev_hackrf_ppm_d_saved, "hackrf: ppm %d saved%s\n", ppm, s_dev ? ", retuned" : "");
 }

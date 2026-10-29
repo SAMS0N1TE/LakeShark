@@ -7,6 +7,7 @@
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "ls_textpack.h"
 
 #define TRAIL_MAGIC 0x54524132u   /* "TRA2": includes native callback id */
 #define TAG_LEN     12
@@ -77,7 +78,7 @@ static void print_one(const char *title, const trail_t *t)
     for (int i = 0; i < LS_TRAIL_SLOTS; i++) {
         const spot_t *s = &t->spot[i];
         if (!s->count) { printf("trail:   %-6s -\n", NAMES[i]); continue; }
-        printf("trail:   %-6s %-11.11s  at %lu.%03lu s  (%lu stamps)\n", NAMES[i], s->tag,
+        LS_PRINTF(t_ls_trail_trail_6s_11_11s, "trail:   %-6s %-11.11s  at %lu.%03lu s  (%lu stamps)\n", NAMES[i], s->tag,
                (unsigned long)(s->at_ms / 1000), (unsigned long)(s->at_ms % 1000), (unsigned long)s->count);
     }
 }
@@ -103,7 +104,7 @@ void ls_trail_print(void)
 {
     if (s_prev_reset >= 0) {
         char title[64];
-        snprintf(title, sizeof(title), "the run before this boot, reset reason %d", s_prev_reset);
+        LS_SNPRINTF(t_ls_trail_the_run_before_this, title, sizeof(title), "the run before this boot, reset reason %d", s_prev_reset);
         print_one(title, &s_prev);
     }
     if (s_live.magic == TRAIL_MAGIC) print_one("this run", &s_live);

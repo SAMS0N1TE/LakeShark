@@ -1,4 +1,6 @@
 #include "../../ls_calls.h"
+#include "p25_calls_live.h"
+#include "../../ls_braille.h"
 /* P25 screen. */
 
 #include "../../ls_tui_screen.h"
@@ -27,6 +29,7 @@
 #include "../../ls_picker.h"
 #include "../../ls_radio_select.h"
 #include "../../ls_options.h"
+#include "../../ls_rffe_ui.h"
 #include "../../ls_numpad.h"
 #include "../../ls_field.h"
 #include "../../ls_notify.h"
@@ -34,6 +37,7 @@
 
 #include <dirent.h>
 #include <strings.h>
+#include "ls_textpack.h"
 
 static char s_hint[80] = "LEFT/RIGHT tune  1/2/3 views  +/- volume";
 static ls_radio_panel_t s_radio = { .focus = -1 };
@@ -83,12 +87,14 @@ static void tg_refresh(int64_t now_us)
    too much gain looks like on this receiver. */
 #define P25_CLIP_SHOW_PCT     20
 
+/* THE ACTIVITY TABLE, in CALLS' colours: each talkgroup in its own hue,
+   its name when the card has one, the last minutes of hits as a braille
+   sparkline, then hits, age and where it was seen. Newest first, because a
+   scanner's list is read from the top. Brightness is freshness. */
 static void draw_activity(tui_surface *sf, tui_rect r, bool sync, int64_t now_us)
 {
     const uint8_t frame = TUI_ATTR(TUI_CYAN, TUI_BLACK);
     const uint8_t head  = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t live  = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t old   = TUI_ATTR(TUI_WHITE, TUI_BLACK);
 
     tui_box(sf, r, ls_tr("ACTIVITY"), frame);
     if (r.h < 3 || r.w < 24) return;
@@ -111,11 +117,38 @@ static void draw_activity(tui_surface *sf, tui_rect r, bool sync, int64_t now_us
     }
 
     if (r.h < 4) return;
-    tui_put_str(sf, r, r.x + 2, r.y + 1,
-                ls_tr("TALKGROUP    HEARD   AGE  SEEN IN"), head);
+    const int inner = r.w - 4;
+    /* Columns from the right: SEEN 3, AGE 4, HITS 5; the name (or the
+       channel, when it is not this one) takes nine; the sparkline gets the
+       rest, sixteen minutes at most. */
+    const int tail = 3 + 1 + 4 + 1 + 5 + 1;
+    int minutes = inner - 7 - 10 - tail;
+    if (minutes > P25_TG_OBSERVED_MINUTES) minutes = P25_TG_OBSERVED_MINUTES;
+    if (minutes < 4) minutes = 0;
+    const int x_name = r.x + 2 + 7;
+    const int x_spark = x_name + 10;
+    const int x_tail = r.x + r.w - 2 - tail;
+    tui_put_str(sf, r, r.x + 2, r.y + 1, ls_tr("TALKGROUP"), head);
+    if (minutes) {
+        char span[16];
+        snprintf(span, sizeof(span), minutes >= 12 ? "LAST %d MIN" : "%dM", minutes);
+        tui_put_str(sf, r, x_spark, r.y + 1, span, frame);
+    }
+    tui_put_str(sf, r, x_tail + 1, r.y + 1, "HITS  AGE SEEN", head);
 
     const uint32_t now_ms = (uint32_t)(now_us / 1000);
     const int rows = r.h - 3;
+    uint16_t on_tg = 0;
+    bool on_air = false;
+    if (!p25_calls_live_now(&on_tg, NULL, &on_air, NULL) || !on_air) on_tg = 0;
+
+    /* One scale for every row, so a taller sparkline is a busier talkgroup. */
+    unsigned top = 1;
+    for (int i = 0; i < n; i++)
+        for (int m = 0; m < minutes; m++) {
+            const unsigned v = p25_tg_observed_minute_hits(&s_tg.rows[i], now_ms, (unsigned)m);
+            if (v > top) top = v;
+        }
 
     uint32_t used = 0;
     for (int slot = 0; slot < rows && slot < n; slot++) {
@@ -130,26 +163,21 @@ static void draw_activity(tui_surface *sf, tui_rect r, bool sync, int64_t now_us
         used |= 1u << best;
 
         const p25_tg_observed_row_t *row = &s_tg.rows[best];
-
-        char age[8];
-        ls_age_str(age, sizeof(age), row->last_seen_ms, now_ms);
-
-        /* Where it was seen answers a different question from how often: a
-           link control word is the talkgroup of a call in progress, a header
-           is one starting, and a grant is one being set up on another
-           channel - so a row seen only in grants is traffic this radio is
-           not listening to. */
-        char how[4];
-        int hi = 0;
-        if (row->sources & P25_TG_SEEN_LCW)   how[hi++] = 'L';
-        if (row->sources & P25_TG_SEEN_HDU)   how[hi++] = 'H';
-        if (row->sources & P25_TG_SEEN_GRANT) how[hi++] = 'G';
-        how[hi] = 0;
-
-        char line[64];
-        snprintf(line, sizeof(line), "%-9u  %7lu  %4s  %-3s",
-                 (unsigned)row->talkgroup, (unsigned long)row->hits,
-                 age, how);
+        const int y = r.y + 2 + slot;
+        const uint32_t age_ms = now_ms - row->last_seen_ms;
+        /* Thirty seconds is the span a P25 call and its tail occupy, so a
+           row brighter than the rest is one that is or has just been live;
+           five minutes is still warm. */
+        const bool hot = now_ms >= row->last_seen_ms && age_ms < 30000;
+        const bool warm = now_ms >= row->last_seen_ms && age_ms < 300000;
+        const uint8_t hue = ls_calls_tg_hue(row->talkgroup);
+        const uint8_t ink = TUI_ATTR(hot ? hue | TUI_BRIGHT : warm ? hue : LS_FAINT_FG,
+                                     TUI_BLACK);
+        char text[24];
+        if (on_tg && row->talkgroup == on_tg)
+            tui_put_char(sf, r, r.x + 1, y, '>', TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        snprintf(text, sizeof(text), "%-5u", (unsigned)row->talkgroup);
+        tui_put_str(sf, r, r.x + 2, y, text, ink);
 
         /* The channel only when it is not the one being listened to. The
            store keys on frequency as well as talkgroup, deliberately, so the
@@ -161,19 +189,61 @@ static void draw_activity(tui_surface *sf, tui_rect r, bool sync, int64_t now_us
         const uint64_t tuned = (uint64_t)s_tune_freq_hz;
         const uint64_t chan  = row->channel_hz;
         const uint64_t delta = chan > tuned ? chan - tuned : tuned - chan;
-        if (chan && delta > 6250ULL && r.w >= 46) {
-            char freq[16];
-            snprintf(freq, sizeof(freq), "  %u.%04u",
+        const tui_rect name_box = tui_rect_make(x_name, y, (minutes ? x_spark : x_tail) - x_name - 1, 1);
+        if (chan && delta > 6250ULL) {
+            snprintf(text, sizeof(text), "%u.%04u",
                      (unsigned)(chan / 1000000ULL),
                      (unsigned)((chan % 1000000ULL) / 100ULL));
-            strncat(line, freq, sizeof(line) - strlen(line) - 1);
+            tui_put_str(sf, name_box, x_name, y, text, TUI_ATTR(TUI_CYAN, TUI_BLACK));
+        } else {
+            const char *alias = p25_calls_alias(row->talkgroup);
+            if (alias)
+                tui_put_str(sf, name_box, x_name, y, alias,
+                            TUI_ATTR(hot ? (TUI_WHITE | TUI_BRIGHT) : LS_DIM_FG, TUI_BLACK));
         }
 
-        /* Thirty seconds is the span a P25 call and its tail occupy, so a
-           row brighter than the rest is one that is or has just been live. */
-        const bool recent = now_ms >= row->last_seen_ms &&
-                            (now_ms - row->last_seen_ms) < 30000;
-        tui_put_str(sf, r, r.x + 2, r.y + 2 + slot, line, recent ? live : old);
+        /* Oldest minute at the left; a floor of dots where nothing was
+           heard, so the row reads as a timeline, not as missing data. */
+        for (int cell = 0; cell < minutes; cell++) {
+            const unsigned v = p25_tg_observed_minute_hits(row, now_ms,
+                                                           (unsigned)(minutes - 1 - cell));
+            unsigned bits;
+            if (v) {
+                unsigned h = 1;
+                while (h < 4 && v * 16u > top * h * h) h++;   /* about a square root */
+                bits = ls_braille_column(h, 0) | ls_braille_column(h, 1);
+            } else {
+                bits = ls_braille_dot(0, 0) | ls_braille_dot(0, 1);
+            }
+            ls_braille_put(sf, r, x_spark + cell, y, (int16_t)(0x2800 | bits),
+                           v ? ink : LS_ATTR_FAINT);
+        }
+
+        if (row->hits >= 100000)
+            snprintf(text, sizeof(text), "%luk", (unsigned long)(row->hits / 1000));
+        else
+            snprintf(text, sizeof(text), "%lu", (unsigned long)row->hits);
+        tui_put_str(sf, r, x_tail + 5 - (int)strlen(text), y, text,
+                    TUI_ATTR(TUI_YELLOW | (hot ? TUI_BRIGHT : 0), TUI_BLACK));
+        char age[8];
+        /* Seconds: ls_age_str counts them. Handed milliseconds, as this
+           table did, a talkgroup heard 22 s ago read as seven hours. */
+        ls_age_str(age, sizeof(age), row->last_seen_ms / 1000u, now_ms / 1000u);
+        tui_put_str(sf, r, x_tail + 10 - (int)strlen(age), y, age,
+                    hot ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+
+        /* Where it was seen answers a different question from how often: a
+           link control word is the talkgroup of a call in progress, a header
+           is one starting, and a grant is one being set up on another
+           channel - so a row seen only in grants is traffic this radio is
+           not listening to. Each letter in its own colour. */
+        int sx = x_tail + 11;
+        if (row->sources & P25_TG_SEEN_LCW)
+            tui_put_char(sf, r, sx++, y, 'L', TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+        if (row->sources & P25_TG_SEEN_HDU)
+            tui_put_char(sf, r, sx++, y, 'H', TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        if (row->sources & P25_TG_SEEN_GRANT)
+            tui_put_char(sf, r, sx++, y, 'G', TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
     }
 }
 
@@ -198,11 +268,11 @@ static void draw_receiver_health(tui_surface *sf, tui_rect r)
     char line[80];
     uint8_t first = ink;
     if (P25.lr_iq_active)
-        snprintf(line, sizeof(line), "IQ blocks %lu  bad %lu  gaps %lu",
+        LS_SNPRINTF(t_scr_p25_iq_blocks_lu_bad, line, sizeof(line), "IQ blocks %lu  bad %lu  gaps %lu",
                  (unsigned long)P25.lr_iq_good, (unsigned long)P25.lr_iq_bad,
                  (unsigned long)P25.lr_iq_gaps);
     else if (P25.lora_rx)
-        snprintf(line, sizeof(line), "%s %lu B/s  RSSI %.0f dBm", ls_rsel_name(LS_RSEL_LORA),
+        LS_SNPRINTF(t_scr_p25_s_lu_b_s, line, sizeof(line), "%s %lu B/s  RSSI %.0f dBm", ls_rsel_name(LS_RSEL_LORA),
                  (unsigned long)P25.iq_bytes_sec, (double)P25.lora_rssi_dbm);
     else if (P25.lora_wait) {
         snprintf(line, sizeof(line), ls_tr("%s IN USE ELSEWHERE"), ls_rsel_name(LS_RSEL_LORA));
@@ -366,12 +436,12 @@ static void draw_decode(tui_surface *sf, tui_rect area)
         tui_rect roles = tui_rect_make(area.x, area.y, area.w, 5);
         tui_box(sf, roles, ls_tr("P25 SPLIT"), frame);
         char roles_line[80];
-        snprintf(roles_line, sizeof(roles_line), "CC: %s site %u/%u CRC %u%%",
+        LS_SNPRINTF(t_scr_p25_cc_s_site_u, roles_line, sizeof(roles_line), "CC: %s site %u/%u CRC %u%%",
             P25.split_active ? "LR2021" : "RTL fallback",
             P25.split_rfss, P25.split_site, P25.split_crc_percent);
         tui_put_str(sf, roles, roles.x + 1, roles.y + 1, roles_line, label);
         if (P25.grant_on_traffic)
-            snprintf(roles_line, sizeof(roles_line), "VOICE: RTL TG %u %.4f MHz",
+            LS_SNPRINTF(t_scr_p25_voice_rtl_tg_u, roles_line, sizeof(roles_line), "VOICE: RTL TG %u %.4f MHz",
                 P25.grant_talkgroup, (double)P25.grant_freq_hz / 1e6);
         else snprintf(roles_line, sizeof(roles_line), "VOICE: RTL idle");
         tui_put_str(sf, roles, roles.x + 1, roles.y + 2, roles_line, value);
@@ -557,14 +627,14 @@ static void draw_signal(tui_surface *sf, tui_rect area)
     }
 
     if (P25.lora_rx && !P25.lr_iq_active) {
-        ls_panel_notice(sf, area, "SPECTRUM", "LR IQ acquiring", "waiting for the IQ stream");
+        ls_panel_notice(sf, area, "SPECTRUM", "LR IQ acquiring", LS_TEXT(t_scr_p25_waiting_for_the_iq, "waiting for the IQ stream"));
         return;
     }
     const char *why = ls_wf_idle_reason();
     /* Keep HOLD reachable while the shared display is paused. */
     if (why && !ls_wf_cfg()->paused) {
         ls_panel_notice(sf, area, "SPECTRUM", why,
-                        "the receiver feeds this once it is streaming");
+                        LS_TEXT(t_scr_p25_the_receiver_feeds_this, "the receiver feeds this once it is streaming"));
         return;
     }
 
@@ -605,13 +675,13 @@ static void mark_observation(void)
         sync ? "synchronised" : "no sync at the time this was kept");
 
     if (sync && n < sizeof(text))
-        n += (size_t)snprintf(text + n, sizeof(text) - n,
+        n += (size_t)LS_SNPRINTF(t_scr_p25_nac_03x_talkgroup_d, text + n, sizeof(text) - n,
             "NAC %03X, talkgroup %d, unit %d, %s. ",
             P25.dsd_nac, P25.dsd_tg, P25.dsd_src,
             P25.dsd_modulation[0] ? P25.dsd_modulation : "modulation unknown");
 
     if (n < sizeof(text))
-        n += (size_t)snprintf(text + n, sizeof(text) - n,
+        n += (size_t)LS_SNPRINTF(t_scr_p25_signal_2f_of_full, text + n, sizeof(text) - n,
             "Signal %.2f of full scale, gain %.1f dB. "
             "%d sync events and %d voice frames this session. Audio: %s. ",
             (double)P25.iq_level, P25.rtl_gain_tenths / 10.0,
@@ -621,8 +691,7 @@ static void mark_observation(void)
        where the RECEIVER was when the note was kept. It is not where the
        transmitter is, and a trunked site can be tens of kilometres away. */
     if (n < sizeof(text))
-        snprintf(text + n, sizeof(text) - n,
-            "The position and motion attached describe this receiver when "
+        LS_SNPUTS(t_scr_p25_the_position_and_motion, text + n, sizeof(text) - n, "The position and motion attached describe this receiver when "
             "the note was kept, not the location of the transmitter.");
 
     const bool ok = ls_field_mark_radio(title, text, LS_FIELD_RTL,
@@ -757,7 +826,7 @@ static ls_act_status_t a_p25_profile(const ls_args_t *in, ls_val_t *out)
     qsort(s_profiles, (size_t)s_profile_n, sizeof(s_profiles[0]), profile_order);
 
     static char title[LS_PICKER_TEXT];
-    if (skipped) snprintf(title, sizeof(title), "P25 PROFILES  %d SKIPPED", skipped);
+    if (skipped) LS_SNPRINTF(t_scr_p25_p25_profiles_d_skipped, title, sizeof(title), "P25 PROFILES  %d SKIPPED", skipped);
     else         snprintf(title, sizeof(title), "P25 PROFILES");
 
     const p25_program_t *ps = p25_program_session();
@@ -793,7 +862,7 @@ static void register_p25_actions(void)
        roster, so this is not a read-only browse. */
     done = ls_action_register("p25.profile", "", LS_CAP_TUNE | LS_CAP_STORE,
                               a_p25_profile,
-                              "choose a P25 profile from the card");
+                              LS_TEXT(t_scr_p25_choose_a_p25_profile, "choose a P25 profile from the card"));
 }
 
 /* The radio the receiver really has; before it has one, the choice. */
@@ -936,7 +1005,7 @@ static void pack_region_done(int r)
         s_pick_map[s_pick_n++] = i;
         ls_picker_add(label, d);
     }
-    ls_picker_empty_reason("No packs for this region yet");
+    ls_picker_empty_reason(LS_TEXT(t_scr_p25_no_packs_for_this, "No packs for this region yet"));
 }
 
 static void o_pack_get(const ls_opt_t *o)
@@ -951,7 +1020,7 @@ static void o_pack_get(const ls_opt_t *o)
         for (int i = 0; i < s_pack_n; i++)
             if (pack_region(s_pack[i].st) == r) { total++; have += strcmp(s_pack[i].have, "absent") != 0; }
         char d[LS_PICKER_DETAIL];
-        snprintf(d, sizeof(d), "%d states, %d on card", total, have);
+        LS_SNPRINTF(t_scr_p25_d_states_d_on, d, sizeof(d), "%d states, %d on card", total, have);
         ls_picker_add(PACK_REGIONS[r], d);
     }
 }
@@ -971,7 +1040,7 @@ static void o_pack_remove(const ls_opt_t *o)
         s_pick_map[s_pick_n++] = i;
         ls_picker_add(label, d);
     }
-    ls_picker_empty_reason("No state packs on the card");
+    ls_picker_empty_reason(LS_TEXT(t_scr_p25_no_state_packs_on, "No state packs on the card"));
 }
 
 static void o_pack_refresh(const ls_opt_t *o) { (void)o; pack_call("p25.pack.refresh", NULL); }
@@ -1029,6 +1098,7 @@ static const ls_opt_t OPT_P25[] = {
     { .label = "Polarity",              .kind = LS_OPT_ACTION, .arg = 1,  .act = o_p25_act, .show = o_p25_show },
     { .label = "Automatic gain",        .kind = LS_OPT_ACTION, .arg = 2,  .act = o_p25_act, .show = o_p25_show, .radios = LS_OPT_SDR },
     { .label = "Receiver gain (dB)",    .kind = LS_OPT_LEVEL, .arg = 3,  .num = o_p25_num, .set_num = o_p25_set_num, .lo = 0, .hi = 50, .step = 1, .radios = LS_OPT_SDR, .show = o_p25_show },
+    LS_RFFE_MENUS,
     { .label = "Volume",                .kind = LS_OPT_LEVEL, .arg = 4,  .num = o_p25_num, .set_num = o_p25_set_num, .lo = 0, .hi = 100, .step = 5, .show = o_p25_show },
     { .label = "Voice gate",            .kind = LS_OPT_LEVEL, .arg = 5,  .num = o_p25_num, .set_num = o_p25_set_num, .lo = 0, .hi = 99, .step = 1, .show = o_p25_show },
     { .label = "Sync beep",             .kind = LS_OPT_ACTION, .arg = 6,  .act = o_p25_act, .show = o_p25_show },
@@ -1051,6 +1121,7 @@ static void open_options(void) { ls_wf_source_release(); ls_opt_open(&CTX_P25); 
 static void enter(void)
 {
     register_p25_actions();
+    p25_calls_live_register();
     ls_rsel_track(LS_RSEL_P25, p25_in_use);
 }
 
@@ -1399,8 +1470,8 @@ static void radio_view(void)
     s_view.volume=audio_volume_get();
     p25_get_receiver_status(&s_view.receiver);
     bool sync=s_view.receiver.receiver_streaming && P25.dsd_has_sync;
-    if(sync && p25_nac_valid(&P25)) snprintf(s_view.detail[0],64,"NAC %03X  TG %d  UNIT %d",P25.dsd_nac,P25.dsd_tg,P25.dsd_src);
-    else snprintf(s_view.detail[0],64,"NAC ---   TG ---   UNIT ---");
+    if(sync && p25_nac_valid(&P25)) LS_SNPRINTF(t_scr_p25_nac_03x_tg_d, s_view.detail[0],64,"NAC %03X  TG %d  UNIT %d",P25.dsd_nac,P25.dsd_tg,P25.dsd_src);
+    else LS_SNPUTS(t_scr_p25_nac_tg_unit, s_view.detail[0], 64, "NAC ---   TG ---   UNIT ---");
     snprintf(s_view.detail[1],64,"%s",receive_label());
     if(lr_receiver()) {
         snprintf(s_view.detail[2],64,"LR IQ receive");
@@ -1409,8 +1480,8 @@ static void radio_view(void)
     if(p25_p2_enabled()) {
         s_view.mode="P25 II EXP";
         p25_p2_describe(s_view.detail[0],64);
-        snprintf(s_view.detail[1],64,"MANUAL VOICE / 6000 baud");
-        snprintf(s_view.detail[3],64,"Experimental; RF path unverified");
+        LS_SNPUTS(t_scr_p25_manual_voice_6000_baud, s_view.detail[1], 64, "MANUAL VOICE / 6000 baud");
+        LS_SNPUTS(t_scr_p25_experimental_rf_path_unverified, s_view.detail[3], 64, "Experimental; RF path unverified");
     }
 }
 static void radio_action(char c)
@@ -1428,12 +1499,14 @@ static void radio_action(char c)
 
 static void draw(tui_surface *sf, tui_rect area)
 {
+    /* Every page follows the call, so CALLS opens on the truth. */
+    p25_calls_live_tick();
     if (ls_calls_active()) {
-        snprintf(s_hint, sizeof(s_hint), "UP/DOWN calls  P play  S stop  D delete  O options  ESC back");
+        LS_SNPUTS(t_scr_p25_up_down_calls_p, s_hint, sizeof(s_hint), "UP/DOWN calls  P play  H hold  L lockout  D delete  ESC back");
         ls_wf_source_release(); ls_calls_draw(sf, area); return;
     }
     if (s_page == 5) {
-        snprintf(s_hint, sizeof(s_hint), "S slot  H hold  O options  1 P25  R radio");
+        LS_SNPUTS(t_scr_p25_s_slot_h_hold, s_hint, sizeof(s_hint), "S slot  H hold  O options  1 P25  R radio");
         draw_dmr(sf, area);
         return;
     }

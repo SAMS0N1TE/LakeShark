@@ -104,6 +104,21 @@ typedef struct {
     int gain_tenths_db;
 } ls_radio_iq_config_t;
 
+/* Host transport evidence only. No device clock, sample sequence or complete
+ * hardware-loss counter exists on RTL USB. Epochs never wrap into a match. */
+typedef struct {
+    bool known, fifo_reset_known, counters_saturated;
+    uint64_t epoch, ring_rejected_bytes, transfer_error_events;
+    uint64_t submission_error_events, flush_discarded_bytes;
+} ls_radio_iq_transport_t;
+typedef struct {
+    bool known;
+    uint64_t read_started_us, read_finished_us, context_epoch;
+    uint64_t configured_center_hz;
+    uint32_t nominal_rate_hz;
+    ls_radio_iq_transport_t transport;
+} ls_radio_iq_read_receipt_t;
+
 /* Optional device-side RX diagnostics. HackRF GET_M0_STATE v1.06 layout.
  * Counters are bytes, not IQ pairs. A failed query means unknown, not zero.
  * Read after stopping RX so the diagnostic cannot disturb sample collection. */
@@ -126,6 +141,23 @@ typedef struct {
     size_t sync_word_bytes;
     size_t max_payload_bytes;
 } ls_radio_packet_config_t;
+
+/* Front-end controls: settings of the receiver's analog end that outlast a
+ * session and belong to the device, not to the app holding it. The values
+ * and what each means are radio_frontend.h's; the registry only carries
+ * them to the driver. A driver says which it answers in fe_ctls. */
+typedef enum {
+    LS_RADIO_FE_BIAS_T = 0,        /* DC on the antenna port: 0 off, 1 on   */
+    LS_RADIO_FE_PPM,               /* reference correction, -200..200       */
+    LS_RADIO_FE_DIGITAL_AGC,       /* RTL2832 demod AGC: 0 follow, 1 on, 2 off */
+    LS_RADIO_FE_OFFSET_TUNING,     /* tune off centre to avoid DC: 0/1      */
+    LS_RADIO_FE_AMP,               /* RF amp: 0 by gain, 1 off, 2 on        */
+    LS_RADIO_FE_LNA_DB,            /* fixed LNA stage, -1 by gain           */
+    LS_RADIO_FE_VGA_DB,            /* fixed baseband stage, -1 by gain      */
+    LS_RADIO_FE_DIRECT_SAMPLING,   /* 0 off, 1 I branch, 2 Q branch         */
+    LS_RADIO_FE_CTLS
+} ls_radio_fe_ctl_t;
+#define LS_RADIO_FE_BIT(c) (1u << (c))
 
 typedef struct {
     uint8_t *data;
@@ -168,6 +200,15 @@ typedef struct {
     ls_radio_err_t (*iq_get_health)(void *driver_ctx, ls_radio_iq_health_t *out);
     /* Optional: tell the tuner its reference runs ppm fast (positive) or slow. */
     ls_radio_err_t (*iq_set_ppm)(void *driver_ctx, int ppm);
+    bool (*iq_transport_status)(void *driver_ctx, ls_radio_iq_transport_t *out);
+    /* Optional front-end control, no lease needed: write sets *value, read
+     * fills it from the device where it can (a register read back), else
+     * from what was last set. Serialized with the other control calls. */
+    ls_radio_err_t (*fe_ctl)(void *driver_ctx, ls_radio_fe_ctl_t ctl,
+                             bool write, int *value);
+    /* Optional: the tuner's own gain steps in tenths of a dB, ascending, at
+     * most max of them; answers how many, 0 when it has no table. */
+    int (*fe_gains)(void *driver_ctx, int *tenths, int max);
 } ls_radio_driver_ops_t;
 
 typedef struct {
@@ -179,10 +220,12 @@ typedef struct {
     uint32_t packet_formats;
     const ls_radio_range_t *frequency_ranges;
     size_t frequency_range_count;
+    bool tuner_model_known; /* model-derived bounds, not calibrated RF proof */
     const ls_radio_range_t *sample_rate_ranges;
     size_t sample_rate_range_count;
     const ls_radio_driver_ops_t *ops;
     void *driver_ctx;
+    uint32_t fe_ctls;              /* LS_RADIO_FE_BIT()s fe_ctl answers     */
 } ls_radio_endpoint_t;
 
 typedef struct {
@@ -194,6 +237,7 @@ typedef struct {
     uint32_t packet_formats;
     ls_radio_range_t frequency_ranges[LS_RADIO_MAX_FREQUENCY_RANGES];
     size_t frequency_range_count;
+    bool tuner_model_known;
     ls_radio_range_t sample_rate_ranges[LS_RADIO_MAX_RATE_RANGES];
     size_t sample_rate_range_count;
     bool present;
@@ -206,12 +250,20 @@ typedef struct {
     ls_radio_packet_config_t actual_packet;
     uint64_t bytes_read;
     uint64_t packets_read;
+    /* Metadata only: process-lifetime tokens never wrap back into a match.
+     * Context changes include attempted controls (unknown driver side effects).
+     * A control in flight or token exhaustion makes the context unknown. */
+    bool diagnostic_context_known;
+    bool diagnostic_counter_known;
+    uint64_t diagnostic_context_epoch;
+    uint64_t diagnostic_counter_epoch;
     ls_radio_err_t last_error;
     /* Control operations - configure, gain, start, retune - that
        have failed with LS_RADIO_ERR_IO in a row, since the last one that
        succeeded or the last attach. Reads do not count: this measures
        whether the device answers requests, not whether samples arrive. */
     uint32_t control_io_errors;
+    uint32_t fe_ctls;              /* LS_RADIO_FE_BIT()s the driver answers */
 } ls_radio_endpoint_info_t;
 
 ls_radio_err_t ls_radio_endpoint_register(const ls_radio_endpoint_t *endpoint);
@@ -240,6 +292,25 @@ ls_radio_err_t ls_radio_endpoint_pause(const char *endpoint_id,
    something changed, without touching the device it has given up on. */
 uint32_t ls_radio_endpoint_generation(void);
 
+/* A front-end control on a present endpoint, whoever holds it (see
+ * ls_radio_fe_ctl_t). UNAVAILABLE when it is not attached, UNSUPPORTED when
+ * the driver does not answer that control. Blocks for the driver's USB
+ * control transfers: not from the UI task (radio_frontend.h queues them). */
+ls_radio_err_t ls_radio_endpoint_fe(const char *endpoint_id,
+                                    ls_radio_fe_ctl_t ctl, bool write,
+                                    int *value);
+/* The tuner's gain table, as fe_gains. 0 when absent or there is none. */
+int ls_radio_endpoint_fe_gains(const char *endpoint_id, int *tenths, int max);
+
+/* One observer of every IQ read that succeeds, whoever made it: the bytes as
+ * the app got them, with the centre and rate in force. Called on the
+ * reader's task after the read, so it must only look and return - copy a
+ * snapshot when asked for one, never block. NULL removes it. */
+typedef void (*ls_radio_iq_tap_fn)(const char *endpoint_id,
+                                   const uint8_t *iq, size_t bytes,
+                                   uint64_t center_hz, uint32_t rate_hz);
+void ls_radio_endpoint_set_iq_tap(ls_radio_iq_tap_fn tap);
+
 ls_radio_err_t ls_radio_acquire(const char *owner,
                                 const ls_radio_requirements_t *requirements,
                                 ls_radio_session_t **out);
@@ -262,10 +333,26 @@ ls_radio_err_t ls_radio_iq_start(ls_radio_session_t *session);
 ls_radio_err_t ls_radio_iq_read(ls_radio_session_t *session, void *dst,
                                 size_t bytes, uint32_t timeout_ms,
                                 size_t *read_bytes);
+ls_radio_err_t ls_radio_iq_read_observed(ls_radio_session_t *session, void *dst,
+    size_t bytes, uint32_t timeout_ms, size_t *read_bytes,
+    ls_radio_iq_read_receipt_t *receipt);
+/* Recheck after DSP before crediting a stamped block. Metadata only. */
+bool ls_radio_iq_receipt_current(ls_radio_session_t *session,
+    const ls_radio_iq_read_receipt_t *receipt);
 ls_radio_err_t ls_radio_iq_retune(ls_radio_session_t *session,
                                   uint64_t center_hz, bool fast,
                                   uint64_t *actual_hz);
 ls_radio_err_t ls_radio_iq_stop(ls_radio_session_t *session);
+
+/* The capture tap, separate from RF LAB's ls_radio_endpoint_set_iq_tap: one
+   listener sees a copy of every I/Q read, on the reading task, after the
+   read and before the reader does: endpoint id, the tuning the samples were
+   read with, the bytes. NULL tuning and data mark the end of a stream. It
+   must only copy and return (TIME MACHINE, ls_tmach.h). NULL removes it. */
+typedef void (*ls_radio_iq_capture_fn)(const char *endpoint_id,
+                                       const ls_radio_iq_config_t *tuning,
+                                       const void *data, size_t bytes);
+void ls_radio_endpoint_set_capture_tap(ls_radio_iq_capture_fn tap);
 ls_radio_err_t ls_radio_iq_get_health(ls_radio_session_t *session,
                                       ls_radio_iq_health_t *out);
 

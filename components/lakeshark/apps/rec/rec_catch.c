@@ -1,7 +1,10 @@
 /* CATCH owns an RTL endpoint and, only while useful, a background socket
    lease. Two workers keep USB reception independent of SPI retunes and SD. */
 #include "rec_catch.h"
+#include "ls_det_signal.h"
+#pragma weak ls_seen_signal
 #include "rec_watch.h"
+#include "rec_ism.h"
 #include "subghz_file.h"
 #include "ls_sub_fsk.h"
 #include "ls_lora.h"
@@ -20,6 +23,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "ls_textpack.h"
 
 /* Defined by REC's weak no-mesh fallback when MeshCore is not linked. */
 extern bool ls_mesh_radio_hold_bg(bool);
@@ -90,9 +94,9 @@ static bool trace_drain(void)
     line=s_trace_queue[s_trace_head];s_trace_head=(s_trace_head+1)%TRACE_QUEUE;s_trace_count--;
     unsigned suppressed=s_trace_suppressed;s_trace_suppressed=0;
     unlock();
-    if(suppressed)printf("catch trace suppressed %u lines\n",suppressed);
+    if(suppressed)LS_PRINTF(t_rec_catch_catch_trace_suppressed_u, "catch trace suppressed %u lines\n",suppressed);
     const catch_trace_t *t=&line.event;
-    printf("catch trace block=%llu us id=%lu coarse=%.1f dB/floor bin=%u freq=%lu FFT=%s state=%s reason=%s period=%llu us gap=%llu us\n",
+    LS_PRINTF(t_rec_catch_catch_trace_block_llu, "catch trace block=%llu us id=%lu coarse=%.1f dB/floor bin=%u freq=%lu FFT=%s state=%s reason=%s period=%llu us gap=%llu us\n",
         (unsigned long long)t->block_us,(unsigned long)t->id,(double)t->coarse_db,
         t->bin,(unsigned long)t->frequency,t->fft,t->state,t->reason,
         (unsigned long long)line.period,(unsigned long long)line.gap);
@@ -159,6 +163,11 @@ static void detection(const catch_burst_t *b,bool start,void *ctx)
         s_result[i].lr_rssi=NAN;
         snprintf(s_result[i].decode_status,sizeof(s_result[i].decode_status),"waiting for LR2021");
         s_status.detections++;
+        if(ls_seen_signal) {            /* a detector app: a new burst row, by frequency */
+            ls_det_signal_t sig={.source=DET_CATCH,.a=b->frequency,.b=b->id,.flag=1};
+            snprintf(sig.text,sizeof(sig.text),"burst");
+            ls_seen_signal(&sig);
+        }
         uint64_t elapsed=b->start_us>=s_rtl_epoch?b->start_us-s_rtl_epoch:0;
         bool eligible=catch_source_observe(&s_sources,&s_result[i].burst,s_status.center,elapsed);
         const char *why=!has_stream?"LR2021 absent (SX1262 has no stream)":
@@ -176,7 +185,7 @@ static void detection(const catch_burst_t *b,bool start,void *ctx)
         }
         if(s_has_pending) {
             if(!catch_handoff_prefer(&s_result[i].burst,&s_pending)) {
-                snprintf(s_result[i].decode_status,sizeof(s_result[i].decode_status),"stronger burst pending");
+                LS_SNPUTS(t_rec_catch_stronger_burst_pending, s_result[i].decode_status, sizeof(s_result[i].decode_status), "stronger burst pending");
                 unlock();return;
             }
             s_status.dropped++;
@@ -246,7 +255,7 @@ static ls_radio_err_t rtl_block(ls_radio_session_t *session)
         hide_learned_spurs();
         if(s_has_pending && catch_detector_is_spur(&s_detector,s_pending.frequency,s_pending.rtl_dbfs)) {
             for(int j=0;j<CATCH_RESULTS;j++)if(s_result[j].burst.id==s_pending.id)
-                snprintf(s_result[j].decode_status,sizeof(s_result[j].decode_status),"learned spur: no handoff");
+                LS_SNPUTS(t_rec_catch_learned_spur_no_handoff, s_result[j].decode_status, sizeof(s_result[j].decode_status), "learned spur: no handoff");
             s_has_pending=false;
         }
         unlock();
@@ -316,7 +325,7 @@ static void handoff_end(void *ctx)
     if(s_lease) ls_mesh_radio_hold_bg(false);
     lock();
     if(s_slot>=0 && !s_result[s_slot].captures)
-        snprintf(s_result[s_slot].decode_status,sizeof(s_result[s_slot].decode_status),"no repeat captured during hold");
+        LS_SNPUTS(t_rec_catch_no_repeat_captured_during, s_result[s_slot].decode_status, sizeof(s_result[s_slot].decode_status), "no repeat captured during hold");
     snprintf(s_status.lr_status,sizeof(s_status.lr_status),"waiting for a burst");
     unlock();
     s_lease=false;s_slot=-1;
@@ -386,6 +395,10 @@ static void capture(uint32_t id,uint32_t frequency,float rssi,int bytes)
     lr433_capture_t cap={.kind=s_kind,.rate=s_rate,.lead=s_lead,
         .lead_bits=(uint8_t)s_lead_bits,.data=s_bits,.bits=bytes*8};
     int decoded=lr433_decode(&cap,&s_decode,s_messages,8);
+    for(int i=0;i<decoded;i++) {
+        const rec_ism_msg_t m={.m=s_messages[i],.hz=frequency,.rssi=rssi,.source=REC_SOURCE_SX1262};
+        rec_ism_publish(&m,esp_timer_get_time());
+    }
     int n=edges_from_bits(&cap);
     lock();
     if(s_slot>=0 && s_result[s_slot].burst.id==id) {
@@ -413,7 +426,7 @@ static void save_capture(void)
     s_save_slot=-1;unlock();
     if(slot<0) return;
     char path[112];bool ok=false;
-    snprintf(path,sizeof(path),"/sdcard/lakeshark/rec/catch_%llu_%lu.sub",
+    LS_SNPRINTF(t_rec_catch_sdcard_lakeshark_rec_catch, path,sizeof(path),"/sdcard/lakeshark/rec/catch_%llu_%lu.sub",
         (unsigned long long)result.burst.detected_us,(unsigned long)result.burst.id);
     if(n>0) {
         mkdir("/sdcard/lakeshark",0775);mkdir("/sdcard/lakeshark/rec",0775);
@@ -453,7 +466,7 @@ static void lr_worker(void *arg)
                 for(int i=0;i<CATCH_RESULTS;i++) if(s_result[i].burst.id==b.id) {found=i;break;}
                 if(accepted && found>=0) {
                     s_slot=found;listening_id=b.id;s_result[found].latency_us=latency;
-                    snprintf(s_result[found].decode_status,sizeof(s_result[found].decode_status),"listening for repeat");
+                    LS_SNPUTS(t_rec_catch_listening_for_repeat, s_result[found].decode_status, sizeof(s_result[found].decode_status), "listening for repeat");
                     if(!same) {s_status.handoffs++;if(preempt)s_status.preemptions++;if(latency>s_status.max_latency_us)s_status.max_latency_us=latency;}
                 } else if(found>=0) snprintf(s_result[found].decode_status,sizeof(s_result[found].decode_status),"%s",hold.listening?"LR2021 holding another channel":s_status.lr_status);
                 unlock();
@@ -467,7 +480,7 @@ static void lr_worker(void *arg)
                        evidence controls preference and hold renewal. */
                     capture(listening_id,hold.frequency,rssi,n);
                 }
-                else if(n<0) {catch_handoff_stop(&hold,&HANDOFF);lock();snprintf(s_status.lr_status,sizeof(s_status.lr_status),"LR2021 receive fault");unlock();}
+                else if(n<0) {catch_handoff_stop(&hold,&HANDOFF);lock();LS_SNPUTS(t_rec_catch_lr2021_receive_fault, s_status.lr_status, sizeof(s_status.lr_status), "LR2021 receive fault");unlock();}
             }
             save_capture();vTaskDelay(1);
         }
@@ -553,7 +566,7 @@ int rec_catch_command(int argc,char **argv)
         if(!argv[2][0] || *end || seconds>300 || !s_lock)return 1;
         lock();s_trace_until=seconds?(uint64_t)esp_timer_get_time()+seconds*1000000ull:0;
         s_trace_head=s_trace_count=s_trace_lines=s_trace_suppressed=0;unlock();
-        printf("catch trace %lu seconds (40 lines/s; suppressed lines counted)\n",seconds);return 0;
+        LS_PRINTF(t_rec_catch_catch_trace_lu_seconds, "catch trace %lu seconds (40 lines/s; suppressed lines counted)\n",seconds);return 0;
     }
     if(argc==3 && !strcmp(argv[1],"start")) {
         char *end;double mhz=strtod(argv[2],&end);
@@ -575,10 +588,10 @@ int rec_catch_command(int argc,char **argv)
             bool found=false;lock();
             for(int j=0;j<CATCH_RESULTS;j++)if(s_result[j].burst.id==ids[i] && !s_result[j].burst.spur) {r=s_result[j];found=true;break;}
             unlock();if(!found)continue;
-            printf("%llu ms %.6f MHz RTL %.1f dBFS LR %.1f dBm %s %s %s\n",
+            LS_PRINTF(t_rec_catch_llu_ms_6f_mhz, "%llu ms %.6f MHz RTL %.1f dBFS LR %.1f dBm %s %s %s\n",
             (unsigned long long)(r.burst.start_us/1000),r.burst.frequency/1e6,(double)r.burst.rtl_dbfs,(double)r.lr_rssi,
             r.decoded?r.message.model:"raw",r.decoded?r.message.id:"",r.decode_status);
-            if(r.decoded) printf("  channel %d battery %d temp %.1f C humidity %.1f %% pressure %.1f kPa wind %.1f m/s rain %.1f mm consumption %lld\n",
+            if(r.decoded) LS_PRINTF(t_rec_catch_channel_d_battery_d, "  channel %d battery %d temp %.1f C humidity %.1f %% pressure %.1f kPa wind %.1f m/s rain %.1f mm consumption %lld\n",
                 r.message.channel,r.message.battery_ok,(double)r.message.temp_c,(double)r.message.humidity,
                 (double)r.message.kpa,(double)r.message.wind_ms,(double)r.message.rain_mm,(long long)r.message.consumption);
         }
@@ -586,47 +599,47 @@ int rec_catch_command(int argc,char **argv)
     }
     if(argc==2 && !strcmp(argv[1],"stats")) {
         catch_status_t *st=heap_caps_malloc(sizeof(*st),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-        if(!st) {puts("catch: diagnostic snapshot allocation failed");return 1;}
+        if(!st) {LS_PUTS(t_rec_catch_catch_diagnostic_snapshot_allocation, "catch: diagnostic snapshot allocation failed");return 1;}
         rec_catch_status(st);
-        printf("catch: %s %.6f MHz detected %lu captures %lu decoded %lu dropped %lu handoffs %lu max latency %lu us\n%s; %s\n",
+        LS_PRINTF(t_rec_catch_catch_s_6f_mhz, "catch: %s %.6f MHz detected %lu captures %lu decoded %lu dropped %lu handoffs %lu max latency %lu us\n%s; %s\n",
             st->running?"running":st->stopping?"stopping":"stopped",st->center/1e6,(unsigned long)st->detections,
             (unsigned long)st->captures,(unsigned long)st->decoded,(unsigned long)st->dropped,
             (unsigned long)st->handoffs,(unsigned long)st->max_latency_us,st->rtl_status,st->lr_status);
-        printf("blocks %lu dropped blocks %lu USB lost bytes %llu detector drops %lu FFT %lu active %llu/%llu us (%.1f%%)\n",
+        LS_PRINTF(t_rec_catch_blocks_lu_dropped_blocks, "blocks %lu dropped blocks %lu USB lost bytes %llu detector drops %lu FFT %lu active %llu/%llu us (%.1f%%)\n",
             (unsigned long)st->blocks,(unsigned long)st->block_drops,(unsigned long long)st->usb_drop_bytes,
             (unsigned long)st->detector_drops,(unsigned long)st->fft_frames,
             (unsigned long long)st->active_us,(unsigned long long)st->elapsed_us,
             st->elapsed_us?100.0*(double)st->active_us/st->elapsed_us:0);
-        printf("processed %.1f blocks/s %.3f MB/s vs expected %.1f blocks/s %.3f MB/s; block period %llu us max coarse block gap %llu us\n",
+        LS_PRINTF(t_rec_catch_processed_1f_blocks_s, "processed %.1f blocks/s %.3f MB/s vs expected %.1f blocks/s %.3f MB/s; block period %llu us max coarse block gap %llu us\n",
             st->elapsed_us?st->blocks*1e6/st->elapsed_us:0,
             st->elapsed_us?(double)st->processed_bytes/st->elapsed_us:0,
             st->processed_bytes?CATCH_RATE*2.0*st->blocks/st->processed_bytes:0,CATCH_RATE*2/1e6,
             (unsigned long long)st->block_period_us,(unsigned long long)st->max_block_gap_us);
-        printf("lost samples %llu (%.1f samples/s, transport reported); unaccounted samples %llu (rate deficit estimate; RTL has no sequence counter)\n",
+        LS_PRINTF(t_rec_catch_lost_samples_llu_1f, "lost samples %llu (%.1f samples/s, transport reported); unaccounted samples %llu (rate deficit estimate; RTL has no sequence counter)\n",
             (unsigned long long)st->lost_samples,st->elapsed_us?st->lost_samples*1e6/st->elapsed_us:0,
             (unsigned long long)st->deficit_samples);
-        printf("stages read %llu us checks %llu us (%llu us/check) FFT %llu us (%llu us/frame) spectrum %llu us scan/status %llu us; hard FFT budget %u/s preemptions %lu\n",
+        LS_PRINTF(t_rec_catch_stages_read_llu_us, "stages read %llu us checks %llu us (%llu us/check) FFT %llu us (%llu us/frame) spectrum %llu us scan/status %llu us; hard FFT budget %u/s preemptions %lu\n",
             (unsigned long long)st->read_us,(unsigned long long)st->checks_us,
             (unsigned long long)(st->coarse_frames?st->checks_us/st->coarse_frames:0),
             (unsigned long long)st->fft_us,(unsigned long long)(st->fft_frames?st->fft_us/st->fft_frames:0),
             (unsigned long long)st->spectrum_us,(unsigned long long)st->scan_us,
             CATCH_FULL_PER_SECOND,(unsigned long)st->preemptions);
-        printf("floor median %.1f dBFS threshold median %.1f dBFS (per-bin +%.1f dB); warm %u ms duration %u..%u ms; quiet %u blocks after %u ms, positive timeout %u ms\n",
+        LS_PRINTF(t_rec_catch_floor_median_1f_dbfs, "floor median %.1f dBFS threshold median %.1f dBFS (per-bin +%.1f dB); warm %u ms duration %u..%u ms; quiet %u blocks after %u ms, positive timeout %u ms\n",
             (double)st->floor_dbfs,(double)st->threshold_dbfs,(double)CATCH_MARGIN_DB,
             CATCH_WARM_US/1000,CATCH_MIN_US/1000,CATCH_MAX_US/1000,CATCH_QUIET_BLOCKS,CATCH_MERGE_US/1000,CATCH_OBSERVATION_US/1000);
-        printf("ignored (outside chosen windows) %lu\n",(unsigned long)st->ignored);
-        printf("handoff warm %u ms repeat tolerance 15000 Hz; DC/image guard %u bins (%.3f kHz)\n",
+        LS_PRINTF(t_rec_catch_ignored_outside_chosen_windows, "ignored (outside chosen windows) %lu\n",(unsigned long)st->ignored);
+        LS_PRINTF(t_rec_catch_handoff_warm_u_ms, "handoff warm %u ms repeat tolerance 15000 Hz; DC/image guard %u bins (%.3f kHz)\n",
             CATCH_HANDOFF_WARM_US/1000,CATCH_DC_BINS,(double)CATCH_DC_BINS*CATCH_RATE/CATCH_BINS/1000);
-        printf("RTL actual centre %lu Hz rate %lu sps gain %s %.1f dB IQ RMS %.5f clips %llu (sampled)\n",
+        LS_PRINTF(t_rec_catch_rtl_actual_centre_lu, "RTL actual centre %lu Hz rate %lu sps gain %s %.1f dB IQ RMS %.5f clips %llu (sampled)\n",
             (unsigned long)st->actual_center,(unsigned long)st->sample_rate,
             st->gain_mode==LS_RADIO_GAIN_MANUAL?"manual":"auto",st->gain_tenths_db/10.0,
             (double)st->iq_rms,(unsigned long long)st->clips);
-        printf("checks %lu full allowance %lu over budget %lu; rejected short %lu long %lu wide %lu margin %lu mask %lu merged %lu\n",
+        LS_PRINTF(t_rec_catch_checks_lu_full_allowance, "checks %lu full allowance %lu over budget %lu; rejected short %lu long %lu wide %lu margin %lu mask %lu merged %lu\n",
             (unsigned long)st->coarse_frames,(unsigned long)st->full_allowance,(unsigned long)st->over_budget,
             (unsigned long)st->reasons[CATCH_TOO_SHORT],(unsigned long)st->reasons[CATCH_TOO_LONG],
             (unsigned long)st->reasons[CATCH_TOO_WIDE],(unsigned long)st->reasons[CATCH_UNDER_MARGIN],
             (unsigned long)st->reasons[CATCH_MASKED],(unsigned long)st->reasons[CATCH_MERGED]);
-        printf("learned spurs %lu suppressed %lu; top",(unsigned long)st->spur_count,(unsigned long)st->reasons[CATCH_SPUR]);
+        LS_PRINTF(t_rec_catch_learned_spurs_lu_suppressed, "learned spurs %lu suppressed %lu; top",(unsigned long)st->spur_count,(unsigned long)st->reasons[CATCH_SPUR]);
         for(unsigned i=0;i<st->spur_count && i<4;i++)printf(" %lu Hz%s",(unsigned long)st->spurs[i].frequency,st->spurs[i].comb?" comb":"");
         puts("");
         uint64_t now=esp_timer_get_time();int strongest=-1;
@@ -635,24 +648,24 @@ int rec_catch_command(int argc,char **argv)
             (strongest<0 || st->recent[i].snr_db>st->recent[strongest].snr_db))strongest=(int)i;
         if(strongest>=0) {
             catch_peak_t *p=&st->recent[strongest];
-            printf("peak last 10 s SNR %.1f dB %lu Hz at %llu ms age %llu ms (%s)\n",
+            LS_PRINTF(t_rec_catch_peak_last_10_s, "peak last 10 s SNR %.1f dB %lu Hz at %llu ms age %llu ms (%s)\n",
                 (double)p->snr_db,(unsigned long)p->frequency,(unsigned long long)(p->peak_us/1000),
                 (unsigned long long)((now-p->peak_us)/1000),catch_reason_name(p->reason));
-        } else puts("peak last 10 s: none above floor+6 dB");
+        } else LS_PUTS(t_rec_catch_peak_last_10_s_2, "peak last 10 s: none above floor+6 dB");
         heap_caps_free(st);return 0;
     }
     if(argc==2 && !strcmp(argv[1],"spurs")) {
         catch_status_t *st=heap_caps_malloc(sizeof(*st),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
         if(!st)return 1;
         rec_catch_status(st);
-        printf("learned spurs %lu (capacity %u; +10 dB override, quiet decay 3 s)\n",(unsigned long)st->spur_count,CATCH_SPUR_GROUPS);
+        LS_PRINTF(t_rec_catch_learned_spurs_lu_capacity, "learned spurs %lu (capacity %u; +10 dB override, quiet decay 3 s)\n",(unsigned long)st->spur_count,CATCH_SPUR_GROUPS);
         for(unsigned i=0;i<st->spur_count && i<CATCH_SPUR_GROUPS;i++)
-            printf("spur %lu Hz %.1f dBFS %s\n",(unsigned long)st->spurs[i].frequency,(double)st->spurs[i].dbfs,st->spurs[i].comb?"comb family":"recurrent / persistent");
+            LS_PRINTF(t_rec_catch_spur_lu_hz_1f, "spur %lu Hz %.1f dBFS %s\n",(unsigned long)st->spurs[i].frequency,(double)st->spurs[i].dbfs,st->spurs[i].comb?"comb family":"recurrent / persistent");
         heap_caps_free(st);return 0;
     }
     if(argc==2 && !strcmp(argv[1],"peaks")) {
         catch_status_t *st=heap_caps_malloc(sizeof(*st),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-        if(!st) {puts("catch: diagnostic snapshot allocation failed");return 1;}
+        if(!st) {LS_PUTS(t_rec_catch_catch_diagnostic_snapshot_allocation, "catch: diagnostic snapshot allocation failed");return 1;}
         rec_catch_status(st);
         /* A snapshot and local index sort keep console locks short. */
         unsigned order[CATCH_PEAKS];
@@ -663,7 +676,7 @@ int rec_catch_command(int argc,char **argv)
             }
         for(unsigned i=0;i<st->peak_count;i++) {
             catch_peak_t *p=&st->peaks[order[i]];
-            printf("peak %llu..%llu ms %lu Hz SNR %.1f dB %.1f dBFS %s\n",
+            LS_PRINTF(t_rec_catch_peak_llu_llu_ms, "peak %llu..%llu ms %lu Hz SNR %.1f dB %.1f dBFS %s\n",
                 (unsigned long long)(p->first_us/1000),(unsigned long long)(p->last_us/1000),
                 (unsigned long)p->frequency,(double)p->snr_db,(double)p->dbfs,catch_reason_name(p->reason));
         }
@@ -678,11 +691,11 @@ int rec_catch_command(int argc,char **argv)
             ok=catch_watch_add(&w,(uint32_t)(atof(argv[3])*1e6+0.5),argc>4?(uint32_t)(atof(argv[4])*1e3+0.5):CATCH_CHAN_WIDTH)>=0;
         else ok=argc==2;
         if(ok && argc>2)ok=catch_watch_set(&w);
-        if(!ok){puts("catch watch [all|chosen|add <MHz> [kHz]|clear]");return 1;}
+        if(!ok){LS_PUTS(t_rec_catch_catch_watch_all_chosen, "catch watch [all|chosen|add <MHz> [kHz]|clear]");return 1;}
         const char *note=catch_watch_note(&w);
         printf("watch %s%s%s\n",w.mode?"CHOSEN":"ALL",note?": ":"",note?note:"");
-        for(int i=0;i<CATCH_CHAN_MAX;i++)if(w.chan[i].centre)printf("  %d: %lu Hz +/- %lu\n",i+1,(unsigned long)w.chan[i].centre,(unsigned long)w.chan[i].width/2);
+        for(int i=0;i<CATCH_CHAN_MAX;i++)if(w.chan[i].centre)LS_PRINTF(t_rec_catch_d_lu_hz_lu, "  %d: %lu Hz +/- %lu\n",i+1,(unsigned long)w.chan[i].centre,(unsigned long)w.chan[i].width/2);
         return 0;
     }
-    puts("catch start <MHz> | stop | list | stats | peaks | spurs | watch | trace <0..300 seconds>");return 1;
+    LS_PUTS(t_rec_catch_catch_start_mhz_stop, "catch start <MHz> | stop | list | stats | peaks | spurs | watch | trace <0..300 seconds>");return 1;
 }

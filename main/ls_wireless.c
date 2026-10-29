@@ -1,7 +1,7 @@
 #include "tui/ls_wireless.h"
 #include "ls_wifi.h"
 #include "tui/ls_sweep_app.h"
-#include "tui/ls_detector.h"
+#include "tui/ls_seen.h"
 #include "ble_link.h"
 #include "ls_flash_task.h"
 #include "esp_timer.h"
@@ -22,9 +22,9 @@ static bool s_rid_requested, s_rid_owned, s_rid_failed, s_rid_retry;
 static bool s_drone_rid;
 /* LINK could not allocate a 6 KiB DRAM stack after the radio and
  * C6 started. Reserve it and keep one sleeping worker across app visits. */
-static DRAM_ATTR StackType_t s_worker_stack[6144 / sizeof(StackType_t)]
+static StackType_t s_worker_stack[6144 / sizeof(StackType_t)]
     __attribute__((aligned(16)));
-static DRAM_ATTR StaticTask_t s_worker_tcb;
+static StaticTask_t s_worker_tcb;
 static TaskHandle_t s_worker_task;
 static ls_wireless_op_t s_pending;
 static char s_ssid[33], s_pass[65];
@@ -162,7 +162,7 @@ static void worker(void *arg)
         bool stop = find_ble == s_find_ble_owned && !s_active && !s_observer && !s_rid_requested && !s_rid_owned && op == LS_WIRELESS_NONE;
         portEXIT_CRITICAL(&s_mux);
         find_ble_tick(find_ble);
-        if (stop && !ls_survey_pending() && !ls_sweep_pending() && !ls_detector_pending()) {
+        if (stop && !ls_survey_pending() && !ls_sweep_pending() && !ls_seen_pending()) {
             wipe(pass, sizeof(pass));
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             last_poll = 0;
@@ -203,7 +203,7 @@ static void worker(void *arg)
         rid_tick();
         ls_survey_tick();
         ls_sweep_tick();
-        ls_detector_tick();
+        ls_seen_tick();
         vTaskDelay(pdMS_TO_TICKS(125));
     }
 }

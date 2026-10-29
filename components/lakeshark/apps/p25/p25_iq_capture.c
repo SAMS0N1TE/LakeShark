@@ -2,6 +2,7 @@
 #include "esp_heap_caps.h"
 #include <stdatomic.h>
 #include <string.h>
+#include "ls_cold.h"
 
 typedef struct {
     p25_iq_capture_status_t status;
@@ -87,7 +88,7 @@ void p25_iq_capture_receiver(bool running)
      * No callback waits for a parked RX task to acknowledge a free. */
 }
 
-p25_iq_capture_result_t p25_iq_capture_start(unsigned blocks, uint32_t now_ms)
+LS_COLD p25_iq_capture_result_t p25_iq_capture_start(unsigned blocks, uint32_t now_ms)
 {
     if (!blocks || blocks > P25_IQ_CAPTURE_MAX_BLOCKS) return P25_IQ_CAPTURE_ARGUMENT;
     if (!take()) return P25_IQ_CAPTURE_BUSY;
@@ -191,7 +192,7 @@ p25_iq_capture_result_t p25_iq_capture_free(void)
     return P25_IQ_CAPTURE_OK;
 }
 
-bool p25_iq_capture_status(p25_iq_capture_status_t *out, uint32_t now_ms)
+LS_COLD bool p25_iq_capture_status(p25_iq_capture_status_t *out, uint32_t now_ms)
 {
     if (!out || !take()) return false;
     expire(now_ms);
@@ -205,7 +206,7 @@ bool p25_iq_capture_status(p25_iq_capture_status_t *out, uint32_t now_ms)
     return true;
 }
 
-p25_iq_capture_result_t p25_iq_capture_read(uint32_t offset, uint8_t *out,
+LS_COLD p25_iq_capture_result_t p25_iq_capture_read(uint32_t offset, uint8_t *out,
     size_t capacity, size_t *read_bytes, uint32_t now_ms)
 {
     if (!out || !read_bytes || !capacity || capacity > P25_IQ_CAPTURE_READ_MAX)

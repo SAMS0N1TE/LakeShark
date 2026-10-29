@@ -1,6 +1,7 @@
 #include "scan_feedback.h"
 
 #include <stdio.h>
+#include "ls_textpack.h"
 
 scan_phase_t scan_feedback_classify(const scan_feedback_input_t *input)
 {
@@ -72,7 +73,7 @@ void scan_feedback_format(const scan_feedback_input_t *input,
         snprintf(actual, sizeof(actual), "-- MHz");
     }
 
-    snprintf(out, out_size, "CARRIER SCAN %s [%s] ACT %s%s%s",
+    LS_SNPRINTF(t_scan_feedback_carrier_scan_s_s, out, out_size, "CARRIER SCAN %s [%s] ACT %s%s%s",
              scan_feedback_phase_name(phase), source ? source : "?", actual,
              why[0] ? "  " : "", why);
 }

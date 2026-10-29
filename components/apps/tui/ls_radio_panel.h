@@ -132,6 +132,8 @@ char ls_freq_pad_hit(const tui_rect keys[12], const tui_rect actions[3],
 void ls_freq_entry_add(char *entry, size_t cap, char c);
 void ls_freq_entry_delete(char *entry);
 bool ls_freq_entry_hz(const char *entry, uint32_t *out);
+/* The same with its own floor: FM takes HF down to 500 kHz. */
+bool ls_freq_entry_hz_min(const char *entry, uint32_t min_hz, uint32_t *out);
 void ls_radio_filament(tui_surface *, tui_rect, int x, int y, int rows, uint8_t hue);
 
 /* Receiver glass: fixed per-screen state, no acquisition or allocation.

@@ -40,6 +40,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
+#include "ls_textpack.h"
 
 static const char *TAG = "ls_wifi";
 static EXT_RAM_BSS_ATTR ls_wifi_scan_ap_t s_scan_cache[64];
@@ -146,7 +147,7 @@ static esp_err_t h_index(httpd_req_t *r)
             struct stat st;
             snprintf(full, sizeof(full), "%s/%s", ROOT, e->d_name);
             long sz = (stat(full, &st) == 0) ? (long)st.st_size : 0;
-            snprintf(line, sizeof(line),
+            LS_SNPRINTF(fmt_ls_wifi_li_a_href_dl, line, sizeof(line),
                      "<li><a href='/dl?f=%s'>%s</a> <small>%ld B</small></li>",
                      e->d_name, e->d_name, sz);
             send_chunk(r, line);
@@ -168,7 +169,7 @@ static esp_err_t h_index(httpd_req_t *r)
                     struct stat cst;
                     snprintf(cfull, sizeof(cfull), "%s/%s", cap, e->d_name);
                     long csz = (stat(cfull, &cst) == 0) ? (long)cst.st_size : 0;
-                    snprintf(line, sizeof(line),
+                    LS_SNPRINTF(fmt_ls_wifi_li_a_href_dl_2, line, sizeof(line),
                              "<li><a href='/dl?f=%s'>%s</a> <small>%ld B</small></li>",
                              e->d_name, e->d_name, csz);
                     send_chunk(r, line);
@@ -782,7 +783,7 @@ static esp_err_t h_field_debug(httpd_req_t *req)
     EXT_RAM_BSS_ATTR static ls_field_state_t field;
     ls_field_snapshot(&field);
     char reply[512];
-    int n = snprintf(reply, sizeof(reply),
+    int n = LS_SNPRINTF(fmt_ls_wifi_ready_direct_busy_mode, reply, sizeof(reply),
         "{\"ready\":%s,\"direct\":%s,\"busy\":%s,\"mode\":%d,"
         "\"hz\":%lu,\"rx\":%lu,\"bad\":%lu,\"tx\":%lu,"
         "\"sequence\":%lu,\"queue_drops\":%lu,\"journal_entries\":%d,"
@@ -804,7 +805,7 @@ static esp_err_t h_watch_debug(httpd_req_t *req)
     rec_watch_snapshot(&watch);
     rec_hub_status_t rx;rec_get_hub_status(&rx);
     char reply[384];
-    int n=snprintf(reply,sizeof(reply),
+    int n=LS_SNPRINTF(fmt_ls_wifi_ready_enabled_streaming_patterns, reply,sizeof(reply),
         "{\"ready\":%s,\"enabled\":%s,\"streaming\":%s,\"patterns\":%d,"
         "\"captures\":%lu,\"skipped\":%lu,\"alerts_queued\":%lu,"
         "\"alerts_refused\":%lu,\"alerts_limited\":%lu,\"archive_max_bytes\":532480}",
@@ -885,7 +886,7 @@ static esp_err_t h_hub_map(httpd_req_t *req)
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Map transfer failed; existing maps kept");
     }
     char reply[120];
-    snprintf(reply, sizeof(reply), "{\"bytes\":%lu,\"crc32\":\"%08lx\",\"saved\":true}",
+    LS_SNPRINTF(fmt_ls_wifi_bytes_crc32_saved_true, reply, sizeof(reply), "{\"bytes\":%lu,\"crc32\":\"%08lx\",\"saved\":true}",
              (unsigned long)received, (unsigned long)crc);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, reply);

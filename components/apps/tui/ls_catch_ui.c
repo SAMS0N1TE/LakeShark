@@ -10,6 +10,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "ls_textpack.h"
 static uint32_t center=433920000u;
 static int preset=1, selected;
 static const char *const BANDS[]={"315","433.92","868.3","915","CUSTOM"};
@@ -106,7 +107,7 @@ static void slot_width_done(double v)
     if(v==0)catch_watch_remove(&w,(unsigned)edit_slot);
     else w.chan[edit_slot].width=(uint32_t)(v*1e3+0.5);
     if(catch_watch_valid(&w))watch_put(&w);
-    else snprintf(notice,sizeof(notice),"Width: 5 to 2400 kHz, or 0 to remove");
+    else LS_SNPUTS(t_ls_catch_ui_width_5_to_2400, notice, sizeof(notice), "Width: 5 to 2400 kHz, or 0 to remove");
 }
 static void slot_pick_done(int i)
 {
@@ -239,17 +240,17 @@ void ls_catch_body_draw(tui_surface *sf,tui_rect a)
     char line[160];
     ls_panel_box(sf,a,"CATCH",s->running?TUI_GREEN:TUI_CYAN);
     a=tui_rect_make(a.x+2,a.y+1,a.w-4,a.h-2);
-    snprintf(line,sizeof(line),"%s %.6f MHz / 2.4 MHz",s->running?"LISTEN":s->stopping?"STOPPING":"STOPPED",(s->running?s->center:center)/1e6);
+    LS_SNPRINTF(t_ls_catch_ui_s_6f_mhz_2, line,sizeof(line),"%s %.6f MHz / 2.4 MHz",s->running?"LISTEN":s->stopping?"STOPPING":"STOPPED",(s->running?s->center:center)/1e6);
     tui_put_str(sf,a,a.x,a.y,line,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
     tui_put_str(sf,a,a.x,a.y+1,s->rtl_status[0]?s->rtl_status:"RTL-SDR spots; LR2021 decodes repeats",LS_ATTR_DIM);
     tui_put_str(sf,a,a.x,a.y+2,s->lr_status,LS_ATTR_DIM);
-    snprintf(line,sizeof(line),"%lu bursts  %lu captures  max %lu us",(unsigned long)s->detections,(unsigned long)s->captures,(unsigned long)s->max_latency_us);
+    LS_SNPRINTF(t_ls_catch_ui_lu_bursts_lu_captures, line,sizeof(line),"%lu bursts  %lu captures  max %lu us",(unsigned long)s->detections,(unsigned long)s->captures,(unsigned long)s->max_latency_us);
     tui_put_str(sf,a,a.x,a.y+3,line,LS_ATTR_DIM);
     catch_watch_t w;catch_watch_get(&w);
     const char *note=catch_watch_note(&w);
     if(note)snprintf(line,sizeof(line),"WATCH %s",note);
-    else if(catch_watch_filtering(&w))snprintf(line,sizeof(line),"WATCH CHOSEN %u  ignored %lu",catch_watch_count(&w),(unsigned long)s->ignored);
-    else snprintf(line,sizeof(line),"WATCH ALL  every burst in the slice");
+    else if(catch_watch_filtering(&w))LS_SNPRINTF(t_ls_catch_ui_watch_chosen_u_ignored, line,sizeof(line),"WATCH CHOSEN %u  ignored %lu",catch_watch_count(&w),(unsigned long)s->ignored);
+    else LS_SNPUTS(t_ls_catch_ui_watch_all_every_burst, line, sizeof(line), "WATCH ALL  every burst in the slice");
     tui_put_str(sf,a,a.x,a.y+4,line,note?TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK):
         catch_watch_filtering(&w)?TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM);
     int top=a.y+5;
@@ -265,11 +266,11 @@ void ls_catch_body_draw(tui_surface *sf,tui_rect a)
     for(int row=0;row<visible;row++) {
         int index=first_visible+row;if(!rec_catch_result(index,&result))break;
         int y=list_area.y+row*3;
-        snprintf(line,sizeof(line),"%c %llu ms %.6f MHz %s",index==selected?'>':' ',
+        LS_SNPRINTF(t_ls_catch_ui_c_llu_ms_6f, line,sizeof(line),"%c %llu ms %.6f MHz %s",index==selected?'>':' ',
             (unsigned long long)(result.burst.start_us/1000),result.burst.frequency/1e6,result.burst.modulation==CATCH_FSK?"FSK?":"OOK?");
         tui_put_str(sf,list_area,a.x,y,line,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
         snprintf(line,sizeof(line),"RTL %.1f dBFS LR %s",(double)result.burst.rtl_dbfs,isfinite(result.lr_rssi)?"":"unavailable");
-        if(isfinite(result.lr_rssi))snprintf(line,sizeof(line),"RTL %.1f dBFS LR %.1f dBm",(double)result.burst.rtl_dbfs,(double)result.lr_rssi);
+        if(isfinite(result.lr_rssi))LS_SNPRINTF(t_ls_catch_ui_rtl_1f_dbfs_lr, line,sizeof(line),"RTL %.1f dBFS LR %.1f dBm",(double)result.burst.rtl_dbfs,(double)result.lr_rssi);
         tui_put_str(sf,list_area,a.x,y+1,line,LS_ATTR_DIM);
         snprintf(line,sizeof(line),"%s %s",result.decoded?result.message.model:"raw",result.decoded?result.message.id:result.decode_status);
         tui_put_str(sf,list_area,a.x,y+2,line,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
@@ -278,14 +279,14 @@ void ls_catch_body_draw(tui_surface *sf,tui_rect a)
     if(rec_catch_result(selected,&result) && result.decoded) {
         snprintf(line,sizeof(line),"ID %s CH %d BAT %d",result.message.id,result.message.channel,result.message.battery_ok);
         tui_put_str(sf,a,a.x,a.y+a.h-5,line,LS_ATTR_DIM);
-        snprintf(line,sizeof(line),"%.1f C %.1f %% %.1f kPa meter %lld",(double)result.message.temp_c,
+        LS_SNPRINTF(t_ls_catch_ui_1f_c_1f_1f, line,sizeof(line),"%.1f C %.1f %% %.1f kPa meter %lld",(double)result.message.temp_c,
             (double)result.message.humidity,(double)result.message.kpa,(long long)result.message.consumption);
         tui_put_str(sf,a,a.x,a.y+a.h-4,line,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
-        snprintf(line,sizeof(line),"Wind %.1f m/s rain %.1f mm",(double)result.message.wind_ms,(double)result.message.rain_mm);
+        LS_SNPRINTF(t_ls_catch_ui_wind_1f_m_s, line,sizeof(line),"Wind %.1f m/s rain %.1f mm",(double)result.message.wind_ms,(double)result.message.rain_mm);
         tui_put_str(sf,a,a.x,a.y+a.h-3,line,LS_ATTR_DIM);
     }
     tui_put_str(sf,a,a.x,a.y+a.h-2,s->save_status[0]?s->save_status:notice,LS_ATTR_DIM);
-    tui_put_str(sf,a,a.x,a.y+a.h-1,"UP/DOWN burst  H watch  tap slice: channels",LS_ATTR_DIM);
+    tui_put_str(sf,a,a.x,a.y+a.h-1,LS_TEXT(t_ls_catch_ui_up_down_burst_h, "UP/DOWN burst  H watch  tap slice: channels"),LS_ATTR_DIM);
 }
 bool ls_catch_key(ls_tk_t key,char c)
 {

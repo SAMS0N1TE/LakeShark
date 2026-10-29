@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "ls_textpack.h"
 
 static void copy_safe(char *dst, size_t cap, const char *src)
 {
@@ -41,7 +42,7 @@ int rec_sidecar_format(char *out, size_t len, const rec_sidecar_t *s)
     copy_safe(board_s, sizeof(board_s), s->board);
     copy_safe(fw_s,    sizeof(fw_s),    s->firmware);
 
-    int n = snprintf(out, len,
+    int n = LS_SNPRINTF(t_rec_sidecar_radio_s_time_s, out, len,
         "{\n"
         "  \"radio\": \"%s\",\n"
         "  \"time\": \"%s\",\n"

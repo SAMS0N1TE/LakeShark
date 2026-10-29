@@ -44,6 +44,8 @@ void ls_hackrf_snap(void) { (void)not_here("hackrf"); }
 
 /* RTL-SDR and the USB host port. */
 int rtl_adapter_port_attached(void) { return 0; }
+int rtl_adapter_hf_path(void) { return 0; }
+bool rtl_adapter_blog_v4(void) { return false; }
 bool rtl_adapter_port_reset_possible(void) { return false; }
 usb_port_cycle_result_t rtl_adapter_port_reset(void) { return USB_PORT_CYCLE_NOTHING; }
 void rtlsdr_dev_teardown(void) {}

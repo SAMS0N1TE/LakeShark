@@ -1079,7 +1079,7 @@ private:
  * contiguous ordinary DRAM they require during a full-feature boot. */
 static RTC_NOINIT_ATTR StackType_t s_mesh_stack[MESH_TASK_STACK / sizeof(StackType_t)]
     __attribute__((aligned(16)));
-static DRAM_ATTR StaticTask_t s_mesh_tcb;
+static StaticTask_t s_mesh_tcb;
 
 static LsMillis   *s_ms;
 static LsRtcClock *s_rtc;

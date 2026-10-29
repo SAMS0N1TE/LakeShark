@@ -21,6 +21,7 @@
 #include "ls_gps.h"
 #include "p25_state.h"
 #include "scan_ctrl.h"
+#include "ls_textpack.h"
 
 static const char *TAG = "p25prog";
 
@@ -418,14 +419,14 @@ void p25_program_format_geo_now(char *out, size_t out_size)
     if (!sites.enabled) { snprintf(out, out_size, "GPS sites OFF"); return; }
     if (sites.packs) {
         if (sites.distance_km >= 0)
-            snprintf(out, out_size, "GPS sites %s: %s / %s, %.1f km", sites.state,
+            LS_SNPRINTF(t_p25_program_sd_gps_sites_s_s, out, out_size, "GPS sites %s: %s / %s, %.1f km", sites.state,
                      sites.system, sites.site, (double)sites.distance_km);
         else snprintf(out, out_size, "GPS sites %s", sites.state);
         return;
     }
     if (s_program && s_program->active_valid && !s_program->geo_paused &&
         p25_geo_profile_has_sites(&s_program->active) && !ls_gps_running()) {
-        snprintf(out, out_size, "GEO waiting: GPS is off - open GPS to start it");
+        LS_SNPUTS(t_p25_program_sd_geo_waiting_gps_is, out, out_size, "GEO waiting: GPS is off - open GPS to start it");
         return;
     }
     p25_program_format_geo(s_program, esp_timer_get_time(), out, out_size);

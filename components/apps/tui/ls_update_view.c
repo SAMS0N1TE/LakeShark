@@ -32,6 +32,7 @@
 #include "ls_tui_ui.h"
 #include "ls_value.h"
 #include "ls_ota_core.h"
+#include "ls_textpack.h"
 
 #define A(fg, bg) TUI_ATTR(fg, bg)
 #define BR(c)     ((uint8_t)((c) | TUI_BRIGHT))
@@ -718,16 +719,16 @@ static void progress(tui_surface *sf, tui_rect clip, int y, int rows, long st, l
     if (st == LS_OTA_ST_DOWNLOADING && size > 0) {
         const int pct = (int)((int64_t)got * 100 / size);
         if (s_rate > 1)
-            snprintf(line, sizeof(line), "%.2f / %.2f MB   %d%%   %.0f KB/s   %d s left",
+            LS_SNPRINTF(t_ls_update_view_2f_2f_mb_d, line, sizeof(line), "%.2f / %.2f MB   %d%%   %.0f KB/s   %d s left",
                      got / 1048576.0, size / 1048576.0, pct, s_rate / 1024.0, (int)((size - got) / s_rate));
         else
-            snprintf(line, sizeof(line), "%.2f / %.2f MB   %d%%", got / 1048576.0, size / 1048576.0, pct);
+            LS_SNPRINTF(t_ls_update_view_2f_2f_mb_d_2, line, sizeof(line), "%.2f / %.2f MB   %d%%", got / 1048576.0, size / 1048576.0, pct);
     } else if (st == LS_OTA_ST_VERIFYING) {
-        snprintf(line, sizeof(line), "%.2f MB in: SHA-256 and the image check", size / 1048576.0);
+        LS_SNPRINTF(t_ls_update_view_2f_mb_in_sha, line, sizeof(line), "%.2f MB in: SHA-256 and the image check", size / 1048576.0);
     } else if (st == LS_OTA_ST_RESTARTING) {
-        snprintf(line, sizeof(line), "written to the other slot; restarting into it");
+        LS_SNPUTS(t_ls_update_view_written_to_the_other, line, sizeof(line), "written to the other slot; restarting into it");
     } else if (st == LS_OTA_ST_UPDATED) {
-        snprintf(line, sizeof(line), "running the new build");
+        LS_SNPUTS(t_ls_update_view_running_the_new_build, line, sizeof(line), "running the new build");
     }
     if (line[0]) centre(sf, clip, y + rows, line, A(BR(TUI_WHITE), TUI_BLACK));
 }
@@ -789,7 +790,7 @@ static void details(tui_surface *sf, tui_rect r, long st, long trial, const char
            start */
         char v[32], line[80];
         release_of(failed, v, sizeof(v));
-        snprintf(line, sizeof(line), "%s did not start, so this build came back", v);
+        LS_SNPRINTF(t_ls_update_view_s_did_not_start, line, sizeof(line), "%s did not start, so this build came back", v);
         y = detail(sf, r, y, "last try", line, A(BR(TUI_RED), TUI_BLACK));
     }
     if (st == LS_OTA_ST_UPDATED) {
@@ -852,7 +853,7 @@ void ls_update_view_draw(tui_surface *sf, tui_rect a)
     if (s_c6_page) { ls_c6_view_draw(sf, a); return; }
     long st = -1;
     if (!get_int("ota.stage", &st)) {
-        ls_panel_notice(sf, a, "UPDATE", "Updates over WiFi are not in this build", "ESC goes back");
+        ls_panel_notice(sf, a, "UPDATE", LS_TEXT(t_ls_update_view_updates_over_wifi_are, "Updates over WiFi are not in this build"), "ESC goes back");
         return;
     }
     if (a.w < 30 || a.h < 18) {
@@ -885,7 +886,7 @@ void ls_update_view_draw(tui_surface *sf, tui_rect a)
         t = (int64_t)s_frame * 90;
         if (now - s_motion_us >= 2000000) {
             s_rate = 0;
-            snprintf(state, sizeof(state), "waiting for update data");
+            LS_SNPUTS(t_ls_update_view_waiting_for_update_data, state, sizeof(state), "waiting for update data");
         }
     }
 
@@ -912,13 +913,13 @@ void ls_update_view_draw(tui_surface *sf, tui_rect a)
                       : st == LS_OTA_ST_AVAILABLE ? "INSTALL" : st == LS_OTA_ST_FAILED ? "RETRY" : "CHECK";
     snprintf(bsub, sizeof(bsub), "%ld s", left);
     if (ready)
-        snprintf(csub, sizeof(csub), "restarts by itself in %ld s", left);
+        LS_SNPRINTF(t_ls_update_view_restarts_by_itself_in, csub, sizeof(csub), "restarts by itself in %ld s", left);
     else if (retry)
         snprintf(csub, sizeof(csub), "%s again", sub);
     else if (st == LS_OTA_ST_AVAILABLE)
         snprintf(csub, sizeof(csub), "%s  %.1f MB", sub, size / 1048576.0);
     else
-        snprintf(csub, sizeof(csub), "ask the server again");
+        LS_SNPUTS(t_ls_update_view_ask_the_server_again, csub, sizeof(csub), "ask the server again");
     const ls_btn_t btn[] = {
         { "BACK", "HOME", 0, false, false, false },
         { press ? press : "WAIT", busy ? DOING[st] : !press ? "trial" : ready ? bsub : st == LS_OTA_ST_AVAILABLE ? sub : "again",

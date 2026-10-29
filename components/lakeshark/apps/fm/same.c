@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ls_cold.h"
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 #endif
@@ -42,7 +43,7 @@ static bool digits(const char *p, int n, unsigned *v)
     }
     return true;
 }
-bool same_parse(const char *h, same_alert_t *a)
+LS_COLD bool same_parse(const char *h, same_alert_t *a)
 {
     if (!h || !a) return false;
     size_t len = strlen(h);
@@ -128,7 +129,7 @@ void same_reset(same_ctx_t *s)
     s->locked = s->candidate = -1; s->mc = s->sc = 1;
     for (int i = 0; i < 8; ++i) s->lanes[i].phase = i / 8.0f;
 }
-same_ctx_t *same_create(same_callback_t cb, void *u)
+LS_COLD same_ctx_t *same_create(same_callback_t cb, void *u)
 {
 #ifdef ESP_PLATFORM
     same_ctx_t *s = heap_caps_calloc(1, sizeof(*s), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);

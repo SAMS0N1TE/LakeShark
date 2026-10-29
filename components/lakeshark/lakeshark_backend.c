@@ -1,6 +1,8 @@
 #include "lakeshark_backend.h"
 
 #include <string.h>
+#include <stdio.h>
+#include "esp_attr.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -23,7 +25,6 @@
 
 #include "p25_state.h"
 #include "dsd.h"
-#include "apps/dmr/dmr_watch.h"
 #include "p25_health.h"
 #include "p25_controls.h"
 #include "fm_state.h"
@@ -48,6 +49,7 @@
 
 /**/
 #include "bsp/esp-bsp.h"
+#include "ls_textpack.h"
 
 static const char *TAG = "lakeshark";
 
@@ -137,9 +139,11 @@ void lakeshark_backend_start(void)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 
-    /* DMR shares P25's 4FSK rate, so it reads the demodulator's symbols
-       rather than owning a receiver. Attached once; it is passive. */
-    dsd_set_symbol_observer(dmr_watch_symbol);
+    /* DMR shares P25's 4FSK rate. It used to read the symbols the P25
+       frame-sync loop sliced; it now takes the C4FM discriminator output in
+       the P25 receive loop and recovers its own timing, so the observer is
+       left unset - the watcher must never be fed from two tasks. */
+    dsd_set_symbol_observer(NULL);
 
     ESP_LOGI(TAG, "backend started (adsb=%d p25=%d)", s_adsb_idx, s_p25_idx);
 }
@@ -249,6 +253,28 @@ static bool diag_selected_endpoint(ls_radio_endpoint_info_t *selected,
     return iq_count == 1;
 }
 
+static bool diag_try_selected_endpoint(ls_radio_endpoint_info_t *selected,
+                                       ls_radio_endpoint_info_t *scan)
+{
+    /* These are the two registered USB IQ services. A busy registry or two
+       idle services is unknown, not a guess about the next selected radio. */
+    static const char *const ids[] = {
+        LS_RADIO_ENDPOINT_RTL_USB, LS_RADIO_ENDPOINT_HACKRF_USB
+    };
+    unsigned count = 0, leases = 0;
+    bool busy = false;
+    for (unsigned i = 0; i < sizeof(ids) / sizeof(ids[0]); ++i) {
+        ls_radio_err_t e = ls_radio_endpoint_try_get(ids[i], scan);
+        if (e == LS_RADIO_ERR_BUSY) { busy = true; continue; }
+        if (e != LS_RADIO_OK || !(scan->capabilities & LS_RADIO_RX_IQ_U8))
+            continue;
+        ++count;
+        if (scan->leased || !leases) *selected = *scan;
+        if (scan->leased) ++leases;
+    }
+    return !busy && (leases == 1 || count == 1);
+}
+
 static void diag_from_control(ls_receiver_diag_t *diag,
                               const ls_iq_control_status_t *radio)
 {
@@ -272,10 +298,27 @@ static void diag_from_control(ls_receiver_diag_t *diag,
         diag->rx_state = LS_RECEIVER_RX_IDLE;
 }
 
-int lakeshark_receiver_status(char *out, size_t len)
+static void diag_chip_source(ls_receiver_diag_t *diag, bool has_iq)
 {
-    if (!out || len == 0) return 0;
+    /* The optional USB IQ slot is not the active LoRa-chip receiver. Its
+       absence, old applied tuning and error must not diagnose the chip. */
+    diag->endpoint_known = false;
+    diag->health_known = false;
+    diag->health_rate_known = false;
+    diag->iq_total_known = false;
+    diag->effective_frequency_known = false;
+    diag->effective_gain_known = false;
+    diag->receiver_error_known = false;
+    diag->source_known = true;
+    diag_copy(diag->source, sizeof(diag->source), has_iq ? "lr-iq" : "lr-chip");
+    diag->sample_rate_known = diag->config_known = false;
+    diag->context_epoch_known = diag->iq_epoch_known = false;
+    diag->iq_rate_known = has_iq;
+    diag->rx_state = LS_RECEIVER_RX_ACTIVE;
+}
 
+static receiver_diag_workspace_t *receiver_snapshot(bool nonblocking)
+{
     /* the first receiver snapshot compiled to a 1536-byte frame:
      * a 320-byte diagnostic plus several mutually exclusive 392-byte endpoint
      * copies were kept live above newlib's 1328-byte snprintf path.  The LCD
@@ -284,12 +327,11 @@ int lakeshark_receiver_status(char *out, size_t len)
      * independent without consuming the 19 bytes of measured DMA headroom. */
     receiver_diag_workspace_t *work = heap_caps_calloc(
         1, sizeof(*work), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!work) {
-        strlcpy(out, "app=? park=? rx=? err=nomem", len);
-        return (int)strnlen(out, len);
-    }
+    if (!work) return NULL;
 
     ls_receiver_diag_t *diag = &work->diag;
+    diag->captured_known = true;
+    diag->captured_us = (uint64_t)esp_timer_get_time();
     ls_radio_endpoint_info_t *endpoint = &work->endpoint;
     ls_iq_control_status_t *radio = &work->radio;
     const app_t *app = app_current();
@@ -300,7 +342,10 @@ int lakeshark_receiver_status(char *out, size_t len)
     diag->parked_known = true;
     diag->parked = app_parked();
 
-    if (diag_selected_endpoint(endpoint, &work->scan_endpoint)) {
+    bool endpoint_selected = nonblocking
+        ? diag_try_selected_endpoint(endpoint, &work->scan_endpoint)
+        : diag_selected_endpoint(endpoint, &work->scan_endpoint);
+    if (endpoint_selected) {
         diag->endpoint_known = true;
         diag_copy(diag->endpoint_id, sizeof(diag->endpoint_id),
                   endpoint->endpoint_id);
@@ -309,7 +354,22 @@ int lakeshark_receiver_status(char *out, size_t len)
         diag->endpoint_streaming = endpoint->streaming;
         diag->iq_total_known = true;
         diag->iq_bytes_total = endpoint->bytes_read;
-        if (radio_health_get_for_endpoint(endpoint, &work->health)) {
+        diag->source_known = endpoint->leased && endpoint->streaming;
+        diag_copy(diag->source, sizeof(diag->source), "external-iq");
+        diag->context_epoch_known = endpoint->diagnostic_context_known;
+        diag->context_epoch = endpoint->diagnostic_context_epoch;
+        diag->iq_epoch_known = endpoint->diagnostic_counter_known;
+        diag->iq_epoch = endpoint->diagnostic_counter_epoch;
+        if (endpoint->configured) {
+            diag->sample_rate_known = endpoint->actual_iq.sample_rate_hz != 0;
+            diag->sample_rate_hz = endpoint->actual_iq.sample_rate_hz;
+            diag->config_known = true;
+            diag->bandwidth_hz = endpoint->actual_iq.bandwidth_hz;
+            diag->gain_mode = (int)endpoint->actual_iq.gain_mode;
+        }
+        /* The health accessor waits on its lock. Console callers retain the
+           complete report; a UI refresh leaves these optional fields unknown. */
+        if (!nonblocking && radio_health_get_for_endpoint(endpoint, &work->health)) {
             diag->health_known = true;
             diag_copy(diag->health, sizeof(diag->health),
                       radio_health_state_name(work->health.state));
@@ -340,6 +400,11 @@ int lakeshark_receiver_status(char *out, size_t len)
         diag->voice_count = (uint32_t)P25.dsd_voice_count;
         diag->audio_drop_count_known = true;
         diag->audio_drop_count = P25.audio_drops;
+        if (P25.lr_iq_active || P25.lora_rx) {
+            diag_chip_source(diag, P25.lr_iq_active);
+            if (P25.lora_wait && !P25.lr_iq_active)
+                diag->rx_state = LS_RECEIVER_RX_IDLE;
+        }
     } else if (app_current_index() == s_fm_idx) {
         fm_get_receiver_status(radio);
         diag_from_control(diag, radio);
@@ -366,14 +431,38 @@ int lakeshark_receiver_status(char *out, size_t len)
             diag->failed_count_known = true;
             diag->failed_count = FM.flex_cw_errs;
         }
+        if (FM.lr_iq_active) diag_chip_source(diag, true);
+        else {
+            ls_iq_observation_t observation;
+            fm_get_iq_observation(&observation);
+            diag->consumer_epoch_known = observation.known && observation.accepting &&
+                !observation.saturated && observation.generation != 0 &&
+                observation.generation != UINT32_MAX &&
+                observation.configured_center_hz == diag->effective_frequency_hz &&
+                observation.nominal_rate_hz == diag->sample_rate_hz;
+            diag->consumer_epoch = observation.generation;
+        }
     } else if (app_current_index() == s_adsb_idx) {
         lakeshark_adsb_tel_t *adsb = &work->app.adsb;
-        lakeshark_adsb_telemetry(adsb);
+        if (nonblocking) {
+            /* Full telemetry also asks registry readiness and walks tracked
+               aircraft. The UI needs only these already-published counters. */
+            adsb->freq_hz = 1090000000UL;
+            adsb->gain_tenths = lakeshark_adsb_gain_tenths();
+            adsb->msgs_total = perf_get_msgs_total();
+            adsb->crc_good = perf_get_crc_good();
+            adsb->crc_err = perf_get_crc_err();
+            adsb->last_msg_ms = perf_get_last_good_us() ? 0 : -1;
+        } else {
+            lakeshark_adsb_telemetry(adsb);
+        }
         diag->requested_frequency_known = true;
         diag->requested_frequency_hz = adsb->freq_hz;
         diag->requested_gain_known = true;
         diag->requested_gain_tenths_db = adsb->gain_tenths;
-        diag->iq_rate_known = true;
+        /* perf_get_bytes_per_sec rolls/reset its window. A UI metadata read
+           must not consume that accounting; no passive rate getter exists. */
+        diag->iq_rate_known = !nonblocking;
         diag->iq_bytes_per_second = adsb->iq_bytes_sec;
         diag->frame_count_known = true;
         diag->frame_count = (uint32_t)adsb->msgs_total;
@@ -400,7 +489,7 @@ int lakeshark_receiver_status(char *out, size_t len)
         /* Which receiver is feeding the decoder: iq, lr-chip or none. */
         diag_copy(diag->demod, sizeof(diag->demod), adsb_active_source_name());
         if (adsb_active_source() == ADSB_SRC_LORA)
-            diag->rx_state = LS_RECEIVER_RX_ACTIVE;
+            diag_chip_source(diag, false);
     } else if (app_current_index() == s_rec_idx) {
         rec_hub_status_t *rec = &work->app.rec;
         rec_get_hub_status(rec);
@@ -422,6 +511,13 @@ int lakeshark_receiver_status(char *out, size_t len)
     }
 
     if (diag->parked) diag->rx_state = LS_RECEIVER_RX_PARKED;
+    /* The registry and app snapshots use separate locks. A concurrent control
+     * must make the assembled trial context unknown, never falsely stable. */
+    if (diag->endpoint_known &&
+        (ls_radio_endpoint_try_get(diag->endpoint_id, &work->scan_endpoint) != LS_RADIO_OK ||
+         !work->scan_endpoint.diagnostic_context_known ||
+         work->scan_endpoint.diagnostic_context_epoch != diag->context_epoch))
+        diag->context_epoch_known = false;
     diag->memory_known = true;
     diag->internal_free = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     diag->internal_largest =
@@ -429,9 +525,99 @@ int lakeshark_receiver_status(char *out, size_t len)
     diag->dma_free = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_DMA);
     diag->dma_largest =
         (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
-    int result = ls_receiver_diag_format(diag, out, len);
+    return work;
+}
+
+bool lakeshark_receiver_snapshot(ls_receiver_diag_t *out)
+{
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    receiver_diag_workspace_t *work = receiver_snapshot(true);
+    if (!work) return false;
+    *out = work->diag;
+    ls_receiver_diag_ui_counters(out);
+    heap_caps_free(work);
+    return true;
+}
+
+int lakeshark_receiver_status(char *out, size_t len)
+{
+    if (!out || !len) return 0;
+    receiver_diag_workspace_t *work = receiver_snapshot(false);
+    if (!work) {
+        strlcpy(out, "app=? park=? rx=? err=nomem", len);
+        return (int)strnlen(out, len);
+    }
+    int result = ls_receiver_diag_format(&work->diag, out, len);
     heap_caps_free(work);
     return result;
+}
+
+/* Only UI/console/export tasks touch these bounded PSRAM copies. A short
+ * nonblocking guard serializes them without holding the registry lock. */
+static EXT_RAM_BSS_ATTR ls_receiver_trial_t s_receiver_trial;
+static EXT_RAM_BSS_ATTR ls_receiver_diag_t s_trial_current;
+static bool s_trial_busy;
+
+bool lakeshark_receiver_trial_action(const char *action)
+{
+    if (!action || (strcmp(action,"baseline") && strcmp(action,"compare") &&
+                   strcmp(action,"reset") && strcmp(action,"status"))) return false;
+    if (__atomic_test_and_set(&s_trial_busy,__ATOMIC_ACQUIRE)) return false;
+    bool ok = true;
+    if (!strcmp(action,"reset")) memset(&s_receiver_trial,0,sizeof(s_receiver_trial));
+    else if (strcmp(action,"status")) {
+        ok = lakeshark_receiver_snapshot(&s_trial_current);
+        if (!strcmp(action,"baseline")) {
+            if (ok) ls_receiver_trial_baseline(&s_receiver_trial,&s_trial_current);
+        } else {
+            ok = ok && s_receiver_trial.baseline_set;
+            ls_receiver_trial_compare(&s_receiver_trial,
+                ok ? &s_trial_current : NULL,(uint64_t)esp_timer_get_time());
+        }
+    }
+    __atomic_clear(&s_trial_busy,__ATOMIC_RELEASE);
+    return ok;
+}
+
+bool lakeshark_receiver_trial_snapshot(ls_receiver_trial_t *out)
+{
+    if (!out || __atomic_test_and_set(&s_trial_busy,__ATOMIC_ACQUIRE)) return false;
+    *out = s_receiver_trial;
+    __atomic_clear(&s_trial_busy,__ATOMIC_RELEASE);
+    return true;
+}
+
+int lakeshark_receiver_trial_command(int argc, char **argv)
+{
+    const char *action = argc == 1 ? "status" : argc == 2 ? argv[1] : "";
+    const bool json = !strcmp(action,"json");
+    if (!lakeshark_receiver_trial_action(json ? "status" : action)) {
+        LS_PUTS(t_lakeshark_backend_receiver_trial_unavailable_busy, "receiver-trial: unavailable/busy or invalid action; use baseline|compare|reset|status|json");
+        return 1;
+    }
+    /* Heap workspaces keep the console's 4096-byte stack below its guard. */
+    ls_receiver_trial_t *copy = heap_caps_malloc(sizeof(*copy),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    char *text = heap_caps_malloc(4096,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if (!copy || !text || !lakeshark_receiver_trial_snapshot(copy)) {
+        heap_caps_free(copy); heap_caps_free(text); LS_PUTS(t_lakeshark_backend_receiver_trial_unavailable_busy_2, "receiver-trial: unavailable/busy"); return 1;
+    }
+    if (json) {
+        if (ls_receiver_trial_json(copy,text,4096)<0) {
+            heap_caps_free(copy); heap_caps_free(text); LS_PUTS(t_lakeshark_backend_receiver_trial_receipt_exceeds, "receiver-trial: receipt exceeds buffer"); return 1;
+        }
+        puts(text);
+    } else {
+        ls_receiver_trial_format(copy,text,4096); puts(text);
+        if (copy->baseline_set) {
+            ls_receiver_diag_format(&copy->before,text,4096); fputs("before ",stdout); puts(text);
+        }
+        if (copy->compared) {
+            ls_receiver_diag_format(&copy->after,text,4096); fputs("after ",stdout); puts(text);
+        }
+    }
+    heap_caps_free(copy); heap_caps_free(text);
+    return 0;
 }
 
 void lakeshark_radio_recover(const char *endpoint_id)

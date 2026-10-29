@@ -64,6 +64,12 @@ bool settings_get_ble_at_boot(void)  { return s_ble_boot; }
 void settings_set_ble_at_boot(bool v)  { s_ble_boot = v; }
 bool settings_get_wifi_at_boot(void) { return s_wifi_boot; }
 void settings_set_wifi_at_boot(bool v) { s_wifi_boot = v; }
+/* LR FRONT END: WIDE I/Q and the waterfall's span view, RAM only here. */
+static bool s_lr_wide, s_lr_span;
+bool settings_get_lr_wide(void) { return s_lr_wide; }
+bool settings_set_lr_wide(bool v) { s_lr_wide = v; return true; }
+bool settings_get_lr_span(void) { return s_lr_span; }
+bool settings_set_lr_span(bool v) { s_lr_span = v; return true; }
 /* Notification sound choice, for the simulator's Settings > Sound page. */
 static int s_notify_sound;
 static const char *const s_notify_names[] = { "ALERT", "RADIO KEY", "ROGER", "CHIRP", "OFF" };
@@ -265,6 +271,40 @@ void lakeshark_fm_set_baud(int baud)
     else { FM.pocsag_auto = false; FM.pocsag_baud = baud; }
 }
 int  lakeshark_fm_get_baud(void) { return FM.pocsag_baud; }
+void lakeshark_fm_pager_voice(bool on) { FM.pager_voice = on; }
+
+/* FM's RX HEAD as the RADIO screen sees it: the real plugins for the mode,
+   attached once per preset (nothing here feeds them). */
+#include "ls_rx_head.h"
+#include "rx_pocsag.h"
+#include "rx_voice.h"
+#include "rx_panels/rx_exp.h"
+const struct ls_rx_head *lakeshark_fm_rx_head(void)
+{
+    static ls_rx_head_t h;
+    static int mode = -1; static bool voice;
+    if (mode != (int)FM.mode || voice != FM.pager_voice) {
+        char why[48];
+        mode = (int)FM.mode; voice = FM.pager_voice;
+        ls_rx_head_detach_all(&h);
+        const ls_rx_stream_t s = { .center_hz = FM.freq_hz, .front = LS_RX_FRONT_NFM,
+            .inputs = LS_RX_IQ_S16 | LS_RX_DISC | LS_RX_PCM16 };
+        ls_rx_head_init(&h, &s);
+        /* LSSIM_RX_EXP=<id>: an EXPERIMENT through the adapter instead. */
+        static ls_rx_plugin_t exp_plugin;
+        if (getenv("LSSIM_RX_EXP")) ls_exp_register_builtin();
+        const ls_experiment_t *e = getenv("LSSIM_RX_EXP") ? ls_exp_find(getenv("LSSIM_RX_EXP")) : NULL;
+        if (e) {
+            ls_rx_plugin_from_exp(&exp_plugin, e);
+            ls_rx_head_attach(&h, &exp_plugin, why, sizeof(why));
+            return &h;
+        }
+        if (mode == FM_MODE_LISTEN || (mode == FM_MODE_POCSAG && voice))
+            ls_rx_head_attach(&h, &rx_voice, why, sizeof(why));
+        if (mode == FM_MODE_POCSAG) ls_rx_head_attach(&h, &rx_pocsag, why, sizeof(why));
+    }
+    return &h;
+}
 
 /* --------------------------------------------------------------- gps ---- */
 
@@ -382,6 +422,30 @@ void ls_gps_stop(void)
 
 /* --------------------------------------------------------------- seed --- */
 
+#include "apps/fm/fm_hf.h"
+static bool s_hf_seeded;
+void lssim_seed_hf(const char *demod)
+{
+    int d = FM_HF_LSB;
+    if (!demod || !fm_hf_demod_parse(demod, 7185000, &d)) d = FM_HF_LSB;
+    static const uint32_t DIAL[] = { 9650000, 9650000, 14230000, 7185000, 10120000 };
+    fm_hf_settings_t h = *fm_hf_get();
+    h.demod = (uint8_t)d;
+    h.rit_hz = d == FM_HF_CW ? 0 : 120;
+    h.nb = d == FM_HF_USB ? 1 : 0;
+    fm_hf_load(&h);
+    FM.mode = FM_MODE_AM;
+    FM.freq_hz = DIAL[d];
+    FM.squelch_tenths = 0;
+    FM.squelch_open = true;
+    FM.hf_active = true;
+    FM.hf_level_db = -58.0f;
+    FM.hf_gain_db = 44.0f;
+    FM.iq_level = fm_hf_meter(FM.hf_level_db) * 0.1f;
+    FM.iq_bytes_sec = 512000;
+    s_hf_seeded = true;
+}
+
 void lssim_seed_state(void)
 {
     memset(&FM, 0, sizeof(FM));
@@ -448,6 +512,8 @@ void lssim_seed_state(void)
 
 /* -------------------------------------------------------------- tick ---- */
 
+void lssim_tick_p25_calls(uint32_t frame);
+
 /* What moves between frames.
 
    The POCSAG tape is built from deltas in the decoder's counters, so a
@@ -460,6 +526,7 @@ void lssim_tick_state(void)
 {
     static uint32_t t;
     t++;
+    lssim_tick_p25_calls(t);
 
     FM.pocsag_frames += 1;                       /* a batch a frame */
     if (t % 40 == 0) { FM.pocsag_addr += 1; FM.pocsag_msg += 3;
@@ -499,10 +566,29 @@ void p25_spectrum_enable(bool on) { s_spec_on = on; }
 #include "apps/fm/fm_spectrum.h"
 static bool s_fm_spec_on;
 void fm_spectrum_enable(bool on) { s_fm_spec_on = on; }
+/* LSSIM_HF: the radio sits 20 kHz above the dial as app_fm.c tunes it, and
+   the band has a voice in the passband, a neighbour and a CW carrier. */
 bool fm_spectrum_read(float *out, int n, uint32_t now,
                        fm_spectrum_snapshot_t *snap)
 {
     if (!s_fm_spec_on || s_no_radio || !out || n < 1) return false;
+    if (s_hf_seeded) {
+        const uint32_t centre = FM.freq_hz + 20000u;
+        const double per = (double)FM_RTL_RATE / n;
+        static const double sig[][3] = { {-1800, 1600, 0.30}, {7000, 3000, 0.22},
+                                         {-9000, 600, 0.35}, {15000, 2500, 0.12} };
+        for (int i = 0; i < n; ++i) {
+            const double off = (i - n / 2) * per + 20000.0;   /* from the dial */
+            float v = 0.30f + 0.02f * (float)((i * 37) % 5) / 4.0f;
+            for (int k = 0; k < 4; ++k) {
+                const double d = (off - sig[k][0]) / sig[k][1];
+                if (d > -1.0 && d < 1.0) v += (float)(sig[k][2] * (1.0 - d * d));
+            }
+            out[i] = v;
+        }
+        *snap = (fm_spectrum_snapshot_t){centre, FM_RTL_RATE, now, now / 100 + 1};
+        return true;
+    }
     for (int i = 0; i < n; ++i) out[i] = i == n / 2 ? 0.8f : 0.15f;
     *snap = (fm_spectrum_snapshot_t){FM.freq_hz, FM_RTL_RATE, now, now / 100 + 1};
     return true;
@@ -624,3 +710,98 @@ const char *ls_gps_antenna_name(uint8_t a) { return a==LS_GPS_ANT_OK?"OK":a==LS_
 const char *ls_gps_sys_name(uint8_t s) { static const char *names[]={"other","GPS","GLONASS","Galileo","BeiDou","QZSS"}; return s<LS_GPS_SYS_COUNT?names[s]:names[0]; }
 
 bool ls_track_rec_requested(void) { return false; }
+
+/* ------------------------------------------------------- P25 CALLS ----- */
+
+/* The CALLS fixture: sixteen minutes of a small trunked system heard by the
+   observed-talkgroup store, and a call on air. LSSIM_P25_CALLS picks the
+   scene: "clear" (default), "enc" (an encrypted call, carrier only),
+   "quiet" (the call ends after LSSIM_P25_QUIET_AT frames, default 40). */
+#include "apps/p25/p25_tg_observed.h"
+static const char *s_calls_scene;
+void lssim_seed_p25_calls(void)
+{
+    s_calls_scene = getenv("LSSIM_P25_CALLS");
+    if (!s_calls_scene) s_calls_scene = "clear";
+    /* Twenty minutes in, so the store can hold sixteen of history. */
+    ls_shim_time_set(20LL * 60 * 1000000);
+    const uint32_t now_ms = 20u * 60 * 1000;
+    static const struct { uint16_t tg; const char *busy; } PLAN[] = {
+        /* hits per minute, oldest first, as letters a=1 .. z=26 */
+        { 1041, "..cf.b.ahk.cdgi." },
+        { 2104, "b..c.ad...bc..fa" },
+        { 2051, ".a..bb...a.cc..." },
+        { 3301, "....a......b...." },
+        { 2110, "a.b...c..a......" },
+        { 4005, "...........a...." },
+        { 5120, "a..............." },
+    };
+    p25_tg_observed_clear();
+    for (unsigned i = 0; i < sizeof(PLAN) / sizeof(PLAN[0]); i++)
+        for (unsigned m = 0; m < 16; m++) {
+            const char c = PLAN[i].busy[m];
+            if (c == '.') continue;
+            /* Inside minute m, never past now: the store has no future. */
+            const int hits = (c - 'a' + 1) * 6;
+            const uint32_t t0 = now_ms - (16 - m) * 60000u + 1000u;
+            for (int k = 0; k < hits; k++)
+                p25_tg_observed_record(851012500ULL + i * 250000ULL, 0x293, PLAN[i].tg,
+                                       P25_TG_SEEN_LCW, t0 + (uint32_t)(k * 55000 / hits));
+        }
+    P25.receive_state = P25_RX_AUDIO;
+    P25.grant_on_traffic = true;
+    P25.grant_talkgroup = 1041;
+    P25.grant_source = 220158;
+    P25.grant_freq_hz = 851262500ULL;
+    P25.dsd_tg = 1041;
+    P25.dsd_src = 220158;
+    P25.p25_enc_tg_count = 1;
+    P25.p25_enc_tg[0].talkgroup = 2051;
+    P25.p25_enc_tg[0].algid = 0x84;
+    P25.p25_enc_tg[0].kid = 0x1d02;
+    snprintf(P25.p25_lcw_alias, sizeof(P25.p25_lcw_alias), "ENGINE 7");
+    P25.p25_lcw_alias_ready = 1;
+    if (!strcmp(s_calls_scene, "enc")) {
+        P25.receive_state = P25_RX_ENCRYPTED;
+        P25.grant_talkgroup = 2051;
+        P25.dsd_tg = 2051;
+        P25.dsd_src = 1407730;
+        P25.grant_source = 1407730;
+        P25.p25_enc_muted = true;
+        P25.p25_ess_valid = 1;
+        P25.p25_algid = 0x84;
+        P25.p25_kid = 0x1d02;
+        P25.p25_lcw_alias_ready = 0;
+    }
+}
+void lssim_tick_p25_calls(uint32_t frame)
+{
+    if (!s_calls_scene) return;
+    const int64_t now = esp_timer_get_time();
+    const char *at = getenv("LSSIM_P25_QUIET_AT");
+    const uint32_t quiet = at ? (uint32_t)atoi(at) : 40;
+    if (!strcmp(s_calls_scene, "quiet") && frame >= quiet) {
+        P25.voice_active_until_us = 0;
+        P25.receive_state = P25_RX_CONTROL_LOCKED;
+        P25.grant_on_traffic = false;
+        P25.voice_peak = 0;
+        return;
+    }
+    /* The decoder logs the call's link control about every 180 ms. */
+    if (frame % 2 == 0)
+        p25_tg_observed_record(851262500ULL, 0x293, (uint16_t)P25.dsd_tg,
+                               P25_TG_SEEN_LCW, (uint32_t)(now / 1000));
+    if (!strcmp(s_calls_scene, "enc")) {
+        /* No voice to hear: the carrier wanders a little about its level. */
+        P25.voice_active_until_us = 0;
+        P25.iq_level = 0.55f + 0.08f * (float)((frame * 7919u) % 13u) / 13.0f;
+        return;
+    }
+    /* Speech: syllables of a few hundred milliseconds inside phrases, a
+       breath between them, from a fixed pattern so a render repeats. */
+    static const uint8_t PHRASE[] = { 2, 7, 9, 6, 8, 4, 0, 5, 9, 7, 3, 8, 6, 2, 0, 0,
+                                      4, 8, 9, 5, 7, 6, 3, 0, 6, 9, 8, 4, 2, 0, 0, 0 };
+    const uint8_t v = PHRASE[(frame / 2) % sizeof(PHRASE)];
+    P25.voice_peak = (uint16_t)(v * v * 380u);
+    P25.voice_active_until_us = now + 500000;
+}

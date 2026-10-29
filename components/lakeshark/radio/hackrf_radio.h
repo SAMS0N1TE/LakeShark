@@ -29,6 +29,12 @@ uint32_t ls_hackrf_filter_bandwidth(uint32_t requested_hz,
 bool ls_hackrf_decode_m0_state(const uint8_t *wire, size_t bytes,
                                ls_radio_iq_health_t *out);
 
+/* App gain settings are on the RTL-SDR's scale (0..49.6 dB, saved that way
+   since before the HackRF) and the HackRF needs about twice the dB to hear
+   the same, so a setting maps to the HackRF's 0..113 dB: doubled up to
+   49.6, then on to 113 at the HackRF's own top setting. Tenths of a dB. */
+int ls_hackrf_gain_from_setting(int tenths);
+
 /* The radio's own sample rates start at 2 MSPS. A slower rate is served by
    running the radio at the smallest whole multiple of it that the radio can
    do and decimating on the way out, so an app asking for 240 or 256 kSPS gets
@@ -71,9 +77,19 @@ typedef struct {
     int32_t agc_q8;       /* 256 is x1 */
     int32_t agc_env;      /* the output's recent peak */
     unsigned agc_count;
+    /* With no room to shift (factor 2) the radio's carrier leak lands on the
+       centre, louder than most signals, and the AGC sized the byte for it:
+       the output was the leak and little else. This takes the slow mean off
+       each rail before the AGC, Q16, about 1024 outputs long. */
+    bool    dc_block;
+    int32_t dc_q16[2];
 } ls_hackrf_cic_t;
 
 void ls_hackrf_cic_init(ls_hackrf_cic_t *c, unsigned factor, unsigned shift);
+/* What the driver runs: the filter for `factor` with its shift, the AGC on
+   starting from `agc_q8` (0 for x1), and the DC block where there is no
+   shift. For a fresh stream, a retune or a gap. */
+void ls_hackrf_cic_start(ls_hackrf_cic_t *c, unsigned factor, int32_t agc_q8);
 /* Takes `bytes` of signed I/Q from `in`, writes offset-binary I/Q to `out`
    and answers how many bytes it wrote: a whole number of pairs, at most
    bytes / factor rounded up to a pair. `out` may be `in`. */

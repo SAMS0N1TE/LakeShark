@@ -3,6 +3,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include "ls_textpack.h"
 #ifdef ESP_PLATFORM
 #include "ls_sdcard.h"
 #include <unistd.h>
@@ -111,7 +112,7 @@ bool scan_sd_write(const char *name, const scan_channel_t *rows, int count)
 
 void scan_sd_list(void)
 {
-    if (!scan_sd_available()) { puts("CHPROFILES ERROR SD not mounted"); return; }
+    if (!scan_sd_available()) { LS_PUTS(t_scan_sd_store_chprofiles_error_sd_not, "CHPROFILES ERROR SD not mounted"); return; }
     DIR *dir = opendir(LS_SCAN_SD_ROOT);
     if (dir) {
         struct dirent *entry;

@@ -5,6 +5,7 @@
 #include "p25p1_hdu.h"
 #include "p25p1_check_ldu.h"
 #include "p25p1_heuristics.h"
+#include "ls_textpack.h"
 
 #ifdef TRACE_DSD
 static void
@@ -155,7 +156,7 @@ process_IMBE (dsd_opts* opts, dsd_state* state, int* status_count)
 
           if (match) {
 
-              printf("(Non-standard IMBE c0 detected, skipped)");
+              LS_FPUTS(t_p25p1_ldu_non_standard_imbe_c0, "(Non-standard IMBE c0 detected, skipped)", stdout);
           } else {
               state->imbe_frame_erased = state->erased_dibits != erased_before;
               processMbeFrame (opts, state, imbe_fr, NULL, NULL);

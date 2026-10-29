@@ -221,6 +221,12 @@ static unsigned s_timer_count;
 void ls_shim_timer_wait_hook(void (*hook)(void), int64_t late_us)
 { s_wait_hook = hook; s_wait_late = late_us; }
 unsigned ls_shim_timer_count(void) { return s_timer_count; }
+int64_t ls_shim_timer_wait_remaining(void)
+{
+    if (!s_wait_timer) return 0;
+    int64_t d = s_wait_timer->due - esp_timer_get_time();
+    return d > 0 ? d : 0;
+}
 esp_err_t esp_timer_create(const esp_timer_create_args_t *args, esp_timer_handle_t *out)
 {
     *out = calloc(1, sizeof(**out));
