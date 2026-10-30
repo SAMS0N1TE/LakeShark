@@ -1031,8 +1031,41 @@ void settings_set_p25_lr_gain(int step)
     sput_u8("p25_lrgain", (uint8_t)step);
 }
 
+/* The LR20xx is brought up before settings_init() runs (its DMA buffers are
+   reserved ahead of USB), so the getters below would answer from their
+   defaults at that boot: a saved xtal clock was ignored, the part tried its
+   TCXO, failed and fell back, and the saved frequency correction was not on
+   the first frame. Before settings_init() the three values come straight
+   from NVS once, on a DRAM stack, the way the port words do. */
+typedef struct { uint8_t tcxo, dcdc; int32_t fcorr; } lr_peek_t;
+static esp_err_t lr_peek_job(void *ctx)
+{
+    lr_peek_t *p = (lr_peek_t *)ctx;
+    nvs_handle_t h;
+    const esp_err_t err = nvs_open(NS, NVS_READONLY, &h);
+    if (err != ESP_OK) return err;
+    if ((nvs_get_u8)(h, "lr_tcxo", &p->tcxo) != ESP_OK || p->tcxo > 1) p->tcxo = 1;
+    if ((nvs_get_u8)(h, "lr_dcdc", &p->dcdc) != ESP_OK || p->dcdc > 1) p->dcdc = 0;
+    if ((nvs_get_i32)(h, "lr_fcorr", &p->fcorr) != ESP_OK ||
+        p->fcorr > LS_LR_FCORR_MAX_PPB || p->fcorr < -LS_LR_FCORR_MAX_PPB) p->fcorr = 0;
+    nvs_close(h);
+    return ESP_OK;
+}
+static void lr_peek_before_init(void)
+{
+    static bool peeked;
+    if (s_nvs_ok || peeked) return;
+    peeked = true;
+    lr_peek_t p = { 1, 0, 0 };
+    if (ls_nvs_run(lr_peek_job, &p, 0) != ESP_OK) return;
+    __atomic_store_n(&s_lr_tcxo, p.tcxo != 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_lr_dcdc, p.dcdc != 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_lr_fcorr_ppb, p.fcorr, __ATOMIC_RELEASE);
+}
+
 bool settings_get_lr_tcxo(void)
 {
+    lr_peek_before_init();
     return __atomic_load_n(&s_lr_tcxo, __ATOMIC_ACQUIRE);
 }
 bool settings_set_lr_tcxo(bool tcxo)
@@ -1043,6 +1076,7 @@ bool settings_set_lr_tcxo(bool tcxo)
 }
 bool settings_get_lr_dcdc(void)
 {
+    lr_peek_before_init();
     return __atomic_load_n(&s_lr_dcdc, __ATOMIC_ACQUIRE);
 }
 bool settings_set_lr_dcdc(bool dcdc)
@@ -1072,6 +1106,7 @@ bool settings_get_lr_span(void) { return __atomic_load_n(&s_lr_iq, __ATOMIC_ACQU
 bool settings_set_lr_span(bool on) { return lr_iq_put(2u, on); }
 int32_t settings_get_lr_fcorr_ppb(void)
 {
+    lr_peek_before_init();
     return __atomic_load_n(&s_lr_fcorr_ppb, __ATOMIC_ACQUIRE);
 }
 bool settings_set_lr_fcorr_ppb(int32_t ppb)
