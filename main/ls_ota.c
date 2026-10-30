@@ -82,16 +82,19 @@
 
 static const char *TAG = "ota";
 
-/* LakeShark LR has its own manifests and board name, so neither edition is
-   ever offered the other's image. A URL saved by the other edition is moved
-   to this edition's folder, channel kept (url_load). */
+/* LakeShark LR and the TFT panel build have their own manifests and board
+   names, so no edition is ever offered another's image: the panel driver is
+   chosen at build time, and an AMOLED image on a TFT board drives the wrong
+   panel. A URL saved by another edition is moved to this edition's folder,
+   channel kept (url_load, ls_ota_url_to_edition). */
 #if CONFIG_LS_LR2021_ONLY
 #define OTA_DIR       "/tdp4lr/"
-#define OTA_DIR_OTHER "/tdp4/"
 #define BOARD_NAME    "T-Display-P4-LR"
+#elif CONFIG_LS_TDP4_PANEL_HI8561
+#define OTA_DIR       "/tdp4tft/"
+#define BOARD_NAME    "T-Display-P4-TFT"
 #else
 #define OTA_DIR       "/tdp4/"
-#define OTA_DIR_OTHER "/tdp4lr/"
 #define BOARD_NAME    "T-Display-P4"
 #endif
 #define DEFAULT_URL   "https://" LS_OTA_HOST_PRIMARY OTA_DIR "stable.txt"
@@ -167,13 +170,9 @@ static esp_err_t url_load(void *ctx)
     size_t n = sizeof(buf);
     if (nvs_open("ls_ota", NVS_READONLY, &h) != ESP_OK) return ESP_OK;
     if (nvs_get_str(h, "url", buf, &n) == ESP_OK && !strncmp(buf, "https://", 8)) {
-        char *other = strstr(buf, OTA_DIR_OTHER);
-        if (other) {
-            char moved[sizeof(s_url)];
-            snprintf(moved, sizeof(moved), "%.*s%s%s", (int)(other - buf), buf, OTA_DIR,
-                     other + strlen(OTA_DIR_OTHER));
+        char moved[sizeof(s_url)];
+        if (ls_ota_url_to_edition(buf, OTA_DIR, moved, sizeof(moved)))
             snprintf(buf, sizeof(buf), "%s", moved);
-        }
         if (strcmp(buf, OLD_DEFAULT_URL)) snprintf(s_url, sizeof(s_url), "%s", buf);
     }
     n = sizeof(s_announced);

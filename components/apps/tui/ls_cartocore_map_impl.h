@@ -97,7 +97,10 @@ size_t ls_carto_map_labels(ls_carto_label *labels,size_t cap,int cols,int rows) 
     memcpy(labels,ui_names,n*sizeof(*labels));return n;
 }
 size_t ls_carto_map_files(char (*paths)[128],size_t cap) {
-    if(!view_lock || xSemaphoreTake(view_lock,0)!=pdTRUE) return 0;
+    /* A few tries before giving up: the renderer holds this lock in short spells. */
+    bool got=false;
+    for(unsigned i=0;view_lock && i<2000 && !(got=xSemaphoreTake(view_lock,0)==pdTRUE);i++) __asm__ volatile("" ::: "memory");
+    if(!got) return 0;
     size_t n=map_file_count<cap?map_file_count:cap;
     memcpy(paths,map_files,n*sizeof(map_files[0]));xSemaphoreGive(view_lock);return n;
 }

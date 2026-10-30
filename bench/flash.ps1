@@ -84,7 +84,11 @@ Write-Host "flashing $($c.board)" -ForegroundColor Cyan
 Write-Host "  config $($c.name)   dir $($c.dir)   port $Port   serial $($c.usb_serial)   $($c.flash_mb) MB"
 Write-Host ""
 
-$flashAction = if ($AppOnly) { 'app-flash' } else { 'flash' }
+# app-flash writes the first app slot only. A board that has taken a WiFi
+# update boots the second slot, so it kept running the old firmware and the
+# flash looked like it had done nothing. erase-otadata sends the next boot to
+# the slot just written; settings (NVS) are not touched.
+$flashAction = if ($AppOnly) { 'app-flash erase-otadata' } else { 'flash' }
 
 $idfExport = if ($c.idf_export) { $c.idf_export } else { $cfg.idf_export }
 if (-not $idfExport -or -not (Test-Path $idfExport)) {

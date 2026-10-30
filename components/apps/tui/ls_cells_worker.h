@@ -5,6 +5,7 @@
 #include "mbedtls/sha256.h"
 #include "ls_cells_json.h"
 #include <time.h>
+#include <errno.h>
 static FILE *cells_fopen(const char *path,const char *mode) {
     FILE *f=fopen(path,mode);if(f)setvbuf(f,NULL,_IONBF,0);return f;
 }
@@ -14,6 +15,7 @@ static EXT_RAM_BSS_ATTR struct {
     char query[64],url[256];unsigned serial,pick,radius,action;uint32_t key;
 } cells_mail,cells_request;
 static EXT_RAM_BSS_ATTR ls_cells_view cells_pub,cells_work;
+static bool cells_plus,cells_plus_work;
 #define CELLS_ACTIONS 4
 typedef struct { unsigned action;uint32_t key;char name[64];uint8_t cover[CELLS_BITS]; } cells_command;
 static EXT_RAM_BSS_ATTR cells_command cells_actions[CELLS_ACTIONS],cells_command_work,cells_preview_mail;
@@ -21,8 +23,19 @@ static unsigned cells_action_head,cells_action_count;
 static atomic_flag cells_guard=ATOMIC_FLAG_INIT;
 static bool cells_take(void) { return !atomic_flag_test_and_set(&cells_guard); }
 static void cells_give(void) { atomic_flag_clear(&cells_guard); }
+/* Readers wait out a publish (a struct copy, microseconds) instead of
+   failing. A failed read reached TILES as "no state list": the US map lost
+   its colours for one frame every time the worker published, which is the
+   flashing on GET MAPS. */
+static bool cells_take_reader(void) {
+    /* A pure spin: this runs on the UI's checked stack, which may not call
+       out. The worker holds the guard for one struct copy on the other core;
+       if it is somehow longer, the read fails and TILES keeps its last list. */
+    for(unsigned i=0;i<20000;i++) { if(cells_take())return true; __asm__ volatile("" ::: "memory"); }
+    return false;
+}
 bool ls_cells_snapshot(ls_cells_view *out) {
-    if(!cells_take()) return false;
+    if(!cells_take_reader()) return false;
     memcpy(out,&cells_pub,sizeof(*out));cells_give();return true;
 }
 bool ls_cells_query(const char *s) {
@@ -57,10 +70,21 @@ static EXT_RAM_BSS_ATTR struct {
     char server[256],country[3],credit[160],queue_name[64];
     uint32_t selected_key,queue_key,next_cell,serial,generation;
     uint64_t queue_total,queue_done,queue_partial;bool progress_loaded,want_detail;
+    uint32_t progress_revision;
     unsigned picked,radius,hint_attempts;bool initialized,base_open,query_pending,queue_loaded,catalog_refresh,states_refresh,preview_active;
     int catalog;bool direct;uint32_t stride,entries,index_size,base_size;uint8_t index_sha[32],base_sha[32];
     char path[256],temp[272],backup[280];
 } cw;
+static EXT_RAM_BSS_ATTR uint8_t cells_credited[2*CELLS_BITS];
+static void cells_progress_reset(void) {
+    cw.progress_loaded=false;cw.progress_revision++;
+    cw.queue_total=cw.queue_done=cw.queue_partial=0;cells_work.maps_progress=0;
+}
+static void cells_progress_credit(unsigned at,uint32_t size) {
+    if(cw.progress_loaded && at<131072 && !(cells_credited[at/8]&(1u<<(at&7)))) {
+        cells_credited[at/8]|=(uint8_t)(1u<<(at&7));cw.queue_done+=size;
+    }
+}
 static uint32_t cells_u32(const uint8_t *p) { return p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16|(uint32_t)p[3]<<24; }
 static void cells_put32(uint8_t *p,uint32_t v) { for(unsigned i=0;i<4;i++)p[i]=(uint8_t)(v>>(8*i)); }
 static uint32_t cells_crc(const void *data,size_t n) {
@@ -71,7 +95,8 @@ static void cells_publish(void) {
     cells_work.generation=cw.generation;cells_work.queued=cw.queue_loaded;
     snprintf(cells_work.queue_name,sizeof(cells_work.queue_name),"%s",cw.queue_loaded?cw.queue_name:"");
     while(!cells_take()) vTaskDelay(1);
-    cells_pub=cells_work;
+    cells_pub=cells_work;cells_plus=cells_plus_work;
+    if(!cw.progress_loaded)cells_pub.maps_progress=0;
     if(cells_work.ready) { cells_preview_mail.key=cw.selected_key;memcpy(cells_preview_mail.name,cells_work.picked.name,64);memcpy(cells_preview_mail.cover,cw.cover,CELLS_BITS); }
     if(cells_mail.serial!=cw.serial) { cells_pub.busy=true;cells_pub.ready=false;cells_pub.count=0; }
     cells_give();
@@ -102,15 +127,19 @@ static bool cells_safe_asset(const char *s) {
     return strlen(s)==21 && !strncmp(s,"places/places_",14) && s[14]>='A' && s[14]<='Z' &&
         s[15]>='A' && s[15]<='Z' && !strcmp(s+16,".ccpl");
 }
-static bool cells_hash(const char *path,const uint8_t sha[32],uint64_t size) {
+/* The SHA-256 of a file of exactly `size` bytes. */
+static bool cells_digest(const char *path,uint64_t size,uint8_t digest[32]) {
     FILE *f=cells_fopen(path,"rb");if(!f)return false;setvbuf(f,NULL,_IONBF,0);
     mbedtls_sha256_context ctx;mbedtls_sha256_init(&ctx);bool ok=!mbedtls_sha256_starts(&ctx,0);
     uint64_t count=0;size_t n;while(ok && (n=fread(cw.buf,1,32768,f))) {
         count+=n;ok=count<=size && !mbedtls_sha256_update(&ctx,cw.buf,n);
         vTaskDelay(1); /* httpd may also verify; do not starve lower-priority owners. */
     }
-    ok=ok && !ferror(f) && count==size;fclose(f);uint8_t digest[32];
-    ok=ok && !mbedtls_sha256_finish(&ctx,digest) && !memcmp(digest,sha,32);mbedtls_sha256_free(&ctx);return ok;
+    ok=ok && !ferror(f) && count==size;fclose(f);
+    ok=ok && !mbedtls_sha256_finish(&ctx,digest);mbedtls_sha256_free(&ctx);return ok;
+}
+static bool cells_hash(const char *path,const uint8_t sha[32],uint64_t size) {
+    uint8_t digest[32];return cells_digest(path,size,digest) && !memcmp(digest,sha,32);
 }
 static bool cells_release_source(void) {
     if(xSemaphoreTake(file_lock,pdMS_TO_TICKS(2000))!=pdTRUE)return false;
@@ -156,7 +185,7 @@ static bool cells_direct_active(void) {
     FILE *f=cells_fopen(CELLS_ROOT "cells/catalog.ccm","rb");if(!f)return false;char magic[8];bool ok=fread(magic,1,8,f)==8 && !memcmp(magic,"CCMAPS2",8);fclose(f);return ok;
 }
 static bool cells_catalog(void) {
-    cw.progress_loaded=false;cw.next_cell=0; /* Every catalog replacement revalidates queued ownership. */
+    cells_progress_reset();cw.next_cell=0; /* Every catalog replacement revalidates queued ownership. */
     if(cw.catalog>=0) { close(cw.catalog);cw.catalog=-1; }
     if(!cells_asset_valid(CELLS_ROOT "cells/catalog.ccm","cells/catalog.ccm"))return false;
     cw.catalog=open(CELLS_ROOT "cells/catalog.ccm",O_RDONLY);struct stat st;
@@ -176,15 +205,18 @@ static bool cells_catalog(void) {
     return true;
 bad:close(cw.catalog);cw.catalog=-1;cells_message("Invalid cells catalog");return false;
 }
-static bool cells_entry(uint32_t id,uint32_t *size,uint8_t sha[32]) {
-    if(cw.catalog<0)return false;
+static bool cells_entry_checked(uint32_t id,uint32_t *size,uint8_t sha[32],bool *error) {
+    if(cw.catalog<0) { if(error)*error=true;return false; }
     uint32_t lo=0,hi=cw.entries;uint8_t r[40];
     while(lo<hi) {
         uint32_t mid=lo+(hi-lo)/2;
-        if(!carto_sd_read_at(cw.catalog,128+(uint64_t)cw.entries*cw.stride,128+(uint64_t)mid*cw.stride,r,40,NULL,0))return false;
+        if(!carto_sd_read_at(cw.catalog,128+(uint64_t)cw.entries*cw.stride,128+(uint64_t)mid*cw.stride,r,40,NULL,0)) { if(error)*error=true;return false; }
         uint32_t key=cells_u32(r);if(key<id)lo=mid+1;else if(key>id)hi=mid;else { *size=cells_u32(r+4);memcpy(sha,r+8,32);return true; }
     }
     return false;
+}
+static bool cells_entry(uint32_t id,uint32_t *size,uint8_t sha[32]) {
+    return cells_entry_checked(id,size,sha,NULL);
 }
 /* CCMAPS2 has fixed 48-byte rows regardless of part count. uint32_t counts
  * support large cells without a per-part array; joined .part checkpoints resume
@@ -205,6 +237,7 @@ static void cells_name(uint32_t id,char *out,size_t n,bool remote) {
     else snprintf(out,n,remote?"cells/8/%u/%u%s.ctile":"cells/8-%u-%u%s.ctile",((id-1)%65536)/256,(id-1)%256,id>65536?".detail":"");
 }
 static bool cells_matches(const char *,uint64_t,const uint8_t[32]);
+static bool cells_matches_checked(const char *,uint64_t,const uint8_t[32],bool *);
 static bool cells_present(uint32_t id,uint32_t size) {
     char name[64],path[96];cells_name(id,name,sizeof(name),false);snprintf(path,sizeof(path),CELLS_ROOT "%s",name);
     uint8_t sha[32];uint32_t expected;
@@ -223,32 +256,43 @@ static bool cells_record(uint32_t key,const char *name,const uint8_t *bits,bool 
 }
 static bool cells_record_read(const char *path,uint8_t *bits,char *name,bool *queued) {
     FILE *f=cells_fopen(path,"rb");if(!f)return false;uint8_t h[80];
-    bool ok=fread(h,1,80,f)==80 && fread(bits,1,CELLS_BITS,f)==CELLS_BITS && fgetc(f)==EOF;
+    bool ok=fread(h,1,80,f)==80 && fread(bits,1,CELLS_BITS,f)==CELLS_BITS && fgetc(f)==EOF && !ferror(f);
     fclose(f);if(!ok || memcmp(h,"CCPLACE2",8) || cells_u32(h+8)>1 || !memchr(h+16,0,64) || cells_crc(bits,CELLS_BITS)!=cells_u32(h+12))return false;
     memcpy(name,h+16,64);*queued=cells_u32(h+8)!=0;return true;
 }
 static void cells_library(void) {
     (void)cells_token_load(); /* keeps maps.plus current for the STATES page */
-    cells_work.library_count=0;DIR *d=opendir(CELLS_ROOT "installed");if(!d)return;struct dirent *e;
-    while((e=readdir(d))) {
+    static EXT_RAM_BSS_ATTR struct {
+        char library[LS_CELLS_PLACES][64],name[64];uint32_t keys[LS_CELLS_PLACES],key;
+        uint8_t cover[CELLS_BITS];unsigned count;bool queued;
+    } next;
+    DIR *d=opendir(CELLS_ROOT "installed");if(!d)return;struct dirent *e;
+    next.count=0;next.queued=false;bool ok=true;
+    for(;;) {
+        errno=0;e=readdir(d);if(!e) { if(errno)ok=false;break; }
         unsigned key;int n=0;bool queued;char name[64];
         if(sscanf(e->d_name,"%8x.ccpi%n",&key,&n)!=1 || !n || e->d_name[n])continue;
         snprintf(cw.path,sizeof(cw.path),CELLS_ROOT "installed/%s",e->d_name);
-        if(!cells_record_read(cw.path,cw.scratch,name,&queued))continue;
-        if(cells_work.library_count<LS_CELLS_PLACES) {
-            unsigned at=cells_work.library_count++;cells_work.keys[at]=key;
-            snprintf(cells_work.library[at],64,"%s%s",queued?"[queued] ":"",name);
+        if(!cells_record_read(cw.path,cw.scratch,name,&queued)) { ok=false;break; }
+        if(next.count<LS_CELLS_PLACES) {
+            unsigned at=next.count++;next.keys[at]=key;
+            snprintf(next.library[at],64,"%s%s",queued?"[queued] ":"",name);
         }
-        if(queued && !cw.queue_loaded) {
-            memcpy(cw.queued,cw.scratch,CELLS_BITS);cw.queue_key=key;snprintf(cw.queue_name,64,"%s",name);cw.queue_loaded=true;cw.next_cell=0;cw.progress_loaded=false;
-            double sx=0,sy=0,rows=0,count=0,pi=3.14159265358979323846;
-            for(unsigned id=0;id<65536;id++)if(cw.queued[id/8]&(1u<<(id&7))) {
-                double angle=((id/256+.5)/256.0*2-1)*pi;sx+=cos(angle);sy+=sin(angle);rows+=id%256+.5;count++;
-            }
-            if(count) { cells_work.queue_lon=atan2(sy,sx)*180/pi;cells_work.queue_lat=atan(sinh(pi*(1-2*rows/count/256)))*180/pi; }
+        if(queued && !cw.queue_loaded && !next.queued) {
+            memcpy(next.cover,cw.scratch,CELLS_BITS);next.key=key;memcpy(next.name,name,64);next.queued=true;
         }
     }
-    closedir(d);
+    if(closedir(d))ok=false;
+    if(!ok)return;
+    memcpy(cells_work.library,next.library,sizeof(next.library));memcpy(cells_work.keys,next.keys,sizeof(next.keys));cells_work.library_count=next.count;
+    if(next.queued) {
+        memcpy(cw.queued,next.cover,CELLS_BITS);cw.queue_key=next.key;memcpy(cw.queue_name,next.name,64);cw.queue_loaded=true;cw.next_cell=0;cells_progress_reset();
+        double sx=0,sy=0,rows=0,count=0,pi=3.14159265358979323846;
+        for(unsigned id=0;id<65536;id++)if(cw.queued[id/8]&(1u<<(id&7))) {
+            double angle=((id/256+.5)/256.0*2-1)*pi;sx+=cos(angle);sy+=sin(angle);rows+=id%256+.5;count++;
+        }
+        if(count) { cells_work.queue_lon=atan2(sy,sx)*180/pi;cells_work.queue_lat=atan(sinh(pi*(1-2*rows/count/256)))*180/pi; }
+    }
 }
 static bool cells_delete(uint32_t key) {
     uint8_t *owned=heap_caps_calloc(1,CELLS_BITS,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);if(!owned)return false;
@@ -275,7 +319,7 @@ static bool cells_delete(uint32_t key) {
             snprintf(cw.temp,sizeof(cw.temp),"%s.part.meta",cw.path);unlink(cw.temp);
         }
     }
-    if(cw.queue_key==key)cw.queue_loaded=false;
+    if(cw.queue_key==key) { cw.queue_loaded=false;cells_progress_reset(); }
     cw.generation++;heap_caps_free(owned);cells_library();return true;
 }
 
@@ -324,19 +368,44 @@ static bool cells_asset_valid_checked(const char *path,const char *relative,bool
 static bool cells_asset_valid(const char *path,const char *relative) {
     return cells_asset_valid_checked(path,relative,NULL,NULL);
 }
-static bool cells_matches(const char *path,uint64_t size,const uint8_t sha[32]) {
-    struct stat st;if(stat(path,&st) || st.st_size!=(int64_t)size)return false;
-    char hex[65];for(unsigned i=0;i<32;i++)snprintf(hex+2*i,3,"%02x",sha[i]);
-    if(carto_digest_cached(path,&st,hex))return true;
-    if(!cells_hash(path,sha,size))return false;
-    return carto_digest_write(path,&st,hex);
+static bool cells_cached_digest(const char *path,const struct stat *st,const uint8_t sha[32],bool *known,bool *error) {
+    char side[272],hex[65],expected[65];long long size,mtime;*known=false;
+    snprintf(side,sizeof(side),"%s.sha",path);FILE *f=cells_fopen(side,"r");
+    if(!f) { if(error && errno!=ENOENT && errno!=ENOTDIR)*error=true;return false; }
+    int n=carto_digest_scan(f,&size,&mtime,hex);bool failed=ferror(f)!=0;
+    if(fclose(f))failed=true;
+    if(failed) { if(error)*error=true;return false; }
+    *known=n==3 && size==(long long)st->st_size && mtime==(long long)st->st_mtime && strlen(hex)==64;
+    for(unsigned i=0;i<32;i++)snprintf(expected+2*i,3,"%02x",sha[i]);
+    return *known && !strcasecmp(hex,expected);
 }
-/* A new index must never address offsets in an older cell revision. Catalog
- * hashes make stale cells behave exactly like missing cells until replaced. */
+static bool cells_matches_checked(const char *path,uint64_t size,const uint8_t sha[32],bool *error) {
+    struct stat st;if(stat(path,&st)) { if(error && errno!=ENOENT && errno!=ENOTDIR)*error=true;return false; }
+    if(st.st_size!=(int64_t)size)return false;
+    bool known;
+    if(cells_cached_digest(path,&st,sha,&known,error))return true;
+    if(error && *error)return false;
+    /* The record says what this exact file hashed to last time. Kept only
+       when it matched, every out-of-date cell was hashed again on every
+       state count: minutes of SD reads after each boot or refresh, with
+       TILES showing no states meanwhile. */
+    if(known)return false;
+    uint8_t got[32];if(!cells_digest(path,size,got)) { if(error)*error=true;return false; }
+    char ghex[65];for(unsigned i=0;i<32;i++)snprintf(ghex+2*i,3,"%02x",got[i]);
+    (void)carto_digest_write(path,&st,ghex);
+    return !memcmp(got,sha,32);
+}
+static bool cells_matches(const char *path,uint64_t size,const uint8_t sha[32]) {
+    return cells_matches_checked(path,size,sha,NULL);
+}
+/* Direct cells carry their own offsets; keep old roads until UPDATE replaces
+ * them. A new index must never address offsets in an older cell revision. */
 static bool cells_file_current(uint32_t id,const char *path) {
     if(!cw.initialized || cw.catalog<0)return !cells_direct_active(); /* locally copied indexed legacy set */
     if((!cw.direct && !cells_matches(CELLS_ROOT "cells/index.cci",cw.index_size,cw.index_sha)))return false;
-    uint32_t size;uint8_t sha[32];return cells_entry(id,&size,sha) && cells_matches(path,size,sha);
+    uint32_t size;uint8_t sha[32];if(!cells_entry(id,&size,sha))return false;
+    if(cw.direct) { struct stat st;return !stat(path,&st) && S_ISREG(st.st_mode) && st.st_size>=64; }
+    return cells_matches(path,size,sha);
 }
 /* Failure records survive dl's per-attempt reset, including joined .pN parts.
  * Only failed assets allocate PSRAM; never evict a permanent stop automatically. */
@@ -415,6 +484,7 @@ static EXT_RAM_BSS_ATTR struct {
 #ifndef LS_CARTOCORE_HOST
     esp_http_client_handle_t http;
 #endif
+    uint32_t cell_id;
 } dl;
 #ifndef LS_CARTOCORE_HOST
 static esp_err_t cells_http_event(esp_http_client_event_t *event) {
@@ -473,7 +543,7 @@ static bool cells_download(unsigned kind,const char *remote,const char *relative
     uint32_t asset_id=0;
     if(kind==6) { unsigned x,y;if(sscanf(remote,"cells/8/%u/%u.ctile",&x,&y)!=2 || x>255 || y>255)return false;asset_id=1+x*256+y+(strstr(remote,".detail.ctile")?65536:0);
         if(!cells_id_allowed(asset_id)) { cells_message("LakeShark Plus token required");return false; } }
-    memset(&dl,0,sizeof(dl));dl.kind=kind;dl.size=size;dl.segment_end=size;
+    memset(&dl,0,sizeof(dl));dl.kind=kind;dl.size=size;dl.segment_end=size;dl.cell_id=asset_id;
     if((kind==5 || kind==6) && !cells_parts(asset_id,&dl.part_bytes,&dl.part_count))return false;
     snprintf(dl.relative,sizeof(dl.relative),"%s",relative);snprintf(dl.remote,sizeof(dl.remote),"%s",remote);
     snprintf(dl.path,sizeof(dl.path),CELLS_ROOT "%s",relative);snprintf(dl.part,sizeof(dl.part),"%s.part",dl.path);
@@ -532,7 +602,11 @@ static bool cells_download(unsigned kind,const char *remote,const char *relative
 }
 static unsigned cells_download_step(void) {
     if(!dl.active)return 0;
-    if(dl.size && dl.offset==dl.size && !dl.out) { dl.active=false;cells_retry_reset(dl.relative);return dl.kind; }
+    if(dl.size && dl.offset==dl.size && !dl.out) {
+        dl.active=false;cells_retry_reset(dl.relative);
+        if(dl.kind==6) { cells_progress_credit(dl.cell_id-1,(uint32_t)dl.size);cw.queue_partial=0; }
+        return dl.kind;
+    }
     size_t wanted=sizeof(cw.buf);if(dl.size && wanted>dl.segment_end-dl.offset)wanted=(size_t)(dl.segment_end-dl.offset);
     int got=0;
     if(wanted) {
@@ -566,7 +640,7 @@ static unsigned cells_download_step(void) {
     if(!ok) { unlink(dl.part);cells_download_failed("SHA256 / format check failed; old asset retained",0,true);return 0; }
     if(!cells_install(dl.part,dl.path)) { cells_download_fail("Atomic install failed; partial retained");return 0; }
     unlink(dl.meta);dl.active=false;cells_work.downloading=false;cells_retry_reset(dl.relative);
-    if(dl.kind==6) { cw.queue_done+=dl.size;cw.queue_partial=0; }
+    if(dl.kind==6) { cells_progress_credit(dl.cell_id-1,(uint32_t)dl.size);cw.queue_partial=0; }
     if(dl.size)(void)cells_matches(dl.path,dl.size,dl.sha);
     cells_message("Installed and verified");return dl.kind;
 }
@@ -656,12 +730,14 @@ static void cells_preview(void) {
     if(cw.catalog<0) { cells_work.busy=true;cells_message("Loading cell sizes from server");cells_download(1,"cells/catalog.ccm","cells/catalog.ccm",0,NULL);return; }
     memset(cw.cover,0,CELLS_BITS);cells_work.cells=cells_work.installed=cells_work.unavailable=cells_work.preview_count=0;cells_work.bytes=0;
     cc_places_cells it;uint32_t x,y;int got;
+    bool detail=cells_token_load();
     if(!cc_places_cells_open(&cw.places,&cw.hits[cw.picked],cw.radius,&it)) { cells_message("Cannot read place shape");return; }
     while((got=cc_places_cells_next(&it,&x,&y))>0) {
         if(x>=256 || y>=256) { cells_message("Place grid must be z8");return; }
         uint32_t id=x*256+y;cw.cover[id/8]|=(uint8_t)(1u<<(id&7));cells_work.cells++;
         uint32_t size;uint8_t sha[32];bool known=cells_entry(id+1,&size,sha);bool present=known && cells_present(id+1,size);
         if(!known)cells_work.unavailable++;else if(present)cells_work.installed++;else cells_work.bytes+=size;
+        if(detail && cells_entry(id+65537,&size,sha) && !cells_present(id+65537,size))cells_work.bytes+=size;
         if(cells_work.preview_count<LS_CELLS_PREVIEW) {
             unsigned at=cells_work.preview_count++;cells_work.preview[at]=(uint16_t)id;cells_work.present[at]=present?1:known?0:2;
         }
@@ -696,7 +772,7 @@ static void cells_queue_step(void) {
     if(!cw.queue_loaded)return;
     bool state_queue=(cw.queue_key&0xffff0000u)==0x53540000u;
     bool want_detail=cells_token_load();
-    if(want_detail!=cw.want_detail) { cw.want_detail=want_detail;cw.next_cell=0;cw.progress_loaded=false; }
+    if(want_detail!=cw.want_detail) { cw.want_detail=want_detail;cw.next_cell=0;cells_progress_reset(); }
     if(state_queue && !cells_states_count) { cw.catalog_refresh=true;cells_message("State metadata required before resuming");return; }
     cells_work.downloading=true;
     if(cw.catalog<0) { cells_download(1,"cells/catalog.ccm","cells/catalog.ccm",0,NULL);return; }
@@ -708,23 +784,33 @@ static void cells_queue_step(void) {
         /* A thousand-cell queue's stat() calls alone held the worker for
            seconds: after 200 ms this walk too resumes next turn. It starts
            over when the queue, its detail level or the catalog changes. */
-        static unsigned walk_at;static uint32_t walk_key;static int walk_catalog;static bool walk_detail;
+        static unsigned walk_at;static uint32_t walk_revision;
+        static uint64_t walk_total,walk_done;
         const unsigned walk_end=cw.want_detail?131072u:65536u;
-        if(!walk_at || walk_key!=cw.queue_key || walk_catalog!=cw.catalog || walk_detail!=cw.want_detail) {
-            walk_at=0;walk_key=cw.queue_key;walk_catalog=cw.catalog;walk_detail=cw.want_detail;
-            cw.queue_done=cw.queue_total=cw.queue_partial=0;
+        if(!walk_at || walk_revision!=cw.progress_revision) {
+            walk_at=0;walk_revision=cw.progress_revision;walk_total=walk_done=0;
+            memset(cells_credited,0,sizeof(cells_credited));
         }
+        cells_message("Checking queued maps");
         const int64_t walk_began=esp_timer_get_time();
         for(;walk_at<walk_end;walk_at++)if(cw.queued[(walk_at%65536)/8]&(1u<<(walk_at&7))) {
-            /* Progress only: size, not SHA. Hashing every queued cell here held
-               the worker, and MAP behind it on "opening map...", for minutes
-               after a catalog refresh; the walk below verifies each cell. */
-            if(cells_entry(walk_at+1,&size,sha)) { struct stat st;char name[64],path[96];
+            /* Credit cached digests here; the walk below hashes unknown cells. */
+            bool error=false;
+            if(cells_entry_checked(walk_at+1,&size,sha,&error)) { struct stat st;char name[64],path[96];bool known;
                 cells_name(walk_at+1,name,sizeof(name),false);snprintf(path,sizeof(path),CELLS_ROOT "%s",name);
-                cw.queue_total+=size;if(!stat(path,&st) && st.st_size==(off_t)size)cw.queue_done+=size; }
+                walk_total+=size;
+                if(!stat(path,&st) && st.st_size==(off_t)size && cells_cached_digest(path,&st,sha,&known,NULL)) {
+                    walk_done+=size;cells_credited[walk_at/8]|=(uint8_t)(1u<<(walk_at&7));
+                }
+            } else if(error || walk_at<65536) {
+                walk_at=0;
+                if(error)cells_message("Cannot count queued maps; retrying");
+                else { cells_work.downloading=false;cells_message("Blocked: queued cell absent from catalog"); }
+                return;
+            }
             if(esp_timer_get_time()-walk_began>200000 && walk_at+1<walk_end) { walk_at++;return; }
         }
-        walk_at=0;cw.progress_loaded=true;
+        walk_at=0;cw.queue_total=walk_total;cw.queue_done=walk_done;cw.queue_partial=0;cw.progress_loaded=true;
     }
     if(!cells_entry(0,&size,sha)) { cells_message("Catalog has no overview");return; }
     if(!cells_present(0,size)) { cells_download(5,"cells/overview.ctile","cells/overview.ctile",size,sha);return; }
@@ -735,6 +821,7 @@ static void cells_queue_step(void) {
         if(at>=65536 && !cells_entry(at+1,&size,sha)) { cw.next_cell++;continue; }
         if(!cells_entry(at+1,&size,sha)) { cells_work.downloading=false;cells_message("Blocked: queued cell absent from catalog");return; }
         if(cells_present(at+1,size)) {
+            cells_progress_credit(at,size);cw.queue_partial=0;
             /* A cell not hashed since the last catalog can take seconds; after
                200 ms the walk resumes next turn so MAP gets the worker. */
             cw.next_cell++;if(esp_timer_get_time()-began>200000)return;continue;
@@ -755,6 +842,15 @@ static void cells_queue_step(void) {
     cells_message(state_queue?"State installed":"Place installed");if(cw.preview_active)cells_preview();
 }
 
+static void cells_metadata_activate(const char *relative) {
+    if(!strcmp(relative,"cells/states.json")) {
+        cw.states_refresh=!cells_states_parse(CELLS_ROOT "cells/states.json",true);
+        cells_states_publish();
+    }
+    if(!strcmp(relative,"outlines.lso")) {
+        cells_outlines_pending=false;snprintf(cells_work.outlines,sizeof(cells_work.outlines),"ready");
+    }
+}
 /* Transport-neutral, resumable uploader. Commands run only on the worker. */
 static EXT_RAM_BSS_ATTR struct {
     char relative[64],path[128],part[144],meta[160];
@@ -805,6 +901,7 @@ static bool cells_upload_finish(bool verified) {
         if(!stat(upload.path,&st))carto_digest_write(upload.path,&st,hex);
         if(!strcmp(upload.relative,"cells/catalog.ccm"))cells_catalog();
         if(!strcmp(upload.relative,"places/places_base.ccpl")) { cw.base_open=false;cw.query_pending=strlen(cells_work.query)>=2; }
+        cells_metadata_activate(upload.relative);cells_states_publish();cells_publish();
     }
     upload.active=false;return ok;
 }
@@ -845,7 +942,7 @@ static void cells_step(void) {
             bool known=false;for(unsigned i=0;i<cells_work.library_count;i++)if(cells_work.keys[i]==q->key)known=true;
             if(!known && cells_work.library_count>=LS_CELLS_PLACES)cells_message("32 places limit; delete a place first");
             else if(cells_record(q->key,q->name,q->cover,true)) {
-                if(cw.queue_loaded && cw.queue_key==q->key) { memcpy(cw.queued,q->cover,CELLS_BITS);memcpy(cw.queue_name,q->name,64);cw.next_cell=0; }
+                if(cw.queue_loaded && cw.queue_key==q->key) { memcpy(cw.queued,q->cover,CELLS_BITS);memcpy(cw.queue_name,q->name,64);cw.next_cell=0;cells_progress_reset(); }
                 cells_library();cells_message("Queued; safe to leave TILES");
             }
             else cells_message("Cannot save download queue; retry");
@@ -875,8 +972,7 @@ static void cells_step(void) {
         }
         unsigned done=cells_download_step();
         if(done==1) { cw.catalog_refresh=false;cells_catalog();if(cw.direct) { cw.states_refresh=true;cells_download(7,"cells/states.json","cells/states.json",0,NULL); }if(cw.preview_active)cells_preview(); }
-        if(done==7) { cw.states_refresh=false;cells_states_parse(CELLS_ROOT "cells/states.json",true);cells_states_publish(); }
-        if(done==8) { cells_outlines_pending=false;snprintf(cells_work.outlines,sizeof(cells_work.outlines),"ready"); }
+        if(done==7 || done==8)cells_metadata_activate(dl.relative);
         if(done==2) { cw.base_open=false;cw.query_pending=true; }
         if(done==3) { cells_attach(cw.shard.iso2);if(cw.preview_active)cells_preview();else cw.query_pending=true; }
     } else if(cw.catalog_refresh)cells_download(1,"cells/catalog.ccm","cells/catalog.ccm",0,NULL);

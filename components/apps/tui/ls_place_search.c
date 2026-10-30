@@ -26,6 +26,7 @@ void ls_place_search_open(bool go) {
 void ls_place_search_goto(void (*go)(double,double)) { ls_place_search_open(true);navigate=go; }
 void ls_place_search_close(void) { opened=false;if(typing)ls_keyboard_close();typing=false; }
 void ls_place_search_progress(void) { focus=-1;notice[0]=0;opened=true;jump=false;page=5; }
+void ls_place_search_installed(void) { focus=-1;notice[0]=0;opened=true;jump=false;page=2;selected=0; }
 const char *ls_place_search_hint(void) {
     return page==0?"TYPE search  UP/DOWN place  ENTER pick  TAB controls":page==2?"UP/DOWN place  TAB controls  F1 update  F2 delete":page==1?"F1 download  LEFT/RIGHT radius  TAB controls":page==4?"F1 confirm delete  ESC cancel":"TAB controls  ESC back";
 }

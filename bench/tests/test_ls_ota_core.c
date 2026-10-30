@@ -269,6 +269,29 @@ LS_CASE(the_other_known_host_is_swapped_in_both_directions)
     LS_EQ_STR(out, "https://lakeshark-ota.pages.dev");
 }
 
+LS_CASE(a_url_saved_by_another_edition_moves_to_this_editions_folder)
+{
+    char out[160];
+    /* A TFT board flashed over a 2.18 build that followed the AMOLED channel. */
+    LS_CHECK(ls_ota_url_to_edition("https://ota.terminalbay.com/tdp4/test.txt", "/tdp4tft/", out, sizeof(out)));
+    LS_EQ_STR(out, "https://ota.terminalbay.com/tdp4tft/test.txt");
+    LS_CHECK(ls_ota_url_to_edition("https://lakeshark-ota.pages.dev/tdp4lr/stable.txt", "/tdp4/", out, sizeof(out)));
+    LS_EQ_STR(out, "https://lakeshark-ota.pages.dev/tdp4/stable.txt");
+    LS_CHECK(ls_ota_url_to_edition("https://ota.terminalbay.com/tdp4tft/beta.txt", "/tdp4lr/", out, sizeof(out)));
+    LS_EQ_STR(out, "https://ota.terminalbay.com/tdp4lr/beta.txt");
+    /* Its own folder, or no edition folder at all, is left alone. */
+    char keep[160] = "keep";
+    LS_CHECK(!ls_ota_url_to_edition("https://ota.terminalbay.com/tdp4tft/stable.txt", "/tdp4tft/", keep, sizeof(keep)));
+    LS_CHECK(!ls_ota_url_to_edition("https://ota.terminalbay.com/tdp4lr/stable.txt", "/tdp4lr/", keep, sizeof(keep)));
+    LS_CHECK(!ls_ota_url_to_edition("https://example.com/other/stable.txt", "/tdp4/", keep, sizeof(keep)));
+    /* /tdp4/ is not found inside /tdp4lr/ or /tdp4tft/: the slash ends it. */
+    LS_CHECK(!ls_ota_url_to_edition("https://ota.terminalbay.com/tdp4lr/stable.txt", "/tdp4lr/", keep, sizeof(keep)));
+    char small[20] = "keep";
+    LS_CHECK(!ls_ota_url_to_edition("https://ota.terminalbay.com/tdp4/stable.txt", "/tdp4tft/", small, sizeof(small)));
+    LS_EQ_STR(keep, "keep");
+    LS_EQ_STR(small, "keep");
+}
+
 LS_CASE(github_is_the_third_place_with_the_path_flattened)
 {
     char out[160];

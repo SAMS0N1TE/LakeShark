@@ -1,1 +1,8 @@
-{ "category": "radio", "description": "Rules over what the board's watchers see: SWEEP's Bluetooth and Wi-Fi categories, Remote ID, drone links, aircraft, the pager decoder, P25, REC and the mesh. Raises a banner, chirp, vibration, speech, an SD log or a mesh share, keeps watching in the background, and reads the same /sdcard/detector/rules.json the built-in DETECTOR did. Needs firmware with SDK 2.2." }
+{
+  "category": "radio",
+  "description": "Rules over what the board's watchers see: SWEEP's Bluetooth and Wi-Fi categories, Remote ID, drone links, aircraft, the pager decoder, P25, REC and the mesh. Raises a banner, chirp, vibration, speech, an SD log or a mesh share, keeps watching in the background, and reads the same /sdcard/detector/rules.json the built-in DETECTOR did. Needs firmware with SDK 2.2.",
+  "thumb": "apps/media/detector/thumb-20261029.png",
+  "screens": [
+    "apps/media/detector/1-20261029.png"
+  ]
+}

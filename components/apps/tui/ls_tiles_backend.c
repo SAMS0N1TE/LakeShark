@@ -276,11 +276,15 @@ static void work(void *arg) {
     ls_carto_transfer t; stage(S_TRANSFER,"transfer-snapshot",""); ls_carto_transfer_snapshot(&t);
     if(q->action<0) {
         if(t.state==1) { error(d,ESP_ERR_INVALID_STATE,LS_TEXT(t_ls_tiles_backend_transfer_active_refresh_after, "Transfer active; refresh after it finishes")); goto publish; }
-        d->count=0;
-        /* Publish presence before any FAT/VFS operation (including cache open). */
-        d->sd=ls_sdcard_mounted(); d->maps=0; d->total=d->free=0;
+        /* Publish presence before any FAT/VFS operation (including cache open).
+           Only the card's presence: the files already listed stay listed until
+           the scan below replaces them, or TILES empties on every refresh. */
+        d->sd=ls_sdcard_mounted();
         stage(S_PUBLISH,"publish-mount","");
-        xSemaphoreTake(lock,portMAX_DELAY); data=*d; xSemaphoreGive(lock);
+        xSemaphoreTake(lock,portMAX_DELAY);
+        data.sd=d->sd; if(!d->sd) { data.count=0; data.maps=0; data.total=data.free=0; }
+        xSemaphoreGive(lock);
+        d->count=0; d->maps=0; d->total=d->free=0;
         FILE *f=d->sd?fopen("/sdcard/maps/catalog.json","rb"):NULL;
         if(f) { char *b=heap_caps_malloc(65537,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
             if(b) {

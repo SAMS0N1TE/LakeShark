@@ -38,6 +38,8 @@ static inline bool ls_cells_server(const char *s) { (void)s;return false; }
 void ls_place_search_open(bool jump);
 void ls_place_search_goto(void (*go)(double lat,double lon));
 void ls_place_search_progress(void);
+/* Opens on the downloaded places, to look at or delete one. */
+void ls_place_search_installed(void);
 void ls_place_search_close(void);
 bool ls_place_search_active(void);
 const char *ls_place_search_hint(void);

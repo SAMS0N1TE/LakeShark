@@ -24,12 +24,18 @@ main = r'''int main(void) {
     for(unsigned i=0;i<8;i++) cw.queued[i]=0xff; /* 64 queued cells, all on the card */
     cells_queue_step();
     assert(!cw.progress_loaded && cw.queue_loaded && !records && cw.next_cell==0);
-    assert(cw.queue_total>0 && cw.queue_total<64u*64u);
+    /* Partial counts stay private until the complete ownership walk succeeds. */
+    assert(cw.queue_total==0 && cw.queue_done==0 && cw.queue_partial==0);
     unsigned steps=1;
-    while(!cw.progress_loaded && steps<200) { cells_queue_step();steps++; }
+    while(!cw.progress_loaded && steps<200) {
+        cells_queue_step();steps++;
+        if(!cw.progress_loaded)assert(cw.queue_total==0 && cw.queue_done==0 && cw.queue_partial==0);
+    }
     assert(cw.progress_loaded && cw.queue_total==64u*64u && steps>8);
     while(cw.queue_loaded && steps<400) { cells_queue_step();steps++; }
     assert(!cw.queue_loaded && records==1);
+    assert(cw.queue_done==cw.queue_total);
+    cells_progress_credit(0,64);assert(cw.queue_done==cw.queue_total);
     printf("PASS: progress walk yields every 200 ms, totals whole, done in %u steps\n",steps);
 }
 '''

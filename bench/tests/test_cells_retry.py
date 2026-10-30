@@ -11,6 +11,8 @@ source = (root / 'components/apps/tui/ls_cells_worker.h').read_text()
 header = (root / 'components/apps/tui/ls_cells.h').read_text()
 types = header[header.index('#define LS_CELLS_HITS'):header.index('#if LS_CARTOCORE_AVAILABLE')]
 public = source[source.index('static EXT_RAM_BSS_ATTR struct {'):source.index('static EXT_RAM_BSS_ATTR struct {\n    cc_places')]
+progress = source[source.index('static EXT_RAM_BSS_ATTR uint8_t cells_credited'):source.index('static uint32_t cells_u32(')]
+metadata = source[source.index('static void cells_metadata_activate('):source.index('/* Transport-neutral')]
 transfer = source[source.index('/* Failure records survive'):source.index('static void cells_config_save(')]
 dispatch = source[source.index('static void cells_step('):source.index('static void cells_service(')]
 
@@ -79,10 +81,12 @@ static const char *esp_err_to_name(int e) { (void)e;return "timeout"; }
 static struct {
     char server[256],path[256],queue_name[64];
     uint8_t queued[CELLS_BITS],scratch[CELLS_BITS],buf[65536];
-    uint64_t queue_done,queue_partial;unsigned queue_key,next_cell,serial,picked,radius,hint_attempts;
-    bool initialized,queue_loaded,catalog_refresh,states_refresh,preview_active,query_pending,base_open,direct;
+    uint64_t queue_total,queue_done,queue_partial;unsigned queue_key,next_cell,serial,picked,radius,hint_attempts;
+    uint32_t progress_revision;
+    bool initialized,queue_loaded,catalog_refresh,states_refresh,preview_active,query_pending,base_open,direct,progress_loaded;
     int catalog;struct { char iso2[3]; } shard;
 } cw;
+''' + progress + r'''
 static struct { bool active;int64_t last_us; } upload;
 static struct { uint32_t bytes;uint8_t sha[32]; } cells_outlines;
 static bool cells_outlines_pending;
@@ -96,11 +100,11 @@ static bool cells_matches(const char *p,uint64_t n,const uint8_t *s) { (void)p;(
 static bool cells_hash(const char *p,const uint8_t *s,uint64_t n) { (void)p;(void)s;(void)n;return hash_ok; }
 static bool cells_asset_valid(const char *p,const char *r) { (void)p;(void)r;return format_ok; }
 static bool cells_install(const char *p,const char *r) { unlink(r);return rename(p,r)==0; }
-static bool cells_token_load(void) { return true; }
+static bool cells_token_load(void) { cells_plus_work=true;return cells_plus_work; }
 ''' + transfer + r'''
 static void cells_init(void) { cw.initialized=true; }
 static void cells_library(void) {}
-static void cells_publish(void) { cells_pub=cells_work; }
+static void cells_publish(void) { cells_pub=cells_work;cells_plus=cells_plus_work; }
 static void cells_states_publish(void) {}
 static void cells_preview(void) {}
 static void cells_search(void) {}
@@ -115,7 +119,7 @@ static bool cells_delete(uint32_t k) { (void)k;return true; }
 static void cells_state_command(unsigned a,uint32_t k) { (void)a;(void)k; }
 static bool cells_record(uint32_t k,const char *n,const uint8_t *b,bool q) { (void)k;(void)n;(void)b;(void)q;return true; }
 static bool cells_record_read(const char *p,uint8_t *b,char *n,bool *q) { (void)p;(void)b;*n=0;*q=true;return true; }
-''' + dispatch + r'''
+''' + metadata + dispatch + r'''
 static const char *asset="cells/states.json";
 static bool start(void) { return cells_download(7,asset,asset,0,NULL); }
 static void reset(void) {

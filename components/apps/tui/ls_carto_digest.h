@@ -34,6 +34,17 @@ static inline bool carto_digest_cached(const char *path,const struct stat *st,co
         mtime==(long long)st->st_mtime && strlen(hex)==64 && !strcasecmp(hex,expected);
     fclose(f); return ok;
 }
+/* A record exists for this exact file (size and mtime), whatever it hashed to. */
+static inline bool carto_digest_known(const char *path,const struct stat *st) {
+    if(strlen(path)>263) return false;
+    char side[272],hex[65]; long long size,mtime;
+    snprintf(side,sizeof(side),"%s.sha",path);
+    FILE *f=fopen(side,"r"); if(!f) return false;
+    int n=carto_digest_scan(f,&size,&mtime,hex);
+    bool ok=n==3 && !ferror(f) && size==(long long)st->st_size &&
+        mtime==(long long)st->st_mtime && strlen(hex)==64;
+    fclose(f); return ok;
+}
 static inline bool carto_digest_write(const char *path,const struct stat *st,const char *hex) {
     if(strlen(path)>263) return false;
     char side[272],temp[280];

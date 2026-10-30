@@ -1,4 +1,5 @@
 #include "../../ls_cells.h"
+#include "../../ls_tiles.h"
 #include "../../ls_cartocore_map.h"
 #include "ls_textpack.h"
 #ifdef LS_MAP_AUDIT
@@ -27,6 +28,7 @@ static int s_carto_audit_bad,s_carto_low_masked;
 #include "../../ls_map.h"
 #include "../../ls_route_live.h"
 #include "../../ls_map_ink.h"
+#include "../../ls_globe.h"
 #include "../../ls_map_label_policy.h"
 #include "../../ls_map_marks.h"
 #include "../../ls_map_share.h"
@@ -70,6 +72,11 @@ static tui_rect s_quick_rect;
 static tui_rect s_pad_rect;
 static tui_rect s_card_rect;
 static int s_header_h;
+/* The header row that names a map download, or -1; a tap opens TILES. */
+static int s_dl_row = -1;
+/* TILES (scr_tiles.c) answers this; builds without TILES download nothing. */
+__attribute__((weak)) int ls_maps_activity(char lines[][64], float *fraction, int max)
+{ (void)lines; (void)fraction; (void)max; return 0; }
 static bool s_controls_hidden;
 /* With the controls hidden, the one way back: a see-through chip in the
    map's bottom right corner. */
@@ -270,7 +277,9 @@ static ls_act_status_t a_map_files(const ls_args_t *in, ls_val_t *out)
 {
     (void)in;
     if(cartocore_view()) {
-        s_archive_n=(int)ls_carto_map_files(s_archives,LS_PICKER_MAX);
+        /* None back can mean the list was busy: the last list read stays. */
+        const int n=(int)ls_carto_map_files(s_archives,LS_PICKER_MAX);
+        if(n>0) s_archive_n=n;
         qsort(s_archives,s_archive_n,sizeof(s_archives[0]),archive_order);
         ls_picker_open("CTILE MAPS",pick_archive);
         for(int i=0;i<s_archive_n;i++) {
@@ -385,6 +394,10 @@ LS_COLD_END
 
 /* --------------------------------------------------------------- draw --- */
 
+/* TILES answers which regions are on the card (a TUI colour, 0 for none). */
+__attribute__((weak)) uint8_t ls_maps_region_fill(const char *code, void *ctx)
+{ (void)code; (void)ctx; return 0; }
+
 static void draw_placeholder(tui_surface *sf, tui_rect area, const char *why)
 {
     const uint8_t dim = LS_ATTR_DIM;
@@ -414,6 +427,52 @@ static int sub_y(void)
     if (sy < 3) sy = 3;
     if (sy > (cc_picture() ? 16 : 8)) sy = cc_picture() ? 16 : 8;
     return sy;
+}
+
+/* Where the card has no tiles: the world's outlines flat on a graticule,
+   the regions on the card picked out in colour, so a pan or a zoom out finds
+   the way to them. Panning, zoom and tap-to-centre keep working over it. */
+/* The chip to the nearest region on the card; a tap goes there. */
+static tui_rect s_near_rect;
+static float s_near_lat, s_near_lon;
+/* World pixels (256 a tile) a cell covers: CartoCore draws 256-pixel tiles
+   SUB_X across a cell; FIELD scales its tiles to the font instead. */
+static void flat_scale(double *ppx, double *ppy)
+{
+    const double k = cartocore_view() ? 1.0 : 256.0 / (ls_map_tile_px() > 0 ? ls_map_tile_px() : 256);
+    *ppx = SUB_X * k; *ppy = sub_y() * k;
+}
+/* opening: the map is still loading its first frame, so the outlines stand in
+   for it and nothing claims the card has no tiles here. */
+static bool map_flat(tui_surface *sf, tui_rect body, bool opening)
+{
+    double lat, lon, ppx, ppy; ls_map_get_center(&lat, &lon); flat_scale(&ppx, &ppy);
+    if (!ls_globe_flat(sf, body, lat, lon, ls_map_zoom(), ppx, ppy, ls_maps_region_fill, NULL)) return false;
+    const int y = body.y + body.h - 1;
+    if (opening) {
+        static const char SPIN[4] = { '|', '/', '-', '\\' };
+        char b[24]; snprintf(b, sizeof(b), " OPENING MAP %c ", SPIN[(esp_timer_get_time() / 250000) & 3]);
+        tui_put_str(sf, body, body.x, y, b, TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT));
+        return true;
+    }
+    tui_put_str(sf, body, body.x, y, " NO TILES HERE ", TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT));
+    tui_put_str(sf, body, body.x + 16, y, " ON CARD ", TUI_ATTR(TUI_BLACK, TUI_GREEN | TUI_BRIGHT));
+    tui_put_str(sf, body, body.x + 26, y, " PART ", TUI_ATTR(TUI_BLACK, TUI_YELLOW | TUI_BRIGHT));
+    /* how far, and which way, to the nearest map on the card */
+    char code[8]; float nla, nlo; bool inside = false;
+    if (ls_globe_nearest(lat, lon, ls_maps_region_fill, NULL, code, &nla, &nlo, &inside) && inside) {
+        /* in a region on the card, on a part of it the card has no tiles for */
+        char b[48]; snprintf(b, sizeof(b), " %s: NOT DOWNLOADED HERE ", strncmp(code, "US-", 3) ? code : code + 3);
+        tui_put_str(sf, body, body.x, y - 1, b, TUI_ATTR(TUI_BLACK, TUI_YELLOW | TUI_BRIGHT));
+    } else if (ls_globe_nearest(lat, lon, ls_maps_region_fill, NULL, code, &nla, &nlo, NULL)) {
+        static const char *const DIR[8] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
+        const double dy = (nla - lat) * 69.0, dx = (fmod(nlo - lon + 540.0, 360.0) - 180.0) * 69.0 * cos(lat * M_PI / 180.0);
+        const int o = (int)lrint(atan2(dx, dy) / (M_PI / 4)) & 7;
+        char b[48]; snprintf(b, sizeof(b), " GO TO %s  %.0f mi %s > ", strncmp(code, "US-", 3) ? code : code + 3, sqrt(dx * dx + dy * dy), DIR[o]);
+        s_near_rect = tui_rect_make(body.x, y - 1, (int)strlen(b), 1); s_near_lat = nla; s_near_lon = nlo;
+        tui_put_str(sf, body, body.x, y - 1, b, TUI_ATTR(TUI_BLACK, TUI_WHITE | TUI_BRIGHT));
+    }
+    return true;
 }
 
 /* The palette a class is drawn in. Water reads as water, parks as green,
@@ -993,6 +1052,69 @@ static void picture_present(tui_surface *sf, tui_rect a, int pw, int ph)
     for (int y = a.y; y < a.y + a.h; y++)
         for (int x = a.x; x < a.x + a.w; x++)
             tui_put_char(sf, a, x, y, LS_TUI_IMAGE_CELL, 0);
+}
+
+/* The outlines under the map where it has nothing to draw: CartoCore draws
+   an empty frame, not an error, where the card has no tiles. Zoomed out (z7
+   and under) every empty cell takes them, so the regions on the card show
+   among the borders around them; closer in, only a view with nothing in it
+   at all, so outlines never lie over streets the card holds. Which cells of
+   a picture are empty is worked out once per picture. PSRAM. */
+#define UNDER_MAX (160 * 100)
+EXT_RAM_BSS_ATTR static tui_cell s_under_keep[UNDER_MAX];
+EXT_RAM_BSS_ATTR static uint8_t s_under_empty[UNDER_MAX];
+static uint32_t s_under_shown = UINT32_MAX;
+static int s_under_w, s_under_h, s_under_n;
+static bool map_flat(tui_surface *sf, tui_rect body, bool opening);
+static void flat_under(tui_surface *sf, tui_rect body, int pw, int ph, const uint16_t *pix, uint32_t serial)
+{
+    const int n = body.w * body.h;
+    if (n <= 0 || n > UNDER_MAX) return;
+    const tui_rect a = tui_rect_intersect(body, tui_surface_rect(sf));
+    if (a.w != body.w || a.h != body.h) return;
+    /* Pictures only (CartoCore's and FIELD's): the text views draw a lake or a
+       forest as the same cell everywhere, which cannot be told from nothing.
+       A failed text frame still gets the outlines (map_flat). */
+    const bool pic = pix != NULL;
+    if (!pic) return;
+    const uint16_t ground = cartocore_view() ? s_pic_built_ground : carto_rgb565(palette()->ground);
+    if (s_under_shown != serial || s_under_w != body.w || s_under_h != body.h) {
+        s_under_n = 0;
+        for (int r = 0; r < body.h; r++)
+            for (int c = 0; c < body.w; c++) {
+                bool e;
+                if (pic) {
+                    e = true;
+                    const int x0 = c * pw / body.w, x1 = (c + 1) * pw / body.w, y0 = r * ph / body.h, y1 = (r + 1) * ph / body.h;
+                    for (int y = y0; e && y < y1; y++)
+                        for (int x = x0; x < x1; x++)
+                            if (pix[(size_t)y * pw + x] != ground) { e = false; break; }
+                } else e = false;
+                s_under_empty[r * body.w + c] = e; s_under_n += e;
+            }
+        s_under_shown = serial; s_under_w = body.w; s_under_h = body.h;
+    }
+    const bool all = s_under_n == n;
+    if (!s_under_n || (ls_map_zoom() > 7 && !all)) return;
+    if (all && ls_map_zoom() > 7) {
+        /* close in, a frame of bare ground inside a region the card holds whole
+           is open country, not a missing map */
+        double lat, lon; ls_map_get_center(&lat, &lon);
+        char code[8]; float la, lo; bool inside = false;
+        if (ls_globe_nearest(lat, lon, ls_maps_region_fill, NULL, code, &la, &lo, &inside) && inside &&
+            ls_maps_region_fill(code, NULL) == TUI_GREEN) return;
+    }
+    for (int r = 0; r < body.h; r++) memcpy(&s_under_keep[r * body.w], &sf->back[(body.y + r) * sf->w + body.x], (size_t)body.w * sizeof(tui_cell));
+    if (all) { if (map_flat(sf, body, false)) return; }
+    else {
+        double lat, lon, ppx, ppy; ls_map_get_center(&lat, &lon); flat_scale(&ppx, &ppy);
+        if (ls_globe_flat(sf, body, lat, lon, ls_map_zoom(), ppx, ppy, ls_maps_region_fill, NULL)) {
+            for (int i = 0; i < n; i++)
+                if (!s_under_empty[i]) sf->back[(body.y + i / body.w) * sf->w + body.x + i % body.w] = s_under_keep[i];
+            return;
+        }
+    }
+    for (int r = 0; r < body.h; r++) memcpy(&sf->back[(body.y + r) * sf->w + body.x], &s_under_keep[r * body.w], (size_t)body.w * sizeof(tui_cell));
 }
 
 /* ------------------------------------------------------- reservations -- */
@@ -3950,17 +4072,18 @@ static bool cell_taken(int x, int y)
 static void centre_reticle(tui_surface *sf, tui_rect body)
 {
     const int x=body.x+body.w/2,y=body.y+body.h/2;
-    /* Opaque backing keeps the target legible over every basemap/theme.
-       It steps around symbols and names: a followed or GO TO target sits
-       right here, and painting over it hid the thing being followed. A
-       symbol on the centre is the target itself, so then none is drawn. */
+    /* Glass strokes, like the names: the map shows through around them.
+       Painted with a black backing, the cross sat in a black box that hid a
+       5x3 patch of the map (the corners were blanks). It steps around
+       symbols and names: a followed or GO TO target sits right here, and
+       painting over it hid the thing being followed. A symbol on the centre
+       is the target itself, so then none is drawn. */
     if(cell_taken(x-body.x,y-body.y)) return;
-    for(int dy=-1;dy<=1;dy++) for(int dx=-2;dx<=2;dx++)
-        if(!cell_taken(x+dx-body.x,y+dy-body.y))
-        tui_put_char(sf,body,x+dx,y+dy,
-            dy==0 ? (dx==0 ? '+' : '-') : (dx==0 ? '|' : ' '),
-            dx==0 && dy==0 ? TUI_ATTR(TUI_BLACK,TUI_YELLOW|TUI_BRIGHT) :
-                TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
+    for(int dy=-1;dy<=1;dy++) for(int dx=-2;dx<=2;dx++) {
+        if((dy && dx) || cell_taken(x+dx-body.x,y+dy-body.y)) continue;
+        const char c=dy ? '|' : dx ? '-' : '+';
+        ls_ink_text(sf,body,x+dx,y+dy,&c,1,TUI_ATTR((dx||dy ? TUI_WHITE : TUI_YELLOW)|TUI_BRIGHT,TUI_BLACK));
+    }
 }
 
 static int count_air_positions(void)
@@ -4077,6 +4200,13 @@ static void draw(tui_surface *sf, tui_rect area)
     const int want = ls_quick_rows(quick, nq, area.w, ls_tui_is_wide());
     const int ctl_h = (!s_controls_hidden && area.h > want + 10) ? want : 0;
     const bool guidance=ls_route_live()->valid;
+    /* What is downloading, from TILES or a search: said here too, so a
+       half-drawn map is explained and the download can be found. */
+    char dl[1][64]; float dl_frac = -1.0f;
+    const bool downloading = ls_maps_activity(dl, &dl_frac, 1) > 0;
+    /* The download strip lies over the map's top row rather than taking a
+       header row of its own: a row coming and going resized the map, which
+       threw the picture away and blinked it. */
     s_header_h = (ls_tui_is_wide() ? 3 : 4)+(guidance ? 1 : 0);
     tui_rect body = tui_rect_make(area.x, area.y + s_header_h, area.w, area.h - ctl_h - s_header_h);
 
@@ -4151,7 +4281,9 @@ static void draw(tui_surface *sf, tui_rect area)
 
     /* The header: what is on the map and what the marks mean. */
     const uint8_t head = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
-    s_controls_hit = tui_rect_make(area.x + area.w - 13, area.y, 13, s_header_h);
+    /* The button's own rows only: the download and route strips under it
+       take their own taps. */
+    s_controls_hit = tui_rect_make(area.x + area.w - 13, area.y, 13, ls_tui_is_wide() ? 3 : 4);
     tui_rect heading = area;
     heading.w -= 14;
     const char *gps = s_track ? "TRACK" : !s_receiver_fresh ? "WAIT" : ls_map_following() ? "FOLLOW" : "LIVE";
@@ -4184,8 +4316,20 @@ static void draw(tui_surface *sf, tui_rect area)
 
     s_nhits = 0;
     s_ntaken = 0;
+    s_near_rect = tui_rect_make(0, -1, 0, 0);
     s_rf_legend = tui_rect_make(0, -1, 0, 0);
-    if (!px && !cc_ok) {
+    /* No frame, or a frame with nothing in it: the outlines, with the pan
+       pad, instead of a notice that leaves nowhere to go. */
+    const bool flat_ok = cc || s_view == MAP_VIEW_FIELD;
+    const bool opening = cc ? why && !strncmp(why, "opening", 7) : ls_map_render_busy();
+    if (flat_ok && ((!px && !cc_ok) || (why && !ls_map_render_busy())) && map_flat(sf, body, opening)) {
+        ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
+        ls_tui_image(tui_rect_make(0,0,0,0),NULL,0,0,0);
+        s_pad_rect = s_controls_hidden ? tui_rect_make(0, -1, 0, 0) : pad_rect_for(body);
+        s_card_rect = tui_rect_make(0, -1, 0, 0);
+        s_map_cells = body;
+        draw_pan_pad(sf, s_pad_rect);
+    } else if (!px && !cc_ok) {
         ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
         draw_placeholder(sf, body, why ? why : "the map has not been started");
         s_pad_rect = tui_rect_make(0, -1, 0, 0);
@@ -4205,6 +4349,10 @@ static void draw(tui_surface *sf, tui_rect area)
             picture_present(sf, body, pw, ph);
             ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
         } else ls_tui_basemap(sf,body,cc?s_cc_colours:s_map_colours);
+        if(cc_picture() && s_pic_view && pw == s_pic_w && ph == s_pic_h)
+            flat_under(sf, body, pw, ph, s_pic_view, s_pic_shown);
+        else if(s_view == MAP_VIEW_FIELD && s_field_pixels && s_field_valid && pw == s_field_w && ph == s_field_h)
+            flat_under(sf, body, pw, ph, s_field_pixels, s_field_serial ^ 0x80000000u ^ ((uint32_t)s_field_pal << 20));
         overlay_reset(body, s_pad_rect, s_card_rect);
 
         /* Underneath to on top: rings and coverage, lines and trails, then
@@ -4269,6 +4417,20 @@ static void draw(tui_surface *sf, tui_rect area)
     tui_put_str(sf,area,area.x,coord_row+1,hint,LS_ATTR_DIM);
 
 
+    s_dl_row = -1;
+    if (downloading) {
+        /* The percent and the way to TILES are placed first, from the right;
+           the name gets what is left. */
+        char tail[24], strip[96];
+        if (dl_frac >= 0) snprintf(tail, sizeof(tail), "  %d%%  TILES >", (int)(dl_frac * 100.0f + 0.5f));
+        else snprintf(tail, sizeof(tail), "  TILES >");
+        const int room = area.w - (int)strlen(tail) - 4;
+        snprintf(strip, sizeof(strip), "GET %.*s", room > 0 ? room : 0, dl[0]);
+        s_dl_row = body.y;
+        for (int x = area.x; x < area.x + area.w; x++) tui_put_char(sf, area, x, s_dl_row, ' ', TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, area, area.x, s_dl_row, strip, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, area, area.x + area.w - (int)strlen(tail), s_dl_row, tail, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    }
     if (guidance) {
         char strip[96];ls_route_guidance(strip,sizeof(strip));
         tui_put_str(sf,area,area.x,area.y+s_header_h-1,strip,
@@ -4529,6 +4691,16 @@ static bool touch(int col, int row)
     if(ls_place_search_active())return ls_place_search_touch(col,row);
     if (s_dragging) { s_dragging = false; return true; }
     if (in_rect(s_controls_hit, col, row) || in_rect(s_show_rect, col, row)) return key(LS_TK_CHAR, 'x');
+    if (in_rect(s_near_rect, col, row)) {
+        jump_to(s_near_lat, s_near_lon);
+        if (ls_map_zoom() > 8) ls_map_zoom_by(8 - (int)ls_map_zoom());
+        return true;
+    }
+    if (s_dl_row >= 0 && row == s_dl_row) {
+        const ls_app_t *t = ls_app_by_id("tiles");
+        if (t) ls_tui_screen_show(ls_tui_screen_index_of(t->screen));
+        return true;
+    }
     if (s_rf_legend.h > 0 && in_rect(s_rf_legend, col, row)) { ls_rfmap_pick(); return true; }
     if (s_map_cells.h > 0 && row >= s_map_cells.y - s_header_h && row < s_map_cells.y &&
         col >= s_map_cells.x && col < s_map_cells.x + 20) {

@@ -17,8 +17,9 @@ source = (root / 'components/apps/tui/ls_cells_worker.h').read_text()
 header = (root / 'components/apps/tui/ls_cells.h').read_text()
 types = header[header.index('#define LS_CELLS_HITS'):header.index('#if LS_CARTOCORE_AVAILABLE')]
 public = source[source.index('static EXT_RAM_BSS_ATTR struct {'):source.index('static EXT_RAM_BSS_ATTR struct {\n    cc_places')]
-queue = source[source.index('static void cells_queue_step('):source.index('/* Transport-neutral')]
-catalog = source[source.index('static bool cells_catalog('):source.index('static bool cells_entry(')]
+progress = source[source.index('static EXT_RAM_BSS_ATTR uint8_t cells_credited'):source.index('static uint32_t cells_u32(')]
+queue = source[source.index('static void cells_queue_step('):source.index('static void cells_metadata_activate(')]
+catalog = source[source.index('static bool cells_catalog('):source.index('static bool cells_entry_checked(')]
 dispatch = source[source.index('static void cells_step('):source.index('    if(cells_request.serial!=cw.serial)')]+ '\n}\n'
 code = r'''
 #include <assert.h>
@@ -37,12 +38,13 @@ code = r'''
 ''' + types + public + r'''
 static struct {
     bool queue_loaded,initialized,preview_active,catalog_refresh,direct,progress_loaded,want_detail;
-    uint32_t next_cell,queue_key,selected_key,index_size,base_size,entries,stride;
+    uint32_t next_cell,queue_key,selected_key,index_size,base_size,entries,stride,progress_revision;
     uint64_t queue_total,queue_done,queue_partial;
     int catalog;
     char queue_name[64],path[256];
     uint8_t queued[CELLS_BITS],cover[CELLS_BITS],scratch[CELLS_BITS],index_sha[32],base_sha[32];
 } cw;
+''' + progress + r'''
 static struct { bool active;int64_t last_us; } upload;
 static struct { bool active; } dl;
 static struct { char path[128]; } saved;
@@ -55,6 +57,12 @@ static void cells_message(const char *s) { snprintf(cells_work.message,sizeof(ce
 static bool cells_matches(const char *p,uint64_t size,const uint8_t *sha) { (void)p;(void)size;(void)sha;return true; }
 static bool cells_entry(uint32_t id,uint32_t *size,uint8_t *sha) {
     *size=64;memset(sha,0,32);return !(missing && id==1);
+}
+static bool cells_entry_checked(uint32_t id,uint32_t *size,uint8_t *sha,bool *error) {
+    (void)error;return cells_entry(id,size,sha);
+}
+static bool cells_cached_digest(const char *path,const struct stat *st,const uint8_t sha[32],bool *known,bool *error) {
+    (void)path;(void)st;(void)sha;(void)error;*known=false;return false;
 }
 static bool cells_present(uint32_t id,uint32_t size) {
     (void)size;return id==0 || (present && !(change_prior && id==1));
@@ -77,13 +85,13 @@ static bool cells_delete(uint32_t key) { (void)key;deletes++;return true; }
 static bool cells_record_read(const char *path,uint8_t *bits,char *name,bool *queued) {
     (void)path;bits[0]=2;strcpy(name,"Update");*queued=false;return true;
 }
-static void cells_publish(void) { cells_pub=cells_work; }
+static void cells_publish(void) { cells_pub=cells_work;cells_plus=cells_plus_work; }
 /* State downloads (ls_cells_states_worker.h) are outside this test's scope. */
 static void cells_states_publish(void) {}
 typedef struct { char code[3],name[64];bool plus,partial;uint8_t cover[CELLS_BITS];unsigned count;uint64_t bytes; } cells_state_row;
 static cells_state_row cells_states[52] __attribute__((unused));
 static unsigned cells_states_count;
-static bool cells_token_load(void) { return false; }
+static bool cells_token_load(void) { cells_plus_work=false;return cells_plus_work; }
 static bool cells_asset_valid(const char *path,const char *relative) { (void)path;(void)relative;return true; }
 static void cells_state_command(unsigned action,uint32_t key) { (void)action;(void)key; }
 static uint32_t cells_u32(const uint8_t *p) { return p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16|(uint32_t)p[3]<<24; }

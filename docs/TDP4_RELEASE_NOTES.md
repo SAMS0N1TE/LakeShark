@@ -1,5 +1,19 @@
 # LakeShark release notes
 
+## 2.19.1
+
+- TILES: a new front page shows what is downloading: the region and percent as a dot-matrix sign, a meter, every cell of the job, and a live speed trace with time left.
+- TILES: UPDATE ALL fetches every state with newer maps, one after another.
+- TILES: GET MAPS no longer flickers, and the lists hold steady while maps download.
+- TILES: a board still set to the old map server says so, and one tap moves it to the live one.
+- TILES: the state list is ready in about a minute after boot instead of three.
+- MAP: the download strip names the state and opens TILES, and the map holds still while a download runs.
+- MAP: a state whose maps the server has updated keeps drawing its roads until you press UPDATE, and still counts as on the card.
+- MAP: the centre cross is drawn over the map without a black box.
+- MAP: where the card has no tiles, MAP shows the world's outlines on a lat/lon grid with your downloaded regions in colour, so you can pan and zoom your way to them.
+- Updates: TFT boards get their own update channel. A TFT board on 2.19.0 or older still follows the AMOLED channel, so do not update it over Wi-Fi: install the TFT package over USB once, and from then on it updates on its own channel.
+- Store: PINBALL, MESHLING and SUPREME T. (the space game) stay in the store.
+
 ## 2.19.0
 
 - HOME: related apps fold into folder tiles. LABS holds LORA LABS, EXPERIMENTS, MIX-RF and METERS; REC holds TIME MACHINE; MAP holds TILES; COMPASS holds FOX HUNT and RF SURVEY; DIAG holds TERMINAL.

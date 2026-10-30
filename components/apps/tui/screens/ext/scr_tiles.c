@@ -12,10 +12,14 @@
 #include "../../ls_quick.h"
 #include "../../ls_i18n.h"
 #include "../../ls_globe.h"
+#include "../../ls_map_ink.h"
+#include "../../ls_braille.h"
+#include "../../ls_calls.h"
 #include <stdlib.h>
 #include "esp_timer.h"
 #include "esp_attr.h"
 #include <math.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 #include "ls_textpack.h"
@@ -27,7 +31,7 @@ static int info_scroll,info_max;
 static bool refreshed,opening;
 static int64_t seen_transfer;
 static char active_file[128];
-static char hint[96]="UP/DOWN region  ENTER info  O options  BACK";
+static char hint[96]="UP/DOWN pick  ENTER manage  M get maps  S search  BACK";
 static tui_rect list_area,content_area;
 static int visible;
 static const char *const STATES[]={"NOT INSTALLED","INSTALLED","PARTIAL","UPDATE AVAILABLE"};
@@ -91,9 +95,13 @@ void ls_tiles_search_globe(tui_surface *sf,tui_rect a,float progress,double lat,
 static void home(void) {
     const ls_app_t *a=ls_app_by_id("home"); if(a) ls_tui_screen_show(ls_tui_screen_index_of(a->screen));
 }
+/* Pages: 0 ON THIS CARD, 1 region info, 2 transfer, 3 confirm, 4 US states,
+   5 region files. Region info and its delete go back to where they came from. */
+static int info_from=5;
 static void back(void) {
     if(page==2 && transfer.state==1) { confirm=1; page=3; }
-    else if(page==3) { page=confirm==1?2:0; confirm=0; }
+    else if(page==3) { page=confirm==1?2:info_from; confirm=0; }
+    else if(page==1) page=info_from;
     else if(page) page=0;
     else home();
 }
@@ -125,9 +133,11 @@ static void action(const ls_opt_t *o) {
     case 7: if(catalog.count && ls_tiles_action(4,&catalog.region[selected])) {
         page=2; refreshed=false; transfer=(ls_carto_transfer){0};
     } break;
+    case 8: page=5; break;
     }
 }
 static const char *available(const ls_opt_t *o) {
+    if(o->arg==8) return NULL;
     if(catalog.busy) return "Working";
     if(transfer.state==1 && (o->arg==0 || o->arg==1 || o->arg==3 || o->arg==7)) return "Transfer active";
     if(o->arg==1 || o->arg==5) return NULL;
@@ -150,6 +160,7 @@ static const ls_opt_t region_opts[]={
 static const ls_opt_ctx_t region_ctx={.name="REGION",.job=-1,.radio=LS_RSEL_NONE,LS_OPT_ROWS(region_opts)};
 static void search_action(const ls_opt_t *arg) { if(arg->arg)ls_place_search_progress();else ls_place_search_open(false); }
 static const ls_opt_t options[]={
+    {.label="REGION FILES",.kind=LS_OPT_ACTION,.arg=8,.act=action,.why_not=available,.leaves=true},
     {.label="SELECTED REGION",.kind=LS_OPT_MENU,.sub=&region_ctx},
     {.label="REFRESH CATALOG",.kind=LS_OPT_ACTION,.arg=5,.act=action,.why_not=available,.leaves=true},
     {.label="RECEIVE FROM LAPTOP",.kind=LS_OPT_ACTION,.arg=1,.act=action,.why_not=available,.leaves=true},
@@ -186,7 +197,8 @@ static const us_tile_t US_TILES[] = {
 };
 #define US_N ((int)(sizeof(US_TILES)/sizeof(US_TILES[0])))
 /* Every state is free to z12 (MAPS); Plus adds z13+ street detail (DETAIL). */
-typedef struct { char name[28]; bool known, detail; unsigned cells, have, partial; unsigned long long base, extra; } us_state_t;
+/* outdated: cells on the card whose bytes are not the server's current revision. */
+typedef struct { char name[28]; bool known, detail; unsigned cells, have, partial, outdated; unsigned long long base, extra; } us_state_t;
 static EXT_RAM_BSS_ATTR us_state_t us_state[US_N];
 static tui_rect us_hit[US_N];
 static int us_sel=-1, us_busy=-1;
@@ -198,14 +210,16 @@ static bool us_full(const us_state_t *s) { return s->cells && s->have>=s->cells 
 
 static int us_index(const char *st) { for(int i=0;i<US_N;i++) if(US_TILES[i].st[0]==st[0] && US_TILES[i].st[1]==st[1]) return i; return -1; }
 
-/* maps.states rows: "ST|name|tier|cells|bytes|installed|partial|base|detail|detail_on";
+/* maps.states rows: "ST|name|tier|cells|bytes|installed|partial|base|detail|detail_on|outdated";
    the tier field is legacy and ignored, and old 7-field rows are all base. */
+/* A read that fails (the worker publishing at that instant) keeps what the
+   last good read said: blanking it drew one empty frame and the map flashed. */
+static bool us_listed;
 static bool us_load(void) {
-    memset(us_state,0,sizeof(us_state));
     ls_val_t v; bool any=false;
-    if(ls_value_read("maps.state",&v,NULL) && v.kind==LS_VAL_TEXT && v.s) snprintf(us_status,sizeof(us_status),"%s",v.s); else us_status[0]=0;
-    us_progress=ls_value_read("maps.progress",&v,NULL)?v.f:0;
-    us_plus=ls_value_read("maps.plus",&v,NULL) && v.i;
+    if(ls_value_read("maps.state",&v,NULL) && v.kind==LS_VAL_TEXT && v.s) snprintf(us_status,sizeof(us_status),"%s",v.s);
+    if(ls_value_read("maps.progress",&v,NULL)) us_progress=v.f;
+    if(ls_value_read("maps.plus",&v,NULL)) us_plus=v.i;
     if(ls_value_read("maps.free_max_zoom",&v,NULL) && v.kind==LS_VAL_INT && v.i>0 && v.i<16) us_free_z=(int)v.i;
     const char *rows=NULL;
     if(ls_value_read("maps.states",&v,NULL) && v.kind==LS_VAL_TEXT && v.s && v.s[0]) rows=v.s;
@@ -218,24 +232,45 @@ static bool us_load(void) {
         us_progress=0.42f; us_busy=1; us_plus=getenv("LSSIM_MAPS_TOKEN")!=NULL;
         snprintf(us_status,sizeof(us_status),"VT: cell 4 of 7, part 2 of 3"); }
 #endif
-    if(!rows) return false;
+    if(!rows) return us_listed;
+    memset(us_state,0,sizeof(us_state));
     for(const char *p=rows;*p;) {
         const char *end=strchr(p,'\n'); if(!end) end=p+strlen(p);
         char row[160]; int len=(int)(end-p)<(int)sizeof(row)-1?(int)(end-p):(int)sizeof(row)-1;
         memcpy(row,p,(size_t)len); row[len]=0;
-        char st[3]={0},name[28]={0},tier[8]={0}; unsigned cells=0,have=0,partial=0,on=0; unsigned long long bytes=0,base=0,extra=0;
-        const int n=sscanf(row,"%2[A-Z]|%27[^|]|%7[^|]|%u|%llu|%u|%u|%llu|%llu|%u",st,name,tier,&cells,&bytes,&have,&partial,&base,&extra,&on);
-        if(n==7 || n==10) {
+        char st[3]={0},name[28]={0},tier[8]={0}; unsigned cells=0,have=0,partial=0,on=0,outdated=0; unsigned long long bytes=0,base=0,extra=0;
+        const int n=sscanf(row,"%2[A-Z]|%27[^|]|%7[^|]|%u|%llu|%u|%u|%llu|%llu|%u|%u",st,name,tier,&cells,&bytes,&have,&partial,&base,&extra,&on,&outdated);
+        if(n==7 || n==10 || n==11) {
             int i=us_index(st);
             if(i>=0) { us_state_t *s=&us_state[i]; snprintf(s->name,sizeof(s->name),"%s",name); s->known=true;
                 s->cells=cells; s->have=have; s->partial=partial; any=true;
-                s->base=n==10?base:bytes; s->extra=n==10?extra:0; s->detail=n==10 && on; }
+                s->base=n>=10?base:bytes; s->extra=n>=10?extra:0; s->detail=n>=10 && on; s->outdated=n==11?outdated:0; }
         }
         p=*end?end+1:end;
     }
+    us_listed=any;
     return any;
 }
 
+/* MAP's outline view, where the card has no tiles, asks which regions are
+   on it: green whole, yellow part. Read at most every two seconds; a change
+   tells the outlines to redraw. */
+uint8_t ls_maps_region_fill(const char *code,void *ctx) {
+    (void)ctx; static int64_t at; static uint32_t sum;
+    const int64_t now=esp_timer_get_time();
+    if(!at || now-at>2000000) {
+        at=now; (void)us_load();
+        uint32_t s=0; for(int i=0;i<US_N;i++) s=s*31u+(us_state[i].have+us_state[i].outdated)*7u+us_state[i].cells;
+        if(s!=sum) { sum=s; ls_globe_refill(); }
+    }
+    if(strncmp(code,"US-",3)) return 0;
+    const int i=us_index(code+3);
+    /* Cells older than the server are still on the card and still draw:
+       counted with the current ones, a state waiting on UPDATE is not a gap. */
+    const unsigned on=i<0?0:us_state[i].have+us_state[i].outdated;
+    if(i<0 || !us_state[i].known || !on) return 0;
+    return on>=us_state[i].cells?TUI_GREEN:TUI_YELLOW;
+}
 static uint8_t us_hue(int i,int *dither) {
     const us_state_t *s=&us_state[i]; int d; uint8_t hue;
     if(!s->known) { hue=0; d=-1; }
@@ -254,14 +289,22 @@ static uint8_t us_globe_fill(const char *code,void *ctx) {
     if(strncmp(code,"US-",3)) return 0;
     const int i=us_index(code+3); return i<0?0:us_hue(i,NULL);
 }
-static bool us_globe_on(void) {
+/* Which picture the states page draws. Asked as "is the globe READY", a
+   reload of the outline file (a new one comes with each state list) put the
+   tile grid up for the length of the load and the globe back after it, so
+   the page swapped between two layouts. The globe now stays while a newer
+   file loads, and the tile grid is only for a card that has no outline
+   file at all. */
+enum { US_VIEW_GRID, US_VIEW_GLOBE, US_VIEW_WAIT };
+static int us_view(void) {
 #ifdef LS_TILES_HOST
-    const char *sim=getenv("LSSIM_OUTLINES");
-    return ls_globe_load(sim)==LS_GLOBE_READY;
+    const int st=ls_globe_load(getenv("LSSIM_OUTLINES"));
 #else
     /* Cheap every frame: a stat, and the loader task once the file lands. */
-    return ls_globe_load(NULL)==LS_GLOBE_READY;
+    const int st=ls_globe_load(NULL);
 #endif
+    if(ls_globe_has_shapes()) return US_VIEW_GLOBE;
+    return st==LS_GLOBE_LOADING?US_VIEW_WAIT:US_VIEW_GRID;
 }
 #define US_VIEW_LAT 38.5f
 #define US_VIEW_LON (-96.0f)
@@ -278,10 +321,16 @@ static void us_draw(tui_surface *sf,tui_rect body) {
     int tw=grid.w/11; if(tw>7) tw=7;
     /* Taller tiles where portrait has the rows; info needs about twelve. */
     int th=wide?grid.h/8:(body.h-12)/8; if(th>5) th=5; if(th<1) th=1;
-    const bool globe=us_globe_on();
+    const int view=us_view();
+    /* The globe and the wait share the globe's layout, so the page does not
+       jump when the outlines arrive. */
+    const bool globe=view!=US_VIEW_GRID;
     if(!wide) { grid.h=globe?body.h-13:th*8; info.y=grid.y+grid.h+1; info.h=body.y+body.h-info.y; }
     const int gx=grid.x+(grid.w-tw*11)/2;
-    if(globe) {
+    if(view==US_VIEW_WAIT) {
+        memset(us_hit,0,sizeof(us_hit));
+        line(sf,grid,grid.y+grid.h/2,"      Loading state outlines...",LS_ATTR_DIM);
+    } else if(globe) {
         /* THE GLOBE: real borders, each state filled with what is on the
            card. Tiles stay for a card without the outline file. */
         memset(us_hit,0,sizeof(us_hit));
@@ -338,6 +387,8 @@ static void us_draw(tui_surface *sf,tui_rect body) {
             }
             LS_SNPRINTF(t_scr_tiles_on_the_card_u, text,sizeof(text),"On the card: %u of %u cells",s->have,s->cells);
             line(sf,info,y++,text,base_on?GOOD:LS_ATTR_DIM);
+            if(s->outdated) { snprintf(text,sizeof(text),"%u cells older than server: UPDATE",s->outdated);
+                line(sf,info,y++,text,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)); }
             if(s->partial) { LS_SNPRINTF(t_scr_tiles_u_border_cells_hold, text,sizeof(text),"%u border cells hold US data only",s->partial); line(sf,info,y++,text,LS_ATTR_DIM); }
         }
     }
@@ -361,12 +412,470 @@ static void us_get_or_remove(void) {
     if(us_sel<0 || !us_state[us_sel].known) return;
     const us_state_t *s=&us_state[us_sel];
     /* Complete for this board: remove. Maps on but Plus detail missing: get adds it. */
-    if(us_full(s)) { us_call("maps.state.remove",US_TILES[us_sel].st); return; }
+    if(us_full(s) && !s->outdated) { us_call("maps.state.remove",US_TILES[us_sel].st); return; }
     us_busy=us_sel; us_call("maps.state.get",US_TILES[us_sel].st);
 }
+/* ---- WHAT IS DOWNLOADING ------------------------------------------------
+   Four ways put maps on the card: a whole state, the cells around a searched
+   place, a region file, a push from a laptop. Each showed its progress on
+   its own page, if at all, so nothing said what was downloading. This asks
+   all of them; TILES and MAP draw the answer. */
+static EXT_RAM_BSS_ATTR ls_cells_view activity_cells;
+int ls_maps_activity(char lines[][64],float *fraction,int max) {
+    static int64_t at; static int n, empty_reads; static char l[LS_MAPS_ACTIVITY_MAX][64]; static float f[LS_MAPS_ACTIVITY_MAX];
+    const int64_t now=esp_timer_get_time();
+    if(!at || now-at>500000) {
+        at=now;
+        /* Built aside and kept only when every source answered: a read that
+           lost the worker's lock is not "nothing downloading". */
+        int m=0; char ml[LS_MAPS_ACTIVITY_MAX][64]; float mf[LS_MAPS_ACTIVITY_MAX];
+        float p=0;
+        const bool got_p=ls_cells_maps_progress(&p), got_c=ls_cells_snapshot(&activity_cells);
+        const bool state=got_p && p>0.0f && p<1.0f;
+        if(state) {
+            /* The queue's name is the state's code while a state downloads. */
+            const char *code=got_c && activity_cells.queue_name[0]?activity_cells.queue_name:"";
+            const int i=code[0]?us_index(code):-1;
+            snprintf(ml[m],64,"STATE %.56s",i>=0 && us_state[i].name[0]?us_state[i].name:code[0]?code:"maps"); mf[m++]=p;
+        }
+        /* The worker does one thing at a time: a state download is not also
+           shown as a place. */
+        if(!state && got_c && activity_cells.queued && activity_cells.queue_name[0]) {
+            /* a state's queue resumed after a restart carries its code as the name */
+            const char *q=activity_cells.queue_name; const int si=strlen(q)==2?us_index(q):-1;
+            if(si>=0) snprintf(ml[m],64,"STATE %.56s",us_state[si].name[0]?us_state[si].name:q);
+            else snprintf(ml[m],64,"PLACE %.56s",q);
+            mf[m++]=activity_cells.downloading && activity_cells.total?(float)activity_cells.done/activity_cells.total:-1.0f;
+        }
+        ls_carto_transfer t; ls_carto_transfer_snapshot(&t);
+        if(m<LS_MAPS_ACTIVITY_MAX && t.state==1) {
+            snprintf(ml[m],64,"%s %.55s",t.receiving?"LAPTOP":"FILE",t.file[0]?t.file:"starting");
+            mf[m++]=t.total?(float)t.bytes/t.total:-1.0f;
+        }
+        /* An empty answer counts after two in a row (a second): the step
+           between one cell and the next reads as idle for an instant. */
+        const bool answered=got_p && got_c;
+        if(m) { empty_reads=0; n=m; memcpy(l,ml,sizeof(ml[0])*(size_t)m); memcpy(f,mf,sizeof(mf[0])*(size_t)m); }
+        else if(answered && ++empty_reads>=2) n=0;
+    }
+    const int k=n<max?n:max;
+    for(int i=0;i<k;i++) { snprintf(lines[i],64,"%s",l[i]); if(fraction) fraction[i]=f[i]; }
+    return k;
+}
+/* ---- ON THIS CARD -------------------------------------------------------
+   The front page: what is downloading, then every map on the card in one
+   list (states, places, region files), each to open or manage. */
+typedef struct { char kind; int index; } card_row_t;   /* 's' state, 'p' place, 'r' region file */
+static EXT_RAM_BSS_ATTR card_row_t card[US_N+LS_CELLS_PLACES+LS_TILES_MAX];
+static EXT_RAM_BSS_ATTR ls_cells_view card_places;
+static int card_n, card_sel, card_first, card_visible, card_states, card_place_n, card_files;
+/* The state list has been read since boot. Before that "0 states" read as "your maps are gone". */
+static bool card_listed;
+/* UPDATE ALL: outdated states, fetched one after another. */
+static char card_update[US_N][3]; static int card_update_n, card_update_row=-1; static int64_t card_update_at;
+static tui_rect card_area;
+static void card_build(void) {
+    static int64_t places_at;
+    const int64_t now=esp_timer_get_time();
+    /* A read that lost the worker's lock keeps the last list, which is still
+       true; emptying it made places vanish for a second. */
+    if(!places_at || now-places_at>1000000) { places_at=now; (void)ls_cells_snapshot(&card_places); }
+    card_listed=us_load();
+    card_n=card_states=card_place_n=card_files=0;
+    for(int i=0;i<US_N;i++) if(us_state[i].known && (us_state[i].have || us_state[i].outdated)) { card[card_n++]=(card_row_t){'s',i}; card_states++; }
+    for(unsigned i=0;i<card_places.library_count && i<LS_CELLS_PLACES;i++) {
+        if((card_places.keys[i]>>16)==0x5354u) continue;   /* a state download, not a place */
+        card[card_n++]=(card_row_t){'p',(int)i}; card_place_n++;
+    }
+    for(int i=0;i<catalog.count;i++) if(catalog.region[i].local_bytes) { card[card_n++]=(card_row_t){'r',i}; card_files++; }
+    if(card_sel>=card_n) card_sel=card_n?card_n-1:0;
+    /* Next state of UPDATE ALL once nothing is downloading; a few seconds
+       between asks so the worker has started the last one. */
+    const bool busy=(us_progress>0.0f && us_progress<1.0f) || card_places.queued;
+    if(card_update_n && !busy && now-card_update_at>6000000) {
+        us_call("maps.state.get",card_update[0]); card_update_at=now;
+        memmove(card_update,card_update+1,sizeof(card_update[0])*(size_t)(--card_update_n));
+    }
+}
+static void card_update_all(void) {
+    card_update_n=0;
+    for(int i=0;i<US_N;i++) if(us_state[i].known && us_state[i].outdated) memcpy(card_update[card_update_n++],US_TILES[i].st,3);
+    card_update_at=0;
+}
+/* Turn the globe to a state. The outlines may not be loaded yet (the states
+   page loads them); then it turns once they are. */
+static int card_turn_to=-1;
+static void card_state_view(int i) {
+    float la,lo; char code[8]; snprintf(code,sizeof(code),"US-%s",US_TILES[i].st);
+    if(ls_globe_region(code,NULL,0,&la,&lo)) { ls_globe_target(la,lo,US_VIEW_ZOOM*1.6f); card_turn_to=-1; }
+    else { ls_globe_target(US_VIEW_LAT,US_VIEW_LON,US_VIEW_ZOOM); card_turn_to=i; }
+}
+/* ENTER on a row: manage it where it is managed. */
+static void card_manage(void) {
+    if(card_sel>=card_n) return;
+    const card_row_t r=card[card_sel];
+    if(r.kind=='s') { page=4; us_sel=r.index; focus=-1; us_globe_world=false; card_state_view(r.index); }
+    else if(r.kind=='p') ls_place_search_installed();
+    else { selected=r.index; info_from=0; page=1; info_scroll=0; }
+}
+/* OPEN: show it in MAP. A place has no stored centre; its list opens instead. */
+static void card_open(void) {
+    if(card_sel>=card_n) return;
+    const card_row_t r=card[card_sel];
+    if(r.kind=='r') { selected=r.index; map_open(); return; }
+    if(r.kind=='p') { ls_place_search_installed(); return; }
+    float la,lo; char code[8]; snprintf(code,sizeof(code),"US-%s",US_TILES[r.index].st);
+    if(!ls_globe_region(code,NULL,0,&la,&lo)) return;
+    ls_map_center(la,lo);
+    const ls_app_t *app=ls_app_by_id("map"); if(app) ls_tui_screen_show(ls_tui_screen_index_of(app->screen));
+}
+/* Where the maps come from. A card set to another server (a test copy was
+   left on one for weeks) got old maps with nothing on screen saying why; it
+   is shown here, and a tap goes back to the live one. */
+#define LIVE_MAP_SERVER "https://cartocore-maps.pages.dev/"
+static int card_server_row=-1;
+static void card_use_live_server(void) { if(ls_cells_server(LIVE_MAP_SERVER)) card_server_row=-1; }
+static void card_server_draw(tui_surface *sf,tui_rect body,int *y) {
+    const char *url=card_places.server; const char *host=strstr(url,"://"); host=host?host+3:url;
+    char text[160]; char shown[64]; snprintf(shown,sizeof(shown),"%.*s",(int)strcspn(host,"/"),host);
+    card_server_row=-1;
+    if(!url[0]) return;
+    if(!strcmp(url,LIVE_MAP_SERVER)) { snprintf(text,sizeof(text),"Maps from %s",shown); line(sf,body,(*y)++,text,LS_ATTR_DIM); return; }
+    snprintf(text,sizeof(text),"NOT LIVE: maps from %s",shown);
+    line(sf,body,(*y)++,text,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+    card_server_row=*y;
+    line(sf,body,(*y)++,"> TAP HERE or L: use the live map server",TUI_ATTR(TUI_BLACK,TUI_YELLOW|TUI_BRIGHT));
+}
+/* ---- THE HERO PANEL -----------------------------------------------------
+   The top of ON THIS CARD, readable from arm's length: what is happening to
+   the maps, in large type. Downloading: the state or place by name, a big
+   percent, a smooth bar, cells, speed and time left. Idle: updates waiting
+   (one key updates them all), everything ready, or nothing yet. Everything
+   in it follows real numbers; the RX light shows only while bytes arrive. */
+/* net: bytes taken off the network so far (one cell's count while a cell
+   downloads), net_ok while there is such a count; checking cells already on
+   the card moves frac but not net, so it never reads as download speed. */
+typedef struct { bool on, waiting, net_ok; char what[24], name[32], big[8]; float frac; unsigned have, cells; double bytes_total; uint64_t net; } hero_job_t;
+
+static void hero_job(hero_job_t *j) {
+    memset(j, 0, sizeof(*j));
+    ls_carto_transfer t; ls_carto_transfer_snapshot(&t);
+    const bool state = us_progress > 0.0f && us_progress < 1.0f;
+    if (state) {
+        const char *code = card_places.queue_name; int i = code[0] ? us_index(code) : -1;
+        j->on = true; snprintf(j->what, sizeof(j->what), "US STATE");
+        if (i >= 0) {
+            snprintf(j->name, sizeof(j->name), "%s", us_state[i].name[0] ? us_state[i].name : US_TILES[i].st);
+            snprintf(j->big, sizeof(j->big), "%s", US_TILES[i].st);
+            j->have = us_state[i].have; j->cells = us_state[i].cells;
+            j->bytes_total = (double)us_state[i].base + (us_state[i].detail ? (double)us_state[i].extra : 0);
+        } else snprintf(j->name, sizeof(j->name), "%s", code[0] ? code : "STATE MAPS");
+        j->frac = us_progress;
+        j->net_ok = card_places.downloading; j->net = card_places.done;
+    } else if (card_places.queued && card_places.queue_name[0]) {
+        /* a state's queue resumed after a restart is named by its code */
+        const char *q = card_places.queue_name; const int si = strlen(q) == 2 ? us_index(q) : -1;
+        j->on = true; snprintf(j->what, sizeof(j->what), "%s", si >= 0 ? "US STATE" : "PLACE");
+        if (si >= 0) {
+            snprintf(j->name, sizeof(j->name), "%s", us_state[si].name[0] ? us_state[si].name : q);
+            snprintf(j->big, sizeof(j->big), "%s", US_TILES[si].st);
+            j->have = us_state[si].have; j->cells = us_state[si].cells;
+        } else snprintf(j->name, sizeof(j->name), "%s", q);
+        j->frac = card_places.downloading && card_places.total ? (float)card_places.done / card_places.total : -1.0f;
+        j->bytes_total = card_places.total;
+        /* queued but not fetching: between tries, or blocked; the worker says why */
+        j->waiting = !card_places.downloading;
+        j->net_ok = card_places.downloading; j->net = card_places.done;
+    } else if (t.state == 1) {
+        j->on = true; snprintf(j->what, sizeof(j->what), "%s", t.receiving ? "FROM LAPTOP" : "REGION FILE");
+        snprintf(j->name, sizeof(j->name), "%.31s", t.file[0] ? t.file : "starting");
+        j->frac = t.total ? (float)t.bytes / t.total : -1.0f; j->bytes_total = (double)t.total;
+        j->net_ok = true; j->net = t.bytes;
+    }
+}
+
+/* Speed, measured once a second from the network bytes that arrived: the
+   trace, the figures and the RX lamp show nothing else. `steps` counts each
+   move of the job (a cell checked or fetched); the meter's pattern and the
+   cell spinner advance on it and on nothing else. */
+#define HERO_HIST 48
+static struct {
+    float frac; int64_t at, moved_at, rx_at, sample_at; char name[32];
+    uint64_t last_net; bool have_net; double got;
+    float hist[HERO_HIST]; int hist_n; uint32_t steps;
+} hero_rate;
+static void hero_track(const hero_job_t *j) {
+    const int64_t now = esp_timer_get_time();
+    if (!j->on || strcmp(j->name, hero_rate.name)) {
+        memset(&hero_rate, 0, sizeof(hero_rate)); snprintf(hero_rate.name, sizeof(hero_rate.name), "%s", j->name);
+        hero_rate.frac = j->frac; hero_rate.at = hero_rate.sample_at = now;
+        hero_rate.last_net = j->net; hero_rate.have_net = j->net_ok; return;
+    }
+    if (j->frac >= 0 && j->frac > hero_rate.frac) { hero_rate.frac = j->frac; hero_rate.at = hero_rate.moved_at = now; hero_rate.steps++; }
+    if (j->net_ok) {
+        /* a smaller count is the next cell starting from nothing */
+        const uint64_t add = !hero_rate.have_net ? 0 : j->net >= hero_rate.last_net ? j->net - hero_rate.last_net : j->net;
+        if (add) { hero_rate.got += (double)add; hero_rate.rx_at = now; }
+        hero_rate.last_net = j->net; hero_rate.have_net = true;
+    } else hero_rate.have_net = false;
+    if (now - hero_rate.sample_at >= 1000000) {
+        const double dt = (now - hero_rate.sample_at) / 1e6, got = hero_rate.got;
+        hero_rate.got = 0;
+        if (hero_rate.hist_n == HERO_HIST) memmove(hero_rate.hist, hero_rate.hist + 1, sizeof(hero_rate.hist[0]) * (HERO_HIST - 1));
+        else hero_rate.hist_n++;
+        hero_rate.hist[hero_rate.hist_n - 1] = (float)(got / dt);
+        hero_rate.sample_at = now;
+    }
+}
+/* Bytes a second over the last eight seconds (cells arrive in bursts);
+   0 when nothing came. */
+static double hero_speed(void) {
+    double s = 0; int n = 0;
+    for (int i = hero_rate.hist_n - 1; i >= 0 && n < 8; i--, n++) s += hero_rate.hist[i];
+    return n ? s / n : 0;
+}
+
+/* The meter: '=' up to the fill behind a '>' head, '.' after it, quarter
+   ticks and figures under it. A '-' every sixth character of the run steps
+   along with each piece that arrives. */
+static void hero_meter(tui_surface *sf, tui_rect clip, int x, int y, int w, float frac, uint8_t hue) {
+    const float f = frac < 0 ? 0 : frac > 1 ? 1 : frac;
+    const int inner = w - 2, lit = (int)(f * inner + 0.5f), phase = (int)(hero_rate.steps % 6u);
+    tui_put_char(sf, clip, x, y, '[', LS_ATTR_DIM); tui_put_char(sf, clip, x + w - 1, y, ']', LS_ATTR_DIM);
+    for (int i = 0; i < inner; i++) {
+        char c = '.'; uint8_t at = LS_ATTR_FAINT;
+        if (i < lit && (i < lit - 1 || lit == inner)) {
+            const bool gap = ((i - phase) % 6 + 6) % 6 == 0;
+            c = gap ? '-' : '='; at = TUI_ATTR(hue | (gap ? 0 : TUI_BRIGHT), TUI_BLACK);
+        } else if (i == lit - 1) { c = '>'; at = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK); }
+        tui_put_char(sf, clip, x + 1 + i, y, c, at);
+    }
+    for (int e = 0; e <= 8; e++) {
+        const int tx = x + 1 + (inner - 1) * e / 8;
+        tui_put_char(sf, clip, tx, y + 1, e % 2 ? '.' : '\'', e % 2 ? LS_ATTR_FAINT : LS_ATTR_DIM);
+        if (e % 2) continue;
+        char n[4]; snprintf(n, sizeof(n), "%d", e * 25 / 2);
+        const int len = (int)strlen(n), nx = e == 0 ? tx : e == 8 ? tx - len + 1 : tx - len / 2;
+        tui_put_str(sf, clip, nx, y + 2, n, LS_ATTR_FAINT);
+    }
+}
+
+/* The job's cells, one character each (several to a character on a big
+   region): 'o' on the card, the spinner on the one arriving, '.' to come. */
+static void hero_cells(tui_surface *sf, tui_rect clip, int x, int y, int w, int rows, unsigned have, unsigned cells, bool live, uint8_t hue) {
+    if (!cells || w <= 0 || rows <= 0) return;
+    const unsigned cap = (unsigned)(w * rows), per = (cells + cap - 1) / cap;
+    const unsigned slots = (cells + per - 1) / per, done = (have > cells ? cells : have) / per;
+    static const char SPIN[4] = { '|', '/', '-', '\\' };
+    for (unsigned s = 0; s < slots; s++) {
+        const int cx = x + (int)(s % (unsigned)w), cy = y + (int)(s / (unsigned)w);
+        if (s < done) tui_put_char(sf, clip, cx, cy, 'o', TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
+        else if (s == done && have < cells) tui_put_char(sf, clip, cx, cy, live ? SPIN[hero_rate.steps % 4u] : ':', live ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK) : TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        else tui_put_char(sf, clip, cx, cy, '.', LS_ATTR_FAINT);
+    }
+}
+
+/* Speed over the last stretch as a braille trace two rows (eight dots)
+   tall, two seconds to a character, newest on the right, scaled to the
+   fastest second shown; a faint baseline where nothing came. */
+static void hero_trace(tui_surface *sf, tui_rect clip, int x, int y, int w, uint8_t hue) {
+    float top = 1;
+    for (int i = 0; i < hero_rate.hist_n; i++) if (hero_rate.hist[i] > top) top = hero_rate.hist[i];
+    for (int c = 0; c < w; c++) {
+        unsigned hi = 0, lo = 0;
+        for (int half = 0; half < 2; half++) {
+            const int k = hero_rate.hist_n - (w - c) * 2 + half;
+            unsigned h = k >= 0 && k < hero_rate.hist_n && hero_rate.hist[k] > 0 ? (unsigned)(hero_rate.hist[k] / top * 8.0f + 0.5f) : 0;
+            if (k >= 0 && k < hero_rate.hist_n && hero_rate.hist[k] > 0 && !h) h = 1;
+            lo |= ls_braille_column(h > 4 ? 4 : h, half);
+            hi |= ls_braille_column(h > 4 ? h - 4 : 0, half);
+        }
+        const uint8_t at = TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK);
+        if (hi) ls_braille_put(sf, clip, x + c, y, (int16_t)(0x2800 | hi), at);
+        if (lo) ls_braille_put(sf, clip, x + c, y + 1, (int16_t)(0x2800 | lo), at);
+        else tui_put_char(sf, clip, x + c, y + 1, '_', LS_ATTR_FAINT);
+    }
+}
+
+/* Character art for the quiet panels, five rows each. */
+static const char *const HERO_GLOBE[5] = { "  .-'''-.  ", " / |   | \\ ", "|--+---+--|", " \\ |   | / ", "  '-...-'  " };
+static const char *const HERO_MAP[5]   = { " ___.___.___ ", "|  /|\\  |  /|", "| / | \\ | / |", "|/__|__\\|/__|", "             " };
+static const char *const HERO_FETCH[5] = { "    _|_    ", "    \\ /    ", "  ___V___  ", " |_______| ", "           " };
+static void hero_art(tui_surface *sf, tui_rect clip, int x, int y, const char *const *art, uint8_t hue) {
+    for (int r = 0; r < 5; r++)
+        for (int c = 0; art[r][c]; c++) {
+            const char ch = art[r][c]; if (ch == ' ') continue;
+            const bool joint = ch == '+' || ch == 'V' || ch == '.';
+            tui_put_char(sf, clip, x + c, y + r, ch, TUI_ATTR(hue | (joint ? TUI_BRIGHT : 0), TUI_BLACK));
+        }
+}
+
+static int hero_draw(tui_surface *sf, tui_rect body, int y) {
+    hero_job_t j; hero_job(&j); hero_track(&j);
+    char text[96];
+    const int64_t now = esp_timer_get_time();
+    if (j.on) {
+        const uint8_t hue = j.waiting ? TUI_YELLOW : TUI_GREEN;
+        const uint8_t bright = TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK), white = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
+        const bool live = hero_rate.moved_at && now - hero_rate.moved_at < 1500000;
+        tui_rect box = tui_rect_make(body.x, y, body.w, j.cells ? 17 : 13);
+        ls_panel_box(sf, box, j.waiting ? "WAITING" : "DOWNLOADING", hue);
+        /* the RX lamp on the frame: lit while bytes arrive */
+        const bool rx = hero_rate.rx_at && now - hero_rate.rx_at < 1500000;
+        tui_put_str(sf, box, box.x + box.w - 7, box.y, " RX ", rx ? TUI_ATTR(TUI_BLACK, TUI_GREEN | TUI_BRIGHT) : LS_ATTR_FAINT);
+        const int x = box.x + 2, inner = box.w - 4;
+        /* headline: the percent on the right as a dot-matrix sign, the region's
+           name on the left, or its code when the name will not fit */
+        int pw = 0;
+        if (j.frac >= 0) {
+            snprintf(text, sizeof(text), "%d", (int)(j.frac * 100.0f));
+            pw = ls_calls_big_width(text) + 2;
+            const int px = x + inner - pw;
+            ls_calls_big_text(sf, box, px, box.y + 1, text, bright);
+            tui_put_char(sf, box, px + pw - 1, box.y + 3, '%', bright);
+        }
+        char up[32]; int n = 0;
+        for (const char *p = j.name; *p && n < 31; p++) up[n++] = (char)toupper((unsigned char)*p);
+        up[n] = 0;
+        const bool sign_name = ls_calls_big_width(up) <= inner - pw - 2;
+        if (sign_name || j.big[0]) ls_calls_big_text(sf, box, x, box.y + 1, sign_name ? up : j.big, white);
+        else {   /* no code and too long for the sign: one bright line, clear of the percent */
+            snprintf(text, sizeof(text), "%.*s", inner - pw - 2 > 0 ? inner - pw - 2 : 0, j.name);
+            tui_put_str(sf, box, x, box.y + 2, text, white);
+        }
+        /* the kind, the code and (if the sign shows the code) the name */
+        const bool named = sign_name || !j.big[0];   /* the name is already up there */
+        snprintf(text, sizeof(text), "%s%s%s%s%s", j.what, j.big[0] ? "  " : "", j.big, named ? "" : "  ", named ? "" : j.name);
+        snprintf(up, sizeof(up), "%.*s", inner > 0 && inner < 31 ? inner : 31, text);
+        tui_put_str(sf, box, x, box.y + 4, up, LS_ATTR_DIM);
+        hero_meter(sf, box, x, box.y + 6, inner, j.frac, hue);
+        int ry = box.y + 10;
+        if (j.cells) {
+            tui_put_str(sf, box, x, ry, "CELLS", LS_ATTR_DIM);
+            snprintf(text, sizeof(text), "%u/%u", j.have, j.cells);
+            if ((int)strlen(text) <= 7) tui_put_str(sf, box, x, ry + 1, text, LS_ATTR_DIM);
+            hero_cells(sf, box, x + 7, ry, inner - 7, 3, j.have, j.cells, live, hue);
+            ry += 4;
+        }
+        /* speed: the trace, then the figures beside it */
+        tui_put_str(sf, box, x, ry, "SPEED", LS_ATTR_DIM);
+        const int tw = inner - 7 - 14 > 24 ? 24 : inner - 7 - 14;
+        hero_trace(sf, box, x + 7, ry, tw, hue);
+        const int fx = x + 7 + tw + 2; const double sp = hero_speed();
+        if (j.waiting && card_places.message[0]) {
+            snprintf(text, sizeof(text), "%.*s", inner > 0 ? inner : 0, card_places.message);
+            tui_put_str(sf, box, x, ry + 2, text, bright);
+        } else if (sp > 1000) {
+            snprintf(text, sizeof(text), "%.1f MB/s", sp / 1e6); tui_put_str(sf, box, fx, ry, text, white);
+            if (j.frac > 0 && j.bytes_total > 0) {
+                const double left = (1.0 - j.frac) * j.bytes_total / sp;
+                if (left < 3600) snprintf(text, sizeof(text), "%dm%02ds left", (int)left / 60, (int)left % 60);
+                else snprintf(text, sizeof(text), "%.1fh left", left / 3600);
+                tui_put_str(sf, box, fx, ry + 1, text, LS_ATTR_DIM);
+            }
+        } else tui_put_str(sf, box, fx, ry, live ? "starting" : "no data", LS_ATTR_FAINT);
+        return box.y + box.h + 1;
+    }
+    /* idle: updates waiting, all ready, or nothing yet; each with its picture */
+    int stale = 0; for (int i = 0; i < US_N; i++) if (us_state[i].known && us_state[i].outdated) stale++;
+    tui_rect box = tui_rect_make(body.x, y, body.w, 7);
+    const int ax = box.x + 2, tx = box.x + 16;
+    const tui_rect tr = tui_rect_make(tx, box.y + 1, box.w - (tx - box.x) - 2, 5);
+    const uint8_t yel = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    if (card_update_n || stale) {
+        const int count = card_update_n ? card_update_n : stale;
+        ls_panel_box(sf, box, card_update_n ? "UPDATING" : "UPDATES READY", TUI_YELLOW);
+        hero_art(sf, box, ax, box.y + 1, HERO_FETCH, TUI_YELLOW);
+        snprintf(text, sizeof(text), "%d", count);
+        const int end = ls_calls_big_text(sf, tr, tx, box.y + 1, text, yel);
+        tui_put_str(sf, tr, end + 2, box.y + 2, card_update_n ? "waiting" : "newer", INK);
+        tui_put_str(sf, tr, end + 2, box.y + 3, card_update_n ? "to update" : (count == 1 ? "region" : "regions"), LS_ATTR_DIM);
+        if (card_update_n) tui_put_str(sf, tr, tx, box.y + 5, "one after another", LS_ATTR_DIM);
+        else { tui_put_str(sf, tr, tx, box.y + 5, " U  UPDATE ALL ", TUI_ATTR(TUI_BLACK, TUI_YELLOW | TUI_BRIGHT)); card_update_row = box.y + 5; }
+    } else if (card_n) {
+        ls_panel_box(sf, box, "MAPS READY", TUI_GREEN);
+        hero_art(sf, box, ax, box.y + 1, HERO_MAP, TUI_GREEN);
+        ls_calls_big_text(sf, tr, tx, box.y + 1, "READY", TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+        snprintf(text, sizeof(text), "%d region%s %d place%s %d file%s", card_states, card_states == 1 ? "" : "s",
+                 card_place_n, card_place_n == 1 ? "" : "s", card_files, card_files == 1 ? "" : "s");
+        tui_put_str(sf, tr, tx, box.y + 4, text, INK);
+        tui_put_str(sf, tr, tx, box.y + 5, "all match the server", LS_ATTR_DIM);
+    } else {
+        ls_panel_box(sf, box, "NO MAPS YET", TUI_CYAN);
+        hero_art(sf, box, ax, box.y + 1, HERO_GLOBE, TUI_CYAN);
+        tui_put_str(sf, tr, tx, box.y + 1, "GET MAPS", TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, tr, tx, box.y + 2, "whole regions, free to z12", INK);
+        tui_put_str(sf, tr, tx, box.y + 4, "SEARCH", TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, tr, tx, box.y + 5, "the area around one place", INK);
+    }
+    return box.y + box.h + 1;
+}
+
+static void card_draw(tui_surface *sf,tui_rect body) {
+    card_build();
+    int y=body.y;
+    card_update_row=-1;
+    card_server_draw(sf,body,&y);
+    y=hero_draw(sf,body,y);
+    char text[160];
+    if(catalog.sd && !card_listed) snprintf(text,sizeof(text),"ON THIS CARD   checking the region maps...");
+    else snprintf(text,sizeof(text),"ON THIS CARD   %d region%s  %d place%s  %d file%s",card_states,card_states==1?"":"s",
+             card_place_n,card_place_n==1?"":"s",card_files,card_files==1?"":"s");
+    line(sf,body,y++,text,TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
+    tui_rect storage=tui_rect_make(body.x,body.y+body.h-3,body.w,3);
+    card_area=tui_rect_make(body.x,y,body.w,storage.y-y-1);
+    card_visible=card_area.h/2; if(card_visible<1) card_visible=1;
+    if(card_sel<card_first) card_first=card_sel;
+    if(card_sel>=card_first+card_visible) card_first=card_sel-card_visible+1;
+    if(!card_n) {
+        line(sf,card_area,card_area.y+1,catalog.sd?"No maps on the card yet.":"No SD card. Insert a card to install maps.",LS_ATTR_DIM);
+        if(catalog.sd) {
+            line(sf,card_area,card_area.y+3,"GET MAPS: whole states, free to z12.",LS_ATTR_DIM);
+            line(sf,card_area,card_area.y+4,"SEARCH: the area around one place.",LS_ATTR_DIM);
+        }
+    }
+    for(int i=card_first;i<card_n && i<card_first+card_visible;i++) {
+        const card_row_t r=card[i]; const int ry=card_area.y+(i-card_first)*2;
+        tui_rect row=tui_rect_make(card_area.x,ry,card_area.w,2);
+        if(i==card_sel) ls_fill_dither(sf,row,LS_DITHER_LIGHT,TUI_CYAN);
+        const char *mark=i==card_sel?"> ":"  ";
+        if(r.kind=='s') {
+            const us_state_t *s=&us_state[r.index]; const bool all=s->cells && s->have>=s->cells;
+            if(s->outdated) {
+                snprintf(text,sizeof(text),"%s%s  %s",mark,US_TILES[r.index].st,s->name); line(sf,row,ry,text,INK);
+                snprintf(text,sizeof(text),"    UPDATE  %u/%u cells older than server",s->outdated,s->cells);
+                line(sf,row,ry+1,text,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+                continue;
+            }
+            snprintf(text,sizeof(text),"%s%s  %s",mark,US_TILES[r.index].st,s->name); line(sf,row,ry,text,INK);
+            snprintf(text,sizeof(text),"    MAPS z0-%d%s%s  %.0f MB  %u/%u cells",us_free_z,all?"":" PART",s->detail?" + DETAIL":"",
+                     (s->base+(s->detail?s->extra:0))/1e6,s->have,s->cells);
+            line(sf,row,ry+1,text,all?(s->detail?TUI_ATTR(TUI_MAGENTA|TUI_BRIGHT,TUI_BLACK):GOOD):TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+        } else if(r.kind=='p') {
+            const char *name=card_places.library[r.index]; const bool queued=!strncmp(name,"[queued] ",9);
+            snprintf(text,sizeof(text),"%sPLACE  %s",mark,queued?name+9:name); line(sf,row,ry,text,INK);
+            line(sf,row,ry+1,queued?"    waiting in the download queue":"    the area around a searched place",queued?TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK):GOOD);
+        } else {
+            const ls_tile_region *g=&catalog.region[r.index];
+            snprintf(text,sizeof(text),"%sFILE  %s%s",mark,g->name,!strcmp(g->file,active_file)?"  [IN MAP]":""); line(sf,row,ry,text,INK);
+            static const char *const SHORT[]={"NOT ON CARD","ON CARD","PARTIAL","UPDATE"};
+            snprintf(text,sizeof(text),"    region file  %.1f MB  z%d-%d  %s",g->local_bytes/1e6,g->zmin,g->zmax,SHORT[g->status&3]);
+            line(sf,row,ry+1,text,g->status==1?GOOD:LS_ATTR_DIM);
+        }
+    }
+    if(card_n>card_visible) {
+        snprintf(text,sizeof(text),"%d-%d of %d",card_first+1,card_first+card_visible<card_n?card_first+card_visible:card_n,card_n);
+        tui_put_str(sf,body,body.x+body.w-(int)strlen(text)-1,card_area.y+card_area.h,text,LS_ATTR_DIM);
+    }
+    snprintf(text,sizeof(text),"SD %.2f GB free / %.2f GB used",catalog.free/1e9,(catalog.total-catalog.free)/1e9);
+    line(sf,storage,storage.y,catalog.sd?text:"SD unavailable",LS_ATTR_DIM);
+    ls_bar(sf,storage,1,storage.x+1,storage.w-2,catalog.total?(float)(catalog.total-catalog.free)/catalog.total:0);
+}
+
 static void draw(tui_surface *sf,tui_rect a) {
     if(ls_place_search_active()) { snprintf(hint,sizeof(hint),"%s",ls_place_search_hint());ls_place_search_draw(sf,a);return; }
-    snprintf(hint,sizeof(hint),"%s",page==4?"TAP a state  ARROWS move  ENTER/G get or remove  R refresh  BACK":"UP/DOWN region  ENTER info  M states  O options  BACK");
+    snprintf(hint,sizeof(hint),"%s",page==4?"TAP a state  ARROWS move  ENTER/G get or remove  R refresh  BACK":
+             page==0?"UP/DOWN pick  ENTER manage  A open in MAP  M get maps  S search":"UP/DOWN region  ENTER info  M states  O options  BACK");
     bool copied=ls_tiles_snapshot(&catalog); ls_carto_transfer_snapshot(&transfer);
     if(map_open_done(copied))return;
     ls_carto_active_file(active_file,sizeof(active_file));
@@ -379,17 +888,18 @@ static void draw(tui_surface *sf,tui_rect a) {
         for(int i=0;i<catalog.count;i++) if(!strcmp(catalog.region[i].file,transfer.file)) selected=i;
     }
     if(page==2 && transfer.state==0 && !catalog.busy) page=0;
-    ls_panel_box(sf,a,page==1?"TILES / REGION INFO":page==2?transfer.verifying?"TILES / VERIFY":transfer.receiving?"TILES / RECEIVE":"TILES / TRANSFER":page==3?"TILES / CONFIRM":page==4?"TILES / US STATES":"TILES / MAP REGIONS",TUI_CYAN);
-    ls_btn_t btn[5]={{.label="BACK",.key='b'},{.label="OPTIONS",.value="REGIONS",.key='o'},
-        {.label="OPEN",.value="SELECTED MAP",.key='a',.dim=catalog.busy || !catalog.count || !catalog.region[selected].local_bytes},{.label="SEARCH",.value="PLACES",.key='s'}};
-    btn[4]=(ls_btn_t){.label="STATES",.value="US MAP",.key='m'};
+    ls_panel_box(sf,a,page==1?"TILES / REGION INFO":page==2?transfer.verifying?"TILES / VERIFY":transfer.receiving?"TILES / RECEIVE":"TILES / TRANSFER":page==3?"TILES / CONFIRM":page==4?"TILES / GET MAPS":page==5?"TILES / REGION FILES":"TILES / ON THIS CARD",TUI_CYAN);
+    ls_btn_t btn[5]={{.label="BACK",.key='b'},{.label="OPTIONS",.value=page==5?"REGIONS":"TILES",.key='o'},
+        {.label="OPEN",.value=page==0?"IN MAP":"SELECTED MAP",.key='a',.dim=page==0?card_sel>=card_n:catalog.busy || !catalog.count || !catalog.region[selected].local_bytes},{.label="SEARCH",.value="PLACES",.key='s'}};
+    btn[4]=(ls_btn_t){.label="GET MAPS",.value="US STATES",.key='m'};
     int nb=5;
     if(page==4) {
         const bool full=us_sel>=0 && us_full(&us_state[us_sel]);
         const bool more=us_sel>=0 && !full && us_state[us_sel].cells && us_state[us_sel].have>=us_state[us_sel].cells;
-        btn[1]=(ls_btn_t){.label=full?"REMOVE":more?"DETAIL":"GET",.value=us_sel>=0?US_TILES[us_sel].st:"PICK A STATE",.key='g',
+        const bool stale=us_sel>=0 && us_state[us_sel].outdated;
+        btn[1]=(ls_btn_t){.label=stale?"UPDATE":full?"REMOVE":more?"DETAIL":"GET",.value=us_sel>=0?US_TILES[us_sel].st:"PICK A STATE",.key='g',
                           .dim=us_sel<0 || !us_state[us_sel].known};
-        btn[2]=(ls_btn_t){.label="VIEW",.value=us_globe_world?"WORLD":"US",.key='w',.dim=ls_globe_state()!=LS_GLOBE_READY};
+        btn[2]=(ls_btn_t){.label="VIEW",.value=us_globe_world?"WORLD":"US",.key='w',.dim=!ls_globe_has_shapes()};
         btn[3]=(ls_btn_t){.label="REFRESH",.value="STATE LIST",.key='r'}; nb=4;
     }
     if(page==1) { btn[1]=(ls_btn_t){.label="OPEN",.value="SELECTED MAP",.key='a',.dim=!catalog.count || !catalog.region[selected].local_bytes}; btn[2]=(ls_btn_t){.label="OPTIONS",.value="REGION",.key='o'}; nb=3; }
@@ -400,6 +910,8 @@ static void draw(tui_surface *sf,tui_rect a) {
     tui_rect body=tui_rect_make(a.x+1,a.y+2,a.w-2,a.h-bh-4);
     content_area=body;
     if(page==0) {
+        card_draw(sf,body);
+    } else if(page==5) {
         line(sf,body,body.y,opening?"Opening selected map...":catalog.busy?"Loading catalog / checking SD...":catalog.message,LS_ATTR_DIM);
         tui_rect storage=tui_rect_make(body.x,body.y+body.h-5,body.w,5);
         list_area=tui_rect_make(body.x,body.y+2,body.w,body.h-8); visible=list_area.h/4;
@@ -486,6 +998,7 @@ static void draw(tui_surface *sf,tui_rect a) {
             line(sf,details,y++,LS_TEXT(t_scr_tiles_put_one_ctile_file, "PUT one .ctile file; expires after 5 min"),LS_ATTR_DIM);
         }
     } else if(page==4) {
+        if(card_turn_to>=0 && ls_globe_has_shapes()) card_state_view(card_turn_to);
         us_draw(sf,body);
     } else if(page==3) {
         line(sf,body,body.y+3,confirm==1?"Cancel this transfer?":"Delete this region and its partial file?",INK);
@@ -500,8 +1013,10 @@ static bool key(ls_tk_t k,char ch) {
     if(k==LS_TK_ESC || k==LS_TK_BACKSPACE || (k==LS_TK_CHAR && (ch=='b' || ch=='B'))) { back(); return true; }
     if(k==LS_TK_CHAR) {
         if(ch=='o' || ch=='O') { ls_opt_open(page==1?&region_ctx:&ctx); return true; }
+        if((ch=='l' || ch=='L') && page==0 && card_server_row>=0) { card_use_live_server(); return true; }
+        if((ch=='u' || ch=='U') && page==0) { card_update_all(); return true; }
         if(ch=='r' || ch=='R') { if(page==4) us_call("maps.refresh",NULL); else ls_tiles_refresh(true); return true; }
-        if(ch=='m' || ch=='M') { page=4; us_sel=-1; focus=-1; us_globe_world=false; ls_globe_target(US_VIEW_LAT,US_VIEW_LON,US_VIEW_ZOOM); return true; }
+        if(ch=='m' || ch=='M') { page=4; us_sel=-1; focus=-1; card_turn_to=-1; us_globe_world=false; ls_globe_target(US_VIEW_LAT,US_VIEW_LON,US_VIEW_ZOOM); return true; }
         if((ch=='w' || ch=='W') && page==4) {
             us_globe_world=!us_globe_world;
             if(us_globe_world) ls_globe_target(US_VIEW_LAT,US_VIEW_LON,1.0f); else ls_globe_target(US_VIEW_LAT,US_VIEW_LON,US_VIEW_ZOOM);
@@ -510,7 +1025,11 @@ static bool key(ls_tk_t k,char ch) {
         if((ch=='+' || ch=='=' || ch=='-') && page==4) { float la,lo,z; ls_globe_view(&la,&lo,&z); ls_globe_target(la,lo,ch=='-'?z/1.5f:z*1.5f); return true; }
         if((ch=='g' || ch=='G') && page==4) { us_get_or_remove(); return true; }
         if(ch=='v' || ch=='V') { action(&(ls_opt_t){.arg=1}); return true; }
-        if(ch=='a' || ch=='A') { if(!catalog.busy && catalog.count && catalog.region[selected].local_bytes) map_open(); return true; }
+        if(ch=='a' || ch=='A') {
+            if(page==0) card_open();
+            else if(!catalog.busy && catalog.count && catalog.region[selected].local_bytes) map_open();
+            return true;
+        }
         if((ch=='y' || ch=='Y') && page==3) {
             if(confirm==1) { ls_carto_transfer_cancel(); page=2; }
             else { ls_tiles_action(3,&catalog.region[selected]); page=0; }
@@ -518,9 +1037,12 @@ static bool key(ls_tk_t k,char ch) {
         }
     }
     if(page==0 && (k==LS_TK_UP || k==LS_TK_DOWN) && focus<0) {
+        card_sel+=k==LS_TK_UP?-1:1; if(card_sel<0) card_sel=0; if(card_sel>=card_n) card_sel=card_n?card_n-1:0; return true;
+    }
+    if(page==5 && (k==LS_TK_UP || k==LS_TK_DOWN) && focus<0) {
         selected+=k==LS_TK_UP?-1:1; if(selected<0) selected=0; if(selected>=catalog.count) selected=catalog.count?catalog.count-1:0; return true;
     }
-    if(page==4 && focus<0 && ls_globe_state()==LS_GLOBE_READY && (k==LS_TK_LEFT || k==LS_TK_RIGHT || k==LS_TK_UP || k==LS_TK_DOWN)) {
+    if(page==4 && focus<0 && ls_globe_has_shapes() && (k==LS_TK_LEFT || k==LS_TK_RIGHT || k==LS_TK_UP || k==LS_TK_DOWN)) {
         float la,lo,z; ls_globe_view(&la,&lo,&z); const float step=20.0f/z;
         ls_globe_target(la+(k==LS_TK_UP?step:k==LS_TK_DOWN?-step:0),lo+(k==LS_TK_LEFT?-step:k==LS_TK_RIGHT?step:0),z);
         return true;
@@ -548,8 +1070,9 @@ static bool key(ls_tk_t k,char ch) {
     if(k==LS_TK_TAB) { focus=focus<0?0:-1; return true; }
     if(focus>=0 && ls_btn_navigate(k,&slot,&focus,false)) return true;
     if(k==LS_TK_ENTER) {
-        if(focus>=0) { const char *keys=page==0?"boasm":page==1?"bao":page==3?"by":page==4?"bgwr":"ba"; if(focus<(int)strlen(keys)) return key(LS_TK_CHAR,keys[focus]); }
-        else if(page==0 && catalog.count) { page=1; info_scroll=0; }
+        if(focus>=0) { const char *keys=page==0||page==5?"boasm":page==1?"bao":page==3?"by":page==4?"bgwr":"ba"; if(focus<(int)strlen(keys)) return key(LS_TK_CHAR,keys[focus]); }
+        else if(page==0) card_manage();
+        else if(page==5 && catalog.count) { page=1; info_from=5; info_scroll=0; }
         return true;
     }
     return false;
@@ -557,19 +1080,24 @@ static bool key(ls_tk_t k,char ch) {
 static bool touch(int col,int row) {
     if(ls_place_search_active())return ls_place_search_touch(col,row);
     int b=ls_btn_hit(col,row);
-    if(b>=0) { const char *keys=page==0?"boasm":page==1?"bao":page==3?"by":page==4?"bgwr":"ba"; if(b<(int)strlen(keys)) key(LS_TK_CHAR,keys[b]); return true; }
-    if(page==0 && row==list_area.y-1) {
+    if(b>=0) { const char *keys=page==0||page==5?"boasm":page==1?"bao":page==3?"by":page==4?"bgwr":"ba"; if(b<(int)strlen(keys)) key(LS_TK_CHAR,keys[b]); return true; }
+    if(page==0 && card_server_row>=0 && row==card_server_row) { card_use_live_server(); return true; }
+    if(page==0 && card_update_row>=0 && row==card_update_row) { card_update_all(); return true; }
+    if(page==0 && tui_rect_contains(card_area,col,row)) {
+        const int i=card_first+(row-card_area.y)/2; if(i<card_n) { card_sel=i; card_manage(); } return true;
+    }
+    if(page==5 && row==list_area.y-1) {
         selected+=col<list_area.x+list_area.w/2?-1:1;
         if(selected<0) selected=0;
         if(selected>=catalog.count) selected=catalog.count?catalog.count-1:0;
         return true;
     }
-    if(page==0 && tui_rect_contains(list_area,col,row)) {
-        int i=first+(row-list_area.y)/4; if(i<catalog.count) { selected=i; page=1; info_scroll=0; } return true;
+    if(page==5 && tui_rect_contains(list_area,col,row)) {
+        int i=first+(row-list_area.y)/4; if(i<catalog.count) { selected=i; page=1; info_from=5; info_scroll=0; } return true;
     }
     if(page==4) {
         for(int i=0;i<US_N;i++) if(us_hit[i].w>0 && tui_rect_contains(us_hit[i],col,row)) { us_sel=i; return true; }
-        if(ls_globe_state()==LS_GLOBE_READY) {
+        if(ls_globe_has_shapes()) {
             char code[8]; float lat,lon,la,lo,z;
             const int level=ls_globe_hit(col,row,code,&lat,&lon);
             ls_globe_view(&la,&lo,&z);

@@ -142,6 +142,25 @@ bool ls_ota_github_url(const char *url, char *out, size_t cap)
     return true;
 }
 
+bool ls_ota_url_to_edition(const char *url, const char *dir, char *out, size_t cap)
+{
+    static const char *const DIRS[] = LS_OTA_DIRS;
+    if (!url || !dir || !out || !cap) return false;
+    for (size_t i = 0; i < sizeof(DIRS) / sizeof(DIRS[0]); i++) {
+        if (!strcmp(DIRS[i], dir)) continue;
+        const char *at = strstr(url, DIRS[i]);
+        if (!at) continue;
+        const size_t head = (size_t)(at - url), dl = strlen(dir);
+        const char *tail = at + strlen(DIRS[i]);
+        if (head + dl + strlen(tail) + 1 > cap) return false;
+        memcpy(out, url, head);
+        memcpy(out + head, dir, dl);
+        strcpy(out + head + dl, tail);
+        return true;
+    }
+    return false;
+}
+
 bool ls_ota_verify_any(size_t nkeys, ls_ota_key_fn verify, void *ctx)
 {
     for (size_t i = 0; verify && i < nkeys; i++)

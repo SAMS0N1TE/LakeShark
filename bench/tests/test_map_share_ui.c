@@ -76,6 +76,20 @@ LS_CASE(map_channel_and_dm_receipts_open_exact_item_without_sending) {
 static int cross_x,cross_y,cross_count,target_cells;
 static uint8_t target_centre_attr;
 uint8_t ls_ink_tinted(uint8_t a) { return a; }
+void ls_ink_text(tui_surface *sf, tui_rect clip, int x, int y, const char *s, int n, uint8_t attr)
+{
+    (void)sf;(void)clip;
+    for(int i=0;i<n;i++) {
+        target_cells++;
+        if(s[i]=='+') { cross_x=x+i;cross_y=y;cross_count++;target_centre_attr=attr; }
+    }
+}
+bool ls_globe_flat(tui_surface *sf, tui_rect a, double lat, double lon, unsigned z, double ppx, double ppy,
+                   ls_globe_fill_fn fill, void *ctx)
+{ (void)sf; (void)a; (void)lat; (void)lon; (void)z; (void)ppx; (void)ppy; (void)fill; (void)ctx; return false; }
+bool ls_globe_nearest(double lat, double lon, ls_globe_fill_fn fill, void *ctx, char code[8], float *rlat, float *rlon,
+                      bool *inside)
+{ (void)lat; (void)lon; (void)fill; (void)ctx; (void)code; (void)rlat; (void)rlon; (void)inside; return false; }
 void tui_put_char(tui_surface *sf,tui_rect clip,int x,int y,char ch,uint8_t attr) {
     (void)sf;(void)clip;(void)attr;
     target_cells++;
@@ -85,7 +99,7 @@ LS_CASE(marker_target_is_visible_with_controls_hidden_and_delete_confirms) {
     reset();latitude=43.12345;longitude=-71.54321;
     s_controls_hidden=true;cross_count=0;target_cells=0;
     centre_reticle(NULL,(tui_rect){2,3,52,60});
-    LS_EQ_INT(target_cells,15);LS_EQ_INT(target_centre_attr,TUI_ATTR(TUI_BLACK,TUI_YELLOW|TUI_BRIGHT));
+    LS_EQ_INT(target_cells,7);LS_EQ_INT(target_centre_attr,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
     LS_EQ_INT(cross_count,1);LS_EQ_INT(cross_x,28);LS_EQ_INT(cross_y,33);
     ls_val_t result;a_map_mark(NULL,&result);LS_EQ_INT(ls_marks_count(),1);
     LS_NEAR(ls_marks_at(0)->lat,latitude,0);LS_NEAR(ls_marks_at(0)->lon,longitude,0);
@@ -178,8 +192,8 @@ LS_CASE(map_drag_pans_with_the_finger_and_never_selects) {
 }
 LS_CASE(target_steps_around_a_symbol_and_hides_under_one) {
     reset();const tui_rect body={2,3,52,60};
-    s_ntaken=0;box_take_air(24,24,29,1,0);target_cells=cross_count=0;
-    centre_reticle(NULL,body);LS_EQ_INT(target_cells,14);LS_EQ_INT(cross_count,1);
+    s_ntaken=0;box_take_air(24,24,30,1,0);target_cells=cross_count=0;
+    centre_reticle(NULL,body);LS_EQ_INT(target_cells,6);LS_EQ_INT(cross_count,1);
     s_ntaken=0;box_take_air(25,27,30,1,0);target_cells=cross_count=0;
     centre_reticle(NULL,body);LS_EQ_INT(target_cells,0);LS_EQ_INT(cross_count,0);
     s_ntaken=0;

@@ -26,13 +26,15 @@ static bool cells_outlines_needed(void) {
     return cells_outlines.bytes && !cells_matches(CELLS_ROOT "outlines.lso",cells_outlines.bytes,cells_outlines.sha);
 }
 static EXT_RAM_BSS_ATTR char cells_token[192];
-static bool cells_plus; /* a Plus token is stored: published as maps.plus */
 #ifndef LS_CARTOCORE_HOST
 static esp_err_t cells_token_job(void *unused) {
-    (void)unused;nvs_handle_t n;cells_token[0]=0;
-    esp_err_t e=nvs_open("p25packs",NVS_READONLY,&n);if(e!=ESP_OK)return e;
-    size_t bytes=sizeof(cells_token);e=nvs_get_str(n,"token",cells_token,&bytes);nvs_close(n);
-    if(e!=ESP_OK)cells_token[0]=0;
+    (void)unused;nvs_handle_t n;char token[sizeof(cells_token)];
+    esp_err_t e=nvs_open("p25packs",NVS_READONLY,&n);
+    if(e==ESP_OK) {
+        size_t bytes=sizeof(token);e=nvs_get_str(n,"token",token,&bytes);nvs_close(n);
+        if(e==ESP_OK)snprintf(cells_token,sizeof(cells_token),"%s",token);
+    }
+    if(e==ESP_ERR_NVS_NOT_FOUND)cells_token[0]=0;
     return e;
 }
 #endif
@@ -40,12 +42,13 @@ static bool cells_token_load(void) {
 #ifdef LS_CARTOCORE_HOST
     const char *token=getenv("LSSIM_MAPS_TOKEN");snprintf(cells_token,sizeof(cells_token),"%s",token?token:"");
 #else
-    if(ls_nvs_run(cells_token_job,NULL,0)!=ESP_OK)cells_token[0]=0;
+    esp_err_t e=ls_nvs_run(cells_token_job,NULL,0);
+    if(e!=ESP_OK && e!=ESP_ERR_NVS_NOT_FOUND)return cells_plus_work;
 #endif
     /* Header values cannot contain HTTP delimiters. */
     for(const char *p=cells_token;*p;p++)if((unsigned char)*p<32 || (unsigned char)*p==127) { cells_token[0]=0;break; }
-    cells_plus=cells_token[0]!=0;
-    return cells_plus;
+    cells_plus_work=cells_token[0]!=0;
+    return cells_plus_work;
 }
 // States contain cell coordinates, not per-part rows. Bound transient PSRAM
 // to 1 MiB text + 65536 tokens (about 1.25 MiB), released after parsing.
@@ -123,22 +126,36 @@ static bool cells_id_allowed(uint32_t id) {
 static void cells_states_publish(void) {
     static uint32_t generation;
     snprintf(cells_work.free_max_zoom,sizeof(cells_work.free_max_zoom),"%u",FREE_MAX_ZOOM);
-    cells_work.maps_progress=cw.queue_total?(float)((double)(cw.queue_done+cw.queue_partial)/cw.queue_total):0;
+    cells_work.maps_progress=cw.progress_loaded && cw.queue_total?(float)((double)(cw.queue_done+cw.queue_partial)/cw.queue_total):0;
+    if(cw.queue_loaded && cells_work.maps_progress>0.99f)cells_work.maps_progress=0.99f;
     if(cells_work.maps_progress>1)cells_work.maps_progress=1;
     snprintf(cells_work.state,sizeof(cells_work.state),"%s",cells_work.message);
     snprintf(cells_work.progress,sizeof(cells_work.progress),"%llu|%llu|%s",(unsigned long long)cells_work.done,(unsigned long long)cells_work.total,cw.queue_loaded?cw.queue_name:"");
     if(!cells_states_dirty && generation==cw.generation)return;
-    generation=cw.generation;cells_states_dirty=false;size_t used=0;cells_work.states[0]=0;
+    static EXT_RAM_BSS_ATTR char next[sizeof(cells_work.states)];
+    size_t used=0;next[0]=0;bool error=false;
     for(unsigned i=0;i<cells_states_count;i++) {
-        cells_state_row *r=cells_states+i;unsigned installed=0,detail_installed=0;
+        cells_state_row *r=cells_states+i;unsigned installed=0,detail_installed=0,outdated=0;
         for(unsigned id=0;id<65536;id++)if(r->cover[id/8]&(1u<<(id&7))) {
-            uint32_t bytes;uint8_t sha[32];if(cells_entry(id+1,&bytes,sha) && cells_present(id+1,bytes))installed++;
-            if(cells_entry(id+1+65536,&bytes,sha) && cells_present(id+1+65536,bytes))detail_installed++;
+            uint32_t bytes;uint8_t sha[32];
+            char name[64],path[96];struct stat st;cells_name(id+1,name,sizeof(name),false);
+            snprintf(path,sizeof(path),CELLS_ROOT "%s",name);
+            if(cells_entry_checked(id+1,&bytes,sha,&error) && cells_matches_checked(path,bytes,sha,&error))installed++;
+            else {
+                /* On the card but not the server's revision: an update, not a
+                   gap. Counted apart so TILES can say UPDATE instead of PART. */
+                if(!stat(path,&st))outdated++;
+                else if(errno!=ENOENT && errno!=ENOTDIR)error=true;
+            }
+            cells_name(id+1+65536,name,sizeof(name),false);snprintf(path,sizeof(path),CELLS_ROOT "%s",name);
+            if(cells_entry_checked(id+1+65536,&bytes,sha,&error) && cells_matches_checked(path,bytes,sha,&error))detail_installed++;
+            if(error)return;
         }
-        int n=snprintf(cells_work.states+used,sizeof(cells_work.states)-used,"%s|%s|%s|%u|%llu|%u|%u|%llu|%llu|%u\n",r->code,r->name,"free",r->count,(unsigned long long)r->bytes,installed,r->partial,(unsigned long long)r->base_bytes,(unsigned long long)r->detail_bytes,detail_installed==r->count);
-        if(n<0 || (size_t)n>=sizeof(cells_work.states)-used)break;
+        int n=snprintf(next+used,sizeof(next)-used,"%s|%s|%s|%u|%llu|%u|%u|%llu|%llu|%u|%u\n",r->code,r->name,"free",r->count,(unsigned long long)r->bytes,installed,r->partial,(unsigned long long)r->base_bytes,(unsigned long long)r->detail_bytes,detail_installed==r->count,outdated);
+        if(n<0 || (size_t)n>=sizeof(next)-used)return;
         used+=(size_t)n;
     }
+    memcpy(cells_work.states,next,used+1);generation=cw.generation;cells_states_dirty=false;
 }
 static void cells_state_command(unsigned action,uint32_t key) {
     char st[3]={(char)(key>>8),(char)key,0};cells_state_row *r=NULL;
@@ -159,10 +176,11 @@ static void cells_state_command(unsigned action,uint32_t key) {
     (void)needed;
 #endif
     if(!cells_record(key,r->code,r->cover,true)) { cells_message("Cannot save state queue");return; }
+    if(cw.queue_loaded && cw.queue_key==key) { memcpy(cw.queued,r->cover,CELLS_BITS);cw.next_cell=0;cells_progress_reset(); }
     cells_library();cells_message("State queued; safe to leave");
 }
 bool ls_cells_maps_text(unsigned which,char *out,size_t cap) {
-    if(!out || !cap || !cells_take())return false;
+    if(!out || !cap || !cells_take_reader())return false;
     if(which==4) snprintf(out,cap,"%u",FREE_MAX_ZOOM);
     else if(which==5) snprintf(out,cap,"%d",cells_plus?1:0);
     else snprintf(out,cap,"%s",which==0?cells_pub.states:which==1?cells_pub.progress:which==3?cells_pub.outlines:cells_pub.state);
@@ -174,6 +192,6 @@ bool ls_cells_state_action(bool remove,const char *st) {
 }
 
 bool ls_cells_maps_progress(float *out) {
-    if(!out || !cells_take())return false;
+    if(!out || !cells_take_reader())return false;
     *out=cells_pub.maps_progress;cells_give();return true;
 }

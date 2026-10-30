@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <sys/stat.h>
 
 #include "ls_map_ink.h"
@@ -24,7 +25,7 @@
    this so the globe comes out round. */
 #define DOT_ASPECT 0.87f
 #define GRID_STEP  30      /* graticule, degrees  */
-#define FILL_ROWS  6       /* fill rows per frame  */
+#define FILL_ROWS  8       /* fill rows redone per frame */
 #define MAX_CELLS  (160 * 100)
 
 typedef struct {
@@ -45,9 +46,13 @@ typedef struct {
 
 static bundle_t s_b;                 /* in use by the UI */
 static bundle_t s_next;              /* handed over by the loader */
-static volatile int s_state, s_next_ready;
+static unsigned s_gen;               /* bumped with each bundle swap and refill: the flat view redraws */
+/* Mailbox: -1 busy, 0 idle, 1 loaded, 2 failed, 3 absent, 4 unchanged. */
+static int s_state;
+static atomic_int s_next_ready;
+static bool s_loading, s_check_shapes;
 static char s_path[96];
-static long s_loaded_size;
+static long s_loaded_size, s_check_size, s_next_size;
 
 /* view: drawn (eases) and target */
 static float s_lat = 38.5f, s_lon = -96.0f, s_zoom = 1.0f;
@@ -63,6 +68,10 @@ static float s_R, s_cx, s_cy;
 /* per-cell region (index+1, 0 none) for fills, filled a few rows a frame */
 static uint16_t *s_cellreg;
 static int s_fill_row, s_fill_w, s_fill_h;
+/* Rows below s_fill_row are current; the rest still hold the last view's
+   regions, drawn until redone. False: nothing worth drawing yet. */
+static bool s_fill_valid;
+static void fill_forget(void);
 
 static void bundle_free(bundle_t *b)
 {
@@ -128,6 +137,10 @@ static int64_t s_retry_us;
 
 static void load_work(void)
 {
+    (void)atomic_load_explicit(&s_next_ready, memory_order_acquire);
+    struct stat st;
+    if (stat(s_path, &st) != 0) { atomic_store_explicit(&s_next_ready, 3, memory_order_release); return; }
+    if (s_check_shapes && st.st_size == s_check_size) { atomic_store_explicit(&s_next_ready, 4, memory_order_release); return; }
     bundle_t b = {0};
     bool ok = false;
     const char *why = "cannot open";
@@ -139,46 +152,60 @@ static void load_work(void)
         if (d && fread(d, 1, (size_t)n, f) == (size_t)n) {
             ok = parse(d, (size_t)n, &b);
             why = "not an LSOUT1 file";
-            if (ok) s_loaded_size = n;
+            if (ok) s_next_size = n;
         }
         heap_caps_free(d);
         fclose(f);
     }
     if (ok) ESP_LOGI(TAG, "%u regions, %u rings, %u points", (unsigned)b.nreg, (unsigned)b.nring, (unsigned)b.npt);
-    else { ESP_LOGW(TAG, "%s: %s", s_path, why); s_retry_us = esp_timer_get_time() + 15000000; }
-    if (ok) { s_next = b; s_next_ready = 1; }
-    else { bundle_free(&b); s_state = s_b.nreg ? LS_GLOBE_READY : LS_GLOBE_FAILED; }
+    else ESP_LOGW(TAG, "%s: %s", s_path, why);
+    if (ok) s_next = b;
+    else bundle_free(&b);
+    atomic_store_explicit(&s_next_ready, ok ? 1 : 2, memory_order_release);
 }
 LS_COLD static void loader(void *arg) { (void)arg; load_work(); vTaskDeleteWithCaps(NULL); }
 
 int ls_globe_state(void) { return s_state; }
+bool ls_globe_has_shapes(void) { return s_b.nreg > 0; }
 
 LS_COLD int ls_globe_load(const char *path)
 {
-    if (s_next_ready) {           /* swap on the UI task, never under a draw */
-        bundle_free(&s_b); s_b = s_next; memset(&s_next, 0, sizeof(s_next));
-        s_next_ready = 0; s_state = LS_GLOBE_READY; s_proj_ok = false; ls_globe_refill();
+#ifndef ESP_PLATFORM
+    if (!path) path = getenv("LSSIM_OUTLINES");   /* lssim: the outlines from the host */
+#endif
+    const int ready = atomic_load_explicit(&s_next_ready, memory_order_acquire);
+    if (ready > 0) {           /* consume the loader's complete result on the UI task */
+        if (ready == 1) {
+            bundle_free(&s_b); s_b = s_next; memset(&s_next, 0, sizeof(s_next));
+            s_loaded_size = s_next_size;
+            s_state = LS_GLOBE_READY; s_proj_ok = false; fill_forget(); s_gen++;
+        } else if (ready == 2) {
+            s_state = s_b.nreg ? LS_GLOBE_READY : LS_GLOBE_FAILED;
+            s_retry_us = esp_timer_get_time() + 15000000;
+        } else if (ready == 3 && !s_b.nreg) s_state = LS_GLOBE_NONE;
+        s_loading = false;
+        atomic_store_explicit(&s_next_ready, 0, memory_order_release);
     }
-    if (s_state == LS_GLOBE_LOADING) return s_state;
-    /* The card is looked at every two seconds at most, never every frame. */
+    if (s_loading) return s_state;
+    /* Probe the card on the loader, at most once every two seconds. */
     static int64_t s_stat_us;
     const int64_t now = esp_timer_get_time();
+    if (now < s_retry_us) return s_state;
     if (s_stat_us && now - s_stat_us < 2000000) return s_state;
     s_stat_us = now;
     snprintf(s_path, sizeof(s_path), "%s", path ? path : LS_GLOBE_PATH);
-    struct stat st;
-    if (stat(s_path, &st) != 0) { if (!s_b.nreg) s_state = LS_GLOBE_NONE; return s_state; }
-    if (s_b.nreg && st.st_size == s_loaded_size) return s_state;
-    if (s_state == LS_GLOBE_FAILED && esp_timer_get_time() < s_retry_us) return s_state;
-    s_state = LS_GLOBE_LOADING;
-    s_loaded_size = st.st_size;
+    s_check_shapes = s_b.nreg != 0; s_check_size = s_loaded_size;
+    s_loading = true;
+    if (!s_b.nreg) s_state = LS_GLOBE_LOADING;
+    atomic_store_explicit(&s_next_ready, -1, memory_order_release);
 #ifdef LS_TILES_HOST
     load_work();                  /* lssim: no tasks run, load in place */
     return ls_globe_load(path);
 #endif
     if (xTaskCreatePinnedToCoreWithCaps(loader, "globe_load", 6144, NULL, 2, NULL, tskNO_AFFINITY,
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS)
-    { ESP_LOGW(TAG, "no task for the loader"); s_state = LS_GLOBE_FAILED; s_retry_us = esp_timer_get_time() + 15000000; }
+    { ESP_LOGW(TAG, "no task for the loader"); s_loading = false; s_state = s_b.nreg ? LS_GLOBE_READY : LS_GLOBE_FAILED; s_retry_us = esp_timer_get_time() + 15000000;
+      atomic_store_explicit(&s_next_ready, 0, memory_order_release); }
     return s_state;
 }
 
@@ -203,7 +230,10 @@ bool ls_globe_moving(void)
     if (dl < -180) dl += 360;
     return fabsf(s_tlat - s_lat) > 0.05f || fabsf(dl) > 0.05f || fabsf(s_tzoom - s_zoom) > 0.01f;
 }
-void ls_globe_refill(void) { s_fill_row = 0; s_fill_w = 0; }
+/* Redo the fills from the top, still drawing the old ones meanwhile. */
+void ls_globe_refill(void) { s_fill_row = 0; s_gen++; }
+/* Forget them: they name regions of a bundle that is gone. */
+static void fill_forget(void) { s_fill_row = 0; s_fill_valid = false; }
 
 /* One step of easing toward the target: a quarter of the way each frame,
    along the short way round. */
@@ -318,18 +348,21 @@ void ls_globe_draw(tui_surface *sf, tui_rect a, ls_globe_fill_fn fill, void *ctx
         ls_globe_refill();
     }
 
-    /* Fills: once the view is still, a few rows a frame. */
+    /* Fills: a few rows a frame, moving or not, over the last view's. Worked
+       out only once the view was still and wiped on every move, the colours
+       went blank on every tap and pan and painted back in from the top: the
+       page flashed. Now they lag a moving view by a few frames instead. */
     if (!s_cellreg) s_cellreg = ps(MAX_CELLS * sizeof(uint16_t));
     if (s_cellreg && a.w * a.h <= MAX_CELLS && s_b.nreg) {
-        if (s_fill_w != a.w || s_fill_h != a.h) { s_fill_w = a.w; s_fill_h = a.h; s_fill_row = 0; }
-        if (!ls_globe_moving())
-            for (int n = 0; n < FILL_ROWS && s_fill_row < a.h; n++, s_fill_row++)
+        if (s_fill_w != a.w || s_fill_h != a.h) { s_fill_w = a.w; s_fill_h = a.h; fill_forget(); }
+        for (int n = 0; n < FILL_ROWS && s_fill_row < a.h; n++, s_fill_row++)
                 for (int col = 0; col < a.w; col++) {
                     float lat, lon; int reg = -1;
                     if (unproject(col * 2 + 1.0f, s_fill_row * 3 + 1.5f, &lat, &lon))
                         reg = find_region(lat, lon, 1);
                     s_cellreg[s_fill_row * a.w + col] = (uint16_t)(reg + 1);
                 }
+        if (s_fill_row >= a.h) s_fill_valid = true;
     }
 
     if (!ls_ink_begin(a)) return;
@@ -350,7 +383,7 @@ void ls_globe_draw(tui_surface *sf, tui_rect a, ls_globe_fill_fn fill, void *ctx
     /* Fills: a dot texture in the state's colour, denser for what is on
        the card, white for the selected state; borders draw over them. */
     if (s_cellreg && fill && a.w * a.h <= MAX_CELLS)
-        for (int row = 0; row < s_fill_row && row < a.h; row++)
+        for (int row = 0; row < (s_fill_valid ? a.h : s_fill_row) && row < a.h; row++)
             for (int col = 0; col < a.w; col++) {
                 const int reg = s_cellreg[row * a.w + col] - 1;
                 if (reg < 0) continue;
@@ -408,4 +441,190 @@ bool ls_globe_region(const char *code, char *name, int cap, float *lat, float *l
         return true;
     }
     return false;
+}
+
+/* ---- FLAT -----------------------------------------------------------------
+   The same outlines laid flat in Web Mercator, for MAP where the card has no
+   tiles: a graticule, countries and states, and the regions the caller fills
+   (the ones on the card) stippled and named, so a way can be found to them.
+   Drawn into a cell cache when the view changes and copied out otherwise:
+   projecting every outline point is too much to do every frame. */
+static tui_cell *s_flat;
+static int s_flat_w, s_flat_h;
+static double s_flat_ppx, s_flat_ppy;
+static double s_flat_lat = 999, s_flat_lon;
+static unsigned s_flat_z, s_flat_gen;
+
+static double flat_merc(double lat)
+{
+    if (lat > 85.05) lat = 85.05;
+    if (lat < -85.05) lat = -85.05;
+    const double r = lat * M_PI / 180.0;
+    return 0.5 - log(tan(M_PI / 4 + r / 2)) / (2 * M_PI);
+}
+/* World pixels to dots, relative to the view's centre, longitude wrapped to
+   the copy of the world nearest it. */
+typedef struct { double cwx, cwy, world, sx, sy; int wd, hd; } flat_view_t;
+static void flat_xy(const flat_view_t *v, double lat, double lon, double *x, double *y)
+{
+    double wx = (lon + 180.0) / 360.0 * v->world;
+    if (wx - v->cwx > v->world / 2) wx -= v->world;
+    else if (v->cwx - wx > v->world / 2) wx += v->world;
+    *x = (wx - v->cwx) / v->sx + v->wd / 2.0;
+    *y = (flat_merc(lat) * v->world - v->cwy) / v->sy + v->hd / 2.0;
+}
+static double flat_step(unsigned z)
+{
+    return z <= 1 ? 30 : z <= 3 ? 15 : z <= 4 ? 10 : z <= 5 ? 5 : z <= 6 ? 2 : z <= 8 ? 1 : z <= 10 ? 0.5 :
+           z <= 11 ? 0.2 : z <= 12 ? 0.1 : z <= 13 ? 0.05 : z <= 14 ? 0.02 : 0.01;
+}
+
+static void flat_render(tui_surface *sf, tui_rect a, const flat_view_t *v, unsigned z, ls_globe_fill_fn fill, void *ctx)
+{
+    if (!ls_ink_begin_braille(a)) return;
+    /* the graticule, faint, every `step` degrees */
+    const double step = flat_step(z);
+    double la0, lo0, la1, lo1;   /* the view's corners */
+    {
+        const double wx0 = v->cwx - v->wd / 2.0 * v->sx, wx1 = v->cwx + v->wd / 2.0 * v->sx;
+        lo0 = wx0 / v->world * 360.0 - 180.0; lo1 = wx1 / v->world * 360.0 - 180.0;
+        const double my0 = (v->cwy - v->hd / 2.0 * v->sy) / v->world, my1 = (v->cwy + v->hd / 2.0 * v->sy) / v->world;
+        la0 = atan(sinh((0.5 - my1) * 2 * M_PI)) * 180.0 / M_PI; la1 = atan(sinh((0.5 - my0) * 2 * M_PI)) * 180.0 / M_PI;
+    }
+    const uint8_t grid = TUI_ATTR(TUI_BLUE, TUI_BLACK);
+    for (double lo = floor(lo0 / step) * step; lo <= lo1 && lo - lo0 < 720; lo += step) {
+        double x, y0, y1, d; flat_xy(v, la1 < 85 ? la1 : 85, lo, &x, &y0); flat_xy(v, la0 > -85 ? la0 : -85, lo, &d, &y1);
+        ls_ink_line((int)x, (int)y0, (int)x, (int)y1, grid, 1, -3);
+    }
+    for (double la = floor(la0 / step) * step; la <= la1; la += step) {
+        if (la < -85 || la > 85) continue;
+        double x, y; flat_xy(v, la, v->cwx / v->world * 360.0 - 180.0, &x, &y);
+        ls_ink_line(0, (int)y, v->wd - 1, (int)y, grid, 1, -3);
+    }
+    /* outlines: regions whose box meets the view, countries under states */
+    const int16_t vw = (int16_t)(lo0 < -180 ? -18000 : lo0 * 100), ve = (int16_t)(lo1 > 180 ? 18000 : lo1 * 100);
+    const int16_t vs = (int16_t)(la0 * 100), vn = (int16_t)(la1 * 100);
+    const bool wraps = lo0 < -180 || lo1 > 180;
+    for (int level = 0; level <= 1; level++)
+        for (uint32_t i = 0; i < s_b.nreg; i++) {
+            const region_t *r = &s_b.reg[i];
+            if (r->level != level) continue;
+            if (r->bb[3] < vs || r->bb[1] > vn) continue;
+            if (!wraps && (r->bb[2] < vw || r->bb[0] > ve)) continue;
+            const uint8_t f = fill && level == 1 ? fill(r->code, ctx) : 0;
+            const uint8_t at = f ? TUI_ATTR(f | TUI_BRIGHT, TUI_BLACK) : TUI_ATTR(level ? TUI_CYAN : TUI_WHITE, TUI_BLACK);
+            const uint8_t prio = f ? 4 : (uint8_t)(2 + level);
+            for (uint32_t k = 0; k < r->nring; k++) {
+                const ring_t *g = &s_b.ring[r->ring0 + k];
+                int px = 0, py = 0; bool have = false;
+                for (uint32_t j = 0; j < g->n; j++) {
+                    double x, y; flat_xy(v, s_b.pt[2 * (g->p0 + j) + 1] * 0.01, s_b.pt[2 * (g->p0 + j)] * 0.01, &x, &y);
+                    const int ix = (int)x, iy = (int)y;
+                    if (have && abs(ix - px) > v->wd) { have = false; }   /* across the date line */
+                    if (have && (ix != px || iy != py)) ls_ink_line(px, py, ix, iy, at, prio, 0);
+                    px = ix; py = iy; have = true;
+                }
+            }
+            /* a region on the card: a light dot grid over it, one dot every third
+               cell across and every other row, so it reads as covered, not as lines */
+            if (f) {
+                double x0, y0, x1, y1;
+                flat_xy(v, r->bb[3] * 0.01, r->bb[0] * 0.01, &x0, &y0); flat_xy(v, r->bb[1] * 0.01, r->bb[2] * 0.01, &x1, &y1);
+                const int c0 = (int)x0 / 2 < 0 ? 0 : (int)x0 / 2, c1 = (int)x1 / 2 >= a.w ? a.w - 1 : (int)x1 / 2;
+                const int r0 = (int)y0 / 4 < 0 ? 0 : (int)y0 / 4, r1 = (int)y1 / 4 >= a.h ? a.h - 1 : (int)y1 / 4;
+                for (int row = r0; row <= r1 && (r1 - r0) * (c1 - c0) < 4000; row++)
+                    for (int col = c0; col <= c1; col++) {
+                        if (row % 2 || (col + row) % 3) continue;
+                        const double wx = v->cwx + ((col * 2 + 1) - v->wd / 2.0) * v->sx;
+                        const double my = (v->cwy + ((row * 4 + 2) - v->hd / 2.0) * v->sy) / v->world;
+                        const float la = (float)(atan(sinh((0.5 - my) * 2 * M_PI)) * 180.0 / M_PI);
+                        float lo = (float)(wx / v->world * 360.0 - 180.0);
+                        if (lo < -180) lo += 360; else if (lo > 180) lo -= 360;
+                        if (in_region(r, la, lo)) ls_ink_dot(col * 2, row * 4 + 2, TUI_ATTR(f, TUI_BLACK), 1);
+                    }
+            }
+        }
+    ls_ink_flush(sf, tui_rect_make(0, -1, 0, 0));
+    /* names: regions on the card always, countries while they are big enough */
+    for (uint32_t i = 0; i < s_b.nreg; i++) {
+        const region_t *r = &s_b.reg[i];
+        const uint8_t f = fill && r->level == 1 ? fill(r->code, ctx) : 0;
+        double x0, y0, x1, y1;
+        flat_xy(v, r->bb[3] * 0.01, r->bb[0] * 0.01, &x0, &y0); flat_xy(v, r->bb[1] * 0.01, r->bb[2] * 0.01, &x1, &y1);
+        const double wcells = (x1 - x0) / 2;
+        const char *name = f ? (strncmp(r->code, "US-", 3) ? r->code : r->code + 3) : r->name;
+        const int len = (int)strlen(name);
+        if (!f && (r->level != 0 || wcells < len + 4 || r->bb[2] - r->bb[0] > 30000)) continue;
+        double cx, cy; flat_xy(v, r->clat, r->clon, &cx, &cy);
+        const int col = a.x + (int)cx / 2 - len / 2, row = a.y + (int)cy / 4;
+        if (row < a.y || row >= a.y + a.h || col < a.x || col + len > a.x + a.w) continue;
+        tui_put_str(sf, a, col, row, name, f ? TUI_ATTR(TUI_BLACK, f | TUI_BRIGHT) : TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    }
+    /* figures for the graticule on the left and top edges */
+    char t[12];
+    for (double la = floor(la0 / step) * step; la <= la1; la += step) {
+        if (la < -85 || la > 85) continue;
+        double x, y; flat_xy(v, la, lo0, &x, &y);
+        snprintf(t, sizeof(t), "%g%c", fabs(la), la > 0 ? 'N' : la < 0 ? 'S' : ' ');
+        const int row = a.y + (int)y / 4;
+        if (row > a.y && row < a.y + a.h - 1) tui_put_str(sf, a, a.x, row, t, LS_ATTR_FAINT);
+    }
+    for (double lo = floor(lo0 / step) * step; lo <= lo1 && lo - lo0 < 720; lo += step) {
+        double x, y; flat_xy(v, la1, lo, &x, &y);
+        double l = fmod(lo + 540.0, 360.0) - 180.0;
+        snprintf(t, sizeof(t), "%g%c", fabs(l), l > 0 ? 'E' : l < 0 ? 'W' : ' ');
+        const int col = a.x + (int)x / 2 + 1;
+        if (col > a.x + 4 && col + (int)strlen(t) < a.x + a.w) tui_put_str(sf, a, col, a.y, t, LS_ATTR_FAINT);
+    }
+}
+
+bool ls_globe_flat(tui_surface *sf, tui_rect a, double lat, double lon, unsigned z, double ppx, double ppy,
+                   ls_globe_fill_fn fill, void *ctx)
+{
+    ls_globe_load(NULL);
+    /* without outlines on the card the graticule alone still gives a way around */
+    if (a.w < 8 || a.h < 4 || ppx < 1 || ppy < 1) return false;
+    if (!s_flat || s_flat_w != a.w || s_flat_h != a.h) {
+        heap_caps_free(s_flat);
+        s_flat = heap_caps_malloc((size_t)a.w * a.h * sizeof(tui_cell), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_flat_w = a.w; s_flat_h = a.h; s_flat_lat = 999;
+        if (!s_flat) return false;
+    }
+    a = tui_rect_intersect(a, tui_surface_rect(sf));
+    if (a.w != s_flat_w || a.h != s_flat_h) return false;
+    const bool same = s_flat_lat == lat && s_flat_lon == lon && s_flat_z == z && s_flat_ppx == ppx &&
+                      s_flat_ppy == ppy && s_flat_gen == s_gen;
+    if (!same) {
+        for (int r = 0; r < a.h; r++)
+            for (int c = 0; c < a.w; c++) sf->back[(a.y + r) * sf->w + a.x + c] = (tui_cell){ ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK) };
+        const double world = 256.0 * ldexp(1.0, (int)z);
+        const flat_view_t v = { (lon + 180.0) / 360.0 * world, flat_merc(lat) * world, world,
+                                ppx / 2.0, ppy / 4.0, a.w * 2, a.h * 4 };
+        flat_render(sf, a, &v, z, fill, ctx);
+        for (int r = 0; r < a.h; r++) memcpy(&s_flat[r * a.w], &sf->back[(a.y + r) * sf->w + a.x], (size_t)a.w * sizeof(tui_cell));
+        s_flat_lat = lat; s_flat_lon = lon; s_flat_z = z; s_flat_ppx = ppx; s_flat_ppy = ppy; s_flat_gen = s_gen;
+    } else
+        for (int r = 0; r < a.h; r++) memcpy(&sf->back[(a.y + r) * sf->w + a.x], &s_flat[r * a.w], (size_t)a.w * sizeof(tui_cell));
+    return true;
+}
+
+bool ls_globe_nearest(double lat, double lon, ls_globe_fill_fn fill, void *ctx, char code[8], float *rlat, float *rlon,
+                       bool *inside)
+{
+    if (!fill) return false;
+    const double k = cos(lat * M_PI / 180.0);
+    double best = 1e18; int bi = -1;
+    for (uint32_t i = 0; i < s_b.nreg; i++) {
+        const region_t *r = &s_b.reg[i];
+        if (r->level != 1 || !fill(r->code, ctx)) continue;
+        if (in_region(r, (float)lat, (float)lon)) { bi = (int)i; best = -1; break; }   /* standing in one */
+        const double dla = r->clat - lat, dlo = (fmod(r->clon - lon + 540.0, 360.0) - 180.0) * k;
+        const double d = dla * dla + dlo * dlo;
+        if (d < best) { best = d; bi = (int)i; }
+    }
+    if (bi < 0) return false;
+    snprintf(code, 8, "%s", s_b.reg[bi].code);
+    *rlat = s_b.reg[bi].clat; *rlon = s_b.reg[bi].clon;
+    if (inside) *inside = best < 0;
+    return true;
 }

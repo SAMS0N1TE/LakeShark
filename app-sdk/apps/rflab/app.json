@@ -1,4 +1,8 @@
 {
   "category": "radio",
-  "description": "A bench instrument on any radio the board has (RTL-SDR, HackRF, LR2021): spectrum with floor, peak, channel and 99% bandwidth marked, SNR, channel power, frequency error and the PPM to set, clipping, DC and I/Q imbalance with its ellipse, and an SNR history."
+  "description": "A bench instrument on any radio the board has (RTL-SDR, HackRF, LR2021): spectrum with floor, peak, channel and 99% bandwidth marked, SNR, channel power, frequency error and the PPM to set, clipping, DC and I/Q imbalance with its ellipse, and an SNR history.",
+  "thumb": "apps/media/rflab/thumb-20261029.png",
+  "screens": [
+    "apps/media/rflab/1-20261029.png"
+  ]
 }

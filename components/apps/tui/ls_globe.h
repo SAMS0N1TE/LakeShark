@@ -5,8 +5,9 @@
    The outlines come from /sdcard/maps/outlines.lso (LSOUT1, written by
    bench/maps/make_outlines.py from Natural Earth and fetched with the map
    state list), loaded into PSRAM by a one-shot task so the UI never waits on
-   the card. Projection is redone only when the view moves; fills are worked
-   out a few rows per frame and kept until the view or the fills change.
+   the card. Projection is redone only when the view moves; fills are redone
+   a few rows per frame, the last view's still drawn meanwhile, so they lag a
+   move instead of blanking.
    UI task only, except the loader. */
 #ifndef LS_GLOBE_H
 #define LS_GLOBE_H
@@ -25,6 +26,9 @@ enum { LS_GLOBE_NONE = 0, LS_GLOBE_LOADING, LS_GLOBE_READY, LS_GLOBE_FAILED };
    newer than what is; returns the state. Cheap to call every frame. */
 int  ls_globe_load(const char *path);
 int  ls_globe_state(void);
+/* Outlines are in memory and drawable. Stays true while a newer file loads:
+   the old shapes are kept until the new ones are swapped in. */
+bool ls_globe_has_shapes(void);
 
 /* Where the globe is looking: latitude, longitude of the centre and a zoom,
    1 the whole globe in the rectangle, larger closer. The drawn view eases
@@ -49,6 +53,17 @@ bool ls_globe_moving(void);
 int  ls_globe_hit(int col, int row, char code[8], float *lat, float *lon);
 /* A region's name and centre by code; false when unknown. */
 bool ls_globe_region(const char *code, char *name, int name_cap, float *lat, float *lon);
+
+/* The outlines flat in Web Mercator over `a`, for MAP where the card has no
+   tiles: centred on lat/lon at zoom `z` (256 px tiles), `ppx` x `ppy` world
+   pixels a cell. A graticule, countries, states; regions `fill` colours are
+   stippled and named. False until outlines are loaded. UI task only. */
+bool ls_globe_flat(tui_surface *sf, tui_rect a, double lat, double lon, unsigned z, double ppx, double ppy,
+                   ls_globe_fill_fn fill, void *ctx);
+/* The filled region (one on the card) whose centre is nearest lat/lon;
+   `inside` (may be NULL) says lat/lon is within it. */
+bool ls_globe_nearest(double lat, double lon, ls_globe_fill_fn fill, void *ctx, char code[8], float *rlat, float *rlon,
+                      bool *inside);
 
 #ifdef __cplusplus
 }

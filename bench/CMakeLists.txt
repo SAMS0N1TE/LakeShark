@@ -2654,6 +2654,8 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME test_cells_progress_budget COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cells_progress_budget.py")
     add_test(NAME test_cells_retry COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cells_retry.py"
         "${CMAKE_C_COMPILER}" "${CMAKE_CURRENT_BINARY_DIR}/cells-retry")
+    add_test(NAME test_cells_readable COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cells_readable.py"
+        "${CMAKE_C_COMPILER}" "${CMAKE_CURRENT_BINARY_DIR}/cells-readable")
     add_test(NAME test_tiles_state COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tiles_state.py")
 endif()
 

@@ -45,6 +45,12 @@ void ls_carto_transfer_cancel(void);
 void ls_carto_transfer_clear(void);
 void ls_carto_transfer_fail(const char *why);
 void ls_tiles_expected(const char *file,char sha[65],uint64_t *bytes);
+/* Everything downloading maps right now, one line each (a state, a place,
+   a region file, a laptop push), with its fraction done, or -1 when the size
+   is not known yet. TILES and MAP both show it. Refreshed at most twice a
+   second, so it is cheap to ask every frame. */
+#define LS_MAPS_ACTIVITY_MAX 3
+int ls_maps_activity(char lines[][64], float *fraction, int max);
 extern const ls_tui_screen_t ls_scr_tiles;
 extern const ls_app_doc_t ls_doc_tiles;
 #endif

@@ -51,7 +51,12 @@ static void lssim_maps_split_transactions(void) {
     assert(stat(CELLS_ROOT "cells/8-77-93.detail.ctile",&st));
     assert(!cells_download(6,"cells/8/77/93.detail.ctile","cells/8-77-93.detail.ctile",100,sha));
     cells_states_dirty=true;cells_states_publish();cells_publish();
-    assert(strstr(cells_work.states,"|0\n"));
+    /* detail_on remains field 10; field 11 is the appended outdated count. */
+    char expected[256];
+    snprintf(expected,sizeof(expected),"CO|Colorado|free|1|%llu|1|0|%llu|%llu|0|0\n",
+        (unsigned long long)cells_states[0].bytes,(unsigned long long)cells_states[0].base_bytes,
+        (unsigned long long)cells_states[0].detail_bytes);
+    assert(!strcmp(cells_work.states,expected));
     assert(cells_states[0].base_bytes && cells_states[0].detail_bytes);
     putenv("LSSIM_MAPS_TOKEN=fixture-entitlement");
     cells_state_command(7,('C'<<8)|'O');cells_queue_step();assert(dl.active && strstr(dl.relative,".detail.ctile"));
@@ -62,7 +67,11 @@ static void lssim_maps_split_transactions(void) {
     steps=0;while(cw.queue_loaded && steps++<200) { if(dl.active)cells_download_step();else cells_queue_step(); }
     assert(!cw.queue_loaded && steps<200);
     assert(cells_entry(id+65536,&bytes,sha) && cells_present(id+65536,bytes));
-    cells_states_dirty=true;cells_states_publish();cells_publish();assert(strstr(cells_work.states,"|1\n"));
+    cells_states_dirty=true;cells_states_publish();cells_publish();
+    snprintf(expected,sizeof(expected),"CO|Colorado|free|1|%llu|1|0|%llu|%llu|1|0\n",
+        (unsigned long long)cells_states[0].bytes,(unsigned long long)cells_states[0].base_bytes,
+        (unsigned long long)cells_states[0].detail_bytes);
+    assert(!strcmp(cells_work.states,expected));
     cells_state_command(8,('C'<<8)|'O');assert(stat(CELLS_ROOT "cells/8-77-93.ctile",&st));
     assert(stat(CELLS_ROOT "cells/8-77-93.detail.ctile",&st));
     puts("PASS: split base all states, detail token gate, revoke/resume, detail publication and removal");
