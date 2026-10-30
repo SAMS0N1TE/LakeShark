@@ -59,6 +59,7 @@ static uint32_t s_fm_hf;
 static bool s_fm_hf_valid;
 static bool         s_lr_tcxo = true, s_lr_dcdc;
 static unsigned     s_lr_iq;   /* "lr_iq" bits: 1 WIDE I/Q, 2 span view */
+static int32_t      s_lr_fcorr_ppb;
 static uint64_t     s_lr_port_a, s_lr_port_b;
 static bool         s_lr_port_have;
 static uint64_t s_location;
@@ -414,6 +415,10 @@ bool settings_init(void)
     if (nvs_get_u8(s_nvs, "lr_iq", &lr_iq) != ESP_OK) lr_iq = 0;
     __atomic_store_n(&s_lr_iq, lr_iq & 3u, __ATOMIC_RELEASE);
     if (lr_iq & 1u) lr_wf_set_wide(true, LR_WF_WIDE_DEFAULT_HZ);
+    int32_t lr_fcorr = 0;
+    if (nvs_get_i32(s_nvs, "lr_fcorr", &lr_fcorr) != ESP_OK ||
+        lr_fcorr > LS_LR_FCORR_MAX_PPB || lr_fcorr < -LS_LR_FCORR_MAX_PPB) lr_fcorr = 0;
+    __atomic_store_n(&s_lr_fcorr_ppb, lr_fcorr, __ATOMIC_RELEASE);
     s_lr_port_have = nvs_get_u64(s_nvs, "lr_port", &s_lr_port_a) == ESP_OK &&
                      nvs_get_u64(s_nvs, "lr_rfsw", &s_lr_port_b) == ESP_OK;
 
@@ -1065,6 +1070,17 @@ bool settings_set_lr_wide(bool on)
 }
 bool settings_get_lr_span(void) { return __atomic_load_n(&s_lr_iq, __ATOMIC_ACQUIRE) & 2u; }
 bool settings_set_lr_span(bool on) { return lr_iq_put(2u, on); }
+int32_t settings_get_lr_fcorr_ppb(void)
+{
+    return __atomic_load_n(&s_lr_fcorr_ppb, __ATOMIC_ACQUIRE);
+}
+bool settings_set_lr_fcorr_ppb(int32_t ppb)
+{
+    if (ppb > LS_LR_FCORR_MAX_PPB || ppb < -LS_LR_FCORR_MAX_PPB) return false;
+    if (!sput_i32("lr_fcorr", ppb)) return false;
+    __atomic_store_n(&s_lr_fcorr_ppb, ppb, __ATOMIC_RELEASE);
+    return true;
+}
 /* Before settings_init() - the keypad's bring-up asks whether the header
    is the radio's - the two words come straight from NVS, on a DRAM stack. */
 typedef struct { uint64_t a, b; } port_peek_t;
