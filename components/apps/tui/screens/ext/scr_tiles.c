@@ -557,6 +557,16 @@ static void card_server_draw(tui_surface *sf,tui_rect body,int *y) {
    the card moves frac but not net, so it never reads as download speed. */
 typedef struct { bool on, waiting, net_ok; char what[24], name[32], big[8]; float frac; unsigned have, cells; double bytes_total; uint64_t net; } hero_job_t;
 
+/* Stopped, not just between two cells: the worker drops "downloading" for a
+   tick after each install, which is no reason to turn the panel yellow. */
+static bool hero_stopped(bool downloading) {
+    static int64_t since;
+    const int64_t now = esp_timer_get_time();
+    if (downloading) { since = 0; return false; }
+    if (!since) since = now;
+    return now - since > 1500000;
+}
+
 static void hero_job(hero_job_t *j) {
     memset(j, 0, sizeof(*j));
     ls_carto_transfer t; ls_carto_transfer_snapshot(&t);
@@ -571,6 +581,8 @@ static void hero_job(hero_job_t *j) {
             j->bytes_total = (double)us_state[i].base + (us_state[i].detail ? (double)us_state[i].extra : 0);
         } else snprintf(j->name, sizeof(j->name), "%s", code[0] ? code : "STATE MAPS");
         j->frac = us_progress;
+        /* a state stopped on a failed cell said DOWNLOADING with "no data" for hours (2026-10-30) */
+        j->waiting = card_places.queued && hero_stopped(card_places.downloading);
         j->net_ok = card_places.downloading; j->net = card_places.done;
     } else if (card_places.queued && card_places.queue_name[0]) {
         /* a state's queue resumed after a restart is named by its code */
@@ -584,7 +596,7 @@ static void hero_job(hero_job_t *j) {
         j->frac = card_places.downloading && card_places.total ? (float)card_places.done / card_places.total : -1.0f;
         j->bytes_total = card_places.total;
         /* queued but not fetching: between tries, or blocked; the worker says why */
-        j->waiting = !card_places.downloading;
+        j->waiting = hero_stopped(card_places.downloading);
         j->net_ok = card_places.downloading; j->net = card_places.done;
     } else if (t.state == 1) {
         j->on = true; snprintf(j->what, sizeof(j->what), "%s", t.receiving ? "FROM LAPTOP" : "REGION FILE");

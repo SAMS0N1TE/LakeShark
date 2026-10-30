@@ -111,7 +111,8 @@ static int carto_stat(const char *p,struct stat *st) { CARTO_IO_ASSERT();return 
 static int carto_unlink(const char *p) { CARTO_IO_ASSERT();return unlink(carto_host_path(p)); }
 static int carto_rename(const char *a,const char *b) { CARTO_IO_ASSERT();return rename(carto_host_path(a),carto_host_path(b)); }
 static int carto_open(const char *p,int flags) { CARTO_IO_ASSERT();return open(carto_host_path(p),flags|O_BINARY); }
-static ssize_t carto_read(int fd,void *p,size_t n) { CARTO_IO_ASSERT();return read(fd,p,n); }
+static uint64_t carto_host_read_bytes;
+static ssize_t carto_read(int fd,void *p,size_t n) { CARTO_IO_ASSERT();ssize_t got=read(fd,p,n);if(got>0)carto_host_read_bytes+=got;return got; }
 static int carto_close(int fd) { CARTO_IO_ASSERT();return close(fd); }
 static size_t carto_fread(void *p,size_t s,size_t n,FILE *f) { CARTO_IO_ASSERT();return fread(p,s,n,f); }
 static int carto_fclose(FILE *f) { CARTO_IO_ASSERT();return fclose(f); }

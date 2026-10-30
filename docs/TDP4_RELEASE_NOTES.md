@@ -1,5 +1,11 @@
 # LakeShark release notes
 
+## 2.19.2
+
+- TILES: map downloads are about three times faster on the bench boards: one connection for a whole cell, larger reads, and no state count while a file comes in.
+- TILES: a state download no longer stops for good when the server's maps have changed under it; the board loads the new catalog and carries on.
+- TILES: a stopped download says WAITING and why, instead of DOWNLOADING with no data, and no longer keeps the processor busy while it waits.
+
 ## 2.19.1
 
 - TILES: a new front page shows what is downloading: the region and percent as a dot-matrix sign, a meter, every cell of the job, and a live speed trace with time left.
@@ -7,6 +13,7 @@
 - TILES: GET MAPS no longer flickers, and the lists hold steady while maps download.
 - TILES: a board still set to the old map server says so, and one tap moves it to the live one.
 - TILES: the state list is ready in about a minute after boot instead of three.
+- TILES: UPDATE ALL no longer makes the screen flash blue every few seconds while it works through the states.
 - MAP: the download strip names the state and opens TILES, and the map holds still while a download runs.
 - MAP: a state whose maps the server has updated keeps drawing its roads until you press UPDATE, and still counts as on the card.
 - MAP: the centre cross is drawn over the map without a black box.

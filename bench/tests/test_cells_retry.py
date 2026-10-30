@@ -30,6 +30,7 @@ code = r'''
 #include <sys/stat.h>
 #include <unistd.h>
 #include <direct.h>
+#include "ls_carto_digest.h"
 #define EXT_RAM_BSS_ATTR
 #define CELLS_ROOT "maps/"
 #define CELLS_BITS 8192
@@ -57,12 +58,14 @@ typedef struct { int event_id;const char *header_key,*header_value; } esp_http_c
 #define ESP_OK 0
 #define esp_crt_bundle_attach NULL
 typedef struct {
-    const char *url;int timeout_ms;void *crt_bundle_attach;int buffer_size;
+    const char *url;int timeout_ms;void *crt_bundle_attach;int buffer_size,buffer_size_tx;
     esp_err_t (*event_handler)(esp_http_client_event_t *);bool keep_alive_enable;
 } esp_http_client_config_t;
 static esp_err_t (*on_header)(esp_http_client_event_t *);
 static void *esp_http_client_init(const esp_http_client_config_t *cfg) { on_header=cfg->event_handler;return (void*)1; }
 static void esp_http_client_set_header(void *h,const char *k,const char *v) { (void)h;(void)k;(void)v; }
+static void esp_http_client_delete_header(void *h,const char *k) { (void)h;(void)k; }
+static int esp_http_client_set_url(void *h,const char *u) { (void)h;(void)u;return ESP_OK; }
 static int esp_http_client_open(void *h,int n) { (void)h;(void)n;requests++;return open_result; }
 static int64_t esp_http_client_fetch_headers(void *h) {
     (void)h;
@@ -85,6 +88,7 @@ static struct {
     uint32_t progress_revision;
     bool initialized,queue_loaded,catalog_refresh,states_refresh,preview_active,query_pending,base_open,direct,progress_loaded;
     int catalog;struct { char iso2[3]; } shard;
+    int64_t queue_wait_until,catalog_auto_at;
 } cw;
 ''' + progress + r'''
 static struct { bool active;int64_t last_us; } upload;
@@ -123,7 +127,7 @@ static bool cells_record_read(const char *p,uint8_t *b,char *n,bool *q) { (void)
 static const char *asset="cells/states.json";
 static bool start(void) { return cells_download(7,asset,asset,0,NULL); }
 static void reset(void) {
-    cells_download_close();memset(&dl,0,sizeof(dl));cells_retry_reset(NULL);
+    cells_download_close();cells_conn_drop();memset(&dl,0,sizeof(dl));cells_retry_reset(NULL);
     memset(&cw,0,sizeof(cw));strcpy(cw.server,"https://example.invalid/");
     status=500;open_result=read_result=0;content_length=0;retry_header=NULL;
     hash_ok=format_ok=complete=true;part_bytes=0;alloc_fail=false;
@@ -134,7 +138,15 @@ static void reset(void) {
 static void explicit_action(unsigned action) {
     cells_pub.ready=true;cells_pub.busy=false;assert(ls_cells_action(action,0));cells_step();
 }
+/* A cell that is not what the catalog says loads the catalog once, and a
+   second failure within 30 minutes stops it for good. */
+static void stale_once(const char *tile) {
+    assert(cw.catalog_refresh && strstr(cells_work.message,"new catalog"));
+    assert(cells_retry_find(tile) && cells_retry_find(tile)->at!=INT64_MAX);
+    cw.catalog_refresh=false;cells_retry_reset(NULL);
+}
 int main(void) {
+    (void)cells_receiving;
     const int64_t bases[]={5,10,20,40,80,160,320,640,900,900,900};
     reset();
     for(unsigned i=0;i<sizeof(bases)/sizeof(*bases);i++) {
@@ -204,12 +216,18 @@ int main(void) {
        and incomplete/time-out body are distinct production failure paths. */
     uint8_t sha[32]={0};const char *tile="cells/8-1-2.ctile",*remote="cells/8/1/2.ctile";
     reset();status=200;hash_ok=false;read_result=4;
+    assert(cells_download(6,remote,tile,4,sha));assert(!cells_download_step());stale_once(tile);
     assert(cells_download(6,remote,tile,4,sha));assert(!cells_download_step());
     assert(cells_retry_find(tile)->at==INT64_MAX && strstr(cells_work.message,"SHA256"));
     reset();status=200;content_length=3;
+    assert(!cells_download(6,remote,tile,4,sha));stale_once(tile);
     assert(!cells_download(6,remote,tile,4,sha));assert(cells_retry_find(tile)->at==INT64_MAX);
-    reset();status=200;assert(cells_download(6,remote,tile,4,sha));assert(!cells_download_step());
+    reset();status=200;assert(cells_download(6,remote,tile,4,sha));assert(!cells_download_step());stale_once(tile);
+    assert(cells_download(6,remote,tile,4,sha));assert(!cells_download_step());
     assert(cells_retry_find(tile)->at==INT64_MAX);
+    /* 30 minutes on, the catalog may have moved again: one more load first */
+    now+=1800000001;cells_retry_reset(NULL);assert(cells_download(6,remote,tile,4,sha));assert(!cells_download_step());
+    stale_once(tile);
     reset();status=200;complete=false;assert(cells_download(6,remote,tile,4,sha));assert(!cells_download_step());
     assert(cells_retry_find(tile)->at-now==5000000);
     puts("PASS: successful install resets streak, format/magic/hash/size failures stop, incomplete body backs off");
@@ -233,5 +251,6 @@ int main(void) {
 (out / 'test.c').write_text(code)
 exe = out / 'test.exe'
 subprocess.run([sys.argv[1], '-std=gnu11', '-Wall', '-Wextra', '-Werror',
+                '-I', str(root / 'components/apps/tui'),
                 str(out / 'test.c'), '-o', str(exe)], check=True)
 subprocess.run([str(exe)], cwd=out, check=True)

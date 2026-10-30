@@ -26,6 +26,7 @@ main = r'''int main(void) {
     unsigned steps=1;
     while(cw.queue_loaded && steps<200) { cells_queue_step();steps++; }
     assert(!cw.queue_loaded && records==1 && steps>8);
+    assert(sleeps>=32); /* Final ownership recheck also leaves real idle gaps. */
     printf("PASS: queue walk yields every 200 ms and completes in %u steps\n",steps);
 }
 '''

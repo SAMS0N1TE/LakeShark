@@ -20,12 +20,14 @@ public = source[source.index('static EXT_RAM_BSS_ATTR struct {'):source.index('s
 progress = source[source.index('static EXT_RAM_BSS_ATTR uint8_t cells_credited'):source.index('static uint32_t cells_u32(')]
 queue = source[source.index('static void cells_queue_step('):source.index('static void cells_metadata_activate(')]
 catalog = source[source.index('static bool cells_catalog('):source.index('static bool cells_entry_checked(')]
+pause = source[source.index('static void cells_pause('):source.index('#define CELLS_ROOT')]
 dispatch = source[source.index('static void cells_step('):source.index('    if(cells_request.serial!=cw.serial)')]+ '\n}\n'
 code = r'''
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
@@ -43,6 +45,7 @@ static struct {
     int catalog;
     char queue_name[64],path[256];
     uint8_t queued[CELLS_BITS],cover[CELLS_BITS],scratch[CELLS_BITS],index_sha[32],base_sha[32];
+    uint8_t *catalog_mem;uint64_t catalog_bytes;int64_t queue_wait_until,catalog_auto_at;
 } cw;
 ''' + progress + r'''
 static struct { bool active;int64_t last_us; } upload;
@@ -81,6 +84,9 @@ static void cells_preview(void) {}
 static void cells_init(void) {}
 static void cells_retry_reset(const char *relative) { (void)relative; }
 static int64_t esp_timer_get_time(void) { return 0; }
+static unsigned sleeps;
+static void vTaskDelay(unsigned ticks) { assert(ticks>=2);sleeps++; }
+''' + pause + r'''
 static bool cells_delete(uint32_t key) { (void)key;deletes++;return true; }
 static bool cells_record_read(const char *path,uint8_t *bits,char *name,bool *queued) {
     (void)path;bits[0]=2;strcpy(name,"Update");*queued=false;return true;
@@ -98,18 +104,37 @@ static uint32_t cells_u32(const uint8_t *p) { return p[0]|(uint32_t)p[1]<<8|(uin
 static bool carto_sd_read_at(int fd,uint64_t size,uint64_t off,void *dst,size_t n,void *unused,int zero) {
     (void)size;(void)unused;(void)zero;return lseek(fd,(long)off,SEEK_SET)>=0 && read(fd,dst,n)==(int)n;
 }
+#define MALLOC_CAP_SPIRAM 1
+#define MALLOC_CAP_8BIT 2
+static void *heap_caps_malloc(size_t n,unsigned caps) { (void)caps;return malloc(n); }
+static void heap_caps_free(void *p) { free(p); }
+static void cells_catalog_close(void) {
+    if(cw.catalog>=0)close(cw.catalog);
+    cw.catalog=-1;heap_caps_free(cw.catalog_mem);cw.catalog_mem=NULL;cw.catalog_bytes=0;
+}
+static bool cells_catalog_read(uint64_t off,void *dst,size_t n) {
+    if(cw.catalog_mem) { if(off+n>cw.catalog_bytes)return false;memcpy(dst,cw.catalog_mem+off,n);return true; }
+    return carto_sd_read_at(cw.catalog,cw.catalog_bytes,off,dst,n,NULL,0);
+}
+/* The worker's wait, minus the retry list this test does not build. */
+static void cells_queue_wait(const char *relative,int64_t otherwise) {
+    (void)relative;if(!dl.active)cw.queue_wait_until=esp_timer_get_time()+otherwise;
+}
+static void cells_conn_expire(void) {}
 ''' + catalog + queue + dispatch + r'''
 int main(void) {
     cw.catalog=-1;cw.next_cell=400;assert(cells_catalog() && cw.next_cell==0);
-    cw.next_cell=65536;assert(cells_catalog() && cw.next_cell==0);close(cw.catalog);
+    cw.next_cell=65536;assert(cells_catalog() && cw.next_cell==0);cells_catalog_close();
     cw.initialized=true;cw.catalog=1;cw.queue_loaded=true;cw.queued[0]=1;
     missing=true;cells_queue_step();cells_queue_step();
     assert(cw.next_cell==0 && cw.queue_loaded && !records && !cells_work.downloading);
     assert(strstr(cells_work.message,"Blocked"));
-    missing=false;present=false;cells_queue_step();assert(cw.next_cell==0 && downloads==1 && !records);
+    assert(cw.queue_wait_until>esp_timer_get_time());   /* blocked: looks again in 5 s */
+    cells_queue_step();assert(strstr(cells_work.message,"Blocked"));
+    cw.queue_wait_until=0;missing=false;present=false;cells_queue_step();assert(cw.next_cell==0 && downloads==1 && !records);
     present=true;cw.next_cell=65536;change_prior=true;cells_queue_step();
     assert(cw.next_cell==0 && cw.queue_loaded && !records);
-    change_prior=false;save_ok=false;cells_queue_step();assert(cw.queue_loaded && records==1);
+    cw.queue_wait_until=0;change_prior=false;save_ok=false;cells_queue_step();assert(cw.queue_loaded && records==1);
     save_ok=true;cells_queue_step();assert(!cw.queue_loaded && records==2);
     records=0;cw.queue_loaded=true;cw.queue_key=42;cw.queued[0]=4;cw.next_cell=400;cells_pub.ready=true;cells_preview_mail.key=42;
     strcpy(cells_preview_mail.name,"Original");cells_preview_mail.cover[0]=1;

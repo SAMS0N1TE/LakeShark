@@ -486,6 +486,7 @@ static int redraw(render_state *s,const char *action)
  * turn bounds raster area; separate scratch preserves the direct saved frame.
  * Low priority and a yield every turn keep console/touch tasks schedulable. */
 static void cells_service(void);
+static bool cells_receiving(void);
 static void cache_step(void) {
     static bool boot_recovered;
     static int64_t recovery_after;
@@ -550,7 +551,11 @@ static void cache_step(void) {
 #ifndef LS_CARTOCORE_HOST
 static void cache_idle(void *arg) {
     (void)arg;cc_arch_task_enable();
-    for(;;) { cache_step();vTaskDelay(pdMS_TO_TICKS(10)); }
+    const TickType_t pause=pdMS_TO_TICKS(10);
+    /* Two ticks between reads while a map streams in: ten held a 32 KB TCP
+       window shut for most of each turn. Reads block on the socket and the
+       card, so IDLE0 still runs; the whole ticks are the 2026-10-30 rule. */
+    for(;;) { cache_step();vTaskDelay((cells_receiving() || pause<2)?2:pause); }
 }
 #endif
 static int show(unsigned z)

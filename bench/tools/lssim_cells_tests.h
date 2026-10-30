@@ -100,7 +100,10 @@ static void lssim_maps_transactions(void) {
     assert(!ls_cells_state_action(false,"../"));
     assert(ls_cells_state_action(false,"NH"));cells_step();assert(cw.queue_loaded);
     cells_queue_step();assert(dl.active && dl.kind==6 && dl.part_count==26 && dl.offset==0);
-    for(unsigned i=0;i<3;i++)assert(!cells_download_step());
+    uint32_t generation=cw.generation;bool dirty=cells_states_dirty;
+    for(unsigned i=0;i<3;i++) {
+        assert(!cells_download_step());assert(cw.generation==generation && cells_states_dirty==dirty);
+    }
     uint64_t saved_offset=dl.offset;assert(saved_offset>0 && saved_offset<part);
     cells_download_fail("test interruption");cells_retry_reset(NULL);cells_queue_step();assert(dl.active && dl.offset==saved_offset);
     /* Resume inside a late part, not just p0. */
@@ -111,11 +114,16 @@ static void lssim_maps_transactions(void) {
     assert(dl.active && dl.offset>=24u*part && dl.offset<25u*part);
     saved_offset=dl.offset;cells_download_fail("late part interruption");cells_retry_reset(NULL);
     cells_queue_step();assert(dl.active && dl.offset==saved_offset && strstr(dl.remote,".p24"));
+    uint64_t read_before=carto_host_read_bytes;
     unsigned steps=0;while(cw.queue_loaded && steps++<8000) {
         if(dl.active)cells_download_step();else cells_queue_step();
     }
     assert(!cw.queue_loaded);assert(steps<8000);
+    /* Only one whole-file hash: install writes the already verified digest. */
+    assert(carto_host_read_bytes-read_before>=size && carto_host_read_bytes-read_before<size+1024u*1024u);
+    read_before=carto_host_read_bytes;
     assert(cells_entry(1+77*256+93,&size,sha));assert(cells_present(1+77*256+93,size));
+    assert(cells_present(1+77*256+93,size) && carto_host_read_bytes-read_before<32768);
     struct stat file_stat;assert(!stat(CELLS_ROOT "cells/8-77-93.ctile",&file_stat));assert(stat(CELLS_ROOT "cells/index.cci",&file_stat));
     cells_states_dirty=true;cells_states_publish();cells_publish();
     static char rows[8192];assert(ls_cells_maps_text(0,rows,sizeof(rows)));
@@ -140,6 +148,13 @@ static void lssim_maps_transactions(void) {
     char remote[1200];snprintf(remote,sizeof(remote),"%scells/8/77/93.ctile.p1",cw.server+7);
     FILE *f=fopen(remote,"r+b");assert(f);int c=fgetc(f);rewind(f);fputc(c^1,f);fclose(f);
     cells_state_command(7,('N'<<8)|'H');steps=0;
+    while(steps++<8000) {
+        if(dl.active)cells_download_step();else { if(!cells_retry_ready(dl.relative))break;cells_queue_step(); }
+    }
+    /* The first rejection loads the catalog, in case the server's has moved
+       on; this one is the server's own, so the second rejection stops. */
+    assert(strstr(cells_work.message,"new catalog") && cw.catalog_refresh);
+    cw.catalog_refresh=false;cells_retry_reset(NULL);assert(cells_catalog());steps=0;
     while(steps++<8000) {
         if(dl.active)cells_download_step();else { if(!cells_retry_ready(dl.relative))break;cells_queue_step(); }
     }

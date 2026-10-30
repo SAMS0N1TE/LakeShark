@@ -47,6 +47,8 @@ code = r'''
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <utime.h>
+#include <direct.h>
 #include "ls_carto_digest.h"
 #include "ls_carto_sd_io.h"
 #define CELLS_ROOT "maps/"
@@ -55,15 +57,25 @@ code = r'''
 static struct {
     bool initialized,direct;int catalog;uint32_t entries,stride,index_size;uint8_t index_sha[32];
 } cw;
-static FILE *cells_fopen(const char *p,const char *m) { return fopen(p,m); }
 static bool cells_direct_active(void) { return cw.direct; }
-/* All strict checks have real cached digests; a read must not hash at all. */
+static bool allow_hash,change_mtime;
+static unsigned hashes;
+static uint8_t old_sha[32];
+/* Cached checks must never reach the hash; unknown records use this seam. */
 static bool cells_digest(const char *p,uint64_t n,uint8_t sha[32]) {
-    (void)p;(void)n;(void)sha;assert(!"unexpected hash");return false;
+    (void)n;assert(allow_hash);hashes++;memcpy(sha,old_sha,32);
+    if(change_mtime) {
+        struct stat st;assert(!stat(p,&st));struct utimbuf t={st.st_atime,st.st_mtime+4};assert(!utime(p,&t));
+    }
+    return true;
 }
 typedef struct { char path[128]; } sd_source;
 typedef struct { int fd;uint64_t size;sd_source *owner; } sd_cell_file;
 static size_t source_handles_live,source_handles_hw;
+/* The worker reads catalog rows from PSRAM when it can; this test reads the card. */
+static bool cells_catalog_read(uint64_t off,void *dst,size_t n) {
+    return carto_sd_read_at(cw.catalog,128+(uint64_t)cw.entries*cw.stride,off,dst,n,NULL,0);
+}
 ''' + u32 + entry + present + matches + opening + r'''
 static void opened(sd_source *owner,uint32_t id) {
     void *handle=NULL;uint64_t bytes=0;
@@ -75,6 +87,9 @@ static void opened(sd_source *owner,uint32_t id) {
 }
 int main(void) {
     cw.initialized=true;cw.entries=2;cw.index_size=64;
+    FILE *old=fopen("maps/cells/8-0-0.ctile.sha","r");assert(old);
+    long long old_size,old_mtime;char old_hex[65];assert(carto_digest_scan(old,&old_size,&old_mtime,old_hex)==3);fclose(old);
+    for(unsigned i=0;i<32;i++) { unsigned v;assert(sscanf(old_hex+i*2,"%2x",&v)==1);old_sha[i]=(uint8_t)v; }
     FILE *f=fopen("maps/cells/index.cci.sha","r");assert(f);
     long long size,mtime;char hex[65];assert(carto_digest_scan(f,&size,&mtime,hex)==3);fclose(f);
     for(unsigned i=0;i<32;i++) { unsigned v;assert(sscanf(hex+i*2,"%2x",&v)==1);cw.index_sha[i]=(uint8_t)v; }
@@ -108,6 +123,25 @@ int main(void) {
     close(cw.catalog);cw.catalog=-1;
     assert(!cells_file_current(1,"maps/cells/8-0-0.ctile"));
     assert(!source_handles_live);
+    const char *path="maps/cells/8-0-0.ctile";uint8_t different[32]={0};bool error=false;
+    assert(!hashes);allow_hash=true;
+    /* Record mismatches as well as matches; a shared stale cell hashes once. */
+    assert(!cells_matches_checked(path,64,different,&error) && !error && hashes==1);
+    assert(!cells_matches(path,64,different) && cells_matches(path,64,old_sha) && hashes==1);
+    struct stat st;assert(!stat(path,&st));struct utimbuf t={st.st_atime,st.st_mtime+4};assert(!utime(path,&t));
+    assert(cells_matches(path,64,old_sha) && hashes==2);
+    assert(cells_matches(path,64,old_sha) && hashes==2);
+    /* An unwritable sidecar cannot grant cached trust on the next check. */
+    assert(carto_digest_remove(path));assert(!_mkdir("maps/cells/8-0-0.ctile.sha.part"));
+    assert(cells_matches(path,64,old_sha) && hashes==3);
+    assert(cells_matches(path,64,old_sha) && hashes==4);
+    assert(!_rmdir("maps/cells/8-0-0.ctile.sha.part"));
+    assert(cells_matches(path,64,old_sha) && hashes==5);
+    assert(cells_matches(path,64,old_sha) && hashes==5);
+    assert(carto_digest_remove(path));change_mtime=true;
+    assert(!cells_matches_checked(path,64,old_sha,&error) && error && hashes==6);
+    assert(stat("maps/cells/8-0-0.ctile.sha",&st));
+    puts("PASS: recorded match/mismatch never rehashed; missing record, mtime and write failure remain strict");
     puts("PASS: direct stale listed cells readable without hashing; real size returned; unlisted/short/nonregular rejected; indexed stale rejected; strict presence unchanged");
 }
 '''

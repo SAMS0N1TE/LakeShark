@@ -2,10 +2,41 @@
 static bool cells_record(uint32_t,const char *,const uint8_t *,bool);
 static bool cells_delete(uint32_t);
 static void cells_library(void);
+static bool cells_receiving(void);
 typedef struct { char code[3],name[64];bool partial;uint8_t cover[CELLS_BITS];unsigned count;uint64_t bytes,base_bytes,detail_bytes; } cells_state_row;
 static EXT_RAM_BSS_ATTR cells_state_row cells_states[52];
 static unsigned cells_states_count;
 static bool cells_states_dirty;
+static EXT_RAM_BSS_ATTR struct {
+    bool active;uint32_t generation,published;
+    unsigned row,id,installed,detail,outdated;size_t used;int64_t began;
+    char next[sizeof(cells_work.states)];
+    uint8_t files[(2*65536+1+7)/8];   /* cell ids with a file in cells/, read once a count */
+} cells_states_walk;
+/* Which cells have a file at all, from one pass over cells/. A count covers
+   every cell of all 52 states; each absent one cost two stat() calls, each a
+   walk of a folder of hundreds of long names. Unreadable: all count as there. */
+static void cells_states_files(void) {
+    uint8_t *bits=cells_states_walk.files;
+    DIR *d=opendir(CELLS_ROOT "cells");
+    if(!d) { memset(bits,0xff,sizeof(cells_states_walk.files));return; }
+    memset(bits,0,sizeof(cells_states_walk.files));
+    struct dirent *e;int64_t since=esp_timer_get_time();
+    while((e=readdir(d))) {
+        cells_pause(&since);
+        unsigned x,y;int n=0;
+        if(sscanf(e->d_name,"8-%u-%u%n",&x,&y,&n)!=2 || x>255 || y>255)continue;
+        const char *rest=e->d_name+n;
+        uint32_t id=1+x*256+y;
+        if(!strcmp(rest,".detail.ctile"))id+=65536;
+        else if(strcmp(rest,".ctile"))continue;
+        bits[id/8]|=(uint8_t)(1u<<(id&7));
+    }
+    closedir(d);
+}
+static bool cells_states_has_file(uint32_t id) {
+    return cells_states_walk.files[id/8]&(1u<<(id&7));
+}
 /* Optional LSOUT1 asset advertised beside the states; owned by carto-idle. */
 typedef struct { uint32_t bytes;uint8_t sha[32]; } cells_outline_asset;
 static EXT_RAM_BSS_ATTR cells_outline_asset cells_outlines;
@@ -124,38 +155,71 @@ static bool cells_id_allowed(uint32_t id) {
     return id<=65536 || cells_token_load();
 }
 static void cells_states_publish(void) {
-    static uint32_t generation;
     snprintf(cells_work.free_max_zoom,sizeof(cells_work.free_max_zoom),"%u",FREE_MAX_ZOOM);
     cells_work.maps_progress=cw.progress_loaded && cw.queue_total?(float)((double)(cw.queue_done+cw.queue_partial)/cw.queue_total):0;
     if(cw.queue_loaded && cells_work.maps_progress>0.99f)cells_work.maps_progress=0.99f;
     if(cells_work.maps_progress>1)cells_work.maps_progress=1;
     snprintf(cells_work.state,sizeof(cells_work.state),"%s",cells_work.message);
     snprintf(cells_work.progress,sizeof(cells_work.progress),"%llu|%llu|%s",(unsigned long long)cells_work.done,(unsigned long long)cells_work.total,cw.queue_loaded?cw.queue_name:"");
-    if(!cells_states_dirty && generation==cw.generation)return;
-    static EXT_RAM_BSS_ATTR char next[sizeof(cells_work.states)];
-    size_t used=0;next[0]=0;bool error=false;
-    for(unsigned i=0;i<cells_states_count;i++) {
-        cells_state_row *r=cells_states+i;unsigned installed=0,detail_installed=0,outdated=0;
-        for(unsigned id=0;id<65536;id++)if(r->cover[id/8]&(1u<<(id&7))) {
+    if(cells_states_walk.active && (cells_states_dirty || cells_states_walk.generation!=cw.generation)) {
+        cells_states_walk.active=false;cells_states_dirty=true;
+    }
+    if(!cells_states_walk.active && !cells_states_dirty && cells_states_walk.published==cw.generation)return;
+    /* Not while a file streams in. A count reads the card between socket
+       reads; the card and the C6's Wi-Fi share the SDMMC host, and the
+       first half megabyte of every cell came in at 0.03-0.05 MB/s for 12-18 s
+       after each install (0.3-0.4 MB/s otherwise). It resumes between parts
+       and while the queue waits. */
+    if(cells_receiving())return;
+    const int64_t began=esp_timer_get_time();unsigned checked=0;
+    if(!cells_states_walk.active) {
+        /* Installs coalesce while progress still publishes every download chunk. */
+        if(cw.queue_loaded && cells_work.states[0] && began-cells_states_walk.began<3000000)return;
+        cells_states_walk.active=true;cells_states_walk.began=began;cells_states_walk.generation=cw.generation;
+        cells_states_walk.row=cells_states_walk.id=cells_states_walk.installed=cells_states_walk.detail=cells_states_walk.outdated=0;
+        cells_states_walk.used=0;cells_states_walk.next[0]=0;cells_states_dirty=false;
+        cells_states_files();
+    }
+    bool error=false;
+    while(cells_states_walk.row<cells_states_count) {
+        cells_state_row *r=cells_states+cells_states_walk.row;
+        while(cells_states_walk.id<65536) {
+            unsigned id=cells_states_walk.id++;
+            if(!(r->cover[id/8]&(1u<<(id&7)))) {
+                if(!(id&255) && esp_timer_get_time()-began>=200000)return;
+                continue;
+            }
+            const bool base=cells_states_has_file(id+1),detail=cells_states_has_file(id+1+65536);
+            if(!base && !detail) {   /* not on the card: nothing to read */
+                if(!(id&255) && esp_timer_get_time()-began>=200000)return;
+                continue;
+            }
             uint32_t bytes;uint8_t sha[32];
             char name[64],path[96];struct stat st;cells_name(id+1,name,sizeof(name),false);
             snprintf(path,sizeof(path),CELLS_ROOT "%s",name);
-            if(cells_entry_checked(id+1,&bytes,sha,&error) && cells_matches_checked(path,bytes,sha,&error))installed++;
-            else {
-                /* On the card but not the server's revision: an update, not a
-                   gap. Counted apart so TILES can say UPDATE instead of PART. */
-                if(!stat(path,&st))outdated++;
-                else if(errno!=ENOENT && errno!=ENOTDIR)error=true;
+            if(base) {
+                if(cells_entry_checked(id+1,&bytes,sha,&error) && cells_matches_checked(path,bytes,sha,&error))cells_states_walk.installed++;
+                else {
+                    /* On the card but not the server's revision: an update, not a
+                       gap. Counted apart so TILES can say UPDATE instead of PART. */
+                    if(!stat(path,&st))cells_states_walk.outdated++;
+                    else if(errno!=ENOENT && errno!=ENOTDIR)error=true;
+                }
             }
             cells_name(id+1+65536,name,sizeof(name),false);snprintf(path,sizeof(path),CELLS_ROOT "%s",name);
-            if(cells_entry_checked(id+1+65536,&bytes,sha,&error) && cells_matches_checked(path,bytes,sha,&error))detail_installed++;
-            if(error)return;
+            if(detail && cells_entry_checked(id+1+65536,&bytes,sha,&error) && cells_matches_checked(path,bytes,sha,&error))cells_states_walk.detail++;
+            if(error) { cells_states_walk.active=false;cells_states_dirty=true;return; }
+            /* One unknown cell may hash slowly, with idle sleeps inside the hash. */
+            if(++checked>=16 || esp_timer_get_time()-began>=200000)return;
         }
-        int n=snprintf(next+used,sizeof(next)-used,"%s|%s|%s|%u|%llu|%u|%u|%llu|%llu|%u|%u\n",r->code,r->name,"free",r->count,(unsigned long long)r->bytes,installed,r->partial,(unsigned long long)r->base_bytes,(unsigned long long)r->detail_bytes,detail_installed==r->count,outdated);
-        if(n<0 || (size_t)n>=sizeof(next)-used)return;
-        used+=(size_t)n;
+        size_t left=sizeof(cells_states_walk.next)-cells_states_walk.used;
+        int n=snprintf(cells_states_walk.next+cells_states_walk.used,left,"%s|%s|%s|%u|%llu|%u|%u|%llu|%llu|%u|%u\n",r->code,r->name,"free",r->count,(unsigned long long)r->bytes,cells_states_walk.installed,r->partial,(unsigned long long)r->base_bytes,(unsigned long long)r->detail_bytes,cells_states_walk.detail==r->count,cells_states_walk.outdated);
+        if(n<0 || (size_t)n>=left) { cells_states_walk.active=false;cells_states_dirty=true;return; }
+        cells_states_walk.used+=(size_t)n;cells_states_walk.row++;cells_states_walk.id=0;
+        cells_states_walk.installed=cells_states_walk.detail=cells_states_walk.outdated=0;
     }
-    memcpy(cells_work.states,next,used+1);generation=cw.generation;cells_states_dirty=false;
+    memcpy(cells_work.states,cells_states_walk.next,cells_states_walk.used+1);
+    cells_states_walk.published=cells_states_walk.generation;cells_states_walk.active=false;
 }
 static void cells_state_command(unsigned action,uint32_t key) {
     char st[3]={(char)(key>>8),(char)key,0};cells_state_row *r=NULL;
@@ -163,8 +227,9 @@ static void cells_state_command(unsigned action,uint32_t key) {
     if(!r) { cw.catalog_refresh=true;cells_message("State metadata unavailable; refresh then retry");return; }
     key=0x53540000u|key;
     if(action==8) { if(!cells_delete(key))cells_message("State removal failed; retry");else cells_message("State removed; shared cells retained");cells_states_dirty=true;return; }
-    bool detail=cells_token_load();uint64_t needed=0;
+    bool detail=cells_token_load();uint64_t needed=0;int64_t since=esp_timer_get_time();
     for(unsigned id=0;id<65536;id++)if(r->cover[id/8]&(1u<<(id&7))) {
+        cells_pause(&since);
         uint32_t bytes;uint8_t sha[32];if(!cells_entry(id+1,&bytes,sha)) { cells_message("State maps are not available yet");return; }
         if(!cells_present(id+1,bytes))needed+=bytes;
         if(detail && cells_entry(id+65537,&bytes,sha) && !cells_present(id+65537,bytes))needed+=bytes;
