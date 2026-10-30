@@ -237,6 +237,9 @@ void      lr20xx_bind(const lr20xx_info_t *info);
 esp_err_t lr20xx_initialize(void);
 /* Returns -1 for other subcommands. */
 int       lr20xx_clock_command(int argc, char **argv);
+/* The synthesizer frequency for nominal `hz` with a reference `ppb` fast
+   (settings_get_lr_fcorr_ppb). Pure; exposed for the host tests. */
+uint32_t  lr20xx_fcorr_hz(uint32_t hz, int32_t ppb);
 
 /* Experimental FW 1.24 source-2 capture. Blocking/task-context only, owns the
    radio lock until recovery finishes. Captures exactly 256 little-endian words

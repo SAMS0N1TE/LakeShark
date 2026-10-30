@@ -2350,8 +2350,13 @@ extern "C" esp_err_t ls_mesh_set_band(int band)
     /* MeshCore's own defaults for each band, so a preset lands this node
        where the rest of the mesh already is. */
     switch (band) {
-        case LS_MESH_BAND_US915: r.freq_hz = 910525000u; break;
-        case LS_MESH_BAND_EU868: r.freq_hz = 869618000u; break;
+        /* US: 910.525 MHz, BW 62.5 kHz, SF7, CR 4/5. */
+        case LS_MESH_BAND_US915: r.freq_hz = 910525000u; r.bw_hz = 62500u; r.sf = 7; r.cr = 5; break;
+        /* EU/UK narrow, the preset the European meshes (Poland included)
+           use: 869.618 MHz, BW 62.5 kHz, SF8, CR 4/8. The frequency alone
+           would leave SF7 and CR 4/5 from the US default, which no EU node
+           decodes. */
+        case LS_MESH_BAND_EU868: r.freq_hz = 869618000u; r.bw_hz = 62500u; r.sf = 8; r.cr = 8; break;
         default: return ESP_ERR_INVALID_ARG;
     }
     return ls_mesh_set_radio(&r);

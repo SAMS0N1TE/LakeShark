@@ -19,6 +19,7 @@
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "esp_timer.h"
+#include "settings.h"
 
 #include <string.h>
 
@@ -55,6 +56,14 @@ bool settings_get_lr_tcxo(void) { return fk_lr_tcxo; }
 bool settings_set_lr_tcxo(bool tcxo) { fk_lr_tcxo = tcxo; return true; }
 bool settings_get_lr_dcdc(void) { return fk_lr_dcdc; }
 bool settings_set_lr_dcdc(bool dcdc) { fk_lr_dcdc = dcdc; return true; }
+static int32_t fk_lr_fcorr_ppb;
+int32_t settings_get_lr_fcorr_ppb(void) { return fk_lr_fcorr_ppb; }
+bool settings_set_lr_fcorr_ppb(int32_t ppb)
+{
+    if (ppb > LS_LR_FCORR_MAX_PPB || ppb < -LS_LR_FCORR_MAX_PPB) return false;
+    fk_lr_fcorr_ppb = ppb;
+    return true;
+}
 /* Where the LoRa radio is wired (ls_lora_port.c): nothing saved unless a test saves it. */
 static uint64_t fk_port_a, fk_port_b;
 static bool fk_port_have;
