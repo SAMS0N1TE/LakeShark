@@ -55,10 +55,6 @@
 
 <p align="center"><strong><a href="https://github.com/SAMS0N1TE/lr2021-sdr">Explore LR2021-SDR →</a></strong></p>
 
-<p align="center">
-  <img src="assets/lakeshark-divider.png" alt="" width="900">
-</p>
-
 <h2 align="center">New in v2.19</h2>
 
 <p align="center">Folders on HOME · DIGI: FT8, FT4 and WSPR · HF on the RTL-SDR and HackRF · METERS · P25 on the LR2021 with RAM to spare</p>
@@ -67,10 +63,6 @@
   <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.19.0">Release notes</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/SAMS0N1TE/LakeShark/releases">All releases</a>
-</p>
-
-<p align="center">
-  <img src="assets/lakeshark-divider.png" alt="" width="900">
 </p>
 
 <h2 align="center">New in v2.18</h2>
@@ -86,10 +78,6 @@
   <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.18.0">Release notes</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/SAMS0N1TE/LakeShark/releases">All releases</a>
-</p>
-
-<p align="center">
-  <img src="assets/lakeshark-divider.png" alt="" width="900">
 </p>
 
 <h2 align="center">Hardware</h2>
