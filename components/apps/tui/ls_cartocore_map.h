@@ -29,6 +29,7 @@ size_t ls_carto_map_labels(ls_carto_label *,size_t,int,int);
 void ls_carto_map_pixel_style(const uint32_t pal[7],int relief);
 bool ls_carto_map_pixels(double lat,double lon,unsigned z,int pw,int ph,int tw,int th,bool labels,uint16_t *dst,uint32_t *serial,
                          double *flat,double *flon,unsigned *fz);
+bool ls_carto_map_picture_cells(void);
 size_t ls_carto_map_files(char (*)[128],size_t);
 #else
 #define LS_CARTOCORE_AVAILABLE 0
@@ -42,6 +43,7 @@ static inline bool ls_carto_map_pixels(double a,double b,unsigned z,int pw,int p
                                        double *fa,double *fo,unsigned *fz) {
     (void)fa;(void)fo;(void)fz;
     (void)a;(void)b;(void)z;(void)pw;(void)ph;(void)tw;(void)th;(void)l;(void)d;(void)s;return false; }
+static inline bool ls_carto_map_picture_cells(void) { return false; }
 static inline void ls_carto_hw_status(bool reset) { (void)reset; }
 static inline const char *ls_carto_map_status(void) { return "CartoCore map unavailable"; }
 static inline bool ls_carto_map_fresh(void) { return false; }

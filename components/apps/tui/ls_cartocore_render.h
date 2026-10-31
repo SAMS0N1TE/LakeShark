@@ -168,6 +168,15 @@ static int render_frame(render_state *s,cc_mode mode,cc_edges edges,int64_t left
     s->coarse=0;
     int ok=cc_render(&s->renderer,&s->map,s->z,left,top,mode,s->labels,out);
     if(!ok && s->map.cellset) {
+        /* Say why, at most every 5 s: a frame drawn coarse is a frame that
+           looks broken, and the counter alone does not say which budget ran out. */
+        static int64_t next_why;
+        const int64_t now_us=esp_timer_get_time();
+        if(now_us>=next_why) {
+            next_why=now_us+5000000;
+            printf("carto MAP: z%u full render failed; arena used=%zu peak=%zu size=%zu, falling back coarse\n",
+                   s->z,s->arena.used,s->arena.peak,s->arena.size);
+        }
         /* Same virtual source, lower source zoom, requested display projection.
            A stable copy outlives retained renderer state. Missing cells still
            use the normal cellset path first; this is a bounded last resort. */

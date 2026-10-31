@@ -1,5 +1,32 @@
 # LakeShark release notes
 
+## 2.19.3
+
+- MAP: roads and rivers draw as continuous lines. Where two lines met in one character cell, one used to wipe the other.
+- MAP: zoomed out over downloaded states, the map draws in full instead of falling back to broken dashes. It now keeps more memory for the picture.
+- MAP: at zoom 7 and below, land over the downloaded states no longer shows as black squares.
+
+New in 2.19 (from 2.19.0):
+
+- HOME: related apps fold into folder tiles. LABS holds LORA LABS, EXPERIMENTS, MIX-RF and METERS; REC holds TIME MACHINE; MAP holds TILES; COMPASS holds FOX HUNT and RF SURVEY; DIAG holds TERMINAL.
+- TIME MACHINE: the board keeps the last stretch of what the radio heard. WHAT WAS THAT? replays it through the decoders, and clips save to the SD card for REC.
+- DIGI: FT8, FT4 and WSPR, decoded from SDR or HF SSB audio.
+- HF on the RTL-SDR and HackRF: direct sampling, AM, SAM, USB, LSB and CW with a passband scope and a band picker.
+- FM: WFM stereo with RDS, an airband and CB channel scanner, SSTV pictures, and NOAA weather channels in SAME.
+- METERS: utility meters heard off the air, on an SDR or the LR2021.
+- RF SURVEY and FOX HUNT: walk an area for a heat map, or take bearings to a transmitter; both show on MAP.
+- RF LAB: front end controls for every SDR app (bias-T, PPM per dongle, AGC, HackRF amp and gains).
+- SUB-GHZ: rtl_433 decoders on every WATCH capture.
+- P25 CALLS: a live call card, the busiest talkgroups and the call history.
+- LakeShark LR: an LR FRONT END option picks narrow or wide I/Q for P25, FM and the pager lab. Narrow is the default.
+- Apps: DETECTOR, RF LAB, BURST SCOPE, CARRIER LEVEL and IRIDIUM BURSTS run from the SD card.
+- App SDK 2.x: radio sessions, receiver audio, decoded events and the board's controls for native apps.
+- Updates: a board that reaches neither update server tries the newest GitHub release.
+- FM keeps its frequency, gain and mode across a reboot.
+- LakeShark LR: P25 finds the LR2021 again after the mesh has stopped.
+- MAP: failed map downloads back off up to 15 minutes instead of retrying every 5 seconds, and a missing file stops until REFRESH.
+- FOX HUNT no longer crashes on opening.
+
 ## 2.19.2
 
 - TILES: map downloads are about three times faster on the bench boards: one connection for a whole cell, larger reads, and no state count while a file comes in.

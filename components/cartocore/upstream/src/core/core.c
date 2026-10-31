@@ -161,12 +161,10 @@ static inline void dot(cc_planes *p, int32_t x, int32_t y, uint8_t ink, uint8_t 
     if (x < 0 || y < 0 || x >= p->cols * 2 || y >= p->rows * 4) return;
     at = (size_t)(y / 4) * (size_t)p->cols + (size_t)(x / 2);
     if((ink==CC_CONTOUR || ink==CC_INDEX_CONTOUR) && p->fill[at]==CC_WATER) return;
-    /* A cell has one foreground ink. Never recolour lower-priority geometry
-       as a wide road when a different line class claims that cell. */
-    if(ink!=p->ink[at]) {
-        if(priority<p->dot_priority[at]) return;
-        p->dots[at]=0;
-    }
+    /* A cell has one foreground ink. Lines never erase lines: where two
+       classes share a cell both keep their dots, and the higher one owns the
+       colour. Erasing here broke every road where a river or a bigger road
+       crossed it, and on a 2x4-dot cell that is most cells zoomed out. */
     p->dots[at] |= cc_dot_bit(x,y);
     if (priority >= p->dot_priority[at]) {
         p->ink[at] = ink; p->dot_priority[at] = priority;
@@ -222,11 +220,10 @@ static inline void line_inside(cc_planes *p,cc_point a,cc_point b,uint8_t ink,ui
     uint8_t *dots=p->dots,*inks=p->ink,*priorities=p->dot_priority;
     for(;;) {
         size_t at=(size_t)(a.y>>2)*cols+(unsigned)a.x/2;
-        if(ink==inks[at] || priority>=priorities[at]) {
-            if(ink!=inks[at]) dots[at]=0;
-            dots[at]|=cc_dot_bit(a.x,a.y);
-            if(priority>=priorities[at]) { inks[at]=ink; priorities[at]=priority; }
-        }
+        /* Lines never erase lines (see dot): a lower class keeps its dots
+           in the owner's colour, a higher class takes the colour. */
+        dots[at]|=cc_dot_bit(a.x,a.y);
+        if(priority>=priorities[at]) { inks[at]=ink; priorities[at]=priority; }
         if(a.x==b.x && a.y==b.y) break;
         int twice=err*2;
         if(twice>-dy) { err-=dy; a.x+=sx; }

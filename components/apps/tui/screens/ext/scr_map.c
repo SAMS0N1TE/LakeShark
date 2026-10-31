@@ -1095,7 +1095,11 @@ static void flat_under(tui_surface *sf, tui_rect body, int pw, int ph, const uin
         s_under_shown = serial; s_under_w = body.w; s_under_h = body.h;
     }
     const bool all = s_under_n == n;
-    if (!s_under_n || (ls_map_zoom() > 7 && !all)) return;
+    /* Zoomed out over the downloaded states the picture is the national
+       overview, whose bare ground is land between its roads and rivers: there
+       only a frame with nothing in it at all is a missing map. */
+    const bool overview = pix == s_pic_view && ls_carto_map_picture_cells();
+    if (!s_under_n || ((ls_map_zoom() > 7 || overview) && !all)) return;
     if (all && ls_map_zoom() > 7) {
         /* close in, a frame of bare ground inside a region the card holds whole
            is open country, not a missing map */

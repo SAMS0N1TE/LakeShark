@@ -15,7 +15,7 @@ static void map_invalidate_frame(void) { map_mail.frame_ready=false; } /* view_l
    cc_pixels_rgb565 into the back buffer and swapped under frame_take. The UI
    copies the front one out, so neither side writes what the other reads. */
 static EXT_RAM_BSS_ATTR struct {
-    uint16_t *buf[2]; size_t cap[2]; unsigned front,serial; int w,h; double lat,lon; unsigned z; bool valid;
+    uint16_t *buf[2]; size_t cap[2]; unsigned front,serial; int w,h; double lat,lon; unsigned z; bool valid,cells;
     size_t count,back_count; ls_carto_label names[LS_CARTO_LABEL_MAX],back_names[LS_CARTO_LABEL_MAX];
 } pix;
 static EXT_RAM_BSS_ATTR cc_pixel_style pix_style; /* view_lock */
@@ -296,6 +296,9 @@ bool ls_carto_map_pixels(double lat,double lon,unsigned z,int pw,int ph,int tw,i
     }
     return have;
 }
+/* The newest picture came from the downloaded states' cells. Zoomed out that
+   is the national overview, whose bare ground is land, not a missing map. */
+bool ls_carto_map_picture_cells(void) { return pix.valid && pix.cells; }
 void ls_carto_map_leave(void) {
     ui_map_drawn=ui_map_fresh=false;ui_name_count=0;
     atomic_store(&map_wanted,false);atomic_fetch_add(&map_epoch,1);
@@ -462,7 +465,7 @@ static bool pix_commit(render_state *s,const map_request *r) {
     cc_pixels_rgb565(&s->renderer.planes,&pix_style,pix.buf[back]);
     pix.back_count=r->labels?pix_labels(s,r->tcols,r->trows,pix.back_names,LS_CARTO_LABEL_MAX):0;
     while(!frame_take()) vTaskDelay(1);
-    pix.front=back;pix.w=s->cols*2;pix.h=s->rows*4;pix.lat=r->lat;pix.lon=r->lon;pix.z=s->z;
+    pix.front=back;pix.w=s->cols*2;pix.h=s->rows*4;pix.lat=r->lat;pix.lon=r->lon;pix.z=s->z;pix.cells=source_is_cells();
     pix.count=pix.back_count;memcpy(pix.names,pix.back_names,pix.count*sizeof(pix.names[0]));
     pix.serial++;pix.valid=true;frame_give();return true;
 }
