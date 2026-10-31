@@ -3034,11 +3034,75 @@ static int lrddc_cmd(int argc, char **argv)
     return rc;
 }
 
+#if LS_HAS_LORA_LR20XX_PROBE
+static void lora_port_print_module(void)
+{
+    printf("lora port: module clk=%s fcorr=%+.3f ppm (an LR20xx's; set with clk=xtal|tcxo fcorr=PPM)\n",
+           settings_get_lr_tcxo() ? "tcxo" : "xtal", settings_get_lr_fcorr_ppb() / 1000.0);
+}
+#endif
+
+/* 'lora port' with the module's reference clock and frequency correction on
+   the same line as its pins, so a header module is described in one place:
+     lora port header con1 rfsw= clk=xtal fcorr=-37.5
+   clk and fcorr are the settings 'lora lrclk' and 'lora lrfcorr' keep (an
+   LR20xx's), not part of the saved port words; the rest goes on to
+   ls_lora_port_command untouched. */
+static int lora_port_cmd(int argc, char **argv)
+{
+#if LS_HAS_LORA_LR20XX_PROBE
+    char *rest[24];
+    int n = 0, clk = -1;
+    bool have_fcorr = false;
+    int32_t fcorr_ppb = 0;
+    for (int i = 0; i < argc; i++) {
+        if (i >= 2 && !strncmp(argv[i], "clk=", 4)) {
+            if (!strcmp(argv[i] + 4, "xtal")) clk = 0;
+            else if (!strcmp(argv[i] + 4, "tcxo")) clk = 1;
+            else { puts("lora port: clk=xtal or clk=tcxo"); return 1; }
+            continue;
+        }
+        if (i >= 2 && !strncmp(argv[i], "fcorr=", 6)) {
+            char *end = NULL;
+            const double ppb = strtod(argv[i] + 6, &end) * 1000.0;
+            if (end == argv[i] + 6 || *end || !(ppb <= LS_LR_FCORR_MAX_PPB && ppb >= -LS_LR_FCORR_MAX_PPB)) {
+                printf("lora port: fcorr=PPM, %d to %d\n", -LS_LR_FCORR_MAX_PPB / 1000, LS_LR_FCORR_MAX_PPB / 1000);
+                return 1;
+            }
+            fcorr_ppb = (int32_t)(ppb < 0 ? ppb - 0.5 : ppb + 0.5);
+            have_fcorr = true;
+            continue;
+        }
+        if (n >= (int)(sizeof(rest) / sizeof(rest[0]))) { puts("lora port: too many words"); return 1; }
+        rest[n++] = argv[i];
+    }
+    const bool module = clk >= 0 || have_fcorr;
+    /* Pins first: a line whose pins are refused saves none of it. */
+    if (n > 2 || !module) {
+        const int rc = ls_lora_port_command(n, rest);
+        if (rc != 0) return rc;
+        if (!module) {
+            if (n <= 2) lora_port_print_module();
+            return 0;
+        }
+    }
+    if ((clk >= 0 && !settings_set_lr_tcxo(clk == 1)) || (have_fcorr && !settings_set_lr_fcorr_ppb(fcorr_ppb))) {
+        puts("lora port: could not save clk/fcorr to NVS");
+        return 1;
+    }
+    printf("lora port: saved module clk=%s fcorr=%+.3f ppm - reboot to use it\n",
+           settings_get_lr_tcxo() ? "tcxo" : "xtal", settings_get_lr_fcorr_ppb() / 1000.0);
+    return 0;
+#else
+    return ls_lora_port_command(argc, argv);
+#endif
+}
+
 static int lora_cmd(int argc, char **argv)
 {
     /* Where the radio is wired: settings only, so it goes before anything
        that wants the radio itself. */
-    if (argc >= 2 && !strcmp(argv[1], "port")) return ls_lora_port_command(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "port")) return lora_port_cmd(argc, argv);
     /* DSP timing only, no radio: safe beside a live stream. */
     if (argc >= 2 && !strcmp(argv[1], "lrddc")) return lrddc_cmd(argc, argv);
 #if LS_HAS_LORA_LR20XX_PROBE

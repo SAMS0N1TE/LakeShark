@@ -108,6 +108,14 @@ settles when receive starts. `lora lrclk` shows the saved clock choice;
 older crystal setting. `lora lrstat` reports the active clock, regulator,
 chip errors and calibration status. Run these in TERMINAL or a console.
 
+A header module without a TCXO, whose crystal runs off frequency, is described
+on the same line as its pins: `lora port header con1 rfsw= clk=xtal fcorr=-37.5`
+(a Waveshare Core2021-HF on CON1). `fcorr` is in ppm, positive when the module
+transmits above the nominal frequency; `lora lrfcorr PPM` changes it live and
+`lora lrrx` counts the packets decoded, header and CRC errors while you find
+the window. Both settings are read before the radio starts, so the first frame
+after a boot already uses them.
+
 ## Mesh INSPECT and LINK SURVEY
 
 In MESH, open a node's details and choose INSPECT. TRACE shows the route;

@@ -140,6 +140,39 @@ LS_CASE(set_rf_frequency_is_a_32_bit_value_in_hertz)
     LS_EQ_INT(fk.nframes, 2);
 }
 
+LS_CASE(frequency_correction_scales_every_programmed_frequency)
+{
+    /* hz / (1 + ppb * 1e-9), to the nearest hertz; none at 0 or out of range. */
+    LS_EQ_UINT(lr20xx_fcorr_hz(869618000u, 0), 869618000u);
+    LS_EQ_UINT(lr20xx_fcorr_hz(869618000u, 10000), 869609304u);    /* +10 ppm fast */
+    LS_EQ_UINT(lr20xx_fcorr_hz(869618000u, -15000), 869631044u);   /* -15 ppm slow */
+    LS_EQ_UINT(lr20xx_fcorr_hz(869618000u, LS_LR_FCORR_MAX_PPB + 1), 869618000u);
+
+    lr_up();
+    LS_EQ_INT(ls_lora_start(), ESP_OK);
+    fk_lr_fcorr_ppb = 10000;
+    fk.nframes = 0;
+    LS_EQ_INT(lr20xx_set_rf_frequency(869618000u), ESP_OK);
+    LS_EQ_UINT(fk.last_freq_hz, 869609304u);
+
+    /* The console sets it in ppm and programs the radio again. */
+    char *set[] = { "lora", "lrfcorr", "-12.5" };
+    LS_EQ_INT(lr20xx_clock_command(3, set), 0);
+    LS_EQ_INT(fk_lr_fcorr_ppb, -12500);
+    LS_EQ_INT(lr20xx_set_rf_frequency(869618000u), ESP_OK);
+    LS_EQ_UINT(fk.last_freq_hz, 869628870u);
+    char *bad[] = { "lora", "lrfcorr", "12x" };
+    LS_EQ_INT(lr20xx_clock_command(3, bad), 1);
+    char *far[] = { "lora", "lrfcorr", "101" };
+    LS_EQ_INT(lr20xx_clock_command(3, far), 1);
+    LS_EQ_INT(fk_lr_fcorr_ppb, -12500);
+    char *show[] = { "lora", "lrfcorr" };
+    LS_EQ_INT(lr20xx_clock_command(2, show), 0);
+    char *rx[] = { "lora", "lrrx" };
+    LS_EQ_INT(lr20xx_clock_command(2, rx), 0);
+    fk_lr_fcorr_ppb = 0;
+}
+
 LS_CASE(set_rx_path_sends_the_path_then_the_boost)
 {
     lr_up();

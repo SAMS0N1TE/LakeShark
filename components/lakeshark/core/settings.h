@@ -140,6 +140,15 @@ bool settings_set_lr_wide(bool on);
    the 125k channel. Default off. */
 bool settings_get_lr_span(void);
 bool settings_set_lr_span(bool on);
+/* LR20xx reference frequency correction in parts per billion: the measured
+   error of the module's 32 MHz reference, positive when it runs fast. Every
+   frequency the driver programs is scaled by 1 / (1 + ppb * 1e-9), so receive
+   and transmit both land on the nominal frequency. 0 (no correction) until
+   one is saved; LS_LR_FCORR_MAX_PPB either way. Matters for modules with a
+   bare crystal (Waveshare Core2021) on narrow LoRa (62.5 kHz MeshCore EU). */
+#define LS_LR_FCORR_MAX_PPB 100000
+int32_t settings_get_lr_fcorr_ppb(void);
+bool settings_set_lr_fcorr_ppb(int32_t ppb);
 /* Where the LoRa radio is wired (ls_lora_port.c packs it): false when
    nothing was ever saved. */
 bool settings_get_lora_port(uint64_t *a, uint64_t *b);

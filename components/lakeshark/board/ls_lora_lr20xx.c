@@ -318,11 +318,29 @@ esp_err_t lr20xx_set_standby(bool xosc)
     return lr20xx_write(LR20XX_OP_SET_STANDBY, &mode, 1);
 }
 
+/* The synthesizer setting that puts `hz` on air with a reference that runs
+   `ppb` fast: hz / (1 + ppb * 1e-9), rounded to the nearest hertz. s_rf_hz
+   and everything else keep the nominal frequency; only the frame differs. */
+uint32_t lr20xx_fcorr_hz(uint32_t hz, int32_t ppb)
+{
+    if (!ppb || ppb > LS_LR_FCORR_MAX_PPB || ppb < -LS_LR_FCORR_MAX_PPB) return hz;
+    const int64_t den = 1000000000ll + ppb;
+    const int64_t num = (int64_t)hz * 1000000000ll;
+    return (uint32_t)((num + den / 2) / den);
+}
+
+static void put_rf_hz(uint8_t a[4], uint32_t nominal_hz)
+{
+    const uint32_t hz = lr20xx_fcorr_hz(nominal_hz, settings_get_lr_fcorr_ppb());
+    a[0] = (uint8_t)(hz >> 24); a[1] = (uint8_t)(hz >> 16);
+    a[2] = (uint8_t)(hz >> 8);  a[3] = (uint8_t)hz;
+}
+
 esp_err_t lr20xx_set_rf_frequency(uint32_t hz)
 {
     if (hz < LR20XX_FREQ_MIN_HZ || hz > LR20XX_FREQ_MAX_HZ) return ESP_ERR_INVALID_ARG;
-    const uint8_t a[4] = { (uint8_t)(hz >> 24), (uint8_t)(hz >> 16),
-                           (uint8_t)(hz >> 8), (uint8_t)hz };
+    uint8_t a[4];
+    put_rf_hz(a, hz);
     /* Forgotten before the frame goes out, so a frame that fails cannot leave
        a transmit armed for a frequency the part may now be on. */
     if (hz >= LR20XX_TX_FREQ_LIMIT_HZ || hz < LR20XX_TX_FREQ_MIN_HZ) s_pa_lf = false;
@@ -2272,6 +2290,45 @@ static bool lr_send_done(void)
     return true;
 }
 
+/* What LoRa receive has seen since boot or 'lora lrrx reset': the numbers a
+   frequency correction is judged by. A packet lost to a header or CRC error
+   means the preamble and sync word were found and the rest did not decode,
+   the signature of a reference offset beyond what the bandwidth tolerates. */
+static struct {
+    uint32_t ok, crc_err, hdr_err, len_err;
+    float rssi_dbm, snr_db;
+    int32_t fei_hz;
+    uint32_t freq_hz;
+    int32_t fcorr_ppb;
+    int64_t at_us;
+} s_rxs;
+
+static void rx_stat_error(uint32_t irq)
+{
+    if (irq & LR20XX_IRQ_LORA_HDR_ERROR) s_rxs.hdr_err++;
+    else if (irq & LR20XX_IRQ_CRC_ERROR) s_rxs.crc_err++;
+    else s_rxs.len_err++;
+    ESP_LOGI(TAG, "rx lost: %s (ok %lu, header %lu, crc %lu) at %lu Hz, correction %+.3f ppm",
+             (irq & LR20XX_IRQ_LORA_HDR_ERROR) ? "header error" :
+             (irq & LR20XX_IRQ_CRC_ERROR) ? "CRC error" : "length error",
+             (unsigned long)s_rxs.ok, (unsigned long)s_rxs.hdr_err, (unsigned long)s_rxs.crc_err,
+             (unsigned long)lr.cfg.freq_hz, settings_get_lr_fcorr_ppb() / 1000.0);
+}
+
+static void rx_stat_ok(const lr20xx_lora_pkt_status_t *ps, size_t len)
+{
+    s_rxs.ok++;
+    s_rxs.rssi_dbm = ps->rssi_dbm;
+    s_rxs.snr_db = ps->snr_db;
+    s_rxs.fei_hz = ps->fei_hz;
+    s_rxs.freq_hz = lr.cfg.freq_hz;
+    s_rxs.fcorr_ppb = settings_get_lr_fcorr_ppb();
+    s_rxs.at_us = esp_timer_get_time();
+    ESP_LOGI(TAG, "rx ok: %u bytes rssi %.1f dBm snr %.2f dB fei %+ld Hz (correction %+.3f ppm)",
+             (unsigned)len, (double)ps->rssi_dbm, (double)ps->snr_db, (long)ps->fei_hz,
+             s_rxs.fcorr_ppb / 1000.0);
+}
+
 static int lr_poll(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db)
 {
     if (!lr.cfg_valid || lr.fsk_active || lr.scanning || s_exp_active || lr20xx_modes_active() ||
@@ -2310,6 +2367,7 @@ static int lr_poll(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db)
 
     if (irq & (LR20XX_IRQ_CRC_ERROR | LR20XX_IRQ_LORA_HDR_ERROR | LR20XX_IRQ_LEN_ERROR)) {
         (void)lr20xx_clear_rx_fifo();
+        rx_stat_error(irq);
         return -1;
     }
     if (!(irq & LR20XX_IRQ_RX_DONE)) return 0;
@@ -2328,6 +2386,7 @@ static int lr_poll(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db)
     if (lr20xx_get_lora_packet_status(&ps) == ESP_OK) {
         if (rssi_dbm) *rssi_dbm = ps.rssi_dbm;
         if (snr_db)   *snr_db   = ps.snr_db;
+        rx_stat_ok(&ps, n);
     }
     /* Whatever of the packet was not read goes, so the next one starts at the
        head of the FIFO; RadioLib clears it after every read. */
@@ -3952,7 +4011,8 @@ static esp_err_t probe_program_locked(void)
     }
     if (err == ESP_OK) {
         const uint32_t hz = s_probe.hz;
-        const uint8_t a[4] = { (uint8_t)(hz >> 24), (uint8_t)(hz >> 16), (uint8_t)(hz >> 8), (uint8_t)hz };
+        uint8_t a[4];
+        put_rf_hz(a, hz);
         s_rf_hz = 0;
         err = lr20xx_write(LR20XX_OP_SET_RF_FREQUENCY, a, sizeof(a));
         if (err == ESP_OK) s_rf_hz = hz;
@@ -4645,6 +4705,98 @@ static int lrble_command(int argc, char **argv)
 
 #include "lr2021_tx_upload.inc"
 
+/* lr.cfg programmed again after something the frames depend on changed
+   (the clock, the regulator, the frequency correction), receiving again if it
+   was; the other sessions are rebuilt the way they were. Under the lock. */
+static esp_err_t reprogram_locked(const char *why)
+{
+    const bool rx = lr.rx_mode || lr.rearm;
+    const int bins = lr.scan_plan_n ? lr.scan_plan_n : LS_LORA_SCAN_BINS;
+    s_recovered = false;
+    esp_err_t err = recover_locked(why);
+    if (err != ESP_OK) return err;
+    if (ms.active) err = configure_session(ms.freq_hz, ms.gain);
+    else if (s_exp_active) err = exp_program();
+    else if (lr.fsk_active) err = fsk_program();
+    else if (lr.scanning) err = scan_configure(bins);
+    else if (lr.cfg_valid) {
+        err = program_lora();
+        if (err == ESP_OK && rx) err = lr_receive();
+    }
+    return err;
+}
+
+/* "-12.5", "+3", "0": ppm with up to three decimals, into ppb. */
+static bool parse_ppm(const char *s, int32_t *ppb)
+{
+    char *end = NULL;
+    errno = 0;
+    const double v = strtod(s, &end);
+    if (end == s || *end || errno || !isfinite(v)) return false;
+    const double p = v * 1000.0;
+    if (p > LS_LR_FCORR_MAX_PPB || p < -LS_LR_FCORR_MAX_PPB) return false;
+    *ppb = (int32_t)(p < 0 ? p - 0.5 : p + 0.5);
+    return true;
+}
+
+static void print_fcorr(int32_t ppb)
+{
+    const uint32_t f = lr.cfg_valid ? lr.cfg.freq_hz : 869618000u;
+    const int64_t shift = (int64_t)lr20xx_fcorr_hz(f, ppb) - (int64_t)f;
+    printf("lora: lrfcorr %+.3f ppm: %.6f MHz is programmed as %.6f MHz (%+lld Hz)\n",
+           ppb / 1000.0, f / 1e6, (f + shift) / 1e6, (long long)shift);
+}
+
+/* lora lrfcorr [ppm] - the reference error of this module, saved.
+   Positive when the crystal runs fast: the radio then sits that far above
+   the frequency it was told, and the correction sets it lower. */
+static int fcorr_command(int argc, char **argv)
+{
+    if (argc == 2) { print_fcorr(settings_get_lr_fcorr_ppb()); return 0; }
+    int32_t ppb = 0;
+    if (argc != 3 || !parse_ppm(argv[2], &ppb)) {
+        printf("usage: lora lrfcorr [ppm]   (-%d..%d, + when the module transmits above nominal)\n",
+               LS_LR_FCORR_MAX_PPB / 1000, LS_LR_FCORR_MAX_PPB / 1000);
+        return 1;
+    }
+    ls_lora_hw_lock();
+    esp_err_t err = ESP_OK;
+    if (lr.tx_busy) err = ESP_ERR_INVALID_STATE;
+    else if (ppb != settings_get_lr_fcorr_ppb()) {
+        if (!settings_set_lr_fcorr_ppb(ppb)) err = ESP_ERR_INVALID_STATE;
+        else if (s_bound) err = reprogram_locked("frequency correction change");
+    }
+    ls_lora_hw_unlock();
+    print_fcorr(settings_get_lr_fcorr_ppb());
+    if (err != ESP_OK) printf("lora: lrfcorr: %s\n", esp_err_to_name(err));
+    return err == ESP_OK ? 0 : 1;
+}
+
+/* lora lrrx [reset] - LoRa receive outcomes, for judging a correction. */
+static int rxstat_command(int argc, char **argv)
+{
+    if (argc == 3 && !strcmp(argv[2], "reset")) {
+        ls_lora_hw_lock();
+        memset(&s_rxs, 0, sizeof(s_rxs));
+        ls_lora_hw_unlock();
+        puts("lora: lrrx counters cleared");
+        return 0;
+    }
+    if (argc != 2) { puts("usage: lora lrrx [reset]"); return 1; }
+    ls_lora_hw_lock();
+    const typeof(s_rxs) r = s_rxs;
+    ls_lora_hw_unlock();
+    printf("lora: lrrx ok %lu, header errors %lu, crc errors %lu, length errors %lu, correction now %+.3f ppm\n",
+           (unsigned long)r.ok, (unsigned long)r.hdr_err, (unsigned long)r.crc_err,
+           (unsigned long)r.len_err, settings_get_lr_fcorr_ppb() / 1000.0);
+    if (r.ok)
+        printf("lora: last good packet %llds ago at %.4f MHz: rssi %.1f dBm snr %.2f dB fei %+ld Hz "
+               "(correction %+.3f ppm)\n",
+               (long long)((esp_timer_get_time() - r.at_us) / 1000000), r.freq_hz / 1e6,
+               (double)r.rssi_dbm, (double)r.snr_db, (long)r.fei_hz, r.fcorr_ppb / 1000.0);
+    return 0;
+}
+
 int lr20xx_clock_command(int argc, char **argv)
 {
     if (argc > 1 && !strcmp(argv[1], "lrroute")) return lrroute_command(argc, argv);
@@ -4669,6 +4821,8 @@ int lr20xx_clock_command(int argc, char **argv)
                ls_lora_hw_capture_dma() && !ls_lora_hw_capture_dma_ready() ? " (DMA asked for, no buffers)" : "");
         return 0;
     }
+    if (argc > 1 && !strcmp(argv[1], "lrfcorr")) return fcorr_command(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "lrrx")) return rxstat_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrtx-upload")) return lrtx_upload_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrtx-send")) return lrtx_send_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrfifo-size")) {
@@ -4750,22 +4904,7 @@ int lr20xx_clock_command(int argc, char **argv)
         if (lr.tx_busy) err = ESP_ERR_INVALID_STATE;
         else if (!(clock ? settings_set_lr_tcxo(value) : settings_set_lr_dcdc(value)))
             err = ESP_ERR_INVALID_STATE;
-        else {
-            const bool rx = lr.rx_mode || lr.rearm;
-            const int bins = lr.scan_plan_n ? lr.scan_plan_n : LS_LORA_SCAN_BINS;
-            s_recovered = false;
-            err = recover_locked("clock/regulator change");
-            if (err == ESP_OK) {
-                if (ms.active) err = configure_session(ms.freq_hz, ms.gain);
-                else if (s_exp_active) err = exp_program();
-                else if (lr.fsk_active) err = fsk_program();
-                else if (lr.scanning) err = scan_configure(bins);
-                else if (lr.cfg_valid) {
-                    err = program_lora();
-                    if (err == ESP_OK && rx) err = lr_receive();
-                }
-            }
-        }
+        else err = reprogram_locked("clock/regulator change");
     }
     ls_lora_hw_unlock();
     printf("lora: %s=%s: %s\n", argv[1], value ? on : off, esp_err_to_name(err));
