@@ -307,9 +307,11 @@ static esp_err_t save_rotation(void *ctx)
    so screens never see hardware. Modifier state lives here because it is a
    property of the keyboard, not of any screen, and because a screen that
    tracked shift itself would get it wrong the moment focus moved. */
-static bool s_shift, s_caps;
+static ls_keymap_modifier_t s_shift, s_fn;
+static bool s_caps;
 
-static ls_tk_t tui_key_from_matrix(const ls_keymap_entry_t *k, char *out_ch)
+static ls_tk_t tui_key_from_matrix(const ls_keymap_entry_t *k, bool shift,
+                                    bool fn, char *out_ch)
 {
     *out_ch = 0;
     if (!k) return LS_TK_NONE;
@@ -325,7 +327,6 @@ static ls_tk_t tui_key_from_matrix(const ls_keymap_entry_t *k, char *out_ch)
 
     case LS_KEY_ALT:       return LS_TK_ALT;
     case LS_KEY_CTRL:      return LS_TK_CTRL;
-    case LS_KEY_FN:        return LS_TK_FN;
     case LS_KEY_META:      return LS_TK_META;
     case LS_KEY_RECORD:    return LS_TK_MIC;
     case LS_KEY_F1:  return LS_TK_F1;   case LS_KEY_F2:  return LS_TK_F2;
@@ -335,7 +336,7 @@ static ls_tk_t tui_key_from_matrix(const ls_keymap_entry_t *k, char *out_ch)
     case LS_KEY_F9:  return LS_TK_F9;   case LS_KEY_F10: return LS_TK_F10;
     case LS_KEY_F11: return LS_TK_F11;
     case LS_KEY_CHAR: {
-        char c = ls_keymap_char(k, s_shift, s_caps);
+        char c = ls_keymap_char(k, shift, s_caps, fn);
         if (!c) return LS_TK_NONE;
         *out_ch = c;
         return LS_TK_CHAR;
@@ -1824,7 +1825,18 @@ static bool tui_session(void)
             display_ctl_activity();
             const ls_keymap_entry_t *k = ls_keymap_lookup(ev.row, ev.col);
             if (!k) continue;
-            if (k->key == LS_KEY_SHIFT) { s_shift = ev.pressed; continue; }
+            if (k->key == LS_KEY_SHIFT || k->key == LS_KEY_FN) {
+                ls_keymap_modifier_t *mod = k->key == LS_KEY_SHIFT ? &s_shift : &s_fn;
+                ls_keymap_modifier_t *other = k->key == LS_KEY_SHIFT ? &s_fn : &s_shift;
+                if (ev.pressed) (void)ls_keymap_modifier_use(other);
+                ls_keymap_modifier_event(mod, (uint8_t)(1u << ev.col), ev.pressed);
+                continue;
+            }
+
+            /* Consume on the next press, including navigation, CAPS, REC,
+               or an Fn key with no symbol. Releases never spend a tap. */
+            const bool shift = ev.pressed && ls_keymap_modifier_use(&s_shift);
+            const bool fn = ev.pressed && ls_keymap_modifier_use(&s_fn);
 
             if (k->key == LS_KEY_RECORD) {
                 if (ev.pressed) {
@@ -1840,7 +1852,7 @@ static bool tui_session(void)
             if (!ev.pressed) continue;
             if (k->key == LS_KEY_CAPS) { s_caps = !s_caps; continue; }
             char ch = 0;
-            ls_tk_t tk = tui_key_from_matrix(k, &ch);
+            ls_tk_t tk = tui_key_from_matrix(k, shift, fn, &ch);
             if (tk != LS_TK_NONE) ls_tui_router_key(tk, ch);
         }
         /* Touch is polled beside the keyboard and lands in the same router,

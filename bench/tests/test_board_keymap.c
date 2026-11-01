@@ -40,18 +40,21 @@ LS_CASE(every_position_either_names_a_key_or_is_empty)
 /* --------------------------------------------------------- reachability -- */
 
 /* Can this character be produced from anywhere on the matrix, in any of the
-   three modifier states the firmware actually uses? */
+   Shift, Caps and Fn combinations? */
 static bool can_type(char want)
 {
-    static const struct { bool shift, caps; } MODES[] = {
-        { false, false }, { true, false }, { false, true }, { true, true },
+    static const struct { bool shift, caps, fn; } MODES[] = {
+        { false, false, false }, { true, false, false },
+        { false, true, false }, { true, true, false },
+        { false, false, true }, { true, false, true },
+        { false, true, true }, { true, true, true },
     };
     for (int r = 0; r < ROWS; r++)
         for (int c = 0; c < COLS; c++) {
             const ls_keymap_entry_t *e = ls_keymap_lookup((uint8_t)r, (uint8_t)c);
             if (!e) continue;
             for (unsigned m = 0; m < sizeof(MODES) / sizeof(MODES[0]); m++)
-                if (ls_keymap_char(e, MODES[m].shift, MODES[m].caps) == want)
+                if (ls_keymap_char(e, MODES[m].shift, MODES[m].caps, MODES[m].fn) == want)
                     return true;
         }
     return false;
@@ -97,12 +100,12 @@ static const ls_keymap_entry_t *entry_for(char ch)
 LS_CASE(caps_is_a_letter_lock_and_leaves_everything_else_alone)
 {
     /* The documented invariant: caps must not turn 3 into #. That is what
-       shift is for, and conflating them makes the number row unusable with
+       Fn is for, and conflating them makes the number row unusable with
        caps on - which is exactly when somebody is typing a callsign. */
     for (char d = '0'; d <= '9'; d++) {
         const ls_keymap_entry_t *e = entry_for(d);
         LS_CHECK_MSG(e != NULL, "digit '%c' is not on the matrix", d);
-        LS_CHECK_MSG(ls_keymap_char(e, false, true) == d,
+        LS_CHECK_MSG(ls_keymap_char(e, false, true, false) == d,
                      "caps changed '%c'", d);
     }
 }
@@ -112,35 +115,54 @@ LS_CASE(caps_uppercases_every_letter)
     for (char c = 'a'; c <= 'z'; c++) {
         const ls_keymap_entry_t *e = entry_for(c);
         LS_CHECK_MSG(e != NULL, "letter '%c' is not on the matrix", c);
-        LS_CHECK_MSG(ls_keymap_char(e, false, true) == (char)(c - 32),
+        LS_CHECK_MSG(ls_keymap_char(e, false, true, false) == (char)(c - 32),
                      "caps did not uppercase '%c'", c);
     }
 }
 
-LS_CASE(shift_is_the_symbol_layer_and_wins_over_caps)
+LS_CASE(shift_capitalises_every_letter_and_caps_reverses_it)
 {
-
-    const ls_keymap_entry_t *q = entry_for('q');
-    LS_CHECK(q != NULL);
-    LS_EQ_INT('\'', ls_keymap_char(q, true, false));
-    LS_EQ_INT('\'', ls_keymap_char(q, true, true));
-    LS_EQ_INT('Q',  ls_keymap_char(q, false, true));
-    LS_EQ_INT('q',  ls_keymap_char(q, false, false));
+    for (char c = 'a'; c <= 'z'; c++) {
+        const ls_keymap_entry_t *e = entry_for(c);
+        LS_CHECK(e != NULL);
+        LS_EQ_INT(c - 32, ls_keymap_char(e, true, false, false));
+        LS_EQ_INT(c, ls_keymap_char(e, true, true, false));
+        LS_EQ_INT(c, ls_keymap_char(e, false, false, false));
+    }
 }
 
-LS_CASE(a_letter_with_no_symbol_is_unchanged_by_shift)
+LS_CASE(fn_selects_symbols_regardless_of_shift_or_caps)
 {
-
-    static const char BARE[] = "zxcv";
-    for (const char *c = BARE; *c; c++) {
-        const ls_keymap_entry_t *e = entry_for(*c);
-        LS_CHECK_MSG(e != NULL, "'%c' is not on the matrix", *c);
-        LS_CHECK_MSG(ls_keymap_char(e, true, false) == *c,
-                     "shift changed '%c' to '%c'", *c,
-                     ls_keymap_char(e, true, false));
-        /* Still reachable in uppercase through caps. */
-        LS_CHECK(ls_keymap_char(e, false, true) == (char)(*c - 32));
+    /* Include every letter with a symbol and all ten number-row symbols. */
+    static const char BASE[] = "1234567890qwertyuiopasdfghjklbnm ";
+    static const char SYMBOLS[] = "!@#$%^&*()'_-+=\\|;:\"~[]{},`/?.<> ";
+    LS_EQ_INT(sizeof(BASE), sizeof(SYMBOLS));
+    for (unsigned i = 0; BASE[i]; i++) {
+        const ls_keymap_entry_t *e = entry_for(BASE[i]);
+        LS_CHECK(e != NULL);
+        for (int m = 0; m < 4; m++)
+            LS_EQ_INT(SYMBOLS[i], ls_keymap_char(e, m & 1, m & 2, true));
     }
+    LS_EQ_INT('\'', ls_keymap_char(entry_for('q'), false, false, true));
+    LS_EQ_INT(',', ls_keymap_char(entry_for('h'), false, false, true));
+}
+
+LS_CASE(fn_on_a_letter_without_a_symbol_types_nothing)
+{
+    for (const char *c = "zxcv"; *c; c++)
+        for (int m = 0; m < 4; m++)
+            LS_EQ_INT(0, ls_keymap_char(entry_for(*c), m & 1, m & 2, true));
+}
+
+LS_CASE(shift_keeps_the_existing_non_letter_symbols)
+{
+    static const char SYMBOLS[] = ")!@#$%^&*(";
+    for (char c = '0'; c <= '9'; c++) {
+        LS_EQ_INT(SYMBOLS[c - '0'], ls_keymap_char(entry_for(c), true, false, false));
+        LS_EQ_INT(SYMBOLS[c - '0'], ls_keymap_char(entry_for(c), true, true, false));
+        LS_EQ_INT(SYMBOLS[c - '0'], ls_keymap_char(entry_for(c), false, false, true));
+    }
+    LS_EQ_INT(' ', ls_keymap_char(entry_for(' '), true, false, false));
 }
 
 LS_CASE(a_key_that_is_not_a_character_yields_no_character)
@@ -151,17 +173,17 @@ LS_CASE(a_key_that_is_not_a_character_yields_no_character)
         for (int c = 0; c < COLS; c++) {
             const ls_keymap_entry_t *e = ls_keymap_lookup((uint8_t)r, (uint8_t)c);
             if (!e || e->key == LS_KEY_CHAR) continue;
-            for (int m = 0; m < 4; m++)
-                LS_CHECK_MSG(ls_keymap_char(e, m & 1, (m >> 1) & 1) == 0,
+            for (int m = 0; m < 8; m++)
+                LS_CHECK_MSG(ls_keymap_char(e, m & 1, m & 2, m & 4) == 0,
                              "%s at row %d col %d produced a character",
                              ls_keymap_name(e), r, c);
         }
-    LS_EQ_INT(0, ls_keymap_char(NULL, false, false));
+    LS_EQ_INT(0, ls_keymap_char(NULL, false, false, false));
 }
 
 LS_CASE(the_modifiers_the_firmware_relies_on_all_exist)
 {
-    /* compact_ui tracks shift and caps and the router needs the function
+    /* compact_ui tracks Shift, Caps and Fn and the router needs the function
        keys. A modifier missing from the transcription disables a whole layer
        silently. */
     static const ls_key_t NEEDED[] = {
@@ -180,6 +202,119 @@ LS_CASE(the_modifiers_the_firmware_relies_on_all_exist)
             }
         LS_CHECK_MSG(found, "key %d is not on the matrix", (int)NEEDED[i]);
     }
+}
+
+/* ---------------------------------------------------------- modifier taps -- */
+
+static void tap_modifier(ls_keymap_modifier_t *mod)
+{
+    ls_keymap_modifier_event(mod, 1, true);
+    ls_keymap_modifier_event(mod, 1, false);
+}
+
+LS_CASE(tapped_shift_or_fn_applies_to_only_the_next_character)
+{
+    for (int fn = 0; fn < 2; fn++) {
+        ls_keymap_modifier_t mod = {0};
+        tap_modifier(&mod);
+        LS_CHECK(mod.pending);
+        const bool active = ls_keymap_modifier_use(&mod);
+        LS_CHECK(active);
+        LS_EQ_INT(fn ? ',' : 'H',
+                  ls_keymap_char(entry_for('h'), !fn && active, false, fn && active));
+        LS_CHECK(!mod.pending);
+        LS_CHECK(!ls_keymap_modifier_use(&mod));
+    }
+}
+
+LS_CASE(tapping_the_same_modifier_again_cancels_the_one_shot)
+{
+    ls_keymap_modifier_t mod = {0};
+    tap_modifier(&mod);
+    tap_modifier(&mod);
+    LS_CHECK(!mod.pending);
+    LS_CHECK(!ls_keymap_modifier_use(&mod));
+    /* The next tap can arm it again. */
+    tap_modifier(&mod);
+    LS_CHECK(ls_keymap_modifier_use(&mod));
+}
+
+LS_CASE(held_shift_and_fn_work_for_multiple_keys_and_repeats)
+{
+    for (int fn = 0; fn < 2; fn++) {
+        ls_keymap_modifier_t mod = {0};
+        ls_keymap_modifier_event(&mod, 1, true);
+        for (int repeat = 0; repeat < 3; repeat++) {
+            const bool active = ls_keymap_modifier_use(&mod);
+            LS_CHECK(active);
+            LS_EQ_INT(fn ? '\'' : 'Q',
+                      ls_keymap_char(entry_for('q'), !fn && active, false, fn && active));
+        }
+        ls_keymap_modifier_event(&mod, 1, false);
+        LS_CHECK(!mod.pending);
+        LS_CHECK(!ls_keymap_modifier_use(&mod));
+    }
+}
+
+LS_CASE(tapped_shift_with_caps_types_one_lowercase_letter)
+{
+    ls_keymap_modifier_t shift = {0};
+    tap_modifier(&shift);
+    LS_EQ_INT('z', ls_keymap_char(entry_for('z'), ls_keymap_modifier_use(&shift), true, false));
+    LS_EQ_INT('Z', ls_keymap_char(entry_for('z'), ls_keymap_modifier_use(&shift), true, false));
+}
+
+LS_CASE(a_symbol_less_key_still_consumes_tapped_fn)
+{
+    ls_keymap_modifier_t fn = {0};
+    tap_modifier(&fn);
+    LS_EQ_INT(0, ls_keymap_char(entry_for('z'), false, false, ls_keymap_modifier_use(&fn)));
+    LS_EQ_INT('h', ls_keymap_char(entry_for('h'), false, false, ls_keymap_modifier_use(&fn)));
+}
+
+LS_CASE(non_character_presses_also_consume_a_tapped_modifier)
+{
+    ls_keymap_modifier_t shift = {0};
+    tap_modifier(&shift);
+    /* The UI calls use even for navigation, Caps and the record key. */
+    LS_CHECK(ls_keymap_modifier_use(&shift));
+    LS_EQ_INT('a', ls_keymap_char(entry_for('a'), ls_keymap_modifier_use(&shift), false, false));
+}
+
+LS_CASE(pressing_a_pending_modifier_then_holding_still_works)
+{
+    ls_keymap_modifier_t mod = {0};
+    tap_modifier(&mod);
+    ls_keymap_modifier_event(&mod, 1, true);
+    LS_CHECK(ls_keymap_modifier_use(&mod));
+    LS_CHECK(ls_keymap_modifier_use(&mod));
+    ls_keymap_modifier_event(&mod, 1, false);
+    LS_CHECK(!ls_keymap_modifier_use(&mod));
+}
+
+LS_CASE(either_physical_fn_key_can_remain_held)
+{
+    ls_keymap_modifier_t fn = {0};
+    ls_keymap_modifier_event(&fn, 1, true);
+    ls_keymap_modifier_event(&fn, 128, true);
+    ls_keymap_modifier_event(&fn, 1, false);
+    LS_CHECK(ls_keymap_modifier_use(&fn));
+    ls_keymap_modifier_event(&fn, 128, false);
+    LS_CHECK(!ls_keymap_modifier_use(&fn));
+}
+
+LS_CASE(duplicate_modifier_edges_do_not_arm_or_cancel_a_tap)
+{
+    ls_keymap_modifier_t mod = {0};
+    ls_keymap_modifier_event(&mod, 1, false);
+    LS_CHECK(!mod.pending);
+    ls_keymap_modifier_event(&mod, 1, true);
+    ls_keymap_modifier_event(&mod, 1, true);
+    ls_keymap_modifier_event(&mod, 1, false);
+    LS_CHECK(mod.pending);
+    ls_keymap_modifier_event(&mod, 1, false);
+    LS_CHECK(ls_keymap_modifier_use(&mod));
+    LS_CHECK(!ls_keymap_modifier_use(&mod));
 }
 
 /* ------------------------------------------------------------- repeating -- */

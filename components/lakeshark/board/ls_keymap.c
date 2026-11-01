@@ -42,15 +42,41 @@ const ls_keymap_entry_t *ls_keymap_lookup(uint8_t row, uint8_t col)
     return e->key == LS_KEY_NONE ? NULL : e;
 }
 
-char ls_keymap_char(const ls_keymap_entry_t *entry, bool shift, bool caps)
+char ls_keymap_char(const ls_keymap_entry_t *entry, bool shift, bool caps,
+                    bool fn)
 {
     if (!entry || entry->key != LS_KEY_CHAR) return 0;
-    /* Caps is a letter lock, not a second shift: it must not turn 3 into #.
-       Shift does both, because that is how the vendor table pairs them. */
+    /* The vendor's "shifted" table is really the Fn symbol layer. */
+    if (fn) return entry->shifted;
+    if (entry->ch >= 'a' && entry->ch <= 'z')
+        return shift != caps ? (char)toupper((unsigned char)entry->ch) : entry->ch;
     if (shift && entry->shifted) return entry->shifted;
-    if (caps && entry->ch >= 'a' && entry->ch <= 'z')
-        return (char)toupper((unsigned char)entry->ch);
     return entry->ch;
+}
+
+void ls_keymap_modifier_event(ls_keymap_modifier_t *mod, uint8_t key_bit,
+                              bool pressed)
+{
+    if (pressed) {
+        if (mod->held & key_bit) return;
+        if (!mod->held) {
+            mod->used = mod->pending; /* a second tap cancels */
+            mod->pending = false;
+        }
+        mod->held |= key_bit;
+    } else {
+        if (!(mod->held & key_bit)) return;
+        mod->held &= (uint8_t)~key_bit;
+        if (!mod->held) mod->pending = !mod->used;
+    }
+}
+
+bool ls_keymap_modifier_use(ls_keymap_modifier_t *mod)
+{
+    const bool active = mod->held || mod->pending;
+    mod->pending = false;
+    if (mod->held) mod->used = true;
+    return active;
 }
 
 bool ls_keymap_repeats(const ls_keymap_entry_t *entry)
