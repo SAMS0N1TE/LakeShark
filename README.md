@@ -64,7 +64,7 @@
 <p align="center">
   <a href="https://www.waveshare.com/esp32-p4-nano-wifi6-db.htm"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/desktop/esp32-p4-nano-paper-20261101.png">
-    <img src="docs/screenshots/desktop/esp32-p4-nano-ink-20261101.png" width="300" alt="Waveshare ESP32-P4-NANO board">
+    <img src="docs/screenshots/desktop/esp32-p4-nano-ink-20261101.png" width="300" alt="Waveshare ESP32-P4-NANO-DB board">
   </picture></a>
 </p>
 
