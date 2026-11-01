@@ -60,7 +60,7 @@
 <p align="center"><strong>Run every app in windows on your PC. Write your own in minutes.</strong><br>New in the 2.20.0-rc1 pre-release.</p>
 
 <p align="center">
-  <a href="https://www.waveshare.com/esp32-p4-nano-wifi6-db.htm"><img src="docs/screenshots/desktop/esp32-p4-nano-20261101.png" width="420" alt="Waveshare ESP32-P4-NANO board"></a>
+  <a href="https://www.waveshare.com/esp32-p4-nano-wifi6-db.htm"><img src="docs/screenshots/desktop/esp32-p4-nano-20261101b.png" width="420" alt="Waveshare ESP32-P4-NANO board"></a>
 </p>
 
 <p align="center"><strong>Real hardware, not an emulator.</strong> The apps run on a
