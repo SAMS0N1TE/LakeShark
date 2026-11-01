@@ -65,7 +65,7 @@
   <a href="https://www.waveshare.com/esp32-p4-nano-wifi6-db.htm"><img src="docs/screenshots/desktop/esp32-p4-nano-20261101b.png" width="420" alt="Waveshare ESP32-P4-NANO board"></a>
 </p>
 
-<p align="center"><strong>Real hardware, not an emulator.</strong> The apps run on a
+<p align="center"><strong>Real hardware, not an emulator (but also an emulator too).</strong> The apps run on a
 <a href="https://www.waveshare.com/esp32-p4-nano-wifi6-db.htm">Waveshare ESP32-P4-NANO</a> with its radios and SD card. Your PC is its
 screen, mouse and keyboard over one USB cable.</p>
 
