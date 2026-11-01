@@ -83,6 +83,18 @@ void settings_set_autodim(bool en);
 int  settings_get_autodim_timeout(void);
 void settings_set_autodim_timeout(int seconds);
 
+/* The desktop shell: its theme (-1 none saved) and wallpaper id, through
+   the write queue so the UI task never writes flash itself. */
+int  settings_get_desk_theme(void);
+void settings_set_desk_theme(int theme);
+uint32_t settings_get_desk_wallpaper(void);
+void settings_set_desk_wallpaper(uint32_t id);
+/* The desktop's other choices as numbered words (effects, colours, icon
+   places); 0 until set. The desk owns what each slot means. */
+#define SETTINGS_DESK_WORDS 24
+uint32_t settings_get_desk_word(int slot);
+void settings_set_desk_word(int slot, uint32_t v);
+
 bool settings_get_audio_mute(void);
 void settings_set_audio_mute(bool muted);
 int  settings_get_volume(void);

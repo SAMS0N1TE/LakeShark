@@ -139,7 +139,14 @@ def compiler():
     if not choices: raise ValueError('IDF riscv32-esp-elf-gcc not found; set IDF_TOOLS_PATH')
     return Path(sorted(choices)[-1])
 
-def build(directory,output=None):
+class CompileError(ValueError):
+    """The compiler or linker said no; .output is what it printed."""
+    def __init__(self,output):
+        super().__init__('compile failed'); self.output=output
+
+def build(directory,output=None,log=None):
+    """Compile every .c in directory into a .lap. The compiler's messages go
+    to stderr, or into the list `log` when one is given (lsdk parses them)."""
     directory=Path(directory).resolve(); cc=compiler()
     sources=sorted(directory.glob('*.c'))
     if not sources: raise ValueError('no .c files in '+str(directory))
@@ -153,14 +160,18 @@ def build(directory,output=None):
           *map(str,sources),'-lgcc','-o',str(temporary)]
     wraps=['-Wl,--wrap='+n.removeprefix('__wrap_') for n in (ROOT/'exports.txt').read_text().splitlines() if n.startswith('__wrap_')]
     try:
-        subprocess.run([str(cc),*args,*wraps],check=True)
+        r=subprocess.run([str(cc),*args,*wraps],capture_output=True,text=True,errors='replace')
+        said=r.stdout+r.stderr
+        if log is not None: log.append(said)
+        elif said: sys.stderr.write(said)
+        if r.returncode: raise CompileError(said)
         strip=cc.with_name(cc.name.replace('gcc','strip'))
         subprocess.run([str(strip),'--strip-unneeded','--remove-section=.comment','--remove-section=.riscv.attributes',str(temporary)],check=True)
         e=Elf(temporary.read_bytes());e.check(set((ROOT/'exports.txt').read_text().splitlines()))
         temporary.replace(output)
     finally:
         temporary.unlink(missing_ok=True)
-    print(f'{output}: {len(e.data)} bytes; {e.manifest["id"]} {e.manifest["version"]}')
+    if log is None: print(f'{output}: {len(e.data)} bytes; {e.manifest["id"]} {e.manifest["version"]}')
     return output
 
 def keygen(path):

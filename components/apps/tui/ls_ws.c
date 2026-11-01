@@ -3,6 +3,7 @@
 #include "ls_ws.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <string.h>
 
 /* --- the handshake --------------------------------------------------------- */
@@ -76,20 +77,28 @@ size_t ls_ws_header(uint8_t out[10], int opcode, size_t n)
 int ls_ws_parse(uint8_t *buf, size_t n, size_t max, ls_ws_msg *m)
 {
     if (n < 2) return 0;
+    /* No extensions/fragment reassembly negotiated by this endpoint. */
+    int op = buf[0] & 15;
+    if ((buf[0] & 0x70) || !(buf[0] & 0x80) ||
+        (op != LS_WS_TEXT && op != LS_WS_BINARY && op != LS_WS_CLOSE &&
+         op != LS_WS_PING && op != LS_WS_PONG)) return -1;
     if (!(buf[1] & 0x80)) return -1;                /* a browser masks everything it sends */
     size_t at = 2;
     uint64_t len = buf[1] & 0x7F;
     if (len == 126) {
         if (n < 4) return 0;
         len = (uint64_t)buf[2] << 8 | buf[3];
+        if (len < 126) return -1;
         at = 4;
     } else if (len == 127) {
         if (n < 10) return 0;
         len = 0;
         for (int i = 0; i < 8; i++) len = len << 8 | buf[2 + i];
+        if (len < 65536 || (buf[2] & 0x80)) return -1;
         at = 10;
     }
-    if (len > max) return -1;
+    if (len > max || len > INT_MAX - at - 4 ||
+        (op >= LS_WS_CLOSE && (len > 125 || (op == LS_WS_CLOSE && len == 1)))) return -1;
     if (n < at + 4 + len) return 0;
     const uint8_t *mask = buf + at;
     uint8_t *p = buf + at + 4;

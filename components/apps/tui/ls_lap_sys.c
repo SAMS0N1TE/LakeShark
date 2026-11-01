@@ -332,7 +332,13 @@ static struct {
 
 /* ---- the screen ---------------------------------------------------------- */
 
-void lap_fullscreen(bool on) { if (ls_lap_api_inside()) { sys.immersive = false; ls_tui_screen_set_bare(on); } }
+void lap_fullscreen(bool on)
+{
+    if (!ls_lap_api_inside()) return;
+    if (sys.immersive) ls_tui_screen_set_full(false);   /* bare is ignored while full */
+    sys.immersive = false;
+    ls_tui_screen_set_bare(on);
+}
 void lap_immersive(bool on) { if (ls_lap_api_inside()) { sys.immersive = on; ls_tui_screen_set_full(on); } }
 /* The board's voice: queued, spoken in the user's chosen voice at the board's volume. */
 bool lap_say(const char *text)

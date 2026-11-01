@@ -10,6 +10,7 @@
 #include "scan_engine.h"
 #include "settings.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -113,6 +114,21 @@ static void draw_activity(tui_surface *sf, tui_rect r, bool sync, int64_t now_us
                     ls_tr(sync ? "synced, nothing heard yet"
                          : "no sync - nothing to hear"),
                     LS_ATTR_DIM);
+        /* What to do about it, while there is room: a quiet panel that only
+           says "nothing" leaves a newcomer with nowhere to go. */
+        static const struct { const char *key, *what; } HOW[] = {
+            { "< >", "step the channel, << >> seek" },
+            { "T", "type a frequency" },
+            { "SCANNER", "search a list of channels" },
+            { "R", "pick the radio it listens with" },
+            { "GAIN", "raise it until SIG moves, not past CLIP" },
+        };
+        const int how_n = (int)(sizeof(HOW) / sizeof(HOW[0]));
+        for (int i = 0; i < how_n && r.y + 3 + i < r.y + r.h - 1; i++) {
+            const int y = r.y + 3 + i;
+            tui_put_str(sf, r, r.x + 2, y, HOW[i].key, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+            tui_put_str(sf, r, r.x + 12, y, ls_tr(HOW[i].what), TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        }
         return;
     }
 
@@ -261,9 +277,10 @@ static void draw_receiver_health(tui_surface *sf, tui_rect r)
 {
     tui_box(sf, r, ls_tr("RECEIVER HEALTH / TOTALS"), TUI_ATTR(TUI_CYAN, TUI_BLACK));
     const uint8_t ink = TUI_ATTR(TUI_WHITE, TUI_BLACK);
-    const int step = r.h >= 11 ? 2 : 1;
-    /* Pair counters in short landscape panes; keep the activity width. */
-    const bool compact = r.h == 5 && r.w >= 50;
+    /* Pair counters whenever the pane is wide enough: spaced single
+       columns left most of a desk window's pane black. */
+    const bool compact = r.h >= 5 && r.w >= 50;
+    const int step = !compact && r.h >= 11 ? 2 : 1;
     int sync_end, bch_end;
     char line[80];
     uint8_t first = ink;
@@ -296,6 +313,53 @@ static void draw_receiver_health(tui_surface *sf, tui_rect r)
         snprintf(line, sizeof(line), ls_tr("DECODE %.1f ms / block"), (double)P25.dsd_decode_ms);
         tui_put_str(sf, r, r.x + (compact ? sync_end : 2),
                     r.y + (compact ? 2 : 1 + step * 4), line, LS_ATTR_DIM);
+    }
+    /* How many frames pass their check, as a bar: the one figure here that
+       says at a glance whether the decode is healthy. */
+    const int total = P25.dsd_bch_ok_count + P25.dsd_bch_fail_count;
+    if (compact && r.h >= 6) {
+        const float ok = total ? (float)P25.dsd_bch_ok_count / (float)total : 0.0f;
+        tui_put_str(sf, r, r.x + 2, r.y + 4, ls_tr("FRAMES OK"), TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        snprintf(line, sizeof(line), total ? "%3d%%" : " --", (int)(ok * 100.0f + 0.5f));
+        tui_put_str(sf, r, r.x + r.w - 6, r.y + 4, line,
+                    TUI_ATTR(!total ? LS_DIM_FG : ok >= 0.8f ? TUI_GREEN | TUI_BRIGHT
+                             : ok >= 0.4f ? TUI_YELLOW | TUI_BRIGHT : TUI_RED | TUI_BRIGHT, TUI_BLACK));
+        ls_radio_bargraph(sf, r, r.x + 12, r.y + 4, r.w - 20, 1, ok, ok);
+    }
+}
+
+/* The receiver's level over the last few seconds, under the health counters
+   in a wide pane: the same trace the glass keeps, given the room. */
+static void draw_signal_history(tui_surface *sf, tui_rect r)
+{
+    tui_box(sf, r, ls_tr("SIGNAL / LAST SECONDS"), TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    if (r.w < 16 || r.h < 3) return;
+    /* In decibels, -60 to 0: on a straight scale the few percent a channel
+       sits at between calls is no height at all, and the box read as dead. */
+    const int h = r.h - 2, x0 = r.x + 6, w = r.w - 8;
+    static const char *const AXIS[3] = { "  0", "-30", "-60" };
+    for (int k = 0; k < 3 && h >= 3; k++)
+        tui_put_str(sf, r, r.x + 2, r.y + 1 + k * (h - 1) / 2, AXIS[k], LS_ATTR_DIM);
+    const int n = s_glass.trace_n < w ? s_glass.trace_n : w;
+    for (int i = 0; i < w; i++) {
+        const int idx = s_glass.trace_n - w + i;
+        int v = 0;
+        if (idx >= 0 && idx < s_glass.trace_n)
+            v = s_glass.trace[(s_glass.trace_head - s_glass.trace_n + idx + LS_RADIO_TRACE_N) % LS_RADIO_TRACE_N];
+        float db = v > 0 ? 20.0f * log10f((float)v / 255.0f) : -99.0f;
+        int q = db <= -60.0f ? 0 : (int)((db + 60.0f) / 60.0f * (float)(h * 8));
+        if (q > h * 8) q = h * 8;
+        if (i < w - n || !q) {
+            tui_put_char(sf, r, x0 + i, r.y + h, LS_TUI_TRACE(1), TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
+            continue;
+        }
+        for (int row = 0; row < h; row++) {
+            const int base = (h - 1 - row) * 8, fill = q - base;
+            if (fill < 1) continue;
+            const uint8_t hue = base >= 6 * h ? (TUI_RED | TUI_BRIGHT) : base >= 3 * h ? (TUI_YELLOW | TUI_BRIGHT)
+                              : (TUI_GREEN | TUI_BRIGHT);
+            tui_put_char(sf, r, x0 + i, r.y + 1 + row, LS_TUI_TRACE(fill > 8 ? 8 : fill), TUI_ATTR(hue, TUI_BLACK));
+        }
     }
 }
 
@@ -564,8 +628,11 @@ static void draw_decode(tui_surface *sf, tui_rect area)
         if (ah >= 3) activity = tui_rect_make(area.x, area.y + top_h - join, area.w, ah);
         if ((ah >= 7 && area.w >= 92) || (ah >= 5 && area.w >= 104)) {
             activity.w = area.w / 2;
-            draw_receiver_health(sf, tui_rect_make(activity.x + activity.w + 1,
-                activity.y, area.w - activity.w - 1, ah));
+            const int hx = activity.x + activity.w + 1, hw = area.w - activity.w - 1;
+            /* The counters take the rows they fill; the trace gets the rest. */
+            const int hh = hw >= 50 && ah >= 11 ? 7 : ah;
+            draw_receiver_health(sf, tui_rect_make(hx, activity.y, hw, hh));
+            if (ah - hh >= 4) draw_signal_history(sf, tui_rect_make(hx, activity.y + hh, hw, ah - hh));
         }
     } else {
         const int ah = detail.h - mbox.h;
@@ -1294,6 +1361,19 @@ static void tune_draw(tui_surface *sf, tui_rect area)
 static void deck_draw(tui_surface *sf, tui_rect area)
 {
     s_deck_n = 0;
+    if (ls_tui_compact() && area.h >= 2 && area.w >= 28) {
+        /* Desk: the tune row, then the cards as one-row sliders side by side. */
+        tune_draw(sf, tui_rect_make(area.x, area.y, area.w, 1));
+        if (s_deck_flash_ttl > 0 && --s_deck_flash_ttl == 0) s_deck_flash = -1;
+        deck_fill();
+        const int n_cards = lr_receiver() ? 1 : P25_N_CARD;
+        const int cw = area.w / (n_cards > 1 ? n_cards : 2);
+        for (int i = 0; i < n_cards; i++) {
+            ls_radio_vfo_card_draw(sf, tui_rect_make(area.x + i * cw, area.y + 1, cw - 2, 1), &s_deck[i]);
+            s_deck_n = i + 1;
+        }
+        return;
+    }
     if (ls_tui_is_wide() && area.h >= 10) {
         tune_draw(sf, tui_rect_make(area.x, area.y, area.w, 4));
         area.y += 4; area.h -= 4;
@@ -1516,7 +1596,9 @@ static void draw(tui_surface *sf, tui_rect area)
              : scan_engine_active() ? "N next K skip H hold/resume X stop / STEP T keyboard O options"
              : "LEFT/RIGHT step ,/. seek / STEP T keyboard 1/2/3 views R radio O options");
     s_blink++;
-    const bool wide = ls_tui_is_wide();
+    /* The desk lays out as landscape does, at one row a bar. */
+    const bool compact = ls_tui_compact();
+    const bool wide = ls_tui_is_wide() || compact;
 
     ls_btn_t ctl[N_CTLS] = {
         { "CALLS", NULL, '5', false, false },
@@ -1543,10 +1625,16 @@ static void draw(tui_surface *sf, tui_rect area)
         ntabs = N_VIEWS + N_CTLS;
         const tui_rect probe = tui_rect_make(area.x, area.y, area.w, 3);
         const bool fits = ls_btn_compact_fits(probe, tabs, ntabs);
-        const int bar_h = (ls_tui_keyboard_mode() && fits) || area.h < 24 || s_page == PV_VFO ? 3 : 4;
+        const int bar_h = compact ? 1
+                        : (ls_tui_keyboard_mode() && fits) || area.h < 24 || s_page == PV_VFO ? 3 : 4;
         s_bar = tui_rect_make(area.x, area.y, area.w, bar_h);
         body = tui_rect_make(area.x, area.y + bar_h, area.w, area.h - bar_h);
-        if (s_page == PV_VFO && area.w >= 56) {
+        if (compact && s_page == PV_VFO && area.w >= 56 && body.h >= 12) {
+            /* Desk deck: a tune row and a slider row, KEYBOARD at its end. */
+            s_quick_rect = tui_rect_make(body.x, body.y + body.h - 2, body.w, 2);
+            body.h -= 2;
+            s_kbd_btn = tui_rect_make(s_quick_rect.x + s_quick_rect.w - 14, s_quick_rect.y, 14, 1);
+        } else if (s_page == PV_VFO && area.w >= 56 && !compact) {
             int deck_h = s_keypad ? body.h - 11 : body.h >= 25 ? 13 : body.h >= 24 ? 12 : 10;
             if (body.h - deck_h < 10) deck_h = 0;
             if (deck_h >= 5) {

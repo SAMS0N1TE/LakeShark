@@ -56,7 +56,7 @@ void ls_tui_touch_remote(int col, int row, int gx, int gy, bool down)
 
 static bool remote_held(void) { return !s_down && s_r_down; }
 
-bool ls_tui_touch_held(int *start_col, int *start_row, int *col, int *row)
+bool ls_tui_touch_input_held(int *start_col, int *start_row, int *col, int *row)
 {
     if (remote_held()) {
         if (start_col) *start_col = s_r_col0;
@@ -75,7 +75,7 @@ bool ls_tui_touch_held(int *start_col, int *start_row, int *col, int *row)
 
 static int64_t s_down_us;
 
-bool ls_tui_touch_px(int *x, int *y, int *x0, int *y0, int64_t *since_us)
+bool ls_tui_touch_input_px(int *x, int *y, int *x0, int *y0, int64_t *since_us)
 {
     if (remote_held()) {
         if (x) *x = s_r_x;
@@ -94,6 +94,58 @@ bool ls_tui_touch_px(int *x, int *y, int *x0, int *y0, int64_t *since_us)
     if (x0) *x0 = sx;
     if (y0) *y0 = sy;
     if (since_us) *since_us = s_down_us;
+    return true;
+}
+
+/* UI-owned app finger. In particular, glass samples and the terminal's raw
+   finger remain available to the desktop after translating this one. */
+static struct {
+    bool active, down;
+    int col, row, col0, row0, x, y, x0, y0;
+    int64_t since;
+} s_client;
+void ls_tui_touch_client(int col, int row, int gx, int gy, bool down)
+{
+    if (down && !s_client.down) {
+        s_client.col0=col; s_client.row0=row; s_client.x0=gx; s_client.y0=gy;
+        s_client.since=esp_timer_get_time();
+    }
+    if (!down && s_client.down && (col!=s_client.col0 || row!=s_client.row0)) {
+        s_drag[0]=s_client.x0; s_drag[1]=s_client.y0; s_drag[2]=gx; s_drag[3]=gy;
+        s_drags++;
+    }
+    s_client.active=true; s_client.down=down;
+    s_client.col=col; s_client.row=row; s_client.x=gx; s_client.y=gy;
+}
+void ls_tui_touch_client_clear(void) { s_client.active=s_client.down=false; }
+bool ls_tui_touch_held(int *sc, int *sr, int *c, int *r)
+{
+    if (!s_client.active) return ls_tui_touch_input_held(sc,sr,c,r);
+    if (!s_client.down) return false;
+    if (sc) *sc=s_client.col0;
+    if (sr) *sr=s_client.row0;
+    if (c) *c=s_client.col;
+    if (r) *r=s_client.row;
+    return true;
+}
+bool ls_tui_touch_px(int *x, int *y, int *x0, int *y0, int64_t *since)
+{
+    if (!s_client.active) return ls_tui_touch_input_px(x,y,x0,y0,since);
+    if (!s_client.down) return false;
+    if (x) *x=s_client.x;
+    if (y) *y=s_client.y;
+    if (x0) *x0=s_client.x0;
+    if (y0) *y0=s_client.y0;
+    if (since) *since=s_client.since;
+    return true;
+}
+static int s_pointer_col=-1, s_pointer_row=-1;
+void ls_tui_pointer_set(int col, int row) { s_pointer_col=col; s_pointer_row=row; }
+bool ls_tui_pointer_cell(int *col, int *row)
+{
+    if (s_pointer_col<0 || s_pointer_row<0) return false;
+    if (col) *col=s_pointer_col;
+    if (row) *row=s_pointer_row;
     return true;
 }
 

@@ -218,7 +218,7 @@ void ls_map_follow_set(bool enable) {(void)enable;}
 void ls_map_preview_reserve(tui_rect a,int x,int y,int w) {(void)a;(void)x;(void)y;(void)w;}
 void ls_map_preview_labels(tui_surface *sf,tui_rect a) {(void)sf;(void)a;}
 void ls_map_get_center(double *lat,double *lon) {if(lat)*lat=43.4445;if(lon)*lon=-71.6473;}
-void ls_map_pan(int dx,int dy) {(void)dx;(void)dy;}
+void ls_map_pan(double dx,double dy) {(void)dx;(void)dy;}
 const uint16_t *ls_map_render(int *w,int *h) {if(w)*w=0;if(h)*h=0;return NULL;}
 void ls_map_preview(tui_surface *sf,tui_rect a,double lat,double lon)
 {(void)sf;(void)a;(void)lat;(void)lon;}
@@ -5504,7 +5504,7 @@ LS_CASE(adsb_traffic_keeps_newest_on_right_and_figures_on_another_row)
     draw_pane(&ls_scr_adsb, pane);
     int x, y;
     LS_CHECK(find_text("TRAFFIC", &x, &y));
-    LS_EQ_INT('#', g_back[(y + 1) * W + pane.x + 2].ch);
+    LS_EQ_INT(LS_TUI_TRACE(1), g_back[(y + 1) * W + pane.x + 2].ch);   /* the floor where nothing came in */
     LS_EQ_INT(LS_TUI_TRACE(8), g_back[(y + 1) * W + pane.x + 2 + 59].ch);
     int figures_y;
     LS_CHECK(find_text("active", &x, &figures_y));

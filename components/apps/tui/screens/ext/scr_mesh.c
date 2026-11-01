@@ -468,6 +468,17 @@ static void draw_feed(tui_surface *sf, tui_rect r, uint32_t now, bool with_box)
         if (!conv_private())
             tui_put_str(sf, r, r.x + 2, top + 4, ls_tr("every MeshCore node in range."),
                         A(DIM_FG, TUI_BLACK));
+        /* Where to start, while the feed has room for it. */
+        static const struct { const char *key, *what; } HOW[] = {
+            { "/start", "bring the mesh radio up" },
+            { "type", "a message; ENTER sends it" },
+            { "NODES", "who has been heard, and how far" },
+            { "/help", "every command" },
+        };
+        for (int i = 0; i < (int)(sizeof(HOW) / sizeof(HOW[0])) && top + 6 + i < top + rows; i++) {
+            tui_put_str(sf, r, r.x + 2, top + 6 + i, HOW[i].key, A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+            tui_put_str(sf, r, r.x + 10, top + 6 + i, ls_tr(HOW[i].what), A(TUI_WHITE, TUI_BLACK));
+        }
         return;
     }
     s_feed_rect = r;

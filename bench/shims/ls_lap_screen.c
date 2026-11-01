@@ -14,6 +14,9 @@
  *   N:rx=K              K more packets heard
  *   N:ble=K             K Bluetooth devices about
  *   N:hour=H            the clock reads H:00 (default noon)
+ *   N:radio=none|sim    the board has no radio (a Nano without an SDR), or the SIM one
+ *   N:page=TEXT         a pager decode on the board's timeline (aprs=, ais=, mesh= too)
+ *   N:key=C             a key: a letter, or @up @down @left @right @enter @tab
  * LAPSIM_PROFILE=1 measures just app->draw with a high-resolution host clock,
  * reporting batches of 100 frames. It excludes BMP capture and presentation.
  * Without LAPSIM it is the plain fallback the board's host stub draws. */
@@ -27,6 +30,7 @@
 #include "ls_icons.h"
 #include "esp_timer.h"
 #include "adsb_demo.h"
+#include "core/ls_decoded.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -37,6 +41,7 @@
 #endif
 
 typedef const lap_app_t *(*lap_main_fn)(void);
+extern bool ls_lap_radio_sim_absent;
 typedef struct { const char *id; lap_main_fn main; const lap_icon_px_t *icon; } lapsim_app_t;
 extern const lapsim_app_t lapsim_apps[];
 extern const int lapsim_app_count;
@@ -61,17 +66,12 @@ static double profile_us(void)
 
 static uint32_t clock_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
-static void script(int frame)
+/* One LAPSIM_SCRIPT step, the part after "N:". */
+static void step(const char *c)
 {
-    const char *s = getenv("LAPSIM_SCRIPT");
     ls_lap_sys_host_t *h = ls_lap_sys_host();
-    while (s && *s) {
-        int n = atoi(s);
-        const char *c = strchr(s, ':');
-        const char *end = strchr(s, ';');
-        if (!c) break;
-        c++;
-        if (n == frame) {
+    {
+        {
             float ax = 0, ay = 0, az = 1;
             int x, y;
             char d;
@@ -115,13 +115,52 @@ static void script(int frame)
                 for (int i = 0; i < h->ble_count; i++) h->ble[i] = (lap_ble_dev_t){ .addr = { 1, 2, 3, 4, 5, (uint8_t)i }, .rssi = -70, .age_ms = 1000 };
             } else if (sscanf(c, "hour=%d", &x) == 1) {
                 h->t.hour = x;
+            } else if (!strncmp(c, "radio=", 6)) {
+                ls_lap_radio_sim_absent = !strncmp(c + 6, "none", 4);
+            } else if (!strncmp(c, "page=", 5) || !strncmp(c, "aprs=", 5) || !strncmp(c, "ais=", 4) ||
+                       !strncmp(c, "mesh=", 5)) {
+                ls_decoded_t e;
+                memset(&e, 0, sizeof(e));
+                const char *eq = strchr(c, '=');
+                e.kind = c[0] == 'p' ? LS_DECODED_PAGE : c[1] == 'p' ? LS_DECODED_APRS : c[1] == 'i' ? LS_DECODED_AIS : LS_DECODED_MESH;
+                e.at_us = esp_timer_get_time();
+                e.address = 1234567;
+                snprintf(e.from, sizeof(e.from), "%s", c[0] == 'p' ? "POCSAG" : c[1] == 'p' ? "N0CALL-9" : c[1] == 'i' ? "SEA SPRITE" : "RIDGE RPT");
+                snprintf(e.text, sizeof(e.text), "%s", eq + 1);
+                ls_decoded_publish(&e);
             } else if (sscanf(c, "swipe=%c", &d) == 1) {
                 h->swipe = d == 'U' ? LAP_SWIPE_UP : d == 'D' ? LAP_SWIPE_DOWN : d == 'L' ? LAP_SWIPE_LEFT : LAP_SWIPE_RIGHT;
             }
         }
+    }
+}
+
+static void script(int frame)
+{
+    const char *s = getenv("LAPSIM_SCRIPT");
+    while (s && *s) {
+        const int n = atoi(s);
+        const char *c = strchr(s, ':');
+        const char *end = strchr(s, ';');
+        if (!c) break;
+        if (n == frame) {
+            char one[128];
+            const size_t len = end && end > c ? (size_t)(end - c - 1) : strlen(c + 1);
+            snprintf(one, sizeof(one), "%.*s", (int)(len < sizeof(one) ? len : sizeof(one) - 1), c + 1);
+            step(one);
+        }
         s = end ? end + 1 : NULL;
     }
+    ls_lap_sys_host_t *h = ls_lap_sys_host();
     if (h->down) h->held_ms += 40;
+}
+
+/* lssim --feed (LakeShark Studio's sensor buttons): one step now, in the
+   LAPSIM_SCRIPT words without the frame number, e.g. "tilt=0.3,-0.1". */
+void ls_lap_sim_step(const char *spec)
+{
+    if (!app || !spec) return;
+    step(spec);
 }
 
 /* With LAPSIM set, the USER tab's APP tile is that app: its name, line,
@@ -156,6 +195,7 @@ static void enter(void)
         if (!strcmp(want, lapsim_apps[i].id)) app = lapsim_apps[i].main();
     if (!app) return;
     ls_lap_api_host_clock = clock_ms;
+    ls_lap_radio_sim_absent = getenv("LAPSIM_RADIO") && !strcmp(getenv("LAPSIM_RADIO"), "none");
     ls_lap_sys_host()->motion = true;
     ls_lap_sys_host()->m = (lap_motion_t){ .az = 1, .heading = -1, .true_heading = -1 };
     ls_lap_sys_host()->t = (lap_time_t){ 2026, 10, 23, 12, 0, 0, 5, 1792756800, true };

@@ -4,6 +4,7 @@
 #include "tui/ls_survey.h"
 #include "tui/ls_ble_ad.h"
 #include "ble_link.h"
+#include "ble_hid.h"
 #include "ble_link_observer.h"
 #include "ble_link_scan.h"
 #include "ble_link_legacy.h"
@@ -11,6 +12,7 @@ static volatile ble_scan_mode_t s_scan_mode;
 static bool s_ext_rejected;
 static uint64_t s_le_features;
 static volatile bool s_scan_coded;
+static bool s_hid_scan_mode;
 extern uint64_t ble_hs_hci_get_le_supported_feat(void); /* IDF 5.5 NimBLE startup HCI query cache. */
 static volatile bool s_scanning, s_scan_connected, s_scan_failed;
 static bool s_c6_inhibit;
@@ -135,6 +137,7 @@ static void advert_task(void *arg)
     (void)arg;
     for (;;) {
         ble_link_observer_dispatch(&s_adverts, BLE_LINK_AD_DEPTH);
+        ble_hid_console_pump();
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
@@ -145,8 +148,19 @@ static bool advert_worker_start(void)
     ble_link_observer_subscribe(&s_adverts, sweep_advert, NULL);
     ble_link_observer_subscribe(&s_adverts, rid_advert, NULL);
     ble_link_observer_subscribe(&s_adverts, heard_advert, NULL);
+#if CONFIG_LS_NANO_RAM_BUDGET
+    /* Dispatch only: SWEEP/RID/SEEN update RAM/queues; HID pump prints.
+     * SURVEY writes only /sdcard/lakeshark/survey (no SPIFFS fallback),
+     * never flash/NVS. Keep all 4096 B for that FAT/stdio path. Re-audit
+     * before adding callbacks or changing LS_SURVEY_DIRECTORY to flash.
+     * Permanent worker; any future deletion must be from another task
+     * using vTaskDeleteWithCaps(s_advert_task). */
+    const uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#else
+    const uint32_t caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+#endif
     return xTaskCreateWithCaps(advert_task, "ble_adverts", 4096, NULL, 3,
-        &s_advert_task, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) == pdPASS;
+        &s_advert_task, caps) == pdPASS;
 }
 static uint32_t s_heap_max_us, s_snapshot_max_us, s_write_max_us;
 
@@ -796,6 +810,8 @@ static void scan_refresh(struct ble_npl_event *event)
     (void)event;
     if (__atomic_load_n(&s_c6_inhibit, __ATOMIC_ACQUIRE)) return;
     if (!ble_hs_synced()) return;
+    if (ble_hid_head_blocked() && s_conn != BLE_HS_CONN_HANDLE_NONE)
+        ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
     if (s_disconnect_requested) {
         s_disconnect_requested = false;
         if (s_conn != BLE_HS_CONN_HANDLE_NONE)
@@ -811,8 +827,19 @@ static void scan_refresh(struct ble_npl_event *event)
     ble_scan_mode_t want = ble_scan_wanted(s_run, connected,
         s_state == BLE_LINK_CONNECTING, s_adverts.listener_count != 0,
         s_passive, s_rescan_at_us != 0);
+    bool hid_scan = ble_hid_scan_wanted();
+    if (hid_scan && s_run && !ble_gap_conn_active()) {
+        if(ble_hid_discovery_active())want=BLE_SCAN_HEAD;
+        else if(want==BLE_SCAN_OFF)want=BLE_SCAN_OBSERVER;
+    }
+    if (ble_gap_conn_active()) want=BLE_SCAN_OFF;
     bool active = ble_gap_disc_active();
     ble_scan_action_t action = ble_scan_action(want, s_scan_mode, active);
+    /* A keyboard scan needs no restart of its own: the running scan's legacy
+       adverts already reach ble_hid_advert (extended reports are folded into
+       DISC). Restarting into legacy commands after extended ones is refused by
+       the controller (0x0C, rc=524) for as long as the keyboard scan lasts. */
+    s_hid_scan_mode=hid_scan;
     s_scanning = active;
     s_scan_connected = connected;
     if (action == BLE_SCAN_KEEP) return;
@@ -899,6 +926,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 #endif
     case BLE_GAP_EVENT_DISC: {
         if (!s_run) return 0;
+        ble_hid_advert(&event->disc);
         ble_link_observer_push(&s_adverts, event->disc.addr.val, event->disc.addr.type,
             event->disc.rssi, event->disc.event_type == BLE_HCI_ADV_RPT_EVTYPE_SCAN_RSP,
             event->disc.data, event->disc.length_data, esp_timer_get_time());
@@ -913,7 +941,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             return 0;
         }
 
-        if (s_passive) {
+        if (s_passive || ble_hid_head_blocked() || ble_hid_busy()) {
             return 0;
         }
         char name[32];
@@ -1324,12 +1352,14 @@ static void on_sync(void)
     ble_link_legacy_scan(false);
     ble_hs_util_ensure_addr(0);
     ESP_LOGI(TAG, "controller synced");
+    ble_hid_sync();
     start_scan();
 }
 
 static void on_reset(int reason)
 {
     ESP_LOGE(TAG, "controller reset, reason=%d", reason);
+    ble_hid_reset();
     s_state = ble_link_reset_state(s_run);
     s_conn=BLE_HS_CONN_HANDLE_NONE;
     s_scanning=false;s_scan_coded=false;s_scan_connected=false;s_scan_mode=BLE_SCAN_OFF;
@@ -1353,7 +1383,7 @@ static bool workers_start(void)
             return false;
         }
     }
-    /* These two stacks MUST be in internal RAM. */
+    /* Command handlers MUST retain their internal stack (NVS/REC LOAD). */
 
     if (!s_cmd_task &&
         /**/ /**/
@@ -1367,13 +1397,22 @@ static bool workers_start(void)
         ESP_LOGE(TAG, "command task create failed (internal RAM exhausted?)");
         return false;
     }
+#if CONFIG_LS_NANO_RAM_BUDGET
+    /* tel_task only posts scan events to nimble_host, reads snapshots and
+     * sends GATT data. It never dispatches commands or writes flash/NVS.
+     * Keep the full float-formatting budget. It lives forever; if shutdown
+     * is added, another task must call vTaskDeleteWithCaps(s_tel_task). */
+    const uint32_t tel_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#else
+    const uint32_t tel_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+#endif
     if (!s_tel_task &&
         /**/
         /* 6144 with 3680 unused - about 2464 B in use, so this one keeps
            more of its margin than ble_cmd. */
         xTaskCreateWithCaps(tel_task, "ble_tel", 4608, NULL, 4, &s_tel_task,
-                            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
-        ESP_LOGE(TAG, "telemetry task create failed (internal RAM exhausted?)");
+                            tel_caps) != pdPASS) {
+        ESP_LOGE(TAG, "telemetry task create failed");
         return false;
     }
     return true;
@@ -1436,6 +1475,7 @@ static esp_err_t link_start(void)
     ble_hs_cfg.sm_our_key_dist  = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.store_status_cb  = ble_store_util_status_rr;
+    ble_hid_init();
 
     /**/
     ble_svc_gap_init();
@@ -1484,16 +1524,17 @@ static esp_err_t link_start(void)
 }
 
 static portMUX_TYPE s_start_mux = portMUX_INITIALIZER_UNLOCKED;
-static bool s_starting, s_primary, s_sweep_observer, s_rid_observer, s_find_observer;
+static bool s_starting, s_primary, s_sweep_observer, s_rid_observer, s_find_observer, s_hid_observer;
 
 static void stop_mode(unsigned observer)
 {
     portENTER_CRITICAL(&s_start_mux);
-    if (observer==3) s_find_observer = false;
+    if (observer==4) s_hid_observer = false;
+    else if (observer==3) s_find_observer = false;
     else if (observer==2) s_rid_observer = false;
     else if (observer) s_sweep_observer = false;
     else s_primary = false;
-    bool keep = s_sweep_observer || s_rid_observer || s_find_observer || s_primary;
+    bool keep = s_sweep_observer || s_rid_observer || s_find_observer || s_hid_observer || s_primary;
     bool passive = !s_primary;
     if (!s_run || s_starting || (observer && keep)) {
         portEXIT_CRITICAL(&s_start_mux);return;
@@ -1665,12 +1706,21 @@ void ble_link_unpin_peer(void)
 
 esp_err_t ble_link_forget_bonds(void)
 {
-    int rc = ble_store_clear();
+    /* Ordinary head forget is identity scoped; HID keys must survive it. */
+    struct ble_gap_conn_desc desc;
+    ble_addr_t identity;
+    if (s_conn != BLE_HS_CONN_HANDLE_NONE && !ble_gap_conn_find(s_conn, &desc))
+        identity=desc.peer_id_addr;
+    else if (s_pinned.valid) {
+        identity.type=s_pinned.type;
+        memcpy(identity.val,s_pinned.val,6);
+    } else return ESP_ERR_NOT_FOUND;
+    int rc = ble_gap_unpair(&identity);
     if (rc != 0) {
-        ESP_LOGE(TAG, "ble_store_clear rc=%d", rc);
+        ESP_LOGE(TAG, "head unpair rc=%d", rc);
         return ESP_FAIL;
     }
-    ESP_LOGW(TAG, "BLE bond store cleared - any stored pairing keys are gone");
+    ESP_LOGW(TAG, "head identity bond removed; HID bonds retained");
 
     if (s_conn != BLE_HS_CONN_HANDLE_NONE) {
         ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
@@ -1701,7 +1751,8 @@ static esp_err_t start_mode(bool passive, unsigned observer)
                 s_starting || (!observer && s_primary && (passive || s_passive));
     bool warm = s_run;
     if (!busy) {
-        if (observer==3) s_find_observer = true;
+        if (observer==4) s_hid_observer = true;
+        else if (observer==3) s_find_observer = true;
         else if (observer==2) s_rid_observer = true;
         else if (observer) s_sweep_observer = true;
         else {s_primary = true;s_passive = passive;}
@@ -1718,12 +1769,13 @@ static esp_err_t start_mode(bool passive, unsigned observer)
     portENTER_CRITICAL(&s_start_mux);
     s_starting = false;
     if (rc != ESP_OK) {
-        if (observer==3) s_find_observer = false;
+        if (observer==4) s_hid_observer = false;
+        else if (observer==3) s_find_observer = false;
         else if (observer==2) s_rid_observer = false;
         else if (observer) s_sweep_observer = false;
         else s_primary = false;
     }
-    bool abandoned = !s_primary && !s_sweep_observer && !s_rid_observer && !s_find_observer;
+    bool abandoned = !s_primary && !s_sweep_observer && !s_rid_observer && !s_find_observer && !s_hid_observer;
     portEXIT_CRITICAL(&s_start_mux);
     if (rc == ESP_OK && abandoned) stop_mode(true);
     return rc;
@@ -1747,7 +1799,7 @@ esp_err_t ble_link_c6_quiesce(void)
     for (;;) {
         portENTER_CRITICAL(&s_start_mux);
         bool starting = s_starting;
-        if (!starting) s_primary = s_sweep_observer = s_rid_observer = s_find_observer = false;
+        if (!starting) s_primary = s_sweep_observer = s_rid_observer = s_find_observer = s_hid_observer = false;
         portEXIT_CRITICAL(&s_start_mux);
         if (!starting) break;
         if (esp_timer_get_time() >= until) return ESP_ERR_TIMEOUT;
@@ -1776,6 +1828,7 @@ esp_err_t ble_link_c6_quiesce(void)
     return ESP_ERR_TIMEOUT;
 }
 esp_err_t ble_link_listen(void) { return start_mode(true, false); }
+esp_err_t ble_link_hid_observer(bool on) { if(on)return start_mode(true,4);stop_mode(4);return ESP_OK; }
 esp_err_t ble_link_sweep_observer(bool on)
 {
     if (on) return start_mode(true, true);

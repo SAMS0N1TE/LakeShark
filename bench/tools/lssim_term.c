@@ -16,6 +16,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <fcntl.h>
+#include <io.h>
 #else
 #include <sys/select.h>
 #include <termios.h>
@@ -23,6 +25,8 @@
 #endif
 
 #include "ls_vt.h"
+#include "ls_input_ev.h"
+#include "desk/ls_desk.h"
 #include "ls_theme.h"
 #include "ls_tui.h"
 #include "ls_tui_screen.h"
@@ -122,6 +126,66 @@ static size_t tty_read(uint8_t *buf, size_t cap)
 static void nap(int ms) { usleep((useconds_t)ms * 1000); }
 #endif
 
+/* The desk takes the whole mouse: SGR reports become desktop input events
+   (every button, drags, wheel, hover with ?1003), and are taken out of the
+   bytes before ls_vt sees them, which knows only the left button. A
+   sequence split across reads waits in `hold`. */
+static uint8_t s_hold[32];
+static size_t s_hold_n;
+static uint8_t s_held_buttons;
+
+static size_t desk_mouse(uint8_t *b, size_t n)
+{
+    static uint8_t buf[256 + sizeof(s_hold)];
+    size_t m = 0;
+    memcpy(buf, s_hold, s_hold_n);
+    memcpy(buf + s_hold_n, b, n);
+    m = s_hold_n + n;
+    s_hold_n = 0;
+    size_t o = 0;
+    for (size_t i = 0; i < m;) {
+        if (buf[i] == 0x1B && (i + 1 >= m || buf[i + 1] == '[') && (i + 2 >= m || buf[i + 2] == '<')) {
+            size_t j = i + 3;
+            while (j < m && buf[j] != 'M' && buf[j] != 'm' && j - i < 24) j++;
+            if (j >= m) {                              /* not all here yet */
+                if (m - i < sizeof(s_hold)) { memcpy(s_hold, buf + i, m - i); s_hold_n = m - i; }
+                break;
+            }
+            int btn = 0, x = 0, y = 0;
+            char tmp[32];
+            const size_t len = j - (i + 3) < sizeof(tmp) - 1 ? j - (i + 3) : sizeof(tmp) - 1;
+            memcpy(tmp, buf + i + 3, len);
+            tmp[len] = 0;
+            if (sscanf(tmp, "%d;%d;%d", &btn, &x, &y) == 3) {
+                ls_input_ev_t e = {.source = LS_ISRC_TERM, .col = (int16_t)(x - 1), .row = (int16_t)(y - 1), .clicks = 1};
+                e.mods = (uint8_t)(((btn & 4) ? LS_IMOD_SHIFT : 0) | ((btn & 8) ? LS_IMOD_ALT : 0) |
+                                   ((btn & 16) ? LS_IMOD_CTRL : 0));
+                const int which = btn & 3;
+                if (btn & 64) {
+                    e.kind = LS_IEV_WHEEL;
+                    e.wheel = (btn & 1) ? 1 : -1;
+                } else if (btn & 32) {
+                    e.kind = LS_IEV_PTR_MOVE;
+                } else if (buf[j] == 'M' && which != 3) {
+                    e.kind = LS_IEV_PTR_DOWN;
+                    e.button = (uint8_t)(which == 0 ? LS_IBTN_LEFT : which == 1 ? LS_IBTN_MIDDLE : LS_IBTN_RIGHT);
+                    s_held_buttons |= (uint8_t)(1u << e.button);
+                } else {
+                    e.kind = LS_IEV_PTR_UP;
+                    e.button = (uint8_t)(which == 1 ? LS_IBTN_MIDDLE : which == 2 ? LS_IBTN_RIGHT : LS_IBTN_LEFT);
+                    s_held_buttons &= (uint8_t)~(1u << e.button);
+                }
+                e.buttons = s_held_buttons;
+                ls_input_post(&e);
+            }
+            i = j + 1;
+            continue;
+        }
+        b[o++] = buf[i++];
+    }
+    return o;
+}
+
 int lssim_term_run(void (*frame)(int))
 {
     int cols = 0, rows = 0;
@@ -137,6 +201,7 @@ int lssim_term_run(void (*frame)(int))
     ls_vt_input in = {0};
     tty_raw();
     ls_vt_enter(out_stdout, NULL, cols, rows);
+    if (ls_desk_enabled()) fputs("[?1003h", stdout);        /* hover too */
     int quiet = 0;
     bool run = true;
     /* The mouse as a finger: a press holds it down (a lap app's stick
@@ -148,7 +213,8 @@ int lssim_term_run(void (*frame)(int))
     while (run) {
         uint8_t bytes[256];
         ls_vt_event ev[64];
-        const size_t got = tty_read(bytes, sizeof(bytes));
+        size_t got = tty_read(bytes, sizeof(bytes));
+        if (got && ls_desk_enabled()) got = desk_mouse(bytes, got);
         int n = got ? ls_vt_input_feed(&in, bytes, got, ev, 64) : 0;
         quiet = got ? 0 : quiet + 1;
         if (!got && quiet == 2 && in.n) n = ls_vt_input_idle(&in, ev, 64);
@@ -192,9 +258,151 @@ int lssim_term_run(void (*frame)(int))
         fflush(stdout);
         nap(33);
     }
+    fputs("[?1003l", stdout);
     ls_vt_leave(out_stdout, NULL);
     fflush(stdout);
     tty_restore();
     free(now); free(shown); free(top); free(bot);
+    return 0;
+}
+
+/* ------------------------------------------------------------- --feed --
+
+   lssim --feed: LakeShark Studio's run panel. The board's cell feed (the
+   records ls_rterm.c's cells_render sends, built by lssim's feed_records) in
+   the board's frames on stdout: 0x1E, 4 hex length, up to 4000 bytes, 0x1F,
+   4 hex CRC-16, and an empty frame to end each update, so web/screen.js
+   draws it as it draws a board. Between the frames, plain lines: first
+   "term: web begin cols C rows R cells", then whatever the app logs.
+
+   Lines on stdin, one word each:
+     in HEX      VT input bytes as screen.js sends them ('term in HEX')
+     step SPEC   one LAPSIM_SCRIPT step now (tilt=0.3,-0.1  swipe=L  rx=1 ...)
+     redraw      send the whole screen again
+     quit        leave (so does the end of stdin)
+   An update goes out when the screen changed, and at least every second. */
+
+static void put_frame(const uint8_t *b, size_t n)
+{
+    unsigned crc = 0xFFFF;
+    for (size_t i = 0; i < n; i++) {
+        crc ^= (unsigned)b[i] << 8;
+        for (int k = 0; k < 8; k++) crc = crc & 0x8000 ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF;
+    }
+    char head[6], tail[6];
+    snprintf(head, sizeof(head), "\x1e%04x", (unsigned)n);
+    snprintf(tail, sizeof(tail), "\x1f%04x", crc);
+    fwrite(head, 1, 5, stdout);
+    if (n) fwrite(b, 1, n, stdout);
+    fwrite(tail, 1, 5, stdout);
+}
+
+static int hexv(char c)
+{
+    return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+}
+
+int lssim_feed_run(void (*frame)(int), size_t (*records)(const uint8_t **))
+{
+    void ls_lap_sim_step(const char *spec);
+#ifdef _WIN32
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stdin), _O_BINARY);
+    s_in = GetStdHandle(STD_INPUT_HANDLE);
+    s_console = false;
+#endif
+    int cols = 0, rows = 0, cw = 10, ch = 17;
+    ls_tui_geometry(&cols, &rows, &cw, &ch);
+    printf("term: web begin cols %d rows %d cells\n", cols, rows);
+    fflush(stdout);
+    ls_vt_input in = {0};
+    uint8_t *shown = NULL;
+    size_t shown_n = 0;
+    char line[1024];
+    size_t ln = 0;
+    bool run = true, force = true, m_down = false, m_moved = false;
+    int m_col = 0, m_row = 0, quiet = 0, since = 0;
+    while (run) {
+        uint8_t bytes[4096];
+#ifdef _WIN32
+        DWORD avail = 0, got = 0;
+        size_t n = 0;
+        if (!PeekNamedPipe(s_in, NULL, 0, NULL, &avail, NULL)) break;      /* Studio went away */
+        if (avail && ReadFile(s_in, bytes, (DWORD)(avail < sizeof(bytes) ? avail : sizeof(bytes)), &got, NULL)) n = got;
+#else
+        size_t n = 0;
+        {
+            fd_set fds;
+            FD_ZERO(&fds);
+            FD_SET(0, &fds);
+            struct timeval tv = {0, 0};
+            if (select(1, &fds, NULL, NULL, &tv) > 0) {
+                const ssize_t r = read(0, bytes, sizeof(bytes));
+                if (r <= 0) break;
+                n = (size_t)r;
+            }
+        }
+#endif
+        uint8_t vt[512];
+        size_t vn = 0;
+        for (size_t i = 0; i < n && run; i++) {
+            if (bytes[i] != '\n') {
+                if (ln < sizeof(line) - 1) line[ln++] = (char)bytes[i];
+                continue;
+            }
+            line[ln] = 0;
+            if (ln && line[ln - 1] == '\r') line[--ln] = 0;
+            ln = 0;
+            if (!strncmp(line, "in ", 3)) {
+                for (const char *p = line + 3; p[0] && p[1] && vn < sizeof(vt); p += 2) {
+                    const int a = hexv(p[0]), b = hexv(p[1]);
+                    if (a < 0 || b < 0) break;
+                    vt[vn++] = (uint8_t)(a << 4 | b);
+                }
+            } else if (!strncmp(line, "step ", 5)) {
+                ls_lap_sim_step(line + 5);
+            } else if (!strcmp(line, "redraw")) {
+                force = true;
+            } else if (!strcmp(line, "quit")) {
+                run = false;
+            }
+        }
+        ls_vt_event ev[64];
+        int ne = vn ? ls_vt_input_feed(&in, vt, vn, ev, 64) : 0;
+        quiet = vn ? 0 : quiet + 1;
+        if (!vn && quiet == 2 && in.n) ne = ls_vt_input_idle(&in, ev, 64);
+        for (int i = 0; i < ne; i++) {
+            if (ev[i].type == LS_VT_EV_QUIT) continue;           /* Ctrl-] is the page's, not a quit */
+            if (ev[i].type == LS_VT_EV_REDRAW) force = true;
+            else if (ev[i].type == LS_VT_EV_TAP) {
+                m_down = true;
+                m_moved = false;
+                m_col = ev[i].col;
+                m_row = ev[i].row;
+                ls_lap_sys_host_finger(m_col * cw + cw / 2, m_row * ch + ch / 2, cw, ch, true);
+            } else if (ev[i].type == LS_VT_EV_DRAG && m_down) {
+                m_moved |= ev[i].col != m_col || ev[i].row != m_row;
+                ls_lap_sys_host_finger(ev[i].col * cw + cw / 2, ev[i].row * ch + ch / 2, cw, ch, true);
+            } else if (ev[i].type == LS_VT_EV_UP && m_down) {
+                m_down = false;
+                ls_lap_sys_host_finger(ev[i].col * cw + cw / 2, ev[i].row * ch + ch / 2, cw, ch, false);
+                if (!m_moved) ls_tui_router_touch(m_col, m_row);
+            } else if (ev[i].type == LS_VT_EV_KEY) ls_tui_router_key((ls_tk_t)ev[i].key, ev[i].ch);
+        }
+        frame(1);
+        const uint8_t *rec = NULL;
+        const size_t rn = records(&rec);
+        if (rn && (force || rn != shown_n || memcmp(rec, shown, rn) || ++since >= 25)) {
+            for (size_t o = 0; o < rn; o += 4000) put_frame(rec + o, rn - o < 4000 ? rn - o : 4000);
+            put_frame(NULL, 0);
+            uint8_t *keep = realloc(shown, rn);
+            if (keep) { memcpy(keep, rec, rn); shown = keep; shown_n = rn; }
+            force = false;
+            since = 0;
+        }
+        if (fflush(stdout) != 0 || ferror(stdout)) break;     /* the reader went away */
+        nap(40);
+    }
+    free(shown);
     return 0;
 }

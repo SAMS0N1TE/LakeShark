@@ -43,8 +43,11 @@ static bool keyed(uint64_t ms) {
     }
     return false;
 }
+/* lssim: a board with no radio at all, as a Nano without an SDR is
+   (LAPSIM_RADIO=none, or the LAPSIM_SCRIPT step radio=none). */
+bool ls_lap_radio_sim_absent;
 static int sim_list(lap_radio_info_t *out, int max) {
-    if (max < 1) return 0;
+    if (max < 1 || ls_lap_radio_sim_absent) return 0;
     memset(out, 0, sizeof(*out));
     snprintf(out->name, sizeof(out->name), "SIM");
     out->kind = LAP_RADIO_KIND_SIM;
@@ -59,7 +62,7 @@ static int sim_list(lap_radio_info_t *out, int max) {
     return 1;
 }
 static int sim_open(int radio, const lap_rx_config_t *cfg, ls_lap_rx_actual_t *actual) {
-    if (radio != 0) return LAP_RX_ENODEV;
+    if (radio != 0 || ls_lap_radio_sim_absent) return LAP_RX_ENODEV;
     sim.open = true;
     sim.center = cfg->center_hz;
     sim.rate = cfg->rate_hz;

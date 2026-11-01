@@ -7,7 +7,11 @@
 
 #include "../../ls_theme.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_box.h"
+#include "../../ls_icons.h"
 #include "core/settings.h"
+#include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "ls_keypad.h"
 #include "ls_lora_port.h"
 /* Brightness and auto-dim go through display_ctl, which applies as
@@ -483,6 +487,163 @@ static void draw_one(tui_surface *sf, tui_rect a, const item_t *it, int i, bool 
         s_hit[s_hit_n++] = a;
 }
 
+/* What each row does, for the side of the desk form. */
+static const struct { const char *label, *what; } HELP[] = {
+    { "Volume", "Speaker and headphone level for every app. Mute keeps the level." },
+    { "Brightness", "Panel backlight. Lower saves battery outdoors at night." },
+    { "Mute", "Silences the speaker without losing the volume." },
+    { "Screen lock", "Locks touch and keys until the unlock gesture." },
+    { "Rotate lock", "Holds the screen the way it is when the board turns." },
+    { "Display", "Theme, Daylight, font and dimming." },
+    { "Sound", "Boot sound, spoken callouts, alert and notice sounds." },
+    { "Device", "Keyboard, LoRa radio, language, hotspot and updates." },
+    { "Theme", "The colours every app is drawn in. On the desk it brings its window scheme." },
+    { "Daylight", "A white theme for sunlight, over the chosen one." },
+    { "Font", "Cell font: bigger reads easier, smaller fits more." },
+    { "Auto dim", "Dims the panel when nothing has been touched for a while." },
+    { "Dim after", "How long before Auto dim turns the panel down." },
+    { "Boot sound", "What plays when the board starts." },
+    { "Voice", "Spoken callouts from the radio apps." },
+    { "Alert sound", "A sound for alerts that need attention." },
+    { "Notify sound", "The sound for ordinary notices." },
+    { "Vibrate", "Buzz on alerts, on boards with a motor." },
+    { "Keyboard light", "Backlight of the keyboard, where there is one." },
+    { "Keyboard dim", "Dims the keyboard light with the panel." },
+    { "LoRa radio", "Which port the LoRa module answers on." },
+    { "LoRa module", "The module type fitted to that port." },
+    { "Language", "Words on screen. Numbers and units stay as they are." },
+    { "Hotspot", "The board's own Wi-Fi network, for the web pages." },
+    { "USB autoreboot", "Restart when a PC flashes the board over USB." },
+    { "Update", "Check for and install new firmware over Wi-Fi." },
+    { "BACK", "Back to the first page." },
+};
+
+/* Words into a box, a line at a time; the lines it used. */
+static int wrap(tui_surface *sf, tui_rect box, int x, int y, int w, int rows, const char *t, uint8_t at)
+{
+    int used = 0;
+    while (*t && used < rows) {
+        int n = (int)strlen(t), cut = n;
+        if (n > w) { cut = w; while (cut > 0 && t[cut] != ' ') cut--; if (!cut) cut = w; }
+        char line[96];
+        snprintf(line, sizeof(line), "%.*s", cut < 95 ? cut : 95, t);
+        tui_put_str(sf, box, x, y + used++, line, at);
+        t += cut;
+        while (*t == ' ') t++;
+    }
+    return used;
+}
+
+/* The side of the desk form: the selected row explained, the theme's sixteen
+   colours, and the board's own figures. */
+static void draw_side(tui_surface *sf, tui_rect r, const set_page_t *pg)
+{
+    const uint8_t frame = TUI_ATTR(TUI_CYAN, TUI_BLACK);
+    const uint8_t head = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t text = TUI_ATTR(TUI_WHITE, TUI_BLACK);
+    const uint8_t val = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    int y = r.y;
+    const int ah = r.h >= 22 ? 7 : 6;
+    if (s_sel < pg->n && r.h >= ah) {
+        const item_t *it = &pg->items[s_sel];
+        const tui_rect b = tui_rect_make(r.x, y, r.w, ah);
+        tui_box(sf, b, ls_tr("ABOUT"), frame);
+        char v[64];
+        it->show(v, sizeof(v));
+        tui_put_str(sf, b, b.x + 2, b.y + 1, ls_tr(it->label), TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, b, b.x + 4 + (int)strlen(ls_tr(it->label)), b.y + 1, v, val);
+        const char *what = "ENTER or a tap changes it.";
+        for (unsigned i = 0; i < sizeof(HELP) / sizeof(HELP[0]); i++)
+            if (!strcmp(HELP[i].label, it->label)) { what = HELP[i].what; break; }
+        wrap(sf, b, b.x + 2, b.y + 2, b.w - 4, ah - 3, ls_tr(what), text);
+        y += ah;
+    }
+    if (y + 5 <= r.y + r.h) {
+        const ls_tui_theme_t *t = ls_tui_get_theme();
+        const tui_rect b = tui_rect_make(r.x, y, r.w, 5);
+        tui_box(sf, b, ls_tr("COLOURS"), frame);
+        tui_put_str(sf, b, b.x + 2, b.y + 1, t && t->name ? t->name : "?", val);
+        if (t && t->desc) {
+            const int dx = b.x + 4 + (int)strlen(t->name), room = b.x + b.w - 2 - dx;
+            if (room > 3) tui_put_str(sf, tui_rect_make(dx, b.y + 1, room, 1), dx, b.y + 1, t->desc, LS_ATTR_DIM);
+        }
+        /* Two rows of eight swatches: the dim colours over the bright. */
+        const int sw = (b.w - 4) / 8 > 4 ? 4 : (b.w - 4) / 8;
+        for (int i = 0; i < 16 && sw >= 1; i++)
+            for (int k = 0; k < sw; k++)
+                tui_put_char(sf, b, b.x + 2 + (i % 8) * sw + k, b.y + 2 + i / 8,
+                             k == sw - 1 ? ' ' : LS_TUI_SHADE_FULL, TUI_ATTR(i, TUI_BLACK));
+        y += 5;
+    }
+    if (y + 5 <= r.y + r.h) {
+        const tui_rect b = tui_rect_make(r.x, y, r.w, r.y + r.h - y < 6 ? r.y + r.h - y : 6);
+        tui_box(sf, b, ls_tr("THIS BOARD"), frame);
+        char line[64];
+        const unsigned up = (unsigned)(esp_timer_get_time() / 1000000);
+        snprintf(line, sizeof(line), "%uh %02um %02us", up / 3600, up / 60 % 60, up % 60);
+        tui_put_str(sf, b, b.x + 2, b.y + 1, ls_tr("UP"), head);
+        tui_put_str(sf, b, b.x + 12, b.y + 1, line, val);
+        snprintf(line, sizeof(line), "%u KB", (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
+        tui_put_str(sf, b, b.x + 2, b.y + 2, ls_tr("RAM FREE"), head);
+        tui_put_str(sf, b, b.x + 12, b.y + 2, line, val);
+        snprintf(line, sizeof(line), "%u KB", (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+        if (b.h >= 5) {
+            tui_put_str(sf, b, b.x + 2, b.y + 3, "PSRAM FREE", head);
+            tui_put_str(sf, b, b.x + 13, b.y + 3, line, val);
+        }
+    }
+}
+
+/* THE DESK FORM: a property list. One row a setting - its name, its value,
+   [<] and [>] on a level - with the selection bar in blue. A click on the
+   row presses it, as a tap on the box does; a level steps on its keys. */
+static void draw_compact(tui_surface *sf, tui_rect body, const set_page_t *pg)
+{
+    const uint8_t name = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t val  = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t menu = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t bar  = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLUE);
+    const uint8_t barv = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLUE);
+    int w = body.w > 76 ? 76 : body.w;
+    const int x = body.x + 1;
+    tui_put_str(sf, body, x + 1, body.y, ls_tr("SETTING"), TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    tui_put_str(sf, body, x + 23, body.y, ls_tr("VALUE"), TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    for (int c = 0; c < w - 2; c++)
+        ls_box_put(sf, body, x + c, body.y + 1, LS_BOX_H, TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
+    for (int i = 0; i < pg->n && body.y + 2 + i < body.y + body.h; i++) {
+        const item_t *it = &pg->items[i];
+        const bool sel = i == s_sel;
+        const tui_rect row = tui_rect_make(x, body.y + 2 + i, w - 2, 1);
+        if (sel) tui_fill(sf, row, ' ', bar);
+        tui_put_str(sf, row, row.x + 1, row.y, ls_tr(it->label), sel ? bar : name);
+        char buf[64];
+        it->show(buf, sizeof(buf));
+        const bool sub = it->next == back_next || it->next == display_next ||
+                         it->next == sound_next || it->next == device_next;
+        s_dec[i].w = s_inc[i].w = 0;
+        int vx = row.x + 22;
+        if (it->step) {
+            const uint8_t key = TUI_ATTR(TUI_BLACK, TUI_WHITE);
+            s_dec[i] = tui_rect_make(vx, row.y, 3, 1);
+            tui_put_str(sf, row, vx, row.y, " < ", key);
+            tui_put_str(sf, row, vx + 4, row.y, buf, sel ? barv : val);
+            s_inc[i] = tui_rect_make(vx + 5 + 10, row.y, 3, 1);
+            tui_put_str(sf, row, s_inc[i].x, row.y, " > ", key);
+        } else {
+            tui_put_str(sf, row, vx, row.y, buf, sel ? barv : sub ? menu : val);
+        }
+        if (s_hit_n < MAX_ITEMS) s_hit[s_hit_n++] = row;
+    }
+    /* The app's own art under the list, and the side panels beside it. */
+    const int below = body.y + 2 + pg->n + 1;
+    if (body.y + body.h - below >= 8)
+        ls_icon_draw(sf, body, x + 2, below, LS_ICON_GEAR, TUI_ATTR(TUI_BLUE | TUI_BRIGHT, TUI_BLACK));
+    if (body.w >= w + 28 && body.h >= 9)
+        draw_side(sf, tui_rect_make(body.x + w + 1, body.y, body.w - w - 1, body.h), pg);
+    else if (body.w >= w + 16 && body.h >= 9)
+        ls_icon_draw(sf, body, body.x + w + 4, body.y + 2, LS_ICON_GEAR, TUI_ATTR(TUI_BLUE | TUI_BRIGHT, TUI_BLACK));
+}
+
 static void draw(tui_surface *sf, tui_rect area)
 {
     const set_page_t *pg = page_get();
@@ -490,6 +651,10 @@ static void draw(tui_surface *sf, tui_rect area)
     s_hit_n = 0;
     ls_panel_box(sf, area, pg->title, TUI_CYAN);
     if (area.h < 6 || area.w < 18) return;
+    if (ls_tui_compact()) {
+        draw_compact(sf, tui_rect_make(area.x + 1, area.y + 1, area.w - 2, area.h - 2), pg);
+        return;
+    }
 
     tui_rect body = tui_rect_make(area.x + 1, area.y + 1,
                                   area.w - 2, area.h - 2);
@@ -566,6 +731,12 @@ static bool touch(int col, int row)
             row >= r.y && row < r.y + r.h) {
             s_sel = i;
             if (pg->items[i].next != ap_next) s_ap_armed = false;
+            if (pg->items[i].step && ls_tui_compact()) {
+                /* The desk row: its keys step it, the rest selects it. */
+                if (tui_rect_contains(s_dec[i], col, row)) pg->items[i].step(-1);
+                else if (tui_rect_contains(s_inc[i], col, row)) pg->items[i].step(1);
+                return true;
+            }
             if (pg->items[i].step) {
                 /* A level steps down from the left half of its box and up
                    from the right half, so a finger does not have to find

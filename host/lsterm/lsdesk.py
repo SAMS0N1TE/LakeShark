@@ -1,9 +1,15 @@
-"""LakeShark on the desktop: the board plugged in over USB, in a window of its own.
+"""LakeShark on the desktop over Ethernet (preferred) or USB.
 
     pythonw lsdesk.py            (the shortcut runs this; no console)
+    python lsdesk.py --host 192.168.1.17  (direct board page; remembers IP)
+    python lsdesk.py --serial    (forget IP and use the USB bridge)
     python lsdesk.py --install   puts a LakeShark shortcut on the desktop and in the Start menu
 
-One click finds the board, starts the screen bridge (lsweb.py) on 127.0.0.1 and
+An explicit/remembered IP opens the board page without serial or a bridge.
+Otherwise the finder asks the USB board 'eth', closes serial, and opens its
+wired IP when available. The owner must enable 'term web on' first.
+
+With no wired IP, one click finds the board, starts lsweb.py on 127.0.0.1 and
 opens it as an app window (Edge or Chrome, a profile of its own). Unplug the
 board and the window says so and waits; plug it back in, any USB port, and it
 carries on. Closing the window stops the bridge. A second click while it runs
@@ -13,6 +19,8 @@ Which board: the one it used last (~/.lsdesk.json remembers its USB serial
 number), else the only CH343 board plugged in, else the one that answers as a
 Nano. Ports listed under "skip" in that file are never opened.
 """
+import argparse
+import ipaddress
 import json
 import os
 import socket
@@ -39,16 +47,87 @@ def log(*a):
 
 def load():
     try:
-        return json.load(open(CONFIG, encoding="utf-8"))
+        with open(CONFIG, encoding="utf-8") as f:
+            return json.load(f)
     except (OSError, ValueError):
         return {}
 
 
 def save(cfg):
     try:
-        json.dump(cfg, open(CONFIG, "w", encoding="utf-8"), indent=2)
+        with open(CONFIG, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
     except OSError:
         pass
+
+
+def board_url(host):
+    """A board IPv4 address only: reject paths, credentials and shell text."""
+    return "http://%s/" % ipaddress.IPv4Address(host)
+
+
+def ethernet_ip(device):
+    """Ask only 'eth', release the console, and leave all services as found.
+
+    Called by the launcher, never at import time. Tests use a fake Serial.
+    """
+    import re
+    import serial
+    try:
+        s = serial.Serial()
+        s.port, s.baudrate, s.timeout = device, 115200, 0.2
+        s.dtr = s.rts = False
+        try:
+            s.open()
+            s.read(1 << 16)
+            s.write(b"\reth\r")
+            got, deadline = b"", time.monotonic() + 1.5
+            while time.monotonic() < deadline:
+                got += s.read(4096)
+                m = re.search(rb"eth: on link=up speed=\d+M ip=([0-9.]+) ", got)
+                if m:
+                    ip = str(ipaddress.IPv4Address(m[1].decode()))
+                    return ip if ip != "0.0.0.0" else None
+        finally:
+            s.close()
+    except (OSError, ValueError, serial.SerialException):
+        pass
+    return None
+
+
+def desktop_host(cfg, host=None, serial_only=False):
+    """Explicit/remembered IP bypasses serial entirely; otherwise discover.
+
+    This does not turn on the board's web server or change its password.
+    --serial is an escape hatch for the existing USB bridge.
+    """
+    if serial_only:
+        cfg.pop("host", None)
+        save(cfg)
+        return None
+    host = host or cfg.get("host")
+    if host:
+        board_url(host)  # validate before saving or opening a browser
+    else:
+        try:
+            device = finder(cfg)()
+            host = ethernet_ip(device) if device else None
+        except ImportError:  # direct-IP use never needs pyserial
+            host = None
+    if host:
+        cfg["host"] = str(ipaddress.IPv4Address(host))
+        save(cfg)
+        return cfg["host"]
+    return None
+
+
+def arguments(argv=None):
+    p = argparse.ArgumentParser(description="LakeShark desktop over Ethernet or USB")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--host", help="board IPv4 address, remembered in ~/.lsdesk.json", type=lambda h: str(ipaddress.IPv4Address(h)))
+    g.add_argument("--serial", action="store_true", help="use USB and forget the remembered IP")
+    p.add_argument("--install", action="store_true")
+    return p.parse_args(argv)
 
 
 def answers_as(device):
@@ -123,7 +202,8 @@ def open_window(url):
         return None
     profile = os.path.join(HOME, "window")
     return subprocess.Popen([exe, "--app=" + url, "--user-data-dir=" + profile, "--no-first-run",
-                             "--no-default-browser-check", "--window-size=1500,860", "--disable-features=Translate"])
+                             "--no-default-browser-check", "--window-size=1500,860", "--disable-features=Translate"]
+                            + lsweb.KEEP_AWAKE)
 
 
 def running(port):
@@ -156,17 +236,23 @@ def install():
         print("shortcut:", lnk)
 
 
-def main():
-    if "--install" in sys.argv:
+def main(argv=None):
+    args = arguments(argv)
+    if args.install:
         install()
         return
     cfg = load()
+    host = desktop_host(cfg, args.host, args.serial)
+    if host:
+        open_window(board_url(host))
+        return
     port = int(cfg.get("port", PORT))
     url = "http://127.0.0.1:%d/" % port
     if running(port):                            # already up: just another window on it
         open_window(url)
         return
-    server = lsweb.serve(finder(cfg), port, int(cfg.get("baud", 2000000)))
+    # 4 Mbaud: map pictures are ~40-60 KB compressed; measured clean on the Nano's CH343.
+    server = lsweb.serve(finder(cfg), port, int(cfg.get("baud", 4000000)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     log("bridge on", url)
     open_window(url)

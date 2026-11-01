@@ -512,7 +512,8 @@ def main():
         args = [only_board()] + args
     if args[0] == "--sim":
         here = os.path.dirname(os.path.abspath(__file__))
-        exe = os.path.join(here, "..", "..", "bench", "build", "lssim.exe" if os.name == "nt" else "lssim")
+        exe = os.environ.get("LSSIM_EXE") or \
+            os.path.join(here, "..", "..", "bench", "build", "lssim.exe" if os.name == "nt" else "lssim")   # lsdk sim names its own
         app = args[1] if len(args) > 1 else "home"
         if app.startswith("lap:"):              # a native app built into the simulator: lap:carrier
             os.environ["LAPSIM"], app = app[4:], "lap"

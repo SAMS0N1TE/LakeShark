@@ -1,5 +1,4 @@
-/* Touch for the TUI. See ls_tui_touch.c for why a drag deliberately does
-   nothing. */
+/* Touch for the TUI: completed taps and held fingers for dragging controls. */
 #ifndef LS_TUI_TOUCH_H
 #define LS_TUI_TOUCH_H
 
@@ -40,6 +39,16 @@ bool ls_tui_touch_held(int *start_col, int *start_row, int *col, int *row);
    that need more than a cell: where it is, where it went down, and when
    (esp_timer microseconds). False while no finger is down. */
 bool ls_tui_touch_px(int *x, int *y, int *x0, int *y0, int64_t *since_us);
+/* Desktop input stays in grid coordinates; the app finger is a separate,
+   window-relative channel. Never feed the latter back into desktop input. */
+bool ls_tui_touch_input_held(int *sc, int *sr, int *c, int *r);
+bool ls_tui_touch_input_px(int *x, int *y, int *x0, int *y0, int64_t *since_us);
+void ls_tui_touch_client(int col, int row, int gx, int gy, bool down);
+void ls_tui_touch_client_clear(void);
+
+/* Pointer cell associated with the wheel currently being dispatched. UI task. */
+void ls_tui_pointer_set(int col, int row);
+bool ls_tui_pointer_cell(int *col, int *row);
 /* Finished touches that were not taps, counted, and the last one in grid
    pixels: start and end. A screen compares the count with the one it saw. */
 uint32_t ls_tui_touch_drags(int *x0, int *y0, int *x1, int *y1);

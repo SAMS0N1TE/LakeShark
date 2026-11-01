@@ -610,7 +610,38 @@ LS_COLD void ls_map_zoom_by(int dz)
     ls_map_zoom_limits(&lo, &hi);
     if (z < lo) z = lo;
     if (z > hi) z = hi;
+    if (z != s_zoom) ls_map_trace("zoom", s_zoom, z);
     s_zoom = z;
+}
+
+/* The map's last moments, for 'carto trace': zooms, pans and each stage
+   after them (request, render, picture, the feed to a desk), newest last, so
+   a slow or stuck change shows where its time went. */
+#define MAP_TRACE_N 192
+static struct { int64_t us; const char *what; int32_t a, b; } s_trace[MAP_TRACE_N];
+static unsigned s_trace_n;
+
+void ls_map_trace_reset(void) { __atomic_store_n(&s_trace_n, 0, __ATOMIC_RELEASE); }
+
+void ls_map_trace(const char *what, int32_t a, int32_t b)
+{
+    const unsigned i = __atomic_fetch_add(&s_trace_n, 1, __ATOMIC_ACQ_REL) % MAP_TRACE_N;
+    s_trace[i].us = esp_timer_get_time(); s_trace[i].what = what; s_trace[i].a = a; s_trace[i].b = b;
+}
+
+void ls_map_trace_dump(void)
+{
+    const unsigned total = __atomic_load_n(&s_trace_n, __ATOMIC_ACQUIRE);
+    const unsigned n = total < MAP_TRACE_N ? total : MAP_TRACE_N, first = total - n;
+    if (!n) { printf("trace: empty (zoom or pan the map first)\n"); return; }
+    const int64_t now = esp_timer_get_time();
+    for (unsigned k = 0; k < n; k++) {
+        const unsigned i = (first + k) % MAP_TRACE_N;
+        printf("trace %9.1f ms ago  %-13s %ld %ld\n", (double)(now - s_trace[i].us) / 1000.0,
+               s_trace[i].what, (long)s_trace[i].a, (long)s_trace[i].b);
+    }
+    printf("trace: %u marks of %u\n", n, total);
+    ls_map_trace_reset();
 }
 
 /* See ls_map.h. The same projection ls_map_pan uses, because a
@@ -671,9 +702,10 @@ LS_COLD int ls_map_zoom_covering(double lat, double lon)
     return -1;
 }
 
-LS_COLD void ls_map_pan(int dx_px, int dy_px)
+LS_COLD void ls_map_pan(double dx_px, double dy_px)
 {
     if (!dx_px && !dy_px) return;
+    ls_map_trace("pan", (int32_t)dx_px, (int32_t)dy_px);
     ls_map_follow_set(false);
 
     const double world = ldexp(1.0, s_zoom) * (double)s_tile_px;

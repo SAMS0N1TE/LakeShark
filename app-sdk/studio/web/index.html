@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LakeShark Studio</title>
+<link rel="stylesheet" href="static/studio.css">
+</head>
+<body>
+<div id="app">
+  <header class="title on" id="titlebar"><span class="logo">/|~</span> LakeShark Studio <span id="title-app"></span><span class="keys">[_][&#9633;][x]</span></header>
+  <nav id="menubar"></nav>
+  <div id="toolbar">
+    <button class="key" data-cmd="app.new" title="New app">New app</button>
+    <button class="key" data-cmd="file.save" title="Save">Save</button>
+    <span class="sep">|</span>
+    <button class="key" data-cmd="build.build">Build <i>F7</i></button>
+    <button class="key" data-cmd="build.run">Run <i>F5</i></button>
+    <button class="key primary" data-cmd="board.install">Install <i>F8</i></button>
+    <button class="key" data-cmd="board.open">Open on board</button>
+    <span class="sep">|</span>
+    <button class="key" data-cmd="view.palette" title="Every command">Commands <i>Ctrl+Shift+P</i></button>
+    <span class="grow"></span>
+    <span id="chip-sim" class="chip">SIM off</span>
+    <span id="chip-board" class="chip">BOARD ?</span>
+  </div>
+  <div id="projtabs"></div>
+  <main id="dock"></main>
+  <footer id="status">
+    <span id="st-text">Ready</span><span class="grow"></span>
+    <span id="st-problems" class="badge" title="Problems">x 0  ! 0</span>
+    <span id="st-build"></span><span id="st-git"></span><span id="st-pos"></span><span id="st-api"></span>
+  </footer>
+</div>
+<div id="holder" hidden></div>
+<div id="floats"></div>
+<div id="dropzone" hidden></div>
+<div id="dragghost" hidden></div>
+<div id="menus"></div>
+<div id="modal" hidden><div class="dialog win" id="dialog"></div></div>
+<div id="palette" hidden><div class="win pal"><input id="pal-q" type="text" spellcheck="false" autocomplete="off"><div id="pal-list" class="list"></div></div></div>
+<script src="static/vendor/codemirror.js"></script>
+<script src="static/studio.js"></script>
+</body>
+</html>

@@ -264,6 +264,9 @@ def main():
         ("ls_font_mono_16", FreeTypeFace(args.freetype, args.regular, 16)),
         ("ls_font_mono_14", FreeTypeFace(args.freetype, args.regular, 14)),
         ("ls_font_mono_24", PillowFace(args.bold, 24)),
+        # Small glass faces from bench/tools/gen_small_font.py, same renderer as 14/16.
+        ("ls_font_mono_13", FreeTypeFace(args.freetype, args.regular, 13)),
+        ("ls_font_mono_11", FreeTypeFace(args.freetype, args.regular, 11)),
     ]
     latin, cells = {}, {}
     for name, face in faces:
@@ -367,7 +370,7 @@ def main():
             "   only some of the faces still links. */",
             "const ls_font_t *ls_font_cyr_page(const ls_font_t *latin)",
             "{",
-            "    static const ls_font_t *const PAGES[] = { &ls_font_cyr_16, &ls_font_cyr_14, &ls_font_cyr_24 };",
+            "    static const ls_font_t *const PAGES[] = { " + ", ".join(f"&ls_font_cyr_{n.replace('ls_font_mono_', '')}" for n, _ in faces) + " };",
             "    if (!latin) return NULL;",
             "    for (unsigned i = 0; i < sizeof(PAGES) / sizeof(PAGES[0]); i++)",
             "        if (PAGES[i]->cell_w == latin->cell_w && PAGES[i]->cell_h == latin->cell_h &&",
@@ -375,7 +378,7 @@ def main():
             "    return NULL;",
             "}", ""]
     (TUI / "ls_font_cyr.c").write_text("\n".join(out), encoding="utf-8", newline="\n")
-    print(f"ls_font_cyr.c: {total} bytes of glyph data and descriptors in three faces")
+    print(f"ls_font_cyr.c: {total} bytes of glyph data and descriptors in {len(faces)} faces")
 
     # A proof sheet: every letter in every face, for a look.
     sheet = REPO / "bench/build-uk/cyr_sheet.png"

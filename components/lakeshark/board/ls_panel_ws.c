@@ -106,29 +106,31 @@ static const ws_panel_t CATALOG[] = {
 };
 #define N_PANELS (sizeof(CATALOG) / sizeof(CATALOG[0]))
 
-/* No glass at all: a framebuffer nothing scans, so the TUI runs and its only
+/* No glass at all: only a cell grid, so the TUI runs and its only
    screen is a terminal on another machine (ls_rterm: 'term serial', 'term
    net on'). Its size is the grid's: 'panel term <cols>x<rows>' saves one, in
-   cells of the default font (10x17) with a cell's margin all round, so the
-   default 1200x510 is 118x28. */
+   cells; term size can also choose the font's device pixel metrics. */
 #define TERM_CW    10
 #define TERM_CH    17
 #define TERM_COLS  118
 #define TERM_ROWS  28
-#define TERM_COLS_MAX 200          /* 'panel term' and 'term size' stop here */
-#define TERM_ROWS_MAX 60
+#define TERM_COLS_MAX 384          /* 'panel term' and 'term size' stop here */
+#define TERM_ROWS_MAX 112
 /* Portrait is its own size, not the landscape one on its side: turned, a
    wide grid came out as a tall one no screen was laid out for. 510x1200 is
    the portrait the UI was drawn for (the T-Display's 52x70, near enough). */
 #define TERM_PORTRAIT_W 510
 #define TERM_PORTRAIT_H 1200
 static ws_panel_t VIRTUAL = { .name = "term", .label = "no display: remote terminal only",
-                              .w = (TERM_COLS + 2) * TERM_CW, .h = (TERM_ROWS + 2) * TERM_CH, .touch = T_ID };
-static uint16_t s_term_land_w = (TERM_COLS + 2) * TERM_CW, s_term_land_h = (TERM_ROWS + 2) * TERM_CH;
+                              .w = TERM_COLS * TERM_CW, .h = TERM_ROWS * TERM_CH, .touch = T_ID };
+static uint16_t s_term_land_w = TERM_COLS * TERM_CW, s_term_land_h = TERM_ROWS * TERM_CH;
 /* The terminal-only view as one word, w << 16 | h: the UI task turns it while
    console commands read it, and two separate halves could pair a portrait
    width with a landscape height. */
 static uint32_t s_term_wh;
+static portMUX_TYPE s_term_mux = portMUX_INITIALIZER_UNLOCKED;
+static int s_term_cols = TERM_COLS, s_term_rows = TERM_ROWS;
+static int s_term_cw = TERM_CW, s_term_ch = TERM_CH;
 
 static const ws_panel_t *find_panel(const char *name)
 {
@@ -148,7 +150,7 @@ typedef struct {
     char model[12];
     uint8_t tmap;       /* TMAP_SET | swap | mirror x << 1 | mirror y << 2 */
     uint16_t mbps;      /* lane rate override, 0 = the panel's own */
-    uint8_t tcols, trows; /* the terminal-only grid, 0 = TERM_COLS x TERM_ROWS */
+    uint16_t tcols; uint8_t trows; /* the terminal-only grid, 0 = TERM_COLS x TERM_ROWS */
 } saved_t;
 
 static esp_err_t saved_job(void *ctx)
@@ -164,7 +166,7 @@ static esp_err_t saved_job(void *ctx)
         if (e == ESP_ERR_NVS_NOT_FOUND) e = ESP_OK;
         if (e == ESP_OK) e = s->mbps ? nvs_set_u16(h, "mbps", s->mbps) : nvs_erase_key(h, "mbps");
         if (e == ESP_ERR_NVS_NOT_FOUND) e = ESP_OK;
-        if (e == ESP_OK) e = s->tcols ? nvs_set_u8(h, "tcols", s->tcols) : nvs_erase_key(h, "tcols");
+        if (e == ESP_OK) e = s->tcols ? nvs_set_u16(h, "tcols", s->tcols) : nvs_erase_key(h, "tcols");
         if (e == ESP_ERR_NVS_NOT_FOUND) e = ESP_OK;
         if (e == ESP_OK) e = s->trows ? nvs_set_u8(h, "trows", s->trows) : nvs_erase_key(h, "trows");
         if (e == ESP_ERR_NVS_NOT_FOUND) e = ESP_OK;
@@ -174,8 +176,12 @@ static esp_err_t saved_job(void *ctx)
         if (nvs_get_str(h, "model", s->model, &n) != ESP_OK) s->model[0] = 0;
         if (nvs_get_u8(h, "tmap", &s->tmap) != ESP_OK) s->tmap = 0;
         if (nvs_get_u16(h, "mbps", &s->mbps) != ESP_OK) s->mbps = 0;
-        if (nvs_get_u8(h, "tcols", &s->tcols) != ESP_OK) s->tcols = 0;
-        if (nvs_get_u8(h, "trows", &s->trows) != ESP_OK) s->trows = 0;
+        if (nvs_get_u16(h, "tcols", &s->tcols) != ESP_OK) {
+            uint8_t old = 0; /* migrate the original one-byte value */
+            nvs_get_u8(h, "tcols", &old); s->tcols = old;
+        }
+        if (s->tcols > TERM_COLS_MAX) s->tcols = 0;
+        if (nvs_get_u8(h, "trows", &s->trows) != ESP_OK || s->trows > TERM_ROWS_MAX) s->trows = 0;
     }
     nvs_close(h);
     return e;
@@ -535,21 +541,29 @@ esp_err_t ls_panel_test_start(void)
     return ESP_OK;
 }
 
+/* Preserve the requested shape while staying inside the pixel allocation.
+   This also bounds a saved grid before the preferred font has been loaded. */
+static void term_fit_pixels(int *cols, int *rows, int cw, int ch)
+{
+    const int c = *cols, r = *rows;
+    while ((size_t)*cols * *rows * cw * ch > LS_TERM_PIXEL_MAX) {
+        if (*cols * r > *rows * c) --*cols;
+        else --*rows;
+    }
+}
+
 static esp_err_t virtual_up(void)
 {
     saved_t sv;
     saved_read(&sv);
-    const int cols = sv.tcols ? sv.tcols : TERM_COLS, rows = sv.trows ? sv.trows : TERM_ROWS;
-    s_term_land_w = VIRTUAL.w = (uint16_t)((cols + 2) * TERM_CW);
-    s_term_land_h = VIRTUAL.h = (uint16_t)((rows + 2) * TERM_CH);
+    int cols = sv.tcols ? sv.tcols : TERM_COLS, rows = sv.trows ? sv.trows : TERM_ROWS;
+    s_term_cols = cols; s_term_rows = rows;
+    term_fit_pixels(&cols, &rows, TERM_CW, TERM_CH);
+    s_term_land_w = VIRTUAL.w = (uint16_t)(cols * TERM_CW);
+    s_term_land_h = VIRTUAL.h = (uint16_t)(rows * TERM_CH);
     __atomic_store_n(&s_term_wh, (uint32_t)VIRTUAL.w << 16 | VIRTUAL.h, __ATOMIC_RELEASE);
-    /* One buffer that holds either view, at the biggest grid 'term size' can
-       ask for, so a window that is resized never needs a new one;
-       ls_panel_ws_term_view picks which. */
-    size_t px = (size_t)((TERM_COLS_MAX + 2) * TERM_CW) * ((TERM_ROWS_MAX + 2) * TERM_CH);
-    if (px < (size_t)TERM_PORTRAIT_W * TERM_PORTRAIT_H) px = (size_t)TERM_PORTRAIT_W * TERM_PORTRAIT_H;
-    s_frames[s_back] = heap_caps_calloc(px, sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-    if (!s_frames[s_back]) return s_result = ESP_ERR_NO_MEM;
+    /* Cells are the screen. A PNG request lends its exact-size destination
+       to the UI for one paint; there is no persistent virtual pixel buffer. */
     s_model = &VIRTUAL;
     s_tmap = VIRTUAL.touch;
     ESP_LOGI(TAG, "no display: the screen is served to a terminal ('term serial', 'term net on')");
@@ -648,10 +662,22 @@ static void geometry(int *w, int *h)
 
 bool ls_panel_fb(ls_panel_fb_t *out)
 {
-    if (!out || !s_model || !s_frames[s_back]) return false;
+    if (!out || !s_model || (s_model != &VIRTUAL && !s_frames[s_back])) return false;
     out->pixels = s_frames[s_back];
     geometry(&out->width, &out->height);
     return true;
+}
+
+bool ls_panel_ws_term_pixels(uint16_t *pixels, int w, int h)
+{
+    if (s_model != &VIRTUAL) return false;
+    int width, height;
+    taskENTER_CRITICAL(&s_term_mux);
+    geometry(&width, &height);
+    const bool fits = !pixels || (w == width && h == height);
+    if (fits) s_frames[s_back] = pixels;
+    taskEXIT_CRITICAL(&s_term_mux);
+    return fits;
 }
 
 void ls_panel_fb_present(void)
@@ -720,20 +746,35 @@ esp_err_t ls_panel_blank(unsigned fade_ms)
 
 const char *ls_panel_ws_name(void) { return s_model ? s_model->name : NULL; }
 
-bool ls_panel_ws_term_resize(int cols, int rows)
+bool ls_panel_ws_term_resize(int cols, int rows, int cw, int ch)
 {
-    if (s_model != &VIRTUAL || cols < 40 || rows < 12 || cols > TERM_COLS_MAX || rows > TERM_ROWS_MAX) return false;
-    const uint16_t w = (uint16_t)((cols + 2) * TERM_CW), h = (uint16_t)((rows + 2) * TERM_CH);
-    if (w == s_term_land_w && h == s_term_land_h) return false;
+    if (s_model != &VIRTUAL || cols < 40 || rows < 12 || cols > TERM_COLS_MAX || rows > TERM_ROWS_MAX ||
+        cw < 1 || ch < 1 || cw > 15 || ch > 26 || (size_t)cols * rows * cw * ch > LS_TERM_PIXEL_MAX) return false;
+    const uint16_t w = (uint16_t)(cols * cw), h = (uint16_t)(rows * ch);
+    taskENTER_CRITICAL(&s_term_mux);
+    if (s_frames[s_back] || (w == s_term_land_w && h == s_term_land_h && cw == s_term_cw && ch == s_term_ch)) {
+        taskEXIT_CRITICAL(&s_term_mux);
+        return false; /* one on-demand paint owns the current geometry */
+    }
+    s_term_cols = cols; s_term_rows = rows;
+    s_term_cw = cw; s_term_ch = ch;
     s_term_land_w = VIRTUAL.w = w;
     s_term_land_h = VIRTUAL.h = h;
     __atomic_store_n(&s_term_wh, (uint32_t)w << 16 | h, __ATOMIC_RELEASE);
+    taskEXIT_CRITICAL(&s_term_mux);
     saved_t sv;                         /* and the next start comes up the same size */
     saved_read(&sv);
-    sv.tcols = (uint8_t)cols;
+    sv.tcols = (uint16_t)cols;
     sv.trows = (uint8_t)rows;
     saved_write(&sv);
     return true;
+}
+
+void ls_panel_ws_term_refont(int cw, int ch)
+{
+    int cols = s_term_cols, rows = s_term_rows;
+    term_fit_pixels(&cols, &rows, cw, ch);
+    ls_panel_ws_term_resize(cols, rows, cw, ch);
 }
 
 bool ls_panel_ws_term_view(bool portrait)
@@ -885,16 +926,16 @@ static int cmd_panel(int argc, char **argv)
         if (argc == 2) {
             printf("panel: terminal grid %ux%u%s\n", sv.tcols ? sv.tcols : TERM_COLS,
                    sv.trows ? sv.trows : TERM_ROWS, sv.tcols ? " (saved)" : " (default)");
-            puts("usage: panel term <cols>x<rows> (40-200 x 12-60) | panel term default");
+            puts("usage: panel term <cols>x<rows> (40-384 x 12-112) | panel term default");
             return 0;
         }
         int c = 0, r = 0;
         if (!strcmp(argv[2], "default")) sv.tcols = sv.trows = 0;
-        else if (sscanf(argv[2], "%dx%d", &c, &r) == 2 && c >= 40 && c <= 200 && r >= 12 && r <= 60) {
-            sv.tcols = (uint8_t)c;
+        else if (sscanf(argv[2], "%dx%d", &c, &r) == 2 && c >= 40 && c <= TERM_COLS_MAX && r >= 12 && r <= TERM_ROWS_MAX) {
+            sv.tcols = (uint16_t)c;
             sv.trows = (uint8_t)r;
         } else {
-            puts("panel: term <cols>x<rows>, 40-200 columns by 12-60 rows, or default");
+            puts("panel: term <cols>x<rows>, 40-384 columns by 12-112 rows, or default");
             return 1;
         }
         snprintf(sv.model, sizeof(sv.model), "%s", VIRTUAL.name);
@@ -920,10 +961,12 @@ void ls_panel_ws_register_console(void)
 }
 
 #else
+bool ls_panel_ws_term_pixels(uint16_t *pixels, int w, int h) { (void)pixels; (void)w; (void)h; return false; }
 const char *ls_panel_ws_name(void) { return NULL; }
 bool ls_panel_ws_size(int *w, int *h) { (void)w; (void)h; return false; }
+void ls_panel_ws_term_refont(int cw, int ch) { (void)cw; (void)ch; }
 bool ls_panel_ws_term_view(bool portrait) { (void)portrait; return false; }
-bool ls_panel_ws_term_resize(int cols, int rows) { (void)cols; (void)rows; return false; }
+bool ls_panel_ws_term_resize(int cols, int rows, int cw, int ch) { (void)cols; (void)rows; (void)cw; (void)ch; return false; }
 bool ls_panel_ws_touch_map(ls_panel_ws_touch_map_t *out) { (void)out; return false; }
 void ls_panel_ws_register_console(void) {}
 #endif

@@ -61,7 +61,10 @@ bool ls_tui_screen_is_bare(void) { return s_bare; }
 
 void ls_tui_screen_set_bare(bool on)
 {
-    if (s_bare == on) return;
+    /* Full is bare already. A desk window draws its app full every frame and
+       MAP asks for bare every frame: letting the two flip the flag threw the
+       whole grid away 25 times a second. */
+    if (s_bare == on || s_full) return;
     s_bare = on;
     ls_tui_invalidate();
 }
@@ -312,11 +315,38 @@ bool ls_tui_keyboard_mode(void)
     return ls_keypad_present();
 }
 
+/* The surface the router last drew when it was not the grid (a desk
+   window's client); zero, and the grid answers, otherwise. */
+static int s_view_w, s_view_h;
+
 bool ls_tui_is_wide(void)
 {
-    int cols, rows;
-    ls_tui_geometry(&cols, &rows, NULL, NULL);
+    int cols = s_view_w, rows = s_view_h;
+    if (cols <= 0 || rows <= 0) ls_tui_geometry(&cols, &rows, NULL, NULL);
     return cols > rows;
+}
+
+/* The size touch is resolved against: what was drawn last. */
+static void drawn_size(int *cols, int *rows)
+{
+    *cols = s_view_w;
+    *rows = s_view_h;
+    if (*cols <= 0 || *rows <= 0) ls_tui_geometry(cols, rows, NULL, NULL);
+}
+
+const char *ls_tui_status_left(void) { return s_status_left; }
+
+/* Desk mode: the router's own global keys off, and input hooks in front. */
+static bool s_globals = true;
+void ls_tui_router_set_globals(bool on) { s_globals = on; }
+bool ls_tui_router_globals(void) { return s_globals; }
+static bool (*s_key_hook)(ls_tk_t, char);
+static bool (*s_touch_hook)(int, int);
+static bool s_in_hook;
+void ls_tui_router_set_hooks(bool (*key)(ls_tk_t key, char ch), bool (*touch)(int col, int row))
+{
+    s_key_hook = key;
+    s_touch_hook = touch;
 }
 
 /* ------------------------------------------------------------------ chrome */
@@ -369,6 +399,7 @@ static void status_span(int cols, int *x0, int *x1)
 /* What the clock slot shows. Set by whoever knows the time; empty
    draws nothing, which is what the bench and a board with no clock get. */
 static char s_status_clock[LS_TUI_CLOCK_W + 1];
+const char *ls_tui_status_clock(void) { return s_status_clock; }
 
 void ls_tui_status_set_clock(const char *text)
 {
@@ -839,8 +870,16 @@ void ls_tui_router_draw(tui_surface *sf)
     if (ls_cartocore_draw(sf)) return;
 #endif
     ls_trail(LS_TRAIL_TUI, s_screens[s_current] && s_screens[s_current]->name ? s_screens[s_current]->name : "?");
-    int cols, rows;
-    ls_tui_geometry(&cols, &rows, NULL, NULL);
+    /* Laid out from the surface drawn into, not the grid: the desk runs the
+       router in a window's own surface. Only the grid has a camera hole. */
+    const int cols = sf->w, rows = sf->h;
+    int grid_cols = 0, grid_rows = 0;
+    ls_tui_geometry(&grid_cols, &grid_rows, NULL, NULL);
+    const bool on_grid = cols == grid_cols && rows == grid_rows;
+    /* Drawn on the grid, or outside the desk, the grid answers as it always
+       did; in a desk window (globals off) the window's surface does. */
+    s_view_w = on_grid || s_globals ? 0 : cols;
+    s_view_h = on_grid || s_globals ? 0 : rows;
 
     const int th = tab_rows();
 
@@ -861,7 +900,7 @@ void ls_tui_router_draw(tui_surface *sf)
                     s_unlock_step ? ls_tr("2. Tap RIGHT half to unlock") : ls_tr("1. Tap LEFT half to begin"), ink);
         tui_put_str(sf, all, x, rows / 2 + 3, ls_tr("Keyboard: LEFT then RIGHT"), ink);
         tui_rect hole;
-        if (ls_tui_cutout(&hole)) ls_tui_cutout_runaround(sf, hole);
+        if (on_grid && ls_tui_cutout(&hole)) ls_tui_cutout_runaround(sf, hole);
         return;
     }
     const int sr = status_rows();
@@ -875,7 +914,7 @@ void ls_tui_router_draw(tui_surface *sf)
        drawing both doubles the cells the diff has to push in the one frame
        where something is already moving. */
     tui_rect hole;
-    const bool has_hole = ls_tui_cutout(&hole);
+    const bool has_hole = on_grid && ls_tui_cutout(&hole);
     if (area.h > 0 && ls_anim_draw(sf, area)) {
         if (hint_rows()) draw_hints(sf, cols, rows - 1);
         if (has_hole) ls_tui_cutout_runaround(sf, hole);
@@ -936,6 +975,12 @@ static bool router_touch_dispatch(int col, int row);
 
 LS_COLD bool ls_tui_router_touch(int col, int row)
 {
+    if (s_touch_hook && !s_in_hook) {
+        s_in_hook = true;
+        const bool took = s_touch_hook(col, row);
+        s_in_hook = false;
+        return took;
+    }
 #if defined(ESP_PLATFORM) && LS_HAS_CARTOCORE
     extern bool ls_cartocore_dismiss(void);
     if (ls_cartocore_dismiss()) return true;
@@ -949,7 +994,7 @@ LS_COLD static bool router_touch_dispatch(int col, int row)
 {
     if (s_locked) {
         int cols, rows;
-        ls_tui_geometry(&cols, &rows, NULL, NULL);
+        drawn_size(&cols, &rows);
         if (col < 0 || col >= cols || row < 1 || row >= rows) return true;
         if (col < cols / 2) s_unlock_step = 1;
         else if (s_unlock_step) ls_tui_set_locked(false);
@@ -967,7 +1012,7 @@ LS_COLD static bool router_touch_dispatch(int col, int row)
 
     if (s_help_open) { s_help_open = false; return true; }
     int cols, rows;
-    ls_tui_geometry(&cols, &rows, NULL, NULL);
+    drawn_size(&cols, &rows);
     const int th = tab_rows();
     if (ls_anim_active()) {
         ls_anim_cancel();
@@ -1010,6 +1055,12 @@ LS_COLD static bool router_touch_dispatch(int col, int row)
 
 LS_COLD bool ls_tui_router_key(ls_tk_t key, char ch)
 {
+    if (s_key_hook && !s_in_hook) {
+        s_in_hook = true;
+        const bool took = s_key_hook(key, ch);
+        s_in_hook = false;
+        return took;
+    }
     if ((key == LS_TK_WHEEL_UP || key == LS_TK_WHEEL_DOWN) && !(s_screens[s_current] && s_screens[s_current]->wheel))
         key = key == LS_TK_WHEEL_UP ? LS_TK_UP : LS_TK_DOWN;
 #if defined(ESP_PLATFORM) && LS_HAS_CARTOCORE
@@ -1034,6 +1085,7 @@ LS_COLD bool ls_tui_router_key(ls_tk_t key, char ch)
             s_help_open = false;
         return true;
     }
+    if (!s_globals && ls_anim_active()) ls_anim_cancel();
     if (ls_anim_active()) {
         ls_anim_cancel();
         /* Navigation and OPTIONS do not depend on body hit rectangles. Keep
@@ -1060,6 +1112,9 @@ LS_COLD bool ls_tui_router_key(ls_tk_t key, char ch)
     if (ls_picker_active()) return ls_picker_key(key, ch);
 
     if (s && s->key && s->key(key, ch)) return true;
+    /* In a desk window the desk owns these: nothing jumps HOME or switches
+       tabs behind the window's back. */
+    if (!s_globals) return false;
 
     switch (key) {
     case LS_TK_F1: case LS_TK_F2: case LS_TK_F3: case LS_TK_F4:
@@ -1097,4 +1152,23 @@ LS_COLD bool ls_tui_router_key(ls_tk_t key, char ch)
     default:
         return false;
     }
+}
+
+/* Past the hooks: what the desk calls to hand a window's app its input. */
+bool ls_tui_router_key_direct(ls_tk_t key, char ch)
+{
+    const bool was = s_in_hook;
+    s_in_hook = true;
+    const bool took = ls_tui_router_key(key, ch);
+    s_in_hook = was;
+    return took;
+}
+
+bool ls_tui_router_touch_direct(int col, int row)
+{
+    const bool was = s_in_hook;
+    s_in_hook = true;
+    const bool took = ls_tui_router_touch(col, row);
+    s_in_hook = was;
+    return took;
 }

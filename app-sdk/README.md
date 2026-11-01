@@ -23,6 +23,84 @@ Every `.c` file in the folder is compiled into the app. The examples:
 | `apps/detector` | API 2.2: DETECTOR, rules over what the board's watchers see (`lap_seen_*`), aircraft and the mesh, with banner, sound, speech, vibration, mesh and SD log sinks, in the background |
 | `apps/morse` | API 2.0: a decoder of your own: reads I/Q, keys on the envelope, decodes Morse, plays a sidetone |
 
+## Your first app in 5 minutes
+
+`lsdk` makes an app, builds it, runs it on the PC and puts it on the board.
+Put `app-sdk` on your PATH once and it works from any terminal (`lsdk.cmd` on
+Windows, `lsdk` elsewhere; `python app-sdk/lsdk.py` does the same):
+
+```
+$env:PATH += ";$PWD\app-sdk"          # PowerShell, in the LakeShark folder
+export PATH="$PATH:$PWD/app-sdk"      # sh
+```
+
+1. **Make it.** `lsdk new demo` writes `demo/` with a working `main.c`, an
+   `app.json` and VS Code tasks. `--template` picks the start:
+
+   | Template | What you get |
+   |---|---|
+   | `blank` (default) | a face in character art, one live value, the board's keys and OPTIONS |
+   | `radio` | big rolling frequency, spectrum and the shared waterfall on any radio; RADIO, TUNE, OPTIONS |
+   | `dots` | a picture in dots: a lit ball that rolls as the board tilts and flies when you swipe |
+   | `3d` | the 3D engine: a lit, shadowed scene you walk round with a finger |
+   | `service` | a background service that watches the decoded timeline and posts a notice |
+
+2. **Build it.** `cd demo` then `lsdk build`: `build/demo.lap`. Mistakes come
+   out one a line as `main.c:69:15: error: expected ';' ...`, and a call that
+   is not in the app API points at the line that makes it.
+3. **See it run.** `lsdk sim` compiles the app into the simulator (the first
+   time takes a minute or two, then seconds) and runs it live in this terminal
+   through `lsterm --sim`: keys and the mouse work, Ctrl-] quits.
+   `lsdk sim --frames 60` writes pictures to `build/frames` instead, and
+   `--script "20:tilt=0.4,0;40:swipe=L"` plays the sensors.
+4. **Put it on the board.** `lsdk install --open` builds, uploads and opens it
+   in a desk window. With LakeShark Desktop's window open, the upload goes
+   through its bridge, which already holds the port; otherwise straight over
+   USB (`--port COMx` when more than one board is plugged in).
+5. **Change it and go again.** `lsdk logs` shows the board's console lines
+   for your app (`lap_log`); `lsdk info`, `lsdk list` and `lsdk rm demo` do
+   the rest.
+
+**LakeShark Studio** is all of that in a browser: `lsdk studio` opens
+http://127.0.0.1:8790/. What it does that an editor alone cannot:
+
+- **The board beside the code.** Run (F5) shows the app drawn by the
+  board's own screen code, fed by the firmware's own UI in the simulator;
+  tilt, swipe, feed it pages and packets, or take its radio away to see what
+  a Nano without an SDR shows. Pop it out into a window of its own.
+- **One key to the real board.** Install (F8) builds and uploads, over USB or
+  through LakeShark Desktop's bridge; Open on board shows it in a desk window.
+- **The board's own log**, next to the sim's.
+- **An AI with the same tools.** The AI panel and any MCP client (Claude
+  Code, Claude Desktop, Codex, VS Code: Connect an AI has the text to paste)
+  build, run the app in the simulator and read its screen, and install it
+  when you say yes. A model is optional and pluggable: any OpenAI-compatible
+  endpoint, its key from an environment variable or the per-user settings
+  file, never a repository.
+
+Around that, an IDE: apps open side by side in tabs with a recent list
+(pins, last screens), a file manager (drag and drop, files dropped from
+Explorer, rename with F2, delete to a trash with undo, images previewed),
+an editor with completion and hover docs for the API, signature help,
+several cursors (Ctrl+D), find and replace, a split view, an outline, git
+marks and format on save, a command palette (Ctrl+Shift+P), keys you can
+change, project search, an lsdk terminal, and panels you can drag, dock,
+float and save as named layouts (Code, Board and Debug come with it). It
+follows the desk's schemes, Bay 95, Classic 95, High Contrast, Teal, Amber
+and Night. On the desk it is under Start > Programs > Development >
+LakeShark Studio; the bridge serves it at `/studio/`. It listens on this
+computer only.
+
+**VS Code:** open the app's folder. Ctrl+Shift+B builds and puts the errors
+in Problems; the `lsdk: sim`, `install` and `logs` tasks are in Run Task;
+typing an API name offers a snippet with its arguments. The SDK's own
+`.vscode` does the same for the examples in `apps/`.
+
+The simulator needs this repository's `bench/` and a host C compiler, CMake
+and Ninja. lsdk finds them in the usual places on Windows (CLion's MinGW,
+Espressif's Ninja); set `LSDK_HOST_PATH` to point it elsewhere. `install`,
+`logs` and `rm` need pyserial.
+
 ## An app
 
 ```c
@@ -448,6 +526,14 @@ lines, circles, lit balls, dithered ramps, ASCII-art sprites and a 3 x 5 dot
 font. Two colours per cell survive, so keep text on a plain background and let
 dither do the shading.
 
+## AI clients (MCP)
+
+`python app-sdk/lsdk.py mcp` starts the SDK's stdio MCP server. AI clients can
+search the headers, make/edit/build apps, run the simulator and see PNGs, then
+install through LakeShark Desktop or serial. See [mcp/README.md](mcp/README.md)
+for tool schemas, Claude Code/Desktop, Codex CLI and VS Code configs, fake-host
+tests, console confirmation rules and limits. No network listener is started.
+
 ## Looking at an app without a board
 
 The host bench compiles every app in `apps/` into `lssim`, the TUI simulator,
@@ -459,15 +545,20 @@ LAPSIM=dice LSSIM_FRAMES=frames lssim lap -A 40 -f 60
 
 writes every frame as a picture. `LAPSIM_SCRIPT` plays the sensors by frame
 (`5:tilt=0.3,-0.1;20:swipe=L;30:mesh;31:rx=4;40:down=120,300;44:up`), and
-lssim's own `-x` taps cells. See `bench/shims/ls_lap_screen.c`.
+lssim's own `-x` taps cells. See `bench/shims/ls_lap_screen.c`. An app
+folder anywhere else goes in with `LAPSIM_EXTRA_APPS` (what `lsdk sim` sets),
+and `lssim lap --feed` streams the screen as the board's cell feed for a
+viewer such as Studio's run panel.
 
 ## Installing
 
 - **From the store:** terminalbay.com, LakeShark hub, APPS. Connect the board
   with USB in Chrome or Edge and press INSTALL.
 - **By hand:** copy the `.lap` into `/apps` on the SD card and restart the board.
+- **From your PC:** `lsdk install` (above), or LakeShark Studio's Install.
 - **Over USB from your own tools:** the board's console command `app`
-  (`app put`, `app data`, `app end`, `app list`, `app info`, `app rm`).
+  (`app put`, `app data`, `app end`, `app list`, `app info`, `app rm`);
+  `lapboard.py` speaks it, directly or through the desktop bridge.
 
 Store apps are signed by the store. An app from anywhere else runs too; the
 board asks once before it opens one the store did not sign.

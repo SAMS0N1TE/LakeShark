@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "ls_tui_screen.h"
+#include "ls_box.h"
 #include "ls_textpack.h"
 
 static uint32_t rgb888(uint16_t c)
@@ -88,6 +89,7 @@ void ls_vt_resolve(const ls_vt_frame *f, bool quadrants_only, ls_vt_cell *out)
             else if (ch >= 0xA0 && ch <= 0xA7)           o.cp = trace(ch - 0xA0 + 1);
             else if (ch >= 0xC0 && ch <= 0xFF)           o.cp = sextant(ch, quadrants_only);
             else if (ch >= 0x2800 && ch <= 0x28FF)       o.cp = (uint32_t)ch;
+            else if (ch >= 0x2000 && ls_box_is(ch))      o.cp = ls_box_vt(ch);
             else if (ch >= 0x80) {
                 const int slot = tui_cyr_slot(ch);
                 o.cp = slot >= 0 ? tui_cyr_slot_codepoint(slot) : '?';
@@ -278,6 +280,11 @@ static void flush(sink *k)
 static void put(sink *k, const char *s, size_t n)
 {
     if (k->n + n > k->cap) flush(k);
+    if (n > k->cap) {                 /* longer than the whole buffer: straight through */
+        k->out(k->ctx, s, n);
+        k->total += n;
+        return;
+    }
     memcpy(k->buf + k->n, s, n);
     k->n += n;
 }

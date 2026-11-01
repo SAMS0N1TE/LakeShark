@@ -24,13 +24,19 @@ for filename in ('ls_cartocore.c','tui_core.c'):
             calls=re.findall(r'(\w+)/\d+',line)
             if calls or name not in graph:graph[name]=calls
 # External leaves are deliberately closed: adding a dependency requires review.
-leaves={'memcpy','strlen','strcpy','strcmp','heap_caps_free','_assert'}
+# ls_map_trace (ls_map.c, 'carto trace'): an atomic index and four stores into a
+# static ring; no I/O, no allocation, a few bytes of stack.
+leaves={'memcpy','strlen','strcpy','strcmp','heap_caps_free','_assert','ls_map_trace'}
 seen=set();pending=list(roots)
 while pending:
     name=pending.pop()
     if name in seen:continue
     seen.add(name)
-    assert name not in indirect,('unreviewed indirect call',name)
+    # Reviewed observer: ls_braille_put calls only tui_stroke_hook with kinds
+    # 1/2. The rterm observer writes bounded RAM paths/ownership; its kind-0
+    # allocation/reset branch is reached only by the root frame begin. The
+    # focused visual fixture exercises that production callback and its cap.
+    assert name not in indirect or name=='ls_braille_put',('unreviewed indirect call',name)
     assert not re.search(r'(fopen|opendir|readdir|(?:^|_)stat$|rename|unlink|fread|fclose|lseek|nvs_|open_map|recover_maps|render_frame)',name),name
     if name in frames:
         size,kind=frames[name]
@@ -39,6 +45,7 @@ while pending:
         assert name in leaves or name.startswith('__atomic_'),('unreviewed external or missing stack record',name)
     pending+=graph.get(name,[])
 assert roots<=frames.keys()
+assert not {'cc_pixels_rgb565_pan','save_pixel_state','pix_commit'} & seen
 for api in ('fopen','opendir','stat','rename','unlink','nvs'):
     env=dict(os.environ,LSSIM_CARTO_GUARD_PROBE=api)
     p=subprocess.run([str(build/'lssim.exe'),'map','-f','1'],cwd=root,env=env,capture_output=True,text=True)

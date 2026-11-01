@@ -15,6 +15,12 @@ if(NOT CONFIG_LS_BOARD_T_DISPLAY_P4 AND NOT CONFIG_LS_PANEL_RUNTIME)   # TILES a
     list(FILTER APPS_C_SRCS EXCLUDE REGEX "/scr_tiles.c$")
 endif()
 
+# The desktop shell (tui/desk) is for a board whose screen is the PC's: the
+# Nano's runtime panel. Every other build leaves it out.
+if(NOT CONFIG_LS_PANEL_RUNTIME)
+    list(FILTER APPS_C_SRCS EXCLUDE REGEX "/tui/desk/")
+endif()
+
 if(CONFIG_LS_LR2021_ONLY)
     list(FILTER APPS_C_SRCS EXCLUDE REGEX "/(scr_cell|ls_catch_ui)\.c$")
 else()
@@ -23,9 +29,9 @@ endif()
 
 # Glyph bitmaps packed where the zstd decoder is linked: these four are
 # compiled from a generated copy (below) instead of as they are.
-set(LS_FONT_PACKED ls_font_mono_14.c ls_font_mono_16.c ls_font_mono_24.c ls_font_cyr.c)
+set(LS_FONT_PACKED ls_font_mono_11.c ls_font_mono_13.c ls_font_mono_14.c ls_font_mono_16.c ls_font_mono_24.c ls_font_cyr.c)
 if(NOT CMAKE_BUILD_EARLY_EXPANSION AND (CONFIG_LS_BOARD_T_DISPLAY_P4 OR CONFIG_LS_PANEL_RUNTIME))
-    list(FILTER APPS_C_SRCS EXCLUDE REGEX "/ls_font_(mono_14|mono_16|mono_24|cyr)\\.c$")
+    list(FILTER APPS_C_SRCS EXCLUDE REGEX "/ls_font_(mono_11|mono_13|mono_14|mono_16|mono_24|cyr)\\.c$")
 endif()
 
 idf_component_register(
@@ -94,6 +100,11 @@ add_custom_command(OUTPUT ${LS_WEB_PAGE}
     DEPENDS ${LS_WEB}/pack.py ${LS_WEB}/screen.html ${LS_WEB}/screen.js ${LS_WEB}/xterm-headless.js
     VERBATIM)
 target_add_binary_data(${COMPONENT_LIB} ${LS_WEB_PAGE} BINARY)
+if(CONFIG_LS_PANEL_RUNTIME)
+    foreach(asset lsfont.bin.gz dejavu-mono.woff2 dejavu-mono-bold.woff2)
+        target_add_binary_data(${COMPONENT_LIB} ${LS_WEB}/${asset} BINARY)
+    endforeach()
+endif()
 foreach(s 180 192 512)
     target_add_binary_data(${COMPONENT_LIB} ${LS_WEB}/icon-${s}.png BINARY)
 endforeach()
@@ -138,7 +149,7 @@ if(CONFIG_COMPILER_OPTIMIZATION_SIZE)
     file(GLOB LS_HOT_TUI ${CMAKE_CURRENT_LIST_DIR}/tui/tuilib/*.c
          ${CMAKE_CURRENT_LIST_DIR}/tui/lap3d/*.c)
     foreach(f ls_tui.c ls_tui_screen.c ls_tui_chrome.c ls_tui_ui.c ls_tui_touch.c ls_tui_inset.c
-              ls_glyph.c ls_font_mono_14.c ls_font_mono_16.c ls_font_mono_24.c ls_font_cyr.c
+              ls_glyph.c ls_font_mono_11.c ls_font_mono_13.c ls_font_mono_14.c ls_font_mono_16.c ls_font_mono_24.c ls_font_cyr.c
               ls_font_list.c ls_text.c ls_textbuf.c ls_map_ink.c ls_pixel_wf.c ls_waterfall.c
               ls_audio_analysis.c ls_audio_overview.c
               ls_audio_tools.c ls_audio_layers.c

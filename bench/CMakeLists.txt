@@ -267,6 +267,19 @@ target_link_libraries(ls_harness PUBLIC Threads::Threads)
 
 enable_testing()
 
+add_executable(test_ble_hid_report tests/test_ble_hid_report.c ../main/ble_hid_report.c)
+target_include_directories(test_ble_hid_report PRIVATE ../main)
+add_test(NAME test_ble_hid_report COMMAND test_ble_hid_report)
+add_executable(test_ble_hid_input tests/test_ble_hid_input.c ../main/ble_hid_input.c)
+target_include_directories(test_ble_hid_input PRIVATE ../main ../components/apps)
+add_test(NAME test_ble_hid_input COMMAND test_ble_hid_input)
+add_executable(test_ble_hid_vt_sink tests/test_ble_hid_vt_sink.c
+    ../components/apps/tui/tuilib/tui_core.c ../components/apps/tui/ls_i18n.c)
+target_include_directories(test_ble_hid_vt_sink PRIVATE ../components/apps/tui)
+target_compile_options(test_ble_hid_vt_sink PRIVATE -O2 -ffunction-sections -fdata-sections)
+target_link_options(test_ble_hid_vt_sink PRIVATE -Wl,--gc-sections)
+add_test(NAME test_ble_hid_vt_sink COMMAND test_ble_hid_vt_sink)
+
 function(ls_add_test name)
     add_executable(${name} tests/${name}.c ${ARGN})
     target_link_libraries(${name} ls_harness m)
@@ -274,7 +287,7 @@ function(ls_add_test name)
 endfunction()
 
 ls_add_test(test_radios_status ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
-    shims/lap_service_none.c)
+    shims/lap_service_none.c shims/ls_compact_none.c)
 target_include_directories(test_radios_status PRIVATE ${LS_TUI_APP_INCLUDES}
     ${FW}/components/lakeshark)
 target_compile_definitions(test_radios_status PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
@@ -297,6 +310,12 @@ target_include_directories(test_tui_surface PRIVATE
 ls_add_test(test_term_vt ${FW}/components/apps/tui/ls_vt.c
     ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_term_vt PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/apps/tui ${FW}/components/apps/tui/tuilib)
+
+# Box lines and shapes (ls_box.h): masks at every face, stand-ins, terminal codepoints.
+ls_add_test(test_tui_box_glyphs ${FW}/components/apps/tui/ls_vt.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
+target_include_directories(test_tui_box_glyphs PRIVATE ${LS_TUI_APP_INCLUDES}
     ${FW}/components/apps/tui ${FW}/components/apps/tui/tuilib)
 
 ls_add_test(test_ws ${FW}/components/apps/tui/ls_ws.c)
@@ -948,6 +967,32 @@ target_sources(lssim PRIVATE ${FW}/components/lakeshark/core/ls_time.c
 target_compile_definitions(lssim PRIVATE LS_TIME_HOST=1)
 target_link_libraries(lssim m music_decode_host)
 target_sources(lssim PRIVATE tools/lssim_music_layers.c)
+# The desktop shell (components/apps/tui/desk): 'lssim desk'.
+set(LS_DESK_SRCS
+    ${FW}/components/apps/tui/desk/ls_desk.c
+    ${FW}/components/apps/tui/desk/ls_desk_widgets.c
+    ${FW}/components/apps/tui/desk/ls_desk_menu.c
+    ${FW}/components/apps/tui/desk/ls_desk_compat.c
+    ${FW}/components/apps/tui/desk/ls_desk_shell.c
+    ${FW}/components/apps/tui/desk/ls_desk_wall.c
+    ${FW}/components/apps/tui/desk/ls_desk_anim.c
+    ${FW}/components/apps/tui/desk/ls_desk_props.c
+    ${FW}/components/apps/tui/desk/ls_desk_studio.c)
+target_sources(lssim PRIVATE ${FW}/components/apps/tui/desk/ls_desk_live.c)
+target_sources(lssim PRIVATE ${LS_DESK_SRCS})
+# The desk's window manager over the real router, in a 160x45 grid.
+ls_add_test(test_desk_wm
+    ${LS_TUI_APP_SRCS}
+    ${LS_DESK_SRCS}
+    ${FW}/components/apps/tui/ls_tui_screen.c
+    ${FW}/components/apps/tui/ls_tui_chrome.c
+    ${FW}/components/apps/tui/ls_theme.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c shims/ls_rterm_line_none.c)
+target_include_directories(test_desk_wm PRIVATE
+    ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/apps/tui
+    ${FW}/components/apps/tui/tuilib
+    ${FW}/bench/shims)
 
 # Runs the lssim above with -C, which links everything the board registers.
 ls_add_test(test_lssim_census)
@@ -1395,7 +1440,7 @@ ls_add_test(test_flex ${APP}/fm/flex.c fixtures/flex_gen.c)
 ls_add_test(test_rec_storage_label ${APP}/rec/rec_storage_label.c)
 ls_add_test(test_rec_unique_name ${APP}/rec/rec_unique_name.c)
 ls_add_test(test_files_safety ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
-    ${FW}/components/apps/tui/ls_tui_ui.c ${FW}/components/apps/tui/ls_icons.c)
+    ${FW}/components/apps/tui/ls_tui_ui.c ${FW}/components/apps/tui/ls_icons.c shims/ls_app_none.c)
 target_include_directories(test_files_safety BEFORE PRIVATE
     ${FW}/bench/tests/files_shims ${LS_TUI_APP_INCLUDES})
 target_compile_options(test_files_safety PRIVATE -ffunction-sections -fdata-sections)
@@ -2422,6 +2467,11 @@ if(CARTOCORE_DIR)
     add_test(NAME test_carto_budget COMMAND test_carto_budget)
     add_executable(test_cartocore_cells "${CC_ROOT}/tests/cells.c" "${CC_ROOT}/src/ingest/host_cellset.c")
     target_link_libraries(test_cartocore_cells cartocore_host m)
+    add_executable(test_cartocore_pan tests/test_carto_pan.c)
+    target_link_libraries(test_cartocore_pan cartocore_host m)
+    target_compile_options(test_cartocore_pan PRIVATE -UNDEBUG)
+    add_test(NAME test_cartocore_pan COMMAND test_cartocore_pan "${FW}/data/franklin_mini.ctile")
+    set_tests_properties(test_cartocore_pan PROPERTIES WORKING_DIRECTORY "${FW}")
     add_executable(test_cartocore_decoded_cache "${CC_ROOT}/tests/decoded_cache.c")
     target_link_libraries(test_cartocore_decoded_cache cartocore_host m)
     add_test(NAME test_cartocore_decoded_cache COMMAND test_cartocore_decoded_cache "${FW}/data/franklin_mini.ctile")
@@ -3096,21 +3146,47 @@ endif()
 # The example apps, compiled for the host into lssim's APP screen so their
 # frames can be looked at (LAPSIM=<id>; see shims/ls_lap_screen.c). Each
 # app's lap_main and lap_app are renamed so they can sit side by side.
+# LAPSIM_EXTRA_APPS: more app folders anywhere on disk (absolute paths, ';'
+# between), compiled in the same way; app-sdk/lsdk.py sets it for `lsdk sim`
+# and LakeShark Studio. One of these wins over an example of the same name.
+set(LAPSIM_EXTRA_APPS "$ENV{LAPSIM_EXTRA_APPS}" CACHE STRING "Extra app folders for lssim's APP screen (lsdk sim)")
 file(GLOB LAPSIM_APP_DIRS LIST_DIRECTORIES true ${FW}/app-sdk/apps/*)
+set(LAPSIM_EXTRA_NAMES "")
+foreach(dir ${LAPSIM_EXTRA_APPS})
+    get_filename_component(app ${dir} NAME)
+    list(APPEND LAPSIM_EXTRA_NAMES ${app})
+endforeach()
 set(LAPSIM_TABLE "")
 set(LAPSIM_DECLS "")
 set(LAPSIM_COUNT 0)
-foreach(dir ${LAPSIM_APP_DIRS})
+foreach(dir ${LAPSIM_APP_DIRS} ${LAPSIM_EXTRA_APPS})
     if(IS_DIRECTORY ${dir})
         get_filename_component(app ${dir} NAME)
-        file(GLOB app_src ${dir}/*.c)
+        list(FIND LAPSIM_EXTRA_NAMES ${app} extra_at)
+        list(FIND LAPSIM_EXTRA_APPS ${dir} is_extra)
+        if(extra_at GREATER -1 AND is_extra EQUAL -1)
+            continue()                       # an extra folder of this name replaces the example
+        endif()
+        string(MAKE_C_IDENTIFIER ${app} sym)
+        file(GLOB app_src CONFIGURE_DEPENDS ${dir}/*.c)
         target_sources(lssim PRIVATE ${app_src})
         set_source_files_properties(${app_src} PROPERTIES COMPILE_DEFINITIONS
-            "lap_main=lap_main_${app};lap_app=lap_app_${app};lap_icon_px=lap_icon_px_${app};LAP_ICON_PX_ATTR=__attribute__((used))")
-        string(APPEND LAPSIM_DECLS "const lap_app_t *lap_main_${app}(void);
-extern const lap_icon_px_t lap_icon_px_${app};
+            "lap_main=lap_main_${sym};lap_app=lap_app_${sym};lap_icon_px=lap_icon_px_${sym};LAP_ICON_PX_ATTR=__attribute__((used))")
+        set(icon "0")                        # LAP_ICON_PX is optional
+        foreach(f ${app_src})
+            file(READ ${f} txt)
+            string(FIND "${txt}" "LAP_ICON_PX(" at)
+            if(at GREATER -1)
+                set(icon "&lap_icon_px_${sym}")
+            endif()
+        endforeach()
+        string(APPEND LAPSIM_DECLS "const lap_app_t *lap_main_${sym}(void);
 ")
-        string(APPEND LAPSIM_TABLE "    {\"${app}\", lap_main_${app}, &lap_icon_px_${app}},
+        if(NOT icon STREQUAL "0")
+            string(APPEND LAPSIM_DECLS "extern const lap_icon_px_t lap_icon_px_${sym};
+")
+        endif()
+        string(APPEND LAPSIM_TABLE "    {\"${app}\", lap_main_${sym}, ${icon}},
 ")
         math(EXPR LAPSIM_COUNT "${LAPSIM_COUNT} + 1")
     endif()
@@ -3462,3 +3538,63 @@ if(TARGET cartocore_host AND Python3_Interpreter_FOUND)
     # the encoder itself, against libzstd when this Python has it (3.14+)
     add_test(NAME test_lszstd COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lszstd.py")
 endif()
+
+# Desktop input queue/codec on the host, shared with firmware.
+add_executable(test_input tests/test_input.c ${FW}/components/apps/tui/ls_input.c)
+target_include_directories(test_input PRIVATE ${LS_TUI_APP_INCLUDES})
+target_link_libraries(test_input PRIVATE Threads::Threads)
+add_test(NAME test_input COMMAND test_input)
+target_sources(lssim PRIVATE ${FW}/components/apps/tui/ls_input.c tools/lssim_input.c)
+target_compile_definitions(lssim PRIVATE LSSIM_HAS_INPUT_FINGER=1)
+
+if(Python3_Interpreter_FOUND)
+    add_test(NAME test_lsweb_input COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lsweb_input.py)
+endif()
+find_program(LS_INPUT_NODE NAMES node)
+if(LS_INPUT_NODE)
+    add_test(NAME test_screen_input COMMAND ${LS_INPUT_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_screen_input.js)
+endif()
+
+# The desk window-manager test links what the router test links.
+target_sources(test_desk_wm PRIVATE shims/ls_route_hw_fake.c)
+target_compile_definitions(test_desk_wm PRIVATE LS_FIELD_SAMPLE_STUB=1 LS_TUI_THEME_STUB=1)
+target_sources(test_desk_wm PRIVATE ${FW}/components/apps/tui/ls_wordmark.c)
+target_link_libraries(test_desk_wm music_analysis_host)
+
+# Keep every host renderer's font indices identical to firmware.
+get_property(LS_HOST_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(t IN LISTS LS_HOST_TARGETS)
+    get_target_property(srcs ${t} SOURCES)
+    if("${srcs}" MATCHES "ls_font_list\\.c")
+        target_sources(${t} PRIVATE ${FW}/components/apps/tui/ls_font_mono_11.c
+                                   ${FW}/components/apps/tui/ls_font_mono_13.c)
+    endif()
+endforeach()
+
+target_sources(test_tui_font PRIVATE ${FW}/components/apps/tui/ls_font_mono_11.c
+                                    ${FW}/components/apps/tui/ls_font_mono_13.c)
+if(LS_INPUT_NODE)
+    add_test(NAME test_screen_resolution COMMAND ${LS_INPUT_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_screen_resolution.js)
+    add_test(NAME test_screen_pcfont COMMAND ${LS_INPUT_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_screen_pcfont.js)
+endif()
+
+target_sources(test_tui_font PRIVATE ${FW}/components/apps/tui/ls_font_cyr.c
+                                    ${FW}/components/apps/tui/tuilib/tui_core.c)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME test_panel_resolution COMMAND ${Python3_EXECUTABLE} -B
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_panel_resolution.py ${CMAKE_C_COMPILER})
+endif()
+
+# MAP pointer math over the real viewport and input channels.
+ls_add_test(test_map_navigation
+    ${FW}/components/apps/tui/ls_map.c ${FW}/components/apps/tui/ls_tui_touch.c
+    ${PMT}/upstream/zeromesh_pmtiles.c
+    ${CARTO}/src/carto.c ${CARTO}/src/framebuffer.c ${CARTO}/src/geom.c
+    ${CARTO}/src/mvt.c ${CARTO}/src/raster.c ${CARTO}/src/style.c)
+target_include_directories(test_map_navigation PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/lakeshark ${CARTO}/include ${CARTO}/src ${PMT}/upstream ${PMT}/compat)
+target_compile_options(test_map_navigation PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_map_navigation PRIVATE -Wl,--gc-sections)
+set_source_files_properties(tests/test_map_navigation.c PROPERTIES COMPILE_OPTIONS "-fwhole-program")
+target_sources(test_desk_wm PRIVATE ${FW}/components/apps/tui/ls_tui_touch.c)
+target_compile_definitions(test_desk_wm PRIVATE LSSIM_HAS_INPUT_FINGER=1)

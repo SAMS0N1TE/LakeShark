@@ -73,6 +73,26 @@ menu "LakeShark"
             the board's DSI connector. Nothing changes until a panel is saved
             with 'panel set <name>'; with none the board stays headless.
 
+    config LS_NANO_RAM_BUDGET
+        bool "Nano desktop internal RAM budget"
+        depends on LS_BOARD_P4_NANO && LS_PANEL_RUNTIME && SPIRAM
+        depends on FREERTOS_TASK_CREATE_ALLOW_EXT_MEM && SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY
+        default n
+        help
+            Keep flash-writing workers in DRAM; put the read-only BLE
+            telemetry, advertisement and UI stall monitor stacks in PSRAM.
+            Right-size measured desktop workers to leave room for EMAC DMA.
+
+    config LS_NANO_ETH
+        bool "Nano wired Ethernet (IP101GRI)"
+        depends on LS_BOARD_P4_NANO && LS_PANEL_RUNTIME
+        select ETH_USE_ESP32_EMAC
+        default y
+        help
+            Starts the P4 EMAC with DHCP alongside the C5 Wi-Fi netif.
+            Does not enable a listener: use 'term web on' explicitly.
+            'eth off' persists across reboots; 'eth on' restores it.
+
     config LS_VBUS_EN_GPIO
         int "USB host VBUS enable GPIO (-1 if the port is hard-powered)"
         default 46 if LS_BOARD_P4_NANO

@@ -67,14 +67,15 @@ static void run_lines(void)
         s_pos = end + 1;
         if (cr && s_pos < s_len && s_buf[s_pos] == '\n') s_pos++;
         if (!*line) continue;
-        printf("%s\n", line);
+        const bool quiet = !strncmp(line, "term ev ", 8) || !strcmp(line, "term ack") ||
+                           !strncmp(line, "term lat ", 9);
+        if (!quiet) printf("%s\n", line);
         int ret;
         const esp_err_t err = esp_console_run(line, &ret);
         if (err == ESP_ERR_NOT_FOUND) printf("Unrecognized command\n");
         else if (err == ESP_OK && ret != ESP_OK) LS_PRINTF(t_console_fast_command_returned_non_zero, "Command returned non-zero error code: 0x%x (%s)\n", ret, esp_err_to_name(ret));
         else if (err != ESP_OK && err != ESP_ERR_INVALID_ARG) printf("Internal error: %s\n", esp_err_to_name(err));
-        fputs(s_prompt, stdout);
-        fflush(stdout);
+        if (!quiet) { fputs(s_prompt, stdout); fflush(stdout); }
     }
 }
 

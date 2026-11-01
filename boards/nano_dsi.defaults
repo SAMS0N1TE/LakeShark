@@ -11,3 +11,12 @@ CONFIG_ESP_MM_CACHE_MSYNC_C2M_CHUNKED_OPS_MAX_LEN=0x4000
 # TILES and the cell maps (CartoCore), as on the T-Display: FAT buffers in PSRAM and room for its open files
 CONFIG_FATFS_ALLOC_PREFER_EXTRAM=y
 CONFIG_FATFS_FS_LOCK=24
+
+# Nano desktop only. Existing sdkconfig files need these values applied too.
+CONFIG_LS_NANO_RAM_BUDGET=y
+# IDF 5.5.4 P4: 64-byte descriptors + 512-byte internal DMA buffers.
+# 6/4 requests 5760 B for the rings, PLUS the 4096 B RX task and objects.
+# Keep the console first; measure internal RAM before trying 10/6.
+CONFIG_ETH_DMA_BUFFER_SIZE=512
+CONFIG_ETH_DMA_RX_BUFFER_NUM=6
+CONFIG_ETH_DMA_TX_BUFFER_NUM=4

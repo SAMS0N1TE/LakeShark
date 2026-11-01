@@ -115,11 +115,6 @@ It engages a pull-**down** on each header pin and reports which ones something
 external is still holding high - which is what an idle UART transmitter does.
 A pin reading ~100% is a wire; 0% is nothing connected.
 
-Use `link probe`, not `link scan`: `scan` engages a pull-**up**, so an
-unconnected pin idles high exactly like a connected one and reads clean whether
-or not anything is attached. That is why a 17-pin sweep can come back perfect
-while the wire is on the wrong pin.
-
 Note that GPIO32 and GPIO36 read 100% on this board even with every jumper off -
 they have their own pull-ups. `link probe` labels them and excludes them.
 

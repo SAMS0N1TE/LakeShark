@@ -46,6 +46,9 @@ static int          s_ui_lang;
 /* Accepted choices must be visible before the delayed write reaches NVS. */
 static int s_boot_sound = 1;
 static int s_notification_sound = SETTINGS_NOTIFY_ALERT;
+static int s_desk_theme = -1;
+static uint32_t s_desk_wallpaper;
+static uint32_t s_desk_words[SETTINGS_DESK_WORDS];
 static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_audio_muted;
 static uint32_t s_fm_step;
@@ -438,6 +441,18 @@ bool settings_init(void)
     if(nvs_get_u8(s_nvs,"ui_lang",&ui_lang)==ESP_OK && settings_ui_lang_valid(ui_lang))
         __atomic_store_n(&s_ui_lang,(int)ui_lang,__ATOMIC_RELEASE);
 
+    uint8_t desk_theme = 0;
+    uint32_t desk_wp = 0;
+    if (nvs_get_u8(s_nvs, "desk_theme", &desk_theme) == ESP_OK)
+        __atomic_store_n(&s_desk_theme, (int)desk_theme, __ATOMIC_RELEASE);
+    if (nvs_get_u32(s_nvs, "desk_wp", &desk_wp) == ESP_OK)
+        __atomic_store_n(&s_desk_wallpaper, desk_wp, __ATOMIC_RELEASE);
+    for (int i = 0; i < SETTINGS_DESK_WORDS; i++) {
+        char k[12];
+        snprintf(k, sizeof(k), "desk_w%d", i);
+        uint32_t v = 0;
+        if (nvs_get_u32(s_nvs, k, &v) == ESP_OK) __atomic_store_n(&s_desk_words[i], v, __ATOMIC_RELEASE);
+    }
     uint8_t notification_sound = SETTINGS_NOTIFY_ALERT;
     if (nvs_get_u8(s_nvs, "notify_snd", &notification_sound) == ESP_OK &&
         notification_sound < SETTINGS_NOTIFY_COUNT)
@@ -1751,6 +1766,33 @@ bool settings_set_pagers(const settings_pagers_t *cfg)
 static const char *const notification_names[SETTINGS_NOTIFY_COUNT] = {
     "ALERT", "RADIO KEY", "ROGER", "CHIRP", "OFF"
 };
+int settings_get_desk_theme(void) { return __atomic_load_n(&s_desk_theme, __ATOMIC_ACQUIRE); }
+void settings_set_desk_theme(int theme)
+{
+    if (theme < 0 || theme > 255 || theme == settings_get_desk_theme()) return;
+    __atomic_store_n(&s_desk_theme, theme, __ATOMIC_RELEASE);
+    if (s_wq) sput_u8("desk_theme", (uint8_t)theme);
+}
+uint32_t settings_get_desk_word(int slot)
+{
+    return slot >= 0 && slot < SETTINGS_DESK_WORDS ? __atomic_load_n(&s_desk_words[slot], __ATOMIC_ACQUIRE) : 0;
+}
+void settings_set_desk_word(int slot, uint32_t v)
+{
+    if (slot < 0 || slot >= SETTINGS_DESK_WORDS || settings_get_desk_word(slot) == v) return;
+    __atomic_store_n(&s_desk_words[slot], v, __ATOMIC_RELEASE);
+    char k[12];
+    snprintf(k, sizeof(k), "desk_w%d", slot);
+    if (s_wq) sput_u32(k, v);
+}
+uint32_t settings_get_desk_wallpaper(void) { return __atomic_load_n(&s_desk_wallpaper, __ATOMIC_ACQUIRE); }
+void settings_set_desk_wallpaper(uint32_t id)
+{
+    if (id == settings_get_desk_wallpaper()) return;
+    __atomic_store_n(&s_desk_wallpaper, id, __ATOMIC_RELEASE);
+    if (s_wq) sput_u32("desk_wp", id);
+}
+
 int settings_get_notification_sound(void)
 {
     return __atomic_load_n(&s_notification_sound,__ATOMIC_ACQUIRE);

@@ -608,6 +608,42 @@ bool ls_globe_flat(tui_surface *sf, tui_rect a, double lat, double lon, unsigned
     return true;
 }
 
+/* ls_globe_flat for the outlines under a moving map: a full draw costs
+   ~340 ms on a Nano zoomed out (most of the world's points, the dot grid over
+   states on the card), and drawing it every pan or zoom frame held the UI and
+   every click behind it. While the view keeps changing, the last outlines are
+   moved by whole cells to follow a pan (a zoom gets none for the moment); a
+   view still for 250 ms is drawn properly, once. */
+bool ls_globe_flat_lazy(tui_surface *sf, tui_rect a, double lat, double lon, unsigned z, double ppx, double ppy, bool full_ok,
+                        ls_globe_fill_fn fill, void *ctx)
+{
+    static double req_lat = 999, req_lon;
+    static unsigned req_z;
+    static int64_t req_us;
+    const int64_t now = esp_timer_get_time();
+    if (lat != req_lat || lon != req_lon || z != req_z) { req_lat = lat; req_lon = lon; req_z = z; req_us = now; }
+    const tui_rect c = tui_rect_intersect(a, tui_surface_rect(sf));
+    const bool cached = s_flat && s_flat_w == a.w && s_flat_h == a.h && c.w == a.w && c.h == a.h && s_flat_lat != 999 &&
+                        s_flat_ppx == ppx && s_flat_ppy == ppy && s_flat_gen == s_gen;
+    const bool same = cached && s_flat_lat == lat && s_flat_lon == lon && s_flat_z == z;
+    if (same || (full_ok && now - req_us >= 250000)) return ls_globe_flat(sf, a, lat, lon, z, ppx, ppy, fill, ctx);
+    if (!cached || s_flat_z != z) return false;
+    const double world = 256.0 * ldexp(1.0, (int)z);
+    const int dc = (int)llround(((lon - s_flat_lon) / 360.0 * world) / ppx);
+    const int dr = (int)llround(((flat_merc(lat) - flat_merc(s_flat_lat)) * world) / ppy);
+    const tui_cell blank = { ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK) };
+    for (int r = 0; r < a.h; r++) {
+        tui_cell *out = &sf->back[(a.y + r) * sf->w + a.x];
+        const int sr = r + dr;
+        if (sr < 0 || sr >= a.h) { for (int col = 0; col < a.w; col++) out[col] = blank; continue; }
+        for (int col = 0; col < a.w; col++) {
+            const int sc = col + dc;
+            out[col] = sc >= 0 && sc < a.w ? s_flat[sr * a.w + sc] : blank;
+        }
+    }
+    return true;
+}
+
 bool ls_globe_nearest(double lat, double lon, ls_globe_fill_fn fill, void *ctx, char code[8], float *rlat, float *rlon,
                        bool *inside)
 {

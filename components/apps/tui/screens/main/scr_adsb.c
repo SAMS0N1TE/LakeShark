@@ -652,9 +652,22 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
         if (s_rows < ADSB_MAX_TRACKED) s_row_icao[s_rows++] = adsb_state_key(a);
         row++;
     }
-    if (!active)
+    if (!active) {
         tui_put_str(sf, list, list.x + 2, list.y + 3, adsb_receiver_status(),
                     stale);
+        /* An empty list, with room: what will fill it and how to help. */
+        static const char *const HOW[] = {
+            "Aircraft show here as they are heard on 1090 MHz;",
+            "the map beside plots the ones that send a position.",
+            "",
+            "Hear further: a vertical antenna about 6.9 cm long,",
+            "as high and as clear of walls as it can go.",
+            "F follows the nearest   R picks the radio",
+        };
+        for (int i = 0; i < (int)(sizeof(HOW) / sizeof(HOW[0])) && list.y + 5 + i < list.y + list.h - 1; i++)
+            tui_put_str(sf, list, list.x + 2, list.y + 5 + i, ls_tr(HOW[i]),
+                        i == 5 ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    }
 
     /* A sparkline of message rate, from the model's own 60-sample ring - the
        GUI kept its own copy of this and did not need to. */
@@ -670,10 +683,11 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
             uint16_t v = hist[x * 59 / (w > 1 ? w - 1 : 1)];
             int eighths = (int)((uint32_t)v * 8u / peak);
             if (v && !eighths) eighths = 1;
-            if (eighths)
-                tui_put_char(sf, foot, foot.x + 2 + x, foot.y + 1,
-                             LS_TUI_TRACE(eighths),
-                             TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+            /* A floor where nothing came in, so the strip reads as a
+               timeline of quiet, not as a missing graph. */
+            tui_put_char(sf, foot, foot.x + 2 + x, foot.y + 1,
+                         LS_TUI_TRACE(eighths ? eighths : 1),
+                         eighths ? TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK) : TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
         }
     }
     snprintf(buf, sizeof(buf), ls_tr("%d active   %d msg/s   %d crc err"),
@@ -970,9 +984,9 @@ static void draw(tui_surface *sf, tui_rect area)
         {"ZOOM+",NULL,'=',false,false},{"ZOOM-",NULL,'-',false,false},
         ls_rsel_button(LS_RSEL_ADSB),ls_opt_button(&CTX_ADSB)};
     const int ntools=ls_opt_count(&CTX_ADSB)?8:7;
-    int th=ls_tui_is_wide()?3:10;
+    int th=ls_tui_compact()?1:ls_tui_is_wide()?3:10;
     s_tools=tui_rect_make(area.x,area.y,area.w,th);
-    if(!ls_tui_is_wide() && s_tools.w>49) {s_tools.x+=(s_tools.w-49)/2;s_tools.w=49;}
+    if(!ls_tui_is_wide() && !ls_tui_compact() && s_tools.w>49) {s_tools.x+=(s_tools.w-49)/2;s_tools.w=49;}
     /* Eight across a landscape row leave no room for a value beside its
        label, which the three-row bar needs: the four-row bar gives the value
        its own line rather than cutting RADIO's in half. */
@@ -981,7 +995,19 @@ static void draw(tui_surface *sf, tui_rect area)
     area.y+=th;area.h-=th;
     }
 
-    if (area.h >= 18 && area.w >= 42) {
+    if (ls_tui_compact() && area.h >= 8 && area.w >= 42) {
+        /* Desk: the three list keys on the window's last row. */
+        const char *labels[] = {"UP prev", (s_detail || s_weather) ? "BACK" : "ENTER info", "DOWN next"};
+        int x = area.x;
+        const int y = area.y + area.h - 1;
+        for (int i = 0; i < 3; i++) {
+            const ls_btn_t b = { .label = labels[i] };
+            const int w = ls_key1_draw(sf, area, x, y, &b, false);
+            s_nav[i] = tui_rect_make(x, y, w, 1);
+            x += w + 1;
+        }
+        area.h -= 1;
+    } else if (area.h >= 18 && area.w >= 42) {
         const int nav_h = ls_tui_is_wide() ? 3 : 5;
         const bool wide=ls_tui_is_wide();
         const char *labels[] = {wide ? "UP prev" : "PREVIOUS", (s_detail || s_weather) ? "BACK" :

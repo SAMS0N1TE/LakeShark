@@ -54,7 +54,7 @@ void ls_rterm_set_serial(void (*write)(const char *bytes, size_t n), void (*wait
 /* 'term size C R' from a viewer: the UI's way to make its grid C x R (a
    screen that is only a terminal can; real glass keeps its own). True when
    the grid will change. Called from the console's or the network's task. */
-void ls_rterm_set_resize(bool (*resize)(int cols, int rows));
+void ls_rterm_set_resize(bool (*resize)(int cols, int rows, const char *font));
 
 /* Start the network listener when it was left on (reads NVS: call from a
    task with an internal-RAM stack). Call after the TUI is running. */
@@ -66,9 +66,16 @@ int ls_rterm_console(int argc, char **argv);
 /* From the UI task after each present: copies the grid when a terminal is
    watching and its last frame has gone. Cheap when none is. */
 void ls_rterm_capture(void);
+/* Reserve the active viewers' buffers before accepting a grid change.
+   Allocation failure leaves the current feed intact. Safe from resize callback. */
+bool ls_rterm_prepare_grid(int cols, int rows);
 
 /* A terminal is attached. */
 bool ls_rterm_active(void);
+/* One console line for the PC: between two updates while a USB feed runs
+   (a plain printf lands inside an update and is lost with it), printed
+   otherwise. */
+void ls_rterm_viewer_line(const char *line);
 
 /* For LINK's REMOTE page: what the two ways in are doing, and the network
    terminal's switches. The settings are kept across restarts. */

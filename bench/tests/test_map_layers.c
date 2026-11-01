@@ -3,6 +3,7 @@
 #include "../../components/apps/tui/ls_map_ink.c"
 #include "../../components/apps/tui/ls_motion.c"
 
+tui_stroke_hook_fn tui_stroke_hook;   /* no vector viewer here */
 static uint32_t saved_layers;
 void settings_set_map_layers(uint32_t bits) { saved_layers = bits; }
 void ls_picker_open(const char *title, ls_picker_done_t cb)

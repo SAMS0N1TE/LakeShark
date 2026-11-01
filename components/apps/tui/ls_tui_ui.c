@@ -8,6 +8,7 @@
 #include "ls_i18n.h"
 #include "esp_timer.h"
 #include "esp_attr.h"
+#include "ls_box.h"
 
 /* Shared out of line: avoid duplicating corner clipping at every label. */
 void ls_safe_line(tui_surface *sf, tui_rect area, int row,
@@ -124,6 +125,251 @@ static const ls_btn_t *tr_buttons(const ls_btn_t *btn, int n, ls_btn_t *copy)
     return copy;
 }
 
+/* ------------------------------------------------------------ desk compact */
+
+#if LS_TUI_HAS_COMPACT
+static bool s_compact;
+bool ls_tui_compact(void) { return s_compact; }
+void ls_tui_set_compact(bool on) { s_compact = on; }
+#else
+void ls_tui_set_compact(bool on) { (void)on; }
+#endif
+
+/* How much of a key's lettering survives a short row. 0 everything; 1 the
+   label to eight and the value to six; 2 the label to five and the value to
+   four. A key is never cut to nothing: the hint row names it anyway. */
+static void key1_text(const ls_btn_t *b, int fit, char *lab, size_t lcap,
+                      char *val, size_t vcap)
+{
+    static const int LAB[3] = {24, 8, 5}, VAL[3] = {16, 6, 4};
+    if (fit < 0) fit = 0;
+    if (fit > 2) fit = 2;
+    fit_label(lab, lcap, b->label ? b->label : "", LAB[fit]);
+    val[0] = 0;
+    if (b->value && b->value[0]) fit_label(val, vcap, b->value, VAL[fit]);
+}
+
+static int key1_width_fit(const ls_btn_t *b, int fit)
+{
+    char lab[32], val[24];
+    key1_text(b, fit, lab, sizeof(lab), val, sizeof(val));
+    const int l = (int)strlen(lab), v = (int)strlen(val);
+    return 4 + l + (v ? v + 1 : 0);
+}
+
+int ls_key1_width(const ls_btn_t *b) { return b ? key1_width_fit(b, 0) : 0; }
+
+int ls_btn_bar_width(const ls_btn_t *btn, int n)
+{
+    /* One translated key at a time: no array copy on the UI stack. */
+    int w = 0;
+    for (int i = 0; btn && i < n; i++) {
+        ls_btn_t one = btn[i];
+        one.label = ls_tr(btn[i].label);
+        one.value = ls_tr(btn[i].value);
+        w += key1_width_fit(&one, 0) + (i ? 1 : 0);
+    }
+    return w;
+}
+
+/* The cap colours: KEY (black on white) at rest, green when engaged, the
+   selection blue when focused or just changed, and no cap at all when the
+   control is unavailable - its word stays readable in the one grey that may
+   carry words. */
+static int key1_paint(tui_surface *sf, tui_rect clip, int x, int y,
+                      const ls_btn_t *b, int fit, bool focus, bool changed)
+{
+    char lab[32], val[24];
+    key1_text(b, fit, lab, sizeof(lab), val, sizeof(val));
+    uint8_t cap_bg, ink, vink, accel;
+    if (b->dim)                { cap_bg = TUI_BLACK; ink = LS_DIM_FG; vink = LS_DIM_FG; accel = LS_DIM_FG; }
+    else if (focus || changed) { cap_bg = TUI_BLUE; ink = TUI_WHITE | TUI_BRIGHT; vink = TUI_YELLOW | TUI_BRIGHT; accel = TUI_YELLOW | TUI_BRIGHT; }
+    else if (b->on)            { cap_bg = TUI_GREEN; ink = TUI_BLACK; vink = TUI_WHITE | TUI_BRIGHT; accel = TUI_RED; }
+    else                       { cap_bg = TUI_WHITE; ink = TUI_BLACK; vink = TUI_BLUE; accel = TUI_RED; }
+    const uint8_t cap = TUI_ATTR(ink, cap_bg);
+    int cx = x;
+    tui_put_char(sf, clip, cx++, y, '[', TUI_ATTR(b->dim ? LS_FAINT_FG : (TUI_WHITE | TUI_BRIGHT), TUI_BLACK));
+    tui_put_char(sf, clip, cx++, y, ' ', cap);
+    /* The shortcut, picked out in the label the way an accelerator was. */
+    int hot = -1;
+    if (b->key && !b->dim) {
+        const char k = (char)(b->key >= 'a' && b->key <= 'z' ? b->key - 32 : b->key);
+        for (int i = 0; lab[i]; i++) {
+            const char c = (char)(lab[i] >= 'a' && lab[i] <= 'z' ? lab[i] - 32 : lab[i]);
+            if (c == k) { hot = i; break; }
+        }
+    }
+    for (int i = 0; lab[i]; i++)
+        tui_put_char(sf, clip, cx++, y, lab[i], i == hot ? TUI_ATTR(accel, cap_bg) : cap);
+    if (val[0]) {
+        tui_put_char(sf, clip, cx++, y, ' ', cap);
+        for (int i = 0; val[i]; i++) tui_put_char(sf, clip, cx++, y, val[i], TUI_ATTR(vink, cap_bg));
+    }
+    /* Something new inside: the drip takes the cap's closing space. */
+    tui_put_char(sf, clip, cx++, y, b->badge ? drip_glyph() : ' ',
+                 b->badge ? TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, cap_bg) : cap);
+    tui_put_char(sf, clip, cx++, y, ']', TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
+    return cx - x;
+}
+
+int ls_key1_draw(tui_surface *sf, tui_rect clip, int x, int y,
+                 const ls_btn_t *b, bool focus)
+{
+    if (!sf || !b) return 0;
+    ls_btn_t one = *b;
+    one.label = ls_tr(b->label);
+    one.value = ls_tr(b->value);
+    return key1_paint(sf, clip, x, y, &one, 0, focus, false);
+}
+
+/* Rows a compact bar needs at a fit level, keys flowing left to right. */
+static int key1_rows(const ls_btn_t *btn, int n, int w, int fit)
+{
+    int rows = 1, x = 0;
+    for (int i = 0; i < n; i++) {
+        const int kw = key1_width_fit(&btn[i], fit);
+        if (x > 0 && x + kw > w) { rows++; x = 0; }
+        x += kw + 1;
+    }
+    return rows;
+}
+
+/* The desk form of every button bar: one-row keys from the bar's left edge,
+   wrapping onto the bar's next row when there is one, shortening their
+   lettering when there is not. Hits are the keys as drawn. */
+static void compact_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
+                        int focus, int slot)
+{
+    int fit = 0;
+    while (fit < 2 && key1_rows(btn, n, bar.w, fit) > bar.h) fit++;
+    int x = bar.x, y = bar.y;
+    const int64_t now = esp_timer_get_time();
+    for (int i = 0; i < n && s_btn_n[slot] < MAX_HITS; i++) {
+        const int kw = key1_width_fit(&btn[i], fit);
+        if (x > bar.x && x + kw > bar.x + bar.w) { y++; x = bar.x; }
+        if (y >= bar.y + bar.h) break;
+        uint32_t token = 2166136261u;
+        const char *parts[] = {btn[i].label, btn[i].value};
+        for (int p = 0; p < 2; p++) if (parts[p])
+            for (const char *c = parts[p]; *c; c++) token = (token ^ (unsigned char)*c) * 16777619u;
+        token ^= (btn[i].on ? 1u : 0u) | (btn[i].dim ? 2u : 0u);
+        if (s_btn_value[slot][i] && s_btn_value[slot][i] != token) s_btn_change[slot][i] = now;
+        s_btn_value[slot][i] = token;
+        const bool changed = s_btn_change[slot][i] && now - s_btn_change[slot][i] < 240000;
+        const int used = key1_paint(sf, bar, x, y, &btn[i], fit, i == focus, changed);
+        const int k = s_btn_n[slot];
+        s_btn_enabled[slot][k] = !btn[i].dim;
+        s_btn_keys[slot][k] = btn[i].key;
+        s_btn_hit[slot][k] = (hit_t){(int16_t)x, (int16_t)y, (int16_t)(x + used - 1), (int16_t)y};
+        s_btn_n[slot]++;
+        x += used + 1;
+    }
+}
+
+void ls_field1_draw(tui_surface *sf, tui_rect clip, int x, int y, int w,
+                    const char *text, bool caret, uint8_t ink)
+{
+    if (!sf || w < 3) return;
+    const uint8_t well = TUI_ATTR(ink, TUI_BLACK);
+    tui_put_char(sf, clip, x, y, '[', TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
+    tui_put_char(sf, clip, x + w - 1, y, ']', TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    const int room = w - 2;
+    const char *t = text ? text : "";
+    int n = (int)strlen(t);
+    /* The tail is what is being typed: a long entry scrolls left. */
+    const int keep = caret ? room - 1 : room;
+    if (n > keep && keep > 0) { t += n - keep; n = keep; }
+    for (int i = 0; i < room; i++)
+        tui_put_char(sf, clip, x + 1 + i, y, i < n ? t[i] : ' ', well);
+    /* The caret is an inverse cell, steady: nothing blinks on a timer. */
+    if (caret && n < room)
+        tui_put_char(sf, clip, x + 1 + n, y, ' ', TUI_ATTR(TUI_BLACK, ink & 0x07));
+}
+
+void ls_dialog1_frame(tui_surface *sf, tui_rect r, const char *title, uint8_t hue)
+{
+    if (!sf || r.w < 4 || r.h < 3) return;
+    const uint8_t hi = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t lo = TUI_ATTR(LS_FAINT_FG, TUI_BLACK);
+    tui_fill(sf, r, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    const int x1 = r.x + r.w - 1, y1 = r.y + r.h - 1;
+    for (int x = r.x + 1; x < x1; x++) {
+        ls_box_put(sf, r, x, r.y, LS_BOX_H, hi);
+        ls_box_put(sf, r, x, y1, LS_BOX_H, lo);
+    }
+    for (int y = r.y + 1; y < y1; y++) {
+        ls_box_put(sf, r, r.x, y, LS_BOX_V, hi);
+        ls_box_put(sf, r, x1, y, LS_BOX_V, lo);
+    }
+    ls_box_put(sf, r, r.x, r.y, LS_BOX_DR, hi);
+    ls_box_put(sf, r, x1, r.y, LS_BOX_DL, hi);
+    ls_box_put(sf, r, r.x, y1, LS_BOX_UR, hi);
+    ls_box_put(sf, r, x1, y1, LS_BOX_UL, lo);
+    if (title && title[0]) {
+        char t[48];
+        snprintf(t, sizeof(t), " %s ", ls_tr(title));
+        if ((int)strlen(t) > r.w - 4) t[r.w - 4 > 0 ? r.w - 4 : 0] = 0;
+        tui_put_str(sf, r, r.x + 2, r.y, t, TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
+    }
+}
+
+void ls_slider1_draw(tui_surface *sf, tui_rect r, const char *label,
+                     const char *value, float frac, uint8_t hue, bool live,
+                     tui_rect *down, tui_rect *up, tui_rect *value_rect,
+                     tui_rect *bar)
+{
+    const tui_rect none = tui_rect_make(0, -1, 0, 0);
+    if (down) *down = none;
+    if (up) *up = none;
+    if (value_rect) *value_rect = none;
+    if (bar) *bar = none;
+    if (!sf || r.w < 16 || r.h < 1) return;
+    const int y = r.y;
+    const uint8_t lab = live ? TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM;
+    label = ls_tr(label ? label : "");
+    int x = r.x;
+    tui_put_str(sf, r, x, y, label, lab);
+    x += (int)strlen(label) + 1;
+    char v[20];
+    snprintf(v, sizeof(v), "[%s]", value ? value : "");
+    const int vw = (int)strlen(v);
+    tui_put_str(sf, r, x, y, v, live ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+    if (value_rect) *value_rect = tui_rect_make(x, y, vw, 1);
+    x += vw + 1;
+    /* The keys at the right end, then the travel between. */
+    const int right = r.x + r.w;
+    const tui_rect kd = tui_rect_make(right - 6, y, 3, 1), ku = tui_rect_make(right - 3, y, 3, 1);
+    const uint8_t kcap = live ? TUI_ATTR(TUI_BLACK, TUI_WHITE) : LS_ATTR_DIM;
+    for (int k = 0; k < 2; k++) {
+        const tui_rect key = k ? ku : kd;
+        tui_put_char(sf, r, key.x, y, '[', TUI_ATTR(live ? (TUI_WHITE | TUI_BRIGHT) : LS_FAINT_FG, TUI_BLACK));
+        tui_put_char(sf, r, key.x + 1, y, k ? '+' : '-', kcap);
+        tui_put_char(sf, r, key.x + 2, y, ']', TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
+    }
+    if (live) {
+        if (down) *down = kd;
+        if (up) *up = ku;
+    }
+    const int tw = kd.x - 1 - x;
+    if (tw < 6) return;
+    /* |----=====#------| : the travel in the shadow grey, the part that is
+       on in the control's own colour, one solid cell for the thumb. */
+    if (frac < 0.0f) frac = 0.0f;
+    if (frac > 1.0f) frac = 1.0f;
+    const int inner = tw - 2;
+    const int pos = (int)(frac * (float)(inner - 1) + 0.5f);
+    const uint8_t track = TUI_ATTR(LS_FAINT_FG, TUI_BLACK);
+    const uint8_t lit = TUI_ATTR(live ? (hue | TUI_BRIGHT) : LS_DIM_FG, TUI_BLACK);
+    ls_box_put(sf, r, x, y, LS_BOX_VR, track);
+    for (int i = 0; i < inner; i++) {
+        if (live && i == pos) tui_put_char(sf, r, x + 1 + i, y, LS_TUI_BLOCK_FULL, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+        else if (i < pos) ls_box_put(sf, r, x + 1 + i, y, LS_BOX_DBL_H, lit);
+        else ls_box_put(sf, r, x + 1 + i, y, LS_BOX_H, track);
+    }
+    ls_box_put(sf, r, x + tw - 1, y, LS_BOX_VL, track);
+    if (bar && live) *bar = tui_rect_make(x + 1, y, inner, 1);
+}
+
 static int s_force_rows;
 static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
                         int focus, int slot, bool raised, bool stretch, bool single_row)
@@ -133,6 +379,7 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
     if (slot < 0 || slot >= BTN_SLOTS) slot = 0;
     hit_clear(s_btn_hit[slot], &s_btn_n[slot]);
     if (!sf || n <= 0 || bar.w < 6 || bar.h < 1) return;
+    if (ls_tui_compact()) { compact_bar(sf, bar, btn, n, focus, slot); return; }
     const bool key_hints = ls_tui_keyboard_mode();
 
     /* Rows follow the height the caller gave us, columns follow from that.
@@ -388,6 +635,7 @@ void ls_btn_bar_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
 bool ls_btn_compact_fits(tui_rect bar, const ls_btn_t *btn, int n)
 {
     if (!btn || n < 1 || bar.w < 6) return false;
+    if (ls_tui_compact()) return true;     /* one-row keys shorten, never split */
     ls_btn_t tr_copy[TR_BTN_MAX];
     btn = tr_buttons(btn, n, tr_copy);
     /* The corners take their cells off both ends before anything is laid
@@ -413,6 +661,8 @@ bool ls_btn_compact_fits(tui_rect bar, const ls_btn_t *btn, int n)
 int ls_btn_raised_height(tui_rect area, int n)
 {
     if (n < 1 || area.w < 1 || area.h < 1) return 0;
+    /* One-row keys average about twelve columns with their gap. */
+    if (ls_tui_compact()) return area.w >= n * 12 || area.h < 8 ? 1 : 2;
     int columns = area.w / 10;
     if (columns < 1) columns = 1;
     const int rows = (n + columns - 1) / columns;

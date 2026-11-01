@@ -597,7 +597,7 @@ static void draw(tui_surface *sf,tui_rect a) {
     for(unsigned i=0;i<count;i++) if(view[i].serial==selected) {pick=i;found=true;break;}
     if(!found) {selected=0;pick=0;owner_selected=false;screen_view=VIEW_LIST;if(s.hunt) ls_sweep_hunt(NULL,0,0);}
     if(a.w<26 || a.h<18) {ls_panel_notice(sf,a,"SWEEP",LS_TEXT(t_ls_sweep_ui_more_screen_space_needed, "More screen space needed"),"Use a smaller font");return;}
-    int bh=ls_tui_is_wide()?3:5;
+    int bh=ls_tui_compact()?1:ls_tui_is_wide()?3:5;
     ls_btn_t b[]={ {st.requested?"STOP":"START","RX",'s',false,false,false},
         {screen_view==VIEW_HUNT?"FIND":"SELECT",screen_view==VIEW_HUNT?"TURN FOR BEARING":"DEVICE",screen_view==VIEW_HUNT?'f':'h',false,!count && !st.owner_nearby,false},
         {s.alerts_muted?"MUTED":"MUTE","SOUND",'m',s.alerts_muted,false,false},

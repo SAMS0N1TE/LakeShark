@@ -1,0 +1,183 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "lsdk: build",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/lsdk.py",
+        "build"
+      ],
+      "options": {
+        "cwd": "${fileDirname}"
+      },
+      "problemMatcher": [
+        {
+          "owner": "lakeshark",
+          "fileLocation": [
+            "autoDetect",
+            "${fileDirname}"
+          ],
+          "pattern": {
+            "regexp": "^(.*?):(\\d+):(\\d+): (error|warning|note): (.*)$",
+            "file": 1,
+            "line": 2,
+            "column": 3,
+            "severity": 4,
+            "message": 5
+          }
+        }
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "lsdk: sim",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/lsdk.py",
+        "sim"
+      ],
+      "options": {
+        "cwd": "${fileDirname}"
+      },
+      "problemMatcher": [
+        {
+          "owner": "lakeshark",
+          "fileLocation": [
+            "autoDetect",
+            "${fileDirname}"
+          ],
+          "pattern": {
+            "regexp": "^(.*?):(\\d+):(\\d+): (error|warning|note): (.*)$",
+            "file": 1,
+            "line": 2,
+            "column": 3,
+            "severity": 4,
+            "message": 5
+          }
+        }
+      ]
+    },
+    {
+      "label": "lsdk: sim frames",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/lsdk.py",
+        "sim",
+        "--frames",
+        "60"
+      ],
+      "options": {
+        "cwd": "${fileDirname}"
+      },
+      "problemMatcher": [
+        {
+          "owner": "lakeshark",
+          "fileLocation": [
+            "autoDetect",
+            "${fileDirname}"
+          ],
+          "pattern": {
+            "regexp": "^(.*?):(\\d+):(\\d+): (error|warning|note): (.*)$",
+            "file": 1,
+            "line": 2,
+            "column": 3,
+            "severity": 4,
+            "message": 5
+          }
+        }
+      ]
+    },
+    {
+      "label": "lsdk: install",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/lsdk.py",
+        "install"
+      ],
+      "options": {
+        "cwd": "${fileDirname}"
+      },
+      "problemMatcher": [
+        {
+          "owner": "lakeshark",
+          "fileLocation": [
+            "autoDetect",
+            "${fileDirname}"
+          ],
+          "pattern": {
+            "regexp": "^(.*?):(\\d+):(\\d+): (error|warning|note): (.*)$",
+            "file": 1,
+            "line": 2,
+            "column": 3,
+            "severity": 4,
+            "message": 5
+          }
+        }
+      ]
+    },
+    {
+      "label": "lsdk: install and open",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/lsdk.py",
+        "install",
+        "--open"
+      ],
+      "options": {
+        "cwd": "${fileDirname}"
+      },
+      "problemMatcher": [
+        {
+          "owner": "lakeshark",
+          "fileLocation": [
+            "autoDetect",
+            "${fileDirname}"
+          ],
+          "pattern": {
+            "regexp": "^(.*?):(\\d+):(\\d+): (error|warning|note): (.*)$",
+            "file": 1,
+            "line": 2,
+            "column": 3,
+            "severity": 4,
+            "message": 5
+          }
+        }
+      ]
+    },
+    {
+      "label": "lsdk: logs",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/lsdk.py",
+        "logs"
+      ],
+      "options": {
+        "cwd": "${fileDirname}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "lsdk: studio",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/lsdk.py",
+        "studio"
+      ],
+      "options": {
+        "cwd": "${fileDirname}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

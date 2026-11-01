@@ -131,7 +131,7 @@ static int draw_picture(tui_surface *sf, tui_rect a, tui_rect p, const uint16_t 
             const int bg = ln ? nearest(lr / ln, lg / ln, lb / ln) : nearest(hr / hn, hg / hn, hb / hn);
             const int fg = hn ? nearest(hr / hn, hg / hn, hb / hn) : bg;
             if (fg == bg) bits = 0;
-            ls_braille_put(sf, a, cx0 + cx, p.y + cy, (int16_t)(0x2800 | bits), TUI_ATTR(fg, bg));
+            ls_braille_glyph_put(sf, a, cx0 + cx, p.y + cy, (int16_t)(0x2800 | bits), TUI_ATTR(fg, bg));
         }
         done = cy + 1;
     }
@@ -190,7 +190,7 @@ void fm_sstv_draw(tui_surface *sf, tui_rect a)
         const int cx = pic.x + (pic.w - cw) / 2;
         for (int yy = 0; yy < ch; ++yy)
             for (int xx = 0; xx < cw; ++xx)
-                ls_braille_put(sf, a, cx + xx, pic.y + yy, (int16_t)(0x2800 | ((xx + yy) & 1 ? 0x40 : 0x08)),
+                ls_braille_glyph_put(sf, a, cx + xx, pic.y + yy, (int16_t)(0x2800 | ((xx + yy) & 1 ? 0x40 : 0x08)),
                                LS_ATTR_FAINT);
         pic.h = ch;
     }

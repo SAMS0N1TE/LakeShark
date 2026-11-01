@@ -191,8 +191,24 @@ bool rec_watch_alert_target(const char *peer)
 
 bool ls_mixrf_card_scan(bool on){mix.card_requested=mix.card_scanning=on;mix.card_polls=12;mix.card_tx=12;return true;}
 
-/* No finger on the bench: nothing is ever being dragged. */
+/* Standalone watch fixtures have no finger; lssim has its own (lssim_input.c).
+   Not weak: a weak definition is not found across objects by the MinGW linker. */
+#ifndef LSSIM_HAS_INPUT_FINGER
 bool ls_tui_touch_held(int *sc,int *sr,int *c,int *r){(void)sc;(void)sr;(void)c;(void)r;return false;}
+bool ls_tui_touch_px(int *x,int *y,int *x0,int *y0,int64_t *since)
+{(void)x;(void)y;(void)x0;(void)y0;(void)since;return false;}
+bool ls_tui_touch_input_held(int *sc,int *sr,int *c,int *r)
+{return ls_tui_touch_held(sc,sr,c,r);}
+bool ls_tui_touch_input_px(int *x,int *y,int *x0,int *y0,int64_t *since)
+{return ls_tui_touch_px(x,y,x0,y0,since);}
+void ls_tui_touch_client(int col,int row,int x,int y,bool down)
+{(void)col;(void)row;(void)x;(void)y;(void)down;}
+void ls_tui_touch_client_clear(void) {}
+uint32_t ls_tui_touch_drags(int *a,int *b,int *c,int *d)
+{(void)a;(void)b;(void)c;(void)d;return 0;}
+void ls_tui_pointer_set(int col,int row) {(void)col;(void)row;}
+bool ls_tui_pointer_cell(int *col,int *row) {(void)col;(void)row;return false;}
+#endif
 
 static bool file_replay_busy;
 static char file_replay_result[112];

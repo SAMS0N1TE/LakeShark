@@ -24,6 +24,8 @@ esp_err_t ble_link_sweep_observer(bool on);
 /* Independent DRONES lease on the same passive receiver. */
 esp_err_t ble_link_rid_observer(bool on);
 esp_err_t ble_link_find_observer(bool on);
+/* HID owns a separate lease on the shared scanner/host. */
+esp_err_t ble_link_hid_observer(bool on);
 void ble_link_receiver(bool *running, bool *scanning, bool *failed);
 
 ble_link_state_t ble_link_state(void);
@@ -77,7 +79,8 @@ esp_err_t ble_link_pin_peer(const char *addr);
 /* Forget the pinned peer.  The scanner falls back to matching by service. */
 void ble_link_unpin_peer(void);
 
-/* Forget every stored bond and unpin the peer, dropping the current connection so the next attempt starts from a clean slate. */
+/* Forget only the connected or pinned head identity. HID keys survive.
+ * Explicit global deletion is the asynchronous hid_forget_all() operation. */
 
 esp_err_t ble_link_forget_bonds(void);
 

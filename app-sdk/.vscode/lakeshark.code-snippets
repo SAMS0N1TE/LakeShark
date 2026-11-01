@@ -1,0 +1,1955 @@
+{
+ "lap_net_status": {
+  "prefix": "lap_net_status",
+  "body": [
+   "lap_net_status(${1:out})"
+  ],
+  "description": "int lap_net_status(lap_net_status_t *out)  All calls return immediately. Two outbound IPv4 sockets per app. No Wi-Fi credentials or join operation: first connect using LINK. Connect returns a handle >=0 or an error; poll state until CONNECTED or a negative error. Timeout (1..30000 ms) covers asynchronous DNS + connect, not stream lifetime. Host is DNS name or numeric IPv4, <=253 chars. IPv6/TLS/listening unsupported. send copies up to 4096 bytes into a bounded queue and returns bytes accepted (may be partial), EAGAIN if full/pending. Acceptance is not delivery. recv copies up to 4096 bytes, EAGAIN when empty/pending, 0 on peer EOF after queued bytes drain. Check negative errors; retry EAGAIN in later frames. Buffers/host/status must be app globals or app malloc allocations, not stack. Close invalidates the handle immediately; worker releases it asynchronously. Closing the app closes every socket and discards queued bytes.",
+  "scope": "c"
+ },
+ "lap_tcp_connect": {
+  "prefix": "lap_tcp_connect",
+  "body": [
+   "lap_tcp_connect(${1:host}, ${2:port}, ${3:timeout_ms})"
+  ],
+  "description": "int lap_tcp_connect(const char *host, int port, uint32_t timeout_ms)  All calls return immediately. Two outbound IPv4 sockets per app. No Wi-Fi credentials or join operation: first connect using LINK. Connect returns a handle >=0 or an error; poll state until CONNECTED or a negative error. Timeout (1..30000 ms) covers asynchronous DNS + connect, not stream lifetime. Host is DNS name or numeric IPv4, <=253 chars. IPv6/TLS/listening unsupported. send copies up to 4096 bytes into a bounded queue and returns bytes accepted (may be partial), EAGAIN if full/pending. Acceptance is not delivery. recv copies up to 4096 bytes, EAGAIN when empty/pending, 0 on peer EOF after queued bytes drain. Check negative errors; retry EAGAIN in later frames. Buffers/host/status must be app globals or app malloc allocations, not stack. Close invalidates the handle immediately; worker releases it asynchronously. Closing the app closes every socket and discards queued bytes.",
+  "scope": "c"
+ },
+ "lap_tcp_state": {
+  "prefix": "lap_tcp_state",
+  "body": [
+   "lap_tcp_state(${1:handle})"
+  ],
+  "description": "int lap_tcp_state(int handle)  All calls return immediately. Two outbound IPv4 sockets per app. No Wi-Fi credentials or join operation: first connect using LINK. Connect returns a handle >=0 or an error; poll state until CONNECTED or a negative error. Timeout (1..30000 ms) covers asynchronous DNS + connect, not stream lifetime. Host is DNS name or numeric IPv4, <=253 chars. IPv6/TLS/listening unsupported. send copies up to 4096 bytes into a bounded queue and returns bytes accepted (may be partial), EAGAIN if full/pending. Acceptance is not delivery. recv copies up to 4096 bytes, EAGAIN when empty/pending, 0 on peer EOF after queued bytes drain. Check negative errors; retry EAGAIN in later frames. Buffers/host/status must be app globals or app malloc allocations, not stack. Close invalidates the handle immediately; worker releases it asynchronously. Closing the app closes every socket and discards queued bytes.",
+  "scope": "c"
+ },
+ "lap_tcp_send": {
+  "prefix": "lap_tcp_send",
+  "body": [
+   "lap_tcp_send(${1:handle}, ${2:buf}, ${3:len})"
+  ],
+  "description": "int lap_tcp_send(int handle, const void *buf, size_t len)  All calls return immediately. Two outbound IPv4 sockets per app. No Wi-Fi credentials or join operation: first connect using LINK. Connect returns a handle >=0 or an error; poll state until CONNECTED or a negative error. Timeout (1..30000 ms) covers asynchronous DNS + connect, not stream lifetime. Host is DNS name or numeric IPv4, <=253 chars. IPv6/TLS/listening unsupported. send copies up to 4096 bytes into a bounded queue and returns bytes accepted (may be partial), EAGAIN if full/pending. Acceptance is not delivery. recv copies up to 4096 bytes, EAGAIN when empty/pending, 0 on peer EOF after queued bytes drain. Check negative errors; retry EAGAIN in later frames. Buffers/host/status must be app globals or app malloc allocations, not stack. Close invalidates the handle immediately; worker releases it asynchronously. Closing the app closes every socket and discards queued bytes.",
+  "scope": "c"
+ },
+ "lap_tcp_recv": {
+  "prefix": "lap_tcp_recv",
+  "body": [
+   "lap_tcp_recv(${1:handle}, ${2:buf}, ${3:len})"
+  ],
+  "description": "int lap_tcp_recv(int handle, void *buf, size_t len)",
+  "scope": "c"
+ },
+ "lap_tcp_close": {
+  "prefix": "lap_tcp_close",
+  "body": [
+   "lap_tcp_close(${1:handle})"
+  ],
+  "description": "void lap_tcp_close(int handle)",
+  "scope": "c"
+ },
+ "lap_cols": {
+  "prefix": "lap_cols",
+  "body": [
+   "lap_cols()"
+  ],
+  "description": "int lap_cols(void)  the app's area, in cells",
+  "scope": "c"
+ },
+ "lap_rows": {
+  "prefix": "lap_rows",
+  "body": [
+   "lap_rows()"
+  ],
+  "description": "int lap_rows(void)  ---- drawing: only inside draw() ---------------------------------------",
+  "scope": "c"
+ },
+ "lap_clear": {
+  "prefix": "lap_clear",
+  "body": [
+   "lap_clear(${1:attr})"
+  ],
+  "description": "void lap_clear(uint8_t attr)  ---- drawing: only inside draw() ---------------------------------------",
+  "scope": "c"
+ },
+ "lap_put_str": {
+  "prefix": "lap_put_str",
+  "body": [
+   "lap_put_str(${1:x}, ${2:y}, ${3:s}, ${4:attr})"
+  ],
+  "description": "void lap_put_str(int x, int y, const char *s, uint8_t attr)",
+  "scope": "c"
+ },
+ "lap_put_cell": {
+  "prefix": "lap_put_cell",
+  "body": [
+   "lap_put_cell(${1:x}, ${2:y}, ${3:ch}, ${4:attr})"
+  ],
+  "description": "void lap_put_cell(int x, int y, int16_t ch, uint8_t attr)",
+  "scope": "c"
+ },
+ "lap_fill": {
+  "prefix": "lap_fill",
+  "body": [
+   "lap_fill(${1:x}, ${2:y}, ${3:w}, ${4:h}, ${5:ch}, ${6:attr})"
+  ],
+  "description": "void lap_fill(int x, int y, int w, int h, int16_t ch, uint8_t attr)",
+  "scope": "c"
+ },
+ "lap_hline": {
+  "prefix": "lap_hline",
+  "body": [
+   "lap_hline(${1:x}, ${2:y}, ${3:len}, ${4:ch}, ${5:attr})"
+  ],
+  "description": "void lap_hline(int x, int y, int len, int16_t ch, uint8_t attr)",
+  "scope": "c"
+ },
+ "lap_vline": {
+  "prefix": "lap_vline",
+  "body": [
+   "lap_vline(${1:x}, ${2:y}, ${3:len}, ${4:ch}, ${5:attr})"
+  ],
+  "description": "void lap_vline(int x, int y, int len, int16_t ch, uint8_t attr)",
+  "scope": "c"
+ },
+ "lap_box": {
+  "prefix": "lap_box",
+  "body": [
+   "lap_box(${1:x}, ${2:y}, ${3:w}, ${4:h}, ${5:title}, ${6:attr})"
+  ],
+  "description": "void lap_box(int x, int y, int w, int h, const char *title, uint8_t attr)",
+  "scope": "c"
+ },
+ "lap_big_char": {
+  "prefix": "lap_big_char",
+  "body": [
+   "lap_big_char(${1:x}, ${2:y}, ${3:c}, ${4:attr})"
+  ],
+  "description": "bool lap_big_char(int x, int y, char c, uint8_t attr)  A 3x5 character made of blocks (0-9, A-Z); false when there is no figure.",
+  "scope": "c"
+ },
+ "lap_image": {
+  "prefix": "lap_image",
+  "body": [
+   "lap_image(${1:x}, ${2:y}, ${3:w}, ${4:h}, ${5:pixels}, ${6:pw}, ${7:ph}, ${8:serial})"
+  ],
+  "description": "void lap_image(int x, int y, int w, int h, const uint16_t *pixels, int pw, int ph, uint32_t serial)  An RGB565 picture over the cells x,y,w,h, scaled to fit. `pixels` must stay valid until the next draw; change `serial` whenever the pixels change.",
+  "scope": "c"
+ },
+ "lap_millis": {
+  "prefix": "lap_millis",
+  "body": [
+   "lap_millis()"
+  ],
+  "description": "uint32_t lap_millis(void)  since the app was opened",
+  "scope": "c"
+ },
+ "lap_frame": {
+  "prefix": "lap_frame",
+  "body": [
+   "lap_frame()"
+  ],
+  "description": "uint32_t lap_frame(void)  draws since the app was opened",
+  "scope": "c"
+ },
+ "lap_random": {
+  "prefix": "lap_random",
+  "body": [
+   "lap_random()"
+  ],
+  "description": "uint32_t lap_random(void)  hardware random",
+  "scope": "c"
+ },
+ "lap_log": {
+  "prefix": "lap_log",
+  "body": [
+   "lap_log(${1:fmt}, ${2:arg})"
+  ],
+  "description": "void lap_log(const char *fmt, ...)  to the console, prefixed with the app id",
+  "scope": "c"
+ },
+ "lap_exit": {
+  "prefix": "lap_exit",
+  "body": [
+   "lap_exit()"
+  ],
+  "description": "void lap_exit(void)  back to HOME after this callback returns",
+  "scope": "c"
+ },
+ "lap_value_text": {
+  "prefix": "lap_value_text",
+  "body": [
+   "lap_value_text(${1:path}, ${2:out}, ${3:cap})"
+  ],
+  "description": "bool lap_value_text(const char *path, char *out, size_t cap)  The same named values .lsapp layouts read: p25.freq, fm.level, adsb.aircraft, sys.uptime ... (USER_APPS.md has the list). False when there is no value.",
+  "scope": "c"
+ },
+ "lap_value_float": {
+  "prefix": "lap_value_float",
+  "body": [
+   "lap_value_float(${1:path}, ${2:out})"
+  ],
+  "description": "bool lap_value_float(const char *path, float *out)  The same named values .lsapp layouts read: p25.freq, fm.level, adsb.aircraft, sys.uptime ... (USER_APPS.md has the list). False when there is no value.",
+  "scope": "c"
+ },
+ "lap_sound": {
+  "prefix": "lap_sound",
+  "body": [
+   "lap_sound(${1:which})"
+  ],
+  "description": "void lap_sound(int which)  at the board's volume; silent when muted",
+  "scope": "c"
+ },
+ "lap_say": {
+  "prefix": "lap_say",
+  "body": [
+   "lap_say(${1:text})"
+  ],
+  "description": "bool lap_say(const char *text)  API 1.2: speak, in the voice chosen in SETTINGS, at the board's volume. Queues and returns at once; false when there is no voice or the queue is full (a few lines wait). Keep it short: one line of plain words.",
+  "scope": "c"
+ },
+ "lap_say_stop": {
+  "prefix": "lap_say_stop",
+  "body": [
+   "lap_say_stop()"
+  ],
+  "description": "void lap_say_stop(void)  stop speaking and drop what waits",
+  "scope": "c"
+ },
+ "lap_file_open": {
+  "prefix": "lap_file_open",
+  "body": [
+   "lap_file_open(${1:name}, ${2:mode})"
+  ],
+  "description": "int lap_file_open(const char *name, const char *mode)  \"r\", \"w\", \"a\"; <0 on error",
+  "scope": "c"
+ },
+ "lap_file_read": {
+  "prefix": "lap_file_read",
+  "body": [
+   "lap_file_read(${1:fd}, ${2:buf}, ${3:n})"
+  ],
+  "description": "int lap_file_read(int fd, void *buf, size_t n)  Names are plain file names inside /sdcard/apps_data/<id>/ - no slashes, no \"..\". Up to 4 open at once; all are closed when the app closes. Files are cached in the 4 MB app PSRAM budget before enter(). Changes persist after leave(), on the IO worker; a crash can lose unflushed changes.",
+  "scope": "c"
+ },
+ "lap_file_write": {
+  "prefix": "lap_file_write",
+  "body": [
+   "lap_file_write(${1:fd}, ${2:buf}, ${3:n})"
+  ],
+  "description": "int lap_file_write(int fd, const void *buf, size_t n)  Names are plain file names inside /sdcard/apps_data/<id>/ - no slashes, no \"..\". Up to 4 open at once; all are closed when the app closes. Files are cached in the 4 MB app PSRAM budget before enter(). Changes persist after leave(), on the IO worker; a crash can lose unflushed changes.",
+  "scope": "c"
+ },
+ "lap_file_close": {
+  "prefix": "lap_file_close",
+  "body": [
+   "lap_file_close(${1:fd})"
+  ],
+  "description": "void lap_file_close(int fd)  Names are plain file names inside /sdcard/apps_data/<id>/ - no slashes, no \"..\". Up to 4 open at once; all are closed when the app closes. Files are cached in the 4 MB app PSRAM budget before enter(). Changes persist after leave(), on the IO worker; a crash can lose unflushed changes.",
+  "scope": "c"
+ },
+ "lap_file_remove": {
+  "prefix": "lap_file_remove",
+  "body": [
+   "lap_file_remove(${1:name})"
+  ],
+  "description": "bool lap_file_remove(const char *name)",
+  "scope": "c"
+ },
+ "lap_file_size": {
+  "prefix": "lap_file_size",
+  "body": [
+   "lap_file_size(${1:name})"
+  ],
+  "description": "long lap_file_size(const char *name)  <0 when absent",
+  "scope": "c"
+ },
+ "lap_touch": {
+  "prefix": "lap_touch",
+  "body": [
+   "lap_touch(${1:out})"
+  ],
+  "description": "bool lap_touch(lap_touch_t *out)  False when no finger has touched the app since it opened.",
+  "scope": "c"
+ },
+ "lap_swipe": {
+  "prefix": "lap_swipe",
+  "body": [
+   "lap_swipe()"
+  ],
+  "description": "int lap_swipe(void)  The direction of a swipe that ended since the last call, once each. A swipe is a drag of at least a cell and a half that is not a tap.",
+  "scope": "c"
+ },
+ "lap_cell_px": {
+  "prefix": "lap_cell_px",
+  "body": [
+   "lap_cell_px(${1:w}, ${2:h})"
+  ],
+  "description": "void lap_cell_px(int *w, int *h)  one cell, in pixels",
+  "scope": "c"
+ },
+ "lap_palette": {
+  "prefix": "lap_palette",
+  "body": [
+   "lap_palette(${1:colour})"
+  ],
+  "description": "uint16_t lap_palette(int colour)  The board theme's colour 0-15 (LAP_* | LAP_BRIGHT) as RGB565, so a picture drawn with lap_image matches the text around it.",
+  "scope": "c"
+ },
+ "lap_dots": {
+  "prefix": "lap_dots",
+  "body": [
+   "lap_dots(${1:x}, ${2:y}, ${3:w}, ${4:h}, ${5:dots})"
+  ],
+  "description": "void lap_dots(int x, int y, int w, int h, const uint8_t *dots)  Dots, the way COMPASS draws: a cell holds 2 x 3 dots and shows the two commonest colours among its six, so ordered dither and sharp edges both survive. `dots` is (w*2) x (h*3) bytes, row by row, each a colour 0-15 or LAP_DOT_CLEAR (black). Draws over cells x,y,w,h.",
+  "scope": "c"
+ },
+ "lap_put_glass": {
+  "prefix": "lap_put_glass",
+  "body": [
+   "lap_put_glass(${1:x}, ${2:y}, ${3:s}, ${4:attr})"
+  ],
+  "description": "void lap_put_glass(int x, int y, const char *s, uint8_t attr)  Text over the lap_image picture: the glyph in fg with a one pixel halo in bg, and the picture everywhere else in the cell.",
+  "scope": "c"
+ },
+ "lap_fullscreen": {
+  "prefix": "lap_fullscreen",
+  "body": [
+   "lap_fullscreen(${1:on})"
+  ],
+  "description": "void lap_fullscreen(bool on)  Hide the tab strip: more rows for the app. The board then draws a close button over the top right 7 x 3 cells and takes any tap in the top right 10 x 5 to go HOME; keep that corner clear.",
+  "scope": "c"
+ },
+ "lap_immersive": {
+  "prefix": "lap_immersive",
+  "body": [
+   "lap_immersive(${1:on})"
+  ],
+  "description": "void lap_immersive(bool on)  API 1.2: the whole screen, tab strip and close button both gone - for games that draw their own cockpit. The app must give a visible way out on the glass that calls lap_exit(); an unused BACK key still goes HOME.",
+  "scope": "c"
+ },
+ "lap_hold_rotation": {
+  "prefix": "lap_hold_rotation",
+  "body": [
+   "lap_hold_rotation(${1:on})"
+  ],
+  "description": "void lap_hold_rotation(bool on)  keep the current orientation while tilting",
+  "scope": "c"
+ },
+ "lap_keep_awake": {
+  "prefix": "lap_keep_awake",
+  "body": [
+   "lap_keep_awake(${1:on})"
+  ],
+  "description": "void lap_keep_awake(bool on)  no auto-dim while the app is open",
+  "scope": "c"
+ },
+ "lap_brightness": {
+  "prefix": "lap_brightness",
+  "body": [
+   "lap_brightness(${1:percent})"
+  ],
+  "description": "void lap_brightness(int percent)  5..100 for now, -1 the user's level; restored on close",
+  "scope": "c"
+ },
+ "lap_motion": {
+  "prefix": "lap_motion",
+  "body": [
+   "lap_motion(${1:out})"
+  ],
+  "description": "bool lap_motion(lap_motion_t *out)  False when the board has no motion sensor. Samples arrive at 20 Hz; asking more often returns the same one. The first call starts the compass's calibrated solver, so heading may be -1 for the first second.",
+  "scope": "c"
+ },
+ "lap_tone": {
+  "prefix": "lap_tone",
+  "body": [
+   "lap_tone(${1:hz}, ${2:ms}, ${3:volume}, ${4:wave})"
+  ],
+  "description": "bool lap_tone(int hz, int ms, int volume, int wave)  Queue one note: hz 0 is a rest. Notes play back to back, without gaps, at the board's volume; up to 32 wait. volume 0..100 of full scale.",
+  "scope": "c"
+ },
+ "lap_tone_stop": {
+  "prefix": "lap_tone_stop",
+  "body": [
+   "lap_tone_stop()"
+  ],
+  "description": "void lap_tone_stop(void)  drop whatever is still queued",
+  "scope": "c"
+ },
+ "lap_tone_busy": {
+  "prefix": "lap_tone_busy",
+  "body": [
+   "lap_tone_busy()"
+  ],
+  "description": "bool lap_tone_busy(void)  Queue one note: hz 0 is a rest. Notes play back to back, without gaps, at the board's volume; up to 32 wait. volume 0..100 of full scale.",
+  "scope": "c"
+ },
+ "lap_haptic": {
+  "prefix": "lap_haptic",
+  "body": [
+   "lap_haptic(${1:effect})"
+  ],
+  "description": "bool lap_haptic(int effect)  false without a motor",
+  "scope": "c"
+ },
+ "lap_vibrate": {
+  "prefix": "lap_vibrate",
+  "body": [
+   "lap_vibrate(${1:ms}, ${2:strength})"
+  ],
+  "description": "bool lap_vibrate(int ms, int strength)  ms up to 2000, strength 0..100",
+  "scope": "c"
+ },
+ "lap_gps": {
+  "prefix": "lap_gps",
+  "body": [
+   "lap_gps(${1:out})"
+  ],
+  "description": "bool lap_gps(lap_gps_t *out)  false when there is no receiver",
+  "scope": "c"
+ },
+ "lap_time": {
+  "prefix": "lap_time",
+  "body": [
+   "lap_time(${1:out})"
+  ],
+  "description": "void lap_time(lap_time_t *out)",
+  "scope": "c"
+ },
+ "lap_battery": {
+  "prefix": "lap_battery",
+  "body": [
+   "lap_battery(${1:out})"
+  ],
+  "description": "bool lap_battery(lap_battery_t *out)  false without a gauge",
+  "scope": "c"
+ },
+ "lap_mesh_self": {
+  "prefix": "lap_mesh_self",
+  "body": [
+   "lap_mesh_self(${1:out})"
+  ],
+  "description": "bool lap_mesh_self(lap_mesh_self_t *out)  false until the first refresh",
+  "scope": "c"
+ },
+ "lap_mesh_nodes": {
+  "prefix": "lap_mesh_nodes",
+  "body": [
+   "lap_mesh_nodes(${1:out}, ${2:max})"
+  ],
+  "description": "int lap_mesh_nodes(lap_mesh_node_t *out, int max)  most recently heard first, up to 12",
+  "scope": "c"
+ },
+ "lap_mesh_messages": {
+  "prefix": "lap_mesh_messages",
+  "body": [
+   "lap_mesh_messages(${1:out}, ${2:max})"
+  ],
+  "description": "int lap_mesh_messages(lap_mesh_msg_t *out, int max)  Oldest first, up to 24. lap_mesh_seq() changes whenever a message comes or goes, so an app can skip the copy when nothing did.",
+  "scope": "c"
+ },
+ "lap_mesh_seq": {
+  "prefix": "lap_mesh_seq",
+  "body": [
+   "lap_mesh_seq()"
+  ],
+  "description": "uint32_t lap_mesh_seq(void)  Oldest first, up to 24. lap_mesh_seq() changes whenever a message comes or goes, so an app can skip the copy when nothing did.",
+  "scope": "c"
+ },
+ "lap_mesh_send": {
+  "prefix": "lap_mesh_send",
+  "body": [
+   "lap_mesh_send(${1:channel}, ${2:text})"
+  ],
+  "description": "bool lap_mesh_send(int channel, const char *text)  Send on a channel slot 0..3, or to a node by id (lap_mesh_dm). Queued for the app worker; lap_mesh_send_state says what became of the last one: 1 waiting, 0 handed to the mesh, <0 refused (-1 transmit off, -2 busy, -3 too long, -4 no mesh). Text up to 150 bytes.",
+  "scope": "c"
+ },
+ "lap_mesh_dm": {
+  "prefix": "lap_mesh_dm",
+  "body": [
+   "lap_mesh_dm(${1:id}, ${2:text})"
+  ],
+  "description": "bool lap_mesh_dm(const char *id, const char *text)  Send on a channel slot 0..3, or to a node by id (lap_mesh_dm). Queued for the app worker; lap_mesh_send_state says what became of the last one: 1 waiting, 0 handed to the mesh, <0 refused (-1 transmit off, -2 busy, -3 too long, -4 no mesh). Text up to 150 bytes.",
+  "scope": "c"
+ },
+ "lap_mesh_advert": {
+  "prefix": "lap_mesh_advert",
+  "body": [
+   "lap_mesh_advert()"
+  ],
+  "description": "bool lap_mesh_advert(void)  Send on a channel slot 0..3, or to a node by id (lap_mesh_dm). Queued for the app worker; lap_mesh_send_state says what became of the last one: 1 waiting, 0 handed to the mesh, <0 refused (-1 transmit off, -2 busy, -3 too long, -4 no mesh). Text up to 150 bytes.",
+  "scope": "c"
+ },
+ "lap_mesh_send_state": {
+  "prefix": "lap_mesh_send_state",
+  "body": [
+   "lap_mesh_send_state()"
+  ],
+  "description": "int lap_mesh_send_state(void)  Send on a channel slot 0..3, or to a node by id (lap_mesh_dm). Queued for the app worker; lap_mesh_send_state says what became of the last one: 1 waiting, 0 handed to the mesh, <0 refused (-1 transmit off, -2 busy, -3 too long, -4 no mesh). Text up to 150 bytes.",
+  "scope": "c"
+ },
+ "lap_wifi_scan": {
+  "prefix": "lap_wifi_scan",
+  "body": [
+   "lap_wifi_scan()"
+  ],
+  "description": "bool lap_wifi_scan(void)  start a scan; results arrive in a few seconds",
+  "scope": "c"
+ },
+ "lap_wifi_aps": {
+  "prefix": "lap_wifi_aps",
+  "body": [
+   "lap_wifi_aps(${1:out}, ${2:max})"
+  ],
+  "description": "int lap_wifi_aps(lap_wifi_ap_t *out, int max)  the last scan, up to 16",
+  "scope": "c"
+ },
+ "lap_wifi_seq": {
+  "prefix": "lap_wifi_seq",
+  "body": [
+   "lap_wifi_seq()"
+  ],
+  "description": "uint32_t lap_wifi_seq(void)  changes with each finished scan",
+  "scope": "c"
+ },
+ "lap_ble_scan": {
+  "prefix": "lap_ble_scan",
+  "body": [
+   "lap_ble_scan(${1:on})"
+  ],
+  "description": "void lap_ble_scan(bool on)  listen for advertisers while the app is open",
+  "scope": "c"
+ },
+ "lap_ble_devices": {
+  "prefix": "lap_ble_devices",
+  "body": [
+   "lap_ble_devices(${1:out}, ${2:max})"
+  ],
+  "description": "int lap_ble_devices(lap_ble_dev_t *out, int max)  strongest first, heard in the last 30 s, up to 24",
+  "scope": "c"
+ },
+ "lap_sd_read": {
+  "prefix": "lap_sd_read",
+  "body": [
+   "lap_sd_read(${1:path}, ${2:offset}, ${3:buf}, ${4:len})"
+  ],
+  "description": "int lap_sd_read(const char *path, uint32_t offset, void *buf, uint32_t len)",
+  "scope": "c"
+ },
+ "lap_sd_write": {
+  "prefix": "lap_sd_write",
+  "body": [
+   "lap_sd_write(${1:path}, ${2:offset}, ${3:data}, ${4:len})"
+  ],
+  "description": "int lap_sd_write(const char *path, uint32_t offset, const void *data, uint32_t len)  offset 0 replaces the file, LAP_SD_APPEND adds to its end, anything else writes over the bytes there. The data is copied when the call is made.",
+  "scope": "c"
+ },
+ "lap_sd_list": {
+  "prefix": "lap_sd_list",
+  "body": [
+   "lap_sd_list(${1:dir}, ${2:out}, ${3:max})"
+  ],
+  "description": "int lap_sd_list(const char *dir, lap_sd_entry_t *out, int max)  up to 256",
+  "scope": "c"
+ },
+ "lap_sd_size": {
+  "prefix": "lap_sd_size",
+  "body": [
+   "lap_sd_size(${1:path})"
+  ],
+  "description": "int lap_sd_size(const char *path)  result: the size in bytes",
+  "scope": "c"
+ },
+ "lap_sd_mkdir": {
+  "prefix": "lap_sd_mkdir",
+  "body": [
+   "lap_sd_mkdir(${1:path})"
+  ],
+  "description": "int lap_sd_mkdir(const char *path)  offset 0 replaces the file, LAP_SD_APPEND adds to its end, anything else writes over the bytes there. The data is copied when the call is made.",
+  "scope": "c"
+ },
+ "lap_sd_remove": {
+  "prefix": "lap_sd_remove",
+  "body": [
+   "lap_sd_remove(${1:path})"
+  ],
+  "description": "int lap_sd_remove(const char *path)  a file or an empty folder",
+  "scope": "c"
+ },
+ "lap_sd_poll": {
+  "prefix": "lap_sd_poll",
+  "body": [
+   "lap_sd_poll(${1:job})"
+  ],
+  "description": "int lap_sd_poll(int job)",
+  "scope": "c"
+ },
+ "lap_aircraft": {
+  "prefix": "lap_aircraft",
+  "body": [
+   "lap_aircraft(${1:out}, ${2:max})"
+  ],
+  "description": "int lap_aircraft(lap_aircraft_t *out, int max)  nearest first; unknown ranges last",
+  "scope": "c"
+ },
+ "lap_aircraft_track": {
+  "prefix": "lap_aircraft_track",
+  "body": [
+   "lap_aircraft_track(${1:icao}, ${2:lat}, ${3:lon}, ${4:alt_ft}, ${5:max})"
+  ],
+  "description": "int lap_aircraft_track(uint32_t icao, float *lat, float *lon, int32_t *alt_ft, int max)  oldest first",
+  "scope": "c"
+ },
+ "lap_aircraft_demo": {
+  "prefix": "lap_aircraft_demo",
+  "body": [
+   "lap_aircraft_demo(${1:on})"
+  ],
+  "description": "void lap_aircraft_demo(bool on)  receiver synthetic traffic, not live reception",
+  "scope": "c"
+ },
+ "lap_radio_list": {
+  "prefix": "lap_radio_list",
+  "body": [
+   "lap_radio_list(${1:out}, ${2:max})"
+  ],
+  "description": "int lap_radio_list(lap_radio_info_t *out, int max)  Copies up to max radios (LAP_RADIOS_MAX is plenty) and returns how many, or a negative LAP_RX_E*. The index into this list is what lap_rx_open takes. The list is the worker's snapshot, refreshed about once a second; right after the app opens it may still be empty for a frame.",
+  "scope": "c"
+ },
+ "lap_rx_open": {
+  "prefix": "lap_rx_open",
+  "body": [
+   "lap_rx_open(${1:radio}, ${2:cfg})"
+  ],
+  "description": "int lap_rx_open(int radio, const lap_rx_config_t *cfg)  One session per app. Returns a handle >0 at once, or a negative error; the radio opens in the background, so poll lap_rx_state until RUNNING (or a negative error). The radio the app did not ask for stays parked, and a radio another receiver holds answers LAP_RX_EBUSY.",
+  "scope": "c"
+ },
+ "lap_rx_state": {
+  "prefix": "lap_rx_state",
+  "body": [
+   "lap_rx_state(${1:h})"
+  ],
+  "description": "int lap_rx_state(int h)  One session per app. Returns a handle >0 at once, or a negative error; the radio opens in the background, so poll lap_rx_state until RUNNING (or a negative error). The radio the app did not ask for stays parked, and a radio another receiver holds answers LAP_RX_EBUSY.",
+  "scope": "c"
+ },
+ "lap_rx_status": {
+  "prefix": "lap_rx_status",
+  "body": [
+   "lap_rx_status(${1:h}, ${2:out})"
+  ],
+  "description": "int lap_rx_status(int h, lap_rx_status_t *out)",
+  "scope": "c"
+ },
+ "lap_rx_tune": {
+  "prefix": "lap_rx_tune",
+  "body": [
+   "lap_rx_tune(${1:h}, ${2:hz})"
+  ],
+  "description": "int lap_rx_tune(int h, uint64_t hz)  Each change is queued for the worker and returns 0, or a negative error (ERANGE outside the radio's limits, EUNSUPPORTED where the radio cannot).",
+  "scope": "c"
+ },
+ "lap_rx_gain": {
+  "prefix": "lap_rx_gain",
+  "body": [
+   "lap_rx_gain(${1:h}, ${2:tenths_db})"
+  ],
+  "description": "int lap_rx_gain(int h, int tenths_db)  Each change is queued for the worker and returns 0, or a negative error (ERANGE outside the radio's limits, EUNSUPPORTED where the radio cannot).",
+  "scope": "c"
+ },
+ "lap_rx_rate": {
+  "prefix": "lap_rx_rate",
+  "body": [
+   "lap_rx_rate(${1:h}, ${2:rate_hz})"
+  ],
+  "description": "int lap_rx_rate(int h, uint32_t rate_hz)  Each change is queued for the worker and returns 0, or a negative error (ERANGE outside the radio's limits, EUNSUPPORTED where the radio cannot).",
+  "scope": "c"
+ },
+ "lap_rx_read": {
+  "prefix": "lap_rx_read",
+  "body": [
+   "lap_rx_read(${1:h}, ${2:iq}, ${3:max_pairs}, ${4:meta})"
+  ],
+  "description": "int lap_rx_read(int h, int16_t *iq, int max_pairs, lap_iq_meta_t *meta)  Copies up to max_pairs pairs from the oldest waiting block (never across two blocks) and returns how many, 0 when nothing waits, or a negative error. meta may be NULL. Read in a loop until 0, within a frame's budget.",
+  "scope": "c"
+ },
+ "lap_rx_spectrum": {
+  "prefix": "lap_rx_spectrum",
+  "body": [
+   "lap_rx_spectrum(${1:h}, ${2:db}, ${3:bins}, ${4:seq})"
+  ],
+  "description": "int lap_rx_spectrum(int h, float *db, int bins, uint32_t *seq)  The latest averaged power spectrum, dB relative to full scale, low frequency first (centre - rate/2 to centre + rate/2), squeezed to `bins` (8..512) by keeping each group's peak. Returns bins, or 0 before the first line. *seq (may be NULL) changes with every new line, about 10 a second.",
+  "scope": "c"
+ },
+ "lap_rx_close": {
+  "prefix": "lap_rx_close",
+  "body": [
+   "lap_rx_close(${1:h})"
+  ],
+  "description": "void lap_rx_close(int h)  The latest averaged power spectrum, dB relative to full scale, low frequency first (centre - rate/2 to centre + rate/2), squeezed to `bins` (8..512) by keeping each group's peak. Returns bins, or 0 before the first line. *seq (may be NULL) changes with every new line, about 10 a second.",
+  "scope": "c"
+ },
+ "lap_audio_listen": {
+  "prefix": "lap_audio_listen",
+  "body": [
+   "lap_audio_listen(${1:on})"
+  ],
+  "description": "int lap_audio_listen(bool on)  The demodulated audio of the receiver the app keeps running (its manifest `radio`, such as LAP_RADIO_FM), as it goes to the speaker, before volume. Needs LAP_CAP_RADIO_RX. A 1 second ring: read every frame or lose the oldest.",
+  "scope": "c"
+ },
+ "lap_audio_read": {
+  "prefix": "lap_audio_read",
+  "body": [
+   "lap_audio_read(${1:pcm}, ${2:max})"
+  ],
+  "description": "int lap_audio_read(int16_t *pcm, int max)  samples copied, 0 when none",
+  "scope": "c"
+ },
+ "lap_audio_write": {
+  "prefix": "lap_audio_write",
+  "body": [
+   "lap_audio_write(${1:pcm}, ${2:n})"
+  ],
+  "description": "int lap_audio_write(const int16_t *pcm, int n)  Play PCM on the speaker at the board's volume. Copied into a 1/2 second queue; returns how many samples were taken (0 when full: offer the rest next frame). Muted, or while live radio audio has the speaker, the samples are taken and dropped at playing speed. Speech is never interrupted by it.",
+  "scope": "c"
+ },
+ "lap_audio_status": {
+  "prefix": "lap_audio_status",
+  "body": [
+   "lap_audio_status(${1:out})"
+  ],
+  "description": "int lap_audio_status(lap_audio_status_t *out)",
+  "scope": "c"
+ },
+ "lap_event_subscribe": {
+  "prefix": "lap_event_subscribe",
+  "body": [
+   "lap_event_subscribe(${1:mask})"
+  ],
+  "description": "int lap_event_subscribe(uint32_t mask)  Which kinds to hear; 0 stops. Events from before the call are not replayed. The board keeps one timeline of the last 256 decodes for every reader; an app that falls further behind loses the oldest, counted in lap_event_dropped.",
+  "scope": "c"
+ },
+ "lap_event_next": {
+  "prefix": "lap_event_next",
+  "body": [
+   "lap_event_next(${1:out})"
+  ],
+  "description": "int lap_event_next(lap_event_t *out)  1 copied, 0 none, <0 error",
+  "scope": "c"
+ },
+ "lap_event_dropped": {
+  "prefix": "lap_event_dropped",
+  "body": [
+   "lap_event_dropped()"
+  ],
+  "description": "uint32_t lap_event_dropped(void)  Which kinds to hear; 0 stops. Events from before the call are not replayed. The board keeps one timeline of the last 256 decodes for every reader; an app that falls further behind loses the oldest, counted in lap_event_dropped.",
+  "scope": "c"
+ },
+ "lap_emit": {
+  "prefix": "lap_emit",
+  "body": [
+   "lap_emit(${1:d})"
+  ],
+  "description": "int lap_emit(const lap_decoded_t *d)",
+  "scope": "c"
+ },
+ "lap_action": {
+  "prefix": "lap_action",
+  "body": [
+   "lap_action(${1:name}, ${2:args}, ${3:out}, ${4:cap})"
+  ],
+  "description": "int lap_action(const char *name, const char *args, char *out, size_t cap)",
+  "scope": "c"
+ },
+ "lap_action_count": {
+  "prefix": "lap_action_count",
+  "body": [
+   "lap_action_count()"
+  ],
+  "description": "int lap_action_count(void)  The table, for discovery: false past the end. sig is one letter an argument: i integer, f number, b on/off, s text.",
+  "scope": "c"
+ },
+ "lap_action_info": {
+  "prefix": "lap_action_info",
+  "body": [
+   "lap_action_info(${1:index}, ${2:name}, ${3:name_cap}, ${4:sig}, ${5:sig_cap})"
+  ],
+  "description": "bool lap_action_info(int index, char *name, size_t name_cap, char *sig, size_t sig_cap)  The table, for discovery: false past the end. sig is one letter an argument: i integer, f number, b on/off, s text.",
+  "scope": "c"
+ },
+ "lap_notify": {
+  "prefix": "lap_notify",
+  "body": [
+   "lap_notify(${1:title}, ${2:body})"
+  ],
+  "description": "bool lap_notify(const char *title, const char *body)  A banner over whatever screen is showing, in the app's colour, titled with the app's name. Quiet: no sound. At most one a second.",
+  "scope": "c"
+ },
+ "lap_alert": {
+  "prefix": "lap_alert",
+  "body": [
+   "lap_alert(${1:title}, ${2:body}, ${3:level})"
+  ],
+  "description": "bool lap_alert(const char *title, const char *body, int level)  A detector-style alert: a steady banner shown even over the app itself, with the board's ring and vibrate settings. At most one every 5 seconds.",
+  "scope": "c"
+ },
+ "lap_emit_dropped": {
+  "prefix": "lap_emit_dropped",
+  "body": [
+   "lap_emit_dropped()"
+  ],
+  "description": "uint32_t lap_emit_dropped(void)  decodes refused by the rate limit",
+  "scope": "c"
+ },
+ "lap_event_source": {
+  "prefix": "lap_event_source",
+  "body": [
+   "lap_event_source(${1:out}, ${2:cap})"
+  ],
+  "description": "int lap_event_source(char *out, size_t cap)  Who decoded the event lap_event_next returned last: \"\" the board's own decoders, else the emitting app's id. Returns its length.",
+  "scope": "c"
+ },
+ "lap_service_start": {
+  "prefix": "lap_service_start",
+  "body": [
+   "lap_service_start(${1:svc})"
+  ],
+  "description": "int lap_service_start(const lap_service_t *svc)  From any callback. Copies *svc; calling it again changes the tick or the period. 0, or LAP_SVC_EACCES without LAP_CAP_SERVICE.",
+  "scope": "c"
+ },
+ "lap_service_stop": {
+  "prefix": "lap_service_stop",
+  "body": [
+   "lap_service_stop()"
+  ],
+  "description": "void lap_service_stop(void)  Ends the service. Inside a tick with the screen closed, the app is unloaded after the tick returns, as lap_exit does.",
+  "scope": "c"
+ },
+ "lap_service_running": {
+  "prefix": "lap_service_running",
+  "body": [
+   "lap_service_running()"
+  ],
+  "description": "bool lap_service_running(void)  Ends the service. Inside a tick with the screen closed, the app is unloaded after the tick returns, as lap_exit does.",
+  "scope": "c"
+ },
+ "lap_screen_open": {
+  "prefix": "lap_screen_open",
+  "body": [
+   "lap_screen_open()"
+  ],
+  "description": "bool lap_screen_open(void)  False inside a tick while the app's screen is closed.",
+  "scope": "c"
+ },
+ "lap_service_stats": {
+  "prefix": "lap_service_stats",
+  "body": [
+   "lap_service_stats(${1:out})"
+  ],
+  "description": "int lap_service_stats(lap_service_stats_t *out)",
+  "scope": "c"
+ },
+ "lap_seen_watch": {
+  "prefix": "lap_seen_watch",
+  "body": [
+   "lap_seen_watch(${1:sources})"
+  ],
+  "description": "int lap_seen_watch(uint32_t sources)  0, LAP_RX_EACCES or LAP_RX_EINVAL",
+  "scope": "c"
+ },
+ "lap_seen_next": {
+  "prefix": "lap_seen_next",
+  "body": [
+   "lap_seen_next(${1:out})"
+  ],
+  "description": "int lap_seen_next(lap_seen_t *out)  1 copied, 0 none, <0 error",
+  "scope": "c"
+ },
+ "lap_seen_dropped": {
+  "prefix": "lap_seen_dropped",
+  "body": [
+   "lap_seen_dropped()"
+  ],
+  "description": "uint32_t lap_seen_dropped(void)",
+  "scope": "c"
+ },
+ "lap_mesh_channel_private": {
+  "prefix": "lap_mesh_channel_private",
+  "body": [
+   "lap_mesh_channel_private(${1:slot}, ${2:name}, ${3:cap})"
+  ],
+  "description": "bool lap_mesh_channel_private(int slot, char *name, size_t cap)  A mesh channel slot (1..3) only those holding its key can read: not the public channel and not a hashtag channel anyone can derive. Fills its name when `name` is not NULL. From the copy the app worker refreshes.",
+  "scope": "c"
+ },
+ "lap_ui_keys_rows": {
+  "prefix": "lap_ui_keys_rows",
+  "body": [
+   "lap_ui_keys_rows(${1:n})"
+  ],
+  "description": "int lap_ui_keys_rows(int n)  The rows a bar of n keys wants at the bottom of this app's area, the way the board sizes its own (taller in portrait, one row per 10 columns).",
+  "scope": "c"
+ },
+ "lap_ui_keys": {
+  "prefix": "lap_ui_keys",
+  "body": [
+   "lap_ui_keys(${1:x}, ${2:y}, ${3:w}, ${4:h}, ${5:keys}, ${6:n}, ${7:focus})"
+  ],
+  "description": "void lap_ui_keys(int x, int y, int w, int h, const lap_btn_t *keys, int n, int focus)  Draw n keys (up to LAP_KEYS_MAX) in x, y, w, h; focus is the key the keyboard is on, -1 for none.",
+  "scope": "c"
+ },
+ "lap_ui_key_hit": {
+  "prefix": "lap_ui_key_hit",
+  "body": [
+   "lap_ui_key_hit(${1:col}, ${2:row})"
+  ],
+  "description": "int lap_ui_key_hit(int col, int row)  Which key of the last lap_ui_keys a tap at col, row landed on, or -1 (a dim key is a miss). Which key has letter ch, or -1.",
+  "scope": "c"
+ },
+ "lap_ui_key_find": {
+  "prefix": "lap_ui_key_find",
+  "body": [
+   "lap_ui_key_find(${1:ch})"
+  ],
+  "description": "int lap_ui_key_find(char ch)  Which key of the last lap_ui_keys a tap at col, row landed on, or -1 (a dim key is a miss). Which key has letter ch, or -1.",
+  "scope": "c"
+ },
+ "lap_options_open": {
+  "prefix": "lap_options_open",
+  "body": [
+   "lap_options_open(${1:root})"
+  ],
+  "description": "bool lap_options_open(const lap_opt_list_t *root)  The row's value: the choice's index for CYCLE and TOGGLE, the number for NUMBER and LEVEL. A sub list without its own uses its parent's.",
+  "scope": "c"
+ },
+ "lap_options_showing": {
+  "prefix": "lap_options_showing",
+  "body": [
+   "lap_options_showing()"
+  ],
+  "description": "bool lap_options_showing(void)",
+  "scope": "c"
+ },
+ "lap_options_close": {
+  "prefix": "lap_options_close",
+  "body": [
+   "lap_options_close()"
+  ],
+  "description": "void lap_options_close(void)",
+  "scope": "c"
+ },
+ "lap_picker_open": {
+  "prefix": "lap_picker_open",
+  "body": [
+   "lap_picker_open(${1:title}, ${2:arg})"
+  ],
+  "description": "bool lap_picker_open(const char *title, void (*done)(int index))  The board's list to pick one thing from: open it, add up to 48 rows, and done(index) is called with the index the row was ADDED at, or not at all when the owner backs out.",
+  "scope": "c"
+ },
+ "lap_picker_add": {
+  "prefix": "lap_picker_add",
+  "body": [
+   "lap_picker_add(${1:label}, ${2:detail})"
+  ],
+  "description": "bool lap_picker_add(const char *label, const char *detail)  The board's list to pick one thing from: open it, add up to 48 rows, and done(index) is called with the index the row was ADDED at, or not at all when the owner backs out.",
+  "scope": "c"
+ },
+ "lap_picker_select": {
+  "prefix": "lap_picker_select",
+  "body": [
+   "lap_picker_select(${1:index})"
+  ],
+  "description": "void lap_picker_select(int index)  The board's list to pick one thing from: open it, add up to 48 rows, and done(index) is called with the index the row was ADDED at, or not at all when the owner backs out.",
+  "scope": "c"
+ },
+ "lap_numpad_open": {
+  "prefix": "lap_numpad_open",
+  "body": [
+   "lap_numpad_open(${1:title}, ${2:unit}, ${3:initial}, ${4:arg})"
+  ],
+  "description": "bool lap_numpad_open(const char *title, const char *unit, double initial, void (*done)(double value))  The board's number keypad over the app; done(value) when entered.",
+  "scope": "c"
+ },
+ "lap_ui_overlay": {
+  "prefix": "lap_ui_overlay",
+  "body": [
+   "lap_ui_overlay()"
+  ],
+  "description": "bool lap_ui_overlay(void)  a list or keypad of this app's is up",
+  "scope": "c"
+ },
+ "lap_ui_freq_pad": {
+  "prefix": "lap_ui_freq_pad",
+  "body": [
+   "lap_ui_freq_pad(${1:x}, ${2:y}, ${3:w}, ${4:h}, ${5:entry}, ${6:invalid})"
+  ],
+  "description": "void lap_ui_freq_pad(int x, int y, int w, int h, const char *entry, bool invalid)  FM's inline frequency keypad, drawn in place of the app's controls. `entry` is the digits typed so far (the app keeps them), invalid shows it refused. lap_ui_freq_hit says what a tap pressed: '0'-'9', '.', 'd' delete, 'c' clear, 'x' cancel, 't' tune, 0 a miss.",
+  "scope": "c"
+ },
+ "lap_ui_freq_hit": {
+  "prefix": "lap_ui_freq_hit",
+  "body": [
+   "lap_ui_freq_hit(${1:col}, ${2:row})"
+  ],
+  "description": "char lap_ui_freq_hit(int col, int row)  FM's inline frequency keypad, drawn in place of the app's controls. `entry` is the digits typed so far (the app keeps them), invalid shows it refused. lap_ui_freq_hit says what a tap pressed: '0'-'9', '.', 'd' delete, 'c' clear, 'x' cancel, 't' tune, 0 a miss.",
+  "scope": "c"
+ },
+ "lap_ui_bezel": {
+  "prefix": "lap_ui_bezel",
+  "body": [
+   "lap_ui_bezel(${1:x}, ${2:y}, ${3:w}, ${4:h}, ${5:title})"
+  ],
+  "description": "void lap_ui_bezel(int x, int y, int w, int h, const char *title)  The receiver face FM and P25 share. bezel: a ruled frame with its title on the rule. chip: an annunciator, a lit word; returns where the next one starts. rail: a row of chips, left ones folding from x, right ones held at the right edge.",
+  "scope": "c"
+ },
+ "lap_ui_chip": {
+  "prefix": "lap_ui_chip",
+  "body": [
+   "lap_ui_chip(${1:x}, ${2:y}, ${3:text}, ${4:on}, ${5:hue})"
+  ],
+  "description": "int lap_ui_chip(int x, int y, const char *text, bool on, uint8_t hue)  The receiver face FM and P25 share. bezel: a ruled frame with its title on the rule. chip: an annunciator, a lit word; returns where the next one starts. rail: a row of chips, left ones folding from x, right ones held at the right edge.",
+  "scope": "c"
+ },
+ "lap_ui_rail": {
+  "prefix": "lap_ui_rail",
+  "body": [
+   "lap_ui_rail(${1:x}, ${2:y}, ${3:w}, ${4:left}, ${5:left_n}, ${6:right}, ${7:right_n})"
+  ],
+  "description": "void lap_ui_rail(int x, int y, int w, const lap_chip_t *left, int left_n, const lap_chip_t *right, int right_n)  The receiver face FM and P25 share. bezel: a ruled frame with its title on the rule. chip: an annunciator, a lit word; returns where the next one starts. rail: a row of chips, left ones folding from x, right ones held at the right edge.",
+  "scope": "c"
+ },
+ "lap_ui_frequency": {
+  "prefix": "lap_ui_frequency",
+  "body": [
+   "lap_ui_frequency(${1:x}, ${2:y}, ${3:w}, ${4:h}, ${5:hz}, ${6:entry})"
+  ],
+  "description": "int lap_ui_frequency(int x, int y, int w, int h, uint64_t hz, const char *entry)  The big frequency figures, inside the box x, y, w, h starting at row y; they roll to a new frequency as FM's do. entry, when not NULL, shows digits being typed instead. Returns the first row below the figures.",
+  "scope": "c"
+ },
+ "lap_ui_bargraph": {
+  "prefix": "lap_ui_bargraph",
+  "body": [
+   "lap_ui_bargraph(${1:x}, ${2:y}, ${3:w}, ${4:rows}, ${5:frac}, ${6:peak})"
+  ],
+  "description": "void lap_ui_bargraph(int x, int y, int w, int rows, float frac, float peak)  A VFD bargraph: lit filaments, green through amber to red, `rows` tall; peak >= 0 holds a white mark.",
+  "scope": "c"
+ },
+ "lap_ui_vfo": {
+  "prefix": "lap_ui_vfo",
+  "body": [
+   "lap_ui_vfo(${1:slot}, ${2:x}, ${3:y}, ${4:w}, ${5:h}, ${6:label}, ${7:value}, ${8:frac}, ${9:hue})"
+  ],
+  "description": "void lap_ui_vfo(int slot, int x, int y, int w, int h, const char *label, const char *value, float frac, uint8_t hue)  The VFO control: label and value on the title row, the travel under it, - and + keys at its end. Up to 4 on a screen (slot 0..3). lap_ui_vfo_hit: LAP_UI_PART_DOWN / _UP step, _VALUE opens exact entry, _BAR sets the value at *frac (0..1) where it was tapped; -1 a miss.",
+  "scope": "c"
+ },
+ "lap_ui_vfo_hit": {
+  "prefix": "lap_ui_vfo_hit",
+  "body": [
+   "lap_ui_vfo_hit(${1:slot}, ${2:col}, ${3:row}, ${4:frac})"
+  ],
+  "description": "int lap_ui_vfo_hit(int slot, int col, int row, float *frac)  The VFO control: label and value on the title row, the travel under it, - and + keys at its end. Up to 4 on a screen (slot 0..3). lap_ui_vfo_hit: LAP_UI_PART_DOWN / _UP step, _VALUE opens exact entry, _BAR sets the value at *frac (0..1) where it was tapped; -1 a miss.",
+  "scope": "c"
+ },
+ "lap_ui_meter": {
+  "prefix": "lap_ui_meter",
+  "body": [
+   "lap_ui_meter(${1:x}, ${2:y}, ${3:w}, ${4:frac}, ${5:hue})"
+  ],
+  "description": "void lap_ui_meter(int x, int y, int w, float frac, uint8_t hue)  One-row ASCII meter, [====|===>--+---], quarter ticks, 0..1.",
+  "scope": "c"
+ },
+ "lap_ui_sparkline": {
+  "prefix": "lap_ui_sparkline",
+  "body": [
+   "lap_ui_sparkline(${1:x}, ${2:y}, ${3:w}, ${4:h}, ${5:level}, ${6:n}, ${7:max}, ${8:marker})"
+  ],
+  "description": "void lap_ui_sparkline(int x, int y, int w, int h, const int *level, int n, int max, int marker)  A sparkline in line characters (':' half, '|' full), n levels 0..max, one a column; marker is a column drawn in the peak colour, -1 none.",
+  "scope": "c"
+ },
+ "lap_ui_history": {
+  "prefix": "lap_ui_history",
+  "body": [
+   "lap_ui_history(${1:x}, ${2:y}, ${3:w}, ${4:h}, ${5:v}, ${6:n}, ${7:lo}, ${8:hi}, ${9:hue})"
+  ],
+  "description": "void lap_ui_history(int x, int y, int w, int h, const float *v, int n, float lo, float hi, uint8_t hue)  History in braille: n values (up to 512) between lo and hi, two a cell, newest at the right, as SWEEP's strips are drawn.",
+  "scope": "c"
+ },
+ "lap_wf_push": {
+  "prefix": "lap_wf_push",
+  "body": [
+   "lap_wf_push(${1:db}, ${2:bins}, ${3:line})"
+  ],
+  "description": "bool lap_wf_push(const float *db, int bins, const lap_wf_line_t *line)",
+  "scope": "c"
+ },
+ "lap_wf_draw": {
+  "prefix": "lap_wf_draw",
+  "body": [
+   "lap_wf_draw(${1:x}, ${2:y}, ${3:w}, ${4:h}, ${5:style})"
+  ],
+  "description": "void lap_wf_draw(int x, int y, int w, int h, int style)  style: LAP_WF_MINI the trace and history only; LAP_WF_FULL the whole instrument with its scale, marker readout and control keys.",
+  "scope": "c"
+ },
+ "lap_wf_key": {
+  "prefix": "lap_wf_key",
+  "body": [
+   "lap_wf_key(${1:key}, ${2:ch})"
+  ],
+  "description": "bool lap_wf_key(lap_key_t key, char ch)  The full instrument's keys and taps; true when it used them.",
+  "scope": "c"
+ },
+ "lap_wf_touch": {
+  "prefix": "lap_wf_touch",
+  "body": [
+   "lap_wf_touch(${1:col}, ${2:row})"
+  ],
+  "description": "bool lap_wf_touch(int col, int row)  The full instrument's keys and taps; true when it used them.",
+  "scope": "c"
+ },
+ "lap_wf_marker_hz": {
+  "prefix": "lap_wf_marker_hz",
+  "body": [
+   "lap_wf_marker_hz()"
+  ],
+  "description": "uint64_t lap_wf_marker_hz(void)  The marker's frequency, 0 when there is none.",
+  "scope": "c"
+ },
+ "lap_canvas_init": {
+  "prefix": "lap_canvas_init",
+  "body": [
+   "lap_canvas_init(${1:c}, ${2:cells_w}, ${3:cells_h})"
+  ],
+  "description": "bool lap_canvas_init(lap_canvas_t *c, int cells_w, int cells_h)  Sizes (or resizes) for cells_w x cells_h cells. False when out of memory.",
+  "scope": "c"
+ },
+ "lap_canvas_free": {
+  "prefix": "lap_canvas_free",
+  "body": [
+   "lap_canvas_free(${1:c})"
+  ],
+  "description": "void lap_canvas_free(lap_canvas_t *c)",
+  "scope": "c"
+ },
+ "lap_canvas_show": {
+  "prefix": "lap_canvas_show",
+  "body": [
+   "lap_canvas_show(${1:c}, ${2:cell_x}, ${3:cell_y})"
+  ],
+  "description": "void lap_canvas_show(const lap_canvas_t *c, int cell_x, int cell_y)",
+  "scope": "c"
+ },
+ "lc_clear": {
+  "prefix": "lc_clear",
+  "body": [
+   "lc_clear(${1:c}, ${2:col})"
+  ],
+  "description": "void lc_clear(lap_canvas_t *c, uint8_t col)  ---- dots -------------------------------------------------------------",
+  "scope": "c"
+ },
+ "lc_pset": {
+  "prefix": "lc_pset",
+  "body": [
+   "lc_pset(${1:c}, ${2:x}, ${3:y}, ${4:col})"
+  ],
+  "description": "void lc_pset(lap_canvas_t *c, int x, int y, uint8_t col)  ---- dots -------------------------------------------------------------",
+  "scope": "c"
+ },
+ "lc_get": {
+  "prefix": "lc_get",
+  "body": [
+   "lc_get(${1:c}, ${2:x}, ${3:y})"
+  ],
+  "description": "uint8_t lc_get(const lap_canvas_t *c, int x, int y)",
+  "scope": "c"
+ },
+ "lc_bayer": {
+  "prefix": "lc_bayer",
+  "body": [
+   "lc_bayer(${1:x}, ${2:y})"
+  ],
+  "description": "float lc_bayer(int x, int y)  The 4x4 ordered-dither threshold COMPASS uses, 0..1.",
+  "scope": "c"
+ },
+ "lc_ramp": {
+  "prefix": "lc_ramp",
+  "body": [
+   "lc_ramp(${1:b}, ${2:x}, ${3:y}, ${4:inks}, ${5:n})"
+  ],
+  "description": "uint8_t lc_ramp(float b, int x, int y, const uint8_t *inks, int n)  Brightness b (0..1) along a ramp of n inks, dark to light, dithered.",
+  "scope": "c"
+ },
+ "lc_shade": {
+  "prefix": "lc_shade",
+  "body": [
+   "lc_shade(${1:c}, ${2:x}, ${3:y}, ${4:b}, ${5:ramp})"
+  ],
+  "description": "void lc_shade(lap_canvas_t *c, int x, int y, float b, const uint8_t *ramp)",
+  "scope": "c"
+ },
+ "lc_mix": {
+  "prefix": "lc_mix",
+  "body": [
+   "lc_mix(${1:a}, ${2:b}, ${3:t}, ${4:x}, ${5:y})"
+  ],
+  "description": "uint8_t lc_mix(uint8_t a, uint8_t b, float t, int x, int y)  Two inks mixed: t 0 is all a, 1 all b.",
+  "scope": "c"
+ },
+ "lc_fill_rect": {
+  "prefix": "lc_fill_rect",
+  "body": [
+   "lc_fill_rect(${1:c}, ${2:x}, ${3:y}, ${4:w}, ${5:h}, ${6:col})"
+  ],
+  "description": "void lc_fill_rect(lap_canvas_t *c, int x, int y, int w, int h, uint8_t col)  ---- shapes --------------------------------------------------------------",
+  "scope": "c"
+ },
+ "lc_rect": {
+  "prefix": "lc_rect",
+  "body": [
+   "lc_rect(${1:c}, ${2:x}, ${3:y}, ${4:w}, ${5:h}, ${6:col})"
+  ],
+  "description": "void lc_rect(lap_canvas_t *c, int x, int y, int w, int h, uint8_t col)",
+  "scope": "c"
+ },
+ "lc_line": {
+  "prefix": "lc_line",
+  "body": [
+   "lc_line(${1:c}, ${2:x0}, ${3:y0}, ${4:x1}, ${5:y1}, ${6:col})"
+  ],
+  "description": "void lc_line(lap_canvas_t *c, int x0, int y0, int x1, int y1, uint8_t col)",
+  "scope": "c"
+ },
+ "lc_fill_circle": {
+  "prefix": "lc_fill_circle",
+  "body": [
+   "lc_fill_circle(${1:c}, ${2:cx}, ${3:cy}, ${4:r}, ${5:col})"
+  ],
+  "description": "void lc_fill_circle(lap_canvas_t *c, int cx, int cy, int r, uint8_t col)",
+  "scope": "c"
+ },
+ "lc_circle": {
+  "prefix": "lc_circle",
+  "body": [
+   "lc_circle(${1:c}, ${2:cx}, ${3:cy}, ${4:r}, ${5:col})"
+  ],
+  "description": "void lc_circle(lap_canvas_t *c, int cx, int cy, int r, uint8_t col)",
+  "scope": "c"
+ },
+ "lc_ball": {
+  "prefix": "lc_ball",
+  "body": [
+   "lc_ball(${1:c}, ${2:cx}, ${3:cy}, ${4:r}, ${5:ramp})"
+  ],
+  "description": "void lc_ball(lap_canvas_t *c, int cx, int cy, int r, const uint8_t *ramp)  A ball lit from the upper left: shaded along `ramp`.",
+  "scope": "c"
+ },
+ "lc_sprite": {
+  "prefix": "lc_sprite",
+  "body": [
+   "lc_sprite(${1:c}, ${2:x}, ${3:y}, ${4:rows}, ${5:nrows}, ${6:keys}, ${7:inks}, ${8:scale}, ${9:flip})"
+  ],
+  "description": "void lc_sprite(lap_canvas_t *c, int x, int y, const char *const *rows, int nrows, const char *keys, const uint8_t *inks, int scale, bool flip)  ASCII art, one string per row. A character found in `keys` takes the colour at the same place in `inks`; anything else ('.', ' ') is transparent. scale repeats each art pixel; flip mirrors left to right.",
+  "scope": "c"
+ },
+ "lc_glyph": {
+  "prefix": "lc_glyph",
+  "body": [
+   "lc_glyph(${1:ch})"
+  ],
+  "description": "uint16_t lc_glyph(char ch)  3 x 5 letters, bit 14 top-left, row by row. Digits, A-Z and a few marks.",
+  "scope": "c"
+ },
+ "lc_text_w": {
+  "prefix": "lc_text_w",
+  "body": [
+   "lc_text_w(${1:s}, ${2:scale})"
+  ],
+  "description": "int lc_text_w(const char *s, int scale)  Width in dots of s at `scale`, one dot between letters.",
+  "scope": "c"
+ },
+ "lc_text": {
+  "prefix": "lc_text",
+  "body": [
+   "lc_text(${1:c}, ${2:x}, ${3:y}, ${4:s}, ${5:scale}, ${6:col})"
+  ],
+  "description": "void lc_text(lap_canvas_t *c, int x, int y, const char *s, int scale, uint8_t col)  Width in dots of s at `scale`, one dot between letters.",
+  "scope": "c"
+ },
+ "lc_text_outlined": {
+  "prefix": "lc_text_outlined",
+  "body": [
+   "lc_text_outlined(${1:c}, ${2:x}, ${3:y}, ${4:s}, ${5:scale}, ${6:col}, ${7:edge})"
+  ],
+  "description": "void lc_text_outlined(lap_canvas_t *c, int x, int y, const char *s, int scale, uint8_t col, uint8_t edge)  The same with a one-dot outline, readable over anything.",
+  "scope": "c"
+ },
+ "lc_block_w": {
+  "prefix": "lc_block_w",
+  "body": [
+   "lc_block_w(${1:s}, ${2:k})"
+  ],
+  "description": "int lc_block_w(const char *s, int k)  Text whose every letter pixel is k whole cells (2k x 3k dots), placed on the cell grid. The board smooths stair-steps inside a cell into diagonals, which suits curves and spoils letters; letters made of whole cells are never smoothed. x, y are dots and are snapped down to a cell.",
+  "scope": "c"
+ },
+ "lc_text_block": {
+  "prefix": "lc_text_block",
+  "body": [
+   "lc_text_block(${1:c}, ${2:x}, ${3:y}, ${4:s}, ${5:k}, ${6:col})"
+  ],
+  "description": "void lc_text_block(lap_canvas_t *c, int x, int y, const char *s, int k, uint8_t col)  Text whose every letter pixel is k whole cells (2k x 3k dots), placed on the cell grid. The board smooths stair-steps inside a cell into diagonals, which suits curves and spoils letters; letters made of whole cells are never smoothed. x, y are dots and are snapped down to a cell.",
+  "scope": "c"
+ },
+ "lc_clampf": {
+  "prefix": "lc_clampf",
+  "body": [
+   "lc_clampf(${1:v}, ${2:lo}, ${3:hi})"
+  ],
+  "description": "float lc_clampf(float v, float lo, float hi)  ---- small maths ----------------------------------------------------------",
+  "scope": "c"
+ },
+ "lc_frand": {
+  "prefix": "lc_frand",
+  "body": [
+   "lc_frand()"
+  ],
+  "description": "float lc_frand(void)  0..1",
+  "scope": "c"
+ },
+ "l3v": {
+  "prefix": "l3v",
+  "body": [
+   "l3v(${1:x}, ${2:y}, ${3:z})"
+  ],
+  "description": "l3_vec l3v(float x, float y, float z)  An affine transform: rotation/scale in m[0..8] row by row, then the translation in m[9..11]. p' = M p + t.",
+  "scope": "c"
+ },
+ "l3_add": {
+  "prefix": "l3_add",
+  "body": [
+   "l3_add(${1:a}, ${2:b})"
+  ],
+  "description": "l3_vec l3_add(l3_vec a, l3_vec b)  An affine transform: rotation/scale in m[0..8] row by row, then the translation in m[9..11]. p' = M p + t.",
+  "scope": "c"
+ },
+ "l3_sub": {
+  "prefix": "l3_sub",
+  "body": [
+   "l3_sub(${1:a}, ${2:b})"
+  ],
+  "description": "l3_vec l3_sub(l3_vec a, l3_vec b)",
+  "scope": "c"
+ },
+ "l3_scale": {
+  "prefix": "l3_scale",
+  "body": [
+   "l3_scale(${1:a}, ${2:k})"
+  ],
+  "description": "l3_vec l3_scale(l3_vec a, float k)",
+  "scope": "c"
+ },
+ "l3_dot": {
+  "prefix": "l3_dot",
+  "body": [
+   "l3_dot(${1:a}, ${2:b})"
+  ],
+  "description": "float l3_dot(l3_vec a, l3_vec b)",
+  "scope": "c"
+ },
+ "l3_cross": {
+  "prefix": "l3_cross",
+  "body": [
+   "l3_cross(${1:a}, ${2:b})"
+  ],
+  "description": "l3_vec l3_cross(l3_vec a, l3_vec b)",
+  "scope": "c"
+ },
+ "l3_norm": {
+  "prefix": "l3_norm",
+  "body": [
+   "l3_norm(${1:a})"
+  ],
+  "description": "l3_vec l3_norm(l3_vec a)  unit length; zero stays zero",
+  "scope": "c"
+ },
+ "l3_identity": {
+  "prefix": "l3_identity",
+  "body": [
+   "l3_identity()"
+  ],
+  "description": "l3_xform l3_identity(void)",
+  "scope": "c"
+ },
+ "l3_pose": {
+  "prefix": "l3_pose",
+  "body": [
+   "l3_pose(${1:pos}, ${2:rot}, ${3:scale})"
+  ],
+  "description": "l3_xform l3_pose(l3_vec pos, l3_quat rot, float scale)  scale, then rotate, then move",
+  "scope": "c"
+ },
+ "l3_mul": {
+  "prefix": "l3_mul",
+  "body": [
+   "l3_mul(${1:a}, ${2:b})"
+  ],
+  "description": "l3_xform l3_mul(const l3_xform *a, const l3_xform *b)  a after b",
+  "scope": "c"
+ },
+ "l3_apply": {
+  "prefix": "l3_apply",
+  "body": [
+   "l3_apply(${1:t}, ${2:p})"
+  ],
+  "description": "l3_vec l3_apply(const l3_xform *t, l3_vec p)",
+  "scope": "c"
+ },
+ "l3_quat_axis": {
+  "prefix": "l3_quat_axis",
+  "body": [
+   "l3_quat_axis(${1:axis}, ${2:deg})"
+  ],
+  "description": "l3_quat l3_quat_axis(l3_vec axis, float deg)",
+  "scope": "c"
+ },
+ "l3_quat_euler": {
+  "prefix": "l3_quat_euler",
+  "body": [
+   "l3_quat_euler(${1:yaw_deg}, ${2:pitch_deg}, ${3:roll_deg})"
+  ],
+  "description": "l3_quat l3_quat_euler(float yaw_deg, float pitch_deg, float roll_deg)",
+  "scope": "c"
+ },
+ "l3_quat_mul": {
+  "prefix": "l3_quat_mul",
+  "body": [
+   "l3_quat_mul(${1:a}, ${2:b})"
+  ],
+  "description": "l3_quat l3_quat_mul(l3_quat a, l3_quat b)  a after b",
+  "scope": "c"
+ },
+ "l3_quat_spin": {
+  "prefix": "l3_quat_spin",
+  "body": [
+   "l3_quat_spin(${1:q}, ${2:omega}, ${3:dt})"
+  ],
+  "description": "l3_quat l3_quat_spin(l3_quat q, l3_vec omega, float dt)  integrate angular velocity (rad/s)",
+  "scope": "c"
+ },
+ "l3_quat_slerp": {
+  "prefix": "l3_quat_slerp",
+  "body": [
+   "l3_quat_slerp(${1:a}, ${2:b}, ${3:t})"
+  ],
+  "description": "l3_quat l3_quat_slerp(l3_quat a, l3_quat b, float t)",
+  "scope": "c"
+ },
+ "l3_quat_rotate": {
+  "prefix": "l3_quat_rotate",
+  "body": [
+   "l3_quat_rotate(${1:q}, ${2:v})"
+  ],
+  "description": "l3_vec l3_quat_rotate(l3_quat q, l3_vec v)",
+  "scope": "c"
+ },
+ "l3_create": {
+  "prefix": "l3_create",
+  "body": [
+   "l3_create(${1:cells_w}, ${2:cells_h})"
+  ],
+  "description": "l3_scene *l3_create(int cells_w, int cells_h)  A scene draws into cells_w x cells_h cells (cells*2 x cells*3 dots). NULL when out of memory or dimensions are invalid. Create on the first draw (lap_cols/lap_rows are drawing APIs), before l3_begin. Free in leave().",
+  "scope": "c"
+ },
+ "l3_destroy": {
+  "prefix": "l3_destroy",
+  "body": [
+   "l3_destroy(${1:sc})"
+  ],
+  "description": "void l3_destroy(l3_scene *sc)  A scene draws into cells_w x cells_h cells (cells*2 x cells*3 dots). NULL when out of memory or dimensions are invalid. Create on the first draw (lap_cols/lap_rows are drawing APIs), before l3_begin. Free in leave().",
+  "scope": "c"
+ },
+ "l3_resize": {
+  "prefix": "l3_resize",
+  "body": [
+   "l3_resize(${1:sc}, ${2:cells_w}, ${3:cells_h})"
+  ],
+  "description": "bool l3_resize(l3_scene *sc, int cells_w, int cells_h)  A scene draws into cells_w x cells_h cells (cells*2 x cells*3 dots). NULL when out of memory or dimensions are invalid. Create on the first draw (lap_cols/lap_rows are drawing APIs), before l3_begin. Free in leave().",
+  "scope": "c"
+ },
+ "l3_reserve": {
+  "prefix": "l3_reserve",
+  "body": [
+   "l3_reserve(${1:sc}, ${2:commands}, ${3:vertices}, ${4:triangles})"
+  ],
+  "description": "bool l3_reserve(l3_scene *sc, int commands, int vertices, int triangles)  Between frames only. Defaults: 256 commands, 1024 mesh vertices (per mesh), 2048 clipped triangles (per view). Buffers never grow in a frame. Overflow is reported in stats.dropped. Reserve larger capacities before drawing complex scenes. Firmware creates its shared PSRAM-stack worker with the first scene.",
+  "scope": "c"
+ },
+ "l3_size": {
+  "prefix": "l3_size",
+  "body": [
+   "l3_size(${1:sc}, ${2:dots_w}, ${3:dots_h})"
+  ],
+  "description": "void l3_size(const l3_scene *sc, int *dots_w, int *dots_h)  Between frames only. Defaults: 256 commands, 1024 mesh vertices (per mesh), 2048 clipped triangles (per view). Buffers never grow in a frame. Overflow is reported in stats.dropped. Reserve larger capacities before drawing complex scenes. Firmware creates its shared PSRAM-stack worker with the first scene.",
+  "scope": "c"
+ },
+ "l3_camera": {
+  "prefix": "l3_camera",
+  "body": [
+   "l3_camera(${1:sc}, ${2:eye}, ${3:target}, ${4:fov_deg})"
+  ],
+  "description": "void l3_camera(l3_scene *sc, l3_vec eye, l3_vec target, float fov_deg)  Perspective camera at `eye` looking at `target`, +y up, vertical field of view in degrees. fov_deg 0 is orthographic, `ortho_h` world units tall.",
+  "scope": "c"
+ },
+ "l3_camera_ortho": {
+  "prefix": "l3_camera_ortho",
+  "body": [
+   "l3_camera_ortho(${1:sc}, ${2:eye}, ${3:target}, ${4:ortho_h})"
+  ],
+  "description": "void l3_camera_ortho(l3_scene *sc, l3_vec eye, l3_vec target, float ortho_h)  Perspective camera at `eye` looking at `target`, +y up, vertical field of view in degrees. fov_deg 0 is orthographic, `ortho_h` world units tall.",
+  "scope": "c"
+ },
+ "l3_camera_up": {
+  "prefix": "l3_camera_up",
+  "body": [
+   "l3_camera_up(${1:sc}, ${2:up})"
+  ],
+  "description": "void l3_camera_up(l3_scene *sc, l3_vec up)  default +y",
+  "scope": "c"
+ },
+ "l3_clip": {
+  "prefix": "l3_clip",
+  "body": [
+   "l3_clip(${1:sc}, ${2:near}, ${3:far})"
+  ],
+  "description": "void l3_clip(l3_scene *sc, float near, float far)  default 0.05 .. 1000",
+  "scope": "c"
+ },
+ "l3_sun": {
+  "prefix": "l3_sun",
+  "body": [
+   "l3_sun(${1:sc}, ${2:dir}, ${3:strength}, ${4:ambient})"
+  ],
+  "description": "void l3_sun(l3_scene *sc, l3_vec dir, float strength, float ambient)  One sun and up to four lamps. The sun shines along `dir`. ambient 0..1.",
+  "scope": "c"
+ },
+ "l3_lamp": {
+  "prefix": "l3_lamp",
+  "body": [
+   "l3_lamp(${1:sc}, ${2:slot}, ${3:pos}, ${4:strength}, ${5:range})"
+  ],
+  "description": "bool l3_lamp(l3_scene *sc, int slot, l3_vec pos, float strength, float range)  strength 0 = off",
+  "scope": "c"
+ },
+ "l3_shadows": {
+  "prefix": "l3_shadows",
+  "body": [
+   "l3_shadows(${1:sc}, ${2:on})"
+  ],
+  "description": "void l3_shadows(l3_scene *sc, bool on)  Shadows from the sun, cast by everything drawn with L3_CAST onto everything (default off: they cost one more pass).",
+  "scope": "c"
+ },
+ "l3_sky": {
+  "prefix": "l3_sky",
+  "body": [
+   "l3_sky(${1:sc}, ${2:top}, ${3:bottom})"
+  ],
+  "description": "void l3_sky(l3_scene *sc, uint8_t top, uint8_t bottom)  What is behind everything: a dithered ramp from `bottom` ink to `top` ink down the screen (the same ink twice for a flat colour), or LAP_DOT_CLEAR to leave those dots clear so an app can draw its own background first with l3_dots.",
+  "scope": "c"
+ },
+ "l3_fog": {
+  "prefix": "l3_fog",
+  "body": [
+   "l3_fog(${1:sc}, ${2:ink}, ${3:start}, ${4:end})"
+  ],
+  "description": "void l3_fog(l3_scene *sc, uint8_t ink, float start, float end)  Fog toward `ink` from `start` to `end` distance; end <= start turns it off.",
+  "scope": "c"
+ },
+ "l3_outline": {
+  "prefix": "l3_outline",
+  "body": [
+   "l3_outline(${1:sc}, ${2:ink})"
+  ],
+  "description": "void l3_outline(l3_scene *sc, uint8_t ink)  A one-dot outline in `ink` where objects meet the background or each other, the way COMPASS edges its bezel. LAP_DOT_CLEAR turns it off.",
+  "scope": "c"
+ },
+ "l3_material": {
+  "prefix": "l3_material",
+  "body": [
+   "l3_material(${1:sc}, ${2:inks}, ${3:n}, ${4:spec}, ${5:flags})"
+  ],
+  "description": "int l3_material(l3_scene *sc, const uint8_t *inks, int n, float spec, uint32_t flags)",
+  "scope": "c"
+ },
+ "l3_texture": {
+  "prefix": "l3_texture",
+  "body": [
+   "l3_texture(${1:sc}, ${2:w}, ${3:h}, ${4:texels})"
+  ],
+  "description": "int l3_texture(l3_scene *sc, int w, int h, const uint8_t *texels)  A picture on a surface: each texel is a material number (or 0xFF for \"the object's own material\"), so lighting still shades it. Boxes take it on every face, floors and quads tile it once per unit. A texture six times as wide as tall gives a box a tile a face, in the order +x, -x, +y, -y, +z, -z of its own axes: one die, six faces.",
+  "scope": "c"
+ },
+ "l3_material_texture": {
+  "prefix": "l3_material_texture",
+  "body": [
+   "l3_material_texture(${1:sc}, ${2:material}, ${3:texture})"
+  ],
+  "description": "void l3_material_texture(l3_scene *sc, int material, int texture)  A picture on a surface: each texel is a material number (or 0xFF for \"the object's own material\"), so lighting still shades it. Boxes take it on every face, floors and quads tile it once per unit. A texture six times as wide as tall gives a box a tile a face, in the order +x, -x, +y, -y, +z, -z of its own axes: one die, six faces.",
+  "scope": "c"
+ },
+ "l3_texture_dot": {
+  "prefix": "l3_texture_dot",
+  "body": [
+   "l3_texture_dot(${1:sc}, ${2:texture}, ${3:radius})"
+  ],
+  "description": "void l3_texture_dot(l3_scene *sc, int texture, float radius)  With L3_ROUND, how big each texel's dot is, in texels (default 0.42; up to 1.4, when dots may reach past their own texel - a die's pips).",
+  "scope": "c"
+ },
+ "l3_begin": {
+  "prefix": "l3_begin",
+  "body": [
+   "l3_begin(${1:sc})"
+  ],
+  "description": "void l3_begin(l3_scene *sc)  ---- a frame -------------------------------------------------------------",
+  "scope": "c"
+ },
+ "l3_end": {
+  "prefix": "l3_end",
+  "body": [
+   "l3_end(${1:sc})"
+  ],
+  "description": "void l3_end(l3_scene *sc)  Renders what was drawn since l3_begin into the scene's dots.",
+  "scope": "c"
+ },
+ "l3_show": {
+  "prefix": "l3_show",
+  "body": [
+   "l3_show(${1:sc}, ${2:cell_x}, ${3:cell_y})"
+  ],
+  "description": "void l3_show(const l3_scene *sc, int cell_x, int cell_y)  Shows the dots over cells x, y onward (lap_dots).",
+  "scope": "c"
+ },
+ "l3_dots": {
+  "prefix": "l3_dots",
+  "body": [
+   "l3_dots(${1:sc})"
+  ],
+  "description": "uint8_t *l3_dots(l3_scene *sc)  The dots themselves, (dots_w x dots_h), after l3_end: draw 2D over them (lap_canvas.h works directly on them) before l3_show.",
+  "scope": "c"
+ },
+ "l3_flags": {
+  "prefix": "l3_flags",
+  "body": [
+   "l3_flags(${1:sc}, ${2:flags})"
+  ],
+  "description": "void l3_flags(l3_scene *sc, uint32_t flags)",
+  "scope": "c"
+ },
+ "l3_tag": {
+  "prefix": "l3_tag",
+  "body": [
+   "l3_tag(${1:sc}, ${2:tag})"
+  ],
+  "description": "void l3_tag(l3_scene *sc, int tag)  A number 1..255 that l3_pick reports for the dots this object covers.",
+  "scope": "c"
+ },
+ "l3_sphere": {
+  "prefix": "l3_sphere",
+  "body": [
+   "l3_sphere(${1:sc}, ${2:c}, ${3:r}, ${4:mat})"
+  ],
+  "description": "void l3_sphere(l3_scene *sc, l3_vec c, float r, int mat)  Curved shapes are traced per dot, so they are exactly round at any size; only the dots they can cover on screen are looked at.",
+  "scope": "c"
+ },
+ "l3_ellipsoid": {
+  "prefix": "l3_ellipsoid",
+  "body": [
+   "l3_ellipsoid(${1:sc}, ${2:t}, ${3:radii}, ${4:mat})"
+  ],
+  "description": "void l3_ellipsoid(l3_scene *sc, const l3_xform *t, l3_vec radii, int mat)  Curved shapes are traced per dot, so they are exactly round at any size; only the dots they can cover on screen are looked at.",
+  "scope": "c"
+ },
+ "l3_box": {
+  "prefix": "l3_box",
+  "body": [
+   "l3_box(${1:sc}, ${2:t}, ${3:half}, ${4:mat})"
+  ],
+  "description": "void l3_box(l3_scene *sc, const l3_xform *t, l3_vec half, int mat)  Curved shapes are traced per dot, so they are exactly round at any size; only the dots they can cover on screen are looked at.",
+  "scope": "c"
+ },
+ "l3_rbox": {
+  "prefix": "l3_rbox",
+  "body": [
+   "l3_rbox(${1:sc}, ${2:t}, ${3:half}, ${4:round}, ${5:mat})"
+  ],
+  "description": "void l3_rbox(l3_scene *sc, const l3_xform *t, l3_vec half, float round, int mat)  rounded edges: dice",
+  "scope": "c"
+ },
+ "l3_cylinder": {
+  "prefix": "l3_cylinder",
+  "body": [
+   "l3_cylinder(${1:sc}, ${2:a}, ${3:b}, ${4:r}, ${5:mat})"
+  ],
+  "description": "void l3_cylinder(l3_scene *sc, l3_vec a, l3_vec b, float r, int mat)  capped",
+  "scope": "c"
+ },
+ "l3_capsule": {
+  "prefix": "l3_capsule",
+  "body": [
+   "l3_capsule(${1:sc}, ${2:a}, ${3:b}, ${4:r}, ${5:mat})"
+  ],
+  "description": "void l3_capsule(l3_scene *sc, l3_vec a, l3_vec b, float r, int mat)",
+  "scope": "c"
+ },
+ "l3_cone": {
+  "prefix": "l3_cone",
+  "body": [
+   "l3_cone(${1:sc}, ${2:a}, ${3:b}, ${4:ra}, ${5:rb}, ${6:mat})"
+  ],
+  "description": "void l3_cone(l3_scene *sc, l3_vec a, l3_vec b, float ra, float rb, int mat)  frustum, capped",
+  "scope": "c"
+ },
+ "l3_torus": {
+  "prefix": "l3_torus",
+  "body": [
+   "l3_torus(${1:sc}, ${2:t}, ${3:ring}, ${4:tube}, ${5:mat})"
+  ],
+  "description": "void l3_torus(l3_scene *sc, const l3_xform *t, float ring, float tube, int mat)  in its local xz plane",
+  "scope": "c"
+ },
+ "l3_disc": {
+  "prefix": "l3_disc",
+  "body": [
+   "l3_disc(${1:sc}, ${2:c}, ${3:normal}, ${4:r}, ${5:mat})"
+  ],
+  "description": "void l3_disc(l3_scene *sc, l3_vec c, l3_vec normal, float r, int mat)",
+  "scope": "c"
+ },
+ "l3_floor": {
+  "prefix": "l3_floor",
+  "body": [
+   "l3_floor(${1:sc}, ${2:y}, ${3:mat})"
+  ],
+  "description": "void l3_floor(l3_scene *sc, float y, int mat)  A floor at height y, without end.",
+  "scope": "c"
+ },
+ "l3_quad": {
+  "prefix": "l3_quad",
+  "body": [
+   "l3_quad(${1:sc}, ${2:a}, ${3:b}, ${4:c}, ${5:d}, ${6:mat})"
+  ],
+  "description": "void l3_quad(l3_scene *sc, l3_vec a, l3_vec b, l3_vec c, l3_vec d, int mat)  A flat four-sided patch a, b, c, d (in order around it).",
+  "scope": "c"
+ },
+ "l3_draw_mesh": {
+  "prefix": "l3_draw_mesh",
+  "body": [
+   "l3_draw_mesh(${1:sc}, ${2:m}, ${3:t}, ${4:mat})"
+  ],
+  "description": "void l3_draw_mesh(l3_scene *sc, const l3_mesh *m, const l3_xform *t, int mat)",
+  "scope": "c"
+ },
+ "l3_mesh_lathe": {
+  "prefix": "l3_mesh_lathe",
+  "body": [
+   "l3_mesh_lathe(${1:out}, ${2:rz}, ${3:n}, ${4:segments})"
+  ],
+  "description": "bool l3_mesh_lathe(l3_mesh *out, const float *rz, int n, int segments)  profile (r,y) pairs turned about +y",
+  "scope": "c"
+ },
+ "l3_mesh_extrude": {
+  "prefix": "l3_mesh_extrude",
+  "body": [
+   "l3_mesh_extrude(${1:out}, ${2:xy}, ${3:n}, ${4:depth})"
+  ],
+  "description": "bool l3_mesh_extrude(l3_mesh *out, const float *xy, int n, float depth)  a closed outline pushed along z",
+  "scope": "c"
+ },
+ "l3_mesh_heightmap": {
+  "prefix": "l3_mesh_heightmap",
+  "body": [
+   "l3_mesh_heightmap(${1:out}, ${2:h}, ${3:w}, ${4:d}, ${5:cell})"
+  ],
+  "description": "bool l3_mesh_heightmap(l3_mesh *out, const float *h, int w, int d, float cell)  terrain on xz",
+  "scope": "c"
+ },
+ "l3_mesh_icosphere": {
+  "prefix": "l3_mesh_icosphere",
+  "body": [
+   "l3_mesh_icosphere(${1:out}, ${2:subdivisions})"
+  ],
+  "description": "bool l3_mesh_icosphere(l3_mesh *out, int subdivisions)  Ready-made meshes, built into memory the app owns (free with l3_mesh_free). False when out of memory.",
+  "scope": "c"
+ },
+ "l3_mesh_prisms": {
+  "prefix": "l3_mesh_prisms",
+  "body": [
+   "l3_mesh_prisms(${1:out}, ${2:xz}, ${3:counts}, ${4:n}, ${5:base}, ${6:top}, ${7:wall_mat}, ${8:roof_mat})"
+  ],
+  "description": "bool l3_mesh_prisms(l3_mesh *out, const float *xz, const uint16_t *counts, int n, const float *base, const float *top, int wall_mat, int roof_mat)  Buildings for a map: n footprints (xz: x east, z south pairs, counts[i] points each, either winding) standing from base[i] up to top[i], walls in wall_mat and flat roofs in roof_mat. One mesh holds up to 65,535 corners (two a footprint point); split a city across meshes, a tile each.",
+  "scope": "c"
+ },
+ "l3_mesh_free": {
+  "prefix": "l3_mesh_free",
+  "body": [
+   "l3_mesh_free(${1:m})"
+  ],
+  "description": "void l3_mesh_free(l3_mesh *m)  Buildings for a map: n footprints (xz: x east, z south pairs, counts[i] points each, either winding) standing from base[i] up to top[i], walls in wall_mat and flat roofs in roof_mat. One mesh holds up to 65,535 corners (two a footprint point); split a city across meshes, a tile each.",
+  "scope": "c"
+ },
+ "l3_mesh_text": {
+  "prefix": "l3_mesh_text",
+  "body": [
+   "l3_mesh_text(${1:out}, ${2:s}, ${3:depth})"
+  ],
+  "description": "bool l3_mesh_text(l3_mesh *out, const char *s, float depth)  Text in the 3 x 5 dot font of lap_canvas.h as a solid, one unit per font dot, `depth` thick, centred on the origin in its xy plane.",
+  "scope": "c"
+ },
+ "l3_terrain": {
+  "prefix": "l3_terrain",
+  "body": [
+   "l3_terrain(${1:sc}, ${2:heights}, ${3:mats}, ${4:w}, ${5:d}, ${6:cell}, ${7:height_scale}, ${8:origin}, ${9:mat})"
+  ],
+  "description": "void l3_terrain(l3_scene *sc, const uint8_t *heights, const uint8_t *mats, int w, int d, float cell, float height_scale, l3_vec origin, int mat)  Terrain from a height map, drawn a column at a time front to back (the way Voxel Space drew Comanche), so a hundred thousand height samples cost about what the screen's columns cost. heights is w x d bytes (0..255 times height_scale), mats a material per sample or NULL for `mat`. The corner sample [0] sits at origin; samples are `cell` apart along +x and +z. It writes depth, so shapes, meshes and sprites stand on it; it takes sun and shadows like everything else. The arrays must live through l3_end.",
+  "scope": "c"
+ },
+ "l3_walls": {
+  "prefix": "l3_walls",
+  "body": [
+   "l3_walls(${1:sc}, ${2:map}, ${3:w}, ${4:d}, ${5:cell}, ${6:height}, ${7:origin})"
+  ],
+  "description": "void l3_walls(l3_scene *sc, const uint8_t *map, int w, int d, float cell, float height, l3_vec origin)  Walls on a grid, the way Wolfenstein 3D drew them: map is w x d bytes, 0 for open floor, otherwise a material number + 1 for a solid block `cell` wide and `height` tall, its corner [0] at origin. One ray a column, so a maze costs the same however big it is. Add l3_floor for floor and ceiling, and anything else for what stands in the rooms. The map must live through l3_end.",
+  "scope": "c"
+ },
+ "l3_particles": {
+  "prefix": "l3_particles",
+  "body": [
+   "l3_particles(${1:sc}, ${2:p}, ${3:n}, ${4:size}, ${5:mat})"
+  ],
+  "description": "void l3_particles(l3_scene *sc, const l3_vec *p, int n, float size, int mat)  Many small round things at once - sparks, snow, stars, bubbles - each a lit ball `size` across in world units (so they shrink with distance). An L3_UNLIT material makes them glow. Positions must live through l3_end.",
+  "scope": "c"
+ },
+ "l3_camera_orbit": {
+  "prefix": "l3_camera_orbit",
+  "body": [
+   "l3_camera_orbit(${1:sc}, ${2:target}, ${3:distance}, ${4:yaw_deg}, ${5:pitch_deg}, ${6:fov_deg})"
+  ],
+  "description": "void l3_camera_orbit(l3_scene *sc, l3_vec target, float distance, float yaw_deg, float pitch_deg, float fov_deg)  Around a point: yaw 0 looks along -z, pitch up from the horizon, degrees.",
+  "scope": "c"
+ },
+ "l3_camera_look": {
+  "prefix": "l3_camera_look",
+  "body": [
+   "l3_camera_look(${1:sc}, ${2:eye}, ${3:yaw_deg}, ${4:pitch_deg}, ${5:fov_deg})"
+  ],
+  "description": "void l3_camera_look(l3_scene *sc, l3_vec eye, float yaw_deg, float pitch_deg, float fov_deg)  From a point, for walking about: yaw 0 looks along -z, pitch up, degrees.",
+  "scope": "c"
+ },
+ "l3_drag_turn": {
+  "prefix": "l3_drag_turn",
+  "body": [
+   "l3_drag_turn(${1:yaw_deg}, ${2:pitch_deg}, ${3:speed})"
+  ],
+  "description": "bool l3_drag_turn(float *yaw_deg, float *pitch_deg, float speed)  A finger dragged across the glass turns yaw and pitch (degrees per pixel), the usual way to look around a model. Returns true while a finger is down.",
+  "scope": "c"
+ },
+ "l3_line": {
+  "prefix": "l3_line",
+  "body": [
+   "l3_line(${1:sc}, ${2:a}, ${3:b}, ${4:ink})"
+  ],
+  "description": "void l3_line(l3_scene *sc, l3_vec a, l3_vec b, uint8_t ink)  ---- lines, points, sprites ------------------------------------------------",
+  "scope": "c"
+ },
+ "l3_point": {
+  "prefix": "l3_point",
+  "body": [
+   "l3_point(${1:sc}, ${2:p}, ${3:size_dots}, ${4:ink})"
+  ],
+  "description": "void l3_point(l3_scene *sc, l3_vec p, float size_dots, uint8_t ink)  ---- lines, points, sprites ------------------------------------------------",
+  "scope": "c"
+ },
+ "l3_sprite": {
+  "prefix": "l3_sprite",
+  "body": [
+   "l3_sprite(${1:sc}, ${2:p}, ${3:height}, ${4:rows}, ${5:nrows}, ${6:keys}, ${7:inks})"
+  ],
+  "description": "void l3_sprite(l3_scene *sc, l3_vec p, float height, const char *const *rows, int nrows, const char *keys, const uint8_t *inks)  lap_canvas.h-style ASCII art standing upright at p, facing the camera, `height` world units tall; keys/inks as lc_sprite.",
+  "scope": "c"
+ },
+ "l3_label": {
+  "prefix": "l3_label",
+  "body": [
+   "l3_label(${1:sc}, ${2:p}, ${3:s}, ${4:scale}, ${5:ink}, ${6:edge})"
+  ],
+  "description": "void l3_label(l3_scene *sc, l3_vec p, const char *s, int scale, uint8_t ink, uint8_t edge)  A label in the 3 x 5 font at p, always facing the camera, scale in dots (it does not shrink with distance).",
+  "scope": "c"
+ },
+ "l3_project": {
+  "prefix": "l3_project",
+  "body": [
+   "l3_project(${1:sc}, ${2:p}, ${3:dot_x}, ${4:dot_y})"
+  ],
+  "description": "bool l3_project(const l3_scene *sc, l3_vec p, float *dot_x, float *dot_y)  Where p lands on the dots; false when behind the camera or clipped.",
+  "scope": "c"
+ },
+ "l3_ray": {
+  "prefix": "l3_ray",
+  "body": [
+   "l3_ray(${1:sc}, ${2:dot_x}, ${3:dot_y}, ${4:origin}, ${5:dir})"
+  ],
+  "description": "void l3_ray(const l3_scene *sc, float dot_x, float dot_y, l3_vec *origin, l3_vec *dir)  The ray through a dot, for aiming and touch.",
+  "scope": "c"
+ },
+ "l3_pick": {
+  "prefix": "l3_pick",
+  "body": [
+   "l3_pick(${1:sc}, ${2:dot_x}, ${3:dot_y})"
+  ],
+  "description": "int l3_pick(const l3_scene *sc, int dot_x, int dot_y)  The l3_tag of what shows at a dot after l3_end, 0 for nothing.",
+  "scope": "c"
+ },
+ "l3_depth": {
+  "prefix": "l3_depth",
+  "body": [
+   "l3_depth(${1:sc}, ${2:dot_x}, ${3:dot_y})"
+  ],
+  "description": "float l3_depth(const l3_scene *sc, int dot_x, int dot_y)  The distance from the camera at a dot after l3_end, or a negative number.",
+  "scope": "c"
+ },
+ "l3_raycast": {
+  "prefix": "l3_raycast",
+  "body": [
+   "l3_raycast(${1:sc}, ${2:origin}, ${3:dir}, ${4:max_t}, ${5:out})"
+  ],
+  "description": "bool l3_raycast(const l3_scene *sc, l3_vec origin, l3_vec dir, float max_t, l3_hit *out)",
+  "scope": "c"
+ },
+ "l3_stats": {
+  "prefix": "l3_stats",
+  "body": [
+   "l3_stats(${1:sc}, ${2:out})"
+  ],
+  "description": "void l3_stats(const l3_scene *sc, l3_stats_t *out)",
+  "scope": "c"
+ },
+ "LAP_APP": {
+  "prefix": "LAP_APP",
+  "scope": "c",
+  "description": "Declare the app: manifest and callbacks",
+  "body": [
+   "LAP_APP(.id = \"${1:myapp}\", .name = \"${2:MY APP}\", .sub = \"${3:what it does}\", .version = \"0.1\",",
+   "        .author = \"${4:you}\", .color = LAP_${5:CYAN},",
+   "        .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch);"
+  ]
+ },
+ "lapdraw": {
+  "prefix": "lapdraw",
+  "scope": "c",
+  "description": "A draw() with the board's keys along the bottom",
+  "body": [
+   "static void draw(void)",
+   "{",
+   "    const int w = lap_cols(), h = lap_rows();",
+   "    const int kh = lap_ui_keys_rows(${1:2}), ky = h - kh;",
+   "    lap_clear(LAP_UI_DIM);",
+   "    $0",
+   "    lap_ui_keys(0, ky, w, kh, keys, ${1:2}, -1);",
+   "}"
+  ]
+ }
+}

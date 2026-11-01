@@ -37,6 +37,7 @@ uint32_t ls_tui_present_count(void);
 
 /* Force the next present to redraw every cell. */
 void ls_tui_invalidate(void);
+void ls_tui_invalidate_stats(uint32_t *n, void **by);   /* count since last call, last caller */
 
 /* No glass (a screen that is only a terminal): present keeps the cells and
    draws no pixels. Turning pixels back on repaints everything. */
@@ -78,6 +79,15 @@ void ls_tui_image_ring(tui_rect cells, const uint16_t *src, int w, int h,
 bool ls_tui_has_images(void);
 /* Where the current ring picture starts in its source; 0, 0 for a plain one. */
 void ls_tui_image_ring_offset(int *x0, int *y0);
+/* UI-only cumulative ring steps. Epoch changes when old contents cannot be
+   reused (new source/rectangle or an unknown/negative shift). */
+/* A normal, contiguous picture with an absolute world-pixel origin. The
+   epoch changes on zoom/style/source changes. This is feed metadata only;
+   the panel continues to consume the ordinary RGB565 image. */
+void ls_tui_image_pan(tui_rect cells,const uint16_t *src,int w,int h,uint32_t serial,
+                      uint32_t epoch,int32_t left,int32_t top,uint16_t ground);
+bool ls_tui_image_pan_state(uint32_t *epoch,int32_t *left,int32_t *top,uint16_t *ground);
+bool ls_tui_image_ring_state(uint32_t *epoch, uint32_t *columns, uint32_t *rows);
 
 /* Glass: draw this cell's glyph over the image instead of on its own
    ground. The glyph is inked in the attribute's foreground with a one pixel
@@ -92,6 +102,9 @@ void ls_tui_put_glass(tui_surface *sf, tui_rect clip, int x, int y, int16_t ch, 
    there is none), and the glass marks as last presented, one bit per cell. */
 bool ls_tui_image_now(tui_rect *cells, const uint16_t **src, int *w, int *h, uint32_t *serial);
 const uint8_t *ls_tui_glass_now(size_t *bytes);
+/* Exact glass coverage, including shape masks and crisp text, for a cell-feed
+   viewer. UI task only, after present; packed as one 0..15 byte per pixel. */
+bool ls_tui_glass_mask(uint16_t glyph, uint8_t *mask, bool *halo);
 
 #define LS_TUI_TRACE(eighths) ((char)(0xA0 + (((eighths) < 1 ? 1 :                                               (eighths) > 8 ? 8 : (eighths)) - 1)))
 
@@ -168,6 +181,14 @@ void ls_tui_basemap(tui_surface *sf,tui_rect cells,const uint16_t palette[16]);
 
 void ls_tui_reserve(tui_rect cells);
 tui_rect ls_tui_reserved(void);
+
+/* The surface now being drawn is not the grid: it is `sf`, whose cell (0,0)
+   lands at grid cell (dx, dy) (the desk's window client). Rects given to
+   ls_tui_image, ls_tui_image_ring, ls_tui_glass, ls_tui_put_glass,
+   ls_tui_basemap, ls_tui_reserve and ls_tui_blit_rgb565 are in that surface's
+   cells until it is set back with NULL. */
+void ls_tui_set_origin(const tui_surface *sf, int dx, int dy);
+void ls_tui_get_origin(int *dx, int *dy);
 
 /* Push an image into a reserved rectangle. */
 

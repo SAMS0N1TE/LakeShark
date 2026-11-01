@@ -192,6 +192,17 @@ void audio_volume_set(int v) { s_vol = v; }
 static bool s_muted;
 bool audio_is_muted(void) { return s_muted; }
 void audio_toggle_mute(void) { s_muted = !s_muted; }
+void audio_mute_set(bool m) { s_muted = m; }
+/* The desk's theme and wallpaper: kept for the run, as NVS would keep them. */
+static int s_desk_theme = -1;
+static uint32_t s_desk_wp;
+int settings_get_desk_theme(void) { return s_desk_theme; }
+void settings_set_desk_theme(int t) { s_desk_theme = t; }
+uint32_t settings_get_desk_wallpaper(void) { return s_desk_wp; }
+void settings_set_desk_wallpaper(uint32_t id) { s_desk_wp = id; }
+static uint32_t s_desk_words[24];
+uint32_t settings_get_desk_word(int s) { return s >= 0 && s < 24 ? s_desk_words[s] : 0; }
+void settings_set_desk_word(int s, uint32_t v) { if (s >= 0 && s < 24) s_desk_words[s] = v; }
 
 /* No perf_history_good here either: perf.c is linked for real, so the
    sparkline on ADSB is fed by the same ring the board fills. */

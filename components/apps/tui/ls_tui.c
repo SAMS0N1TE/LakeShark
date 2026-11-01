@@ -1,4 +1,5 @@
 #include "ls_braille.h"
+#include "ls_box.h"
 /* See ls_tui.h for why the TUI bypasses LVGL entirely. */
 #include "ls_tui.h"
 #include "ls_tui_inset.h"
@@ -140,6 +141,19 @@ static bool blit_block(uint16_t *fb, int native_w, int x0, int y0,
                                          : (uint32_t)(y0+y)*native_w+x0+x;
                 fb[idx]=ls_braille_pixel(ch,x,y,s_cw,s_ch)?fg:bg;
             }
+        return true;
+    }
+    if (ch >= 0x2000 && ls_box_is(ch)) {
+        ls_box_mask_t m;
+        ls_box_mask(ch, s_cw, s_ch, &m);
+        for (int y = 0; y < s_ch && y0 + y < s_screen_h; y++) {
+            const uint32_t bits = y < 32 ? m.r[y] : 0;
+            for (int x = 0; x < s_cw && x0 + x < s_screen_w; x++) {
+                const uint32_t idx = s_landscape ? landscape_index(x0 + x, y0 + y, native_w)
+                                                 : (uint32_t)(y0 + y) * native_w + x0 + x;
+                fb[idx] = (x < 32 && (bits >> x & 1)) ? fg : bg;
+            }
+        }
         return true;
     }
     if (ch < 0x80 || (ch > 0xA7 && ch < 0xC0)) return false;
@@ -311,7 +325,11 @@ static bool s_image_previous_valid;
    has moved left / down since the last present. What was on the glass when
    that present finished, so the next one can tell whether moving those
    pixels is enough. */
-static bool s_image_ring;
+static bool s_image_ring,s_image_pan;
+static uint32_t s_pan_epoch;
+static int32_t s_pan_left,s_pan_top;
+static uint16_t s_pan_ground;
+static uint32_t s_ring_epoch,s_ring_columns,s_ring_rows;
 static int s_image_x0, s_image_y0, s_image_dx, s_image_dy;
 static bool s_image_shown;
 static tui_rect s_image_shown_rect;
@@ -333,6 +351,32 @@ void ls_tui_last_traffic(uint32_t *image_bytes, uint32_t *flush_bytes)
    over the map afterwards (a picker, the keyboard) is solid again without
    having to know the map was there. */
 static uint8_t  *s_glass_back, *s_glass_front;   /* one bit per cell */
+
+/* Where the surface being drawn sits in the grid (ls_tui_set_origin): the
+   desk draws an app into a window's own surface, and the rects that app
+   hands over for pixels it owns are in that surface's cells. */
+static int s_org_x, s_org_y;
+static const tui_surface *s_org_sf;
+
+void ls_tui_set_origin(const tui_surface *sf, int dx, int dy)
+{
+    s_org_sf = sf;
+    s_org_x = sf ? dx : 0;
+    s_org_y = sf ? dy : 0;
+}
+
+void ls_tui_get_origin(int *dx, int *dy)
+{
+    if (dx) *dx = s_org_x;
+    if (dy) *dy = s_org_y;
+}
+
+static inline tui_rect org_rect(tui_rect r)
+{
+    r.x += s_org_x;
+    r.y += s_org_y;
+    return r;
+}
 static tui_cell *s_glass_rec;
 
 static inline bool glass_bit(const uint8_t *bits, size_t i)
@@ -353,6 +397,7 @@ void ls_tui_basemap(tui_surface *sf,tui_rect area,const uint16_t palette[16])
         if(s_base_rect.w) s_base_dirty=true;
         s_base_rect=tui_rect_make(0,0,0,0);return;
     }
+    area=org_rect(area);
     if(memcmp(s_base_palette,palette,sizeof(s_base_palette)) ||
        memcmp(&s_base_rect,&area,sizeof(area))) {
         memcpy(s_base_palette,palette,sizeof(s_base_palette));
@@ -360,9 +405,11 @@ void ls_tui_basemap(tui_surface *sf,tui_rect area,const uint16_t palette[16])
         memset(s_ramp_valid[2],0,sizeof(s_ramp_valid[2]));s_base_dirty=true;
     }
     s_base_rect=area;
-    for(int y=area.y;y<area.y+area.h;y++) for(int x=area.x;x<area.x+area.w;x++)
-        if(x>=0 && y>=0 && x<s_cols && y<s_rows)
-            s_base_rec[y*s_cols+x]=sf->back[y*sf->w+x];
+    for(int y=area.y;y<area.y+area.h;y++) for(int x=area.x;x<area.x+area.w;x++) {
+        const int lx=x-s_org_x, ly=y-s_org_y;
+        if(x>=0 && y>=0 && x<s_cols && y<s_rows && lx>=0 && ly>=0 && lx<sf->w && ly<sf->h)
+            s_base_rec[y*s_cols+x]=sf->back[ly*sf->w+lx];
+    }
 }
 static bool basemap_live(int col,int row,size_t i)
 {
@@ -374,21 +421,38 @@ static void image_set(tui_rect cells, const uint16_t *src, int w, int h,
                       uint32_t serial, bool ring);
 void ls_tui_image(tui_rect cells, const uint16_t *src, int w, int h, uint32_t serial)
 {
+    s_image_pan=false;
+    cells = org_rect(cells);
     image_set(cells, src, w, h, serial, false);
     s_image_x0 = s_image_y0 = s_image_dx = s_image_dy = 0;
 }
 
+void ls_tui_image_pan(tui_rect cells,const uint16_t *src,int w,int h,uint32_t serial,
+                      uint32_t epoch,int32_t left,int32_t top,uint16_t ground) {
+    ls_tui_image(cells,src,w,h,serial);
+    s_image_pan=true;s_pan_epoch=epoch;s_pan_left=left;s_pan_top=top;s_pan_ground=ground;
+}
+bool ls_tui_image_pan_state(uint32_t *epoch,int32_t *left,int32_t *top,uint16_t *ground) {
+    *epoch=s_pan_epoch;*left=s_pan_left;*top=s_pan_top;*ground=s_pan_ground;
+    return s_image_pan && s_image;
+}
 void ls_tui_image_ring(tui_rect cells, const uint16_t *src, int w, int h,
                        int x0, int y0, int dx, int dy, uint32_t serial)
 {
+    cells = org_rect(cells);
+    s_image_pan=false;
     const bool same = s_image_ring && src == s_image && w == s_image_w && h == s_image_h &&
                       !memcmp(&cells, &s_image_rect, sizeof(cells));
     image_set(cells, src, w, h, serial, true);
     /* A negative move says the whole picture changed: draw every cell. */
-    if (!same || dx < 0 || dy < 0) s_image_dx = s_image_dy = 0, s_image_shown = false;
+    if (!same || dx < 0 || dy < 0) {
+        s_image_dx = s_image_dy = 0;s_image_shown = false;
+        s_ring_epoch++;s_ring_columns=s_ring_rows=0;
+    }
     /* Moves since the last present add up; a present uses them once. */
     s_image_dx += dx > 0 ? dx : 0;
     s_image_dy += dy > 0 ? dy : 0;
+    s_ring_columns += dx > 0 ? dx : 0;s_ring_rows += dy > 0 ? dy : 0;
     s_image_x0 = w > 0 ? ((x0 % w) + w) % w : 0;
     s_image_y0 = h > 0 ? ((y0 % h) + h) % h : 0;
 }
@@ -399,6 +463,14 @@ void ls_tui_image_ring_offset(int *x0, int *y0)
 {
     if (x0) *x0 = s_image_ring ? s_image_x0 : 0;
     if (y0) *y0 = s_image_ring ? s_image_y0 : 0;
+}
+
+bool ls_tui_image_ring_state(uint32_t *epoch,uint32_t *columns,uint32_t *rows)
+{
+    if(epoch) *epoch=s_ring_epoch;
+    if(columns) *columns=s_ring_columns;
+    if(rows) *rows=s_ring_rows;
+    return s_image_ring && s_image && s_image_w>0 && s_image_h>0;
 }
 
 static void image_set(tui_rect cells, const uint16_t *src, int w, int h,
@@ -455,10 +527,17 @@ static bool image_cell(int col, int row)
 
 void ls_tui_glass(int col, int row)
 {
+    const int lx = col, ly = row;
+    col += s_org_x;
+    row += s_org_y;
     if (!s_glass_back || !s_back || col < 0 || row < 0 || col >= s_cols || row >= s_rows) return;
     const size_t i = (size_t)row * s_cols + col;
     glass_set(s_glass_back, i, true);
-    s_glass_rec[i] = s_back[i];
+    /* The cell as it will be in the grid: from the surface being drawn. */
+    if (s_org_sf && lx >= 0 && ly >= 0 && lx < s_org_sf->w && ly < s_org_sf->h)
+        s_glass_rec[i] = s_org_sf->back[(size_t)ly * s_org_sf->w + lx];
+    else
+        s_glass_rec[i] = s_back[i];
 }
 
 void ls_tui_put_glass(tui_surface *sf, tui_rect clip, int x, int y, int16_t ch, uint8_t attr)
@@ -470,7 +549,7 @@ void ls_tui_put_glass(tui_surface *sf, tui_rect clip, int x, int y, int16_t ch, 
        anywhere else it is the ground already drawn in the cell, so a ring or
        a route over a character map keeps the map's colour behind it instead
        of a black block. */
-    if(!image_cell(x,y)) attr=TUI_ATTR(TUI_ATTR_FG(attr),TUI_ATTR_BG(cell->attr));
+    if(!image_cell(x+s_org_x,y+s_org_y)) attr=TUI_ATTR(TUI_ATTR_FG(attr),TUI_ATTR_BG(cell->attr));
     *cell=(tui_cell){ch,attr};
     ls_tui_glass(x, y);
 }
@@ -630,6 +709,13 @@ static bool glass_coverage(uint16_t ch, bool *halo)
             s_cov[y*32+x]=ls_braille_pixel(ch,x,y,cw,chh)?15:0;
         return true;
     }
+    if(ch>=0x2000 && ls_box_is(ch)) {
+        ls_box_mask_t m;
+        ls_box_mask(ch,cw,chh,&m);
+        for(int y=0;y<chh;y++) for(int x=0;x<cw;x++)
+            s_cov[y*32+x]=(m.r[y]>>x&1)?15:0;
+        return true;
+    }
     /* A Cyrillic letter has a byte the blocks would otherwise claim. */
     const ls_font_t *face = s_font;
     const int slot = tui_cyr_slot(ch);
@@ -693,6 +779,15 @@ glyph:;
         }
     }
     return true;
+}
+
+bool ls_tui_glass_mask(uint16_t glyph, uint8_t *mask, bool *halo)
+{
+    bool ink = glass_coverage(glyph, halo);
+    for (int y = 0; y < s_ch; y++)
+        for (int x = 0; x < s_cw; x++)
+            mask[y * s_cw + x] = ink && y < 32 && x < 32 ? s_cov[y * 32 + x] : 0;
+    return ink;
 }
 
 /* A glyph over the image: the picture shows through, the glyph is inked in
@@ -1025,7 +1120,8 @@ LS_COLD bool ls_tui_begin(int screen_w, int screen_h)
     {
         const uint16_t g = PALETTE[0];
         const size_t n = (size_t)fb.width * fb.height;
-        if (g == 0) memset(fb.pixels, 0, n * sizeof(uint16_t));
+        if (!fb.pixels) { /* virtual panel: cells only until an on-demand paint */ }
+        else if (g == 0) memset(fb.pixels, 0, n * sizeof(uint16_t));
         else        fill_run(fb.pixels, (int)n, g, ((uint32_t)g << 16) | g);
     }
     ls_panel_fb_present();
@@ -1087,8 +1183,15 @@ void ls_tui_set_pixels_off(bool off)
 }
 bool ls_tui_pixels_off(void) { return s_pixels_off; }
 
+/* 'tui cost': how often the whole grid was thrown away, and by whom last. */
+static uint32_t s_inval_n;
+static void *s_inval_by;
+void ls_tui_invalidate_stats(uint32_t *n, void **by) { *n = s_inval_n; *by = s_inval_by; s_inval_n = 0; }
+
 void ls_tui_invalidate(void)
 {
+    s_inval_n++;
+    s_inval_by = __builtin_return_address(0);
     /* A cell that cannot occur forces every comparison to differ. */
     if (s_front) memset(s_front, 0xFF, (size_t)s_cols * s_rows * sizeof(tui_cell));
     s_bar_sig[0] = s_bar_sig[1] = UINT32_MAX;
@@ -1212,6 +1315,7 @@ tui_rect ls_tui_reserved(void) { return s_reserved; }
 
 void ls_tui_reserve(tui_rect cells)
 {
+    cells = org_rect(cells);
     if (cells.w < 0) cells.w = 0;
     if (cells.h < 0) cells.h = 0;
 
@@ -1240,12 +1344,13 @@ void ls_tui_blit_rgb565(tui_rect cells, const uint16_t *src,
 {
     if (!src || src_w <= 0 || src_h <= 0) return;
     if (cells.w <= 0 || cells.h <= 0) return;
+    cells = org_rect(cells);
 
     if (cells.x != s_reserved.x || cells.y != s_reserved.y ||
         cells.w != s_reserved.w || cells.h != s_reserved.h) return;
 
     ls_panel_fb_t fb;
-    if (!ls_panel_fb(&fb)) return;
+    if (!ls_panel_fb(&fb) || !fb.pixels) return;
 
     const int x0 = s_ox + cells.x * s_cw;
     const int y0 = s_oy + cells.y * s_ch;
@@ -1386,6 +1491,17 @@ static void image_shift(uint16_t *fb, int native_w)
     dirty_logical(X0, Y0, W, H);
 }
 
+/* No bit set in [start, start + n). */
+static bool bits_clear(const uint8_t *bits, size_t start, size_t n)
+{
+    if (!bits) return true;
+    size_t i = start, end = start + n;
+    for (; i < end && (i & 7); i++) if (glass_bit(bits, i)) return false;
+    for (; i + 8 <= end; i += 8) if (bits[i >> 3]) return false;
+    for (; i < end; i++) if (glass_bit(bits, i)) return false;
+    return true;
+}
+
 static volatile uint32_t s_present_count;
 
 uint32_t ls_tui_present_count(void) { return s_present_count; }
@@ -1394,7 +1510,7 @@ int ls_tui_present(void)
 {
     if (!s_back || !s_front) return 0;
     ls_panel_fb_t fb;
-    if (!ls_panel_fb(&fb)) return 0;
+    if (!ls_panel_fb(&fb) || (!s_pixels_off && !fb.pixels)) return 0;
 
     uint64_t t0 = esp_timer_get_time();
     s_image_copy_bytes = s_present_flush_bytes = 0;
@@ -1416,6 +1532,16 @@ int ls_tui_present(void)
     bool image_cell_invalidated = false;
     bool image_area_touched = false;
     for (int row = 0; row < s_rows; row++) {
+        /* A row with the same cells and no glass, basemap or picture to
+           weigh draws nothing: one compare instead of the per-cell tests,
+           which cost ~2.5 ms a present on a still Nano screen. */
+        const size_t r0 = (size_t)row * s_cols;
+        if (!s_image_dirty && !s_base_dirty && !margin &&
+            !memcmp(&s_back[r0], &s_front[r0], (size_t)s_cols * sizeof(tui_cell)) &&
+            (!s_base_rec || row < s_base_rect.y || row >= s_base_rect.y + s_base_rect.h) &&
+            bits_clear(s_glass_back, r0, s_cols) && bits_clear(s_glass_front, r0, s_cols) &&
+            bits_clear(s_base_front, r0, s_cols))
+            continue;
         for (int col = 0; col < s_cols; col++) {
             if (reserved_cell(col, row)) continue;
             size_t i = (size_t)row * s_cols + col;
@@ -1606,6 +1732,7 @@ bool ls_tui_pixel_to_grid(int native_x, int native_y, int *gx, int *gy)
 static char printable(int16_t ch)
 {
     if(ch>=0x2800 && ch<=0x28ff) return '#';
+    if(ch>=0x2000 && ls_box_is(ch)) return ls_box_ascii(ch);
     unsigned char c = (unsigned char)ch;
     if (c >= 0x20 && c < 0x7F) return ch;
     if (c >= 0x80 && c <= 0x8F) return '#';        /* quadrant blocks */

@@ -1,0 +1,23 @@
+{
+  "_comment": "The tools an AI gets for LakeShark apps: the contract Studio's AI panel (ai.py) and the MCP server (app-sdk/mcp) share. Loose on purpose: names and arguments, not wire details. Side effects on the board are marked; Studio asks before running those.",
+  "server": {"command": "python", "args": ["app-sdk/mcp/server.py"], "transport": "stdio"},
+  "tools": [
+    {"name": "sdk_docs", "description": "Search the app API (headers) and the SDK README.",
+     "args": {"query": "string"}, "board": false},
+    {"name": "new_app", "description": "Make a new app from a template in the workspace. Never overwrites a folder.",
+     "args": {"name": "string", "template": "blank|radio|dots|3d|service"}, "board": false},
+    {"name": "build", "description": "Build the app for the board; problems as file, line, col, severity, message.",
+     "args": {"project": "path"}, "board": false},
+    {"name": "sim_run", "description": "Run the app in the simulator for some frames; the screen as a PNG and as text.",
+     "args": {"project": "path", "frames": "int, default 40", "landscape": "bool", "no_radio": "bool", "script": "LAPSIM_SCRIPT, e.g. 10:key=o;20:tilt=0.4,0"},
+     "board": false},
+    {"name": "sim_input", "description": "Send one step to the simulator running in Studio's run panel: key=o, key=@enter, tilt=0.4,0, swipe=L, down=X,Y, up, page=TEXT, radio=none.",
+     "args": {"step": "string"}, "board": false},
+    {"name": "install", "description": "Build and put the app on the board.", "args": {"project": "path"}, "board": true},
+    {"name": "board_console", "description": "Run one console line on the board and return its replies.",
+     "args": {"line": "string"}, "board": true},
+    {"name": "board_screen", "description": "The board's screen now, as text cells and a picture.", "args": {}, "board": false},
+    {"name": "board_input", "description": "Press keys or tap on the board's screen.", "args": {"keys": "string", "tap": "col,row"}, "board": true},
+    {"name": "board_logs", "description": "Recent board console lines, optionally only an app's.", "args": {"app": "id", "lines": "int"}, "board": false}
+  ]
+}

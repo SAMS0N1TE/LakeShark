@@ -1,3 +1,4 @@
+#include "ls_input_ev.h"
 #include "ls_map_share_ui.h"
 #include "apps/example_app.h"
 #include "ls_sweep_ui.h"
@@ -30,6 +31,9 @@ extern const ls_tui_screen_t ls_scr_meters;
 
 #include "ls_tui.h"
 #include "ls_tui_screen.h"
+#include "ls_vt.h"
+#include "ls_box.h"
+#include "desk/ls_desk.h"
 #include "ls_app.h"
 #include "ls_app_docs.h"
 #include "ls_notify.h"
@@ -72,7 +76,7 @@ extern const ls_tui_screen_t ls_scr_meters;
 
 static int NATIVE_W = 568, NATIVE_H = 1232, CORNER_R = 72;
 static bool s_tft;
-static uint16_t g_fb[200 * 10 * 60 * 17];     /* the biggest LSSIM_GRID, 200x60; the T-Display is 568 x 1232 */
+static uint16_t g_fb[384 * 15 * 112 * 26];     /* the biggest LSSIM_GRID, 384x112; the T-Display is 568 x 1232 */
 
 bool ls_panel_fb(ls_panel_fb_t *out)
 {
@@ -193,7 +197,7 @@ static void dump_grid(FILE *f)
         fprintf(f, "%3d ", y);
         for (int x = 0; x < sf->w; x++) {
             const int16_t cp=sf->back[y*sf->w+x].ch;
-            const char c=cp>=0x2800 && cp<=0x28ff ? '#' : (char)cp;
+            const char c=cp>=0x2800 && cp<=0x28ff ? '#' : cp>=0x2000 && ls_box_is(cp) ? ls_box_ascii(cp) : (char)cp;
             /* The shade and block characters are outside ASCII and print as
                mojibake; they are the ones a layout question is usually
                about, so they get names a reader can count. */
@@ -854,8 +858,10 @@ static void frame(int n)
         for (int k = 0; k < 4; k++) ls_notes_io_step();
         /* The experiments worker, which on the board is its own task. */
         ls_exp_service();
+        ls_input_drain();
         tui_frame_begin(sf);
-        ls_tui_router_draw(sf);
+        if (ls_desk_enabled()) ls_desk_draw(sf);
+        else ls_tui_router_draw(sf);
         ls_tui_present();capture_frame();
     }
 }
@@ -868,6 +874,7 @@ static void time_frames(int n, bool moving)
        every later frame hits, and averaging it in reports a steady state
        nobody is ever in. */
     lssim_tick_state();
+    ls_input_drain();
     tui_frame_begin(sf);
     ls_tui_router_draw(sf);
     ls_tui_present();capture_frame();
@@ -883,6 +890,7 @@ static void time_frames(int n, bool moving)
         if (moving) ls_tui_router_key((i & 1) ? LS_TK_RIGHT : LS_TK_LEFT, 0);
         lssim_cartocore_pump();
         lssim_tick_state();
+        ls_input_drain();
         tui_frame_begin(sf);
         ls_tui_router_draw(sf);
         ls_tui_present();capture_frame();
@@ -944,6 +952,7 @@ static void usage(void)
     printf("  --tft     HI8561 panel with camera hole\n");
     printf("  -t NAME   theme by name\n");
     printf("  -D        Daylight: black on white over the theme\n");
+    printf("  --ev HEX one term ev batch (24-byte records), delivered before -k\n");
     printf("  -k KEYS   feed characters to the screen, one per frame\n");
     printf("  -K NAMES  feed named keys, comma separated, one per frame:\n");
     printf("            left,right,up,down,enter,esc,tab,mic  (before -k)\n");
@@ -952,10 +961,12 @@ static void usage(void)
     printf("            @name presses a named key, ~N waits N frames\n");
     printf("  -f N      frames to settle (default 3)\n");
     printf("  -d        also print the cell grid as text\n");
+    printf("  --term    live in this terminal (VT); --feed: the cell feed on stdout,\n");
+    printf("            console words on stdin (LakeShark Studio's run panel)\n");
     printf("  -e        empty: no radio, no map - the idle branches\n");
     printf("  -n TEXT   post a notification banner, to look at it;\n");
     printf("            -f then counts frames into the banner's own life\n");
-    printf("  -F N      font index: 0 is 10x17, 1 is 9x16, 2 is 15x26\n");
+    printf("  -F N      font index: 0=10x17, 1=9x16, 2=15x26, 3=8x14, 4=7x13\n");
     printf("  -m FILE   a .pmtiles archive instead of the fixture\n");
     printf("  -g FILE   load a GPX route into MAP and COMPASS\n");
     printf("  -T N      time N frames of this screen and print us/frame\n");
@@ -1076,18 +1087,117 @@ static int play(const char *in, const char *out)
     return frames ? 0 : 1;
 }
 
+/* LSSIM_FEED_OUT=FILE: the screen as one full update of the cell feed, the
+   records ls_rterm.c's cells_render sends ('G', 'P', then 'C' and 'X' runs),
+   raw and unframed, for driving web/screen.js headless
+   (bench/tools/desk_font_shots.py). Cells are keyed as cell_key does. */
+typedef struct { uint8_t *b; size_t n, cap; } feed_buf;
+static void feed_put(feed_buf *k, int c)
+{
+    if (k->n == k->cap) {
+        const size_t cap = k->cap ? k->cap * 2 : 65536;
+        uint8_t *nb = realloc(k->b, cap);
+        if (!nb) return;
+        k->b = nb;
+        k->cap = cap;
+    }
+    k->b[k->n++] = (uint8_t)c;
+}
+static void feed_u16(feed_buf *k, unsigned v) { feed_put(k, (int)(v & 0xFF)); feed_put(k, (int)(v >> 8 & 0xFF)); }
+static unsigned feed_565(uint32_t c) { return (c >> 8 & 0xF800) | (c >> 5 & 0x07E0) | (c >> 3 & 0x1F); }
+static bool feed_records(feed_buf *k)
+{
+    tui_surface *sf = ls_tui_surface();
+    const int cols = sf->w, n = sf->w * sf->h;
+    uint32_t *top = calloc((size_t)n, sizeof(uint32_t)), *bot = calloc((size_t)n, sizeof(uint32_t));
+    uint8_t *kind = calloc((size_t)n, 1);
+    if (!top || !bot || !kind) { free(top); free(bot); free(kind); return false; }
+    size_t gn = 0;
+    const uint8_t *glass = ls_tui_glass_now(&gn);
+    tui_rect r = {0};
+    const uint16_t *src = NULL;
+    int w = 0, h = 0, x0 = 0, y0 = 0;
+    uint32_t serial = 0;
+    const bool img = ls_tui_image_now(&r, &src, &w, &h, &serial) && src && r.x >= 0 && r.y >= 0 &&
+                     r.x + r.w <= cols && r.y + r.h <= sf->h;
+    if (img) { ls_tui_image_ring_offset(&x0, &y0); ls_vt_sample_image(r, cols, src, w, h, x0, y0, top, bot); }
+    for (int i = 0; i < n; i++) {
+        const int ch = sf->front[i].ch < 0 ? sf->front[i].ch & 0xFF : sf->front[i].ch;
+        if (!img || !tui_rect_contains(r, i % cols, i / cols)) continue;
+        if (ch == 0xB0) kind[i] = 1;
+        else if (glass && (size_t)(i >> 3) < gn && (glass[i >> 3] >> (i & 7) & 1)) kind[i] = 2;
+    }
+    const ls_tui_theme_t *th = ls_tui_theme_effective(ls_tui_get_theme(), ls_tui_daylight());
+    int fi = 0, cw = 0, chh = 0;
+    for (; fi < ls_tui_font_count() - 1; fi++) if (ls_tui_font_at(fi) == ls_tui_font()) break;
+    ls_tui_geometry(NULL, NULL, &cw, &chh);
+    feed_put(k, 'G'); feed_u16(k, (unsigned)cols); feed_u16(k, (unsigned)sf->h);
+    feed_put(k, fi); feed_put(k, cw); feed_put(k, chh);
+    feed_put(k, 'P');
+    for (int i = 0; i < 16; i++) feed_u16(k, th->palette[i]);
+    for (int i = 0; i < n;) {
+        const bool special = kind[i] != 0;
+        int j = i;
+        while (j < n && (kind[j] != 0) == special && j - i < 4096) j++;
+        feed_put(k, special ? 'X' : 'C'); feed_u16(k, (unsigned)i); feed_u16(k, (unsigned)(j - i));
+        for (int t = i; t < j; t++) {
+            const int ch = sf->front[t].ch < 0 ? sf->front[t].ch & 0xFF : sf->front[t].ch;
+            feed_u16(k, (unsigned)(uint16_t)ch); feed_put(k, sf->front[t].attr);
+            if (!special) continue;
+            feed_put(k, kind[t]);
+            if (kind[t] == 1) { feed_u16(k, feed_565(top[t])); feed_u16(k, feed_565(bot[t])); }
+            else {
+                const uint32_t a = top[t], b = bot[t];
+                const uint32_t m = ((a >> 16 & 255) + (b >> 16 & 255)) / 2 << 16 |
+                                   ((a >> 8 & 255) + (b >> 8 & 255)) / 2 << 8 | ((a & 255) + (b & 255)) / 2;
+                feed_u16(k, feed_565(m)); feed_u16(k, 0);
+            }
+        }
+        i = j;
+    }
+    free(top); free(bot); free(kind);
+    return true;
+}
+static int write_feed(const char *path)
+{
+    feed_buf k = {0};
+    FILE *f = fopen(path, "wb");
+    if (!f || !feed_records(&k)) { printf("lssim: cannot write %s\n", path); if (f) fclose(f); free(k.b); return 1; }
+    fwrite(k.b, 1, k.n, f);
+    fclose(f);
+    free(k.b);
+    tui_surface *sf = ls_tui_surface();
+    int fi = 0;
+    for (; fi < ls_tui_font_count() - 1; fi++) if (ls_tui_font_at(fi) == ls_tui_font()) break;
+    printf("lssim: feed %dx%d font %d -> %s\n", sf->w, sf->h, fi, path);
+    return 0;
+}
+/* lssim --feed: the same records for every frame, for lssim_feed_run. */
+static size_t feed_now(const uint8_t **out)
+{
+    static feed_buf k;
+    k.n = 0;
+    if (!feed_records(&k)) return 0;
+    *out = k.b;
+    return k.n;
+}
+
 /* `lssim atlas -o lsfont.bin`: every glyph of every font, drawn by the
    board's own renderer and read back as coverage, for a viewer that draws
-   cells itself (the cell feed, web/screen.js). Layout: "LSF1", a font count,
-   then per font its cell width and height and 512 glyphs of w*h bytes
-   (0 = background, 255 = ink): codes 0-255, then braille U+2800-28FF. */
+   cells itself (the cell feed, web/screen.js). Layout: "LSF2", a font count,
+   a u16 glyph count, then per font its cell width and height and the glyphs
+   of w*h bytes (0 = background, 255 = ink): codes 0-255, braille
+   U+2800-28FF, box lines U+2500-257F, then the shapes (ls_box.h). */
 static int font_atlas(const char *out)
 {
     FILE *f = fopen(out, "wb");
     if (!f) { printf("lssim: cannot write %s\n", out); return 1; }
     const int nf = ls_tui_font_count();
-    fwrite("LSF1", 1, 4, f);
+    const int NG = LS_BOX_ATLAS_GLYPHS;
+    fwrite("LSF2", 1, 4, f);
     fputc(nf, f);
+    fputc(NG & 0xFF, f);
+    fputc(NG >> 8, f);
     for (int fi = 0; fi < nf; fi++) {
         ls_tui_set_font_index(fi);
         NATIVE_W = 2000;           /* 129 columns of the widest font; g_fb holds 2000 x 1020 */
@@ -1106,9 +1216,10 @@ static int font_atlas(const char *out)
         const int gi = (th->palette[ink] >> 5) & 63, gb = (th->palette[ground] >> 5) & 63;
         tui_surface *sf = ls_tui_surface();
         for (int i = 0; i < cols * rows; i++) sf->back[i] = (tui_cell){' ', (uint8_t)(ground << 4 | ground)};
-        if (cols < 130 || rows < 20) { printf("lssim: grid %dx%d too small\n", cols, rows); fclose(f); return 1; }
-        for (int g = 0; g < 512; g++) {
-            const int code = g < 256 ? g : 0x2800 + g - 256;
+        if (cols < 130 || rows < 2 + (NG / 64 + 1) * 2) { printf("lssim: grid %dx%d too small\n", cols, rows); fclose(f); return 1; }
+        for (int g = 0; g < NG; g++) {
+            const int code = g < 256 ? g : g < 512 ? 0x2800 + g - 256 : g < 640 ? 0x2500 + g - 512
+                           : g - 640 < LS_BOX_SHAPE_N ? LS_BOX_SHAPES[g - 640] : ' ';
             sf->back[(2 + (g / 64) * 2) * cols + 1 + (g % 64) * 2] = (tui_cell){(int16_t)code, (uint8_t)(ground << 4 | ink)};
         }
         ls_tui_invalidate();
@@ -1116,7 +1227,7 @@ static int font_atlas(const char *out)
         fputc(cw, f);
         fputc(ch, f);
         uint8_t *cov = malloc((size_t)cw * ch);
-        for (int g = 0; g < 512; g++) {
+        for (int g = 0; g < NG; g++) {
             const int col = 1 + (g % 64) * 2, row = 2 + (g / 64) * 2;
             int x0 = -1, y0 = -1, c = 0, r = 0;      /* the cell's first pixel, found the way a tap is */
             for (int y = 0; y < NATIVE_H && y0 < 0; y++)
@@ -1151,6 +1262,7 @@ int main(int argc, char **argv)
     const char *out = "sim.bmp";
     const char *theme = NULL;
     const char *keys = NULL;
+    const char *events = NULL;
     const char *navkeys = NULL;
     const char *taps = NULL;
     const char *notice = NULL;
@@ -1159,6 +1271,7 @@ int main(int argc, char **argv)
     bool clockwise = true;
     bool dump = false;
     bool term = false;
+    bool feed = false;
     bool empty = false;
     bool daylight = false;              /* */
     int font = 0;
@@ -1171,6 +1284,7 @@ int main(int argc, char **argv)
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
         else if (!strcmp(argv[i], "-t") && i + 1 < argc) theme = argv[++i];
+        else if (!strcmp(argv[i], "--ev") && i + 1 < argc) events = argv[++i];
         else if (!strcmp(argv[i], "-k") && i + 1 < argc) keys = argv[++i];
         else if (!strcmp(argv[i], "-K") && i + 1 < argc) navkeys = argv[++i];
         else if (!strcmp(argv[i], "-x") && i + 1 < argc) taps = argv[++i];
@@ -1182,6 +1296,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--tft")) s_tft = true;
         else if (!strcmp(argv[i], "-d")) dump = true;
         else if (!strcmp(argv[i], "--term")) term = true;
+        else if (!strcmp(argv[i], "--feed")) feed = true;
         else if (!strcmp(argv[i], "-e")) empty = true;
         else if (!strcmp(argv[i], "-C")) census = true;
         else if (!strcmp(argv[i], "-D")) daylight = true;
@@ -1201,7 +1316,9 @@ int main(int argc, char **argv)
 
     if (!strcmp(want, "atlas")) return font_atlas(strcmp(out, "sim.bmp") ? out : "lsfont.bin");
     const bool splash = !strcmp(want, "splash");
-    const int idx = app_by_id(splash ? "home" : !strcmp(want,"calls")?"p25":want);
+    /* lssim desk: the desktop shell over every app, as a Nano's 'desk on'. */
+    const bool desk = !strcmp(want, "desk");
+    const int idx = app_by_id(splash || desk ? "home" : !strcmp(want,"calls")?"p25":want);
     if (idx < 0) { printf("lssim: no app '%s'\n", want); usage(); return 1; }
 
     /* Before begin, which is where the cell size becomes the grid.
@@ -1212,7 +1329,7 @@ int main(int argc, char **argv)
        the interface at once, and the cheapest place to find out what that
        breaks is here. */
 
-    if ((timed > 0 || term) && !s_step_us) ls_shim_time_live(1);
+    if ((timed > 0 || term || feed) && !s_step_us) ls_shim_time_live(1);
     else           ls_shim_time_set(120000000);
 
     ls_tui_set_font_index(ls_tui_font_for_view(font, APPS[idx].screen->name, false));
@@ -1225,12 +1342,12 @@ int main(int argc, char **argv)
         ls_tui_set_cutout(LS_PANEL_CUTOUT_CX, LS_PANEL_CUTOUT_CY, LS_PANEL_CUTOUT_R);
     }
     /* LSSIM_GRID=160x45: a grid like a Nano's terminal panel ('panel term',
-       40-200 x 12-60), for a desktop window. */
+       40-384 x 12-112), for a desktop window. */
     const char *grid = getenv("LSSIM_GRID");
     int gc = 0, gr = 0;
-    if (grid && sscanf(grid, "%dx%d", &gc, &gr) == 2 && gc >= 40 && gr >= 12 && gc <= 200 && gr <= 60) {
-        NATIVE_W = gc * 10;
-        NATIVE_H = gr * 17;
+    if (grid && sscanf(grid, "%dx%d", &gc, &gr) == 2 && gc >= 40 && gr >= 12 && gc <= 384 && gr <= 112) {
+        NATIVE_W = gc * ls_tui_font_at(font)->cell_w;
+        NATIVE_H = gr * ls_tui_font_at(font)->cell_h;
         CORNER_R = 0;
         landscape = false;
     }
@@ -1522,12 +1639,48 @@ int main(int argc, char **argv)
             return 1;
         }
     }
+    if (desk) {
+        /* The tray's clock: this computer's, in UTC, as the board's GPS would give it. */
+        const time_t now = time(NULL);
+        const struct tm *g = gmtime(&now);
+        char clk[12];
+        snprintf(clk, sizeof(clk), "%02d:%02dZ", g ? g->tm_hour : 0, g ? g->tm_min : 0);
+        ls_tui_status_set_clock(clk);
+        /* LSSIM_DESK_WALL=N: a built-in wallpaper, as if saved last run. */
+        if (getenv("LSSIM_DESK_WALL")) {
+            extern void settings_set_desk_wallpaper(uint32_t id);
+            settings_set_desk_wallpaper((uint32_t)atoi(getenv("LSSIM_DESK_WALL")));
+        }
+        ls_desk_set_enabled(true);
+        /* LSSIM_DESK_THEME=classic, or a scheme number (0 Bay 95 .. 5 Night). */
+        if (getenv("LSSIM_DESK_THEME")) {
+            const char *t = getenv("LSSIM_DESK_THEME");
+            ls_desk_set_theme(!strcmp(t, "classic") ? LS_DESK_THEME_CLASSIC95 : atoi(t));
+        }
+        /* LSSIM_DESK_LAT=18,22,95,...: round trips as the page reports them
+           ('term lat'), one a second, for the tray's latency line. */
+        const char *lat = getenv("LSSIM_DESK_LAT");
+        for (const char *p = lat; p && *p;) {
+            const int ms = atoi(p);
+            ls_input_latency_report(ms, ms + ms / 3);
+            ls_shim_time_advance(1100000);
+            frame(1);
+            p = strchr(p, ',');
+            if (p) p++;
+        }
+    }
     ls_tui_invalidate();
     frame(settle);
     /* --term: from here the person at the terminal drives it. */
     if (term) {
         int lssim_term_run(void (*frame)(int));
         return lssim_term_run(frame);
+    }
+    /* --feed: the board's cell feed on stdout and its console words on stdin,
+       for LakeShark Studio's run panel (app-sdk/studio). */
+    if (feed) {
+        int lssim_feed_run(void (*frame)(int), size_t (*records)(const uint8_t **));
+        return lssim_feed_run(frame, feed_now);
     }
     if (getenv("LSSIM_FM_LR") && getenv("LSSIM_LR_IQ")) {
         /* Feed after the real panel has allocated its pixel history too. */
@@ -1552,6 +1705,11 @@ int main(int argc, char **argv)
         frame(settle);
     }
 
+    if (events) {
+        if (!ls_input_decode_hex(events)) { fprintf(stderr, "lssim: invalid --ev hex\n"); return 1; }
+        frame(1);
+    }
+
     if (keys) {
         for (const char *k = keys; *k; k++) {
             ls_tui_router_key(LS_TK_CHAR, *k);
@@ -1572,8 +1730,9 @@ int main(int argc, char **argv)
        that in either order. A token is a tap, `+text` to type, or `@name`
        for one of the named keys. */
     if (taps) {
-        char buf[256];
+        char buf[1024];
         snprintf(buf, sizeof(buf), "%s", taps);
+        bool desk_clock_set = false;
         for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
             if (tok[0] == '+') {
                 for (const char *c = tok + 1; *c; c++) {
@@ -1596,6 +1755,62 @@ int main(int argc, char **argv)
                 frame(atoi(tok + 1) > 0 ? atoi(tok + 1) : 1);
                 continue;
             }
+            /* The desk: !app opens an app's window, R c:r right-clicks,
+               H c:r hovers, D c:r>c:r drags with the left button. */
+            /* !display:N opens Display Properties on tab N, !shutdown the Shut Down dialog. */
+            if (tok[0] == '!') {
+                if (!strcmp(tok + 1, "about")) ls_desk_open_about();
+                else if (!strncmp(tok + 1, "display", 7)) ls_desk_open_display(tok[8] == ':' ? atoi(tok + 9) : 0);
+                else if (!strcmp(tok + 1, "shutdown")) ls_desk_open_shutdown();
+                else if (!strcmp(tok + 1, "welcome")) ls_desk_welcome();
+                else ls_desk_open_app(tok + 1);
+                frame(1);
+                continue;
+            }
+            /* =MS moves the clock on by MS, one frame drawn: a mid-animation
+               shot stops the clock there (the last frames do not move it). */
+            if (tok[0] == '=') {
+                ls_shim_time_advance((int64_t)atoi(tok + 1) * 1000);
+                desk_clock_set = true;
+                frame(1);
+                continue;
+            }
+            /* ^ maximizes the front window (and ^ again restores it). */
+            if (tok[0] == '^' && !tok[1]) { ls_desk_maximize(ls_desk_front()); frame(1); continue; }
+            /* &volume, &clock...: a tray popup; &&volume its right-button menu. */
+            if (tok[0] == '&') { ls_desk_tray_popup(tok + (tok[1] == '&' ? 2 : 1), tok[1] == '&'); frame(1); continue; }
+            if (tok[0] == 'C' && tok[1] >= '0' && tok[1] <= '9') {      /* C c:r a left click */
+                int a = -1, bb = -1;
+                if (sscanf(tok + 1, "%d:%d", &a, &bb) != 2) { printf("lssim: bad click '%s'\n", tok); return 1; }
+                ls_input_ev_t e = {.source = LS_ISRC_LOCAL, .clicks = 1, .col = (int16_t)a, .row = (int16_t)bb,
+                                   .kind = LS_IEV_PTR_DOWN, .button = LS_IBTN_LEFT, .buttons = 1};
+                ls_desk_input(&e); frame(1);
+                e.kind = LS_IEV_PTR_UP; e.buttons = 0; ls_desk_input(&e); frame(1);
+                continue;
+            }
+            if (tok[0] == 'R' || tok[0] == 'H' || tok[0] == 'D') {
+                int a = -1, b = -1, c = -1, d = -1;
+                const int got = sscanf(tok + 1, "%d:%d>%d:%d", &a, &b, &c, &d);
+                if (got < 2) { printf("lssim: bad desk token '%s'\n", tok); return 1; }
+                ls_input_ev_t e = {.source = LS_ISRC_LOCAL, .clicks = 1, .col = (int16_t)a, .row = (int16_t)b};
+                if (tok[0] == 'H') { e.kind = LS_IEV_PTR_MOVE; ls_desk_input(&e); frame(1); continue; }
+                if (tok[0] == 'R') {
+                    e.kind = LS_IEV_PTR_DOWN; e.button = LS_IBTN_RIGHT; e.buttons = 1 << LS_IBTN_RIGHT;
+                    ls_desk_input(&e); frame(1);
+                    e.kind = LS_IEV_PTR_UP; e.buttons = 0; ls_desk_input(&e); frame(1);
+                    continue;
+                }
+                if (got < 4) { printf("lssim: a drag wants D c:r>c:r\n"); return 1; }
+                e.kind = LS_IEV_PTR_DOWN; e.button = LS_IBTN_LEFT; e.buttons = 1;
+                ls_desk_input(&e); frame(1);
+                for (int k = 1; k <= 4; k++) {
+                    e.kind = LS_IEV_PTR_MOVE;
+                    e.col = (int16_t)(a + (c - a) * k / 4); e.row = (int16_t)(b + (d - b) * k / 4);
+                    ls_desk_input(&e); frame(1);
+                }
+                if (tok[strlen(tok) - 1] != '?') { e.kind = LS_IEV_PTR_UP; e.buttons = 0; ls_desk_input(&e); frame(1); }
+                continue;
+            }
             int tc = -1, tr = -1;
             if (sscanf(tok, "%d:%d", &tc, &tr) != 2 || tc < 0 || tr < 0) {
                 printf("lssim: bad tap '%s', want COL:ROW\n", tok);
@@ -1604,6 +1819,9 @@ int main(int argc, char **argv)
             ls_tui_router_touch(tc, tr);
             frame(1);
         }
+        /* Without a =MS in the script, whatever the clicks started has finished
+           by the shot. */
+        if (desk && !desk_clock_set) ls_shim_time_advance(3000000);
         frame(settle);
     }
 
@@ -1653,6 +1871,37 @@ int main(int argc, char **argv)
         ls_splash_draw(ls_tui_surface(), cols, rows, at ? atoi(at) : 93, 93);
         ls_tui_present();capture_frame();
     }
+    /* A bench-only snapshot for measuring the production cells feed. */
+    if (getenv("LSSIM_VISUAL_OUT")) {
+        /* Host-only fixture: real image, ring origin, glass coverage and the
+           rendered RGB565 reference. Requires LSSIM_GRID (no panel inset). */
+        FILE *f=fopen(getenv("LSSIM_VISUAL_OUT"),"wb");assert(f);
+        tui_surface *sf=ls_tui_surface();tui_rect rect={0};
+        const uint16_t *src=NULL;int sw=0,sh=0,x0=0,y0=0,cw=0,ch=0;uint32_t serial=0;
+        ls_tui_geometry(NULL,NULL,&cw,&ch);
+        ls_tui_image_now(&rect,&src,&sw,&sh,&serial);ls_tui_image_ring_offset(&x0,&y0);
+        size_t gn=0;const uint8_t *glass=ls_tui_glass_now(&gn);unsigned count=0;
+        for(int i=0;i<sf->w*sf->h;i++) if(glass && (glass[i>>3]>>(i&7)&1)) count++;
+        uint32_t meta[]={sf->w,sf->h,font,cw,ch,rect.x,rect.y,rect.w,rect.h,sw,sh,x0,y0,serial,count};
+        fwrite("LSP2",1,4,f);fwrite(meta,sizeof(meta),1,f);
+        const ls_tui_theme_t *th=ls_tui_theme_effective(ls_tui_get_theme(),ls_tui_daylight());
+        fwrite(th->palette,2,16,f);fwrite(sf->front,sizeof(tui_cell),(size_t)sf->w*sf->h,f);
+        fwrite(glass,1,gn,f);if(src) fwrite(src,2,(size_t)sw*sh,f);
+        for(int i=0;i<sf->w*sf->h;i++) if(glass && (glass[i>>3]>>(i&7)&1)) {
+            uint16_t head[]={i,(uint16_t)sf->front[i].ch};uint8_t mask[1024];bool halo=false;
+            ls_tui_glass_mask(head[1],mask,&halo);fwrite(head,2,2,f);fputc(halo,f);fwrite(mask,1,(size_t)cw*ch,f);
+        }
+        uint32_t ring[4]={0};ring[0]=ls_tui_image_ring_state(&ring[1],&ring[2],&ring[3]);
+        fwrite(ring,sizeof(ring),1,f);
+        fwrite(g_fb,2,(size_t)sf->w*cw*sf->h*ch,f);fclose(f);
+    }
+    if (getenv("LSSIM_CELLS_OUT")) {
+        FILE *f = fopen(getenv("LSSIM_CELLS_OUT"), "wb");
+        tui_surface *sf = ls_tui_surface();
+        if (!f || fwrite(sf->back, sizeof(tui_cell), (size_t)sf->w * sf->h, f) != (size_t)sf->w * sf->h) return 1;
+        fclose(f);
+    }
+    if (getenv("LSSIM_FEED_OUT") && write_feed(getenv("LSSIM_FEED_OUT")) != 0) return 1;
     if (write_bmp(out) != 0) {
         printf("lssim: cannot write %s\n", out);
         return 1;

@@ -20,9 +20,15 @@ static bool s_active, s_worker, s_observer;
 static bool s_find_ble_requested, s_find_ble_owned;
 static bool s_rid_requested, s_rid_owned, s_rid_failed, s_rid_retry;
 static bool s_drone_rid;
-/* LINK could not allocate a 6 KiB DRAM stack after the radio and
- * C6 started. Reserve it and keep one sleeping worker across app visits. */
-static StackType_t s_worker_stack[6144 / sizeof(StackType_t)]
+/* Keep DRAM: JOIN/FORGET and survey operations reach NVS/storage. Nano's
+ * measured 3100 B unused at 6144 permits 4608, retaining 1564 B for the
+ * deeper paths. Reserve it across visits rather than allocating late. */
+#if CONFIG_LS_NANO_RAM_BUDGET
+#define WIRELESS_STACK_BYTES 4608
+#else
+#define WIRELESS_STACK_BYTES 6144
+#endif
+static StackType_t s_worker_stack[WIRELESS_STACK_BYTES / sizeof(StackType_t)]
     __attribute__((aligned(16)));
 static StaticTask_t s_worker_tcb;
 static TaskHandle_t s_worker_task;

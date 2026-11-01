@@ -52,6 +52,14 @@ typedef struct {
     int shown_attr;           /* SGR the terminal is left in; -1 = unknown */
 } tui_surface;
 
+/* Optional observer of dot strokes. Does not change any cell. Coordinates are
+   in a canvas with dx by dy dots/cell; kind 0 begins a surface frame, kind 1
+   records a segment, kind 2 marks its actually drawn dot (mask in x1).
+   Returning false on a segment keeps its dots in the ordinary cell layer. */
+typedef bool (*tui_stroke_hook_fn)(int kind, const tui_surface *sf, tui_rect area,
+    int dx, int dy, int x0, int y0, int x1, int y1, uint8_t attr);
+extern tui_stroke_hook_fn tui_stroke_hook;
+
 /* Attach caller-provided storage (each grid w*h cells). No allocation here;
  * tui_init() in tui_term allocates once and calls this. Front buffer is
  * invalidated so the first present redraws everything. */

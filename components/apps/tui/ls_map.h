@@ -62,14 +62,17 @@ bool ls_map_last_good(double *lat, double *lon, int *zoom);
 bool ls_map_go_last_good(void);
 void ls_map_get_center(double *lat, double *lon);
 void ls_map_zoom_by(int dz);
+/* The map's recent timeline ('carto trace'): ls_trace.h. */
+#include "ls_trace.h"
 int  ls_map_zoom(void);
 /* The zooms ls_map_zoom_by holds the map to: the archive's lowest, up to
    three past its highest, magnified. */
 void ls_map_zoom_limits(int *lo, int *hi);
 
-/* Move by whole pixels of the current frame, which is what a swipe and an
-   arrow key both mean. */
-void ls_map_pan(int dx_px, int dy_px);
+/* Move in rendered frame pixels at ls_map_tile_px() per tile. Fractional
+   pixels preserve pointer anchoring when the frame is scaled to the grid.
+   CartoCore callers use its fixed 256-pixel tile scale. */
+void ls_map_pan(double dx_px, double dy_px);
 
 /* The rendered frame, redrawn only when the view has moved. */
 

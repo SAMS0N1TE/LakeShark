@@ -66,6 +66,7 @@ int main(int argc,char **argv) {
             cc_edges edges=i&1?CC_EDGES_CRISP:CC_EDGES_SMOOTH;
             cc_renderer r; cc_arena_init(&a,arena_bytes,sizeof(arena_bytes)); assert(cc_renderer_init(&r,&a,240,67,expected)); r.edges_mode=edges;
             assert(cc_render(&r,&map,z,left,top,mode,labels,expected));
+            assert(!r.pixel_reuse); /* cell callers never borrow saved as pixel scratch */
             cc_arena h; cc_arena_init(&h,hot_bytes,sizeof(hot_bytes));
             cc_arena_init(&a,arena_bytes,sizeof(arena_bytes)); assert(cc_renderer_init_split(&r,&h,&a,240,67,cells)); r.edges_mode=edges; r.decoded_cache=&c;
             assert(cc_render(&r,&map,z,left,top,mode,labels,cells)); assert(!memcmp(cells,expected,sizeof(cells)));

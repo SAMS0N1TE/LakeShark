@@ -10,6 +10,7 @@
 
 #include "../../ls_tui.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_box.h"
 #include "../../ls_i18n.h"
 #include "../../ls_quick.h"
 #include "../../ls_options.h"
@@ -411,6 +412,41 @@ static int s_page_first, s_page_size;
 static tui_rect s_page_prev, s_page_next;
 static int      s_hit_n;
 
+/* What a row is doing right now, beyond its state word, when there is
+   something to say: who holds the receiver, the mesh socket, the service's
+   timing, the antenna path. */
+static bool row_detail(int i, char *what, size_t n)
+{
+#if LS_HAS_LORA
+    if (ROWS[i].set == mesh_set) {
+        ls_mesh_socket_t socket;
+        ls_mesh_socket_get(&socket);
+        snprintf(what, n, "%s / %s", socket.owner, socket.mode);
+        return true;
+    }
+#endif
+    if (ROWS[i].set == svc_set && svc_get()) {
+        snprintf(what, n, ls_tr("every %lu ms, %lu ticks, worst %lu us"),
+                 (unsigned long)s_svc.period_ms, (unsigned long)s_svc.stats.ticks,
+                 (unsigned long)s_svc.stats.worst_us);
+        return true;
+    }
+    if (ROWS[i].set == ant_set && ls_board_hw_antenna_is_external()) {
+        snprintf(what, n, "%s", ls_tr(ls_board_hw_antenna_mmcx_tx() ?
+                 "TX on MMCX1: band antenna on it" : "TX goes out the internal antenna"));
+        return true;
+    }
+    if (ROWS[i].set == rtl_set || ROWS[i].set == hackrf_set) {
+        ls_radio_endpoint_info_t info;
+        if (ls_radio_endpoint_get(ROWS[i].set == rtl_set ? LS_RADIO_ENDPOINT_RTL_USB :
+                                  LS_RADIO_ENDPOINT_HACKRF_USB, &info) == LS_RADIO_OK && info.leased) {
+            snprintf(what, n, ls_tr("Owner: %s"), info.owner);
+            return true;
+        }
+    }
+    return false;
+}
+
 static void draw_one(tui_surface *sf, tui_rect a, int i, int bh)
 {
     const uint8_t dim  = A(DIM_FG, TUI_BLACK);
@@ -444,35 +480,8 @@ static void draw_one(tui_surface *sf, tui_rect a, int i, int bh)
     }
 
     int y = a.y + 1;
-    bool detail = false;
     char what[72];
-#if LS_HAS_LORA
-    if (ROWS[i].set == mesh_set) {
-        ls_mesh_socket_t socket;
-        ls_mesh_socket_get(&socket);
-        snprintf(what, sizeof(what), "%s / %s", socket.owner, socket.mode);
-        detail = true;
-    }
-#endif
-    if (ROWS[i].set == svc_set && svc_get()) {
-        snprintf(what, sizeof(what), ls_tr("every %lu ms, %lu ticks, worst %lu us"),
-                 (unsigned long)s_svc.period_ms, (unsigned long)s_svc.stats.ticks,
-                 (unsigned long)s_svc.stats.worst_us);
-        detail = true;
-    }
-    if (ROWS[i].set == ant_set && ls_board_hw_antenna_is_external()) {
-        snprintf(what, sizeof(what), "%s", ls_tr(ls_board_hw_antenna_mmcx_tx() ?
-                 "TX on MMCX1: band antenna on it" : "TX goes out the internal antenna"));
-        detail = true;
-    }
-    if (ROWS[i].set == rtl_set || ROWS[i].set == hackrf_set) {
-        ls_radio_endpoint_info_t info;
-        if (ls_radio_endpoint_get(ROWS[i].set == rtl_set ? LS_RADIO_ENDPOINT_RTL_USB :
-                                  LS_RADIO_ENDPOINT_HACKRF_USB, &info) == LS_RADIO_OK && info.leased) {
-            snprintf(what, sizeof(what), ls_tr("Owner: %s"), info.owner);
-            detail = true;
-        }
-    }
+    const bool detail = row_detail(i, what, sizeof(what));
     if (bh >= 6 || detail) {
         if (!detail) snprintf(what, sizeof(what), "%.*s", a.w - 4, ls_tr(ROWS[i].what));
         else if (a.w - 4 >= 0 && a.w - 4 < (int)sizeof(what)) what[a.w - 4] = '\0';
@@ -513,6 +522,99 @@ static void draw_one(tui_surface *sf, tui_rect a, int i, int bh)
     }
 }
 
+/* THE DESK FORM: a list view. One row a radio - a lamp, its name, what it
+   is doing, what it is for - and the action as a key at the right end. A
+   click on the key does it; a click on the row selects it. */
+static tui_rect s_row_hit[12];
+
+static void draw_compact(tui_surface *sf, tui_rect area)
+{
+    const uint8_t dim = A(DIM_FG, TUI_BLACK);
+    const uint8_t head = A(TUI_CYAN, TUI_BLACK);
+    const int x = area.x + 2, right = area.x + area.w - 2;
+    const int act_x = right - 18;
+    tui_put_str(sf, area, x + 2, area.y + 3, ls_tr("RADIO"), head);
+    tui_put_str(sf, area, x + 16, area.y + 3, ls_tr("STATE"), head);
+    tui_put_str(sf, area, x + 32, area.y + 3, ls_tr("FOR"), head);
+    tui_put_str(sf, area, act_x, area.y + 3, ls_tr("ACTION"), head);
+    for (int c = x; c < right; c++)
+        ls_box_put(sf, area, c, area.y + 4, LS_BOX_H, A(LS_FAINT_FG, TUI_BLACK));
+    const int first_y = area.y + 5;
+    const int rows = area.y + area.h - 3 - first_y;
+    s_page_size = rows < N_ROWS ? (rows > 0 ? rows : 1) : N_ROWS;
+    if (s_sel < N_ROWS) s_page_first = (s_sel / s_page_size) * s_page_size;
+    for (int slot = 0; slot < s_page_size && s_page_first + slot < N_ROWS; slot++) {
+        const int i = s_page_first + slot, y = first_y + slot;
+        const radio_state_t st = ROWS[i].read();
+        const bool can = ROWS[i].set && (st != RS_ABSENT || ROWS[i].set == open_link);
+        const bool sel = i == s_sel;
+        const tui_rect row = tui_rect_make(x, y, right - x, 1);
+        if (sel) tui_fill(sf, tui_rect_make(x, y, act_x - 1 - x, 1), ' ', A(TUI_WHITE | TUI_BRIGHT, TUI_BLUE));
+        const uint8_t bg = sel ? TUI_BLUE : TUI_BLACK;
+        const uint8_t lamp = !can ? LS_FAINT_FG : st == RS_BUSY ? (TUI_GREEN | TUI_BRIGHT)
+                           : st == RS_ON ? (TUI_YELLOW | TUI_BRIGHT)
+                           : st == RS_FAILED ? (TUI_RED | TUI_BRIGHT) : LS_DIM_FG;
+        ls_box_put(sf, row, x, y, LS_SHAPE_DOT, A(lamp, bg));
+        tui_put_str(sf, row, x + 2, y, ls_tr(ROWS[i].name), A(can ? (TUI_WHITE | TUI_BRIGHT) : DIM_FG, bg));
+        char w[24];
+        snprintf(w, sizeof(w), "%.15s", ls_tr(ROWS[i].state_text ? ROWS[i].state_text() : state_word(st)));
+        tui_put_str(sf, row, x + 16, y, w, A(lamp == LS_FAINT_FG ? DIM_FG : lamp, bg));
+        char what[72];
+        const int room = act_x - 2 - (x + 32);
+        snprintf(what, sizeof(what), "%.*s", room < 0 ? 0 : room > 70 ? 70 : room, ls_tr(ROWS[i].what));
+        tui_put_str(sf, row, x + 32, y, what, sel ? A(TUI_WHITE, TUI_BLUE) : dim);
+        const ls_btn_t key = { .label = ROWS[i].action_text ? ROWS[i].action_text() : action_word(st, can),
+                               .dim = !can };
+        const int kw = ls_key1_draw(sf, area, act_x, y, &key, false);
+        if (s_hit_n < (int)(sizeof(s_hit) / sizeof(s_hit[0]))) {
+            s_hit_row[s_hit_n] = i;
+            s_row_hit[s_hit_n] = tui_rect_make(x, y, act_x - 1 - x, 1);
+            s_hit[s_hit_n++] = tui_rect_make(act_x, y, kw, 1);
+        }
+    }
+    const int by = area.y + area.h - 2;
+    /* The selected radio in full, under the list, while there is room. */
+    const int dy = first_y + (s_page_size < N_ROWS ? s_page_size : N_ROWS) + 1;
+    if (s_sel < N_ROWS && by - 1 - dy >= 5) {
+        const int i = s_sel;
+        const radio_state_t st = ROWS[i].read();
+        const tui_rect b = tui_rect_make(x, dy, right - x, by - 1 - dy > 7 ? 7 : by - 1 - dy);
+        tui_box(sf, b, ls_tr("SELECTED"), A(TUI_CYAN, TUI_BLACK));
+        const char *nm = ls_tr(ROWS[i].name);
+        tui_put_str(sf, b, b.x + 2, b.y + 1, nm, A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, b, b.x + 4 + (int)strlen(nm), b.y + 1,
+                    ls_tr(ROWS[i].state_text ? ROWS[i].state_text() : state_word(st)),
+                    A(st == RS_BUSY ? TUI_GREEN | TUI_BRIGHT : st == RS_ON ? TUI_YELLOW | TUI_BRIGHT
+                      : st == RS_FAILED ? TUI_RED | TUI_BRIGHT : DIM_FG, TUI_BLACK));
+        char line[96];
+        snprintf(line, sizeof(line), "%.*s", b.w - 4 < 95 ? b.w - 4 : 95, ls_tr(ROWS[i].what));
+        tui_put_str(sf, b, b.x + 2, b.y + 2, line, A(TUI_WHITE, TUI_BLACK));
+        char what[72];
+        if (row_detail(i, what, sizeof(what)) && b.h >= 5)
+            tui_put_str(sf, b, b.x + 2, b.y + 3, what, A(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        if (b.h >= 6) {
+            snprintf(line, sizeof(line), ls_tr("ENTER or the key: %s"),
+                     ls_tr(ROWS[i].action_text ? ROWS[i].action_text() : action_word(st, ROWS[i].set && (st != RS_ABSENT || ROWS[i].set == open_link))));
+            tui_put_str(sf, b, b.x + 2, b.y + b.h - 2, line, A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        }
+    }
+    char buf[24];
+    if (s_page_size < N_ROWS) {
+        const ls_btn_t prev = { .label = "< PREV" }, next = { .label = "NEXT >" };
+        const int pw = ls_key1_draw(sf, area, x, by, &prev, false);
+        s_page_prev = tui_rect_make(x, by, pw, 1);
+        snprintf(buf, sizeof(buf), "%d/%d", s_page_first / s_page_size + 1,
+                 (N_ROWS + s_page_size - 1) / s_page_size);
+        tui_put_str(sf, area, x + pw + 1, by, buf, head);
+        const int nx = x + pw + 2 + (int)strlen(buf);
+        s_page_next = tui_rect_make(nx, by, ls_key1_draw(sf, area, nx, by, &next, false), 1);
+    }
+    const ls_btn_t opt = ls_opt_button(&RADIO_CONTEXT);
+    const int ow = ls_key1_width(&opt);
+    ls_key1_draw(sf, area, right - ow, by, &opt, s_sel == N_ROWS);
+    s_options_hit = tui_rect_make(right - ow, by, ow, 1);
+}
+
 static void draw(tui_surface *sf, tui_rect area)
 {
     const uint8_t dim = A(DIM_FG, TUI_BLACK);
@@ -522,6 +624,18 @@ static void draw(tui_surface *sf, tui_rect area)
     s_options_hit = s_page_prev = s_page_next = tui_rect_make(0, 0, 0, 0);
     ls_panel_box(sf, area, "RADIOS", TUI_CYAN);
     if (area.h < 8 || area.w < 20) return;
+    if (ls_tui_compact() && area.w >= 72 && area.h >= 12) {
+        const int live = count_live();
+        int loads = 0;
+        for (int i = 0; i < N_ROWS; i++)
+            if (!ROWS[i].no_power && !ROWS[i].at_boot) loads++;
+        snprintf(buf, sizeof(buf), ls_tr("%d of %d powered"), live, loads);
+        tui_put_str(sf, area, area.x + 2, area.y + 1, buf,
+                    live ? A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : dim);
+        if (s_error) tui_put_str(sf, area, area.x + 24, area.y + 1, ls_tr(s_error), A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        draw_compact(sf, area);
+        return;
+    }
 
     const int live = count_live();
     int loads = 0;
@@ -619,6 +733,22 @@ static bool touch(int col, int row)
     if (col >= s_options_hit.x && col < s_options_hit.x + s_options_hit.w &&
         row >= s_options_hit.y && row < s_options_hit.y + s_options_hit.h) {
         options_open(); return true;
+    }
+    if (ls_tui_compact()) {
+        /* The desk list: the key acts, the row selects. */
+        if (tui_rect_contains(s_page_prev, col, row) && s_page_prev.w > 0) {
+            s_sel = s_page_first >= s_page_size ? s_page_first - s_page_size : 0;
+            return true;
+        }
+        if (tui_rect_contains(s_page_next, col, row) && s_page_next.w > 0) {
+            if (s_page_first + s_page_size < N_ROWS) s_sel = s_page_first + s_page_size;
+            return true;
+        }
+        for (int i = 0; i < s_hit_n && i < N_ROWS; i++) {
+            if (tui_rect_contains(s_hit[i], col, row)) { s_sel = s_hit_row[i]; toggle(s_sel); return true; }
+            if (tui_rect_contains(s_row_hit[i], col, row)) { s_sel = s_hit_row[i]; return true; }
+        }
+        return true;
     }
     if (s_page_size > 0 && row == s_page_prev.y && s_page_prev.w > 0) {
         if (col >= s_page_prev.x && col < s_page_prev.x + s_page_prev.w) {
