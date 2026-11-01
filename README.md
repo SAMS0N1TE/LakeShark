@@ -62,7 +62,7 @@
 <h3 align="center"><a href="https://github.com/SAMS0N1TE/LakeShark/blob/release/2.20.0-rc1/app-sdk/README.md#your-first-app-in-5-minutes">Make your first app →</a></h3>
 
 <p align="center">
-  <a href="https://www.waveshare.com/esp32-p4-nano-wifi6-db.htm"><img src="docs/screenshots/desktop/esp32-p4-nano-20261101b.png" width="420" alt="Waveshare ESP32-P4-NANO board"></a>
+  <img src="docs/screenshots/desktop/desk-radios-20261101.png" width="100%" alt="LakeShark Desktop on a PC: app icons, the RADIOS window and the taskbar" />
 </p>
 
 <p align="center"><strong>Real hardware, not an emulator (but also an emulator too).</strong> The apps run on a
