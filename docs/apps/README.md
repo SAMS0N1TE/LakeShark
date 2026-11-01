@@ -25,7 +25,10 @@ pick the receiver, O opens OPTIONS, and Esc or BACK goes back. See
 | [FILES](FILES.md) | Browse the SD card, preview captures and text, send, rename or delete | None |
 | [MUSIC](MUSIC.md) | Play WAV files, watch levels and spectra, record the microphone | None |
 | [MIX-RF](MIXRF.md) | The keyboard board radios: sub-GHz monitor, 2.4 GHz survey and NFC | CC1101, nRF24 and NFC (keyboard board) |
+| [NFC](NFC.md) | Identify and read MIFARE Classic cards you own, view blocks and save a capture. Opens from MIX-RF | NFC reader (keyboard board) |
 | [DRONES](DRONES.md) | Bluetooth Remote ID drones and their operators | Bluetooth |
+| [DIGI](DIGI.md) | Decode FT8, FT4 and WSPR from HF sideband audio, with signal, timing, distance and a WHERE ring | HF receiver in FM: RTL-SDR or HackRF |
+| [METERS](METERS.md) | List Itron ERT utility meters on 902 to 928 MHz with reading and use per hour. In the LABS folder | RTL-SDR, HackRF or LR2021 |
 
 ## FIELD
 
@@ -55,6 +58,7 @@ pick the receiver, O opens OPTIONS, and Esc or BACK goes back. See
 | App | What it does | Radio |
 |---|---|---|
 | [USER](USER.md) | Your own screens, written as `.lsapp` files on the SD card | None |
+| [DETECTOR](DETECTOR.md) | Background rules that raise banners, sounds, speech, SD log lines or mesh shares for drones, aircraft emergencies, SWEEP categories, pagers, P25 and mesh | None of its own; uses what other apps receive |
 
 ## More guides
 

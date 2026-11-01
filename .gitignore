@@ -56,6 +56,7 @@ serial*.txt
 !/docs/DRONES.md
 !/docs/REPLAY_AND_AIRCRAFT.md
 !/docs/screenshots/
+!/docs/apps/
 /tools/*
 !/tools/observation_catalog.py
 !/docs/OBSERVATION_CATALOG.md

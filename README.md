@@ -55,6 +55,53 @@
 
 <p align="center"><strong><a href="https://github.com/SAMS0N1TE/lr2021-sdr">Explore LR2021-SDR →</a></strong></p>
 
+<h2 align="center">LakeShark Desktop and Studio</h2>
+
+<p align="center"><strong>Run every app in windows on your PC. Write your own in minutes.</strong><br>New in the 2.20.0-rc1 pre-release.</p>
+
+<p align="center">
+  <img src="docs/screenshots/desktop/desk-map-20261101c.gif" width="49%" alt="MAP in a desktop window, panned and zoomed" />
+  <img src="docs/screenshots/desktop/studio-20261101.png" width="49%" alt="LakeShark Studio with an app running in the simulator" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/desktop/music-20261101.gif" width="49%" alt="MUSIC playing on the desktop, meters and waterfall" />
+  <img src="docs/screenshots/desktop/focus-map-20261101.png" width="49%" alt="Focused mode: MAP alone at the full frame rate" />
+</p>
+
+<table align="center">
+  <thead>
+    <tr>
+      <th align="center">DESKTOP</th>
+      <th align="center">STUDIO</th>
+      <th align="center">SIMULATOR</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td align="center"><strong>Every app, windowed</strong></td>
+      <td align="center"><strong>Write, build, install</strong></td>
+      <td align="center"><strong>The real UI on your PC</strong></td>
+    </tr>
+    <tr>
+      <td align="center">An ESP32-P4-NANO on one USB cable</td>
+      <td align="center">From one window, F5 to F8</td>
+      <td align="center">Click, type, tilt and swipe</td>
+    </tr>
+  </tbody>
+</table>
+
+- **LakeShark Desktop:** taskbar, Start menu, wallpapers and themes, all drawn in characters. Drag windows, pan MAP with the mouse, type with a real keyboard. **Focused mode** (Ctrl+F11) gives one app or game the whole screen at twice the frame rate.
+- **LakeShark Studio:** an editor with outline, search and a problems list. **Build** (F7), **Run** in the simulator (F5), **Install** on the board (F8) and watch the board log, all in one window. An **AI panel** and an MCP server let the AI you already use read the API and build with you.
+- **Simulator:** the same TUI the board runs. Tilt and shake it, swipe it, feed it radio traffic (APRS, mesh, pages), set the clock to night or noon, rotate it, and take shots.
+- **`lsdk`:** the same from any terminal. `lsdk new` starts from a template (blank, radio, dots, 3d, service), `lsdk sim` runs it, `lsdk install --open` puts it on the board.
+- **Share it:** apps are one `.lap` file on the SD card, and the [app store](https://terminalbay.com/?m=lakeshark-apps) installs them in one click.
+
+<p align="center">
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.20.0-rc1">Try 2.20.0-rc1</a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/SAMS0N1TE/LakeShark/blob/release/2.20.0-rc1/app-sdk/README.md">Make your first app</a>
+</p>
+
 <h2 align="center">New in v2.19</h2>
 
 <p align="center">Folders on HOME · DIGI: FT8, FT4 and WSPR · HF on the RTL-SDR and HackRF · METERS · P25 on the LR2021 with RAM to spare</p>
@@ -149,12 +196,19 @@
 
 <p align="center">
 <img src="docs/screenshots/tdp4/home-20261025.png" width="32%" alt="HOME" />
-<img src="docs/screenshots/tdp4/motion/p25-call-20261022.gif" width="32%" alt="P25 decoding a call" />
 <img src="docs/screenshots/tdp4/motion/music-scan-20261014.gif" width="32%" alt="MUSIC analyzer and waterfall" />
+<img src="docs/screenshots/tdp4/motion/adsb.gif" width="32%" alt="ADS-B" />
+</p>
+
+<details>
+<summary><strong>More screenshots</strong></summary>
+<br>
+
+<p align="center">
+<img src="docs/screenshots/tdp4/motion/p25-call-20261022.gif" width="32%" alt="P25 decoding a call" />
 <img src="docs/screenshots/tdp4/motion/music-waterfall-smooth-20261022.gif" width="32%" alt="MUSIC waterfall drawing a picture hidden in a WAV" />
 <img src="docs/screenshots/tdp4/motion/boot-splash-20261022.gif" width="32%" alt="Boot globe and progress line" />
 <img src="docs/screenshots/tdp4/motion/update.gif" width="32%" alt="UPDATE over WiFi" />
-<img src="docs/screenshots/tdp4/motion/adsb.gif" width="32%" alt="ADS-B" />
 <img src="docs/screenshots/tdp4/motion/map.gif" width="32%" alt="MAP following an aircraft" />
 <img src="docs/screenshots/tdp4/motion/compass.gif" width="32%" alt="COMPASS FIND" />
 <img src="docs/screenshots/tdp4/motion/falls-hackrf-20261014.gif" width="32%" alt="FALLS with HackRF signals" />
@@ -168,59 +222,13 @@
 <img src="docs/screenshots/tdp4/files-to-music-20261022.png" width="32%" alt="FILES sending a P25 call to MUSIC" />
 </p>
 
+</details>
+
 ## Applications
 
-### Radio and signal decoding
+P25 voice and trunking, FM with pagers and data, ADS-B, waterfalls, MeshCore, Sub-GHz capture and replay, FT8, offline maps, a compass, GPS, music and more: about thirty apps, each with its own guide.
 
-| App | Features |
-| --- | --- |
-| **P25** | Phase I trunking and conventional voice, channel lists, GPS sites that follow you, TUNE and seek, DMR activity and call archive. Phase II `[EXPERIMENTAL]` |
-| **FM** | FM/AM, one-tap scanning, TUNE and seek, POCSAG, FLEX, ACARS, CTCSS/DCS, APRS, AIS and SAME alerts |
-| **ADS-B** | 1090 MHz aircraft tracking, traffic history, mini map and spoken notifications |
-| **FALLS** | Live P25, FM and LoRa waterfalls with touch-to-tune |
-| **CELL WATCH** | Cellular band survey |
-
-### Mesh and LoRa
-
-| App | Features |
-| --- | --- |
-| **MESH** | MeshCore messaging, node discovery, notifications, spoken messages, routes and telemetry |
-| **LORA LABS** | Direct radio controls, packet view, signal history and compass |
-
-### Sub-GHz and RF tools
-
-| App | Features |
-| --- | --- |
-| **SUB-GHZ** | Read, analyzer, saved captures, raw recording and learning. OOK/FSK replay `[EXPERIMENTAL]` |
-| **REC** | Signal capture, `.sub` export, playback and waveforms. LR2021 I/Q recording and replay |
-| **MIX-RF** | Keyboard CC1101 energy monitor, nRF24 scans and NFC detection |
-| **NFC** | MIFARE Classic reads, block maps, key entry and saved dumps |
-| **DRONES** | Receive-only warning for ELRS, 900 MHz hoppers, 2.4 GHz links, 5.8 GHz analog FPV and Remote ID |
-| **DETECTOR** | Background alerts for Remote ID drones, aircraft emergencies and SWEEP categories, with your own rules on the SD card |
-| **EXPERIMENTS** | LR2021 experiments: RS41 sondes and LR433 sensors `[EXPERIMENTAL]` |
-
-### Mapping and navigation
-
-| App | Features |
-| --- | --- |
-| **MAP** | Offline maps in full colour with shaded relief, or in text. Aircraft, Mesh nodes, ships, APRS, routes and markers shared over MeshCore |
-| **TILES** | Download map regions, or a whole state from a globe |
-| **COMPASS** | Tilt-compensated heading, transmitter finding, RADAR and HEAT views `[EXPERIMENTAL]` |
-| **GPS** | Position, navigation and GPX tracks |
-| **NOTES** | Markdown notes with checklists and live GPS, heading and radio data |
-
-### Media and system
-
-| App | Features |
-| --- | --- |
-| **MUSIC** | WAV playback, VFD meters, octave bands, spectrum, a pixel waterfall that shows what is hidden in a recording, and mic recording |
-| **FILES** | Browse the SD card, preview `.sub` files, PLAY any WAV, or COPY or MOVE it to MUSIC |
-| **UPDATE** | One-tap signed updates over Wi-Fi, and C6 firmware from the SD card |
-| **SET** | Brightness, themes, fonts, sounds, speech, Ukrainian, hotspot password and daylight mode |
-| **RADIOS** | Radio power, antenna and Wi-Fi/Bluetooth startup |
-| **LINK** | Wi-Fi/Bluetooth scanning and SURVEY war driving to WiGLE CSV. Needs [ESP-Hosted C6 firmware](c6_firmware/README.md) |
-| **DIAG** | Memory, radios, sensors and logs |
-| **TERMINAL** | On-device console |
+<p align="center"><strong><a href="https://terminalbay.com/?m=wiki#tdp4/APPS">Browse every app in the wiki →</a></strong></p>
 
 The [web tools](https://terminalbay.com/?m=lakeshark) make P25 profiles, GPS scan lists, channel memories and map tiles. [Replay and aircraft details](docs/REPLAY_AND_AIRCRAFT.md)
 
