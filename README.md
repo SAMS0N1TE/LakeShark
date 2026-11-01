@@ -60,6 +60,14 @@
 <p align="center"><strong>Run every app in windows on your PC. Write your own in minutes.</strong><br>New in the 2.20.0-rc1 pre-release.</p>
 
 <p align="center">
+  <a href="https://www.waveshare.com/esp32-p4-nano-wifi6-db.htm"><img src="docs/screenshots/desktop/esp32-p4-nano-20261101.png" width="420" alt="Waveshare ESP32-P4-NANO board"></a>
+</p>
+
+<p align="center"><strong>Real hardware, not an emulator.</strong> The apps run on a
+<a href="https://www.waveshare.com/esp32-p4-nano-wifi6-db.htm">Waveshare ESP32-P4-NANO</a> with its radios and SD card. Your PC is its
+screen, mouse and keyboard over one USB cable.</p>
+
+<p align="center">
   <img src="docs/screenshots/desktop/desk-map-20261101c.gif" width="49%" alt="MAP in a desktop window, panned and zoomed" />
   <img src="docs/screenshots/desktop/studio-20261101.png" width="49%" alt="LakeShark Studio with an app running in the simulator" />
 </p>
@@ -83,14 +91,14 @@
       <td align="center"><strong>The real UI on your PC</strong></td>
     </tr>
     <tr>
-      <td align="center">An ESP32-P4-NANO on one USB cable</td>
+      <td align="center">On a <a href="https://www.waveshare.com/esp32-p4-nano-wifi6-db.htm">Waveshare ESP32-P4-NANO</a>, over USB</td>
       <td align="center">From one window, F5 to F8</td>
       <td align="center">Click, type, tilt and swipe</td>
     </tr>
   </tbody>
 </table>
 
-- **LakeShark Desktop:** taskbar, Start menu, wallpapers and themes, all drawn in characters. Drag windows, pan MAP with the mouse, type with a real keyboard. **Focused mode** (Ctrl+F11) gives one app or game the whole screen at twice the frame rate.
+- **LakeShark Desktop:** the board draws every window and runs every receiver; the PC only shows the picture and sends your input. Taskbar, Start menu, wallpapers and themes, all drawn in characters. Drag windows, pan MAP with the mouse, type with a real keyboard. **Focused mode** (Ctrl+F11) gives one app or game the whole screen at twice the frame rate.
 - **LakeShark Studio:** an editor with outline, search and a problems list. **Build** (F7), **Run** in the simulator (F5), **Install** on the board (F8) and watch the board log, all in one window. An **AI panel** and an MCP server let the AI you already use read the API and build with you.
 - **Simulator:** the same TUI the board runs. Tilt and shake it, swipe it, feed it radio traffic (APRS, mesh, pages), set the clock to night or noon, rotate it, and take shots.
 - **`lsdk`:** the same from any terminal. `lsdk new` starts from a template (blank, radio, dots, 3d, service), `lsdk sim` runs it, `lsdk install --open` puts it on the board.
