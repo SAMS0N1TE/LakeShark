@@ -70,11 +70,11 @@
 screen, mouse and keyboard over one USB cable.</p>
 
 <p align="center">
-  <img src="docs/screenshots/desktop/desk-map-20261101c.gif" width="49%" alt="MAP in a desktop window, panned and zoomed" />
+  <img src="docs/screenshots/desktop/desk-p25-20261101.png" width="49%" alt="P25 in a desktop window, receiver health and signal" />
   <img src="docs/screenshots/desktop/studio-20261101.png" width="49%" alt="LakeShark Studio with an app running in the simulator" />
 </p>
 <p align="center">
-  <img src="docs/screenshots/desktop/music-20261101.gif" width="49%" alt="MUSIC playing on the desktop, meters and waterfall" />
+  <img src="docs/screenshots/desktop/music-20261101b.gif" width="49%" alt="MUSIC playing on the desktop, meters and waterfall" />
   <img src="docs/screenshots/desktop/focus-map-20261101.png" width="49%" alt="Focused mode: MAP alone at the full frame rate" />
 </p>
 
