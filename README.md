@@ -81,7 +81,7 @@ screen, mouse and keyboard over one USB cable.</p>
   <img src="docs/screenshots/desktop/focus-map-20261101.png" width="49%" alt="Focused mode: MAP alone at the full frame rate" />
 </p>
 
-- **Desktop:** every app in a window on your PC. The board does the work.
+- **Desktop:** run every app in a window on your PC.
 - **Focused mode:** Ctrl+F11 puts one app full screen at double the frame rate.
 - **Studio:** write an app, run it in the simulator, put it on the board.
 - **lsdk:** the same from a terminal.
