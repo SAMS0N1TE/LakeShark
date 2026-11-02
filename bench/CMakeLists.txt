@@ -2524,10 +2524,14 @@ if(CARTOCORE_DIR)
     target_link_libraries(carto_stack_audit PRIVATE
         $<TARGET_PROPERTY:lssim,LINK_LIBRARIES>)
     target_compile_options(carto_stack_audit PRIVATE -fno-sanitize=all)
-    add_dependencies(lssim carto_stack_audit)
-    add_custom_command(TARGET lssim POST_BUILD
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_carto_stack.py" "${CMAKE_CURRENT_BINARY_DIR}"
-        COMMENT "Checking CartoCore TUI stack and file/flash boundary")
+    # The audit reads the MinGW/MSVC stack records of the bench build; other
+    # hosts (glibc, its hardened _chk calls) are not what it reviews.
+    if(WIN32)
+        add_dependencies(lssim carto_stack_audit)
+        add_custom_command(TARGET lssim POST_BUILD
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_carto_stack.py" "${CMAKE_CURRENT_BINARY_DIR}"
+            COMMENT "Checking CartoCore TUI stack and file/flash boundary")
+    endif()
 endif()
 
 ls_add_test(test_map_marks_async ${FW}/components/apps/tui/ls_geo.c)

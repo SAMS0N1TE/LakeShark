@@ -11,7 +11,12 @@ extern const ls_tui_screen_t ls_scr_meters;
 #include "ls_rec_replay.h"
 #include "ls_calls.h"
 #include "call_archive.h"
+#ifdef _WIN32
 #include <direct.h>
+#else
+#include <sys/stat.h>
+#define _mkdir(p) mkdir((p), 0755)
+#endif
 #include "ls_tui_density.h"
 #include "ls_i18n.h"
 /* The panel, on this machine. */
