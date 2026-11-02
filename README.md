@@ -81,11 +81,11 @@ screen, mouse and keyboard over one USB cable.</p>
   <img src="docs/screenshots/desktop/focus-map-20261101.png" width="49%" alt="Focused mode: MAP alone at the full frame rate" />
 </p>
 
-- **LakeShark Desktop:** the board draws every window and runs every receiver; the PC only shows the picture and sends your input. Taskbar, Start menu, wallpapers and themes, all drawn in characters. Drag windows, pan MAP with the mouse, type with a real keyboard. **Focused mode** (Ctrl+F11) gives one app or game the whole screen at twice the frame rate.
-- **LakeShark Studio:** an editor with outline, search and a problems list. **Build** (F7), **Run** in the simulator (F5), **Install** on the board (F8) and watch the board log, all in one window. An **AI panel** and an MCP server let the AI you already use read the API and build with you.
-- **Simulator:** the same TUI the board runs. Tilt and shake it, swipe it, feed it radio traffic (APRS, mesh, pages), set the clock to night or noon, rotate it, and take shots.
-- **`lsdk`:** the same from any terminal. `lsdk new` starts from a template (blank, radio, dots, 3d, service), `lsdk sim` runs it, `lsdk install --open` puts it on the board.
-- **Share it:** apps are one `.lap` file on the SD card, and the [app store](https://terminalbay.com/?m=lakeshark-apps) installs them in one click.
+- **Desktop:** every app in a window on your PC. The board does the work.
+- **Focused mode:** Ctrl+F11 puts one app full screen at double the frame rate.
+- **Studio:** write an app, run it in the simulator, put it on the board.
+- **lsdk:** the same from a terminal.
+- **App store:** install apps in one click.
 
 <p align="center">
   <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.20.0-rc1">Try 2.20.0-rc1</a>
