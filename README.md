@@ -81,28 +81,6 @@ screen, mouse and keyboard over one USB cable.</p>
   <img src="docs/screenshots/desktop/focus-map-20261101.png" width="49%" alt="Focused mode: MAP alone at the full frame rate" />
 </p>
 
-<table align="center">
-  <thead>
-    <tr>
-      <th align="center">DESKTOP</th>
-      <th align="center">STUDIO</th>
-      <th align="center">SIMULATOR</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td align="center"><strong>Every app, windowed</strong></td>
-      <td align="center"><strong>Write, build, install</strong></td>
-      <td align="center"><strong>The real UI on your PC</strong></td>
-    </tr>
-    <tr>
-      <td align="center">On a <a href="https://www.waveshare.com/esp32-p4-nano-wifi6-db.htm">Waveshare ESP32-P4-NANO</a>, over USB</td>
-      <td align="center">From one window, F5 to F8</td>
-      <td align="center">Click, type, tilt and swipe</td>
-    </tr>
-  </tbody>
-</table>
-
 - **LakeShark Desktop:** the board draws every window and runs every receiver; the PC only shows the picture and sends your input. Taskbar, Start menu, wallpapers and themes, all drawn in characters. Drag windows, pan MAP with the mouse, type with a real keyboard. **Focused mode** (Ctrl+F11) gives one app or game the whole screen at twice the frame rate.
 - **LakeShark Studio:** an editor with outline, search and a problems list. **Build** (F7), **Run** in the simulator (F5), **Install** on the board (F8) and watch the board log, all in one window. An **AI panel** and an MCP server let the AI you already use read the API and build with you.
 - **Simulator:** the same TUI the board runs. Tilt and shake it, swipe it, feed it radio traffic (APRS, mesh, pages), set the clock to night or noon, rotate it, and take shots.
