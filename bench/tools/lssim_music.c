@@ -6,7 +6,7 @@
 #include <string.h>
 static ls_music_state_t state;
 static bool warm;
-static int vol=43,index;
+static int vol=43,track;
 static uint32_t position, archive_ms;
 static unsigned sample_rate=44100,channels=2;
 static int64_t since;
@@ -17,9 +17,9 @@ bool ls_music_scan(int source){(void)source;return true;}
 int ls_music_count(void){return 4;}
 const char*ls_music_name(int i){return i>=0&&i<4?names[i]:"";}
 const char*ls_music_error(void){return "";}
-bool ls_music_play(int i){if(i<0||i>=4)return false;index=i;archive_ms=0;sample_rate=44100;channels=2;position=i==0?2000:72000;since=esp_timer_get_time();state=LS_MUSIC_PLAYING;return true;}
+bool ls_music_play(int i){if(i<0||i>=4)return false;track=i;archive_ms=0;sample_rate=44100;channels=2;position=i==0?2000:72000;since=esp_timer_get_time();state=LS_MUSIC_PLAYING;return true;}
 uint32_t ls_music_position_ms(void){return position+(state==LS_MUSIC_PLAYING?(uint32_t)((esp_timer_get_time()-since)/1000):0);}
-uint32_t ls_music_duration_ms(void){return archive_ms?archive_ms:index==0?8000:594000;}
+uint32_t ls_music_duration_ms(void){return archive_ms?archive_ms:track==0?8000:594000;}
 bool ls_music_toggle(void){if(state==LS_MUSIC_PLAYING){position=ls_music_position_ms();state=LS_MUSIC_PAUSED;}else{since=esp_timer_get_time();state=LS_MUSIC_PLAYING;}return true;}
 void ls_music_stop(void){state=LS_MUSIC_STOPPED;position=0;}
 ls_music_state_t ls_music_state(void){return state;}
@@ -75,7 +75,7 @@ static unsigned le32(const unsigned char *b){return b[0]|b[1]<<8|b[2]<<16|(unsig
 bool ls_music_play_path(const char *path){
  unsigned char h[44];FILE *f=fopen(path,"rb");archive_ms=0;sample_rate=44100;channels=2;
  if(f){if(fread(h,1,44,f)==44){sample_rate=le32(h+24);channels=h[22];if(sample_rate&&channels)archive_ms=(uint64_t)le32(h+40)*1000/(sample_rate*channels*2);}fclose(f);}
- index=0;position=0;since=esp_timer_get_time();state=LS_MUSIC_PLAYING;return true;}
+ track=0;position=0;since=esp_timer_get_time();state=LS_MUSIC_PLAYING;return true;}
 bool ls_music_is_open(void){return state!=LS_MUSIC_STOPPED;}
 bool ls_music_seek_ms(uint32_t ms){position=ms>ls_music_duration_ms()?ls_music_duration_ms():ms;since=esp_timer_get_time();return true;}
 

@@ -19,8 +19,16 @@
 #include <strings.h>
 #include <errno.h>
 #include <fcntl.h>
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
 #include <unistd.h>
+#ifdef _WIN32
 #include <direct.h>
+#else
+#include <sys/stat.h>
+#define _mkdir(p) (mkdir)((p), 0755)
+#endif
 #include <ctype.h>
 #include <limits.h>
 static bool carto_host_worker,carto_host_nvs;
