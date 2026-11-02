@@ -147,9 +147,9 @@ screen, mouse and keyboard over one USB cable.</p>
   </tbody>
 </table>
 
-<p align="center"><strong>Install</strong> from Chrome or Edge with the <a href="https://terminalbay.com/?m=lakeshark">browser installer</a>. Already installed? The <strong>UPDATE</strong> app updates over Wi-Fi in one tap.</p>
+<p align="center">Install from Chrome or Edge with the <a href="https://terminalbay.com/?m=lakeshark">browser installer</a>. After that, the <strong>UPDATE</strong> app updates over Wi-Fi.</p>
 
-<blockquote><p align="center"><strong>Power:</strong> power the P4 from its own USB-C input, never from the keyboard's 5V USB output. That causes repeated power cycling.</p></blockquote>
+<blockquote><p align="center"><strong>Power:</strong> use the P4's own USB-C port, not the keyboard's 5V output, or it keeps restarting.</p></blockquote>
 
 <h2 align="center">LakeShark Pager (coming soon)</h2>
 
@@ -217,31 +217,29 @@ screen, mouse and keyboard over one USB cable.</p>
 
 ## Applications
 
-P25 voice and trunking, FM with pagers and data, ADS-B, waterfalls, MeshCore, Sub-GHz capture and replay, FT8, offline maps, a compass, GPS, music and more: about thirty apps, each with its own guide.
+About thirty apps: P25 voice and trunking, FM with pagers, ADS-B, waterfalls, MeshCore, Sub-GHz capture and replay, FT8, offline maps, compass, GPS and music. Each one has a guide in the [wiki](https://terminalbay.com/?m=wiki#tdp4/APPS).
 
-<p align="center"><strong><a href="https://terminalbay.com/?m=wiki#tdp4/APPS">Browse every app in the wiki →</a></strong></p>
-
-The [web tools](https://terminalbay.com/?m=lakeshark) make P25 profiles, GPS scan lists, channel memories and map tiles. [Replay and aircraft details](docs/REPLAY_AND_AIRCRAFT.md)
+The [web tools](https://terminalbay.com/?m=lakeshark) make P25 profiles, GPS scan lists, channel memories and map tiles. See also [replay and aircraft details](docs/REPLAY_AND_AIRCRAFT.md).
 
 ### Remote terminal
 
-The whole interface in a terminal on your computer, with keys and mouse clicks.
+Use the full interface from a terminal on your PC, keys and mouse included.
 
-- **USB:** `python host/lsterm/lsterm.py` (or add the port, `COM5`).
-- **Wi-Fi:** `term net on` on the board prints a password, then `python host/lsterm/lsterm.py tcp://<board-ip>` or `telnet <board-ip> 2323`.
-- **SSH (ESP32-P4-NANO builds):** `term ssh on` (or LINK > REMOTE), then `ssh <board-ip>`. Encrypted; the same password, or a key the board learns once (LEARN on the REMOTE page, then one password login) or reads from `lakeshark/authorized_keys` on the SD card.
+- **USB:** `python host/lsterm/lsterm.py` (add the port if needed, e.g. `COM5`).
+- **Wi-Fi:** `term net on` on the board prints a password. Then `python host/lsterm/lsterm.py tcp://<board-ip>` or `telnet <board-ip> 2323`.
+- **SSH (ESP32-P4-NANO):** `term ssh on`, then `ssh <board-ip>`. Log in with the same password, or with a key: LEARN on LINK > REMOTE, or put it in `lakeshark/authorized_keys` on the SD card.
 
-Its side panel has snapshots, recordings, screen off, volume, a console and the SD card. [lsterm guide](host/lsterm/README.md)
+The side panel has snapshots, recordings, screen off, volume, a console and the SD card. [lsterm guide](host/lsterm/README.md)
 
 ### Apps
 
-Games and tools that run from the SD card, each with its own tile under USER on HOME.
+Games and tools that run from the SD card. Each gets a tile under USER on HOME.
 
-- **Store:** open the [LakeShark hub](https://terminalbay.com/?m=lakeshark-hub) in Chrome or Edge, connect the board with USB and press INSTALL.
+- **App store:** open the [store](https://terminalbay.com/?m=lakeshark-apps) in Chrome or Edge, plug the board in with USB and press INSTALL.
 - **By hand:** copy a `.lap` file into `/apps` on the SD card.
-- **Your own:** write one in C with the [app SDK](app-sdk/README.md). DICE, SNAKE, PINBALL and MESHLING are the examples.
+- **Your own:** write one in C with LakeShark Studio or the [app SDK](app-sdk/README.md). Examples: DICE, SNAKE, PINBALL, MESHLING.
 
-The hub also shows the board's screen live, browses and copies files on the SD card, and runs the console, all in the browser.
+The [hub](https://terminalbay.com/?m=lakeshark-hub) also shows the board's screen, its SD card and the console in the browser.
 
 <p align="center">
   <img src="assets/lakeshark-divider.png" alt="" width="900">
@@ -251,15 +249,11 @@ The hub also shows the board's screen live, browses and copies files on the SD c
 
 ### Headless ESP32-P4
 
-The **Waveshare ESP32-P4-NANO** and **ESP32-P4-WIFI6** run the same receivers with no display, controlled from a serial console, a Flipper Zero or the [remote terminal](#remote-terminal). On the NANO the terminal is the full interface (`panel term 160x40` sets its size).
+The **Waveshare ESP32-P4-NANO** and **ESP32-P4-WIFI6** run the same receivers without a screen. Control them from a serial console, a Flipper Zero or the [remote terminal](#remote-terminal). On the NANO the terminal is the full interface; `panel term 160x40` sets its size.
 
 ### Flipper Zero control head
 
-<p align="center">
-  <strong>Your Flipper becomes the display and controls. LakeShark handles the radio.</strong>
-</p>
-
-The [LakeShark-Flipper app](https://github.com/SAMS0N1TE/LakeShark-Flipper) connects over Bluetooth, with no pairing code, or GPIO.
+The [LakeShark-Flipper app](https://github.com/SAMS0N1TE/LakeShark-Flipper) uses a Flipper Zero as the screen and buttons. It connects over Bluetooth (no pairing code) or GPIO.
 
 <table align="center">
   <thead>
@@ -294,7 +288,7 @@ The [LakeShark-Flipper app](https://github.com/SAMS0N1TE/LakeShark-Flipper) conn
 
 ### Waveshare touch boards
 
-The Touch-LCD-4.3 (480 × 800), Touch-LCD-4B and Smart 86 Box (720 × 720) builds end with 2.16.4. [Install LCD-4.3 firmware](https://terminalbay.com/?m=lakeshark&board=lcd43) &nbsp;•&nbsp; [Quick start](https://terminalbay.com/?m=wiki#lcd43/LCD43_QUICKSTART)
+Builds for the Touch-LCD-4.3 (480 × 800), Touch-LCD-4B and Smart 86 Box (720 × 720) stopped at 2.16.4. [Install LCD-4.3 firmware](https://terminalbay.com/?m=lakeshark&board=lcd43) &nbsp;•&nbsp; [Quick start](https://terminalbay.com/?m=wiki#lcd43/LCD43_QUICKSTART)
 
 <p align="center">
   <img src="assets/lakeshark-divider.png" alt="" width="900">
