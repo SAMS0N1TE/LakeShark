@@ -29,10 +29,6 @@
 <p align="center"><strong>New in 2.20.0: the LR2021 runs programs on its own CPU.</strong><br>
 On-chip waterfall · On-chip down-conversion · Background LoRa scan · FM at half the CPU</p>
 
-<p align="center">
-  <img width="48%" alt="FALLS with the waterfall computed on the LR2021" src="docs/screenshots/tdp4/motion/falls-chip-20261103.gif">
-</p>
-
 <p align="center">The programs on the radio come from <a href="https://github.com/beala/lr2021-re">Alex Beal's lr2021-re</a>, which builds on LR2021-SDR: his on-chip FFT, sweep and LoRa scanner, and the ARC toolchain and Patch RAM loader we used for our own. <a href="https://beala.substack.com/p/your-node-doesnt-need-a-microcontroller">Read his write-up</a>.</p>
 
 <p align="center"><strong><a href="https://github.com/SAMS0N1TE/lr2021-sdr">Explore LR2021-SDR →</a></strong></p>
