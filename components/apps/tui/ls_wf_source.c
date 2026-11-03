@@ -85,11 +85,22 @@ static int s_fm_preview_idx = -1;
    the widget will take, so nothing here has to know the panel width. */
 static EXT_RAM_BSS_ATTR float s_bins[LS_WF_BINS_MAX];
 
+/* The decoder AUTO last fed a row from, and when. A decoder that restarts its
+   IQ stream reads as stopped for a moment (no receiver, no IQ centre); on an
+   LR-only board AUTO would then fall to the LoRa view, claim the chip and hand
+   the waterfall a new owner, and the FM or P25 row that follows would take it
+   back and clear the history again. Holding the decoder through the restart
+   keeps the picture and leaves the chip to the decoder. */
+#define AUTO_HOLD_MS 2000u
+static ls_wf_src_t s_last_src = LS_WF_SRC_AUTO;
+static uint32_t    s_last_src_ms;
+
 void ls_wf_source_select(ls_wf_src_t src)
 {
     if (src >= LS_WF_SRC__COUNT) src = LS_WF_SRC_AUTO;
     if (src == s_want) return;
     s_want = src;
+    s_last_src = LS_WF_SRC_AUTO;
     s_live_owner = LS_WF_OWNER_NONE;
 
     ls_wf_claim(LS_WF_OWNER_NONE, NULL);
@@ -119,6 +130,9 @@ ls_wf_src_t ls_wf_source_get(void)
         if (p25_running() || P25.lr_iq_active) return LS_WF_SRC_P25;
         if (fm_running() || FM.lr_iq_active) return LS_WF_SRC_FM;
         if (lr_spec_center()) return LS_WF_SRC_LORA;
+        if (s_last_src != LS_WF_SRC_AUTO &&
+            (uint32_t)(esp_timer_get_time() / 1000) - s_last_src_ms < AUTO_HOLD_MS)
+            return s_last_src;
     }
     if (s_want == LS_WF_SRC_P25 && P25.lr_iq_active) return LS_WF_SRC_P25;
     if (s_want == LS_WF_SRC_FM && FM.lr_iq_active) return LS_WF_SRC_FM;
@@ -992,7 +1006,10 @@ void ls_wf_source_pump(void)
         const bool lr_app = (use == LS_WF_SRC_P25 && app_uses_lr(LS_RSEL_P25) && P25.lr_iq_active) ||
                             (use == LS_WF_SRC_FM && fm_lr_tapping());
         if (!lr_app) { lr_spec_enable(false); lr_span_enable(false); }
-        if (!lr_app || s_lr_owned || s_lora_held || s_lora_owned) lora_stop();
+        /* Only when something is held: with nothing held lora_stop only forgets
+           the live owner, and a decoder's tap that is down for a restart would
+           then clear the picture when its next row arrived. */
+        if (s_lr_owned || s_chip_owned || s_lora_held || s_lora_owned) lora_stop();
         /* Decoder taps do not own field DIRECT. */
     }
 
@@ -1007,11 +1024,16 @@ void ls_wf_source_pump(void)
         (use == LS_WF_SRC_P25 && !p25_running() && !P25.lr_iq_active))
         idle(LS_WF_IDLE_STARTING, LS_TEXT(t_ls_wf_source_waiting_for_receiver_startup, "Waiting for receiver startup"));
     s_active = ok ? use : LS_WF_SRC_AUTO;
+    if (ok && (use == LS_WF_SRC_FM || use == LS_WF_SRC_P25)) {
+        s_last_src = use;
+        s_last_src_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    }
 }
 
 void ls_wf_source_release(void)
 {
     s_view_hz = 0; s_lr_mode = false; s_lr_span_seen_ms = 0;
+    s_last_src = LS_WF_SRC_AUTO;
     lr_spec_enable(false); lr_span_enable(false);
     /* No field DIRECT ownership was acquired here. */
     fm_spectrum_enable(false);

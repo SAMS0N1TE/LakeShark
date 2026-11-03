@@ -273,10 +273,15 @@ static uint32_t s_capture_hz = 26666666u;
 static uint8_t *s_capture_tx, *s_capture_rx;
 #endif
 uint32_t ls_lora_hw_capture_hz(void) { return s_capture_hz; }
-/* DMA FIFO reads by default: 62-byte register chunks cost about 0.7 us a
-   byte, so narrow FM at 500 kB/s kept core 0 near 70% busy and any other
-   load overflowed the 2 ms FIFO. `lora lrdma off` goes back to registers. */
-static bool s_capture_dma = true;
+/* Register FIFO reads by default. The DMA path goes through esp_cache_msync,
+   which the display's framebuffer write-back also takes, and a read that
+   waits on it past the ~2 ms the FIFO holds overflows the stream: on the FM
+   SPECTRUM view, where the picture changes ten times a second, narrow FM lost
+   it 12 to 20 times in 120 s (each a 0.4 s hole in the waterfall and an audio
+   drop). With register reads that view ran 120 s with no overflow, and again
+   after P25 had run, at the same ~75% core 0 load as DMA. `lora lrdma on`
+   goes back to DMA. */
+static bool s_capture_dma = false;
 void ls_lora_hw_capture_set_dma(bool dma) { s_capture_dma = dma; }
 bool IRAM_ATTR ls_lora_hw_capture_dma(void) { return s_capture_dma; }
 

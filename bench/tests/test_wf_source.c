@@ -26,6 +26,8 @@
 uint32_t ls_wf_marker_hz(void) { return 0; }
 static ls_wf_owner_t g_owner;
 static int           g_claims_none;
+/* Every change of owner, which on the real widget throws the history away. */
+static int           g_owner_changes;
 static int           g_pushes;
 static float         g_row[LS_WF_BINS_MAX];
 static int           g_row_n;
@@ -43,6 +45,7 @@ void ls_wf_claim(ls_wf_owner_t owner, const char *label)
     (void)label;
     if (owner == g_owner) return;
     g_owner = owner;
+    g_owner_changes++;
     if (owner == LS_WF_OWNER_NONE) g_claims_none++;
 }
 
@@ -242,7 +245,7 @@ static void fresh(void)
     memset(&FM, 0, sizeof(FM));
     lakeshark_fm_frequency_lock(false);
     g_owner = LS_WF_OWNER_NONE;
-    g_claims_none = g_pushes = g_row_n = 0;
+    g_claims_none = g_owner_changes = g_pushes = g_row_n = 0;
     memset(&g_feed, 0, sizeof(g_feed));
     g_scanning = g_scan_ours = false;
     g_begins = g_retunes = g_ends = 0;
@@ -1018,6 +1021,59 @@ LS_CASE(decoder_switches_have_no_allocations_or_radio_commands)
         LS_EQ_UINT(switch_budget_end(), 0);
         LS_EQ_UINT(g_radio_calls, calls);
     }
+}
+
+/* The FM session's IQ stream stops and starts again on the same channel (the
+   status line reads IQ 0 B/s, gaps +1). The waterfall is a record of what
+   was measured; the restart must not hand the picture to another owner or
+   start a capture of its own on the chip FM is about to reclaim. */
+LS_CASE(an_fm_iq_restart_in_auto_keeps_the_waterfall_and_leaves_the_chip_alone)
+{
+    const ls_wf_src_t sources[] = {LS_WF_SRC_AUTO, LS_WF_SRC_FM};
+    for (int rtl = 0; rtl < 2; ++rtl) for (int i = 0; i < 2; ++i) {
+        fresh(); g_lr = true; g_rtl = rtl; g_fm_radio = LS_RSEL_LORA;
+        g_fm_streaming = true; FM.mode = FM_MODE_LISTEN; FM.freq_hz = 152600000;
+        FM.lr_iq_active = true;
+        ls_wf_source_select(sources[i]);
+        lr_spec_begin(FM.freq_hz);
+        ls_wf_source_pump(); publish_lr_row(); ls_wf_source_pump();
+        LS_EQ_INT(1, g_pushes);
+        LS_EQ_INT(LS_WF_SRC_FM, ls_wf_source_get());
+        const int owner_changes = g_owner_changes;
+        const ls_wf_owner_t held = g_owner;
+
+        /* Down: the session ends, the receiver reads as stopped. */
+        FM.lr_iq_active = false; g_fm_streaming = false; lr_spec_end();
+        for (int t = 0; t < 5; ++t) { ls_shim_time_advance(100000); ls_wf_source_pump(); }
+        LS_EQ_INT(owner_changes, g_owner_changes);
+        LS_EQ_INT(0, g_iq_starts); LS_CHECK(!g_hold_asked);
+        LS_EQ_INT(0, g_iq_stops);
+
+        /* Up again, same channel: the next row lands on the same picture. */
+        FM.lr_iq_active = true; g_fm_streaming = true; lr_spec_begin(FM.freq_hz);
+        ls_wf_source_pump();    /* the tap is switched back on by the next UI tick */
+        publish_lr_row(); ls_wf_source_pump();
+        LS_EQ_INT(2, g_pushes);
+        LS_EQ_INT(owner_changes, g_owner_changes);
+        LS_CHECK(g_owner == held);
+        LS_EQ_INT(0, g_iq_starts);
+    }
+}
+
+/* A receiver that has really gone away still gives the source back, once the
+   grace is over: the hold is for a restart, not for ever. */
+LS_CASE(an_fm_stream_that_stays_down_lets_auto_move_on)
+{
+    fresh(); g_lr = true; g_rtl = false; g_fm_radio = LS_RSEL_LORA;
+    g_fm_streaming = true; FM.mode = FM_MODE_LISTEN; FM.freq_hz = 152600000;
+    FM.lr_iq_active = true; lr_spec_begin(FM.freq_hz);
+    ls_wf_source_pump(); publish_lr_row(); ls_wf_source_pump();
+    LS_EQ_INT(LS_WF_SRC_FM, ls_wf_source_get());
+    FM.lr_iq_active = false; g_fm_streaming = false; lr_spec_end();
+    ls_wf_source_pump();
+    LS_EQ_INT(LS_WF_SRC_FM, ls_wf_source_get());
+    ls_shim_time_advance(5000000);
+    LS_EQ_INT(LS_WF_SRC_LORA, ls_wf_source_get());
 }
 
 LS_CASE(lr_fm_marker_reports_range_and_relocks_manual_tune)
