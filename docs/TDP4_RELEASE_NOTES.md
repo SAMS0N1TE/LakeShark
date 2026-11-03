@@ -1,5 +1,11 @@
 # LakeShark release notes
 
+## 2.20.1
+
+- FM SPECTRUM: the waterfall no longer wipes itself when the FM stream restarts; AUTO keeps the FM or P25 view through the restart instead of falling to the LoRa view for a moment.
+- LR: the SPECTRUM view no longer freezes for 0.4 s, with an audio drop, whenever its picture changes. The LR2021's buffer is now read by the processor instead of by DMA (`lora lrdma on` goes back to DMA).
+- Screen recordings (`tools/ls_record.py`) show the pixel waterfall again, SMOOTH included. Use the 2.20.1 recorder with 2.20.1 firmware.
+
 ## 2.20.0
 
 LakeShark Desktop:
