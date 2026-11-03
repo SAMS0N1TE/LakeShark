@@ -1,5 +1,10 @@
 # LakeShark release notes
 
+## 2.20.2
+
+- Keyboard: Shift types capitals and Fn types the symbols printed on the keycaps, held or tapped (#20).
+- The simulator builds on Linux, so the Linux install script works.
+
 ## 2.20.1
 
 - FM SPECTRUM: the waterfall no longer wipes itself when the FM stream restarts; AUTO keeps the FM or P25 view through the restart instead of falling to the LoRa view for a moment.
