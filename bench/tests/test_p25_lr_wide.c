@@ -89,6 +89,7 @@ LS_CASE(preference_follows_the_shared_setting_unless_pinned)
     /* Boot: narrow, whatever the shared setting says. */
     LS_EQ_INT(P25_LR_WIDE_OFF, p25_lr_wide_pref());
     LS_CHECK(!p25_lr_wide_pick(p25_lr_wide_pref(), true));
+    LS_CHECK(!p25_lr_wide_pick(p25_lr_wide_pref(), false));
     LS_CHECK(!p25_lr_wide_pick(P25_LR_WIDE_FOLLOW, false));
     LS_CHECK(p25_lr_wide_pick(P25_LR_WIDE_FOLLOW, true));
     LS_CHECK(p25_lr_wide_pick(P25_LR_WIDE_ON, false));

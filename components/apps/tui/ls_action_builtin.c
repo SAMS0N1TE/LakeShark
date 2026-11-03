@@ -281,6 +281,15 @@ static ls_act_status_t a_wf_split(const ls_args_t *in, ls_val_t *out)
     return wf_apply(&c, out, v);
 }
 
+static ls_act_status_t a_wf_grain(const ls_args_t *in, ls_val_t *out)
+{
+    long v = in->v[0].i;
+    if (v < 0 || v >= LS_WF_GRAIN__COUNT) return LS_ACT_BADARG;
+    ls_wf_cfg_t c = *ls_wf_cfg();
+    c.grain = (uint8_t)v;
+    return wf_apply(&c, out, v);
+}
+
 static ls_act_status_t a_wf_range(const ls_args_t *in, ls_val_t *out)
 {
     long v = in->v[0].i;
@@ -566,6 +575,8 @@ void ls_action_register_builtin(void)
                        LS_TEXT(t_ls_action_builtin_contrast_window_4_16, "contrast window, 4..16 sixteenths"));
     ls_action_register("wf.ref",         "i", LS_CAP_UI,   a_wf_ref,
                        LS_TEXT(t_ls_action_builtin_reference_shift_8_8, "reference shift, -8..8 sixteenths"));
+    ls_action_register("wf.grain",       "i", LS_CAP_UI,   a_wf_grain,
+                       "0 pixel, 1 ascii, 2 dense, 3 bars, 4 smooth");
     ls_action_register("wf.pause",       "b", LS_CAP_UI,   a_wf_pause,
                        "freeze the history");
     ls_action_register("wf.peak",        "b", LS_CAP_UI,   a_wf_peak,

@@ -32,7 +32,9 @@ typedef enum {
     CC_NONE, CC_LAND, CC_PARK, CC_WATER, CC_BUILDING,
     CC_MINOR, CC_MAJOR, CC_BOUNDARY, CC_RAIL, CC_WOOD, CC_FARM, CC_RESIDENTIAL, CC_INDUSTRIAL, CC_MOTORWAY, CC_SECONDARY, CC_SERVICE, CC_CONTOUR, CC_INDEX_CONTOUR, CC_INK_COUNT
 } cc_ink;
-typedef struct { uint8_t fill, line, priority; } cc_style;
+/* minzoom: the feature is left out below it (0 = every zoom), for a class
+   that shares its ink with one that stays, as streams do with rivers. */
+typedef struct { uint8_t fill, line, priority, minzoom; } cc_style;
 cc_style cc_style_lookup(cc_str layer, cc_str kind);
 uint32_t cc_palette(uint8_t ink);
 uint8_t cc_palette16(uint8_t ink);
@@ -97,6 +99,9 @@ typedef struct {
     /* Map zoom being drawn, 0 when unknown. Set, it hides detail a terminal
        cell cannot carry at that zoom and widens the main roads. */
     uint8_t zoom;
+    /* Retained overlap, in cells. The renderer excludes clipped stroke bounds
+       because viewport clipping can change their Bresenham phase. */
+    int reuse_fill,keep_x0,keep_y0,keep_x1,keep_y1;
     int ordered; /* raster owns this flag while traversing priority buckets */
     uint8_t *dots, *ink, *dot_priority, *fill, *fill_priority;
     cc_bitword *edges;

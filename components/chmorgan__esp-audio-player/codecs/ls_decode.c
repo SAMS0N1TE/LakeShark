@@ -6,21 +6,32 @@
 #include <stdlib.h>
 #include <string.h>
 #ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#define LS_AUDIO_COMPRESSED CONFIG_LS_MUSIC_COMPRESSED
+#elif !defined(LS_AUDIO_COMPRESSED)
+#define LS_AUDIO_COMPRESSED 1
+#endif
+#ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 static void *codec_malloc(size_t n) {
   return heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 }
+#if LS_AUDIO_COMPRESSED
 static void *codec_realloc(void *p, size_t n) {
   return heap_caps_realloc(p, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 }
+#endif
 static void codec_free(void *p) { heap_caps_free(p); }
 #else
 static void *codec_malloc(size_t n) { return malloc(n); }
+#if LS_AUDIO_COMPRESSED
 static void *codec_realloc(void *p, size_t n) { return realloc(p, n); }
+#endif
 static void codec_free(void *p) { free(p); }
 #endif
 /* Redirect every vendor heap allocation. Vorbis additionally uses a bounded
    arena, including frame scratch, instead of alloca on an internal stack. */
+#if LS_AUDIO_COMPRESSED
 #define malloc codec_malloc
 #define realloc codec_realloc
 #define free codec_free
@@ -40,6 +51,7 @@ static void codec_free(void *p) { free(p); }
 #undef malloc
 #undef realloc
 #undef free
+#endif
 
 enum { F_WAV, F_MP3, F_FLAC, F_VORBIS };
 struct ls_decode {
@@ -48,13 +60,16 @@ struct ls_decode {
   uint64_t frames, position;
   bool failed;
   wav_instance wav;
+#if LS_AUDIO_COMPRESSED
   mp3dec_ex_t *mp3;
   mp3dec_io_t io;
   drflac *flac;
   stb_vorbis *vorbis;
   void *arena;
+#endif
   char *file_buffer;
 };
+#if LS_AUDIO_COMPRESSED
 static size_t mp3_read(void *out, size_t n, void *ctx) {
   return fread(out, 1, n, ctx);
 }
@@ -76,6 +91,7 @@ static drflac_bool32 flac_tell(void *ctx, drflac_int64 *at) {
   *at = n;
   return n >= 0;
 }
+#endif
 ls_decode *ls_decode_open(FILE *file) {
   if (!file)
     return NULL;
@@ -100,7 +116,9 @@ ls_decode *ls_decode_open(FILE *file) {
     d->rate = d->wav.header.SampleRate;
     d->channels = d->wav.header.NumChannels;
     d->frames = d->wav.data_bytes / d->wav.header.BlockAlign;
-  } else if (!memcmp(magic, "fLaC", 4)) {
+  }
+#if LS_AUDIO_COMPRESSED
+  else if (!memcmp(magic, "fLaC", 4)) {
     d->kind = F_FLAC;
     d->flac = drflac_open(flac_read, flac_seek, flac_tell, file, NULL);
     if (!d->flac)
@@ -137,7 +155,9 @@ ls_decode *ls_decode_open(FILE *file) {
     if (!d->channels)
       goto fail;
     d->frames = d->mp3->samples / d->channels;
-  } else
+  }
+#endif
+  else
     goto fail;
   if (d->channels < 1 || d->channels > 2 || d->rate < 8000 ||
       d->rate > 192000 || !d->frames)
@@ -150,6 +170,7 @@ fail:
 void ls_decode_close(ls_decode *d) {
   if (!d)
     return;
+#if LS_AUDIO_COMPRESSED
   if (d->mp3) {
     mp3dec_ex_close(d->mp3);
     codec_free(d->mp3);
@@ -159,6 +180,7 @@ void ls_decode_close(ls_decode *d) {
   if (d->vorbis)
     stb_vorbis_close(d->vorbis);
   codec_free(d->arena);
+#endif
   if (d->file_buffer) {
     setvbuf(d->file, NULL, _IONBF, 0);
     codec_free(d->file_buffer);
@@ -186,6 +208,7 @@ size_t ls_decode_read(ls_decode *d, int16_t *pcm, size_t count) {
     got = fread(pcm, d->channels * sizeof(*pcm), count, d->file);
     d->failed = got < count;
     break;
+#if LS_AUDIO_COMPRESSED
   case F_MP3:
     got = mp3dec_ex_read(d->mp3, pcm, count * d->channels) / d->channels;
     d->failed = d->mp3->last_error != 0;
@@ -197,6 +220,7 @@ size_t ls_decode_read(ls_decode *d, int16_t *pcm, size_t count) {
     got = (size_t)stb_vorbis_get_samples_short_interleaved(
         d->vorbis, d->channels, pcm, (int)(count * d->channels));
     break;
+#endif
   }
   if (!got && d->position < d->frames)
     d->failed = true;
@@ -220,6 +244,7 @@ bool ls_decode_seek(ls_decode *d, uint64_t frame) {
     ok = at <= LONG_MAX && fseek(d->file, (long)at, SEEK_SET) == 0;
     break;
   }
+#if LS_AUDIO_COMPRESSED
   case F_MP3:
     ok = mp3dec_ex_seek(d->mp3, frame * d->channels) == 0;
     break;
@@ -229,6 +254,7 @@ bool ls_decode_seek(ls_decode *d, uint64_t frame) {
   case F_VORBIS:
     ok = frame <= UINT_MAX && stb_vorbis_seek(d->vorbis, (unsigned)frame) != 0;
     break;
+#endif
   }
   if (ok) {
     d->position = frame;

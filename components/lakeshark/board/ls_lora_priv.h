@@ -139,6 +139,10 @@ unsigned  ls_lora_hw_unguarded(void);
 uint8_t *ls_lora_hw_pkt(void);
 /* BUSY low within `timeout_ms`, spinning briefly and then yielding. */
 bool ls_lora_hw_wait_not_busy(int timeout_ms);
+/* BUSY waits block on a falling-edge interrupt instead of polling, for the
+   lock holder only; for sessions whose radio answers slowly but which have
+   no microsecond deadline of their own (the chip down-converter). */
+esp_err_t ls_lora_hw_busy_sleep(bool on);
 int  ls_lora_hw_busy_level(void);
 /* A pulse on the part's NRESET and the wait for it to come back up, for a
    backend whose part has stopped taking commands. The part then holds none of

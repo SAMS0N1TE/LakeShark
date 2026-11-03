@@ -51,6 +51,7 @@ LAP_ICON_PX("....................",
             "....................");
 
 static struct {
+    lap_rx_config_t cfg;
     bool ready;                       /* allocated and set up: survives the screen closing */
     lap_radio_info_t radios[LAP_RADIOS_MAX];
     int nradios, radio, h;
@@ -115,8 +116,8 @@ static void open_rx(void)
     if (s.rate > r->max_rate) s.rate = r->max_rate;
     if (s.rate < r->min_rate) s.rate = r->min_rate;
     if (s.watch < r->min_hz + WATCH_OFFSET || s.watch > r->max_hz) s.watch = (r->min_hz + r->max_hz) / 2;
-    const lap_rx_config_t cfg = { s.watch - WATCH_OFFSET, s.rate, LAP_GAIN_AUTO, LAP_RX_SPECTRUM_ONLY };
-    s.h = lap_rx_open(s.radio, &cfg);
+    s.cfg = (lap_rx_config_t){ s.watch - WATCH_OFFSET, s.rate, LAP_GAIN_AUTO, LAP_RX_SPECTRUM_ONLY };
+    s.h = lap_rx_open(s.radio, &s.cfg);
     if (s.h < 0) snprintf(s.why, sizeof(s.why), "%s would not open (%d)", r->name, s.h);
     else s.why[0] = 0;
 }

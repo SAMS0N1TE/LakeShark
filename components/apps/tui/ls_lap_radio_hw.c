@@ -18,8 +18,10 @@
 #include "lr_wf_session.h"
 #include "ls_field.h"
 #include "ls_lora.h"
+#include "ls_mixrf.h"
 #include "ls_mesh.h"
 #include "radio_endpoint.h"
+#include "radio_frontend.h"
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
@@ -45,8 +47,6 @@ static int sdr_entry(lap_radio_info_t *r, const char *id, uint8_t kind, const ch
     r->busy = info.leased && strcmp(info.owner, OWNER);
     r->min_hz = info.frequency_range_count ? info.frequency_ranges[0].min_hz : 0;
     r->max_hz = info.frequency_range_count ? info.frequency_ranges[info.frequency_range_count - 1].max_hz : 0;
-    /* Apps tune through ls_iq_control, whose centre is 32-bit. */
-    if (r->max_hz > UINT32_MAX) r->max_hz = UINT32_MAX;
     r->min_rate = info.sample_rate_range_count ? (uint32_t)info.sample_rate_ranges[0].min_hz : 0;
     r->max_rate = info.sample_rate_range_count ? (uint32_t)info.sample_rate_ranges[info.sample_rate_range_count - 1].max_hz : 0;
     r->gain_min = 0;
@@ -60,12 +60,12 @@ static int hw_list(lap_radio_info_t *out, int max) {
     memset(kinds, 0, sizeof(kinds));
     if (n < max && sdr_entry(&out[n], LS_RADIO_ENDPOINT_RTL_USB, LAP_RADIO_KIND_RTL, "RTL-SDR")) kinds[n++] = K_RTL;
     if (n < max && sdr_entry(&out[n], LS_RADIO_ENDPOINT_HACKRF_USB, LAP_RADIO_KIND_HACKRF, "HackRF")) kinds[n++] = K_HACKRF;
-    if (n < max && ls_lora_present()) {
+    if (n < max && ls_lora_fitted()!=LS_LORA_CHIP_NONE) {
         lap_radio_info_t *r = &out[n];
         memset(r, 0, sizeof(*r));
-        const uint32_t caps = ls_lora_caps();
+        const uint32_t caps = ls_lora_fitted_caps();
         r->present = true;
-        if (ls_lora_chip() == LS_LORA_CHIP_LR20XX) {
+        if (ls_lora_fitted() == LS_LORA_CHIP_LR20XX) {
             snprintf(r->name, sizeof(r->name), "LR2021");
             r->kind = LAP_RADIO_KIND_LR2021;
             r->features = LAP_RXF_IQ | LAP_RXF_SPECTRUM | LAP_RXF_WIDE;
@@ -76,12 +76,14 @@ static int hw_list(lap_radio_info_t *out, int max) {
             r->busy = lr_spec_center() != 0 && open_kind != K_LORA;
             if (r->busy) snprintf(r->why, sizeof(r->why), "another receiver streams");
         } else {
-            snprintf(r->name, sizeof(r->name), "%.15s", ls_lora_chip_name());
+            snprintf(r->name, sizeof(r->name), "%.15s", ls_lora_fitted_name());
             r->kind = LAP_RADIO_KIND_SX1262;
             snprintf(r->why, sizeof(r->why), "packets only, no I/Q");
         }
         kinds[n++] = K_LORA;
     }
+    ls_mixrf_status_t mix;ls_mixrf_snapshot(&mix);
+    if(n<max&&mix.cc){lap_radio_info_t *r=&out[n++];memset(r,0,sizeof(*r));r->kind=LAP_RADIO_KIND_MIXRF;r->present=true;r->busy=mix.cc_owner!=LS_MIXRF_OWNER_NONE;r->min_hz=300000000;r->max_hz=928000000;snprintf(r->name,sizeof(r->name),"MIX-RF CC1101");snprintf(r->why,sizeof(r->why),"edge capture; no I/Q");}
     return n;
 }
 
@@ -100,18 +102,24 @@ static int hw_list(lap_radio_info_t *out, int max) {
 enum { PH_NONE = 0, PH_STARTING = 1, PH_RUNNING = 2 };   /* or a negative LAP_RX_E* */
 enum { CAP_RUNNING = 0, CAP_DONE = 1, CAP_LEFT = 2 };
 typedef struct {
+    kind_t kind;
+    uint32_t token;
+    lap_rx_config_t want;
+    ls_iq_control_t control; /* stays with a late USB task after close */
     atomic_bool stop;
     atomic_int state;                    /* CAP_*: who frees this block */
     atomic_int phase;
     atomic_uint rate, new_rate;          /* what runs, and a change asked for */
     atomic_int gain;
+    atomic_int command_state; /* 0 idle, 1 queued, 2 completed */
+    int command_control, command_result;
+    int64_t command_value;
+    uint64_t command_center;
+
     uint8_t raw[READ_BYTES];             /* u8 IQ as read */
     int16_t iq[READ_BYTES];              /* the same as int16 */
 } cap_t;
 static struct {
-    kind_t kind;
-    lap_rx_config_t want;
-    ls_iq_control_t control;
     TaskHandle_t task;
     cap_t *cap;                          /* PSRAM; the running task's block */
 } sdr;
@@ -133,44 +141,81 @@ static ls_radio_err_t sdr_start(cap_t *c, ls_radio_session_t *session, uint64_t 
         .gain_mode = gain == LAP_GAIN_AUTO ? LS_RADIO_GAIN_AUTO : LS_RADIO_GAIN_MANUAL,
         .gain_tenths_db = gain == LAP_GAIN_AUTO ? 0 : gain,
     }, got;
-    ls_radio_err_t e = ls_iq_control_configure(&sdr.control, session, &want, &got);
+    ls_radio_err_t e = ls_iq_control_configure(&c->control, session, &want, &got);
     if (e == LS_RADIO_OK) e = ls_radio_iq_start(session);
     if (e != LS_RADIO_OK) return e;
+    if (atomic_load(&c->stop)) return LS_RADIO_ERR_DISCONNECTED;
     atomic_store(&c->rate, got.sample_rate_hz);
     atomic_store(&c->gain, got.gain_mode == LS_RADIO_GAIN_AUTO ? LAP_GAIN_AUTO : got.gain_tenths_db);
-    ls_lap_rx_mark(got.center_hz, got.sample_rate_hz, LAP_IQ_GAP | LAP_IQ_RETUNED);
+    ls_lap_rx_gain_token(c->token,atomic_load(&c->gain));
+    ls_lap_rx_mark_token(c->token,got.center_hz, got.sample_rate_hz, LAP_IQ_GAP | LAP_IQ_RETUNED);
     return LS_RADIO_OK;
 }
 static void capture(void *arg) {
     cap_t *const c = arg;
     ls_radio_session_t *session = NULL;
     const ls_radio_requirements_t req = {
-        .required_caps = LS_RADIO_RX_IQ_U8, .min_hz = sdr.want.center_hz, .max_hz = sdr.want.center_hz,
-        .sample_rate_hz = sdr.want.rate_hz, .iq_format = LS_RADIO_IQ_FORMAT_U8_INTERLEAVED,
-        .preferred_endpoint_id = sdr.kind == K_RTL ? LS_RADIO_ENDPOINT_RTL_USB : LS_RADIO_ENDPOINT_HACKRF_USB,
+        .required_caps = LS_RADIO_RX_IQ_U8, .min_hz = c->want.center_hz, .max_hz = c->want.center_hz,
+        .sample_rate_hz = c->want.rate_hz, .iq_format = LS_RADIO_IQ_FORMAT_U8_INTERLEAVED,
+        .preferred_endpoint_id = c->kind == K_RTL ? LS_RADIO_ENDPOINT_RTL_USB : LS_RADIO_ENDPOINT_HACKRF_USB,
     };
     ls_radio_err_t e = ls_radio_acquire(OWNER, &req, &session);
     if (e != LS_RADIO_OK) { session = NULL; goto out; }
-    ls_iq_control_reset(&sdr.control);
-    ls_iq_control_set_initial(&sdr.control, (uint32_t)sdr.want.center_hz,
-                              sdr.want.gain_tenths_db == LAP_GAIN_AUTO ? 0 : sdr.want.gain_tenths_db, sdr.want.rate_hz);
-    e = sdr_start(c, session, sdr.want.center_hz, sdr.want.rate_hz, sdr.want.gain_tenths_db);
+    ls_iq_control_reset(&c->control);
+    ls_iq_control_set_initial(&c->control, c->want.center_hz,
+                              c->want.gain_tenths_db == LAP_GAIN_AUTO ? 0 : c->want.gain_tenths_db, c->want.rate_hz);
+    e = sdr_start(c, session, c->want.center_hz, c->want.rate_hz, c->want.gain_tenths_db);
     if (e != LS_RADIO_OK) goto out;
+    if (atomic_load(&c->stop)) goto out;
     atomic_store(&c->phase, PH_RUNNING);
-    uint64_t center = sdr.want.center_hz;
+    uint64_t center = c->want.center_hz;
     while (!atomic_load(&c->stop)) {
         ls_iq_control_request_t r;
-        if (ls_iq_control_take(&sdr.control, &r)) {
+        if (ls_iq_control_take(&c->control, &r)) {
             if (r.flags & LS_IQ_CONTROL_TUNE) {
-                ls_iq_control_apply_tune(&sdr.control, session, &r);
-                center = r.center_hz;
-                ls_lap_rx_mark(center, 0, LAP_IQ_RETUNED);
+                if (ls_iq_control_apply_tune(&c->control, session, &r) == LS_RADIO_OK && !atomic_load(&c->stop)) {
+                    ls_iq_control_status_t status;
+                    ls_iq_control_status(&c->control, &status);
+                    center = status.effective_center_hz;
+                    ls_lap_rx_mark_token(c->token,center, 0, LAP_IQ_RETUNED);
+                }
             }
             if (r.flags & LS_IQ_CONTROL_GAIN) {
-                if (ls_iq_control_apply_gain(&sdr.control, session, &r) == LS_RADIO_OK)
-                    atomic_store(&c->gain, r.gain_tenths_db);
-                ls_lap_rx_mark(0, 0, LAP_IQ_RETUNED);
+                if (ls_iq_control_apply_gain(&c->control, session, &r) == LS_RADIO_OK && !atomic_load(&c->stop)) {
+                    ls_iq_control_status_t status;
+                    ls_iq_control_status(&c->control,&status);
+                    int applied=r.gain_auto ? LAP_GAIN_AUTO : status.effective_gain_tenths_db;
+                    atomic_store(&c->gain,applied); ls_lap_rx_gain_token(c->token,applied);
+                }
+                if (!atomic_load(&c->stop)) ls_lap_rx_mark_token(c->token,0, 0, LAP_IQ_RETUNED);
             }
+        }
+        if (atomic_load(&c->stop)) break;
+        if (atomic_load_explicit(&c->command_state, memory_order_acquire) == 1) {
+            const int ctl = c->command_control;
+            const int64_t value = c->command_value;
+            ls_radio_err_t ce = LS_RADIO_ERR_UNSUPPORTED;
+            if (ctl == LAP_RX_CTL_TUNE) {
+                uint64_t got = 0;
+                ce = ls_radio_iq_retune(session, (uint64_t)value, false, &got);
+                if (ce == LS_RADIO_OK) { center = got; c->command_center = got; }
+            } else if (ctl == LAP_RX_CTL_GAIN) {
+                int got = 0;
+                ce = ls_radio_iq_set_gain(session, value == LAP_GAIN_AUTO ? LS_RADIO_GAIN_AUTO : LS_RADIO_GAIN_MANUAL, value == LAP_GAIN_AUTO ? 0 : (int)value, &got);
+                if (ce == LS_RADIO_OK && !atomic_load(&c->stop)) { atomic_store(&c->gain, value == LAP_GAIN_AUTO ? LAP_GAIN_AUTO : got); ls_lap_rx_gain_token(c->token,atomic_load(&c->gain)); }
+            } else if (ctl == LAP_RX_CTL_RATE) {
+                ce = ls_radio_iq_stop(session);
+                if (ce == LS_RADIO_OK) ce = sdr_start(c, session, center, (uint32_t)value, atomic_load(&c->gain));
+            } else if (ctl < LS_RADIO_FE_CTLS) {
+                ce = ls_rffe_set(c->kind == K_RTL ? LS_RFFE_RTL : LS_RFFE_HACKRF, (ls_radio_fe_ctl_t)ctl, (int)value);
+            } else if (ctl == LAP_RX_CTL_ANTENNA && value == 0) ce = LS_RADIO_OK;
+            if (atomic_load(&c->stop)) break;
+            c->command_result = ce == LS_RADIO_OK ? 0 : sdr_err(ce);
+            if (ce == LS_RADIO_OK) ls_lap_rx_mark_token(c->token,center, atomic_load(&c->rate), LAP_IQ_RETUNED | LAP_IQ_GAP);
+            /* Keep the legacy effective snapshot in sync with successful tune. */
+            if (ctl == LAP_RX_CTL_TUNE && ce == LS_RADIO_OK)
+                ls_iq_control_note_tune_result(&c->control, center, LS_RADIO_OK, center);
+            atomic_store_explicit(&c->command_state, 2, memory_order_release);
         }
         const unsigned rate = atomic_exchange(&c->new_rate, 0u);
         if (rate && rate != atomic_load(&c->rate)) {
@@ -187,7 +232,7 @@ static void capture(void *arg) {
         got &= ~(size_t)1;
         /* Offset binary u8 (both dongles hand it over so) to signed full scale. */
         for (size_t i = 0; i < got; i++) c->iq[i] = (int16_t)(((int)c->raw[i] * 2 - 255) * 128);
-        if (got) ls_lap_rx_push(c->iq, got / 2);
+        if (got) ls_lap_rx_push_token(c->token,c->iq, got / 2);
     }
 out:
     if (session) {
@@ -220,11 +265,11 @@ static void sdr_close(void) {
 }
 static int sdr_open(kind_t k, const lap_rx_config_t *cfg, ls_lap_rx_actual_t *actual) {
     if (!sdr.task) {
-        if (cfg->center_hz > UINT32_MAX) return LAP_RX_ERANGE;   /* ls_iq_control's centre is 32-bit */
         cap_t *c = heap_caps_calloc(1, sizeof(cap_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!c) return LAP_RX_ENOMEM;
-        sdr.kind = k;
-        sdr.want = *cfg;
+        c->kind = k;
+        c->want = *cfg;
+        c->token=ls_lap_rx_token();
         atomic_init(&c->stop, false);
         atomic_init(&c->state, CAP_RUNNING);
         atomic_init(&c->new_rate, 0u);
@@ -254,9 +299,9 @@ static struct {
 } lr;
 
 static void lr_consume(void *ctx, const uint8_t *data, size_t bytes, bool spare) {
-    (void)ctx; (void)spare;
-    if (!data || !bytes) { ls_lap_rx_mark(0, 0, LAP_IQ_GAP); return; }
-    ls_lap_rx_push((const int16_t *)data, bytes / 4);
+    uint32_t token=(uint32_t)(uintptr_t)ctx; (void)spare;
+    if (!data || !bytes) { ls_lap_rx_mark_token(token,0,0,LAP_IQ_GAP); return; }
+    ls_lap_rx_push_token(token,(const int16_t *)data,bytes/4);
 }
 static void lr_close(void) {
     if (lr.started) {
@@ -268,7 +313,7 @@ static void lr_close(void) {
 }
 static int lr_start(uint64_t hz) {
     ls_lap_rx_mark(hz, LR_RATE, LAP_IQ_GAP | LAP_IQ_RETUNED);
-    const esp_err_t e = lr_wf_start_consumer((uint32_t)hz, lr_consume, NULL);
+    const esp_err_t e = lr_wf_start_consumer((uint32_t)hz,lr_consume,(void *)(uintptr_t)ls_lap_rx_token());
     if (e == ESP_OK) { lr.hz = hz; return 0; }
     return e == ESP_ERR_INVALID_ARG ? LAP_RX_ERANGE : e == ESP_ERR_NO_MEM ? LAP_RX_ENOMEM
          : e == ESP_ERR_NOT_SUPPORTED ? LAP_RX_EUNSUPPORTED : LAP_RX_EBUSY;
@@ -311,14 +356,15 @@ static int hw_tune(uint64_t hz, ls_lap_rx_actual_t *actual) {
         if (rc == 0) actual->center_hz = hz;
         return rc;
     }
-    if (hz > UINT32_MAX) return LAP_RX_ERANGE;
-    ls_iq_control_request_tune(&sdr.control, (uint32_t)hz, false);   /* the capture task applies it */
+    if (!sdr.cap) return LAP_RX_ENODEV;
+    ls_iq_control_request_tune(&sdr.cap->control, hz, false);   /* the capture task applies it */
     actual->center_hz = hz;
     return 0;
 }
 static int hw_gain(int tenths, ls_lap_rx_actual_t *actual) {
-    if (open_kind == K_LORA || tenths == LAP_GAIN_AUTO) return LAP_RX_EUNSUPPORTED;
-    ls_iq_control_request_gain(&sdr.control, tenths);
+    if (open_kind == K_LORA) return LAP_RX_EUNSUPPORTED;
+    if (!sdr.cap) return LAP_RX_ENODEV;
+    ls_iq_control_request_gain_mode(&sdr.cap->control, tenths, tenths == LAP_GAIN_AUTO);
     actual->gain_tenths_db = tenths;
     return 0;
 }
@@ -337,7 +383,7 @@ static int hw_poll(ls_lap_rx_actual_t *actual) {
     }
     if (!sdr.cap) return LAP_RX_EIO;
     ls_iq_control_status_t st;
-    ls_iq_control_status(&sdr.control, &st);
+    ls_iq_control_status(&sdr.cap->control, &st);
     if (st.effective_center_known) actual->center_hz = st.effective_center_hz;
     actual->rate_hz = atomic_load(&sdr.cap->rate);
     actual->gain_tenths_db = atomic_load(&sdr.cap->gain);
@@ -349,6 +395,75 @@ static void hw_close(void) {
     else if (open_kind != K_NONE) sdr_close();
     open_kind = K_NONE;
 }
-static const ls_lap_rx_backend_t HW = {hw_list, hw_open, hw_tune, hw_gain, hw_rate, hw_poll, hw_close};
+
+/* Radio RX API 2.4: exact registry discovery and capture-task completions. */
+static int hw_info2(int radio, lap_radio_info2_t *out) {
+    kind_t k = radio >= 0 && radio < LAP_RADIOS_MAX ? kinds[radio] : K_NONE;
+    memset(out, 0, sizeof(*out)); out->size = sizeof(*out); out->version = 1;
+    const char *id = k == K_RTL ? LS_RADIO_ENDPOINT_RTL_USB : k == K_HACKRF ? LS_RADIO_ENDPOINT_HACKRF_USB : NULL;
+    if (id) {
+        ls_radio_endpoint_info_t i;
+        if (ls_radio_endpoint_get(id, &i) != LS_RADIO_OK) return LAP_RX_ENODEV;
+        snprintf(out->id, sizeof(out->id), "%s", id);
+        snprintf(out->owner, sizeof(out->owner), "%s", i.owner);
+        out->present = i.present; out->busy = i.leased && strcmp(i.owner, OWNER);
+        out->controls = i.fe_ctls | (1u<<LAP_RX_CTL_TUNE) | (1u<<LAP_RX_CTL_GAIN) | (1u<<LAP_RX_CTL_RATE) | (1u<<LAP_RX_CTL_ANTENNA);
+        out->frequency_count = i.frequency_range_count < LAP_RADIO_RANGES_MAX ? i.frequency_range_count : LAP_RADIO_RANGES_MAX;
+        out->rate_count = i.sample_rate_range_count < LAP_RADIO_RANGES_MAX ? i.sample_rate_range_count : LAP_RADIO_RANGES_MAX;
+        for (int n=0;n<out->frequency_count;n++) out->frequencies[n] = (lap_radio_range_t){i.frequency_ranges[n].min_hz,i.frequency_ranges[n].max_hz};
+        for (int n=0;n<out->rate_count;n++) out->rates[n] = (lap_radio_range_t){i.sample_rate_ranges[n].min_hz,i.sample_rate_ranges[n].max_hz};
+        int gains[LAP_RADIO_GAINS_MAX]; int n = ls_radio_endpoint_fe_gains(id,gains,LAP_RADIO_GAINS_MAX);
+        out->gain_count = n > 0 ? (n < LAP_RADIO_GAINS_MAX ? n : LAP_RADIO_GAINS_MAX) : 0;
+        for (n=0;n<out->gain_count;n++) out->gains[n] = gains[n];
+        for (n=0;n<LS_RADIO_FE_CTLS;n++) if (out->controls & (1u<<n))
+            out->values[n] = ls_rffe_value(k == K_RTL ? LS_RFFE_RTL : LS_RFFE_HACKRF,(ls_radio_fe_ctl_t)n);
+        return 0;
+    }
+    if (k != K_LORA) return LAP_RX_ENODEV;
+    snprintf(out->id,sizeof(out->id),"lora.socket"); out->present = ls_lora_present();
+    if (ls_lora_chip() != LS_LORA_CHIP_LR20XX) return 0;
+    uint32_t caps = ls_lora_caps();
+    if (caps & LS_LORA_CAP_RX_EXT) {
+        out->frequency_count=1;
+        out->frequencies[0]=(lap_radio_range_t){LS_LORA_RX_EXT_MIN_HZ,LS_LORA_RX_EXT_MAX_HZ};
+    } else {
+        out->frequency_count=1;
+        out->frequencies[0]=(lap_radio_range_t){LS_LORA_RX_MIN_HZ,LS_LORA_RX_NARROW_MAX_HZ};
+        if (caps & LS_LORA_CAP_BAND_1G5_2G5) {
+            out->frequencies[0].max_hz=999999999u;
+            out->frequencies[1]=(lap_radio_range_t){1900000000u,2200000000u};
+            out->frequencies[2]=(lap_radio_range_t){2400000000u,2500000000u};
+            out->frequency_count=3;
+        }
+    }
+    out->rate_count = 1; out->rates[0] = (lap_radio_range_t){LR_RATE,LR_RATE};
+    out->controls = (1u<<LAP_RX_CTL_TUNE) | (1u<<LAP_RX_CTL_ANTENNA);
+    return 0;
+}
+static int hw_control(int ctl, int64_t value, ls_lap_rx_actual_t *actual) {
+    if (open_kind == K_LORA) {
+        if (ctl == LAP_RX_CTL_TUNE) return hw_tune((uint64_t)value,actual);
+        if (ctl == LAP_RX_CTL_ANTENNA) return value == 0 ? 0 : LAP_RX_EUNSUPPORTED;
+        return LAP_RX_EUNSUPPORTED;
+    }
+    cap_t *c = sdr.cap;
+    if (!c || atomic_load(&c->phase) != PH_RUNNING) return LAP_RX_ENODEV;
+    int st = atomic_load_explicit(&c->command_state,memory_order_acquire);
+    if (st == 0) {
+        c->command_control = ctl; c->command_value = value;
+        atomic_store_explicit(&c->command_state,1,memory_order_release);
+        return LAP_RX_EAGAIN;
+    }
+    if (st == 1) return LAP_RX_EAGAIN;
+    int rc = c->command_result;
+    if (!rc) {
+        if (ctl == LAP_RX_CTL_TUNE) actual->center_hz = c->command_center;
+        actual->rate_hz = atomic_load(&c->rate);
+        actual->gain_tenths_db = atomic_load(&c->gain);
+    }
+    atomic_store(&c->command_state,0);
+    return rc;
+}
+static const ls_lap_rx_backend_t HW = {hw_list, hw_open, hw_tune, hw_gain, hw_rate, hw_poll, hw_close, hw_info2, hw_control};
 const ls_lap_rx_backend_t *ls_lap_rx_default_backend(void) { return &HW; }
 #endif

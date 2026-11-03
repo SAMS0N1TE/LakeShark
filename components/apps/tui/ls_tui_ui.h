@@ -85,6 +85,54 @@ void ls_btn_clear_hits(void);
 /* Which button a character matches, or -1. Case-insensitive. */
 int  ls_btn_key(char ch, const ls_btn_t *btn, int n);
 
+/* ------------------------------------------------------------ desk compact */
+
+/* COMPACT: the desk is drawing this app in a window.
+
+   On the desktop the pointer is a mouse and the keyboard is a real one, so
+   the thumb-sized keys above are wasted rows. While this is true the shared
+   widgets draw their desk forms instead: one-row keys "[ LABEL value ]", a
+   popup list for the picker and OPTIONS, a text field where a keypad was.
+   Hit-testing is unchanged - every form records the rects it drew.
+
+   Only a board that runs the desk (the Nano's runtime panel) and the host
+   bench can ever answer true. Everywhere else it is a constant false, so the
+   compact branches fold away and a touch build draws exactly as before. */
+#if defined(ESP_PLATFORM)
+#include "sdkconfig.h"
+#endif
+#if defined(ESP_PLATFORM) && !(defined(CONFIG_LS_PANEL_RUNTIME) && CONFIG_LS_PANEL_RUNTIME)
+#define LS_TUI_HAS_COMPACT 0
+static inline bool ls_tui_compact(void) { return false; }
+#else
+#define LS_TUI_HAS_COMPACT 1
+bool ls_tui_compact(void);
+#endif
+/* The desk turns it on with itself and off again. A no-op without a desk. */
+void ls_tui_set_compact(bool on);
+
+/* One desk key, "[ LABEL value ]", on one row: label and value on a cap,
+   the shortcut letter picked out when the label contains it. */
+int  ls_key1_width(const ls_btn_t *b);
+/* Draws at (x, y), clipped to `clip`; answers the columns it took. */
+int  ls_key1_draw(tui_surface *sf, tui_rect clip, int x, int y,
+                  const ls_btn_t *b, bool focus);
+/* Columns a row of these keys takes, one blank between keys. */
+int  ls_btn_bar_width(const ls_btn_t *btn, int n);
+/* A one-row text field "[162.5500_     ]": sunken ends, text on black. */
+void ls_field1_draw(tui_surface *sf, tui_rect clip, int x, int y, int w,
+                    const char *text, bool caret, uint8_t ink);
+/* A desk dialog's raised frame in box lines, its title on the top rule in
+   `hue`, the inside cleared to black. */
+void ls_dialog1_frame(tui_surface *sf, tui_rect r, const char *title, uint8_t hue);
+/* A one-row slider "LABEL [val] |---====#----| [-][+]" for a level.
+   Fills the four rects (down, up, value, bar) the way a VFO card does, so
+   the caller's hit-test is the touch one. `frac` is 0..1. */
+void ls_slider1_draw(tui_surface *sf, tui_rect r, const char *label,
+                     const char *value, float frac, uint8_t hue, bool live,
+                     tui_rect *down, tui_rect *up, tui_rect *value_rect,
+                     tui_rect *bar);
+
 /* ------------------------------------------------------------------- tiles */
 
 typedef struct {

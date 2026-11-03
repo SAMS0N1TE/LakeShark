@@ -1,7 +1,31 @@
 # LakeShark apps
 
+<!-- generated-api:start -->
+Current default target: **API 2.6**. Exported SDK calls: **383**.
+See the [generated API registry](docs/api.json) and [simulator coverage](docs/SIMULATOR.md).
+<!-- generated-api:end -->
+
+API 2.4 radio I/O: [packet/edge RX, scanning and channel banks, capture/local replay, TX and NFC](docs/RADIO_IO.md).
+
+API 2.6: [resident services, resource ownership and worker DSP](docs/SERVICES26.md).
+
 Write a program for the board in C, copy one file to the SD card, and it shows
 up on HOME under USER. One app is one `.lap` file.
+
+Firmware can leave optional libraries out to fit its app partition.
+`CONFIG_LS_LAP_3D` controls the native `l3_*` exports; when it is off, an app
+importing them is rejected at load with a missing-symbol error. Other apps
+still load. `CONFIG_LS_MUSIC_COMPRESSED` controls MP3/FLAC/Ogg decoding; WAV
+playback, recording and SDK PCM audio remain available without it. Both default
+off on Nano and are off in the T-Display OTA profile. The host simulator keeps
+both enabled. Enabling them on T-Display requires reclaiming space elsewhere;
+the partition tables have not changed. After adding Kconfig options to an
+existing build, run `idf.py -B <build-directory> reconfigure` in its IDF
+environment before rebuilding.
+
+[Pure SDK libraries](lib/README.md) provide a fixed-step loop, bounded JSON and
+CSV helpers. [Simulator contracts and verification](docs/PHASE1.md) explain
+permissions, pointer ownership, worker lifecycle and the executable examples.
 
 ## Start
 
@@ -22,6 +46,84 @@ Every `.c` file in the folder is compiled into the app. The examples:
 | `apps/sentry` | API 2.1: a background service: watches a channel for a carrier after you leave it, posts a notice and puts each up and down on the board's timeline |
 | `apps/detector` | API 2.2: DETECTOR, rules over what the board's watchers see (`lap_seen_*`), aircraft and the mesh, with banner, sound, speech, vibration, mesh and SD log sinks, in the background |
 | `apps/morse` | API 2.0: a decoder of your own: reads I/Q, keys on the envelope, decodes Morse, plays a sidetone |
+
+## Your first app in 5 minutes
+
+`lsdk` makes an app, builds it, runs it on the PC and puts it on the board.
+Put `app-sdk` on your PATH once and it works from any terminal (`lsdk.cmd` on
+Windows, `lsdk` elsewhere; `python app-sdk/lsdk.py` does the same):
+
+```
+$env:PATH += ";$PWD\app-sdk"          # PowerShell, in the LakeShark folder
+export PATH="$PATH:$PWD/app-sdk"      # sh
+```
+
+1. **Make it.** `lsdk new demo` writes `demo/` with a working `main.c`, an
+   `app.json`, an MIT `LICENSE` and VS Code tasks. `--template` picks the start:
+
+   | Template | What you get |
+   |---|---|
+   | `blank` (default) | a face in character art, one live value, the board's keys and OPTIONS |
+   | `radio` | big rolling frequency, spectrum and the shared waterfall on any radio; RADIO, TUNE, OPTIONS |
+   | `dots` | a picture in dots: a lit ball that rolls as the board tilts and flies when you swipe |
+   | `3d` | the 3D engine: a lit, shadowed scene you walk round with a finger |
+   | `service` | a background service that watches the decoded timeline and posts a notice |
+
+2. **Build it.** `cd demo` then `lsdk build`: `build/demo.lap`. Mistakes come
+   out one a line as `main.c:69:15: error: expected ';' ...`, and a call that
+   is not in the app API points at the line that makes it.
+3. **See it run.** `lsdk sim` compiles the app into the simulator (the first
+   time takes a minute or two, then seconds) and runs it live in this terminal
+   through `lsterm --sim`: keys and the mouse work, Ctrl-] quits.
+   `lsdk sim --frames 60` writes pictures to `build/frames` instead, and
+   `--script "20:tilt=0.4,0;40:swipe=L"` plays the sensors.
+4. **Put it on the board.** `lsdk install --open` builds, uploads and opens it
+   in a desk window. With LakeShark Desktop's window open, the upload goes
+   through its bridge, which already holds the port; otherwise straight over
+   USB (`--port COMx` when more than one board is plugged in).
+5. **Change it and go again.** `lsdk logs` shows the board's console lines
+   for your app (`lap_log`); `lsdk info`, `lsdk list` and `lsdk rm demo` do
+   the rest.
+
+**LakeShark Studio** is all of that in a browser: `lsdk studio` opens
+http://127.0.0.1:8790/. What it does that an editor alone cannot:
+
+- **The board beside the code.** Run (F5) shows the app drawn by the
+  board's own screen code, fed by the firmware's own UI in the simulator;
+  tilt, swipe, feed it pages and packets, or take its radio away to see what
+  a Nano without an SDR shows. Pop it out into a window of its own.
+- **One key to the real board.** Install (F8) builds and uploads, over USB or
+  through LakeShark Desktop's bridge; Open on board shows it in a desk window.
+- **The board's own log**, next to the sim's.
+- **An AI with the same tools.** The AI panel and any MCP client (Claude
+  Code, Claude Desktop, Codex, VS Code: Connect an AI has the text to paste)
+  build, run the app in the simulator and read its screen, and install it
+  when you say yes. A model is optional and pluggable: any OpenAI-compatible
+  endpoint, its key from an environment variable or the per-user settings
+  file, never a repository.
+
+Around that, an IDE: apps open side by side in tabs with a recent list
+(pins, last screens), a file manager (drag and drop, files dropped from
+Explorer, rename with F2, delete to a trash with undo, images previewed),
+an editor with completion and hover docs for the API, signature help,
+several cursors (Ctrl+D), find and replace, a split view, an outline, git
+marks and format on save, a command palette (Ctrl+Shift+P), keys you can
+change, project search, an lsdk terminal, and panels you can drag, dock,
+float and save as named layouts (Code, Board and Debug come with it). It
+follows the desk's schemes, Bay 95, Classic 95, High Contrast, Teal, Amber
+and Night. On the desk it is under Start > Programs > Development >
+LakeShark Studio; the bridge serves it at `/studio/`. It listens on this
+computer only.
+
+**VS Code:** open the app's folder. Ctrl+Shift+B builds and puts the errors
+in Problems; the `lsdk: sim`, `install` and `logs` tasks are in Run Task;
+typing an API name offers a snippet with its arguments. The SDK's own
+`.vscode` does the same for the examples in `apps/`.
+
+The simulator needs this repository's `bench/` and a host C compiler, CMake
+and Ninja. lsdk finds them in the usual places on Windows (CLion's MinGW,
+Espressif's Ninja); set `LSDK_HOST_PATH` to point it elsewhere. `install`,
+`logs` and `rm` need pyserial.
 
 ## An app
 
@@ -64,8 +166,7 @@ device:
 | SD card | `lap_sd_read`, `lap_sd_write`, `lap_sd_list`, `lap_sd_size`, `lap_sd_mkdir`, `lap_sd_remove`: the whole card except `/sdcard/apps`, as jobs that never stall a frame |
 
 Nothing in 1.1 blocks the screen: the mesh and the card are worked by the app
-worker and handed over as copies. An app built with this SDK says API 1.1 and
-needs firmware 2.19.
+worker and handed over as copies. The default build target is generated at the top of this document.
 
 ## Outbound networking (API 1.3, experimental 2.18.1-rc1)
 
@@ -127,7 +228,7 @@ it must handle EAGAIN and partial writes and implement its own cryptography,
 host-key verification and authentication. Whether it fits the 512 KiB ELF /
 4 MiB app allocation limit depends on the library and enabled algorithms.
 The firmware's existing inbound screen SSH service is separate from this API.
-Apps built with this SDK advertise API 1.3; older firmware rejects them clearly.
+Networking was introduced in API 1.3; older firmware rejects apps importing it clearly.
 Existing API 1.0–1.2 apps keep their descriptor layout and remain compatible.
 
 ## Radios (API 2.0)
@@ -235,9 +336,8 @@ Then, step by step:
 5. **Tell the user** with `lap_notify` for news and `lap_alert` for something
    that must not be missed.
 
-Old apps keep working: firmware with API 2.2 loads every 1.0-1.3 app and
-every 2.0 and 2.1 app. An app built with this SDK says API 2.2; to keep one
-running on older firmware put `#define LAP_TARGET_API_1` (2.18 / 2.19),
+Old apps keep working within the supported ABI families. The current default
+target and exported calls are generated above. To keep an app running on older firmware put `#define LAP_TARGET_API_1` (2.18 / 2.19),
 `#define LAP_TARGET_API_20` (2.20) or `#define LAP_TARGET_API_21` (2.21)
 before the include. The examples that use
 nothing newer do (MORSE is a 2.0 app).
@@ -448,6 +548,14 @@ lines, circles, lit balls, dithered ramps, ASCII-art sprites and a 3 x 5 dot
 font. Two colours per cell survive, so keep text on a plain background and let
 dither do the shading.
 
+## AI clients (MCP)
+
+`python app-sdk/lsdk.py mcp` starts the SDK's stdio MCP server. AI clients can
+search the headers, make/edit/build apps, run the simulator and see PNGs, then
+install through LakeShark Desktop or serial. See [mcp/README.md](mcp/README.md)
+for tool schemas, Claude Code/Desktop, Codex CLI and VS Code configs, fake-host
+tests, console confirmation rules and limits. No network listener is started.
+
 ## Looking at an app without a board
 
 The host bench compiles every app in `apps/` into `lssim`, the TUI simulator,
@@ -459,18 +567,59 @@ LAPSIM=dice LSSIM_FRAMES=frames lssim lap -A 40 -f 60
 
 writes every frame as a picture. `LAPSIM_SCRIPT` plays the sensors by frame
 (`5:tilt=0.3,-0.1;20:swipe=L;30:mesh;31:rx=4;40:down=120,300;44:up`), and
-lssim's own `-x` taps cells. See `bench/shims/ls_lap_screen.c`.
+lssim's own `-x` taps cells. See `bench/shims/ls_lap_screen.c`. An app
+folder anywhere else goes in with `LAPSIM_EXTRA_APPS` (what `lsdk sim` sets),
+and `lssim lap --feed` streams the screen as the board's cell feed for a
+viewer such as Studio's run panel.
 
 ## Installing
 
 - **From the store:** terminalbay.com, LakeShark hub, APPS. Connect the board
   with USB in Chrome or Edge and press INSTALL.
 - **By hand:** copy the `.lap` into `/apps` on the SD card and restart the board.
+- **From your PC:** `lsdk install` (above), or LakeShark Studio's Install.
 - **Over USB from your own tools:** the board's console command `app`
-  (`app put`, `app data`, `app end`, `app list`, `app info`, `app rm`).
+  (`app put`, `app data`, `app end`, `app list`, `app info`, `app rm`);
+  `lapboard.py` speaks it, directly or through the desktop bridge.
 
 Store apps are signed by the store. An app from anywhere else runs too; the
 board asks once before it opens one the store did not sign.
+
+## Publish to the store
+
+Anyone can send an app to the community store. You sign in with GitHub once,
+but you never have to use GitHub itself: the store opens the pull request for
+you, checks the app, and the owner approves it before it goes live. Community
+apps are signed with the community key, which firmware 2.20.0 and later trust.
+
+```
+lsdk login                 # shows a code; type it at github.com/login/device
+lsdk publish               # in the app's folder
+lsdk submissions           # what became of it
+```
+
+- **app.json** says what the app is and how it was made (schema 2): category,
+  description, license, whether AI was used and how much (`none`, `assisted`,
+  `substantial`, `generated`, with the tools and what they did), every outside
+  piece of code, data or art under `third_party`, sources under `references`,
+  and four declarations that must all be true. `lsdk new` writes it with those
+  answers empty, plus an MIT `LICENSE` in your name. At a terminal,
+  `lsdk publish` asks for anything missing and saves the answers.
+- **The rules:** say how AI was used; no AI cleanroom copies of someone else's
+  code or design; every dependency's license allows this use and is credited;
+  nothing leaked, stolen or scraped against terms.
+- **What is sent:** `app.json`, `LICENSE`, the `.c` and `.h` files (top level or
+  `src/`), `README.md`, and in `media/` a `thumb.png`, up to four
+  `screen-*.png` (300 KB each) and a `clip.gif` (1.5 MB). At most 64 files and
+  2 MB zipped. `build/` and everything else stays home; `lsdk publish` says
+  what it left out.
+- **Before sending** it checks app.json and builds once, so mistakes show up
+  here. `lsdk publish --dry-run` stops there and leaves the zip in `build/`.
+- **Studio:** File > Publish to the store opens the Publish panel: sign in,
+  fill in the form, Submit, and the list of what you sent.
+- The sign-in stays in `%APPDATA%\lakeshark\store.json` (Windows) or
+  `~/.config/lakeshark/store.json`; `lsdk logout` forgets it. `LSDK_STORE_API`
+  points lsdk and Studio at another store API.
 
 ## Limits
 
@@ -562,3 +711,17 @@ python app-sdk/tools/obj2l3.py ship.obj -o app-sdk/apps/myapp/ship_model.c --nam
 writes a `const l3_mesh ship` and lists the OBJ's materials in order. Make
 your scene's materials in that same order before anything else, so their
 numbers match, then `l3_draw_mesh(sc, &ship, &pose, 0)`.
+
+API 2.6 Bluetooth peripheral services: see [BLE_PERIPHERAL.md](docs/BLE_PERIPHERAL.md)
+for advertising, GATT server, keyboard/mouse/gamepad reports, exclusive leases,
+Nano build options and RAM costs. Examples: `ble_beacon`, `gatt_sensor`, `board_gamepad`.
+
+Board builds can independently disable `CONFIG_LS_LAP_HACKRF_TX`,
+`CONFIG_LS_LAP_WORKER_DSP`, `CONFIG_LS_LAP_NFC` and `CONFIG_LS_LAP_MDNS`.
+All default on. Disabled services keep their loader symbols and return
+`LAP_RX_EUNSUPPORTED` (radio/DSP/NFC) or `LAP_IO_ENOTSUP` (mDNS/BLE).
+Check `lap_caps`: HackRF's `radio_tx` bit, `LAP_HW_WORKER_DSP`,
+`LAP_HW_NFC`/`LAP_HW_NDEF_WRITE`, `LAP_HW_MDNS` and the BLE peripheral bits
+describe availability. The T-Display OTA profile disables these services;
+Nano enables them. Receive channels, decoders, packet/scan/capture, HTTPS/UDP/time,
+audio, input, 3D and compressed music remain enabled on both boards.

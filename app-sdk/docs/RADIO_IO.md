@@ -1,0 +1,249 @@
+# API 2.4 radio I/O (R6–R11)
+
+These are firmware services. Apps choose workflows, frequency lists, thresholds,
+UI and protocol interpretation; they do not manipulate buses or radio registers.
+The 228-byte RV32 descriptor, manifest capability byte and all older exports are
+unchanged. `LAP_TARGET_API_23` retains the previous SDK declarations/target.
+Direct imports of these calls require API 2.4 firmware, independently of hardware.
+One API 2.4 `.lap` handles optional boards using `lap_caps` and `lap_radio_modes`.
+
+## Execution and ownership
+
+Every API is called from an app callback and copies synchronous buffers before
+returning. Callback-stack inputs and outputs are valid. A positive handle admits
+an immutable request; it does not mean the bus operation succeeded. Poll status
+for QUEUED, RUNNING, DONE, FAILED or CANCELLED and a numeric error. No app code
+runs on radio, NFC, capture or SD tasks. All handles are invalidated on unload;
+physical work is stopped/released by the firmware worker. IDs are not reused on
+ordinary app restarts.
+
+One packet/edge/scanner session owns a radio. It excludes the app's physical I/Q
+session and TX. One TX, one database job and one recording/local replay can exist
+at a time. The last database result remains until the next database request;
+recording results remain until the next record/replay request. Stop a recording
+and wait for DONE before opening it for replay. NFC has a separate frontend lease.
+
+A bounded packet already on air finishes before its lease is released. Raw I/Q
+cancel/unload requests interrupt the driver's FIFO loop without doing bus I/O in
+the screen callback. Jobs never retry a physical transmission automatically.
+Lease acquisition can remain QUEUED for up to 250 worker passes.
+
+## Discovery and implemented receive modes
+
+`lap_caps.hardware` adds PACKET, EDGES, RECORD, NFC and NDEF_WRITE bits, without
+changing `lap_caps_t`. SD mounting is independently visible in `LAP_HW_SD`.
+`lap_radio_modes(radio, &modes)` supplies per-radio mode bits and hardware limits.
+Queries do not acquire the device. A missing radio gives ENODEV, an unimplemented
+mode EUNSUPPORTED, a conflicting lease EBUSY. Check both service and mode bits.
+
+| Backend | Packet reception | Edges | RSSI | TX backend |
+|---|---|---|---|---|
+| LR2021 | LoRa, FSK; OOK decisions when implemented by fitted backend | Run-length encoded OOK decisions | Instantaneous/channel and packet level | LoRa/FSK/OOK packets; bounded IQ8 on supported ROM; short OOK edge replay |
+| SX1262 | LoRa and implemented fixed-length FSK | Unsupported | Driver-dependent instantaneous/packet level | LoRa/FSK packets |
+| MIX-RF CC1101 | OOK raw edge service; no packet reconstruction | Captured signed pulse durations | CC1101 receiver level | OOK captured edges, nominal -10/0/5/10 dBm steps |
+| RTL-SDR/HackRF | Existing I/Q receive APIs | Unsupported by this adapter | Unsupported by this adapter | Existing HackRF firmware driver has no TX backend; EUNSUPPORTED |
+| SIM | Scripted LoRa/FSK/OOK packets and edges | Scripted signed pulses | Scripted trajectory | Synthetic completion and the shared protection ledger; never RF |
+
+For packet/edge configuration use `size=sizeof(cfg)`, `version=1`, zero reserved
+bytes, frequency, bandwidth and modulation-specific settings. LoRa uses SF 5–12,
+CR 5–8, preamble symbols, sync byte and CRC flag. FSK uses bitrate, deviation,
+sync bits/word, preamble bits and fixed payload length (LR2021 starts at
+500 bit/s; SX1262 at 600 bit/s). Current FSK backends use
+CRC-off frames; requesting CRC gives EUNSUPPORTED rather than silently dropping
+the setting. OOK uses a detector pattern (bit 0 first), pattern length and sampled
+frame size; edge mode reports signed high/low microsecond runs (fractional periods are rounded to integer microseconds). Backend-specific
+limits are applied asynchronously and reported through status. MIX-RF exposes
+its existing fixed OOK capture profile; it does not claim configurable packet CRC.
+
+Eight RX batches wait. Overflow drops newest, increments counters and marks gaps.
+Too-small output buffers return ESIZE without consuming a batch. Packet timestamps
+are monotonic firmware arrival times, not RF sample-clock timestamps. RSSI/SNR use
+tenths of dB; INT16_MIN means unavailable. A CRC-rejected hardware packet is a
+counted receive gap, not proof of a bus failure. `lap_radio_rssi` reads a cached
+worker snapshot; it never performs SPI on the screen task.
+
+## Scanner and channel banks
+
+`lap_scan_start` copies up to 64 frequencies, receiver settings, dwell and hang
+intervals and a squelch threshold. It tunes the selected packet radio after each
+dwell, holds while the carrier exceeds squelch, and reports rising squelch hits.
+Sixteen hits wait; overflow is counted. HOLD, NEXT, SKIP and RESUME are typed
+controls. SKIP suppresses one list position until stop. Thresholds are receiver-
+relative RSSI, not claims of absolute calibration. A list may contain database
+rows or frequencies generated by the app. The firmware's existing SDR audio
+scanner remains separate from this packet-radio scanner.
+
+`lap_channels_query(bank, first, count)` queues a page (up to 64 rows).
+`lap_channels_read(job, rows, max)` returns EAGAIN until ready. Rows preserve name,
+frequency, firmware scan mode, zone/bank, enabled/lockout/priority flags, tone and
+geographic fields. `lap_channels_write` queues a complete bounded replacement of
+a named bank or the active bank; `lap_io_status` reports persistence completion.
+
+`active` uses the board's channel store, including its NVS/SD replacement path.
+Named banks use the firmware's `/sdcard/channels/<bank>.bin` format with magic,
+version, build identifier and checksum. Existing `.bak` recovery and `.new`
+staging/rename paths are reused. Bank names are 1–32 ASCII letters, digits, `-`
+or `_`, never arbitrary paths. Reads/writes of shared profile files are serialized
+across firmware and app workers. A replacement is one bank transaction, not an
+incremental edit; query pages to inspect a larger existing database first. The
+active firmware store can impose stricter row/mode limits than a named profile.
+Apps decide when to request a write; no new confirmation dialog is introduced.
+
+## Recording and local replay
+
+Record I/Q16, 16 kHz mono audio16, packets or edge batches with
+`lap_record_start`. The source for packets/edges is its handle; source 0 selects
+the app I/Q/audio tap. Files live only in
+`/sdcard/apps_data/<app-id>/<plain-name>`. Existing files are refused using
+exclusive creation. File names are at most 32 characters; no slash or traversal.
+The file cap is 1 KiB–64 MiB. Eight 2048-byte blocks buffer capture; SD stalls
+produce counted gaps. `lap_record_mark` queues a bounded metadata label.
+`lap_record_stop` drains, flushes and closes; failures retain a partial file.
+
+`lap_replay_open(name)` is local analysis with no RF output. Packet/edge batches
+can be read using the replay handle and normal packet/edge readers.
+`lap_replay_read` is a format-neutral byte reader for all four formats, carrying
+REPLAY and any SYNTHETIC/GAP flags. Use `lap_replay_status.format` to interpret its
+payload. This is the preferred input for app decoders that need explicit
+provenance. The existing I/Q queue can also receive replay via
+`lap_rx_open(-1, &cfg)`; I/Q metadata carries LAP_IQ_REPLAY throughout. Audio
+replay also feeds the app's listening ring; the legacy audio reader has no
+metadata, so new decoders use `lap_replay_read` for provenance. Neither service
+publishes fabricated live detections into the firmware decoded timeline.
+
+Replay injects one bounded block per worker pass, not sample-clock-timed RF
+playback. Packet/edge replay pauses on a full reader queue. Sample replay uses
+bounded queues and explicit drops if its reader falls behind. Seek positions
+are **file block indices**, including marker blocks, and advance at most one
+skipped block per worker pass. Seeking after EOF reopens the recording. A
+malformed/truncated header/block gives EFORMAT; missing/read-failed files EIO.
+
+### LSR2 format (version 1)
+
+All integers and signed 16/32-bit samples are little-endian. There are no native
+struct dumps, pointers or target-dependent padding.
+
+| Header offset | Bytes | Meaning |
+|---|---:|---|
+| 0 | 4 | ASCII `LSR2` |
+| 4 / 6 | 2 / 2 | version 1 / header bytes 128 |
+| 8 / 12 / 16 | 4 / 4 / 8 | format / sample or bit rate / frequency Hz |
+| 24–29 | 6 | modulation, sync bits, CRC, SF, CR, fixed payload bytes |
+| 32 / 36 / 40 / 44 / 48 | 4 / 4 / 4 / 4 / 2 | bitrate, bandwidth, deviation, sync word, preamble |
+| remaining | | zero, reserved |
+
+Each block has a 48-byte header followed by at most 2048 payload bytes:
+length u32 at 0, flags u32 at 4, timestamp u64 at 8, frequency u64 at 16,
+RSSI/SNR i16 at 24/26, sequence u32 at 28, cumulative drops u32 at 32,
+kind u16 at 36 (0 data, 1 NUL-terminated marker), and rate u32 at 40.
+Other bytes are reserved. Format IDs are IQ16=1, AUDIO16=2, PACKETS=3, EDGES=4.
+Data flags are REPLAY=1, SYNTHETIC=2, GAP=4, RETUNED=8.
+
+## Transmit: declaration and physical protection
+
+`lap_tx_packet`, `lap_tx_iq` and `lap_tx_replay` require the app manifest's
+LAP_CAP_RADIO_TX. There are **no legal, band, region, licence, trusted-confirmation
+or user-consent gates**. Physical tuning ranges and RX-only ports are hardware
+constraints. Payloads/settings are copied at admission; status reflects the
+actual worker/driver result. Local replay never invokes these operations.
+
+The common physical protection entry point is `ls_tx_protect` in `tx_policy.c`.
+The existing LoRa dispatcher (including MeshCore callers), LR2021 IQ upload and
+MIX-RF replay worker charge it before RF starts. The old unconnected plan/broker
+interfaces remain internal; production callers do not use their legacy
+region/licence/confirmation checks. No new broker token is an app requirement.
+
+Protection includes socket -9..22 dBm and MIX-RF -10..10 dBm ceilings, discrete
+MIX-RF steps, the existing IQ-upload -9..10 dBm/amplitude/rate envelope, refusing
+an explicitly RX-only port, and the board's physical antenna routing. A fitted LR2021's MMCX1 remains
+receive-only even if the older firmware MMCX-TX option was enabled; AUTO routes
+transmission to the internal TX path and restores the receive selection afterward. A rolling
+60-second hardware ledger admits at most 10 seconds of charged airtime. Its
+conservative thermal model admits at most 5 seconds of accumulated TX heat and
+cools at one second of heat per five elapsed seconds; a driver thermal latch can
+also refuse TX. These are hardware envelopes, independent of frequency/region.
+Charges survive app restart and cancellation; uncertain/failed transmissions
+are not refunded. Firmware packet paths use their actual configured airtime.
+
+Errors distinguish EPOWER (-21), EDUTY (-22), ETHERMAL (-23), ERXPORT (-24), normal
+busy/unsupported/range/I/O errors, EFORMAT (-25), cancellation (-26), ESIZE (-20)
+and recording file-cap/data-write-full errors (-27). There are no automatic RF retries.
+
+Direct packet payloads are at most 255 bytes. Direct IQ8 has at most 32767 pairs;
+the current LR2021 ROM 1.24 backend further requires rates 4800/9600/19200/38400/
+76800/125000, <=900 ms and vector magnitude <=56. RF replay reads a bounded LSR2
+recording: one packet (plus marks), up to 32767 IQ16 pairs converted to IQ8, or
+up to 4096 signed edges. Multiple-packet clips return ESIZE rather than merging
+frames. Audio-to-RF replay is unsupported. LR2021 edge replay must fit the current
+255-byte OOK chip buffer; longer edge captures can use MIX-RF where fitted.
+
+## NFC
+
+The existing MIX-RF SPI task owns NFC-A selection. SDK access adds bounded UID,
+ATQA/SAK and NDEF snapshots; no bus, authentication key or emulation interface.
+Read buffers are bounded at 2048 bytes; the current frontend reads at most 496
+user-memory bytes and reports oversized tags explicitly. Eight SDK events wait.
+NDEF writes validate up to 16 records before queueing. Absent frontends give
+ENODEV; unsupported layouts/read-only tags return explicit error events.
+
+Writes support the canonical short NDEF TLV at page 4 of the 144-byte NTAG213
+layout, with static/dynamic locks clear and password protection disabled.
+Capacity is checked, UID is reselected/compared, the TLV length is cleared first,
+user pages are ACK-checked, length is published last, and content is read back.
+No lock, capability-container, manufacturer or configuration page is written.
+An interrupted write can leave an empty/partial NDEF message; tag writes are not
+a filesystem transaction. Other Type-2 layouts remain readable where bounded,
+but do not become writable just because they share a tag enum.
+
+## Simulator and examples
+
+`LAPSIM_SCRIPT` uses ordinary `frame:command` steps. Radio commands:
+`packet=text`, `packethex=010203ff`, `edges=100,-200,300,-400`, `iorssi=-650` (tenths dBm),
+`iomodes=255` (bit mask; 0 removes modes), `ioerror=-7` (receiver/TX failure),
+`iotemp=1|0`, `iofilefail=-27|0`, `nfc=text`, `nfc=removed`, `nfc=none`, `nfclock=1|0`.
+`LAPSIM_NFC=1` advertises a frontend before enter; scripted `nfc=text` presents
+an NDEF text fixture. Existing `radio=none`/`LAPSIM_RADIO=none` removes the radio.
+Synthetic receive metadata is tagged; scripted TX never accesses RF hardware.
+The simulator uses the same queues, file format, profiles and protection ledger.
+
+Examples: `packet_io` (LoRa/FSK/OOK sniff/send, record, mark, seek, local/RF replay,
+IQ8 send), `scanner_db` (paged database, explicit named-bank replacement, dwell,
+squelch hits, hold/skip), and `nfc_tags` (UID/NDEF read and explicit bounded write).
+
+## Board verification still required
+
+No firmware image was built or flashed. Verify physical packet timing/RSSI/SNR,
+LoRa/FSK CRC behavior, OOK edge quantization and FIFO loss, MeshCore/receiver
+lease handoff, port switching with MMCX1 selected, calibrated power, airtime and
+thermal envelopes under sustained TX, IQ ROM/rate/amplitude behavior and cancel,
+SD removal/full/power-loss recovery, and real NTAG213 ACK/lock/auth/tag-swap cases.
+The host chip emulators and syntax checks do not establish RF or thermal safety.
+
+## Firmware implementation files
+
+- `components/apps/tui/ls_lap_api.c`
+- `components/apps/tui/ls_lap_audio.c`
+- `components/apps/tui/ls_lap_channels.c`
+- `components/apps/tui/ls_lap_exports.inc`
+- `components/apps/tui/ls_lap_manifest.h`
+- `components/apps/tui/ls_lap_radio.c`
+- `components/apps/tui/ls_lap_radio_hw.c`
+- `components/apps/tui/ls_lap_radio_io.c`
+- `components/apps/tui/ls_lap_radio_io.h`
+- `components/apps/tui/ls_lap_radio_io_hw.c`
+- `components/apps/tui/ls_lap_radio_sim.c`
+- `components/lakeshark/apps/subghz/subghz_file.c`
+- `components/lakeshark/board/lr2021_tx_upload.inc`
+- `components/lakeshark/board/ls_board_hw.c`
+- `components/lakeshark/board/ls_board_hw.h`
+- `components/lakeshark/board/ls_cc_capture.c`
+- `components/lakeshark/board/ls_cc_capture.h`
+- `components/lakeshark/board/ls_lora.c`
+- `components/lakeshark/board/ls_mixrf.c`
+- `components/lakeshark/board/ls_mixrf.h`
+- `components/lakeshark/board/ls_mixrf_control.h`
+- `components/lakeshark/core/scan_sd_store.c`
+- `components/lakeshark/nfc/ls_nfc_suite.c`
+- `components/lakeshark/nfc/ls_nfc_suite.h`
+- `components/lakeshark/radio/tx_policy.c`
+- `components/lakeshark/radio/tx_protection.h`

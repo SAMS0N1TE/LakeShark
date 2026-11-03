@@ -344,7 +344,7 @@ LS_CASE(fsk_files_outside_every_replay_band_are_refused)
 {
     static const uint32_t out[] = {
         150000000u, 299999999u, 348000001u, 386999999u,
-        406050000u, 464000001u, 778999999u, 928000001u, 960000000u };
+        464000001u, 778999999u, 928000001u, 960000000u };
     int32_t e[16]; subghz_file_t f;
     for (size_t i = 0; i < sizeof(out) / sizeof(out[0]); i++) {
         feed(&f, FSK_433, e, 16);
@@ -354,7 +354,7 @@ LS_CASE(fsk_files_outside_every_replay_band_are_refused)
     }
 }
 
-LS_CASE(the_406_mhz_distress_beacon_band_is_refused_on_the_cc1101_too)
+LS_CASE(the_406_mhz_frequency_has_no_legal_carveout)
 {
     static const char *T =
         "Filetype: Flipper SubGhz RAW File\n"
@@ -364,7 +364,7 @@ LS_CASE(the_406_mhz_distress_beacon_band_is_refused_on_the_cc1101_too)
         "RAW_Data: 350 -1050 1050 -350 350 -10500\n";
     int32_t e[16]; subghz_file_t f;
     feed(&f, T, e, 16);
-    LS_CHECK(!subghz_file_is_ook(&f));
+    LS_CHECK(subghz_file_is_ook(&f));
     f.freq_hz = 405999999u; LS_CHECK(subghz_file_is_ook(&f));
     f.freq_hz = 406100001u; LS_CHECK(subghz_file_is_ook(&f));
 }

@@ -179,7 +179,7 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
        A steady notice (an event, not a message) is this same banner without
        the decoration: full height from the first frame, no pulse, no light.
        Its body still scrolls, because that is reading, not decoration. */
-    const int full = 4;
+    const int full = s_now.activate && s_now.actions[0][0] ? 5 : 4;
     const bool still = s_now.steady;
 
     const int age = s_life - s_ttl;
@@ -252,6 +252,13 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
         char line[LS_NOTIFY_BODY];
         snprintf(line, sizeof(line), "%.*s", width, msg + off);
         tui_put_str(sf, r, r.x + 2, r.y + 2, line, A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+        if (full == 5) {
+            int aw = (r.w - 9) / 2;
+            for (int i=0;i<2;i++) if (s_now.actions[i][0]) {
+                char label[20]; snprintf(label,sizeof(label),"[%.*s]",aw-2,s_now.actions[i]);
+                tui_put_str(sf,r,r.x+2+i*aw,r.y+3,label,A(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
+            }
+        }
 
         /* The light: sixteen heavy cells travelling round the edge, white
            at the head, yellow behind it (the notice's own colour for a system
@@ -294,7 +301,15 @@ bool ls_notify_touch(int col, int row)
     const int go = s_now.screen;
     s_ttl = 0;
     ls_tui_invalidate();
-    if (!close && go >= 0 && go < ls_tui_screen_count()) {
+    if (!close && s_now.activate) {
+        int action=-1;
+        if (s_rect.h==5 && row==s_rect.y+3) {
+            int aw=(s_rect.w-9)/2;
+            action=col>=s_rect.x+2+aw?1:0;
+            if (!s_now.actions[action][0]) action=-1;
+        }
+        s_now.activate(s_now.item,action);
+    } else if (!close && go >= 0 && go < ls_tui_screen_count()) {
         if (!s_now.accent) s_unread = 0;
         ls_tui_screen_show(go);
         if(s_now.open) s_now.open(s_now.item);
@@ -310,4 +325,8 @@ bool ls_notify_key(ls_tk_t key)
     s_ttl = 0;
     ls_tui_invalidate();
     return true;
+}
+
+void ls_notify_dismiss_action(uint32_t item, void (*activate)(uint32_t, int)) {
+    if (s_now.item==item && s_now.activate==activate) { s_ttl=0; ls_tui_invalidate(); }
 }

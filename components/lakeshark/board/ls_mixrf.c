@@ -1,4 +1,5 @@
 #include "ls_mixrf.h"
+#include "tx_protection.h"
 #include "ls_mixrf_control.h"
 #include "ls_trail.h"
 #include "ls_cc_capture.h"
@@ -454,7 +455,8 @@ static void worker(void *arg)
         if(send) {
             ls_cc_capture_stop();capturing=running=false;
             tx_idle=true;
-            bool sent=!replay_cancelled() && ls_keypad_present() && transmit_raw(tx_hz,tx_pulses,tx_count,tx_dbm);
+            int protection=ls_tx_protect(LS_TX_MIXRF,tx_dbm,false,(uint32_t)subghz_span_us(tx_pulses,tx_count),esp_timer_get_time());
+            bool sent=!protection && !replay_cancelled() && ls_keypad_present() && transmit_raw(tx_hz,tx_pulses,tx_count,tx_dbm);
             /* The request owns its timings until hardware cleanup completes,
                even if the caller has timed out and reused its own buffer. */
             heap_caps_free(tx_pulses);
@@ -592,6 +594,7 @@ bool ls_mixrf_receive(bool on,uint32_t hz)
 {return ls_mixrf_receive_owned(LS_MIXRF_OWNER_MONITOR,on,hz);}
 bool ls_mixrf_capture(bool on,uint32_t hz)
 {return ls_mixrf_receive_owned(LS_MIXRF_OWNER_REC,on,hz);}
+void ls_mixrf_replay_cancel_request(void){portENTER_CRITICAL(&lock);if(tx_active)tx_cancelled=true;portEXIT_CRITICAL(&lock);}
 static bool replay_raw(uint32_t hz,const int32_t *pulses,size_t count,int dbm,const subghz_cc_fsk_t *mod)
 {
     /* The shared replay policy, then the four power steps this chip has. */
@@ -656,6 +659,7 @@ bool ls_mixrf_card_scan(bool on)
     portEXIT_CRITICAL(&lock);return ok;
 }
 #else
+void ls_mixrf_replay_cancel_request(void){}
 bool ls_mixrf_replay(uint32_t hz,const int32_t *p,size_t n,int dbm){(void)hz;(void)p;(void)n;(void)dbm;return false;}
 bool ls_mixrf_replay_fsk(uint32_t hz,const int32_t *p,size_t n,int dbm,const subghz_cc_fsk_t *mod){(void)hz;(void)p;(void)n;(void)dbm;(void)mod;return false;}
 bool ls_mixrf_start(void){return false;}

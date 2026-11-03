@@ -218,7 +218,13 @@ static bool us_listed;
 static bool us_load(void) {
     ls_val_t v; bool any=false;
     if(ls_value_read("maps.state",&v,NULL) && v.kind==LS_VAL_TEXT && v.s) snprintf(us_status,sizeof(us_status),"%s",v.s);
-    if(ls_value_read("maps.progress",&v,NULL)) us_progress=v.f;
+    if(ls_value_read("maps.progress",&v,NULL)) {
+        /* A download that ended changed the card: count its space again, or
+           the SD line keeps what it read before (0.00 GB used on a full state). */
+        const bool was=us_progress>0.0f && us_progress<1.0f;
+        us_progress=v.f;
+        if(was && !(us_progress>0.0f && us_progress<1.0f)) (void)ls_tiles_refresh(false);
+    }
     if(ls_value_read("maps.plus",&v,NULL)) us_plus=v.i;
     if(ls_value_read("maps.free_max_zoom",&v,NULL) && v.kind==LS_VAL_INT && v.i>0 && v.i<16) us_free_z=(int)v.i;
     const char *rows=NULL;
@@ -518,16 +524,28 @@ static void card_manage(void) {
     else if(r.kind=='p') ls_place_search_installed();
     else { selected=r.index; info_from=0; page=1; info_scroll=0; }
 }
+/* A whole state on the screen. MAP kept its own zoom before, z12 after a
+   boot: Florida's centre at z12 is open water off Cedar Key, and the state
+   "did not work". z6 fits Florida or Texas on the portrait map. */
+#define CARD_STATE_ZOOM 6
+/* OPEN before the outlines are in (just after a boot) waits for them. */
+static int card_open_to=-1;
+static bool card_open_state(int i) {
+    float la,lo; char code[8]; snprintf(code,sizeof(code),"US-%s",US_TILES[i].st);
+    if(!ls_globe_region(code,NULL,0,&la,&lo)) return false;
+    ls_map_center(la,lo);
+    ls_map_zoom_by(CARD_STATE_ZOOM-ls_map_zoom());
+    const ls_app_t *app=ls_app_by_id("map"); if(app) ls_tui_screen_show(ls_tui_screen_index_of(app->screen));
+    return true;
+}
 /* OPEN: show it in MAP. A place has no stored centre; its list opens instead. */
 static void card_open(void) {
     if(card_sel>=card_n) return;
     const card_row_t r=card[card_sel];
     if(r.kind=='r') { selected=r.index; map_open(); return; }
     if(r.kind=='p') { ls_place_search_installed(); return; }
-    float la,lo; char code[8]; snprintf(code,sizeof(code),"US-%s",US_TILES[r.index].st);
-    if(!ls_globe_region(code,NULL,0,&la,&lo)) return;
-    ls_map_center(la,lo);
-    const ls_app_t *app=ls_app_by_id("map"); if(app) ls_tui_screen_show(ls_tui_screen_index_of(app->screen));
+    card_open_to=card_open_state(r.index)?-1:r.index;
+    if(card_open_to>=0) (void)us_view();      /* starts the outline load */
 }
 /* Where the maps come from. A card set to another server (a test copy was
    left on one for weeks) got old maps with nothing on screen saying why; it
@@ -825,6 +843,10 @@ static int hero_draw(tui_surface *sf, tui_rect body, int y) {
 
 static void card_draw(tui_surface *sf,tui_rect body) {
     card_build();
+    if(card_open_to>=0) {                     /* an OPEN waiting for the outlines; no file: give up */
+        const int v=us_view(), i=card_open_to;
+        if(v!=US_VIEW_WAIT) { card_open_to=-1; if(v==US_VIEW_GLOBE && card_open_state(i)) return; }
+    }
     int y=body.y;
     card_update_row=-1;
     card_server_draw(sf,body,&y);

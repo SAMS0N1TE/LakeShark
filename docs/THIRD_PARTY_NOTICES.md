@@ -14,6 +14,7 @@ LakeShark is licensed under GPL-3.0. Bundled components retain their copyright a
 | MeshCore and ed25519 | `components/meshcore/` notices and upstream notices | Preserve each component's license |
 | libcarto, PMTiles and TUI library | Notices within their component directories | Preserve each component's license |
 | CartoCore and Zstandard 1.5.7 (including FSE/HUF and xxHash) | `components/cartocore/upstream/NOTICE`, `LICENSE`, `PROVENANCE.txt` and `third_party/zstd/LICENSE` | CartoCore GPL-3.0-or-later; Zstandard BSD-3-Clause option |
+| LR2021 radio programs (lr2021-re by Alex Beal: on-chip FFT and sweep, multi-channel LoRa scanner) | `components/lakeshark/board/lr2021_pram_image.h` and `lr2021_scan_image.h` headers | MIT |
 | Speech synthesis (Moonshine klatt-tts and g2p) | `components/klatt_tts/NOTICE` and `LICENSE` | MIT |
 | Pronouncing dictionary | `components/klatt_tts/LICENSE.CMUdict` | CMU Pronouncing Dictionary BSD-style terms; the notice ships with binaries |
 | DejaVu fonts | `components/apps/tui/DEJAVU-LICENSE.txt` | Bitstream Vera and DejaVu terms |

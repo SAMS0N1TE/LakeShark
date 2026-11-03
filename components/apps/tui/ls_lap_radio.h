@@ -26,11 +26,12 @@ extern "C" {
 
 /* Screen task. begin with the app's descriptor when it is entered (NULL:
    nothing granted, as ls_lap_sys_begin does first); the app's declared
-   flags are its grants, because the board asked before loading it. end when
+   flags are its grants after opening; TX needs its declaration only. end when
    it closes: every session, tap and subscription is closed, and the radio is
    given back by the worker. */
 void ls_lap_radio_begin(const lap_app_t *app);
 void ls_lap_radio_end(void);
+void ls_lap_radio_caps(lap_caps_t *out);
 uint32_t ls_lap_granted(void);           /* LAP_CAP_* this launch has */
 /* lap_io worker. True while it has work and wants calling again soon. */
 bool ls_lap_radio_service(void);
@@ -58,6 +59,10 @@ typedef struct {
     int (*rate)(uint32_t rate_hz, ls_lap_rx_actual_t *actual);
     int (*poll)(ls_lap_rx_actual_t *actual);   /* <0 when the stream has died */
     void (*close)(void);
+    /* API 2.4: worker snapshots and repeat-until-terminal control. EAGAIN
+       means pending on capture task, never a successful application. */
+    int (*info2)(int radio, lap_radio_info2_t *out);
+    int (*control)(int control, int64_t value, ls_lap_rx_actual_t *actual);
 } ls_lap_rx_backend_t;
 /* The board's (ls_lap_radio_hw.c) or the bench's simulator (ls_lap_radio_sim.c). */
 const ls_lap_rx_backend_t *ls_lap_rx_default_backend(void);
@@ -66,6 +71,8 @@ void ls_lap_radio_set_backend(const ls_lap_rx_backend_t *backend);
 
 /* Capture context only (one producer). iq is interleaved int16 pairs. */
 void ls_lap_rx_push(const int16_t *iq, size_t pairs);
+/* Capture owner: stamp the gain actually applied before publishing samples. */
+void ls_lap_rx_gain_applied(int tenths_db);
 /* The next block starts fresh with these flags (LAP_IQ_*); a partly filled
    block is handed over first. center_hz/rate_hz of 0 keep the current ones.
    From the capture context, or from the worker while capture is stopped. */
@@ -95,10 +102,19 @@ typedef struct {
     bool muted, live;
 } ls_lap_hub_host_t;
 ls_lap_hub_host_t *ls_lap_hub_host(void);
+/* LAPSIM_SCRIPT: rxdelay=N, rxresult=negative_E, decode=kind,fields. */
+bool ls_lap_rx24_sim_step(const char *command);
 /* The bench's stand-in for ls_action_call; NULL answers LAP_ACT_UNAVAILABLE. */
 extern int (*ls_lap_host_action)(const char *name, const char *args, char *out, size_t cap,
                                  uint32_t granted);
 #endif
+void ls_lap_rx_replay_mark(uint64_t hz,uint32_t rate,uint32_t flags);
+void ls_lap_rx_replay_push(const int16_t *iq,size_t pairs);
+void ls_lap_audio_reap(void);
+uint32_t ls_lap_rx_token(void);
+void ls_lap_rx_push_token(uint32_t token,const int16_t *iq,size_t pairs);
+void ls_lap_rx_mark_token(uint32_t token,uint64_t hz,uint32_t rate,uint32_t flags);
+void ls_lap_rx_gain_token(uint32_t token,int gain);
 #ifdef __cplusplus
 }
 #endif

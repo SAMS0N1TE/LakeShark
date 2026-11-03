@@ -13,6 +13,7 @@ extern "C" {
 /* Screen task. begin when the app is entered, frame before each draw with
  * the app's cell area, end when it closes (restores the screen, brightness,
  * rotation and scans; abandons queued jobs). */
+uint32_t ls_lap_sys_caps(void);
 void ls_lap_sys_begin(void);
 void ls_lap_sys_frame(tui_rect area);
 void ls_lap_sys_end(void);
@@ -28,6 +29,7 @@ void ls_lap_sys_set_wake(void (*wake)(void));
 #if !defined(ESP_PLATFORM) || defined(LS_LAP_HOST_TEST)
 /* The bench's stand-in for the hardware: what the sensors say. */
 typedef struct {
+    uint32_t hardware; /* simulated hardware flags, independent of current readings */
     bool motion;
     lap_motion_t m;
     bool down;

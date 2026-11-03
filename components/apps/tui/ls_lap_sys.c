@@ -1,9 +1,16 @@
+#include "ls_lap_ble_peripheral.h"
+#include "ls_lap_context.h"
 /* See ls_lap_sys.h. */
 #include "ls_lap_sys.h"
+#include "ls_lap_system.h"
 #include "ls_lap_api.h"
 #include "ls_lap_net.h"
+#include "ls_lap_net_audio.h"
 #include "ls_lap_radio.h"
 #include "ls_lap_kit.h"
+#include "ls_lap_service.h"
+#include "ls_lap_sensors.h"
+#include "ls_lap_usage.h"
 #include <errno.h>
 #include <math.h>
 #include <stdio.h>
@@ -17,7 +24,7 @@
 #define SD_LIST_MAX 256
 
 static void (*wake_io)(void);
-void ls_lap_sys_set_wake(void (*wake)(void)) { wake_io = wake; ls_lap_net_set_wake(wake); }
+void ls_lap_sys_set_wake(void (*wake)(void)) { wake_io = wake; ls_lap_net_set_wake(wake); ls_lap_av_set_wake(wake); ls_lap_system_wake(wake); }
 
 /* ---- paths -------------------------------------------------------------- */
 
@@ -41,18 +48,20 @@ static bool sd_path(const char *p, bool write)
 /* ---- notes -------------------------------------------------------------- */
 
 typedef struct { uint16_t hz, ms; uint8_t volume, wave; } note_t;
-static struct {
+static LS_LAP_POOL struct {
     note_t q[TONES];
     unsigned head, tail;
-} tones;
+} p4_tones_slots[LS_LAP_CONTEXTS];
+#define p4_tones (p4_tones_slots[ls_lap_context_index()])
+
 
 bool lap_tone(int hz, int ms, int volume, int wave)
 {
     if (!ls_lap_api_inside() || hz < 0 || hz > 12000 || ms <= 0 || ms > 5000 ||
         volume < 0 || volume > 100 || wave < 0 || wave > LAP_WAVE_NOISE)
         return false;
-    if (tones.head - tones.tail >= TONES) return false;
-    tones.q[tones.head++ % TONES] = (note_t){(uint16_t)hz, (uint16_t)ms, (uint8_t)volume, (uint8_t)wave};
+    if (p4_tones.head - p4_tones.tail >= TONES) return false;
+    p4_tones.q[p4_tones.head++ % TONES] = (note_t){(uint16_t)hz, (uint16_t)ms, (uint8_t)volume, (uint8_t)wave};
 #if !defined(ESP_PLATFORM) || defined(LS_LAP_HOST_TEST)
     ls_lap_sys_host()->tones++;
     ls_lap_sys_host()->last_tone_hz = hz;
@@ -61,13 +70,13 @@ bool lap_tone(int hz, int ms, int volume, int wave)
 }
 void lap_tone_stop(void)
 {
-    if (ls_lap_api_inside()) tones.tail = tones.head;
+    if (ls_lap_api_inside()) p4_tones.tail = p4_tones.head;
 }
 
 /* ---- card jobs ---------------------------------------------------------- */
 
 enum { JOB_FREE, JOB_QUEUED, JOB_RUNNING, JOB_DONE };
-enum { OP_READ, OP_WRITE, OP_LIST, OP_SIZE, OP_MKDIR, OP_REMOVE };
+enum { OP_READ, OP_WRITE, OP_LIST, OP_SIZE, OP_MKDIR, OP_REMOVE, OP_FLUSH };
 typedef struct {
     volatile int state;
     int op, result, serial, max;
@@ -77,8 +86,18 @@ typedef struct {
     void *out;                  /* the app's buffer, filled on poll */
     void *stage;                /* ours, PSRAM */
 } job_t;
-static job_t jobs[SD_JOBS];
+static LS_LAP_POOL job_t p4_jobs_slots[LS_LAP_CONTEXTS][SD_JOBS];
+#define p4_jobs (p4_jobs_slots[ls_lap_context_index()])
+
 static int job_serial;
+ls_lap_usage_t ls_lap_sys_usage(unsigned slot) {
+    ls_lap_usage_t v={sizeof(p4_jobs_slots[slot]),0};
+    for(int i=0;i<SD_JOBS;i++) {
+        job_t *j=&p4_jobs_slots[slot][i];
+        if(j->state!=JOB_FREE) { v.handles++; if(j->stage) v.bytes+=j->op==OP_LIST?(uint32_t)(j->max*sizeof(lap_sd_entry_t)):j->len; }
+    }
+    return v;
+}
 
 static void *stage_alloc(size_t n);
 static void stage_free(void *p);
@@ -89,14 +108,15 @@ static int job_start(int op, const char *path, uint32_t offset, void *out, uint3
         return LAP_SD_EINVAL;
     if ((op == OP_READ || op == OP_WRITE) && (len > SD_MAX || (len && !(op == OP_READ ? out : data))))
         return LAP_SD_EINVAL;
+    if (op == OP_WRITE && len && !ls_lap_api_readable(data, len)) return LAP_SD_EINVAL;
     if (op == OP_READ && len && !ls_lap_api_owns(out, len)) return LAP_SD_EINVAL;
     if (op == OP_LIST && (max <= 0 || !out || !ls_lap_api_owns(out, (size_t)max * sizeof(lap_sd_entry_t))))
         return LAP_SD_EINVAL;
     int slot = -1;
     for (int i = 0; i < SD_JOBS && slot < 0; i++)
-        if (jobs[i].state == JOB_FREE) slot = i;
+        if (p4_jobs[i].state == JOB_FREE) slot = i;
     if (slot < 0) return LAP_SD_EBUSY;
-    job_t *j = &jobs[slot];
+    job_t *j = &p4_jobs[slot];
     memset(j, 0, sizeof(*j));
     snprintf(j->path, sizeof(j->path), "%s", path);
     j->op = op;
@@ -116,6 +136,12 @@ static int job_start(int op, const char *path, uint32_t offset, void *out, uint3
     return slot | j->serial << 3;
 }
 
+int lap_file_flush(void) {
+    if (!ls_lap_api_flush_acquire()) return LAP_SD_EBUSY;
+    int id = job_start(OP_FLUSH, LS_LAP_SD_ROOT, 0, NULL, 0, 0, NULL);
+    if (id < 0) ls_lap_api_flush_release();
+    return id;
+}
 int lap_sd_read(const char *path, uint32_t offset, void *buf, uint32_t len) { return job_start(OP_READ, path, offset, buf, len, 0, NULL); }
 int lap_sd_write(const char *path, uint32_t offset, const void *data, uint32_t len) { return job_start(OP_WRITE, path, offset, NULL, len, 0, data); }
 int lap_sd_list(const char *dir, lap_sd_entry_t *out, int max) { return job_start(OP_LIST, dir, 0, out, 0, max, NULL); }
@@ -127,7 +153,7 @@ int lap_sd_poll(int id)
 {
     if (!ls_lap_api_inside() || id < 0) return LAP_SD_EINVAL;
     if ((id & 7) >= SD_JOBS) return LAP_SD_EINVAL;
-    job_t *j = &jobs[id & 7];
+    job_t *j = &p4_jobs[id & 7];
     if (j->serial != id >> 3 || j->state == JOB_FREE) return LAP_SD_EINVAL;
     if (__atomic_load_n(&j->state, __ATOMIC_ACQUIRE) != JOB_DONE) return LAP_SD_PENDING;
     int r = j->result;
@@ -160,6 +186,10 @@ static int err(void) { return errno == ENOENT ? LAP_SD_ENOENT : errno == EACCES 
 static void job_run(job_t *j)
 {
     switch (j->op) {
+    case OP_FLUSH:
+        j->result = ls_lap_api_files_flush() ? 0 : LAP_SD_EIO;
+        ls_lap_api_flush_release();
+        break;
     case OP_READ: {
         FILE *f = fopen(j->path, "rb");
         if (!f) { j->result = err(); break; }
@@ -221,7 +251,7 @@ static void job_run(job_t *j)
 static bool jobs_service(void)
 {
     for (int i = 0; i < SD_JOBS; i++) {
-        job_t *j = &jobs[i];
+        job_t *j = &p4_jobs[i];
         int expect = JOB_QUEUED;
         if (!__atomic_compare_exchange_n(&j->state, &expect, JOB_RUNNING, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
             continue;
@@ -242,9 +272,10 @@ static bool jobs_service(void)
 static void jobs_abandon(void)
 {
     for (int i = 0; i < SD_JOBS; i++) {
-        job_t *j = &jobs[i];
+        job_t *j = &p4_jobs[i];
         int expect = JOB_QUEUED;
         if (__atomic_compare_exchange_n(&j->state, &expect, JOB_FREE, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            if (j->op == OP_FLUSH) ls_lap_api_flush_release();
             stage_free(j->stage);
             j->stage = NULL;
             continue;
@@ -260,24 +291,26 @@ static void jobs_abandon(void)
 
 /* ---- touch -------------------------------------------------------------- */
 
-static struct {
+static LS_LAP_POOL struct {
     bool seen, down;
     lap_touch_t t;
     int swipe;
     uint32_t drags;
-} finger;
+} p4_finger_slots[LS_LAP_CONTEXTS];
+#define p4_finger (p4_finger_slots[ls_lap_context_index()])
+
 
 bool lap_touch(lap_touch_t *out)
 {
-    if (!ls_lap_api_inside() || !out || !finger.seen) return false;
-    *out = finger.t;
+    if (!ls_lap_api_inside() || !out || !p4_finger.seen) return false;
+    *out = p4_finger.t;
     return true;
 }
 int lap_swipe(void)
 {
     if (!ls_lap_api_inside()) return LAP_SWIPE_NONE;
-    const int s = finger.swipe;
-    finger.swipe = LAP_SWIPE_NONE;
+    const int s = p4_finger.swipe;
+    p4_finger.swipe = LAP_SWIPE_NONE;
     return s;
 }
 static int swipe_of(int dx, int dy, int cw, int ch)
@@ -314,12 +347,16 @@ static int swipe_of(int dx, int dy, int cw, int ch)
 #include "ls_tui_touch.h"
 #include "ls_theme.h"
 #include "ls_wireless.h"
+#include "ls_board.h"
+#include "ls_caps.h"
+#include "ls_sdcard.h"
+#include "ls_rterm.h"
 
 static void *stage_alloc(size_t n) { return heap_caps_malloc(n ? n : 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT); }
 static void stage_free(void *p) { heap_caps_free(p); }
 static int64_t now_us(void) { return esp_timer_get_time(); }
 
-static struct {
+static LS_LAP_POOL struct {
     bool open, keep_awake, bright_set, field, ble, wifi;
     tui_rect area;
     int64_t awake_us, audio_until_us;
@@ -328,33 +365,41 @@ static struct {
     bool immersive;                 /* lap_immersive: no board close button either */
     bool spoke;                     /* lap_say used: hush it when the app closes */
     bool park_held;                 /* lap_tone used: audio clocks kept running until it closes */
-} sys;
+} p4_sys_slots[LS_LAP_CONTEXTS];
+#define p4_sys (p4_sys_slots[ls_lap_context_index()])
+
 
 /* ---- the screen ---------------------------------------------------------- */
 
-void lap_fullscreen(bool on) { if (ls_lap_api_inside()) { sys.immersive = false; ls_tui_screen_set_bare(on); } }
-void lap_immersive(bool on) { if (ls_lap_api_inside()) { sys.immersive = on; ls_tui_screen_set_full(on); } }
+void lap_fullscreen(bool on)
+{
+    if (!ls_lap_api_inside()||!ls_lap_service_shown()) return;
+    if (p4_sys.immersive) ls_tui_screen_set_full(false);   /* bare is ignored while full */
+    p4_sys.immersive = false;
+    ls_tui_screen_set_bare(on);
+}
+void lap_immersive(bool on) { if (ls_lap_api_inside()&&ls_lap_service_shown()) { p4_sys.immersive = on; ls_tui_screen_set_full(on); } }
 /* The board's voice: queued, spoken in the user's chosen voice at the board's volume. */
 bool lap_say(const char *text)
 {
     if (!ls_lap_api_inside() || !text || !text[0]) return false;
-    sys.spoke = true;
+    p4_sys.spoke = true;
     return speech_say_async(text) == SPEECH_SPOKEN;
 }
 void lap_say_stop(void) { if (ls_lap_api_inside()) speech_cancel(); }
-bool ls_lap_sys_immersive(void) { return sys.open && sys.immersive; }
-void lap_hold_rotation(bool on) { if (ls_lap_api_inside()) ls_tui_screen_hold_rotation(on); }
-void lap_keep_awake(bool on) { if (ls_lap_api_inside()) sys.keep_awake = on; }
+bool ls_lap_sys_immersive(void) { return p4_sys.open && p4_sys.immersive; }
+void lap_hold_rotation(bool on) { if (ls_lap_api_inside()&&ls_lap_service_shown()) ls_tui_screen_hold_rotation(on); }
+void lap_keep_awake(bool on) { if (ls_lap_api_inside()&&ls_lap_service_shown()) p4_sys.keep_awake = on; }
 void lap_brightness(int pct)
 {
-    if (!ls_lap_api_inside()) return;
+    if (!ls_lap_api_inside()||!ls_lap_service_shown()) return;
     if (pct < 0) {
-        if (sys.bright_set) display_ctl_reapply();
-        sys.bright_set = false;
+        if (p4_sys.bright_set) display_ctl_reapply();
+        p4_sys.bright_set = false;
         return;
     }
     ls_panel_set_brightness((unsigned)(pct < 5 ? 5 : pct > 100 ? 100 : pct));
-    sys.bright_set = true;
+    p4_sys.bright_set = true;
 }
 
 /* ---- motion ------------------------------------------------------------- */
@@ -371,8 +416,8 @@ bool lap_motion(lap_motion_t *out)
     ls_imu_sample_t s;
     if (ls_imu_read(&s)) { imu.s = s; imu.at = now_us(); imu.have = true; }
     if (!imu.have) return false;
-    if (!sys.field) {
-        sys.field = true;
+    if (!p4_sys.field) {
+        p4_sys.field = true;
         ls_field_start();
         ls_field_watch(true);
     }
@@ -413,7 +458,7 @@ bool lap_vibrate(int ms, int strength)
 }
 bool lap_tone_busy(void)
 {
-    return ls_lap_api_inside() && (tones.head != tones.tail || sys.audio_until_us > now_us());
+    return ls_lap_api_inside() && (p4_tones.head != p4_tones.tail || p4_sys.audio_until_us > now_us());
 }
 
 /* Render queued notes into the cue ring, keeping about a quarter second
@@ -422,14 +467,14 @@ static void tones_service(void)
 {
     static int16_t buf[256];
     const int64_t t = now_us();
-    if (sys.audio_until_us < t) sys.audio_until_us = t;
-    while (tones.head != tones.tail && sys.audio_until_us - t < 250000) {
-        const note_t n = tones.q[tones.tail++ % TONES];
+    if (p4_sys.audio_until_us < t) p4_sys.audio_until_us = t;
+    while (p4_tones.head != p4_tones.tail && p4_sys.audio_until_us - t < 250000) {
+        const note_t n = p4_tones.q[p4_tones.tail++ % TONES];
         const int total = AUDIO_RATE_HZ * n.ms / 1000, edge = AUDIO_RATE_HZ * 3 / 1000;
         const float amp = 60.0f * n.volume, step = (float)n.hz / AUDIO_RATE_HZ;
         /* A game's sounds come seconds apart: parked between them, every one
            started on clocks and a rail just woken, and snapped. */
-        if (!sys.park_held) { sys.park_held = true; audio_out_park_hold(true); }
+        if (!p4_sys.park_held) { p4_sys.park_held = true; audio_out_park_hold(true); }
         audio_out_play_now();
         for (int i = 0; i < total; i += 256) {
             const int chunk = total - i < 256 ? total - i : 256;
@@ -437,14 +482,14 @@ static void tones_service(void)
                 const int at = i + k;
                 float v = 0;
                 if (n.hz) {
-                    sys.phase += step;
-                    if (sys.phase >= 1) sys.phase -= 1;
-                    const float p = sys.phase;
+                    p4_sys.phase += step;
+                    if (p4_sys.phase >= 1) p4_sys.phase -= 1;
+                    const float p = p4_sys.phase;
                     switch (n.wave) {
                     case LAP_WAVE_SQUARE: v = p < 0.5f ? 0.6f : -0.6f; break;
                     case LAP_WAVE_TRIANGLE: v = p < 0.5f ? 4 * p - 1 : 3 - 4 * p; break;
                     case LAP_WAVE_SAW: v = (2 * p - 1) * 0.7f; break;
-                    case LAP_WAVE_NOISE: sys.noise = sys.noise * 1664525u + 1013904223u; v = ((int32_t)sys.noise >> 16) / 32768.0f * 0.6f; break;
+                    case LAP_WAVE_NOISE: p4_sys.noise = p4_sys.noise * 1664525u + 1013904223u; v = ((int32_t)p4_sys.noise >> 16) / 32768.0f * 0.6f; break;
                     default: v = sinf(6.2831853f * p); break;
                     }
                 }
@@ -454,7 +499,7 @@ static void tones_service(void)
             /* Dropped on a busy lock, a chunk cut the note mid-wave: a click. */
             audio_write_cue_wait(buf, chunk, 5);
         }
-        sys.audio_until_us += (int64_t)n.ms * 1000;
+        p4_sys.audio_until_us += (int64_t)n.ms * 1000;
     }
 }
 
@@ -510,11 +555,12 @@ EXT_RAM_BSS_ATTR static ls_mesh_msg_t mesh_raw[LS_MESH_MAX_MSGS];
 static SemaphoreHandle_t mesh_lock;
 static StaticSemaphore_t mesh_lock_buf;
 static volatile int64_t mesh_wanted_us, mesh_refreshed_us;
-static struct {
+static LS_LAP_POOL struct {
     volatile int state;         /* 1 waiting for the worker, 0 done, <0 refused */
     int kind, chan;             /* 0 channel, 1 direct, 2 advert */
     char id[17], text[151];
-} mesh_out;
+} mesh_out_slots[LS_LAP_CONTEXTS];
+#define mesh_out mesh_out_slots[ls_lap_context_index()]
 
 static void mesh_want(void)
 {
@@ -560,7 +606,7 @@ int lap_mesh_messages(lap_mesh_msg_t *out, int max)
 }
 bool lap_mesh_channel_private(int slot, char *name, size_t cap)
 {
-    if (!ls_lap_api_inside() || slot < 1 || slot > 3 || (name && (!cap || !ls_lap_api_owns(name, cap)))) return false;
+    if (!ls_lap_api_inside() || slot < 1 || slot > 3 || (name && (!cap || !ls_lap_api_readable(name, cap)))) return false;
     mesh_want();
     uint8_t bits = 0;
     char shown[16] = "";
@@ -578,7 +624,7 @@ uint32_t lap_mesh_seq(void)
 }
 static bool mesh_queue(int kind, int chan, const char *id, const char *text)
 {
-    if (!ls_lap_api_inside() || mesh_out.state == 1) return false;
+    if (!ls_lap_api_inside() || !(ls_lap_granted() & LAP_CAP_RADIO_TX) || mesh_out.state == 1) return false;
     if (text && strlen(text) > 150) { mesh_out.state = -3; return false; }
     if (kind == 0 && (chan < 0 || chan > 3)) return false;
     if (kind == 1 && (!id || strlen(id) != 16)) return false;
@@ -688,7 +734,7 @@ EXT_RAM_BSS_ATTR static ls_ble_heard_t heard[24];
 bool lap_wifi_scan(void)
 {
     if (!ls_lap_api_inside()) return false;
-    if (!sys.wifi) { sys.wifi = true; ls_wireless_set_active(true); }
+    if (!p4_sys.wifi) { p4_sys.wifi = true; ls_wireless_set_active(true); }
     return ls_wireless_request(LS_WIRELESS_SCAN, NULL, NULL);
 }
 int lap_wifi_aps(lap_wifi_ap_t *out, int max)
@@ -715,8 +761,8 @@ uint32_t lap_wifi_seq(void)
 
 void lap_ble_scan(bool on)
 {
-    if (!ls_lap_api_inside() || sys.ble == on) return;
-    sys.ble = on;
+    if (!ls_lap_api_inside() || p4_sys.ble == on) return;
+    p4_sys.ble = on;
     ls_wireless_find_ble(on);
 }
 int lap_ble_devices(lap_ble_dev_t *out, int max)
@@ -736,54 +782,75 @@ int lap_ble_devices(lap_ble_dev_t *out, int max)
     return n;
 }
 
+uint32_t ls_lap_sys_caps(void) {
+    uint32_t flags = 0;
+    ls_wireless_snapshot_t w; ls_wireless_get(&w);
+    if (w.wifi_available) flags |= LAP_HW_WIFI;
+    if (w.bt_available) flags |= LAP_HW_BLE;
+#if defined(LS_BOARD_GPS_RX_GPIO) && defined(LS_BOARD_GPS_UART_NUM)
+    flags |= LAP_HW_GPS;
+#endif
+    if (ls_imu_present()) flags |= LAP_HW_IMU;
+    if (ls_sdcard_mounted()) flags |= LAP_HW_SD;
+    if (LS_HAS_AUDIO) flags |= LAP_HW_SPEAKER;
+    if (LS_HAS_MIC) flags |= LAP_HW_MIC;
+    if (ls_rterm_active()) flags |= LAP_HW_DESKTOP;
+    return flags;
+}
+
 /* ---- the host side ------------------------------------------------------- */
 
 void ls_lap_sys_begin(void)
 {
+    ls_lap_sensors_begin();
+    ls_lap_input_enable(true);
+    ls_lap_av_begin();
     ls_lap_net_begin(false);
     ls_lap_radio_begin(NULL);            /* nothing granted until ls_lap.c says */
-    memset(&sys, 0, sizeof(sys));
-    memset(&finger, 0, sizeof(finger));
+    memset(&p4_sys, 0, sizeof(p4_sys));
+    memset(&p4_finger, 0, sizeof(p4_finger));
     memset(&imu, 0, sizeof(imu));
-    tones.head = tones.tail = 0;
-    finger.drags = ls_tui_touch_drags(NULL, NULL, NULL, NULL);
+    p4_tones.head = p4_tones.tail = 0;
+    p4_finger.drags = ls_tui_touch_drags(NULL, NULL, NULL, NULL);
     mesh_out.state = 0;
-    sys.open = true;
+    p4_sys.open = true;
     ls_lap_kit_begin();
 }
 
 void ls_lap_sys_frame(tui_rect area)
 {
-    sys.area = area;
+    ls_lap_system_frame();
+    p4_sys.area = area;
     int cols, rows, cw = 10, ch = 17;
     ls_tui_geometry(&cols, &rows, &cw, &ch);
     int x, y, x0, y0;
     int64_t since;
     if (ls_tui_touch_px(&x, &y, &x0, &y0, &since)) {
         const int ox = area.x * cw, oy = area.y * ch;
-        if (!finger.down) {
+        if (!p4_finger.down) {
             /* A finger that went down outside the app (on the tab strip) is not the app's. */
             if (x0 < ox || y0 < oy || x0 >= ox + area.w * cw || y0 >= oy + area.h * ch) goto lifted;
-            finger.down = finger.seen = true;
+            p4_finger.down = p4_finger.seen = true;
         }
-        finger.t = (lap_touch_t){ true, (int16_t)(x - ox), (int16_t)(y - oy), (int16_t)(x0 - ox), (int16_t)(y0 - oy),
+        p4_finger.t = (lap_touch_t){ true, (int16_t)(x - ox), (int16_t)(y - oy), (int16_t)(x0 - ox), (int16_t)(y0 - oy),
                                   (uint32_t)((now_us() - since) / 1000) };
     } else {
 lifted:
-        finger.down = false;
-        finger.t.down = false;
+        p4_finger.down = false;
+        p4_finger.t.down = false;
     }
     int dx0, dy0, dx1, dy1;
     const uint32_t drags = ls_tui_touch_drags(&dx0, &dy0, &dx1, &dy1);
-    if (drags != finger.drags) {
-        finger.drags = drags;
+    if (drags != p4_finger.drags) {
+        p4_finger.drags = drags;
         const int s = swipe_of(dx1 - dx0, dy1 - dy0, cw, ch);
-        if (s) finger.swipe = s;
+        if (s) p4_finger.swipe = s;
     }
-    if (sys.keep_awake && now_us() - sys.awake_us > 1000000) {
-        sys.awake_us = now_us();
+    if (p4_sys.keep_awake && now_us() - p4_sys.awake_us > 1000000) {
+        p4_sys.awake_us = now_us();
         display_ctl_activity();
     }
+    ls_lap_input_touch(p4_finger.t.x, p4_finger.t.y, p4_finger.t.down);
     tones_service();
 }
 
@@ -793,15 +860,18 @@ lifted:
    stay. */
 void ls_lap_sys_hide(void)
 {
+    ls_lap_peripheral_release_inputs();
+    ls_lap_system_hide();
     ls_lap_kit_end();
-    if (!sys.open) return;
-    if (sys.bright_set) display_ctl_reapply();
-    sys.bright_set = false;
-    sys.keep_awake = false;
-    if (sys.spoke) speech_cancel();
-    sys.spoke = false;
-    if (sys.park_held) audio_out_park_hold(false);
-    sys.park_held = false;
+    ls_lap_input_enable(false);
+    if (!p4_sys.open) return;
+    if (p4_sys.bright_set) display_ctl_reapply();
+    p4_sys.bright_set = false;
+    p4_sys.keep_awake = false;
+    if (p4_sys.spoke) speech_cancel();
+    p4_sys.spoke = false;
+    if (p4_sys.park_held) audio_out_park_hold(false);
+    p4_sys.park_held = false;
     ls_tui_screen_set_full(false);
     ls_tui_screen_set_bare(false);
     ls_tui_screen_hold_rotation(false);
@@ -809,33 +879,47 @@ void ls_lap_sys_hide(void)
 
 void ls_lap_sys_end(void)
 {
+    ls_lap_system_hide();
+    ls_lap_system_detach();
+    const bool shown=ls_lap_service_shown();
+    ls_lap_sensors_end();
     ls_lap_kit_end();
-    ls_lap_net_end();
+    ls_lap_input_enable(false);
+    ls_lap_net_end(); ls_lap_av_end();
     ls_lap_radio_end();                  /* the worker closes the session and frees the radio */
-    if (!sys.open) return;
-    sys.open = false;
+    if (!p4_sys.open) return;
+    p4_sys.open = false;
     jobs_abandon();
-    tones.head = tones.tail = 0;
-    if (sys.bright_set) display_ctl_reapply();
-    if (sys.field) ls_field_watch(false);
-    if (sys.ble) ls_wireless_find_ble(false);
-    if (sys.wifi) ls_wireless_set_active(false);
-    if (sys.spoke) speech_cancel();
-    if (sys.park_held) audio_out_park_hold(false);
-    sys.park_held = false;
-    ls_tui_screen_set_full(false);
-    ls_tui_screen_set_bare(false);
-    ls_tui_screen_hold_rotation(false);
+    p4_tones.head = p4_tones.tail = 0;
+    if (p4_sys.bright_set) display_ctl_reapply();
+    bool field=false,ble=false,wifi=false;
+    p4_sys.field=p4_sys.ble=p4_sys.wifi=false;
+    for(unsigned i=0;i<LS_LAP_CONTEXTS;i++) if(p4_sys_slots[i].open) {
+        field|=p4_sys_slots[i].field; ble|=p4_sys_slots[i].ble; wifi|=p4_sys_slots[i].wifi;
+    }
+    ls_field_watch(field); ls_wireless_find_ble(ble); ls_wireless_set_active(wifi);
+    __atomic_store_n(&mesh_out.state,0,__ATOMIC_RELEASE);
+    if (p4_sys.spoke) speech_cancel();
+    if (p4_sys.park_held) audio_out_park_hold(false);
+    p4_sys.park_held = false;
+    if(shown) {
+        ls_tui_screen_set_full(false);
+        ls_tui_screen_set_bare(false);
+        ls_tui_screen_hold_rotation(false);
+    }
     mesh_wanted_us = 0;
 }
 
 bool ls_lap_sys_service(void)
 {
+    const bool system = ls_lap_system_service();
+    const bool sensors = ls_lap_sensors_service();
+    const bool av = ls_lap_av_service();
     const bool net = ls_lap_net_service();
     const bool a = jobs_service();
     const bool b = mesh_service();
     const bool radio = ls_lap_radio_service();
-    return net || a || b || radio;
+    return system || sensors || av || net || a || b || radio;
 }
 
 /* ====================================================================== */
@@ -843,6 +927,7 @@ bool ls_lap_sys_service(void)
 
 static ls_lap_sys_host_t host;
 ls_lap_sys_host_t *ls_lap_sys_host(void) { return &host; }
+uint32_t ls_lap_sys_caps(void) { return host.hardware | (host.motion ? LAP_HW_IMU : 0) | (host.gps ? LAP_HW_GPS : 0); }
 static void *stage_alloc(size_t n) { return malloc(n ? n : 1); }
 static void stage_free(void *p) { free(p); }
 
@@ -864,7 +949,7 @@ bool lap_motion(lap_motion_t *out)
 }
 bool lap_haptic(int effect) { (void)effect; return false; }
 bool lap_vibrate(int ms, int strength) { (void)ms; (void)strength; return false; }
-bool lap_tone_busy(void) { return ls_lap_api_inside() && tones.head != tones.tail; }
+bool lap_tone_busy(void) { return ls_lap_api_inside() && p4_tones.head != p4_tones.tail; }
 bool lap_gps(lap_gps_t *out)
 {
     if (!ls_lap_api_inside() || !out || !host.gps) return false;
@@ -893,9 +978,9 @@ int lap_mesh_nodes(lap_mesh_node_t *out, int max)
 }
 int lap_mesh_messages(lap_mesh_msg_t *out, int max) { (void)out; (void)max; return 0; }
 uint32_t lap_mesh_seq(void) { return 0; }
-bool lap_mesh_send(int channel, const char *text) { return ls_lap_api_inside() && channel >= 0 && channel <= 3 && text && strlen(text) <= 150; }
-bool lap_mesh_dm(const char *id, const char *text) { return ls_lap_api_inside() && id && strlen(id) == 16 && text && strlen(text) <= 150; }
-bool lap_mesh_advert(void) { return ls_lap_api_inside(); }
+bool lap_mesh_send(int channel, const char *text) { return ls_lap_api_inside() && (ls_lap_granted() & LAP_CAP_RADIO_TX) && channel >= 0 && channel <= 3 && text && *text && strlen(text) <= 150; }
+bool lap_mesh_dm(const char *id, const char *text) { return ls_lap_api_inside() && (ls_lap_granted() & LAP_CAP_RADIO_TX) && id && strlen(id) == 16 && text && *text && strlen(text) <= 150; }
+bool lap_mesh_advert(void) { return ls_lap_api_inside() && (ls_lap_granted() & LAP_CAP_RADIO_TX); }
 int lap_mesh_send_state(void) { return 0; }
 bool lap_mesh_channel_private(int slot, char *name, size_t cap)
 {
@@ -922,10 +1007,13 @@ int lap_ble_devices(lap_ble_dev_t *out, int max)
 }
 void ls_lap_sys_begin(void)
 {
+    ls_lap_sensors_begin();
+    ls_lap_input_enable(true);
+    ls_lap_av_begin();
     ls_lap_net_begin(false);
     ls_lap_radio_begin(NULL);
-    memset(&finger, 0, sizeof(finger));
-    tones.head = tones.tail = 0;
+    memset(&p4_finger, 0, sizeof(p4_finger));
+    p4_tones.head = p4_tones.tail = 0;
     ls_lap_kit_begin();
 }
 static tui_rect host_area;
@@ -933,26 +1021,35 @@ void ls_lap_sys_host_finger(int gx, int gy, int cw, int ch, bool down)
 {
     const int x = gx - host_area.x * cw, y = gy - host_area.y * ch;
     if (down && !host.down) { host.x0 = x; host.y0 = y; host.held_ms = 0; }
+    if (!down && host.down && (abs(x - host.x0) > 32 || abs(y - host.y0) > 32))
+        host.swipe = swipe_of(x - host.x0, y - host.y0, cw, ch);
+    p4_finger.seen |= down;       /* even a whole tap received between frames */
     host.down = down;
     host.x = x;
     host.y = y;
 }
 void ls_lap_sys_frame(tui_rect area)
 {
+    ls_lap_system_frame();
     host_area = area;
-    finger.seen |= host.down;
-    finger.t = (lap_touch_t){ host.down, (int16_t)host.x, (int16_t)host.y, (int16_t)host.x0, (int16_t)host.y0, host.held_ms };
-    if (host.swipe) { finger.swipe = host.swipe; host.swipe = 0; }
-    tones.tail = tones.head;                    /* the bench has no speaker */
-    (void)swipe_of;
+    p4_finger.seen |= host.down;
+    p4_finger.t = (lap_touch_t){ host.down, (int16_t)host.x, (int16_t)host.y, (int16_t)host.x0, (int16_t)host.y0, host.held_ms };
+    ls_lap_input_touch(host.x, host.y, host.down);
+    if (host.swipe) { p4_finger.swipe = host.swipe; host.swipe = 0; }
+    p4_tones.tail = p4_tones.head;                    /* the bench has no speaker */
     ls_lap_radio_service();                     /* no worker here: one pass a frame */
 }
-void ls_lap_sys_end(void) { ls_lap_kit_end(); ls_lap_net_end(); ls_lap_radio_end(); jobs_abandon(); }
-void ls_lap_sys_hide(void) { ls_lap_kit_end(); }
+void ls_lap_sys_end(void) { ls_lap_system_hide(); ls_lap_system_detach(); ls_lap_sensors_end(); ls_lap_kit_end(); ls_lap_input_enable(false); ls_lap_net_end(); ls_lap_av_end(); ls_lap_radio_end(); jobs_abandon(); }
+void ls_lap_sys_hide(void) { ls_lap_peripheral_release_inputs(); ls_lap_system_hide(); ls_lap_kit_end(); ls_lap_input_enable(false); }
 bool ls_lap_sys_service(void)
 {
+    const bool system = ls_lap_system_service();
+    const bool sensors = ls_lap_sensors_service();
+    const bool av = ls_lap_av_service();
     const bool net = ls_lap_net_service();
     const bool radio = ls_lap_radio_service();
-    return jobs_service() || net || radio;
+    return jobs_service() || system || sensors || av || net || radio;
 }
 #endif
+
+#include "ls_lap_sensors.inc"

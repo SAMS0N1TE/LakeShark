@@ -267,6 +267,19 @@ target_link_libraries(ls_harness PUBLIC Threads::Threads)
 
 enable_testing()
 
+add_executable(test_ble_hid_report tests/test_ble_hid_report.c ../main/ble_hid_report.c)
+target_include_directories(test_ble_hid_report PRIVATE ../main)
+add_test(NAME test_ble_hid_report COMMAND test_ble_hid_report)
+add_executable(test_ble_hid_input tests/test_ble_hid_input.c ../main/ble_hid_input.c)
+target_include_directories(test_ble_hid_input PRIVATE ../main ../components/apps)
+add_test(NAME test_ble_hid_input COMMAND test_ble_hid_input)
+add_executable(test_ble_hid_vt_sink tests/test_ble_hid_vt_sink.c
+    ../components/apps/tui/tuilib/tui_core.c ../components/apps/tui/ls_i18n.c)
+target_include_directories(test_ble_hid_vt_sink PRIVATE ../components/apps/tui)
+target_compile_options(test_ble_hid_vt_sink PRIVATE -O2 -ffunction-sections -fdata-sections)
+target_link_options(test_ble_hid_vt_sink PRIVATE -Wl,--gc-sections)
+add_test(NAME test_ble_hid_vt_sink COMMAND test_ble_hid_vt_sink)
+
 function(ls_add_test name)
     add_executable(${name} tests/${name}.c ${ARGN})
     target_link_libraries(${name} ls_harness m)
@@ -274,7 +287,7 @@ function(ls_add_test name)
 endfunction()
 
 ls_add_test(test_radios_status ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
-    shims/lap_service_none.c)
+    shims/lap_service_none.c shims/ls_compact_none.c)
 target_include_directories(test_radios_status PRIVATE ${LS_TUI_APP_INCLUDES}
     ${FW}/components/lakeshark)
 target_compile_definitions(test_radios_status PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
@@ -297,6 +310,12 @@ target_include_directories(test_tui_surface PRIVATE
 ls_add_test(test_term_vt ${FW}/components/apps/tui/ls_vt.c
     ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_term_vt PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/apps/tui ${FW}/components/apps/tui/tuilib)
+
+# Box lines and shapes (ls_box.h): masks at every face, stand-ins, terminal codepoints.
+ls_add_test(test_tui_box_glyphs ${FW}/components/apps/tui/ls_vt.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
+target_include_directories(test_tui_box_glyphs PRIVATE ${LS_TUI_APP_INCLUDES}
     ${FW}/components/apps/tui ${FW}/components/apps/tui/tuilib)
 
 ls_add_test(test_ws ${FW}/components/apps/tui/ls_ws.c)
@@ -376,6 +395,7 @@ ls_add_test(test_tui_screens
     ${LS_EXP_SRCS}
     ${FW}/bench/shims/ls_exp_fake.c
     ${FW}/bench/shims/ls_scan_fake.c
+    shims/lap_service_none.c
     ${FW}/components/apps/tui/screens/ext/scr_nfc.c
     ${FW}/components/lakeshark/nfc/ls_nfc_suite.c
     ${FW}/components/lakeshark/nfc/nfc_classic.c
@@ -682,9 +702,17 @@ target_include_directories(test_tui_picker PRIVATE ${LS_TUI_APP_INCLUDES})
 
 ls_add_test(test_mixrf_control)
 ls_add_test(test_mixrf_field)
-ls_add_test(test_nfc_suite ${FW}/components/lakeshark/nfc/nfc_classic.c)
+ls_add_test(test_nfc_suite ${FW}/components/lakeshark/nfc/nfc_classic.c ${FW}/components/lakeshark/nfc/ndef.c ${FW}/components/lakeshark/nfc/t2t.c)
 target_include_directories(test_nfc_suite PRIVATE
     ${FW}/components/lakeshark/nfc ${FW}/components/lakeshark/board)
+add_executable(test_nfc_suite_disabled tests/test_nfc_suite.c
+    ${FW}/components/lakeshark/nfc/nfc_classic.c ${FW}/components/lakeshark/nfc/ndef.c
+    ${FW}/components/lakeshark/nfc/t2t.c)
+target_include_directories(test_nfc_suite_disabled PRIVATE
+    ${FW}/components/lakeshark/nfc ${FW}/components/lakeshark/board)
+target_compile_definitions(test_nfc_suite_disabled PRIVATE CONFIG_LS_LAP_NFC=0)
+target_link_libraries(test_nfc_suite_disabled ls_harness m)
+add_test(NAME test_nfc_suite_disabled COMMAND test_nfc_suite_disabled)
 
 ls_add_test(test_radio_select
     ${FW}/components/apps/tui/ls_radio_select.c
@@ -948,6 +976,33 @@ target_sources(lssim PRIVATE ${FW}/components/lakeshark/core/ls_time.c
 target_compile_definitions(lssim PRIVATE LS_TIME_HOST=1)
 target_link_libraries(lssim m music_decode_host)
 target_sources(lssim PRIVATE tools/lssim_music_layers.c)
+# The desktop shell (components/apps/tui/desk): 'lssim desk'.
+set(LS_DESK_SRCS
+    ${FW}/components/apps/tui/desk/ls_desk.c
+    ${FW}/components/apps/tui/desk/ls_desk_widgets.c
+    ${FW}/components/apps/tui/desk/ls_desk_menu.c
+    ${FW}/components/apps/tui/desk/ls_desk_compat.c
+    ${FW}/components/apps/tui/desk/ls_desk_shell.c
+    ${FW}/components/apps/tui/desk/ls_desk_wall.c
+    ${FW}/components/apps/tui/desk/ls_desk_anim.c
+    ${FW}/components/apps/tui/desk/ls_desk_props.c
+    ${FW}/components/apps/tui/desk/ls_desk_studio.c)
+target_sources(lssim PRIVATE ${FW}/components/apps/tui/desk/ls_desk_live.c)
+target_sources(lssim PRIVATE ${LS_DESK_SRCS})
+# The desk's window manager over the real router, in a 160x45 grid.
+ls_add_test(test_desk_wm
+    ${LS_TUI_APP_SRCS}
+    ${LS_DESK_SRCS}
+    ${FW}/components/apps/tui/ls_tui_screen.c
+    ${FW}/components/apps/tui/ls_tui_chrome.c
+    ${FW}/components/apps/tui/ls_theme.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c shims/ls_rterm_line_none.c
+    shims/lap_system_none.c)
+target_include_directories(test_desk_wm PRIVATE
+    ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/apps/tui
+    ${FW}/components/apps/tui/tuilib
+    ${FW}/bench/shims)
 
 # Runs the lssim above with -C, which links everything the board registers.
 ls_add_test(test_lssim_census)
@@ -1333,7 +1388,8 @@ ls_add_test(test_tui_render_dump
     ${FW}/components/apps/tui/screens/ext/scr_update.c
     ${FW}/components/apps/tui/ls_voice_opts.c
     ${FW}/components/apps/tui/screens/ext/scr_rec.c
-    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
+    shims/lap_service_none.c)
 target_sources(test_tui_render_dump PRIVATE ${FW}/components/apps/tui/screens/ext/scr_subghz.c)
 target_sources(test_tui_render_dump PRIVATE tools/lssim_field.c)
 target_sources(test_tui_p25_screen PRIVATE tools/lssim_field.c)
@@ -1395,7 +1451,7 @@ ls_add_test(test_flex ${APP}/fm/flex.c fixtures/flex_gen.c)
 ls_add_test(test_rec_storage_label ${APP}/rec/rec_storage_label.c)
 ls_add_test(test_rec_unique_name ${APP}/rec/rec_unique_name.c)
 ls_add_test(test_files_safety ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
-    ${FW}/components/apps/tui/ls_tui_ui.c ${FW}/components/apps/tui/ls_icons.c)
+    ${FW}/components/apps/tui/ls_tui_ui.c ${FW}/components/apps/tui/ls_icons.c shims/ls_app_none.c)
 target_include_directories(test_files_safety BEFORE PRIVATE
     ${FW}/bench/tests/files_shims ${LS_TUI_APP_INCLUDES})
 target_compile_options(test_files_safety PRIVATE -ffunction-sections -fdata-sections)
@@ -1629,6 +1685,16 @@ add_test(NAME music_fixtures COMMAND ${Python3_EXECUTABLE}
 set_tests_properties(music_fixtures PROPERTIES FIXTURES_SETUP music_audio)
 add_test(NAME test_music_decode COMMAND test_music_decode ${CMAKE_CURRENT_BINARY_DIR}/music-fixtures)
 set_tests_properties(test_music_decode PROPERTIES FIXTURES_REQUIRED music_audio)
+add_executable(test_music_decode_wav tests/test_music_decode.c
+    ${FW}/components/chmorgan__esp-audio-player/codecs/ls_decode.c
+    ${FW}/components/chmorgan__esp-audio-player/audio_wav.cpp)
+target_include_directories(test_music_decode_wav PRIVATE
+    ${FW}/components/chmorgan__esp-audio-player/codecs shims)
+target_compile_definitions(test_music_decode_wav PRIVATE LS_AUDIO_COMPRESSED=0)
+target_link_libraries(test_music_decode_wav PRIVATE m)
+add_test(NAME test_music_decode_wav COMMAND test_music_decode_wav
+    ${CMAKE_CURRENT_BINARY_DIR}/music-fixtures)
+set_tests_properties(test_music_decode_wav PROPERTIES FIXTURES_REQUIRED music_audio)
 ls_add_test(test_pixel_wf
     ${FW}/components/apps/tui/ls_pixel_wf.c
     ${FW}/components/apps/tui/ls_tui.c ${FW}/components/apps/tui/ls_font_cyr.c
@@ -1976,6 +2042,17 @@ ls_add_test(test_ls_errlog_esp
 target_include_directories(test_ls_errlog_esp BEFORE PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/errlog_shims
     ${FW}/components/lakeshark/core)
+
+# The same cases with the log in Log V2's three pieces (the T-Display).
+add_executable(test_ls_errlog_esp_v2 tests/test_ls_errlog_esp.c
+    ${FW}/components/lakeshark/core/ls_errlog.c
+    ${FW}/components/lakeshark/core/ls_errlog_esp.c)
+target_link_libraries(test_ls_errlog_esp_v2 ls_harness m)
+add_test(NAME test_ls_errlog_esp_v2 COMMAND test_ls_errlog_esp_v2)
+target_include_directories(test_ls_errlog_esp_v2 BEFORE PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/errlog_shims
+    ${FW}/components/lakeshark/core)
+target_compile_definitions(test_ls_errlog_esp_v2 PRIVATE CONFIG_LOG_VERSION_2=1)
 
 ls_add_test(test_ls_crash_esp
     ${FW}/components/lakeshark/core/ls_crash.c
@@ -2422,6 +2499,11 @@ if(CARTOCORE_DIR)
     add_test(NAME test_carto_budget COMMAND test_carto_budget)
     add_executable(test_cartocore_cells "${CC_ROOT}/tests/cells.c" "${CC_ROOT}/src/ingest/host_cellset.c")
     target_link_libraries(test_cartocore_cells cartocore_host m)
+    add_executable(test_cartocore_pan tests/test_carto_pan.c)
+    target_link_libraries(test_cartocore_pan cartocore_host m)
+    target_compile_options(test_cartocore_pan PRIVATE -UNDEBUG)
+    add_test(NAME test_cartocore_pan COMMAND test_cartocore_pan "${FW}/data/franklin_mini.ctile")
+    set_tests_properties(test_cartocore_pan PROPERTIES WORKING_DIRECTORY "${FW}")
     add_executable(test_cartocore_decoded_cache "${CC_ROOT}/tests/decoded_cache.c")
     target_link_libraries(test_cartocore_decoded_cache cartocore_host m)
     add_test(NAME test_cartocore_decoded_cache COMMAND test_cartocore_decoded_cache "${FW}/data/franklin_mini.ctile")
@@ -3024,9 +3106,12 @@ endif()
 
 # Native SD apps: only these targets are needed for the backend bench.
 set(LAP_TUI ${FW}/components/apps/tui)
+# Loader tests define ESP_PLATFORM, but sightings still use the host backend.
+set_source_files_properties(${LAP_TUI}/ls_seen.c PROPERTIES COMPILE_OPTIONS "-UESP_PLATFORM")
+set(LAP_BUILD_TOOL "${FW}/app-sdk/lap.py" CACHE FILEPATH "LAP fixture builder (defaults to SDK tooling)")
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/lap-probe.lap
-    COMMAND ${Python3_EXECUTABLE} ${FW}/app-sdk/lap.py build ${FW}/bench/fixtures/lap -o ${CMAKE_CURRENT_BINARY_DIR}/lap-probe.lap
-    DEPENDS ${FW}/app-sdk/lap.py ${FW}/app-sdk/exports.txt ${FW}/app-sdk/include/lakeshark_app.h ${FW}/bench/fixtures/lap/probe.c)
+    COMMAND ${Python3_EXECUTABLE} ${LAP_BUILD_TOOL} build ${FW}/bench/fixtures/lap -o ${CMAKE_CURRENT_BINARY_DIR}/lap-probe.lap
+    DEPENDS ${LAP_BUILD_TOOL} ${FW}/app-sdk/lap.py ${FW}/app-sdk/exports.txt ${FW}/app-sdk/include/lakeshark_app.h ${FW}/bench/fixtures/lap/probe.c)
 add_custom_target(lap_fixture DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/lap-probe.lap)
 add_executable(test_lap_manifest tests/test_lap_manifest.c ${LAP_TUI}/ls_lap_manifest.c ${LAP_TUI}/ls_lap_signature.c ${LAP_TUI}/ls_lap.c)
 target_include_directories(test_lap_manifest PRIVATE ${LAP_TUI})
@@ -3042,6 +3127,9 @@ target_include_directories(test_lap_api PRIVATE ${LAP_TUI} ${FW}/components/lake
 target_link_libraries(test_lap_api m)
 target_compile_definitions(test_lap_api PRIVATE LS_LAP_SD_ROOT="lap-sd")
 add_test(NAME test_lap_api COMMAND test_lap_api)
+# Its root-directory listing must not include other tests' SD fixtures.
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lap-api-test)
+set_tests_properties(test_lap_api PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lap-api-test)
 
 # Optional SDK checkout location, used only by the new LAP signature test.
 set(LAP_MBEDTLS_DIR "" CACHE PATH "Mbed TLS source root for the LAP host verifier")
@@ -3096,21 +3184,50 @@ endif()
 # The example apps, compiled for the host into lssim's APP screen so their
 # frames can be looked at (LAPSIM=<id>; see shims/ls_lap_screen.c). Each
 # app's lap_main and lap_app are renamed so they can sit side by side.
+# LAPSIM_EXTRA_APPS: more app folders anywhere on disk (absolute paths, ';'
+# between), compiled in the same way; app-sdk/lsdk.py sets it for `lsdk sim`
+# and LakeShark Studio. One of these wins over an example of the same name.
+set(LAPSIM_EXTRA_APPS "$ENV{LAPSIM_EXTRA_APPS}" CACHE STRING "Extra app folders for lssim's APP screen (lsdk sim)")
 file(GLOB LAPSIM_APP_DIRS LIST_DIRECTORIES true ${FW}/app-sdk/apps/*)
+set(LAPSIM_EXTRA_NAMES "")
+foreach(dir ${LAPSIM_EXTRA_APPS})
+    get_filename_component(app ${dir} NAME)
+    list(APPEND LAPSIM_EXTRA_NAMES ${app})
+endforeach()
 set(LAPSIM_TABLE "")
 set(LAPSIM_DECLS "")
 set(LAPSIM_COUNT 0)
-foreach(dir ${LAPSIM_APP_DIRS})
+foreach(dir ${LAPSIM_APP_DIRS} ${LAPSIM_EXTRA_APPS})
     if(IS_DIRECTORY ${dir})
         get_filename_component(app ${dir} NAME)
-        file(GLOB app_src ${dir}/*.c)
+        list(FIND LAPSIM_EXTRA_NAMES ${app} extra_at)
+        list(FIND LAPSIM_EXTRA_APPS ${dir} is_extra)
+        if(extra_at GREATER -1 AND is_extra EQUAL -1)
+            continue()                       # an extra folder of this name replaces the example
+        endif()
+        string(MAKE_C_IDENTIFIER ${app} sym)
+        file(GLOB app_src CONFIGURE_DEPENDS ${dir}/*.c)
+        file(GLOB_RECURSE app_nested CONFIGURE_DEPENDS ${dir}/src/*.c)
+        list(APPEND app_src ${app_nested})
+        set_source_files_properties(${app_src} PROPERTIES INCLUDE_DIRECTORIES "${dir}" COMPILE_OPTIONS "-include;${FW}/app-sdk/tools/sim_alloc.h")
         target_sources(lssim PRIVATE ${app_src})
         set_source_files_properties(${app_src} PROPERTIES COMPILE_DEFINITIONS
-            "lap_main=lap_main_${app};lap_app=lap_app_${app};lap_icon_px=lap_icon_px_${app};LAP_ICON_PX_ATTR=__attribute__((used))")
-        string(APPEND LAPSIM_DECLS "const lap_app_t *lap_main_${app}(void);
-extern const lap_icon_px_t lap_icon_px_${app};
+            "lap_main=lap_main_${sym};lap_app=lap_app_${sym};lap_icon_px=lap_icon_px_${sym};LAP_ICON_PX_ATTR=__attribute__((used))")
+        set(icon "0")                        # LAP_ICON_PX is optional
+        foreach(f ${app_src})
+            file(READ ${f} txt)
+            string(FIND "${txt}" "LAP_ICON_PX(" at)
+            if(at GREATER -1)
+                set(icon "&lap_icon_px_${sym}")
+            endif()
+        endforeach()
+        string(APPEND LAPSIM_DECLS "const lap_app_t *lap_main_${sym}(void);
 ")
-        string(APPEND LAPSIM_TABLE "    {\"${app}\", lap_main_${app}, &lap_icon_px_${app}},
+        if(NOT icon STREQUAL "0")
+            string(APPEND LAPSIM_DECLS "extern const lap_icon_px_t lap_icon_px_${sym};
+")
+        endif()
+        string(APPEND LAPSIM_TABLE "    {\"${app}\", lap_main_${sym}, ${icon}},
 ")
         math(EXPR LAPSIM_COUNT "${LAPSIM_COUNT} + 1")
     endif()
@@ -3129,6 +3246,20 @@ const int lapsim_app_count = ${LAPSIM_COUNT};
 ")
 target_sources(lssim PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/lapsim_apps.c ${LAP_TUI}/ls_lap_api.c ${LAP_TUI}/ls_lap_sys.c ${LAP_TUI}/ls_lap_net.c ${LAP_TUI}/ls_lap_storage.c ${LAP_TUI}/ls_lap_manifest.c)
 target_include_directories(lssim PRIVATE ${FW}/app-sdk/include)
+
+# Desktop release host: app DLLs import the same public API as board apps.
+# Opt-in so checkout `lsdk sim` keeps its existing static app build.
+option(LSSIM_DYNAMIC_APPS "Export the app API for Desktop app DLLs" OFF)
+if(WIN32 AND LSSIM_DYNAMIC_APPS)
+    set_target_properties(lssim PROPERTIES ENABLE_EXPORTS ON)
+    file(STRINGS ${FW}/app-sdk/exports.txt LSSIM_EXPORTS REGEX "^(lap_|l3_)")
+    list(FILTER LSSIM_EXPORTS INCLUDE REGEX "^[A-Za-z_][A-Za-z_0-9]*$")
+    string(JOIN "\n" LSSIM_EXPORT_TEXT ${LSSIM_EXPORTS})
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/lssim.def "EXPORTS\n${LSSIM_EXPORT_TEXT}\nls_lap_malloc\nls_lap_calloc\nls_lap_realloc\nls_lap_free\n")
+    set_property(TARGET lssim APPEND PROPERTY LINK_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/lssim.def)
+    target_link_options(lssim PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/lssim.def")
+    target_compile_definitions(lssim PRIVATE LSSIM_DYNAMIC_APPS=1)
+endif()
 
 # Shared receiver assessment and bounded read-only observation receipts.
 target_sources(test_tui_screens PRIVATE ${FW}/components/lakeshark/radio/receiver_diagnostics.c)
@@ -3266,6 +3397,55 @@ target_link_libraries(test_lap_kit lap3d_host m $<$<BOOL:${WIN32}>:ws2_32>)
 target_compile_definitions(test_lap_kit PRIVATE LS_LAP_SD_ROOT="lap-sd")
 add_test(NAME test_lap_kit COMMAND test_lap_kit ${FW}/bench/fixtures/lap_api13_exports.txt
     ${FW}/bench/fixtures/lap_api20_exports.txt ${FW}/app-sdk/exports.txt ${FW}/app-sdk/include/lakeshark_ui.h)
+# API 2.3 contracts over the production runtime, with recording modal widgets.
+add_executable(test_lap_radio_io tests/test_lap_radio_io.c ${LAP_API_TEST_SOURCES})
+target_include_directories(test_lap_radio_io PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
+target_link_libraries(test_lap_radio_io lap3d_host m $<$<BOOL:${WIN32}>:ws2_32>)
+target_compile_definitions(test_lap_radio_io PRIVATE LS_LAP_SD_ROOT="lap-sd")
+add_test(NAME test_lap_radio_io COMMAND test_lap_radio_io)
+add_executable(test_lap_phase1 tests/test_lap_phase1.c ${LAP_API_TEST_SOURCES})
+target_include_directories(test_lap_phase1 PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
+target_link_libraries(test_lap_phase1 lap3d_host m $<$<BOOL:${WIN32}>:ws2_32>)
+target_compile_definitions(test_lap_phase1 PRIVATE LS_LAP_SD_ROOT="lap-sd")
+add_test(NAME test_lap_phase1 COMMAND test_lap_phase1)
+
+# Radio RX API 2.4 contract and waveform tests.
+add_executable(test_lap_rx24 tests/test_lap_rx24.c ${LAP_API_TEST_SOURCES}
+    fixtures/pocsag_gen.c)
+target_include_directories(test_lap_rx24 PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
+target_link_libraries(test_lap_rx24 lap3d_host m $<$<BOOL:${WIN32}>:ws2_32>)
+add_test(NAME test_lap_rx24 COMMAND test_lap_rx24)
+
+# API 2.5 system contracts over the shared runtime.
+add_executable(test_lap_system tests/test_lap_system.c ${LAP_API_TEST_SOURCES})
+target_include_directories(test_lap_system PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
+target_link_libraries(test_lap_system lap3d_host m $<$<BOOL:${WIN32}>:ws2_32>)
+target_compile_definitions(test_lap_system PRIVATE LS_LAP_SD_ROOT="lap-system-sd")
+add_test(NAME test_lap_system COMMAND test_lap_system)
+# API 2.5: input devices and sensors; same production runtime as Phase 1.
+add_executable(test_touch_contacts tests/test_touch_contacts.c ${FW}/components/lakeshark/board/ls_touch.c)
+target_include_directories(test_touch_contacts PRIVATE shims ${FW}/components/lakeshark/board)
+target_compile_definitions(test_touch_contacts PRIVATE CONFIG_LS_BOARD_P4_NANO=1 CONFIG_LS_PANEL_RUNTIME=1)
+target_link_libraries(test_touch_contacts ls_harness m)
+add_test(NAME test_touch_contacts COMMAND test_touch_contacts)
+add_executable(test_lap_services26 tests/test_lap_services26.c ${LAP_API_TEST_SOURCES})
+target_include_directories(test_lap_services26 PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
+target_link_libraries(test_lap_services26 lap3d_host m $<$<BOOL:${WIN32}>:ws2_32>)
+target_compile_definitions(test_lap_services26 PRIVATE LS_LAP_SD_ROOT="lap-services26-sd")
+add_test(NAME test_lap_services26 COMMAND test_lap_services26)
+add_executable(test_lap_services26_nano tests/test_lap_services26.c ${LAP_API_TEST_SOURCES})
+target_include_directories(test_lap_services26_nano PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
+target_link_libraries(test_lap_services26_nano lap3d_host m $<$<BOOL:${WIN32}>:ws2_32>)
+target_compile_definitions(test_lap_services26_nano PRIVATE CONFIG_LS_LAP_SERVICES_MAX=2 LS_LAP_SD_ROOT="lap-services26-nano-sd")
+add_test(NAME test_lap_services26_nano COMMAND test_lap_services26_nano)
+add_test(NAME test_lap_services26_examples COMMAND ${Python3_EXECUTABLE} ${FW}/app-sdk/tests/test_services26.py)
+
+add_executable(test_lap_sensors tests/test_lap_sensors.c ${LAP_API_TEST_SOURCES})
+target_include_directories(test_lap_sensors PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
+target_link_libraries(test_lap_sensors lap3d_host m $<$<BOOL:${WIN32}>:ws2_32>)
+target_compile_definitions(test_lap_sensors PRIVATE LS_LAP_SD_ROOT="sensor-sd")
+add_test(NAME test_lap_sensors COMMAND test_lap_sensors)
+
 get_property(lap2_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 foreach(t IN LISTS lap2_targets)
   get_target_property(lap2_type ${t} TYPE)
@@ -3275,16 +3455,38 @@ foreach(t IN LISTS lap2_targets)
   get_target_property(lap2_sources ${t} SOURCES)
   set(lap2_add "")
   if("${lap2_sources}" MATCHES "ls_lap_api\.c|ls_lap_sys\.c")
-    list(APPEND lap2_add ${LAP_TUI}/ls_lap_radio.c ${LAP_TUI}/ls_lap_radio_sim.c ${LAP_TUI}/ls_lap_audio.c
-         ${LAP_TUI}/ls_lap_events.c ${LAP_TUI}/ls_lap_grants.c)
+    list(APPEND lap2_add ${LAP_TUI}/ls_desk_host.c ${LAP_TUI}/ls_lap_system.c ${LAP_TUI}/ls_lap_radio.c ${LAP_TUI}/ls_lap_radio_sim.c ${LAP_TUI}/ls_lap_audio.c
+         ${LAP_TUI}/ls_lap_events.c ${LAP_TUI}/ls_lap_grants.c
+         ${LAP_TUI}/ls_lap_net_audio.c ${LAP_TUI}/ls_lap_wifi_http.c ${LAP_TUI}/ls_lap_udp.c
+         ${LAP_TUI}/ls_lap_mdns.c ${LAP_TUI}/ls_lap_ble_client.c ${LAP_TUI}/ls_lap_sound.c)
+    target_compile_definitions(${t} PRIVATE LS_TIME_HOST=1)
+    if(t STREQUAL "test_lap_host" OR t STREQUAL "test_lap_service")
+      list(APPEND lap2_add ${FW}/bench/shims/lap_rx_log.c)
+    endif()
+    # Radio RX API 2.4: use the same pure DSP/decoder implementations.
+    foreach(rx24_source IN ITEMS
+        apps/fm/fm_dsp.c apps/fm/fm_lr_dsp.c apps/fm/pocsag.c apps/fm/aprs.c apps/fm/ais.c apps/fm/same.c apps/fm/flex.c
+        apps/acars/acars.c apps/acars/acars_msk.c apps/acars/acars_resample.c
+        apps/adsb/mode-s.c dsp/hf_demod.c core/ls_time.c
+        apps/p25/dsp_pipeline.c apps/p25/p25_cqpsk_controls.c apps/p25/p25_tsbk.c apps/p25/p25p1_check_nid.c)
+      string(REPLACE "." "\\." rx24_pattern "${rx24_source}")
+      if(NOT "${lap2_sources}" MATCHES "${rx24_pattern}")
+        list(APPEND lap2_add ${FW}/components/lakeshark/${rx24_source})
+      endif()
+    endforeach()
+
+    list(APPEND lap2_add ${LAP_TUI}/ls_lap_radio_io.c ${LAP_TUI}/ls_lap_channels.c
+         ${FW}/bench/shims/ls_lap_radio_io_sim.c ${FW}/components/lakeshark/radio/tx_policy.c
+         ${FW}/components/lakeshark/core/scan_sd_store.c ${FW}/components/lakeshark/nfc/ndef.c)
+    target_compile_definitions(${t} PRIVATE LS_SCAN_SD_ROOT="sdcard/channels")
     # API 2.2: what the board's watchers see, behind lap_seen_*.
     if(NOT "${lap2_sources}" MATCHES "ls_seen\\.c")
       list(APPEND lap2_add ${LAP_TUI}/ls_seen.c)
     endif()
     # API 2.1: services and the board's controls. lssim draws them with the
     # real widgets; the other targets get recording stand-ins.
-    list(APPEND lap2_add ${LAP_TUI}/ls_lap_service.c ${LAP_TUI}/ls_lap_kit.c)
-    target_include_directories(${t} PRIVATE ${FW}/components/lakeshark/core ${FW}/components/lakeshark/radio)
+    list(APPEND lap2_add ${LAP_TUI}/ls_lap_service.c ${LAP_TUI}/ls_lap_kit.c ${LAP_TUI}/ls_lap_dsp.c)
+    target_include_directories(${t} PRIVATE ${FW}/components/lakeshark/core ${FW}/components/lakeshark/radio ${FW}/components/lakeshark/nfc)
     if(NOT "${lap2_sources}" MATCHES "ls_options\\.c")
       list(APPEND lap2_add ${FW}/bench/shims/lap_kit_widgets.c)
     elseif(NOT "${lap2_sources}" MATCHES "tui_controls\\.c")
@@ -3462,3 +3664,165 @@ if(TARGET cartocore_host AND Python3_Interpreter_FOUND)
     # the encoder itself, against libzstd when this Python has it (3.14+)
     add_test(NAME test_lszstd COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lszstd.py")
 endif()
+
+# Desktop input queue/codec on the host, shared with firmware.
+add_executable(test_input tests/test_input.c ${FW}/components/apps/tui/ls_input.c)
+target_include_directories(test_input PRIVATE ${LS_TUI_APP_INCLUDES})
+target_link_libraries(test_input PRIVATE Threads::Threads)
+add_test(NAME test_input COMMAND test_input)
+target_sources(lssim PRIVATE ${FW}/components/apps/tui/ls_input.c tools/lssim_input.c)
+target_compile_definitions(lssim PRIVATE LSSIM_HAS_INPUT_FINGER=1)
+
+if(Python3_Interpreter_FOUND)
+    add_test(NAME test_lsweb_input COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lsweb_input.py)
+endif()
+find_program(LS_INPUT_NODE NAMES node)
+if(LS_INPUT_NODE)
+    add_test(NAME test_screen_input COMMAND ${LS_INPUT_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_screen_input.js)
+endif()
+
+# The desk window-manager test links what the router test links.
+target_sources(test_desk_wm PRIVATE shims/ls_route_hw_fake.c)
+target_compile_definitions(test_desk_wm PRIVATE LS_FIELD_SAMPLE_STUB=1 LS_TUI_THEME_STUB=1)
+target_sources(test_desk_wm PRIVATE ${FW}/components/apps/tui/ls_wordmark.c)
+target_link_libraries(test_desk_wm music_analysis_host)
+
+# Keep every host renderer's font indices identical to firmware.
+get_property(LS_HOST_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(t IN LISTS LS_HOST_TARGETS)
+    get_target_property(srcs ${t} SOURCES)
+    if("${srcs}" MATCHES "ls_font_list\\.c")
+        target_sources(${t} PRIVATE ${FW}/components/apps/tui/ls_font_mono_11.c
+                                   ${FW}/components/apps/tui/ls_font_mono_13.c)
+    endif()
+endforeach()
+
+target_sources(test_tui_font PRIVATE ${FW}/components/apps/tui/ls_font_mono_11.c
+                                    ${FW}/components/apps/tui/ls_font_mono_13.c)
+if(LS_INPUT_NODE)
+    add_test(NAME test_screen_resolution COMMAND ${LS_INPUT_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_screen_resolution.js)
+    add_test(NAME test_screen_pcfont COMMAND ${LS_INPUT_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_screen_pcfont.js)
+endif()
+
+target_sources(test_tui_font PRIVATE ${FW}/components/apps/tui/ls_font_cyr.c
+                                    ${FW}/components/apps/tui/tuilib/tui_core.c)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME test_panel_resolution COMMAND ${Python3_EXECUTABLE} -B
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_panel_resolution.py ${CMAKE_C_COMPILER})
+endif()
+
+# MAP pointer math over the real viewport and input channels.
+ls_add_test(test_map_navigation
+    ${FW}/components/apps/tui/ls_map.c ${FW}/components/apps/tui/ls_tui_touch.c
+    ${PMT}/upstream/zeromesh_pmtiles.c
+    ${CARTO}/src/carto.c ${CARTO}/src/framebuffer.c ${CARTO}/src/geom.c
+    ${CARTO}/src/mvt.c ${CARTO}/src/raster.c ${CARTO}/src/style.c)
+target_include_directories(test_map_navigation PRIVATE ${LS_TUI_APP_INCLUDES}
+    ${FW}/components/lakeshark ${CARTO}/include ${CARTO}/src ${PMT}/upstream ${PMT}/compat)
+target_compile_options(test_map_navigation PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_map_navigation PRIVATE -Wl,--gc-sections)
+set_source_files_properties(tests/test_map_navigation.c PROPERTIES COMPILE_OPTIONS "-fwhole-program")
+# Exercise the simulator's production touch bridge and the real lap_touch API.
+target_sources(test_desk_wm PRIVATE tools/lssim_input.c
+    ${FW}/components/apps/tui/ls_input.c ${FW}/components/apps/tui/ls_lap_sys.c)
+target_compile_definitions(test_desk_wm PRIVATE LSSIM_HAS_INPUT_FINGER=1)
+
+# Pure SDK helpers compile into each app; never add firmware exports.
+file(GLOB LAP_SDK_LIB CONFIGURE_DEPENDS ${FW}/app-sdk/lib/*.c)
+# Games/assets: library allocations are caller-owned; no simulator-only backend.
+target_sources(lssim PRIVATE ${LAP_SDK_LIB})
+target_include_directories(lssim PRIVATE ${FW}/app-sdk/lib)
+include(${CMAKE_CURRENT_SOURCE_DIR}/shims/lap_contracts.cmake)
+
+# API 2.5 games/assets: same pure libraries used by board apps and Studio.
+add_executable(test_lap_games_assets ${FW}/app-sdk/tests/test_games_assets.c
+    ${FW}/app-sdk/lib/lap_assets.c ${FW}/app-sdk/lib/lap_game.c ${FW}/app-sdk/lib/lap_music.c)
+target_include_directories(test_lap_games_assets PRIVATE ${FW}/app-sdk/lib ${FW}/app-sdk/include)
+target_compile_options(test_lap_games_assets PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(test_lap_games_assets $<$<NOT:$<BOOL:${WIN32}>>:m>)
+add_test(NAME test_lap_games_assets COMMAND test_lap_games_assets)
+
+# Radio RX API 2.4: P25 DSP diagnostic sink for the headless simulator.
+target_sources(lssim PRIVATE shims/lap_rx_log.c)
+
+# API 2.4 networking, Bluetooth and audio contracts (no GUI/external services).
+add_executable(test_lap_net_audio tests/test_lap_net_audio.c
+  ${LAP_TUI}/ls_lap_net_audio.c ${LAP_TUI}/ls_lap_wifi_http.c
+  ${LAP_TUI}/ls_lap_udp.c ${LAP_TUI}/ls_lap_mdns.c
+  ${LAP_TUI}/ls_lap_ble_client.c ${LAP_TUI}/ls_lap_sound.c)
+target_include_directories(test_lap_net_audio PRIVATE ${LAP_TUI})
+target_link_libraries(test_lap_net_audio $<$<BOOL:${WIN32}>:ws2_32>)
+add_test(NAME test_lap_net_audio COMMAND test_lap_net_audio)
+
+# API 2.4 radio I/O: production protection also under the actual chip tests.
+get_property(radio_io_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(t IN LISTS radio_io_targets)
+  get_target_property(srcs ${t} SOURCES)
+  if("${srcs}" MATCHES "board/ls_lora\\.c" AND NOT "${srcs}" MATCHES "radio/tx_policy\\.c")
+    target_sources(${t} PRIVATE ${FW}/components/lakeshark/radio/tx_policy.c)
+    target_include_directories(${t} PRIVATE ${FW}/components/lakeshark/radio)
+  endif()
+endforeach()
+
+# API 2.5 scripted app journeys, including missing hardware and SD fixtures.
+add_test(NAME test_lap_sensor_examples COMMAND ${Python3_EXECUTABLE}
+    ${FW}/bench/tests/test_lap_sensor_examples.py $<TARGET_FILE:lssim>)
+
+# API 2.6 HackRF TX / desktop host: physical driver and native-viewer fakes.
+add_test(NAME test_hackrf_tx COMMAND ${Python3_EXECUTABLE} ${FW}/bench/tests/test_hackrf_tx.py)
+add_test(NAME test_desk_host COMMAND ${Python3_EXECUTABLE} ${FW}/bench/tests/test_desk_host.py)
+find_program(LS_DESK_NODE node)
+if(LS_DESK_NODE)
+    add_test(NAME test_desk_viewer COMMAND ${LS_DESK_NODE} ${FW}/bench/tests/test_desk_viewer.js
+        ${FW}/components/apps/tui/web/screen.js)
+endif()
+
+# API 2.6: Bluetooth peripheral roles, common copied queues plus host fixtures.
+get_property(periph_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(t IN LISTS periph_targets)
+  get_target_property(srcs ${t} SOURCES)
+  if("${srcs}" MATCHES "ls_lap_net_audio\\.c")
+    target_sources(${t} PRIVATE ${LAP_TUI}/ls_lap_ble_peripheral.c)
+  endif()
+endforeach()
+# API 2.6: Bluetooth peripheral contracts and build-disabled board variant.
+foreach(t IN ITEMS test_lap_ble_peripheral test_lap_ble_peripheral_disabled)
+  add_executable(${t} tests/test_lap_ble_peripheral.c ${LAP_TUI}/ls_lap_ble_peripheral.c)
+  target_include_directories(${t} PRIVATE ${LAP_TUI})
+  add_test(NAME ${t} COMMAND ${t})
+endforeach()
+target_compile_definitions(test_lap_ble_peripheral_disabled PRIVATE LS_LAP_PERIPH_DISABLED=1)
+add_executable(test_lap_ble_peripheral_host tests/test_lap_ble_peripheral_host.c
+    ${LAP_TUI}/ls_lap_ble_peripheral.c ${FW}/main/ble_lap_peripheral.c)
+target_include_directories(test_lap_ble_peripheral_host PRIVATE ${LAP_TUI})
+target_compile_definitions(test_lap_ble_peripheral_host PRIVATE LS_LAP_PERIPH_HOST_TEST=1
+    CONFIG_LS_LAP_BLE_ADVERTISER=1 CONFIG_LS_LAP_GATT_SERVER=1 CONFIG_LS_LAP_HID_DEVICE=1)
+add_executable(test_lap_ble_advertiser_only tests/test_lap_ble_peripheral_host.c
+    ${LAP_TUI}/ls_lap_ble_peripheral.c ${FW}/main/ble_lap_peripheral.c)
+target_include_directories(test_lap_ble_advertiser_only PRIVATE ${LAP_TUI})
+target_compile_definitions(test_lap_ble_advertiser_only PRIVATE LS_LAP_PERIPH_HOST_TEST=1
+    CONFIG_LS_LAP_BLE_ADVERTISER=1 CONFIG_LS_LAP_GATT_SERVER=0 CONFIG_LS_LAP_HID_DEVICE=0)
+add_test(NAME test_lap_ble_advertiser_only COMMAND test_lap_ble_advertiser_only)
+add_test(NAME test_lap_ble_peripheral_host COMMAND test_lap_ble_peripheral_host)
+
+# The synthetic peer is a bench backend; firmware only keeps the copied service.
+get_property(periph_sim_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(t IN LISTS periph_sim_targets)
+  get_target_property(srcs ${t} SOURCES)
+  if("${srcs}" MATCHES "ls_lap_ble_peripheral\\.c")
+    target_sources(${t} PRIVATE ${FW}/bench/shims/ls_lap_ble_peripheral_sim.c)
+  endif()
+endforeach()
+
+# Same complete runtime/loader as the on tests, with the optional board services
+# compiled out. Validate ABI resolution, capability masks and immediate errors.
+get_target_property(lap_board_sources test_lap_services26 SOURCES)
+list(FILTER lap_board_sources EXCLUDE REGEX "test_lap_services26\\.c$")
+add_executable(test_lap_board_features tests/test_lap_board_features.c ${lap_board_sources})
+target_include_directories(test_lap_board_features PRIVATE ${LAP_TUI} ${FW}/components/lakeshark
+    ${FW}/components/lakeshark/core ${FW}/components/lakeshark/radio ${FW}/components/lakeshark/nfc)
+target_link_libraries(test_lap_board_features lap3d_host m $<$<BOOL:${WIN32}>:ws2_32>)
+target_compile_definitions(test_lap_board_features PRIVATE LS_LAP_SD_ROOT="lap-board-sd"
+    LS_LAP_PERIPH_DISABLED=1 CONFIG_LS_LAP_WORKER_DSP=0 CONFIG_LS_LAP_HACKRF_TX=0
+    CONFIG_LS_LAP_NFC=0 CONFIG_LS_LAP_MDNS=0 LS_TIME_HOST=1)
+add_test(NAME test_lap_board_features COMMAND test_lap_board_features)

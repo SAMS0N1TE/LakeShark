@@ -35,6 +35,9 @@ typedef struct {
     bool haptic_only;              /* vibrate without speaker output */
     bool steady;                   /* event banner: no decorative motion (slide, pulse, light); stays up longer if its body scrolls */
     bool notify_visible;           /* alert even while its source is open */
+    /* Firmware-owned actionable app notices; never app code pointers. */
+    char actions[2][16];
+    void (*activate)(uint32_t item, int action); /* -1 body, 0/1 action */
 } ls_notice_t;
 
 /* Report a notice, or return false when nothing has happened. Called once a
@@ -51,6 +54,7 @@ void ls_notify_poll(int visible);
 void ls_notify_post(const ls_notice_t *n);
 /* Banner only: the caller supplies its own alert policy. */
 void ls_notify_post_quiet(const ls_notice_t *n);
+void ls_notify_dismiss_action(uint32_t item, void (*activate)(uint32_t, int));
 
 /* True while a banner is on screen. */
 bool ls_notify_showing(void);

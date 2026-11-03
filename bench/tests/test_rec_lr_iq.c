@@ -109,7 +109,8 @@ LS_CASE(lriq_sidecar_and_tx_gate)
     LS_CHECK(rec_sidecar_format(json,sizeof(json),&in)>0);LS_CHECK(rec_sidecar_parse(json,&out));
     LS_CHECK(!strcmp(out.radio,"LR2021"));LS_EQ_UINT(out.sample_rate,125000);LS_EQ_UINT(out.freq_hz,433920000);
     LS_CHECK(!subghz_tx_radio_refusal(433920000,10));
-    LS_CHECK(subghz_tx_radio_refusal(406050000,0));LS_CHECK(subghz_tx_radio_refusal(1500000000,0));
+    LS_CHECK(!subghz_tx_radio_refusal(406050000,0));   /* no band carve-out */
+    LS_CHECK(subghz_tx_radio_refusal(1500000000,0));
     LS_CHECK(subghz_tx_radio_refusal(433920000,11));
 }
 
@@ -395,7 +396,7 @@ LS_CASE(lriq_diagnostics_info_and_shared_tx_gates)
     LS_CHECK(strstr(result,"antenna switch to internal failed"));LS_EQ_UINT(fk.tx_starts,0);
     antenna_allowed=true;stream_active=true;iq_diagnostic(result,sizeof(result));
     LS_CHECK(strstr(result,"radio busy"));LS_EQ_UINT(fk.tx_starts,0);
-    stream_active=false;s_iq_hz=406050000;iq_diagnostic(result,sizeof(result));
+    stream_active=false;s_iq_hz=150000000;iq_diagnostic(result,sizeof(result));
     LS_CHECK(strstr(result,"Replay refused:"));LS_EQ_UINT(fk.tx_starts,0);
     s_iq_hz=433920000;iq_diagnostic(result,sizeof(result));
     LS_CHECK(strstr(result,"Sent LR2021 I/Q once: 231979 us, -9 dBm"));

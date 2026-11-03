@@ -1,3 +1,4 @@
+#include "ls_lap_context.h"
 /* API 2.0 audio for native apps; see ls_lap_radio.h and lakeshark_app.h.
  *
  * Hearing: audio_out hands every block of live radio audio (FM, P25 voice)
@@ -15,6 +16,7 @@
  * Both rings are PSRAM, allocated the first time an app uses them and kept,
  * so a receiver task can never touch freed memory. */
 #include "ls_lap_radio.h"
+#include "ls_lap_radio_io.h"
 #include "ls_lap_api.h"
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -25,9 +27,11 @@
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #define BIG_ALLOC(n) heap_caps_calloc(1, (n), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#define BIG_FREE(p) heap_caps_free(p)
 #define DEVICE 1
 #else
 #define BIG_ALLOC(n) calloc(1, (n))
+#define BIG_FREE(p) free(p)
 #define DEVICE 0
 #endif
 
@@ -40,13 +44,28 @@ typedef struct {
     atomic_uint head, tail;
     int16_t pcm[];
 } ring_t;
-static ring_t *_Atomic hear;
-static ring_t *_Atomic play;
-static atomic_bool listening, flush_play;
-static atomic_uint flush_to;             /* the play queue's head when its app closed */
+static LS_LAP_POOL ring_t *_Atomic p4_hear_slots[LS_LAP_CONTEXTS];
+#define p4_hear (p4_hear_slots[ls_lap_context_index()])
+
+static LS_LAP_POOL ring_t *_Atomic p4_play_slots[LS_LAP_CONTEXTS];
+#define p4_play (p4_play_slots[ls_lap_context_index()])
+
+static LS_LAP_POOL atomic_bool p4_listening_slots[LS_LAP_CONTEXTS], p4_flush_play_slots[LS_LAP_CONTEXTS];
+#define p4_flush_play (p4_flush_play_slots[ls_lap_context_index()])
+#define p4_listening (p4_listening_slots[ls_lap_context_index()])
+
+static LS_LAP_POOL atomic_uint p4_flush_to_slots[LS_LAP_CONTEXTS];
+#define p4_flush_to (p4_flush_to_slots[ls_lap_context_index()])
+             /* the play queue's head when its app closed */
 static atomic_flag tap_busy = ATOMIC_FLAG_INIT;
-static atomic_uint heard_dropped, play_dropped;
-static int64_t paced_us;                 /* worker: when it last let samples go */
+static atomic_flag producer_lock=ATOMIC_FLAG_INIT;
+static LS_LAP_POOL atomic_uint p4_heard_dropped_slots[LS_LAP_CONTEXTS], p4_play_dropped_slots[LS_LAP_CONTEXTS];
+#define p4_heard_dropped (p4_heard_dropped_slots[ls_lap_context_index()])
+#define p4_play_dropped (p4_play_dropped_slots[ls_lap_context_index()])
+
+static LS_LAP_POOL int64_t p4_paced_us_slots[LS_LAP_CONTEXTS];
+#define p4_paced_us (p4_paced_us_slots[ls_lap_context_index()])
+                 /* worker: when it last let samples go */
 #if !DEVICE
 static ls_lap_hub_host_t host;
 ls_lap_hub_host_t *ls_lap_hub_host(void) { return &host; }
@@ -63,18 +82,19 @@ static ring_t *ring(ring_t *_Atomic *slot, unsigned n) {
 
 /* ---- hearing ------------------------------------------------------------ */
 
-void ls_lap_audio_tap(const int16_t *pcm, int n) {
-    if (!atomic_load_explicit(&listening, memory_order_acquire) || !pcm || n <= 0) return;
-    ring_t *r = atomic_load_explicit(&hear, memory_order_acquire);
+static void audio_tap(const int16_t *pcm, int n) {
+    if(pcm && n>0)ls_lap_io_tap(LAP_RECORD_AUDIO16,pcm,(size_t)n*2,0,16000,0);
+    if (!atomic_load_explicit(&p4_listening, memory_order_acquire) || !pcm || n <= 0) return;
+    ring_t *r = atomic_load_explicit(&p4_hear, memory_order_acquire);
     if (!r) return;
     if (atomic_flag_test_and_set_explicit(&tap_busy, memory_order_acquire)) {
-        atomic_fetch_add(&heard_dropped, (unsigned)n);
+        atomic_fetch_add(&p4_heard_dropped, (unsigned)n);
         return;
     }
     const unsigned h = atomic_load_explicit(&r->head, memory_order_relaxed);
     const unsigned room = HEAR_N - (h - atomic_load_explicit(&r->tail, memory_order_acquire));
     unsigned k = (unsigned)n < room ? (unsigned)n : room;
-    if (k < (unsigned)n) atomic_fetch_add(&heard_dropped, (unsigned)n - k);
+    if (k < (unsigned)n) atomic_fetch_add(&p4_heard_dropped, (unsigned)n - k);
     for (unsigned i = 0; i < k; i++) r->pcm[(h + i) & (HEAR_N - 1)] = pcm[i];
     atomic_store_explicit(&r->head, h + k, memory_order_release);
     atomic_flag_clear_explicit(&tap_busy, memory_order_release);
@@ -82,22 +102,22 @@ void ls_lap_audio_tap(const int16_t *pcm, int n) {
 int lap_audio_listen(bool on) {
     if (!ls_lap_api_inside()) return LAP_AUDIO_EINVAL;
     if (!(ls_lap_granted() & LAP_CAP_RADIO_RX)) return LAP_AUDIO_EACCES;
-    if (on && !ring(&hear, HEAR_N)) return LAP_AUDIO_EINVAL;
+    if (on && !ring(&p4_hear, HEAR_N)) return LAP_AUDIO_EINVAL;
 #if DEVICE
     if (on) audio_out_set_tap(ls_lap_audio_tap);   /* once is enough; it stays */
 #endif
-    ring_t *r = atomic_load(&hear);
+    ring_t *r = atomic_load(&p4_hear);
     if (!r) return 0;
-    if (on && !atomic_load(&listening)) atomic_store(&r->tail, atomic_load(&r->head));   /* start from now */
-    atomic_store_explicit(&listening, on, memory_order_release);
+    if (on && !atomic_load(&p4_listening)) atomic_store(&r->tail, atomic_load(&r->head));   /* start from now */
+    atomic_store_explicit(&p4_listening, on, memory_order_release);
     return 0;
 }
 int lap_audio_read(int16_t *pcm, int max) {
     if (!ls_lap_api_inside() || max < 0) return LAP_AUDIO_EINVAL;
     if (!(ls_lap_granted() & LAP_CAP_RADIO_RX)) return LAP_AUDIO_EACCES;
-    if (max && !ls_lap_api_owns(pcm, (size_t)max * sizeof(int16_t))) return LAP_AUDIO_EINVAL;
-    ring_t *r = atomic_load_explicit(&hear, memory_order_acquire);
-    if (!r || !atomic_load(&listening)) return 0;
+    if (max && !ls_lap_api_readable(pcm, (size_t)max * sizeof(int16_t))) return LAP_AUDIO_EINVAL;
+    ring_t *r = atomic_load_explicit(&p4_hear, memory_order_acquire);
+    if (!r || !atomic_load(&p4_listening)) return 0;
     const unsigned t = atomic_load_explicit(&r->tail, memory_order_relaxed);
     unsigned k = atomic_load_explicit(&r->head, memory_order_acquire) - t;
     if (k > (unsigned)max) k = (unsigned)max;
@@ -110,8 +130,8 @@ int lap_audio_read(int16_t *pcm, int max) {
 
 int lap_audio_write(const int16_t *pcm, int n) {
     if (!ls_lap_api_inside() || n < 0) return LAP_AUDIO_EINVAL;
-    if (n && !ls_lap_api_owns(pcm, (size_t)n * sizeof(int16_t))) return LAP_AUDIO_EINVAL;
-    ring_t *r = ring(&play, PLAY_N);
+    if (n && !ls_lap_api_readable(pcm, (size_t)n * sizeof(int16_t))) return LAP_AUDIO_EINVAL;
+    ring_t *r = ring(&p4_play, PLAY_N);
     if (!r) return LAP_AUDIO_EINVAL;
     const unsigned h = atomic_load_explicit(&r->head, memory_order_relaxed);
     const unsigned room = PLAY_N - (h - atomic_load_explicit(&r->tail, memory_order_acquire));
@@ -135,9 +155,9 @@ static bool board_live(void) {
 #endif
 }
 int lap_audio_status(lap_audio_status_t *out) {
-    if (!ls_lap_api_inside() || !ls_lap_api_owns(out, sizeof(*out))) return LAP_AUDIO_EINVAL;
+    if (!ls_lap_api_inside() || !ls_lap_api_readable(out, sizeof(*out))) return LAP_AUDIO_EINVAL;
     memset(out, 0, sizeof(*out));
-    out->listening = atomic_load(&listening);
+    out->listening = atomic_load(&p4_listening);
     out->muted = board_muted();
     out->live = board_live();
 #if DEVICE
@@ -145,9 +165,9 @@ int lap_audio_status(lap_audio_status_t *out) {
 #else
     out->volume = 30;
 #endif
-    out->heard_dropped = atomic_load(&heard_dropped);
-    out->play_dropped = atomic_load(&play_dropped);
-    ring_t *r = atomic_load(&play);
+    out->heard_dropped = atomic_load(&p4_heard_dropped);
+    out->play_dropped = atomic_load(&p4_play_dropped);
+    ring_t *r = atomic_load(&p4_play);
     if (r) out->play_queued = atomic_load(&r->head) - atomic_load(&r->tail);
     return 0;
 }
@@ -162,7 +182,7 @@ static unsigned drain(ring_t *r, unsigned n, bool drop) {
     unsigned have = atomic_load_explicit(&r->head, memory_order_acquire) - t0;
     if (n > have) n = have;
     if (drop) {
-        atomic_fetch_add(&play_dropped, n);
+        atomic_fetch_add(&p4_play_dropped, n);
     } else {
         for (unsigned done = 0; done < n;) {
             unsigned k = n - done < 256u ? n - done : 256u;
@@ -179,26 +199,26 @@ static unsigned drain(ring_t *r, unsigned n, bool drop) {
     return n;
 }
 bool ls_lap_audio_service(void) {
-    ring_t *r = atomic_load_explicit(&play, memory_order_acquire);
+    ring_t *r = atomic_load_explicit(&p4_play, memory_order_acquire);
     if (!r) return false;
-    if (atomic_exchange(&flush_play, false)) {
+    if (atomic_exchange(&p4_flush_play, false)) {
         /* Drop what the closed app left, not what the next one has written. */
-        const unsigned to = atomic_load(&flush_to);
+        const unsigned to = atomic_load(&p4_flush_to);
         if ((int)(to - atomic_load(&r->tail)) > 0) atomic_store(&r->tail, to);
     }
     const unsigned waiting = atomic_load(&r->head) - atomic_load(&r->tail);
-    if (!waiting) { paced_us = 0; return false; }
+    if (!waiting) { p4_paced_us = 0; return false; }
     const bool drop = board_muted() || board_live();
 #if DEVICE
     const int64_t now = esp_timer_get_time();
     if (drop) {
         /* At playing speed, so the app sees the same pace as when it plays. */
-        if (!paced_us) paced_us = now;
-        const unsigned n = (unsigned)((now - paced_us) * 16 / 1000);
-        if (n) { drain(r, n, true); paced_us = now; }
+        if (!p4_paced_us) p4_paced_us = now;
+        const unsigned n = (unsigned)((now - p4_paced_us) * 16 / 1000);
+        if (n) { drain(r, n, true); p4_paced_us = now; }
         return true;
     }
-    paced_us = 0;
+    p4_paced_us = 0;
     const unsigned queued = audio_out_ring_avail() / 2u;
     const unsigned ahead = LAP_AUDIO_RATE * AHEAD_MS / 1000u;
     if (queued < ahead) {
@@ -215,15 +235,43 @@ bool ls_lap_audio_service(void) {
 /* ---- lifetime ----------------------------------------------------------- */
 
 void ls_lap_audio_begin(void) {
-    atomic_store(&listening, false);
-    atomic_store(&heard_dropped, 0u);
-    atomic_store(&play_dropped, 0u);
+    atomic_store(&p4_listening, false);
+    atomic_store(&p4_heard_dropped, 0u);
+    atomic_store(&p4_play_dropped, 0u);
 }
 void ls_lap_audio_end(void) {
-    atomic_store(&listening, false);
-    ring_t *r = atomic_load(&play);
+    atomic_store(&p4_listening, false);
+    ring_t *r = atomic_load(&p4_play);
     if (r) {                             /* the worker empties it */
-        atomic_store(&flush_to, atomic_load(&r->head));
-        atomic_store(&flush_play, true);
+        atomic_store(&p4_flush_to, atomic_load(&r->head));
+        atomic_store(&p4_flush_play, true);
     }
+}
+
+/* Live receiver and local replay are separate bounded producers. Neither
+ * waits for the other; legacy audio has no provenance, so new decoders use
+ * lap_replay_read for explicit source/gap metadata. */
+void ls_lap_audio_tap(const int16_t *pcm,int n) {
+    if(atomic_flag_test_and_set_explicit(&producer_lock,memory_order_acquire))return;
+    unsigned saved=ls_lap_context_index();
+    for(unsigned i=0;i<LS_LAP_CONTEXTS;i++) {
+        if(!ls_lap_instance_at(i)) continue;
+        ls_lap_producer_restore(i); audio_tap(pcm,n);
+    }
+    ls_lap_producer_restore(saved);
+    atomic_flag_clear_explicit(&producer_lock,memory_order_release);
+}
+/* ELF cleanup runs on the IO owner after cancellation; join the bounded
+   producer copy before returning dynamically allocated rings to PSRAM. */
+void ls_lap_audio_reap(void) {
+    atomic_store(&p4_listening,false);
+    while(atomic_flag_test_and_set_explicit(&producer_lock,memory_order_acquire)) {}
+    ring_t *heard=atomic_exchange(&p4_hear,NULL), *played=atomic_exchange(&p4_play,NULL);
+    BIG_FREE(heard); BIG_FREE(played);
+    atomic_flag_clear_explicit(&producer_lock,memory_order_release);
+}
+
+#include "ls_lap_usage.h"
+ls_lap_usage_t ls_lap_audio_usage(unsigned s) {
+    return (ls_lap_usage_t){(atomic_load(&p4_hear_slots[s])?sizeof(ring_t)+HEAR_N*2:0)+(atomic_load(&p4_play_slots[s])?sizeof(ring_t)+PLAY_N*2:0),0};
 }

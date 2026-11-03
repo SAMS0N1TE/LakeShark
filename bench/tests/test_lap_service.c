@@ -103,7 +103,7 @@ int esp_elf_relocate(esp_elf_t *elf, const uint8_t *bytes) {
     relocations++;
     elf->psegment = heap_caps_malloc(32768, 3);
     lap_app_t *app = (lap_app_t *)(elf->psegment + 256);
-    *app = s.apps[s.active].manifest;
+    *app = catalog.apps[lap_state.active].manifest;
     app->enter = on_enter; app->leave = on_leave; app->draw = on_draw; app->key = on_key; app->touch = on_touch;
     descriptor = app;
     elf->entry = (void *)(uintptr_t)entry_fn;
@@ -136,30 +136,33 @@ static const ls_app_doc_t home_doc = {.purpose = "test"};
 
 /* The relocated text: every callback the board may call, tick and stopped too. */
 static bool host_text = true;
-static void step(void) {
+static void selected_io_step(void) {
     io_service();
-    if (!s.work_error[0] && s.elf.psegment && host_text) {
+    if (!lap_state.work_error[0] && lap_state.elf.psegment && host_text) {
         uintptr_t p[] = {(uintptr_t)on_enter, (uintptr_t)on_leave, (uintptr_t)on_draw, (uintptr_t)on_key,
                          (uintptr_t)on_touch, (uintptr_t)on_tick, (uintptr_t)on_stopped};
         uintptr_t lo = p[0], hi = p[0];
         for (int i = 1; i < 7; i++) { if (p[i] < lo) lo = p[i]; if (p[i] > hi) hi = p[i]; }
         bool have = false;
-        for (unsigned i = 0; i < s.nexec; i++) have |= s.exec[i].start == lo && s.exec[i].end == hi + 1;
-        if (!have && s.nexec < 16) {
-            s.exec[s.nexec].start = lo;
-            s.exec[s.nexec++].end = hi + 1;
+        for (unsigned i = 0; i < lap_state.nexec; i++) have |= lap_state.exec[i].start == lo && lap_state.exec[i].end == hi + 1;
+        if (!have && lap_state.nexec < 16) {
+            lap_state.exec[lap_state.nexec].start = lo;
+            lap_state.exec[lap_state.nexec++].end = hi + 1;
         }
     }
+}
+static void step(void) {
+    for(unsigned i=0;i<LS_LAP_CONTEXTS;i++) if(ls_lap_instance_at(i)) { bind_slot(i); selected_io_step(); }
     ls_lap_poll();
 }
 static void frames(int n) {
     for (int i = 0; i < n; i++) { clock_us += 100000; step(); }
 }
-static bool loaded(void) { return s.elf.psegment != NULL; }
+static bool loaded(void) { return lap_state.elf.psegment != NULL; }
 static void open_app(void) {
     ls_app_open(1);
     step();
-    CHECK(s.status.state == LS_LAP_RUNNING);
+    CHECK(lap_state.status.state == LS_LAP_RUNNING);
 }
 static void go_home(void) { ls_tui_screen_show(0); }
 static void unloaded(void) {
@@ -168,7 +171,7 @@ static void unloaded(void) {
 }
 
 /* The probe as a 2.1 service app: LAP_CAP_SERVICE in its descriptor. */
-static void make_service_app(const char *path) {
+static void make_service_app(const char *path,const char *id) {
     FILE *in = fopen(path, "r+b");
     assert(in);
     unsigned char header[52];
@@ -185,7 +188,13 @@ static void make_service_app(const char *path) {
         assert(!fseek(in, section[4], SEEK_SET));
         assert(fread(&magic, 1, 4, in) == 4 && fread(api, 2, 2, in) == 2);
         if (magic != LAP_MAGIC) continue;
-        assert(api[0] == 2 && api[1] == 1);                    /* the SDK builds 2.1 now */
+        char app_id[32]={0},name[16]={0}; snprintf(app_id,sizeof(app_id),"%s",id); snprintf(name,sizeof(name),"%s",id);
+        assert(!fseek(in,section[4]+8,SEEK_SET)); assert(fwrite(app_id,1,sizeof(app_id),in)==sizeof(app_id));
+        assert(fwrite(name,1,sizeof(name),in)==sizeof(name));
+        assert(api[0] == 2 && api[1] <= LS_LAP_API2_MINOR);
+        /* Keep this a legacy 2.1 service fixture after SDK minor bumps. */
+        assert(!fseek(in, section[4] + 6, SEEK_SET));
+        assert(fputc(1, in) != EOF && fputc(0, in) != EOF);
         assert(!fseek(in, section[4] + 130, SEEK_SET));
         assert(fputc(LAP_CAP_SERVICE, in) != EOF);
         changed = true;
@@ -200,23 +209,23 @@ int main(int argc, char **argv) {
     int c;
     while ((c = fgetc(in)) != EOF) assert(fputc(c, out) != EOF);
     fclose(in); fclose(out);
-    make_service_app("lap-svc-probe.lap");
+    make_service_app("lap-svc-probe.lap","probe");
     _mkdir("lap-svc-data");
     ls_app_t home = {.id = "home", .name = "HOME", .screen = &home_screen, .doc = &home_doc};
     assert(ls_app_register(&home) == 0);
     assert(ls_lap_scan_file("lap-svc-probe.lap") == 1 && !outstanding);
-    CHECK(s.apps[0].manifest.flags == LAP_CAP_SERVICE);
+    CHECK(catalog.apps[0].manifest.flags == LAP_CAP_SERVICE);
     /* Asked once per install: SERVICE is a remembered grant. */
     ls_app_open(1);
-    CHECK(s.status.state == LS_LAP_FAILED && s.status.needs_confirmation);
-    CHECK(ls_lap_confirm("probe") && ls_lap_grant_has(&s.apps[0], LAP_CAP_SERVICE));
+    CHECK(lap_state.status.state == LS_LAP_FAILED && lap_state.status.needs_confirmation);
+    CHECK(ls_lap_confirm("probe") && ls_lap_grant_has(&catalog.apps[0], LAP_CAP_SERVICE));
     ls_lap_poll();
     step();
-    CHECK(s.status.state == LS_LAP_RUNNING && enters == 1 && ls_lap_service_on());
+    CHECK(lap_state.status.state == LS_LAP_RUNNING && enters == 1 && ls_lap_service_on());
 
     /* 1. The screen closes: leave() runs, the app stays, the tick goes on. */
     go_home();
-    CHECK(leaves == 1 && loaded() && s.entered && ls_lap_service_on() && !ls_lap_service_shown());
+    CHECK(leaves == 1 && loaded() && lap_state.entered && ls_lap_service_on() && !ls_lap_service_shown());
     frames(1);
     CHECK(loaded());                                           /* not cleaned up behind its back */
     const unsigned t0 = ticks;
@@ -232,7 +241,7 @@ int main(int argc, char **argv) {
     const unsigned relocs = relocations;
     ls_app_open(1);
     step();
-    CHECK(enters == 2 && relocations == relocs && ls_lap_service_shown() && s.status.state == LS_LAP_RUNNING);
+    CHECK(enters == 2 && relocations == relocs && ls_lap_service_shown() && lap_state.status.state == LS_LAP_RUNNING);
     tui_cell back[400], front[400];
     tui_surface sf;
     tui_surface_setup(&sf, back, front, 20, 20);
@@ -242,7 +251,7 @@ int main(int argc, char **argv) {
     /* 3. STOP with the screen open: the service ends, the app stays open. */
     CHECK(ls_lap_service_request_stop("probe"));
     step();
-    CHECK(!ls_lap_service_on() && loaded() && s.status.state == LS_LAP_RUNNING && stops == 0);
+    CHECK(!ls_lap_service_on() && loaded() && lap_state.status.state == LS_LAP_RUNNING && stops == 0);
     CHECK(strstr(ls_lap_hub_host()->last_body, "STOP pressed"));
     go_home();                                                  /* no service: an ordinary close */
     unloaded();
@@ -282,27 +291,35 @@ int main(int argc, char **argv) {
     open_app();
     go_home();
     host_text = false;
-    s.nexec = 0;                                              /* the text no longer covers the tick */
+    lap_state.nexec = 0;                                              /* the text no longer covers the tick */
     frames(2);
     CHECK(!ls_lap_service_on() && stops == 3);                /* nor stopped(): not app code either */
     unloaded();
     host_text = true;
 
-    /* 8. Another native app opened while it runs: the service stops first. */
+    /* 8. Two legacy native services coexist. Reopen without relocation, stop
+       one by identity while the other continues; all ELF/PSRAM is released. */
     open_app();
     go_home();
     CHECK(ls_lap_maintenance_begin("other"));
-    ls_lap_info_t other = s.apps[0];
-    snprintf(other.manifest.id, sizeof(other.manifest.id), "other");
-    snprintf(other.manifest.name, sizeof(other.manifest.name), "OTHER");
-    CHECK(ls_lap_publish(&other));
-    ls_lap_poll();
+    in=fopen("lap-svc-probe.lap","rb"); out=fopen("lap-svc-other.lap","wb"); CHECK(in&&out);
+    while((c=fgetc(in))!=EOF) CHECK(fputc(c,out)!=EOF);
+    fclose(in); fclose(out); make_service_app("lap-svc-other.lap","other");
+    CHECK(ls_lap_scan_file("lap-svc-other.lap")==1); ls_lap_maintenance_end();
+    CHECK(ls_lap_confirm("other"));
+    ls_app_open(1); step(); /* switch directly between native screens */
     ls_app_open(2);
-    CHECK(!ls_lap_service_on() && strstr(ls_lap_hub_host()->last_body, "OTHER opened") && stops == 4);
     step(); step(); step();
-    CHECK(s.active == 1);                                       /* the other app's turn */
+    CHECK(lap_state.active == 1 && lap_state.status.state==LS_LAP_RUNNING && stops==3);
+    ls_lap_service_info_t rows[4]; CHECK(ls_lap_services(rows,4)==2);
     go_home();
-    step(); step();
+    frames(3); CHECK(ls_lap_services(rows,4)==2);
+    unsigned before_reopen=relocations; ls_app_open(1); step();
+    CHECK(lap_state.active==0 && lap_state.status.state==LS_LAP_RUNNING && relocations==before_reopen);
+    go_home(); CHECK(ls_lap_service_request_stop("other")); frames(3);
+    CHECK(ls_lap_services(rows,4)==1&&!strcmp(rows[0].id,"probe")&&stops==4);
+    CHECK(ls_lap_service_request_stop("probe")); frames(3);
+    CHECK(ls_lap_services(rows,4)==0&&stops==5);
     CHECK(!loaded() && !outstanding);
 
     /* 9. An app that never starts a service closes as before. */
@@ -312,6 +329,7 @@ int main(int argc, char **argv) {
     unloaded();
 
     remove("lap-svc-probe.lap");
+    remove("lap-svc-other.lap");
     rmdir("lap-svc-data/probe");
     rmdir("lap-svc-data/other");
     rmdir("lap-svc-data");

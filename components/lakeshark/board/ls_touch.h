@@ -5,6 +5,10 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+typedef struct { uint16_t id, x, y; } ls_touch_contact_t;
+/* True only after the backend with stable multi-contact IDs initialized.
+   Native frames use the optional internal ls_touch_frame hook. */
+bool ls_touch_multitouch(void);
 esp_err_t ls_touch_init(void);
 /* Native portrait pixels. No-data preserves contact until a release report. */
 bool ls_touch_read(uint16_t *x, uint16_t *y, bool *pressed);

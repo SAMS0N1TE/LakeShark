@@ -52,8 +52,19 @@ CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE=y
 CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
-CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
-CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+# SDK peripheral roles are lower priority than receive/decoder, network and
+# audio/input services on the 4.5 MiB OTA board. Keep BLE central/observer.
+# CONFIG_LS_LAP_BLE_ADVERTISER is not set
+# CONFIG_LS_LAP_GATT_SERVER is not set
+# CONFIG_LS_LAP_HID_DEVICE is not set
+# CONFIG_BT_NIMBLE_ROLE_PERIPHERAL is not set
+# CONFIG_BT_NIMBLE_ROLE_BROADCASTER is not set
+# CONFIG_BT_NIMBLE_GATT_SERVER is not set
+# CONFIG_LS_LAP_HACKRF_TX is not set
+# CONFIG_LS_LAP_WORKER_DSP is not set
+# No onboard NFC reader; the optional SDK tag service can be enabled for MixRF.
+# CONFIG_LS_LAP_NFC is not set
+# CONFIG_LS_LAP_MDNS is not set
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=256
 CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=24
@@ -112,6 +123,10 @@ CONFIG_LWIP_TCP_RECVMBOX_SIZE=24
 # app slot. boards/debug.defaults puts both back (config t-display-p4-debug).
 CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
 CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+# Log V2 adds the "E (123) tag: " prefix at run time instead of storing it
+# in every log string, and its call sites are smaller: 4.68 -> 4.62 MB, the
+# same text on the console. The log hooks read lines through ls_log_line.h.
+CONFIG_LOG_VERSION_2=y
 
 # App space: compile for size; the per-frame and DSP code keeps
 # -O2 per file (components/*/CMakeLists.txt). Measured on a T-Display-P4:

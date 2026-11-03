@@ -18,11 +18,13 @@ LS_CASE(large_preference_is_limited_to_hubs_and_settings)
     LS_EQ_INT(ls_tui_font_for_view(2,NULL,false),0);
 }
 #include "ls_font.h"
+#include "tuilib/tui_core.h"
+#include "tuilib/tui_cyr.h"
 
 #include <string.h>
 
 static const ls_font_t *const FACES[] = {
-    &ls_font_mono_16, &ls_font_mono_14, &ls_font_mono_24,
+    &ls_font_mono_16, &ls_font_mono_14, &ls_font_mono_24, &ls_font_mono_13, &ls_font_mono_11,
 };
 #define N_FACES ((int)(sizeof(FACES) / sizeof(FACES[0])))
 
@@ -186,4 +188,26 @@ LS_CASE(the_two_faces_really_are_different_sizes)
              ls_font_mono_14.cell_h < ls_font_mono_16.cell_h);
     LS_CHECK(ls_font_mono_14.bitmap != ls_font_mono_16.bitmap);
     LS_CHECK(ls_font_mono_14.dsc    != ls_font_mono_16.dsc);
+}
+
+LS_CASE(desktop_faces_have_the_requested_device_pixel_cells)
+{
+    LS_EQ_INT(ls_font_mono_11.cell_w, 7); LS_EQ_INT(ls_font_mono_11.cell_h, 13);
+    LS_EQ_INT(ls_font_mono_13.cell_w, 8); LS_EQ_INT(ls_font_mono_13.cell_h, 14);
+}
+
+LS_CASE(every_face_has_the_matching_cyrillic_page)
+{
+    for (int f = 0; f < N_FACES; f++) {
+        const ls_font_t *page = ls_font_cyr_page(FACES[f]);
+        LS_CHECK(page != NULL);
+        LS_EQ_INT(page->count, TUI_CYR_SLOTS);
+        LS_EQ_INT(page->cell_w, FACES[f]->cell_w);
+        LS_EQ_INT(page->cell_h, FACES[f]->cell_h);
+        for (int slot = 0; slot < TUI_CYR_SLOTS; slot++) {
+            LS_CHECK(ls_font_glyph(page, (uint8_t)slot) != NULL);
+            const int byte = tui_cell_codepoint_byte(tui_cyr_slot_codepoint(slot));
+            LS_EQ_INT(tui_cyr_slot(byte), slot);
+        }
+    }
 }

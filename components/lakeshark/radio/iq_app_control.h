@@ -23,8 +23,9 @@ typedef struct {
     /* No lock word here: the one global mux in iq_app_control.c serializes
        every caller of every control, so a per-control flag was redundant. */
     volatile uint32_t pending;
-    volatile uint32_t center_hz;
+    volatile uint64_t center_hz;
     volatile int gain_tenths_db;
+    volatile bool gain_auto;
     volatile uint32_t bandwidth_hz;
     volatile bool fast_retune;
     volatile uint32_t tune_generation;
@@ -51,8 +52,9 @@ typedef enum {
 
 typedef struct {
     uint32_t flags;
-    uint32_t center_hz;
+    uint64_t center_hz;
     int gain_tenths_db;
+    bool gain_auto;
     uint32_t bandwidth_hz;
     bool fast_retune;
     uint32_t tune_generation;
@@ -75,14 +77,15 @@ typedef struct {
 } ls_iq_control_status_t;
 
 void ls_iq_control_reset(ls_iq_control_t *control);
-void ls_iq_control_set_initial(ls_iq_control_t *control, uint32_t center_hz,
+void ls_iq_control_set_initial(ls_iq_control_t *control, uint64_t center_hz,
                                int gain_tenths_db, uint32_t bandwidth_hz);
-void ls_iq_control_request_tune(ls_iq_control_t *control, uint32_t center_hz,
+void ls_iq_control_request_tune(ls_iq_control_t *control, uint64_t center_hz,
                                 bool fast);
 /* Cancel only this generation before its owner admits hardware I/O. No
  * receiver operation; newer operator requests are preserved. */
 bool ls_iq_control_cancel_tune(ls_iq_control_t *control,uint32_t generation,
                               uint64_t *effective_center_hz);
+void ls_iq_control_request_gain_mode(ls_iq_control_t *control, int tenths_db, bool automatic);
 void ls_iq_control_request_gain(ls_iq_control_t *control,
                                 int gain_tenths_db);
 void ls_iq_control_request_bandwidth(ls_iq_control_t *control,

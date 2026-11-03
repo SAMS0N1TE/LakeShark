@@ -156,11 +156,25 @@ static void o_set_lr_span(const ls_opt_t *o, int v)
 static const char *o_lr_span_why(const ls_opt_t *o)
 {
     (void)o;
+    if (settings_get_lr_chip()) return "the 576k span view needs ON-CHIP off";
     return settings_get_lr_wide() ? NULL : "needs WIDE I/Q on";
 }
+/* ON-CHIP: the LR2021 takes 1 MHz and picks the channel out on its own CPU,
+   for every app on the shared session. Saved; on by default. With it on,
+   WIDE I/Q only matters if the radio refuses the program. */
+static const char *const LR_CHIP_NAMES[] = { "OFF  the handheld filters", "ON  1 MHz, the radio picks the channel" };
+static int o_lr_chip(const ls_opt_t *o) { (void)o; return settings_get_lr_chip(); }
+static void o_set_lr_chip(const ls_opt_t *o, int v) { (void)o; (void)settings_set_lr_chip(v != 0); }
+static const char *o_lr_wide_why(const ls_opt_t *o)
+{
+    (void)o;
+    return settings_get_lr_chip() ? "ON-CHIP is on" : NULL;
+}
 static const ls_opt_t LR_ROWS[] = {
+    { .label = "ON-CHIP", .kind = LS_OPT_TOGGLE, .names = LR_CHIP_NAMES,
+      .get = o_lr_chip, .set = o_set_lr_chip },
     { .label = "WIDE I/Q", .kind = LS_OPT_TOGGLE, .names = LR_WIDE_NAMES,
-      .get = o_lr_wide, .set = o_set_lr_wide },
+      .get = o_lr_wide, .set = o_set_lr_wide, .why_not = o_lr_wide_why },
     { .label = "WATERFALL", .kind = LS_OPT_TOGGLE, .names = LR_SPAN_NAMES,
       .get = o_lr_span, .set = o_set_lr_span, .why_not = o_lr_span_why },
 };

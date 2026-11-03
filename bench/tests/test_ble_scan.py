@@ -29,10 +29,15 @@ static int s_conn=BLE_HS_CONN_HANDLE_NONE,s_state=BLE_LINK_SYNCING,starts,cancel
 static int64_t s_rescan_at_us,now;
 static struct {int listener_count; char chains[4];int64_t chain_quarantine;} s_adverts={3};
 static ble_scan_mode_t s_scan_mode;
+static bool s_hid_scan_mode,s_sdk_peripheral;
 static struct ble_gap_disc_params params;
 static bool ble_hs_synced(void){return synced;}
 static int64_t esp_timer_get_time(void){return now;}
 static bool ble_gap_disc_active(void){return active;}
+static bool ble_hid_head_blocked(void){return false;}
+static bool ble_hid_scan_wanted(void){return false;}
+static bool ble_hid_discovery_active(void){return false;}
+static int ble_gap_conn_active(void){return 0;}
 static int ble_gap_disc_cancel(void){cancels++;active=false;return 0;}
 #define BLE_ERR_REM_USER_CONN_TERM 0
 static void ble_gap_terminate(int conn,int why){(void)conn;(void)why;}
@@ -139,6 +144,7 @@ static bool s_scan_event_ready=true,queued,active;
 static int locked,s_start_mux,s_conn=BLE_HS_CONN_HANDLE_NONE;
 static ble_scan_mode_t s_scan_mode;
 static ble_link_state_t s_state;
+static bool s_hid_scan_mode,s_sdk_peripheral,s_hid_observer,s_sdk_observer;
 static bool s_starting,s_primary,s_sweep_observer,s_rid_observer,s_find_observer,s_run,s_passive,s_scanning,s_scan_connected,s_scan_failed;
 static bool s_disconnect_requested,s_cancel_connect_requested,s_stack_up=true;
 static int64_t s_rescan_at_us;
@@ -148,9 +154,15 @@ static int starts,refreshes,terminates,cancels,connect_cancels,fail;
 static bool ble_hs_synced(void){return true;}
 static int64_t esp_timer_get_time(void){return 1000;}
 static bool ble_gap_disc_active(void){return active;}
+static bool ble_hid_head_blocked(void){return false;}
+static bool ble_hid_scan_wanted(void){return false;}
+static bool ble_hid_discovery_active(void){return false;}
+static int ble_gap_conn_active(void){return 0;}
 static void ble_gap_terminate(int conn,int why){(void)conn;(void)why;if(locked)__builtin_trap();terminates++;s_conn=BLE_HS_CONN_HANDLE_NONE;}
 static void ble_gap_conn_cancel(void){if(locked)__builtin_trap();connect_cancels++;}
 static int ble_gap_disc_cancel(void){if(locked)__builtin_trap();cancels++;active=false;return 0;}
+static void ble_hid_reset(void){}
+static void ls_lap_peripheral_host_reset(void){}
 static int gap_event(struct ble_gap_event*e,void*p){(void)e;(void)p;return 0;}
 static int ble_gap_disc(int addr,int duration,struct ble_gap_disc_params*p,int(*cb)(struct ble_gap_event*,void*),void*arg){
  (void)addr;(void)duration;(void)p;(void)cb;(void)arg;if(locked)__builtin_trap();active=true;return 0;

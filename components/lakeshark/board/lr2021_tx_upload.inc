@@ -1,3 +1,4 @@
+#include "tx_protection.h"
 /* Bounded, amplitude-preserving LR2021 I/Q playback. Included by the LR20xx
  * board driver so it can share the radio lock and established recovery path. */
 #define LRTX_UPLOAD_MAX_BYTES 16384u
@@ -291,6 +292,10 @@ static esp_err_t lrtx_send(const uint8_t *data, uint32_t size, uint32_t rate,
         if (reason) *reason=why;
         printf("lrtx-send: %s\n",why);
         return err;
+    }
+    if (err == ESP_OK) {
+        int protect=ls_tx_protect(LS_TX_SOCKET,dbm,false,(uint32_t)duration_us,esp_timer_get_time());
+        if(protect){ls_board_hw_antenna_tx_end();ls_lora_hw_unlock();if(reason)*reason=protect==-23?"PA thermal protection":protect==-22?"hardware duty limit":"hardware power limit";return ESP_ERR_INVALID_STATE;}
     }
     if (err == ESP_OK) {
         rx = lr.rx_mode || lr.rearm;

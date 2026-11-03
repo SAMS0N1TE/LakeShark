@@ -392,10 +392,65 @@ static int panel_columns(const ls_quick_t *items,int n,int width,bool wide)
     return across>limit ? limit : across;
 }
 
+/* THE DESK FORM: one-row keys flowing along the strip. A two-way control
+   is its label and value with a [-] and a [+] after them; the rest are
+   keys with their state on the cap. Hits are the halves the touch form
+   has (i*2 down, i*2+1 up or press). */
+static int compact_width(const ls_quick_t *it)
+{
+    const char *st = ls_quick_state(it);
+    const int l = it->label ? (int)strlen(it->label) : 0, v = st ? (int)strlen(st) : 0;
+    if (two_way(it)) return l + (v ? v + 1 : 0) + 7;
+    return 4 + l + (v ? v + 1 : 0);
+}
+
+static int compact_flow(tui_surface *sf, tui_rect area, const ls_quick_t *items, int n)
+{
+    int x = area.x, y = area.y;
+    for (int i = 0; i < n; i++) {
+        const int w = compact_width(&items[i]);
+        if (x > area.x && x + w > area.x + area.w) { x = area.x; y++; }
+        if (sf && y < area.y + area.h) {
+            const bool have = action_index(items[i].action) >= 0;
+            const char *st = ls_quick_state(&items[i]);
+            if (two_way(&items[i])) {
+                const uint8_t lab = have ? TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM;
+                const uint8_t val = have ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM;
+                int cx = x;
+                tui_put_str(sf, area, cx, y, items[i].label, lab);
+                cx += (int)strlen(items[i].label) + 1;
+                if (st && st[0]) { tui_put_str(sf, area, cx, y, st, val); cx += (int)strlen(st) + 1; }
+                for (int k = 0; k < 2; k++) {
+                    const bool lit = s_flash_target == i * 2 + k && s_flash_ttl > 0;
+                    const ls_btn_t b = { .label = k ? "+" : "-", .dim = !have };
+                    tui_put_char(sf, area, cx, y, '[', TUI_ATTR(have ? (TUI_WHITE | TUI_BRIGHT) : LS_FAINT_FG, TUI_BLACK));
+                    tui_put_char(sf, area, cx + 1, y, b.label[0],
+                                 !have ? LS_ATTR_DIM : lit ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLUE)
+                                       : TUI_ATTR(TUI_BLACK, TUI_WHITE));
+                    tui_put_char(sf, area, cx + 2, y, ']', TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
+                    hit_add(i * 2 + k, cx, y, cx + 2, y);
+                    cx += 3;
+                }
+            } else {
+                const bool tog = items[i].kind == LS_QUICK_TOGGLE;
+                const bool on = tog && st && (!strcmp(st, "ON") || !strcmp(st, "on"));
+                const ls_btn_t b = { .label = items[i].label, .value = st, .key = items[i].key,
+                                     .on = on, .dim = !have };
+                const bool lit = s_flash_target == i * 2 + 1 && s_flash_ttl > 0;
+                const int used = ls_key1_draw(sf, area, x, y, &b, lit);
+                hit_add(i * 2 + 1, x, y, x + used - 1, y);
+            }
+        }
+        x += w + 1;
+    }
+    return y - area.y + 1;
+}
+
 int ls_quick_rows(const ls_quick_t *items, int n, int width, bool wide)
 {
     if (!items || n <= 0) return 0;
     if (n > MAX_ITEMS) n = MAX_ITEMS;
+    if (ls_tui_compact()) return compact_flow(NULL, tui_rect_make(0, 0, width, 64), items, n);
 
     /* The same walk the draw does. */
 
@@ -439,6 +494,22 @@ int ls_quick_draw_posture(tui_surface *sf, tui_rect area, bool wide,
 {
     if (!sf || !items || n <= 0) return 0;
     if (n > MAX_ITEMS) n = MAX_ITEMS;
+    if (ls_tui_compact()) {
+        if (area.h < 1 || area.w < 12) return 0;
+        hit_reset();
+        int used = compact_flow(sf, area, items, n);
+        if (used > area.h) used = area.h;
+        if (s_flash_ttl > 0 && --s_flash_ttl == 0) s_flash_target = -1;
+        if (s_say_ttl > 0) {
+            if (--s_say_ttl == 0) s_say[0] = 0;
+            if (s_say[0] && used < area.h) {
+                tui_put_str(sf, area, area.x + 1, area.y + used, s_say,
+                            TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+                used++;
+            }
+        }
+        return used;
+    }
     if (area.h < panel_min(items,n,wide) || area.w < ONE_W) return 0;
 
     hit_reset();

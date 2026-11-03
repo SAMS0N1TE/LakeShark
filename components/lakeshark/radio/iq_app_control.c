@@ -40,6 +40,7 @@ void ls_iq_control_reset(ls_iq_control_t *control)
     __atomic_store_n(&control->pending, 0, __ATOMIC_RELEASE);
     control->center_hz = 0;
     control->gain_tenths_db = 0;
+    control->gain_auto = true;
     control->bandwidth_hz = 0;
     control->fast_retune = false;
     control->tune_generation = 0;
@@ -57,7 +58,7 @@ void ls_iq_control_reset(ls_iq_control_t *control)
     control_unlock(control);
 }
 
-void ls_iq_control_set_initial(ls_iq_control_t *control, uint32_t center_hz,
+void ls_iq_control_set_initial(ls_iq_control_t *control, uint64_t center_hz,
                                int gain_tenths_db, uint32_t bandwidth_hz)
 {
     if (!control) return;
@@ -68,12 +69,12 @@ void ls_iq_control_set_initial(ls_iq_control_t *control, uint32_t center_hz,
     control_unlock(control);
 }
 
-void ls_iq_control_request_tune(ls_iq_control_t *control, uint32_t center_hz,
+void ls_iq_control_request_tune(ls_iq_control_t *control, uint64_t center_hz,
                                 bool fast)
 {
     if (!control) return;
     control_lock(control);
-    __atomic_store_n(&control->center_hz, center_hz, __ATOMIC_RELAXED);
+    control->center_hz = center_hz;
     __atomic_store_n(&control->fast_retune, fast, __ATOMIC_RELAXED);
     control->tune_generation++;
     control->tune_state = LS_IQ_RESULT_PENDING;
@@ -83,13 +84,16 @@ void ls_iq_control_request_tune(ls_iq_control_t *control, uint32_t center_hz,
     control_unlock(control);
 }
 
-void ls_iq_control_request_gain(ls_iq_control_t *control,
-                                int gain_tenths_db)
+void ls_iq_control_request_gain(ls_iq_control_t *control, int gain_tenths_db) {
+    ls_iq_control_request_gain_mode(control, gain_tenths_db, gain_tenths_db == 0);
+}
+void ls_iq_control_request_gain_mode(ls_iq_control_t *control, int gain_tenths_db, bool automatic)
 {
     if (!control) return;
     control_lock(control);
     __atomic_store_n(&control->gain_tenths_db, gain_tenths_db,
                      __ATOMIC_RELAXED);
+    control->gain_auto = automatic;
     control->gain_generation++;
     control->gain_state = LS_IQ_RESULT_PENDING;
     control->gain_error = LS_RADIO_OK;
@@ -105,8 +109,8 @@ bool ls_iq_control_cancel_tune(ls_iq_control_t *control,uint32_t generation,uint
     bool cancelled=control->tune_generation==generation && control->tune_state==LS_IQ_RESULT_PENDING;
     if(cancelled) {
         __atomic_fetch_and(&control->pending,~(uint32_t)LS_IQ_CONTROL_TUNE,__ATOMIC_RELEASE);
-        bool known=control->effective_center_known && control->effective_center_hz<=UINT32_MAX;
-        control->center_hz=known?(uint32_t)control->effective_center_hz:0;
+        bool known=control->effective_center_known;
+        control->center_hz=known?control->effective_center_hz:0;
         control->tune_state=known?LS_IQ_RESULT_EFFECTIVE:LS_IQ_RESULT_UNKNOWN;
         control->tune_error=LS_RADIO_OK;
         ++control->tune_generation;
@@ -136,12 +140,12 @@ bool ls_iq_control_take(ls_iq_control_t *control,
     request->flags = __atomic_exchange_n(&control->pending, 0,
                                          __ATOMIC_ACQUIRE);
     if (request->flags & LS_IQ_CONTROL_TUNE) {
-        request->center_hz = __atomic_load_n(&control->center_hz,
-                                             __ATOMIC_RELAXED);
+        request->center_hz = control->center_hz;
         request->fast_retune = __atomic_load_n(&control->fast_retune,
                                                __ATOMIC_RELAXED);
         request->tune_generation = control->tune_generation;
     }
+    request->gain_auto = control->gain_auto;
     if (request->flags & LS_IQ_CONTROL_GAIN)
         request->gain_tenths_db = __atomic_load_n(&control->gain_tenths_db,
                                                   __ATOMIC_RELAXED);
@@ -247,9 +251,9 @@ ls_radio_err_t ls_iq_control_apply_gain(
         return LS_RADIO_ERR_INVALID;
     int actual_gain = 0;
     ls_radio_err_t error = ls_radio_iq_set_gain(
-        session, request->gain_tenths_db == 0 ? LS_RADIO_GAIN_AUTO
+        session, request->gain_auto ? LS_RADIO_GAIN_AUTO
                                                : LS_RADIO_GAIN_MANUAL,
-        request->gain_tenths_db, &actual_gain);
+        request->gain_auto ? 0 : request->gain_tenths_db, &actual_gain);
     note_gain_result(control, request->gain_tenths_db,
                      request->gain_generation, error, actual_gain);
     return error;

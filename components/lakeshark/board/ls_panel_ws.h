@@ -6,6 +6,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+
+/* Virtual pixels only: leave PSRAM for capture, apps and networking. */
+#define LS_TERM_PIXEL_MAX (4u * 1024u * 1024u)
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -25,9 +28,14 @@ bool ls_panel_ws_size(int *w, int *h);
    size of its own, both unturned; this picks the one the framebuffer reports.
    False when the running panel is real glass. */
 bool ls_panel_ws_term_view(bool portrait);
+/* UI task only: lend a PNG destination for one paint, then detach with NULL.
+   No allocation; size must match the current virtual panel. */
+bool ls_panel_ws_term_pixels(uint16_t *pixels, int w, int h);
 /* The terminal-only screen's landscape grid, live and kept for the next
-   start (40-200 x 12-60). True when it changed: the UI then regrids. */
-bool ls_panel_ws_term_resize(int cols, int rows);
+   start (40-384 x 12-112). True when it changed: the UI then regrids. */
+bool ls_panel_ws_term_resize(int cols, int rows, int cw, int ch);
+/* Reapply the saved cell counts after choosing the session font. */
+void ls_panel_ws_term_refont(int cw, int ch);
 
 void ls_panel_ws_register_console(void);
 

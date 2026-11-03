@@ -1,3 +1,4 @@
+#include "ls_lap_context.h"
 /* Bounded outbound TCP for LAP. App callbacks never enter the socket stack.
  * Rings are single producer/single consumer; publishing their counters hands
  * bytes to the other task. DNS callbacks never retain app memory. */
@@ -37,7 +38,7 @@ typedef int net_fd;
 #define EXT_RAM_BSS_ATTR
 #endif
 
-#define SLOTS 2
+#define SLOTS 6
 #define RING 4096u
 enum { FREE, QUEUED, RESOLVING, CONNECTING, READY };
 typedef struct {
@@ -56,9 +57,16 @@ typedef struct {
     net_fd fd;                 /* worker only */
     ring_t tx, rx;
 } connection;
-EXT_RAM_BSS_ATTR static connection sockets[SLOTS];
-static unsigned generation = 1, serial;
-static bool permitted;
+EXT_RAM_BSS_ATTR static connection p4_sockets_slots[LS_LAP_CONTEXTS][SLOTS];
+#define p4_sockets (p4_sockets_slots[ls_lap_context_index()])
+
+static unsigned p4_generation_slots[LS_LAP_CONTEXTS]  = { [0 ... LS_LAP_CONTEXTS-1] = 1 }, serial;
+#define p4_generation (p4_generation_slots[ls_lap_context_index()])
+
+static LS_LAP_POOL bool p4_permitted_slots[LS_LAP_CONTEXTS];
+#define p4_permitted (p4_permitted_slots[ls_lap_context_index()])
+
+bool ls_lap_net_allowed(void) { return p4_permitted; }
 static atomic_uint local_ip;
 static void (*wake_io)(void);
 static uint32_t clock_ms(void) {
@@ -78,29 +86,29 @@ static uint32_t clock_ms(void) {
 }
 void ls_lap_net_set_wake(void (*wake)(void)) { wake_io = wake; }
 void ls_lap_net_end(void) {
-    permitted = false;
-    ++generation;
+    p4_permitted = false;
+    ++p4_generation;
     for (unsigned i = 0; i < SLOTS; ++i)
-        if (atomic_load(&sockets[i].state) != FREE) atomic_store(&sockets[i].cancel, true);
+        if (atomic_load(&p4_sockets[i].state) != FREE) atomic_store(&p4_sockets[i].cancel, true);
     if (wake_io) wake_io();
 }
 void ls_lap_net_begin(bool allowed) {
     ls_lap_net_end();
-    permitted = allowed;
+    p4_permitted = allowed;
 }
 static connection *lookup(int handle) {
-    if (!ls_lap_api_inside() || !permitted || handle < 0) return NULL;
-    connection *c = &sockets[(unsigned)handle % SLOTS];
-    if (atomic_load(&c->state) == FREE || c->generation != generation ||
+    if (!ls_lap_api_inside() || !p4_permitted || handle < 0) return NULL;
+    connection *c = &p4_sockets[(unsigned)handle % SLOTS];
+    if (atomic_load(&c->state) == FREE || c->generation != p4_generation ||
         c->serial != (unsigned)handle / SLOTS || atomic_load(&c->cancel)) return NULL;
     return c;
 }
 int lap_net_status(lap_net_status_t *out) {
-    if (!ls_lap_api_inside() || !ls_lap_api_owns(out, sizeof(*out))) return LAP_NET_EINVAL;
+    if (!ls_lap_api_inside() || !ls_lap_api_readable(out, sizeof(*out))) return LAP_NET_EINVAL;
     memset(out, 0, sizeof(*out));
     uint32_t ip = atomic_load(&local_ip);
     out->connected = ip != 0;
-    out->allowed = permitted;
+    out->allowed = p4_permitted;
     const unsigned char *b = (const unsigned char *)&ip;
     if (ip) snprintf(out->ip, sizeof(out->ip), "%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
     if (wake_io) wake_io();
@@ -108,22 +116,22 @@ int lap_net_status(lap_net_status_t *out) {
 }
 int lap_tcp_connect(const char *host, int port, uint32_t timeout_ms) {
     if (!ls_lap_api_inside()) return LAP_NET_EINVAL;
-    if (!permitted) return LAP_NET_EACCES;
+    if (!p4_permitted) return LAP_NET_EACCES;
     /* Validate each byte before reading it: no string function on a foreign pointer. */
     if (!host) return LAP_NET_EINVAL;
     size_t n = 0;
-    for (; n < sizeof(sockets[0].host); ++n) {
-        if (!ls_lap_api_owns(host, n + 1)) return LAP_NET_EINVAL;
+    for (; n < sizeof(p4_sockets[0].host); ++n) {
+        if (!ls_lap_api_readable(host, n + 1)) return LAP_NET_EINVAL;
         if (!host[n]) break;
         if ((unsigned char)host[n] <= 32 || (unsigned char)host[n] >= 127) return LAP_NET_EINVAL;
     }
-    if (!n || n == sizeof(sockets[0].host) || port < 1 || port > 65535 ||
+    if (!n || n == sizeof(p4_sockets[0].host) || port < 1 || port > 65535 ||
         timeout_ms < 1 || timeout_ms > 30000) return LAP_NET_EINVAL;
     for (unsigned i = 0; i < SLOTS; ++i) {
-        connection *c = &sockets[i];
+        connection *c = &p4_sockets[i];
         if (atomic_load(&c->state) != FREE) continue;
         c->serial = serial = serial % 0x1fffffff + 1;
-        c->generation = generation;
+        c->generation = p4_generation;
         memcpy(c->host, host, n + 1);
         c->port = (uint16_t)port;
         c->timeout = timeout_ms;
@@ -147,7 +155,7 @@ int lap_tcp_state(int handle) {
 }
 int lap_tcp_send(int handle, const void *buf, size_t len) {
     connection *c = lookup(handle);
-    if (!c || len > RING || (len && !ls_lap_api_owns(buf, len))) return LAP_NET_EINVAL;
+    if (!c || len > RING || (len && !ls_lap_api_readable(buf, len))) return LAP_NET_EINVAL;
     int s = atomic_load(&c->state);
     if (s != READY) return s < 0 ? s : LAP_NET_EAGAIN;
     unsigned head = atomic_load(&c->tx.head), tail = atomic_load(&c->tx.tail);
@@ -161,7 +169,7 @@ int lap_tcp_send(int handle, const void *buf, size_t len) {
 }
 int lap_tcp_recv(int handle, void *buf, size_t len) {
     connection *c = lookup(handle);
-    if (!c || len > RING || (len && !ls_lap_api_owns(buf, len))) return LAP_NET_EINVAL;
+    if (!c || len > RING || (len && !ls_lap_api_readable(buf, len))) return LAP_NET_EINVAL;
     if (!len) return 0;
     unsigned head = atomic_load(&c->rx.head), tail = atomic_load(&c->rx.tail);
     size_t n = head - tail;
@@ -291,7 +299,7 @@ bool ls_lap_net_service(void) {
 #endif
     bool busy = false;
     for (unsigned i = 0; i < SLOTS; ++i) {
-        connection *c = &sockets[i];
+        connection *c = &p4_sockets[i];
         int s = atomic_load(&c->state);
         if (s == FREE) continue;
         if (s == QUEUED) c->fd = (net_fd)-1;
@@ -322,4 +330,11 @@ bool ls_lap_net_service(void) {
         if (atomic_load(&c->state) == READY) transfer(c);
     }
     return busy;
+}
+
+#include "ls_lap_usage.h"
+ls_lap_usage_t ls_lap_net_usage(unsigned s) {
+    ls_lap_usage_t v={sizeof(p4_sockets_slots[s]),0};
+    for(unsigned i=0;i<SLOTS;i++) v.handles+=atomic_load(&p4_sockets_slots[s][i].state)!=FREE;
+    return v;
 }

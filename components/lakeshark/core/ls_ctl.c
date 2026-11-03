@@ -44,6 +44,7 @@
 #include "esp_timer.h"
 #include "lr_iq_spectrum.h"
 #include "lr_wf_session.h"
+#include "lr_chip_wf.h"
 #include "p25_lr_wide.h"
 #include "p25_lr_frontend.h"
 #include "dsp_pipeline.h"
@@ -397,13 +398,58 @@ static int cmd_fmlr(int argc, char **argv)
     return 0;
 }
 
+/* The TUI's switch for the LR waterfall the radio computes (ls_wf_source.h). */
+#pragma weak ls_wf_source_lr_chip
+#pragma weak ls_wf_source_lr_chip_get
+#pragma weak ls_wf_source_counters
+#pragma weak ls_wf_source_idle_reason
+void ls_wf_source_lr_chip(bool on);
+bool ls_wf_source_lr_chip_get(void);
+void ls_wf_source_counters(uint32_t *pumps, uint32_t *asks, uint32_t *granted);
+const char *ls_wf_source_idle_reason(void);
+
+/* `wf` - the LR waterfall's feeds; `wf chip on|off` picks the radio's own FFT
+   or the I/Q session for the standalone LR view. */
 static int cmd_wf(int argc, char **argv)
 {
-    (void)argc; (void)argv;
+    if (argc >= 2 && !strcmp(argv[1], "cpu")) {
+        /* Both cores' busy share over a window, from the idle tasks' run
+           time; touches no radio, so it answers while a stream holds it. */
+        uint32_t a[2], b[2], ms = argc > 2 ? (uint32_t)strtoul(argv[2], NULL, 0) : 3000;
+        if (ms < 100 || ms > 60000) ms = 3000;
+        for (BaseType_t c = 0; c < 2; c++) {
+            TaskStatus_t info; vTaskGetInfo(xTaskGetIdleTaskHandleForCore(c), &info, pdFALSE, eRunning);
+            a[c] = info.ulRunTimeCounter;
+        }
+        const int64_t t0 = esp_timer_get_time();
+        vTaskDelay(pdMS_TO_TICKS(ms));
+        for (BaseType_t c = 0; c < 2; c++) {
+            TaskStatus_t info; vTaskGetInfo(xTaskGetIdleTaskHandleForCore(c), &info, pdFALSE, eRunning);
+            b[c] = info.ulRunTimeCounter;
+        }
+        const double us = (double)(esp_timer_get_time() - t0);
+        printf("wf cpu: core0 %.0f%% core1 %.0f%% busy over %lu ms\n", 100.0 - 100.0 * (uint32_t)(b[0] - a[0]) / us,
+               100.0 - 100.0 * (uint32_t)(b[1] - a[1]) / us, (unsigned long)ms);
+        return 0;
+    }
+    if (argc == 3 && !strcmp(argv[1], "chip") && ls_wf_source_lr_chip &&
+        (!strcmp(argv[2], "on") || !strcmp(argv[2], "off")))
+        ls_wf_source_lr_chip(!strcmp(argv[2], "on"));
     bool on; uint32_t hz, lines, gaps, skipped;
     lr_spec_stats(&on, &hz, &lines, &gaps, &skipped);
     LS_PRINTF(fmt_ls_ctl_lrwf_on_center_lines, "LRWF on=%d center=%lu lines=%lu gaps=%lu skipped=%lu\n", on, (unsigned long)hz,
            (unsigned long)lines, (unsigned long)gaps, (unsigned long)skipped);
+    lr_chip_wf_status_t c;
+    lr_chip_wf_status(&c);
+    printf("LRCHIP use=%d active=%d center=%lu rows=%lu frames=%lu per_row=%lu error=%s\n",
+           ls_wf_source_lr_chip_get ? ls_wf_source_lr_chip_get() : 0, c.active, (unsigned long)c.hz,
+           (unsigned long)c.rows, (unsigned long)c.frames, (unsigned long)c.frames_per_row, esp_err_to_name(c.error));
+    if (ls_wf_source_counters && ls_wf_source_idle_reason) {
+        uint32_t pumps, asks, granted;
+        ls_wf_source_counters(&pumps, &asks, &granted);
+        printf("WFSRC pumps=%lu mesh_asks=%lu granted=%lu reason=\"%s\"\n", (unsigned long)pumps,
+               (unsigned long)asks, (unsigned long)granted, ls_wf_source_idle_reason());
+    }
     return 0;
 }
 
@@ -706,7 +752,7 @@ static int p25_lrwide_command(int argc, char **argv)
         }
     }
     const p25_lr_wide_pref_t pref = p25_lr_wide_pref();
-    const bool shared = lr_wf_wide_on();
+    const bool shared = lr_wf_shared_wide();
     printf("P25LRWIDE pref=%s shared=%s -> %s | running=%s\n", p25_lr_wide_pref_name(pref),
            shared ? "on" : "off", p25_lr_wide_pick(pref, shared) ? "wide" : "narrow",
            !P25.lr_iq_active ? "none" : P25.lr_iq_wide ? "wide" : "narrow");

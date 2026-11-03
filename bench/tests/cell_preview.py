@@ -130,5 +130,8 @@ link=re.search(r'^\s*LINK_LIBRARIES = (.*)$',link_block,re.M)
 libs=[str(build/w) if w.endswith('.a') else w
       for w in (link.group(1).split() if link else [])
       if w.endswith('.a') or w.startswith('-l')]
+# and its link flags: the SDK contract wrappers need lssim's --wrap list
+flags=re.search(r'^\s*LINK_FLAGS = (.*)$',link_block,re.M)
+flags=flags.group(1).split() if flags else []
 (out/'link.rsp').write_text('\n'.join('"'+x.replace('\\','/')+'"' for x in objects+libs)+'\n-lm\n')
-subprocess.run([linker,'@'+str(out/'link.rsp'),'-o',str(out/'lssim-cell.exe')],check=True)
+subprocess.run([linker,*flags,'@'+str(out/'link.rsp'),'-o',str(out/'lssim-cell.exe')],check=True)

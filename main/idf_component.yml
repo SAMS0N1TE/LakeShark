@@ -7,6 +7,8 @@ dependencies:
   espressif/esp_hosted:
     version: "==2.12.9"
   espressif/elf_loader: "==1.3.5"
+  # mDNS browse/advertise for apps (ls_lap_mdns.c, API 2.4).
+  espressif/mdns: "==1.11.2"
   # SSH for the network terminal (ls_rterm_ssh.c): libssh 0.12 on the
   # IDF's own mbedTLS. LGPL-2.1, which GPLv3 code may use.
   david-cermak/libssh: "==0.12.2"

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LakeShark Desktop</title>
+<style>
+  :root { --ink: #e9eaee; --dim: #8a8f98; --line: #2a2e35; --hot: #46d6e0; }
+  html, body { height: 100%; margin: 0; background: #000; color: var(--ink);
+    font: 15px/1.35 Menlo, Consolas, monospace; }
+  body { display: flex; flex-direction: column; }
+  iframe { width: 100%; flex: 1; min-height: 0; border: 0; }
+</style>
+</head>
+<body data-updater-desktop="true">
+<iframe id="updater-board" title="LakeShark board"></iframe>
+<script src="updater.js"></script>
+<script>
+// Native host services for the board iframe. Only that frame and its current
+// origin can invoke the two bounded operations; replies never include paths.
+(() => {
+  const frame = document.getElementById('updater-board');
+  const ready = () => {
+    if (frame.contentWindow && frame.src && window.pywebview?.api)
+      frame.contentWindow.postMessage({type:'ls-host-ready', enabled:true}, new URL(frame.src).origin);
+  };
+  window.addEventListener('pywebviewready', ready);
+  frame.addEventListener('load', ready);
+  window.addEventListener('message', async event => {
+    if (event.source !== frame.contentWindow || !frame.src || event.origin !== new URL(frame.src).origin) return;
+    const m = event.data;
+    if (m?.type === 'ls-host-query') { ready(); return; }
+    if (m?.type !== 'ls-host-call' || !Number.isSafeInteger(m.id) || !Array.isArray(m.args)) return;
+    let result = -5;
+    try {
+      if (m.op === 'open_url' && m.args.length === 1) result = await window.pywebview.api.open_url(m.args[0]);
+      else if (m.op === 'save_file' && m.args.length === 2) result = await window.pywebview.api.save_file(...m.args);
+    } catch (_) {}
+    event.source.postMessage({type:'ls-host-result', id:m.id, result}, event.origin);
+  });
+})();
+</script>
+</body>
+</html>

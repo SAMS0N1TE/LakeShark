@@ -55,6 +55,7 @@ void ls_picker_open(const char *title, ls_picker_done_t done) {
 bool ls_picker_add(const char *label, const char *detail) { (void)label; (void)detail; lap_kit_seen.picker_rows++; return true; }
 void ls_picker_select(int index) { (void)index; }
 void ls_picker_close(void) { picker = NULL; lap_kit_seen.picker_closes++; }
+bool ls_picker_active(void) { return picker != NULL; }
 bool ls_picker_is(ls_picker_done_t done) { return picker && picker == done; }
 void lap_kit_pick(int index) { ls_picker_done_t d = picker; picker = NULL; if (d) d(index); }
 

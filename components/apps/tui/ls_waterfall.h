@@ -81,6 +81,10 @@ typedef enum {
     LS_WF_GRAIN_ASCII,
     LS_WF_GRAIN_DENSE,
     LS_WF_GRAIN_BARS,
+    /* Pixels again, drawn for looks: rows blended into a steady scroll at
+       the frame rate, bins blended across the width, a continuous colour
+       map. Same data as PIXEL, never more than one row behind it. */
+    LS_WF_GRAIN_SMOOTH,
     LS_WF_GRAIN__COUNT
 } ls_wf_grain_t;
 
@@ -131,6 +135,10 @@ typedef struct {
        floor", which is not a rounding error, it is two quantities in one
        sentence. */
     uint16_t row_bins;
+    /* The pixel picture: updates handed to the panel and pixel lines drawn,
+       both since boot, so `tui cost` can give them as rates. */
+    uint32_t pix_updates;
+    uint32_t pix_lines;
 } ls_wf_stats_t;
 
 /* Claim the instrument. A different owner clears the history, because two

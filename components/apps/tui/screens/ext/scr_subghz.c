@@ -1662,6 +1662,7 @@ static void page_bar(tui_surface *sf,tui_rect *a,const ls_btn_t *btn,int n)
     const int bw=wide && tab_w>0 && a->w-tab_w>=40?a->w-tab_w:a->w;
     int h=wide?(ls_btn_compact_fits(tui_rect_make(a->x,a->y,bw,3),row,m)?3:4):two?10:5;
     if(h>a->h-6)h=a->h>9?3:0;
+    if(ls_tui_compact())h=1;   /* desk: one-row keys, page tabs beside them */
     if(h<=0)return;
     if(two)ls_btn_bar_raised(sf,tui_rect_make(a->x,a->y,a->w,h),row,m,button_focus);
     else ls_btn_bar_raised_row(sf,tui_rect_make(a->x,a->y,bw,h),row,m,button_focus);
@@ -1704,7 +1705,7 @@ static void draw_read(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,
         ls_btn_t bottom[2]={
             {"PREV","PATTERN",',',false,!s.count || selected==0},
             {"NEXT","PATTERN",'.',false,selected+1>=s.count}};
-        const int bh=5;
+        const int bh=ls_tui_compact()?1:5;
         if(a.h>bh+20) {
             ls_btn_bar_raised_slot(sf,tui_rect_make(a.x,a.y+a.h-bh,a.w,bh),bottom,2,-1,LS_BTN_SLOT_WATERFALL);
             a.h-=bh;
@@ -1734,8 +1735,22 @@ static void draw_read(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,
     }
     int rows=list.h/2;if(rows<1)rows=1;
     int first=selected/rows*rows;
-    if(!s.count)tui_put_str(sf,content,list.x,list.y,
-                            s.enabled?"Listening - press the remote":"Nothing caught yet. Press WATCH.",LS_ATTR_DIM);
+    if(!s.count) {
+        tui_put_str(sf,content,list.x,list.y,
+                    s.enabled?"Listening - press the remote":"Nothing caught yet. Press WATCH.",LS_ATTR_DIM);
+        /* What turns up here, while the list has room. */
+        static const char *const HOW[]={
+            "Each burst on the channel becomes a capture:",
+            "its timing, a decode when the pattern is known,",
+            "and a device name when rtl_433 knows it.",
+            "",
+            "W  watch      F  frequency",
+            "R  radio      ENTER  open a capture to replay it",
+        };
+        for(int i=0;i<(int)(sizeof(HOW)/sizeof(HOW[0])) && list.y+2+i<list.y+list.h;i++)
+            tui_put_str(sf,list,list.x,list.y+2+i,HOW[i],
+                        i>=4?TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK):TUI_ATTR(TUI_WHITE,TUI_BLACK));
+    }
     for(int i=0;i<rows && first+i<s.count;i++) {
         const rec_watch_event_t *e=&s.event[first+i];int y=list.y+i*2;
         if(first+i==selected)ls_fill_dither(sf,tui_rect_make(list.x,y,list.w,2),LS_DITHER_LIGHT,TUI_CYAN);
@@ -2150,7 +2165,7 @@ static void draw(tui_surface *sf,tui_rect a)
             /* Landscape: beside the page's bar, on the same rows. */
             tab_w=a.w*9/20;tabs=tui_rect_make(0,0,0,0);
         } else {
-            const int th=a.h>=50?8:6;
+            const int th=ls_tui_compact()?1:a.h>=50?8:6;
             tab_w=0;tabs=tui_rect_make(a.x,a.y+a.h-th,a.w,th);
             a.h-=th;
         }

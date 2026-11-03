@@ -56,8 +56,7 @@ int main(void) {
         if (!e[i].address || ls_lap_resolve(e[i].name) != e[i].address)
             fprintf(stderr, "unresolved export: %s\n", e[i].name);
         assert(e[i].address && ls_lap_resolve(e[i].name) == e[i].address);
-        if (i)
-            assert(strcmp(e[i - 1].name, e[i].name) < 0);
+        for(size_t j=0;j<i;j++)assert(strcmp(e[j].name,e[i].name)!=0);
         checks++;
     }
     assert(!ls_lap_resolve("socket") && !strcmp(ls_lap_missing_symbol(), "needs socket"));
@@ -277,11 +276,13 @@ int main(void) {
         assert(lap_sd_remove("lap-sd/apps") == LAP_SD_EINVAL);
         char stack_buf[8];
         assert(lap_sd_read("lap-sd/f.txt", 0, stack_buf, 4) == LAP_SD_EINVAL); /* not the app's memory */
-        int j = lap_sd_write("lap-sd/f.txt", 0, "hello card", 10);
+        char write_data[] = "hello card", append_data[] = "!";
+        int j = lap_sd_write("lap-sd/f.txt", 0, write_data, 10);
+        memset(write_data, 0, sizeof(write_data)); /* job must hold its own copy */
         assert(j >= 0 && lap_sd_poll(j) == LAP_SD_PENDING);
         assert(ls_lap_sys_service() && lap_sd_poll(j) == 10);
         assert(lap_sd_poll(j) == LAP_SD_EINVAL); /* collected once */
-        j = lap_sd_write("lap-sd/f.txt", LAP_SD_APPEND, "!", 1);
+        j = lap_sd_write("lap-sd/f.txt", LAP_SD_APPEND, append_data, 1);
         ls_lap_sys_service();
         assert(lap_sd_poll(j) == 1);
         char *buf = ls_lap_malloc(32);

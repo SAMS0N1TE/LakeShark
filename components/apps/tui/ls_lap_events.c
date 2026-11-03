@@ -1,3 +1,4 @@
+#include "ls_lap_context.h"
 /* API 2.0 for native apps: decoded events, the board's actions and notices.
  * See lakeshark_app.h for the calls and ls_lap_radio.h for the tasks.
  *
@@ -60,22 +61,51 @@ _Static_assert((int)LAP_SEEN_F_VALIDATED == (int)LS_SEEN_F_VALIDATED && (int)LAP
 #define LAP_EV_ALL21 LS_DECODED_KINDS
 #define LAP_EV_ALL22 (LS_DECODED_KINDS | LS_DECODED_P25 | LS_DECODED_REC | LS_DECODED_DETECT)
 
-static int reader = -1;                  /* screen task */
-static uint32_t lost, delivered;         /* screen task */
-static atomic_uint mesh_wanted;          /* the worker polls MeshCore while set */
-static atomic_bool mesh_prime;
-static char app_name[16], app_id[32];
-static uint8_t app_hue;
-static bool api21;                       /* the app knows the 2.1 kinds */
-static bool api22;                       /* and the 2.2 ones, and lap_seen_* */
-static uint32_t notice_ms, alert_ms;    /* screen task: rate limits */
-static char last_source[32];             /* who decoded the event handed over last */
+static int p4_reader_slots[LS_LAP_CONTEXTS]  = { [0 ... LS_LAP_CONTEXTS-1] = -1 };
+#define p4_reader (p4_reader_slots[ls_lap_context_index()])
+                  /* screen task */
+static LS_LAP_POOL uint32_t p4_lost_slots[LS_LAP_CONTEXTS], p4_delivered_slots[LS_LAP_CONTEXTS];
+#define p4_delivered (p4_delivered_slots[ls_lap_context_index()])
+#define p4_lost (p4_lost_slots[ls_lap_context_index()])
+         /* screen task */
+static LS_LAP_POOL atomic_uint p4_mesh_wanted_slots[LS_LAP_CONTEXTS];
+#define p4_mesh_wanted (p4_mesh_wanted_slots[ls_lap_context_index()])
+          /* the worker polls MeshCore while set */
+static LS_LAP_POOL atomic_bool p4_mesh_prime_slots[LS_LAP_CONTEXTS];
+#define p4_mesh_prime (p4_mesh_prime_slots[ls_lap_context_index()])
+
+static LS_LAP_POOL char p4_app_name_slots[LS_LAP_CONTEXTS][16], p4_app_id_slots[LS_LAP_CONTEXTS][32];
+#define p4_app_id (p4_app_id_slots[ls_lap_context_index()])
+#define p4_app_name (p4_app_name_slots[ls_lap_context_index()])
+
+static LS_LAP_POOL uint8_t p4_app_hue_slots[LS_LAP_CONTEXTS];
+#define p4_app_hue (p4_app_hue_slots[ls_lap_context_index()])
+
+static LS_LAP_POOL bool p4_api21_slots[LS_LAP_CONTEXTS];
+#define p4_api21 (p4_api21_slots[ls_lap_context_index()])
+                       /* the app knows the 2.1 kinds */
+static LS_LAP_POOL bool p4_api22_slots[LS_LAP_CONTEXTS];
+#define p4_api22 (p4_api22_slots[ls_lap_context_index()])
+                       /* and the 2.2 ones, and lap_seen_* */
+static LS_LAP_POOL uint32_t p4_notice_ms_slots[LS_LAP_CONTEXTS], p4_alert_ms_slots[LS_LAP_CONTEXTS];
+#define p4_alert_ms (p4_alert_ms_slots[ls_lap_context_index()])
+#define p4_notice_ms (p4_notice_ms_slots[ls_lap_context_index()])
+    /* screen task: rate limits */
+static LS_LAP_POOL char p4_last_source_slots[LS_LAP_CONTEXTS][32];
+#define p4_last_source (p4_last_source_slots[ls_lap_context_index()])
+             /* who decoded the event handed over last */
 /* lap_emit: a token bucket, EMIT_BURST deep, refilled EMIT_PER_S a second. */
 #define EMIT_PER_S 4
 #define EMIT_BURST 8
-static int64_t emit_at_us;
-static int emit_tokens;
-static uint32_t emit_dropped;
+static LS_LAP_POOL int64_t p4_emit_at_us_slots[LS_LAP_CONTEXTS];
+#define p4_emit_at_us (p4_emit_at_us_slots[ls_lap_context_index()])
+
+static LS_LAP_POOL int p4_emit_tokens_slots[LS_LAP_CONTEXTS];
+#define p4_emit_tokens (p4_emit_tokens_slots[ls_lap_context_index()])
+
+static LS_LAP_POOL uint32_t p4_emit_dropped_slots[LS_LAP_CONTEXTS];
+#define p4_emit_dropped (p4_emit_dropped_slots[ls_lap_context_index()])
+
 
 /* ---- events ------------------------------------------------------------- */
 
@@ -85,27 +115,27 @@ static uint32_t emit_dropped;
 int lap_event_subscribe(uint32_t m) {
     if (!ls_lap_api_inside()) return LAP_RX_EINVAL;
     if (!(ls_lap_granted() & LAP_CAP_RADIO_RX)) return LAP_RX_EACCES;
-    m &= api22 ? LAP_EV_ALL22 : api21 ? LAP_EV_ALL21 : LAP_EV_ALL;
-    if (m && reader < 0) {
-        reader = ls_decoded_open(m);
-        if (reader < 0) return LAP_RX_ENOMEM;
-    } else if (reader >= 0) {
-        ls_decoded_kinds(reader, m);
+    m &= p4_api22 ? LAP_EV_ALL22 : p4_api21 ? LAP_EV_ALL21 : LAP_EV_ALL;
+    if (m && p4_reader < 0) {
+        p4_reader = ls_decoded_open(m);
+        if (p4_reader < 0) return LAP_RX_ENOMEM;
+    } else if (p4_reader >= 0) {
+        ls_decoded_kinds(p4_reader, m);
     }
-    if ((m & LAP_EV_MESH) && !atomic_load(&mesh_wanted)) atomic_store(&mesh_prime, true);
-    atomic_store(&mesh_wanted, m & LAP_EV_MESH);
+    if ((m & LAP_EV_MESH) && !atomic_load(&p4_mesh_wanted)) atomic_store(&p4_mesh_prime, true);
+    atomic_store(&p4_mesh_wanted, m & LAP_EV_MESH);
     return 0;
 }
 int lap_event_next(lap_event_t *out) {
-    if (!ls_lap_api_inside() || !ls_lap_api_owns(out, sizeof(*out))) return LAP_RX_EINVAL;
+    if (!ls_lap_api_inside() || !ls_lap_api_readable(out, sizeof(*out))) return LAP_RX_EINVAL;
     if (!(ls_lap_granted() & LAP_CAP_RADIO_RX)) return LAP_RX_EACCES;
     ls_decoded_t d;
-    if (reader < 0 || !ls_decoded_next(reader, &d, &lost)) return 0;
+    if (p4_reader < 0 || !ls_decoded_next(p4_reader, &d, &p4_lost)) return 0;
     memset(out, 0, sizeof(*out));
     out->kind = d.kind < 256 ? (uint8_t)d.kind : 0;
     out->kind16 = d.kind;
     out->has_pos = d.has_pos;
-    out->seq = ++delivered + lost;
+    out->seq = ++p4_delivered + p4_lost;
     out->address = d.address;
     const int64_t age = now_us() - d.at_us;
     out->age_ms = age > 0 ? (uint32_t)(age / 1000) : 0;
@@ -114,15 +144,15 @@ int lap_event_next(lap_event_t *out) {
     out->alt_ft = d.alt_ft;
     memcpy(out->from, d.from, sizeof(out->from) - 1);
     memcpy(out->text, d.text, sizeof(out->text) - 1);
-    memcpy(last_source, d.source, sizeof(last_source));
-    last_source[sizeof(last_source) - 1] = 0;
+    memcpy(p4_last_source, d.source, sizeof(p4_last_source));
+    p4_last_source[sizeof(p4_last_source) - 1] = 0;
     return 1;
 }
-uint32_t lap_event_dropped(void) { return ls_lap_api_inside() ? lost : 0; }
+uint32_t lap_event_dropped(void) { return ls_lap_api_inside() ? p4_lost : 0; }
 int lap_event_source(char *out, size_t cap) {
-    if (!ls_lap_api_inside() || !out || !cap || !ls_lap_api_owns(out, cap)) return LAP_RX_EINVAL;
-    snprintf(out, cap, "%s", last_source);
-    return (int)strlen(last_source);
+    if (!ls_lap_api_inside() || !out || !cap || !ls_lap_api_readable(out, cap)) return LAP_RX_EINVAL;
+    snprintf(out, cap, "%s", p4_last_source);
+    return (int)strlen(p4_last_source);
 }
 /* API 2.1: the app as a decoder. Its decode goes on the board's timeline the
    way pocsag.c and aprs_store.c put theirs (RX_HEAD_DESIGN.md: plugin output
@@ -130,49 +160,49 @@ int lap_event_source(char *out, size_t cap) {
    runaway app cannot push the board's own decodes out of the ring. */
 int lap_emit(const lap_decoded_t *d) {
     if (!ls_lap_api_inside()) return LAP_RX_EINVAL;
-    if (!api21) return LAP_RX_EUNSUPPORTED;      /* a 2.0 app gets what 2.0 promised */
-    if (!ls_lap_api_owns(d, sizeof(*d))) return LAP_RX_EINVAL;
+    if (!p4_api21) return LAP_RX_EUNSUPPORTED;      /* a 2.0 app gets what 2.0 promised */
+    lap_decoded_t c;
+    if (!ls_lap_copy_input(&c, d, sizeof(c))) return LAP_RX_EINVAL;
     if (!(ls_lap_granted() & LAP_CAP_RADIO_RX)) return LAP_RX_EACCES;
-    const lap_decoded_t c = *d;                  /* copy-in: read the app's memory once */
-    if (!c.kind || (c.kind & (c.kind - 1)) || (c.kind & ~(api22 ? LAP_EV_ALL22 : LAP_EV_ALL21))) return LAP_RX_EINVAL;
+    if (!c.kind || (c.kind & (c.kind - 1)) || (c.kind & ~(p4_api22 ? LAP_EV_ALL22 : LAP_EV_ALL21))) return LAP_RX_EINVAL;
     const int64_t t = now_us();
-    if (emit_at_us) {
-        const int64_t refill = (t - emit_at_us) * EMIT_PER_S / 1000000;
+    if (p4_emit_at_us) {
+        const int64_t refill = (t - p4_emit_at_us) * EMIT_PER_S / 1000000;
         if (refill > 0) {
-            emit_tokens = emit_tokens + refill > EMIT_BURST ? EMIT_BURST : emit_tokens + (int)refill;
-            emit_at_us += refill * 1000000 / EMIT_PER_S;
+            p4_emit_tokens = p4_emit_tokens + refill > EMIT_BURST ? EMIT_BURST : p4_emit_tokens + (int)refill;
+            p4_emit_at_us += refill * 1000000 / EMIT_PER_S;
         }
     } else {
-        emit_at_us = t ? t : 1;
-        emit_tokens = EMIT_BURST;
+        p4_emit_at_us = t ? t : 1;
+        p4_emit_tokens = EMIT_BURST;
     }
-    if (emit_tokens <= 0) {
-        emit_dropped++;
+    if (p4_emit_tokens <= 0) {
+        p4_emit_dropped++;
         return LAP_RX_EAGAIN;
     }
-    emit_tokens--;
+    p4_emit_tokens--;
     ls_decoded_t e = {.kind = c.kind, .has_pos = c.has_pos, .address = c.address, .lat = c.lat,
                       .lon = c.lon, .alt_ft = c.alt_ft, .at_us = t};
     memcpy(e.from, c.from, sizeof(e.from) - 1);
     memcpy(e.text, c.text, sizeof(e.text) - 1);
-    snprintf(e.source, sizeof(e.source), "%s", app_id[0] ? app_id : "app");
+    snprintf(e.source, sizeof(e.source), "%s", p4_app_id[0] ? p4_app_id : "app");
     ls_decoded_publish(&e);
     return 0;
 }
-uint32_t lap_emit_dropped(void) { return ls_lap_api_inside() ? emit_dropped : 0; }
+uint32_t lap_emit_dropped(void) { return ls_lap_api_inside() ? p4_emit_dropped : 0; }
 
 /* API 2.2: what the board's watchers see (ls_seen.c). One app watches, the
    one loaded; its sources go when it closes (ls_lap_events_begin). */
 int lap_seen_watch(uint32_t sources) {
     if (!ls_lap_api_inside()) return LAP_RX_EINVAL;
-    if (!api22) return LAP_RX_EUNSUPPORTED;
+    if (!p4_api22) return LAP_RX_EUNSUPPORTED;
     if (!(ls_lap_granted() & LAP_CAP_RADIO_RX)) return LAP_RX_EACCES;
     if (sources & ~(uint32_t)LS_SEEN_ALL) return LAP_RX_EINVAL;
     ls_seen_want(sources);
     return 0;
 }
 int lap_seen_next(lap_seen_t *out) {
-    if (!ls_lap_api_inside() || !api22 || !ls_lap_api_owns(out, sizeof(*out))) return LAP_RX_EINVAL;
+    if (!ls_lap_api_inside() || !p4_api22 || !ls_lap_api_readable(out, sizeof(*out))) return LAP_RX_EINVAL;
     if (!(ls_lap_granted() & LAP_CAP_RADIO_RX)) return LAP_RX_EACCES;
     ls_seen_t s;
     if (!ls_seen_take(&s)) return 0;
@@ -192,16 +222,16 @@ int lap_seen_next(lap_seen_t *out) {
     memcpy(out->text, s.text, sizeof(out->text) - 1);
     return 1;
 }
-uint32_t lap_seen_dropped(void) { return ls_lap_api_inside() && api22 ? ls_seen_dropped() : 0; }
+uint32_t lap_seen_dropped(void) { return ls_lap_api_inside() && p4_api22 ? ls_seen_dropped() : 0; }
 
 /* Worker: MeshCore's log, polled while an app listens for it. */
 bool ls_lap_events_service(void) {
-    if (!atomic_load(&mesh_wanted)) return false;
+    if (!atomic_load(&p4_mesh_wanted)) return false;
 #if DEVICE
     static uint32_t seen_seq, last_id;
     static ls_mesh_msg_t *log;
     if (!log && !(log = BIG_ALLOC(sizeof(ls_mesh_msg_t) * LS_MESH_MAX_MSGS))) return false;
-    const bool prime = atomic_exchange(&mesh_prime, false);
+    const bool prime = atomic_exchange(&p4_mesh_prime, false);
     const uint32_t seq = ls_mesh_msg_seq();
     if (seq == seen_seq && !prime) return true;
     seen_seq = seq;
@@ -225,22 +255,23 @@ bool ls_lap_events_service(void) {
 static bool text_ok(const char *s, size_t max) {
     if (!s) return false;
     for (size_t n = 0; n < max; n++) {
-        if (!ls_lap_api_owns(s + n, 1)) return false;
+        if (!ls_lap_api_readable(s + n, 1)) return false;
         if (!s[n]) return true;
     }
     return false;
 }
 static uint32_t action_grant(void) {
     const uint32_t g = ls_lap_granted();
+    const bool tune=(g&LAP_CAP_RADIO_RX)&&ls_lap_radio_control_allowed();
 #if DEVICE
-    return LS_CAP_READ | ((g & LAP_CAP_RADIO_RX) ? LS_CAP_TUNE : 0) | ((g & LAP_CAP_RADIO_TX) ? LS_CAP_TX : 0);
+    return LS_CAP_READ | (tune ? LS_CAP_TUNE : 0) | ((g & LAP_CAP_RADIO_TX) ? LS_CAP_TX : 0);
 #else
-    return 1u | ((g & LAP_CAP_RADIO_RX) ? 2u : 0) | ((g & LAP_CAP_RADIO_TX) ? 32u : 0);
+    return 1u | (tune ? 2u : 0) | ((g & LAP_CAP_RADIO_TX) ? 32u : 0);
 #endif
 }
 int lap_action(const char *name, const char *args, char *out, size_t cap) {
     if (!ls_lap_api_inside() || !text_ok(name, 48) || (args && !text_ok(args, 192)) ||
-        (out && (!cap || !ls_lap_api_owns(out, cap))))
+        (out && (!cap || !ls_lap_api_readable(out, cap))))
         return LAP_ACT_BADARG;
     if (out) out[0] = 0;
 #if DEVICE
@@ -281,15 +312,15 @@ int lap_action(const char *name, const char *args, char *out, size_t cap) {
     switch (st) {
     case LS_ACT_OK: return LAP_ACT_OK;
     case LS_ACT_UNKNOWN: return LAP_ACT_UNKNOWN;
-    case LS_ACT_DENIED: return LAP_ACT_DENIED;
+    case LS_ACT_DENIED: return (ls_lap_granted()&LAP_CAP_RADIO_RX)&&!ls_lap_radio_control_allowed()?LAP_ACT_BUSY:LAP_ACT_DENIED;
     case LS_ACT_BADARG: return LAP_ACT_BADARG;
     case LS_ACT_UNAVAILABLE: return LAP_ACT_UNAVAILABLE;
     case LS_ACT_BUSY: return LAP_ACT_BUSY;
     default: return LAP_ACT_FAILED;
     }
 #else
-    return ls_lap_host_action ? ls_lap_host_action(name, args ? args : "", out, out ? cap : 0, action_grant())
-                              : LAP_ACT_UNAVAILABLE;
+    int result=ls_lap_host_action ? ls_lap_host_action(name,args?args:"",out,out?cap:0,action_grant()):LAP_ACT_UNAVAILABLE;
+    return result==LAP_ACT_DENIED&&(ls_lap_granted()&LAP_CAP_RADIO_RX)&&!ls_lap_radio_control_allowed()?LAP_ACT_BUSY:result;
 #endif
 }
 int lap_action_count(void) {
@@ -300,8 +331,8 @@ int lap_action_count(void) {
 #endif
 }
 bool lap_action_info(int index, char *name, size_t name_cap, char *sig, size_t sig_cap) {
-    if (!ls_lap_api_inside() || (name && (!name_cap || !ls_lap_api_owns(name, name_cap))) ||
-        (sig && (!sig_cap || !ls_lap_api_owns(sig, sig_cap))))
+    if (!ls_lap_api_inside() || (name && (!name_cap || !ls_lap_api_readable(name, name_cap))) ||
+        (sig && (!sig_cap || !ls_lap_api_readable(sig, sig_cap))))
         return false;
 #if DEVICE
     if (index < 0 || index >= ls_action_count()) return false;
@@ -320,17 +351,17 @@ static bool notice(const char *title, const char *body, int level, bool alert) {
     if (!ls_lap_api_inside() || !text_ok(title, 64) || !text_ok(body, 256) || level < 0 || level > LAP_ALERT_ALARM)
         return false;
     const uint32_t t = (uint32_t)(now_us() / 1000);
-    uint32_t *last = alert ? &alert_ms : &notice_ms;
+    uint32_t *last = alert ? &p4_alert_ms : &p4_notice_ms;
     const uint32_t gap = alert ? 5000u : 1000u;
     if (*last && t - *last < gap) return false;
     *last = t ? t : 1;
 #if DEVICE
     static const uint8_t HUE[8] = {TUI_WHITE, TUI_RED, TUI_GREEN, TUI_YELLOW, TUI_BLUE, TUI_MAGENTA, TUI_CYAN, TUI_WHITE};
     ls_notice_t n = {0};
-    snprintf(n.title, sizeof(n.title), "%.9s %s", app_name, title);
+    snprintf(n.title, sizeof(n.title), "%.9s %s", p4_app_name, title);
     snprintf(n.body, sizeof(n.body), "%s", body);
     n.screen = -1;
-    n.hue = HUE[app_hue & 7];
+    n.hue = HUE[p4_app_hue & 7];
     if (alert) {
         n.accent = level == LAP_ALERT_ALARM ? TUI_RED : level == LAP_ALERT_WARN ? TUI_YELLOW : TUI_CYAN;
         n.steady = true;
@@ -347,7 +378,7 @@ static bool notice(const char *title, const char *body, int level, bool alert) {
     snprintf(h->last_title, sizeof(h->last_title), "%s", title);
     snprintf(h->last_body, sizeof(h->last_body), "%s", body);
     h->last_level = level;
-    (void)app_name; (void)app_hue;
+    (void)p4_app_name; (void)p4_app_hue;
 #endif
     return true;
 }
@@ -357,20 +388,20 @@ bool lap_alert(const char *title, const char *body, int level) { return notice(t
 /* ---- lifetime ----------------------------------------------------------- */
 
 void ls_lap_events_begin(const lap_app_t *app) {
-    if (reader >= 0) ls_decoded_close(reader);
-    reader = -1;
-    lost = delivered = 0;
-    atomic_store(&mesh_wanted, 0u);
-    notice_ms = alert_ms = 0;
-    snprintf(app_name, sizeof(app_name), "%s", app ? app->name : "");
-    snprintf(app_id, sizeof(app_id), "%s", app ? app->id : "");
-    app_hue = app ? app->color : 0;
-    api21 = app && app->api_major == 2 && app->api_minor >= 1;
-    api22 = app && app->api_major == 2 && app->api_minor >= 2;
+    if (p4_reader >= 0) ls_decoded_close(p4_reader);
+    p4_reader = -1;
+    p4_lost = p4_delivered = 0;
+    atomic_store(&p4_mesh_wanted, 0u);
+    p4_notice_ms = p4_alert_ms = 0;
+    snprintf(p4_app_name, sizeof(p4_app_name), "%s", app ? app->name : "");
+    snprintf(p4_app_id, sizeof(p4_app_id), "%s", app ? app->id : "");
+    p4_app_hue = app ? app->color : 0;
+    p4_api21 = app && app->api_major == 2 && app->api_minor >= 1;
+    p4_api22 = app && app->api_major == 2 && app->api_minor >= 2;
     ls_seen_want(0);
-    last_source[0] = 0;
-    emit_at_us = 0;
-    emit_tokens = 0;
-    emit_dropped = 0;
+    p4_last_source[0] = 0;
+    p4_emit_at_us = 0;
+    p4_emit_tokens = 0;
+    p4_emit_dropped = 0;
 }
 void ls_lap_events_end(void) { ls_lap_events_begin(NULL); }

@@ -11,6 +11,7 @@ static size_t strlcpy(char *out,const char *in,size_t n)
 #include "../../components/lakeshark/audio/tone.c"
 /* settings_init applies a saved WIDE I/Q to the LR session; none here. */
 esp_err_t lr_wf_set_wide(bool on, int32_t offset_hz) { (void)on; (void)offset_hz; return ESP_OK; }
+void lr_wf_set_wide_chip(bool on) { (void)on; }
 
 static int saved=-1, volume=100, pcm_n, job=-1, writes, commits;
 static bool muted, reject;

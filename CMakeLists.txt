@@ -47,11 +47,20 @@ add_compile_options(
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-enum-enum-conversion")
 
-set(LS_PRODUCT_VERSION "2.19.3")
+set(LS_PRODUCT_VERSION "2.20.0")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/ls_build_identity.cmake")
 set(PROJECT_VER "${LS_PRODUCT_VERSION}")
-set(LS_PROJECT_VERSION "2.19.3")
+set(LS_PROJECT_VERSION "2.20.0")
 project(lakeshark VERSION ${LS_PROJECT_VERSION})
+
+# The selected task-only components use LTO; the SDK's unconditional driver flag
+# suppresses the linker plugin even when a later -flto is present. Keep the
+# cache-disabled and driver placement unchanged.
+if(CONFIG_LS_BOARD_T_DISPLAY_P4 AND CONFIG_COMPILER_OPTIMIZATION_SIZE)
+    get_target_property(ls_app_link_options ${CMAKE_PROJECT_NAME}.elf LINK_OPTIONS)
+    list(REMOVE_ITEM ls_app_link_options "-fno-lto")
+    set_property(TARGET ${CMAKE_PROJECT_NAME}.elf PROPERTY LINK_OPTIONS ${ls_app_link_options})
+endif()
 
 # Selective placement avoids moving the whole FreeRTOS kernel back to SRAM.
 # Both task lookups in panic_crumb's IRAM tick hook and the flash IPC scheduler
@@ -201,4 +210,64 @@ endif()
 idf_component_get_property(ls_p2_lib p25_phase2 COMPONENT_LIB)
 if(ls_p2_lib)
     target_compile_definitions(${ls_p2_lib} PRIVATE EZPWD_NO_EXCEPTS)
+endif()
+
+if(CONFIG_LS_BOARD_T_DISPLAY_P4 AND CONFIG_COMPILER_OPTIMIZATION_SIZE)
+    # Protocol/TLS task code has no noflash linker mappings. Keep the hosted
+    # wake ISR outside LTO; no USB, SPI, kernel, DMA or cache-off code joins it.
+    target_compile_options(${ls_hosted_lib} PRIVATE -flto=auto)
+    idf_component_get_property(ls_hosted_dir espressif__esp_hosted COMPONENT_DIR)
+    set_property(SOURCE "${ls_hosted_dir}/host/drivers/power_save/power_save_drv.c"
+        TARGET_DIRECTORY ${ls_hosted_lib} APPEND PROPERTY COMPILE_OPTIONS -fno-lto)
+    foreach(ls_tls_lib mbedcrypto mbedx509 mbedtls)
+        if(TARGET ${ls_tls_lib})
+            target_compile_options(${ls_tls_lib} PRIVATE -flto=auto)
+        endif()
+    endforeach()
+    foreach(ls_protocol_comp esp_http_client esp_http_server esp-tls tcp_transport
+            http_parser json nvs_flash)
+        idf_component_get_property(ls_protocol_lib ${ls_protocol_comp} COMPONENT_LIB)
+        target_compile_options(${ls_protocol_lib} PRIVATE -flto=auto)
+    endforeach()
+    # These board settings leave lwIP's noflash mappings inactive.
+    if(NOT CONFIG_LWIP_IRAM_OPTIMIZATION AND NOT CONFIG_LWIP_EXTRA_IRAM_OPTIMIZATION
+            AND NOT CONFIG_VFS_SELECT_IN_RAM)
+        idf_component_get_property(ls_lwip_lib lwip COMPONENT_LIB)
+        target_compile_options(${ls_lwip_lib} PRIVATE -flto=auto)
+    endif()
+    if(CONFIG_BT_CONTROLLER_DISABLED)
+        idf_component_get_property(ls_bt_lib bt COMPONENT_LIB)
+        target_compile_options(${ls_bt_lib} PRIVATE -flto=auto)
+        idf_component_get_property(ls_bt_dir bt COMPONENT_DIR)
+        foreach(ls_bt_iram hal_uart nimble_port os_msys_init)
+            set_property(SOURCE "${ls_bt_dir}/host/nimble/nimble/porting/nimble/src/${ls_bt_iram}.c"
+                TARGET_DIRECTORY ${ls_bt_lib} APPEND PROPERTY COMPILE_OPTIONS -fno-lto)
+        endforeach()
+        foreach(ls_bt_iram common/hci_log/bt_hci_log.c porting/mem/bt_osi_mem.c
+                common/ble_log/ble_log_spi_out.c common/ble_log/ble_log_uhci_out.c)
+            set_property(SOURCE "${ls_bt_dir}/${ls_bt_iram}"
+                TARGET_DIRECTORY ${ls_bt_lib} APPEND PROPERTY COMPILE_OPTIONS -fno-lto)
+        endforeach()
+    endif()
+    # Decoder/DSP and task-level service code can optimize with the SDK that
+    # calls it. Hardware board/radio sources remain ordinary objects. Exclude
+    # any source declaring an IRAM entry point from this optimization unit.
+    idf_component_get_property(ls_decoder_lib lakeshark COMPONENT_LIB)
+    get_target_property(ls_decoder_sources ${ls_decoder_lib} SOURCES)
+    foreach(ls_decoder_source IN LISTS ls_decoder_sources)
+        if(ls_decoder_source MATCHES "/(apps|dsp|core)/.*\\.(c|cpp)$")
+            file(READ "${ls_decoder_source}" ls_decoder_text)
+            # A weak fallback definition (an attribute reaching a body before
+            # any ';') must stay outside: inside the LTO unit it prevailed over
+            # the strong one in a plain object, so rec_watch_runtime.c's
+            # always-true ls_mesh_radio_hold stub answered for MeshCore and no
+            # hold was ever registered (2.20.0 candidate: every LR app waited
+            # on "mesh release").
+            if(NOT ls_decoder_text MATCHES "IRAM_ATTR|\\.iram|LS_COLD_BEGIN" AND
+               NOT ls_decoder_text MATCHES "__attribute__\\(\\(weak\\)\\)[^;{]*\\{")
+                set_property(SOURCE "${ls_decoder_source}" TARGET_DIRECTORY ${ls_decoder_lib}
+                    APPEND PROPERTY COMPILE_OPTIONS -flto=auto)
+            endif()
+        endif()
+    endforeach()
 endif()

@@ -123,9 +123,40 @@ static void draw_key(tui_surface *sf, tui_rect a, const char *label,
     }
 }
 
+/* The desk form: a small dialog with a field to type into and OK and
+   CANCEL, over the app. The digit keys are not drawn and take no taps;
+   the keyboard types. */
+static void draw_compact(tui_surface *sf, tui_rect area)
+{
+    for (int i = 0; i < N_KEYS + 2; i++) s_hit[i] = tui_rect_make(0, -1, 0, 0);
+    int w = 46;
+    if (w > area.w - 2) w = area.w - 2;
+    if (w < 30 || area.h < 7) return;
+    const tui_rect box = tui_rect_make(area.x + (area.w - w) / 2, area.y + (area.h - 7) / 3, w, 7);
+    ls_dialog1_frame(sf, box, s_title, TUI_CYAN);
+    const int fx = box.x + 2;
+    char line[32];
+    snprintf(line, sizeof(line), "%s", s_buf);
+    ls_field1_draw(sf, box, fx, box.y + 2, 18, line, true, TUI_GREEN | TUI_BRIGHT);
+    tui_put_str(sf, box, fx + 19, box.y + 2, s_unit, A(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, box, fx, box.y + 3, LS_TEXT(t_ls_numpad_type_it_or_esc, "type it, or ESC to go back"),
+                A(DIM_FG, TUI_BLACK));
+    const ls_btn_t ok = { .label = "OK", .on = true }, cancel = { .label = "CANCEL" };
+    const int y = box.y + box.h - 2;
+    const int cw = ls_key1_width(&cancel), ow = ls_key1_width(&ok);
+    const int cx = box.x + box.w - 2 - cw, ox = cx - 1 - ow;
+    ls_key1_draw(sf, box, ox, y, &ok, false);
+    ls_key1_draw(sf, box, cx, y, &cancel, false);
+    s_hit[HIT_OK] = tui_rect_make(ox, y, ow, 1);
+    s_hit[HIT_CANCEL] = tui_rect_make(cx, y, cw, 1);
+    s_hit_n = HIT_OK + 1;
+}
+
 void ls_numpad_draw(tui_surface *sf, tui_rect area)
 {
-    if (!s_open || area.w < 20 || area.h < 14) return;
+    if (!s_open) return;
+    if (ls_tui_compact()) { draw_compact(sf, area); return; }
+    if (area.w < 20 || area.h < 14) return;
 
     const uint8_t dim = A(DIM_FG, TUI_BLACK);
     s_hit_n = 0;

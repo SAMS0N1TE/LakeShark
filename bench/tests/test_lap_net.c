@@ -23,11 +23,11 @@ typedef int fd_t;
 static bool inside = true;
 #ifdef LS_LAP_NET_TEST_DNS
 static bool delay_dns;
-static struct { void *ctx; void (*done)(void *, uint32_t); } dns[2];
+static struct { void *ctx; void (*done)(void *, uint32_t); } dns[6];
 void ls_lap_net_test_dns_start(const char *host, void *ctx, void (*done)(void *, uint32_t)) {
     assert(!strcmp(host, "localhost"));
     if (!delay_dns) { done(ctx, htonl(INADDR_LOOPBACK)); return; }
-    for (int i = 0; i < 2; ++i) if (!dns[i].ctx) {
+    for (int i = 0; i < 6; ++i) if (!dns[i].ctx) {
         dns[i].ctx = ctx; dns[i].done = done; return;
     }
     assert(!"unbounded DNS request");
@@ -38,7 +38,7 @@ static struct {
     lap_net_status_t status;
 } app;
 bool ls_lap_api_inside(void) { return inside; }
-bool ls_lap_api_owns(const void *p, size_t n) {
+bool ls_lap_api_readable(const void *p, size_t n) {
     uintptr_t a = (uintptr_t)p, b = (uintptr_t)&app;
     return p && a >= b && a - b <= sizeof(app) && n <= sizeof(app) - (a - b);
 }
@@ -87,7 +87,10 @@ int main(void) {
         pause_ms(40); ls_lap_net_service();
         assert(lap_tcp_state(d1) == LAP_NET_ETIMEOUT);
         ls_lap_net_end(); ls_lap_net_begin(true); ls_lap_net_service();
-        assert(lap_tcp_connect(app.host, port, 1000) == LAP_NET_EBUSY);
+        /* Pending old DNS owns two slots; the other four remain usable. */
+        for (int j=0;j<4;j++) assert(lap_tcp_connect(app.host,port,1000)>=0);
+        assert(lap_tcp_connect(app.host,port,1000)==LAP_NET_EBUSY);
+        ls_lap_net_end();ls_lap_net_begin(true);ls_lap_net_service();
         for (int i = 0; i < 2; ++i) { dns[i].done(dns[i].ctx, i ? 0 : htonl(INADDR_LOOPBACK)); dns[i].ctx = NULL; }
         ls_lap_net_service();
         assert(lap_tcp_state(d1) == LAP_NET_EINVAL && lap_tcp_state(d2) == LAP_NET_EINVAL);
@@ -148,6 +151,7 @@ int main(void) {
     lap_tcp_close(timed); ls_lap_net_service();
     int a = lap_tcp_connect(app.host, port, 1000), b = lap_tcp_connect(app.host, port, 1000);
     assert(a >= 0 && b >= 0 && a != b);
+    for(int i=0;i<4;i++)assert(lap_tcp_connect(app.host,port,1000)>=0);
     assert(lap_tcp_connect(app.host, port, 1000) == LAP_NET_EBUSY);
     ls_lap_net_end();
     assert(lap_tcp_state(a) == LAP_NET_EINVAL && lap_tcp_state(b) == LAP_NET_EINVAL);

@@ -59,7 +59,7 @@ Captures go to `LakeShark captures` in your home folder. The `.png` and `.gif` n
 The ESP32-P4-NANO DSI image runs the full interface even with nothing on the DSI connector. The terminal is its screen.
 
 - `panel set term` chooses this on purpose.
-- `panel term 160x40` makes its grid 160 columns by 40 rows (40-200 by 12-60), then reboot. `panel term` shows the size, `panel term default` goes back to 118 x 28.
+- `panel term 160x40` makes its grid 160 columns by 40 rows (40-384 by 12-112), then reboot. `panel term` shows the size, `panel term default` goes back to 118 x 28. Large grids also respect a 4,194,304-pixel framebuffer budget for the selected font.
 - `panel none` goes back to the plain headless board.
 
 USB needs `pip install pyserial`.
@@ -70,8 +70,18 @@ USB needs `pip install pyserial`.
 
 - The page draws the board's own cells with the board's own font (`lsfont.bin.gz`, made by `lssim atlas`), so it shows exactly what the glass would, at every frame the board draws.
 - On a Nano with no display the board's grid follows the window: resize it and the screen fits.
+- With desktop input (`term caps` answers `ev1`) and a fine pointer, the page defaults to 7x13. The gear panel offers 7x13, 8x14 and 10x17; the choice is remembered in the browser. Each bitmap pixel occupies one device pixel, including at 150% or 200% display scaling. Phone/coarse-pointer and legacy pages keep the scaled view.
+- Gear panel, **PC FONT FOR TEXT** (off by default, remembered in the browser): letters, digits, punctuation and Cyrillic are drawn by the browser in DejaVu Sans Mono, the face the board's bitmaps come from, in the same cells at the same size and baseline. Blocks, sextants, braille, box lines, frames, icons and pictures stay the board's own glyphs.
+- The page sends `term size C R 7x13` (or the selected font) to change the font and grid together. Caps are 384x112 / 43,008 cells on panel-runtime builds, with the pixel budget above. Real glass keeps its own grid.
 - Mouse: click to tap, hold and move to drag, the wheel scrolls. Keys go to the board.
 - `?fit=0` on the address keeps the board's grid as it is.
+
+Host-only dense desktop preview (no serial port): in PowerShell, set
+`$env:LSSIM_GRID='360x105'` and run
+`bench/build/lssim.exe desk -l -F 4 -o bench/build-desk/res.bmp -d`.
+`-F 4` selects 7x13, `-F 3` selects 8x14, and `-F 0` selects 10x17;
+`-d` dumps the grid as text. Set `LSSIM_CELLS_OUT` to a file to capture the
+same cell array for `bench/tools/bench_rterm_cells.py`.
 
 ## LakeShark on the desktop (one click)
 

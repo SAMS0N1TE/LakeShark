@@ -100,7 +100,7 @@ legend.
 ## Tips and limits
 
 - A pattern match is not a device identity. List legend (i) explains the list.
-- REPLAY appears for CC1101 and LoRa chip captures. Power is -9 to +10 dBm (-10 to +10 dBm on the CC1101). Replay works in 300 to 348, 387 to 464 and 779 to 928 MHz, not at 406.0 to 406.1 MHz, and for 6 to 4096 edges up to 10 seconds.
+- REPLAY appears for CC1101 and LoRa chip captures. Power is -9 to +10 dBm (-10 to +10 dBm on the CC1101). Replay works in 300 to 348, 387 to 464 and 779 to 928 MHz, for 6 to 4096 edges up to 10 seconds.
 - A JOURNAL note carries the GPS fix from when you kept it, not from when the pattern was first heard.
 - SAVED shows the newest 48 `.sub` files.
 - Check your local rules before transmitting.

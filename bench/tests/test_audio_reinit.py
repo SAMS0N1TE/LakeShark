@@ -23,10 +23,12 @@ def run_c(source):
     with tempfile.TemporaryDirectory() as tmp:
         path = pathlib.Path(tmp)
         (path / 'test.c').write_text(source)
-        subprocess.run([shutil.which('gcc'), '-std=c11', '-Wall', '-Wextra',
-                        '-I', str(ROOT / 'components/ls_textpack/include'), '-include', 'ls_textpack.h',
-                        str(path / 'test.c'), '-o', str(path / 'test.exe')], check=True,
-                       capture_output=True, text=True)
+        built = subprocess.run([shutil.which('gcc'), '-std=c11', '-Wall', '-Wextra',
+                                '-I', str(ROOT / 'components/ls_textpack/include'), '-include', 'ls_textpack.h',
+                                str(path / 'test.c'), '-o', str(path / 'test.exe')],
+                               capture_output=True, text=True)
+        if built.returncode:
+            raise AssertionError('the harness does not compile:\n' + built.stderr)
         result = subprocess.run([str(path / 'test.exe')], capture_output=True, text=True)
         if result.returncode:
             raise AssertionError(result.stdout + result.stderr)
@@ -52,6 +54,7 @@ enum {ESP_OK,ESP_ERR_TIMEOUT,ESP_ERR_INVALID_STATE,ESP_FAIL};
 static unsigned s_reinit_state;
 static int s_owner_lock, s_volume=17;
 static bool s_ready=true,s_media_request,s_media_owned,s_reinit_swap,s_muted=true;
+static bool s_capture_owned;
 static bool s_volume_applied,s_reprime;
 static esp_err_t s_reinit_result;
 static int ls_audio_ws_gpio=3,ls_audio_dout_gpio=4;

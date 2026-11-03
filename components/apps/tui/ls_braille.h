@@ -3,12 +3,35 @@
 #define LS_BRAILLE_H
 #include <stdint.h>
 #include "tuilib/tui_core.h"
+/* Dot-matrix text and picture glyphs are pictures, not line observations. */
+static inline void ls_braille_glyph_put(tui_surface *sf,tui_rect clip,int x,int y,
+                                      int16_t ch,uint8_t at)
+{
+    clip=tui_rect_intersect(clip,tui_surface_rect(sf));
+    if(tui_rect_contains(clip,x,y)) sf->back[y*sf->w+x]=(tui_cell){ch,at};
+}
 /* tui_put_char is byte-sized; preserve all eight braille bits in the grid. */
 static inline void ls_braille_put(tui_surface *sf,tui_rect clip,int x,int y,
                                   int16_t ch,uint8_t at)
 {
     clip=tui_rect_intersect(clip,tui_surface_rect(sf));
-    if(tui_rect_contains(clip,x,y)) sf->back[y*sf->w+x]=(tui_cell){ch,at};
+    if(tui_rect_contains(clip,x,y)) {
+        sf->back[y*sf->w+x]=(tui_cell){ch,at};
+        /* Observe the actual column strokes, without interpolating samples
+           into a waveform the board never drew. */
+        tui_stroke_hook_fn hook=__atomic_load_n(&tui_stroke_hook,__ATOMIC_ACQUIRE);
+        if(hook && ch>=0x2800 && ch<=0x28ff) {
+            static const uint8_t bit[4][2]={{0,3},{1,4},{2,5},{6,7}};
+            for(int half=0;half<2;half++) for(int k=0;k<4;) {
+                if(!(ch&(1u<<bit[k][half]))) {k++;continue;}
+                int a=k;while(k+1<4 && (ch&(1u<<bit[k+1][half]))) k++;
+                if(hook(1,sf,tui_surface_rect(sf),2,4,x*2+half,y*4+a,x*2+half,y*4+k,at))
+                    for(int j=a;j<=k;j++) hook(2,sf,tui_surface_rect(sf),2,4,
+                        x*2+half,y*4+j,1u<<bit[j][half],0x2800,at);
+                k++;
+            }
+        }
+    }
 }
 static inline int ls_braille_pixel(uint16_t cp,int x,int y,int w,int h) {
     static const uint8_t bit[4][2]={{0,3},{1,4},{2,5},{6,7}};

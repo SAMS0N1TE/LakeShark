@@ -1,4 +1,5 @@
 /* Shared CartoCore source, console overlay and MAP rendering. */
+#include "ls_braille.h"
 #ifdef LS_CARTOCORE_HOST
 #include "lssim_cartocore_platform.h"
 #else
@@ -50,6 +51,7 @@
 #include <limits.h>
 #endif
 #include "ls_map_marks.h"
+#include "ls_map.h"
 #include "ls_cartocore_map.h"
 #include "ls_carto_sd_io.h"
 #include "ls_cold.h"
@@ -494,7 +496,12 @@ static void cache_step(void) {
     /* MAP first: a cells step can run long (catalog install, queue checks),
        and MAP sat on "opening map..." behind it with nothing allocated. */
     map_service();
-    cells_service();
+    {
+        const int64_t t=esp_timer_get_time();
+        cells_service();
+        const int64_t ms=(esp_timer_get_time()-t)/1000;
+        if(ms>=20) ls_map_trace("cells step",(int32_t)ms,0);
+    }
     bool closed=false;
     if(xSemaphoreTake(view_lock,0)==pdTRUE) {
         if(atomic_exchange(&dismiss_pending,false)) {
@@ -1657,6 +1664,8 @@ int ls_cartocore_command(int argc, char **argv)
             atomic_load(&fetch_running),t.last_error[0]?t.last_error:"none"); return 0;
     }
     if (argc==2 && !strcmp(argv[1],"tiles")) { ls_tiles_diagnostics(); return 0; }
+    if (argc==2 && !strcmp(argv[1],"trace")) { ls_map_trace_dump(); return 0; }
+    if (argc==2 && !strcmp(argv[1],"cost")) { extern void ls_map_cost_print(void) __attribute__((weak)); if (ls_map_cost_print) ls_map_cost_print(); return 0; }
     if (argc>=2 && !strcmp(argv[1],"recv")) return recv_start(argc,argv);
     if (argc>=2 && !strcmp(argv[1],"fetch")) return fetch_start_expected(argc,argv,NULL,0);
     job j={.z=saved.z,.n=50,.mode=CC_QUADRANT,.edges=CC_EDGES_CRISP};

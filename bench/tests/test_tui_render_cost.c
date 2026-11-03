@@ -24,12 +24,13 @@
 #define NATIVE_H 1232
 
 static uint16_t g_fb[NATIVE_W * NATIVE_H];
+static bool g_cells_only;
 
 bool ls_panel_fb(ls_panel_fb_t *out)
 {
     if (!out) return false;
     memset(out, 0, sizeof(*out));
-    out->pixels = g_fb;
+    out->pixels = g_cells_only ? NULL : g_fb;
     out->width  = NATIVE_W;
     out->height = NATIVE_H;
     return true;
@@ -434,4 +435,37 @@ LS_CASE(the_landscape_signal_page_in_pixels_pushes_a_fraction)
     pin_grain(LS_WF_GRAIN_ASCII);
     ls_scr_p25.key(LS_TK_CHAR, '2'); /* SPECTRUM toggles: put it back */
     ls_tui_end();
+}
+/* Virtual geometry remains available without a persistent pixel reservation. */
+LS_CASE(cells_only_panel_presents_and_samples_without_framebuffer)
+{
+    g_cells_only = true;
+    LS_CHECK(ls_tui_begin(NATIVE_W, NATIVE_H));
+    ls_tui_set_pixels_off(true);
+    tui_surface *sf = ls_tui_surface();
+    tui_frame_begin(sf);
+    sf->back[0] = (tui_cell){'Q', 0x17};
+    LS_CHECK(ls_tui_present() > 0);
+    LS_EQ_INT(sf->front[0].ch, 'Q');
+    LS_EQ_INT(ls_tui_present(), 0);
+    /* An actual app image remains the source even though pixels are absent. */
+    uint16_t image[16] = {0xf800, 0x07e0, 0x001f};
+    tui_rect area = {1, 2, 2, 2};
+    ls_tui_image(area, image, 4, 4, 1);
+    ls_tui_present();
+    const uint16_t *src = NULL;
+    LS_CHECK(ls_tui_image_now(NULL, &src, NULL, NULL, NULL));
+    LS_CHECK(src == image);
+    ls_tui_reserve(area);
+    ls_tui_blit_rgb565(area, image, 4, 4); /* no writes through NULL */
+    ls_tui_reserve(tui_rect_make(0, 0, 0, 0));
+    g_cells_only = false; /* lend a destination for the on-demand frame */
+    ls_tui_set_pixels_off(false);
+    LS_CHECK(ls_tui_present() > 0);
+    ls_tui_set_pixels_off(true);
+    g_cells_only = true;
+    LS_EQ_INT(ls_tui_present(), 0);
+    ls_tui_end();
+    g_cells_only = false;
+    ls_tui_set_pixels_off(false);
 }

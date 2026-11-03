@@ -37,6 +37,13 @@ int cc_html(cc_buffer *b, const cc_cell *cells, int32_t cols, int32_t rows);
    a (cols*2) x (rows*4) RGB565 image. rgb is 0xRRGGBB per ink as ground and
    line, river the colour of water drawn as a line, relief 0..100 the hillshade
    strength (used only where the planes carry terrain). */
-typedef struct { uint32_t rgb[CC_INK_COUNT]; uint32_t river; int relief; } cc_pixel_style;
+typedef struct { uint32_t rgb[CC_INK_COUNT]; uint32_t river; int relief;
+    const uint16_t (*shades)[256]; /* optional caller cache, ink x (signed shade+128) */
+} cc_pixel_style;
+void cc_pixels_rgb565_prepare(const cc_pixel_style *s,uint16_t shades[CC_INK_COUNT][256]);
+/* Prior state is the renderer's saved array after a reusable raster-only pan.
+   previous must be a distinct old RGB565 buffer, same style/dimensions. */
+void cc_pixels_rgb565_pan(const cc_planes *p,const cc_pixel_style *s,uint16_t *out,
+                          const uint16_t *previous,cc_cell *state,int dx,int dy);
 void cc_pixels_rgb565(const cc_planes *p, const cc_pixel_style *s, uint16_t *out);
 #endif

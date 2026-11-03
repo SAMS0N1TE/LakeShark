@@ -339,9 +339,11 @@ int cc_ctile_name(cc_str tile,uint32_t index,cc_str *name) {
 }
 cc_style cc_ctile_style(unsigned c) {
     static const cc_style styles[CT_CLASS_COUNT]={
-        {0,0,0},{CC_WATER,0,3},{0,CC_WATER,4},{0,CC_WATER,4},{0,CC_WATER,4},
+        /* water, river, stream (z10 on: zoomed out every creek drew a mesh), canal (z8 on) */
+        {0,0,0},{CC_WATER,0,3},{0,CC_WATER,4},{0,CC_WATER,4,10},{0,CC_WATER,4,8},
         {CC_WOOD,0,1},{CC_PARK,0,2},{CC_FARM,0,1},{CC_RESIDENTIAL,0,1},{CC_INDUSTRIAL,0,1},
-        {CC_BUILDING,0,5},{0,CC_MOTORWAY,12},{0,CC_MOTORWAY,11},{0,CC_MAJOR,10},
+        /* motorway, then trunk from z6: the US highways at z4 were a mesh over the interstates */
+        {CC_BUILDING,0,5},{0,CC_MOTORWAY,12},{0,CC_MOTORWAY,11,6},{0,CC_MAJOR,10},
         {0,CC_SECONDARY,9},{0,CC_SECONDARY,8},{0,CC_MINOR,7},{0,CC_SERVICE,6},{0,CC_SERVICE,6},
         {0,CC_RAIL,8},{0,CC_BOUNDARY,6},{0,0,0}};
     if(c==CT_CONTOUR) return (cc_style){0,CC_CONTOUR,2};

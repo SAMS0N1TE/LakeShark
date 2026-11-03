@@ -1,0 +1,1 @@
+{"category":"radio","description":"API 2.4: explicitly attach firmware decoders to a session, read typed protocol events and drain a filtered channel. Adapts to absent radios and unsupported sample rates. N cycles modes; R retries. P25 is Phase 1 C4FM control, without trunk following or voice."}

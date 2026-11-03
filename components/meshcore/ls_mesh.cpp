@@ -2840,6 +2840,20 @@ extern "C" void ls_mesh_diagnostics(void)
         printf("mesh: stack headroom %u bytes of %d (low water)\n",
                (unsigned)uxTaskGetStackHighWaterMark(s_task), MESH_TASK_STACK);
 
+    {
+        /* Who is asking for the radio: a foreground holder gets it once every
+           background holder has let go and the loop says it has paused. */
+        ls_radio_holders_t fg, bg;
+        portENTER_CRITICAL(&s_hold_lock);
+        fg = s_fg_holders; bg = s_bg_holders;
+        const bool blocked = s_radio_blocked, held = s_radio_held;
+        portEXIT_CRITICAL(&s_hold_lock);
+        printf("mesh: radio hold fg=%u bg=%u blocked=%d paused=%d send_done=%d", fg.count, bg.count,
+               blocked, held, ls_lora_send_done());
+        for (unsigned i = 0; i < fg.count && i < 8; i++) printf(" fg:%s", pcTaskGetName((TaskHandle_t)fg.task[i]));
+        for (unsigned i = 0; i < bg.count && i < 8; i++) printf(" bg:%s", pcTaskGetName((TaskHandle_t)bg.task[i]));
+        printf("\n");
+    }
     printf("mesh: tx budget %lu ms remaining in the duty-cycle window\n",
            (unsigned long)(s_mesh ? s_mesh->getRemainingTxBudget() : 0));
     printf("mesh: loops=%lu rx=%lu bad=%lu tx=%lu airtime=%lu ms\n",

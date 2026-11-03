@@ -1228,7 +1228,15 @@ static void draw_list(tui_surface *sf, tui_rect left)
                                    : (room < 24 ? room : 24);
 
         tui_rect b = tui_rect_make(left.x + 2, left.y + 20, w, 3);
-        if (b.y + b.h <= left.y + left.h && w > 8) {
+        if (ls_tui_compact() && left.y + 22 <= left.y + left.h) {
+            /* Desk: two one-row keys on the middle row of the same band. */
+            const ls_btn_t t = { .label = "TEST ALERT", .key = 't' }, sd = { .label = "CHECK SD", .key = 's' };
+            const int y = left.y + 21;
+            const int tw = ls_key1_draw(sf, left, left.x + 2, y, &t, false);
+            s_test_hit = tui_rect_make(left.x + 2, y, tw, 1);
+            const int sw = ls_key1_draw(sf, left, left.x + 3 + tw, y, &sd, false);
+            s_sd_hit = tui_rect_make(left.x + 3 + tw, y, sw, 1);
+        } else if (b.y + b.h <= left.y + left.h && w > 8) {
             ls_panel_box(sf, b, NULL, TUI_CYAN | TUI_BRIGHT);
             ls_fill_dither(sf, tui_rect_make(b.x + 1, b.y + 1, b.w - 2, b.h - 2),
                            LS_DITHER_LIGHT, TUI_CYAN);
@@ -1241,7 +1249,9 @@ static void draw_list(tui_surface *sf, tui_rect left)
             s_test_hit = tui_rect_make(0, -1, 0, 0);
         }
 
-        if (side_by_side && s_test_hit.h > 0) {
+        if (ls_tui_compact()) {
+            /* drawn above */
+        } else if (side_by_side && s_test_hit.h > 0) {
             tui_rect c = tui_rect_make(b.x + w + 2, b.y, w, 3);
             ls_panel_box(sf, c, NULL, TUI_CYAN | TUI_BRIGHT);
             ls_fill_dither(sf, tui_rect_make(c.x + 1, c.y + 1, c.w - 2, c.h - 2),

@@ -44,6 +44,9 @@ typedef struct {
     /* Bins read by each pixel along frequency, both inclusive, in picture
        order: LEFT row 0 is the top (highest), DOWN column 0 the left. */
     int16_t *first, *last;
+    /* ls_pwf_axis_lerp: first[] is the lower bin and last[] the weight of
+       the next one, 0..256, instead of a range to take the loudest of. */
+    bool lerp;
     uint16_t lut[256];
     int head, filled, fresh;
     int pos;              /* LEFT: next column, the left edge; DOWN: top row */
@@ -78,6 +81,11 @@ void ls_pwf_axis_changed(ls_pwf_t *p);
 /* Bins lo..hi spread evenly across the frequency axis, low frequency at the
    bottom (LEFT) or left (DOWN). */
 void ls_pwf_axis_even(ls_pwf_t *p, int lo, int hi);
+/* Bins lo..hi with pixels between bin centres blended from the two
+   nearest bins, for a picture wider than its bins: no hard steps between
+   neighbouring bins. Narrower pictures still take the loudest bin a pixel
+   covers, so a lone carrier is never averaged away. */
+void ls_pwf_axis_lerp(ls_pwf_t *p, int lo, int hi);
 /* The colour table from stops, code `lo` black and `hi` the top stop;
    redraws only when the table changed. */
 void ls_pwf_colours(ls_pwf_t *p, const ls_pwf_stop_t *stops, int n, float lo, float hi);

@@ -10,11 +10,11 @@ extern "C" {
 /* FIND slots claim separately so stopping one cannot release the other. */
 typedef enum {
     LS_MIXRF_OWNER_NONE, LS_MIXRF_OWNER_MONITOR, LS_MIXRF_OWNER_REC,
-    LS_MIXRF_OWNER_FIND, LS_MIXRF_OWNER_FIND_2
+    LS_MIXRF_OWNER_FIND, LS_MIXRF_OWNER_FIND_2, LS_MIXRF_OWNER_APP
 } ls_mixrf_owner_t;
 static inline const char *ls_mixrf_owner_name(ls_mixrf_owner_t owner)
 {
-    return owner==LS_MIXRF_OWNER_MONITOR?"MIX-RF MONITOR":
+    return owner==LS_MIXRF_OWNER_APP?"SDK app":owner==LS_MIXRF_OWNER_MONITOR?"MIX-RF MONITOR":
         owner==LS_MIXRF_OWNER_REC?"REC/SUB-GHZ WATCH":
         (owner==LS_MIXRF_OWNER_FIND || owner==LS_MIXRF_OWNER_FIND_2)?"COMPASS FIND":"none";
 }
@@ -59,6 +59,7 @@ bool ls_mixrf_receive(bool on,uint32_t frequency);
 bool ls_mixrf_capture(bool on,uint32_t frequency);
 /* Blocking, bounded one-shot on the mixrf worker; caller retains pulses.
    Refuses competing receive/probe work. Nominal power: -10, 0, 5, 10 dBm. */
+void ls_mixrf_replay_cancel_request(void);
 bool ls_mixrf_replay(uint32_t frequency, const int32_t *pulses, size_t count, int dbm);
 /* Same timing and ownership contract; continuous 2-FSK, PA entry zero. */
 bool ls_mixrf_replay_fsk(uint32_t frequency, const int32_t *pulses, size_t count,

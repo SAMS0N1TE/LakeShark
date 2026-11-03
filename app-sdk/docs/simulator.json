@@ -1,0 +1,1917 @@
+[
+  {
+    "name": "l3_apply",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_begin",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_box",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_camera",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_camera_look",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_camera_orbit",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_camera_ortho",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_camera_up",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_capsule",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_clip",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_cone",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_create",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_cylinder",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_depth",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_destroy",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_disc",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_dots",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_draw_mesh",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_ellipsoid",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_end",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_flags",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_floor",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_fog",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_identity",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_label",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_lamp",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_line",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_material",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_material_texture",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_mesh_extrude",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_mesh_free",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_mesh_heightmap",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_mesh_icosphere",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_mesh_lathe",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_mesh_prisms",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_mesh_text",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_mul",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_norm",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_outline",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_particles",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_pick",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_point",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_pose",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_project",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_quad",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_quat_axis",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_quat_euler",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_quat_mul",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_quat_rotate",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_quat_slerp",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_quat_spin",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_ray",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_raycast",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_rbox",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_reserve",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_resize",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_shadows",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_show",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_size",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_sky",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_sphere",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_sprite",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_stats",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_sun",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_tag",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_terrain",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_texture",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_texture_dot",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_torus",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "l3_walls",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_action",
+    "status": "limited",
+    "reason": "Shared validation/queues; host action, notice or watcher producers differ from device services."
+  },
+  {
+    "name": "lap_action_count",
+    "status": "limited",
+    "reason": "Shared validation/queues; host action, notice or watcher producers differ from device services."
+  },
+  {
+    "name": "lap_action_info",
+    "status": "limited",
+    "reason": "Shared validation/queues; host action, notice or watcher producers differ from device services."
+  },
+  {
+    "name": "lap_aircraft",
+    "status": "faked",
+    "reason": "Host snapshots or scripted synthetic input; no hardware acquisition."
+  },
+  {
+    "name": "lap_aircraft_demo",
+    "status": "faked",
+    "reason": "Host snapshots or scripted synthetic input; no hardware acquisition."
+  },
+  {
+    "name": "lap_aircraft_track",
+    "status": "faked",
+    "reason": "Host snapshots or scripted synthetic input; no hardware acquisition."
+  },
+  {
+    "name": "lap_alert",
+    "status": "limited",
+    "reason": "Shared validation/queues; host action, notice or watcher producers differ from device services."
+  },
+  {
+    "name": "lap_api_version",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_audio_close",
+    "status": "limited",
+    "reason": "Shared mixer, PCM queues and WAV file parsing/recording; synthetic microphone; no host speaker. Hardware codec arbitration, mic indicator and real-time timing require board tests."
+  },
+  {
+    "name": "lap_audio_listen",
+    "status": "limited",
+    "reason": "Queue/count/log behavior only; no speaker, receiver PCM or haptic hardware; host drains immediately."
+  },
+  {
+    "name": "lap_audio_operation",
+    "status": "limited",
+    "reason": "Shared mixer, PCM queues and WAV file parsing/recording; synthetic microphone; no host speaker. Hardware codec arbitration, mic indicator and real-time timing require board tests."
+  },
+  {
+    "name": "lap_audio_read",
+    "status": "limited",
+    "reason": "Queue/count/log behavior only; no speaker, receiver PCM or haptic hardware; host drains immediately."
+  },
+  {
+    "name": "lap_audio_record_start",
+    "status": "limited",
+    "reason": "Shared mixer, PCM queues and WAV file parsing/recording; synthetic microphone; no host speaker. Hardware codec arbitration, mic indicator and real-time timing require board tests."
+  },
+  {
+    "name": "lap_audio_record_stop",
+    "status": "limited",
+    "reason": "Shared mixer, PCM queues and WAV file parsing/recording; synthetic microphone; no host speaker. Hardware codec arbitration, mic indicator and real-time timing require board tests."
+  },
+  {
+    "name": "lap_audio_status",
+    "status": "limited",
+    "reason": "Queue/count/log behavior only; no speaker, receiver PCM or haptic hardware; host drains immediately."
+  },
+  {
+    "name": "lap_audio_write",
+    "status": "limited",
+    "reason": "Queue/count/log behavior only; no speaker, receiver PCM or haptic hardware; host drains immediately."
+  },
+  {
+    "name": "lap_battery",
+    "status": "faked",
+    "reason": "Host snapshots or scripted synthetic input; no hardware acquisition."
+  },
+  {
+    "name": "lap_big_char",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ble_advert_next",
+    "status": "limited",
+    "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
+  },
+  {
+    "name": "lap_ble_advertise",
+    "status": "limited",
+    "reason": "Shared bounded peripheral database, copied ATT values, event and send queues. LAPSIM_SCRIPT periphconnect/periphdisconnect/periphread/periphwrite/periphsubscribe/periphmtu/periphbond/periphbusy/peripherror/periphack simulate peers. No RF; controller power, HOGP pairing and internal RAM need board verification. See BLE_PERIPHERAL.md."
+  },
+  {
+    "name": "lap_ble_advertise_stop",
+    "status": "limited",
+    "reason": "Shared bounded peripheral database, copied ATT values, event and send queues. LAPSIM_SCRIPT periphconnect/periphdisconnect/periphread/periphwrite/periphsubscribe/periphmtu/periphbond/periphbusy/peripherror/periphack simulate peers. No RF; controller power, HOGP pairing and internal RAM need board verification. See BLE_PERIPHERAL.md."
+  },
+  {
+    "name": "lap_ble_connect",
+    "status": "limited",
+    "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
+  },
+  {
+    "name": "lap_ble_devices",
+    "status": "limited",
+    "reason": "Host snapshots/stubs; no wireless backend, real scan lease or mesh delivery."
+  },
+  {
+    "name": "lap_ble_disconnect",
+    "status": "limited",
+    "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
+  },
+  {
+    "name": "lap_ble_event_next",
+    "status": "limited",
+    "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
+  },
+  {
+    "name": "lap_ble_peripheral_status",
+    "status": "limited",
+    "reason": "Shared bounded peripheral database, copied ATT values, event and send queues. LAPSIM_SCRIPT periphconnect/periphdisconnect/periphread/periphwrite/periphsubscribe/periphmtu/periphbond/periphbusy/peripherror/periphack simulate peers. No RF; controller power, HOGP pairing and internal RAM need board verification. See BLE_PERIPHERAL.md."
+  },
+  {
+    "name": "lap_ble_scan",
+    "status": "limited",
+    "reason": "Host snapshots/stubs; no wireless backend, real scan lease or mesh delivery."
+  },
+  {
+    "name": "lap_ble_scan_start",
+    "status": "limited",
+    "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
+  },
+  {
+    "name": "lap_ble_scan_status",
+    "status": "limited",
+    "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
+  },
+  {
+    "name": "lap_ble_scan_stop",
+    "status": "limited",
+    "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
+  },
+  {
+    "name": "lap_box",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_brightness",
+    "status": "limited",
+    "reason": "Host display/power stubs; immersive only with LSSIM_IMMERSIVE=1."
+  },
+  {
+    "name": "lap_caps",
+    "status": "limited",
+    "reason": "Shared capability query; LAPSIM_HW configures Wi-Fi/BLE/GPS/etc. and LAPSIM_RADIO=none removes SIM radio; no physical hardware."
+  },
+  {
+    "name": "lap_cell_px",
+    "status": "limited",
+    "reason": "Host theme/cell metrics fallback; glass text is rendered as ordinary cells."
+  },
+  {
+    "name": "lap_channels_query",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_channels_read",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_channels_write",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_choose",
+    "status": "limited",
+    "reason": "Shared modal validation/completion/cancel; LAPSIM_SCRIPT dialogtext/dialogpick/dialogcancel supplies answers; trusted device UI still needs board validation."
+  },
+  {
+    "name": "lap_clear",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_cols",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_confirm",
+    "status": "limited",
+    "reason": "Shared modal validation/completion/cancel; LAPSIM_SCRIPT dialogtext/dialogpick/dialogcancel supplies answers; trusted device UI still needs board validation."
+  },
+  {
+    "name": "lap_desktop_features",
+    "status": "limited",
+    "reason": "Shared desk1 broker; desktopcaps=FLAGS,SCALE and desktopresult=RESULT fixtures exercise bounded export, completion, cancellation and DPI. Old viewers return unsupported; OS dialogs need a real viewer."
+  },
+  {
+    "name": "lap_desktop_info",
+    "status": "limited",
+    "reason": "Shared desk1 broker; desktopcaps=FLAGS,SCALE and desktopresult=RESULT fixtures exercise bounded export, completion, cancellation and DPI. Old viewers return unsupported; OS dialogs need a real viewer."
+  },
+  {
+    "name": "lap_desktop_next",
+    "status": "limited",
+    "reason": "Shared desk1 broker; desktopcaps=FLAGS,SCALE and desktopresult=RESULT fixtures exercise bounded export, completion, cancellation and DPI. Old viewers return unsupported; OS dialogs need a real viewer."
+  },
+  {
+    "name": "lap_desktop_open_url",
+    "status": "limited",
+    "reason": "Shared desk1 broker; desktopcaps=FLAGS,SCALE and desktopresult=RESULT fixtures exercise bounded export, completion, cancellation and DPI. Old viewers return unsupported; OS dialogs need a real viewer."
+  },
+  {
+    "name": "lap_desktop_request_cancel",
+    "status": "limited",
+    "reason": "Shared desk1 broker; desktopcaps=FLAGS,SCALE and desktopresult=RESULT fixtures exercise bounded export, completion, cancellation and DPI. Old viewers return unsupported; OS dialogs need a real viewer."
+  },
+  {
+    "name": "lap_desktop_request_status",
+    "status": "limited",
+    "reason": "Shared desk1 broker; desktopcaps=FLAGS,SCALE and desktopresult=RESULT fixtures exercise bounded export, completion, cancellation and DPI. Old viewers return unsupported; OS dialogs need a real viewer."
+  },
+  {
+    "name": "lap_desktop_save_file",
+    "status": "limited",
+    "reason": "Shared desk1 broker; desktopcaps=FLAGS,SCALE and desktopresult=RESULT fixtures exercise bounded export, completion, cancellation and DPI. Old viewers return unsupported; OS dialogs need a real viewer."
+  },
+  {
+    "name": "lap_dialog_cancel",
+    "status": "limited",
+    "reason": "Shared modal validation/completion/cancel; LAPSIM_SCRIPT dialogtext/dialogpick/dialogcancel supplies answers; trusted device UI still needs board validation."
+  },
+  {
+    "name": "lap_dialog_poll",
+    "status": "limited",
+    "reason": "Shared modal validation/completion/cancel; LAPSIM_SCRIPT dialogtext/dialogpick/dialogcancel supplies answers; trusted device UI still needs board validation."
+  },
+  {
+    "name": "lap_dir_list",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_dots",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_edges_open",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_edges_read",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_emit",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_emit_dropped",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_event_dropped",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_event_next",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_event_source",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_event_subscribe",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_exit",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_file_close",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_file_flush",
+    "status": "limited",
+    "reason": "Shared durable-data/cache worker over host files; FAT power-loss behavior and SD timing need board tests."
+  },
+  {
+    "name": "lap_file_open",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_file_picker",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_file_picker_poll",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_file_read",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_file_remove",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_file_scope_close",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_file_size",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_file_write",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_fill",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_frame",
+    "status": "faked",
+    "reason": "Deterministic host random/frame/virtual clock source; not hardware entropy or real-time scheduling."
+  },
+  {
+    "name": "lap_fullscreen",
+    "status": "limited",
+    "reason": "Host display/power stubs; immersive only with LSSIM_IMMERSIVE=1."
+  },
+  {
+    "name": "lap_gatt_descriptors",
+    "status": "limited",
+    "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
+  },
+  {
+    "name": "lap_gatt_discover",
+    "status": "limited",
+    "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
+  },
+  {
+    "name": "lap_gatt_notify",
+    "status": "limited",
+    "reason": "Shared bounded peripheral database, copied ATT values, event and send queues. LAPSIM_SCRIPT periphconnect/periphdisconnect/periphread/periphwrite/periphsubscribe/periphmtu/periphbond/periphbusy/peripherror/periphack simulate peers. No RF; controller power, HOGP pairing and internal RAM need board verification. See BLE_PERIPHERAL.md."
+  },
+  {
+    "name": "lap_gatt_read",
+    "status": "limited",
+    "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
+  },
+  {
+    "name": "lap_gatt_server_close",
+    "status": "limited",
+    "reason": "Shared bounded peripheral database, copied ATT values, event and send queues. LAPSIM_SCRIPT periphconnect/periphdisconnect/periphread/periphwrite/periphsubscribe/periphmtu/periphbond/periphbusy/peripherror/periphack simulate peers. No RF; controller power, HOGP pairing and internal RAM need board verification. See BLE_PERIPHERAL.md."
+  },
+  {
+    "name": "lap_gatt_server_next",
+    "status": "limited",
+    "reason": "Shared bounded peripheral database, copied ATT values, event and send queues. LAPSIM_SCRIPT periphconnect/periphdisconnect/periphread/periphwrite/periphsubscribe/periphmtu/periphbond/periphbusy/peripherror/periphack simulate peers. No RF; controller power, HOGP pairing and internal RAM need board verification. See BLE_PERIPHERAL.md."
+  },
+  {
+    "name": "lap_gatt_server_open",
+    "status": "limited",
+    "reason": "Shared bounded peripheral database, copied ATT values, event and send queues. LAPSIM_SCRIPT periphconnect/periphdisconnect/periphread/periphwrite/periphsubscribe/periphmtu/periphbond/periphbusy/peripherror/periphack simulate peers. No RF; controller power, HOGP pairing and internal RAM need board verification. See BLE_PERIPHERAL.md."
+  },
+  {
+    "name": "lap_gatt_server_set",
+    "status": "limited",
+    "reason": "Shared bounded peripheral database, copied ATT values, event and send queues. LAPSIM_SCRIPT periphconnect/periphdisconnect/periphread/periphwrite/periphsubscribe/periphmtu/periphbond/periphbusy/peripherror/periphack simulate peers. No RF; controller power, HOGP pairing and internal RAM need board verification. See BLE_PERIPHERAL.md."
+  },
+  {
+    "name": "lap_gatt_subscribe",
+    "status": "limited",
+    "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
+  },
+  {
+    "name": "lap_gatt_write",
+    "status": "limited",
+    "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
+  },
+  {
+    "name": "lap_gps",
+    "status": "faked",
+    "reason": "Host snapshots or scripted synthetic input; no hardware acquisition."
+  },
+  {
+    "name": "lap_gps_acquire",
+    "status": "limited",
+    "reason": "Shared focused input queue, bounded GPS lease/motion delivery/navigation snapshots; LAPSIM_SCRIPT device/gamepad/contact/gpsfix/satellite/motionquality fixtures and host track/place files. BLE HID, controller IDs, UART and sensor accuracy require board tests. See INPUT_SENSORS.md."
+  },
+  {
+    "name": "lap_gps_release",
+    "status": "limited",
+    "reason": "Shared focused input queue, bounded GPS lease/motion delivery/navigation snapshots; LAPSIM_SCRIPT device/gamepad/contact/gpsfix/satellite/motionquality fixtures and host track/place files. BLE HID, controller IDs, UART and sensor accuracy require board tests. See INPUT_SENSORS.md."
+  },
+  {
+    "name": "lap_gps_satellites",
+    "status": "limited",
+    "reason": "Shared focused input queue, bounded GPS lease/motion delivery/navigation snapshots; LAPSIM_SCRIPT device/gamepad/contact/gpsfix/satellite/motionquality fixtures and host track/place files. BLE HID, controller IDs, UART and sensor accuracy require board tests. See INPUT_SENSORS.md."
+  },
+  {
+    "name": "lap_gps_status",
+    "status": "limited",
+    "reason": "Shared focused input queue, bounded GPS lease/motion delivery/navigation snapshots; LAPSIM_SCRIPT device/gamepad/contact/gpsfix/satellite/motionquality fixtures and host track/place files. BLE HID, controller IDs, UART and sensor accuracy require board tests. See INPUT_SENSORS.md."
+  },
+  {
+    "name": "lap_haptic",
+    "status": "limited",
+    "reason": "Queue/count/log behavior only; no speaker, receiver PCM or haptic hardware; host drains immediately."
+  },
+  {
+    "name": "lap_hid_device_close",
+    "status": "limited",
+    "reason": "Shared bounded peripheral database, copied ATT values, event and send queues. LAPSIM_SCRIPT periphconnect/periphdisconnect/periphread/periphwrite/periphsubscribe/periphmtu/periphbond/periphbusy/peripherror/periphack simulate peers. No RF; controller power, HOGP pairing and internal RAM need board verification. See BLE_PERIPHERAL.md."
+  },
+  {
+    "name": "lap_hid_device_open",
+    "status": "limited",
+    "reason": "Shared bounded peripheral database, copied ATT values, event and send queues. LAPSIM_SCRIPT periphconnect/periphdisconnect/periphread/periphwrite/periphsubscribe/periphmtu/periphbond/periphbusy/peripherror/periphack simulate peers. No RF; controller power, HOGP pairing and internal RAM need board verification. See BLE_PERIPHERAL.md."
+  },
+  {
+    "name": "lap_hid_device_report_map",
+    "status": "limited",
+    "reason": "Shared bounded peripheral database, copied ATT values, event and send queues. LAPSIM_SCRIPT periphconnect/periphdisconnect/periphread/periphwrite/periphsubscribe/periphmtu/periphbond/periphbusy/peripherror/periphack simulate peers. No RF; controller power, HOGP pairing and internal RAM need board verification. See BLE_PERIPHERAL.md."
+  },
+  {
+    "name": "lap_hid_device_send",
+    "status": "limited",
+    "reason": "Shared bounded peripheral database, copied ATT values, event and send queues. LAPSIM_SCRIPT periphconnect/periphdisconnect/periphread/periphwrite/periphsubscribe/periphmtu/periphbond/periphbusy/peripherror/periphack simulate peers. No RF; controller power, HOGP pairing and internal RAM need board verification. See BLE_PERIPHERAL.md."
+  },
+  {
+    "name": "lap_hline",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_hold_rotation",
+    "status": "limited",
+    "reason": "Host display/power stubs; immersive only with LSSIM_IMMERSIVE=1."
+  },
+  {
+    "name": "lap_http_close",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_http_header",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_http_open",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_http_read",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_http_status",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_image",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_immersive",
+    "status": "limited",
+    "reason": "Host display/power stubs; immersive only with LSSIM_IMMERSIVE=1."
+  },
+  {
+    "name": "lap_input_device_state",
+    "status": "limited",
+    "reason": "Shared focused input queue, bounded GPS lease/motion delivery/navigation snapshots; LAPSIM_SCRIPT device/gamepad/contact/gpsfix/satellite/motionquality fixtures and host track/place files. BLE HID, controller IDs, UART and sensor accuracy require board tests. See INPUT_SENSORS.md."
+  },
+  {
+    "name": "lap_input_devices",
+    "status": "limited",
+    "reason": "Shared focused input queue, bounded GPS lease/motion delivery/navigation snapshots; LAPSIM_SCRIPT device/gamepad/contact/gpsfix/satellite/motionquality fixtures and host track/place files. BLE HID, controller IDs, UART and sensor accuracy require board tests. See INPUT_SENSORS.md."
+  },
+  {
+    "name": "lap_input_next",
+    "status": "limited",
+    "reason": "Shared held-key/state/event queue fed by host keys/mouse and LAPSIM_SCRIPT key edges, buttons, wheel, focus and resize; host geometry/timing differ."
+  },
+  {
+    "name": "lap_input_next2",
+    "status": "limited",
+    "reason": "Shared focused input queue, bounded GPS lease/motion delivery/navigation snapshots; LAPSIM_SCRIPT device/gamepad/contact/gpsfix/satellite/motionquality fixtures and host track/place files. BLE HID, controller IDs, UART and sensor accuracy require board tests. See INPUT_SENSORS.md."
+  },
+  {
+    "name": "lap_input_state",
+    "status": "limited",
+    "reason": "Shared held-key/state/event queue fed by host keys/mouse and LAPSIM_SCRIPT key edges, buttons, wheel, focus and resize; host geometry/timing differ."
+  },
+  {
+    "name": "lap_io_status",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_ipc_next",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_ipc_publish",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_ipc_subscribe",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_ipc_unsubscribe",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_keep_awake",
+    "status": "limited",
+    "reason": "Host display/power stubs; immersive only with LSSIM_IMMERSIVE=1."
+  },
+  {
+    "name": "lap_key_down",
+    "status": "limited",
+    "reason": "Shared held-key/state/event queue fed by host keys/mouse and LAPSIM_SCRIPT key edges, buttons, wheel, focus and resize; host geometry/timing differ."
+  },
+  {
+    "name": "lap_launch_data",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_load",
+    "status": "limited",
+    "reason": "Shared durable-data/cache worker over host files; FAT power-loss behavior and SD timing need board tests."
+  },
+  {
+    "name": "lap_log",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_mdns_browse",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_mdns_next",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_mdns_register",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_mdns_stop",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_mesh_advert",
+    "status": "limited",
+    "reason": "Host snapshots/stubs; no wireless backend, real scan lease or mesh delivery."
+  },
+  {
+    "name": "lap_mesh_channel_private",
+    "status": "limited",
+    "reason": "Host snapshots/stubs; no wireless backend, real scan lease or mesh delivery."
+  },
+  {
+    "name": "lap_mesh_dm",
+    "status": "limited",
+    "reason": "Host snapshots/stubs; no wireless backend, real scan lease or mesh delivery."
+  },
+  {
+    "name": "lap_mesh_messages",
+    "status": "limited",
+    "reason": "Host snapshots/stubs; no wireless backend, real scan lease or mesh delivery."
+  },
+  {
+    "name": "lap_mesh_nodes",
+    "status": "limited",
+    "reason": "Host snapshots/stubs; no wireless backend, real scan lease or mesh delivery."
+  },
+  {
+    "name": "lap_mesh_self",
+    "status": "limited",
+    "reason": "Host snapshots/stubs; no wireless backend, real scan lease or mesh delivery."
+  },
+  {
+    "name": "lap_mesh_send",
+    "status": "limited",
+    "reason": "Host snapshots/stubs; no wireless backend, real scan lease or mesh delivery."
+  },
+  {
+    "name": "lap_mesh_send_state",
+    "status": "limited",
+    "reason": "Host snapshots/stubs; no wireless backend, real scan lease or mesh delivery."
+  },
+  {
+    "name": "lap_mesh_seq",
+    "status": "limited",
+    "reason": "Host snapshots/stubs; no wireless backend, real scan lease or mesh delivery."
+  },
+  {
+    "name": "lap_mic_close",
+    "status": "limited",
+    "reason": "Shared mixer, PCM queues and WAV file parsing/recording; synthetic microphone; no host speaker. Hardware codec arbitration, mic indicator and real-time timing require board tests."
+  },
+  {
+    "name": "lap_mic_open",
+    "status": "limited",
+    "reason": "Shared mixer, PCM queues and WAV file parsing/recording; synthetic microphone; no host speaker. Hardware codec arbitration, mic indicator and real-time timing require board tests."
+  },
+  {
+    "name": "lap_mic_read",
+    "status": "limited",
+    "reason": "Shared mixer, PCM queues and WAV file parsing/recording; synthetic microphone; no host speaker. Hardware codec arbitration, mic indicator and real-time timing require board tests."
+  },
+  {
+    "name": "lap_millis",
+    "status": "faked",
+    "reason": "Deterministic host random/frame/virtual clock source; not hardware entropy or real-time scheduling."
+  },
+  {
+    "name": "lap_mixer_clear",
+    "status": "limited",
+    "reason": "Shared mixer, PCM queues and WAV file parsing/recording; synthetic microphone; no host speaker. Hardware codec arbitration, mic indicator and real-time timing require board tests."
+  },
+  {
+    "name": "lap_mixer_config",
+    "status": "limited",
+    "reason": "Shared mixer, PCM queues and WAV file parsing/recording; synthetic microphone; no host speaker. Hardware codec arbitration, mic indicator and real-time timing require board tests."
+  },
+  {
+    "name": "lap_mixer_status",
+    "status": "limited",
+    "reason": "Shared mixer, PCM queues and WAV file parsing/recording; synthetic microphone; no host speaker. Hardware codec arbitration, mic indicator and real-time timing require board tests."
+  },
+  {
+    "name": "lap_mixer_write",
+    "status": "limited",
+    "reason": "Shared mixer, PCM queues and WAV file parsing/recording; synthetic microphone; no host speaker. Hardware codec arbitration, mic indicator and real-time timing require board tests."
+  },
+  {
+    "name": "lap_motion",
+    "status": "faked",
+    "reason": "Host snapshots or scripted synthetic input; no hardware acquisition."
+  },
+  {
+    "name": "lap_motion_next",
+    "status": "limited",
+    "reason": "Shared focused input queue, bounded GPS lease/motion delivery/navigation snapshots; LAPSIM_SCRIPT device/gamepad/contact/gpsfix/satellite/motionquality fixtures and host track/place files. BLE HID, controller IDs, UART and sensor accuracy require board tests. See INPUT_SENSORS.md."
+  },
+  {
+    "name": "lap_motion_status",
+    "status": "limited",
+    "reason": "Shared focused input queue, bounded GPS lease/motion delivery/navigation snapshots; LAPSIM_SCRIPT device/gamepad/contact/gpsfix/satellite/motionquality fixtures and host track/place files. BLE HID, controller IDs, UART and sensor accuracy require board tests. See INPUT_SENSORS.md."
+  },
+  {
+    "name": "lap_motion_subscribe",
+    "status": "limited",
+    "reason": "Shared focused input queue, bounded GPS lease/motion delivery/navigation snapshots; LAPSIM_SCRIPT device/gamepad/contact/gpsfix/satellite/motionquality fixtures and host track/place files. BLE HID, controller IDs, UART and sensor accuracy require board tests. See INPUT_SENSORS.md."
+  },
+  {
+    "name": "lap_navigation_close",
+    "status": "limited",
+    "reason": "Shared focused input queue, bounded GPS lease/motion delivery/navigation snapshots; LAPSIM_SCRIPT device/gamepad/contact/gpsfix/satellite/motionquality fixtures and host track/place files. BLE HID, controller IDs, UART and sensor accuracy require board tests. See INPUT_SENSORS.md."
+  },
+  {
+    "name": "lap_navigation_open",
+    "status": "limited",
+    "reason": "Shared focused input queue, bounded GPS lease/motion delivery/navigation snapshots; LAPSIM_SCRIPT device/gamepad/contact/gpsfix/satellite/motionquality fixtures and host track/place files. BLE HID, controller IDs, UART and sensor accuracy require board tests. See INPUT_SENSORS.md."
+  },
+  {
+    "name": "lap_navigation_read",
+    "status": "limited",
+    "reason": "Shared focused input queue, bounded GPS lease/motion delivery/navigation snapshots; LAPSIM_SCRIPT device/gamepad/contact/gpsfix/satellite/motionquality fixtures and host track/place files. BLE HID, controller IDs, UART and sensor accuracy require board tests. See INPUT_SENSORS.md."
+  },
+  {
+    "name": "lap_net_status",
+    "status": "limited",
+    "reason": "Real nonblocking host IPv4 sockets and worker lifecycle; host DNS/Wi-Fi and wall-clock timing differ."
+  },
+  {
+    "name": "lap_nfc_close",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_nfc_next",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_nfc_open",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_nfc_write",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_notify",
+    "status": "limited",
+    "reason": "Shared validation/queues; host action, notice or watcher producers differ from device services."
+  },
+  {
+    "name": "lap_notify_dismiss",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_notify_post",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_numpad_open",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_operation_close",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_operation_status",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_options_close",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_options_open",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_options_showing",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_packet_close",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_packet_open",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_packet_read",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_packet_status",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_palette",
+    "status": "limited",
+    "reason": "Host theme/cell metrics fallback; glass text is rendered as ordinary cells."
+  },
+  {
+    "name": "lap_picker_add",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_picker_open",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_picker_select",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_put_cell",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_put_glass",
+    "status": "limited",
+    "reason": "Host theme/cell metrics fallback; glass text is rendered as ordinary cells."
+  },
+  {
+    "name": "lap_put_str",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_radio_info2",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_radio_list",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_radio_modes",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_radio_rssi",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_random",
+    "status": "faked",
+    "reason": "Deterministic host random/frame/virtual clock source; not hardware entropy or real-time scheduling."
+  },
+  {
+    "name": "lap_record_mark",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_record_start",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_record_status",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_record_stop",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_replay_close",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_replay_open",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_replay_read",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_replay_seek",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_replay_status",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_rows",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_rx_channel_close",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_channel_open",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_channel_read",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_channel_status",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_close",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_command_poll",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_control",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_control_get",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_decoder_attach",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_decoder_catalog",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_decoder_detach",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_decoder_next",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_decoder_status",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_dsp_close",
+    "status": "limited",
+    "reason": "Copied channel blocks and private native worker; host thread deadline containment, two input blocks, eight results, drop/overrun accounting. LAPSIM_SCRIPT dspcost=US injects missed budgets and dspfail=1 injects memory admission failure; device FreeRTOS preemption and watchdog need board verification."
+  },
+  {
+    "name": "lap_rx_dsp_next",
+    "status": "limited",
+    "reason": "Copied channel blocks and private native worker; host thread deadline containment, two input blocks, eight results, drop/overrun accounting. LAPSIM_SCRIPT dspcost=US injects missed budgets and dspfail=1 injects memory admission failure; device FreeRTOS preemption and watchdog need board verification."
+  },
+  {
+    "name": "lap_rx_dsp_start",
+    "status": "limited",
+    "reason": "Copied channel blocks and private native worker; host thread deadline containment, two input blocks, eight results, drop/overrun accounting. LAPSIM_SCRIPT dspcost=US injects missed budgets and dspfail=1 injects memory admission failure; device FreeRTOS preemption and watchdog need board verification."
+  },
+  {
+    "name": "lap_rx_dsp_status",
+    "status": "limited",
+    "reason": "Copied channel blocks and private native worker; host thread deadline containment, two input blocks, eight results, drop/overrun accounting. LAPSIM_SCRIPT dspcost=US injects missed budgets and dspfail=1 injects memory admission failure; device FreeRTOS preemption and watchdog need board verification."
+  },
+  {
+    "name": "lap_rx_gain",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_open",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_rate",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_read",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_spectrum",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_spectrum_config",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_spectrum_read",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_state",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_status",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_rx_tune",
+    "status": "faked",
+    "reason": "Shared radio/DSP/typed decoder workers with synthetic SIM I/Q; rxdelay/rxresult/decode fixtures via LAPSIM_SCRIPT, exact range holes and hot unplug; RF timing requires board validation."
+  },
+  {
+    "name": "lap_sample_play",
+    "status": "limited",
+    "reason": "Shared mixer, PCM queues and WAV file parsing/recording; synthetic microphone; no host speaker. Hardware codec arbitration, mic indicator and real-time timing require board tests."
+  },
+  {
+    "name": "lap_save",
+    "status": "limited",
+    "reason": "Shared durable-data/cache worker over host files; FAT power-loss behavior and SD timing need board tests."
+  },
+  {
+    "name": "lap_save_read",
+    "status": "limited",
+    "reason": "Shared durable-data/cache worker over host files; FAT power-loss behavior and SD timing need board tests."
+  },
+  {
+    "name": "lap_save_write",
+    "status": "limited",
+    "reason": "Shared durable-data/cache worker over host files; FAT power-loss behavior and SD timing need board tests."
+  },
+  {
+    "name": "lap_say",
+    "status": "limited",
+    "reason": "Queue/count/log behavior only; no speaker, receiver PCM or haptic hardware; host drains immediately."
+  },
+  {
+    "name": "lap_say_stop",
+    "status": "limited",
+    "reason": "Queue/count/log behavior only; no speaker, receiver PCM or haptic hardware; host drains immediately."
+  },
+  {
+    "name": "lap_scan_control",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_scan_next",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_scan_start",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_scan_status",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_scan_stop",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_screen_open",
+    "status": "limited",
+    "reason": "Shared per-instance hide/reopen/stop, resource tables and tick budget. LAPSIM_SERVICES=service_logger,service_notifier runs two residents with a foreground app; service_stop=ID stops one. Device scheduling and physical leases require board checks."
+  },
+  {
+    "name": "lap_sd_list",
+    "status": "limited",
+    "reason": "Shared bounded jobs on a host directory; FAT latency/power-loss behavior is not simulated."
+  },
+  {
+    "name": "lap_sd_mkdir",
+    "status": "limited",
+    "reason": "Shared bounded jobs on a host directory; FAT latency/power-loss behavior is not simulated."
+  },
+  {
+    "name": "lap_sd_poll",
+    "status": "limited",
+    "reason": "Shared bounded jobs on a host directory; FAT latency/power-loss behavior is not simulated."
+  },
+  {
+    "name": "lap_sd_read",
+    "status": "limited",
+    "reason": "Shared bounded jobs on a host directory; FAT latency/power-loss behavior is not simulated."
+  },
+  {
+    "name": "lap_sd_remove",
+    "status": "limited",
+    "reason": "Shared bounded jobs on a host directory; FAT latency/power-loss behavior is not simulated."
+  },
+  {
+    "name": "lap_sd_size",
+    "status": "limited",
+    "reason": "Shared bounded jobs on a host directory; FAT latency/power-loss behavior is not simulated."
+  },
+  {
+    "name": "lap_sd_write",
+    "status": "limited",
+    "reason": "Shared bounded jobs on a host directory; FAT latency/power-loss behavior is not simulated."
+  },
+  {
+    "name": "lap_seen_dropped",
+    "status": "limited",
+    "reason": "Shared validation/queues; host action, notice or watcher producers differ from device services."
+  },
+  {
+    "name": "lap_seen_next",
+    "status": "limited",
+    "reason": "Shared validation/queues; host action, notice or watcher producers differ from device services."
+  },
+  {
+    "name": "lap_seen_watch",
+    "status": "limited",
+    "reason": "Shared validation/queues; host action, notice or watcher producers differ from device services."
+  },
+  {
+    "name": "lap_service_limit",
+    "status": "limited",
+    "reason": "Shared per-instance hide/reopen/stop, resource tables and tick budget. LAPSIM_SERVICES=service_logger,service_notifier runs two residents with a foreground app; service_stop=ID stops one. Device scheduling and physical leases require board checks."
+  },
+  {
+    "name": "lap_service_list",
+    "status": "limited",
+    "reason": "Shared per-instance hide/reopen/stop, resource tables and tick budget. LAPSIM_SERVICES=service_logger,service_notifier runs two residents with a foreground app; service_stop=ID stops one. Device scheduling and physical leases require board checks."
+  },
+  {
+    "name": "lap_service_query",
+    "status": "limited",
+    "reason": "Shared per-instance hide/reopen/stop, resource tables and tick budget. LAPSIM_SERVICES=service_logger,service_notifier runs two residents with a foreground app; service_stop=ID stops one. Device scheduling and physical leases require board checks."
+  },
+  {
+    "name": "lap_service_running",
+    "status": "limited",
+    "reason": "Shared per-instance hide/reopen/stop, resource tables and tick budget. LAPSIM_SERVICES=service_logger,service_notifier runs two residents with a foreground app; service_stop=ID stops one. Device scheduling and physical leases require board checks."
+  },
+  {
+    "name": "lap_service_start",
+    "status": "limited",
+    "reason": "Shared per-instance hide/reopen/stop, resource tables and tick budget. LAPSIM_SERVICES=service_logger,service_notifier runs two residents with a foreground app; service_stop=ID stops one. Device scheduling and physical leases require board checks."
+  },
+  {
+    "name": "lap_service_stats",
+    "status": "limited",
+    "reason": "Shared per-instance hide/reopen/stop, resource tables and tick budget. LAPSIM_SERVICES=service_logger,service_notifier runs two residents with a foreground app; service_stop=ID stops one. Device scheduling and physical leases require board checks."
+  },
+  {
+    "name": "lap_service_stop",
+    "status": "limited",
+    "reason": "Shared per-instance hide/reopen/stop, resource tables and tick budget. LAPSIM_SERVICES=service_logger,service_notifier runs two residents with a foreground app; service_stop=ID stops one. Device scheduling and physical leases require board checks."
+  },
+  {
+    "name": "lap_settings_get",
+    "status": "limited",
+    "reason": "Shared durable-data/cache worker over host files; FAT power-loss behavior and SD timing need board tests."
+  },
+  {
+    "name": "lap_settings_set",
+    "status": "limited",
+    "reason": "Shared durable-data/cache worker over host files; FAT power-loss behavior and SD timing need board tests."
+  },
+  {
+    "name": "lap_sound",
+    "status": "limited",
+    "reason": "Queue/count/log behavior only; no speaker, receiver PCM or haptic hardware; host drains immediately."
+  },
+  {
+    "name": "lap_storage_cancel",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_storage_poll",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_stream_close",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_stream_open",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_stream_read",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_stream_seek",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_stream_write",
+    "status": "limited",
+    "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_swipe",
+    "status": "faked",
+    "reason": "Host snapshots or scripted synthetic input; no hardware acquisition."
+  },
+  {
+    "name": "lap_tcp_close",
+    "status": "limited",
+    "reason": "Real nonblocking host IPv4 sockets and worker lifecycle; host DNS/Wi-Fi and wall-clock timing differ."
+  },
+  {
+    "name": "lap_tcp_connect",
+    "status": "limited",
+    "reason": "Real nonblocking host IPv4 sockets and worker lifecycle; host DNS/Wi-Fi and wall-clock timing differ."
+  },
+  {
+    "name": "lap_tcp_recv",
+    "status": "limited",
+    "reason": "Real nonblocking host IPv4 sockets and worker lifecycle; host DNS/Wi-Fi and wall-clock timing differ."
+  },
+  {
+    "name": "lap_tcp_send",
+    "status": "limited",
+    "reason": "Real nonblocking host IPv4 sockets and worker lifecycle; host DNS/Wi-Fi and wall-clock timing differ."
+  },
+  {
+    "name": "lap_tcp_state",
+    "status": "limited",
+    "reason": "Real nonblocking host IPv4 sockets and worker lifecycle; host DNS/Wi-Fi and wall-clock timing differ."
+  },
+  {
+    "name": "lap_text_input",
+    "status": "limited",
+    "reason": "Shared modal validation/completion/cancel; LAPSIM_SCRIPT dialogtext/dialogpick/dialogcancel supplies answers; trusted device UI still needs board validation."
+  },
+  {
+    "name": "lap_time",
+    "status": "faked",
+    "reason": "Host snapshots or scripted synthetic input; no hardware acquisition."
+  },
+  {
+    "name": "lap_time_status",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_time_sync_request",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_tone",
+    "status": "limited",
+    "reason": "Queue/count/log behavior only; no speaker, receiver PCM or haptic hardware; host drains immediately."
+  },
+  {
+    "name": "lap_tone_busy",
+    "status": "limited",
+    "reason": "Queue/count/log behavior only; no speaker, receiver PCM or haptic hardware; host drains immediately."
+  },
+  {
+    "name": "lap_tone_stop",
+    "status": "limited",
+    "reason": "Queue/count/log behavior only; no speaker, receiver PCM or haptic hardware; host drains immediately."
+  },
+  {
+    "name": "lap_touch",
+    "status": "faked",
+    "reason": "Host snapshots or scripted synthetic input; no hardware acquisition."
+  },
+  {
+    "name": "lap_tx_cancel",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_tx_hackrf_config",
+    "status": "limited",
+    "reason": "Shared copied TX settings; hackrf/hackrflimits/hackrfrx/hackrftemp fixtures. Synthetic USB output; physical RF and disconnect timing require a board."
+  },
+  {
+    "name": "lap_tx_iq",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_tx_packet",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_tx_replay",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_tx_status",
+    "status": "limited",
+    "reason": "Shared bounded radio-I/O queues, framed SD files and replay; scripted synthetic radio/NFC backend, no RF. See RADIO_IO.md."
+  },
+  {
+    "name": "lap_udp_close",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_udp_join",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_udp_open",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_udp_recv",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_udp_send",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_udp_status",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_ui_bargraph",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ui_bezel",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ui_chip",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ui_freq_hit",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ui_freq_pad",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ui_frequency",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ui_history",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ui_key_find",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ui_key_hit",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ui_keys",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ui_keys_rows",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ui_meter",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ui_overlay",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ui_rail",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ui_sparkline",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ui_vfo",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ui_vfo_hit",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_value_float",
+    "status": "limited",
+    "reason": "Shared value lookup over the host registry; device-only producers may be absent."
+  },
+  {
+    "name": "lap_value_text",
+    "status": "limited",
+    "reason": "Shared value lookup over the host registry; device-only producers may be absent."
+  },
+  {
+    "name": "lap_vibrate",
+    "status": "limited",
+    "reason": "Queue/count/log behavior only; no speaker, receiver PCM or haptic hardware; host drains immediately."
+  },
+  {
+    "name": "lap_vline",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_wf_draw",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_wf_key",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_wf_marker_hz",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_wf_push",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_wf_touch",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_wifi_ap_request",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_wifi_aps",
+    "status": "limited",
+    "reason": "Host snapshots/stubs; no wireless backend, real scan lease or mesh delivery."
+  },
+  {
+    "name": "lap_wifi_connect",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_wifi_disconnect",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_wifi_scan",
+    "status": "limited",
+    "reason": "Host snapshots/stubs; no wireless backend, real scan lease or mesh delivery."
+  },
+  {
+    "name": "lap_wifi_scan_result",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_wifi_scan_start",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  },
+  {
+    "name": "lap_wifi_seq",
+    "status": "limited",
+    "reason": "Host snapshots/stubs; no wireless backend, real scan lease or mesh delivery."
+  },
+  {
+    "name": "lap_wifi_status",
+    "status": "limited",
+    "reason": "Shared bounded services; Wi-Fi/HTTPS/DNS-SD/time fixtures and real UDP host sockets. LAPSIM_SCRIPT wifierror/httperror/httpbody/wifidown inject outcomes; device TLS, radio and credential persistence require board tests."
+  }
+]

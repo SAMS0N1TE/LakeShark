@@ -4,6 +4,12 @@
  */
 #include "ls_touch.h"
 #include "ls_board.h"
+#include <string.h>
+/* The controller task publishes complete native-coordinate frames. The UI
+   hook queues edges before another 10 ms sample can replace a quick tap. */
+extern void ls_touch_frame(const ls_touch_contact_t *,unsigned) __attribute__((weak));
+static bool touch_multi_ready;
+bool ls_touch_multitouch(void) { return touch_multi_ready; }
 #if defined(LS_BOARD_PANEL_RM69A10)
 #include "ls_i2c.h"
 #include "esp_log.h"
@@ -276,6 +282,7 @@ esp_err_t ls_touch_init(void)
         return e;
     }
     ESP_LOGI("gt911", "GT%s at 0x%02X, range %ux%u, panel %dx%d", id, addr, s_res_x, s_res_y, w, h);
+    touch_multi_ready=true;
     return ESP_OK;
 }
 static uint16_t scale(uint16_t v, uint16_t range, int native)
@@ -286,32 +293,35 @@ static uint16_t scale(uint16_t v, uint16_t range, int native)
 bool ls_touch_read(uint16_t *x, uint16_t *y, bool *pressed)
 {
     if (!s_dev) return false;
-    uint8_t p[8];
-    if (gt_read(s_dev, 0x814E, p, sizeof(p)) != ESP_OK) return false;
-    if (p[0] & 0x80) {
-        const unsigned n = p[0] & 0x0F;
-        (void)gt_write8(0x814E, 0);
-        s_down = n > 0 && n <= 5;
-        if (s_down) {
-            int w = 0, h = 0;
-            ls_panel_ws_touch_map_t m = {0};
-            ls_panel_ws_size(&w, &h);
-            ls_panel_ws_touch_map(&m);
-            const uint16_t rx = p[2] | (uint16_t)p[3] << 8, ry = p[4] | (uint16_t)p[5] << 8;
-            /* swap first, scaling each raw axis to the native axis it lands on */
-            uint16_t tx = m.swap_xy ? scale(ry, s_res_y, w) : scale(rx, s_res_x, w);
-            uint16_t ty = m.swap_xy ? scale(rx, s_res_x, h) : scale(ry, s_res_y, h);
-            if (m.mirror_x) tx = (uint16_t)(w - 1 - tx);
-            if (m.mirror_y) ty = (uint16_t)(h - 1 - ty);
-            s_last_x = tx;
-            s_last_y = ty;
+    uint8_t status;
+    if (gt_read(s_dev,0x814E,&status,1)!=ESP_OK) return false;
+    if(status & 0x80) {
+        unsigned n=status & 15;
+        if(n>5)return false;
+        uint8_t p[40];
+        if(n && gt_read(s_dev,0x814F,p,n*8)!=ESP_OK)return false;
+        int w=0,h=0;ls_panel_ws_touch_map_t m={0};
+        if(!ls_panel_ws_size(&w,&h) || w<1 || h<1)return false;
+        ls_panel_ws_touch_map(&m);
+        ls_touch_contact_t next[5];
+        for(unsigned i=0;i<n;i++) {
+            const uint8_t *q=p+i*8;
+            uint16_t rx=q[1]|(uint16_t)q[2]<<8,ry=q[3]|(uint16_t)q[4]<<8;
+            uint16_t tx=m.swap_xy?scale(ry,s_res_y,w):scale(rx,s_res_x,w);
+            uint16_t ty=m.swap_xy?scale(rx,s_res_x,h):scale(ry,s_res_y,h);
+            if (m.mirror_x) tx = w - 1 - tx;
+            if (m.mirror_y) ty = h - 1 - ty;
+            next[i]=(ls_touch_contact_t){q[0]&15,tx,ty};
+            for(unsigned j=0;j<i;j++)if(next[j].id==next[i].id)return false;
         }
+        if(gt_write8(0x814E,0)!=ESP_OK)return false;
+        if (ls_touch_frame) ls_touch_frame(next, n);
+        s_down = n > 0;
+        if(n){s_last_x=next[0].x;s_last_y=next[0].y;}
     }
-    *x = s_last_x;
-    *y = s_last_y;
-    *pressed = s_down;
-    return true;
+    *x=s_last_x;*y=s_last_y;*pressed=s_down;return true;
 }
+
 #else
 esp_err_t ls_touch_init(void) { return ESP_ERR_NOT_SUPPORTED; }
 bool ls_touch_read(uint16_t *x, uint16_t *y, bool *pressed) { (void)x;(void)y;(void)pressed; return false; }

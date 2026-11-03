@@ -11,6 +11,8 @@
 #ifndef LS_LAP_SERVICE_H
 #define LS_LAP_SERVICE_H
 #include "ls_lap_manifest.h"
+#include "ls_lap_context.h"
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #ifdef __cplusplus
@@ -28,6 +30,26 @@ typedef struct {
     void (*begin)(void);
     void (*end)(void);
 } ls_lap_guard_t;
+/* Explicit per-instance service callbacks, guard nesting, budget and stop
+ * request. Kept in the core context even while its screen is hidden. */
+typedef struct {
+    struct {
+    bool granted, running, shown, stop;  /* stop: the app asked while hidden */
+    void (*tick)(void), (*stopped)(void);
+    uint32_t period_ms;
+    int64_t next_us;
+    int strikes;
+    lap_service_stats_t st;
+    char id[32], name[16], why[40];
+    uint8_t hue;
+    } state;
+    const ls_lap_guard_t *guard;
+    int depth;
+    bool outer;
+    atomic_bool stop_wanted;
+    char stop_id[32];
+} ls_lap_service_context_t;
+ls_lap_service_context_t *ls_lap_api_services(void);
 void ls_lap_set_guard(const ls_lap_guard_t *guard);
 bool ls_lap_code_ok(const void *fn);
 /* Nest-aware: inside an app callback already, these do nothing, so a
@@ -57,7 +79,7 @@ const char *ls_lap_service_why(void);
 /* Ends the service and answers its `stopped` callback (NULL when none or the
    app never set one); the caller calls it inside the guard if it unloads. */
 void (*ls_lap_service_off(const char *why))(void);
-/* Any task: ask the screen task to stop the service of app `id` (NULL any).
+/* Any task: ask the screen task to stop the service of app `id` (NULL all).
    ls_lap_service_take_stop answers true once per request. */
 bool ls_lap_service_request_stop(const char *id);
 bool ls_lap_service_take_stop(void);
@@ -71,7 +93,7 @@ typedef struct {
     uint32_t period_ms;
     lap_service_stats_t stats;
 } ls_lap_service_info_t;
-/* What runs now, for RADIOS and the console: 0 or 1 (LAP_SERVICES_MAX). */
+/* Snapshot all residents for Settings, RADIOS and the console. */
 int ls_lap_services(ls_lap_service_info_t *out, int max);
 
 #if !defined(ESP_PLATFORM) || defined(LS_LAP_HOST_TEST)

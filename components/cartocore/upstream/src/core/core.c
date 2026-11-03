@@ -4,6 +4,9 @@
 #include "cartocore/profile.h"
 #include "cartocore/simd.h"
 int cc_native_rasters=1;
+static int keep_fill(const cc_planes *p,int x,int y) {
+    return p->reuse_fill && x>=p->keep_x0 && x<p->keep_x1 && y>=p->keep_y0 && y<p->keep_y1;
+}
 static uint32_t read32(const uint8_t *p) { return (uint32_t)p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16|(uint32_t)p[3]<<24; }
 static unsigned read16(const uint8_t *p) { return (unsigned)p[0]|(unsigned)p[1]<<8; }
 static void packed_fill(cc_planes *p,const cc_feature *f,int vx,int vy,int phase) {
@@ -19,7 +22,7 @@ static void packed_fill(cc_planes *p,const cc_feature *f,int vx,int vy,int phase
         int y=vy+(edge?v[0]&127:v[0]),x=vx+v[1];
         if(y<0 || y>=p->rows) continue;
         if(edge) {
-            if(x<0 || x>=p->cols) continue;
+            if(x<0 || x>=p->cols || keep_fill(p,x,y)) continue;
             size_t at=(size_t)y*p->cols+x; unsigned bits=v[2];
             if(p->edges_mode!=CC_EDGES_CRISP && priority>=p->fill_priority[at] && priority>=p->coverage_priority[at]) {
                 if(p->coverage_ink[at]==ink) bits|=p->coverage[at]; else p->coverage_bg[at]=p->fill[at];
@@ -28,7 +31,7 @@ static void packed_fill(cc_planes *p,const cc_feature *f,int vx,int vy,int phase
             if((v[0]&128) && priority>=p->fill_priority[at]) { p->fill[at]=ink; p->fill_priority[at]=priority; }
         } else {
             int end=x+v[2]; if(x<0) x=0; if(end>p->cols) end=p->cols;
-            for(;x<end;x++) { size_t at=(size_t)y*p->cols+x;
+            for(;x<end;x++) { if(keep_fill(p,x,y)) continue; size_t at=(size_t)y*p->cols+x;
                 if(priority>=p->fill_priority[at]) {
                     p->fill[at]=ink; p->fill_priority[at]=priority;
                     if(p->edges_mode!=CC_EDGES_CRISP && priority>=p->coverage_priority[at]) p->coverage_ink[at]=p->coverage_priority[at]=0;
@@ -48,7 +51,7 @@ static void native_fill(cc_planes *p,const cc_feature *f) {
     uint64_t stamp=cc_profiling?cc_ticks():0;
     for(unsigned i=0;i<edges;i++,e+=3) {
         int y=vy+(e[0]&127),x=vx+e[1];
-        if(x<0 || x>=p->cols || y<0 || y>=p->rows) continue;
+        if(x<0 || x>=p->cols || y<0 || y>=p->rows || keep_fill(p,x,y)) continue;
         size_t at=(size_t)y*p->cols+x; unsigned bits=e[2];
         if(p->edges_mode!=CC_EDGES_CRISP && priority>=p->fill_priority[at] && priority>=p->coverage_priority[at]) {
             if(p->coverage_ink[at]==ink) bits|=p->coverage[at]; else p->coverage_bg[at]=p->fill[at];
@@ -63,6 +66,7 @@ static void native_fill(cc_planes *p,const cc_feature *f) {
         if(x<0) x=0;
         if(end>p->cols) end=p->cols;
         for(;x<end;x++) {
+            if(keep_fill(p,x,y)) continue;
             size_t at=(size_t)y*p->cols+x;
             if(priority>=p->fill_priority[at]) {
                 p->fill[at]=ink; p->fill_priority[at]=priority;
@@ -103,7 +107,7 @@ int cc_planes_init_split(cc_planes *p, cc_arena *a, cc_arena *cold, int32_t cols
     size_t n, mark = a->used, cm=cold->used;
     if (cols < 1 || rows < 1 || cols > 16384 || rows > 16384) return 0;
     p->terrain_strength=p->terrain_active=0; p->terrain_phase_x=p->terrain_phase_y=0; p->terrain_palette_strength=-1;
-    p->palette=NULL; p->ordered=0; p->zoom=0; p->colors16=0; p->edges_mode=CC_EDGES_SMOOTH; p->native_unclipped_lines=0; p->cols = cols; p->rows = rows; n = (size_t)cols * (size_t)rows;
+    p->reuse_fill=0; p->palette=NULL; p->ordered=0; p->zoom=0; p->colors16=0; p->edges_mode=CC_EDGES_SMOOTH; p->native_unclipped_lines=0; p->cols = cols; p->rows = rows; n = (size_t)cols * (size_t)rows;
     p->words = ((size_t)cols + CC_WORD_BITS) / CC_WORD_BITS;
     p->dots = cc_arena_alloc(a, n, 1); p->ink = cc_arena_alloc(a, n, 1);
     p->dot_priority = cc_arena_alloc(a, n, 1); p->fill = cc_arena_alloc(a, n, 1);
@@ -129,10 +133,20 @@ int cc_planes_init(cc_planes *p,cc_arena *a,int32_t cols,int32_t rows) {
 }
 void cc_planes_clear(cc_planes *p) {
     size_t n = (size_t)p->cols * (size_t)p->rows;
+    if(p->reuse_fill) {
+        for(int y=0;y<p->rows;y++) for(int x=0;x<p->cols;x++) {
+            if(keep_fill(p,x,y)) continue;
+            size_t i=(size_t)y*p->cols+x;
+            p->dots[i]=p->ink[i]=p->dot_priority[i]=0;
+            p->fill[i]=CC_LAND;p->fill_priority[i]=0;
+            p->coverage_ink[i]=p->coverage_priority[i]=0;
+        }
+    } else {
     cc_arch_clear(p->dots, n); cc_arch_clear(p->ink, n); cc_arch_clear(p->dot_priority, n);
     cc_arch_set(p->fill, CC_LAND, n); cc_arch_clear(p->fill_priority, n);
     if(p->edges_mode!=CC_EDGES_CRISP) {
         cc_arch_clear(p->coverage_ink,n); cc_arch_clear(p->coverage_priority,n);
+    }
     }
     cc_arch_clear(p->collision,p->words*(size_t)p->rows*sizeof(cc_bitword));
 }
@@ -159,6 +173,7 @@ uint8_t cc_dot_bit(int32_t x, int32_t y) {
 static inline void dot(cc_planes *p, int32_t x, int32_t y, uint8_t ink, uint8_t priority) {
     size_t at;
     if (x < 0 || y < 0 || x >= p->cols * 2 || y >= p->rows * 4) return;
+    if(keep_fill(p,x/2,y/4))return;
     at = (size_t)(y / 4) * (size_t)p->cols + (size_t)(x / 2);
     if((ink==CC_CONTOUR || ink==CC_INDEX_CONTOUR) && p->fill[at]==CC_WATER) return;
     /* A cell has one foreground ink. Lines never erase lines: where two
@@ -222,8 +237,10 @@ static inline void line_inside(cc_planes *p,cc_point a,cc_point b,uint8_t ink,ui
         size_t at=(size_t)(a.y>>2)*cols+(unsigned)a.x/2;
         /* Lines never erase lines (see dot): a lower class keeps its dots
            in the owner's colour, a higher class takes the colour. */
+        if(!keep_fill(p,a.x/2,a.y/4)) {
         dots[at]|=cc_dot_bit(a.x,a.y);
         if(priority>=priorities[at]) { inks[at]=ink; priorities[at]=priority; }
+        }
         if(a.x==b.x && a.y==b.y) break;
         int twice=err*2;
         if(twice>-dy) { err-=dy; a.x+=sx; }
@@ -334,7 +351,7 @@ static void boundary_coverage(cc_planes *p,const cc_path *paths,size_t count,
     uint32_t cached=UINT32_MAX; uint8_t transposed[32]; int packed=0;
     for(size_t i=0;i<touched;i++) {
         int row=(int)(p->edge_list[i]>>16),x=(int)(p->edge_list[i]&65535); size_t at=(size_t)row*p->cols+x;
-        if(priority<p->fill_priority[at] || priority<p->coverage_priority[at]) continue;
+        if(keep_fill(p,x,row) || priority<p->fill_priority[at] || priority<p->coverage_priority[at]) continue;
         static const uint8_t masks[4][4]={{0,1,8,9},{0,2,16,18},{0,4,32,36},{0,64,128,192}};
         size_t base=(size_t)row*4*dw+(unsigned)x/32; unsigned shift=(x%32)*2;
         uint32_t key=((uint32_t)row<<16)|((unsigned)x/32);
@@ -446,11 +463,12 @@ static void fill_bounds(cc_planes *p, const cc_path *paths, size_t count, uint8_
                 uint8_t *fill=p->fill+at,*fp=p->fill_priority+at,*ci=p->coverage_ink+at;
                 uint8_t *cp=p->coverage_priority+at,*ec=p->edge_cells+at;
                 int crisp=p->edges_mode==CC_EDGES_CRISP;
-                if(crisp && p->ordered) {
+                if(crisp && p->ordered && !p->reuse_fill) {
                     /* Bucket traversal guarantees last-writer priority here. */
                     if(run>=16) { cc_arch_set(fill,ink,run); cc_arch_set(fp,priority,run); }
                     else for(unsigned j=0;j<run;j++) { fill[j]=ink; fp[j]=priority; }
                 } else for(unsigned j=0;j<run;j++) {
+                    if(keep_fill(p,(int)x+(int)j,y)) continue;
                     if(priority>=fp[j]) {
                         fill[j]=ink; fp[j]=priority;
                         if(!crisp && !ec[j] && priority>=cp[j]) { ci[j]=0; cp[j]=0; }
@@ -468,6 +486,11 @@ void cc_fill(cc_planes *p,const cc_path *paths,size_t count,uint8_t ink,uint8_t 
 void (*cc_yield_hook)(void);
 /* What a character cell can carry at a zoom: below these, a class is texture
    rather than information, and it buries the classes that are. */
+/* Zoomed out, a whole region's roads and every county line drew a solid mat:
+   the map comes in by zoom like an atlas. At z4 and out land, water and the
+   state and country outlines MAP lays over (outlines.lso) carry it; motorways
+   come in at 4 (trunk roads at 6, by class in ctile.c), main roads at 7, county lines (the data's
+   boundaries are admin 4-8 in one class) and land-use shading at 8. */
 static int ink_shown(const cc_planes *p,uint8_t ink) {
     if(!p->zoom) return 1;
     switch(ink) {
@@ -476,8 +499,22 @@ static int ink_shown(const cc_planes *p,uint8_t ink) {
     case CC_SECONDARY: return p->zoom>=9;
     case CC_RAIL: return p->zoom>=10;
     case CC_BUILDING: return p->zoom>=15;
+    case CC_MOTORWAY: return p->zoom>=4;
+    case CC_MAJOR: return p->zoom>=7;
+    case CC_BOUNDARY: return p->zoom>=8;
+    case CC_PARK: case CC_WOOD: case CC_FARM: case CC_RESIDENTIAL: case CC_INDUSTRIAL: return p->zoom>=8;
     default: return 1;
     }
+}
+/* The national overview keeps every OSM river, one class: at z4 they drew a
+   grey mesh over half the country. A river shows once it spans enough of the
+   screen at this zoom, so the big ones carry the map far out and the small
+   ones arrive as it closes in. Extent in dots (2x4 per cell). */
+static int line_big_enough(const cc_planes *p,const cc_feature *f) {
+    if(!p->zoom || p->zoom>=10 || f->style.line!=CC_WATER || f->type==3 || !f->bounds_valid) return 1;
+    const int64_t w=(int64_t)f->bounds_max.x-f->bounds_min.x,h=(int64_t)f->bounds_max.y-f->bounds_min.y;
+    const int64_t need=p->zoom<=5?24:p->zoom<=7?16:8;
+    return w>=need || h>=need;
 }
 /* Main roads two dots wide, so they read as the skeleton of the map. */
 static int ink_bold(const cc_planes *p,uint8_t ink) {
@@ -496,15 +533,23 @@ void cc_raster(cc_planes *p, const cc_scene *scene) {
         for (const cc_feature *f = scene->first[priority]; f; f = f->next) {
             if(cc_yield_hook && !(++yield_n & 255u)) cc_yield_hook();
             if(f->terrain_feature && !p->terrain_strength) continue;
+            if(p->zoom && f->style.minzoom>p->zoom) continue;
             if(f->bounds_valid && (f->bounds_max.x<0 || f->bounds_min.x>=p->cols*2 ||
                f->bounds_max.y<0 || f->bounds_min.y>=p->rows*4)) continue;
+            if(p->reuse_fill && f->bounds_valid &&
+               f->bounds_min.x>=p->keep_x0*2+2 && f->bounds_max.x<p->keep_x1*2-2 &&
+               f->bounds_min.y>=p->keep_y0*4+2 && f->bounds_max.y<p->keep_y1*4-2)continue;
             uint64_t stamp=cc_profiling?cc_ticks():0,coverage=cc_profiling?cc_profiling->ticks[CC_COVERAGE]:0;
-            if (f->style.fill && f->type == 3 && ink_shown(p,f->style.fill)) {
+            if (f->style.fill && f->type == 3 && ink_shown(p,f->style.fill) &&
+                !(p->reuse_fill && f->bounds_valid &&
+                  f->bounds_min.x>=p->keep_x0*2 && f->bounds_max.x<p->keep_x1*2 &&
+                  f->bounds_min.y>=p->keep_y0*4 && f->bounds_max.y<p->keep_y1*4)) {
                 if(f->raster && cc_native_rasters) native_fill(p,f);
                 else fill_bounds(p,f->paths,f->count,f->style.fill,f->style.priority,f);
             }
             if(cc_profiling) { cc_profiling->ticks[CC_FILL]+=cc_ticks()-stamp-(cc_profiling->ticks[CC_COVERAGE]-coverage); stamp=cc_ticks(); }
             if (!f->style.line || !ink_shown(p,f->style.line)) continue;
+            if (!line_big_enough(p,f)) continue;
             const int bold=ink_bold(p,f->style.line);
             for (size_t k = 0; k < f->count; ++k) {
                 const cc_path *path = &f->paths[k];

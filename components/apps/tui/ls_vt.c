@@ -7,6 +7,8 @@
 #include <string.h>
 
 #include "ls_tui_screen.h"
+#include "ls_input_ev.h"
+#include "ls_box.h"
 #include "ls_textpack.h"
 
 static uint32_t rgb888(uint16_t c)
@@ -88,6 +90,7 @@ void ls_vt_resolve(const ls_vt_frame *f, bool quadrants_only, ls_vt_cell *out)
             else if (ch >= 0xA0 && ch <= 0xA7)           o.cp = trace(ch - 0xA0 + 1);
             else if (ch >= 0xC0 && ch <= 0xFF)           o.cp = sextant(ch, quadrants_only);
             else if (ch >= 0x2800 && ch <= 0x28FF)       o.cp = (uint32_t)ch;
+            else if (ch >= 0x2000 && ls_box_is(ch))      o.cp = ls_box_vt(ch);
             else if (ch >= 0x80) {
                 const int slot = tui_cyr_slot(ch);
                 o.cp = slot >= 0 ? tui_cyr_slot_codepoint(slot) : '?';
@@ -278,6 +281,11 @@ static void flush(sink *k)
 static void put(sink *k, const char *s, size_t n)
 {
     if (k->n + n > k->cap) flush(k);
+    if (n > k->cap) {                 /* longer than the whole buffer: straight through */
+        k->out(k->ctx, s, n);
+        k->total += n;
+        return;
+    }
     memcpy(k->buf + k->n, s, n);
     k->n += n;
 }
@@ -395,7 +403,7 @@ size_t ls_vt_enter(ls_vt_out_fn out, void *ctx, int cols, int rows)
     char seq[48];
     /* Ask for the grid's size; terminals that allow it resize, the rest ignore it. */
     put(&k, seq, (size_t)snprintf(seq, sizeof(seq), "\x1b[8;%d;%dt", rows, cols));
-    puts_(&k, LS_TEXT(t_ls_vt_1049h_25l_7l_1000h, "\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b]0;LakeShark\x07\x1b[0m\x1b[2J"));
+    puts_(&k, LS_TEXT(t_ls_vt_1049h_25l_7l_1000h, "\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1004h\x1b[?1006h\x1b]0;LakeShark\x07\x1b[0m\x1b[2J"));
     flush(&k);
     return k.total;
 }
@@ -404,7 +412,7 @@ size_t ls_vt_leave(ls_vt_out_fn out, void *ctx)
 {
     char buf[64];
     sink k = {.buf = buf, .cap = sizeof(buf), .out = out, .ctx = ctx};
-    puts_(&k, LS_TEXT(t_ls_vt_1006l_1002l_1000l_0m, "\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l"));
+    puts_(&k, LS_TEXT(t_ls_vt_1006l_1002l_1000l_0m, "\x1b[?1006l\x1b[?1004l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l"));
     flush(&k);
     return k.total;
 }
@@ -515,21 +523,36 @@ static int take(ls_vt_input *in, ls_vt_event *ev, int *n, int max)
     const int pn = end - 2 < (int)sizeof(params) - 1 ? end - 2 : (int)sizeof(params) - 1;
     memcpy(params, b + 2, (size_t)pn);
     params[pn] = 0;
-    if (params[0] == '<' && (final == 'M' || final == 'm')) {   /* SGR mouse */
+    if (params[0] == '<' && (final == 'M' || final == 'm')) {
         int btn = 0, x = 0, y = 0;
-        if (sscanf(params + 1, "%d;%d;%d", &btn, &x, &y) == 3 && final == 'm') {
-            if ((btn & 3) == 0 && !(btn & 64))
-                event(ev, n, max, (ls_vt_event){.type = LS_VT_EV_UP, .col = x - 1, .row = y - 1});
-        } else if (sscanf(params + 1, "%d;%d;%d", &btn, &x, &y) == 3 && final == 'M') {
-            if ((btn & 32) && (btn & 3) == 0)          /* motion with the left button held */
-                event(ev, n, max, (ls_vt_event){.type = LS_VT_EV_DRAG, .col = x - 1, .row = y - 1});
-            else if (btn & 32) {}                      /* motion with no button, or another one */
-            else if (btn == 64 || btn == 65)
-                event(ev, n, max, (ls_vt_event){.type = LS_VT_EV_KEY, .key = btn == 64 ? LS_TK_UP : LS_TK_DOWN,
-                                                .wheel = true, .col = x - 1, .row = y - 1});
-            else if ((btn & ~(4 | 8 | 16)) == 0)
-                event(ev, n, max, (ls_vt_event){.type = LS_VT_EV_TAP, .col = x - 1, .row = y - 1});
+        if (sscanf(params + 1, "%d;%d;%d", &btn, &x, &y) == 3 && btn >= 0 && x > 0 && y > 0) {
+            const int button = (btn & 128) ? 3 + (btn & 3) : (btn & 3);
+            ls_vt_event e = {.type = LS_VT_EV_POINTER, .col = x - 1, .row = y - 1,
+                .button = button, .mods = ((btn & 4) ? LS_IMOD_SHIFT : 0) |
+                    ((btn & 8) ? LS_IMOD_ALT : 0) | ((btn & 16) ? LS_IMOD_CTRL : 0)};
+            if (btn & 64) {
+                e.pointer_kind = LS_IEV_WHEEL; e.wheel_steps = (btn & 1) ? 1 : -1;
+                /* Keep legacy wheel consumers' vocabulary. */
+                e.type = LS_VT_EV_KEY; e.wheel = true;
+                e.key = e.wheel_steps < 0 ? LS_TK_UP : LS_TK_DOWN;
+            } else if (btn & 32) {
+                e.pointer_kind = LS_IEV_PTR_MOVE;
+                if (button == LS_IBTN_LEFT) e.type = LS_VT_EV_DRAG;
+            } else if (final == 'm') {
+                e.pointer_kind = LS_IEV_PTR_UP;
+                if (button < 8) in->buttons &= ~(1u << button);
+                if (button == LS_IBTN_LEFT) e.type = LS_VT_EV_UP;
+            } else if (button < 8 && (btn & 3) != 3) {
+                e.pointer_kind = LS_IEV_PTR_DOWN; in->buttons |= 1u << button;
+                if (button == LS_IBTN_LEFT) e.type = LS_VT_EV_TAP;
+            } else return end + 1;
+            e.buttons = in->buttons; event(ev, n, max, e);
         }
+        return end + 1;
+    }
+    if (!params[0] && (final == 'I' || final == 'O')) {
+        if (final == 'O') in->buttons = 0;
+        event(ev, n, max, (ls_vt_event){.type = LS_VT_EV_FOCUS, .focused = final == 'I'});
         return end + 1;
     }
     const int p1 = params[0] >= '0' && params[0] <= '9' ? atoi(params) : 0;

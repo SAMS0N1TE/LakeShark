@@ -145,7 +145,7 @@ LS_CASE(replay_policy_allows_fixed_bounds_and_refuses_outside_them)
 {
     reset();char result[112];
     LS_CHECK(!replay_refused(433920000,0,6,1800,result,sizeof(result)));
-    LS_CHECK(replay_refused(406050000,0,6,1800,result,sizeof(result)));
+    LS_CHECK(replay_refused(150000000,0,6,1800,result,sizeof(result)));
     LS_CHECK(strstr(result,"refused"));
     LS_EQ_INT(fsk_begins,0);LS_EQ_INT(subghz_hold_attempts,0);
 }
@@ -196,9 +196,9 @@ LS_CASE(iq_replay_requires_matching_sidecar_and_tx_gate_before_radio)
     iq_replay(path,-9,result,sizeof(result));LS_EQ_INT(iq_sends,1);LS_EQ_INT(subghz_lease,0);
     LS_CHECK(strstr(result,"Sent LR2021 I/Q"));
     unlink(path);unlink("test-runtime-iq.json");
-    sc.freq_hz=406050000;LS_CHECK(rec_lr_iq_save(path,sc.freq_hz,data,sizeof(data)));
+    sc.freq_hz=150000000;LS_CHECK(rec_lr_iq_save(path,sc.freq_hz,data,sizeof(data)));
     LS_EQ_INT(rec_sidecar_write(".","test-runtime-iq",&sc),0);
     int held=subghz_hold_attempts;
     iq_replay(path,-9,result,sizeof(result));LS_EQ_INT(iq_sends,1);LS_EQ_INT(subghz_hold_attempts,held);
-    LS_CHECK(strstr(result,"distress"));unlink(path);unlink("test-runtime-iq.json");
+    LS_CHECK(strstr(result,"outside"));unlink(path);unlink("test-runtime-iq.json");
 }

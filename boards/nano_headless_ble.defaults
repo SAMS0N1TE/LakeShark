@@ -24,6 +24,7 @@ CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=12
 CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=16
 CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
+CONFIG_BT_NIMBLE_MAX_BONDS=4
 # As on the T-Display: the host is task-context on the hosted VHCI transport,
 # so its pools need no DMA RAM. In internal RAM they left the Nano 951 bytes
 # after boot, too little for an app to load.

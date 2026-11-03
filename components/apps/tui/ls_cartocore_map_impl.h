@@ -20,10 +20,12 @@ static EXT_RAM_BSS_ATTR struct {
 } pix;
 static EXT_RAM_BSS_ATTR cc_pixel_style pix_style; /* view_lock */
 static bool pix_style_set;
+static uint16_t (*pix_shades)[256];
 static uint32_t pix_render_us; /* the last picture, raster to publish */
 static bool pix_commit(render_state *s,const map_request *r);
 /* MAP left: the pictures go back to PSRAM. Worker only. */
 static void pix_release(void) {
+    heap_caps_free(pix_shades);pix_shades=NULL;pix_style.shades=NULL;
     while(!frame_take()) vTaskDelay(1);
     for(unsigned i=0;i<2;i++) { heap_caps_free(pix.buf[i]);pix.buf[i]=NULL;pix.cap[i]=0; }
     pix.valid=false;pix.count=0;frame_give();
@@ -205,7 +207,7 @@ bool ls_carto_map_draw(tui_surface *sf,tui_rect area,double lat,double lon,unsig
                     c=f->cells[fy*f->cols+fx];
                     if(carto_style_tint || carto_style_ground) c.attr=carto_style_attr(c.attr);
                 }
-                sf->back[(area.y+y)*sf->w+area.x+x]=c;
+                ls_braille_put(sf,area,area.x+x,area.y+y,c.ch,c.attr);
             }
             ui_name_count=0;ui_map_area=area;ui_map_drawn=true;ui_map_fresh=true;
             frame_give();return true;
@@ -215,7 +217,7 @@ bool ls_carto_map_draw(tui_surface *sf,tui_rect area,double lat,double lon,unsig
                 if(tui_rect_contains(tui_surface_rect(sf),area.x+x,area.y+y))
                     { tui_cell c=f->cells[(y*f->rows/area.h)*f->cols+x*f->cols/area.w];
                       if(carto_style_tint || carto_style_ground) c.attr=carto_style_attr(c.attr);
-                      sf->back[(area.y+y)*sf->w+area.x+x]=c; }
+                      ls_braille_put(sf,area,area.x+x,area.y+y,c.ch,c.attr); }
             ui_name_count=f->count;memcpy(ui_names,f->names,f->count*sizeof(*ui_names));
             ui_map_area=area;ui_map_drawn=true;frame_give();return true;
         }
@@ -223,7 +225,8 @@ bool ls_carto_map_draw(tui_surface *sf,tui_rect area,double lat,double lon,unsig
     }
     if(held) for(int y=0;y<area.h;y++) for(int x=0;x<area.w;x++) {
         if(!tui_rect_contains(tui_surface_rect(sf),area.x+x,area.y+y)) continue;
-        size_t i=(area.y+y)*sf->w+area.x+x;sf->back[i]=sf->front[i];
+        size_t i=(area.y+y)*sf->w+area.x+x;
+        ls_braille_put(sf,area,area.x+x,area.y+y,sf->front[i].ch,sf->front[i].attr);
     }
     return held;
 }
@@ -276,6 +279,7 @@ bool ls_carto_map_pixels(double lat,double lon,unsigned z,int pw,int ph,int tw,i
         if(!r->pixels || r->lat!=lat || r->lon!=lon || r->z!=z || r->cols!=cols || r->rows!=rows ||
            r->tcols!=tw || r->trows!=th || r->labels!=labels) {
             *r=(map_request){lat,lon,z,r->serial+1,cols,rows,false,labels,true,tw,th};
+            ls_map_trace("request",(int32_t)z,(int32_t)r->serial);
             map_mail.retry_after=0;
         }
         xSemaphoreGive(view_lock);
@@ -286,6 +290,7 @@ bool ls_carto_map_pixels(double lat,double lon,unsigned z,int pw,int ph,int tw,i
             if(*serial!=pix.serial) {
                 for(int y=0;y<ph;y++) memcpy(dst+(size_t)y*pw,pix.buf[pix.front]+(size_t)y*pix.w,(size_t)pw*sizeof(uint16_t));
                 *serial=pix.serial;
+                ls_map_trace("ui copy",(int32_t)pix.z,(int32_t)pix.serial);
                 ui_name_count=pix.count;memcpy(ui_names,pix.names,pix.count*sizeof(ui_names[0]));
             }
             ui_map_fresh=pix.lat==lat && pix.lon==lon && pix.z==z;
@@ -333,6 +338,7 @@ static void map_service_locked(void) {
     if(select) strcpy(map_worker_path,map_mail.path);
     xSemaphoreGive(view_lock);
     if(prepare) {
+        ls_map_trace("prepare",(int32_t)r.z,select);
         map_worker_session=true;
         map_scan_files();
         if(map_owned) close_hidden();
@@ -352,6 +358,7 @@ static void map_service_locked(void) {
                 carto_failure("source selection/open",r.cols,r.rows,r.z);
             }
         }
+        ls_map_trace("prepared",(int32_t)r.z,0);
         xSemaphoreGive(view_lock);return;
     }
     xSemaphoreTake(view_lock,portMAX_DELAY);
@@ -375,6 +382,7 @@ static void map_service_locked(void) {
             else if(source_is_cells() && !carto_file_covering("/sdcard/maps",r.lat,r.lon,r.z,want,sizeof(want))) want[0]=0;
             if(want[0] && strlen(want)<sizeof(map_mail.path)) {
                 printf("carto MAP: follow -> %s at z%u\n",want,r.z);
+                ls_map_trace("follow",(int32_t)r.z,0);
                 strcpy(map_mail.path,want);map_mail.select=map_mail.follow=true;map_mail.retry_after=0;
                 atomic_fetch_add(&map_epoch,1);atomic_store(&map_status,0);
                 xSemaphoreGive(view_lock);return;
@@ -391,10 +399,13 @@ static void map_service_locked(void) {
         origin(r.cols,r.rows,r.z,&shown->left,&shown->top);
         cc_mode mode=r.braille?CC_BRAILLE:CC_QUADRANT;
         const int64_t render_start=esp_timer_get_time();
+        ls_map_trace("render",(int32_t)r.z,(int32_t)r.serial);
         ok=render_frame(shown,mode,CC_EDGES_SMOOTH,shown->left,shown->top);
         map_label_count=0;
         if(r.pixels) {
+            ls_map_trace("rendered",(int32_t)r.z,ok);
             if(ok) ok=pix_commit(shown,&r);
+            ls_map_trace("committed",(int32_t)r.z,ok);
             pix_render_us=(uint32_t)(esp_timer_get_time()-render_start);
             if(!ok) carto_failure("picture",r.cols,r.rows,r.z);
             if(ok) { map_mail.completed=r;shown->hint_count=shown->hint_next=0; }
@@ -462,7 +473,19 @@ static bool pix_commit(render_state *s,const map_request *r) {
         heap_caps_free(pix.buf[back]);pix.buf[back]=p;pix.cap[back]=need;
     }
     if(!pix_style_set) return false;
-    cc_pixels_rgb565(&s->renderer.planes,&pix_style,pix.buf[back]);
+    static cc_pixel_style previous_style;
+    bool new_shades=!pix_shades;
+    if(!pix_shades)pix_shades=heap_caps_malloc(CC_INK_COUNT*256u*sizeof(uint16_t),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    pix_style.shades=(const uint16_t (*)[256])pix_shades;
+    if(pix_shades && (new_shades || memcmp(&previous_style,&pix_style,sizeof(pix_style))))
+        cc_pixels_rgb565_prepare(&pix_style,pix_shades);
+    cc_renderer *renderer=&s->renderer;
+    if(renderer->pixel_reuse && pix.valid && pix.w==s->cols*2 && pix.h==s->rows*4 &&
+       !memcmp(&previous_style,&pix_style,sizeof(pix_style)))
+        cc_pixels_rgb565_pan(&renderer->planes,&pix_style,pix.buf[back],pix.buf[pix.front],
+                            renderer->saved,renderer->pixel_dx,renderer->pixel_dy);
+    else cc_pixels_rgb565(&renderer->planes,&pix_style,pix.buf[back]);
+    previous_style=pix_style;
     pix.back_count=r->labels?pix_labels(s,r->tcols,r->trows,pix.back_names,LS_CARTO_LABEL_MAX):0;
     while(!frame_take()) vTaskDelay(1);
     pix.front=back;pix.w=s->cols*2;pix.h=s->rows*4;pix.lat=r->lat;pix.lon=r->lon;pix.z=s->z;pix.cells=source_is_cells();

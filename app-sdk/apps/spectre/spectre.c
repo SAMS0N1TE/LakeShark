@@ -1,8 +1,8 @@
 /* SPECTRE: a small spectrum analyser on any radio the board has.
  *
- * SDK 2.0's radio calls and SDK 2.1's shared controls in one screen:
+ * SDK 2.4 typed radio controls and configurable spectrum:
  * lap_radio_list and lap_rx_open with LAP_RX_SPECTRUM_ONLY (the board does
- * the FFT; the app never handles I/Q), lap_rx_spectrum for the averaged
+ * the FFT; the app never handles I/Q), lap_rx_spectrum_read for the averaged
  * lines. Its own face is the braille trace with peak hold; everything else
  * is the board's: the waterfall under it (lap_wf_*, with the board's
  * palettes and DISPLAY settings), the annunciator rail, the ASCII meter,
@@ -17,6 +17,7 @@
 #include "lakeshark_app.h"
 #include "lakeshark_ui.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define A(fg) LAP_ATTR((fg), LAP_BLACK)
@@ -50,6 +51,13 @@ static struct {
     int step;                        /* STEP choice */
     int range_db;                    /* the trace's height in dB */
     uint32_t seq;
+    lap_radio_info2_t info;
+    lap_spectrum_config_t fft_cfg;
+    lap_spectrum_meta_t fft_meta;
+    float fft_line[2048];
+    bool fft_ready;
+    int command, ppm;
+
     float floor_db;
     char why[48];
     lap_rx_config_t cfg;
@@ -78,7 +86,7 @@ static void close_rx(void)
 {
     if (s.h > 0) lap_rx_close(s.h);
     s.h = 0;
-    s.seq = 0;
+    s.seq = 0; s.fft_ready = false; s.command = 0;
 }
 static bool usable(const lap_radio_info_t *r) { return r->present && !r->busy && (r->features & LAP_RXF_SPECTRUM); }
 static void clear_peaks(void) { for (int i = 0; s.peak && i < BINS_MAX; i++) s.peak[i] = -200.0f; }
@@ -110,9 +118,10 @@ static void tune_to(uint64_t hz)
     const lap_radio_info_t *r = &s.radios[s.radio];
     if (hz < r->min_hz) hz = r->min_hz;
     if (hz > r->max_hz) hz = r->max_hz;
-    if (lap_rx_tune(s.h, hz) == 0) {
-        s.center = hz;
-        clear_peaks();
+    if (!s.command) {
+        int ticket = lap_rx_control(s.h,LAP_RX_CTL_TUNE,(int64_t)hz);
+        if (ticket > 0) s.command = ticket;
+        else snprintf(s.why,sizeof(s.why),"tune refused (%d)",ticket);
     }
 }
 static void tune(int64_t delta) { tune_to((uint64_t)((int64_t)s.center + delta)); }
@@ -130,7 +139,15 @@ static void set_gain(int g)
         if (g < r->gain_min) g = r->gain_min;
         if (g > r->gain_max) g = r->gain_max;
     }
-    if (lap_rx_gain(s.h, g) == 0) s.gain = g;
+    if (s.command) return;
+    if (g != LAP_GAIN_AUTO && s.info.gain_count) {
+        int best=0;
+        for (int i=1;i<s.info.gain_count;i++)
+            if (abs(s.info.gains[i]-g)<abs(s.info.gains[best]-g)) best=i;
+        g=s.info.gains[best];
+    }
+    int ticket=lap_rx_control(s.h,LAP_RX_CTL_GAIN,g);
+    if (ticket>0) s.command=ticket;
 }
 
 /* ---- the RADIO list and the TUNE keypad: the board's own -------------- */
@@ -161,7 +178,7 @@ static void type_frequency(void) { lap_numpad_open("TUNE", "MHz", (double)(s.cen
 
 /* ---- OPTIONS: one tree, a level below for the trace -------------------- */
 
-enum { OPT_AUTO, OPT_GAIN, OPT_STEP, OPT_FREQ, OPT_HOLD, OPT_RANGE };
+enum { OPT_AUTO, OPT_GAIN, OPT_STEP, OPT_FREQ, OPT_HOLD, OPT_RANGE, OPT_FFT, OPT_WINDOW, OPT_AVG, OPT_PPM };
 static const char *const STEPS[] = { "1/4 SPAN", "100 kHz", "25 kHz", "12.5 kHz" };
 static double opt_get(int id)
 {
@@ -171,6 +188,10 @@ static double opt_get(int id)
     case OPT_STEP: return s.step;
     case OPT_FREQ: return (double)(s.center / 1000u) / 1000.0;
     case OPT_HOLD: return s.hold;
+    case OPT_FFT: return s.fft_cfg.fft_size==256 ? 0 : s.fft_cfg.fft_size==512 ? 1 : 2;
+    case OPT_WINDOW: return s.fft_cfg.window;
+    case OPT_AVG: return s.fft_cfg.averages;
+    case OPT_PPM: return s.ppm;
     default: return s.range_db;
     }
 }
@@ -183,15 +204,26 @@ static void opt_set(int id, double v)
     case OPT_STEP: s.step = (int)v & 3; break;
     case OPT_FREQ: typed(v); break;
     case OPT_HOLD: s.hold = v > 0.5; if (!s.hold) clear_peaks(); break;
+    case OPT_FFT: s.fft_cfg.fft_size=256u<<(int)v; s.fft_ready=false; clear_peaks(); break;
+    case OPT_WINDOW: s.fft_cfg.window=(uint16_t)v; s.fft_ready=false; clear_peaks(); break;
+    case OPT_AVG: s.fft_cfg.averages=(uint16_t)v; s.fft_ready=false; break;
+    case OPT_PPM:
+        if (!s.command && s.h>0) { int ticket=lap_rx_control(s.h,LAP_RX_CTL_PPM,(int)v); if (ticket>0) s.command=ticket; }
+        break;
     default: s.range_db = (int)v; break;
     }
 }
+static const char *const FFT_NAMES[]={"256","512","1024"};
+static const char *const WINDOWS[]={"RECT","HANN","BLACKMAN"};
 static const lap_opt_t TRACE_ROWS[] = {
+    { .label = "FFT SIZE", .kind = LAP_OPT_CYCLE, .id = OPT_FFT, .names = FFT_NAMES, .n = 3 },
+    { .label = "WINDOW", .kind = LAP_OPT_CYCLE, .id = OPT_WINDOW, .names = WINDOWS, .n = 3 },
+    { .label = "AVERAGES", .kind = LAP_OPT_LEVEL, .id = OPT_AVG, .lo = 1, .hi = 16, .step = 1 },
     { .label = "PEAK HOLD", .kind = LAP_OPT_TOGGLE, .id = OPT_HOLD },
     { .label = "RANGE", .kind = LAP_OPT_LEVEL, .id = OPT_RANGE, .lo = 40, .hi = 100, .step = 10, .unit = "dB" },
 };
-static const lap_opt_list_t TRACE = { "TRACE", TRACE_ROWS, 2, NULL, NULL };
-static lap_opt_t rows[6];
+static const lap_opt_list_t TRACE = { "TRACE", TRACE_ROWS, 5, NULL, NULL };
+static lap_opt_t rows[7];
 static lap_opt_list_t options;
 static void open_options(void)
 {
@@ -202,6 +234,8 @@ static void open_options(void)
         rows[n++] = (lap_opt_t){ .label = "GAIN", .kind = LAP_OPT_LEVEL, .id = OPT_GAIN, .lo = r->gain_min / 10.0,
                                  .hi = r->gain_max / 10.0, .step = 3, .unit = "dB" };
     }
+    if (r && s.h>0 && lap_radio_info2(s.radio,&s.info,sizeof(s.info))==0 && (s.info.controls&(1u<<LAP_RX_CTL_PPM)))
+        rows[n++] = (lap_opt_t){ .label = "PPM", .kind = LAP_OPT_NUMBER, .id = OPT_PPM, .lo = -100, .hi = 100, .step = 1 };
     rows[n++] = (lap_opt_t){ .label = "STEP", .kind = LAP_OPT_CYCLE, .id = OPT_STEP, .names = STEPS, .n = 4 };
     rows[n++] = (lap_opt_t){ .label = "FREQUENCY", .kind = LAP_OPT_NUMBER, .id = OPT_FREQ,
                              .lo = r ? r->min_hz / 1e6 : 1, .hi = r ? r->max_hz / 1e6 : 6000, .unit = "MHz" };
@@ -348,6 +382,8 @@ static void draw_status(void)
         lap_put_str(1, y, "opening the radio...", A(LAP_CYAN));
         return;
     }
+    if (s.command) { lap_put_str(0,y,"control queued...",A(LAP_YELLOW)); return; }
+    if (s.why[0]) { lap_put_str(0,y,s.why,A(LAP_RED)); return; }
     fmt_hz(hz, sizeof(hz), s.peak_hz);
     snprintf(t, sizeof(t), " PEAK %s %4d dB ", hz, (int)s.peak_db);
     lap_put_str(0, y, t, A(LAP_YELLOW | LAP_BRIGHT));
@@ -406,10 +442,35 @@ static void draw(void)
         lap_rx_status(s.h, &s.st);
         if (s.st.state < 0) snprintf(s.why, sizeof(s.why), "the radio stopped (%d): tap RADIO", s.st.state);
         s.bins = s.sw * 2 > BINS_MAX ? BINS_MAX : s.sw * 2;
-        uint32_t seq = 0;
-        if (s.st.state == LAP_RX_RUNNING && lap_rx_spectrum(s.h, s.line, s.bins, &seq) == s.bins && seq != s.seq) {
-            s.seq = seq;
-            take_line();
+        if (s.st.state == LAP_RX_RUNNING) {
+            if (!s.fft_ready) {
+                lap_radio_info2(s.radio,&s.info,sizeof(s.info));
+                s.fft_ready=lap_rx_spectrum_config(s.h,&s.fft_cfg)==0;
+                int64_t ppm=0;
+                if ((s.info.controls&(1u<<LAP_RX_CTL_PPM)) && !lap_rx_control_get(s.h,LAP_RX_CTL_PPM,&ppm)) s.ppm=(int)ppm;
+            }
+            if (s.command) {
+                lap_rx_command_t result;
+                if (!lap_rx_command_poll(s.command,&result,sizeof(result))) {
+                    if (!result.result) {
+                        if (result.control==LAP_RX_CTL_TUNE) s.center=(uint64_t)result.applied;
+                        if (result.control==LAP_RX_CTL_GAIN) s.gain=(int)result.applied;
+                        if (result.control==LAP_RX_CTL_PPM) s.ppm=(int)result.applied;
+                        clear_peaks(); s.why[0]=0;
+                    } else snprintf(s.why,sizeof(s.why),"control failed (%d)",result.result);
+                    s.command=0;
+                }
+            }
+            int n=lap_rx_spectrum_read(s.h,s.fft_line,2048,&s.fft_meta,sizeof(s.fft_meta));
+            if (n>0 && s.fft_meta.sequence!=s.seq) {
+                s.seq=s.fft_meta.sequence; s.center=s.fft_meta.center_hz;
+                for (int i=0;i<s.bins;i++) {
+                    float peak=-200;
+                    for (int k=i*n/s.bins;k<(i+1)*n/s.bins;k++) if (s.fft_line[k]>peak) peak=s.fft_line[k];
+                    s.line[i]=peak;
+                }
+                take_line();
+            }
         }
     }
     draw_header();
@@ -455,6 +516,8 @@ static bool touch(int col, int row)
 static void enter(void)
 {
     memset(&s, 0, sizeof(s));
+    s.fft_cfg=(lap_spectrum_config_t){sizeof(lap_spectrum_config_t),1,512,LAP_SPEC_HANN,3,10};
+    lap_caps_t caps; lap_caps(&caps,sizeof(caps));
     s.radio = -1;
     s.gain = LAP_GAIN_AUTO;
     s.center = 433920000u;
@@ -472,7 +535,7 @@ static void leave(void)
     memset(&s, 0, sizeof(s));
 }
 
-LAP_APP(.id = "spectre", .name = "SPECTRE", .sub = "spectrum on any radio", .version = "1.1",
+LAP_APP(.id = "spectre", .name = "SPECTRE", .sub = "spectrum on any radio", .version = "2.0",
         .author = "LakeShark", .icon = LAP_ICON_WAVE, .color = LAP_MAGENTA, .flags = LAP_CAP_RADIO_RX,
         .icon_art = { "  /\\      ", " /  \\  /\\ ", "/    \\/  \\", "----------", " SPECTRE  ", "          " },
         .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch);

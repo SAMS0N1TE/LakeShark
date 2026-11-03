@@ -32,7 +32,7 @@ uint32_t ls_panel_refresh_count(void);
 /* Direct framebuffer access for the TUI backend. */
 
 typedef struct {
-    uint16_t *pixels;   /* RGB565, native orientation */
+    uint16_t *pixels;   /* RGB565, native orientation; NULL for a cells-only virtual panel */
     int width;          /* native, always the panel's own width  */
     int height;         /* native, always the panel's own height */
 } ls_panel_fb_t;

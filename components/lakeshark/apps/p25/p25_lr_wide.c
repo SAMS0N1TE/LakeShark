@@ -9,8 +9,9 @@
 #define WIDE_YIELD() do { } while (0)
 #endif
 
-/* Narrow at boot: P25's own capture is the proven path. Wide only when
-   pinned (`p25 lrwide on`) or told to follow the shared setting. */
+/* Off at boot: P25 keeps its own narrow capture, the path heard decoding
+   on the bench. Chip wide does not decode P25 yet; `p25 lrwide follow` or
+   `on` tries it. */
 static atomic_int s_pref = P25_LR_WIDE_OFF;
 void p25_lr_wide_set_pref(p25_lr_wide_pref_t pref)
 {

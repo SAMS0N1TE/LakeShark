@@ -38,6 +38,8 @@ typedef enum {
 
 struct flex_ctx {
     fm_state_t    *out;
+    flex_page_fn sink;
+    void *sink_user;
     ls_flex_mode_t mode;
 
     /* Bit slicer / timing loop */
@@ -263,6 +265,12 @@ static void process_block(flex_ctx_t *c)
         }
     }
 
+    if (c->sink) {
+        c->n_pages++;
+        c->sink(c->sink_user, &pg);
+        reset_hunt(c);
+        return;
+    }
     fm_state_t *o = c->out;
     o->pages[o->page_head] = pg;
     o->page_head = (o->page_head + 1) % FM_PAGE_LOG_MAX;
@@ -291,6 +299,12 @@ LS_COLD flex_ctx_t *flex_create(fm_state_t *out, ls_flex_mode_t mode)
     c->out = out;
     flex_set_mode(c, mode);
     flex_reset(c);
+    return c;
+}
+
+flex_ctx_t *flex_create_sink(flex_page_fn sink, void *user, ls_flex_mode_t mode) {
+    flex_ctx_t *c = flex_create(NULL,mode);
+    if (c) { c->sink=sink; c->sink_user=user; }
     return c;
 }
 

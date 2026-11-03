@@ -1,7 +1,7 @@
 /* The public halves of the keys that sign store apps. Separate from the OTA
  * keys on purpose: an app-signing key that leaks cannot sign firmware.
  * The first is the store key; the second is an offline spare, kept away from
- * the machine that signs. Rotation follows ls_ota_key.h: ship a build that
+ * the machine that signs; the third signs community store apps. Rotation follows ls_ota_key.h: ship a build that
  * trusts both, wait, then sign with the new one. */
 #ifndef LS_LAP_KEYS_H
 #define LS_LAP_KEYS_H
@@ -15,6 +15,11 @@ static const char *const LS_LAP_PUBLIC_KEYS[] = {
     "-----BEGIN PUBLIC KEY-----\n"
     "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAET0un5qyHmJqYYpDwdrN9XROGUxcY\n"
     "H9sXvhJVvhHkpmfDGu1f8VZxyJK4zmFBQFNcuXbWdWYdSi7+tn0+jWVyYw==\n"
+    "-----END PUBLIC KEY-----\n",
+    /* community store key; private half only in the lakeshark-apps repo's Actions secrets */
+    "-----BEGIN PUBLIC KEY-----\n"
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEwuLrG2wyuDUTxpLHAqrafsFFUscs\n"
+    "FE1HTddBoblKFMPklBxilEBK2nOl+l9UEWz2u5jqUNQoKZ+7HYYtuFXttQ==\n"
     "-----END PUBLIC KEY-----\n",
 };
 #define LS_LAP_PUBLIC_KEY_COUNT (sizeof(LS_LAP_PUBLIC_KEYS) / sizeof(LS_LAP_PUBLIC_KEYS[0]))

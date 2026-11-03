@@ -18,6 +18,8 @@ sdkconfig.old
 serial*.txt
 
 .vscode/
+# The app SDK's VS Code tasks and snippets are part of it (lsdk).
+!app-sdk/.vscode/
 .idea/
 .cache/
 *.swp

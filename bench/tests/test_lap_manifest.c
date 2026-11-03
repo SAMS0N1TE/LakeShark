@@ -48,13 +48,21 @@ int main(int argc, char **argv) {
     lap_app_t capability = app;
     capability.flags = LAP_CAP_NETWORK;
     assert(ls_lap_fields_valid(&capability, why, sizeof(why)));
-    capability.api_minor = 4;                                   /* past this firmware (2.2) */
+    capability.api_major = 2; capability.api_minor = 5;
+    assert(ls_lap_fields_valid(&capability, why, sizeof(why)));
+    capability.api_minor = LS_LAP_API2_MINOR + 1; /* past this firmware (2.5) */
     assert(!ls_lap_fields_valid(&capability, why, sizeof(why)));
-    capability.api_minor = 5; capability.flags = 2;
+    capability.flags = LAP_CAP_RADIO_RX;
+    assert(!ls_lap_fields_valid(&capability, why, sizeof(why)));
+    capability.api_minor = 5; capability.flags = 128; /* unknown bit */
     assert(!ls_lap_fields_valid(&capability, why, sizeof(why)));
     capability.flags = 0; capability.api_minor = 0;
     assert(ls_lap_fields_valid(&capability, why, sizeof(why)));
-    checks += 4;
+    capability.api_major=2;capability.api_minor=4;capability.flags=LAP_CAP_MIC;
+    assert(ls_lap_fields_valid(&capability,why,sizeof(why)));
+    capability.api_minor=3;assert(!ls_lap_fields_valid(&capability,why,sizeof(why)));
+    capability.api_minor=5;assert(ls_lap_fields_valid(&capability,why,sizeof(why)));
+    checks += 9;
     /* The colour icon: '.' clear, hex digits colours, row by row. */
     uint8_t px[LAP_PX_H][LAP_PX_W];
     {

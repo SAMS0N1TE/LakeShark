@@ -131,7 +131,7 @@ bool ls_lap_fields_valid(const lap_app_t *m, char *why, size_t cap) {
         }
     }
     /* A capability cannot hide in a manifest older than the API that defined it. */
-    const unsigned known = m->api_major >= 2 ? (m->api_minor >= 1 ? LS_LAP_CAPS_API21 : LS_LAP_CAPS_API2)
+    const unsigned known = m->api_major >= 2 ? (m->api_minor >= 6 ? LS_LAP_CAPS_API26 : m->api_minor >= 4 ? LS_LAP_CAPS_API24 : m->api_minor >= 1 ? LS_LAP_CAPS_API21 : LS_LAP_CAPS_API2)
                                              : LAP_CAP_NETWORK;
     if ((m->flags & ~known) || (m->flags && m->api_major == 1 && m->api_minor < 3) ||
         m->reserved || m->color > 15 || m->icon > 12)

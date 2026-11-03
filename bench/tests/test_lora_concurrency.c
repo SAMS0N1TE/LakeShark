@@ -130,7 +130,7 @@ static void session_with_two_task_fake(void)
     LS_EQ_INT(ls_lora_start(), ESP_OK);
     LS_EQ_INT(ls_lora_modes_begin(1090000000u, 13), ESP_OK);
     fk.nframes = 0;
-    fk.rssi_hi = 57; fk.rssi_lo = 0x80;       /* GetRssiInst: -57.5 dBm */
+    fk.rssi_hi = 57; fk.rssi_lo = 0x01;       /* GetRssiInst: -57.5 dBm */
     conc_reset();
     ls_shim_spi_on_transfer(conc_respond, &fk);
 }

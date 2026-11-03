@@ -23,8 +23,10 @@ class NativeSDK(unittest.TestCase):
         text=(ROOT/'components/apps/tui/ls_lap_exports.inc').read_text()
         table=re.findall(r'EXPORT\("([^"]+)",\s*(\w+)\)',text)
         names=[n for n,f in table]
-        self.assertEqual(names,sorted(set(names)))
-        self.assertEqual(names,(ROOT/'app-sdk/exports.txt').read_text().splitlines())
+        self.assertEqual(len(names),len(set(names)))
+        allowlist=[line.strip() for line in (ROOT/'app-sdk/exports.txt').read_text().splitlines()
+                   if line.strip() and not line.lstrip().startswith('#')]
+        self.assertEqual(names,allowlist)
         h=(ROOT/'app-sdk/include/lakeshark_app.h').read_text()
         clean=re.sub(r'/\*.*?\*/','',h,flags=re.S)
         api=set(re.findall(r'\b(lap_\w+|malloc|calloc|realloc|free)\s*\([^;{}]*\)\s*;',clean))
@@ -66,12 +68,15 @@ class NativeSDK(unittest.TestCase):
     def test_network_capability_and_example(self):
         f=lap.build(ROOT/'app-sdk/apps/tcp_probe',BUILD/'tcp_probe.lap')
         raw=f.read_bytes();e=lap.Elf(raw)
-        self.assertEqual(e.manifest['api_minor'],3)
+        self.assertEqual((e.manifest['api_major'],e.manifest['api_minor']),(2,6))
         self.assertEqual(e.manifest['flags'],1)
         self.assertEqual(subprocess.run([str(INSPECT),str(f)],capture_output=True).returncode,0)
         offset=e.sections[e.names.index('.lap_app')][4]
-        for minor,flags,valid in [(3,1,True),(2,1,False),(3,2,False),(0,0,True),(2,0,True)]:
-            b=bytearray(raw);lap.struct.pack_into('<H',b,offset+6,minor);b[offset+130]=flags
+        # MIC (bit 4) starts at API 2.4; unknown capability bits remain invalid.
+        for major,minor,flags,valid in [(2,4,1,True),(2,3,1,True),(2,4,16,True),
+                                      (2,3,16,False),(2,4,128,False),(2,5,0,True),(2,6,0,True),(2,7,0,False),(2,0,0,True),
+                                      (1,3,1,True),(1,2,1,False),(1,3,2,False)]:
+            b=bytearray(raw);lap.struct.pack_into('<HH',b,offset+4,major,minor);b[offset+130]=flags
             path=BUILD/'network-manifest.lap';path.write_bytes(b)
             if valid:self.assertEqual(lap.Elf(b).manifest['flags'],flags)
             else:

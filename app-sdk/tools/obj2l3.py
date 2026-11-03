@@ -11,6 +11,8 @@ each:  m[0] = l3_material(...); ... then draw with mats mapped through m[].
 """
 import argparse
 import sys
+import struct
+import math
 
 
 def load(path):
@@ -45,6 +47,7 @@ def main():
     ap.add_argument('--name', default='model')
     ap.add_argument('--size', type=float, default=0, help='longest side in world units (0 keeps the file\'s units)')
     ap.add_argument('--center', action='store_true')
+    ap.add_argument('--binary', action='store_true', help='write validated L3M1 runtime mesh instead of C arrays')
     a = ap.parse_args()
 
     verts, tris, mats, names = load(a.obj)
@@ -52,12 +55,30 @@ def main():
         sys.exit('%s: no vertices or faces' % a.obj)
     if len(verts) > 65535:
         sys.exit('%s: %d vertices; lap3d meshes take up to 65,535' % (a.obj, len(verts)))
+    if len(tris)>65535 or any(i<0 or i>=len(verts) for t in tris for i in t):
+        sys.exit('invalid face index or more than 65,535 triangles')
+    if len(names)>32 or any(not math.isfinite(c) for v in verts for c in v) or not math.isfinite(a.size):
+        sys.exit('non-finite coordinate/scale or more than 32 materials')
     lo = [min(v[k] for v in verts) for k in range(3)]
     hi = [max(v[k] for v in verts) for k in range(3)]
     mid = [(lo[k] + hi[k]) / 2 if a.center else 0 for k in range(3)]
     span = max(hi[k] - lo[k] for k in range(3)) or 1
     s = a.size / span if a.size else 1
     verts = [tuple((v[k] - mid[k]) * s for k in range(3)) for v in verts]
+    if any(not math.isfinite(c) or abs(c)>3.402823466e38 for v in verts for c in v):
+        sys.exit('scaled coordinate outside finite float32 range')
+
+    if a.binary:
+        try:
+            data = struct.pack('<4sHHII',b'L3M1',1,1,len(verts),len(tris))
+            data += b''.join(struct.pack('<3f',*v) for v in verts)
+            data += b''.join(struct.pack('<3H',*t) for t in tris)
+            data += bytes(mats)
+        except (OverflowError,struct.error) as e:
+            sys.exit('model outside L3M1 range: '+str(e))
+        with open(a.out,'wb') as f: f.write(data)
+        print('%s: %d vertices, %d triangles -> %s (L3M1)' % (a.name,len(verts),len(tris),a.out))
+        return
 
     n = a.name
     out = ['/* %s: made by app-sdk/tools/obj2l3.py from %s. */' % (n, a.obj.replace('\\', '/').split('/')[-1]),

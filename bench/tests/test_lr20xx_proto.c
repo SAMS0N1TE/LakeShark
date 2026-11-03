@@ -317,7 +317,7 @@ LS_CASE(instantaneous_rssi_is_minus_half_of_the_nine_bit_value)
     LS_EQ_INT(lr20xx_set_rx(0xFFFFFFu), ESP_OK);
     FK_FRAME(fk.nframes - 1, 0x02, 0x0C, 0xFF, 0xFF, 0xFF);
     fk.nframes = 0;
-    fk.rssi_hi = 100; fk.rssi_lo = 0x80;        /* 201 -> -100.5 dBm */
+    fk.rssi_hi = 100; fk.rssi_lo = 0x01;        /* 201 -> -100.5 dBm */
     LS_EQ_INT(ls_lora_rssi_inst(&dbm), ESP_OK);
     LS_NEAR(dbm, -100.5, 0.001);
     /* One read, no GetStatus first: its own Stat says the part was in Rx. */
@@ -327,6 +327,9 @@ LS_CASE(instantaneous_rssi_is_minus_half_of_the_nine_bit_value)
     fk.rssi_hi = 100; fk.rssi_lo = 0x00;
     LS_EQ_INT(ls_lora_rssi_inst(&dbm), ESP_OK);
     LS_NEAR(dbm, -100.0, 0.001);
+    fk.rssi_hi = 100; fk.rssi_lo = 0x80;        /* bit 7 is not the half-dB bit */
+    LS_EQ_INT(ls_lora_rssi_inst(&dbm), ESP_OK);
+    LS_NEAR(dbm, -100.0, 0.001);
 
     /* A read that comes back as nothing is not a measurement. */
     dbm = 42; fk.bad_read_stat = true;
@@ -334,7 +337,9 @@ LS_CASE(instantaneous_rssi_is_minus_half_of_the_nine_bit_value)
     LS_NEAR(dbm, 42, 0.001);
     fk.bad_read_stat = false;
     LS_NEAR(lr20xx_rssi_dbm(0, 0), 0.0, 0.001);
-    LS_NEAR(lr20xx_rssi_dbm(0xFF, 0x80), -255.5, 0.001);
+    LS_NEAR(lr20xx_rssi_dbm(0xFF, 0x01), -255.5, 0.001);
+    LS_NEAR(lr20xx_rssi_dbm(0xFF, 0x80), -255.0, 0.001);
+    LS_NEAR(lr20xx_rssi_dbm(104, 0x01), -104.5, 0.001);
 }
 
 LS_CASE(the_interrupt_is_polled_from_the_status_word_without_the_expander)

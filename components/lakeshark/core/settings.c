@@ -46,6 +46,9 @@ static int          s_ui_lang;
 /* Accepted choices must be visible before the delayed write reaches NVS. */
 static int s_boot_sound = 1;
 static int s_notification_sound = SETTINGS_NOTIFY_ALERT;
+static int s_desk_theme = -1;
+static uint32_t s_desk_wallpaper;
+static uint32_t s_desk_words[SETTINGS_DESK_WORDS];
 static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_audio_muted;
 static uint32_t s_fm_step;
@@ -58,7 +61,7 @@ static bool s_map_layers_valid;
 static uint32_t s_fm_hf;
 static bool s_fm_hf_valid;
 static bool         s_lr_tcxo = true, s_lr_dcdc;
-static unsigned     s_lr_iq;   /* "lr_iq" bits: 1 WIDE I/Q, 2 span view */
+static unsigned     s_lr_iq;   /* "lr_iq" bits: 1 WIDE I/Q, 2 span view, 4 ON-CHIP off */
 static int32_t      s_lr_fcorr_ppb;
 static uint64_t     s_lr_port_a, s_lr_port_b;
 static bool         s_lr_port_have;
@@ -413,8 +416,9 @@ bool settings_init(void)
     __atomic_store_n(&s_lr_dcdc, lr_dcdc != 0, __ATOMIC_RELEASE);
     uint8_t lr_iq = 0;
     if (nvs_get_u8(s_nvs, "lr_iq", &lr_iq) != ESP_OK) lr_iq = 0;
-    __atomic_store_n(&s_lr_iq, lr_iq & 3u, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_lr_iq, lr_iq & 7u, __ATOMIC_RELEASE);
     if (lr_iq & 1u) lr_wf_set_wide(true, LR_WF_WIDE_DEFAULT_HZ);
+    lr_wf_set_wide_chip(!(lr_iq & 4u));
     int32_t lr_fcorr = 0;
     if (nvs_get_i32(s_nvs, "lr_fcorr", &lr_fcorr) != ESP_OK ||
         lr_fcorr > LS_LR_FCORR_MAX_PPB || lr_fcorr < -LS_LR_FCORR_MAX_PPB) lr_fcorr = 0;
@@ -438,6 +442,18 @@ bool settings_init(void)
     if(nvs_get_u8(s_nvs,"ui_lang",&ui_lang)==ESP_OK && settings_ui_lang_valid(ui_lang))
         __atomic_store_n(&s_ui_lang,(int)ui_lang,__ATOMIC_RELEASE);
 
+    uint8_t desk_theme = 0;
+    uint32_t desk_wp = 0;
+    if (nvs_get_u8(s_nvs, "desk_theme", &desk_theme) == ESP_OK)
+        __atomic_store_n(&s_desk_theme, (int)desk_theme, __ATOMIC_RELEASE);
+    if (nvs_get_u32(s_nvs, "desk_wp", &desk_wp) == ESP_OK)
+        __atomic_store_n(&s_desk_wallpaper, desk_wp, __ATOMIC_RELEASE);
+    for (int i = 0; i < SETTINGS_DESK_WORDS; i++) {
+        char k[12];
+        snprintf(k, sizeof(k), "desk_w%d", i);
+        uint32_t v = 0;
+        if (nvs_get_u32(s_nvs, k, &v) == ESP_OK) __atomic_store_n(&s_desk_words[i], v, __ATOMIC_RELEASE);
+    }
     uint8_t notification_sound = SETTINGS_NOTIFY_ALERT;
     if (nvs_get_u8(s_nvs, "notify_snd", &notification_sound) == ESP_OK &&
         notification_sound < SETTINGS_NOTIFY_COUNT)
@@ -1085,7 +1101,7 @@ bool settings_set_lr_dcdc(bool dcdc)
     __atomic_store_n(&s_lr_dcdc, dcdc, __ATOMIC_RELEASE);
     return true;
 }
-/* "lr_iq": bit 0 WIDE I/Q, bit 1 the waterfall's span view. */
+/* "lr_iq": bit 0 WIDE I/Q, bit 1 the waterfall's span view, bit 2 ON-CHIP off. */
 static bool lr_iq_put(unsigned bit, bool on)
 {
     unsigned v = __atomic_load_n(&s_lr_iq, __ATOMIC_ACQUIRE);
@@ -1104,6 +1120,14 @@ bool settings_set_lr_wide(bool on)
 }
 bool settings_get_lr_span(void) { return __atomic_load_n(&s_lr_iq, __ATOMIC_ACQUIRE) & 2u; }
 bool settings_set_lr_span(bool on) { return lr_iq_put(2u, on); }
+/* Bit 2 set is ON-CHIP off, so a board that never saved it gets the default. */
+bool settings_get_lr_chip(void) { return !(__atomic_load_n(&s_lr_iq, __ATOMIC_ACQUIRE) & 4u); }
+bool settings_set_lr_chip(bool on)
+{
+    if (!lr_iq_put(4u, !on)) return false;
+    lr_wf_set_wide_chip(on);
+    return true;
+}
 int32_t settings_get_lr_fcorr_ppb(void)
 {
     lr_peek_before_init();
@@ -1648,6 +1672,19 @@ void settings_set_callouts(uint32_t packed)
     if (s_nvs_ok) sput_u32("callouts", packed);
 }
 
+int settings_hackrf_tx_vga_get(void) {
+    int32_t v=47;
+    if(s_nvs_ok) nvs_get_i32(s_nvs,"hr_tx_vga",&v);
+    return v>=0&&v<=47?v:47;
+}
+bool settings_hackrf_tx_amp_get(void) {
+    int32_t v=1;
+    if(s_nvs_ok) nvs_get_i32(s_nvs,"hr_tx_amp",&v);
+    return v==1;
+}
+void settings_hackrf_tx_limits_set(unsigned vga, bool amp) {
+    if(s_nvs_ok&&vga<=47) { sput_i32("hr_tx_vga",vga); sput_i32("hr_tx_amp",amp); }
+}
 int settings_hackrf_ppm_get(void)
 {
     if (!s_nvs_ok) return 0;
@@ -1751,6 +1788,33 @@ bool settings_set_pagers(const settings_pagers_t *cfg)
 static const char *const notification_names[SETTINGS_NOTIFY_COUNT] = {
     "ALERT", "RADIO KEY", "ROGER", "CHIRP", "OFF"
 };
+int settings_get_desk_theme(void) { return __atomic_load_n(&s_desk_theme, __ATOMIC_ACQUIRE); }
+void settings_set_desk_theme(int theme)
+{
+    if (theme < 0 || theme > 255 || theme == settings_get_desk_theme()) return;
+    __atomic_store_n(&s_desk_theme, theme, __ATOMIC_RELEASE);
+    if (s_wq) sput_u8("desk_theme", (uint8_t)theme);
+}
+uint32_t settings_get_desk_word(int slot)
+{
+    return slot >= 0 && slot < SETTINGS_DESK_WORDS ? __atomic_load_n(&s_desk_words[slot], __ATOMIC_ACQUIRE) : 0;
+}
+void settings_set_desk_word(int slot, uint32_t v)
+{
+    if (slot < 0 || slot >= SETTINGS_DESK_WORDS || settings_get_desk_word(slot) == v) return;
+    __atomic_store_n(&s_desk_words[slot], v, __ATOMIC_RELEASE);
+    char k[12];
+    snprintf(k, sizeof(k), "desk_w%d", slot);
+    if (s_wq) sput_u32(k, v);
+}
+uint32_t settings_get_desk_wallpaper(void) { return __atomic_load_n(&s_desk_wallpaper, __ATOMIC_ACQUIRE); }
+void settings_set_desk_wallpaper(uint32_t id)
+{
+    if (id == settings_get_desk_wallpaper()) return;
+    __atomic_store_n(&s_desk_wallpaper, id, __ATOMIC_RELEASE);
+    if (s_wq) sput_u32("desk_wp", id);
+}
+
 int settings_get_notification_sound(void)
 {
     return __atomic_load_n(&s_notification_sound,__ATOMIC_ACQUIRE);

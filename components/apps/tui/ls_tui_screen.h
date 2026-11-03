@@ -32,6 +32,16 @@ typedef enum {
     /* The mouse wheel, from a remote screen. Only a screen with .wheel set gets
        these; every other screen gets UP and DOWN, as it always did. */
     LS_TK_WHEEL_UP, LS_TK_WHEEL_DOWN,
+    /* Desktop extensions: append only; the input wire protocol uses these IDs. */
+    LS_TK_F12, LS_TK_HOME, LS_TK_END, LS_TK_PGUP, LS_TK_PGDN,
+    LS_TK_INSERT, LS_TK_DELETE, LS_TK_MENU, LS_TK_SHIFT,
+    /* Bluetooth keyboards: locks and media keys. */
+    LS_TK_CAPS_LOCK, LS_TK_NUM_LOCK, LS_TK_MEDIA_PLAY, LS_TK_MEDIA_STOP,
+    LS_TK_MEDIA_NEXT, LS_TK_MEDIA_PREV, LS_TK_VOLUME_UP,
+    LS_TK_VOLUME_DOWN, LS_TK_MUTE,
+    /* Untranslated keyboard usages retain a distinct key code for raw desktop
+       consumers. Character generation remains in the layout adapter. */
+    LS_TK_HID_USAGE_BASE = 0x100,
 } ls_tk_t;
 
 typedef struct ls_tui_screen_s {
@@ -118,7 +128,24 @@ void ls_tui_screen_prev(void);
 void ls_tui_set_locked(bool locked);
 bool ls_tui_locked(void);
 
+/* Lays out from the surface it is handed (sf->w x sf->h), not the grid, so
+   the desk can run it in a window's own surface; taps then arrive in that
+   surface's cells. ls_tui_is_wide answers for the surface drawn last. */
 void ls_tui_router_draw(tui_surface *sf);
+
+/* Desk mode: false switches off the router's global keys (F1-F11, TAB, ESC
+   to HOME); a key the screen does not take is then returned unconsumed. */
+void ls_tui_router_set_globals(bool on);
+bool ls_tui_router_globals(void);
+/* Hooks in front of ls_tui_router_key and ls_tui_router_touch: when set,
+   the public entry points call them instead, and a call made from inside a
+   hook goes to the router itself. NULL removes them. */
+void ls_tui_router_set_hooks(bool (*key)(ls_tk_t key, char ch), bool (*touch)(int col, int row));
+bool ls_tui_router_key_direct(ls_tk_t key, char ch);
+bool ls_tui_router_touch_direct(int col, int row);
+/* The current screen's left status text, and the clock as last set. */
+const char *ls_tui_status_left(void);
+const char *ls_tui_status_clock(void);
 
 /* Feed a key. The active screen sees it first; the router handles what is
    left over. Returns true when anything consumed it. */

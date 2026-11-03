@@ -222,11 +222,14 @@ static int command(int argc, char **argv) {
         goto done;
     }
     if (argc == 2 && !strcmp(argv[1], "svc")) {   /* API 2.1: the background service, if any */
-        ls_lap_service_info_t v;
-        if (ls_lap_services(&v, 1) > 0)
+        ls_lap_service_info_t rows[4];
+        int n=ls_lap_services(rows,4);
+        for(int i=0;i<n;i++) {
+            ls_lap_service_info_t v=rows[i];
             LS_PRINTF(t_ls_lap_console_app_ok_svc_id, "APP OK svc id=%s screen=%s period_ms=%lu ticks=%lu last_us=%lu worst_us=%lu over=%lu\n", v.id,
                    v.shown ? "open" : "closed", (unsigned long)v.period_ms, (unsigned long)v.stats.ticks,
                    (unsigned long)v.stats.last_us, (unsigned long)v.stats.worst_us, (unsigned long)v.stats.over);
+        }
         puts("APP OK svc end");
         goto done;
     }

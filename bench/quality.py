@@ -1177,7 +1177,8 @@ class TrackedReferenceTests(unittest.TestCase):
     so did two tools and a document that code comments point at.
 
     A path is resolved against the naming file's own directory first, then
-    the repository root, the way a reader would look for it.
+    its project's top (app-sdk/) and the repository root, the way a reader
+    would look for it.
     """
 
     SKIP = ('managed_components/', 'components/meshcore/upstream/',
@@ -1193,6 +1194,8 @@ class TrackedReferenceTests(unittest.TestCase):
                 'components/usb/hub.c', 'components/usb/hcd_dwc.c',
                 'components/sdmmc/sdmmc_cmd.c',
                 'components/esp_driver_spi/src/gpspi/spi_master.c',
+                'components/esp_eth/include/esp_eth_mac_esp.h',
+                'tools/tools.json',
                 'tools/build_g2p_dict.py'}
     # These selected upstream files name docs/generators intentionally omitted
     # from the embedded snapshot (see its provenance). Scope exceptions to
@@ -1211,7 +1214,10 @@ class TrackedReferenceTests(unittest.TestCase):
     BUILD_DIR = re.compile(r'(?:^|/)build(?:[-_][\w-]*)?/')
     # Tests name fixtures they write into a temporary tree, and files they
     # assert are gone, so they are not read as references.
-    NOT_READ = ('bench/quality.py', 'bench/tests/', 'tools/test_')
+    NOT_READ = ('bench/quality.py', 'bench/tests/', 'tools/test_', 'app-sdk/mcp/tests/')
+    # Trees with their own docs/ and tools/, which their files name from
+    # their own top: app-sdk/docs/PHASE1.md's docs/api.json is app-sdk's.
+    PROJECTS = ('app-sdk/',)
     # Known gaps, each with where the file is. Remove a line when it lands.
     KNOWN_MISSING = {
         'docs/PUBLIC_MAIN_RECONCILED.txt':
@@ -1262,6 +1268,8 @@ class TrackedReferenceTests(unittest.TestCase):
                         or self.BUILD_DIR.search(ref)):
                     continue
                 if (base / ref).as_posix() in tracked or ref in tracked:
+                    continue
+                if any(name.startswith(p) and p + ref in tracked for p in self.PROJECTS):
                     continue
                 # A new relative build input can exist before it is staged.
                 # Keep it in the inventory for ignore checks under its actual

@@ -17,6 +17,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hackrf_radio.h"
+#include "../../apps/tui/ls_lap_features.h"
+#include "tx_protection.h"
+#include "../../../app-sdk/include/lakeshark_app.h"
+#include <stdatomic.h>
 #include "radio_endpoint.h"
 #include "radio_frontend.h"
 #include "settings.h"
@@ -38,6 +42,7 @@ enum {
     HACKRF_REQ_SET_AMP_ENABLE = 17,
     HACKRF_REQ_SET_LNA_GAIN = 19,
     HACKRF_REQ_SET_VGA_GAIN = 20,
+    HACKRF_REQ_SET_TXVGA_GAIN = 21,
     /* Antenna port power (the bias-T), wValue 1 on, 0 off; HackRF USB
        protocol, vendor request 23. There is no request to read it back. */
     HACKRF_REQ_ANTENNA_ENABLE = 23,
@@ -47,6 +52,7 @@ enum {
 enum {
     HACKRF_MODE_OFF = 0,
     HACKRF_MODE_RECEIVE = 1,
+    HACKRF_MODE_TRANSMIT = 2,
 };
 
 typedef struct {
@@ -145,6 +151,22 @@ typedef struct {
 
 static const char *TAG = "hackrf_dev";
 static hackrf_dev_t *s_dev;
+static hackrf_dev_t *s_tx_dev; /* pins a removed device until USB callback drains */
+#if LAP_HACKRF_TX
+static atomic_bool s_tx_cancelled, s_tx_done, s_tx_armed;
+static atomic_int s_tx_result=1;
+static void tx_guard_task(void *arg);
+static atomic_uint s_tx_max_vga=47;
+static atomic_bool s_tx_amp_allowed=true;
+static struct {
+    ls_radio_session_t *lease;
+    usb_transfer_t *transfer;
+    int64_t deadline, finish_at;
+    uint32_t duration;
+    unsigned vga; bool amp, pending, stopping;
+    int power, error;
+} s_tx;
+#endif
 /* Setup owns its private object until publication. Removal never waits for
  * setup (the USB client must remain able to deliver control completions). */
 static portMUX_TYPE s_lifecycle = portMUX_INITIALIZER_UNLOCKED;
@@ -318,6 +340,7 @@ LS_COLD static ls_radio_err_t hackrf_iq_configure(
     ls_radio_iq_config_t *actual)
 {
     hackrf_dev_t *dev = (hackrf_dev_t *)ctx;
+    if (dev==s_tx_dev) return LS_RADIO_ERR_BUSY;
     if (!dev || !requested || !actual || requested->center_hz == 0 ||
         requested->sample_rate_hz == 0)
         return LS_RADIO_ERR_INVALID;
@@ -366,6 +389,7 @@ static ls_radio_err_t hackrf_iq_start(void *ctx)
 {
     hackrf_dev_t *dev = (hackrf_dev_t *)ctx;
     if (!dev) return LS_RADIO_ERR_INVALID;
+    if (dev==s_tx_dev) return LS_RADIO_ERR_BUSY;
     __atomic_store_n(&dev->read_cancelled, false, __ATOMIC_RELEASE);
     int result = esp_libusb_stream_start(&dev->usb, HACKRF_RX_ENDPOINT);
     if (result == ESP_LIBUSB_ERR_BUSY) return LS_RADIO_ERR_BUSY;
@@ -549,6 +573,7 @@ LS_COLD static ls_radio_err_t hackrf_fe_ctl(void *ctx, ls_radio_fe_ctl_t ctl, bo
 {
     hackrf_dev_t *dev = (hackrf_dev_t *)ctx;
     if (!dev || !value) return LS_RADIO_ERR_INVALID;
+    if (write&&dev==s_tx_dev) return LS_RADIO_ERR_BUSY;
     int *field;
     switch (ctl) {
     case LS_RADIO_FE_BIAS_T:
@@ -593,7 +618,7 @@ static ls_radio_err_t register_endpoint(hackrf_dev_t *dev)
 {
     const ls_radio_endpoint_t endpoint = {
         .endpoint_id = LS_RADIO_ENDPOINT_HACKRF_USB,
-        .name = "HackRF USB IQ transceiver (RX only)",
+        .name = "HackRF USB IQ transceiver",
         .capabilities = LS_HACKRF_CAPABILITIES,
         .duplex = LS_HACKRF_DUPLEX,
         .iq_formats = LS_RADIO_IQ_FORMAT_U8_INTERLEAVED,
@@ -626,6 +651,17 @@ static void close_device(hackrf_dev_t *dev, bool gone)
     free(dev);
 }
 
+#if LAP_HACKRF_TX
+static void removed_tx_cleanup(void *arg) {
+    hackrf_dev_t *dev=arg;
+    for(;;) {
+        portENTER_CRITICAL(&s_lifecycle); bool pinned=s_tx_dev==dev; portEXIT_CRITICAL(&s_lifecycle);
+        if(!pinned) break;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    close_device(dev,true); finish_lifecycle(false); vTaskDelete(NULL);
+}
+#endif
 bool hackrf_adapter_note_removed(usb_device_handle_t device)
 {
     portENTER_CRITICAL(&s_lifecycle);
@@ -638,8 +674,16 @@ bool hackrf_adapter_note_removed(usb_device_handle_t device)
     if (!matches) return false;
     (void)ls_radio_endpoint_unregister(LS_RADIO_ENDPOINT_HACKRF_USB);
     ls_rffe_note(LS_RFFE_HACKRF, LS_RADIO_FE_BIAS_T, 0, false);
-    close_device(dev, true);
-    finish_lifecycle(false);
+#if LAP_HACKRF_TX
+    portENTER_CRITICAL(&s_lifecycle); bool pinned=s_tx_dev==dev; portEXIT_CRITICAL(&s_lifecycle);
+    if(pinned) {
+        atomic_store(&s_tx_cancelled,true);
+        if(xTaskCreate(removed_tx_cleanup,"hackrf_tx_gone",4096,dev,4,NULL)!=pdPASS)
+            ESP_LOGE(TAG,"removed TX device retained: no cleanup task memory");
+    } else { close_device(dev,true); finish_lifecycle(false); }
+#else
+    close_device(dev,true); finish_lifecycle(false);
+#endif
     return true;
 }
 
@@ -681,6 +725,10 @@ LS_COLD static void setup_task(void *arg)
 
     if (init_adsb_dev() != ESP_OK) { close_device(dev, false); goto done; }
     dev->ppm = settings_hackrf_ppm_get();
+#if LAP_HACKRF_TX
+    atomic_store(&s_tx_max_vga,settings_hackrf_tx_vga_get());
+    atomic_store(&s_tx_amp_allowed,settings_hackrf_tx_amp_get());
+#endif
     ls_rffe_note(LS_RFFE_HACKRF, LS_RADIO_FE_PPM, dev->ppm, false);
     dev->amp_mode = ls_rffe_saved(LS_RFFE_HACKRF, LS_RADIO_FE_AMP);
     dev->lna_fix = ls_rffe_saved(LS_RFFE_HACKRF, LS_RADIO_FE_LNA_DB);
@@ -900,3 +948,134 @@ void ls_hackrf_set_ppm(int ppm)
     }
     LS_PRINTF(t_hackrf_dev_hackrf_ppm_d_saved, "hackrf: ppm %d saved%s\n", ppm, s_dev ? ", retuned" : "");
 }
+
+/* Bounded, copied USB OUT. The SDK worker polls this; no app code or pointers
+ * run on the USB client task. USB ownership drains before a transfer is freed. */
+#if LAP_HACKRF_TX
+static void tx_complete(usb_transfer_t *transfer) {
+    (void)transfer;
+    atomic_store_explicit(&s_tx_done,true,memory_order_release);
+}
+void ls_hackrf_tx_cancel(void) { atomic_store(&s_tx_cancelled,true); }
+void ls_hackrf_tx_limits(unsigned vga, bool amp) {
+    if(vga>47) { printf("hackrf: txlimits VGA 0..47, amp 0|1\n"); return; }
+    atomic_store(&s_tx_max_vga,vga); atomic_store(&s_tx_amp_allowed,amp);
+    settings_hackrf_tx_limits_set(vga,amp);
+    printf("hackrf: TX maximum VGA %u dB, amp %s (saved)\n",vga,amp?"allowed":"off");
+}
+static int tx_release(void) {
+    hackrf_dev_t *dev=s_tx_dev;
+    int result=s_tx.error?s_tx.error:1;
+    if(s_tx.transfer) usb_host_transfer_free(s_tx.transfer);
+    if(s_tx.lease) ls_radio_release(s_tx.lease);
+    memset(&s_tx,0,sizeof(s_tx));
+    portENTER_CRITICAL(&s_lifecycle); if(s_tx_dev==dev) s_tx_dev=NULL; portEXIT_CRITICAL(&s_lifecycle);
+    return result;
+}
+int ls_hackrf_tx_start(uint64_t hz,uint32_t rate,unsigned vga,bool amp,
+                       int power,const void *iq,size_t bytes) {
+    if(hz<1000000||hz>6000000000ULL||rate<2000000||rate>20000000) return LAP_RX_ERANGE;
+    if(!iq||!bytes||(bytes&1)||bytes>65534) return LAP_IO_ESIZE;
+    if(vga>47||vga>atomic_load(&s_tx_max_vga)||(amp&&!atomic_load(&s_tx_amp_allowed))) return LAP_IO_EPOWER;
+    ls_radio_requirements_t req={.required_caps=LS_RADIO_RX_IQ_U8,
+        .preferred_endpoint_id=LS_RADIO_ENDPOINT_HACKRF_USB,.min_hz=hz,.max_hz=hz};
+    ls_radio_session_t *lease=NULL;
+    ls_radio_err_t e=ls_radio_acquire("app.hackrf.tx",&req,&lease);
+    if(e!=LS_RADIO_OK) return e==LS_RADIO_ERR_BUSY?LAP_RX_EBUSY:LAP_RX_ENODEV;
+    portENTER_CRITICAL(&s_lifecycle);
+    hackrf_dev_t *dev=s_dev;
+    bool busy=s_tx_dev||!dev||dev->streaming;
+    if(!busy) s_tx_dev=dev;
+    portEXIT_CRITICAL(&s_lifecycle);
+    if(busy) { ls_radio_release(lease); return dev?LAP_RX_EBUSY:LAP_RX_ENODEV; }
+    memset(&s_tx,0,sizeof(s_tx)); s_tx.lease=lease;
+    s_tx.vga=vga;s_tx.amp=amp;s_tx.power=power;
+    atomic_store(&s_tx_cancelled,false);atomic_store(&s_tx_done,false);
+    s_tx.duration=(uint32_t)(((uint64_t)bytes*500000+rate-1)/rate);
+    int p=ls_tx_protect(LS_TX_HACKRF,power,false,s_tx.duration+500000,esp_timer_get_time());
+    if(p) { s_tx.error=p; return tx_release(); }
+    if(usb_host_transfer_alloc(bytes,0,&s_tx.transfer)!=ESP_OK) { s_tx.error=LAP_RX_ENOMEM; return tx_release(); }
+    usb_transfer_t *x=s_tx.transfer;
+    memcpy(x->data_buffer,iq,bytes); x->device_handle=dev->usb.dev_hdl;
+    x->bEndpointAddress=0x02;x->num_bytes=bytes;x->callback=tx_complete;x->timeout_ms=200;
+    dev->shift_hz=0; /* TX has no receive decimator or LO shift */
+    e=control_out(dev,HACKRF_REQ_SET_TRANSCEIVER_MODE,HACKRF_MODE_OFF,0,NULL,0);
+    if(e==LS_RADIO_OK) e=set_sample_rate(dev,rate);
+    if(e==LS_RADIO_OK) e=set_bandwidth(dev,ls_hackrf_filter_bandwidth(0,rate));
+    if(e==LS_RADIO_OK) e=set_frequency(dev,hz);
+    if(e==LS_RADIO_OK) e=control_gain(dev,HACKRF_REQ_SET_TXVGA_GAIN,vga);
+    if(e==LS_RADIO_OK) e=control_out(dev,HACKRF_REQ_SET_AMP_ENABLE,amp,0,NULL,0);
+    if(e==LS_RADIO_OK&&atomic_load(&s_tx_cancelled)) e=LS_RADIO_ERR_STOPPED;
+    if(e!=LS_RADIO_OK) {
+        s_tx.error=atomic_load(&s_tx_cancelled)?LAP_IO_ECANCELLED:LAP_RX_EIO;
+        (void)control_out(dev,HACKRF_REQ_SET_AMP_ENABLE,0,0,NULL,0);
+        return tx_release();
+    }
+    /* A dedicated firmware task bounds RF duration even if the app I/O worker
+       subsequently blocks on FAT or another service. Create it before RF on. */
+    atomic_store(&s_tx_armed,false); atomic_store(&s_tx_result,0);
+    if(xTaskCreate(tx_guard_task,"hackrf_tx",4096,NULL,5,NULL)!=pdPASS) {
+        s_tx.error=LAP_RX_ENOMEM;
+        (void)control_out(dev,HACKRF_REQ_SET_AMP_ENABLE,0,0,NULL,0);
+        int result=tx_release(); atomic_store(&s_tx_result,result); return result;
+    }
+    e=control_out(dev,HACKRF_REQ_SET_TRANSCEIVER_MODE,HACKRF_MODE_TRANSMIT,0,NULL,0);
+    if(e==LS_RADIO_OK) {
+        s_tx.deadline=esp_timer_get_time()+s_tx.duration+200000;
+        if(usb_host_transfer_submit(x)==ESP_OK) s_tx.pending=true;
+        else e=LS_RADIO_ERR_IO;
+    }
+    if(e!=LS_RADIO_OK) s_tx.error=atomic_load(&s_tx_cancelled)?LAP_IO_ECANCELLED:LAP_RX_EIO;
+    atomic_store_explicit(&s_tx_armed,true,memory_order_release);
+    return 0;
+}
+static int tx_step(void) {
+    hackrf_dev_t *dev=s_tx_dev; if(!dev) return 1;
+    int64_t now=esp_timer_get_time();
+    portENTER_CRITICAL(&s_lifecycle); bool gone=s_dev!=dev; portEXIT_CRITICAL(&s_lifecycle);
+    if(gone||atomic_load(&s_tx_cancelled)) s_tx.error=gone?LAP_RX_ENODEV:LAP_IO_ECANCELLED;
+    if(!s_tx.error&&(s_tx.vga>atomic_load(&s_tx_max_vga)||(s_tx.amp&&!atomic_load(&s_tx_amp_allowed)))) s_tx.error=LAP_IO_EPOWER;
+    if(!s_tx.error) s_tx.error=ls_tx_protect(LS_TX_HACKRF,s_tx.power,false,1,now);
+    if(!s_tx.error&&now>s_tx.deadline) s_tx.error=LAP_RX_EIO;
+    bool done=atomic_load_explicit(&s_tx_done,memory_order_acquire);
+    if(done&&s_tx.pending) {
+        s_tx.pending=false;
+        if(!s_tx.error&&(s_tx.transfer->status!=USB_TRANSFER_STATUS_COMPLETED||
+           s_tx.transfer->actual_num_bytes!=s_tx.transfer->num_bytes)) s_tx.error=LAP_RX_EIO;
+        s_tx.finish_at=now+s_tx.duration+2000; /* drain radio FIFO after USB completion */
+    }
+    if(s_tx.error||(!s_tx.pending&&now>=s_tx.finish_at)) {
+        if(!s_tx.stopping) {
+            s_tx.stopping=true;
+            if(!gone) {
+                if(control_out(dev,HACKRF_REQ_SET_TRANSCEIVER_MODE,HACKRF_MODE_OFF,0,NULL,0)!=LS_RADIO_OK&&!s_tx.error) s_tx.error=LAP_RX_EIO;
+                (void)control_out(dev,HACKRF_REQ_SET_AMP_ENABLE,0,0,NULL,0);
+            }
+            if(s_tx.pending) {
+                usb_host_endpoint_halt(dev->usb.dev_hdl,0x02);
+                usb_host_endpoint_flush(dev->usb.dev_hdl,0x02);
+            }
+        }
+        if(s_tx.pending&&!atomic_load_explicit(&s_tx_done,memory_order_acquire)) return 0;
+        if(!gone) usb_host_endpoint_clear(dev->usb.dev_hdl,0x02);
+        return tx_release();
+    }
+    return 0;
+}
+
+static void tx_guard_task(void *arg) {
+    (void)arg;
+    while(!atomic_load_explicit(&s_tx_armed,memory_order_acquire)) vTaskDelay(1);
+    int result;
+    while(!(result=tx_step())) vTaskDelay(1);
+    atomic_store_explicit(&s_tx_result,result,memory_order_release);
+    vTaskDelete(NULL);
+}
+int ls_hackrf_tx_poll(void) { return atomic_load_explicit(&s_tx_result,memory_order_acquire); }
+#else
+void ls_hackrf_tx_cancel(void) {}
+void ls_hackrf_tx_limits(unsigned vga, bool amp) { printf("hackrf: TX unsupported in this build\n"); }
+int ls_hackrf_tx_start(uint64_t hz, uint32_t rate, unsigned vga, bool amp,
+                       int power, const void *iq, size_t bytes) { return LAP_RX_EUNSUPPORTED; }
+int ls_hackrf_tx_poll(void) { return LAP_RX_EUNSUPPORTED; }
+#endif

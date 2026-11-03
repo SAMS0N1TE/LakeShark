@@ -34,8 +34,16 @@ bool ls_time_is_synced(void) { return s_synced; }
 
 /* Who set the clock last: 0 nobody, 1 RTC (or another local source), 2 SNTP. */
 static volatile int s_source = 0;
+static uint32_t s_last_sync_ms=UINT32_MAX;
+uint32_t ls_time_last_sync_ms(void) {return __atomic_load_n(&s_last_sync_ms,__ATOMIC_ACQUIRE);}
+static void note_sync_time(void) {
+#if !LS_TIME_HOST
+    __atomic_store_n(&s_last_sync_ms,(uint32_t)(esp_timer_get_time()/1000),__ATOMIC_RELEASE);
+#endif
+}
 
-void ls_time_note_set(void) { s_synced = true; if (s_source != 2) s_source = 1; }
+
+void ls_time_note_set(void) { note_sync_time(); s_synced = true; if (s_source != 2) s_source = 1; }
 
 int ls_time_source(void) { return s_synced ? s_source : 0; }
 
@@ -154,6 +162,7 @@ static void sntp_sync_notif(struct timeval *now)
     }
     s_synced = true;
     s_source = 2;
+    note_sync_time();
     struct tm tm;
     gmtime_r(&s, &tm);
     ESP_LOGW(TAG, "wall clock set: %04d-%02d-%02dT%02d:%02d:%02dZ",

@@ -13,6 +13,13 @@ typedef struct {
  uint8_t block_state[256],sector_keys[40];
  char status[96];
 } ls_nfc_suite_status_t;
+typedef struct {
+ uint32_t kind,error;uint16_t len,capacity,atqa;uint8_t uid[10],uid_len,sak;bool writable;
+} ls_nfc_tag_result_t;
+bool ls_nfc_tag_open(void);
+void ls_nfc_tag_close(void);
+int ls_nfc_tag_read(ls_nfc_tag_result_t *out,void *ndef,size_t cap);
+int ls_nfc_tag_write(const void *ndef,size_t len);
 bool ls_nfc_suite_start(bool read);
 void ls_nfc_suite_stop(void);
 bool ls_nfc_suite_busy(void);

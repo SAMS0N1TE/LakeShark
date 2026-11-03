@@ -4,6 +4,7 @@
 
 #include "ls_errlog.h"
 #include "ls_crash.h"
+#include "ls_log_line.h"
 #include "ls_nvs_safe.h"
 #include "ls_trail.h"
 
@@ -29,27 +30,55 @@ RTC_NOINIT_ATTR static ls_errlog_tail_t s_rtc_tail;
 /* Internal RAM is the scarce kind here; nothing below needs it. */
 EXT_RAM_BSS_ATTR static char s_prev[LS_ERRLOG_REC_TAIL];   /* the run before's */
 EXT_RAM_BSS_ATTR static char s_line[192];
+static size_t s_line_len;
+static bool s_line_open;                /* s_line_task holds s_line_mutex */
+static TaskHandle_t s_line_task;
+static ls_log_line_t s_line_of;
 static portMUX_TYPE s_tail_lock = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t s_line_mutex;
 static StaticSemaphore_t s_line_mutex_buf;
 static vprintf_like_t s_next_vprintf;
 
-/* Every log line passes here. Error and warning lines (the format begins
-   "E (" or "W (" with colours off) are copied into the ring first; a line
-   arriving while another is being copied is not kept, rather than wait. */
-static int errlog_vprintf(const char *fmt, va_list args)
+/* One call's share of an error or warning line, into s_line. Under Log V2
+   the line comes in pieces (ls_log_line.h): the task whose prefix took the
+   mutex keeps it until its newline, and the whole line goes into the ring. */
+static void keep_piece(const char *fmt, va_list args)
 {
-    if (fmt && (fmt[0] == 'E' || fmt[0] == 'W') && fmt[1] == ' ' && fmt[2] == '(' &&
-        s_line_mutex && xSemaphoreTake(s_line_mutex, 0) == pdTRUE) {
-        va_list copy;
-        va_copy(copy, args);
-        vsnprintf(s_line, sizeof(s_line), fmt, copy);
-        va_end(copy);
+    const TaskHandle_t me = xTaskGetCurrentTaskHandle();
+    const bool mine = s_line_open && s_line_task == me;
+    if (ls_log_line_start(fmt)) {
+        if (!mine) {
+            if (!s_line_mutex || xSemaphoreTake(s_line_mutex, 0) != pdTRUE) return;
+            s_line_open = true;
+            s_line_task = me;
+        }
+        s_line_len = 0;
+    } else if (!mine) {
+        return;
+    }
+    const size_t room = sizeof(s_line) - s_line_len;
+    va_list copy;
+    va_copy(copy, args);
+    const int n = vsnprintf(s_line + s_line_len, room, fmt, copy);
+    va_end(copy);
+    if (n > 0) s_line_len += (size_t)n < room ? (size_t)n : room - 1;
+    const bool ended = s_line_len && s_line[s_line_len - 1] == '\n';
+    if (!LS_LOG_LINE_IN_PIECES || ended || s_line_len >= sizeof(s_line) - 1) {
         portENTER_CRITICAL_SAFE(&s_tail_lock);
         ls_errlog_tail_add(&s_rtc_tail, s_line);
         portEXIT_CRITICAL_SAFE(&s_tail_lock);
+        s_line_open = false;
         xSemaphoreGive(s_line_mutex);
     }
+}
+
+/* Every log line passes here. Error and warning lines are copied into the
+   ring first; a line beginning while another is being copied is not kept,
+   rather than wait. */
+static int errlog_vprintf(const char *fmt, va_list args)
+{
+    const char level = ls_log_line_level(&s_line_of, fmt, args);
+    if (level == 'E' || level == 'W') keep_piece(fmt, args);
     return s_next_vprintf ? s_next_vprintf(fmt, args) : vprintf(fmt, args);
 }
 

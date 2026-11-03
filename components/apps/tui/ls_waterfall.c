@@ -70,8 +70,8 @@ static uint32_t cfg_packed(void)
     return s_cfg.split_pct | ((uint32_t)(s_cfg.ref + 8) << 7)
         | ((uint32_t)s_cfg.range << 12) | ((uint32_t)s_cfg.palette << 17)
         | ((uint32_t)s_cfg.avg << 19) | ((uint32_t)s_cfg.decim << 23)
-        | ((uint32_t)s_cfg.peak_hold << 27) | ((uint32_t)s_cfg.grain << 28)
-        | ((uint32_t)s_cfg.paused << 30);
+        | ((uint32_t)s_cfg.peak_hold << 27) | ((uint32_t)(s_cfg.grain & 3) << 28)
+        | ((uint32_t)s_cfg.paused << 30) | ((uint32_t)(s_cfg.grain >> 2) << 31);
 }
 LS_COLD static void cfg_load(void)
 {
@@ -83,13 +83,14 @@ LS_COLD static void cfg_load(void)
         .split_pct = v & 127, .ref = (int)((v >> 7) & 31) - 8,
         .range = (v >> 12) & 31, .palette = (v >> 17) & 3,
         .avg = (v >> 19) & 15, .decim = (v >> 23) & 15,
-        .peak_hold = (v >> 27) & 1, .grain = (v >> 28) & 3,
+        .peak_hold = (v >> 27) & 1, .grain = ((v >> 28) & 3) | ((v >> 31) << 2),
         .paused = (v >> 30) & 1,
     };
     if (cfg.split_pct > 100 || cfg.split_pct % 25 || cfg.ref < -8 || cfg.ref > 8
         || cfg.range < 4 || cfg.range > 16
         || (cfg.avg != 1 && cfg.avg != 2 && cfg.avg != 4 && cfg.avg != 8)
-        || (cfg.decim != 1 && cfg.decim != 2 && cfg.decim != 4 && cfg.decim != 8)) return;
+        || (cfg.decim != 1 && cfg.decim != 2 && cfg.decim != 4 && cfg.decim != 8)
+        || cfg.grain >= LS_WF_GRAIN__COUNT) return;
     s_cfg = cfg;
 }
 static void cfg_save(void) { settings_set_waterfall(cfg_packed()); }
@@ -919,7 +920,7 @@ static const char *split_name(void)
 }
 
 static const char *const GRAIN_NAME[LS_WF_GRAIN__COUNT] = {
-    "pixel", "ascii", "dense", "bars"
+    "pixel", "ascii", "dense", "bars", "smooth"
 };
 
 /* One knob for contrast, because it was already there twice and named neither time. */
@@ -1209,9 +1210,13 @@ void ls_wf_prepare(int width, int height)
 }
 
 static uint32_t s_pix_pushes;
+static uint32_t s_pix_seen, s_pix_updates, s_pix_lines;
 static ls_wf_owner_t s_pix_owner;
 static int s_pix_bins = -1;
 static uint8_t s_pix_zoom;
+static bool s_pix_smooth;
+
+static inline bool smooth_on(void) { return s_cfg.grain == LS_WF_GRAIN_SMOOTH; }
 
 /* Pixel rows per history row: a band sweep is a row every second or more
    and gets a thick one, a fast FFT feed thin ones, and never so thin that the
@@ -1224,9 +1229,48 @@ static int pix_rows_per_row(void)
     return k > fill ? k : fill;
 }
 
+/* SMOOTH's colour maps: the cell palettes' hues as continuous ramps, so a
+   signal fades up out of the floor instead of stepping through sixteen
+   theme colours. Dark ground first; Daylight runs from the page's own
+   ground to dark ink, as the cell palettes do. */
+static const ls_pwf_stop_t SMOOTH_DARK[LS_WF_PAL__COUNT][8] = {
+    [LS_WF_PAL_HEAT] = {{0, 0, 0, 0}, {40, 8, 10, 90}, {80, 10, 70, 210}, {120, 0, 175, 225},
+                        {155, 60, 215, 90}, {195, 245, 225, 40}, {230, 250, 70, 30}, {255, 255, 250, 245}},
+    [LS_WF_PAL_ICE] = {{0, 0, 0, 0}, {50, 4, 16, 70}, {100, 14, 70, 190}, {150, 30, 150, 240},
+                       {195, 90, 215, 255}, {230, 185, 240, 255}, {255, 250, 255, 255}, {255, 250, 255, 255}},
+    [LS_WF_PAL_PHOSPHOR] = {{0, 0, 0, 0}, {50, 0, 35, 8}, {105, 0, 105, 25}, {160, 30, 200, 55},
+                            {210, 140, 255, 130}, {255, 235, 255, 230}, {255, 235, 255, 230}, {255, 235, 255, 230}},
+    [LS_WF_PAL_NEON] = {{0, 0, 0, 0}, {45, 50, 0, 70}, {95, 170, 0, 180}, {145, 90, 70, 255},
+                        {190, 0, 215, 255}, {225, 190, 255, 110}, {255, 255, 255, 230}, {255, 255, 255, 230}},
+};
+static const ls_pwf_stop_t SMOOTH_DAY[LS_WF_PAL__COUNT][6] = {
+    [LS_WF_PAL_HEAT] = {{0, 0, 0, 0}, {60, 150, 170, 230}, {120, 30, 80, 200}, {175, 0, 30, 140},
+                        {220, 200, 30, 30}, {255, 100, 0, 0}},
+    [LS_WF_PAL_ICE] = {{0, 0, 0, 0}, {70, 160, 200, 240}, {140, 50, 110, 210}, {200, 10, 50, 160},
+                       {255, 0, 10, 80}, {255, 0, 10, 80}},
+    [LS_WF_PAL_PHOSPHOR] = {{0, 0, 0, 0}, {70, 150, 215, 150}, {140, 40, 150, 60}, {200, 0, 90, 20},
+                            {255, 0, 40, 0}, {255, 0, 40, 0}},
+    [LS_WF_PAL_NEON] = {{0, 0, 0, 0}, {70, 220, 160, 230}, {140, 170, 40, 190}, {200, 100, 0, 140},
+                        {255, 40, 0, 70}, {255, 40, 0, 70}},
+};
+
 static void pix_colours(void)
 {
     const ls_tui_theme_t *th = ls_tui_active_theme();
+    if (smooth_on()) {
+        const int pal = s_cfg.palette < LS_WF_PAL__COUNT ? s_cfg.palette : 0;
+        ls_pwf_stop_t stops[8];
+        const int n = s_light ? 6 : 8;
+        memcpy(stops, s_light ? SMOOTH_DAY[pal] : SMOOTH_DARK[pal], (size_t)n * sizeof(*stops));
+        /* The floor is the screen's own ground, whatever the theme. */
+        const uint16_t g = th->palette[TUI_BLACK];
+        stops[0] = (ls_pwf_stop_t){0, (uint8_t)((g >> 11) * 255 / 31),
+                                   (uint8_t)(((g >> 5) & 63) * 255 / 63), (uint8_t)((g & 31) * 255 / 31)};
+        const int span = s_cfg.range ? s_cfg.range : 16;
+        const float lo = 17.0f * s_cfg.ref, hi = 17.0f * (s_cfg.ref + 15.0f * span / 16.0f);
+        ls_pwf_colours(&s_pix, stops, n, lo, hi);
+        return;
+    }
     ls_pwf_stop_t stops[16];
     for (int l = 0; l < 16; l++) {
         /* Levels 0 and 1 are the floor's floor, drawn as nothing. */
@@ -1244,7 +1288,7 @@ static void pix_colours(void)
 static void pix_sync(bool fresh)
 {
     if (fresh || s_owner != s_pix_owner || s_nbins != s_pix_bins ||
-        s_zoom != s_pix_zoom || s_st.pushes < s_pix_pushes) {
+        s_zoom != s_pix_zoom || s_st.pushes < s_pix_pushes || s_pix_smooth) {
         ls_pwf_clear(&s_pix);
         int first, count;
         visible_bins(&first, &count);
@@ -1252,6 +1296,7 @@ static void pix_sync(bool fresh)
         s_pix_owner = s_owner;
         s_pix_bins = s_nbins;
         s_pix_zoom = s_zoom;
+        s_pix_smooth = false;
         /* Start from what the history already holds. */
         s_pix_pushes = s_st.pushes > (uint32_t)s_filled ? s_st.pushes - (uint32_t)s_filled : 0;
     }
@@ -1279,11 +1324,136 @@ static void pix_sync(bool fresh)
     s_pix_pushes = s_st.pushes;
 }
 
+/* SMOOTH: THE SAME ROWS, MOVING AT A STEADY PACE.
+
+   PIXEL drops each row in as k identical pixel lines the moment it lands,
+   so the picture stands still and then jumps k pixels at the row rate. Here
+   the k lines between two rows are emitted as time passes, paced by the
+   measured row interval, and line j of k is row n-1 blended j/k of the way
+   to row n. The scroll moves a pixel or two every frame instead of k pixels
+   a row. It costs one row of delay: the blend toward row n starts when row
+   n has arrived. Nothing is drawn that is not between two measured rows,
+   and when rows stop the picture stops on the last one. */
+static uint32_t s_sm_row;        /* push number of the row being blended to  */
+static int      s_sm_done;       /* lines emitted toward it, 0..k            */
+static int64_t  s_sm_t0;         /* when it arrived (as far as pacing knows) */
+static bool     s_sm_gap;
+static EXT_RAM_BSS_ATTR uint8_t s_sm_prev[LS_WF_BINS_MAX], s_sm_next[LS_WF_BINS_MAX];
+
+/* Row `push` (1 = the first since the claim) as colour codes through the
+   window it was written under; false when the history no longer holds it. */
+static bool sm_codes(uint32_t push, uint8_t *out, bool *gap)
+{
+    const uint32_t back = s_st.pushes - push;
+    if (push == 0 || back >= (uint32_t)s_filled) return false;
+    const int idx = (s_head - (int)back + LS_WF_ROWS_MAX * 2) % LS_WF_ROWS_MAX;
+    int lo = s_row_lo[idx], hi = s_row_hi[idx];
+    if (hi - lo < 8) hi = lo + 8;
+    const uint8_t *row = s_hist[idx];
+    for (int i = 0; i < s_nbins && i < LS_WF_BINS_MAX; i++) {
+        const int c = ((int)row[i] - lo) * 255 / (hi - lo);
+        out[i] = (uint8_t)(c < 0 ? 0 : c > 255 ? 255 : c);
+    }
+    *gap = s_row_gap[idx];
+    return true;
+}
+
+/* Line j of k toward s_sm_next. */
+static void sm_emit(int j, int k)
+{
+    uint8_t *line = ls_pwf_push(&s_pix);
+    if (!line) return;
+    const int n = s_nbins < LS_WF_BINS_MAX ? s_nbins : LS_WF_BINS_MAX;
+    if (j >= k) memcpy(line, s_sm_next, (size_t)n);
+    else
+        for (int i = 0; i < n; i++)
+            line[i] = (uint8_t)(s_sm_prev[i] + ((int)s_sm_next[i] - s_sm_prev[i]) * j / k);
+    if (s_sm_gap)
+        for (int i = 0; i < 8 && i < n; i++) line[i] = (i & 1) ? 0 : 255;
+}
+
+/* Make row `push` the one being blended to, the current one its start. */
+static bool sm_advance(uint32_t push)
+{
+    bool gap = false;
+    memcpy(s_sm_prev, s_sm_next, sizeof(s_sm_prev));
+    if (!sm_codes(push, s_sm_next, &gap)) return false;
+    s_sm_row = push;
+    s_sm_done = 0;
+    s_sm_gap = gap;
+    return true;
+}
+
+static void pix_sync_smooth(bool fresh, int64_t now)
+{
+    const int k = pix_rows_per_row();
+    if (fresh || !s_pix_smooth || s_owner != s_pix_owner || s_nbins != s_pix_bins ||
+        s_zoom != s_pix_zoom || s_st.pushes < s_sm_row) {
+        ls_pwf_clear(&s_pix);
+        int first, count;
+        visible_bins(&first, &count);
+        ls_pwf_axis_lerp(&s_pix, first, first + count - 1);
+        s_pix_owner = s_owner;
+        s_pix_bins = s_nbins;
+        s_pix_zoom = s_zoom;
+        s_pix_smooth = true;
+        /* What the history holds goes in at once, blended the same way, so
+           an opened picture is full and continuous from its first frame. */
+        const uint32_t oldest = s_st.pushes - (uint32_t)s_filled + 1;
+        bool gap = false;
+        s_sm_row = 0;
+        if (s_filled > 0 && sm_codes(oldest, s_sm_next, &gap)) {
+            s_sm_row = oldest;
+            s_sm_gap = gap;
+            sm_emit(k, k);
+            for (uint32_t p = oldest + 1; p <= s_st.pushes; p++) {
+                if (!sm_advance(p)) break;
+                for (int j = 1; j <= k; j++) sm_emit(j, k);
+            }
+        }
+        s_sm_done = k;
+        s_sm_t0 = now;
+        /* PIXEL's own sync starts over from here if it is chosen again. */
+        s_pix_pushes = s_st.pushes;
+        return;
+    }
+    if (!s_sm_row) {                        /* rows began after the reset */
+        if (!s_st.pushes) return;
+        bool gap = false;
+        if (!sm_codes(s_st.pushes, s_sm_next, &gap)) return;
+        memcpy(s_sm_prev, s_sm_next, sizeof(s_sm_prev));
+        s_sm_row = s_st.pushes;
+        s_sm_gap = gap;
+        sm_emit(k, k);
+        s_sm_done = k;
+        s_sm_t0 = now;
+        return;
+    }
+    /* Rows that landed since: finish the blend under way, and any row the
+       history skipped past is drawn whole on the way to the newest. */
+    while (s_sm_row < s_st.pushes) {
+        while (s_sm_done < k) sm_emit(++s_sm_done, k);
+        uint32_t next = s_sm_row + 1;
+        const uint32_t oldest = s_st.pushes - (uint32_t)s_filled + 1;
+        if (next < oldest) next = oldest;
+        if (!sm_advance(next)) break;
+        s_sm_t0 = now;
+    }
+    /* The blend toward the newest row, spread over one row interval.
+       Rounded, not floored: with two lines a row and two frames a row,
+       flooring put both lines on the second frame and the picture moved
+       every other frame. */
+    const int64_t period_us = (int64_t)(s_st.row_ms ? s_st.row_ms : 100) * 1000;
+    int due = (int)(((now - s_sm_t0) * k + period_us / 2) / period_us);
+    if (due > k) due = k;
+    while (s_sm_done < due) sm_emit(++s_sm_done, k);
+}
+
 /* The history in pixels, or false to draw it in cells: a cell look chosen,
    no PSRAM, or the panel's image cells taken by another picture. */
 static bool draw_pixels(tui_surface *sf, tui_rect r)
 {
-    if (s_cfg.grain != LS_WF_GRAIN_PIXEL || !s_hist || r.w < 4 || r.h < 2 ||
+    if ((s_cfg.grain != LS_WF_GRAIN_PIXEL && !smooth_on()) || !s_hist || r.w < 4 || r.h < 2 ||
         !ls_tui_has_images()) return false;
     const uint16_t *src = NULL;
     if (ls_tui_image_now(NULL, &src, NULL, NULL, NULL) && src && src != s_pix.img) return false;
@@ -1298,10 +1468,18 @@ static bool draw_pixels(tui_surface *sf, tui_rect r)
     const bool same = s_pix.img && s_pix.w == r.w * cw && s_pix.h == r.h * ch;
     if (!ls_pwf_size(&s_pix, LS_PWF_DOWN, r.w * cw, r.h * ch, LS_WF_BINS_MAX)) return false;
     pix_colours();
-    pix_sync(!same);
+    const int64_t now = esp_timer_get_time();
+    if (smooth_on()) pix_sync_smooth(!same, now);
+    else             pix_sync(!same);
     const uint16_t white = ls_tui_active_theme()->palette[TUI_WHITE | TUI_BRIGHT];
     ls_pwf_mark(&s_pix, s_marker >= 0 && s_marker < r.w ? s_marker * cw + cw / 2 - 1 : -1, white);
-    ls_pwf_compose(&s_pix, esp_timer_get_time(), s_have_feed && s_feed.iq ? 100000 : 33000);
+    /* SMOOTH moves every frame by what is due; PIXEL coalesces. */
+    ls_pwf_compose(&s_pix, now, smooth_on() ? 0 : s_have_feed && s_feed.iq ? 100000 : 33000);
+    if (s_pix.serial != s_pix_seen) {
+        s_pix_seen = s_pix.serial;
+        s_pix_updates++;
+        s_pix_lines += s_pix.freq_px ? s_pix.stat_px / (uint32_t)s_pix.freq_px : 0;
+    }
     ls_pwf_show(&s_pix, sf, r);
     /* A panel that does not keep the picture (a bench without one) gets
        the cells instead, on a cleared rectangle. */
@@ -1423,7 +1601,13 @@ void ls_wf_note_full_view(void) { s_full_draw_sequence++; }
 void ls_wf_draw(tui_surface *sf, tui_rect area)      { ls_wf_note_full_view(); layout_and_draw(sf, area, true); }
 void ls_wf_draw_mini(tui_surface *sf, tui_rect area) { layout_and_draw(sf, area, false); }
 
-void ls_wf_stats(ls_wf_stats_t *out) { if (out) *out = s_st; }
+void ls_wf_stats(ls_wf_stats_t *out)
+{
+    if (!out) return;
+    *out = s_st;
+    out->pix_updates = s_pix_updates;
+    out->pix_lines = s_pix_lines;
+}
 
 uint32_t ls_wf_seq(void) { return s_seq; }
 

@@ -349,6 +349,7 @@ void ls_mesh_socket_get(ls_mesh_socket_t *out)
 esp_err_t lr_wf_start(uint32_t hz) { (void)hz; return ESP_ERR_NOT_SUPPORTED; }
 void lr_wf_stop(void) {}
 esp_err_t lr_wf_set_wide(bool on, int32_t offset_hz) { (void)on; (void)offset_hz; return ESP_OK; }
+void lr_wf_set_wide_chip(bool on) { (void)on; }
 #include "lr_wf_session.h"
 void lr_wf_wide_get(lr_wf_wide_status *out) { memset(out, 0, sizeof(*out)); }
 #endif
@@ -363,3 +364,10 @@ __attribute__((weak)) uint32_t ls_lora_caps(void) { return LS_LORA_CAP_LORA | LS
 static uint32_t s_fm_bcast_stub;
 uint32_t settings_get_fm_bcast(uint32_t fallback) { return s_fm_bcast_stub ? s_fm_bcast_stub : fallback; }
 void settings_set_fm_bcast(uint32_t value) { s_fm_bcast_stub = value; }
+
+#ifdef LS_TUI_IMAGE_STUB
+void ls_tui_image_pan(tui_rect r,const uint16_t *p,int w,int h,uint32_t serial,uint32_t epoch,int32_t x,int32_t y,uint16_t ground) {
+    (void)epoch;(void)x;(void)y;(void)ground;ls_tui_image(r,p,w,h,serial);
+}
+
+#endif

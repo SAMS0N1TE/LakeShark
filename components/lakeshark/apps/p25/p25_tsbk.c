@@ -856,9 +856,11 @@ size_t p25_tsbk_status_format(const dsd_state *state, char *buf, size_t buf_sz)
     return pos;
 }
 
-unsigned int p25_tsbk_process_tsdu(dsd_state *state,
-                                   const uint8_t *wire_dibits,
-                                   size_t wire_count)
+unsigned int p25_tsbk_process_tsdu(dsd_state *state, const uint8_t *wire_dibits, size_t wire_count) {
+    return p25_tsbk_process_tsdu_sink(state,wire_dibits,wire_count,NULL,NULL);
+}
+unsigned int p25_tsbk_process_tsdu_sink(dsd_state *state, const uint8_t *wire_dibits,
+    size_t wire_count, p25_tsbk_sink_fn sink, void *user)
 {
     uint8_t interleaved[P25_TSBK_ENCODED_DIBITS];
     uint8_t encoded[P25_TSBK_ENCODED_DIBITS];
@@ -896,7 +898,10 @@ unsigned int p25_tsbk_process_tsdu(dsd_state *state,
         }
         state->p25_tsbk_valid_count++;
         accepted++;
+        unsigned before=state->p25_grant_count;
         (void)parse_block(state, block);
+        unsigned added=state->p25_grant_count>=before ? state->p25_grant_count-before : state->p25_grant_count;
+        if (sink) sink(block,state,added,user);
         if (block[0] & 0x80u)
             break;
     }

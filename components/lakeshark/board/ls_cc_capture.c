@@ -3,6 +3,7 @@
 #ifdef LS_BOARD_MIX_CC_GDO0
 #include "driver/rmt_rx.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
 #include "rec_state.h"
 #include "rec_watch.h"
 #include <stdatomic.h>
@@ -13,6 +14,15 @@ static rmt_symbol_word_t *symbols;
 static int32_t *pulses;
 static atomic_uint completed;
 static bool enabled;
+static portMUX_TYPE app_lock=portMUX_INITIALIZER_UNLOCKED;
+static int32_t app_edges[1024];static unsigned app_count,app_at,app_dropped;
+void ls_cc_capture_clear(void){portENTER_CRITICAL(&app_lock);app_count=app_at=app_dropped=0;portEXIT_CRITICAL(&app_lock);}
+int ls_cc_capture_read(int32_t *out,int max,unsigned *dropped) {
+    portENTER_CRITICAL(&app_lock);unsigned n=app_count-app_at;if(n>(unsigned)max)n=max;
+    for (unsigned i = 0; i < n; i++) out[i] = app_edges[app_at++];
+    *dropped = app_dropped;
+    portEXIT_CRITICAL(&app_lock);return n;
+}
 
 static bool done(rmt_channel_handle_t ch, const rmt_rx_done_event_data_t *event,
                  void *ctx) {
@@ -90,6 +100,12 @@ bool ls_cc_capture_poll(uint32_t hz, uint32_t *captures, uint32_t *overflows) {
     }
     n=rec_watch_filter_pulses(pulses,n,REC_MIN_PULSE_US);
     if (n >= 6) {
+      portENTER_CRITICAL(&app_lock);
+      if(app_at<app_count)app_dropped+=app_count-app_at;
+      app_count=n>1024?1024:n;app_at=0;
+      for(unsigned i=0;i<app_count;i++)app_edges[i]=pulses[i];
+      if(n>1024)app_dropped+=n-1024;
+      portEXIT_CRITICAL(&app_lock);
       rec_watch_submit_from(REC_SOURCE_CC1101, hz, pulses, n, 0, REC_END_GAP);
       (*captures)++;
     }
@@ -97,6 +113,8 @@ bool ls_cc_capture_poll(uint32_t hz, uint32_t *captures, uint32_t *overflows) {
   return arm();
 }
 #else
+void ls_cc_capture_clear(void){}
+int ls_cc_capture_read(int32_t *out,int max,unsigned *dropped){(void)out;(void)max;*dropped=0;return 0;}
 bool ls_cc_capture_start(void) { return false; }
 void ls_cc_capture_stop(void) {}
 bool ls_cc_capture_poll(uint32_t hz, uint32_t *captures, uint32_t *overflows) {

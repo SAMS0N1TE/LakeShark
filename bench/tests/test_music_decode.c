@@ -3,6 +3,9 @@
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
+#ifndef LS_AUDIO_COMPRESSED
+#define LS_AUDIO_COMPRESSED 1
+#endif
 static float amplitude(const int16_t *p,size_t n,int ch,float hz,unsigned rate) {
     double re=0,im=0;
     for(size_t i=0;i<n;i++){double a=6.283185307179586*hz*i/rate;re+=p[2*i+ch]*cos(a);im+=p[2*i+ch]*sin(a);}
@@ -16,7 +19,13 @@ int main(int argc,char **argv) {
     for(int i=0;i<4;i++) {
         char path[512];snprintf(path,sizeof(path),"%s/tone.%s",argv[1],ext[i]);
         FILE *f=fopen(path,"rb");assert(f);
-        printf("Testing %s\n",ext[i]);ls_decode *d=ls_decode_open(f);assert(d);
+        printf("Testing %s\n",ext[i]);ls_decode *d=ls_decode_open(f);
+        if (!LS_AUDIO_COMPRESSED && i) {
+            assert(!d); assert(fclose(f)==0);
+            printf("PASS %s: disabled decoder rejected\n",ext[i]);
+            continue;
+        }
+        assert(d);
         assert(ls_decode_rate(d)==44100 && ls_decode_channels(d)==2);
         assert(ls_decode_frames(d)>=88000 && ls_decode_frames(d)<92000);
         assert(ls_decode_seek(d,22050));assert(ls_decode_position(d)==22050);
@@ -29,6 +38,7 @@ int main(int argc,char **argv) {
         assert(!ls_decode_failed(d));ls_decode_close(d);assert(fclose(f)==0);
         printf("PASS %s: stream, channels, duration, tone, exact seek, EOF\n",ext[i]);
     }
-    FILE *bad=tmpfile();assert(bad);fputs("not audio",bad);rewind(bad);assert(!ls_decode_open(bad));fclose(bad);
+    char junk[512];snprintf(junk,sizeof(junk),"%s/not_audio.bin",argv[1]);
+    FILE *bad=fopen(junk,"w+b");assert(bad);fputs("not audio",bad);rewind(bad);assert(!ls_decode_open(bad));fclose(bad);remove(junk);
     free(pcm);return 0;
 }

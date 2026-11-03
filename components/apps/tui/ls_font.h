@@ -32,6 +32,8 @@ typedef struct {
 extern const ls_font_t ls_font_mono_24; /* 15x26 detector view */
 extern const ls_font_t ls_font_mono_14;   /*  9x16 - 131x33 landscape */
 extern const ls_font_t ls_font_mono_16;   /* 10x17 - 115x27 landscape */
+extern const ls_font_t ls_font_mono_13;   /*  8x14 - small glass, 60x57 on 480x800 */
+extern const ls_font_t ls_font_mono_11;   /*  7x13 - small glass, 68x61 on 480x800 */
 
 /* The Cyrillic page that goes with a face (ls_font_cyr.c), indexed by the
    slot tui_cyr_slot() gives for a cell; NULL for a face without one. Same

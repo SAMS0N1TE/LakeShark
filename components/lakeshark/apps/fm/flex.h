@@ -19,6 +19,8 @@ typedef enum {
 
 typedef struct flex_ctx flex_ctx_t;
 
+typedef void (*flex_page_fn)(void *user, const fm_page_t *page);
+flex_ctx_t *flex_create_sink(flex_page_fn sink, void *user, ls_flex_mode_t mode);
 flex_ctx_t *flex_create(fm_state_t *out, ls_flex_mode_t mode);
 void        flex_destroy(flex_ctx_t *c);
 void        flex_set_mode(flex_ctx_t *c, ls_flex_mode_t mode);

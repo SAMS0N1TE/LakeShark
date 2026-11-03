@@ -16,6 +16,10 @@ esp_err_t audio_out_init(void);
    Release only after the decoder has stopped writing; restores radio format. */
 esp_err_t audio_out_media_acquire(void);
 void audio_out_media_release(void);
+/* SDK mic lease preserves the 16 kHz stereo codec format against media. */
+esp_err_t audio_out_capture_acquire(void);
+void audio_out_capture_release(void);
+bool audio_out_app_cues_available(void);
 
 /* Live radio audio (FM, P25 voice): it takes the speaker from speech. */
 void audio_write_mono(const int16_t *samples, int n);

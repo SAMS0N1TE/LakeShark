@@ -6,6 +6,7 @@
    ls_lora_sx126x.c (the SX1262, unchanged) and ls_lora_lr20xx.c. See
    ls_lora.h for why BUSY and DIO1 shape all of it. */
 #include "ls_lora.h"
+#include "tx_protection.h"
 #include "ls_lora_priv.h"
 #include "ls_board_hw.h"
 
@@ -376,7 +377,25 @@ esp_err_t IRAM_ATTR ls_lora_hw_transmit(spi_transaction_t *t)
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
     t->override_freq_hz = s_capture_clock_pending;
 #if CONFIG_IDF_TARGET_ESP32P4
-    err = s_capture_fast ? capture_cpu_transmit(t) : spi_device_transmit(s_dev, t);
+    if (s_capture_fast && t->length > 64 * 8 && !(t->length & 7) &&
+        !(t->flags & (SPI_TRANS_USE_TXDATA | SPI_TRANS_USE_RXDATA))) {
+        /* Longer than the CPU FIFO: 64-byte pieces with CS held throughout,
+           as capture_fifo_transmit does for FIFO frames (a 256-byte
+           ReadRegMem32 answer is one command instead of five). */
+        const size_t n = t->length / 8;
+        const uint8_t *tx = t->tx_buffer;
+        uint8_t *rx = t->rx_buffer;
+        err = (tx && rx) ? ESP_OK : ESP_ERR_INVALID_SIZE;
+        for (size_t off = 0; err == ESP_OK && off < n; off += 64) {
+            const size_t m = n - off > 64 ? 64 : n - off;
+            spi_transaction_t p = {
+                .flags = off + m < n ? SPI_TRANS_CS_KEEP_ACTIVE : 0,
+                .length = m * 8, .tx_buffer = tx + off, .rx_buffer = rx + off,
+            };
+            err = capture_cpu_transmit(&p);
+        }
+    } else
+        err = s_capture_fast ? capture_cpu_transmit(t) : spi_device_transmit(s_dev, t);
 #else
     err = s_capture_fast ? spi_device_polling_transmit(s_dev, t) : spi_device_transmit(s_dev, t);
 #endif
@@ -401,9 +420,10 @@ static void tx_route_settle(void);
 
 /* A transmit: the route first, then the part. A refused start puts the
    route straight back. */
-#define TX_ROUTED(expr)                                                       \
+#define TX_ROUTED(expr, airtime, power)                                                       \
     do { ls_lora_hw_lock(); tx_route_settle();                                \
-         esp_err_t r_ = ls_board_hw_antenna_tx_begin();                       \
+         int protect_ = ls_tx_protect(LS_TX_SOCKET,(power),false,(airtime),esp_timer_get_time()); \
+         esp_err_t r_ = protect_ ? ESP_ERR_INVALID_STATE : ls_board_hw_antenna_tx_begin();                       \
          if (r_ == ESP_OK) { r_ = (expr); if (r_ != ESP_OK) tx_route_settle(); } \
          ls_lora_hw_unlock(); return r_; } while (0)
 
@@ -478,9 +498,76 @@ int ls_lora_hw_busy_level(void) { return gpio_get_level(BUSY_PIN); }
    meanwhile. 1 ms is generous for every command used here; the datasheet's
    worst case is the crystal start after a cold reset, which is handled
    separately below with a longer budget. */
+/* Sleeping BUSY waits (ls_lora_hw_busy_sleep): the waiting task blocks on a
+   falling-edge interrupt of BUSY instead of polling it, so a long answer from
+   the radio (one that has to wait for its own CPU) costs the ESP32-P4 nothing.
+   Task notification index 0 (the build has one): never on with the live
+   capture, whose timer uses it; a stray notify only wakes the wait early. */
+static volatile bool s_busy_sleep;
+#ifdef ESP_PLATFORM
+
+static TaskHandle_t volatile s_busy_waiter;
+static bool s_busy_isr_added;
+static void IRAM_ATTR busy_fall_isr(void *arg)
+{
+    (void)arg;
+    gpio_intr_disable(BUSY_PIN);
+    BaseType_t woke = pdFALSE;
+    TaskHandle_t t = s_busy_waiter;
+    if (t) vTaskNotifyGiveFromISR(t, &woke);
+    portYIELD_FROM_ISR(woke);
+}
+esp_err_t ls_lora_hw_busy_sleep(bool on)
+{
+    if (on && !s_busy_isr_added) {
+        esp_err_t err = gpio_install_isr_service(0);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
+        err = gpio_set_intr_type(BUSY_PIN, GPIO_INTR_NEGEDGE);
+        if (err == ESP_OK) err = gpio_isr_handler_add(BUSY_PIN, busy_fall_isr, NULL);
+        if (err != ESP_OK) return err;
+        gpio_intr_disable(BUSY_PIN);
+        s_busy_isr_added = true;
+    }
+    s_busy_sleep = on;
+    return ESP_OK;
+}
+static bool busy_sleep_wait(int timeout_ms)
+{
+    /* Short answers come back within a few microseconds: spin those. */
+    for (int i = 0; i < 20; i++) {
+        if (!gpio_get_level(BUSY_PIN)) return true;
+        esp_rom_delay_us(1);
+    }
+    const int64_t deadline = esp_timer_get_time() + (int64_t)(timeout_ms > 0 ? timeout_ms : 1) * 1000;
+    s_busy_waiter = xTaskGetCurrentTaskHandle();
+    bool low = false;
+    while (!low) {
+        (void)ulTaskNotifyTake(pdTRUE, 0);
+        gpio_intr_enable(BUSY_PIN);
+        /* The edge may have come between the last read and the enable. */
+        if ((low = !gpio_get_level(BUSY_PIN))) break;
+        const int64_t left = deadline - esp_timer_get_time();
+        if (left <= 0) break;
+        const TickType_t ticks = pdMS_TO_TICKS((left + 999) / 1000);
+        (void)ulTaskNotifyTake(pdTRUE, ticks ? ticks : 1);
+        low = !gpio_get_level(BUSY_PIN);
+        if (esp_timer_get_time() >= deadline) break;
+    }
+    gpio_intr_disable(BUSY_PIN);
+    s_busy_waiter = NULL;
+    return low || !gpio_get_level(BUSY_PIN);
+}
+
+#else
+/* Host builds: no GPIO interrupts; every wait polls. */
+esp_err_t ls_lora_hw_busy_sleep(bool on) { (void)on; return ESP_ERR_NOT_SUPPORTED; }
+static bool busy_sleep_wait(int timeout_ms) { (void)timeout_ms; return true; }
+#endif
+
 /* Spin briefly, then yield. */
 bool IRAM_ATTR ls_lora_hw_wait_not_busy(int timeout_ms)
 {
+    if (s_busy_sleep && ls_lora_hw_locked_by_me()) return busy_sleep_wait(timeout_ms);
     if (ls_lora_hw_locked_by_me() && s_capture_fast) {
         /* The raw FIFO holds only 512 us at 125 ksample/s. A tick sleep after
          * the normal 256 us spin can overflow it. Keep interrupts enabled and
@@ -921,8 +1008,14 @@ bool ls_lora_is_transmitting(void)
        a status reader (RADIOS) must never wait for that session to end. */
     return s_present && s_ops->is_transmitting && s_ops->is_transmitting();
 }
+static uint32_t tx_duration(uint64_t us) { return us>10000000u?10000001u:(uint32_t)us; }
 esp_err_t ls_lora_send(const uint8_t *data, size_t len)
-{ TX_ROUTED(s_ops->send(data, len)); }
+{
+    if(!data||!len)return ESP_ERR_INVALID_ARG;
+    if(len>255)return ESP_ERR_INVALID_SIZE;
+    TX_ROUTED(s_ops->send(data,len),tx_duration((uint64_t)ls_lora_airtime_ms(len)*1000u),
+              s_ops->cfg()?s_ops->cfg()->power_dbm:0);
+}
 /* Polls the part's IRQ word and clears it, so it is a bus sequence. */
 bool ls_lora_send_done(void)
 {
@@ -941,16 +1034,27 @@ int ls_lora_activity(float *dbm)
 esp_err_t ls_lora_rssi_inst(float *dbm) { LOCKED_RET(esp_err_t, s_ops->rssi_inst(dbm)); }
 uint32_t ls_lora_airtime_ms(int len) { return s_ops->airtime_ms(len); }
 
+static ls_fsk_cfg_t tx_fsk_cfg;
 esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg)
-{ LOCKED_RET(esp_err_t, bound_locked() ? s_ops->fsk_begin(cfg) : ESP_ERR_NOT_SUPPORTED); }
+{ ls_lora_hw_lock();esp_err_t e=bound_locked()?s_ops->fsk_begin(cfg):ESP_ERR_NOT_SUPPORTED;if(e==ESP_OK)tx_fsk_cfg=*cfg;ls_lora_hw_unlock();return e; }
 int ls_lora_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm)
 { LOCKED_RET(int, s_ops->fsk_poll(buf, size, rssi_dbm)); }
 esp_err_t ls_lora_fsk_send(const uint8_t *data, size_t len)
-{ TX_ROUTED(s_ops->fsk_send(data, len)); }
+{
+    if(!data||!len)return ESP_ERR_INVALID_ARG;
+    if(len>255)return ESP_ERR_INVALID_SIZE;
+    TX_ROUTED(s_ops->fsk_send(data,len),
+        tx_duration(((uint64_t)len*8+(tx_fsk_cfg.preamble_bits?tx_fsk_cfg.preamble_bits:32)+
+                     (tx_fsk_cfg.sync_bits?tx_fsk_cfg.sync_bits:32))*1000000/
+                    (tx_fsk_cfg.bitrate?tx_fsk_cfg.bitrate:1)+1),tx_fsk_cfg.power_dbm);
+}
 esp_err_t ls_lora_ook_send(const uint8_t *chips, size_t len, uint32_t chip_bps)
 {
-    if (!s_ops->ook_send) return ESP_ERR_NOT_SUPPORTED;
-    TX_ROUTED(s_ops->ook_send(chips, len, chip_bps));
+    if(!chips||!len||!chip_bps)return ESP_ERR_INVALID_ARG;
+    if(len>255)return ESP_ERR_INVALID_SIZE;
+    if(!s_ops->ook_send)return ESP_ERR_NOT_SUPPORTED;
+    TX_ROUTED(s_ops->ook_send(chips,len,chip_bps),
+        tx_duration((uint64_t)len*8*1000000/chip_bps+1),tx_fsk_cfg.power_dbm);
 }
 esp_err_t ls_lora_fsk_receive(void) { LOCKED_RET(esp_err_t, s_ops->fsk_receive()); }
 esp_err_t ls_lora_fsk_end(void) { LOCKED_RET(esp_err_t, s_ops->fsk_end()); }

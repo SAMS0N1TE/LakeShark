@@ -68,7 +68,9 @@ static int resolve_file(const char *path, int *missing) {
     assert(f);
     char name[96];
     int n = 0;
-    while (fscanf(f, "%95s", name) == 1) {
+    while (fgets(name,sizeof(name),f)) {
+        name[strcspn(name,"\r\n")]=0;
+        if(!name[0]||name[0]=='#')continue;
         n++;
         if (!ls_lap_resolve(name)) { printf("unresolved: %s\n", name); (*missing)++; }
     }
@@ -82,7 +84,7 @@ static void abi(const char *api13, const char *api20, const char *now, const cha
     CHECK(resolve_file(now, &missing) >= 275 && !missing);
     size_t n = 0;
     const ls_lap_export_t *e = ls_lap_exports(&n);
-    for (size_t i = 1; i < n; i++) CHECK(strcmp(e[i - 1].name, e[i].name) < 0);
+    for (size_t i=0;i<n;i++)for(size_t j=0;j<i;j++) CHECK(strcmp(e[j].name,e[i].name)!=0);
     /* Every call lakeshark_ui.h declares is exported. */
     FILE *f = fopen(ui_h, "r");
     assert(f);
@@ -117,7 +119,9 @@ static void manifests(void) {
     m.api_minor = 2; m.flags = LAP_CAP_RADIO_RX | LAP_CAP_SERVICE;
     CHECK(ls_lap_fields_valid(&m, why, sizeof(why)));                 /* a 2.2 app loads */
     m.api_minor = 3; m.flags = 0;
-    CHECK(!ls_lap_fields_valid(&m, why, sizeof(why)));                /* 2.3 is not this firmware */
+    CHECK(ls_lap_fields_valid(&m, why, sizeof(why)));
+    m.api_minor = LS_LAP_API2_MINOR + 1;
+    CHECK(!ls_lap_fields_valid(&m, why, sizeof(why)));                /* future minor is not this firmware */
     m.api_minor = 1; m.flags = 16;
     CHECK(!ls_lap_fields_valid(&m, why, sizeof(why)));                /* no such capability */
 }

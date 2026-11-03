@@ -83,6 +83,18 @@ void settings_set_autodim(bool en);
 int  settings_get_autodim_timeout(void);
 void settings_set_autodim_timeout(int seconds);
 
+/* The desktop shell: its theme (-1 none saved) and wallpaper id, through
+   the write queue so the UI task never writes flash itself. */
+int  settings_get_desk_theme(void);
+void settings_set_desk_theme(int theme);
+uint32_t settings_get_desk_wallpaper(void);
+void settings_set_desk_wallpaper(uint32_t id);
+/* The desktop's other choices as numbered words (effects, colours, icon
+   places); 0 until set. The desk owns what each slot means. */
+#define SETTINGS_DESK_WORDS 24
+uint32_t settings_get_desk_word(int slot);
+void settings_set_desk_word(int slot, uint32_t v);
+
 bool settings_get_audio_mute(void);
 void settings_set_audio_mute(bool muted);
 int  settings_get_volume(void);
@@ -140,6 +152,11 @@ bool settings_set_lr_wide(bool on);
    the 125k channel. Default off. */
 bool settings_get_lr_span(void);
 bool settings_set_lr_span(bool on);
+/* LR FRONT END > ON-CHIP: the LR2021 takes 1 MHz and picks the channel out
+   itself (lr_wf_set_wide_chip) for every app on the shared LR session, P25
+   included when it follows. Default on; saved. */
+bool settings_get_lr_chip(void);
+bool settings_set_lr_chip(bool on);
 /* LR20xx reference frequency correction in parts per billion: the measured
    error of the module's 32 MHz reference, positive when it runs fast. Every
    frequency the driver programs is scaled by 1 / (1 + ppb * 1e-9), so receive
@@ -285,6 +302,9 @@ void settings_set_callouts(uint32_t packed);
 /* The HackRF's reference error in ppm: positive when its clock runs fast
    and it hears everything that much low. Read it from a task whose stack
    is in internal RAM. */
+int settings_hackrf_tx_vga_get(void);
+bool settings_hackrf_tx_amp_get(void);
+void settings_hackrf_tx_limits_set(unsigned vga, bool amp);
 int  settings_hackrf_ppm_get(void);
 void settings_hackrf_ppm_set(int ppm);
 int  settings_speech_volume_get(void);

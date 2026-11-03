@@ -169,8 +169,9 @@ static void test_input(void)
           ev[1].type == LS_VT_EV_UP && ev[1].col == 9 &&
           ev[2].type == LS_VT_EV_KEY && ev[2].key == LS_TK_UP, "mouse: %d", n);
     n = feed(&in, "\x1b[<0;3;3M\x1b[<32;7;4M\x1b[<35;8;4M\x1b[<34;8;4M\x1b[<0;7;4m\x1b[<2;7;4m", ev);
-    CHECK(n == 3 && ev[0].type == LS_VT_EV_TAP && ev[1].type == LS_VT_EV_DRAG && ev[1].col == 6 && ev[1].row == 3 &&
-          ev[2].type == LS_VT_EV_UP, "drag: held motion only, left release only: %d", n);
+    CHECK(n == 6 && ev[0].type == LS_VT_EV_TAP && ev[1].type == LS_VT_EV_DRAG && ev[1].col == 6 && ev[1].row == 3 &&
+          ev[2].type == LS_VT_EV_POINTER && ev[3].type == LS_VT_EV_POINTER &&
+          ev[4].type == LS_VT_EV_UP && ev[5].type == LS_VT_EV_POINTER, "all pointer edges: %d", n);
     n = feed(&in, "\x1b[", ev);
     CHECK(n == 0, "half a sequence gave %d events", n);
     n = feed(&in, "B", ev);
@@ -377,10 +378,22 @@ static void test_telnet(void)
     CHECK(kept == 1 && t.cols == 255 && t.rows == 40, "split NAWS %dx%d, %u kept", t.cols, t.rows, (unsigned)kept);
 }
 
+static void test_rich_pointer(void) {
+    ls_vt_input in = {0}; ls_vt_event ev[16];
+    const char *s = "\x1b[<0;4;5M\x1b[<2;4;5M\x1b[<0;4;5m\x1b[<34;7;8M\x1b[<2;7;8m\x1b[<35;9;10M\x1b[<65;9;10M\x1b[O\x1b[I";
+    int n = ls_vt_input_feed(&in, (const uint8_t *)s, strlen(s), ev, 16);
+    CHECK(n == 9, "rich pointer count %d", n);
+    CHECK(ev[0].buttons == 1 && ev[1].buttons == 5 && ev[2].buttons == 4, "independent button releases");
+    CHECK(ev[3].type == LS_VT_EV_POINTER && ev[3].buttons == 4 && ev[3].col == 6, "right drag retained");
+    CHECK(ev[4].buttons == 0 && ev[5].type == LS_VT_EV_POINTER, "right up and hover retained");
+    CHECK(ev[6].wheel_steps == 1 && ev[7].type == LS_VT_EV_FOCUS && !ev[7].focused && ev[8].focused, "wheel and focus");
+}
+
 int main(void)
 {
     test_render();
     test_input();
+    test_rich_pointer();
     test_phone();
     test_telnet();
     printf("test_term_vt: %s\n", fails ? "FAIL" : "ok");

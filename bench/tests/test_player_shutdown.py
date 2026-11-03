@@ -106,6 +106,7 @@ static void vTaskDelete(void*){if(s_mic_busy)abort();++deletes;}
 static void heap_caps_free(void *p){if(p)++frees;}
 static int audio_player_delete(){++decoder_deletes;return decoder_result;}
 static void audio_out_media_release(){++releases;}
+static void pcm_flush(){}
 static void spectrum_close(){++spectra;}
 static void ls_media_playlist_close(void*){++lists;}
 static void music_heap_checkpoint(const char*,int){}

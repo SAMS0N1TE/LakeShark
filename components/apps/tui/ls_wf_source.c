@@ -4,12 +4,14 @@
 #include "ls_radio_select.h"
 #include "lr_iq_spectrum.h"
 #include "lr_wf_session.h"
+#include "lr_chip_wf.h"
 #include "scan_engine.h"
 
 #include <string.h>
 
 #include "esp_timer.h"
 #include "esp_attr.h"
+#include <stdio.h>
 
 #include "ls_waterfall.h"
 
@@ -37,6 +39,23 @@ static bool s_lr_span;
 static uint32_t s_lr_span_seen_ms;
 static uint32_t s_live_seq, s_live_center, s_live_span, s_view_hz;
 static ls_wf_owner_t s_live_owner;
+/* The standalone LR view computed by the radio itself (lr_chip_wf.h). Weak:
+   host builds of this file have no radio and keep the I/Q session. Off for
+   the rest of the boot once the chip refuses its program, or when asked. */
+#pragma weak lr_chip_wf_start
+#pragma weak lr_chip_wf_stop
+#pragma weak lr_chip_wf_read
+#pragma weak lr_chip_wf_failed
+static bool s_chip_owned, s_chip_off;
+/* `wf` console counters: pumps, asks for the mesh's radio, asks it granted. */
+static uint32_t s_dbg_pumps, s_dbg_hold_asks, s_dbg_hold_ok, s_dbg_stops, s_dbg_row_ms;
+void ls_wf_source_counters(uint32_t *pumps, uint32_t *asks, uint32_t *granted)
+{
+    *pumps = s_dbg_pumps; *asks = s_dbg_hold_asks; *granted = s_dbg_hold_ok;
+    printf("WFSRC stops=%lu last_sweep_row_ms=%lu\n", (unsigned long)s_dbg_stops, (unsigned long)s_dbg_row_ms);
+}
+void ls_wf_source_lr_chip(bool on) { s_chip_off = !on; }
+bool ls_wf_source_lr_chip_get(void) { return lr_chip_wf_start && !s_chip_off; }
 void ls_wf_source_view(uint32_t hz) { s_view_hz = hz; }
 static bool lr_only(void)
 {
@@ -124,7 +143,7 @@ const char *ls_wf_source_label(ls_wf_src_t src)
     switch (src) {
     case LS_WF_SRC_P25:  return "P25";
     case LS_WF_SRC_FM:   return "FM";
-    case LS_WF_SRC_LORA: return s_lr_mode ? "LR IQ" : "LR SWEEP";
+    case LS_WF_SRC_LORA: return s_chip_owned ? "LR CHIP" : s_lr_mode ? "LR IQ" : "LR SWEEP";
     default:             return "AUTO";
     }
 }
@@ -398,6 +417,7 @@ void ls_wf_fm_sweep(bool on)
 LS_COLD const char *ls_wf_preset_current(ls_wf_src_t src)
 {
     if (src == LS_WF_SRC_LORA) {
+        if (s_chip_owned) return "LR CHIP 250k";
         if (s_lr_mode && lr_spec_center()) return s_lr_span_seen_ms ? "LR SPAN 576k" : "LR IQ 125k";
         uint32_t lo = 0, hi = 0;
         ls_wf_source_lora_band_get(&lo, &hi);
@@ -703,18 +723,50 @@ static bool lora_hold(void)
     if (!ls_lora_present()) return idle(LS_WF_IDLE_FAILED, LS_TEXT(t_ls_wf_source_no_lora_radio_on, "No LoRa radio on this board"));
 
     if (ls_field_owned()) return idle(LS_WF_IDLE_BUSY, LS_TEXT(t_ls_wf_source_lora_busy_stop_labs, "LoRa busy: stop Labs DIRECT"));
-    if (!s_lora_held) {
-        if (ls_lora_scanning()) return idle(LS_WF_IDLE_BUSY, LS_TEXT(t_ls_wf_source_lora_busy_another_scan, "LoRa busy: another scan"));
-        ls_mesh_radio_hold(true);
+    if (!s_lora_held && ls_lora_scanning())
+        return idle(LS_WF_IDLE_BUSY, LS_TEXT(t_ls_wf_source_lora_busy_another_scan, "LoRa busy: another scan"));
+    /* Asked again on every pump until held: a request refused once (the mesh
+       blocked while it starts) is not registered, and asking only the first
+       time left the view on "Waiting for mesh release" for good. Repeating
+       it only polls this task's lease. */
+    s_dbg_hold_asks++;
+    if (!ls_mesh_radio_held()) {
+        if (ls_mesh_radio_hold(true)) s_dbg_hold_ok++;
         s_lora_held = true;
+        if (!ls_mesh_radio_held())
+            return idle(LS_WF_IDLE_STARTING, LS_TEXT(t_ls_wf_source_waiting_for_mesh_release, "Waiting for mesh release"));
     }
-    if (!ls_mesh_radio_held()) return idle(LS_WF_IDLE_STARTING, LS_TEXT(t_ls_wf_source_waiting_for_mesh_release, "Waiting for mesh release"));
     return true;
+}
+
+/* A row the radio computed: about twenty FFT frames averaged on its own CPU. */
+static bool pump_chip_line(void)
+{
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    lr_spec_line snap;
+    if (!lr_chip_wf_read(s_bins, &snap, now)) return idle(LS_WF_IDLE_WAITING, "Waiting for LR chip");
+    ls_wf_feed_t f = {
+        .center_hz = snap.center_hz, .span_hz = LR_CHIP_WF_SPAN_HZ,
+        .floor_db = -100, .top_db = 0, .live = true, .note = "on-chip FFT",
+        .period_ms = LR_SPEC_PERIOD_MS, .iq = true,
+    };
+    return push_live(LS_WF_OWNER_LORA, snap.sequence, &f);
+}
+static void chip_stop(void)
+{
+    if (s_chip_owned) { lr_chip_wf_stop(); s_chip_owned = false; }
 }
 
 static bool pump_lora_iq(uint32_t hz)
 {
     s_lr_mode = true;
+    /* Ours on the chip already: same frequency is a no-op, a new one restarts.
+       A session the chip ended on its own hands over to the I/Q path below. */
+    if (s_chip_owned) {
+        if (!lr_chip_wf_failed() && lr_chip_wf_start(hz) == ESP_OK) return pump_chip_line();
+        chip_stop();
+        s_chip_off = true;
+    }
     if (!lr_spec_enable(true)) return idle(LS_WF_IDLE_FAILED, LS_TEXT(t_ls_wf_source_lr_iq_memory_unavailable, "LR IQ memory unavailable"));
     /* An existing decoder owns capture and tuning. Only tap its checked blocks. */
     if (lr_spec_center() && !s_lr_owned) return pump_lr_line();
@@ -734,6 +786,10 @@ static bool pump_lora_iq(uint32_t hz)
     if (s_want == LS_WF_SRC_FM && FM.mode == FM_MODE_LISTEN && lr_only() && !s_lr_owned)
         return idle(LS_WF_IDLE_WAITING, LS_TEXT(t_ls_wf_source_waiting_for_fm_lr, "Waiting for FM LR IQ"));
     if (!lora_hold()) return false;
+    if (ls_wf_source_lr_chip_get() && !s_lr_span) {
+        if (lr_chip_wf_start(hz) == ESP_OK) { s_chip_owned = true; return pump_chip_line(); }
+        s_chip_off = true;
+    }
     if (lr_wf_start(hz) != ESP_OK) return idle(LS_WF_IDLE_FAILED, LS_TEXT(t_ls_wf_source_lr_iq_session_failed, "LR IQ session failed"));
     s_lr_owned = true;
     return pump_lr_line();
@@ -787,6 +843,7 @@ static bool pump_lora(void)
     const uint32_t period_ms =
         (uint32_t)((esp_timer_get_time() - s_lora_row_t0) / 1000);
     s_lora_row_t0 = 0;
+    s_dbg_row_ms = period_ms;
 
     /* This row first, then the window it moves. A twelve dB minimum
        span keeps a genuinely flat band from being amplified into the
@@ -837,6 +894,8 @@ static bool pump_lora(void)
 
 static void lora_stop(void)
 {
+    if (s_lora_held) s_dbg_stops++;
+    chip_stop();
     if (s_lr_owned) { lr_wf_stop(); s_lr_owned = false; }
     if (s_live_owner == LS_WF_OWNER_LORA) s_live_owner = LS_WF_OWNER_NONE;
     if (s_lora_owned && ls_lora_scanning()) ls_lora_scan_end();
@@ -909,6 +968,7 @@ static bool tune_marker(ls_wf_owner_t owner,uint32_t hz)
 
 void ls_wf_source_pump(void)
 {
+    s_dbg_pumps++;
     if (s_noaa_pending && FM.mode == FM_MODE_LISTEN) {
         uint32_t hz = s_noaa_pending; s_noaa_pending = 0;
         lakeshark_fm_set_freq(hz);

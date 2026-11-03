@@ -6,10 +6,21 @@
 #include <limits.h>
 #include <string.h>
 
+#if defined(ESP_PLATFORM) && !defined(LS_LAP_HOST_TEST)
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-
+#else
+#include <stdatomic.h>
+typedef void *SemaphoreHandle_t;
+static atomic_flag host_policy_lock=ATOMIC_FLAG_INIT;
+static void host_take(void){while(atomic_flag_test_and_set_explicit(&host_policy_lock,memory_order_acquire)){}}
+static void host_give(void){atomic_flag_clear_explicit(&host_policy_lock,memory_order_release);}
+#define xSemaphoreCreateMutex() ((SemaphoreHandle_t)1)
+#define xSemaphoreTake(s,t) host_take()
+#define xSemaphoreGive(s) host_give()
+#define vTaskDelay(t) ((void)0)
+#endif
 #define TX_LEDGER_MAX 16
 
 typedef struct {
@@ -296,4 +307,104 @@ bool ls_radio_tx_policy_latest_audit(ls_radio_tx_audit_t *out)
     if (latest) *out = latest->audit;
     xSemaphoreGive(s_lock);
     return latest != NULL;
+}
+
+/* API 2.4: radio I/O hardware envelope. This is the production boundary.
+ * Reuses the policy ledger's mutex and conservative reservation principle.
+ * The legacy plan/profile API above is retained for old internal tests only;
+ * NO production transmitter invokes its region/licence/confirmation model.
+ * Per-second buckets cannot be exhausted by tiny packets. Charge the complete
+ * bounded operation before RF starts; failed/cancelled sends are not refunded.
+ * Clock regressions retain charges, and app restarts never reset this ledger.
+ */
+#include "tx_protection.h"
+#if defined(ESP_PLATFORM) && !defined(LS_LAP_HOST_TEST)
+#include "esp_attr.h"
+#elif !defined(EXT_RAM_BSS_ATTR)
+#define EXT_RAM_BSS_ATTR
+#endif
+/* 3 KB, taken under the policy mutex only: PSRAM, not internal RAM. */
+EXT_RAM_BSS_ATTR static struct {
+    uint64_t sec[61];
+    uint32_t used[61];
+    uint64_t last;
+    uint64_t heat_at;
+    uint32_t heat;
+    bool hot;
+    int error;
+} protection[LS_TX_RADIOS];
+int ls_tx_protect(unsigned radio, int dbm, bool rx_only, uint32_t airtime, uint64_t now) {
+    if (radio >= LS_TX_RADIOS || !airtime)
+        return -5;
+    if (!ensure_lock())
+        return -4;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int e = 0;
+    int min = radio == LS_TX_MIXRF ? -10 : radio == LS_TX_HACKRF ? 0 : -9;
+    int max = radio == LS_TX_MIXRF ? 10 : radio == LS_TX_HACKRF ? 15 : 22;
+    uint64_t sec = now / 1000000;
+    uint64_t sum = 0;
+    if (sec < protection[radio].last)
+        sec = protection[radio].last;
+    protection[radio].last = sec;
+    for (unsigned i = 0; i < 61; i++)
+        if (sec - protection[radio].sec[i] <= 60)
+            sum += protection[radio].used[i];
+    uint64_t thermal_now=now>=protection[radio].heat_at?now:protection[radio].heat_at;
+    uint64_t elapsed=thermal_now-protection[radio].heat_at;
+    uint64_t cooled = elapsed / 5;
+    uint32_t heat =
+        cooled >= protection[radio].heat ? 0 : protection[radio].heat - (uint32_t)cooled;
+    if (rx_only)
+        e = -24;
+    else if (dbm < min || dbm > max)
+        e = -21;
+    else if (protection[radio].hot || (uint64_t)heat + airtime > 5000000u)
+        e = -23;
+    else if (airtime > 10000000u || sum + airtime > 10000000u)
+        e = -22;
+    if (!e) {
+        protection[radio].heat = heat + airtime;
+        protection[radio].heat_at = thermal_now;
+        unsigned i = sec % 61;
+        if (protection[radio].sec[i] != sec) {
+            protection[radio].sec[i] = sec;
+            protection[radio].used[i] = 0;
+        }
+        protection[radio].used[i] += airtime;
+    }
+    protection[radio].error = e;
+    xSemaphoreGive(s_lock);
+    return e;
+}
+void ls_tx_thermal(unsigned radio, bool hot) {
+    if (radio >= LS_TX_RADIOS || !ensure_lock())
+        return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    protection[radio].hot = hot;
+    xSemaphoreGive(s_lock);
+}
+int ls_tx_last_error(unsigned radio) {
+    if (radio >= LS_TX_RADIOS || !ensure_lock())
+        return -4;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int e = protection[radio].error;
+    xSemaphoreGive(s_lock);
+    return e;
+}
+void ls_tx_clear_error(unsigned radio) {
+    if(radio>=LS_TX_RADIOS||!ensure_lock())return;
+    xSemaphoreTake(s_lock,portMAX_DELAY);protection[radio].error=0;xSemaphoreGive(s_lock);
+}
+uint32_t ls_tx_lora_airtime(unsigned bytes, unsigned sf, unsigned bw, unsigned cr,
+                            unsigned preamble, bool crc, bool implicit) {
+    if (bytes > 255 || sf < 5 || sf > 12 || !bw || cr < 5 || cr > 8)
+        return 0;
+    unsigned de = ((1ull << sf) * 1000000 / bw) >= 16000;
+    int numerator = (int)(8 * bytes) - 4 * (int)sf + 28 + 16 * crc - 20 * implicit;
+    unsigned div = 4 * (sf - 2 * de);
+    unsigned payload = 8 + (numerator > 0 ? ((unsigned)numerator + div - 1) / div * cr : 0);
+    uint64_t quarter_symbols = 4ull * (preamble + payload) + 17;
+    uint64_t us = (quarter_symbols * (1ull << sf) * 1000000 + 4ull * bw - 1) / (4ull * bw);
+    return us <= UINT32_MAX ? (uint32_t)us : 0;
 }

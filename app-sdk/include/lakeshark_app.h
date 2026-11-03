@@ -14,9 +14,10 @@
  *             .author = "you", .icon = LAP_ICON_STAR, .color = LAP_GREEN,
  *             .draw = draw);
  *
- * Every callback runs on the screen task, one frame at a time (about 25 a
- * second). Return quickly: a callback that loops forever stops the screen and
- * the board restarts, and the next boot names the app that did it.
+ * Screen/service callbacks run on the screen task (about 25 frames a second).
+ * Return quickly: a screen callback that loops forever restarts the board;
+ * the next boot names the app. API 2.6 custom DSP has a separate, preemptible
+ * worker callback and its own pure-computation contract below.
  */
 #ifndef LAKESHARK_APP_H
 #define LAKESHARK_APP_H
@@ -30,14 +31,21 @@
 extern "C" {
 #endif
 
-/* The API an app declares. Firmware with API 2.2 runs every 1.x app (1.0 to
-   1.3), every 2.0, 2.1 and 2.2 app unchanged; older firmware refuses a
+/* The API an app declares. Firmware with API 2.6 runs every 1.x app (1.0 to
+   1.3), every 2.0 through 2.6 app unchanged; older firmware refuses a
    newer app with a clear message. An app that wants to keep running on 1.3
    firmware (2.18 / 2.19) defines LAP_TARGET_API_1 before including this
    header: it is then built as a 1.3 app and the 2.x calls are not declared.
    LAP_TARGET_API_20 does the same for 2.0 firmware: the 2.1 calls (services,
    lap_emit, the shared controls in lakeshark_ui.h) are not declared.
-   LAP_TARGET_API_21 builds for 2.1 firmware: the 2.2 calls are not declared. */
+   LAP_TARGET_API_21 builds for 2.1 firmware: the 2.2 calls are not declared.
+   LAP_TARGET_API_22 builds for 2.2 firmware: the 2.3 calls are not declared.
+   LAP_TARGET_API_23 builds for 2.3 firmware: the 2.4 calls are not declared.
+   LAP_TARGET_API_24 builds for 2.4 firmware: the 2.5 calls are not declared.
+   LAP_TARGET_API_25 builds for 2.5 firmware: the 2.6 calls are not declared.
+   API 2.5 games/assets: include lib/lap_assets.h, lap_game.h, lap_music.h.
+   These helpers compile into the app and add no firmware imports. PNG assets
+   use caller-owned bounded arenas; SD reads and PCM use existing services. */
 #if defined(LAP_TARGET_API_1)
 #define LAP_API_MAJOR 1
 #define LAP_API_MINOR 3 /* API 1.3: permission-gated asynchronous TCP. */
@@ -48,11 +56,47 @@ extern "C" {
 #define LAP_API_MAJOR 2
 #define LAP_API_MINOR 1 /* API 2.1: the board's own controls, background services, lap_emit. */
 #define LAP_API_21 1
-#else
+#elif defined(LAP_TARGET_API_22)
 #define LAP_API_MAJOR 2
 #define LAP_API_MINOR 2 /* API 2.2: P25, sub-GHz and detector events; what the board's watchers see. */
 #define LAP_API_21 1
 #define LAP_API_22 1
+#elif defined(LAP_TARGET_API_23)
+#define LAP_API_MAJOR 2
+#define LAP_API_MINOR 3
+#define LAP_API_21 1
+#define LAP_API_22 1
+#define LAP_API_23 1
+#elif defined(LAP_TARGET_API_24)
+#define LAP_API_MAJOR 2
+#define LAP_API_MINOR 4
+#define LAP_API_21 1
+#define LAP_API_22 1
+#define LAP_API_23 1
+#define LAP_API_24 1
+#elif defined(LAP_TARGET_API_25)
+/* API 2.5: system services, games/assets, input devices and sensors.
+   Helpers compile into apps; descriptor stays 228 bytes. */
+#define LAP_API_MAJOR 2
+#define LAP_API_MINOR 5
+#define LAP_API_21 1
+#define LAP_API_22 1
+#define LAP_API_23 1
+#define LAP_API_24 1
+#define LAP_API_25 1
+#else
+/* API 2.6: HackRF TX / desktop host and Bluetooth peripheral roles.
+   API 2.5: system services, games/assets, input devices and sensors.
+   Helpers compile into apps; descriptor stays 228 bytes. */
+/* API 2.6 services: concurrent residents and budgeted custom DSP. */
+#define LAP_API_MAJOR 2
+#define LAP_API_MINOR 6
+#define LAP_API_21 1
+#define LAP_API_22 1
+#define LAP_API_23 1
+#define LAP_API_24 1
+#define LAP_API_25 1
+#define LAP_API_26 1
 #endif
 #define LAP_MAGIC     0x3150414Cu   /* "LAP1" */
 
@@ -88,6 +132,12 @@ typedef enum {
     LAP_KEY_MIC, LAP_KEY_MIC_HOLD,      /* the RECORD key, tapped and held */
     /* 1.2: the mouse wheel on a remote screen; not taken (return false) it comes again as UP or DOWN */
     LAP_KEY_WHEEL_UP, LAP_KEY_WHEEL_DOWN,
+    LAP_KEY_F12, LAP_KEY_HOME, LAP_KEY_END, LAP_KEY_PGUP, LAP_KEY_PGDN,
+    LAP_KEY_INSERT, LAP_KEY_DELETE, LAP_KEY_MENU, LAP_KEY_SHIFT,
+    LAP_KEY_CAPS_LOCK, LAP_KEY_NUM_LOCK, LAP_KEY_MEDIA_PLAY, LAP_KEY_MEDIA_STOP,
+    LAP_KEY_MEDIA_NEXT, LAP_KEY_MEDIA_PREV, LAP_KEY_VOLUME_UP,
+    LAP_KEY_VOLUME_DOWN, LAP_KEY_MUTE,
+    LAP_KEY_HID_USAGE_BASE = 0x100,
 } lap_key_t;
 
 /* Tile pictures already in the firmware; or draw your own in icon_art. */
@@ -168,9 +218,9 @@ typedef struct {
    the board remembers the answer for this id, version and file size, and asks
    again when any of them changes. BACK denies and leaves the app closed. */
 #define LAP_CAP_RADIO_RX 2u
-/* API 2.0: transmit actions (mesh.send, mesh.advert). Asked with RADIO_RX.
-   The board's own transmit rules still decide: MeshCore sends only with
-   TRANSMIT armed in MESH. There is no raw transmit call in 2.0. */
+/* Transmit actions and direct mesh sends require this declaration. No separate
+   TX confirmation is required. Hardware power/duty/PA protection still applies;
+   MeshCore also requires its own TRANSMIT switch armed. No raw TX call in 2.0. */
 #define LAP_CAP_RADIO_TX 4u
 /* API 2.1: a background service. The app may start a small tick
    (lap_service_start) that keeps running after its screen closes, until the
@@ -189,8 +239,8 @@ enum {
     LAP_NET_EAGAIN = -4, LAP_NET_EDNS = -5, LAP_NET_ETIMEOUT = -6,
     LAP_NET_EIO = -7, LAP_NET_EOF = -8, LAP_NET_ENETDOWN = -9
 };
-/* All calls return immediately. Two outbound IPv4 sockets per app. No Wi-Fi
-   credentials or join operation: first connect using LINK. Connect returns
+/* All calls return immediately. Six outbound IPv4 sockets per app (two on
+   firmware before API 2.4). Join using LINK or the API 2.4 Wi-Fi service. Connect returns
    a handle >=0 or an error; poll state until CONNECTED or a negative error.
    Timeout (1..30000 ms) covers asynchronous DNS + connect, not stream lifetime.
    Host is DNS name or numeric IPv4, <=253 chars. IPv6/TLS/listening unsupported.
@@ -198,7 +248,7 @@ enum {
    (may be partial), EAGAIN if full/pending. Acceptance is not delivery.
    recv copies up to 4096 bytes, EAGAIN when empty/pending, 0 on peer EOF after
    queued bytes drain. Check negative errors; retry EAGAIN in later frames.
-   Buffers/host/status must be app globals or app malloc allocations, not stack.
+   Host strings and send/receive/status buffers are copied synchronously and may live on the callback stack.
    Close invalidates the handle immediately; worker releases it asynchronously.
    Closing the app closes every socket and discards queued bytes. */
 int lap_net_status(lap_net_status_t *out);
@@ -520,7 +570,8 @@ void lap_aircraft_demo(bool on); /* receiver synthetic traffic, not live recepti
    own capture tasks fill a bounded queue in PSRAM that these calls copy
    from. No app code ever runs in a capture task. Closing the app (or
    lap_exit, or a crash) closes the session, stops the capture and gives the
-   radio back. Buffers passed here must be app globals or app malloc memory.
+   radio back. Synchronous buffers may use the active callback stack;
+   only retained data requires app globals or live app allocations.
    ====================================================================== */
 
 /* ---- which radios there are -------------------------------------------- */
@@ -579,6 +630,10 @@ typedef struct {
    the radio opens in the background, so poll lap_rx_state until RUNNING
    (or a negative error). The radio the app did not ask for stays parked,
    and a radio another receiver holds answers LAP_RX_EBUSY. */
+/* Synchronous inputs and outputs (including I/Q metadata and spectrum seq)
+   may live on the active callback stack: they are checked and copied before
+   return. Retained pointers, such as SD read/list destinations, must remain
+   in the app image or live app malloc memory until the job completes. */
 int lap_rx_open(int radio, const lap_rx_config_t *cfg);
 int lap_rx_state(int h);
 typedef struct {
@@ -784,12 +839,17 @@ int lap_event_source(char *out, size_t cap);
    says so. A tick that never returns stops the board; it restarts, names the
    app, and asks before the app runs again. No service starts by itself.
 
-   One service runs at a time (LAP_SERVICES_MAX), and it is the app that is
-   loaded: opening another native app stops it, with a notice. The owner
-   sees it in RADIOS, with STOP, and on the console (`app svc`, `app stop`).
+   API 2.6 firmware retains several services with a foreground app. Query
+   lap_service_limit() on a 2.6 target; older firmware retained only one.
+   The owner sees them in SETTINGS > SERVICES, with individual STOP, and
+   on the console (`app svc`, `app stop <id>`).
    When it stops while the screen is closed, `stopped` (if set) is called,
    then everything is freed and given back as when an app closes. */
+#if defined(LAP_API_26)
+#define LAP_SERVICES_MAX 4 /* compile-time ceiling; query lap_service_limit */
+#else
 #define LAP_SERVICES_MAX 1
+#endif
 #define LAP_SERVICE_BUDGET_US 4000u
 typedef struct {
     void (*tick)(void);         /* required */
@@ -883,6 +943,461 @@ bool lap_mesh_channel_private(int slot, char *name, size_t cap);
 #endif /* LAP_API_22 */
 #endif /* !LAP_TARGET_API_1 */
 
+
+#if defined(LAP_API_24)
+/* ---- API 2.4: radio I/O (R6-R11) ----------------------------------------
+ * All calls run in app callbacks, return immediately, and copy inputs/outputs
+ * synchronously (callback-stack buffers are valid). No caller buffer is retained.
+ * Positive handles are generation-owned; unload closes all services. One packet,
+ * edge OR scanner session, one recording/replay and one TX operation at a time.
+ * QUEUED is admission, not hardware success; poll status for the actual result.
+ * Configurations require size=sizeof(struct), version=1 and zero reserved fields.
+ * Metadata timestamps are firmware monotonic arrival times, NOT RF sample clocks.
+ * Read returns count/bytes, 0 empty, negative LAP_RX_E* or LAP_IO_E*.
+ */
+enum { LAP_RADIO_KIND_MIXRF = 6 };
+enum {
+    LAP_HW_PACKET = 1u << 8, LAP_HW_EDGES = 1u << 9,
+    LAP_HW_RECORD = 1u << 10, LAP_HW_NFC = 1u << 11,
+    LAP_HW_NDEF_WRITE = 1u << 12
+};
+enum { LAP_IO_QUEUED = 1, LAP_IO_RUNNING, LAP_IO_DONE, LAP_IO_FAILED, LAP_IO_CANCELLED };
+enum {
+    LAP_IO_ESIZE = -20, LAP_IO_EPOWER = -21, LAP_IO_EDUTY = -22,
+    LAP_IO_ETHERMAL = -23, LAP_IO_ERXPORT = -24, LAP_IO_EFORMAT = -25,
+    LAP_IO_ECANCELLED = -26, LAP_IO_ENOSPC = -27
+};
+enum { LAP_MOD_LORA = 1, LAP_MOD_FSK, LAP_MOD_OOK };
+enum { LAP_PORT_AUTO, LAP_PORT_TX, LAP_PORT_RX_ONLY }; /* LR2021 MMCX1 is RX_ONLY */
+enum {
+    LAP_MODE_LORA = 1u, LAP_MODE_FSK = 2u, LAP_MODE_OOK = 4u,
+    LAP_MODE_EDGES = 8u, LAP_MODE_RSSI = 16u,
+    LAP_MODE_TX_PACKET = 32u, LAP_MODE_TX_IQ = 64u, LAP_MODE_TX_EDGES = 128u
+};
+enum { LAP_DATA_REPLAY = 1u, LAP_DATA_SYNTHETIC = 2u, LAP_DATA_GAP = 4u, LAP_DATA_RETUNED = 8u };
+#define LAP_IQ_REPLAY 4u
+#define LAP_IQ_SYNTHETIC 8u
+#define LAP_PACKET_MAX 255
+#define LAP_SCAN_MAX 64
+
+typedef struct {
+    uint16_t size, version;
+    uint32_t modes;                 /* implemented backend modes, not silicon claims */
+    int16_t min_power_dbm, max_power_dbm;
+    uint32_t max_tx_us, duty_window_ms, duty_airtime_ms;
+} lap_radio_modes_t;
+/* Discovery needs no grant. Radio index is the index returned by lap_radio_list.
+ * lap_caps.hardware advertises packet/edges/NFC/record service presence; this
+ * query refines each radio. Unsupported modes return EUNSUPPORTED, absent ENODEV. */
+int lap_radio_modes(int radio, lap_radio_modes_t *out);
+
+typedef struct {
+    uint16_t size, version;
+    uint64_t frequency_hz;
+    uint32_t bitrate, bandwidth_hz, deviation_hz, sync_word;
+    uint16_t preamble;             /* LoRa symbols; FSK/OOK bits */
+    uint8_t modulation, sync_bits; /* FSK 1..32; OOK 1..16 (bit 0 first) */
+    uint8_t crc, sf, coding_rate, payload_bytes; /* LoRa: SF5..12, CR5..8; 0=explicit RX */
+    int8_t power_dbm;              /* TX only; not clamped */
+    uint8_t port, reserved[2];
+} lap_packet_config_t;
+typedef struct {
+    uint16_t size, version;
+    uint64_t timestamp_us, frequency_hz;
+    uint32_t sequence, dropped, flags;
+    int16_t rssi_tenths_dbm, snr_tenths_db; /* INT16_MIN when unavailable */
+    uint16_t length, reserved;
+} lap_packet_meta_t;
+typedef struct {
+    uint16_t size, version;
+    int32_t state, error;
+    uint32_t queued, dropped;
+} lap_io_status_t;
+/* RX grant required. Eight packets wait; overflow drops newest and is counted.
+ * Too-small destinations return ESIZE WITHOUT consuming the packet. FSK CRC
+ * unsupported by the current streaming backend is refused, never ignored. */
+int lap_packet_open(int radio, const lap_packet_config_t *cfg);
+int lap_packet_read(int h, void *data, size_t cap, lap_packet_meta_t *meta);
+int lap_packet_status(int h, lap_io_status_t *out);
+void lap_packet_close(int h);
+/* Edge mode uses the OOK config above. Signed durations: positive high, negative
+ * low, microseconds. LR OOK decisions are run-length encoded at cfg.bitrate;
+ * MIX-RF delivers captured CC1101 edges. Each read is one bounded batch (<=256).
+ * Queue gaps are explicit. Close with lap_packet_close; status is shared. */
+int lap_edges_open(int radio, const lap_packet_config_t *cfg);
+int lap_edges_read(int h, int32_t *durations_us, int max, lap_packet_meta_t *meta);
+/* Cached RSSI from the worker; timestamp_us identifies the sample time. EAGAIN before first sample. */
+int lap_radio_rssi(int h, lap_packet_meta_t *out);
+
+typedef struct {
+    uint16_t size, version;
+    uint64_t frequency_hz;
+    uint32_t id;
+    uint8_t mode, flags, bank, reserved; /* firmware scan mode 0=P25,1=NFM,2=WFM */
+    int32_t lat_e7, lon_e7;
+    uint32_t radius_m;
+    uint16_t tone, reserved2;
+    char name[16];
+} lap_channel_t;
+/* Asynchronous paged firmware channel database access. bank="active" uses
+ * firmware's live channel store; named banks are firmware scan binary profiles.
+ * Query returns a job, result read returns EAGAIN until complete then 0..64 rows.
+ * Writes replace a bank with <=64 rows in a staged firmware transaction.
+ * Query first selects a page; no app path can escape the firmware scan folder. */
+int lap_channels_query(const char *bank, uint32_t first, int count);
+int lap_channels_read(int job, lap_channel_t *out, int max);
+int lap_channels_write(const char *bank, const lap_channel_t *rows, int count);
+/* Generic job status also covers channel writes. Completed job survives until
+ * the next database request. No hardware or SD work happens in the callback. */
+int lap_io_status(int job, lap_io_status_t *out);
+typedef struct {
+    uint16_t size, version;
+    int32_t radio;
+    lap_packet_config_t receiver;
+    uint32_t dwell_ms, hang_ms;   /* 20..10000; 0..10000 */
+    int16_t squelch_tenths_dbm;   /* radio-relative RSSI, not a calibrated meter */
+    uint16_t count;              /* 1..64 copied frequencies */
+    uint64_t frequencies[LAP_SCAN_MAX];
+} lap_scan_config_t;
+typedef struct {
+    uint16_t size, version;
+    int32_t state, error;
+    uint32_t channel, sweeps, hits, dropped;
+    uint64_t frequency_hz;
+    uint8_t held, squelch_open, reserved[6];
+} lap_scan_status_t;
+enum { LAP_SCAN_HOLD = 1, LAP_SCAN_NEXT, LAP_SCAN_SKIP, LAP_SCAN_RESUME };
+/* Scanner owns its selected packet/edge radio; frequency lists may come from
+ * the database or be app-defined. Hits are rising squelch events, sixteen wait.
+ * Dwell starts AFTER tuning, hang extends while carrier exceeds threshold.
+ * SKIP suppresses this index until stop; NEXT leaves a manual hold. */
+int lap_scan_start(const lap_scan_config_t *cfg);
+int lap_scan_status(int h, lap_scan_status_t *out);
+int lap_scan_control(int h, int command);
+int lap_scan_next(int h, lap_packet_meta_t *hit);
+void lap_scan_stop(int h);
+
+enum { LAP_RECORD_IQ16 = 1, LAP_RECORD_AUDIO16, LAP_RECORD_PACKETS, LAP_RECORD_EDGES };
+typedef struct {
+    uint16_t size, version;
+    int32_t source;              /* packet/edge handle; 0 for app RX I/Q/audio tap */
+    uint32_t format, rate_hz, max_bytes; /* file cap 1KiB..64MiB; rate matches source */
+    uint64_t frequency_hz;
+    char name[33];               /* app-local plain filename, no slash; extension optional */
+} lap_record_config_t;
+typedef struct {
+    uint16_t size, version;
+    int32_t state, error;
+    uint32_t format, blocks, dropped, flags;
+    uint64_t bytes, position;    /* position: replay block index; seek uses block index */
+} lap_record_status_t;
+/* Records to /sdcard/apps_data/<app-id>/<name>, LSR2 little-endian framed
+ * format (see RADIO_IO.md). Eight 2048-byte blocks wait; SD stalls count gaps.
+ * Config/timestamps/RSSI/SNR, tuning/gaps and marks are stored with payloads.
+ * Existing files are refused. Stop drains then closes; errors preserve partial
+ * files. Poll status for completion before opening local replay. */
+int lap_record_start(const lap_record_config_t *cfg);
+int lap_record_status(int h, lap_record_status_t *out);
+int lap_record_mark(int h, const char *label); /* <=63 bytes; queued metadata */
+int lap_record_stop(int h);
+/* Local replay NEVER emits RF. Packet/edge replay creates a virtual RX source
+ * read with lap_packet_read/lap_edges_read using the replay handle. I/Q/audio
+ * replay feeds the same app receive taps (open lap_rx_open(-1,...) for virtual
+ * I/Q). All replay blocks carry REPLAY; decoders must propagate provenance.
+ * Read failures/truncation are EFORMAT/EIO; completion is DONE. One block is
+ * injected per worker pass; this is analysis replay, not sample-clock timing. */
+int lap_replay_open(const char *name);
+/* Format-neutral block read (<=2048 bytes), with REPLAY metadata. Use status.format
+ * to interpret IQ16 pairs, mono audio16, packets or signed edge durations. */
+int lap_replay_read(int h, void *data, size_t cap, lap_packet_meta_t *meta);
+int lap_replay_seek(int h, uint64_t block);
+int lap_replay_status(int h, lap_record_status_t *out);
+void lap_replay_close(int h);
+
+/* TX requires ONLY the manifest's LAP_CAP_RADIO_TX and hardware protection.
+ * No region/band/licence or confirmation UI. One immutable copied operation.
+ * Packet <=255 bytes, raw signed IQ8 <=32767 pairs, edges <=4096/10 seconds.
+ * Hardware power ceiling, PA heat/duty budget and RX-only port are enforced
+ * again at the physical send boundary, also for firmware LoRa/MeshCore/MIX-RF.
+ * status error: EPOWER, EDUTY, ETHERMAL, ERXPORT or normal LAP_RX_E*.
+ * Cancelling/unloading stops queued work; in-flight packet finishes its bounded
+ * frame. Raw IQ observes cancel between FIFO chunks. No automatic retries. */
+int lap_tx_packet(int radio, const lap_packet_config_t *cfg, const void *data, size_t len);
+int lap_tx_iq(int radio, const lap_packet_config_t *cfg, const int8_t *iq, int pairs, uint32_t rate_hz);
+int lap_tx_replay(int radio, const lap_packet_config_t *cfg, const char *name);
+int lap_tx_status(int h, lap_io_status_t *out);
+void lap_tx_cancel(int h);
+
+/* Bounded NFC service. Availability is lap_caps LAP_HW_NFC; NDEF writes are
+ * advertised separately. No register/raw-bus access. Read-only frontends return
+ * EUNSUPPORTED for write; absent ones ENODEV. UID <=10 bytes, NDEF <=2048 bytes.
+ * Eight events wait; overflow counts drops. Type-2 writes only on unlocked,
+ * capacity-checked tags; no authentication keys or emulation exposed. */
+typedef struct {
+    uint16_t size, version;
+    uint64_t timestamp_us;
+    uint32_t kind, error, dropped; /* 1 discovered,2 read,3 removed,4 error,5 written */
+    uint16_t ndef_bytes, capacity, atqa;
+    uint8_t uid[10], uid_len, sak, writable, flags; /* LAP_DATA_SYNTHETIC on host fixtures */
+} lap_nfc_event_t;
+int lap_nfc_open(void);
+int lap_nfc_next(int h, lap_nfc_event_t *out, void *ndef, size_t cap);
+int lap_nfc_write(int h, const void *ndef, size_t len);
+void lap_nfc_close(int h);
+#endif /* LAP_API_24: radio I/O */
+
+#if defined(LAP_API_23)
+/* ---- API 2.3: discovery, input, dialogs and durable app data ------------ */
+/* Queries are snapshots, never start hardware. Hardware flags describe firmware
+   support/presence, independently of app grants. Radio masks use list indices;
+   radio_kinds uses (1u << LAP_RADIO_KIND_*). Discovery needs no RX grant.
+   Call from app callbacks. Synchronous outputs may live on the callback stack. */
+enum {
+    LAP_HW_WIFI = 1u, LAP_HW_BLE = 2u, LAP_HW_GPS = 4u, LAP_HW_IMU = 8u,
+    LAP_HW_SD = 16u, LAP_HW_SPEAKER = 32u, LAP_HW_MIC = 64u,
+    LAP_HW_DESKTOP = 128u,
+    /* Optional SDK services; absent bits mean the calls return unsupported. */
+    LAP_HW_WORKER_DSP = 1u << 22, LAP_HW_MDNS = 1u << 23
+};
+enum { LAP_SCREEN_SMALL, LAP_SCREEN_MEDIUM, LAP_SCREEN_LARGE };
+typedef struct {
+    uint16_t size, version; /* firmware fills size, version=1 */
+    uint32_t hardware, granted, radio_present, radio_tx, radio_kinds;
+    uint16_t width_px, height_px;
+    uint8_t screen_class, radio_count;
+    uint16_t reserved;
+    uint8_t radio_kind[LAP_RADIOS_MAX]; /* kind at each radio-list index */
+} lap_caps_t;
+uint32_t lap_api_version(void); /* (major << 16) | minor */
+int lap_caps(lap_caps_t *out, size_t size); /* 0 or LAP_RX_E* */
+
+/* Key IDs: LAP_KEY_* for special keys; printable keys use 128 + unsigned
+   ASCII (case folded to lowercase); raw HID keys use their 0x100+usage ID.
+   Legacy terminals without release reports emit a down/up pulse. */
+#define LAP_KEY_CHAR(ch) (128u + (uint8_t)(ch))
+#define LAP_INPUT_KEY_WORDS 16
+/* First seven event kinds mirror the firmware input channel. */
+enum {
+    LAP_INPUT_KEY_DOWN, LAP_INPUT_KEY_UP, LAP_INPUT_POINTER_MOVE,
+    LAP_INPUT_POINTER_DOWN, LAP_INPUT_POINTER_UP, LAP_INPUT_WHEEL,
+    LAP_INPUT_RELEASE_ALL, LAP_INPUT_FOCUS_LOST, LAP_INPUT_FOCUS_GAINED,
+    LAP_INPUT_PAUSE, LAP_INPUT_RESUME, LAP_INPUT_RESIZE
+};
+enum { LAP_BUTTON_LEFT = 1, LAP_BUTTON_MIDDLE = 2, LAP_BUTTON_RIGHT = 4, LAP_BUTTON_X1 = 8, LAP_BUTTON_X2 = 16 };
+typedef struct {
+    uint16_t size, version;
+    uint8_t kind, mods, button, buttons; /* button index: 0 left, 1 middle, 2 right */
+    uint16_t key;
+    int16_t x, y, wheel; /* client pixels; wheel positive down */
+    uint16_t width, height; /* RESIZE client pixels */
+    uint8_t clicks;
+    char ch;
+} lap_input_event_t;
+typedef struct {
+    uint16_t size, version;
+    uint32_t keys[LAP_INPUT_KEY_WORDS];
+    int16_t x, y;
+    uint8_t buttons, mods;
+    uint16_t reserved;
+    uint32_t dropped;
+} lap_input_state_t;
+bool lap_key_down(unsigned key);
+int lap_input_state(lap_input_state_t *out);
+int lap_input_next(lap_input_event_t *out); /* 1 event, 0 empty, <0 error */
+/* 64 events wait; overflow drops oldest and increments state.dropped.
+   Held state always reflects the newest input. Focus loss/pause clears it. */
+
+/* One asynchronous modal at a time. Inputs are copied, including strings/list.
+   max=1..768 bytes excluding NUL; flags LOWER (0 keeps the default keyboard case). Poll returns 0 pending,
+   1 accepted, 2 cancelled, <0 error; text needs room for result plus NUL.
+   Prompt <=95 bytes; confirm message <=159; choose 1..48 items of <=31
+   bytes. Confirm value: 1 yes, 0 no; choose value: zero-based index. Closing/hiding
+   the app cancels its modal. No callbacks run on worker tasks. */
+enum { LAP_TEXT_LOWER = 1 };
+int lap_text_input(const char *prompt, const char *initial, int max, unsigned flags);
+int lap_confirm(const char *message);
+int lap_choose(const char *const *list, int count);
+int lap_dialog_poll(int handle, char *text, size_t cap, int *value);
+void lap_dialog_cancel(int handle);
+
+/* App-local data, preserved across updates. Slot/key: 1..32 ASCII plain-name
+   characters. Save envelope v1 carries payload length and checksum; schema
+   is app-defined. lap_save uses schema 1, lap_load ignores schema.
+   Saves <=64KiB; settings <=256 bytes. Inputs are copied before return.
+   Writes return a job (>=0), polled via lap_sd_poll; completion means temp +
+   recoverable rename finished on SD. While a flush is pending, cached-file
+   mutation returns failure. A failed job preserves dirty cache for retry.
+   FAT power loss is recoverable replacement, not a multi-file transaction. */
+int lap_save(const char *slot, const void *data, size_t len);
+int lap_load(const char *slot, void *data, size_t cap);
+int lap_save_write(const char *slot, const void *data, size_t len, uint32_t schema);
+int lap_save_read(const char *slot, void *data, size_t cap, uint32_t *schema);
+int lap_settings_set(const char *key, const void *data, size_t len);
+int lap_settings_get(const char *key, void *data, size_t cap);
+int lap_file_flush(void); /* async job for all dirty cached files; keeps handles */
+#endif /* LAP_API_23 */
+
+/* ---- Radio RX API 2.4: discovery, managed DSP and typed decodes ---------- */
+#if defined(LAP_API_24)
+#define LAP_RADIO_RANGES_MAX 8
+#define LAP_RADIO_GAINS_MAX 64
+/* Controls 0..7 match the firmware front end. Antenna 0 is the sole RX port
+   on current radios; other values return EUNSUPPORTED. No register access. */
+enum { LAP_RX_CTL_BIAS_T, LAP_RX_CTL_PPM, LAP_RX_CTL_AGC, LAP_RX_CTL_OFFSET,
+       LAP_RX_CTL_AMP, LAP_RX_CTL_LNA_DB, LAP_RX_CTL_VGA_DB, LAP_RX_CTL_DIRECT,
+       LAP_RX_CTL_ANTENNA, LAP_RX_CTL_TUNE, LAP_RX_CTL_GAIN, LAP_RX_CTL_RATE,
+       LAP_RX_CTLS };
+typedef struct { uint64_t min_hz, max_hz; } lap_radio_range_t;
+typedef struct {
+    uint16_t size, version; /* returned size, version=1 */
+    uint32_t controls;      /* 1 << LAP_RX_CTL_*; only actually supported controls */
+    char id[32], owner[24];
+    uint8_t present, busy, frequency_count, rate_count;
+    uint16_t gain_count, reserved;
+    lap_radio_range_t frequencies[LAP_RADIO_RANGES_MAX];
+    lap_radio_range_t rates[LAP_RADIO_RANGES_MAX];
+    int16_t gains[LAP_RADIO_GAINS_MAX]; /* tuner steps, tenths dB; not an envelope */
+    int32_t values[LAP_RX_CTLS]; /* last successfully applied front-end values */
+} lap_radio_info2_t;
+/* Cached worker snapshot, no USB calls on the screen. 0 or LAP_RX_E*.
+   Synchronous copied inputs/outputs accept the active callback stack.
+   Call lap_caps first: radio_count/present may be zero on another board. */
+int lap_radio_info2(int index, lap_radio_info2_t *out, size_t size);
+enum { LAP_RX_COMMAND_QUEUED=1, LAP_RX_COMMAND_APPLIED, LAP_RX_COMMAND_FAILED };
+typedef struct {
+    uint16_t size, version;
+    uint32_t id, state;
+    int32_t control, result;
+    int64_t requested, applied;
+} lap_rx_command_t;
+/* One outstanding command per session; positive ticket means QUEUED, never
+   applied. Poll returns 0 and a terminal APPLIED/FAILED result, or EAGAIN.
+   Last 8 completions retained; stale tickets return EINVAL. Hardware errors
+   remain command results. Close/unload invalidates tickets. Tune is uint64
+   Hz up to INT64_MAX; gain accepts LAP_GAIN_AUTO. Rate is samples/s.
+   FE values: bias/offset 0|1, PPM -100..100 RTL/-200..200 HackRF, AGC
+   0 follow/1 on/2 off, amp 0 auto/1 off/2 on, LNA -1 auto or 0..40 step 8,
+   VGA -1 auto or 0..62 step 2, direct 0..2 only when supported. */
+int lap_rx_control(int h, int control, int64_t value);
+int lap_rx_control_get(int h, int control, int64_t *value);
+int lap_rx_command_poll(int ticket, lap_rx_command_t *out, size_t size);
+
+typedef struct {
+    uint16_t size, version; /* sizeof, 1 */
+    int32_t offset_hz;
+    uint32_t output_rate_hz, bandwidth_hz;
+} lap_channel_config_t;
+typedef struct {
+    uint16_t size, version;
+    uint32_t epoch, flags;
+    uint64_t first_sample, center_hz, arrival_us;
+    uint32_t rate_hz, dropped_pairs;
+} lap_iq_meta2_t;
+typedef struct {
+    uint16_t size, version;
+    int32_t state;
+    uint32_t output_rate_hz, queued_pairs, dropped_pairs, input_dropped_pairs;
+} lap_channel_status_t;
+/* One channel per session, prepared by the I/O worker. Integer decimation
+   1..64; output >=8 kS/s. 127-tap Hann FIR, bandwidth <= output_rate/2;
+   callers must allow the transition band. |offset|+bandwidth/2 < input/2.
+   32 x 2048-pair input slots; 16K-pair output ring, drop newest, no waiting.
+   No app callbacks on capture/DSP tasks. Read on the screen is cheap after
+   decimation. Status reports OPENING/RUNNING/errors. Close is asynchronous.
+   Arrival is host monotonic time, NOT a hardware sample clock; positions are
+   nominal output samples. GAP/epoch changes reset filter alignment. */
+int lap_rx_channel_open(int h, const lap_channel_config_t *cfg);
+int lap_rx_channel_read(int channel, int16_t *iq, int max_pairs, lap_iq_meta2_t *meta, size_t size);
+int lap_rx_channel_status(int channel, lap_channel_status_t *out, size_t size);
+void lap_rx_channel_close(int channel);
+
+enum { LAP_SPEC_RECT, LAP_SPEC_HANN, LAP_SPEC_BLACKMAN };
+typedef struct {
+    uint16_t size, version;
+    uint16_t fft_size, window; /* 64,128,256,512,1024,2048; LAP_SPEC_* */
+    uint16_t averages, lines_per_second; /* 1..64, 1..50 */
+} lap_spectrum_config_t;
+typedef struct {
+    uint16_t size, version;
+    uint32_t sequence, epoch;
+    uint64_t center_hz, arrival_us;
+    uint32_t span_hz;
+    float bin_hz;
+    int32_t gain_tenths_db; /* LAP_GAIN_AUTO when unknown/automatic */
+    uint16_t fft_size, window;
+    uint32_t input_dropped_pairs;
+} lap_spectrum_meta_t;
+/* Config copied/queued, 0 means accepted; next line carries the settings.
+   Linear-power averages, coherent-window-gain normalization, shifted dBFS
+   bins. Read returns configured FFT bins, 0 until a line, or E*. Small
+   buffers return ERANGE without consuming. FFT * averages * lines/s must fit
+   the input sample rate. Old lap_rx_spectrum is unchanged. */
+int lap_rx_spectrum_config(int h, const lap_spectrum_config_t *cfg);
+int lap_rx_spectrum_read(int h, float *db, int max_bins, lap_spectrum_meta_t *meta, size_t size);
+
+enum { LAP_DEC_FM=1, LAP_DEC_AM, LAP_DEC_USB, LAP_DEC_LSB, LAP_DEC_CW,
+       LAP_DEC_POCSAG, LAP_DEC_APRS, LAP_DEC_ACARS, LAP_DEC_AIS, LAP_DEC_ADSB,
+       LAP_DEC_SAME, LAP_DEC_P25, LAP_DEC_FLEX, LAP_DEC_WFM };
+typedef struct {
+    uint16_t size, version;
+    uint32_t supported; /* 1 << LAP_DEC_*; compiled session adapters */
+    uint32_t lr125_supported; /* decoder mask also accepting LR2021 125 kS/s */
+    uint32_t rate_hz[15]; /* preferred/fixed rate indexed by LAP_DEC_* */
+} lap_decoder_catalog_t;
+typedef struct {
+    uint16_t size, version;
+    uint32_t decoder;
+    uint32_t flags; /* reserved: zero */
+} lap_decoder_config_t;
+typedef struct {
+    uint16_t size, version;
+    int32_t state;
+    uint32_t decoder, events, dropped, input_dropped_pairs;
+} lap_decoder_status_t;
+/* Actual firmware decoder implementations, exclusive one per session.
+   FM/AM/USB/LSB/CW/POCSAG/APRS/ACARS/AIS/SAME: 256 kS/s;
+   FM/AM/POCSAG/FLEX/APRS/ACARS/SAME also accept LR2021 125 kS/s;
+   ADS-B: exactly 2 MS/s. P25: 240 kS/s C4FM Phase 1 NID/TSBK/grants,
+   no automatic tuning or P25 vocoder. WFM/FLEX: 256 kS/s. The catalog
+   reports compiled adapters, including on a board currently without RF.
+   Attachment is queued: inspect status before relying on it. PCM goes to
+   lap_audio_read only after lap_audio_listen(true); no automatic speaker.
+   Polling/legacy timeline subscriptions never activate a decoder. */
+int lap_rx_decoder_catalog(lap_decoder_catalog_t *out, size_t size);
+int lap_rx_decoder_attach(int h, const lap_decoder_config_t *cfg);
+int lap_rx_decoder_status(int decoder, lap_decoder_status_t *out, size_t size);
+void lap_rx_decoder_detach(int decoder);
+
+enum { LAP_EVENT_LIVE=1, LAP_EVENT_SYNTHETIC=2, LAP_EVENT_POSITION_VALID=4,
+       LAP_EVENT_CRC_OK=8 };
+/* P25 support: 0 none, 1 Phase 1, 2 unsupported, 3 missing IDEN,
+   4 invalid, 5 Phase 2. carrier_hz=0 means unresolved; opcode=255 is NID only.
+   All fields/payloads fixed width; version=1. Protocol fields are values
+   supplied by the decoder, never parsed out of a summary string. */
+typedef struct {
+    uint16_t size, version;
+    uint32_t decoder, sequence, epoch, flags;
+    int32_t radio;
+    uint64_t center_hz, arrival_us;
+    uint32_t payload_size, dropped;
+} lap_event_header_t;
+typedef struct { uint32_t address; uint16_t baud; uint8_t function, protocol; char text[160]; } lap_page_event_t;
+typedef struct { char call[12], recipient[10], text[160]; int32_t lat_e7, lon_e7; uint32_t kind, fields; } lap_aprs_event_t;
+typedef struct { char registration[8], label[3], text[221]; uint16_t bcs; uint8_t mode, block_id; } lap_acars_event_t;
+typedef struct { uint32_t mmsi; int32_t lat_e7, lon_e7; uint16_t sog, cog, heading; uint8_t message, fields, channel, ship_type; char name[21], callsign[8]; } lap_ais_event_t;
+/* ADS-B speed is knots, heading degrees; INT32_MIN means unavailable.
+   non_icao preserves DF18 address qualification; frame carries wire bytes. */
+typedef struct { uint32_t address; int32_t altitude_ft, speed, heading; uint8_t df, crc_ok, corrected, non_icao; char callsign[9]; uint8_t frame[14]; } lap_adsb_event_t;
+typedef struct { uint16_t nac; uint8_t duid, corrected_bits; uint8_t opcode, mfid, reserved[2]; uint8_t block[12]; uint32_t talkgroup, source; uint64_t carrier_hz; uint16_t channel; uint8_t slot, slots_per_carrier, support, system_valid; uint16_t reserved2; uint32_t wacn, sysid; } lap_p25_event_t;
+typedef struct { char originator[4], event[4], sender[9]; uint8_t location_count; uint16_t valid_minutes, day; uint8_t hour, minute, ended, test; uint32_t locations[31]; } lap_same_event_t;
+/* Only events from this explicitly attached decoder. 32 entries; full drops
+   newest. 1 copied, 0 empty, ERANGE leaves event queued, EINVAL stale handle.
+   No implicit global timeline or replay. Synthetic fixtures are tagged.
+   Detach/session close/unload discards all unread events. */
+int lap_rx_decoder_next(int decoder, lap_event_header_t *header, size_t header_size, void *payload, size_t capacity);
+#endif /* LAP_API_24: Radio RX */
+
+
 /* ---- memory and the C library ------------------------------------------ */
 
 /* The SDK wraps non-PIC compiler helpers as __wrap___<libgcc-name> imports.
@@ -902,6 +1417,595 @@ void *calloc(size_t n, size_t size);
 void *realloc(void *p, size_t n);
 void  free(void *p);
 
+/* API 2.4 — networking, Bluetooth and audio. All operations copy inputs before
+   returning; outputs can be on the active callback stack. No app callbacks run
+   on workers. Handles belong to one loaded app, are invalid after close/unload,
+   and must be closed even after failure. Negative LAP_IO_E* values are errors.
+   Query lap_caps first: missing hardware returns ENOTSUP. NETWORK is required
+   for Wi-Fi, HTTP, UDP, mDNS and SNTP; BLE uses the existing BLE hardware lease.
+   Fixed limits keep Nano internal RAM bounded; large queues live in PSRAM. */
+#if defined(LAP_API_24)
+/* Microphone access is declared in the existing one-byte flags field. */
+#define LAP_CAP_MIC 16u
+enum {
+    LAP_IO_EINVAL = -100, LAP_IO_EBUSY = -101, LAP_IO_EACCES = -102,
+    LAP_IO_ENOTSUP = -103, LAP_IO_EAGAIN = -104, LAP_IO_EIO = -105,
+    LAP_IO_ELIMIT = -106, LAP_IO_ETIMEOUT = -107, LAP_IO_ECLOSED = -108,
+    LAP_IO_ETLS = -109, LAP_IO_EAUTH = -110, LAP_IO_ECONFLICT = -111
+};
+enum { LAP_OPERATION_PENDING, LAP_OPERATION_READY, LAP_OPERATION_DONE };
+typedef struct {
+    uint16_t size, version;
+    int32_t state, error;
+    uint32_t transferred, dropped;
+} lap_operation_t;
+/* Poll Wi-Fi/time operations; close releases completed or pending operations.
+   Four operations across Wi-Fi/time; scan returns up to 16 cached AP records. */
+int lap_operation_status(int operation, lap_operation_t *out);
+void lap_operation_close(int operation);
+typedef struct {
+    uint16_t size, version;
+    uint8_t connected, ap_running, channel, reserved;
+    int16_t rssi;
+    uint16_t saved_count;
+    char ssid[33], ip[16];
+} lap_wifi_status_t;
+/* Cached SSID/IP/RSSI, never credentials. Disconnected RSSI is -127. */
+int lap_wifi_status(lap_wifi_status_t *out);
+int lap_wifi_scan_start(void);
+int lap_wifi_scan_result(int operation, int first, lap_wifi_ap_t *out, int max);
+/* NULL password joins a firmware-saved SSID. A supplied password is copied,
+   erased after the join and saved by firmware only on success. No getter. */
+int lap_wifi_connect(const char *ssid, const char *password);
+int lap_wifi_disconnect(void);
+/* Start the firmware's own SoftAP identity/password; never discloses its key. */
+int lap_wifi_ap_request(bool on);
+enum { LAP_HTTP_GET, LAP_HTTP_POST, LAP_HTTP_PUT, LAP_HTTP_DELETE, LAP_HTTP_HEAD, LAP_HTTP_PATCH };
+typedef struct {
+    uint16_t size, version;
+    uint8_t method, reserved[3];
+    uint32_t timeout_ms, response_limit; /* 100..30000 ms; 1..1048576 bytes */
+    char url[256]; /* http:// or https://; no credentials; no insecure TLS flag */
+    char headers[512]; /* Name: value\r\n; no Host/length/transfer overrides */
+    const void *body; /* copied, max 4096 bytes; NULL with body_size=0 */
+    uint32_t body_size;
+} lap_http_request_t;
+typedef struct {
+    uint16_t size, version;
+    int32_t state, error, status_code;
+    uint32_t received, queued;
+    int32_t content_length; /* -1 unknown */
+} lap_http_status_t;
+/* Two requests. TLS always uses the firmware CA bundle and hostname checking.
+   Redirects are refused (3xx status is delivered). Response headers <=2 KiB,
+   8 KiB stream queue with backpressure; timeout covers the entire request. */
+int lap_http_open(const lap_http_request_t *request);
+int lap_http_status(int h, lap_http_status_t *out);
+int lap_http_header(int h, const char *name, char *out, size_t cap);
+/* Positive bytes, EAGAIN while pending, 0 only when stream fully drained.
+   On terminal failure queued bytes drain before the error is returned. */
+int lap_http_read(int h, void *out, size_t cap);
+void lap_http_close(int h);
+typedef struct {
+    uint16_t size, version;
+    uint16_t port, reserved;
+    char ip[16]; /* numeric IPv4, empty local address = any */
+} lap_socket_address_t;
+/* Four datagram sockets, 4 packets per direction, max 1472 bytes each.
+   Broadcast allowed. join/leave enables IPv4 multicast, TTL=1. recv leaves an
+   oversized packet queued and returns ELIMIT. Empty datagrams return 0. */
+int lap_udp_open(const lap_socket_address_t *local);
+int lap_udp_send(int h, const lap_socket_address_t *to, const void *data, size_t len);
+int lap_udp_recv(int h, lap_socket_address_t *from, void *data, size_t cap);
+int lap_udp_join(int h, const char *group, bool on);
+int lap_udp_status(int h, lap_operation_t *out);
+void lap_udp_close(int h);
+typedef struct {
+    uint16_t size, version, port, reserved;
+    uint32_t ttl;
+    char instance[64], hostname[64], ip[16], txt[256];
+} lap_mdns_service_t;
+typedef struct {
+    uint16_t size, version, port, reserved;
+    char instance[64], service[32], protocol[8], txt[256]; /* TXT: key=value;key=value */
+} lap_mdns_registration_t;
+/* One browse and one registration per app, at most eight results. Browse is
+   a bounded 2 second snapshot. next returns EAGAIN, 1 record, or 0 at end.
+   Registration names are scoped to this lease; stop sends service goodbye. */
+int lap_mdns_browse(const char *service, const char *protocol);
+int lap_mdns_next(int browse, lap_mdns_service_t *out);
+int lap_mdns_register(const lap_mdns_registration_t *service);
+void lap_mdns_stop(int h);
+typedef struct {
+    uint16_t size, version;
+    uint8_t synced, source, reserved[2]; /* 0 unknown, 1 RTC/local, 2 SNTP */
+    uint32_t last_sync_ms, uncertainty_ms; /* UINT32_MAX if backend cannot estimate */
+} lap_time_status_t;
+int lap_time_status(lap_time_status_t *out);
+int lap_time_sync_request(void);
+#define LAP_BLE_AD_MAX 1650
+/* Passive scan lease shared with LINK/HID/RID. Full AD TLVs include service
+   UUIDs/manufacturer data; repeated reports preserve timestamped RSSI history.
+   Queue depth 8. Overlong reports are dropped whole, never silently truncated. */
+typedef struct {
+    uint16_t size, version, payload_size;
+    uint8_t addr[6], addr_type, scan_response;
+    int16_t rssi;
+    uint32_t at_ms;
+} lap_ble_advert_t;
+int lap_ble_scan_start(void);
+int lap_ble_advert_next(int scan, lap_ble_advert_t *out, void *payload, size_t cap);
+int lap_ble_scan_status(int scan, lap_operation_t *out);
+void lap_ble_scan_stop(int scan);
+typedef struct { uint8_t bytes[16], length, reserved[3]; } lap_uuid_t; /* little endian; length=2,4,16 */
+enum { LAP_BLE_CONNECTED, LAP_BLE_DISCONNECTED, LAP_GATT_SERVICE,
+       LAP_GATT_CHARACTERISTIC, LAP_GATT_DESCRIPTOR, LAP_GATT_VALUE,
+       LAP_GATT_WRITTEN, LAP_GATT_NOTIFY, LAP_GATT_COMPLETE };
+typedef struct {
+    uint16_t size, version;
+    int32_t connection, operation, error;
+    uint16_t kind, attribute, end_handle, properties, payload_size, reserved;
+    uint32_t dropped;
+    lap_uuid_t uuid;
+} lap_ble_event_t;
+/* One additional GATT client; never borrows HID/head connections. 20-byte
+   values (default MTU=23), 16 events, one procedure in flight. No new NimBLE
+   host or task. Pairing-required errors are returned; bond keys stay private. */
+int lap_ble_connect(const uint8_t addr[6], uint8_t addr_type);
+/* Services when start=end=0; otherwise characteristics in the given range. */
+int lap_gatt_discover(int connection, uint16_t start, uint16_t end);
+/* Discover descriptors between a characteristic value and its end handle. */
+int lap_gatt_descriptors(int connection, uint16_t start, uint16_t end);
+int lap_gatt_read(int connection, uint16_t attribute);
+int lap_gatt_write(int connection, uint16_t attribute, const void *data, size_t len);
+/* CCCD must come from descriptor discovery; write request, completion event. */
+int lap_gatt_subscribe(int connection, uint16_t cccd, bool on);
+int lap_ble_event_next(lap_ble_event_t *out, void *data, size_t cap);
+void lap_ble_disconnect(int connection);
+enum { LAP_MIX_MUSIC, LAP_MIX_EFFECTS, LAP_MIX_VOICE, LAP_MIX_CHANNELS };
+/* Opt-in mixer: three 2048-sample mono 16 kHz s16 channels. Legacy lap_tone
+   and lap_audio_write keep their queues. Mixer yields to live radio/mute.
+   Gain and duck are 0..100%; duck attenuates this channel while voice queues.
+   write returns accepted sample count (0 if full). */
+int lap_mixer_config(int channel, int volume, int duck);
+int lap_mixer_write(int channel, const int16_t *pcm, int samples);
+void lap_mixer_clear(int channel);
+/* transferred = consumed samples; dropped = muted/live/media/busy speaker. */
+int lap_mixer_status(int channel, lap_operation_t *out);
+/* One capture lease, 16 kHz mono s16 PCM, 4096 samples, drop newest/count.
+   Firmware displays MIC ON while active, including when the app is hidden.
+   No mic on Nano variants without a fitted ADC. Close stops capture/record. */
+int lap_mic_open(void);
+int lap_mic_read(int h, int16_t *pcm, int max, lap_operation_t *status);
+void lap_mic_close(int h);
+/* Names are single plain basenames in this app's apps_data/<id>/ directory.
+   WAV: PCM signed 16-bit, mono 16 kHz; RIFF chunks and odd padding supported.
+   One sample stream, one recorder, max 30 seconds / 960000 PCM bytes. Worker
+   owns SD handles. Record stop finalizes WAV; unload also finalizes recording.
+   Audio status/close work for sample and record operations. */
+int lap_sample_play(int channel, const char *name);
+int lap_audio_record_start(int mic, const char *name, uint32_t max_ms);
+/* Stop/finalize asynchronously; poll lap_audio_operation until DONE, then close. */
+int lap_audio_record_stop(int h);
+int lap_audio_operation(int h, lap_operation_t *out);
+void lap_audio_close(int h);
+#endif /* LAP_API_24: networking, Bluetooth and audio */
+
+/* ---- API 2.5: system services (Y1, D2/U2, Y2, Y5) ---------------------- */
+#if defined(LAP_API_25)
+enum { LAP_SYS_EINVAL=-1, LAP_SYS_EBUSY=-2, LAP_SYS_EACCES=-3,
+       LAP_SYS_ENOENT=-4, LAP_SYS_EIO=-5, LAP_SYS_EUNSUPPORTED=-6,
+       LAP_SYS_ELIMIT=-7, LAP_SYS_ECANCEL=-8 };
+/* Fixed, copied notice; at most two nonempty action labels. Data is opaque.
+   Eight notices system-wide, one post/second/app; no pointers into app code.
+   Notices survive unload until dismissed/activated (not reboot). Activation
+   uses the normal launcher including signature/permission review. */
+typedef struct {
+    uint16_t size, version;
+    char title[20], body[128], actions[2][16];
+    uint16_t data_len, reserved;
+    uint8_t data[128];
+} lap_notification_t;
+typedef struct {
+    uint16_t size, version;
+    uint32_t notification;
+    int32_t action; /* -1=body tap, 0/1=action button */
+    uint16_t data_len, reserved;
+    uint8_t data[128];
+} lap_launch_data_t;
+int lap_notify_post(const lap_notification_t *notice);
+int lap_notify_dismiss(int notification);
+/* 1 consumes a launch, 0=ordinary launch/no new activation. Retry after enter
+   too: an already resident app receives activation on its next tick/draw. */
+int lap_launch_data(lap_launch_data_t *out);
+
+enum { LAP_FILE_READ=1, LAP_FILE_WRITE=2, LAP_FILE_FOLDER=4 };
+typedef struct { uint16_t size, version; uint32_t flags; char title[32]; } lap_file_picker_config_t;
+typedef struct { uint16_t size, version; uint32_t bytes; uint8_t dir, reserved[3]; char name[64]; } lap_dir_entry_t;
+/* Scope 0 is apps_data/<id>/files; positive scope handles are user-selected
+   files/folders valid until app unload. Relative UTF-8 paths, max 127 bytes;
+   no dot components, hidden files, backslashes or symlinks. Protected app,
+   credentials and firmware folders can never be granted. READ mandatory;
+   WRITE permits overwrite/creation. Four streams and four grants/instance.
+   Each instance has one outstanding storage job, max 4096 bytes or 16 rows.
+   Calls never perform filesystem I/O on the UI task. Open reserves a logical
+   handle; existence/I/O errors arrive from read/write/list completion.
+   Poll: 0=pending, 1=done (result is bytes/rows or negative error); completion
+   consumes the job. Inputs are copied; output buffers are used only by poll.
+   Reads/writes advance stream position on successful completion; seek and
+   close return EBUSY while that stream has an outstanding job. Offset range
+   is 0..INT32_MAX. Directory cursor is an entry offset, zero starts; next=0
+   means end. Directory mutations can invalidate pagination. Close is logical;
+   writes complete only after fflush/fsync/close (FAT power loss still matters).
+   Cached lap_file_* data is separate from the streaming files/ subfolder. */
+int lap_file_picker(const lap_file_picker_config_t *cfg);
+/* 0=pending, positive=scope, negative=cancel/error; consumes completion. */
+int lap_file_picker_poll(int picker);
+int lap_file_scope_close(int scope);
+int lap_stream_open(int scope, const char *path, uint32_t flags);
+int lap_stream_read(int stream, uint32_t bytes);
+int lap_stream_write(int stream, const void *data, uint32_t bytes);
+int lap_stream_seek(int stream, uint64_t offset);
+int lap_stream_close(int stream);
+int lap_dir_list(int scope, const char *path, uint32_t cursor);
+int lap_storage_poll(int job, void *out, uint32_t capacity, int32_t *outcome, uint32_t *next);
+/* Best effort: queued work is skipped; a write already running may complete.
+   Poll still consumes the cancelled job. Cancellation does not roll back. */
+int lap_storage_cancel(int job);
+
+/* Boot-local topic mailboxes: 8 app identities, 4 subscriptions/app, 8 messages
+   each, 192-byte payload, 8 publishes/second/app. Topic: 1..31 ASCII letters,
+   digits, dot, slash, underscore or dash. Type is an app-defined schema ID.
+   Sender identity is supplied by firmware. Subscribe is idempotent. Queues
+   and subscriptions survive unload so sequential apps can exchange messages
+   with today's single resident service. No auto-launch. Full queues drop
+   newest; publish returns delivered count; dropped is reported on next read.
+   Unsubscribe clears matching queued messages. Topics are public, not secret.
+   No additional resident service is enabled by this API. */
+typedef struct {
+    uint16_t size, version;
+    uint32_t type, dropped;
+    char sender[32], topic[32];
+    uint16_t data_len, reserved;
+    uint8_t data[192];
+} lap_ipc_message_t;
+int lap_ipc_subscribe(const char *topic);
+int lap_ipc_unsubscribe(const char *topic);
+int lap_ipc_publish(const char *topic, uint32_t type, const void *data, uint32_t len);
+int lap_ipc_next(lap_ipc_message_t *out);
+
+enum { LAP_DESKTOP_CONNECTED=1, LAP_DESKTOP_DISCONNECTED, LAP_DESKTOP_RESIZE,
+       LAP_DESKTOP_SCALE, LAP_DESKTOP_FOCUS };
+typedef struct {
+    uint16_t size, version;
+    uint32_t kind, dropped;
+    int32_t width_px, height_px;
+    uint16_t cell_width_px, cell_height_px;
+    uint16_t scale_milli; /* 1000=1x host DPI; 0=viewer DPI unknown */
+    uint8_t connected, focused;
+} lap_desktop_event_t;
+/* Snapshot returns 0; next returns 1/event, 0/empty. 16 events/instance, oldest
+   dropped on overflow. Connection covers attached serial/web/network viewers;
+   protocol does not identify the Desktop brand. Negotiated host DPI is in
+   scale_milli (0 on older viewers). Size is
+   own client pixels; scale events reflect firmware font/cell changes. */
+int lap_desktop_info(lap_desktop_event_t *out);
+int lap_desktop_next(lap_desktop_event_t *out);
+/* API 2.6 viewers negotiate URL/save support. Returns positive request ID;
+   poll/cancel with lap_desktop_request_status/cancel. Older viewers return
+   EUNSUPPORTED. HTTPS only; viewer displays the URL before opening. Save reads
+   a scoped file on the worker (max 65536 bytes), then asks the PC save dialog. */
+int lap_desktop_open_url(const char *url);
+int lap_desktop_save_file(int scope, const char *path, const char *suggested_name);
+#endif /* LAP_API_25: system services */
+#if defined(LAP_API_26)
+/* ---- API 2.6: HackRF TX / desktop host -------------------------------- */
+typedef struct {
+    uint16_t size, version; /* sizeof, 1 */
+    uint8_t vga_db, amp, reserved[2]; /* VGA 0..47 dB, amp 0/1; not calibrated dBm */
+} lap_hackrf_tx_config_t;
+/* Copies settings for subsequent lap_tx_iq/replay on this HackRF. Requires
+   RADIO_TX, idle TX queue; defaults VGA=0/amp=off on app load. Frequency and
+   sample rate come from the existing TX calls (2..20 MS/s, signed I8/Q8).
+   Owner firmware settings cap VGA/amp; duty/thermal/RX ownership still apply.
+   power_dbm remains a conservative hardware ceiling, not an output calibration. */
+int lap_tx_hackrf_config(int radio, const lap_hackrf_tx_config_t *cfg);
+/* Features: bit 0 URL, bit 1 save; absent/older viewers return 0. */
+uint32_t lap_desktop_features(void);
+/* 0 pending, 1 success, negative LAP_SYS_E* failure. Terminal results consumed.
+   120s timeout, disconnect/unload cancel. Only the requesting app can poll. */
+int lap_desktop_request_status(int request);
+int lap_desktop_request_cancel(int request);
+#endif /* API 2.6: HackRF TX / desktop host */
+#if defined(LAP_API_25)
+/* ---- API 2.5: input devices and sensors ------------------------------- */
+enum {
+    LAP_HW_HID_BLE = 1u << 13, LAP_HW_GAMEPAD_BLE = 1u << 14,
+    LAP_HW_GAMEPAD_USB = 1u << 15, LAP_HW_MULTITOUCH = 1u << 16,
+    LAP_HW_NAVIGATION = 1u << 17, LAP_HW_GAMEPAD_DESKTOP = 1u << 18
+};
+enum { LAP_INPUT_DEVICE_CONNECTED = 12, LAP_INPUT_DEVICE_DISCONNECTED,
+       LAP_INPUT_GAMEPAD, LAP_INPUT_CONTACT_DOWN, LAP_INPUT_CONTACT_MOVE, LAP_INPUT_CONTACT_UP };
+enum { LAP_DEVICE_KEYBOARD = 1, LAP_DEVICE_MOUSE = 2, LAP_DEVICE_GAMEPAD = 4,
+       LAP_DEVICE_TOUCH = 8 };
+enum { LAP_TRANSPORT_LOCAL, LAP_TRANSPORT_DESKTOP, LAP_TRANSPORT_BLE, LAP_TRANSPORT_USB };
+#define LAP_INPUT_DEVICES_MAX 8
+#define LAP_CONTACTS_MAX 10
+typedef struct {
+    uint16_t size, version; /* version 1; firmware fills all new output structs */
+    uint32_t id; /* boot-local identity, never a Bluetooth address; zero reserved */
+    uint8_t classes, transport, connected, reserved;
+    char name[32];
+} lap_input_device_t;
+typedef struct {
+    lap_input_event_t event; /* unchanged 2.3 prefix; size is sizeof this struct, version 2 */
+    uint32_t device;
+    uint16_t contact; /* controller/desktop ID; stable for the contact lifetime */
+    uint8_t classes, transport;
+    int16_t axes[6]; /* LX,LY,RX,RY: -32767..32767; LT,RT: 0..32767; +Y down */
+    uint32_t gamepad_buttons; /* HID button usages 1..32 map to bits 0..31 */
+    int8_t dpad_x, dpad_y; /* -1..1; right/down positive */
+    uint16_t reserved;
+} lap_input_event2_t;
+typedef struct {
+    uint16_t id;
+    int16_t x, y; /* client pixels */
+    uint16_t reserved;
+} lap_input_contact_t;
+typedef struct {
+    uint16_t size, version;
+    uint32_t device;
+    lap_input_state_t input;
+    int16_t axes[6];
+    uint32_t gamepad_buttons;
+    int8_t dpad_x, dpad_y;
+    uint8_t connected, contact_count;
+    lap_input_contact_t contacts[LAP_CONTACTS_MAX];
+} lap_input_device_state_t;
+/* Same focused queue as lap_input_next; choose one reader. Old reader skips
+   new kinds. Overflow counted by lap_input_state; recover from device_state.
+   Focus loss, modal entry, disconnect and queue reset release held state.
+   Lists never scan/pair. BLE pairing remains in LINK. All buffers synchronous.
+   USB gamepads are unavailable until a USB HID host is implemented. */
+int lap_input_next2(lap_input_event2_t *out, size_t size);
+int lap_input_devices(lap_input_device_t *out, int max);
+int lap_input_device_state(uint32_t device, lap_input_device_state_t *out, size_t size);
+
+enum { LAP_GPS_ABSENT, LAP_GPS_OFF, LAP_GPS_ACQUIRING, LAP_GPS_FIX, LAP_GPS_STALE };
+typedef struct {
+    uint16_t size, version;
+    uint8_t state, quality, antenna, leased; /* antenna: 0 unknown,1 OK,2 open,3 short */
+    uint32_t sentence_age_ms, fix_age_ms, sky_age_ms; /* UINT32_MAX when never seen */
+    lap_gps_t position; /* coordinates may be last known; check state and age */
+    uint8_t tracked, reserved[3];
+    int32_t error; /* asynchronous receiver start error, 0 when none */
+} lap_gps_status_t;
+typedef struct {
+    uint16_t size, version;
+    uint16_t prn, azimuth;
+    uint8_t constellation, elevation, snr, used; /* NMEA system ID; dB-Hz */
+    uint32_t age_ms;
+} lap_gps_satellite_t;
+/* One app acquisition lease; flags must be zero. Returns positive lease or
+   LAP_RX_E*. Repeated acquire returns the same lease. Worker starts/feeds the
+   UART; status reports pending/off/acquiring/fix/error. Release/unload drops
+   only this app's demand, never firmware demand. No reset/configuration access. */
+int lap_gps_acquire(uint32_t flags);
+void lap_gps_release(int lease);
+int lap_gps_status(lap_gps_status_t *out);
+int lap_gps_satellites(lap_gps_satellite_t *out, int max); /* up to 48; stale sky omitted */
+
+enum { LAP_MOTION_ACCEL = 1, LAP_MOTION_GYRO = 2, LAP_MOTION_MAG = 4,
+       LAP_MOTION_HEADING = 8, LAP_MOTION_RAW = 16 };
+enum { LAP_MOTION_CALIBRATED = 1, LAP_MOTION_DISTURBED = 2,
+       LAP_MOTION_LOW_CONFIDENCE = 4, LAP_MOTION_TRUE_NORTH = 8 };
+typedef struct {
+    uint16_t size, version;
+    uint32_t available, subscribed, period_ms, age_ms, sequence;
+    uint32_t quality; /* LAP_MOTION_* flags above */
+    float heading_sigma_deg; /* learner's 1-sigma, -1 when unknown */
+} lap_motion_status_t;
+typedef struct {
+    uint16_t size, version;
+    uint32_t sequence, fields, quality, age_ms;
+    lap_motion_t motion; /* existing calibrated screen-axis view */
+    float raw_accel[3], raw_gyro[3], raw_mag[3]; /* uncalibrated board axes, g/deg s/uT */
+    float heading_sigma_deg; /* -1 unknown; do not infer accuracy from validity */
+} lap_motion_sample_t;
+/* Latest-only delivery, no hardware callbacks. period 50..10000 ms (20 Hz
+   maximum), fields nonzero subset above. No duplicate until the next period;
+   slow readers skip samples. RAW includes available accel/gyro/mag, never ADC
+   counts. Invalid mag omitted. Subscribe(0,0) stops delivery. Unload cleans up. */
+int lap_motion_subscribe(uint32_t fields, uint32_t period_ms);
+int lap_motion_status(lap_motion_status_t *out);
+int lap_motion_next(lap_motion_sample_t *out); /* 1 sample,0 not due,<0 error */
+
+enum { LAP_NAV_TRACK = 1, LAP_NAV_WAYPOINT = 2, LAP_NAV_PLACE = 3 };
+typedef struct {
+    uint16_t size, version;
+    uint32_t id, time;
+    double lat, lon;
+    float altitude_m;
+    uint8_t kind, flags; /* bit 0 track time is Unix seconds; bit 1 place is tile-cover centre; bit 2 queued place */
+    uint16_t reserved;
+    char name[64];
+} lap_navigation_point_t;
+/* Read-only, bounded snapshot of the firmware track ring (4096 points), saved
+   map waypoints (48), or installed place library (32). One request at a time;
+   open returns positive handle, read returns LAP_RX_EAGAIN while worker reads
+   SD, then page count (0 at end). All snapshots are immutable until close.
+   Waypoint IDs are snapshot-local; place IDs are the saved library keys.
+   No arbitrary path, no recording/marker mutation. Close/unload abandons work.
+   CartoCore tile/feature rendering is not exported: see INPUT_SENSORS.md. */
+int lap_navigation_open(int kind);
+int lap_navigation_read(int handle, uint32_t first, lap_navigation_point_t *out, int max);
+void lap_navigation_close(int handle);
+#endif /* LAP_API_25: input devices and sensors */
+
+#ifdef LAP_API_26
+/* API 2.6: Bluetooth peripheral roles (B3/B4).
+   One exclusive BLE peripheral lease. LINK, HID host, observers and SDK central
+   leases return EBUSY while owned; existing owners are never stopped. Optional
+   builds expose these symbols but omit the lap_caps hardware bits and return
+   ENOTSUP. Starts return a positive handle; poll status for worker completion.
+   All input is copied synchronously (callback stack allowed), no app callbacks
+   run on NimBLE. Close/unload stops advertising, disconnects and drops the DB.
+   Emission requires the declared LAP_CAP_RADIO_TX; HID also declares HID_DEVICE.
+   No region, licence or confirmation gate. See docs/BLE_PERIPHERAL.md. */
+#define LAP_CAP_HID_DEVICE 32u
+#define LAP_BLE_SERVER_ATTRS 16
+#define LAP_BLE_VALUE_MAX 128
+#define LAP_BLE_REPORT_MAX 20
+#define LAP_BLE_ADV_MAX 31
+/* Independent build features; BLE alone does not imply peripheral support. */
+enum { LAP_HW_BLE_ADVERTISER = 1u << 19, LAP_HW_GATT_SERVER = 1u << 20,
+       LAP_HW_HID_DEVICE = 1u << 21 };
+typedef struct {
+    uint16_t size, version; /* sizeof, 1 */
+    int32_t server; /* 0 creates beacon session; server handle attaches advertising */
+    uint16_t interval_min_ms, interval_max_ms; /* 20..10240, min<=max */
+    int8_t tx_power_dbm; /* -24..20 (C5/C6 PA); actual controller power in status */
+    uint8_t connectable, data_len, scan_response_len;
+    uint8_t data[31], scan_response[31];
+} lap_ble_advert_config_t;
+/* Legacy AD TLVs (length,type,value): name 0x09, manufacturer 0xff, UUID lists
+   0x03/0x07, service data 0x16/0x21. Both 31-byte fields validated; no silent
+   truncation. A connectable advert requires a ready GATT server. Reconfigure
+   existing server by setting server=h; beacon stop also closes its session. */
+int lap_ble_advertise(const lap_ble_advert_config_t *cfg);
+void lap_ble_advertise_stop(int handle);
+enum { LAP_GATTS_SERVICE = 1, LAP_GATTS_CHARACTERISTIC, LAP_GATTS_DESCRIPTOR };
+enum { LAP_GATTS_READ = 1u, LAP_GATTS_WRITE = 2u, LAP_GATTS_WRITE_NR = 4u,
+       LAP_GATTS_NOTIFY = 8u, LAP_GATTS_INDICATE = 16u,
+       LAP_GATTS_ENCRYPT = 32u, LAP_GATTS_AUTHENTICATE = 64u };
+typedef struct {
+    uint16_t size, version; /* sizeof, 1 */
+    uint16_t id, parent; /* app IDs, nonzero unique; preceding service/char parent */
+    uint8_t kind, reserved;
+    uint16_t flags, value_len;
+    lap_uuid_t uuid;
+    uint8_t value[LAP_BLE_VALUE_MAX];
+} lap_gatt_attribute_t;
+/* Flat ordered tree: service, its characteristics, each followed by descriptors.
+   16 entries total, UUID length 2/4/16, values <=128 bytes. CCCD 0x2902 is
+   automatic for notify/indicate; do not declare it. 0x1800/0x1801 are reserved.
+   READ returns the current copied value immediately and queues a READ event;
+   WRITE validates permissions/length, queues an event and updates the value.
+   App handles reads by refreshing values before the next ATT read. There is no
+   deferred ATT reply or app-dependent write veto. Overflow rejects ATT access;
+   no screen-task waits or multi-attribute app transaction. */
+int lap_gatt_server_open(const lap_gatt_attribute_t *attributes, int count);
+int lap_gatt_server_set(int server, uint16_t id, const void *data, size_t len);
+/* One peer, notifications/indications <=20 bytes independent of negotiated MTU.
+   Requires subscription; returns EAGAIN before connected/subscribed, EBUSY if
+   queue/indication in flight. Accepted data also updates the cached value.
+   0 means queued; SENT reports host submission/indication acknowledgement. */
+int lap_gatt_notify(int server, uint16_t id, const void *data, size_t len, bool indicate);
+enum { LAP_PERIPHERAL_READY = 1, LAP_PERIPHERAL_CONNECTED, LAP_PERIPHERAL_DISCONNECTED,
+       LAP_PERIPHERAL_MTU, LAP_PERIPHERAL_BOND, LAP_PERIPHERAL_SUBSCRIBE,
+       LAP_PERIPHERAL_READ, LAP_PERIPHERAL_WRITE, LAP_PERIPHERAL_SENT,
+       LAP_PERIPHERAL_ADVERTISING };
+typedef struct {
+    uint16_t size, version;
+    uint16_t kind, id; /* app attribute ID; never a NimBLE pointer/handle */
+    int32_t error;
+    uint16_t payload_size, value; /* MTU; subscription bits notify=1,indicate=2; bond=1,encrypted=2,authenticated=4 */
+    uint32_t dropped;
+} lap_gatt_server_event_t;
+typedef struct {
+    uint16_t size, version;
+    int32_t state, error; /* LAP_OPERATION_PENDING/READY/DONE */
+    uint32_t dropped;
+    uint16_t mtu;
+    uint8_t advertising, connected, bonded, encrypted, authenticated;
+    int8_t tx_power_dbm;
+} lap_ble_peripheral_status_t;
+int lap_ble_peripheral_status(int handle, lap_ble_peripheral_status_t *out);
+/* 1 event, EAGAIN empty, ELIMIT leaves event queued when cap is too small. */
+int lap_gatt_server_next(int server, lap_gatt_server_event_t *out, void *data, size_t cap);
+void lap_gatt_server_close(int server); /* also closes beacon and HID sessions */
+enum { LAP_HID_KEYBOARD = 1, LAP_HID_MOUSE, LAP_HID_GAMEPAD };
+/* Built-in HOGP maps, report ID 1 (ID is NOT included in report payload):
+   keyboard=8 bytes: modifiers,reserved,6 USB key usages; mouse=4 bytes:
+   buttons(3 bits),signed x,y,wheel; gamepad=6 bytes: LE buttons16,signed x,y,z,rz.
+   Firmware owns bonding keys; Just Works encryption, no MITM claim or app key
+   export. Open builds HID service and connectable advertising (100ms, 0dBm).
+   Focus loss/hide queues a neutral report, so held controls release.
+   Peer output reports (e.g. keyboard LEDs) arrive as WRITE events. */
+int lap_hid_device_open(int kind, const char *name); /* UTF-8 name <=24 bytes */
+int lap_hid_device_send(int handle, const void *report, size_t len);
+void lap_hid_device_close(int handle);
+/* Copy the exact standard report map; returns byte count or ELIMIT/ENOTSUP. */
+int lap_hid_device_report_map(int kind, void *out, size_t cap);
+#endif /* LAP_API_26: Bluetooth peripheral roles */
+
+/* ---- API 2.6: services and worker DSP ----------------------------------- */
+#if defined(LAP_API_26)
+typedef struct {
+    uint16_t size, version; /* sizeof, 1 */
+    char id[32], name[16];
+    uint32_t shown, period_ms, memory_bytes, memory_limit, tick_budget_us;
+    uint32_t pool_bytes, pool_limit, handles, handle_limit;
+    lap_service_stats_t stats;
+} lap_service_info_t;
+/* Resident snapshots; list returns rows copied, query 1 found / 0 absent.
+   The build selects 2 services on Nano, 3 on P4 by default, plus a foreground
+   app. Each app retains its 4 MiB heap/cache cap and bounded private handle
+   tables: TCP 6, HTTP 2, UDP 4, mDNS 2, BLE scan/client 1 each, mic 1,
+   mixer 3, WAV 2, IQ/channel/decoder 1 each, packet/scan/TX/record 1 each,
+   cached files 4, streams/scopes/storage jobs 4 each, IPC subscriptions 4.
+   memory_bytes includes tracked heap/cache. pool_bytes accounts firmware
+   handle tables, copied queues and live radio/audio buffers separately
+   (2 MiB ceiling per slot); handles reports currently published handles.
+   Exclusive hardware returns busy; opening a screen never steals a lease.
+   No service auto-starts at boot. Stop residents from SETTINGS > SERVICES. */
+int lap_service_list(lap_service_info_t *out, int max);
+int lap_service_query(const char *app_id, lap_service_info_t *out);
+int lap_service_limit(void);
+
+#define LAP_DSP_OUTPUT_MAX 192u
+enum { LAP_DSP_RUNNING=1, LAP_DSP_STOPPED=2, LAP_DSP_OVERRUN=3, LAP_DSP_FAILED=4 };
+/* Pure computation on a PRIVATE WORKER task, never the screen/capture task.
+   No SDK calls, blocking, locks, heap allocation or firmware access here.
+   Return output bytes (0..cap), negative to discard. Input and output are
+   borrowed for this block. State must be image/tracked allocation storage;
+   only the worker may mutate it while attached. An overrun terminates the
+   worker and disables this hook: state may be partial and must be reset.
+   Budget is conservative elapsed time, including scheduling, rounded up to
+   a scheduler tick on device; no callback may run past that deadline.
+   Native machine code is trusted; this is scheduling isolation, not a sandbox. */
+typedef int (*lap_dsp_process_t)(const int16_t *iq, uint32_t pairs,
+    const lap_iq_meta2_t *meta, void *state, void *output, uint32_t cap);
+typedef struct {
+    uint16_t size, version; /* sizeof, 1 */
+    uint32_t budget_us; /* 1000..10000; default 2000 */
+    lap_dsp_process_t process;
+    void *state;
+    uint32_t state_bytes; /* 0 permits NULL */
+} lap_dsp_config_t;
+typedef struct {
+    uint16_t size, version;
+    uint32_t state, blocks, dropped, overruns, last_us, worst_us, queued;
+    int32_t error; /* asynchronous admission failure, e.g. LAP_RX_ENOMEM */
+} lap_dsp_status_t;
+typedef struct {
+    uint16_t size, version;
+    uint32_t bytes, dropped;
+    lap_iq_meta2_t iq;
+} lap_dsp_result_t;
+/* One hook per instance, on its own channel. Two copied input blocks and
+   eight output messages; overflow drops newest and increments dropped.
+   Channel reading remains available independently. Start returns a positive
+   handle; errors use LAP_RX_*. next returns 1 result / 0 empty; too-small
+   output returns ERANGE without consuming. status/next copy to callback
+   stack or owned buffers. Close is async: retain state until STOPPED,
+   OVERRUN or FAILED is reported. Channel close/unload cancels and joins the worker
+   before image/state memory is freed. Stale/foreign handles are rejected. */
+int lap_rx_dsp_start(int channel, const lap_dsp_config_t *config);
+int lap_rx_dsp_status(int worker, lap_dsp_status_t *out);
+int lap_rx_dsp_next(int worker, lap_dsp_result_t *out, void *data, uint32_t cap);
+void lap_rx_dsp_close(int worker);
+#endif /* API 2.6 services and worker DSP */
 #ifdef __cplusplus
 }
 #endif

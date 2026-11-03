@@ -8,6 +8,7 @@
 
 #include "ls_tui_ui.h"
 #include "ls_textpack.h"
+#include "ls_i18n.h"
 
 #define A(fg, bg) TUI_ATTR((fg), (bg))
 
@@ -249,10 +250,54 @@ static void draw_text(tui_surface *sf, tui_rect box)
     }
 }
 
+/* The desk form: the PC's keyboard types, so a field and OK and CANCEL,
+   in a small dialog over the app. Secret text shows as stars with a SHOW
+   key, as the touch form's reveal does. */
+static void draw_compact(tui_surface *sf, tui_rect full)
+{
+    memset(s_hit, 0, sizeof(s_hit));
+    int w = s_max + 6;
+    if (w < 52) w = 52;
+    if (w > full.w - 2) w = full.w - 2;
+    if (w < 30 || full.h < 7) return;
+    const tui_rect box = tui_rect_make(full.x + (full.w - w) / 2, full.y + (full.h - 7) / 3, w, 7);
+    ls_dialog1_frame(sf, box, s_title, TUI_CYAN);
+    /* Only the tail the field shows, so the UI stack carries 96 bytes
+       rather than the whole buffer. */
+    char shown[96];
+    int fw = box.w - 4;
+    if (fw > (int)sizeof(shown) - 1) fw = (int)sizeof(shown) - 1;
+    const int keep = fw - 3;
+    const int from = s_len > keep ? s_len - keep : 0;
+    snprintf(shown, sizeof(shown), "%s", s_buf + from);
+    if (s_secret && !s_reveal) memset(shown, '*', strlen(shown));
+    ls_field1_draw(sf, box, box.x + 2, box.y + 2, fw, shown, true, TUI_WHITE | TUI_BRIGHT);
+    char count[24];
+    snprintf(count, sizeof(count), "%d/%d", s_len, s_max);
+    tui_put_str(sf, box, box.x + 2, box.y + 3, count, A(DIM_FG, TUI_BLACK));
+    tui_put_str(sf, box, box.x + 4 + (int)strlen(count), box.y + 3,
+                ls_tr("ENTER accepts, ESC cancels"), A(DIM_FG, TUI_BLACK));
+    const int y = box.y + box.h - 2;
+    const ls_btn_t ok = { .label = "OK", .on = true }, cancel = { .label = "CANCEL" },
+                   show = { .label = s_reveal ? "HIDE" : "SHOW" };
+    const int cw = ls_key1_width(&cancel), ow = ls_key1_width(&ok);
+    const int cx = box.x + box.w - 2 - cw, ox = cx - 1 - ow;
+    ls_key1_draw(sf, box, ox, y, &ok, false);
+    ls_key1_draw(sf, box, cx, y, &cancel, false);
+    s_hit[SLOT_OK] = tui_rect_make(ox, y, ow, 1);
+    s_hit[SLOT_CANCEL] = tui_rect_make(cx, y, cw, 1);
+    if (s_secret) {
+        const int sw = ls_key1_draw(sf, box, box.x + 2, y, &show, false);
+        s_hit[SLOT_REVEAL] = tui_rect_make(box.x + 2, y, sw, 1);
+    }
+    s_hit_n = N_SLOTS;
+}
+
 void ls_keyboard_draw(tui_surface *sf, tui_rect full)
 {
     if (!s_open) return;
     s_blink++;
+    if (ls_tui_compact()) { draw_compact(sf, full); return; }
     if (full.w < 20 || full.h < 8) return;
 
     s_hit_n = 0;

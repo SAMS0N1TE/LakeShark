@@ -1,4 +1,4 @@
-/* Native SD app host. One shared screen, one resident ELF, no layout policy.
+/* Native SD app host. One shared screen, bounded resident ELFs, no layout policy.
  * Callbacks run ONLY on the existing 6144-byte TUI task stack (never an ISR).
  * ls_lap_stack_unused() reports the minimum sampled FreeRTOS headroom in bytes.
  * Budget apps to <=1024 bytes of callback-local stack until measured on board;

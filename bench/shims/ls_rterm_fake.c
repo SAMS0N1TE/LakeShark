@@ -67,3 +67,6 @@ bool ls_rterm_ssh_port_set(int port)
 void ls_rterm_ssh_learn(bool on) { s_learn = on; }
 
 bool ls_rterm_ssh_keys_clear(void) { s_keys = 0; return true; }
+
+/* No feed in the simulator: the line goes to the console. */
+void ls_rterm_viewer_line(const char *line) { printf("%s\n", line); }

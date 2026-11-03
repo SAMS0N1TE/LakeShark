@@ -5,6 +5,8 @@
 
 #include "tui_cyr.h"
 
+tui_stroke_hook_fn tui_stroke_hook;
+
 /* --- geometry --- */
 
 tui_rect tui_rect_make(int x, int y, int w, int h) {
@@ -56,6 +58,8 @@ tui_rect tui_surface_rect(const tui_surface *s) {
 }
 
 void tui_frame_begin(tui_surface *s) {
+    tui_stroke_hook_fn hook=__atomic_load_n(&tui_stroke_hook,__ATOMIC_ACQUIRE);
+    if (hook) hook(0, s, tui_surface_rect(s), 0, 0, 0, 0, 0, 0, 0);
     tui_cell blank = {' ', TUI_DEFAULT_ATTR};
     int n = s->w * s->h;
     for (int i = 0; i < n; i++)

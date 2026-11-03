@@ -49,6 +49,11 @@ static void err_names(uint16_t errors, char *out, size_t n);
    lr20xx_set_tx reads both and nothing else decides. */
 static uint32_t s_rf_hz;
 static bool     s_pa_lf;
+/* lr2021_coproc.inc's program is in PRAM and active since the last reset:
+   it is not uploaded again (an active program's write window moves). */
+static bool     s_cop_loaded;
+/* The sweep runs on the chip; it is receiving there; off for this boot. */
+static bool     s_cop_scan, s_cop_scan_rx, s_cop_off;
 /* A fixed receive gain step is in the part (SetAgcGain with a nonzero step), so
    whoever wants the AGC back knows it has to say so. A reset clears it. */
 static bool     s_agc_forced;
@@ -85,7 +90,7 @@ uint16_t lr20xx_calib_fe_word(uint32_t hz, lr20xx_rx_path_t path)
 
 float lr20xx_rssi_dbm(uint8_t b0, uint8_t b1)
 {
-    const unsigned raw = ((unsigned)b0 << 1) | ((unsigned)(b1 >> 7) & 1u);
+    const unsigned raw = ((unsigned)b0 << 1) | ((unsigned)b1 & 1u);
     return -(float)raw / 2.0f;
 }
 
@@ -542,6 +547,7 @@ static esp_err_t initialize_locked(void)
         s_xtal_fallback = true;
         ESP_LOGW(TAG, "TCXO errors 0x%04X, using xtal for this boot", (unsigned)errors);
         err = ls_lora_hw_reset();
+        s_cop_loaded = false;
         s_reset_seen = true;
         s_agc_forced = false;
         if (err == ESP_OK) err = initialize_locked();
@@ -1993,12 +1999,13 @@ static esp_err_t recover_locked(const char *why)
     if (s_recovered && now - s_recover_at_us < s_recover_gap_us) return ESP_ERR_INVALID_STATE;
     s_recovered = true;
     s_recover_at_us = now;
-    if (!strcmp(why, "IQ stream finished"))
+    if (!strcmp(why, "IQ stream finished") || !strncmp(why, "chip ", 5))
         ESP_LOGD(TAG, "%s: resetting the part (last stat 0x%04X)", why, (unsigned)s_stat);
     else
         ESP_LOGW(TAG, "%s: resetting the part (last stat 0x%04X)", why, (unsigned)s_stat);
 
     esp_err_t err = ls_lora_hw_reset();
+    s_cop_loaded = false;
     lr20xx_info_t info;
     for (int i = 0; err == ESP_OK && i < 5; i++) {
         err = probe_locked(&info);
@@ -2828,6 +2835,10 @@ static esp_err_t lr_fsk_retune(uint32_t hz)
 /* ---- the RSSI sweep ------------------------------------------------------- */
 
 static bool lr_scanning(void) { return lr.scanning; }
+/* The sweep on the radio's own CPU (lr2021_coproc.inc). */
+static void cop_scan_arm_locked(void);
+static void cop_scan_stop_locked(void);
+static int cop_scan_pass_locked(float *dbm, int n, bool *row_done);
 
 /* GFSK receive on the band, planned for `n` bins on this part's own filter
    table (lr20xx_scan_plan), so a wide band takes a filter up to 3 MHz and
@@ -2855,6 +2866,7 @@ static esp_err_t scan_configure(int n)
         if (err == ESP_OK) err = lr20xx_dcdc_workaround_set();
     } while (retry_gate(tries++, err, "sweep setup"));
     if (err == ESP_OK) s_reset_seen = false;
+    if (err == ESP_OK) cop_scan_arm_locked();
     return err;
 }
 
@@ -2914,6 +2926,9 @@ static int lr_scan_pass(float *dbm, int n, bool *row_done)
     }
     /* A bin count the plan was not made for is planned again, once. */
     if (n != lr.scan_plan_n && scan_configure(n) != ESP_OK) return 0;
+    /* Turned off mid-sweep (lora lrchip scan off): the reset, then a host plan. */
+    if (s_cop_scan && s_cop_off) { cop_scan_stop_locked(); lr.scan_plan_n = 0; return 0; }
+    if (s_cop_scan) return cop_scan_pass_locked(dbm, n, row_done);
 
     const int looks = lr.scan_plan.looks > 0 ? lr.scan_plan.looks : 1;
     const int k = (lr.scan_look >= 0 && lr.scan_look < looks) ? lr.scan_look : 0;
@@ -3003,6 +3018,7 @@ static esp_err_t lr_scan_end(void)
     if (!lr.scanning) return ESP_OK;
     lr.scanning = false;
     lr.scan_plan_n = 0;          /* the next sweep plans afresh */
+    cop_scan_stop_locked();      /* NRESET clears the chip program */
     if (!lr.cfg_valid) return ESP_ERR_INVALID_STATE;
     return restore_lora(lr.restore_rx);
 }
@@ -4704,6 +4720,7 @@ static int lrble_command(int argc, char **argv)
 }
 
 #include "lr2021_tx_upload.inc"
+#include "lr2021_coproc.inc"
 
 /* lr.cfg programmed again after something the frames depend on changed
    (the clock, the regulator, the frequency correction), receiving again if it
@@ -4861,6 +4878,9 @@ int lr20xx_clock_command(int argc, char **argv)
     if (argc > 1 && !strcmp(argv[1], "lrfifo-check")) return checked_fifo_probe_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrmem")) return memory_probe_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrproof")) return pram_proof_command(argc);
+    if (argc > 1 && !strcmp(argv[1], "lrchip")) return cop_command(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "lrscan")) return lrscan_command(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "lrchipddc")) return lrddc_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrcap")) return capture_probe_command(argc);
     const bool clock = argc > 1 && !strcmp(argv[1], "lrclk");
     const bool reg = argc > 1 && !strcmp(argv[1], "lrreg");
@@ -4994,6 +5014,35 @@ esp_err_t lr20xx_stream(const lr20xx_iq_config_t *config, unsigned duration_ms,
     return ESP_ERR_NOT_SUPPORTED;
 }
 bool lr20xx_stream_source2_active(void) { return false; }
+esp_err_t lr20xx_chip_spectrum(const lr20xx_chip_spec_cfg_t *cfg, lr20xx_chip_spec_sink_t sink,
+                               void *ctx, lr20xx_chip_result_t *out)
+{
+    (void)cfg; (void)sink; (void)ctx;
+    if (out) { memset(out, 0, sizeof(*out)); out->error = ESP_ERR_NOT_SUPPORTED; }
+    return ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t lr20xx_chip_sweep(const lr20xx_chip_sweep_cfg_t *cfg, float *dbm, lr20xx_chip_result_t *out)
+{
+    (void)cfg; (void)dbm;
+    if (out) { memset(out, 0, sizeof(*out)); out->error = ESP_ERR_NOT_SUPPORTED; }
+    return ESP_ERR_NOT_SUPPORTED;
+}
+void lr20xx_chip_stats(lr20xx_chip_stats_t *out) { if (out) memset(out, 0, sizeof(*out)); }
+esp_err_t lr20xx_chip_ddc_live(const lr20xx_chip_ddc_cfg_t *cfg, lr20xx_chip_ddc_sink_t sink, void *ctx,
+                               lr20xx_chip_ddc_result_t *out)
+{
+    (void)cfg; (void)sink; (void)ctx;
+    if (out) { memset(out, 0, sizeof(*out)); out->error = ESP_ERR_NOT_SUPPORTED; }
+    return ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t lr20xx_chip_lora_scan(const lr20xx_chip_scan_cfg_t *cfg, lr20xx_chip_scan_sink_t sink, void *ctx,
+                                lr20xx_chip_scan_stats_t *stats, lr20xx_chip_result_t *out)
+{
+    (void)cfg; (void)sink; (void)ctx;
+    if (stats) memset(stats, 0, sizeof(*stats));
+    if (out) { memset(out, 0, sizeof(*out)); out->error = ESP_ERR_NOT_SUPPORTED; }
+    return ESP_ERR_NOT_SUPPORTED;
+}
 esp_err_t lr20xx_stream_source2_live(lr20xx_iq_sink_t sink, void *context,
                                     lr20xx_stream_result_t *result)
 {

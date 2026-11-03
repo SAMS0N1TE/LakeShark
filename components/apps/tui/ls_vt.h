@@ -52,6 +52,13 @@ void ls_vt_sample_image(tui_rect cells, int cols, const uint16_t *src, int w, in
                           int x0, int y0, uint32_t *img_top, uint32_t *img_bot);
 
 typedef void (*ls_vt_out_fn)(void *ctx, const char *bytes, size_t n);
+/* desk1 text payloads are hex, independent of terminal escape parsing. */
+static inline bool ls_vt_hex_encode(const uint8_t *bytes, size_t n, char *out, size_t cap) {
+    static const char hex[]="0123456789abcdef";
+    if (!out || !cap || n>(cap-1)/2 || (n&&!bytes)) return false;
+    for(size_t i=0;i<n;i++) { out[i*2]=hex[bytes[i]>>4]; out[i*2+1]=hex[bytes[i]&15]; }
+    out[n*2]=0; return true;
+}
 
 /* What one terminal shows, so a frame sends only the cells that changed.
 
@@ -129,13 +136,16 @@ size_t ls_vt_telnet_strip(ls_vt_telnet *t, uint8_t *b, size_t n);
    then sends LS_VT_EV_DRAG while the button moves held and LS_VT_EV_UP when
    it lets go, so a client that sends those can steer a drag, not just tap. */
 enum { LS_VT_EV_KEY = 1, LS_VT_EV_TAP, LS_VT_EV_QUIT, LS_VT_EV_REDRAW, LS_VT_EV_SIZE,
-       LS_VT_EV_DRAG, LS_VT_EV_UP };
+       LS_VT_EV_DRAG, LS_VT_EV_UP, LS_VT_EV_POINTER, LS_VT_EV_FOCUS };
 
 typedef struct {
     int type;
     int key;                        /* ls_tk_t for LS_VT_EV_KEY */
     char ch;                        /* the character for LS_TK_CHAR */
     bool wheel;                     /* the key is the mouse wheel's */
+    uint8_t button, buttons, mods, pointer_kind; /* LS_IEV_* rich pointer */
+    int16_t wheel_steps;
+    bool focused;
     int col, row;                   /* LS_VT_EV_TAP, 0-based cells; LS_VT_EV_SIZE, the size */
 } ls_vt_event;
 
@@ -143,6 +153,7 @@ typedef struct {
     uint8_t buf[32];
     int n;
     uint8_t last;                   /* the byte before, so CR LF is one Enter */
+    uint8_t buttons;                /* independent SGR mouse buttons */
     bool want_size;                 /* a cursor report is due (ls_vt_ask_size), not F3 */
 } ls_vt_input;
 

@@ -77,7 +77,7 @@ static const ls_radio_driver_ops_t s_fake_ops = {
     .cancel_read = fake_cancel,
 };
 
-static const ls_radio_range_t s_freqs[] = {{24000000, 1766000000}};
+static const ls_radio_range_t s_freqs[] = {{24000000, 6000000000ull}};
 static const ls_radio_range_t s_rates[] = {{256000, 256000}};
 
 static void register_fake(const char *id, fake_iq_t *fake)
@@ -300,4 +300,24 @@ LS_CASE(fail_detach_and_reacquire_preserve_last_success_until_new_success)
 
     ls_radio_release(session);
     LS_EQ_INT(ls_radio_endpoint_unregister(id), LS_RADIO_OK);
+}
+
+LS_CASE(usb_tuning_keeps_64_bits_and_explicit_gain_mode) {
+    fake_iq_t fake = {0}; const char *id="test.iq64";
+    register_fake(id,&fake); ls_radio_session_t *session=acquire_fake(id);
+    ls_iq_control_t control; ls_iq_control_reset(&control);
+    ls_iq_control_set_initial(&control,5800000123ull,0,256000);
+    ls_iq_control_request_tune(&control,5700000123ull,false);
+    ls_iq_control_request_t request;
+    LS_CHECK(ls_iq_control_take(&control,&request));
+    LS_CHECK(request.center_hz==5700000123ull);
+    LS_EQ_INT(ls_iq_control_apply_tune(&control,session,&request),LS_RADIO_OK);
+    ls_iq_control_status_t status; ls_iq_control_status(&control,&status);
+    LS_CHECK(status.effective_center_hz==5700000000ull);
+    ls_iq_control_request_gain_mode(&control,0,false);
+    LS_CHECK(ls_iq_control_take(&control,&request) && !request.gain_auto);
+    ls_iq_control_request_gain_mode(&control,INT32_MIN,true);
+    LS_CHECK(ls_iq_control_take(&control,&request) && request.gain_auto);
+    LS_EQ_INT(ls_iq_control_apply_gain(&control,session,&request),LS_RADIO_OK);
+    ls_radio_release(session); LS_EQ_INT(ls_radio_endpoint_unregister(id),LS_RADIO_OK);
 }

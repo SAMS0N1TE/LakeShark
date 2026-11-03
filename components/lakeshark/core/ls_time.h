@@ -63,6 +63,8 @@ void ls_time_note_set(void);
 /* What set the wall clock: 0 nothing yet, 1 the RTC at boot (or another
    local source through ls_time_note_set), 2 SNTP. */
 int ls_time_source(void);
+/* Monotonic time of last successful clock update, UINT32_MAX if unknown. */
+uint32_t ls_time_last_sync_ms(void);
 
 /* Test-only. Force the sync flag on or off. Not for firmware callers. */
 void ls_time_test_set_synced(bool synced);

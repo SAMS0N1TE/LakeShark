@@ -13,9 +13,17 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(sys._MEIPASS) / 'app-sdk' if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
+# Also support hosts loading lap.py with importlib rather than as a script.
+sys.path.insert(0, str(ROOT))
+from api_registry import version as sdk_api_version
 MAX_BYTES = 512 * 1024
 MAGIC = b'LSG1'
+
+def supports_api(major, minor):
+    current_major, current_minor = sdk_api_version(ROOT)
+    return (major == 1 and 0 <= minor <= 3) or (major == current_major and 0 <= minor <= current_minor)
+
 
 def signature_parts(data):
     if data[-4:] != MAGIC:
@@ -78,8 +86,8 @@ class Elf:
         if s[1]!=1 or s[5]!=228 or not s[2]&2 or s[4]%4: raise ValueError('invalid .lap_app')
         self.prefix=d[s[4]:s[4]+198]
         magic,major,minor=struct.unpack_from('<IHH',self.prefix)
-        # Firmware with API 2.2 runs 1.0-1.3 and 2.0-2.2 (ls_lap_fields_valid).
-        if magic!=0x3150414c or not ((major==1 and minor<=3) or (major==2 and minor<=2)): raise ValueError('unsupported LAP API')
+        # Accept the supported legacy family and current header minor versions.
+        if magic!=0x3150414c or not supports_api(major, minor): raise ValueError('unsupported LAP API')
         self.manifest={'magic':magic,'api_major':major,'api_minor':minor}
         off=8
         for name,n in [('id',32),('name',16),('sub',32),('version',16),('author',24)]:
@@ -89,7 +97,7 @@ class Elf:
         if not re.fullmatch(r'[a-z0-9_.-]{1,31}',self.manifest['id']) or self.manifest['id'] in ('.','..') or not self.manifest['name']:
             raise ValueError('invalid id/name')
         icon,color,flags,reserved=self.prefix[128:132]
-        known=(15 if minor>=1 else 7) if major>=2 else 1   # NETWORK; 2.0 adds RADIO_RX and RADIO_TX; 2.1 SERVICE
+        known=(63 if minor>=6 else 31 if minor>=4 else 15 if minor>=1 else 7) if major>=2 else 1   # NETWORK; 2.0 adds RADIO_RX and RADIO_TX; 2.1 SERVICE
         if icon>12 or color>15 or flags & ~known or (flags and major==1 and minor<3) or reserved: raise ValueError('invalid icon/color/reserved')
         art=[]
         for y in range(6):
@@ -127,8 +135,21 @@ class Elf:
                         raise ValueError('unsupported or text relocation')
                     if typ==3 and not self.mapped(addend,0): raise ValueError('bad relative addend')
 
+class CompilerMissing(ValueError):
+    pass
+
+
 def compiler():
+    override = os.environ.get('LAP_CC')
+    if override:
+        found = shutil.which(override)
+        if found: return Path(found)
+        raise CompilerMissing('App compiler not found at LAP_CC. Use Get the compiler in Studio or fix LAP_CC.')
     exe='riscv32-esp-elf-gcc'+('.exe' if os.name=='nt' else '')
+    if os.name == 'nt':
+        import toolchain
+        local = toolchain.compiler_path()
+        if local.is_file(): return local
     found=shutil.which(exe)
     if found: return Path(found)
     roots=[os.environ.get('IDF_TOOLS_PATH',''), str(Path.home()/'.espressif'), 'C:/Espressif']
@@ -136,31 +157,50 @@ def compiler():
     for root in filter(None,roots):
         choices+=glob.glob(root+'/tools/riscv32-esp-elf/*/riscv32-esp-elf/bin/'+exe)
         choices+=glob.glob(root+'/riscv32-esp-elf/*/riscv32-esp-elf/bin/'+exe)
-    if not choices: raise ValueError('IDF riscv32-esp-elf-gcc not found; set IDF_TOOLS_PATH')
+    if not choices: raise CompilerMissing('App compiler missing. Use Get the compiler in Studio (or set LAP_CC / IDF_TOOLS_PATH).')
     return Path(sorted(choices)[-1])
 
-def build(directory,output=None):
+class CompileError(ValueError):
+    """The compiler or linker said no; .output is what it printed."""
+    def __init__(self,output):
+        super().__init__('compile failed'); self.output=output
+
+def project_sources(directory):
+    """Shared source layout: top-level C plus src/, excluding build outputs."""
+    directory = Path(directory)
+    return sorted(directory.glob('*.c')) + sorted((directory/'src').rglob('*.c'))
+
+
+def build(directory,output=None,log=None):
+    """Compile every .c in directory into a .lap. The compiler's messages go
+    to stderr, or into the list `log` when one is given (lsdk parses them)."""
     directory=Path(directory).resolve(); cc=compiler()
-    sources=sorted(directory.glob('*.c'))
+    sources=project_sources(directory)
     if not sources: raise ValueError('no .c files in '+str(directory))
+    sources += sorted((ROOT/'lib').glob('*.c'))
     output=Path(output) if output else directory/(directory.name+'.lap')
     output.parent.mkdir(parents=True,exist_ok=True)
     fd,temp_name=tempfile.mkstemp(prefix=output.name+'.',suffix='.build',dir=output.parent)
     os.close(fd);temporary=Path(temp_name)
     args=['-march=rv32imafc_zicsr_zifencei','-mabi=ilp32f','-Os','-fPIC','-shared','-nostdlib','-nostartfiles','-e','lap_main',
           '-ffunction-sections','-fdata-sections','-Wl,--gc-sections','-fvisibility=hidden',
-          '-Wl,-Bsymbolic,--exclude-libs,ALL,-z,noexecstack,-z,max-page-size=4096', '-I'+str(ROOT/'include'),
+          '-Wl,-Bsymbolic,--exclude-libs,ALL,-z,noexecstack,-z,max-page-size=4096', '-I'+str(ROOT/'include'), '-I'+str(ROOT/'lib'), '-I'+str(directory),
           *map(str,sources),'-lgcc','-o',str(temporary)]
     wraps=['-Wl,--wrap='+n.removeprefix('__wrap_') for n in (ROOT/'exports.txt').read_text().splitlines() if n.startswith('__wrap_')]
     try:
-        subprocess.run([str(cc),*args,*wraps],check=True)
+        flags = {'creationflags': subprocess.CREATE_NO_WINDOW} if getattr(sys, 'frozen', False) and os.name == 'nt' else {}
+        r=subprocess.run([str(cc),*args,*wraps],capture_output=True,text=True,errors='replace',**flags)
+        said=r.stdout+r.stderr
+        if log is not None: log.append(said)
+        elif said: sys.stderr.write(said)
+        if r.returncode: raise CompileError(said)
         strip=cc.with_name(cc.name.replace('gcc','strip'))
-        subprocess.run([str(strip),'--strip-unneeded','--remove-section=.comment','--remove-section=.riscv.attributes',str(temporary)],check=True)
+        subprocess.run([str(strip),'--strip-unneeded','--remove-section=.comment','--remove-section=.riscv.attributes',str(temporary)],check=True,**flags)
         e=Elf(temporary.read_bytes());e.check(set((ROOT/'exports.txt').read_text().splitlines()))
         temporary.replace(output)
     finally:
         temporary.unlink(missing_ok=True)
-    print(f'{output}: {len(e.data)} bytes; {e.manifest["id"]} {e.manifest["version"]}')
+    if log is None: print(f'{output}: {len(e.data)} bytes; {e.manifest["id"]} {e.manifest["version"]}')
     return output
 
 def keygen(path):

@@ -60,6 +60,11 @@ const char *ls_wf_preset_none(ls_wf_src_t src);
    Saved by the LR FRONT END row (settings_set_lr_span), applied here. */
 void ls_wf_source_lr_span(bool on);
 bool ls_wf_source_lr_span_get(void);
+/* The standalone LR view from the radio's own FFT (on by default where the
+   firmware has it); off uses the I/Q session. A refused chip program turns
+   it off for the boot. */
+void ls_wf_source_lr_chip(bool on);
+bool ls_wf_source_lr_chip_get(void);
 /* App-specific narrow view; cleared on release. Zero follows the radio. */
 void ls_wf_source_view(uint32_t center_hz);
 void ls_wf_source_lora_band(uint32_t min_hz, uint32_t max_hz);

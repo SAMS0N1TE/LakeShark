@@ -165,6 +165,9 @@ void ls_board_hw_antenna_set_mmcx_tx(bool tx)
 bool ls_board_hw_antenna_mmcx_tx(void)
 {
 #ifdef LS_BOARD_XL_RF_SW_VCTL
+#if defined(LS_BOARD_LORA_CS_GPIO) && defined(LS_BOARD_LORA_BUSY_GPIO) && defined(LS_BOARD_XL_RADIO_RST)
+    if(ls_lora_fitted()==LS_LORA_CHIP_LR20XX)return false;
+#endif
     return s_mmcx_tx;
 #else
     return false;
@@ -187,7 +190,7 @@ void ls_board_hw_antenna_tx_counts(uint32_t *moved, uint32_t *returned)
 esp_err_t ls_board_hw_antenna_tx_begin(void)
 {
 #ifdef LS_BOARD_XL_RF_SW_VCTL
-    if (!s_ant_external || s_mmcx_tx || s_tx_moved) return ESP_OK;
+    if (!s_ant_external || ls_board_hw_antenna_mmcx_tx() || s_tx_moved) return ESP_OK;
     const esp_err_t err = ls_xl9535_out(LS_BOARD_XL_RF_SW_VCTL, true);
     if (err == ESP_OK) { s_tx_moved = true; s_tx_moves++; }
     else ESP_LOGW(TAG, "antenna: could not move a transmit off MMCX1, not sent");

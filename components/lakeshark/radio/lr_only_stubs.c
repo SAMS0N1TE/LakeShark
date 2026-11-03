@@ -58,3 +58,11 @@ const char *usb_port_cycle_result_name(usb_port_cycle_result_t result)
     (void)result;
     return "no USB host in LakeShark LR";
 }
+
+/* API 2.6 HackRF TX: one binary also works without USB hardware. */
+int ls_hackrf_tx_start(uint64_t hz,uint32_t rate,unsigned vga,bool amp,int power,const void *iq,size_t bytes) {
+    (void)hz;(void)rate;(void)vga;(void)amp;(void)power;(void)iq;(void)bytes;return -5;
+}
+int ls_hackrf_tx_poll(void) { return 1; }
+void ls_hackrf_tx_cancel(void) {}
+void ls_hackrf_tx_limits(unsigned vga,bool amp) { (void)vga;(void)amp; }

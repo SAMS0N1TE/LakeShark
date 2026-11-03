@@ -42,7 +42,7 @@ static bool p25_lr_iq_wanted(void)
 static uint32_t s_lr_wide_refused_hz;
 static bool p25_lr_wide_now(void)
 {
-    return p25_lr_wide_pick(p25_lr_wide_pref(), lr_wf_wide_on()) &&
+    return p25_lr_wide_pick(p25_lr_wide_pref(), lr_wf_shared_wide()) &&
            s_tune_freq_hz != s_lr_wide_refused_hz;
 }
 /* A hop (first start or retune) is timed from the request to the first
@@ -164,7 +164,9 @@ static void p25_lr_wide_session(p25_lr_wide_sink_t *k, p25_lr_feed_t *f, uint32_
         ls_iq_control_note_tune_result(&s_radio_control, hz, LS_RADIO_OK, hz);
         p25_lr_generation_begin();
         if (*generation > 1) P25.lr_iq_gaps++;
-        if (!p25_lr_frontend_init(f->frontend, 0, false)) break;
+        /* Filtered: the wide stream carries the whole 125k, neighbouring
+           channels too; narrow gets the radio's own channel filter. */
+        if (!p25_lr_frontend_init(f->frontend, 0, true)) break;
         f->expected = 0;
         bool bad = false, hop = false, ended = false;
         while (p25_lr_iq_wanted() && p25_lr_wide_now()) {

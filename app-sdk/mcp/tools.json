@@ -1,0 +1,488 @@
+{
+  "tools": [
+    {
+      "name": "sdk_docs",
+      "description": "Search README sections and API signatures/doc comments (case-insensitive words).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "sdk_api",
+      "description": "Exact, case-sensitive API symbol signature and documentation from SDK headers.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "symbol"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "new_app",
+      "description": "Create an app from an SDK template inside the workspace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "App folder name directly inside the configured workspace."
+          },
+          "template": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "enum": [
+              "blank",
+              "radio",
+              "dots",
+              "3d",
+              "service"
+            ],
+            "default": "blank"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_apps",
+      "description": "List local workspace apps, metadata and relative files.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "read_file",
+      "description": "Read UTF-8 text inside an app folder (max 1 MiB).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "App folder name directly inside the configured workspace."
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "app",
+          "path"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "write_file",
+      "description": "Write UTF-8 text inside an app folder (max 1 MiB).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "App folder name directly inside the configured workspace."
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 1048576
+          }
+        },
+        "required": [
+          "app",
+          "path",
+          "content"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "build",
+      "description": "Build the board .lap; return ok, problems {file,line,col,severity,message}, lap, size and output.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "App folder name directly inside the configured workspace."
+          }
+        },
+        "required": [
+          "app"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "sim_run",
+      "description": "Build and run lssim; return final PNG and log. Resets replay history.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "App folder name directly inside the configured workspace."
+          },
+          "frames": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000,
+            "default": 60
+          },
+          "script": {
+            "type": "string",
+            "maxLength": 16384
+          },
+          "orientation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "enum": [
+              "portrait",
+              "landscape"
+            ],
+            "default": "portrait"
+          }
+        },
+        "required": [
+          "app"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "sim_input",
+      "description": "Replay the prior sim plus keys/taps/tilt/swipe/rx; return new final PNG and log.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "App folder name directly inside the configured workspace."
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096,
+                  "enum": [
+                    "key",
+                    "tap",
+                    "down",
+                    "up",
+                    "tilt",
+                    "swipe",
+                    "rx",
+                    "release_all"
+                  ]
+                },
+                "frame": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2000,
+                  "description": "Sim only: frame offset from this input call, default sequential."
+                },
+                "key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                "x": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32767
+                },
+                "y": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32767
+                },
+                "col": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32767
+                },
+                "row": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32767
+                },
+                "ax": {
+                  "type": "number",
+                  "minimum": -100,
+                  "maximum": 100
+                },
+                "ay": {
+                  "type": "number",
+                  "minimum": -100,
+                  "maximum": 100
+                },
+                "az": {
+                  "type": "number",
+                  "minimum": -100,
+                  "maximum": 100
+                },
+                "direction": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096,
+                  "enum": [
+                    "U",
+                    "D",
+                    "L",
+                    "R"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100000
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "app",
+          "events"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "install",
+      "description": "Build then upload via desktop bridge if present, else serial; optionally open. Returns progress and result.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "App folder name directly inside the configured workspace."
+          },
+          "open": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "app"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "board_console",
+      "description": "Run one console line. confirm=true required for: format/formatting/mkfs/erase; sd rm/remove/delete; crumb clear / crash clear; flash/flashing/ota/update/bootloader; tx/transmit/send/PTT/arm, say, mesh dm/advert commands; cellreport target/test; app rm/remove/delete; reset/reboot/factory. No command separators or control characters.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "line": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "line"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "board_screen",
+      "description": "Capture tui png; validate byte count and CRC-32; return MCP PNG image.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "board_input",
+      "description": "Inject key/tap/down/up/swipe/release_all via term ev; return screenshot. Board cannot synthesize tilt or rx.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096,
+                  "enum": [
+                    "key",
+                    "tap",
+                    "down",
+                    "up",
+                    "tilt",
+                    "swipe",
+                    "rx",
+                    "release_all"
+                  ]
+                },
+                "frame": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2000,
+                  "description": "Sim only: frame offset from this input call, default sequential."
+                },
+                "key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                "x": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32767
+                },
+                "y": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32767
+                },
+                "col": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32767
+                },
+                "row": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32767
+                },
+                "ax": {
+                  "type": "number",
+                  "minimum": -100,
+                  "maximum": 100
+                },
+                "ay": {
+                  "type": "number",
+                  "minimum": -100,
+                  "maximum": 100
+                },
+                "az": {
+                  "type": "number",
+                  "minimum": -100,
+                  "maximum": 100
+                },
+                "direction": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096,
+                  "enum": [
+                    "U",
+                    "D",
+                    "L",
+                    "R"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100000
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "board_logs",
+      "description": "Last n available bridge lines, or up to 2 seconds of direct serial logs; optional [app ID] filter.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "App folder name directly inside the configured workspace."
+          },
+          "n": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 100
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

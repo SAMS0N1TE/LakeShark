@@ -44,6 +44,27 @@ void esp_log_write(esp_log_level_t level, const char *tag, const char *format, .
     va_end(ap);
 }
 
+#if CONFIG_LOG_VERSION_2
+static int piece(const char *format, ...)
+{
+    va_list ap;
+    va_start(ap, format);
+    const int n = s_vprintf(format, ap);
+    va_end(ap);
+    return n;
+}
+
+void ls_errlog_shim_log_v2(char letter, const char *tag, const char *format, ...)
+{
+    piece("%s%c %s%s%s%s%s", "", letter, "(", "0", ") ", tag, ": ");
+    va_list ap;
+    va_start(ap, format);
+    s_vprintf(format, ap);
+    va_end(ap);
+    piece("%s", "\n");
+}
+#endif
+
 static int count_of(const char *hay, const char *needle)
 {
     int n = 0;
@@ -185,6 +206,22 @@ LS_CASE(every_line_still_reaches_the_console_and_only_errors_and_warnings_are_ke
     char live[512];
     ls_errlog_live(live, sizeof(live));
     LS_EQ_STR(live, "W (0) p25: stream quiet 2 s\nE (0) usb: transfer failed 3\n");
+}
+
+LS_CASE(a_line_longer_than_the_copy_keeps_its_start_and_the_next_line_is_still_kept)
+{
+    nvs_wipe();
+    boot(ESP_RST_POWERON, false, "");
+    char long_msg[400];
+    memset(long_msg, 'x', sizeof(long_msg) - 1);
+    long_msg[sizeof(long_msg) - 1] = '\0';
+    ESP_LOGE("big", "%s", long_msg);
+    ESP_LOGW("next", "after %d", 1);
+    char live[512];
+    ls_errlog_live(live, sizeof(live));
+    LS_CHECK(strncmp(live, "E (0) big: xxx", 14) == 0);
+    LS_CHECK(strstr(live, "\nW (0) next: after 1\n") != NULL);
+    LS_EQ_INT(count_of(live, "\n"), 2);
 }
 
 LS_CASE(a_second_boot_never_hooks_the_log_to_itself)

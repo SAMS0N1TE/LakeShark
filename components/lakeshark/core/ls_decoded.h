@@ -54,7 +54,7 @@ typedef struct {
 } ls_decoded_t;
 
 #define LS_DECODED_RING 256u
-#define LS_DECODED_READERS 4
+#define LS_DECODED_READERS 8 /* four residents + foreground + firmware viewers */
 
 void ls_decoded_publish(const ls_decoded_t *d);
 

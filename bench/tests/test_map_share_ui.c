@@ -170,7 +170,13 @@ bool ls_tui_touch_held(int *sc,int *sr,int *c,int *r) {
     if(!finger) return false;
     *sc=finger_sc;*sr=finger_sr;*c=finger_c;*r=finger_r;return true;
 }
-void ls_map_pan(int dx,int dy) { panned_x+=dx;panned_y+=dy; }
+bool ls_tui_touch_px(int *x,int *y,int *x0,int *y0,int64_t *since) {
+    *x=finger_c*10+5;*y=finger_r*17+8;
+    *x0=finger_sc*10+5;*y0=finger_sr*17+8;*since=1;return finger;
+}
+int ls_map_tile_px(void) { return 256; }
+uint32_t ls_tui_touch_drags(int *a,int *b,int *c,int *d) { if(a)*a=0;if(b)*b=0;if(c)*c=0;if(d)*d=0;return 0; }
+void ls_map_pan(double dx,double dy) { panned_x+=dx;panned_y+=dy; }
 void ls_tui_geometry(int *cols,int *rows,int *cw,int *ch) {
     if(cols) *cols=52;
     if(rows) *rows=67;

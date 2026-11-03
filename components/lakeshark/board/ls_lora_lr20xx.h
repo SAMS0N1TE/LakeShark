@@ -204,7 +204,9 @@ lr20xx_rx_path_t lr20xx_path_for_hz(uint32_t hz);
 /* CalibFE frequency word: the 4 MHz step at or below `hz`, path in bit 15
    (datasheet 6.4.2: 900 MHz is 0x00E1 on LF, 0x80E1 on HF). 0 if out of range. */
 uint16_t lr20xx_calib_fe_word(uint32_t hz, lr20xx_rx_path_t path);
-/* GetRssiInst data bytes -> dBm: Rssi(8:0) = byte0<<1 | byte1>>7, dBm = -Rssi/2. */
+/* GetRssiInst data bytes -> dBm: Rssi(8:0) = byte0<<1 | (byte1 & 1), dBm = -Rssi/2.
+   Measured on ROM 1.24: byte 1 only reads 0 or 1, and the value equals
+   register 0xF301A8 bits 26:18 (lr2021-sdr research/agc-readback). */
 float    lr20xx_rssi_dbm(uint8_t b0, uint8_t b1);
 
 /* ---- frames -------------------------------------------------------------- */
@@ -351,6 +353,73 @@ esp_err_t lr20xx_stream_live(const lr20xx_iq_config_t *config, lr20xx_iq_block_s
                              void *context, lr20xx_stream_result_t *result);
 /* Advisory ownership flag: direct diagnostics must not wait on a live owner. */
 bool lr20xx_stream_source2_active(void);
+
+/* Programs on the LR2021's own CPU (lr2021-re by Alex Beal, lr2021_pram_image.h).
+ * Both calls hold the radio for their whole run, upload the program, and end
+ * with the reset and LoRa reprogram the I/Q stream ends with. ROM 1.24 only. */
+typedef struct {
+    uint32_t hz, bw_hz;      /* bw 31250 or 62500: the spectrum spans 4 x bw */
+    uint8_t nseg;            /* 256-sample segments averaged on the chip, 1..4 */
+    uint8_t gain;            /* 0 = the chip's AGC, 1..13 fixed */
+} lr20xx_chip_spec_cfg_t;
+/* One frame: 256 half-dB bytes in FFT order (bin 0 = DC, 128..255 negative).
+   Runs on the caller's task with the radio locked: copy and return. false ends. */
+typedef bool (*lr20xx_chip_spec_sink_t)(void *ctx, const uint8_t *half_db, uint32_t chip_us);
+typedef struct { uint32_t frames; esp_err_t error, recovery_error; } lr20xx_chip_result_t;
+esp_err_t lr20xx_chip_spectrum(const lr20xx_chip_spec_cfg_t *cfg, lr20xx_chip_spec_sink_t sink,
+                               void *ctx, lr20xx_chip_result_t *out);
+typedef struct {
+    uint32_t start_hz, step_hz, bw_hz;  /* bw: the receive filter, FSK table */
+    uint16_t points, dwell, avg;        /* dwell x16 chip loops per point (1000 ~ 1.4 ms) */
+} lr20xx_chip_sweep_cfg_t;
+/* RSSI in dBm for every point into dbm[]; out->frames is the points done. */
+esp_err_t lr20xx_chip_sweep(const lr20xx_chip_sweep_cfg_t *cfg, float *dbm, lr20xx_chip_result_t *out);
+/* Many LoRa channels on one radio (lr2021-re's scan.bin): the chip hops the
+ * table with CAD and parks on the first real preamble. The caller pauses the
+ * mesh first; the radio lock is free between polls. Up to 32 channels, one
+ * input (LF or HF), 28 at MeshCore's SF7/62.5k preamble in lr2021-re's runs. */
+typedef struct { uint32_t hz, bw_hz; uint8_t sf; } lr20xx_chip_chan_t;
+typedef struct {
+    const lr20xx_chip_chan_t *chans;
+    uint8_t n, sync_word, cad_symbols /* 1 or 2 */, cad_flags /* 0x10 preamble only, 0x08 fast */;
+    uint32_t poll_ms;
+} lr20xx_chip_scan_cfg_t;
+typedef struct {
+    uint8_t channel, len; bool crc_ok;
+    float rssi_dbm, snr_db; const uint8_t *data;
+} lr20xx_chip_packet_t;
+/* NULL packet: an idle tick, return false to end. Radio locked: copy and return. */
+typedef bool (*lr20xx_chip_scan_sink_t)(void *ctx, const lr20xx_chip_packet_t *pkt);
+typedef struct { uint32_t cads, falses, rx_lost, packets, passes; } lr20xx_chip_scan_stats_t;
+esp_err_t lr20xx_chip_lora_scan(const lr20xx_chip_scan_cfg_t *cfg, lr20xx_chip_scan_sink_t sink, void *ctx,
+                                lr20xx_chip_scan_stats_t *stats, lr20xx_chip_result_t *out);
+/* Down-conversion on the chip (ddc.bin): a raw route streams into the chip's
+ * RAM, the chip mixes by fs/4 and decimates (CIC), the host reads int8 pairs
+ * with the channel at 0 Hz. The channel is lo_hz + in_rate / 4, or with plus
+ * set lo_hz - in_rate / 4; the LO's DC leakage stays a quarter rate away. */
+typedef struct {
+    uint32_t lo_hz;
+    uint8_t code;      /* 0 source 0 at 576k; a source-1 divider code (0x19 1M, 0x21 800k) */
+    uint8_t dec, shift, gain; /* gain 0 = the chip's AGC */
+    bool plus;         /* the chip mixes up instead of down: channel at lo_hz - in_rate / 4 */
+    bool order3;       /* third-order CIC (sharper; gain dec^3, so shift 3 bits more) */
+    bool spin;         /* poll BUSY instead of sleeping on its interrupt (measurement) */
+} lr20xx_chip_ddc_cfg_t;
+/* Radio locked: copy and return. false ends the run. */
+typedef bool (*lr20xx_chip_ddc_sink_t)(void *ctx, const uint8_t *iq8, size_t bytes, uint64_t first_pair);
+typedef struct {
+    uint32_t in_rate_hz, out_pairs, laps, lapped_bytes, chip_overruns, chip_busy_max, timeouts;
+    uint32_t reads, early, read_us;    /* ring reads, ones that found the block unwritten, their time */
+    esp_err_t error, recovery_error;
+} lr20xx_chip_ddc_result_t;
+esp_err_t lr20xx_chip_ddc_live(const lr20xx_chip_ddc_cfg_t *cfg, lr20xx_chip_ddc_sink_t sink, void *ctx,
+                               lr20xx_chip_ddc_result_t *out);
+typedef struct {
+    uint32_t sessions, frames, sweeps, points, uploads, upload_fail;
+    uint32_t last_chip_us, max_chip_us, last_read_us;
+    esp_err_t last_error;
+} lr20xx_chip_stats_t;
+void lr20xx_chip_stats(lr20xx_chip_stats_t *out);
 
 esp_err_t lr20xx_set_standby(bool xosc);
 esp_err_t lr20xx_set_rf_frequency(uint32_t hz);

@@ -14,6 +14,7 @@ typedef struct {
     cc_decoded_cache *decoded_cache; /* optional; supplied and owned by caller */
     cc_cell *output_row;
     int scene_ready;
+    int pixel_reuse,pixel_dx,pixel_dy; /* saved borrows 10 bytes/cell as prior pixel state */
     int encoded; /* saved holds the cells of the current raster */
 } cc_renderer;
 int cc_renderer_init(cc_renderer *r,cc_arena *arena,int cols,int rows,cc_cell *saved);

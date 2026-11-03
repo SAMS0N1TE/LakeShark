@@ -114,10 +114,15 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
         sign(sf, body, body.x, y, crashed ? TUI_RED | TUI_BRIGHT : TUI_YELLOW | TUI_BRIGHT);
         const int tx = body.x + 10;
         tui_rect text = tui_rect_make(tx, y, body.x + body.w - tx, 6);
-        if (app && (app->manifest.flags & LS_LAP_GRANT_CAPS) && !ls_lap_grant_has(app, app->manifest.flags)) {
+        if (app && (app->manifest.flags & LAP_CAP_MIC) && !ls_lap_grant_has(app, app->manifest.flags)) {
+            tui_put_str(sf,text,tx,y,"ALLOW MICROPHONE ACCESS?",TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+            const char *const why[] = {"This app can capture microphone audio", "and record it in its own SD folder.",
+                "MIC ON stays visible while capture runs.", "Other declared access also applies.", "BACK denies access."};
+            lines(sf,body,y+6,why,5,TUI_ATTR(TUI_WHITE,TUI_BLACK));
+        } else if (app && (app->manifest.flags & LS_LAP_GRANT_CAPS) && !ls_lap_grant_has(app, app->manifest.flags)) {
             const bool send = app->manifest.flags & LAP_CAP_RADIO_TX, net = app->manifest.flags & LAP_CAP_NETWORK;
             const bool rx = app->manifest.flags & LAP_CAP_RADIO_RX, svc = app->manifest.flags & LAP_CAP_SERVICE;
-            tui_put_str(sf, text, tx, y, !rx ? "ALLOW BACKGROUND SERVICE?" : send ? "ALLOW RADIO RECEIVE + SEND?" : "ALLOW RADIO ACCESS?",
+            tui_put_str(sf, text, tx, y, !rx ? "ALLOW BACKGROUND SERVICE?" : "ALLOW RADIO ACCESS?",
                         TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
             if (crashed) tui_put_str(sf, text, tx, y + 1, LS_TEXT(t_ls_lap_ui_it_stopped_the_board, "It stopped the board last time"), TUI_ATTR(TUI_RED, TUI_BLACK));
             const char *const why[] = {

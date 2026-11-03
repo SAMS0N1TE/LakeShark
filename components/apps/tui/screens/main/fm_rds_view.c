@@ -94,8 +94,8 @@ static void draw_ps(tui_surface *sf, tui_rect a, int x, int y, const char *ps,
                 for (int dx = 0; dx < 2; ++dx)
                     if (ps_pixel(ps, cx * 2 + dx, cy * 4 + dy)) bits |= BIT[dy][dx];
             /* The unlit matrix shows faintly, as a VFD's grid does. */
-            if (bits) ls_braille_put(sf, a, x + cx, y + cy, (int16_t)(0x2800 | bits), at);
-            else if (unlit) ls_braille_put(sf, a, x + cx, y + cy, (int16_t)(0x2800 | 0x24), unlit);
+            if (bits) ls_braille_glyph_put(sf, a, x + cx, y + cy, (int16_t)(0x2800 | bits), at);
+            else if (unlit) ls_braille_glyph_put(sf, a, x + cx, y + cy, (int16_t)(0x2800 | 0x24), unlit);
         }
 }
 

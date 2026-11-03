@@ -21,6 +21,13 @@ extern "C" {
 extern const ls_radio_range_t ls_hackrf_frequency_ranges[1];
 extern const ls_radio_range_t ls_hackrf_sample_rate_ranges[1];
 
+/* Firmware TX backend. Caller owns immutable bounded bytes until poll completes.
+   These return LAP_RX/LAP_IO errors; cancel is atomic and bus-free. */
+int ls_hackrf_tx_start(uint64_t hz, uint32_t rate, unsigned vga, bool amp,
+                       int power_dbm, const void *iq, size_t bytes);
+int ls_hackrf_tx_poll(void);
+void ls_hackrf_tx_cancel(void);
+void ls_hackrf_tx_limits(unsigned vga, bool amp); /* owner console, persisted */
 void ls_hackrf_iq_s8_to_u8(uint8_t *samples, size_t bytes);
 void ls_hackrf_encode_frequency(uint64_t frequency_hz, uint8_t out[8]);
 void ls_hackrf_encode_sample_rate(uint32_t sample_rate_hz, uint8_t out[8]);

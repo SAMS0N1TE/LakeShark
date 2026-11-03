@@ -522,7 +522,7 @@ static void dot_char(tui_surface *sf, tui_rect clip, int x, int y,
           bits |= dy < 3 ? 1u << (dx * 3 + dy) : 1u << (6 + dx);
         }
       if (bits)
-        ls_braille_put(sf, clip, x + cx, y + cy, (int16_t)(0x2800 | bits), attr);
+        ls_braille_glyph_put(sf, clip, x + cx, y + cy, (int16_t)(0x2800 | bits), attr);
     }
 }
 int ls_calls_big_text(tui_surface *sf, tui_rect clip, int x, int y,

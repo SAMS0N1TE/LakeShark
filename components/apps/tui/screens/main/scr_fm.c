@@ -11,6 +11,7 @@
 #include "../../ls_i18n.h"
 #include "../../ls_radio_panel.h"
 #include "../../ls_numpad.h"
+#include "../../ls_box.h"
 #include "../../ls_options.h"
 #include "../../ls_rffe_ui.h"
 #include "scan_engine.h"
@@ -1892,7 +1893,8 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
        `y` is the row right after the readouts, and the trace starts there
        rather than leaving it as a blank line nothing else claims. */
     int trace_h = meter_y - y - 1;
-    if (trace_h > 6) trace_h = 6;
+    /* The desk's glass is tall: the activity trace keeps more history rows. */
+    if (trace_h > (ls_tui_compact() ? 16 : 6)) trace_h = ls_tui_compact() ? 16 : 6;
     /* The scope takes every row down to the meter: on HF it is the
        instrument, and landscape has only two to give it. */
     const int scope_h = meter_y - y > 7 ? 7 : meter_y - y;
@@ -2003,15 +2005,17 @@ static void draw_quick_controls(tui_surface *sf, tui_rect area)
     if (s_freq_keyboard) { draw_keypad(sf, area); return; }
     /* Five-row keys leave three filled rows between their rules. Shorten
        the lower cards' bar travel to pay for the portrait TUNE enclosure. */
-    const int tune_h = ls_tui_is_wide() ? 4 : 7;
+    const bool compact = ls_tui_compact();
+    const int tune_h = compact ? 1 : ls_tui_is_wide() ? 4 : 7;
     ls_radio_tune_draw(&s_tune, sf, tui_rect_make(area.x, area.y, area.w, tune_h));
-    area.y += tune_h + 1; area.h -= tune_h + 1;
+    area.y += tune_h + (compact ? 0 : 1); area.h -= tune_h + (compact ? 0 : 1);
     memset(s_freq_key, 0, sizeof(s_freq_key));
     memset(s_freq_action, 0, sizeof(s_freq_action));
 
-    if (ls_tui_is_wide()) {
+    if (ls_tui_is_wide() || compact) {
         int h = area.h;
         if (h > 9) h = 9;
+        if (compact) h = 1;            /* desk: three one-row sliders */
         const int y = area.y + (area.h - h) / 2;
         for (int i = 0; i < N_STEP; ++i) {
             const int x0 = area.x + area.w * i / N_STEP;
@@ -2246,6 +2250,31 @@ static void draw_spectrum_page(tui_surface *sf, tui_rect body)
                                  body.h - vfo_h));
 }
 
+/* The view tabs as they stand: which pages this mode has, and their names. */
+static int build_tabs(ls_btn_t *b)
+{
+    int nb = 0;
+    for (int i = 0; i < N_PAGES; i++) {
+        if (i == 1 && !pager_mode() && !own_page()) continue;   /* PAGER decodes or it hides */
+        b[nb] = PAGES[i];
+        if (i == 1 && own_page()) b[nb].label = own_tab();
+        if (i == 1 && FM.mode == FM_MODE_ACARS) b[nb].label = "MESSAGES";
+        if (i == 1 && FM.mode == FM_MODE_SAME) b[nb].label = "ALERTS";
+        if (i == 1 && FM.mode == FM_MODE_APRS) b[nb].label = "STATIONS";
+        if (i == 1 && FM.mode == FM_MODE_AIS) b[nb].label = "VESSELS";
+        b[nb].on = (i == s_page);
+        s_tab_page[nb] = i;
+        nb++;
+    }
+    return nb;
+}
+
+static int tab_bar_width(void)
+{
+    ls_btn_t b[N_PAGES];
+    return ls_btn_bar_width(b, build_tabs(b));
+}
+
 static void draw(tui_surface *sf, tui_rect area)
 {
     ls_rsel_fm_context(FM.freq_hz, fm_lr_mode(FM.mode));
@@ -2280,10 +2309,12 @@ static void draw(tui_surface *sf, tui_rect area)
         if (s_mode_requested) s_mode_requested = false;
         else s_page = mode_page(FM.mode);
     }
-    const bool wide = ls_tui_is_wide();
+    /* The desk lays out as landscape does, at one row a bar. */
+    const bool compact = ls_tui_compact();
+    const bool wide = ls_tui_is_wide() || compact;
     /* Three rows in portrait: a two row bar with one line of text has no middle row to put it on. */
 
-    const int bar_h = wide ? 3 : 5;
+    const int bar_h = compact ? 1 : wide ? 3 : 5;
     const int bar_pad = 0;
 
     /* Portrait puts the page bar at the bottom, where the thumb is.
@@ -2313,6 +2344,22 @@ static void draw(tui_surface *sf, tui_rect area)
        keeps volume/squelch here while the VFO groups its quick controls below. */
     if (!wide && body.h >= 40) control_rows = 8;
     if (wide && control_rows > 3) control_rows = 3;
+    /* Desk: the view tabs and the controls share one toolbar row when the
+       window is wide enough for both, else the controls take the next. */
+    int tabs_w = 0;
+    tui_rect ctl_rect = tui_rect_make(area.x, wide ? area.y + bar_h : area.y, area.w, control_rows);
+    if (compact) {
+        tabs_w = tab_bar_width();
+        if (area.w - tabs_w - 3 >= 100) {
+            control_rows = 0;
+            s_bar.w = tabs_w;
+            ctl_rect = tui_rect_make(area.x + tabs_w + 3, area.y, area.w - tabs_w - 3, 1);
+            ls_box_put(sf, area, area.x + tabs_w + 1, area.y, LS_BOX_V, TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
+        } else {
+            control_rows = 1;
+            ctl_rect = tui_rect_make(area.x, area.y + 1, area.w, 1);
+        }
+    }
     body.y += control_rows;
     body.h -= control_rows;
 
@@ -2330,9 +2377,11 @@ static void draw(tui_surface *sf, tui_rect area)
     if (vfo) {
         /* Short landscape panes still need the deck: seven glass rows
            suffice when the meter stays in the frequency column. */
-        const int lcd_min  = wide ? 7 : 12;
-        const int deck_min = wide ? 11 : 23;
-        int lcd_h = wide ? (body.h < 19 ? 7 : 8)
+        const int lcd_min  = compact ? 5 : wide ? 7 : 12;
+        /* Desk: a tune row and a slider row, or the frequency field. */
+        const int deck_min = compact ? 2 : wide ? 11 : 23;
+        int lcd_h = compact ? body.h - deck_min
+                  : wide ? (body.h < 19 ? 7 : 8)
                          : (s_freq_keyboard ? 14 : body.h * 7 / 20);
         if (!wide && lcd_h > 24) lcd_h = 24;
         if (lcd_h > body.h) lcd_h = body.h;
@@ -2346,7 +2395,13 @@ static void draw(tui_surface *sf, tui_rect area)
             /* Landscape's view tabs sit at the top (see below); its deck is
                the actual bottom of the screen, so the toggle's corner comes
                out of the deck instead of the tab strip. */
-            if (wide) {
+            if (compact) {
+                /* The toggle is a key at the right end of the tune row. */
+                const int kw = 14;
+                if (s_quick_rect.w - kw >= 60)
+                    s_kbd_btn = tui_rect_make(s_quick_rect.x + s_quick_rect.w - kw,
+                                              s_quick_rect.y, kw, 1);
+            } else if (wide) {
                 int kw = s_quick_rect.w / 8;
                 if (kw < 10) kw = 10;
                 if (kw > 14) kw = 14;
@@ -2376,19 +2431,7 @@ static void draw(tui_surface *sf, tui_rect area)
     /* Draw navigation after the waterfall so each bar keeps a distinct hit
        slot and cannot steal the other's touch targets. */
     ls_btn_t b[N_PAGES];
-    int nb = 0;
-    for (int i = 0; i < N_PAGES; i++) {
-        if (i == 1 && !pager_mode() && !own_page()) continue;   /* PAGER decodes or it hides */
-        b[nb] = PAGES[i];
-        if (i == 1 && own_page()) b[nb].label = own_tab();
-        if (i == 1 && FM.mode == FM_MODE_ACARS) b[nb].label = "MESSAGES";
-        if (i == 1 && FM.mode == FM_MODE_SAME) b[nb].label = "ALERTS";
-        if (i == 1 && FM.mode == FM_MODE_APRS) b[nb].label = "STATIONS";
-        if (i == 1 && FM.mode == FM_MODE_AIS) b[nb].label = "VESSELS";
-        b[nb].on = (i == s_page);
-        s_tab_page[nb] = i;
-        nb++;
-    }
+    const int nb = build_tabs(b);
     s_tab_count = nb;
     tui_rect tabs_bar = s_bar;
     /* Portrait's view tabs already sit at the screen's bottom - the toggle's
@@ -2406,8 +2449,7 @@ static void draw(tui_surface *sf, tui_rect area)
     }
     ls_btn_bar_slot(sf, tabs_bar, b, nb, -1, LS_BTN_SLOT_QUICK);
     if (!wide && s_kbd_btn.h > 0) draw_kbd_toggle(sf, s_kbd_btn);
-    (void)draw_controls(sf, tui_rect_make(area.x, wide ? area.y + bar_h : area.y,
-                                          area.w, control_rows), vfo);
+    (void)draw_controls(sf, ctl_rect, vfo);
 }
 
 static void leave(void)

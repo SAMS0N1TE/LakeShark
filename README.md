@@ -26,6 +26,15 @@
 
 <p align="center"><strong>Raw I/Q capture · Live waterfalls · Software demodulation · Experimental I/Q transmission</strong></p>
 
+<p align="center"><strong>New in 2.20.0: the LR2021 runs programs on its own CPU.</strong><br>
+On-chip waterfall · On-chip down-conversion · Background LoRa scan · FM at half the CPU</p>
+
+<p align="center">
+  <img width="48%" alt="FALLS with the waterfall computed on the LR2021" src="docs/screenshots/tdp4/motion/falls-chip-20261103.gif">
+</p>
+
+<p align="center">Built on <a href="https://github.com/beala/lr2021-re">Alex Beal's lr2021-re</a>: he found the chip's own CPU, mapped its ROM and showed how to run code from its Patch RAM. <a href="https://beala.substack.com/p/your-node-doesnt-need-a-microcontroller">Read his write-up</a>.</p>
+
 <p align="center"><strong><a href="https://github.com/SAMS0N1TE/lr2021-sdr">Explore LR2021-SDR →</a></strong></p>
 <p align="center">
   <img src="assets/lakeshark-divider.png" alt="" width="900">
@@ -35,10 +44,10 @@
     <tr><th>Hardware</th><th>Use</th><th>Firmware</th></tr>
   </thead>
   <tbody>
-    <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>2.19.3 stable, 2.20.0-rc1 pre-release</td></tr>
-    <tr><td><strong>LILYGO T-Display P4 TFT</strong></td><td>Handheld</td><td>2.19.3 stable, 2.20.0-rc1 pre-release</td></tr>
-    <tr><td><strong>LILYGO T-Display P4, LR edition</strong> (LR2021 only)</td><td>Handheld</td><td>2.19.3 stable, 2.20.0-rc1 pre-release</td></tr>
-    <tr><td><strong>Waveshare ESP32-P4-NANO-DB</strong> (P4 rev 3, ESP32-C5)</td><td>LakeShark Desktop</td><td>2.20.0-rc1 pre-release</td></tr>
+    <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>2.20.0 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4 TFT</strong></td><td>Handheld</td><td>2.20.0 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4, LR edition</strong> (LR2021 only)</td><td>Handheld</td><td>2.20.0 stable</td></tr>
+    <tr><td><strong>Waveshare ESP32-P4-NANO-DB</strong> (P4 rev 3, ESP32-C5)</td><td>LakeShark Desktop</td><td>2.20.0 stable</td></tr>
     <tr><td><strong>Waveshare ESP32-P4-NANO</strong></td><td>Headless (serial, Flipper)</td><td>2.0.2 in the installer, newer from source</td></tr>
     <tr><td><strong>Waveshare Touch-LCD-4.3, Touch-LCD-4B, Smart 86 Box</strong></td><td>Touch screen</td><td>Up to 2.16.4, no longer updated</td></tr>
     <tr><td><strong>RTL-SDR Blog/Nooelec V3/V4</strong></td><td>USB SDR</td><td>All current builds except the LR edition</td></tr>
@@ -80,9 +89,9 @@
 
 <h2 align="center">LakeShark Desktop and Studio</h2>
 
-<p align="center"><strong>Run every app in windows on your PC. Write your own in minutes.</strong><br>New in the 2.20.0-rc1 pre-release.</p>
+<p align="center"><strong>Run every app in windows on your PC. Write your own in minutes.</strong><br>New in 2.20.0.</p>
 
-<h3 align="center"><a href="https://github.com/SAMS0N1TE/LakeShark/blob/release/2.20.0-rc1/app-sdk/README.md#your-first-app-in-5-minutes">Make your first app →</a></h3>
+<h3 align="center"><a href="https://github.com/SAMS0N1TE/LakeShark/blob/main/app-sdk/README.md#your-first-app-in-5-minutes">Make your first app →</a></h3>
 
 <p align="center">
   <a href="https://www.waveshare.com/esp32-p4-nano-wifi6-db.htm"><picture>
@@ -108,15 +117,15 @@ screen, mouse and keyboard over one USB cable.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.20.0-rc1">Try 2.20.0-rc1</a>
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.20.0">Get 2.20.0</a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/SAMS0N1TE/LakeShark/blob/release/2.20.0-rc1/app-sdk/README.md#your-first-app-in-5-minutes">Make your first app</a>
+  <a href="https://github.com/SAMS0N1TE/LakeShark/blob/main/app-sdk/README.md#your-first-app-in-5-minutes">Make your first app</a>
 </p>
 
 <h2 align="center">What's New</h2>
 
-<p align="center">Folders on HOME · DIGI: FT8, FT4 and WSPR · HF on the RTL-SDR and HackRF · METERS · P25 on the LR2021 with RAM to spare</p>
-<p align="center">Apps from the SD card · <a href="https://terminalbay.com/?m=lakeshark-apps">App store with one-click installs</a> · Live screen and files in the browser · Faster MAP picture</p>
+<p align="center">LR2021 on-chip waterfall and down-conversion · ON-CHIP in LR FRONT END · Smooth DETAIL waterfalls</p>
+<p align="center">LakeShark Desktop on the ESP32-P4-NANO · App SDK 2.6 and LakeShark Studio · <a href="https://terminalbay.com/?m=lakeshark-apps">App store with one-click installs</a></p>
 
 <p align="center">
   <img width="48%" alt="CARRIER, an early access space game" src="docs/screenshots/apps/carrier-0.4.gif">
@@ -124,7 +133,7 @@ screen, mouse and keyboard over one USB cable.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.19.0">Release notes</a>
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.20.0">Release notes</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/SAMS0N1TE/LakeShark/releases">All releases</a>
 </p>
@@ -161,7 +170,7 @@ screen, mouse and keyboard over one USB cable.</p>
 <img src="docs/screenshots/tdp4/motion/update.gif" width="32%" alt="UPDATE over WiFi" />
 <img src="docs/screenshots/tdp4/motion/map.gif" width="32%" alt="MAP following an aircraft" />
 <img src="docs/screenshots/tdp4/motion/compass.gif" width="32%" alt="COMPASS FIND" />
-<img src="docs/screenshots/tdp4/motion/falls-hackrf-20261014.gif" width="32%" alt="FALLS with HackRF signals" />
+<img src="docs/screenshots/tdp4/motion/falls-chip-20261103.gif" width="32%" alt="FALLS on the LR2021, computed on the chip" />
 <img src="docs/screenshots/tdp4/motion/subghz_scan2.gif" width="32%" alt="SUB-GHZ scan" />
 <img src="docs/screenshots/tdp4/motion/subghz-lr2021-hackrf-ook-decode-20261014.gif" width="32%" alt="SUB-GHZ decoding a Flipper" />
 <img src="docs/screenshots/tdp4/motion/fm-pager-20261025.gif" width="32%" alt="FM on a busy VHF channel" />
@@ -306,6 +315,10 @@ idf.py -B build_nano -D SDKCONFIG=build_nano/sdkconfig -D SDKCONFIG_DEFAULTS="sd
     </tr>
   </thead>
   <tbody>
+    <tr>
+      <td><a href="https://github.com/beala/lr2021-re">lr2021-re</a></td>
+      <td>Alex Beal. Found the LR2021's own CPU and how to run code in its Patch RAM, mapped its ROM, and wrote the programs LakeShark runs on the radio: the on-chip FFT waterfall, the band sweep and the LoRa scanner. Our on-chip down-conversion is built with his toolchain. <a href="https://beala.substack.com/p/your-node-doesnt-need-a-microcontroller">Write-up</a>. MIT</td>
+    </tr>
     <tr>
       <td><a href="https://osmocom.org/projects/rtl-sdr">rtl-sdr / librtlsdr</a></td>
       <td>Osmocom. RTL-SDR driver foundation. GPL-2.0+</td>

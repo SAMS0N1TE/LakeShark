@@ -1,0 +1,1 @@
+{"category":"radio","description":"API 2.6 app-owned OOK framing on a private budgeted DSP worker. Adapts to absent/busy/unsupported radios; script dspcost=20000 exercises overrun containment."}

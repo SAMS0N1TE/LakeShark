@@ -20,6 +20,11 @@ void ls_lap_kit_begin(void);
    opened, give the waterfall back, free the OPTIONS tables, and never call
    its callbacks again. */
 void ls_lap_kit_end(void);
+bool ls_lap_dialog_active(void);
+#if !defined(ESP_PLATFORM) || defined(LS_LAP_HOST_TEST)
+bool ls_lap_dialog_answer(const char *text, int index, bool cancel);
+#endif
+void ls_lap_dialog_forget(void); /* unloaded generation; UI already closed */
 #ifdef __cplusplus
 }
 #endif

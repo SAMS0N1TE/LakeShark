@@ -17,8 +17,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* OFF (narrow) at boot. FOLLOW takes the shared WIDE I/Q setting (LR FRONT
-   END, `lora lrwide`); ON pins wide. */
+/* OFF at boot keeps P25's own capture; FOLLOW takes the shared session's
+   choice (ON-CHIP or WIDE I/Q in LR FRONT END); ON pins wide. */
 typedef enum { P25_LR_WIDE_FOLLOW = 0, P25_LR_WIDE_ON, P25_LR_WIDE_OFF } p25_lr_wide_pref_t;
 void p25_lr_wide_set_pref(p25_lr_wide_pref_t pref);
 p25_lr_wide_pref_t p25_lr_wide_pref(void);

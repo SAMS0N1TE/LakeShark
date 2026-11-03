@@ -60,6 +60,11 @@ bool ls_globe_region(const char *code, char *name, int name_cap, float *lat, flo
    stippled and named. False until outlines are loaded. UI task only. */
 bool ls_globe_flat(tui_surface *sf, tui_rect a, double lat, double lon, unsigned z, double ppx, double ppy,
                    ls_globe_fill_fn fill, void *ctx);
+/* The same under a map that is moving: the last outlines shifted with a pan,
+   none during a zoom, a full draw once the view has been still 250 ms (only
+   when full_ok: false keeps it to cheap shifts, as while MAP opens). */
+bool ls_globe_flat_lazy(tui_surface *sf, tui_rect a, double lat, double lon, unsigned z, double ppx, double ppy, bool full_ok,
+                        ls_globe_fill_fn fill, void *ctx);
 /* The filled region (one on the card) whose centre is nearest lat/lon;
    `inside` (may be NULL) says lat/lon is within it. */
 bool ls_globe_nearest(double lat, double lon, ls_globe_fill_fn fill, void *ctx, char code[8], float *rlat, float *rlon,

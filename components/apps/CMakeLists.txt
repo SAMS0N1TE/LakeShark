@@ -15,6 +15,12 @@ if(NOT CONFIG_LS_BOARD_T_DISPLAY_P4 AND NOT CONFIG_LS_PANEL_RUNTIME)   # TILES a
     list(FILTER APPS_C_SRCS EXCLUDE REGEX "/scr_tiles.c$")
 endif()
 
+# The desktop shell (tui/desk) is for a board whose screen is the PC's: the
+# Nano's runtime panel. Every other build leaves it out.
+if(NOT CONFIG_LS_PANEL_RUNTIME)
+    list(FILTER APPS_C_SRCS EXCLUDE REGEX "/tui/desk/")
+endif()
+
 if(CONFIG_LS_LR2021_ONLY)
     list(FILTER APPS_C_SRCS EXCLUDE REGEX "/(scr_cell|ls_catch_ui)\.c$")
 else()
@@ -23,15 +29,15 @@ endif()
 
 # Glyph bitmaps packed where the zstd decoder is linked: these four are
 # compiled from a generated copy (below) instead of as they are.
-set(LS_FONT_PACKED ls_font_mono_14.c ls_font_mono_16.c ls_font_mono_24.c ls_font_cyr.c)
+set(LS_FONT_PACKED ls_font_mono_11.c ls_font_mono_13.c ls_font_mono_14.c ls_font_mono_16.c ls_font_mono_24.c ls_font_cyr.c)
 if(NOT CMAKE_BUILD_EARLY_EXPANSION AND (CONFIG_LS_BOARD_T_DISPLAY_P4 OR CONFIG_LS_PANEL_RUNTIME))
-    list(FILTER APPS_C_SRCS EXCLUDE REGEX "/ls_font_(mono_14|mono_16|mono_24|cyr)\\.c$")
+    list(FILTER APPS_C_SRCS EXCLUDE REGEX "/ls_font_(mono_11|mono_13|mono_14|mono_16|mono_24|cyr)\\.c$")
 endif()
 
 idf_component_register(
     SRCS ${APPS_C_SRCS} ${APPS_CPP_SRCS}
     INCLUDE_DIRS ${APPS_DIR}
-    REQUIRES ls_textpack espressif__elf_loader mbedtls console esp_timer libcarto pmtiles meshcore esp_event esp_wifi esp_netif lwip esp_hw_support esp_app_format nvs_flash esp_mm bsp_extra esp32_p4_wifi6_touch_lcd_4b espressif__esp_lcd_touch_gt911 esp_http_client esp_http_server json vfs lakeshark esp_adc esp_driver_jpeg chmorgan__esp-file-iterator chmorgan__esp-audio-player david-cermak__libssh)
+    REQUIRES espressif__mdns ls_textpack espressif__elf_loader mbedtls console esp_timer libcarto pmtiles meshcore esp_event esp_wifi esp_netif lwip esp_hw_support esp_app_format nvs_flash esp_mm bsp_extra esp32_p4_wifi6_touch_lcd_4b espressif__esp_lcd_touch_gt911 esp_http_client esp_http_server json vfs lakeshark esp_adc esp_driver_jpeg chmorgan__esp-file-iterator chmorgan__esp-audio-player david-cermak__libssh)
 
 target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_LIST_DIR}/../../data/drone-watch/defaults.json" TEXT)
 
@@ -94,6 +100,11 @@ add_custom_command(OUTPUT ${LS_WEB_PAGE}
     DEPENDS ${LS_WEB}/pack.py ${LS_WEB}/screen.html ${LS_WEB}/screen.js ${LS_WEB}/xterm-headless.js
     VERBATIM)
 target_add_binary_data(${COMPONENT_LIB} ${LS_WEB_PAGE} BINARY)
+if(CONFIG_LS_PANEL_RUNTIME)
+    foreach(asset lsfont.bin.gz dejavu-mono.woff2 dejavu-mono-bold.woff2)
+        target_add_binary_data(${COMPONENT_LIB} ${LS_WEB}/${asset} BINARY)
+    endforeach()
+endif()
 foreach(s 180 192 512)
     target_add_binary_data(${COMPONENT_LIB} ${LS_WEB}/icon-${s}.png BINARY)
 endforeach()
@@ -138,7 +149,7 @@ if(CONFIG_COMPILER_OPTIMIZATION_SIZE)
     file(GLOB LS_HOT_TUI ${CMAKE_CURRENT_LIST_DIR}/tui/tuilib/*.c
          ${CMAKE_CURRENT_LIST_DIR}/tui/lap3d/*.c)
     foreach(f ls_tui.c ls_tui_screen.c ls_tui_chrome.c ls_tui_ui.c ls_tui_touch.c ls_tui_inset.c
-              ls_glyph.c ls_font_mono_14.c ls_font_mono_16.c ls_font_mono_24.c ls_font_cyr.c
+              ls_glyph.c ls_font_mono_11.c ls_font_mono_13.c ls_font_mono_14.c ls_font_mono_16.c ls_font_mono_24.c ls_font_cyr.c
               ls_font_list.c ls_text.c ls_textbuf.c ls_map_ink.c ls_pixel_wf.c ls_waterfall.c
               ls_audio_analysis.c ls_audio_overview.c
               ls_audio_tools.c ls_audio_layers.c
@@ -157,4 +168,29 @@ set_property(SOURCE ${LS_LAP3D} APPEND PROPERTY COMPILE_OPTIONS
 option(L3_PROFILE "Profile lap3d passes every 50 frames" OFF)
 if(L3_PROFILE)
     set_property(SOURCE ${LS_LAP3D} APPEND PROPERTY COMPILE_DEFINITIONS L3_PROFILE)
+endif()
+
+# Optimize across the SDK/UI translation units without lowering the renderer's
+# -O2 setting. This component has no object-specific linker placement rules.
+# Keep the IRAM capture producer as an ordinary object, outside the LTO unit.
+if(CONFIG_LS_BOARD_T_DISPLAY_P4 AND CONFIG_COMPILER_OPTIMIZATION_SIZE)
+    target_compile_options(${COMPONENT_LIB} PRIVATE -flto=auto)
+    target_link_options(${COMPONENT_LIB} INTERFACE -flto=auto)
+    set_property(SOURCE ${CMAKE_CURRENT_LIST_DIR}/tui/experiments/pager_iq_radio.c
+        APPEND PROPERTY COMPILE_OPTIONS -fno-lto)
+    # A weak fallback definition stays outside the LTO unit: inside it, the
+    # stub prevailed over the strong definition in a plain object (see the
+    # top-level CMakeLists, 2.20.0 "mesh release").
+    get_target_property(ls_apps_sources ${COMPONENT_LIB} SOURCES)
+    foreach(ls_apps_source IN LISTS ls_apps_sources)
+        if(ls_apps_source MATCHES "\\.(c|cpp)$")
+            if(NOT IS_ABSOLUTE "${ls_apps_source}")
+                set(ls_apps_source "${CMAKE_CURRENT_LIST_DIR}/${ls_apps_source}")
+            endif()
+            file(READ "${ls_apps_source}" ls_apps_text)
+            if(ls_apps_text MATCHES "__attribute__\\(\\(weak\\)\\)[^;{]*\\{")
+                set_property(SOURCE "${ls_apps_source}" APPEND PROPERTY COMPILE_OPTIONS -fno-lto)
+            endif()
+        endif()
+    endforeach()
 endif()

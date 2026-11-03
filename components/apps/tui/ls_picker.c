@@ -318,9 +318,156 @@ static void draw_button(tui_surface *sf, tui_rect a, const char *label,
                     A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
 }
 
+/* THE DESK FORM: a popup menu over the app, not a page of thumb rows.
+
+   One row an item: the label, the detail right-aligned, the selection bar
+   in blue. A level row carries its value between two small keys. The keys
+   along the bottom are the touch form's (BACK, PAGE UP/DN, CLOSE) at one
+   row. Typing still filters; every rect drawn is the rect hit. */
+static void draw_compact(tui_surface *sf, tui_rect area)
+{
+    const uint8_t text = A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t dim = A(DIM_FG, TUI_BLACK);
+    const uint8_t sel = A(TUI_WHITE | TUI_BRIGHT, TUI_BLUE);
+    const uint8_t sel_dim = A(TUI_YELLOW | TUI_BRIGHT, TUI_BLUE);
+
+    /* As wide as the longest row asks, inside the window. */
+    int want = (int)strlen(s_title) + 8;
+    for (int i = 0; i < s_shown; i++) {
+        const int idx = s_order[i];
+        int w = (int)strlen(s_label[idx]) + (int)strlen(s_detail[idx]) + 6;
+        if (s_stepper[idx]) w += 8;
+        if (w > want) want = w;
+    }
+    if (want < 40) want = 40;
+    const int note_rows = s_note[0] && s_flen == 0 ? 1 : 0;
+    const int filt_rows = s_flen > 0 ? 1 : 0;
+    const bool side = s_header && area.w >= want + 4 + 38;
+    const bool prev = s_preview && area.w >= want + 4 + (side ? 38 : 0) + 44;
+    int w = want + (side ? 38 : 0) + (prev ? 44 : 0);
+    if (w > area.w - 2) w = area.w - 2;
+    int rows = s_shown > 0 ? s_shown : 1;
+    const int chrome = 4 + note_rows + filt_rows;      /* frames, gap, keys */
+    if (rows > area.h - 2 - chrome) rows = area.h - 2 - chrome;
+    if (rows > ROWS_MAX) rows = ROWS_MAX;
+    if (rows < 1) return;
+    int h = rows + chrome;
+    if ((side || prev) && h < 16 && area.h - 2 >= 16) h = 16;
+    const tui_rect box = tui_rect_make(area.x + (area.w - w) / 2,
+                                       area.y + (area.h - h) / 3, w, h);
+    ls_dialog1_frame(sf, box, s_title, TUI_CYAN);
+    tui_rect in = tui_rect_make(box.x + 1, box.y + 1, box.w - 2, box.h - 2);
+    if (side) {
+        s_header(sf, tui_rect_make(in.x, in.y, 36, in.h));
+        in.x += 38; in.w -= 38;
+    }
+    if (prev) {
+        s_preview(sf, tui_rect_make(in.x + in.w - 43, in.y, 43, in.h));
+        in.w -= 44;
+    }
+
+    int y = in.y;
+    if (filt_rows) {
+        char line[FILTER_MAX + 8];
+        snprintf(line, sizeof(line), "/%s", s_filter);
+        tui_put_str(sf, in, in.x + 1, y, line, A(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+        char count[24];
+        snprintf(count, sizeof(count), ls_tr("%d of %d"), s_shown, s_n);
+        tui_put_str(sf, in, in.x + in.w - 1 - (int)strlen(count), y, count, dim);
+        y++;
+    }
+    if (note_rows) {
+        char line[sizeof(s_note)];
+        snprintf(line, sizeof(line), "%.*s", in.w - 2 > 0 ? in.w - 2 : 0, s_note);
+        tui_put_str(sf, in, in.x + 1, y++, line, A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    }
+
+    s_nvis = rows;
+    if (s_cur < s_top) s_top = s_cur;
+    if (s_cur >= s_top + rows) s_top = s_cur - rows + 1;
+    if (s_top > s_shown - rows) s_top = s_shown - rows;
+    if (s_top < 0) s_top = 0;
+
+    if (s_shown <= 0) {
+        tui_put_str(sf, in, in.x + 1, y, s_why[0] ? s_why : ls_tr("nothing here"), dim);
+    }
+    for (int i = 0; i < rows && s_top + i < s_shown; i++) {
+        const int oi = s_top + i, idx = s_order[oi];
+        const bool on = oi == s_cur;
+        const tui_rect row = tui_rect_make(in.x, y + i, in.w, 1);
+        if (on) tui_fill(sf, row, ' ', sel);
+        tui_put_str(sf, row, row.x + 1, row.y, s_label[idx], on ? sel : text);
+        s_hit_dec[i].w = s_hit_inc[i].w = 0;
+        int right = row.x + row.w - 1;
+        if (s_stepper[idx]) {
+            /* [<] value [>] at the right end: the keys step, the row stays. */
+            char v[LS_PICKER_DETAIL];
+            snprintf(v, sizeof(v), "%.14s", s_detail[idx]);
+            const int vw = 16;
+            const tui_rect inc = tui_rect_make(right - 3, row.y, 3, 1);
+            const tui_rect dec = tui_rect_make(inc.x - vw - 3, row.y, 3, 1);
+            const uint8_t cap = A(TUI_BLACK, TUI_WHITE);
+            tui_put_str(sf, row, dec.x, row.y, " < ", cap);
+            tui_put_str(sf, row, inc.x, row.y, " > ", cap);
+            tui_put_str(sf, row, dec.x + 3 + (vw - (int)strlen(v)) / 2, row.y, v,
+                        on ? sel_dim : A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+            s_hit_dec[i] = dec;
+            s_hit_inc[i] = inc;
+        } else if (s_detail[idx][0]) {
+            const int room = row.w - 4 - (int)strlen(s_label[idx]);
+            char d[LS_PICKER_DETAIL];
+            snprintf(d, sizeof(d), "%.*s", room > 0 ? room : 0, s_detail[idx]);
+            tui_put_str(sf, row, right - (int)strlen(d), row.y, d, on ? sel_dim : A(TUI_CYAN, TUI_BLACK));
+        }
+        s_hit_row[i] = row;
+        s_hit_row_at[i] = oi;
+        s_hit_rows = i + 1;
+    }
+
+    const bool paged = s_shown > rows;
+    if (paged) {
+        char pos[28];
+        int last = s_top + rows;
+        if (last > s_shown) last = s_shown;
+        snprintf(pos, sizeof(pos), ls_tr(" %d-%d of %d "), s_top + 1, last, s_shown);
+        tui_put_str(sf, box, box.x + box.w - 2 - (int)strlen(pos), box.y, pos, A(TUI_CYAN, TUI_BLACK));
+    }
+    /* The keys, one row, on the bottom line inside the frame. */
+    const int ky = box.y + box.h - 2;
+    int kx = in.x + 1;
+    if (s_on_back) {
+        const ls_btn_t b = { .label = "< BACK", .key = 0 };
+        const int kw = ls_key1_draw(sf, box, kx, ky, &b, false);
+        s_hit_back = tui_rect_make(kx, ky, kw, 1);
+        kx += kw + 1;
+    }
+    if (paged) {
+        const ls_btn_t up = { .label = "PAGE UP" }, dn = { .label = "PAGE DN" };
+        int kw = ls_key1_draw(sf, box, kx, ky, &up, false);
+        s_hit_prev = tui_rect_make(kx, ky, kw, 1);
+        kx += kw + 1;
+        kw = ls_key1_draw(sf, box, kx, ky, &dn, false);
+        s_hit_next = tui_rect_make(kx, ky, kw, 1);
+        kx += kw + 1;
+    }
+    const ls_btn_t close = { .label = "CLOSE" };
+    const int cw = ls_key1_width(&close);
+    const int cx = box.x + box.w - 2 - cw;
+    ls_key1_draw(sf, box, cx, ky, &close, false);
+    s_hit_close = tui_rect_make(cx, ky, cw, 1);
+    if (cx - kx > 24)
+        tui_put_str(sf, box, kx + 1, ky, ls_tr("type to filter"), dim);
+}
+
 void ls_picker_draw(tui_surface *sf, tui_rect area)
 {
     if (!s_open || area.w < 16 || area.h < 12) return;
+    if (ls_tui_compact()) {
+        s_hit_rows = 0;
+        s_hit_prev.w = s_hit_next.w = s_hit_close.w = s_hit_back.w = 0;
+        draw_compact(sf, area);
+        return;
+    }
 
     const uint8_t dim = A(DIM_FG, TUI_BLACK);
     s_hit_rows = 0;

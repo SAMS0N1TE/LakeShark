@@ -8,9 +8,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 class UsbAttachTest(unittest.TestCase):
     def test_host_start_oom_uninstalls_and_can_retry_without_bsp_abort_macro(self):
-        source = (ROOT / 'managed_components/waveshare__esp32_p4_wifi6_touch_lcd_4b/esp32_p4_wifi6_touch_lcd_4b.c').read_text()
+        source = (ROOT / 'components/esp32_p4_wifi6_touch_lcd_4b/esp32_p4_wifi6_touch_lcd_4b.c').read_text()
         start = body(source, 'esp_err_t bsp_usb_host_start(')
         harness = r'''
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,6 +58,7 @@ int main(void){
                 removed = body(source, 'bool ' + adapter + '_adapter_note_removed(')
                 setup = body(source, 'static void ' + setup_name + '(void *arg)')
                 harness = r'''
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -73,14 +75,26 @@ enum {ESP_OK=0,ESP_ERR_NO_MEM=1,LS_RADIO_OK=0,LS_RADIO_ERR_BUSY=1,LS_RADIO_ERR_I
 #define ESP_LOGE(...) ((void)0)
 #define LS_RADIO_ENDPOINT_HACKRF_USB "hackrf"
 typedef struct {void *client_hdl;uint8_t dev_addr;void *dev_hdl;} usb_t;
-typedef struct {usb_t usb;uint16_t usb_api;int ppm;} device_t;
+typedef struct {usb_t usb;uint16_t usb_api;int ppm,amp_mode,lna_fix,vga_fix;bool bias;} device_t;
 typedef device_t rtlsdr_dev_t,hackrf_dev_t;
 typedef struct {unsigned generation;uint8_t dev_addr;void *client;} setup_arg_t,hackrf_setup_arg_t;
 typedef struct {uint16_t idVendor,idProduct,bcdDevice;} usb_device_desc_t;
 static usb_device_desc_t descriptor={1,2,3};
-static device_t *s_dev;
+static device_t *s_dev,*s_tx_dev;
+static atomic_bool s_tx_cancelled,s_tx_amp_allowed;
+static atomic_uint s_tx_max_vga;
+static int xTaskCreate(void(*fn)(void *),const char *n,int stack,void *p,int pri,void *out){(void)fn;(void)n;(void)stack;(void)p;(void)pri;(void)out;return 1;}
+static void removed_tx_cleanup(void *p){(void)p;}
+#define pdPASS 1
 static bool s_adapter_streaming;
 static unsigned s_alloc_fail_count;
+static int s_path;
+enum {LS_RTL_PATH_NONE,LS_RFFE_RTL,LS_RFFE_HACKRF,LS_RADIO_FE_BIAS_T,LS_RADIO_FE_PPM,LS_RADIO_FE_AMP,LS_RADIO_FE_LNA_DB,LS_RADIO_FE_VGA_DB,HACKRF_REQ_ANTENNA_ENABLE};
+static void ls_rffe_note(int d,int ctl,int v,bool save){(void)d;(void)ctl;(void)v;(void)save;}
+static int ls_rffe_saved(int d,int ctl){(void)d;(void)ctl;return 0;}
+static int control_out(device_t*d,int req,int value,int index,void*data,int bytes){(void)d;(void)req;(void)value;(void)index;(void)data;(void)bytes;return LS_RADIO_OK;}
+static void inject(int boundary);
+static void rtl_fe_attach(device_t*d){(void)d;inject(2); }
 static int scenario,closes,unregisters,probes,retired,registry_calls;
 static bool present,injected;
 static void *const device=(void*)0x1234;
@@ -125,6 +139,8 @@ static int usb_host_interface_claim(void*c,void*d,int i,int a){(void)c;(void)d;(
 static int usb_host_device_close(void*c,void*d){(void)c;(void)d;return ESP_OK;}
 static int init_adsb_dev(void){return ESP_OK;}
 static int settings_hackrf_ppm_get(void){return 0;}
+static int settings_hackrf_tx_vga_get(void){return 47;}
+static bool settings_hackrf_tx_amp_get(void){return true;}
 '''.replace('ADAPTER', adapter) + removed + '\n' + setup + r'''
 #define CHECK(x) do {if(!(x)){fprintf(stderr,"line %d scenario %d: %s\n",__LINE__,scenario,#x);return 1;}}while(0)
 int main(void){

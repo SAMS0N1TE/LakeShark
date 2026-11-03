@@ -121,7 +121,7 @@ static void manifests(void) {
     CHECK(ls_lap_fields_valid(&m, why, sizeof(why)));
     m.flags = 8;                                                     /* no such capability */
     CHECK(!ls_lap_fields_valid(&m, why, sizeof(why)));
-    m.flags = 0; m.api_minor = 3;                                    /* the next minor, past 2.2 */
+    m.flags = 0; m.api_minor = LS_LAP_API2_MINOR + 1;                                    /* next minor, past current API */
     CHECK(!ls_lap_fields_valid(&m, why, sizeof(why)));
     m.api_major = 3; m.api_minor = 0;
     CHECK(!ls_lap_fields_valid(&m, why, sizeof(why)));
@@ -132,7 +132,9 @@ static int resolve_file(const char *path, int *missing) {
     assert(f);
     char name[96];
     int n = 0;
-    while (fscanf(f, "%95s", name) == 1) {
+    while (fgets(name,sizeof(name),f)) {
+        name[strcspn(name,"\r\n")]=0;
+        if(!name[0]||name[0]=='#')continue;
         n++;
         if (!ls_lap_resolve(name)) { printf("unresolved: %s\n", name); (*missing)++; }
     }
@@ -146,7 +148,7 @@ static void abi(const char *api13, const char *now) {
     CHECK(resolve_file(now, &missing) >= 239 && !missing);
     size_t n = 0;
     const ls_lap_export_t *e = ls_lap_exports(&n);
-    for (size_t i = 1; i < n; i++) CHECK(strcmp(e[i - 1].name, e[i].name) < 0);
+    for (size_t i=0;i<n;i++)for(size_t j=0;j<i;j++) CHECK(strcmp(e[j].name,e[i].name)!=0);
     CHECK(!ls_lap_resolve("lap_rx_transmit") && ls_lap_resolve("lap_rx_open") && ls_lap_resolve("lap_tcp_connect"));
 }
 
@@ -204,7 +206,7 @@ static void lifetime(void) {
     lap_rx_config_t *cfg = ls_lap_malloc(sizeof(*cfg));
     lap_rx_status_t *st = ls_lap_malloc(sizeof(*st));
     int16_t *iq = ls_lap_malloc(4 * 4096);
-    lap_iq_meta_t *meta = ls_lap_malloc(sizeof(*meta));
+    lap_iq_meta_t stack_meta, *meta = &stack_meta;
     pump(1);
     CHECK(lap_radio_list(list, 4) == 2 && !strcmp(list[0].name, "FAKE"));
     *cfg = (lap_rx_config_t){150000000, 0, LAP_GAIN_AUTO, 0};
@@ -293,7 +295,7 @@ static void overflow(void) {
     lap_rx_config_t *cfg = ls_lap_malloc(sizeof(*cfg));
     lap_rx_status_t *st = ls_lap_malloc(sizeof(*st));
     int16_t *iq = ls_lap_malloc(4 * LS_LAP_RX_SLOT_PAIRS);
-    lap_iq_meta_t *meta = ls_lap_malloc(sizeof(*meta));
+    lap_iq_meta_t stack_meta, *meta = &stack_meta;
     pump(1);
     *cfg = (lap_rx_config_t){150000000, 48000, LAP_GAIN_AUTO, 0};
     const int h = lap_rx_open(0, cfg);
@@ -326,7 +328,7 @@ static void spectrum(void) {
     enter(LAP_CAP_RADIO_RX);
     lap_rx_config_t *cfg = ls_lap_malloc(sizeof(*cfg));
     float *db = ls_lap_malloc(sizeof(float) * 64);
-    uint32_t *seq = ls_lap_malloc(sizeof(*seq));
+    uint32_t stack_seq, *seq = &stack_seq;
     int16_t *iq = ls_lap_malloc(4 * LS_LAP_RX_SLOT_PAIRS);
     pump(1);
     *cfg = (lap_rx_config_t){150000000, 48000, LAP_GAIN_AUTO, 0};
@@ -440,7 +442,8 @@ static void grants(void) {
     a.size = 4000;
     CHECK(!ls_lap_grant_has(&a, LAP_CAP_RADIO_RX) && ls_lap_grant_has(&a, LAP_CAP_NETWORK) && ls_lap_grant_has(&a, 0));
     ls_lap_grant_set(&a, LAP_CAP_RADIO_RX | LAP_CAP_NETWORK);
-    CHECK(ls_lap_grant_has(&a, LAP_CAP_RADIO_RX) && !ls_lap_grant_has(&a, LAP_CAP_RADIO_RX | LAP_CAP_RADIO_TX));
+    CHECK(ls_lap_grant_has(&a, LAP_CAP_RADIO_RX) && ls_lap_grant_has(&a, LAP_CAP_RADIO_RX | LAP_CAP_RADIO_TX));
+    CHECK(ls_lap_grant_has(&a, LAP_CAP_RADIO_TX)); /* declaration, no separate TX confirmation */
     ls_lap_info_t b = a;
     snprintf(b.manifest.version, sizeof(b.manifest.version), "1.1");    /* an update asks again */
     CHECK(!ls_lap_grant_has(&b, LAP_CAP_RADIO_RX));
@@ -467,6 +470,25 @@ int main(int argc, char **argv) {
     audio();
     events();
     grants();
+    enter(LAP_CAP_RADIO_RX);
+    pump(1);
+    lap_rx_config_t stack_cfg = {150000000, 48000, LAP_GAIN_AUTO, 0};
+    CHECK(!ls_lap_api_owns(&stack_cfg, sizeof(stack_cfg)));
+    CHECK(lap_rx_open(0, (const lap_rx_config_t *)1) == LAP_RX_EINVAL);
+    int stack_h = lap_rx_open(0, &stack_cfg);
+    CHECK(stack_h > 0);
+    stack_cfg.center_hz = 1; /* worker must use the copy */
+    pump(1);
+    CHECK(lap_rx_state(stack_h) == LAP_RX_RUNNING);
+    CHECK(!lap_mesh_send(0, "hello"));
+    CHECK(!lap_mesh_dm("0123456789abcdef", "hello"));
+    CHECK(!lap_mesh_advert());
+    leave();
+    enter(LAP_CAP_RADIO_TX);
+    CHECK(lap_mesh_send(0, "hello"));
+    CHECK(lap_mesh_dm("0123456789abcdef", "hello"));
+    CHECK(lap_mesh_advert());
+    leave();
     printf("test_lap_radio: %u checks passed\n", checks);
     return 0;
 }

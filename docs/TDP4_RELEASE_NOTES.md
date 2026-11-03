@@ -1,5 +1,58 @@
 # LakeShark release notes
 
+## 2.20.0
+
+LakeShark Desktop:
+
+- Every LakeShark app in windows on your PC, run by a Waveshare ESP32-P4-NANO-DB over one USB cable: windows, taskbar, Start menu, wallpapers and Display Properties, all drawn in characters.
+- LakeShark.exe opens it; nothing else to install. It checks once a day for a new version and updates in one click.
+- Focused mode (Ctrl+F11): one app or game alone at twice the frame rate. F11 leaves it.
+- One theme for everything: the window colours and every app follow the same choice.
+- MAP pans and zooms without stalls; MUSIC plays without hitches; FILES opens tracks in MUSIC and maps in MAP.
+- Held keys and held, moving presses reach apps the way they do on the board.
+
+Make your own apps (App SDK 2.6):
+
+- LakeShark Studio: write an app, build it, run it in the simulator and put it on the board from one window. `lsdk new`, `lsdk sim` and `lsdk install --open` from any terminal.
+- Publish to the community store from Studio or `lsdk publish`.
+- Apps can receive packets, OOK and RSSI, scan channels, capture and replay, and attach the firmware's decoders.
+- Wi-Fi, HTTPS, TCP/UDP, time sync, an audio mixer, the microphone and WAV playback.
+- Input from HID keyboards, mice, gamepads and multi-touch; GPS sky view, motion and raw sensors, tracks and waypoints.
+- Games: PNG and mesh assets, sprites, tile maps, collision, particles and tracker music, with arcade 2D and 3D flight templates.
+- Notifications with actions, a file picker, streaming files, and topics between apps.
+- Several app services can stay resident, each with its own resources and budget, and run custom DSP on a worker.
+
+LR2021 radio does the work itself:
+
+- The LR2021 has a small CPU of its own. LakeShark now runs programs on it, from Alex Beal's [lr2021-re](https://github.com/beala/lr2021-re).
+- FALLS on the LR: the radio captures, runs the FFT and works out the spectrum itself. Each row averages about 13 of its FFTs over 250 kHz (BAND shows LR CHIP 250k), and the ESP32-P4 just draws.
+- Wide LR sweeps (US915, 433, full range) run on the radio too: rows about 20% faster, with the ESP32-P4 resting instead of timing every retune.
+- `lora lrscan`: one LR2021 listens to up to 32 LoRa channels at once, hopping with channel activity detection and stopping on the first real packet.
+- FM and the other receivers on the LR now take a 1 MHz slice of the band, and the radio narrows it to your channel itself. The handheld no longer filters it, so the LR runs FM lighter than ever (core load 51%/30%, against 73%/31% before), and the radio's own centre spike stays outside the channel.
+- ON-CHIP in LR FRONT END turns this on and off, and is saved. P25 keeps its own capture either way.
+
+Waterfalls:
+
+- DETAIL draws smooth: rows glide in at the radio's own pace, and colours ramp continuously instead of in steps.
+- On the desktop, waterfalls update every 30 ms instead of every 100 ms.
+
+All boards:
+
+- Apps that use the LoRa radio (FALLS on the LR, P25 and FM on the LR, LoRa Labs, REC watches) get it from MeshCore again. A size optimisation in the 2.20.0 build had left them waiting on "mesh release".
+- LR2021: instantaneous RSSI reads to the half dB again; it lost the half dB on every reading before.
+- LR2021 modules without a TCXO (Waveshare Core2021) get a frequency correction: `lora lrfcorr` or `lora port ... fcorr=PPM` (thanks zenobik).
+- Boot no longer sweeps the header pins looking for a wired Flipper head.
+- T-Display: the screen task has more stack, so ADS-B opens and stays up.
+- Transmit and replay are limited by power, duty and heat protection that keeps the radio safe. There are no band exclusions inside each radio's tuning ranges: what you transmit, and where, is up to you.
+- ESP32-P4-NANO: the serial console and SSH start at boot again; the app SDK had left them too little internal memory.
+
+Known issues:
+
+- Desktop mode needs the NANO; T-Display boards get the app changes only.
+- On the T-Display, apps cannot yet act as a Bluetooth peripheral or HID device, transmit on a HackRF, run worker DSP, use the NFC service or mDNS: those need room the T-Display does not have. The NANO has them.
+- Over USB a full-screen map picture takes a few seconds to arrive; smaller windows are quicker.
+- Bluetooth keyboards on the desktop are untested outside the bench.
+
 ## 2.19.3
 
 - MAP: roads and rivers draw as continuous lines. Where two lines met in one character cell, one used to wipe the other.

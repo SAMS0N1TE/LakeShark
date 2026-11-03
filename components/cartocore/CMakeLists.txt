@@ -19,6 +19,11 @@ endif()
 idf_component_register(SRCS ${CC_IDF_SRCS} INCLUDE_DIRS ${CC_PUBLIC_INCLUDE_DIRS})
 target_compile_options(${COMPONENT_LIB} PRIVATE -O2 -Wall -Wextra)
 target_compile_features(${COMPONENT_LIB} PUBLIC c_std_11)
+# The picture decoders (media/png.c, jpeg.c) emit through media/stream.c,
+# which the shared source list leaves out: the desktop decodes wallpapers.
+if(EXISTS "${CC_ROOT}/src/media/stream.c")
+    target_sources(${COMPONENT_LIB} PRIVATE "${CC_ROOT}/src/media/stream.c")
+endif()
 
 # The PIE kernels fault on P4 rev 3 (the Nano v3.1 panicked at cc_pie_task_enter on its
 # first boot with TILES): rev 3 builds take the portable C kernels.

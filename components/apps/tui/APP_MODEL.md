@@ -1,3 +1,10 @@
+> Historical architecture discussion. Current native apps use signed RISC-V
+> ELF `.lap` artifacts. The device verifies ECDSA P-256 signatures; unsigned
+> sideloads require confirmation. LoRa TX, MeshCore sending and MIX-RF replay
+> exist. The TX broker/policy code must not be read as proof that every
+> production TX path already uses the broker. See `app-sdk/README.md` and
+> `app-sdk/docs/SIMULATOR.md` for the current SDK contract.
+
 # The app model, and where it is going
 
 For the catalog/storefront track. **This is a trajectory, not a set of
@@ -150,7 +157,7 @@ were wrong, and I asserted it without checking:
 So: `nfc_write` is a real future capability that will need its own deliberate
 -action gate, and the transmit broker will not provide it. **Keep Tier C.**
 
-On signing: nothing verifies a signature on-device today, and for tier 1 there
+Historical signing proposal (superseded by device-side signature verification): and for tier 1 there
 is nothing to verify - the grammar has no verb. But tier 3 is native code with
 hardware access, so **build the signing model now**. The device-side verify
 path is a firmware task that does not exist yet and should be filed.
@@ -176,13 +183,13 @@ so a filename grep reports zero for both while the drivers sit right there.
 | Sub-GHz, CC1101 | **none** (0 files tree-wide) | - | **commented out** (`t_display_p4.h:357`) | `LS_HAS_SUBGHZ_TX` **0** |
 | nRF24L01+ | **none** (0 files tree-wide) | - | - | - |
 
-So nothing in this firmware can transmit anything today: the LoRa driver can
+Historical TX inventory (superseded by LoRa transmission and MIX-RF replay): the LoRa driver can
 bring an SX1262 up and read its registers but has no send path, and the two
 parts that would do sub-GHz and 2.4 GHz have no driver at all.
 
 Corrections that fall out of this, two of them against what I first said:
 
-- **There is no transmitter driver of any kind.** `components/lakeshark/radio/`
+- **Historical claim, superseded: transmitter drivers were absent at the time of this discussion.** `components/lakeshark/radio/`
   contains `tx_broker.c`, `tx_policy.c`, `tx_plan.h` and `tx_driver_private.h`
   - the gate and the interface a driver would implement - and **nothing
   implements it**. Saying "transmit authorisation already exists" reads as
@@ -204,7 +211,7 @@ makes it early, which is the right way round.
 ## 5. Transmit authorisation, as actually built
 
 This part of the first version was right and is verified - with the caveat in
-§4b that it currently gates nothing, because no transmitter driver exists. From
+§4b that the broker was then unintegrated. Current LoRa/MIX-RF transmitters exist; common broker integration remains separate work. From
 `bench/done/190-add-fail-closed-transmit-broker.md`; public API in
 `radio/tx_plan.h`:
 

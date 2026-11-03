@@ -1208,7 +1208,8 @@ static bool touch(int x, int y) {
       return true;
     }
   if(!library && view>=VIEW_WAVE && ls_audio_layers_touch(layers,x,y))return true;
-  if (!library && on_track() && y==progress_rect.y+1 && x>=progress_rect.x+2 && x<progress_rect.x+progress_rect.w-2) {
+  /* Either row of the bar: a click on its top half did nothing. */
+  if (!library && on_track() && (y==progress_rect.y || y==progress_rect.y+1) && x>=progress_rect.x+2 && x<progress_rect.x+progress_rect.w-2) {
     if(ls_music_seek_ms((uint64_t)(x-progress_rect.x-2)*ls_music_duration_ms()/(progress_rect.w-4)))ls_audio_view_reset();
     return true;
   }

@@ -100,6 +100,7 @@ void ls_pwf_axis_changed(ls_pwf_t *p)
 void ls_pwf_axis_even(ls_pwf_t *p, int lo, int hi)
 {
     if (!p || !p->first || hi < lo) return;
+    p->lerp = false;
     const int n = hi - lo + 1, f = p->freq_px;
     for (int i = 0; i < f; i++) {
         /* Pixel i from the low end. */
@@ -109,6 +110,26 @@ void ls_pwf_axis_even(ls_pwf_t *p, int lo, int hi)
         p->first[at] = (int16_t)a;
         p->last[at] = (int16_t)b;
     }
+    p->redraw = true;
+}
+
+void ls_pwf_axis_lerp(ls_pwf_t *p, int lo, int hi)
+{
+    if (!p || !p->first || hi < lo) return;
+    const int n = hi - lo + 1, f = p->freq_px;
+    if (n >= f || n < 2) { ls_pwf_axis_even(p, lo, hi); return; }
+    for (int i = 0; i < f; i++) {
+        /* Pixel i's centre in bins, bin centres at k + 0.5, 8.8 fixed. */
+        int pos = (int)(((2 * i + 1) * n * 128) / f) - 128;
+        if (pos < 0) pos = 0;
+        if (pos > (n - 1) * 256) pos = (n - 1) * 256;
+        int a = pos >> 8, w = pos & 255;
+        if (a >= n - 1) { a = n - 2; w = 256; }
+        const int at = p->flow == LS_PWF_LEFT ? f - 1 - i : i;
+        p->first[at] = (int16_t)(lo + a);
+        p->last[at] = (int16_t)w;
+    }
+    p->lerp = true;
     p->redraw = true;
 }
 
@@ -178,6 +199,16 @@ static void draw_line(ls_pwf_t *p, int at, int age)
     int step;
     if (p->flow == LS_PWF_LEFT) { px = p->img + at; step = p->w; }
     else                        { px = p->img + (size_t)at * p->w; step = 1; }
+    if (p->lerp) {
+        for (int i = 0; i < f; i++) {
+            int m = 0;
+            if (line) {
+                const int a = p->first[i], w = p->last[i];
+                m = (line[a] * (256 - w) + line[a + 1] * w) >> 8;
+            }
+            px[(size_t)i * step] = p->lut[m];
+        }
+    } else
     for (int i = 0; i < f; i++) {
         int m = 0;
         if (line)

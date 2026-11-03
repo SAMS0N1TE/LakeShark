@@ -37,6 +37,17 @@ void lr_wf_stop(void);
 esp_err_t lr_wf_set_wide(bool on, int32_t offset_hz);
 /* The setting alone, cheap enough to poll per block. */
 bool lr_wf_wide_on(void);
+/* Chip wide (on by default): every run takes 1 MS/s and the LR2021 itself
+ * mixes and decimates to the same 125k IQ16 (lr20xx_chip_ddc_live), the
+ * LO 250 kHz below the channel (above it near the bottom of the range); no
+ * down-converter or FIFO polling on the ESP32-P4. The offset setting does
+ * not apply. Gain is the chip's AGC. Off, runs are narrow unless wide is on.
+ * A radio that refuses the program drops back to those for the boot. */
+void lr_wf_set_wide_chip(bool on);
+bool lr_wf_wide_chip_on(void);
+/* A run of the shared session now would be wide: WIDE I/Q, or chip wide
+   that the radio has not refused. What P25 follows. */
+bool lr_wf_shared_wide(void);
 /* An owner that wants wide whatever the setting (`p25 lrwide on`) pins it
    for its session and clears the pin when it stops; the setting and its
    counters are untouched. Set it before start, or the next run switches. */
@@ -44,6 +55,8 @@ void lr_wf_set_wide_force(bool on);
 typedef struct {
     bool on; int32_t offset_hz;          /* the setting                        */
     bool active, wide;                   /* a stream runs; that run is wide    */
+    bool chip_on, chip;                  /* the chip setting; this run is chip wide */
+    bool chip_failed;                    /* the radio refused it this boot     */
     uint32_t channel_hz, lo_hz, rate_hz; /* the running stream, 0 when none   */
     uint32_t ddc_mcycles, expand_mcycles;/* per input pair x1000, last ~1 s    */
     uint32_t queue_slots, queue_high_water, queue_drops;

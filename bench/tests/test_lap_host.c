@@ -161,7 +161,7 @@ int esp_elf_relocate(esp_elf_t *elf, const uint8_t *bytes) {
         return -1;
     }
     lap_app_t *app = (lap_app_t *)(elf->psegment + 256);
-    *app = s.apps[s.active].manifest;
+    *app = catalog.apps[lap_state.active].manifest;
     app->enter = on_enter;
     app->leave = on_leave;
     app->draw = on_draw;
@@ -232,7 +232,7 @@ static const ls_tui_screen_t home_screen = {.name = "HOME", .draw = home_draw};
 static const ls_app_doc_t home_doc = {.purpose = "test"};
 static void step(void) {
     io_service();
-    if (!s.work_error[0] && s.elf.psegment) {
+    if (!lap_state.work_error[0] && lap_state.elf.psegment) {
         /* Model the relocated callback text with the host's test callback addresses. */
         uintptr_t ptrs[] = {(uintptr_t)on_enter, (uintptr_t)on_leave, (uintptr_t)on_draw,
                             (uintptr_t)on_key, (uintptr_t)on_touch};
@@ -243,8 +243,8 @@ static void step(void) {
             if (ptrs[i] > hi)
                 hi = ptrs[i];
         }
-        s.exec[s.nexec].start = lo;
-        s.exec[s.nexec++].end = hi + 1;
+        lap_state.exec[lap_state.nexec].start = lo;
+        lap_state.exec[lap_state.nexec++].end = hi + 1;
     }
     ls_lap_poll();
 }
@@ -252,13 +252,13 @@ static void open_app(void) {
     assert(current == 0);
     assert(ls_lap_confirm("probe")); /* normal lifecycle cases assume OPEN was approved */
     ls_app_open(1);
-    assert(s.status.state == LS_LAP_LOADING);
+    assert(lap_state.status.state == LS_LAP_LOADING);
 }
 static void close_app(void) {
     ls_tui_screen_show(0);
     step();
     step();
-    assert(!outstanding && !ls_lap_api_bytes() && !s.elf.psegment && !crumb[0]);
+    assert(!outstanding && !ls_lap_api_bytes() && !lap_state.elf.psegment && !crumb[0]);
 }
 int main(int argc, char **argv) {
     assert(argc == 2);
@@ -275,7 +275,7 @@ int main(int argc, char **argv) {
     ls_app_t home = {.id = "home", .name = "HOME", .screen = &home_screen, .doc = &home_doc};
     assert(ls_app_register(&home) == 0);
     assert(ls_lap_scan_file("lap-host-probe.lap") == 1 && !outstanding);
-    assert(!s.apps[0].signature_checked && !s.apps[0].is_signed);
+    assert(!catalog.apps[0].signature_checked && !catalog.apps[0].is_signed);
     unsigned cases = 0;
     ls_lap_info_t probe;
     char why[96];
@@ -298,7 +298,7 @@ int main(int argc, char **argv) {
     cases++;
     open_app();
     step();
-    assert(s.status.state == LS_LAP_RUNNING && enters == 1 && !crumb[0]);
+    assert(lap_state.status.state == LS_LAP_RUNNING && enters == 1 && !crumb[0]);
     tui_cell back[400], front[400];
     tui_surface sf;
     tui_surface_setup(&sf, back, front, 20, 20);
@@ -311,30 +311,30 @@ int main(int argc, char **argv) {
     fail_alloc = true;
     open_app();
     step();
-    assert(s.status.state == LS_LAP_FAILED && !outstanding);
+    assert(lap_state.status.state == LS_LAP_FAILED && !outstanding);
     close_app();
     cases++;
     fail_relocate = true;
     open_app();
     step();
-    assert(s.status.state == LS_LAP_FAILED && !outstanding &&
-           strstr(s.error, "needs forbidden_symbol"));
+    assert(lap_state.status.state == LS_LAP_FAILED && !outstanding &&
+           strstr(lap_state.error, "needs forbidden_symbol"));
     close_app();
     fail_relocate = false;
     cases++;
     external = false;
     open_app();
     step();
-    assert(s.status.state == LS_LAP_FAILED && !outstanding);
+    assert(lap_state.status.state == LS_LAP_FAILED && !outstanding);
     close_app();
     external = true;
     cases++;
     bad_descriptor = true;
     open_app();
     step();
-    assert(s.status.state == LS_LAP_FAILED);
+    assert(lap_state.status.state == LS_LAP_FAILED);
     step();
-    assert(s.status.state == LS_LAP_FAILED && !outstanding);
+    assert(lap_state.status.state == LS_LAP_FAILED && !outstanding);
     close_app();
     bad_descriptor = false;
     cases++;
@@ -342,11 +342,11 @@ int main(int argc, char **argv) {
     step();
     assert(!ls_lap_maintenance_begin("probe"));
     assert(ls_lap_maintenance_begin("other"));
-    ls_lap_info_t other = s.apps[0];
+    ls_lap_info_t other = catalog.apps[0];
     snprintf(other.manifest.id, sizeof(other.manifest.id), "other");
     assert(ls_lap_publish(&other));
     ls_lap_poll();
-    assert(ls_lap_by_id("other") && !strcmp(ls_app_current()->id, "probe") && s.entered);
+    assert(ls_lap_by_id("other") && !strcmp(ls_app_current()->id, "probe") && lap_state.entered);
     assert(ls_lap_maintenance_begin("other"));
     other.installed = false;
     assert(ls_lap_publish(&other));
@@ -386,18 +386,18 @@ int main(int argc, char **argv) {
     assert(!outstanding);
     exit_draw = false;
     cases++;
-    s.apps[0].needs_confirmation = true;
+    catalog.apps[0].needs_confirmation = true;
     ls_app_open(1);
-    assert(s.status.state == LS_LAP_FAILED && s.status.needs_confirmation && !outstanding);
+    assert(lap_state.status.state == LS_LAP_FAILED && lap_state.status.needs_confirmation && !outstanding);
     assert(ls_lap_confirm("probe"));
     ls_lap_poll();
     step();
-    assert(s.status.state == LS_LAP_RUNNING);
+    assert(lap_state.status.state == LS_LAP_RUNNING);
     close_app();
     cases++;
     assert(ls_lap_maintenance_begin(NULL));
     ls_app_open(1);
-    assert(s.status.state == LS_LAP_FAILED);
+    assert(lap_state.status.state == LS_LAP_FAILED);
     ls_tui_screen_show(0);
     ls_lap_maintenance_end();
     cases++;
@@ -435,13 +435,13 @@ int main(int argc, char **argv) {
     expected_network = true;
     for (unsigned round = 0; round < 2; ++round) {
         unsigned before_enter = enters;
-        s.apps[0].needs_confirmation = false;
-        if (round) s.apps[0].is_signed = s.apps[0].signature_present = true;
+        catalog.apps[0].needs_confirmation = false;
+        if (round) catalog.apps[0].is_signed = catalog.apps[0].signature_present = true;
         ls_app_open(1);
-        assert(s.status.state == LS_LAP_FAILED && s.status.needs_confirmation && enters == before_enter);
+        assert(lap_state.status.state == LS_LAP_FAILED && lap_state.status.needs_confirmation && enters == before_enter);
         assert(!outstanding);
         assert(ls_lap_confirm("probe")); ls_lap_poll(); step();
-        assert(s.status.state == LS_LAP_RUNNING && enters == before_enter + 1);
+        assert(lap_state.status.state == LS_LAP_RUNNING && enters == before_enter + 1);
         close_app();
         ls_lap_api_callback(true);
         assert(lap_tcp_connect("localhost", 80, 1000) == LAP_NET_EACCES);

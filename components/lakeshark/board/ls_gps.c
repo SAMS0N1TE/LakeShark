@@ -784,21 +784,34 @@ static void stop_locked(void)
 
 /* The work runs in the reader task, so this returns as soon as the UART is
    up and the task exists. */
+static bool s_app_demand, s_firmware_demand;
 esp_err_t ls_gps_start(void)
 {
-    if (s_task && s_run) return ESP_OK;
     if (!make_locks()) return ESP_ERR_NO_MEM;
     xSemaphoreTake(s_ctl, portMAX_DELAY);
-    const esp_err_t err = start_locked();
+    s_firmware_demand=true;
+    const esp_err_t e=start_locked();
     xSemaphoreGive(s_ctl);
-    return err;
+    return e;
 }
-
+esp_err_t ls_gps_app_demand(bool on)
+{
+    if (!on && !s_app_demand) return ESP_OK;
+    if (!make_locks()) return ESP_ERR_NO_MEM;
+    xSemaphoreTake(s_ctl, portMAX_DELAY);
+    s_app_demand=on;
+    esp_err_t e=ESP_OK;
+    if (on) e=start_locked();
+    else if (!s_firmware_demand) stop_locked();
+    xSemaphoreGive(s_ctl);
+    return e;
+}
 void ls_gps_stop(void)
 {
-    if (!s_task || !make_locks()) return;
+    if (!make_locks()) return;
     xSemaphoreTake(s_ctl, portMAX_DELAY);
-    stop_locked();
+    s_firmware_demand=false;
+    if (!s_app_demand) stop_locked();
     xSemaphoreGive(s_ctl);
 }
 
@@ -1037,6 +1050,7 @@ bool ls_gps_factory_reset(void)
 
 bool ls_gps_running(void) { return false; }
 esp_err_t ls_gps_start(void) { return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t ls_gps_app_demand(bool on) { return on ? ESP_ERR_NOT_SUPPORTED : ESP_OK; }
 void ls_gps_stop(void) { }
 void ls_gps_get(ls_gps_state_t *out) { if (out) memset(out, 0, sizeof(*out)); }
 void ls_gps_diagnostics(void) { printf("gps: board declares none\n"); }

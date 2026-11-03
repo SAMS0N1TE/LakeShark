@@ -1,4 +1,29 @@
 menu "LakeShark"
+    config LS_LAP_3D
+        bool "Native app 3D renderer"
+        default y
+        help
+            Export the lap3d renderer to native apps (about 66 KiB of code
+            plus shared tables). When disabled, apps importing l3_* are
+            rejected by the loader with a missing-symbol error. Other native
+            apps and the firmware map renderer remain available.
+
+    config LS_MUSIC_COMPRESSED
+        bool "MP3, FLAC and Ogg Vorbis playback"
+        default y
+        help
+            Include compressed music decoders (about 91 KiB of code plus
+            shared tables). WAV playback, recording and SDK PCM audio do not
+            need this option. Compressed files fail to open when disabled.
+
+    config LS_LAP_SERVICES_MAX
+        int "Maximum resident native app services"
+        range 1 4
+        default 2 if LS_BOARD_P4_NANO
+        default 3
+        help
+            Bounded resident service slots, plus one foreground app. Each slot
+            has separate resource tables, a 4 MiB app heap and a 4 ms tick.
     choice LS_BOARD
         prompt "LakeShark target board"
         default LS_BOARD_P4_NANO
@@ -73,6 +98,26 @@ menu "LakeShark"
             the board's DSI connector. Nothing changes until a panel is saved
             with 'panel set <name>'; with none the board stays headless.
 
+    config LS_NANO_RAM_BUDGET
+        bool "Nano desktop internal RAM budget"
+        depends on LS_BOARD_P4_NANO && LS_PANEL_RUNTIME && SPIRAM
+        depends on FREERTOS_TASK_CREATE_ALLOW_EXT_MEM && SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY
+        default n
+        help
+            Keep flash-writing workers in DRAM; put the read-only BLE
+            telemetry, advertisement and UI stall monitor stacks in PSRAM.
+            Right-size measured desktop workers to leave room for EMAC DMA.
+
+    config LS_NANO_ETH
+        bool "Nano wired Ethernet (IP101GRI)"
+        depends on LS_BOARD_P4_NANO && LS_PANEL_RUNTIME
+        select ETH_USE_ESP32_EMAC
+        default y
+        help
+            Starts the P4 EMAC with DHCP alongside the C5 Wi-Fi netif.
+            Does not enable a listener: use 'term web on' explicitly.
+            'eth off' persists across reboots; 'eth on' restores it.
+
     config LS_VBUS_EN_GPIO
         int "USB host VBUS enable GPIO (-1 if the port is hard-powered)"
         default 46 if LS_BOARD_P4_NANO
@@ -107,6 +152,68 @@ menu "LakeShark"
             Once you change the volume at runtime it is saved to NVS after ~1.5 s
             and that saved value wins on every later boot, so this only governs
             first boot.
+
+    config LS_LAP_HACKRF_TX
+        bool "Native app HackRF transmit backend"
+        default y
+        help
+            Bounded USB IQ transmit with cancellation and power accounting.
+            Off retains HackRF reception and all SDK symbols; TX reports
+            unsupported and lap_caps clears the HackRF radio_tx bit.
+
+    config LS_LAP_WORKER_DSP
+        bool "Native app worker DSP callbacks"
+        default y
+        help
+            Preemptible app-defined IQ processing on a private worker. Off
+            keeps receive channels, spectrum and built-in decoder attachment.
+            DSP calls report unsupported; lap_caps omits LAP_HW_WORKER_DSP.
+
+    config LS_LAP_NFC
+        bool "Native app NFC service"
+        default y
+        help
+            Copied tag events and NDEF writes through the NFC backend. Off
+            retains SDK symbols and the built-in NFC tools, reports unsupported
+            and clears LAP_HW_NFC and LAP_HW_NDEF_WRITE in lap_caps.
+
+    config LS_LAP_MDNS
+        bool "Native app mDNS browse and registration"
+        default y
+        help
+            Native app DNS-SD discovery and registration. Off keeps Wi-Fi,
+            HTTPS, UDP and time, returns unsupported and omits LAP_HW_MDNS.
+            The network terminal's existing responder remains available.
+
+    # API 2.6: Bluetooth peripheral roles; board profiles may opt out.
+    config LS_LAP_BLE_ADVERTISER
+        bool "Native app BLE advertising"
+        depends on LS_BLE_HEAD && BT_NIMBLE_EXT_ADV
+        select BT_NIMBLE_ROLE_BROADCASTER
+        default y
+        help
+            Exclusive peripheral lease; 31-byte legacy PDUs through extended
+            HCI commands (per-advertiser bounded TX power). No extra task.
+            See app-sdk/docs/BLE_PERIPHERAL.md for RAM/admission estimates.
+
+    config LS_LAP_GATT_SERVER
+        bool "Native app GATT server"
+        depends on LS_LAP_BLE_ADVERTISER
+        select BT_NIMBLE_ROLE_PERIPHERAL
+        select BT_NIMBLE_GATT_SERVER
+        default y
+        help
+            Optional 16-attribute copied database, one peer, MTU-independent
+            20-byte notifications. No increase to NimBLE connection pools.
+
+    config LS_LAP_HID_DEVICE
+        bool "Native app BLE keyboard/mouse/gamepad peripheral"
+        depends on LS_LAP_GATT_SERVER && BT_NIMBLE_SECURITY_ENABLE && BT_NIMBLE_NVS_PERSIST
+        depends on BT_NIMBLE_SM_SC || BT_NIMBLE_SM_LEGACY
+        default y
+        help
+            Standard HOGP report maps using the same GATT server allocation.
+            Requires manifest HID_DEVICE and RADIO_TX. Keys stay in NimBLE NVS.
 
     config LS_BLE_HEAD
         bool "BLE control head (Flipper / host over BLE)"

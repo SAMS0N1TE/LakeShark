@@ -65,7 +65,7 @@ LS_CASE(receive_only_mmcx1_moves_transmit_to_internal_and_back)
     /* A refused start puts the route straight back. */
     mark = fk_xl_log_n;
     LS_EQ_INT(ls_lora_send(&data, 0), ESP_ERR_INVALID_ARG);
-    LS_EQ_INT(vctl_since(mark), 0);
+    LS_EQ_INT(vctl_since(mark), -1); /* invalid payload does not touch RF routing */
 
     /* A failed switch write means no transmit at all. */
     const int frames = fk.nframes;
@@ -76,15 +76,16 @@ LS_CASE(receive_only_mmcx1_moves_transmit_to_internal_and_back)
     LS_CHECK(!ls_lora_is_transmitting());
 }
 
-LS_CASE(mmcx1_rx_tx_and_internal_route_leave_the_switch_alone)
+LS_CASE(lr2021_rx_only_port_cannot_be_overridden)
 {
     radio_up(FK_LR);
     uint8_t data = 1;
     ls_board_hw_antenna_set_mmcx_tx(true);
+    LS_CHECK(!ls_board_hw_antenna_mmcx_tx());
     LS_EQ_INT(ls_board_hw_antenna_external(true), ESP_OK);
     int mark = fk_xl_log_n;
     LS_EQ_INT(ls_lora_send(&data, 1), ESP_OK);
-    LS_EQ_INT(vctl_since(mark), -1);
+    LS_EQ_INT(vctl_since(mark), 1);
     fk.irq |= LR20XX_IRQ_TX_DONE;
     LS_CHECK(ls_lora_send_done());
     ls_board_hw_antenna_set_mmcx_tx(false);

@@ -317,8 +317,10 @@ static ls_act_status_t a_map_files(const ls_args_t *in, ls_val_t *out)
     return LS_ACT_OK;
 }
 
+static void drag_reset(void);
 static void enter(void)
 {
+    drag_reset();
     register_view_action();
     s_notice_screen=ls_tui_screen_current();
     ls_notify_add_probe(marks_notice);
@@ -447,7 +449,12 @@ static void flat_scale(double *ppx, double *ppy)
 static bool map_flat(tui_surface *sf, tui_rect body, bool opening)
 {
     double lat, lon, ppx, ppy; ls_map_get_center(&lat, &lon); flat_scale(&ppx, &ppy);
-    if (!ls_globe_flat(sf, body, lat, lon, ls_map_zoom(), ppx, ppy, ls_maps_region_fill, NULL)) return false;
+    /* Shifted outlines while it pans; a zoom with nothing to shift draws in
+       full, except while the map is still opening: the first frame of MAP
+       held the UI 400 ms for outlines the picture replaces a moment later.
+       "opening map" stands in until the view has been still 250 ms. */
+    if (!ls_globe_flat_lazy(sf, body, lat, lon, ls_map_zoom(), ppx, ppy, !opening, ls_maps_region_fill, NULL) &&
+        (opening || !ls_globe_flat(sf, body, lat, lon, ls_map_zoom(), ppx, ppy, ls_maps_region_fill, NULL))) return false;
     const int y = body.y + body.h - 1;
     if (opening) {
         static const char SPIN[4] = { '|', '/', '-', '\\' };
@@ -998,32 +1005,106 @@ static bool s_pic_built;
 static uint32_t s_pic_built_serial;
 static int s_pic_built_dx, s_pic_built_dy;
 static uint16_t s_pic_built_ground;
+static int s_pic_built_z = -1;              /* the zoom it was built for */
+static double s_pic_built_lat, s_pic_built_lon;
+static uint32_t s_pic_epoch;
+static int32_t s_pic_left,s_pic_top;
+static unsigned s_pic_epoch_z;
+static uint32_t s_pic_preview_serial;
+static int64_t s_pic_pending_us;
 
 static bool picture_prepare(double lat, double lon, unsigned z, int pw, int ph, int tw, int th, bool labels)
 {
     if (pw != s_pic_w || ph != s_pic_h || !s_pic || !s_pic_view) {
         /* The image layer still points at the old picture until told otherwise. */
         ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
-        heap_caps_free(s_pic); heap_caps_free(s_pic_view);
+        uint16_t *old = s_pic;
+        const int ow = s_pic_w, oh = s_pic_h;
+        const bool keep = old && s_pic_have;
+        heap_caps_free(s_pic_view);
         s_pic = heap_caps_malloc((size_t)pw * ph * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         s_pic_view = heap_caps_malloc((size_t)pw * ph * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        s_pic_w = pw; s_pic_h = ph; s_pic_serial = 0; s_pic_have = false; s_pic_built = false;
-        if (!s_pic || !s_pic_view) return false;
+        s_pic_epoch++;s_pic_w = pw; s_pic_h = ph; s_pic_built = false;
+        if (keep && s_pic) {
+            /* A new size (a window resized, focused mode): the old picture,
+               centred at its own scale, until the render for this size lands.
+               Freeing it showed "opening map..." on black for seconds. */
+            const uint16_t ground = carto_rgb565(palette()->ground);
+            const int ox = (pw - ow) / 2, oy = (ph - oh) / 2;
+            for (int y = 0; y < ph; y++) {
+                uint16_t *out = s_pic + (size_t)y * pw;
+                const int sy = y - oy;
+                for (int x = 0; x < pw; x++) {
+                    const int sx = x - ox;
+                    out[x] = sy >= 0 && sy < oh && sx >= 0 && sx < ow ? old[(size_t)sy * ow + sx] : ground;
+                }
+            }
+            s_pic_serial ^= 0x80000000u;         /* not the render's serial: its next frame replaces this */
+        } else { s_pic_serial = 0; s_pic_have = false; }
+        heap_caps_free(old);
+        if (!s_pic || !s_pic_view) { s_pic_have = false; return false; }
     }
     double flat, flon; unsigned fz;
     if (ls_carto_map_pixels(lat, lon, z, pw, ph, tw, th, labels, s_pic, &s_pic_serial, &flat, &flon, &fz)) {
         s_pic_have = true; s_pic_lat = flat; s_pic_lon = flon; s_pic_z = fz;
     }
-    if (!s_pic_have || s_pic_z != z) return false;
+    if (!s_pic_have) return false;
+    const uint16_t ground = carto_rgb565(palette()->ground);
+    if (s_pic_z != z) {
+        /* Zoomed, and the new picture is still rendering: the last one scaled
+           to this zoom, at once. The outline fallback drawn instead projected
+           the world's outlines again on the UI task (~340 ms on a Nano), and
+           every click waited behind it while the tiles sat still. Coarse for
+           a moment; the render replaces it. */
+        const int dz = (int)s_pic_z - (int)z;
+        if (dz < -4 || dz > 4) return false;
+        if (s_pic_built && s_pic_built_serial == s_pic_serial && s_pic_built_z == (int)z &&
+            s_pic_built_lat == lat && s_pic_built_lon == lon && s_pic_built_ground == ground) return true;
+        const double wt = 256.0 * ldexp(1.0, (int)z), ws = 256.0 * ldexp(1.0, (int)s_pic_z), k = ws / wt;
+        const double ax = ((lon + 180.0) / 360.0 * wt - pw / 2.0) * k - (s_pic_lon + 180.0) / 360.0 * ws + pw / 2.0;
+        const double ay = (merc_y(lat) * wt - ph / 2.0) * k - merc_y(s_pic_lat) * ws + ph / 2.0;
+        /* Source columns in 16.16 fixed point: a double floor per pixel cost
+           ~40 ms a frame on the P4. */
+        const int64_t fx0 = (int64_t)floor(ax * 65536.0), fstep = (int64_t)llround(k * 65536.0);
+        for (int y = 0; y < ph; y++) {
+            uint16_t *out = s_pic_view + (size_t)y * pw;
+            const int sy = (int)floor(ay + y * k);
+            if (sy < 0 || sy >= ph) { for (int x = 0; x < pw; x++) out[x] = ground; continue; }
+            const uint16_t *in = s_pic + (size_t)sy * pw;
+            int64_t f = fx0;
+            for (int x = 0; x < pw; x++, f += fstep) { const int64_t sx = f >> 16; out[x] = sx >= 0 && sx < pw ? in[sx] : ground; }
+        }
+        s_pic_epoch++; s_pic_epoch_z = z;
+        s_pic_left = (int32_t)llround((lon + 180.0) / 360.0 * wt) - pw / 2;
+        s_pic_top = (int32_t)llround(merc_y(lat) * wt) - ph / 2;
+        s_pic_built = true; s_pic_built_serial = s_pic_serial; s_pic_built_z = (int)z;
+        s_pic_built_lat = lat; s_pic_built_lon = lon; s_pic_built_ground = ground;
+        s_pic_built_dx = INT32_MAX; s_pic_built_dy = INT32_MAX;   /* the real picture always rebuilds */
+        s_pic_pending_us = 0; s_pic_preview_serial = 0;
+        ls_map_trace("zoom preview", (int32_t)z, dz);
+        s_pic_shown++;
+        return true;
+    }
     /* World pixels at this zoom, the picture's own unit. */
     const double world = 256.0 * ldexp(1.0, (int)z);
-    const double ox = (lon - s_pic_lon) / 360.0 * world;
-    const double oy = (merc_y(s_pic_lat) - merc_y(lat)) * world;
-    const int dx = (int)lrint(ox), dy = (int)lrint(-oy);
-    const uint16_t ground = carto_rgb565(palette()->ground);
+    const int dx = (int)(llround((lon+180.0)/360.0*world)-llround((s_pic_lon+180.0)/360.0*world));
+    const int dy = (int)(llround(merc_y(lat)*world)-llround(merc_y(s_pic_lat)*world));
+    if(!dx && !dy) {s_pic_pending_us=0;s_pic_preview_serial=0;}
     if (s_pic_built && s_pic_built_serial == s_pic_serial && s_pic_built_dx == dx &&
         s_pic_built_dy == dy && s_pic_built_ground == ground) return true;
-    s_pic_built = true; s_pic_built_serial = s_pic_serial;
+    /* A fast completed frame needs no intermediate shifted publication. Wait
+       at most 50 ms for it; a slow render still gets an immediate cheap scroll. */
+    bool pending=dx || dy;
+    if(pending && s_pic_preview_serial!=s_pic_serial) {
+        if(!s_pic_pending_us) s_pic_pending_us=esp_timer_get_time();
+        if(s_pic_built && esp_timer_get_time()-s_pic_pending_us<50000) return true;
+        s_pic_preview_serial=s_pic_serial;
+    }
+    if(!pending) {s_pic_pending_us=0;s_pic_preview_serial=0;}
+    if(s_pic_epoch_z!=z || (s_pic_built && s_pic_built_ground!=ground)) {s_pic_epoch++;s_pic_epoch_z=z;}
+    s_pic_left=(int32_t)llround((lon+180.0)/360.0*world)-pw/2;
+    s_pic_top=(int32_t)llround(merc_y(lat)*world)-ph/2;
+    s_pic_built = true; s_pic_built_serial = s_pic_serial; s_pic_built_z = (int)z;
     s_pic_built_dx = dx; s_pic_built_dy = dy; s_pic_built_ground = ground;
     if (!dx && !dy) { memcpy(s_pic_view, s_pic, (size_t)pw * ph * 2); }
     else for (int y = 0; y < ph; y++) {
@@ -1042,13 +1123,14 @@ static void picture_release(void)
     ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
     heap_caps_free(s_pic); heap_caps_free(s_pic_view);
     s_pic = s_pic_view = NULL; s_pic_w = s_pic_h = 0; s_pic_have = false; s_pic_serial = 0;
-    s_pic_built = false;
+    s_pic_built = false;s_pic_epoch++;s_pic_pending_us=0;s_pic_preview_serial=0;
 }
 
 static void picture_present(tui_surface *sf, tui_rect a, int pw, int ph)
 {
     if (!s_pic_view || pw != s_pic_w || ph != s_pic_h) return;
-    ls_tui_image(a, s_pic_view, pw, ph, 0xC0000000u ^ s_pic_shown);
+    ls_tui_image_pan(a,s_pic_view,pw,ph,0xC0000000u ^ s_pic_shown,
+                     s_pic_epoch,s_pic_left,s_pic_top,s_pic_built_ground);
     for (int y = a.y; y < a.y + a.h; y++)
         for (int x = a.x; x < a.x + a.w; x++)
             tui_put_char(sf, a, x, y, LS_TUI_IMAGE_CELL, 0);
@@ -1112,7 +1194,7 @@ static void flat_under(tui_surface *sf, tui_rect body, int pw, int ph, const uin
     if (all) { if (map_flat(sf, body, false)) return; }
     else {
         double lat, lon, ppx, ppy; ls_map_get_center(&lat, &lon); flat_scale(&ppx, &ppy);
-        if (ls_globe_flat(sf, body, lat, lon, ls_map_zoom(), ppx, ppy, ls_maps_region_fill, NULL)) {
+        if (ls_globe_flat_lazy(sf, body, lat, lon, ls_map_zoom(), ppx, ppy, true, ls_maps_region_fill, NULL)) {
             for (int i = 0; i < n; i++)
                 if (!s_under_empty[i]) sf->back[(body.y + i / body.w) * sf->w + body.x + i % body.w] = s_under_keep[i];
             return;
@@ -2631,7 +2713,11 @@ static void rings_canvas(tui_surface *sf, tui_rect a, int pw, int ph, bool text)
     for (unsigned i = 0; i < sizeof(NICE) / sizeof(NICE[0]); i++)
         if (NICE[i] <= half_nm / 3.0) step = NICE[i];
     s_ring_nm = step;
-    const double diag = hypot(pw, ph) + hypot(fx - pw / 2.0, fy - ph / 2.0);
+    /* The farthest corner: a ring past it has no dot on the map, and each
+       costs up to 1200 plotting steps (the old bound, the whole diagonal
+       plus the offset, plotted ~half the rings for nothing). */
+    const double far_x = fx > pw / 2.0 ? fx : pw - fx, far_y = fy > ph / 2.0 ? fy : ph - fy;
+    const double diag = hypot(far_x, far_y) + 2.0;
     int dx, dy;
     px_dot(fx, fy, &dx, &dy);
     const uint8_t at = radar_attr();
@@ -4165,28 +4251,85 @@ static void route_canvas(int pw,int ph)
 /* A finger dragged on the map carries the map with it. Once it has moved a
    couple of cells it is a drag, never a tap: the release that ends it
    selects nothing, however close to a marker it went down. */
-static void pan(int dx, int dy);
+static void pan(double dx, double dy);
 static bool s_dragging;
-static int s_drag_col, s_drag_row;
+static int s_drag_x, s_drag_y;
+static int64_t s_drag_since;
+static uint32_t s_drag_seen;
+
+static void drag_reset(void)
+{
+    s_dragging=false;
+    s_drag_seen=ls_tui_touch_drags(NULL,NULL,NULL,NULL);
+}
 
 static void drag_pan(void)
 {
-    int sc, sr, c, r;
-    if (!ls_tui_touch_held(&sc, &sr, &c, &r)) { s_dragging = false; return; }
+    int sc, sr, c, r, x, y, x0, y0;
+    int64_t since;
+    int cw=10,ch=17;
+    ls_tui_geometry(NULL,NULL,&cw,&ch);
+    if (cw<1) cw=10;
+    if (ch<1) ch=17;
+    const uint32_t finished=ls_tui_touch_drags(&x0,&y0,&x,&y);
+    if (!ls_tui_touch_held(&sc, &sr, &c, &r)) {
+        /* The last move and release can arrive in one input drain. Apply the
+           endpoint once, including a whole drag between rendered frames. */
+        if (finished!=s_drag_seen) {
+            if (!s_dragging && in_rect(s_map_cells,x0/cw,y0/ch) &&
+                (abs(x/cw-x0/cw)>=2 || abs(y/ch-y0/ch)>=2)) {
+                s_dragging=true; s_drag_x=x0; s_drag_y=y0;
+            }
+            if (s_dragging) pan((s_drag_x-x)*(double)SUB_X/cw,
+                                (s_drag_y-y)*(double)sub_y()/ch);
+        }
+        s_drag_seen=finished; s_dragging=false;
+        return;
+    }
+    s_drag_seen=finished;
+    if (!ls_tui_touch_px(&x,&y,&x0,&y0,&since)) { s_dragging=false; return; }
+    if (s_dragging && since != s_drag_since) s_dragging=false;
     if (!s_dragging) {
         if (!in_rect(s_map_cells, sc, sr) || (abs(c - sc) < 2 && abs(r - sr) < 2)) return;
         s_dragging = true;
-        s_drag_col = sc;
-        s_drag_row = sr;
+        s_drag_x = x0;
+        s_drag_y = y0;
+        s_drag_since = since;
     }
-    if (c == s_drag_col && r == s_drag_row) return;
-    pan((s_drag_col - c) * SUB_X, (s_drag_row - r) * sub_y());
-    s_drag_col = c;
-    s_drag_row = r;
+    if (x == s_drag_x && y == s_drag_y) return;
+    pan((s_drag_x-x)*(double)SUB_X/cw, (s_drag_y-y)*(double)sub_y()/ch);
+    s_drag_x=x;
+    s_drag_y=y;
+}
+
+/* 'carto cost': where a MAP frame's draw goes, per stage: average (1/8)
+   and the worst since the last read. */
+enum { MC_PREP, MC_RENDER, MC_NODES, MC_HEAD, MC_PICTURE, MC_RINGS, MC_COVER, MC_RF, MC_ROUTE_SONDE, MC_AIR,
+       MC_INK, MC_LIVE, MC_CLABELS, MC_TEXT, MC_TAIL, MC_N };
+static const char *const MC_NAME[MC_N] = { "prepare", "render/picture", "air+nodes", "header",
+                                           "present+under", "rings", "cover", "rf", "route..sonde", "receiver+air",
+                                           "edges+flush", "live labels", "carto labels", "rings2+card", "tail" };
+static uint32_t s_mc_avg[MC_N], s_mc_max[MC_N];
+static int64_t s_mc_t;
+static void mc_mark(int k)
+{
+    const int64_t t = esp_timer_get_time();
+    const uint32_t u = (uint32_t)(t - s_mc_t);
+    s_mc_avg[k] = s_mc_avg[k] ? (s_mc_avg[k] * 7 + u) / 8 : u;
+    if (u > s_mc_max[k]) s_mc_max[k] = u;
+    s_mc_t = t;
+}
+void ls_map_cost_print(void)
+{
+    for (int k = 0; k < MC_N; k++) {
+        printf("map cost %-15s avg %6lu us  max %6lu us\n", MC_NAME[k], (unsigned long)s_mc_avg[k], (unsigned long)s_mc_max[k]);
+        s_mc_max[k] = 0;
+    }
 }
 
 static void draw(tui_surface *sf, tui_rect area)
 {
+    s_mc_t = esp_timer_get_time();
     static const char *previous_save;
     const char *save_status=ls_marks_save_status();
     if(save_status && (save_status!=previous_save || strstr(save_status,"NOT SAVED"))) say(save_status);
@@ -4234,6 +4377,7 @@ static void draw(tui_surface *sf, tui_rect area)
         if(!s_opened) { rescan();s_opened=true; }
         ls_map_begin(body.w*SUB_X,body.h*sub_y());
     }
+    mc_mark(MC_PREP);
 
     nodes_prepare();
     track_selection(body.w*SUB_X,body.h*sub_y());
@@ -4270,6 +4414,7 @@ static void draw(tui_surface *sf, tui_rect area)
         ls_map_get_center(&s_covered_lat,&s_covered_lon);s_have_covered_view=true;
     }
     s_pw = pw; s_ph = ph;
+    mc_mark(MC_RENDER);
 
     s_vector_s = vector_seconds();
     air_prepare(body, pw, ph, now);
@@ -4282,6 +4427,7 @@ static void draw(tui_surface *sf, tui_rect area)
     else if(demand<capacity-2) s_map_crowded=false;
     nodes_prepare();
     cover_update();
+    mc_mark(MC_NODES);
 
     /* The header: what is on the map and what the marks mean. */
     const uint8_t head = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
@@ -4318,6 +4464,7 @@ static void draw(tui_surface *sf, tui_rect area)
     tui_put_str(sf, area, s_controls_hit.x, area.y, s_controls_hidden ? "[SHOW KEYS]" : "[HIDE KEYS]",
                 TUI_ATTR(TUI_BLACK, TUI_CYAN));
 
+    mc_mark(MC_HEAD);
     s_nhits = 0;
     s_ntaken = 0;
     s_near_rect = tui_rect_make(0, -1, 0, 0);
@@ -4357,6 +4504,7 @@ static void draw(tui_surface *sf, tui_rect area)
             flat_under(sf, body, pw, ph, s_pic_view, s_pic_shown);
         else if(s_view == MAP_VIEW_FIELD && s_field_pixels && s_field_valid && pw == s_field_w && ph == s_field_h)
             flat_under(sf, body, pw, ph, s_field_pixels, s_field_serial ^ 0x80000000u ^ ((uint32_t)s_field_pal << 20));
+        mc_mark(MC_PICTURE);
         overlay_reset(body, s_pad_rect, s_card_rect);
 
         /* Underneath to on top: rings and coverage, lines and trails, then
@@ -4365,21 +4513,27 @@ static void draw(tui_surface *sf, tui_rect area)
         ls_ink_set_tint(palette()->tint);
         s_nplaced = 0;
         rings_canvas(sf, body, pw, ph, false);
+        mc_mark(MC_RINGS);
         cover_canvas(pw, ph);
+        mc_mark(MC_COVER);
         rf_canvas(body, pw, ph, now);
+        mc_mark(MC_RF);
         route_canvas(pw,ph);
         marks_canvas(body, pw, ph, now);
         nodes_canvas(body, pw, ph);
         aprs_canvas(body, pw, ph, now);
         ais_canvas(body, pw, ph, now);
         sonde_canvas(body, pw, ph, now);
+        mc_mark(MC_ROUTE_SONDE);
         receiver_canvas(body, pw, ph);
         air_canvas(body, pw, ph, now);
+        mc_mark(MC_AIR);
         edges_collect(pw, ph);
         edges_canvas(body, pw, ph);
         brackets_canvas();
         ls_ink_flush(sf, s_card_rect);
         claim_ink(body);
+        mc_mark(MC_INK);
 
         s_live_history=&s_live_labels;live_labels_begin(false);
         receiver_text(sf, body, pw, ph);
@@ -4391,7 +4545,9 @@ static void draw(tui_surface *sf, tui_rect area)
         marks_text(sf, body, pw, ph);
         edges_text(sf, body, pw, ph);
         map_sticky_end(s_live_history);
+        mc_mark(MC_LIVE);
         if(cc && layer(L_PLACES) && !layer(L_NOLABEL)) draw_carto_labels(sf,body);
+        mc_mark(MC_CLABELS);
         rings_canvas(sf, body, pw, ph, true);
         if (!cc && layer(L_PLACES) && !layer(L_NOLABEL)) draw_labels(sf, body, SUB_X, sub_y(), s_pad_rect);
         draw_card(sf, s_card_rect);
@@ -4402,6 +4558,7 @@ static void draw(tui_surface *sf, tui_rect area)
 
 
         draw_pan_pad(sf, s_pad_rect);
+        mc_mark(MC_TEXT);
     }
 
     centre_reticle(sf,body);
@@ -4458,6 +4615,7 @@ static void draw(tui_surface *sf, tui_rect area)
 #ifdef LS_MAP_AUDIT
     s_carto_audit_bad=carto_audit_cells(sf); /* before an external modal covers MAP */
 #endif
+    mc_mark(MC_TAIL);
 }
 
 /* Input handlers: one call per key or tap. */
@@ -4470,11 +4628,33 @@ static int pan_step(void)
     return px > 0 ? px : 32;
 }
 
-static void pan(int dx, int dy)
+static void pan(double dx, double dy)
 {
     s_delete_armed=false;
     s_track = false;
-    ls_map_pan(dx, dy);
+    /* CartoCore owns its raster scale; ls_map owns only centre and zoom.
+       Do not depend on the last draw/preview having set its tile size. */
+    const double k=cartocore_view() ? ls_map_tile_px()/256.0 : 1.0;
+    ls_map_pan(dx*k, dy*k);
+}
+
+static bool wheel_zoom(ls_tk_t k)
+{
+    if (k!=LS_TK_WHEEL_UP && k!=LS_TK_WHEEL_DOWN) return false;
+    int col,row;
+    double lat=0,lon=0;
+    const bool anchored=ls_tui_pointer_cell(&col,&row) && in_rect(s_map_cells,col,row);
+    const double fx=anchored ? (col-s_map_cells.x+0.5)*SUB_X : 0;
+    const double fy=anchored ? (row-s_map_cells.y+0.5)*sub_y() : 0;
+    if (anchored) frame_ll(fx,fy,s_pw,s_ph,&lat,&lon);
+    const int before=ls_map_zoom();
+    ls_map_zoom_by(k==LS_TK_WHEEL_UP ? 1 : -1);
+    if (anchored && before!=ls_map_zoom()) {
+        double x,y;
+        frame_px(lat,lon,s_pw,s_ph,&x,&y);
+        pan(x-fx,y-fy);
+    }
+    return true;
 }
 
 /* Step through the aircraft with a position, nearest the centre first, and
@@ -4568,6 +4748,7 @@ static ls_act_status_t a_map_context(const ls_args_t *in,ls_val_t *out)
 static bool key(ls_tk_t k, char ch)
 {
     if(ls_place_search_active())return ls_place_search_key(k,ch);
+    if (wheel_zoom(k)) return true;
     if (k == LS_TK_CHAR && (ch == 'x' || ch == 'X')) {
         controls_toggle();
         return true;
@@ -4693,7 +4874,7 @@ static void select_hit(const hit_t *h)
 static bool touch(int col, int row)
 {
     if(ls_place_search_active())return ls_place_search_touch(col,row);
-    if (s_dragging) { s_dragging = false; return true; }
+    if (s_dragging) { drag_pan(); s_dragging = false; return true; }
     if (in_rect(s_controls_hit, col, row) || in_rect(s_show_rect, col, row)) return key(LS_TK_CHAR, 'x');
     if (in_rect(s_near_rect, col, row)) {
         jump_to(s_near_lat, s_near_lon);
@@ -4783,4 +4964,5 @@ const ls_tui_screen_t ls_scr_map = {
     .draw = draw,
     .key = key,
     .touch = touch,
+    .wheel = true,
 };

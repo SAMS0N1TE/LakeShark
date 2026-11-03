@@ -12,6 +12,7 @@
 #include "freertos/task.h"
 #include <string.h>
 #include "ls_cold.h"
+#include "esp_log.h"
 #ifdef ESP_PLATFORM
 #include "esp_cpu.h"
 #define WF_CYCLES() esp_cpu_get_cycle_count()
@@ -59,7 +60,13 @@ typedef struct {
     void *ctx;
     atomic_uint lost_pairs, gaps;
     /* This run's route, fixed while its capture task lives. */
-    bool run_wide;
+    bool run_wide, run_chip, chip_plus;
+    /* Chip wide: the radio decimates (lr20xx_chip_ddc_live) and the capture
+       task only widens its int8 pairs into the narrow queue's IQ16 blocks. */
+    uint8_t chip_stage[1024];
+    size_t chip_n;
+    uint64_t chip_first;
+    lr20xx_chip_ddc_result_t chip_result;
     int32_t run_offset;
     lr20xx_iq_config_t iq;
     wide_t *wide;           /* PSRAM, from the first wide run to stop */
@@ -80,8 +87,42 @@ static inline void tap_block(const uint8_t *data, size_t bytes, uint32_t hz)
 }
 
 static atomic_bool wide_on, wide_force;
+/* Chip wide is the default: the cheapest LR stream (no FIFO polling, no
+   down-converter on the P4). A radio that refuses the program turns it off
+   for the boot (chip_failed); `lora lrwide chip on` asks again. */
+static atomic_bool wide_chip = true, chip_failed;
 /* What a run takes: the setting, or an owner's pin (lr_wf_set_wide_force). */
 static inline bool wide_want(void) { return atomic_load(&wide_on) || atomic_load(&wide_force); }
+/* Chip wide: 1 MS/s on source 1, the LR2021 decimates by 8 to 125k itself,
+   the channel a quarter rate above the LO. */
+#define CHIP_CODE      0x19u      /* source-1 divider: 1 MS/s */
+#define CHIP_RATE_HZ   1000000u
+#define CHIP_OFFSET_HZ (CHIP_RATE_HZ / 4)
+#define CHIP_DEC       8u
+#define CHIP_SHIFT     6u         /* CIC gain 64: int8 in, int8 out */
+/* Weak: host tests link the session against a fake stream with no chip path. */
+#pragma weak lr20xx_chip_ddc_live
+void lr_wf_set_wide_chip(bool on) { atomic_store(&wide_chip, on); if (on) atomic_store(&chip_failed, false); }
+bool lr_wf_wide_chip_on(void) { return atomic_load(&wide_chip); }
+static inline bool chip_usable(void)
+{
+    return atomic_load(&wide_chip) && !atomic_load(&chip_failed) && lr20xx_chip_ddc_live;
+}
+bool lr_wf_shared_wide(void) { return atomic_load(&wide_on) || chip_usable(); }
+/* The LO for chip wide at hz: a quarter rate below, or above where below is
+   out of range or on the other input. 0 when neither fits. */
+static uint32_t chip_lo(uint32_t hz, bool *plus)
+{
+    const uint32_t caps = ls_lora_caps();
+    for (int up = 0; up < 2; up++) {
+        const uint32_t lo = up ? hz + CHIP_OFFSET_HZ : hz - CHIP_OFFSET_HZ;
+        if (ls_lora_packet_rx_hz_ok(caps, lo) && lr20xx_path_for_hz(lo) == lr20xx_path_for_hz(hz)) {
+            if (plus) *plus = up;
+            return lo;
+        }
+    }
+    return 0;
+}
 bool lr_wf_wide_on(void) { return atomic_load(&wide_on); }
 void lr_wf_set_wide_force(bool on) { atomic_store(&wide_force, on); }
 /* TIME MACHINE's copy of what the consumer gets (lr_wf_set_capture_tap). */
@@ -95,7 +136,7 @@ static inline void tap_out(uint32_t hz, const uint8_t *d, size_t bytes)
 static atomic_int wide_offset = LR_WF_WIDE_DEFAULT_HZ;
 _Static_assert(LR_WF_WIDE_DEFAULT_HZ * 4 == WIDE_RATE_HZ, "default offset is lr_ddc's in/4 path");
 static struct {
-    atomic_bool active, wide;
+    atomic_bool active, wide, chip;
     atomic_uint channel_hz, lo_hz, rate_hz;
     atomic_uint ddc_mcycles, expand_mcycles;
     atomic_uint queue_high_water, queue_drops, fifo_overflows, fifo_full;
@@ -135,6 +176,8 @@ void lr_wf_wide_get(lr_wf_wide_status *out)
     *out = (lr_wf_wide_status){
         .on = atomic_load(&wide_on), .offset_hz = atomic_load(&wide_offset),
         .active = atomic_load(&st.active), .wide = atomic_load(&st.wide),
+        .chip_on = atomic_load(&wide_chip), .chip = atomic_load(&st.chip),
+        .chip_failed = atomic_load(&chip_failed),
         .channel_hz = atomic_load(&st.channel_hz), .lo_hz = atomic_load(&st.lo_hz),
         .rate_hz = atomic_load(&st.rate_hz),
         .ddc_mcycles = atomic_load(&st.ddc_mcycles),
@@ -169,8 +212,9 @@ static void confirm(session_t *s, bool *confirmed)
 /* The setting differs from what this run streams. */
 static bool switch_wanted(const session_t *s)
 {
-    const bool on = wide_want();
-    return on != s->run_wide || (on && atomic_load(&wide_offset) != s->run_offset);
+    const bool chip = chip_usable() && chip_lo(s->hz, NULL), on = wide_want() || chip;
+    if (on != s->run_wide || chip != s->run_chip) return true;
+    return on && !s->run_chip && atomic_load(&wide_offset) != s->run_offset;
 }
 
 static bool IRAM_ATTR collect(void *arg, const uint8_t *data, size_t bytes, uint64_t first)
@@ -205,9 +249,58 @@ static bool IRAM_ATTR collect_wide(void *arg, const uint8_t *data, size_t bytes,
     atomic_fetch_add(&st.queue_drops, 1);
     return false;
 }
+/* Chip wide: int8 pairs, already at 125k with the channel at 0 Hz, widened
+   to IQ16 and pushed in 256-pair blocks, as the narrow stream pushes them. */
+static bool collect_chip(void *arg, const uint8_t *iq8, size_t bytes, uint64_t first)
+{
+    session_t *s = arg;
+    if (atomic_load(&s->capture_stop)) return false;
+    const uint64_t have = s->chip_first + s->chip_n / 4;
+    /* A lapped ring (the host stalled past the radio's 14 ms) is a jump in
+       first: the part block goes, and the pump resets the decoders there. */
+    if (s->chip_n && first != have) {
+        atomic_fetch_add(&s->lost_pairs, (unsigned)(first - have + s->chip_n / 4));
+        s->chip_n = 0;
+    }
+    if (!s->chip_n) s->chip_first = first;
+    for (size_t k = 0; k < bytes; k++) {
+        const int16_t v = (int16_t)((int8_t)iq8[k] * 256);
+        s->chip_stage[s->chip_n++] = (uint8_t)v;
+        s->chip_stage[s->chip_n++] = (uint8_t)((uint16_t)v >> 8);
+        if (s->chip_n == sizeof(s->chip_stage)) {
+            if (!lr2021_iq_queue_push(&s->queue, s->chip_stage, s->chip_n, s->chip_first, 1)) {
+                atomic_fetch_add(&s->lost_pairs, (unsigned)(s->chip_n / 4));
+                atomic_fetch_add(&s->gaps, 1);
+                atomic_fetch_add(&st.queue_drops, 1);
+                return false;
+            }
+            s->chip_first += s->chip_n / 4;
+            s->chip_n = 0;
+        }
+    }
+    atomic_fetch_add(&st.in_pairs, (unsigned)(bytes / 2) * CHIP_DEC);
+    atomic_fetch_add(&st.out_pairs, (unsigned)(bytes / 2));
+    return true;
+}
 static void capture(void *arg)
 {
     session_t *s = arg;
+    if (s->run_chip) {
+        s->chip_n = 0; s->chip_first = 0;
+        const lr20xx_chip_ddc_cfg_t cfg = {.lo_hz = s->iq.frequency_hz, .code = CHIP_CODE,
+                                           .dec = CHIP_DEC, .shift = CHIP_SHIFT, .gain = 0,
+                                           .plus = s->chip_plus};
+        s->capture_error = lr20xx_chip_ddc_live(&cfg, collect_chip, s, &s->chip_result);
+        if (s->chip_result.laps) atomic_fetch_add(&st.fifo_overflows, s->chip_result.laps);
+        if (!atomic_load(&s->capture_stop))
+            ESP_LOGW("lr_wf", "chip wide run ended: %s, %lu pairs out, laps %lu, busy timeouts %lu, chip overruns %lu busy_max %lu",
+                     esp_err_to_name(s->capture_error), (unsigned long)s->chip_result.out_pairs,
+                     (unsigned long)s->chip_result.laps, (unsigned long)s->chip_result.timeouts,
+                     (unsigned long)s->chip_result.chip_overruns, (unsigned long)s->chip_result.chip_busy_max);
+        atomic_store_explicit(&s->capture_done, true, memory_order_release);
+        vTaskDelete(NULL);
+        return;
+    }
     s->capture_error = s->run_wide ? lr20xx_stream_live(&s->iq, collect_wide, s, &s->result)
                                    : lr20xx_stream_source2_live(collect, s, &s->result);
     atomic_store_explicit(&s->capture_done, true, memory_order_release);
@@ -228,13 +321,23 @@ static int pump_narrow(session_t *s, bool *confirmed)
             if (esp_timer_get_time() > deadline) { s->error = ESP_ERR_TIMEOUT; return RUN_FAIL; }
             vTaskDelay(1); continue;
         }
+        if (s->run_chip && b->generation == 1 && b->first_pair > expected) {
+            /* Chip wide keeps streaming across a host stall: the decoders
+               restart there (NULL/0), as after a retune, and the run goes on. */
+            atomic_fetch_add(&s->gaps, 1);
+            if (s->consume) s->consume(s->ctx, NULL, 0, false);
+            tap_out(s->hz, NULL, 0);
+            expected = b->first_pair;
+        }
         if (b->generation != 1 || b->first_pair != expected) {
             atomic_fetch_add(&s->gaps, 1);
             atomic_fetch_add(&s->lost_pairs, (b->first_pair > expected ? (uint32_t)(b->first_pair-expected) : 0));
             s->error = ESP_ERR_INVALID_RESPONSE; return RUN_FAIL;
         }
         if (!*confirmed) confirm(s, confirmed);
-        bool spare = atomic_load(&s->queue.write_index) - atomic_load(&s->queue.read_index) <= 1;
+        /* Chip wide hands blocks over in short bursts after a host stall:
+           two waiting is still keeping up (wide allows WIDE_SPARE_SLOTS). */
+        bool spare = atomic_load(&s->queue.write_index) - atomic_load(&s->queue.read_index) <= (s->run_chip ? 2u : 1u);
         if (s->consume) s->consume(s->ctx, b->data, b->bytes, spare);
         tap_block(b->data, b->bytes, s->hz);
         tap_out(s->hz, b->data, b->bytes);
@@ -318,8 +421,22 @@ static int pump_wide(session_t *s, bool *confirmed)
    the channel and points the down-converter back at it. */
 static esp_err_t prepare_run(session_t *s)
 {
-    s->run_wide = wide_want();
     s->run_offset = atomic_load(&wide_offset);
+    s->run_chip = chip_usable();
+    if (s->run_chip) {
+        /* The LO a quarter rate below the channel, or above it where below is
+           out of the radio's range (the chip then mixes the other way). Same
+           input either side; otherwise this channel runs the ordinary way. */
+        const uint32_t lo = chip_lo(s->hz, &s->chip_plus);
+        if (lo) {
+            s->run_wide = true;
+            s->iq = (lr20xx_iq_config_t){.route = LR20XX_IQ_SOURCE1, .code = CHIP_CODE, .frequency_hz = lo,
+                                         .path = lr20xx_path_for_hz(lo)};
+            return ESP_OK;
+        }
+        s->run_chip = false;
+    }
+    s->run_wide = wide_want();
     if (!s->run_wide) return ESP_OK;
     const uint32_t lo = s->hz - (uint32_t)s->run_offset;
     if (!ls_lora_packet_rx_hz_ok(ls_lora_caps(), lo)) return ESP_ERR_INVALID_ARG;
@@ -381,17 +498,22 @@ static void owner(void *arg)
         /* Core 0 even when wide: core 1 has ls_tui (prio 4) under the owner's
            down-conversion, and capture there starved the UI into its 60 s
            stall abort. */
+        /* Chip wide reads the radio's output ring in BUSY-spinning frames and
+           has no FIFO deadline of its own (the radio buffers 3.5 ms): the
+           owner's priority, not the top one. */
         if (xTaskCreatePinnedToCore(capture, "wf_iq_rx", 4096, s,
-                                   configMAX_PRIORITIES - 1, NULL, 0) != pdPASS) {
+                                   s->run_chip ? 10 : configMAX_PRIORITIES - 1, NULL, 0) != pdPASS) {
             atomic_store(&s->capture_done, true);
             s->error = ESP_ERR_NO_MEM; goto restore;
         }
         atomic_store(&st.active, true); atomic_store(&st.wide, s->run_wide);
         atomic_store(&st.channel_hz, s->hz);
         atomic_store(&st.lo_hz, s->run_wide ? s->iq.frequency_hz : s->hz);
-        atomic_store(&st.rate_hz, s->run_wide ? WIDE_RATE_HZ : LR_DDC_OUT_HZ);
+        atomic_store(&st.rate_hz, s->run_chip ? CHIP_RATE_HZ : s->run_wide ? WIDE_RATE_HZ : LR_DDC_OUT_HZ);
+        atomic_store(&st.chip, s->run_chip);
         if (s->run_wide) atomic_fetch_add(&st.runs, 1);
-        const int why = s->run_wide ? pump_wide(s, &confirmed) : pump_narrow(s, &confirmed);
+        /* Chip wide arrives as narrow-shaped 125k blocks. */
+        const int why = s->run_wide && !s->run_chip ? pump_wide(s, &confirmed) : pump_narrow(s, &confirmed);
         atomic_store(&s->capture_stop, true);
         while (!atomic_load_explicit(&s->capture_done, memory_order_acquire)) vTaskDelay(1);
         atomic_store(&st.active, false);
@@ -418,7 +540,7 @@ static void owner(void *arg)
             if (!moved) atomic_fetch_add(&s->lost_pairs, left->bytes/4);
             lr2021_iq_queue_release(&s->queue);
         }
-        if (s->run_wide && !moved) {
+        if (s->run_wide && !s->run_chip && !moved) {
             const unsigned w = atomic_load(&s->wide->write_index), r = atomic_load(&s->wide->read_index);
             for (unsigned i = r; i != w; ++i)
                 atomic_fetch_add(&s->lost_pairs, s->wide->meta[i & (WIDE_SLOTS - 1)].bytes / 2);
@@ -426,7 +548,17 @@ static void owner(void *arg)
         if (s->run_wide) lr_span_end();
         if (s->consume) s->consume(s->ctx, NULL, 0, false);
         tap_out(s->hz, NULL, 0);
-        if (moved && s->capture_error == ESP_OK && s->result.recovery_error == ESP_OK) {
+        const esp_err_t recovery = s->run_chip ? s->chip_result.recovery_error : s->result.recovery_error;
+        /* Chip wide that never delivered a pair (the radio refused the
+           program, an older ROM): the ordinary route, for the rest of the boot. */
+        if (s->run_chip && !atomic_load(&s->stop) && !s->chip_result.out_pairs && s->capture_error != ESP_OK) {
+            atomic_store(&chip_failed, true);
+            ESP_LOGW("lr_wf", "chip wide refused (%s): the ordinary route for this boot",
+                     esp_err_to_name(s->capture_error));
+            if (confirmed) { lr_spec_end(); confirmed = false; }
+            continue;
+        }
+        if (moved && s->capture_error == ESP_OK && recovery == ESP_OK) {
             /* The new route confirms the tune again with its own first block. */
             if (confirmed) { lr_spec_end(); confirmed = false; }
             if (why == RUN_RETUNE) {
@@ -438,7 +570,7 @@ static void owner(void *arg)
         }
         if (!atomic_load(&s->stop) && !atomic_load(&s->gaps)) atomic_fetch_add(&s->gaps, 1);
         if (s->capture_error != ESP_OK) s->error = s->capture_error;
-        if (s->result.recovery_error != ESP_OK) s->error = s->result.recovery_error;
+        if (recovery != ESP_OK) s->error = recovery;
         if (!atomic_load(&s->stop) && s->error == ESP_OK) s->error = ESP_ERR_INVALID_STATE;
         break;
     }

@@ -1688,67 +1688,6 @@ static bool pin_idles_high(int pin)
     return false;
 }
 
-int flipper_link_scan_rx(int dwell_ms)
-{
-    if (dwell_ms < 200)  dwell_ms = 200;
-    if (dwell_ms > 5000) dwell_ms = 5000;
-
-    flipper_link_cfg_t saved = s_cfg;
-    bool was_running = s_run;
-    if (was_running) flipper_link_stop();
-
-    s_cfg.tx_gpio = -1;
-    esp_err_t err = link_install();
-    if (err != ESP_OK) {
-        printf("scan: uart install failed: %s\n", esp_err_to_name(err));
-        s_cfg = saved;
-        if (was_running) flipper_link_start(&s_cfg, NULL);
-        return -1;
-    }
-
-    LS_PRINTF(fmt_flipper_link_scanning_pins_ms_each, "scanning %d pins, %d ms each (drive the head so it keeps talking)\n",
-           N_SCAN_PINS, dwell_ms);
-
-    int best = -1;
-    size_t best_n = 0;
-    for (int i = 0; i < N_SCAN_PINS; i++) {
-        int pin = SCAN_PINS[i];
-
-        if (uart_set_pin(s_cfg.uart_num, UART_PIN_NO_CHANGE, pin,
-                         UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK) {
-            printf("  GPIO%-2d : (cannot route)\n", pin);
-            continue;
-        }
-        uart_flush_input(s_cfg.uart_num);
-        vTaskDelay(pdMS_TO_TICKS(dwell_ms));
-
-        size_t avail = 0;
-        uart_get_buffered_data_len(s_cfg.uart_num, &avail);
-
-        char peek[33] = { 0 };
-        if (avail) {
-            int n = uart_read_bytes(s_cfg.uart_num, (uint8_t *)peek,
-                                    avail > 32 ? 32 : avail, 0);
-            for (int k = 0; k < n; k++) {
-                if (peek[k] < 32 || peek[k] > 126) peek[k] = '.';
-            }
-            peek[n > 0 ? n : 0] = '\0';
-        }
-        printf("  GPIO%-2d : %4u bytes  %s\n", pin, (unsigned)avail, peek);
-
-        if (avail > best_n) { best_n = avail; best = pin; }
-        uart_flush_input(s_cfg.uart_num);
-    }
-
-    link_uninstall();
-    s_cfg = saved;
-    if (was_running) flipper_link_start(&s_cfg, NULL);
-
-    if (best >= 0) printf("scan: busiest pin GPIO%d (%u bytes)\n", best, (unsigned)best_n);
-    else           printf("scan: nothing heard on any pin\n");
-    return best;
-}
-
 static int probe_pin_pct(int pin)
 {
     gpio_config_t in = {
@@ -1841,14 +1780,6 @@ int flipper_link_probe_rx(void)
 
 #else  /* !LS_HAS_LINK_UART */
 
-int flipper_link_scan_rx(int dwell_ms)
-{
-    (void)dwell_ms;
-    LS_FPUTS(msg_flipper_link_this_board_declares_no, "this board declares no wired head-link pins - nothing to scan.\n"
-           "  see LS_BOARD_LINK_SCAN_PINS in components/lakeshark/board/variants/\n", stdout);
-    return -1;
-}
-
 int flipper_link_probe_rx(void)
 {
     LS_FPUTS(msg_flipper_link_this_board_declares_no_2, "this board declares no wired head-link pins - nothing to probe.\n", stdout);
@@ -1856,15 +1787,6 @@ int flipper_link_probe_rx(void)
 }
 
 #endif /* LS_HAS_LINK_UART */
-
-static bool link_has_scan_pins(void)
-{
-#if LS_HAS_LINK_UART
-    return N_SCAN_PINS > 0;
-#else
-    return false;
-#endif
-}
 
 void flipper_link_inject(const char *line, char *reply, size_t reply_len)
 {
@@ -2004,59 +1926,6 @@ static void link_uninstall(void)
     gpio_set_level(s_cfg.tx_gpio, 1);
 }
 
-/**/
-#define LS_HEAL_MAX_SWEEPS 3
-
-static void heal_task(void *arg)
-{
-    (void)arg;
-    int  sweeps   = 0;
-    bool told_ble = false;
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(60000));
-        if (!s_run || s_rx_lines > 0) continue;
-        if (s_tx_lines < 50) continue;
-
-        if (ble_link_state() == BLE_LINK_READY) {
-            if (!told_ble) {
-                ESP_LOGI(TAG, "head is on BLE - leaving the UART pins alone");
-                told_ble = true;
-            }
-            continue;
-        }
-
-        /* A board with no pins to sweep has no search to announce, and announcing it three times a minute apart is worse than saying it once. */
-
-        if (!link_has_scan_pins()) {
-            if (!sweeps) {
-                ESP_LOGI(TAG, "no RX after %lu TX frames, and this board has "
-                              "no pins to sweep - a head is on GPIO%d or it "
-                              "is not attached",
-                         (unsigned long)s_tx_lines, s_cfg.rx_gpio);
-            }
-            sweeps = LS_HEAL_MAX_SWEEPS;
-            continue;
-        }
-
-        if (sweeps >= LS_HEAL_MAX_SWEEPS) continue;
-        sweeps++;
-
-        ESP_LOGW(TAG, "no RX after %lu TX frames - sweeping header pins for the head "
-                      "(attempt %d of %d)",
-                 (unsigned long)s_tx_lines, sweeps, LS_HEAL_MAX_SWEEPS);
-        int pin = flipper_link_scan_rx(700);
-        if (pin >= 0 && pin != s_cfg.rx_gpio) {
-            flipper_link_cfg_t c = s_cfg;
-            c.rx_gpio = pin;
-            ESP_LOGW(TAG, "adopting GPIO%d as link RX", pin);
-            flipper_link_reconfigure(&c);
-        } else if (sweeps >= LS_HEAL_MAX_SWEEPS) {
-            ESP_LOGW(TAG, "giving up on the UART sweep - use 'link pins <rx> <tx>' "
-                          "or run the head over BLE");
-        }
-    }
-}
-
 void flipper_link_set_host(const flipper_link_host_t *host)
 {
     if (host) s_host = *host;
@@ -2082,11 +1951,6 @@ esp_err_t flipper_link_start(const flipper_link_cfg_t *cfg,
         s_run = false;
         link_uninstall();
         return ESP_ERR_NO_MEM;
-    }
-
-    static bool healer_started = false;
-    if (!healer_started) {
-        healer_started = (xTaskCreate(heal_task, "fl_heal", 4096, NULL, 3, NULL) == pdPASS);
     }
 
     /**/

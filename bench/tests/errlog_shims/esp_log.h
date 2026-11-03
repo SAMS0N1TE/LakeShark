@@ -21,8 +21,16 @@ typedef int (*vprintf_like_t)(const char *, va_list);
 vprintf_like_t esp_log_set_vprintf(vprintf_like_t func);
 void esp_log_write(esp_log_level_t level, const char *tag, const char *format, ...);
 
+#if CONFIG_LOG_VERSION_2
+/* Log V2: the prefix, the message and the newline in three calls, as
+   esp_log_format() makes them. */
+void ls_errlog_shim_log_v2(char letter, const char *tag, const char *format, ...);
+#define LS_ERRLOG_SHIM_LINE(letter, lvl, tag, fmt, ...) \
+    ls_errlog_shim_log_v2(letter[0], tag, fmt, ##__VA_ARGS__)
+#else
 #define LS_ERRLOG_SHIM_LINE(letter, lvl, tag, fmt, ...) \
     esp_log_write(lvl, tag, letter " (%lu) %s: " fmt "\n", 0ul, tag, ##__VA_ARGS__)
+#endif
 
 #define ESP_LOGE(tag, fmt, ...) LS_ERRLOG_SHIM_LINE("E", ESP_LOG_ERROR, tag, fmt, ##__VA_ARGS__)
 #define ESP_LOGW(tag, fmt, ...) LS_ERRLOG_SHIM_LINE("W", ESP_LOG_WARN, tag, fmt, ##__VA_ARGS__)

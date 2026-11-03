@@ -37,6 +37,16 @@
 #define LS_BOARD_LINK_RX_GPIO    33
 #define LS_BOARD_LINK_TX_GPIO    32
 #define LS_BOARD_LINK_SCAN_PINS \
-    { 33, 32, 45, 47, 48, 0, 1, 2, 3, 6, 4, 5, 20, 21, 22, 23, 36 }
+    { 33, 32, 45, 47, 48, 0, 1, 2, 3, 6, 4, 20, 21, 36 }
+
+/* Waveshare L76K GPS module on the left header, the same GPIOs as the
+   T-Display-P4's L76K: module TX -> GPIO22 (header pin 16), module RX <-
+   GPIO23 (pin 7), VCC 3V3 (pin 1), GND (pin 6), PPS -> GPIO5 (pin 11, not
+   read yet). The module ships at 9600; ls_gps raises it to 115200. 22/23/5
+   are out of the Flipper pin scan so NMEA is never taken for a Flipper. */
+#define LS_BOARD_GPS_UART_NUM    2
+#define LS_BOARD_GPS_RX_GPIO     22
+#define LS_BOARD_GPS_TX_GPIO     23
+#define LS_BOARD_GPS_BAUD        115200
 
 #endif

@@ -1,6 +1,7 @@
 /* LS_TEST_SOURCES: ${FW}/components/lakeshark/board/ls_board_hw.c */
 #include "ls_test.h"
 #include "ls_board_hw.h"
+#include "ls_lora.h"
 #include "ls_xl9535.h"
 #include "ls_board.h"
 #include "freertos/task.h"
@@ -45,6 +46,7 @@ bool ls_xl9535_ready(void) { return ready; }
 void ls_lora_hw_lock(void) {}
 void ls_lora_hw_unlock(void) {}
 bool ls_lora_send_done(void) { return true; }
+ls_lora_chip_t ls_lora_fitted(void) { return LS_LORA_CHIP_NONE; }
 esp_err_t ls_xl9535_set(int pin, bool high)
 { levels[pin] = high; return ESP_OK; }
 esp_err_t ls_xl9535_set_dir(int pin, bool output)

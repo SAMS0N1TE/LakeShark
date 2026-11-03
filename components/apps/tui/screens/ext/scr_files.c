@@ -13,6 +13,8 @@
 #include "../../ls_media_widgets.h"
 #include "../../ls_rec_replay.h"
 #include "../../ls_keyboard.h"
+#include "../../ls_app.h"
+#include "../../ls_cartocore_map.h"
 #include "rec_state.h"
 #include "rec_watch.h"
 #include "rec_file_open.h"
@@ -99,6 +101,8 @@ static const char *ext_of(const char *name);
 static bool is_text(const char *name);
 static bool is_audio(const char *name);
 static void play_audio(void);
+static bool is_map(const char *name);
+static void open_map(void);
 
 /* A shortened path must never address a different entry on the card. */
 static bool join_path(char *out, size_t len, const char *dir, const char *name)
@@ -333,6 +337,7 @@ static void open_selected(void)
     }
     if (is_text(e->name)) { open_text(); return; }
     if (is_audio(e->name)) { play_audio(); return; }
+    if (is_map(e->name)) { open_map(); return; }
     char sz[16];
     size_text(e->size, sz, sizeof(sz));
     LS_SNPRINTF(t_scr_files_s_s_no_viewer, s_feedback, sizeof(s_feedback), "%s, %s - no viewer for .%s", e->name, sz, ext_of(e->name));
@@ -409,6 +414,17 @@ static bool music_dir_ready(void)
     if (mkdir(MUSIC_DIR, 0777) == 0) return true;
     snprintf(s_feedback, sizeof(s_feedback), "Could not make %s", MUSIC_DIR);
     return false;
+}
+/* A map file opens in MAP (on the desktop, in MAP's own window). */
+static bool is_map(const char *name) { return !strcasecmp(ext_of(name), "ctile"); }
+static void open_map(void)
+{
+    const ls_app_t *map = ls_app_by_id("map");
+    if (!map || !map->screen || !ls_carto_map_select(s_open_path)) {
+        snprintf(s_feedback, sizeof(s_feedback), "MAP could not open it");
+        return;
+    }
+    ls_tui_screen_show(ls_tui_screen_index_of(map->screen));
 }
 static void play_audio(void)
 {
@@ -580,6 +596,7 @@ static void actions_done(int i)
     case 'R': replay_open(); break;
     case 'T': open_text(); break;
     case 'P': play_audio(); break;
+    case 'A': open_map(); break;
     case 'C': copy_to_music(); break;
     case 'M': move_to_music(); break;
     case 'I': info_open(); break;
@@ -643,6 +660,7 @@ static void actions_open(void)
             menu_add('M', "MOVE TO MUSIC", LS_TEXT(t_scr_files_take_it_out_of, "Take it out of here, into MUSIC"));
         }
     }
+    if (!dir && is_map(open_name())) menu_add('A', "OPEN IN MAP", "Show this map in MAP");
     if (!dir && is_text(open_name()) && s_view != VIEW_TEXT) menu_add('T', "VIEW AS TEXT", "The file as written");
     menu_add('I', "INFO", LS_TEXT(t_scr_files_size_date_where_it, "Size, date, where it is"));
     menu_add('N', "RENAME", "Type a new name");

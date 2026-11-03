@@ -41,6 +41,7 @@ static volatile bool     s_muted  = false;
 static volatile bool     s_idle_park = true;
 static volatile bool     s_park_hold = false;
 static bool              s_ready  = false;
+static atomic_bool s_capture_owned;
 static atomic_bool       s_media_request = false, s_media_owned = false;
 /* Selected settings and codec restoration are one transaction. */
 static StaticSemaphore_t s_settings_memory;
@@ -670,7 +671,7 @@ void audio_out_reset(void)
 esp_err_t audio_out_media_acquire(void)
 {
     portENTER_CRITICAL(&s_owner_lock);
-    if (!s_ready || s_media_request || s_media_owned || __atomic_load_n(&s_reinit_state, __ATOMIC_ACQUIRE)) {
+    if (!s_ready || s_capture_owned || s_media_request || s_media_owned || __atomic_load_n(&s_reinit_state, __ATOMIC_ACQUIRE)) {
         portEXIT_CRITICAL(&s_owner_lock);
         return ESP_ERR_INVALID_STATE;
     }
@@ -731,7 +732,7 @@ void audio_volume_set(int v)
 esp_err_t audio_out_reinit(bool swap)
 {
     portENTER_CRITICAL(&s_owner_lock);
-    if (!s_ready || s_media_request || s_media_owned || __atomic_load_n(&s_reinit_state, __ATOMIC_ACQUIRE)) {
+    if (!s_ready || s_capture_owned || s_media_request || s_media_owned || __atomic_load_n(&s_reinit_state, __ATOMIC_ACQUIRE)) {
         portEXIT_CRITICAL(&s_owner_lock);
         return ESP_ERR_INVALID_STATE;
     }
@@ -750,3 +751,16 @@ esp_err_t audio_out_reinit(bool swap)
     __atomic_store_n(&s_reinit_state, 0, __ATOMIC_RELEASE);
     return result;
 }
+
+esp_err_t audio_out_capture_acquire(void) {
+    portENTER_CRITICAL(&s_owner_lock);
+    bool ok=s_ready && !s_capture_owned && !s_media_request && !s_media_owned && !__atomic_load_n(&s_reinit_state,__ATOMIC_ACQUIRE);
+    if(ok)s_capture_owned=true;
+    portEXIT_CRITICAL(&s_owner_lock);
+    return ok?ESP_OK:ESP_ERR_INVALID_STATE;
+}
+void audio_out_capture_release(void) {
+    portENTER_CRITICAL(&s_owner_lock);s_capture_owned=false;portEXIT_CRITICAL(&s_owner_lock);
+}
+
+bool audio_out_app_cues_available(void) {return s_ready&&!s_media_request&&!s_media_owned&&!__atomic_load_n(&s_reinit_state,__ATOMIC_ACQUIRE);}

@@ -1,4 +1,6 @@
 #include "ls_audio_overview.h"
+#include "ls_trace.h"
+#include "esp_timer.h"
 #include "../../chmorgan__esp-audio-player/codecs/ls_decode.h"
 #include "ls_audio_analysis.h"
 #include <inttypes.h>
@@ -235,8 +237,10 @@ static void slice_step(ls_audio_overview *o) {
   }
   unsigned rate = ls_decode_rate(o->decoder),
            channels = ls_decode_channels(o->decoder);
+  const int64_t seek_us = LS_TRACE_US();
   if (!ls_decode_seek(o->decoder, (uint64_t)ms * rate / 1000))
     return;
+  LS_TRACE("ov slice", (int32_t)((LS_TRACE_US() - seek_us) / 1000), (int32_t)ms);
   size_t got = ls_decode_read(o->decoder, o->pcm, n);
   if (ls_decode_failed(o->decoder))
     return;
@@ -278,7 +282,10 @@ void ls_audio_overview_step(ls_audio_overview *o, unsigned budget) {
     budget = 2048;
   unsigned channels = ls_decode_channels(o->decoder);
   uint64_t first = ls_decode_position(o->decoder);
+  const int64_t read_us = LS_TRACE_US();
   size_t got = ls_decode_read(o->decoder, o->pcm, budget);
+  if (LS_TRACE_US() - read_us > 30000)
+    LS_TRACE("ov read slow", (int32_t)((LS_TRACE_US() - read_us) / 1000), (int32_t)got);
   if (!got) {
     if (ls_decode_failed(o->decoder)) {
       atomic_store(&o->error, 2);

@@ -290,3 +290,27 @@ LS_CASE(a_release_carries_the_position_the_finger_was_last_at)
     LS_EQ_INT(9, t.col);
     LS_EQ_INT(4, t.row);
 }
+
+LS_CASE(window_translation_preserves_raw_input_and_overrides_glass_for_the_app)
+{
+    settle();ls_tui_touch_client_clear();
+    finger_at(40,20,true);poll(NULL);
+    ls_tui_touch_client(20,10,203,172,true);
+    ls_tui_touch_client(5,4,53,70,true);
+    int sc,sr,c,r,x,y,x0,y0;
+    LS_CHECK(ls_tui_touch_input_held(&sc,&sr,&c,&r));
+    LS_EQ_INT(40,sc);LS_EQ_INT(20,sr);LS_EQ_INT(40,c);LS_EQ_INT(20,r);
+    LS_CHECK(ls_tui_touch_held(&sc,&sr,&c,&r));
+    LS_EQ_INT(20,sc);LS_EQ_INT(10,sr);LS_EQ_INT(5,c);LS_EQ_INT(4,r);
+    LS_CHECK(ls_tui_touch_px(&x,&y,&x0,&y0,NULL));
+    LS_EQ_INT(203,x0);LS_EQ_INT(172,y0);LS_EQ_INT(53,x);LS_EQ_INT(70,y);
+    ls_tui_touch_client(5,4,53,70,false);
+    LS_CHECK(!ls_tui_touch_held(NULL,NULL,NULL,NULL));
+    LS_CHECK(ls_tui_touch_input_held(NULL,NULL,NULL,NULL));
+    ls_tui_touch_client_clear();settle();
+    ls_tui_touch_remote(40,20,405,348,true);
+    ls_tui_touch_client(20,10,205,178,true);
+    LS_CHECK(ls_tui_touch_input_held(&sc,&sr,&c,&r));LS_EQ_INT(40,c);LS_EQ_INT(20,r);
+    LS_CHECK(ls_tui_touch_held(&sc,&sr,&c,&r));LS_EQ_INT(20,c);LS_EQ_INT(10,r);
+    ls_tui_touch_client_clear();ls_tui_touch_remote(40,20,405,348,false);
+}

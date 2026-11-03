@@ -1,5 +1,5 @@
 /* Capabilities the owner granted to an installed native app, remembered
- * across restarts so RADIO_RX / RADIO_TX are asked once per install (NETWORK
+ * across restarts so RADIO_RX / SERVICE are asked once per install (NETWORK
  * is still asked on every launch). An install is the app's id, version and
  * file size: an update or a different file asks again. Kept in
  * /sdcard/apps/lap_grants.txt, under the folder apps cannot write.
@@ -14,7 +14,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-#define LS_LAP_GRANT_CAPS (LAP_CAP_RADIO_RX | LAP_CAP_RADIO_TX | LAP_CAP_SERVICE)   /* the ones remembered */
+#define LS_LAP_GRANT_CAPS (LAP_CAP_RADIO_RX | LAP_CAP_SERVICE | LAP_CAP_MIC)   /* the ones remembered */
 #ifndef LS_LAP_GRANTS_PATH
 #define LS_LAP_GRANTS_PATH "/sdcard/apps/lap_grants.txt"
 #endif

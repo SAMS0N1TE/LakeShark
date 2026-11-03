@@ -305,6 +305,14 @@ static void card_fill(card_t *c, int id, const ls_radio_view_t *v)
 void ls_radio_card_draw(tui_surface *sf, tui_rect b, ls_radio_card_t *c)
 {
     c->down = c->up = c->value_rect = c->bar = tui_rect_make(0, -1, 0, 0);
+    if (ls_tui_compact()) {
+        /* The desk form: one row, the same four targets. */
+        ls_slider1_draw(sf, tui_rect_make(b.x, b.y + (b.h - 1) / 2, b.w, 1), c->label,
+                        c->value, c->frac, c->hue, c->live, &c->down, &c->up,
+                        &c->value_rect, &c->bar);
+        if (!c->settable) c->bar = tui_rect_make(0, -1, 0, 0);
+        return;
+    }
     if (b.w < 20 || b.h < 5 || (c->thumb_keys && (b.w < 28 || b.h < 6))) return;
     const uint8_t h = c->live ? c->hue : LS_FAINT_FG;
     const uint8_t edge = TUI_ATTR(h, TUI_BLACK);
@@ -501,8 +509,16 @@ static void deck_plan(tui_rect area, int want, int *n, int *card_h, int *cols)
     *card_h = 1;
 }
 
+/* The desk's deck: one-row sliders, two across a wide pane. */
+static int compact_cols(tui_rect area) { return area.w >= 100 ? 2 : 1; }
+
 static int deck_rows(tui_rect area, int want)
 {
+    if (ls_tui_compact()) {
+        const int cols = compact_cols(area);
+        const int rows = (want + cols - 1) / cols;
+        return rows < area.h ? rows : area.h;
+    }
     int n, card_h, cols;
     deck_plan(area, want, &n, &card_h, &cols);
     if (!n) return 0;
@@ -521,6 +537,12 @@ static void deck_draw(tui_surface *sf, tui_rect area, const ls_radio_view_t *v, 
     s_cards = 0;
     int n, card_h, cols;
     deck_plan(area, want, &n, &card_h, &cols);
+    if (ls_tui_compact() && area.h >= 1 && area.w >= 24) {
+        cols = compact_cols(area);
+        n = want;
+        if (n > cols * area.h) n = cols * area.h;
+        card_h = 2;                    /* through card_draw, one row a card */
+    }
     if (!n) return;
     /* A receiver with no squelch (P25 gates on sync, not quieting) gets no
        dead SQUELCH card: the slot goes to the next control that works. */
@@ -534,7 +556,12 @@ static void deck_draw(tui_surface *sf, tui_rect area, const ls_radio_view_t *v, 
         s_card_id[i] = ids[i];
         card_t c;
         card_fill(&c, ids[i], v);
-        if (card_h > 1) {
+        if (ls_tui_compact()) {
+            const int cw = area.w / cols;
+            s_card[i] = tui_rect_make(area.x + (i % cols) * cw, area.y + i / cols,
+                                      cw - 2, 1);
+            card_draw(sf, i, &c);
+        } else if (card_h > 1) {
             const int rows = (n + cols - 1) / cols;
             const int used = rows * card_h + (rows - 1);
             const int y0 = area.y + (area.h - used) / 2;
@@ -964,6 +991,7 @@ static int scan_eligible(const ls_radio_view_t *v)
 static int start_deck_rows(tui_rect body, bool wide)
 {
     const int rest = body.h - glass_rows(body, wide);
+    if (ls_tui_compact()) return body.w >= 30 && rest >= 4 ? 1 : 0;   /* one row of keys */
     if (!wide && body.w >= 30 && rest >= 9 + 1 + 1 + 11) return 9;
     if (body.w >= 30 && rest >= 4 + 1 + 1 + 1) return 4;
     return 0;
@@ -974,7 +1002,7 @@ static void start_deck(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surfac
 {
     for (int i = 0; i < N_SRC; i++) s_src[i] = tui_rect_make(0, -1, 0, 0);
     s_go_n = 0;
-    if (r.w < 24 || r.h < 4) return;
+    if (r.w < 24 || r.h < (ls_tui_compact() ? 1 : 4)) return;
     const bool active = scan_engine_active();
     const bool band = scan_engine_get_source() == SCAN_SRC_BAND;
     const int n = scan_eligible(v);
@@ -1157,7 +1185,13 @@ static void front(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surface *sf
                   tui_rect body, bool wide)
 {
     const bool active = scan_engine_active();
-    const int gh = glass_rows(body, wide);
+    int gh = glass_rows(body, wide);
+    if (ls_tui_compact()) {
+        /* Desk: the keys are one row each, so the glass keeps the rest. */
+        const bool on_list = active && scan_engine_get_source() == SCAN_SRC_CHANNELS;
+        const int keys = 3 + deck_rows(body, on_list ? 2 : 4);
+        if (!on_list && body.h - keys > gh) gh = body.h - keys;
+    }
     glass(sf, tui_rect_make(body.x, body.y, body.w, gh), p, v, wide);
     tui_rect rest = tui_rect_make(body.x, body.y + gh, body.w, body.h - gh);
     const int sh = start_deck_rows(body, wide);
@@ -1277,7 +1311,7 @@ void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
     buttons(p, v, true);
     if (!p->lists && !start_deck_rows(tui_rect_make(a.x, a.y + 5, a.w, a.h - 11), wide))
         buttons(p, v, false);
-    const int bh = p->nbuttons > 4 ? (wide ? 5 : 10) : 5;
+    const int bh = ls_tui_compact() ? 1 : p->nbuttons > 4 ? (wide ? 5 : 10) : 5;
     tui_rect controls = tui_rect_make(a.x, a.y + a.h - bh, a.w, bh);
     tui_rect body = tui_rect_make(a.x, a.y + 5, a.w, controls.y - a.y - 6);
     if (p->lists) {
@@ -1464,6 +1498,14 @@ void ls_freq_key_draw(tui_surface *sf, tui_rect k, const char *cap, char badge,
                       uint8_t hue, bool strong)
 {
     if (k.w < 3 || k.h < 1) return;
+    if (ls_tui_compact()) {
+        /* A one-row key centred in its rect; the rect stays the target. */
+        const ls_btn_t b = { .label = cap, .key = badge, .on = strong };
+        const int w = ls_key1_width(&b);
+        ls_key1_draw(sf, k, k.x + (k.w > w ? (k.w - w) / 2 : 0), k.y + (k.h - 1) / 2, &b, false);
+        (void)hue;
+        return;
+    }
     cap = ls_tr(cap);
     ls_fill_dither(sf, k, strong ? LS_DITHER_HEAVY : LS_DITHER_LIGHT, hue);
     const uint8_t edge = TUI_ATTR(hue, TUI_BLACK);
@@ -1504,6 +1546,35 @@ void ls_freq_pad_draw(tui_surface *sf, tui_rect area, const char *entry,
     const uint8_t edge = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
     memset(keys, 0, 12 * sizeof(tui_rect));
     memset(actions, 0, 3 * sizeof(tui_rect));
+
+    if (ls_tui_compact()) {
+        /* The desk has a keyboard: a field to type into and three keys,
+           on one row. The digit keys are not drawn and take no taps. */
+        int x = area.x + 1;
+        const int y = area.y;
+        tui_put_str(sf, area, x, y, ls_tr("FREQUENCY"), edge);
+        x += 10;
+        ls_field1_draw(sf, area, x, y, 16, entry, true, TUI_YELLOW | TUI_BRIGHT);
+        x += 17;
+        tui_put_str(sf, area, x, y, ls_tr("MHz"), edge);
+        x += 5;
+        static const char HOT[3] = { 'c', 0, 0 };
+        for (int i = 0; i < 3; ++i) {
+            const ls_btn_t b = { .label = ACT[i], .key = HOT[i], .on = i == 2 };
+            const int w = ls_key1_width(&b);
+            actions[i] = tui_rect_make(x, y, w, 1);
+            x += ls_key1_draw(sf, area, x, y, &b, false) + 1;
+        }
+        if (invalid)
+            tui_put_str(sf, area, x + 1, y, ls_tr("INVALID RANGE"),
+                        TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+        if (area.h >= 2)
+            tui_put_str(sf, area, area.x + 1, y + 1,
+                        ls_tr("type digits and . / ENTER tunes / ESC cancels"),
+                        TUI_ATTR(LS_DIM_FG, TUI_BLACK));
+        (void)blink; (void)BADGE; (void)KEY;
+        return;
+    }
 
     tui_put_str(sf, area, area.x + 2, area.y, ls_tr("FREQUENCY / MHz"), edge);
     char edit[20];
@@ -2017,6 +2088,12 @@ int ls_radio_vfo_card_hit(tui_rect down, tui_rect up, tui_rect value,
    lit. Segments are drawn every second column from bar.x (see the draw). */
 float ls_radio_vfo_card_bar_frac(tui_rect bar, int col)
 {
+    /* The desk slider is one row of cells, every one of them a position. */
+    if (ls_tui_compact() && bar.h == 1) {
+        if (bar.w < 2) return 0.0f;
+        float f = (float)(col - bar.x) / (float)(bar.w - 1);
+        return f < 0.0f ? 0.0f : f > 1.0f ? 1.0f : f;
+    }
     const int segs = bar.w / 2;
     if (segs < 1) return 0.0f;
     int s = (col - bar.x) / 2;
@@ -2033,6 +2110,14 @@ void ls_radio_vfo_card_draw(tui_surface *sf, tui_rect b, ls_radio_card_t *c)
     const uint8_t h = c->live ? c->hue : (TUI_BLACK | TUI_BRIGHT);
     const uint8_t edge = TUI_ATTR(h, TUI_BLACK);
     const uint8_t face = TUI_ATTR(c->live ? (h | TUI_BRIGHT) : LS_DIM_FG, TUI_BLACK);
+    if (ls_tui_compact()) {
+        /* The desk form: one row, the same four targets. */
+        ls_slider1_draw(sf, tui_rect_make(b.x, b.y + (b.h - 1) / 2, b.w, 1), c->label,
+                        c->value, c->frac, c->hue, c->live, &c->down, &c->up,
+                        &c->value_rect, &c->bar);
+        if (!c->settable) c->bar = tui_rect_make(0, -1, 0, 0);
+        return;
+    }
     if (b.w < 24 || b.h < 5) return;
 
     /* The card's own outline, then the field inside it. */
@@ -2135,6 +2220,29 @@ void ls_radio_tune_draw(ls_radio_tune_t *t, tui_surface *sf, tui_rect area)
         cap[1] = "NEXT"; cap[2] = "SKIP";
         cap[3] = scan_engine_manual_hold() ? "RESUME" : "HOLD";
         cap[4] = "STOP";
+    }
+    if (ls_tui_compact()) {
+        /* The desk form: one row, a word and five keys. */
+        const int dir = scan_engine_seek_direction();
+        char title[48];
+        if (active)
+            snprintf(title, sizeof(title), ls_tr("SCAN %s%lu.%04lu"), held ? ls_tr("HELD ") : "",
+                     (unsigned long)(t->frequency() / 1000000),
+                     (unsigned long)((t->frequency() % 1000000) / 100));
+        else snprintf(title, sizeof(title), "%s", ls_tr("TUNE"));
+        int x = area.x;
+        tui_put_str(sf, area, x, area.y, title, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        x += (int)strlen(title) + 1;
+        static const char SCAN_KEY[5] = { 0, 'N', 'K', 'H', 'X' };
+        for (int i = 0; i < 5; ++i) {
+            ls_btn_t b = { .label = i == 0 ? "STEP" : cap[i], .value = i == 0 ? step : NULL,
+                           .key = active ? SCAN_KEY[i] : 0,
+                           .on = active ? (i == 3 && held) : (i == 1 && dir < 0) || (i == 4 && dir > 0) };
+            const int w = ls_key1_draw(sf, area, x, area.y, &b, false);
+            t->keys[i] = tui_rect_make(x, area.y, w, 1);
+            x += w + 1;
+        }
+        return;
     }
     const bool portrait = !ls_tui_is_wide();
     if (active) {

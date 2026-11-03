@@ -20,6 +20,9 @@ int p25_tsbk_parse(dsd_state *state,
                    const uint8_t block[P25_TSBK_BYTES]);
 /* Explicit control/system change; counters survive, site evidence does not. */
 void p25_tsbk_reset_system(dsd_state *state);
+/* Optional per-block typed sink, called after CRC/FEC and state update. */
+typedef void (*p25_tsbk_sink_fn)(const uint8_t block[P25_TSBK_BYTES], const dsd_state *state, unsigned new_grants, void *user);
+unsigned int p25_tsbk_process_tsdu_sink(dsd_state *state, const uint8_t *wire_dibits, size_t wire_count, p25_tsbk_sink_fn sink, void *user);
 unsigned int p25_tsbk_process_tsdu(dsd_state *state,
                                    const uint8_t *wire_dibits,
                                    size_t wire_count);

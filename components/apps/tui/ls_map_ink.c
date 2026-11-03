@@ -84,6 +84,29 @@ static bool on_dash(int dash, int k)
     return k % (-dash) == 0;
 }
 
+/* One contiguous, actually rasterized run. Preserve the original Bresenham
+   error while marking ownership, so dashed/clipped lines hide exactly their
+   own dots. The recorded path has the same endpoints as that board stroke. */
+static void trace_run(int ax,int ay,int bx,int by,int error,int count,
+                      int dx,int dy,int sx,int sy,uint8_t attr,uint8_t prio)
+{
+    tui_stroke_hook_fn hook=__atomic_load_n(&tui_stroke_hook,__ATOMIC_ACQUIRE);
+    if(!hook || !count) return;
+    uint8_t ink=ls_ink_tinted(attr);
+    static const uint8_t bits[4][2]={{1,8},{2,16},{4,32},{64,128}};
+    bool braille=s_braille || prio<=3;
+    int rows=braille?4:3,ty=ay/s_dy*rows+ay%s_dy,uy=by/s_dy*rows+by%s_dy;
+    if(!hook(1,NULL,s_rect,2,rows,ax,ty,bx,uy,ink)) return;
+    for(int i=0;i<count;i++) {
+        int mask=braille?bits[ay%s_dy][ax%2]:1u<<((ay%3)*2+ax%2);
+        ty=ay/s_dy*rows+ay%s_dy;
+        hook(2,NULL,s_rect,2,rows,ax,ty,mask,braille?0x2800:0xC0,ink);
+        int e2=2*error;
+        if(e2>=dy) {error+=dy;ax+=sx;}
+        if(e2<=dx) {error+=dx;ay+=sy;}
+    }
+}
+
 void ls_ink_line(int x0, int y0, int x1, int y1, uint8_t attr, uint8_t prio, int dash)
 {
     if (!s_on) return;
@@ -94,15 +117,26 @@ void ls_ink_line(int x0, int y0, int x1, int y1, uint8_t attr, uint8_t prio, int
     int dx = abs(x1 - x0), dy = -abs(y1 - y0);
     if (dx > 4 * w || -dy > 4 * h) return;
     const int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
-    int err = dx + dy, k = 0;
+    int err = dx + dy, k = 0, ax=0,ay=0,bx=0,by=0,run_error=0,run_count=0;
+    bool trace=__atomic_load_n(&tui_stroke_hook,__ATOMIC_ACQUIRE)!=NULL;
     for (;;) {
-        if (on_dash(dash, k)) ls_ink_dot(x0, y0, attr, prio);
+        bool drawn=on_dash(dash,k) && x0>=0 && y0>=0 && x0<w && y0<h;
+        if (drawn) {
+            ls_ink_dot(x0, y0, attr, prio);
+            if(trace) {
+                if(!run_count) {ax=x0;ay=y0;run_error=err;}
+                bx=x0;by=y0;run_count++;
+            }
+        } else if(run_count) {
+            trace_run(ax,ay,bx,by,run_error,run_count,dx,dy,sx,sy,attr,prio);run_count=0;
+        }
         k++;
         if (x0 == x1 && y0 == y1) break;
         const int e2 = 2 * err;
         if (e2 >= dy) { err += dy; x0 += sx; }
         if (e2 <= dx) { err += dx; y0 += sy; }
     }
+    trace_run(ax,ay,bx,by,run_error,run_count,dx,dy,sx,sy,attr,prio);
 }
 
 void ls_ink_ellipse(int cx, int cy, int rx, int ry, uint8_t attr, uint8_t prio, int dash)
@@ -120,6 +154,8 @@ void ls_ink_ellipse(int cx, int cy, int rx, int ry, uint8_t attr, uint8_t prio, 
     float ux = 0.0f, uy = 1.0f;
     const int w = s_rect.w * 2, h = s_rect.h * s_dy;
     int px = 0x7FFFFFFF, py = 0, k = 0;
+    bool previous=false;
+    tui_stroke_hook_fn hook=__atomic_load_n(&tui_stroke_hook,__ATOMIC_ACQUIRE);
     for (int i = 0; i < steps; i++) {
         const int x = cx + (int)lrintf(rx * ux);
         const int y = cy - (int)lrintf(ry * uy);
@@ -127,8 +163,24 @@ void ls_ink_ellipse(int cx, int cy, int rx, int ry, uint8_t attr, uint8_t prio, 
         uy = uy * c - ux * s;
         ux = nx;
         if (x == px && y == py) continue;
-        px = x; py = y;
-        if (on_dash(dash, k) && x >= 0 && y >= 0 && x < w && y < h) ls_ink_dot(x, y, attr, prio);
+        bool drawn=on_dash(dash,k) && x>=0 && y>=0 && x<w && y<h;
+        if(drawn) {
+            ls_ink_dot(x,y,attr,prio);
+            if(hook) {
+                bool braille=s_braille || prio<=3;int rows=braille?4:3;
+                int ax=previous?px:x,ay=previous?py:y;
+                int a=ay/s_dy*rows+ay%s_dy,b=y/s_dy*rows+y%s_dy;
+                uint8_t ink=ls_ink_tinted(attr);
+                if(hook(1,NULL,s_rect,2,rows,ax,a,x,b,ink)) {
+                    static const uint8_t bits[4][2]={{1,8},{2,16},{4,32},{64,128}};
+                    int mask=braille?bits[y%s_dy][x%2]:1u<<((y%3)*2+x%2);
+                    hook(2,NULL,s_rect,2,rows,x,b,mask,braille?0x2800:0xC0,ink);
+                    mask=braille?bits[ay%s_dy][ax%2]:1u<<((ay%3)*2+ax%2);
+                    hook(2,NULL,s_rect,2,rows,ax,a,mask,braille?0x2800:0xC0,ink);
+                }
+            }
+        }
+        previous=drawn;px=x;py=y;
         k++;
     }
 }

@@ -755,6 +755,6 @@ static void leave(void) {
 
 LAP_APP(.id = "detector", .name = "DETECTOR", .sub = "rule matches", .version = "3.0",
         .author = "LakeShark", .icon = LAP_ICON_TOWER, .color = LAP_CYAN,
-        .flags = LAP_CAP_RADIO_RX | LAP_CAP_SERVICE,
+        .flags = LAP_CAP_RADIO_RX | LAP_CAP_RADIO_TX | LAP_CAP_SERVICE,
         .icon_art = {"  .----.  ", " / .--. \\ ", "| ( () ) |", " \\ '--' / ", "  '----'  ", " DETECTOR "},
         .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch);

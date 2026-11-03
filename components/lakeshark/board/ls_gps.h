@@ -229,6 +229,9 @@ ls_gps_do_t ls_gps_link_step(ls_gps_link_t *link, bool framed,
 /* Snapshot of the current state.  Cheap; safe from any task. */
 void ls_gps_get(ls_gps_state_t *out);
 
+/* lap_io worker demand, independent of firmware start/stop intent. */
+esp_err_t ls_gps_app_demand(bool on);
+
 /* Console helper: start if needed, then describe what is arriving. */
 void ls_gps_diagnostics(void);
 

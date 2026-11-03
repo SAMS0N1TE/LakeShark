@@ -1,6 +1,9 @@
 /* Native-rate decoder, using the board abstraction rather than the
    Waveshare-specific BSP player (which is not the T-Display-P4 codec). */
 #include "ls_music_backend.h"
+#include "ls_trace.h"
+#include "esp_timer.h"
+#include <string.h>
 #include "ls_music_marks.h"
 #include "media_playlist.h"
 #include "audio_player.h"
@@ -296,8 +299,105 @@ static int16_t tone(int ch,int32_t x)
    meters stay stereo on a mono board. The spectrum ring takes what the codec
    is sent. Exchange-on-read collects transients between UI frames without a
    lock. A mono file arrives one sample per frame. */
+
+#ifdef ESP_PLATFORM
+#include "freertos/stream_buffer.h"
+#include "freertos/semphr.h"
+/* A cushion between the decoder and the I2S DMA, which holds ~35 ms at
+   44.1 kHz. The decoder came back 80-100 ms late every few seconds (the card
+   and the PSRAM bus are shared with the desk's screen feed and the track
+   overview), and each time the speaker ran dry: the music hitched by itself
+   and on clicks. 250 ms in PSRAM, emptied by a writer above the decoder.
+   Pause, seek, stop, a new track or format drop what is queued, so they still
+   act at once; the shown position is moved back by what is still queued. */
+#define PCM_RING_MS 250u
+#define PCM_RING_BYTES (48000u * 4u * PCM_RING_MS / 1000u)
+#define PCM_CHUNK 2048u
+static StreamBufferHandle_t s_pcm_ring;
+static SemaphoreHandle_t s_pcm_lock;         /* held while a chunk goes to I2S */
+static atomic_size_t s_pcm_drop;             /* queued bytes to throw away */
+static atomic_uint s_pcm_bytes_per_ms;       /* of the format being played */
+
+static void pcm_writer(void *arg)
+{
+    (void)arg;
+    uint8_t *chunk = heap_caps_malloc(PCM_CHUNK, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int64_t last_write_us = 0;
+    for (;;) {
+        const int64_t wait_us = esp_timer_get_time();
+        size_t n = xStreamBufferReceive(s_pcm_ring, chunk, PCM_CHUNK, portMAX_DELAY);
+        if (!n) continue;
+        const int64_t got_us = esp_timer_get_time();
+        /* Ran dry while playing: data came after the I2S buffer had emptied. */
+        if (last_write_us && got_us - last_write_us < 200000 && got_us - wait_us > 40000)
+            LS_TRACE("ring dry", (int32_t)((got_us - wait_us) / 1000), 0);
+        size_t drop = atomic_load(&s_pcm_drop);
+        if (drop) {
+            const size_t d = drop < n ? drop : n;
+            atomic_fetch_sub(&s_pcm_drop, d);
+            if (d == n) continue;
+            memmove(chunk, chunk + d, n - d);
+            n -= d;
+        }
+        xSemaphoreTake(s_pcm_lock, portMAX_DELAY);
+        size_t w = 0;
+        (void)ls_audio_hw_write(chunk, n, &w, 500);
+        xSemaphoreGive(s_pcm_lock);
+        last_write_us = esp_timer_get_time();
+    }
+}
+
+static bool pcm_ring_start(void)
+{
+    if (s_pcm_ring) return true;
+    uint8_t *store = heap_caps_malloc(PCM_RING_BYTES + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    StaticStreamBuffer_t *ctl = heap_caps_calloc(1, sizeof(*ctl), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_pcm_lock = xSemaphoreCreateMutex();
+    if (!store || !ctl || !s_pcm_lock) { heap_caps_free(store); heap_caps_free(ctl); return false; }
+    s_pcm_ring = xStreamBufferCreateStatic(PCM_RING_BYTES, 1, store, ctl);
+    /* PSRAM stack: it only drives I2S, never flash. */
+    if (xTaskCreatePinnedToCoreWithCaps(pcm_writer, "music_out", 4096, NULL, 12, NULL, 1,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        s_pcm_ring = NULL;
+        return false;
+    }
+    return true;
+}
+
+/* Throw away what is queued (whole frames), so the next sound is the new one. */
+static void pcm_flush(void)
+{
+    if (s_pcm_ring) atomic_store(&s_pcm_drop, xStreamBufferBytesAvailable(s_pcm_ring) & ~(size_t)3);
+}
+
+static esp_err_t pcm_push(void *data, size_t len, size_t *written, uint32_t timeout)
+{
+    if (!s_pcm_ring) return ls_audio_hw_write(data, len, written, timeout);
+    const size_t sent = xStreamBufferSend(s_pcm_ring, data, len, pdMS_TO_TICKS(timeout));
+    if (written) *written = sent;
+    return sent == len ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+/* What is queued and not heard yet, in ms of the playing format. */
+static uint32_t pcm_queued_ms(void)
+{
+    const unsigned per_ms = atomic_load(&s_pcm_bytes_per_ms);
+    if (!s_pcm_ring || !per_ms) return 0;
+    size_t q = xStreamBufferBytesAvailable(s_pcm_ring), drop = atomic_load(&s_pcm_drop);
+    q = q > drop ? q - drop : 0;
+    return (uint32_t)(q / per_ms);
+}
+#else
+static void pcm_flush(void) {}
+static uint32_t pcm_queued_ms(void) { return 0; }
+#endif
 static esp_err_t write_pcm(void *data,size_t len,size_t *written,uint32_t timeout)
 {
+    /* 'carto trace': a decoder that came back late for the I2S buffer (~35 ms at 44.1 kHz). */
+    static int64_t last_us;
+    const int64_t now_us=esp_timer_get_time();
+    if(last_us && now_us-last_us>40000)LS_TRACE("pcm gap",(int32_t)((now_us-last_us)/1000),(int32_t)(len/4));
+    last_us=now_us;
     int16_t *pcm=data;
     const bool mono=atomic_load(&s_slots)==1;
     const size_t step=mono?1:2,count=len/sizeof(*pcm);
@@ -325,7 +425,12 @@ static esp_err_t write_pcm(void *data,size_t len,size_t *written,uint32_t timeou
         if(mixed==sizeof(mix)/sizeof(*mix)){ring_push(mix,mixed);mixed=0;}
     }
     ring_push(mix,mixed);
+#ifdef ESP_PLATFORM
+    esp_err_t err=pcm_push(data,len,written,timeout);
+#else
     esp_err_t err=ls_audio_hw_write(data,len,written,timeout);
+#endif
+    last_us=esp_timer_get_time();
     if(err==ESP_OK)peaks_publish(peaks);
     return err;
 }
@@ -567,7 +672,16 @@ static esp_err_t clock_set(uint32_t rate, uint32_t bits, i2s_slot_mode_t channel
     }
     atomic_store(&s_rate,rate);atomic_store(&s_bits,bits);
     atomic_store(&s_slots,channels==I2S_SLOT_MODE_MONO?1u:2u);
+#ifdef ESP_PLATFORM
+    /* The old format's queue is dropped, and I2S changes between two chunks. */
+    pcm_flush();
+    atomic_store(&s_pcm_bytes_per_ms,rate*(bits/8u)*(channels==I2S_SLOT_MODE_MONO?1u:2u)/1000u);
+    if(s_pcm_lock)xSemaphoreTake(s_pcm_lock,portMAX_DELAY);
     esp_err_t err = ls_audio_hw_set_fs(rate, bits, channels);
+    if(s_pcm_lock)xSemaphoreGive(s_pcm_lock);
+#else
+    esp_err_t err = ls_audio_hw_set_fs(rate, bits, channels);
+#endif
     if (err == ESP_OK) { int actual; err = ls_audio_hw_volume(audio_volume_get(), &actual); }
     return err;
 }
@@ -599,6 +713,9 @@ bool ls_music_open(void)
     esp_err_t err = audio_out_media_acquire();
     music_heap_checkpoint("after media acquire", err);
     if (err != ESP_OK) { spectrum_close(); s_error = "Audio busy / unavailable"; return false; }
+#ifdef ESP_PLATFORM
+    (void)pcm_ring_start();          /* without it the decoder writes I2S itself, as before */
+#endif
     audio_player_config_t config = {.mute_fn=mute, .clk_set_fn=clock_set,
         .write_fn=write_pcm, .source_format_fn=source_format, .priority=5, .coreID=1,
         .file_close_fn=call_store_playback_close, .service_fn=transport_service};
@@ -637,7 +754,7 @@ void ls_music_close(void)
         }
     }
     if (s_up) {
-        s_up = false; audio_out_media_release(); spectrum_close();
+        pcm_flush(); s_up = false; audio_out_media_release(); spectrum_close();
         music_heap_checkpoint("after media release", -1);
     }
     music_heap_checkpoint("before playlist close", -1);
@@ -696,11 +813,12 @@ bool ls_music_play_path(const char *path)
     if(s_marks)ls_music_marks_prepare(s_marks,path);
     FILE *fp = call_store_playback_open(path);
     if (!fp) { s_error="Track unavailable; rescan card"; return false; }
+    pcm_flush();
     if (audio_player_play(fp) != ESP_OK) { call_store_playback_close(fp); s_error="Player queue busy"; return false; }
     if(s_overview)ls_audio_overview_request(s_overview,path,false);
     s_error=""; atomic_store(&s_bad_format,false); return true;
 }
-bool ls_music_seek_ms(uint32_t ms) { return s_up && audio_player_seek_ms(ms)==ESP_OK; }
+bool ls_music_seek_ms(uint32_t ms) { if(!s_up || audio_player_seek_ms(ms)!=ESP_OK) return false; pcm_flush(); return true; }
 bool ls_music_speed_set(unsigned value){return s_up && audio_player_speed(value)==ESP_OK;}
 unsigned ls_music_speed_get(void){return audio_player_speed_get();}
 bool ls_music_loop_set(uint32_t a,uint32_t b,bool enabled){return s_up && audio_player_loop(a,b,enabled)==ESP_OK;}
@@ -715,9 +833,12 @@ bool ls_music_marker_get(unsigned index,uint32_t *at){return ls_music_marks_get(
 bool ls_music_toggle(void)
 {
     if (!s_up) return false;
-    return (audio_player_get_state() == AUDIO_PLAYER_STATE_PAUSE ? audio_player_resume() : audio_player_pause()) == ESP_OK;
+    if (audio_player_get_state() == AUDIO_PLAYER_STATE_PAUSE) return audio_player_resume() == ESP_OK;
+    if (audio_player_pause() != ESP_OK) return false;
+    pcm_flush();                     /* stop now, not a quarter second later */
+    return true;
 }
-void ls_music_stop(void) { ls_music_mic_stop(); if (s_up) audio_player_stop(); }
+void ls_music_stop(void) { ls_music_mic_stop(); if (s_up) { audio_player_stop(); pcm_flush(); } }
 ls_music_state_t ls_music_state(void)
 {
     if (!s_up) return LS_MUSIC_STOPPED;
@@ -725,7 +846,12 @@ ls_music_state_t ls_music_state(void)
     return s == AUDIO_PLAYER_STATE_PLAYING ? LS_MUSIC_PLAYING : s == AUDIO_PLAYER_STATE_PAUSE ? LS_MUSIC_PAUSED : LS_MUSIC_STOPPED;
 }
 int ls_music_volume(void) { return audio_volume_get(); }
-uint32_t ls_music_position_ms(void) { return s_up ? audio_player_position_ms() : 0; }
+uint32_t ls_music_position_ms(void)
+{
+    if (!s_up) return 0;
+    const uint32_t at = audio_player_position_ms(), queued = pcm_queued_ms();   /* what you hear, not what is decoded */
+    return at > queued ? at - queued : 0;
+}
 uint32_t ls_music_duration_ms(void) { return s_up ? audio_player_duration_ms() : 0; }
 void ls_music_volume_step(int delta) { audio_volume_delta(delta); }
 const char *ls_music_output(void) { return audio_is_muted() ? "MUTED" : "BOARD AUDIO"; }

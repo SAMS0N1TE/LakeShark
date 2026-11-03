@@ -35,6 +35,30 @@ static size_t render(const cc_ctile *map,unsigned z,int64_t left,int64_t top,cc_
     assert(cc_renderer_init(&r,&a,80,30,saved));r.terrain_strength=80;r.decoded_cache=&decoded;
     assert(cc_render(&r,map,z,left,top,mode,labels,cells));return a.peak;
 }
+/* Raster-only pans must be exact through v7 virtual cells, source-boundary
+   clipping, overview fallback and overzoom, as well as a monolithic file. */
+static void pan_pixels(const cc_ctile *map) {
+    static unsigned char reference_memory[32*1024*1024];
+    static cc_cell saved[2][80*30];static uint16_t picture[2][160*120],previous[160*120];
+    const int moves[][2]={{0,0},{10,8},{-20,-16},{2,4},{1,3},{-40,0},{0,64}};
+    cc_pixel_style style={0};for(int i=0;i<CC_INK_COUNT;i++)style.rgb[i]=cc_palette(i);style.river=0x80a0ff;style.relief=80;
+    for(unsigned z=7;z<=16;z+=(z==7?1:z==8?6:1)) {
+        cc_arena a[2];cc_renderer r[2];
+        cc_arena_init(&a[0],memory,sizeof(memory));cc_arena_init(&a[1],reference_memory,sizeof(reference_memory));
+        for(int k=0;k<2;k++){assert(cc_renderer_init(&r[k],&a[k],80,30,saved[k]));r[k].terrain_strength=80;}
+        int64_t left=(INT64_C(77)*256<<z)/256-80,top=(INT64_C(93)*256<<z)/256-60;
+        for(unsigned j=0;j<sizeof(moves)/sizeof(*moves);j++) {
+            left+=moves[j][0];top+=moves[j][1];
+            for(int k=0;k<2;k++) {
+                if(k)cc_renderer_invalidate(&r[k]);
+                assert(cc_render(&r[k],map,z,left,top,CC_QUADRANT,0,NULL));
+                if(!k && r[k].pixel_reuse)cc_pixels_rgb565_pan(&r[k].planes,&style,picture[k],previous,r[k].saved,r[k].pixel_dx,r[k].pixel_dy);
+                else cc_pixels_rgb565(&r[k].planes,&style,picture[k]);
+            }
+            assert(!memcmp(picture[0],picture[1],sizeof(picture[0])));memcpy(previous,picture[0],sizeof(previous));
+        }
+    }
+}
 int main(int argc,char **argv) {
     clipped_overview_edge();
     assert(cc_decoded_cache_init(&decoded,cache_memory,sizeof(cache_memory)));
@@ -51,6 +75,8 @@ int main(int argc,char **argv) {
     printf("zstd static context=%zu scratch_peak=%zu mean_decode_us=%.3f\n",cc_zstd_context_bytes(),peak,1e6*(double)(clock()-start)/CLOCKS_PER_SEC/10000);
     cc_ctile m;((uint8_t*)mono.data)[8]=6;assert(!cc_ctile_open(mono,&m));((uint8_t*)mono.data)[8]=7;
     assert(cc_ctile_open(mono,&m));cc_host_cellset h;assert(cc_host_cellset_open(&h,argv[1]));cc_cell expected[80*30],actual[80*30];
+    pan_pixels(&m);pan_pixels(&h.set.map);
+    puts("v7 monolithic/virtual-cell pixel pans exact at z7/8/14/15/16");
     size_t render_peak=0;
     for(unsigned mode=0;mode<2;mode++) for(unsigned z=7;z<=16;z+=(z==7?1:z==8?6:1)) {
         int64_t cx=(INT64_C(77)*256<<z)/256,cy=(INT64_C(93)*256<<z)/256;
@@ -77,7 +103,7 @@ int main(int argc,char **argv) {
         row[44]=1;assert(fwrite(row,1,48,catalog)==48);free((void*)data.data);
     }
     fclose(catalog);
-    assert(!rename(idx,oldidx));assert(cc_host_cellset_open(&h,argv[1]));assert(h.set.indexless);
+    assert(!rename(idx,oldidx));assert(cc_host_cellset_open(&h,argv[1]));assert(h.set.indexless);pan_pixels(&h.set.map);
     for(unsigned z=7;z<=16;z+=(z==7?1:z==8?6:1)) {
         int64_t dx=(INT64_C(77)*256<<z)/256,dy=(INT64_C(93)*256<<z)/256;
         render(&m,z,dx-80,dy-60,CC_BRAILLE,expected);
@@ -90,7 +116,7 @@ int main(int argc,char **argv) {
     cc_cellset_close(&h.set);assert(cc_cellset_open_direct(&h.set,(cc_cellset_io){0},h.directory,4096,h.staging,1)==0);
     cc_host_cellset_close(&h);assert(!rename(oldidx,idx));assert(!remove(cat));
     char path[1400],hidden[1400];snprintf(path,sizeof(path),"%s/8-77-93.ctile",argv[1]);snprintf(hidden,sizeof(hidden),"%s/8-77-93.hidden",argv[1]);assert(!rename(path,hidden));
-    assert(cc_host_cellset_open(&h,argv[1]));cc_ctile overview=m;overview.zmax=7;
+    assert(cc_host_cellset_open(&h,argv[1]));pan_pixels(&h.set.map);cc_ctile overview=m;overview.zmax=7;
     int64_t cx=INT64_C(77)*256*64,cy=INT64_C(93)*256*64;
     labels=0;cc_cell detail[80*30];
     render(&overview,14,cx-80,cy-60,CC_BRAILLE,expected);

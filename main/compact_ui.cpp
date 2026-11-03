@@ -17,6 +17,14 @@
 #include "ls_panel.h"
 #include "ls_panel_ws.h"
 #include "tui/ls_rterm.h"
+#include "tui/ls_input_ev.h"
+#if defined(CONFIG_LS_PANEL_RUNTIME) && CONFIG_LS_PANEL_RUNTIME
+#include "tui/desk/ls_desk.h"
+#define LS_DESK_BUILD 1
+#else
+#define LS_DESK_BUILD 0
+static inline bool ls_desk_focused(void) { return false; }
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "ls_keypad.h"
@@ -70,6 +78,7 @@ extern "C" bool rec_watch_notify(const char *peer, const char *text)
 { return ls_mesh_queue_dm(peer, text); }
 extern "C" void ls_scr_fm_show_page(int page);
 extern "C" void ls_cell_publish(void);
+extern "C" void ls_rterm_picture_tx(uint32_t *bytes, uint32_t *lines, uint32_t *captures) __attribute__((weak));
 extern "C" bool cell_report_transport_known(const char *peer)
 {return ls_mesh_peer_known(peer);}
 extern "C" bool cell_report_transport_send(const char *peer,const char *text)
@@ -122,6 +131,7 @@ extern "C" {
 #include "cell_performance.h"
 #include "settings.h"
 #include "display_ctl.h"
+#include "ls_log_line.h"
 #include "ls_nvs_safe.h"
 #include "app_registry.h"
 /* The audio diagnostic and the test tone: the console is where the
@@ -586,9 +596,10 @@ static void tui_png_task(void *arg)
 static vprintf_like_t s_rec_prev_vprintf = vprintf;
 /* Log output while recording: errors only. Lines start with their level
    letter (no log colours in this build). */
+static ls_log_line_t s_rec_log_line;
 static int rec_log_vprintf(const char *fmt, va_list ap)
 {
-    return fmt[0] == 'E' ? s_rec_prev_vprintf(fmt, ap) : 0;
+    return ls_log_line_level(&s_rec_log_line, fmt, ap) == 'E' ? s_rec_prev_vprintf(fmt, ap) : 0;
 }
 static int rec_row_diff(const tui_cell *a, const tui_cell *b, int cols)
 {
@@ -909,6 +920,11 @@ static volatile uint8_t   s_tui_tap_r = 0;
 /* The console and the remote terminal (ls_term, its own task) both fill the
    two rings; the UI task empties them. One writer at a time. */
 static portMUX_TYPE s_inject_mux = portMUX_INITIALIZER_UNLOCKED;
+extern "C" void ls_input_wake(void)
+{
+    if (s_tui_wake) xSemaphoreGive(s_tui_wake);
+}
+
 static bool tui_push_key(ls_tk_t k, char ch)
 {
     taskENTER_CRITICAL(&s_inject_mux);
@@ -922,6 +938,11 @@ static bool tui_push_key(ls_tk_t k, char ch)
     taskEXIT_CRITICAL(&s_inject_mux);
     if (room && s_tui_wake) xSemaphoreGive(s_tui_wake);
     return room;
+}
+
+extern "C" bool compact_ui_inject_key(uint16_t key, char ch)
+{
+    return tui_push_key((ls_tk_t)key, ch);
 }
 
 static bool tui_push_tap(int c, int r)
@@ -939,13 +960,43 @@ static bool tui_push_tap(int c, int r)
     return room;
 }
 
+/* One frame of the interface: the desk when it is on (a Nano serving its
+   screen to a PC), else the router as always. */
+static inline void tui_draw_frame(tui_surface *sf)
+{
+#if LS_DESK_BUILD
+    ls_desk_draw(sf);               /* the router itself while the desk is off */
+    return;
+#endif
+    ls_tui_router_draw(sf);
+}
+static inline bool tui_desk_on(void)
+{
+#if LS_DESK_BUILD
+    return ls_desk_enabled();
+#else
+    return false;
+#endif
+}
 static void term_key(int k, char ch) { tui_push_key((ls_tk_t)k, ch); }
 static void term_tap(int c, int r) { tui_push_tap(c, r); }
 /* A viewer's window size: a terminal-only screen takes it as its grid. */
 static void tui_request_regrid(void);
-static bool term_resize(int c, int r)
+static bool term_resize(int c, int r, const char *font)
 {
-    if (!ls_panel_ws_term_resize(c, r)) return false;
+    int fi = ls_tui_font_index();
+    if (font && *font) {
+        for (fi = 0; fi < ls_tui_font_count(); fi++)
+            if (!strcmp(font, ls_tui_font_label(fi))) break;
+        if (fi == ls_tui_font_count()) return false;
+    }
+    const ls_font_t *face = ls_tui_font_at(fi);
+    const char *panel = ls_panel_ws_name();
+    if (!panel || strcmp(panel, "term") || c < 40 || r < 12 || c > 384 || r > 112 ||
+        (size_t)c * r * face->cell_w * face->cell_h > LS_TERM_PIXEL_MAX) return false;
+    if (!ls_rterm_prepare_grid(c, r)) return false;
+    if (!ls_panel_ws_term_resize(c, r, face->cell_w, face->cell_h)) return false;
+    ls_tui_set_font_index(fi);
     tui_request_regrid();
     return true;
 }
@@ -1048,6 +1099,7 @@ static bool tui_logical_size(int *w, int *h)
        an odd quarter is its portrait. */
     if (ls_panel_ws_term_view(wide)) {
         s_term_only = true;
+        ls_tui_set_corner_radius(0); /* exact remote cell counts, no glass corners */
         if (!ls_panel_fb(&fb)) return false;
         *w = fb.width;
         *h = fb.height;
@@ -1066,6 +1118,7 @@ static uint32_t s_loop_avg_us;
 
 /* Where a frame's time goes, one smoothed number per phase. */
 
+static uint32_t s_ph_capture_us;   /* of present: the remote screen's capture */
 static uint32_t s_ph_input_us, s_ph_imu_us, s_ph_draw_us, s_ph_present_us,
                 s_ph_sleep_us;
 static uint32_t s_ph_core_frames[2];
@@ -1105,6 +1158,8 @@ static void boot_splash_run(void)
 #ifdef LS_BOARD_LCD_CORNER_R
     ls_tui_set_corner_radius(LS_BOARD_LCD_CORNER_R);
 #endif
+    const ls_font_t *boot_face = ls_tui_font_at(ls_tui_font_index());
+    ls_panel_ws_term_refont(boot_face->cell_w, boot_face->cell_h);
     int lw = 0, lh = 0;
     if (!tui_logical_size(&lw, &lh) || !ls_tui_begin(lw, lh)) {
         s_boot_splash_wanted = false;       /* the first session animates as before */
@@ -1158,6 +1213,8 @@ static bool tui_session(void)
     }
     else if(!s_tui_rebuilding){ls_tui_set_font_index(2);ls_tui_set_daylight(true);ls_tui_set_crisp_text(false);}
     s_session_font = ls_tui_font_index();
+    const ls_font_t *remote_face = ls_tui_font_at(s_session_font);
+    ls_panel_ws_term_refont(remote_face->cell_w, remote_face->cell_h);
     /* The TUI knows nothing about LVGL now, so hand it the logical size. */
     /* The glass's corner radius, before the grid is laid out against
        it. Board fact in, layout arithmetic inside. */
@@ -1180,9 +1237,21 @@ static bool tui_session(void)
         ls_i18n_set_saver(settings_set_ui_lang);
     }
     int lw = 0, lh = 0;
-    if (!tui_logical_size(&lw, &lh) || !ls_tui_begin(lw, lh)) {
-        printf("tui: could not start\n");
-        return false;
+    if (!tui_logical_size(&lw, &lh)) return false;
+    while (!ls_tui_begin(lw, lh)) {
+        /* Feed admission succeeded but app/grid storage can still exhaust the
+           heap during rebuild. Retry a smaller term grid instead of losing UI. */
+        int c = lw / remote_face->cell_w, r = lh / remote_face->cell_h;
+        if (!s_term_only || (c <= 40 && r <= 12)) {
+            printf("tui: could not start\n");
+            return false;
+        }
+        c = c * 3 / 4; if (c < 40) c = 40;
+        r = r * 3 / 4; if (r < 12) r = 12;
+        ls_panel_ws_term_resize(c, r, remote_face->cell_w, remote_face->cell_h);
+        ls_rterm_prepare_grid(c, r);
+        const int old_w = lw, old_h = lh;
+        if (!tui_logical_size(&lw, &lh) || (lw == old_w && lh == old_h)) return false;
     }
     ls_tui_set_pixels_off(s_term_only);
 
@@ -1399,9 +1468,19 @@ static bool tui_session(void)
     s_splash_replay = -1;
     const bool rebuilt = s_tui_rebuilding && replay < 0;
     s_tui_rebuilding = false;
+#if LS_DESK_BUILD
+    /* The desk is on by default where the screen is the PC's: the virtual
+       'term' panel. Once per boot; 'desk off' sticks across regrids. */
+    static bool s_desk_default_done;
+    if (!s_desk_default_done) {
+        s_desk_default_done = true;
+        const char *pn = ls_panel_ws_name();
+        if (pn && !strcmp(pn, "term")) ls_desk_set_enabled(true);
+    }
+#endif
     if (rebuilt) {
         const int64_t start = esp_timer_get_time();
-        ls_tui_router_draw(sf);
+        tui_draw_frame(sf);
         ls_tui_present();
         ls_ui_perf_frame(&s_perf, start, esp_timer_get_time());
         tui_perf_service();
@@ -1455,7 +1534,7 @@ static bool tui_session(void)
 
     ls_tui_invalidate();
     const int64_t first_start = esp_timer_get_time();
-    ls_tui_router_draw(sf);
+    tui_draw_frame(sf);
     int full = ls_tui_present();
     ls_ui_perf_frame(&s_perf, first_start, esp_timer_get_time());
     tui_perf_service();
@@ -1606,18 +1685,24 @@ static bool tui_session(void)
         /* The last presented frame is on the glass whole here. */
         if (s_tui_png_req) {
             ls_panel_fb_t fb;
-            /* A terminal-only screen draws no pixels: paint this one frame whole. */
+            /* On term, paint directly into the request's exact-size snapshot.
+               Only the UI task borrows it, so a resize cannot race the blitter. */
             const bool off = ls_tui_pixels_off();
-            if (off) { ls_tui_set_pixels_off(false); ls_tui_present(); }
-            /* Only into a buffer sized for this framebuffer: a terminal-only
-               screen changes size when it turns, and a turn between the
-               request and this copy would run past the end of it. */
-            if (s_tui_png_buf && ls_panel_fb(&fb) &&
-                ((uint32_t)fb.width << 16 | (uint32_t)fb.height) == s_tui_png_wh)
-                memcpy(s_tui_png_buf, fb.pixels, (size_t)fb.width * fb.height * sizeof(uint16_t));
-            else
-                s_tui_png_wh = 0;
-            if (off) ls_tui_set_pixels_off(true);
+            bool borrowed = false;
+            if (off && s_tui_png_buf) {
+                borrowed = ls_panel_ws_term_pixels(s_tui_png_buf,
+                    (int)(s_tui_png_wh >> 16), (int)(s_tui_png_wh & 65535));
+                if (borrowed) { ls_tui_set_pixels_off(false); ls_tui_present(); }
+            }
+            if (s_tui_png_buf && ls_panel_fb(&fb) && fb.pixels &&
+                ((uint32_t)fb.width << 16 | (uint32_t)fb.height) == s_tui_png_wh) {
+                if (fb.pixels != s_tui_png_buf)
+                    memcpy(s_tui_png_buf, fb.pixels, (size_t)fb.width * fb.height * sizeof(uint16_t));
+            } else s_tui_png_wh = 0;
+            if (off) {
+                ls_tui_set_pixels_off(true);
+                if (borrowed) ls_panel_ws_term_pixels(nullptr, 0, 0);
+            }
             s_tui_png_req = false;
         }
         /* 'tui rec': the grid as it is on the glass, when the sender is free. */
@@ -1708,6 +1793,8 @@ static bool tui_session(void)
             ls_tui_router_key(k, ch);
         }
 
+        if (ls_input_drain()) display_ctl_nudge();
+
         /* One status update per frame, from where the truth lives - the router does not go looking for it. */
 
         char right[48];
@@ -1741,7 +1828,7 @@ static bool tui_session(void)
 
         /* Known dense instruments change grid before their first draw. Full
            waterfalls embedded in FM/P25 are detected by the draw below. */
-        if (!cell_performance_active() && !s_tui_stop && ls_tui_font_index() != 0 &&
+        if (!cell_performance_active() && !s_tui_stop && !tui_desk_on() && ls_tui_font_index() != 0 &&
             ls_tui_font_for_view(s_preferred_font,
                 ls_tui_screen_name(ls_tui_screen_current()), false) == 0) {
             s_context_regrid = true;
@@ -1753,8 +1840,8 @@ static bool tui_session(void)
         s_ph_input_us = ph_avg(s_ph_input_us, ph_draw - ph_start);
         const uint32_t wf_before = ls_wf_full_draw_sequence();
         ls_lap_poll();
-        ls_tui_router_draw(sf);
-        if (!cell_performance_active() && !s_tui_stop) {
+        tui_draw_frame(sf);
+        if (!cell_performance_active() && !s_tui_stop && !tui_desk_on()) {
             const int wanted = ls_tui_font_for_view(s_preferred_font,
                 ls_tui_screen_name(ls_tui_screen_current()),
                 wf_before != ls_wf_full_draw_sequence());
@@ -1771,8 +1858,14 @@ static bool tui_session(void)
         /* A remote terminal watching: the grid just presented, when its last
            frame has gone. Here rather than before the input, so a key's
            result goes out this frame and not after the next sleep. */
+        const int64_t ph_capture = esp_timer_get_time();
         ls_rterm_capture();
         const int64_t ph_sleep = esp_timer_get_time();
+        s_ph_capture_us = ph_avg(s_ph_capture_us, ph_sleep - ph_capture);
+        /* 'carto trace': a frame phase long enough to hold up a click's answer. */
+        if (ph_draw - ph_start > 40000) ls_map_trace("slow input", (int32_t)((ph_draw - ph_start) / 1000), 0);
+        if (ph_present - ph_draw > 40000) ls_map_trace("slow draw", (int32_t)((ph_present - ph_draw) / 1000), ls_tui_screen_current());
+        if (ph_sleep - ph_present > 40000) ls_map_trace("slow present", (int32_t)((ph_sleep - ph_present) / 1000), 0);
         ls_ui_perf_frame(&s_perf, ph_draw, ph_sleep);
         s_ph_present_us = ph_avg(s_ph_present_us, ph_sleep - ph_present);
         s_ph_core_frames[esp_cpu_get_core_id() ? 1 : 0]++;
@@ -1797,7 +1890,8 @@ static bool tui_session(void)
         else if (ls_map_render_busy()) sleep_ms = 5;
         else {
             const int spent_ms = (int)((esp_timer_get_time() - ph_start) / 1000);
-            sleep_ms = 40 - spent_ms;
+            /* Focused mode (the desk's one-app full rate): a 20 ms period. */
+            sleep_ms = (LS_DESK_BUILD && ls_desk_focused() ? 20 : 40) - spent_ms;
             /* A full-screen game draws every frame and its frames run long;
                a 15 ms floor after a 50 ms frame was a quarter of its rate.
                It still yields 4 ms a frame to the tasks below it. */
@@ -1805,8 +1899,11 @@ static bool tui_session(void)
             if (sleep_ms < floor_ms) sleep_ms = floor_ms;
         }
         /* An injected key or tap, or a touch edge, ends the sleep. */
+        const int64_t ph_nap = esp_timer_get_time();
         if (s_tui_wake) xSemaphoreTake(s_tui_wake, pdMS_TO_TICKS(sleep_ms));
         else vTaskDelay(pdMS_TO_TICKS(sleep_ms));
+        if (esp_timer_get_time() - ph_nap > (int64_t)sleep_ms * 1000 + 30000)   /* woke late: another task had the core */
+            ls_map_trace("late wake", (int32_t)((esp_timer_get_time() - ph_nap) / 1000), sleep_ms);
         s_ph_sleep_us = ph_avg(s_ph_sleep_us, esp_timer_get_time() - ph_sleep);
     }
 
@@ -1859,7 +1956,18 @@ static bool tui_session(void)
  * spent 39 ms comparing an unchanged grid. Reserve DRAM and reuse one task
  * across rotation/regrid, so neither memory pressure nor overlap with the
  * previous session changes stack placement. A stopped UI sleeps here. */
-static StackType_t s_tui_stack[6144 / sizeof(StackType_t)]
+/* The desktop runs each app's router inside a window, one level deeper: FM
+ * in a desk window overflowed 6 KB in newlib's float formatting, and at 8 KB
+ * left 1.3 KB unused. */
+/* At 9216, P25 in a desk window left only 1.1 KB unused: keep 10 KB. */
+#if defined(CONFIG_LS_PANEL_RUNTIME) && CONFIG_LS_PANEL_RUNTIME
+#define TUI_STACK_BYTES 10240
+#else
+/* 6 KB overflowed opening ADS-B on the T-Display (stack protection fault
+   in float formatting, 2.20.0). */
+#define TUI_STACK_BYTES 8192
+#endif
+static StackType_t s_tui_stack[TUI_STACK_BYTES / sizeof(StackType_t)]
     __attribute__((aligned(16)));
 static StaticTask_t s_tui_tcb;
 static TaskHandle_t s_tui_worker;
@@ -2018,7 +2126,15 @@ static bool tui_start_session(void)
             esp_timer_start_periodic(beat_timer, 1000000);
     }
     if (!stall_task) {
+#if CONFIG_LS_NANO_RAM_BUDGET
+        /* Read-only diagnostics, timer/task queries and abort on a fatal
+         * stall; no flash/NVS writes. Preserve the full diagnostic stack.
+         * Permanent static task: never self-delete this PSRAM stack. */
+        static EXT_RAM_BSS_ATTR StackType_t stack[3072 / sizeof(StackType_t)]
+            __attribute__((aligned(16)));
+#else
         static StackType_t stack[3072 / sizeof(StackType_t)];
+#endif
         static StaticTask_t tcb;
         stall_task = xTaskCreateStaticPinnedToCore(tui_stall_task, "tui_stall", sizeof(stack),
                                                    nullptr, configMAX_PRIORITIES - 2, stack, &tcb, tskNO_AFFINITY);
@@ -2526,7 +2642,7 @@ static int tui_cmd(int argc, char **argv)
            against what the memory itself allows. Scribbles the glass for a
            moment; the grid is repainted after. */
         ls_panel_fb_t fb;
-        if (!ls_panel_fb(&fb)) { printf("tui: no framebuffer\n"); return 1; }
+        if (!ls_panel_fb(&fb) || !fb.pixels) { printf("tui: no framebuffer\n"); return 1; }
         const size_t bytes = (size_t)fb.width * fb.height * sizeof(uint16_t);
         int64_t t = esp_timer_get_time();
         memset(fb.pixels, 0x10, bytes);
@@ -2590,6 +2706,11 @@ static int tui_cmd(int argc, char **argv)
         printf("tui: %s  %d cells of %d  %lu us\n", scr ? scr : "?",
                cells, cols * rows, (unsigned long)us);
         {
+            uint32_t inv = 0; void *by = nullptr;
+            ls_tui_invalidate_stats(&inv, &by);
+            printf("tui: invalidated %lu times since last look, last by %p\n", (unsigned long)inv, by);
+        }
+        {
             uint32_t pus = 0, psync = 0, pramps = 0; int pcells = 0;
             ls_tui_peak_cost(&pus, &pcells, &psync, &pramps);
             LS_PRINTF(fmt_compact_ui_tui_peak_frame_cells, "tui: peak frame %d cells %lu us (writeback %lu us, %lu ramp builds)\n",
@@ -2606,6 +2727,7 @@ static int tui_cmd(int argc, char **argv)
                (unsigned long)s_ph_input_us, (unsigned long)s_ph_imu_us,
                (unsigned long)s_ph_draw_us, (unsigned long)s_ph_present_us,
                (unsigned long)s_ph_sleep_us);
+        printf("tui: of present, remote capture %lu us\n", (unsigned long)s_ph_capture_us);
         LS_PRINTF(fmt_compact_ui_tui_frames_on_core, "tui: frames on core 0 %lu, core 1 %lu since the last look\n",
                (unsigned long)s_ph_core_frames[0],
                (unsigned long)s_ph_core_frames[1]);
@@ -2647,6 +2769,34 @@ static int tui_cmd(int argc, char **argv)
             for (int i = 0; i < 16; i++)
                 printf(" %u", (unsigned)w.level_hist[i]);
             printf("\n");
+            /* The picture as somebody watching it gets it: how often it
+               moved, how far, and what moving it cost, per second since the
+               last look. */
+            static int64_t prev_us;
+            static ls_wf_stats_t prev_w;
+            static uint64_t prev_copy, prev_flush, prev_pres;
+            static uint32_t prev_shifts, prev_tx_b, prev_tx_l, prev_cap;
+            uint64_t copy = 0, flush = 0, pres = 0;
+            uint32_t shifts = 0, tx_b = 0, tx_l = 0, cap = 0;
+            ls_tui_traffic_totals(&copy, &flush, &shifts, &pres);
+            if (ls_rterm_picture_tx) ls_rterm_picture_tx(&tx_b, &tx_l, &cap);
+            const int64_t now_us = esp_timer_get_time();
+            if (prev_us && now_us > prev_us) {
+                const double s = (now_us - prev_us) / 1e6;
+                printf("tui: wfrate %.1f s  updates %.1f/s  px lines %.1f/s  shifts %.1f/s  "
+                       "copy %.0f KB/s  flush %.0f KB/s  present %.1f%%  desk captures %.1f/s  "
+                       "desk lines %.1f/s  desk %.1f KB/s\n", s,
+                       (w.pix_updates - prev_w.pix_updates) / s,
+                       (w.pix_lines - prev_w.pix_lines) / s,
+                       (shifts - prev_shifts) / s,
+                       (double)(copy - prev_copy) / 1024.0 / s,
+                       (double)(flush - prev_flush) / 1024.0 / s,
+                       (double)(pres - prev_pres) / 1e4 / s,
+                       (cap - prev_cap) / s, (tx_l - prev_tx_l) / s,
+                       (tx_b - prev_tx_b) / 1024.0 / s);
+            }
+            prev_us = now_us; prev_w = w; prev_copy = copy; prev_flush = flush;
+            prev_pres = pres; prev_shifts = shifts; prev_tx_b = tx_b; prev_tx_l = tx_l; prev_cap = cap;
         }
         return 0;
     }
@@ -2897,7 +3047,11 @@ static int lrwide_cmd(int argc, char **argv)
 {
     lr_wf_wide_status w;
     lr_wf_wide_get(&w);
-    if (argc == 3 && strcmp(argv[2], "status")) {
+    /* `lora lrwide chip on|off`: wide runs take 1 MS/s and the LR2021 down-converts itself. */
+    if (argc == 4 && !strcmp(argv[2], "chip") && (!strcmp(argv[3], "on") || !strcmp(argv[3], "off"))) {
+        lr_wf_set_wide_chip(!strcmp(argv[3], "on"));
+        lr_wf_wide_get(&w);
+    } else if (argc == 3 && strcmp(argv[2], "status")) {
         bool on = w.on;
         int32_t offset = w.offset_hz;
         char *end = nullptr;
@@ -2921,9 +3075,12 @@ static int lrwide_cmd(int argc, char **argv)
     }
     LS_PRINTF(fmt_compact_ui_lrwide_setting_offset_khz, "lrwide: setting=%s offset=%+ld kHz (LO = channel - offset) | stream: %s",
            w.on ? "on" : "off", (long)w.offset_hz / 1000,
-           !w.active ? "none" : w.wide ? "wide source0 576k iq8" : "narrow source2 125k iq16");
+           !w.active ? "none" : w.chip ? "wide source1 1M, down-converted on the LR2021" :
+           w.wide ? "wide source0 576k iq8" : "narrow source2 125k iq16");
     if (w.active)
         printf(" channel=%lu LO=%lu", (unsigned long)w.channel_hz, (unsigned long)w.lo_hz);
+    printf("\nlrwide: chip down-conversion %s%s (default on; lora lrwide chip on|off)",
+           w.chip_on ? "on" : "off", w.chip_on && w.chip_failed ? ", refused by the radio this boot" : "");
     LS_PRINTF(fmt_compact_ui_lrwide_ddc_cycles_pair, "\nlrwide: ddc=%lu.%02lu cycles/pair expand=%lu.%02lu cycles/pair (last ~1 s) "
            "queue_hw=%lu/%lu drops=%lu fifo_ovf=%lu fifo_full=%lu\n",
            (unsigned long)(w.ddc_mcycles / 1000), (unsigned long)(w.ddc_mcycles % 1000 / 10),
@@ -4128,6 +4285,13 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
               "'term net kick'), bare 'term' for who is watching"),
         .hint=nullptr,.func=ls_rterm_console,.argtable=nullptr};
     esp_console_cmd_register(&term);
+#if LS_DESK_BUILD
+    static const esp_console_cmd_t desk={.command="desk",
+        .help="LakeShark Desktop, a Windows 95 style shell over the apps for a PC viewer: "
+              "'desk on|off', 'desk theme bay|classic', 'desk open <app>', 'desk close', 'desk list'",
+        .hint=nullptr,.func=ls_desk_console,.argtable=nullptr};
+    esp_console_cmd_register(&desk);
+#endif
     if (!s_tui_wake) s_tui_wake = xSemaphoreCreateBinary();
     ls_rterm_set_input(term_key, term_tap);
     ls_rterm_set_resize(term_resize);

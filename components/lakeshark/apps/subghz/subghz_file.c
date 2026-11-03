@@ -182,13 +182,10 @@ void subghz_file_line(subghz_file_t *f, const char *line,
 
 const char *subghz_tx_radio_refusal(uint32_t freq_hz, int dbm)
 {
-    /* 406.0-406.1 MHz is COSPAS-SARSAT distress beacons, inside 387-464. */
     if (!((freq_hz>=300000000 && freq_hz<=348000000) ||
           (freq_hz>=387000000 && freq_hz<=464000000) ||
           (freq_hz>=779000000 && freq_hz<=928000000)))
-        return "not a replay band";
-    if (freq_hz>=406000000 && freq_hz<=406100000)
-        return "406 MHz distress band";
+        return "outside CC1101 tuning ranges";
     if (dbm < -10 || dbm > 10) return "power outside -10 to +10 dBm";
     return NULL;
 }
