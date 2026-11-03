@@ -524,28 +524,45 @@ static TaskHandle_t     s_rec_task = nullptr;
 static volatile bool    s_rec_busy = false;      /* a recording from command to its last line */
 #define REC_FRAME_US 35000          /* under the TUI's 40 ms frame, so every frame is a candidate */
 
-/* The picture behind image cells (the map) travels too, but only when it
-   changes, at most every REC_IMAGE_US, as run-length pixels; the glass marks
-   that let cells show over it go with every frame that has a picture. Both
-   are copied by the TUI task with the cells, while the sender is idle. */
+/* The picture behind image cells (the map, a pixel waterfall) travels too:
+   when it changes, at most every REC_IMAGE_US, and between changes as
+   blocks that mend the receiver's copy, in run-length or base64 pixels. The
+   glass marks that let cells show over it go with every frame that has a
+   picture. Both are copied by the TUI task with the cells, while the sender
+   is idle. */
 #define REC_IMAGE_US   66000
-#define REC_IMAGE_RUNS 60000        /* a picture that codes to more runs than this is not sent */
-/* A whole picture after this many strips, so a lost strip cannot last. A
-   full waterfall is ~190 KB, a second of the line: often enough to recover,
-   rare enough not to stall the take. */
-#define REC_IMAGE_FULL_EVERY 600
+/* A picture that codes to more than this does not go at once: the receiver
+   gets one of the ground colour and blocks mend it over the next frames. A
+   full SMOOTH waterfall, nearly every pixel its own colour, is ~750 KB as
+   base64, five seconds of the line; a PIXEL one has gone whole at ~300 KB. */
+#define REC_IMAGE_BYTES 360000
+/* What one frame may carry in mending blocks, so the cells keep their pace
+   while a busy picture fills in. */
+#define REC_PATCH_BYTES 8000
+/* Rows a frame compares with the receiver's copy, from where the last
+   frame stopped: the whole of a 561-row picture each frame, in PSRAM, took
+   the sender longer than the frame. A change is found within ~6 frames. */
+#define REC_SCAN_ROWS 96
+/* Rows sent again whatever the copy says, so a line lost on the way is
+   mended within ~20 s; about one row of a waterfall, on a frame whose
+   picture took less than that. A scrolling one replaces its rows anyway,
+   and a frame that ran over the TUI's 40 ms halved the take's rate. */
+#define REC_REFRESH_BYTES 1500
 static uint16_t        *s_rec_img = nullptr;     /* PSRAM copy */
 static size_t           s_rec_img_cap;
 static tui_rect         s_rec_img_rect;
 static int              s_rec_img_w, s_rec_img_h;
 static int              s_rec_img_x0, s_rec_img_y0;   /* where the ring started, at capture */
-/* The picture as last sent: a waterfall that has only scrolled since goes
-   as the shift and its new strip, not the whole picture again. */
+/* The receiver's picture, pixel for pixel: a waterfall that has only
+   scrolled since goes as the shift and its new strip, and what still
+   differs from the picture now as blocks, not the whole picture again. */
 static uint16_t        *s_rec_sent = nullptr;
 static size_t           s_rec_sent_cap;
 static tui_rect         s_rec_sent_rect;
-static int              s_rec_sent_w, s_rec_sent_h, s_rec_sent_x0, s_rec_sent_y0, s_rec_sent_left;
+static int              s_rec_sent_w, s_rec_sent_h, s_rec_sent_x0, s_rec_sent_y0;
 static bool             s_rec_sent_ok;
+static int              s_rec_patch_y;           /* where the next frame's compare starts */
+static int              s_rec_fresh_y;           /* and the next row sent again */
 static const uint16_t  *s_rec_img_src;
 static uint32_t         s_rec_img_serial;
 static bool             s_rec_img_on, s_rec_img_new;
@@ -616,14 +633,14 @@ static void rec_out(const char *buf, size_t n)
 }
 static const char REC_HEX[] = "0123456789abcdef";
 
-/* "~P" lines of runs over a block of the picture, row by row: six hex
-   digits a run (count 1-255, then the RGB565 value). */
-static void rec_send_runs(char *chunk, size_t chunk_cap, int x0, int y0, int w, int h)
+/* "~P" lines of runs over a block of a picture as wide as the one captured,
+   row by row: six hex digits a run (count 1-255, then the RGB565 value). */
+static void rec_send_runs(char *chunk, size_t chunk_cap, const uint16_t *src, int x0, int y0, int w, int h)
 {
     size_t n = 3;
     memcpy(chunk, "~P ", 3);
     const size_t total = (size_t)w * h;
-    auto at = [&](size_t i) { return s_rec_img[(size_t)(y0 + i / w) * s_rec_img_w + x0 + i % w]; };
+    auto at = [&](size_t i) { return src[(size_t)(y0 + i / w) * s_rec_img_w + x0 + i % w]; };
     for (size_t i = 0; i < total;) {
         const uint16_t v = at(i);
         size_t k = i + 1;
@@ -642,50 +659,104 @@ static void rec_send_runs(char *chunk, size_t chunk_cap, int x0, int y0, int w, 
     }
 }
 
-/* A waterfall moves its ring and adds lines at one edge. When the picture
-   now is the one last sent, moved by exactly that, only the new strip goes:
-   "~H <columns>" (positive: moved left, new columns at the right; negative:
-   moved right) or "~V <rows>" likewise, then its runs. Checked row by row,
-   so a change of colours or a redraw goes whole. */
-static bool rec_send_strip(char *chunk, size_t chunk_cap)
+/* What a block of the picture costs as runs, counted no further than past
+   `limit`, and as base64. */
+static size_t rec_runs_bytes(int x0, int y0, int w, int h, size_t limit)
 {
-    const int w = s_rec_img_w, h = s_rec_img_h;
-    if (!s_rec_sent_ok || s_rec_sent_left <= 0 || w != s_rec_sent_w || h != s_rec_sent_h ||
-        memcmp(&s_rec_img_rect, &s_rec_sent_rect, sizeof(tui_rect)))
-        return false;
-    const int dx = ((s_rec_img_x0 - s_rec_sent_x0) % w + w) % w, dy = ((s_rec_img_y0 - s_rec_sent_y0) % h + h) % h;
-    if ((dx != 0) == (dy != 0)) return false;           /* no move, or both: send it whole */
-    const uint16_t *now = s_rec_img, *was = s_rec_sent;
-    char head[24];
-    if (dx) {
-        for (int pass = 0; pass < 2; pass++) {
-            const int s = pass ? w - dx : dx;            /* left by dx, or right by w - dx */
-            bool same = true;
-            for (int y = 0; y < h && same; y++) {
-                const uint16_t *a = now + (size_t)y * w, *b = was + (size_t)y * w;
-                same = pass ? !memcmp(a + s, b, (size_t)(w - s) * 2) : !memcmp(a, b + s, (size_t)(w - s) * 2);
-            }
-            if (!same) continue;
-            rec_out(head, (size_t)snprintf(head, sizeof(head), "~H %d\n", pass ? -s : s));
-            rec_send_runs(chunk, chunk_cap, pass ? 0 : w - s, 0, s, h);
-            return true;
-        }
-    } else {
-        for (int pass = 0; pass < 2; pass++) {
-            const int s = pass ? h - dy : dy;
-            const bool same = pass ? !memcmp(now + (size_t)s * w, was, (size_t)(h - s) * w * 2)
-                                   : !memcmp(now, was + (size_t)s * w, (size_t)(h - s) * w * 2);
-            if (!same) continue;
-            rec_out(head, (size_t)snprintf(head, sizeof(head), "~V %d\n", pass ? -s : s));
-            rec_send_runs(chunk, chunk_cap, 0, pass ? 0 : h - s, w, s);
-            return true;
+    const size_t total = (size_t)w * h;
+    auto at = [&](size_t i) { return s_rec_img[(size_t)(y0 + i / w) * s_rec_img_w + x0 + i % w]; };
+    size_t bytes = 0;
+    for (size_t i = 0; i < total && bytes <= limit; bytes += 6) {
+        size_t k = i + 1;
+        while (k < total && k - i < 255 && at(k) == at(i)) k++;
+        i = k;
+    }
+    return bytes;
+}
+static size_t rec_b64_bytes(int w, int h) { return ((size_t)w * h * 2 + 2) / 3 * 4; }
+
+/* "~B" lines of a block of the picture as it is, RGB565 little-endian in
+   base64: under three characters a pixel against a run's six, for pictures
+   with few repeats (a SMOOTH waterfall). Each line holds whole groups. */
+static void rec_send_b64(char *chunk, size_t chunk_cap, int x0, int y0, int w, int h)
+{
+    static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t n = 3;
+    memcpy(chunk, "~B ", 3);
+    const size_t total = (size_t)w * h * 2;
+    uint32_t acc = 0;
+    int got = 0;
+    for (size_t b = 0; b < total; b++) {
+        const size_t i = b / 2;
+        const uint16_t v = s_rec_img[(size_t)(y0 + i / w) * s_rec_img_w + x0 + i % w];
+        acc = acc << 8 | (b & 1 ? v >> 8 : v & 255);
+        if (++got < 3 && b + 1 < total) continue;
+        const int pad = 3 - got;
+        acc <<= 8 * pad;
+        chunk[n++] = B64[acc >> 18 & 63];
+        chunk[n++] = B64[acc >> 12 & 63];
+        chunk[n++] = pad > 1 ? '=' : B64[acc >> 6 & 63];
+        chunk[n++] = pad > 0 ? '=' : B64[acc & 63];
+        acc = 0;
+        got = 0;
+        if (n + 8 > chunk_cap || b + 1 == total) {
+            chunk[n++] = '\n';
+            rec_out(chunk, n);
+            n = 0;
+            if (b + 1 < total) { memcpy(chunk, "~B ", 3); n = 3; }
         }
     }
-    return false;
 }
 
-/* Remember what went, for the next strip. */
-static void rec_keep_sent(void)
+/* The receiver's copy is a ring like a waterfall's own picture, so a scroll
+   moves where it starts and not its pixels (a 561 KB memmove in PSRAM, a
+   frame's worth of the sender's time). Its pixel (x, y) is at row
+   (y + s_rec_my) % h, column (x + s_rec_mx) % w. */
+static int s_rec_mx, s_rec_my;
+static inline uint16_t *rec_mrow(int y)
+{
+    return s_rec_sent + (size_t)(((y + s_rec_my) % s_rec_img_h + s_rec_img_h) % s_rec_img_h) * s_rec_img_w;
+}
+
+/* Pixels x0..x0+n-1 of row y of the picture now into the copy. */
+static void rec_mirror_put(int x0, int y, int n)
+{
+    const int w = s_rec_img_w, at = (x0 + s_rec_mx) % w, first = n < w - at ? n : w - at;
+    uint16_t *row = rec_mrow(y);
+    const uint16_t *src = s_rec_img + (size_t)y * w + x0;
+    memcpy(row + at, src, (size_t)first * sizeof(uint16_t));
+    if (n > first) memcpy(row, src + first, (size_t)(n - first) * sizeof(uint16_t));
+}
+
+/* Whether columns lo..hi-1 of row y of the picture now are the copy's
+   pixels ex columns and ey rows on. */
+static bool rec_same(int y, int ey, int lo, int hi, int ex)
+{
+    const int w = s_rec_img_w;
+    const uint16_t *a = s_rec_img + (size_t)y * w, *b = rec_mrow(y + ey);
+    for (int x = lo; x < hi;) {
+        const int at = ((x + ex + s_rec_mx) % w + w) % w, n = hi - x < w - at ? hi - x : w - at;
+        if (memcmp(a + x, b + at, (size_t)n * sizeof(uint16_t))) return false;
+        x += n;
+    }
+    return true;
+}
+
+/* A block of the picture in whichever form is shorter; returns its cost.
+   The receiver's copy takes it too. */
+static size_t rec_send_block(char *chunk, size_t chunk_cap, int x0, int y0, int w, int h)
+{
+    const size_t raw = rec_b64_bytes(w, h), runs = rec_runs_bytes(x0, y0, w, h, raw);
+    if (runs <= raw) rec_send_runs(chunk, chunk_cap, s_rec_img, x0, y0, w, h);
+    else             rec_send_b64(chunk, chunk_cap, x0, y0, w, h);
+    if (s_rec_sent_ok)
+        for (int r = 0; r < h; r++) rec_mirror_put(x0, y0 + r, w);
+    return runs <= raw ? runs : raw;
+}
+
+/* Room for the receiver's copy of a picture the size of the one captured,
+   placed where it is. */
+static bool rec_mirror_fit(void)
 {
     const size_t bytes = (size_t)s_rec_img_w * s_rec_img_h * sizeof(uint16_t);
     if (bytes > s_rec_sent_cap) {
@@ -694,38 +765,140 @@ static void rec_keep_sent(void)
         s_rec_sent_cap = s_rec_sent ? bytes : 0;
     }
     s_rec_sent_ok = s_rec_sent != nullptr;
-    if (!s_rec_sent_ok) return;
-    memcpy(s_rec_sent, s_rec_img, bytes);
-    s_rec_sent_rect = s_rec_img_rect;
-    s_rec_sent_w = s_rec_img_w; s_rec_sent_h = s_rec_img_h;
-    s_rec_sent_x0 = s_rec_img_x0; s_rec_sent_y0 = s_rec_img_y0;
+    if (s_rec_sent_ok) {
+        s_rec_sent_rect = s_rec_img_rect;
+        s_rec_sent_w = s_rec_img_w; s_rec_sent_h = s_rec_img_h;
+        s_rec_mx = s_rec_my = 0;
+    }
+    return s_rec_sent_ok;
 }
 
-/* The picture as "~I <x> <y> <w> <h> <pixels wide> <high>" and lines of
-   "~P" runs, or a strip after "~H"/"~V" when it has only scrolled, or "~N"
-   when there is none or it is too busy to send. */
+/* Whether the receiver's copy, moved by s (positive: left or up), is the
+   picture now outside the strip the move brings in, on every 16th row:
+   enough to tell the way it went. */
+static bool rec_moved_matches(bool across, int s)
+{
+    const int w = s_rec_img_w, h = s_rec_img_h;
+    for (int y = 0; y < h; y += 16) {
+        if (across) {
+            if (!rec_same(y, 0, s > 0 ? 0 : -s, s > 0 ? w - s : w, s)) return false;
+        } else if (y + s >= 0 && y + s < h && !rec_same(y, s, 0, w, 0)) return false;
+    }
+    return true;
+}
+
+/* A waterfall moves its ring and adds lines at one edge. The ring offsets
+   say how far; the way it went is the one under which the receiver's copy
+   matches the picture now, or else the shorter. "~H <columns>" (positive:
+   moved left, new columns at the right; negative: moved right) or "~V
+   <rows>" likewise, then the strip; the copy moves the same. What the move
+   does not explain (a redraw, a change of colours) the blocks mend.
+   Returns what the strip cost. */
+static size_t rec_send_strip(char *chunk, size_t chunk_cap)
+{
+    const int w = s_rec_img_w, h = s_rec_img_h;
+    const int dx = ((s_rec_img_x0 - s_rec_sent_x0) % w + w) % w, dy = ((s_rec_img_y0 - s_rec_sent_y0) % h + h) % h;
+    s_rec_sent_x0 = s_rec_img_x0; s_rec_sent_y0 = s_rec_img_y0;
+    if ((dx != 0) == (dy != 0)) return 0;               /* no move, or both */
+    const bool across = dx != 0;
+    const int n = across ? w : h, d = across ? dx : dy;
+    int s = d <= n - d ? d : d - n;
+    if (rec_moved_matches(across, d)) s = d;
+    else if (rec_moved_matches(across, d - n)) s = d - n;
+    const int m = s > 0 ? s : -s;
+    char head[24];
+    rec_out(head, (size_t)snprintf(head, sizeof(head), across ? "~H %d\n" : "~V %d\n", s));
+    if (across) {
+        s_rec_mx = ((s_rec_mx + s) % w + w) % w;
+        return rec_send_block(chunk, chunk_cap, s > 0 ? w - m : 0, 0, m, h);
+    }
+    s_rec_my = ((s_rec_my + s) % h + h) % h;
+    return rec_send_block(chunk, chunk_cap, 0, s > 0 ? h - m : 0, w, m);
+}
+
+/* Blocks of what the receiver's copy still has wrong: bands of rows that
+   differ, each as wide as its differences, over the frame's share of rows
+   from where the last frame stopped, until its share of the line is used.
+   Then, when the frame's picture (`spent` so far) was light, a row or so
+   sent again whatever the copy says. */
+static void rec_send_patches(char *chunk, size_t chunk_cap, size_t spent)
+{
+    const int w = s_rec_img_w, h = s_rec_img_h;
+    size_t budget = REC_PATCH_BYTES;
+    int y = s_rec_patch_y < h ? s_rec_patch_y : 0;
+    for (int seen = 0; seen < h && seen < REC_SCAN_ROWS;) {
+        if (rec_same(y, 0, 0, w, 0)) {
+            seen++;
+            y = (y + 1) % h;
+            continue;
+        }
+        if (!budget) break;
+        int x0 = w, x1 = -1, y1 = y;
+        for (; y1 < h && seen + (y1 - y) < h; y1++) {
+            if (y1 > y && rec_same(y1, 0, 0, w, 0)) break;
+            const uint16_t *a = s_rec_img + (size_t)y1 * w, *b = rec_mrow(y1);
+            auto at = [&](int x) { const int i = x + s_rec_mx; return b[i < w ? i : i - w]; };
+            int l = 0, r = w - 1;
+            while (a[l] == at(l)) l++;
+            while (a[r] == at(r)) r--;
+            const int nx0 = l < x0 ? l : x0, nx1 = r > x1 ? r : x1;
+            if (y1 > y && rec_b64_bytes(nx1 - nx0 + 1, y1 - y + 1) > budget) break;
+            x0 = nx0; x1 = nx1;
+        }
+        const int bh = y1 - y;
+        char head[48];
+        rec_out(head, (size_t)snprintf(head, sizeof(head), "~R %d %d %d %d\n", x0, y, x1 - x0 + 1, bh));
+        const size_t cost = rec_send_block(chunk, chunk_cap, x0, y, x1 - x0 + 1, bh);
+        budget = cost < budget ? budget - cost : 0;
+        spent += cost;
+        seen += bh;
+        y = (y + bh) % h;
+    }
+    s_rec_patch_y = y;
+    if (spent >= REC_REFRESH_BYTES) return;
+    const int y0 = s_rec_fresh_y < h ? s_rec_fresh_y : 0;
+    int n = (int)(REC_REFRESH_BYTES / rec_b64_bytes(w, 1));
+    n = n < 1 ? 1 : n > h - y0 ? h - y0 : n;
+    char head[48];
+    rec_out(head, (size_t)snprintf(head, sizeof(head), "~R 0 %d %d %d\n", y0, w, n));
+    rec_send_block(chunk, chunk_cap, 0, y0, w, n);
+    s_rec_fresh_y = (y0 + n) % h;
+}
+
+/* The picture as "~I <x> <y> <w> <h> <pixels wide> <high>" and its pixels,
+   or a strip after "~H"/"~V" when it has only scrolled, then "~R" blocks
+   for what still differs; "~N" when there is none. A new picture too busy
+   to go at once goes as the ground colour, and the blocks fill it in. */
 static void rec_send_image(char *chunk, size_t chunk_cap)
 {
-    if (s_rec_img_on && rec_send_strip(chunk, chunk_cap)) {
-        s_rec_sent_left--;
-        rec_keep_sent();
-        return;
+    if (!s_rec_img_on) { s_rec_sent_ok = false; rec_out("~N\n", 3); return; }
+    const int w = s_rec_img_w, h = s_rec_img_h;
+    size_t spent = 0;
+    if (s_rec_img_new) {
+        char head[64];
+        const int hn = snprintf(head, sizeof(head), "~I %d %d %d %d %d %d\n", s_rec_img_rect.x, s_rec_img_rect.y,
+                                s_rec_img_rect.w, s_rec_img_rect.h, w, h);
+        if (s_rec_sent_ok && w == s_rec_sent_w && h == s_rec_sent_h &&
+            !memcmp(&s_rec_img_rect, &s_rec_sent_rect, sizeof(tui_rect))) {
+            spent = rec_send_strip(chunk, chunk_cap);
+        } else if (rec_runs_bytes(0, 0, w, h, REC_IMAGE_BYTES) <= REC_IMAGE_BYTES ||
+                   rec_b64_bytes(w, h) <= REC_IMAGE_BYTES) {
+            rec_out(head, (size_t)hn);
+            s_rec_sent_ok = false;
+            rec_send_block(chunk, chunk_cap, 0, 0, w, h);
+            if (rec_mirror_fit()) memcpy(s_rec_sent, s_rec_img, (size_t)w * h * sizeof(uint16_t));
+            s_rec_sent_x0 = s_rec_img_x0; s_rec_sent_y0 = s_rec_img_y0;
+            return;
+        } else if (rec_mirror_fit()) {
+            const uint16_t g = ls_tui_active_theme()->palette[TUI_BLACK];
+            for (size_t i = 0; i < (size_t)w * h; i++) s_rec_sent[i] = g;
+            rec_out(head, (size_t)hn);
+            rec_send_runs(chunk, chunk_cap, s_rec_sent, 0, 0, w, h);
+            s_rec_sent_x0 = s_rec_img_x0; s_rec_sent_y0 = s_rec_img_y0;
+            s_rec_patch_y = 0;
+        } else { rec_out("~N\n", 3); return; }
     }
-    const size_t px = (size_t)s_rec_img_w * s_rec_img_h;
-    size_t runs = 0;
-    if (s_rec_img_on)
-        for (size_t i = 0; i < px && runs <= REC_IMAGE_RUNS; runs++) {
-            size_t k = i + 1;
-            while (k < px && k - i < 255 && s_rec_img[k] == s_rec_img[i]) k++;
-            i = k;
-        }
-    if (!s_rec_img_on || runs > REC_IMAGE_RUNS) { s_rec_sent_ok = false; rec_out("~N\n", 3); return; }
-    char head[64];
-    rec_out(head, (size_t)snprintf(head, sizeof(head), "~I %d %d %d %d %d %d\n", s_rec_img_rect.x, s_rec_img_rect.y,
-                                   s_rec_img_rect.w, s_rec_img_rect.h, s_rec_img_w, s_rec_img_h));
-    rec_send_runs(chunk, chunk_cap, 0, 0, s_rec_img_w, s_rec_img_h);
-    s_rec_sent_left = REC_IMAGE_FULL_EVERY;
-    rec_keep_sent();
+    if (s_rec_sent_ok) rec_send_patches(chunk, chunk_cap, spent);
 }
 
 static void tui_rec_run(void)
@@ -777,7 +950,7 @@ static void tui_rec_run(void)
                 c = end;
             }
         }
-        if (chunk && (s_rec_img_new || sent == 1)) {
+        if (chunk && (s_rec_img_new || sent == 1 || s_rec_sent_ok)) {
             rec_out(buf, n);
             n = 0;
             rec_send_image(chunk, 4096);
@@ -869,6 +1042,7 @@ static int tui_rec_cmd(int argc, char **argv)
     s_rec_img_src = nullptr;
     s_rec_img_us = 0;
     s_rec_sent_ok = false;
+    s_rec_patch_y = s_rec_fresh_y = 0;
     if (!s_rec_task) {
         /* Control block in TCM, which DMA cannot use, so the recorder takes
            nothing from the DMA memory the radios' SPI transfers need. */

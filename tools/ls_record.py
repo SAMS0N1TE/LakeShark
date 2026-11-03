@@ -16,12 +16,15 @@ The board takes console commands only between recordings, so each scene's
 commands run first, then it is recorded, and the scenes are joined without
 the gaps. With no --scene, one scene of --seconds after --before.
 
-The map's picture comes along whenever it changes, at most four times a
-second. Other pixels an app paints itself (a waterfall) are not sent: the
-video shows what those cells hold. Needs bench/build/lssim.exe (the host
-bench build) and ffmpeg.
+The picture behind image cells (the map, a pixel waterfall) comes along
+whenever it changes, at most fifteen times a second: whole, as a scroll and
+its new strip, or as blocks that mend what still differs. A picture too
+busy to send at once is mended a few blocks a frame, so it fills in over
+the first seconds. Needs bench/build/lssim.exe (the host bench build) and
+ffmpeg.
 """
 import argparse
+import base64
 import os
 import re
 import struct
@@ -131,36 +134,101 @@ def scrolled(head, strip):
     return (x, y, w, h, iw, ih, bytes(out))
 
 
+def patched(cur, rect, block):
+    """The picture with a w x h block put at x, y. None when it does not fit."""
+    x, y, w, h = rect
+    iw, ih, px = cur[4], cur[5], bytearray(cur[6])
+    if x < 0 or y < 0 or w < 1 or h < 1 or x + w > iw or y + h > ih or len(block) != w * h * 2:
+        return None
+    for r in range(h):
+        at = ((y + r) * iw + x) * 2
+        px[at:at + w * 2] = block[r * w * 2:(r + 1) * w * 2]
+    return cur[:6] + (bytes(px),)
+
+
 def frames_of(head, text, images):
     """Frames as (ms, cells, glass, picture index or -1). Pictures are appended
-    to images as (x, y, w, h, pixels wide, high, RGB565 little-endian bytes)."""
+    to images as (x, y, w, h, pixels wide, high, RGB565 little-endian bytes),
+    one for each frame that changed it."""
     cols, rows = int(head.group(1)), int(head.group(2))
     grid = bytearray(cols * rows * 2)
     nglass = (cols * rows + 7) // 8
     glass, pic, building = bytes(nglass), -1, None
+    # The picture as it stands; a frame may move and mend it several times
+    # before its end, and only the result is kept.
+    cur, changed = None, False
     frames, t, bad = [], None, 0
     prev = bytes(grid)
     row = cols * 2
+
+    def finish():
+        """Put the picture lines read so far into cur. A block that came short
+        or long (a line lost on the way) still goes in, cut or padded to its
+        size, so what follows lands where it belongs; the board sends every
+        row again now and then, which mends it."""
+        nonlocal building, cur, changed, bad
+        if building is None:
+            return
+        kind, head_, px = building
+        building = None
+        if kind == "I":
+            (x, y, w, h, iw, ih) = head_
+            need = iw * ih * 2 if iw > 0 and ih > 0 else -1
+        elif kind == "S":
+            need = abs(head_[1]) * (cur[5] if head_[0] == "H" else cur[4]) * 2
+        else:
+            x, y, w, h = head_
+            fits = x >= 0 and y >= 0 and w > 0 and h > 0 and x + w <= cur[4] and y + h <= cur[5]
+            need = w * h * 2 if fits else -1
+        if need < 0:
+            bad += 1
+            return
+        if len(px) != need:
+            bad += 1
+            px = bytes(px[:need]) + bytes(max(0, need - len(px)))
+        if kind == "I":
+            full = (x, y, w, h, iw, ih, bytes(px))
+        elif kind == "S":
+            full = scrolled(head_ + (cur,), px)
+        else:
+            full = patched(cur, head_, px)
+        if full is None:
+            bad += 1
+        elif full != cur:                   # rows the board sends again are mostly the same
+            cur, changed = full, True
+
     for line in text.splitlines():
         line = line.strip("\r")
         if line.startswith("~F "):
             t = int(line[3:])
             prev = bytes(grid)              # a row copy takes the row as it was last frame
         elif line.startswith("~I ") and t is not None:
+            finish()
             try:
-                building = ([int(x) for x in line[3:].split()], bytearray())
-                if len(building[0]) != 6:
+                building = ("I", [int(x) for x in line[3:].split()], bytearray())
+                if len(building[1]) != 6:
                     raise ValueError
             except ValueError:
                 building, bad = None, bad + 1
         elif (line.startswith("~H ") or line.startswith("~V ")) and t is not None:
             # A waterfall that only scrolled: the last picture moved by this
             # many columns (H) or rows (V), and the new strip follows.
+            finish()
             try:
                 shift = int(line[3:])
-                if pic < 0 or not shift:
+                if cur is None or not shift:
                     raise ValueError
-                building = ((line[1], shift, images[pic]), bytearray())
+                building = ("S", (line[1], shift), bytearray())
+            except ValueError:
+                building, bad = None, bad + 1
+        elif line.startswith("~R ") and t is not None:
+            # A block of the picture as it now is: x y w h, its pixels follow.
+            finish()
+            try:
+                rect = tuple(int(x) for x in line[3:].split())
+                if cur is None or len(rect) != 4:
+                    raise ValueError
+                building = ("R", rect, bytearray())
             except ValueError:
                 building, bad = None, bad + 1
         elif line.startswith("~P ") and t is not None:
@@ -168,13 +236,21 @@ def frames_of(head, text, images):
                 continue
             try:
                 runs = bytes.fromhex(line[3:])
-                px = building[1]
+                px = building[2]
                 for i in range(0, len(runs) - 2, 3):
                     px += bytes((runs[i + 2], runs[i + 1])) * runs[i]
             except ValueError:
-                building, bad = None, bad + 1
+                bad += 1                    # the block goes in short, see finish
+        elif line.startswith("~B ") and t is not None:
+            # Pixels as they are, little-endian, where runs would cost more.
+            if building is None:
+                continue
+            try:
+                building[2].extend(base64.b64decode(line[3:], validate=True))
+            except ValueError:
+                bad += 1
         elif line == "~N" and t is not None:
-            pic, building, glass = -1, None, bytes(nglass)
+            pic, building, glass, cur, changed = -1, None, bytes(nglass), None, False
         elif line.startswith("~G ") and t is not None:
             try:
                 g = bytes.fromhex(line[3:])
@@ -192,23 +268,10 @@ def frames_of(head, text, images):
             except ValueError:
                 bad += 1
         elif line == "~E":
-            if building is not None:
-                head_, px = building
-                if isinstance(head_[0], str):
-                    full = scrolled(head_, px)
-                    if full is None:
-                        bad += 1
-                    else:
-                        images.append(full)
-                        pic = len(images) - 1
-                else:
-                    (x, y, w, h, iw, ih) = head_
-                    if len(px) == iw * ih * 2:
-                        images.append((x, y, w, h, iw, ih, bytes(px)))
-                        pic = len(images) - 1
-                    else:
-                        bad += 1
-                building = None
+            finish()
+            if changed:
+                images.append(cur)
+                pic, changed = len(images) - 1, False
             if t is not None:
                 frames.append((t, bytes(grid), glass if pic >= 0 else bytes(nglass), pic))
             t = None
