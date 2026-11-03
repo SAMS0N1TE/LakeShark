@@ -38,7 +38,6 @@ Waterfalls:
 
 All boards:
 
-- Apps that use the LoRa radio (FALLS on the LR, P25 and FM on the LR, LoRa Labs, REC watches) get it from MeshCore again. A size optimisation in the 2.20.0 build had left them waiting on "mesh release".
 - LR2021: instantaneous RSSI reads to the half dB again; it lost the half dB on every reading before.
 - LR2021 modules without a TCXO (Waveshare Core2021) get a frequency correction: `lora lrfcorr` or `lora port ... fcorr=PPM` (thanks zenobik).
 - Boot no longer sweeps the header pins looking for a wired Flipper head.
