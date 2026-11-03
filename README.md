@@ -33,7 +33,7 @@ On-chip waterfall · On-chip down-conversion · Background LoRa scan · FM at ha
   <img width="48%" alt="FALLS with the waterfall computed on the LR2021" src="docs/screenshots/tdp4/motion/falls-chip-20261103.gif">
 </p>
 
-<p align="center">Built on <a href="https://github.com/beala/lr2021-re">Alex Beal's lr2021-re</a>: he found the chip's own CPU, mapped its ROM and showed how to run code from its Patch RAM. <a href="https://beala.substack.com/p/your-node-doesnt-need-a-microcontroller">Read his write-up</a>.</p>
+<p align="center">The programs on the radio come from <a href="https://github.com/beala/lr2021-re">Alex Beal's lr2021-re</a>, which builds on LR2021-SDR: his on-chip FFT, sweep and LoRa scanner, and the ARC toolchain and Patch RAM loader we used for our own. <a href="https://beala.substack.com/p/your-node-doesnt-need-a-microcontroller">Read his write-up</a>.</p>
 
 <p align="center"><strong><a href="https://github.com/SAMS0N1TE/lr2021-sdr">Explore LR2021-SDR →</a></strong></p>
 <p align="center">
@@ -328,7 +328,7 @@ idf.py -B build_nano -D SDKCONFIG=build_nano/sdkconfig -D SDKCONFIG_DEFAULTS="sd
   <tbody>
     <tr>
       <td><a href="https://github.com/beala/lr2021-re">lr2021-re</a></td>
-      <td>Alex Beal. Found the LR2021's own CPU and how to run code in its Patch RAM, mapped its ROM, and wrote the programs LakeShark runs on the radio: the on-chip FFT waterfall, the band sweep and the LoRa scanner. Our on-chip down-conversion is built with his toolchain. <a href="https://beala.substack.com/p/your-node-doesnt-need-a-microcontroller">Write-up</a>. MIT</td>
+      <td>Alex Beal. Patch RAM programs for the LR2021's internal CPU that LakeShark runs on the radio: the on-chip FFT waterfall, the band sweep and the LoRa scanner. Our on-chip down-conversion is built with his ARC toolchain and loader. <a href="https://beala.substack.com/p/your-node-doesnt-need-a-microcontroller">Write-up</a>. MIT</td>
     </tr>
     <tr>
       <td><a href="https://osmocom.org/projects/rtl-sdr">rtl-sdr / librtlsdr</a></td>
