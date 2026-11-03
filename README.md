@@ -305,6 +305,17 @@ idf.py -B build_nano -D SDKCONFIG=build_nano/sdkconfig -D SDKCONFIG_DEFAULTS="sd
   <img src="assets/lakeshark-divider.png" alt="" width="900">
 </p>
 
+## Contributors
+
+<table align="center">
+  <tbody>
+    <tr>
+      <td><a href="https://github.com/zenobik">@zenobik</a></td>
+      <td>T-Display P4 TFT support (<a href="https://github.com/SAMS0N1TE/LakeShark/pull/8">#8</a>), UTF-8 text shown as ASCII letters (<a href="https://github.com/SAMS0N1TE/LakeShark/pull/9">#9</a>), LR2021 frequency correction for modules without a TCXO (<a href="https://github.com/SAMS0N1TE/LakeShark/pull/19">#19</a>)</td>
+    </tr>
+  </tbody>
+</table>
+
 ## Credits and open-source projects
 
 <table align="center">
