@@ -141,7 +141,9 @@ LS_CASE(uat_is_marked_lr2021_only_and_refuses_a_part_that_stops_at_960_mhz)
 LS_CASE(fsk_settings_polarities_and_diagnostics)
 {
     char why[80], out[16][LS_EXP_LINE];
+    char *both[] = {"both"};
     ls_shim_time_set(0);
+    LS_CHECK(exp_uat.configure(1, both, why, sizeof(why)));
     LS_CHECK(exp_uat.start(why, sizeof(why)));
     LS_EQ_UINT(cfg.freq_hz, 978000000);
     LS_EQ_UINT(cfg.bitrate, 1041667);
@@ -182,9 +184,40 @@ LS_CASE(fsk_settings_polarities_and_diagnostics)
     LS_EQ_UINT(cfg.sync_word, 0xacdda4e2);
     exp_uat.stop();
     LS_CHECK(!active);
+    char *down[] = {"down"};
+    LS_CHECK(exp_uat.configure(1, down, why, sizeof(why)));
+    char *junk[] = {"sideways"};
+    LS_CHECK(!exp_uat.configure(1, junk, why, sizeof(why)));
 }
-/* Discussion #13: a source that sends only long frames lost every one caught
-   in the old 30-byte basic window. Downlink windows now all read 48 bytes. */
+/* Discussion #13: a source that sends only long frames. By default the
+   downlink is heard all the time: one tune, no window changes, every frame
+   read as 48 bytes and decoded. */
+LS_CASE(downlink_only_by_default_hears_every_long_frame)
+{
+    char why[80], out[16][LS_EXP_LINE];
+    uint8_t data[34] = {0};
+    data[0] = 8;
+    data[1] = 0x1a;
+    data[2] = 0xbb;
+    data[3] = 0xa1;
+    LS_CHECK(uat_rs_encode(data, 34, packet));
+    ls_shim_time_set(0);
+    LS_CHECK(exp_uat.start(why, sizeof(why)));
+    for (int s = 0; s < 6; s++) {
+        LS_EQ_UINT(cfg.sync_word, 0xacdda4e2);
+        LS_EQ_INT(cfg.payload_bytes, 48);
+        pending = 1;
+        exp_uat.poll();
+        ls_shim_time_advance(1000000);
+        exp_uat.poll();
+    }
+    exp_uat.lines(out, 16);
+    LS_CHECK(strstr(out[1], "all the time"));
+    LS_CHECK(strstr(out[6], "basic 0 long 6 bad 0"));
+    LS_CHECK(strstr(out[9], "ADDRESS 1ABBA1"));
+    exp_uat.stop();
+}
+/* With the uplink windows on, the downlink ones still read 48 bytes. */
 LS_CASE(long_frames_decode_in_every_downlink_window)
 {
     char why[80], out[16][LS_EXP_LINE];
@@ -195,6 +228,8 @@ LS_CASE(long_frames_decode_in_every_downlink_window)
     data[3] = 0xa1;
     LS_CHECK(uat_rs_encode(data, 34, packet));
     ls_shim_time_set(0);
+    char *both[] = {"both"}, *down[] = {"down"};
+    LS_CHECK(exp_uat.configure(1, both, why, sizeof(why)));
     LS_CHECK(exp_uat.start(why, sizeof(why)));
     for (int w = 0; w < 6; w++) {
         if (cfg.sync_word == 0xacdda4e2) LS_EQ_INT(cfg.payload_bytes, 48);
@@ -207,6 +242,7 @@ LS_CASE(long_frames_decode_in_every_downlink_window)
     LS_CHECK(strstr(out[6], "basic 0 long 3 bad 0"));
     LS_CHECK(strstr(out[9], "ADDRESS 1ABBA1"));
     exp_uat.stop();
+    LS_CHECK(exp_uat.configure(1, down, why, sizeof(why)));
 }
 #include "uat_vectors.h"
 static void unhex(const char *text, uint8_t *out, int n)

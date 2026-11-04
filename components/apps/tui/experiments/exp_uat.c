@@ -1,9 +1,11 @@
-/* UAT 978: one hardware sync at a time. Equal one-second downlink and
-   uplink windows expose listening time. Downlink always reads 48 bytes, a
-   long frame's length: uat_frame_decode tries long and falls back to the
-   first 30 bytes as basic, so neither kind is cut short. The uplink is only
-   a prefix capture because a 432-byte payload exceeds the session API's
-   255-byte limit. */
+/* UAT 978: one hardware sync at a time. By default it listens for the
+   aircraft downlink all the time: no window changes, so nothing is lost to a
+   retune and every frame on the air can be caught. LISTEN DOWN + UPLINK
+   alternates equal one-second downlink and uplink windows and shows the
+   listening time of each. Downlink always reads 48 bytes, a long frame's
+   length: uat_frame_decode tries long and falls back to the first 30 bytes as
+   basic, so neither kind is cut short. The uplink is only a prefix capture
+   because a 432-byte payload exceeds the session API's 255-byte limit. */
 #include "../ls_experiments.h"
 #include "uat_decode.h"
 #include "esp_attr.h"
@@ -28,6 +30,9 @@ static EXT_RAM_BSS_ATTR struct {
 } s;
 static EXT_RAM_BSS_ATTR uint8_t raw[48];
 static int64_t changed, last, read_at;
+extern const ls_experiment_t exp_uat;
+static const char *const LISTENS[] = {"DOWNLINK", "DOWN + UPLINK"};
+static unsigned s_listen;          /* 0 downlink only, 1 both in turn */
 static esp_err_t tune(int window)
 {
     const ls_fsk_cfg_t cfg = {.freq_hz = 978000000,
@@ -121,7 +126,7 @@ static void poll(void)
         }
         read_at = now;
     }
-    if (now - changed >= 1000000) {
+    if (s_listen && now - changed >= 1000000) {
         ls_lora_fsk_end();
         int next = !s.window;
         esp_err_t e = tune(next);
@@ -158,8 +163,10 @@ static int lines(char (*out)[LS_EXP_LINE], int max)
     portEXIT_CRITICAL(&lock);
     int n = 0;
     if (n < max) LS_SNPUTS(t_exp_uat_978_mhz_1_041667, out[n++], LS_EXP_LINE, "978 MHz 1.041667 Mbps FSK  +/-312.5 kHz");
-    if (n < max)
-        snprintf(out[n++], LS_EXP_LINE, "WINDOW %s 48B / 1s", window ? "uplink prefix" : "downlink");
+    if (n < max) {
+        if (s_listen) snprintf(out[n++], LS_EXP_LINE, "WINDOW %s 48B / 1s", window ? "uplink prefix" : "downlink");
+        else snprintf(out[n++], LS_EXP_LINE, "WINDOW downlink 48B, all the time");
+    }
     for (int p = 0; p < 2 && n < max; p++)
         LS_SNPRINTF(t_exp_uat_s_sync_lu_listen, out[n++], LS_EXP_LINE, "%s SYNC %lu  listen %.1fs", p ? "UP" : "DN", (unsigned long)sync[p],
                  listen[p] / 1e6);
@@ -197,6 +204,25 @@ static int lines(char (*out)[LS_EXP_LINE], int max)
     if (n < max) LS_SNPUTS(t_exp_uat_32_bit_sync_capture, out[n++], LS_EXP_LINE, "32-bit sync capture counts; uplink prefix only");
     return n;
 }
+static bool configure(int argc, char **argv, char *why, size_t n)
+{
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "down")) s_listen = 0;
+        else if (!strcmp(argv[i], "both")) s_listen = 1;
+        else { snprintf(why, n, "args: down|both"); return false; }
+    }
+    return true;
+}
+static int get(const ls_opt_t *o) { (void)o; return (int)s_listen; }
+static void set(const ls_opt_t *o, int v)
+{
+    if (v < 0 || v >= o->n) return;
+    s_listen = (unsigned)v;
+    if (ls_exp_running() == &exp_uat) ls_exp_start(&exp_uat);
+}
+static const ls_opt_t OPTS[] = {
+    {.label = "LISTEN", .kind = LS_OPT_CYCLE, .names = LISTENS, .n = 2, .get = get, .set = set},
+};
 const ls_experiment_t exp_uat = {.id = "uat",
                                  .name = "UAT 978",
                                  .sub = "978 MHz ADS-B RS checks and sync diagnostics",
@@ -206,4 +232,7 @@ const ls_experiment_t exp_uat = {.id = "uat",
                                  .start = start,
                                  .stop = stop,
                                  .poll = poll,
-                                 .lines = lines};
+                                 .lines = lines,
+                                 .configure = configure,
+                                 .opts = OPTS,
+                                 .n_opts = 1};

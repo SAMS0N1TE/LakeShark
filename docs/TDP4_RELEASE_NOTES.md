@@ -2,7 +2,7 @@
 
 ## 2.21.0
 
-- UAT 978 (LR2021): long frames are no longer cut short. Every downlink window reads a full 48 bytes and decodes basic or long, so a source sending only long frames decodes them all (#13). The console now says which check a failed packet missed when it counts a radio error.
+- UAT 978 (LR2021): listens for aircraft all the time instead of half the time, and long frames are no longer cut short. Every frame is read as a full 48 bytes and decoded as basic or long, so a source sending only long frames decodes them all (#13). OPTIONS > LISTEN DOWN + UPLINK brings back the ground uplink windows. The console now says which check a failed packet missed when it counts a radio error.
 - DOPPLER RADAR (LR2021): finds the SX1262 board's tone anywhere in the 125 kHz it hears, so a crystal-only LR2021 module tens of ppm off still locks, on the right frequency. With no tone running it keeps searching instead of locking on something faint elsewhere in the band and drawing motion that is not there.
 - FREQ OFFSET (EXPERIMENTS): the frequency offset tool for LR2021 boards. Start it on the SX1262 board (it sends a tone from its TCXO) and on the LR2021 board, same FREQ: after 5 s it shows the LR2021's error in ppm. On a crystal module, APPLY AS LRFCORR saves it as `lora lrfcorr`. `exp offset start [915|903|433|<MHz>] [apply]` on the console.
 - LR2021: `lora lrfcorr` and the other `lora lr...` console commands no longer crash the board with a stack overflow.
