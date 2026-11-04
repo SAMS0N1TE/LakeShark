@@ -34,6 +34,12 @@
 
 static const char *TAG = "ls_lora_lr";
 
+/* A `lora lr...` handler, never inlined into lr20xx_clock_command: each
+   command pays only its own frame on the console task's 4 KB stack. With
+   them inlined the dispatcher's frame was 960 bytes under every command,
+   and 'lora lrfcorr' overflowed the stack (crumbs #66, #67). */
+#define LR_CMD static __attribute__((noinline)) int
+
 #define FRAME_MAX 24   /* opcode + args, or Stat + up to 14 data bytes, with room */
 
 static uint16_t s_stat;
@@ -3427,7 +3433,7 @@ static bool probe_number(const char *s, uint32_t limit, uint32_t *out)
     return true;
 }
 
-static int memory_probe_command(int argc, char **argv)
+LR_CMD memory_probe_command(int argc, char **argv)
 {
     uint32_t addr = 0, count = 1;
     if (argc < 3 || argc > 4 || !probe_number(argv[2], 0xFFFFFCu, &addr) ||
@@ -3470,7 +3476,7 @@ static esp_err_t proof_write(uint32_t addr, uint32_t value)
     return err;
 }
 
-static int pram_proof_command(int argc)
+LR_CMD pram_proof_command(int argc)
 {
     if (argc != 2) { puts("usage: lora lrproof"); return 1; }
     uint32_t saved[25], marker = 0, observed = 0, recovered_signature = 0;
@@ -3644,7 +3650,7 @@ esp_err_t lr20xx_capture_source2(uint32_t *captured, uint32_t *saved,
     return err != ESP_OK ? err : restore != ESP_OK ? restore : recovery;
 }
 
-static int capture_probe_command(int argc)
+LR_CMD capture_probe_command(int argc)
 {
     if (argc != 2) { puts("usage: lora lrcap"); return 1; }
     uint32_t *saved = malloc(2u * 1024u);
@@ -4306,7 +4312,7 @@ static bool iq_checked_probe_sink(void *context, const uint8_t *data, size_t byt
     p->bytes += bytes; p->blocks++;
     return true;
 }
-static int checked_fifo_probe_command(int argc, char **argv)
+LR_CMD checked_fifo_probe_command(int argc, char **argv)
 {
     uint32_t duration = 1000;
     if (argc > 3 || (argc == 3 && (!probe_number(argv[2], 3000, &duration) || !duration))) {
@@ -4325,7 +4331,7 @@ static int checked_fifo_probe_command(int argc, char **argv)
     return e == ESP_OK && !r.stopped_by_sink && r.validated_bytes ? 0 : 1;
 }
 
-static int capture_fifo_probe_command(int argc, char **argv)
+LR_CMD capture_fifo_probe_command(int argc, char **argv)
 {
     uint32_t duration = 100;
     uint32_t wait_ms = 0;
@@ -4514,7 +4520,7 @@ static bool iq_route_tail(void *context, const uint8_t *data, size_t bytes,
     return true;
 }
 
-static int lrroute_command(int argc, char **argv)
+LR_CMD lrroute_command(int argc, char **argv)
 {
     uint32_t khz = 0, gain = 13, secs = 10;
     lr20xx_iq_config_t c = {.route = LR20XX_IQ_SOURCE2};
@@ -4586,7 +4592,7 @@ static int lrroute_command(int argc, char **argv)
     return err == ESP_OK ? 0 : 1;
 }
 
-static int lrprobe_command(int argc, char **argv)
+LR_CMD lrprobe_command(int argc, char **argv)
 {
     uint32_t khz = 0, bw = 31250, gain = 0, ms = 40;
     int boost = -1;
@@ -4674,7 +4680,7 @@ static int lrprobe_command(int argc, char **argv)
 
 /* `lora lrble <37|38|39> [seconds] [1m|2m|s2|s8]`: receive-only BLE
    advertising on the LR2021's 2.4 GHz input. One line per advert. */
-static int lrble_command(int argc, char **argv)
+LR_CMD lrble_command(int argc, char **argv)
 {
     uint32_t ch = 37, secs = 10, preset = 0;
     bool ok = argc >= 3 && probe_number(argv[2], 39, &ch) && ch >= 37;
@@ -4777,7 +4783,7 @@ static void print_fcorr(int32_t ppb)
 /* lora lrfcorr [ppm] - the reference error of this module, saved.
    Positive when the crystal runs fast: the radio then sits that far above
    the frequency it was told, and the correction sets it lower. */
-static int fcorr_command(int argc, char **argv)
+LR_CMD fcorr_command(int argc, char **argv)
 {
     if (argc == 2) { print_fcorr(settings_get_lr_fcorr_ppb()); return 0; }
     int32_t ppb = 0;
@@ -4800,7 +4806,7 @@ static int fcorr_command(int argc, char **argv)
 }
 
 /* lora lrrx [reset] - LoRa receive outcomes, for judging a correction. */
-static int rxstat_command(int argc, char **argv)
+LR_CMD rxstat_command(int argc, char **argv)
 {
     if (argc == 3 && !strcmp(argv[2], "reset")) {
         ls_lora_hw_lock();
@@ -4822,6 +4828,58 @@ static int rxstat_command(int argc, char **argv)
                (long long)((esp_timer_get_time() - r.at_us) / 1000000), r.freq_hz / 1e6,
                (double)r.rssi_dbm, (double)r.snr_db, (long)r.fei_hz, r.fcorr_ppb / 1000.0);
     return 0;
+}
+
+/* lora lrstat | lrclk [tcxo|xtal] | lrreg [dcdc|ldo]; -1 for anything else. */
+LR_CMD clock_reg_command(int argc, char **argv)
+{
+    const bool clock = argc > 1 && !strcmp(argv[1], "lrclk");
+    const bool reg = argc > 1 && !strcmp(argv[1], "lrreg");
+    if (!clock && !reg && !(argc > 1 && !strcmp(argv[1], "lrstat"))) return -1;
+    ls_lora_hw_lock();
+    if (!s_bound) {
+        ls_lora_hw_unlock();
+        puts("lora: LR20xx is not initialized");
+        return 1;
+    }
+    if (!clock && !reg) {
+        uint16_t errors = 0;
+        const esp_err_t err = lr20xx_get_errors(&errors);
+        const bool tcxo = s_tcxo, dcdc = s_dcdc, fallback = s_xtal_fallback;
+        const esp_err_t cal = s_cal_result;
+        const uint16_t cal_errors = s_cal_errors;
+        ls_lora_hw_unlock();
+        char names[128];
+        err_names(errors, names, sizeof(names));
+        LS_PRINTF(fmt_ls_lora_lr20xx_lora_clock_reg_errors, "lora: clock=%s%s reg=%s errors=0x%04X %s (%s) calibration=%s errors=0x%04X\n",
+               tcxo ? "tcxo" : "xtal", fallback ? " (boot fallback)" : "",
+               dcdc ? "dcdc" : "ldo", (unsigned)errors, names, esp_err_to_name(err),
+               esp_err_to_name(cal), (unsigned)cal_errors);
+        return err == ESP_OK ? 0 : 1;
+    }
+    const bool current = clock ? settings_get_lr_tcxo() : settings_get_lr_dcdc();
+    if (argc == 2) {
+        ls_lora_hw_unlock();
+        printf("lora: %s=%s\n", argv[1], clock ? (current ? "tcxo" : "xtal") : (current ? "dcdc" : "ldo"));
+        return 0;
+    }
+    const char *on = clock ? "tcxo" : "dcdc", *off = clock ? "xtal" : "ldo";
+    if (argc != 3 || (strcmp(argv[2], on) && strcmp(argv[2], off))) {
+        ls_lora_hw_unlock();
+        printf("usage: lora %s [%s|%s]\n", argv[1], on, off);
+        return 1;
+    }
+    const bool value = !strcmp(argv[2], on);
+    esp_err_t err = ESP_OK;
+    if (value != current) {
+        if (lr.tx_busy) err = ESP_ERR_INVALID_STATE;
+        else if (!(clock ? settings_set_lr_tcxo(value) : settings_set_lr_dcdc(value)))
+            err = ESP_ERR_INVALID_STATE;
+        else err = reprogram_locked("clock/regulator change");
+    }
+    ls_lora_hw_unlock();
+    printf("lora: %s=%s: %s\n", argv[1], value ? on : off, esp_err_to_name(err));
+    return err == ESP_OK ? 0 : 1;
 }
 
 int lr20xx_clock_command(int argc, char **argv)
@@ -4892,53 +4950,7 @@ int lr20xx_clock_command(int argc, char **argv)
     if (argc > 1 && !strcmp(argv[1], "lrscan")) return lrscan_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrchipddc")) return lrddc_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrcap")) return capture_probe_command(argc);
-    const bool clock = argc > 1 && !strcmp(argv[1], "lrclk");
-    const bool reg = argc > 1 && !strcmp(argv[1], "lrreg");
-    if (!clock && !reg && !(argc > 1 && !strcmp(argv[1], "lrstat"))) return -1;
-    ls_lora_hw_lock();
-    if (!s_bound) {
-        ls_lora_hw_unlock();
-        puts("lora: LR20xx is not initialized");
-        return 1;
-    }
-    if (!clock && !reg) {
-        uint16_t errors = 0;
-        const esp_err_t err = lr20xx_get_errors(&errors);
-        const bool tcxo = s_tcxo, dcdc = s_dcdc, fallback = s_xtal_fallback;
-        const esp_err_t cal = s_cal_result;
-        const uint16_t cal_errors = s_cal_errors;
-        ls_lora_hw_unlock();
-        char names[128];
-        err_names(errors, names, sizeof(names));
-        LS_PRINTF(fmt_ls_lora_lr20xx_lora_clock_reg_errors, "lora: clock=%s%s reg=%s errors=0x%04X %s (%s) calibration=%s errors=0x%04X\n",
-               tcxo ? "tcxo" : "xtal", fallback ? " (boot fallback)" : "",
-               dcdc ? "dcdc" : "ldo", (unsigned)errors, names, esp_err_to_name(err),
-               esp_err_to_name(cal), (unsigned)cal_errors);
-        return err == ESP_OK ? 0 : 1;
-    }
-    const bool current = clock ? settings_get_lr_tcxo() : settings_get_lr_dcdc();
-    if (argc == 2) {
-        ls_lora_hw_unlock();
-        printf("lora: %s=%s\n", argv[1], clock ? (current ? "tcxo" : "xtal") : (current ? "dcdc" : "ldo"));
-        return 0;
-    }
-    const char *on = clock ? "tcxo" : "dcdc", *off = clock ? "xtal" : "ldo";
-    if (argc != 3 || (strcmp(argv[2], on) && strcmp(argv[2], off))) {
-        ls_lora_hw_unlock();
-        printf("usage: lora %s [%s|%s]\n", argv[1], on, off);
-        return 1;
-    }
-    const bool value = !strcmp(argv[2], on);
-    esp_err_t err = ESP_OK;
-    if (value != current) {
-        if (lr.tx_busy) err = ESP_ERR_INVALID_STATE;
-        else if (!(clock ? settings_set_lr_tcxo(value) : settings_set_lr_dcdc(value)))
-            err = ESP_ERR_INVALID_STATE;
-        else err = reprogram_locked("clock/regulator change");
-    }
-    ls_lora_hw_unlock();
-    printf("lora: %s=%s: %s\n", argv[1], value ? on : off, esp_err_to_name(err));
-    return err == ESP_OK ? 0 : 1;
+    return clock_reg_command(argc, argv);
 }
 
 static void lr_stop(void)

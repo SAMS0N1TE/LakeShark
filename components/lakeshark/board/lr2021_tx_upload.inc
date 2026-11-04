@@ -82,7 +82,7 @@ static esp_err_t lrtx_enqueue(const uint8_t *frame, unsigned frame_len,
     return ESP_OK;
 }
 
-static int lrtx_upload_command(int argc, char **argv)
+LR_CMD lrtx_upload_command(int argc, char **argv)
 {
     if (argc == 3 && !strcmp(argv[2], "status")) {
         if (!ls_lora_hw_try_lock()) {
@@ -474,7 +474,7 @@ esp_err_t lr20xx_iq_send_rate_reason(const uint8_t *data, size_t bytes, uint32_t
     return lrtx_send(data, (uint32_t)bytes, rate, 1, hz, dbm, reason);
 }
 
-static int lrtx_send_command(int argc, char **argv)
+LR_CMD lrtx_send_command(int argc, char **argv)
 {
     uint32_t rate = 0, repeats = 1;
     if (argc < 3 || argc > 4 || !probe_number(argv[2], 125000, &rate) ||

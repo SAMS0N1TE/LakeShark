@@ -560,7 +560,7 @@ static bool cop_scan_probe_sink(void *ctx, const lr20xx_chip_packet_t *p)
     printf(p->len > 48 ? "...\n" : "\n");
     return true;
 }
-static int lrscan_command(int argc, char **argv)
+LR_CMD lrscan_command(int argc, char **argv)
 {
     static lr20xx_chip_chan_t chans[32];
     unsigned n = 0;
@@ -757,7 +757,7 @@ static bool cop_ddc_probe_sink(void *ctx, const uint8_t *iq8, size_t bytes, uint
     }
     return now < p->end;
 }
-static int lrddc_command(int argc, char **argv)
+LR_CMD lrddc_command(int argc, char **argv)
 {
     const float mhz = argc > 2 ? strtof(argv[2], NULL) : 915.0f, secs = argc > 3 ? strtof(argv[3], NULL) : 5.0f;
     const unsigned dec = argc > 4 ? (unsigned)strtoul(argv[4], NULL, 0) : 8;
@@ -868,7 +868,7 @@ static bool cop_probe_sink(void *ctx, const uint8_t *db, uint32_t chip_us)
     p->t_end = esp_timer_get_time();
     return p->got < p->want;
 }
-static int cop_command(int argc, char **argv)
+LR_CMD cop_command(int argc, char **argv)
 {
     if (argc >= 3 && !strcmp(argv[2], "cpu")) {
         /* Both cores' busy share over a window, from the idle tasks' run time. */
