@@ -5,8 +5,9 @@
    shifts its echo by f = 2 v / lambda (6.1 Hz per m/s at 915 MHz), so the
    picture is the spectrum right around the carrier:
 
-     acquire  125 kHz -> 25 kHz, one 4096-point FFT: the carrier is the
-              strongest line more than 300 Hz from the LR's own DC.
+     acquire  one 4096-point FFT of the whole 125 kHz (30.5 Hz bins): the
+              carrier is the strongest line more than 300 Hz from the LR's
+              own DC, wherever a crystal-only module puts it.
      track    an oscillator moves it to 0 Hz, 125 kHz -> 5 kHz -> 500 Hz,
               and a slow loop follows the two boards' crystals drifting
               apart (seconds, far slower than anything that moves).
@@ -27,7 +28,7 @@ extern "C" {
 #endif
 
 #define RADAR_IN_RATE    125000
-#define RADAR_ACQ_DECIM  5            /* 125k -> 25k for the search        */
+#define RADAR_ACQ_DECIM  1            /* the search sees all 125 kHz: a narrower one aliases a far tone */
 #define RADAR_ACQ_N      4096
 #define RADAR_D1         25           /* 125k -> 5k                        */
 #define RADAR_D2         10           /* 5k -> 500 Hz                      */

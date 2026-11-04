@@ -44,16 +44,22 @@ static void render(room_t *r, uint8_t *out, size_t pairs, double carrier_hz, flo
     }
 }
 
+/* Rows past learning with an echo over the threshold: in a still room, noise
+   (480 bins a row against an 11-12 dB threshold) puts one on a few in a hundred. */
+static int s_echo_rows;
+
 static int run(room_t *r, double seconds, double carrier, float amp, double e1hz, float e1,
                double e2hz, float e2, radar_row_t *last)
 {
     static uint8_t buf[4 * 1020];
     int rows = 0;
+    s_echo_rows = 0;
     const size_t total = (size_t)(seconds * RADAR_IN_RATE);
     for (size_t done = 0; done < total; done += 1020) {
         render(r, buf, 1020, carrier, amp, e1hz, e1, e2hz, e2, 0.002f);
         const int k = radar_dsp_feed(&s_dsp, buf, 1020, s_rows, 64);
         if (k) { *last = s_rows[k - 1]; rows += k; }
+        for (int j = 0; j < k; j++) s_echo_rows += !s_rows[j].learning && s_rows[j].peak_hz != 0;
     }
     return rows;
 }
@@ -66,7 +72,10 @@ LS_CASE(the_carrier_is_found_tracked_and_its_echoes_measured)
     /* a still room for 6 s (the background is learned), then something moves:
        -6 dBFS carrier, echoes 40 and 50 dB under it */
     int rows = run(&room, 6.0, 3500.0, 0.5f, 0, 0, 0, 0, &last);
-    LS_CHECK(!last.learning && last.peak_hz == 0);            /* nothing moves yet */
+    /* nothing moves yet: no motion, and an echo on a noise bin only now and then */
+    ls_note("still room: %d of %d rows with an echo, motion %.1f dBc", s_echo_rows, rows, (double)last.motion_db);
+    LS_CHECK(!last.learning && last.motion_db < -80.0f);
+    LS_CHECK(s_echo_rows * 5 < rows);
     rows += run(&room, 1.5, 3500.0, 0.5f, 30.0, 0.005f, -60.0, 0.0016f, &last);
     ls_note("%d rows; carrier %.1f dBFS at %+.1f Hz (true %+.1f), floor %.1f dBc, motion %.1f dBc, "
             "peak %+.2f Hz %.1f dB over floor", rows, (double)last.carrier_dbfs, (double)last.offset_hz,
@@ -124,6 +133,23 @@ LS_CASE(a_lost_carrier_is_searched_for_again)
     (void)run(&room, 4.0, 1800.0, 0.3f, 0, 0, 0, 0, &last);    /* another one starts */
     LS_CHECK(s_dsp.locked);
     LS_CHECK(fabs(last.offset_hz - (1800.0 + 2.0 * room.t)) < 2.0);
+}
+
+/* A crystal-only LR2021 module (PR #19: a Waveshare Core2021 runs about -37
+   ppm) hears the tone 34 kHz from where it should be at 915 MHz: the search
+   covers the whole 125 kHz, and the tracked offset is exact, either side. */
+LS_CASE(a_carrier_far_off_tune_is_found_where_it_is)
+{
+    static const double AT[] = { 1500.0 + 33855.0, 1500.0 - 20000.0, 55000.0 };
+    for (int i = 0; i < 3; i++) {
+        radar_dsp_init(&s_dsp);
+        room_t room = { .rng = 11u + (uint32_t)i };
+        radar_row_t last = {0};
+        (void)run(&room, 4.0, AT[i], 0.3f, 0, 0, 0, 0, &last);
+        ls_note("true %+.1f Hz, tracked %+.2f Hz", AT[i] + 2.0 * room.t, (double)last.offset_hz);
+        LS_CHECK(s_dsp.locked);
+        LS_CHECK(fabs(last.offset_hz - (AT[i] + 2.0 * room.t)) < 1.0);
+    }
 }
 
 LS_CASE(nothing_but_the_lr_s_own_dc_is_not_a_carrier)

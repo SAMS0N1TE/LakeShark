@@ -123,12 +123,15 @@ static void acquire(radar_dsp_t *s)
     s->acq_fill = 0;
     /* A carrier is a line, not noise: most of the power, far over the average bin. */
     if (best < 0 || best_p < 200.0f * total / RADAR_ACQ_N) return;
-    /* Centre it between bins from its neighbours (parabola on magnitude). */
+    /* Centre it between bins from its neighbours: Jacobsen's estimate,
+       Re((X[l] - X[r]) / (2 X[c] - X[l] - X[r])), right to a few hundredths
+       of a 30 Hz bin with no window, so the loop starts within a hertz. */
     const int l = (best + RADAR_ACQ_N - 1) % RADAR_ACQ_N, r = (best + 1) % RADAR_ACQ_N;
-    const float ml = hypotf(s->acq_re[l], s->acq_im[l]), mc = sqrtf(best_p),
-                mr = hypotf(s->acq_re[r], s->acq_im[r]);
-    const float den = ml - 2 * mc + mr;
-    const float frac = fabsf(den) > 1e-12f ? 0.5f * (ml - mr) / den : 0.0f;
+    const float nr = s->acq_re[l] - s->acq_re[r], ni = s->acq_im[l] - s->acq_im[r];
+    const float dr = 2 * s->acq_re[best] - s->acq_re[l] - s->acq_re[r];
+    const float di = 2 * s->acq_im[best] - s->acq_im[l] - s->acq_im[r];
+    const float den = dr * dr + di * di;
+    const float frac = den > 1e-24f ? (nr * dr + ni * di) / den : 0.0f;
     const float k = (float)(best < RADAR_ACQ_N / 2 ? best : best - RADAR_ACQ_N) + frac;
     set_nco(s, k * bin_hz);
     stages_reset(s);
