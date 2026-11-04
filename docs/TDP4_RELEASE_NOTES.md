@@ -1,5 +1,16 @@
 # LakeShark release notes
 
+## 2.20.3
+
+- SETTINGS: volume, brightness, mute, lock and rotate up top, then six colour-coded pages (DISPLAY, SOUND, POWER, RADIO, NETWORK, SYSTEM), each with a live panel of what it controls.
+- POWER modes: FULL, SAVER (half brightness, dims at 30 s, 15 fps) and WATCH. WATCH turns the screen off after 20 s and keeps only what you pick running: everything, the mesh, P25 or a GPS track. A touch brings the rest back. `power` on the console.
+- The POWER page shows battery, current draw and the last hour of current, so you can see what a mode saves.
+- The GPS rests in standby whenever nothing is reading it, about 23 mA less on every board.
+- MUSIC: the seek bar spans the player and is easy to hit in portrait; all ten views are full-size tabs; SPECTRO and MELODIC are redrawn, with MELODIC a piano roll that follows the tune; the keys fill the width.
+- More free memory for the RTL-SDR, USB and the radios, and more room for the task that keeps the RTL-SDR running.
+- OPTIONS lists show on and off in colour.
+- MAP says why when it can only draw outlines.
+
 ## 2.20.2
 
 - Keyboard: Shift types capitals and Fn types the symbols printed on the keycaps, held or tapped (#20).
