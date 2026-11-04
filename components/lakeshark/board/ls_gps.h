@@ -157,6 +157,9 @@ bool ls_gps_running(void);
 
 esp_err_t ls_gps_start(void);
 void      ls_gps_stop(void);
+/* Whether the firmware's own start (ls_gps_start) is in force, as distinct
+   from an app's demand: what ls_gps_stop would take away. */
+bool      ls_gps_firmware_wanted(void);
 
 bool ls_gps_parse_line(const char *line, int len, ls_gps_parser_t *p);
 

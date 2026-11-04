@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "xl9535";
 
@@ -30,6 +31,18 @@ static uint8_t s_out[2];
 static uint8_t s_cfg[2];
 
 static ls_i2c_bus_id_t s_bus;
+
+/* One writer at a time: a pin change is a read of the shadow, a bank write and
+   a shadow update, and two tasks interleaving them (the GPS's standby pin, a
+   LoRa reset, the C6 enable share banks) lost one of the changes. */
+static StaticSemaphore_t s_lock_buf;
+static SemaphoreHandle_t s_lock;
+static void lock(void)
+{
+    if (!s_lock) s_lock = xSemaphoreCreateMutexStatic(&s_lock_buf);
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+}
+static void unlock(void) { xSemaphoreGive(s_lock); }
 
 /* LS-1239: I2C0 can also lock after the part has answered (seen on the
    first write after the GT9895 left reset), and nothing cleared it, so
@@ -147,12 +160,15 @@ esp_err_t ls_xl9535_set_dir(int pin, bool output)
 
     const int bank = pin >> 3;
     const uint8_t mask = (uint8_t)(1u << (pin & 7));
+    lock();
     const uint8_t next = output ? (uint8_t)(s_cfg[bank] & ~mask)
                                 : (uint8_t)(s_cfg[bank] | mask);
-    if (next == s_cfg[bank]) return ESP_OK;
-
-    const esp_err_t err = reg_write(bank ? REG_CONFIG1 : REG_CONFIG0, next);
-    if (err == ESP_OK) s_cfg[bank] = next;
+    esp_err_t err = ESP_OK;
+    if (next != s_cfg[bank]) {
+        err = reg_write(bank ? REG_CONFIG1 : REG_CONFIG0, next);
+        if (err == ESP_OK) s_cfg[bank] = next;
+    }
+    unlock();
     return err;
 }
 
@@ -163,12 +179,15 @@ esp_err_t ls_xl9535_set(int pin, bool level)
 
     const int bank = pin >> 3;
     const uint8_t mask = (uint8_t)(1u << (pin & 7));
+    lock();
     const uint8_t next = level ? (uint8_t)(s_out[bank] | mask)
                                : (uint8_t)(s_out[bank] & ~mask);
-    if (next == s_out[bank]) return ESP_OK;
-
-    const esp_err_t err = reg_write(bank ? REG_OUTPUT1 : REG_OUTPUT0, next);
-    if (err == ESP_OK) s_out[bank] = next;
+    esp_err_t err = ESP_OK;
+    if (next != s_out[bank]) {
+        err = reg_write(bank ? REG_OUTPUT1 : REG_OUTPUT0, next);
+        if (err == ESP_OK) s_out[bank] = next;
+    }
+    unlock();
     return err;
 }
 

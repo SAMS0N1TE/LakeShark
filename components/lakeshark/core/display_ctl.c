@@ -21,17 +21,24 @@ static bool s_dimmed      = false;
 static int  s_applied_pct = -1;
 static bool s_key_dim     = true;
 static bool s_off         = false;
+/* The power mode's policy over the user's own settings (display_ctl.h). */
+static int  s_pwr_cap     = 100;
+static int  s_pwr_dim_s   = 0;
+static int  s_pwr_off_s   = 0;
 
-/* The keyboard backlight follows the screen down and back, when asked to. */
+/* The keyboard backlight follows the screen down and back, when asked to,
+   and always under a power mode. A screen turned off takes it too: the
+   light used to stay lit over a dark panel. */
 static void keypad_follow(void)
 {
 #if LS_HAS_COMPACT_UI
-    ls_keypad_backlight_dim(s_dimmed && s_key_dim);
+    ls_keypad_backlight_dim((s_dimmed || s_off) && (s_key_dim || s_pwr_dim_s > 0));
 #endif
 }
 
 static int perceptual(int slider)
 {
+    if (slider > s_pwr_cap) slider = s_pwr_cap;
     if (slider <= 0)   return 0;
     if (slider >= 100) return 100;
     float y = sqrtf((float)slider / 100.0f);
@@ -57,7 +64,16 @@ static void apply_now(int applied)
 static void dim_policy(uint32_t idle_ms)
 {
     if (s_off) return;
-    if (display_dim_due(s_autodim, s_timeout_s, idle_ms)) {
+    if (s_pwr_off_s > 0 && idle_ms > (uint32_t)s_pwr_off_s * 1000u) {
+        display_ctl_set_off(true);
+        return;
+    }
+    /* A power mode's dim time is a ceiling: it turns auto-dim on, and a
+       shorter time of the user's own still wins. */
+    const bool dim_on = s_autodim || s_pwr_dim_s > 0;
+    int dim_s = s_autodim ? s_timeout_s : s_pwr_dim_s;
+    if (s_pwr_dim_s > 0 && s_pwr_dim_s < dim_s) dim_s = s_pwr_dim_s;
+    if (display_dim_due(dim_on, dim_s, idle_ms)) {
         if (!s_dimmed) { s_dimmed = true; keypad_follow(); }
     } else if (s_dimmed) {
         s_dimmed = false;
@@ -205,3 +221,15 @@ void display_ctl_set_autodim_timeout(int seconds)
 }
 
 int display_ctl_autodim_timeout(void) { return s_timeout_s; }
+
+void display_ctl_set_power_policy(int cap_pct, int dim_s, int off_s)
+{
+    s_pwr_cap   = cap_pct < 5 ? 5 : cap_pct > 100 ? 100 : cap_pct;
+    s_pwr_dim_s = dim_s > 0 ? dim_s : 0;
+    s_pwr_off_s = off_s > 0 ? off_s : 0;
+#if LS_HAS_COMPACT_UI
+    s_last_input_us = esp_timer_get_time();
+#endif
+    keypad_follow();
+    if (!s_off) apply_now(s_dimmed ? DIM_APPLIED_PCT : perceptual(s_user_pct));
+}

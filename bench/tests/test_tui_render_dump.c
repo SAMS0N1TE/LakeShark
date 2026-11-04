@@ -754,7 +754,7 @@ static void blank_check(uint16_t want, int *blank, int *wrong)
 LS_CASE(daylight_whitens_the_ground_and_the_margin_and_off_gives_black_back)
 {
     static const char *const LABELS[] = {
-        "Volume", "Brightness", "Mute", "Screen lock", "Rotate lock", "Display", "Sound", "Device",
+        "Volume", "Brightness", "Mute", "Screen lock", "Rotate lock", "DISPLAY", "SOUND", "POWER",
     };
     static const int SIZE[2][2] = { { 568, 1232 }, { 1232, 568 } };
 

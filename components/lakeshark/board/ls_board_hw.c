@@ -40,6 +40,17 @@ static const char *TAG = "board_hw";
 #define C6_VIA_GPIO 0
 #endif
 
+esp_err_t ls_board_hw_gps_wake(bool awake)
+{
+#ifdef LS_BOARD_XL_GPS_WAKE
+    if (!ls_xl9535_ready()) return ESP_ERR_INVALID_STATE;
+    return ls_xl9535_out(LS_BOARD_XL_GPS_WAKE, awake);
+#else
+    (void)awake;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
 esp_err_t ls_board_hw_c6_enable(bool on)
 {
 #if C6_VIA_EXPANDER

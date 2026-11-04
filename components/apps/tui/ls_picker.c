@@ -219,6 +219,20 @@ static void put_over(tui_surface *sf, tui_rect r, int x, int y,
         tui_put_char(sf, r, x + i, y, text[i], attr);
 }
 
+/* How a value reads at a glance, the same in every OPTIONS list as on the
+   SETTINGS pages: a switch that is on is a green pill, one that is off a
+   grey one; anything else is plain words. */
+static uint8_t value_attr(const char *v)
+{
+    static const char *const ON[] = { "on", "ON", "On", "yes", "YES", "enabled", "armed", "ARMED" };
+    static const char *const OFF[] = { "off", "OFF", "Off", "no", "NO", "disabled" };
+    for (unsigned i = 0; i < sizeof(ON) / sizeof(ON[0]); i++)
+        if (!strcmp(v, ON[i])) return A(TUI_BLACK, TUI_GREEN | TUI_BRIGHT);
+    for (unsigned i = 0; i < sizeof(OFF) / sizeof(OFF[0]); i++)
+        if (!strcmp(v, OFF[i])) return A(TUI_WHITE, TUI_BLACK | TUI_BRIGHT);
+    return A(TUI_WHITE, TUI_BLACK);
+}
+
 static void draw_row(tui_surface *sf, tui_rect a, int slot, int oi, bool sel)
 {
     tui_rect hole;
@@ -293,8 +307,7 @@ static void draw_row(tui_surface *sf, tui_rect a, int slot, int oi, bool sel)
     }
     if (dn > 0) {
         cut[dn] = 0;
-        put_over(sf, f, f.x + f.w - 1 - dn, f.y + (f.h-1)/2, cut,
-                 A(TUI_WHITE, TUI_BLACK));
+        put_over(sf, f, f.x + f.w - 1 - dn, f.y + (f.h-1)/2, cut, value_attr(cut));
     }
 
     if (slot < ROWS_MAX) {

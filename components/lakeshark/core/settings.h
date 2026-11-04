@@ -83,6 +83,12 @@ void settings_set_autodim(bool en);
 int  settings_get_autodim_timeout(void);
 void settings_set_autodim_timeout(int seconds);
 
+/* SETTINGS > POWER: the mode and what WATCH keeps running (ls_power.h). */
+int  settings_get_power_mode(void);
+void settings_set_power_mode(int mode);
+int  settings_get_power_keep(void);
+void settings_set_power_keep(int keep);
+
 /* The desktop shell: its theme (-1 none saved) and wallpaper id, through
    the write queue so the UI task never writes flash itself. */
 int  settings_get_desk_theme(void);

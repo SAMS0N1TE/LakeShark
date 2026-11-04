@@ -41,6 +41,13 @@ void display_ctl_set_off(bool off);
 bool display_ctl_off(void);
 void display_ctl_nudge(void);
 
+/* A power mode's limits over the user's settings, which stay as they were
+   saved: the panel no brighter than cap_pct, dimmed after dim_s idle seconds
+   at most (0 leaves auto-dim to the user), and turned off after off_s idle
+   seconds (0 never). The keyboard light goes down with the screen whenever
+   a dim time is set. FULL is (100, 0, 0). Not saved. */
+void display_ctl_set_power_policy(int cap_pct, int dim_s, int off_s);
+
 #ifdef __cplusplus
 }
 #endif

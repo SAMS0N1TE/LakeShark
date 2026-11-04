@@ -37,6 +37,9 @@ esp_err_t uart_set_baudrate(int p, uint32_t baud)
 esp_err_t uart_wait_tx_done(int p, uint32_t ticks)
 { (void)p; (void)ticks; return ESP_OK; }
 esp_err_t uart_flush_input(int p) { (void)p; return ESP_OK; }
+/* The module's standby pin, which ls_gps drives around its reader. */
+static bool gps_awake = true;
+esp_err_t ls_board_hw_gps_wake(bool on) { gps_awake = on; return ESP_OK; }
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"

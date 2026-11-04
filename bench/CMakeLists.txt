@@ -422,6 +422,7 @@ ls_add_test(test_tui_screens
     ${FW}/components/apps/tui/ls_notes.c
     ${FW}/components/apps/tui/ls_note_blocks.c
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
+    tools/ls_power_host.c
     ${FW}/components/lakeshark/board/ls_lora_port.c
     ${FW}/components/apps/tui/screens/ext/scr_update.c
     ${FW}/components/apps/tui/ls_voice_opts.c
@@ -889,6 +890,7 @@ add_executable(lssim
     ${FW}/components/lakeshark/core/ls_safe_mode.c
     ${FW}/components/lakeshark/board/ls_haptic.c
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
+    tools/ls_power_host.c
     ${FW}/components/lakeshark/board/ls_lora_port.c
     ${FW}/components/apps/tui/screens/ext/scr_update.c
     ${FW}/components/apps/tui/ls_voice_opts.c
@@ -1384,6 +1386,7 @@ ls_add_test(test_tui_render_dump
     ${APP}/p25/p25_tg_observed.c
     ${FW}/components/apps/tui/screens/main/scr_home.c
     ${FW}/components/apps/tui/screens/ext/scr_settings.c
+    tools/ls_power_host.c
     ${FW}/components/lakeshark/board/ls_lora_port.c
     ${FW}/components/apps/tui/screens/ext/scr_update.c
     ${FW}/components/apps/tui/ls_voice_opts.c
@@ -2676,6 +2679,7 @@ add_library(ls_i18n_host STATIC ${FW}/components/apps/tui/ls_i18n.c
     ${FW}/components/apps/tui/tuilib/tui_core.c)
 target_include_directories(ls_i18n_host PRIVATE ${FW}/components/apps/tui ${FW}/bench/shims)
 target_link_libraries(test_set_async ls_i18n_host)
+target_sources(test_set_async PRIVATE tools/ls_power_host.c)
 target_include_directories(test_set_async PRIVATE
     tests/set_shims ${LS_TUI_APP_INCLUDES} ${FW}/components/lakeshark
     ${FW}/components/apps/tui ${FW}/components/lakeshark/board)

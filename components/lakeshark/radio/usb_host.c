@@ -81,7 +81,9 @@ static void client_event_cb(const usb_host_client_event_msg_t *event_msg, void *
         xSemaphoreGive(driver_obj->constant.mux_lock);
         break;
     case USB_HOST_CLIENT_EVENT_DEV_GONE:
-        /**/
+        /* Said, so a dongle that dropped off the bus reads differently in the
+           log from the health check's own port cycle. */
+        ESP_LOGW(TAG, "USB device gone from the bus");
         (void)rtl_adapter_note_removed(event_msg->dev_gone.dev_hdl);
         (void)hackrf_adapter_note_removed(event_msg->dev_gone.dev_hdl);
         xSemaphoreTake(driver_obj->constant.mux_lock, portMAX_DELAY);

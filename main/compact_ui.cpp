@@ -131,6 +131,7 @@ extern "C" {
 #include "cell_performance.h"
 #include "settings.h"
 #include "display_ctl.h"
+#include "tui/ls_power.h"
 #include "ls_log_line.h"
 #include "ls_nvs_safe.h"
 #include "app_registry.h"
@@ -257,8 +258,17 @@ static bool tui_touch_source(int *x, int *y, bool *pressed)
         ls_ui_perf_input(&s_perf, sample.received);
     previous = sample;
     *x = sample.x; *y = sample.y;
-    /* A finger on the glass is the auto-dim clock's input. */
+    /* A finger on the glass is the auto-dim clock's input. On a dark screen
+       it only lights it: the press is held back until the finger lifts, so
+       a blind tap cannot start whatever happened to be under it. */
+    static bool s_wake_press;
+    if (sample.pressed && display_ctl_off()) s_wake_press = true;
     if (sample.pressed) display_ctl_activity();
+    if (s_wake_press) {
+        if (!sample.pressed) s_wake_press = false;
+        *pressed = false;
+        return true;
+    }
     *pressed = sample.pressed;
     return true;
 }
@@ -835,7 +845,7 @@ static void rec_send_patches(char *chunk, size_t chunk_cap, size_t spent)
         }
         if (!budget) break;
         int x0 = w, x1 = -1, y1 = y;
-        for (; y1 < h && seen + (y1 - y) < h; y1++) {
+        for (; y1 < h && seen + (y1 - y) < h && seen + (y1 - y) < REC_SCAN_ROWS; y1++) {
             if (y1 > y && rec_same(y1, 0, 0, w, 0)) break;
             const uint16_t *a = s_rec_img + (size_t)y1 * w, *b = rec_mrow(y1);
             auto at = [&](int x) { const int i = x + s_rec_mx; return b[i < w ? i : i - w]; };
@@ -1722,6 +1732,7 @@ static bool tui_session(void)
            s_imu_ok ? "turn it over or press F11" : "press F11");
 
     ls_keypad_backlight(settings_get_keyboard_light());
+    ls_power_init();
     /* A new session starts its own count: the gap since the last one
        is a rebuild, not a frame. */
     s_loop_last_us = 0;
@@ -1747,6 +1758,8 @@ static bool tui_session(void)
 
         /* The auto-dim clock; it gates itself to five ticks a second. */
         display_ctl_tick();
+        /* WATCH parks and restores around the dark (ls_power.h). */
+        ls_power_tick();
 
         /* Attachment selects landscape once, including a keyboard present at
            boot. Keep this state across session rebuilds so turning the board
@@ -1822,9 +1835,14 @@ static bool tui_session(void)
         while (ls_keypad_read(&ev)) {
             /* The hardware FIFO has no timestamps: first software receipt. */
             ls_ui_perf_input(&s_perf, esp_timer_get_time());
+            /* A key on a dark screen lights it and does nothing else. */
+            const bool was_dark = display_ctl_off();
             display_ctl_activity();
             const ls_keymap_entry_t *k = ls_keymap_lookup(ev.row, ev.col);
             if (!k) continue;
+            /* Modifiers keep their bookkeeping even then: a SHIFT held into the
+               dark and let go to wake it would otherwise stay held. */
+            if (was_dark && k->key != LS_KEY_SHIFT && k->key != LS_KEY_FN) continue;
             if (k->key == LS_KEY_SHIFT || k->key == LS_KEY_FN) {
                 ls_keymap_modifier_t *mod = k->key == LS_KEY_SHIFT ? &s_shift : &s_fn;
                 ls_keymap_modifier_t *other = k->key == LS_KEY_SHIFT ? &s_fn : &s_shift;
@@ -2040,7 +2058,8 @@ static bool tui_session(void)
         }
         const int64_t ph_present = esp_timer_get_time();
         s_ph_draw_us = ph_avg(s_ph_draw_us, ph_present - ph_draw);
-        ls_tui_present();
+        /* A dark WATCH panel shows nothing: the frame is not sent to it. */
+        if (!ls_power_dark()) ls_tui_present();
         /* A remote terminal watching: the grid just presented, when its last
            frame has gone. Here rather than before the input, so a key's
            result goes out this frame and not after the next sleep. */
@@ -2077,7 +2096,7 @@ static bool tui_session(void)
         else {
             const int spent_ms = (int)((esp_timer_get_time() - ph_start) / 1000);
             /* Focused mode (the desk's one-app full rate): a 20 ms period. */
-            sleep_ms = (LS_DESK_BUILD && ls_desk_focused() ? 20 : 40) - spent_ms;
+            sleep_ms = ls_power_frame_ms(LS_DESK_BUILD && ls_desk_focused() ? 20 : 40) - spent_ms;
             /* A full-screen game draws every frame and its frames run long;
                a 15 ms floor after a 50 ms frame was a quarter of its rate.
                It still yields 4 ms a frame to the tasks below it. */
@@ -4456,6 +4475,7 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     esp_console_cmd_register(&call_c);
     ls_ota_console_register();
     ls_lap_console_register();
+    ls_power_console_register();
     static const esp_console_cmd_t cmd={.command="display",.help=LS_TXT(con_compact_ui_display_help, "Display: rotate | 0 | 90 | 180 | 270 | on | off | brightness 5..100 | timeout 5..240 | autodim on|off"),.hint=nullptr,.func=display_cmd,.argtable=nullptr};
     esp_console_cmd_register(&cmd);
 

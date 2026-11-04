@@ -4480,6 +4480,13 @@ static void draw(tui_surface *sf, tui_rect area)
         s_card_rect = tui_rect_make(0, -1, 0, 0);
         s_map_cells = body;
         draw_pan_pad(sf, s_pad_rect);
+        /* Say it: outlines in place of the map read as the map having changed
+           its look, when it is a map that could not be drawn. */
+        if (why && !opening && body.w >= 20) {
+            char note[80];
+            snprintf(note, sizeof(note), " OUTLINES ONLY: %.60s ", why);
+            tui_put_str(sf, body, body.x + 1, body.y, note, TUI_ATTR(TUI_BLACK, TUI_YELLOW | TUI_BRIGHT));
+        }
     } else if (!px && !cc_ok) {
         ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
         draw_placeholder(sf, body, why ? why : "the map has not been started");

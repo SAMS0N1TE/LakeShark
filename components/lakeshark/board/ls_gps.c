@@ -21,6 +21,20 @@
 
 static const char *TAG = "ls_gps";
 
+/* The module tracks at about 23 mA whether anything reads it or not. With
+   no reader it waits in standby, which keeps its almanac and clock, so the
+   next start is a hot one. */
+#ifdef LS_BOARD_XL_GPS_WAKE
+#include "ls_board_hw.h"
+static void gps_module_awake(bool on)
+{
+    const esp_err_t err = ls_board_hw_gps_wake(on);
+    if (err != ESP_OK) ESP_LOGW(TAG, "GPS %s: %s", on ? "wake" : "standby", esp_err_to_name(err));
+}
+#else
+static inline void gps_module_awake(bool on) { (void)on; }
+#endif
+
 _Static_assert(sizeof(ls_gps_sat_t) == 6,
                "used and sys must share a byte: a snapshot carries a table "
                "of these and the parser's context two");
@@ -684,6 +698,7 @@ static esp_err_t start_locked(void)
     reap_locked();
     if (s_task) return s_run ? ESP_OK : ESP_ERR_INVALID_STATE;
     if (s_scanning) return ESP_ERR_INVALID_STATE;
+    gps_module_awake(true);
 
     if (!s_port_ours) {
         esp_err_t lease = ls_uart_claim_lock();
@@ -766,7 +781,11 @@ static esp_err_t start_locked(void)
 /* With s_ctl held. */
 static void stop_locked(void)
 {
-    if (!s_task) return;
+    if (!s_task) {
+        /* nothing reading it: standby, unless a baud scan owns the port */
+        if (!s_scanning) gps_module_awake(false);
+        return;
+    }
     s_run = false;
     /* The reader notices within its 200 ms read timeout, or once a bring-up
        step finishes, which is under 400 ms more. */
@@ -780,17 +799,27 @@ static void stop_locked(void)
     reap_locked();
     uart_driver_delete(GPS_UART);
     s_port_ours = false;
+    gps_module_awake(false);
 }
 
 /* The work runs in the reader task, so this returns as soon as the UART is
    up and the task exists. */
 static bool s_app_demand, s_firmware_demand;
+/* A start that failed leaves no reader, so nothing would ever put the module
+   back in standby: do it here. */
+static esp_err_t start_or_standby_locked(void)
+{
+    const esp_err_t e = start_locked();
+    if (e != ESP_OK && !s_task && !s_scanning) gps_module_awake(false);
+    return e;
+}
+bool ls_gps_firmware_wanted(void) { return s_firmware_demand; }
 esp_err_t ls_gps_start(void)
 {
     if (!make_locks()) return ESP_ERR_NO_MEM;
     xSemaphoreTake(s_ctl, portMAX_DELAY);
     s_firmware_demand=true;
-    const esp_err_t e=start_locked();
+    const esp_err_t e=start_or_standby_locked();
     xSemaphoreGive(s_ctl);
     return e;
 }
@@ -801,7 +830,7 @@ esp_err_t ls_gps_app_demand(bool on)
     xSemaphoreTake(s_ctl, portMAX_DELAY);
     s_app_demand=on;
     esp_err_t e=ESP_OK;
-    if (on) e=start_locked();
+    if (on) e=start_or_standby_locked();
     else if (!s_firmware_demand) stop_locked();
     xSemaphoreGive(s_ctl);
     return e;
@@ -849,6 +878,7 @@ void ls_gps_scan_baud(void)
         if (was_running) ls_gps_start();
         return;
     }
+    gps_module_awake(true);
 
     LS_PRINTF(t_ls_gps_gps_listening_on_gpio, "gps: listening on GPIO%d for 1200 ms at each rate\n",
            LS_BOARD_GPS_RX_GPIO);
@@ -906,6 +936,7 @@ void ls_gps_scan_baud(void)
            "counts in the tens.\n");
     xSemaphoreTake(s_ctl, portMAX_DELAY);
     s_scanning = false;
+    if (!was_running && !s_task) gps_module_awake(false);
     xSemaphoreGive(s_ctl);
     if (was_running) ls_gps_start();
 }
@@ -1052,6 +1083,7 @@ bool ls_gps_running(void) { return false; }
 esp_err_t ls_gps_start(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_gps_app_demand(bool on) { return on ? ESP_ERR_NOT_SUPPORTED : ESP_OK; }
 void ls_gps_stop(void) { }
+bool ls_gps_firmware_wanted(void) { return false; }
 void ls_gps_get(ls_gps_state_t *out) { if (out) memset(out, 0, sizeof(*out)); }
 void ls_gps_diagnostics(void) { printf("gps: board declares none\n"); }
 void ls_gps_print_sky(void) { printf("gps: board declares none\n"); }

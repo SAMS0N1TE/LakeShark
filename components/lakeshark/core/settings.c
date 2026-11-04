@@ -924,6 +924,22 @@ void settings_set_autodim_timeout(int seconds)
     sput_u8("autodim_to", (uint8_t)seconds);
 }
 
+/* The power mode and what its WATCH keeps (ls_power.h), as small numbers. */
+int settings_get_power_mode(void)
+{
+    uint8_t v = 0;
+    if (!s_nvs_ok || nvs_get_u8(s_nvs, "pwr_mode", &v) != ESP_OK || v > 7) return 0;
+    return (int)v;
+}
+void settings_set_power_mode(int mode) { if (s_nvs_ok && mode >= 0 && mode <= 7) sput_u8("pwr_mode", (uint8_t)mode); }
+int settings_get_power_keep(void)
+{
+    uint8_t v = 0;
+    if (!s_nvs_ok || nvs_get_u8(s_nvs, "pwr_keep", &v) != ESP_OK || v > 7) return 0;
+    return (int)v;
+}
+void settings_set_power_keep(int keep) { if (s_nvs_ok && keep >= 0 && keep <= 7) sput_u8("pwr_keep", (uint8_t)keep); }
+
 bool settings_get_audio_mute(void) {return s_audio_muted;}
 void settings_set_audio_mute(bool muted) {
     s_audio_muted=muted;

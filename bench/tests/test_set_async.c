@@ -196,7 +196,7 @@ LS_CASE(dim_timeout_steps_clamp_and_handle_intermediate_saved_values)
     dimt_step(-1); LS_EQ_INT(15, timeout);
     timeout = 45; dimt_step(-1); LS_EQ_INT(30, timeout);
     timeout = 45; dimt_step(1); LS_EQ_INT(60, timeout);
-    LS_CHECK(DISPLAY_ITEMS[5].step == dimt_step);
+    LS_CHECK(DISPLAY_ITEMS[4].step == dimt_step);
 }
 
 LS_CASE(waterfall_preferences_are_ram_only_on_the_ui_path)

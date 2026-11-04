@@ -28,6 +28,12 @@ esp_err_t ls_board_hw_c6_enable(bool on);
 /* Release EN to the board pull-up so the physical reset button can drive it. */
 esp_err_t ls_board_hw_c6_release(void);
 
+/* The GPS module awake (true) or in its standby (false), where the board
+   wires its WAKE_UP pin. Standby keeps the module's time and ephemeris, so
+   the next fix is a hot start; tracking draws about 23 mA, standby about
+   20 uA. ESP_ERR_NOT_SUPPORTED on a board without the pin. */
+esp_err_t ls_board_hw_gps_wake(bool awake);
+
 /* 1 enabled, 0 held in reset, -1 when the board cannot tell. */
 int ls_board_hw_c6_state(void);
 

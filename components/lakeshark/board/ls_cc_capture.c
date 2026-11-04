@@ -2,6 +2,7 @@
 #include "ls_board.h"
 #ifdef LS_BOARD_MIX_CC_GDO0
 #include "driver/rmt_rx.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "rec_state.h"
@@ -15,7 +16,11 @@ static int32_t *pulses;
 static atomic_uint completed;
 static bool enabled;
 static portMUX_TYPE app_lock=portMUX_INITIALIZER_UNLOCKED;
-static int32_t app_edges[1024];static unsigned app_count,app_at,app_dropped;
+/* 4 KB of edges: PSRAM, because internal RAM is the DMA pool the RTL-SDR's
+   USB transfers and the SPI radios need (2.20.0 put it there and every board
+   paid for it, CC1101 fitted or not). Read and written only from tasks. */
+static EXT_RAM_BSS_ATTR int32_t app_edges[1024];
+static unsigned app_count,app_at,app_dropped;
 void ls_cc_capture_clear(void){portENTER_CRITICAL(&app_lock);app_count=app_at=app_dropped=0;portEXIT_CRITICAL(&app_lock);}
 int ls_cc_capture_read(int32_t *out,int max,unsigned *dropped) {
     portENTER_CRITICAL(&app_lock);unsigned n=app_count-app_at;if(n>(unsigned)max)n=max;

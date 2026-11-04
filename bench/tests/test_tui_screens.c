@@ -2675,10 +2675,14 @@ LS_CASE(every_setting_has_a_box_in_both_postures)
        dropped was Daylight's. Every label must be on the glass in both
        postures and in half a landscape pane, which is the tightest case. */
     static const struct { const char *menu; const char *labels[8]; } PAGES_SEEN[] = {
-        { NULL,      { "Volume", "Brightness", "Mute", "Screen lock", "Rotate lock", "Display", "Sound", "Device" } },
-        { "Display", { "BACK", "Theme", "Daylight", "Font", "Auto dim", "Dim after" } },
-        { "Sound",   { "BACK", "Boot sound", "Voice", "Alert sound", "Vibrate" } },
-        { "Device",  { "BACK", "Keyboard light", "Keyboard dim", "USB autoreboot", "Update" } },
+        { NULL,      { "Volume", "Brightness", "Mute", "Screen lock", "Rotate lock", "DISPLAY", "SOUND", "POWER" } },
+        { NULL,      { "RADIO", "NETWORK", "SYSTEM" } },
+        { "DISPLAY", { "BACK", "Theme", "Daylight", "Font", "Auto dim", "Dim after" } },
+        { "SOUND",   { "BACK", "Boot sound", "Voice", "Alert sound", "Vibrate" } },
+        { "POWER",   { "BACK", "Power mode", "Watch keeps", "Keyboard light", "Keyboard dim" } },
+        { "RADIO",   { "BACK", "LoRa radio", "LoRa module" } },
+        { "NETWORK", { "BACK", "Hotspot", "Update", "Check for updates" } },
+        { "SYSTEM",  { "BACK", "Language", "USB autoreboot" } },
     };
     static const int PANE_IDX[] = { 0, 1, 3 };
     s_daylight = false;
@@ -2700,7 +2704,7 @@ LS_CASE(every_setting_has_a_box_in_both_postures)
 
 LS_CASE(every_settings_menu_has_a_back_box_and_esc_goes_back)
 {
-    static const char *const MENUS[] = { "Display", "Sound", "Device" };
+    static const char *const MENUS[] = { "DISPLAY", "SOUND", "POWER", "RADIO", "NETWORK", "SYSTEM" };
     for (unsigned m = 0; m < sizeof(MENUS) / sizeof(MENUS[0]); m++) {
         settings_open(MENUS[m], PANES[0]);
         int c, r;
@@ -2731,7 +2735,7 @@ LS_CASE(the_daylight_box_turns_it_on_and_off_and_keeps_the_theme)
         s_daylight = false;
         s_daylight_stored = false;
 
-        settings_open("Display", pane);
+        settings_open("DISPLAY", pane);
         int c, r;
         LS_CHECK(find_text("Daylight", &c, &r));
         LS_CHECK(ls_scr_settings.touch(c, r));
@@ -2837,7 +2841,7 @@ LS_CASE(the_theme_box_under_daylight_steps_the_theme_and_keeps_daylight)
     s_daylight = true;
     s_theme_stored = -1;
 
-    settings_open("Display", PANES[1]);
+    settings_open("DISPLAY", PANES[1]);
     int c, r;
     LS_CHECK(find_text("Theme", &c, &r));
     LS_CHECK(ls_scr_settings.touch(c, r));
@@ -3515,11 +3519,11 @@ LS_CASE(large_portrait_exposes_all_settings_and_maps_last_touch_correctly)
     const tui_rect pane = {0,5,34,41};
     settings_open(NULL, pane);
     const char *labels[] = {"Volume", "Brightness", "Mute", "Screen lock", "Rotate lock",
-        "Display", "Sound", "Device"};
+        "DISPLAY", "SOUND", "POWER", "SYSTEM"};
     int x,y;
     for (unsigned i=0; i<sizeof(labels)/sizeof(labels[0]); i++)
         LS_CHECK_MSG(find_text(labels[i], &x, &y), "missing setting %s", labels[i]);
-    settings_open("Device", pane);
+    settings_open("SYSTEM", pane);
     bool before = settings_get_usb_autoreboot();
     LS_CHECK(find_text("USB autoreboot", &x, &y));
     LS_CHECK(ls_scr_settings.touch(x,y));
@@ -4922,7 +4926,7 @@ bool ls_track_rec_running(void) { return false; }
 LS_CASE(keyboard_light_toggle_is_applied_and_stored)
 {
     for(int orientation=0;orientation<2;orientation++) {
-        settings_open("Device",PANES[orientation]);
+        settings_open("POWER",PANES[orientation]);
         int x,y;LS_CHECK(find_text("Keyboard light",&x,&y));
         bool before=settings_get_keyboard_light();
         LS_CHECK(ls_scr_settings.touch(x,y));
@@ -5311,9 +5315,9 @@ LS_CASE(update_is_an_app_that_settings_opens_and_back_leaves_for_home)
     fake_ota_publish();
     apps_once();
     s_ota_stage = 3;
-    settings_open("Device", PANES[1]);
+    settings_open("NETWORK", PANES[1]);
     int c, r;
-    LS_CHECK_MSG(find_text("Update", &c, &r), "no Update box in DEVICE");
+    LS_CHECK_MSG(find_text("Update", &c, &r), "no Update box in NETWORK");
     LS_CHECK(ls_scr_settings.touch(c, r));
     LS_EQ_INT(ls_tui_screen_current(), ls_tui_screen_index_of(&ls_scr_update));
     ls_anim_cancel();
@@ -5745,7 +5749,7 @@ LS_CASE(dim_timeout_keys_and_touch_are_bounded_in_both_postures)
     for (int orientation = 0; orientation < 2; orientation++) {
         const tui_rect pane = PANES[orientation];
         s_dimt = 240;
-        settings_open("Display", pane);
+        settings_open("DISPLAY", pane);
         int c, r;
         LS_CHECK(find_text("240 s", &c, &r));
         const int up = find_on_row('>', r, c, 1);
