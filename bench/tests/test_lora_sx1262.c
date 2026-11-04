@@ -166,6 +166,53 @@ static void respond_activity(const uint8_t *tx,uint8_t *rx,size_t n,void *ctx) {
     if(op==0x12 && n==4 && rx) {rx[2]=activity_irq>>8;rx[3]=activity_irq;}
     if(op==0x02)activity_irq=0;
 }
+/* DOPPLER RADAR's tone: SetTxContinuousWave only inside the ISM limits,
+   nothing else on the radio meanwhile, and the LoRa receive back after. */
+static int cw_starts, cw_rx_starts, cw_standbys;
+static uint8_t cw_freq[5], cw_power[3];
+static void respond_cw(const uint8_t *tx, uint8_t *rx, size_t n, void *ctx)
+{
+    const uint8_t op = n ? tx[0] : 0;
+    if (op == 0xD1) cw_starts++;
+    if (op == 0x82) cw_rx_starts++;
+    if (op == 0x80) cw_standbys++;
+    if (op == 0x86 && n == 5) memcpy(cw_freq, tx, 5);
+    if (op == 0x8E && n == 3) memcpy(cw_power, tx, 3);
+    respond(tx, rx, n, ctx);
+}
+LS_CASE(the_radar_tone_is_a_low_power_ism_carrier_and_lora_comes_back)
+{
+    bring_up(0x22, 0x14, 0x24);
+    ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg);
+    LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+    LS_EQ_INT(ls_lora_receive(), ESP_OK);
+    ls_shim_spi_on_transfer(respond_cw, &s_part);
+    cw_starts = cw_rx_starts = cw_standbys = 0;
+    /* outside the band or over the power cap: refused, nothing sent */
+    LS_EQ_INT(ls_lora_cw_begin(915000000u, 0, false), ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(ls_lora_cw_begin(915000000u, -10, false), ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(ls_lora_cw_begin(940000000u, -9, false), ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(ls_lora_cw_begin(446000000u, -9, false), ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(cw_starts, 0);
+    LS_CHECK(ls_lora_cw_allowed(433920000u, -3) && ls_lora_cw_allowed(902000000u, -9));
+    LS_EQ_INT(ls_lora_cw_begin(915000000u, -9, false), ESP_OK);
+    LS_EQ_INT(cw_starts, 1);
+    const uint64_t steps = ((uint64_t)915000000u << 25) / 32000000u;
+    LS_EQ_UINT(cw_freq[1], (uint8_t)(steps >> 24)); LS_EQ_UINT(cw_freq[4], (uint8_t)steps);
+    LS_EQ_INT((int8_t)cw_power[1], -9);
+    LS_CHECK(ls_lora_is_transmitting());
+    uint8_t b = 1;
+    LS_EQ_INT(ls_lora_send(&b, 1), ESP_ERR_INVALID_STATE);      /* nothing else meanwhile */
+    LS_EQ_INT(ls_lora_cw_begin(915000000u, -9, false), ESP_ERR_INVALID_STATE);
+    const int rx_before = cw_rx_starts;
+    LS_EQ_INT(ls_lora_cw_end(), ESP_OK);
+    LS_CHECK(!ls_lora_is_transmitting());
+    LS_CHECK(cw_standbys >= 1);
+    LS_EQ_INT(cw_rx_starts, rx_before + 1);                   /* receiving again */
+    LS_EQ_INT((int8_t)cw_power[1], cfg.power_dbm);            /* its own power back */
+    LS_EQ_INT(ls_lora_cw_end(), ESP_OK);                      /* twice is harmless */
+}
+
 LS_CASE(detector_activity_sx1262_irq_and_no_transmit) {
     bring_up(0x22,0x14,0x24);ls_lora_cfg_t cfg;ls_lora_cfg_default(&cfg);cfg.implicit_rx_bytes=8;cfg.crc_on=false;
     LS_EQ_INT(ls_lora_configure(&cfg),ESP_OK);LS_EQ_INT(ls_lora_receive(),ESP_OK);

@@ -255,6 +255,24 @@ esp_err_t ls_lora_fsk_send(const uint8_t *data, size_t len);
    carrier. LR20xx only; completion is ls_lora_send_done(). */
 esp_err_t ls_lora_ook_send(const uint8_t *chips, size_t len, uint32_t chip_bps);
 
+/* A plain unmodulated carrier, the Doppler radar's light. Low power in an ISM
+   band only: 902-928 MHz or 433.05-434.79 MHz, LS_LORA_CW_MIN_DBM to
+   LS_LORA_CW_MAX_DBM (under the US Part 15.249 field strength for a whip).
+   It runs until ls_lora_cw_end; nothing else uses the radio meanwhile.
+   SX126x only today: ESP_ERR_NOT_SUPPORTED elsewhere. */
+#define LS_LORA_CW_MIN_DBM (-9)
+#define LS_LORA_CW_MAX_DBM (-3)
+bool ls_lora_cw_allowed(uint32_t hz, int dbm);
+/* limited: the tone is charged to the transmitter protection at its power,
+   a second ahead, by ls_lora_cw_keep. false: no limit at all, the caller
+   ends it. */
+esp_err_t ls_lora_cw_begin(uint32_t hz, int dbm, bool limited);
+/* Call often while a limited tone runs. ESP_OK keeps it on; anything else
+   means the protection refused the next second and the tone is off. */
+esp_err_t ls_lora_cw_keep(void);
+esp_err_t ls_lora_cw_end(void);
+bool ls_lora_cw_supported(void);
+
 /* Re-arm continuous receive, restoring the session's payload length. */
 esp_err_t ls_lora_fsk_receive(void);
 

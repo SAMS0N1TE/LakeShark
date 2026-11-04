@@ -1061,6 +1061,53 @@ esp_err_t ls_lora_ook_send(const uint8_t *chips, size_t len, uint32_t chip_bps)
     TX_ROUTED(s_ops->ook_send(chips,len,chip_bps),
         tx_duration((uint64_t)len*8*1000000/chip_bps+1),tx_fsk_cfg.power_dbm);
 }
+bool ls_lora_cw_allowed(uint32_t hz, int dbm)
+{
+    const bool band = (hz >= 902000000u && hz <= 928000000u) ||
+                      (hz >= 433050000u && hz <= 434790000u);
+    return band && dbm >= LS_LORA_CW_MIN_DBM && dbm <= LS_LORA_CW_MAX_DBM;
+}
+bool ls_lora_cw_supported(void) { return s_present && s_ops->cw_begin; }
+/* A limited tone is paid a second ahead; keep pays the next second, and for
+   any time the caller was late. */
+#define CW_PAY_US 1000000
+static bool s_cw_limited;
+static int s_cw_dbm;
+static int64_t s_cw_paid_to;
+esp_err_t ls_lora_cw_begin(uint32_t hz, int dbm, bool limited)
+{
+    if (!ls_lora_cw_allowed(hz, dbm)) return ESP_ERR_INVALID_ARG;
+    if (!s_present || !s_ops->cw_begin) return ESP_ERR_NOT_SUPPORTED;
+    s_cw_limited = limited;
+    s_cw_dbm = dbm;
+    s_cw_paid_to = esp_timer_get_time() + CW_PAY_US;
+    if (limited) TX_ROUTED(s_ops->cw_begin(hz, dbm), CW_PAY_US, dbm);
+    ls_lora_hw_lock();
+    tx_route_settle();
+    esp_err_t r = ls_board_hw_antenna_tx_begin();
+    if (r == ESP_OK) { r = s_ops->cw_begin(hz, dbm); if (r != ESP_OK) tx_route_settle(); }
+    ls_lora_hw_unlock();
+    return r;
+}
+esp_err_t ls_lora_cw_keep(void)
+{
+    if (!s_cw_limited) return ESP_OK;
+    const int64_t now = esp_timer_get_time();
+    if (s_cw_paid_to - now > CW_PAY_US / 2) return ESP_OK;
+    const int64_t due = now + CW_PAY_US - s_cw_paid_to;
+    if (!ls_tx_protect(LS_TX_SOCKET, s_cw_dbm, false, (uint32_t)(due > 0 ? due : 1), (uint64_t)now)) {
+        s_cw_paid_to = now + CW_PAY_US;
+        return ESP_OK;
+    }
+    (void)ls_lora_cw_end();
+    return ESP_ERR_INVALID_STATE;
+}
+esp_err_t ls_lora_cw_end(void)
+{
+    s_cw_limited = false;
+    if (!s_ops->cw_end) return ESP_OK;
+    LOCKED_RET(esp_err_t, s_ops->cw_end());
+}
 esp_err_t ls_lora_fsk_receive(void) { LOCKED_RET(esp_err_t, s_ops->fsk_receive()); }
 esp_err_t ls_lora_fsk_end(void) { LOCKED_RET(esp_err_t, s_ops->fsk_end()); }
 bool ls_lora_fsk_active(void) { return s_ops->fsk_active(); }
@@ -1307,6 +1354,12 @@ esp_err_t ls_lora_fsk_send(const uint8_t *d, size_t l)
 { (void)d; (void)l; return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_lora_ook_send(const uint8_t *c, size_t l, uint32_t r)
 { (void)c; (void)l; (void)r; return ESP_ERR_NOT_SUPPORTED; }
+bool ls_lora_cw_allowed(uint32_t hz, int dbm) { (void)hz; (void)dbm; return false; }
+esp_err_t ls_lora_cw_begin(uint32_t hz, int dbm, bool limited)
+{ (void)hz; (void)dbm; (void)limited; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t ls_lora_cw_keep(void) { return ESP_OK; }
+esp_err_t ls_lora_cw_end(void) { return ESP_OK; }
+bool ls_lora_cw_supported(void) { return false; }
 esp_err_t ls_lora_fsk_receive(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_lora_fsk_end(void) { return ESP_ERR_NOT_SUPPORTED; }
 bool ls_lora_fsk_active(void) { return false; }

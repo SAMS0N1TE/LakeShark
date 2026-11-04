@@ -4,6 +4,7 @@
 #include "tx_policy_private.h"
 
 #include <limits.h>
+#include <math.h>
 #include <string.h>
 
 #if defined(ESP_PLATFORM) && !defined(LS_LAP_HOST_TEST)
@@ -342,6 +343,14 @@ int ls_tx_protect(unsigned radio, int dbm, bool rx_only, uint32_t airtime, uint6
     int e = 0;
     int min = radio == LS_TX_MIXRF ? -10 : radio == LS_TX_HACKRF ? 0 : -9;
     int max = radio == LS_TX_MIXRF ? 10 : radio == LS_TX_HACKRF ? 15 : 22;
+    /* Heat and duty go by energy, not time alone: the airtime is charged at
+       its share of the radio's full power, so a carrier at -3 dBm on a 22 dBm
+       part costs 1/316 of the same time at 22 dBm. Full power is unchanged. */
+    uint64_t charge = airtime;
+    if (dbm < max && dbm >= min) {
+        charge = (uint64_t)((double)airtime * pow(10.0, (dbm - max) / 10.0));
+        if (!charge) charge = 1;
+    }
     uint64_t sec = now / 1000000;
     uint64_t sum = 0;
     if (sec < protection[radio].last)
@@ -359,19 +368,19 @@ int ls_tx_protect(unsigned radio, int dbm, bool rx_only, uint32_t airtime, uint6
         e = -24;
     else if (dbm < min || dbm > max)
         e = -21;
-    else if (protection[radio].hot || (uint64_t)heat + airtime > 5000000u)
+    else if (protection[radio].hot || (uint64_t)heat + charge > 5000000u)
         e = -23;
-    else if (airtime > 10000000u || sum + airtime > 10000000u)
+    else if (charge > 10000000u || sum + charge > 10000000u)
         e = -22;
     if (!e) {
-        protection[radio].heat = heat + airtime;
+        protection[radio].heat = heat + (uint32_t)charge;
         protection[radio].heat_at = thermal_now;
         unsigned i = sec % 61;
         if (protection[radio].sec[i] != sec) {
             protection[radio].sec[i] = sec;
             protection[radio].used[i] = 0;
         }
-        protection[radio].used[i] += airtime;
+        protection[radio].used[i] += (uint32_t)charge;
     }
     protection[radio].error = e;
     xSemaphoreGive(s_lock);

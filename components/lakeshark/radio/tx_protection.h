@@ -7,7 +7,9 @@
 extern "C" {
 #endif
 enum { LS_TX_SOCKET, LS_TX_MIXRF, LS_TX_HACKRF, LS_TX_SIM, LS_TX_RADIOS };
-/* Errors intentionally match LAP_IO_E*: power,duty,thermal,RX-only. */
+/* Errors intentionally match LAP_IO_E*: power,duty,thermal,RX-only.
+   Heat (5 s) and duty (10 s a minute) are counted at full power: airtime at
+   a lower power is charged at its share of the radio's maximum. */
 int ls_tx_protect(unsigned radio, int dbm, bool rx_only, uint32_t airtime_us, uint64_t now_us);
 void ls_tx_thermal(unsigned radio, bool hot); /* driver PA/over-temperature fault latch */
 int ls_tx_last_error(unsigned radio);

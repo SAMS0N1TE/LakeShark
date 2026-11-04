@@ -364,6 +364,11 @@ static void transmit(void) {
     assert(ls_tx_protect(LS_TX_MIXRF, 10, false, 1, 53000000) == LAP_IO_EDUTY);
     assert(!ls_tx_protect(LS_TX_MIXRF, 10, false, 1, 89000000));
     assert(ls_tx_protect(LS_TX_SOCKET, 0, true, 1, 1000000) == LAP_IO_ERXPORT);
+    /* Charged by energy: a -3 dBm carrier for ten minutes, paid a second at a
+       time, fits; six seconds at full power still does not. */
+    for (uint64_t t = 200000000; t < 800000000; t += 1000000)
+        assert(!ls_tx_protect(LS_TX_SIM, -3, false, 1000000, t));
+    assert(ls_tx_protect(LS_TX_SIM, 22, false, 6000000, 900000000) == LAP_IO_ETHERMAL);
     assert(ls_tx_lora_airtime(8, 7, 125000, 5, 8, true, false) == 36096);
     remove("lap-sd/apps_data/io-test/packets.lsr");
 }

@@ -403,7 +403,8 @@ static esp_err_t sx_receive(void)
 }
 
 static bool sx_is_receiving(void) { return s_rx_mode; }
-static bool sx_is_transmitting(void) { return s_tx_busy; }
+static bool s_cw_active;
+static bool sx_is_transmitting(void) { return s_tx_busy || s_cw_active; }
 
 static esp_err_t sx_send(const uint8_t *data, size_t len)
 {
@@ -996,12 +997,69 @@ static uint32_t sx_caps(void)
     return LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST;
 }
 
+/* ------------------------------------------------------ carrier tone -- */
+
+/* SetTxContinuousWave: the plain carrier the Doppler radar lights the room
+   with. The dispatcher has checked the band and the power. The normal LoRa
+   bring-up sets the frequency, PA and power, then the tone starts and runs
+   until cw_end, which puts back the configuration that was in force.
+   s_cfg_valid is false for the span, so receive, send and sweep are turned
+   away rather than interleaved; is_transmitting says true, so the antenna
+   route stays on transmit. */
+#define OP_SET_TX_CW 0xD1
+static bool s_cw_had_cfg, s_cw_was_rx;
+static ls_lora_cfg_t s_cw_saved;
+
+static esp_err_t sx_cw_end(void)
+{
+    if (!s_cw_active) return ESP_OK;
+    uint8_t b = STANDBY_RC;
+    esp_err_t err = cmd(OP_SET_STANDBY, &b, 1, NULL, 0);
+    s_cw_active = false;
+    if (s_cw_had_cfg) {
+        const esp_err_t r = configure_lora(&s_cw_saved);
+        if (r == ESP_OK && s_cw_was_rx) (void)sx_receive();
+        if (err == ESP_OK) err = r;
+    }
+    ESP_LOGI(TAG, "tone off");
+    return err;
+}
+
+static esp_err_t sx_cw_begin(uint32_t hz, int dbm)
+{
+    if (s_fsk_active || s_scanning || s_tx_busy || s_probe_active || s_cw_active)
+        return ESP_ERR_INVALID_STATE;
+    s_cw_had_cfg = s_cfg_valid;
+    s_cw_was_rx = s_rx_mode || s_rearm;
+    s_cw_saved = s_cfg;
+    ls_lora_cfg_t c;
+    if (s_cfg_valid) c = s_cfg; else ls_lora_cfg_default(&c);
+    c.freq_hz = hz;
+    c.power_dbm = (int8_t)dbm;
+    const uint32_t lo = (hz / 1000000u / 4u) * 4u;
+    c.cal_min_mhz = (uint16_t)lo;
+    c.cal_max_mhz = (uint16_t)(lo + 4u);
+    esp_err_t err = configure_lora(&c);
+    s_cfg_valid = false;
+    s_rx_mode = s_rearm = false;
+    if (err == ESP_OK) err = cmd(OP_SET_TX_CW, NULL, 0, NULL, 0);
+    if (err != ESP_OK) {
+        s_cw_active = true;          /* so the end below restores */
+        (void)sx_cw_end();
+        return err;
+    }
+    s_cw_active = true;
+    ESP_LOGI(TAG, "tone on: %.4f MHz %+d dBm", hz / 1e6, dbm);
+    return ESP_OK;
+}
+
 static void sx_stop(void)
 {
     /* Reset invalidates every session and the configuration cached for it. */
     s_cfg_valid = s_fsk_active = s_scanning = false;
     s_rx_mode = s_rearm = s_tx_busy = false;
     s_scan_saved_valid = false;
+    s_cw_active = false;
 }
 
 /* ------------------------------------------------------------- sxprobe -- */
@@ -1274,6 +1332,8 @@ const ls_lora_ops_t ls_lora_sx126x_ops = {
     .fsk_begin = sx_fsk_begin,
     .fsk_poll = sx_fsk_poll,
     .fsk_send = sx_fsk_send,
+    .cw_begin = sx_cw_begin,
+    .cw_end = sx_cw_end,
     .fsk_receive = sx_fsk_receive,
     .fsk_end = sx_fsk_end,
     .fsk_active = sx_fsk_active,

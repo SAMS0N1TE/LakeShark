@@ -150,6 +150,8 @@ set(LS_EXP_SRCS
     ${FW}/components/apps/tui/experiments/exp_rf.c
     ${FW}/components/apps/tui/experiments/exp_survey.c
     ${FW}/components/apps/tui/experiments/exp_lr433.c
+    ${FW}/components/apps/tui/experiments/exp_radar.c
+    ${FW}/components/apps/tui/experiments/radar_dsp.c
     ${FW}/components/apps/tui/experiments/lr433_dec.c
     ${APP}/rec/rec_ism.c
     ${APP}/rec/rec_fsk.c
@@ -1412,6 +1414,8 @@ target_sources(test_tui_render_dump PRIVATE
     ${FW}/components/apps/tui/ls_experiments.c
     ${FW}/components/apps/tui/ls_notes.c
     ${FW}/components/apps/tui/experiments/exp_lr433.c
+    ${FW}/components/apps/tui/experiments/exp_radar.c
+    ${FW}/components/apps/tui/experiments/radar_dsp.c
     ${FW}/components/apps/tui/experiments/lr433_dec.c
     ${APP}/rec/rec_ism.c
     ${APP}/rec/rec_fsk.c
@@ -2196,6 +2200,9 @@ target_link_libraries(test_p25_phase2 p25_phase2_host ls_harness m)
 add_test(NAME test_p25_phase2 COMMAND test_p25_phase2)
 ls_add_test(test_p25_phase2_dsp ${APP}/p25/dsp_pipeline.c ${APP}/p25/p25_cqpsk_controls.c fixtures/lsm_gen.c)
 target_compile_definitions(test_p25_phase2_dsp PRIVATE LSM_GEN_BAUD=6000)
+# DOPPLER RADAR: carrier search, tracking and Doppler rows from LR IQ16.
+ls_add_test(test_radar_dsp ${FW}/components/apps/tui/experiments/radar_dsp.c)
+target_include_directories(test_radar_dsp PRIVATE ${FW}/components/apps/tui/experiments)
 
 foreach(target test_tui_picker test_radio_select test_options test_tui_wireless test_tui_waterfall_claim
                test_tui_waterfall_scale test_tui_quick test_tui_waterfall_stall

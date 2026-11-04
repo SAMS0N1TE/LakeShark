@@ -20,7 +20,7 @@ extern "C" {
 /* One entry per public ls_lora_* call that depends on the part. A backend that
    does not implement a call still fills the slot, with a function that returns
    ESP_ERR_NOT_SUPPORTED (or the matching neutral value). Never NULL except
-   `stop`, `fsk_retune`, `fsk_stream_read`, the modes_* slots and the ook_* slots. A backend must never send another family's opcodes. */
+   `stop`, `fsk_retune`, `fsk_stream_read`, the modes_* slots, the ook_* slots and the cw_* slots. A backend must never send another family's opcodes. */
 typedef struct {
     ls_lora_chip_t kind;
     const char *name;                       /* default name; see name_fn */
@@ -43,6 +43,10 @@ typedef struct {
     esp_err_t (*fsk_send)(const uint8_t *data, size_t len);
     /* NULL where the part has no OOK transmitter. */
     esp_err_t (*ook_send)(const uint8_t *chips, size_t len, uint32_t chip_bps);
+    /* An unmodulated carrier until cw_end; NULL where there is none. The
+       dispatcher has checked band and power (ls_lora_cw_allowed). */
+    esp_err_t (*cw_begin)(uint32_t hz, int dbm);
+    esp_err_t (*cw_end)(void);
     esp_err_t (*fsk_receive)(void);
     esp_err_t (*fsk_end)(void);
     bool      (*fsk_active)(void);
