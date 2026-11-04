@@ -121,8 +121,11 @@ static void acquire(radar_dsp_t *s)
         if (fabsf(hz) > RADAR_DC_GUARD_HZ && p > best_p) { best_p = p; best = k; }
     }
     s->acq_fill = 0;
-    /* A carrier is a line, not noise: most of the power, far over the average bin. */
-    if (best < 0 || best_p < 200.0f * total / RADAR_ACQ_N) return;
+    /* A carrier is a line, not noise: most of the power, far over the average
+       bin, and strong enough to be the other board's, not something faint
+       elsewhere in the band (amplitude sqrt(p) / N with no window). */
+    const float min_amp = RADAR_ACQ_N * powf(10.0f, RADAR_MIN_DBFS / 20.0f);
+    if (best < 0 || best_p < 200.0f * total / RADAR_ACQ_N || best_p < min_amp * min_amp) return;
     /* Centre it between bins from its neighbours: Jacobsen's estimate,
        Re((X[l] - X[r]) / (2 X[c] - X[l] - X[r])), right to a few hundredths
        of a 30 Hz bin with no window, so the loop starts within a hertz. */
@@ -210,6 +213,9 @@ static void make_row(radar_dsp_t *s, radar_row_t *row)
     const float amp = sqrtf(pc) / (RADAR_N * 0.35875f);
     row->carrier_dbfs = 20.0f * log10f(amp + 1e-12f);
     row->offset_hz = (float)s->nco_hz;
+    /* Too faint to be the other board's tone, at once: a burst that passed
+       one search is dropped before any row of it is shown. */
+    if (row->carrier_dbfs < RADAR_MIN_DBFS) { radar_dsp_reset(s); return; }
 
     /* The loop: the mean phase step left over is the error, at 500 Hz. Two
        crystals warming up drift in a ramp, which a plain loop trails; the
@@ -271,9 +277,10 @@ int radar_dsp_feed(radar_dsp_t *s, const uint8_t *iq16, size_t pairs, radar_row_
         if (s->filled < RADAR_N) s->filled++;
         if (++s->since_row < RADAR_HOP || s->filled < RADAR_N) continue;
         s->since_row = 0;
-        if (made < max) make_row(s, &rows[made++]);
-        else make_row(s, &rows[max - 1]);
-        if (!s->locked) break;   /* lost: the rest is the next search's */
+        radar_row_t *row = &rows[made < max ? made : max - 1];
+        make_row(s, row);
+        if (!s->locked) break;   /* lost: no row, and the rest is the next search's */
+        if (made < max) made++;
     }
     return made;
 }

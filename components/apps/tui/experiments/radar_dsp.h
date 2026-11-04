@@ -37,6 +37,7 @@ extern "C" {
 #define RADAR_N          512
 #define RADAR_HOP        128
 #define RADAR_DC_GUARD_HZ 300.0f
+#define RADAR_MIN_DBFS   -55.0f       /* a tone at least this strong: the other board's lands near -13 */
 #define RADAR_MIN_HZ     5.0f         /* echoes from here out: the window's main lobe */
 #define RADAR_BG_ROWS    48           /* the still room, learned over ~12 s   */
 #define RADAR_WARM_ROWS  8            /* 2 s of learning before anything counts */

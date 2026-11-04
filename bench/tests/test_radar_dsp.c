@@ -152,6 +152,51 @@ LS_CASE(a_carrier_far_off_tune_is_found_where_it_is)
     }
 }
 
+/* On the board, with no tone running, DOPPLER RADAR locked on a line 8 kHz
+   off tune that came and went between -103 and about -70 dBFS: something
+   else in the band, far under the -13 dBFS the other board's tone lands at.
+   A line that weak is not a tone, however clean; one at -40 dBFS is. */
+LS_CASE(a_faint_line_is_not_the_other_board)
+{
+    static uint8_t buf[4 * 1020];
+    static const float AMP[] = { 2.5e-5f, 3.2e-4f, 1e-2f };   /* -92, -70, -40 dBFS */
+    for (int a = 0; a < 3; a++) {
+        radar_dsp_init(&s_dsp);
+        double ph = 0;
+        for (int b = 0; b < 3 * RADAR_IN_RATE / 1020; b++) {
+            for (int n = 0; n < 1020; n++) {
+                ph += 2 * M_PI * -8337.0 / RADAR_IN_RATE;
+                put(buf + 4 * n, AMP[a] * (float)cos(ph));
+                put(buf + 4 * n + 2, AMP[a] * (float)sin(ph));
+            }
+            (void)radar_dsp_feed(&s_dsp, buf, 1020, s_rows, 64);
+        }
+        LS_CHECK(s_dsp.locked == (a == 2));
+    }
+}
+
+/* Also on the board: a burst from some other transmitter, strong for the
+   33 ms of one search and gone, read for a moment as a tone at -103 dBFS.
+   No row of it is handed out, and the search starts again. */
+LS_CASE(a_burst_is_not_a_lock)
+{
+    static uint8_t buf[4 * 1020];
+    radar_dsp_init(&s_dsp);
+    double ph = 0;
+    int rows = 0;
+    for (int b = 0; b < 3 * RADAR_IN_RATE / 1020; b++) {
+        for (int n = 0; n < 1020; n++) {
+            const float amp = b < 6 ? 0.1f : 0.0f;              /* -20 dBFS for 49 ms */
+            ph += 2 * M_PI * 4081.0 / RADAR_IN_RATE;
+            put(buf + 4 * n, amp * (float)cos(ph));
+            put(buf + 4 * n + 2, amp * (float)sin(ph));
+        }
+        rows += radar_dsp_feed(&s_dsp, buf, 1020, s_rows, 64);
+    }
+    LS_EQ_INT(rows, 0);
+    LS_CHECK(!s_dsp.locked);
+}
+
 LS_CASE(nothing_but_the_lr_s_own_dc_is_not_a_carrier)
 {
     radar_dsp_init(&s_dsp);
