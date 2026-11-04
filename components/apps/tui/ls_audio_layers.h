@@ -22,6 +22,12 @@ void ls_audio_layers_draw(ls_audio_layers *p, tui_surface *sf, tui_rect r,
                           ls_audio_tools *tools, uint32_t position_ms,
                           bool hold);
 bool ls_audio_layers_touch(ls_audio_layers *p, int x, int y);
+/* The two-row whole-track strip under the plot, as last drawn: the screen
+   seeks playback on a tap there. */
+tui_rect ls_audio_layers_strip(const ls_audio_layers *p);
+/* A tap on the plot holds the reading at that instant until unpinned. */
+bool ls_audio_layers_pinned(const ls_audio_layers *p);
+void ls_audio_layers_unpin(ls_audio_layers *p);
 void ls_audio_layers_zoom(ls_audio_layers *p);
 uint32_t ls_audio_layers_time(const ls_audio_layers *p);
 float ls_audio_layers_frequency(const ls_audio_layers *p);

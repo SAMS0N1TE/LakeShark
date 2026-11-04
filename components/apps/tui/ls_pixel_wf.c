@@ -204,7 +204,11 @@ static void draw_line(ls_pwf_t *p, int at, int age)
             int m = 0;
             if (line) {
                 const int a = p->first[i], w = p->last[i];
-                m = (line[a] * (256 - w) + line[a + 1] * w) >> 8;
+                if (w >= 0)
+                    m = (line[a] * (256 - w) + line[a + 1] * w) >> 8;
+                else    /* a mixed axis: this pixel covers bins a..-w-1 */
+                    for (int k = a; k <= -w - 1; k++)
+                        if (line[k] > m) m = line[k];
             }
             px[(size_t)i * step] = p->lut[m];
         }

@@ -58,15 +58,21 @@ enum {
   REPAIR,
   HOLD,
   AXIS,
+  SEEK_BACK,
+  SEEK_FWD,
+  LIVE,
   ACTIONS
 };
 /* The key each control answers to, drawn on it while a keyboard is fitted. */
 static const char *const KEYS[ACTIONS] = {
     "B", "P", "N", "-", "M", "+", "L", "I", "W", "1", "2", "3", "4",
-    "5", "6", "7", "8", "9", "0", "V", "C", "Z", "E", "D", "R", "ESC", "U", "J", "O", "S", "", "H", "A"};
+    "5", "6", "7", "8", "9", "0", "V", "C", "Z", "E", "D", "R", "ESC", "U", "J", "O", "S", "", "H", "A",
+    "[", "]", ""};
 enum { VIEW_LEVEL, VIEW_BANDS, VIEW_SCAN, VIEW_WATERFALL, VIEW_WAVE, VIEW_SPECTRO, VIEW_MELODIC, VIEW_SPECTRUM, VIEW_SCOPE, VIEW_TOOLS, VIEWS };
 static const char *const VIEW_NAME[VIEWS] = {"LEVEL", "BANDS", "SCAN",
                                              "WATERFALL", "WAVE", "SPECTRO", "MELODIC", "SPECTRUM", "SCOPE", "TOOLS"};
+static const char *const VIEW_MID[VIEWS] = {"LEVEL", "BANDS", "SCAN", "WFALL", "WAVE",
+                                            "SPECTRO", "MELODIC", "SPECTRM", "SCOPE", "TOOLS"};
 static const char *const VIEW_SHORT[VIEWS] = {"LVL", "BND", "SCN", "WF", "WAV", "SPG", "MEL", "SPC", "SCP", "TLS"};
 static const char *const VIEW_TITLE[VIEWS] = {
     " PEAK LEVEL ", " SPECTRUM 2/3 OCTAVE ", " SCAN ", " WATERFALL ", " WAVE ", " SPECTRO ", " MELODIC ", " SPECTRUM ", " SCOPE ", " TOOLS "};
@@ -120,6 +126,28 @@ static void push_waterfall(void) {
 }
 
 static void volume_to_step(int direction) { ls_media_volume_step(direction); }
+/* Move playback. One request per player turn: the player takes one event
+   at a time, and a burst of taps on the bar used to fill its queue. The
+   analysis views follow again after a seek. */
+static int64_t last_seek_us;
+static void seek_to(int64_t ms) {
+  if (!on_track() || ls_music_state() == LS_MUSIC_STOPPED)
+    return;
+  const int64_t now = esp_timer_get_time();
+  if (last_seek_us && now - last_seek_us < 120000)
+    return;
+  const int64_t total = ls_music_duration_ms();
+  if (ms < 0)
+    ms = 0;
+  if (ms > total)
+    ms = total;
+  if (ls_music_seek_ms((uint32_t)ms)) {
+    last_seek_us = now;
+    ls_audio_view_reset();
+    ls_audio_layers_unpin(layers);
+  }
+}
+static void seek_by(int64_t delta_ms) { seek_to((int64_t)ls_music_position_ms() + delta_ms); }
 static void start(int index) {
   if (ready && ls_music_play(index)) {
     selected = current = index;
@@ -297,8 +325,8 @@ static void act(int id) {
   case TAB_WAVE: case TAB_SPECTRO: case TAB_MELODIC: case TAB_SPECTRUM: case TAB_SCOPE: case TAB_TOOLS:
     view = VIEW_LEVEL + (id - TAB_LEVEL);
     break;
-  case MORE:
-    view=(view+1)%VIEWS;
+  case MORE: /* the next page of four tabs, on a short row */
+    view = (view / 4 * 4 + 4) % VIEWS;
     break;
   case COLOUR:
     palette = (palette + 1) % PALETTES;
@@ -344,6 +372,15 @@ static void act(int id) {
     break;
   case OPTIONS:
     ls_opt_open(&CTX_MUSIC);
+    break;
+  case SEEK_BACK:
+    seek_by(-5000);
+    break;
+  case SEEK_FWD:
+    seek_by(5000);
+    break;
+  case LIVE:
+    ls_audio_layers_unpin(layers);
     break;
   }
 }
@@ -469,7 +506,11 @@ static uint8_t role_hue(int id) {
   case MIC: return TUI_MAGENTA;
   case COLOUR: return PALETTE_HUE[palette];
   case TAB_LEVEL: case TAB_BANDS: case TAB_SCAN: case TAB_WATERFALL:
+  case TAB_WAVE: case TAB_SPECTRO: case TAB_MELODIC: case TAB_SPECTRUM: case TAB_SCOPE: case TAB_TOOLS:
     return VIEW_HUE[id - TAB_LEVEL];
+  case SEEK_BACK: case SEEK_FWD: return TUI_CYAN;
+  case STOP: return TUI_RED;
+  case LIVE: return TUI_GREEN;
   default: return TUI_CYAN;
   }
 }
@@ -602,17 +643,42 @@ static void strip(tui_surface *sf, tui_rect r, bool waterfall, float lo_db,
               LS_ATTR_DIM);
   tui_put_str(sf, r, r.x + 1, r.y, waterfall ? "COLOUR MAP" : "LEVEL KEY", cyan);
 }
-static void tabs(tui_surface *sf, tui_rect t) {
-  int first=(view/4)*4;
-  int count=VIEWS-first<4?VIEWS-first:4;
-  int tw = t.w / count;
-  bool full = tw - 2 >= 9;
-  for (int j = 0; j < count; j++) {
-    int i=first+j;
-    int x = t.x + j * tw, w = j == count - 1 ? t.w - j * tw : tw - 1;
-    button(sf, TAB_LEVEL + i, tui_rect_make(x, t.y, w, 3),
-           full ? VIEW_NAME[i] : VIEW_SHORT[i], i == view, true);
+/* The longest of a view's names that fits a tab with `inner` cells. */
+static const char *view_label(int i, int inner) {
+  if ((int)strlen(VIEW_NAME[i]) <= inner) return VIEW_NAME[i];
+  if ((int)strlen(VIEW_MID[i]) <= inner) return VIEW_MID[i];
+  return VIEW_SHORT[i];
+}
+/* How the ten views' tabs fit across `w` cells in at most `max_rows` rows:
+   all ten in one or two rows when each tab can carry a word, else four of
+   them and a full-size MORE tile for the next four. Returns the rows used. */
+static int tab_rows_for(int w, int max_rows) {
+  if (w / VIEWS >= 8) return 1;
+  if (max_rows >= 2 && w / (VIEWS / 2) >= 7) return 2;
+  return 1;
+}
+static void tabs(tui_surface *sf, tui_rect t, int rows) {
+  if (rows == 2 || t.w / VIEWS >= 8) {
+    const int per = rows == 2 ? VIEWS / 2 : VIEWS;
+    for (int i = 0; i < VIEWS; i++) {
+      int j = i % per, row = i / per, tw = t.w / per;
+      /* Touching tiles, the last one taking the remainder: every cell of
+         the row is somebody's tab. */
+      int x = t.x + j * tw, w = j == per - 1 ? t.w - j * tw : tw;
+      button(sf, TAB_LEVEL + i, tui_rect_make(x, t.y + 3 * row, w, 3), view_label(i, w - 2),
+             i == view, true);
+    }
+    return;
   }
+  /* One short row: this page of four, then MORE. */
+  int first = (view / 4) * 4, count = VIEWS - first < 4 ? VIEWS - first : 4;
+  int tw = t.w / 5;
+  for (int j = 0; j < count; j++) {
+    int i = first + j;
+    button(sf, TAB_LEVEL + i, tui_rect_make(t.x + j * tw, t.y, tw, 3), view_label(i, tw - 2),
+           i == view, true);
+  }
+  button(sf, MORE, tui_rect_make(t.x + 4 * tw, t.y, t.w - 4 * tw, 3), "MORE >", false, true);
 }
 /* What the plots are reading. */
 static const char *source_name(void) {
@@ -658,32 +724,31 @@ static void panel(tui_surface *sf, tui_rect p, bool playing, bool boxed) {
   if (p.w < 20 || p.h < 12)
     return;
   ls_panel_box(sf, p, VIEW_TITLE[view], VIEW_HUE[view]);
-  hits[MORE]=tui_rect_make(p.x+p.w-10,p.y,9,1);enabled[MORE]=true;
-  tui_fill(sf,hits[MORE],' ',TUI_ATTR(TUI_BLACK,TUI_CYAN));
-  tui_put_str(sf,hits[MORE],hits[MORE].x,hits[MORE].y," VIEW > ",TUI_ATTR(TUI_BLACK,TUI_CYAN));
   tui_rect in = tui_rect_make(p.x + 1, p.y + 1, p.w - 2, p.h - 2);
-  /* Tabs beside the format lines when there is room, above them when not;
-     with the format in the now-playing box above, the tabs have the row. */
-  const int info_w = boxed ? 0 : 25;
-  bool beside = boxed || in.w - info_w >= 4 * 11;
-  int tabs_w = beside ? in.w - info_w : in.w;
-  if (tabs_w > 4 * 12 && !boxed)
-    tabs_w = 4 * 12;
-  tabs(sf, tui_rect_make(in.x + in.w - tabs_w, in.y, tabs_w, 3));
+  /* Every view has a full-size tab across the top of the panel: one or two
+     rows of them, or four and MORE where the panel is short. The format
+     lines go under them when the now-playing box does not carry them. */
+  const int rows = tab_rows_for(in.w, in.h >= 30 ? 2 : 1);
+  tabs(sf, tui_rect_make(in.x, in.y, in.w, 3 * rows), rows);
+  int body_y = in.y + 3 * rows;
   if (!boxed) {
-    int info_y = beside ? in.y : in.y + 3;
-    format_line(sf, in, in.x + 1, info_y);
-    output_line(sf, in, in.x + 1, info_y + 1);
+    format_line(sf, in, in.x + 1, body_y);
+    output_line(sf, in, in.x + 1, body_y + 1);
+    body_y += 2;
   }
-  int body_y = beside ? in.y + 3 : in.y + 6;
   tui_rect body = tui_rect_make(in.x, body_y, in.w, in.y + in.h - 1 - body_y);
+  if (body.h < 4)
+    return;
   tui_rect plot = tui_rect_make(body.x, body.y, body.w, body.h - 3);
   tui_rect controls_row = tui_rect_make(body.x, body.y + body.h - 3, body.w, 3);
   char line[96];
   unsigned rate = rate_now();
   if(view>=VIEW_WAVE){
     ls_audio_layers_draw(layers,sf,body,view-VIEW_WAVE,ls_music_analysis(),ls_music_overview(),ls_music_tools(),ls_music_position_ms(),wf_hold);
-    LS_SNPRINTF(t_scr_music_v_view_h_s, layer_footer,sizeof(layer_footer),"V view  H %s  Z zoom  O options  %.1fx varispeed",wf_hold?"HELD":"hold",ls_music_speed_get()/1000.0);
+    /* A held reading says so, with the way back to following playback. */
+    if (ls_audio_layers_pinned(layers) && body.w >= 30)
+      button(sf, LIVE, tui_rect_make(body.x + body.w - 10, body.y, 10, 3), "LIVE", false, true);
+    LS_SNPRINTF(t_scr_music_v_view_h_s_strip, layer_footer,sizeof(layer_footer),"H %s  Z zoom  strip: seek  %.1fx varispeed",wf_hold?"HELD":"hold",ls_music_speed_get()/1000.0);
     ls_safe_line(sf,in,in.y+in.h-1,layer_footer,LS_ATTR_DIM);
     return;
   }
@@ -786,11 +851,27 @@ static void clock_text(char *out, size_t n, uint32_t elapsed_ms,
            (unsigned)(elapsed_ms / 1000 % 60), (unsigned)(total_ms / 60000),
            (unsigned)(total_ms / 1000 % 60));
 }
+/* A thick bar to tap: played part bright, a knob where playback is, and
+   the rest dim. progress_rect is its row; touch takes a row either side. */
+static void seek_bar(tui_surface *sf, tui_rect r, bool show, uint32_t elapsed, uint32_t total) {
+  progress_rect = r;
+  if (!show || r.w < 4)
+    return;
+  int knob = total ? (int)((uint64_t)(elapsed > total ? total : elapsed) * (r.w - 1) / total) : 0;
+  for (int x = 0; x < r.w; x++) {
+    bool done = x < knob;
+    tui_put_char(sf, r, r.x + x, r.y, x == knob ? LS_TUI_BLOCK_FULL : done ? LS_TUI_BLOCK_LOWER : '-',
+                 x == knob ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK)
+                 : done    ? TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK)
+                           : TUI_ATTR(TUI_CYAN, TUI_BLACK));
+  }
+}
 /* The roomy form: a box titled with the state, the cassette in its colour,
-   and the track beside it. Eleven rows with the keys under it. */
+   the track beside it and the seek bar under both. Twelve rows with the
+   keys under it. */
 static void info_boxed(tui_surface *sf, tui_rect r, bool playing) {
   int pad = 0;
-  for (int y = r.y; y < r.y + 11; y++)
+  for (int y = r.y; y < r.y + 12; y++)
     if (ls_tui_corner_pad(y) > pad)
       pad = ls_tui_corner_pad(y);
   int cols = tui_surface_rect(sf).w;
@@ -801,7 +882,7 @@ static void info_boxed(tui_surface *sf, tui_rect r, bool playing) {
   if (r.x + r.w > cols - pad)
     r.w = cols - pad - r.x;
   const uint8_t hue = state_hue(playing);
-  tui_rect box = tui_rect_make(r.x, r.y, r.w, 8);
+  tui_rect box = tui_rect_make(r.x, r.y, r.w, 9);
   char title[24];
   snprintf(title, sizeof(title), " %s ", state_name(playing));
   ls_panel_box(sf, box, title, hue);
@@ -853,13 +934,12 @@ static void info_boxed(tui_surface *sf, tui_rect r, bool playing) {
   else
     clock_text(clock, sizeof(clock), elapsed * 1000, total * 1000);
   tui_put_str(sf, text, tx, text.y + 4, clock, white);
-  /* The seek bar: the touch handler reads it as progress_rect's second row,
-     inset two columns at each end. */
-  progress_rect = tui_rect_make(tx - 2, text.y + 4, tw + 4, 2);
-  if (mic == LS_MIC_OFF)
-    ls_media_progress_bar(sf, progress_rect, elapsed * 1000, total * 1000);
+  /* The seek bar: the whole width of the box under the cassette. A tap on
+     it, the row above or the frame below moves playback there. */
+  seek_bar(sf, tui_rect_make(box.x + 2, box.y + 7, box.w - 4, 1), mic == LS_MIC_OFF, elapsed * 1000,
+           total * 1000);
   int bw = (r.w - 3) / 4;
-  top_keys(sf, r.x + (r.w - (4 * bw + 3)) / 2, r.y + 8, bw, 3);
+  top_keys(sf, r.x + (r.w - (4 * bw + 3)) / 2, r.y + 9, bw, 3);
 }
 /* The tight form, for a narrow side pane: status, title, clock and
    progress in eight rows, the keys across the top. */
@@ -899,7 +979,7 @@ static void info_flat(tui_surface *sf, tui_rect r, bool playing) {
   }
   if (*error)
     ls_safe_line(sf, r, r.y + 5, error, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
-  progress_rect = tui_rect_make(r.x, r.y + 6, r.w, 2);
+  tui_rect clock_rect = tui_rect_make(r.x, r.y + 6, r.w, 1);
   if (mic != LS_MIC_OFF) {
     char clock[48];
     if (mic == LS_MIC_RECORDING)
@@ -908,7 +988,7 @@ static void info_flat(tui_surface *sf, tui_rect r, bool playing) {
       snprintf(clock, sizeof(clock), "LIVE");
     ls_safe_line(sf, r, r.y + 6, clock, white);
   } else
-    ls_media_clock(sf, progress_rect, elapsed * 1000, total * 1000);
+    ls_media_clock(sf, clock_rect, elapsed * 1000, total * 1000);
   int count = outside[0] ? 0 : ls_music_count();
   if (count > 0) {
     char n[32];
@@ -917,16 +997,122 @@ static void info_flat(tui_surface *sf, tui_rect r, bool playing) {
     tui_put_str(sf, r, r.x + r.w - 2 - len, r.y + 6, n,
                 TUI_ATTR(hue, TUI_BLACK));
   }
-  ls_media_progress_bar(sf, progress_rect, elapsed * 1000, total * 1000);
+  seek_bar(sf, tui_rect_make(r.x + 2, r.y + 7, r.w - 4, 1), true, elapsed * 1000, total * 1000);
 }
-/* Transport, volume readout and volume buttons: 2h+3 rows. */
-static void transport_button(tui_surface *sf,void *ctx,int id,tui_rect r,const char *label,bool on,bool can) {
-  (void)ctx;
-  if(id==4){label=ls_music_muted()?"UNMUTE":"MUTE";on=ls_music_muted();}
-  button(sf,PREV+id,r,label,on,can);
+/* The width a row of keys from y to y+h-1 can use: clear of the rounded
+   corner on those rows only, so the rows above the corner keep the full
+   width instead of all of them shrinking to the bottom row's. */
+static tui_rect key_row(tui_surface *sf, tui_rect r, int y, int h) {
+  int pad = 0, cols = tui_surface_rect(sf).w;
+  for (int i = y; i < y + h; i++)
+    if (ls_tui_corner_pad(i) > pad)
+      pad = ls_tui_corner_pad(i);
+  int x0 = r.x < pad ? pad : r.x, x1 = r.x + r.w > cols - pad ? cols - pad : r.x + r.w;
+  return tui_rect_make(x0, y, x1 - x0, h);
 }
-static void controls(tui_surface *sf,tui_rect r,bool playing,int h) {
-  ls_media_transport(sf,r,playing,h,ready&&ls_music_count()>0,ls_music_volume(),ls_music_volume_db(),transport_button,NULL);
+/* Splits a row into n keys one cell apart, the middle one `wide` times as
+   wide as the others, and draws them. */
+static void key_split(tui_surface *sf, tui_rect row, int n, int wide_at, int wide, const int *ids,
+                      const char *const *labels, const bool *on, const bool *can) {
+  int units = n - 1 + wide, unit = (row.w - (n - 1)) / units, x = row.x;
+  for (int i = 0; i < n; i++) {
+    int w = i == n - 1 ? row.x + row.w - x : unit * (i == wide_at ? wide : 1);
+    button(sf, ids[i], tui_rect_make(x, row.y, w, row.h), labels[i], on[i], can[i]);
+    x += w + 1;
+  }
+}
+/* The player keys, the whole width: PREV, PLAY and NEXT; the volume row; then
+   back 5 s, STOP and forward 5 s, the row the corner narrows. h+8 rows. */
+/* Rows the keys take out of `avail`: the full set, or the short form. */
+static int controls_rows(int h, int avail) { return avail >= h + 8 ? h + 8 : h + 6; }
+static void controls(tui_surface *sf, tui_rect r, bool playing, int h) {
+  const bool can = ready && ls_music_count() > 0, going = on_track() && ls_music_state() != LS_MUSIC_STOPPED;
+  int y = r.y;
+  {
+    const int ids[3] = {PREV, PLAY, NEXT};
+    const char *const labels[3] = {"PREV", playing ? "PAUSE" : "PLAY", "NEXT"};
+    const bool on[3] = {false, true, false}, ok[3] = {can, can || outside[0], can};
+    key_split(sf, key_row(sf, r, y, h), 3, 1, 2, ids, labels, on, ok);
+  }
+  y += h + 1;
+  /* The volume row, clear of the corner: VOL -, the gauge, VOL +. */
+  tui_rect row = key_row(sf, r, y, 3);
+  int value = ls_music_volume();
+  if (value < 0) value = 0;
+  if (value > 100) value = 100;
+  if (r.h < h + 8) {
+    /* Short: VOL -, MUTE and VOL + in one row, the gauge on the two rows
+       under it, no seek row ([ and ] still seek). h+6 rows. */
+    const bool muted = ls_music_muted();
+    const int ids[3] = {QUIETER, SILENCE, LOUDER};
+    const char *const labels[3] = {"VOL -", muted ? "UNMUTE" : "MUTE", "VOL +"};
+    const bool on[3] = {false, muted, false}, ok[3] = {value > 0, true, value < 100};
+    key_split(sf, row, 3, 1, 1, ids, labels, on, ok);
+    tui_rect g = key_row(sf, r, y + 3, 2);
+    char vol[24];
+    if (value)
+      snprintf(vol, sizeof(vol), "%d%% %.1f dB", value, (double)ls_music_volume_db());
+    else
+      snprintf(vol, sizeof(vol), "MUTED");
+    int segs = g.w - (int)strlen(vol) - 2 >= 10 ? 10 : 5, gx = g.x + 1;
+    for (int i = 0; i < segs; i++)
+      tui_put_char(sf, g, gx + i, g.y, LS_TUI_BLOCK_LEFT,
+                   i < value * segs / 100 ? TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK)
+                                          : TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
+    tui_put_str(sf, g, gx + segs + 1, g.y, vol, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, g, gx, g.y + 1, "VOLUME", LS_ATTR_DIM);
+    return;
+  }
+  int unit = (row.w - 2) / 4, x = row.x;
+  button(sf, QUIETER, tui_rect_make(x, row.y, unit, 3), "VOL -", false, value > 0);
+  x += unit + 1;
+  tui_rect gauge = tui_rect_make(x, row.y, row.w - 2 * unit - 2, 3);
+  button(sf, LOUDER, tui_rect_make(row.x + row.w - unit, row.y, unit, 3), "VOL +", false, value < 100);
+  /* The gauge: level and dB, a segment per 5, 10 or 20 points under them,
+     and its name. */
+  char vol[32];
+  if (value)
+    snprintf(vol, sizeof(vol), "%d%%  %.1f dB", value, (double)ls_music_volume_db());
+  else
+    snprintf(vol, sizeof(vol), "0%%  MUTED");
+  if ((int)strlen(vol) > gauge.w) {
+    if (value)
+      snprintf(vol, sizeof(vol), "%.1f dB", (double)ls_music_volume_db());
+    else
+      snprintf(vol, sizeof(vol), "MUTED");
+  }
+  int len = (int)strlen(vol);
+  tui_put_str(sf, gauge, gauge.x + (gauge.w - len) / 2, gauge.y, vol, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+  int segs = gauge.w - 2 >= 20 ? 20 : gauge.w - 2 >= 10 ? 10 : 5, gx = gauge.x + (gauge.w - segs) / 2;
+  for (int i = 0; i < segs; i++)
+    tui_put_char(sf, gauge, gx + i, gauge.y + 1, LS_TUI_BLOCK_LEFT,
+                 i < value * segs / 100 ? TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK)
+                                        : TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
+  if (gauge.w >= 6)
+    tui_put_str(sf, gauge, gauge.x + (gauge.w - 6) / 2, gauge.y + 2, "VOLUME", LS_ATTR_DIM);
+  /* The row the corner narrows: back 5 s, STOP, forward 5 s and MUTE, the
+     labels as long as the keys allow. */
+  row = key_row(sf, r, y + 4, 3);
+  const bool muted = ls_music_muted();
+  /* Too narrow for four keys that can spell UNMUTE: STOP leaves (S, and
+     OPTIONS > STOP, still stop). */
+  const bool four = (row.w - 3) / 4 - 2 >= 6;
+  const int inner = four ? (row.w - 3) / 4 - 2 : (row.w - 2) / 3 - 2;
+  const char *back = inner >= 8 ? "<< 5 SEC" : inner >= 5 ? "<< 5s" : "-5s",
+             *fwd = inner >= 8 ? "5 SEC >>" : inner >= 5 ? "5s >>" : "+5s";
+  const char *mute = muted ? "UNMUTE" : "MUTE";
+  const bool stop_ok = going || ls_music_mic_state() != LS_MIC_OFF;
+  if (four) {
+    const int ids[4] = {SEEK_BACK, STOP, SEEK_FWD, SILENCE};
+    const char *const labels[4] = {back, "STOP", fwd, mute};
+    const bool on[4] = {false, false, false, muted}, ok[4] = {going, stop_ok, going, true};
+    key_split(sf, row, 4, 0, 1, ids, labels, on, ok);
+  } else {
+    const int ids[3] = {SEEK_BACK, SEEK_FWD, SILENCE};
+    const char *const labels[3] = {back, fwd, mute};
+    const bool on[3] = {false, false, muted}, ok[3] = {going, going, true};
+    key_split(sf, row, 3, 0, 1, ids, labels, on, ok);
+  }
 }
 
 /* ------------------------------------------------------- the track list -- */
@@ -1036,8 +1222,8 @@ static void draw(tui_surface *sf, tui_rect r) {
     int split = r.w * (r.w >= 100 ? 62 : 55) / 100;
     tui_rect side = tui_rect_make(r.x + split, r.y, r.w - split, r.h);
     bool boxed = side.w >= 40 && r.h >= 26;
-    int info_h = boxed ? 11 : 8;
-    int h = (r.h - info_h - 4) / 2;
+    int info_h = boxed ? 12 : 8;
+    int h = r.h - info_h - 9;
     if (h > 7)
       h = 7;
     if (h < 3)
@@ -1047,21 +1233,21 @@ static void draw(tui_surface *sf, tui_rect r) {
       info_boxed(sf, side, playing);
     else
       info_flat(sf, side, playing);
-    controls(sf, tui_rect_make(side.x, side.y + side.h - (2 * h + 3), side.w,
-                               2 * h + 3),
+    controls(sf, tui_rect_make(side.x, side.y + side.h - controls_rows(h, side.h - info_h), side.w,
+                               controls_rows(h, side.h - info_h)),
              playing, h);
   } else {
     const int h = 5;
     bool boxed = r.w >= 40 && r.h >= 60;
-    int info_h = boxed ? 11 : 8;
+    int info_h = boxed ? 12 : 8;
     if (boxed)
       info_boxed(sf, r, playing);
     else
       info_flat(sf, r, playing);
-    int bottom = r.y + r.h - (2 * h + 3);
+    int bottom = r.y + r.h - controls_rows(h, r.h - info_h);
     panel(sf, tui_rect_make(r.x, r.y + info_h + 1, r.w, bottom - r.y - info_h - 2),
           live, boxed);
-    controls(sf, tui_rect_make(r.x, bottom, r.w, 2 * h + 3), playing, h);
+    controls(sf, tui_rect_make(r.x, bottom, r.w, controls_rows(h, r.h - info_h)), playing, h);
   }
 }
 static bool key(ls_tk_t key, char ch) {
@@ -1115,13 +1301,9 @@ static bool key(ls_tk_t key, char ch) {
     ch += 'a' - 'A';
   switch (ch) {
   case '[':
-  case ']': {
-    int64_t target=(int64_t)ls_music_position_ms()+(ch=='['?-5000:5000);
-    if(target<0)target=0;
-    if(target>ls_music_duration_ms())target=ls_music_duration_ms();
-    if(ls_music_seek_ms((uint32_t)target))ls_audio_view_reset();
+  case ']':
+    act(ch == '[' ? SEEK_BACK : SEEK_FWD);
     break;
-  }
   case 'p':
   case ' ':
     act(PLAY);
@@ -1152,7 +1334,7 @@ static bool key(ls_tk_t key, char ch) {
     act(REC);
     break;
   case 'v':
-    act(MORE);
+    view = (view + 1) % VIEWS;
     break;
   case '1':
   case '2':
@@ -1207,11 +1389,25 @@ static bool touch(int x, int y) {
       act(i);
       return true;
     }
-  if(!library && view>=VIEW_WAVE && ls_audio_layers_touch(layers,x,y))return true;
-  /* Either row of the bar: a click on its top half did nothing. */
-  if (!library && on_track() && (y==progress_rect.y || y==progress_rect.y+1) && x>=progress_rect.x+2 && x<progress_rect.x+progress_rect.w-2) {
-    if(ls_music_seek_ms((uint64_t)(x-progress_rect.x-2)*ls_music_duration_ms()/(progress_rect.w-4)))ls_audio_view_reset();
+  /* The seek bar, with a row of slack above and below: a finger is wider
+     than a cell. Taps a little past either end go to the start or end. */
+  if (!library && on_track() && progress_rect.w > 1 && y >= progress_rect.y - 1 &&
+      y <= progress_rect.y + 1 && x >= progress_rect.x - 2 && x < progress_rect.x + progress_rect.w + 2) {
+    int at = x - progress_rect.x;
+    if (at < 0) at = 0;
+    if (at > progress_rect.w - 1) at = progress_rect.w - 1;
+    seek_to((int64_t)at * ls_music_duration_ms() / (progress_rect.w - 1));
     return true;
+  }
+  /* The analysis views' whole-track strip moves playback too. */
+  if (!library && view >= VIEW_WAVE) {
+    tui_rect strip = ls_audio_layers_strip(layers);
+    if (strip.w > 1 && tui_rect_contains(strip, x, y)) {
+      seek_to((int64_t)(x - strip.x) * ls_music_duration_ms() / (strip.w - 1));
+      return true;
+    }
+    if (ls_audio_layers_touch(layers, x, y))
+      return true;
   }
   if (library && tui_rect_contains(rows_rect, x, y)) {
     int i = top + (y - rows_rect.y) / row_height;
@@ -1226,7 +1422,7 @@ static bool touch(int x, int y) {
 }
 const ls_tui_screen_t ls_scr_music = {
     .name = "MUSIC",
-    .hint = "1-0/V view  C colour  H hold  A axis  O options  SPACE play  I mic  W rec  L tracks  +/- vol",
+    .hint = "1-0/V view  [ ] seek  C colour  H hold  O options  SPACE play  I mic  W rec  L tracks  +/- vol",
     .enter = enter,
     .leave = leave,
     .draw = draw,

@@ -45,7 +45,10 @@ typedef struct {
        order: LEFT row 0 is the top (highest), DOWN column 0 the left. */
     int16_t *first, *last;
     /* ls_pwf_axis_lerp: first[] is the lower bin and last[] the weight of
-       the next one, 0..256, instead of a range to take the loudest of. */
+       the next one, 0..256, instead of a range to take the loudest of. A
+       negative last[] in this mode is -(end bin + 1): that pixel takes the
+       loudest of first..end, for an axis that is wider than its bins at one
+       end and narrower at the other (log). */
     bool lerp;
     uint16_t lut[256];
     int head, filled, fresh;

@@ -196,18 +196,29 @@ static bool contains(tui_cell *cells,int w,int h,const char *text){
     }
     return false;
 }
-/* Lit gauge segments on the row under the volume readout. */
+/* Lit gauge segments on the row over the gauge's VOLUME name, scaled to 20:
+   the gauge has 5, 10 or 20 segments by its width, and lights value*n/100. */
 static int gauge_lit(tui_cell *cells,int w,int h,int value){
-    char text[32];int x,y;snprintf(text,sizeof(text),"VOLUME %d%%",value);
-    if(!locate(cells,w,h,text,&x,&y)||y+1>=h)return -1;
+    /* The gauge's own VOLUME, the one with segments on the row above it
+       (LEVEL's footer says VOLUME too). */
+    int y=-1;
+    for(int yy=h-1;yy>=1&&y<0;yy--)for(int xx=0;xx+6<=w;xx++){
+        int j=0;while(j<6&&cells[yy*w+xx+j].ch=="VOLUME"[j])j++;
+        if(j<6||(xx+6<w&&cells[yy*w+xx+6].ch!=' '))continue;
+        bool bar=false;for(int k=0;k<w;k++)if(cells[(yy-1)*w+k].ch==LS_TUI_BLOCK_LEFT)bar=true;
+        if(bar){y=yy;break;}
+    }
+    if(y<1)return -1;
     int lit=0,segments=0;
     for(int xx=0;xx<w;xx++){
-        tui_cell c=cells[(y+1)*w+xx];
+        tui_cell c=cells[(y-1)*w+xx];
         if(c.ch!=LS_TUI_BLOCK_LEFT)continue;
         segments++;
         if(TUI_ATTR_FG(c.attr)!=LS_FAINT_FG)lit++;
     }
-    return segments==20?lit:-2;
+    if(segments!=5&&segments!=10&&segments!=20)return -2;
+    if(lit!=value*segments/100)return -3;
+    return value/5;
 }
 static void volume_display(int w,int h){
     size_t n=(size_t)w*h;
@@ -548,7 +559,8 @@ LS_CASE(new_layers_use_pcm_and_cursor_and_hold){
     for(int layer=0;layer<LS_LAYERS;layer++){
         tui_frame_begin(&sf);ls_audio_layers_draw(p,&sf,tui_rect_make(0,0,80,30),layer,a,NULL,NULL,1000,false);
         LS_CHECK(contains(back+1,80,30,"Hz"));LS_CHECK(contains(back+1,80,30,"dBFS"));
-        if(layer!=LS_LAYER_TOOLS)LS_CHECK(image_px&&image_w==800&&image_h==(layer==LS_LAYER_SPECTRUM?21:23)*17);
+        /* SPECTRO keeps a 5-cell frequency scale and MELODIC 4 cells of note names left of the picture. */
+        if(layer!=LS_LAYER_TOOLS)LS_CHECK(image_px&&image_w==(layer==LS_LAYER_SPECTRO?750:layer==LS_LAYER_MELODIC?760:800)&&image_h==(layer==LS_LAYER_SPECTRUM?20:22)*17);
         if(layer==LS_LAYER_SPECTRUM){
             /* A real 1 kHz tone lies 5% across this linear 1..20 kHz axis. */
             int top_at=-1;for(int x=32;x<49;x++)for(int y=0;y<image_h/3;y++)if(image_px[y*image_w+x]==0x07ff)top_at=x;
@@ -571,14 +583,20 @@ LS_CASE(file_wave_zoom_and_precise_cursor_slice){
     ls_audio_analysis *a=ls_audio_analysis_new();ls_audio_layers *p=ls_audio_layers_new();feed_real_tone(a,1000);
     tui_cell back[80*30],front[80*30];tui_surface sf;tui_surface_setup(&sf,back,front,80,30);tui_frame_begin(&sf);
     ls_audio_layers_draw(p,&sf,tui_rect_make(0,0,80,30),LS_LAYER_WAVE,a,o,NULL,1000,false);
-    LS_CHECK(ls_audio_layers_touch(p,20,27));LS_CHECK(ls_audio_layers_time(p)>490&&ls_audio_layers_time(p)<520);
+    /* The two-row strip is the screen's to seek with; the layers leave it alone. */
+    tui_rect strip=ls_audio_layers_strip(p);LS_CHECK(strip.y==26&&strip.h==2&&strip.w==80);
+    LS_CHECK(!ls_audio_layers_touch(p,20,27));LS_CHECK(!ls_audio_layers_pinned(p));
+    /* A tap on the plot holds that instant: a quarter of the way across. */
+    LS_CHECK(ls_audio_layers_touch(p,20,10));LS_CHECK(ls_audio_layers_pinned(p));
+    LS_CHECK(ls_audio_layers_time(p)>490&&ls_audio_layers_time(p)<520);
     ls_audio_layers_zoom(p);
     ls_audio_layers_draw(p,&sf,tui_rect_make(0,0,80,30),LS_LAYER_WAVE,a,o,NULL,1500,false);
-    LS_CHECK(contains(back,80,30,"FILE 2x"));
+    LS_CHECK(contains(back,80,30,"WHOLE TRACK 2x"));
     ls_audio_overview_step(o,1);
     ls_audio_layers_draw(p,&sf,tui_rect_make(0,0,80,30),LS_LAYER_SPECTRUM,a,o,NULL,1500,false);
     LS_CHECK(contains(back,80,30,"SLICE"));
     LS_CHECK(ls_audio_layers_time(p)<520);
+    ls_audio_layers_unpin(p);LS_CHECK(!ls_audio_layers_pinned(p));
     ls_audio_layers_free(p);ls_audio_analysis_free(a);LS_CHECK(ls_audio_overview_free(o));
 }
 LS_CASE(all_ten_views_are_reachable_and_options_have_safe_defaults){
