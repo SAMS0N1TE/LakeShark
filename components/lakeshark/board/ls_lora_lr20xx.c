@@ -2627,12 +2627,22 @@ static esp_err_t lr_fsk_begin(const ls_fsk_cfg_t *cfg)
     return ESP_OK;
 }
 
+/* Which check a received packet failed, so a count of "radio errors" can be
+   traced: irq 0 is a status read that failed, a len equal to the session's
+   is the FIFO read. Every sixteenth, from the first. */
+static int fsk_rx_fault(uint32_t irq, uint16_t len)
+{
+    static uint32_t n;
+    if (!(n++ & 15)) ESP_LOGW(TAG, "FSK rx error %lu: irq 0x%08lX len %u", (unsigned long)n, (unsigned long)irq, len);
+    return -1;
+}
+
 static int lr_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm)
 {
     if (!lr.fsk_active || lr.fsk_stream || !buf || size < lr.fsk_bytes) return -1;
     heal();
     lr20xx_status_t st;
-    if (lr20xx_get_status(&st) != ESP_OK || !lr20xx_stat_plausible(st.stat)) return -1;
+    if (lr20xx_get_status(&st) != ESP_OK || !lr20xx_stat_plausible(st.stat)) return fsk_rx_fault(0, 0);
     if (take_reset(st.stat) || lr.fsk_stale) {
         /* The part restarted, or the driver reset it: it listens to nothing
            until it is told again. */
@@ -2645,16 +2655,16 @@ static int lr_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm)
     const uint32_t irq = st.irq & (LR20XX_IRQ_RX_DONE | LR20XX_IRQ_CRC_ERROR |
                                    LR20XX_IRQ_TIMEOUT | LR20XX_IRQ_LEN_ERROR);
     if (!irq) return 0;
-    if (lr20xx_clear_irq(irq) != ESP_OK) return -1;
+    if (lr20xx_clear_irq(irq) != ESP_OK) return fsk_rx_fault(0, 0);
     if (irq & (LR20XX_IRQ_CRC_ERROR | LR20XX_IRQ_TIMEOUT | LR20XX_IRQ_LEN_ERROR)) {
         (void)lr20xx_clear_rx_fifo();
-        return -1;
+        return fsk_rx_fault(irq, 0);
     }
     uint16_t len = 0;
     if (lr20xx_get_rx_pkt_length(&len) != ESP_OK || len != lr.fsk_bytes ||
         lr20xx_read_rx_fifo(buf, lr.fsk_bytes) != ESP_OK) {
         (void)lr20xx_clear_rx_fifo();
-        return -1;
+        return fsk_rx_fault(irq, len);
     }
     if (rssi_dbm) *rssi_dbm = lr.fsk_rssi_at_sync ? NAN : -200.0f;
     lr20xx_gfsk_pkt_status_t ps;

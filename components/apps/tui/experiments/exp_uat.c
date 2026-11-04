@@ -1,6 +1,9 @@
-/* UAT 978: one hardware sync at a time. Equal one-second basic, long and
-   uplink windows expose listening time; the uplink is only a prefix capture
-   because a 432-byte payload exceeds the session API's 255-byte limit. */
+/* UAT 978: one hardware sync at a time. Equal one-second downlink and
+   uplink windows expose listening time. Downlink always reads 48 bytes, a
+   long frame's length: uat_frame_decode tries long and falls back to the
+   first 30 bytes as basic, so neither kind is cut short. The uplink is only
+   a prefix capture because a 432-byte payload exceeds the session API's
+   255-byte limit. */
 #include "../ls_experiments.h"
 #include "uat_decode.h"
 #include "esp_attr.h"
@@ -31,9 +34,9 @@ static esp_err_t tune(int window)
                               .bitrate = 1041667,
                               .deviation_hz = 312500,
                               .bandwidth_hz = 2222222,
-                              .sync_word = window == 2 ? ~0xACDDA4E2u : 0xACDDA4E2u,
+                              .sync_word = window ? ~0xACDDA4E2u : 0xACDDA4E2u,
                               .sync_bits = 32,
-                              .payload_bytes = window == 0 ? 30 : 48,
+                              .payload_bytes = 48,
                               .preamble_bits = 8,
                               .rssi_at_sync = true};
     return ls_lora_fsk_begin(&cfg);
@@ -70,7 +73,7 @@ static void stop(void)
 static void poll(void)
 {
     int64_t now = esp_timer_get_time();
-    int polarity = s.window == 2;
+    int polarity = s.window;
     portENTER_CRITICAL(&lock);
     if (s.active) s.listen_us[polarity] += (uint64_t)(now - last);
     portEXIT_CRITICAL(&lock);
@@ -120,7 +123,7 @@ static void poll(void)
     }
     if (now - changed >= 1000000) {
         ls_lora_fsk_end();
-        int next = (s.window + 1) % 3;
+        int next = !s.window;
         esp_err_t e = tune(next);
         portENTER_CRITICAL(&lock);
         s.window = next;
@@ -156,10 +159,7 @@ static int lines(char (*out)[LS_EXP_LINE], int max)
     int n = 0;
     if (n < max) LS_SNPUTS(t_exp_uat_978_mhz_1_041667, out[n++], LS_EXP_LINE, "978 MHz 1.041667 Mbps FSK  +/-312.5 kHz");
     if (n < max)
-        snprintf(out[n++], LS_EXP_LINE, "WINDOW %s / 1s",
-                 window == 0   ? "basic 30B"
-                 : window == 1 ? "long 48B"
-                               : "uplink prefix 48B");
+        snprintf(out[n++], LS_EXP_LINE, "WINDOW %s 48B / 1s", window ? "uplink prefix" : "downlink");
     for (int p = 0; p < 2 && n < max; p++)
         LS_SNPRINTF(t_exp_uat_s_sync_lu_listen, out[n++], LS_EXP_LINE, "%s SYNC %lu  listen %.1fs", p ? "UP" : "DN", (unsigned long)sync[p],
                  listen[p] / 1e6);

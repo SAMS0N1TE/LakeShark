@@ -151,31 +151,62 @@ LS_CASE(fsk_settings_polarities_and_diagnostics)
     LS_EQ_INT(cfg.sync_bits, 32);
     LS_EQ_INT(cfg.preamble_bits, 8);
     LS_CHECK(cfg.rssi_at_sync);
-    LS_EQ_INT(cfg.payload_bytes, 30);
+    LS_EQ_INT(cfg.payload_bytes, 48);
     uint8_t data[34] = {0};
     data[1] = 0x12;
+    /* A basic frame read as 48 bytes: what follows it on the air is noise. */
     LS_CHECK(uat_rs_encode(data, 18, packet));
+    memset(packet + 30, 0x5a, 18);
     pending = 1;
     exp_uat.poll();
-    ls_shim_time_advance(1000000);
-    exp_uat.poll();
-    LS_EQ_INT(cfg.payload_bytes, 48);
     data[0] = 8;
     LS_CHECK(uat_rs_encode(data, 34, packet));
     pending = 1;
     exp_uat.poll();
+    int n = exp_uat.lines(out, 16);
+    LS_CHECK(strstr(out[1], "WINDOW downlink 48B"));
     ls_shim_time_advance(1000000);
     exp_uat.poll();
     LS_EQ_UINT(cfg.sync_word, ~0xacdda4e2u);
+    LS_EQ_INT(cfg.payload_bytes, 48);
     pending = 1;
     exp_uat.poll();
-    int n = exp_uat.lines(out, 16);
+    n = exp_uat.lines(out, 16);
     LS_CHECK(n == 12);
+    LS_CHECK(strstr(out[1], "WINDOW uplink prefix 48B"));
     LS_CHECK(strstr(out[2], "SYNC 2"));
     LS_CHECK(strstr(out[3], "SYNC 1"));
     LS_CHECK(strstr(out[6], "basic 1 long 1 bad 0"));
+    ls_shim_time_advance(1000000);
+    exp_uat.poll();
+    LS_EQ_UINT(cfg.sync_word, 0xacdda4e2);
     exp_uat.stop();
     LS_CHECK(!active);
+}
+/* Discussion #13: a source that sends only long frames lost every one caught
+   in the old 30-byte basic window. Downlink windows now all read 48 bytes. */
+LS_CASE(long_frames_decode_in_every_downlink_window)
+{
+    char why[80], out[16][LS_EXP_LINE];
+    uint8_t data[34] = {0};
+    data[0] = 8;
+    data[1] = 0x1a;
+    data[2] = 0xbb;
+    data[3] = 0xa1;
+    LS_CHECK(uat_rs_encode(data, 34, packet));
+    ls_shim_time_set(0);
+    LS_CHECK(exp_uat.start(why, sizeof(why)));
+    for (int w = 0; w < 6; w++) {
+        if (cfg.sync_word == 0xacdda4e2) LS_EQ_INT(cfg.payload_bytes, 48);
+        pending = 1;
+        exp_uat.poll();
+        ls_shim_time_advance(1000000);
+        exp_uat.poll();
+    }
+    exp_uat.lines(out, 16);
+    LS_CHECK(strstr(out[6], "basic 0 long 3 bad 0"));
+    LS_CHECK(strstr(out[9], "ADDRESS 1ABBA1"));
+    exp_uat.stop();
 }
 #include "uat_vectors.h"
 static void unhex(const char *text, uint8_t *out, int n)
