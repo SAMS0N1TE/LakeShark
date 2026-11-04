@@ -2065,9 +2065,12 @@ static void vfo_card_geometry(tui_rect b, ls_radio_card_t *c, char edit[20])
     snprintf(edit, 20, "[%s]", c->value);
     c->up = tui_rect_make(right - key_w + 1, inner_y, key_w, inner_h);
     c->down = tui_rect_make(right - 2 * key_w, inner_y, key_w, inner_h);
+    /* the value after the label: column 12, or one past a longer label */
+    const int lw = c->label ? (int)strlen(c->label) : 0;
+    const int vx = lw + 3 > 12 ? lw + 3 : 12;
     int value_w = (int)strlen(edit);
-    if (value_w > b.w - 12) value_w = b.w - 12;
-    c->value_rect = tui_rect_make(b.x + 12, b.y + 1, value_w, 1);
+    if (value_w > b.w - vx) value_w = b.w - vx;
+    c->value_rect = tui_rect_make(b.x + vx, b.y + 1, value_w, 1);
     const int bar_x = b.x + 2, bar_w = c->down.x - 2 - bar_x;
     c->bar = bar_w / 2 >= 2 ? tui_rect_make(bar_x, inner_y, bar_w, inner_h)
                            : tui_rect_make(0, -1, 0, 0);

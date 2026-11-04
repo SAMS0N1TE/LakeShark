@@ -33,6 +33,8 @@
 #include "../../ls_power.h"
 #include "ls_gauge.h"
 #include "../../ls_braille.h"
+#include "../../ls_tui_touch.h"
+#include "../../ls_radio_panel.h"
 
 static int s_sel;
 
@@ -48,6 +50,8 @@ typedef struct {
        where it sits, 0..100, for its meter. */
     int  (*on)(void);
     int  (*pct)(void);
+    /* A level set outright, 0..100: what a finger on its slider does. */
+    void (*set)(int pct);
     /* A row with nothing to show right now (a service slot not in use). */
     bool (*hidden)(void);
     bool warn;
@@ -344,6 +348,19 @@ static void lang_next(void) { ls_i18n_set_lang(ls_i18n_next(ls_i18n_lang())); }
 
 static int vol_pct(void)      { return audio_volume_get(); }
 static int bri_pct(void)      { return display_ctl_get_user(); }
+/* Only on a change: both save, and a held finger asks every frame. */
+static void vol_set(int v)
+{
+    v = (v + 2) / 5 * 5;
+    v = v < 0 ? 0 : v > 100 ? 100 : v;
+    if (v != audio_volume_get()) audio_volume_set(v);
+}
+static void bri_set(int v)
+{
+    v = (v + 2) / 5 * 5;
+    v = v < 5 ? 5 : v > 100 ? 100 : v;
+    if (v != display_ctl_get_user()) display_ctl_set_user(v);
+}
 static int mute_on(void)      { return audio_is_muted(); }
 static int rotlock_on(void)   { return !settings_get_auto_rotate(); }
 static int day_on(void)       { return ls_tui_daylight(); }
@@ -422,8 +439,8 @@ typedef struct {
 static int s_page = SETP_ROOT;
 
 static const item_t QUICK_ITEMS[] = {
-    { .label = "Volume",      .show = vol_show,     .next = vol_next,     .step = vol_step, .pct = vol_pct },
-    { .label = "Brightness",  .show = bri_show,     .next = bri_next,     .step = bri_step, .pct = bri_pct },
+    { .label = "Volume",      .show = vol_show,     .next = vol_next,     .step = vol_step, .pct = vol_pct, .set = vol_set },
+    { .label = "Brightness",  .show = bri_show,     .next = bri_next,     .step = bri_step, .pct = bri_pct, .set = bri_set },
     { .label = "Mute",        .show = mute_show,    .next = mute_next,    .on = mute_on, .warn = true },
     { .label = "Screen lock", .show = lock_show,    .next = lock_next },
     { .label = "Rotate lock", .show = rotlock_show, .next = rotlock_next, .on = rotlock_on },
@@ -603,6 +620,64 @@ static void row_draw(tui_surface *sf, tui_rect a, const item_t *it, int i, uint8
     if (f.h < 1) return;
     if (sel) ls_fill_dither(sf, f, LS_DITHER_LIGHT, hue);
     value_draw(sf, a, f.x + 1, f.y + (f.h - 1) / 2, f.w - 2, f.y, f.h, it, i, hue, sel);
+}
+
+/* ---- the level sliders ------------------------------------------------------
+   Volume and brightness drawn as the radio screens draw volume and gain: a
+   card of upright bars, the bar pressed and everything left of it lit, and a
+   - and + key at the right. A finger held on the bars follows the drag. */
+static ls_radio_card_t s_lvc[2];
+static tui_rect        s_lv[2];
+static int             s_lvdrag = -1;
+
+static void lv_draw(tui_surface *sf, tui_rect a, const item_t *it, int i, uint8_t hue)
+{
+    char v[12];
+    snprintf(v, sizeof(v), "%d%%", it->pct());
+    ls_radio_card_t *c = &s_lvc[i];
+    memset(c, 0, sizeof(*c));
+    c->label = it->label;
+    c->value = v;
+    c->frac = it->pct() / 100.0f;
+    c->hue = hue;
+    c->live = true;
+    c->settable = true;
+    c->thumb_keys = true;
+    ls_radio_vfo_card_draw(sf, a, c);
+    s_lv[i] = a;
+}
+
+static int lv_level(int i, int col)
+{
+    return (int)(ls_radio_vfo_card_bar_frac(s_lvc[i].bar, col) * 100.0f + 0.5f);
+}
+
+/* A finger that went down on a slider's bars sets it from the column it is
+   on now, each frame, until it lifts. */
+static void lv_follow(const item_t *items)
+{
+    int sc, sr, c, r;
+    if (!ls_tui_touch_held(&sc, &sr, &c, &r)) { s_lvdrag = -1; return; }
+    if (s_lvdrag < 0)
+        for (int i = 0; i < 2; i++)
+            if (s_lv[i].w && s_lvc[i].bar.w && tui_rect_contains(s_lvc[i].bar, sc, sr)) s_lvdrag = i;
+    if (s_lvdrag < 0) return;
+    s_sel = s_lvdrag;
+    items[s_lvdrag].set(lv_level(s_lvdrag, c));
+}
+
+/* A tap on a slider card: - and + step, the bars set. True when it was one. */
+static bool lv_touch(int i, const item_t *it, int col, int row)
+{
+    if (!s_lv[i].w || !tui_rect_contains(s_lv[i], col, row)) return false;
+    const ls_radio_card_t *c = &s_lvc[i];
+    switch (ls_radio_vfo_card_hit(c->down, c->up, c->value_rect, c->bar, col, row)) {
+    case LS_RADIO_PART_DOWN: it->step(-1); break;
+    case LS_RADIO_PART_UP:   it->step(1);  break;
+    case LS_RADIO_PART_BAR:  it->set(lv_level(i, col)); break;
+    default: break;
+    }
+    return true;
 }
 
 /* A setting as one line, label left and value right, for the short boxes. */
@@ -863,18 +938,24 @@ static void draw_root(tui_surface *sf, tui_rect body)
     status_line(sf, left, left.y);
     /* the line is a way into POWER as well as a reading */
     hit_add(tui_rect_make(left.x, left.y, left.w, 1), -1, SETP_POWER);
-    /* volume and brightness, then mute, lock and rotate side by side */
     int y = left.y + 1;
     const int lh = body.h >= 40 || wide ? 4 : 3;
-    for (int i = 0; i < 2; i++) {
-        const tui_rect a = tui_rect_make(left.x, y, left.w, lh);
-        row_draw(sf, a, &QUICK_ITEMS[i], i, TUI_CYAN, s_sel == i);
-        hit_add(a, i, -1);
-        y += lh;
-    }
+    /* volume and brightness as the radio screens' slider cards (volume in
+       SOUND's colour, brightness in DISPLAY's), then mute, lock and rotate */
     /* three across when each has room for its name, else a row each */
     const bool across = left.w >= 45;
     const int cw = left.w / 3;
+    /* the cards as tall as the radio screens' where the column has the
+       room; on a short pane a row each with the meter */
+    int sh = (left.y + left.h - y - (across ? lh : 9)) / 2;
+    if (sh > (wide || body.h >= 60 ? 8 : 6)) sh = wide || body.h >= 60 ? 8 : 6;
+    for (int i = 0; i < 2; i++) {
+        const tui_rect a = tui_rect_make(left.x, y, left.w, sh >= 5 ? sh : lh);
+        if (sh >= 5) lv_draw(sf, a, &QUICK_ITEMS[i], i, i == 0 ? TUI_MAGENTA : TUI_CYAN);
+        else row_draw(sf, a, &QUICK_ITEMS[i], i, TUI_CYAN, s_sel == i);
+        hit_add(a, i, -1);
+        y += a.h;
+    }
     for (int i = 2; i < q; i++) {
         const int k = i - 2;
         const tui_rect a = across ? tui_rect_make(left.x + k * cw, y, k == 2 ? left.w - 2 * cw : cw, lh)
@@ -886,7 +967,7 @@ static void draw_root(tui_surface *sf, tui_rect body)
     /* the six cards: a column in portrait, a grid beside the quick ones in landscape */
     tui_rect area = wide ? right : tui_rect_make(body.x, y, body.w, body.y + body.h - y);
     if (area.h < 3) return;
-    const int cols = wide ? (area.w >= 90 ? 3 : 2) : (area.h / N_CARDS >= 5 ? 1 : 2);
+    const int cols = wide ? (area.w >= 90 ? 3 : 2) : (area.h / N_CARDS >= LS_ICON_ROWS + 2 ? 1 : 2);
     const int rows = (N_CARDS + cols - 1) / cols;
     int ch = area.h / rows;
     if (ch > 12) ch = 12;
@@ -1066,6 +1147,9 @@ static void draw(tui_surface *sf, tui_rect area)
     const set_page_t *pg = page_get();
     s_hit_n = 0;
     s_back.w = 0;
+    /* a held finger on a slider, against where it was drawn last frame */
+    if (s_page == SETP_ROOT) lv_follow(QUICK_ITEMS);
+    s_lv[0].w = s_lv[1].w = 0;
     if (s_page == SETP_POWER) services_refresh();
     visible_refresh();
     if (s_sel >= entries()) s_sel = entries() ? entries() - 1 : 0;
@@ -1140,6 +1224,11 @@ static bool touch(int col, int row)
         if (t->item < 0 || t->item >= pg->n) return true;
         const item_t *it = &pg->items[t->item];
         for (int k = 0; k < s_vis_n; k++) if (s_vis[k] == t->item) s_sel = k;
+        /* a slider card: - and + step, the bars set the level */
+        if (s_page == SETP_ROOT && t->item < 2 && it->set && lv_touch(t->item, it, col, row)) {
+            s_ap_armed = false;
+            return true;
+        }
         if (it->step) {
             /* the keys step it; elsewhere the left half steps down and the
                right half up, so a finger does not have to find the keys */

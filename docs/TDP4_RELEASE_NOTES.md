@@ -2,7 +2,7 @@
 
 ## 2.20.3
 
-- SETTINGS: volume, brightness, mute, lock and rotate up top, then six colour-coded pages (DISPLAY, SOUND, POWER, RADIO, NETWORK, SYSTEM), each with a live panel of what it controls.
+- SETTINGS: volume and brightness as big bar sliders like the radio screens (tap a bar to set the level, drag, or use - and +), mute, lock and rotate up top, then six colour-coded pages (DISPLAY, SOUND, POWER, RADIO, NETWORK, SYSTEM), each with a live panel of what it controls.
 - POWER modes: FULL, SAVER (half brightness, dims at 30 s, 15 fps) and WATCH. WATCH turns the screen off after 20 s and keeps only what you pick running: everything, the mesh, P25 or a GPS track. A touch brings the rest back. `power` on the console.
 - The POWER page shows battery, current draw and the last hour of current, so you can see what a mode saves.
 - The GPS rests in standby whenever nothing is reading it, about 23 mA less on every board.

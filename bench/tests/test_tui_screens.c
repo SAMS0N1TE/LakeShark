@@ -2769,9 +2769,9 @@ LS_CASE(the_volume_box_moves_the_volume_the_speaker_uses)
        glass changed and the speaker did not until the next boot. Every press
        has to reach the live volume, and the box has to read it back from
        there. Spoken callouts ride the same volume, so this is also what
-       makes them louder or quieter. The volume is a level: < and > step it
+       makes them louder or quieter. The volume is a level: - and + step it
        by five and it stops at either end rather than wrapping from full to
-       silent. */
+       silent, and a tap on its bars sets it outright. */
     static const int PANE_IDX[] = { 0, 1 };
     for (unsigned p = 0; p < sizeof(PANE_IDX) / sizeof(PANE_IDX[0]); p++) {
         const tui_rect pane = PANES[PANE_IDX[p]];
@@ -2779,32 +2779,44 @@ LS_CASE(the_volume_box_moves_the_volume_the_speaker_uses)
         s_audio_vol_calls = 0;
 
         settings_open(NULL, pane);
-        int c, r;
-        LS_CHECK(find_text("60 %", &c, &r));
-        const int up = find_on_row('>', r, c, 1), down = find_on_row('<', r, c, -1);
-        LS_CHECK_MSG(up >= 0 && down >= 0, "the volume box has no < and >");
-        if (up < 0 || down < 0) continue;
+        int c, t;
+        /* the radio screens' slider card: the value in its title, upright
+           bars under it and the - and + keys at the right */
+        LS_CHECK(find_text("[60%]", &c, &t));
+        int r = -1, up = -1, down = -1;
+        for (int y = t + 1; y <= t + 5 && r < 0; y++) {
+            const int u = find_on_row('+', y, W - 1, -1);
+            const int d = u > 0 ? find_on_row('-', y, u - 1, -1) : -1;
+            if (u > 0 && d > 0) { r = y; up = u; down = d; }
+        }
+        LS_CHECK_MSG(r >= 0, "the volume card has no - and + keys");
+        if (r < 0) continue;
         LS_CHECK(ls_scr_settings.touch(up, r));
         LS_CHECK_MSG(s_audio_vol_calls == 1 && audio_volume_get() == 65,
-                     "> left the live volume at %d after %d call(s)",
+                     "+ left the live volume at %d after %d call(s)",
                      audio_volume_get(), s_audio_vol_calls);
         LS_EQ_INT(settings_get_volume(), 65);
 
         fresh();
         draw_pane(&ls_scr_settings, pane);
-        LS_CHECK_MSG(find_text("65 %", &c, &r), "the box does not show the live volume");
+        LS_CHECK_MSG(find_text("[65%]", &c, &t), "the card does not show the live volume");
         LS_CHECK(ls_scr_settings.touch(down, r));
         LS_CHECK(ls_scr_settings.touch(down, r));
         LS_EQ_INT(audio_volume_get(), 55);
 
-        /* Anywhere in the left half steps down, the right half up, so a
-           finger does not have to land on the arrow keys. */
-        LS_CHECK(ls_scr_settings.touch((down + c) / 2, r));
-        LS_EQ_INT(audio_volume_get(), 50);
-        LS_CHECK(ls_scr_settings.touch((up + c + 4) / 2, r));
-        LS_EQ_INT(audio_volume_get(), 55);
-        LS_CHECK(ls_scr_settings.touch((up + c + 4) / 2, r - 1));
-        LS_EQ_INT(audio_volume_get(), 60);
+        /* A bar is a level: the first sets it low, one further right sets
+           it higher, straight there and not a step at a time. */
+        const int bar0 = c - 10;
+        LS_CHECK(ls_scr_settings.touch(bar0, r));
+        const int low = audio_volume_get();
+        LS_CHECK_MSG(low > 0 && low <= 15, "the first bar set %d", low);
+        fresh();
+        draw_pane(&ls_scr_settings, pane);
+        LS_CHECK(ls_scr_settings.touch(bar0 + 20, r));
+        LS_CHECK_MSG(audio_volume_get() > low + 20, "a bar further right set %d after %d",
+                     audio_volume_get(), low);
+        fresh();
+        draw_pane(&ls_scr_settings, pane);
         s_audio_vol = 55;
 
         /* Volume edits preserve an explicit mute. */
