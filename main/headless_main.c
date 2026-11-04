@@ -275,7 +275,7 @@ static void settings_save_mode(int m)
 
 /* 5 KB, in LP RAM (not the DMA pool). The task also runs radio_health_tick,
    whose RTL recovery path left 184 bytes of a 3 KB stack on a board with a
-   dongle (SX board, 2026-11-04): one more frame there was an overflow. */
+   dongle attached: one more frame there was an overflow. */
 #define SETTINGS_STACK_WORDS (5120 / sizeof(StackType_t))
 static RTC_NOINIT_ATTR StackType_t s_settings_stack[SETTINGS_STACK_WORDS];
 static StaticTask_t s_settings_tcb;

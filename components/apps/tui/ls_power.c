@@ -151,7 +151,7 @@ static void park(void)
     } else if (ls_mesh_running()) {
         s_mesh_tx = ls_mesh_tx_enabled();
         /* restored whatever the stop answered: a stop that timed out part way
-           is still a mesh the owner had running */
+           is still a mesh that was running */
         (void)ls_mesh_stop();
         s_mesh_stopped = true;
         add_parked("MESH");
