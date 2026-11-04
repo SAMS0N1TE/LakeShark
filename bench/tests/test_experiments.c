@@ -252,6 +252,38 @@ LS_CASE(the_builtins_register_once_and_radiosonde_is_among_them)
     LS_CHECK(!ls_exp_find("carrier") && !ls_exp_find("burst") && !ls_exp_find("iridium"));
 }
 
+/* FREQ OFFSET on the bench's SX126x: it would send the reference, so it
+   reads its reference, takes one typed in MHz, and refuses APPLY. */
+LS_CASE(freq_offset_takes_a_reference_and_applies_only_on_an_lr2021)
+{
+    ls_exp_forget();
+    ls_exp_register_builtin();
+    const ls_experiment_t *o = ls_exp_find("offset"), *r = ls_exp_find("radar");
+    LS_CHECK(o != NULL && r != NULL);
+    LS_EQ_STR(o->name, "FREQ OFFSET");
+    LS_EQ_INT(o->n_opts, 2);
+    char why[96], out[16][LS_EXP_LINE], a[3][12] = { "915.250", "2000.5", "apply" };
+    char *arg[1];
+    arg[0] = a[0];
+    LS_CHECK(o->configure(1, arg, why, sizeof(why)));
+    int n = ls_exp_read_lines(o, out, 16);
+    LS_CHECK(n >= 2);
+    LS_CHECK(strstr(out[0], "REFERENCE 915.250000 MHz") != NULL);
+    LS_CHECK(strstr(out[1], "START sends the reference") != NULL);
+    arg[0] = a[1];
+    LS_CHECK(!o->configure(1, arg, why, sizeof(why)));
+    LS_CHECK(strstr(why, "out of range") != NULL);
+    arg[0] = a[2];
+    LS_CHECK(!o->configure(1, arg, why, sizeof(why)));
+    LS_CHECK(strstr(why, "LR2021 board") != NULL);
+    LS_CHECK(o->opts[1].why_not(&o->opts[1]) != NULL);
+    LS_CHECK(!r->configure(1, arg, why, sizeof(why)));       /* APPLY is FREQ OFFSET's */
+    /* choosing a FREQ drops the typed reference */
+    o->opts[0].set(&o->opts[0], 0);
+    n = ls_exp_read_lines(o, out, 16);
+    LS_CHECK(strstr(out[0], "REFERENCE 915.000000 MHz") != NULL);
+}
+
 /* ------------------------------------------------------------ running -- */
 
 LS_CASE(a_start_waits_for_the_worker_and_then_runs_with_the_radio)

@@ -11,13 +11,19 @@
    Which board does what follows from its radio: start it on both. Both must
    use the same FREQ. The tone stops by itself after ten minutes. TX LIMIT
    SCALED charges it to the transmitter protection at its power (about 1/300
-   of full power, so it runs); NONE is the plain ten minutes. */
+   of full power, so it runs); NONE is the plain ten minutes.
+
+   FREQ OFFSET is the same pair with the receiver's numbers averaged: where
+   the tone lands against where it should is the LR2021's reference error
+   against the SX1262's TCXO, in ppm. A crystal-only LR2021 module is
+   calibrated in seconds; APPLY saves it as 'lora lrfcorr'. */
 #include "../ls_experiments.h"
 #include "radar_dsp.h"
 
 #include <math.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_attr.h"
@@ -25,11 +31,13 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "ls_lora.h"
+#include "../ls_options.h"
 #ifdef ESP_PLATFORM
 #include "lr_wf_session.h"
+#include "settings.h"
 #endif
 
-extern const ls_experiment_t exp_radar;
+extern const ls_experiment_t exp_radar, exp_offset;
 
 #define TUNE_BELOW_HZ 1500          /* the LR sits this far under the tone   */
 #define TONE_MAX_US   (600LL * 1000000)
@@ -37,6 +45,8 @@ extern const ls_experiment_t exp_radar;
 #define COLS          49            /* odd: the middle column is the carrier */
 #define SPAN_HZ       240.0f
 #define RING_PAIRS    16384         /* 131 ms at 125 kHz                     */
+#define CAL_SETTLE    4             /* rows after a lock before they count   */
+#define CAL_ROWS      20            /* 5 s of them before APPLY              */
 
 static const char *const FREQS[] = { "915.000 MHz", "903.000 MHz", "433.920 MHz" };
 static const uint32_t FREQ_HZ[] = { 915000000u, 903000000u, 433920000u };
@@ -45,6 +55,8 @@ static const int POWER_DBM[] = { -9, -6, -3 };
 static const char *const BGS[] = { "ONLY WHAT CHANGES", "EVERYTHING" };
 static const char *const LIMITS[] = { "SCALED BY POWER", "NONE" };
 static volatile unsigned s_freq, s_power, s_bg, s_limit;
+static volatile uint32_t s_ref_hz;    /* FREQ OFFSET's own reference, 0: FREQ */
+static bool s_cal;                    /* the one running is FREQ OFFSET */
 
 typedef enum { ROLE_NONE, ROLE_TONE, ROLE_RECEIVER } role_t;
 
@@ -67,6 +79,9 @@ static struct {
     char wf[ROWS][COLS + 1];
     int wf_n;
     float peak_hold_mps;
+    uint32_t cal_seen, cal_n;         /* rows since the lock, rows averaged */
+    float cal_ref, cal_sum, cal_sq;   /* ppm: the first, and the rest's
+                                         differences from it (float holds those) */
 } s_view;
 
 /* the receiver's state: big, so in PSRAM */
@@ -105,6 +120,10 @@ static ls_lora_chip_t radio_chip(void) { return LS_LORA_CHIP_SX126X; }
 static esp_err_t tone_on(uint32_t hz, int dbm) { (void)hz; (void)dbm; return ESP_ERR_NOT_SUPPORTED; }
 static esp_err_t tone_keep(void) { return ESP_OK; }
 static void tone_off(void) {}
+static bool settings_get_lr_tcxo(void) { return true; }
+static int32_t settings_get_lr_fcorr_ppb(void) { return 0; }
+static bool settings_set_lr_fcorr_ppb(int32_t ppb) { (void)ppb; return false; }
+#define LS_LR_FCORR_MAX_PPB 100000
 #endif
 
 static role_t role_now(void)
@@ -115,17 +134,23 @@ static role_t role_now(void)
     return ROLE_NONE;
 }
 
+static uint32_t ref_hz(bool cal)
+{
+    return cal && s_ref_hz ? s_ref_hz : FREQ_HZ[s_freq < 3 ? s_freq : 0];
+}
+
 static bool start(char *why, size_t n)
 {
-    const unsigned f = s_freq < 3 ? s_freq : 0, p = s_power < 3 ? s_power : 0;
+    const unsigned p = s_power < 3 ? s_power : 0;
+    const uint32_t hz = ref_hz(s_cal);
     const role_t role = role_now();
     portENTER_CRITICAL(&s_lock);
     memset(&s_view, 0, sizeof(s_view));
-    s_view.role = role; s_view.hz = FREQ_HZ[f]; s_view.dbm = POWER_DBM[p];
+    s_view.role = role; s_view.hz = hz; s_view.dbm = POWER_DBM[p];
     s_view.since_us = esp_timer_get_time();
     portEXIT_CRITICAL(&s_lock);
     if (role == ROLE_TONE) {
-        const esp_err_t e = tone_on(FREQ_HZ[f], POWER_DBM[p]);
+        const esp_err_t e = tone_on(hz, POWER_DBM[p]);
         if (e != ESP_OK) { snprintf(why, n, "SX1262 tone: %s", esp_err_to_name(e)); return false; }
         portENTER_CRITICAL(&s_lock); s_view.tone_on = true; portEXIT_CRITICAL(&s_lock);
         return true;
@@ -135,7 +160,7 @@ static bool start(char *why, size_t n)
     radar_dsp_init(&s_dsp);
     radar_dsp_set_background(&s_dsp, s_bg == 0);
     atomic_store(&s_w, 0); atomic_store(&s_r, 0); atomic_store(&s_gap, false);
-    const esp_err_t e = lr_wf_start_consumer(FREQ_HZ[f] - TUNE_BELOW_HZ, consume, NULL);
+    const esp_err_t e = lr_wf_start_consumer(hz - TUNE_BELOW_HZ, consume, NULL);
     if (e != ESP_OK) { snprintf(why, n, "LR2021 I/Q: %s", esp_err_to_name(e)); return false; }
     s_streaming = true;
     return true;
@@ -143,6 +168,9 @@ static bool start(char *why, size_t n)
     snprintf(why, n, "LR2021 I/Q needs the board"); return false;
 #endif
 }
+
+static bool start_radar(char *why, size_t n) { s_cal = false; return start(why, n); }
+static bool start_cal(char *why, size_t n) { s_cal = true; return start(why, n); }
 
 static void stop(void)
 {
@@ -160,7 +188,15 @@ static void take_row(const radar_row_t *r)
     radar_row_text(r, SPAN_HZ, COLS, text);
     const float mps = radar_speed_mps(r->peak_hz, s_view.hz);
     const summary_t sum = { r->carrier_dbfs, r->offset_hz, r->motion_db, r->peak_hz, r->peak_db, r->learning };
+    /* where the tone sits against where it should, in ppm of the carrier */
+    const float ppm = (r->offset_hz - TUNE_BELOW_HZ) * 1e6f / (float)s_view.hz;
     portENTER_CRITICAL(&s_lock);
+    if (!s_view.locked) { s_view.cal_seen = s_view.cal_n = 0; s_view.cal_sum = s_view.cal_sq = 0; }
+    if (++s_view.cal_seen > CAL_SETTLE) {
+        if (!s_view.cal_n) s_view.cal_ref = ppm;
+        const float d = ppm - s_view.cal_ref;
+        s_view.cal_n++; s_view.cal_sum += d; s_view.cal_sq += d * d;
+    }
     memmove(s_view.wf[1], s_view.wf[0], (ROWS - 1) * sizeof(s_view.wf[0]));
     memcpy(s_view.wf[0], text, sizeof(text));
     if (s_view.wf_n < ROWS) s_view.wf_n++;
@@ -285,7 +321,82 @@ static int lines(char (*out)[LS_EXP_LINE], int max)
     return n;
 }
 
-static bool configure(int argc, char **argv, char *why, size_t n)
+/* The averaged reading: false until CAL_ROWS rows count. */
+static bool cal_mean(float *ppm, float *sd, uint32_t *rows)
+{
+    portENTER_CRITICAL(&s_lock);
+    const uint32_t k = s_view.cal_n;
+    const float ref = s_view.cal_ref, sum = s_view.cal_sum, sq = s_view.cal_sq;
+    portEXIT_CRITICAL(&s_lock);
+    if (rows) *rows = k;
+    if (!k) return false;
+    *ppm = ref + sum / k;
+    if (sd) *sd = k > 1 ? sqrtf(fmaxf(0.0f, (sq - sum * sum / k) / (k - 1))) : 0.0f;
+    return k >= CAL_ROWS;
+}
+
+/* The correction that zeroes what is measured: the saved one, less the
+   error still seen with it on (the frame is set by lr20xx_fcorr_hz). */
+static const char *cal_why_not(const ls_opt_t *o)
+{
+    (void)o;
+    float ppm = 0;
+    if (role_now() != ROLE_RECEIVER) return "Run this on the LR2021 board";
+    if (settings_get_lr_tcxo()) return "TCXO: nothing to correct";
+    if (!cal_mean(&ppm, NULL, NULL)) return "Measure first: 5 s locked";
+    return NULL;
+}
+
+static bool cal_apply(char *why, size_t n)
+{
+    float ppm = 0;
+    const char *no = cal_why_not(NULL);
+    (void)cal_mean(&ppm, NULL, NULL);
+    const float ppb = (float)settings_get_lr_fcorr_ppb() - ppm * 1000.0f;
+    if (!no && (fabsf(ppb) > LS_LR_FCORR_MAX_PPB || !settings_set_lr_fcorr_ppb((int32_t)lroundf(ppb))))
+        no = "lrfcorr out of range";
+    if (no) snprintf(why, n, "%s", no);
+    return !no;
+}
+
+static int lines_cal(char (*out)[LS_EXP_LINE], int max)
+{
+    portENTER_CRITICAL(&s_lock);
+    const role_t role = s_view.role;
+    const bool locked = s_view.locked, tone_on = s_view.tone_on;
+    const float tone_hz = s_view.last.offset_hz - TUNE_BELOW_HZ, dbfs = s_view.last.carrier_dbfs;
+    portEXIT_CRITICAL(&s_lock);
+    const uint32_t hz = role ? s_view.hz : ref_hz(true);
+    const role_t shown = role != ROLE_NONE ? role : role_now();
+    const bool tcxo = settings_get_lr_tcxo();
+    int n = 0;
+#define LINE(...) do { if (n < max) snprintf(out[n++], LS_EXP_LINE, __VA_ARGS__); } while (0)
+    LINE("REFERENCE %lu.%06lu MHz%s", (unsigned long)(hz / 1000000), (unsigned long)(hz % 1000000),
+         shown != ROLE_RECEIVER ? "" : tcxo ? ", LR clock TCXO" : ", LR clock crystal");
+    if (shown == ROLE_TONE) {
+        LINE(tone_on ? "SENDING the reference tone (TCXO)" : "OFF. START sends the reference tone");
+        LINE("Run FREQ OFFSET on the LR2021 board, same FREQ");
+        return n;
+    }
+    if (shown != ROLE_RECEIVER) { LINE("Needs an SX1262 or an LR2021 radio"); return n; }
+    if (!role) { LINE("START here and on the SX1262 board"); return n; }
+    if (!locked) { LINE("SEARCHING +-62 kHz for the reference tone..."); return n; }
+    LINE("NOW  %+8.3f ppm (%+.0f Hz)  tone %.0f dBFS", (double)(tone_hz * 1e6f / (float)hz), (double)tone_hz,
+         (double)dbfs);
+    float ppm = 0, sd = 0; uint32_t k = 0;
+    const bool ready = cal_mean(&ppm, &sd, &k);
+    if (k) LINE("MEAN %+8.3f ppm +-%.3f over %lus", (double)ppm, (double)sd, (unsigned long)(k / 4));
+    if (!ready) return n;
+    /* the module's own error: what it would read with no correction */
+    const float saved = settings_get_lr_fcorr_ppb() / 1000.0f, err = saved - ppm;
+    LINE("MODULE %+.3f ppm vs the SX1262 TCXO (+-2)", (double)err);
+    if (tcxo) LINE("lrfcorr %+.3f; a TCXO should read near 0", (double)saved);
+    else LINE("lrfcorr %+.3f; APPLY saves %+.3f", (double)saved, (double)err);
+#undef LINE
+    return n;
+}
+
+static bool configure_any(int argc, char **argv, char *why, size_t n, bool cal)
 {
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "915")) s_freq = 0;
@@ -298,10 +409,27 @@ static bool configure(int argc, char **argv, char *why, size_t n)
         else if (!strcmp(argv[i], "changes")) s_bg = 0;
         else if (!strcmp(argv[i], "limit")) s_limit = 0;
         else if (!strcmp(argv[i], "nolimit")) s_limit = 1;
-        else { snprintf(why, n, "args: 915|903|433, -9|-6|-3 (dBm), changes|all, limit|nolimit"); return false; }
+        else if (cal && !strcmp(argv[i], "apply")) { if (!cal_apply(why, n)) return false; }
+        else if (cal && strchr(argv[i], '.')) {
+            /* a reference of the user's own, in MHz: whatever the LR hears */
+            const double mhz = strtod(argv[i], NULL);
+            if (!(mhz > 0 && mhz < 4000) ||
+                !ls_lora_rx_range_ok(ls_lora_caps(), (uint32_t)(mhz * 1e6), (uint32_t)(mhz * 1e6))) {
+                snprintf(why, n, "reference %s MHz: out of range", argv[i]);
+                return false;
+            }
+            s_ref_hz = (uint32_t)lround(mhz * 1e6);
+        }
+        else {
+            snprintf(why, n, cal ? "args: 915|903|433|<MHz with a dot>, -9|-6|-3, apply"
+                                 : "args: 915|903|433, -9|-6|-3 (dBm), changes|all, limit|nolimit");
+            return false;
+        }
     }
     return true;
 }
+static bool configure(int argc, char **argv, char *why, size_t n) { return configure_any(argc, argv, why, n, false); }
+static bool configure_cal(int argc, char **argv, char *why, size_t n) { return configure_any(argc, argv, why, n, true); }
 
 static int get(const ls_opt_t *o)
 {
@@ -315,7 +443,15 @@ static void set(const ls_opt_t *o, int v)
     else if (o->names == POWERS) s_power = (unsigned)v;
     else if (o->names == LIMITS) s_limit = (unsigned)v;
     else s_bg = (unsigned)v;
-    if (ls_exp_running() == &exp_radar) ls_exp_start(&exp_radar);
+    if (o->names == FREQS) s_ref_hz = 0;
+    const ls_experiment_t *e = ls_exp_running();
+    if (e == &exp_radar || e == &exp_offset) ls_exp_start(e);
+}
+static void cal_act(const ls_opt_t *o)
+{
+    char why[48];
+    (void)o;
+    if (cal_apply(why, sizeof(why))) ls_exp_start(&exp_offset);   /* measure again, with it on */
 }
 static const ls_opt_t OPTS[] = {
     {.label="FREQ", .kind=LS_OPT_CYCLE, .names=FREQS, .n=3, .get=get, .set=set},
@@ -323,9 +459,19 @@ static const ls_opt_t OPTS[] = {
     {.label="SHOW", .kind=LS_OPT_CYCLE, .names=BGS, .n=2, .get=get, .set=set},
     {.label="TX LIMIT", .kind=LS_OPT_CYCLE, .names=LIMITS, .n=2, .get=get, .set=set},
 };
+static const ls_opt_t OPTS_CAL[] = {
+    {.label="FREQ", .kind=LS_OPT_CYCLE, .names=FREQS, .n=3, .get=get, .set=set},
+    {.label="APPLY AS LRFCORR", .kind=LS_OPT_ACTION, .act=cal_act, .why_not=cal_why_not},
+};
 const ls_experiment_t exp_radar = {
     .id="radar", .name="DOPPLER RADAR", .sub="SX1262 board sends a tone, LR2021 board sees what moves",
     .maturity=LS_EXP_TRYING, .needs="both boards, this on each, same FREQ",
-    .start=start, .stop=stop, .poll=poll, .lines=lines, .configure=configure,
+    .start=start_radar, .stop=stop, .poll=poll, .lines=lines, .configure=configure,
     .opts=OPTS, .n_opts=4,
+};
+const ls_experiment_t exp_offset = {
+    .id="offset", .name="FREQ OFFSET", .sub="LR2021 reference error in ppm, against the SX1262 tone",
+    .maturity=LS_EXP_TRYING, .needs="both boards, this on each, same FREQ",
+    .start=start_cal, .stop=stop, .poll=poll, .lines=lines_cal, .configure=configure_cal,
+    .opts=OPTS_CAL, .n_opts=2,
 };
