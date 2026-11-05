@@ -2,13 +2,11 @@
 
 ## 2.21.0
 
+- DOPPLER RADAR (EXPERIMENTS): the SX1262 board lights the room with a low-power tone and the LR2021 board sees what moves: an ASCII Doppler waterfall, the strongest echo with its speed and direction, a motion level, and how far apart the two boards' crystals are. Run it on both boards at the same FREQ. It finds the tone anywhere in the 125 kHz the LR2021 hears, so a crystal-only LR2021 module tens of ppm off still locks on the right frequency, and with no tone running it keeps searching instead of drawing motion that is not there.
+- Transmitter protection counts heat and duty by energy: time on air at low power is charged as its share of the radio's full power, so a quiet tone can run for minutes. Full-power limits are unchanged. DOPPLER RADAR's TX LIMIT NONE is the plain ten-minute tone.
 - UAT 978 (LR2021): listens for aircraft all the time instead of half the time, and long frames are no longer cut short. Every frame is read as a full 48 bytes and decoded as basic or long, so a source sending only long frames decodes them all (#13). OPTIONS > LISTEN DOWN + UPLINK brings back the ground uplink windows. The console now says which check a failed packet missed when it counts a radio error.
-- DOPPLER RADAR (LR2021): finds the SX1262 board's tone anywhere in the 125 kHz it hears, so a crystal-only LR2021 module tens of ppm off still locks, on the right frequency. With no tone running it keeps searching instead of locking on something faint elsewhere in the band and drawing motion that is not there.
 - FREQ OFFSET (EXPERIMENTS): the frequency offset tool for LR2021 boards. Start it on the SX1262 board (it sends a tone from its TCXO) and on the LR2021 board, same FREQ: after 5 s it shows the LR2021's error in ppm. On a crystal module, APPLY AS LRFCORR saves it as `lora lrfcorr`. `exp offset start [915|903|433|<MHz>] [apply]` on the console.
 - LR2021: `lora lrfcorr` and the other `lora lr...` console commands no longer crash the board with a stack overflow.
-
-## 2.20.3
-
 - SETTINGS: volume and brightness as big bar sliders like the radio screens (tap a bar to set the level, drag, or use - and +), mute, lock and rotate up top, then six colour-coded pages (DISPLAY, SOUND, POWER, RADIO, NETWORK, SYSTEM), each with a live panel of what it controls.
 - POWER modes: FULL, SAVER (half brightness, dims at 30 s, 15 fps) and WATCH. WATCH turns the screen off after 20 s and keeps only what you pick running: everything, the mesh, P25 or a GPS track. A touch brings the rest back. `power` on the console.
 - The POWER page shows battery, current draw and the last hour of current, so you can see what a mode saves.
