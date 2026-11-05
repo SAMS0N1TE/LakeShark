@@ -1,5 +1,11 @@
 # LakeShark release notes
 
+## 2.21.1
+
+- FM and REC work again with an RTL-SDR Blog V4: sound and spectrum are back. Newer V4s also switch their HF upconverter in and out on a band change.
+- P25 GPS sites: getting a state pack or refreshing the list no longer restarts the board.
+- P25 in portrait with an RTL-SDR: the big frequency stays big once talkgroups are heard.
+
 ## 2.21.0
 
 - DOPPLER RADAR (EXPERIMENTS): the SX1262 board lights the room with a low-power tone and the LR2021 board sees what moves: an ASCII Doppler waterfall, the strongest echo with its speed and direction, a motion level, and how far apart the two boards' crystals are. Run it on both boards at the same FREQ. It finds the tone anywhere in the 125 kHz the LR2021 hears, so a crystal-only LR2021 module tens of ppm off still locks on the right frequency, and with no tone running it keeps searching instead of drawing motion that is not there.
