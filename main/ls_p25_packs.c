@@ -21,6 +21,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* The worker runs the TLS handshake and the pack download on its own stack.
+ * 6 KB overflowed on the first catalog refresh (stack protection fault);
+ * the OTA task needs 12 KB for the same path, this one adds the download
+ * buffers on top. PSRAM, so the margin costs no internal RAM. */
+#define P25_PACKS_STACK 16384
 static EXT_RAM_BSS_ATTR p25_pack_catalog_t catalog;
 static EXT_RAM_BSS_ATTR ls_p25_pack_info_t info[P25_PACK_STATE_MAX];
 static EXT_RAM_BSS_ATTR char catalog_text[LS_OTA_DATA_MAX_TEXT + 1], token[192];
@@ -101,7 +106,11 @@ static void refresh(void)
     int status = 0; int64_t length;
     const int64_t deadline = esp_timer_get_time() + 30000000;
     esp_http_client_handle_t c = ls_ota_open_data(P25_PACK_CATALOG_URL, NULL, deadline, &length, &status);
-    if (!c || status != 200) { if (c) esp_http_client_cleanup(c); state("catalog unavailable"); return; }
+    if (!c || status != 200) {
+        if (c) esp_http_client_cleanup(c);
+        state(status == 404 ? "no site packs published yet" : "catalog unavailable");
+        return;
+    }
     size_t len = 0; int n = 0;
     while (len < sizeof(catalog_text) && esp_timer_get_time() < deadline) {
         n = esp_http_client_read(c, catalog_text + len, 1);
@@ -256,7 +265,7 @@ void ls_p25_packs_publish(void)
     static bool done; if (done) return; done = true;
     p25_sites_init();
     queue = xQueueCreate(1, sizeof(request_t));
-    if (queue && xTaskCreatePinnedToCoreWithCaps(worker, "p25_packs", 6144, NULL, 3, NULL,
+    if (queue && xTaskCreatePinnedToCoreWithCaps(worker, "p25_packs", P25_PACKS_STACK, NULL, 3, NULL,
                                               tskNO_AFFINITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) { vQueueDelete(queue); queue = NULL; }
     ls_value_publish("p25.geo.enabled", NULL, v_geo_enabled);
     ls_value_publish("p25.geo.state", NULL, v_geo_state);

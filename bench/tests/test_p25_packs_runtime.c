@@ -6,10 +6,11 @@ static char response[2048];
 static size_t offset;
 static unsigned opened;
 static bool trusted = true;
+static int http_status = 200;
 static char stored_token[192];
 struct esp_http_client { int unused; } client;
 esp_http_client_handle_t ls_ota_open_data(const char *url, const char *auth, int64_t deadline, int64_t *length, int *status)
-{ (void)url; (void)auth; (void)deadline; opened++; offset = 0; *length = strlen(response); *status = 200; return &client; }
+{ (void)url; (void)auth; (void)deadline; opened++; offset = 0; *length = strlen(response); *status = http_status; return &client; }
 int esp_http_client_read(esp_http_client_handle_t c, char *out, int cap)
 { (void)c; size_t n = strlen(response) - offset; if (n > (size_t)cap) n = (size_t)cap; memcpy(out, response + offset, n); offset += n; return (int)n; }
 esp_err_t esp_http_client_close(esp_http_client_handle_t c) { (void)c; return ESP_OK; }
@@ -35,7 +36,7 @@ static void fixture(void)
 {
     const char *sha = "0000000000000000000000000000000000000000000000000000000000000000";
     snprintf(response, sizeof(response), "LAKESHARK-OTA 1\nboard=P25-sites\nchannel=catalog\nschema=p25-sites-1\nversion=1.0.0\nbuild=sites-1\nsize=1\nsha256=%s\nurl=catalog.txt\nentry=MA|Fictional MA|MA.txt|12|%s|1.0.0|plus\nsig=3006020101020101\n", sha, sha);
-    trusted = true; token[0] = 0; opened = 0; ls_shim_time_set(1000000);
+    trusted = true; http_status = 200; token[0] = 0; opened = 0; ls_shim_time_set(1000000);
 }
 LS_CASE(catalog_worker_publishes_and_rejects_bad_signature_without_losing_trusted_catalog)
 {
@@ -46,6 +47,18 @@ LS_CASE(catalog_worker_publishes_and_rejects_bad_signature_without_losing_truste
     trusted = false; refresh();
     LS_EQ_INT(1, ls_p25_pack_entry(0, &e)); LS_EQ_STR("Fictional MA", e.pack.name);
     LS_CHECK(strstr(stage, "signature") != NULL);
+}
+LS_CASE(worker_stack_fits_tls_like_the_ota_task)
+{
+    /* 6144 overflowed on the board at the first HTTPS catalog fetch. */
+    LS_CHECK(P25_PACKS_STACK >= 12288);
+}
+LS_CASE(missing_catalog_says_none_published)
+{
+    fixture(); http_status = 404; refresh();
+    LS_CHECK(strstr(stage, "no site packs published") != NULL);
+    http_status = 503; refresh();
+    LS_CHECK(strstr(stage, "catalog unavailable") != NULL);
 }
 LS_CASE(plus_download_is_refused_before_network_without_entitlement)
 {
