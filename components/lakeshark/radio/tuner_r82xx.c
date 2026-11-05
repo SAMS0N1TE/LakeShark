@@ -33,6 +33,7 @@
 #include <unistd.h>
 
 #include "rtlsdr_i2c.h"
+#include "rtl-sdr.h"
 #include "tuner_r82xx.h"
 #include "esp_log.h"
 /* Redirect fprintf(stderr,...) to ESP_LOG so TUI captures it. */
@@ -1221,6 +1222,12 @@ int r82xx_set_freq(struct r82xx_priv *priv, uint32_t freq)
             {
                 uint8_t cable_2_in = (band == V4_BAND_HF) ? 0x08 : 0x00;
                 rc = r82xx_write_reg_mask(priv, 0x06, cable_2_in, 0x08);
+                if (rc < 0) goto err;
+                /* Newer V4 batches switch the upconverter in and out on the
+                   RTL2832U's GPIO5: low for HF, high for the tuner inputs, as
+                   rtl-sdr-blog's driver does. Older ones leave it unwired. */
+                rc = rtlsdr_set_bias_tee_gpio((rtlsdr_dev_t *)priv->rtl_dev, 5,
+                                              band != V4_BAND_HF);
                 if (rc < 0) goto err;
             }
             {
