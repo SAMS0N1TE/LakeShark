@@ -521,7 +521,8 @@ static void draw_decode(tui_surface *sf, tui_rect area)
     /* The same stacked glass as FM, with a side column for digital decode.
        Leave the existing history/health windows the rest of the pane. */
     const int join = wide && !s_keypad && area.h <= 18 ? 1 : 0;
-    const int tune_rows = !wide && !s_keypad && area.w >= 47 && area.h >= 35 ? 8 : 0;
+    int tune_rows = !wide && !s_keypad && area.w >= 47 && area.h >= 35 ? 8 : 0;
+    int health_rows = 7;
     int dial_want = wide ? (area.h >= 15 || s_keypad ? 11 : 10)
                          : s_keypad && area.w >= 51 ? 11 : area.h >= 25 ? 14 : 8;
     /* Pay for TUNE with empty glass/trace rows; retain decode, activity and
@@ -532,8 +533,20 @@ static void draw_decode(tui_surface *sf, tui_rect area)
         /* A full activity history may shorten its visible tail, never
            evict health or the receiver readouts to keep empty glass rows. */
         if (spare < 7) spare = 7;
-        if (dial_want > spare) dial_want = spare;
-    }
+        /* Portrait: the big frequency figures need FIG_DIAL glass rows. They
+           outrank the gap under TUNE and the activity tail, so heard
+           talkgroups never shrink the frequency to one line of text. Activity
+           keeps a row and health keeps all seven. */
+        enum { FIG_DIAL = 11 };
+        if (!wide && dial_want >= FIG_DIAL && spare < FIG_DIAL) {
+            if (tune_rows == 8) { tune_rows = 7; spare++; }
+            const int left = area.h - tune_rows - FIG_DIAL - MERGED_ROWS;
+            if (spare < FIG_DIAL && left >= 4 + 6) {
+                if (left < 4 + 7) health_rows = 6;   /* its spare blank row */
+                spare = FIG_DIAL;
+            }
+        }
+        if (dial_want > spare) dial_want = spare;    }
     const int top_h = area.h < dial_want ? area.h : dial_want;
     tui_rect dial = tui_rect_make(area.x, area.y,
                                   wide ? area.w * 11 / 20 : area.w, top_h);
@@ -638,10 +651,10 @@ static void draw_decode(tui_surface *sf, tui_rect area)
         const int ah = detail.h - mbox.h;
         if (ah >= 3) {
             activity = tui_rect_make(area.x, mbox.y + mbox.h, area.w, ah);
-            if (ah >= fits + 7 || (tune_rows && ah >= 10)) {
-                activity.h = ah - 7;
+            if (ah >= fits + health_rows || (tune_rows && ah >= 3 + health_rows)) {
+                activity.h = ah - health_rows;
                 draw_receiver_health(sf, tui_rect_make(area.x,
-                    activity.y + activity.h, area.w, 7));
+                    activity.y + activity.h, area.w, health_rows));
             }
         }
     }

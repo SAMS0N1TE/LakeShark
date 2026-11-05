@@ -1,5 +1,6 @@
 """P25 VFO journeys through the real screen and action registry in lssim."""
 from pathlib import Path
+import os
 import re
 import subprocess
 import sys
@@ -51,4 +52,16 @@ for tft in (False, True):
         for word in ('P25 / RECEIVER', 'DECODE / SIGNAL', 'ACTIVITY',
                      'RECEIVER HEALTH', 'AUDIO drops', 'DECODE 0.0', 'VOLUME', 'GAIN'):
             assert word in text, (suffix, word)
+        if not wide and not tft:
+            # Heard talkgroups shorten ACTIVITY, never the big frequency figures.
+            # (The TFT portrait grid is two rows short of both; it keeps one line.)
+            os.environ['LSSIM_P25_TGS'] = '1'
+            try:
+                text, rows = render('talkgroups')
+            finally:
+                del os.environ['LSSIM_P25_TGS']
+            assert '851.0125 MHz' not in text, (suffix, 'frequency fell back to one line')
+            assert sum('#### ####' in line for line in rows.values()) >= 3, suffix
+            for word in ('TALKGROUP', '2104', 'RECEIVER HEALTH', 'AUDIO drops', 'GAIN'):
+                assert word in text, (suffix, word)
 print('PASS: P25 actual frequency retunes, raster, bidirectional seek, scan actions and retained content on all four layouts')

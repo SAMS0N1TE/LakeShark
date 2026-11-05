@@ -1637,6 +1637,11 @@ int main(int argc, char **argv)
         if(ls_scr_map_receive(&msg,&notice) && notice.open) notice.open(notice.item);
     }
     if(!strcmp(want,"calls"))seed_calls(empty);
+    /* LSSIM_P25_TGS: the P25 page with heard talkgroups in ACTIVITY. */
+    if(!strcmp(want,"p25") && getenv("LSSIM_P25_TGS")) {
+        void lssim_seed_p25_calls(void);
+        lssim_seed_p25_calls();
+    }
     if (replay_path) {
         subghz_file_t file;
         int32_t edges[4096];
