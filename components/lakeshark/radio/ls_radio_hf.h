@@ -52,6 +52,15 @@ static inline ls_rtl_path_t ls_rtl_path_for(uint64_t hz, bool blog_v4)
     return hz < LS_RTL_TUNER_MIN_HZ ? LS_RTL_PATH_DIRECT_Q : LS_RTL_PATH_TUNER;
 }
 
+/* The lowest frequency an RTL-SDR endpoint offers apps. R820T dongles reach
+   HF by direct sampling and the Blog V4 by its upconverter; a plain R828D
+   stops at its tuner. Never above LS_RTL_TUNER_MIN_HZ: FM and REC ask for
+   24 MHz up, and a receiver that starts higher is never handed to them. */
+static inline uint32_t ls_rtl_floor_hz(bool r828d, bool blog_v4)
+{
+    return r828d && !blog_v4 ? LS_RTL_TUNER_MIN_HZ : LS_HF_MIN_HZ;
+}
+
 static inline const char *ls_rtl_path_name(ls_rtl_path_t path)
 {
     switch (path) {

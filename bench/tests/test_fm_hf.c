@@ -183,3 +183,18 @@ LS_CASE(an_rtl_reaches_hf_by_direct_sampling_or_the_v4_upconverter)
     /* No gap: the tuner takes over before direct sampling runs out. */
     LS_CHECK(LS_RTL_TUNER_MIN_HZ < LS_RTL_DIRECT_MAX_HZ);
 }
+
+LS_CASE(an_rtl_endpoint_starts_where_its_dongle_can_tune)
+{
+    /* R820T dongles reach HF by direct sampling and the Blog V4 by its
+       upconverter; a plain R828D stops at its tuner. */
+    LS_EQ_UINT(LS_HF_MIN_HZ, ls_rtl_floor_hz(false, false));
+    LS_EQ_UINT(LS_HF_MIN_HZ, ls_rtl_floor_hz(true, true));
+    LS_EQ_UINT(LS_RTL_TUNER_MIN_HZ, ls_rtl_floor_hz(true, false));
+    /* FM and REC ask a receiver for 24 MHz up. An R828D that advertised its
+       28.8 MHz upconverter crossover instead was never handed to them: with
+       a Blog V4 attached, FM had no audio and no spectrum. */
+    LS_CHECK(ls_rtl_floor_hz(false, false) <= LS_RTL_TUNER_MIN_HZ);
+    LS_CHECK(ls_rtl_floor_hz(true, true) <= LS_RTL_TUNER_MIN_HZ);
+    LS_CHECK(ls_rtl_floor_hz(true, false) <= LS_RTL_TUNER_MIN_HZ);
+}

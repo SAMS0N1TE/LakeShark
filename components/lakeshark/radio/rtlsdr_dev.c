@@ -65,13 +65,12 @@ typedef struct {
     usb_host_client_handle_t client;
 } setup_arg_t;
 
-/* HF from 500 kHz: direct sampling on a plain R820T dongle, the upconverter
-   on a Blog V4 (ls_radio_hf.h). Apps that only want VHF/UHF still ask for
-   24 MHz up and match, since a range covers any span inside it. */
-static const ls_radio_range_t s_frequency_ranges[] = {
-    {LS_HF_MIN_HZ, 1766000000},
-};
-static const ls_radio_range_t s_r828d_frequency_ranges[]={{28800000,1766000000}};
+/* The top of the R820T/R828D. The bottom is ls_rtl_floor_hz's: HF from
+   500 kHz by direct sampling on a plain R820T dongle or the upconverter on a
+   Blog V4, the 24 MHz tuner floor on any other R828D. Apps that only want
+   VHF/UHF ask for 24 MHz up and match, since a range covers any span inside
+   it. */
+#define RTL_MAX_HZ 1766000000u
 
 static void rtl_bind_fifo_epoch(bool reset_ok)
 {
@@ -511,12 +510,16 @@ static ls_radio_err_t rtl_register_endpoint(rtlsdr_dev_t *dev)
     uint32_t fe = LS_RADIO_FE_BIT(LS_RADIO_FE_BIAS_T) | LS_RADIO_FE_BIT(LS_RADIO_FE_PPM) |
                   LS_RADIO_FE_BIT(LS_RADIO_FE_DIGITAL_AGC);
     if (rtl_offset_capable(dev)) fe |= LS_RADIO_FE_BIT(LS_RADIO_FE_OFFSET_TUNING);
+    /* Registration copies the range, so it can live here. */
+    const ls_radio_range_t range = {
+        ls_rtl_floor_hz(tuner == RTLSDR_TUNER_R828D, rtl_is_blog_v4(dev)), RTL_MAX_HZ,
+    };
     const ls_radio_endpoint_t endpoint = {
         .endpoint_id = LS_RADIO_ENDPOINT_RTL_USB,
         .name = "RTL-SDR USB IQ receiver",
         .capabilities = LS_RADIO_RX_IQ_U8,
         .iq_formats = LS_RADIO_IQ_FORMAT_U8_INTERLEAVED,
-        .frequency_ranges = tuner==RTLSDR_TUNER_R828D?s_r828d_frequency_ranges:s_frequency_ranges,
+        .frequency_ranges = &range,
         .frequency_range_count = 1,
         .tuner_model_known=known,
         .sample_rate_ranges = s_sample_rate_ranges,
