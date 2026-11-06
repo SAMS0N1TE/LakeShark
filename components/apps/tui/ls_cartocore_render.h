@@ -133,9 +133,23 @@ fail:
     carto_failure(step,cols,rows,z);
     release(s); return NULL;
 }
+/* Hill shading is built at z12 resolution at most (cc_terrain_max_zoom) from a
+   surface model that includes buildings. Past z13 each shade cell is stretched
+   4x and more, which on flat cities (Buenos Aires, 11-05) paints large soft
+   facets over the street grid. Full strength to z12, half at z13, none above. */
+static int carto_terrain_for_zoom(int strength,int z)
+{
+    if(strength<=0 || z>=14) return 0;
+    return z==13?(strength+1)/2:strength;
+}
 static int render_frame(render_state *s,cc_mode mode,cc_edges edges,int64_t left,int64_t top)
 {
     carto_memory_failed=false;
+    {
+        /* The cell cache clears itself when the strength changes (cache.c). */
+        const int t=carto_terrain_for_zoom(saved.terrain_on?saved.terrain_strength:0,s->z);
+        s->renderer.terrain_strength=t; s->tiles.terrain_strength=t;
+    }
 #ifdef LS_CARTOCORE_HOST
     /* Poison unfinished output: a failed render must never reach publication. */
     static bool injected;
