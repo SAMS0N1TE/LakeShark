@@ -40,10 +40,10 @@ On-chip waterfall · On-chip down-conversion · Background LoRa scan · FM at ha
     <tr><th>Hardware</th><th>Use</th><th>Firmware</th></tr>
   </thead>
   <tbody>
-    <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>2.20.0 stable</td></tr>
-    <tr><td><strong>LILYGO T-Display P4 TFT</strong></td><td>Handheld</td><td>2.20.0 stable</td></tr>
-    <tr><td><strong>LILYGO T-Display P4, LR edition</strong> (LR2021 only)</td><td>Handheld</td><td>2.20.0 stable</td></tr>
-    <tr><td><strong>Waveshare ESP32-P4-NANO-DB</strong> (P4 rev 3, ESP32-C5)</td><td>LakeShark Desktop</td><td>2.20.0 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>2.21.2 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4 TFT</strong></td><td>Handheld</td><td>2.21.2 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4, LR edition</strong> (LR2021 only)</td><td>Handheld</td><td>2.21.2 stable</td></tr>
+    <tr><td><strong>Waveshare ESP32-P4-NANO-DB</strong> (P4 rev 3, ESP32-C5)</td><td>LakeShark Desktop</td><td>2.21.2 stable</td></tr>
     <tr><td><strong>Waveshare ESP32-P4-NANO</strong></td><td>Headless (serial, Flipper)</td><td>2.0.2 in the installer, newer from source</td></tr>
     <tr><td><strong>Waveshare Touch-LCD-4.3, Touch-LCD-4B, Smart 86 Box</strong></td><td>Touch screen</td><td>Up to 2.16.4, no longer updated</td></tr>
     <tr><td><strong>RTL-SDR Blog/Nooelec V3/V4</strong></td><td>USB SDR</td><td>All current builds except the LR edition</td></tr>
@@ -113,15 +113,17 @@ screen, mouse and keyboard over one USB cable.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.20.0">Get 2.20.0</a>
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.21.2">Get 2.21.2</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/SAMS0N1TE/LakeShark/blob/main/app-sdk/README.md#your-first-app-in-5-minutes">Make your first app</a>
 </p>
 
 <h2 align="center">What's New</h2>
 
-<p align="center">LR2021 on-chip waterfall and down-conversion · ON-CHIP in LR FRONT END · Smooth DETAIL waterfalls</p>
-<p align="center">LakeShark Desktop on the ESP32-P4-NANO · App SDK 2.6 and LakeShark Studio · <a href="https://terminalbay.com/?m=lakeshark-apps">App store with one-click installs</a></p>
+<p align="center"><strong>2.21:</strong> DOPPLER RADAR with two boards · FREQ OFFSET for crystal LR2021 modules · UAT 978 hears every frame</p>
+<p align="center">New SETTINGS pages · POWER modes with WATCH · GPS standby saves about 23 mA · Redrawn MUSIC views</p>
+<p align="center"><strong>2.21.1 and 2.21.2:</strong> Sharp street-level MAP zooms · RTL-SDR Blog V4 FM and REC · Steady P25 GPS sites</p>
+<p align="center"><strong>2.20:</strong> LR2021 on-chip waterfall and down-conversion · LakeShark Desktop · App SDK 2.6 and Studio · <a href="https://terminalbay.com/?m=lakeshark-apps">App store with one-click installs</a></p>
 
 <p align="center">
   <img width="48%" alt="CARRIER, an early access space game" src="docs/screenshots/apps/carrier-0.4.gif">
@@ -129,7 +131,7 @@ screen, mouse and keyboard over one USB cable.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.20.0">Release notes</a>
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.21.2">Release notes</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/SAMS0N1TE/LakeShark/releases">All releases</a>
 </p>
