@@ -1,5 +1,9 @@
 # LakeShark release notes
 
+## 2.21.2
+
+- MAP: street-level zooms are clean and sharp. Hill shading now fades out past zoom 13, so city streets no longer sit on large smeared patches. Wider views keep their shading exactly as before.
+
 ## 2.21.1
 
 - FM and REC work again with an RTL-SDR Blog V4: sound and spectrum are back. Newer V4s also switch their HF upconverter in and out on a band change.

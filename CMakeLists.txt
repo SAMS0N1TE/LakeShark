@@ -47,10 +47,10 @@ add_compile_options(
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-enum-enum-conversion")
 
-set(LS_PRODUCT_VERSION "2.21.1")
+set(LS_PRODUCT_VERSION "2.21.2")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/ls_build_identity.cmake")
 set(PROJECT_VER "${LS_PRODUCT_VERSION}")
-set(LS_PROJECT_VERSION "2.21.1")
+set(LS_PROJECT_VERSION "2.21.2")
 project(lakeshark VERSION ${LS_PROJECT_VERSION})
 
 # The selected task-only components use LTO; the SDK's unconditional driver flag
