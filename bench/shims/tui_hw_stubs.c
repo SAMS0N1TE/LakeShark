@@ -188,6 +188,7 @@ bool        ls_wf_source_start(ls_wf_src_t src)  { s_src = src; return true; }
    nothing and does nothing - the question under test is whether the router
    ASKS, and a test that wants to check that asks the router, not this. */
 void ls_tui_radio_want(const char *mode_name) { (void)mode_name; }
+void ls_tui_radio_screen(bool radio_app) { (void)radio_app; }
 /* The bench has no receiver, so nothing is ever claimed. A screen
    that lights its lamp off this would light it never here, which is the
    right way for a stub to be wrong. */

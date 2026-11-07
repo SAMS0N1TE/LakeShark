@@ -208,6 +208,12 @@ bool ls_mesh_radio_held(void);
 bool ls_mesh_radio_hold_bg(bool on);
 bool ls_mesh_radio_wanted(void);
 bool ls_mesh_radio_bg(void);
+/* The MESH screen is open: background receivers on the LoRa chip give it
+   back to MeshCore until it closes. A send asks the same, for a few seconds. */
+void ls_mesh_radio_front(bool on);
+/* False while no radio app is on screen: background receivers on the LoRa
+   chip let go so it is never held by an app you left. */
+void ls_mesh_radio_bg_allow(bool on);
 /* RADIOS' STOP and ALLOW. Blocked, the radio is taken from every background
    holder (they see ls_mesh_radio_wanted) and from MeshCore, and no new hold
    is granted; a foreground holder that already has it keeps it until it

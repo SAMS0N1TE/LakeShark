@@ -19,6 +19,9 @@
 #define LS_BOARD_SDIO_D2_GPIO    41
 #define LS_BOARD_SDIO_D3_GPIO    42
 #define LS_BOARD_SDCARD_LDO_CHAN 4
+/* Driving GPIO45 (a LoRa reset on it, 2026-11-06) made every TF read time
+   out (0x107) until the next boot: treat it as the card's, never an add-on's. */
+#define LS_BOARD_SD_PWR_GPIO     45
 
 /* The codec, a DSI panel's adapter (0x45) and its GT911 all sit on SDA7/SCL8,
    where the vendored BSP already runs I2C1; ls_i2c shares that bus. */
@@ -36,17 +39,41 @@
 /**/
 #define LS_BOARD_LINK_RX_GPIO    33
 #define LS_BOARD_LINK_TX_GPIO    32
-#define LS_BOARD_LINK_SCAN_PINS \
-    { 33, 32, 45, 47, 48, 0, 1, 2, 3, 6, 4, 20, 21, 36 }
 
 /* Waveshare L76K GPS module on the left header, the same GPIOs as the
    T-Display-P4's L76K: module TX -> GPIO22 (header pin 16), module RX <-
    GPIO23 (pin 7), VCC 3V3 (pin 1), GND (pin 6), PPS -> GPIO5 (pin 11, not
-   read yet). The module ships at 9600; ls_gps raises it to 115200. 22/23/5
-   are out of the Flipper pin scan so NMEA is never taken for a Flipper. */
+   read yet). The module ships at 9600; ls_gps raises it to 115200. */
 #define LS_BOARD_GPS_UART_NUM    2
 #define LS_BOARD_GPS_RX_GPIO     22
 #define LS_BOARD_GPS_TX_GPIO     23
 #define LS_BOARD_GPS_BAUD        115200
+
+/* Add-on pins below are defaults only: the PINS app (or the `pin` console
+   command) saves others to NVS and they apply at the next boot. */
+#define LS_BOARD_PINS_RUNTIME    1
+
+/* A LoRa module (LR2021 first, then SX1262) on the header, its own SPI bus
+   (SPI2). No expander on this board: reset and IRQ are plain GPIOs and the
+   LR2021 interrupt word is polled over SPI. */
+#define LS_BOARD_SPI_SCLK_GPIO   2
+#define LS_BOARD_SPI_MOSI_GPIO   3
+#define LS_BOARD_SPI_MISO_GPIO   4
+#define LS_BOARD_LORA_CS_GPIO    47
+#define LS_BOARD_LORA_BUSY_GPIO  48
+#define LS_BOARD_LORA_RST_GPIO   1     /* not 45: SD card errors followed its reset pulse */
+#define LS_BOARD_LORA_IRQ_GPIO   6
+#define LS_BOARD_LORA_MAY_BE_LR20XX 1
+/* LilyGO LR2021 module tables, as on the T-Display-P4 socket. `lora port`
+   changes them (dio=, rfsw=, tcxo=) for another module. */
+#define LS_BOARD_LR20XX_IRQ_DIO  11
+#define LS_BOARD_LR20XX_RFSW_TABLE     { 6, 0x08 }, { 7, 0x00 }, { 8, 0x06 }, { 10, 0x08 }
+
+/* Nine-axis IMU (ICM-20948) on I2C. Default: the board bus SDA7/SCL8,
+   shared with the codec. Other pins get their own controller (I2C1). */
+#define LS_BOARD_IMU_I2C_ADDR    0x68
+#define LS_BOARD_IMU_SDA_GPIO    7
+#define LS_BOARD_IMU_SCL_GPIO    8
+#define LS_BOARD_IMU_MOUNT_DEG   0
 
 #endif

@@ -32,3 +32,11 @@ CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
 # TLS in PSRAM, as on the T-Display: in internal RAM a map download's HTTPS
 # session failed to allocate and TILES said only "Connect failed".
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
+# LoRa / LR2021 module on the header (PINS app): the LR2021 driver wakes
+# its I/Q task from an ISR-dispatched esp_timer.
+CONFIG_ESP_TIMER_SUPPORTS_ISR_DISPATCH_METHOD=y
+CONFIG_ESP_TIMER_ISR_AFFINITY_CPU0=y
+# The SPI interrupt path stays in flash on the Nano (about 9 KB of internal
+# RAM): the LoRa driver polls, and a flash write only delays a transfer.
+# CONFIG_SPI_MASTER_ISR_IN_IRAM is not set

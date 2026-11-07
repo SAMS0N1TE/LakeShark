@@ -40,6 +40,10 @@ _Static_assert(sizeof(ls_gps_sat_t) == 6,
                "of these and the parser's context two");
 
 #if defined(LS_BOARD_GPS_RX_GPIO) && defined(LS_BOARD_GPS_UART_NUM)
+#include "ls_pins.h"
+#define GPS_RX_PIN ls_pin(LS_PIN_GPS_RX)
+#define GPS_TX_PIN (ls_pin(LS_PIN_GPS_TX) >= 0 ? ls_pin(LS_PIN_GPS_TX) : UART_PIN_NO_CHANGE)
+
 
 _Static_assert(LS_BOARD_GPS_BAUD == 115200,
                "the bring-up raises the module with $PCAS01,5, which is 115200");
@@ -728,7 +732,7 @@ static esp_err_t start_locked(void)
         if (err != ESP_OK) { ls_uart_claim_unlock(); return err; }
         err = uart_param_config(GPS_UART, &cfg);
         if (err == ESP_OK)
-            err = uart_set_pin(GPS_UART, LS_BOARD_GPS_TX_GPIO, LS_BOARD_GPS_RX_GPIO,
+            err = uart_set_pin(GPS_UART, GPS_TX_PIN, GPS_RX_PIN,
                                UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
         if (err != ESP_OK) {
             uart_driver_delete(GPS_UART);
@@ -774,7 +778,7 @@ static esp_err_t start_locked(void)
     }
 
     ESP_LOGI(TAG, "L76K reader up on RX%d/TX%d at %d baud",
-             LS_BOARD_GPS_RX_GPIO, LS_BOARD_GPS_TX_GPIO, LS_BOARD_GPS_BAUD);
+             GPS_RX_PIN, GPS_TX_PIN, LS_BOARD_GPS_BAUD);
     return ESP_OK;
 }
 
@@ -881,7 +885,7 @@ void ls_gps_scan_baud(void)
     gps_module_awake(true);
 
     LS_PRINTF(t_ls_gps_gps_listening_on_gpio, "gps: listening on GPIO%d for 1200 ms at each rate\n",
-           LS_BOARD_GPS_RX_GPIO);
+           GPS_RX_PIN);
 
     for (unsigned r = 0; r < sizeof(RATES) / sizeof(RATES[0]); r++) {
         uart_config_t cfg = {
@@ -899,7 +903,7 @@ void ls_gps_scan_baud(void)
             break;
         }
         uart_param_config(GPS_UART, &cfg);
-        uart_set_pin(GPS_UART, UART_PIN_NO_CHANGE, LS_BOARD_GPS_RX_GPIO,
+        uart_set_pin(GPS_UART, UART_PIN_NO_CHANGE, GPS_RX_PIN,
                      UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
         ls_uart_claim_unlock();
 
@@ -981,7 +985,7 @@ void ls_gps_diagnostics(void)
     ls_gps_get(g);
 
     LS_PRINTF(t_ls_gps_gps_uart_d_rx, "gps: uart%d rx=GPIO%d tx=GPIO%d %d baud  bytes=%lu sentences=%lu csum_err=%lu\n",
-           (int)s_port, LS_BOARD_GPS_RX_GPIO, LS_BOARD_GPS_TX_GPIO,
+           (int)s_port, GPS_RX_PIN, GPS_TX_PIN,
            (int)s_baud,
            (unsigned long)g->bytes, (unsigned long)g->sentences,
            (unsigned long)g->checksum_errors);

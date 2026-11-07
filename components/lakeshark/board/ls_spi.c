@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "ls_board.h"
+#include "ls_pins.h"
 #include "ls_textpack.h"
 
 static const char *TAG = "ls_spi";
@@ -21,7 +22,7 @@ typedef struct {
 /* -1 means the board did not declare this bus. The host is fixed per role so
    two boards cannot disagree about which controller is which - the same rule
    ls_i2c.c follows, and for the same reason. */
-static const bus_pins_t BUS[LS_SPI_BUS_COUNT] = {
+static bus_pins_t BUS[LS_SPI_BUS_COUNT] = {
     [LS_SPI_RADIO] = {
 #if defined(LS_BOARD_SPI_SCLK_GPIO) && defined(LS_BOARD_SPI_MOSI_GPIO) && \
     defined(LS_BOARD_SPI_MISO_GPIO)
@@ -42,9 +43,21 @@ static void lock_init_once(void)
     if (!s_lock) s_lock = xSemaphoreCreateMutex();
 }
 
+/* A board with runtime pins takes the radio bus from the saved table. */
+static void sync_pins(void)
+{
+    static bool done;
+    if (done || !ls_pins_runtime()) return;
+    BUS[LS_SPI_RADIO].sclk = ls_pin(LS_PIN_SPI_SCLK);
+    BUS[LS_SPI_RADIO].mosi = ls_pin(LS_PIN_SPI_MOSI);
+    BUS[LS_SPI_RADIO].miso = ls_pin(LS_PIN_SPI_MISO);
+    done = ls_pins_ready();
+}
+
 bool ls_spi_bus_present(ls_spi_bus_id_t id)
 {
     if (id < 0 || id >= LS_SPI_BUS_COUNT) return false;
+    sync_pins();
     return BUS[id].sclk >= 0 && BUS[id].mosi >= 0 && BUS[id].miso >= 0;
 }
 

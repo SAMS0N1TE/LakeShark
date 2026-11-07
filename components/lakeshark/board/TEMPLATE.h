@@ -26,12 +26,9 @@
 /* Keyboard matrix controller.  Its I2C address derives LS_HAS_KEYBOARD. */
 /* #define LS_BOARD_KEYBOARD_I2C_ADDR  0x34 */
 
-/* Control-head UART to the Flipper.  LS_BOARD_LINK_SCAN_PINS is the ordered
-   list the link probes when autodetecting which pins are actually wired. */
+/* Control-head UART to the Flipper. */
 #define LS_BOARD_LINK_RX_GPIO    33
 #define LS_BOARD_LINK_TX_GPIO    32
-#define LS_BOARD_LINK_SCAN_PINS \
-    { 33, 32 }
 
 /* Any of the shared ESP32-P4 pins in ls_board.h (I2C, I2S, SDIO, C6 enable,
    BOOT button) may be overridden by defining them here - ls_board.h fills in

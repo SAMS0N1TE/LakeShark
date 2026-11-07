@@ -87,6 +87,7 @@
 /**/
 #include "rec_space.h"
 #include "ls_board.h"
+#include "ls_pins.h"
 #include "ls_vitals.h"
 #include "ls_sdcard.h"
 #include "ls_keypad.h"
@@ -1133,6 +1134,11 @@ void ls_tui_radio_want(const char *mode_name)
     defer_post(DEFER_RADIO_WANT);
 }
 
+void ls_tui_radio_screen(bool radio_app)
+{
+    ls_mesh_radio_bg_allow(radio_app);
+}
+
 /* Which receiver mode is claimed, or NULL when the radio is parked. */
 
 const char *ls_tui_radio_claimed(void)
@@ -1453,6 +1459,14 @@ static int cmd_link(int argc, char **argv)
         cfg.rx_gpio = atoi(argv[2]);
         cfg.tx_gpio = atoi(argv[3]);
         printf("reconfigure: %s\n", esp_err_to_name(flipper_link_reconfigure(&cfg)));
+        if (ls_pins_runtime()) {
+            char why[64];
+            if (!ls_pin_set(LS_PIN_LINK_RX, cfg.rx_gpio, why, sizeof(why)) ||
+                !ls_pin_set(LS_PIN_LINK_TX, cfg.tx_gpio, why, sizeof(why)))
+                printf("not saved: %s\n", why);
+            else
+                printf("saved for later boots\n");
+        }
     } else {
         LS_FPUTS(msg_headless_main_usage_link_on_off, "usage: link [on|off|verbose <0|1>|baud <n>|tel <hz>|pins <rx> <tx>"
                "|probe]\n"
@@ -3203,6 +3217,8 @@ static bool console_start(bool full)
 #endif
         { .command = "c6",     .help = LS_TXT(con_headless_main_c6_help, "ESP32-C6 co-processor: enable line, transport, firmware versions, SD update"),
           .hint = LS_TXT(con_headless_main_c6_hint, "<0|1|up|ver|reset|release|update [path] [force]|status>"), .func = &cmd_c6 },
+        { .command = "pin",    .help = "Add-on wiring: GPS, LoRa/LR2021, IMU, Flipper link pins (next boot)",
+          .hint = "[set <key> <gpio|none> | imu <addr> | reset]", .func = &ls_pins_cmd },
         { .command = "link",   .help = LS_TXT(con_headless_main_link_help, "Flipper serial head control"),
           .hint = LS_TXT(con_headless_main_link_hint, "[on|off|verbose <0|1>|baud <n>|tel <hz>|pins <rx> <tx>]"),
           .func = &cmd_link },
@@ -3376,6 +3392,7 @@ void app_main(void)
     /* initialize before BLE can load its pinned peer. Storage is
        static cache-safe DRAM, so this does not depend on heap availability. */
     esp_err_t nvs_worker_err = ls_nvs_init();
+    ls_pins_load();
     if (nvs_worker_err != ESP_OK)
         ESP_LOGE(TAG, "NVS dispatcher init failed: %s",
                  esp_err_to_name(nvs_worker_err));
@@ -3684,6 +3701,8 @@ void app_main(void)
 #if LS_HAS_LINK_UART
     esp_err_t lerr = ESP_ERR_NOT_SUPPORTED;
     flipper_link_cfg_t link_cfg = FLIPPER_LINK_CFG_DEFAULT();
+    link_cfg.rx_gpio = ls_pin(LS_PIN_LINK_RX);
+    link_cfg.tx_gpio = ls_pin(LS_PIN_LINK_TX);
     if (ls_keypad_present()) {
         ESP_LOGW(TAG, "flipper link held down: the keyboard owns GPIO%d/%d "
                       "(CC1101 GDO2 and nRF24 INT on the 2x8 header)",

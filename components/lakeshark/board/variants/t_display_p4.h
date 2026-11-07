@@ -321,6 +321,5 @@
    session, not a compile error. */
 /* #define LS_BOARD_LINK_RX_GPIO    ??  TODO measure */
 /* #define LS_BOARD_LINK_TX_GPIO    ??  TODO measure */
-/* #define LS_BOARD_LINK_SCAN_PINS  ??  TODO measure */
 
 #endif

@@ -11,7 +11,7 @@
 #if LS_HAS_LORA_LR20XX_PROBE
 #include "ls_lora_lr20xx.h"
 #endif
-#if defined(LS_BOARD_LORA_CS_GPIO) && defined(LS_BOARD_LORA_BUSY_GPIO) && defined(LS_BOARD_XL_RADIO_RST)
+#if LS_LORA_WIRED
 #include "ls_lora_priv.h"
 #define ANT_LOCK() ls_lora_hw_lock()
 #define ANT_UNLOCK() ls_lora_hw_unlock()
@@ -176,7 +176,7 @@ void ls_board_hw_antenna_set_mmcx_tx(bool tx)
 bool ls_board_hw_antenna_mmcx_tx(void)
 {
 #ifdef LS_BOARD_XL_RF_SW_VCTL
-#if defined(LS_BOARD_LORA_CS_GPIO) && defined(LS_BOARD_LORA_BUSY_GPIO) && defined(LS_BOARD_XL_RADIO_RST)
+#if LS_LORA_WIRED
     if(ls_lora_fitted()==LS_LORA_CHIP_LR20XX)return false;
 #endif
     return s_mmcx_tx;

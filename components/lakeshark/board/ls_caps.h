@@ -150,6 +150,15 @@
 #define LS_HAS_LORA          0
 #endif
 
+/* The LoRa driver needs a select, a busy line and a way to reset the part:
+   an expander line (T-Display-P4) or a plain GPIO (a module on a header). */
+#if defined(LS_BOARD_LORA_CS_GPIO) && defined(LS_BOARD_LORA_BUSY_GPIO) && \
+    (defined(LS_BOARD_XL_RADIO_RST) || defined(LS_BOARD_LORA_RST_GPIO))
+#define LS_LORA_WIRED        1
+#else
+#define LS_LORA_WIRED        0
+#endif
+
 /* The LoRa socket may hold an LR20xx (LR2021 class) part instead of an
    SX1262. Which one is a RUNTIME fact, resolved by ls_lora_start(); this flag
    only says the LR20xx driver is compiled in and probed first, so an image for

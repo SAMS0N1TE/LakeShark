@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "ls_board.h"
+#include "ls_pins.h"
 #include "settings.h"
 #include "ls_textpack.h"
 #ifdef ESP_PLATFORM
@@ -45,6 +46,14 @@ void ls_lora_port_board(ls_lora_port_t *out)
 #endif
     out->rst = LS_LORA_PORT_RST_BOARD;
     out->irq_gpio = LS_LORA_PORT_NONE;
+    if (ls_pins_runtime()) {
+        /* No expander: the socket is wherever the pin table says. */
+        out->cs = (int8_t)ls_pin(LS_PIN_LORA_CS);
+        out->busy = (int8_t)ls_pin(LS_PIN_LORA_BUSY);
+        const int rst = ls_pin(LS_PIN_LORA_RST);
+        out->rst = rst >= 0 ? (int8_t)rst : LS_LORA_PORT_RST_BOARD;
+        out->irq_gpio = (int8_t)ls_pin(LS_PIN_LORA_IRQ);
+    }
 #ifdef LS_BOARD_LR20XX_IRQ_DIO
     out->irq_dio = LS_BOARD_LR20XX_IRQ_DIO;
 #else
@@ -144,6 +153,20 @@ static bool listed(const int *list, int pin)
     return false;
 }
 
+/* The board's own lines, with the movable ones (radio bus, GPS) read from
+   the pin table on a board that has one. */
+static bool board_pin(int g)
+{
+    if (!ls_pins_runtime()) return listed(BOARD_PINS, g);
+    static const ls_pin_id_t MOVABLE[] = { LS_PIN_SPI_SCLK, LS_PIN_SPI_MOSI, LS_PIN_SPI_MISO,
+                                           LS_PIN_GPS_RX, LS_PIN_GPS_TX };
+    for (size_t i = 0; i < sizeof(MOVABLE) / sizeof(MOVABLE[0]); i++) {
+        if (ls_pin(MOVABLE[i]) == g) return true;
+        if (ls_pin_default(MOVABLE[i]) == g) return false;   /* moved away */
+    }
+    return listed(BOARD_PINS, g);
+}
+
 uint64_t ls_lora_port_keyboard_pins(const ls_lora_port_t *p)
 {
     if (!p || !p->header) return 0;
@@ -173,7 +196,7 @@ bool ls_lora_port_check(const ls_lora_port_t *p, char *why, size_t n)
         /* The board's own socket lines are allowed: header mode pointed at
            them is how it is tested without another module. */
         const bool socket = (i == 0 && g == board.cs) || (i == 1 && g == board.busy);
-        if (!socket && listed(BOARD_PINS, g)) {
+        if (!socket && board_pin(g)) {
             LS_SNPRINTF(fmt_ls_lora_port_gpio_is_the_board, why, n, "%s: GPIO %d is the board's own (bus, display, audio, SD or GPS)", pins[i].name, g);
             return false;
         }

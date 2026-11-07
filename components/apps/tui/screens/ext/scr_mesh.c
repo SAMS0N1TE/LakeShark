@@ -1826,8 +1826,13 @@ static void draw_portrait(tui_surface *sf, tui_rect area,
 
 /* ---------------------------------------------------------------- screen */
 
+/* While MESH is on screen the LoRa chip is the mesh's: a background receiver
+   (FM on the LR2021, say) lets go until the screen closes. */
+static void leave(void) { ls_mesh_radio_front(false); }
+
 static void enter(void)
 {
+    ls_mesh_radio_front(true);
     s_page = PAGE_CHAT;
     s_feed_back = 0;
     s_sel = 0; s_field = 0; s_edit_field = -1;
@@ -2550,6 +2555,7 @@ const ls_tui_screen_t ls_scr_mesh = {
     .name = "MESH",
     .hint = "MIC arms  LEFT/RIGHT page  CHAT: ENTER send  NODES: ENTER open",
     .enter = enter,
+    .leave = leave,
     .draw = draw,
     .key = key,
     .touch = touch,

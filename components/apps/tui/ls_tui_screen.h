@@ -112,6 +112,9 @@ bool ls_tui_screen_is_bare(void);
 /* "Run this receiver", or NULL for "nothing here needs one". */
 
 void ls_tui_radio_want(const char *mode_name);
+/* Whether the screen now shown is a radio app: background leases on the
+   LoRa chip are dropped while it is not. */
+void ls_tui_radio_screen(bool radio_app);
 
 /* The mode currently claimed, or NULL when nothing is. The same
    strings a screen puts in its `radio` field, so a directory lamp and a

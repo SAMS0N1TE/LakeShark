@@ -556,7 +556,7 @@ static const char *const GROUP_IDS[3][16] = {
     {"p25", "fm", "adsb", "falls", "mesh", "subghz", "digi", "labs", "experiments", "mixrf", "meters",
      "rec", "tmach", "radio", NULL},
     {"map", "tiles", "gps", "compass", "fox", "rfsurvey", "notes", "journal", "sweep", "drones", "cell", NULL},
-    {"set", "link", "radios", "update", "diag", "terminal", "files", "music", NULL},
+    {"set", "pins", "link", "radios", "update", "diag", "terminal", "files", "music", NULL},
 };
 
 const char *dk_group_name(int g) { return g >= 0 && g < 5 ? GROUP_NAMES[g] : ""; }

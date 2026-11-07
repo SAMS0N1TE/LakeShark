@@ -41,6 +41,14 @@ extern "C" {
    SX1262 had already been measured receiving at -116 dBm. It built clean and
    it did nothing, which is the worst combination available. */
 #include "ls_board.h"
+
+/* The Nano (runtime pins, LoRa on a header) is short of internal RAM: its
+   mesh tables live in PSRAM. Task-side data only, never touched from an ISR. */
+#if defined(LS_BOARD_PINS_RUNTIME) && LS_BOARD_PINS_RUNTIME
+#define MESH_TABLE EXT_RAM_BSS_ATTR
+#else
+#define MESH_TABLE
+#endif
 #include "ls_lora.h"
 #include "ls_rtc.h"
 #include "ls_gps.h"
@@ -63,8 +71,8 @@ static const uint8_t PUBLIC_PSK[16] = {
     0xC9, 0xE5, 0xED, 0xBA, 0xA1, 0x15, 0xCD, 0x72
 };
 
-static mesh::GroupChannel s_chan[LS_MESH_MAX_CHANNELS];
-static ls_mesh_chan_t     s_chan_meta[LS_MESH_MAX_CHANNELS];
+MESH_TABLE static mesh::GroupChannel s_chan[LS_MESH_MAX_CHANNELS];
+MESH_TABLE static ls_mesh_chan_t     s_chan_meta[LS_MESH_MAX_CHANNELS];
 static bool               s_chan_ready[LS_MESH_MAX_CHANNELS];
 static int                s_chan_active;
 static bool               s_public_ready;
@@ -171,6 +179,31 @@ static volatile bool  s_hold_fg, s_hold_bg;
 static volatile bool  s_radio_blocked;
 static ls_radio_holders_t s_fg_holders, s_bg_holders;
 static portMUX_TYPE s_hold_lock = portMUX_INITIALIZER_UNLOCKED;
+/* The mesh asking for its own radio back. A background receiver (FM, P25 or
+   ADS-B on the LoRa chip) kept every send refused, so the mesh could not
+   transmit while one listened. A send now wants the socket for a while, and
+   so does the MESH screen while it is open: background holders see
+   ls_mesh_radio_wanted, let go, and take the radio back afterwards. */
+/* The LoRa settings MeshCore last applied. Another owner (FM, P25 or ADS-B
+   on the LR2021, LoRa Labs, a capture) retunes the chip; the mesh put them
+   back only at start, so after FM it listened, and sent, on FM's frequency
+   (seen: 144.39 MHz). Restored every time the radio comes back. */
+static ls_lora_cfg_t s_mesh_lora_cfg;
+static bool          s_mesh_lora_cfg_valid;
+static bool          s_was_held;
+static void mesh_cfg_applied(const ls_lora_cfg_t *c) { s_mesh_lora_cfg = *c; s_mesh_lora_cfg_valid = true; }
+static volatile int64_t s_tx_want_until;
+static volatile bool    s_front_want;
+/* False while the screen shows no radio app: a receiver left running in the
+   background does not keep the LoRa chip from the mesh. */
+static volatile bool    s_bg_allowed = true;
+#define MESH_TX_WANT_US    (8 * 1000 * 1000)   /* a DM's ACK and retries */
+#define MESH_TX_EVICT_US   (2500 * 1000)
+static bool mesh_wants_radio(void)
+{
+    return s_front_want || !s_bg_allowed ||
+           (s_tx_want_until && esp_timer_get_time() < s_tx_want_until);
+}
 
 #define SIGHTLOG_PATH "/sdcard/lakeshark/sightings.log"
 #define SIGHT_MOVE_M  50.0f
@@ -251,14 +284,15 @@ static char            s_name[LS_MESH_NAME_MAX + 1];
 static ls_mesh_radio_t s_radio_cfg;
 static bool s_radio_stored;
 
-static float    s_scope[LS_MESH_SCOPE_N];
+
+MESH_TABLE static float    s_scope[LS_MESH_SCOPE_N];
 static int      s_scope_head;
 static int64_t  s_scope_next_us;
 static int64_t  s_advert_next_us;
 
-static ls_mesh_peer_t  s_peers[LS_MESH_MAX_PEERS];
+MESH_TABLE static ls_mesh_peer_t  s_peers[LS_MESH_MAX_PEERS];
 static int             s_peer_count;
-static ls_mesh_event_t s_events[LS_MESH_MAX_EVENTS];
+MESH_TABLE static ls_mesh_event_t s_events[LS_MESH_MAX_EVENTS];
 static int             s_ev_head;          /* next slot to write */
 static volatile uint32_t s_ev_seq;
 
@@ -328,7 +362,7 @@ static int note_msg(const char *text, bool mine, uint8_t chan, const char *peer)
     return slot;
 }
 
-static struct { mesh::Packet *packet; uint32_t id; int slot; } s_delivery[LS_MESH_MAX_MSGS];
+MESH_TABLE static struct { mesh::Packet *packet; uint32_t id; int slot; } s_delivery[LS_MESH_MAX_MSGS];
 static mesh::Packet *s_outbound_packet;
 static bool s_on_air, s_rx_fault;
 static int64_t s_rx_retry_us;
@@ -561,7 +595,7 @@ static uint32_t inspect_ms() { return (uint32_t)(esp_timer_get_time() / 1000); }
 EXT_RAM_BSS_ATTR static struct { char id[17]; uint8_t path[72], count, width; } s_inspect_routes[LS_MESH_MAX_PEERS];
 /* Peers allowed to read this node's telemetry: empty, so nobody, until the
    user adds one. Guarded by s_inspect_lock; stored in NVS. */
-static ls_inspect_allow_t s_telem_allow;
+MESH_TABLE static ls_inspect_allow_t s_telem_allow;
 /* The typed login password, held only until the login is built. */
 static char s_login_pw[LS_INSPECT_PASSWORD_MAX + 1];
 
@@ -1870,12 +1904,23 @@ static void mesh_task(void *arg)
         inspect_service();
         if (s_radio_hold || ls_lora_fsk_active()) {
             s_radio_held = true;
+            s_was_held = true;
             msglog_service();
             peerlog_service();
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10) ? pdMS_TO_TICKS(10) : 1);
             continue;
         }
         s_radio_held = false;
+        if (s_was_held) {
+            s_was_held = false;
+            if (s_mesh_lora_cfg_valid) {
+                const esp_err_t e = ls_lora_configure(&s_mesh_lora_cfg);
+                if (e != ESP_OK) ESP_LOGW(TAG, "radio back, settings not restored: %s", esp_err_to_name(e));
+                else ESP_LOGI(TAG, "radio back: %.4f MHz SF%u restored", s_mesh_lora_cfg.freq_hz / 1e6,
+                              (unsigned)s_mesh_lora_cfg.sf);
+                s_rx_retry_us = 0;
+            }
+        }
 
         if (!s_on_air && !ls_lora_is_receiving() && esp_timer_get_time() >= s_rx_retry_us)
             mesh_receive();
@@ -1976,6 +2021,7 @@ extern "C" esp_err_t ls_mesh_start(void)
 
     if (s_radio_cfg.crc_on)    cfg.crc_on    = (s_radio_cfg.crc_on == 2);
     esp_err_t err = ls_lora_configure(&cfg);
+    if (err == ESP_OK) mesh_cfg_applied(&cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "radio not configured: %s", esp_err_to_name(err));
         ls_lora_park();
@@ -2121,8 +2167,9 @@ extern "C" bool ls_mesh_radio_hold_bg(bool on)
 {
     const uintptr_t task = (uintptr_t)xTaskGetCurrentTaskHandle();
     portENTER_CRITICAL(&s_hold_lock);
-    /* Foreground requests make each background holder release its own lease. */
-    const bool take = on && !s_hold_fg && !s_radio_blocked;
+    /* Foreground requests make each background holder release its own lease,
+       and so does the mesh wanting to send or being on screen. */
+    const bool take = on && !s_hold_fg && !s_radio_blocked && !mesh_wants_radio();
     const bool accepted = ls_radio_holders_set(&s_bg_holders, task, take);
     s_hold_bg = s_bg_holders.count != 0;
     s_radio_hold = s_hold_fg || s_hold_bg || s_radio_blocked;
@@ -2133,7 +2180,36 @@ extern "C" bool ls_mesh_radio_hold_bg(bool on)
     return accepted && (!on || (owns && mesh_paused()));
 }
 
-extern "C" bool ls_mesh_radio_wanted(void) { return s_hold_fg || s_radio_blocked; }
+extern "C" bool ls_mesh_radio_wanted(void) { return s_hold_fg || s_radio_blocked || mesh_wants_radio(); }
+
+extern "C" void ls_mesh_radio_front(bool on)
+{
+    s_front_want = on;
+    if (s_task) xTaskNotifyGive(s_task);
+}
+
+extern "C" void ls_mesh_radio_bg_allow(bool on)
+{
+    if (s_bg_allowed == on) return;
+    s_bg_allowed = on;
+    if (s_task) xTaskNotifyGive(s_task);
+}
+
+/* Before a send: a background receiver gives the socket back and MeshCore
+   takes it again. A foreground owner (LoRa Labs, a capture) keeps it, and
+   the send is refused as before. Waits on the caller's task, never MeshCore's. */
+static void mesh_tx_evict(void)
+{
+    if (!s_task || s_hold_fg || s_radio_blocked) return;
+    s_tx_want_until = esp_timer_get_time() + MESH_TX_WANT_US;
+    xTaskNotifyGive(s_task);
+    if (xTaskGetCurrentTaskHandle() == s_task) return;
+    const int64_t until = esp_timer_get_time() + MESH_TX_EVICT_US;
+    while ((s_hold_bg || s_radio_held) && esp_timer_get_time() < until)
+        vTaskDelay(pdMS_TO_TICKS(20));
+    /* MeshCore re-arms the part on its next loop. */
+    vTaskDelay(pdMS_TO_TICKS(60));
+}
 extern "C" bool ls_mesh_radio_bg(void) { return s_hold_bg; }
 
 extern "C" void ls_mesh_radio_block(bool on)
@@ -2577,6 +2653,7 @@ extern "C" esp_err_t ls_mesh_set_radio(const ls_mesh_radio_t *cfg)
 
     esp_err_t err = ls_lora_configure(&lc);
     if (err != ESP_OK) return err;
+    mesh_cfg_applied(&lc);
     esp_err_t rx_err = mesh_receive();
 
     s_radio_cfg = *cfg;
@@ -2638,8 +2715,10 @@ static esp_err_t send_dm_to(int pi, const char *text)
 
 extern "C" esp_err_t ls_mesh_send_dm(int peer_index, const char *text)
 {
-    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task) {
+        mesh_tx_evict();
         return mesh_call([&]() -> int { return ls_mesh_send_dm(peer_index, text); });
+    }
     if (!s_mesh || !s_task || s_stop || s_radio_hold || s_radio_held) return ESP_ERR_INVALID_STATE;
     if (!text || !*text) return ESP_ERR_INVALID_ARG;
     if (!ls_mesh_tx_enabled()) return ESP_ERR_NOT_ALLOWED;
@@ -2661,8 +2740,10 @@ extern "C" esp_err_t ls_mesh_send_dm(int peer_index, const char *text)
 
 extern "C" esp_err_t ls_mesh_send_dm_id(const char *id, const char *text)
 {
-    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task) {
+        mesh_tx_evict();
         return mesh_call([&]() -> int { return ls_mesh_send_dm_id(id, text); });
+    }
     if (!s_mesh || !s_task || s_stop || s_radio_hold || s_radio_held) return ESP_ERR_INVALID_STATE;
     if (!text || !*text) return ESP_ERR_INVALID_ARG;
     if (!ls_mesh_tx_enabled()) return ESP_ERR_NOT_ALLOWED;
@@ -2737,8 +2818,10 @@ extern "C" esp_err_t ls_mesh_send_text(const char *text)
 
 extern "C" esp_err_t ls_mesh_send_text_on(int chan, const char *text)
 {
-    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task) {
+        mesh_tx_evict();
         return mesh_call([&]() -> int { return ls_mesh_send_text_on(chan, text); });
+    }
     if (!s_mesh || !s_task || s_stop || s_radio_hold || s_radio_held) return ESP_ERR_INVALID_STATE;
     if (chan < 0 || chan >= LS_MESH_MAX_CHANNELS || !s_chan_ready[chan])
         return ESP_ERR_INVALID_STATE;
@@ -2853,6 +2936,11 @@ extern "C" void ls_mesh_diagnostics(void)
         for (unsigned i = 0; i < fg.count && i < 8; i++) printf(" fg:%s", pcTaskGetName((TaskHandle_t)fg.task[i]));
         for (unsigned i = 0; i < bg.count && i < 8; i++) printf(" bg:%s", pcTaskGetName((TaskHandle_t)bg.task[i]));
         printf("\n");
+        {
+            const int64_t left = s_tx_want_until - esp_timer_get_time();
+            printf("mesh: wants its radio: mesh screen=%d radio app on screen=%d send=%lld ms\n",
+                   (int)s_front_want, (int)s_bg_allowed, (long long)(left > 0 ? left / 1000 : 0));
+        }
     }
     printf("mesh: tx budget %lu ms remaining in the duty-cycle window\n",
            (unsigned long)(s_mesh ? s_mesh->getRemainingTxBudget() : 0));
@@ -2932,6 +3020,7 @@ extern "C" esp_err_t ls_mesh_radio_default(void)
     ls_lora_cfg_t lc;
     ls_lora_cfg_default(&lc);
     err = ls_lora_configure(&lc);
+    if (err == ESP_OK) mesh_cfg_applied(&lc);
     if (err == ESP_OK) err = mesh_receive();
     return err;
 }
@@ -3001,6 +3090,8 @@ extern "C" bool ls_mesh_radio_hold(bool on) { (void)on; return false; }
 extern "C" bool ls_mesh_radio_held(void) { return false; }
 extern "C" bool ls_mesh_radio_hold_bg(bool on) { (void)on; return false; }
 extern "C" bool ls_mesh_radio_wanted(void) { return false; }
+extern "C" void ls_mesh_radio_front(bool on) { (void)on; }
+extern "C" void ls_mesh_radio_bg_allow(bool on) { (void)on; }
 extern "C" bool ls_mesh_radio_bg(void) { return false; }
 extern "C" void ls_mesh_radio_block(bool on) { (void)on; }
 extern "C" bool ls_mesh_radio_blocked(void) { return false; }

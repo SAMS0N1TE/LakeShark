@@ -27,7 +27,5 @@
 /**/
 #define LS_BOARD_LINK_RX_GPIO    33
 #define LS_BOARD_LINK_TX_GPIO    32
-#define LS_BOARD_LINK_SCAN_PINS \
-    { 33, 32, 20, 21, 22, 2, 3, 4, 5 }
 
 #endif

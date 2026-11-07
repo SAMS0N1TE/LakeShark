@@ -6,6 +6,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "ls_board.h"
+#include "ls_pins.h"
 #if defined(LS_BOARD_I2C_FROM_BSP)
 #include "bsp/esp-bsp.h"
 #endif
@@ -20,7 +21,7 @@ typedef struct {
 
 /* -1 means the board did not declare this bus.  The IDF port number is fixed
    per role so two boards cannot disagree about which controller is which. */
-static const bus_pins_t BUS[LS_I2C_BUS_COUNT] = {
+static bus_pins_t BUS[LS_I2C_BUS_COUNT] = {
     [LS_I2C_PRIMARY] = {
 #if defined(LS_BOARD_I2C_SDA_GPIO) && defined(LS_BOARD_I2C_SCL_GPIO)
         LS_BOARD_I2C_SDA_GPIO, LS_BOARD_I2C_SCL_GPIO, 0
@@ -49,9 +50,29 @@ static void lock_init_once(void)
     if (!s_lock) s_lock = xSemaphoreCreateMutex();
 }
 
+/* A board with runtime pins puts the IMU bus where the saved table says.
+   On the board bus's own pair it is that bus (one controller, shared). */
+static bool s_secondary_is_primary;
+static void sync_pins(void)
+{
+    static bool done;
+    if (done || !ls_pins_runtime()) return;
+    const int sda = ls_pin(LS_PIN_IMU_SDA), scl = ls_pin(LS_PIN_IMU_SCL);
+    BUS[LS_I2C_SECONDARY].sda = sda;
+    BUS[LS_I2C_SECONDARY].scl = scl;
+#if defined(LS_BOARD_I2C_FROM_BSP)
+    BUS[LS_I2C_SECONDARY].port = 0;   /* the BSP holds I2C1 */
+#else
+    BUS[LS_I2C_SECONDARY].port = 1;
+#endif
+    s_secondary_is_primary = sda == BUS[LS_I2C_PRIMARY].sda && scl == BUS[LS_I2C_PRIMARY].scl;
+    done = ls_pins_ready();
+}
+
 bool ls_i2c_bus_present(ls_i2c_bus_id_t id)
 {
     if (id < 0 || id >= LS_I2C_BUS_COUNT) return false;
+    sync_pins();
     return BUS[id].sda >= 0 && BUS[id].scl >= 0;
 }
 
@@ -67,7 +88,7 @@ esp_err_t ls_i2c_bus(ls_i2c_bus_id_t id, i2c_master_bus_handle_t *out)
 {
     if (!out) return ESP_ERR_INVALID_ARG;
     if (!ls_i2c_bus_present(id)) return ESP_ERR_NOT_SUPPORTED;
-
+    if (id == LS_I2C_SECONDARY && s_secondary_is_primary) return ls_i2c_bus(LS_I2C_PRIMARY, out);
     lock_init_once();
     if (!s_lock) return ESP_ERR_NO_MEM;
 

@@ -1670,23 +1670,6 @@ int flipper_link_snapshot(char *buf, size_t len)
 
 #if LS_HAS_LINK_UART
 
-/**/
-static const int SCAN_PINS[] = LS_BOARD_LINK_SCAN_PINS;
-#define N_SCAN_PINS ((int)(sizeof(SCAN_PINS) / sizeof(SCAN_PINS[0])))
-
-/**/
-#define VBUS_EN_GPIO LS_BOARD_VBUS_EN_GPIO
-#define C6_EN_GPIO   LS_BOARD_C6_EN_GPIO
-
-static const int IDLE_HIGH_PINS[] = { LS_BOARD_LINK_TX_GPIO, 36 };
-
-static bool pin_idles_high(int pin)
-{
-    for (size_t i = 0; i < sizeof(IDLE_HIGH_PINS) / sizeof(IDLE_HIGH_PINS[0]); i++) {
-        if (IDLE_HIGH_PINS[i] == pin) return true;
-    }
-    return false;
-}
 
 static int probe_pin_pct(int pin)
 {
@@ -1723,53 +1706,20 @@ int flipper_link_probe_rx(void)
     esp_log_level_t gpio_lvl = esp_log_level_get("gpio");
     esp_log_level_set("gpio", ESP_LOG_WARN);
 
-    LS_PRINTF(fmt_flipper_link_probing_header_pins_with, "probing %d header pins with a pull-down.\n"
-           "  ~100%% = something external is driving it high (an idle UART TX)\n"
-           "  <100%% = that line is also carrying traffic\n"
-           "     0%% = nothing connected, or the far end is unpowered\n",
-           N_SCAN_PINS);
-
-    int best = -1, best_pct = 0, found = 0;
-    for (int i = 0; i < N_SCAN_PINS; i++) {
-        int pin = SCAN_PINS[i];
-        /**/
-        if (LS_HAS_VBUS_CTRL && pin == VBUS_EN_GPIO) continue;
-        if (pin == C6_EN_GPIO) continue;
-
-        int pct = probe_pin_pct(pin);
-        if (pct < 0) {
-            printf("  GPIO%-2d : (cannot configure)\n", pin);
-            continue;
-        }
-
-        bool baseline = pin_idles_high(pin);
-        printf("  GPIO%-2d : %3d%% high%s\n", pin, pct,
-               baseline ? "   (board pull-up, ignored)"
-                        : (pct > 0 ? "   <-- driven" : ""));
-        if (baseline) continue;
-
-        if (pct > 0) found++;
-        if (pct > best_pct) { best_pct = pct; best = pin; }
-    }
-
-    if (best >= 0) {
-        LS_PRINTF(fmt_flipper_link_probe_gpio_is_being, "probe: GPIO%d is being driven (%d%%). %d pin(s) driven in total.\n",
-               best, best_pct, found);
-        if (best != saved.rx_gpio) {
-            LS_PRINTF(fmt_flipper_link_probe_the_link_expects, "probe: the link expects RX on GPIO%d - the wire is on the "
-                   "wrong pin. `link pins %d %d` to adopt it.\n",
-                   saved.rx_gpio, best, saved.tx_gpio);
-        } else {
-            LS_FPUTS(msg_flipper_link_probe_that_is_the, "probe: that is the configured RX pin - wiring is good.\n", stdout);
-        }
+    /* Only the configured RX pin: the old header sweep is gone. Move the
+       link with `pin set link.rx N` (or the PINS app). */
+    const int pin = saved.rx_gpio;
+    const int pct = pin >= 0 ? probe_pin_pct(pin) : -1;
+    int best = -1;
+    if (pct < 0) {
+        printf("probe: GPIO%d cannot be read\n", pin);
+    } else if (pct > 0) {
+        printf("probe: RX GPIO%d is driven (%d%% high) - wiring is good.\n", pin, pct);
+        best = pin;
     } else {
-        LS_FPUTS(msg_flipper_link_probe_every_pin_followed, "probe: every pin followed the pull-down - the head's TX is not "
-               "reaching any P4 header pin.\n"
-               "       The P4 cannot see C6_IO12/C6_IO13/C6_U0RXD/C6_U0TXD at "
-               "all (those belong to the on-board ESP32-C6), so a jumper one or\n"
-               "       two positions off the mark looks exactly like this. "
-               "Count header positions against the Waveshare pinout, and check "
-               "the head is powered with its app open.\n", stdout);
+        printf("probe: RX GPIO%d followed the pull-down - the head's TX is not on it.\n"
+               "       Check the wire, that the head is powered with its app open,\n"
+               "       or move the link with `pin set link.rx N`.\n", pin);
     }
 
     esp_log_level_set("gpio", gpio_lvl);

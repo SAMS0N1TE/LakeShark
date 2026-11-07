@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "ls_pins.h"
 
 #include "ls_i2c.h"
 
@@ -184,7 +185,7 @@ esp_err_t ls_imu_start(void)
     if (!s_sample_lock) s_sample_lock = xSemaphoreCreateMutexStatic(&s_sample_lock_storage);
     if (s_present) return ESP_OK;
 
-    esp_err_t err = ls_i2c_device(LS_I2C_SECONDARY, LS_BOARD_IMU_I2C_ADDR,
+    esp_err_t err = ls_i2c_device(LS_I2C_SECONDARY, ls_pins_imu_addr(),
                                   100 * 1000, &s_dev);
     if (err != ESP_OK) return err;
 
@@ -193,7 +194,7 @@ esp_err_t ls_imu_start(void)
 
     uint8_t who = 0;
     if (!rd(B0_WHO_AM_I, &who, 1)) {
-        ESP_LOGW(TAG, "no ACK at 0x%02X", LS_BOARD_IMU_I2C_ADDR);
+        ESP_LOGW(TAG, "no ACK at 0x%02X", ls_pins_imu_addr());
         return ESP_ERR_NOT_FOUND;
     }
     if (who != WHO_AM_I_ICM20948) {
@@ -201,7 +202,7 @@ esp_err_t ls_imu_start(void)
            address is not a part number, and guessing is what put two
            addresses in the handoff notes that were never there. */
         ESP_LOGW(TAG, "0x%02X answered 0x%02X, expected 0x%02X for an ICM20948",
-                 LS_BOARD_IMU_I2C_ADDR, who, WHO_AM_I_ICM20948);
+                 ls_pins_imu_addr(), who, WHO_AM_I_ICM20948);
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -228,7 +229,7 @@ esp_err_t ls_imu_start(void)
         return ESP_ERR_INVALID_STATE;
 
     s_present = true;
-    ESP_LOGI(TAG, "ICM20948 verified at 0x%02X: 102.27 Hz, +/-250 dps, +/-2 g, 5.7 Hz LPF", LS_BOARD_IMU_I2C_ADDR);
+    ESP_LOGI(TAG, "ICM20948 verified at 0x%02X: 102.27 Hz, +/-250 dps, +/-2 g, 5.7 Hz LPF", ls_pins_imu_addr());
 
     mag_start();
 

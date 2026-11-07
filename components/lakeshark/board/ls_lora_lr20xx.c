@@ -27,10 +27,21 @@
 #include "ls_xl9535.h"
 #include "settings.h"
 #include "ls_lora_port.h"
+
+/* The Nano (runtime pins: LoRa on a header) is short of internal RAM. There
+   the LoRa hot paths run from flash and task-only tables live in PSRAM; the
+   T-Display keeps them in IRAM / DRAM. ISRs stay IRAM_ATTR everywhere. */
+#if defined(LS_BOARD_PINS_RUNTIME) && LS_BOARD_PINS_RUNTIME
+#define LORA_HOT
+#define LORA_TABLE EXT_RAM_BSS_ATTR
+#else
+#define LORA_HOT IRAM_ATTR
+#define LORA_TABLE
+#endif
+
 #include "ls_textpack.h"
 
-#if LS_HAS_LORA_LR20XX_PROBE && defined(LS_BOARD_LORA_CS_GPIO) && \
-    defined(LS_BOARD_LORA_BUSY_GPIO) && defined(LS_BOARD_XL_RADIO_RST)
+#if LS_HAS_LORA_LR20XX_PROBE && LS_LORA_WIRED
 
 static const char *TAG = "ls_lora_lr";
 
@@ -69,7 +80,7 @@ static unsigned s_exp_preset, s_exp_channel, s_exp_fec;
 
 /* ------------------------------------------------------------------ pure -- */
 
-bool IRAM_ATTR lr20xx_stat_plausible(uint16_t stat)
+bool LORA_HOT lr20xx_stat_plausible(uint16_t stat)
 {
     if (stat & 0xF000u) return false;           /* bits 15:12 are defined 0 */
     if (stat & 0x0008u) return false;           /* rfu */
@@ -102,7 +113,7 @@ float lr20xx_rssi_dbm(uint8_t b0, uint8_t b1)
 
 /* ---------------------------------------------------------------- frames -- */
 
-uint16_t IRAM_ATTR lr20xx_last_stat(void) { return s_stat; }
+uint16_t LORA_HOT lr20xx_last_stat(void) { return s_stat; }
 uint32_t lr20xx_last_irq(void)  { return s_irq; }
 
 /* The last few frames, opcode and the Stat each one clocked back: Stat in a
@@ -144,7 +155,7 @@ static bool take_reset(uint16_t stat)
     return r;
 }
 
-static esp_err_t IRAM_ATTR frame(uint8_t *io, size_t n)
+static esp_err_t LORA_HOT frame(uint8_t *io, size_t n)
 {
     spi_device_handle_t dev = ls_lora_hw_dev();
     if (!dev) return ESP_ERR_INVALID_STATE;
@@ -192,7 +203,7 @@ esp_err_t lr20xx_write(uint16_t op, const uint8_t *args, size_t n)
     LOCKED_RET(esp_err_t, write_locked(op, args, n));
 }
 
-static esp_err_t IRAM_ATTR read_locked(uint16_t op, const uint8_t *args, size_t n,
+static esp_err_t LORA_HOT read_locked(uint16_t op, const uint8_t *args, size_t n,
                              uint8_t *out, size_t m)
 {
     if (2 + n > FRAME_MAX || 2 + m > FRAME_MAX || m > 14 || (n && !args))
@@ -591,7 +602,7 @@ esp_err_t lr20xx_clear_rx_fifo(void)
     return lr20xx_write(LR20XX_OP_CLEAR_RX_FIFO, NULL, 0);
 }
 
-static esp_err_t IRAM_ATTR get_rx_fifo_level_locked(uint16_t *level)
+static esp_err_t LORA_HOT get_rx_fifo_level_locked(uint16_t *level)
 {
     uint8_t d[2] = { 0, 0 };
     esp_err_t err = read_locked(LR20XX_OP_GET_RX_FIFO_LVL, NULL, 0, d, sizeof(d));
@@ -608,11 +619,11 @@ esp_err_t lr20xx_get_rx_fifo_level(uint16_t *level)
     LOCKED_RET(esp_err_t, get_rx_fifo_level_locked(level));
 }
 
-static bool IRAM_ATTR read_stat_ok(void);
+static bool LORA_HOT read_stat_ok(void);
 
 #define FIFO_READ_MAX 257   /* the 259-byte packet buffer less the two Stat bytes */
 
-static esp_err_t IRAM_ATTR read_rx_fifo_locked(uint8_t *dst, size_t n)
+static esp_err_t LORA_HOT read_rx_fifo_locked(uint8_t *dst, size_t n)
 {
     uint8_t *pkt = ls_lora_hw_pkt();
     if (!pkt) return ESP_ERR_INVALID_STATE;
@@ -875,7 +886,7 @@ esp_err_t lr20xx_lora_set_syncword(uint8_t sync_word)
 }
 
 /* A read whose Stat says it was answered. */
-static bool IRAM_ATTR read_stat_ok(void)
+static bool LORA_HOT read_stat_ok(void)
 {
     const uint16_t s = lr20xx_last_stat();
     return lr20xx_stat_plausible(s) && s != 0x0000 && LR20XX_STAT_CMD(s) >= LR20XX_CMD_OK;
@@ -1336,7 +1347,7 @@ static void heal(void);
 #define MODES_QMAX    9                     /* whole Mode S frames in the 256-byte FIFO */
 #define MODES_STALE_POLLS 3
 
-static struct {
+LORA_TABLE static struct {
     bool     active;
     /* The OOK session rather than Mode S: the same machinery, its numbers
        from lr20xx_ook_rx_begin rather than the Mode S constants. */
@@ -3723,7 +3734,7 @@ static struct {
     uint32_t ups, downs, write_errors;
 } s_iqagc;
 
-static int IRAM_ATTR iqagc_peak(const uint8_t *d, size_t n, int peak)
+static int LORA_HOT iqagc_peak(const uint8_t *d, size_t n, int peak)
 {
     for (size_t i = 0; i + 1 < n; i += 2) {
         int v = (int16_t)(d[i] | (d[i + 1] << 8));
@@ -3736,7 +3747,7 @@ static int IRAM_ATTR iqagc_peak(const uint8_t *d, size_t n, int peak)
 /* IQ8 is the top byte of the same scale (lr20xx_iq_expand8 multiplies by
    256), so its peak meets the same 16-bit thresholds: clip at |v| >= 102,
    quiet below 23. */
-static int IRAM_ATTR iqagc_peak8(const uint8_t *d, size_t n, int peak)
+static int LORA_HOT iqagc_peak8(const uint8_t *d, size_t n, int peak)
 {
     int top = peak >> 8;
     for (size_t i = 0; i < n; ++i) {
@@ -3771,7 +3782,7 @@ static esp_err_t iqagc_begin_locked(uint32_t hz, int mode)
 }
 
 /* After a drain: one step at most, down fast, up slowly. */
-static void IRAM_ATTR iqagc_after_drain(int64_t now)
+static void LORA_HOT iqagc_after_drain(int64_t now)
 {
     if (s_iqagc.mode != LS_IQ_GAIN_AUTO || !s_iqagc.gain) return;
     if (s_iqagc.peak >= IQAGC_CLIP) {
@@ -3804,7 +3815,7 @@ typedef struct {
     void *context;
 } iq_delivery_t;
 
-static bool IRAM_ATTR iq_deliver(const iq_delivery_t *sink, const uint8_t *data,
+static bool LORA_HOT iq_deliver(const iq_delivery_t *sink, const uint8_t *data,
         size_t bytes, uint64_t first, const lr20xx_stream_result_t *out)
 {
     return sink->block ? sink->block(sink->context, data, bytes, first,
@@ -3821,7 +3832,7 @@ static void iq_note_flags(lr20xx_stream_result_t *out, uint8_t flags, int64_t st
     out->fifo_flags |= flags;
 }
 
-static esp_err_t IRAM_ATTR iq_check_flags(lr20xx_stream_result_t *out, int64_t started)
+static esp_err_t LORA_HOT iq_check_flags(lr20xx_stream_result_t *out, int64_t started)
 {
     uint8_t flags[2] = {0};
     esp_err_t err = read_locked(0x011B, NULL, 0, flags, 2);
@@ -3833,7 +3844,7 @@ static esp_err_t IRAM_ATTR iq_check_flags(lr20xx_stream_result_t *out, int64_t s
     return err;
 }
 
-static void IRAM_ATTR iq_publish(const iq_delivery_t *sink, const uint8_t *pending,
+static void LORA_HOT iq_publish(const iq_delivery_t *sink, const uint8_t *pending,
         size_t bytes, lr20xx_stream_result_t *out)
 {
     const unsigned pair_bytes = out->format == LR20XX_IQ8 ? 2 : 4;
@@ -3849,7 +3860,7 @@ static void IRAM_ATTR iq_publish(const iq_delivery_t *sink, const uint8_t *pendi
 /* One 0x0001 command, not repeated 62-byte FIFO commands. frame has a
    padded 1024-byte internal allocation for the CPU tail's word access. */
 static int64_t s_iq_busy_us; /* BUSY wait of the last FIFO read */
-static esp_err_t IRAM_ATTR iq_read_fifo(uint8_t *frame_data, size_t n)
+static esp_err_t LORA_HOT iq_read_fifo(uint8_t *frame_data, size_t n)
 {
     const int64_t busy_start = esp_timer_get_time();
     const bool ready = ls_lora_hw_wait_not_busy(20);
@@ -3865,7 +3876,7 @@ static esp_err_t IRAM_ATTR iq_read_fifo(uint8_t *frame_data, size_t n)
     return err;
 }
 
-static esp_err_t IRAM_ATTR iq_stream_loop(unsigned duration_ms, const iq_delivery_t *sink,
+static esp_err_t LORA_HOT iq_stream_loop(unsigned duration_ms, const iq_delivery_t *sink,
         lr20xx_stream_result_t *out, bool checked, bool live,
         unsigned capacity, uint8_t *data, uint8_t *pending, size_t *tail_bytes,
         esp_timer_handle_t wake_timer, iq_wake_context_t *wake)
@@ -4693,8 +4704,8 @@ LR_CMD lrble_command(int argc, char **argv)
     if (!ok || argc > 5) { puts(LS_TEXT(msg_ls_lora_lr20xx_usage_lora_lrble_37, "usage: lora lrble <37|38|39> [seconds 1..600] [1m|2m|s2|s8]")); return 1; }
     esp_err_t err = lr20xx_exp_begin(LR20XX_ENGINE_BLE, preset, ch, 0);
     if (err != ESP_OK) { printf("lrble: start %s\n", esp_err_to_name(err)); return 1; }
-    static uint8_t frame[260];
-    static uint8_t seen[64][6];
+    LORA_TABLE static uint8_t frame[260];
+    LORA_TABLE static uint8_t seen[64][6];
     unsigned nseen = 0, good = 0, bad = 0;
     const int64_t end = esp_timer_get_time() + (int64_t)secs * 1000000;
     static const char *const types[] = {"ADV_IND", "DIRECT", "NONCONN", "SCAN_REQ", "SCAN_RSP",

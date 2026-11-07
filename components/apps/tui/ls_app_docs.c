@@ -267,6 +267,14 @@ const ls_app_doc_t ls_doc_settings = {
     .gps     = LS_APP_GPS_UNUSED,
 };
 
+const ls_app_doc_t ls_doc_pins = {
+    .purpose = "Where the add-on parts are wired: GPS, a LoRa or LR2021 module, "
+               "a nine-axis IMU and the Flipper link. Pick a line, step or type "
+               "its GPIO, save, and reboot to apply.",
+    .records = LS_APP_RECORDS_NOTHING,
+    .gps     = LS_APP_GPS_UNUSED,
+};
+
 const ls_app_doc_t ls_doc_tiles = {
     .purpose = LS_TXT(doc_tiles_purpose, "Install and manage CartoCore map regions on the SD card. Download over WiFi or receive a file from a laptop. OPEN displays the selected map."),
     .records = LS_APP_RECORDS_NOTHING,
@@ -398,6 +406,7 @@ const ls_app_doc_row_t ls_app_docs_all[] = {
     { "terminal", &ls_doc_terminal },
     { "update",  &ls_doc_update   },
     { "set",     &ls_doc_settings},
+    { "pins",    &ls_doc_pins    },
     { "map",     &ls_doc_map     },
     { "tiles",   &ls_doc_tiles   },
     { "gps",     &ls_doc_gps     },

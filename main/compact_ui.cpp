@@ -1598,6 +1598,21 @@ static bool tui_session(void)
             const int rc = ls_app_register(&meters);
             if (rc < 0) ESP_LOGE("tdp_ui", "could not register app meters: %s", ls_app_register_why(rc));
         }
+        /* PINS: add-on wiring (boards with runtime pins: the Nano). Its own
+           tile, a header strip, in the slot beside METERS. */
+#if defined(LS_BOARD_PINS_RUNTIME) && LS_BOARD_PINS_RUNTIME
+        if (!cell_performance_active()) {
+            extern const ls_tui_screen_t ls_scr_pins;
+            static const char PINS_ART[LS_ICON_ROWS][LS_ICON_COLS + 1] = {
+                " .------. ", " |oooooo| ", " |oooooo| ", " '------' ", "  ||||||  ", "  ''''''  ",
+            };
+            const ls_app_t pins = { "pins", "PINS", "add-on wiring",
+                ls_icon_art(LS_ICON_ART_MAX - 2, PINS_ART, LS_ICON_CHIP), TUI_GREEN,
+                LS_APP_EXTRA, &ls_scr_pins, nullptr, &ls_doc_pins };
+            const int rc = ls_app_register(&pins);
+            if (rc < 0) ESP_LOGE("tdp_ui", "could not register app pins: %s", ls_app_register_why(rc));
+        }
+#endif
 
         {
             static const char *const TABS[] = { "home", "mesh", "radios", "set" };
