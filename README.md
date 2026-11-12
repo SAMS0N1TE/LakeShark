@@ -113,14 +113,16 @@ screen, mouse and keyboard over one USB cable.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.21.3">Get 2.21.3</a>
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.21.3">Get 2.21.3 for T-Display</a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.21.4">Get 2.21.4 for Desktop and NANO</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/SAMS0N1TE/LakeShark/blob/main/app-sdk/README.md#your-first-app-in-5-minutes">Make your first app</a>
 </p>
 
 <h2 align="center">What's New</h2>
 
-<p align="center"><strong>2.21.4:</strong> Studio app installs on the ESP32-P4-NANO no longer fail · New desktop and Studio installer</p>
+<p align="center"><strong>2.21.4 (Desktop, Studio, ESP32-P4-NANO):</strong> Studio app installs on the NANO no longer fail · New desktop and Studio installer · T-Display boards: 2.21.3 is current</p>
 <p align="center"><strong>2.21.3:</strong> FREQS frequency library with imports and NEAR · MESHTASTIC app · Lists scroll under a finger · FM waterfall ZOOM to 32x</p>
 <p align="center">SUB-GHZ WATCH, READ and BAND · P25 shows why a grant was not followed · The LR2021 moves cleanly between apps</p>
 <p align="center"><strong>2.21:</strong> DOPPLER RADAR with two boards · FREQ OFFSET for crystal LR2021 modules · UAT 978 hears every frame</p>
