@@ -40,9 +40,9 @@ On-chip waterfall · On-chip down-conversion · Background LoRa scan · FM at ha
     <tr><th>Hardware</th><th>Use</th><th>Firmware</th></tr>
   </thead>
   <tbody>
-    <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>2.21.2 stable</td></tr>
-    <tr><td><strong>LILYGO T-Display P4 TFT</strong></td><td>Handheld</td><td>2.21.2 stable</td></tr>
-    <tr><td><strong>LILYGO T-Display P4, LR edition</strong> (LR2021 only)</td><td>Handheld</td><td>2.21.2 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>2.21.3 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4 TFT</strong></td><td>Handheld</td><td>2.21.3 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4, LR edition</strong> (LR2021 only)</td><td>Handheld</td><td>2.21.3 stable</td></tr>
     <tr><td><strong>Waveshare ESP32-P4-NANO-DB</strong> (P4 rev 3, ESP32-C5)</td><td>LakeShark Desktop</td><td>2.21.2 stable</td></tr>
     <tr><td><strong>Waveshare ESP32-P4-NANO</strong></td><td>Headless (serial, Flipper)</td><td>2.0.2 in the installer, newer from source</td></tr>
     <tr><td><strong>Waveshare Touch-LCD-4.3, Touch-LCD-4B, Smart 86 Box</strong></td><td>Touch screen</td><td>Up to 2.16.4, no longer updated</td></tr>
@@ -113,13 +113,15 @@ screen, mouse and keyboard over one USB cable.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.21.2">Get 2.21.2</a>
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.21.3">Get 2.21.3</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/SAMS0N1TE/LakeShark/blob/main/app-sdk/README.md#your-first-app-in-5-minutes">Make your first app</a>
 </p>
 
 <h2 align="center">What's New</h2>
 
+<p align="center"><strong>2.21.3:</strong> FREQS frequency library with imports and NEAR · MESHTASTIC app · Lists scroll under a finger · FM waterfall ZOOM to 32x</p>
+<p align="center">SUB-GHZ WATCH, READ and BAND · P25 shows why a grant was not followed · The LR2021 moves cleanly between apps</p>
 <p align="center"><strong>2.21:</strong> DOPPLER RADAR with two boards · FREQ OFFSET for crystal LR2021 modules · UAT 978 hears every frame</p>
 <p align="center">New SETTINGS pages · POWER modes with WATCH · GPS standby saves about 23 mA · Redrawn MUSIC views</p>
 <p align="center"><strong>2.21.1 and 2.21.2:</strong> Sharp street-level MAP zooms · RTL-SDR Blog V4 FM and REC · Steady P25 GPS sites</p>
@@ -131,7 +133,7 @@ screen, mouse and keyboard over one USB cable.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.21.2">Release notes</a>
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.21.3">Release notes</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/SAMS0N1TE/LakeShark/releases">All releases</a>
 </p>
