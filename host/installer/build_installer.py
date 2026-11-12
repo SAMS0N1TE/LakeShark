@@ -1,6 +1,7 @@
 """Build the release desktop exe with its private buildenv, then Inno Setup 6."""
 import argparse
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -16,7 +17,9 @@ def main():
     a = ap.parse_args()
     subprocess.run([a.python, str(REPO / "host/lsterm/build_app.py"), "--release"], cwd=REPO, check=True)
     subprocess.run([a.iscc, str(REPO / "host/installer/lakeshark.iss")], cwd=REPO, check=True)
-    installer = REPO / "build_installer/LakeShark-Setup-2.20.0.exe"
+    iss = (REPO / "host/installer/lakeshark.iss").read_text("utf-8")
+    version = re.search(r'^#define AppVersion "([^"]+)"', iss, re.M)[1]
+    installer = REPO / ("build_installer/LakeShark-Setup-%s.exe" % version)
     print("Built %s (%d bytes)" % (installer, installer.stat().st_size))
     return 0
 

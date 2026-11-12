@@ -69,10 +69,33 @@ def app_name(data):
     return m["id"] + ".lap", m
 
 
-def do_install(sess, data, name, progress=None, window=4):
+# A board's console reads through a 256-byte UART buffer and answers a line
+# only after echoing it and writing the chunk to the card. Two lines in flight
+# (about 220 bytes) always fit; four overran it on the P4-NANO, and the lost
+# bytes came back as "APP ERR base64" or "APP ERR seq".
+WINDOW = 2
+# Replies that mean a line was damaged or lost on the way, not a real refusal.
+RESEND = re.compile(r"APP ERR (seq|base64) |out of step|did not answer")
+
+
+def do_install(sess, data, name, progress=None, window=WINDOW):
     """Upload `data` as /sdcard/apps/NAME. progress(sent, total, text) is called
     as it goes. `window` data lines may be in flight before their replies.
+    A line lost on the way starts the upload again, one line at a time.
     Returns the board's final reply line."""
+    try:
+        return _upload(sess, data, name, progress, window)
+    except BoardError as e:
+        if window <= 1 or not RESEND.search(str(e)):
+            raise
+    say = progress or (lambda *a: None)
+    say(0, len(data), "a line was lost; sending again, one at a time")
+    while sess.get(0.5) is not None:        # replies to the lines still in flight
+        pass
+    return _upload(sess, data, name, progress, 1)
+
+
+def _upload(sess, data, name, progress, window):
     total = len(data)
     if not 52 <= total <= 512 * 1024:
         raise BoardError("app must be 52..524288 bytes")

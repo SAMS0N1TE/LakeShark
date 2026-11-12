@@ -52,6 +52,7 @@ class FakeBoard:
         self.ids = {}                   # id -> name
         self.up = None                  # the upload in progress
         self.corrupt = False
+        self.lose = 0                   # lines to lose on the way, as an overrun does
         self.feed = False
         self.out = bytearray()
         self.cv = threading.Condition()
@@ -117,6 +118,10 @@ class FakeBoard:
                 return self.say("APP ERR seq sequence must be contiguous from zero")
             chunk = base64.b64decode(w[3])
             if len(w[3]) > 96 or len(chunk) > 72:
+                self.up = None
+                return self.say("APP ERR base64 invalid base64 chunk")
+            if self.lose and self.up["seq"] == 5:          # a UART overrun ate a byte
+                self.lose -= 1
                 self.up = None
                 return self.say("APP ERR base64 invalid base64 chunk")
             if self.corrupt and self.up["seq"] == 3:
@@ -388,6 +393,19 @@ def main():
     except lapboard.BoardError as e:
         check("the board refuses a corrupted upload", "SHA256 mismatch" in str(e), e)
     board.corrupt = False
+
+    # 7. a line lost on the way (a UART overrun): sent again, one line at a time
+    board.apps.clear()
+    board.ids.clear()
+    board.lose = 1
+    said = []
+    try:
+        name, manifest, reply = lapboard.install(lk, data, lambda a, b, t: said.append(t))
+        check("a lost line is sent again", board.apps.get("demo.lap") == data and reply == "APP OK end demo.lap", reply)
+        check("  and the progress said so", any("sending again" in t for t in said), said[-5:])
+    except lapboard.BoardError as e:
+        check("a lost line is sent again", False, e)
+    board.lose = 0
 
     print("FAIL: %d" % len(FAILS) if FAILS else "PASS: all")
     return 1 if FAILS else 0

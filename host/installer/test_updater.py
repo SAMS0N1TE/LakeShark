@@ -29,6 +29,8 @@ def manifest(version="2.20.1", **kw):
             "sha256": hashlib.sha256(PAYLOAD).hexdigest(), "size": len(PAYLOAD), "notes": "An update. One more sentence."} | kw
 
 
+REAL_APP_VERSION = updates.app_version   # setUp patches app_version; the built installer has the real one
+
 class Fixture(BaseHTTPRequestHandler):
     data = manifest()
     hits = 0
@@ -64,6 +66,9 @@ class UpdaterTests(unittest.TestCase):
         env = patch.dict(os.environ, {"LSDK_UPDATER_TEST_URL": self.url + "/latest.json"})
         env.start()
         self.addCleanup(env.stop)
+        ver = patch.object(updates, "app_version", return_value="2.20.0-rc1")   # not the AppVersion being built
+        ver.start()
+        self.addCleanup(ver.stop)
         self.up = updates.Updater(self.root / "studio.json")
         self.up.version = "2.20.0-rc1"
         Fixture.data = manifest()
@@ -267,7 +272,7 @@ class UpdaterTests(unittest.TestCase):
                 http.server_close()
 
     def test_make_latest_on_built_installer(self):
-        version = updates.app_version()
+        version = REAL_APP_VERSION()
         installer = REPO / ("build_installer/LakeShark-Setup-" + version + ".exe")
         self.assertTrue(installer.is_file(), "build the installer before this integration check")
         data = make_latest(installer, self.root / "latest.json", "A release for testing.")

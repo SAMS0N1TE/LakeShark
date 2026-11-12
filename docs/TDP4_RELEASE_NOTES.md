@@ -1,5 +1,11 @@
 # LakeShark release notes
 
+## 2.21.4
+
+- LakeShark Studio and lsdk: installing an app on an ESP32-P4-NANO no longer stops with "invalid base64 chunk" or "sequence must be contiguous from zero". The upload keeps two lines in flight, and a line lost on the way starts the upload again one line at a time.
+- LakeShark Desktop and Studio 2.21.4 installer, with the 2.21 desktop and Studio changes; the desktop app offers it as an update.
+- ESP32-P4-NANO desktop firmware 2.21.4, built from 2.21.3. The T-Display boards stay on 2.21.3.
+
 ## 2.21.3
 
 - FREQS, the frequency library: banks of frequencies on the card (CSV, plus CHIRP, gqrx and SDR++ imports), filters by band, group, NEAR (by GPS) and FIND, and TUNE straight into FM, P25, SUB-GHZ or LORA LABS in the right mode. SAVE TO FREQS from FM, SUB-GHZ, P25, LORA LABS and CELL WATCH. Ships with 566 sourced frequencies for Argentina.

@@ -23,6 +23,10 @@ static ls_mesh_stats_t s_stats = {
 
 void ls_mesh_get_stats(ls_mesh_stats_t *o) { if (o) *o = s_stats; }
 bool ls_mesh_running(void) { return s_stats.running; }
+/* The sim has MeshCore only: no MESHTASTIC primary, nothing holds the chip. */
+void ls_mesh_radio_front(bool on) { (void)on; }
+int ls_mesh_primary(void) { return 0; }
+esp_err_t ls_mesh_set_primary(int p) { return p ? ESP_ERR_NOT_SUPPORTED : ESP_OK; }
 bool ls_mesh_tx_enabled(void) { return s_stats.tx_enabled; }
 void ls_mesh_set_tx(bool on) { s_stats.tx_enabled = on; }
 esp_err_t ls_mesh_start(void) { s_stats.running = true; return 0; }
