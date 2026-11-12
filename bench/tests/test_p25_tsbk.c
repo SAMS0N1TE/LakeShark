@@ -421,6 +421,59 @@ LS_CASE(vendor_mfid_is_counted_not_parsed_as_standard_grant)
     LS_EQ_UINT(state.p25_tsbk_vendor_count, 2);
 }
 
+LS_CASE(motorola_patch_grants_queue_like_standard_grants)
+{
+    dsd_state state = { 0 };
+    uint8_t block[12] = { 0 };
+    state.p25_iden_table[3].valid = 1;
+    state.p25_iden_table[3].base_hz = 850000000;
+    state.p25_iden_table[3].spacing_hz = 12500;
+
+    /* MFID 0x90 opcode 0x02 GRG_CN_GRANT: 0x00's layout. */
+    block[0] = 0x80 | 0x02;
+    block[1] = 0x90;
+    set_bits(block, 24, 16, 0x302a);
+    set_bits(block, 40, 16, 0x4567);
+    set_bits(block, 56, 24, 0x123456);
+    add_crc(block);
+    LS_EQ_INT(p25_tsbk_parse(&state, block), 1);
+    LS_EQ_UINT(state.p25_mot_grant_count, 1);
+    LS_EQ_UINT(state.p25_tsbk_vendor_ops[0x02], 1);
+    LS_EQ_UINT(state.p25_grant_count, 1);
+    LS_EQ_UINT(state.p25_grants[0].talkgroup, 0x4567);
+    LS_EQ_UINT(state.p25_grants[0].source, 0x123456);
+    LS_EQ_UINT(state.p25_grants[0].carrier_hz, 850525000ull);
+    LS_EQ_INT(state.p25_grants[0].support, P25_CALL_PHASE1);
+
+    /* Opcode 0x03 GRG_CN_GRANT_UPDT: two channel/group pairs, like 0x02. */
+    memset(block, 0, sizeof(block));
+    block[0] = 0x80 | 0x03;
+    block[1] = 0x90;
+    set_bits(block, 16, 16, 0x3010);
+    set_bits(block, 32, 16, 0x0101);
+    set_bits(block, 48, 16, 0x3020);
+    set_bits(block, 64, 16, 0x0202);
+    add_crc(block);
+    LS_EQ_INT(p25_tsbk_parse(&state, block), 1);
+    LS_EQ_UINT(state.p25_mot_grant_count, 2);
+    LS_EQ_UINT(state.p25_grant_count, 2);   /* each parse is its own batch */
+    LS_EQ_UINT(state.p25_grants[0].talkgroup, 0x0101);
+    LS_EQ_UINT(state.p25_grants[0].carrier_hz, 850200000ull);
+    LS_EQ_UINT(state.p25_grants[1].talkgroup, 0x0202);
+    LS_EQ_UINT(state.p25_grants[1].carrier_hz, 850400000ull);
+
+    /* Other Motorola opcodes are still only counted. */
+    memset(block, 0, sizeof(block));
+    block[0] = 0x80 | 0x00;
+    block[1] = 0x90;
+    set_bits(block, 24, 16, 0x302a);
+    add_crc(block);
+    LS_EQ_INT(p25_tsbk_parse(&state, block), 0);
+    LS_EQ_UINT(state.p25_grant_count, 0);
+    LS_EQ_UINT(state.p25_tsbk_vendor_ops[0x00], 1);
+    LS_EQ_UINT(state.p25_tsbk_vendor_count, 3);
+}
+
 LS_CASE(identifier_15_writes_last_slot_only)
 {
     dsd_state state = { 0 };

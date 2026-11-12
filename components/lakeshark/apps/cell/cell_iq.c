@@ -37,7 +37,6 @@ static bool ui_busy, ui_auto, ui_stop;
 static cell_session_t session;
 static char session_path[112];
 static portMUX_TYPE status_lock=portMUX_INITIALIZER_UNLOCKED;
-static const uint32_t auto_centers[]={739000000,751000000,881500000,1981250000,1992500000,2150000000};
 static int ui_phase;
 static cell_iq_status_t ui_status;
 static uint32_t ui_hz,ui_rate,ui_ms;
@@ -386,7 +385,7 @@ static void capture_worker(void *unused)
 {
     (void)unused;
     do {
-        if(ui_auto && session.multi)__atomic_store_n(&ui_hz,auto_centers[session.channel],__ATOMIC_RELEASE);
+        if(ui_auto && session.multi)__atomic_store_n(&ui_hz,cell_hrf_centers[session.channel],__ATOMIC_RELEASE);
         __atomic_store_n(&ui_phase,CELL_IQ_RECEIVING,__ATOMIC_RELEASE);
         vTaskPrioritySet(NULL,8);
         capture_once();

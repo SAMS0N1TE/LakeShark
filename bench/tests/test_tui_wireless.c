@@ -11,6 +11,8 @@
 #include <string.h>
 
 extern const ls_tui_screen_t ls_scr_wireless;
+static const ls_opt_ctx_t *opened_options;   /* the list the screen opened last */
+static bool opt_row(const char *label);
 static ls_wireless_snapshot_t model;
 static ls_wireless_op_t operation;
 static char joined[33], password[65];
@@ -54,9 +56,10 @@ static void draw(void)
 }
 static bool tap(const char *text)
 {
-    /* Buttons carry their key only while a keyboard is attached. */
+    /* Tabs carry their key inline while a keyboard is attached; the raised
+       bar's keys wear theirs on a corner badge, so its labels are bare. */
     const bool bottom_button = text[0] == '[' && text[1] != 'B' && text[1] != 'W';
-    if (!keyboard && text[0] == '[' && strlen(text) > 4 && text[2] == ']') text += 4;
+    if ((!keyboard || bottom_button) && text[0] == '[' && strlen(text) > 4 && text[2] == ']') text += 4;
     for (int row_index = 0; row_index < height; row_index++) {
         int y = bottom_button ? height - 1 - row_index : row_index;
         char row[129];
@@ -96,7 +99,10 @@ LS_CASE(wifi_and_bluetooth_buttons_work_in_both_orientations)
         setup(landscape);
         LS_CHECK(active);
         LS_CHECK(tap("[S] SCAN")); LS_EQ_INT(operation, LS_WIRELESS_SCAN);
-        LS_CHECK(tap("[R] AUTO")); LS_EQ_INT(operation, LS_WIRELESS_SAVED);
+        /* AUTO is the CONNECT SAVED row of OPTIONS now. */
+        opened_options = NULL;
+        LS_CHECK(tap("[O] OPTIONS")); LS_CHECK(opened_options && !strcmp(opened_options->name, "WI-FI"));
+        LS_CHECK(opt_row("CONNECT SAVED")); LS_EQ_INT(operation, LS_WIRELESS_SAVED);
         LS_CHECK(tap("[D] LEAVE")); LS_EQ_INT(operation, LS_WIRELESS_LEAVE);
         operation = LS_WIRELESS_NONE;
         ls_scr_wireless.key(LS_TK_CHAR, 'f'); LS_EQ_INT(operation, LS_WIRELESS_NONE);
@@ -132,7 +138,7 @@ LS_CASE(paged_network_tap_joins_the_name_that_was_drawn)
 LS_CASE(manual_ssid_password_and_cancel_use_the_shared_keyboard)
 {
     setup(false);
-    LS_CHECK(tap("[M] MANUAL"));
+    ls_scr_wireless.key(LS_TK_CHAR, 'o'); LS_CHECK(opt_row("HIDDEN NETWORK"));
     const char *ssid = "HiddenNet";
     for (const char *p = ssid; *p; p++) ls_keyboard_key(LS_TK_CHAR, *p);
     ls_keyboard_key(LS_TK_ENTER, 0);
@@ -141,7 +147,7 @@ LS_CASE(manual_ssid_password_and_cancel_use_the_shared_keyboard)
     LS_EQ_INT(operation, LS_WIRELESS_JOIN);
     LS_CHECK(!strcmp(joined, ssid)); LS_CHECK(!password[0]);
     operation = LS_WIRELESS_NONE;
-    LS_CHECK(tap("[M] MANUAL"));
+    ls_scr_wireless.key(LS_TK_CHAR, 'o'); LS_CHECK(opt_row("HIDDEN NETWORK"));
     ls_keyboard_key(LS_TK_ESC, 0);
     LS_EQ_INT(operation, LS_WIRELESS_NONE);
 }
@@ -158,10 +164,12 @@ LS_CASE(remote_ssh_buttons_port_learn_and_forget)
     setup(false);
     ls_scr_wireless.key(LS_TK_CHAR, 'e'); draw();
     ls_rterm_status_t st;
-    /* 'o' is the web screen's, not the port's. */
+    /* 'o' is OPTIONS, as everywhere; the web screen is M now. */
+    opened_options = NULL;
     ls_scr_wireless.key(LS_TK_CHAR, 'o');
     LS_CHECK(!ls_keyboard_active());
-    LS_CHECK(tap("PORT"));
+    LS_CHECK(opened_options && !strcmp(opened_options->name, "REMOTE"));
+    LS_CHECK(opt_row("SSH PORT"));
     LS_CHECK(ls_keyboard_active());
     type_field("2323");                         /* telnet's: refused */
     ls_rterm_status(&st); LS_EQ_INT(st.ssh_port, 22);
@@ -170,16 +178,16 @@ LS_CASE(remote_ssh_buttons_port_learn_and_forget)
     type_field("2222");
     ls_rterm_status(&st); LS_EQ_INT(st.ssh_port, 2222);
     draw();
-    LS_CHECK(tap("LEARN"));
+    LS_CHECK(opt_row("LEARN SSH KEYS"));
     ls_rterm_status(&st); LS_CHECK(st.ssh_learn_s > 0);
     draw();
-    LS_CHECK(tap("STOP"));
+    LS_CHECK(opt_row("LEARN SSH KEYS"));          /* the same row stops it */
     ls_rterm_status(&st); LS_EQ_INT(st.ssh_learn_s, 0);
     LS_CHECK(st.ssh_keys > 0);
-    LS_CHECK(tap("FORGET"));
+    LS_CHECK(opt_row("FORGET SSH KEYS"));
     type_field("no");
     ls_rterm_status(&st); LS_CHECK(st.ssh_keys > 0);
-    LS_CHECK(tap("FORGET"));
+    LS_CHECK(opt_row("FORGET SSH KEYS"));
     type_field("Yes");
     ls_rterm_status(&st); LS_EQ_INT(st.ssh_keys, 0);
     ls_scr_wireless.leave();
@@ -222,6 +230,21 @@ LS_CASE(history_handles_counter_wrap_and_reconnect)
 
 static const ls_opt_ctx_t *opened_options;
 void ls_opt_open(const ls_opt_ctx_t *ctx) { opened_options = ctx; }
+ls_btn_t ls_opt_button(const ls_opt_ctx_t *ctx) { return (ls_btn_t){ "OPTIONS", ctx ? ctx->name : NULL, LS_OPT_KEY, false, false }; }
+/* Run a row of the list the screen opened last, the way the real list would. */
+static bool opt_row(const char *label)
+{
+    if (!opened_options) return false;
+    for (int i = 0; i < opened_options->n; i++) {
+        const ls_opt_t *o = &opened_options->opt[i];
+        if (strcmp(o->label, label)) continue;
+        if (o->why_not && o->why_not(o)) return false;
+        if (o->act) o->act(o);
+        return true;
+    }
+    return false;
+}
+
 void ls_tui_geometry(int *cols, int *rows, int *cw, int *ch)
 {
     if (cols) *cols = width;
@@ -389,7 +412,8 @@ void ls_tui_screen_show(int index) { shown_screen = index; }
 LS_CASE(drones_navigation_uses_router_for_touch_and_keyboard) {
     for (int landscape = 0; landscape < 2; ++landscape) {
         setup(landscape); shown_screen = -1;
-        LS_CHECK(tap("DRONES"));
+        LS_CHECK(!on_screen("DRONES"));                /* not a tab: it is an app */
+        ls_scr_wireless.key(LS_TK_CHAR, 'o'); LS_CHECK(opt_row("DRONE WATCH"));
         LS_EQ_INT(shown_screen, ls_tui_screen_index_of(&ls_scr_drones));
         shown_screen = -1; ls_scr_wireless.key(LS_TK_CHAR, 'g');
         LS_EQ_INT(shown_screen, ls_tui_screen_index_of(&ls_scr_drones));

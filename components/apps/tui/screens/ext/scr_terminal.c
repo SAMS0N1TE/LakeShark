@@ -5,6 +5,7 @@
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
 #include "../../ls_keyboard.h"
+#include "../../ls_drag_scroll.h"
 #include "../../ls_motion.h"
 #include "../../ls_term.h"
 #include "esp_attr.h"
@@ -26,6 +27,7 @@ static bool     s_view_ok;
 static int      s_hist_at;       /* 0: the line being typed; n: the n-th newest */
 static int      s_back;          /* rows scrolled back from the newest */
 static int      s_page = 8;      /* rows one scroll moves; set by draw */
+static ls_drag_scroll_t s_drag;  /* a finger carrying the scrollback */
 static bool     s_runner;
 static bool     s_greeted;
 static int      s_bar_n;
@@ -245,6 +247,10 @@ static void draw(tui_surface *sf, tui_rect a)
     const int total = rows_of(NULL, out, s_view, out.w, 0);
     const int most = total > out.h ? total - out.h : 0;
     if (s_back > most) s_back = most;
+    /* Dragged from the top row: a finger moving down reaches back into
+       history, up comes forward; back at the newest row it follows output. */
+    int first = most - s_back;
+    if (ls_drag_scroll(&s_drag, out, 1, &first, total, out.h)) s_back = most - first;
     rows_of(sf, out, s_view, out.w, most - s_back);
     s_out_hit = out;
     if (s_back) {
@@ -277,7 +283,7 @@ static void draw(tui_surface *sf, tui_rect a)
     const char *foot = s_note[0] ? s_note
                      : !s_runner ? "no command runner: not enough internal memory"
                      : ls_tui_keyboard_mode() ? ""
-                     : "KEYS to type; tap the text to scroll";
+                     : "KEYS to type; drag the text to scroll";
     ls_safe_line(sf, a, a.y + a.h - 1, foot, s_note[0] || !s_runner ? A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
 }
 
@@ -315,6 +321,7 @@ static bool touch(int x, int y)
     if (i >= 0 && i < s_bar_n) { action(i); return true; }
     if (s_in_hit.w > 0 && tui_rect_contains(s_in_hit, x, y)) { open_keys(); return true; }
     if (s_out_hit.w > 0 && tui_rect_contains(s_out_hit, x, y)) {
+        if (ls_drag_scroll_tap_is_lift(&s_drag)) return true;   /* the end of a drag */
         scroll(y < s_out_hit.y + s_out_hit.h / 2 ? s_page : -s_page);
         return true;
     }

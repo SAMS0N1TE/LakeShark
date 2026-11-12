@@ -14,6 +14,7 @@
 #include "app_registry.h"
 #include "ls_board.h"
 #include "settings.h"
+#include "ls_haptic.h"
 #include "cell_performance.h"
 /**/
 #include "usb_autoreboot_pref.h"
@@ -81,6 +82,10 @@ void lakeshark_backend_start(void)
 
     event_bus_init();
     settings_init();
+    /* The stored vibration switch, as soon as the store can be read: read
+       earlier, it answered its default and 'haptic off' came back on at
+       every boot. */
+    ls_haptic_set_enabled(settings_get_haptics());
     /**/
     usb_autoreboot_pref_init(settings_set_usb_autoreboot,
                              settings_get_usb_autoreboot());

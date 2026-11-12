@@ -16,6 +16,7 @@
 #include "../../ls_media_widgets.h"
 #include "../../ls_music_transport.h"
 #include "../../ls_options.h"
+#include "../../ls_picker.h"
 #include "../../ls_spectro.h"
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
@@ -61,13 +62,14 @@ enum {
   SEEK_BACK,
   SEEK_FWD,
   LIVE,
+  VIEW_PICK, VIEW_PREV, VIEW_NEXT,   /* the one VIEW key and its steps */
   ACTIONS
 };
 /* The key each control answers to, drawn on it while a keyboard is fitted. */
 static const char *const KEYS[ACTIONS] = {
     "B", "P", "N", "-", "M", "+", "L", "I", "W", "1", "2", "3", "4",
     "5", "6", "7", "8", "9", "0", "V", "C", "Z", "E", "D", "R", "ESC", "U", "J", "O", "S", "", "H", "A",
-    "[", "]", ""};
+    "[", "]", "", "V", "", ""};
 enum { VIEW_LEVEL, VIEW_BANDS, VIEW_SCAN, VIEW_WATERFALL, VIEW_WAVE, VIEW_SPECTRO, VIEW_MELODIC, VIEW_SPECTRUM, VIEW_SCOPE, VIEW_TOOLS, VIEWS };
 static const char *const VIEW_NAME[VIEWS] = {"LEVEL", "BANDS", "SCAN",
                                              "WATERFALL", "WAVE", "SPECTRO", "MELODIC", "SPECTRUM", "SCOPE", "TOOLS"};
@@ -268,6 +270,7 @@ static const ls_opt_t OPT_MUSIC[] = {
 static const ls_opt_ctx_t CTX_MUSIC = {.name = "MUSIC", .job = -1,
                                        .radio = LS_RSEL_NONE,
                                        LS_OPT_ROWS(OPT_MUSIC), .tag = "PLAYER"};
+static void view_pick_done(int i) { if (i >= 0 && i < VIEWS) view = i; }
 static void act(int id) {
   switch (id) {
   case PREV:
@@ -328,6 +331,16 @@ static void act(int id) {
   case MORE: /* the next page of four tabs, on a short row */
     view = (view / 4 * 4 + 4) % VIEWS;
     break;
+  case VIEW_PREV: view = (view + VIEWS - 1) % VIEWS; break;
+  case VIEW_NEXT: view = (view + 1) % VIEWS; break;
+  case VIEW_PICK: {
+    static const char *const WHAT[VIEWS] = {"peak and hold", "octave bands", "the band scan", "time against frequency",
+                                            "the waveform", "spectrogram", "notes heard", "the spectrum", "scope", "tools"};
+    ls_picker_open("VIEW", view_pick_done);
+    for (int i = 0; i < VIEWS; i++) ls_picker_add(VIEW_NAME[i], WHAT[i]);
+    ls_picker_select(view);
+    break;
+  }
   case COLOUR:
     palette = (palette + 1) % PALETTES;
     break;
@@ -653,12 +666,21 @@ static const char *view_label(int i, int inner) {
    all ten in one or two rows when each tab can carry a word, else four of
    them and a full-size MORE tile for the next four. Returns the rows used. */
 static int tab_rows_for(int w, int max_rows) {
-  if (w / VIEWS >= 8) return 1;
-  if (max_rows >= 2 && w / (VIEWS / 2) >= 7) return 2;
+  (void)w; (void)max_rows;
   return 1;
 }
 static void tabs(tui_surface *sf, tui_rect t, int rows) {
-  if (rows == 2 || t.w / VIEWS >= 8) {
+  (void)rows;
+  {
+    const int side = t.w / 5 < 6 ? 6 : t.w / 5;
+    char label[32];
+    snprintf(label, sizeof(label), t.w - 2 * side >= 20 ? "VIEW: %s" : "%s", VIEW_NAME[view]);
+    button(sf, VIEW_PREV, tui_rect_make(t.x, t.y, side, 3), "<", false, true);
+    button(sf, VIEW_PICK, tui_rect_make(t.x + side, t.y, t.w - 2 * side, 3), label, true, true);
+    button(sf, VIEW_NEXT, tui_rect_make(t.x + t.w - side, t.y, side, 3), ">", false, true);
+    return;
+  }
+  if (t.w / VIEWS >= 8) {
     const int per = rows == 2 ? VIEWS / 2 : VIEWS;
     for (int i = 0; i < VIEWS; i++) {
       int j = i % per, row = i / per, tw = t.w / per;

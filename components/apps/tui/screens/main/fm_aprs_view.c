@@ -27,7 +27,8 @@ static int option_get(const ls_opt_t *o)
     return o->arg == 0 ? v.preset : o->arg == 1 ? v.messages : v.map;
 }
 static uint32_t frequency(const aprs_options_t *v)
-{ return v->preset == 0 ? 144390000 : v->preset == 1 ? 144800000 : v->custom_hz; }
+{ return v->preset == 0 ? 144390000 : v->preset == 1 ? 144800000 :
+           v->preset == 3 ? 144930000 : v->custom_hz; }
 static void option_apply(aprs_options_t *v, bool tune)
 {
     /* A frequency lock refuses the change before the preference is saved. */
@@ -55,11 +56,13 @@ static void number_set(const ls_opt_t *o, double value)
     else v.max_km = value;
     option_apply(&v, o->arg == 0);
 }
-static const char *const presets[] = { "US 144.390", "EU 144.800", "CUSTOM" };
+/* Index 3 came later: CUSTOM stays 2 so a saved choice keeps its meaning.
+   144.930 is the APRS frequency in Argentina. */
+static const char *const presets[] = { "US 144.390", "EU 144.800", "CUSTOM", "AR 144.930" };
 static double preset_get(const ls_opt_t *o)
 { return option_get(o); }
 static void preset_set(const ls_opt_t *o, double value)
-{ if (value >= 0 && value <= 2 && value == (int)value) option_set(o, (int)value); }
+{ if (value >= 0 && value <= 3 && value == (int)value) option_set(o, (int)value); }
 static void preset_show(const ls_opt_t *o, char *out, size_t n)
 { snprintf(out, n, "%s", presets[option_get(o)]); }
 static void number_show(const ls_opt_t *o, char *out, size_t n)
@@ -72,7 +75,7 @@ static void number_show(const ls_opt_t *o, char *out, size_t n)
 }
 static const ls_opt_t frequency_rows[] = {
     { .label = "PRESET", .kind = LS_OPT_LEVEL, .arg = 0, .num = preset_get, .set_num = preset_set,
-      .lo = 0, .hi = 2, .step = 1, .unit = "0 US / 1 EU / 2 custom", .show = preset_show },
+      .lo = 0, .hi = 3, .step = 1, .unit = "0 US / 1 EU / 2 custom / 3 AR", .show = preset_show },
     { .label = "CUSTOM MHz", .kind = LS_OPT_LEVEL, .arg = 0, .num = number_get, .set_num = number_set,
       .lo = 24, .hi = 1766, .step = 0.005, .unit = "MHz / NFM receive only", .show = number_show }
 };

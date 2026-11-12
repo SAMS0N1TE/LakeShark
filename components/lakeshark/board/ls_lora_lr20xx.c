@@ -3,6 +3,7 @@
    semantics as ls_lora_sx126x.c. Only ls_lora_read_reg answers
    ESP_ERR_NOT_SUPPORTED. See ls_lora_lr20xx.h for the protocol notes and the
    transmit rule. */
+#include "ls_tx_unlock.h"
 #include "ls_lora.h"
 #include "ls_lora_priv.h"
 #include "ls_lora_lr20xx.h"
@@ -27,10 +28,21 @@
 #include "ls_xl9535.h"
 #include "settings.h"
 #include "ls_lora_port.h"
+
+/* The Nano (runtime pins: LoRa on a header) is short of internal RAM. There
+   the LoRa hot paths run from flash and task-only tables live in PSRAM; the
+   T-Display keeps them in IRAM / DRAM. ISRs stay IRAM_ATTR everywhere. */
+#if defined(LS_BOARD_PINS_RUNTIME) && LS_BOARD_PINS_RUNTIME
+#define LORA_HOT
+#define LORA_TABLE EXT_RAM_BSS_ATTR
+#else
+#define LORA_HOT IRAM_ATTR
+#define LORA_TABLE
+#endif
+
 #include "ls_textpack.h"
 
-#if LS_HAS_LORA_LR20XX_PROBE && defined(LS_BOARD_LORA_CS_GPIO) && \
-    defined(LS_BOARD_LORA_BUSY_GPIO) && defined(LS_BOARD_XL_RADIO_RST)
+#if LS_HAS_LORA_LR20XX_PROBE && LS_LORA_WIRED
 
 static const char *TAG = "ls_lora_lr";
 
@@ -55,6 +67,7 @@ static void err_names(uint16_t errors, char *out, size_t n);
    lr20xx_set_tx reads both and nothing else decides. */
 static uint32_t s_rf_hz;
 static bool     s_pa_lf;
+static bool     s_pa_hf;
 /* lr2021_coproc.inc's program is in PRAM and active since the last reset:
    it is not uploaded again (an active program's write window moves). */
 static bool     s_cop_loaded;
@@ -69,7 +82,7 @@ static unsigned s_exp_preset, s_exp_channel, s_exp_fec;
 
 /* ------------------------------------------------------------------ pure -- */
 
-bool IRAM_ATTR lr20xx_stat_plausible(uint16_t stat)
+bool LORA_HOT lr20xx_stat_plausible(uint16_t stat)
 {
     if (stat & 0xF000u) return false;           /* bits 15:12 are defined 0 */
     if (stat & 0x0008u) return false;           /* rfu */
@@ -102,7 +115,7 @@ float lr20xx_rssi_dbm(uint8_t b0, uint8_t b1)
 
 /* ---------------------------------------------------------------- frames -- */
 
-uint16_t IRAM_ATTR lr20xx_last_stat(void) { return s_stat; }
+uint16_t LORA_HOT lr20xx_last_stat(void) { return s_stat; }
 uint32_t lr20xx_last_irq(void)  { return s_irq; }
 
 /* The last few frames, opcode and the Stat each one clocked back: Stat in a
@@ -111,6 +124,15 @@ uint32_t lr20xx_last_irq(void)  { return s_irq; }
 #define TRACE_N 6
 static struct { uint16_t op, stat; } s_trace[TRACE_N];
 static unsigned s_trace_n;
+static uint16_t s_last_op;
+static uint16_t s_refused_op;
+static uint32_t s_refused_n;
+
+uint16_t lr20xx_refused_op(uint32_t *count)
+{
+    if (count) *count = s_refused_n;
+    return s_refused_op;
+}
 
 static void trace_dump(void)
 {
@@ -144,7 +166,7 @@ static bool take_reset(uint16_t stat)
     return r;
 }
 
-static esp_err_t IRAM_ATTR frame(uint8_t *io, size_t n)
+static esp_err_t LORA_HOT frame(uint8_t *io, size_t n)
 {
     spi_device_handle_t dev = ls_lora_hw_dev();
     if (!dev) return ESP_ERR_INVALID_STATE;
@@ -153,6 +175,12 @@ static esp_err_t IRAM_ATTR frame(uint8_t *io, size_t n)
     if (err == ESP_OK && n >= 2) {
         s_stat = (uint16_t)((io[0] << 8) | io[1]);
         if (lr20xx_stat_plausible(s_stat) && LR20XX_STAT_RESET_SRC(s_stat) != 0) s_reset_seen = true;
+        else if (s_stat != 0 && s_last_op && lr20xx_stat_plausible(s_stat) &&
+                 LR20XX_STAT_CMD(s_stat) < LR20XX_CMD_OK) {
+            s_refused_op = s_last_op;
+            s_refused_n++;
+        }
+        if (op) s_last_op = op;
         s_trace[s_trace_n % TRACE_N].op = op;
         s_trace[s_trace_n % TRACE_N].stat = s_stat;
         s_trace_n++;
@@ -192,7 +220,7 @@ esp_err_t lr20xx_write(uint16_t op, const uint8_t *args, size_t n)
     LOCKED_RET(esp_err_t, write_locked(op, args, n));
 }
 
-static esp_err_t IRAM_ATTR read_locked(uint16_t op, const uint8_t *args, size_t n,
+static esp_err_t LORA_HOT read_locked(uint16_t op, const uint8_t *args, size_t n,
                              uint8_t *out, size_t m)
 {
     if (2 + n > FRAME_MAX || 2 + m > FRAME_MAX || m > 14 || (n && !args))
@@ -354,7 +382,8 @@ esp_err_t lr20xx_set_rf_frequency(uint32_t hz)
     put_rf_hz(a, hz);
     /* Forgotten before the frame goes out, so a frame that fails cannot leave
        a transmit armed for a frequency the part may now be on. */
-    if (hz >= LR20XX_TX_FREQ_LIMIT_HZ || hz < LR20XX_TX_FREQ_MIN_HZ) s_pa_lf = false;
+    if (LS_TX_UNLOCKED ? (hz >= LR20XX_HF_PATH_MIN_HZ) != s_pa_hf
+                       : (hz >= LR20XX_TX_FREQ_LIMIT_HZ || hz < LR20XX_TX_FREQ_MIN_HZ)) s_pa_lf = false;
     s_rf_hz = 0;
     const esp_err_t err = lr20xx_write(LR20XX_OP_SET_RF_FREQUENCY, a, sizeof(a));
     if (err == ESP_OK) s_rf_hz = hz;
@@ -591,7 +620,7 @@ esp_err_t lr20xx_clear_rx_fifo(void)
     return lr20xx_write(LR20XX_OP_CLEAR_RX_FIFO, NULL, 0);
 }
 
-static esp_err_t IRAM_ATTR get_rx_fifo_level_locked(uint16_t *level)
+static esp_err_t LORA_HOT get_rx_fifo_level_locked(uint16_t *level)
 {
     uint8_t d[2] = { 0, 0 };
     esp_err_t err = read_locked(LR20XX_OP_GET_RX_FIFO_LVL, NULL, 0, d, sizeof(d));
@@ -608,11 +637,11 @@ esp_err_t lr20xx_get_rx_fifo_level(uint16_t *level)
     LOCKED_RET(esp_err_t, get_rx_fifo_level_locked(level));
 }
 
-static bool IRAM_ATTR read_stat_ok(void);
+static bool LORA_HOT read_stat_ok(void);
 
 #define FIFO_READ_MAX 257   /* the 259-byte packet buffer less the two Stat bytes */
 
-static esp_err_t IRAM_ATTR read_rx_fifo_locked(uint8_t *dst, size_t n)
+static esp_err_t LORA_HOT read_rx_fifo_locked(uint8_t *dst, size_t n)
 {
     uint8_t *pkt = ls_lora_hw_pkt();
     if (!pkt) return ESP_ERR_INVALID_STATE;
@@ -790,7 +819,7 @@ static esp_err_t configure_dios_mask(uint32_t irq_mask)
        routes Tx HF to the antenna is refused before a single frame goes out.
        Tx LF is the transmit state this driver uses. */
     const ls_lora_port_t *port = ls_lora_port();
-    for (int i = 0; i < port->rfsw_n; i++)
+    for (int i = 0; !LS_TX_UNLOCKED && i < port->rfsw_n; i++)
         if (port->rfsw[i].config & LR20XX_RFSW_TX_HF) {
             ESP_LOGE(TAG, "RF switch table sets the HF transmit state on DIO%u", (unsigned)port->rfsw[i].dio);
             return ESP_ERR_INVALID_ARG;
@@ -875,7 +904,7 @@ esp_err_t lr20xx_lora_set_syncword(uint8_t sync_word)
 }
 
 /* A read whose Stat says it was answered. */
-static bool IRAM_ATTR read_stat_ok(void)
+static bool LORA_HOT read_stat_ok(void)
 {
     const uint16_t s = lr20xx_last_stat();
     return lr20xx_stat_plausible(s) && s != 0x0000 && LR20XX_STAT_CMD(s) >= LR20XX_CMD_OK;
@@ -1248,15 +1277,41 @@ lr20xx_pa_lf_t lr20xx_pa_lf_for_dbm(int dbm)
     return PA_LF[dbm - LR20XX_TX_POWER_MIN_DBM];
 }
 
+static bool tx_hz_ok(uint32_t hz)
+{
+    if (LS_TX_UNLOCKED) return hz >= LR20XX_FREQ_MIN_HZ && hz <= LR20XX_FREQ_MAX_HZ;
+    return hz >= LR20XX_TX_FREQ_MIN_HZ && hz < LR20XX_TX_FREQ_LIMIT_HZ;
+}
+
 bool lr20xx_tx_allowed(void)
 {
-    return s_rf_hz >= LR20XX_TX_FREQ_MIN_HZ && s_rf_hz < LR20XX_TX_FREQ_LIMIT_HZ;
+    return tx_hz_ok(s_rf_hz);
+}
+
+static esp_err_t set_pa_hf_locked(int dbm)
+{
+    int half_db = dbm * 2;
+    if (half_db < LR20XX_TX_HF_POWER_MIN_HALF_DB) half_db = LR20XX_TX_HF_POWER_MIN_HALF_DB;
+    if (half_db > LR20XX_TX_HF_POWER_MAX_HALF_DB) half_db = LR20XX_TX_HF_POWER_MAX_HALF_DB;
+    const uint8_t sel = 0x01;
+    const uint8_t cfg[3] = { 0x80, 0x67, 28 };
+    const uint8_t txp[2] = { (uint8_t)(int8_t)half_db, LR20XX_TX_RAMP_48US };
+    esp_err_t err = lr20xx_write(LR20XX_OP_SEL_PA, &sel, 1);
+    if (err == ESP_OK) err = lr20xx_check_last_ok();
+    if (err == ESP_OK) err = lr20xx_write(LR20XX_OP_SET_PA_CONFIG, cfg, sizeof(cfg));
+    if (err == ESP_OK) err = lr20xx_check_last_ok();
+    if (err == ESP_OK) err = lr20xx_write(LR20XX_OP_SET_TX_PARAMS, txp, sizeof(txp));
+    if (err == ESP_OK) err = lr20xx_check_last_ok();
+    if (err == ESP_OK) { s_pa_lf = true; s_pa_hf = true; }
+    return err;
 }
 
 static esp_err_t set_pa_lf_locked(int dbm)
 {
     s_pa_lf = false;
+    s_pa_hf = false;
     if (!lr20xx_tx_allowed()) return ESP_ERR_NOT_SUPPORTED;
+    if (LS_TX_UNLOCKED && s_rf_hz >= LR20XX_HF_PATH_MIN_HZ) return set_pa_hf_locked(dbm);
     const lr20xx_pa_lf_t pa = lr20xx_pa_lf_for_dbm(dbm);
     /* SelPa 0 is the LF PA. SetPaConfig: PaSel 0 (LF) in bit 7 with the LF
        mode (0, full single-ended) below it; LF duty cycle and slices; and the
@@ -1309,7 +1364,7 @@ esp_err_t lr20xx_write_tx_fifo(const uint8_t *data, size_t len)
 
 static esp_err_t set_tx_locked(void)
 {
-    if (!lr20xx_tx_allowed() || !s_pa_lf) {
+    if (!lr20xx_tx_allowed() || !s_pa_lf || s_pa_hf != (s_rf_hz >= LR20XX_HF_PATH_MIN_HZ)) {
         ESP_LOGE(TAG, "transmit refused at %lu Hz%s", (unsigned long)s_rf_hz,
                  s_pa_lf ? "" : " (LF PA not programmed)");
         return ESP_ERR_NOT_SUPPORTED;
@@ -1336,7 +1391,7 @@ static void heal(void);
 #define MODES_QMAX    9                     /* whole Mode S frames in the 256-byte FIFO */
 #define MODES_STALE_POLLS 3
 
-static struct {
+LORA_TABLE static struct {
     bool     active;
     /* The OOK session rather than Mode S: the same machinery, its numbers
        from lr20xx_ook_rx_begin rather than the Mode S constants. */
@@ -1353,6 +1408,10 @@ static struct {
     uint16_t leftover;                      /* FIFO bytes beyond whole frames    */
     uint8_t  stale;
     uint8_t  recal_tries;                   /* front-end recalibrations done this session */
+    uint16_t err_named;
+    uint16_t refused_named[4];
+    uint8_t  refused_named_n;
+    uint32_t refused_seen;
     /* A GetStatus that is not the session's own (the console's) cleared the
        reset source this poll would have seen. It saw it instead, and says so. */
     bool     reset_seen;
@@ -1416,6 +1475,7 @@ static esp_err_t arm_rx(void)
     if (err == ESP_OK) err = step_ok(lr20xx_clear_irq(LR20XX_IRQ_ALL), "ClearIrq");
     if (err == ESP_OK) err = lr20xx_set_rx(0xFFFFFFu);
     if (err == ESP_OK) err = check_mode(LR20XX_MODE_RX);
+    (void)lr20xx_refused_op(&ms.refused_seen);
     return err;
 }
 
@@ -1667,6 +1727,29 @@ static int deliver(uint8_t *buf, float *rssi_dbm)
     return ms.frame;
 }
 
+static esp_err_t discard_rx_fifo(void)
+{
+    static uint8_t scratch[64];
+    uint16_t level = 0;
+    esp_err_t err = lr20xx_get_rx_fifo_level(&level);
+    while (err == ESP_OK && level) {
+        const uint16_t part = level > sizeof(scratch) ? (uint16_t)sizeof(scratch) : level;
+        err = lr20xx_read_rx_fifo(scratch, part);
+        level = (uint16_t)(level - part);
+    }
+    return err;
+}
+
+static esp_err_t restart_rx_empty(void)
+{
+    esp_err_t err = step_ok(lr20xx_set_standby(true), "SetStandby");
+    if (err == ESP_OK) err = step_ok(lr20xx_clear_rx_fifo(), "ClearRxFifo");
+    if (err == ESP_OK) err = lr20xx_set_rx(0xFFFFFFu);
+    if (err == ESP_OK) err = check_mode(LR20XX_MODE_RX);
+    (void)lr20xx_refused_op(&ms.refused_seen);
+    return err;
+}
+
 /* Read what the FIFO holds. `rxdone` says a packet finished; without it this
    is only a look at bytes left over from before. */
 static esp_err_t drain_fifo(bool rxdone)
@@ -1684,7 +1767,7 @@ static esp_err_t drain_fifo(bool rxdone)
                 ms.stats.overflows++;
                 ms.leftover = 0;
                 ms.stale = 0;
-                return lr20xx_clear_rx_fifo();
+                return restart_rx_empty();
             }
         } else {
             ms.stale = 0;
@@ -1704,16 +1787,16 @@ static esp_err_t drain_fifo(bool rxdone)
 
     /* A full FIFO has lost its tail, so what is left cannot be trusted to be
        aligned to a frame. */
-    if (level >= 256) {
-        ms.stats.overflows++;
-        ms.leftover = 0;
-        err = lr20xx_clear_rx_fifo();
-        if (err != ESP_OK) return err;
-    }
-
     lr20xx_ook_pkt_status_t ps;
     ms.q_rssi = NAN;
     if (lr20xx_get_ook_packet_status(&ps) == ESP_OK) ms.q_rssi = ps.rssi_high_dbm;
+
+    if (level >= 256) {
+        ms.stats.overflows++;
+        ms.leftover = 0;
+        err = restart_rx_empty();
+        if (err != ESP_OK) return err;
+    }
     return ESP_OK;
 }
 
@@ -1734,21 +1817,59 @@ static void err_names(uint16_t errors, char *out, size_t n)
             o += (size_t)snprintf(out + o, n - o, "%s%s", o ? "|" : "", ERR_NAMES[i]);
 }
 
-/* Reads and clears the chip's error word; returns it (0 when none or unread).
-   `quiet`: counted and cleared without a log line. */
-static uint16_t note_chip_errors(bool quiet)
+/* Reads and clears the chip's error word; returns it (0 when none or unread). */
+static uint16_t note_chip_errors(void)
 {
     uint16_t errors = 0;
-    if (lr20xx_get_errors(&errors) == ESP_OK) {
-        ms.stats.chip_errors++;
-        if (!quiet) {
-            char names[64];
-            err_names(errors, names, sizeof(names));
-            ESP_LOGW(TAG, "modes: chip errors 0x%04X %s", (unsigned)errors, names);
-        }
-        (void)lr20xx_clear_errors();
+    if (lr20xx_get_errors(&errors) != ESP_OK || errors == 0) return 0;
+    ms.stats.chip_errors++;
+    const uint16_t fresh = (uint16_t)(errors & ~ms.err_named);
+    if (fresh) {
+        ms.err_named |= fresh;
+        char names[64];
+        err_names(fresh, names, sizeof(names));
+        ESP_LOGW(TAG, "modes: chip errors 0x%04X %s (each named once a session, 'lora status' counts them)",
+                 (unsigned)errors, names);
     }
+    (void)lr20xx_clear_errors();
     return errors;
+}
+
+static const char *op_name(uint16_t op)
+{
+    switch (op) {
+    case LR20XX_OP_READ_RX_FIFO:     return "ReadRxFifo";
+    case LR20XX_OP_GET_STATUS:       return "GetStatus";
+    case LR20XX_OP_GET_ERRORS:       return "GetErrors";
+    case LR20XX_OP_CLEAR_ERRORS:     return "ClearErrors";
+    case LR20XX_OP_CLEAR_IRQ:        return "ClearIrq";
+    case LR20XX_OP_GET_RX_FIFO_LVL:  return "GetRxFifoLevel";
+    case LR20XX_OP_CLEAR_RX_FIFO:    return "ClearRxFifo";
+    case LR20XX_OP_SET_STANDBY:      return "SetStandby";
+    case LR20XX_OP_SET_RX:           return "SetRx";
+    case LR20XX_OP_GET_OOK_PKT_STAT: return "GetOokPacketStatus";
+    default:                         return "";
+    }
+}
+
+static void note_refused_command(void)
+{
+    ms.stats.cmd_errors++;
+    uint32_t n = 0;
+    const uint16_t op = lr20xx_refused_op(&n);
+    const bool seen = n != ms.refused_seen;
+    ms.refused_seen = n;
+    if (seen) ms.stats.refused_op = op;
+    const uint16_t key = seen ? op : 0;
+    for (unsigned i = 0; i < ms.refused_named_n; i++)
+        if (ms.refused_named[i] == key) return;
+    if (ms.refused_named_n >= sizeof(ms.refused_named) / sizeof(ms.refused_named[0])) return;
+    ms.refused_named[ms.refused_named_n++] = key;
+    if (seen)
+        ESP_LOGI(TAG, "modes: the part refused 0x%04X %s; receiving goes on, 'lora status' counts refusals",
+                 (unsigned)op, op_name(op));
+    else
+        ESP_LOGI(TAG, "modes: CmdError raised with no refused command in Stat; receiving goes on");
 }
 
 /* The part had no front-end calibration for the Rx frequency (bit 9). Standby,
@@ -1818,9 +1939,10 @@ int lr20xx_modes_poll(uint8_t *buf, size_t size, float *rssi_dbm)
 
     const uint32_t irq = st.irq;
     const bool rxdone = (irq & LR20XX_IRQ_RX_DONE) != 0;
+    if (irq & LR20XX_IRQ_CMD_ERROR) note_refused_command();
     if (irq & (LR20XX_IRQ_ERROR | LR20XX_IRQ_CMD_ERROR)) {
         const bool spent = ms.recal_tries > RECAL_MAX;      /* gave up, and said so */
-        const uint16_t e = note_chip_errors(spent);
+        const uint16_t e = note_chip_errors();
         if (e & LR20XX_ERR_RXFREQ_NO_FE_CAL) {
             if (ms.recal_tries < RECAL_MAX) {
                 ms.stats.rearms++;
@@ -2111,7 +2233,7 @@ static esp_err_t program_lora_once(void)
         err = step_lr(lr20xx_lora_set_packet(c->preamble, c->implicit_rx_bytes?c->implicit_rx_bytes:255, c->implicit_rx_bytes!=0, c->crc_on, c->invert_iq),
                       "SetLoraPacketParams");
     if (err == ESP_OK) err = step_lr(lr20xx_lora_set_syncword(c->sync_word), "SetLoraSyncword");
-    if (err == ESP_OK && c->freq_hz >= LR20XX_TX_FREQ_MIN_HZ && c->freq_hz < LR20XX_TX_FREQ_LIMIT_HZ)
+    if (err == ESP_OK && tx_hz_ok(c->freq_hz))
         err = lr20xx_set_pa_lf(c->power_dbm);
     if (err == ESP_OK) lr.programmed = true;
     else (void)lr20xx_set_standby(false);
@@ -2261,7 +2383,7 @@ static esp_err_t lr_send(const uint8_t *data, size_t len)
     if (len > 255) return ESP_ERR_INVALID_SIZE;
     if (lr.tx_busy || lr.scanning || s_exp_active || lr20xx_modes_active()) return ESP_ERR_INVALID_STATE;
     if (!ls_lora_hw_pkt()) return ESP_ERR_INVALID_STATE;
-    if (lr.cfg.freq_hz >= LR20XX_TX_FREQ_LIMIT_HZ || lr.cfg.freq_hz < LR20XX_TX_FREQ_MIN_HZ) return ESP_ERR_NOT_SUPPORTED;
+    if (!tx_hz_ok(lr.cfg.freq_hz)) return ESP_ERR_NOT_SUPPORTED;
 
     esp_err_t err = ESP_OK;
     if (!lr.programmed && (err = program_lora()) != ESP_OK) { lr.rearm = true; return err; }
@@ -2379,7 +2501,7 @@ static int lr_poll(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db)
     if (lr.rx_mode && !lr.tx_busy && left_rx) lr.rearm = true;
 
     if (irq & (LR20XX_IRQ_CRC_ERROR | LR20XX_IRQ_LORA_HDR_ERROR | LR20XX_IRQ_LEN_ERROR)) {
-        (void)lr20xx_clear_rx_fifo();
+        (void)discard_rx_fifo();
         rx_stat_error(irq);
         return -1;
     }
@@ -2387,12 +2509,12 @@ static int lr_poll(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db)
 
     uint16_t len = 0;
     if (lr20xx_get_rx_pkt_length(&len) != ESP_OK || len == 0 || len > 255) {
-        (void)lr20xx_clear_rx_fifo();
+        (void)discard_rx_fifo();
         return 0;
     }
     const size_t n = len < max ? len : max;
     if (lr20xx_read_rx_fifo(buf, n) != ESP_OK) {
-        (void)lr20xx_clear_rx_fifo();
+        (void)discard_rx_fifo();
         return 0;
     }
     lr20xx_lora_pkt_status_t ps;
@@ -2403,7 +2525,7 @@ static int lr_poll(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db)
     }
     /* Whatever of the packet was not read goes, so the next one starts at the
        head of the FIFO; RadioLib clears it after every read. */
-    (void)lr20xx_clear_rx_fifo();
+    (void)discard_rx_fifo();
     return (int)n;
 }
 
@@ -2434,7 +2556,7 @@ static int lr_activity(float *dbm)
     } else if((flags&3) && lr20xx_get_rssi_inst(dbm)!=ESP_OK)return -1;
     if(lr20xx_clear_irq(st.irq)!=ESP_OK)return -1;
     if((st.irq&end) || LR20XX_STAT_MODE(st.stat)!=LR20XX_MODE_RX) {
-        if(lr20xx_clear_rx_fifo()!=ESP_OK || lr_receive()!=ESP_OK)return -1;
+        if(discard_rx_fifo()!=ESP_OK || lr_receive()!=ESP_OK)return -1;
     }
     return flags;
 }
@@ -2545,7 +2667,7 @@ static esp_err_t fsk_program_once(void)
         err = step_lr(lr20xx_gfsk_set_syncword(cfg->sync_word, lr.fsk_sync_bits), "SetGfskSyncword");
     /* Above 960 MHz the session only listens: the PA is not programmed, so
        lr20xx_set_tx refuses whatever is asked of it there. */
-    if (err == ESP_OK && cfg->freq_hz >= LR20XX_TX_FREQ_MIN_HZ && cfg->freq_hz < LR20XX_TX_FREQ_LIMIT_HZ)
+    if (err == ESP_OK && tx_hz_ok(cfg->freq_hz))
         err = lr20xx_set_pa_lf(cfg->power_dbm);
     /* The chip's AGC, unless a step is asked for. Nothing is sent for the AGC
        unless an earlier session left a step in the part: 0 is the AGC. */
@@ -2663,13 +2785,13 @@ static int lr_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm)
     if (!irq) return 0;
     if (lr20xx_clear_irq(irq) != ESP_OK) return fsk_rx_fault(0, 0);
     if (irq & (LR20XX_IRQ_CRC_ERROR | LR20XX_IRQ_TIMEOUT | LR20XX_IRQ_LEN_ERROR)) {
-        (void)lr20xx_clear_rx_fifo();
+        (void)discard_rx_fifo();
         return fsk_rx_fault(irq, 0);
     }
     uint16_t len = 0;
     if (lr20xx_get_rx_pkt_length(&len) != ESP_OK || len != lr.fsk_bytes ||
         lr20xx_read_rx_fifo(buf, lr.fsk_bytes) != ESP_OK) {
-        (void)lr20xx_clear_rx_fifo();
+        (void)discard_rx_fifo();
         return fsk_rx_fault(irq, len);
     }
     if (rssi_dbm) *rssi_dbm = lr.fsk_rssi_at_sync ? NAN : -200.0f;
@@ -2742,7 +2864,7 @@ static esp_err_t lr_fsk_send(const uint8_t *data, size_t len)
     if (!data || len == 0)          return ESP_ERR_INVALID_ARG;
     if (len > 255)                  return ESP_ERR_INVALID_SIZE;
     if (lr.tx_busy || lr.scanning)  return ESP_ERR_INVALID_STATE;
-    if (lr.fsk_freq_hz >= LR20XX_TX_FREQ_LIMIT_HZ || lr.fsk_freq_hz < LR20XX_TX_FREQ_MIN_HZ) return ESP_ERR_NOT_SUPPORTED;
+    if (!tx_hz_ok(lr.fsk_freq_hz)) return ESP_ERR_NOT_SUPPORTED;
 
     esp_err_t err = step_lr(lr20xx_set_standby(false), "SetStandby");
     if (err != ESP_OK) return err;
@@ -2773,7 +2895,7 @@ static esp_err_t lr_ook_send(const uint8_t *chips, size_t len, uint32_t chip_bps
     if (chip_bps < LR20XX_OOK_BITRATE_MIN || chip_bps > LR20XX_FSK_BITRATE_MAX)
         return ESP_ERR_INVALID_ARG;
     if (lr.tx_busy || lr.scanning)  return ESP_ERR_INVALID_STATE;
-    if (lr.fsk_freq_hz >= LR20XX_TX_FREQ_LIMIT_HZ || lr.fsk_freq_hz < LR20XX_TX_FREQ_MIN_HZ) return ESP_ERR_NOT_SUPPORTED;
+    if (!tx_hz_ok(lr.fsk_freq_hz)) return ESP_ERR_NOT_SUPPORTED;
 
     esp_err_t err = step_lr(lr20xx_set_standby(false), "SetStandby");
     if (err != ESP_OK) return err;
@@ -3409,10 +3531,13 @@ static void lr_diagnostics(void)
     if (scanning) printf("lora: sweep active\n");
     if (session) {
         LS_PRINTF(fmt_ls_lora_lr20xx_lora_session_on_polls, "lora: %s session on: polls=%lu frames=%lu rearms=%lu resets=%lu"
-               " overflows=%lu chip-errors=%lu bus-errors=%lu\n",
+               " overflows=%lu chip-errors=%lu cmd-errors=%lu bus-errors=%lu\n",
                lr20xx_ook_rx_active() ? "OOK" : "Mode S", (unsigned long)mstat.polls, (unsigned long)mstat.frames, (unsigned long)mstat.rearms,
                (unsigned long)mstat.resets, (unsigned long)mstat.overflows,
-               (unsigned long)mstat.chip_errors, (unsigned long)mstat.bus_errors);
+               (unsigned long)mstat.chip_errors, (unsigned long)mstat.cmd_errors, (unsigned long)mstat.bus_errors);
+        if (mstat.refused_op)
+            LS_PRINTF(fmt_ls_lora_lr20xx_lora_session_refused_op, "lora: last command the part refused: 0x%04X %s\n",
+                      (unsigned)mstat.refused_op, op_name(mstat.refused_op));
         LS_PRINTF(fmt_ls_lora_lr20xx_lora_mode_s_tuning, "lora: Mode S tuning: gain step %d%s, boost %d, rx bw %lu Hz, detection threshold %s",
                tune.gain_step, tune.gain_step == 0 ? " (AGC)" : "", tune.boost,
                (unsigned long)tune.rx_bw_hz, tune.thresh_override ? "override" : "chip's own");
@@ -3723,7 +3848,7 @@ static struct {
     uint32_t ups, downs, write_errors;
 } s_iqagc;
 
-static int IRAM_ATTR iqagc_peak(const uint8_t *d, size_t n, int peak)
+static int LORA_HOT iqagc_peak(const uint8_t *d, size_t n, int peak)
 {
     for (size_t i = 0; i + 1 < n; i += 2) {
         int v = (int16_t)(d[i] | (d[i + 1] << 8));
@@ -3736,7 +3861,7 @@ static int IRAM_ATTR iqagc_peak(const uint8_t *d, size_t n, int peak)
 /* IQ8 is the top byte of the same scale (lr20xx_iq_expand8 multiplies by
    256), so its peak meets the same 16-bit thresholds: clip at |v| >= 102,
    quiet below 23. */
-static int IRAM_ATTR iqagc_peak8(const uint8_t *d, size_t n, int peak)
+static int LORA_HOT iqagc_peak8(const uint8_t *d, size_t n, int peak)
 {
     int top = peak >> 8;
     for (size_t i = 0; i < n; ++i) {
@@ -3771,7 +3896,7 @@ static esp_err_t iqagc_begin_locked(uint32_t hz, int mode)
 }
 
 /* After a drain: one step at most, down fast, up slowly. */
-static void IRAM_ATTR iqagc_after_drain(int64_t now)
+static void LORA_HOT iqagc_after_drain(int64_t now)
 {
     if (s_iqagc.mode != LS_IQ_GAIN_AUTO || !s_iqagc.gain) return;
     if (s_iqagc.peak >= IQAGC_CLIP) {
@@ -3804,7 +3929,7 @@ typedef struct {
     void *context;
 } iq_delivery_t;
 
-static bool IRAM_ATTR iq_deliver(const iq_delivery_t *sink, const uint8_t *data,
+static bool LORA_HOT iq_deliver(const iq_delivery_t *sink, const uint8_t *data,
         size_t bytes, uint64_t first, const lr20xx_stream_result_t *out)
 {
     return sink->block ? sink->block(sink->context, data, bytes, first,
@@ -3821,7 +3946,7 @@ static void iq_note_flags(lr20xx_stream_result_t *out, uint8_t flags, int64_t st
     out->fifo_flags |= flags;
 }
 
-static esp_err_t IRAM_ATTR iq_check_flags(lr20xx_stream_result_t *out, int64_t started)
+static esp_err_t LORA_HOT iq_check_flags(lr20xx_stream_result_t *out, int64_t started)
 {
     uint8_t flags[2] = {0};
     esp_err_t err = read_locked(0x011B, NULL, 0, flags, 2);
@@ -3833,7 +3958,7 @@ static esp_err_t IRAM_ATTR iq_check_flags(lr20xx_stream_result_t *out, int64_t s
     return err;
 }
 
-static void IRAM_ATTR iq_publish(const iq_delivery_t *sink, const uint8_t *pending,
+static void LORA_HOT iq_publish(const iq_delivery_t *sink, const uint8_t *pending,
         size_t bytes, lr20xx_stream_result_t *out)
 {
     const unsigned pair_bytes = out->format == LR20XX_IQ8 ? 2 : 4;
@@ -3849,7 +3974,7 @@ static void IRAM_ATTR iq_publish(const iq_delivery_t *sink, const uint8_t *pendi
 /* One 0x0001 command, not repeated 62-byte FIFO commands. frame has a
    padded 1024-byte internal allocation for the CPU tail's word access. */
 static int64_t s_iq_busy_us; /* BUSY wait of the last FIFO read */
-static esp_err_t IRAM_ATTR iq_read_fifo(uint8_t *frame_data, size_t n)
+static esp_err_t LORA_HOT iq_read_fifo(uint8_t *frame_data, size_t n)
 {
     const int64_t busy_start = esp_timer_get_time();
     const bool ready = ls_lora_hw_wait_not_busy(20);
@@ -3865,7 +3990,7 @@ static esp_err_t IRAM_ATTR iq_read_fifo(uint8_t *frame_data, size_t n)
     return err;
 }
 
-static esp_err_t IRAM_ATTR iq_stream_loop(unsigned duration_ms, const iq_delivery_t *sink,
+static esp_err_t LORA_HOT iq_stream_loop(unsigned duration_ms, const iq_delivery_t *sink,
         lr20xx_stream_result_t *out, bool checked, bool live,
         unsigned capacity, uint8_t *data, uint8_t *pending, size_t *tail_bytes,
         esp_timer_handle_t wake_timer, iq_wake_context_t *wake)
@@ -4693,8 +4818,8 @@ LR_CMD lrble_command(int argc, char **argv)
     if (!ok || argc > 5) { puts(LS_TEXT(msg_ls_lora_lr20xx_usage_lora_lrble_37, "usage: lora lrble <37|38|39> [seconds 1..600] [1m|2m|s2|s8]")); return 1; }
     esp_err_t err = lr20xx_exp_begin(LR20XX_ENGINE_BLE, preset, ch, 0);
     if (err != ESP_OK) { printf("lrble: start %s\n", esp_err_to_name(err)); return 1; }
-    static uint8_t frame[260];
-    static uint8_t seen[64][6];
+    LORA_TABLE static uint8_t frame[260];
+    LORA_TABLE static uint8_t seen[64][6];
     unsigned nseen = 0, good = 0, bad = 0;
     const int64_t end = esp_timer_get_time() + (int64_t)secs * 1000000;
     static const char *const types[] = {"ADV_IND", "DIRECT", "NONCONN", "SCAN_REQ", "SCAN_RSP",

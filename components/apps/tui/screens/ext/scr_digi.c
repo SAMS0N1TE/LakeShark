@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "../../ls_app.h"
+#include "../../ls_drag_scroll.h"
 #include "../../ls_braille.h"
 #include "../../ls_glyph.h"
 #include "../../ls_options.h"
@@ -34,6 +35,7 @@
 EXT_RAM_BSS_ATTR static digi_view_t s_v;
 static uint32_t s_seen;
 static int s_scroll;
+static ls_drag_scroll_t s_drag;   /* a finger carrying the decode list */
 
 static int64_t now_us(void) { return esp_timer_get_time(); }
 
@@ -48,7 +50,10 @@ static void note_arrivals(void)
 {
     if (!s_v.n) return;
     uint32_t top = s_v.row[0].seq;
-    if (s_seen && s_scroll && top > s_seen) s_scroll += (int)(top - s_seen);
+    if (s_seen && top > s_seen) {
+        if (s_scroll) s_scroll += (int)(top - s_seen);
+        if (s_drag.held) s_drag.start_first += (int)(top - s_seen);
+    }
     s_seen = top;
 }
 
@@ -388,6 +393,8 @@ static void list(tui_surface *sf, tui_rect r)
     snprintf(hdr, sizeof(hdr), wide ? " dB   DT    Hz  %-*s    km BRG" : " dB   DT   Hz  %-*s  km  BRG",
              w - (wide ? 30 : 29), "MESSAGE");
     tui_put_str(sf, r, x, y++, hdr, LS_ATTR_FAINT);
+    /* A finger moving up shows older decodes, down newer; a row per cell. */
+    ls_drag_scroll(&s_drag, tui_rect_make(r.x + 1, y, r.w - 2, y_end - y), 1, &s_scroll, s_v.n, 1);
     if (s_scroll > s_v.n - 1) s_scroll = s_v.n - 1;
     if (s_scroll < 0) s_scroll = 0;
     uint32_t prev_slot = s_scroll ? s_v.row[s_scroll - 1].slot_utc : 0;
@@ -514,8 +521,12 @@ static void draw(tui_surface *sf, tui_rect area)
     digi_view(&s_v);
     note_arrivals();
     const bool wide = area.w > area.h * 2;
-    tui_rect bar = tui_rect_make(area.x, area.y + area.h - 5, area.w, 5);
-    tui_rect body = tui_rect_make(area.x, area.y, area.w - (wide ? 8 : 0), area.h - 5);
+    /* Four keys at the house height: five in a fixed five rows cut every
+       label short on the portrait grid. */
+    int bar_h = ls_btn_raised_height(area, 4);
+    if (bar_h < 5) bar_h = 5;
+    tui_rect bar = tui_rect_make(area.x, area.y + area.h - bar_h, area.w, bar_h);
+    tui_rect body = tui_rect_make(area.x, area.y, area.w - (wide ? 8 : 0), area.h - bar_h);
     tui_rect h, b, l;
     if (wide) {
         int lw = body.w * 2 / 5;
@@ -538,15 +549,19 @@ static void draw(tui_surface *sf, tui_rect area)
     list(sf, l);
     s_list_r = l;
     const digi_band_t *bd = digi_band(s_v.band);
-    ls_btn_t btn[5] = {
+    /* TEST SIGNAL is a row in OPTIONS (and still on T); a bench switch does
+       not need a quarter of the bar in the field. */
+    ls_btn_t btn[4] = {
         {.label = s_v.running ? "STOP" : "START", .value = "RX", .key = 's', .on = s_v.running},
         {.label = "BAND", .value = bd ? bd->band : "?", .key = 'b'},
         {.label = "MODE", .value = digi_mode_name(s_v.mode), .key = 'm'},
-        {.label = "TEST", .value = digi_test_source() ? "ON" : "OFF", .key = 't', .on = digi_test_source()},
         ls_opt_button(&CTX_DIGI),
     };
-    ls_btn_bar_raised_row(sf, bar, btn, 5, -1);
+    if (digi_test_source()) btn[3].value = "TEST ON";
+    ls_btn_bar_raised_row(sf, bar, btn, 4, -1);
 }
+/* The bar's keys, in its order. */
+static const int BAR_ACT[4] = { A_RUN, A_BAND, A_MODE, A_OPT };
 
 static bool key(ls_tk_t k, char ch)
 {
@@ -567,9 +582,10 @@ static bool key(ls_tk_t k, char ch)
 static bool touch(int col, int row)
 {
     int i = ls_btn_hit(col, row);
-    if (i >= 0) { act(i); return true; }
+    if (i >= 0 && i < 4) { act(BAR_ACT[i]); return true; }
     /* The decode list scrolls by its top and bottom thirds. */
     if (tui_rect_contains(s_list_r, col, row) && s_v.n) {
+        if (ls_drag_scroll_tap_is_lift(&s_drag)) return true;   /* the end of a drag */
         if (row < s_list_r.y + s_list_r.h / 3) { act(A_UP); return true; }
         if (row >= s_list_r.y + s_list_r.h * 2 / 3) { act(A_DOWN); return true; }
     }
@@ -578,7 +594,7 @@ static bool touch(int col, int row)
 
 const ls_tui_screen_t ls_scr_digi = {
     .name = "DIGI",
-    .hint = "s Start/Stop  b Band  m Mode  t Test  o Options  Up/Down or tap list ends to scroll",
+    .hint = "s Start/Stop  b Band  m Mode  t Test  o Options  Up/Down, drag or tap list ends to scroll",
     .enter = enter, .draw = draw, .key = key, .touch = touch,
 };
 

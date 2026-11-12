@@ -25,6 +25,7 @@
 #include "apps/p25/p25_spectrum.h"
 #include "apps/fm/fm_state.h"
 #include "apps/fm/fm_spectrum.h"
+#include "radio/ls_radio_hf.h"
 #include "apps/p25/p25_program.h"
 #include "apps/p25/p25_profile.h"
 #include "ls_cold.h"
@@ -948,6 +949,18 @@ static bool fm_marker(uint32_t hz)
     return ok || tune_refused(LS_TEXT(t_ls_wf_source_receiver_refused_tune, "receiver refused tune"));
 }
 
+/* FM's live view zooms from its own IQ; the sweep and the LR2021's tap do not. */
+static bool fm_zoomable(void)
+{
+    return FM.mode != FM_MODE_SCAN && !app_uses_lr(LS_RSEL_FM) && !FM.lr_iq_active;
+}
+static bool zoom_source(ls_wf_owner_t owner, unsigned factor, uint32_t hz)
+{
+    if (owner != LS_WF_OWNER_FM) return false;
+    if (factor > 1 && !fm_zoomable()) return false;
+    return fm_spectrum_zoom(factor, hz);
+}
+
 static bool tune_marker(ls_wf_owner_t owner,uint32_t hz)
 {
     if(owner==LS_WF_OWNER_P25) {
@@ -956,8 +969,10 @@ static bool tune_marker(ls_wf_owner_t owner,uint32_t hz)
         scan_engine_stop();lakeshark_p25_set_freq(hz);return true;
     }
     if(owner==LS_WF_OWNER_FM) {
-        if(hz<24000000||hz>1766000000)
-            return tune_refused("outside 24-1766 MHz");
+        /* Below 24 MHz the RTL takes HF by direct sampling or the V4's
+           upconverter; the receiver refuses what its dongle cannot reach. */
+        if(hz<LS_HF_MIN_HZ||hz>1766000000)
+            return tune_refused("outside 0.5-1766 MHz");
         return fm_marker(hz);
     }
     if(owner==LS_WF_OWNER_LORA) {
@@ -996,6 +1011,11 @@ void ls_wf_source_pump(void)
                        (s_lora_max_hz >= 1900000000u &&
                         ls_lora_packet_rx_hz_ok(ls_lora_caps(), s_lora_max_hz));
     ls_wf_set_tuner(ls_wf_source_get() == LS_WF_SRC_LORA && !packet_band ? NULL : tune_marker);
+    ls_wf_set_zoomer(zoom_source);
+    if (fm_spectrum_zoom_factor() > 1 && (ls_wf_source_get() != LS_WF_SRC_FM || !fm_zoomable())) {
+        (void)fm_spectrum_zoom(1, 0);
+        ls_wf_zoom_drop();
+    }
     ls_wf_src_t use = ls_wf_source_get();
 
     if (use != LS_WF_SRC_P25)  p25_feed(false);

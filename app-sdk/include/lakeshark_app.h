@@ -2006,6 +2006,26 @@ int lap_rx_dsp_status(int worker, lap_dsp_status_t *out);
 int lap_rx_dsp_next(int worker, lap_dsp_result_t *out, void *data, uint32_t cap);
 void lap_rx_dsp_close(int worker);
 #endif /* API 2.6 services and worker DSP */
+
+#if defined(LAP_API_26)
+/* ---- API 2.6: nodes of another mesh on MAP ------------------------------ */
+/* An app that runs a mesh the board does not (MESHTASTIC) puts its nodes on
+   MAP beside MeshCore's peers. Insert or update by id; up to 48 are kept,
+   the stalest dropped. Copied; may live on the callback stack. Returns 0, or
+   LAP_RX_EINVAL for a bad size/version. Nodes without has_pos are kept for
+   lists but not drawn. */
+typedef struct {
+    uint16_t size, version;     /* sizeof(lap_map_node_t), 1 */
+    uint32_t id;
+    char name[24];
+    char short_name[6];
+    bool has_pos;
+    uint8_t hops;
+    double lat, lon;            /* degrees */
+    int16_t rssi_tenths, snr_tenths;
+} lap_map_node_t;
+int lap_map_node(const lap_map_node_t *node);
+#endif /* API 2.6: nodes of another mesh on MAP */
 #ifdef __cplusplus
 }
 #endif

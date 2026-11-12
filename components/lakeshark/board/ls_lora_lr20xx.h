@@ -171,6 +171,8 @@ enum { LR20XX_MODE_SLEEP = 0, LR20XX_MODE_STBY_RC = 1, LR20XX_MODE_STBY_XOSC = 2
 #define LR20XX_TX_FREQ_LIMIT_HZ    960000001u
 #define LR20XX_TX_POWER_MIN_DBM    (-9)
 #define LR20XX_TX_POWER_MAX_DBM    22
+#define LR20XX_TX_HF_POWER_MIN_HALF_DB (-39)
+#define LR20XX_TX_HF_POWER_MAX_HALF_DB 24
 
 /* FSK sessions: receive on the LF input up to 1100 MHz (UAT at 978 MHz sits
    between the 960 MHz edge of the LF specification and Mode S at 1090, which
@@ -221,6 +223,7 @@ esp_err_t lr20xx_read(uint16_t op, const uint8_t *args, size_t n,
 /* Stat and IRQ word of the most recent frame, free with every transaction. */
 uint16_t lr20xx_last_stat(void);
 uint32_t lr20xx_last_irq(void);   /* only refreshed by frames of six bytes or more */
+uint16_t lr20xx_refused_op(uint32_t *count);
 
 /* ---- commands ------------------------------------------------------------ */
 
@@ -720,6 +723,8 @@ typedef struct {
     uint32_t overflows;   /* Rx FIFO full or misaligned, cleared               */
     uint32_t chip_errors; /* GetErrors flags read and cleared                  */
     uint32_t bus_errors;  /* SPI or protocol failures                          */
+    uint32_t cmd_errors;
+    uint16_t refused_op;
 } lr20xx_modes_stats_t;
 
 /* freq_hz 1080..1100 MHz, gain_step 0 (AGC) .. 13. Standby, DIOs, calibrate,

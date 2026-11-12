@@ -1,0 +1,3 @@
+freq_mhz,mode,bw_khz,name,group,tags,lat,lon,radius_km,tone,notes
+433.92,OOK,,GARAGE REMOTE,MINE,subghz,,,,,
+162.55,NFM,,FM 162.550,MINE,fm,,,,,

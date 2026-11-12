@@ -1,5 +1,23 @@
 # LakeShark release notes
 
+## 2.21.3
+
+- FREQS, the frequency library: banks of frequencies on the card (CSV, plus CHIRP, gqrx and SDR++ imports), filters by band, group, NEAR (by GPS) and FIND, and TUNE straight into FM, P25, SUB-GHZ or LORA LABS in the right mode. SAVE TO FREQS from FM, SUB-GHZ, P25, LORA LABS and CELL WATCH. Ships with 566 sourced frequencies for Argentina.
+- Lists scroll under a finger: drag FREQS, every OPTIONS list and picker, FILES, JOURNAL, NOTES, MESH, SUB-GHZ, ADS-B, DIGI, TIME MACHINE and the terminal. Dragging moves the list, not your selection, and lifting your finger never picks a row by accident.
+- Waterfall ZOOM is a real zoom on FM: 2x to 32x around the mark, computed from the radio's own signal so close stations separate (32x is 8 kHz wide). TUNE MARK works on HF too.
+- FALLS: the keys over the waterfall are smaller, so the waterfall gets more of the screen.
+- SUB-GHZ is three places, WATCH, READ and BAND: LEARN and RECORD work right on READ, BAND draws a waterfall with a DETECT gate you drag or tap, and LISTEN HERE hands a detection to READ. On the LR2021, FSK WATCH and LEARN work from one burst. SEND is one press with one power setting. SAVED shows the newest 48 files. WATCH is ready seconds after boot.
+- P25 trunk following: OPTIONS shows why a grant was not followed, stays on the voice channel briefly after an over so replies are heard, and keeps each system's talkgroup list and auto-follow to that system, so a profile for one system no longer silences another.
+- MESHTASTIC app: hear and talk to Meshtastic nodes on the LoRa radio, nodes on MAP, and Meshtastic as the primary mesh (MESH > OPTIONS > RADIO, until restart).
+- The LoRa chip changes hands reliably: MESH gets it back from background receivers and restores its settings, and apps no longer leave it held when you move on.
+- RADIOS: STOP switches off whatever app is using a radio (STOP FM, STOP SUB-GHZ) instead of pausing it under the app; BLE and Wi-Fi boot switches.
+- ADS-B: emergencies show on the list, and the list sorts by nearest or lowest.
+- CELL WATCH: band 28, START with no GPS fix surveys where you are, and every band row goes out on the mesh.
+- Bigger, simpler screens: LINK, NOTES, DIGI, LORA LABS, MIX-RF, RF SURVEY and EXPERIMENTS use big keys with the rest in OPTIONS; MUSIC has one VIEW key for its ten views; DIAG and TILES show chips under the title.
+- SETTINGS: Vibrate is the one vibration switch for taps, alerts and detections, and alert sound and vibrate settings survive a reboot. Drones background watch and scan tuning settings stick.
+- FM: RDS station name and type stop flashing.
+- LR2021: Mode S no longer floods the console with "chip errors 0x0000" (#22).
+
 ## 2.21.2
 
 - MAP: street-level zooms are clean and sharp. Hill shading now fades out past zoom 13, so city streets no longer sit on large smeared patches. Wider views keep their shading exactly as before.

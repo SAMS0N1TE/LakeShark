@@ -33,6 +33,7 @@
 #include "../../ls_app.h"
 #include "../../ls_map.h"
 #include "../../ls_map_share_ui.h"
+#include "../../ls_drag_scroll.h"
 
 #include "core/settings.h"
 #include "audio/audio_events.h"
@@ -59,6 +60,12 @@ static const ls_opt_ctx_t CTX_INSPECT;
 static tui_rect s_inspect_buttons, s_inspect_content;
 static char     s_detail_id[17];
 static tui_rect s_node_rect;       /* where the list was drawn, for taps    */
+/* NODES: the first row shown. A finger dragged on the rows moves it alone
+   and the cursor stays put; a key or a tap that moves the cursor puts the
+   window back on it. */
+static int      s_node_top;
+static ls_drag_scroll_t s_node_drag;
+static bool     s_node_free;
 #define DETAIL_ACTS 4
 static tui_rect s_act_rect[DETAIL_ACTS];
 
@@ -66,6 +73,7 @@ static tui_rect s_act_rect[DETAIL_ACTS];
 static tui_rect s_compose_rect;
 static tui_rect s_feed_rect;
 static int s_feed_back;
+static ls_drag_scroll_t s_feed_drag;
 static char s_feed_text[LS_MESH_MSG_LEN + LS_MESH_PEER_NAME + 2];
 static char s_feed_line[LS_MESH_MSG_LEN + LS_MESH_PEER_NAME + 2];
 /* Where the destination chip was drawn, for the tap that clears it. */
@@ -483,9 +491,28 @@ static void draw_feed(tui_surface *sf, tui_rect r, uint32_t now, bool with_box)
     }
     s_feed_rect = r;
     if (s_feed_back >= n) s_feed_back = n - 1;
-    const int end = n - s_feed_back;
     const int width = r.w - 8;
     if (width < 1) return;
+    /* A finger carries the feed a message per row: down reads back. Only
+       while the log overflows, and no further back than puts the oldest
+       message on the top row. */
+    {
+        int deepest = 0, lines = 0;
+        for (int i = 0; i < n; i++) {
+            const int k = feed_rows(&s_msg_buf[i], width);
+            lines += k < 1 ? 1 : k;
+        }
+        for (int i = n - 1; i > 0 && lines > rows; i--, deepest++) {
+            const int k = feed_rows(&s_msg_buf[i], width);
+            lines -= k < 1 ? 1 : k;
+        }
+        int f = deepest - s_feed_back;
+        if (f < 0) f = 0;
+        if (deepest > 0 && ls_drag_scroll(&s_feed_drag, tui_rect_make(r.x, top, r.w, rows),
+                                          1, &f, deepest + 1, 1))
+            s_feed_back = deepest - f;
+    }
+    const int end = n - s_feed_back;
     int first = end, used = 0;
     while (first > 0) {
         int lines = feed_rows(&s_msg_buf[first - 1], width);
@@ -592,7 +619,7 @@ static int node_at(tui_rect r, int row)
 {
     const int rh = node_row_h(false);
     const int i = (row - r.y - 1) / rh;
-    return i >= 0 ? i : -1;
+    return i >= 0 && i < (r.h - 3) / rh ? s_node_top + i : -1;
 }
 
 static void draw_nodes(tui_surface *sf, tui_rect r, uint32_t now, bool compact)
@@ -628,8 +655,21 @@ static void draw_nodes(tui_surface *sf, tui_rect r, uint32_t now, bool compact)
     /* The full list keeps its last interior row for the hint. The compact
        rail has no hint and no room for one. */
     const int rows = (r.h - (compact ? 2 : 3)) / rh;
-    for (int i = 0; i < n && i < rows; i++) {
-        const int top = r.y + 1 + i * rh;
+    int first = 0;
+    if (!compact && rows > 0) {
+        if (n > rows &&
+            ls_drag_scroll(&s_node_drag, tui_rect_make(r.x + 1, r.y + 1, r.w - 2, rows * rh),
+                           rh, &s_node_top, n, rows)) s_node_free = true;
+        if (!s_node_free) {
+            if (s_sel < s_node_top) s_node_top = s_sel;
+            if (s_sel >= s_node_top + rows) s_node_top = s_sel - rows + 1;
+        }
+        if (s_node_top > n - rows) s_node_top = n - rows;
+        if (s_node_top < 0) s_node_top = 0;
+        first = s_node_top;
+    }
+    for (int i = first; i < n && i < first + rows; i++) {
+        const int top = r.y + 1 + (i - first) * rh;
         const int y = top + (rh - 1) / 2;
         const bool sel = !compact && i == s_sel;
         if (sel) {
@@ -1308,7 +1348,25 @@ static void o_forget(const ls_opt_t *o)
     option_flash(ls_mesh_forget_peer(s_detail_id) > 0 ? "contact forgotten" : "contact not found");
 }
 
+/* Which mesh owns the LoRa radio, until the next restart: the board always
+   starts on MeshCore and never opens an app by itself. MESHTASTIC needs the
+   MESHTASTIC app; open it once and it keeps listening in the background. */
+static void o_primary(const ls_opt_t *o)
+{
+    (void)o;
+    const int next = !ls_mesh_primary();
+    if (ls_mesh_set_primary(next) != ESP_OK) { option_flash("could not switch"); return; }
+    option_flash(next ? "MESHTASTIC owns the radio until restart: open its app"
+                      : "MESHCORE owns the radio again");
+}
+static void o_primary_show(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    snprintf(out, n, "%s", ls_mesh_primary() ? "MESHTASTIC" : "MESHCORE");
+}
+
 static const ls_opt_t OPT_RADIO[] = {
+    { .label = "PRIMARY MESH", .kind = LS_OPT_ACTION, .act = o_primary, .show = o_primary_show },
     MESH_ROW("BAND", F_BAND), MESH_ROW("FREQUENCY", F_FREQ), MESH_ROW("SPREADING", F_SF),
     MESH_ROW("BANDWIDTH", F_BW), MESH_ROW("CODING RATE", F_CR), MESH_ROW("POWER", F_PWR),
     MESH_ROW("SYNC WORD", F_SYNC), MESH_ROW("CRC", F_CRC),
@@ -1826,11 +1884,17 @@ static void draw_portrait(tui_surface *sf, tui_rect area,
 
 /* ---------------------------------------------------------------- screen */
 
+/* While MESH is on screen the LoRa chip is the mesh's: a background receiver
+   (FM on the LR2021, say) lets go until the screen closes. */
+static void leave(void) { ls_mesh_radio_front(false); }
+
 static void enter(void)
 {
+    ls_mesh_radio_front(true);
     s_page = PAGE_CHAT;
     s_feed_back = 0;
     s_sel = 0; s_field = 0; s_edit_field = -1;
+    s_node_top = 0; s_node_free = false;
     s_detail = false; s_inspect_page = false; s_detail_id[0] = 0;
     s_compose_len = 0; s_compose[0] = 0;
     s_seen_msg = ls_mesh_msg_seq();
@@ -2269,6 +2333,7 @@ static bool key(ls_tk_t k, char ch)
             }
             if (k == LS_TK_UP || k == LS_TK_DOWN) {
                 const int n = ls_mesh_peers(s_peer_buf, LS_MESH_MAX_PEERS);
+                s_node_free = false;
                 if (k == LS_TK_UP && s_sel > 0) s_sel--;
                 if (k == LS_TK_DOWN && s_sel < n - 1) s_sel++;
                 if (s_sel >= 0 && s_sel < n)
@@ -2279,8 +2344,8 @@ static bool key(ls_tk_t k, char ch)
             return true;      /* the page owns the rest while it is open */
         }
         switch (k) {
-        case LS_TK_UP:   if (s_sel > 0) s_sel--; return true;
-        case LS_TK_DOWN: s_sel++; return true;      /* clamped in draw */
+        case LS_TK_UP:   s_node_free = false; if (s_sel > 0) s_sel--; return true;
+        case LS_TK_DOWN: s_node_free = false; s_sel++; return true;      /* clamped in draw */
         case LS_TK_ENTER: {
             const int n = ls_mesh_peers(s_peer_buf, LS_MESH_MAX_PEERS);
             if (s_sel < 0 || s_sel >= n) { flash("nothing heard yet"); return true; }
@@ -2337,6 +2402,7 @@ static bool key(ls_tk_t k, char ch)
 static bool touch(int col, int row)
 {
     if (s_page == PAGE_CHAT && tui_rect_contains(s_feed_rect, col, row)) {
+        if (ls_drag_scroll_tap_is_lift(&s_feed_drag)) return true;   /* the end of a drag */
         if (row < s_feed_rect.y + s_feed_rect.h / 2) { if (s_feed_back < LS_MESH_MAX_MSGS - 1) s_feed_back++; }
         else if (s_feed_back > 0) s_feed_back--;
         return true;
@@ -2393,9 +2459,11 @@ static bool touch(int col, int row)
         if (!s_detail && s_node_rect.h > 0 && row > s_node_rect.y &&
             row < s_node_rect.y + s_node_rect.h - 1 &&
             col >= s_node_rect.x && col < s_node_rect.x + s_node_rect.w) {
+            if (ls_drag_scroll_tap_is_lift(&s_node_drag)) return true;   /* the end of a drag, not a choice */
             const int n = ls_mesh_peers(s_peer_buf, LS_MESH_MAX_PEERS);
             const int i = node_at(s_node_rect, row);
             if (i >= 0 && i < n) {
+                s_node_free = false;
                 if (i == s_sel) return key(LS_TK_ENTER, 0);
                 s_sel = i;
             }
@@ -2475,9 +2543,11 @@ static bool touch(int col, int row)
     if (s_page == PAGE_NODES && s_node_rect.h > 0 &&
         row > s_node_rect.y && row < s_node_rect.y + s_node_rect.h - 1 &&
         col >= s_node_rect.x && col < s_node_rect.x + s_node_rect.w) {
+        if (ls_drag_scroll_tap_is_lift(&s_node_drag)) return true;   /* the end of a drag, not a choice */
         const int n = ls_mesh_peers(s_peer_buf, LS_MESH_MAX_PEERS);
         const int i = node_at(s_node_rect, row);
         if (i >= 0 && i < n) {
+            s_node_free = false;
             if (i == s_sel && !s_detail) {
                 snprintf(s_detail_id, sizeof(s_detail_id), "%s", s_peer_buf[i].id);
                 s_detail = true;
@@ -2550,6 +2620,7 @@ const ls_tui_screen_t ls_scr_mesh = {
     .name = "MESH",
     .hint = "MIC arms  LEFT/RIGHT page  CHAT: ENTER send  NODES: ENTER open",
     .enter = enter,
+    .leave = leave,
     .draw = draw,
     .key = key,
     .touch = touch,

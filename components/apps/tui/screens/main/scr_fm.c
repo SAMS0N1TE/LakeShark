@@ -44,6 +44,7 @@
 #include "lakeshark_backend.h"
 
 #include "../../ls_quick.h"
+#include "../../ls_freqs.h"
 #include "../../ls_picker.h"
 #include "../../ls_radio_select.h"
 #include "../../ls_field.h"
@@ -1235,6 +1236,32 @@ static void o_show_tone(const ls_opt_t *o, char *out, size_t n)
 }
 static int o_tone_show(const ls_opt_t *o) { (void)o; return FM.tone_show; }
 static void o_set_tone_show(const ls_opt_t *o, int v) { (void)o; FM.tone_show = v != 0; }
+/* SAVE TO FREQS: the carrier and the mode as they are, into mine.csv. FREQS
+   says how it went in a banner, so this list needs no line of its own. */
+static const char *freqs_mode(void)
+{
+    switch (FM.mode) {
+    case FM_MODE_WFM:    return "WFM";
+    case FM_MODE_AM:     return hf_on() ? fm_hf_demod_label(fm_hf_get()->demod) : "AM";
+    case FM_MODE_POCSAG: return "POCSAG";
+    case FM_MODE_ACARS:  return "ACARS";
+    case FM_MODE_APRS:   return "APRS";
+    case FM_MODE_AIS:    return "AIS";
+    default:             return "NFM";
+    }
+}
+static void o_freqs_save(const ls_opt_t *o)
+{
+    (void)o;
+    char said[96];
+    ls_freqs_offer(FM.freq_hz, freqs_mode(), NULL, "fm", said, sizeof(said));
+}
+static void o_freqs_show(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    snprintf(out, n, "%.4f %s", FM.freq_hz / 1e6, freqs_mode());
+}
+#define OPT_FREQS_SAVE { .label = "SAVE TO FREQS", .kind = LS_OPT_ACTION, .act = o_freqs_save, .show = o_freqs_show }
 static const ls_opt_t OPT_TONE[] = {
     { .label = "TONE SQUELCH", .kind = LS_OPT_CYCLE, .n = FM_TONE_CHOICES,
       .get = o_tone, .set = o_set_tone, .show = o_show_tone, .step = 1 },
@@ -1260,6 +1287,7 @@ static const ls_opt_t OPT_NFM[] = {
     OPT_GAIN,
     LS_RFFE_MENUS,
     OPT_SSTV,
+    OPT_FREQS_SAVE,
 };
 /* HF rows. They sit on AM's list because HF is AM mode on the HF chain;
    while the chain is off (plain AM on airband) all but DEMOD say why not,
@@ -1336,6 +1364,7 @@ static const ls_opt_t OPT_AM[] = {
     LS_RFFE_MENUS,
     OPT_AIR_SCAN,
     OPT_SSTV,
+    OPT_FREQS_SAVE,
 };
 /* HF: what is changed while tuning first, the rest a level down. */
 static const ls_opt_t OPT_HF[] = {
@@ -1356,6 +1385,7 @@ static const ls_opt_t OPT_HF[] = {
     LS_RFFE_MENUS,
     OPT_AIR_SCAN,
     OPT_SSTV,
+    OPT_FREQS_SAVE,
 };
 static const ls_opt_t OPT_GAIN_ONLY[] = { OPT_GAIN, LS_RFFE_MENUS };
 static int o_pager_voice(const ls_opt_t *o) { (void)o; return FM.pager_voice; }
@@ -1372,12 +1402,14 @@ static const ls_opt_t OPT_POCSAG[] = {
       .get = o_pager_voice, .set = o_set_pager_voice },
     OPT_GAIN,
     LS_RFFE_MENUS,
+    OPT_FREQS_SAVE,
 };
 static const ls_opt_t OPT_ACARS[] = {
     { .label = "CHANNEL", .kind = LS_OPT_CYCLE, .names = ACARS_CH, .n = 3,
       .get = o_acars, .set = o_set_acars, .show = o_show_acars },
     OPT_GAIN,
     LS_RFFE_MENUS,
+    OPT_FREQS_SAVE,
 };
 
 static const ls_opt_ctx_t CTX_NFM    = { .name = "NFM", .job = LS_RSEL_FM, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_NFM) };

@@ -1,6 +1,5 @@
 #include "call_archive.h"
 #include "p25_state.h"
-#include "radio_choice.h"
 #include "p25_p2_runtime.h"
 #include "p25_p2_runtime_status.h"
 #include "esp_attr.h"
@@ -31,8 +30,6 @@ extern void audio_write_p25_voice(const int16_t *, int);
 
 bool p25_p2_enabled(void) { return __atomic_load_n(&wanted, __ATOMIC_ACQUIRE); }
 void p25_p2_enable(bool on) {
-  if (on && !p25_p2_receiver_supported(P25.lora_rx,
-      ls_rsel_saved(LS_RSEL_P25) == LS_RSEL_LORA)) return;
   __atomic_store_n(&wanted, on, __ATOMIC_RELEASE);
 }
 bool p25_p2_config(uint32_t wacn, uint16_t system, uint16_t nac,
@@ -109,18 +106,20 @@ void p25_p2_stop(void) {
   applied_generation = UINT32_MAX;
   portEXIT_CRITICAL(&lock);
 }
-bool p25_p2_rx(dsp_state_t *dsp, const uint8_t *iq, int length, uint32_t hz,
-               uint32_t wacn, uint16_t system, uint16_t nac) {
+/* -1: Phase II is off (the caller demodulates Phase I). 0: on, but no system
+   ids yet, so nothing to decode. 1: the demodulator is set for Phase II. */
+static int p2_begin(dsp_state_t *dsp, uint32_t hz, uint32_t wacn,
+                    uint16_t system, uint16_t nac) {
   if (!p25_p2_enabled()) {
     if (decoder)
       p25_p2_stop();
-    return false;
+    return -1;
   }
   if (!decoder) {
     decoder = p25p2_create(output, NULL);
     if (!decoder) {
       p25_p2_enable(false);
-      return false;
+      return -1;
     }
     last_generation = UINT32_MAX;
     last_hz = 0;
@@ -139,7 +138,7 @@ bool p25_p2_rx(dsp_state_t *dsp, const uint8_t *iq, int length, uint32_t hz,
   unsigned slot = cfg_slot;
   portEXIT_CRITICAL(&lock);
   if (!ids)
-    return true;
+    return 0;
   if (last_generation != gen || hz != last_hz || !dsp->phase2) {
     call_archive_end(CALL_P25_P2, false);
     archive_ptt = archive_end = 0;
@@ -151,7 +150,9 @@ bool p25_p2_rx(dsp_state_t *dsp, const uint8_t *iq, int length, uint32_t hz,
     last_generation = gen;
     last_hz = hz;
   }
-  int count = dsp_process_iq(dsp, iq, length, samples, 8192);
+  return 1;
+}
+static void p2_decode(dsp_state_t *dsp, int count, uint32_t hz) {
   int out = p25_p2_slice(samples, count, dsp->demod_gain, symbols, 1024);
   int64_t start = esp_timer_get_time();
   p25p2_push(decoder, symbols, (size_t)out);
@@ -168,5 +169,21 @@ bool p25_p2_rx(dsp_state_t *dsp, const uint8_t *iq, int length, uint32_t hz,
   if (elapsed > max_decode_us)
     max_decode_us = elapsed;
   portEXIT_CRITICAL(&lock);
+}
+bool p25_p2_rx(dsp_state_t *dsp, const uint8_t *iq, int length, uint32_t hz,
+               uint32_t wacn, uint16_t system, uint16_t nac) {
+  int ready = p2_begin(dsp, hz, wacn, system, nac);
+  if (ready <= 0)
+    return ready == 0;
+  p2_decode(dsp, dsp_process_iq(dsp, iq, length, samples, 8192), hz);
+  return true;
+}
+/* The LR2021's front end hands over float IQ at the SDR path's 240 kHz. */
+bool p25_p2_rx_float(dsp_state_t *dsp, const float *iq, int pairs, uint32_t hz,
+                     uint32_t wacn, uint16_t system, uint16_t nac) {
+  int ready = p2_begin(dsp, hz, wacn, system, nac);
+  if (ready <= 0)
+    return ready == 0;
+  p2_decode(dsp, dsp_process_float_iq(dsp, iq, pairs, samples, 8192), hz);
   return true;
 }

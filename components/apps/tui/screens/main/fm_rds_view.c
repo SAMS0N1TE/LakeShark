@@ -23,6 +23,7 @@
 #include "../../ls_rffe_ui.h"
 #include "../../ls_tui_ui.h"
 #include "../../ls_action.h"
+#include "../../ls_freqs.h"
 #include "apps/fm/fm_bcast.h"
 #include "apps/fm/fm_state.h"
 #include "esp_attr.h"
@@ -54,8 +55,16 @@ void fm_rds_glass_line(char *out, int n)
              pty[0] && s_st.rds.pty ? " / " : "", s_st.rds.pty ? pty : "");
 }
 
+/* The river moves eight times a second, not every frame. Scrolled per
+   frame, a loud station changed ~1000 cells each time (the whole river is
+   lit) and the screen lagged; quiet audio hid it. */
+#define RIVER_STEP_US 125000
 static void history_take(void)
 {
+    static int64_t at;
+    const int64_t now = esp_timer_get_time();
+    if (s_hn && now - at < RIVER_STEP_US && now >= at) return;
+    at = now;
     s_hn = fm_wfm_history(s_hl, s_hr, s_hq, s_hmono, FM_WFM_HIST);
 }
 
@@ -384,6 +393,13 @@ static void o_show_gain(const ls_opt_t *o, char *out, size_t n)
     if (FM.gain_tenths <= 0) snprintf(out, n, "AUTO");
     else snprintf(out, n, "%d.%d dB", FM.gain_tenths / 10, FM.gain_tenths % 10);
 }
+static void o_freqs_save(const ls_opt_t *o)
+{
+    (void)o;
+    char said[96];
+    ls_freqs_offer(FM.freq_hz, "WFM", NULL, "fm", said, sizeof(said));
+}
+static void o_freqs_show(const ls_opt_t *o, char *out, size_t n) { (void)o; snprintf(out, n, "%.1f WFM", FM.freq_hz / 1e6); }
 static const char *const STEREO_NAMES[] = { "AUTO", "MONO" };
 static const char *const PTY_NAMES[] = { "RBDS (AMERICAS)", "RDS (EUROPE)" };
 static const ls_opt_t ROWS[] = {
@@ -399,6 +415,7 @@ static const ls_opt_t ROWS[] = {
       .unit = "dB, 0 is automatic", .show = o_show_gain },
     /* FRONT END (bias-T and the rest), as on every SDR app's list. */
     LS_RFFE_MENUS,
+    { .label = "SAVE TO FREQS", .kind = LS_OPT_ACTION, .act = o_freqs_save, .show = o_freqs_show },
 };
 const ls_opt_ctx_t fm_wfm_options = {
     .name = "WFM", .job = LS_RSEL_FM, .radio = LS_RSEL_NONE, LS_OPT_ROWS(ROWS)

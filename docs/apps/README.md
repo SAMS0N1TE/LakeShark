@@ -16,6 +16,7 @@ pick the receiver, O opens OPTIONS, and Esc or BACK goes back. See
 | [P25](P25.md) | Follow a P25 trunked system, decode Phase 1 voice and see active talkgroups | RTL-SDR or HackRF; LR2021 for Phase 1 voice |
 | [FM](FM.md) | Listen to NFM, WFM or AM, decode pagers, ACARS, APRS, AIS and SAME, or sweep a band | RTL-SDR or HackRF; LoRa chip for POCSAG |
 | [ADSB](ADSB.md) | Aircraft on 1090 MHz as a list and an offline mini map | RTL-SDR, HackRF or LR2021 |
+| [FREQS](FREQS.md) | The frequency list every app tunes from and saves into: banks on the card, near me, import and export | None; TUNE opens the app for the mode |
 | [FALLS](FALLS.md) | A waterfall of the last minute on the receiver you choose | RTL-SDR, HackRF or LoRa chip |
 | [CELL WATCH](CELL_WATCH.md) | Compare cellular downlink power with a learned site baseline | RTL-SDR; HackRF for HIGH RATE |
 | [MESH](MESH.md) | A MeshCore node: hear, relay and message over LoRa | LoRa chip (SX1262 or LR2021) |

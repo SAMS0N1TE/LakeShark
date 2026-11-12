@@ -60,11 +60,54 @@ typedef struct {
     uint32_t          source;
 } p25_scan_decision_t;
 
+/* What became of one voice grant. FOLLOWED tuned to it; the rest say why
+ * the grant was left. DUPLICATE is a grant for the call already followed. */
+typedef enum {
+    P25_FOLLOW_FOLLOWED = 0,
+    P25_FOLLOW_BUSY,          /* carrier scan, survey or split owns tuning   */
+    P25_FOLLOW_UNRESOLVED,    /* no IDEN for the channel, or a bad channel   */
+    P25_FOLLOW_UNSUPPORTED,   /* channel type this receiver cannot follow    */
+    P25_FOLLOW_P2_OFF,        /* Phase II grant with Phase II follow off     */
+    P25_FOLLOW_P2_NO_SYSTEM,  /* Phase II grant before WACN/SYSID are known  */
+    P25_FOLLOW_POLICY,        /* p25_scan_decide stayed; see the reason      */
+    P25_FOLLOW_REFUSED,       /* the follower refused (other call, skip)     */
+    P25_FOLLOW_DUPLICATE,
+    P25_FOLLOW_OUTCOME_COUNT
+} p25_follow_outcome_t;
+
+#define P25_FOLLOW_TRACE_LEN 8
+
+typedef struct {
+    int64_t  at_us;
+    uint32_t carrier_hz;
+    uint16_t talkgroup;
+    uint16_t channel;
+    uint8_t  support;         /* p25_call_support_t                          */
+    uint8_t  slot;
+    uint8_t  slots;
+    uint8_t  outcome;         /* p25_follow_outcome_t                        */
+    uint8_t  reason;          /* p25_scan_reason_t, for POLICY               */
+} p25_follow_trace_t;
+
 typedef struct {
     uint16_t number;
     char     name[P25_SCAN_NAME_LEN];
     char     category[P25_SCAN_CATEGORY_LEN];
 } p25_scan_name_t;
+
+/* A P25 system as the control channel names it. wacn 0 = not heard (a
+ * site that sent RFSS_STS_BCST, which carries SYSID only). */
+typedef struct {
+    uint32_t wacn;
+    uint16_t sysid;
+    bool     valid;
+} p25_system_id_t;
+
+/* How long a roster scoped to one system keeps applying on a control
+ * channel that has not said which system it is. NET_STS_BCST comes every
+ * few seconds; a site that never sends one must not be held to another
+ * system's list forever. */
+#define P25_ROSTER_UNKNOWN_GRACE_US 10000000LL
 
 typedef struct {
 
@@ -79,6 +122,25 @@ typedef struct {
     p25_scan_list_mode_t list_mode;
 
     uint16_t hold_tg;         /* 0 = no hold                                  */
+
+    /* The system the roster above (lockouts, allow list and mode, hold,
+     * priorities) belongs to. !valid = unscoped: a roster saved before
+     * scoping existed, or made where no system was ever named. It applies
+     * everywhere, as before. A scoped roster applies only on its system. */
+    p25_system_id_t roster_sys;
+    /* A profile's auto_follow=false, kept with its system's roster: the
+     * radio stays on control there and only there. The global switch
+     * (auto_follow) still rules everywhere. */
+    bool     roster_follow_off;
+
+    /* Runtime: the system on the control channel now. */
+    p25_system_id_t current_sys;
+    int64_t  sys_unknown_since_us;   /* 0 = known, or nothing heard yet  */
+    uint32_t roster_switches;        /* rosters swapped on a new system  */
+    /* An unscoped roster made in this session (a profile or an edit before
+     * any system was named) goes to the first system named, where an old
+     * unscoped roster from NVS is set aside instead. */
+    bool     roster_pending_bind;
 
     /* Runtime only ------------------------------------------------------ */
 
@@ -98,6 +160,14 @@ typedef struct {
     uint32_t allow_rejects;
     uint32_t priority_preempts;
     uint32_t priority_grants;
+
+    /* Every voice grant's outcome, counted, plus the last few that were
+     * not duplicates. Read by 'p25 follow' and the P25 screen. */
+    uint32_t follow_outcomes[P25_FOLLOW_OUTCOME_COUNT];
+    p25_follow_trace_t follow_trace[P25_FOLLOW_TRACE_LEN];
+    uint32_t follow_trace_total;
+    p25_follow_trace_t follow_last_left;   /* newest grant not followed */
+    uint32_t follow_busy_generation;
 
     /* File-load diagnostics from the last p25_scan_names_load(). Kept on the
      * controller so a UI can display the report without holding the file
@@ -170,6 +240,57 @@ void p25_scan_names_load(p25_scan_ctrl_t *sc,
                          size_t file_bytes);
 void p25_scan_names_clear(p25_scan_ctrl_t *sc);
 
+/* Roster scope ----------------------------------------------------------- */
+
+/* Loads the roster stored for (wacn, sysid) into sc's roster fields, or
+ * leaves them cleared if none is stored. Set by the NVS layer; NULL (the
+ * bench default) means no stored rosters. */
+typedef void (*p25_roster_load_fn)(p25_scan_ctrl_t *sc, uint32_t wacn,
+                                   uint16_t sysid);
+void p25_scan_set_roster_loader(p25_roster_load_fn fn);
+/* Stores the roster now in sc under its scope and drops the copy under
+ * moved_from, the scope it just left (!valid = the unscoped slot). Set by
+ * the NVS layer. */
+typedef void (*p25_roster_save_fn)(p25_scan_ctrl_t *sc,
+                                   p25_system_id_t moved_from);
+void p25_scan_set_roster_saver(p25_roster_save_fn fn);
+/* Called after another system's roster was swapped in. Stored rosters
+ * carry no priorities: the profile layer puts its ranks back from here. */
+typedef void (*p25_roster_switched_fn)(p25_scan_ctrl_t *sc);
+void p25_scan_set_roster_switched(p25_roster_switched_fn fn);
+
+/* Take the system identity from the decoder. A newly named system swaps
+ * in that system's roster. Returns true when the roster changed. */
+bool p25_scan_note_system(p25_scan_ctrl_t *sc, const dsd_state *s,
+                          int64_t now_us);
+/* Whether lockouts, hold, allow list and priorities apply right now. */
+bool p25_scan_roster_applies(const p25_scan_ctrl_t *sc, int64_t now_us);
+/* Empty the roster (lockouts, allow, mode, hold, priorities); scope kept. */
+void p25_scan_roster_clear(p25_scan_ctrl_t *sc);
+/* Scope the roster in memory to a system (sysid 0 = unscoped). */
+void p25_scan_roster_bind(p25_scan_ctrl_t *sc, uint32_t wacn, uint16_t sysid);
+/* True when the roster holds nothing worth storing. */
+bool p25_scan_roster_empty(const p25_scan_ctrl_t *sc);
+/* After a roster was written for another system (a profile for somewhere
+ * else), swap back to the current system's own. True when it swapped. */
+bool p25_scan_roster_resync(p25_scan_ctrl_t *sc);
+/* Before an edit from the UI or console: make the roster in memory the
+ * current system's, so the edit lands on the system the radio is on.
+ * Unscoped rosters on an unnamed system are edited as they are. */
+bool p25_scan_roster_for_edit(p25_scan_ctrl_t *sc);
+
+/* Follow trace ----------------------------------------------------------- */
+void p25_scan_trace_grant(p25_scan_ctrl_t *sc, const p25_call_info_t *g,
+                          p25_follow_outcome_t outcome,
+                          p25_scan_reason_t reason, int64_t now_us);
+/* Grants seen while scan/survey/split hold tuning. Once per TSDU batch. */
+void p25_scan_trace_busy(p25_scan_ctrl_t *sc, const dsd_state *s,
+                         int64_t now_us);
+const char *p25_follow_outcome_name(p25_follow_outcome_t o);
+const char *p25_scan_reason_name(p25_scan_reason_t r);
+/* Short screen text for why the newest grant was left, or NULL. */
+const char *p25_follow_left_label(const p25_follow_trace_t *t);
+
 /* Decision --------------------------------------------------------------- */
 
 /* Given a candidate grant and the follower's current state, decide what the
@@ -217,6 +338,10 @@ size_t p25_scan_persist_save(const p25_scan_ctrl_t *sc, uint8_t *buf,
  * behaviour. */
 bool   p25_scan_persist_load(p25_scan_ctrl_t *sc, const uint8_t *buf,
                              size_t buf_len);
+/* Same blob, but replaces only the roster fields and their scope: the
+ * follow settings, counters and system identity are left alone. */
+bool   p25_scan_persist_load_roster(p25_scan_ctrl_t *sc, const uint8_t *buf,
+                                    size_t buf_len);
 
 /* Firmware-only: NVS-backed reload of the global g_p25_scan singleton, and
  * write-through save. Defined in scan_ctrl_nvs.c; the bench does not link

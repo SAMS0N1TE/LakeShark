@@ -80,6 +80,9 @@ typedef struct {
     const char *name;
     ls_case_fn  fn;
     const char *xfail;   /* NULL for an ordinary case */
+    int         line;    /* where the case is written; 0 when unknown */
+    int         seq;     /* registration order, for a stable sort */
+    int         frank;   /* registration order of the file's first case */
 } ls_case_t;
 
 static ls_case_t s_cases[LS_MAX_CASES];
@@ -106,7 +109,42 @@ static ls_case_t *alloc_case(const char *file, const char *name, ls_case_fn fn)
     c->name  = name;
     c->fn    = fn;
     c->xfail = NULL;
+    c->line  = 0;
+    c->seq   = s_n_cases;
     return c;
+}
+
+void ls_register_at(const char *file, int line, const char *name, ls_case_fn fn)
+{
+    alloc_case(file, name, fn)->line = line;
+}
+
+void ls_register_xfail_at(const char *file, int line, const char *name, ls_case_fn fn,
+                          const char *ticket)
+{
+    ls_case_t *c = alloc_case(file, name, fn);
+    c->line = line;
+    c->xfail = ticket;
+}
+
+/* The order cases run in. Constructors run in source order with gcc on
+   Linux and in reverse with the Windows toolchain, and cases that share
+   state (an app registered, a clock left set) were written and are gated
+   against the Windows order. So every platform runs that one: files as
+   first registered, and within a file from the last case written to the
+   first. */
+static int file_rank(const char *file)
+{
+    for (int i = 0; i < s_n_cases; i++)
+        if (!strcmp(s_cases[i].file, file)) return s_cases[i].seq;
+    return 0;
+}
+static int case_order(const void *pa, const void *pb)
+{
+    const ls_case_t *a = pa, *b = pb;
+    if (a->frank != b->frank) return a->frank < b->frank ? -1 : 1;
+    if (a->line != b->line) return a->line > b->line ? -1 : 1;
+    return a->seq < b->seq ? -1 : a->seq > b->seq;
 }
 
 void ls_register(const char *file, const char *name, ls_case_fn fn)
@@ -149,6 +187,9 @@ int main(int argc, char **argv)
         if (strcmp(argv[i], "-v") == 0) ls_shim_log_enabled = 1;
         else                            filter = argv[i];
     }
+
+    for (int i = 0; i < s_n_cases; i++) s_cases[i].frank = file_rank(s_cases[i].file);
+    qsort(s_cases, (size_t)s_n_cases, sizeof(s_cases[0]), case_order);
 
     int run = 0, passed = 0, failed = 0, xfailed = 0, xpassed = 0;
     for (int i = 0; i < s_n_cases; i++) {

@@ -3,6 +3,11 @@
 
 #define FLOOR_SHIFT 6         /* floor follows about 64 quiet samples (0.5 ms) */
 #define FLOOR_MIN   8
+/* The floor starts at FLOOR_MIN, below any real receiver's noise, so the
+   first samples would read as carrier, and the floor is not learned while
+   carrier is on: the capture opened on noise with a stuck floor. The first
+   4 floor time constants (2 ms) only learn the floor. */
+#define FLOOR_WARM  (4u << FLOOR_SHIFT)
 
 void rec_lr_ook_reset(rec_lr_ook_t *s)
 {
@@ -64,6 +69,7 @@ void rec_lr_ook_feed(rec_lr_ook_t *s, const uint8_t *iq, size_t bytes,
             s->floor = s->floor_acc >> FLOOR_SHIFT;
             if (s->floor < FLOOR_MIN) s->floor = FLOOR_MIN;
         }
+        if (s->warm < FLOOR_WARM) { s->warm++; continue; }
         const int32_t on = s->floor * 4, off = s->floor * 2;
         s->carrier = s->carrier ? mag > off : mag > on;
         if (s->capturing && mag > s->peak) s->peak = mag;

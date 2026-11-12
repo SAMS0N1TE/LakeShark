@@ -5,6 +5,7 @@
 #include "../../ls_picker.h"
 #include "../../ls_radio_select.h"
 #include "../../ls_options.h"
+#include "../../ls_freqs.h"
 #include "../../ls_braille.h"
 #include "../../ls_value.h"
 #include "../../ls_action.h"
@@ -25,22 +26,8 @@
 #include "esp_timer.h"
 #include "ls_textpack.h"
 
-static void frequency_readout(tui_surface *sf,tui_rect area,int y,uint32_t hz,uint8_t ink)
-{
-    static const uint8_t digits[10][5]={
-        {7,5,5,5,7},{2,6,2,2,7},{7,1,7,4,7},{7,1,7,1,7},{5,5,7,1,1},
-        {7,4,7,1,7},{7,4,7,5,7},{7,1,1,1,1},{7,5,7,5,7},{7,5,7,1,7}};
-    char text[24];if(hz)snprintf(text,sizeof(text),"%.3f",hz/1e6);else snprintf(text,sizeof(text),"---.---");
-    int x=area.x+2;
-    for(const char *c=text;*c;c++) {
-        if(*c=='.'){tui_put_char(sf,area,x,y+4,LS_TUI_BLOCK_FULL,ink);x+=2;continue;}
-        for(int row=0;row<5;row++)for(int col=0;col<3;col++)
-            if((*c=='-' && row==2) || (*c>='0' && *c<='9' && (digits[*c-'0'][row]&(4>>col))))
-                tui_put_char(sf,area,x+col,y+row,LS_TUI_BLOCK_FULL,ink);
-        x+=4;
-    }
-    tui_put_str(sf,area,x+1,y+4,"MHz",ink);
-}
+#include "../../ls_radio_panel.h"
+#include "../../ls_motion.h"
 
 static unsigned band;
 static int focus=-1,slot;
@@ -53,17 +40,14 @@ static uint32_t hrf_frequency=739000000,hrf_rate=8000000,hrf_ms=80;
 static bool auto_multi;
 static char control_message[80];
 static ls_imu_status_policy_t imu_display;
-static const uint32_t hrf_centers[]={739000000,751000000,881500000,1981250000,1992500000,2150000000};
 static const uint32_t hrf_rates[]={8000000,10000000,19200000,20000000};
-static void hrf_choose_frequency(int i){if(i>=0 && i<6)hrf_frequency=hrf_centers[i];}
-/* "B12 / EARFCN 5110" for a frequency on the band table, "B2" when it is
- * between two raster points. */
+static void hrf_choose_frequency(int i){if(i>=0 && i<CELL_HRF_CHANNELS)hrf_frequency=cell_hrf_centers[i];}
+/* "B13 / EARFCN 5230" for a frequency on the band table, "B2/B25" when it is
+ * between two raster points. HIGH RATE has no survey window to go by, so an
+ * overlap shows both bands: 763.0 is B14 in the US and B28 in Argentina. */
 static void band_label(uint32_t hz,char *out,size_t n)
 {
-    int b=cell_band_for_hz(hz);unsigned e;
-    if(b<0)LS_SNPUTS(t_scr_cell_outside_the_lte_bands, out, n, "outside the LTE bands");
-    else if(cell_hz_to_earfcn((unsigned)b,hz,&e))snprintf(out,n,"B%u / EARFCN %u",cell_bands[b].band,e);
-    else snprintf(out,n,"B%u",cell_bands[b].band);
+    if(!cell_band_label(hz,-1,out,n))LS_SNPUTS(t_scr_cell_outside_the_lte_bands, out, n, "outside the LTE bands");
 }
 static void hrf_choose_rate(int i){if(i>=0 && i<4)hrf_rate=hrf_rates[i];}
 static void hrf_choose_duration(int i){if(i>=0 && i<3)hrf_ms=i==0?30:i==1?80:100;}
@@ -81,12 +65,24 @@ static void report_choose(int i)
     snprintf(control_message,sizeof(control_message),saved?"Report selection saved":"Report changed in RAM; SD save failed");
 }
 static void choose(int i) {if(i>=0 && (unsigned)i<cell_band_count) band=(unsigned)i;}
-static void enter(void) {snprintf(mode_hint,sizeof(mode_hint),"%s",cell_performance_active()?"S auto/stop C once B channel V view O options H exit":"S go/stop B band L learn D load G site E LTE N cells P rate T report R radio O opts H exit");opened=true;memset(&imu_display,0,sizeof(imu_display));cell_monitor_init();cell_report_init();ls_tui_radio_want(NULL);ls_gps_start();ls_imu_start();}
+static void enter(void) {snprintf(mode_hint,sizeof(mode_hint),"%s",cell_performance_active()?"S auto/stop C once B channel O options (V view H exit)":"S go/stop B band L learn E LTE N cells O options (D load G site T report P rate R radio H home)");opened=true;memset(&imu_display,0,sizeof(imu_display));cell_monitor_init();cell_report_init();ls_tui_radio_want(NULL);ls_gps_start();ls_imu_start();}
 static void leave(void) {opened=false;cell_iq_stop();cell_monitor_wait_stopped();}
 static bool request(int cmd)
 {
     if(!opened) return false;
     control_message[0]=0;
+    /* Indoors, or before the first fix, START used to answer "GPS NO FIX:
+       wait or select SITE: LOCAL" and do nothing - in the field a press that
+       does nothing. A survey with no fix is a survey of this spot, so it
+       becomes one, and says so; SITE in OPTIONS puts GPS back. */
+    if((cmd==CELL_WATCH || cmd==CELL_LEARN) && !manual_site) {
+        static EXT_RAM_BSS_ATTR ls_gps_state_t gps;
+        ls_gps_get(&gps);
+        if(!cell_gps_valid(gps.fix,gps.last_fix_us,esp_timer_get_time(),gps.lat_deg,gps.lon_deg,gps.hdop)) {
+            manual_site=true;
+            snprintf(control_message,sizeof(control_message),"%s","No GPS fix: surveying this spot as LOCAL");
+        }
+    }
     if(cmd!=CELL_LOAD) ls_tui_radio_want(NULL);
     return cell_monitor_request(cmd,band,manual_site);
 }
@@ -106,6 +102,26 @@ static const char *o_cell_busy(const ls_opt_t *o)
     (void)o;
     cell_monitor_get(&status);
     return status.busy ? "Stop the survey first" : NULL;
+}
+/* SAVE TO FREQS: the carrier the survey is on, as LTE, into mine.csv. */
+static void o_freqs(const ls_opt_t *o)
+{
+    (void)o;
+    cell_monitor_get(&status);
+    ls_freqs_offer(status.frequency, "LTE", NULL, "cell", control_message, sizeof(control_message));
+}
+static void o_freqs_show(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    cell_monitor_get(&status);
+    if (status.frequency) snprintf(out, n, "%.3f MHz", status.frequency / 1e6);
+    else snprintf(out, n, "nothing tuned");
+}
+static const char *o_freqs_why(const ls_opt_t *o)
+{
+    (void)o;
+    cell_monitor_get(&status);
+    return status.frequency ? NULL : "Run a pass first";
 }
 static void o_band(const ls_opt_t *o) { (void)o; action(1); }
 static void o_band_show(const ls_opt_t *o,char *out,size_t n)
@@ -153,6 +169,23 @@ static void o_set_scan(const ls_opt_t *o,int v){(void)o;cell_monitor_set_full_sc
 static const char *const MIBS[]={"OFF","ON"};
 static int o_mib(const ls_opt_t *o){(void)o;cell_status_t s;cell_monitor_get(&s);return s.mib_on;}
 static void o_set_mib(const ls_opt_t *o,int v){(void)o;cell_monitor_set_mib(v!=0);}
+/* The names follow cell_gains, and a baseline is only compared at the gain it
+   was learned at, which the row says when it is not the usual one. */
+static const char *const GAIN[CELL_GAINS]={"7.7 dB","14.4 dB","19.7 dB","25.4 dB","29.7 dB","37.2 dB"};
+static int o_gain(const ls_opt_t *o)
+{
+    (void)o;cell_status_t s;cell_monitor_get(&s);
+    for(int i=0;i<CELL_GAINS;i++)if(cell_gains[i]==s.gain)return i;
+    return -1;
+}
+static void o_set_gain(const ls_opt_t *o,int v){(void)o;if(v>=0 && v<CELL_GAINS)cell_monitor_set_gain(cell_gains[v]);}
+static void o_gain_show(const ls_opt_t *o,char *out,size_t n)
+{
+    int i=o_gain(o);
+    if(i<0)snprintf(out,n,"?");
+    else if(cell_gains[i]==CELL_GAIN)snprintf(out,n,"%s",GAIN[i]);
+    else LS_SNPRINTF(t_scr_cell_s_learn_at_this_gain, out,n,"%s / LEARN at this gain",GAIN[i]);
+}
 static void o_ppm(const ls_opt_t *o){(void)o;cell_monitor_clear_ppm();}
 static void o_ppm_show(const ls_opt_t *o,char *out,size_t n)
 {
@@ -174,9 +207,18 @@ static void o_report_test(const ls_opt_t *o)
     char *args[]={"cellreport","test"};cell_report_command(2,args);
     cell_report_status(control_message,sizeof(control_message));
 }
+/* What left the eleven-key bar: each row runs the action its key ran. */
+static void o_act(const ls_opt_t *o){action(o->arg);}
+static const char *o_lte_why(const ls_opt_t *o){(void)o;cell_monitor_get(&status);return status.busy?"Stop the survey first":status.lte?NULL:NULL;}
+static void o_lte_show(const ls_opt_t *o,char *out,size_t n){(void)o;cell_monitor_get(&status);snprintf(out,n,"%s",status.lte?"searched":"run one");}
+static void o_load_show(const ls_opt_t *o,char *out,size_t n){(void)o;cell_monitor_get(&status);snprintf(out,n,"%s",status.baseline?(status.baseline_saved?"on SD":"in RAM"):"none");}
+static void o_radio_show(const ls_opt_t *o,char *out,size_t n){(void)o;snprintf(out,n,"%s",ls_rsel_button(LS_RSEL_CELL).value);}
 static const ls_opt_t OPT_CELL[]={
     {.label="BAND",.kind=LS_OPT_ACTION,.act=o_band,.show=o_band_show,.why_not=o_cell_busy},
+    {.label="LTE SEARCH",.kind=LS_OPT_ACTION,.arg=7,.act=o_act,.show=o_lte_show,.leaves=true,.why_not=o_lte_why},
+    {.label="LOAD BASELINE",.kind=LS_OPT_ACTION,.arg=3,.act=o_act,.show=o_load_show,.why_not=o_cell_busy},
     {.label="SITE",.kind=LS_OPT_TOGGLE,.names=SITE,.get=o_site,.set=o_set_site,.why_not=o_cell_busy},
+    {.label="RTL GAIN",.kind=LS_OPT_CYCLE,.names=GAIN,.n=CELL_GAINS,.get=o_gain,.set=o_set_gain,.show=o_gain_show,.why_not=o_cell_busy},
     {.label="LTE SCAN",.kind=LS_OPT_TOGGLE,.names=SCAN,.get=o_scan,.set=o_set_scan,.why_not=o_cell_busy},
     {.label="LTE MIB",.kind=LS_OPT_TOGGLE,.names=MIBS,.get=o_mib,.set=o_set_mib,.why_not=o_cell_busy},
     {.label="DONGLE PPM",.kind=LS_OPT_ACTION,.act=o_ppm,.show=o_ppm_show,.why_not=o_cell_busy},
@@ -184,6 +226,9 @@ static const ls_opt_t OPT_CELL[]={
     {.label="LORA REPORTS",.kind=LS_OPT_ACTION,.act=o_report,.show=o_report_show},
     {.label="RECENT SD LTE",.kind=LS_OPT_ACTION,.act=o_history},
     {.label="REPORT TEST / HEALTH",.kind=LS_OPT_ACTION,.act=o_report_test,.show=o_report_show},
+    {.label="HIGH RATE",.kind=LS_OPT_ACTION,.arg=8,.act=o_act,.leaves=true,.why_not=o_cell_busy},
+    {.label="RADIO",.kind=LS_OPT_ACTION,.arg=9,.act=o_act,.show=o_radio_show,.leaves=true},
+    {.label="SAVE TO FREQS",.kind=LS_OPT_ACTION,.act=o_freqs,.show=o_freqs_show,.why_not=o_freqs_why},
 };
 static const ls_opt_ctx_t CTX_CELL={.name="CELL",.job=LS_RSEL_CELL,.radio=LS_RSEL_NONE,LS_OPT_ROWS(OPT_CELL),.tag="SURVEY"};
 
@@ -196,11 +241,12 @@ static const char *o_hrf_busy(const ls_opt_t *o)
     static EXT_RAM_BSS_ATTR cell_iq_status_t iq;cell_iq_get_status(&iq);
     return iq.busy?"Stop the capture first":NULL;
 }
-static const char *const PLAN[]={"selected channel","six presets"};
+static const char *const PLAN[]={"selected channel","all nine presets"};
 static int o_plan(const ls_opt_t *o){(void)o;return auto_multi;}
 static void o_set_plan(const ls_opt_t *o,int v){(void)o;auto_multi=v!=0;}
-static const char *const HRF_CH[]={"739.000 MHz","751.000 MHz","881.500 MHz","1981.250 MHz","1992.500 MHz","2150.000 MHz"};
-static int o_hrf_ch(const ls_opt_t *o){(void)o;for(int i=0;i<6;i++)if(hrf_centers[i]==hrf_frequency)return i;return -1;}
+static const char *const HRF_CH[CELL_HRF_CHANNELS]={"739.000 MHz","751.000 MHz","881.500 MHz","1981.250 MHz","1992.500 MHz","2150.000 MHz",
+    "763.000 MHz","773.000 MHz","785.500 MHz"};
+static int o_hrf_ch(const ls_opt_t *o){(void)o;for(int i=0;i<CELL_HRF_CHANNELS;i++)if(cell_hrf_centers[i]==hrf_frequency)return i;return -1;}
 static void o_set_hrf_ch(const ls_opt_t *o,int v){(void)o;hrf_choose_frequency(v);}
 static void o_hrf_ch_show(const ls_opt_t *o,char *out,size_t n)
 {
@@ -217,9 +263,11 @@ static void o_set_length(const ls_opt_t *o,int v){(void)o;hrf_choose_duration(v)
 static void o_rate_show(const ls_opt_t *o,char *out,size_t n){(void)o;snprintf(out,n,"%.1f MS/s%s",hrf_rate/1e6,hrf_rate==8000000?"":" EXPERIMENTAL");}
 static const ls_opt_t OPT_HRF[]={
     {.label="AUTO PLAN",.kind=LS_OPT_TOGGLE,.names=PLAN,.get=o_plan,.set=o_set_plan,.why_not=o_hrf_busy},
-    {.label="CHANNEL",.kind=LS_OPT_CYCLE,.names=HRF_CH,.n=6,.get=o_hrf_ch,.set=o_set_hrf_ch,.show=o_hrf_ch_show,.why_not=o_hrf_busy},
+    {.label="CHANNEL",.kind=LS_OPT_CYCLE,.names=HRF_CH,.n=CELL_HRF_CHANNELS,.get=o_hrf_ch,.set=o_set_hrf_ch,.show=o_hrf_ch_show,.why_not=o_hrf_busy},
     {.label="ONCE: SAMPLE RATE",.kind=LS_OPT_CYCLE,.names=RATE,.n=4,.get=o_rate,.set=o_set_rate,.show=o_rate_show,.why_not=o_hrf_busy},
     {.label="ONCE: LENGTH",.kind=LS_OPT_CYCLE,.names=LENGTH,.n=3,.get=o_length,.set=o_set_length,.why_not=o_hrf_busy},
+    {.label="DISPLAY",.kind=LS_OPT_ACTION,.arg=3,.act=o_act,.leaves=true},
+    {.label="EXIT TO NORMAL OS",.kind=LS_OPT_ACTION,.arg=5,.act=o_act,.leaves=true,.why_not=o_hrf_busy},
 };
 static const ls_opt_ctx_t CTX_HRF={.name="HIGH RATE",.job=-1,.radio=LS_RSEL_SDR_HACKRF,LS_OPT_ROWS(OPT_HRF),.tag="CAPTURE"};
 
@@ -233,7 +281,7 @@ static void action(int i)
         control_message[0]=0;
         if(i==0){if(!cell_iq_auto_begin(hrf_frequency,auto_multi))LS_SNPUTS(t_scr_cell_auto_needs_mounted_sd, control_message, sizeof(control_message), "Auto needs mounted SD + idle HackRF");}
         if(i==1){if(!cell_iq_hackrf_begin(hrf_frequency,hrf_rate,hrf_ms))LS_SNPUTS(t_scr_cell_cannot_start_capture, control_message, sizeof(control_message), "Cannot start capture");}
-        if(i==2){ls_picker_open("RECEIVE CHANNEL",hrf_choose_frequency);for(int n=0;n<6;n++){char text[32];snprintf(text,sizeof(text),"%.3f MHz",hrf_centers[n]/1e6);char label[32];band_label(hrf_centers[n],label,sizeof(label));ls_picker_add(text,label);}}
+        if(i==2){ls_picker_open("RECEIVE CHANNEL",hrf_choose_frequency);for(int n=0;n<CELL_HRF_CHANNELS;n++){char text[32];snprintf(text,sizeof(text),"%.3f MHz",cell_hrf_centers[n]/1e6);char label[32];band_label(cell_hrf_centers[n],label,sizeof(label));ls_picker_add(text,label);}}
         if(i==4)ls_opt_open(&CTX_HRF);
         if(i==5)performance_picker();
         return;
@@ -281,11 +329,8 @@ static void draw_high_rate(tui_surface *sf,tui_rect area)
     const char *imu_text=imu_ok?(imu_display.mag_valid?"READY":"6 axes / mag missing"):
         imu_display.good?"STALE":"UNAVAILABLE";
     uint8_t cyan=TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK),white=TUI_ATTR(TUI_WHITE,TUI_BLACK),yellow=TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK);
-    int controls=ls_btn_raised_height(area,6);
+    int controls=ls_btn_raised_height(area,4);
     if(ls_tui_is_wide() && area.h>=24 && controls<5)controls=5;
-    /* Rounded portrait corners reduce the real bar width to two columns.
-     * Reserve three full-height rows so labels and hints remain separate. */
-    if(area.w<48 && area.h>=35)controls=15;
     tui_rect body=tui_rect_make(area.x,area.y,area.w,area.h-controls);
     int y=body.y;char text[120];
     if(body.h<24) {
@@ -314,9 +359,9 @@ static void draw_high_rate(tui_surface *sf,tui_rect area)
     const char *phase=iq.phase==CELL_IQ_FILTERING?"Filtering samples":iq.phase==CELL_IQ_SYNCHRONIZING?"Finding LTE cell":iq.phase==CELL_IQ_DECODING_MIB?"Checking broadcast CRC":iq.phase==CELL_IQ_SAVING?"Saving evidence":iq.phase==CELL_IQ_WAITING?"Waiting for next capture":"Receiving samples";
     ls_safe_line(sf,body,y++,iq.stopping?"STOPPING / finishing this save":iq.busy?phase:"READY / start Auto or Once",yellow);
     uint32_t shown=iq.busy?iq.active_hz:hrf_frequency;
-    if(body.w>=32 && body.h>=26){frequency_readout(sf,body,y+1,shown,cyan);y+=7;}
+    if(body.w>=32 && body.h>=26){ls_radio_frequency_draw(sf,body,y+1-body.y,shown,cyan);tui_put_str(sf,body,body.x+body.w-5,y+5,"MHz",cyan);y+=7;}
     else {snprintf(text,sizeof(text),"%.3f MHz",shown/1e6);ls_safe_line(sf,body,y++,text,cyan);}
-    snprintf(text,sizeof(text),"Auto: %s",(iq.busy?iq.multi:auto_multi)?"6 preset channels":"selected channel");ls_safe_line(sf,body,y++,text,white);
+    snprintf(text,sizeof(text),"Auto: %s",(iq.busy?iq.multi:auto_multi)?"9 preset channels":"selected channel");ls_safe_line(sf,body,y++,text,white);
     LS_SNPRINTF(t_scr_cell_s_1fm_lums_hackrf, text,sizeof(text),"%s %.1fM %lums HackRF",iq.attempts?(iq.automatic?"Last AUTO":"Last ONCE"):"ONCE plan",(iq.attempts?iq.rate:hrf_rate)/1e6,(unsigned long)(iq.attempts?iq.requested_ms:hrf_ms));
     ls_safe_line(sf,body,y++,text,white);
     LS_SNPRINTF(t_scr_cell_lu_attempts_lu_mib, text,sizeof(text),"%lu attempts / %lu MIB decodes",(unsigned long)iq.attempts,(unsigned long)iq.decoded);ls_safe_line(sf,body,y++,text,cyan);
@@ -339,16 +384,14 @@ static void draw_high_rate(tui_surface *sf,tui_rect area)
     ls_safe_line(sf,body,body.y+body.h-2,LS_TEXT(t_scr_cell_detection_not_yet_validated, "Detection: not yet validated"),yellow);
     ls_safe_line(sf,body,body.y+body.h-1,LS_TEXT(t_scr_cell_identity_sib1_still_missing, "Identity / SIB1 still missing"),yellow);
 render_controls:;
+    /* VIEW (V) and EXIT (H) are OPTIONS rows now, and still answer their keys. */
     ls_btn_t buttons[]={
         {iq.busy?"STOP":"AUTO",iq.busy?"save + end":"repeat",'S',iq.busy,false},
         {"ONCE","single",'C',false,iq.busy},
         {"CHANNEL","tune",'B',false,iq.busy},
-        {"VIEW","theme/size",'V',false,false},
-        ls_opt_button(&CTX_HRF),
-        {"EXIT","normal OS",'H',false,iq.busy}};
-    buttons[4].dim=iq.busy;
-    if(body.h<24)for(unsigned i=0;i<6;i++)buttons[i].value=NULL;
-    ls_btn_bar_raised(sf,tui_rect_make(area.x,area.y+area.h-controls,area.w,controls),buttons,6,focus);
+        ls_opt_button(&CTX_HRF)};
+    if(body.h<24)for(unsigned i=0;i<4;i++)buttons[i].value=NULL;
+    ls_btn_bar_raised(sf,tui_rect_make(area.x,area.y+area.h-controls,area.w,controls),buttons,4,focus);
 }
 /* The LTE search's cells, strongest first: the list is the worker's, copied
  * here once a frame into PSRAM (only the TUI task draws). */
@@ -390,53 +433,72 @@ static void draw_tower(tui_surface *sf,tui_rect clip,int x,int y,unsigned lit)
     tui_put_char(sf,clip,x+2,y+2,'/',leg);tui_put_char(sf,clip,x+3,y+2,'|',TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));tui_put_char(sf,clip,x+4,y+2,'\\',leg);
     tui_put_str(sf,clip,x+1,y+3,"/_|_\\",TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK));
 }
-/* The occupancy or survey trace as braille dots, two columns and four levels
- * to a cell, coloured by what the search made of it. */
+/* HOW HIGH, AGAINST WHAT.
+
+   Against the pass's own noise floor, not a fixed dBFS range. The receiver
+   alone reads about -68..-57 dBFS in a 25 kHz bin peak-held over its tune,
+   so on -110..-30 its noise was more than half the plot and a carrier 15 dB
+   up barely cleared it: the "huge noise" was the scale. The plot now runs
+   from CHART_BELOW dB under the floor to CHART_DB above that, the floor is a
+   dotted line, and a column within CHART_NOISE dB of it is faint - that is
+   the receiver, and it should read as a calm baseline. Carriers the plateau
+   reading found are green, as in the LTE view; anything else clear of the
+   noise is cyan. Without a floor (no pass yet) the old fixed range stands. */
+#define CHART_DB 60
+#define CHART_BELOW 6
+#define CHART_NOISE 5
+typedef struct {int lo,levels;bool relative;} chart_scale_t;
+static chart_scale_t chart_scale(const cell_status_t *s,int rows)
+{
+    if(s->floor!=CELL_MISSING) return (chart_scale_t){s->floor-CHART_BELOW,rows*4,true};
+    return (chart_scale_t){-110,rows*4,false};
+}
+static int chart_level(chart_scale_t c,int db)
+{
+    int h=(db-c.lo)*c.levels/(c.relative?CHART_DB:80);
+    return h<0?0:h>c.levels?c.levels:h;
+}
+/* The occupancy or survey trace as bars: one column a cell, eighth-block
+ * tops, rising from the floor line, coloured by what the search made of it.
+ * The receiver's own noise (within CHART_NOISE of the floor) is faint, so
+ * it reads as a calm baseline and a carrier towers over it. */
 static void draw_plot(tui_surface *sf,tui_rect plot,const cell_status_t *s,bool lte,bool same)
 {
     uint8_t cyan=TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK),green=TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK);
     uint8_t magenta=TUI_ATTR(TUI_MAGENTA|TUI_BRIGHT,TUI_BLACK),yellow=TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK);
     uint8_t white=TUI_ATTR(TUI_WHITE,TUI_BLACK),faint=LS_ATTR_FAINT;
-    for(int row=0;row<plot.h;row+=2)for(int col=0;col<plot.w;col+=6)
-        tui_put_char(sf,plot,plot.x+col,plot.y+row,'.',faint);
     if(!(same && s->spectrum_count)) {
-        tui_put_str(sf,plot,plot.x+1,plot.y+plot.h/2,lte?"Occupancy appears after the first pass":"Spectrum appears after a full pass",white);
+        ls_fill_dither(sf,plot,LS_DITHER_LIGHT,lte?TUI_MAGENTA:TUI_CYAN);
+        ls_dither_label(sf,plot,plot.h/2,lte?"Occupancy appears after the first pass":"Spectrum appears after a full pass",white);
         return;
     }
-    const int levels=plot.h*4;
+    chart_scale_t scale=chart_scale(s,plot.h*2);   /* levels in eighths */
+    const int floor_e=scale.relative?chart_level(scale,s->floor):0;
+    /* The floor: one thin line, the same in every column. */
+    const int floor_row=plot.h-1-floor_e/8;
+    for(int x=0;x<plot.w;x++)tui_put_char(sf,plot,plot.x+x,plot.y+floor_row,LS_TUI_TRACE(1),TUI_ATTR(TUI_CYAN,TUI_BLACK));
     for(int x=0;x<plot.w;x++) {
-        int height[2];uint8_t marks=0;
-        for(int half=0;half<2;half++) {
-            unsigned begin=(unsigned)(2*x+half)*s->spectrum_count/(unsigned)(2*plot.w);
-            unsigned end=(unsigned)(2*x+half+1)*s->spectrum_count/(unsigned)(2*plot.w);
-            if(end<=begin)end=begin+1;
-            if(end>s->spectrum_count)end=s->spectrum_count;
-            int value=CELL_MISSING;
-            for(unsigned i=begin;i<end;i++) {if(s->spectrum[i]>value)value=s->spectrum[i];marks|=s->mark[i];}
-            height[half]=value==CELL_MISSING?0:(value+110)*levels/80;
-            if(height[half]<0)height[half]=0;
-            if(height[half]>levels)height[half]=levels;
-            if(value!=CELL_MISSING && height[half]==0)height[half]=1;
-        }
-        uint8_t ink=(marks&4)?magenta:(marks&1)?green:cyan;
+        unsigned begin=(unsigned)x*s->spectrum_count/(unsigned)plot.w,end=(unsigned)(x+1)*s->spectrum_count/(unsigned)plot.w;
+        if(end<=begin)end=begin+1;
+        if(end>s->spectrum_count)end=s->spectrum_count;
+        int value=CELL_MISSING,reference=CELL_MISSING;uint8_t marks=0;
+        for(unsigned i=begin;i<end;i++) {if(s->spectrum[i]>value)value=s->spectrum[i];if(s->reference[i]>reference)reference=s->reference[i];marks|=s->mark[i];}
+        if(value==CELL_MISSING)continue;
+        int top=chart_level(scale,value);
+        if(top<=floor_e+1)top=floor_e+2;          /* a reading always shows */
+        uint8_t ink=(marks&4)?magenta:(marks&1)?green:
+            scale.relative && value<=s->floor+CHART_NOISE?faint:cyan;
         for(int row=0;row<plot.h;row++) {
-            int base=(plot.h-1-row)*4;unsigned bits=0;
-            for(int half=0;half<2;half++) {
-                int k=height[half]-base;
-                if(k>4)k=4;
-                if(k>0)bits|=ls_braille_column((unsigned)k,half);
-            }
-            if(bits)ls_braille_put(sf,plot,plot.x+x,plot.y+row,(int16_t)(0x2800|bits),TUI_ATTR(ink,TUI_BLACK));
+            const int base=(plot.h-1-row)*8;
+            int lo=floor_e+1>base?floor_e+1:base,hi=top<base+8?top:base+8;
+            if(hi<=lo)continue;
+            tui_put_char(sf,plot,plot.x+x,plot.y+row,LS_TUI_TRACE(hi-base),ink);
         }
-        if(!lte && s->compared) {
-            int reference=CELL_MISSING;
-            unsigned begin=(unsigned)x*s->spectrum_count/(unsigned)plot.w,end=(unsigned)(x+1)*s->spectrum_count/(unsigned)plot.w;
-            if(end<=begin)end=begin+1;
-            for(unsigned i=begin;i<end && i<s->spectrum_count;i++)if(s->reference[i]>reference)reference=s->reference[i];
-            if(reference!=CELL_MISSING) {
-                int rh=(reference+110)*(plot.h-1)/80;if(rh<0)rh=0;if(rh>=plot.h)rh=plot.h-1;
-                tui_put_char(sf,plot,plot.x+x,plot.y+plot.h-1-rh,'-',yellow);
-            }
+        /* A baseline that was only receiver noise is the floor line
+           already; a dash there would only jitter between two rows. */
+        if(!lte && s->compared && reference!=CELL_MISSING && !(scale.relative && reference<=s->floor+CHART_NOISE)) {
+            int rh=chart_level(scale,reference)/8;if(rh>=plot.h)rh=plot.h-1;
+            tui_put_char(sf,plot,plot.x+x,plot.y+plot.h-1-rh,'-',yellow);
         }
     }
 }
@@ -490,13 +552,23 @@ static void draw_chart(tui_surface *sf,tui_rect chart,const cell_status_t *s,boo
         int x=plot.x+(int)((uint64_t)(s->frequency-low)*(plot.w-1)/span);
         tui_put_char(sf,plot,x,plot.y+plot.h-1,'^',yellow);
     }
-    int legend=chart.y+chart.h-2;
+    int legend=chart.y+chart.h-2,x=chart.x+2;
+    uint8_t green=TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK);
     if(lte) {
-        int x=chart.x+2;
-        tui_put_str(sf,chart,x,legend,"=",TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK));tui_put_str(sf,chart,x+1,legend," carrier  ",white);
+        tui_put_str(sf,chart,x,legend,"=",green);tui_put_str(sf,chart,x+1,legend," carrier  ",white);
         tui_put_str(sf,chart,x+11,legend,"+",yellow);tui_put_str(sf,chart,x+12,legend," searched  ",white);
         tui_put_str(sf,chart,x+23,legend,"*",TUI_ATTR(TUI_MAGENTA|TUI_BRIGHT,TUI_BLACK));tui_put_str(sf,chart,x+24,legend," cell",white);
-    } else tui_put_str(sf,chart,chart.x+2,legend,"-110..-30 dBFS / dashes: baseline",faint);
+        x+=31;
+    } else {
+        tui_put_str(sf,chart,x,legend,"=",green);tui_put_str(sf,chart,x+1,legend," carrier",white);x+=11;
+        if(same && s->compared){tui_put_str(sf,chart,x,legend,"-",yellow);tui_put_str(sf,chart,x+1,legend," baseline",white);x+=12;}
+    }
+    /* What the dotted line is, where there is room for it. */
+    if(same && s->spectrum_count && s->floor!=CELL_MISSING) {
+        snprintf(text,sizeof(text),"floor %d dBFS",s->floor);
+        int at=chart.x+chart.w-2-(int)strlen(text);
+        if(at>=x)tui_put_str(sf,chart,at,legend,text,faint);
+    }
     snprintf(text,sizeof(text),"%.0f MHz",low/1e6);
     tui_put_str(sf,chart,chart.x+2,chart.y+chart.h-1,text,white);
     snprintf(text,sizeof(text),"%.0f",(low+span/2)/1e6);
@@ -541,6 +613,67 @@ static int draw_cells(tui_surface *sf,tui_rect area,int y,int last)
     }
     return y;
 }
+/* The bar's four keys and which action each one is; the rest of the old
+   eleven answer their letters and sit in OPTIONS. */
+static const int BAR_ACT[4]={0,1,2,10};
+static const char KEY_ACT[]="sbldghtep";   /* 0..8; r 9, o 10 */
+/* The header band: the band and its EARFCN range, the mast whose arcs light
+   as cells are heard (in a survey: as the pass goes), the frequency in the
+   house digits, a rail of chips for the state, and the pass meter. Returns
+   the row under it. */
+static int header(tui_surface *sf,tui_rect a,bool lte,bool same,bool fix,bool wide)
+{
+    const uint8_t hue=lte?TUI_MAGENTA:TUI_CYAN;
+    uint8_t white=TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK),yellow=TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK),green=TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK);
+    const int h=wide?6:11;
+    tui_rect box=tui_rect_make(a.x,a.y,a.w,h);
+    ls_panel_box(sf,box,lte?"CELL WATCH / LTE CELL SEARCH":"CELL WATCH / SPECTRUM OBSERVATORY",hue);
+    const unsigned completed=same?status.tune:0,total=same?status.tunes:0;
+    unsigned lit=same && lte?status.lte_count:0;
+    if(!lte && status.busy && total)lit=completed*3/total;
+    draw_tower(sf,box,box.x+box.w-9,box.y+1,lit);
+    char text[64];unsigned first,last;cell_band_earfcns(band,&first,&last);
+    tui_put_str(sf,box,box.x+2,box.y+1,cell_bands[band].name,white);
+    snprintf(text,sizeof(text),"EARFCN %u-%u",first,last);
+    tui_put_str(sf,box,box.x+4+(int)strlen(cell_bands[band].name),box.y+1,text,yellow);
+    int y=box.y+2;
+    const uint32_t hz=same?status.frequency:0;
+    if(!wide) {
+        tui_rect digits=tui_rect_make(box.x+1,box.y,box.w-12,box.h);
+        if(hz)ls_radio_frequency_draw(sf,digits,2,hz,TUI_ATTR(hue|TUI_BRIGHT,TUI_BLACK));
+        else ls_radio_digits_draw(sf,digits,2,"0.0000",LS_ATTR_FAINT);
+        tui_put_str(sf,box,box.x+box.w-9,box.y+6,hz?"MHz":"idle",hz?white:LS_ATTR_FAINT);
+        y+=5;
+        /* By the window being swept: 795 MHz in B28 hi is EARFCN 9580,
+         * not the B20 6190 the table's first match would give. */
+        unsigned e,b;
+        if(hz && cell_bands_at(hz,(int)band,&b,1) && cell_hz_to_earfcn(b,hz,&e)) {
+            snprintf(text,sizeof(text),"EARFCN %u",e);
+            tui_put_str(sf,box,box.x+2,y,text,yellow);
+        }
+        y++;
+    } else {
+        if(hz)snprintf(text,sizeof(text),"%.4f MHz",hz/1e6);else snprintf(text,sizeof(text),"---.---- MHz");
+        tui_put_str(sf,box,box.x+2,y++,text,TUI_ATTR(hue|TUI_BRIGHT,TUI_BLACK));
+    }
+    /* Chips: what it is doing, where it thinks it is, what it has. */
+    int x=box.x+2;
+    x=ls_radio_chip(sf,box,x,y,status.busy?"RECEIVING":same && hz?"HELD":"READY",status.busy,TUI_GREEN)+1;
+    if(lte && same && (status.busy || status.phase)) {
+        static const char *const phase[]={"","OCCUPANCY","PSS / SSS","MIB"};
+        x=ls_radio_chip(sf,box,x,y,phase[status.phase<4?status.phase:0],true,TUI_MAGENTA)+1;
+    }
+    x=ls_radio_chip(sf,box,x,y,manual_site?"LOCAL":fix?"GPS FIX":"NO FIX",manual_site||fix,manual_site?TUI_YELLOW:TUI_CYAN)+1;
+    if(!lte)x=ls_radio_chip(sf,box,x,y,status.baseline && same?(status.baseline_saved?"SD BASELINE":"RAM BASELINE"):"NO BASELINE",status.baseline && same,TUI_YELLOW)+1;
+    else x=ls_radio_chip(sf,box,x,y,status.mib_on?"MIB ON":"MIB OFF",status.mib_on,TUI_CYAN)+1;
+    y++;
+    int mw=box.w-14;if(mw>40)mw=40;
+    ls_meter_ascii(sf,box,box.x+2,y,mw,total?(float)completed/total:0.f,TUI_GREEN|TUI_BRIGHT);
+    snprintf(text,sizeof(text),"%3u%%",total?completed*100/total:0);
+    tui_put_str(sf,box,box.x+3+mw,y,text,green);
+    (void)x;
+    return box.y+box.h;
+}
 static void draw(tui_surface *sf,tui_rect area)
 {
     if(cell_performance_active()){draw_high_rate(sf,area);return;}
@@ -550,55 +683,28 @@ static void draw(tui_surface *sf,tui_rect area)
     static EXT_RAM_BSS_ATTR ls_gps_state_t gps;ls_gps_get(&gps);
     bool fix=cell_gps_valid(gps.fix,gps.last_fix_us,esp_timer_get_time(),gps.lat_deg,gps.lon_deg,gps.hdop);
     uint8_t white=TUI_ATTR(TUI_WHITE,TUI_BLACK), cyan=TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK);
-    uint8_t yellow=TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK),green=TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK);
-    uint8_t magenta=TUI_ATTR(TUI_MAGENTA|TUI_BRIGHT,TUI_BLACK),faint=LS_ATTR_FAINT;
-    int controls=ls_btn_raised_height(area,11);
+    uint8_t yellow=TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK),green=TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK),faint=LS_ATTR_FAINT;
+    int controls=ls_btn_raised_height(area,4);
     if(ls_tui_is_wide() && area.h>=24 && controls<5)controls=5;
     tui_rect body=tui_rect_make(area.x,area.y,area.w,area.h-controls);
     bool wide=body.w>=90;
     tui_rect left=wide?tui_rect_make(body.x,body.y,body.w/2-1,body.h):body;
     tui_rect right=wide?tui_rect_make(body.x+body.w/2+1,body.y,body.w-body.w/2-1,body.h):body;
-    char text[100];int y=left.y;
+    char text[100];
     load_cells(same_setup,lte);
-    draw_tower(sf,left,left.x+left.w-9,left.y,same_setup && lte?status.lte_count:0);
-    ls_safe_line(sf,left,y++,lte?"CELL WATCH / LTE CELL SEARCH":"CELL WATCH / SPECTRUM OBSERVATORY",cyan);
-    unsigned first,last_earfcn;cell_band_earfcns(band,&first,&last_earfcn);
-    snprintf(text,sizeof(text),"%s",cell_bands[band].name);
-    tui_put_str(sf,left,left.x+1,y,text,white);
-    snprintf(text,sizeof(text),"EARFCN %u-%u",first,last_earfcn);
-    tui_put_str(sf,left,left.x+3+(int)strlen(cell_bands[band].name),y,text,yellow);
-    y++;
-    snprintf(text,sizeof(text),"%s",status.busy?"RECEIVING":same_setup && status.frequency?"CAPTURE HELD":"READY");
-    tui_put_str(sf,left,left.x+1,y,text,status.busy?green:white);
-    if(lte && same_setup && (status.busy || status.phase)) {
-        static const char *const phase[]={"","OCCUPANCY","PSS / SSS","MIB"};
-        tui_put_str(sf,left,left.x+3+(int)strlen(text),y,phase[status.phase<4?status.phase:0],magenta);
-    }
-    y++;
-    if(!wide && body.w>=36 && body.h>=32) {
-        frequency_readout(sf,left,y+1,same_setup?status.frequency:0,cyan);y+=7;
-        if(same_setup && status.frequency) {
-            unsigned e;int b=cell_band_for_hz(status.frequency);
-            if(b>=0 && cell_hz_to_earfcn((unsigned)b,status.frequency,&e)) {
-                snprintf(text,sizeof(text),"EARFCN %u",e);
-                tui_put_str(sf,left,left.x+left.w-(int)strlen(text)-2,y-3,text,yellow);
-            }
-        }
-    } else {
-        if(same_setup && status.frequency)snprintf(text,sizeof(text),"%.4f MHz",status.frequency/1e6);
-        else snprintf(text,sizeof(text),"---.---- MHz");
-        ls_safe_line(sf,left,y++,text,cyan);
-    }
+    int y=header(sf,left,lte,same_setup,fix,wide);
     unsigned completed=same_setup?status.tune:0,total=same_setup?status.tunes:0;
-    int mw=left.w-14;if(mw>40)mw=40;
-    ls_meter_ascii(sf,left,left.x+1,y,mw,total?(float)completed/total:0.f,TUI_GREEN|TUI_BRIGHT);
-    snprintf(text,sizeof(text),"%3u%%",total?completed*100/total:0);
-    tui_put_str(sf,left,left.x+2+mw,y,text,green);
-    y++;
     LS_SNPRINTF(t_scr_cell_s_u_u_1f, text,sizeof(text),"%s %u/%u  |  %.1f s  |  %s",lte?"POINTS":"TUNES",completed,total,
         (lte?status.scan_ms:status.elapsed_ms)/1000.,status.busy?"IN PROGRESS":completed?"FINISHED":"READY");
     ls_safe_line(sf,left,y++,text,white);
-    ls_safe_line(sf,left,y++,control_message[0]?control_message:status.message,yellow);
+    /* Clipping outranks the worker's message: the pass was neither learned
+       nor compared, and the next one is no better until the gain comes down.
+       It stays up through that next sweep, until a pass comes back clean. */
+    if(!control_message[0] && same_setup && status.overload) {
+        LS_SNPRINTF(t_scr_cell_rtl_overloaded_at_lower, text,sizeof(text),"RTL overloaded at %lu MHz - lower gain",
+            (unsigned long)((status.overload_hz+500000)/1000000));
+        ls_safe_line(sf,left,y++,text,TUI_ATTR(TUI_RED|TUI_BRIGHT,TUI_BLACK));
+    } else ls_safe_line(sf,left,y++,control_message[0]?control_message:status.message,yellow);
     if(lte) {
         if(status.ppm_known) {
             LS_SNPRINTF(t_scr_cell_dongle_1f_ppm_u, text,sizeof(text),"DONGLE %+.1f ppm / %u cell%s / +-%.1f / %s",(double)status.ppm,status.ppm_cells,
@@ -638,6 +744,8 @@ static void draw(tui_surface *sf,tui_rect area)
     } else {
         table_area=tui_rect_make(0,0,0,0);
         snprintf(text,sizeof(text),"%s | %s | %s",status.baseline && same_setup?(status.baseline_saved?"SD BASELINE":"RAM BASELINE"):"BASELINE NEEDED",manual_site?"LOCAL":fix?"GPS FIX":"GPS NO FIX",status.busy?(status.quiet?"IMU QUIET":"MOTION/IMU STALE"):"READY");
+        /* Only when it is not the usual gain: a baseline is per gain. */
+        if(status.gain!=CELL_GAIN)snprintf(text+strlen(text),sizeof(text)-strlen(text)," | %.1f dB",status.gain/10.);
         ls_safe_line(sf,wide?right:left,top++,text,cyan);
         LS_SNPRINTF(t_scr_cell_u_passes_u_persistent, text,sizeof(text),"%u passes  /  %u persistent changes  /  %.1fs",status.passes,status.changed,status.elapsed_ms/1000.);
         ls_safe_line(sf,wide?right:left,top++,text,status.changed?yellow:white);
@@ -649,20 +757,15 @@ static void draw(tui_surface *sf,tui_rect area)
         }
     }
     ls_safe_line(sf,body,body.y+body.h-2,LS_TEXT(t_scr_cell_rf_changes_do_not, "RF changes do not prove a simulator."),yellow);
+    /* LOAD, SITE, HOME, REPORT, LTE, HIGH RATE and RADIO are OPTIONS rows
+       now, and still answer D G H T E P R. */
     ls_btn_t buttons[]={
-        {status.busy?"STOP":"START","survey",'S',status.busy,false},
+        {status.busy?"STOP":"START",lte?"search":"survey",'S',status.busy,false},
         {"BAND","range",'B',false,status.busy},
         {"LEARN","3 passes",'L',false,status.busy},
-        {"LOAD","SD",'D',false,status.busy},
-        {"SITE",manual_site?"LOCAL":"GPS",'G',manual_site,status.busy},
-        {"HOME","exit",'H',false,false},
-        {"REPORT","LoRa",'T',false,false},
-        {"LTE","search",'E',false,status.busy},
-        {"HIGH RATE","restart",'P',false,status.busy},
-        ls_rsel_button(LS_RSEL_CELL),
         ls_opt_button(&CTX_CELL),
     };
-    ls_btn_bar_raised(sf,tui_rect_make(area.x,area.y+area.h-controls,area.w,controls),buttons,11,focus);
+    ls_btn_bar_raised(sf,tui_rect_make(area.x,area.y+area.h-controls,area.w,controls),buttons,4,focus);
 }
 static void cells_choose(int i){(void)i;}
 /* Every cell found, strongest first, one row each with what is known of it. */
@@ -686,24 +789,33 @@ static void open_cells(void)
     }
 }
 
+static const int HRF_ACT[4]={0,1,2,4};
 static bool key(ls_tk_t k,char ch)
 {
     if(k==LS_TK_ESC) {action(5);return true;}
     if(ls_btn_navigate(k,&slot,&focus,false)) return true;
-    if(k==LS_TK_ENTER && focus>=0 && ls_btn_enabled(slot,focus)) {action(focus);return true;}
-    if(k==LS_TK_CHAR && (ch=='n' || ch=='N') && !cell_performance_active()){open_cells();return true;}
-    if(k==LS_TK_CHAR) {
-        int i=ls_btn_shortcut(ch,LS_BTN_SLOT_SCREEN);
-        if(i>=0) {action(i);return true;}
+    const bool high=cell_performance_active();
+    if(k==LS_TK_ENTER && focus>=0 && focus<4 && ls_btn_enabled(slot,focus)) {action(high?HRF_ACT[focus]:BAR_ACT[focus]);return true;}
+    if(k!=LS_TK_CHAR)return false;
+    if(ch>='A' && ch<='Z')ch+='a'-'A';
+    if(high) {
+        const char *p=strchr("scbvoh",ch);
+        if(ch && p){action((int)(p-"scbvoh"));return true;}
+        return false;
     }
+    if(ch=='n'){open_cells();return true;}
+    if(ch=='r'){action(9);return true;}
+    if(ch=='o'){action(10);return true;}
+    const char *p=strchr(KEY_ACT,ch);
+    if(ch && p){action((int)(p-KEY_ACT));return true;}
     return false;
 }
 static bool touch(int col,int row)
 {
     int i=ls_btn_hit(col,row);
     if(i<0 && !cell_performance_active() && table_area.h && tui_rect_contains(table_area,col,row)){open_cells();return true;}
-    if(i<0)return false;
-    action(i);return true;
+    if(i<0 || i>=4)return false;
+    action(cell_performance_active()?HRF_ACT[i]:BAR_ACT[i]);return true;
 }
 static bool value_busy(ls_val_t *out)
 {out->kind=LS_VAL_BOOL;if(cell_performance_active()){static EXT_RAM_BSS_ATTR cell_iq_status_t iq;cell_iq_get_status(&iq);out->i=iq.busy;}else {cell_status_t s;cell_monitor_get(&s);out->i=s.busy;}return true;}

@@ -41,6 +41,9 @@ def run(source, sources=(), compile_only=False):
                     'components/libcarto/upstream/include',
                     'components/lakeshark/rx', 'components/ls_textpack/include']:
             cmd += ['-I', str(ROOT / inc)]
+        if os.name != 'nt':
+            # -include below pulls in <stdio.h> before the source can ask for POSIX
+            cmd += ['-D_POSIX_C_SOURCE=200809L']
         cmd += ['-include', 'ls_textpack.h']
         cmd += [str(p / 'test.c')] + [str(ROOT / f) for f in sources]
         cmd += ['-lm', '-o', str(p / 'test.exe')]
@@ -200,6 +203,7 @@ static int fail_reg=-1, fail_bank=-1; static bool corrupt, read_fail;
 static ls_imu_sample_t s_cache;static int64_t s_cache_us,s_mag_us,s_mag_retry_us;
 static int xSemaphoreCreateMutexStatic(int *p){(void)p;return 1;}
 static int ls_i2c_device(int b,int a,int hz,int *d){(void)b;(void)a;(void)hz;*d=1;return 0;}
+static uint8_t ls_pins_imu_addr(void){return LS_BOARD_IMU_I2C_ADDR;}
 static void vTaskDelay(int ms){(void)ms;}
 static int64_t esp_timer_get_time(void){return 100000;}
 static void mag_start(void){}

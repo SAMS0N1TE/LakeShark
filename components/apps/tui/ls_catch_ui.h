@@ -15,4 +15,10 @@ void ls_catch_watch_cycle(void);           /* WATCH key: ALL <-> CHOSEN */
 const char *ls_catch_watch_label(bool *on);
 bool ls_catch_running(void);
 const ls_opt_ctx_t *ls_catch_options(void);
+/* The burst picked in the list, for SUB-GHZ BAND's LISTEN HERE: its index
+   (-1 for none), its frequency (0 for none), and whether a cell is on the
+   list rather than the slice strip. */
+int ls_catch_selected_index(void);
+uint32_t ls_catch_selected_hz(void);
+bool ls_catch_list_contains(int x,int y);
 #endif

@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <math.h>
 #include <sys/stat.h>
 #include <unistd.h>
 static rec_watch_catalog_t catalog, restored;
@@ -326,7 +327,9 @@ LS_CASE(checkpoint_keeps_snapshot_consistent_while_live_captures_continue)
     LS_CHECK(rec_watch_store(dir,&catalog,64*1024*1024));
     observe(433920000,3,NULL);snapshot=catalog;pump_calls=0;
     LS_CHECK(rec_watch_store_pumped(dir,&snapshot,64*1024*1024,capture_during_checkpoint,&catalog));
-    LS_CHECK(pump_calls>=3*sizeof(catalog)/512);
+    /* Captures are drained at least once per 4 KB moved: the kept
+       generation read through, and the new one written. */
+    LS_CHECK(pump_calls>=2*sizeof(catalog)/4096);
     LS_CHECK(catalog.sequence>snapshot.sequence);
     LS_CHECK(rec_watch_restore(dir,&restored));
     LS_CHECK(memcmp(&restored,&snapshot,sizeof(snapshot))==0);
@@ -520,4 +523,178 @@ LS_CASE(status_copy_carries_every_populated_slot_and_no_more)
              rec_watch_status_copy(&dst, &src, REC_WATCH_SLOTS));
     LS_EQ_INT(dst.count, REC_WATCH_SLOTS);
     LS_EQ_UINT(rec_watch_status_copy(NULL, &src, 1), 0u);
+}
+
+/* An LR2021 FSK packet decoded from I/Q arrives as the edges the packet
+   engine's captures are built from: ls_fsk_bitstream then ls_fsk_raw_data.
+   The catalog has to take one. */
+#include "ls_sub_fsk.h"
+#include "ls_fsk_capture.h"
+LS_CASE(fsk_packet_edges_are_a_capture)
+{
+    memset(&catalog, 0, sizeof(catalog));
+    ls_fsk_capture_t c;
+    memset(&c, 0, sizeof(c));
+    c.freq_hz = 915000000u; c.bitrate = 4800; c.deviation_hz = 25000;
+    c.sync_word = 0x2DD42DD4u; c.preamble_bits = 32; c.len = 64;
+    memcpy(c.data, "LAKESHARK SEND TEST SX", 22);
+    memset(c.data + 22, '.', 42);
+    static uint8_t bits[LS_FSK_CAPTURE_BYTES * 8 + 1024 + 32];
+    static int32_t raw[LS_FSK_CAPTURE_BYTES * 8 + 1024 + 32];
+    const size_t nb = ls_fsk_bitstream(&c, bits, sizeof(bits));
+    const size_t nr = ls_fsk_raw_data(bits, nb, c.bitrate, raw, sizeof(raw) / sizeof(raw[0]));
+    LS_CHECK(nr >= 6 && nr <= REC_WATCH_EDGES);
+    const rec_fsk_mod_t m = { .bitrate = 4800, .deviation_hz = 25000, .sync_word = 0x2DD42DD4u,
+                              .preamble_bits = 32, .bandwidth_khz = 59 };
+    bool novel = false;
+    const int slot = rec_watch_observe_mod(&catalog, REC_SOURCE_SX1262, c.freq_hz, raw, (int)nr,
+                                           1, 1000, 100, 0, &m, &novel);
+    LS_CHECK_MSG(slot >= 0, "refused %d edges, first %d %d", (int)nr, (int)raw[0], (int)raw[1]);
+    LS_CHECK(novel);
+}
+
+/* A full catalog of repeated captures still takes a demodulated packet,
+   and a later one-off burst of noise does not evict it. */
+LS_CASE(fsk_packet_takes_a_slot_from_a_full_catalog)
+{
+    memset(&catalog, 0, sizeof(catalog));
+    for (int i = 0; i < REC_WATCH_SLOTS; i++) {
+        int32_t p[40];
+        const int n = 6 + 2 * i;            /* a different length each: no two match */
+        for (int k = 0; k < n; k++) p[k] = (k & 1) ? -400 : 300;
+        LS_CHECK(rec_watch_observe(&catalog, 433920000u, p, n, 1, 100 + i, 50, 0, NULL) >= 0);
+        LS_CHECK(rec_watch_observe(&catalog, 433920000u, p, n, 1, 200 + i, 50, 0, NULL) >= 0);
+    }
+    int repeated = 0;
+    for (int i = 0; i < REC_WATCH_SLOTS; i++) if (catalog.record[i].event.count > 1) repeated++;
+    LS_EQ_INT(repeated, REC_WATCH_SLOTS);
+    int32_t raw[40];
+    for (int i = 0; i < 40; i++) raw[i] = (i & 1) ? -208 : 208;
+    const rec_fsk_mod_t m = { .bitrate = 4800, .deviation_hz = 25000, .sync_word = 0x2DD42DD4u,
+                              .preamble_bits = 32, .bandwidth_khz = 59 };
+    bool novel = false;
+    LS_CHECK(rec_watch_observe_mod(&catalog, REC_SOURCE_SX1262, 915000000u, raw, 40,
+                                   1, 5000, 100, 0, &m, &novel) >= 0);
+    LS_CHECK(novel);
+    int32_t noise[8] = { 90, -40, 70, -300, 55, -80, 60, -20 };
+    rec_watch_observe(&catalog, 433920000u, noise, 8, 1, 6000, 10, 0, NULL);
+    bool kept = false;
+    for (int i = 0; i < REC_WATCH_SLOTS; i++) if (catalog.record[i].event.bitrate) kept = true;
+    LS_CHECK(kept);
+}
+
+/* A packet heard only in part is the pattern it is the start of, heard
+   again - and a whole one replaces a fragment kept first. A packet that
+   differs later on is still a pattern of its own. */
+LS_CASE(fsk_fragments_count_as_the_packet_they_start)
+{
+    memset(&catalog, 0, sizeof(catalog));
+    static int32_t full[324], other[324];
+    for (int i = 0; i < 324; i++) {
+        const int32_t w = (i % 7 == 3) ? 416 : 208;
+        full[i] = (i & 1) ? -w : w;
+        other[i] = full[i];
+    }
+    for (int i = 200; i < 324; i += 2) other[i] = (i % 4) ? 624 : 208;   /* a different payload */
+    const rec_fsk_mod_t m = { .bitrate = 4800, .deviation_hz = 25000, .sync_word = 0x2DD42DD4u,
+                              .preamble_bits = 32, .bandwidth_khz = 59 };
+    bool novel = false;
+    const int a = rec_watch_observe_mod(&catalog, REC_SOURCE_SX1262, 915000000u, full, 324,
+                                        1, 1000, 100, 0, &m, &novel);
+    LS_CHECK(a >= 0 && novel);
+    /* Cut at 272 edges, mid-bit: the same packet. */
+    int32_t cut[272];
+    memcpy(cut, full, sizeof(cut));
+    cut[271] = cut[271] < 0 ? -90 : 90;
+    LS_EQ_INT(rec_watch_observe_mod(&catalog, REC_SOURCE_SX1262, 915000000u, cut, 272,
+                                    1, 2000, 100, 0, &m, &novel), a);
+    LS_CHECK(!novel);
+    LS_EQ_UINT(catalog.record[a].event.count, 2);
+    LS_EQ_INT(catalog.record[a].event.edges, 324);
+    /* Under half of it is not enough to say. */
+    LS_CHECK(rec_watch_observe_mod(&catalog, REC_SOURCE_SX1262, 915000000u, full, 120,
+                                   1, 3000, 100, 0, &m, &novel) != a);
+    /* Another payload behind the same header is its own pattern. */
+    const int b = rec_watch_observe_mod(&catalog, REC_SOURCE_SX1262, 915000000u, other, 324,
+                                        1, 4000, 100, 0, &m, &novel);
+    LS_CHECK(b >= 0 && b != a && novel);
+    /* A fragment kept first is replaced by the whole packet. */
+    memset(&catalog, 0, sizeof(catalog));
+    const int f = rec_watch_observe_mod(&catalog, REC_SOURCE_SX1262, 915000000u, cut, 272,
+                                        1, 5000, 100, 0, &m, &novel);
+    LS_EQ_INT(rec_watch_observe_mod(&catalog, REC_SOURCE_SX1262, 915000000u, full, 324,
+                                    1, 6000, 100, 0, &m, &novel), f);
+    LS_EQ_INT(catalog.record[f].event.edges, 324);
+    LS_EQ_UINT(catalog.record[f].event.count, 2);
+    LS_CHECK(!memcmp(catalog.record[f].pulse, full, sizeof(full)));
+    /* Without a bit rate (OOK) nothing changes: lengths must agree. */
+    memset(&catalog, 0, sizeof(catalog));
+    const int o = rec_watch_observe(&catalog, 433920000u, full, 324, 1, 7000, 100, 0, NULL);
+    LS_CHECK(rec_watch_observe(&catalog, 433920000u, cut, 272, 1, 8000, 100, 0, NULL) != o);
+}
+
+/* Filtering to one radio keeps each capture's readings beside it. */
+LS_CASE(filter_moves_every_reading_with_its_capture)
+{
+    static rec_watch_status_t st;
+    memset(&st, 0, sizeof(st));
+    st.count = 3;
+    st.event[0].source = REC_SOURCE_RTL;    st.event[0].id = 1;
+    st.event[1].source = REC_SOURCE_SX1262; st.event[1].id = 2;
+    st.event[2].source = REC_SOURCE_SX1262; st.event[2].id = 3;
+    st.pwm[0].repeats = 7;  st.pwm[1].repeats = 0;  st.pwm[2].repeats = 2;
+    snprintf(st.ism[0], sizeof(st.ism[0]), "rtl device");
+    st.ism[1][0] = 0;
+    snprintf(st.ism[2], sizeof(st.ism[2]), "third");
+    rec_watch_filter_status(&st, REC_SOURCE_SX1262);
+    LS_EQ_INT(st.count, 2);
+    LS_EQ_UINT(st.event[0].id, 2u);
+    LS_EQ_INT((int)st.pwm[0].repeats, 0);
+    LS_CHECK(st.ism[0][0] == 0);
+    LS_EQ_UINT(st.event[1].id, 3u);
+    LS_EQ_INT((int)st.pwm[1].repeats, 2);
+    LS_CHECK(!strcmp(st.ism[1], "third"));
+}
+
+/* SCAN's live columns: noise that scatters is followed evenly, a signal
+   that clears the noise is taken at once. */
+#include "rec_scan_live.h"
+LS_CASE(scan_live_columns_are_calm_on_scattered_noise_and_quick_on_a_signal)
+{
+    /* The LR2021's quiet 433 MHz passes, as measured: four rows of 32. */
+    static const float pass[4][32] = {
+        {-124,-126,-124,-115,-123,-117,-116,-120,-112,-116,-116,-124,-112,-118,-118,-119,-120,-119,-119,-118,-115,-114,-118,-120,-116,-123,-118,-122,-119,-121,-114,-122},
+        {-118,-122,-121,-123,-130,-118,-120,-119,-114,-122,-118,-114,-118,-124,-120,-120,-121,-112,-118,-124,-118,-121,-122,-119,-126,-120,-126,-125,-122,-120,-124,-116},
+        {-122,-120,-122,-125,-123,-124,-114,-116,-124,-117,-116,-104,-122,-116,-118,-112,-119,-114,-122,-116,-124,-116,-120,-122,-119,-118,-123,-120,-121,-120,-120,-130},
+        {-122,-122,-118,-124,-120,-124,-122,-120,-115,-124,-116,-114,-118,-122,-122,-118,-120,-122,-120,-122,-124,-122,-119,-126,-120,-126,-126,-123,-127,-125,-125,-121},
+    };
+    float shown[32], old_shown[32];
+    for (int i = 0; i < 32; i++) shown[i] = old_shown[i] = pass[0][i];
+    double jump_new = 0, jump_old = 0; int cells = 0;
+    for (int p = 1; p < 4; p++) {
+        float sorted[32];
+        memcpy(sorted, pass[p], sizeof(sorted));
+        for (int i = 1; i < 32; i++) { float v = sorted[i]; int j = i; while (j > 0 && sorted[j-1] > v) { sorted[j] = sorted[j-1]; j--; } sorted[j] = v; }
+        const float floor_db = sorted[8], spread = rec_scan_spread(sorted, 32);
+        LS_CHECK(spread > 1.5f && spread < 6.0f);
+        const float attack = rec_scan_attack_level(floor_db, spread);
+        for (int i = 0; i < 32; i++) {
+            const float was_new = shown[i], was_old = old_shown[i];
+            shown[i] = rec_scan_follow(shown[i], pass[p][i], attack);
+            old_shown[i] = pass[p][i] > old_shown[i] ? pass[p][i] : old_shown[i] + (pass[p][i] - old_shown[i]) * 0.30f;
+            jump_new += fabsf(shown[i] - was_new); jump_old += fabsf(old_shown[i] - was_old); cells++;
+        }
+    }
+    /* What reads as "jumping" is how far a column moves a pass: the old rule
+       moved a quiet column 1.9 dB a pass on these readings, this one 1.4.
+       (The -104 reading in pass 3 is 18 dB up and clears three spreads, so
+       it is still taken at once: that is a burst, not noise.) */
+    const double avg_new = jump_new / cells, avg_old = jump_old / cells;
+    LS_CHECK_MSG(avg_old > 1.7, "old rule moved %.2f dB a pass", avg_old);
+    LS_CHECK_MSG(avg_new < avg_old * 0.8, "new %.2f vs old %.2f dB a pass", avg_new, avg_old);
+    /* A transmission 40 dB up is shown the pass it arrives. */
+    const float attack = rec_scan_attack_level(-120.0f, 3.0f);
+    LS_NEAR(rec_scan_follow(-118.0f, -80.0f, attack), -80.0, 0.001);
+    /* A flat receiver (the SX1262 at its floor) keeps the 6 dB minimum. */
+    LS_NEAR(rec_scan_attack_level(-122.0f, 0.0f), -116.0, 0.001);
 }

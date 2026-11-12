@@ -38,6 +38,12 @@ bool ls_haptic_present(void);
 
    Callable from any task INCLUDING the draw path: it is a queue send and
    nothing else. */
+/* The master switch. Off, every effect and buzz is refused before it
+   reaches the motor - taps, alerts, SCAN detections, apps - so one setting
+   silences the board. On at boot until the stored choice is applied. */
+void ls_haptic_set_enabled(bool on);
+bool ls_haptic_enabled(void);
+
 bool ls_haptic_play(ls_haptic_effect_t effect);
 
 /* Run the motor for an arbitrary time at an arbitrary strength. `ms` is

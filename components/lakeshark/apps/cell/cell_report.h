@@ -19,6 +19,8 @@ typedef struct {
     int8_t rise;
     uint8_t band,kind,flags;
 } cell_report_record_t;
+/* band is a row of cell_bands[] (frequency_khz says where, whatever the row). */
+#define CELL_REPORT_BAND_ROWS 32
 bool cell_report_encode(const cell_report_record_t *r,char *text,size_t size);
 void cell_report_init(void);
 void cell_report_observe(const cell_status_t *s);

@@ -46,6 +46,16 @@
       "board": "ESP32-P4-NANO"
     },
     {
+      "name": "p4-nano-v3-dsi-txunlocked",
+      "dir": "build_nano_v3_dsi_txunlocked",
+      "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
+      "defaults": "sdkconfig.defaults;boards/nano_headless_ble.defaults;boards/p4_rev3.defaults;boards/nano_c5.defaults;boards/nano_dsi.defaults;boards/tx_unlocked.defaults",
+      "enabled": false,
+      "usb_serial": "5B91065109",
+      "flash_mb": 16,
+      "board": "ESP32-P4-NANO"
+    },
+    {
       "name": "t-display-p4",
       "dir": "build_tdp4",
       "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
@@ -81,6 +91,26 @@
       "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/t_display_p4.defaults;boards/t_display_p4_lr2021.defaults",
       "enabled": true,
+      "usb_serial": "5B91081095",
+      "flash_mb": 16,
+      "board": "T-Display-P4"
+    },
+    {
+      "name": "t-display-p4-txunlocked",
+      "dir": "build_tdp4_txunlocked",
+      "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
+      "defaults": "sdkconfig.defaults;boards/t_display_p4.defaults;boards/tx_unlocked.defaults",
+      "enabled": false,
+      "usb_serial": "5C84301528",
+      "flash_mb": 16,
+      "board": "T-Display-P4"
+    },
+    {
+      "name": "t-display-p4-lr2021-txunlocked",
+      "dir": "build_tdp4_lr_txunlocked",
+      "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
+      "defaults": "sdkconfig.defaults;boards/t_display_p4.defaults;boards/tx_unlocked.defaults",
+      "enabled": false,
       "usb_serial": "5B91081095",
       "flash_mb": 16,
       "board": "T-Display-P4"

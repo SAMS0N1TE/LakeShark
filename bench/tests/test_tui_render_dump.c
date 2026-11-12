@@ -64,6 +64,8 @@ static rec_hub_status_t s_rec = {
 static bool s_rec_armed = true;
 
 void rec_get_hub_status(rec_hub_status_t *out) { if (out) *out = s_rec; }
+bool rec_get_autosave(void) { return true; }
+bool rec_save_busy(void) { return false; }
 uint64_t rec_dir_free_bytes(void) { return 1500ull * 1024 * 1024; }
 const char *rec_dir(void) { return "/sdcard/rec"; }
 bool rec_active(void) { return s_rec_armed; }
@@ -205,6 +207,7 @@ void settings_set_compass_options(int v) { s_compass_opt = v; }
 int  settings_get_subghz_colour(void) { return s_sg_colour; }
 void settings_set_subghz_colour(int v) { s_sg_colour = v; }
 void settings_set_alert_vibe(bool v) { s_alert_vibe = v; }
+void settings_set_haptics(bool on) { (void)on; }
 int  settings_get_theme(void) { return 0; }
 void settings_set_theme(int v) { (void)v; }
 /* SET's Daylight row stores as well as applies. */
@@ -311,7 +314,7 @@ LS_CASE(sensor_history_list_detail_options_and_touch_render)
         for (int i = 0; i < ls_exp_count(); i++) {
             const ls_experiment_t *e = ls_exp_at(i);
             if (!strcmp(e->id, "lr433")) break;
-            ls_scr_experiments.key(LS_TK_DOWN, 0);
+            ls_scr_experiments.key(LS_TK_RIGHT, 0);   /* tiles: RIGHT is the next trial */
         }
         ls_scr_experiments.key(LS_TK_ENTER, 0); frame(2);
         LS_CHECK(grid_has("SENSORS"));

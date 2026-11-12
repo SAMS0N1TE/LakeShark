@@ -127,7 +127,7 @@ python tools/cell_console.py --port COM13 "celliq auto 739000000"
 python tools/cell_console.py --port COM13 "celliq stop"
 ```
 
-`celliq auto list` uses six presets. `celliq read <basename>` reads only regular
+`celliq auto list` steps through the nine HIGH RATE presets (`cell_hrf_centers`). `celliq read <basename>` reads only regular
 files beneath `/sdcard/cell`, bounds file size, and does not modify the SD.
 
 ## Decoder and storage optimization (p4-mib-3)

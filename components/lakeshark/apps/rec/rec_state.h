@@ -173,6 +173,8 @@ void rec_set_mod(int mod);
 int  rec_get_mod(void);
 void rec_set_autosave(bool on);
 bool rec_get_autosave(void);
+/* A capture is being written to the card (SAVE or autosave) right now. */
+bool rec_save_busy(void);
 
 bool rec_active(void);
 void rec_arm(void);

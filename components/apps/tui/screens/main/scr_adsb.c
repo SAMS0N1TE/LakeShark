@@ -33,15 +33,23 @@
 #include "core/settings.h"
 #include "ls_gps.h"
 #include "ls_textpack.h"
+#include "../../ls_drag_scroll.h"
 
 static bool s_radar_only;
 static tui_rect s_tools;
 static int  s_top;      /* first visible row of the list                  */
+/* A finger dragged on the rows moves the window by itself; the selection
+   stays put until a key, a tap or a new sort moves it, and then the window
+   follows the selection again. */
+static ls_drag_scroll_t s_drag;
+static bool s_free;
 static bool s_weather;
 static int s_weather_slot;
 static int s_weather_line;
 static EXT_RAM_BSS_ATTR uat_weather_text_t s_weather_text;
 static bool s_detail;   /* the list, or the selected aircraft's own page   */
+enum { SORT_TABLE, SORT_NEAREST, SORT_LOWEST, SORT_N };
+static int s_sort;
 
 /* Where draw() last put the list, the radar and the contacts on the
    radar, so a tap is tested against what is on the glass - the contract every
@@ -133,6 +141,31 @@ static const char *emitter_word(int tc, int ca)
          : tc == 2 ? SET_C[ca] : NULL;
 }
 
+#define EMERGENCY_HELD_US (60 * 1000000LL)
+
+static int slot_of_aircraft(const adsb_aircraft_t *a)
+{
+    for (int s = 0; s < ADSB_MAX_TRACKED; s++)
+        if (adsb_state_get(s) == a) return s;
+    return -1;
+}
+
+static const char *emergency_word(int slot, int64_t now)
+{
+    if (slot < 0) return NULL;
+    const int squawk = adsb_state_squawk(slot);
+    if (squawk == 7500) return "HIJACK";
+    if (squawk == 7600) return "RADIO FAILURE";
+    if (squawk == 7700) return "EMERGENCY";
+    static const char *const STATE[] = { NULL, "EMERGENCY", "MEDICAL", "MINIMUM FUEL",
+                                         "NO COMMS", "UNLAWFUL", "DOWNED" };
+    int64_t ts = 0;
+    const int st = adsb_state_emergency(slot, &ts);
+    if (st > 0 && st < (int)(sizeof(STATE) / sizeof(STATE[0])) && now - ts <= EMERGENCY_HELD_US)
+        return STATE[st];
+    return NULL;
+}
+
 static void reading(char *out, size_t n, int value, const char *unit,
                     bool valid, int64_t ts, int64_t now)
 {
@@ -180,14 +213,14 @@ static void draw_detail(tui_surface *sf, tui_rect area,
 
     /* The Mode A code, from identity replies; the three emergency codes
        say so in red. */
-    int squawk = 0;
-    for (int s = 0; s < ADSB_MAX_TRACKED; s++)
-        if (adsb_state_get(s) == a) squawk = adsb_state_squawk(s);
-    const bool emergency = squawk == 7500 || squawk == 7600 || squawk == 7700;
+    const int slot = slot_of_aircraft(a);
+    const int squawk = slot >= 0 ? adsb_state_squawk(slot) : 0;
+    const char *alarm = emergency_word(slot, now);
+    const bool emergency = alarm != NULL;
     if (squawk)
-        snprintf(buf, sizeof(buf), "%04d%s", squawk,
-                 squawk == 7500 ? "  HIJACK" : squawk == 7600 ? "  RADIO FAILURE" :
-                 squawk == 7700 ? "  EMERGENCY" : "");
+        snprintf(buf, sizeof(buf), "%04d%s%s", squawk, alarm ? "  " : "", alarm ? alarm : "");
+    else if (alarm)
+        snprintf(buf, sizeof(buf), "not heard yet  %s", alarm);
     else
         snprintf(buf, sizeof(buf), "not heard yet");
     ls_kv(sf, area, row++, "SQUAWK", buf,
@@ -577,6 +610,59 @@ static void draw_dash(tui_surface *sf, tui_rect r, int64_t now)
                 ls_tr(s_traffic_len >= gw ? "2 min" : "since opening"), dim);
 }
 
+typedef struct { float key; int8_t slot; bool alarm; } order_t;
+EXT_RAM_BSS_ATTR static order_t s_order[ADSB_MAX_TRACKED];
+
+static int list_order(int *slots, int64_t now)
+{
+    order_t *o = s_order;
+    int n = 0;
+    double rx_lat = 0, rx_lon = 0;
+    const bool have_rx = s_sort == SORT_NEAREST && radar_center(&rx_lat, &rx_lon, NULL);
+    for (int s = 0; s < ADSB_MAX_TRACKED; s++) {
+        const adsb_aircraft_t *a = adsb_state_get(s);
+        if (!a || !a->active) continue;
+        float key = 1e30f;
+        if (s_sort == SORT_NEAREST && have_rx && a->pos_valid) {
+            double brg = 0, nm = 0;
+            bearing_range_nm(rx_lat, rx_lon, a->lat, a->lon, &brg, &nm);
+            key = (float)nm;
+        } else if (s_sort == SORT_LOWEST && a->altitude_valid) {
+            key = (float)a->altitude;
+        }
+        o[n++] = (order_t){ key, (int8_t)s, s_sort != SORT_TABLE && emergency_word(s, now) != NULL };
+    }
+    for (int i = 1; i < n; i++) {
+        const order_t v = o[i];
+        int j = i - 1;
+        while (j >= 0 && (o[j].alarm < v.alarm || (o[j].alarm == v.alarm && o[j].key > v.key))) {
+            o[j + 1] = o[j];
+            j--;
+        }
+        o[j + 1] = v;
+    }
+    for (int i = 0; i < n; i++) slots[i] = o[i].slot;
+    return n;
+}
+
+static void select_step_shown(int dir)
+{
+    s_free = false;
+    if (s_sort == SORT_TABLE) {
+        if (dir > 0) adsb_select_next(); else adsb_select_prev();
+        return;
+    }
+    int slots[ADSB_MAX_TRACKED];
+    const int n = list_order(slots, esp_timer_get_time());
+    if (n == 0) return;
+    const uint32_t cur = adsb_select_get_icao();
+    int at = -1;
+    for (int i = 0; i < n; i++)
+        if (adsb_state_key(adsb_state_get(slots[i])) == cur) at = i;
+    const int next = at < 0 ? (dir > 0 ? 0 : n - 1) : (at + dir + n) % n;
+    adsb_select_set_icao(adsb_state_key(adsb_state_get(slots[next])));
+}
+
 static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
 {
     const uint8_t frame  = TUI_ATTR(TUI_CYAN, TUI_BLACK);
@@ -609,18 +695,46 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
                        : "ICAO   CALLSIGN S    ALT  SPD DIR  AGE  MSGS"),
                 head);
 
-    int sel_index = 0, total = 0;
-    adsb_select_index(&sel_index, &total);
+    int order[ADSB_MAX_TRACKED];
+    const int ordered = list_order(order, now);
+    const uint32_t sel_key = adsb_select_get_icao();
+    int sel_index = -1;
+    for (int i = 0; i < ordered; i++)
+        if (adsb_state_key(adsb_state_get(order[i])) == sel_key) sel_index = i;
     int active = adsb_state_active_count();
 
     /* Keep the selection on screen without letting the list jump around: only
        scroll when the selection has actually left the window. */
-    if (sel_index < s_top) s_top = sel_index;
-    if (sel_index >= s_top + list_h - 1) s_top = sel_index - list_h + 2;
+    const int nvis = list_h - 1;
+    if (nvis > 0 && ordered > nvis &&
+        ls_drag_scroll(&s_drag, tui_rect_make(list.x + 1, list.y + 2, list.w - 2, nvis),
+                       1, &s_top, ordered, nvis)) s_free = true;
+    if (!s_free) {
+        if (sel_index < s_top) s_top = sel_index;
+        if (sel_index >= s_top + nvis) s_top = sel_index - nvis + 1;
+    }
+    if (s_top > ordered - nvis) s_top = ordered - nvis;
     if (s_top < 0) s_top = 0;
 
+    const char *banner = NULL;
+    const adsb_aircraft_t *banner_ac = NULL;
+    for (int i = 0; i < ordered && !banner; i++) {
+        banner = emergency_word(order[i], now);
+        if (banner) banner_ac = adsb_state_get(order[i]);
+    }
+    if (banner && list.w >= 30) {
+        char who[10], alarm[40];
+        if (banner_ac->callsign[0]) snprintf(who, sizeof(who), "%.8s", banner_ac->callsign);
+        else snprintf(who, sizeof(who), "%06lX", (unsigned long)banner_ac->icao);
+        snprintf(alarm, sizeof(alarm), " ! %s %s ", who, banner);
+        const int title_end = list.x + 3 + (int)strlen(ls_tr("AIRCRAFT (* stale)")) + 1;
+        const tui_rect edge = tui_rect_make(list.x + 1, list.y, list.w - 2, 1);
+        tui_put_str(sf, edge, title_end + 1, list.y, alarm, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED));
+    }
+
     int row = 0, shown = 0;
-    for (int slot = 0; slot < 16 && row < list_h - 1; slot++) {
+    for (int k = 0; k < ordered && row < list_h - 1; k++) {
+        const int slot = order[k];
         const adsb_aircraft_t *a = adsb_state_get(slot);
         if (!a || !a->active) continue;
         if (shown++ < s_top) continue;
@@ -646,7 +760,9 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
             LS_SNPRINTF(t_scr_adsb_06lx_8s_1s_6s_2, buf, sizeof(buf), "%06lX %-8s %.1s %6s %4s %3s %4d %5lu",
                      (unsigned long)a->icao, call, adsb_state_source_label(a, now), alt, speed,
                      hdg, age, (unsigned long)a->msg_count);
-        uint8_t at = (shown - 1 == sel_index) ? sel
+        const bool alarm = emergency_word(slot, now) != NULL;
+        uint8_t at = (shown - 1 == sel_index) ? (alarm ? TUI_ATTR(TUI_BLACK, TUI_RED | TUI_BRIGHT) : sel)
+                   : alarm                   ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED)
                    : a->pos_valid            ? body : stale;
         tui_put_str(sf, list, list.x + 2, list.y + 2 + row, buf, at);
         if (s_rows < ADSB_MAX_TRACKED) s_row_icao[s_rows++] = adsb_state_key(a);
@@ -843,12 +959,16 @@ static void o_show_zoom(const ls_opt_t *o, char *out, size_t n)
     else if (s_follow.bias) snprintf(out, n, "%d FIT%+d", ls_map_zoom(), s_follow.bias);
     else snprintf(out, n, "%d FIT", ls_map_zoom());
 }
+static const char *const SORT[] = { "TABLE", "NEAREST", "LOWEST" };
+static int o_sort(const ls_opt_t *o) { (void)o; return s_sort; }
+static void o_set_sort(const ls_opt_t *o, int v) { (void)o; s_sort = v >= 0 && v < SORT_N ? v : SORT_TABLE; s_top = 0; s_free = false; }
 static const ls_opt_t OPT_DISPLAY[] = {
     { .label = "VIEW", .kind = LS_OPT_TOGGLE, .names = VIEW, .get = o_view, .set = o_set_view },
     { .label = "FOLLOW", .kind = LS_OPT_CYCLE, .names = ls_follow_names, .n = LS_FOLLOW_MODES,
       .get = o_follow, .set = o_set_follow },
     { .label = "MAP ZOOM", .kind = LS_OPT_LEVEL, .num = o_zoom, .set_num = o_set_zoom,
       .lo = 0, .hi = 22, .step = 1, .unit = "tile zoom, 0 to 22", .show = o_show_zoom },
+    { .label = "SORT", .kind = LS_OPT_CYCLE, .names = SORT, .n = SORT_N, .get = o_sort, .set = o_set_sort },
 };
 static const ls_opt_ctx_t CTX_DISPLAY = { .name = "DISPLAY", .job = -1, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_DISPLAY) };
 
@@ -1123,8 +1243,8 @@ static bool key(ls_tk_t k, char ch)
        useful reading of "next" while looking at one, and it is one selection
        state either way (), so nothing about switching pages needs to
        change to support it. */
-    if (k == LS_TK_UP)   { adsb_select_prev(); return true; }
-    if (k == LS_TK_DOWN) { adsb_select_next(); return true; }
+    if (k == LS_TK_UP)   { select_step_shown(-1); return true; }
+    if (k == LS_TK_DOWN) { select_step_shown(+1); return true; }
     if (k == LS_TK_ENTER) {
         if (!s_detail && !adsb_select_get()) return true;  /* nothing to open */
         s_detail = !s_detail;
@@ -1169,6 +1289,7 @@ static bool touch(int col, int row)
             if (best < 0 || d < best_d) { best = i; best_d = d; }
         }
         if (best < 0) return true;
+        s_free = false;
         if (adsb_select_get_icao() == s_plot[best].icao) s_detail = true;
         else {
             adsb_select_set_icao(s_plot[best].icao);
@@ -1181,8 +1302,10 @@ static bool touch(int col, int row)
     }
 
     if (hit(s_list_rect, col, row)) {
+        if (ls_drag_scroll_tap_is_lift(&s_drag)) return true;   /* the end of a drag, not a choice */
         const int index = row - s_list_rect.y - 2;
         if (index >= 0 && index < s_rows) {
+            s_free = false;
             adsb_select_set_icao(s_row_icao[index]);
             s_detail = adsb_select_get() != NULL;
         }

@@ -26,7 +26,7 @@ static portMUX_TYPE lock=portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t worker;
 static StaticTask_t worker_tcb;
 static bool endpoint_subscribed;
-static cell_status_t state;
+static cell_status_t state;   /* floor is read only with a spectrum, which sets it */
 static int command;
 static bool manual;
 static bool stopped;
@@ -52,6 +52,8 @@ static bool ppm_verify;     /* a correction was applied and no cell has confirme
 static float ppm_before;    /* the estimate it was applied for */
 static EXT_RAM_BSS_ATTR cell_status_t snapshot;   /* the worker's own copy, to keep its stack small */
 static bool full_scan,no_mib;
+/* The setting, and what the job running now took at its start. */
+static int gain_tenths=CELL_GAIN,job_gain=CELL_GAIN;
 static volatile bool ppm_stale;
 static int64_t scan_t0;
 #define LTE_CANDIDATES 48
@@ -104,7 +106,7 @@ void cell_monitor_get(cell_status_t *out)
 {
     portENTER_CRITICAL(&lock);
     *out=state;
-    out->lte_count=cell_n;out->gated=!full_scan;out->mib_on=!no_mib;
+    out->lte_count=cell_n;out->gated=!full_scan;out->mib_on=!no_mib;out->gain=gain_tenths;
     portEXIT_CRITICAL(&lock);
 }
 unsigned cell_monitor_cells(cell_lte_t *out,unsigned max)
@@ -117,6 +119,12 @@ unsigned cell_monitor_cells(cell_lte_t *out,unsigned max)
 }
 void cell_monitor_set_full_scan(bool full){portENTER_CRITICAL(&lock);full_scan=full;portEXIT_CRITICAL(&lock);}
 void cell_monitor_set_mib(bool on){portENTER_CRITICAL(&lock);no_mib=!on;portEXIT_CRITICAL(&lock);}
+bool cell_monitor_set_gain(int tenths)
+{
+    if(!cell_gain_valid(tenths))return false;
+    portENTER_CRITICAL(&lock);gain_tenths=tenths;portEXIT_CRITICAL(&lock);
+    return true;
+}
 static bool cancel(void *arg)
 {
     (void)arg;
@@ -170,7 +178,7 @@ static bool read_baseline(unsigned band)
         FILE *f=fopen(file,"rb"); if(!f) continue;
         bool ok=fread(&disk,1,sizeof(disk),f)==sizeof(disk) && fgetc(f)==EOF;
         fclose(f);
-        if(ok && cell_baseline_valid(&disk,band,tile_lat,tile_lon,located,external)) {
+        if(ok && cell_baseline_valid(&disk,band,job_gain,tile_lat,tile_lon,located,external)) {
             baseline=disk; baseline_saved=true; return true;
         }
     }
@@ -203,12 +211,15 @@ static void publish_rows(bool comparable,unsigned changed,uint32_t elapsed)
     next.rows=0; next.changed=changed;next.elapsed_ms=elapsed;next.compared=comparable;
     next.baseline=baseline.passes==3;next.quiet=quiet;
     next.spectrum_count=96;
-    memset(next.spectrum,CELL_MISSING,sizeof(next.spectrum));
+    /* The same floor and carrier reading the LTE pre-pass makes, so the chart
+     * can be drawn against the receiver's own noise rather than fixed dBFS. */
+    cell_plateau_t carriers[CELL_PLATEAU_MAX];
+    next.plateaus=cell_columns(measured,plan.n_bins,(uint32_t)plan.start_hz,CELL_BIN,next.spectrum,next.mark,96,
+                               carriers,CELL_PLATEAU_MAX,&next.floor);
     memset(next.reference,CELL_MISSING,sizeof(next.reference));
     for(unsigned i=0;i<plan.n_bins;i++) {
         if(measured[i]==CELL_MISSING) continue;
         unsigned column=i*96/plan.n_bins;
-        if(measured[i]>next.spectrum[column])next.spectrum[column]=measured[i];
         if(comparable && baseline.power[i]>next.reference[column])next.reference[column]=baseline.power[i];
         int delta=comparable?(int)measured[i]-baseline.power[i]:0;
         int score=comparable?delta:measured[i]; unsigned j=0;
@@ -232,8 +243,36 @@ static void publish_rows(bool comparable,unsigned changed,uint32_t elapsed)
         state.spectrum_count=next.spectrum_count;
         memcpy(state.spectrum,next.spectrum,sizeof(state.spectrum));
         memcpy(state.reference,next.reference,sizeof(state.reference));
+        memcpy(state.mark,next.mark,sizeof(state.mark));
+        state.floor=next.floor;state.plateaus=next.plateaus;
     }
     portEXIT_CRITICAL(&lock);
+    LS_PRINTF(fmt_cell_monitor_cell_pass_band_floor, "CELL_PASS band=%u floor=%d carriers=%u compared=%d changed=%u\n",
+        cell_bands[next.band<cell_band_total?next.band:0].band,next.floor,next.plateaus,comparable,changed);
+}
+/* A pass that clipped the converter anywhere is the receiver's reading, not
+ * the site's: it is neither learned nor compared. Published either way, so
+ * the screen says when it clears. */
+static bool clipped(unsigned band,const ls_sweep_rails_t *r)
+{
+    bool over=cell_overloaded(r->worst_rails,r->worst_samples);
+    portENTER_CRITICAL(&lock);
+    if(receiver_epoch==job_epoch) {
+        state.overload=over;state.overload_hz=(uint32_t)r->worst_hz;
+        state.rails=r->worst_rails;state.rail_samples=r->worst_samples;
+    }
+    portEXIT_CRITICAL(&lock);
+    LS_PRINTF(fmt_cell_monitor_cell_rails_band_gain, "CELL_RAILS band=%u gain=%d worst_hz=%lu worst=%lu/%lu pass=%lu/%lu overload=%d\n",
+        cell_bands[band].band,job_gain,(unsigned long)r->worst_hz,(unsigned long)r->worst_rails,
+        (unsigned long)r->worst_samples,(unsigned long)r->rails,(unsigned long)r->samples,over);
+    return over;
+}
+static void overload_message(void)
+{
+    portENTER_CRITICAL(&lock);uint32_t hz=state.overload_hz;portEXIT_CRITICAL(&lock);
+    char text[80];
+    LS_SNPRINTF(t_cell_monitor_rtl_overloaded_at_lower, text,sizeof(text),"RTL overloaded at %lu MHz - lower gain",(unsigned long)((hz+500000)/1000000));
+    message(text);
 }
 static bool lte_yield(void *arg)
 {
@@ -327,28 +366,24 @@ static ls_radio_err_t lte_occupancy(unsigned band,cell_plateau_t *pl,unsigned *n
     scan_progress(CELL_PH_OCCUPANCY,0,op.n_tunes,0);
     message(LS_TEXT(t_cell_monitor_lte_measuring_which_carriers, "LTE: measuring which carriers are on air"));
     ls_radio_err_t result=LS_RADIO_ERR_BUSY;
+    ls_sweep_rails_t rails;
     for(int retry=0;retry<10 && result==LS_RADIO_ERR_BUSY && !cancel(NULL);retry++) {
-        result=ls_sweep_run_endpoint(&op,CELL_GAIN,8,false,measured,occupancy_progress,cancel,&op,LS_RADIO_ENDPOINT_RTL_USB);
+        result=ls_sweep_run_rails(&op,job_gain,8,false,measured,occupancy_progress,cancel,&op,LS_RADIO_ENDPOINT_RTL_USB,&rails);
         if(result==LS_RADIO_ERR_BUSY)vTaskDelay(pdMS_TO_TICKS(300));
     }
     if(cancel(NULL))return LS_RADIO_ERR_STOPPED;
     if(result!=LS_RADIO_OK)return result;
     if(ls_sweep_gaps(&op,measured))return LS_RADIO_ERR_IO;
-    int floor_db;
-    *np=cell_plateaus(measured,op.n_bins,low,CELL_BIN,pl,CELL_PLATEAU_MAX,&floor_db);
+    /* Clipping makes images that look like carriers; the search still tries
+     * them, since only a cell that synchronises is reported, but says so. */
+    clipped(band,&rails);
+    int floor_db;int8_t spectrum[96];uint8_t mark[96];
+    *np=cell_columns(measured,op.n_bins,low,CELL_BIN,spectrum,mark,96,pl,CELL_PLATEAU_MAX,&floor_db);
     *nc=cell_candidates(pl,*np,low+700000,high-700000,cand,LTE_CANDIDATES);
-    int8_t spectrum[96];uint8_t mark[96];
-    memset(spectrum,CELL_MISSING,sizeof(spectrum));memset(mark,0,sizeof(mark));
-    for(unsigned i=0;i<op.n_bins;i++) {
-        unsigned col=i*96/op.n_bins;
-        if(measured[i]!=CELL_MISSING && measured[i]>spectrum[col])spectrum[col]=measured[i];
-    }
-    for(unsigned p=0;p<*np;p++)
-        for(unsigned col=mark_col(band,pl[p].lo);col<=mark_col(band,pl[p].hi-1);col++)mark[col]|=1;
     portENTER_CRITICAL(&lock);
     state.spectrum_count=96;memcpy(state.spectrum,spectrum,sizeof(spectrum));
     memset(state.reference,CELL_MISSING,sizeof(state.reference));memcpy(state.mark,mark,sizeof(mark));
-    state.plateaus=*np;state.candidates=*nc;
+    state.plateaus=*np;state.candidates=*nc;state.floor=floor_db;
     portEXIT_CRITICAL(&lock);
     return LS_RADIO_OK;
 }
@@ -577,7 +612,7 @@ static bool lte_scan(unsigned band)
         message(LS_TEXT(t_cell_monitor_lte_acquiring_30_ms, "LTE: acquiring 30 ms of continuous IQ"));
         if(i==0) {
             ls_radio_iq_config_t cfg={.center_hz=hz,.sample_rate_hz=1920000,.bandwidth_hz=1920000,
-                .gain_mode=LS_RADIO_GAIN_MANUAL,.gain_tenths_db=CELL_GAIN},actual;
+                .gain_mode=LS_RADIO_GAIN_MANUAL,.gain_tenths_db=job_gain},actual;
             error=ls_radio_iq_configure(session,&cfg,&actual);
             if(error!=LS_RADIO_OK)break;
             if(actual.sample_rate_hz!=1920000){error=LS_RADIO_ERR_UNSUPPORTED;break;}
@@ -649,6 +684,7 @@ static void task(void *arg)
         ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
         cell_status_t initial;cell_monitor_get(&initial);
         unsigned band=initial.band; int job=command;bool complete_lte=false;
+        job_gain=initial.gain;
         if(initial.needs_relearn) {memset(&baseline,0,sizeof(baseline));baseline_saved=false;}
         located=position(&tile_lat,&tile_lon);external=ls_board_hw_antenna_is_external();
         portENTER_CRITICAL(&lock);
@@ -658,7 +694,7 @@ static void task(void *arg)
         if(job==CELL_PPM_ZERO){ppm_zero();goto finished;}
         if(!manual && !located) {invalidate();message(LS_TEXT(t_cell_monitor_gps_no_fix_wait, "GPS NO FIX: wait or select SITE: LOCAL"));goto finished;}
         memset(streak,0,sizeof(streak));
-        if(!cell_baseline_valid(&baseline,band,tile_lat,tile_lon,located,external)) {memset(&baseline,0,sizeof(baseline));baseline_saved=false;}
+        if(!cell_baseline_valid(&baseline,band,job_gain,tile_lat,tile_lon,located,external)) {memset(&baseline,0,sizeof(baseline));baseline_saved=false;}
         if(job==CELL_LOAD && initial.needs_relearn) {
             message(LS_TEXT(t_cell_monitor_receiver_changed_learn_a, "Receiver changed: LEARN a fresh antenna baseline"));goto finished;
         }
@@ -675,7 +711,7 @@ static void task(void *arg)
             baseline_saved=false;
             baseline.magic=0x43454c4c;baseline.version=CELL_BASELINE_VERSION;baseline.band=band;
             baseline.receiver=CELL_RECEIVER_RTL;baseline.calibration=CELL_CALIBRATION;
-            baseline.rate=CELL_RATE;baseline.gain=CELL_GAIN;
+            baseline.rate=CELL_RATE;baseline.gain=(uint32_t)job_gain;
             baseline.lat_tile=tile_lat;baseline.lon_tile=tile_lon;baseline.located=located;
             baseline.antenna=external;baseline.created=(uint32_t)time(NULL);
             memset(baseline.power,CELL_MISSING,sizeof(baseline.power));
@@ -702,12 +738,13 @@ static void task(void *arg)
             int64_t started=esp_timer_get_time();
             message(job==CELL_LEARN?"Learning: keep antenna and device still":"Sweeping cellular downlink spectrum");
             portENTER_CRITICAL(&lock);state.tune=0;state.tunes=plan.n_tunes;portEXIT_CRITICAL(&lock);
-            ls_radio_err_t result=ls_sweep_run_endpoint(&plan,CELL_GAIN,8,false,measured,progress,cancel,NULL,LS_RADIO_ENDPOINT_RTL_USB);
+            ls_sweep_rails_t rails;
+            ls_radio_err_t result=ls_sweep_run_rails(&plan,job_gain,8,false,measured,progress,cancel,NULL,LS_RADIO_ENDPOINT_RTL_USB,&rails);
             if(result==LS_RADIO_ERR_BUSY && passes==0 && esp_timer_get_time()-started<1000000) {
                 message(LS_TEXT(t_cell_monitor_waiting_for_receiver_to, "Waiting for receiver to park"));vTaskDelay(pdMS_TO_TICKS(300));
                 /* Bounded retry; a different owner may legitimately hold it. */
                 for(int retry=0;retry<10 && result==LS_RADIO_ERR_BUSY && !cancel(NULL);retry++) {
-                    result=ls_sweep_run_endpoint(&plan,CELL_GAIN,8,false,measured,progress,cancel,NULL,LS_RADIO_ENDPOINT_RTL_USB);
+                    result=ls_sweep_run_rails(&plan,job_gain,8,false,measured,progress,cancel,NULL,LS_RADIO_ENDPOINT_RTL_USB,&rails);
                     if(result==LS_RADIO_ERR_BUSY) vTaskDelay(pdMS_TO_TICKS(300));
                 }
             }
@@ -724,11 +761,20 @@ static void task(void *arg)
                 message(text);break;
             }
             passes++;
-            bool valid_base=cell_baseline_valid(&baseline,band,tile_lat,tile_lon,located,external);
-            bool comparable=valid_base && context_ok && quiet;
+            bool overload=clipped(band,&rails);
+            bool valid_base=cell_baseline_valid(&baseline,band,job_gain,tile_lat,tile_lon,located,external);
+            bool comparable=valid_base && context_ok && quiet && !overload;
             unsigned changed=cell_compare(baseline.power,measured,streak,plan.n_bins,comparable);
             if(job==CELL_LEARN) {
                 if(!context_ok || !quiet) {invalidate();message(!context_ok?context_reason:"Motion / stale IMU: rest device and retry");break;}
+                /* Another pass at the same gain clips the same way: stop, and
+                 * show this one so the operator sees where. */
+                if(overload) {
+                    invalidate();
+                    portENTER_CRITICAL(&lock);state.passes=passes;portEXIT_CRITICAL(&lock);
+                    publish_rows(false,0,(uint32_t)((esp_timer_get_time()-started)/1000));
+                    overload_message();break;
+                }
                 for(unsigned i=0;i<plan.n_bins;i++) if(measured[i]>baseline.power[i]) baseline.power[i]=measured[i];
                 baseline.passes++;baseline.count=plan.n_bins;
             }
@@ -746,13 +792,14 @@ static void task(void *arg)
                 message(baseline_saved?"Baseline saved to SD; START to compare":"Baseline ready in RAM; SD save failed");break;
             }
             if(!context_ok) {message(context_reason);break;}
-            message(!quiet?"Motion detected: comparison suppressed":!valid_base?"No baseline: LEARN captures three passes":changed?"Persistent RF change; identity unknown":"No persistent rise above threshold");
+            if(overload)overload_message();
+            else message(!quiet?"Motion detected: comparison suppressed":!valid_base?"No baseline: LEARN captures three passes":changed?"Persistent RF change; identity unknown":"No persistent rise above threshold");
             for(int i=0;i<20 && !cancel(NULL);i++) vTaskDelay(pdMS_TO_TICKS(100));
         }
 finished:
         if(cancel(NULL))invalidate();
         portENTER_CRITICAL(&lock);
-        state.baseline=(manual || located) && !state.needs_relearn && cell_baseline_valid(&baseline,band,tile_lat,tile_lon,located,external);
+        state.baseline=(manual || located) && !state.needs_relearn && cell_baseline_valid(&baseline,band,job_gain,tile_lat,tile_lon,located,external);
         state.baseline_saved=state.baseline && baseline_saved;
         state.busy=false;state.learning=false;
         portEXIT_CRITICAL(&lock);
@@ -790,6 +837,7 @@ bool cell_monitor_request(int job,unsigned band,bool manual_site)
     if(job==CELL_PPM_ZERO)state.busy=true;   /* a short chore: the screen keeps what it shows */
     else {
         memset(&state,0,sizeof(state));state.busy=true;state.learning=job==CELL_LEARN;state.band=band;
+        state.floor=CELL_MISSING;
         state.lte=job==CELL_LTE;ppm_publish_locked();
         state.receiver_missing=missing;state.needs_relearn=relearn;
         state.manual_site=manual_site;

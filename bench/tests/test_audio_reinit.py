@@ -25,7 +25,7 @@ def run_c(source):
         (path / 'test.c').write_text(source)
         built = subprocess.run([shutil.which('gcc'), '-std=c11', '-Wall', '-Wextra',
                                 '-I', str(ROOT / 'components/ls_textpack/include'), '-include', 'ls_textpack.h',
-                                str(path / 'test.c'), '-o', str(path / 'test.exe')],
+                                str(path / 'test.c'), '-o', str(path / 'test.exe'), '-lm'],
                                capture_output=True, text=True)
         if built.returncode:
             raise AssertionError('the harness does not compile:\n' + built.stderr)

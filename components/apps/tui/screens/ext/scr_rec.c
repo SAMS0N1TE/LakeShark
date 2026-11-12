@@ -10,6 +10,8 @@
 #include "../../ls_rec_replay.h"
 #include "../../ls_catch_ui.h"
 #include "apps/rec/rec_catch.h"
+#include "ls_mixrf.h"
+#include "ls_lora.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -389,8 +391,10 @@ static void capture_toggle(void)
 {
     if(lr_raw()) {
         if(rec_watch_iq_status(NULL,0))rec_watch_iq_stop();
-        else if(!rec_watch_iq_record(rec_get_freq()))LS_SNPUTS(t_scr_rec_i_q_receiver_busy, iq_notice, sizeof(iq_notice), "I/Q: receiver busy/loading or frequency outside 150-1000 MHz");
-        else iq_notice[0]=0;
+        else if(rec_watch_iq_record(rec_get_freq()))iq_notice[0]=0;
+        else if(!ls_lora_rx_range_ok(ls_lora_caps(),rec_get_freq(),rec_get_freq()))
+            LS_SNPUTS(t_scr_rec_i_q_outside_range, iq_notice, sizeof(iq_notice), "I/Q: frequency outside the radio's range");
+        else LS_SNPUTS(t_scr_rec_i_q_busy, iq_notice, sizeof(iq_notice), "I/Q: receiver busy or still loading");
         return;
     }
     if (capture_running()) rec_disarm();
@@ -526,9 +530,18 @@ static EXT_RAM_BSS_ATTR struct {
 static bool rec_child_active;
 static tui_rect replay_trace;
 static ls_fresh_t replay_flash;
-static const int replay_ook_power[]={-10,0,5,10};
-static const int replay_fsk_power[]={-9,0,5,10}; /* +10 dBm replay ceiling */
-static int replay_dbm(void) {return (subghz_file_is_ook(&player.file)||subghz_file_is_cc_fsk(&player.file))?replay_ook_power[player.power]:replay_fsk_power[player.power];}
+/* Whether a CC1101 sends the loaded file, as replay_file decides: OOK goes
+   to an LR2021 when no CC1101 answers, and an FSK file with a CC1101 preset
+   (what REC writes for an SX1262 or LR2021 capture) to the LoRa chip. The
+   power steps are that radio's: the CC1101's -10 dBm is outside the LoRa
+   chips' -9..+22, which refused every send of such a file. */
+static bool player_on_cc(void)
+{
+    ls_mixrf_status_t mix;ls_mixrf_snapshot(&mix);
+    if(subghz_file_is_ook(&player.file))return mix.cc || ls_lora_chip()!=LS_LORA_CHIP_LR20XX;
+    return subghz_file_is_cc_fsk(&player.file) && (mix.cc || !subghz_file_is_fsk(&player.file));
+}
+static int replay_dbm(void) {return subghz_tx_step_dbm(player.power,player_on_cc());}
 static void replay_poll(void)
 {
     if(!player.waiting)return;
@@ -564,7 +577,7 @@ static int replay_control(int i)
 {
     if(i==0)replay_play();
     else if(i==1 && !player.waiting && player.power>0)player.power--;
-    else if(i==2 && !player.waiting && player.power<3)player.power++;
+    else if(i==2 && !player.waiting && player.power<SUBGHZ_TX_STEPS-1)player.power++;
     else if(i==3 && !player.waiting)return 2;
     return 1;
 }
@@ -580,7 +593,7 @@ static void replay_draw(tui_surface *sf,tui_rect a)
     ls_btn_t controls[]={
         {player.waiting?"BUSY":"PLAY ONCE",player.waiting?"WAIT":"TRANSMIT",'p',player.waiting,player.waiting},
         {"POWER-",power,'-',false,player.waiting || player.power==0},
-        {"POWER+",power,'+',false,player.waiting || player.power==3},
+        {"POWER+",power,'+',false,player.waiting || player.power==SUBGHZ_TX_STEPS-1},
         {player_embedded?"OTHER":"BROWSE",player_embedded?"FILE":"FILES",'o',false,player.waiting}};
     int h=ls_tui_is_wide()?5:10;
     if(a.h<h+12)h=5;
@@ -590,10 +603,10 @@ static void replay_draw(tui_surface *sf,tui_rect a)
     a.y+=h;a.h-=h;
     const bool ook=subghz_file_is_ook(&player.file);
     char title[40];
+    /* The radio that will send it, as replay_file picks. */
+    const bool on_cc=player_on_cc();
     if(subghz_file_is_iq(&player.file)) snprintf(title,sizeof(title),"REPLAY / LR2021 I/Q");
-    else if(ook) snprintf(title,sizeof(title),"REPLAY / CC1101 OOK");
-    else if(subghz_file_is_cc_fsk(&player.file)) snprintf(title,sizeof(title),"REPLAY / CC1101 FSK");
-    else snprintf(title,sizeof(title),"REPLAY / %s FSK",ls_rsel_name(LS_RSEL_LORA));
+    else snprintf(title,sizeof(title),"REPLAY / %s %s",on_cc?"CC1101":ls_rsel_name(LS_RSEL_LORA),ook?"OOK":"FSK");
     ls_panel_box(sf,a,title,TUI_CYAN);
     ls_motion_busy(sf,a,player.waiting);
     const uint8_t ink=TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK);
@@ -818,6 +831,9 @@ void ls_rec_player_draw(tui_surface *sf,tui_rect a){player_embedded=true;replay_
 int  ls_rec_player_key(ls_tk_t k,char c){return replay_key_result(k,c);}
 int  ls_rec_player_touch(int x,int y){return replay_touch_result(x,y);}
 bool ls_rec_player_busy(void){replay_poll();return player.waiting;}
+void ls_rec_player_set_power(int step){if(!player.waiting && step>=0 && step<SUBGHZ_TX_STEPS)player.power=step;}
+int  ls_rec_player_power(void){return player.power;}
+bool ls_rec_player_play(void){replay_play();return player.waiting;}
 
 /* The capture radios draw SUB-GHZ's own face, bar and tabs included. GPS
    and the metadata recorders keep their screens under one filled row: the
@@ -866,7 +882,7 @@ static bool recorder_touch(int x,int y) {
     if(tui_rect_contains(files_key,x,y)){replay_browse();return true;}
     return recorder_child()->touch(x,y);
 }
-/* The level meter and ARM, for SUB-GHZ to show as its own READ RAW page. */
+/* The level meter and ARM, for SUB-GHZ to show as RECORD's full view. */
 void ls_rec_tools_enter(void){if(!lr_raw())ls_tui_radio_want("REC");on_enter();}
 void ls_rec_tools_draw(tui_surface *sf,tui_rect a)
 {
@@ -880,8 +896,12 @@ void ls_rec_tools_draw(tui_surface *sf,tui_rect a)
 }
 bool ls_rec_tools_key(ls_tk_t k,char c){return key(k,c);}
 bool ls_rec_tools_touch(int x,int y){return touch(x,y);}
+/* Whether a cell is on ARM: SUB-GHZ arms through its own RECORD so its
+   banner knows a recording is running. */
+bool ls_rec_tools_button_hit(int x,int y)
+{ return s_btn.w>0 && x>=s_btn.x && x<s_btn.x+s_btn.w && y>=s_btn.y && y<s_btn.y+s_btn.h; }
 
-/* REC on its RAW page, recording from the SDR. */
+/* REC's recorder, full size: SUB-GHZ's RECORD view, from the SDR. */
 void ls_scr_rec_tools(void) {
     int index=ls_tui_screen_index_of(&ls_scr_rec);
     recorder_radio=LS_RSEL_SDR_RTL;recorder_loaded=true;recorder_mesh=false;gps_view=false;

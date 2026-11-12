@@ -51,6 +51,9 @@ LS_CASE(failed_done_keeps_the_editor_and_original_file)
 {
     fresh("# Original\nBody\n");
     ls_test_mkdir("build"); ls_test_mkdir("build/lssim_notes"); ls_test_mkdir("build/lssim_notes/9000_test.tmp");
+    /* A directory where the temp file goes makes the write fail; it has to
+       hold something, or the simulator's fixture copy removes it first. */
+    { FILE *keep = fopen("build/lssim_notes/9000_test.tmp/keep", "wb"); LS_CHECK(keep != NULL); if (keep) fclose(keep); }
     run("-x +o,+e,+LOST_CHANGE,@esc,~2", "failed.bmp");
     LS_CHECK_MSG(said("SAVE FAILED") && said("LOST CHANGE"), "%s", s_out);
     FILE *f = fopen("build/lssim_notes/9000_test.md", "rb"); LS_CHECK(f != NULL);

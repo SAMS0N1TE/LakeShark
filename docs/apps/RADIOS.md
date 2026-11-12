@@ -23,18 +23,21 @@ These rows appear on the T-Display-P4:
 
 | Row | State | Press |
 |---|---|---|
-| RTL-SDR | ACTIVE, parked, starting, failed or unavailable, with the app that owns it | STOP / BLOCK RX or ALLOW RX |
-| HackRF | Same as RTL-SDR | STOP / BLOCK RX or ALLOW RX |
-| LORA | Chip name and TX, RX, held, armed or parked, with the owner and mode | TURN ON or TURN OFF |
+| RTL-SDR | ACTIVE, parked, starting, failed or unavailable, with the app that owns it | STOP <app>, STOP / BLOCK RX or ALLOW RX |
+| HackRF | Same as RTL-SDR | Same as RTL-SDR |
+| LORA | Chip name and TX, RX, held, armed or parked, with the owner and mode | STOP <app>, TURN ON or TURN OFF |
 | GPS | off, searching or fix | TURN ON or TURN OFF |
 | ANTENNA | internal or MMCX1 | USE MMCX1 or USE INTERNAL |
 | BLE | Live Bluetooth status | OPEN LINK |
 | WI-FI | connected, disconnected, busy or off | OPEN LINK |
 | CC1101, NRF24, NFC | The keyboard board radios | OPEN MIX-RF |
 
-STOP / BLOCK RX parks a USB SDR so no app starts it. ALLOW RX lets its owner
-start it again. LORA cannot be switched while another app holds it; the screen
-names that app.
+STOP <app> turns off the app using the radio: FM, P25, ADS-B and REC park
+their receiver, SUB-GHZ turns WATCH off, CATCH, DRONES and CELL WATCH stop,
+and an app service is asked to end. The radio is then free (the LoRa chip goes
+back to MeshCore) and nothing takes it back until you open that app again.
+An owner STOP does not know is blocked instead: STOP / BLOCK RX or STOP /
+BLOCK LORA, then ALLOW to undo it.
 
 ## How to use it
 

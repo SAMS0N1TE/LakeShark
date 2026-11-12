@@ -131,11 +131,14 @@ LS_CASE(labs_page_history_wraps_the_suffix_and_touch_reaches_oldest_page)
         LS_CHECK(strstr(output, "8 of 8"));
         LS_CHECK(strstr(output, "TAILVISIBLE"));
     }
-    run("labs", "-k mmmm -x 30:42,30:42,30:42,30:42,30:42,30:42,30:42", false, "13");
+    /* NEXT > seven times reaches the last page; a tap on a page's row
+       picks it. Positions as LORA LABS lays them out now: NEXT under the
+       list (portrait row 25, landscape row 18), the pages from row 17. */
+    run("labs", "-k mmmm -x 28:25,28:25,28:25,28:25,28:25,28:25,28:25", false, "13");
     LS_CHECK(strstr(output, "8 of 8"));
-    run("labs", "-k mmmm -x 80:20,80:20,80:20,80:20,80:20,80:20,80:20", true, "13");
+    run("labs", "-k mmmm -x 61:18,61:18,61:18,61:18,61:18,61:18,61:18", true, "13");
     LS_CHECK(strstr(output, "8 of 8"));
-    run("labs", "-k mmmm -x 5:35", false, "13");
+    run("labs", "-k mmmm -x 5:18", false, "13");
     LS_CHECK(strstr(output, "2 of 8"));
 #ifdef _WIN32
     _putenv_s("LSSIM_LABS_PAGES", "");

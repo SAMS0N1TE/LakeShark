@@ -18,6 +18,8 @@ static void entry_defaults(const app_t *app, uint32_t fallback_hz,
     out->auto_follow = true;
     out->skip_encrypted = true;
     out->encrypted_skip_ms = P25_CONTROL_ENCRYPTED_SKIP_DEFAULT_MS;
+    out->phase2_follow = false;
+    out->linger_ms = P25_FOLLOW_LINGER_DEFAULT_MS;
 }
 
 static esp_err_t read_entry_settings(void *ctx)
@@ -33,6 +35,8 @@ static esp_err_t read_entry_settings(void *ctx)
     loaded.auto_follow = settings_get_p25_auto_follow();
     loaded.skip_encrypted = settings_get_p25_skip_encrypted();
     loaded.encrypted_skip_ms = settings_get_p25_encrypted_skip_ms();
+    loaded.phase2_follow = settings_get_p25_phase2_follow();
+    loaded.linger_ms = settings_get_p25_linger_ms();
 
     job->loaded = loaded;
     return ESP_OK;

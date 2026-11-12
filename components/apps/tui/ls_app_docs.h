@@ -45,11 +45,13 @@ extern const ls_app_doc_t ls_doc_diag;
 extern const ls_app_doc_t ls_doc_terminal;
 extern const ls_app_doc_t ls_doc_update;
 extern const ls_app_doc_t ls_doc_settings;
+extern const ls_app_doc_t ls_doc_pins;
 extern const ls_app_doc_t ls_doc_map;
 extern const ls_app_doc_t ls_doc_tiles;
 extern const ls_app_doc_t ls_doc_gps;
 extern const ls_app_doc_t ls_doc_radios;
 extern const ls_app_doc_t ls_doc_link;
+extern const ls_app_doc_t ls_doc_freqs;
 
 typedef struct {
     const char         *id;

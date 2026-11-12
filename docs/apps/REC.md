@@ -33,7 +33,7 @@ Press R (or U), or tap the RADIO box at the top left, to open the RADIO picker. 
 
 REC and SUB-GHZ share one capture receiver. A capture radio chosen in REC is the one SUB-GHZ uses too, and REC always names the one actually in use.
 
-The radio cannot be changed while WATCH, SCAN, LEARN, a replay, a CSV recording or a GPS track is running. REC says which one to stop first.
+The radio cannot be changed while WATCH, SCAN, LEARN, RECORD, a replay, a CSV recording or a GPS track is running. REC says which one to stop first.
 
 ## How to use it
 
@@ -45,13 +45,13 @@ The view below the RADIO box follows the radio. The hint line at the bottom show
 
 | Radio | Keys |
 |---|---|
-| RTL-SDR, CC1101, LoRa chip | W starts or stops WATCH. D opens READ RAW (RTL-SDR or HackRF source). O opens FILES |
+| RTL-SDR, CC1101, LoRa chip | W starts or stops WATCH. D records one raw capture (RTL-SDR, HackRF or LR2021). L learns a 2-FSK transmitter (LoRa chip). 1, 2 and 3 are READ, BAND and SAVED. G opens FILES. O opens OPTIONS |
 | HackRF, nRF24, NFC, Wi-Fi, Bluetooth, mesh traffic | C turns RECORD (CSV) on or off. V shows the live SENSORS readings. O opens FILES |
 | GPS | T starts or stops the GPS track. M opens the map. O opens FILES |
 
-Capture radios show the SUB-GHZ capture pages inside REC: frequency, capture setup, WATCH and the captured patterns. They work the same as in the SUB-GHZ app.
+Capture radios show SUB-GHZ inside REC: READ, BAND and SAVED, with the frequency, capture setup, WATCH and the captured patterns. They work the same as in the SUB-GHZ app; see [SUB-GHZ](SUBGHZ.md).
 
-**READ RAW** is the manual capture page. Press ARM, or Enter, to wait for the next signal over the trigger. Press STOP to end it.
+**RECORD** (D, or the RECORD key on READ) is the manual capture that READ RAW was. It arms for the next signal over the trigger while READ stays on screen; the banner shows RECORDING, the level against the trigger and the edges. The file lands in SAVED. D again stops it. Tap the RECORDING chip, or press V, for the full view below; BACK returns to READ.
 
 ### REPLAY
 
@@ -73,7 +73,7 @@ Capture radios show the SUB-GHZ capture pages inside REC: frequency, capture set
 ## What the screen shows
 
 - **RECORD**: the RADIO box, what that radio records (for example "OOK pulse captures"), and the clock.
-- **READ RAW**: CAPTURE START time, then state (idle, armed, CAPTURING, done), frequency, receiver (streaming or stopped), captures, edges and free card space.
+- **RECORD's full view**: CAPTURE START time, then state (idle, armed, CAPTURING, done), frequency, receiver (streaming or stopped), captures, edges and free card space.
   - **LEVEL**: the received level over time. The yellow dashed line is the trigger. Samples at or over the trigger are red.
   - **RX RATE**: how fast samples arrive from the receiver, in KiB/s. This is receiver input, not card writes.
   - The footer names the folder captures go to.

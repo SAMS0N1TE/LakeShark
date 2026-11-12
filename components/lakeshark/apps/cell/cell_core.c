@@ -1,27 +1,59 @@
 #include "cell_core.h"
+#include "cell_report.h"
 #include <stddef.h>
 #include <string.h>
+#include <stdio.h>
 #include <math.h>
-/* Positions 0-4 are the first five presets and must not move: a saved
- * baseline names its band by index. */
+/* No RTL row may move: a saved baseline names its window by index, in its
+ * file name (_b<index>_) and in its band field. New RTL windows go after the
+ * last one, ahead of the HackRF rows. */
 const cell_band_t cell_bands[] = {
     {"850 DL / B5",869000000,894000000,5,2400},
     {"900 DL / B8",925000000,960000000,8,3450},
     {"700 DL / B12",729000000,746000000,12,5010},
     {"700 DL / B13",746000000,756000000,13,5180},
-    {"800 DL / B20",791000000,821000000,20,6150},
+    /* Europe's 800 band. In the Americas 791-803 is B28 downlink and 806-821
+     * is handset uplink, so this window is not a downlink there. */
+    {"800 DL / B20 EU",791000000,821000000,20,6150},
     {"700 DL / B14",758000000,768000000,14,5280},
     {"700 DL / B17",734000000,746000000,17,5730},
     {"850 DL / B26",859000000,894000000,26,8690},
     {"600 DL / B71",617000000,652000000,71,68586},
+    /* APT 700 (Argentina, Brazil, Chile and others): downlink 758-803 MHz,
+     * EARFCN 9210 at 758.0. 45 MHz is more than a baseline holds, so two
+     * windows that share one 5 MHz block, 778-783: the LTE search keeps
+     * 700 kHz off each window's edges, and the overlap leaves every raster
+     * centre from 758.7 to 802.3 inside one of them. Argentina's three
+     * carriers (758-768, 768-778, 778-793) are each whole in one window. */
+    {"700 DL / B28 lo",758000000,783000000,28,9210},
+    {"700 DL / B28 hi",778000000,803000000,28,9410},
     /* Above the RTL-SDR tuner: HackRF only. */
     {"1900 DL / B2",1930000000,1990000000,2,600},
     {"AWS DL / B4",2110000000,2155000000,4,1950},
     {"1900 DL / B25",1930000000,1995000000,25,8040},
     {"AWS DL / B66",2110000000,2200000000,66,66436},
 };
-const unsigned cell_band_count = 9;
+const unsigned cell_band_count = 11;
 const unsigned cell_band_total = sizeof(cell_bands)/sizeof(cell_bands[0]);
+/* A report names its band by row; CW1 must hold every row. */
+_Static_assert(sizeof(cell_bands)/sizeof(cell_bands[0]) <= CELL_REPORT_BAND_ROWS, "CW1 band rows");
+/* B12/B17, B13, B5, B25 twice and B4/B66 for the US; then 763.0 (B14, and
+ * Movistar's B28 in Argentina), 773.0 (Personal) and 785.5 (Claro's 15 MHz)
+ * as assigned in Argentina's 2015 700 MHz award. 881.5 is B5's centre in
+ * both countries. */
+const uint32_t cell_hrf_centers[CELL_HRF_CHANNELS]={
+    739000000,751000000,881500000,1981250000,1992500000,2150000000,
+    763000000,773000000,785500000};
+const int16_t cell_gains[CELL_GAINS]={77,144,197,254,297,372};
+bool cell_gain_valid(int tenths)
+{
+    for(unsigned i=0;i<CELL_GAINS;i++) if(cell_gains[i]==tenths) return true;
+    return false;
+}
+bool cell_overloaded(uint32_t rails,uint32_t samples)
+{
+    return samples && (uint64_t)rails*1000u>(uint64_t)samples*CELL_RAIL_PER_MILLE;
+}
 bool cell_earfcn_to_hz(unsigned band,unsigned earfcn,uint32_t *hz)
 {
     if(band>=cell_band_total || earfcn<cell_bands[band].offs) return false;
@@ -43,10 +75,40 @@ void cell_band_earfcns(unsigned band,unsigned *first,unsigned *last)
     if(first)*first=cell_bands[band].offs;
     if(last)*last=cell_bands[band].offs+(cell_bands[band].high-cell_bands[band].low)/CELL_RASTER_HZ-1;
 }
+static bool holds(unsigned i,uint32_t hz){return i<cell_band_total && hz>=cell_bands[i].low && hz<cell_bands[i].high;}
+unsigned cell_bands_at(uint32_t hz,int selected,unsigned *out,unsigned max)
+{
+    unsigned n=0;
+    if(!out || !max) return 0;
+    if(selected>=0 && holds((unsigned)selected,hz)) out[n++]=(unsigned)selected;
+    for(unsigned i=0;i<cell_band_total && n<max;i++) {
+        if(!holds(i,hz)) continue;
+        bool seen=false;
+        for(unsigned k=0;k<n;k++) if(cell_bands[out[k]].band==cell_bands[i].band) seen=true;
+        if(!seen) out[n++]=i;
+    }
+    return n;
+}
 int cell_band_for_hz(uint32_t hz)
 {
-    for(unsigned i=0;i<cell_band_total;i++) if(hz>=cell_bands[i].low && hz<cell_bands[i].high) return (int)i;
-    return -1;
+    unsigned b;
+    return cell_bands_at(hz,-1,&b,1)?(int)b:-1;
+}
+bool cell_band_label(uint32_t hz,int selected,char *out,size_t n)
+{
+    unsigned b[2],e[2];
+    /* The window being surveyed says which band this is; without one, both
+     * readings of an overlap are shown rather than a guess at the region. */
+    unsigned k=cell_bands_at(hz,selected,b,selected>=0 && holds((unsigned)selected,hz)?1:2);
+    if(!k) {if(n)*out=0;return false;}
+    bool raster=true;
+    for(unsigned i=0;i<k;i++) raster=cell_hz_to_earfcn(b[i],hz,&e[i]) && raster;
+    if(k==1 && raster) snprintf(out,n,"B%u / EARFCN %u",cell_bands[b[0]].band,e[0]);
+    else if(k==1) snprintf(out,n,"B%u",cell_bands[b[0]].band);
+    /* As wide as one band's label, which is what the HIGH RATE picker fits. */
+    else if(raster) snprintf(out,n,"B%u %u/B%u %u",cell_bands[b[0]].band,e[0],cell_bands[b[1]].band,e[1]);
+    else snprintf(out,n,"B%u/B%u",cell_bands[b[0]].band,cell_bands[b[1]].band);
+    return true;
 }
 bool cell_gps_valid(bool fix,int64_t timestamp,int64_t now,double lat,double lon,float hdop)
 {
@@ -65,11 +127,11 @@ uint32_t cell_checksum(const cell_baseline_t *b)
     for(unsigned i=0;i<offsetof(cell_baseline_t,checksum);i++) h=(h^p[i])*16777619u;
     return h;
 }
-bool cell_baseline_valid(const cell_baseline_t *b,unsigned band,int lat,int lon,bool located,bool antenna)
+bool cell_baseline_valid(const cell_baseline_t *b,unsigned band,int gain,int lat,int lon,bool located,bool antenna)
 {
     if(band>=cell_band_count || b->magic!=0x43454c4c || b->version!=CELL_BASELINE_VERSION ||
        b->receiver!=CELL_RECEIVER_RTL || b->calibration!=CELL_CALIBRATION ||
-       b->band!=band || b->rate!=CELL_RATE || b->gain!=CELL_GAIN || b->passes!=3 ||
+       b->band!=band || b->rate!=CELL_RATE || gain<=0 || b->gain!=(uint32_t)gain || b->passes!=3 ||
        b->count!=(cell_bands[band].high-cell_bands[band].low)/CELL_BIN ||
        b->count>CELL_MAX_BINS || b->located!=located || b->antenna!=antenna ||
        b->lat_tile!=lat || b->lon_tile!=lon || b->checksum!=cell_checksum(b)) return false;
@@ -163,11 +225,9 @@ static int smooth(const int8_t *db,unsigned n,unsigned i)
     }
     return count?(sum-(sum<0?count/2:-count/2))/count:CELL_MISSING;
 }
-unsigned cell_plateaus(const int8_t *db,unsigned n,uint32_t start,uint32_t bin,
-                       cell_plateau_t *out,unsigned max,int *floor_db)
+int cell_floor(const int8_t *db,unsigned n)
 {
-    if(floor_db)*floor_db=CELL_MISSING;
-    if(!db || !out || !max || !bin || n<8) return 0;
+    if(!db || n<8) return CELL_MISSING;
     /* The floor is the fifth percentile of the pass, not its minimum or its
      * median: a band that is one 10 MHz carrier is still 10% guard band. */
     uint16_t hist[129]={0};unsigned valid=0;
@@ -177,9 +237,18 @@ unsigned cell_plateaus(const int8_t *db,unsigned n,uint32_t start,uint32_t bin,
         if(v<-128)v=-128;
         hist[-v]++;valid++;
     }
-    if(valid<8) return 0;
+    if(valid<8) return CELL_MISSING;
     unsigned target=valid/20,seen=0;int fl=0;
     for(int k=128;k>=0;k--) {seen+=hist[k];if(seen>target){fl=-k;break;}}
+    return fl;
+}
+unsigned cell_plateaus(const int8_t *db,unsigned n,uint32_t start,uint32_t bin,
+                       cell_plateau_t *out,unsigned max,int *floor_db)
+{
+    if(floor_db)*floor_db=CELL_MISSING;
+    if(!db || !out || !max || !bin || n<8) return 0;
+    int fl=cell_floor(db,n);
+    if(fl==CELL_MISSING) return 0;
     if(floor_db)*floor_db=fl;
     const int thr=fl+CELL_GATE_DB,min_level=fl+CELL_GATE_DB+3;
     const uint32_t min_width=800000;
@@ -217,6 +286,30 @@ unsigned cell_plateaus(const int8_t *db,unsigned n,uint32_t start,uint32_t bin,
     }
     for(unsigned a=1;a<count;a++) {cell_plateau_t t=out[a];unsigned b=a;while(b && out[b-1].lo>t.lo){out[b]=out[b-1];b--;}out[b]=t;}
     return count;
+}
+unsigned cell_columns(const int8_t *db,unsigned n,uint32_t start,uint32_t bin,
+                      int8_t *col,uint8_t *mark,unsigned ncol,
+                      cell_plateau_t *pl,unsigned max,int *floor_db)
+{
+    if(floor_db)*floor_db=CELL_MISSING;
+    if(!col || !mark || !ncol) return 0;
+    memset(col,CELL_MISSING,ncol);memset(mark,0,ncol);
+    if(!db || !n) return 0;
+    for(unsigned i=0;i<n;i++) {
+        unsigned c=(unsigned)((uint64_t)i*ncol/n);
+        if(db[i]!=CELL_MISSING && db[i]>col[c]) col[c]=(int8_t)db[i];
+    }
+    unsigned np=cell_plateaus(db,n,start,bin,pl,max,floor_db);
+    const uint64_t span=(uint64_t)n*bin;
+    for(unsigned p=0;p<np;p++) {
+        /* A plateau's edges are put back 40 kHz outside the bins that held
+         * it, so they can fall past the pass on either side. */
+        uint64_t lo=pl[p].lo>start?pl[p].lo-start:0,hi=pl[p].hi>start?pl[p].hi-start:0;
+        unsigned a=(unsigned)(lo*ncol/span),b=hi?(unsigned)((hi-1)*ncol/span):0;
+        if(b>=ncol) b=ncol-1;
+        for(unsigned c=a;c<=b;c++) mark[c]|=1;
+    }
+    return np;
 }
 static uint32_t raster_snap(uint32_t x,uint32_t first,uint32_t last)
 {

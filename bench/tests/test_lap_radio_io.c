@@ -44,7 +44,7 @@ static void packets(void) {
     start(0);
     lap_packet_config_t c = pc();
     assert(lap_packet_open(0, &c) == LAP_RX_EACCES);
-    assert(lap_tx_packet(0, &c, "x", 1) == LAP_RX_EACCES);
+    assert(lap_tx_packet(0, &c, (char[]){"x"}, 1) == LAP_RX_EACCES);
     finish();
     start(LAP_CAP_RADIO_RX);
     lap_caps_t caps;
@@ -169,14 +169,18 @@ static void database(void) {
         r[i].tone = 300;
         strcpy(r[i].name, i ? "second" : "first");
     }
-    assert(lap_channels_write("../escape", r, 2) == LAP_RX_EINVAL);
-    int h = lap_channels_write("sdk-test", r, 2);
+    /* The bank name from the app's own memory, as an app passes it: the
+       runtime refuses pointers that are neither the app's nor its stack,
+       and a literal in this test program is neither (on Linux). */
+    char bank[] = "sdk-test", escape[] = "../escape";
+    assert(lap_channels_write(escape, r, 2) == LAP_RX_EINVAL);
+    int h = lap_channels_write(bank, r, 2);
     assert(h > 0);
     r[0].frequency_hz = 1;
     pump_io(1);
     lap_io_status_t s;
     assert(!lap_io_status(h, &s) && s.state == LAP_IO_DONE);
-    h = lap_channels_query("sdk-test", 1, 64);
+    h = lap_channels_query(bank, 1, 64);
     assert(h > 0);
     assert(lap_channels_read(h, r, 2) == LAP_RX_EAGAIN);
     pump_io(1);
@@ -188,7 +192,7 @@ static void database(void) {
 }
 static void recordings(void) {
     start(LAP_CAP_RADIO_RX);
-    remove("lap-sd/apps_data/io-test/packets.lsr");
+    remove("lap-sd-io/apps_data/io-test/packets.lsr");
     lap_packet_config_t c = pc();
     int h = lap_packet_open(0, &c);
     assert(h > 0);
@@ -206,7 +210,7 @@ static void recordings(void) {
     pump_io(1);
     ls_lap_io_sim_command("packet=record this");
     pump_io(1);
-    assert(!lap_record_mark(rec, "test mark"));
+    assert(!lap_record_mark(rec, (char[]){"test mark"}));
     pump_io(1);
     assert(!lap_record_stop(rec));
     pump_io(2);
@@ -214,7 +218,7 @@ static void recordings(void) {
     assert(!lap_record_status(rec, &s) && s.state == LAP_IO_DONE && s.blocks >= 2);
     lap_packet_close(h);
     pump_io(1);
-    int rp = lap_replay_open("packets.lsr");
+    int rp = lap_replay_open((char[]){"packets.lsr"});
     assert(rp > 0);
     pump_io(1);
     char data[255];
@@ -229,7 +233,7 @@ static void recordings(void) {
     lap_replay_close(rp);
     pump_io(1);
     strcpy(rc.name, "failed.lsr");
-    remove("lap-sd/apps_data/io-test/failed.lsr");
+    remove("lap-sd-io/apps_data/io-test/failed.lsr");
     h = lap_packet_open(0, &c);
     assert(h > 0);
     pump_io(1);
@@ -244,27 +248,28 @@ static void recordings(void) {
     ls_lap_io_sim_command("iofilefail=0");
     lap_packet_close(h);
     pump_io(1);
-    FILE *f = fopen("lap-sd/apps_data/io-test/truncated.lsr", "wb");
+    FILE *f = fopen("lap-sd-io/apps_data/io-test/truncated.lsr", "wb");
     assert(f);
     fwrite("LSR2", 1, 4, f);
     fclose(f);
-    rp = lap_replay_open("truncated.lsr");
+    rp = lap_replay_open((char[]){"truncated.lsr"});
     assert(rp > 0);
     pump_io(1);
     assert(!lap_replay_status(rp, &s) && s.error == LAP_IO_EFORMAT);
     lap_replay_close(rp);
     pump_io(1);
-    remove("lap-sd/apps_data/io-test/failed.lsr");
-    remove("lap-sd/apps_data/io-test/truncated.lsr");
+    remove("lap-sd-io/apps_data/io-test/failed.lsr");
+    remove("lap-sd-io/apps_data/io-test/truncated.lsr");
     finish();
 }
 
 static void sample_recordings(void) {
     start(LAP_CAP_RADIO_RX);
     for (int format = 1; format <= 2; format++) {
-        const char *name = format == 1 ? "iq.lsr" : "audio.lsr";
+        char name[16];
+        strcpy(name, format == 1 ? "iq.lsr" : "audio.lsr");
         char path[128];
-        snprintf(path, sizeof(path), "lap-sd/apps_data/io-test/%s", name);
+        snprintf(path, sizeof(path), "lap-sd-io/apps_data/io-test/%s", name);
         remove(path);
         lap_record_config_t c = {.size = sizeof(c),
                                  .version = 1,
@@ -326,23 +331,23 @@ static void transmit(void) {
     lap_packet_config_t c = pc();
     lap_io_status_t s;
     c.power_dbm = 23;
-    assert(lap_tx_packet(0, &c, "x", 1) == LAP_IO_EPOWER);
+    assert(lap_tx_packet(0, &c, (char[]){"x"}, 1) == LAP_IO_EPOWER);
     c.power_dbm = 0;
     c.port = LAP_PORT_RX_ONLY;
-    assert(lap_tx_packet(0, &c, "x", 1) == LAP_IO_ERXPORT);
+    assert(lap_tx_packet(0, &c, (char[]){"x"}, 1) == LAP_IO_ERXPORT);
     c.port = 0;
     /* 406 MHz has no legal/band prompt or exclusion. */
-    int h = lap_tx_packet(0, &c, "direct", 6);
+    int h = lap_tx_packet(0, &c, (char[]){"direct"}, 6);
     assert(h > 0);
     pump_io(3);
     assert(!lap_tx_status(h, &s) && s.state == LAP_IO_DONE);
-    h = lap_tx_packet(0, &c, "cancel", 6);
+    h = lap_tx_packet(0, &c, (char[]){"cancel"}, 6);
     assert(h > 0);
     lap_tx_cancel(h);
     pump_io(1);
     assert(!lap_tx_status(h, &s) && s.state == LAP_IO_CANCELLED);
     ls_lap_io_sim_command("iotemp=1");
-    h = lap_tx_packet(0, &c, "x", 1);
+    h = lap_tx_packet(0, &c, (char[]){"x"}, 1);
     assert(h > 0);
     pump_io(1);
     assert(!lap_tx_status(h, &s) && s.error == LAP_IO_ETHERMAL);
@@ -352,7 +357,7 @@ static void transmit(void) {
     assert(h > 0);
     pump_io(3);
     assert(!lap_tx_status(h, &s) && s.state == LAP_IO_DONE);
-    h = lap_tx_replay(0, &c, "packets.lsr");
+    h = lap_tx_replay(0, &c, (char[]){"packets.lsr"});
     assert(h > 0);
     pump_io(3);
     assert(!lap_tx_status(h, &s) && s.state == LAP_IO_DONE);
@@ -370,7 +375,7 @@ static void transmit(void) {
         assert(!ls_tx_protect(LS_TX_SIM, -3, false, 1000000, t));
     assert(ls_tx_protect(LS_TX_SIM, 22, false, 6000000, 900000000) == LAP_IO_ETHERMAL);
     assert(ls_tx_lora_airtime(8, 7, 125000, 5, 8, true, false) == 36096);
-    remove("lap-sd/apps_data/io-test/packets.lsr");
+    remove("lap-sd-io/apps_data/io-test/packets.lsr");
 }
 static void hackrf_tx(void) {
     start(0); lap_hackrf_tx_config_t gain={.size=sizeof(gain),.version=1,.vga_db=12};
@@ -389,14 +394,14 @@ static void hackrf_tx(void) {
     assert(!lap_tx_status(h,&st)&&st.state==LAP_IO_DONE);
     lap_record_config_t recording={.size=sizeof(recording),.version=1,.format=LAP_RECORD_IQ16,
         .rate_hz=2000000,.frequency_hz=100000000,.max_bytes=65536};
-    strcpy(recording.name,"hackrf.lsr"); remove("lap-sd/apps_data/io-test/hackrf.lsr");
+    strcpy(recording.name,"hackrf.lsr"); remove("lap-sd-io/apps_data/io-test/hackrf.lsr");
     int rec=lap_record_start(&recording); assert(rec>0); pump_io(1);
     int16_t samples[512]; for(int i=0;i<512;i++) samples[i]=i*63;
     ls_lap_api_callback(false); ls_lap_io_tap(LAP_RECORD_IQ16,samples,sizeof(samples),100000000,2000000,0); ls_lap_api_callback(true);
     pump_io(1); assert(!lap_record_stop(rec)); pump_io(2);
-    h=lap_tx_replay(0,&c,"hackrf.lsr"); assert(h>0); pump_io(3);
+    h=lap_tx_replay(0,&c,(char[]){"hackrf.lsr"}); assert(h>0); pump_io(3);
     assert(!lap_tx_status(h,&st)&&st.state==LAP_IO_DONE);
-    remove("lap-sd/apps_data/io-test/hackrf.lsr");
+    remove("lap-sd-io/apps_data/io-test/hackrf.lsr");
     ls_lap_io_sim_command("hackrflimits=10,0");
     h=lap_tx_iq(0,&c,iq,128,2000000); assert(h>0); pump_io(3);
     assert(!lap_tx_status(h,&st)&&st.error==LAP_IO_EPOWER);
@@ -427,7 +432,7 @@ static void nfc_tests(void) {
     uint8_t data[2048];
     assert(lap_nfc_next(h, &e, data, 1) == LAP_IO_ESIZE);
     assert(lap_nfc_next(h, &e, data, sizeof(data)) == 1 && e.uid_len == 4 && e.ndef_bytes > 0);
-    static const uint8_t msg[] = {0xd1, 1, 5, 'T', 2, 'e', 'n', 'H', 'i'};
+    const uint8_t msg[] = {0xd1, 1, 5, 'T', 2, 'e', 'n', 'H', 'i'}; /* app stack, not this program's data */
     assert(!lap_nfc_write(h, msg, sizeof(msg)));
     pump_io(1);
     assert(lap_nfc_next(h, &e, data, sizeof(data)) == 1 && e.kind == 5 &&

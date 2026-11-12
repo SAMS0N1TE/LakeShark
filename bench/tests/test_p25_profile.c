@@ -83,6 +83,39 @@ LS_CASE(valid_minimal_profile_uses_policy_defaults)
     LS_EQ_STR(diagnostic.reason, "ok");
 }
 
+LS_CASE(system_ids_parse_as_published_hex_and_as_decimal)
+{
+    p25_profile_t profile;
+    p25_profile_parse_scratch_t scratch;
+    p25_profile_diagnostic_t diagnostic;
+    static const char *const ok[][3] = {
+        /* wacn=, sysid=, nac= lines as people write them */
+        { "wacn=BEE00\n", "sysid=9DC\n", "nac=9d1\n" },
+        { "wacn=0xBEE00\n", "sysid=0x9DC\n", "nac=0X9D1\n" },
+        { "wacn=781824\n", "sysid=2524\n", "nac=2513\n" },
+    };
+    for (size_t i = 0; i < sizeof(ok) / sizeof(ok[0]); i++) {
+        char text[512];
+        snprintf(text, sizeof(text), "version=1\nsystem=S\nsite=T\n%s%s%s"
+                 "control=851012500\n", ok[i][0], ok[i][1], ok[i][2]);
+        LS_CHECK_MSG(parse_text(&profile, &scratch, text, &diagnostic),
+                     "case %u rejected: %s", (unsigned)i, diagnostic.reason);
+        LS_EQ_UINT(profile.wacn, 0xBEE00);
+        LS_EQ_UINT(profile.sysid, 0x9DC);
+        LS_EQ_UINT(profile.nac, 0x9D1);
+        LS_CHECK(profile.wacn_set && profile.sysid_set && profile.nac_set);
+    }
+    static const char *const bad[] = { "sysid=0x\n", "sysid=9DG\n", "sysid=0x1000\n", "sysid=4096\n",
+                                       "wacn=0x100000\n", "sysid=-1\n" };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char text[256];
+        snprintf(text, sizeof(text), "version=1\nsystem=S\nsite=T\n%s"
+                 "control=851012500\n", bad[i]);
+        LS_CHECK_MSG(!parse_text(&profile, &scratch, text, &diagnostic),
+                     "accepted %s", bad[i]);
+    }
+}
+
 LS_CASE(valid_full_profile_accepts_comments_crlf_and_final_line_without_lf)
 {
     p25_profile_t profile;

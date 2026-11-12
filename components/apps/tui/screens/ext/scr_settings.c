@@ -18,6 +18,7 @@
    well as stores. */
 #include "core/display_ctl.h"
 #include "../../ls_notify.h"
+#include "board/ls_haptic.h"
 /* Whether speech exists, so the spoken greeting and voice are offered only then. */
 #include "audio/speech.h"
 #include "audio/tone.h"
@@ -227,12 +228,23 @@ static void nsound_next(void)
     settings_cycle_notification_sound();
     (void)snd_alert_start();
 }
-static void vibe_show(char *b, size_t n) { snprintf(b, n, "%s", settings_get_alert_vibe() ? ls_tr("on") : ls_tr("off")); }
+/* Vibrate is the board's one vibration switch: taps, alerts and detections.
+   It used to set alert vibration only, so the console's 'haptic off' left
+   this row saying "on" while nothing buzzed, and nothing here could turn it
+   back. Off stops the motor at once; on gives one buzz, so the choice is felt. */
+static bool vibe_now(void) { return ls_haptic_enabled() && settings_get_alert_vibe(); }
+static void vibe_show(char *b, size_t n) { snprintf(b, n, "%s", vibe_now() ? ls_tr("on") : ls_tr("off")); }
 static void vibe_next(void)
 {
-    const bool en = !settings_get_alert_vibe();
+    const bool en = !vibe_now();
     settings_set_alert_vibe(en);
-    ls_notify_set_alerts(ls_notify_ring(), settings_get_alert_vibe());
+    /* A refused write leaves the row, the motor and the notifier as they were. */
+    if (settings_get_alert_vibe() != en) return;
+    if (!en) ls_haptic_stop();
+    ls_haptic_set_enabled(en);
+    settings_set_haptics(en);
+    ls_notify_set_alerts(ls_notify_ring(), en);
+    if (en) (void)ls_haptic_play(LS_HAPTIC_CONFIRM);
 }
 
 /* ---- update ------------------------------------------------------------- */
@@ -367,7 +379,7 @@ static int day_on(void)       { return ls_tui_daylight(); }
 static int dim_on(void)       { return display_ctl_autodim_enabled(); }
 static int dimt_pct(void)     { return display_ctl_autodim_timeout() * 100 / 240; }
 static int ring_on(void)      { return settings_get_alert_ring(); }
-static int vibe_on(void)      { return settings_get_alert_vibe(); }
+static int vibe_on(void)      { return vibe_now(); }
 static int keylight_on(void)  { return settings_get_keyboard_light(); }
 static int keydim_on(void)    { return display_ctl_keyboard_dim(); }
 static int usb_on(void)       { return app_usb_autoreboot(); }
@@ -999,7 +1011,7 @@ static const struct { const char *label, *what; } HELP[] = {
     { "Voice", "Spoken callouts from the radio apps." },
     { "Alert sound", "A sound for alerts that need attention." },
     { "Notify sound", "The sound for ordinary notices." },
-    { "Vibrate", "Buzz on alerts, on boards with a motor." },
+    { "Vibrate", "All vibration: taps, alerts and detections." },
     { "Power mode", "FULL as set. SAVER: half brightness, dims at 30 s, 15 fps. WATCH: also dark after 20 s." },
     { "Watch keeps", "What runs while WATCH has the screen dark. A touch brings the rest back." },
     { "Keyboard light", "Backlight of the keyboard, where there is one." },

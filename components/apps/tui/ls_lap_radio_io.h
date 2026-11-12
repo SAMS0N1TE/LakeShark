@@ -18,6 +18,11 @@ typedef struct {
     int (*nfc_write)(const void *data, size_t len);
     void (*nfc_close)(void);
     int (*channels)(const char *bank, uint32_t first, lap_channel_t *rows, int count, bool write);
+    /* True while the app's session must stay off the radio: its service runs
+       with the screen closed and another owner wants the LoRa chip, or the
+       screen opened or closed under a held lease. The worker closes an open
+       session and waits, queued, without counting tries. NULL: never. */
+    bool (*step_aside)(int radio);
 } ls_lap_io_backend_t;
 const ls_lap_io_backend_t *ls_lap_io_backend(void);
 void ls_lap_io_begin(const lap_app_t *app);

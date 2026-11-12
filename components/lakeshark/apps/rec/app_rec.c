@@ -1408,6 +1408,15 @@ int rec_save(const char *name, char *path_out, size_t path_len)
 #endif
 }
 
+bool rec_save_busy(void)
+{
+#ifdef ESP_PLATFORM
+    return s_save_busy;
+#else
+    return false;
+#endif
+}
+
 /**/
 const char *rec_dir(void)
 {

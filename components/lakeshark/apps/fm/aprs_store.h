@@ -4,7 +4,7 @@
 typedef struct {
     uint32_t custom_hz;
     uint16_t keep_minutes, max_km;
-    uint8_t preset; /* 0 US, 1 EU, 2 custom. */
+    uint8_t preset; /* 0 US, 1 EU, 2 custom, 3 AR (144.930). */
     bool messages, map;
 } aprs_options_t;
 void aprs_options_load(void);

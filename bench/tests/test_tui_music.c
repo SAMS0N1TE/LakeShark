@@ -3,6 +3,7 @@
 #include "ls_tui_ui.h"
 #include "ls_music_backend.h"
 #include "ls_options.h"
+#include "ls_picker.h"
 #include "ls_audio_view.h"
 #include "ls_audio_layers.h"
 #include "ls_music_options.h"
@@ -19,6 +20,7 @@ static ls_audio_analysis *analysis;
 ls_audio_analysis *ls_music_analysis(void){return analysis;}
 ls_audio_overview *ls_music_overview(void){return NULL;}
 ls_audio_tools *ls_music_tools(void){return NULL;}
+bool ls_tui_cutout(tui_rect *cells){if(cells)*cells=tui_rect_make(0,0,0,0);return false;}
 static unsigned speed=1000;static uint32_t loop_a,loop_b;static bool looping;
 bool ls_music_speed_set(unsigned v){speed=v;return true;}
 unsigned ls_music_speed_get(void){return speed;}
@@ -270,12 +272,14 @@ static void view_switch(int w,int h,int w2,int h2){
     /* Only the view on screen does any analysis. */
     spectrum_calls=gram_calls=0;paint(&sf,w,h);paint(&sf,w,h);
     LS_EQ_INT(spectrum_calls,0);LS_EQ_INT(gram_calls,0);
-    tap_label(&sf,back,w,h,"BANDS");paint(&sf,w,h);
+    /* VIEW lists the ten; the second is BANDS. */
+    tap_label(&sf,back,w,h,"VIEW:");LS_CHECK(ls_picker_key(LS_TK_DOWN,0));LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    paint(&sf,w,h);
     LS_CHECK(spectrum_calls>0);LS_EQ_INT(gram_calls,0);
     LS_CHECK(contains(back,w,h," SPECTRUM 2/3 OCTAVE "));
     LS_CHECK(contains(back,w,h,"16k"));LS_CHECK(contains(back,w,h,"1.6k"));
     LS_CHECK(!contains(back,w,h,"PEAK HOLD"));
-    tap_label(&sf,back,w,h,"SCAN");paint(&sf,w,h);
+    LS_CHECK(ls_scr_music.key(LS_TK_CHAR,'3'));paint(&sf,w,h);
     LS_CHECK(contains(back,w,h," SCAN "));LS_CHECK(contains(back,w,h,"RAINBOW"));
     LS_CHECK(contains(back,w,h,"1k"));
     /* Thin bars in more than one colour. */
@@ -320,7 +324,7 @@ static void badges(int w,int h){
     tui_surface sf;wide=w>h;rounded_height=0;tracks=24;volume=35;
     tui_surface_setup(&sf,back,front,w,h);ls_scr_music.enter();
     keypad=true;paint(&sf,w,h);
-    static const char *const player[]={"[B]","[P]","[N]","[-]","[M]","[+]","[L]","[1]","[2]","[3]","[4]"};
+    static const char *const player[]={"[B]","[P]","[N]","[-]","[M]","[+]","[L]","[V]"};
     for(unsigned i=0;i<sizeof(player)/sizeof(*player);i++)
         LS_CHECK_MSG(contains(back,w,h,player[i]),"missing %s at %dx%d",player[i],w,h);
     ls_scr_music.key(LS_TK_CHAR,'l');paint(&sf,w,h);

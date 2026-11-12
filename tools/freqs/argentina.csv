@@ -1,0 +1,567 @@
+freq_mhz,mode,bw_khz,name,group,tags,lat,lon,radius_km,tone,notes
+118.850000,AM,25,AEP TWR,AVIATION,CABA AMBA SABE listen,-34.5597,-58.4150,40,,Aeroparque Torre main;AIP AD2.18
+118.250000,AM,25,AEP TWR aux1,AVIATION,CABA AMBA SABE listen,-34.5597,-58.4150,40,,AIP AD2.18
+128.850000,AM,25,AEP TWR aux2,AVIATION,CABA AMBA SABE listen,-34.5597,-58.4150,40,,AIP AD2.18
+121.900000,AM,25,AEP GND,AVIATION,CABA AMBA SABE listen,-34.5597,-58.4150,40,,Rodaje/Superficie H24;AIP AD2.18
+120.600000,AM,25,AEP APP,AVIATION,CABA AMBA SABE listen,-34.5597,-58.4150,40,,Aeroparque Aproximacion main;AIP AD2.18
+119.500000,AM,25,AEP APP aux,AVIATION,CABA AMBA SABE listen,-34.5597,-58.4150,40,,AIP AD2.18
+129.300000,AM,25,AEP DEL,AVIATION,CABA AMBA SABE listen,-34.5597,-58.4150,40,,Autorizaciones 0900-0330 UTC; DCL via ACARS;AIP AD2.18
+127.600000,AM,25,AEP ATIS,AVIATION,CABA AMBA SABE listen,-34.5597,-58.4150,40,,ATIS 0900-0345 UTC; Spanish/English;AIP AD2.18
+127.900000,AM,25,AEP ATIS 2,AVIATION,CABA AMBA SABE listen,-34.5597,-58.4150,40,,second ATIS freq listed in AIP;AIP AD2.18
+118.600000,AM,25,EZE TWR,AVIATION,AMBA SAEZ listen,-34.8222,-58.5358,45,,Ezeiza Torre main;AIP AD2.18
+118.050000,AM,25,EZE TWR aux,AVIATION,AMBA SAEZ listen,-34.8222,-58.5358,45,,AIP AD2.18
+121.750000,AM,25,EZE GND,AVIATION,AMBA SAEZ listen,-34.8222,-58.5358,45,,Rodaje/Superficie H24;AIP AD2.18
+119.900000,AM,25,EZE APP,AVIATION,AMBA SAEZ listen,-34.8222,-58.5358,45,,Ezeiza Aproximacion main;AIP AD2.18
+120.450000,AM,25,EZE APP aux,AVIATION,AMBA SAEZ listen,-34.8222,-58.5358,45,,AIP AD2.18
+127.800000,AM,25,EZE ATIS,AVIATION,AMBA SAEZ listen,-34.8222,-58.5358,45,,H24;AIP AD2.18
+127.100000,AM,25,EZE DEL,AVIATION,AMBA SAEZ listen,-34.8222,-58.5358,45,,Autorizaciones 0900-0100 UTC; DCL via ACARS;AIP AD2.18
+119.000000,AM,25,FDO TWR,AVIATION,AMBA SADF listen,-34.4550,-58.5914,35,,San Fernando Torre main;AIP AD2.18
+120.050000,AM,25,FDO TWR aux,AVIATION,AMBA SADF listen,-34.4550,-58.5914,35,,AIP AD2.18
+121.850000,AM,25,FDO GND,AVIATION,AMBA SADF listen,-34.4550,-58.5914,35,,AIP AD2.18
+129.500000,AM,25,FDO DEL,AVIATION,AMBA SADF listen,-34.4550,-58.5914,35,,Autorizaciones San Fernando;AIP AD2.18
+127.650000,AM,25,FDO ATIS,AVIATION,AMBA SADF listen,-34.4550,-58.5914,35,,Spanish/English;AIP AD2.18
+120.300000,AM,25,EPA TWR,AVIATION,AMBA SADP listen,-34.6100,-58.6125,35,,El Palomar Torre main H24;AIP AD2.18
+118.900000,AM,25,EPA TWR aux,AVIATION,AMBA SADP listen,-34.6100,-58.6125,35,,AIP AD2.18
+121.950000,AM,25,EPA GND,AVIATION,AMBA SADP listen,-34.6100,-58.6125,35,,H24;AIP AD2.18
+127.625000,AM,25,EPA ATIS,AVIATION,AMBA SADP listen,-34.6100,-58.6125,35,,H24;AIP AD2.18
+118.500000,AM,25,Moron TWR,AVIATION,AMBA SADM listen,-34.6786,-58.6436,30,,Moron Torre 1100-SS;AIP AD2.18
+120.750000,AM,25,Moron TWR aux,AVIATION,AMBA SADM listen,-34.6786,-58.6436,30,,1100-SS;AIP AD2.18
+121.800000,AM,25,Moron GND,AVIATION,AMBA SADM listen,-34.6786,-58.6436,30,,1100-SS;AIP AD2.18
+127.700000,AM,25,Moron ATIS,AVIATION,AMBA SADM listen,-34.6786,-58.6436,30,,1100-SS;AIP AD2.18
+119.700000,AM,25,M.Moreno TWR,AVIATION,AMBA SADJ listen,-34.5606,-58.7894,30,,Mon-Fri 1100-1700 UTC;AIP AD2.18
+118.550000,AM,25,M.Moreno TWR aux,AVIATION,AMBA SADJ listen,-34.5606,-58.7894,30,,Mon-Fri 1100-1700 UTC;AIP AD2.18
+118.300000,AM,25,COR TWR/APP,AVIATION,CORDOBA SACO listen,-31.3100,-64.2083,50,,Cordoba Torre main;AIP AD2.18
+118.550000,AM,25,COR TWR aux1,AVIATION,CORDOBA SACO listen,-31.3100,-64.2083,50,,AIP AD2.18
+119.450000,AM,25,COR TWR aux2,AVIATION,CORDOBA SACO listen,-31.3100,-64.2083,50,,AIP AD2.18
+121.750000,AM,25,COR GND,AVIATION,CORDOBA SACO listen,-31.3100,-64.2083,50,,AIP AD2.18
+129.300000,AM,25,COR DEL,AVIATION,CORDOBA SACO listen,-31.3100,-64.2083,50,,Autorizaciones H24;AIP AD2.18
+127.500000,AM,25,COR ATIS,AVIATION,CORDOBA SACO listen,-31.3100,-64.2083,50,,AIP AD2.18
+119.100000,AM,25,COR Control TMA,AVIATION,CORDOBA SACO listen,-31.3100,-64.2083,50,,Cordoba Control main;AIP AD2.18
+120.650000,AM,25,COR Control aux,AVIATION,CORDOBA SACO listen,-31.3100,-64.2083,50,,Cordoba Control aux;AIP AD2.18
+125.400000,AM,25,ROS Control TMA,AVIATION,ROSARIO SAAR listen,-32.9036,-60.7844,50,,Rosario Control main;AIP AD2.18
+123.750000,AM,25,ROS Control aux,AVIATION,ROSARIO SAAR listen,-32.9036,-60.7844,50,,AIP AD2.18
+118.700000,AM,25,ROS TWR/APP,AVIATION,ROSARIO SAAR listen,-32.9036,-60.7844,50,,Rosario Torre main H24;AIP AD2.18
+119.750000,AM,25,ROS TWR aux,AVIATION,ROSARIO SAAR listen,-32.9036,-60.7844,50,,AIP AD2.18
+121.850000,AM,25,ROS GND,AVIATION,ROSARIO SAAR listen,-32.9036,-60.7844,50,,AIP AD2.18
+127.400000,AM,25,ROS ATIS,AVIATION,ROSARIO SAAR listen,-32.9036,-60.7844,50,,AIP AD2.18
+124.200000,AM,25,MDZ Control TMA,AVIATION,MENDOZA SAME listen,-32.8317,-68.7928,50,,Mendoza Control main;AIP AD2.18
+122.100000,AM,25,MDZ Control aux,AVIATION,MENDOZA SAME listen,-32.8317,-68.7928,50,,AIP AD2.18
+119.900000,AM,25,MDZ TWR/APP,AVIATION,MENDOZA SAME listen,-32.8317,-68.7928,50,,Mendoza Torre main H24;AIP AD2.18
+118.650000,AM,25,MDZ TWR aux,AVIATION,MENDOZA SAME listen,-32.8317,-68.7928,50,,AIP AD2.18
+121.950000,AM,25,MDZ GND,AVIATION,MENDOZA SAME listen,-32.8317,-68.7928,50,,AIP AD2.18
+127.600000,AM,25,MDZ ATIS,AVIATION,MENDOZA SAME listen,-32.8317,-68.7928,50,,AIP AD2.18
+119.100000,AM,25,BRC TWR/APP,AVIATION,BARILOCHE SAZS listen,-41.1511,-71.1578,45,,Bariloche Torre main (TMA/APP/TWR); AIP also lists SMC on 119.10;AIP AD2.18
+118.650000,AM,25,BRC TWR aux,AVIATION,BARILOCHE SAZS listen,-41.1511,-71.1578,45,,AIP AD2.18
+127.900000,AM,25,BRC ATIS,AVIATION,BARILOCHE SAZS listen,-41.1511,-71.1578,45,,AIP AD2.18
+118.750000,AM,25,MDQ TWR/APP,AVIATION,MDQ SAZM listen,-37.9342,-57.5733,45,,Mar del Plata Torre main (TWR/APP/TMA) H24;AIP AD2.18
+118.200000,AM,25,MDQ TWR aux,AVIATION,MDQ SAZM listen,-37.9342,-57.5733,45,,AIP AD2.18
+121.700000,AM,25,MDQ GND,AVIATION,MDQ SAZM listen,-37.9342,-57.5733,45,,AIP AD2.18
+128.850000,AM,25,SLA TWR,AVIATION,SALTA SASA listen,-24.8597,-65.4869,45,,Salta Torre main;AIP AD2.18
+129.750000,AM,25,SLA TWR aux,AVIATION,SALTA SASA listen,-24.8597,-65.4869,45,,AIP AD2.18
+124.600000,AM,25,SLA Control TMA,AVIATION,SALTA SASA listen,-24.8597,-65.4869,45,,Salta Control main;AIP AD2.18
+126.000000,AM,25,SLA Control aux,AVIATION,SALTA SASA listen,-24.8597,-65.4869,45,,AIP AD2.18
+127.750000,AM,25,SLA ATIS,AVIATION,SALTA SASA listen,-24.8597,-65.4869,45,,H24; changed by AIP SUP A125/26 (May 2026);AIP AD2.18
+119.500000,AM,25,TUC TWR/APP,AVIATION,TUCUMAN SANT listen,-26.8383,-65.1044,45,,Tucuman Torre main;AIP AD2.18
+118.350000,AM,25,TUC TWR aux,AVIATION,TUCUMAN SANT listen,-26.8383,-65.1044,45,,AIP AD2.18
+121.750000,AM,25,TUC GND,AVIATION,TUCUMAN SANT listen,-26.8383,-65.1044,45,,H24;AIP AD2.18
+127.550000,AM,25,TUC ATIS,AVIATION,TUCUMAN SANT listen,-26.8383,-65.1044,45,,confirmed by AIP SUP A199/26;AIP AD2.18
+123.850000,AM,25,TUC Control TMA,AVIATION,TUCUMAN SANT listen,-26.8383,-65.1044,45,,Tucuman Control main;AIP AD2.18
+122.500000,AM,25,TUC Control aux,AVIATION,TUCUMAN SANT listen,-26.8383,-65.1044,45,,AIP AD2.18
+118.100000,AM,25,USH TWR/APP,AVIATION,USHUAIA SAWH listen,-54.8433,-68.2956,45,,Ushuaia Torre main;AIP AD2.18
+122.100000,AM,25,USH TWR aux,AVIATION,USHUAIA SAWH listen,-54.8433,-68.2956,45,,AIP AD2.18
+127.800000,AM,25,USH ATIS,AVIATION,USHUAIA SAWH listen,-54.8433,-68.2956,45,,AIP AD2.18
+123.850000,AM,25,USH Control TMA,AVIATION,USHUAIA SAWH listen,-54.8433,-68.2956,45,,Ushuaia Control 1000-0200 UTC; rest O/R on TWR 118.10;AIP AD2.18
+119.800000,AM,25,NQN TWR/APP,AVIATION,NEUQUEN SAZN listen,-38.9489,-68.1558,45,,Neuquen Torre main (TMA/TWR/APP);AIP AD2.18
+118.850000,AM,25,NQN TWR aux,AVIATION,NEUQUEN SAZN listen,-38.9489,-68.1558,45,,AIP AD2.18
+121.800000,AM,25,NQN GND,AVIATION,NEUQUEN SAZN listen,-38.9489,-68.1558,45,,H24;AIP AD2.18
+127.650000,AM,25,NQN ATIS,AVIATION,NEUQUEN SAZN listen,-38.9489,-68.1558,45,,AIP AD2.18
+120.700000,AM,25,IGR TWR/APP,AVIATION,IGUAZU SARI listen,-25.7372,-54.4733,40,,Cataratas Torre main;AIP AD2.18
+118.300000,AM,25,IGR TWR aux,AVIATION,IGUAZU SARI listen,-25.7372,-54.4733,40,,AIP AD2.18
+121.800000,AM,25,IGR GND,AVIATION,IGUAZU SARI listen,-25.7372,-54.4733,40,,H24;AIP AD2.18
+127.700000,AM,25,IGR ATIS,AVIATION,IGUAZU SARI listen,-25.7372,-54.4733,40,,AIP AD2.18
+119.900000,AM,25,CRD TWR/APP,AVIATION,COMODORO SAVC listen,-45.7853,-67.4656,45,,Comodoro Torre main;AIP AD2.18
+120.800000,AM,25,CRD TWR aux,AVIATION,COMODORO SAVC listen,-45.7853,-67.4656,45,,AIP AD2.18
+124.300000,AM,25,CRD Control TMA,AVIATION,COMODORO SAVC listen,-45.7853,-67.4656,45,,Comodoro Control main;AIP AD2.18
+126.750000,AM,25,CRD Control aux,AVIATION,COMODORO SAVC listen,-45.7853,-67.4656,45,,AIP AD2.18
+119.950000,AM,25,FTE TWR/APP,AVIATION,CALAFATE SAWC listen,-50.2803,-72.0533,45,,Calafate Torre main 1000-2359 UTC;AIP AD2.18
+118.200000,AM,25,FTE TWR aux,AVIATION,CALAFATE SAWC listen,-50.2803,-72.0533,45,,1000-2359 UTC;AIP AD2.18
+127.850000,AM,25,FTE ATIS,AVIATION,CALAFATE SAWC listen,-50.2803,-72.0533,45,,U/S Aug 2026-Aug 2027 per AIP SUP A212/26;AIP AD2.18
+119.150000,AM,25,BHI TWR/APP,AVIATION,BAHIABLANCA SAZB listen,-38.7272,-62.1533,45,,Bahia Blanca Torre main;AIP AD2.18
+118.100000,AM,25,BHI TWR aux,AVIATION,BAHIABLANCA SAZB listen,-38.7272,-62.1533,45,,AIP AD2.18
+121.900000,AM,25,BHI GND,AVIATION,BAHIABLANCA SAZB listen,-38.7272,-62.1533,45,,listed U/S in AIP AMDT 1/2026;AIP AD2.18
+124.800000,AM,25,BHI Control TMA,AVIATION,BAHIABLANCA SAZB listen,-38.7272,-62.1533,45,,Bahia Blanca Control;AIP AD2.18
+119.400000,AM,25,RGL TWR/APP,AVIATION,RIOGALLEGOS SAWG listen,-51.6086,-69.3069,45,,Gallegos Torre main H24;AIP AD2.18
+118.800000,AM,25,RGL TWR aux,AVIATION,RIOGALLEGOS SAWG listen,-51.6086,-69.3069,45,,AIP AD2.18
+127.600000,AM,25,RGL ATIS,AVIATION,RIOGALLEGOS SAWG listen,-51.6086,-69.3069,45,,H24;AIP AD2.18
+124.700000,AM,25,RGL Control TMA,AVIATION,RIOGALLEGOS SAWG listen,-51.6086,-69.3069,45,,Gallegos Control main H24;AIP AD2.18
+128.800000,AM,25,RGL Control aux,AVIATION,RIOGALLEGOS SAWG listen,-51.6086,-69.3069,45,,AIP AD2.18
+119.350000,AM,25,UAQ TWR/APP,AVIATION,SANJUAN SANU listen,-31.5714,-68.4183,40,,San Juan Torre 1000-2359 UTC;AIP AD2.18
+118.050000,AM,25,UAQ TWR aux,AVIATION,SANJUAN SANU listen,-31.5714,-68.4183,40,,AIP AD2.18
+118.700000,AM,25,REL TWR/APP,AVIATION,TRELEW SAVT listen,-43.2106,-65.2703,40,,Trelew Torre main H24;AIP AD2.18
+120.650000,AM,25,REL TWR aux,AVIATION,TRELEW SAVT listen,-43.2106,-65.2703,40,,AIP AD2.18
+127.700000,AM,25,REL ATIS,AVIATION,TRELEW SAVT listen,-43.2106,-65.2703,40,,AIP AD2.18
+120.100000,AM,25,PSS TWR/APP,AVIATION,POSADAS SARP listen,-27.3858,-55.9706,40,,Posadas Torre main H24;AIP AD2.18
+118.500000,AM,25,PSS TWR aux,AVIATION,POSADAS SARP listen,-27.3858,-55.9706,40,,AIP AD2.18
+118.700000,AM,25,JUJ TWR/APP,AVIATION,JUJUY SASJ listen,-24.3928,-65.0978,40,,Jujuy Torre main H24;AIP AD2.18
+119.750000,AM,25,JUJ TWR aux,AVIATION,JUJUY SASJ listen,-24.3928,-65.0978,40,,AIP AD2.18
+118.300000,AM,25,Rio Grande TWR,AVIATION,RIOGRANDE SAWE listen,-53.7777,-67.7494,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+120.200000,AM,25,Rio Grande TWR aux,AVIATION,RIOGRANDE SAWE listen,-53.7777,-67.7494,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+118.800000,AM,25,Esquel TWR,AVIATION,ESQUEL SAVE listen,-42.9080,-71.1395,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+118.100000,AM,25,Esquel TWR aux,AVIATION,ESQUEL SAVE listen,-42.9080,-71.1395,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+118.300000,AM,25,Viedma TWR,AVIATION,VIEDMA SAVV listen,-40.8692,-63.0004,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+120.400000,AM,25,Viedma TWR aux,AVIATION,VIEDMA SAVV listen,-40.8692,-63.0004,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+119.600000,AM,25,Parana TWR,AVIATION,PARANA SAAP listen,-31.7948,-60.4804,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+118.500000,AM,25,Parana TWR aux,AVIATION,PARANA SAAP listen,-31.7948,-60.4804,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+118.300000,AM,25,Santa Rosa TWR,AVIATION,SANTAROSA SAZR listen,-36.5883,-64.2757,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+119.700000,AM,25,Santa Rosa TWR aux,AVIATION,SANTAROSA SAZR listen,-36.5883,-64.2757,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+120.900000,AM,25,Tandil TWR,AVIATION,TANDIL SAZT listen,-37.2374,-59.2279,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+119.400000,AM,25,Tandil TWR aux,AVIATION,TANDIL SAZT listen,-37.2374,-59.2279,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+119.600000,AM,25,Chapelco TWR,AVIATION,SMANDES SAZY listen,-40.0754,-71.1373,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+118.350000,AM,25,Chapelco TWR aux,AVIATION,SMANDES SAZY listen,-40.0754,-71.1373,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+118.300000,AM,25,Concordia TWR,AVIATION,CONCORDIA SAAC listen,-31.2969,-57.9966,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+122.100000,AM,25,Concordia TWR aux,AVIATION,CONCORDIA SAAC listen,-31.2969,-57.9966,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+118.150000,AM,25,Catamarca TWR,AVIATION,CATAMARCA SANC listen,-28.5956,-65.7518,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+119.900000,AM,25,Catamarca TWR aux,AVIATION,CATAMARCA SANC listen,-28.5956,-65.7518,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+118.450000,AM,25,La Rioja TWR,AVIATION,LARIOJA SANL listen,-29.3816,-66.7958,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+119.150000,AM,25,La Rioja TWR aux,AVIATION,LARIOJA SANL listen,-29.3816,-66.7958,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+118.750000,AM,25,Rio Cuarto TWR,AVIATION,RIOCUARTO SAOC listen,-33.0851,-64.2614,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+119.550000,AM,25,Rio Cuarto TWR aux,AVIATION,RIOCUARTO SAOC listen,-33.0851,-64.2614,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+118.700000,AM,25,Sgo Estero TWR,AVIATION,SGOESTERO SANE listen,-27.7656,-64.3100,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+119.250000,AM,25,Sgo Estero TWR aux,AVIATION,SGOESTERO SANE listen,-27.7656,-64.3100,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+118.400000,AM,25,San Luis TWR,AVIATION,SANLUIS SAOU listen,-33.2732,-66.3564,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+119.850000,AM,25,San Luis TWR aux,AVIATION,SANLUIS SAOU listen,-33.2732,-66.3564,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+118.100000,AM,25,San Rafael TWR,AVIATION,SANRAFAEL SAMR listen,-34.5883,-68.4039,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+119.150000,AM,25,San Rafael TWR aux,AVIATION,SANRAFAEL SAMR listen,-34.5883,-68.4039,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+118.250000,AM,25,Malargue TWR,AVIATION,MALARGUE SAMM listen,-35.4936,-69.5743,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+119.550000,AM,25,Malargue TWR aux,AVIATION,MALARGUE SAMM listen,-35.4936,-69.5743,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+120.850000,AM,25,Reconquista TWR,AVIATION,RECONQUISTA SATR listen,-29.2103,-59.6800,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+118.500000,AM,25,Reconquista TWR aux,AVIATION,RECONQUISTA SATR listen,-29.2103,-59.6800,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+120.300000,AM,25,P de los Libres TWR,AVIATION,PASOLIBRES SARL listen,-29.6894,-57.1521,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+118.500000,AM,25,P de los Libres TWR aux,AVIATION,PASOLIBRES SARL listen,-29.6894,-57.1521,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+118.400000,AM,25,Gualeguaychu TWR,AVIATION,GUALEGUAYCHU SAAG listen,-33.0103,-58.6131,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+119.300000,AM,25,Gualeguaychu TWR aux,AVIATION,GUALEGUAYCHU SAAG listen,-33.0103,-58.6131,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+118.100000,AM,25,Marambio TWR,AVIATION,ANTARTIDA SAWB listen,-64.2383,-56.6308,35,,TWR main;AIP ENR2.1 TMA table; coords approx
+118.500000,AM,25,Marambio TWR aux,AVIATION,ANTARTIDA SAWB listen,-64.2383,-56.6308,35,,TWR aux;AIP ENR2.1 TMA table; coords approx
+119.400000,AM,25,Resistencia Ctl,AVIATION,RESISTENCIA SARE listen,-27.4500,-59.0561,60,,TMA Resistencia (ACC Resistencia) main;AIP ENR2.1 TMA table; coords approx
+120.400000,AM,25,Resistencia Ctl aux,AVIATION,RESISTENCIA SARE listen,-27.4500,-59.0561,60,,TMA Resistencia aux;AIP ENR2.1 TMA table; coords approx
+135.500000,AM,25,Ezeiza Ctr N,AVIATION,AMBA SAEF listen,-33.0000,-59.5000,400,,ACC Ezeiza North sector (FIR+CTA);AIP ENR2.1;centre/radius approx
+134.500000,AM,25,Ezeiza Ctr N 2,AVIATION,AMBA SAEF listen,-33.0000,-59.5000,400,,ACC Ezeiza North sector (FIR+CTA);AIP ENR2.1;centre/radius approx
+133.550000,AM,25,Ezeiza Ctl N 3,AVIATION,AMBA SAEF listen,-34.0000,-58.5000,280,,CTA Ezeiza North sector;AIP ENR2.1;centre/radius approx
+125.800000,AM,25,Ezeiza Ctl CTA III,AVIATION,AMBA SAEF listen,-33.0000,-59.5000,400,,CTA Ezeiza III North;AIP ENR2.1;centre/radius approx
+125.200000,AM,25,Ezeiza Ctr S,AVIATION,AMBA SAEF listen,-37.5000,-59.0000,450,,ACC Ezeiza South sector (FIR+CTA);AIP ENR2.1;centre/radius approx
+124.100000,AM,25,Ezeiza Ctr S 2,AVIATION,AMBA SAEF listen,-37.5000,-59.0000,450,,ACC Ezeiza South sector (FIR+CTA);AIP ENR2.1;centre/radius approx
+133.350000,AM,25,Ezeiza Ctl S 3,AVIATION,AMBA SAEF listen,-35.5000,-58.5000,280,,CTA Ezeiza South sector;AIP ENR2.1;centre/radius approx
+133.950000,AM,25,Baires/Ezeiza Ctl,AVIATION,AMBA SAEF listen,-34.8000,-58.5000,250,,Listed for TMA Baires North and CTA Ezeiza South;AIP ENR2.1;centre/radius approx
+125.900000,AM,25,Baires Ctl N,AVIATION,CABA AMBA SAEF listen,-34.6000,-58.4000,110,,TMA Baires (Baires Control) North sector;AIP ENR2.1;centre/radius approx
+124.900000,AM,25,Baires Ctl S,AVIATION,CABA AMBA SAEF listen,-34.9000,-58.4000,110,,TMA Baires (Baires Control) South sector;AIP ENR2.1;centre/radius approx
+125.300000,AM,25,Baires Ctl S 2,AVIATION,CABA AMBA SAEF listen,-34.9000,-58.4000,110,,TMA Baires (Baires Control) South sector;AIP ENR2.1;centre/radius approx
+128.250000,AM,25,Cordoba Ctr N,AVIATION,CORDOBA SACF listen,-28.0000,-63.5000,450,,ACC Cordoba North sector;AIP ENR2.1;centre/radius approx
+125.100000,AM,25,Cordoba Ctr N 2,AVIATION,CORDOBA SACF listen,-28.0000,-63.5000,450,,ACC Cordoba North sector;AIP ENR2.1;centre/radius approx
+126.500000,AM,25,Cordoba Ctr S,AVIATION,CORDOBA SACF listen,-32.5000,-63.5000,400,,ACC Cordoba South sector;AIP ENR2.1;centre/radius approx
+128.800000,AM,25,Cordoba Ctr S 2,AVIATION,CORDOBA SACF listen,-32.5000,-63.5000,400,,ACC Cordoba South sector;AIP ENR2.1;centre/radius approx
+126.600000,AM,25,Mendoza Ctr,AVIATION,MENDOZA SAMF listen,-33.0000,-68.5000,450,,ACC Mendoza;AIP ENR2.1;centre/radius approx
+134.700000,AM,25,Mendoza Ctr 2,AVIATION,MENDOZA SAMF listen,-33.0000,-68.5000,450,,ACC Mendoza;AIP ENR2.1;centre/radius approx
+134.300000,AM,25,Resistencia Ctr,AVIATION,RESISTENCIA SARR listen,-26.5000,-59.0000,450,,ACC Resistencia;AIP ENR2.1;centre/radius approx
+125.750000,AM,25,Resistencia Ctr 2,AVIATION,RESISTENCIA SARR listen,-26.5000,-59.0000,450,,ACC Resistencia;AIP ENR2.1;centre/radius approx
+125.500000,AM,25,Comodoro Ctr N,AVIATION,COMODORO SAVF listen,-42.5000,-67.0000,500,,ACC Comodoro Rivadavia North sector (N of 45S);AIP ENR2.1;centre/radius approx
+134.350000,AM,25,Comodoro Ctr N 2,AVIATION,COMODORO SAVF listen,-42.5000,-67.0000,500,,ACC Comodoro Rivadavia North sector;AIP ENR2.1;centre/radius approx
+125.700000,AM,25,Comodoro Ctr S,AVIATION,COMODORO USHUAIA SAVF listen,-50.0000,-68.5000,600,,ACC Comodoro Rivadavia South sector (S of 45S);AIP ENR2.1;centre/radius approx
+133.800000,AM,25,Comodoro Ctr S 2,AVIATION,COMODORO USHUAIA SAVF listen,-50.0000,-68.5000,600,,ACC Comodoro Rivadavia South sector;AIP ENR2.1;centre/radius approx
+121.500000,AM,25,Air Emergency 121.5,AVIATION,NATIONAL emergency listen,,,,,International aeronautical emergency; ELT homing;AIP GEN3.4
+123.450000,AM,25,SAM TIBA 123.45,AVIATION,NATIONAL listen,,,,,SAM in-flight broadcast (TIBA) in ATS contingency; also used air-to-air;AIP GEN3.4 3.2.5.3
+123.100000,AM,25,SAR on-scene 123.1,AVIATION,NATIONAL emergency listen,,,,,Search and rescue on-scene;AIP GEN3.4 3.2.2
+131.550000,ACARS,25,ACARS 131.550,AVIATION,NATIONAL listen,,,,,Primary ACARS channel used in South America;AR AIP uses ACARS for DCL (GEN3.4 3.2.5.5);other channels unverified
+136.975000,VDL2,25,VDL2 CSC 136.975,AVIATION,NATIONAL listen,,,,,VDL Mode 2 common signalling channel (worldwide);AR ground stations unverified
+1090.000000,ADSB,,ADS-B 1090ES,AVIATION,NATIONAL listen,,,,,Mode S/ADS-B 1090ES;978 UAT is a US-only system and is not used in Argentina
+116.500000,AM,25,VOR EZE,NAVIGATION,AMBA SAEZ listen,-34.8222,-58.5358,120,,VOR/DME EZE H24;Morse ident;AIP AD2.19
+109.500000,AM,25,ILS AE AEP RWY13,NAVIGATION,CABA SABE listen,-34.5597,-58.4150,120,,ILS/LOC AE CAT II RWY 13;Morse ident;AIP AD2.19
+114.500000,AM,25,VOR CBA,NAVIGATION,CORDOBA SACO listen,-31.3100,-64.2083,120,,VOR/DME CBA H24;Morse ident;AIP AD2.19
+117.300000,AM,25,VOR ROS,NAVIGATION,ROSARIO SAAR listen,-32.9036,-60.7844,120,,VOR/DME ROS H24;Morse ident;AIP AD2.19
+114.900000,AM,25,VOR DOZ,NAVIGATION,MENDOZA SAME listen,-32.8317,-68.7928,120,,VOR/DME DOZ H24;Morse ident;AIP AD2.19
+116.200000,AM,25,VOR MDP,NAVIGATION,MDQ SAZM listen,-37.9342,-57.5733,120,,VOR/DME MDP H24;Morse ident;AIP AD2.19
+117.400000,AM,25,VOR BAR,NAVIGATION,BARILOCHE SAZS listen,-41.1511,-71.1578,120,,VOR/DME BAR H24;Morse ident;AIP AD2.19
+113.700000,AM,25,VOR USU,NAVIGATION,USHUAIA SAWH listen,-54.8433,-68.2956,120,,DVOR/DME USU H24;Morse ident;AIP AD2.19
+1575.420000,GPS,,GPS L1 / Galileo E1,NAVIGATION,NATIONAL listen,,,,,GNSS L1 C/A and Galileo E1 centre (spread spectrum; below noise)
+1602.000000,GPS,,GLONASS L1,NAVIGATION,NATIONAL listen,,,,,GLONASS L1 FDMA centre (1598-1606)
+1561.098000,GPS,,BeiDou B1I,NAVIGATION,NATIONAL listen,,,,,BeiDou B1I centre
+156.800000,NFM,25,Marine CH16,MARINE,NATIONAL emergency listen,,,,,Distress/safety/calling; PNA permanent watch; emergencias nauticas 106 or CH16;PNA
+156.525000,FSK,25,Marine CH70 DSC,MARINE,NATIONAL emergency listen,,,,,DSC distress/calling (digital 1200 bd);ITU App.18
+156.750000,NFM,25,Marine CH15 PNA Info,MARINE,NATIONAL listen,,,,,PNA navigation safety broadcasts and local weather at scheduled times (varies by VTS);PNA VTS pages
+156.300000,NFM,25,Marine CH06,MARINE,NATIONAL listen,,,,,Intership; recreational boat-to-boat per RESMMA SECONADE (1984);RESMMA
+156.725000,NFM,25,Marine CH74,MARINE,NATIONAL listen,,,,,SECONADE class A yacht clubs + PNA working channel on request (RESMMA 1984; may be outdated)
+156.575000,NFM,25,Marine CH71,MARINE,NATIONAL listen,,,,,SECONADE class B yacht clubs (RESMMA 1984; may be outdated)
+161.525000,NFM,25,Marine CH78B,MARINE,NATIONAL listen,,,,,SECONADE class C marinas/guarderias shore TX (RESMMA 1984; may be outdated)
+156.925000,NFM,25,Marine CH78A,MARINE,NATIONAL listen,,,,,SECONADE reserve (RESMMA 1984; may be outdated)
+156.650000,NFM,25,Marine CH13,MARINE,NATIONAL listen,,,,,ITU RR App.18 channel; Argentine-specific assignment unverified
+156.375000,NFM,25,Marine CH67,MARINE,NATIONAL listen,,,,,ITU RR App.18 channel; Argentine-specific assignment unverified
+156.425000,NFM,25,Marine CH68,MARINE,NATIONAL listen,,,,,ITU RR App.18 channel; Argentine-specific assignment unverified
+156.475000,NFM,25,Marine CH69,MARINE,NATIONAL listen,,,,,ITU RR App.18 channel; Argentine-specific assignment unverified
+156.675000,NFM,25,Marine CH73,MARINE,NATIONAL listen,,,,,ITU RR App.18 channel; Argentine-specific assignment unverified
+156.875000,NFM,25,Marine CH77,MARINE,NATIONAL listen,,,,,ITU RR App.18 channel; Argentine-specific assignment unverified
+161.975000,AIS,25,AIS 1 (CH87B),MARINE,NATIONAL listen,,,,,AIS; PNA runs national AIS server;ITU
+162.025000,AIS,25,AIS 2 (CH88B),MARINE,NATIONAL listen,,,,,AIS;ITU
+156.600000,NFM,25,VTS RdlPlata CH12,MARINE,CABA AMBA listen,-34.5900,-58.3500,90,,VTS Rio de la Plata L2G; sectors Recalada km239 to Bs As port (Canal Norte/Sur);PNA VTS page
+156.450000,NFM,25,VTS RdlPlata CH09,MARINE,CABA AMBA LAPLATA listen,-34.7500,-57.8000,90,,VTS Rio de la Plata L2G; pilot boarding Rada La Plata; Bs As access km37/11;PNA VTS page
+156.625000,NFM,25,VTS RdlPlata CH72,MARINE,CABA AMBA listen,-34.5000,-58.3000,80,,VTS Rio de la Plata L2G; Canal de Acceso km12 / Emilio Mitre;PNA VTS page
+161.675000,NFM,25,VTS RdlPlata CH81 cst,MARINE,AMBA listen,-34.2000,-58.2500,80,,VTS Rio de la Plata L2G CH81 coast TX; Canal Martin Garcia km39/93;PNA VTS page
+157.075000,NFM,25,VTS RdlPlata CH81 shp,MARINE,AMBA listen,-34.2000,-58.2500,80,,VTS Rio de la Plata L2G CH81 ship TX side;PNA VTS page
+156.625000,NFM,25,VTS Zarate CH72,MARINE,AMBA ZARATE listen,-34.0983,-59.0286,50,,VTS Zarate L5T; Parana de las Palmas;PNA VTS page
+156.700000,NFM,25,VTS Zarate CH14,MARINE,AMBA ZARATE listen,-34.0983,-59.0286,50,,VTS Zarate L5T;PNA VTS page
+156.700000,NFM,25,VTS Rosario CH14,MARINE,ROSARIO listen,-32.9468,-60.6393,50,,VTS Rosario L6I; Parana km 418-412 Canal de Muelles;PNA VTS page
+156.600000,NFM,25,VTS San Nicolas CH12,MARINE,SANNICOLAS listen,-33.3300,-60.2200,40,,VTS San Nicolas L6G;PNA VTS page
+156.450000,NFM,25,V.Constitucion CH09,MARINE,SANNICOLAS ROSARIO listen,-33.2300,-60.3300,30,,Villa Constitucion L6H (VTS San Nicolas);PNA VTS page
+156.450000,NFM,25,Ramallo CH09,MARINE,SANNICOLAS listen,-33.4800,-60.0100,30,,Ramallo L6F (VTS San Nicolas);PNA VTS page
+156.600000,NFM,25,VTS San Pedro CH12,MARINE,SANPEDRO listen,-33.6790,-59.6630,40,,VTS San Pedro L6E; Parana km 310-240;PNA VTS page
+156.600000,NFM,25,VTS Diamante CH12,MARINE,PARANA listen,-32.0660,-60.6390,40,,VTS Diamante L6M;PNA VTS page
+156.600000,NFM,25,VTS Corrientes CH12,MARINE,CORRIENTES listen,-27.4806,-58.8341,50,,VTS Corrientes L6Y;PNA VTS page
+156.700000,NFM,25,Corrientes CH14 info,MARINE,CORRIENTES listen,-27.4806,-58.8341,50,,VTS Corrientes safety info/weather/river heights 0010 0410 0810 1210 1610 2010 UTC;PNA VTS page
+156.450000,NFM,25,VTS MdP CH09,MARINE,MDQ listen,-38.0400,-57.5300,55,,VTS Mar del Plata Portuario L2U; 30 nm radius; radio-medical;PNA VTS page
+156.600000,NFM,25,VTS Bahia Blanca CH12,MARINE,BAHIABLANCA listen,-38.7900,-62.2700,45,,VTS Bahia Blanca L2N; access channel Rosales/Ing. White/Galvan;PNA VTS page
+156.450000,NFM,25,VTS Comodoro CH09,MARINE,COMODORO listen,-45.8600,-67.4800,40,,VTS Comodoro Rivadavia Portuario L3B;PNA VTS page
+156.600000,NFM,25,VTS Ushuaia CH12,MARINE,USHUAIA listen,-54.8100,-68.3000,70,,VTS Ushuaia Portuario L3P; Beagle Channel;PNA VTS page
+2.182000,USB,3,Marine 2182 kHz,MARINE,NATIONAL emergency listen hf,,,,,MF distress/calling; HackRF only (below RTL 24 MHz);PNA VTS pages
+4.125000,USB,3,Marine 4125 kHz,MARINE,NATIONAL emergency listen hf,,,,,HF distress/safety; HackRF only;PNA VTS pages
+4.354000,USB,3,VTS MdP Maritimo 4354,MARINE,MDQ listen hf,-38.0400,-57.5300,800,,VTS Mar del Plata Maritimo L2T (also 8713 kHz); HackRF only;PNA
+462.562500,NFM,12.5,FRS uso familiar CH1,PMR/LICENSE-FREE,NATIONAL tx-ok,,,,,Res SC 2750/98: no individual licence; 500 mW; fixed antenna; homologated radio; 3 min max TX
+462.587500,NFM,12.5,FRS uso familiar CH2,PMR/LICENSE-FREE,NATIONAL tx-ok,,,,,Res SC 2750/98: no individual licence; 500 mW; fixed antenna; homologated radio; 3 min max TX
+462.612500,NFM,12.5,FRS uso familiar CH3,PMR/LICENSE-FREE,NATIONAL tx-ok,,,,,Res SC 2750/98: no individual licence; 500 mW; fixed antenna; homologated radio; 3 min max TX
+462.637500,NFM,12.5,FRS uso familiar CH4,PMR/LICENSE-FREE,NATIONAL tx-ok,,,,,Res SC 2750/98: no individual licence; 500 mW; fixed antenna; homologated radio; 3 min max TX
+462.662500,NFM,12.5,FRS uso familiar CH5,PMR/LICENSE-FREE,NATIONAL tx-ok,,,,,Res SC 2750/98: no individual licence; 500 mW; fixed antenna; homologated radio; 3 min max TX
+462.687500,NFM,12.5,FRS uso familiar CH6,PMR/LICENSE-FREE,NATIONAL tx-ok,,,,,Res SC 2750/98: no individual licence; 500 mW; fixed antenna; homologated radio; 3 min max TX
+462.712500,NFM,12.5,FRS uso familiar CH7,PMR/LICENSE-FREE,NATIONAL tx-ok,,,,,Res SC 2750/98: no individual licence; 500 mW; fixed antenna; homologated radio; 3 min max TX
+446.006250,NFM,12.5,PMR446 CH1,PMR/LICENSE-FREE,NATIONAL listen,,,,,PMR446 (EU) - no ENACOM authorisation found; imported radios heard; do not TX
+446.018750,NFM,12.5,PMR446 CH2,PMR/LICENSE-FREE,NATIONAL listen,,,,,PMR446 (EU) - no ENACOM authorisation found; imported radios heard; do not TX
+446.031250,NFM,12.5,PMR446 CH3,PMR/LICENSE-FREE,NATIONAL listen,,,,,PMR446 (EU) - no ENACOM authorisation found; imported radios heard; do not TX
+446.043750,NFM,12.5,PMR446 CH4,PMR/LICENSE-FREE,NATIONAL listen,,,,,PMR446 (EU) - no ENACOM authorisation found; imported radios heard; do not TX
+446.056250,NFM,12.5,PMR446 CH5,PMR/LICENSE-FREE,NATIONAL listen,,,,,PMR446 (EU) - no ENACOM authorisation found; imported radios heard; do not TX
+446.068750,NFM,12.5,PMR446 CH6,PMR/LICENSE-FREE,NATIONAL listen,,,,,PMR446 (EU) - no ENACOM authorisation found; imported radios heard; do not TX
+446.081250,NFM,12.5,PMR446 CH7,PMR/LICENSE-FREE,NATIONAL listen,,,,,PMR446 (EU) - no ENACOM authorisation found; imported radios heard; do not TX
+446.093750,NFM,12.5,PMR446 CH8,PMR/LICENSE-FREE,NATIONAL listen,,,,,PMR446 (EU) - no ENACOM authorisation found; imported radios heard; do not TX
+26.965000,AM,10,CB CH1,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+26.975000,AM,10,CB CH2,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+26.985000,AM,10,CB CH3,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.005000,AM,10,CB CH4,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.015000,AM,10,CB CH5,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.025000,AM,10,CB CH6,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.035000,AM,10,CB CH7,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.055000,AM,10,CB CH8,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.065000,AM,10,CB CH9,PMR/LICENSE-FREE,NATIONAL listen,,,,,emergency channel by convention;Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.075000,AM,10,CB CH10,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.085000,AM,10,CB CH11,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.105000,AM,10,CB CH12,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.115000,AM,10,CB CH13,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.125000,AM,10,CB CH14,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.135000,AM,10,CB CH15,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.155000,AM,10,CB CH16,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.165000,AM,10,CB CH17,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.175000,AM,10,CB CH18,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.185000,AM,10,CB CH19,PMR/LICENSE-FREE,NATIONAL listen,,,,,road/trucker channel by convention;Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.205000,AM,10,CB CH20,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.215000,AM,10,CB CH21,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.225000,AM,10,CB CH22,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.255000,AM,10,CB CH23,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.235000,AM,10,CB CH24,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.245000,AM,10,CB CH25,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.265000,AM,10,CB CH26,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.275000,AM,10,CB CH27,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.285000,AM,10,CB CH28,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.295000,AM,10,CB CH29,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.305000,AM,10,CB CH30,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.315000,AM,10,CB CH31,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.325000,AM,10,CB CH32,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.335000,AM,10,CB CH33,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.345000,AM,10,CB CH34,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.355000,AM,10,CB CH35,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.365000,AM,10,CB CH36,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.375000,AM,10,CB CH37,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.385000,AM,10,CB CH38,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.395000,AM,10,CB CH39,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+27.405000,AM,10,CB CH40,PMR/LICENSE-FREE,NATIONAL listen,,,,,Banda Ciudadana (SBC) needs ENACOM authorisation (fees Res 481/2026); standard 40ch plan - AR channel table unverified
+433.920000,OOK,,ISM 433.92 remotes,ISM/IOT,NATIONAL tx-ok,,,,,Remotes/weather sensors/doorbells; LPD band 433.075-434.775 (ENACOM Q2-60.14 / Res 5186-E/2017)
+915.000000,FSK,,ISM 915 sensors,ISM/IOT,NATIONAL tx-ok,,,,,915-928 shared use without authorisation (Res 581/2018 MinModernizacion); US-market sensors often here
+919.875000,LORA,250,Meshtastic ANZ LongFast,LORA/MESH,NATIONAL tx-ok,,,,,ANZ region (915-928) default LongFast slot 20 SF11 BW250 CR4/5; ANZ used by AR communities (e.g. Bahia Blanca)
+926.125000,LORA,250,Meshtastic ANZ MedFast,LORA/MESH,NATIONAL tx-ok,,,,,ANZ MediumFast default slot 45 SF9 BW250 (computed from firmware hash); AR use unverified
+906.875000,LORA,250,Meshtastic US LongFast,LORA/MESH,NATIONAL listen,,,,,US region default LongFast slot 20; 902-915 not in AR shared band - listen only
+915.800000,LORA,250,MeshCore AU preset,LORA/MESH,NATIONAL listen,,,,,MeshCore Australia/NZ preset 915.8 MHz (SF10 BW250); AR MeshCore preset not found - unverified
+910.525000,LORA,62.5,MeshCore US preset,LORA/MESH,NATIONAL listen,,,,,MeshCore USA/Canada preset SF7 BW62.5 CR5; outside AR 915-928 shared band
+916.800000,LORA,125,LoRaWAN AU915 UL8,LORA/MESH,NATIONAL tx-ok,,,,,AU915-928 sub-band 2 uplink ch8 (TTN plan for AR; RESOL-2018-581-APN-MM)
+917.000000,LORA,125,LoRaWAN AU915 UL9,LORA/MESH,NATIONAL tx-ok,,,,,AU915-928 sub-band 2 uplink ch9 (TTN plan for AR; RESOL-2018-581-APN-MM)
+917.200000,LORA,125,LoRaWAN AU915 UL10,LORA/MESH,NATIONAL tx-ok,,,,,AU915-928 sub-band 2 uplink ch10 (TTN plan for AR; RESOL-2018-581-APN-MM)
+917.400000,LORA,125,LoRaWAN AU915 UL11,LORA/MESH,NATIONAL tx-ok,,,,,AU915-928 sub-band 2 uplink ch11 (TTN plan for AR; RESOL-2018-581-APN-MM)
+917.600000,LORA,125,LoRaWAN AU915 UL12,LORA/MESH,NATIONAL tx-ok,,,,,AU915-928 sub-band 2 uplink ch12 (TTN plan for AR; RESOL-2018-581-APN-MM)
+917.800000,LORA,125,LoRaWAN AU915 UL13,LORA/MESH,NATIONAL tx-ok,,,,,AU915-928 sub-band 2 uplink ch13 (TTN plan for AR; RESOL-2018-581-APN-MM)
+918.000000,LORA,125,LoRaWAN AU915 UL14,LORA/MESH,NATIONAL tx-ok,,,,,AU915-928 sub-band 2 uplink ch14 (TTN plan for AR; RESOL-2018-581-APN-MM)
+918.200000,LORA,125,LoRaWAN AU915 UL15,LORA/MESH,NATIONAL tx-ok,,,,,AU915-928 sub-band 2 uplink ch15 (TTN plan for AR; RESOL-2018-581-APN-MM)
+917.500000,LORA,500,LoRaWAN AU915 UL65,LORA/MESH,NATIONAL tx-ok,,,,,AU915 sub-band 2 500 kHz uplink ch65 SF8BW500
+923.300000,LORA,500,LoRaWAN AU915 DL0,LORA/MESH,NATIONAL listen,,,,,AU915 downlink RX1 ch0 SF7-12 BW500; also RX2 SF12
+923.900000,LORA,500,LoRaWAN AU915 DL1,LORA/MESH,NATIONAL listen,,,,,AU915 downlink RX1 ch1 SF7-12 BW500
+924.500000,LORA,500,LoRaWAN AU915 DL2,LORA/MESH,NATIONAL listen,,,,,AU915 downlink RX1 ch2 SF7-12 BW500
+925.100000,LORA,500,LoRaWAN AU915 DL3,LORA/MESH,NATIONAL listen,,,,,AU915 downlink RX1 ch3 SF7-12 BW500
+925.700000,LORA,500,LoRaWAN AU915 DL4,LORA/MESH,NATIONAL listen,,,,,AU915 downlink RX1 ch4 SF7-12 BW500
+926.300000,LORA,500,LoRaWAN AU915 DL5,LORA/MESH,NATIONAL listen,,,,,AU915 downlink RX1 ch5 SF7-12 BW500
+926.900000,LORA,500,LoRaWAN AU915 DL6,LORA/MESH,NATIONAL listen,,,,,AU915 downlink RX1 ch6 SF7-12 BW500
+927.500000,LORA,500,LoRaWAN AU915 DL7,LORA/MESH,NATIONAL listen,,,,,AU915 downlink RX1 ch7 SF7-12 BW500
+137.620000,APT,40,NOAA-15 APT (off),WEATHER,NATIONAL listen,,,,,NOAA-15 decommissioned 19 Aug 2025 - no signal expected
+137.912500,APT,40,NOAA-18 APT (off),WEATHER,NATIONAL listen,,,,,NOAA-18 decommissioned 6 Jun 2025 - no signal expected
+137.100000,LRPT,150,Meteor-M LRPT 137.1,WEATHER,NATIONAL listen,,,,,Meteor-M N2-3/N2-4 LRPT alt freq (assignments change); was NOAA-19 APT (NOAA-19 off 13 Aug 2025)
+137.900000,LRPT,150,Meteor-M LRPT 137.9,WEATHER,NATIONAL listen,,,,,Meteor-M N2-3/N2-4 LRPT QPSK 72k/80k; frequency per sat varies - check current reports
+1694.100000,LRPT,1210,GOES-19 HRIT/EMWIN,WEATHER,NATIONAL listen,,,,,GOES-East (GOES-19 since 7 Apr 2025) HRIT BPSK - not LRPT; needs dish+LNA; HackRF/LR2021 range
+1626.270833,IRIDIUM,,Iridium ring alert,SATELLITE,NATIONAL listen,,,,,Iridium simplex/ring alert channels 1626.0-1626.5; full band 1616-1626.5 (gr-iridium)
+243.000000,AM,25,Mil Air Emergency 243,EMERGENCY,NATIONAL listen,,,,,Military aeronautical emergency (UHF guard; ITU)
+406.040000,FSK,3,Cospas-Sarsat 406,EMERGENCY,NATIONAL listen,,,,,ELT/EPIRB/PLB digital burst (BPSK 400 bps not FSK) in 406.0-406.1; 50 s repetition
+3.023000,USB,3,Aero SAR 3023 kHz,EMERGENCY,NATIONAL listen hf,,,,,SAR HF (AIP GEN3.4 3.2.2); HackRF only
+5.680000,USB,3,Aero SAR 5680 kHz,EMERGENCY,NATIONAL listen hf,,,,,SAR HF (AIP GEN3.4 3.2.2); HackRF only
+146.520000,NFM,25,2m FM calling,AMATEUR,NATIONAL listen,,,,,FM simplex calling;ENACOM Anexo A 2018;older CNC 50/98 plan: simplex 146.400-146.600
+144.930000,APRS,25,APRS 2m LU de facto,AMATEUR,NATIONAL listen,,,,,called Argentina's APRS freq by AMSAT-UK 2020 and sigidwiki (AR+CX);not in ENACOM text;conflict with 144.390
+144.390000,APRS,25,APRS 2m ENACOM plan,AMATEUR,NATIONAL listen,,,,,ENACOM Anexo A says APRS priority 144.390;conflicts with de facto 144.930;no on-air evidence found
+430.930000,APRS,25,APRS 70cm ENACOM plan,AMATEUR,NATIONAL listen,,,,,ENACOM Anexo A 70cm APRS priority;no on-air evidence found
+145.110000,FSK,12.5,2m packet DX,AMATEUR,NATIONAL listen,,,,,ENACOM Anexo A packet DX via nodes/digipeaters;packet segment 144.900-145.200
+144.200000,USB,,2m SSB calling,AMATEUR,NATIONAL listen,,,,,ENACOM Anexo A SSB calling
+432.100000,USB,,70cm CW/SSB calling,AMATEUR,NATIONAL listen,,,,,ENACOM Anexo A CW/SSB calling
+50.110000,USB,,6m SSB/CW calling,AMATEUR,NATIONAL listen,,,,,ENACOM Anexo A international SSB/CW calling
+51.500000,NFM,25,6m FM calling,AMATEUR,NATIONAL listen,,,,,ENACOM Anexo A FM calling;also qsl.net/lu_6_meters meeting freq
+223.500000,NFM,25,1.25m FM calling,AMATEUR,NATIONAL listen,,,,,ENACOM Anexo A;220-225 primary amateur in AR
+3.750000,LSB,,80m IARU emergency,AMATEUR,NATIONAL listen hf,,,,,ENACOM Anexo A IARU emergency centre of activity;also 3.985
+7.060000,LSB,,40m IARU emergency,AMATEUR,NATIONAL listen hf,,,,,ENACOM Anexo A emergency centre;also 7.240 and 7.275
+14.300000,USB,,20m IARU emergency,AMATEUR,NATIONAL listen hf,,,,,ENACOM Anexo A global emergency centre;also 18.160 and 21.360
+145.800000,NFM,12.5,ISS voice downlink,SATELLITE,NATIONAL listen,,,,,uplink 144.490 (Region 2);ARISS;crew ops as schedule allows
+437.800000,NFM,12.5,ISS crossband rptr,SATELLITE,NATIONAL listen,,,,67.0,uplink 145.990 PL 67 (not 88.5);ARISS status 2026-11-04 repeater mode;off during EVAs
+437.825000,APRS,12.5,ISS APRS UHF,SATELLITE,NATIONAL listen,,,,,ARISS 2026-11-04: APRS active on 437.825 under test;AMSAT grid shows ISS UHF digi heard
+145.825000,APRS,12.5,Sat APRS 145.825,SATELLITE,NATIONAL listen,,,,,AMSAT 2026-10-31 list: ISS/NO-44/SONATE-2/IO-86 APRS;ISS now on 437.825 per ARISS
+436.795000,NFM,12.5,SO-50 downlink,SATELLITE,NATIONAL listen,,,,67.0,uplink 145.850 PL 67;arm 10-min timer with 74.4 Hz;AMSAT status active Nov 2026
+435.400000,NFM,12.5,AO-123 downlink,SATELLITE,NATIONAL listen,,,,67.0,uplink 145.850 PL 67;AMSAT status active Nov 2026
+435.640000,USB,,RS-44 passband ctr,SATELLITE,NATIONAL listen,,,,,linear 435.610-435.670 inverting;uplink LSB 145.935-145.995;CW beacon 435.605;active
+435.850000,USB,,FO-29 passband ctr,SATELLITE,NATIONAL listen,,,,,linear 435.800-435.900 by schedule;uplink LSB 145.900-146.000;CW beacon 435.795;active
+145.950000,USB,,AO-7 mode B ctr,SATELLITE,NATIONAL listen,,,,,linear 145.925-145.975 sunlight only;uplink LSB 432.125-432.175;beacon 29.502;active
+145.865000,USB,,JO-97 passband ctr,SATELLITE,NATIONAL listen,,,,,linear 145.855-145.875;uplink LSB 435.100-435.120;active Nov 2026
+146.910000,NFM,25,LU4AA 2m RCA,AMATEUR,CABA listen,-34.6037,-58.3816,40,123.0,-0.6 MHz;Radio Club Argentino;FM+C4FM since 2017 per lu4aa.org;RB#9661 2026-10;old lists had 146.940/145.240
+147.060000,NFM,25,LU5CBA 2m,AMATEUR,CABA listen,-34.6037,-58.3816,40,67.0,+0.6 MHz;Centro Radioaf. Ciudad de Bs As;Parque Chacabuco;RB#141 2026-09;CNC04-08 agrees
+433.800000,NFM,25,LU5CBA 70cm,AMATEUR,CABA listen,-34.6037,-58.3816,40,67.0,+5 MHz;Centro Radioaf. Ciudad de Bs As;RB#237 2026-09;CNC04-08 agrees
+146.880000,NFM,25,LU4AAO 2m Belgrano,AMATEUR,CABA listen,-34.6037,-58.3816,40,151.4,-0.6 MHz;RC QRM Belgrano;Villa Urquiza;RB#105 2026-10;CNC04-08 agrees
+146.805000,NFM,25,LU4BB 2m,AMATEUR,CABA listen,-34.6037,-58.3816,40,94.8,-0.6 MHz;Buenos Aires Radio Club;Villa Pueyrredon;RB#90 2026-10;CNC04-08 agrees
+434.900000,NFM,25,LU1CGB 70cm AMSAT-LU,AMATEUR,CABA listen,-34.6037,-58.3816,40,123.0,+5 MHz;AMSAT Argentina;RB#12804 2026-10;LU7DOT 2010 agrees
+147.345000,DSTAR,12.5,LU3AOC 2m D-STAR,AMATEUR,CABA listen,-34.6037,-58.3816,40,,+0.6 MHz;Barrancas de Belgrano;sponsor LU1CGB;RB#195 2026-10
+434.950000,DSTAR,12.5,LU3AOC 70cm D-STAR,AMATEUR,CABA listen,-34.6037,-58.3816,40,,+5 MHz;Barrancas de Belgrano;gateway barolo.dstar.com.ar;RB#257 2026-10
+146.700000,NFM,25,LU2CSG 2m Arg Room,AMATEUR,CABA listen,-34.6037,-58.3816,40,123.0,-0.6 MHz;Red Argentina Room;freq pair corrected 2026-04;RB#15403 2026-10
+434.650000,DMR,12.5,LU2CSG DMR Boedo,AMATEUR,CABA listen,-34.6037,-58.3816,40,,+5 MHz;CC1;TS2 TG 7229 Argentina Room;RB#13125 2026-09
+434.800000,DMR,12.5,LU8EUT DMR Palermo,AMATEUR,CABA listen,-34.6037,-58.3816,40,,+5 MHz;CC1;TS2 TG 7227 Argentina Link;BrandMeister;RB#14590 2026-10
+434.460000,DMR,12.5,LW6DSM FM/DMR Recoleta,AMATEUR,CABA listen,-34.6037,-58.3816,40,67.0,+5 MHz;mixed FM (67.0) and DMR CC1;RB#13501 2026-08
+53.070000,NFM,25,LU5CBA 6m,AMATEUR,CABA listen,-34.6037,-58.3816,40,67.0,-1 MHz;Centro Radioaf. Ciudad de Bs As;unverified - only CNC04-08 list and LU7DOT 2010
+145.345000,NFM,25,LU7EO 2m Avellaneda,AMATEUR,AMBA listen,-34.6625,-58.3678,40,136.5,-0.6 MHz;Avellaneda Radio Club;RB#16 2026-10;CNC04-08 agrees
+434.700000,DMR,12.5,LU7EO DMR Avellaneda,AMATEUR,AMBA listen,-34.6625,-58.3678,40,,+5 MHz;CC1;BM TS1 TG 722/7221 AMBA/72201;RB#11189 2026-09
+145.390000,NFM,25,LU4DQ 2m Quilmes,AMATEUR,AMBA listen,-34.7206,-58.2546,40,131.8,-0.6 MHz;RC Quilmes;Torre Kalop;RB#24 2026-10;CNC04-08 agrees
+146.970000,NFM,25,LU4DQ 2m Quilmes B,AMATEUR,AMBA listen,-34.7206,-58.2546,40,131.8,-0.6 MHz;RC Quilmes;RB#125 2026-10;CNC04-08 agrees
+434.300000,DMR,12.5,LU4DQ DMR Quilmes,AMATEUR,AMBA listen,-34.7206,-58.2546,40,,+5 MHz;CC1;RC Quilmes;BM local TG 722055;RB#16237 2026-10
+147.165000,NFM,25,LU1DBQ 2m Moron,AMATEUR,AMBA listen,-34.6534,-58.6198,40,141.3,+0.6 MHz;RC Moron;RB#164 2026-09;CNC04-08 agrees;a 2021 RB report said no tone
+433.500000,NFM,25,LU1DBQ 70cm Moron,AMATEUR,AMBA listen,-34.6534,-58.6198,40,114.8,+5 MHz;RC Moron;RB#229 2026-07;CNC04-08 agrees
+223.980000,NFM,25,LU1DBQ 220 Moron,AMATEUR,AMBA listen,-34.6534,-58.6198,40,136.5,-1.6 MHz;RC Moron;RB#212 2026-07;CNC04-08 agrees
+146.625000,NFM,25,LU7DZV 2m San Miguel,AMATEUR,AMBA listen,-34.5432,-58.7123,40,77.0,-0.6 MHz;RC General Sarmiento;repaired Jan 2026;RB#13091 2026-09
+433.300000,NFM,25,LU7DZV 70cm San Miguel,AMATEUR,AMBA listen,-34.5432,-58.7123,40,88.5,+5 MHz;RC General Sarmiento;RB#226 2026-09;CNC04-08 agrees
+147.120000,NFM,25,LU3DY 2m Burzaco,AMATEUR,AMBA listen,-34.8277,-58.3935,40,88.5,+0.6 MHz;RC Almirante Brown;tone changed 2024 (CNC04-08 had 100.0);RB#150 2026-08
+147.315000,NFM,25,LU1EEE 2m Banfield,AMATEUR,AMBA listen,-34.7600,-58.4060,40,67.0,+0.6 MHz;RC Banfield;Lomas de Zamora;RB#188 2026-08;CNC04-08 agrees
+147.105000,NFM,25,LU5DA 2m Olivos,AMATEUR,AMBA listen,-34.5100,-58.4960,40,123.0,+0.6 MHz;RC Rio de La Plata;FM+C4FM;RB#148 2026-10;CNC04-08 agrees
+434.600000,NFM,25,LU5DA 70cm Olivos,AMATEUR,AMBA listen,-34.5100,-58.4960,40,67.0,+5 MHz;RC Rio de La Plata;FM+D-STAR;RB#253 2026-10;CNC04-08 agrees
+147.390000,NFM,25,LU3ERU 2m Gral Rodriguez,AMATEUR,AMBA listen,-34.6083,-58.9500,40,141.3,+0.6 MHz;RC Ciudad de Gral Rodriguez;heard 2025-09;RB#203 2026-04
+147.030000,NFM,25,LU8DZE 2m La Plata,AMATEUR,LAPLATA listen,-34.9214,-57.9545,40,100.0,+0.6 MHz;Radio Club La Plata;RB#133 2026-08;CNC04-08 agrees
+433.200000,NFM,25,LU8DZE 70cm La Plata,AMATEUR,LAPLATA listen,-34.9214,-57.9545,40,82.5,+5 MHz;Radio Club La Plata;RB#223 2026-08;CNC04-08 agrees
+224.200000,NFM,25,LU8DZE 220 La Plata,AMATEUR,LAPLATA listen,-34.9214,-57.9545,40,67.0,-1.6 MHz;Radio Club La Plata;RB#13090 2026-08
+146.700000,NFM,25,LU4HH 2m Mogote,AMATEUR,CORDOBA listen,-31.4201,-64.1888,40,,-0.6 MHz;Radio Club Cordoba;Cerro Mogote;RB#67 lists no tone (CNC04-08 had 77.0)
+146.940000,NFM,25,LU4HH 2m Mogote B,AMATEUR,CORDOBA listen,-31.4201,-64.1888,40,67.0,-0.6 MHz;Radio Club Cordoba;RB#16368 2026-09 says 67.0 (CNC04-08 had 77.0)
+146.970000,NFM,25,LU4HH 2m Bosque Alegre,AMATEUR,CORDOBA listen,-31.4201,-64.1888,40,77.0,-0.6 MHz;Radio Club Cordoba;RB#127 2026-08;CNC04-08 agrees
+433.550000,NFM,25,LU4HH 70cm Mogote,AMATEUR,CORDOBA listen,-31.4201,-64.1888,40,123.0,+5 MHz;Radio Club Cordoba;123.0 on downlink too;RB#238 2026-07
+434.400000,DMR,12.5,LU4HH DMR Mogote,AMATEUR,CORDOBA listen,-31.4201,-64.1888,40,,+5 MHz;CC1;Radio Club Cordoba;Argentina Link;RB#16367 2026-10
+434.700000,YSF,12.5,LU1HKO C4FM Mogote,AMATEUR,CORDOBA listen,-31.4201,-64.1888,40,,+5 MHz;Fusion;Argentina Link;RB#13293 2026-07
+147.000000,NFM,25,LU1HRA 2m Alta Gracia,AMATEUR,CORDOBA listen,-31.4201,-64.1888,40,118.8,+0.6 MHz;RC Alta Gracia;Bosque Alegre;linked to 146.895 La Falda;RB#130 2026-09
+145.390000,NFM,25,LU4FM 2m RC Rosario,AMATEUR,ROSARIO listen,-32.9442,-60.6505,40,100.0,-0.6 MHz;Radio Club Rosario;RB#26 2026-10;CNC04-08 agrees
+434.650000,NFM,25,LU4FM 70cm RC Rosario,AMATEUR,ROSARIO listen,-32.9442,-60.6505,40,94.8,+5 MHz;Radio Club Rosario;RB#254 2026-08;CNC04-08 agrees
+434.250000,DMR,12.5,LU4FM DMR RC Rosario,AMATEUR,ROSARIO listen,-32.9442,-60.6505,40,,+5 MHz;CC1;TS1 TG 7222 / TS2 TG 7227;Radio Club Rosario;RB#16223 2026-10
+434.475000,YSF,12.5,LU4FM C4FM RC Rosario,AMATEUR,ROSARIO listen,-32.9442,-60.6505,40,,+5 MHz;Fusion;Radio Club Rosario;RB#16225 2026-10
+147.090000,NFM,25,LU5FB 2m Rosario,AMATEUR,ROSARIO listen,-32.9442,-60.6505,40,88.5,+0.6 MHz;Circulo de Radioaficionados de Rosario;Plaza San Martin;RB#147 2026-10;CNC04-08 agrees
+434.525000,DMR,12.5,LU5FB DMR Rosario,AMATEUR,ROSARIO listen,-32.9442,-60.6505,40,,+5 MHz;CC1;TS1 TG 7222 / TS2 TG 7229;Circulo Radioaf. Rosario;RB#16222 2026-10
+146.865000,NFM,25,LU6FHL 2m Rosario,AMATEUR,ROSARIO listen,-32.9442,-60.6505,40,107.2,-0.6 MHz;Puerto de Rosario;RB#102 2026-10;CNC04-08 agrees
+146.760000,NFM,25,LU1MA 2m Mendoza,AMATEUR,MENDOZA listen,-32.8895,-68.8458,40,77.0,-0.6 MHz;Cuyo Radio Club;RB#82 2026-10;CNC04-08 agrees
+147.390000,NFM,25,LU1MA 2m Las Heras,AMATEUR,MENDOZA listen,-32.8895,-68.8458,40,114.8,+0.6 MHz;Cuyo Radio Club;RB#205 2026-01;CNC04-08 agrees
+434.000000,NFM,25,LU1MA 70cm Las Heras,AMATEUR,MENDOZA listen,-32.8895,-68.8458,40,94.8,+5 MHz;Cuyo Radio Club;RB#242 2026-01;CNC04-08 agrees
+147.300000,NFM,25,LU2DT 2m Mar del Plata,AMATEUR,MDQ listen,-38.0055,-57.5426,40,88.5,+0.6 MHz;Radio Club Mar del Plata;RB#184 2026-07;CNC04-08 agrees;147.045 now listed off-air
+433.600000,NFM,25,LU2DT 70cm Mar del Plata,AMATEUR,MDQ listen,-38.0055,-57.5426,40,88.5,+5 MHz;Radio Club Mar del Plata;RB#232 2026-08;CNC04-08 agrees
+145.500000,YSF,12.5,LU2DT C4FM simplex node,AMATEUR,MDQ listen,-38.0055,-57.5426,25,,simplex node no offset;Radio Club Mar del Plata;Argentina Link;RB simplex#16364 2026-09
+433.300000,NFM,25,LW6DNF 70cm Manantiales,AMATEUR,MDQ listen,-38.0055,-57.5426,40,,+5 MHz;FM + WIRES-X;Torre Manantiales;RB#9939 2026-10
+146.940000,NFM,25,LU1VNH 2m Cerro Otto,AMATEUR,BARILOCHE listen,-41.1335,-71.3103,40,100.0,-0.6 MHz;RC Nahuel Huapi;EchoLink;RB#119 2026-08;CNC04-08 agrees
+147.090000,NFM,25,LU1VZ 2m Catedral,AMATEUR,BARILOCHE listen,-41.1335,-71.3103,40,103.5,+0.6 MHz;Radio Club Bariloche;Cerro Catedral;RB#210 2026-08;CNC04-08 agrees
+433.100000,NFM,25,LU1VNH 70cm Cerro Otto,AMATEUR,BARILOCHE listen,-41.1335,-71.3103,40,88.5,+5 MHz;RC Nahuel Huapi;RB#221 2026-08;CNC04-08 agrees
+224.940000,NFM,25,LU1VZ 220 Catedral,AMATEUR,BARILOCHE listen,-41.1335,-71.3103,40,67.0,-1.6 MHz;Radio Club Bariloche;RB#217 2026-10;CNC04-08 agrees
+146.700000,NFM,25,LU7VO 2m Bariloche,AMATEUR,BARILOCHE listen,-41.1335,-71.3103,40,,-0.6 MHz;LU7VO;RB#16392 2026-09 single source
+146.940000,NFM,25,LU4OC 2m Salta,AMATEUR,SALTA listen,-24.7821,-65.4232,40,123.0,-0.6 MHz;Radio Club Salta;123.0 on downlink too;tone updated 2025-09 (CNC04-08 had 94.8);RB#121
+145.465000,NFM,25,LU1OO 2m Salta,AMATEUR,SALTA listen,-24.7821,-65.4232,40,103.5,-0.6 MHz;Circulo de Radioaficionados Salta;RB#16257 2026-08
+145.450000,NFM,25,LU7KDR 2m Villa Nougues,AMATEUR,TUCUMAN listen,-26.8083,-65.2176,40,123.0,-0.6 MHz;Radio Club Tucuman per RB;linked 147.000 Ancasti;RB#16216 2026-09;CNC04-08 had LU4KC 146.940 here
+146.640000,NFM,25,LU1YY 2m Neuquen,AMATEUR,NEUQUEN listen,-38.9516,-68.0591,40,77.0,-0.6 MHz;Radio Club Neuquen;RB#57 2026-08 single source
+147.120000,NFM,25,LU1VO 2m Cipolletti,AMATEUR,NEUQUEN listen,-38.9516,-68.0591,40,71.9,+0.6 MHz;Cipolletti (adjacent);heard 2024-07;RB#151 2026-08
+434.850000,NFM,25,LU2VA 70cm Cipolletti,AMATEUR,NEUQUEN listen,-38.9516,-68.0591,40,103.5,+5 MHz;Cipolletti;RB#256 2026-08
+146.700000,NFM,25,LU7DBL 2m Bahia Blanca,AMATEUR,BAHIABLANCA listen,-38.7183,-62.2663,40,,-0.6 MHz;Radio Club Bahia Blanca;RB#65 lists no tone (CNC04-08 had 67.0)
+147.240000,NFM,25,LU6DG 2m Punta Alta,AMATEUR,BAHIABLANCA listen,-38.7183,-62.2663,40,67.0,+0.6 MHz;Punta Alta Radio Club (~25 km);RB#175 2026-10;CNC04-08 agrees
+434.750000,NFM,25,LU6DG 70cm Punta Alta,AMATEUR,BAHIABLANCA listen,-38.7183,-62.2663,40,67.0,+5 MHz;Punta Alta Radio Club;RB#12805 2026-10
+145.600000,NFM,25,LU8XW simplex node,AMATEUR,USHUAIA listen,-54.8019,-68.3030,25,,simplex EchoLink node 335382 no offset;Radio Club Ushuaia;RB simplex#12781 2026-08;no Ushuaia repeater found
+87.500000,WFM,200,FM Soldados 87.5,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRI325;Min Defensa;src ENACOM25+WRM
+88.700000,WFM,200,La Tribu 88.7,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,community;src ENACOM25+WRM
+89.900000,WFM,200,Radio Con Vos 89.9,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRI220;src ENACOM25+SITE
+91.500000,WFM,200,Radio Mitre FM 91.5,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,Grupo Clarin FM licence;src ENACOM25+WRM;programming not confirmed
+92.100000,WFM,200,Vorterix 92.1,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,was on 97.1 2024-25;src ENACOM25+TA26
+92.700000,WFM,200,La 2x4 92.7,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LS1 city tango radio;concession tender 2026;src ENACOM25+GCBA
+93.100000,WFM,200,FM Late 93.1,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRI771;src TA26+WRM+ESWIKI
+93.700000,WFM,200,Nacional Rock 93.7,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRA337;src ENACOM25+WRM
+94.300000,WFM,200,Radio Disney 94.3,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRL301;src ENACOM25+WRM
+94.700000,WFM,200,Mucha Radio 94.7,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,src ENACOM25+WRM
+95.100000,WFM,200,Metro Power Hits 95.1,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRL728;renamed from Metro 95.1;src ENACOM25+SITE
+95.900000,WFM,200,Rock & Pop 95.9,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRL315;src ENACOM25+SITE
+96.300000,WFM,200,Radio Jai 96.3,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRL331;src WRM+ESWIKI
+96.700000,WFM,200,Nacional Clasica 96.7,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRA338;src ENACOM25+WRM
+97.100000,WFM,200,FM 97.1,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,ex FM Like/Vorterix;Grupo Octubre;Hadad news stream from 02-2026;src ENACOM25+TA26
+97.500000,WFM,200,Vale 97.5,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRL321;src ENACOM25+TA26
+97.900000,WFM,200,Radio Cultura 97.9,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,src ENACOM25;eswiki calls it Now 97.9
+98.300000,WFM,200,Mega 98.3,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRL312;src ENACOM25+TA26
+98.700000,WFM,200,Nacional Folklorica 98.7,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRA339;src ENACOM25+WRM
+99.100000,WFM,200,Cadena 3 BA 99.1,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,AYP75;src ENACOM16+WRM+ESWIKI
+99.500000,WFM,200,FM Federal 99.5,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRL317;Policia Federal;src WRM+ESWIKI
+99.900000,WFM,200,La 100 99.9,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,Grupo Clarin;src ENACOM25+WRM
+100.300000,WFM,200,La Colifata 100.3,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LT22;src ENACOM25+WRM
+100.700000,WFM,200,Blue 100.7,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRL302;src ENACOM25+TA26
+101.100000,WFM,200,Radio Latina 101.1,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRL318;src ENACOM25+TA26
+101.500000,WFM,200,Pop Radio 101.5,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,not in ENACOM25 list;src TA26+WRM+ESWIKI
+102.300000,WFM,200,Aspen 102.3,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRL320;src ENACOM25+SITE
+103.100000,WFM,200,DSports Radio 103.1,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRL726;src TA26+WRM+ESWIKI
+103.700000,WFM,200,Radio One 103.7,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRI711;src WRM+ESWIKI
+104.300000,WFM,200,Urbana Play 104.3,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRL322;src ENACOM25+SITE
+104.900000,WFM,200,LN+ Musica 104.9,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,La Nacion;src TA26+ESWIKI
+105.500000,WFM,200,Los 40 105.5,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRL725;sold by Prisa 2025 with Continental;src ENACOM25+TA26
+106.700000,WFM,200,FM Milenium 106.7,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRL329;src ENACOM25+SITE
+107.900000,WFM,200,El Observador 107.9,BROADCAST FM,CABA AMBA listen,-34.6037,-58.3816,60,,LRI710;src ENACOM25+TA26
+0.530000,AM,10,Somos Radio AM 530,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,src WRM+ESWIKI
+0.570000,AM,10,Radio Belgrano AM 570,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,ex LR2 Radio Argentina;name uncertain (570 vs 650);src WRM+ESWIKI+MWINFO
+0.590000,AM,10,Radio Continental AM,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,LS4;owner linked to Grupo Octubre since 2025;src ENACOM25+SITE
+0.630000,AM,10,Radio Rivadavia AM,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,LS5;Alpha Media;src ENACOM25+SITE
+0.650000,AM,10,AM 650,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,ex Radio Belgrano 650;music;src WRM+ESWIKI+MWINFO
+0.710000,AM,10,Radio 10 AM 710,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,LRL202;src ENACOM25
+0.750000,AM,10,AM 750,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,LRL203;Grupo Octubre;src ENACOM25+SITE
+0.770000,AM,10,Radio Republica AM 770,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,src LN26+WRM
+0.790000,AM,10,Radio Mitre AM,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,LR6;Grupo Clarin;src ENACOM25
+0.870000,AM,10,LRA1 Nacional AM,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,LRA1;src ENACOM25+LN26
+0.910000,AM,10,Radio La Red AM 910,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,LR5;src ENACOM25+SITE
+0.950000,AM,10,StreAM 950,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,LR3;CNN Radio left 12-2025;name in flux;src ENACOM25+TA26+ECON25
+0.990000,AM,10,Radio Splendid AM 990,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,LR4;Alpha Media;src ENACOM25+LN26
+1.030000,AM,10,Radio Del Plata AM 1030,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,LS10;src ENACOM25+LN26
+1.070000,AM,10,El Destape AM 1070,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,LR1;ex Radio El Mundo;src ENACOM25+LN26
+1.110000,AM,10,Radio Ciudad AM 1110,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,LS1;city-owned;concession tender 2026;src ENACOM25+IPRO26
+1.190000,AM,10,Radio Perfil AM 1190,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,LR9;ex Radio America;src ENACOM25+ESWIKI
+1.350000,AM,10,Radio Buenos Aires 1350,BROADCAST AM,CABA AMBA listen hf,-34.6037,-58.3816,150,,LS6;src ENACOM25+WRM
+1.270000,AM,10,Radio Provincia AM 1270,BROADCAST AM,LAPLATA AMBA listen hf,-34.9214,-57.9545,150,,LS11;provincial public radio;src WRM+LACAPITAL
+97.100000,WFM,200,Radio Provincia FM 97.1,BROADCAST FM,LAPLATA AMBA listen,-34.9214,-57.9545,60,,LRI393;src WRM+LACAPITAL
+1.390000,AM,10,Radio Universidad 1390,BROADCAST AM,LAPLATA AMBA listen hf,-34.9214,-57.9545,150,,LR11;UNLP;src WRM+UNLP
+107.500000,WFM,200,Universidad FM 107.5,BROADCAST FM,LAPLATA AMBA listen,-34.9214,-57.9545,60,,LR11 FM;UNLP;src WRM+UNLP
+89.900000,WFM,200,FM Platense 89.9,BROADCAST FM,LAPLATA AMBA listen,-34.9214,-57.9545,60,,LRI418;src ENACOM25+WRM
+90.900000,WFM,200,Radio La Plata 90.9,BROADCAST FM,LAPLATA AMBA listen,-34.9214,-57.9545,60,,src ENACOM25+WRM
+0.700000,AM,10,Cadena 3 AM 700,BROADCAST AM,CORDOBA listen hf,-31.4201,-64.1888,150,,LV3 Radio Cordoba;src ENACOM25+ENACOM16
+0.750000,AM,10,LRA7 Nacional Cba AM,BROADCAST AM,CORDOBA listen hf,-31.4201,-64.1888,150,,LRA7;src ENACOM25+ESWIKI
+0.810000,AM,10,Radio Mitre Cordoba 810,BROADCAST AM,CORDOBA listen hf,-31.4201,-64.1888,150,,Grupo Clarin;src ENACOM25+WRM+PERFIL26
+0.580000,AM,10,Radio Universidad 580,BROADCAST AM,CORDOBA listen hf,-31.4201,-64.1888,150,,LW1;UNC;src ENACOM25+WRM
+100.500000,WFM,200,Cadena 3 FM 100.5,BROADCAST FM,CORDOBA listen,-31.4201,-64.1888,60,,Radio Tres;src ENACOM25+ESWIKI
+100.100000,WFM,200,LRA7 Nacional Cba FM,BROADCAST FM,CORDOBA listen,-31.4201,-64.1888,60,,relays Nacional Rock since 2024;src HCDN24+ESWIKI
+92.300000,WFM,200,La Popu 92.3,BROADCAST FM,CORDOBA listen,-31.4201,-64.1888,60,,Radio Popular;Cadena 3 group;src ENACOM25+INFONEG
+91.900000,WFM,200,Cadena Heat 91.9,BROADCAST FM,CORDOBA listen,-31.4201,-64.1888,60,,ex FM Cordoba;src ENACOM25+WRM
+104.100000,WFM,200,Mia FM 104.1,BROADCAST FM,CORDOBA listen,-31.4201,-64.1888,60,,src ENACOM25+INFONEG
+102.900000,WFM,200,La 100 Cordoba 102.9,BROADCAST FM,CORDOBA listen,-31.4201,-64.1888,60,,src ENACOM25+INFONEG
+96.500000,WFM,200,Suquia 96.5,BROADCAST FM,CORDOBA listen,-31.4201,-64.1888,60,,src ENACOM25+INFONEG
+96.100000,WFM,200,Shopping Classics 96.1,BROADCAST FM,CORDOBA listen,-31.4201,-64.1888,60,,Grupo Shopping;src ENACOM25+INFONEG
+88.900000,WFM,200,Pobre Johnny 88.9,BROADCAST FM,CORDOBA listen,-31.4201,-64.1888,60,,Grupo Shopping;src INFONEG+WRM
+94.700000,WFM,200,Loca Suelta 94.7,BROADCAST FM,CORDOBA listen,-31.4201,-64.1888,60,,src ENACOM25+INFONEG
+103.500000,WFM,200,Continental Cba 103.5,BROADCAST FM,CORDOBA listen,-31.4201,-64.1888,60,,src ENACOM25+WRM
+102.300000,WFM,200,Universidad FM 102.3,BROADCAST FM,CORDOBA listen,-31.4201,-64.1888,60,,UNC;src ENACOM25+WRM
+95.500000,WFM,200,Cosquin Rock 95.5,BROADCAST FM,CORDOBA listen,-31.4201,-64.1888,60,,src ENACOM25+ESWIKI;WRM lists 90.3
+106.300000,WFM,200,Gamba 106.3,BROADCAST FM,CORDOBA listen,-31.4201,-64.1888,60,,src ENACOM25+INFONEG
+0.830000,AM,10,LT8 Radio Rosario 830,BROADCAST AM,ROSARIO listen hf,-32.9468,-60.6393,150,,LT8;src ENACOM25+SITE
+1.230000,AM,10,LT2 Radio 2 AM 1230,BROADCAST AM,ROSARIO listen hf,-32.9468,-60.6393,150,,LT2;Television Litoral;src ENACOM25+APP
+0.680000,AM,10,LT3 Cerealista AM 680,BROADCAST AM,ROSARIO listen hf,-32.9468,-60.6393,150,,LT3;relays Rivadavia 2026;src ENACOM25+LETRAP26
+1.300000,AM,10,LRA5 Nacional Ros AM,BROADCAST AM,ROSARIO listen hf,-32.9468,-60.6393,150,,LRA5;src ENACOM25+ESWIKI
+1.330000,AM,10,AM 1330 Rosario,BROADCAST AM,ROSARIO listen hf,-32.9468,-60.6393,150,,src ENACOM25+WRM
+104.500000,WFM,200,LRA5 Nacional Ros FM,BROADCAST FM,ROSARIO listen,-32.9468,-60.6393,60,,LRA305;src ESWIKI+WRM
+100.100000,WFM,200,Cadena 3 Rosario 100.1,BROADCAST FM,ROSARIO listen,-32.9468,-60.6393,60,,src ENACOM25+ESWIKI
+93.100000,WFM,200,FM Plus 93.1,BROADCAST FM,ROSARIO listen,-32.9468,-60.6393,60,,LRI818;Television Litoral;src ENACOM25+WRM
+97.300000,WFM,200,Boing 97.3,BROADCAST FM,ROSARIO listen,-32.9468,-60.6393,60,,src ENACOM25+WRM
+96.100000,WFM,200,Pop Radio Rosario 96.1,BROADCAST FM,ROSARIO listen,-32.9468,-60.6393,60,,src ENACOM25+WRM
+105.500000,WFM,200,Red TL 105.5,BROADCAST FM,ROSARIO listen,-32.9468,-60.6393,60,,LRI809;src ENACOM25+WRM
+106.700000,WFM,200,Fisherton Classic 106.7,BROADCAST FM,ROSARIO listen,-32.9468,-60.6393,60,,src ENACOM25+WRM
+94.100000,WFM,200,M90 Vintage 94.1,BROADCAST FM,ROSARIO listen,-32.9468,-60.6393,60,,src ENACOM25+WRM
+100.700000,WFM,200,Radiofonica 100.7,BROADCAST FM,ROSARIO listen,-32.9468,-60.6393,60,,LRI310;src ENACOM25+WRM
+103.300000,WFM,200,Radio UNR 103.3,BROADCAST FM,ROSARIO listen,-32.9468,-60.6393,60,,university;src APP+CONCLUSION
+90.900000,WFM,200,Rock & Pop Rosario 90.9,BROADCAST FM,ROSARIO listen,-32.9468,-60.6393,60,,src WRM+STREEMA
+0.960000,AM,10,LRA6 Nacional Mza AM,BROADCAST AM,MENDOZA listen hf,-32.8895,-68.8458,150,,LRA6;src ENACOM25+ESWIKI
+0.720000,AM,10,LV10 Radio de Cuyo AM,BROADCAST AM,MENDOZA listen hf,-32.8895,-68.8458,150,,LV10;src ENACOM25+WRM
+0.680000,AM,10,LV6 Radio Nihuil AM,BROADCAST AM,MENDOZA listen hf,-32.8895,-68.8458,150,,LV6;Grupo America;src ENACOM25+SITE
+0.780000,AM,10,LV8 Libertador AM 780,BROADCAST AM,MENDOZA listen hf,-32.8895,-68.8458,150,,LV8;Radio Nacional network;src ENACOM25+WRM
+97.100000,WFM,200,LRA6 Nacional Mza FM,BROADCAST FM,MENDOZA listen,-32.8895,-68.8458,60,,src ESWIKI+WRM
+98.900000,WFM,200,Nihuil FM 98.9,BROADCAST FM,MENDOZA listen,-32.8895,-68.8458,60,,LRJ368;src SITE+WRM
+104.100000,WFM,200,LV10 Radio de Cuyo FM,BROADCAST FM,MENDOZA listen,-32.8895,-68.8458,60,,src WRM+STREEMA
+97.700000,WFM,200,Cadena 3 Mendoza 97.7,BROADCAST FM,MENDOZA listen,-32.8895,-68.8458,60,,LRJ387;src ENACOM25+ENACOM16
+100.300000,WFM,200,Radio Mitre Mza 100.3,BROADCAST FM,MENDOZA listen,-32.8895,-68.8458,60,,LRJ369;src WRM+STREEMA
+96.500000,WFM,200,Radio U 96.5,BROADCAST FM,MENDOZA listen,-32.8895,-68.8458,60,,UNCuyo;src ENACOM25+WRM
+105.500000,WFM,200,MDZ Radio 105.5,BROADCAST FM,MENDOZA listen,-32.8895,-68.8458,60,,src ENACOM25+WRM
+94.100000,WFM,200,La Red Mendoza 94.1,BROADCAST FM,MENDOZA listen,-32.8895,-68.8458,60,,src ENACOM25+WRM
+93.700000,WFM,200,Montecristo 93.7,BROADCAST FM,MENDOZA listen,-32.8895,-68.8458,60,,src ENACOM25+WRM
+98.100000,WFM,200,FM Ayer 98.1,BROADCAST FM,MENDOZA listen,-32.8895,-68.8458,60,,LRJ705;src ENACOM25+WRM
+94.900000,WFM,200,Brava 94.9,BROADCAST FM,MENDOZA listen,-32.8895,-68.8458,60,,src ENACOM25+WRM
+90.100000,WFM,200,Andina 90.1,BROADCAST FM,MENDOZA listen,-32.8895,-68.8458,60,,LRJ733;src ENACOM25+WRM
+0.760000,AM,10,LU6 Atlantica AM 760,BROADCAST AM,MDQ listen hf,-38.0055,-57.5426,150,,LU6;src ENACOM25+WRM
+0.670000,AM,10,LU9 Mar del Plata AM 670,BROADCAST AM,MDQ listen hf,-38.0055,-57.5426,150,,LU9;src ENACOM25+WRM
+93.300000,WFM,200,LU6 Atlantica FM 93.3,BROADCAST FM,MDQ listen,-38.0055,-57.5426,60,,src WRM+STREEMA
+98.500000,WFM,200,Radio Brisas 98.5,BROADCAST FM,MDQ listen,-38.0055,-57.5426,60,,LRI782;src ENACOM25+WRM
+97.300000,WFM,200,La 97 MDQ 97.3,BROADCAST FM,MDQ listen,-38.0055,-57.5426,60,,src ENACOM25+WRM
+94.100000,WFM,200,Continental MDQ 94.1,BROADCAST FM,MDQ listen,-38.0055,-57.5426,60,,LRI438;src ENACOM25+WRM
+98.900000,WFM,200,Metro MDQ 98.9,BROADCAST FM,MDQ listen,-38.0055,-57.5426,60,,src ENACOM25+WRM
+90.100000,WFM,200,Mega MDQ 90.1,BROADCAST FM,MDQ listen,-38.0055,-57.5426,60,,src ENACOM25+WRM
+96.100000,WFM,200,Cadena 3 MDQ 96.1,BROADCAST FM,MDQ listen,-38.0055,-57.5426,60,,LRI765;src ESWIKI+WRM
+0.690000,AM,10,LRA4 Nacional Salta AM,BROADCAST AM,SALTA listen hf,-24.7821,-65.4232,150,,LRA4;src ENACOM25+WRM
+102.700000,WFM,200,LRA4 Nacional Salta FM,BROADCAST FM,SALTA listen,-24.7821,-65.4232,60,,src ESWIKI+WRM
+0.840000,AM,10,LV9 Radio Salta AM 840,BROADCAST AM,SALTA listen hf,-24.7821,-65.4232,150,,LV9;src ENACOM25+WRM
+96.900000,WFM,200,Radio Salta FM 96.9,BROADCAST FM,SALTA listen,-24.7821,-65.4232,60,,LRK740;src ENACOM25+WRM
+98.300000,WFM,200,La Red Salta 98.3,BROADCAST FM,SALTA listen,-24.7821,-65.4232,60,,src ENACOM25+WRM
+104.100000,WFM,200,Cadena 3 Salta 104.1,BROADCAST FM,SALTA listen,-24.7821,-65.4232,60,,LRK341;src ENACOM16+WRM
+101.500000,WFM,200,Radio 10 Salta 101.5,BROADCAST FM,SALTA listen,-24.7821,-65.4232,60,,src R10+WRM
+1.190000,AM,10,LRA15 Nacional Tuc AM,BROADCAST AM,TUCUMAN listen hf,-26.8083,-65.2176,150,,LRA15;src ESWIKI+WRM
+98.700000,WFM,200,LRA15 Nacional Tuc FM,BROADCAST FM,TUCUMAN listen,-26.8083,-65.2176,60,,src ENACOM25+WRM
+0.930000,AM,10,LV7 Radio Tucuman AM,BROADCAST AM,TUCUMAN listen hf,-26.8083,-65.2176,150,,LV7;src ENACOM25+WRM
+102.700000,WFM,200,LV7 Radio Tucuman FM,BROADCAST FM,TUCUMAN listen,-26.8083,-65.2176,60,,src ENACOM25+WRM
+0.590000,AM,10,LV12 Independencia AM,BROADCAST AM,TUCUMAN listen hf,-26.8083,-65.2176,150,,LV12;src ENACOM25+WRM
+99.500000,WFM,200,Radio Mitre Tucuman 99.5,BROADCAST FM,TUCUMAN listen,-26.8083,-65.2176,60,,LRK381;src ENACOM25+WRM
+107.500000,WFM,200,Cadena 3 Tucuman 107.5,BROADCAST FM,TUCUMAN listen,-26.8083,-65.2176,60,,LRK387;src ENACOM16+WRM
+101.500000,WFM,200,Radio 10 Tucuman 101.5,BROADCAST FM,TUCUMAN listen,-26.8083,-65.2176,60,,src R10+WRM
+0.600000,AM,10,Radio Neuquen AM 600,BROADCAST AM,NEUQUEN listen hf,-38.9516,-68.0591,150,,src ENACOM25+ESWIKI
+103.300000,WFM,200,LRA43 Nacional NQN FM,BROADCAST FM,NEUQUEN listen,-38.9516,-68.0591,60,,LRA343;src ENACOM25+ESWIKI
+100.100000,WFM,200,Cadena 3 Neuquen 100.1,BROADCAST FM,NEUQUEN listen,-38.9516,-68.0591,60,,LRG341;src ENACOM25+ENACOM16
+94.100000,WFM,200,La Red Neuquen 94.1,BROADCAST FM,NEUQUEN listen,-38.9516,-68.0591,60,,src ENACOM25
+96.500000,WFM,200,Vorterix Neuquen 96.5,BROADCAST FM,NEUQUEN listen,-38.9516,-68.0591,60,,src ENACOM25
+103.700000,WFM,200,Univ Comahue 103.7,BROADCAST FM,NEUQUEN listen,-38.9516,-68.0591,60,,src ENACOM25
+98.500000,WFM,200,Radio 10 Neuquen 98.5,BROADCAST FM,NEUQUEN listen,-38.9516,-68.0591,60,,src R10
+0.590000,AM,10,LRA30 Nacional BRC AM,BROADCAST AM,BARILOCHE listen hf,-41.1335,-71.3103,150,,LRA30;src ENACOM25+ESWIKI
+95.500000,WFM,200,LRA30 Nacional BRC FM,BROADCAST FM,BARILOCHE listen,-41.1335,-71.3103,60,,relays Nacional Rock since 2024;src HCDN24+ESWIKI
+99.300000,WFM,200,Cadena 3 Bariloche 99.3,BROADCAST FM,BARILOCHE listen,-41.1335,-71.3103,60,,LRG731;src ENACOM25+ENACOM16
+103.100000,WFM,200,Radio 6 Bariloche 103.1,BROADCAST FM,BARILOCHE listen,-41.1335,-71.3103,60,,src ENACOM25
+92.500000,WFM,200,Radio 10 Bariloche 92.5,BROADCAST FM,BARILOCHE listen,-41.1335,-71.3103,60,,src R10
+0.780000,AM,10,LRA10 Nacional USH AM,BROADCAST AM,USHUAIA listen hf,-54.8019,-68.3030,150,,LRA10;src ENACOM25+WRM
+92.100000,WFM,200,LRA10 Nacional USH FM,BROADCAST FM,USHUAIA listen,-54.8019,-68.3030,60,,LRA310;src ESWIKI+WRM
+106.100000,WFM,200,Cadena 3 Ushuaia 106.1,BROADCAST FM,USHUAIA listen,-54.8019,-68.3030,60,,LRF337;src ENACOM25+ENACOM16+WRM
+104.500000,WFM,200,Radio 10 Ushuaia 104.5,BROADCAST FM,USHUAIA listen,-54.8019,-68.3030,60,,src R10
+0.640000,AM,10,LRA24 Nacional RGA AM,BROADCAST AM,RIOGRANDE listen hf,-53.7877,-67.7095,150,,LRA24;src ENACOM25+WRM
+0.790000,AM,10,LRA22 Nacional Jujuy AM,BROADCAST AM,JUJUY listen hf,-24.1858,-65.2995,150,,LRA22;src ENACOM25+WRM
+94.100000,WFM,200,LRA22 Nacional Jujuy FM,BROADCAST FM,JUJUY listen,-24.1858,-65.2995,60,,relays Nacional Folklorica since 2024;src HCDN24+ESWIKI
+0.630000,AM,10,LW8 San Salvador AM 630,BROADCAST AM,JUJUY listen hf,-24.1858,-65.2995,150,,LW8;src ENACOM25+WRM
+1.150000,AM,10,LRA2 Nacional Viedma AM,BROADCAST AM,VIEDMA listen hf,-40.8135,-62.9967,150,,LRA2;src ENACOM25+ESWIKI
+0.730000,AM,10,LRA3 Nacional SRosa AM,BROADCAST AM,SANTAROSA listen hf,-36.6167,-64.2833,150,,LRA3;src ENACOM25+ESWIKI
+94.100000,WFM,200,LRA8 Nacional Formosa FM,BROADCAST FM,FORMOSA listen,-26.1775,-58.1781,60,,LRA8;src ENACOM25+ESWIKI
+0.630000,AM,10,LU4 Patagonia Arg AM,BROADCAST AM,COMODORO listen hf,-45.8641,-67.4966,150,,LU4;Radio Nacional network;src ENACOM25+RNSITE
+95.100000,WFM,200,LRA13 Nac Bahia Bca FM,BROADCAST FM,BAHIABLANCA listen,-38.7183,-62.2663,60,,LRA13;src ENACOM25;eswiki lists 99.3
+0.540000,AM,10,LRA14 Nacional SFe AM,BROADCAST AM,SANTAFE listen hf,-31.6333,-60.7000,150,,LRA14;src ENACOM25+ESWIKI+WRM
+98.500000,WFM,200,LRA21 Nacional Sgo FM,BROADCAST FM,SANTIAGO listen,-27.7951,-64.2615,60,,LRA21;relays Folklorica since 2024;src ENACOM25+HCDN24
+101.700000,WFM,200,LRA23 Nacional SJuan FM,BROADCAST FM,SANJUAN listen,-31.5375,-68.5364,60,,LRA23;src ENACOM25;HCDN24 and eswiki say 101.9
+0.620000,AM,10,LRA26 Nacional Resist AM,BROADCAST AM,RESISTENCIA listen hf,-27.4606,-58.9839,150,,LRA26;src ENACOM25+ESWIKI
+0.730000,AM,10,LRA27 Nacional Catam AM,BROADCAST AM,CATAMARCA listen hf,-28.4696,-65.7795,150,,LRA27;src ENACOM25+ESWIKI
+102.500000,WFM,200,LRA28 Nacional LRioja FM,BROADCAST FM,LARIOJA listen,-29.4131,-66.8558,60,,LRA28;src ENACOM25+ESWIKI
+1.170000,AM,10,LRA29 Nacional SLuis AM,BROADCAST AM,SANLUIS listen hf,-33.2950,-66.3356,150,,LRA29;src ENACOM25+ESWIKI

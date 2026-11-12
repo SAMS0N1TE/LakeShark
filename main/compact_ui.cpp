@@ -78,6 +78,10 @@ extern "C" bool rec_watch_notify(const char *peer, const char *text)
 { return ls_mesh_queue_dm(peer, text); }
 extern "C" void ls_scr_fm_show_page(int page);
 extern "C" void ls_cell_publish(void);
+/* FREQS (ls_freqs.h): its action, the UI task's share and the console. */
+extern "C" void ls_freqs_register(void);
+extern "C" void ls_freqs_tick(void);
+extern "C" void ls_freqs_console_register(void);
 extern "C" void ls_rterm_picture_tx(uint32_t *bytes, uint32_t *lines, uint32_t *captures) __attribute__((weak));
 extern "C" bool cell_report_transport_known(const char *peer)
 {return ls_mesh_peer_known(peer);}
@@ -1477,7 +1481,7 @@ static bool tui_session(void)
                                  ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf, ls_scr_cell,
                                  ls_scr_notes, ls_scr_compass, ls_scr_music, ls_scr_rfsurvey, ls_scr_fox,
                                  ls_scr_files, ls_scr_experiments, ls_scr_terminal,
-                                 ls_scr_update, ls_scr_tmach, ls_scr_meters;
+                                 ls_scr_update, ls_scr_tmach, ls_scr_meters, ls_scr_freqs;
     extern const ls_app_doc_t ls_doc_tiles;
     if (ls_app_count() == 0) {
         ls_wireless_set_active(false);
@@ -1488,6 +1492,7 @@ static bool tui_session(void)
            knows, ls_action is what it can be asked to do. A user app binds
            to both by name and to neither by symbol. */
         ls_action_register_builtin();
+        ls_freqs_register();
         ls_cell_publish();
         ls_ota_publish();
 
@@ -1502,6 +1507,8 @@ static bool tui_session(void)
               LS_APP_MAIN, &ls_scr_adsb, tui_live_adsb, &ls_doc_adsb },
             { "falls","FALLS","spectrum",  LS_ICON_FALLS, TUI_BLUE,
               LS_APP_EXTRA, &ls_scr_falls, nullptr, &ls_doc_falls },
+            { "freqs","FREQS","frequency list", LS_ICON_FREQS, TUI_YELLOW,
+              LS_APP_EXTRA, &ls_scr_freqs, nullptr, &ls_doc_freqs },
 #if !LS_LR_EDITION
             { "cell", "CELL WATCH", "cell survey", LS_ICON_CELL, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_cell, nullptr, &ls_doc_cell },
@@ -1598,6 +1605,21 @@ static bool tui_session(void)
             const int rc = ls_app_register(&meters);
             if (rc < 0) ESP_LOGE("tdp_ui", "could not register app meters: %s", ls_app_register_why(rc));
         }
+        /* PINS: add-on wiring (boards with runtime pins: the Nano). Its own
+           tile, a header strip, in the slot beside METERS. */
+#if defined(LS_BOARD_PINS_RUNTIME) && LS_BOARD_PINS_RUNTIME
+        if (!cell_performance_active()) {
+            extern const ls_tui_screen_t ls_scr_pins;
+            static const char PINS_ART[LS_ICON_ROWS][LS_ICON_COLS + 1] = {
+                " .------. ", " |oooooo| ", " |oooooo| ", " '------' ", "  ||||||  ", "  ''''''  ",
+            };
+            const ls_app_t pins = { "pins", "PINS", "add-on wiring",
+                ls_icon_art(LS_ICON_ART_MAX - 2, PINS_ART, LS_ICON_CHIP), TUI_GREEN,
+                LS_APP_EXTRA, &ls_scr_pins, nullptr, &ls_doc_pins };
+            const int rc = ls_app_register(&pins);
+            if (rc < 0) ESP_LOGE("tdp_ui", "could not register app pins: %s", ls_app_register_why(rc));
+        }
+#endif
 
         {
             static const char *const TABS[] = { "home", "mesh", "radios", "set" };
@@ -1760,6 +1782,8 @@ static bool tui_session(void)
         display_ctl_tick();
         /* WATCH parks and restores around the dark (ls_power.h). */
         ls_power_tick();
+        /* FREQS: a save's banner, a console tune. */
+        ls_freqs_tick();
 
         /* Attachment selects landscape once, including a keyboard present at
            boot. Keep this state across session rebuilds so turning the board
@@ -3839,6 +3863,15 @@ static int rtc_cmd(int argc, char **argv)
 
 static int mesh_cmd(int argc, char **argv)
 {
+    if (argc >= 2 && !strcmp(argv[1], "primary")) {
+        if (argc >= 3) {
+            const int p = !strcmp(argv[2], "meshtastic") ? 1 : !strcmp(argv[2], "meshcore") ? 0 : -1;
+            if (p < 0) { printf("mesh: primary meshcore|meshtastic\n"); return 1; }
+            if (ls_mesh_set_primary(p) != ESP_OK) { printf("mesh: could not switch\n"); return 1; }
+        }
+        printf("mesh: primary %s\n", ls_mesh_primary() ? "MESHTASTIC (until restart; open its app)" : "MESHCORE");
+        return 0;
+    }
     if (argc >= 2 && !strcmp(argv[1], "start")) {
         esp_err_t err = ls_mesh_start();
         printf("mesh: start %s\n", esp_err_to_name(err));
@@ -4476,6 +4509,7 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     ls_ota_console_register();
     ls_lap_console_register();
     ls_power_console_register();
+    ls_freqs_console_register();
     static const esp_console_cmd_t cmd={.command="display",.help=LS_TXT(con_compact_ui_display_help, "Display: rotate | 0 | 90 | 180 | 270 | on | off | brightness 5..100 | timeout 5..240 | autodim on|off"),.hint=nullptr,.func=display_cmd,.argtable=nullptr};
     esp_console_cmd_register(&cmd);
 

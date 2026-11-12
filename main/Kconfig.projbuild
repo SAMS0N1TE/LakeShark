@@ -98,6 +98,16 @@ menu "LakeShark"
             the board's DSI connector. Nothing changes until a panel is saved
             with 'panel set <name>'; with none the board stays headless.
 
+    config LS_TX_UNLOCKED
+        bool "Experimental: no software TX limits (lab testing)"
+        default n
+        help
+            Removes every software transmit limit: band and region checks,
+            power caps, time-on-air, duty and heat budgets, and edge and
+            duration caps on replay. What is left is what the hardware
+            itself cannot do: a chip's own register range, the PA path it
+            has, and buffer sizes. Never enable in a release build.
+
     config LS_NANO_RAM_BUDGET
         bool "Nano desktop internal RAM budget"
         depends on LS_BOARD_P4_NANO && LS_PANEL_RUNTIME && SPIRAM
@@ -254,6 +264,14 @@ menu "LakeShark"
 
             Requires compatible ESP-Hosted firmware on the ESP32-C6.
             Disable when the co-processor uses a different protocol.
+
+    config LS_RTERM_WEB
+        bool "Web screen (the board's screen in a browser over WiFi)"
+        default y
+        help
+            'term web on' serves a page on port 80 with the screen and its keys
+            (about 80 KB of page, scripts and icons). Off, the USB screen feed and
+            telnet still work; the T-Display builds turn it off for app space.
 
     config LS_SSH
         bool "SSH for the network terminal"

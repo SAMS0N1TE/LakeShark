@@ -49,6 +49,7 @@ static int s_notification_sound = SETTINGS_NOTIFY_ALERT;
 static int s_desk_theme = -1;
 static uint32_t s_desk_wallpaper;
 static uint32_t s_desk_words[SETTINGS_DESK_WORDS];
+static uint32_t s_freqs_view;
 static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_audio_muted;
 static uint32_t s_fm_step;
@@ -454,6 +455,9 @@ bool settings_init(void)
         uint32_t v = 0;
         if (nvs_get_u32(s_nvs, k, &v) == ESP_OK) __atomic_store_n(&s_desk_words[i], v, __ATOMIC_RELEASE);
     }
+    uint32_t freqs_view = 0;
+    if (nvs_get_u32(s_nvs, "freqs_view", &freqs_view) == ESP_OK)
+        __atomic_store_n(&s_freqs_view, freqs_view, __ATOMIC_RELEASE);
     uint8_t notification_sound = SETTINGS_NOTIFY_ALERT;
     if (nvs_get_u8(s_nvs, "notify_snd", &notification_sound) == ESP_OK &&
         notification_sound < SETTINGS_NOTIFY_COUNT)
@@ -616,6 +620,19 @@ bool settings_set_p25_skip_encrypted(bool enabled)
     return sput_u8("p25_skipenc", enabled ? 1u : 0u);
 }
 
+bool settings_get_p25_phase2_follow(void)
+{
+    if (!s_nvs_ok) return false;
+    uint8_t v = 0;
+    if (nvs_get_u8(s_nvs, "p25_p2follow", &v) != ESP_OK || v > 1) return false;
+    return v != 0;
+}
+
+bool settings_set_p25_phase2_follow(bool enabled)
+{
+    return sput_u8("p25_p2follow", enabled ? 1u : 0u);
+}
+
 uint32_t settings_get_p25_encrypted_skip_ms(void)
 {
     if (!s_nvs_ok) return P25_CONTROL_ENCRYPTED_SKIP_DEFAULT_MS;
@@ -628,6 +645,21 @@ uint32_t settings_get_p25_encrypted_skip_ms(void)
 bool settings_set_p25_encrypted_skip_ms(uint32_t ms)
 {
     return sput_u32("p25_skipms", p25_controls_clamp_encrypted_skip_ms(ms));
+}
+
+/* Time on the voice channel after an over, waiting for the next one. */
+uint32_t settings_get_p25_linger_ms(void)
+{
+    if (!s_nvs_ok) return P25_FOLLOW_LINGER_DEFAULT_MS;
+    uint32_t v = P25_FOLLOW_LINGER_DEFAULT_MS;
+    if (nvs_get_u32(s_nvs, "p25_linger", &v) != ESP_OK || v > P25_FOLLOW_LINGER_MAX_MS)
+        return P25_FOLLOW_LINGER_DEFAULT_MS;
+    return v;
+}
+
+bool settings_set_p25_linger_ms(uint32_t ms)
+{
+    return ms <= P25_FOLLOW_LINGER_MAX_MS && sput_u32("p25_linger", ms);
 }
 
 void settings_get_p25_cqpsk(p25_cqpsk_config_t *config)
@@ -1237,7 +1269,7 @@ int settings_get_subghz_gate_db(void)
 }
 void settings_set_subghz_gate_db(int db)
 {
-    if (!s_nvs_ok || db < 1 || db > 60) return;
+    if (!s_nvs_ok || db < 1 || db > 90) return;
     sput_u8("sg_gate", (uint8_t)db);
 }
 int settings_get_subghz_on_hit(void)
@@ -1348,6 +1380,17 @@ void settings_set_subghz_style(int style)
     if (!s_nvs_ok || style < 0 || style > 8) return;
     sput_u8("sg_style", (uint8_t)style);
 }
+bool settings_get_subghz_lr_fsk(void)
+{
+    uint8_t v = 0;
+    if (!s_nvs_ok || nvs_get_u8(s_nvs, "sg_lrfsk", &v) != ESP_OK) return false;
+    return v != 0;
+}
+void settings_set_subghz_lr_fsk(bool fsk)
+{
+    if (!s_nvs_ok) return;
+    sput_u8("sg_lrfsk", fsk ? 1 : 0);
+}
 int settings_get_subghz_colour(void)
 {
     if (!s_nvs_ok) return 0;
@@ -1427,6 +1470,16 @@ void settings_set_alert_ring(bool en)
 {
     if (sput_u8("alert_ring", en ? 1 : 0))
         __atomic_store_n(&s_alert_ring,en,__ATOMIC_RELEASE);
+}
+bool settings_get_haptics(void)
+{
+    uint8_t v = 1;
+    if (!s_nvs_ok || nvs_get_u8(s_nvs, "haptics", &v) != ESP_OK) return true;
+    return v != 0;
+}
+void settings_set_haptics(bool on)
+{
+    if (s_nvs_ok) sput_u8("haptics", on ? 1 : 0);
 }
 bool settings_get_alert_vibe(void)
 {
@@ -1663,6 +1716,24 @@ void settings_set_scan_zone(int zone)
     (void)set_put("scan_zone", SV_I8, (uint64_t)(int64_t)zone);
 }
 
+/* One word: hang and priority look in tenths of a second, the open level in
+   percent, and a top bit saying it was ever written. */
+bool settings_get_scan_tuning(int *hang_ms, int *thresh_pct, int *pri_ms)
+{
+    uint32_t v = 0;
+    if (!s_nvs_ok || nvs_get_u32(s_nvs, "scan_tune", &v) != ESP_OK || !(v >> 31)) return false;
+    *hang_ms = (int)(v & 0x1FFu) * 100;
+    *thresh_pct = (int)((v >> 9) & 0x7Fu);
+    *pri_ms = (int)((v >> 16) & 0x3FFu) * 100;
+    return true;
+}
+void settings_set_scan_tuning(int hang_ms, int thresh_pct, int pri_ms)
+{
+    if (!s_nvs_ok) return;
+    (void)sput_u32("scan_tune", 1u << 31 | ((uint32_t)(hang_ms / 100) & 0x1FFu) |
+                   ((uint32_t)thresh_pct & 0x7Fu) << 9 | ((uint32_t)(pri_ms / 100) & 0x3FFu) << 16);
+}
+
 /* Speech voice by stable id (speech_voice_t); out-of-range reads as 0. */
 int settings_speech_voice_get(void)
 {
@@ -1822,6 +1893,13 @@ void settings_set_desk_word(int slot, uint32_t v)
     char k[12];
     snprintf(k, sizeof(k), "desk_w%d", slot);
     if (s_wq) sput_u32(k, v);
+}
+uint32_t settings_get_freqs_view(void) { return __atomic_load_n(&s_freqs_view, __ATOMIC_ACQUIRE); }
+void settings_set_freqs_view(uint32_t v)
+{
+    if (v == settings_get_freqs_view()) return;
+    __atomic_store_n(&s_freqs_view, v, __ATOMIC_RELEASE);
+    if (s_wq) sput_u32("freqs_view", v);
 }
 uint32_t settings_get_desk_wallpaper(void) { return __atomic_load_n(&s_desk_wallpaper, __ATOMIC_ACQUIRE); }
 void settings_set_desk_wallpaper(uint32_t id)

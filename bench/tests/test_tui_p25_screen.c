@@ -1289,7 +1289,7 @@ LS_CASE(valid_zero_nac_renders_and_old_channel_identity_is_hidden)
     LS_CHECK(!rect_has(PORTRAIT, "293"));
     P25.dsd_nac_valid = false;
 }
-LS_CASE(lr_iq_settings_omit_fsk_gain_and_refuse_phase2)
+LS_CASE(lr_iq_settings_omit_fsk_gain_and_offer_phase2)
 {
     ls_value_publish("p25.lrgain", "step", v_fake_lrgain);
     ls_action_register("p25.lrgain", "i", LS_CAP_TUNE, a_fake_lrgain, "test");
@@ -1320,8 +1320,10 @@ LS_CASE(lr_iq_settings_omit_fsk_gain_and_refuse_phase2)
     LS_CHECK(lakeshark_p25_polarity_inverted() == before_polarity);
     LS_EQ_INT(s_fake_lrgain, 0);
     ls_opt_close(); ls_scr_p25.key(LS_TK_CHAR, '4');
+    /* Phase II runs on the LR2021's I/Q since 2.21.3-rc3. */
     filter_option("Phase II (exp)"); p25_p2_enable(false);
-    ls_picker_key(LS_TK_ENTER, 0); LS_CHECK(!p25_p2_enabled());
+    ls_picker_key(LS_TK_ENTER, 0); LS_CHECK(p25_p2_enabled());
+    p25_p2_enable(false);
     ls_opt_close(); P25.lora_rx = false;
     ls_rsel_set(LS_RSEL_P25, LS_RSEL_SDR_RTL);
 }
@@ -1369,6 +1371,62 @@ LS_CASE(options_reach_p25_policy_and_survey_controls)
     ls_picker_key(LS_TK_ENTER, 0);
     LS_EQ_INT(p25_program_survey_active_now(), before);
     ls_opt_close(); P25.hold_tg = 0; P25.dsd_tg = 0;
+}
+static bool picker_shows(const char *text)
+{
+    fresh(); grid_for(PORTRAIT); ls_picker_draw(&g_sf, PORTRAIT);
+    return rect_has(PORTRAIT, text);
+}
+LS_CASE(trunk_following_is_configurable_from_options)
+{
+    ls_opt_close(); ls_scr_p25.key(LS_TK_CHAR, '1');
+
+    /* Follow linger: stepped with < and >, saved through the app. */
+    ls_scr_p25.key(LS_TK_CHAR, 'o'); filter_option("Follow linger");
+    unsigned before = p25_get_follow_linger_ms();
+    LS_CHECK(picker_shows("Follow linger"));
+    ls_picker_key(LS_TK_RIGHT, 0);
+    LS_EQ_UINT(p25_get_follow_linger_ms(), before + 100);
+    LS_CHECK(picker_shows("1600"));
+    ls_picker_key(LS_TK_LEFT, 0);
+    LS_EQ_UINT(p25_get_follow_linger_ms(), before);
+    ls_opt_close();
+
+    /* Last grant: what became of the newest grant. */
+    snprintf(P25.follow_last_text, sizeof(P25.follow_last_text), "TG 201 SKIP: NOT ALLOWED");
+    P25.follow_last_us = esp_timer_get_time();
+    ls_scr_p25.key(LS_TK_CHAR, 'o'); filter_option("Last grant");
+    LS_CHECK(picker_shows("NOT ALLOWED"));
+    ls_opt_close();
+
+    /* Talkgroup policy names the system and its own follow switch. */
+    P25.here_sys = (p25_system_id_t){ .wacn = 0xBEE00, .sysid = 0x9DC, .valid = true };
+    P25.roster_sys = P25.here_sys;
+    P25.roster_applies = true; P25.roster_follow_off = false;
+    ls_scr_p25.key(LS_TK_CHAR, 'o'); filter_option("Talkgroup policy");
+    ls_picker_key(LS_TK_ENTER, 0); filter_option("This system");
+    LS_CHECK(picker_shows("BEE00-9DC"));
+    ls_opt_close();
+    ls_scr_p25.key(LS_TK_CHAR, 'o'); filter_option("Talkgroup policy");
+    ls_picker_key(LS_TK_ENTER, 0); filter_option("Follow on this");
+    ls_picker_key(LS_TK_ENTER, 0);
+    LS_CHECK(P25.roster_follow_off);
+    LS_CHECK(picker_shows("OFF HERE"));
+    ls_picker_key(LS_TK_ENTER, 0);
+    LS_CHECK(!P25.roster_follow_off);
+    ls_opt_close();
+
+    /* Forget this system's list: ENTER only. */
+    P25.lockout_count = 2; P25.hold_tg = 7;
+    ls_scr_p25.key(LS_TK_CHAR, 'o'); filter_option("Talkgroup policy");
+    ls_picker_key(LS_TK_ENTER, 0); filter_option("Forget this");
+    ls_picker_key(LS_TK_ENTER, 0);
+    LS_EQ_UINT(P25.lockout_count, 0);
+    LS_EQ_UINT(P25.hold_tg, 0);
+    ls_opt_close();
+    memset(&P25.here_sys, 0, sizeof(P25.here_sys));
+    memset(&P25.roster_sys, 0, sizeof(P25.roster_sys));
+    P25.follow_last_us = 0;
 }
 LS_CASE(trunking_failure_and_unresolved_grants_are_visible)
 {

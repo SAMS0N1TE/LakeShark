@@ -60,6 +60,7 @@ serial*.txt
 !/docs/screenshots/
 !/docs/apps/
 /tools/*
+!/tools/freqs/
 !/tools/observation_catalog.py
 !/docs/OBSERVATION_CATALOG.md
 !/docs/RECEIVER_TRIALS.md

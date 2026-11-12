@@ -1,3 +1,5 @@
+#include "lr_wf_session.h"
+#include "ls_tx_unlock.h"
 #include "adsb_app.h"
 #include "ble_hid.h"
 #include "tui/ls_rid.h"
@@ -87,6 +89,7 @@
 /**/
 #include "rec_space.h"
 #include "ls_board.h"
+#include "ls_pins.h"
 #include "ls_vitals.h"
 #include "ls_sdcard.h"
 #include "ls_keypad.h"
@@ -1133,6 +1136,11 @@ void ls_tui_radio_want(const char *mode_name)
     defer_post(DEFER_RADIO_WANT);
 }
 
+void ls_tui_radio_screen(bool radio_app)
+{
+    ls_mesh_radio_bg_allow(radio_app);
+}
+
 /* Which receiver mode is claimed, or NULL when the radio is parked. */
 
 const char *ls_tui_radio_claimed(void)
@@ -1453,6 +1461,14 @@ static int cmd_link(int argc, char **argv)
         cfg.rx_gpio = atoi(argv[2]);
         cfg.tx_gpio = atoi(argv[3]);
         printf("reconfigure: %s\n", esp_err_to_name(flipper_link_reconfigure(&cfg)));
+        if (ls_pins_runtime()) {
+            char why[64];
+            if (!ls_pin_set(LS_PIN_LINK_RX, cfg.rx_gpio, why, sizeof(why)) ||
+                !ls_pin_set(LS_PIN_LINK_TX, cfg.tx_gpio, why, sizeof(why)))
+                printf("not saved: %s\n", why);
+            else
+                printf("saved for later boots\n");
+        }
     } else {
         LS_FPUTS(msg_headless_main_usage_link_on_off, "usage: link [on|off|verbose <0|1>|baud <n>|tel <hz>|pins <rx> <tx>"
                "|probe]\n"
@@ -1502,7 +1518,7 @@ static int cmd_rec(int argc, char **argv)
             char *end;double mhz=strtod(argv[3],&end);
             if(end==argv[3] || *end || !(mhz>=150 && mhz<1000))return 1;
             long dbm=strtol(argv[4],&end,10);
-            if(end==argv[4] || *end || dbm<-9 || dbm>10)return 1;
+            if(end==argv[4] || *end || dbm<-9 || dbm>(LS_TX_UNLOCKED?22:10))return 1;
             bool fsk=argc>=6 && !strcmp(argv[argc-1],"fsk");
             int args=argc-(fsk?1:0);
             if(args>6)return 1;
@@ -1515,7 +1531,7 @@ static int cmd_rec(int argc, char **argv)
         if(argc==3 && !strcmp(argv[2],"stop"))rec_watch_iq_stop();
         if((argc==5 || argc==6) && !strcmp(argv[2],"replay")) {
             char *end;long dbm=strtol(argv[4],&end,10);
-            if(*end || dbm<-9 || dbm>10)return 1;
+            if(*end || dbm<-9 || dbm>(LS_TX_UNLOCKED?22:10))return 1;
             long rate=19200;
             if(argc==6){rate=strtol(argv[5],&end,10);if(end==argv[5] || *end || !rec_lr_iq_rate_supported((uint32_t)rate) || rate>125000 || rate<4800)return 1;}
             bool ok=rec_watch_iq_replay(argv[3],(int)dbm,(uint32_t)rate);
@@ -1533,6 +1549,12 @@ static int cmd_rec(int argc, char **argv)
             watch->ready,watch->enabled,watch->count,(unsigned long)watch->received,(unsigned long)watch->dropped);
         LS_PRINTF(fmt_headless_main_watch_alerts_queued_refused, "watch: %s; alerts=%d queued=%lu refused=%lu limited=%lu\n",watch->storage,
             watch->alerts,(unsigned long)watch->alert_sent,(unsigned long)watch->alert_failed,(unsigned long)watch->alert_suppressed);
+        /* The LR2021's I/Q stream, when WATCH is reading it: a gap is a few
+           ms the radio's ring overran, and a packet across it is cut. */
+        if(ls_lora_chip()==LS_LORA_CHIP_LR20XX) {
+            lr_wf_stats st={0};lr_wf_get_stats(&st);
+            printf("watch: lr2021 iq gaps=%lu lost=%lu pairs\n",(unsigned long)st.gaps,(unsigned long)st.lost_pairs);
+        }
         heap_caps_free(watch);return 0;
     }
     if (argc < 2 || !strcmp(argv[1], "status")) {
@@ -2476,6 +2498,24 @@ static int cmd_haptic(int argc, char **argv)
 
     if (argc > 1 && strcmp(argv[1], "stop") == 0) { ls_haptic_stop(); return 0; }
 
+    /* The master switch: taps, alerts and detections all go quiet. */
+    if (argc > 1 && (!strcmp(argv[1], "off") || !strcmp(argv[1], "on"))) {
+        const bool on = !strcmp(argv[1], "on");
+        if (!on) ls_haptic_stop();
+        ls_haptic_set_enabled(on);
+        settings_set_haptics(on);
+        printf("haptic: vibration %s (stored)\n", on ? "on" : "off");
+        return 0;
+    }
+    if (argc > 1 && !strcmp(argv[1], "state")) {
+        printf("haptic: vibration %s\n", ls_haptic_enabled() ? "on" : "off");
+        return 0;
+    }
+    if (argc > 1 && !ls_haptic_enabled()) {
+        printf("haptic: vibration is off - 'haptic on' first\n");
+        return 1;
+    }
+
     if (argc > 1 && strcmp(argv[1], "buzz") == 0) {
         const int ms  = (argc > 2) ? atoi(argv[2]) : 150;
         const int pct = (argc > 3) ? atoi(argv[3]) : 100;
@@ -2502,7 +2542,7 @@ static int cmd_haptic(int argc, char **argv)
 
     printf("haptic: effects -");
     for (int i = 0; i < LS_HAPTIC_EFFECT_COUNT; i++) printf(" %s", names[i]);
-    LS_FPUTS(msg_headless_main_haptic_also_buzz_ms, "\nhaptic: also 'buzz <ms> [percent]', 'stop', 'diag'\n", stdout);
+    LS_FPUTS(msg_headless_main_haptic_also_buzz_ms, "\nhaptic: also 'buzz <ms> [percent]', 'stop', 'diag', 'off', 'on', 'state'\n", stdout);
     return 0;
 }
 
@@ -3203,6 +3243,8 @@ static bool console_start(bool full)
 #endif
         { .command = "c6",     .help = LS_TXT(con_headless_main_c6_help, "ESP32-C6 co-processor: enable line, transport, firmware versions, SD update"),
           .hint = LS_TXT(con_headless_main_c6_hint, "<0|1|up|ver|reset|release|update [path] [force]|status>"), .func = &cmd_c6 },
+        { .command = "pin",    .help = "Add-on wiring: GPS, LoRa/LR2021, IMU, Flipper link pins (next boot)",
+          .hint = "[set <key> <gpio|none> | imu <addr> | reset]", .func = &ls_pins_cmd },
         { .command = "link",   .help = LS_TXT(con_headless_main_link_help, "Flipper serial head control"),
           .hint = LS_TXT(con_headless_main_link_hint, "[on|off|verbose <0|1>|baud <n>|tel <hz>|pins <rx> <tx>]"),
           .func = &cmd_link },
@@ -3221,8 +3263,8 @@ static bool console_start(bool full)
           .hint = LS_TXT(con_headless_main_snd_hint, "test <name>"), .func = &cmd_snd },
         { .command = "notify", .help = LS_TXT(con_headless_main_notify_help, "Post a test notice through the real path: banner, count, ring and vibrate"),
           .hint = LS_TXT(con_headless_main_notify_hint, "[ring|vibe|quiet|sound <alert|radiokey|roger|chirp|off>]"), .func = &cmd_notify },
-        { .command = "haptic", .help = LS_TXT(con_headless_main_haptic_help, "Vibration: play an effect, buzz for a time, or measure the motor"),
-          .hint = LS_TXT(con_headless_main_haptic_hint, "[tick|click|confirm|alert|warn|buzz <ms> [pct]|stop|diag]"),
+        { .command = "haptic", .help = LS_TXT(con_headless_main_haptic_help, "Vibration: play an effect, buzz for a time, measure the motor, or off|on"),
+          .hint = LS_TXT(con_headless_main_haptic_hint, "[tick|click|confirm|alert|warn|buzz <ms> [pct]|stop|diag|off|on|state]"),
           .func = &cmd_haptic },
         { .command = "track",  .help = LS_TXT(con_headless_main_track_help, "GPS track: 'track on|off' records to the card, 'track export' writes GPX, 'track rule <m> <s>' sets how often a point is kept"),
           .func = &cmd_track },
@@ -3376,6 +3418,7 @@ void app_main(void)
     /* initialize before BLE can load its pinned peer. Storage is
        static cache-safe DRAM, so this does not depend on heap availability. */
     esp_err_t nvs_worker_err = ls_nvs_init();
+    ls_pins_load();
     if (nvs_worker_err != ESP_OK)
         ESP_LOGE(TAG, "NVS dispatcher init failed: %s",
                  esp_err_to_name(nvs_worker_err));
@@ -3590,6 +3633,11 @@ void app_main(void)
 #endif
     ls_mesh_boot();
     lakeshark_backend_start();
+    /* The alert switches as stored. The notice path started with both on and
+       nothing loaded them, so "Alert sound: off" or "Vibrate: off" in SETTINGS
+       held only until the next boot while the row still said off. */
+    ls_notify_set_alerts(settings_get_alert_ring(),
+                         settings_get_alert_vibe() && ls_haptic_enabled());
     ls_drone_watch_start();
 
 #if LS_HAS_RF_SWITCH
@@ -3684,6 +3732,8 @@ void app_main(void)
 #if LS_HAS_LINK_UART
     esp_err_t lerr = ESP_ERR_NOT_SUPPORTED;
     flipper_link_cfg_t link_cfg = FLIPPER_LINK_CFG_DEFAULT();
+    link_cfg.rx_gpio = ls_pin(LS_PIN_LINK_RX);
+    link_cfg.tx_gpio = ls_pin(LS_PIN_LINK_TX);
     if (ls_keypad_present()) {
         ESP_LOGW(TAG, "flipper link held down: the keyboard owns GPIO%d/%d "
                       "(CC1101 GDO2 and nRF24 INT on the 2x8 header)",

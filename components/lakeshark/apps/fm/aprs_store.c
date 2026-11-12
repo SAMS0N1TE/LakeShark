@@ -49,7 +49,7 @@ static esp_err_t option_job(void *arg)
     } else {
         err = nvs_get_blob(h, "options_v1", v, &bytes);
         if (err == ESP_OK && bytes == sizeof(v) && v[0] >= 24000000 && v[0] <= 1766000000 &&
-            v[1] >= 1 && v[1] <= 1440 && v[2] <= 20000 && v[3] <= 2 && v[4] <= 1 && v[5] <= 1) {
+            v[1] >= 1 && v[1] <= 1440 && v[2] <= 20000 && v[3] <= 3 && v[4] <= 1 && v[5] <= 1) {
             j->value = (aprs_options_t){v[0], v[1], v[2], v[3], v[4], v[5]};
         } else err = ESP_ERR_INVALID_SIZE;
     }
@@ -66,7 +66,7 @@ void aprs_options_load(void)
 void aprs_options_get(aprs_options_t *out) { if (out) { lock(); *out = options; unlock(); } }
 void aprs_options_set(const aprs_options_t *o)
 {
-    if (!o || o->preset > 2 || o->keep_minutes < 1 || o->keep_minutes > 1440 ||
+    if (!o || o->preset > 3 || o->keep_minutes < 1 || o->keep_minutes > 1440 ||
         o->max_km > 20000 || o->custom_hz < 24000000 || o->custom_hz > 1766000000) return;
     lock(); options = *o; unlock();
 #ifdef ESP_PLATFORM
@@ -76,7 +76,8 @@ void aprs_options_set(const aprs_options_t *o)
 uint32_t aprs_frequency(void)
 {
     aprs_options_t o; aprs_options_get(&o);
-    return o.preset == 0 ? 144390000 : o.preset == 1 ? 144800000 : o.custom_hz;
+    return o.preset == 0 ? 144390000 : o.preset == 1 ? 144800000 :
+           o.preset == 3 ? 144930000 : o.custom_hz;
 }
 void aprs_store_clear(void) { lock(); count = 0; last_heard = 0; unlock(); }
 int64_t aprs_store_last_heard(void) { lock(); int64_t v = last_heard; unlock(); return v; }

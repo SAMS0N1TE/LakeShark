@@ -6,16 +6,65 @@
 #include <fcntl.h>
 #include <limits.h>
 #include "ls_textpack.h"
+#ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+/* A restore runs raised above its worker's priority (rec_watch_runtime.c),
+   so it lets the core go for a tick between reads. */
+#define RESTORE_YIELD() vTaskDelay(1)
+#else
+#define RESTORE_YIELD() ((void)0)
+#endif
 #ifdef _WIN32
 #include <io.h>
 #define fsync _commit
 #endif
 
 /* FAT/SDMMC cannot DMA directly to the catalog in PSRAM.  Keep every disk
-   transfer behind one sector-sized internal buffer instead of asking the
-   fragmented runtime heap for a large bounce allocation.  The watch runtime
-   serializes restore, checkpoint and export on its single I/O worker. */
+   transfer behind an internal buffer.  The watch runtime serializes restore,
+   checkpoint and export on its single I/O worker. */
 static uint8_t s_watch_io[512];
+
+/* A restore read both generations whole to check them and then the newer
+   again, a sector a call: 1,540 card commands. A restore now reads the
+   headers, then only the generation it loads, checked as it goes; a
+   checkpoint reads through only the one it keeps. Both borrow 4 KB of
+   DMA-capable internal RAM for their length when the heap has it, eight
+   sectors a call; without it, the sector buffer as before. (The caller
+   raises its priority for them - see rec_watch_runtime.c.) */
+#define WATCH_IO_BIG 4096
+typedef struct { uint8_t *p; size_t n; } watch_io_t;
+#ifndef ESP_PLATFORM
+static uint8_t s_watch_big[WATCH_IO_BIG];
+#endif
+static watch_io_t io_take(void)
+{
+#ifdef ESP_PLATFORM
+    uint8_t *p = heap_caps_aligned_alloc(128, WATCH_IO_BIG,
+                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+    if (p) return (watch_io_t){p, WATCH_IO_BIG};
+    return (watch_io_t){s_watch_io, sizeof(s_watch_io)};
+#else
+    return (watch_io_t){s_watch_big, sizeof(s_watch_big)};
+#endif
+}
+static void io_give(watch_io_t io)
+{
+#ifdef ESP_PLATFORM
+    if (io.p != s_watch_io) heap_caps_free(io.p);
+#else
+    (void)io;
+#endif
+}
+static uint32_t crc_step(uint32_t crc, const uint8_t *b, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        crc ^= b[i];
+        for (int k = 0; k < 8; k++) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
+    }
+    return crc;
+}
 
 bool rec_watch_export(const char *dir, const rec_watch_catalog_t *c, uint32_t id,
                       uint64_t free_bytes, char *result, size_t result_size)
@@ -113,28 +162,42 @@ static size_t payload_bytes_for(const header_t *h)
         return sizeof(rec_watch_catalog_v3_t);
     return 0;
 }
-static bool read_header(const char *dir, int slot, header_t *h,
-    void (*pump)(void *), void *context)
+/* The 32-byte header alone: enough to order the two generations. */
+static bool peek_header(const char *dir, int slot, header_t *h)
 {
     char path[256];
     if (snprintf(path,sizeof(path),"%s/watch%d.bin",dir,slot) >= (int)sizeof(path)) return false;
     FILE *f=fopen(path,"rb"); if (!f) return false;
     setvbuf(f,NULL,_IONBF,0);
     bool ok=fread(s_watch_io,1,sizeof(*h),f)==sizeof(*h);
+    fclose(f);
     if(ok)memcpy(h,s_watch_io,sizeof(*h));
+    return ok && h->magic==MAGIC && payload_bytes_for(h)!=0;
+}
+/* The whole generation, CRC and length checked, without keeping it. */
+static bool read_header(const char *dir, int slot, header_t *h, watch_io_t io,
+    void (*pump)(void *), void *context)
+{
+    char path[256];
+    if (snprintf(path,sizeof(path),"%s/watch%d.bin",dir,slot) >= (int)sizeof(path)) return false;
+    FILE *f=fopen(path,"rb"); if (!f) return false;
+    setvbuf(f,NULL,_IONBF,0);
+    bool ok=fread(io.p,1,sizeof(*h),f)==sizeof(*h);
+    if(ok)memcpy(h,io.p,sizeof(*h));
     const size_t payload=ok?payload_bytes_for(h):0;
     ok=ok && h->magic==MAGIC && payload!=0;
     uint32_t crc=UINT32_MAX;
-    uint8_t *buf=s_watch_io; size_t remaining=payload;
+    size_t remaining=payload, first=512-sizeof(*h);
     while (ok && remaining) {
-        size_t n=remaining<sizeof(s_watch_io)?remaining:sizeof(s_watch_io);
-        if (fread(buf,1,n,f)!=n) {ok=false;break;}
+        size_t n=remaining<io.n?remaining:io.n;
+        if(first){if(n>first)n=first;first=0;}
+        if (fread(io.p,1,n,f)!=n) {ok=false;break;}
         if (remaining==payload) {
             uint64_t id,sequence;
-            memcpy(&id,buf,sizeof(id));memcpy(&sequence,buf+8,sizeof(sequence));
+            memcpy(&id,io.p,sizeof(id));memcpy(&sequence,io.p+8,sizeof(sequence));
             if(id!=h->archive_id || sequence!=h->sequence) {ok=false;break;}
         }
-        for(size_t i=0;i<n;i++) {crc^=buf[i];for(int b=0;b<8;b++)crc=(crc>>1)^(0xedb88320u&(0u-(crc&1u)));}
+        crc=crc_step(crc,io.p,n);
         remaining-=n;
         if(pump)pump(context);
     }
@@ -167,28 +230,41 @@ bool rec_watch_store_pumped(const char *dir, const rec_watch_catalog_t *c,
 {
     if (!dir || !c || free_bytes==UINT64_MAX ||
         free_bytes < REC_WATCH_RESERVE + sizeof(*c) + sizeof(header_t)) return false;
-    header_t a={0}, b={0};
-    bool va=read_header(dir,0,&a,pump,context), vb=read_header(dir,1,&b,pump,context);
-    if ((va && a.archive_id!=c->archive_id) || (vb && b.archive_id!=c->archive_id)) return false;
-    if(!va && !vb) {
-        if(!quarantine_invalid(dir,0) || !quarantine_invalid(dir,1)) return false;
-    }
-    int slot=!va?0:!vb?1:a.sequence<=b.sequence?0:1;
+    /* The generation that is kept must be whole, so it is read through; the
+       one about to be overwritten is not - its header says which it is. */
+    header_t a={0}, b={0}, h={0};
+    const bool pa=peek_header(dir,0,&a), pb=peek_header(dir,1,&b);
+    int order[2], n=0;
+    if (pa && pb) { order[n++]=a.sequence>=b.sequence?0:1; order[n++]=a.sequence>=b.sequence?1:0; }
+    else if (pa) order[n++]=0;
+    else if (pb) order[n++]=1;
+    watch_io_t io=io_take();
+    int keep=-1;
+    for (int i=0;i<n && keep<0;i++)
+        if (read_header(dir,order[i],&h,io,pump,context)) keep=order[i];
+    if (keep>=0 && h.archive_id!=c->archive_id) { io_give(io); return false; }
+    if (keep<0 && (!quarantine_invalid(dir,0) || !quarantine_invalid(dir,1))) { io_give(io); return false; }
+    const int slot=keep<0?0:1-keep;
     char path[256];
-    if (snprintf(path,sizeof(path),"%s/watch%d.bin",dir,slot) >= (int)sizeof(path)) return false;
-    FILE *f=fopen(path,"wb"); if(!f)return false;
+    if (snprintf(path,sizeof(path),"%s/watch%d.bin",dir,slot) >= (int)sizeof(path)) { io_give(io); return false; }
+    FILE *f=fopen(path,"wb"); if(!f) { io_give(io); return false; }
     setvbuf(f,NULL,_IONBF,0);
-    header_t h={.magic=MAGIC,.version=4,.bytes=sizeof(*c),
+    header_t w={.magic=MAGIC,.version=4,.bytes=sizeof(*c),
         .crc=rec_watch_crc(c,sizeof(*c)),.sequence=c->sequence,.archive_id=c->archive_id};
-    memcpy(s_watch_io,&h,sizeof(h));
-    bool ok=fwrite(s_watch_io,1,sizeof(h),f)==sizeof(h);
+    /* The header and the first of the catalog in one write. */
+    memcpy(io.p,&w,sizeof(w));
     const uint8_t *src=(const uint8_t *)c;size_t remaining=sizeof(*c);
+    size_t first=io.n-sizeof(w);if(first>remaining)first=remaining;
+    memcpy(io.p+sizeof(w),src,first);
+    bool ok=fwrite(io.p,1,sizeof(w)+first,f)==sizeof(w)+first;
+    src+=first;remaining-=first;
     while(ok && remaining) {
-        size_t n=remaining<sizeof(s_watch_io)?remaining:sizeof(s_watch_io);
-        memcpy(s_watch_io,src,n);
-        ok=fwrite(s_watch_io,1,n,f)==n;src+=n;remaining-=n;
+        size_t k=remaining<io.n?remaining:io.n;
+        memcpy(io.p,src,k);
+        ok=fwrite(io.p,1,k,f)==k;src+=k;remaining-=k;
         if(pump)pump(context);
     }
+    io_give(io);
     if (fflush(f)!=0) ok=false;
     if (ok && fsync(fileno(f))!=0) ok=false;
     if (fclose(f)!=0) ok=false;
@@ -197,14 +273,13 @@ bool rec_watch_store_pumped(const char *dir, const rec_watch_catalog_t *c,
 bool rec_watch_store(const char *dir, const rec_watch_catalog_t *c, uint64_t free_bytes)
 { return rec_watch_store_pumped(dir,c,free_bytes,NULL,NULL); }
 
-bool rec_watch_restore(const char *dir, rec_watch_catalog_t *c)
+/* One generation into the catalog, checked as it is read: the newer by
+   its header first, the other only when that one fails. */
+static bool restore_slot(const char *dir, int slot, const header_t *hp, rec_watch_catalog_t *c,
+                         watch_io_t io)
 {
-    if(!dir || !c)return false;
-    header_t a={0},b={0};bool va=read_header(dir,0,&a,NULL,NULL),vb=read_header(dir,1,&b,NULL,NULL);
+    const header_t h=*hp;
     memset(c,0,sizeof(*c));
-    if(!va&&!vb)return false;
-    int slot=vb && (!va || b.sequence>a.sequence)?1:0;
-    header_t h=slot?b:a;
     char path[256];snprintf(path,sizeof(path),"%s/watch%d.bin",dir,slot);
     FILE *f=fopen(path,"rb");if(!f)return false;
     setvbuf(f,NULL,_IONBF,0);
@@ -213,13 +288,19 @@ bool rec_watch_restore(const char *dir, rec_watch_catalog_t *c)
     uint32_t crc=UINT32_MAX;
     if(!legacy) {
         uint8_t *dst=(uint8_t *)c;size_t remaining=sizeof(*c);
+        /* The rest of the header's sector first, so every read after it
+           starts on a sector and lands whole in the aligned buffer: FAT then
+           moves eight sectors in one transfer instead of one at a time. */
+        size_t first=512-sizeof(header_t);
         while(ok && remaining) {
-            size_t n=remaining<sizeof(s_watch_io)?remaining:sizeof(s_watch_io);
-            ok=fread(s_watch_io,1,n,f)==n;
-            if(ok)memcpy(dst,s_watch_io,n);
+            size_t n=remaining<io.n?remaining:io.n;
+            if(first){if(n>first)n=first;first=0;}
+            ok=fread(io.p,1,n,f)==n;
+            if(ok){memcpy(dst,io.p,n);crc=crc_step(crc,io.p,n);}
             dst+=n;remaining-=n;
+            RESTORE_YIELD();
         }
-        if(ok)crc=~rec_watch_crc(c,sizeof(*c));
+        ok=ok && fgetc(f)==EOF && c->archive_id==h.archive_id;
     } else {
         /* Carry the old layout forward, streaming, so the migration costs one
            512 byte buffer rather than a second catalog. Fields are copied by
@@ -279,5 +360,20 @@ bool rec_watch_restore(const char *dir, rec_watch_catalog_t *c)
             e->order>c->sequence || e->id>c->next_id || e->source>=REC_SOURCE_COUNT)) ok=false;
     }
     if(!ok)memset(c,0,sizeof(*c));
+    return ok;
+}
+
+bool rec_watch_restore(const char *dir, rec_watch_catalog_t *c)
+{
+    if(!dir || !c)return false;
+    memset(c,0,sizeof(*c));
+    header_t a={0},b={0};
+    const bool pa=peek_header(dir,0,&a), pb=peek_header(dir,1,&b);
+    if(!pa && !pb)return false;
+    const int first=pb && (!pa || b.sequence>a.sequence)?1:0;
+    watch_io_t io=io_take();
+    bool ok=restore_slot(dir,first,first?&b:&a,c,io);
+    if(!ok && (first?pa:pb))ok=restore_slot(dir,1-first,first?&a:&b,c,io);
+    io_give(io);
     return ok;
 }

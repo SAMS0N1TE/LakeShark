@@ -23,6 +23,11 @@ add_test(NAME test_hamming_tables COMMAND test_hamming_tables)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+# gcc on Linux predefines `unix` to 1 in gnu modes, which turns the SDK's
+# lap_time_t field `int64_t unix;` into a syntax error.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_compile_options(-Uunix)
+endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -1196,6 +1201,17 @@ target_include_directories(test_lr20xx_proto PRIVATE
     ${FW}/bench/shims)
 target_compile_definitions(test_lr20xx_proto PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
 
+ls_add_test(test_lr20xx_hf_tx
+    ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_port.c
+    ${FW}/components/lakeshark/board/ls_lora_sx126x.c
+    ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
+    ${FW}/components/lakeshark/board/ls_spi.c)
+target_include_directories(test_lr20xx_hf_tx PRIVATE
+    ${FW}/components/lakeshark/board
+    ${FW}/bench/shims)
+target_compile_definitions(test_lr20xx_hf_tx PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1 LS_TX_UNLOCKED=1)
+
 ls_add_test(test_lr20xx_clock
     ${FW}/components/lakeshark/board/ls_lora.c
     ${FW}/components/lakeshark/board/ls_lora_port.c
@@ -1235,6 +1251,12 @@ ls_add_test(test_lora_port ${FW}/components/lakeshark/board/ls_lora_port.c)
 target_include_directories(test_lora_port PRIVATE
     ${FW}/components/lakeshark/board ${FW}/components/lakeshark/core ${FW}/bench/shims)
 target_compile_definitions(test_lora_port PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+add_executable(test_lora_port_unlocked tests/test_lora_port.c ${FW}/components/lakeshark/board/ls_lora_port.c)
+target_link_libraries(test_lora_port_unlocked ls_harness m)
+add_test(NAME test_lora_port_unlocked COMMAND test_lora_port_unlocked)
+target_include_directories(test_lora_port_unlocked PRIVATE
+    ${FW}/components/lakeshark/board ${FW}/components/lakeshark/core ${FW}/bench/shims)
+target_compile_definitions(test_lora_port_unlocked PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1 LS_TX_UNLOCKED=1)
 ls_add_test(test_lora_port_driver
     ${FW}/components/lakeshark/board/ls_lora.c
     ${FW}/components/lakeshark/board/ls_lora_port.c
@@ -1248,10 +1270,14 @@ target_compile_definitions(test_lora_port_driver PRIVATE CONFIG_LS_BOARD_T_DISPL
 
 ls_add_test(test_lora_scan
     ${FW}/components/lakeshark/board/ls_lora.c
+    ${FW}/components/lakeshark/board/ls_lora_port.c
+    ${FW}/components/lakeshark/board/ls_lora_sx126x.c
+    ${FW}/components/lakeshark/board/ls_lora_lr20xx.c
     ${FW}/components/lakeshark/board/ls_spi.c)
 target_include_directories(test_lora_scan PRIVATE
     ${FW}/components/lakeshark/board
     ${FW}/bench/shims)
+target_compile_definitions(test_lora_scan PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
 
 ls_add_test(test_xl9535 ${FW}/components/lakeshark/board/ls_xl9535.c)
 target_include_directories(test_xl9535 PRIVATE
@@ -1740,12 +1766,17 @@ ls_add_test(test_tui_music
     ${FW}/components/apps/tui/ls_audio_view.c
     ${FW}/components/apps/tui/ls_audio_layers.c
     ${FW}/components/apps/tui/ls_music_options.c
+    ${FW}/components/apps/tui/ls_picker.c
     ${FW}/components/apps/tui/ls_pixel_wf.c
     ${FW}/components/apps/tui/screens/ext/scr_music.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_icons.c
     ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_tui_music PRIVATE ${LS_TUI_APP_INCLUDES})
+# ls_picker.c follows a dragging finger; these suites have none.
+foreach(no_touch test_tui_picker test_radio_select test_options test_scan_shell test_tui_music)
+    target_sources(${no_touch} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/shims/ls_touch_none.c)
+endforeach()
 target_link_libraries(test_tui_music music_decode_host)
 target_compile_definitions(test_tui_music PRIVATE LS_MUSIC_FIXTURES="${CMAKE_CURRENT_BINARY_DIR}/music-fixtures")
 set_tests_properties(test_tui_music PROPERTIES FIXTURES_REQUIRED music_audio)
@@ -1802,6 +1833,11 @@ target_include_directories(test_subghz_file PRIVATE ${APP}/subghz)
 target_compile_definitions(test_subghz_file PRIVATE
     CC1101_FSK_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/cc1101-fsk-ch2-t99.sub")
 target_include_directories(test_subghz_nrz PRIVATE ${APP}/subghz)
+ls_add_test(test_tx_unlocked ${APP}/subghz/subghz_file.c
+    ${FW}/components/lakeshark/radio/tx_policy.c)
+target_include_directories(test_tx_unlocked PRIVATE ${APP}/subghz
+    ${FW}/components/apps/tui ${FW}/components/meshcore)
+target_compile_definitions(test_tx_unlocked PRIVATE LS_TX_UNLOCKED=1)
 ls_add_test(test_subghz_pwm
     ${APP}/subghz/subghz_pwm.c
     ${APP}/rec/rec_ook24.c)
@@ -2200,6 +2236,10 @@ target_link_libraries(test_p25_phase2 p25_phase2_host ls_harness m)
 add_test(NAME test_p25_phase2 COMMAND test_p25_phase2)
 ls_add_test(test_p25_phase2_dsp ${APP}/p25/dsp_pipeline.c ${APP}/p25/p25_cqpsk_controls.c fixtures/lsm_gen.c)
 target_compile_definitions(test_p25_phase2_dsp PRIVATE LSM_GEN_BAUD=6000)
+# Phase II symbols through the LR2021's 125 kHz IQ16 and p25_lr_frontend.
+ls_add_test(test_p25_phase2_lr ${APP}/p25/dsp_pipeline.c ${APP}/p25/p25_cqpsk_controls.c
+            ${APP}/p25/p25_lr_frontend.c fixtures/lsm_gen.c)
+target_compile_definitions(test_p25_phase2_lr PRIVATE LSM_GEN_BAUD=6000)
 # DOPPLER RADAR: carrier search, tracking and Doppler rows from LR IQ16.
 ls_add_test(test_radar_dsp ${FW}/components/apps/tui/experiments/radar_dsp.c)
 target_include_directories(test_radar_dsp PRIVATE ${FW}/components/apps/tui/experiments)
@@ -2226,6 +2266,14 @@ target_include_directories(test_scan_journal PRIVATE ${FW}/components/lakeshark/
 ls_add_test(test_scan_store)
 target_include_directories(test_scan_store BEFORE PRIVATE ${FW}/bench/shims/scan_store)
 ls_add_test(test_scan_upload ${FW}/components/lakeshark/core/scan_import.c)
+# FREQS: the bank format, the importers, the filters and the store on a card.
+ls_add_test(test_freqs
+    ${FW}/components/apps/tui/ls_freqs.c
+    ${FW}/components/lakeshark/core/scan_import.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
+target_include_directories(test_freqs PRIVATE ${FW}/bench/shims ${FW}/components/apps/tui
+    ${FW}/components/apps/tui/tuilib ${FW}/components/lakeshark/core)
+target_compile_definitions(test_freqs PRIVATE FREQS_TOOLS="${FW}/tools")
 ls_add_test(test_scan_list_nh_ma
     ${FW}/components/lakeshark/core/scan_import.c
     ${FW}/components/lakeshark/core/scan_geo.c)
@@ -3002,6 +3050,16 @@ set_source_files_properties(${FW}/components/apps/tui/screens/main/scr_radio.c t
     tools/lssim_state.c PROPERTIES COMPILE_DEFINITIONS CONFIG_LS_RX_HEAD=1)
 target_sources(test_tui_screens PRIVATE ${APP}/fm/fm_hf.c ${APP}/fm/fm_spectrum.c
     ${FW}/components/lakeshark/dsp/spectrum.c)
+# FREQS: the library screen, its store, TUNE and the scanner hand-off.
+set(LS_FREQS_SRCS
+    ${FW}/components/apps/tui/screens/ext/scr_freqs.c
+    ${FW}/components/apps/tui/ls_freqs.c
+    ${FW}/components/apps/tui/ls_freqs_run.c
+    ${FW}/components/lakeshark/core/scan_import.c
+    shims/freqs_scan_import_fake.c)
+target_sources(lssim PRIVATE ${LS_FREQS_SRCS})
+target_sources(test_tui_screens PRIVATE ${LS_FREQS_SRCS})
+target_compile_definitions(test_tui_screens PRIVATE LSSIM_FREQS_DIR="${FW}/bench/fixtures/freqs_test")
 
 add_test(NAME test_fm_vfo_ui COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fm_vfo_ui.py $<TARGET_FILE:lssim>)
@@ -3416,12 +3474,12 @@ add_test(NAME test_lap_kit COMMAND test_lap_kit ${FW}/bench/fixtures/lap_api13_e
 add_executable(test_lap_radio_io tests/test_lap_radio_io.c ${LAP_API_TEST_SOURCES})
 target_include_directories(test_lap_radio_io PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
 target_link_libraries(test_lap_radio_io lap3d_host m $<$<BOOL:${WIN32}>:ws2_32>)
-target_compile_definitions(test_lap_radio_io PRIVATE LS_LAP_SD_ROOT="lap-sd")
+target_compile_definitions(test_lap_radio_io PRIVATE LS_LAP_SD_ROOT="lap-sd-io")
 add_test(NAME test_lap_radio_io COMMAND test_lap_radio_io)
 add_executable(test_lap_phase1 tests/test_lap_phase1.c ${LAP_API_TEST_SOURCES})
 target_include_directories(test_lap_phase1 PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
 target_link_libraries(test_lap_phase1 lap3d_host m $<$<BOOL:${WIN32}>:ws2_32>)
-target_compile_definitions(test_lap_phase1 PRIVATE LS_LAP_SD_ROOT="lap-sd")
+target_compile_definitions(test_lap_phase1 PRIVATE LS_LAP_SD_ROOT="lap-sd-io")
 add_test(NAME test_lap_phase1 COMMAND test_lap_phase1)
 
 # Radio RX API 2.4 contract and waveform tests.
@@ -3454,6 +3512,7 @@ target_link_libraries(test_lap_services26_nano lap3d_host m $<$<BOOL:${WIN32}>:w
 target_compile_definitions(test_lap_services26_nano PRIVATE CONFIG_LS_LAP_SERVICES_MAX=2 LS_LAP_SD_ROOT="lap-services26-nano-sd")
 add_test(NAME test_lap_services26_nano COMMAND test_lap_services26_nano)
 add_test(NAME test_lap_services26_examples COMMAND ${Python3_EXECUTABLE} ${FW}/app-sdk/tests/test_services26.py)
+set_tests_properties(test_lap_services26_examples PROPERTIES ENVIRONMENT "LS_BENCH_BUILD=${CMAKE_CURRENT_BINARY_DIR}")
 
 add_executable(test_lap_sensors tests/test_lap_sensors.c ${LAP_API_TEST_SOURCES})
 target_include_directories(test_lap_sensors PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
@@ -3497,6 +3556,10 @@ foreach(t IN LISTS lap2_targets)
     # API 2.2: what the board's watchers see, behind lap_seen_*.
     if(NOT "${lap2_sources}" MATCHES "ls_seen\\.c")
       list(APPEND lap2_add ${LAP_TUI}/ls_seen.c)
+    endif()
+    # API 2.6: lap_map_node, other meshes' nodes for MAP.
+    if(NOT "${lap2_sources}" MATCHES "ls_extnodes\\.c")
+      list(APPEND lap2_add ${LAP_TUI}/ls_extnodes.c)
     endif()
     # API 2.1: services and the board's controls. lssim draws them with the
     # real widgets; the other targets get recording stand-ins.
@@ -3841,3 +3904,14 @@ target_compile_definitions(test_lap_board_features PRIVATE LS_LAP_SD_ROOT="lap-b
     LS_LAP_PERIPH_DISABLED=1 CONFIG_LS_LAP_WORKER_DSP=0 CONFIG_LS_LAP_HACKRF_TX=0
     CONFIG_LS_LAP_NFC=0 CONFIG_LS_LAP_MDNS=0 LS_TIME_HOST=1)
 add_test(NAME test_lap_board_features COMMAND test_lap_board_features)
+
+# Runtime add-on pins (board/ls_pins.c): every board file that asks ls_pin()
+# for a GPIO needs the table, which reads NVS only on the device.
+get_property(_pins_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(t IN LISTS _pins_targets)
+  get_target_property(_srcs ${t} SOURCES)
+  if("${_srcs}" MATCHES "board/ls_(spi|i2c|gps|lora|lora_port)\\.c" AND
+     NOT "${_srcs}" MATCHES "ls_pins\\.c")
+    target_sources(${t} PRIVATE ${FW}/components/lakeshark/board/ls_pins.c)
+  endif()
+endforeach()

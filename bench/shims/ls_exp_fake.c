@@ -56,5 +56,8 @@ esp_err_t ls_lora_rssi_inst(float *dbm)
     return ESP_OK;
 }
 
-/* The simulator's LoRa chip is the SX1262. */
-ls_lora_chip_t ls_lora_chip(void) { return LS_LORA_CHIP_SX126X; }
+/* The simulator's LoRa chip is the SX1262, unless a case asks for the
+   LR2021 to see what only that part offers. */
+static ls_lora_chip_t s_chip = LS_LORA_CHIP_SX126X;
+void ls_exp_fake_lora_chip(ls_lora_chip_t chip) { s_chip = chip; }
+ls_lora_chip_t ls_lora_chip(void) { return s_chip; }

@@ -76,6 +76,12 @@ static int16_t s_silence[CHUNK_FRAMES * 2];
 
 static _Atomic uint32_t s_audio_drops = 0;
 static volatile uint32_t s_underruns   = 0;
+/* Underruns count every empty 16 ms chunk, including the drain after each
+ * over. A cut is a silence that audio then resumed from, which is what a
+ * listener hears; s_cut_run is the silence in progress, in chunks. */
+static volatile uint32_t s_cuts        = 0;
+static volatile uint32_t s_cut_worst_ms = 0;
+static uint32_t s_cut_run;
 static volatile bool     s_reprime     = false;
 static volatile bool     s_play_now    = false;
 /* When live radio audio last reached the ring. FM and P25 voice both
@@ -124,6 +130,8 @@ LS_COLD void audio_out_speech_level_set(int pct) { s_speech_gain = audio_speech_
 
 uint32_t audio_drops_get(void)     { return s_audio_drops; }
 uint32_t audio_underruns_get(void) { return s_underruns; }
+uint32_t audio_cuts_get(void)      { return s_cuts; }
+uint32_t audio_cut_worst_ms_get(void) { return s_cut_worst_ms; }
 uint32_t audio_out_ring_avail(void){ return s_ring ? (uint32_t)xStreamBufferBytesAvailable(s_ring) : 0; }
 
 void audio_out_play_now(void) { s_play_now = true; }
@@ -528,6 +536,12 @@ static void audio_player_task(void *arg)
         uint32_t pos = 0;
         if (got) {
             last_data = esp_timer_get_time();
+            if (s_cut_run) {
+                const uint32_t ms = s_cut_run * CHUNK_FRAMES * 1000u / AUDIO_RATE_HZ;
+                s_cuts++;
+                if (ms > s_cut_worst_ms) s_cut_worst_ms = ms;
+                s_cut_run = 0;
+            }
             got = player_skip(mono, got, &pos);
             if (!got) continue;
         }
@@ -545,8 +559,10 @@ static void audio_player_task(void *arg)
 
             if (esp_timer_get_time() - last_data > IDLE_DROP_US) {
                 playing = false;
+                s_cut_run = 0;              /* the over ended: not a cut */
             } else {
                 s_underruns++;
+                s_cut_run++;
                 player_write(silence, CHUNK_FRAMES * 2 * sizeof(int16_t));
             }
         }

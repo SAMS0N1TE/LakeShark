@@ -204,10 +204,37 @@ bool ls_mesh_radio_held(void);
    has it now and refuses while a ls_mesh_radio_hold holder is asking. That
    holder's ls_mesh_radio_held answers false until the background holder has
    let go, which it does as soon as ls_mesh_radio_wanted says so.
-   ls_mesh_radio_bg says a background holder has it. */
+   ls_mesh_radio_bg says a background holder has it.
+   Between background holders the newest claimant has the chip: the older
+   one's ls_mesh_radio_wanted answers true, it lets go, and its hold_bg is
+   refused until the newer has gone. A lease is kept by asking - hold_bg
+   while waiting, ls_mesh_radio_wanted while holding, both from the holding
+   task. A holder silent for five seconds is dropped when anyone else wants
+   the chip; if it is still running, its ls_mesh_radio_wanted answers true
+   and its hold_bg is refused until it has released. A task that ends must
+   release first. */
 bool ls_mesh_radio_hold_bg(bool on);
 bool ls_mesh_radio_wanted(void);
 bool ls_mesh_radio_bg(void);
+/* An app's background service (MESHTASTIC heard from HOME) holds the radio
+   below everyone else. ls_mesh_radio_hold_svc answers whether it has it now
+   and is refused while any other holder, RADIOS' STOP, the MESH screen or a
+   MeshCore send wants it; ls_mesh_radio_svc_yield says a service must be off
+   the radio now (let go, or not ask). Other holders' "held" answers false
+   until it has let go. */
+bool ls_mesh_radio_hold_svc(bool on);
+bool ls_mesh_radio_held_svc(void);
+bool ls_mesh_radio_svc_yield(void);
+/* The MESH screen is open: background receivers on the LoRa chip give it
+   back to MeshCore until it closes. A send asks the same, for a few seconds. */
+void ls_mesh_radio_front(bool on);
+/* False while no radio app is on screen: background receivers on the LoRa
+   chip let go so it is never held by an app you left. */
+void ls_mesh_radio_bg_allow(bool on);
+/* Primary mesh: 0 MeshCore, 1 the MESHTASTIC app (MeshCore is stopped).
+   Until the next restart only; every boot starts on MeshCore. */
+int       ls_mesh_primary(void);
+esp_err_t ls_mesh_set_primary(int p);
 /* RADIOS' STOP and ALLOW. Blocked, the radio is taken from every background
    holder (they see ls_mesh_radio_wanted) and from MeshCore, and no new hold
    is granted; a foreground holder that already has it keeps it until it
@@ -289,6 +316,7 @@ typedef struct {
 typedef enum {
     LS_MESH_BAND_US915 = 0,   /* 902-928, MeshCore default 910.525 */
     LS_MESH_BAND_EU868,       /* 863-870, MeshCore default 869.618 */
+    LS_MESH_BAND_AU915,       /* 915-928 (AR, AU, NZ), MeshCore Australia 915.800 */
     LS_MESH_BAND__COUNT
 } ls_mesh_band_t;
 

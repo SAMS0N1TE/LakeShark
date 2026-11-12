@@ -201,6 +201,7 @@ LR_CMD lrtx_upload_command(int argc, char **argv)
 
 static bool lrtx_rate_supported(uint32_t rate)
 {
+    if (LS_TX_UNLOCKED) return rate >= 1u && rate <= 1000000u;
     return rate == 4800 || rate == 9600 || rate == 19200 || rate == 38400 ||
            rate == 76800 || rate == 125000;
 }
@@ -212,9 +213,9 @@ static esp_err_t lrtx_send(const uint8_t *data, uint32_t size, uint32_t rate,
     if (reason) *reason = NULL;
 #define REFUSE(code, message) do { if (reason) *reason = (message); puts("lrtx-send: " message); return (code); } while (0)
     if (!lrtx_rate_supported(rate)) REFUSE(ESP_ERR_INVALID_ARG, "unsupported sample rate");
-    if (!repeats || repeats>16) REFUSE(ESP_ERR_INVALID_ARG, "repeat count outside 1..16");
-    if (hz<150000000u || hz>960000000u) REFUSE(ESP_ERR_INVALID_ARG, "frequency outside LF TX band");
-    if (dbm<-9 || dbm>10) REFUSE(ESP_ERR_INVALID_ARG, "power outside -9..10 dBm");
+    if (!repeats || repeats>(LS_TX_UNLOCKED ? LRTX_MAX_SAMPLES : 16u)) REFUSE(ESP_ERR_INVALID_ARG, "repeat count outside 1..16");
+    if (LS_TX_UNLOCKED ? (hz<LR20XX_FREQ_MIN_HZ || hz>LR20XX_FREQ_MAX_HZ) : (hz<150000000u || hz>960000000u)) REFUSE(ESP_ERR_INVALID_ARG, "frequency outside LF TX band");
+    if (dbm<-9 || dbm>(LS_TX_UNLOCKED ? LR20XX_TX_POWER_MAX_DBM : 10)) REFUSE(ESP_ERR_INVALID_ARG, "power outside -9..10 dBm");
     const bool leased = data && ls_mesh_radio_held && ls_mesh_radio_held();
     const uint32_t cancel_generation = __atomic_load_n(&s_lrtx_cancel_generation,
                                                         __ATOMIC_ACQUIRE);
@@ -263,7 +264,7 @@ static esp_err_t lrtx_send(const uint8_t *data, uint32_t size, uint32_t rate,
     if (err == ESP_OK) {
         const uint64_t samples = (uint64_t)(size / 2u) * repeats;
         duration_us = (int64_t)((samples * 1000000u + rate - 1u) / rate);
-        if (!samples || samples > LRTX_MAX_SAMPLES || duration_us > 900000)
+        if (!samples || samples > LRTX_MAX_SAMPLES || duration_us > (LS_TX_UNLOCKED ? 500000000 : 900000))
             { err = ESP_ERR_INVALID_ARG; why="sample/duration limit exceeded"; }
         else {
             total_bytes = size * repeats;
@@ -272,7 +273,7 @@ static esp_err_t lrtx_send(const uint8_t *data, uint32_t size, uint32_t rate,
     }
     for (uint32_t i=0; err==ESP_OK && i<size; i+=2) {
         int si=(int8_t)data[i], sq=(int8_t)data[i+1];
-        if (si*si+sq*sq>56*56) { err=ESP_ERR_INVALID_ARG; why="I/Q magnitude exceeds 56"; }
+        if (!LS_TX_UNLOCKED && si*si+sq*sq>56*56) { err=ESP_ERR_INVALID_ARG; why="I/Q magnitude exceeds 56"; }
     }
     if (err == ESP_OK) {
         if (ls_mesh_radio_wanted && ls_mesh_radio_wanted() && !leased) why="foreground listener holds the radio";
@@ -405,7 +406,8 @@ static esp_err_t lrtx_send(const uint8_t *data, uint32_t size, uint32_t rate,
                 irq = status.irq;
                 if (irq & LR20XX_IRQ_TX_DONE) break;
             }
-            vTaskDelay(pdMS_TO_TICKS(1));
+            if (!(LS_TX_UNLOCKED && rate > 125000u && queued < total_bytes))
+                vTaskDelay(pdMS_TO_TICKS(1));
         }
         if (err == ESP_OK) err = lr20xx_read(0x011B, NULL, 0, flags, 2);
         if (err == ESP_OK) err = lr20xx_read(0x011D, NULL, 0, level, 2);

@@ -5,6 +5,7 @@
    part answered - plus the arithmetic every board has. The commands live in
    ls_lora_sx126x.c (the SX1262, unchanged) and ls_lora_lr20xx.c. See
    ls_lora.h for why BUSY and DIO1 shape all of it. */
+#include "ls_tx_unlock.h"
 #include "ls_lora.h"
 #include "tx_protection.h"
 #include "ls_lora_priv.h"
@@ -34,14 +35,26 @@
 #include "ls_spi.h"
 #include "ls_xl9535.h"
 #include "ls_lora_port.h"
+#include "ls_pins.h"
+
+/* The Nano (runtime pins: LoRa on a header) is short of internal RAM. There
+   the LoRa hot paths run from flash and task-only tables live in PSRAM; the
+   T-Display keeps them in IRAM / DRAM. ISRs stay IRAM_ATTR everywhere. */
+#if defined(LS_BOARD_PINS_RUNTIME) && LS_BOARD_PINS_RUNTIME
+#define LORA_HOT
+#define LORA_TABLE EXT_RAM_BSS_ATTR
+#else
+#define LORA_HOT IRAM_ATTR
+#define LORA_TABLE
+#endif
+
 
 #if LS_HAS_LORA_LR20XX_PROBE
 #include "ls_lora_lr20xx.h"
 #endif
 
 /* ls_lora_lr20xx.c builds its backend under this condition and no other. */
-#if LS_HAS_LORA_LR20XX_PROBE && defined(LS_BOARD_LORA_CS_GPIO) && \
-    defined(LS_BOARD_LORA_BUSY_GPIO) && defined(LS_BOARD_XL_RADIO_RST)
+#if LS_HAS_LORA_LR20XX_PROBE && LS_LORA_WIRED
 #define LR20XX_BACKEND_BUILT 1
 #else
 #define LR20XX_BACKEND_BUILT 0
@@ -163,8 +176,7 @@ uint32_t ls_lora_scan_bin_hz(uint32_t min_hz, uint32_t max_hz, int n, int i)
     return min_hz + (uint32_t)((span * (uint64_t)i) / (uint64_t)(n - 1));
 }
 
-#if defined(LS_BOARD_LORA_CS_GPIO) && defined(LS_BOARD_LORA_BUSY_GPIO) && \
-    defined(LS_BOARD_XL_RADIO_RST)
+#if LS_LORA_WIRED
 
 /* The lines this boot drives: the board's socket, or a module on the
    header (ls_lora_port.c), set at the first start. Reset is a GPIO for a
@@ -198,7 +210,7 @@ static TaskHandle_t      s_lock_owner;     /* written by the holder only */
 static unsigned          s_lock_depth;     /* ditto */
 static unsigned          s_unguarded;
 
-static SemaphoreHandle_t IRAM_ATTR lock_handle(void)
+static SemaphoreHandle_t LORA_HOT lock_handle(void)
 {
     SemaphoreHandle_t h = __atomic_load_n(&s_lock, __ATOMIC_ACQUIRE);
     if (!h) {
@@ -213,12 +225,12 @@ static SemaphoreHandle_t IRAM_ATTR lock_handle(void)
     return h;
 }
 
-bool IRAM_ATTR ls_lora_hw_locked_by_me(void)
+bool LORA_HOT ls_lora_hw_locked_by_me(void)
 {
     return __atomic_load_n(&s_lock_owner, __ATOMIC_ACQUIRE) == xTaskGetCurrentTaskHandle();
 }
 
-void IRAM_ATTR ls_lora_hw_lock(void)
+void LORA_HOT ls_lora_hw_lock(void)
 {
     /* Capture owns the mutex for the whole session. Nested command/frame
        calls only change owner-local depth, avoiding kernel queue locks on
@@ -256,7 +268,7 @@ bool ls_lora_diagnostic_try_begin(void)
 
 void ls_lora_diagnostic_try_end(void) { ls_lora_hw_unlock(); }
 
-void IRAM_ATTR ls_lora_hw_unlock(void)
+void LORA_HOT ls_lora_hw_unlock(void)
 {
     if (!ls_lora_hw_locked_by_me()) return;      /* not ours to give */
     if (--s_lock_depth != 0) return;
@@ -283,7 +295,7 @@ uint32_t ls_lora_hw_capture_hz(void) { return s_capture_hz; }
    goes back to DMA. */
 static bool s_capture_dma = false;
 void ls_lora_hw_capture_set_dma(bool dma) { s_capture_dma = dma; }
-bool IRAM_ATTR ls_lora_hw_capture_dma(void) { return s_capture_dma; }
+bool LORA_HOT ls_lora_hw_capture_dma(void) { return s_capture_dma; }
 
 /* lr2021-sdr radio.c: aligned internal buffers avoid P4 DMA bounce copies.
    Taken once when the radio's SPI device is added, before any app has used
@@ -358,18 +370,18 @@ esp_err_t ls_lora_hw_capture_fast(bool enable)
 }
 
 static uint32_t s_spi_bytes;
-uint32_t IRAM_ATTR ls_lora_hw_spi_bytes(void) { return s_spi_bytes; }
-bool IRAM_ATTR ls_lora_hw_capture_active(void) { return s_capture_fast; }
+uint32_t LORA_HOT ls_lora_hw_spi_bytes(void) { return s_spi_bytes; }
+bool LORA_HOT ls_lora_hw_capture_active(void) { return s_capture_fast; }
 
 #if defined(ESP_PLATFORM) && CONFIG_IDF_TARGET_ESP32P4
 #include "ls_lora_spi_cpu.h"
 #endif
 
 #include "ls_lora_spi_capture.h"
-esp_err_t IRAM_ATTR ls_lora_hw_capture_frame(uint8_t *io, size_t n)
+esp_err_t LORA_HOT ls_lora_hw_capture_frame(uint8_t *io, size_t n)
 { return capture_fifo_transmit(io, n); }
 
-esp_err_t IRAM_ATTR ls_lora_hw_transmit(spi_transaction_t *t)
+esp_err_t LORA_HOT ls_lora_hw_transmit(spi_transaction_t *t)
 {
     if (!ls_lora_hw_locked_by_me()) {
         if (__atomic_fetch_add(&s_unguarded, 1, __ATOMIC_RELAXED) == 0)
@@ -464,13 +476,13 @@ static void tx_route_settle(void)
    direction: the driver is single-threaded by contract. */
 static uint8_t *s_pkt;
 
-spi_device_handle_t IRAM_ATTR ls_lora_hw_dev(void) { return s_dev; }
-uint8_t * IRAM_ATTR ls_lora_hw_pkt(void) { return s_pkt; }
+spi_device_handle_t LORA_HOT ls_lora_hw_dev(void) { return s_dev; }
+uint8_t * LORA_HOT ls_lora_hw_pkt(void) { return s_pkt; }
 /* The command lock protects the descriptor, inline DMA storage and packet
    buffer, including copyback. Callers may have external-RAM stacks. */
 static spi_transaction_t s_transfer __attribute__((aligned(4)));
 
-esp_err_t IRAM_ATTR ls_lora_hw_transfer_bytes(const uint8_t *tx, uint8_t *rx, size_t n)
+esp_err_t LORA_HOT ls_lora_hw_transfer_bytes(const uint8_t *tx, uint8_t *rx, size_t n)
 {
     if (!s_dev) return ESP_ERR_INVALID_STATE;
     if (!n || n > 259) return ESP_ERR_INVALID_SIZE;
@@ -570,7 +582,7 @@ static bool busy_sleep_wait(int timeout_ms) { (void)timeout_ms; return true; }
 #endif
 
 /* Spin briefly, then yield. */
-bool IRAM_ATTR ls_lora_hw_wait_not_busy(int timeout_ms)
+bool LORA_HOT ls_lora_hw_wait_not_busy(int timeout_ms)
 {
     if (s_busy_sleep && ls_lora_hw_locked_by_me()) return busy_sleep_wait(timeout_ms);
     if (ls_lora_hw_locked_by_me() && s_capture_fast) {
@@ -602,16 +614,25 @@ bool IRAM_ATTR ls_lora_hw_wait_not_busy(int timeout_ms)
 static esp_err_t rst_out(bool level)
 {
     if (s_rst_gpio >= 0) return gpio_set_level((gpio_num_t)s_rst_gpio, level ? 1 : 0);
+#ifdef LS_BOARD_XL_RADIO_RST
     return ls_xl9535_out(LS_BOARD_XL_RADIO_RST, level);
+#else
+    (void)level;
+    return ESP_ERR_NOT_SUPPORTED;    /* no reset line set: `pin set lora.rst N` */
+#endif
 }
 
 static const char *rst_readback(void)
 {
     if (s_rst_gpio >= 0) return gpio_get_level((gpio_num_t)s_rst_gpio) ? "high" : "low";
+#ifdef LS_BOARD_XL_RADIO_RST
     bool level = false;
     const esp_err_t err = ls_xl9535_get(LS_BOARD_XL_RADIO_RST, &level);
     if (err != ESP_OK) return esp_err_to_name(err);
     return level ? "high" : "low";
+#else
+    return "no reset pin";
+#endif
 }
 
 static bool ensure_pkt(void)
@@ -785,7 +806,9 @@ static esp_err_t start_locked(void)
         const ls_lora_port_t *port = ls_lora_port();
         s_cs_pin = port->cs;
         s_busy_pin = port->busy;
-        s_rst_gpio = port->header && port->rst >= 0 ? port->rst : -1;
+        /* A GPIO reset: a header module, or a board whose socket has no
+           expander behind it (its reset is in the pin table). */
+        s_rst_gpio = port->rst >= 0 ? port->rst : -1;
         if (s_rst_gpio >= 0) {
             gpio_config_t rst = {
                 .pin_bit_mask = 1ULL << s_rst_gpio,
@@ -797,20 +820,22 @@ static esp_err_t start_locked(void)
             gpio_config(&rst);
             gpio_set_level((gpio_num_t)s_rst_gpio, 0);   /* held until the pulse below */
         }
-        if (port->header && s_cs_pin != LS_BOARD_LORA_CS_GPIO) {
+        ls_lora_port_t socket;
+        ls_lora_port_board(&socket);
+        if (port->header && s_cs_pin != socket.cs && socket.cs >= 0) {
             /* The socket's part stays in the reset ls_board_hw put it in, and
                its select is held high so it never answers on the shared bus. */
             gpio_config_t socket_cs = {
-                .pin_bit_mask = 1ULL << LS_BOARD_LORA_CS_GPIO,
+                .pin_bit_mask = 1ULL << socket.cs,
                 .mode = GPIO_MODE_OUTPUT,
                 .pull_up_en = GPIO_PULLUP_DISABLE,
                 .pull_down_en = GPIO_PULLDOWN_DISABLE,
                 .intr_type = GPIO_INTR_DISABLE,
             };
             gpio_config(&socket_cs);
-            gpio_set_level((gpio_num_t)LS_BOARD_LORA_CS_GPIO, 1);
+            gpio_set_level((gpio_num_t)socket.cs, 1);
         }
-        if (port->header && port->irq_gpio >= 0) {
+        if (port->irq_gpio >= 0) {
             /* The driver polls the interrupt word over SPI; the line is only
                kept an input so nothing here drives the module's DIO. */
             gpio_config_t irq = {
@@ -864,7 +889,9 @@ static esp_err_t start_locked(void)
        an input, but ls_board_hw touches this expander and a later change
        there should not silently turn the radio's interrupt line into an
        output. */
+#ifdef LS_BOARD_XL_RADIO_DIO1
     if (s_rst_gpio < 0) ls_xl9535_set_dir(LS_BOARD_XL_RADIO_DIO1, false);
+#endif
 
     /* A part that does not identify straight after a reset is reset again and
        given longer: the first frames of a part still starting come back as
@@ -888,6 +915,16 @@ static esp_err_t start_locked(void)
         s_fitted = LS_LORA_CHIP_NONE;
         s_fitted_name = "none";
         s_fitted_caps = 0;
+        if (ls_pins_runtime()) {
+            /* An empty header on a board short of internal RAM (the Nano)
+               gives its DMA buffers back; the next start takes them again. */
+#if defined(ESP_PLATFORM) && CONFIG_IDF_TARGET_ESP32P4
+            free(s_capture_tx); free(s_capture_rx);
+            s_capture_tx = s_capture_rx = NULL;
+#endif
+            free(s_pkt);
+            s_pkt = NULL;
+        }
     }
     return err;
 }
@@ -1063,6 +1100,7 @@ esp_err_t ls_lora_ook_send(const uint8_t *chips, size_t len, uint32_t chip_bps)
 }
 bool ls_lora_cw_allowed(uint32_t hz, int dbm)
 {
+    if (LS_TX_UNLOCKED) return hz >= 150000000u && hz <= 960000000u && dbm >= -9 && dbm <= 22;
     const bool band = (hz >= 902000000u && hz <= 928000000u) ||
                       (hz >= 433050000u && hz <= 434790000u);
     return band && dbm >= LS_LORA_CW_MIN_DBM && dbm <= LS_LORA_CW_MAX_DBM;

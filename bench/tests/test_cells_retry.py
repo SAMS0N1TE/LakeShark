@@ -29,7 +29,11 @@ code = r'''
 #include <time.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef _WIN32
 #include <direct.h>
+#else
+#define _mkdir(p) mkdir((p), 0775)
+#endif
 #include "ls_carto_digest.h"
 #define EXT_RAM_BSS_ATTR
 #define CELLS_ROOT "maps/"

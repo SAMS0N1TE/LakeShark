@@ -381,3 +381,259 @@ LS_CASE(hashtag_channel_key_comes_from_the_name)
     LS_EQ_INT(ls_mesh_set_channel(1, NULL, "#"), ESP_ERR_INVALID_ARG);
     reset_port();
 }
+
+/* One long-lived task standing in for the app radio worker: a host thread is
+   a FreeRTOS task here (xTaskGetCurrentTaskHandle is per thread). */
+struct svc_task {
+    std::atomic<int> cmd{0};
+    std::atomic<bool> result{false};
+    std::thread th;
+    svc_task() : th([this]() {
+        for (;;) {
+            const int c = cmd.load();
+            if (c < 0) return;
+            if (!c) { std::this_thread::yield(); continue; }
+            result = c == 1 ? ls_mesh_radio_hold_svc(true)
+                   : c == 2 ? ls_mesh_radio_hold_svc(false)
+                            : ls_mesh_radio_held_svc();
+            cmd = 0;
+        }
+    }) {}
+    bool run(int c) { cmd = c; while (cmd.load() > 0) std::this_thread::yield(); return result; }
+    ~svc_task() { cmd = -1; th.join(); }
+};
+
+LS_CASE(app_service_hold_steps_aside_for_every_radio_app)
+{
+    reset_port();
+    memset(&s_svc_holders, 0, sizeof(s_svc_holders)); s_hold_svc = false;
+    svc_task svc;
+    /* MESHTASTIC in the background takes the idle chip. */
+    LS_CHECK(svc.run(1));
+    LS_CHECK(svc.run(3));
+    LS_CHECK(!ls_mesh_radio_svc_yield());
+    /* P25 on the LR2021 still asks (the old foreground hold made it give up),
+       and waits while the service is on the part. */
+    LS_CHECK(!ls_mesh_radio_wanted());
+    LS_CHECK(!ls_mesh_radio_hold_bg(true));
+    LS_CHECK(ls_mesh_radio_svc_yield());
+    LS_CHECK(!svc.run(3));
+    /* The service lets go; P25 has the chip and the service is refused. */
+    LS_CHECK(svc.run(2));
+    LS_CHECK(ls_mesh_radio_hold_bg(true));
+    LS_CHECK(!svc.run(1));
+    LS_CHECK(!s_hold_svc);
+    /* P25 leaves: the service takes it back by itself. */
+    LS_CHECK(ls_mesh_radio_hold_bg(false));
+    LS_CHECK(!ls_mesh_radio_svc_yield());
+    LS_CHECK(svc.run(1));
+    /* A foreground holder (LoRa Labs) waits for the service too. */
+    LS_CHECK(!ls_mesh_radio_hold(true));
+    LS_CHECK(ls_mesh_radio_svc_yield());
+    LS_CHECK(svc.run(2));
+    LS_CHECK(ls_mesh_radio_held());
+    LS_CHECK(ls_mesh_radio_hold(false));
+    /* RADIOS' STOP keeps the service off as well. */
+    ls_mesh_radio_block(true);
+    LS_CHECK(!svc.run(1));
+    ls_mesh_radio_block(false);
+    LS_CHECK(svc.run(1));
+    LS_CHECK(svc.run(2));
+    LS_CHECK(!s_radio_hold);
+    reset_port();
+}
+
+/* A background receiver's task: FM, P25 or ADS-B on the LR2021. */
+struct bg_task {
+    std::atomic<int> cmd{0};
+    std::atomic<bool> result{false};
+    std::thread th;
+    bg_task() : th([this]() {
+        for (;;) {
+            const int c = cmd.load();
+            if (c < 0) return;
+            if (!c) { std::this_thread::yield(); continue; }
+            result = c == 1 ? ls_mesh_radio_hold_bg(true)
+                   : c == 2 ? ls_mesh_radio_hold_bg(false)
+                            : ls_mesh_radio_wanted();
+            cmd = 0;
+        }
+    }) {}
+    bool hold(bool on) { return run(on ? 1 : 2); }
+    bool wanted() { return run(3); }
+    bool run(int c) { cmd = c; while (cmd.load() > 0) std::this_thread::yield(); return result; }
+    ~bg_task() { cmd = -1; th.join(); }
+};
+
+static void reset_leases()
+{
+    reset_port();
+    memset(&s_fg_holders, 0, sizeof(s_fg_holders));
+    memset(&s_bg_holders, 0, sizeof(s_bg_holders));
+    memset(&s_svc_holders, 0, sizeof(s_svc_holders));
+    memset(&s_bg_claims, 0, sizeof(s_bg_claims));
+    s_radio_blocked = false; s_front_want = false; s_bg_allowed = true; s_tx_want_until = 0;
+    radio_hold_update();
+    ls_shim_time_set(1000000);
+}
+
+LS_CASE(newest_background_claimant_takes_the_chip_from_the_one_left_listening)
+{
+    reset_leases();
+    bg_task fm, p25;
+    /* FM listens on the LR2021; nobody else wants it. */
+    LS_CHECK(fm.hold(true));
+    LS_CHECK(!fm.wanted());
+    /* P25 opens: queued until FM has let go, and FM is told to. */
+    ls_shim_time_advance(200000);
+    LS_CHECK(!p25.hold(true));
+    LS_CHECK(fm.wanted());
+    LS_CHECK(!p25.wanted());
+    LS_CHECK(fm.hold(false));
+    LS_CHECK(p25.hold(true));
+    /* FM keeps polling in the background: refused, not queued, so P25 is
+       not asked to give the chip back. */
+    for (int i = 0; i < 100; i++) {
+        ls_shim_time_advance(100000);
+        LS_CHECK(fm.wanted());
+        LS_CHECK(!fm.hold(true));
+        LS_CHECK(!p25.wanted());
+        LS_CHECK(p25.hold(true));
+    }
+    LS_EQ_UINT(s_bg_holders.count, 1);
+    /* P25 closes: FM listens again. */
+    LS_CHECK(p25.hold(false));
+    LS_CHECK(!fm.wanted());
+    LS_CHECK(fm.hold(true));
+    /* The MESH screen still takes it from whoever has it. */
+    ls_mesh_radio_front(true);
+    LS_CHECK(fm.wanted());
+    LS_CHECK(!fm.hold(true));
+    LS_CHECK(!s_radio_hold);
+    ls_mesh_radio_front(false);
+    LS_CHECK(fm.hold(true));
+    LS_CHECK(fm.hold(false));
+    LS_CHECK(!s_radio_hold);
+    reset_leases();
+}
+
+LS_CASE(abandoned_background_lease_does_not_hold_the_chip)
+{
+    reset_leases();
+    {
+        /* A holder that stops asking without releasing: its task ended. */
+        bg_task gone, fm;
+        LS_CHECK(gone.hold(true));
+        /* It may only be slow: FM waits its turn at first. */
+        ls_shim_time_advance(1000000);
+        LS_CHECK(!fm.hold(true));
+        LS_EQ_UINT(s_bg_holders.count, 2);
+        ls_shim_time_advance(RADIO_BG_QUIET_US);
+        LS_CHECK(fm.hold(true));
+        LS_EQ_UINT(s_bg_holders.count, 1);
+        LS_CHECK(fm.hold(false));
+        LS_CHECK(!s_radio_hold);
+    }
+    reset_leases();
+    {
+        /* The same, met by a foreground owner (LoRa Labs, SUB-GHZ). */
+        bg_task gone;
+        LS_CHECK(gone.hold(true));
+        ls_shim_time_advance(RADIO_BG_QUIET_US + 1);
+        LS_CHECK(ls_mesh_radio_hold(true));
+        LS_CHECK(ls_mesh_radio_held());
+        LS_CHECK(ls_mesh_radio_hold(false));
+        LS_CHECK(!s_radio_hold);
+    }
+    reset_leases();
+    {
+        /* And by MeshCore: its loop drops the lease once it wants the radio. */
+        bg_task gone;
+        LS_CHECK(gone.hold(true));
+        ls_shim_time_advance(RADIO_BG_QUIET_US + 1);
+        portENTER_CRITICAL(&s_hold_lock); bg_reap(esp_timer_get_time()); portEXIT_CRITICAL(&s_hold_lock);
+        LS_CHECK(s_radio_hold);              /* a radio app is on screen, nobody asks */
+        ls_mesh_radio_front(true);
+        portENTER_CRITICAL(&s_hold_lock); bg_reap(esp_timer_get_time()); portEXIT_CRITICAL(&s_hold_lock);
+        LS_CHECK(!s_radio_hold);
+        ls_mesh_radio_front(false);
+    }
+    reset_leases();
+    {
+        /* Dropped while still running (a stalled holder, mid-capture): it is
+           told to let go, cannot take the chip back, and the new owner is
+           never asked to give it up. */
+        bg_task p25, fm;
+        LS_CHECK(p25.hold(true));
+        ls_shim_time_advance(1000000);
+        LS_CHECK(!fm.hold(true));
+        ls_shim_time_advance(RADIO_BG_QUIET_US);
+        LS_CHECK(fm.hold(true));
+        LS_CHECK(p25.wanted());
+        LS_CHECK(!fm.wanted());
+        LS_CHECK(!p25.hold(true));
+        LS_CHECK(p25.wanted());
+        LS_CHECK(p25.hold(false));
+        for (int i = 0; i < 100; i++) {
+            ls_shim_time_advance(100000);
+            LS_CHECK(p25.wanted());
+            LS_CHECK(!p25.hold(true));
+            LS_CHECK(!fm.wanted());
+            LS_CHECK(fm.hold(true));
+        }
+        LS_EQ_UINT(s_bg_holders.count, 1);
+        /* The owner leaves: the dropped holder is an ordinary one again. */
+        LS_CHECK(fm.hold(false));
+        LS_CHECK(!p25.wanted());
+        LS_CHECK(p25.hold(true));
+        LS_CHECK(p25.hold(false));
+        LS_CHECK(!s_radio_hold);
+    }
+    reset_leases();
+    {
+        /* Dropped for MeshCore, with no other holder: told to let go even
+           after the mesh has stopped asking, then free to ask again. */
+        bg_task adsb;
+        LS_CHECK(adsb.hold(true));
+        ls_shim_time_advance(RADIO_BG_QUIET_US + 1);
+        ls_mesh_radio_front(true);
+        portENTER_CRITICAL(&s_hold_lock); bg_reap(esp_timer_get_time()); portEXIT_CRITICAL(&s_hold_lock);
+        ls_mesh_radio_front(false);
+        LS_CHECK(!s_radio_hold);
+        LS_CHECK(adsb.wanted());
+        LS_CHECK(!adsb.hold(true));
+        LS_CHECK(!s_radio_hold);
+        LS_CHECK(adsb.hold(false));
+        LS_CHECK(!adsb.wanted());
+        LS_CHECK(adsb.hold(true));
+        LS_CHECK(adsb.hold(false));
+    }
+    reset_leases();
+    {
+        /* A release nobody forced ends the claim: opened again, that app is
+           the newest and takes the chip. */
+        bg_task fm, p25;
+        LS_CHECK(fm.hold(true));
+        LS_CHECK(fm.hold(false));
+        LS_CHECK(p25.hold(true));
+        LS_CHECK(!fm.hold(true));
+        LS_CHECK(p25.wanted());
+        LS_CHECK(p25.hold(false));
+        LS_CHECK(fm.hold(true));
+        LS_CHECK(fm.hold(false));
+    }
+    reset_leases();
+    {
+        /* A holder that keeps asking is never dropped, however long it holds. */
+        bg_task p25;
+        LS_CHECK(p25.hold(true));
+        for (int i = 0; i < 100; i++) { ls_shim_time_advance(1000000); LS_CHECK(!p25.wanted()); }
+        LS_CHECK(!ls_mesh_radio_hold(true));
+        LS_CHECK(s_hold_bg);
+        LS_CHECK(p25.wanted());
+        LS_CHECK(p25.hold(false));
+        LS_CHECK(ls_mesh_radio_held());
+        LS_CHECK(ls_mesh_radio_hold(false));
+    }
+    reset_leases();
+}

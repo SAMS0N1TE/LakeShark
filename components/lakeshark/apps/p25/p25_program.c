@@ -114,6 +114,9 @@ static void apply_profile(const p25_profile_t *profile, uint64_t control_hz,
         ops->set_cqpsk_loops(ops->user, &profile->cqpsk);
     if (ops->set_demod_preference)
         ops->set_demod_preference(ops->user, profile->demod_preference);
+    if (ops->set_roster_system)
+        ops->set_roster_system(ops->user, profile->wacn_set ? profile->wacn : 0,
+                               profile->sysid_set ? profile->sysid : 0);
     if (restore && ops->restore_roster)
         ops->restore_roster(ops->user, profile->talkgroups,
                             profile->talkgroup_count);
@@ -690,6 +693,25 @@ void p25_program_restore_roster(p25_scan_ctrl_t *scan,
             (void)p25_scan_priority_set(scan, talkgroups[i].id,
                                         talkgroups[i].priority);
     }
+}
+
+bool p25_program_roster_switched(const p25_program_t *program,
+                                 const p25_system_id_t *roster_sys,
+                                 const p25_program_ops_t *ops)
+{
+    if (!program || !roster_sys || !ops || !ops->restore_roster) return false;
+    /* Mid-load the active profile is the outgoing one. */
+    if (program->state == P25_PROGRAM_BUSY || !program->active_valid) return false;
+    const p25_profile_t *p = &program->active;
+    /* A profile with no sysid= does not say whose its ranks are. */
+    if (!p->sysid_set || !roster_sys->valid) return false;
+    if ((p->sysid & 0xfffu) != roster_sys->sysid) return false;
+    if (p->wacn_set && roster_sys->wacn &&
+        (p->wacn & 0xfffffu) != roster_sys->wacn) return false;
+    if (ops->set_roster_system)
+        ops->set_roster_system(ops->user, p->wacn_set ? p->wacn : 0, p->sysid);
+    ops->restore_roster(ops->user, p->talkgroups, p->talkgroup_count);
+    return true;
 }
 
 bool p25_program_commit_staged(p25_program_t *program, const p25_program_t *staged,

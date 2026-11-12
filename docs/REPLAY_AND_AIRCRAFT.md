@@ -55,9 +55,9 @@ Open **RADIOS** and use **ON AT BOOT / OFF AT BOOT** for **WI-FI** and **BLE**. 
 
 ## SUB-GHZ
 
-Use **SCAN / N** and choose a band or a range around the current frequency. The moving sweep line shows the frequency being sampled. Open **MORE OPTIONS → DISPLAY** to choose the spectrum style and colour palette.
+On **BAND** (2), use **SCAN / N** and choose a band or a range around the current frequency. The chart and the detections it found share the page. **OPTIONS** on BAND has the spectrum style and colour palette.
 
-Drag the threshold line to change detection sensitivity. Tap **DETECTED** to browse hits, then choose **CAPTURE IT**, **TUNE HERE** or **ZOOM IN**. While scanning, **SCAN → ON DETECT** selects NOTHING, BUZZ or BUZZ + CATCH. **SCAN → STOP** ends the sweep.
+Tap or drag the red track on the right edge to set the detection threshold at that height; a tap on the chart itself never moves it. Tap a detection or a column of the chart, then choose **LISTEN HERE** (tune READ to it and start WATCH), **TUNE HERE** or **ZOOM IN**. **OPTIONS → On detection** selects NOTHING, BUZZ or BUZZ + LISTEN. **SCAN** again ends the sweep.
 
 ![SUB-GHZ scan in landscape](screenshots/tdp4/development-20260923/subghz-scan-land.png)
 

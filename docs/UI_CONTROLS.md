@@ -66,9 +66,12 @@ call activity. SLOT/S chooses BOTH, 1 or 2; HOLD/H holds a heard destination.
 OPTIONS offers slot, colour-code and talkgroup filters. Voice and DMR recording
 are unavailable. Encrypted calls are marked and muted.
 
-REC and SUB-GHZ share captures. RADIO/R chooses the receiver. Stop WATCH before
-changing capture source. WATCH/W starts capture; TOOLS/D opens RTL capture
-controls in REC. EXPORT and marks keep selected captures or observations.
+REC and SUB-GHZ share captures and the same three places: READ, BAND and
+SAVED (1, 2, 3). RADIO/R chooses the receiver. Stop WATCH before changing
+capture source. WATCH/W starts capture; RECORD/D keeps one raw capture and
+LEARN/L measures a 2-FSK transmitter, both on READ without leaving it. On BAND,
+LISTEN HERE tunes READ to a detection and starts WATCH. EXPORT and marks keep
+selected captures or observations.
 LoRa FSK captures and CC1101 raw OOK/FSK captures can be replayed where supported.
 An OOK24 row identifies a repeated pulse pattern, not a verified manufacturer.
 
@@ -83,8 +86,53 @@ completes a command; Left/Right scrolls output. KEYS opens touch input. ERRORS
 runs `crumb log`, HEAP shows memory, and CLEAR clears output. Type `help` for
 the available console commands.
 
-CELL WATCH is in RADIO. BAND/B selects a band, LEARN/L takes three baseline
-passes, LOAD/D loads a baseline, and SITE/G chooses GPS or LOCAL. LTE/E searches
-for LTE carriers. HIGH RATE/P offers a restart into the high-rate capture mode.
-RADIO/R and OPTIONS/O select its receiver and settings. Reports are optional.
+LINK is in SYSTEM. Its header says the network, address and level, the
+Bluetooth head and which remote doors are open before anything is tapped.
+Tabs are WI-FI/W, BLUETOOTH/B, SURVEY/V and REMOTE/E; TAB cycles them. On
+WI-FI the keys are SCAN/S, JOIN/J, LEAVE/D and OPTIONS/O, where CONNECT SAVED
+(R), HIDDEN NETWORK (M), FORGET SAVED (F) and DRONE WATCH (G) live; a second
+tap on a saved network connects to it. On REMOTE the keys are WEB/M,
+TERMINAL/T and SSH/S switches and OPTIONS/O, with the password (H show, N new,
+P set), SIGN OUT BROWSERS (X), KICK TERMINAL (K), SSH PORT (R), LEARN (L) and
+FORGET SSH KEYS (F) as rows. DRONES is its own app on HOME.
+
+NOTES opens on NEW/N, FIND/F and OPEN/O over the list; the header shows the
+count on the card and the note under the cursor. C opens COMPASS; a note with
+a place has GO TO COMPASS in its reader. DIGI's bar is START/S, BAND/B, MODE/M
+and OPTIONS/O; TEST SIGNAL (T) is a row in OPTIONS.
+
+FREQS is in RADIO, the frequency list every app tunes from. The bar is
+TUNE/T (or Enter, or a second tap on a row), SAVE/S, BANK/K and OPTIONS/O; the
+filters above the list are BAND/B, GROUP/G, NEAR/N and FIND/F, and Esc clears
+FIND. The TUNE key names the app it will open: FM in the entry's mode, P25,
+SUB-GHZ (LISTEN HERE on READ), LORA LABS, ADS-B, GPS or CELL WATCH, or NOT
+HERE when nothing can hear the mode. NEAR without a GPS fix says NO FIX and
+hides nothing. DELETE and LOAD INTO SCANNER in OPTIONS ask twice. FM (NFM,
+AM, HF, WFM, POCSAG, ACARS), P25, LORA LABS, CELL WATCH and SUB-GHZ (a
+detection's menu on BAND, OPTIONS on READ) have a SAVE TO FREQS row; the
+banner that follows says whether it was written. See [FREQS](apps/FREQS.md).
+
+The SUB-GHZ BAND sweep is drawn as bars (eighth-block tops), an ASCII ramp or
+a pixel waterfall of the last passes (newest at the top, in FALLS's colours,
+dimmed below the gate and full strength from it up); CHART/U on BAND switches bars and waterfall,
+SPECTRUM STYLE in OPTIONS lists all three and SPECTRUM COLOUR the palette.
+The DETECT track, its number, the column taps and the band edges are the same
+in both. MUSIC's views are one VIEW key between < and >: tap VIEW to list the
+ten, 1-0 and V still select them. JOURNAL shows chips for recording, entry
+count, GPS, IMU and the attached radio over its list.
+
+CELL WATCH is in RADIO. The bar is START/S, BAND/B, LEARN/L (three baseline
+passes) and OPTIONS/O; the header shows the band, the frequency, chips for
+the state, site and baseline, and the pass meter. OPTIONS holds LOAD BASELINE
+(D), LTE SEARCH (E), SITE (G), LORA REPORTS (T), HIGH RATE (P) and RADIO (R);
+N lists the cells, H goes home. HIGH RATE's bar is AUTO/S, ONCE/C, CHANNEL/B
+and OPTIONS, with DISPLAY (V) and EXIT (H) as rows. Reports are optional.
+
+LORA LABS' bar is DIRECT/D, MODE/M, BAND/B, REC/E and OPTIONS/O; SETUP (S),
+SEND (T), MARK (J), RADIO (R), CRC (C), IQ (I), SYNC (P), HOLD (H), CLEAR (X)
+and CALIBRATE (K) are OPTIONS rows that still answer their letters. MIX-RF's
+bar is MONITOR/M, 2.4 SCAN/S, NFC/N, VIEW/V, MARK/J and OPTIONS/O, with PROBE
+(P), NFC CARDS (C), STOP ALL (X) and RADIO (R) as rows. RF SURVEY's OPTIONS is
+one list. EXPERIMENTS shows its trials as tiles: tap one to open it; LEFT and
+RIGHT walk them, UP and DOWN the rows.
 It observes broadcast signals and does not read subscriber messages.

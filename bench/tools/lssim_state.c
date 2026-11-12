@@ -114,6 +114,7 @@ void settings_set_map_layers(uint32_t v) { s_map_layers = v; s_map_layers_set = 
 int  settings_get_subghz_colour(void) { return s_sg_colour; }
 void settings_set_subghz_colour(int v) { s_sg_colour = v; }
 void settings_set_alert_vibe(bool v) { s_alert_vibe = v; }
+void settings_set_haptics(bool on) { (void)on; }
 int  settings_get_theme(void) { return 0; }
 void settings_set_theme(int v) { (void)v; }
 /* SET's Daylight row stores as well as applies; -D turns it on. */
@@ -158,6 +159,8 @@ static bool s_rec_armed = true;
    a chart. This is a band with a remote being keyed in it: a floor that
    wanders, bursts well over the trigger at a steady interval, and a write
    rate that follows the bursts because that is when bytes are produced. */
+bool rec_get_autosave(void) { return true; }
+bool rec_save_busy(void) { return false; }
 void rec_get_hub_status(rec_hub_status_t *out)
 {
     if (!out) return;
@@ -205,6 +208,9 @@ void settings_set_desk_wallpaper(uint32_t id) { s_desk_wp = id; }
 static uint32_t s_desk_words[24];
 uint32_t settings_get_desk_word(int s) { return s >= 0 && s < 24 ? s_desk_words[s] : 0; }
 void settings_set_desk_word(int s, uint32_t v) { if (s >= 0 && s < 24) s_desk_words[s] = v; }
+static uint32_t s_freqs_view;
+uint32_t settings_get_freqs_view(void) { return s_freqs_view; }
+void settings_set_freqs_view(uint32_t v) { s_freqs_view = v; }
 
 /* No perf_history_good here either: perf.c is linked for real, so the
    sparkline on ADSB is fed by the same ring the board fills. */
@@ -373,6 +379,8 @@ void ls_gps_get(ls_gps_state_t *out) {
     if(!out) return;
     *out=s_gps;
     if(getenv("LSSIM_SWEEP_NO_GPS")) out->fix=false;
+    /* LSSIM_GPS_AT=lat,lon: stand somewhere else, for what is near. */
+    if(getenv("LSSIM_GPS_AT")) sscanf(getenv("LSSIM_GPS_AT"), "%lf,%lf", &out->lat_deg, &out->lon_deg);
     /* The live simulator fixture emits a fresh fix; -e remains unavailable. */
     if(out->alive) out->last_sentence_us=out->last_gsv_us=esp_timer_get_time();
     if(out->fix) out->last_fix_us=esp_timer_get_time();
@@ -579,6 +587,16 @@ void p25_spectrum_enable(bool on) { s_spec_on = on; }
 #include "apps/fm/fm_spectrum.h"
 static bool s_fm_spec_on;
 void fm_spectrum_enable(bool on) { s_fm_spec_on = on; }
+/* The LSSIM_HF band is a formula in Hz, so it zooms as the IQ path would:
+   a narrower span around the view, every bin computed for its own offset. */
+static unsigned s_fm_zoom = 1;
+static uint32_t s_fm_view;
+bool fm_spectrum_zoom(unsigned f, uint32_t hz)
+{
+    if (f != 1 && f != 2 && f != 4 && f != 8 && f != 16 && f != 32) return false;
+    s_fm_zoom = f; s_fm_view = f > 1 ? hz : 0; return true;
+}
+unsigned fm_spectrum_zoom_factor(void) { return s_fm_zoom; }
 /* LSSIM_HF: the radio sits 20 kHz above the dial as app_fm.c tunes it, and
    the band has a voice in the passband, a neighbour and a CW carrier. */
 bool fm_spectrum_read(float *out, int n, uint32_t now,
@@ -586,12 +604,16 @@ bool fm_spectrum_read(float *out, int n, uint32_t now,
 {
     if (!s_fm_spec_on || s_no_radio || !out || n < 1) return false;
     if (s_hf_seeded) {
-        const uint32_t centre = FM.freq_hz + 20000u;
-        const double per = (double)FM_RTL_RATE / n;
+        const uint32_t hw = FM.freq_hz + 20000u;
+        int64_t shift = s_fm_view ? (int64_t)s_fm_view - hw : 0;
+        const int64_t reach = FM_RTL_RATE / 2 - FM_RTL_RATE / s_fm_zoom / 2;
+        if (shift > reach || shift < -reach) shift = 0;
+        const uint32_t centre = (uint32_t)(hw + shift), span = FM_RTL_RATE / s_fm_zoom;
+        const double per = (double)span / n;
         static const double sig[][3] = { {-1800, 1600, 0.30}, {7000, 3000, 0.22},
                                          {-9000, 600, 0.35}, {15000, 2500, 0.12} };
         for (int i = 0; i < n; ++i) {
-            const double off = (i - n / 2) * per + 20000.0;   /* from the dial */
+            const double off = (i - n / 2) * per + 20000.0 + (double)shift;   /* from the dial */
             float v = 0.30f + 0.02f * (float)((i * 37) % 5) / 4.0f;
             for (int k = 0; k < 4; ++k) {
                 const double d = (off - sig[k][0]) / sig[k][1];
@@ -599,7 +621,7 @@ bool fm_spectrum_read(float *out, int n, uint32_t now,
             }
             out[i] = v;
         }
-        *snap = (fm_spectrum_snapshot_t){centre, FM_RTL_RATE, now, now / 100 + 1};
+        *snap = (fm_spectrum_snapshot_t){centre, span, now, now / 100 + 1};
         return true;
     }
     for (int i = 0; i < n; ++i) out[i] = i == n / 2 ? 0.8f : 0.15f;

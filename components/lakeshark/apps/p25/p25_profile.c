@@ -95,6 +95,34 @@ static number_result_t parse_u64(const char *text, uint64_t *value)
     return NUMBER_OK;
 }
 
+/* WACN, SYSID and NAC are written in hex everywhere they are published
+ * (RadioReference, the decoder's own readouts: BEE00, 9DC). Accept 0x-hex,
+ * and bare hex when it has a letter, which never parsed before. Bare digits
+ * stay decimal, as they always were. */
+static number_result_t parse_id(const char *text, uint64_t *value)
+{
+    if (!text || !*text) return NUMBER_INVALID;
+    const char *p = text;
+    bool hex = false;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) { p += 2; hex = true; }
+    for (const char *q = p; *q && !hex; ++q)
+        if ((*q >= 'a' && *q <= 'f') || (*q >= 'A' && *q <= 'F')) hex = true;
+    if (!hex) return parse_u64(text, value);
+    if (!*p) return NUMBER_INVALID;
+    uint64_t result = 0;
+    for (; *p; ++p) {
+        unsigned d;
+        if (*p >= '0' && *p <= '9') d = (unsigned)(*p - '0');
+        else if (*p >= 'a' && *p <= 'f') d = (unsigned)(*p - 'a' + 10);
+        else if (*p >= 'A' && *p <= 'F') d = (unsigned)(*p - 'A' + 10);
+        else return NUMBER_INVALID;
+        if (result > (UINT64_MAX >> 4)) return NUMBER_OVERFLOW;
+        result = (result << 4) | d;
+    }
+    *value = result;
+    return NUMBER_OK;
+}
+
 static bool parse_bool(const char *text, bool *value)
 {
     if (strcmp(text, "true") == 0) {
@@ -386,7 +414,7 @@ static bool parse_line(p25_profile_t *profile, char *line_text,
         bool w = !strcmp(key, "wacn"), sys = !strcmp(key, "sysid");
         if (!singleton_once(seen, w ? SEEN_WACN : sys ? SEEN_SYSID : SEEN_NAC, diagnostic, line)) return false;
         uint64_t id;
-        number_result_t nr = parse_u64(value, &id);
+        number_result_t nr = parse_id(value, &id);
         if (nr != NUMBER_OK) return fail(diagnostic, line, number_error(nr));
         if (id > (w ? 0xfffffu : 0xfffu)) return fail(diagnostic, line, P25_PROFILE_ERROR_NUMBER_OVERFLOW);
         if (w) { profile->wacn = (uint32_t)id; profile->wacn_set = true; }

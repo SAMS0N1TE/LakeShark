@@ -65,6 +65,26 @@ static void p25_lr_generation_begin(void)
     dsp_set_gain(&s_dsp, p25_demod_output_gain(DEMOD_C4FM, P25.demod_invert));
     P25.demod_active = DEMOD_C4FM; P25.demod_auto = false;
 }
+
+/* Phase II switched on or off under a running stream: the Phase I decoder
+   drops what it was assembling, and off puts the C4FM demodulator back
+   (on is p25_p2_rx_float's to set up). */
+static bool s_lr_p2_was;
+static void p25_lr_phase2_switch(void)
+{
+    const bool now = p25_p2_enabled();
+    if (now == s_lr_p2_was) return;
+    s_lr_p2_was = now;
+    s_ring.read_idx = s_ring.write_idx;
+    P25.channel_generation = atomic_fetch_add_explicit(&s_decode_tune_generation, 1,
+                              memory_order_release) + 1;
+    P25.dsd_nac_valid = false;
+    if (!now && s_dsp.phase2) {
+        p25_p2_stop();
+        dsp_init(&s_dsp); dsp_set_mode(&s_dsp, DEMOD_C4FM);
+        dsp_set_gain(&s_dsp, p25_demod_output_gain(DEMOD_C4FM, P25.demod_invert));
+    }
+}
 typedef struct {
     p25_lr_frontend_t *frontend;
     float *iq;
@@ -96,7 +116,14 @@ static bool p25_lr_block(p25_lr_feed_t *f, lr2021_iq_queue *q, const lr2021_iq_b
     f->received += b->bytes; P25.iq_bytes_total += b->bytes;
     lr2021_iq_queue_release(q);
     const int64_t t2 = esp_timer_get_time();
-    int count = dsp_process_float_iq(&s_dsp, f->iq, (int)pairs, f->audio, 1024);
+    p25_lr_phase2_switch();
+    /* Phase II slices and plays its own voice; the Phase I decoder's ring
+       gets nothing meanwhile, as on the SDR path. */
+    int count = 0;
+    if (!p25_p2_rx_float(&s_dsp, f->iq, (int)pairs, s_radio_freq_hz,
+                         s_dsd_state.p25_tsbk_wacn, s_dsd_state.p25_tsbk_sysid,
+                         (uint16_t)s_dsd_state.nac))
+        count = dsp_process_float_iq(&s_dsp, f->iq, (int)pairs, f->audio, 1024);
     f->dsp_us += esp_timer_get_time() - t2;
     if (count < 0 || dsd_ring_available(&s_ring) + count >= DSD_SAMPLE_RING_SIZE) return false;
     for (int i = 0; i < count; ++i) {
@@ -231,10 +258,13 @@ static void p25_lr_iq_run(void)
     while (!ls_mesh_radio_wanted() && p25_lr_iq_wanted() &&
            !(held = ls_mesh_radio_hold_bg(true)) && esp_timer_get_time() < hold_until)
         vTaskDelay(pdMS_TO_TICKS(5));
-    if (!held && !ls_mesh_radio_wanted() && !p25_lr_iq_wanted()) {
-        ls_mesh_radio_hold_bg(false);   /* leaving, not refused */
-        vTaskDelay(pdMS_TO_TICKS(20));
-        return;
+    /* Not asking any more (leaving, or the chip is wanted elsewhere): a
+       request left queued from an earlier pass would hold the mesh paused
+       and every other holder out. Still asking: it stays queued. */
+    if (!held && !p25_lr_iq_wanted()) {
+        const bool refused = ls_mesh_radio_wanted();
+        ls_mesh_radio_hold_bg(false);
+        if (!refused) { vTaskDelay(pdMS_TO_TICKS(20)); return; }
     }
     if (!held) {
         P25.lora_wait = true;

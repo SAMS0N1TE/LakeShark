@@ -632,7 +632,9 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
         if (t[2] > 13) { fk.cmd_status = 1; break; }
         fk.agc = t[2];
         break;
-    case 0x011E: fk.fifo_n = 0; break;
+    case 0x011E:
+        if ((fk.mode == 4 || fk.mode == 5) && fk.packet_type != 0x0B) { fk.cmd_status = 0; fk.bad_mode++; break; }
+        fk.fifo_n = 0; break;
     /* OOK commands fail when the packet type is not OOK (16.3.2). */
     case 0x0281: case 0x0282: case 0x0284: case 0x0288: {
         if (fk.packet_type != 0x0A) { fk.cmd_status = 0; fk.bad_mode++; break; }

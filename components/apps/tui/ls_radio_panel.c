@@ -2008,23 +2008,55 @@ int ls_radio_glass_frequency(ls_radio_glass_t *g, tui_surface *sf, tui_rect r,
     return y;
 }
 
-void ls_radio_glass_wipe(ls_radio_glass_t *g, tui_surface *sf, tui_rect r,
-                         int first_y, int y, int mode)
+/* Where the wipe's column is this frame, or -1 when there is none: twelve
+   frames across the rect after a change of `mode`, none on the first. */
+static int glass_wipe_column(ls_radio_glass_t *g, tui_rect r, int mode)
 {
-    const int last = r.y + r.h - 2;
-    const uint8_t key = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
     if (!g->mode_known || g->mode != mode) {
         if (g->mode_known) g->wipe_frames = 12;
         g->mode = mode;
         g->mode_known = true;
     }
-    if (g->wipe_frames > 0) {
-        const int col = (12 - g->wipe_frames) * (r.w - 2) / 12;
-        for (int i = first_y; i < y && i <= last; ++i)
-            tui_put_char(sf, r, r.x + 1 + col, i, LS_TUI_SHADE_50, key);
-        g->wipe_frames--;
-    }
+    if (g->wipe_frames <= 0) return -1;
+    const int col = (12 - g->wipe_frames) * (r.w - 2) / 12;
+    g->wipe_frames--;
+    return col;
+}
 
+void ls_radio_glass_wipe(ls_radio_glass_t *g, tui_surface *sf, tui_rect r,
+                         int first_y, int y, int mode)
+{
+    const int last = r.y + r.h - 2;
+    const uint8_t key = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
+    const int col = glass_wipe_column(g, r, mode);
+    if (col < 0) return;
+    for (int i = first_y; i < y && i <= last; ++i)
+        tui_put_char(sf, r, r.x + 1 + col, i, LS_TUI_SHADE_50, key);
+}
+
+/* The same sweep over a page of text, passing behind it: only background is
+   shaded - a cell that is blank and has blank cells either side - so neither
+   a word nor the space between two words is cut while the column crosses
+   them. FM wipes one figure line; a page wipes everything it shows. */
+static bool glass_blank(const tui_surface *sf, int x, int y)
+{
+    return x < 0 || x >= sf->w || sf->back[y * sf->w + x].ch == ' ';
+}
+void ls_radio_glass_wipe_behind(ls_radio_glass_t *g, tui_surface *sf, tui_rect r,
+                                int first_y, int y, int mode)
+{
+    const int last = r.y + r.h - 2;
+    const uint8_t key = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
+    const int col = glass_wipe_column(g, r, mode);
+    if (col < 0 || !sf || !sf->back) return;
+    const int x = r.x + 1 + col;
+    if (x < 0 || x >= sf->w) return;
+    for (int i = first_y; i < y && i <= last; ++i) {
+        if (i < 0 || i >= sf->h) continue;
+        if (!glass_blank(sf, x, i) || !glass_blank(sf, x - 1, i) ||
+            !glass_blank(sf, x + 1, i)) continue;
+        tui_put_char(sf, r, x, i, LS_TUI_SHADE_50, key);
+    }
 }
 
 void ls_radio_glass_bezel(tui_surface *sf, tui_rect r, const char *title)

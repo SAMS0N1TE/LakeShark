@@ -3,6 +3,7 @@
 #include <math.h>
 #include "ls_lora.h"
 #include "ls_mesh.h"
+#include "ls_tx_unlock.h"
 
 /* LABS uses a conservative US915 packet budget: +14 dBm conducted power,
    400 ms per packet and 600 ms in any 60 seconds. Charges survive DIRECT
@@ -13,6 +14,7 @@ typedef struct {
 static inline const char *ls_labs_tx_check(const ls_lora_cfg_t *cfg,
     uint32_t airtime_ms, int64_t now, const ls_labs_tx_budget_t *budget)
 {
+    if (LS_TX_UNLOCKED) { (void)budget; (void)now; return airtime_ms ? NULL : "SEND refused: no airtime"; }
     const uint32_t half_bw = (cfg->bw_hz + 1) / 2;
     if (cfg->freq_hz < LS_MESH_US915_MIN_HZ + half_bw ||
         cfg->freq_hz > LS_MESH_US915_MAX_HZ - half_bw)

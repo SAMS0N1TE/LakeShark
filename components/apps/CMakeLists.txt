@@ -99,6 +99,7 @@ add_custom_command(OUTPUT ${LS_WEB_PAGE}
     COMMAND ${LS_PYTHON} ${LS_WEB}/pack.py ${LS_WEB}/screen.html ${LS_WEB_PAGE}
     DEPENDS ${LS_WEB}/pack.py ${LS_WEB}/screen.html ${LS_WEB}/screen.js ${LS_WEB}/xterm-headless.js
     VERBATIM)
+if(CONFIG_LS_RTERM_WEB)
 target_add_binary_data(${COMPONENT_LIB} ${LS_WEB_PAGE} BINARY)
 if(CONFIG_LS_PANEL_RUNTIME)
     foreach(asset lsfont.bin.gz dejavu-mono.woff2 dejavu-mono-bold.woff2)
@@ -108,6 +109,7 @@ endif()
 foreach(s 180 192 512)
     target_add_binary_data(${COMPONENT_LIB} ${LS_WEB}/icon-${s}.png BINARY)
 endforeach()
+endif()
 if(CONFIG_LS_BOARD_T_DISPLAY_P4 OR CONFIG_LS_PANEL_RUNTIME)
     # CONFIG is available at registration time, not in IDF's early dependency scan.
     idf_component_optional_requires(PRIVATE cartocore console esp_timer mbedtls)

@@ -235,18 +235,24 @@ static const ls_opt_t O_FILES[] = {
     { .label = "EXPORT CSV + GEOJSON", .kind = LS_OPT_ACTION, .act = act_export },
 };
 static void options_preview(tui_surface *sf, tui_rect a);
-static const ls_opt_ctx_t C_SURVEY = { .name = "SURVEY", .job = -1, .radio = LS_RSEL_NONE, LS_OPT_ROWS(O_SURVEY) };
-static const ls_opt_ctx_t C_BAND = { .name = "BAND", .job = -1, .radio = LS_RSEL_NONE, LS_OPT_ROWS(O_BAND) };
-static const ls_opt_ctx_t C_HEAT = { .name = "HEAT", .job = -1, .radio = LS_RSEL_NONE, LS_OPT_ROWS(O_HEAT) };
-static const ls_opt_ctx_t C_FILES = { .name = "FILES", .job = -1, .radio = LS_RSEL_NONE, LS_OPT_ROWS(O_FILES) };
-static const ls_opt_t O_ROOT[] = {
-    { .label = "SURVEY", .kind = LS_OPT_MENU, .sub = &C_SURVEY },
-    { .label = "HEAT", .kind = LS_OPT_MENU, .sub = &C_HEAT },
-    { .label = "BAND", .kind = LS_OPT_MENU, .sub = &C_BAND },
-    { .label = "FILES", .kind = LS_OPT_MENU, .sub = &C_FILES },
-};
-static const ls_opt_ctx_t C_ROOT = { .name = "RF SURVEY", .back_to_screen = true, .preview = options_preview, .job = -1,
-                                     .radio = LS_RSEL_NONE, LS_OPT_ROWS(O_ROOT) };
+/* OPTIONS was a menu of four menus (SURVEY, HEAT, BAND, FILES), so a setting
+   was two taps and a BACK away and nobody remembered which menu. It is one
+   list now, what the heat shows first, then the files, the survey's
+   numbers and the custom band; the four tables above stay the owners of
+   their rows and are copied into it once, on entry. */
+#define ROOT_ROWS (sizeof(O_HEAT) / sizeof(O_HEAT[0]) + sizeof(O_FILES) / sizeof(O_FILES[0]) + \
+                   sizeof(O_SURVEY) / sizeof(O_SURVEY[0]) + sizeof(O_BAND) / sizeof(O_BAND[0]))
+static EXT_RAM_BSS_ATTR ls_opt_t s_root[ROOT_ROWS];
+static ls_opt_ctx_t C_ROOT = { .name = "RF SURVEY", .back_to_screen = true, .preview = options_preview, .job = -1,
+                               .radio = LS_RSEL_NONE, .opt = s_root, .n = 0 };
+static void flatten_options(void)
+{
+    int n = 0;
+#define ADD(t) for (unsigned i = 0; i < sizeof(t) / sizeof(t[0]); i++) s_root[n++] = t[i]
+    ADD(O_HEAT); ADD(O_FILES); ADD(O_SURVEY); ADD(O_BAND);
+#undef ADD
+    C_ROOT.n = n;
+}
 
 /* --------------------------------------------------------------- drawing -- */
 
@@ -448,9 +454,9 @@ static void heat_field(tui_surface *sf, tui_rect a)
     put(sf, in, x + 5, in.y + in.h - 1, lab, LS_ATTR_DIM);
 }
 
-/* Every channel as a bar over its floor: '|' from the floor up to the
-   level, '-' the floor itself, '.' the room above; lit in the heat colours
-   when it stands clear of the floor. */
+/* Every channel as a bar over its floor: eighth-block tops from the floor
+   line up to the level, the floor itself one thin line, the room above
+   left dark; lit in the heat colours when it stands clear of the floor. */
 static void channel_strip(tui_surface *sf, tui_rect a)
 {
     int ch; ls_rfs_metric_t m; ls_rfs_shown(&ch, &m);
@@ -480,19 +486,20 @@ static void channel_strip(tui_surface *sf, tui_rect a)
         const int x = s_strip_x0 + i * s_strip_pitch;
         const bool data = s_v.passes > 0 || s_v.replaying;
         const float lv = data ? s_v.level[i] : NAN, fl = data ? s_v.floor[i] : NAN;
-        const int top = isfinite(lv) ? (int)lroundf((lv - lo) / (hi - lo) * h) : 0;
-        const int fr = isfinite(fl) ? (int)lroundf((fl - lo) / (hi - lo) * h) : -1;
+        const int top8 = isfinite(lv) ? (int)lroundf((lv - lo) / (hi - lo) * h * 8) : 0;
+        const int fr = isfinite(fl) ? (int)lroundf((fl - lo) / (hi - lo) * h) : 0;
         const bool busy = (s_v.occ >> i) & 1;
         const float over = isfinite(lv) && isfinite(fl) ? lv - fl : 0;
         const uint8_t lit = busy ? TUI_ATTR(ls_rfmap_hue(over > 30 ? 4 : over > 20 ? 3 : 2), TUI_BLACK) : TUI_ATTR(TUI_BLUE | TUI_BRIGHT, TUI_BLACK);
+        const int w = s_strip_pitch - 1 < 3 ? (s_strip_pitch - 1 < 1 ? 1 : s_strip_pitch - 1) : 3;
         for (int r = 0; r < h; r++) {
             const int y = base - 1 - r;
-            char c = '.'; uint8_t at = LS_ATTR_FAINT;
-            if (r == fr) { c = '-'; at = LS_ATTR_DIM; }
-            if (r < top && r > fr) { c = '|'; at = lit; }
-            if (r < top && r <= fr) { c = ':'; at = TUI_ATTR(TUI_BLUE, TUI_BLACK); }
-            tui_put_char(sf, a, x, y, c, at);
-            for (int k = 1; k < s_strip_pitch - 1 && k < 3; k++) tui_put_char(sf, a, x + k, y, c == '.' ? ' ' : c, at);
+            char c = 0; uint8_t at = lit;
+            const int fill = top8 - r * 8;
+            if (r == fr) { c = LS_TUI_TRACE(1); at = LS_ATTR_DIM; }
+            if (r > fr && fill > 0) c = LS_TUI_TRACE(fill > 8 ? 8 : fill);
+            if (!c) continue;
+            for (int k = 0; k < w; k++) tui_put_char(sf, a, x + k, y, c, at);
         }
         char lab = i < 10 ? (char)('0' + i) : (char)('A' + i - 10);
         tui_put_char(sf, a, x, base, lab, i == ch ? TUI_ATTR(TUI_BLACK, TUI_CYAN) : LS_ATTR_DIM);
@@ -605,6 +612,7 @@ static bool touch(int col, int row)
 
 static void enter(void)
 {
+    flatten_options();
     settings_ready();
     ls_field_start();
     ls_rfs_files_refresh();

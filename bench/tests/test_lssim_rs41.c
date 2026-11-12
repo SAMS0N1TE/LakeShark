@@ -123,11 +123,17 @@ LS_CASE(sonde_detail_shows_its_own_keys)
 
 LS_CASE(experiment_touch_pages_and_list_recovery_hint)
 {
-    run("experiments","-k b -x @up,90:26",true);
-    LS_CHECK(strstr(output,"2/2 (13)")); LS_CHECK(strstr(output,"Z-WAVE SNIFFER"));
-    run("experiments","-k b -x @up,90:26,5:26",true);
-    LS_CHECK(strstr(output,"1/2 (13)")); LS_CHECK(strstr(output,"AVIATION PULSES"));
-    LS_CHECK(!strstr(output,"Z-WAVE SNIFFER"));
+    /* The trials are tiles on one screen, first to last, so there are no
+       pages to walk: the last one is a tap away from the first, and ESC
+       from an opened trial lands back on the grid. A landscape tile is
+       too short for a subtitle row, so a long name shows its first word. */
+    run("experiments","-k b",true);
+    LS_CHECK(strstr(output,"AVIATION")); LS_CHECK(strstr(output,"Z-WAVE"));
+    LS_CHECK(!strstr(output,"(13)"));
+    run("experiments","-k b -x 84:21",true);
+    LS_CHECK(strstr(output,"Z-WAVE SNIFFER / TRYING")); LS_CHECK(!strstr(output,"RADIOSONDE"));
+    run("experiments","-k b -x 84:21,@esc,9:11",true);
+    LS_CHECK(strstr(output,"AVIATION PULSES / ")); LS_CHECK(!strstr(output,"Z-WAVE SNIFFER"));
     for (int wide = 0; wide < 2; ++wide) {
         run("experiments","-k h",wide);
         LS_CHECK(!strstr(output,"G recover")); LS_CHECK(strstr(output,"ENTER detail"));

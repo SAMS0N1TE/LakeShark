@@ -11,10 +11,12 @@
 #include "../../ls_keydock.h"
 #include "../../ls_keyboard.h"
 #include "../../ls_picker.h"
+#include "../../ls_drag_scroll.h"
 #include "../../ls_field.h"
 #include "../../ls_app.h"
 #include "../../ls_map.h"
 #include "../../ls_compass_live.h"
+#include "../../ls_motion.h"
 #include "ls_keypad.h"
 #include "esp_attr.h"
 #include "esp_timer.h"
@@ -38,6 +40,11 @@ EXT_RAM_BSS_ATTR static char s_filter[40];
 static ls_textbuf_t s_tb;
 static view_t s_view;
 static int s_sel, s_first, s_read_scroll, s_read_rows;
+/* A finger dragged on the list moves the window on its own; the selection
+   stays where it was until a key or a tap moves it, and only then does the
+   window go back to following it. */
+static ls_drag_scroll_t s_drag, s_read_drag;
+static bool s_free;
 static int button_focus = -1, button_slot;
 /* s_dock is whether the touch keys are wanted; they are shown only while
    the keyboard is not attached, which is checked every frame, so attaching
@@ -391,15 +398,80 @@ static int draw_line(tui_surface *sf, tui_rect clip, int x, int y, int w, const 
     return rows ? rows : 1;
 }
 
+/* The emblem: a page of the notebook with the pen beside it. The lines are
+   lit for the notes on the card, up to three, so the picture is the count;
+   the pen walks the lines only while the card is being read or written,
+   because that is the one time the notebook is doing something by itself.
+   Nothing else here moves. */
+static void art(tui_surface *sf, tui_rect a, int x, int y, bool wide, int lines, bool busy)
+{
+    const uint8_t edge = TUI_ATTR(TUI_CYAN, TUI_BLACK), lit = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t pen = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    static const char *const RULE[3] = { "~~~~~~~", "~~~~~~~", "~~~~" };
+    const int n = wide ? 1 : 3;
+    tui_put_str(sf, a, x, y, wide ? ".=========." : ".=========.", edge);
+    for (int i = 0; i < n; i++) {
+        tui_put_str(sf, a, x, y + 1 + i, "|         |", edge);
+        tui_put_str(sf, a, x + 2, y + 1 + i, RULE[i], i < lines ? lit : LS_ATTR_FAINT);
+    }
+    tui_put_str(sf, a, x, y + 1 + n, "'========='", edge);
+    const int at = busy ? ls_motion_phase(n, 900) : (lines ? (lines > n ? n : lines) - 1 : 0);
+    tui_put_char(sf, a, x + 13, y + at, '/', pen);
+    tui_put_char(sf, a, x + 12, y + 1 + at, '/', pen);
+}
+
+/* What the notebook holds and which note is under the cursor, before
+   anything is opened. Returns the rows it took. */
+static int list_header(tui_surface *sf, tui_rect a, int total)
+{
+    const bool wide = ls_tui_is_wide();
+    const bool busy = ls_notes_scanning() || s_save_ticket || s_png_ticket || s_trash_ticket;
+    const int count = ls_notes_count();
+    art(sf, a, a.x + 1, a.y, wide, count, busy);
+    const int tx = a.x + 16, tw = a.w - 17;
+    const tui_rect clip = tui_rect_make(tx, a.y, tw > 0 ? tw : 0, wide ? 3 : 5);
+    char s[96];
+    tui_put_str(sf, clip, tx, a.y, "NOTES", TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    if (ls_notes_scanning()) snprintf(s, sizeof(s), "reading the card...");
+    else if (s_filter[0]) snprintf(s, sizeof(s), "%d of %d match \"%s\"", total, count, s_filter);
+    else snprintf(s, sizeof(s), count == 1 ? "%d on the card" : "%d on the card", count);
+    tui_put_str(sf, clip, tx + 7, a.y, s, ls_notes_scanning() ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+    ls_note_info_t n;
+    const int idx = total ? visible_index(s_sel) : -1;
+    if (idx >= 0 && ls_notes_at(idx, &n)) {
+        tui_put_str(sf, clip, tx, a.y + 1, n.title, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        if (!wide) {
+            char when[24];
+            if (n.when[0]) snprintf(when, sizeof(when), "%s", n.when);
+            else stamp_of(n.stem, when, sizeof(when));
+            snprintf(s, sizeof(s), "%s%s%s%s", when[0] ? when : n.stem,
+                     n.badges & LS_NOTE_HAS_GPS ? "  GPS" : "", n.badges & LS_NOTE_HAS_MAP ? "  MAP" : "",
+                     n.badges & LS_NOTE_HAS_RADIO ? "  RADIO" : "");
+            tui_put_str(sf, clip, tx, a.y + 2, s, LS_ATTR_DIM);
+            tui_put_str(sf, clip, tx, a.y + 3, "OPEN reads it; ENTER too", LS_ATTR_DIM);
+        }
+    } else {
+        tui_put_str(sf, clip, tx, a.y + 1, "A notebook for the field", TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        if (!wide) {
+            tui_put_str(sf, clip, tx, a.y + 2, "NEW starts one. INSERT drops in", LS_ATTR_DIM);
+            tui_put_str(sf, clip, tx, a.y + 3, "position, heading, map, radio", LS_ATTR_DIM);
+        }
+    }
+    return wide ? 4 : 6;
+}
+
 static void draw_list(tui_surface *sf, tui_rect a)
 {
     const int total = visible_count();
     if (s_sel >= total) s_sel = total ? total - 1 : 0;
+    const int head_h = list_header(sf, a, total);
+    a = tui_rect_make(a.x, a.y + head_h, a.w, a.h - head_h);
     char find[48]; snprintf(find, sizeof(find), "%s", s_filter[0] ? s_filter : "ALL");
+    /* COMPASS APP was the fourth key here; it is on HOME and still on C. */
     ls_btn_t buttons[] = {{"NEW", "NOTE", 'n', false, false}, {"FIND", find, 'f', s_filter[0] != 0, false},
-                          {"OPEN", NULL, 'o', false, !total}, {"COMPASS", "APP", 'c', false, false}};
-    const int bar_h = ls_btn_raised_height(a, 4);
-    ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 4, button_focus);
+                          {"OPEN", total ? "READ" : NULL, 'o', false, !total}};
+    const int bar_h = ls_btn_raised_height(a, 3);
+    ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 3, button_focus);
     tui_rect panel = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - 1);
     char title[40]; snprintf(title, sizeof(title), "NOTES  %d", ls_notes_count());
     ls_panel_box(sf, panel, title, TUI_CYAN);
@@ -408,14 +480,18 @@ static void draw_list(tui_surface *sf, tui_rect a)
     s_row_count = 0;
     if (!total) {
         const char *lines[] = { ls_notes_scanning() ? "Reading the SD card..." : s_filter[0] ? "No note title matches." :
-                                "A notebook for the field.", "", "NEW starts a note. INSERT drops in",
-                                "your position, heading, a map", "picture or what a radio hears.",
-                                "", "Notes are plain text files in", "/sdcard/notes on the card." };
+                                "Nothing on the card yet.", "", "Notes are plain text files in",
+                                "/sdcard/notes on the card." };
         for (unsigned i = 0; i < sizeof(lines) / sizeof(lines[0]); i++)
             tui_put_str(sf, panel, s_list_area.x, s_list_area.y + 1 + (int)i, lines[i], LS_ATTR_DIM);
     }
-    if (s_sel < s_first) s_first = s_sel;
-    if (rows > 0 && s_sel >= s_first + rows) s_first = s_sel - rows + 1;
+    if (rows > 0 && ls_drag_scroll(&s_drag, s_list_area, per, &s_first, total, rows)) s_free = true;
+    if (!s_free) {
+        if (s_sel < s_first) s_first = s_sel;
+        if (rows > 0 && s_sel >= s_first + rows) s_first = s_sel - rows + 1;
+    }
+    if (rows > 0 && s_first > total - rows) s_first = total - rows > 0 ? total - rows : 0;
+    if (s_first < 0) s_first = 0;
     for (int r = 0; r < rows && s_first + r < total; r++) {
         const int k = s_first + r, idx = visible_index(k);
         ls_note_info_t n;
@@ -456,6 +532,7 @@ static void draw_read(tui_surface *sf, tui_rect a)
     ls_panel_box(sf, panel, NULL, TUI_CYAN);
     s_read_area = tui_rect_make(panel.x + 2, panel.y + 1, panel.w - 4, panel.h - 2);
     for (unsigned i = 0; i < sizeof(s_read_line_at) / sizeof(s_read_line_at[0]); i++) s_read_line_at[i] = -1;
+    ls_drag_scroll(&s_read_drag, s_read_area, 1, &s_read_scroll, s_read_rows, s_read_area.h);
     int row = -s_read_scroll, total = 0;
     bool map_shown = false;
     for (const char *line = s_text; *line;) {
@@ -581,7 +658,7 @@ static void draw(tui_surface *sf, tui_rect a)
 
 /* ---------------------------------------------------------------- input -- */
 
-static void filter_done(const char *text) { snprintf(s_filter, sizeof(s_filter), "%s", text); s_sel = s_first = 0; }
+static void filter_done(const char *text) { snprintf(s_filter, sizeof(s_filter), "%s", text); s_sel = s_first = 0; s_free = false; }
 
 static void toggle_check_at(int offset)
 {
@@ -599,7 +676,7 @@ static void list_action(int i)
     s_feedback[0] = 0;
     if (i == 0) new_note();
     else if (i == 1) {
-        if (s_filter[0]) { s_filter[0] = 0; s_sel = s_first = 0; }
+        if (s_filter[0]) { s_filter[0] = 0; s_sel = s_first = 0; s_free = false; }
         else ls_keyboard_open("FIND BY TITLE", "", sizeof(s_filter) - 1, filter_done);
     } else if (i == 2) { int idx = visible_index(s_sel); if (idx >= 0) open_note(idx); }
     else if (i == 3) open_app("compass");
@@ -732,8 +809,8 @@ static bool key(ls_tk_t k, char ch)
         return false;
     }
     const int total = visible_count();
-    if (k == LS_TK_UP) { if (s_sel) s_sel--; return true; }
-    if (k == LS_TK_DOWN) { if (s_sel + 1 < total) s_sel++; return true; }
+    if (k == LS_TK_UP) { s_free = false; if (s_sel) s_sel--; return true; }
+    if (k == LS_TK_DOWN) { s_free = false; if (s_sel + 1 < total) s_sel++; return true; }
     if (k == LS_TK_ENTER) { list_action(2); return true; }
     if (k == LS_TK_CHAR) { const char *p = strchr("nfoc", tolower((unsigned char)ch)); if (p) { list_action((int)(p - "nfoc")); return true; } }
     return false;
@@ -765,6 +842,7 @@ static bool touch(int col, int row)
         return true;
     }
     if (s_view == V_READ) {
+        if (ls_drag_scroll_tap_is_lift(&s_read_drag)) return true;   /* the end of a drag */
         const int r = row - s_read_area.y;
         if (r >= 0 && r < (int)(sizeof(s_read_line_at) / sizeof(s_read_line_at[0])) && s_read_line_at[r] >= 0 &&
             col < s_read_area.x + 4)
@@ -780,6 +858,7 @@ static bool touch(int col, int row)
     }
     if (s_view == V_LIST && col >= s_list_area.x + s_list_area.w && col < s_list_area.x + s_list_area.w + 4 && row >= s_list_area.y && row < s_list_area.y + s_list_area.h) {
         int step = s_row_count > 1 ? s_row_count - 1 : 1;
+        s_free = false;
         s_sel += row < s_list_area.y + s_list_area.h / 2 ? -step : step;
         int total = visible_count();
         if (s_sel < 0) s_sel = 0;
@@ -787,6 +866,8 @@ static bool touch(int col, int row)
         return true;
     }
     if (s_view == V_LIST && col >= s_list_area.x && col < s_list_area.x + s_list_area.w && row >= s_list_area.y) {
+        if (ls_drag_scroll_tap_is_lift(&s_drag)) return true;   /* the end of a drag, not a choice */
+        s_free = false;
         const int r = (row - s_list_area.y) / 3;
         if (r >= 0 && r < s_row_count) {
             const int k = s_row_index[r];

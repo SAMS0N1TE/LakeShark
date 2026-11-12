@@ -30,7 +30,9 @@ LOCAL mode ignores GPS for baseline selection and comparison, while leaving
 the GPS receiver available to other apps. It still enforces the IMU gate.
 
 The scanner uses the radio-session broker, 256 ksample/s complex U8 IQ, 25 kHz
-peak-held bins, 8 FFTs per tune and fixed 29.7 dB requested gain. It discards the
+peak-held bins, 8 FFTs per tune and 29.7 dB requested gain unless OPTIONS >
+RTL GAIN chooses another R820T step (7.7, 14.4, 19.7, 25.4 or 37.2 dB). A
+baseline records its gain and is only compared at that gain. It discards the
 DC region and settles after each retune. It is a sequential survey, not a
 simultaneous wideband capture. The UI reports actual completed tune counts and
 last-completed-pass measurements. STOP cancels between bounded radio reads;
@@ -56,11 +58,38 @@ orientation or nearby obstructions can still change RF levels at one location.
 Use the same RTL receiver and physical antenna for baseline and monitoring;
 changing the dongle or antenna requires learning a new baseline.
 
-Supported presets are the downlink windows of B5 (869-894 MHz, also GSM850),
-B8 (925-960, also E-GSM900), B12, B13, B14, B17, B20, B26 and B71. These are
-downlink frequency windows, not assertions about which radio technology is
-present. B2, B4, B25 and B66 are in the band table (for EARFCN labels) but
-above the RTL-SDR tuner, so the picker does not offer them.
+Supported presets are the windows of B5 (869-894 MHz, also GSM850), B8
+(925-960, also E-GSM900), B12, B13, B14, B17, B20 EU, B26, B71 and B28 (APT
+700) as two windows, B28 lo (758-783) and B28 hi (778-803). These are
+frequency windows, not assertions about which radio technology is present.
+B2, B4, B25 and B66 are in the band table (for EARFCN labels) but above the
+RTL-SDR tuner, so the picker does not offer them.
+
+Each window is a downlink only in the region its band belongs to. B20 EU
+(791-821 MHz) is Europe's 800 band. In the Americas 791-803 MHz is B28
+downlink and 806-821 MHz is handset and SMR uplink: phones transmitting in
+bursts, which reads as noise in a survey and is no cell. In Argentina use
+B28 lo and B28 hi (Movistar 758-768, Personal 768-778 and Claro 778-793 MHz
+in the 2015 award), B5 (869-894) and, with the HackRF, B4/B66; B7 (2620-2690)
+and B2 are above the RTL-SDR.
+
+B28 is 45 MHz and a baseline holds 1400 bins of 25 kHz (35 MHz), so it is
+two windows. They share the block 778-783 MHz: the LTE search keeps 700 kHz
+off each window's edges, and the overlap leaves every raster centre from
+758.7 to 802.3 MHz searchable in one of them (with no overlap, centres such
+as 780.5, a plausible 5 or 15 MHz carrier, would be in neither). Each of the
+three Argentine carriers is whole in one window. EARFCN is TS 36.101's band 28
+(`F_DL = 758 + 0.1 (N - 9210)`): B28 lo is 9210-9459 and B28 hi 9410-9659.
+A baseline names its window by position in the table (file
+`..._b<index>_a<antenna>.bin` and its `band` field), so the nine windows that
+shipped before B28 keep their positions; B28 lo and B28 hi are 9 and 10, and
+baselines saved earlier still load. The baseline format is unchanged
+(version 2).
+
+Where bands overlap, a frequency is labelled by the window being surveyed
+(795 MHz in B28 hi is EARFCN 9580, not B20's 6190). Without a window, as in
+HIGH RATE, both readings are shown: 763.0 MHz is `B14 5330/B28 9260`, FirstNet
+in the US and Movistar in Argentina.
 
 Published values: `cell.busy`, `cell.changed_bins`, `cell.frequency` (MHz).
 Actions: `cell.start` and `cell.stop`, both requiring tuning capability.
@@ -190,6 +219,39 @@ plateau reports that and suggests FULL. The occupancy trace, the plateaus,
 the points searched and the cells found are drawn on the band chart (braille
 dots, with `=` occupied, `+` searched, `*` cell).
 
+### Survey chart against the floor, and clipping (2026-11-10)
+
+The survey chart used to draw raw dBFS on a fixed -110..-30 scale. Receiver
+noise alone reads about -68..-57 dBFS in a 25 kHz bin peak-held over its
+tune, so noise filled more than half of the chart and a carrier 15 dB above
+it barely stood out: an owner in Argentina reported this as huge noise in
+the 800 MHz band. Every survey pass now takes the same fifth-percentile
+floor and plateau reading as the LTE pre-pass (`cell_floor`,
+`cell_columns`). The chart runs from about 6 dB below the floor to 54 dB
+above it, the floor is a dotted line, columns within 5 dB of it are drawn
+faint, carriers (plateaus at least 0.8 MHz wide and 8 dB over the floor) are
+green as in the LTE view, and anything else clear of the noise is cyan. The
+legend gives the floor in dBFS. A baseline dash is drawn only where the
+baseline held more than noise. The LTE occupancy chart uses the same scale.
+Each pass prints `CELL_PASS band= floor= carriers= compared= changed=` on
+the console.
+
+The sweep counts the I/Q bytes at the converter's rails (0 or 255) in what
+each tune folds into the spectrum, and keeps the worst tune
+(`ls_sweep_run_rails`). A tune with more than one rail byte in a thousand is
+clipping: its levels, and the images clipping folds into other bins, are the
+receiver's. Such a pass is neither learned nor compared. LEARN stops at it,
+WATCH shows it without comparing and resets persistence, and the screen
+reads `RTL overloaded at 786 MHz - lower gain` in red until a pass comes
+back clean. The LTE pre-pass reports it too but still searches, since only a
+cell that synchronises is listed. Each pass prints `CELL_RAILS band= gain=
+worst_hz= worst=rails/bytes pass=rails/bytes overload=`. The threshold is per
+tune, not per pass: a strong carrier clips the tunes that hold it, and a
+whole-pass share would dilute that by every quiet tune. A nearby site that
+clips at 29.7 dB can be surveyed at a lower OPTIONS > RTL GAIN, with a new
+baseline learned at that gain. The threshold has not yet been checked on
+hardware against a site known to clip.
+
 ### Dongle clock from the cells
 
 An eNodeB carrier is within about 0.05 ppm of nominal, so the carrier offset
@@ -213,8 +275,9 @@ all reported, and up to 32 rows are kept (the screen lists the strongest that
 fit; tap the list, press N or use OPTIONS > ALL CELLS for every row). Each row
 has an RSRP-like level: the mean power of the port 0 reference signals in the
 central six resource blocks, dB relative to a full-scale complex tone per
-resource element, at the fixed 29.7 dB gain. It compares cells heard with one
-antenna; it is not dBm. When the PSS/SSS search finds cells, the search
+resource element, at the survey's RTL gain (29.7 dB unless OPTIONS > RTL GAIN
+says otherwise). It compares cells heard with one antenna at one gain; it is
+not dBm. When the PSS/SSS search finds cells, the search
 captures 80 ms once per carrier and runs the existing PBCH decoder on each
 (MIB: bandwidth, antenna ports, SFN) with no HackRF restart. OPTIONS > LTE MIB
 turns this off. The journal gains `earfcn`, `rsrp_dbfs` and `ppm` on

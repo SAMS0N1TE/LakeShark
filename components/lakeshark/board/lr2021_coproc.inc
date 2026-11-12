@@ -106,7 +106,7 @@ static esp_err_t cop_upload_image_locked(const cop_image_t *img)
         if (err == ESP_OK) err = lr20xx_check_last_ok();
     }
     for (unsigned i = 0; err == ESP_OK && i < img->n; i += 32) {
-        static uint8_t b[128];
+        LORA_TABLE static uint8_t b[128];
         const unsigned n = img->n - i > 32 ? 32 : img->n - i;
         err = cop_mem_read_locked(COP_PRAM_CPU + 4u * i, b, n);
         for (unsigned j = 0; err == ESP_OK && j < n; j++) {
@@ -190,7 +190,7 @@ esp_err_t lr20xx_chip_spectrum(const lr20xx_chip_spec_cfg_t *cfg, lr20xx_chip_sp
     if (touched) s_cop.sessions++;
     if (err == ESP_OK) err = cop_upload_locked();
     if (err == ESP_OK) err = cop_program_rx_locked(cfg->hz, cfg->bw_hz, cfg->gain);
-    static uint8_t db[256];   /* console callers have a small stack */
+    LORA_TABLE static uint8_t db[256];   /* console callers have a small stack */
     while (err == ESP_OK) {
         const uint8_t p[3] = {9, cfg->nseg, 0};
         uint8_t r[4] = {0};
@@ -284,7 +284,7 @@ esp_err_t lr20xx_chip_sweep(const lr20xx_chip_sweep_cfg_t *cfg, float *dbm, lr20
         err = cop_call_locked(p, sizeof(p), r, 2, (int)(n * (cfg->dwell / 300u + 4u) + 50u));
         if (err == ESP_OK && (((uint32_t)r[0] << 8) | r[1]) != n) err = ESP_ERR_INVALID_RESPONSE;
         for (uint32_t i = 0; err == ESP_OK && i < n; i += 64) {
-            static uint8_t b[128];
+            LORA_TABLE static uint8_t b[128];
             const uint32_t k = n - i > 64 ? 64 : n - i;
             err = cop_mem_read_locked(COP_SWEEP_OUT + 2u * i, b, (k + 1) / 2);
             for (uint32_t j = 0; err == ESP_OK && j < k; j++)
@@ -389,7 +389,7 @@ static int cop_scan_pass_locked(float *dbm, int n, bool *row_done)
         if (err == ESP_OK && (((uint32_t)r[0] << 8) | r[1]) != c) err = ESP_ERR_INVALID_RESPONSE;
     }
     for (uint32_t m = 0; err == ESP_OK && m < c; m += 64) {
-        static uint8_t b[128];
+        LORA_TABLE static uint8_t b[128];
         const uint32_t k = c - m > 64 ? 64 : c - m;
         err = cop_mem_read_locked(COP_SWEEP_OUT + 2u * m, b, (k + 1) / 2);
         for (uint32_t q = 0; err == ESP_OK && q < k; q++) {
@@ -492,7 +492,11 @@ esp_err_t lr20xx_chip_lora_scan(const lr20xx_chip_scan_cfg_t *cfg, lr20xx_chip_s
         const lr20xx_chip_chan_t *c = &cfg->chans[i];
         const lr20xx_lora_bw_t bw = lr20xx_lora_bw_nearest(c->bw_hz);
         const uint32_t mod0 = (uint32_t)(c->sf << 4) | bw.code, mod1 = 0x10u | (lr20xx_lora_ldro(c->sf, bw.hz) ? 1u : 0u);
-        const uint32_t peak = COP_CAD_PEAK[cfg->cad_symbols - 1][c->sf - 5], pre = c->sf <= 8 ? 32u : 16u;
+        /* Clamped: the -O2 Nano build cannot prove the caller's SF 5-12 /
+           1-2 CAD symbol range and stops on array-bounds. */
+        const unsigned cad_i = cfg->cad_symbols >= 2 ? 1u : 0u;
+        const unsigned sf_i = c->sf >= 5 && c->sf <= 12 ? (unsigned)(c->sf - 5) : 0u;
+        const uint32_t peak = COP_CAD_PEAK[cad_i][sf_i], pre = c->sf <= 8 ? 32u : 16u;
         err = lr20xx_write_reg32(COP_SCAN_TAB + 8u * i, c->hz);
         if (err == ESP_OK) err = lr20xx_write_reg32(COP_SCAN_TAB + 8u * i + 4u, mod0 | mod1 << 8 | peak << 16 | pre << 24);
     }
@@ -502,7 +506,7 @@ esp_err_t lr20xx_chip_lora_scan(const lr20xx_chip_scan_cfg_t *cfg, lr20xx_chip_s
         const uint8_t start[4] = {cfg->n, cfg->cad_symbols, 8, cfg->cad_flags};
         err = cop_scan_op_locked(1, start, sizeof(start), w);
     }
-    static uint8_t data[256];
+    LORA_TABLE static uint8_t data[256];
     while (err == ESP_OK) {
         if (!sink(ctx, NULL)) break;
         bool pending = false;
@@ -562,7 +566,7 @@ static bool cop_scan_probe_sink(void *ctx, const lr20xx_chip_packet_t *p)
 }
 LR_CMD lrscan_command(int argc, char **argv)
 {
-    static lr20xx_chip_chan_t chans[32];
+    LORA_TABLE static lr20xx_chip_chan_t chans[32];
     unsigned n = 0;
     float sf = 7, bw = 62.5f, secs = 30;
     unsigned sync = 0x12;
@@ -668,7 +672,7 @@ esp_err_t lr20xx_chip_ddc_live(const lr20xx_chip_ddc_cfg_t *cfg, lr20xx_chip_ddc
        block's sequence number (1, 2, ...) written last. A block whose number
        is the one expected is complete; one already newer means the ring
        lapped. Reads are paced on the block period, so few find nothing. */
-    static uint8_t buf[COP_DDC_BLK];
+    LORA_TABLE static uint8_t buf[COP_DDC_BLK];
     uint32_t blk = 1;
     uint64_t first = 0;
     const int64_t period_us = res.in_rate_hz ? (int64_t)COP_DDC_BLK_PAIRS * cfg->dec * 1000000 / res.in_rate_hz : 1000;

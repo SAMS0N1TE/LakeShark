@@ -73,6 +73,11 @@ bool subghz_file_is_cc_fsk(const subghz_file_t *f);
    power, so the file checks above pass 0 dBm and the sender checks its own. */
 const char *subghz_tx_refusal(uint32_t freq_hz, int dbm, size_t edges,
                               uint64_t span_us);
+#include "ls_tx_unlock.h"
+#define SUBGHZ_TX_STEPS_MAX 7
+#define SUBGHZ_TX_STEPS (LS_TX_UNLOCKED ? SUBGHZ_TX_STEPS_MAX : 4)
+int subghz_tx_step_dbm(int step, bool cc1101);
+const char *subghz_tx_step_name(int step);
 /* Total duration of signed microsecond edges. */
 uint64_t subghz_span_us(const int32_t *edges, size_t count);
 

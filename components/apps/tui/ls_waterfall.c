@@ -56,6 +56,11 @@ static uint8_t  s_marker_on_mark_zoom;
 /* Display-only crop. This survives source claims so the shared instrument
    presents one consistent zoom across FM, P25, and swept sources. */
 static uint8_t  s_zoom = 1;
+static ls_wf_zoom_fn s_zoomer;
+static bool     s_real_zoom;             /* the source narrowed its span   */
+static ls_wf_owner_t s_zoom_owner;
+void ls_wf_set_zoomer(ls_wf_zoom_fn zoomer) { s_zoomer = zoomer; }
+void ls_wf_zoom_drop(void) { if (s_real_zoom) { s_real_zoom = false; s_zoom = 1; } }
 
 static ls_wf_cfg_t s_cfg = {
     .split_pct = 25, .ref = 0, .range = 16, .palette = LS_WF_PAL_HEAT,
@@ -334,6 +339,12 @@ void ls_wf_claim(ls_wf_owner_t owner, const char *label)
 {
     cfg_load();
     if (owner == s_owner) return;
+    /* A real zoom belongs to its source; another taking over starts at 1x.
+       NONE in between is a source re-claiming after its span changed. */
+    if (s_real_zoom && owner != LS_WF_OWNER_NONE && owner != s_zoom_owner) {
+        if (s_zoomer) (void)s_zoomer(s_zoom_owner, 1, 0);
+        s_real_zoom = false; s_zoom = 1;
+    }
     s_owner = owner;
     snprintf(s_label, sizeof(s_label), "%s", label ? label : "");
     s_head = 0;
@@ -489,9 +500,29 @@ void ls_wf_push(ls_wf_owner_t owner, const float *bins, int n,
 
 uint8_t ls_wf_zoom(void) { return s_zoom; }
 
+static void visible_band(uint32_t *center_hz, uint32_t *span_hz);
+
+/* To `z`: by the source where it can, centred on the marker or else on the
+   middle of what is shown; otherwise by cropping the bins. */
+static void zoom_to(uint8_t z)
+{
+    if (s_zoomer && s_owner != LS_WF_OWNER_NONE) {
+        uint32_t at = ls_wf_marker_hz();
+        if (!at) visible_band(&at, NULL);
+        if (s_zoomer(s_owner, z, z > 1 ? at : 0)) {
+            s_zoom = z; s_real_zoom = z > 1; s_zoom_owner = s_owner;
+            return;
+        }
+    }
+    if (s_real_zoom && s_zoomer) (void)s_zoomer(s_zoom_owner, 1, 0);
+    s_real_zoom = false;
+    s_zoom = z > 4 ? 1 : z;
+}
+
 static void zoom_step(void)
 {
-    s_zoom = s_zoom == 1 ? 2 : s_zoom == 2 ? 4 : 1;
+    const uint8_t top = s_real_zoom || (s_zoom == 1 && s_zoomer && s_owner != LS_WF_OWNER_NONE) ? 32 : 4;
+    zoom_to(s_zoom >= top ? 1 : (uint8_t)(s_zoom * 2));
 }
 
 /* Return the centered source-bin window and its actual frequency span. */
@@ -500,17 +531,18 @@ static void zoom_step(void)
 static void visible_bins(int *first, int *count)
 {
     static int c_bins = -1, c_zoom = -1, c_first, c_count;
-    if (s_nbins != c_bins || s_zoom != c_zoom) {
+    const int key = s_real_zoom ? 1 : s_zoom;
+    if (s_nbins != c_bins || key != c_zoom) {
         int n = s_nbins;
         if (n < 1) n = 1;
-        int factor = s_zoom ? s_zoom : 1;
+        int factor = s_real_zoom ? 1 : s_zoom ? s_zoom : 1;
         if (factor > n) factor = n;
         int visible = n / factor;
         if (visible < 1) visible = 1;
         c_first = (n - visible) / 2;
         c_count = visible;
         c_bins = s_nbins;
-        c_zoom = s_zoom;
+        c_zoom = key;
     }
     *first = c_first;
     *count = c_count;
@@ -1076,7 +1108,7 @@ static int o_get(const ls_opt_t *o)
     case 6: return s_cfg.peak_hold;
     case 7: return s_cfg.paused;
     case 8: return s_cfg.grain;
-    case 10: return s_zoom == 4 ? 2 : s_zoom == 2 ? 1 : 0;
+    case 10: { int v = 0; while ((1u << v) < s_zoom && v < 5) v++; return v; }
     default:
         for (int i = 0; i < N_CONTRAST; i++)
             if (s_cfg.ref == CONTRAST[i].ref && s_cfg.range == CONTRAST[i].range) return i;
@@ -1091,12 +1123,12 @@ static void o_set(const ls_opt_t *o, int v)
     case 7: s_cfg.paused = v; break;
     case 8: s_cfg.grain = v; break;
     case 9: s_cfg.ref = CONTRAST[v].ref; s_cfg.range = CONTRAST[v].range; break;
-    case 10: s_zoom = v == 2 ? 4 : v == 1 ? 2 : 1; return;
+    case 10: zoom_to((uint8_t)(1u << (v < 0 ? 0 : v > 5 ? 5 : v))); return;
     }
     cfg_save();
 }
 static const char *const CONTRAST_NAME[] = {"soft", "norm", "hard", "max"};
-static const char *const ZOOM_NAME[] = {"1x", "2x", "4x"};
+static const char *const ZOOM_NAME[] = {"1x", "2x", "4x", "8x", "16x", "32x"};
 #define WF_LEVEL(l, i, low, high, inc) { .label = (l), .kind = LS_OPT_LEVEL, .arg = (i), \
     .num = o_num, .set_num = o_set_num, .lo = (low), .hi = (high), .step = (inc), .show = o_wf_show }
 #define WF_CHOICE(l, i, k, labels, count) { .label = (l), .kind = (k), .arg = (i), \
@@ -1109,7 +1141,7 @@ static const ls_opt_t OPT_WF[] = {
     WF_LEVEL("AVG", 4, 0, 3, 1), WF_LEVEL("SPEED", 5, 0, 3, 1),
     WF_CHOICE("PEAK", 6, LS_OPT_TOGGLE, NULL, 2), WF_LEVEL("SPLIT", 0, 0, 100, 25),
     WF_CHOICE("HOLD", 7, LS_OPT_TOGGLE, NULL, 2),
-    WF_CHOICE("ZOOM", 10, LS_OPT_CYCLE, ZOOM_NAME, 3),
+    WF_CHOICE("ZOOM", 10, LS_OPT_CYCLE, ZOOM_NAME, 6),
     LS_RFFE_MENUS,
 };
 #undef WF_LEVEL
@@ -1282,6 +1314,16 @@ static void pix_colours(void)
     const int span = s_cfg.range ? s_cfg.range : 16;
     const float lo = 17.0f * s_cfg.ref, hi = 17.0f * (s_cfg.ref + 15.0f * span / 16.0f);
     ls_pwf_colours(&s_pix, stops, 16, lo, hi);
+}
+
+int ls_wf_smooth_stops(int palette, ls_pwf_stop_t out[8])
+{
+    if (palette < 0 || palette >= LS_WF_PAL__COUNT) palette = 0;
+    memcpy(out, SMOOTH_DARK[palette], sizeof(SMOOTH_DARK[palette]));
+    const uint16_t g = ls_tui_active_theme()->palette[TUI_BLACK];
+    out[0] = (ls_pwf_stop_t){0, (uint8_t)((g >> 11) * 255 / 31),
+                             (uint8_t)(((g >> 5) & 63) * 255 / 63), (uint8_t)((g & 31) * 255 / 31)};
+    return 8;
 }
 
 /* The rows accepted since the last draw, oldest first. */

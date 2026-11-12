@@ -8,6 +8,7 @@
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
 #include "../../ls_picker.h"
+#include "../../ls_drag_scroll.h"
 #include "../../ls_radio_select.h"
 #include "../../ls_motion.h"
 #include "../../ls_media_widgets.h"
@@ -38,7 +39,7 @@
 
 #define ROOT "/sdcard"
 #define MAX_ENTRIES 256
-#define MAX_EDGES 8192
+#define MAX_EDGES (LS_TX_UNLOCKED ? 65536 : 8192)
 #define TEXT_MAX 8192
 #define PATH_MAX_LEN 416
 
@@ -67,6 +68,12 @@ static char s_feedback[96];
 static int button_focus = -1, button_slot;
 static tui_rect s_list;
 static bool s_touch_nav;
+/* The first row on screen. It is the page that holds the selection, unless
+   a finger dragged the list; then it stays where the finger left it until a
+   key or a tap moves the selection. */
+static int s_first;
+static bool s_free;
+static ls_drag_scroll_t s_drag, s_text_drag;
 
 typedef enum { VIEW_LIST, VIEW_SUB, VIEW_TEXT } view_t;
 static view_t s_view;
@@ -152,6 +159,8 @@ static void load_dir(void)
 {
     job_cancel();
     s_count = 0;
+    s_first = 0;
+    s_free = false;
     s_truncated = false;
     s_read_failed = false;
     DIR *d = opendir(s_path);
@@ -673,6 +682,7 @@ static void sort_done(int i)
     char keep[256];
     snprintf(keep, sizeof(keep), "%s", selected_name() ? selected_name() : "");
     s_sort = (sort_t)i;
+    s_free = false;
     if (!s_truncated && !s_read_failed) {
         qsort(s_entry, s_count, sizeof(s_entry[0]), entry_cmp);
         for (int k = 0; k < s_count; k++)
@@ -1042,6 +1052,7 @@ static void draw_text(tui_surface *sf, tui_rect a)
     const int lines = text_rows(NULL, a);
     s_scroll_max = lines > a.h ? lines - a.h : 0;
     if (s_scroll > s_scroll_max) s_scroll = s_scroll_max;
+    ls_drag_scroll(&s_text_drag, a, 1, &s_scroll, lines, a.h);
     text_rows(sf, a);
 }
 
@@ -1081,8 +1092,15 @@ static void draw_list(tui_surface *sf, tui_rect p)
         return;
     }
     const int rows = list_rows();
-    const int first = s_selected / rows * rows;
     const int rh = row_h();
+    /* A last page that is not full stays where it is under a drag. */
+    const int page_first = s_selected / rows * rows;
+    const int span = s_count > page_first + rows ? s_count : page_first + rows;
+    if (ls_drag_scroll(&s_drag, s_list, rh, &s_first, span, rows)) s_free = true;
+    if (!s_free && (s_selected < s_first || s_selected >= s_first + rows)) s_first = page_first;
+    if (s_first > span - rows) s_first = span - rows;
+    if (s_first < 0) s_first = 0;
+    const int first = s_first;
     for (int i = 0; i < rows && first + i < s_count; i++) {
         const entry_t *e = &s_entry[first + i];
         const int y = s_list.y + i * rh;
@@ -1203,6 +1221,7 @@ static void page(int dir)
         return;
     }
     const int rows = list_rows();
+    s_free = false;
     s_selected += dir * rows;
     if (s_selected < 0) s_selected = 0;
     if (s_selected >= s_count) s_selected = s_count ? s_count - 1 : 0;
@@ -1224,13 +1243,13 @@ static bool key(ls_tk_t k, char ch)
     if (k == LS_TK_UP || k == LS_TK_DOWN || k == LS_TK_BACKSPACE) button_focus = -1;
     if (k == LS_TK_BACKSPACE || k == LS_TK_ESC) return go_up();
     if (k == LS_TK_UP) {
-        if (s_view == VIEW_LIST) { if (s_selected) s_selected--; }
+        if (s_view == VIEW_LIST) { s_free = false; if (s_selected) s_selected--; }
         else if (s_view == VIEW_TEXT && !s_scroll) page(-1);
         else if (s_scroll) s_scroll--;
         return true;
     }
     if (k == LS_TK_DOWN) {
-        if (s_view == VIEW_LIST) { if (s_selected + 1 < s_count) s_selected++; }
+        if (s_view == VIEW_LIST) { s_free = false; if (s_selected + 1 < s_count) s_selected++; }
         else if (s_view == VIEW_TEXT && s_scroll >= s_scroll_max) page(1);
         else if (s_scroll < s_scroll_max) s_scroll++;
         return true;
@@ -1255,8 +1274,9 @@ static bool touch(int col, int row)
     if (s_view != VIEW_LIST) return true;
     if (col < s_list.x || col >= s_list.x + s_list.w || row < s_list.y || row >= s_list.y + s_list.h)
         return true;
-    const int rows = list_rows();
-    const int index = s_selected / rows * rows + (row - s_list.y) / row_h();
+    if (ls_drag_scroll_tap_is_lift(&s_drag)) return true;   /* the end of a drag, not a choice */
+    s_free = false;
+    const int index = s_first + (row - s_list.y) / row_h();
     if (index < s_count) {
         if (index == s_selected) open_selected();
         else s_selected = index;

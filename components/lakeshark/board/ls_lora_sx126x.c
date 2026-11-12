@@ -20,6 +20,7 @@
 #include "ls_board.h"
 #include "ls_spi.h"
 #include "ls_xl9535.h"
+#include "ls_lora_port.h"
 #include "ls_textpack.h"
 
 static const char *TAG = "ls_lora";
@@ -32,8 +33,7 @@ static const char *TAG = "ls_lora";
 /* How long one ls_lora_scan_pass may run before it hands back. */
 #define SCAN_PASS_BUDGET_US 20000
 
-#if defined(LS_BOARD_LORA_CS_GPIO) && defined(LS_BOARD_LORA_BUSY_GPIO) && \
-    defined(LS_BOARD_XL_RADIO_RST)
+#if LS_LORA_WIRED
 
 
 /* SX1262 opcodes, datasheet table 11-1. */
@@ -477,8 +477,15 @@ static int sx_poll(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db)
 
     /* DIO1 first: one expander read is much cheaper than an SPI round trip
        and this runs in a loop. Low means there is nothing to collect. */
-bool dio1 = false;
+#ifdef LS_BOARD_XL_RADIO_DIO1
+    bool dio1 = false;
     if (ls_xl9535_get(LS_BOARD_XL_RADIO_DIO1, &dio1) != ESP_OK || !dio1) return 0;
+#else
+    /* No expander: DIO1 on its own GPIO when the pin table has one, else
+       the IRQ word is read over SPI every time. */
+    const int irq_pin = ls_lora_port()->irq_gpio;
+    if (irq_pin >= 0 && !gpio_get_level((gpio_num_t)irq_pin)) return 0;
+#endif
 
     uint16_t irq = 0;
     if (get_irq(&irq) != ESP_OK) return 0;

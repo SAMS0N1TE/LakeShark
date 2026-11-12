@@ -74,9 +74,9 @@ static void write_file(const char *name)
 
 static bool fixture_path_is_gone(const char *path)
 {
-    struct _stat st;
+    struct stat st;
     errno = 0;
-    return _stat(path, &st) != 0 && errno == ENOENT;
+    return stat(path, &st) != 0 && errno == ENOENT;
 }
 
 static bool fixture_remove_file(const char *path)

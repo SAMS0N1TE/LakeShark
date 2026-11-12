@@ -1,0 +1,4 @@
+{
+  "category": "radio",
+  "description": "Talk to Meshtastic nodes from the board LoRa radio: nodes, channel chat and every packet heard; sends text and node info when TRANSMIT is on."
+}

@@ -313,6 +313,8 @@ const char *rec_watch_scan_stage(void);
    list of things that actually crossed the threshold. */
 int   rec_watch_scan_live(rec_scan_bin_t *out, int max);
 float rec_watch_scan_live_floor(void);
+/* The noise spread of recent passes, in dB (one standard deviation). */
+float rec_watch_scan_live_spread(void);
 int   rec_watch_scan_hits(void);
 void  rec_watch_scan_stop(void);
 
@@ -358,7 +360,9 @@ bool rec_watch_replay_status(char *out, size_t len);
    far better than a constant can. */
 #define REC_SCAN_DETECT_DB 12.0f
 #define REC_SCAN_DETECT_MIN 3.0f
-#define REC_SCAN_DETECT_MAX 45.0f
+/* High enough to sit above a transmitter in the same room: an SX1262 a
+   metre from the LR2021 read 76 dB over its floor. */
+#define REC_SCAN_DETECT_MAX 90.0f
 
 float rec_watch_scan_threshold(void);
 void  rec_watch_scan_set_threshold(float db);
@@ -401,6 +405,9 @@ typedef struct {
 
 bool rec_watch_request_learn(uint32_t seconds);
 bool rec_watch_learn_busy(void);
+/* Have the runtime turn WATCH back on when the running LEARN ends. False
+   when none is running, so the caller restores WATCH itself. */
+bool rec_watch_learn_rewatch(void);
 bool rec_watch_learn_result(rec_learn_t *out);
 /* Copy what it worked out into the receive settings. */
 bool rec_watch_learn_apply(void);

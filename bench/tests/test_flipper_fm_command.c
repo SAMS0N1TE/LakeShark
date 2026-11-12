@@ -311,6 +311,7 @@ bool rec_watch_request_scan(uint32_t lo, uint32_t hi, uint32_t s, int b)
 { (void)lo; (void)hi; (void)s; (void)b; return false; }
 int rec_watch_scan_live(rec_scan_bin_t *o, int m) { (void)o; (void)m; return 0; }
 float rec_watch_scan_live_floor(void) { return 0; }
+float rec_watch_scan_live_spread(void) { return 0; }
 int rec_watch_scan_result(rec_scan_bin_t *o, int m) { (void)o; (void)m; return 0; }
 int rec_watch_scan_events(void) { return 0; }
 uint32_t rec_get_freq(void) { return 0; }

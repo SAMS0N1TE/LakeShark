@@ -201,6 +201,7 @@ static uint32_t s_mdns_ip;            /* the address it answers with, network or
 static int s_mdns_say;                /* announcements still to send */
 static int64_t s_mdns_next, s_mdns_retry;
 
+#if CONFIG_LS_RTERM_WEB
 extern const uint8_t web_page_start[] asm("_binary_screen_html_gz_start");
 extern const uint8_t web_page_end[] asm("_binary_screen_html_gz_end");
 #if CONFIG_LS_PANEL_RUNTIME
@@ -217,6 +218,7 @@ extern const uint8_t web_icon192_start[] asm("_binary_icon_192_png_start");
 extern const uint8_t web_icon192_end[] asm("_binary_icon_192_png_end");
 extern const uint8_t web_icon512_start[] asm("_binary_icon_512_png_start");
 extern const uint8_t web_icon512_end[] asm("_binary_icon_512_png_end");
+#endif
 
 /* SSH (ls_rterm_ssh.c). The worker renders an update into this buffer and
    hands it over with s_sshq_ready; the SSH task sends it and hands it back.
@@ -1614,6 +1616,11 @@ static void http_answer(int i, int64_t now)
         c->since = c->last = now;
         return;
     }
+#if !CONFIG_LS_RTERM_WEB
+    /* Built without the web screen (CONFIG_LS_RTERM_WEB): no page to serve. */
+    http_reply(i, "404 Not Found");
+    (void)now;
+#else
     const web_file_t files[] = {
         {"/", "text/html; charset=utf-8", "no-cache", web_page_start, web_page_end, true},
         {"/screen.html", "text/html; charset=utf-8", "no-cache", web_page_start, web_page_end, true},
@@ -1654,6 +1661,7 @@ static void http_answer(int i, int64_t now)
     if (!web_queue(i, head, (size_t)n)) return;
     if (strcmp(method, "HEAD")) { c->body = f->start; c->body_n = size; }
     c->closing = true;
+#endif
 }
 
 static void web_read(int i, int64_t now)
@@ -2047,7 +2055,12 @@ static void load_settings(void)
     if (nvs_get_str(h, "wtok", s_token, &len) != ESP_OK) s_token[0] = 0;
     nvs_close(h);
     s_net_enabled = on && s_pass[0];
+#if CONFIG_LS_RTERM_WEB
     s_web_enabled = web && s_pass[0];
+#else
+    s_web_enabled = false;
+    (void)web;
+#endif
 }
 
 static bool save_settings(void)
@@ -2117,6 +2130,9 @@ bool ls_rterm_net_set(bool on)
 
 bool ls_rterm_web_set(bool on)
 {
+#if !CONFIG_LS_RTERM_WEB
+    if (on) return false;           /* not in this build */
+#endif
     if (on) {
         if (!s_pass[0]) make_password(s_pass);
         if (!ensure_started()) return false;
@@ -2299,6 +2315,10 @@ int ls_rterm_console(int argc, char **argv)
     if (!strcmp(verb, "web")) {
         const char *what = argc >= 3 ? argv[2] : "";
         if (!strcmp(what, "on")) {
+#if !CONFIG_LS_RTERM_WEB
+            printf("term: this build has no web screen; the USB screen and telnet ('term net on') work\n");
+            return 1;
+#endif
             if (!s_pass[0]) make_password(s_pass);
             if (!ensure_started()) { printf("term: no memory\n"); return 1; }
             s_web_enabled = true;

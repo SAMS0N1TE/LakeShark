@@ -191,11 +191,3 @@ LS_CASE(owner_commands_are_bounded_ordered_and_invalidated_on_exit)
     LS_CHECK(q.generation != generation);
     LS_CHECK(!p25_owner_queue_pop(&q, &cmd));
 }
-#include "p25_p2_runtime.h"
-LS_CASE(phase2_requires_an_iq_receiver_even_during_radio_transition)
-{
-    LS_CHECK(p25_p2_receiver_supported(false, false));
-    LS_CHECK(!p25_p2_receiver_supported(true, false));
-    LS_CHECK(!p25_p2_receiver_supported(false, true));
-    LS_CHECK(!p25_p2_receiver_supported(true, true));
-}

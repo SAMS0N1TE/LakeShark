@@ -233,14 +233,18 @@ int render(speech_voice_t v, const char *text, size_t len,
     opts.sample_rate = static_cast<float>(SPEECH_RATE_HZ);
 
     int rc;
+#if defined(__cpp_exceptions)
     try {
+#endif
         s.synth.emplace(*s_voice[v], arena, arena_size);
         rc = s.synth->BeginText(s.unit, opts);
+#if defined(__cpp_exceptions)
     } catch (const std::bad_alloc &) {
         return SPEECH_ENGINE_NO_MEMORY;
     } catch (...) {
         return SPEECH_ENGINE_BAD_ARG;
     }
+#endif
     switch (rc) {
     case tts::kStreamOk:           break;
     case tts::kStreamErrArenaFull: return SPEECH_ENGINE_ARENA;
@@ -303,13 +307,17 @@ extern "C" int speech_engine_init(void)
     for (int v = 0; v < SPEECH_VOICE_COUNT; ++v) {
         void *mem = ext_alloc(sizeof(tts::VoiceParams));
         if (!mem) { free_voices(); return SPEECH_ENGINE_NO_MEMORY; }
+#if defined(__cpp_exceptions)
         try {
+#endif
             s_voice[v] = new (mem) tts::VoiceParams(tts::DefaultVoiceParams());
+#if defined(__cpp_exceptions)
         } catch (const std::bad_alloc &) {
             std::free(mem);
             free_voices();
             return SPEECH_ENGINE_NO_MEMORY;
         }
+#endif
         make_voice(*s_voice[v], static_cast<speech_voice_t>(v));
     }
     void *mem = ext_alloc(sizeof(Scratch));

@@ -1,5 +1,6 @@
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_radio_panel.h"
 #include "../../ls_field.h"
 #include "../../ls_picker.h"
 #include "../../ls_radio_select.h"
@@ -66,13 +67,25 @@ static const uint32_t BAND_HZ[]={315000000,433920000,868350000,915000000};
 static int o_band(const ls_opt_t *o){(void)o;for(int i=0;i<4;i++)if(BAND_HZ[i]==frequency)return i;return -1;}
 static void o_set_band(const ls_opt_t *o,int v){(void)o;band_done(v);}
 static void o_band_show(const ls_opt_t *o,char *out,size_t n){(void)o;snprintf(out,n,"%.3f MHz",frequency/1e6);}
-static const ls_opt_t OPT_CC1101[]={
-    {.label="RECEIVE BAND",.kind=LS_OPT_CYCLE,.names=BAND_NAME,.n=4,.get=o_band,.set=o_set_band,.show=o_band_show}};
-static const ls_opt_ctx_t CTX_CC1101={.name="MONITOR",.job=-1,.radio=LS_RSEL_CC1101,LS_OPT_ROWS(OPT_CC1101)};
-
 /* RADIO picks which of the board's three radios the view shows. */
 static ls_rsel_radio_t viewed(void) { return view_nfc?LS_RSEL_NFC:view_24?LS_RSEL_NRF24:LS_RSEL_CC1101; }
-static const ls_opt_ctx_t *mixrf_options(void) { return viewed()==LS_RSEL_CC1101?&CTX_CC1101:NULL; }
+/* The one list, for every view: the band row says when it does not apply,
+   and the keys that left the face (PROBE, CARDS, STOP ALL, RADIO) are rows
+   that run what their letters run. */
+static void action(int i);
+static void o_action(const ls_opt_t *o){action(o->arg);}
+static const char *o_band_why(const ls_opt_t *o){(void)o;return viewed()==LS_RSEL_CC1101?NULL:"Sub-GHz view only";}
+static const char *o_probe_why(const ls_opt_t *o){(void)o;return state.busy||state.receive_requested||state.scan_requested||state.card_requested||state.nfc_requested?"Stop the radios first":NULL;}
+static const char *o_cards_why(const ls_opt_t *o){(void)o;return !state.nfc||state.busy?"NFC reader unavailable":NULL;}
+static const char *o_stop_why(const ls_opt_t *o){(void)o;return state.receive_requested||state.scan_requested||state.card_requested||state.nfc_requested?NULL:"Nothing running";}
+static const ls_opt_t OPT_MIXRF[]={
+    {.label="RECEIVE BAND",.kind=LS_OPT_CYCLE,.names=BAND_NAME,.n=4,.get=o_band,.set=o_set_band,.show=o_band_show,.why_not=o_band_why},
+    {.label="PROBE RADIOS",.kind=LS_OPT_ACTION,.arg=0,.act=o_action,.why_not=o_probe_why},
+    {.label="NFC CARDS",.kind=LS_OPT_ACTION,.arg=2,.act=o_action,.leaves=true,.why_not=o_cards_why},
+    {.label="STOP ALL",.kind=LS_OPT_ACTION,.arg=7,.act=o_action,.why_not=o_stop_why},
+    {.label="RADIO",.kind=LS_OPT_ACTION,.arg=8,.act=o_action,.leaves=true}};
+static const ls_opt_ctx_t CTX_MIXRF={.name="MIX-RF",.job=-1,.radio=LS_RSEL_NONE,LS_OPT_ROWS(OPT_MIXRF),.tag="MONITOR"};
+static const ls_opt_ctx_t *mixrf_options(void) { return &CTX_MIXRF; }
 static void radio_chosen(ls_rsel_radio_t r)
 {
     view_24=r==LS_RSEL_NRF24;
@@ -136,7 +149,7 @@ static void enter(void)
 {
     button_focus=-1;button_slot=0;card_suite=false;
     radio_chosen(ls_rsel_get(LS_RSEL_MIXRF));
-    LS_SNPUTS(t_scr_mixrf_m_monitor_r_radio, hint, sizeof(hint), "M monitor  R radio  O options  C cards  J mark  N NFC mode");
+    LS_SNPUTS(t_scr_mixrf_m_monitor_r_radio, hint, sizeof(hint), "M monitor  S scan  N NFC  V view  J mark  O options  (P probe  C cards  X stop  R radio)");
     ls_rsel_track(LS_RSEL_MIXRF,viewed);
     ls_field_start();ls_field_watch(true);ls_field_provider(LS_FIELD_CC1101,provider);
     ls_field_provider(LS_FIELD_NRF24,provider_24);ls_field_provider(LS_FIELD_NFC,provider_nfc);ls_mixrf_start();
@@ -149,7 +162,7 @@ static void draw(tui_surface *sf,tui_rect a)
 {
     if(card_suite){ls_scr_nfc.draw(sf,a);return;}
     if(a.w<30 || a.h<17){ls_panel_notice(sf,a,"MIX-RF","Enlarge the pane",LS_TEXT(t_scr_mixrf_receive_monitor_keeps_its, "Receive monitor keeps its state"));return;}
-    LS_SNPUTS(t_scr_mixrf_m_monitor_r_radio, hint, sizeof(hint), "M monitor  R radio  O options  C cards  J mark  N NFC mode");
+    LS_SNPUTS(t_scr_mixrf_m_monitor_r_radio, hint, sizeof(hint), "M monitor  S scan  N NFC  V view  J mark  O options  (P probe  C cards  X stop  R radio)");
     ls_mixrf_snapshot(&state);
     enabled=state.receive_requested && state.cc_owner==LS_MIXRF_OWNER_MONITOR;scan_enabled=state.scan_requested && state.scan_owner==LS_MIXRF_OWNER_MONITOR;nfc_enabled=state.card_requested;
     if(state.samples!=last_samples) {
@@ -157,22 +170,35 @@ static void draw(tui_surface *sf,tui_rect a)
         trace[47]=state.receiving?state.rssi:NAN;last_samples=state.samples;
     }
     bool held=state.cc_owner!=LS_MIXRF_OWNER_NONE && state.cc_owner!=LS_MIXRF_OWNER_MONITOR;
-    ls_btn_t buttons[]={{"PROBE","RADIOS",'p',false,state.busy || state.receive_requested || state.scan_requested || nfc_enabled || state.nfc_requested},
+    /* Ten keys were here. The three radios' switches, the view and MARK
+       are the face; PROBE, CARDS, STOP ALL and RADIO are OPTIONS rows and
+       still answer P C X R. */
+    ls_btn_t buttons[]={
         {"MONITOR",enabled?"ON":"OFF",'m',enabled,!state.cc || held},
-        {"CARDS","NFC",'c',false,!state.nfc || state.busy},{"MARK","NOTE",'j',false,view_nfc?!((state.nfc_watching && state.nfc_samples) || (state.card_scanning && state.card_polls)):view_24?!(state.scanning && state.sweeps):!state.receiving},
         {"2.4 SCAN",scan_enabled?"ON":"OFF",'s',scan_enabled,!state.nrf || state.busy},
-        {"VIEW",view_nfc?"NFC":view_24?"2.4 GHz":"SUB-GHZ",'v',view_24||view_nfc,false},
         {"NFC",state.nfc_requested?"FIELD":nfc_enabled?"SCAN":"OFF",'n',nfc_enabled || state.nfc_requested,!state.nfc || state.busy},
-        {"STOP","ALL",'x',false,!(enabled || scan_enabled || nfc_enabled || state.nfc_requested)},
-        ls_rsel_button(LS_RSEL_MIXRF),ls_opt_button(mixrf_options())};
-    buttons[9].dim=!mixrf_options();
-    const int nb=10;
+        {"VIEW",view_nfc?"NFC":view_24?"2.4 GHz":"SUB-GHZ",'v',view_24||view_nfc,false},
+        {"MARK","NOTE",'j',false,view_nfc?!((state.nfc_watching && state.nfc_samples) || (state.card_scanning && state.card_polls)):view_24?!(state.scanning && state.sweeps):!state.receiving},
+        ls_opt_button(mixrf_options())};
+    const int nb=6;
     int h=ls_btn_raised_height(a,nb);
     if(a.h<22 && a.w>=72) h=6;
     ls_btn_bar_raised(sf,tui_rect_make(a.x,a.y,a.w,h),buttons,nb,button_focus);
     tui_rect panel=tui_rect_make(a.x,a.y+h,a.w,a.h-h-2);
     ls_panel_box(sf,panel,LS_TEXT(t_scr_mixrf_keyboard_radios_receive, "KEYBOARD RADIOS / RECEIVE"),TUI_CYAN);
     ls_motion_busy(sf,panel,state.busy || state.receiving || state.scanning || state.card_scanning);
+    /* The three radios as chips, lit when identified; a second rail says
+       which is listening now. */
+    {
+        int cx=panel.x+2;const int cy=panel.y+2;
+        cx=ls_radio_chip(sf,panel,cx,cy,"CC1101",state.cc,TUI_CYAN)+1;
+        cx=ls_radio_chip(sf,panel,cx,cy,"NRF24",state.nrf,TUI_CYAN)+1;
+        cx=ls_radio_chip(sf,panel,cx,cy,"NFC",state.nfc,TUI_CYAN)+2;
+        if(state.receiving)cx=ls_radio_chip(sf,panel,cx,cy,"RX",true,TUI_GREEN)+1;
+        if(state.scanning)cx=ls_radio_chip(sf,panel,cx,cy,"SCAN",true,TUI_GREEN)+1;
+        if(state.card_scanning||state.nfc_watching)cx=ls_radio_chip(sf,panel,cx,cy,state.card_present||state.nfc_field?"FIELD":"WATCH",true,TUI_GREEN)+1;
+        (void)cx;
+    }
     tui_rect chart=panel;
     bool wide=panel.w>=90;
     if(wide) { panel.w=panel.w/2; chart.x=panel.x+panel.w;chart.w-=panel.w;ls_panel_box(sf,chart,view_nfc?"NFC / RECEIVE HISTORY":view_24?"2.4 GHz ACTIVITY":"CHANNEL ENERGY",TUI_CYAN); }
@@ -249,13 +275,15 @@ static void draw(tui_surface *sf,tui_rect a)
     ls_safe_line(sf,a,a.y+a.h-2,held?ls_mixrf_cc_refusal(&state):state.status,LS_ATTR_DIM);
     ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:ls_tui_keyboard_mode()?"M RX | S scan | N NFC | V view | X stop":"",LS_ATTR_DIM);
 }
+/* The bar's six, each to the action its key runs. */
+static const int BAR_ACT[6]={1,4,6,5,3,9};
 static bool key(ls_tk_t k,char c)
 {
     if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
     if(card_suite){if(k==LS_TK_ESC){card_suite=false;return true;}return ls_scr_nfc.key(k,c);}
     if(k==LS_TK_CHAR && c=='c'){cards_open();return true;}
     if(ls_btn_navigate(k,&button_slot,&button_focus,false))return true;
-    if(k==LS_TK_ENTER){if(ls_btn_enabled(0,button_focus))action(button_focus);return true;}
+    if(k==LS_TK_ENTER){if(button_focus>=0 && button_focus<6 && ls_btn_enabled(0,button_focus))action(BAR_ACT[button_focus]);return true;}
     if(k!=LS_TK_CHAR)return false;
     if(c=='f'){nfc_mode(state.nfc_requested?0:2);return true;}
     if(c=='b'){ls_opt_open(mixrf_options());return true;}
@@ -264,5 +292,5 @@ static bool key(ls_tk_t k,char c)
     if(!c || !p)return false;
     action((int)(p-"pmbjsvnxr"));return true;
 }
-static bool touch(int x,int y){if(card_suite){if(!ls_scr_nfc.touch(x,y))card_suite=false;return true;}int i=ls_btn_hit(x,y);if(i>=0)action(i);return true;}
+static bool touch(int x,int y){if(card_suite){if(!ls_scr_nfc.touch(x,y))card_suite=false;return true;}int i=ls_btn_hit(x,y);if(i>=0 && i<6)action(BAR_ACT[i]);return true;}
 const ls_tui_screen_t ls_scr_mixrf={.name="MIX-RF",.hint=hint,.enter=enter,.leave=leave,.draw=draw,.key=key,.touch=touch};

@@ -98,6 +98,10 @@ static const char *TAG = "ota";
 #define BOARD_NAME    "T-Display-P4"
 #endif
 #define DEFAULT_URL   "https://" LS_OTA_HOST_PRIMARY OTA_DIR "stable.txt"
+/* Development builds keep the board on the dev channel: saved, so a trip to
+   the public stable build (which has no channel picker) can come back here
+   from stable's own UPDATE page. */
+#define DEV_URL       "https://" LS_OTA_HOST_PRIMARY OTA_DIR "dev.txt"
 /* The default until 2026-10: a board that saved it keeps the default, not the URL. */
 #define OLD_DEFAULT_URL "https://" LS_OTA_HOST_FALLBACK OTA_DIR "stable.txt"
 #define VALID_AFTER_S 20
@@ -127,7 +131,11 @@ static char             s_reason[48];
 static ls_ota_manifest_t s_man;            /* from the last good check */
 static ls_ota_verdict_t s_verdict;
 static bool             s_nothing;         /* the last check found no manifest on the server */
-static char             s_url[200] = DEFAULT_URL;
+static char             s_url[200] = DEV_URL;
+/* CHANNEL on the UPDATE page: the next check and install read the public
+   stable channel once, and may go to an older build. The saved URL stays. */
+static volatile bool    s_stable_once;
+static esp_err_t url_save(void *ctx);
 static char             s_failed[32];      /* the build that last rolled back, or "" */
 static unsigned         s_stack_left;      /* the last job's unused stack, for sizing */
 static volatile bool    s_bg;              /* a background check is running: silent, state untouched */
@@ -168,8 +176,13 @@ static esp_err_t url_load(void *ctx)
     nvs_handle_t h;
     char buf[sizeof(s_url)];
     size_t n = sizeof(buf);
-    if (nvs_open("ls_ota", NVS_READONLY, &h) != ESP_OK) return ESP_OK;
+    if (nvs_open("ls_ota", NVS_READONLY, &h) != ESP_OK) {
+        url_save((void *)DEV_URL);          /* first boot of a dev build: keep it on dev */
+        return ESP_OK;
+    }
+    bool saved = false;
     if (nvs_get_str(h, "url", buf, &n) == ESP_OK && !strncmp(buf, "https://", 8)) {
+        saved = true;
         char moved[sizeof(s_url)];
         if (ls_ota_url_to_edition(buf, OTA_DIR, moved, sizeof(moved)))
             snprintf(buf, sizeof(buf), "%s", moved);
@@ -178,6 +191,7 @@ static esp_err_t url_load(void *ctx)
     n = sizeof(s_announced);
     if (nvs_get_str(h, "seen", s_announced, &n) != ESP_OK) s_announced[0] = 0;
     nvs_close(h);
+    if (!saved) url_save((void *)DEV_URL);
     return ESP_OK;
 }
 
@@ -385,6 +399,8 @@ static void notice_found(const ls_ota_manifest_t *m, bool post)
         __atomic_store_n(&s_note_pending, true, __ATOMIC_RELEASE);
 }
 
+static const char *job_url(void) { return s_stable_once && !s_bg ? DEFAULT_URL : s_url; }
+
 static bool do_check(void)
 {
     if (s_bg ? !wifi_up() : !wifi_ready()) return false;
@@ -397,7 +413,8 @@ static bool do_check(void)
     int status = 0;
     const int64_t deadline = esp_timer_get_time() + (int64_t)LS_OTA_CHECK_MAX_MS * 1000;
     int via = 0;
-    esp_http_client_handle_t c = open_url_fallback(s_url, LS_OTA_CHECK_READ_MS, deadline, &length, &status, NULL, &via);
+    const char *url = job_url();
+    esp_http_client_handle_t c = open_url_fallback(url, LS_OTA_CHECK_READ_MS, deadline, &length, &status, NULL, &via);
     const int response = ls_ota_manifest_status(status);
     if (!c || response != 1) {
         if (c) shut(c);
@@ -428,7 +445,7 @@ static bool do_check(void)
        host's copy instead, so the image is looked for on the hosts first
        and then as its own GitHub asset. */
     char base[sizeof(s_url)];
-    if (via == 2 || esp_http_client_get_url(c, base, sizeof(base)) != ESP_OK) snprintf(base, sizeof(base), "%s", s_url);
+    if (via == 2 || esp_http_client_get_url(c, base, sizeof(base)) != ESP_OK) snprintf(base, sizeof(base), "%s", url);
     if (via) ESP_LOGW(TAG, "manifest from %s", via == 2 ? "GitHub" : "the other update host");
     shut(c);
     text[n] = 0;
@@ -447,7 +464,7 @@ static bool do_check(void)
     }
     else if (!ls_ota_signed_by_us(text, &m))            fail("manifest not signed by LakeShark");
     else if (strcmp(m.board, BOARD_NAME))        fail("manifest is for another board");
-    else if (!ls_ota_channel_ok(&m, s_url))      fail("manifest is for another channel");
+    else if (!ls_ota_channel_ok(&m, url))        fail("manifest is for another channel");
     else                                         ok = true;
     free(text);
     if (none) return nothing_published();
@@ -474,9 +491,10 @@ static bool do_check(void)
     }
     s_man = m;
     s_verdict = found;
-    s_state = s_verdict == LS_OTA_NEWER ? LS_OTA_ST_AVAILABLE : LS_OTA_ST_CURRENT;
+    s_state = s_verdict == LS_OTA_NEWER || (s_stable_once && s_verdict != LS_OTA_CURRENT)
+              ? LS_OTA_ST_AVAILABLE : LS_OTA_ST_CURRENT;
     s_notify = false;
-    if (news) notice_found(&m, false);
+    if (news && !s_stable_once) notice_found(&m, false);
     ESP_LOGI(TAG, "server has %s (%s), running %s", m.build, s_verdict == LS_OTA_NEWER ? "newer" : "not newer",
              running_build());
     return true;
@@ -858,6 +876,24 @@ static bool v_notes(ls_val_t *o) { o->kind = LS_VAL_TEXT; o->s = s_man.notes; re
 static bool v_notify(ls_val_t *o) { o->kind = LS_VAL_INT; o->i = s_notify ? 1 : 0; return true; }
 static bool v_running(ls_val_t *o) { o->kind = LS_VAL_TEXT; o->s = running_build(); return true; }
 static bool v_failed(ls_val_t *o)  { o->kind = LS_VAL_TEXT; o->s = s_failed; return true; }
+/* Which manifest the next check reads: DEV, STABLE (once) or CUSTOM. */
+static bool v_channel(ls_val_t *o)
+{
+    o->kind = LS_VAL_TEXT;
+    o->s = s_stable_once ? "STABLE" : !strcmp(s_url, DEV_URL) ? "DEV"
+         : !strcmp(s_url, DEFAULT_URL) ? "STABLE" : "CUSTOM";
+    return true;
+}
+static ls_act_status_t a_channel(const ls_args_t *in, ls_val_t *out)
+{
+    (void)in;
+    (void)out;
+    if (__atomic_load_n(&s_busy, __ATOMIC_ACQUIRE) || s_state == LS_OTA_ST_RESTARTING) return LS_ACT_BUSY;
+    s_stable_once = !s_stable_once && strcmp(s_url, DEFAULT_URL);
+    memset(&s_man, 0, sizeof(s_man));
+    s_state = LS_OTA_ST_IDLE;
+    return LS_ACT_OK;
+}
 static bool v_restart(ls_val_t *o) { o->kind = LS_VAL_INT; o->i = restart_left(); return true; }
 static bool v_trial(ls_val_t *o)
 {
@@ -879,7 +915,7 @@ static ls_act_status_t a_step(const ls_args_t *in, ls_val_t *out)
         return LS_ACT_OK;
     }
     if (__atomic_load_n(&s_busy, __ATOMIC_ACQUIRE)) return LS_ACT_BUSY;
-    switch (start_job(s_state == LS_OTA_ST_AVAILABLE ? JOB_INSTALL : JOB_CHECK)) {
+    switch (start_job(s_state == LS_OTA_ST_AVAILABLE ? (s_stable_once ? JOB_FORCE : JOB_INSTALL) : JOB_CHECK)) {
     case JOB_STARTED: return LS_ACT_OK;
     case JOB_BUSY:    return LS_ACT_BUSY;
     default:          return LS_ACT_FAILED;
@@ -905,6 +941,9 @@ void ls_ota_publish(void)
     ls_value_publish("ota.failed", NULL, v_failed);
     ls_value_publish("ota.trial", "s", v_trial);
     ls_value_publish("ota.restart", "s", v_restart);
+    ls_value_publish("ota.channel", NULL, v_channel);
+    ls_action_register("ota.channel", "", LS_CAP_STORE, a_channel,
+                       "the next check reads the public stable channel once, or this board's own again");
     ls_action_register("ota.step", "", LS_CAP_STORE | LS_CAP_POWER, a_step,
                        "check for an update, install the one found, or restart into it");
     bool trial = false;
@@ -1013,9 +1052,15 @@ static int ota_cmd(int argc, char **argv)
                 return 1;
             }
             snprintf(s_url, sizeof(s_url), "%s", def ? DEFAULT_URL : argv[2]);
+            s_stable_once = false;
             s_state = LS_OTA_ST_IDLE;
         }
         printf("ota: manifest %s\n", s_url);
+        return 0;
+    }
+    if (!strcmp(sub, "stable")) {          /* the CHANNEL key: stable once, or back */
+        a_channel(NULL, NULL);
+        printf("ota: next check reads %s\n", job_url());
         return 0;
     }
     if (!strcmp(sub, "restart")) {
@@ -1041,7 +1086,7 @@ static int ota_cmd(int argc, char **argv)
     LS_PRINTF(fmt_ls_ota_ota_running_from_boots, "ota: running %s from %s (%s); boots %s; next %s\n", running_build(),
            s.run ? s.run->label : "?", s.have_st ? st_name(s.st) : "no record",
            s.boot ? s.boot->label : "?", s.next ? s.next->label : "none");
-    printf("ota: manifest %s\n", s_url);
+    printf("ota: manifest %s%s\n", s_url, s_stable_once ? " (next check: stable, once)" : "");
     if (s_failed[0]) printf("ota: last build that did not start: %s\n", s_failed);
     LS_PRINTF(fmt_ls_ota_ota_wifi_task_stack, "ota: wifi %s %s; task stack left %u; internal free %u\n",
            ls_wifi_sta_connected() ? "up" : "down", ip, s_stack_left,

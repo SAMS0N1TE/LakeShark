@@ -101,6 +101,9 @@ typedef struct {
     void (*set_encrypted_policy)(void *user, bool skip_enabled, uint32_t skip_ms);
     void (*set_cqpsk_loops)(void *user, const p25_cqpsk_config_t *config);
     void (*set_demod_preference)(void *user, int preference);
+    /* The system the profile names (wacn=, sysid=; 0 = not given). Called
+     * before set_roster/restore_roster so the roster is scoped to it. */
+    void (*set_roster_system)(void *user, uint32_t wacn, uint16_t sysid);
     void (*set_roster)(void *user, const p25_profile_talkgroup_t *talkgroups,
                        size_t count);
     /* app handoff reloads the profile's runtime priority ranks but
@@ -251,6 +254,13 @@ void p25_program_apply_roster(p25_scan_ctrl_t *scan,
 void p25_program_restore_roster(p25_scan_ctrl_t *scan,
                                 const p25_profile_talkgroup_t *talkgroups,
                                 size_t count);
+
+/* After scan_ctrl swapped in a stored roster (which has no priorities): if
+ * it is the active profile's system, put the profile's ranks back through
+ * ops->restore_roster. Not while a load is in flight. True when restored. */
+bool p25_program_roster_switched(const p25_program_t *program,
+                                 const p25_system_id_t *roster_sys,
+                                 const p25_program_ops_t *ops);
 
 /* ------------------------------------------------------- firmware-only ---
  * Defined in p25_program_sd.c, which the bench does not link: a host test

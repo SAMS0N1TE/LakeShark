@@ -456,6 +456,357 @@ LS_CASE(persistence_rejects_wrong_magic_and_does_not_mutate_state)
     LS_CHECK(p25_scan_is_locked_out(&sc, 500));
 }
 
+/* ============================================================ roster scope */
+
+/* Fake store for scoped rosters, keyed like the NVS one by (wacn, sysid). */
+#define STORE_MAX 8
+static struct { uint32_t wacn; uint16_t sysid; uint8_t blob[512]; size_t n; } s_store[STORE_MAX];
+static int s_store_n, s_saves, s_unscoped_moves;
+
+static int store_find(uint32_t wacn, uint16_t sysid)
+{
+    for (int i = 0; i < s_store_n; i++)
+        if (s_store[i].wacn == wacn && s_store[i].sysid == sysid) return i;
+    return -1;
+}
+static void store_erase(uint32_t wacn, uint16_t sysid)
+{
+    int i = store_find(wacn, sysid);
+    if (i < 0) return;
+    s_store[i] = s_store[--s_store_n];
+}
+static void store_put(p25_scan_ctrl_t *sc);
+/* As the NVS loader: the full key first, then a SYSID-only one, moved. */
+static void store_load(p25_scan_ctrl_t *sc, uint32_t wacn, uint16_t sysid)
+{
+    int i = store_find(wacn, sysid);
+    if (i >= 0) {
+        (void)p25_scan_persist_load_roster(sc, s_store[i].blob, s_store[i].n);
+        return;
+    }
+    i = store_find(0, sysid);
+    if (!wacn || i < 0) return;
+    (void)p25_scan_persist_load_roster(sc, s_store[i].blob, s_store[i].n);
+    p25_scan_roster_bind(sc, wacn, sysid);
+    store_put(sc);
+    store_erase(0, sysid);
+}
+static void store_put(p25_scan_ctrl_t *sc)
+{
+    LS_CHECK(sc->roster_sys.valid);
+    int i = store_find(sc->roster_sys.wacn, sc->roster_sys.sysid);
+    if (i < 0) { LS_CHECK(s_store_n < STORE_MAX); i = s_store_n++; }
+    s_store[i].wacn = sc->roster_sys.wacn;
+    s_store[i].sysid = sc->roster_sys.sysid;
+    s_store[i].n = p25_scan_persist_save(sc, s_store[i].blob, sizeof(s_store[i].blob));
+    s_saves++;
+}
+static void store_save(p25_scan_ctrl_t *sc, p25_system_id_t moved_from)
+{
+    store_put(sc);
+    if (!moved_from.valid) s_unscoped_moves++;
+    else store_erase(moved_from.wacn, moved_from.sysid);
+}
+static int s_switched_calls;
+static void store_reset(void)
+{
+    memset(s_store, 0, sizeof(s_store));
+    s_store_n = s_saves = s_unscoped_moves = s_switched_calls = 0;
+    p25_scan_set_roster_loader(store_load);
+    p25_scan_set_roster_saver(store_save);
+    p25_scan_set_roster_switched(NULL);
+}
+
+static dsd_state s_sys;
+static void on_system(p25_scan_ctrl_t *sc, uint32_t wacn, uint16_t sysid,
+                      int64_t now_us)
+{
+    memset(&s_sys, 0, sizeof(s_sys));
+    s_sys.p25_net_valid = wacn != 0;
+    s_sys.p25_tsbk_wacn = wacn;
+    s_sys.p25_tsbk_sysid = wacn ? sysid : 0;
+    s_sys.p25_rfss_valid = !wacn && sysid;
+    s_sys.p25_rfss_sysid = wacn ? 0 : sysid;
+    (void)p25_scan_note_system(sc, &s_sys, now_us);
+}
+
+#define FL_WACN 0xBEE00u   /* Manatee-Sarasota */
+#define FL_SYS  0x9DCu
+#define AR_WACN 0x7A1C3u   /* a made-up Argentine system */
+#define AR_SYS  0x1F2u
+
+LS_CASE(scoped_roster_applies_only_on_its_own_system)
+{
+    p25_scan_ctrl_t sc; p25_grant_follower_t f;
+    reset_all(&sc, &f); store_reset();
+
+    on_system(&sc, FL_WACN, FL_SYS, 1000);
+    p25_scan_list_set_mode(&sc, P25_SCAN_LIST_ALLOW);
+    p25_scan_allow_add(&sc, 101);
+    p25_scan_lockout_add(&sc, 202);
+    LS_CHECK(sc.roster_sys.valid && sc.roster_sys.sysid == FL_SYS);
+    store_put(&sc);
+    LS_EQ_INT(feed(&sc, &f, 303, 1, 851500000ull, 2000).reason, P25_SCAN_REASON_ALLOW_LIST);
+
+    /* Argentina: nothing stored there, so every call is followed. */
+    on_system(&sc, AR_WACN, AR_SYS, 3000);
+    LS_EQ_UINT(sc.roster_switches, 2);
+    LS_CHECK(p25_scan_roster_applies(&sc, 3000));
+    LS_EQ_UINT(sc.allow_count, 0);
+    LS_EQ_UINT(sc.lockout_count, 0);
+    LS_EQ_INT(feed(&sc, &f, 202, 1, 851600000ull, 4000).action, P25_SCAN_TUNE_TO_TRAFFIC);
+    p25_grant_force_return_to_control(&f);
+
+    /* Home again: the Florida roster comes back from the store. */
+    on_system(&sc, FL_WACN, FL_SYS, 5000);
+    LS_EQ_UINT(sc.allow_count, 1);
+    LS_CHECK(p25_scan_is_locked_out(&sc, 202));
+    LS_EQ_INT(feed(&sc, &f, 202, 1, 851600000ull, 6000).reason, P25_SCAN_REASON_LOCKED_OUT);
+}
+
+LS_CASE(an_edit_abroad_lands_on_that_system_and_leaves_home_alone)
+{
+    p25_scan_ctrl_t sc; p25_grant_follower_t f;
+    reset_all(&sc, &f); store_reset();
+    on_system(&sc, FL_WACN, FL_SYS, 1000);
+    p25_scan_lockout_add(&sc, 7);
+    store_put(&sc);
+
+    on_system(&sc, AR_WACN, AR_SYS, 2000);
+    (void)p25_scan_roster_for_edit(&sc);
+    p25_scan_lockout_add(&sc, 99);
+    store_put(&sc);
+    LS_EQ_INT(s_store_n, 2);
+
+    on_system(&sc, FL_WACN, FL_SYS, 3000);
+    LS_CHECK(p25_scan_is_locked_out(&sc, 7));
+    LS_CHECK(!p25_scan_is_locked_out(&sc, 99));
+    on_system(&sc, AR_WACN, AR_SYS, 4000);
+    LS_CHECK(p25_scan_is_locked_out(&sc, 99));
+    LS_CHECK(!p25_scan_is_locked_out(&sc, 7));
+}
+
+LS_CASE(an_unnamed_site_is_held_to_the_roster_only_for_the_grace_period)
+{
+    p25_scan_ctrl_t sc; p25_grant_follower_t f;
+    reset_all(&sc, &f); store_reset();
+    on_system(&sc, FL_WACN, FL_SYS, 1000);
+    p25_scan_lockout_add(&sc, 202);
+
+    /* Retuned: the decoder has not heard NET_STS_BCST yet. */
+    on_system(&sc, 0, 0, 2000000);
+    LS_CHECK(p25_scan_roster_applies(&sc, 2000000 + P25_ROSTER_UNKNOWN_GRACE_US - 1));
+    LS_EQ_INT(feed(&sc, &f, 202, 1, 851600000ull, 3000000).reason, P25_SCAN_REASON_LOCKED_OUT);
+    /* A site that never names itself is not held to it for good. */
+    LS_CHECK(!p25_scan_roster_applies(&sc, 2000000 + P25_ROSTER_UNKNOWN_GRACE_US));
+    LS_EQ_INT(feed(&sc, &f, 202, 1, 851600000ull,
+                   2000000 + P25_ROSTER_UNKNOWN_GRACE_US).action, P25_SCAN_TUNE_TO_TRAFFIC);
+}
+
+LS_CASE(a_sysid_only_site_matches_on_sysid)
+{
+    p25_scan_ctrl_t sc; p25_grant_follower_t f;
+    reset_all(&sc, &f); store_reset();
+    on_system(&sc, FL_WACN, FL_SYS, 1000);
+    p25_scan_lockout_add(&sc, 202);
+    on_system(&sc, 0, FL_SYS, 2000);          /* RFSS_STS_BCST only */
+    LS_CHECK(p25_scan_roster_applies(&sc, 2000));
+    on_system(&sc, 0, AR_SYS, 3000);
+    LS_CHECK(!p25_scan_roster_applies(&sc, 3000));
+    LS_EQ_INT(feed(&sc, &f, 202, 1, 851600000ull, 4000).action, P25_SCAN_TUNE_TO_TRAFFIC);
+}
+
+LS_CASE(an_old_unscoped_roster_is_set_aside_on_the_first_named_system)
+{
+    p25_scan_ctrl_t sc; p25_grant_follower_t f;
+    reset_all(&sc, &f); store_reset();
+    /* What NVS held before scoping: an allow list from a home profile. */
+    p25_scan_list_set_mode(&sc, P25_SCAN_LIST_ALLOW);
+    p25_scan_allow_add(&sc, 10001);
+    uint8_t buf[256];
+    size_t n = p25_scan_persist_save(&sc, buf, sizeof(buf));
+    LS_CHECK(p25_scan_persist_load(&sc, buf, n));
+    LS_CHECK(!sc.roster_sys.valid && !sc.roster_pending_bind);
+
+    on_system(&sc, FL_WACN, FL_SYS, 1000);
+    LS_EQ_UINT(sc.allow_count, 0);
+    LS_EQ_INT(sc.list_mode, P25_SCAN_LIST_OFF);
+    LS_EQ_INT(feed(&sc, &f, 303, 1, 851500000ull, 2000).action, P25_SCAN_TUNE_TO_TRAFFIC);
+    p25_grant_force_return_to_control(&f);
+
+    /* A site that only ever sends RFSS_STS_BCST never swaps rosters; the
+     * old list must still not hold it. */
+    LS_CHECK(p25_scan_persist_load(&sc, buf, n));
+    on_system(&sc, 0, FL_SYS, 3000);
+    LS_EQ_UINT(sc.allow_count, 1);
+    LS_CHECK(!p25_scan_roster_applies(&sc, 3000));
+    LS_EQ_INT(feed(&sc, &f, 303, 1, 851500000ull, 4000).action, P25_SCAN_TUNE_TO_TRAFFIC);
+    p25_grant_force_return_to_control(&f);
+
+    /* Before any system has named itself it still holds, briefly. */
+    LS_CHECK(p25_scan_persist_load(&sc, buf, n));
+    on_system(&sc, 0, 0, 5000);
+    LS_CHECK(p25_scan_roster_applies(&sc, 5000));
+    LS_CHECK(!p25_scan_roster_applies(&sc, 5000 + P25_ROSTER_UNKNOWN_GRACE_US));
+}
+
+LS_CASE(a_roster_made_before_the_system_is_named_belongs_to_it)
+{
+    p25_scan_ctrl_t sc; p25_grant_follower_t f;
+    reset_all(&sc, &f); store_reset();
+    p25_scan_lockout_add(&sc, 202);
+    sc.roster_pending_bind = true;            /* as the NVS save marks it */
+    on_system(&sc, AR_WACN, AR_SYS, 1000);
+    LS_CHECK(sc.roster_sys.valid && sc.roster_sys.wacn == AR_WACN &&
+             sc.roster_sys.sysid == AR_SYS);
+    LS_CHECK(p25_scan_is_locked_out(&sc, 202));
+    LS_EQ_INT(s_unscoped_moves, 1);
+    LS_EQ_INT(store_find(AR_WACN, AR_SYS), 0);
+}
+
+LS_CASE(scope_survives_a_restart_and_old_blobs_load_unscoped)
+{
+    p25_scan_ctrl_t sc, sc2;
+    p25_scan_init(&sc);
+    p25_scan_lockout_add(&sc, 5);
+    p25_scan_roster_bind(&sc, AR_WACN, AR_SYS);
+    uint8_t buf[256];
+    size_t n = p25_scan_persist_save(&sc, buf, sizeof(buf));
+    LS_EQ_UINT(n, p25_scan_persist_size(&sc));
+    LS_CHECK(p25_scan_persist_load(&sc2, buf, n));
+    LS_CHECK(sc2.roster_sys.valid);
+    LS_EQ_UINT(sc2.roster_sys.wacn, AR_WACN);
+    LS_EQ_UINT(sc2.roster_sys.sysid, AR_SYS);
+    LS_CHECK(p25_scan_is_locked_out(&sc2, 5));
+
+    /* An older build reads only up to the allow list and ignores the
+     * flags word: the same bytes with the scope cut off still load. */
+    buf[6] = buf[7] = 0;
+    LS_CHECK(p25_scan_persist_load(&sc2, buf, n - 6));
+    LS_CHECK(!sc2.roster_sys.valid);
+    LS_CHECK(p25_scan_is_locked_out(&sc2, 5));
+    /* A truncated scoped blob is refused, not half applied. */
+    buf[6] = 1;
+    LS_CHECK(!p25_scan_persist_load(&sc2, buf, n - 6));
+}
+
+LS_CASE(a_profile_follow_off_holds_only_on_its_system)
+{
+    p25_scan_ctrl_t sc; p25_grant_follower_t f;
+    reset_all(&sc, &f); store_reset();
+    on_system(&sc, FL_WACN, FL_SYS, 1000);
+    sc.roster_follow_off = true;             /* profile said auto_follow=false */
+    LS_CHECK(!p25_scan_roster_empty(&sc));
+    store_put(&sc);
+    LS_CHECK(sc.auto_follow);                /* the global switch is untouched */
+    LS_CHECK(!p25_scan_get_auto_follow(&sc));
+    LS_EQ_INT(feed(&sc, &f, 303, 1, 851500000ull, 2000).reason,
+              P25_SCAN_REASON_AUTO_FOLLOW_OFF);
+
+    on_system(&sc, AR_WACN, AR_SYS, 3000);
+    LS_CHECK(!sc.roster_follow_off);
+    LS_CHECK(p25_scan_get_auto_follow(&sc));
+    LS_EQ_INT(feed(&sc, &f, 303, 1, 851500000ull, 4000).action, P25_SCAN_TUNE_TO_TRAFFIC);
+    p25_grant_force_return_to_control(&f);
+
+    on_system(&sc, FL_WACN, FL_SYS, 5000);
+    LS_CHECK(sc.roster_follow_off);           /* came back with the roster */
+
+    /* It survives a restart in the blob's flags word. */
+    uint8_t buf[256];
+    size_t n = p25_scan_persist_save(&sc, buf, sizeof(buf));
+    p25_scan_ctrl_t sc2;
+    LS_CHECK(p25_scan_persist_load(&sc2, buf, n));
+    LS_CHECK(sc2.roster_follow_off);
+}
+
+LS_CASE(roster_load_keeps_follow_settings_and_identity)
+{
+    p25_scan_ctrl_t sc; p25_grant_follower_t f;
+    reset_all(&sc, &f); store_reset();
+    p25_scan_set_auto_follow(&sc, &f, false);
+    on_system(&sc, FL_WACN, FL_SYS, 1000);
+    LS_CHECK(!sc.auto_follow);
+    LS_CHECK(sc.current_sys.valid);
+}
+
+/* Stand-in for the profile layer: a profile for Florida ranking TG 101. */
+static void fl_profile_switched(p25_scan_ctrl_t *sc)
+{
+    s_switched_calls++;
+    if (sc->roster_sys.valid && sc->roster_sys.sysid == FL_SYS &&
+        sc->roster_sys.wacn == FL_WACN)
+        (void)p25_scan_priority_set(sc, 101, 5);
+}
+
+LS_CASE(profile_priorities_come_back_when_the_stored_roster_is_swapped_in)
+{
+    p25_scan_ctrl_t sc; p25_grant_follower_t f;
+    reset_all(&sc, &f); store_reset();
+    on_system(&sc, FL_WACN, FL_SYS, 1000);
+    p25_scan_list_set_mode(&sc, P25_SCAN_LIST_ALLOW);
+    p25_scan_allow_add(&sc, 101);
+    p25_scan_allow_add(&sc, 202);
+    store_put(&sc);
+
+    /* Reboot / P25 re-entry: an empty unscoped roster, and the profile
+     * reapply puts its ranks on it before the system names itself. */
+    reset_all(&sc, &f);
+    p25_scan_set_roster_switched(fl_profile_switched);
+    (void)p25_scan_priority_set(&sc, 101, 5);
+    on_system(&sc, FL_WACN, FL_SYS, 2000);
+    LS_EQ_INT(s_switched_calls, 1);
+    LS_EQ_UINT(sc.allow_count, 2);
+    LS_EQ_UINT(p25_scan_priority_rank(&sc, 101), 5);
+
+    /* So TG 101 still preempts a lower call. */
+    LS_EQ_INT(feed(&sc, &f, 202, 1, 851600000ull, 3000).action, P25_SCAN_TUNE_TO_TRAFFIC);
+    p25_scan_decision_t d = feed(&sc, &f, 101, 1, 851700000ull, 4000);
+    LS_EQ_INT(d.reason, P25_SCAN_REASON_PRIORITY);
+    p25_grant_force_return_to_control(&f);
+
+    /* Not onto another system's roster; back again on the way home. */
+    on_system(&sc, AR_WACN, AR_SYS, 5000);
+    LS_EQ_UINT(p25_scan_priority_rank(&sc, 101), 0);
+    on_system(&sc, FL_WACN, FL_SYS, 6000);
+    LS_EQ_UINT(p25_scan_priority_rank(&sc, 101), 5);
+    LS_EQ_INT(s_switched_calls, 3);
+    p25_scan_set_roster_switched(NULL);
+}
+
+LS_CASE(a_sysid_only_profile_reload_replaces_an_older_full_key_roster)
+{
+    p25_scan_ctrl_t sc; p25_grant_follower_t f;
+    reset_all(&sc, &f); store_reset();
+    /* An older roster for Florida, stored under the full key. */
+    on_system(&sc, FL_WACN, FL_SYS, 1000);
+    p25_scan_list_set_mode(&sc, P25_SCAN_LIST_ALLOW);
+    p25_scan_allow_add(&sc, 101);
+    store_put(&sc);
+
+    /* The profile is reloaded with sysid= but no wacn= (as op_roster). */
+    p25_scan_allow_clear(&sc);
+    p25_scan_allow_add(&sc, 202);
+    p25_scan_roster_bind(&sc, 0, FL_SYS);
+    store_put(&sc);
+    LS_CHECK(!p25_scan_roster_resync(&sc));
+
+    /* Upgraded in place: the profile's list, under the full key only. */
+    LS_EQ_UINT(sc.roster_sys.wacn, FL_WACN);
+    LS_EQ_UINT(sc.roster_sys.sysid, FL_SYS);
+    LS_CHECK(p25_scan_allow_contains(&sc, 202));
+    LS_CHECK(!p25_scan_allow_contains(&sc, 101));
+    LS_EQ_INT(store_find(0, FL_SYS), -1);
+    LS_CHECK(store_find(FL_WACN, FL_SYS) >= 0);
+    LS_EQ_UINT(sc.roster_switches, 1);
+
+    /* It is the one that comes back after a trip away. */
+    on_system(&sc, AR_WACN, AR_SYS, 2000);
+    on_system(&sc, FL_WACN, FL_SYS, 3000);
+    LS_CHECK(p25_scan_allow_contains(&sc, 202));
+    LS_CHECK(!p25_scan_allow_contains(&sc, 101));
+}
+
 /* ==================================================================== names */
 
 /* Fixture reader: feeds one line at a time from a fixed array. */

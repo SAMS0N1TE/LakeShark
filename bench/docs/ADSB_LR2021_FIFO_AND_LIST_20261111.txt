@@ -1,0 +1,146 @@
+LakeShark notes, 2026-11-11
+ADS-B on the LR2021 (issue #22) and the ADS-B list
+
+These notes stand in for code comments on the changes below. Each item says
+what broke, what was measured or found, and why the change is the fix.
+
+
+1. "modes: chip errors 0x0000" on the console (issue #22)
+
+What the user saw
+  With an LR2021 on the T-Display P4 header running ADS-B, the console
+  printed "W ls_lora_lr: modes: chip errors 0x0000" one to several times a
+  second. Reception itself worked.
+
+What was happening
+  lr20xx_modes_poll read GetErrors whenever the IRQ word had either the
+  Error bit (16) or the CmdError bit (17), and logged the result every time.
+  CmdError means the chip refused a host command. GetErrors only reports
+  the other kind of error, so it read 0x0000, and the log said so.
+
+  The refused command was ClearRxFifo (0x011E). The Mode S FIFO drain sends
+  it while the chip is in continuous Rx, on two paths:
+    - the stale-remainder path: the same few bytes sitting in the FIFO for
+      three polls (half a frame from before an overflow);
+    - the full-FIFO path: level >= 256 after the whole frames were read.
+  In packet modes the LR2021 refuses ClearRxFifo and ClearTxFifo in Rx or
+  Tx. RadioFoundryGateway measured this on ROM 1.24 (that project's
+  LR2021 I/Q spec, finding R3.34). Their packet API goes to standby first, and their mock
+  refuses 0x011E in Rx. Our own rearm_rx comment records the same refusal.
+  So the FIFO was never actually flushed on those paths. The torn frame
+  stayed, the stale path fired again, and each try raised CmdError again.
+
+The fix
+  - restart_rx_empty(): standby with the crystal running (SetStandby 1),
+    ClearRxFifo, SetRx, and a check that the part is receiving. Both drain
+    paths use it. Frames already read into the queue are kept. The packet
+    status is now read before the restart, so its RSSI belongs to the
+    frames just read.
+  - The LoRa packet poll, the activity detector and the FSK session poll
+    also sent ClearRxFifo during continuous Rx, to drop a bad or partly
+    read packet. They now use discard_rx_fifo(), which reads GetRxFifoLevel
+    and reads out exactly that many bytes. Reading the FIFO is allowed in
+    Rx. On hardware the old clear was refused, so nothing was dropped.
+    Now the bytes the code meant to drop are dropped, and nothing that
+    arrives after the level read is touched. After a packet read in full,
+    the level is 0 and the only cost is one level read.
+  - Refused commands are counted apart from chip errors:
+      chip-errors  GetErrors words with a flag set
+      cmd-errors   CmdError IRQs seen by the session
+    Each GetErrors bit is named once a session. Each refused opcode is named
+    once a session (up to four), at INFO.
+  - The driver now records which opcode the chip refused. Every SPI frame
+    clocks back the Stat of the command before it. When that Stat says
+    FAIL or PERR, the previous opcode is kept (lr20xx_refused_op).
+    'lora status' prints cmd-errors and "last command the part refused:
+    0x.... Name". If a CmdError comes back on a build with this fix, the
+    reporter can say which command it was.
+
+Not changed, worth measuring on a board
+  - RadioFoundry R2.25: on ROM 1.24, SetRx forces gain step 13 (0xDD)
+    whatever was set before. Mode S sets its gain before SetRx (arm_rx), so
+    a chosen gain step may be overridden. The raw I/Q path already puts the
+    gain back after SetRx. Reading register 0xF30154 bits 23:16 after arm_rx
+    on a board would settle it.
+  - Mode S overflow could also be read from the FIFO flags (0x011B, Rx
+    flag 0x10) instead of inferred from level >= 256. The raw I/Q path
+    already reads those flags.
+
+
+2. Bench changes that go with it
+
+  - lora_fakes.h: the fake LR2021 refuses ClearRxFifo in Rx or Tx unless
+    the packet type is 0x0B (the raw I/Q route, where lr2021-sdr found it
+    is accepted). Before, the fake accepted it and the bench asserted
+    something the chip does not do.
+  - test_lr20xx_proto.c:
+      new  a_command_error_with_no_chip_error_is_counted_apart_and_never_cleared_as_one
+      new  a_refused_command_is_named_by_its_opcode_from_the_stat_that_followed_it
+      new  a_full_or_stale_fifo_is_emptied_from_standby_because_rx_refuses_clear_rx_fifo
+      changed  a_received_lora_packet_is_read_with_its_level_and_the_fifo_left_empty:
+           the fifth command is GetRxFifoLevel, no longer ClearRxFifo.
+      fixed  no_frame_in_a_full_session_is_an_sx126x_opcode_or_unlisted:
+           ActivatePram (0x012D), sent by the on-chip sweep added in 2.21,
+           was missing from the list of reviewed opcodes. That case failed
+           on main before this change.
+    The new cases fail against the old driver and pass against the new one.
+
+
+3. ADS-B list: emergencies and SORT
+
+Emergencies on the list
+  An aircraft squawking 7500, 7600 or 7700, or one whose aircraft-status
+  message (type code 28) reported an emergency in the last 60 s, is now:
+    - drawn as a white-on-red row in the AIRCRAFT list (black on bright red
+      when it is the selected row);
+    - named in red in the list's title bar: " ! CALLSIGN EMERGENCY ", or
+      the ICAO address when no callsign is known;
+    - shown on its detail page with the type code 28 state as well
+      (MEDICAL, MINIMUM FUEL, NO COMMS, UNLAWFUL, DOWNED). The detail page
+      used to show only the three squawk codes.
+  Before, an emergency squawk was only visible on that aircraft's detail
+  page.
+
+SORT (OPTIONS > DISPLAY > SORT)
+  TABLE    the order the table holds them in, as before (the default)
+  NEAREST  closest to home or the GPS fix first; no position goes last
+  LOWEST   lowest altitude first; no altitude goes last
+  In NEAREST and LOWEST, aircraft in an emergency go to the top. UP and DOWN
+  step through the list in the order it is drawn. The selection still lives
+  in the ADS-B model; the screen only works out the order. SORT is the last
+  row of DISPLAY, so VIEW, FOLLOW and MAP ZOOM keep their places.
+
+Memory
+  The sort table is 16 entries of 8 bytes in PSRAM (EXT_RAM_BSS_ATTR), as
+  this screen already does for its radar plots. Only the TUI task's draw and
+  key paths use it, so nothing is added to the screen task's stack, which
+  the 2.20 notes say was short for ADS-B on the T-Display.
+
+Tests (test_tui_screens.c)
+  adsb_sort_lowest_orders_the_list_and_down_follows_what_is_shown
+  adsb_sort_nearest_puts_the_closest_to_home_first
+  adsb_an_emergency_squawk_is_red_in_the_list_and_named_in_its_title
+  adsb_an_emergency_status_report_without_a_squawk_is_shown_and_ages_out
+  All four fail against the old screen and pass against the new one. The
+  aging case winds the host clock back when it is done, so later cases see
+  the clock they would have seen without it.
+
+
+4. Running the bench on Linux
+
+  These are needed on a Linux host. None of this is in the commit.
+  - GCC in gnu11 mode predefines the macro "unix". The app SDK has a field
+    named unix (lap_time_t), so pass -Uunix:
+      cmake -G Ninja -S bench -B build -DCC_MBED=<mbedtls 3.6 source> \
+            -DCMAKE_C_FLAGS=-Uunix -DCMAKE_CXX_FLAGS=-Uunix
+  - CC_MBED must point at an mbedtls source tree when IDF_PATH is not set.
+  - 19 targets do not build on Linux because they use Windows headers or
+    functions: direct.h and _mkdir in ls_lap_channels.c and
+    test_nfc_suite.c, _stat, and a fopencookie shim that clashes with
+    glibc's. Without them, lssim and the test_lap_* and test_lssim_* cases
+    cannot run. On main, before these changes, 60 of 506 CTest cases fail or
+    do not run on this host; after them, 58. The two that changed:
+    test_lr20xx_proto (fixed here) and test_p25_packs_runtime. The second
+    fails in one build tree and passes in another from the same source
+    (its rollback-on-failed-rename case), so it depends on the host's build
+    tree, not on these changes; nothing in P25 was touched.

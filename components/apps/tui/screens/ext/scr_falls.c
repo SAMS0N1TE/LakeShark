@@ -361,7 +361,10 @@ static void draw(tui_surface *sf, tui_rect area)
              sdr_view() ? "R radio  E mode  N band  O options" : "R radio  N band  O options");
     if(s_data<0) ls_wf_source_pump();
 
+    /* The waterfall is the screen: its keys stay at the height of the
+       control rows under it rather than the house height. */
     int want = ls_btn_raised_height(area, bar_count());
+    if (want > 4 && !ls_tui_compact()) want = 4;
     draw_buttons(sf, tui_rect_make(area.x, area.y, area.w, want));
     tui_rect body = tui_rect_make(area.x, area.y + want, area.w, area.h - want);
 

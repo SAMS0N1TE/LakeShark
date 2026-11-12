@@ -1,3 +1,4 @@
+#include <errno.h>
 /* API 2.3 runtime contracts; no windows or hardware. */
 #include "ls_lap_api.h"
 #include "ls_lap_kit.h"
@@ -166,8 +167,8 @@ static void saves(void) {
     _mkdir("p1-data"); begin("save-test", 5);
     assert(ls_lap_api_files_load("p1-data"));
     char data[128]; uint32_t stack_schema, *schema = &stack_schema;
-    assert(lap_sd_read("lap-sd/x", 0, data, sizeof(data)) == LAP_SD_EINVAL);
-    assert(lap_sd_list("lap-sd", (lap_sd_entry_t *)data, 1) == LAP_SD_EINVAL);
+    assert(lap_sd_read("lap-sd-io/x", 0, data, sizeof(data)) == LAP_SD_EINVAL);
+    assert(lap_sd_list("lap-sd-io", (lap_sd_entry_t *)data, 1) == LAP_SD_EINVAL);
     int j = lap_save_write("progress", "checkpoint", 11, 7); assert(j >= 0);
     assert(lap_save("other", "x", 1) == LAP_SD_EBUSY);
     assert(lap_file_open("other", "w") < 0);
@@ -180,7 +181,10 @@ static void saves(void) {
     FILE *previous = fopen("p1-data/save-test/save_progress", "rb");
     unsigned char envelope[20]; assert(previous && fread(envelope, 1, 20, previous) == 20); fclose(previous);
     assert(envelope[8] == 7); /* old schema survived */
-    assert(_rmdir("p1-data/save-test/.lap-write") == 0);
+    /* The failed save's cleanup removes its staging path; remove() takes an
+       empty directory with it on Linux and on the card's FAT, not on
+       Windows. Either way the blocker is gone afterwards. */
+    assert(_rmdir("p1-data/save-test/.lap-write") == 0 || errno == ENOENT);
     complete(lap_file_flush());
     complete(lap_settings_set("volume", "42", 3));
     assert(lap_settings_get("volume", data, 128) == 3 && !strcmp(data, "42"));

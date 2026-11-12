@@ -139,10 +139,83 @@ static const char *sdr_word(radio_state_t st);
 static const char *rtl_state(void) { return sdr_word(rtl_read()); }
 static const char *hackrf_state(void) { return sdr_word(hackrf_read()); }
 
+/* STOP turns off the app using the radio. It used to pause the receiver
+   (SDR) or block the chip (LoRa) under an app that kept wanting it, so the
+   app took it straight back at ALLOW: STOP never released anything. Now the
+   app itself is switched off - its mode parked, its watch ended - and the
+   radio is free with nothing to allow. An owner not listed here still gets
+   the old block. Weak, so a build without one of these apps still links. */
+static ls_lap_service_info_t s_svc;
+static bool svc_get(void);
+bool rec_watch_enable(bool on) __attribute__((weak));
+bool rec_watch_enabled(void) __attribute__((weak));
+void rec_disarm(void) __attribute__((weak));
+void rec_catch_stop(void) __attribute__((weak));
+bool ls_drone_watch_enable(bool on) __attribute__((weak));
+void cell_monitor_stop(void) __attribute__((weak));
+void cell_iq_stop(void) __attribute__((weak));
+
+typedef enum { ST_NONE, ST_MODE, ST_WATCH, ST_REC, ST_CATCH, ST_DRONES, ST_CELL, ST_CELL_IQ, ST_SERVICE } stop_kind_t;
+static stop_kind_t stop_kind(const char *owner, const char **app)
+{
+    static const struct { const char *prefix, *app; stop_kind_t kind; } OWNERS[] = {
+        { "subghz", "SUB-GHZ", ST_WATCH }, { "wf_", "SUB-GHZ", ST_WATCH },
+        { "tui_rec", "REC", ST_REC }, { "rec", "REC", ST_REC },
+        { "adsb", "ADS-B", ST_MODE }, { "p25", "P25", ST_MODE }, { "pager", "P25", ST_MODE },
+        { "fm", "FM", ST_MODE }, { "CATCH", "CATCH", ST_CATCH }, { "catch", "CATCH", ST_CATCH },
+        /* CELL WATCH's I/Q capture is its own loop that retakes the radio;
+           stopping the monitor leaves it running. Before "cell". */
+        { "drone", "DRONES", ST_DRONES }, { "cell-iq", "CELL", ST_CELL_IQ }, { "cell", "CELL", ST_CELL }, { "lap", "APP", ST_SERVICE },
+    };
+    if (!owner || !owner[0]) return ST_NONE;
+    for (size_t i = 0; i < sizeof(OWNERS) / sizeof(OWNERS[0]); i++) {
+        if (strncmp(owner, OWNERS[i].prefix, strlen(OWNERS[i].prefix))) continue;
+        stop_kind_t k = OWNERS[i].kind;
+        /* The LR2021's I/Q session is WATCH's only while WATCH is on. */
+        if (k == ST_WATCH && !(rec_watch_enabled && rec_watch_enabled())) return ST_NONE;
+        if (k == ST_SERVICE && !svc_get()) return ST_NONE;
+        if (app) *app = k == ST_SERVICE ? s_svc.name : OWNERS[i].app;
+        return k;
+    }
+    return ST_NONE;
+}
+static bool stop_owner(const char *owner, const char **app)
+{
+    switch (stop_kind(owner, app)) {
+    case ST_WATCH:
+    case ST_REC:
+        if (rec_watch_enabled && rec_watch_enabled() && rec_watch_enable) (void)rec_watch_enable(false);
+        if (rec_disarm) rec_disarm();
+        ls_tui_radio_want(NULL);
+        return true;
+    case ST_MODE:    ls_tui_radio_want(NULL); return true;
+    case ST_CATCH:   if (!rec_catch_stop) return false; rec_catch_stop(); return true;
+    case ST_DRONES:  return ls_drone_watch_enable && ls_drone_watch_enable(false);
+    case ST_CELL:    if (!cell_monitor_stop) return false; cell_monitor_stop(); return true;
+    case ST_CELL_IQ: if (!cell_iq_stop) return false; cell_iq_stop(); return true;
+    case ST_SERVICE: return ls_lap_service_request_stop(s_svc.id);
+    default:         return false;
+    }
+}
+static const char *stop_label(const char *owner)
+{
+    static char t[24];
+    const char *app = NULL;
+    if (stop_kind(owner, &app) == ST_NONE) return NULL;
+    snprintf(t, sizeof(t), "STOP %.18s", app);
+    return t;
+}
+
 static void sdr_set_endpoint(const char *id)
 {
     ls_radio_endpoint_info_t info;
     if (ls_radio_endpoint_get(id, &info) != LS_RADIO_OK || !info.present) return;
+    const char *app = NULL;
+    if (!info.paused && info.leased && stop_owner(info.owner, &app)) {
+        snprintf(s_error_text, sizeof(s_error_text), "%s off: %s is free", app, info.name);
+        s_error = s_error_text;
+        return;
+    }
     const ls_radio_err_t err = ls_radio_endpoint_pause(id, info.owner, !info.paused);
     if (err != LS_RADIO_OK) {
         snprintf(s_error_text, sizeof(s_error_text), "%s: %s (%s)",
@@ -156,7 +229,8 @@ static const char *sdr_action(const char *id)
 {
     ls_radio_endpoint_info_t info;
     if (ls_radio_endpoint_get(id, &info) != LS_RADIO_OK || !info.present) return "unavailable";
-    return info.paused ? "ALLOW RX" : "STOP / BLOCK RX";
+    const char *stop = !info.paused && info.leased ? stop_label(info.owner) : NULL;
+    return stop ? stop : info.paused ? "ALLOW RX" : "STOP / BLOCK RX";
 }
 static const char *rtl_action(void) { return sdr_action(LS_RADIO_ENDPOINT_RTL_USB); }
 static const char *hackrf_action(void) { return sdr_action(LS_RADIO_ENDPOINT_HACKRF_USB); }
@@ -229,6 +303,8 @@ static const char *mesh_action(void)
     ls_mesh_socket_t s;
     ls_mesh_socket_get(&s);
     if (s.blocked) return "ALLOW LORA";
+    const char *stop = s.held ? stop_label(s.owner) : NULL;
+    if (stop) return stop;
     if (s.held) return "STOP / BLOCK LORA";
     return ls_mesh_running() ? "TURN OFF" : "TURN ON";
 }
@@ -243,6 +319,13 @@ static void mesh_set(bool on)
     if (s.blocked) {
         ls_mesh_radio_block(false);
         s_error = "LORA allowed: apps can take it again";
+        return;
+    }
+    const char *app = NULL;
+    if (s.held && stop_owner(s.owner, &app)) {
+        snprintf(s_error_text, sizeof(s_error_text), "%s off: LORA %s", app,
+                 ls_mesh_running() ? "back to MeshCore" : "free");
+        s_error = s_error_text;
         return;
     }
     if (s.held) {
@@ -330,10 +413,10 @@ static void open_link(bool on)
 static const char *link_action(void) { return "OPEN LINK"; }
 
 static const radio_row_t ROWS[] = {
-    { "RTL-SDR", "ALLOW RX permits owner retry / app start", rtl_read, rtl_set, rtl_state, rtl_action },
-    { "HackRF", "ALLOW RX permits owner retry / app start", hackrf_read, hackrf_set, hackrf_state, hackrf_action },
+    { "RTL-SDR", "STOP turns off the app using it", rtl_read, rtl_set, rtl_state, rtl_action },
+    { "HackRF", "STOP turns off the app using it", hackrf_read, hackrf_set, hackrf_state, hackrf_action },
 #if LS_HAS_LORA
-    { "LORA", "MeshCore from boot; STOP frees it from any app",
+    { "LORA", "MeshCore from boot; STOP turns off the app using it",
       mesh_read, mesh_set, mesh_state, mesh_action },
 #endif
     { "GPS",  "keeps a receiver fed to hold a fix",

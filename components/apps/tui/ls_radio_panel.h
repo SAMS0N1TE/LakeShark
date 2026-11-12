@@ -161,6 +161,8 @@ int ls_radio_glass_frequency(ls_radio_glass_t *, tui_surface *, tui_rect,
                              int y, uint32_t hz, const char *entry,
                              uint32_t blink, bool wide);
 void ls_radio_glass_wipe(ls_radio_glass_t *, tui_surface *, tui_rect, int first_y, int end_y, int mode);
+/* The same, shading only blank cells: for a page change, behind its text. */
+void ls_radio_glass_wipe_behind(ls_radio_glass_t *, tui_surface *, tui_rect, int first_y, int end_y, int mode);
 void ls_radio_glass_sample(ls_radio_glass_t *, float signal);
 void ls_radio_glass_trace(const ls_radio_glass_t *, tui_surface *, tui_rect,
                           int x, int y, int w, int h, float threshold);

@@ -28,6 +28,13 @@ static bool plateau_mode,cells_mode;
 static int fake_ppm,fake_applied,fake_gain=1,window_calls,first_span,last_span,set_ppm_calls,spans[16],span_n;
 static uint32_t tuned_hz,tuned_log[300];
 static unsigned tuned_count;
+/* rail_bytes: I/Q bytes on a rail in the tune at 881.5 MHz, of the 8192 each
+ * tune folds in; clip_from: the sweep (1-based) it starts at. sweep_gain is
+ * what the last sweep was asked for. */
+static uint32_t rail_bytes;
+static int clip_from,sweep_gain,configured_gain,stop_after,observations;
+static bool stop_on_delay;
+static cell_status_t observed;   /* what the last WATCH pass reported */
 static void reset_job(void)
 {
     memset(&state,0,sizeof(state));memset(&baseline,0,sizeof(baseline));
@@ -36,6 +43,13 @@ static void reset_job(void)
     set_ppm_calls=0;tuned_hz=0;tuned_count=0;fake_gain=1;span_n=0;ppm_verify=false;
     sd_ready=false;baseline_reads=0;stopped=false;receiver_epoch=job_epoch=0;baseline_saved=false;
     notifications=sweeps=reads=lose_fix=slow_mode=0;clock_us=1000000;fix_mode=1;activity_kind=0;
+    rail_bytes=0;clip_from=1;sweep_gain=configured_gain=0;gain_tenths=CELL_GAIN;state.floor=CELL_MISSING;
+    stop_after=observations=0;stop_on_delay=false;memset(&observed,0,sizeof(observed));
+}
+/* Another job on the same worker, keeping the baseline it holds. */
+static void next_job(void)
+{
+    stopped=false;stop_on_delay=false;sweeps=0;observations=0;
 }
 static void run_job(int job,bool local)
 {
@@ -45,7 +59,7 @@ static void run_job(int job,bool local)
 }
 uint32_t ulTaskNotifyTake(BaseType_t clear,TickType_t wait)
 {(void)clear;(void)wait;if(notifications++)longjmp(end_job,1);return 1;}
-void vTaskDelay(TickType_t ticks){clock_us+=(int64_t)ticks*1000;}
+void vTaskDelay(TickType_t ticks){clock_us+=(int64_t)ticks*1000;if(stop_on_delay)stopped=true;}
 int64_t esp_timer_get_time(void){return clock_us;}
 void ls_gps_get(ls_gps_state_t *g)
 {memset(g,0,sizeof(*g));g->fix=fix_mode && !(lose_fix && sweeps);g->last_fix_us=clock_us;g->lat_deg=43;g->lon_deg=-71;g->hdop=1;}
@@ -54,14 +68,25 @@ bool ls_board_hw_antenna_is_external(void){return false;}
 bool ls_sdcard_mounted(void){return sd_ready;}
 FILE *cell_test_fopen(const char *path,const char *mode)
 {if(!strcmp(mode,"rb") && strstr(path,".bin"))baseline_reads++;return NULL;}
-void cell_report_observe(const cell_status_t *s){(void)s;}
+void cell_report_observe(const cell_status_t *s){observed=*s;observations++;}
 void cell_report_activity(const cell_status_t *s,char kind){(void)s;activity_kind=kind;}
-ls_radio_err_t ls_sweep_run_endpoint(const ls_sweep_plan_t *p,int gain,uint32_t dwell,bool fast,int8_t *out,
-    ls_sweep_progress_fn progress_fn,ls_sweep_cancel_fn cancel_fn,void *arg,const char *endpoint)
+ls_radio_err_t ls_sweep_run_rails(const ls_sweep_plan_t *p,int gain,uint32_t dwell,bool fast,int8_t *out,
+    ls_sweep_progress_fn progress_fn,ls_sweep_cancel_fn cancel_fn,void *arg,const char *endpoint,ls_sweep_rails_t *rails)
 {
-    (void)gain;(void)dwell;(void)fast;(void)cancel_fn;
+    (void)dwell;(void)fast;(void)cancel_fn;
     if(strcmp(endpoint,LS_RADIO_ENDPOINT_RTL_USB))abort();
-    memset(out,-90,p->n_bins);sweeps++;if(command==CELL_WATCH)stopped=true;
+    memset(out,-90,p->n_bins);sweeps++;sweep_gain=gain;
+    /* WATCH repeats until stopped: by default inside its first sweep (which
+     * is then discarded), or with stop_after in the wait after that pass. */
+    if(command==CELL_WATCH && !stop_after)stopped=true;
+    if(command==CELL_WATCH && stop_after && sweeps>=stop_after)stop_on_delay=true;
+    if(rails) {
+        memset(rails,0,sizeof(*rails));
+        rails->samples=p->n_tunes*8192u;rails->worst_samples=8192;rails->worst_hz=ls_sweep_tune_center(p,0);
+        if(rail_bytes && sweeps>=clip_from) {
+            rails->rails=rails->worst_rails=rail_bytes;rails->worst_hz=881000000;
+        }
+    }
     if(plateau_mode) {
         /* 10 MHz carrier 877-886 and a 5 MHz one 886.75-891.25, on a -85 floor. */
         for(uint32_t i=0;i<p->n_bins;i++) {
@@ -75,7 +100,7 @@ ls_radio_err_t ls_sweep_run_endpoint(const ls_sweep_plan_t *p,int gain,uint32_t 
 ls_radio_err_t ls_radio_acquire(const char *owner,const ls_radio_requirements_t *r,ls_radio_session_t **s)
 {(void)owner;if(strcmp(r->preferred_endpoint_id,LS_RADIO_ENDPOINT_RTL_USB))abort();*s=(void*)1;return LS_RADIO_OK;}
 ls_radio_err_t ls_radio_iq_configure(ls_radio_session_t *s,const ls_radio_iq_config_t *c,ls_radio_iq_config_t *a)
-{(void)s;*a=*c;tuned_hz=(uint32_t)c->center_hz;if(tuned_count<300)tuned_log[tuned_count++]=tuned_hz;return LS_RADIO_OK;}
+{(void)s;*a=*c;configured_gain=c->gain_tenths_db;tuned_hz=(uint32_t)c->center_hz;if(tuned_count<300)tuned_log[tuned_count++]=tuned_hz;return LS_RADIO_OK;}
 ls_radio_err_t ls_radio_iq_retune(ls_radio_session_t *s,uint64_t hz,bool fast,uint64_t *actual)
 {(void)s;(void)fast;tuned_hz=(uint32_t)hz;*actual=hz;if(tuned_count<300)tuned_log[tuned_count++]=tuned_hz;return LS_RADIO_OK;}
 ls_radio_err_t ls_radio_iq_set_ppm(ls_radio_session_t *s,int ppm){(void)s;fake_applied=ppm;set_ppm_calls++;return LS_RADIO_OK;}
@@ -273,4 +298,70 @@ LS_CASE(a_correction_that_moves_the_carriers_the_wrong_way_is_taken_back)
     LS_CHECK(!state.ppm_known && !state.ppm_applied && !ppm_verify);
     LS_EQ_INT(cell_n,3);                       /* the cells themselves are still reported */
     LS_EQ_INT(spans[1],40000);                 /* and the proving capture was not narrowed */
+}
+LS_CASE(a_survey_pass_publishes_its_floor_and_its_carriers)
+{
+    reset_job();plateau_mode=true;stop_after=1;run_job(CELL_WATCH,true);
+    LS_EQ_INT(sweeps,1);LS_EQ_INT(observations,1);
+    LS_EQ_INT(observed.floor,-85);LS_EQ_INT(observed.plateaus,2);LS_EQ_INT(observed.spectrum_count,96);
+    unsigned occupied=0;for(int i=0;i<96;i++)occupied+=observed.mark[i]&1;
+    LS_CHECK(occupied>20 && occupied<60);
+    LS_CHECK(!observed.overload && !state.overload);
+    LS_EQ_INT(state.floor,-85);
+    /* The LTE pre-pass publishes the same floor from the same reading. */
+    reset_job();plateau_mode=true;run_job(CELL_LTE,false);
+    LS_EQ_INT(state.floor,-85);LS_EQ_INT(state.plateaus,2);
+}
+LS_CASE(a_clipped_pass_is_never_learned)
+{
+    /* Clipped from the first pass: LEARN stops there, with nothing learned,
+     * and says where and what to do. */
+    reset_job();rail_bytes=200;run_job(CELL_LEARN,true);
+    LS_EQ_INT(sweeps,1);LS_EQ_INT(baseline.passes,0);
+    LS_CHECK(!state.baseline && !baseline_saved);
+    LS_CHECK(state.overload);LS_EQ_UINT(state.overload_hz,881000000);
+    LS_EQ_UINT(state.rails,200);LS_EQ_UINT(state.rail_samples,8192);
+    LS_CHECK(strstr(state.message,"RTL overloaded at 881 MHz - lower gain")!=NULL);
+    /* The pass is still drawn, so the operator sees where. */
+    LS_EQ_INT(state.spectrum_count,96);LS_EQ_INT(state.floor,-90);
+    /* Clipping that starts on the second pass loses the first one too. */
+    reset_job();rail_bytes=200;clip_from=2;run_job(CELL_LEARN,true);
+    LS_EQ_INT(sweeps,2);LS_EQ_INT(baseline.passes,1);LS_CHECK(!state.baseline);
+    /* One byte in a thousand is still a clean pass. */
+    reset_job();rail_bytes=8;run_job(CELL_LEARN,true);
+    LS_EQ_INT(sweeps,3);LS_CHECK(state.baseline && !state.overload);
+}
+LS_CASE(a_clipped_pass_is_never_compared_and_the_warning_clears_with_a_clean_one)
+{
+    reset_job();run_job(CELL_LEARN,true);LS_CHECK(state.baseline);
+    /* Watching with the receiver clipping: shown, not compared, no streak. */
+    next_job();rail_bytes=200;stop_after=1;plateau_mode=true;run_job(CELL_WATCH,true);
+    LS_EQ_INT(observations,1);
+    LS_CHECK(!observed.compared && observed.overload);LS_EQ_UINT(observed.changed,0);
+    LS_CHECK(observed.rows>0);LS_EQ_INT(observed.row[0].delta,0);
+    LS_CHECK(strstr(state.message,"overloaded at 881 MHz")!=NULL);
+    /* The same carriers 35 dB over the baseline, unclipped, are compared. */
+    next_job();rail_bytes=0;stop_after=1;plateau_mode=true;run_job(CELL_WATCH,true);
+    LS_CHECK(observed.compared && !observed.overload && !state.overload);
+    LS_EQ_INT(observed.row[0].delta,35);
+    LS_CHECK(!strstr(state.message,"overloaded"));
+}
+LS_CASE(the_chosen_gain_runs_the_sweeps_and_keys_the_baseline)
+{
+    reset_job();
+    LS_CHECK(!cell_monitor_set_gain(300));LS_CHECK(!cell_monitor_set_gain(0));
+    LS_CHECK(cell_monitor_set_gain(197));
+    cell_status_t s;cell_monitor_get(&s);LS_EQ_INT(s.gain,197);
+    run_job(CELL_LEARN,true);
+    LS_EQ_INT(sweep_gain,197);LS_EQ_UINT(baseline.gain,197);LS_CHECK(state.baseline);
+    /* Back at the usual gain, that baseline is not this receiver's reading. */
+    LS_CHECK(cell_monitor_set_gain(CELL_GAIN));
+    next_job();stop_after=1;run_job(CELL_WATCH,true);
+    LS_EQ_INT(sweep_gain,CELL_GAIN);LS_CHECK(!observed.compared && !state.baseline);
+    LS_CHECK(strstr(state.message,"No baseline")!=NULL);
+    /* The LTE search tunes at the chosen gain too: its pre-pass and its captures. */
+    reset_job();plateau_mode=true;LS_CHECK(cell_monitor_set_gain(144));run_job(CELL_LTE,false);
+    LS_EQ_INT(sweep_gain,144);LS_EQ_INT(configured_gain,144);
+    reset_job();full_scan=true;LS_CHECK(cell_monitor_set_gain(372));run_job(CELL_LTE,false);
+    LS_EQ_INT(configured_gain,372);LS_EQ_INT(sweeps,0);
 }

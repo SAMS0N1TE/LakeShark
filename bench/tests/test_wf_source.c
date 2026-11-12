@@ -609,6 +609,12 @@ LS_CASE(am_presets_keep_live_mode_and_publish_the_selected_range)
 
 static ls_wf_tune_fn test_tuner;
 void ls_wf_set_tuner(ls_wf_tune_fn fn){test_tuner=fn;}
+static ls_wf_zoom_fn test_zoomer;
+static unsigned g_fm_zoom = 1; static uint32_t g_fm_zoom_hz; static int g_zoom_drops;
+void ls_wf_set_zoomer(ls_wf_zoom_fn fn){test_zoomer=fn;}
+void ls_wf_zoom_drop(void){g_zoom_drops++;}
+bool fm_spectrum_zoom(unsigned f, uint32_t hz){g_fm_zoom=f;g_fm_zoom_hz=hz;return true;}
+unsigned fm_spectrum_zoom_factor(void){return g_fm_zoom;}
 void scan_engine_stop(void){g_scan_stops++;}
 void lakeshark_p25_set_freq(uint32_t hz){g_p25_tuned=hz;}
 void ls_field_snapshot(ls_field_state_t *out){memset(out,0,sizeof(*out));out->ready=g_field_ready;}
@@ -645,12 +651,31 @@ LS_CASE(locked_marker_is_a_manual_tune_across_fm_bands)
         LS_EQ_UINT(FM.freq_hz,frequencies[i]);
         LS_EQ_UINT(lakeshark_fm_frequency_lock_hz(),frequencies[i]);
     }
-    LS_CHECK(!test_tuner(LS_WF_OWNER_FM,23000000));
-    LS_EQ_STR(tune_reason,"outside 24-1766 MHz");
+    /* HF: the dongle takes it by direct sampling or the V4's upconverter. */
+    LS_CHECK(test_tuner(LS_WF_OWNER_FM,700000));
+    LS_EQ_UINT(FM.freq_hz,700000);
+    LS_CHECK(!test_tuner(LS_WF_OWNER_FM,400000));
+    LS_EQ_STR(tune_reason,"outside 0.5-1766 MHz");
     g_fm_streaming=false;
     LS_CHECK(!test_tuner(LS_WF_OWNER_FM,91000000));
     LS_EQ_STR(tune_reason,"receiver not running");
-    LS_EQ_UINT(lakeshark_fm_frequency_lock_hz(),433920000);
+    LS_EQ_UINT(lakeshark_fm_frequency_lock_hz(),700000);
+}
+
+LS_CASE(fm_live_view_zooms_from_its_iq_and_lets_go_for_a_sweep)
+{
+    fresh(); g_fm_streaming=true; FM.mode=FM_MODE_LISTEN;
+    ls_wf_source_select(LS_WF_SRC_FM); ls_wf_source_pump();
+    LS_CHECK(test_zoomer!=NULL);
+    LS_CHECK(test_zoomer(LS_WF_OWNER_FM,8,154800000));
+    LS_EQ_UINT(8,g_fm_zoom); LS_EQ_UINT(154800000,g_fm_zoom_hz);
+    LS_CHECK(!test_zoomer(LS_WF_OWNER_P25,8,154800000));
+    /* A sweep has no IQ of one place to zoom: the zoom is given back. */
+    g_zoom_drops=0; FM.mode=FM_MODE_SCAN; ls_wf_source_pump();
+    LS_EQ_UINT(1,g_fm_zoom); LS_CHECK(g_zoom_drops>0);
+    LS_CHECK(!test_zoomer(LS_WF_OWNER_FM,4,154800000));
+    LS_CHECK(test_zoomer(LS_WF_OWNER_FM,1,0));
+    FM.mode=FM_MODE_LISTEN;
 }
 
 static int g_labs_handoffs;

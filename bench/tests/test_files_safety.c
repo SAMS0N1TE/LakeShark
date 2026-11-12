@@ -301,6 +301,43 @@ LS_CASE(text_touch_pages_in_both_orientations) {
         LS_EQ_INT(s_scroll, s_scroll_max);
     }
 }
+/* One finger for the drag case: where it went down and where it is. */
+static bool finger;
+static int finger_c0, finger_r0, finger_c, finger_r;
+bool ls_tui_touch_held(int *sc, int *sr, int *c, int *r)
+{
+    if (!finger) return false;
+    *sc = finger_c0; *sr = finger_r0; *c = finger_c; *r = finger_r;
+    return true;
+}
+LS_CASE(list_follows_a_dragged_finger_and_keeps_the_selection) {
+    reset(); entry_count = 60;
+    for (int i = 0; i < entry_count; i++) snprintf(entries[i].d_name, 256, "f%02d", i);
+    s_sort = SORT_NAME; load_all();
+    ls_shim_time_set(1000000);
+    static tui_cell back[52 * 70], front[52 * 70]; tui_surface sf;
+    tui_surface_setup(&sf, back, front, 52, 70);
+    const tui_rect a = tui_rect_make(0, 0, 52, 70);
+    draw(&sf, a); draw(&sf, a);
+    const int rows = list_rows(), rh = row_h();
+    LS_CHECK(s_count > 2 * rows); LS_EQ_INT(s_first, 0);
+    const int col = s_list.x + 2, r0 = s_list.y + s_list.h - 2;
+    finger = true; finger_c0 = finger_c = col; finger_r0 = finger_r = r0;
+    draw(&sf, a); LS_EQ_INT(s_first, 0);                   /* still, it is a tap */
+    finger_r = r0 - 3 * rh; draw(&sf, a);
+    LS_EQ_INT(s_first, 3); LS_EQ_INT(s_selected, 0);       /* the list moved, the selection did not */
+    finger = false; draw(&sf, a); LS_EQ_INT(s_first, 3);
+    touch(col, s_list.y); LS_EQ_INT(s_selected, 0);        /* the lift is not a tap */
+    ls_shim_time_advance(300000);
+    touch(col, s_list.y + rh); LS_EQ_INT(s_selected, 4);   /* a later tap picks the row under it */
+    draw(&sf, a); LS_EQ_INT(s_first, 3);
+    LS_CHECK(key(LS_TK_UP, 0)); LS_CHECK(key(LS_TK_UP, 0)); draw(&sf, a);
+    LS_EQ_INT(s_selected, 2); LS_EQ_INT(s_first, 0);       /* a key puts the window back on the page */
+    finger = true; finger_c0 = finger_c = col; finger_r0 = finger_r = r0;
+    draw(&sf, a); finger_r = -400; draw(&sf, a);
+    LS_EQ_INT(s_first, s_count - rows);
+    finger = false; draw(&sf, a);
+}
 LS_CASE(text_crlf_tabs_nul_and_large_file_ranges) {
     reset(); memset(s_text, 'x', 52); memcpy(s_text + 52, "\r\n", 2); s_text_len = 54;
     LS_EQ_INT(text_rows(NULL, tui_rect_make(0, 0, 52, 2)), 2);

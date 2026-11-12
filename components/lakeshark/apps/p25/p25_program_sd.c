@@ -48,6 +48,8 @@ static const p25_profile_parse_config_t s_parse_config = {
 
 /* ------------------------------------------------------------- session --- */
 
+static void on_roster_switched(p25_scan_ctrl_t *sc);
+
 /* Allocate outside the critical section and discard the loser, because
  * heap_caps_malloc cannot be called with interrupts off.  Two tasks can reach
  * here first: the UI pressing RELOAD and p25_on_enter re-applying. */
@@ -70,6 +72,7 @@ static p25_program_t *program_session(void)
     portEXIT_CRITICAL(&s_program_lock);
 
     if (loser) heap_caps_free(loser);
+    p25_scan_set_roster_switched(on_roster_switched);
     return s_program;
 }
 
@@ -109,10 +112,16 @@ static void op_release(void *user)
     p25_return_to_control();
 }
 
+/* A profile's auto_follow= belongs to its system, like its roster: kept
+ * here and stored with the roster in op_roster. It never sets the global
+ * switch, which a profile used to turn off for every system, on every P25
+ * entry (apply_profile calls this on a restore too). */
+static bool s_profile_auto_follow = true;
+
 static void op_auto_follow(void *user, bool enabled)
 {
     (void)user;
-    (void)p25_set_auto_follow(enabled);
+    s_profile_auto_follow = enabled;
 }
 
 static void op_phase2_follow(void *user, bool enabled)
@@ -134,14 +143,39 @@ static void op_demod_preference(void *user, int preference)
     p25_demod_set_preference(preference);
 }
 
+/* The profile's system, from set_roster_system, for the roster ops that
+ * follow it in the same apply. */
+static uint32_t s_profile_wacn;
+static uint16_t s_profile_sysid;
+
+static void op_roster_system(void *user, uint32_t wacn, uint16_t sysid)
+{
+    (void)user;
+    s_profile_wacn = wacn;
+    s_profile_sysid = sysid;
+}
+
 static void op_roster(void *user, const p25_profile_talkgroup_t *talkgroups,
                       size_t count)
 {
     (void)user;
-    p25_program_apply_roster(&g_p25_scan, talkgroups, count);
+    p25_scan_ctrl_t *sc = &g_p25_scan;
+    p25_program_apply_roster(sc, talkgroups, count);
+    sc->roster_follow_off = !s_profile_auto_follow;
+    /* Scope it: to the system the profile names, else to the system on the
+     * air now, else unscoped until one is named. */
+    if (s_profile_sysid)
+        p25_scan_roster_bind(sc, s_profile_wacn, s_profile_sysid);
+    else if (sc->current_sys.valid)
+        p25_scan_roster_bind(sc, sc->current_sys.wacn, sc->current_sys.sysid);
+    else
+        p25_scan_roster_bind(sc, 0, 0);
     /* The allow list and hold are persisted state; the profile has just
      * replaced them, so write through like every other roster mutation. */
     p25_scan_persist_save_now();
+    /* A profile for another system is stored for it; the radio keeps the
+     * roster of the system it is on. */
+    (void)p25_scan_roster_resync(sc);
 }
 
 static void op_cqpsk_loops(void *user, const p25_cqpsk_config_t *config)
@@ -155,6 +189,11 @@ static void op_restore_roster(void *user,
                               size_t count)
 {
     (void)user;
+    /* Ranks belong to the profile's system: not onto another's roster. */
+    if (s_profile_sysid && g_p25_scan.roster_sys.valid &&
+        (g_p25_scan.roster_sys.sysid != s_profile_sysid ||
+         (s_profile_wacn && g_p25_scan.roster_sys.wacn &&
+          g_p25_scan.roster_sys.wacn != s_profile_wacn))) return;
     p25_program_restore_roster(&g_p25_scan, talkgroups, count);
 }
 
@@ -171,11 +210,20 @@ static const p25_program_ops_t s_ops = {
     .set_encrypted_policy = op_encrypted_policy,
     .set_cqpsk_loops      = op_cqpsk_loops,
     .set_demod_preference = op_demod_preference,
+    .set_roster_system    = op_roster_system,
     .set_roster           = op_roster,
     .restore_roster       = op_restore_roster,
     .set_control          = op_set_control,
     .user                 = NULL,
 };
+
+/* A newly named system's stored roster has no priorities: put the active
+ * profile's back when the system is the one it names. */
+static void on_roster_switched(p25_scan_ctrl_t *sc)
+{
+    if (sc != &g_p25_scan) return;
+    (void)p25_program_roster_switched(s_program, &sc->roster_sys, &s_ops);
+}
 
 /* --------------------------------------------------------------- worker --- */
 

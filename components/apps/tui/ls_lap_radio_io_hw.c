@@ -1,5 +1,6 @@
 /* Board packet/edge adapter. Only lap_io touches these bus operations. */
 #if defined(ESP_PLATFORM) && !defined(LS_LAP_HOST_TEST)
+#include "ls_tx_unlock.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "lr_iq_spectrum.h"
@@ -7,6 +8,7 @@
 #include "ls_field.h"
 #include "ls_lap_radio_io.h"
 #include "ls_lap_features.h"
+#include "ls_lap_service.h"
 #include "ls_lora.h"
 #include "ls_mesh.h"
 #include "ls_mixrf.h"
@@ -18,7 +20,7 @@
 #include <string.h>
 extern int ls_lap_io_channels(const char *, uint32_t, lap_channel_t *, int, bool);
 static struct {
-    bool lease, opened, edges, tx, mix, hackrf;
+    bool lease, svc, opened, edges, tx, mix, hackrf;
     int mod;
     lap_packet_config_t cfg;
     uint32_t drops;
@@ -85,10 +87,14 @@ static void close_rx(void) {
         hw.opened = false;
     }
     if (hw.lease) {
-        ls_mesh_radio_hold(false);
-        hw.lease = false;
+        if (hw.svc) ls_mesh_radio_hold_svc(false);
+        else ls_mesh_radio_hold(false);
+        hw.lease = hw.svc = false;
     }
 }
+/* The app is running with its screen closed: a background service, which
+   holds the LoRa chip below every radio app (ls_mesh_radio_hold_svc). */
+static bool in_background(void) { return ls_lap_service_on() && !ls_lap_service_shown(); }
 static int configure(const lap_packet_config_t *c) {
     if (c->modulation == LAP_MOD_LORA) {
         ls_lora_cfg_t l;
@@ -136,10 +142,36 @@ static int lease(void) {
     if (!hw.lease) {
         if (ls_field_owned() || ls_lora_scanning() || lr_spec_center())
             return LAP_RX_EBUSY;
-        ls_mesh_radio_hold(true);
-        hw.lease = true;
+        hw.svc = in_background();
+        if (!hw.svc)
+            ls_mesh_radio_hold(true);
+        hw.lease = true;  /* asked; close_rx lets go of whichever kind */
     }
-    return ls_mesh_radio_held() ? 0 : LAP_RX_EAGAIN;
+    if (!hw.svc)
+        return ls_mesh_radio_held() ? 0 : LAP_RX_EAGAIN;
+    /* A session already on the part never drops its hold here: step_aside
+       closes it, parking the chip before the hold goes. */
+    if (hw.opened)
+        return ls_mesh_radio_held_svc() ? 0 : LAP_RX_EAGAIN;
+    /* Ask, or poll the request. Refused (and nothing held) while a radio
+       app or MeshCore wants the chip: queued. */
+    return ls_mesh_radio_hold_svc(true) ? 0 : LAP_RX_EAGAIN;
+}
+/* Before every worker pass. A transmission in flight finishes first; the
+   send owns its lease until ls_lora_send_done. */
+static bool step_aside(int radio) {
+    if (hw.mix || hw.hackrf || hw.tx) return false;
+    if (hw.lease) {
+        /* Screen opened or closed: the lease is the wrong kind now. Reopen. */
+        if (hw.svc != in_background()) return true;
+        return hw.svc && ls_mesh_radio_svc_yield();
+    }
+    /* Not holding: would a service lease on the LoRa chip be refused now? */
+    lap_radio_info_t r;
+    if (!in_background() || ls_lap_radio_snapshot(radio, &r) < 0 ||
+        (r.kind != LAP_RADIO_KIND_LR2021 && r.kind != LAP_RADIO_KIND_SX1262))
+        return false;
+    return ls_mesh_radio_svc_yield();
 }
 static int open_rx(int radio, const lap_packet_config_t *cfg, bool edges) {
     lap_radio_info_t r;
@@ -282,7 +314,7 @@ static int tx_start(int radio, const lap_packet_config_t *c, int format, const v
     if (e)
         return e;
     if (format == LAP_RECORD_IQ16) {
-        if (c->power_dbm > 10) {
+        if (!LS_TX_UNLOCKED && c->power_dbm > 10) {
             close_rx();
             return LAP_IO_EPOWER;
         }
@@ -428,7 +460,8 @@ static void nfc_close(void) {}
 const ls_lap_io_backend_t *ls_lap_io_backend(void) {
     static const ls_lap_io_backend_t be = {
         modes,     open_rx,  read_rx,  rssi,     close_rx,  tx_start,  tx_poll,
-        tx_cancel, nfc_caps, nfc_open, nfc_read, nfc_write, nfc_close, ls_lap_io_channels};
+        tx_cancel, nfc_caps, nfc_open, nfc_read, nfc_write, nfc_close, ls_lap_io_channels,
+        step_aside};
     return &be;
 }
 bool ls_lap_io_sim_command(const char *command) {

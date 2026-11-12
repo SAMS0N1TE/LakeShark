@@ -2,6 +2,7 @@
    right fit for this board. This file is the platform layer and nothing
    else: upstream/ is unmodified MeshCore and must stay that way, so every
    accommodation for this hardware lives here. */
+#include "ls_tx_unlock.h"
 #include "ls_mesh.h"
 #include "ls_radio_holders.h"
 #include "ls_mesh_pacing.h"
@@ -41,6 +42,14 @@ extern "C" {
    SX1262 had already been measured receiving at -116 dBm. It built clean and
    it did nothing, which is the worst combination available. */
 #include "ls_board.h"
+
+/* The Nano (runtime pins, LoRa on a header) is short of internal RAM: its
+   mesh tables live in PSRAM. Task-side data only, never touched from an ISR. */
+#if defined(LS_BOARD_PINS_RUNTIME) && LS_BOARD_PINS_RUNTIME
+#define MESH_TABLE EXT_RAM_BSS_ATTR
+#else
+#define MESH_TABLE
+#endif
 #include "ls_lora.h"
 #include "ls_rtc.h"
 #include "ls_gps.h"
@@ -63,8 +72,8 @@ static const uint8_t PUBLIC_PSK[16] = {
     0xC9, 0xE5, 0xED, 0xBA, 0xA1, 0x15, 0xCD, 0x72
 };
 
-static mesh::GroupChannel s_chan[LS_MESH_MAX_CHANNELS];
-static ls_mesh_chan_t     s_chan_meta[LS_MESH_MAX_CHANNELS];
+MESH_TABLE static mesh::GroupChannel s_chan[LS_MESH_MAX_CHANNELS];
+MESH_TABLE static ls_mesh_chan_t     s_chan_meta[LS_MESH_MAX_CHANNELS];
 static bool               s_chan_ready[LS_MESH_MAX_CHANNELS];
 static int                s_chan_active;
 static bool               s_public_ready;
@@ -166,11 +175,73 @@ static volatile bool  s_radio_held;
 /* Who holds it: s_radio_hold is either. A background holder (P25 or ADS-B
    left listening on the LoRa chip) gives way to the other kind. */
 static volatile bool  s_hold_fg, s_hold_bg;
+/* Below both: an app's background service (ls_mesh_radio_hold_svc). */
+static volatile bool  s_hold_svc;
 /* RADIOS' STOP: counts as a hold, so MeshCore pauses, and as a foreground
    request, so background holders let go; no one takes the radio until ALLOW. */
 static volatile bool  s_radio_blocked;
-static ls_radio_holders_t s_fg_holders, s_bg_holders;
+static ls_radio_holders_t s_fg_holders, s_bg_holders, s_svc_holders;
 static portMUX_TYPE s_hold_lock = portMUX_INITIALIZER_UNLOCKED;
+/* The mesh asking for its own radio back. A background receiver (FM, P25 or
+   ADS-B on the LoRa chip) kept every send refused, so the mesh could not
+   transmit while one listened. A send now wants the socket for a while, and
+   so does the MESH screen while it is open: background holders see
+   ls_mesh_radio_wanted, let go, and take the radio back afterwards. */
+/* The LoRa settings MeshCore last applied. Another owner (FM, P25 or ADS-B
+   on the LR2021, LoRa Labs, a capture) retunes the chip; the mesh put them
+   back only at start, so after FM it listened, and sent, on FM's frequency
+   (seen: 144.39 MHz). Restored every time the radio comes back. */
+static ls_lora_cfg_t s_mesh_lora_cfg;
+static bool          s_mesh_lora_cfg_valid;
+static bool          s_was_held;
+static void mesh_cfg_applied(const ls_lora_cfg_t *c) { s_mesh_lora_cfg = *c; s_mesh_lora_cfg_valid = true; }
+static volatile int64_t s_tx_want_until;
+static volatile bool    s_front_want;
+/* False while the screen shows no radio app: a receiver left running in the
+   background does not keep the LoRa chip from the mesh. */
+static volatile bool    s_bg_allowed = true;
+#define MESH_TX_WANT_US    (8 * 1000 * 1000)   /* a DM's ACK and retries */
+#define MESH_TX_EVICT_US   (2500 * 1000)
+static bool mesh_wants_radio(void)
+{
+    return s_front_want || !s_bg_allowed ||
+           (s_tx_want_until && esp_timer_get_time() < s_tx_want_until);
+}
+/* Among background holders the newest claimant has the chip: the app just
+   opened, not the one left listening. An older one sees ls_mesh_radio_wanted,
+   lets go, and takes it back when the newer has gone. A lease is kept by
+   asking (hold_bg while waiting, ls_mesh_radio_wanted while holding); a
+   holder silent this long is dropped once anyone else wants the chip. Still
+   alive, it finds ls_mesh_radio_wanted true until it has released. */
+#define RADIO_BG_QUIET_US  (5 * 1000 * 1000)
+#define RADIO_BG_DROP_US   (30 * 1000 * 1000)
+static ls_radio_claims_t s_bg_claims;
+static void radio_hold_update(void)
+{
+    s_hold_fg = s_fg_holders.count != 0;
+    s_hold_bg = s_bg_holders.count != 0;
+    s_hold_svc = s_svc_holders.count != 0;
+    s_radio_hold = s_hold_fg || s_hold_bg || s_hold_svc || s_radio_blocked;
+    if (!s_radio_hold) s_radio_held = false;
+}
+static bool bg_newer(uintptr_t task, uint32_t mine, int64_t now)
+{
+    for (unsigned i = 0; i < s_bg_holders.count; i++)
+        if (s_bg_holders.task[i] != task &&
+            ls_radio_claims_peek(&s_bg_claims, s_bg_holders.task[i], now, RADIO_BG_QUIET_US) > mine)
+            return true;
+    return false;
+}
+static void bg_reap(int64_t now)
+{
+    const bool asked = s_hold_fg || s_radio_blocked || mesh_wants_radio();
+    for (unsigned i = s_bg_holders.count; i-- > 0 && (asked || s_bg_holders.count > 1);)
+        if (!ls_radio_claims_peek(&s_bg_claims, s_bg_holders.task[i], now, RADIO_BG_QUIET_US)) {
+            ls_radio_claims_drop(&s_bg_claims, s_bg_holders.task[i], now);
+            ls_radio_holders_set(&s_bg_holders, s_bg_holders.task[i], false);
+        }
+    radio_hold_update();
+}
 
 #define SIGHTLOG_PATH "/sdcard/lakeshark/sightings.log"
 #define SIGHT_MOVE_M  50.0f
@@ -245,20 +316,25 @@ static sent_track_t s_sent[SENT_TRACK];
 static int          s_sent_head;
 
 static bool            s_auto_listen = true;   /* , safe: emits nothing */
+/* Which mesh owns the LoRa radio: MeshCore (0, built in) or the MESHTASTIC
+   app (1). Not saved: every boot starts on MeshCore, and no app opens by
+   itself. With Meshtastic primary MeshCore is stopped until switched back. */
+static uint8_t         s_primary;
 static bool            s_auto_tx     = false;  /* , never on by default */
 
 static char            s_name[LS_MESH_NAME_MAX + 1];
 static ls_mesh_radio_t s_radio_cfg;
 static bool s_radio_stored;
 
-static float    s_scope[LS_MESH_SCOPE_N];
+
+MESH_TABLE static float    s_scope[LS_MESH_SCOPE_N];
 static int      s_scope_head;
 static int64_t  s_scope_next_us;
 static int64_t  s_advert_next_us;
 
-static ls_mesh_peer_t  s_peers[LS_MESH_MAX_PEERS];
+MESH_TABLE static ls_mesh_peer_t  s_peers[LS_MESH_MAX_PEERS];
 static int             s_peer_count;
-static ls_mesh_event_t s_events[LS_MESH_MAX_EVENTS];
+MESH_TABLE static ls_mesh_event_t s_events[LS_MESH_MAX_EVENTS];
 static int             s_ev_head;          /* next slot to write */
 static volatile uint32_t s_ev_seq;
 
@@ -328,7 +404,7 @@ static int note_msg(const char *text, bool mine, uint8_t chan, const char *peer)
     return slot;
 }
 
-static struct { mesh::Packet *packet; uint32_t id; int slot; } s_delivery[LS_MESH_MAX_MSGS];
+MESH_TABLE static struct { mesh::Packet *packet; uint32_t id; int slot; } s_delivery[LS_MESH_MAX_MSGS];
 static mesh::Packet *s_outbound_packet;
 static bool s_on_air, s_rx_fault;
 static int64_t s_rx_retry_us;
@@ -561,7 +637,7 @@ static uint32_t inspect_ms() { return (uint32_t)(esp_timer_get_time() / 1000); }
 EXT_RAM_BSS_ATTR static struct { char id[17]; uint8_t path[72], count, width; } s_inspect_routes[LS_MESH_MAX_PEERS];
 /* Peers allowed to read this node's telemetry: empty, so nobody, until the
    user adds one. Guarded by s_inspect_lock; stored in NVS. */
-static ls_inspect_allow_t s_telem_allow;
+MESH_TABLE static ls_inspect_allow_t s_telem_allow;
 /* The typed login password, held only until the login is built. */
 static char s_login_pw[LS_INSPECT_PASSWORD_MAX + 1];
 
@@ -704,6 +780,11 @@ public:
     LsMesh(LsRadio &radio, LsMillis &ms, LsRng &rng, LsRtcClock &rtc,
            mesh::PacketManager &mgr, mesh::MeshTables &tables)
         : mesh::Mesh(radio, ms, rng, rtc, mgr, tables) {}
+
+    float getAirtimeBudgetFactor() const override
+    {
+        return LS_TX_UNLOCKED ? 0.0f : mesh::Dispatcher::getAirtimeBudgetFactor();
+    }
 
     void onAdvertRecv(mesh::Packet *packet, const mesh::Identity &id,
                       uint32_t timestamp, const uint8_t *app_data,
@@ -1868,14 +1949,30 @@ static void mesh_task(void *arg)
            and still writes, because that is a card and not a radio. */
         mesh_calls_service();
         inspect_service();
+        if (s_hold_bg) {
+            portENTER_CRITICAL(&s_hold_lock);
+            bg_reap(esp_timer_get_time());
+            portEXIT_CRITICAL(&s_hold_lock);
+        }
         if (s_radio_hold || ls_lora_fsk_active()) {
             s_radio_held = true;
+            s_was_held = true;
             msglog_service();
             peerlog_service();
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10) ? pdMS_TO_TICKS(10) : 1);
             continue;
         }
         s_radio_held = false;
+        if (s_was_held) {
+            s_was_held = false;
+            if (s_mesh_lora_cfg_valid) {
+                const esp_err_t e = ls_lora_configure(&s_mesh_lora_cfg);
+                if (e != ESP_OK) ESP_LOGW(TAG, "radio back, settings not restored: %s", esp_err_to_name(e));
+                else ESP_LOGI(TAG, "radio back: %.4f MHz SF%u restored", s_mesh_lora_cfg.freq_hz / 1e6,
+                              (unsigned)s_mesh_lora_cfg.sf);
+                s_rx_retry_us = 0;
+            }
+        }
 
         if (!s_on_air && !ls_lora_is_receiving() && esp_timer_get_time() >= s_rx_retry_us)
             mesh_receive();
@@ -1976,6 +2073,7 @@ extern "C" esp_err_t ls_mesh_start(void)
 
     if (s_radio_cfg.crc_on)    cfg.crc_on    = (s_radio_cfg.crc_on == 2);
     esp_err_t err = ls_lora_configure(&cfg);
+    if (err == ESP_OK) mesh_cfg_applied(&cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "radio not configured: %s", esp_err_to_name(err));
         ls_lora_park();
@@ -2095,7 +2193,8 @@ extern "C" bool ls_mesh_radio_held(void)
 {
     const uintptr_t task = (uintptr_t)xTaskGetCurrentTaskHandle();
     portENTER_CRITICAL(&s_hold_lock);
-    const bool owns = ls_radio_holders_owns(&s_fg_holders, task) && !s_hold_bg;
+    bg_reap(esp_timer_get_time());
+    const bool owns = ls_radio_holders_owns(&s_fg_holders, task) && !s_hold_bg && !s_hold_svc;
     portEXIT_CRITICAL(&s_hold_lock);
     return owns && mesh_paused();
 }
@@ -2109,9 +2208,7 @@ extern "C" bool ls_mesh_radio_hold(bool on)
         return false;
     }
     const bool accepted = ls_radio_holders_set(&s_fg_holders, task, on);
-    s_hold_fg = s_fg_holders.count != 0;
-    s_radio_hold = s_hold_fg || s_hold_bg || s_radio_blocked;
-    if (!s_radio_hold) s_radio_held = false;
+    radio_hold_update();
     portEXIT_CRITICAL(&s_hold_lock);
     if (s_task) xTaskNotifyGive(s_task);
     return accepted && (!on || ls_mesh_radio_held());
@@ -2120,28 +2217,122 @@ extern "C" bool ls_mesh_radio_hold(bool on)
 extern "C" bool ls_mesh_radio_hold_bg(bool on)
 {
     const uintptr_t task = (uintptr_t)xTaskGetCurrentTaskHandle();
+    const int64_t now = esp_timer_get_time();
     portENTER_CRITICAL(&s_hold_lock);
-    /* Foreground requests make each background holder release its own lease. */
-    const bool take = on && !s_hold_fg && !s_radio_blocked;
+    const uint32_t mine = on ? ls_radio_claims_touch(&s_bg_claims, task, now, RADIO_BG_QUIET_US, true) : 0;
+    /* Foreground requests make each background holder release its own lease,
+       and so does the mesh wanting to send or being on screen, and so does a
+       newer background claimant. */
+    const bool take = on && !s_hold_fg && !s_radio_blocked && !mesh_wants_radio() &&
+                      !bg_newer(task, mine, now) &&
+                      !ls_radio_claims_dropped(&s_bg_claims, task, now, RADIO_BG_DROP_US);
     const bool accepted = ls_radio_holders_set(&s_bg_holders, task, take);
-    s_hold_bg = s_bg_holders.count != 0;
-    s_radio_hold = s_hold_fg || s_hold_bg || s_radio_blocked;
-    if (!s_radio_hold) s_radio_held = false;
-    const bool owns = take && ls_radio_holders_owns(&s_bg_holders, task);
+    if (!on) {
+        const uint32_t had = ls_radio_claims_peek(&s_bg_claims, task, now, RADIO_BG_QUIET_US);
+        ls_radio_claims_release(&s_bg_claims, task, now, had && bg_newer(task, had, now));
+    }
+    bg_reap(now);
+    /* An older holder still on the part sees ls_mesh_radio_wanted, a service
+       holder ls_mesh_radio_svc_yield, and lets go; until then this holder is
+       queued, not refused. */
+    const bool owns = take && s_bg_holders.count == 1 &&
+                      ls_radio_holders_owns(&s_bg_holders, task) && !s_hold_svc;
     portEXIT_CRITICAL(&s_hold_lock);
     if (s_task) xTaskNotifyGive(s_task);
     return accepted && (!on || (owns && mesh_paused()));
 }
 
-extern "C" bool ls_mesh_radio_wanted(void) { return s_hold_fg || s_radio_blocked; }
+/* Everyone outranks an app's background service: a foreground or background
+   holder, RADIOS' STOP, and a running MeshCore that is on screen or sending. */
+static bool svc_contested(void)
+{
+    return s_hold_fg || s_hold_bg || s_radio_blocked ||
+           (s_task && (s_front_want ||
+                       (s_tx_want_until && esp_timer_get_time() < s_tx_want_until)));
+}
+
+extern "C" bool ls_mesh_radio_hold_svc(bool on)
+{
+    const uintptr_t task = (uintptr_t)xTaskGetCurrentTaskHandle();
+    portENTER_CRITICAL(&s_hold_lock);
+    /* Asking while someone else wants it is letting go, so a service that
+       polls its lease steps aside by itself. */
+    const bool take = on && !svc_contested();
+    const bool accepted = ls_radio_holders_set(&s_svc_holders, task, take);
+    radio_hold_update();
+    const bool owns = take && ls_radio_holders_owns(&s_svc_holders, task);
+    portEXIT_CRITICAL(&s_hold_lock);
+    if (s_task) xTaskNotifyGive(s_task);
+    return accepted && (!on || (owns && mesh_paused()));
+}
+
+extern "C" bool ls_mesh_radio_held_svc(void)
+{
+    const uintptr_t task = (uintptr_t)xTaskGetCurrentTaskHandle();
+    portENTER_CRITICAL(&s_hold_lock);
+    const bool owns = ls_radio_holders_owns(&s_svc_holders, task) && !svc_contested();
+    portEXIT_CRITICAL(&s_hold_lock);
+    return owns && mesh_paused();
+}
+
+/* Whether a service must be off the radio now, holding it or not. */
+extern "C" bool ls_mesh_radio_svc_yield(void) { return svc_contested(); }
+
+extern "C" bool ls_mesh_radio_wanted(void)
+{
+    if (s_hold_fg || s_radio_blocked || mesh_wants_radio()) return true;
+    /* For a background holder only: a newer one is asking, or its lease was
+       dropped and it has yet to release. */
+    const uintptr_t task = (uintptr_t)xTaskGetCurrentTaskHandle();
+    const int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&s_hold_lock);
+    bool holds = false;
+    for (unsigned i = 0; i < s_bg_holders.count; i++) holds |= s_bg_holders.task[i] == task;
+    const uint32_t mine = ls_radio_claims_touch(&s_bg_claims, task, now, RADIO_BG_QUIET_US, holds);
+    const bool newer = ls_radio_claims_dropped(&s_bg_claims, task, now, RADIO_BG_DROP_US) ||
+                       (mine && bg_newer(task, mine, now));
+    portEXIT_CRITICAL(&s_hold_lock);
+    return newer;
+}
+
+extern "C" void ls_mesh_radio_front(bool on)
+{
+    s_front_want = on;
+    if (s_task) xTaskNotifyGive(s_task);
+}
+
+extern "C" void ls_mesh_radio_bg_allow(bool on)
+{
+    /* A radio app came on screen: the window a mesh send keeps for its ACK
+       (8 s) ends now, or the new app waits it out ("ADS-B loaded slow"). */
+    if (on) s_tx_want_until = 0;
+    if (s_bg_allowed == on) return;
+    s_bg_allowed = on;
+    if (s_task) xTaskNotifyGive(s_task);
+}
+
+/* Before a send: a background receiver gives the socket back and MeshCore
+   takes it again. A foreground owner (LoRa Labs, a capture) keeps it, and
+   the send is refused as before. Waits on the caller's task, never MeshCore's. */
+static void mesh_tx_evict(void)
+{
+    if (!s_task || s_hold_fg || s_radio_blocked) return;
+    s_tx_want_until = esp_timer_get_time() + MESH_TX_WANT_US;
+    xTaskNotifyGive(s_task);
+    if (xTaskGetCurrentTaskHandle() == s_task) return;
+    const int64_t until = esp_timer_get_time() + MESH_TX_EVICT_US;
+    while ((s_hold_bg || s_hold_svc || s_radio_held) && esp_timer_get_time() < until)
+        vTaskDelay(pdMS_TO_TICKS(20));
+    /* MeshCore re-arms the part on its next loop. */
+    vTaskDelay(pdMS_TO_TICKS(60));
+}
 extern "C" bool ls_mesh_radio_bg(void) { return s_hold_bg; }
 
 extern "C" void ls_mesh_radio_block(bool on)
 {
     portENTER_CRITICAL(&s_hold_lock);
     s_radio_blocked = on;
-    s_radio_hold = s_hold_fg || s_hold_bg || s_radio_blocked;
-    if (!s_radio_hold) s_radio_held = false;
+    radio_hold_update();
     portEXIT_CRITICAL(&s_hold_lock);
     if (s_task) xTaskNotifyGive(s_task);
 }
@@ -2155,7 +2346,8 @@ extern "C" void ls_mesh_socket_get(ls_mesh_socket_t *out)
     out->present = ls_lora_present();
     portENTER_CRITICAL(&s_hold_lock);
     uintptr_t owner = s_bg_holders.count ? s_bg_holders.task[0] :
-                      s_fg_holders.count ? s_fg_holders.task[0] : 0;
+                      s_fg_holders.count ? s_fg_holders.task[0] :
+                      s_svc_holders.count ? s_svc_holders.task[0] : 0;
     out->held = s_radio_hold;
     out->blocked = s_radio_blocked;
     snprintf(out->owner, sizeof(out->owner), "%s", owner ?
@@ -2329,6 +2521,7 @@ extern "C" const char *ls_mesh_band_name(int band)
     switch (band) {
         case LS_MESH_BAND_US915: return "US915";
         case LS_MESH_BAND_EU868: return "EU868";
+        case LS_MESH_BAND_AU915: return "AU915";
         default: return "custom";
     }
 }
@@ -2338,6 +2531,9 @@ extern "C" int ls_mesh_band_current(void)
     ls_mesh_radio_t r;
     ls_mesh_get_radio(&r);
     const uint32_t mhz = r.freq_hz / 1000000u;
+    /* 915-928 first: it sits inside the US range, and Argentina, Australia
+       and New Zealand only have this upper part. */
+    if (r.freq_hz >= 915000000u && r.freq_hz <= 928000000u) return LS_MESH_BAND_AU915;
     if (r.freq_hz >= LS_MESH_US915_MIN_HZ && r.freq_hz <= LS_MESH_US915_MAX_HZ) return LS_MESH_BAND_US915;
     if (mhz >= 863 && mhz <= 870) return LS_MESH_BAND_EU868;
     return LS_MESH_BAND__COUNT;      /* reads as "custom" */
@@ -2357,6 +2553,10 @@ extern "C" esp_err_t ls_mesh_set_band(int band)
            would leave SF7 and CR 4/5 from the US default, which no EU node
            decodes. */
         case LS_MESH_BAND_EU868: r.freq_hz = 869618000u; r.bw_hz = 62500u; r.sf = 8; r.cr = 8; break;
+        /* 915-928 (Argentina, Australia, New Zealand): MeshCore's Australia
+           preset, 915.800 MHz, BW 250 kHz, SF10, CR 4/5. 910.525 is outside
+           this band; in Argentina 905-915 belongs to mobile networks. */
+        case LS_MESH_BAND_AU915: r.freq_hz = 915800000u; r.bw_hz = 250000u; r.sf = 10; r.cr = 5; break;
         default: return ESP_ERR_INVALID_ARG;
     }
     return ls_mesh_set_radio(&r);
@@ -2377,6 +2577,20 @@ extern "C" esp_err_t ls_mesh_set_auto(bool listen, bool tx)
        the state never disagree while you are looking at them. */
     if (tx_changed && err == ESP_OK && s_task && s_radio) s_radio->setTxEnabled(tx);
     return err;
+}
+
+extern "C" int ls_mesh_primary(void) { return s_primary; }
+
+/* Until the next restart only: the board always starts on MeshCore and
+   never switches to an app by itself (owner, 2026-11-07). */
+extern "C" esp_err_t ls_mesh_set_primary(int p)
+{
+    s_primary = p ? 1 : 0;
+    /* Meshtastic takes the radio: MeshCore steps aside now. */
+    if (s_primary && s_task) (void)ls_mesh_stop();
+    /* back to MeshCore: it comes up as at boot (paused while an app holds the radio) */
+    if (!s_primary && !s_task && s_auto_listen) (void)ls_mesh_start();
+    return ESP_OK;
 }
 
 extern "C" void ls_mesh_boot(void)
@@ -2577,6 +2791,7 @@ extern "C" esp_err_t ls_mesh_set_radio(const ls_mesh_radio_t *cfg)
 
     esp_err_t err = ls_lora_configure(&lc);
     if (err != ESP_OK) return err;
+    mesh_cfg_applied(&lc);
     esp_err_t rx_err = mesh_receive();
 
     s_radio_cfg = *cfg;
@@ -2638,8 +2853,10 @@ static esp_err_t send_dm_to(int pi, const char *text)
 
 extern "C" esp_err_t ls_mesh_send_dm(int peer_index, const char *text)
 {
-    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task) {
+        mesh_tx_evict();
         return mesh_call([&]() -> int { return ls_mesh_send_dm(peer_index, text); });
+    }
     if (!s_mesh || !s_task || s_stop || s_radio_hold || s_radio_held) return ESP_ERR_INVALID_STATE;
     if (!text || !*text) return ESP_ERR_INVALID_ARG;
     if (!ls_mesh_tx_enabled()) return ESP_ERR_NOT_ALLOWED;
@@ -2661,8 +2878,10 @@ extern "C" esp_err_t ls_mesh_send_dm(int peer_index, const char *text)
 
 extern "C" esp_err_t ls_mesh_send_dm_id(const char *id, const char *text)
 {
-    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task) {
+        mesh_tx_evict();
         return mesh_call([&]() -> int { return ls_mesh_send_dm_id(id, text); });
+    }
     if (!s_mesh || !s_task || s_stop || s_radio_hold || s_radio_held) return ESP_ERR_INVALID_STATE;
     if (!text || !*text) return ESP_ERR_INVALID_ARG;
     if (!ls_mesh_tx_enabled()) return ESP_ERR_NOT_ALLOWED;
@@ -2737,8 +2956,10 @@ extern "C" esp_err_t ls_mesh_send_text(const char *text)
 
 extern "C" esp_err_t ls_mesh_send_text_on(int chan, const char *text)
 {
-    if (s_task && xTaskGetCurrentTaskHandle() != s_task)
+    if (s_task && xTaskGetCurrentTaskHandle() != s_task) {
+        mesh_tx_evict();
         return mesh_call([&]() -> int { return ls_mesh_send_text_on(chan, text); });
+    }
     if (!s_mesh || !s_task || s_stop || s_radio_hold || s_radio_held) return ESP_ERR_INVALID_STATE;
     if (chan < 0 || chan >= LS_MESH_MAX_CHANNELS || !s_chan_ready[chan])
         return ESP_ERR_INVALID_STATE;
@@ -2853,6 +3074,11 @@ extern "C" void ls_mesh_diagnostics(void)
         for (unsigned i = 0; i < fg.count && i < 8; i++) printf(" fg:%s", pcTaskGetName((TaskHandle_t)fg.task[i]));
         for (unsigned i = 0; i < bg.count && i < 8; i++) printf(" bg:%s", pcTaskGetName((TaskHandle_t)bg.task[i]));
         printf("\n");
+        {
+            const int64_t left = s_tx_want_until - esp_timer_get_time();
+            printf("mesh: wants its radio: mesh screen=%d radio app on screen=%d send=%lld ms\n",
+                   (int)s_front_want, (int)s_bg_allowed, (long long)(left > 0 ? left / 1000 : 0));
+        }
     }
     printf("mesh: tx budget %lu ms remaining in the duty-cycle window\n",
            (unsigned long)(s_mesh ? s_mesh->getRemainingTxBudget() : 0));
@@ -2932,6 +3158,7 @@ extern "C" esp_err_t ls_mesh_radio_default(void)
     ls_lora_cfg_t lc;
     ls_lora_cfg_default(&lc);
     err = ls_lora_configure(&lc);
+    if (err == ESP_OK) mesh_cfg_applied(&lc);
     if (err == ESP_OK) err = mesh_receive();
     return err;
 }
@@ -2973,6 +3200,8 @@ extern "C" bool ls_mesh_auto_listen(void) { return false; }
 extern "C" bool ls_mesh_auto_tx(void) { return false; }
 extern "C" esp_err_t ls_mesh_set_auto(bool l, bool t) { (void)l; (void)t; return ESP_ERR_NOT_SUPPORTED; }
 extern "C" void ls_mesh_boot(void) {}
+extern "C" int ls_mesh_primary(void) { return 0; }
+extern "C" esp_err_t ls_mesh_set_primary(int p) { (void)p; return ESP_ERR_NOT_SUPPORTED; }
 extern "C" uint32_t ls_mesh_msg_seq(void) { return 0; }
 extern "C" uint32_t ls_mesh_incoming_seq(void) { return 0; }
 extern "C" const char *ls_mesh_name(void) { return "LakeShark"; }
@@ -3000,7 +3229,12 @@ extern "C" bool ls_mesh_peer_at(int rank, ls_mesh_peer_t *out)
 extern "C" bool ls_mesh_radio_hold(bool on) { (void)on; return false; }
 extern "C" bool ls_mesh_radio_held(void) { return false; }
 extern "C" bool ls_mesh_radio_hold_bg(bool on) { (void)on; return false; }
+extern "C" bool ls_mesh_radio_hold_svc(bool on) { (void)on; return false; }
+extern "C" bool ls_mesh_radio_held_svc(void) { return false; }
+extern "C" bool ls_mesh_radio_svc_yield(void) { return false; }
 extern "C" bool ls_mesh_radio_wanted(void) { return false; }
+extern "C" void ls_mesh_radio_front(bool on) { (void)on; }
+extern "C" void ls_mesh_radio_bg_allow(bool on) { (void)on; }
 extern "C" bool ls_mesh_radio_bg(void) { return false; }
 extern "C" void ls_mesh_radio_block(bool on) { (void)on; }
 extern "C" bool ls_mesh_radio_blocked(void) { return false; }

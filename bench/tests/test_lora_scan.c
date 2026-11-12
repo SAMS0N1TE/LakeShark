@@ -1,6 +1,6 @@
 /* LS_TEST_SOURCES: ${FW}/components/lakeshark/board/ls_lora.c */
 
-#include "ls_test.h"
+#include "lora_fakes.h"
 #include "ls_lora.h"
 
 LS_CASE(no_lora_board_admits_diagnostic_snapshot_as_a_noop)

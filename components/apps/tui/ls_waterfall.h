@@ -12,6 +12,7 @@ extern "C" {
 
 #include "ls_tui.h"
 #include "ls_tui_screen.h"
+#include "ls_pixel_wf.h"
 
 /* History is PSRAM and sized once. 256 bins is more than the widest panel has
    columns, so the display never interpolates upward; 128 rows is about two
@@ -178,6 +179,10 @@ void ls_wf_draw_mini(tui_surface *sf, tui_rect area);
    blitter which ground it has; this is the table itself, so the bench can
    hold the light scales to running from light to dark. */
 uint8_t ls_wf_level_colour(int palette, int level, bool light_ground);
+/* SMOOTH's continuous colour map for `palette` on the dark ground, the
+   screen's own black first: eight stops, for another screen's pixel
+   waterfall to read in the same colours as this one. */
+int ls_wf_smooth_stops(int palette, ls_pwf_stop_t out[8]);
 
 /* Controls. The key path and the touch path reach the same actions; neither
    is the real one. Both return true when they consumed the input. */
@@ -192,9 +197,15 @@ bool ls_wf_touch(int col, int row);
 /* Marker frequency, or 0 when there is no marker or no known span. */
 uint32_t ls_wf_marker_hz(void);
 
-/* Session-local display zoom. It only remaps existing bins/history; it does
-   not change the receiver bandwidth or restart a source. */
-uint8_t ls_wf_zoom(void); /* 1, 2, or 4 */
+/* Display zoom: 1, 2, 4, and up to 32 where the source zooms for real.
+   A zoomer computes a narrower span from its IQ, centred on `hz`, so the
+   bins get finer; 1 puts the whole span back. It returns false when this
+   owner cannot, and the display then crops its bins instead (to 4x). */
+uint8_t ls_wf_zoom(void);
+typedef bool (*ls_wf_zoom_fn)(ls_wf_owner_t owner, unsigned factor, uint32_t hz);
+void ls_wf_set_zoomer(ls_wf_zoom_fn zoomer);
+/* The source can no longer zoom (a sweep started, the radio changed). */
+void ls_wf_zoom_drop(void);
 
 /* How many rows have ever been accepted. */
 

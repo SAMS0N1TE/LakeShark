@@ -8,6 +8,7 @@
 
 #include "ls_test.h"
 #include "ls_lora_port.h"
+#include "ls_tx_unlock.h"
 
 #include <string.h>
 
@@ -88,8 +89,10 @@ LS_CASE(what_a_header_line_cannot_say)
     LS_CHECK(!parse("header cs=33 busy=33 rst=26", &p, why, sizeof why));          /* one pin twice */
     LS_CHECK_MSG(strstr(why, "both GPIO 33") != NULL, "%s", why);
     LS_CHECK(!parse("header cs=33 busy=32 rst=board", &p, why, sizeof why));       /* resets the socket instead */
-    LS_CHECK(!parse("header cs=33 busy=32 rst=26 rfsw=7:10", &p, why, sizeof why)); /* HF transmit */
-    LS_CHECK_MSG(strstr(why, "HF transmit") != NULL, "%s", why);
+    if (!LS_TX_UNLOCKED) {
+        LS_CHECK(!parse("header cs=33 busy=32 rst=26 rfsw=7:10", &p, why, sizeof why));
+        LS_CHECK_MSG(strstr(why, "HF transmit") != NULL, "%s", why);
+    }
     LS_CHECK(!parse("header cs=33 busy=32 rst=26 rfsw=4:02", &p, why, sizeof why)); /* no DIO4 */
     LS_CHECK(!parse("header cs=33 busy=32 rst=26 dio=9 rfsw=9:02", &p, why, sizeof why)); /* DIO9 is the IRQ */
     LS_CHECK(!parse("header cs=33 busy=32 rst=26 tcxo=2.0", &p, why, sizeof why));
@@ -422,3 +425,37 @@ LS_CASE(the_console_saves_for_the_next_boot)
     char *argv4[] = { a0, a1, a2, bad };
     LS_CHECK(ls_lora_port_command(4, argv4) != 0);
 }
+
+#if LS_TX_UNLOCKED
+static unsigned config_of(const ls_lora_port_t *p, int dio)
+{
+    for (int i = 0; i < p->rfsw_n; i++) if (p->rfsw[i].dio == dio) return p->rfsw[i].config;
+    return 0xFFu;
+}
+
+LS_CASE(unlocked_a_nano_header_module_may_switch_the_hf_transmitter)
+{
+    ls_lora_port_t p;
+    char why[112];
+    LS_CHECK_MSG(parse("header cs=33 busy=32 rst=26 dio=11 rfsw=6:08,7:10,8:06,10:18", &p, why, sizeof why), "%s", why);
+    LS_EQ_INT(config_of(&p, 7), 0x10);
+    LS_EQ_INT(config_of(&p, 10), 0x18);
+    LS_CHECK_MSG(parse("header tlr2021 cs=33 busy=32 rst=26", &p, why, sizeof why), "%s", why);
+    LS_EQ_INT(p.rfsw_n, 4);
+    LS_EQ_INT(p.irq_dio, 11);
+    LS_EQ_INT(config_of(&p, 6), 0x08);
+    LS_EQ_INT(config_of(&p, 7), 0x10);
+    LS_EQ_INT(config_of(&p, 8), 0x06);
+    LS_EQ_INT(config_of(&p, 10), 0x18);
+    LS_EQ_INT(p.cs, 33);
+}
+
+LS_CASE(unlocked_the_board_table_carries_the_measured_hf_transmit_bits)
+{
+    ls_lora_port_t p;
+    ls_lora_port_board(&p);
+    LS_EQ_INT(config_of(&p, 7), 0x10);
+    LS_EQ_INT(config_of(&p, 10), 0x18);
+    LS_EQ_INT(config_of(&p, 8), 0x06);
+}
+#endif

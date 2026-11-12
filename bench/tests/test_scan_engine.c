@@ -89,6 +89,8 @@ static int64_t last_tune_us;
 static bool autosq_only;
 uint8_t settings_get_scan_options(void) { return 0; }
 bool settings_set_scan_options(uint8_t options) { (void)options; return true; }
+bool settings_get_scan_tuning(int *h, int *t, int *p) { (void)h; (void)t; (void)p; return false; }
+void settings_set_scan_tuning(int h, int t, int p) { (void)h; (void)t; (void)p; }
 int app_count(void) { return 2; }
 const app_t *app_at(int i) { static app_t apps[]={{.name="P25"},{.name="FM"}}; return i>=0 && i<2 ? &apps[i] : NULL; }
 void app_switch_to(int i) { foreground = *app_at(i); ++switched; }

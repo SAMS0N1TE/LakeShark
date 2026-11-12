@@ -19,7 +19,7 @@ static void seed(void)
     snprintf(s_model.ssid, 33, "Home Net");
     snprintf(s_model.ip, sizeof(s_model.ip), "192.168.1.42");
     snprintf(s_model.wifi_status, sizeof(s_model.wifi_status), "Connected: Home Net");
-    snprintf(s_model.message, sizeof(s_model.message), "Select saved / FORGET removes one / * connected");
+    snprintf(s_model.message, sizeof(s_model.message), "Tap a saved network twice to connect / * connected");
     s_model.wifi_rssi = -42; s_model.channel = 6;
     for (int i = 0; i < 8; ++i)
         snprintf(s_model.saved[i], 33, i == 0 ? "Home Net" : i == 1 ? "Office Net" : "Saved site %d", i);

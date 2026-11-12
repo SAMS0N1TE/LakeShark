@@ -53,6 +53,7 @@ static int s_carto_audit_bad,s_carto_low_masked;
 /* The nodes drawn on the map are the mesh's own peers. */
 #include "esp_attr.h"
 #include "ls_mesh.h"
+#include "../../ls_extnodes.h"
 #include "ls_gps.h"
 #include "apps/fm/aprs_store.h"
 #include "apps/fm/ais_store.h"
@@ -2561,15 +2562,73 @@ static bool s_node_compact[LS_MESH_MAX_PEERS];
 
 /* Read once a frame, before anything that asks about a node: the card and
    FOLLOW want them even with the layer off. */
+/* Nodes of other meshes (the MESHTASTIC app), drawn in green beside them. */
+static EXT_RAM_BSS_ATTR ls_extnode_t s_ext[LS_EXTNODES_MAX];
+static int s_next;
+
 static void nodes_prepare(void)
 {
     s_npeers = ls_mesh_peers(s_map_peers, LS_MESH_MAX_PEERS);
     if (s_npeers < 0) s_npeers = 0;
+    s_next = ls_extnodes(s_ext, LS_EXTNODES_MAX);
+}
+
+static uint32_t ext_age(const ls_extnode_t *n)
+{
+    const int64_t d = esp_timer_get_time() - n->heard_us;
+    return d > 0 ? (uint32_t)(d / 1000000) : 0;
+}
+
+static uint8_t ext_hue(uint32_t age)
+{
+    return age < 300 ? (TUI_GREEN | TUI_BRIGHT) : age < 1800 ? TUI_GREEN : LS_DIM_FG;
+}
+
+static void ext_canvas(tui_rect a, int pw, int ph, bool have_rx, int rdx, int rdy)
+{
+    for (int i = 0; i < s_next; i++) {
+        const ls_extnode_t *n = &s_ext[i];
+        if (!n->has_pos) continue;
+        double fx, fy;
+        if (!frame_px(n->lat, n->lon, pw, ph, &fx, &fy)) continue;
+        int dx, dy;
+        px_dot(fx, fy, &dx, &dy);
+        const uint32_t age = ext_age(n);
+        if (layer(L_LINKS) && have_rx && age < 600)
+            ls_ink_line(rdx, rdy, dx, dy, TUI_ATTR(TUI_GREEN, TUI_BLACK), 1, 1);
+        if (fx < 0 || fy < 0 || fx >= pw || fy >= ph) continue;
+        if (age < 60) ping_ring(dx, dy, TUI_ATTR(TUI_GREEN, TUI_BLACK), 2000);
+        const bool compact = ls_map_zoom() < 10 || crowded_at(dx, dy);
+        node_symbol(dx, dy, 0, TUI_ATTR(ext_hue(age), TUI_BLACK), 6, compact ? 0.75 : 1.0);
+        claim_dots(dx, dy, compact ? 2 : 3, a.w, a.h);
+    }
+}
+
+static void ext_text(tui_surface *sf, tui_rect a, int pw, int ph)
+{
+    for (int i = 0; i < s_next; i++) {
+        const ls_extnode_t *n = &s_ext[i];
+        if (!n->has_pos) continue;
+        double fx, fy;
+        if (!frame_px(n->lat, n->lon, pw, ph, &fx, &fy)) continue;
+        if (fx < 0 || fy < 0 || fx >= pw || fy >= ph) continue;
+        int dx, dy;
+        px_dot(fx, fy, &dx, &dy);
+        const uint32_t age = ext_age(n);
+        char l1[26], l2[24], ago[12], key[16];
+        snprintf(l1, sizeof(l1), "%.12s", n->name[0] ? n->name : n->short_name);
+        age_words(ago, sizeof(ago), age);
+        snprintf(l2, sizeof(l2), "MT %s %ddB", ago, n->rssi_tenths / 10);
+        snprintf(key, sizeof(key), "mt%08lx", (unsigned long)n->id);
+        place_label_key(sf, a, dx / 2, dy / 3, 3, l1, layer(L_BLOCKS) ? l2 : NULL,
+                        TUI_ATTR(ext_hue(age), TUI_BLACK), false,
+                        map_object_key(2, map_label_key(key, 0)), MAP_LABEL_RIGHT);
+    }
 }
 
 static void nodes_canvas(tui_rect a, int pw, int ph)
 {
-    if (!layer(L_MESH) || s_npeers <= 0) return;
+    if (!layer(L_MESH) || (s_npeers <= 0 && s_next <= 0)) return;
 
     double rlat = 0, rlon = 0;
     const bool have_rx = receiver_at(&rlat, &rlon, NULL);
@@ -2578,6 +2637,7 @@ static void nodes_canvas(tui_rect a, int pw, int ph)
         double fx, fy;
         if (frame_px(rlat, rlon, pw, ph, &fx, &fy)) px_dot(fx, fy, &rdx, &rdy);
     }
+    ext_canvas(a, pw, ph, have_rx, rdx, rdy);
 
     for (int i = 0; i < s_npeers; i++) {
         const ls_mesh_peer_t *p = &s_map_peers[i];
@@ -2607,6 +2667,7 @@ static void nodes_canvas(tui_rect a, int pw, int ph)
 static void nodes_text(tui_surface *sf, tui_rect a, int pw, int ph)
 {
     if (!layer(L_MESH)) return;
+    ext_text(sf, a, pw, ph);
     for (int i = 0; i < s_npeers; i++) {
         const ls_mesh_peer_t *p = &s_map_peers[i];
         if (!p->has_loc) continue;

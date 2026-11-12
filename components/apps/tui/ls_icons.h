@@ -57,6 +57,7 @@ typedef enum {
     LS_ICON_DIGI,       /* DIGI: the FT8 Costas array, tones stepping     */
     LS_ICON_TMACH,      /* TIME MACHINE: a dial turning back over a burst */
     LS_ICON_RADIO,      /* RADIO: a handheld receiver, not FM's wave        */
+    LS_ICON_FREQS,      /* FREQS: a dial over the list it tunes from       */
     LS_ICON__COUNT
 } ls_icon_t;
 

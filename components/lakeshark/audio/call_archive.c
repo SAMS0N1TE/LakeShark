@@ -148,8 +148,13 @@ static uint32_t now_ms(void)
 {
 #ifdef ESP_PLATFORM
     return (uint32_t)(esp_timer_get_time() / 1000);
-#else
+#elif defined(_WIN32)
     return (uint32_t)((uint64_t)clock() * 1000 / CLOCKS_PER_SEC);
+#else
+    /* clock() is process CPU time on POSIX and stands still while idle. */
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint32_t)((uint64_t)t.tv_sec * 1000 + (uint64_t)t.tv_nsec / 1000000);
 #endif
 }
 static call_meta_t metadata(call_input_t input, uint32_t hz, uint32_t tg, uint32_t source)

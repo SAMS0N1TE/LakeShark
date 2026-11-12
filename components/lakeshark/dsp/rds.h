@@ -77,6 +77,13 @@ typedef struct {
     int8_t   rt_ab;
     int8_t   rt_end;         /* index of the 0x0D terminator, -1 none       */
     int8_t   rt_len_b;       /* 2B text is 32 long                          */
+    /* A PI, PTY or TP that differs from the card's is a candidate until it
+       repeats: one corrupt block that passed the check used to wipe the
+       station's name ("--------") or flash a wrong programme type. */
+    uint16_t pi_cand;
+    uint8_t  pi_cand_n;
+    uint8_t  pty_cand, pty_cand_n;
+    bool     tp_cand;
     rds_group_fn on_group;
     void    *user;
 } rds_t;

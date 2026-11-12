@@ -180,3 +180,29 @@ const char *p25_calls_host_alias(uint16_t tg)
         if (NAMES[i].tg == tg) return NAMES[i].name;
     return NULL;
 }
+
+/* Trunk following rows (Follow linger, Follow on this system, Forget). */
+static unsigned linger_ms = 1500;
+unsigned int p25_get_follow_linger_ms(void)
+{
+    return linger_ms;
+}
+bool p25_set_follow_linger_ms(unsigned int v)
+{
+    if (v > 5000) return false;
+    linger_ms = v;
+    return true;
+}
+bool p25_set_follow_here(bool on)
+{
+    P25.roster_follow_off = !on;
+    return true;
+}
+bool p25_forget_system_roster(void)
+{
+    P25.roster_follow_off = false;
+    P25.lockout_count = P25.allow_count = 0;
+    P25.hold_tg = 0;
+    P25.list_mode = 0;
+    return true;
+}

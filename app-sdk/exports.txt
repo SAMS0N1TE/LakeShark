@@ -166,6 +166,7 @@ lap_keep_awake
 lap_key_down
 lap_load
 lap_log
+lap_map_node
 lap_mesh_advert
 lap_mesh_channel_private
 lap_mesh_dm

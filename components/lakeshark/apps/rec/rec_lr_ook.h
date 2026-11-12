@@ -28,6 +28,7 @@ typedef struct {
     int32_t  peak;           /* strongest magnitude in the capture         */
     bool     carrier, level, capturing;
     uint32_t run;            /* samples at the current level               */
+    uint32_t warm;           /* samples seen while the floor settles        */
     int      edges;
     uint32_t span_us;
     int32_t  edge[REC_LR_OOK_MAX_EDGES];

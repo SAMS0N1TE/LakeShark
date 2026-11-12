@@ -2,6 +2,7 @@
    each with START/STOP, RADIO, OPTIONS and its live readout. */
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_icons.h"
 #include "../../ls_radio_select.h"
 #include "../../ls_options.h"
 #include "../../ls_motion.h"
@@ -36,7 +37,6 @@ static bool s_bar_dim[6];
 static int s_bar_n;
 /* The list's rows as drawn, for taps: two cells each. */
 static tui_rect s_rows_hit;
-static int s_rows_first;
 static tui_rect s_page_up, s_page_down;
 static int *s_page_sel;
 static int s_page_rows, s_page_count;
@@ -293,6 +293,21 @@ static int list_pages(tui_surface *sf, tui_rect *in, int height, int count, int 
 
 /* ------------------------------------------------------------------ list */
 
+/* Each trial's glyph, by what it listens to; the maturity is the hue. */
+static int exp_icon(const ls_experiment_t *e)
+{
+    static const struct { const char *id; uint8_t icon; } ICON[] = {
+        { "rs41", LS_ICON_SAT }, { "dfm17", LS_ICON_SAT }, { "aviation", LS_ICON_PLANE }, { "uat", LS_ICON_PLANE },
+        { "p25site", LS_ICON_TOWER }, { "pagers", LS_ICON_PAGER }, { "radar", LS_ICON_SWEEP }, { "offset", LS_ICON_WAVE },
+        { "survey", LS_ICON_HEAT }, { "loramon", LS_ICON_MESH }, { "wisun", LS_ICON_SUBGHZ }, { "zwave", LS_ICON_CHIP },
+        { "lr433", LS_ICON_DETECTOR },
+    };
+    for (unsigned i = 0; i < sizeof(ICON) / sizeof(ICON[0]); i++) if (!strcmp(e->id, ICON[i].id)) return ICON[i].icon;
+    return LS_ICON_EXPERIMENT;
+}
+
+/* The trials as tiles, the way HOME shows its apps: a glyph, the name, the
+   one line under it, lit while it runs. A tap opens one; arrows walk them. */
 static void draw_list(tui_surface *sf, tui_rect a)
 {
     const ls_experiment_t *run = ls_exp_running();
@@ -306,37 +321,29 @@ static void draw_list(tui_surface *sf, tui_rect a)
     const int count = ls_exp_count();
     if (s_sel >= count) s_sel = count ? count - 1 : 0;
     tui_rect body = tui_rect_make(a.x, a.y, a.w, a.h - 1);
-    ls_panel_box(sf, body, "EXPERIMENTS", TUI_CYAN);
+    ls_panel_box(sf, body, run ? run->name : "EXPERIMENTS", run ? TUI_GREEN : TUI_CYAN);
     ls_motion_busy(sf, body, run != NULL);
-    tui_rect list = tui_rect_make(body.x + 2, body.y + 1, body.w - 4, body.h - 2);
-    s_rows_hit = tui_rect_make(0, 0, 0, 0);
-    if (list.w < 4 || list.h < 2) return;
+    tui_rect grid = tui_rect_make(body.x + 1, body.y + 1, body.w - 2, body.h - 2);
+    s_rows_hit = grid;
+    if (grid.w < 8 || grid.h < 4) return;
     if (!count) {
-        tui_put_str(sf, list, list.x, list.y, "No experiments in this build", LS_ATTR_DIM);
-    } else {
-        int rows = list_pages(sf,&list,2,count,&s_sel);
-        const int first = s_sel / rows * rows;
-        s_rows_hit = list; s_rows_hit.h = rows * 2;
-        s_rows_first = first;
-        for (int i = 0; i < rows && first + i < count; i++) {
-            const ls_experiment_t *e = ls_exp_at(first + i);
-            const int y = list.y + i * 2;
-            if (first + i == s_sel) ls_fill_dither(sf, tui_rect_make(list.x, y, list.w, 2), LS_DITHER_LIGHT, TUI_CYAN);
-            char badge[10];
-            snprintf(badge, sizeof(badge), "%-6s", ls_exp_maturity_name(e->maturity));
-            tui_put_str(sf, list, list.x, y, badge, badge_attr(e->maturity));
-            tui_put_str(sf, list, list.x + 7, y, e->name, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
-            if (e == run) {
-                char on[8];
-                snprintf(on, sizeof(on), "%c ON", ls_motion_pip(true));
-                tui_put_str(sf, list, list.x + list.w - 4, y, on, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
-            }
-            if (e->lr2021_only && list.w > 40)
-                tui_put_str(sf, list, list.x + list.w - 17, y, "LR2021 only", LS_ATTR_DIM);
-            tui_put_str(sf, list, list.x + 7, y + 1, e->sub ? e->sub : "", LS_ATTR_DIM);
-        }
+        tui_put_str(sf, grid, grid.x + 1, grid.y, "No experiments in this build", LS_ATTR_DIM);
+        return;
     }
-    ls_safe_line(sf, a, a.y + a.h - 1, s_feedback[0] ? s_feedback : "UP/DOWN pick, ENTER opens", LS_ATTR_DIM);
+    static EXT_RAM_BSS_ATTR ls_tile_t tiles[LS_EXP_MAX];
+    int n = 0;
+    for (int i = 0; i < count && n < LS_EXP_MAX; i++) {
+        const ls_experiment_t *e = ls_exp_at(i);
+        tiles[n++] = (ls_tile_t){ .name = e->name, .sub = e->lr2021_only ? "LR2021 only" : ls_exp_maturity_name(e->maturity),
+                                  .icon = exp_icon(e),
+                                  .hue = e == run ? TUI_GREEN : e->maturity == LS_EXP_WORKS ? TUI_CYAN : e->maturity == LS_EXP_TRYING ? TUI_YELLOW : TUI_MAGENTA,
+                                  .live = e == run };
+    }
+    ls_tile_grid(sf, grid, tiles, n, s_sel);
+    const ls_experiment_t *sel = ls_exp_at(s_sel);
+    char foot[LS_EXP_LINE + 24];
+    snprintf(foot, sizeof(foot), "%s%s", s_feedback[0] ? s_feedback : sel && sel->sub ? sel->sub : "", s_feedback[0] || !sel ? "" : "");
+    ls_safe_line(sf, a, a.y + a.h - 1, foot[0] ? foot : "Tap a trial to open it", LS_ATTR_DIM);
 }
 
 /* ------------------------------------------------------------------ page */
@@ -707,7 +714,7 @@ static void draw(tui_surface *sf, tui_rect a)
     s_page_sel = NULL;
     const ls_experiment_t *e = opened();
     snprintf(s_hint, sizeof(s_hint), "%s", e ? "S start/stop  R radio  O options  N note  ESC back"
-                                             : "ENTER open  X stop  N note  ESC home");
+                                             : "arrows pick  ENTER open  X stop  N note  ESC home");
     if (s_history) snprintf(s_hint, sizeof(s_hint), is_rs41(e) ? (s_sonde_detail >= 0 ? "G recover  O options  ESC flights" : "ENTER detail  O options  ESC back") : "ENTER detail  O options  N name  G graph  ESC back");
     if (a.w < 24 || a.h < 12) {
         s_bar_n = 0;
@@ -753,7 +760,7 @@ static bool key(ls_tk_t k, char ch)
         if (k != LS_TK_TAB && k != LS_TK_LEFT && k != LS_TK_RIGHT &&
             !(k == LS_TK_ENTER && s_focus >= 0)) return false;
     }
-    if (k == LS_TK_TAB || k == LS_TK_LEFT || k == LS_TK_RIGHT)
+    if (k == LS_TK_TAB || ((k == LS_TK_LEFT || k == LS_TK_RIGHT) && (e || s_focus >= 0)))
         return ls_btn_navigate(k, &s_slot, &s_focus, false);
     if (k == LS_TK_ENTER && s_focus >= 0 && s_focus < s_bar_n) {
         action(s_bar_keys[s_focus]);
@@ -768,9 +775,13 @@ static bool key(ls_tk_t k, char ch)
         return false;
     }
     const int count = ls_exp_count();
-    if (k == LS_TK_UP || k == LS_TK_DOWN) s_focus = -1;
-    if (k == LS_TK_UP)   { if (s_sel > 0) s_sel--; return true; }
-    if (k == LS_TK_DOWN) { if (s_sel + 1 < count) s_sel++; return true; }
+    if (k == LS_TK_UP || k == LS_TK_DOWN || k == LS_TK_LEFT || k == LS_TK_RIGHT) s_focus = -1;
+    int cols = 1, rows_ = 1; ls_tile_shape(&cols, &rows_);
+    if (cols < 1) cols = 1;
+    if (k == LS_TK_LEFT)  { if (s_sel > 0) s_sel--; return true; }
+    if (k == LS_TK_RIGHT) { if (s_sel + 1 < count) s_sel++; return true; }
+    if (k == LS_TK_UP)    { if (s_sel >= cols) s_sel -= cols; return true; }
+    if (k == LS_TK_DOWN)  { if (s_sel + cols < count) s_sel += cols; else if (s_sel + 1 < count) s_sel = count - 1; return true; }
     if (k == LS_TK_ENTER) { open_page(s_sel); return true; }
     if (k != LS_TK_CHAR || !ch) return false;
     if (ch == 'b' || ch == 'x' || ch == 'n') { action(ch); return true; }
@@ -806,12 +817,8 @@ static bool touch(int x, int y)
         return true;
     }
     if (s_open < 0 && s_rows_hit.w > 0 && tui_rect_contains(s_rows_hit, x, y)) {
-        const int row = s_rows_first + (y - s_rows_hit.y) / 2;
-        /* First tap selects, a tap on the selected one opens it. */
-        if (row < ls_exp_count()) {
-            if (row == s_sel) open_page(row);
-            else s_sel = row;
-        }
+        const int t = ls_tile_hit(x, y);
+        if (t >= 0 && t < ls_exp_count()) open_page(t);
     }
     return true;
 }

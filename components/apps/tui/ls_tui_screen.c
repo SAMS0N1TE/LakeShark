@@ -295,6 +295,8 @@ LS_COLD void ls_tui_screen_show(int index)
 
     const ls_tui_screen_t *now = s_screens[s_current];
     if (now && now->radio) ls_tui_radio_want(now->radio);
+    /* Only a radio app on screen may keep the LoRa chip in the background. */
+    ls_tui_radio_screen(now && now->radio);
     /* Keep the pixel baseline between screens that render through cells.
        Clearing unchanged background cells is a large part of a full switch
        repaint, especially while P25 still consumes core/cache bandwidth. */

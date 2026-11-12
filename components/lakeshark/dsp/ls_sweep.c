@@ -22,11 +22,13 @@ static const char *TAG = "ls_sweep";
 #define LS_SWEEP_SETTLE_MS        4
 #define LS_SWEEP_DISCARD_BUFFERS  2
 
-ls_radio_err_t ls_sweep_run_endpoint(const ls_sweep_plan_t *plan, int gain_tenths,
+ls_radio_err_t ls_sweep_run_rails(const ls_sweep_plan_t *plan, int gain_tenths,
                             uint32_t dwell_ffts, bool fast_retune, int8_t *dbfs,
                             ls_sweep_progress_fn progress,
-                            ls_sweep_cancel_fn cancel, void *user, const char *endpoint_id)
+                            ls_sweep_cancel_fn cancel, void *user, const char *endpoint_id,
+                            ls_sweep_rails_t *rails)
 {
+    if (rails) memset(rails, 0, sizeof(*rails));
     if (!plan || !dbfs || plan->n_bins == 0) return LS_RADIO_ERR_INVALID;
     if (dwell_ffts == 0) dwell_ffts = LS_SWEEP_DEFAULT_DWELL_FFTS;
 
@@ -105,7 +107,7 @@ ls_radio_err_t ls_sweep_run_endpoint(const ls_sweep_plan_t *plan, int gain_tenth
                                  &got) != LS_RADIO_OK) break;
         }
 
-        uint32_t done = 0;
+        uint32_t done = 0, tune_rails = 0, tune_samples = 0;
         while (error == LS_RADIO_OK && done < dwell_ffts) {
             if (cancel && cancel(user)) { error = LS_RADIO_ERR_STOPPED; break; }
             got = 0;
@@ -118,12 +120,29 @@ ls_radio_err_t ls_sweep_run_endpoint(const ls_sweep_plan_t *plan, int gain_tenth
                than handing it the whole thing and averaging one transform
                eight times. */
             size_t whole = got / IQ_BYTES_PER_FFT;
-            for (size_t i = 0; i < whole && done < dwell_ffts; i++, done++)
+            for (size_t i = 0; i < whole && done < dwell_ffts; i++, done++) {
                 spectrum_accum(iq + i * IQ_BYTES_PER_FFT, IQ_BYTES_PER_FFT);
+                tune_rails += ls_sweep_rail_count(iq + i * IQ_BYTES_PER_FFT,
+                                                  IQ_BYTES_PER_FFT);
+                tune_samples += IQ_BYTES_PER_FFT;
+            }
 
             if (whole == 0) break;   /* short read; take what we have */
         }
         if (error != LS_RADIO_OK) break;
+
+        if (rails && tune_samples) {
+            rails->rails += tune_rails;
+            rails->samples += tune_samples;
+            /* By share, cross-multiplied: a short read is a smaller tune. */
+            if (!rails->worst_samples ||
+                (uint64_t)tune_rails * rails->worst_samples >
+                (uint64_t)rails->worst_rails * tune_samples) {
+                rails->worst_rails = tune_rails;
+                rails->worst_samples = tune_samples;
+                rails->worst_hz = center;
+            }
+        }
 
         if (spectrum_read_db(db, SPEC_FFT_N))
             ls_sweep_fold(plan, center, db, SPEC_FFT_N, dbfs);
@@ -143,6 +162,15 @@ ls_radio_err_t ls_sweep_run_endpoint(const ls_sweep_plan_t *plan, int gain_tenth
     if (error != LS_RADIO_OK)
         ESP_LOGW(TAG, "sweep stopped: %s", ls_radio_err_name(error));
     return error;
+}
+
+ls_radio_err_t ls_sweep_run_endpoint(const ls_sweep_plan_t *plan, int gain_tenths,
+                            uint32_t dwell_ffts, bool fast_retune, int8_t *dbfs,
+                            ls_sweep_progress_fn progress,
+                            ls_sweep_cancel_fn cancel, void *user, const char *endpoint_id)
+{
+    return ls_sweep_run_rails(plan, gain_tenths, dwell_ffts, fast_retune, dbfs,
+                              progress, cancel, user, endpoint_id, NULL);
 }
 
 ls_radio_err_t ls_sweep_run_cancelable(const ls_sweep_plan_t *plan, int gain_tenths,

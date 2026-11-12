@@ -893,9 +893,14 @@ void ls_rfs_step(void)
 
 int ls_rfs_command(int argc, char **argv)
 {
-    ls_rfs_view_t v;
+    /* Static: the console REPL has a 4 KB stack, and the view (1.2 KB) and
+       the settings (0.7 KB) with printf's float formatting on top overflowed
+       it - `rfsurvey start rtl ...` and `rfsurvey status` both rebooted the
+       board with a stack protection fault in console_repl. The console is
+       one task, so one copy serves every call. */
+    static ls_rfs_view_t v;
     if (argc >= 2 && !strcmp(argv[1], "start")) {
-        ls_rfs_settings_t s;
+        static ls_rfs_settings_t s;
         ls_rfs_settings_default(&s);
         for (int i = 2; i < argc; i++) {
             const char *a = argv[i];
@@ -930,7 +935,7 @@ int ls_rfs_command(int argc, char **argv)
     if (argc >= 2 && !strcmp(argv[1], "export")) return ls_rfs_export(argc > 2 ? argv[2] : NULL) ? 0 : 1;
     if (argc == 2 && !strcmp(argv[1], "files")) {
         list_files();
-        char names[FILES_MAX][40];
+        static char names[FILES_MAX][40];
         const int n = ls_rfs_files(names, FILES_MAX);
         for (int i = 0; i < n; i++) printf("  %s\n", names[i]);
         printf("%d survey file(s) in " LS_RFS_DIR "\n", n);
@@ -938,7 +943,7 @@ int ls_rfs_command(int argc, char **argv)
     }
     if (argc == 2 && !strcmp(argv[1], "plans")) {
         for (int i = 0; i < ls_rfs_preset_count(); i++) {
-            ls_rfs_plan_t p; ls_rfs_preset(i, &p);
+            static ls_rfs_plan_t p; ls_rfs_preset(i, &p);
             LS_PRINTF(t_ls_rfs_run_plan_d_12s_2d, "  plan=%d  %-12s %2d ch  %.4f-%.4f MHz\n", i, p.name, p.n, p.ch[0].hz / 1e6, p.ch[p.n - 1].hz / 1e6);
         }
         return 0;

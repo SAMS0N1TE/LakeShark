@@ -19,6 +19,8 @@ typedef struct {
     bool               auto_follow;
     bool               skip_encrypted;
     uint32_t           encrypted_skip_ms;
+    bool               phase2_follow;
+    uint32_t           linger_ms;
 } p25_entry_settings_t;
 
 /* Snapshot every flash-backed setting consumed by P25 app entry.  On dispatch

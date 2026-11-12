@@ -92,6 +92,14 @@ const p25_grant_tg_state_t *p25_grant_tg_state(const p25_grant_follower_t *f,
     return &f->tg_state[index];
 }
 
+static void gap_add(unsigned int hist[P25_OVER_GAP_BUCKETS], int64_t gap_us)
+{
+    static const unsigned edges[P25_OVER_GAP_BUCKETS] = P25_OVER_GAP_EDGES_MS;
+    const int64_t ms = gap_us / 1000;
+    for (int i = 0; i < P25_OVER_GAP_BUCKETS; i++)
+        if (ms < (int64_t)edges[i]) { hist[i]++; return; }
+}
+
 static void retune_to_control(p25_grant_follower_t *f)
 {
     f->state = P25_GRANT_ON_CONTROL;
@@ -100,6 +108,7 @@ static void retune_to_control(p25_grant_follower_t *f)
     f->source = 0;
     memset(&f->active_call, 0, sizeof(f->active_call));
     f->last_activity_us = 0;
+    f->lingering = false;
     f->receive_state = P25_RX_CONTROL_SEARCH;
     f->returned_count++;
     if (f->retune) f->retune(f->user, f->control_hz, false);
@@ -139,6 +148,12 @@ void p25_grant_set_control(p25_grant_follower_t *f, uint64_t control_hz)
 void p25_grant_set_hang_ms(p25_grant_follower_t *f, unsigned int ms)
 {
     f->hang_us = (int64_t)ms * 1000LL;
+}
+
+void p25_grant_set_linger_ms(p25_grant_follower_t *f, unsigned int ms)
+{
+    if (!f) return;
+    f->linger_us = (int64_t)ms * 1000LL;
 }
 
 void p25_grant_set_filter(p25_grant_follower_t *f,
@@ -233,6 +248,10 @@ static bool on_grant(p25_grant_follower_t *f,
     f->receive_state = P25_RX_TRAFFIC_WAIT;
     f->last_activity_us = now_us;
     f->followed_count++;
+    if (f->over_end_us && f->over_end_tg == talkgroup &&
+        f->over_end_hz == freq_hz && now_us - f->over_end_us < 10000000LL)
+        gap_add(f->gap_regrant, now_us - f->over_end_us);
+    f->over_end_us = 0;
     if (f->retune) f->retune(f->user, freq_hz, true);
     return true;
 }
@@ -271,6 +290,11 @@ bool p25_grant_tick(p25_grant_follower_t *f, int64_t now_us)
 {
     if (!f) return false;
     if (f->state != P25_GRANT_ON_TRAFFIC) return false;
+    if (f->lingering) {
+        if (now_us < f->linger_until_us) return false;
+        retune_to_control(f);
+        return true;
+    }
     if (now_us - f->last_activity_us < f->hang_us) return false;
     retune_to_control(f);
     return true;
@@ -387,10 +411,28 @@ void p25_grant_on_frame(p25_grant_follower_t *f, const dsd_state *s,
     /* lastp25type also becomes zero for an ignored LDU2 or unknown
      * DUID. Only a validated TDU/TDULC is a terminator. */
     if (s->p25_frame_duid == 3 || s->p25_frame_duid == 15) {
-        (void)p25_grant_on_terminator(f, now_us);
+        if (f->linger_us <= 0) {
+            (void)p25_grant_on_terminator(f, now_us);
+        } else if (!f->lingering) {
+            /* TDULC repeats; the first one starts the linger, the rest
+             * do not stretch it. p25_grant_tick ends it. */
+            f->lingering = true;
+            f->linger_until_us = now_us + f->linger_us;
+            f->lingers++;
+            f->over_end_us = now_us ? now_us : 1;
+            f->over_end_tg = f->talkgroup;
+            f->over_end_hz = f->traffic_hz;
+        }
+        if (f->lingering) f->receive_state = P25_RX_TRAFFIC_WAIT;
     } else if (s->p25_frame_duid == 5 || s->p25_frame_duid == 10) {
         if ((s->p25_frame_duid == 5 && s->lastp25type != 1) ||
             (s->p25_frame_duid == 10 && s->lastp25type != 2)) return;
+        if (f->lingering) {
+            f->lingering = false;
+            f->linger_catches++;
+            if (f->over_end_us) gap_add(f->gap_caught, now_us - f->over_end_us);
+            f->over_end_us = 0;
+        }
         p25_grant_on_voice(f, now_us);
         f->receive_state = s->pcm_out_write > 0 ? P25_RX_AUDIO :
             s->p25_ess_valid && p25_algid_is_encrypted(s->p25_algid)

@@ -203,6 +203,11 @@ static bool v_mesh_armed(ls_val_t *o)
     if (!st.running) return false;
     o->kind = LS_VAL_BOOL; o->i = st.tx_enabled; return true;
 }
+/* Which mesh owns the LoRa radio: "meshcore" or "meshtastic". */
+static bool v_mesh_primary(ls_val_t *o)
+{
+    o->kind = LS_VAL_TEXT; o->s = ls_mesh_primary() ? "meshtastic" : "meshcore"; return true;
+}
 static bool v_mesh_rssi(ls_val_t *o)
 {
     ls_mesh_stats_t st; ls_mesh_get_stats(&st);
@@ -278,6 +283,7 @@ void ls_value_publish_builtin(void)
     ls_value_publish("mesh.rx",       NULL,  v_mesh_rx);
     ls_value_publish("mesh.tx",       NULL,  v_mesh_tx);
     ls_value_publish("mesh.armed",    NULL,  v_mesh_armed);
+    ls_value_publish("mesh.primary",  NULL,  v_mesh_primary);
     ls_value_publish("mesh.rssi",     "dBm", v_mesh_rssi);
 
     ls_value_publish("sys.internal",  "KB",  v_sys_internal);

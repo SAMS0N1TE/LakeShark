@@ -832,6 +832,15 @@ static void step(void)
     ls_action_call("ota.step", &in, &out, LS_CAP_STORE | LS_CAP_POWER);
 }
 
+/* CHANNEL: the next check reads the public stable build once (and may go
+   back to it), or this board's own channel again. */
+static void channel(void)
+{
+    ls_args_t in = { 0 };
+    ls_val_t out;
+    ls_action_call("ota.channel", &in, &out, LS_CAP_STORE);
+}
+
 void ls_update_view_enter(void)
 {
     s_c6_page = false;
@@ -920,13 +929,16 @@ void ls_update_view_draw(tui_surface *sf, tui_rect a)
         snprintf(csub, sizeof(csub), "%s  %.1f MB", sub, size / 1048576.0);
     else
         LS_SNPUTS(t_ls_update_view_ask_the_server_again, csub, sizeof(csub), "ask the server again");
+    char chan[12];
+    get_text("ota.channel", chan, sizeof(chan));
     const ls_btn_t btn[] = {
         { "BACK", "HOME", 0, false, false, false },
         { press ? press : "WAIT", busy ? DOING[st] : !press ? "trial" : ready ? bsub : st == LS_OTA_ST_AVAILABLE ? sub : "again",
           0, tappable, !press, false },
-        { "C6 FIRMWARE", "SD CARD", 'c', false, false, false },
+        { "CHANNEL", chan[0] ? chan : "?", 'h', false, busy || ready, !strcmp(chan, "STABLE") },
+        { "C6", "SD CARD", 'c', false, false, false },
     };
-    ls_btn_bar_raised_row(sf, tui_rect_make(a.x, a.y, a.w, 5), btn, 3, -1);
+    ls_btn_bar_raised_row(sf, tui_rect_make(a.x, a.y, a.w, 5), btn, 4, -1);
 
     const tui_rect body = tui_rect_make(a.x, a.y + 5, a.w, a.h - 5);
     const uint8_t hue = hue_of(st);
@@ -1029,6 +1041,7 @@ bool ls_update_view_key(ls_tk_t k, char ch)
         return ls_c6_view_key(k, ch);
     }
     if (ch == 'c' || ch == 'C') { s_c6_page = true; ls_c6_view_enter(); return true; }
+    if (ch == 'h' || ch == 'H') { channel(); return true; }
     if (k != LS_TK_ENTER) return false;      /* ESC home, F-keys switch apps: the router's */
     step();
     return true;
@@ -1041,7 +1054,8 @@ bool ls_update_view_touch(int col, int row)
         return false;
     }
     const int i = ls_btn_hit(col, row);
-    if (i == 2) { s_c6_page = true; ls_c6_view_enter(); return false; }
+    if (i == 3) { s_c6_page = true; ls_c6_view_enter(); return false; }
+    if (i == 2) { channel(); return false; }
     if (i == 0) return true;
     if (i == 1 || inside(s_cta_on, s_cta, col, row) || inside(s_hero_on, s_hero, col, row)) step();
     return false;
@@ -1049,5 +1063,5 @@ bool ls_update_view_touch(int col, int row)
 
 const char *ls_update_view_hint(void)
 {
-    return s_c6_page ? ls_c6_view_hint() : "ENTER action  C C6 firmware  ESC home  TAP filled keys";
+    return s_c6_page ? ls_c6_view_hint() : "ENTER action  H channel  C C6 firmware  ESC home";
 }

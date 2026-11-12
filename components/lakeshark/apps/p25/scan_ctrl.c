@@ -30,7 +30,12 @@ bool p25_scan_set_auto_follow(p25_scan_ctrl_t *sc, p25_grant_follower_t *f,
 
 bool p25_scan_get_auto_follow(const p25_scan_ctrl_t *sc)
 {
-    return sc ? sc->auto_follow : true;
+    if (!sc) return true;
+    /* Effective value, for the screen: the system's own off wins where its
+     * roster applies (taken as "now" within the grace, for display). */
+    return sc->auto_follow &&
+           !(sc->roster_follow_off &&
+             p25_scan_roster_applies(sc, sc->sys_unknown_since_us));
 }
 
 void p25_scan_restore_controls(p25_scan_ctrl_t *sc,
@@ -360,19 +365,22 @@ p25_scan_decide(const p25_scan_ctrl_t *sc,
     /* AUTO FOLLOW is a global gate, not an alternate path around the
      * controller. Re-enabling it merely reaches the existing precedence
      * checks below; disabling it can never cause a traffic retune. */
-    if (!sc->auto_follow) {
+    /* The roster (lockout, hold, list, priority, a profile's follow-off)
+     * is one system's. On another system none of it applies. */
+    const bool roster = p25_scan_roster_applies(sc, now_us);
+    if (!sc->auto_follow || (roster && sc->roster_follow_off)) {
         d.reason = P25_SCAN_REASON_AUTO_FOLLOW_OFF;
         return d;
     }
 
     /* 1. LOCKOUT beats everything. */
-    if (p25_scan_is_locked_out(sc, talkgroup)) {
+    if (roster && p25_scan_is_locked_out(sc, talkgroup)) {
         d.reason = P25_SCAN_REASON_LOCKED_OUT;
         return d;
     }
 
     /* 2. HOLD - a hold on this TG says "this one". */
-    bool hold_on = p25_scan_hold_active(sc);
+    bool hold_on = roster && p25_scan_hold_active(sc);
     if (hold_on) {
         if (sc->hold_tg != talkgroup) {
             d.reason = P25_SCAN_REASON_HOLD_MISMATCH;
@@ -390,7 +398,7 @@ p25_scan_decide(const p25_scan_ctrl_t *sc,
 
     /* 3. LIST MODE. Empty ALLOW follows everything, while NONE rejects every
      *    grant (see p25_scan_is_allowed for the distinction). */
-    if (!p25_scan_is_allowed(sc, talkgroup)) {
+    if (roster && !p25_scan_is_allowed(sc, talkgroup)) {
         d.reason = sc->list_mode == P25_SCAN_LIST_NONE
                  ? P25_SCAN_REASON_LIST_NONE
                  : P25_SCAN_REASON_ALLOW_LIST;
@@ -405,9 +413,9 @@ p25_scan_decide(const p25_scan_ctrl_t *sc,
         return d;
     }
 
-    uint8_t new_rank = p25_scan_priority_rank(sc, talkgroup);
+    uint8_t new_rank = roster ? p25_scan_priority_rank(sc, talkgroup) : 0;
     if (grant_is_foreign(f, talkgroup)) {
-        uint8_t cur_rank = p25_scan_priority_rank(sc, f->talkgroup);
+        uint8_t cur_rank = roster ? p25_scan_priority_rank(sc, f->talkgroup) : 0;
         if (new_rank > cur_rank) {
             /* TUNE + PRIORITY reason - the caller releases the current call
              * first and follows the incoming one. Precedence: encrypted skip
@@ -476,16 +484,273 @@ p25_scan_apply(p25_scan_ctrl_t *sc, p25_grant_follower_t *f,
     return d;
 }
 
+/* ---------------------------------------------------------- roster scope */
+
+static p25_roster_load_fn s_roster_load;
+static p25_roster_save_fn s_roster_save;
+static p25_roster_switched_fn s_roster_switched;
+
+void p25_scan_set_roster_loader(p25_roster_load_fn fn) { s_roster_load = fn; }
+void p25_scan_set_roster_saver(p25_roster_save_fn fn) { s_roster_save = fn; }
+void p25_scan_set_roster_switched(p25_roster_switched_fn fn) { s_roster_switched = fn; }
+
+void p25_scan_roster_clear(p25_scan_ctrl_t *sc)
+{
+    if (!sc) return;
+    sc->lockout_count = 0;
+    sc->allow_count = 0;
+    sc->list_mode = P25_SCAN_LIST_OFF;
+    sc->hold_tg = 0;
+    sc->roster_follow_off = false;
+    p25_scan_priority_clear(sc);
+}
+
+void p25_scan_roster_bind(p25_scan_ctrl_t *sc, uint32_t wacn, uint16_t sysid)
+{
+    if (!sc) return;
+    sc->roster_sys.wacn = wacn & 0xfffffu;
+    sc->roster_sys.sysid = sysid & 0xfffu;
+    sc->roster_sys.valid = sc->roster_sys.sysid != 0;
+    if (!sc->roster_sys.valid) sc->roster_sys.wacn = 0;
+}
+
+bool p25_scan_roster_empty(const p25_scan_ctrl_t *sc)
+{
+    return !sc || (!sc->lockout_count && !sc->allow_count && !sc->hold_tg &&
+                   sc->list_mode == P25_SCAN_LIST_OFF && !sc->roster_follow_off);
+}
+
+static bool same_system(p25_system_id_t a, p25_system_id_t b)
+{
+    /* SYSID must agree; WACN only where both are known. */
+    return a.valid && b.valid && a.sysid == b.sysid &&
+           (!a.wacn || !b.wacn || a.wacn == b.wacn);
+}
+
+/* Rescope the roster in memory to the current system, keeping its
+ * contents, and move its stored copy to the new key. */
+static void roster_rebind(p25_scan_ctrl_t *sc)
+{
+    const p25_system_id_t from = sc->roster_sys;
+    sc->roster_pending_bind = false;
+    p25_scan_roster_bind(sc, sc->current_sys.wacn, sc->current_sys.sysid);
+    if (s_roster_save) s_roster_save(sc, from);
+}
+
+/* Replace the roster in memory with the current system's stored one. */
+static void roster_swap(p25_scan_ctrl_t *sc)
+{
+    const p25_system_id_t cur = sc->current_sys;
+    sc->roster_pending_bind = false;
+    p25_scan_roster_clear(sc);
+    p25_scan_roster_bind(sc, cur.wacn, cur.sysid);
+    if (s_roster_load) s_roster_load(sc, cur.wacn, cur.sysid);
+    /* The loader may only find a SYSID-only roster; it belongs here now. */
+    p25_scan_roster_bind(sc, cur.wacn, cur.sysid);
+    sc->roster_switches++;
+    if (s_roster_switched) s_roster_switched(sc);
+}
+
+/* Swap in the stored roster for the current, fully named system. */
+static bool roster_switch(p25_scan_ctrl_t *sc)
+{
+    const p25_system_id_t cur = sc->current_sys;
+    if (!cur.valid || !cur.wacn) return false;
+    if (sc->roster_sys.valid && sc->roster_sys.wacn == cur.wacn &&
+        sc->roster_sys.sysid == cur.sysid) return false;
+    if (!sc->roster_sys.valid && sc->roster_pending_bind) {
+        /* Made here before the system said its name: it is this one's. */
+        roster_rebind(sc);
+        return false;
+    }
+    if (sc->roster_sys.valid && !sc->roster_sys.wacn &&
+        sc->roster_sys.sysid == cur.sysid) {
+        /* Made when only the SYSID was known (a profile with no wacn=): it
+         * is this system's, and newer than anything under the full key. */
+        roster_rebind(sc);
+        return false;
+    }
+    roster_swap(sc);
+    return true;
+}
+
+bool p25_scan_note_system(p25_scan_ctrl_t *sc, const dsd_state *s,
+                          int64_t now_us)
+{
+    if (!sc || !s) return false;
+    p25_system_id_t id = { 0 };
+    if (s->p25_net_valid && s->p25_tsbk_sysid) {
+        id.wacn = s->p25_tsbk_wacn & 0xfffffu;
+        id.sysid = s->p25_tsbk_sysid & 0xfffu;
+        id.valid = true;
+    } else if (s->p25_rfss_valid && s->p25_rfss_sysid) {
+        id.sysid = s->p25_rfss_sysid & 0xfffu;
+        id.valid = true;
+    }
+    if (!id.valid) {
+        sc->current_sys.valid = false;
+        if (!sc->sys_unknown_since_us) sc->sys_unknown_since_us = now_us ? now_us : 1;
+        return false;
+    }
+    sc->current_sys = id;
+    sc->sys_unknown_since_us = 0;
+    return roster_switch(sc);
+}
+
+bool p25_scan_roster_resync(p25_scan_ctrl_t *sc)
+{
+    return sc ? roster_switch(sc) : false;
+}
+
+bool p25_scan_roster_for_edit(p25_scan_ctrl_t *sc)
+{
+    if (!sc || !sc->current_sys.valid) return false;
+    if (roster_switch(sc)) return true;
+    if (!sc->roster_sys.valid && sc->roster_pending_bind) {
+        roster_rebind(sc);
+        return false;
+    }
+    /* Only the SYSID is known here and the roster in memory is another
+     * system's: edit this system's roster, not that one. */
+    if (sc->roster_sys.valid && same_system(sc->current_sys, sc->roster_sys))
+        return false;
+    roster_swap(sc);
+    return true;
+}
+
+bool p25_scan_roster_applies(const p25_scan_ctrl_t *sc, int64_t now_us)
+{
+    if (!sc) return true;
+    if (!sc->roster_sys.valid) {
+        /* Made this session before any system was named: it is for here. */
+        if (sc->roster_pending_bind) return true;
+        /* Saved unscoped by an older build: nobody knows which system it
+         * was for, so it is not applied to a system that has named itself
+         * (a SYSID-only site never swaps rosters and would keep it). */
+        if (sc->current_sys.valid) return false;
+    } else if (sc->current_sys.valid) {
+        return same_system(sc->current_sys, sc->roster_sys);
+    }
+    /* Not named yet: hold to the roster briefly (a fresh tune at home must
+     * not leak a locked-out call), then stop, so a site that never names
+     * itself is not held to another system's list. */
+    return !sc->sys_unknown_since_us ||
+           now_us - sc->sys_unknown_since_us < P25_ROSTER_UNKNOWN_GRACE_US;
+}
+
+/* ---------------------------------------------------------- follow trace */
+
+void p25_scan_trace_grant(p25_scan_ctrl_t *sc, const p25_call_info_t *g,
+                          p25_follow_outcome_t outcome,
+                          p25_scan_reason_t reason, int64_t now_us)
+{
+    if (!sc || !g || outcome >= P25_FOLLOW_OUTCOME_COUNT) return;
+    sc->follow_outcomes[outcome]++;
+    if (outcome == P25_FOLLOW_DUPLICATE) return;
+    p25_follow_trace_t t = {
+        .at_us = now_us,
+        .carrier_hz = g->carrier_hz <= UINT32_MAX ? (uint32_t)g->carrier_hz : 0,
+        .talkgroup = g->talkgroup,
+        .channel = g->channel,
+        .support = (uint8_t)g->support,
+        .slot = g->slot,
+        .slots = g->slots_per_carrier,
+        .outcome = (uint8_t)outcome,
+        .reason = (uint8_t)reason,
+    };
+    sc->follow_trace[sc->follow_trace_total % P25_FOLLOW_TRACE_LEN] = t;
+    sc->follow_trace_total++;
+    if (outcome != P25_FOLLOW_FOLLOWED) sc->follow_last_left = t;
+    else memset(&sc->follow_last_left, 0, sizeof(sc->follow_last_left));
+}
+
+void p25_scan_trace_busy(p25_scan_ctrl_t *sc, const dsd_state *s,
+                         int64_t now_us)
+{
+    if (!sc || !s || !s->p25_grant_batch_valid || !s->p25_grant_count ||
+        s->p25_grant_count > P25_GRANTS_PER_TSDU ||
+        sc->follow_busy_generation == s->p25_grant_generation) return;
+    sc->follow_busy_generation = s->p25_grant_generation;
+    for (unsigned int i = 0; i < s->p25_grant_count; i++)
+        p25_scan_trace_grant(sc, &s->p25_grants[i], P25_FOLLOW_BUSY,
+                             P25_SCAN_REASON_NONE, now_us);
+}
+
+static p25_follow_outcome_t unfollowable_outcome(const p25_grant_follower_t *f,
+                                                 const p25_call_info_t *g)
+{
+    switch (g->support) {
+    case P25_CALL_PHASE2:
+        if (!f->phase2_follow) return P25_FOLLOW_P2_OFF;
+        if (!g->system_valid || !g->wacn || !g->sysid)
+            return P25_FOLLOW_P2_NO_SYSTEM;
+        return P25_FOLLOW_UNSUPPORTED;
+    case P25_CALL_MISSING_IDEN:
+    case P25_CALL_INVALID:
+        return P25_FOLLOW_UNRESOLVED;
+    default:
+        return P25_FOLLOW_UNSUPPORTED;
+    }
+}
+
+const char *p25_follow_outcome_name(p25_follow_outcome_t o)
+{
+    static const char *const names[P25_FOLLOW_OUTCOME_COUNT] = {
+        "followed", "busy", "unresolved", "unsupported", "p2-off",
+        "p2-no-system", "policy", "refused", "duplicate",
+    };
+    return o < P25_FOLLOW_OUTCOME_COUNT ? names[o] : "?";
+}
+
+const char *p25_scan_reason_name(p25_scan_reason_t r)
+{
+    static const char *const names[] = {
+        "none", "auto-follow-off", "locked-out", "hold-mismatch", "hold-hit",
+        "allow-list", "list-none", "priority", "encrypted-skip",
+        "already-following", "foreign-grant", "default",
+    };
+    return (unsigned)r < sizeof(names) / sizeof(names[0]) ? names[r] : "?";
+}
+
+const char *p25_follow_left_label(const p25_follow_trace_t *t)
+{
+    if (!t || !t->talkgroup) return NULL;
+    switch ((p25_follow_outcome_t)t->outcome) {
+    case P25_FOLLOW_BUSY:         return "SKIP: SCAN BUSY";
+    case P25_FOLLOW_UNRESOLVED:   return "UNRESOLVED GRANT";
+    case P25_FOLLOW_UNSUPPORTED:  return "UNSUPPORTED GRANT";
+    case P25_FOLLOW_P2_OFF:       return "SKIP: PHASE II OFF";
+    case P25_FOLLOW_P2_NO_SYSTEM: return "SKIP: NO SYSTEM ID";
+    case P25_FOLLOW_REFUSED:      return "SKIP: OTHER CALL";
+    case P25_FOLLOW_POLICY:
+        switch ((p25_scan_reason_t)t->reason) {
+        case P25_SCAN_REASON_AUTO_FOLLOW_OFF: return "SKIP: FOLLOW OFF";
+        case P25_SCAN_REASON_LOCKED_OUT:      return "SKIP: LOCKED OUT";
+        case P25_SCAN_REASON_HOLD_MISMATCH:   return "SKIP: HOLD";
+        case P25_SCAN_REASON_ALLOW_LIST:      return "SKIP: NOT ALLOWED";
+        case P25_SCAN_REASON_LIST_NONE:       return "SKIP: FOLLOW NONE";
+        case P25_SCAN_REASON_ENCRYPTED_SKIP:  return "SKIP: ENCRYPTED";
+        case P25_SCAN_REASON_FOREIGN_GRANT:   return "SKIP: OTHER CALL";
+        default:                              return "SKIP: POLICY";
+        }
+    default:
+        return NULL;
+    }
+}
+
 bool p25_scan_apply_from_state(p25_scan_ctrl_t *sc, p25_grant_follower_t *f,
                                const dsd_state *state, int64_t now_us)
 {
     if (!sc || !f || !state) return false;
+    (void)p25_scan_note_system(sc, state, now_us);
     if (state->p25_grant_batch_valid) {
         if (!p25_grant_take_batch(f, state)) return false;
         bool tuned = false;
         for (unsigned int i = 0; i < state->p25_grant_count; i++) {
             const p25_call_info_t *g = &state->p25_grants[i];
             if (!p25_grant_call_followable(f, g)) {
+                p25_scan_trace_grant(sc, g, unfollowable_outcome(f, g),
+                                     P25_SCAN_REASON_NONE, now_us);
                 p25_grant_observe(f, g);
                 continue;
             }
@@ -499,8 +764,18 @@ bool p25_scan_apply_from_state(p25_scan_ctrl_t *sc, p25_grant_follower_t *f,
                     (void)p25_grant_force_return_to_control(f);
                     sc->priority_preempts++;
                 }
-                tuned |= p25_grant_on_call(f, g, now_us);
+                const unsigned int followed = f->followed_count;
+                const bool on_call = p25_grant_on_call(f, g, now_us);
+                tuned |= on_call;
+                p25_scan_trace_grant(sc, g,
+                    f->followed_count != followed ? P25_FOLLOW_FOLLOWED :
+                    d.reason == P25_SCAN_REASON_ALREADY_FOLLOWING ||
+                        (f->state == P25_GRANT_ON_TRAFFIC &&
+                         f->talkgroup == g->talkgroup)
+                        ? P25_FOLLOW_DUPLICATE : P25_FOLLOW_REFUSED,
+                    d.reason, now_us);
             } else {
+                p25_scan_trace_grant(sc, g, P25_FOLLOW_POLICY, d.reason, now_us);
                 p25_grant_observe(f, g);
             }
             p25_scan_note_decision(sc, &d);
@@ -521,13 +796,19 @@ bool p25_scan_apply_from_state(p25_scan_ctrl_t *sc, p25_grant_follower_t *f,
 
 /* Wire layout (little-endian, packed by hand - no host/target width surprises):
  *
- *   magic:u32  version:u16  reserved:u16
+ *   magic:u32  version:u16  flags:u16
  *   hold_tg:u16  list_mode:u8  _pad:u8
  *   lockout_count:u16  allow_count:u16
  *   lockout[lockout_count]:u16
  *   allow[allow_count]:u16
+ *   [flags bit 0] wacn:u32 sysid:u16   - the system the roster belongs to
  *
+ * flags was "reserved", always written 0 and never read, and older builds
+ * ignore bytes past the allow list, so a scoped blob still loads there (as
+ * unscoped) and an older blob loads here as unscoped. No version bump.
  * Priority and names are not persisted (see scan_ctrl.h). */
+#define P25_SCAN_FLAG_SCOPED     0x0001u
+#define P25_SCAN_FLAG_FOLLOW_OFF 0x0002u  /* roster_follow_off */
 
 static void wr_u8 (uint8_t **p, uint8_t v)  { *(*p)++ = v; }
 static void wr_u16(uint8_t **p, uint16_t v)
@@ -570,7 +851,8 @@ size_t p25_scan_persist_size(const p25_scan_ctrl_t *sc)
          + 2 + 1 + 1                       /* hold + mode + pad              */
          + 2 + 2                           /* counts                          */
          + (size_t)sc->lockout_count * 2
-         + (size_t)sc->allow_count   * 2;
+         + (size_t)sc->allow_count   * 2
+         + (sc->roster_sys.valid ? 4 + 2 : 0);
 }
 
 size_t p25_scan_persist_save(const p25_scan_ctrl_t *sc, uint8_t *buf,
@@ -583,7 +865,8 @@ size_t p25_scan_persist_save(const p25_scan_ctrl_t *sc, uint8_t *buf,
     uint8_t *p = buf;
     wr_u32(&p, P25_SCAN_NVS_MAGIC);
     wr_u16(&p, P25_SCAN_NVS_VER);
-    wr_u16(&p, 0);
+    wr_u16(&p, (uint16_t)((sc->roster_sys.valid ? P25_SCAN_FLAG_SCOPED : 0) |
+                          (sc->roster_follow_off ? P25_SCAN_FLAG_FOLLOW_OFF : 0)));
     wr_u16(&p, sc->hold_tg);
     wr_u8 (&p, (uint8_t)sc->list_mode);
     wr_u8 (&p, 0);
@@ -591,45 +874,93 @@ size_t p25_scan_persist_save(const p25_scan_ctrl_t *sc, uint8_t *buf,
     wr_u16(&p, sc->allow_count);
     for (size_t i = 0; i < sc->lockout_count; i++) wr_u16(&p, sc->lockout[i]);
     for (size_t i = 0; i < sc->allow_count;   i++) wr_u16(&p, sc->allow[i]);
+    if (sc->roster_sys.valid) {
+        wr_u32(&p, sc->roster_sys.wacn);
+        wr_u16(&p, sc->roster_sys.sysid);
+    }
     return (size_t)(p - buf);
+}
+
+typedef struct {
+    uint16_t hold, lc, ac;
+    uint8_t  mode;
+    uint16_t lockout[P25_SCAN_LOCKOUT_MAX];
+    uint16_t allow[P25_SCAN_ALLOW_MAX];
+    p25_system_id_t sys;
+    bool follow_off;
+} roster_blob_t;
+
+/* Parse without touching the controller, so a bad blob changes nothing. */
+static bool roster_parse(const uint8_t *buf, size_t buf_len, roster_blob_t *r)
+{
+    if (!buf || buf_len < 12) return false;
+    const uint8_t *p = buf;
+    uint32_t magic = rd_u32(&p);
+    uint16_t ver   = rd_u16(&p);
+    uint16_t flags = rd_u16(&p);
+    if (magic != P25_SCAN_NVS_MAGIC || ver != P25_SCAN_NVS_VER) return false;
+
+    /* Header consumed 8 bytes; body-scalar block is 8 more (hold + mode +
+     * pad + lc + ac). Then per-entry arrays. */
+    if (buf_len < 8 + 8) return false;
+    r->hold = rd_u16(&p);
+    r->mode = rd_u8(&p);
+    (void)rd_u8(&p);
+    r->lc   = rd_u16(&p);
+    r->ac   = rd_u16(&p);
+
+    if (r->lc > P25_SCAN_LOCKOUT_MAX || r->ac > P25_SCAN_ALLOW_MAX) return false;
+    size_t need = 16 + (size_t)r->lc * 2 + (size_t)r->ac * 2;
+    if (buf_len < need) return false;
+    for (size_t i = 0; i < r->lc; i++) r->lockout[i] = rd_u16(&p);
+    for (size_t i = 0; i < r->ac; i++) r->allow[i]   = rd_u16(&p);
+    memset(&r->sys, 0, sizeof(r->sys));
+    r->follow_off = (flags & P25_SCAN_FLAG_FOLLOW_OFF) != 0;
+    if (flags & P25_SCAN_FLAG_SCOPED) {
+        if (buf_len < need + 6) return false;
+        r->sys.wacn  = rd_u32(&p) & 0xfffffu;
+        r->sys.sysid = rd_u16(&p) & 0xfffu;
+        r->sys.valid = r->sys.sysid != 0;
+    }
+    return true;
+}
+
+static void roster_apply(p25_scan_ctrl_t *sc, const roster_blob_t *r)
+{
+    p25_scan_roster_clear(sc);
+    sc->hold_tg = r->hold;
+    if (r->mode == P25_SCAN_LIST_ALLOW)
+        sc->list_mode = P25_SCAN_LIST_ALLOW;
+    else if (r->mode == P25_SCAN_LIST_NONE)
+        sc->list_mode = P25_SCAN_LIST_NONE;
+    else
+        sc->list_mode = P25_SCAN_LIST_OFF;
+    sc->lockout_count = r->lc;
+    sc->allow_count   = r->ac;
+    memcpy(sc->lockout, r->lockout, (size_t)r->lc * 2);
+    memcpy(sc->allow, r->allow, (size_t)r->ac * 2);
+    sc->roster_sys = r->sys;
+    sc->roster_follow_off = r->follow_off;
 }
 
 bool p25_scan_persist_load(p25_scan_ctrl_t *sc, const uint8_t *buf,
                            size_t buf_len)
 {
     if (!sc) return false;
-    if (!buf || buf_len < 12) return false;
-    const uint8_t *p = buf;
-    uint32_t magic = rd_u32(&p);
-    uint16_t ver   = rd_u16(&p);
-    (void)rd_u16(&p);
-    if (magic != P25_SCAN_NVS_MAGIC || ver != P25_SCAN_NVS_VER) return false;
-
-    /* Header consumed 8 bytes; body-scalar block is 8 more (hold + mode +
-     * pad + lc + ac). Then per-entry arrays. */
-    if (buf_len < 8 + 8) return false;
-    uint16_t hold = rd_u16(&p);
-    uint8_t  mode = rd_u8(&p);
-    (void)rd_u8(&p);
-    uint16_t lc   = rd_u16(&p);
-    uint16_t ac   = rd_u16(&p);
-
-    if (lc > P25_SCAN_LOCKOUT_MAX || ac > P25_SCAN_ALLOW_MAX) return false;
-    size_t need = 16 + (size_t)lc * 2 + (size_t)ac * 2;
-    if (buf_len < need) return false;
-
+    static roster_blob_t r;   /* ~270 B; owner task and bench only */
+    if (!roster_parse(buf, buf_len, &r)) return false;
     /* Only mutate on success. */
     p25_scan_init(sc);
-    sc->hold_tg = hold;
-    if (mode == P25_SCAN_LIST_ALLOW)
-        sc->list_mode = P25_SCAN_LIST_ALLOW;
-    else if (mode == P25_SCAN_LIST_NONE)
-        sc->list_mode = P25_SCAN_LIST_NONE;
-    else
-        sc->list_mode = P25_SCAN_LIST_OFF;
-    sc->lockout_count = lc;
-    sc->allow_count   = ac;
-    for (size_t i = 0; i < lc; i++) sc->lockout[i] = rd_u16(&p);
-    for (size_t i = 0; i < ac; i++) sc->allow[i]   = rd_u16(&p);
+    roster_apply(sc, &r);
+    return true;
+}
+
+bool p25_scan_persist_load_roster(p25_scan_ctrl_t *sc, const uint8_t *buf,
+                                  size_t buf_len)
+{
+    if (!sc) return false;
+    static roster_blob_t r;
+    if (!roster_parse(buf, buf_len, &r)) return false;
+    roster_apply(sc, &r);
     return true;
 }

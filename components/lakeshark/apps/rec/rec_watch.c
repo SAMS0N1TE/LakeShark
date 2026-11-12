@@ -36,6 +36,32 @@ static bool matches(const rec_watch_record_t *r, uint32_t hz, const int32_t *p, 
     }
     return true;
 }
+/* An FSK packet heard only in part - the LR2021's I/Q stream loses a few
+   ms now and then, and the decode ends early - came in as a new pattern:
+   a top-ranked one, so each fragment cluttered READ and could push out a
+   good capture. One that agrees edge for edge with the start of a pattern
+   already kept (same frequency and bit rate, at least half of it, the last
+   edge left out because a cut frame ends mid-bit) is that pattern heard
+   again; and a whole frame that a kept fragment is the start of replaces
+   it. 1: the incoming is the start of r; 2: r is the start of the
+   incoming; 0: neither. */
+static int fsk_prefix(const rec_watch_record_t *r, uint32_t hz, const int32_t *p, int n,
+                      const rec_fsk_mod_t *mod)
+{
+    if (!mod || !mod->bitrate || !r->event.id || r->event.frequency != hz ||
+        r->event.bitrate != mod->bitrate || r->event.edges == n) return 0;
+    const int shorter = n < r->event.edges ? n : r->event.edges;
+    const int longer = n < r->event.edges ? r->event.edges : n;
+    if (shorter < 24 || shorter * 2 < longer) return 0;
+    for (int i = 0; i < shorter - 1; i++) {
+        if ((p[i] < 0) != (r->pulse[i] < 0)) return 0;
+        uint32_t a = magnitude(p[i]), b = magnitude(r->pulse[i]);
+        uint32_t tolerance = b / 8;
+        if (tolerance < 30) tolerance = 30;
+        if ((a > b ? a-b : b-a) > tolerance) return 0;
+    }
+    return n < r->event.edges ? 1 : 2;
+}
 int rec_watch_observe(rec_watch_catalog_t *c, uint32_t hz,
     const int32_t *p, int n, uint32_t boot, uint64_t ms,
     int peak, int reason, bool *novel)
@@ -63,19 +89,29 @@ int rec_watch_observe_mod(rec_watch_catalog_t *c, rec_source_t source, uint32_t 
     if (span > UINT32_MAX) return -1;
     if (!c->archive_id) c->archive_id=((uint64_t)boot<<32)|hz;
     rec_ook24_t incoming;
-    int incoming_rank=rec_decode_ook24(p,n,&incoming)?3:1;
+    /* A demodulated capture is a packet whose sync word matched: as
+       qualified as a decoded OOK24 frame. Ranked as noise, it could never
+       take a slot from a full catalog and every FSK packet was lost. */
+    int incoming_rank=(mod && mod->bitrate) || rec_decode_ook24(p,n,&incoming)?3:1;
     int slot = -1, slot_rank=99, slot_class=99;
     for (int i = 0; i < REC_WATCH_SLOTS; i++) {
-        if (c->record[i].event.source == source && matches(&c->record[i], hz, p, n)) {
+        const int prefix = c->record[i].event.source == source ?
+                           fsk_prefix(&c->record[i], hz, p, n, mod) : 0;
+        if (c->record[i].event.source == source && (prefix || matches(&c->record[i], hz, p, n))) {
             rec_watch_event_t *e = &c->record[i].event;
             if (e->count < UINT32_MAX) e->count++;
             e->last_ms = ms; e->last_boot = boot; e->order = ++c->sequence;
             if (peak > e->peak) e->peak = peak;
+            if (prefix == 2) {
+                memcpy(c->record[i].pulse, p, (size_t)n * sizeof(*p));
+                e->edges = (uint16_t)n; e->span_us = (uint32_t)span; e->end_reason = (uint8_t)reason;
+            }
             return i;
         }
         const rec_watch_record_t *candidate=&c->record[i];
         rec_ook24_t decoded;
         int rank=!candidate->event.id?0:
+            candidate->event.bitrate ||
             rec_decode_ook24(candidate->pulse,candidate->event.edges,&decoded)?3:
             candidate->event.count>1?2:1;
         /* Which source it belongs to, as a tiebreaker only - an empty slot
@@ -151,7 +187,13 @@ void rec_watch_filter_status(rec_watch_status_t *out,rec_source_t source)
     int count=0;
     for(int i=0;i<out->count && i<REC_WATCH_SLOTS;i++) if(out->event[i].source==source) {
         out->event[count]=out->event[i];out->decoded[count]=out->decoded[i];
-        if(count!=i)memcpy(out->preview[count],out->preview[i],sizeof(out->preview[count]));
+        /* Every per-slot reading moves with its event: left in place, the
+           list printed one capture beside another's decode and device. */
+        out->pwm[count]=out->pwm[i];out->nrz[count]=out->nrz[i];
+        if(count!=i) {
+            memcpy(out->preview[count],out->preview[i],sizeof(out->preview[count]));
+            memcpy(out->ism[count],out->ism[i],sizeof(out->ism[count]));
+        }
         count++;
     }
     out->count=count;

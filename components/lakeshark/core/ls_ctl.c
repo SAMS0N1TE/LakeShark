@@ -46,6 +46,7 @@
 #include "lr_wf_session.h"
 #include "lr_chip_wf.h"
 #include "p25_lr_wide.h"
+#include "scan_ctrl.h"
 #include "p25_lr_frontend.h"
 #include "dsp_pipeline.h"
 #include "esp_cpu.h"
@@ -377,9 +378,9 @@ static int cmd_scan(int argc, char **argv)
 static int cmd_p25tsbk(int argc, char **argv)
 {
     (void)argc; (void)argv;
-    /* 2 KiB is enough for a full 16-slot IDEN table + 16 neighbours +
-     * every unhandled opcode counter, and fits on the REPL stack. */
-    static EXT_RAM_BSS_ATTR char buf[2048];
+    /* 3 KiB holds a full 16-slot IDEN table, 16 neighbours and every
+     * unhandled and vendor opcode counter. */
+    static EXT_RAM_BSS_ATTR char buf[3072];
     size_t n = p25_tsbk_status_format(&s_dsd_state, buf, sizeof(buf));
     if (n > 0) fputs(buf, stdout);
     if (n >= sizeof(buf)) LS_PRINTF(t_ls_ctl_truncated_zu_bytes, "[truncated - %zu bytes]\n", n);
@@ -741,6 +742,115 @@ static int p25_lr_command(int argc, char **argv)
    boot state) pins P25's narrow capture; on pins wide for P25's own
    session; follow takes the shared WIDE I/Q setting. Not saved. Prints each path's
    hops (start or grant to the first block of the new channel). */
+/* p25 follow: what became of the voice grants. One line of follower
+   counters, one of outcomes, then the last few grants that were not
+   duplicates, newest first. */
+static int p25_follow_command(int argc, char **argv)
+{
+    if (argc >= 1) {
+        if (!strcmp(argv[0], "on") || !strcmp(argv[0], "off")) {
+            /* Same path as the TRUNKING row: saved, and posted to the owner. */
+            const bool on = !strcmp(argv[0], "on");
+            printf("P25FOLLOW auto-follow %s: %s\n", on ? "on" : "off",
+                   p25_set_auto_follow(on) ? "ok" : "failed");
+            return 0;
+        }
+        if (argc >= 2 && !strcmp(argv[0], "list")) {
+            /* Same path as the Talkgroups > Allow list mode row; saved. */
+            int mode = !strcmp(argv[1], "off") ? P25_SCAN_LIST_OFF
+                     : !strcmp(argv[1], "allow") ? P25_SCAN_LIST_ALLOW
+                     : !strcmp(argv[1], "none") ? P25_SCAN_LIST_NONE : -1;
+            if (mode >= 0) {
+                printf("P25FOLLOW list %s: %s\n", argv[1],
+                       p25_ui_policy(P25_UI_LIST_MODE, (uint16_t)mode) ? "ok" : "failed");
+                return 0;
+            }
+        }
+        if (argc >= 2 && !strcmp(argv[0], "linger")) {
+            const unsigned ms = (unsigned)strtoul(argv[1], NULL, 10);
+            printf("P25FOLLOW linger %u ms: %s\n", ms,
+                   p25_set_follow_linger_ms(ms) ? "ok" : "failed (0-10000)");
+            return 0;
+        }
+        puts("usage: p25 follow [on|off | list off|allow|none | linger <ms>]");
+        return 1;
+    }
+    const p25_scan_ctrl_t *sc = &g_p25_scan;
+    static const char *const list_name[] = { "off", "allow", "none" };
+    printf("P25FOLLOW list=%s allowed=%u:", (unsigned)P25.list_mode < 3
+               ? list_name[P25.list_mode] : "?", (unsigned)P25.allow_count);
+    for (unsigned i = 0; i < P25.allow_count && i < 64; i++) {
+        if (i == 16) { printf(" ..."); break; }
+        printf(" %u", (unsigned)P25.allow[i]);
+    }
+    printf("\n");
+    char rs[24], cs[24];
+    if (sc->roster_sys.valid)
+        snprintf(rs, sizeof(rs), "%05lX-%03X", (unsigned long)sc->roster_sys.wacn,
+                 (unsigned)sc->roster_sys.sysid);
+    else
+        snprintf(rs, sizeof(rs), sc->roster_pending_bind ? "unscoped(new)" : "unscoped");
+    if (sc->current_sys.valid)
+        snprintf(cs, sizeof(cs), "%05lX-%03X", (unsigned long)sc->current_sys.wacn,
+                 (unsigned)sc->current_sys.sysid);
+    else
+        snprintf(cs, sizeof(cs), "unknown");
+    printf("P25FOLLOW roster=%s here=%s applies=%s switches=%lu\n", rs, cs,
+           p25_scan_roster_applies(sc, esp_timer_get_time()) ? "yes" : "no",
+           (unsigned long)sc->roster_switches);
+    printf("P25FOLLOW auto=%s (switch=%s system-off=%s) p2follow=%s system=%s state=%u on_traffic=%d tg=%u\n",
+           P25.grant_auto_follow ? "on" : "off", sc->auto_follow ? "on" : "off",
+           sc->roster_follow_off ? "yes" : "no", P25.phase2_follow ? "on" : "off",
+           P25.grant_system_valid ? "valid" : "unknown", (unsigned)P25.receive_state,
+           (int)P25.grant_on_traffic, (unsigned)P25.grant_talkgroup);
+    printf("P25FOLLOW followed=%lu returned=%lu duplicate=%lu foreign=%lu enc_skips=%lu "
+           "unsupported=%lu unresolved=%lu p2_seen=%lu relocks=%lu\n",
+           (unsigned long)P25.grant_followed_count, (unsigned long)P25.grant_returned_count,
+           (unsigned long)P25.grant_duplicate_count, (unsigned long)P25.grant_foreign_count,
+           (unsigned long)P25.p25_enc_skips, (unsigned long)P25.grant_unsupported_count,
+           (unsigned long)P25.grant_unresolved_count, (unsigned long)P25.grant_phase2_seen,
+           (unsigned long)P25.control_relock_count);
+    printf("P25FOLLOW outcomes:");
+    for (int i = 0; i < P25_FOLLOW_OUTCOME_COUNT; i++)
+        printf(" %s=%lu", p25_follow_outcome_name((p25_follow_outcome_t)i),
+               (unsigned long)sc->follow_outcomes[i]);
+    printf("\nP25FOLLOW linger=%u ms lingers=%lu caught=%lu\n", p25_get_follow_linger_ms(),
+           (unsigned long)P25.grant_lingers, (unsigned long)P25.grant_linger_catches);
+    {
+        static const unsigned edges[P25_OVER_GAP_BUCKETS] = P25_OVER_GAP_EDGES_MS;
+        printf("P25FOLLOW next-over gap ms (caught/regranted):");
+        for (int i = 0; i < P25_OVER_GAP_BUCKETS; i++)
+            printf(" <%u:%lu/%lu", edges[i], (unsigned long)P25.over_gap_caught[i],
+                   (unsigned long)P25.over_gap_regrant[i]);
+        printf("\n");
+    }
+    printf("P25FOLLOW audio cuts=%lu worst=%lu ms underruns=%lu (cuts: silences inside an over that audio resumed from)\n",
+           (unsigned long)audio_cuts_get(), (unsigned long)audio_cut_worst_ms_get(),
+           (unsigned long)audio_underruns_get());
+    printf("P25FOLLOW policy: lockout=%lu hold=%lu allow=%lu preempt=%lu mot_grants=%u\n",
+           (unsigned long)sc->lockout_hits, (unsigned long)sc->hold_stays,
+           (unsigned long)sc->allow_rejects, (unsigned long)sc->priority_preempts,
+           s_dsd_state.p25_mot_grant_count);
+    static const char *const support[] = {
+        "none", "p1", "unsupported", "no-iden", "invalid", "p2" };
+    const int64_t now = esp_timer_get_time();
+    const uint32_t total = sc->follow_trace_total;
+    const uint32_t n = total < P25_FOLLOW_TRACE_LEN ? total : P25_FOLLOW_TRACE_LEN;
+    for (uint32_t k = 0; k < n; k++) {
+        const p25_follow_trace_t *t = &sc->follow_trace[(total - 1 - k) % P25_FOLLOW_TRACE_LEN];
+        printf("  %5.1fs ago tg=%u ch=$%04x %.4f MHz slot %u/%u %s -> %s%s%s\n",
+               (double)(now - t->at_us) / 1e6, (unsigned)t->talkgroup, (unsigned)t->channel,
+               (double)t->carrier_hz / 1e6, (unsigned)t->slot, (unsigned)t->slots,
+               t->support < sizeof(support) / sizeof(support[0]) ? support[t->support] : "?",
+               p25_follow_outcome_name((p25_follow_outcome_t)t->outcome),
+               t->outcome == P25_FOLLOW_POLICY ? " " : "",
+               t->outcome == P25_FOLLOW_POLICY
+                   ? p25_scan_reason_name((p25_scan_reason_t)t->reason) : "");
+    }
+    if (!n) puts("  no voice grants yet");
+    return 0;
+}
+
 static int p25_lrwide_command(int argc, char **argv)
 {
     if (argc >= 1) {
@@ -885,6 +995,8 @@ static int cmd_p25(int argc, char **argv)
         return p25_lr_command(argc - 2, argv + 2);
     if (argc >= 2 && !strcmp(argv[1], "lrwide"))
         return p25_lrwide_command(argc - 2, argv + 2);
+    if (argc >= 2 && !strcmp(argv[1], "follow"))
+        return p25_follow_command(argc - 2, argv + 2);
     if (argc >= 2 && !strcmp(argv[1], "sym"))
         return p25_sym_command(argc - 2, argv + 2);
     if (argc >= 2 && !strcmp(argv[1], "imbe"))
@@ -897,7 +1009,7 @@ static int cmd_p25(int argc, char **argv)
         return p25_iq_capture_command(argc - 2, argv + 2,
             (uint32_t)(esp_timer_get_time() / 1000LL));
     if (argc != 2 || strcmp(argv[1], "acquisition")) {
-        LS_PUTS(msg_ls_ctl_usage_p25_acquisition_profile, "usage: p25 acquisition | profile [name] | capture start [blocks] | status | cancel | read <offset> [bytes] | save [name] | free");
+        LS_PUTS(msg_ls_ctl_usage_p25_acquisition_profile, "usage: p25 acquisition | follow [on|off|list off|allow|none|linger <ms>] | profile [name] | capture start [blocks] | status | cancel | read <offset> [bytes] | save [name] | free");
         return 0;
     }
     return print_p25_acquisition();

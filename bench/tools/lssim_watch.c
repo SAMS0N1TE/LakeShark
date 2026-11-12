@@ -5,11 +5,25 @@
 #include "esp_timer.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 static rec_watch_status_t state;
 static ls_mixrf_status_t mix;
 static rec_source_t source;
-rec_source_t rec_watch_source(void){return source;}
-bool rec_watch_select_source(rec_source_t next){if(state.enabled)return false;source=next;return true;}
+/* LSSIM_SUBGHZ_SRC=lora or cc1101 starts READ on that receiver, so a shot of
+   something only one of them has (LEARN on the LoRa chip) needs no picker
+   walk. Read once; the tests never set it. */
+static bool source_read;
+rec_source_t rec_watch_source(void)
+{
+    if(!source_read) {
+        source_read=true;
+        const char *e=getenv("LSSIM_SUBGHZ_SRC");
+        if(e && !strcmp(e,"lora"))source=REC_SOURCE_SX1262;
+        else if(e && !strcmp(e,"cc1101"))source=REC_SOURCE_CC1101;
+    }
+    return source;
+}
+bool rec_watch_select_source(rec_source_t next){if(state.enabled)return false;source_read=true;source=next;return true;}
 bool ls_mixrf_capture(bool on,uint32_t hz){if(!ls_mixrf_cc_request(&mix,LS_MIXRF_OWNER_REC,on,hz,false))return false;mix.capturing=on;mix.frequency=hz;return true;}
 static uint32_t frequency=433920000;
 bool ls_mixrf_start(void){mix.ready=mix.keyboard=mix.power=mix.cc=mix.nfc=mix.nrf=true;mix.cc_version=0x14;mix.nfc_identity=0x2a;strcpy(mix.status,"SIMULATED keyboard radios");return true;}
@@ -35,12 +49,21 @@ void rec_set_min_edges(int n){minimum_edges=n;}
 uint32_t rec_get_freq(void){return frequency;}
 bool rec_set_freq(uint32_t hz){if(state.enabled)return false;frequency=hz;return true;}
 const char *rec_end_reason_name(int reason){return reason==1?"gap":"limit";}
+void rec_watch_sim_hits(int n);
 bool rec_watch_start(void)
 {
     state.ready=true;
     strcpy(state.storage,"SIMULATED archive; 2 files, < 520 KiB");
     state.count=3;
     for(int i=0;i<3;i++)state.event[i]=(rec_watch_event_t){.id=i+1,.frequency=433920000,.count=20+i,.edges=24,.span_us=8400};
+    /* LSSIM_SUBGHZ_FILL: every capture slot used and a long detection
+       list, for the lists that have to scroll. */
+    if(getenv("LSSIM_SUBGHZ_FILL")) {
+        state.count=REC_WATCH_SLOTS;
+        for(int i=3;i<REC_WATCH_SLOTS;i++)
+            state.event[i]=(rec_watch_event_t){.id=i+1,.frequency=433000000+i*25000,.count=1+i,.edges=24,.span_us=8400,.order=(uint32_t)i};
+        rec_watch_sim_hits(32);
+    }
     for(int i=0;i<3;i++)for(int j=0;j<24;j++)state.preview[i][j]=(j%2?-1:1)*(j%3?300:600);
     int32_t pulse[100];
     for(int frame=0;frame<2;frame++) {
@@ -62,7 +85,8 @@ bool rec_watch_start(void)
     rec_decode_ook24(pulse,100,&state.decoded[0]);
     return true;
 }
-bool rec_watch_enable(bool on){state.enabled=on;return true;}
+static bool sim_loading;
+bool rec_watch_enable(bool on){if(on && sim_loading)return false;state.enabled=on;return true;}
 bool rec_watch_enabled(void){return state.enabled;}
 /* The bench has no radio to refuse a session, so nothing ever went wrong
    and the reason is always empty. */
@@ -95,6 +119,7 @@ static bool sim_sweeping;
 static int  sim_found;
 static rec_scan_bin_t sim_bin[REC_SCAN_BINS];
 static bool sim_learning,sim_learn_pending;
+static bool sim_learned;
 bool rec_watch_request_scan(uint32_t lo,uint32_t hi,uint32_t secs,int bins)
 {
     (void)secs;(void)bins;
@@ -107,17 +132,22 @@ bool rec_watch_request_scan(uint32_t lo,uint32_t hi,uint32_t secs,int bins)
     return true;
 }
 bool rec_watch_scan_busy(void){return sim_sweeping;}
-int rec_watch_scan_progress(void){return sim_sweeping?50:0;}
-const char *rec_watch_scan_stage(void){return sim_sweeping?"Sweeping":"";}
+/* A learn reports through the same two as a sweep, as the runtime's does. */
+int rec_watch_scan_progress(void){return sim_learning?40:sim_sweeping?50:0;}
+const char *rec_watch_scan_stage(void){return sim_learning?"Trying 2400 baud":sim_sweeping?"Sweeping":"";}
 /* A fixed picture while sweeping - noise, one strong carrier and one weak
    one - so the analyser's columns, gate and peak marker can be looked at. */
+static float sim_strong_dbm=-74.0f;
+void rec_watch_sim_strong(float dbm){sim_strong_dbm=dbm;}
+/* WATCH's receiver still coming up: not ready, and WATCH refused. */
+void rec_watch_sim_ready(bool ready){state.ready=ready;sim_loading=!ready;}
 int rec_watch_scan_live(rec_scan_bin_t *o,int m)
 {
     if(!sim_sweeping||!o)return 0;
     int n=m<32?m:32;
     for(int i=0;i<n;i++){
         float d=-112.0f+(float)((i*7)%5);
-        if(i==9)d=-74.0f;
+        if(i==9)d=sim_strong_dbm;
         if(i==10)d=-96.0f;
         if(i==23)d=-88.0f;
         o[i].hz=433050000u+(uint32_t)i*54000u;
@@ -127,15 +157,23 @@ int rec_watch_scan_live(rec_scan_bin_t *o,int m)
     return n;
 }
 float rec_watch_scan_live_floor(void){return -120.0f;}
+float rec_watch_scan_live_spread(void){return 0.0f;}
 int rec_watch_scan_hits(void){return sim_found;}
+/* A LEARN asked to stop still owns the radio until the worker returns;
+   lingering keeps it running past STOP until rec_watch_sim_result. */
+static bool sim_learn_lingers,sim_rewatch;
+static void sim_learn_ended(void){if(sim_rewatch){sim_rewatch=false;state.enabled=true;}}
 void rec_watch_scan_stop(void){
     if(sim_sweeping){sim_sweeping=false;state.scan_generation++;strcpy(state.scan_result,"Scan stopped");}
-    if(sim_learning){sim_learning=false;state.learn_generation++;strcpy(state.learn_result,"Learn stopped");}
+    if(sim_learning && !sim_learn_lingers){sim_learning=false;sim_learned=false;state.learn_generation++;strcpy(state.learn_result,"Learn stopped");sim_learn_ended();}
 }
+bool rec_watch_learn_rewatch(void){if(!sim_learning)return false;sim_rewatch=true;return true;}
+void rec_watch_sim_learn_lingers(bool on){sim_learn_lingers=on;}
 static rec_scan_on_hit_t sim_on_hit=REC_SCAN_ON_HIT_BUZZ;
 void rec_watch_scan_on_hit(rec_scan_on_hit_t m){sim_on_hit=m;}
 rec_scan_on_hit_t rec_watch_scan_on_hit_get(void){return sim_on_hit;}
-uint32_t rec_watch_scan_last_hit(void){return 0;}
+static uint32_t sim_last_hit;
+uint32_t rec_watch_scan_last_hit(void){return sim_last_hit;}
 static float sim_gate=REC_SCAN_DETECT_DB;
 float rec_watch_scan_threshold(void){return sim_gate;}
 void rec_watch_scan_set_threshold(float db){sim_gate=db;}
@@ -157,9 +195,8 @@ float rec_watch_scan_floor(void){return -120.0f;}
    reading once it has been asked - the screen's job is to lay it out and
    say how sure it is, and neither can be checked against a function that
    never returns anything. */
-static bool sim_learned;
 bool rec_watch_request_learn(uint32_t secs)
-{(void)secs;if(state.enabled || sim_sweeping)return false;sim_learned=true;if(sim_learn_pending){sim_learning=true;return true;}state.learn_generation++;strcpy(state.learn_result,"Learn: 2400 baud, sync D391D391, 76% confident");return true;}
+{(void)secs;if(state.enabled || sim_sweeping || sim_learning)return false;sim_learned=true;sim_rewatch=false;if(sim_learn_pending || getenv("LSSIM_LEARN_BUSY")){sim_learning=true;return true;}state.learn_generation++;strcpy(state.learn_result,"Learn: 2400 baud, sync D391D391, 76% confident");return true;}
 bool rec_watch_learn_busy(void){return sim_learning;}
 bool rec_watch_learn_result(rec_learn_t *out)
 {
@@ -194,7 +231,21 @@ bool ls_mixrf_card_scan(bool on){mix.card_requested=mix.card_scanning=on;mix.car
 /* Standalone watch fixtures have no finger; lssim has its own (lssim_input.c).
    Not weak: a weak definition is not found across objects by the MinGW linker. */
 #ifndef LSSIM_HAS_INPUT_FINGER
-bool ls_tui_touch_held(int *sc,int *sr,int *c,int *r){(void)sc;(void)sr;(void)c;(void)r;return false;}
+/* One scripted finger, for a control that follows a drag: down at (sc,sr),
+   now at (c,r). */
+static bool sim_held;
+static int sim_sc,sim_sr,sim_c,sim_r;
+void rec_watch_sim_finger(bool down,int sc,int sr,int c,int r)
+{sim_held=down;sim_sc=sc;sim_sr=sr;sim_c=c;sim_r=r;}
+bool ls_tui_touch_held(int *sc,int *sr,int *c,int *r)
+{
+    if(!sim_held)return false;
+    if(sc)*sc=sim_sc;
+    if(sr)*sr=sim_sr;
+    if(c)*c=sim_c;
+    if(r)*r=sim_r;
+    return true;
+}
 bool ls_tui_touch_px(int *x,int *y,int *x0,int *y0,int64_t *since)
 {(void)x;(void)y;(void)x0;(void)y0;(void)since;return false;}
 bool ls_tui_touch_input_held(int *sc,int *sr,int *c,int *r)
@@ -236,13 +287,32 @@ void rec_watch_sim_hits(int n)
     }
 }
 void rec_watch_sim_learn_pending(bool pending){sim_learn_pending=pending;}
+/* ON DETECTION LISTEN, as the runtime does it: the sweep stops on its first
+   hit, the receiver is tuned there, and WATCH starts when READ's radio is
+   the one that swept. */
+void rec_watch_sim_catch(uint32_t hz)
+{
+    sim_last_hit=hz;frequency=hz;sim_sweeping=false;
+    state.scan_generation++;
+    snprintf(state.scan_result,sizeof(state.scan_result),"Caught %.4f MHz - receiver started",hz/1e6);
+    if(source==REC_SOURCE_SX1262)state.enabled=true;
+}
+/* A learn result that names a rate is one that found something; any other
+   is a learn that ended with nothing to apply, as the runtime's does. */
 void rec_watch_sim_result(bool learn,const char *result)
 {
-    if(learn){sim_learning=false;state.learn_generation++;snprintf(state.learn_result,sizeof(state.learn_result),"%s",result);}
+    if(learn){sim_learning=false;sim_learned=strstr(result,"baud")!=NULL;state.learn_generation++;snprintf(state.learn_result,sizeof(state.learn_result),"%s",result);sim_learn_ended();}
     else {sim_sweeping=false;state.scan_generation++;snprintf(state.scan_result,sizeof(state.scan_result),"%s",result);}
 }
 
-bool rec_watch_iq_record(uint32_t hz){(void)hz;return false;}
-void rec_watch_iq_stop(void){}
-bool rec_watch_iq_status(char *out,size_t len){if(out && len)out[0]=0;return false;}
+/* An LR2021 I/Q recording as the screen sees it: busy until it is stopped or
+   the bench says it finished, then a result line. */
+static bool sim_iq_busy;
+static char sim_iq_result[112];
+static bool sim_iq_refuse;
+bool rec_watch_iq_record(uint32_t hz){(void)hz;if(state.enabled || sim_iq_busy || sim_iq_refuse)return false;sim_iq_busy=true;sim_iq_result[0]=0;return true;}
+void rec_watch_sim_iq_refuse(bool on){sim_iq_refuse=on;}
+void rec_watch_iq_stop(void){if(sim_iq_busy){sim_iq_busy=false;snprintf(sim_iq_result,sizeof(sim_iq_result),"I/Q stopped");}}
+bool rec_watch_iq_status(char *out,size_t len){if(out && len)snprintf(out,len,"%s",sim_iq_result);return sim_iq_busy;}
+void rec_watch_sim_iq_done(const char *result){sim_iq_busy=false;snprintf(sim_iq_result,sizeof(sim_iq_result),"%s",result);}
 bool rec_watch_iq_packet(char *out,size_t len){if(out && len)out[0]=0;return false;}

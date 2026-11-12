@@ -2,8 +2,10 @@
 #define LS_NFC_SUITE_HOST 1
 #include <stdint.h>
 #include <sys/stat.h>
+#ifdef _WIN32
 #include <direct.h>
 #define mkdir(path,mode) _mkdir(path)
+#endif
 static uint32_t esp_random(void){return 42;}
 #include "../../components/lakeshark/nfc/ls_nfc_suite.c"
 static ls_mixrf_status_t radio;

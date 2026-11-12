@@ -1,5 +1,7 @@
 #include "ls_test.h"
 #include <setjmp.h>
+/* glibc 2.38+ declares strlcpy; keep the test copy under its own name */
+#define strlcpy ls_test_strlcpy
 static size_t strlcpy(char *out, const char *in, size_t n)
 { size_t len = strlen(in); if (n) snprintf(out, n, "%s", in); return len; }
 #include "../../components/lakeshark/core/settings.c"
@@ -10,6 +12,8 @@ static set_write_t queued[SET_Q_DEPTH];
 static int queued_n, queued_read, commit_count;
 static bool reject_write, live_ring, live_vibe, muted;
 static int boot_saved, ring_saved, vibe_saved, volume, timeout;
+static bool haptic_on;
+static int haptic_plays, haptic_stops;
 static int lr_iq_saved = -1;
 static int nvs_reads;
 static jmp_buf worker_done;
@@ -68,6 +72,10 @@ esp_err_t ls_nvs_run(ls_nvs_fn_t fn, void *ctx, unsigned bytes)
 void ls_notify_set_alerts(bool r, bool v) { live_ring = r; live_vibe = v; }
 bool ls_notify_ring(void) { return live_ring; }
 bool ls_notify_vibe(void) { return live_vibe; }
+bool ls_haptic_enabled(void) { return haptic_on; }
+void ls_haptic_set_enabled(bool on) { haptic_on = on; }
+void ls_haptic_stop(void) { haptic_stops++; }
+bool ls_haptic_play(ls_haptic_effect_t e) { (void)e; haptic_plays++; return true; }
 bool speech_available(void) { return true; }
 int audio_volume_get(void) { return volume; }
 void audio_volume_set(int v) { volume = v; }
@@ -88,6 +96,8 @@ static void prepare(void)
     s_alert_ring = s_alert_vibe = true;
     live_ring = live_vibe = true;
     ring_saved = vibe_saved = 1;
+    haptic_on = true;
+    haptic_plays = haptic_stops = 0;
 }
 static void flush(void)
 {
@@ -126,6 +136,9 @@ LS_CASE(rapid_alert_edits_preserve_live_flags_before_delayed_commit)
     LS_CHECK(!settings_get_alert_ring() && !live_ring && live_vibe);
     vibe_next();
     LS_CHECK(!settings_get_alert_vibe() && !live_ring && !live_vibe);
+    LS_CHECK(!haptic_on);
+    LS_EQ_INT(1, haptic_stops);
+    LS_EQ_INT(0, haptic_plays);
     LS_EQ_INT(1, ring_saved);
     LS_EQ_INT(1, vibe_saved);
     LS_EQ_INT(0, commit_count);
@@ -141,6 +154,8 @@ LS_CASE(rapid_double_toggles_and_boot_cycles_use_accepted_choices)
     ring_next(); ring_next(); vibe_next(); vibe_next();
     LS_CHECK(settings_get_alert_ring() && live_ring);
     LS_CHECK(settings_get_alert_vibe() && live_vibe);
+    LS_CHECK(haptic_on);
+    LS_EQ_INT(1, haptic_plays);
     boot_next(); LS_EQ_INT(2, settings_get_boot_sound());
     boot_next(); LS_EQ_INT(0, settings_get_boot_sound());
     LS_EQ_INT(1, boot_saved);

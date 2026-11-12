@@ -36,9 +36,9 @@ static void fx_write_raw(const char *name, const char *body)
 
 static bool fx_path_is_gone(const char *path)
 {
-    struct _stat st;
+    struct stat st;
     errno = 0;
-    return _stat(path, &st) != 0 && errno == ENOENT;
+    return stat(path, &st) != 0 && errno == ENOENT;
 }
 
 static bool fx_remove_file(const char *path)

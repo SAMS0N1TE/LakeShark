@@ -100,6 +100,10 @@ void settings_set_desk_wallpaper(uint32_t id);
 #define SETTINGS_DESK_WORDS 24
 uint32_t settings_get_desk_word(int slot);
 void settings_set_desk_word(int slot, uint32_t v);
+/* FREQS: band, sort, NEAR and the bank in view, packed by the screen
+   (scr_freqs.c owns the layout); 0 until set. */
+uint32_t settings_get_freqs_view(void);
+void settings_set_freqs_view(uint32_t v);
 
 bool settings_get_audio_mute(void);
 void settings_set_audio_mute(bool muted);
@@ -181,6 +185,10 @@ void settings_set_p25_lr_gain(int step);
 bool settings_get_alert_ring(void);
 void settings_set_alert_ring(bool en);
 bool settings_get_alert_vibe(void);
+/* The board's master vibration switch (ls_haptic_set_enabled): on unless
+   turned off, and kept across a restart. */
+bool settings_get_haptics(void);
+void settings_set_haptics(bool on);
 
 /* Sub-GHz scan preferences. Every one of these is something an operator
    changes while using the thing, so every one of them survives a reboot -
@@ -211,6 +219,8 @@ int  settings_get_adsb_follow(void);
 void settings_set_adsb_follow(int mode);
 int  settings_get_subghz_style(void);        /* spectrum grain             */
 void settings_set_subghz_style(int style);
+bool settings_get_subghz_lr_fsk(void);       /* LR2021 WATCH: FSK, not OOK */
+void settings_set_subghz_lr_fsk(bool fsk);
 int  settings_get_subghz_colour(void);       /* spectrum palette           */
 void settings_set_subghz_colour(int colour);
 /* The FSK receive parameters, which are the ones that take real effort to
@@ -282,6 +292,11 @@ int  settings_get_scan_zone(void);
 uint8_t settings_get_scan_options(void);
 bool settings_set_scan_options(uint8_t options);
 void settings_set_scan_zone(int zone);
+/* The scan's Hang time, Open at and Priority look, which reset at every boot
+   while Zone and the list switches beside them were kept. False when never
+   saved; values are as scan_engine_set_* take them. */
+bool settings_get_scan_tuning(int *hang_ms, int *thresh_pct, int *pri_ms);
+void settings_set_scan_tuning(int hang_ms, int thresh_pct, int pri_ms);
 
 int  settings_get_p25_demod(void);
 void settings_set_p25_demod(int mode_idx);
@@ -293,8 +308,17 @@ bool     settings_get_p25_auto_follow(void);
 bool     settings_set_p25_auto_follow(bool enabled);
 bool     settings_get_p25_skip_encrypted(void);
 bool     settings_set_p25_skip_encrypted(bool enabled);
+/* Phase II grant following: off until switched on, then kept across restarts. */
+bool     settings_get_p25_phase2_follow(void);
+bool     settings_set_p25_phase2_follow(bool enabled);
 uint32_t settings_get_p25_encrypted_skip_ms(void);
 bool     settings_set_p25_encrypted_skip_ms(uint32_t ms);
+/* Measured on Manatee-Sarasota: the next over comes at 250-500 ms (re-key)
+ * or 1-1.5 s (reply); 1.5 s catches both. */
+#define P25_FOLLOW_LINGER_DEFAULT_MS 1500u
+#define P25_FOLLOW_LINGER_MAX_MS     5000u
+uint32_t settings_get_p25_linger_ms(void);
+bool     settings_set_p25_linger_ms(uint32_t ms);
 void     settings_get_p25_cqpsk(p25_cqpsk_config_t *config);
 bool     settings_set_p25_cqpsk(const p25_cqpsk_config_t *config);
 

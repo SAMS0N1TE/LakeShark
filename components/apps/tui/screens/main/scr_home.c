@@ -43,7 +43,7 @@ static const char *const GROUPS[] = {"RADIO", "FIELD", "SYSTEM", "USER"};
    FIELD, then SYSTEM. A built-in missing from this list still appears, at
    the end of RADIO, so a new app is never lost for want of a line here. */
 static const char *const LAYOUT[] = {
-    "p25", "fm", "adsb", "falls", "mesh", "subghz", "digi", "labs", "rec", "radio", NULL,
+    "p25", "fm", "adsb", "freqs", "falls", "mesh", "subghz", "digi", "labs", "rec", "radio", NULL,
     "map", "gps", "compass", "notes", "sweep", "drones", "cell", NULL,
     "set", "link", "radios", "update", "diag", "files", "music", NULL,
 };

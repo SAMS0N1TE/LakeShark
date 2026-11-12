@@ -4,7 +4,10 @@ out=root/'bench/out/cell'
 out.mkdir(parents=True,exist_ok=True)
 build=root/os.environ.get('LS_CELL_BUILD','bench/build')
 ninja=(build/'build.ninja').read_text()
-block=ninja.split('build CMakeFiles/lssim.dir/tools/lssim.c.obj:',1)[1].split('\nbuild ',1)[0]
+# Windows builds name objects .obj and the program lssim.exe; Linux .o and lssim.
+obj_ext='.obj' if 'build CMakeFiles/lssim.dir/tools/lssim.c.obj:' in ninja else '.o'
+exe_ext='.exe' if 'build lssim.exe:' in ninja else ''
+block=ninja.split('build CMakeFiles/lssim.dir/tools/lssim.c'+obj_ext+':',1)[1].split('\nbuild ',1)[0]
 args=[]
 for name in ['DEFINES','INCLUDES','FLAGS']:
     line=re.search(r'^  '+name+r' = (.*)$',block,re.M).group(1)
@@ -41,6 +44,7 @@ static void seed_scan(const char *how){
         survey.mark[i]=(i>=31&&i<65)||(i>=69&&i<85)?1:0;
     }
     survey.plateaus=2;survey.candidates=2;survey.tunes=2;
+    survey.floor=cell_floor(survey.spectrum,96);
     survey.ppm_known=true;survey.ppm=9.6f;survey.ppm_spread=.4f;survey.ppm_cells=3;
     if(!strcmp(how,"run")){
         survey.busy=true;survey.phase=CELL_PH_SYNC;survey.tune=1;survey.frequency=881500000;survey.scan_ms=14300;
@@ -68,18 +72,70 @@ static void seed_scan(const char *how){
     }
     cell_count=n;survey.last.hz=889000000;survey.last.pci=17;
 }
+/* CELL_SURVEY=<band index> seeds a complete survey pass: receiver noise as
+ * the RTL reads it (25 kHz bins peak-held over the tune, about -63 dBFS and a
+ * few dB of scatter) under the carriers of an Argentine 700/800 MHz site,
+ * turned into columns, floor and carriers by the worker's own cell_columns.
+ * CELL_COMPARED adds a baseline; CELL_OVERLOAD a pass that clipped at 785.5. */
+static uint32_t lcg=12345;
+static int scatter(int span){lcg=lcg*1103515245u+12345u;return (int)((lcg>>16)%(unsigned)span);}
+static int synth(uint32_t hz){
+    static const struct {uint32_t lo,hi;int level;} carrier[]={
+        {758500000,767500000,-47},   /* Movistar B28 10 MHz */
+        {768500000,777500000,-52},   /* Personal B28 10 MHz */
+        {778750000,792250000,-41},   /* Claro B28 15 MHz */
+        {869700000,878300000,-50},{881000000,889000000,-56},
+    };
+    int v=-63+scatter(5);
+    if(!scatter(40))v+=2;
+    for(unsigned k=0;k<sizeof(carrier)/sizeof(carrier[0]);k++)
+        if(hz>=carrier[k].lo && hz<carrier[k].hi){int c=carrier[k].level-1+scatter(3);if(c>v)v=c;}
+    return v;
+}
+static int8_t survey_bins[CELL_MAX_BINS];
+static void seed_survey(unsigned b){
+    survey.lte=false;survey.band=b;survey.manual_site=false;
+    unsigned n=(cell_bands[b].high-cell_bands[b].low)/CELL_BIN;
+    for(unsigned i=0;i<n;i++)survey_bins[i]=(int8_t)synth(cell_bands[b].low+i*CELL_BIN+CELL_BIN/2);
+    survey.spectrum_count=96;
+    cell_plateau_t pl[CELL_PLATEAU_MAX];
+    survey.plateaus=cell_columns(survey_bins,n,cell_bands[b].low,CELL_BIN,survey.spectrum,survey.mark,96,pl,CELL_PLATEAU_MAX,&survey.floor);
+    memset(survey.reference,CELL_MISSING,sizeof(survey.reference));
+    bool compared=getenv("CELL_COMPARED")!=NULL && !getenv("CELL_OVERLOAD");
+    for(unsigned c=0;c<96;c++)survey.reference[c]=compared?(int8_t)(survey.spectrum[c]-1-scatter(3)):CELL_MISSING;
+    survey.compared=compared;survey.baseline=compared;survey.baseline_saved=compared;survey.quiet=true;
+    survey.passes=4;survey.tunes=survey.tune=n/4;survey.elapsed_ms=91300;
+    survey.frequency=cell_bands[b].low+(cell_bands[b].high-cell_bands[b].low)*2/3/CELL_RASTER_HZ*CELL_RASTER_HZ;
+    survey.rows=0;
+    for(unsigned i=0;i<n;i++){
+        unsigned j=0;while(j<survey.rows && survey.row[j].power>=survey_bins[i])j++;
+        if(j>=8)continue;
+        if(survey.rows<8)survey.rows++;
+        for(unsigned k=survey.rows-1;k>j;k--)survey.row[k]=survey.row[k-1];
+        survey.row[j].hz=cell_bands[b].low+i*CELL_BIN;survey.row[j].power=survey_bins[i];
+        survey.row[j].delta=compared?1:0;survey.row[j].flagged=false;
+    }
+    snprintf(survey.message,sizeof(survey.message),compared?"No persistent rise above threshold":"No baseline: LEARN captures three passes");
+    if(getenv("CELL_OVERLOAD")){
+        survey.overload=true;survey.overload_hz=785500000;survey.rails=61;survey.rail_samples=8192;
+        snprintf(survey.message,sizeof(survey.message),"RTL overloaded at 786 MHz - lower gain");
+    }
+}
 esp_err_t ls_imu_start(void){return 0;}
 bool cell_performance_active(void){return getenv("CELL_HIGH")!=NULL;}
 void cell_performance_reboot(bool x){printf("REBOOT %d\n",x);}
 void cell_monitor_init(void){
     snprintf(survey.message,sizeof(survey.message),"Select band, then LEARN or START");
-    survey.gated=true;survey.mib_on=true;
+    survey.gated=true;survey.mib_on=true;survey.gain=CELL_GAIN;survey.floor=CELL_MISSING;
+    if(getenv("CELL_GAIN_TENTHS"))survey.gain=atoi(getenv("CELL_GAIN_TENTHS"));
     if(getenv("CELL_LTE_HISTORY")){survey.lte=true;survey.band=0;cell_count=1;cells[0]=(cell_lte_t){.hz=881500000,.earfcn=2525,.pci=42,.hits=4,.sss=.9f,.rsrp10=CELL_NO_POWER};}
     if(getenv("CELL_LTE_SCAN"))seed_scan(getenv("CELL_LTE_SCAN"));
+    if(getenv("CELL_SURVEY"))seed_survey((unsigned)atoi(getenv("CELL_SURVEY")));
 }
 unsigned cell_monitor_cells(cell_lte_t *out,unsigned max){unsigned n=cell_count<max?cell_count:max;memcpy(out,cells,n*sizeof(cells[0]));return n;}
 void cell_monitor_set_full_scan(bool full){survey.gated=!full;}
 void cell_monitor_set_mib(bool on){survey.mib_on=on;}
+bool cell_monitor_set_gain(int t){if(!cell_gain_valid(t))return false;survey.gain=t;return true;}
 bool cell_monitor_clear_ppm(void){survey.ppm_known=false;return true;}
 bool cell_monitor_request(int j,unsigned b,bool m){survey.band=b;survey.manual_site=m;survey.busy=j!=CELL_LOAD;survey.lte=j==CELL_LTE;survey.learning=j==CELL_LEARN;return true;}
 void cell_monitor_stop(void){survey.busy=false;}
@@ -112,10 +168,10 @@ for src in [out/'lssim_cell.c',root/'components/apps/tui/screens/ext/scr_cell.c'
     obj=out/(src.stem+'.obj')
     subprocess.run([gcc,*args,'-c',str(src),'-o',str(obj)],check=True)
     objects.append(str(obj))
-line=next(l for l in ninja.splitlines() if l.startswith('build lssim.exe:'))
+line=next(l for l in ninja.splitlines() if l.startswith('build lssim'+exe_ext+':'))
 rule, inputs = line.split(': ', 1)[1].split(' ', 1)
 old=inputs.split(' |',1)[0].split()
-objects+=[str(build/o) for o in old if o!='CMakeFiles/lssim.dir/tools/lssim.c.obj']
+objects+=[str(build/o) for o in old if o!='CMakeFiles/lssim.dir/tools/lssim.c'+obj_ext]
 # C++ audio dependencies make CMake select a C++ linker even though the
 # replacement CELL sources above are C. Follow that choice for the same runtime.
 linker = gcc
@@ -134,4 +190,5 @@ libs=[str(build/w) if w.endswith('.a') else w
 flags=re.search(r'^\s*LINK_FLAGS = (.*)$',link_block,re.M)
 flags=flags.group(1).split() if flags else []
 (out/'link.rsp').write_text('\n'.join('"'+x.replace('\\','/')+'"' for x in objects+libs)+'\n-lm\n')
-subprocess.run([linker,*flags,'@'+str(out/'link.rsp'),'-o',str(out/'lssim-cell.exe')],check=True)
+# from the build directory: its link flags name files relative to it (link.d)
+subprocess.run([linker,*flags,'@'+str(out/'link.rsp'),'-o',str(out/'lssim-cell.exe')],check=True,cwd=str(build))

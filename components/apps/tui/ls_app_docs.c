@@ -131,6 +131,21 @@ const ls_app_doc_t ls_doc_journal = {
                 "rather than attached"),
 };
 
+const ls_app_doc_t ls_doc_freqs = {
+    .purpose = LS_TXT(doc_freqs_purpose, "One list of the frequencies worth knowing, for every app: find one "
+               "by band, group, name or how near it is, and TUNE hands it to the app that "
+               "can hear it. SAVE keeps one from here or from FM, SUB-GHZ, P25, LORA LABS "
+               "or CELL WATCH."),
+    .records     = LS_APP_RECORDS_MANUAL,
+    .record_note = LS_TXT(doc_freqs_record_note, "each saved frequency as a line of /sdcard/freqs/mine.csv: "
+                   "MHz, mode, name, group and the app it came from; banks are plain CSV "
+                   "files beside it that can be edited by hand"),
+    .gps      = LS_APP_GPS_NAVIGATES,
+    .gps_note = LS_TXT(doc_freqs_gps_note, "NEAR lists only the entries that have a place within their "
+                "radius of the fix, nearest first, and says NO FIX rather than guess; "
+                "nothing is saved with a position"),
+};
+
 const ls_app_doc_t ls_doc_notes = {
     .purpose = LS_TXT(doc_notes_purpose, "A field notebook: write notes with a real cursor, and insert "
                "the time, a GPS fix, the heading, a map picture or what a "
@@ -267,6 +282,14 @@ const ls_app_doc_t ls_doc_settings = {
     .gps     = LS_APP_GPS_UNUSED,
 };
 
+const ls_app_doc_t ls_doc_pins = {
+    .purpose = "Where the add-on parts are wired: GPS, a LoRa or LR2021 module, "
+               "a nine-axis IMU and the Flipper link. Pick a line, step or type "
+               "its GPIO, save, and reboot to apply.",
+    .records = LS_APP_RECORDS_NOTHING,
+    .gps     = LS_APP_GPS_UNUSED,
+};
+
 const ls_app_doc_t ls_doc_tiles = {
     .purpose = LS_TXT(doc_tiles_purpose, "Install and manage CartoCore map regions on the SD card. Download over WiFi or receive a file from a laptop. OPEN displays the selected map."),
     .records = LS_APP_RECORDS_NOTHING,
@@ -387,6 +410,7 @@ const ls_app_doc_row_t ls_app_docs_all[] = {
     { "experiments", &ls_doc_experiments },
     { "journal", &ls_doc_journal },
     { "notes",   &ls_doc_notes   },
+    { "freqs",   &ls_doc_freqs   },
     { "compass", &ls_doc_compass },
     { "rfsurvey", &ls_doc_rfsurvey },
     { "fox",     &ls_doc_fox     },
@@ -398,6 +422,7 @@ const ls_app_doc_row_t ls_app_docs_all[] = {
     { "terminal", &ls_doc_terminal },
     { "update",  &ls_doc_update   },
     { "set",     &ls_doc_settings},
+    { "pins",    &ls_doc_pins    },
     { "map",     &ls_doc_map     },
     { "tiles",   &ls_doc_tiles   },
     { "gps",     &ls_doc_gps     },

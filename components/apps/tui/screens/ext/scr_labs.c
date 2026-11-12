@@ -10,6 +10,7 @@
 #include "../../ls_picker.h"
 #include "../../ls_radio_select.h"
 #include "../../ls_options.h"
+#include "../../ls_freqs.h"
 #include "ls_lora.h"
 #include "esp_attr.h"
 #include "esp_timer.h"
@@ -434,18 +435,57 @@ static void o_set_polarity(const ls_opt_t *o, int v)
     result(ls_field_configure(&cfg));
 }
 
+/* What left the face: the six switches and SEND, MARK and RADIO. Each row
+   runs the action its key ran, so D M S B T J E R O and C I P H X K all
+   still answer. */
+static void action(int i);
+static void switch_action(int i);
+static void o_action(const ls_opt_t *o) { action(o->arg); }
+static void o_switch(const ls_opt_t *o) { switch_action(o->arg); }
+static void o_sync_show(const ls_opt_t *o, char *out, size_t n)
+{ (void)o; snprintf(out, n, "%s", s.config.sync_word == 0x12 ? "PRIVATE" : s.config.sync_word == 0x34 ? "PUBLIC" : "CUSTOM"); }
+static void o_hold_show(const ls_opt_t *o, char *out, size_t n) { (void)o; snprintf(out, n, "%s", s_hold ? "ON" : "OFF"); }
+static const char *o_send_why(const ls_opt_t *o)
+{
+    (void)o;
+    if (!s.direct) return "Turn DIRECT on first";
+    if (s.transmitting) return "Still sending";
+    if (s.mode == LS_LAB_SPECTRUM || LS_LAB_IS_FSK(s.mode)) return "LoRa packet modes only";
+    if (s.config.freq_hz >= LS_LORA_RX_NARROW_MAX_HZ) return "Receive only up here";
+    return NULL;
+}
+static const char *o_lora_why(const ls_opt_t *o) { (void)o; return LS_LAB_IS_FSK(s.mode) ? "LoRa modes only" : s.transmitting ? "Still sending" : NULL; }
+static const char *o_cal_why(const ls_opt_t *o) { (void)o; return s.sample.imu_valid ? NULL : "No motion sensor"; }
+/* SAVE TO FREQS: the frequency the radio is on, in the mode it is in. */
+static void o_freqs(const ls_opt_t *o)
+{
+    (void)o;
+    ls_freqs_offer(s.config.freq_hz, s.mode == LS_LAB_POCSAG ? "POCSAG" : LS_LAB_IS_FSK(s.mode) ? "FSK" : "LORA",
+                   NULL, "labs", s_feedback, sizeof(s_feedback));
+}
+static void o_freqs_show(const ls_opt_t *o, char *out, size_t n) { (void)o; snprintf(out, n, "%.4f MHz", s.config.freq_hz / 1e6); }
+#define LABS_COMMON \
+    { .label = "SYNC PRESET", .kind = LS_OPT_ACTION, .arg = 2, .act = o_switch, .show = o_sync_show, .why_not = o_lora_why }, \
+    { .label = "HOLD PLOT", .kind = LS_OPT_ACTION, .arg = 3, .act = o_switch, .show = o_hold_show }, \
+    { .label = "CLEAR PLOT", .kind = LS_OPT_ACTION, .arg = 4, .act = o_switch }, \
+    { .label = "SEND ONE PACKET", .kind = LS_OPT_ACTION, .arg = 4, .act = o_action, .leaves = true, .why_not = o_send_why }, \
+    { .label = "MARK JOURNAL", .kind = LS_OPT_ACTION, .arg = 5, .act = o_action }, \
+    { .label = "CALIBRATE COMPASS", .kind = LS_OPT_ACTION, .arg = 5, .act = o_switch, .leaves = true, .why_not = o_cal_why }, \
+    { .label = "RADIO", .kind = LS_OPT_ACTION, .arg = 7, .act = o_action, .leaves = true }, \
+    { .label = "SAVE TO FREQS", .kind = LS_OPT_ACTION, .act = o_freqs, .show = o_freqs_show }
 static const ls_opt_t OPT_LORA[] = {
     LORA_LEVEL(0, "FREQUENCY", 150, 2500, .025), LORA_LEVEL(1, "SPREAD FACTOR", 5, 12, 1), { .label = "BANDWIDTH", .kind = LS_OPT_CYCLE, .names = BW_NAMES, .n = 10, .get = o_bw, .set = o_set_bw, .step = 1 }, LORA_LEVEL(3, "CODING RATE", 5, 8, 1), LORA_LEVEL(4, "POWER", -9, 22, 1),
-    LORA_LEVEL(5, "PREAMBLE", 1, 65535, 1), LORA_LEVEL(6, "SYNC WORD", 0, 255, 1), LORA_ROW(7, "CRC"), LORA_ROW(8, "INVERT IQ") };
-static const ls_opt_t OPT_SPECTRUM[] = { LORA_LEVEL(0, "FREQUENCY", 150, 2500, .025) };
+    LORA_LEVEL(5, "PREAMBLE", 1, 65535, 1), LORA_LEVEL(6, "SYNC WORD", 0, 255, 1), LORA_ROW(7, "CRC"), LORA_ROW(8, "INVERT IQ"), LABS_COMMON };
+static const ls_opt_t OPT_SPECTRUM[] = { LORA_LEVEL(0, "FREQUENCY", 150, 2500, .025), LABS_COMMON };
 static const ls_opt_t OPT_GFSK[] = {
-    FSK_ROW(0, "FREQUENCY"), FSK_LEVEL(1, "BITRATE", 600, 300000, 100), FSK_LEVEL(2, "DEVIATION", 600, 200000, 100), FSK_LEVEL(3, "BANDWIDTH", 4800, 467000, 100), FSK_LEVEL(4, "SYNC WORD", 0, 4294967295, 1), FSK_LEVEL(5, "PAYLOAD", 1, 255, 1) };
+    FSK_ROW(0, "FREQUENCY"), FSK_LEVEL(1, "BITRATE", 600, 300000, 100), FSK_LEVEL(2, "DEVIATION", 600, 200000, 100), FSK_LEVEL(3, "BANDWIDTH", 4800, 467000, 100), FSK_LEVEL(4, "SYNC WORD", 0, 4294967295, 1), FSK_LEVEL(5, "PAYLOAD", 1, 255, 1), LABS_COMMON };
 static const ls_opt_t OPT_POCSAG[] = {
     FSK_ROW(0, "FREQUENCY"),
     { .label = "BAUD", .kind = LS_OPT_CYCLE, .names = PAGER_BAUD, .n = 2,
       .get = o_pager_baud, .set = o_set_pager_baud },
     { .label = "POLARITY", .kind = LS_OPT_TOGGLE, .names = POLARITY,
       .get = o_polarity, .set = o_set_polarity },
+    LABS_COMMON,
 };
 static const ls_opt_t OPT_POCSAG_STREAM[] = {
     FSK_ROW(0, "FREQUENCY"),
@@ -454,6 +494,7 @@ static const ls_opt_t OPT_POCSAG_STREAM[] = {
     { .label = "POLARITY", .kind = LS_OPT_TOGGLE, .names = POLARITY,
       .get = o_polarity, .set = o_set_polarity },
 };
+#undef LABS_COMMON
 #undef LORA_ROW
 #undef FSK_ROW
 #undef FSK_LEVEL
@@ -663,23 +704,26 @@ static void calibration_draw(tui_surface *sf, tui_rect a, int64_t now)
 }
 static void graph(tui_surface *sf, tui_rect r, const float *values)
 {
+    /* Bars, one column a cell with eighth-block tops, over a thin floor
+       line: -140 dBm is the floor and -30 the top, as before. Colour is the
+       level - cyan in the grass, green where a packet would decode, yellow
+       and red when the chip is close to overload. */
     if (r.w < 4 || r.h < 3) return;
-    for (int y = 0; y < r.h; y++) {
-        for (int x = 0; x < r.w; x++) {
-            if (y == r.h - 1 || (y % 4 == 0 && x % 4 == 0))
-                tui_put_char(sf, r, r.x + x, r.y + y, '.', LS_ATTR_FAINT);
-        }
-    }
     for (int x = 0; x < r.w; x++) {
-        float v = (values[x * LS_FIELD_BINS / r.w] + 140) / 110;
+        tui_put_char(sf, r, r.x + x, r.y + r.h - 1, LS_TUI_TRACE(1), TUI_ATTR(TUI_CYAN, TUI_BLACK));
+        const float dbm = values[x * LS_FIELD_BINS / r.w];
+        float v = (dbm + 140) / 110;
         if (!isfinite(v)) continue;
         if (v < 0) v = 0;
         if (v > 1) v = 1;
-        int height = (int)(v * (r.h - 1));
-        for (int y = 0; y < height; y++)
-            tui_put_char(sf, r, r.x + x, r.y + r.h - 1 - y, '.',
-                         TUI_ATTR(TUI_CYAN, TUI_BLACK));
-        tui_put_char(sf, r, r.x + x, r.y + r.h - 1 - height, '_', TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        const int eighths = (int)(v * (r.h - 1) * 8 + 0.5f);
+        const uint8_t hue = dbm >= -60 ? TUI_RED : dbm >= -80 ? TUI_YELLOW : dbm >= -110 ? TUI_GREEN : TUI_CYAN;
+        for (int y = 0; y < r.h - 1; y++) {
+            const int base = y * 8, top = eighths < base + 8 ? eighths : base + 8;
+            if (top <= base) break;
+            tui_put_char(sf, r, r.x + x, r.y + r.h - 2 - y, LS_TUI_TRACE(top - base),
+                         TUI_ATTR(hue | (top - base == 8 ? 0 : TUI_BRIGHT), TUI_BLACK));
+        }
     }
 }
 static void polar(tui_surface *sf, tui_rect r)
@@ -863,28 +907,18 @@ static void draw(tui_surface *sf, tui_rect a)
         memcpy(s_bearing, s.bearing, sizeof(s_bearing)); memcpy(s_bearing_count, s.bearing_count, sizeof(s_bearing_count));
     }
     if (s_full_compass) { full_compass_draw(sf,a); return; }
+    /* Fifteen keys were on this face. These five are what a hunt touches;
+       the switches (CRC, IQ, SYNC, HOLD, CLEAR, CAL), SEND, MARK and RADIO
+       are OPTIONS rows and still answer their letters; SETUP is on S. */
     ls_btn_t buttons[] = {{"DIRECT", s.direct ? "ON" : s.requested ? "WAIT" : "OFF", 'd', s.direct, false},
-        {"MODE", modes[s.mode], 'm', false, false}, {"SETUP", NULL, 's', false, false},
+        {"MODE", modes[s.mode], 'm', false, false},
         {"BAND", band_now(), 'b', false, false},
-        {"SEND", s.config.freq_hz >= LS_LORA_RX_NARROW_MAX_HZ ? "RX ONLY" : s.transmitting ? "BUSY" : "ONCE", 't', s.transmitting, !s.direct || LS_LAB_IS_FSK(s.mode) || s.mode == LS_LAB_SPECTRUM || s.config.freq_hz >= LS_LORA_RX_NARROW_MAX_HZ},
-        {"MARK", "JOURNAL", 'j', false, false},
         /* REC is E: R is RADIO, as in every app. */
         {"REC", rec_face(), 'e', s.recording, !s.ready},
-        ls_rsel_button(LS_RSEL_LABS),
         ls_opt_button(labs_options())};
-    const int bar_h = ls_btn_raised_height(a, 9);
-    ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 9, button_slot==0?button_focus:-1);
-    ls_btn_t switches[] = {{"CRC", s.config.crc_on ? "ON" : "OFF", 'c', s.config.crc_on, s.transmitting || LS_LAB_IS_FSK(s.mode)},
-        {"IQ", s.config.invert_iq ? "INVERT" : "NORMAL", 'i', s.config.invert_iq, s.transmitting || s.mode == LS_LAB_GFSK},
-        {"SYNC", s.config.sync_word == 0x12 ? "PRIVATE" : s.config.sync_word == 0x34 ? "PUBLIC" : "CUSTOM", 'p', s.config.sync_word == 0x34, s.transmitting || LS_LAB_IS_FSK(s.mode)},
-        {"HOLD", s_hold ? "ON" : "OFF", 'h', s_hold, false}, {"CLEAR", "PLOT", 'x', false, false},
-        {"CAL", s.calibrating ? "FINISH" : s.calibrated ? "AGAIN" : "COMPASS", 'k', s.calibrating, !s.sample.imu_valid}};
-    tui_rect controls = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h);
-    if (controls.h > 40) controls.h = 40;
-    const int switch_h = ls_btn_raised_height(controls, 6);
-    controls.h = switch_h;
-    ls_btn_bar_raised_slot(sf, controls, switches, 6, button_slot==1?button_focus:-1, LS_BTN_SLOT_WATERFALL);
-    const int top = bar_h + switch_h;
+    const int bar_h = ls_btn_raised_height(a, 5);
+    ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 5, button_slot==0?button_focus:-1);
+    const int top = bar_h;
     tui_rect panel = tui_rect_make(a.x, a.y + top, a.w, a.h - top - 2);
     ls_panel_box(sf, panel, "LORA LABS", TUI_CYAN);
     ls_motion_busy(sf,panel,s.busy || s.transmitting || (s.requested && !s.direct));
@@ -1014,6 +1048,7 @@ static void enter_marker(void)
 }
 static void enter(void) { expand_compass(false); button_focus=-1;button_slot=0; s_guide_visible = false; s_hold = false; s_heading = NAN; s_heading_us = 0; s_feedback[0] = 0; if (!ls_field_start()) snprintf(s_feedback, sizeof(s_feedback), "Field worker could not start"); ls_field_watch(true); enter_guide(); enter_marker(); }
 static void leave(void) { s_guide_visible = false; ls_field_direct(false); ls_field_calibrate(2); ls_field_watch(false); }
+static const int BAR_ACT[5] = { 0, 1, 3, 6, 8 };
 static bool touch(int col, int row) {
     int i = ls_btn_hit(col,row);
     if (s.calibrating || s_guide_visible) { if(i>=0)calibration_action(i); return true; }
@@ -1029,7 +1064,7 @@ static bool touch(int col, int row) {
             page_move(col < s_page_nav.x + s_page_nav.w / 2 ? -1 : 1); return true;
         }
     }
-    if(i>=0)action(i);else { i=ls_btn_hit_slot(col,row,LS_BTN_SLOT_WATERFALL);if(i>=0)switch_action(i); }
+    if(i>=0 && i<5)action(BAR_ACT[i]);
     return true;
 }
 static bool key(ls_tk_t k, char ch) {
@@ -1055,10 +1090,10 @@ static bool key(ls_tk_t k, char ch) {
         page_move(k == LS_TK_DOWN ? 1 : -1);
         return true;
     }
-    if (ls_btn_navigate(k,&button_slot,&button_focus,true)) return true;
-    if (k==LS_TK_ENTER) { if(ls_btn_enabled(button_slot,button_focus)) { if(button_slot==0)action(button_focus);else switch_action(button_focus); } return true; }
+    if (ls_btn_navigate(k,&button_slot,&button_focus,false)) return true;
+    if (k==LS_TK_ENTER) { if(button_focus>=0 && button_focus<5 && ls_btn_enabled(0,button_focus)) action(BAR_ACT[button_focus]); return true; }
     if (k != LS_TK_CHAR || !ch) return false;
     const char *p = strchr("dmsbtjero", ch); if (p) { action((int)(p - "dmsbtjero")); return true; }
     p = strchr("ciphxk", ch); if (!p) return false; switch_action((int)(p - "ciphxk")); return true;
 }
-const ls_tui_screen_t ls_scr_labs = {.name="LORA LABS", .hint="D direct  M mode  S setup  O options  B band  E record  R radio  K calibrate  H hold", .enter=enter, .leave=leave, .draw=draw, .key=key, .touch=touch, .hold_auto_rotation=true};
+const ls_tui_screen_t ls_scr_labs = {.name="LORA LABS", .hint="D direct  M mode  B band  E record  O options  (S setup  T send  J mark  R radio  K calibrate  H hold)", .enter=enter, .leave=leave, .draw=draw, .key=key, .touch=touch, .hold_auto_rotation=true};

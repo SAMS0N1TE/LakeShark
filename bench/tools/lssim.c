@@ -36,6 +36,7 @@ extern const ls_tui_screen_t ls_scr_meters;
 #include "esp_timer.h"
 
 #include "ls_tui.h"
+#include "ls_tui_touch.h"
 #include "ls_tui_screen.h"
 #include "ls_vt.h"
 #include "ls_box.h"
@@ -242,6 +243,8 @@ extern const ls_app_doc_t ls_doc_radio;
 extern const ls_tui_screen_t lssim_p25_preview, lssim_fm_preview, ls_scr_wireless;
 extern const ls_tui_screen_t ls_lap_screen;
 extern const ls_tui_screen_t ls_scr_tmach;
+extern const ls_tui_screen_t ls_scr_freqs;
+#include "ls_freqs.h"
 /* The two design previews exist only in the simulator, so they carry a
    simulator doc rather than one of the real ones. */
 static const ls_app_doc_t sim_preview_doc = {
@@ -260,6 +263,8 @@ static const ls_app_t APPS[] = {
       LS_APP_MAIN, &ls_scr_fm, NULL, &ls_doc_fm },
     { "adsb", "ADSB", "aircraft",  LS_ICON_PLANE, TUI_MAGENTA,
       LS_APP_MAIN, &ls_scr_adsb, NULL, &ls_doc_adsb },
+    { "freqs", "FREQS", "frequency library", LS_ICON_FREQS, TUI_YELLOW,
+      LS_APP_EXTRA, &ls_scr_freqs, NULL, &ls_doc_freqs },
     { "rec",  "REC",  "capture",   LS_ICON_RECORD, TUI_RED,
       LS_APP_EXTRA, &ls_scr_rec, NULL, &ls_doc_rec },
     { "diag", "DIAG", "health",    LS_ICON_CHIP,  TUI_WHITE,
@@ -391,6 +396,17 @@ static void seed_tmach(void)
         ls_decoded_publish(&d);
         if (d.kind == LS_DECODED_ADSB) for (int k = 1; k < 14; k++) { d.at_us += 10000000; ls_decoded_publish(&d); }
     }
+    /* LSSIM_TMACH=many: a timeline longer than the page, to scroll. */
+    if (!strcmp(getenv("LSSIM_TMACH"), "many"))
+        for (int i = 0; i < 30; i++) {
+            ls_decoded_t d;
+            memset(&d, 0, sizeof(d));
+            d.kind = LS_DECODED_APRS; d.freq_hz = 144390000; d.radio = LS_TM_RADIO_LR2021;
+            d.at_us = now - (int64_t)(700 + 60 * i) * 1000000;
+            snprintf(d.from, sizeof(d.from), "N%dTST-%d", i % 10, i);
+            snprintf(d.text, sizeof(d.text), "beacon %d", i);
+            ls_decoded_publish(&d);
+        }
     ls_tm_service(now);
     /* WHAT WAS THAT?, as the key does it. */
     const bool half = !strcmp(getenv("LSSIM_TMACH"), "saving");
@@ -655,6 +671,20 @@ static void feed_adsb(void)
         if (a->icao == 0xA77000u) { adsb_state_set_squawk(a, 7700); adsb_state_set_squawk(a, 7700); }
         else if (a->pos_valid) { adsb_state_set_squawk(a, 1200 + (int)i); adsb_state_set_squawk(a, 1200 + (int)i); }
     }
+    /* LSSIM_ADSB_FILL: every slot tracked, for a list that has to scroll. */
+    if (getenv("LSSIM_ADSB_FILL")) {
+        for (int i = 0; i < ADSB_MAX_TRACKED; i++) {
+            adsb_aircraft_t *a = adsb_state_find_or_create(0xB00000u + (uint32_t)i);
+            if (!a) break;
+            if (a->callsign[0]) continue;
+            snprintf(a->callsign, sizeof(a->callsign), "FILL%02d", i);
+            a->altitude = 2000 + i * 1500; a->altitude_valid = true;
+            a->msg_count = 10 + i;
+            a->last_seen_us = now - (int64_t)i * 1000000LL;
+            a->first_seen_us = a->last_seen_us - 60 * 1000000LL;
+            a->altitude_ts_us = a->last_seen_us;
+        }
+    }
     adsb_select_set_icao(SEED[0].icao);
 }
 
@@ -724,15 +754,23 @@ static void label_track_tick(void) {
     step++;
 }
 
-/* NOTES works on a scratch copy of the fixture notes, so whatever a run
-   types, imports or trashes never reaches the fixtures themselves. */
-static const char *sim_notes_copy(void)
+/* NOTES and FREQS work on scratch copies of their fixtures, so whatever a
+   run types, imports, saves or trashes never reaches the fixtures themselves. */
+static void sim_copy_file(const char *from, const char *to)
 {
-    static const char *dir = "build/lssim_notes";
+    FILE *a = fopen(from, "rb"), *b = a ? fopen(to, "wb") : NULL;
+    char buf[4096]; size_t n;
+    while (a && b && (n = fread(buf, 1, sizeof(buf), a)) > 0) fwrite(buf, 1, n, b);
+    if (a) fclose(a);
+    if (b) fclose(b);
+}
+
+static const char *sim_copy(const char *from_dir, const char *dir)
+{
 #ifdef _WIN32
-    mkdir("build"); mkdir(dir);
+    mkdir("build"); mkdir("build/lssim_sdcard"); mkdir(dir);
 #else
-    mkdir("build", 0775); mkdir(dir, 0775);
+    mkdir("build", 0775); mkdir("build/lssim_sdcard", 0775); mkdir(dir, 0775);
 #endif
     DIR *d = opendir(dir);
     if (d) {
@@ -744,19 +782,15 @@ static const char *sim_notes_copy(void)
         }
         closedir(d);
     }
-    d = opendir("fixtures/notes");
+    d = opendir(from_dir);
     if (d) {
         struct dirent *e;
         while ((e = readdir(d))) {
             if (e->d_name[0] == '.' && (!e->d_name[1] || e->d_name[1] == '.')) continue;
             char from[512], to[512];
-            snprintf(from, sizeof(from), "fixtures/notes/%s", e->d_name);
+            snprintf(from, sizeof(from), "%s/%s", from_dir, e->d_name);
             snprintf(to, sizeof(to), "%s/%s", dir, e->d_name);
-            FILE *a = fopen(from, "rb"), *b = a ? fopen(to, "wb") : NULL;
-            char buf[4096]; size_t n;
-            while (a && b && (n = fread(buf, 1, sizeof(buf), a)) > 0) fwrite(buf, 1, n, b);
-            if (a) fclose(a);
-            if (b) fclose(b);
+            sim_copy_file(from, to);
         }
         closedir(d);
     }
@@ -987,6 +1021,7 @@ static void usage(void)
     printf("  LSSIM_ACARS=1 seeds FM with decoded ACARS messages\n");
     printf("  LSSIM_SAME=1 seeds FM with a quiet test and a tornado warning\n");
     printf("  LSSIM_DMR=1 seeds clear/encrypted repeater calls (P25 key 6)\n");
+    printf("  LSSIM_JOURNAL=N seeds JOURNAL with N entries\n");
     printf("  LSSIM_TONE=1..258 seeds a detected receive tone in FM\n");
     printf("  LSSIM_HF=usb|lsb|am|sam|cw seeds shortwave in FM (AM mode on the HF chain)\n");
     printf("  LSSIM_UAT_IQ=FILE.cu8 decodes recorded/synthetic 978 IQ before rendering\n");
@@ -1502,6 +1537,7 @@ int main(int argc, char **argv)
 
     ls_value_publish_builtin();
     ls_action_register_builtin();
+    ls_freqs_register();
     void lssim_ota_publish(void);
     if (getenv("LSSIM_RID")) {
         for(int i=0;i<5;i++) {
@@ -1569,7 +1605,14 @@ int main(int argc, char **argv)
     void lssim_set_empty(bool on);
     lssim_set_empty(empty);
     if (maparc) s_map_archive = maparc;
-    ls_notes_use_directory(sim_notes_copy());
+    ls_notes_use_directory(sim_copy("fixtures/notes", "build/lssim_notes"));
+    /* FREQS: a card with the country bank the units carry and a mine.csv.
+       LSSIM_FREQS_EMPTY: no card, so the built-in set. */
+    if (getenv("LSSIM_FREQS_EMPTY")) ls_freqs_set_root("build/lssim_no_card");
+    else {
+        ls_freqs_set_root(sim_copy("fixtures/freqs", "build/lssim_sdcard/freqs"));
+        sim_copy_file("../tools/freqs/argentina.csv", "build/lssim_sdcard/freqs/argentina.csv");
+    }
     if (!empty) {
         feed_waterfall();
         feed_map();
@@ -1799,6 +1842,23 @@ int main(int argc, char **argv)
                                    .kind = LS_IEV_PTR_DOWN, .button = LS_IBTN_LEFT, .buttons = 1};
                 ls_desk_input(&e); frame(1);
                 e.kind = LS_IEV_PTR_UP; e.buttons = 0; ls_desk_input(&e); frame(1);
+                continue;
+            }
+            /* S c:r>c:r: a finger on an app screen goes down, moves in four
+               frames and lifts (a trailing ? keeps it down). */
+            if (tok[0] == 'S' && tok[1] >= '0' && tok[1] <= '9') {
+                int a = -1, b = -1, c = -1, d = -1, cw = 10, chh = 17;
+                if (sscanf(tok + 1, "%d:%d>%d:%d", &a, &b, &c, &d) != 4) { printf("lssim: a swipe wants S c:r>c:r\n"); return 1; }
+                ls_tui_geometry(NULL, NULL, &cw, &chh);
+                for (int k = 0; k <= 4; k++) {
+                    const int col = a + (c - a) * k / 4, row = b + (d - b) * k / 4;
+                    ls_tui_touch_remote(col, row, col * cw + cw / 2, row * chh + chh / 2, true);
+                    frame(1);
+                }
+                if (tok[strlen(tok) - 1] != '?') {
+                    ls_tui_touch_remote(c, d, c * cw + cw / 2, d * chh + chh / 2, false);
+                    frame(1);
+                }
                 continue;
             }
             if (tok[0] == 'R' || tok[0] == 'H' || tok[0] == 'D') {

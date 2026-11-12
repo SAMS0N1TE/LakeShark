@@ -35,6 +35,7 @@ static bool known_lr_opcode(uint16_t op)
         0x0297, 0x0298, 0x0299, 0x029A, 0x029C, 0x029D,
         /* the LF transmitter: Tx FIFO, SelPa, SetPaConfig, SetTxParams, SetTx */
         0x0002, 0x011F, 0x020F, 0x0202, 0x0203, 0x020D,
+        0x012D,
     };
     for (size_t i = 0; i < sizeof(ok) / sizeof(ok[0]); i++) if (ok[i] == op) return true;
     return false;
@@ -977,6 +978,69 @@ LS_CASE(a_chip_error_is_read_and_cleared_without_stopping_the_session)
     LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);                   /* still receiving, nothing to re-arm */
 }
 
+static int count_frames_with(uint8_t b0, uint8_t b1);
+
+LS_CASE(a_command_error_with_no_chip_error_is_counted_apart_and_never_cleared_as_one)
+{
+    session_up();
+    LS_EQ_INT(ls_lora_modes_begin(1090000000u, 13), ESP_OK);
+    uint8_t buf[28]; float rssi;
+    for (int k = 0; k < 5; k++) {
+        fk.irq = LR20XX_IRQ_CMD_ERROR;
+        fk.errors = 0;
+        fk.nframes = 0;
+        LS_EQ_INT(ls_lora_modes_poll(buf, sizeof(buf), &rssi), 0);
+        LS_EQ_INT(count_frames_with(0x01, 0x11), 0);
+        LS_EQ_UINT(fk.irq & LR20XX_IRQ_CMD_ERROR, 0);
+    }
+    lr20xx_modes_stats_t st; lr20xx_modes_stats(&st);
+    LS_EQ_UINT(st.cmd_errors, 5);
+    LS_EQ_UINT(st.chip_errors, 0);
+    LS_EQ_UINT(st.refused_op, 0);
+    LS_CHECK(ls_lora_modes_active());
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+}
+
+LS_CASE(a_refused_command_is_named_by_its_opcode_from_the_stat_that_followed_it)
+{
+    session_up();
+    LS_EQ_INT(ls_lora_modes_begin(1090000000u, 13), ESP_OK);
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    const int refusals = fk.bad_mode;
+    (void)lr20xx_set_rx(0xFFFFFFu);
+    LS_EQ_INT(fk.bad_mode, refusals + 1);
+    fk.irq |= LR20XX_IRQ_CMD_ERROR;
+    uint8_t buf[28]; float rssi;
+    LS_EQ_INT(ls_lora_modes_poll(buf, sizeof(buf), &rssi), 0);
+    lr20xx_modes_stats_t st; lr20xx_modes_stats(&st);
+    LS_EQ_UINT(st.cmd_errors, 1);
+    LS_EQ_UINT(st.refused_op, 0x020C);
+    LS_EQ_UINT(st.chip_errors, 0);
+    uint32_t n = 0;
+    LS_EQ_UINT(lr20xx_refused_op(&n), 0x020C);
+    LS_CHECK(n >= 1);
+    LS_CHECK(ls_lora_modes_active());
+}
+
+LS_CASE(a_full_or_stale_fifo_is_emptied_from_standby_because_rx_refuses_clear_rx_fifo)
+{
+    session_up();
+    LS_EQ_INT(ls_lora_modes_begin(1090000000u, 13), ESP_OK);
+    uint8_t f[28];
+    for (int k = 0; k < 10; k++) { frame_k(k, f); fk_push_frame(f); }
+    const int refusals = fk.bad_mode;
+    uint8_t buf[28]; float rssi;
+    int got = 0;
+    while (ls_lora_modes_poll(buf, sizeof(buf), &rssi) == 28) got++;
+    LS_EQ_INT(got, 9);
+    LS_EQ_INT(fk.fifo_n, 0);
+    LS_EQ_INT(fk.bad_mode, refusals);
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    lr20xx_modes_stats_t st; lr20xx_modes_stats(&st);
+    LS_EQ_UINT(st.overflows, 1);
+    LS_EQ_UINT(st.cmd_errors, 0);
+}
+
 LS_CASE(a_chip_reset_in_the_middle_of_a_session_reprograms_the_whole_session)
 {
     session_up();
@@ -1681,7 +1745,7 @@ LS_CASE(a_received_lora_packet_is_read_with_its_level_and_the_fifo_left_empty)
     LS_EQ_UINT(fk.frames[ix[2]].b[0], 0x00);
     LS_EQ_UINT(fk.frames[ix[2]].b[1], 0x01);
     CMD(3, 0x02, 0x2A);                                    /* GetLoraPacketStatus       */
-    CMD(4, 0x01, 0x1E);                                    /* ClearRxFifo               */
+    CMD(4, 0x01, 0x1C);                                    /* GetRxFifoLevel            */
     LS_EQ_INT(fk.fifo_n, 0);
     LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);                   /* continuous Rx: nothing to re-arm */
     LS_EQ_INT(fk.rx_arms, arms);

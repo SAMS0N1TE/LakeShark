@@ -2,6 +2,7 @@
 #define LS_SWEEP_CORE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -89,6 +90,10 @@ void ls_sweep_fold(const ls_sweep_plan_t *plan, uint64_t center_hz,
 
 /* Centre frequency of output bin `i`. */
 uint64_t ls_sweep_out_hz(const ls_sweep_plan_t *plan, uint32_t i);
+
+/* How many of n interleaved u8 I/Q bytes sit on a rail of the converter, 0
+   or 255. I and Q are counted apart: either one clipping is clipping. */
+uint32_t ls_sweep_rail_count(const uint8_t *iq, size_t n);
 
 /* How many bins never received a reading. Zero is the stitching invariant:
    a full sweep that leaves holes means the tune step and the usable window

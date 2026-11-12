@@ -40,8 +40,16 @@ typedef struct {
     unsigned spectrum_count;
     int8_t spectrum[96], reference[96]; /* peak held columns from a complete pass */
     /* Per column of the LTE search: bit 0 occupied, 1 raster point searched,
-     * 2 cell found. */
+     * 2 cell found. A survey pass sets bit 0 on its carriers. */
     uint8_t mark[96];
+    /* The noise floor of the pass the spectrum is from (cell_floor),
+     * CELL_MISSING with no spectrum. */
+    int floor;
+    /* The pass's most clipped tune: I/Q bytes on a rail out of those it
+     * folded in, and its centre. overload when that refused the pass. */
+    bool overload;
+    uint32_t overload_hz, rails, rail_samples;
+    int gain;                            /* RTL gain in force, tenths of dB */
     char message[80];
 } cell_status_t;
 enum { CELL_WATCH=1, CELL_LEARN, CELL_LOAD, CELL_LTE, CELL_PPM_ZERO };
@@ -56,6 +64,10 @@ unsigned cell_monitor_cells(cell_lte_t *out, unsigned max);
  * occupied carriers; full tries every 100 kHz raster point. */
 void cell_monitor_set_full_scan(bool full);
 void cell_monitor_set_mib(bool on);
+/* RTL gain for the survey and the LTE search, one of cell_gains; kept until
+ * the next boot. A baseline is only compared at the gain it was learned at.
+ * False for a gain not in the list. */
+bool cell_monitor_set_gain(int tenths);
 /* Forget the dongle's measured clock error and take the tuner correction back
  * to zero, as a short job on the worker. False while a job runs. */
 bool cell_monitor_clear_ppm(void);

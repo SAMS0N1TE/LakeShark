@@ -297,6 +297,17 @@ bool ls_catch_key(ls_tk_t key,char c)
     if(key==LS_TK_CHAR && ls_opt_key(&OPTION_MENU,c))return true;
     return false;
 }
+int ls_catch_selected_index(void)
+{
+    catch_status_t *s=&status;rec_catch_status(s);
+    return s->count && selected<s->count?selected:-1;
+}
+uint32_t ls_catch_selected_hz(void)
+{
+    const int i=ls_catch_selected_index();
+    return i>=0 && rec_catch_result(i,&result)?result.burst.frequency:0;
+}
+bool ls_catch_list_contains(int x,int y){return tui_rect_contains(list_area,x,y);}
 bool ls_catch_body_touch(int x,int y)
 {
     if(tui_rect_contains(slice_area,x,y)){ls_opt_open(&CHAN_MENU);return true;}

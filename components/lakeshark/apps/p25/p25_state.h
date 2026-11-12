@@ -9,6 +9,7 @@
 #include "dsp_pipeline.h"
 #include "iq_app_control.h"
 #include "grant_follower.h"
+#include "scan_ctrl.h"
 
 #define RTL_SAMPLE_RATE       240000
 #define RTL_DEFAULT_GAIN      200
@@ -138,6 +139,25 @@ typedef struct {
     uint32_t grant_unsupported_count;
     uint32_t grant_unresolved_count;
     uint32_t control_relock_count;
+    uint32_t grant_returned_count;
+    uint32_t grant_foreign_count;
+    uint32_t grant_duplicate_count;
+    uint32_t grant_phase2_seen;
+    uint32_t grant_lingers, grant_linger_catches;
+    uint32_t over_gap_caught[P25_OVER_GAP_BUCKETS];
+    uint32_t over_gap_regrant[P25_OVER_GAP_BUCKETS];
+    bool     grant_system_valid;
+    /* Why the newest grant was not followed (static text, NULL = it was,
+     * or none yet) and when, for the SYNC row. */
+    const char *follow_left_label;
+    int64_t  follow_left_us;
+    /* Roster scope, for Talkgroup policy: the system on the air, the one
+     * the roster belongs to, whether it applies, and this system's
+     * follow-off. Plus the newest grant's fate, for OPTIONS. */
+    p25_system_id_t roster_sys, here_sys;
+    bool     roster_applies, roster_follow_off;
+    char     follow_last_text[48];
+    int64_t  follow_last_us;
     /* TSBK/IDEN telemetry. iden_valid_count separates "we haven't
      * seen a control channel yet" from "we have the tables and are waiting
      * for a grant"; tsbk_ok/err lives next to the BCH counts. */
@@ -257,6 +277,10 @@ void p25_request_gain(int gain_tenths_db);
 void p25_get_receiver_status(ls_iq_control_status_t *out);
 
 bool p25_set_auto_follow(bool enabled);
+bool p25_set_follow_linger_ms(unsigned int ms);
+bool p25_set_follow_here(bool on);
+bool p25_forget_system_roster(void);
+unsigned int p25_get_follow_linger_ms(void);
 bool p25_get_auto_follow(void);
 bool p25_set_leave_on_encrypted(bool enabled);
 bool p25_set_encrypted_skip_ms(unsigned int ms);

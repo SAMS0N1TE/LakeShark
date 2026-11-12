@@ -2,6 +2,7 @@
 /* LS_TEST_INCLUDE: ${APP}/cell */
 #include "ls_test.h"
 #include "cell_core.h"
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
@@ -50,19 +51,30 @@ LS_CASE(every_band_round_trips_and_its_edges_are_exact)
     unsigned n;
     LS_CHECK(!cell_hz_to_earfcn(cell_band_total,880000000,&n));
 }
-LS_CASE(the_us_and_eu_set_is_there_and_the_rtl_ones_come_first)
+LS_CASE(the_us_eu_and_apt_set_is_there_and_the_rtl_ones_come_first)
 {
-    static const unsigned want[]={2,4,5,8,12,13,14,17,20,25,26,66,71};
+    static const unsigned want[]={2,4,5,8,12,13,14,17,20,25,26,28,66,71};
     for(unsigned i=0;i<sizeof(want)/sizeof(want[0]);i++) LS_CHECK(band_index(want[i])>=0);
-    LS_EQ_UINT(cell_band_total,13);
+    LS_EQ_UINT(cell_band_total,15);
+    LS_EQ_UINT(cell_band_count,11);
     for(unsigned b=0;b<cell_band_total;b++) {
         bool rtl=cell_bands[b].high<1766000000u;
         LS_CHECK((b<cell_band_count)==rtl);
         LS_CHECK(cell_bands[b].name && strstr(cell_bands[b].name,"/ B"));
     }
-    /* Saved baselines name a band by position: the first five must not move. */
-    LS_EQ_UINT(cell_bands[0].band,5);LS_EQ_UINT(cell_bands[1].band,8);LS_EQ_UINT(cell_bands[2].band,12);
-    LS_EQ_UINT(cell_bands[3].band,13);LS_EQ_UINT(cell_bands[4].band,20);
+    /* Saved baselines name a window by position: none of the nine that
+     * shipped before B28 may move, nor change its range (a baseline holds
+     * its bin count). */
+    static const struct {unsigned band;uint32_t low,high;} shipped[]={
+        {5,869000000,894000000},{8,925000000,960000000},{12,729000000,746000000},
+        {13,746000000,756000000},{20,791000000,821000000},{14,758000000,768000000},
+        {17,734000000,746000000},{26,859000000,894000000},{71,617000000,652000000}};
+    for(unsigned i=0;i<9;i++) {
+        LS_EQ_UINT(cell_bands[i].band,shipped[i].band);
+        LS_EQ_UINT(cell_bands[i].low,shipped[i].low);LS_EQ_UINT(cell_bands[i].high,shipped[i].high);
+    }
+    /* B20 says it is Europe's: in the Americas 806-821 is uplink. */
+    LS_CHECK(strstr(cell_bands[4].name,"EU")!=NULL);
     LS_EQ_INT(cell_band_for_hz(881500000),0);
     LS_EQ_INT(cell_band_for_hz(1960000000),band_index(2));
     LS_EQ_INT(cell_band_for_hz(100000000),-1);
@@ -71,6 +83,118 @@ LS_CASE(no_band_needs_more_bins_than_a_baseline_holds)
 {
     for(unsigned b=0;b<cell_band_count;b++)
         LS_CHECK((cell_bands[b].high-cell_bands[b].low)/CELL_BIN<=CELL_MAX_BINS);
+    /* Which is why B28's 45 MHz is two windows: as one it would not fit. */
+    LS_CHECK((803000000u-758000000u)/CELL_BIN>CELL_MAX_BINS);
+    LS_EQ_UINT((uint32_t)CELL_MAX_BINS*CELL_BIN,35000000);
+}
+
+/* ---- band 28: APT 700, TS 36.101 table 5.7.3-1: F_DL = 758 + 0.1 (N - 9210) ---- */
+static int b28(bool high)
+{
+    for(unsigned i=0;i<cell_band_count;i++)
+        if(cell_bands[i].band==28 && (cell_bands[i].low==778000000)==high) return (int)i;
+    return -1;
+}
+LS_CASE(band_28_is_two_rtl_windows_with_the_standard_earfcn)
+{
+    int lo=b28(false),hi=b28(true);
+    LS_EQ_INT(lo,9);LS_EQ_INT(hi,10);
+    LS_EQ_UINT(cell_bands[lo].low,758000000);LS_EQ_UINT(cell_bands[lo].high,783000000);
+    LS_EQ_UINT(cell_bands[hi].low,778000000);LS_EQ_UINT(cell_bands[hi].high,803000000);
+    LS_CHECK(!strcmp(cell_bands[lo].name,"700 DL / B28 lo") && !strcmp(cell_bands[hi].name,"700 DL / B28 hi"));
+    unsigned first,last;
+    cell_band_earfcns((unsigned)lo,&first,&last);LS_EQ_UINT(first,9210);LS_EQ_UINT(last,9459);
+    cell_band_earfcns((unsigned)hi,&first,&last);LS_EQ_UINT(first,9410);LS_EQ_UINT(last,9659);
+    /* Every EARFCN of the band, in whichever window holds it, is the formula. */
+    for(unsigned n=9210;n<=9659;n++) {
+        uint32_t want=758000000u+(n-9210u)*100000u,hz;unsigned back;bool any=false;
+        for(int w=lo;w<=hi;w++) if(cell_earfcn_to_hz((unsigned)w,n,&hz)) {
+            any=true;LS_EQ_UINT(hz,want);
+            LS_CHECK(cell_hz_to_earfcn((unsigned)w,hz,&back));LS_EQ_UINT(back,n);
+        }
+        LS_CHECK(any);
+    }
+    /* The carriers of Argentina's 2015 award. */
+    uint32_t hz;
+    LS_CHECK(cell_earfcn_to_hz((unsigned)lo,9260,&hz));LS_EQ_UINT(hz,763000000);   /* Movistar 758-768 */
+    LS_CHECK(cell_earfcn_to_hz((unsigned)lo,9360,&hz));LS_EQ_UINT(hz,773000000);   /* Personal 768-778 */
+    LS_CHECK(cell_earfcn_to_hz((unsigned)hi,9485,&hz));LS_EQ_UINT(hz,785500000);   /* Claro 778-793 */
+    LS_CHECK(!cell_earfcn_to_hz((unsigned)hi,9660,&hz));                            /* 803.0 is the edge */
+    LS_CHECK(!cell_earfcn_to_hz((unsigned)lo,9460,&hz));
+}
+LS_CASE(the_lte_search_reaches_every_b28_raster_centre_from_one_window)
+{
+    /* lte_scan searches [low+0.7, high-0.7] of a window; a 1.4 MHz carrier
+     * cannot be centred nearer a band edge, but a window's inner edge is not
+     * a band edge, so the windows must overlap by more than 1.4 MHz. */
+    int lo=b28(false),hi=b28(true);
+    for(uint32_t hz=758700000;hz<=802300000;hz+=CELL_RASTER_HZ) {
+        bool in=false;
+        for(int w=lo;w<=hi;w++) in|=hz>=cell_bands[w].low+700000 && hz<=cell_bands[w].high-700000;
+        LS_CHECK(in);
+    }
+    /* Each of Argentina's three carriers is whole inside one window. */
+    static const uint32_t carrier[][2]={{758000000,768000000},{768000000,778000000},{778000000,793000000}};
+    for(unsigned c=0;c<3;c++) {
+        bool whole=false;
+        for(int w=lo;w<=hi;w++) whole|=carrier[c][0]>=cell_bands[w].low && carrier[c][1]<=cell_bands[w].high;
+        LS_CHECK(whole);
+    }
+}
+
+/* ---- which band a frequency is, where bands overlap ---- */
+static const char *label(uint32_t hz,int selected)
+{
+    static char text[48];
+    if(!cell_band_label(hz,selected,text,sizeof(text))) LS_EQ_INT(text[0],0);
+    return text;
+}
+LS_CASE(an_overlap_is_labelled_by_the_selected_window_or_shows_both_bands)
+{
+    int lo=b28(false),hi=b28(true),b14=band_index(14),b20=band_index(20),b5=band_index(5);
+    /* 763.0: FirstNet's B14 in the US, Movistar's B28 in Argentina. */
+    LS_CHECK(!strcmp(label(763000000,-1),"B14 5330/B28 9260"));
+    LS_CHECK(!strcmp(label(763000000,lo),"B28 / EARFCN 9260"));
+    LS_CHECK(!strcmp(label(763000000,b14),"B14 / EARFCN 5330"));
+    /* A window that does not hold it says nothing about it. */
+    LS_CHECK(!strcmp(label(763000000,b5),"B14 5330/B28 9260"));
+    LS_CHECK(!strcmp(label(763000000,hi),"B14 5330/B28 9260"));
+    /* 795.0: B28 hi in Argentina, B20 in Europe. */
+    LS_CHECK(!strcmp(label(795000000,hi),"B28 / EARFCN 9580"));
+    LS_CHECK(!strcmp(label(795000000,b20),"B20 / EARFCN 6190"));
+    LS_CHECK(!strcmp(label(795000000,-1),"B20 6190/B28 9580"));
+    /* The two B28 windows are one band, and agree where they overlap. */
+    LS_CHECK(!strcmp(label(780000000,-1),"B28 / EARFCN 9430"));
+    LS_CHECK(!strcmp(label(780000000,lo),"B28 / EARFCN 9430"));
+    LS_CHECK(!strcmp(label(780000000,hi),"B28 / EARFCN 9430"));
+    LS_CHECK(!strcmp(label(773000000,-1),"B28 / EARFCN 9360"));
+    LS_CHECK(!strcmp(label(751000000,-1),"B13 / EARFCN 5230"));
+    /* Off the raster: the bands without an EARFCN. Outside all: nothing. */
+    LS_CHECK(!strcmp(label(1981250000,-1),"B2/B25"));
+    LS_CHECK(!strcmp(label(763050000,lo),"B28"));
+    LS_CHECK(!cell_band_label(100000000,-1,(char[8]){0},8));
+    LS_CHECK(!strcmp(label(100000000,lo),""));
+    /* The list itself: the selected window first, one row per band number. */
+    unsigned out[4];
+    LS_EQ_UINT(cell_bands_at(780000000,hi,out,4),1);LS_EQ_UINT(out[0],(unsigned)hi);
+    LS_EQ_UINT(cell_bands_at(780000000,-1,out,4),1);LS_EQ_UINT(out[0],(unsigned)lo);
+    LS_EQ_UINT(cell_bands_at(763000000,lo,out,4),2);LS_EQ_UINT(out[0],(unsigned)lo);LS_EQ_UINT(out[1],(unsigned)b14);
+    LS_EQ_UINT(cell_bands_at(763000000,-1,out,1),1);LS_EQ_UINT(out[0],(unsigned)b14);
+    LS_EQ_UINT(cell_bands_at(763000000,-1,NULL,4),0);
+    LS_EQ_UINT(cell_bands_at(763000000,99,out,4),2);
+}
+LS_CASE(the_high_rate_presets_keep_the_us_ones_and_add_argentinas_b28)
+{
+    static const uint32_t us[]={739000000,751000000,881500000,1981250000,1992500000,2150000000};
+    for(unsigned i=0;i<6;i++) LS_EQ_UINT(cell_hrf_centers[i],us[i]);
+    LS_EQ_UINT(cell_hrf_centers[6],763000000);LS_EQ_UINT(cell_hrf_centers[7],773000000);
+    LS_EQ_UINT(cell_hrf_centers[8],785500000);
+    /* Each is a carrier centre on the raster of a band that holds it. */
+    for(unsigned i=0;i<CELL_HRF_CHANNELS;i++) {
+        unsigned b[2];LS_CHECK(cell_bands_at(cell_hrf_centers[i],-1,b,2)>=1);
+        LS_CHECK(cell_hrf_centers[i]%50000==0);
+    }
+    unsigned b;LS_EQ_UINT(cell_bands_at(785500000,-1,&b,1),1);LS_EQ_UINT(cell_bands[b].band,28);
 }
 
 /* ---- dongle clock from cells ---- */
@@ -236,6 +360,64 @@ LS_CASE(candidates_stay_inside_the_scanned_window_and_the_strongest_plateau_wins
     for(unsigned i=0;i<nc;i++) LS_CHECK(cand[i]>=869700000 && cand[i]<=893300000);
     LS_EQ_UINT(cell_candidates(pl,2,893300000,869700000,cand,8),0);
 }
+/* ---- the floor a survey chart is drawn against ---- */
+LS_CASE(the_floor_is_the_receiver_whether_the_band_is_empty_or_full_of_carriers)
+{
+    /* Receiver noise alone, as the RTL reads it at 25 kHz peak held. */
+    floor_noise(-63,21);
+    int empty=cell_floor(spectrum,BINS);
+    LS_CHECK(empty>=-64 && empty<=-62);
+    /* 85% of the band under carriers 20 dB up: the floor stays the noise
+     * in the gaps, not the carriers' level or a median between. */
+    carrier(869500000,879500000,-43,22);
+    carrier(880000000,885000000,-45,23);
+    carrier(885200000,890200000,-40,24);
+    carrier(890500000,893500000,-48,25);
+    int full=cell_floor(spectrum,BINS);
+    LS_CHECK(full>=-64 && full<=-61);
+    LS_CHECK(abs(full-empty)<=2);
+    /* The plateau reading uses the same floor, so the LTE pre-pass and the
+     * survey chart agree on it. */
+    cell_plateau_t pl[CELL_PLATEAU_MAX];int fl;
+    unsigned np=cell_plateaus(spectrum,BINS,869000000,25000,pl,CELL_PLATEAU_MAX,&fl);
+    LS_EQ_INT(fl,full);LS_EQ_UINT(np,4);
+    /* Nothing to go by: no floor. */
+    int8_t gone[BINS];memset(gone,CELL_MISSING,sizeof(gone));
+    LS_EQ_INT(cell_floor(gone,BINS),CELL_MISSING);
+    LS_EQ_INT(cell_floor(spectrum,7),CELL_MISSING);
+    LS_EQ_INT(cell_floor(NULL,BINS),CELL_MISSING);
+    gone[500]=-60;                             /* smoothed, that reaches five bins */
+    LS_EQ_INT(cell_floor(gone,BINS),CELL_MISSING);
+    gone[600]=-60;                             /* and two reach ten */
+    LS_EQ_INT(cell_floor(gone,BINS),-60);
+}
+LS_CASE(a_survey_pass_becomes_columns_with_its_carriers_marked)
+{
+    floor_noise(-63,31);
+    carrier(877000000,886000000,-45,32);       /* 10 MHz carrier */
+    spectrum[100]=-30;                         /* a narrow spur, 871.5 MHz */
+    int8_t col[96];uint8_t mark[96];cell_plateau_t pl[CELL_PLATEAU_MAX];int fl;
+    memset(mark,0xff,sizeof(mark));
+    unsigned np=cell_columns(spectrum,BINS,869000000,25000,col,mark,96,pl,CELL_PLATEAU_MAX,&fl);
+    LS_EQ_UINT(np,1);LS_EQ_INT(fl,cell_floor(spectrum,BINS));
+    /* Columns are the strongest bin under them: the spur survives. */
+    LS_EQ_INT(col[100*96/BINS],-30);
+    LS_CHECK(!(mark[100*96/BINS]&1));
+    /* The carrier's columns, and only those (allowing a column at each edge). */
+    unsigned marked=0;
+    for(unsigned c=0;c<96;c++) {
+        uint32_t f=869000000u+(uint32_t)((uint64_t)c*25000000u/96u);
+        if(mark[c]&1) {marked++;LS_CHECK(f>=876700000u && f<886300000u);}
+        LS_CHECK(!(mark[c]&~1u));
+        if(f>=877500000u && f<885500000u) LS_CHECK(mark[c]&1);
+    }
+    LS_CHECK(marked>=34 && marked<=38);
+    /* A missing pass leaves missing columns and no floor. */
+    int8_t gone[BINS];memset(gone,CELL_MISSING,sizeof(gone));
+    LS_EQ_UINT(cell_columns(gone,BINS,869000000,25000,col,mark,96,pl,CELL_PLATEAU_MAX,&fl),0);
+    LS_EQ_INT(fl,CELL_MISSING);LS_EQ_INT(col[0],CELL_MISSING);LS_EQ_INT(mark[0],0);
+}
+
 LS_CASE(gating_cuts_a_b5_pass_by_an_order_of_magnitude)
 {
     /* A plausible US 850 MHz band: 10 MHz at 879.0 (873.5-884.5) is not what

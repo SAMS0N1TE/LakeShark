@@ -15,6 +15,18 @@ LS_CASE(report_wire_is_bounded_and_has_known_encoding)
     r.pci=-1;r.kind='X';LS_CHECK(!cell_report_encode(&r,b,sizeof(b)));
 }
 
+/* The later band rows - B28's two windows for Argentina among them - are
+   reported, not refused. */
+LS_CASE(reports_carry_every_band_row)
+{
+    cell_report_record_t r={.pci=12,.lat_e5=INT32_MIN,.lon_e5=INT32_MIN,.kind='C',.band=10,
+                            .frequency_khz=790500};
+    char text[49];
+    LS_CHECK(cell_report_encode(&r,text,sizeof(text)));
+    r.band=CELL_REPORT_BAND_ROWS;
+    LS_CHECK(!cell_report_encode(&r,text,sizeof(text)));
+}
+
 LS_CASE(coverage_counts_fit_the_existing_bounded_wire_record)
 {
     cell_report_record_t r={.pci=7,.changed=10,.lat_e5=INT32_MIN,.lon_e5=INT32_MIN,.kind='F',.flags=64};

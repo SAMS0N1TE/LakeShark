@@ -27,6 +27,11 @@ bool ls_field_start(void)
     snprintf(entry.title, sizeof(entry.title), "Ridge trail / north overlook");
     snprintf(entry.text, sizeof(entry.text), "Mesh reception returned near the overlook. Clear sky and a steady GPS fix. Repeat this walk with the same antenna and compare the eastern path.\n\nThe radio sample, my position and all nine motion axes are attached to this note.");
     s.journal_count = 1;
+    /* LSSIM_JOURNAL=<n> fills the journal with n entries, for a long list. */
+    if (getenv("LSSIM_JOURNAL")) {
+        const int n = atoi(getenv("LSSIM_JOURNAL"));
+        if (n > 1) s.journal_count = n;
+    }
     if (getenv("LSSIM_LABS_PAGES")) {
         s.page_log_count = LS_FIELD_PAGES; s.pages = LS_FIELD_PAGES;
         for (int i = 0; i < LS_FIELD_PAGES; i++) {
@@ -107,7 +112,13 @@ bool ls_field_mark_lora(void) { return true; }
 bool ls_field_mark_radio(const char *title,const char *text,ls_field_source_t source,uint32_t frequency,uint32_t count)
 { (void)source;(void)frequency;(void)count;return ls_field_note(0,title,text); }
 bool ls_field_note(uint32_t id, const char *title, const char *text) { (void)id; snprintf(entry.title, sizeof(entry.title), "%s", title); snprintf(entry.text, sizeof(entry.text), "%s", text); return true; }
-bool ls_field_entry(int index, ls_journal_entry_t *out) { if (index != 0) return false; *out = entry; return true; }
+bool ls_field_entry(int index, ls_journal_entry_t *out)
+{
+    if (index < 0 || index >= s.journal_count) return false;
+    *out = entry;
+    if (index) { out->id = (uint32_t)index + 1; snprintf(out->title, sizeof(out->title), "Entry %02d", s.journal_count - index); }
+    return true;
+}
 bool ls_field_provider(ls_field_source_t source, ls_field_provider_t provider) { (void)source; (void)provider; return true; }
 
 /* The IQ probe the P25 SIGNAL panel reads. Every screen target that compiles

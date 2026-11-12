@@ -1368,6 +1368,12 @@ void scan_engine_init(void)
 {
     /**/
     s_zone = settings_get_scan_zone();
+    int hang_ms, thresh, pri_ms;
+    if (settings_get_scan_tuning(&hang_ms, &thresh, &pri_ms)) {
+        s_hang_ms = hang_ms < 0 ? 0 : hang_ms > 30000 ? 30000 : hang_ms;
+        s_thresh = thresh < 1 ? 1 : thresh > 100 ? 100 : thresh;
+        s_pri_ms = pri_ms > 0 && pri_ms < 500 ? 500 : pri_ms > 60000 ? 60000 : pri_ms;
+    }
     uint8_t options = settings_get_scan_options();
     s_mixed = (options & 1) != 0;
     s_location = (options & 2) != 0;
@@ -1490,11 +1496,15 @@ bool scan_engine_manual_hold(void)
 int scan_engine_candidate(void) { return s_candidate; }
 
 
+/* Kept across a restart, as the zone is. */
+static void tuning_save(void) { settings_set_scan_tuning(s_hang_ms, s_thresh, s_pri_ms); }
+
 void scan_engine_set_hang_ms(int ms)
 {
     if (ms < 0) ms = 0;
     if (ms > 30000) ms = 30000;
     s_hang_ms = ms;
+    tuning_save();
 }
 
 /**/
@@ -1503,6 +1513,7 @@ void scan_engine_set_threshold_pct(int pct)
     if (pct < 1)   pct = 1;
     if (pct > 100) pct = 100;
     s_thresh = pct;
+    tuning_save();
 }
 
 /**/
@@ -1522,6 +1533,7 @@ void scan_engine_set_priority_ms(int ms)
     if (ms > 0 && ms < 500) ms = 500;
     if (ms > 60000) ms = 60000;
     s_pri_ms = ms > 0 ? ms : 0;
+    tuning_save();
 }
 
 int   scan_engine_current(void)           { return s_cur; }

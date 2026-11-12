@@ -537,6 +537,32 @@ static void p25_grant_publish_ui(void)
                                    : s_grant_follower.control_hz;
     P25.grant_followed_count = s_grant_follower.followed_count;
     P25.grant_auto_follow    = p25_scan_get_auto_follow(&g_p25_scan);
+    P25.grant_returned_count  = s_grant_follower.returned_count;
+    P25.grant_foreign_count   = s_grant_follower.foreign_grants;
+    P25.grant_duplicate_count = s_grant_follower.duplicate_grants;
+    P25.grant_phase2_seen     = s_grant_follower.phase2_grants;
+    P25.grant_lingers         = s_grant_follower.lingers;
+    P25.grant_linger_catches  = s_grant_follower.linger_catches;
+    for (int i = 0; i < P25_OVER_GAP_BUCKETS; i++) {
+        P25.over_gap_caught[i]  = s_grant_follower.gap_caught[i];
+        P25.over_gap_regrant[i] = s_grant_follower.gap_regrant[i];
+    }
+    P25.grant_system_valid    = s_grant_follower.system_valid;
+    P25.follow_left_label = p25_follow_left_label(&g_p25_scan.follow_last_left);
+    P25.follow_left_us    = g_p25_scan.follow_last_left.at_us;
+    P25.roster_sys        = g_p25_scan.roster_sys;
+    P25.here_sys          = g_p25_scan.current_sys;
+    P25.roster_applies    = p25_scan_roster_applies(&g_p25_scan, esp_timer_get_time());
+    P25.roster_follow_off = g_p25_scan.roster_follow_off;
+    if (g_p25_scan.follow_trace_total) {
+        const p25_follow_trace_t *t = &g_p25_scan.follow_trace[
+            (g_p25_scan.follow_trace_total - 1) % P25_FOLLOW_TRACE_LEN];
+        const char *why = t->outcome == P25_FOLLOW_FOLLOWED ? "followed"
+                        : p25_follow_left_label(t);
+        snprintf(P25.follow_last_text, sizeof(P25.follow_last_text), "TG %u %s",
+                 (unsigned)t->talkgroup, why ? why : "left");
+        P25.follow_last_us = t->at_us;
+    }
 
     /* sample TSBK/IDEN telemetry off dsd_state. The IDEN table is
      * 16 slots so this loop is a handful of loads. */
@@ -669,6 +695,55 @@ void p25_get_receiver_status(ls_iq_control_status_t *out)
     ls_iq_control_status(&s_radio_control, out);
 }
 
+/* Transmission-trunked systems end the call at every PTT release and grant
+ * the next over on the same channel. Measured on Manatee-Sarasota: one TG
+ * granted the same channel seven times in seven seconds, ~120 ms lost to
+ * each return and retune. Saved; FOLLOW LINGER in OPTIONS or 'p25 follow linger <ms>'. */
+static unsigned int s_follow_linger_ms = P25_FOLLOW_LINGER_DEFAULT_MS;
+
+LS_COLD static void owner_follow_linger(uint32_t arg) { (void)p25_set_follow_linger_ms(arg); }
+
+LS_COLD bool p25_set_follow_linger_ms(unsigned int ms)
+{
+    if (ms > P25_FOLLOW_LINGER_MAX_MS) return false;
+    if (!p25_owner_current()) return p25_owner_post(owner_follow_linger, ms);
+    s_follow_linger_ms = ms;
+    p25_grant_set_linger_ms(&s_grant_follower, ms);
+    return settings_set_p25_linger_ms(ms);
+}
+
+unsigned int p25_get_follow_linger_ms(void) { return s_follow_linger_ms; }
+
+/* Follow on this system only: a profile's auto_follow=false, or the same
+ * set by hand from Talkgroup policy. Kept with this system's roster. */
+LS_COLD static void owner_follow_here(uint32_t arg) { (void)p25_set_follow_here(arg != 0); }
+
+LS_COLD bool p25_set_follow_here(bool on)
+{
+    if (!p25_owner_current()) return p25_owner_post(owner_follow_here, on);
+    (void)p25_scan_roster_for_edit(&g_p25_scan);
+    if (g_p25_scan.roster_follow_off == !on) return true;
+    g_p25_scan.roster_follow_off = !on;
+    if (!on) (void)p25_grant_force_return_to_control(&s_grant_follower);
+    p25_scan_persist_save_now();
+    return true;
+}
+
+/* Forget this system's roster: lockouts, allow list and mode, hold,
+ * priorities and follow-off. Other systems' rosters are untouched. */
+LS_COLD static void owner_forget_roster(uint32_t arg) { (void)arg; (void)p25_forget_system_roster(); }
+
+LS_COLD bool p25_forget_system_roster(void)
+{
+    if (!p25_owner_current()) return p25_owner_post(owner_forget_roster, 0);
+    (void)p25_scan_roster_for_edit(&g_p25_scan);
+    p25_scan_roster_clear(&g_p25_scan);
+    g_p25_scan.roster_pending_bind = false;
+    p25_scan_persist_save_now();
+    sys_log(1, "Talkgroup list for this system cleared");
+    return true;
+}
+
 LS_COLD static void owner_auto_follow(uint32_t arg) { (void)p25_set_auto_follow(arg != 0); }
 
 LS_COLD bool p25_set_auto_follow(bool enabled)
@@ -676,6 +751,14 @@ LS_COLD bool p25_set_auto_follow(bool enabled)
     if (!p25_owner_current()) return p25_owner_post(owner_auto_follow, enabled);
     bool returned = p25_scan_set_auto_follow(&g_p25_scan, &s_grant_follower,
                                              enabled);
+    /* Turning it on here means here too: drop this system's profile off. */
+    if (enabled) {
+        (void)p25_scan_roster_for_edit(&g_p25_scan);
+        if (g_p25_scan.roster_follow_off) {
+            g_p25_scan.roster_follow_off = false;
+            p25_scan_persist_save_now();
+        }
+    }
     bool saved = settings_set_p25_auto_follow(enabled);
     if (returned) sys_log(1, "Auto follow off: returning to control");
     if (!saved) sys_log(4, "Auto follow changed but preference was not saved");
@@ -715,16 +798,18 @@ bool p25_get_leave_on_encrypted(void)
     return P25.p25_leave_on_encrypted;
 }
 
-/* off after restart, not saved */
+/* Saved: a board that follows Phase II keeps following after a restart.
+   Both receivers decode it (the LR2021 through p25_p2_rx_float). */
 static void owner_phase2(uint32_t arg) { p25_set_phase2_follow(arg != 0); }
 
 LS_COLD void p25_set_phase2_follow(bool enabled)
 {
     if (!p25_owner_current()) { (void)p25_owner_post(owner_phase2, enabled); return; }
-    if (enabled && (P25.lora_rx || ls_rsel_saved(LS_RSEL_P25) == LS_RSEL_LORA)) return;
     p25_grant_set_phase2_follow(&s_grant_follower, enabled);
     if (!enabled && s_p2_owned)
         (void)p25_grant_force_return_to_control(&s_grant_follower);
+    if (!settings_set_p25_phase2_follow(enabled))
+        sys_log(4, "Phase II follow changed but preference was not saved");
 }
 
 bool p25_get_phase2_follow(void)
@@ -862,6 +947,7 @@ LS_COLD bool p25_ui_policy(p25_ui_policy_t kind, uint16_t value)
 {
     if (!p25_owner_current())
         return p25_owner_post(owner_policy, ((uint32_t)kind << 16) | value);
+    (void)p25_scan_roster_for_edit(&g_p25_scan);
     bool ok = true;
     switch (kind) {
     case P25_UI_ALLOW_ADD: ok = value && p25_scan_allow_add(&g_p25_scan, value); break;
@@ -888,6 +974,7 @@ LS_COLD bool p25_ui_policy(p25_ui_policy_t kind, uint16_t value)
 
 LS_COLD static void owner_hold(uint32_t arg)
 {
+    (void)p25_scan_roster_for_edit(&g_p25_scan);
     p25_scan_hold_set(&g_p25_scan, p25_scan_hold_active(&g_p25_scan) ? 0 : (uint16_t)arg);
     p25_scan_persist_save_now();
 }
@@ -903,6 +990,7 @@ LS_COLD bool p25_ui_hold_toggle(void)
 LS_COLD static void owner_lockout(uint32_t arg)
 {
     uint16_t tg = (uint16_t)arg;
+    (void)p25_scan_roster_for_edit(&g_p25_scan);
     if (!tg || !p25_scan_lockout_add(&g_p25_scan, tg)) return;
     if (s_grant_follower.talkgroup == tg)
         (void)p25_grant_force_return_to_control(&s_grant_follower);
@@ -922,6 +1010,7 @@ LS_COLD static void owner_unlock(uint32_t arg) { (void)p25_ui_lockout_remove((ui
 LS_COLD bool p25_ui_lockout_remove(uint16_t tg)
 {
     if (!p25_owner_current()) return p25_owner_post(owner_unlock, tg);
+    (void)p25_scan_roster_for_edit(&g_p25_scan);
     bool ok = p25_scan_lockout_remove(&g_p25_scan, tg);
     if (ok) p25_scan_persist_save_now();
     return ok;
@@ -1072,10 +1161,6 @@ static void dsd_decoder_task(void *arg)
         }
         p25_owner_service();
         p25_split_owner_service();
-        if (P25.lora_rx || ls_rsel_saved(LS_RSEL_P25) == LS_RSEL_LORA) {
-            p25_set_phase2_follow(false);
-            p25_p2_enable(false);
-        }
         esp_task_wdt_reset();
         if (s_p2_owned) p25_p2_follow_service();
         if (p25_p2_enabled()) {
@@ -1873,6 +1958,9 @@ static void p25_rx_task(void *arg)
             p25_lr_iq_run();
             continue;
         }
+        /* On to the SDR: a LoRa-chip request still queued from the last
+           pass would keep MeshCore paused for the whole session. */
+        if (P25.lora_wait) ls_mesh_radio_hold_bg(false);
         P25.lora_wait = false;
         if (!s_session) {
             ls_radio_err_t open_error = p25_radio_open();
@@ -2296,6 +2384,8 @@ static void p25_rx_task(void *arg)
 
     p25_split_radio_stop();
     p25_iq_capture_receiver(false);
+    /* A request still queued for the LoRa chip goes with the task. */
+    ls_mesh_radio_hold_bg(false);
     P25.lora_wait = false;
     if (s_session) {
         (void)ls_radio_iq_stop(s_session);
@@ -2433,9 +2523,13 @@ LS_COLD static void p25_on_enter(void)
     /* init the grant follower against whatever the current tune is
      * treated as the control channel. If the user retunes, the follower's
      * control_hz is refreshed in p25_rx_task when it processes the request. */
-    bool phase2_follow = s_grant_follower.phase2_follow;
+    /* The saved switch; if the settings could not be read, what this boot
+       last had. */
+    bool phase2_follow = entry_settings_err == ESP_OK ? entry_settings.phase2_follow
+                                                      : s_grant_follower.phase2_follow;
     p25_grant_init(&s_grant_follower, (uint64_t)s_tune_freq_hz,
                    p25_grant_retune_cb, NULL);
+    p25_grant_set_linger_ms(&s_grant_follower, s_follow_linger_ms);
     p25_split_init(&s_split, s_tune_freq_hz, esp_timer_get_time());
     atomic_store(&s_split_active, false);
     atomic_store(&s_split_available, false);
@@ -2464,6 +2558,8 @@ LS_COLD static void p25_on_enter(void)
                               entry_settings.auto_follow,
                               entry_settings.skip_encrypted,
                               entry_settings.encrypted_skip_ms);
+    s_follow_linger_ms = entry_settings.linger_ms;
+    p25_grant_set_linger_ms(&s_grant_follower, s_follow_linger_ms);
     /* and the profile outranks those persisted preferences in turn,
      * for the same reason. Reapply reads nothing from SD - what is on the card
      * may have changed, and re-entering an app is not a reload. */

@@ -27,6 +27,7 @@
 
 #include "../../ls_app.h"
 #include "../../ls_braille.h"
+#include "../../ls_drag_scroll.h"
 #include "../../ls_options.h"
 #include "../../ls_theme.h"
 #include "../../ls_tui_ui.h"
@@ -56,6 +57,8 @@ typedef enum { VIEW_TAPE, VIEW_TIMELINE } view_t;
 static view_t s_view;
 static uint32_t s_scroll;            /* timeline: first row shown        */
 static int s_sel = -1;               /* timeline: selected row, absolute */
+static ls_drag_scroll_t s_drag;      /* timeline: a finger carrying the cards */
+static tui_rect s_tl_rows;           /* timeline: where the cards were laid out */
 static EXT_RAM_BSS_ATTR struct { int x0, x1, y0, y1; uint32_t row; } s_cards[EV_MAX];
 static int s_cards_n;
 static char s_flash[72];
@@ -532,6 +535,7 @@ static int draw_cards(tui_surface *sf, tui_rect a, int y, int bottom, bool full)
         right(sf, a, a.x + 1, a.w - 4, y, t, NOTE);
     }
     y++;
+    if (full) s_tl_rows = tui_rect_make(a.x, y, a.w, bottom - y + 1);
     /* Wide glass: two columns of cards, read down the left one first. */
     const int ncol = full && a.w >= 96 ? 2 : 1, colw = a.w / ncol;
     uint32_t i = 0;
@@ -599,6 +603,13 @@ static int bar_buttons(ls_btn_t *b)
 
 static void draw(tui_surface *sf, tui_rect a)
 {
+    /* A finger on the timeline's cards carries them, a card per three rows;
+       the events for the new window are fetched just below. */
+    if (s_view == VIEW_TIMELINE && s_tl_rows.h > 0 && s_cards_n) {
+        int first = (int)s_scroll;
+        if (ls_drag_scroll(&s_drag, s_tl_rows, 3, &first, (int)s_ev_total, s_cards_n)) s_scroll = (uint32_t)first;
+    }
+    s_tl_rows = tui_rect_make(0, 0, 0, 0);
     refresh();
     snprintf(s_hint, sizeof(s_hint), s_view == VIEW_TIMELINE ?
              "W what was that  V tape  P replay  J/K newer/older  Enter play card  O options" :
@@ -718,6 +729,7 @@ static bool touch(int col, int row)
         if (i == n - 1) { ls_opt_open(&OPT); return true; }
         return i < n && key(LS_TK_CHAR, b[i].key);
     }
+    if (s_view == VIEW_TIMELINE && ls_drag_scroll_tap_is_lift(&s_drag)) return true;   /* the end of a drag */
     for (int c = 0; c < s_cards_n; c++) {
         if (row < s_cards[c].y0 || row >= s_cards[c].y1 || col < s_cards[c].x0 || col >= s_cards[c].x1) continue;
         if (s_view == VIEW_TAPE) { s_view = VIEW_TIMELINE; s_scroll = 0; s_sel = (int)s_cards[c].row; return true; }

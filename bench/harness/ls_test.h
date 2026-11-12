@@ -11,6 +11,9 @@
 typedef void (*ls_case_fn)(void);
 
 void ls_register(const char *file, const char *name, ls_case_fn fn);
+void ls_register_at(const char *file, int line, const char *name, ls_case_fn fn);
+void ls_register_xfail_at(const char *file, int line, const char *name, ls_case_fn fn,
+                          const char *ticket);
 void ls_register_xfail(const char *file, const char *name, ls_case_fn fn,
                        const char *ticket);
 void ls_fail(const char *file, int line, const char *fmt, ...);
@@ -19,7 +22,7 @@ void ls_note(const char *fmt, ...);
 #define LS_CASE(name)                                                        \
     static void name(void);                                                  \
     static void ls_reg_##name(void) __attribute__((constructor));            \
-    static void ls_reg_##name(void) { ls_register(__FILE__, #name, name); }  \
+    static void ls_reg_##name(void) { ls_register_at(__FILE__, __LINE__, #name, name); } \
     static void name(void)
 
 /* A case that documents a defect that is not fixed yet. It must fail; if it
@@ -29,7 +32,7 @@ void ls_note(const char *fmt, ...);
     static void name(void);                                                  \
     static void ls_reg_##name(void) __attribute__((constructor));            \
     static void ls_reg_##name(void)                                          \
-        { ls_register_xfail(__FILE__, #name, name, ticket); }                \
+        { ls_register_xfail_at(__FILE__, __LINE__, #name, name, ticket); }   \
     static void name(void)
 
 #define LS_CHECK(cond)                                                       \

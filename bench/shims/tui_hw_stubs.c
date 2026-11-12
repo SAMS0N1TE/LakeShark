@@ -188,6 +188,7 @@ bool        ls_wf_source_start(ls_wf_src_t src)  { s_src = src; return true; }
    nothing and does nothing - the question under test is whether the router
    ASKS, and a test that wants to check that asks the router, not this. */
 void ls_tui_radio_want(const char *mode_name) { (void)mode_name; }
+void ls_tui_radio_screen(bool radio_app) { (void)radio_app; }
 /* The bench has no receiver, so nothing is ever claimed. A screen
    that lights its lamp off this would light it never here, which is the
    right way for a stub to be wrong. */
@@ -343,6 +344,11 @@ void adsb_chip_diag_snapshot(adsb_chip_diag_t *out) { if (out) memset(out, 0, si
 void ls_mesh_socket_get(ls_mesh_socket_t *out)
 { if (out) { memset(out, 0, sizeof(*out)); strcpy(out->chip, "none");
     strcpy(out->owner, "none"); strcpy(out->mode, "LoRa"); } }
+/* MESH's primary-mesh row and its radio-front lease: the bench has
+   MeshCore only and no radio to lend. */
+__attribute__((weak)) int ls_mesh_primary(void) { return 0; }
+__attribute__((weak)) esp_err_t ls_mesh_set_primary(int p) { return p ? ESP_ERR_NOT_SUPPORTED : ESP_OK; }
+__attribute__((weak)) void ls_mesh_radio_front(bool on) { (void)on; }
 
 #ifdef LS_WF_SOURCE_REAL
 /* Simulator has no raw hardware FIFO. */

@@ -347,6 +347,10 @@ typedef struct dsd_state {
      * than parsed with the standard bit layout. See p25_tsbk_parse. */
     unsigned int p25_tsbk_vendor_count;
     uint8_t p25_tsbk_last_vendor_mfid;
+    /* Vendor opcodes by number, so a site's vendor traffic can be named. */
+    uint16_t p25_tsbk_vendor_ops[P25_TSBK_OPCODE_COUNT];
+    /* Motorola (MFID $90) patch/supergroup voice grants, 0x02 and 0x03. */
+    unsigned int p25_mot_grant_count;
 
     uint16_t p25_tsbk_unhandled[P25_TSBK_OPCODE_COUNT];
     /* RFSS_STS_BCST (0x3a). Which RFSS/site this control channel

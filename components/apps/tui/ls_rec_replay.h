@@ -19,6 +19,9 @@ void ls_rec_player_draw(tui_surface *sf,tui_rect area);
 int  ls_rec_player_key(ls_tk_t k,char c);
 int  ls_rec_player_touch(int x,int y);
 bool ls_rec_player_busy(void);
+void ls_rec_player_set_power(int step);
+int  ls_rec_player_power(void);
+bool ls_rec_player_play(void);
 
 /* SUB-GHZ's capture source, chosen from REC's RADIO list: the RTL-SDR, the
    CC1101 or the LoRa chip, each back on its own frequency. False when WATCH
@@ -30,6 +33,7 @@ void ls_rec_tools_enter(void);
 void ls_rec_tools_draw(tui_surface *sf,tui_rect area);
 bool ls_rec_tools_key(ls_tk_t k,char c);
 bool ls_rec_tools_touch(int x,int y);
+bool ls_rec_tools_button_hit(int x,int y);
 #ifdef __cplusplus
 }
 #endif

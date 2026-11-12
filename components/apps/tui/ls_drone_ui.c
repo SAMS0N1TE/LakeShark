@@ -402,6 +402,7 @@ static void opt_set(const ls_opt_t *o, int v)
     if (o->arg == 100) {
         s_background = v;
         if (v) { (void)ls_drone_watch_enable(true); s_session_on = false; }
+        else s_session_on = true;   /* on for this visit only: leaving stops it */
         return;
     }
     if (o->arg == 101) { (void)ls_drone_watch_alerts(v); return; }
@@ -515,6 +516,10 @@ static void enter(void)
     s_refreshed = 0;
     ls_drone_watch_foreground(true);   /* on screen: may pause MeshCore to scan */
     (void)ls_drone_watch_status(&s_status);
+    /* Already on when the app opens means it was left watching: the stored
+       switch survives a reboot and this one did not, so the row said OFF
+       while the watch ran, and OFF could not stop it. */
+    if (s_status.enabled && !s_session_on) s_background = true;
     /* Opening the app listens; leaving stops it unless asked to keep going. */
     if (!s_status.enabled) { (void)ls_drone_watch_enable(true); s_status.enabled = true; s_session_on = !s_background; }
 }

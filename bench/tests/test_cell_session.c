@@ -1,12 +1,21 @@
 #include "ls_test.h"
 #include "cell_session.h"
+#include "cell_core.h"
 LS_CASE(repeated_session_keeps_attempts_and_rejects_failed_decode)
 {
     cell_session_t s; cell_session_begin(&s, true);
     for (unsigned i=0;i<13;i++) cell_session_finish(&s,true,true,1280000);
-    LS_CHECK(s.attempts==13 && s.decoded==13 && s.channel==1);
+    LS_CHECK(s.attempts==13 && s.decoded==13 && s.channel==13%CELL_HRF_CHANNELS);
     cell_session_finish(&s,false,true,0);
     LS_CHECK(s.decoded==13 && s.wait_ms==2000);
+}
+LS_CASE(auto_visits_every_preset_once_a_round)
+{
+    cell_session_t s; cell_session_begin(&s, true);
+    unsigned seen[CELL_HRF_CHANNELS]={0};
+    for (unsigned i=0;i<CELL_HRF_CHANNELS;i++) {seen[s.channel]++;cell_session_finish(&s,true,false,0);}
+    for (unsigned i=0;i<CELL_HRF_CHANNELS;i++) LS_EQ_UINT(seen[i],1);
+    LS_EQ_UINT(s.channel,0);
 }
 LS_CASE(retries_back_off_and_recover_without_stalling)
 {

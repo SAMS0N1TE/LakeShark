@@ -53,6 +53,18 @@ uint32_t settings_get_p25_encrypted_skip_ms(void)
     return 45678u;
 }
 
+bool settings_get_p25_phase2_follow(void)
+{
+    ++s_settings_reads;
+    return true;
+}
+
+uint32_t settings_get_p25_linger_ms(void)
+{
+    ++s_settings_reads;
+    return 900u;
+}
+
 static const app_t P25_TEST_APP = {
     .name = "P25",
     .default_freq = 154785000u,
@@ -69,7 +81,7 @@ LS_CASE(entry_snapshot_reads_all_settings_on_cache_safe_static_worker)
 
     LS_EQ_INT(p25_entry_settings_load(&P25_TEST_APP, 111u, &got), ESP_OK);
 
-    LS_EQ_UINT(s_settings_reads, 6);
+    LS_EQ_UINT(s_settings_reads, 8);
     LS_EQ_STR(ls_shim_task_last_name(), "ls_nvs");
     LS_EQ_UINT(ls_shim_task_last_stack_depth(), LS_NVS_WORKER_STACK_BYTES);
     LS_CHECK(ls_shim_task_last_static_stack() != NULL);
@@ -79,6 +91,8 @@ LS_CASE(entry_snapshot_reads_all_settings_on_cache_safe_static_worker)
     LS_CHECK(!got.auto_follow);
     LS_CHECK(!got.skip_encrypted);
     LS_EQ_UINT(got.encrypted_skip_ms, 45678u);
+    LS_CHECK(got.phase2_follow);   /* saved ON comes back after a restart */
+    LS_EQ_UINT(got.linger_ms, 900u);
     LS_NEAR(got.cqpsk.timing_gain, 0.0002f, 0.0000001f);
     LS_NEAR(got.cqpsk.carrier_gain, 0.02f, 0.000001f);
 }
@@ -101,6 +115,8 @@ LS_CASE(cache_safe_worker_allocation_failure_uses_defaults_without_nvs)
     LS_EQ_UINT(got.freq_hz, P25_TEST_APP.default_freq);
     LS_CHECK(got.auto_follow);
     LS_CHECK(got.skip_encrypted);
+    LS_CHECK(!got.phase2_follow);  /* never on by default */
+    LS_EQ_UINT(got.linger_ms, P25_FOLLOW_LINGER_DEFAULT_MS);
     LS_EQ_UINT(got.encrypted_skip_ms,
                P25_CONTROL_ENCRYPTED_SKIP_DEFAULT_MS);
     LS_NEAR(got.cqpsk.timing_gain, P25_CQPSK_TIMING_GAIN_DEFAULT,

@@ -120,7 +120,7 @@ class CellReviewTest(unittest.TestCase):
                      'BAND OCCUPANCY', '= carrier  + searched  * cell']:
             self.assertIn(text, done)
         many_p = render('scan-many-p', 'many')
-        self.assertIn('+5 more', many_p)
+        self.assertIn(' 33 ', many_p)              # the four-key bar leaves room for all fourteen
         many_l = render('scan-many-l', 'many', args=('-l',))
         for pci in ['301', '412', '451', '33']:
             self.assertIn(' '+pci+' ', many_l)
@@ -137,7 +137,7 @@ class CellReviewTest(unittest.TestCase):
         listing = render('scan-list-key', 'many', args=('-k', 'n'))
         self.assertIn('LTE CELLS / 850 DL / B5', listing)
         self.assertIn('881.500 MHz  PCI 301', listing)
-        tapped = render('scan-list-tap', 'many', args=('-x', '8:36'))
+        tapped = render('scan-list-tap', 'many', args=('-x', '8:44'))
         self.assertIn('LTE CELLS', tapped)
         bands = render('scan-bands', 'done', args=('-k', 'b'))
         for text in ['600 DL / B71', 'EARFCN 68586-68935', '700 DL / B14', '850 DL / B26', '700 DL / B17', 'EARFCN 2400-2649']:
@@ -146,6 +146,55 @@ class CellReviewTest(unittest.TestCase):
         options = render('scan-options', 'done', args=('-k', 'o'))
         for text in ['LTE SCAN', 'GATED', 'LTE MIB', 'DONGLE PPM', 'ALL CELLS', '14 found' if False else 'found']:
             self.assertIn(text, options)
+
+    def test_survey_chart_floor_b28_overload_and_gain(self):
+        """A survey pass draws against its floor; B28, the clip warning and the gain show."""
+        subprocess.run([shutil.which('python'), str(ROOT/'bench/tests/cell_preview.py')],
+                       check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out = ROOT/'bench/out/cell'
+        exe = out/'lssim-cell.exe'
+        def render(name, env_extra, args=()):
+            env = os.environ.copy()
+            for k in ('CELL_HIGH', 'CELL_LTE_HISTORY', 'CELL_LTE_SCAN', 'CELL_SURVEY', 'CELL_COMPARED',
+                      'CELL_OVERLOAD', 'CELL_GAIN_TENTHS'):
+                env.pop(k, None)
+            env.update(env_extra)
+            result = subprocess.run([str(exe), 'cell', '-F', '2', '-f', '3', '-d',
+                '-o', str(out/(name+'.bmp')), *args], env=env, text=True, capture_output=True, check=True)
+            (out/(name+'.txt')).write_text(result.stdout)
+            return result.stdout
+        pick = lambda index: ('-x', ','.join(['+b'] + ['@down']*index + ['@enter']))
+        bands = render('survey-bands', {}, args=('-k', 'b'))
+        for text in ['800 DL / B20 EU', '700 DL / B28 lo', 'EARFCN 9210-9459', '700 DL / B28 hi',
+                     '778-803 MHz EARFCN 9410-9659']:
+            self.assertIn(text, bands)
+        # B28 hi, Claro's 15 MHz carrier on the receiver's floor.
+        hi = render('survey-b28hi', {'CELL_SURVEY': '10'}, args=pick(10))
+        self.assertIn('700 DL / B28 hi', hi)
+        self.assertIn('= carrier', hi)
+        self.assertRegex(hi, r'floor -6\d dBFS')
+        self.assertNotIn('-110..-30', hi)
+        self.assertIn('EARFCN 9576', hi)             # 794.6 MHz by the window, not B20's 6186
+        self.assertNotIn('overloaded', hi)
+        compared = render('survey-b28hi-compared', {'CELL_SURVEY': '10', 'CELL_COMPARED': '1'}, args=pick(10))
+        self.assertIn('- baseline', compared)
+        clipped = render('survey-overload', {'CELL_SURVEY': '10', 'CELL_OVERLOAD': '1'}, args=pick(10))
+        self.assertIn('RTL overloaded at 786 MHz - lower gain', clipped)
+        gain = render('survey-gain', {'CELL_SURVEY': '9', 'CELL_COMPARED': '1', 'CELL_GAIN_TENTHS': '197'}, args=pick(9))
+        self.assertIn('| 19.7 dB', gain)
+        self.assertNotIn('29.7 dB', render('survey-b28lo', {'CELL_SURVEY': '9'}, args=pick(9)))
+        options = render('survey-options', {}, args=('-k', 'o'))
+        self.assertIn('RTL GAIN', options)
+        self.assertIn('29.7 dB', options)
+        lower = render('survey-options-gain', {'CELL_GAIN_TENTHS': '144'}, args=('-k', 'o'))
+        self.assertIn('LEARN at this', lower)
+        # The narrow picker cuts each label short, as it did before: the band
+        # pair and the first EARFCN show. Claro's 785.5 is on the second page.
+        channels = render('high-channels', {'CELL_HIGH': '1'}, args=('-k', 'b'))
+        for text in ['739.000 MHz', '2150.000 MHz', '763.000 MHz', 'B14 5330/B28', '773.000 MHz', 'of 9']:
+            self.assertIn(text, channels)
+        page2 = render('high-channels-2', {'CELL_HIGH': '1'}, args=('-k', 'b', '-x', '13:42'))   # PAGE DN
+        self.assertIn('785.500 MHz', page2)
 
     def test_full_iq_and_sweep_compile(self):
         compiler = shutil.which('gcc') or shutil.which('cc')

@@ -5,7 +5,10 @@ static void put32(uint8_t *p,uint32_t v)
 {for(int i=0;i<4;i++)p[i]=(uint8_t)(v>>(8*i));}
 bool cell_report_encode(const cell_report_record_t *r,char *text,size_t size)
 {
-    if(!r || !text || size<49 || r->band>=5 || r->pci < -1 || r->pci>503 ||
+    /* band is the row of cell_bands[]: it was held under 5 when the table
+       had five rows, which kept every report from the later windows (B28,
+       Argentina's 700 MHz) off the mesh. The byte holds any row there is. */
+    if(!r || !text || size<49 || r->band>=CELL_REPORT_BAND_ROWS || r->pci < -1 || r->pci>503 ||
        !strchr("QRUDSTLMPCF",r->kind) || !r->kind)return false;
     uint8_t b[32];
     put32(b,r->boot);put32(b+4,r->sequence);put32(b+8,r->epoch);put32(b+12,r->frequency_khz);

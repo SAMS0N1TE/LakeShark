@@ -5,6 +5,8 @@
 /* The host shim does not otherwise need these two ESP task APIs. */
 TaskHandle_t xTaskCreateStatic(TaskFunction_t,const char *,uint32_t,void *,UBaseType_t,StackType_t *,StaticTask_t *);
 UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t);
+/* glibc 2.38+ declares strlcpy; keep the test copy under its own name */
+#define strlcpy ls_test_strlcpy
 static size_t strlcpy(char *out,const char *in,size_t n)
 { size_t len=strlen(in); if(n) snprintf(out,n,"%s",in); return len; }
 #include "../../components/lakeshark/core/settings.c"

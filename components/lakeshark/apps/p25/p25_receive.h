@@ -28,7 +28,8 @@ static inline bool p25_receive_frame(p25_scan_ctrl_t *sc,
                                     p25_grant_follower_t *f, dsd_state *s,
                                     int64_t now_us, bool allow_follow)
 {
-    unsigned int transitions = f->followed_count + f->returned_count;
+    /* A linger start ends the over too: the next one starts clean. */
+    unsigned int transitions = f->followed_count + f->returned_count + f->lingers;
     uint32_t source = f->source;
     if (f->state == P25_GRANT_ON_TRAFFIC && s->p25_frame_valid &&
         s->p25_frame_duid != 7 && f->active_call.nac &&
@@ -50,9 +51,11 @@ static inline bool p25_receive_frame(p25_scan_ctrl_t *sc,
     if (s->p25_frame_valid && s->p25_frame_duid == 10 && s->p25_ess_valid &&
         f->state == P25_GRANT_ON_TRAFFIC)
         (void)p25_grant_on_ess(f, 0, s->p25_algid, s->p25_kid, now_us);
-    if (s->p25_frame_valid && s->p25_frame_duid == 7 && allow_follow)
-        (void)p25_scan_apply_from_state(sc, f, s, now_us);
-    if (transitions != f->followed_count + f->returned_count ||
+    if (s->p25_frame_valid && s->p25_frame_duid == 7) {
+        if (allow_follow) (void)p25_scan_apply_from_state(sc, f, s, now_us);
+        else p25_scan_trace_busy(sc, s, now_us);
+    }
+    if (transitions != f->followed_count + f->returned_count + f->lingers ||
         (source && f->source && source != f->source)) {
         p25_receive_call_reset(s);
         return true;

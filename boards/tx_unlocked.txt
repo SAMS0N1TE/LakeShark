@@ -1,0 +1,143 @@
+TX UNLOCKED - EXPERIMENTAL LAB BUILD
+
+What it is
+----------
+CONFIG_LS_TX_UNLOCKED (main/Kconfig.projbuild) removes every software
+transmit limit. It is off by default. boards/tx_unlocked.defaults turns it
+on, and bench/configs.json has three profiles that layer it onto a board.
+All are enabled: false, so the release gate (verify.ps1 -Level full) never
+builds them:
+
+  p4-nano-v3-dsi-txunlocked        dir build_nano_v3_dsi_txunlocked
+                                   desktop board (Waveshare ESP32-P4-NANO-DB,
+                                   P4 rev 3 + C5)
+  t-display-p4-txunlocked          dir build_tdp4_txunlocked
+                                   T-Display-P4, SX1262 module
+  t-display-p4-lr2021-txunlocked   dir build_tdp4_lr_txunlocked
+                                   T-Display-P4, LR2021 module
+
+The two T-Display profiles are the same universal image (the LoRa chip is
+found at boot); they differ only in the USB serial bench/flash.ps1 looks for.
+
+Build and flash (Windows, as for any other profile):
+
+  pwsh -File bench/build.ps1 p4-nano-v3-dsi-txunlocked
+  pwsh -File bench/flash.ps1 p4-nano-v3-dsi-txunlocked
+
+or with idf.py directly (T-Display-P4):
+
+  idf.py -B build_tdp4_txunlocked -D SDKCONFIG=build_tdp4_txunlocked/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/t_display_p4.defaults;boards/tx_unlocked.defaults" build
+
+or for the desktop board:
+
+  idf.py -B build_nano_v3_dsi_txunlocked -D SDKCONFIG=build_nano_v3_dsi_txunlocked/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/nano_headless_ble.defaults;boards/p4_rev3.defaults;boards/nano_c5.defaults;boards/nano_dsi.defaults;boards/tx_unlocked.defaults" build
+
+On the host bench, add -DLS_TX_UNLOCKED=1 to the compiler flags to get the
+same behaviour; bench/tests/test_tx_unlocked.c always builds that way.
+
+The screen says so: the TX gauge reads "UNLOCKED TX +nn dBm" in red, and
+OPTIONS shows "TX power (UNLOCKED)".
+
+Limits removed
+--------------
+  radio/tx_policy.c ls_tx_protect   per-radio power window, 5 s heat budget,
+                                    10 s per minute duty budget (all radios:
+                                    LoRa socket, CC1101, HackRF, sim)
+  subghz_tx_radio_refusal           CC1101 band list (300-348, 387-464,
+                                    779-928 MHz) and -10..+10 dBm, for every
+                                    replay on every radio
+  subghz_tx_refusal                 6-4096 edges and 10 s on air
+  subghz_ook_symbols                4096 edges and 10 s span when packing
+  ls_mixrf.c (CC1101)               only -10/0/5/10 dBm accepted; any dBm is
+                                    now mapped to the nearest PATABLE step;
+                                    the fixed 11 s send wait now follows the
+                                    burst length plus 1 s
+  ls_lora_cw_allowed                CW only at 902-928 / 433.05-434.79 MHz
+                                    and -9..-3 dBm
+  lr2021_tx_upload.inc (I/Q TX)     -9..+10 dBm, 16 repeats, 900 ms, the
+                                    150-960 MHz band, six sample rates and
+                                    the |IQ| <= 56 magnitude rule; rates
+                                    above 125 kS/s poll the FIFO without the
+                                    1 ms sleep, as lr2021-sdr does
+  LR2021 LoRa / FSK / OOK / I/Q TX  the 150-960 MHz LF-only rule: transmit
+                                    now covers the whole synthesiser,
+                                    104-2740 MHz, on the HF PA from 1.5 GHz
+                                    (SelPa 1, SetPaConfig 80 67 1C, the
+                                    datasheet 2445 MHz 0 dBm row, as in
+                                    lr2021-sdr)
+  LR2021 RF switch                  the TX HF state was refused in the
+                                    driver and the console; the T-Display
+                                    table gains the bits lr2021-sdr measured
+                                    (DIO7 TX HF, DIO10 RX+TX HF: a 2440 MHz
+                                    burst 48 dB over the floor with them and
+                                    nothing without)
+  ls_lap_radio_io_hw.c (app API)    I/Q sends above +10 dBm
+  ls_labs_limits.h (Labs SEND)      US915 band only, +14 dBm, 400 ms per
+                                    packet, 600 ms a minute
+  headless_main.c console           "rec iq test" and "rec iq replay"
+                                    -9..+10 dBm
+  meshcore ls_mesh.cpp              MeshCore dispatcher airtime budget
+                                    (factor 0, so 100 % duty)
+  replay file buffers               4096 / 8192 edges raised to 65536
+                                    (PSRAM) so long files load whole
+                                    instead of being refused as incomplete
+
+UI power steps become BENCH -9, ROOM 0, NORMAL 5, +10, +14, +17, FULL +22
+dBm (subghz_tx_step_dbm). The CC1101 shows +10 on the top four steps because
+that is its PA ceiling.
+
+HackRF had nothing to remove: its checks are the hardware's (1 MHz-6 GHz,
+TX VGA 0-47 dB, one 65534-byte USB transfer) and the operator's own saved
+"hackrf txlimits", which default to VGA 47 with the amp allowed.
+
+What is still enforced, and why
+-------------------------------
+These are what the hardware can do, not policy. Going past them writes
+invalid register values, indexes past a table, or overruns a buffer:
+
+  SX126x / LR2021 LF -9..+22 dBm      the chips' SetTxParams range; the
+                                      LR2021 PA table is indexed by it
+  LR2021 HF PA -19.5..+12 dBm         the datasheet HF SetTxParams range,
+                                      and on the T-Display-P4 the HF path
+                                      feeds a 2.4 GHz front-end module that
+                                      LilyGO warns is damaged above +12
+  LR2021 104-2740 MHz                 what the synthesiser tunes
+  LR2021 I/Q 32767 samples, 1 MS/s,   the ROM streamer's 16-bit byte count,
+    under 500 s, ROM 1.24, no patch   its rate field and the 24-bit SetTx
+    marker                            timeout at 32 kHz
+  CC1101 PATABLE +10 dBm top step     the chip's highest PA setting
+  LoRa OOK packet 255 bytes           the radio FIFO
+  edges must alternate and be         malformed data, not a limit
+    non-zero; at least 2
+  rx-only radios, PA thermal fault    -24 when the path cannot transmit at
+    latch                             all; -23 only when a driver reports
+                                      a PA over-temperature fault
+
+LR2021 on the Nano-DB
+---------------------
+The desktop board has no LoRa socket; an LR2021 module goes on its header
+and is described on the console. In this build the LilyGO T-LR2021 V0.3 /
+V1.0 switch table and interrupt DIO are one word:
+
+  lora port header tlr2021 cs=<gpio> busy=<gpio> rst=<gpio>
+
+which sets rfsw=6:08,7:10,8:06,10:18 dio=11 tcxo 3.3. Any other table may
+be given with rfsw=, TX HF bits included. In a locked build the preset
+leaves the TX HF bits clear and the console still refuses them.
+
+The UI power steps above +12 dBm read their LF value; on the HF path the
+driver sends +12, the most the PA and the front-end take.
+
+Verification done here
+----------------------
+Host bench (Linux gcc): the full suite fails the same 59 environment-only
+tests with and without this change (no new failures in the locked build).
+test_tx_unlocked: 5/5, test_lora_port_unlocked: 18/18, test_lr20xx_hf_tx:
+4/4 (RF switch bytes, HF PA SelPa/SetPaConfig/SetTxParams at 2440 MHz,
+the +12 dBm ceiling, re-arming the PA across the 1.5 GHz edge, transmit at
+both ends of the synthesiser). Five existing suites assert refusals that
+this build removes on purpose (test_labs_limits, test_lora_port's HF line
+is now guarded, test_rec_lr_iq, test_subghz_file, test_subghz_runtime);
+they pass in the locked build, which is what the release gate runs. test_tui_screens: 146/153 in both locked and
+unlocked builds, same 7 pre-existing failures. Unlocked READ page rendered
+and inspected.

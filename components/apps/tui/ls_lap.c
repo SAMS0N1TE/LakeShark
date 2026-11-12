@@ -72,7 +72,9 @@ static void ls_lap_select(const char *id);
 extern const ls_tui_screen_t ls_lap_screen;
 static TaskHandle_t worker;
 static StaticTask_t worker_tcb;
-EXT_RAM_BSS_ATTR static StackType_t worker_stack[6144 / sizeof(StackType_t)];
+/* 12 KB: it also runs app radio sessions, and the LR2021 setup path for a
+   frequency above 915 MHz overflowed 6 KB (MESHTASTIC at 926.125 MHz). */
+EXT_RAM_BSS_ATTR static StackType_t worker_stack[12288 / sizeof(StackType_t)];
 static const ls_app_doc_t doc = {
     .purpose = "A native app installed on the SD card. Its author supplies its behavior.",
     .records = LS_APP_RECORDS_MANUAL,

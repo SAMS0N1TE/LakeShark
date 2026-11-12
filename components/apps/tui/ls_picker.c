@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "ls_tui_ui.h"
+#include "ls_drag_scroll.h"
 #include "ls_i18n.h"
 #include "esp_attr.h"
 
@@ -49,6 +50,10 @@ static int  s_top;     /* first visible, index into s_order */
 /* How many rows the last draw actually fitted. A page is this, and
    it cannot be known before the list has been given its rectangle. */
 static int  s_nvis;
+/* A finger dragged on the rows moves the window by itself; the cursor is
+   left where it was until a key moves it, and then the window follows it. */
+static ls_drag_scroll_t s_drag;
+static bool s_free;
 
 #define ROWS_MAX 24
 static tui_rect s_hit_row[ROWS_MAX];
@@ -87,6 +92,7 @@ static void refilter(void)
     if (s_cur >= s_shown) s_cur = s_shown - 1;
     if (s_cur < 0) s_cur = 0;
     s_top = 0;
+    s_free = false;
 }
 
 void ls_picker_open(const char *title, ls_picker_done_t on_done)
@@ -107,6 +113,7 @@ void ls_picker_open(const char *title, ls_picker_done_t on_done)
     s_filter[0] = 0;
     s_cur = 0;
     s_top = 0;
+    s_free = false;
     s_shown = 0;
     s_open = true;
 }
@@ -558,8 +565,12 @@ void ls_picker_draw(tui_surface *sf, tui_rect area)
     if (nvis <= 0) return;
     s_nvis = nvis;              /* what a page is worth, see page() */
 
-    if (s_cur < s_top) s_top = s_cur;
-    if (s_cur >= s_top + nvis) s_top = s_cur - nvis + 1;
+    if (s_shown > nvis &&
+        ls_drag_scroll(&s_drag, body, s_header ? 6 : ROW_STEP, &s_top, s_shown, nvis)) s_free = true;
+    if (!s_free) {
+        if (s_cur < s_top) s_top = s_cur;
+        if (s_cur >= s_top + nvis) s_top = s_cur - nvis + 1;
+    }
     if (s_top > s_shown - nvis) s_top = s_shown - nvis;
     if (s_top < 0) s_top = 0;
 
@@ -621,6 +632,7 @@ void ls_picker_draw(tui_surface *sf, tui_rect area)
 static void move(int dz)
 {
     if (s_shown <= 0) return;
+    s_free = false;
     s_cur += dz;
     if (s_cur < 0) s_cur = 0;
     if (s_cur >= s_shown) s_cur = s_shown - 1;
@@ -639,6 +651,7 @@ static void page(int dir)
        the bottom of the window scrolls it by exactly one row. That is a
        press of PAGE DN that advances the list by a single entry, which is
        the fault this was written to cure, wearing a different hat. */
+    s_free = false;
     s_top += dir * n;
     if (s_top > s_shown - n) s_top = s_shown - n;
     if (s_top < 0) s_top = 0;
@@ -695,6 +708,8 @@ bool ls_picker_touch(int col, int row)
     if (in(s_hit_prev, col, row))  { page(-1); return true; }
     if (in(s_hit_next, col, row))  { page(1);  return true; }
 
+    /* The lift at the end of a drag is not a choice. */
+    if (ls_drag_scroll_tap_is_lift(&s_drag)) return true;
     for (int i = 0; i < s_hit_rows; i++) {
         if (!in(s_hit_row[i], col, row)) continue;
         /* A level's arrows step it and leave the list up. */

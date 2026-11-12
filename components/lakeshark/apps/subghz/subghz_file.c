@@ -1,3 +1,4 @@
+#include "ls_tx_unlock.h"
 #include "subghz_file.h"
 
 #include <stdio.h>
@@ -182,6 +183,7 @@ void subghz_file_line(subghz_file_t *f, const char *line,
 
 const char *subghz_tx_radio_refusal(uint32_t freq_hz, int dbm)
 {
+    if (LS_TX_UNLOCKED) return freq_hz ? NULL : "no frequency";
     if (!((freq_hz>=300000000 && freq_hz<=348000000) ||
           (freq_hz>=387000000 && freq_hz<=464000000) ||
           (freq_hz>=779000000 && freq_hz<=928000000)))
@@ -194,9 +196,28 @@ const char *subghz_tx_refusal(uint32_t freq_hz, int dbm, size_t edges, uint64_t 
 {
     const char *why=subghz_tx_radio_refusal(freq_hz,dbm);
     if(why)return why;
+    if (LS_TX_UNLOCKED) return edges < 2 ? "fewer than 2 edges" : NULL;
     if (edges < 6 || edges > 4096) return "not 6-4096 edges";
     if (span_us > 10000000) return "longer than 10 s";
     return NULL;
+}
+
+int subghz_tx_step_dbm(int step, bool cc1101)
+{
+    static const int DBM[SUBGHZ_TX_STEPS_MAX] = {-9, 0, 5, 10, 14, 17, 22};
+    static const int CC[SUBGHZ_TX_STEPS_MAX] = {-10, 0, 5, 10, 10, 10, 10};
+    if (step < 0) step = 0;
+    if (step >= SUBGHZ_TX_STEPS) step = SUBGHZ_TX_STEPS - 1;
+    return cc1101 ? CC[step] : DBM[step];
+}
+
+const char *subghz_tx_step_name(int step)
+{
+    static const char *const NAME[SUBGHZ_TX_STEPS_MAX] =
+        {"BENCH", "ROOM", "NORMAL", LS_TX_UNLOCKED ? "+10" : "MAX", "+14", "+17", "FULL"};
+    if (step < 0) step = 0;
+    if (step >= SUBGHZ_TX_STEPS) step = SUBGHZ_TX_STEPS - 1;
+    return NAME[step];
 }
 
 uint64_t subghz_span_us(const int32_t *edges, size_t count)
@@ -251,7 +272,7 @@ bool subghz_file_is_ook(const subghz_file_t *f)
 size_t subghz_ook_symbols(const int32_t *edges, size_t count,
                           uint32_t *out, size_t capacity)
 {
-    if (!edges || count < 6 || count > 4096) return 0;
+    if (!edges || count < (LS_TX_UNLOCKED ? 2 : 6) || (!LS_TX_UNLOCKED && count > 4096)) return 0;
     uint64_t span = 0;
     size_t halves = 0;
     for (size_t i=0;i<count;i++) {
@@ -259,7 +280,7 @@ size_t subghz_ook_symbols(const int32_t *edges, size_t count,
         if (!v || (i && (v>0)==(edges[i-1]>0))) return 0;
         uint64_t us=v<0?-v:v;
         span+=us;
-        if (span>10000000) return 0;
+        if (!LS_TX_UNLOCKED && span>10000000) return 0;
         halves+=(us+32766)/32767;
     }
     /* A trailing low half ensures the final mark completes before EOT. */

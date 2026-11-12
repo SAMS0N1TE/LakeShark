@@ -216,6 +216,8 @@
    table that sets one. */
 #define LS_BOARD_LR20XX_RFSW_TABLE     { 6, 0x08 },   /* high in Rx HF            */     { 7, 0x00 },   /* high only in Tx HF       */     { 8, 0x06 },   /* high in Rx LF and Tx LF  */     { 10, 0x08 }   /* high in Rx HF            */
 
+#define LS_BOARD_LR20XX_RFSW_TX_HF     { 7, 0x10 }, { 10, 0x10 }
+
 /* VCTL level that selects RF1, the antenna the factory firmware defaults to. */
 #define LS_BOARD_LR20XX_RF1_VCTL_LEVEL true
 
@@ -321,6 +323,5 @@
    session, not a compile error. */
 /* #define LS_BOARD_LINK_RX_GPIO    ??  TODO measure */
 /* #define LS_BOARD_LINK_TX_GPIO    ??  TODO measure */
-/* #define LS_BOARD_LINK_SCAN_PINS  ??  TODO measure */
 
 #endif

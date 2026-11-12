@@ -206,3 +206,11 @@ uint32_t ls_sweep_gaps(const ls_sweep_plan_t *plan, const int8_t *dbfs)
         if (dbfs[i] == LS_SWEEP_NO_DATA) n++;
     return n;
 }
+
+uint32_t ls_sweep_rail_count(const uint8_t *iq, size_t n)
+{
+    if (!iq) return 0;
+    uint32_t rails = 0;
+    for (size_t i = 0; i < n; i++) rails += iq[i] == 0 || iq[i] == 255;
+    return rails;
+}

@@ -89,9 +89,19 @@ static const ls_mesh_peer_t PEERS[] = {
 
 bool lssim_is_empty(void);
 
+/* LSSIM_MESH_FILL: every peer slot and every message slot used, for the
+   lists that have to scroll. */
+static bool fill(void) { return getenv("LSSIM_MESH_FILL") != NULL; }
+static int n_peers(void) { return fill() ? LS_MESH_MAX_PEERS : N_PEERS; }
+
 static void copy_peer(int rank, ls_mesh_peer_t *out)
 {
-    *out = PEERS[rank];
+    *out = PEERS[rank % N_PEERS];
+    if (rank >= N_PEERS) {
+        out->id[15] = "0123456789ABCDEF"[rank & 15];
+        snprintf(out->name, sizeof(out->name), "NODE %02d", rank + 1);
+        out->last_heard -= (uint32_t)rank * 60u;
+    }
     extern double lssim_map_scene_coord(double,bool);
     out->lat_e6=(int32_t)(lssim_map_scene_coord(out->lat_e6/1e6,true)*1e6);
     out->lon_e6=(int32_t)(lssim_map_scene_coord(out->lon_e6/1e6,false)*1e6);
@@ -102,7 +112,7 @@ static void copy_peer(int rank, ls_mesh_peer_t *out)
 int ls_mesh_peers(ls_mesh_peer_t *out, int max)
 {
     if (lssim_is_empty()) return 0;
-    int n = (max < N_PEERS) ? max : N_PEERS;
+    int n = (max < n_peers()) ? max : n_peers();
     for (int i = 0; i < n; i++) copy_peer(i, &out[i]);
     return n;
 }
@@ -111,7 +121,7 @@ uint32_t ls_mesh_now(void) { return 1757000000u; }
 
 bool ls_mesh_peer_at(int rank, ls_mesh_peer_t *out)
 {
-    if (rank < 0 || rank >= N_PEERS || !out) return false;
+    if (rank < 0 || rank >= n_peers() || !out) return false;
     copy_peer(rank, out);
     return true;
 }
@@ -190,6 +200,16 @@ int ls_mesh_messages(ls_mesh_msg_t *out, int max)
 {
     int n = (max < N_MSGS) ? max : N_MSGS;
     for (int i = 0; i < n; i++) out[i] = MSGS[i];
+    if (fill()) {
+        /* Older chatter ahead of the fixture, numbered oldest first. */
+        const int extra = (max < LS_MESH_MAX_MSGS ? max : LS_MESH_MAX_MSGS) - n;
+        for (int i = n - 1; i >= 0; i--) out[i + extra] = out[i];
+        for (int i = 0; i < extra; i++) {
+            out[i] = (ls_mesh_msg_t){ .t = 43000u + (uint32_t)i * 40u, .state = LS_MSG_IN };
+            snprintf(out[i].text, sizeof(out[i].text), "NORTHFIELD: earlier message %02d", i + 1);
+        }
+        n += extra;
+    }
     const char *last = getenv("LSSIM_MESH_LAST");
     if (last && n < max) {
         if (!strcmp(last, "dm"))   out[n++] = LAST_DM;

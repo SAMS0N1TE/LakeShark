@@ -824,7 +824,15 @@ void ls_tile_grid(tui_surface *sf, tui_rect area, const ls_tile_t *tile,
        not literals: the count comes from dividing the rect, so a 48-column
        portrait grid gets three across and a 115-column landscape one gets
        eight, and neither is written down anywhere. */
-    int cols = area.w / 15;
+    /* A tile is also as wide as its longest name needs: a name cut at
+       thirteen characters is a name nobody can read back. */
+    int longest = 0;
+    for (int i = 0; i < n; i++) {
+        const int len = tile[i].name ? (int)strlen(tile[i].name) : 0;
+        if (len > longest) longest = len;
+    }
+    const int pitch = longest + 2 > 15 ? longest + 2 : 15;
+    int cols = area.w / pitch;
     if (cols < 2) cols = 2;
     if (cols > 6) cols = 6;
     if (cols > n) cols = n;
@@ -845,6 +853,8 @@ void ls_tile_grid(tui_surface *sf, tui_rect area, const ls_tile_t *tile,
             const int want_cols = (n + fits_rows - 1) / fits_rows;
             /* The art has a width as well as a height, and a tile too narrow
                for it is the same fault turned ninety degrees. */
+            /* The art outranks the name: a long name folds onto the
+               subtitle row below, cropped art has nowhere to go. */
             if (want_cols <= MAX_HITS && area.w / want_cols >= LS_ICON_COLS + 3) {
                 cols = want_cols;
                 rows = fits_rows;
@@ -927,9 +937,17 @@ void ls_tile_grid(tui_surface *sf, tui_rect area, const ls_tile_t *tile,
 
         const char *tile_name = ls_tr(tile[i].name);
         const char *tile_sub = ls_tr(tile[i].sub);
+        /* A name too long for the tile folds at its last space onto the
+           subtitle's row, which it takes over: "AVIATION PULSES" reads as
+           two words, not as "AVIATION PULS". */
         if (tile_name) {
             int nw = (int)strlen(tile_name);
-            if (nw > box.w - 2) nw = box.w - 2;
+            if (nw > box.w - 2) {
+                int at = box.w - 2;
+                while (at > 0 && tile_name[at] != ' ') at--;
+                if (at > 0) { tile_sub = tile_name + at + 1; nw = at; }
+                else nw = box.w - 2;
+            }
             char cut[24];
             snprintf(cut, sizeof(cut), "%.*s", nw, tile_name);
             tui_put_str(sf, box, box.x + (box.w - nw) / 2, text_y, cut, name_at);

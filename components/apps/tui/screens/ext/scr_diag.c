@@ -9,6 +9,7 @@
 #include "ls_safe_mode.h"
 #include "../../ls_tui_touch.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_radio_panel.h"
 #include "../../ls_radio_select.h"
 #include "esp_attr.h"
 
@@ -44,6 +45,9 @@
 #define DIAG_FLASH_MS 900
 /* PSRAM: only the draw path reads it, and the startup code zeroes it. */
 static EXT_RAM_BSS_ATTR ls_fresh_t s_row_fresh[DIAG_ROW_KEYS];
+/* Which row owns each slot: its label and the panel's corner. */
+static EXT_RAM_BSS_ATTR const char *s_row_owner[DIAG_ROW_KEYS];
+static EXT_RAM_BSS_ATTR int16_t s_row_ox[DIAG_ROW_KEYS], s_row_oy[DIAG_ROW_KEYS];
 static EXT_RAM_BSS_ATTR ls_radio_endpoint_info_t s_endpoint;
 static EXT_RAM_BSS_ATTR ls_receiver_diag_t s_receiver;
 static bool s_receiver_ok;
@@ -72,9 +76,21 @@ static void row(tui_surface *sf, tui_rect a, int y, const char *label,
     tui_put_str(sf, labels, a.x + 2, a.y + y, label,
                 TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
 
-    /* By screen row, not row within the panel: in portrait the panels are
-       stacked in one column, and their rows must not share a slot. */
-    const int key = ((a.x > 0) ? 64 : 0) + ((a.y + y) & 63);
+    /* By the row's own label and panel, not by its position alone. Keyed on
+       a.x > 0 for the column, two panels side by side in a pane that does
+       not start at column 0 (landscape, a desktop window) shared one slot
+       per line, so "endpoint" and "decoder" each read the other's value as a
+       change and both flashed on every frame. */
+    unsigned h = 5381u + (unsigned)a.x * 131u + (unsigned)a.y * 7u;
+    for (const char *c = label; *c; c++) h = h * 33u + (unsigned char)*c;
+    int key = (int)(h % DIAG_ROW_KEYS);
+    for (int probe = 0; probe < DIAG_ROW_KEYS; probe++, key = (key + 1) % DIAG_ROW_KEYS) {
+        if (!s_row_owner[key]) {
+            s_row_owner[key] = label; s_row_ox[key] = (int16_t)a.x; s_row_oy[key] = (int16_t)a.y;
+            break;
+        }
+        if (s_row_ox[key] == a.x && s_row_oy[key] == a.y && !strcmp(s_row_owner[key], label)) break;
+    }
     const uint8_t level = ls_fresh(&s_row_fresh[key], text_token(value),
                                    DIAG_FLASH_MS);
     /* Inverse of whatever the row already was, so the highlight does not
@@ -733,8 +749,8 @@ static void detail_alerts(tui_surface *sf, tui_rect a, uint8_t val,
     group(sf, a, 8, "WHAT AN ALERT DOES");
     row(sf, a, 9, "sound", ls_notify_ring() ? "on" : "off",
         ls_notify_ring() ? good : dim);
-    row(sf, a, 10, "vibrate", ls_notify_vibe() ? "on" : "off",
-        ls_notify_vibe() ? good : dim);
+    row(sf, a, 10, "vibrate", (ls_notify_vibe() && ls_haptic_enabled()) ? "on" : "off",
+        (ls_notify_vibe() && ls_haptic_enabled()) ? good : dim);
     /* The measured reason the pulse length matters, on the page where
        somebody is asking why they cannot feel it. */
     row(sf, a, 12, "note", LS_TEXT(t_scr_diag_below_20_ms_the, "below 20 ms the LRA never starts"), dim);
@@ -1127,8 +1143,25 @@ static void draw_list(tui_surface *sf, tui_rect left)
     size_t heap_big  = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
     size_t heap_ps   = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
 
+    /* A rail of chips on the frame's first row: the radio, the memory and
+       the alerts in one glance, before the figures under them say why. */
+    {
+        const tui_rect in = tui_rect_make(left.x + 1, left.y, left.w - 2, left.h);
+        const bool rbad = have_rh && (rh.state == RH_FAILED || rh.state == RH_STALLED);
+        int cx = left.x + 2;
+        const int cy = left.y + 1;
+        cx = ls_radio_chip(sf, in, cx, cy, !have_rh ? "NO STREAM" : rh.state == RH_OK ? "RADIO OK" : rbad ? "RADIO STALLED" : "RADIO BUSY",
+                           have_rh, rbad ? TUI_RED : TUI_GREEN) + 1;
+        human_bytes(b2, sizeof(b2), heap_int);
+        snprintf(buf, sizeof(buf), "INT %s", b2);
+        cx = ls_radio_chip(sf, in, cx, cy, buf, true, heap_int < 32 * 1024 ? TUI_RED : heap_int < 64 * 1024 ? TUI_YELLOW : TUI_CYAN) + 1;
+        const bool alerts = ls_notify_ring() || (ls_notify_vibe() && ls_haptic_enabled());
+        cx = ls_radio_chip(sf, in, cx, cy, alerts ? "ALERTS ON" : "ALERTS OFF", alerts, TUI_YELLOW) + 1;
+        (void)cx;
+    }
+
     tui_put_str(sf, left, left.x + 2, left.y + 9, "MEMORY",
-                TUI_ATTR(TUI_CYAN, TUI_BLACK));
+                TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
 
     /* The all-time low goes on the heading row, and it is the number
        that actually decides whether this board is about to fail.
@@ -1213,9 +1246,9 @@ static void draw_list(tui_surface *sf, tui_rect left)
 
     LS_SNPRINTF(t_scr_diag_sound_s_vibrate_s, buf, sizeof(buf), "sound %s   vibrate %s",
              ls_notify_ring() ? "on" : "off",
-             ls_notify_vibe() ? "on" : "off");
+             (ls_notify_vibe() && ls_haptic_enabled()) ? "on" : "off");
     row(sf, left, 18, "set to", buf,
-        (ls_notify_ring() || ls_notify_vibe()) ? good : dim);
+        (ls_notify_ring() || (ls_notify_vibe() && ls_haptic_enabled())) ? good : dim);
 
     /* A box you press, sized from its rect - the treatment SETTINGS
        and RADIOS use, because a one-cell row is 1.3 mm on this panel. */

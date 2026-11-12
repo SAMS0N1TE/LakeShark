@@ -27,6 +27,23 @@ ls_radio_err_t ls_sweep_run_endpoint(const ls_sweep_plan_t *plan,
     ls_sweep_progress_fn progress, ls_sweep_cancel_fn cancel, void *user,
     const char *endpoint_id);
 
+/* How much of a sweep the converter delivered at full scale. Counted over
+   the bytes each tune folded in, not the settling reads it threw away, I and
+   Q apart (ls_sweep_rail_count). `worst` is the tune with the largest share:
+   a strong carrier clips the tunes that hold it, and a whole-sweep figure
+   would dilute that by every quiet tune. */
+typedef struct {
+    uint32_t samples, rails;
+    uint32_t worst_samples, worst_rails;
+    uint64_t worst_hz;        /* centre of the worst tune; 0 before any */
+} ls_sweep_rails_t;
+
+/* ls_sweep_run_endpoint, also filling `rails` (cleared first; may be NULL). */
+ls_radio_err_t ls_sweep_run_rails(const ls_sweep_plan_t *plan,
+    int gain_tenths, uint32_t dwell_ffts, bool fast_retune, int8_t *dbfs,
+    ls_sweep_progress_fn progress, ls_sweep_cancel_fn cancel, void *user,
+    const char *endpoint_id, ls_sweep_rails_t *rails);
+
 /* How many 512-point transforms to average per tune.
 
    Cheap: one transform covers 512 complex samples, which at 2.4 MS/s is

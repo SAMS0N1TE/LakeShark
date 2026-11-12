@@ -2,6 +2,7 @@
 /* TILES: a region library and live transfers, with no I/O in draw. */
 #include "../../ls_tiles.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_radio_panel.h"
 #include "../../ls_options.h"
 #include "../../ls_picker.h"
 #include "../../ls_glyph.h"
@@ -942,6 +943,20 @@ static void draw(tui_surface *sf,tui_rect a) {
     if(page==3) { btn[1]=(ls_btn_t){.label="CONFIRM",.value=confirm==1?"CANCEL":"DELETE",.key='y'}; nb=2; }
     int bh=ls_btn_raised_height(a,nb); tui_rect bar=tui_rect_make(a.x+1,a.y+a.h-bh-1,a.w-2,bh);
     tui_rect body=tui_rect_make(a.x+1,a.y+2,a.w-2,a.h-bh-4);
+    /* Chips under the title: the card, how many regions, which map is
+       open, and a transfer while one runs - the state before the page. */
+    {
+        const tui_rect in=tui_rect_make(a.x+1,a.y,a.w-2,a.h);
+        char chip[32];int cx=a.x+2;const int cy=a.y+1;
+        if(catalog.sd)snprintf(chip,sizeof(chip),"SD %.1f GB FREE",catalog.free/1e9);else snprintf(chip,sizeof(chip),"NO SD");
+        cx=ls_radio_chip(sf,in,cx,cy,chip,catalog.sd,catalog.sd?TUI_GREEN:TUI_RED)+1;
+        snprintf(chip,sizeof(chip),"%d %s",catalog.count,catalog.count==1?"REGION":"REGIONS");
+        cx=ls_radio_chip(sf,in,cx,cy,chip,catalog.count>0,TUI_CYAN)+1;
+        if(active_file[0])cx=ls_radio_chip(sf,in,cx,cy,"MAP OPEN",true,TUI_YELLOW)+1;
+        if(transfer.state==1||transfer.state==2)cx=ls_radio_chip(sf,in,cx,cy,transfer.verifying?"VERIFYING":transfer.receiving?"RECEIVING":"TRANSFER",true,TUI_MAGENTA)+1;
+        if(catalog.busy)cx=ls_radio_chip(sf,in,cx,cy,"BUSY",true,TUI_YELLOW)+1;
+        (void)cx;
+    }
     content_area=body;
     if(page==0) {
         card_draw(sf,body);

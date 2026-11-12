@@ -1,3 +1,4 @@
+#include "esp_log.h"
 #include "rec_watch.h"
 #include "rec_state.h"
 #include "ls_mixrf.h"
@@ -5,6 +6,7 @@
 #include "ls_lora.h"
 #include "ls_fsk_capture.h"
 #include "rec_lr_ook.h"
+#include "rec_scan_live.h"
 #include "lr_wf_session.h"
 #include "ls_haptic.h"
 #include "settings.h"
@@ -69,7 +71,7 @@ static EXT_RAM_BSS_ATTR rec_scan_bin_t s_scan[REC_SCAN_BINS];
 static int s_scan_n; static float s_scan_floor;
 static volatile int s_scan_pct;
 static EXT_RAM_BSS_ATTR rec_scan_bin_t s_scan_live[REC_SCAN_BINS];
-static int s_scan_live_n; static float s_scan_live_floor=-120.0f;
+static int s_scan_live_n; static float s_scan_live_floor=-120.0f, s_scan_live_spread;
 static volatile bool s_scan_stop_req;
 static int s_scan_hits;
 /* Every time a bin rises through the threshold - a burst, not a frequency.
@@ -120,6 +122,7 @@ int rec_watch_scan_live(rec_scan_bin_t *out,int max)
     return n;
 }
 float rec_watch_scan_live_floor(void){ return s_scan_live_floor; }
+float rec_watch_scan_live_spread(void){ return s_scan_live_spread; }
 int  rec_watch_scan_hits(void){ return s_scan_hits; }
 int  rec_watch_scan_events(void){ return s_scan_events; }
 bool rec_watch_scan_catch(uint32_t hz)
@@ -149,8 +152,10 @@ static void stage(const char *what,int pct)
 static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,int nb,char *result,size_t len);
 static uint32_t s_learn_secs,s_learn_hz;
 static volatile bool s_learn_busy;
+static bool s_learn_rewatch;   /* WATCH back on when the running LEARN ends */
 static EXT_RAM_BSS_ATTR rec_learn_t s_learn;
 static void learn_run(uint32_t hz,uint32_t secs,char *result,size_t len);
+static void learn_job(uint32_t hz,uint32_t secs);
 static bool s_pin_value, s_starting;
 static uint32_t s_boot;
 static rec_source_t s_source;
@@ -159,6 +164,8 @@ static rec_source_t s_source;
 static uint32_t source_received[REC_SOURCE_COUNT],source_dropped[REC_SOURCE_COUNT];
 static const char *DIR="/sdcard/subghz";
 #define REC_WATCH_STACK_WORDS (6144 / sizeof(StackType_t))
+#define WORKER_PRIORITY 1
+#define ARCHIVE_IO_PRIORITY 5
 static EXT_RAM_BSS_ATTR StackType_t s_worker_stack[REC_WATCH_STACK_WORDS];
 static StaticTask_t s_worker_tcb;
 
@@ -307,12 +314,25 @@ static void worker(void *arg)
 {
     (void)arg;
     s_worker_task=xTaskGetCurrentTaskHandle();
+    /* The archive is read at ARCHIVE_IO_PRIORITY, not the worker's 1. Just
+       after boot other tasks are reading the card, and FAT hands its lock
+       to the highest waiter: at priority 1 the restore took 64-72 s on the
+       T-Display-P4, a second a read, and WATCH could not start until it
+       was done. At 5 it takes about 4 s. It blocks on the card nearly all
+       of that time; its own work (copy and CRC) is about 60 ms, and it
+       gives the core up for a tick between reads (rec_watch_store.c). Only
+       the restore: checkpoints stay at the worker's priority. */
+    const int64_t t0=esp_timer_get_time();
+    vTaskPrioritySet(NULL,ARCHIVE_IO_PRIORITY);
     bool restored=rec_watch_restore(DIR,s_catalog);
+    vTaskPrioritySet(NULL,WORKER_PRIORITY);
+    const int64_t t1=esp_timer_get_time();
     portENTER_CRITICAL(&s_lock);
     snprintf(s_status.storage,sizeof(s_status.storage),"%s",restored?"SD archive restored":"RAM; awaiting SD checkpoint");
     portEXIT_CRITICAL(&s_lock);
     s_status.saved=restored;
     publish();
+    ESP_LOGI("subghz_io","archive %s in %lld ms",restored?"restored":"not restored",(long long)(t1-t0)/1000);
     uint64_t saved=s_catalog->sequence, checkpoint=0;
     capture_flow_t flow={0};
     bool was_enabled=false;
@@ -355,16 +375,7 @@ static void worker(void *arg)
             portEXIT_CRITICAL(&s_lock);
         }
         if(pin) { rec_watch_pin(s_catalog,pin,value);portENTER_CRITICAL(&s_lock);s_status.pending_save=true;portEXIT_CRITICAL(&s_lock);publish(); }
-        if(learn_secs) {
-            char result[112];
-            learn_run(learn_hz,learn_secs,result,sizeof(result));
-            portENTER_CRITICAL(&s_lock);
-            snprintf(s_status.export_status,sizeof(s_status.export_status),"%s",result);
-            snprintf(s_status.learn_result,sizeof(s_status.learn_result),"%s",result);
-            s_status.learn_generation++;s_learn_busy=false;
-            portEXIT_CRITICAL(&s_lock);
-            publish();
-        }
+        if(learn_secs){learn_job(learn_hz,learn_secs);publish();}
         if(scan_min) {
             char result[112];
             scan_band(scan_min,scan_max,scan_secs,scan_bins,result,sizeof(result));
@@ -431,6 +442,10 @@ static void worker(void *arg)
             if(ok) {
                 memcpy(s_checkpoint,s_catalog,sizeof(*s_checkpoint));
                 mkdir(DIR,0775);
+                /* At the worker's own priority: a checkpoint is background
+                   work every 30 s, and at ARCHIVE_IO_PRIORITY it kept core 0
+                   busy enough that its idle task missed the 5 s watchdog
+                   (68 times in an hour of WATCH on the LR2021). */
                 ok=rec_watch_store_pumped(DIR,s_checkpoint,free_bytes,pump_capture,&flow);
             }
             if(ok)saved=s_checkpoint->sequence;
@@ -472,7 +487,7 @@ bool rec_watch_start(void)
         for(int i=0;i<2;i++) {capture_t *p=&pool[i];xQueueSend(s_free,&p,0);}
         s_boot=esp_random();
         ok=xTaskCreateStaticPinnedToCore(worker,"subghz_io",
-            REC_WATCH_STACK_WORDS,NULL,1,s_worker_stack,&s_worker_tcb,0)!=NULL;
+            REC_WATCH_STACK_WORDS,NULL,WORKER_PRIORITY,s_worker_stack,&s_worker_tcb,0)!=NULL;
     }
     if(!ok) {
         if(s_free)vQueueDelete(s_free);
@@ -610,6 +625,11 @@ static bool fsk_session(bool on)
         cfg.sync_word=s_fsk.sync_word;
         cfg.preamble_bits=s_fsk.preamble_bits;
         cfg.payload_bytes=LS_FSK_CAPTURE_BYTES;
+        /* The LR2021 with its preamble detector off misses the sync of a
+           clean packet: an SX1262 frame its I/Q path decoded whole counted
+           only as sync failures. 16 bits, as FIELD and RadioLib use. */
+        if(ls_lora_caps() & LS_LORA_CAP_FSK_DETECT)
+            cfg.preamble_detect_bits=cfg.preamble_bits>=16?16:8;
         if(s_scan_busy && !s_catch_armed) {
             ls_mesh_radio_hold(false);return false;
         }
@@ -653,12 +673,18 @@ static bool fsk_session(bool on)
    above stays for a signal LEARN has measured (rec_watch_lr_fsk). */
 static EXT_RAM_BSS_ATTR rec_lr_ook_t s_lr_ook;
 static bool s_lr_run;
-static bool s_lr_fsk;
-bool rec_watch_lr_fsk(void){return s_lr_fsk;}
+static bool s_lr_fsk, s_lr_fsk_loaded;
+/* Kept across a restart, like the rest of the capture setup. */
+bool rec_watch_lr_fsk(void)
+{
+    if(!s_lr_fsk_loaded){s_lr_fsk=settings_get_subghz_lr_fsk();s_lr_fsk_loaded=true;}
+    return s_lr_fsk;
+}
 bool rec_watch_set_lr_fsk(bool fsk)
 {
     if(rec_watch_enabled())return false;
-    s_lr_fsk=fsk;
+    s_lr_fsk=fsk;s_lr_fsk_loaded=true;
+    settings_set_subghz_lr_fsk(fsk);
     return true;
 }
 static void lr_ook_emit(void *ctx,const int32_t *edge,int edges,int peak)
@@ -678,7 +704,7 @@ static void lr_ook_consume(void *ctx,const uint8_t *data,size_t bytes,bool spare
 static bool lr_ook_wanted(void)
 {
     const uint32_t hz=rec_get_freq();
-    return !s_lr_fsk && ls_lora_chip()==LS_LORA_CHIP_LR20XX && ls_lora_rx_range_ok(ls_lora_caps(),hz,hz);
+    return !rec_watch_lr_fsk() && ls_lora_chip()==LS_LORA_CHIP_LR20XX && ls_lora_rx_range_ok(ls_lora_caps(),hz,hz);
 }
 static bool lr_ook_session(bool on)
 {
@@ -709,12 +735,221 @@ static bool lr_ook_session(bool on)
     ls_mesh_radio_hold(false);
     return true;
 }
-/* The LoRa chip's WATCH: the OOK stream on an LR2021, FSK packets otherwise. */
+/* FSK on the LR2021, from its I/Q stream.
+
+   The chip's GFSK packet engine counted every frame an SX1262 sent it as a
+   preamble then a sync failure, with sync, rate, deviation and filter set as
+   RadioLib sets them, while the same frame recorded as I/Q decoded whole
+   (offset 0.5 kHz, deviation 24.7 kHz). So FSK WATCH listens the way OOK
+   WATCH does: bursts are gated out of the 125 kS/s stream, decoded in
+   software (fsk_packet.c, as REC's I/Q records are), and a packet whose sync
+   matches the capture setup is submitted exactly as the packet engine's are,
+   so SEND replays it under the same settings. The engine stays for what
+   125 kS/s cannot hold. */
+/* 1 s: a 64-byte frame with its preamble and sync at 600 bd. 320 ms held
+   2400 bd and up, and a 1200 bd frame - learned in one burst at 4800 bd on
+   the same pair of boards - was cut short and never decoded. */
+#define LRF_PAIRS    125000u
+#define LRF_PRE      256u             /* 2 ms before the gate opened                    */
+#define LRF_QUIET    625u             /* 5 ms under the gate ends the burst             */
+#define LRF_MIN      250u             /* a burst shorter than 2 ms is not a packet      */
+#define LRF_EDGES    4096u
+static EXT_RAM_BSS_ATTR int16_t s_lrf_buf[2][LRF_PAIRS*2];
+static EXT_RAM_BSS_ATTR int16_t s_lrf_pre[LRF_PRE*2];
+static EXT_RAM_BSS_ATTR int32_t s_lrf_edges[LRF_EDGES];
+static EXT_RAM_BSS_ATTR fsk_pkt_t s_lrf_pkts[4];
+static EXT_RAM_BSS_ATTR uint8_t s_lrf_bits[LS_FSK_CAPTURE_BYTES*8+1024+32];
+static EXT_RAM_BSS_ATTR int32_t s_lrf_raw[LS_FSK_CAPTURE_BYTES*8+1024+32];
+static size_t s_lrf_len[2];
+static int32_t s_lrf_peakv[2];
+static atomic_int s_lrf_full[2];
+static struct {
+    int32_t floor_acc, floor, peak;
+    uint32_t warm, quiet, pre_at, pre_n;
+    size_t n;
+    int buf;
+    bool on;
+} s_lrf;
+static bool s_lrf_run;
+static TaskHandle_t s_lrf_task;
+/* LEARN on the LR2021: the first packet heard, whole, instead of a capture. */
+static volatile bool s_lrf_learning, s_lrf_learned;
+static fsk_pkt_t s_lrf_learn_pkt;
+static float s_lrf_learn_dev;
+#define LRF_STACK_WORDS (6144 / sizeof(StackType_t))
+static EXT_RAM_BSS_ATTR StackType_t s_lrf_stack[LRF_STACK_WORDS];
+static StaticTask_t s_lrf_tcb;
+
+/* What 125 kS/s can carry: both tones and a bit inside +/-62.5 kHz. */
+static bool lr_fsk_iq_fits(const rec_fsk_mod_t *m)
+{
+    return m->bitrate<=50000u && m->deviation_hz+m->bitrate/2u<=55000u;
+}
+/* A decoded sync, sent once or twice, against the top bits of the setup's. */
+static bool lr_fsk_sync_ok(const fsk_pkt_t *p,uint32_t want)
+{
+    const unsigned bits=p->sync_bits;
+    if(!bits || bits>32)return false;
+    uint64_t got=p->sync;
+    unsigned have=bits;
+    for(unsigned r=1;r<p->sync_repeats && have+bits<=32;r++){got=(got<<bits)|p->sync;have+=bits;}
+    if(have<16)return false;
+    return (uint32_t)got==(have==32?want:want>>(32-have));
+}
+static void lr_fsk_decode(const int16_t *iq,size_t pairs,int peak)
+{
+    fsk_pkt_rf_t rf={0};
+    const size_t ne=fsk_pkt_iq16_edges(iq,pairs,REC_LR_IQ_RATE,s_lrf_edges,LRF_EDGES,&rf);
+    const int found=ne?fsk_pkt_from_edges(s_lrf_edges,ne,s_lrf_pkts,4):0;
+    if(s_lrf_learning) {
+        for(int i=0;i<found && !s_lrf_learned;i++) {
+            const fsk_pkt_t *p=&s_lrf_pkts[i];
+            if(!p->len || p->baud<600 || p->baud>100000 || !p->sync_bits)continue;
+            s_lrf_learn_pkt=*p;
+            s_lrf_learn_dev=rf.deviation_hz;
+            s_lrf_learned=true;
+        }
+        return;
+    }
+    const rec_fsk_mod_t m=s_fsk;
+    for(int i=0;i<found;i++) {
+        const fsk_pkt_t *p=&s_lrf_pkts[i];
+        if(!p->len || !lr_fsk_sync_ok(p,m.sync_word))continue;
+        /* The rate and deviation this packet was MEASURED at, not the capture
+           setup's: the I/Q path hears any rate whose sync matches, and a
+           1200 bd frame stored as 4800 bd would be replayed four times too
+           fast. The setup's values stand in only where a measurement is
+           missing. */
+        rec_fsk_mod_t got=m;
+        const uint32_t baud=p->baud_std?p->baud_std:p->baud;
+        if(baud>=600 && baud<=100000)got.bitrate=baud;
+        if(rf.deviation_hz>=600.0f && rf.deviation_hz<=200000.0f)got.deviation_hz=(uint32_t)(rf.deviation_hz+0.5f);
+        ls_fsk_capture_t c;
+        memset(&c,0,sizeof(c));
+        c.freq_hz=rec_get_freq();
+        c.bitrate=got.bitrate; c.deviation_hz=got.deviation_hz;
+        c.bandwidth_hz=(uint32_t)m.bandwidth_khz*1000u;
+        c.sync_word=m.sync_word; c.preamble_bits=m.preamble_bits;
+        c.len=(uint8_t)(p->len>LS_FSK_CAPTURE_BYTES?LS_FSK_CAPTURE_BYTES:p->len);
+        memcpy(c.data,p->data,c.len);
+        const size_t nb=ls_fsk_bitstream(&c,s_lrf_bits,sizeof(s_lrf_bits));
+        const size_t nr=nb?ls_fsk_raw_data(s_lrf_bits,nb,c.bitrate,s_lrf_raw,
+                            sizeof(s_lrf_raw)/sizeof(s_lrf_raw[0])):0;
+        if(nr>=6 && nr<=REC_WATCH_EDGES)
+            rec_watch_submit_mod(REC_SOURCE_SX1262,c.freq_hz,s_lrf_raw,(int)nr,
+                                 peak,REC_END_GAP,&got);
+    }
+}
+static void lr_fsk_worker(void *arg)
+{
+    (void)arg;
+    for(;;) {
+        (void)ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
+        for(int b=0;b<2;b++)
+            if(atomic_load(&s_lrf_full[b])) {
+                lr_fsk_decode(s_lrf_buf[b],s_lrf_len[b],s_lrf_peakv[b]);
+                atomic_store(&s_lrf_full[b],0);
+            }
+    }
+}
+static void lr_fsk_reset(void)
+{
+    s_lrf.on=false;s_lrf.n=0;s_lrf.quiet=0;s_lrf.pre_at=s_lrf.pre_n=0;s_lrf.peak=0;
+}
+static void lr_fsk_close(void)
+{
+    const int b=s_lrf.buf;
+    if(s_lrf.n>=LRF_MIN) {
+        s_lrf_len[b]=s_lrf.n;
+        s_lrf_peakv[b]=s_lrf.peak/16>255?255:s_lrf.peak/16;
+        atomic_store(&s_lrf_full[b],1);
+        if(s_lrf_task)xTaskNotifyGive(s_lrf_task);
+        s_lrf.buf=b^1;
+    }
+    lr_fsk_reset();
+}
+static void lr_fsk_consume(void *ctx,const uint8_t *data,size_t bytes,bool spare)
+{
+    (void)ctx;(void)spare;
+    if(!data){lr_fsk_reset();return;}
+    for(size_t i=0;i+3<bytes;i+=4) {
+        const int16_t si=(int16_t)(data[i]|(data[i+1]<<8));
+        const int16_t sq=(int16_t)(data[i+2]|(data[i+3]<<8));
+        const int32_t mag=(si<0?-(int32_t)si:si)+(sq<0?-(int32_t)sq:sq);
+        if(!s_lrf.on) {
+            s_lrf.floor_acc+=mag-(s_lrf.floor_acc>>6);
+            s_lrf.floor=s_lrf.floor_acc>>6;
+            if(s_lrf.floor<8)s_lrf.floor=8;
+            s_lrf_pre[2*s_lrf.pre_at]=si;s_lrf_pre[2*s_lrf.pre_at+1]=sq;
+            s_lrf.pre_at=(s_lrf.pre_at+1)%LRF_PRE;
+            if(s_lrf.pre_n<LRF_PRE)s_lrf.pre_n++;
+            if(s_lrf.warm<256){s_lrf.warm++;continue;}
+            /* Both buffers waiting on the decoder: this burst is lost. */
+            if(mag<=s_lrf.floor*4 || atomic_load(&s_lrf_full[s_lrf.buf]))continue;
+            s_lrf.on=true;s_lrf.quiet=0;s_lrf.peak=mag;
+            int16_t *out=s_lrf_buf[s_lrf.buf];
+            for(uint32_t k=0;k<s_lrf.pre_n;k++) {
+                const uint32_t at=(s_lrf.pre_at+LRF_PRE-s_lrf.pre_n+k)%LRF_PRE;
+                out[2*k]=s_lrf_pre[2*at];out[2*k+1]=s_lrf_pre[2*at+1];
+            }
+            s_lrf.n=s_lrf.pre_n;
+            continue;
+        }
+        int16_t *out=s_lrf_buf[s_lrf.buf];
+        out[2*s_lrf.n]=si;out[2*s_lrf.n+1]=sq;s_lrf.n++;
+        if(mag>s_lrf.peak)s_lrf.peak=mag;
+        s_lrf.quiet=mag<s_lrf.floor*2?s_lrf.quiet+1:0;
+        if(s_lrf.quiet>=LRF_QUIET || s_lrf.n>=LRF_PAIRS)lr_fsk_close();
+    }
+}
+static bool lr_fsk_iq_wanted(void)
+{
+    const uint32_t hz=rec_get_freq();
+    rec_fsk_mod_t m;rec_watch_fsk_get(&m);
+    return rec_watch_lr_fsk() && ls_lora_chip()==LS_LORA_CHIP_LR20XX &&
+           ls_lora_rx_range_ok(ls_lora_caps(),hz,hz) && lr_fsk_iq_fits(&m);
+}
+static bool lr_fsk_iq_session(bool on)
+{
+    if(on) {
+        if(s_lrf_run)return true;
+        s_fsk_error[0]=0;
+        if(!s_lrf_task)
+            s_lrf_task=xTaskCreateStaticPinnedToCore(lr_fsk_worker,"subghz_lrfsk",
+                LRF_STACK_WORDS,NULL,3,s_lrf_stack,&s_lrf_tcb,1);
+        const int64_t deadline=esp_timer_get_time()+1000000;
+        while((!s_scan_busy || s_catch_armed) && !ls_mesh_radio_hold(true) && esp_timer_get_time()<deadline)
+            vTaskDelay(pdMS_TO_TICKS(10));
+        if((s_scan_busy && !s_catch_armed) || !ls_mesh_radio_held()) {
+            ls_mesh_radio_hold(false);
+            LS_SNPUTS(t_rec_watch_runtime_mesh_would_not_release, s_fsk_error, sizeof(s_fsk_error), "Mesh would not release the radio");
+            return false;
+        }
+        memset(&s_lrf,0,sizeof(s_lrf));
+        s_lrf.floor=8;s_lrf.floor_acc=8<<6;
+        if(lr_wf_start_consumer(rec_get_freq(),lr_fsk_consume,NULL)!=ESP_OK) {
+            ls_mesh_radio_hold(false);
+            LS_SNPUTS(t_rec_watch_runtime_lr2021_stream_busy_close, s_fsk_error, sizeof(s_fsk_error), "LR2021 stream busy; close its waterfall first");
+            return false;
+        }
+        s_lrf_run=true;
+        return true;
+    }
+    if(!s_lrf_run)return true;
+    lr_wf_stop();
+    s_lrf_run=false;
+    ls_mesh_radio_hold(false);
+    return true;
+}
+/* The LoRa chip's WATCH: the OOK stream on an LR2021, its FSK from the same
+   stream when the capture setup fits it, FSK packets otherwise. */
 static bool lora_session(bool on)
 {
-    if(on)return lr_ook_wanted()?lr_ook_session(true):fsk_session(true);
+    if(on)return lr_ook_wanted()?lr_ook_session(true):
+                 lr_fsk_iq_wanted()?lr_fsk_iq_session(true):fsk_session(true);
     const bool ook=lr_ook_session(false);
-    return fsk_session(false) && ook;
+    const bool iq=lr_fsk_iq_session(false);
+    return fsk_session(false) && ook && iq;
 }
 
 static bool rec_watch_enable_owned(bool on)
@@ -1048,17 +1283,23 @@ static void send_ook(const char *what,uint32_t freq_hz,const int32_t *pulse,int 
 
 static void replay_file(const char *path,int dbm,char *result,size_t len)
 {
-    static EXT_RAM_BSS_ATTR int32_t edges[REC_WATCH_EDGES];
+    static EXT_RAM_BSS_ATTR int32_t edges[LS_TX_UNLOCKED?65536:REC_WATCH_EDGES];
     static EXT_RAM_BSS_ATTR char line[SUBGHZ_FILE_LINE_BYTES];
     static EXT_RAM_BSS_ATTR subghz_file_t f;
-    if(!subghz_file_load(path,&f,edges,REC_WATCH_EDGES,line,sizeof(line))) {
+    if(!subghz_file_load(path,&f,edges,(int)(sizeof(edges)/sizeof(edges[0])),line,sizeof(line))) {
         LS_SNPUTS(t_rec_watch_runtime_replay_not_a_readable, result, len, "Replay: not a readable .sub file");
         return;
     }
     if(!strcmp(f.protocol,"LR2021_IQ")) {iq_replay(path,dbm,result,len);return;}
     if(replay_refused(f.freq_hz,dbm,(size_t)f.edges_total,f.span_us,result,len))
         return;
-    if(subghz_file_is_cc_fsk(&f)) {
+    /* REC writes an SX1262 or LR2021 FSK capture with a CC1101 preset too, so
+       a Flipper can play it. With no CC1101 fitted (both T-Display-P4s) the
+       file is still FSK the LoRa chip sends: only a CC1101 that answers
+       takes it. */
+    ls_mixrf_status_t mix;
+    ls_mixrf_snapshot(&mix);
+    if(subghz_file_is_cc_fsk(&f) && (mix.cc || !subghz_file_is_fsk(&f))) {
         bool sent=ls_mixrf_replay_fsk(f.freq_hz,edges,f.edges,dbm,&f.cc_fsk);
         snprintf(result,len,"%s",sent?"Sent FSK file once on CC1101":"Replay: CC1101 failed/busy; check MIX-RF");
         return;
@@ -1133,6 +1374,27 @@ int rec_watch_scan_result(rec_scan_bin_t *out,int max)
 }
 float rec_watch_scan_floor(void){ return s_scan_floor; }
 
+/* A pass's floor is its quarter-way reading, not its lowest. One bad low
+   look set the floor before: the LR2021 read one bin at -132 dBm in a
+   -110 dBm band (2026-11-07), so every other bin stood "30 dB over the
+   floor" and all 32 were detections. A quarter of the band can carry
+   signals before this moves. */
+static float pass_floor(const float *row,int nb,float *spread)
+{
+    float s[REC_SCAN_BINS];
+    const int n=nb<REC_SCAN_BINS?nb:REC_SCAN_BINS;
+    if(spread)*spread=0.0f;
+    if(n<=0)return -200.0f;
+    for(int i=0;i<n;i++) {
+        const float v=row[i];
+        int j=i;
+        while(j>0 && s[j-1]>v){s[j]=s[j-1];j--;}
+        s[j]=v;
+    }
+    if(spread)*spread=rec_scan_spread(s,n);
+    return s[n/4];
+}
+
 /* Sweep, and keep what each bin heard at its loudest.
 
    One pass takes about 200 ms and a button press lasts 60, so a single sweep
@@ -1201,23 +1463,28 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,int nb,char 
                from this pass rather than from the accumulated peaks - the
                peaks only ever rise, so a floor taken from them would drift
                up and stop detecting anything. */
-            float lo=row[0];
-            for(int i=1;i<nb;i++) if(row[i]<lo) lo=row[i];
+            float spread=0.0f;
+            const float lo=pass_floor(row,nb,&spread);
             /* The floor gets ballistics too, or the whole display shifts
-               under the columns every pass. */
-            if(s_scan_live_n) s_scan_live_floor += (lo-s_scan_live_floor)*0.25f;
-            else              s_scan_live_floor = lo;
+               under the columns every pass; so does the noise spread. */
+            if(s_scan_live_n) {
+                s_scan_live_floor += (lo-s_scan_live_floor)*0.25f;
+                s_scan_live_spread += (spread-s_scan_live_spread)*0.25f;
+            } else {
+                s_scan_live_floor = lo;
+                s_scan_live_spread = spread;
+            }
+            const float attack=rec_scan_attack_level(s_scan_live_floor,s_scan_live_spread);
 
             for(int i=0;i<nb;i++) {
                 s_scan_live[i].hz=ls_lora_scan_bin_hz(min_hz,max_hz,nb,i);
                 if(!s_scan_live_n) { s_scan_live[i].dbm=row[i]; s_scan_live[i].hold=row[i]; continue; }
-                /* Instant attack, slow release: a signal appears the pass it
-                   arrives, and noise does not flicker between passes. */
-                if(row[i] > s_scan_live[i].dbm) s_scan_live[i].dbm = row[i];
-                else s_scan_live[i].dbm += (row[i]-s_scan_live[i].dbm)*0.30f;
+                /* Instant attack for a signal, an even follow for noise:
+                   rec_scan_live.h says why. */
+                s_scan_live[i].dbm = rec_scan_follow(s_scan_live[i].dbm,row[i],attack);
                 /* And a peak that falls about a dB a pass, so a burst that
                    landed between looks at this bin still leaves a mark. */
-                if(row[i] > s_scan_live[i].hold) s_scan_live[i].hold = row[i];
+                if(row[i] > s_scan_live[i].hold && row[i] >= attack) s_scan_live[i].hold = row[i];
                 else s_scan_live[i].hold -= 0.8f;
                 if(s_scan_live[i].hold < s_scan_live[i].dbm)
                     s_scan_live[i].hold = s_scan_live[i].dbm;
@@ -1319,9 +1586,7 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,int nb,char 
        reducing over all of REC_SCAN_BINS mixes in whatever a previous
        sweep of a different band left in the tail - which a narrow
        sweep after a wide one reports as a floor tens of dB off. */
-    float lo=peak[0];
-    for(int i=1;i<nb;i++) if(peak[i]<lo) lo=peak[i];
-    s_scan_floor=lo;
+    s_scan_floor=pass_floor(peak,nb,NULL);
 
     /* Strongest first, so the list opens on the thing worth looking at. */
     for(int i=1;i<s_scan_n;i++) {
@@ -1343,12 +1608,20 @@ bool rec_watch_request_learn(uint32_t seconds)
     if(seconds<5 || seconds>90)return false;
     portENTER_CRITICAL(&s_lock);
     bool ok=s_status.ready && !s_scan_busy && !s_learn_busy && !s_watch_waiting && !s_status.enabled && !s_iq_busy && !s_replay_busy && !s_replay_id && !s_replay_path[0];
-    if(ok){s_scan_stop_req=false;s_catch_armed=false;s_learn_busy=true;
+    if(ok){s_scan_stop_req=false;s_catch_armed=false;s_learn_busy=true;s_learn_rewatch=false;
         s_learn_secs=seconds;s_learn_hz=rec_get_freq();}
     portEXIT_CRITICAL(&s_lock);
     return ok;
 }
 bool rec_watch_learn_busy(void){ return s_learn_busy; }
+bool rec_watch_learn_rewatch(void)
+{
+    portENTER_CRITICAL(&s_lock);
+    const bool ok=s_learn_busy;
+    if(ok)s_learn_rewatch=true;
+    portEXIT_CRITICAL(&s_lock);
+    return ok;
+}
 bool rec_watch_learn_result(rec_learn_t *out)
 {
     if(!out)return false;
@@ -1427,9 +1700,10 @@ static uint32_t measure_deviation(uint32_t centre,uint32_t secs)
    A wrong bit rate slices the same burst differently every time, so the
    captures disagree. The right one produces identical bytes. That is the
    whole test, and it is why this needs somebody pressing the button
-   repeatedly rather than one transmission. */
-static int try_rate(uint32_t hz,uint32_t rate,uint32_t dev,uint32_t secs,
-                    uint8_t *best,int *best_len)
+   repeatedly rather than one transmission. False when the radio was never
+   put on the rate, so nothing waited. */
+static bool try_rate_window(uint32_t hz,uint32_t rate,uint32_t dev,int ms,
+                            uint8_t (*seen)[LEARN_BYTES],int *n)
 {
     ls_fsk_cfg_t cfg={0};
     cfg.freq_hz=hz;
@@ -1442,20 +1716,21 @@ static int try_rate(uint32_t hz,uint32_t rate,uint32_t dev,uint32_t secs,
     cfg.sync_bits=8;
     cfg.preamble_bits=16;
     cfg.payload_bytes=LEARN_BYTES;
-    if(s_scan_stop_req || ls_lora_fsk_begin(&cfg)!=ESP_OK)return 0;
-
-    static uint8_t seen[LEARN_KEEP][LEARN_BYTES];
-    int n=0;
-    const int64_t end=esp_timer_get_time()+(int64_t)secs*1000000;
-    while(!s_scan_stop_req && esp_timer_get_time()<end && n<LEARN_KEEP) {
+    if(s_scan_stop_req || ls_lora_fsk_begin(&cfg)!=ESP_OK)return false;
+    const int64_t end=esp_timer_get_time()+(int64_t)ms*1000;
+    while(!s_scan_stop_req && esp_timer_get_time()<end && *n<LEARN_KEEP) {
         uint8_t buf[LEARN_BYTES]; float rssi;
         const int got=ls_lora_fsk_poll(buf,sizeof(buf),&rssi);
-        if(got>0){memcpy(seen[n],buf,LEARN_BYTES);n++;}
+        if(got>0){memcpy(seen[*n],buf,LEARN_BYTES);(*n)++;}
         vTaskDelay(pdMS_TO_TICKS(2));
     }
     ls_lora_fsk_end();
-    if(n<2)return n?1:0;
+    return true;
+}
 
+/* The most frames that agree among those one rate heard. */
+static int rate_agreement(uint8_t (*seen)[LEARN_BYTES],int n,uint8_t *best,int *best_len)
+{
     int best_count=0,best_i=0;
     for(int i=0;i<n;i++) {
         int c=0;
@@ -1463,17 +1738,84 @@ static int try_rate(uint32_t hz,uint32_t rate,uint32_t dev,uint32_t secs,
         if(c>best_count){best_count=c;best_i=i;}
     }
     if(best_count>=2 && best){memcpy(best,seen[best_i],LEARN_BYTES);*best_len=LEARN_BYTES;}
-    return best_count;
+    return n<2?(n?1:0):best_count;
 }
 
-/* The sync word is whatever follows the preamble run. */
+/* The sync word is whatever follows the preamble run - found to the bit.
+   Whole bytes of 0xAA/0x55 skipped left the word up to seven bits early,
+   preamble bits in front (an LR2021 learning 2DD42DD4 beside an SX1262
+   reporting A96EA16E for the same remote). The run ends where two bits
+   first agree; the word is taken from one bit before that, because the
+   first sync bit may have continued the alternation. One preamble bit too
+   many still receives - it is always sent before the sync - where one sync
+   bit too few would put a payload bit in the word. */
+static int frame_bit(const uint8_t *b,int at){return (b[at>>3]>>(7-(at&7)))&1;}
 static uint32_t sync_from(const uint8_t *b,int len)
 {
-    int i=0;
-    while(i<len && (b[i]==0xAA || b[i]==0x55))i++;
-    if(i+4>len)return 0;
-    return ((uint32_t)b[i]<<24)|((uint32_t)b[i+1]<<16)|
-           ((uint32_t)b[i+2]<<8)|b[i+3];
+    const int bits=len*8;
+    int i=1;
+    while(i<bits && frame_bit(b,i)!=frame_bit(b,i-1))i++;
+    if(i>=9 && i-1+32<=bits) {
+        uint32_t w=0;
+        for(int k=0;k<32;k++)w=(w<<1)|(uint32_t)frame_bit(b,i-1+k);
+        return w;
+    }
+    /* No run to find: the bytes as they came. */
+    int j=0;
+    while(j<len && (b[j]==0xAA || b[j]==0x55))j++;
+    if(j+4>len)return 0;
+    return ((uint32_t)b[j]<<24)|((uint32_t)b[j+1]<<16)|
+           ((uint32_t)b[j+2]<<8)|b[j+3];
+}
+
+/* LEARN from one burst on the LR2021: its I/Q decoder measures the rate from
+   the preamble, the deviation from the two tones and reads the sync word, so
+   one press is enough. The SX1262 has no I/Q and keeps the search below,
+   which needs the same frame twice at each rate it tries. */
+static bool learn_run_iq(uint32_t hz,uint32_t secs,char *result,size_t len)
+{
+    (void)hz;
+    s_lrf_learned=false;s_lrf_learning=true;
+    stage("Listening for one burst",5);
+    if(!lr_fsk_iq_session(true)) {
+        s_lrf_learning=false;
+        snprintf(result,len,"Learn: %s",s_fsk_error[0]?s_fsk_error:"LR2021 stream busy");
+        return true;
+    }
+    const int64_t start=esp_timer_get_time(),end=start+(int64_t)secs*1000000;
+    while(!s_scan_stop_req && !s_lrf_learned && esp_timer_get_time()<end) {
+        stage("Listening for one burst",5+(int)((esp_timer_get_time()-start)*90/((int64_t)secs*1000000)));
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    lr_fsk_iq_session(false);
+    s_lrf_learning=false;
+    stage("",0);
+    if(s_scan_stop_req){memset(&s_learn,0,sizeof(s_learn));snprintf(result,len,"Learn stopped");return true;}
+    if(!s_lrf_learned) {
+        snprintf(s_learn.note,sizeof(s_learn.note),"%s","nothing heard");
+        snprintf(result,len,"Learn: heard no FSK packet - press the remote once");
+        return true;
+    }
+    const fsk_pkt_t *p=&s_lrf_learn_pkt;
+    const uint32_t w=p->sync&0xFFFFu;
+    /* A word sent twice is the whole 32; otherwise the top half is the word
+       and the bottom half what follows it, which WATCH on this chip does not
+       compare (it matches the bits it decoded). */
+    uint32_t sync=(w<<16)|w;
+    if(p->sync_repeats<2) sync=(w<<16)|(p->len>=2?((uint32_t)p->data[0]<<8)|p->data[1]:w);
+    s_learn.bitrate=p->baud_std?p->baud_std:p->baud;
+    s_learn.deviation_hz=(s_lrf_learn_dev>=600.0f && s_lrf_learn_dev<=200000.0f)?(uint32_t)(s_lrf_learn_dev+0.5f):0;
+    if(!s_learn.deviation_hz){rec_fsk_mod_t m;rec_watch_fsk_get(&m);s_learn.deviation_hz=m.deviation_hz;}
+    s_learn.sync_word=sync;
+    s_learn.preamble_bits=(uint16_t)(p->preamble_bits>=8?p->preamble_bits:0);
+    s_learn.tried=1;s_learn.agreed=1;
+    s_learn.confidence=(uint8_t)(p->sync_known||p->sync_repeats>=2||p->crc_kind!=FSK_CRC_NONE?95:70);
+    s_learn.valid=true;
+    snprintf(s_learn.note,sizeof(s_learn.note),"one burst, %s deviation, %u-byte packet",
+             s_lrf_learn_dev>=600.0f?"measured":"assumed",(unsigned)p->len);
+    LS_SNPRINTF(t_rec_watch_runtime_learn_lu_baud_sync, result,len,"Learn: %lu baud, sync %08lX, %u%% confident",
+        (unsigned long)s_learn.bitrate,(unsigned long)s_learn.sync_word,s_learn.confidence);
+    return true;
 }
 
 static void learn_run(uint32_t hz,uint32_t secs,char *result,size_t len)
@@ -1481,6 +1823,9 @@ static void learn_run(uint32_t hz,uint32_t secs,char *result,size_t len)
     static const uint32_t RATE[]={600,1200,2400,4800,9600,19200,38400};
     const int n_rate=(int)(sizeof(RATE)/sizeof(RATE[0]));
     memset(&s_learn,0,sizeof(s_learn));
+    if(ls_lora_chip()==LS_LORA_CHIP_LR20XX && ls_lora_rx_range_ok(ls_lora_caps(),hz,hz) &&
+       learn_run_iq(hz,secs,result,len))
+        return;
     stage("Taking the radio",0);
 
     const int64_t deadline=esp_timer_get_time()+1000000;
@@ -1502,17 +1847,40 @@ static void learn_run(uint32_t hz,uint32_t secs,char *result,size_t len)
     bool measured=dev!=0;
     if(!dev) { rec_fsk_mod_t m; rec_watch_fsk_get(&m); dev=m.deviation_hz; }
 
-    const uint32_t each=(secs-(secs/4))/(uint32_t)n_rate;
-    uint8_t best[LEARN_BYTES]; int best_len=0, best_agreed=0; uint32_t best_rate=0;
-    int tried=0;
-    for(int i=0;i<n_rate && !s_scan_stop_req;i++) {
+    /* Round after round of short looks at every rate, the frames each rate
+       heard kept across rounds. One long look per rate needed the same
+       frame twice inside that rate's three seconds: a remote pressed every
+       couple of seconds was never learned. Now any two presses that land on
+       the right rate, in any rounds, agree. */
+    static EXT_RAM_BSS_ATTR uint8_t seen[7][LEARN_KEEP][LEARN_BYTES];
+    int heard[7]={0};
+    const int64_t search_end=esp_timer_get_time()+(int64_t)(secs-(secs/4))*1000000;
+    const int window_ms=1200;
+    int tried=0, round=0;
+    while(!s_scan_stop_req && esp_timer_get_time()<search_end) {
+        bool listened=false;
+        for(int i=0;i<n_rate && !s_scan_stop_req && esp_timer_get_time()<search_end;i++) {
+            char what[40];
+            snprintf(what,sizeof(what),"Round %d, %lu baud",round+1,(unsigned long)RATE[i]);
+            const int64_t left=search_end-esp_timer_get_time();
+            stage(what,25+(int)(75-left*75/((int64_t)(secs-(secs/4))*1000000+1)));
+            if(heard[i]<LEARN_KEEP && try_rate_window(hz,RATE[i],dev,window_ms,seen[i],&heard[i]))
+                listened=true;
+            if(!round)tried++;
+        }
+        round++;
+        /* Every rate full: nothing more to hear. */
+        bool full=true;
+        for(int i=0;i<n_rate;i++) if(heard[i]<LEARN_KEEP) full=false;
+        if(full)break;
+        /* A round the radio refused every rate must still yield the core. */
+        if(!listened)vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    uint8_t best[LEARN_BYTES]; int best_len=0, best_agreed=0, best_heard=0; uint32_t best_rate=0;
+    for(int i=0;i<n_rate;i++) {
         uint8_t got[LEARN_BYTES]; int got_len=0;
-        char what[40];
-        snprintf(what,sizeof(what),"Trying %lu baud",(unsigned long)RATE[i]);
-        stage(what,25+i*75/n_rate);
-        const int agreed=try_rate(hz,RATE[i],dev,each?each:1,got,&got_len);
-        tried++;
-        if(agreed>best_agreed){best_agreed=agreed;best_rate=RATE[i];
+        const int agreed=rate_agreement(seen[i],heard[i],got,&got_len);
+        if(agreed>best_agreed){best_agreed=agreed;best_rate=RATE[i];best_heard=heard[i];
             if(got_len){memcpy(best,got,LEARN_BYTES);best_len=got_len;}}
     }
     ls_mesh_radio_hold(false);
@@ -1528,7 +1896,11 @@ static void learn_run(uint32_t hz,uint32_t secs,char *result,size_t len)
     if(best_agreed>=2 && best_rate) {
         s_learn.bitrate=best_rate;
         s_learn.sync_word=sync_from(best,best_len);
-        s_learn.confidence=(uint8_t)(best_agreed*100/LEARN_KEEP);
+        /* Two 24-byte frames alike at one rate do not happen by chance; what
+           lowers it is the rest of what that rate heard disagreeing. */
+        int conf=best_agreed>=4?95:best_agreed==3?90:80;
+        if(best_agreed*2<best_heard)conf-=20;
+        s_learn.confidence=(uint8_t)conf;
         s_learn.valid=s_learn.sync_word!=0;
         LS_SNPRINTF(t_rec_watch_runtime_s_deviation_d_of, s_learn.note,sizeof(s_learn.note),"%s deviation, %d of %d agreed",
                  measured?"measured":"assumed",best_agreed,LEARN_KEEP);
@@ -1539,6 +1911,22 @@ static void learn_run(uint32_t hz,uint32_t secs,char *result,size_t len)
         LS_SNPUTS(t_rec_watch_runtime_nothing_repeated_at_any, s_learn.note, sizeof(s_learn.note), "nothing repeated at any rate");
         LS_SNPUTS(t_rec_watch_runtime_learn_heard_nothing_consistent, result, len, "Learn: heard nothing consistent - press it repeatedly");
     }
+}
+
+/* One LEARN on the worker. WATCH handed back by the screen that paused it
+   is restored here, after the radio is free, whether or not the screen is
+   still open. */
+static void learn_job(uint32_t hz,uint32_t secs)
+{
+    char result[112];
+    learn_run(hz,secs,result,sizeof(result));
+    portENTER_CRITICAL(&s_lock);
+    snprintf(s_status.export_status,sizeof(s_status.export_status),"%s",result);
+    snprintf(s_status.learn_result,sizeof(s_status.learn_result),"%s",result);
+    s_status.learn_generation++;s_learn_busy=false;
+    const bool rewatch=s_learn_rewatch && !s_status.enabled;s_learn_rewatch=false;
+    portEXIT_CRITICAL(&s_lock);
+    if(rewatch)rec_watch_enable_owned(true);
 }
 
 bool rec_watch_request_pin(uint32_t id,bool pin)

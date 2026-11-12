@@ -1,0 +1,38 @@
+lo_mhz,hi_mhz,name,group,notes
+758.000000,768.000000,B28 DL Movistar,CELLULAR,APT 700 lower block; UL 703-713; 2015 award (TeleSemana/Telecompaper)
+768.000000,778.000000,B28 DL Personal,CELLULAR,APT 700; UL 713-723; 2015 award
+778.000000,793.000000,B28 DL Claro,CELLULAR,APT 700 2x15; UL 723-738; 2015 award
+793.000000,803.000000,B28 DL upper 10 MHz,CELLULAR,UL 738-748; holder not verified
+703.000000,748.000000,B28 UL (all),CELLULAR,APT 700 uplink; handset TX
+869.000000,894.000000,B5 DL 850,CELLULAR,UL 824-849; 850 MHz split among Claro/Movistar/Personal by area (not verified per block)
+1930.000000,1990.000000,B2 DL PCS 1900,CELLULAR,UL 1850-1910; operator split not verified
+2110.000000,2155.000000,B4/B66 DL AWS,CELLULAR,UL 1710-1755; Movistar 2110-2120 (2014 award); rest split not verified; B66 may extend to 2180/2200
+2620.000000,2690.000000,B7 DL 2600,CELLULAR,UL 2500-2570; operator split not verified; HackRF only
+3300.000000,3400.000000,n78 Claro,CELLULAR,5G TDD; 2022-23 auction (dplnews); HackRF only
+3400.000000,3500.000000,n78 Personal,CELLULAR,5G TDD; HackRF only
+3500.000000,3600.000000,n78 block 3,CELLULAR,Movistar holds 3550-3600 per dplnews 2023; 3500-3550 holder not verified
+26.965000,27.405000,CB 27 MHz (SBC),PMR/LICENSE-FREE,Servicio de Banda Ciudadana needs authorisation (Res ENACOM 481/2026 fees); 40ch AM plan
+433.075000,434.775000,LPD 433 MHz,ISM/IOT,Low power devices (ENACOM-Q2-60.14; Res 5186-E/2017 power update)
+462.556250,462.718750,FRS uso familiar,PMR/LICENSE-FREE,Res SC 2750/98: 7 ch; 500 mW; no individual licence
+902.000000,915.000000,LPD 902-915,ISM/IOT,Low-power devices with field-strength limit (ENACOM LPD rules); not shared-use band
+915.000000,928.000000,ISM 915-928 shared,ISM/IOT,Res 581/2018: shared use without authorisation; 30 dBm cond / 36 dBm EIRP; LoRaWAN AU915; Meshtastic ANZ
+2400.000000,2483.500000,ISM 2.4 GHz shared,ISM/IOT,Res 581/2018 shared use; WiFi/BLE
+5725.000000,5850.000000,ISM 5.8 GHz shared,ISM/IOT,Res 581/2018 shared use; HackRF only
+50.000000,54.000000,Amateur 6 m,AMATEUR,ENACOM Anexo A; rpt out 53-54 in 52.05-53
+144.000000,148.000000,Amateur 2 m,AMATEUR,ENACOM Anexo A; sat-only 145.8-146.0; rpt out 145.2-145.5 and 146.6-147.4
+220.000000,225.000000,Amateur 1.25 m,AMATEUR,ENACOM Anexo A primary; rpt out 223.9-225 (-1.6 MHz)
+430.000000,440.000000,Amateur 70 cm,AMATEUR,ENACOM Anexo A; rpt out 433-435 (+5 MHz); sat-only 435-438
+108.000000,117.975000,Aero nav VOR/ILS,NAVIGATION,ILS LOC 108-112; VOR 108-117.975 (AM ident)
+117.975000,137.000000,VHF airband COM,AVIATION,AM 25 kHz spacing in AR AIP (no 8.33 kHz assignments found)
+328.600000,335.400000,ILS glidepath,NAVIGATION,Paired with LOC
+960.000000,1215.000000,DME/SSR/ADS-B,AVIATION,SSR 1030 interrogate / 1090 reply and ADS-B 1090ES; DME
+406.000000,406.100000,Cospas-Sarsat 406,EMERGENCY,ELT/EPIRB/PLB digital bursts
+1559.000000,1610.000000,GNSS RNSS L1,NAVIGATION,GPS L1/Galileo E1/BeiDou B1/GLONASS L1
+156.025000,162.025000,Marine VHF,MARINE,RESMMA: ship TX 156.025-157.425; RX 160.025-162.025; AIS 161.975/162.025
+0.530000,1.710000,AM broadcast (R2),BROADCAST AM,ITU Region 2 MW; 10 kHz raster; HackRF or upconverter
+88.000000,108.000000,FM broadcast,BROADCAST FM,WFM; 200 kHz raster
+137.000000,138.000000,MetSat VHF,WEATHER,Meteor-M LRPT 137.1/137.9; NOAA APT ended 2025
+400.150000,406.000000,Radiosondes,WEATHER,SMN sounding sites incl. Ezeiza Cordoba Mendoza Resistencia Santa Rosa (UCAR SMN dataset); exact freqs vary per flight
+1670.000000,1710.000000,MetSat L-band,WEATHER,GOES-19 GRB 1686.6 / HRIT 1694.1; Meteor/MetOp HRPT ~1700; dish needed
+1525.000000,1559.000000,Inmarsat L-band DL,SATELLITE,MSS downlink (STD-C/AERO/EGC); specific AR-visible channels not verified
+1616.000000,1626.500000,Iridium,SATELLITE,TDMA/FDMA; simplex ring alert 1626.0-1626.5

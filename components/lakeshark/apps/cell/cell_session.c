@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "cell_session.h"
+#include "cell_core.h"
 #include <string.h>
 void cell_session_begin(cell_session_t *s, bool multi)
 {
@@ -22,5 +23,5 @@ void cell_session_finish(cell_session_t *s, bool complete, bool mib,
     s->raw_bytes += saved_bytes;
     s->wait_ms = complete ? 1000 : 1000u << s->failures;
     if (s->wait_ms > 30000) s->wait_ms = 30000;
-    if (s->multi) s->channel = (s->channel + 1) % 6;
+    if (s->multi) s->channel = (s->channel + 1) % CELL_HRF_CHANNELS;
 }

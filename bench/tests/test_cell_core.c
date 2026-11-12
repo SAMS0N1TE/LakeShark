@@ -23,15 +23,15 @@ LS_CASE(baseline_rejects_corruption_wrong_site_band_gain_and_antenna)
     b.count=1000;b.rate=CELL_RATE;b.gain=CELL_GAIN;b.passes=3;
     b.located=1;b.lat_tile=43000;b.lon_tile=-71000;
     memset(b.power,-90,sizeof(b.power));b.checksum=cell_checksum(&b);
-    LS_CHECK(cell_baseline_valid(&b,0,43000,-71000,true,false));
-    LS_CHECK(!cell_baseline_valid(&b,1,43000,-71000,true,false));
-    LS_CHECK(!cell_baseline_valid(&b,0,43001,-71000,true,false));
-    LS_CHECK(!cell_baseline_valid(&b,0,43000,-71000,true,true));
-    b.power[1]++;LS_CHECK(!cell_baseline_valid(&b,0,43000,-71000,true,false));
+    LS_CHECK(cell_baseline_valid(&b,0,CELL_GAIN,43000,-71000,true,false));
+    LS_CHECK(!cell_baseline_valid(&b,1,CELL_GAIN,43000,-71000,true,false));
+    LS_CHECK(!cell_baseline_valid(&b,0,CELL_GAIN,43001,-71000,true,false));
+    LS_CHECK(!cell_baseline_valid(&b,0,CELL_GAIN,43000,-71000,true,true));
+    b.power[1]++;LS_CHECK(!cell_baseline_valid(&b,0,CELL_GAIN,43000,-71000,true,false));
     b.power[1]=-128;b.checksum=cell_checksum(&b);
-    LS_CHECK(!cell_baseline_valid(&b,0,43000,-71000,true,false));
+    LS_CHECK(!cell_baseline_valid(&b,0,CELL_GAIN,43000,-71000,true,false));
     b.power[1]=-90;b.gain++;b.checksum=cell_checksum(&b);
-    LS_CHECK(!cell_baseline_valid(&b,0,43000,-71000,true,false));
+    LS_CHECK(!cell_baseline_valid(&b,0,CELL_GAIN,43000,-71000,true,false));
 }
 LS_CASE(orientation_is_not_stationarity)
 {
@@ -93,10 +93,55 @@ LS_CASE(legacy_and_wrong_receiver_calibration_baselines_are_rejected)
     cell_baseline_t b={0};b.magic=0x43454c4c;b.version=CELL_BASELINE_VERSION;
     b.receiver=CELL_RECEIVER_RTL;b.calibration=CELL_CALIBRATION;b.count=1000;
     b.rate=CELL_RATE;b.gain=CELL_GAIN;b.passes=3;memset(b.power,-90,sizeof(b.power));
-    b.checksum=cell_checksum(&b);LS_CHECK(cell_baseline_valid(&b,0,0,0,false,false));
-    b.version=1;b.checksum=cell_checksum(&b);LS_CHECK(!cell_baseline_valid(&b,0,0,0,false,false));
+    b.checksum=cell_checksum(&b);LS_CHECK(cell_baseline_valid(&b,0,CELL_GAIN,0,0,false,false));
+    b.version=1;b.checksum=cell_checksum(&b);LS_CHECK(!cell_baseline_valid(&b,0,CELL_GAIN,0,0,false,false));
     b.version=CELL_BASELINE_VERSION;b.receiver=2;b.checksum=cell_checksum(&b);
-    LS_CHECK(!cell_baseline_valid(&b,0,0,0,false,false));
+    LS_CHECK(!cell_baseline_valid(&b,0,CELL_GAIN,0,0,false,false));
     b.receiver=CELL_RECEIVER_RTL;b.calibration++;b.checksum=cell_checksum(&b);
-    LS_CHECK(!cell_baseline_valid(&b,0,0,0,false,false));
+    LS_CHECK(!cell_baseline_valid(&b,0,CELL_GAIN,0,0,false,false));
+}
+LS_CASE(a_baseline_is_compared_only_at_the_gain_it_was_learned_at)
+{
+    cell_baseline_t b={0};b.magic=0x43454c4c;b.version=CELL_BASELINE_VERSION;
+    b.receiver=CELL_RECEIVER_RTL;b.calibration=CELL_CALIBRATION;b.count=1000;
+    b.rate=CELL_RATE;b.gain=197;b.passes=3;memset(b.power,-90,sizeof(b.power));
+    b.checksum=cell_checksum(&b);
+    LS_CHECK(cell_baseline_valid(&b,0,197,0,0,false,false));
+    LS_CHECK(!cell_baseline_valid(&b,0,CELL_GAIN,0,0,false,false));
+    LS_CHECK(!cell_baseline_valid(&b,0,0,0,0,false,false));
+    /* The list the survey offers: R820T steps, the usual gain among them. */
+    LS_CHECK(cell_gain_valid(CELL_GAIN));
+    for(unsigned i=0;i<CELL_GAINS;i++) {LS_CHECK(cell_gain_valid(cell_gains[i]));LS_CHECK(!i || cell_gains[i]>cell_gains[i-1]);}
+    LS_CHECK(!cell_gain_valid(0));LS_CHECK(!cell_gain_valid(300));LS_CHECK(!cell_gain_valid(-297));
+}
+LS_CASE(baselines_saved_before_b28_still_load_for_every_shipped_window)
+{
+    /* What the firmware wrote before this table grew: band field = index,
+     * count = its 25 kHz bins, gain 29.7 dB, version 2. */
+    static const struct {uint32_t low,high;} shipped[]={
+        {869000000,894000000},{925000000,960000000},{729000000,746000000},
+        {746000000,756000000},{791000000,821000000},{758000000,768000000},
+        {734000000,746000000},{859000000,894000000},{617000000,652000000}};
+    LS_EQ_UINT(CELL_BASELINE_VERSION,2);
+    for(unsigned i=0;i<9;i++) {
+        cell_baseline_t b={0};b.magic=0x43454c4c;b.version=2;b.receiver=CELL_RECEIVER_RTL;
+        b.calibration=CELL_CALIBRATION;b.band=i;b.count=(shipped[i].high-shipped[i].low)/25000;
+        b.rate=256000;b.gain=297;b.passes=3;b.located=1;b.lat_tile=-34600;b.lon_tile=-58400;
+        memset(b.power,-70,sizeof(b.power));b.checksum=cell_checksum(&b);
+        LS_CHECK(cell_baseline_valid(&b,i,CELL_GAIN,-34600,-58400,true,false));
+        /* and is not mistaken for either new window */
+        LS_CHECK(!cell_baseline_valid(&b,9,CELL_GAIN,-34600,-58400,true,false));
+        LS_CHECK(!cell_baseline_valid(&b,10,CELL_GAIN,-34600,-58400,true,false));
+    }
+}
+LS_CASE(a_tune_is_overloaded_past_one_rail_byte_in_a_thousand)
+{
+    /* 8 transforms of 512 complex samples: 8192 I/Q bytes a tune. */
+    LS_CHECK(!cell_overloaded(0,8192));
+    LS_CHECK(!cell_overloaded(8,8192));       /* 0.098% */
+    LS_CHECK(cell_overloaded(9,8192));        /* 0.11% */
+    LS_CHECK(!cell_overloaded(1,1000));LS_CHECK(cell_overloaded(2,1000));
+    LS_CHECK(cell_overloaded(8192,8192));
+    LS_CHECK(!cell_overloaded(5,0));          /* nothing measured is not overload */
+    LS_CHECK(cell_overloaded(UINT32_MAX,UINT32_MAX));
 }

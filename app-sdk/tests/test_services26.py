@@ -11,7 +11,8 @@ sys.path.insert(0,str(SDK))
 import apidoc
 import lap
 import lsdk
-BUILD=SDK.parent/'bench/build'
+BUILD=Path(os.environ.get('LS_BENCH_BUILD') or SDK.parent/'bench/build')
+LSSIM=BUILD/('lssim.exe' if os.name=='nt' else 'lssim')
 
 class Services26(unittest.TestCase):
     def run_sim(self,app,script='',services='',radio='sim',frames=100):
@@ -19,7 +20,7 @@ class Services26(unittest.TestCase):
         env.update(LAPSIM=app,LAPSIM_SCRIPT=script,LAPSIM_SERVICES=services,LAPSIM_RADIO=radio,LAPSIM_CONSENT='grant')
         for key in ('LAPSIM_DLL','LSSIM_FRAMES'): env.pop(key,None)
         folder=BUILD/'services26'/app; folder.mkdir(parents=True,exist_ok=True)
-        r=subprocess.run([str(BUILD/'lssim.exe'),'lap','-A','40','-f',str(frames)],cwd=folder,env=env,
+        r=subprocess.run([str(LSSIM),'lap','-A','40','-f',str(frames)],cwd=folder,env=env,
             capture_output=True,text=True,errors='replace',timeout=30,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
         output=r.stdout+r.stderr

@@ -15,6 +15,10 @@
 
 static const char *TAG = "ls_haptic";
 
+static volatile bool s_enabled = true;
+void ls_haptic_set_enabled(bool on) { s_enabled = on; }
+bool ls_haptic_enabled(void) { return s_enabled; }
+
 /* ------------------------------------------------------ the arithmetic --- */
 /* Outside the board gate on purpose: none of it depends on this board having
    the part, and the bench checks it on every build. */
@@ -443,6 +447,7 @@ static bool submit(const ls_haptic_req_t *req)
 
 bool ls_haptic_play(ls_haptic_effect_t effect)
 {
+    if (!s_enabled) return false;
     if (effect < 0 || effect >= LS_HAPTIC_EFFECT_COUNT) return false;
     ls_haptic_req_t req = { .raw = false, .effect = (uint8_t)effect };
     return submit(&req);
@@ -450,6 +455,7 @@ bool ls_haptic_play(ls_haptic_effect_t effect)
 
 bool ls_haptic_buzz(int ms, int strength)
 {
+    if (!s_enabled) return false;
     ms = ls_haptic_clamp_ms(ms);
     if (ms <= 0) return false;
     if (strength < 0) strength = 0;

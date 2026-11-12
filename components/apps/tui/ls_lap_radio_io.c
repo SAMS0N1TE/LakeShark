@@ -1082,9 +1082,20 @@ bool ls_lap_io_service(void) {
         p4_w.carrier = false;
         p4_w.deadline = 0;
     }
+    /* A background app's session gives the LoRa chip to a radio app or to
+       MeshCore that wants it, and waits queued (no tries counted) until it is
+       free; the same session then opens again by itself. */
+    const bool aside = id && kind != 4 && !p4_w.rx_error && !p4_w.rx_done &&
+                       be->step_aside && be->step_aside(radio);
+    if (aside) {
+        be->close();
+        p4_w.opened = false;
+    }
     if (id && kind != 4 && !p4_w.rx_error && !p4_w.rx_done) {
         int e = 0;
-        if (!p4_w.opened) {
+        if (aside)
+            e = LAP_RX_EAGAIN;
+        else if (!p4_w.opened) {
             e = be->open(radio, &cfg, kind == 2);
             if (e == LAP_RX_EAGAIN && ++p4_w.tries >= 250) {
                 be->close();

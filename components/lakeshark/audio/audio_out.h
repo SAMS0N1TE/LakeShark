@@ -74,6 +74,9 @@ void audio_out_park_hold(bool hold);
 
 uint32_t audio_drops_get(void);
 uint32_t audio_underruns_get(void);
+/* Silences inside an over that audio resumed from, and the longest, ms. */
+uint32_t audio_cuts_get(void);
+uint32_t audio_cut_worst_ms_get(void);
 uint32_t audio_out_ring_avail(void);
 
 #ifdef __cplusplus

@@ -1,5 +1,6 @@
 #include "ls_mixrf.h"
 #include "tx_protection.h"
+#include "ls_tx_unlock.h"
 #include "ls_mixrf_control.h"
 #include "ls_trail.h"
 #include "ls_cc_capture.h"
@@ -348,6 +349,7 @@ static bool transmit_raw(uint32_t hz,const int32_t *pulses,size_t count,int dbm)
     static const uint8_t pa[4][4]={{0x34,0x51,0x85,0xc2},
         {0x34,0x60,0x84,0xc0},{0x27,0x50,0x81,0xc2},{0x27,0x8e,0xcd,0xc0}};
     int power=dbm==-10?0:dbm==0?1:dbm==5?2:dbm==10?3:-1;
+    if(LS_TX_UNLOCKED)power=dbm<-5?0:dbm<3?1:dbm<8?2:3;
     size_t words=subghz_ook_symbols(pulses,count,NULL,0);
     if(power<0 || !words)return false;
     uint32_t *symbols=heap_caps_malloc(words*4,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
@@ -411,7 +413,7 @@ static bool transmit_raw(uint32_t hz,const int32_t *pulses,size_t count,int dbm)
     stage="RMT transmit";
     if((error=rmt_transmit(channel,encoder,symbols,words*4,&send))!=ESP_OK)goto cleanup;
     stage="RMT completion";
-    deadline=esp_timer_get_time()+11000000;
+    deadline=esp_timer_get_time()+(LS_TX_UNLOCKED?(int64_t)subghz_span_us(pulses,count)+1000000:11000000);
     do {
         error=rmt_tx_wait_all_done(channel,20);
         if(error==ESP_OK){ok=true;break;}
@@ -599,7 +601,7 @@ static bool replay_raw(uint32_t hz,const int32_t *pulses,size_t count,int dbm,co
 {
     /* The shared replay policy, then the four power steps this chip has. */
     if(subghz_tx_refusal(hz,dbm,count,subghz_span_us(pulses,count)) ||
-       (dbm!=-10 && dbm!=0 && dbm!=5 && dbm!=10) ||
+       (!LS_TX_UNLOCKED && dbm!=-10 && dbm!=0 && dbm!=5 && dbm!=10) ||
        !subghz_ook_symbols(pulses,count,NULL,0))return false;
     portENTER_CRITICAL(&lock);bool needs_start=!started;portEXIT_CRITICAL(&lock);
     if(needs_start && !ls_mixrf_start())return false;

@@ -1,5 +1,6 @@
 /* Simulator fixture for DIGI: a 20 m FT8 band a moment after a slot decode,
-   or mid-slot with LSSIM_DIGI=mid, or stopped with LSSIM_DIGI=idle. The
+   or mid-slot with LSSIM_DIGI=mid, or stopped with LSSIM_DIGI=idle, or
+   with a list longer than the page with LSSIM_DIGI=busy. The
    screen and the engine's view are the production ones. */
 #include <math.h>
 #include <stdlib.h>
@@ -84,11 +85,16 @@ void lssim_digi_seed(void)
     }
     for (int c = 0; c < DIGI_SPEC_CELLS; ++c) v.spec_peak[c] = (uint8_t)(v.spec[c] + (v.spec[c] > 80 ? 30 : 6));
     if (stopped) { v.n = 0; digi_host_set(&v); return; }
-    uint32_t seq = 30;
+    uint32_t seq = 60;
     /* Newest first: this slot's decodes on top, landed under a second ago. */
     for (unsigned i = 0; i < sizeof(NEW) / sizeof(NEW[0]); ++i)
         put(&v, &NEW[i], (uint32_t)slot0, seq--, mid ? now - 8000 : now - 300 - 150 * i);
     for (unsigned i = 0; i < sizeof(OLD) / sizeof(OLD[0]); ++i)
         put(&v, &OLD[i], (uint32_t)(slot0 - 15), seq--, now - 16000);
+    /* LSSIM_DIGI=busy: a list longer than the page, to scroll. */
+    if (phase && !strcmp(phase, "busy"))
+        for (int k = 2; k < 8; ++k)
+            for (unsigned i = 0; i < sizeof(OLD) / sizeof(OLD[0]); ++i)
+                put(&v, &OLD[i], (uint32_t)(slot0 - 15 * k), seq--, now - 15000 * k);
     digi_host_set(&v);
 }

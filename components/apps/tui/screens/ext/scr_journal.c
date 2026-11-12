@@ -1,9 +1,11 @@
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_radio_panel.h"
 #include "../../ls_field.h"
 #include "../../ls_motion.h"
 #include "../../ls_keyboard.h"
 #include "../../ls_picker.h"
+#include "../../ls_drag_scroll.h"
 #include "../../ls_radio_select.h"
 #include "../../ls_app.h"
 #include "ls_mesh.h"
@@ -27,6 +29,11 @@ static tui_rect s_list;
 static bool s_touch_nav;
 static ls_fresh_t newest;
 static int s_scroll_max;
+/* The first entry on screen: the page that holds the selection, unless a
+   finger dragged the list, until a key or a tap moves the selection. */
+static int s_first;
+static bool s_free;
+static ls_drag_scroll_t s_drag, s_text_drag;
 
 static void feedback(bool ok) { snprintf(s_feedback, sizeof(s_feedback), "%s", ok ? "Queued; SD result appears below" : "Request not accepted; try again after pending save"); }
 static void save_text(const char *text) { feedback(ls_field_note(s_edit_id, s_title, text)); }
@@ -136,6 +143,7 @@ static void text_rows(tui_surface *sf, tui_rect a, const char *text)
     for(const char *p=text;*p;p++){if(*p=='\n'||used>=width){lines++;used=0;if(*p=='\n')continue;}used++;}
     s_scroll_max=lines>a.h?lines-a.h:0;
     if(s_scroll>s_scroll_max)s_scroll=s_scroll_max;
+    ls_drag_scroll(&s_text_drag,a,1,&s_scroll,lines,a.h);
     for (const char *p = text; *p; p++) {
         if (*p == '\n' || col >= width) { row++; col = 0; if (*p == '\n') continue; }
         if (row >= s_scroll && row < s_scroll + a.h)
@@ -164,8 +172,26 @@ static void draw(tui_surface *sf, tui_rect a)
     const int bar_h = ls_btn_raised_height(a, 6);
     ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 6, button_focus);
     tui_rect panel = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - 3);
-    ls_panel_box(sf, panel, s_sensors ? (s_detail ? "ENTRY ATTACHMENTS" : "LIVE ATTACHMENTS") : "JOURNAL", TUI_CYAN);
+    ls_panel_box(sf, panel, s_sensors ? (s_detail ? "ENTRY ATTACHMENTS" : "LIVE ATTACHMENTS") : "JOURNAL", s.recording ? TUI_GREEN : TUI_CYAN);
     ls_motion_busy(sf,panel,s.recording);
+    if (!s_sensors && !s_detail) {
+        /* A rail of chips over the list: what is recording, what is
+           attached, and how many entries there are - the state at a glance
+           rather than three dim lines at the foot. */
+        char chip[24];
+        const tui_rect inner = tui_rect_make(panel.x + 1, panel.y, panel.w - 2, panel.h);   /* inside the frame */
+        int cx = panel.x + 2;
+        const int cy = panel.y + 1;
+        cx = ls_radio_chip(sf, inner, cx, cy, s.record_errors ? "WRITE FAILED" : s.recording ? "RECORDING" : "IDLE",
+                           s.recording || s.record_errors, s.record_errors ? TUI_RED : TUI_GREEN) + 1;
+        snprintf(chip, sizeof(chip), "%d %s", s.journal_count, s.journal_count == 1 ? "ENTRY" : "ENTRIES");
+        cx = ls_radio_chip(sf, inner, cx, cy, chip, s.journal_count > 0, TUI_CYAN) + 1;
+        cx = ls_radio_chip(sf, inner, cx, cy, "GPS", s.sample.gps_valid, TUI_YELLOW) + 1;
+        cx = ls_radio_chip(sf, inner, cx, cy, "IMU", s.sample.imu_valid, TUI_YELLOW) + 1;
+        const char *src = ls_field_source_name(s.sample.source);
+        if (src && src[0]) cx = ls_radio_chip(sf, inner, cx, cy, src, true, TUI_MAGENTA) + 1;
+        (void)cx;
+    }
     if (s_sensors) {
         if(!s_detail) sensors(sf,panel,&s.sample);
         else if(ls_field_entry(s_selected,&s_entry)) sensors(sf,panel,&s_entry.sample);
@@ -181,7 +207,14 @@ static void draw(tui_surface *sf, tui_rect a)
         s_list = tui_rect_make(panel.x + 2, panel.y + 2, panel.w - 4, panel.h - 3);
         if (panel.h > 38) s_list.h = panel.h - 23;
         int rows = s_list.h / 3; if (rows < 1) rows = 1;
-        int first = s_selected / rows * rows;
+        /* A last page that is not full stays where it is under a drag. */
+        const int page_first = s_selected / rows * rows;
+        const int span = s.journal_count > page_first + rows ? s.journal_count : page_first + rows;
+        if (ls_drag_scroll(&s_drag, s_list, 3, &s_first, span, rows)) s_free = true;
+        if (!s_free && (s_selected < s_first || s_selected >= s_first + rows)) s_first = page_first;
+        if (s_first > span - rows) s_first = span - rows;
+        if (s_first < 0) s_first = 0;
+        const int first = s_first;
         if (!s.journal_count) {
             tui_put_str(sf, panel, panel.x + 2, panel.y + 3, LS_TEXT(t_scr_journal_a_notebook_for_the, "A notebook for the field."), LS_ATTR_DIM);
             tui_put_str(sf, panel, panel.x + 2, panel.y + 5, LS_TEXT(t_scr_journal_write_a_note_mark, "Write a note, mark a place,"), LS_ATTR_DIM);
@@ -228,6 +261,7 @@ static bool key(ls_tk_t k, char ch)
     if(k==LS_TK_LEFT || k==LS_TK_RIGHT || k==LS_TK_TAB)return ls_btn_navigate(k,&button_slot,&button_focus,false);
     if(k==LS_TK_ENTER && button_focus>=0){if(ls_btn_enabled(0,button_focus))action(button_focus);return true;}
     if(k==LS_TK_UP || k==LS_TK_DOWN || k==LS_TK_BACKSPACE)button_focus=-1;
+    if((k==LS_TK_UP || k==LS_TK_DOWN) && !s_detail)s_free=false;
     if (k == LS_TK_BACKSPACE) { s_detail = s_sensors = false; return true; }
     if (k == LS_TK_UP) { if (s_detail) { if (s_scroll) s_scroll--; } else if (s_selected) s_selected--; return true; }
     if (k == LS_TK_DOWN) { if (s_detail) { if (s_scroll < s_scroll_max) s_scroll++; } else if (s_selected + 1 < s.journal_count) s_selected++; return true; }
@@ -239,10 +273,11 @@ static bool touch(int col, int row)
 {
     if(s_touch_nav){int i=ls_btn_hit_slot(col,row,LS_BTN_SLOT_WATERFALL);if(i>=0)return key(i==0?LS_TK_UP:i==1?LS_TK_DOWN:LS_TK_BACKSPACE,0);}
     int button = ls_btn_hit(col, row); if (button >= 0) { action(button); return true; }
-    if (s_detail) { if(s_touch_nav)return true; if(s_sensors)s_sensors=false;else s_detail=false; return true; }
+    if (s_detail) { if(s_touch_nav || ls_drag_scroll_tap_is_lift(&s_text_drag))return true; if(s_sensors)s_sensors=false;else s_detail=false; return true; }
     if (s_sensors || col < s_list.x || col >= s_list.x + s_list.w || row < s_list.y || row >= s_list.y + s_list.h) return true;
-    int rows = s_list.h / 3; if (rows < 1) rows = 1;
-    int index = s_selected / rows * rows + (row - s_list.y) / 3;
+    if (ls_drag_scroll_tap_is_lift(&s_drag)) return true;   /* the end of a drag, not a choice */
+    s_free = false;
+    int index = s_first + (row - s_list.y) / 3;
     if (index < s.journal_count) { if (index == s_selected) { s_detail = true; s_scroll = 0; } s_selected = index; }
     return true;
 }

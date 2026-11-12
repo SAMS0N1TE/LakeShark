@@ -7,6 +7,8 @@
 int ls_shim_log_enabled;
 void ls_register(const char *file, const char *name, ls_case_fn fn) {}
 void ls_register_xfail(const char *file, const char *name, ls_case_fn fn, const char *ticket) {}
+void ls_register_at(const char *file, int line, const char *name, ls_case_fn fn) {}
+void ls_register_xfail_at(const char *file, int line, const char *name, ls_case_fn fn, const char *ticket) {}
 void ls_fail(const char *file, int line, const char *fmt, ...)
 {
     fprintf(stderr, "replay assertion at %s:%d\n", file, line);

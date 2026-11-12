@@ -15,7 +15,8 @@ static tui_rect rendered_button;
 
 ls_radio_err_t ls_radio_endpoint_get(const char *id, ls_radio_endpoint_info_t *out)
 { *out = !strcmp(id, LS_RADIO_ENDPOINT_RTL_USB) ? rtl : hackrf; return LS_RADIO_OK; }
-void ls_tui_radio_want(const char *mode) { (void)mode; }
+static int parks;
+void ls_tui_radio_want(const char *mode) { if (!mode) ++parks; }
 bool ls_gps_running(void) { return false; }
 void ls_gps_get(ls_gps_state_t *out) { memset(out, 0, sizeof(*out)); }
 esp_err_t ls_gps_start(void) { return gps_error; }
@@ -70,6 +71,9 @@ void settings_set_wifi_at_boot(bool on) { }
 bool ls_tui_is_wide(void) { return wide; }
 char ls_motion_pip(bool on) { return '*'; }
 void ls_panel_box(tui_surface *sf, tui_rect r, const char *title, uint8_t hue) { }
+static int monitor_stops, iq_stops;
+void cell_monitor_stop(void) { ++monitor_stops; }
+void cell_iq_stop(void) { ++iq_stops; }
 
 LS_CASE(sdr_missing_failed_and_parked_do_not_count_as_powered)
 {
@@ -159,12 +163,21 @@ LS_CASE(socket_owner_activity_and_named_refusal)
     running = false;
     LS_EQ_INT(mesh_read(), RS_BUSY);
     LS_CHECK(strstr(mesh_state(), "held by ADSB"));
+    /* STOP turns the app off: its receiver parks, nothing is blocked, so
+       there is no ALLOW that would hand the chip straight back to it. */
+    LS_CHECK(!strcmp(mesh_action(), "STOP ADS-B"));
+    parks = 0;
+    mesh_set(false);
+    LS_EQ_INT(parks, 1);
+    LS_CHECK(!socket_state.blocked);
+    LS_CHECK(s_error && strstr(s_error, "ADS-B off"));
+    LS_CHECK(!running);
+    /* An owner STOP does not know is still blocked, and ALLOW undoes it. */
+    strcpy(socket_state.owner, "exp");
     LS_CHECK(!strcmp(mesh_action(), "STOP / BLOCK LORA"));
-    /* The tap takes it back from the app and keeps it free, without
-       starting MeshCore in its place. */
     mesh_set(false);
     LS_CHECK(socket_state.blocked);
-    LS_CHECK(s_error && strstr(s_error, "ADSB"));
+    LS_CHECK(s_error && strstr(s_error, "EXPERIMENTS"));
     LS_CHECK(!running);
     socket_state.held = true; socket_state.receiving = false;   /* the block is a hold */
     strcpy(socket_state.owner, "none");
@@ -185,6 +198,12 @@ LS_CASE(sdr_controls_are_scoped_and_absent_controls_do_nothing)
     LS_CHECK(rtl.paused && !rtl.streaming && hackrf.streaming && !hackrf.paused);
     LS_CHECK(!strcmp(rtl_action(), "ALLOW RX"));
     toggle(0); LS_CHECK(!rtl.paused && hackrf.streaming);
+    /* Held by FM: STOP parks FM instead of pausing the receiver under it. */
+    rtl.leased = true; strcpy(rtl.owner, "fm"); parks = 0; pauses = 0;
+    LS_CHECK(!strcmp(rtl_action(), "STOP FM"));
+    toggle(0);
+    LS_EQ_INT(parks, 1); LS_EQ_INT(pauses, 0); LS_CHECK(!rtl.paused);
+    LS_CHECK(s_error && strstr(s_error, "FM off"));
 }
 
 LS_CASE(large_font_pages_follow_keys_and_touch_maps_real_rows)
@@ -234,4 +253,25 @@ LS_CASE(c6_live_state_is_separate_from_boot_preference)
     wireless.bt_failed = true; LS_EQ_INT(ble_read(), RS_FAILED);
     LS_CHECK(!strcmp(ble_state(), "failed"));
     memset(&wireless, 0, sizeof(wireless));
+}
+
+LS_CASE(stop_cell_ends_the_iq_capture_not_just_the_monitor)
+{
+    memset(&rtl, 0, sizeof(rtl)); memset(&hackrf, 0, sizeof(hackrf));
+    hackrf.present = hackrf.leased = hackrf.streaming = true;
+    strcpy(hackrf.name, "HackRF");
+    int row = 0;
+    while (ROWS[row].set != hackrf_set) ++row;
+    /* CELL WATCH's capture loop holds it as "cell-iq": the monitor's stop
+       would leave the loop retaking the radio under "HackRF is free". */
+    strcpy(hackrf.owner, "cell-iq"); monitor_stops = iq_stops = 0; pauses = 0;
+    LS_CHECK(!strcmp(hackrf_action(), "STOP CELL"));
+    toggle(row);
+    LS_EQ_INT(iq_stops, 1); LS_EQ_INT(monitor_stops, 0); LS_EQ_INT(pauses, 0);
+    LS_CHECK(s_error && strstr(s_error, "CELL off"));
+    /* The monitor itself still stops the monitor. */
+    strcpy(hackrf.owner, "cell"); monitor_stops = iq_stops = 0;
+    toggle(row);
+    LS_EQ_INT(monitor_stops, 1); LS_EQ_INT(iq_stops, 0);
+    memset(&hackrf, 0, sizeof(hackrf));
 }

@@ -49,6 +49,8 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <direct.h>
+#else
+#include <sys/stat.h>
 #endif
 
 typedef const lap_app_t *(*lap_main_fn)(void);

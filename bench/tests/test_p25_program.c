@@ -41,6 +41,9 @@ typedef struct {
     p25_cqpsk_config_t cqpsk;
     uint8_t  roster_count;
     uint16_t roster_first_tg;
+    uint32_t roster_wacn;
+    uint16_t roster_sysid;
+    unsigned roster_system_calls;
 } fake_radio_t;
 
 static void log_op(fake_radio_t *r, char c)
@@ -99,6 +102,14 @@ static void op_roster(void *user, const p25_profile_talkgroup_t *tgs, size_t n)
     r->roster_first_tg = n ? tgs[0].id : 0;
 }
 
+static void op_roster_system(void *user, uint32_t wacn, uint16_t sysid)
+{
+    fake_radio_t *r = (fake_radio_t *)user;
+    r->roster_wacn = wacn;
+    r->roster_sysid = sysid;
+    r->roster_system_calls++;
+}
+
 static void op_restore_roster(void *user,
                               const p25_profile_talkgroup_t *tgs, size_t n)
 {
@@ -117,6 +128,7 @@ static void op_control(void *user, uint64_t control_hz)
 static void fake_radio_init(fake_radio_t *r, p25_program_ops_t *ops)
 {
     memset(r, 0, sizeof(*r));
+    memset(ops, 0, sizeof(*ops));   /* ops not named here stay NULL */
     r->demod_preference = -99;
     ops->release              = op_release;
     ops->set_auto_follow      = op_auto_follow;
@@ -124,6 +136,7 @@ static void fake_radio_init(fake_radio_t *r, p25_program_ops_t *ops)
     ops->set_cqpsk_loops      = op_cqpsk;
     ops->set_demod_preference = op_demod;
     ops->set_roster           = op_roster;
+    ops->set_roster_system    = op_roster_system;
     ops->restore_roster       = op_restore_roster;
     ops->set_control          = op_control;
     ops->user                 = r;
@@ -248,6 +261,37 @@ LS_CASE(reload_applies_every_op_in_order_then_commits)
     LS_EQ_STR(text, "2 TG  1 allowed  1 priority");
     p25_program_format_source(&program, text, sizeof(text));
     LS_EQ_STR(text, "/sdcard/p25_profile.txt");
+}
+
+LS_CASE(a_profile_scopes_its_roster_to_the_system_it_names)
+{
+    p25_program_t program;
+    fake_radio_t radio;
+    p25_program_ops_t ops;
+    /* Written the way RadioReference shows it: hex. */
+    static const char text[] =
+        "version=1\n"
+        "system=Sistema Troncal\n"
+        "site=Centro\n"
+        "wacn=7A1C3\n"
+        "sysid=0x1F2\n"
+        "control=851012500\n"
+        "tg=4001|Ops|true|0\n";
+    fake_file_t file = { text, P25_PROGRAM_OK, 0, NULL };
+    p25_program_init(&program);
+    fake_radio_init(&radio, &ops);
+    LS_EQ_INT(load(&program, &file, &ops, "/sdcard/p25_profile_ar.txt"), P25_PROGRAM_OK);
+    LS_EQ_UINT(radio.roster_system_calls, 1);
+    LS_EQ_UINT(radio.roster_wacn, 0x7A1C3);
+    LS_EQ_UINT(radio.roster_sysid, 0x1F2);
+    LS_EQ_UINT(radio.roster_count, 1);
+
+    /* No ids in the profile: 0, so the roster takes the system on air. */
+    fake_file_t plain = { SECOND_PROFILE, P25_PROGRAM_OK, 0, NULL };
+    LS_EQ_INT(load(&program, &plain, &ops, "/sdcard/p25_profile.txt"), P25_PROGRAM_OK);
+    LS_EQ_UINT(radio.roster_system_calls, 2);
+    LS_EQ_UINT(radio.roster_wacn, 0);
+    LS_EQ_UINT(radio.roster_sysid, 0);
 }
 
 LS_CASE(reload_without_a_claim_is_refused_and_touches_nothing)
@@ -773,6 +817,98 @@ LS_CASE(app_handoff_restores_priority_without_overwriting_persisted_edits)
     LS_EQ_UINT(p25_scan_priority_rank(&scan, 1201), 7);
     LS_EQ_UINT(p25_scan_priority_rank(&scan, 1202), 0);
     LS_EQ_UINT(p25_scan_priority_rank(&scan, 1203), 1);
+}
+
+/* As p25_program_sd.c wires it: restore_roster onto the live scan_ctrl,
+ * and scan_ctrl's roster-switched hook into p25_program_roster_switched. */
+static p25_scan_ctrl_t s_live_scan;
+static p25_program_t *s_live_program;
+static p25_program_ops_t s_live_ops;
+
+static void live_restore_roster(void *user, const p25_profile_talkgroup_t *tgs,
+                                size_t n)
+{
+    op_roster(user, tgs, n);
+    p25_program_restore_roster(&s_live_scan, tgs, n);
+}
+
+static void live_switched(p25_scan_ctrl_t *sc)
+{
+    (void)p25_program_roster_switched(s_live_program, &sc->roster_sys, &s_live_ops);
+}
+
+static void live_name_system(uint32_t wacn, uint16_t sysid)
+{
+    static dsd_state s;
+    memset(&s, 0, sizeof(s));
+    s.p25_net_valid = true;
+    s.p25_tsbk_wacn = wacn;
+    s.p25_tsbk_sysid = sysid;
+    (void)p25_scan_note_system(&s_live_scan, &s, 1000);
+}
+
+LS_CASE(profile_priorities_survive_reentry_once_the_system_names_itself)
+{
+    static p25_program_t program;
+    fake_radio_t radio;
+    static const char text[] =
+        "version=1\n"
+        "system=Sistema Troncal\n"
+        "site=Centro\n"
+        "wacn=7A1C3\n"
+        "sysid=0x1F2\n"
+        "control=851012500\n"
+        "tg=4001|Ops|true|5\n"
+        "tg=4002|Fire|true|0\n";
+    fake_file_t file = { text, P25_PROGRAM_OK, 0, NULL };
+    p25_program_init(&program);
+    fake_radio_init(&radio, &s_live_ops);
+    s_live_ops.restore_roster = live_restore_roster;
+    s_live_program = &program;
+    LS_EQ_INT(load(&program, &file, &s_live_ops, "/sdcard/p25_profile.txt"),
+              P25_PROGRAM_OK);
+
+    /* P25 entry: a fresh unscoped roster, then the reapply. */
+    p25_scan_init(&s_live_scan);
+    p25_scan_set_roster_switched(live_switched);
+    LS_CHECK(p25_program_reapply(&program, &s_live_ops));
+    LS_EQ_UINT(p25_scan_priority_rank(&s_live_scan, 4001), 5);
+
+    /* The control channel names the profile's system: the switch to its
+     * stored roster keeps the profile's ranks. */
+    live_name_system(0x7A1C3, 0x1F2);
+    LS_EQ_UINT(s_live_scan.roster_switches, 1);
+    LS_EQ_UINT(p25_scan_priority_rank(&s_live_scan, 4001), 5);
+
+    /* Another system gets none; home again gets them back. */
+    live_name_system(0xBEE00, 0x9DC);
+    LS_EQ_UINT(p25_scan_priority_rank(&s_live_scan, 4001), 0);
+    live_name_system(0x7A1C3, 0x1F2);
+    LS_EQ_UINT(p25_scan_priority_rank(&s_live_scan, 4001), 5);
+
+    /* Not while a load is in flight: the active profile is the old one. */
+    LS_CHECK(p25_program_claim(&program, "/sdcard/p25_profile.txt"));
+    p25_scan_priority_clear(&s_live_scan);
+    live_name_system(0xBEE00, 0x9DC);
+    live_name_system(0x7A1C3, 0x1F2);
+    LS_EQ_UINT(p25_scan_priority_rank(&s_live_scan, 4001), 0);
+    (void)p25_program_abandon(&program, P25_PROGRAM_ERR_NO_MEMORY);
+    p25_scan_set_roster_switched(NULL);
+}
+
+LS_CASE(a_profile_without_sysid_puts_no_ranks_on_a_switched_roster)
+{
+    p25_program_t program;
+    fake_radio_t radio;
+    p25_program_ops_t ops;
+    fake_file_t file = { SECOND_PROFILE, P25_PROGRAM_OK, 0, NULL };
+    p25_program_init(&program);
+    fake_radio_init(&radio, &ops);
+    LS_EQ_INT(load(&program, &file, &ops, "/sdcard/p25_profile.txt"), P25_PROGRAM_OK);
+    const p25_system_id_t sys = { .wacn = 0x7A1C3, .sysid = 0x1F2, .valid = true };
+    unsigned before = radio.ops;
+    LS_CHECK(!p25_program_roster_switched(&program, &sys, &ops));
+    LS_EQ_UINT(radio.ops, before);
 }
 
 /* ------------------------------------------------ survey fixtures */

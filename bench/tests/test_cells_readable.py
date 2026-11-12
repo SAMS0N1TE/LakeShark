@@ -48,7 +48,12 @@ code = r'''
 #include <sys/stat.h>
 #include <unistd.h>
 #include <utime.h>
+#ifdef _WIN32
 #include <direct.h>
+#else
+#define _mkdir(p) mkdir((p), 0775)
+#define _rmdir(p) rmdir(p)
+#endif
 #include "ls_carto_digest.h"
 #include "ls_carto_sd_io.h"
 #define CELLS_ROOT "maps/"

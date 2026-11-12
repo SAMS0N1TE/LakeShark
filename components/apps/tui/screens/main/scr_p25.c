@@ -34,6 +34,7 @@
 #include "../../ls_numpad.h"
 #include "../../ls_field.h"
 #include "../../ls_notify.h"
+#include "../../ls_freqs.h"
 #include "p25_program.h"
 
 #include <dirent.h>
@@ -389,6 +390,11 @@ static const char *receive_label(void)
         if (P25.grant_observed.support == P25_CALL_MISSING_IDEN || P25.grant_observed.support == P25_CALL_INVALID) return "UNRESOLVED GRANT";
         if (P25.grant_observed.support == P25_CALL_UNSUPPORTED || (P25.grant_observed.support == P25_CALL_PHASE2 && !P25.phase2_follow)) return "UNSUPPORTED GRANT";
     }
+    /* A grant left on control in the last 15 s says why, instead of a
+     * CONTROL LOCKED that reads as if all is well. */
+    if (!P25.grant_on_traffic && P25.follow_left_label &&
+        esp_timer_get_time() - P25.follow_left_us < 15000000LL)
+        return ls_tr(P25.follow_left_label);
     unsigned state = (unsigned)P25.receive_state;
     return state < sizeof(names) / sizeof(names[0]) ? names[state] : "CONTROL SEARCH";
 }
@@ -979,11 +985,11 @@ static void o_p25_set_num(const ls_opt_t *o, double v)
 {
     ps_selected = o->arg; ps_number(v);
 }
-static const char *o_p25_iq_only(const ls_opt_t *o)
-{
-    (void)o; return ps_lr_receiver() ? "IQ receiver required" : NULL;
-}
 static const ls_opt_t OPT_P25_POLICY[] = {
+    /* Everything in this menu belongs to the system on the air: another
+       system has its own list, and one with none follows every call. */
+    { .label = "This system", .kind = LS_OPT_ACTION, .arg = LS_P25_SETTING_THIS_SYSTEM, .act = o_p25_act, .show = o_p25_show },
+    { .label = "Follow on this system", .kind = LS_OPT_ACTION, .arg = LS_P25_SETTING_FOLLOW_HERE, .act = o_p25_act, .show = o_p25_show },
     { .label = "Hold current talkgroup", .kind = LS_OPT_ACTION, .arg = 18, .act = o_p25_act, .show = o_p25_show },
     { .label = "Lockout current talkgroup", .kind = LS_OPT_ACTION, .arg = 19, .act = o_p25_act, .show = o_p25_show },
     { .label = "Lockout list", .kind = LS_OPT_ACTION, .arg = 25, .act = o_p25_act, .show = o_p25_show, .leaves = true },
@@ -992,6 +998,7 @@ static const ls_opt_t OPT_P25_POLICY[] = {
     { .label = "Allowed list", .kind = LS_OPT_ACTION, .arg = 26, .act = o_p25_act, .show = o_p25_show, .leaves = true },
     { .label = "Add allowed TG", .kind = LS_OPT_NUMBER, .arg = 22, .num = o_p25_num, .set_num = o_p25_set_num, .lo = 1, .hi = 65535 },
     { .label = "Remove allowed TG", .kind = LS_OPT_NUMBER, .arg = 23, .num = o_p25_num, .set_num = o_p25_set_num, .lo = 1, .hi = 65535 },
+    { .label = "Forget this system's list", .kind = LS_OPT_ACTION, .arg = LS_P25_SETTING_FORGET_LIST, .act = o_p25_act, .show = o_p25_show },
 };
 static const ls_opt_ctx_t CTX_P25_POLICY = { .name = "Talkgroups", .job = LS_RSEL_P25, LS_OPT_ROWS(OPT_P25_POLICY) };
 
@@ -1169,8 +1176,22 @@ static const ls_opt_t OPT_P25_SITES[] = {
 };
 static const ls_opt_ctx_t CTX_P25_SITES = { .name = "GPS sites", .job = LS_RSEL_P25, .refresh_ms = 250,
                                             LS_OPT_ROWS(OPT_P25_SITES) };
+/* Save to FREQS: the channel P25 is on, into mine.csv; FREQS says how it
+   went in a banner. */
+static void o_p25_freqs(const ls_opt_t *o)
+{
+    (void)o;
+    char said[96];
+    ls_freqs_offer(s_tune_freq_hz, "P25", NULL, "p25", said, sizeof(said));
+}
+static void o_p25_freqs_show(const ls_opt_t *o, char *out, size_t n)
+{
+    (void)o;
+    snprintf(out, n, "%.4f MHz", s_tune_freq_hz / 1e6);
+}
 static const ls_opt_t OPT_P25[] = {
     LS_CALLS_MENU,
+    { .label = "Save to FREQS", .kind = LS_OPT_ACTION, .act = o_p25_freqs, .show = o_p25_freqs_show },
     { .label = "Talkgroup policy", .kind = LS_OPT_MENU, .sub = &CTX_P25_POLICY },
     { .label = "GPS sites", .kind = LS_OPT_MENU, .sub = &CTX_P25_SITES },
     { .label = "Control survey", .kind = LS_OPT_ACTION, .arg = 24, .act = o_p25_act, .show = o_p25_show },
@@ -1183,12 +1204,14 @@ static const ls_opt_t OPT_P25[] = {
     { .label = "Voice gate",            .kind = LS_OPT_LEVEL, .arg = 5,  .num = o_p25_num, .set_num = o_p25_set_num, .lo = 0, .hi = 99, .step = 1, .show = o_p25_show },
     { .label = "Sync beep",             .kind = LS_OPT_ACTION, .arg = 6,  .act = o_p25_act, .show = o_p25_show },
     { .label = "Trunking auto-follow",  .kind = LS_OPT_ACTION, .arg = 7,  .act = o_p25_act, .show = o_p25_show },
+    { .label = "Follow linger (ms)",    .kind = LS_OPT_LEVEL, .arg = LS_P25_SETTING_LINGER, .num = o_p25_num, .set_num = o_p25_set_num, .lo = 0, .hi = P25_FOLLOW_LINGER_MAX_MS, .step = 100, .show = o_p25_show },
+    { .label = "Last grant",            .kind = LS_OPT_ACTION, .arg = LS_P25_SETTING_LAST_GRANT, .act = o_p25_act, .show = o_p25_show },
     { .label = "Leave encrypted calls", .kind = LS_OPT_ACTION, .arg = 8,  .act = o_p25_act, .show = o_p25_show },
     { .label = "Encrypted skip (s)",    .kind = LS_OPT_LEVEL, .arg = 9,  .num = o_p25_num, .set_num = o_p25_set_num, .lo = 1, .hi = 3600, .step = 5, .show = o_p25_show },
     { .label = "Scan threshold (%)",    .kind = LS_OPT_LEVEL, .arg = 13, .num = o_p25_num, .set_num = o_p25_set_num, .lo = 1, .hi = 100, .step = 1, .show = o_p25_show },
     { .label = "Scan hang (ms)",        .kind = LS_OPT_LEVEL, .arg = 14, .num = o_p25_num, .set_num = o_p25_set_num, .lo = 0, .hi = 30000, .step = 500, .show = o_p25_show },
-    { .label = "Phase II (exp)",        .kind = LS_OPT_ACTION, .arg = 15, .act = o_p25_act, .show = o_p25_show, .why_not = o_p25_iq_only },
-    { .label = "Phase II follow (exp)", .kind = LS_OPT_ACTION, .arg = 17, .act = o_p25_act, .show = o_p25_show, .why_not = o_p25_iq_only },
+    { .label = "Phase II (exp)",        .kind = LS_OPT_ACTION, .arg = 15, .act = o_p25_act, .show = o_p25_show },
+    { .label = "Phase II follow (exp)", .kind = LS_OPT_ACTION, .arg = 17, .act = o_p25_act, .show = o_p25_show },
     { .label = "Profile from card",     .kind = LS_OPT_ACTION, .arg = 16, .act = o_p25_act, .show = o_p25_show },
     { .label = "CQPSK timing gain", .kind = LS_OPT_ACTION, .arg = 10, .act = o_p25_act, .show = o_p25_show, .radios = LS_OPT_SDR },
     { .label = "CQPSK carrier gain", .kind = LS_OPT_ACTION, .arg = 11, .act = o_p25_act, .show = o_p25_show, .radios = LS_OPT_SDR },

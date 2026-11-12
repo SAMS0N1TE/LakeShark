@@ -208,6 +208,64 @@ LS_CASE(control_grant_traffic_call_end_returns_to_control)
     LS_EQ_INT(g_log.count, 2);
 }
 
+LS_CASE(linger_holds_the_voice_channel_for_the_next_over)
+{
+    p25_grant_follower_t f;
+    static dsd_state s;
+    reset_log();
+    p25_grant_init(&f, 851012500ull, retune_cb, &g_log);
+    p25_grant_set_linger_ms(&f, 1500);
+    LS_CHECK(p25_grant_on_grant(&f, 100, 5000, 851525000ull, 0LL) == true);
+    LS_EQ_INT(g_log.count, 1);
+
+    /* TDULC (twice, as sent): stay on traffic, one linger. */
+    memset(&s, 0, sizeof(s));
+    s.p25_frame_valid = 1;
+    s.p25_frame_duid = 15;
+    p25_grant_on_frame(&f, &s, 100000LL);
+    p25_grant_on_frame(&f, &s, 200000LL);
+    LS_EQ_INT(f.state, P25_GRANT_ON_TRAFFIC);
+    LS_CHECK(f.lingering);
+    LS_EQ_UINT(f.lingers, 1);
+    LS_EQ_INT(f.receive_state, P25_RX_TRAFFIC_WAIT);
+    LS_CHECK(!p25_grant_tick(&f, 1500000LL));
+    LS_EQ_INT(g_log.count, 1);
+
+    /* The next over arrives on the same channel: caught, no retune. */
+    s.p25_frame_duid = 5;
+    s.lastp25type = 1;
+    p25_grant_on_frame(&f, &s, 900000LL);
+    LS_CHECK(!f.lingering);
+    LS_EQ_UINT(f.linger_catches, 1);
+    LS_EQ_INT(g_log.count, 1);
+
+    /* Its TDULC starts a new linger; nothing follows, so tick returns. */
+    s.p25_frame_duid = 3;
+    p25_grant_on_frame(&f, &s, 2000000LL);
+    LS_EQ_UINT(f.lingers, 2);
+    LS_CHECK(!p25_grant_tick(&f, 3400000LL));
+    LS_CHECK(p25_grant_tick(&f, 3500000LL));
+    LS_EQ_INT(f.state, P25_GRANT_ON_CONTROL);
+    LS_CHECK(!f.lingering);
+    LS_EQ_INT(g_log.count, 2);
+    LS_CHECK(g_log.to_traffic[1] == false);
+
+    /* The caught over came 800 ms after the first TDULC. */
+    LS_EQ_UINT(f.gap_caught[3], 1);
+    /* The second over's linger ran out; the same TG re-granted on the same
+     * channel 1.2 s after its TDULC lands in the regrant histogram. */
+    LS_CHECK(p25_grant_on_grant(&f, 100, 5000, 851525000ull, 3200000LL) == true);
+    LS_EQ_UINT(f.gap_regrant[4], 1);
+    p25_grant_force_return_to_control(&f);
+    g_log.count = 2;
+
+    /* Linger 0 keeps the old behaviour: a terminator leaves at once. */
+    p25_grant_set_linger_ms(&f, 0);
+    LS_CHECK(p25_grant_on_grant(&f, 100, 5000, 851525000ull, 4000000LL) == true);
+    p25_grant_on_frame(&f, &s, 4100000LL);
+    LS_EQ_INT(f.state, P25_GRANT_ON_CONTROL);
+}
+
 LS_CASE(repeated_grant_for_active_call_does_not_retune)
 {
     p25_grant_follower_t f;

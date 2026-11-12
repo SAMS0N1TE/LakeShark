@@ -2,6 +2,12 @@
 #define LS_P25_SETTINGS_H
 /* Reserved OPTIONS id; the screen owner places the row. */
 #define LS_P25_SETTING_GPS_SITES 27
+/* Trunk following: ids after GPS sites, placed by the screen owner. */
+#define LS_P25_SETTING_LINGER      28
+#define LS_P25_SETTING_LAST_GRANT  29
+#define LS_P25_SETTING_THIS_SYSTEM 30
+#define LS_P25_SETTING_FOLLOW_HERE 31
+#define LS_P25_SETTING_FORGET_LIST 32
 #include "lakeshark_backend.h"
 #include "p25_demod_control.h"
 #include "p25_p2_runtime.h"
@@ -59,7 +65,12 @@ static const char *const ps_names[] = {"Demodulation",
                                        "Control survey",
                                        "Lockout list",
                                        "Allowed list",
-                                       "GPS sites"};
+                                       "GPS sites",
+                                       "Follow linger (ms)",
+                                       "Last grant",
+                                       "This system",
+                                       "Follow on this system",
+                                       "Forget this system's list"};
 static void ps_value(int i, char *out, size_t n)
 {
     p25_cqpsk_config_t cfg;
@@ -117,11 +128,37 @@ static void ps_value(int i, char *out, size_t n)
         snprintf(out, n, "%d", scan_engine_get_hang_ms());
         break;
     case 15:
-        snprintf(out,n,"%s",ps_lr_receiver()?"IQ receiver required":p25_p2_enabled()?"ON / MANUAL VOICE":"OFF");
+        snprintf(out,n,"%s",p25_p2_enabled()?"ON / MANUAL VOICE":"OFF");
         break;
     case 17:
-        snprintf(out, n, "%s", ps_lr_receiver() ? "IQ receiver required" : p25_get_phase2_follow() ? "ON" : "OFF");
+        snprintf(out, n, "%s", p25_get_phase2_follow() ? "ON" : "OFF");
         break;
+    case LS_P25_SETTING_LINGER: snprintf(out, n, "%u", p25_get_follow_linger_ms()); break;
+    case LS_P25_SETTING_LAST_GRANT: {
+        if (!P25.follow_last_us) { snprintf(out, n, "none yet"); break; }
+        const long age = (long)((esp_timer_get_time() - P25.follow_last_us) / 1000000LL);
+        snprintf(out, n, "%s, %lds ago", P25.follow_last_text, age);
+        break;
+    }
+    case LS_P25_SETTING_THIS_SYSTEM: {
+        char here[16];
+        if (P25.here_sys.valid && P25.here_sys.wacn)
+            snprintf(here, sizeof(here), "%05lX-%03X", (unsigned long)P25.here_sys.wacn,
+                     (unsigned)P25.here_sys.sysid);
+        else if (P25.here_sys.valid)
+            snprintf(here, sizeof(here), "SYS %03X", (unsigned)P25.here_sys.sysid);
+        else
+            snprintf(here, sizeof(here), "not named yet");
+        const unsigned rules = P25.lockout_count + P25.allow_count + (P25.hold_tg ? 1u : 0u);
+        snprintf(out, n, "%s / %s", here,
+                 !P25.roster_applies ? "list not used here"
+                 : rules || P25.list_mode || P25.roster_follow_off ? "own list" : "follow all");
+        break;
+    }
+    case LS_P25_SETTING_FOLLOW_HERE:
+        snprintf(out, n, "%s", P25.roster_follow_off && P25.roster_applies ? "OFF HERE" : "ON");
+        break;
+    case LS_P25_SETTING_FORGET_LIST: snprintf(out, n, "ENTER clears this system only"); break;
     case 18: snprintf(out, n, "TG %u%s", P25.hold_tg, P25.hold_tg ? " / HELD" : " / OFF"); break;
     case 19: snprintf(out, n, "TG %u", P25.grant_on_traffic ? P25.grant_talkgroup : (unsigned)P25.dsd_tg); break;
     case 20: case 22: case 23: snprintf(out, n, "ENTER talkgroup number"); break;
@@ -189,6 +226,12 @@ static void ps_number(double v)
         else
             scan_engine_set_hang_ms((int)v);
         break;
+    case LS_P25_SETTING_LINGER:
+        if (!(v >= 0 && v <= P25_FOLLOW_LINGER_MAX_MS) || v != (unsigned)v)
+            ok = false;
+        else
+            ok = p25_set_follow_linger_ms((unsigned)v);
+        break;
     }
     snprintf(ps_status, sizeof(ps_status), "%s",
              ok ? "Change requested" : "Invalid value or save failed");
@@ -233,12 +276,15 @@ static void ps_change(int direction, bool edit)
         return;
     }
     if (ps_selected == 3 || ps_selected == 4 || ps_selected == 5 || ps_selected == 9 ||
-        (ps_selected >= 13 && ps_selected <= 14)) {
+        (ps_selected >= 13 && ps_selected <= 14) || ps_selected == LS_P25_SETTING_LINGER) {
         double v = atof(value);
         if (edit)
-            ls_numpad_open(ps_names[ps_selected], "", v, ps_number);
+            ls_numpad_open(ps_names[ps_selected],
+                           ps_selected == LS_P25_SETTING_LINGER ? "0 = leave at once" : "",
+                           v, ps_number);
         else
-            ps_number(v + direction * (ps_selected == 14                      ? 500
+            ps_number(v + direction * (ps_selected == LS_P25_SETTING_LINGER ? 100
+                                       : ps_selected == 14                      ? 500
                                        : ps_selected == 4 || ps_selected == 9 ? 5
                                                                               : 1));
         return;
@@ -300,6 +346,22 @@ static void ps_change(int direction, bool edit)
         if (!ok) snprintf(ps_status, sizeof(ps_status), "%s",
                           "No profile chooser on this build");
         return;
+    case LS_P25_SETTING_LAST_GRANT: case LS_P25_SETTING_THIS_SYSTEM: return;
+    case LS_P25_SETTING_FOLLOW_HERE: {
+        const bool here = !(P25.roster_follow_off && P25.roster_applies);
+        if (!edit && here == (direction > 0)) return;
+        ok = p25_set_follow_here(edit ? !here : direction > 0);
+        snprintf(ps_status, sizeof(ps_status), "%s", ok ? (here ? "Stays on control on this system"
+                                                                : "Follows calls on this system")
+                                                        : "Could not save setting");
+        return;
+    }
+    case LS_P25_SETTING_FORGET_LIST:
+        if (!edit) return;
+        ok = p25_forget_system_roster();
+        snprintf(ps_status, sizeof(ps_status), "%s", ok ? "This system's list cleared"
+                                                        : "Could not clear the list");
+        return;
     case 18: if (edit) ok = p25_ui_hold_toggle(); break;
     case 19: if (edit) ok = p25_ui_lockout_current(); break;
     case 21: ok = p25_ui_policy(P25_UI_LIST_MODE, (uint16_t)((P25.list_mode + (direction > 0 ? 1 : 2)) % 3)); break;
@@ -310,7 +372,6 @@ static void ps_change(int direction, bool edit)
         break;
     case 25: case 26: if (edit) ps_list(ps_selected == 26); return;
     case 17:
-        if (ps_lr_receiver()) { snprintf(ps_status, sizeof(ps_status), "Phase II needs an IQ receiver"); return; }
         p25_set_phase2_follow(edit ? !p25_get_phase2_follow() : direction > 0);
         snprintf(ps_status, sizeof(ps_status), "%s",
                  p25_get_phase2_follow()
@@ -318,7 +379,6 @@ static void ps_change(int direction, bool edit)
                      : "TDMA grants observed only");
         return;
     case 15:
-        if (ps_lr_receiver()) { snprintf(ps_status, sizeof(ps_status), "Phase II needs an IQ receiver"); return; }
         scan_engine_stop();
         p25_p2_enable(edit?!p25_p2_enabled():direction>0);
         snprintf(ps_status,sizeof(ps_status),"%s",p25_p2_enabled()?"EXP: manual voice; IDs from control or p2 config":"Phase I restored");

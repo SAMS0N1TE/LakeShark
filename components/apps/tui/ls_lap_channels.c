@@ -5,8 +5,12 @@
 #include <stdlib.h>
 #include <string.h>
 #if !defined(ESP_PLATFORM) || defined(LS_LAP_HOST_TEST)
-#include <direct.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#else
+#define _mkdir(path) mkdir((path), 0777)
+#endif
 #endif
 #if defined(ESP_PLATFORM) && !defined(LS_LAP_HOST_TEST)
 #include "esp_heap_caps.h"

@@ -466,6 +466,47 @@ LS_CASE(a_phase2_grant_is_not_followed_before_the_system_is_known)
     LS_EQ_UINT(tune_count, 0);
     LS_EQ_INT(follower.observed_grant.support, P25_CALL_PHASE2);
     LS_EQ_UINT(follower.unsupported_grants, 1);
+    LS_EQ_UINT(scanner.follow_outcomes[P25_FOLLOW_P2_NO_SYSTEM], 1);
+    LS_EQ_UINT(scanner.follow_trace_total, 1);
+    LS_EQ_UINT(scanner.follow_last_left.talkgroup, 42);
+    LS_CHECK(!strcmp(p25_follow_left_label(&scanner.follow_last_left),
+                     "SKIP: NO SYSTEM ID"));
+}
+
+LS_CASE(every_grant_outcome_is_traced_with_its_reason)
+{
+    setup();
+    decoder.nac = s_nac;
+    uint8_t b[12];
+    fdma_iden(b, 2); LS_CHECK(p25_tsbk_parse(&decoder, b));
+    p25_scan_set_auto_follow(&scanner, &follower, false);
+    make_group_grant(b, 0x200f, 42);
+    LS_CHECK(p25_tsbk_parse(&decoder, b));
+    decoder.p25_grant_batch_valid = 1;
+    LS_CHECK(!p25_scan_apply_from_state(&scanner, &follower, &decoder, now_us));
+    LS_EQ_UINT(scanner.follow_outcomes[P25_FOLLOW_POLICY], 1);
+    LS_EQ_INT(scanner.follow_last_left.reason, P25_SCAN_REASON_AUTO_FOLLOW_OFF);
+    LS_CHECK(!strcmp(p25_follow_left_label(&scanner.follow_last_left),
+                     "SKIP: FOLLOW OFF"));
+
+    p25_scan_set_auto_follow(&scanner, &follower, true);
+    decoder.p25_grant_generation++;
+    LS_CHECK(p25_scan_apply_from_state(&scanner, &follower, &decoder, now_us));
+    LS_EQ_UINT(scanner.follow_outcomes[P25_FOLLOW_FOLLOWED], 1);
+    LS_EQ_UINT(scanner.follow_trace_total, 2);
+    LS_EQ_UINT(scanner.follow_last_left.talkgroup, 0);
+    LS_CHECK(p25_follow_left_label(&scanner.follow_last_left) == NULL);
+
+    decoder.p25_grant_generation++;
+    (void)p25_scan_apply_from_state(&scanner, &follower, &decoder, now_us);
+    LS_EQ_UINT(scanner.follow_outcomes[P25_FOLLOW_DUPLICATE], 1);
+    LS_EQ_UINT(scanner.follow_trace_total, 2);
+
+    /* Grants seen while a scan holds tuning are traced once per batch. */
+    decoder.p25_grant_generation++;
+    p25_scan_trace_busy(&scanner, &decoder, now_us);
+    p25_scan_trace_busy(&scanner, &decoder, now_us);
+    LS_EQ_UINT(scanner.follow_outcomes[P25_FOLLOW_BUSY], 1);
 }
 
 LS_CASE(a_four_slot_grant_stays_unsupported_with_phase2_following_on)

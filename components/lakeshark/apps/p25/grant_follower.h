@@ -46,6 +46,10 @@ typedef struct {
 typedef void (*p25_grant_retune_fn)(void *user, uint64_t center_hz,
                                     bool to_traffic);
 
+#define P25_OVER_GAP_BUCKETS 8
+/* Upper edges, ms; the last bucket is everything up to 10 s. */
+#define P25_OVER_GAP_EDGES_MS { 250, 500, 750, 1000, 1500, 2500, 5000, 10000 }
+
 typedef struct {
     uint64_t control_hz;
     p25_grant_retune_fn retune;
@@ -71,6 +75,25 @@ typedef struct {
 
     int64_t last_activity_us;
     int64_t hang_us;
+
+    /* After a TDU/TDULC, stay on the voice channel this long before going
+     * back to control, so the next over on a transmission-trunked system
+     * (same TG, same channel) is heard from its first frame. 0 = leave at
+     * once. lingers counts linger starts. */
+    int64_t  linger_us;
+    int64_t  linger_until_us;
+    bool     lingering;
+    unsigned int lingers;
+    unsigned int linger_catches;       /* voice resumed during a linger */
+
+    /* How long the next over on the same TG and channel takes: caught on
+     * the channel during a linger, or re-granted after going back. The
+     * linger is chosen from these. Buckets end at P25_OVER_GAP_EDGES_MS. */
+    int64_t  over_end_us;
+    uint64_t over_end_hz;
+    uint16_t over_end_tg;
+    unsigned int gap_caught[P25_OVER_GAP_BUCKETS];
+    unsigned int gap_regrant[P25_OVER_GAP_BUCKETS];
 
     p25_grant_filter_mode_t filter_mode;
     uint16_t filter[P25_GRANT_FILTER_MAX];
@@ -104,6 +127,7 @@ void p25_grant_init(p25_grant_follower_t *f,
                     void *user);
 void p25_grant_set_control(p25_grant_follower_t *f, uint64_t control_hz);
 void p25_grant_set_hang_ms(p25_grant_follower_t *f, unsigned int ms);
+void p25_grant_set_linger_ms(p25_grant_follower_t *f, unsigned int ms);
 void p25_grant_set_filter(p25_grant_follower_t *f,
                           p25_grant_filter_mode_t mode,
                           const uint16_t *talkgroups, size_t count);

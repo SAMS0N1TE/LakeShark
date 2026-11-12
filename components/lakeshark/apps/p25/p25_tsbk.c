@@ -296,6 +296,34 @@ static int parse_block(dsd_state *state,
     if (mfid != 0x00 && mfid != 0x01) {
         state->p25_tsbk_vendor_count++;
         state->p25_tsbk_last_vendor_mfid = mfid;
+        if (state->p25_tsbk_vendor_ops[opcode] < UINT16_MAX)
+            state->p25_tsbk_vendor_ops[opcode]++;
+        /* Motorola carries patched talkgroups (supergroups) on their own
+         * grants. Same bit layout as the standard ones: 0x02 GRG_CN_GRANT
+         * is 0x00's channel/group/source, 0x03 GRG_CN_GRANT_UPDT is 0x02's
+         * two channel/group pairs. Without these a patched call is heard
+         * on the control channel and never followed. */
+        if (mfid == 0x90 && !(block[0] & 0x40u) &&
+            (opcode == 0x02 || opcode == 0x03)) {
+            state->p25_mot_grant_count++;
+            if (opcode == 0x02) {
+                uint16_t channel = (uint16_t)get_bits(block, 24, 16);
+                uint16_t sg      = (uint16_t)get_bits(block, 40, 16);
+                uint32_t src     = get_bits(block, 56, 24);
+                set_voice_grant(state, channel, sg, src);
+                queue_voice_grant(state, channel, sg, src, 0);
+            } else {
+                uint16_t channel = (uint16_t)get_bits(block, 16, 16);
+                uint16_t sg      = (uint16_t)get_bits(block, 32, 16);
+                uint16_t channel_b = (uint16_t)get_bits(block, 48, 16);
+                uint16_t sg_b      = (uint16_t)get_bits(block, 64, 16);
+                set_voice_grant(state, channel, sg, 0);
+                queue_voice_grant(state, channel, sg, 0, 0);
+                if (sg_b && (channel_b != channel || sg_b != sg))
+                    queue_voice_grant(state, channel_b, sg_b, 0, 0);
+            }
+            return 1;
+        }
         return 0;
     }
     /* protected payload cannot be interpreted as plaintext grants. */
@@ -851,6 +879,18 @@ size_t p25_tsbk_status_format(const dsd_state *state, char *buf, size_t buf_sz)
         }
         pos = sfappend(buf, buf_sz, pos, " $%02x=%u",
                        op, (unsigned)state->p25_tsbk_unhandled[op]);
+    }
+    if (printed) pos = sfappend(buf, buf_sz, pos, "\n");
+    printed = 0;
+    for (int op = 0; op < P25_TSBK_OPCODE_COUNT; op++) {
+        if (state->p25_tsbk_vendor_ops[op] == 0) continue;
+        if (!printed) {
+            pos = sfappend(buf, buf_sz, pos, "vendor ops (mot grants %u):",
+                           state->p25_mot_grant_count);
+            printed = 1;
+        }
+        pos = sfappend(buf, buf_sz, pos, " $%02x=%u",
+                       op, (unsigned)state->p25_tsbk_vendor_ops[op]);
     }
     if (printed) pos = sfappend(buf, buf_sz, pos, "\n");
     return pos;

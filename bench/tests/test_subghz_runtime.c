@@ -16,7 +16,7 @@ uint32_t esp_random(void);
 int subghz_task=1,subghz_lease,subghz_hold_attempts,subghz_cancel_hold;
 static int scan_begins,scan_ends,fsk_begins,fsk_ends,polls,cancel_pass,cancel_poll;
 static uint32_t frequency=433920000u;
-static bool refuse_tune;
+static bool refuse_tune,refuse_fsk,frame_every_poll;
 static void reset(void)
 {
     memset(&s_status,0,sizeof(s_status));s_status.ready=true;
@@ -28,7 +28,7 @@ static void reset(void)
     s_worker_task=(TaskHandle_t)2;subghz_task=1;subghz_lease=0;
     subghz_hold_attempts=subghz_cancel_hold=0;
     scan_begins=scan_ends=fsk_begins=fsk_ends=polls=0;cancel_pass=cancel_poll=0;
-    refuse_tune=false;frequency=433920000u;s_gate_db=12;s_on_hit_loaded=0;
+    refuse_tune=refuse_fsk=frame_every_poll=false;s_learn_rewatch=false;frequency=433920000u;s_gate_db=12;s_on_hit_loaded=0;
 }
 TaskHandle_t subghz_current_task(void){return (TaskHandle_t)(uintptr_t)subghz_task;}
 void subghz_delay(TickType_t ticks)
@@ -57,9 +57,16 @@ int ls_lora_scan_pass(float *row,int n,bool *done)
 {for(int i=0;i<n;i++)row[i]=-110;*done=true;if(cancel_pass)rec_watch_scan_stop();return n;}
 uint32_t ls_lora_scan_bin_hz(uint32_t lo,uint32_t hi,int n,int i){return lo+(uint64_t)(hi-lo)*i/(n-1);}
 uint32_t ls_lora_fsk_bw_snap(uint32_t hz){return hz;}
-esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg){(void)cfg;fsk_begins++;return ESP_OK;}
+esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg){(void)cfg;fsk_begins++;return refuse_fsk?ESP_FAIL:ESP_OK;}
 esp_err_t ls_lora_fsk_end(void){fsk_ends++;return ESP_OK;}
-int ls_lora_fsk_poll(uint8_t *b,size_t n,float *r){memset(b,0,n);(void)r;polls++;if(cancel_poll)rec_watch_scan_stop();return 0;}
+int ls_lora_fsk_poll(uint8_t *b,size_t n,float *r)
+{
+    memset(b,0,n);(void)r;polls++;if(cancel_poll)rec_watch_scan_stop();
+    if(!frame_every_poll)return 0;
+    /* The same frame each time: preamble, then 2DD42DD4. */
+    static const uint8_t frame[]={0xAA,0xAA,0x2D,0xD4,0x2D,0xD4,0x12,0x34};
+    memcpy(b,frame,sizeof(frame)<n?sizeof(frame):n);return (int)n;
+}
 bool ls_haptic_play(ls_haptic_effect_t effect){(void)effect;return true;}
 int settings_get_subghz_gate_db(void){return 12;}
 int settings_get_subghz_on_hit(void){return 0;}
@@ -88,6 +95,23 @@ LS_CASE(scan_stop_survives_acquisition_and_pass_cancellation)
     scan_band(433000000,434000000,30,8,result,sizeof(result));
     LS_EQ_INT(scan_ends,1);LS_EQ_INT(subghz_lease,0);LS_CHECK(strstr(result,"stopped"));
 }
+LS_CASE(sweep_floor_ignores_a_bad_low_bin)
+{
+    /* The LR2021 sweep of 2026-11-07: a -110 dBm band with one -132 look. */
+    float row[REC_SCAN_BINS];
+    for(int i=0;i<REC_SCAN_BINS;i++) row[i]=-110.0f+(float)(i%3);
+    row[5]=-132.0f;
+    LS_NEAR(pass_floor(row,REC_SCAN_BINS,NULL),-110.0f,0.01f);
+    /* A carrier does not lift it, and nothing but the carrier clears 30 dB. */
+    row[20]=-60.0f;
+    const float lo=pass_floor(row,REC_SCAN_BINS,NULL);
+    int above=0;
+    for(int i=0;i<REC_SCAN_BINS;i++) if(row[i]>=lo+30.0f) above++;
+    LS_EQ_INT(above,1);
+    /* Short rows (8 bins) and an empty one. */
+    LS_NEAR(pass_floor(row,8,NULL),-110.0f,1.01f);
+    LS_NEAR(pass_floor(row,0,NULL),-200.0f,0.01f);
+}
 LS_CASE(learn_cancels_acquisition_measurement_and_rate_poll)
 {
     char result[112];reset();LS_CHECK(rec_watch_request_learn(30));
@@ -99,6 +123,43 @@ LS_CASE(learn_cancels_acquisition_measurement_and_rate_poll)
     reset();s_learn_busy=true;cancel_poll=1;learn_run(frequency,5,result,sizeof(result));
     LS_EQ_INT(fsk_begins,1);LS_EQ_INT(fsk_ends,1);LS_EQ_INT(polls,1);
     LS_EQ_INT(subghz_lease,0);LS_CHECK(!s_learn.valid);LS_CHECK(strstr(result,"stopped"));
+}
+/* The rate search always yields the worker's core: a round where the radio
+   refuses every rate waits, and once every rate is full the search ends
+   instead of spinning to its deadline. */
+LS_CASE(learn_search_waits_on_refusal_and_ends_when_every_rate_is_full)
+{
+    char result[112];reset();s_learn_busy=true;refuse_fsk=true;
+    int64_t t0=esp_timer_get_time();
+    learn_run(frequency,8,result,sizeof(result));
+    LS_CHECK(esp_timer_get_time()-t0>=6000000);
+    LS_EQ_INT(polls,0);LS_CHECK(fsk_begins>=7);LS_EQ_INT(subghz_lease,0);
+    LS_CHECK(strstr(result,"nothing consistent"));
+    reset();s_learn_busy=true;frame_every_poll=true;
+    t0=esp_timer_get_time();
+    learn_run(frequency,30,result,sizeof(result));
+    LS_CHECK(esp_timer_get_time()-t0<20000000);
+    LS_EQ_INT(fsk_begins,7);LS_EQ_INT(fsk_ends,7);LS_EQ_INT(polls,7*LEARN_KEEP);
+    LS_CHECK(s_learn.valid);LS_EQ_UINT(s_learn.bitrate,600);
+    LS_CHECK(s_learn.sync_word!=0);LS_EQ_INT(subghz_lease,0);
+}
+/* A WATCH handed back while LEARN runs comes on when the job ends, even
+   stopped; without the hand-back it stays off. */
+LS_CASE(learn_job_restores_a_handed_back_watch)
+{
+    reset();subghz_task=2;
+    LS_CHECK(!rec_watch_learn_rewatch());
+    LS_CHECK(rec_watch_request_learn(5));s_learn_secs=0;
+    LS_CHECK(rec_watch_learn_rewatch());
+    cancel_poll=1;learn_job(frequency,5);
+    LS_CHECK(!rec_watch_learn_busy());LS_CHECK(s_status.enabled);
+    LS_EQ_INT(subghz_lease,2);
+    LS_CHECK(rec_watch_enable(false));LS_EQ_INT(subghz_lease,0);
+    reset();subghz_task=2;
+    LS_CHECK(rec_watch_request_learn(5));s_learn_secs=0;
+    cancel_poll=1;learn_job(frequency,5);
+    LS_CHECK(!s_status.enabled);LS_EQ_INT(subghz_lease,0);
+    subghz_task=1;
 }
 LS_CASE(worker_catch_and_ui_stop_release_the_same_watch_lease)
 {
@@ -119,6 +180,8 @@ LS_CASE(catch_does_not_arm_after_tune_refusal_or_stop)
 
 void settings_set_subghz_gate_db(int db){(void)db;}
 void settings_set_subghz_on_hit(int mode){(void)mode;}
+bool settings_get_subghz_lr_fsk(void){return false;}
+void settings_set_subghz_lr_fsk(bool fsk){(void)fsk;}
 void settings_set_subghz_fsk(uint32_t rate,uint32_t dev,uint32_t sync,int pre,int bw)
 {(void)rate;(void)dev;(void)sync;(void)pre;(void)bw;}
 ls_rsel_radio_t ls_rsel_saved(ls_rsel_job_t job){(void)job;return LS_RSEL_LORA;}

@@ -1,3 +1,4 @@
+#include "ls_tx_unlock.h"
 #include "ls_lora_port.h"
 
 #include <stdio.h>
@@ -5,6 +6,7 @@
 #include <string.h>
 
 #include "ls_board.h"
+#include "ls_pins.h"
 #include "settings.h"
 #include "ls_textpack.h"
 #ifdef ESP_PLATFORM
@@ -45,6 +47,14 @@ void ls_lora_port_board(ls_lora_port_t *out)
 #endif
     out->rst = LS_LORA_PORT_RST_BOARD;
     out->irq_gpio = LS_LORA_PORT_NONE;
+    if (ls_pins_runtime()) {
+        /* No expander: the socket is wherever the pin table says. */
+        out->cs = (int8_t)ls_pin(LS_PIN_LORA_CS);
+        out->busy = (int8_t)ls_pin(LS_PIN_LORA_BUSY);
+        const int rst = ls_pin(LS_PIN_LORA_RST);
+        out->rst = rst >= 0 ? (int8_t)rst : LS_LORA_PORT_RST_BOARD;
+        out->irq_gpio = (int8_t)ls_pin(LS_PIN_LORA_IRQ);
+    }
 #ifdef LS_BOARD_LR20XX_IRQ_DIO
     out->irq_dio = LS_BOARD_LR20XX_IRQ_DIO;
 #else
@@ -58,7 +68,27 @@ void ls_lora_port_board(ls_lora_port_t *out)
         out->rfsw[i].config = rfsw[i].config;
         out->rfsw_n = (uint8_t)(i + 1);
     }
+#if LS_TX_UNLOCKED && defined(LS_BOARD_LR20XX_RFSW_TX_HF)
+    static const struct { uint8_t dio, config; } tx_hf[] = { LS_BOARD_LR20XX_RFSW_TX_HF };
+    for (size_t k = 0; k < sizeof(tx_hf) / sizeof(tx_hf[0]); k++)
+        for (int i = 0; i < out->rfsw_n; i++)
+            if (out->rfsw[i].dio == tx_hf[k].dio) out->rfsw[i].config |= tx_hf[k].config;
 #endif
+#endif
+}
+
+static void tlr2021_port(ls_lora_port_t *out)
+{
+    static const struct { uint8_t dio, config; } t[] = {
+        { 6, 0x08 }, { 7, LS_TX_UNLOCKED ? 0x10 : 0x00 }, { 8, 0x06 }, { 10, LS_TX_UNLOCKED ? 0x18 : 0x08 } };
+    out->rfsw_n = 0;
+    for (size_t i = 0; i < sizeof(t) / sizeof(t[0]) && i < LS_LORA_PORT_RFSW_MAX; i++) {
+        out->rfsw[i].dio = t[i].dio;
+        out->rfsw[i].config = t[i].config;
+        out->rfsw_n = (uint8_t)(i + 1);
+    }
+    out->irq_dio = 11;
+    out->tcxo_code = 7;
 }
 
 #ifdef LS_BOARD_LORA_CON1_CS
@@ -144,6 +174,20 @@ static bool listed(const int *list, int pin)
     return false;
 }
 
+/* The board's own lines, with the movable ones (radio bus, GPS) read from
+   the pin table on a board that has one. */
+static bool board_pin(int g)
+{
+    if (!ls_pins_runtime()) return listed(BOARD_PINS, g);
+    static const ls_pin_id_t MOVABLE[] = { LS_PIN_SPI_SCLK, LS_PIN_SPI_MOSI, LS_PIN_SPI_MISO,
+                                           LS_PIN_GPS_RX, LS_PIN_GPS_TX };
+    for (size_t i = 0; i < sizeof(MOVABLE) / sizeof(MOVABLE[0]); i++) {
+        if (ls_pin(MOVABLE[i]) == g) return true;
+        if (ls_pin_default(MOVABLE[i]) == g) return false;   /* moved away */
+    }
+    return listed(BOARD_PINS, g);
+}
+
 uint64_t ls_lora_port_keyboard_pins(const ls_lora_port_t *p)
 {
     if (!p || !p->header) return 0;
@@ -173,7 +217,7 @@ bool ls_lora_port_check(const ls_lora_port_t *p, char *why, size_t n)
         /* The board's own socket lines are allowed: header mode pointed at
            them is how it is tested without another module. */
         const bool socket = (i == 0 && g == board.cs) || (i == 1 && g == board.busy);
-        if (!socket && listed(BOARD_PINS, g)) {
+        if (!socket && board_pin(g)) {
             LS_SNPRINTF(fmt_ls_lora_port_gpio_is_the_board, why, n, "%s: GPIO %d is the board's own (bus, display, audio, SD or GPS)", pins[i].name, g);
             return false;
         }
@@ -196,7 +240,7 @@ bool ls_lora_port_check(const ls_lora_port_t *p, char *why, size_t n)
         if (d == p->irq_dio) { LS_SNPRINTF(t_ls_lora_port_rfsw_dio_d_is, why, n, "rfsw: DIO%d is the interrupt", d); return false; }
         if (p->rfsw[i].config & ~0x1Fu) { LS_SNPUTS(t_ls_lora_port_rfsw_config_is_5, why, n, "rfsw: config is 5 bits (00-1F)"); return false; }
         /* the driver never transmits on the HF path */
-        if (p->rfsw[i].config & RFSW_TX_HF) { LS_SNPRINTF(fmt_ls_lora_port_rfsw_dio_sets_the, why, n, "rfsw: DIO%d sets the HF transmit state, which is refused", d); return false; }
+        if (!LS_TX_UNLOCKED && (p->rfsw[i].config & RFSW_TX_HF)) { LS_SNPRINTF(fmt_ls_lora_port_rfsw_dio_sets_the, why, n, "rfsw: DIO%d sets the HF transmit state, which is refused", d); return false; }
         for (int j = 0; j < i; j++)
             if (p->rfsw[j].dio == d) { snprintf(why, n, "rfsw: DIO%d twice", d); return false; }
     }
@@ -233,6 +277,7 @@ bool ls_lora_port_parse(int argc, char **argv, const ls_lora_port_t *base,
         if (!strcmp(argv[i], "con1")) { con1_port(out, false); continue; }
         if (!strcmp(argv[i], "v02")) { con1_port(out, true); continue; }
 #endif
+        if (!strcmp(argv[i], "tlr2021")) { tlr2021_port(out); continue; }
         char key[8];
         const char *eq = strchr(argv[i], '=');
         if (!eq || eq == argv[i] || (size_t)(eq - argv[i]) >= sizeof(key)) { LS_SNPRINTF(t_ls_lora_port_s_want_key_value, why, n, "'%s': want key=value", argv[i]); return false; }

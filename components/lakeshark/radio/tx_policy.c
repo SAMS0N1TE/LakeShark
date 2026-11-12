@@ -319,6 +319,7 @@ bool ls_radio_tx_policy_latest_audit(ls_radio_tx_audit_t *out)
  * Clock regressions retain charges, and app restarts never reset this ledger.
  */
 #include "tx_protection.h"
+#include "ls_tx_unlock.h"
 #if defined(ESP_PLATFORM) && !defined(LS_LAP_HOST_TEST)
 #include "esp_attr.h"
 #elif !defined(EXT_RAM_BSS_ATTR)
@@ -366,6 +367,8 @@ int ls_tx_protect(unsigned radio, int dbm, bool rx_only, uint32_t airtime, uint6
         cooled >= protection[radio].heat ? 0 : protection[radio].heat - (uint32_t)cooled;
     if (rx_only)
         e = -24;
+    else if (LS_TX_UNLOCKED)
+        e = protection[radio].hot ? -23 : 0;
     else if (dbm < min || dbm > max)
         e = -21;
     else if (protection[radio].hot || (uint64_t)heat + charge > 5000000u)

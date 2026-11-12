@@ -13,3 +13,6 @@ void ls_catch_stop(void) {}
 void ls_catch_toggle(void) {}
 void ls_catch_watch_cycle(void) {}
 const char *ls_catch_watch_label(bool *on) { if (on) *on = false; return "OFF"; }
+int ls_catch_selected_index(void) { return -1; }
+uint32_t ls_catch_selected_hz(void) { return 0; }
+bool ls_catch_list_contains(int x, int y) { (void)x; (void)y; return false; }

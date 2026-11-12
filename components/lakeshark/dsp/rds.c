@@ -147,26 +147,39 @@ static void af_add(rds_info_t *in, uint8_t code)
 /* Modified Julian Day to Unix days: MJD 40587 is 1970-01-01. */
 #define RDS_MJD_UNIX 40587
 
+/* A PI is taken when it repeats: twice for the first, three times in a row
+   to replace one, since a new station on the same channel without a retune
+   is rare and a corrupt block A that passes the check is not. */
+static void pi_take(rds_t *r, uint16_t pi)
+{
+    rds_info_t *in = &r->info;
+    if (in->has_pi && pi == in->pi) { r->pi_cand_n = 0; return; }
+    if (pi != r->pi_cand || !r->pi_cand_n) { r->pi_cand = pi; r->pi_cand_n = 0; }
+    if (++r->pi_cand_n < (in->has_pi ? 3 : 2)) return;
+    r->pi_cand_n = 0;
+    if (in->has_pi) {
+        /* A new station: the old card means nothing now. */
+        card_clear(in);
+        r->ps_mask = 0;
+        r->rt_mask = 0;
+        r->rt_end = -1;
+        r->rt_ab = -1;
+        r->pty_cand_n = 0;
+        memset(r->ps_work, ' ', sizeof(r->ps_work));
+        memset(r->rt_work, ' ', sizeof(r->rt_work));
+    }
+    in->has_pi = true;
+    in->pi = pi;
+    in->seq++;
+}
+
 void rds_decode_group(rds_t *r, const uint16_t blk[4], uint8_t ok)
 {
     rds_info_t *in = &r->info;
     in->groups++;
     if (r->on_group) r->on_group(r->user, blk, ok);
 
-    if (ok & 1) {
-        if (in->has_pi && in->pi != blk[0]) {
-            /* A new station: the old card means nothing now. */
-            card_clear(in);
-            r->ps_mask = 0;
-            r->rt_mask = 0;
-            r->rt_end = -1;
-            r->rt_ab = -1;
-            memset(r->ps_work, ' ', sizeof(r->ps_work));
-            memset(r->rt_work, ' ', sizeof(r->rt_work));
-        }
-        if (!in->has_pi) { in->has_pi = true; in->seq++; }
-        in->pi = blk[0];
-    }
+    if (ok & 1) pi_take(r, blk[0]);
     in->synced = r->synced;
     if (!(ok & 2)) return;
 
@@ -175,9 +188,13 @@ void rds_decode_group(rds_t *r, const uint16_t blk[4], uint8_t ok)
     const bool ver_b = (b >> 11) & 1;
     const bool tp = (b >> 10) & 1;
     const uint8_t pty = (uint8_t)((b >> 5) & 0x1F);
-    if (tp != in->tp || pty != in->pty) { in->tp = tp; in->pty = pty; in->seq++; }
+    if (tp == in->tp && pty == in->pty) r->pty_cand_n = 0;
+    else if (r->pty_cand_n && pty == r->pty_cand && tp == r->tp_cand) {
+        in->tp = tp; in->pty = pty; in->seq++;
+        r->pty_cand_n = 0;
+    } else { r->pty_cand = pty; r->tp_cand = tp; r->pty_cand_n = 1; }
     in->type_seen |= (uint16_t)(1u << type);
-    if (ver_b && (ok & 4) && !(ok & 1)) { in->pi = blk[2]; in->has_pi = true; }
+    if (ver_b && (ok & 4) && !(ok & 1)) pi_take(r, blk[2]);
 
     switch (type) {
     case 0: {
@@ -316,7 +333,10 @@ void rds_push_bit(rds_t *r, int bit)
         r->bad_run++;
         r->info.blocks_bad++;
     }
-    block_done(r, want, data, good);
+    /* A corrected block keeps the clock, but its data is used only while the
+       channel is clean: on a weak signal a two-bit fix of a ruined block
+       turns up as a wrong letter, type or station code. */
+    block_done(r, want, data, good && (!fixed || r->bad_hist < 3));
     if (r->bad_run >= 10 || r->bad_hist >= 10) lose_sync(r);
 }
 
