@@ -46,6 +46,7 @@ unsigned ls_lap_stack_unused(void); /* zero means not measured yet */
 void ls_lap_poll(void);             /* TUI task, before router draw, also after leaving */
 void ls_lap_console_register(void);
 bool ls_lap_start_worker(void); /* backend worker, PSRAM stack; no app code */
+void ls_lap_reserve_link_memory(bool early); /* boot: early from LP RAM, then after the console: the 2 KB app-link stack */
 /* Console worker transaction fence. Acquiring fails while the target native app is open. NULL
  * targets all apps. publish is applied by poll on the TUI task; disk changes survive a stopped UI.
  */

@@ -230,7 +230,8 @@ extern const ls_tui_screen_t ls_scr_home, ls_scr_p25, ls_scr_fm, ls_scr_adsb,
                              ls_scr_gps, ls_scr_map, ls_scr_falls,
                              ls_scr_mesh, ls_scr_radios, ls_scr_labs, ls_scr_journal, ls_scr_subghz, ls_scr_mixrf,
                              ls_scr_notes, ls_scr_compass, ls_scr_music, ls_scr_experiments,
-                             ls_scr_terminal, ls_scr_update, ls_scr_tiles, ls_scr_rfsurvey, ls_scr_fox;
+                             ls_scr_terminal, ls_scr_update, ls_scr_tiles, ls_scr_rfsurvey, ls_scr_fox,
+                             ls_scr_bootlog;
 extern const ls_app_doc_t ls_doc_tiles;
 extern const ls_tui_screen_t ls_scr_digi;
 extern const ls_app_doc_t ls_doc_digi;
@@ -271,6 +272,8 @@ static const ls_app_t APPS[] = {
       LS_APP_EXTRA, &ls_scr_diag, NULL, &ls_doc_diag },
     { "terminal", "TERMINAL", "console", LS_ICON_TERMINAL, TUI_GREEN,
       LS_APP_EXTRA, &ls_scr_terminal, NULL, &ls_doc_terminal },
+    { "bootlog", "BOOT LOG", "startup log", LS_ICON_JOURNAL, TUI_YELLOW,
+      LS_APP_EXTRA, &ls_scr_bootlog, NULL, &ls_doc_bootlog },
     { "update", "UPDATE", "firmware", LS_ICON_UPDATE, TUI_CYAN,
       LS_APP_EXTRA, &ls_scr_update, NULL, &ls_doc_update },
     { "set",  "SET",  "display",   LS_ICON_GEAR,  TUI_BLUE,
@@ -973,10 +976,29 @@ static bool named_key(const char *name, ls_tk_t *out)
         { "tab",   LS_TK_TAB   }, { "mic",   LS_TK_MIC   },
         { "backspace", LS_TK_BACKSPACE },
         { "f1", LS_TK_F1 }, { "f2", LS_TK_F2 }, { "f3", LS_TK_F3 }, { "f4", LS_TK_F4 }, { "f5", LS_TK_F5 },
+        { "home", LS_TK_HOME }, { "end", LS_TK_END }, { "pgup", LS_TK_PGUP }, { "pgdn", LS_TK_PGDN },
+        { "ins", LS_TK_INSERT }, { "del", LS_TK_DELETE },
     };
     for (unsigned i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++)
         if (!strcmp(name, NAMES[i].name)) { *out = NAMES[i].key; return true; }
     return false;
+}
+
+/* The desk's input as the board gets it: queued and drained, so a screen can
+   ask what is being delivered (ls_input_current). M<n> in a -x script holds
+   modifiers down for what follows (1 Shift, 2 Alt, 4 Ctrl). */
+static uint8_t s_sim_mods;
+static void desk_in(const ls_input_ev_t *ev)
+{
+    ls_input_ev_t e = *ev;
+    e.mods = s_sim_mods;
+    ls_input_post(&e);
+    ls_input_drain();
+}
+static void desk_key_in(ls_tk_t k, char ch)
+{
+    const ls_input_ev_t e = {.kind = LS_IEV_KEY_DOWN, .source = LS_ISRC_LOCAL, .clicks = 1, .key = (uint16_t)k, .ch = ch};
+    desk_in(&e);
 }
 
 static void usage(void)
@@ -1606,11 +1628,17 @@ int main(int argc, char **argv)
     lssim_set_empty(empty);
     if (maparc) s_map_archive = maparc;
     ls_notes_use_directory(sim_copy("fixtures/notes", "build/lssim_notes"));
+    { extern void ls_mesh_desk_export_dir(const char *dir); ls_mesh_desk_export_dir("build/lssim_mesh");
+      extern void ls_adsb_desk_export_dir(const char *dir); ls_adsb_desk_export_dir("build/lssim_adsb");
+      extern void ls_p25_desk_export_dir(const char *dir); ls_p25_desk_export_dir("build/lssim_p25");
+      extern void ls_journal_desk_export_dir(const char *dir); ls_journal_desk_export_dir("build/lssim_journal"); }
     /* FREQS: a card with the country bank the units carry and a mine.csv.
-       LSSIM_FREQS_EMPTY: no card, so the built-in set. */
+       LSSIM_FREQS_EMPTY: no card, so the built-in set. LSSIM_FREQS_FROM:
+       the banks of another directory copied onto the card instead. */
     if (getenv("LSSIM_FREQS_EMPTY")) ls_freqs_set_root("build/lssim_no_card");
     else {
-        ls_freqs_set_root(sim_copy("fixtures/freqs", "build/lssim_sdcard/freqs"));
+        const char *from = getenv("LSSIM_FREQS_FROM");
+        ls_freqs_set_root(sim_copy(from && *from ? from : "fixtures/freqs", "build/lssim_sdcard/freqs"));
         sim_copy_file("../tools/freqs/argentina.csv", "build/lssim_sdcard/freqs/argentina.csv");
     }
     if (!empty) {
@@ -1681,7 +1709,7 @@ int main(int argc, char **argv)
     }
     if(!strcmp(want,"calls"))seed_calls(empty);
     /* LSSIM_P25_TGS: the P25 page with heard talkgroups in ACTIVITY. */
-    if(!strcmp(want,"p25") && getenv("LSSIM_P25_TGS")) {
+    if((!strcmp(want,"p25") || desk) && getenv("LSSIM_P25_TGS")) {
         void lssim_seed_p25_calls(void);
         lssim_seed_p25_calls();
     }
@@ -1792,9 +1820,20 @@ int main(int argc, char **argv)
         for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
             if (tok[0] == '+') {
                 for (const char *c = tok + 1; *c; c++) {
-                    ls_tui_router_key(LS_TK_CHAR, *c == '_' ? ' ' : *c);
+                    if (desk) desk_key_in(LS_TK_CHAR, *c == '_' ? ' ' : *c);
+                    else ls_tui_router_key(LS_TK_CHAR, *c == '_' ? ' ' : *c);
                     frame(1);
                 }
+                continue;
+            }
+            if (desk && tok[0] == 'M' && tok[1] >= '0' && tok[1] <= '9') { s_sim_mods = (uint8_t)atoi(tok + 1); continue; }
+            /* W c:r:n turns the wheel n notches (negative: up) over a cell. */
+            if (desk && tok[0] == 'W' && tok[1] >= '0' && tok[1] <= '9') {
+                int a = -1, bb = -1, n = 1;
+                if (sscanf(tok + 1, "%d:%d:%d", &a, &bb, &n) < 2) { printf("lssim: bad wheel '%s'\n", tok); return 1; }
+                const ls_input_ev_t e = {.kind = LS_IEV_WHEEL, .source = LS_ISRC_LOCAL, .col = (int16_t)a, .row = (int16_t)bb,
+                                         .wheel = (int16_t)n};
+                desk_in(&e); frame(1);
                 continue;
             }
             if (tok[0] == '@') {
@@ -1803,7 +1842,8 @@ int main(int argc, char **argv)
                     printf("lssim: no key '%s'\n", tok + 1);
                     return 1;
                 }
-                ls_tui_router_key(k, 0);
+                if (desk) desk_key_in(k, 0);
+                else ls_tui_router_key(k, 0);
                 frame(1);
                 continue;
             }
@@ -1814,8 +1854,39 @@ int main(int argc, char **argv)
             /* The desk: !app opens an app's window, R c:r right-clicks,
                H c:r hovers, D c:r>c:r drags with the left button. */
             /* !display:N opens Display Properties on tab N, !shutdown the Shut Down dialog. */
+            /* K[cas]:key a key with Ctrl/Alt/Shift held (a name, or one character);
+               U[ca] lets the modifier go. */
+            if (desk && tok[0] == 'K' && strchr(tok, ':')) {
+                ls_input_ev_t e = {.source = LS_ISRC_LOCAL, .kind = LS_IEV_KEY_DOWN, .clicks = 1};
+                const char *key = strchr(tok, ':') + 1;
+                for (const char *m = tok + 1; *m != ':'; m++)
+                    e.mods |= *m == 'c' ? LS_IMOD_CTRL : *m == 'a' ? LS_IMOD_ALT : *m == 's' ? LS_IMOD_SHIFT : 0;
+                ls_tk_t k = LS_TK_CHAR;
+                static const struct { const char *n; ls_tk_t k; } X[] = {
+                    {"f1", LS_TK_F1}, {"f2", LS_TK_F2}, {"f4", LS_TK_F4}, {"f6", LS_TK_F6}, {"f10", LS_TK_F10},
+                    {"del", LS_TK_DELETE}, {"home", LS_TK_HOME}, {"end", LS_TK_END}, {"bksp", LS_TK_BACKSPACE},
+                    {"pgdn", LS_TK_PGDN}, {"pgup", LS_TK_PGUP},
+                };
+                bool found = false;
+                for (unsigned i = 0; i < sizeof(X) / sizeof(X[0]) && !found; i++) if (!strcmp(key, X[i].n)) { k = X[i].k; found = true; }
+                if (!found && key[1] && !named_key(key, &k)) { printf("lssim: no key '%s'\n", key); return 1; }
+                e.key = (uint16_t)k;
+                if (k == LS_TK_CHAR) e.ch = key[0] == '_' ? ' ' : key[0];
+                ls_desk_input(&e); frame(1);
+                continue;
+            }
+            if (desk && tok[0] == 'U' && (tok[1] == 'c' || tok[1] == 'a') && !tok[2]) {
+                ls_input_ev_t e = {.source = LS_ISRC_LOCAL, .kind = LS_IEV_KEY_UP, .key = tok[1] == 'c' ? LS_TK_CTRL : LS_TK_ALT};
+                ls_desk_input(&e); frame(1);
+                continue;
+            }
             if (tok[0] == '!') {
                 if (!strcmp(tok + 1, "about")) ls_desk_open_about();
+                else if (!strcmp(tok + 1, "run")) ls_desk_shell_open("run", -1);
+                else if (!strcmp(tok + 1, "tasks")) ls_desk_shell_open("tasks", -1);
+                else if (!strcmp(tok + 1, "bin")) ls_desk_shell_open("bin", -1);
+                else if (!strcmp(tok + 1, "folder")) ls_desk_shell_open("folder", -1);
+                else if (!strncmp(tok + 1, "control", 7)) ls_desk_shell_open("control", tok[8] == ':' ? atoi(tok + 9) : -1);
                 else if (!strncmp(tok + 1, "display", 7)) ls_desk_open_display(tok[8] == ':' ? atoi(tok + 9) : 0);
                 else if (!strcmp(tok + 1, "shutdown")) ls_desk_open_shutdown();
                 else if (!strcmp(tok + 1, "welcome")) ls_desk_welcome();
@@ -1840,8 +1911,8 @@ int main(int argc, char **argv)
                 if (sscanf(tok + 1, "%d:%d", &a, &bb) != 2) { printf("lssim: bad click '%s'\n", tok); return 1; }
                 ls_input_ev_t e = {.source = LS_ISRC_LOCAL, .clicks = 1, .col = (int16_t)a, .row = (int16_t)bb,
                                    .kind = LS_IEV_PTR_DOWN, .button = LS_IBTN_LEFT, .buttons = 1};
-                ls_desk_input(&e); frame(1);
-                e.kind = LS_IEV_PTR_UP; e.buttons = 0; ls_desk_input(&e); frame(1);
+                desk_in(&e); frame(1);
+                e.kind = LS_IEV_PTR_UP; e.buttons = 0; desk_in(&e); frame(1);
                 continue;
             }
             /* S c:r>c:r: a finger on an app screen goes down, moves in four
@@ -1866,22 +1937,22 @@ int main(int argc, char **argv)
                 const int got = sscanf(tok + 1, "%d:%d>%d:%d", &a, &b, &c, &d);
                 if (got < 2) { printf("lssim: bad desk token '%s'\n", tok); return 1; }
                 ls_input_ev_t e = {.source = LS_ISRC_LOCAL, .clicks = 1, .col = (int16_t)a, .row = (int16_t)b};
-                if (tok[0] == 'H') { e.kind = LS_IEV_PTR_MOVE; ls_desk_input(&e); frame(1); continue; }
+                if (tok[0] == 'H') { e.kind = LS_IEV_PTR_MOVE; desk_in(&e); frame(1); continue; }
                 if (tok[0] == 'R') {
                     e.kind = LS_IEV_PTR_DOWN; e.button = LS_IBTN_RIGHT; e.buttons = 1 << LS_IBTN_RIGHT;
-                    ls_desk_input(&e); frame(1);
-                    e.kind = LS_IEV_PTR_UP; e.buttons = 0; ls_desk_input(&e); frame(1);
+                    desk_in(&e); frame(1);
+                    e.kind = LS_IEV_PTR_UP; e.buttons = 0; desk_in(&e); frame(1);
                     continue;
                 }
                 if (got < 4) { printf("lssim: a drag wants D c:r>c:r\n"); return 1; }
                 e.kind = LS_IEV_PTR_DOWN; e.button = LS_IBTN_LEFT; e.buttons = 1;
-                ls_desk_input(&e); frame(1);
+                desk_in(&e); frame(1);
                 for (int k = 1; k <= 4; k++) {
                     e.kind = LS_IEV_PTR_MOVE;
                     e.col = (int16_t)(a + (c - a) * k / 4); e.row = (int16_t)(b + (d - b) * k / 4);
-                    ls_desk_input(&e); frame(1);
+                    desk_in(&e); frame(1);
                 }
-                if (tok[strlen(tok) - 1] != '?') { e.kind = LS_IEV_PTR_UP; e.buttons = 0; ls_desk_input(&e); frame(1); }
+                if (tok[strlen(tok) - 1] != '?') { e.kind = LS_IEV_PTR_UP; e.buttons = 0; desk_in(&e); frame(1); }
                 continue;
             }
             int tc = -1, tr = -1;

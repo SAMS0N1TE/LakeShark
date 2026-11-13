@@ -68,6 +68,17 @@ bool ls_tui_pixel_to_cell(int x,int y,int *col,int *row)
 bool ls_tui_pixel_to_grid(int x,int y,int *gx,int *gy)
 { if(gx)*gx=x;if(gy)*gy=y;return true; }
 const char *ls_desk_version(void) { return "test"; }
+/* The desk's store and the rest of the board, as the host has none of it. */
+static uint8_t s_store[4096]; static size_t s_store_n;
+static bool s_store_keep;            /* a case that tests the store turns it on; the rest start as a new board */
+size_t dk_sys_store_load(void *buf, size_t cap) { const size_t n = s_store_keep && s_store_n <= cap ? s_store_n : 0; memcpy(buf, s_store, n); return n; }
+bool dk_sys_store_save(const void *buf, size_t len) { if (len > sizeof(s_store)) return false; memcpy(s_store, buf, len); s_store_n = len; return true; }
+const char *dk_sys_card_root(void) { return "no-such-card"; }
+bool dk_sys_open_file(const char *path) { (void)path; return false; }
+bool dk_sys_console(const char *line) { (void)line; return false; }
+void dk_sys_perf(dk_perf_t *o) { memset(o, 0, sizeof(*o)); }
+int dk_cpl_count(void) { return 0; }
+const dk_cpl_applet_t *dk_cpl_at(int i) { (void)i; return NULL; }
 int  dk_sys_volume(void) { return s_vol; }
 void dk_sys_set_volume(int p) { s_vol = p < 0 ? 0 : p > 100 ? 100 : p; }
 bool dk_sys_muted(void) { return s_mute; }
@@ -227,6 +238,7 @@ LS_CASE(open_raise_move_minimize_maximize_close_and_nothing_leaks)
 {
     setup();
     for (int round = 0; round < 3; round++) {
+        if (round) setup();              /* a window opens where it was left: each round starts as a new board */
         const int a = ls_desk_open_app("p25");
         frame(160, 45);
         LS_EQ_INT(2, ls_desk_alloc_blocks());              /* the live surface, two grids */
@@ -588,6 +600,147 @@ void ls_lap_lifecycle(unsigned kind, int w, int h) {
     if (kind == LAP_INPUT_FOCUS_LOST) native_lost++;
     if (kind == LAP_INPUT_RESUME) native_resumed++;
 }
+static void type(const char *s)
+{
+    for (; *s; s++) {
+        ls_input_ev_t e = {.kind = LS_IEV_KEY_DOWN, .source = LS_ISRC_LOCAL, .clicks = 1, .key = LS_TK_CHAR, .ch = *s};
+        LS_CHECK(ls_desk_input(&e));
+    }
+}
+static int item_named(const char *label)
+{
+    for (int i = 0; i < dk_items_count(); i++) if (!strcmp(dk_items_label(dk_items_at(i)), label)) return i;
+    return -1;
+}
+
+LS_CASE(shortcuts_are_made_renamed_binned_and_kept_from_the_gui)
+{
+    s_store_keep = false;
+    setup();
+    const int stock = dk_items_count();
+    LS_CHECK(stock >= 4);                              /* p25, fm, Control Panel, Recycle Bin */
+    LS_CHECK(item_named("RECYCLE BIN") >= 0);
+    /* The desktop's menu: New, a shortcut to an app, picked from the list. */
+    ptr(LS_IEV_PTR_DOWN, LS_IBTN_RIGHT, 100, 30);
+    LABEL_IS(0, 1, "New");
+    dk_menu_close_all();
+    dk_do(A_NEW_APP, 0);
+    frame(160, 45);
+    LS_CHECK(dk_win_shell(DK_SHELL_PICK) != NULL);
+    key(LS_TK_ENTER);                                   /* the first app in the list */
+    frame(160, 45);
+    LS_CHECK(dk_win_shell(DK_SHELL_PICK) == NULL);
+    LS_EQ_INT(stock + 1, dk_items_count());
+    const int made = dk_items_count() - 1;
+    LS_EQ_INT(DKI_APP, dk_items_at(made)->kind);
+    /* Rename it through the dialog: the old name is there to edit. */
+    dk_do(A_ITEM_RENAME, made);
+    frame(160, 45);
+    LS_CHECK(dk_win_shell(DK_SHELL_PROMPT) != NULL);
+    for (int i = 0; i < 16; i++) key(LS_TK_BACKSPACE);
+    type("SCANNER");
+    key(LS_TK_ENTER);
+    frame(160, 45);
+    LS_CHECK(dk_win_shell(DK_SHELL_PROMPT) == NULL);
+    LS_EQ_INT(made, item_named("SCANNER"));
+    /* Dragged somewhere, then the desk goes off and on: it is where it was left. */
+    const tui_rect r0 = dk_items_rect(made);
+    ptr(LS_IEV_PTR_DOWN, LS_IBTN_LEFT, r0.x + 2, r0.y + 2);
+    ls_input_ev_t mv = {.kind = LS_IEV_PTR_MOVE, .source = LS_ISRC_LOCAL, .buttons = 1, .col = 90, .row = 20};
+    ls_desk_input(&mv);
+    ptr(LS_IEV_PTR_UP, LS_IBTN_LEFT, 90, 20);
+    const tui_rect r1 = dk_items_rect(made);
+    LS_EQ_INT(88, r1.x); LS_EQ_INT(18, r1.y);
+    s_store_keep = true;
+    ls_desk_set_enabled(false);
+    ls_desk_set_enabled(true);
+    frame(160, 45);
+    LS_EQ_INT(stock + 1, dk_items_count());
+    const int again = item_named("SCANNER");
+    LS_CHECK(again >= 0);
+    LS_EQ_INT(88, dk_items_rect(again).x); LS_EQ_INT(18, dk_items_rect(again).y);
+    /* Delete sends it to the bin; the bin gives it back; the bin itself stays. */
+    dk_do(A_ITEM_DELETE, again);
+    LS_EQ_INT(stock, dk_items_count());
+    LS_EQ_INT(1, dk_items_binned(NULL, 0));
+    dk_icon_t *gone[4];
+    LS_EQ_INT(1, dk_items_binned(gone, 4));
+    dk_items_restore(gone[0]);
+    LS_EQ_INT(stock + 1, dk_items_count());
+    const int bin = item_named("RECYCLE BIN");
+    LS_CHECK(!dk_items_delete(bin));
+    LS_CHECK(item_named("RECYCLE BIN") >= 0);
+    frame(160, 45);
+    ls_desk_close_all();
+    s_store_keep = false;
+    s_store_n = 0;
+}
+
+LS_CASE(an_icon_placed_on_a_default_slot_never_hides_the_icon_that_owned_it)
+{
+    s_store_keep = false;
+    setup();
+    frame(160, 45);
+    const int n = dk_items_count();
+    LS_CHECK(n >= 3);
+    /* A saved spot lands on icon 0's default slot (an old placement after the icon set grew). */
+    const tui_rect slot0 = dk_items_rect(0);
+    dk_items_place(n - 1, slot0.x, slot0.y);
+    const tui_rect moved = dk_items_rect(n - 1);
+    LS_EQ_INT(slot0.x, moved.x); LS_EQ_INT(slot0.y, moved.y);
+    for (int i = 0; i < n; i++)
+        for (int j = i + 1; j < n; j++) {
+            const tui_rect a = dk_items_rect(i), b = dk_items_rect(j);
+            LS_CHECK(!(a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h));
+        }
+    ls_desk_close_all();
+    s_store_n = 0;
+}
+
+LS_CASE(a_window_opens_where_it_was_left_and_the_ninth_says_why)
+{
+    s_store_keep = false;
+    setup();
+    const int id = ls_desk_open_app("p25"); frame(160, 45);
+    ls_desk_move(id, 30, 5);
+    ls_desk_resize(id, 100, 30);
+    ls_desk_close(id);
+    const int back = ls_desk_open_app("p25"); frame(160, 45);
+    ls_desk_win_info_t w; LS_CHECK(info(back, &w));
+    LS_EQ_INT(30, w.x); LS_EQ_INT(5, w.y); LS_EQ_INT(100, w.w); LS_EQ_INT(30, w.h);
+    /* Move by the keys from the window menu: arrows step, Esc puts it back. */
+    dk_do(A_WIN_MOVE, back);
+    key(LS_TK_RIGHT); key(LS_TK_DOWN);
+    LS_CHECK(info(back, &w)); LS_EQ_INT(32, w.x); LS_EQ_INT(6, w.y);
+    key(LS_TK_ESC);
+    LS_CHECK(info(back, &w)); LS_EQ_INT(30, w.x); LS_EQ_INT(5, w.y);
+    /* The switcher: Ctrl+Tab steps, letting Ctrl go brings that window up. */
+    const int fm = ls_desk_open_app("fm"); frame(160, 45);
+    LS_EQ_INT(fm, ls_desk_front());
+    ls_input_ev_t tab = {.kind = LS_IEV_KEY_DOWN, .source = LS_ISRC_LOCAL, .clicks = 1, .key = LS_TK_TAB, .mods = LS_IMOD_CTRL};
+    ls_desk_input(&tab);
+    LS_EQ_INT(fm, ls_desk_front());                     /* not until the key is let go */
+    ls_input_ev_t up = {.kind = LS_IEV_KEY_UP, .source = LS_ISRC_LOCAL, .key = LS_TK_CTRL};
+    ls_desk_input(&up);
+    LS_EQ_INT(back, ls_desk_front());
+    /* Eight windows is the limit; the message that says so still opens. */
+    ls_desk_close_all();
+    ls_desk_open_about(); ls_desk_open_display(0); ls_desk_open_app("p25"); ls_desk_open_app("fm");
+    LS_CHECK(ls_desk_shell_open("tasks", -1)); LS_CHECK(ls_desk_shell_open("bin", -1));
+    LS_CHECK(ls_desk_shell_open("run", -1)); LS_CHECK(ls_desk_shell_open("control", -1));
+    frame(160, 45);
+    LS_EQ_INT(8, ls_desk_window_count());
+    dk_do(A_NEW_APP, 0);                                /* a ninth ordinary window */
+    frame(160, 45);
+    LS_CHECK(dk_win_shell(DK_SHELL_PICK) == NULL);
+    LS_CHECK(dk_win_shell(DK_SHELL_MSG) != NULL);
+    LS_EQ_INT(9, ls_desk_window_count());
+    key(LS_TK_ENTER);                                   /* OK */
+    LS_EQ_INT(8, ls_desk_window_count());
+    ls_desk_close_all();
+    frame(160, 45);
+}
+
 LS_CASE(native_pointer_buttons_keep_capture_and_client_pixels)
 {
     setup();

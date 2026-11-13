@@ -224,6 +224,9 @@ int ls_mesh_messages(ls_mesh_msg_t *out, int max)
             out[n++] = m;
         }
     }
+    /* On the same clock as the peers: the fixture's times are seconds before
+       "now", so a message reads as minutes old and has a time of day. */
+    for (int i = 0; i < n; i++) out[i].t += ls_mesh_now() - 44382u;
     return n;
 }
 

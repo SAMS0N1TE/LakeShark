@@ -7014,6 +7014,36 @@ LS_CASE(freqs_tune_into_subghz_waits_for_the_receiver_and_sets_the_mode)
     ls_anim_cancel();
 }
 
+/* The same hand-off with a WATCH that will not stop: the LR2021 cannot
+   change mode under it, so it says so instead of listening in the old one. */
+void rec_watch_sim_refuse_off(bool refuse);
+LS_CASE(freqs_tune_into_subghz_does_not_listen_in_the_wrong_mode)
+{
+    rec_watch_enable(false);rec_watch_select_source(REC_SOURCE_SX1262);
+    ls_exp_fake_lora_chip(LS_LORA_CHIP_LR20XX);
+    rec_watch_set_lr_fsk(true);
+    rec_set_freq(433920000u);
+    rec_watch_sim_ready(true);
+    LS_CHECK(rec_watch_enable(true));
+    rec_watch_sim_refuse_off(true);
+    LS_CHECK(ls_scr_subghz_listen(433920000u, "OOK"));
+    ls_anim_cancel();
+    tui_rect pane={1,2,46,63};
+    subghz_draw(pane);
+    LS_CHECK(rec_watch_lr_fsk());
+    subghz_settle(pane);
+    int x,y;
+    LS_CHECK(!find_text("from FREQS",&x,&y));
+    LS_CHECK(find_text("Stop WATCH",&x,&y));
+    rec_watch_sim_refuse_off(false);
+    rec_watch_enable(false);
+    rec_watch_select_source(REC_SOURCE_RTL);
+    ls_exp_fake_lora_chip(LS_LORA_CHIP_SX126X);
+    ls_scr_subghz.leave();
+    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
+    ls_anim_cancel();
+}
+
 /* SAVE from any app goes through freq.save into mine.csv, and says so in a
    banner on the next frame; FREQS lists it the next time it draws. */
 LS_CASE(freqs_save_from_another_app_lands_in_mine_with_a_banner)
@@ -7084,6 +7114,40 @@ LS_CASE(freqs_reload_under_a_scrolled_list_draws_and_keeps_the_cursor)
     LS_CHECK(find_text("322 of 322", &x, &y));
     LS_CHECK(find_text("BIG 250", &x, &y));
     LS_EQ_INT(escaped(pane), 0);
+}
+
+/* IMPORT opens the bank it made, and still does when the file had lines it
+   could not read and the sentence ends in a line number, not the bank. */
+LS_CASE(freqs_import_with_skipped_lines_opens_the_new_bank)
+{
+    const char *dir = freqs_card();
+    char path[256];
+    snprintf(path, sizeof(path), "%s/import", dir);
+    freqs_mkdir(path);
+    snprintf(path, sizeof(path), "%s/import/tower.csv", dir);
+    FILE *f = fopen(path, "w");
+    LS_CHECK(f != NULL);
+    if (!f) return;
+    fputs("freq_mhz,mode,name\n118.1,AM,TWR ONE\nbad,AM,X\n119.1,AM,TWR TWO\n", f);
+    fclose(f);
+    const tui_rect pane = PANES[1];
+    freqs_open(pane);
+    LS_CHECK(ls_scr_freqs.key(LS_TK_CHAR, 'k'));
+    LS_CHECK(ls_picker_active());
+    picker_row(ls_freqs_banks() + 2);
+    LS_CHECK(ls_picker_key(LS_TK_ENTER, 0));
+    LS_CHECK(ls_picker_active());
+    picker_row(0);
+    LS_CHECK(ls_picker_key(LS_TK_ENTER, 0));
+    LS_EQ_STR(ls_freqs_imported(), "tower");
+    LS_EQ_INT(ls_freqs_which(), ls_freqs_bank_find("tower"));
+    for (int i = 0; i < 40 && ls_freqs_loading(); i++) { fresh(); ls_scr_freqs.draw(&g_sf, pane); }
+    fresh(); ls_scr_freqs.draw(&g_sf, pane);
+    int x, y;
+    LS_CHECK(find_text("FREQS / TOWER", &x, &y));
+    LS_CHECK(find_text("1 skipped", &x, &y));
+    remove(path);
+    ls_freqs_load(LS_FREQS_ALL);
 }
 
 /* LOAD INTO SCANNER replaces the scanner's list, so it asks twice; what it

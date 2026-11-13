@@ -762,9 +762,12 @@ static EXT_RAM_BSS_ATTR uint8_t s_lrf_bits[LS_FSK_CAPTURE_BYTES*8+1024+32];
 static EXT_RAM_BSS_ATTR int32_t s_lrf_raw[LS_FSK_CAPTURE_BYTES*8+1024+32];
 static size_t s_lrf_len[2];
 static int32_t s_lrf_peakv[2];
+static int32_t s_lrf_airv[2];         /* the gate's floor before the burst              */
+static bool s_lrf_tailed[2];          /* the burst ended in LRF_QUIET of quiet          */
 static atomic_int s_lrf_full[2];
 static struct {
     int32_t floor_acc, floor, peak;
+    int32_t air;        /* the floor before the sample that opened the gate */
     uint32_t warm, quiet, pre_at, pre_n;
     size_t n;
     int buf;
@@ -772,10 +775,22 @@ static struct {
 } s_lrf;
 static bool s_lrf_run;
 static TaskHandle_t s_lrf_task;
-/* LEARN on the LR2021: the first packet heard, whole, instead of a capture. */
+/* LEARN on the LR2021: a packet heard whole, instead of a capture. One that
+   proves itself is taken from the one burst: a CRC that checks, or a radio
+   chip's default sync word. Anything else is only a preamble-like run and
+   the sixteen bits after it, which a keyed-up FM voice set or a tone gives
+   as readily as a remote, so it waits for a second burst with the same word
+   at the same rate and deviation. */
+#define LRF_CAND 4
 static volatile bool s_lrf_learning, s_lrf_learned;
 static fsk_pkt_t s_lrf_learn_pkt;
 static float s_lrf_learn_dev;
+/* Each candidate keeps the capture it came from: one capture of a remote
+   repeating its frame is still one burst. */
+static EXT_RAM_BSS_ATTR struct { fsk_pkt_t pkt; float dev; uint32_t capture; } s_lrf_cand[LRF_CAND];
+static uint32_t s_lrf_capture;
+static volatile uint32_t s_lrf_cands, s_lrf_cand_baud;   /* unproven bursts, and the last one's rate */
+static uint8_t s_lrf_learn_bursts;
 #define LRF_STACK_WORDS (6144 / sizeof(StackType_t))
 static EXT_RAM_BSS_ATTR StackType_t s_lrf_stack[LRF_STACK_WORDS];
 static StaticTask_t s_lrf_tcb;
@@ -796,19 +811,77 @@ static bool lr_fsk_sync_ok(const fsk_pkt_t *p,uint32_t want)
     if(have<16)return false;
     return (uint32_t)got==(have==32?want:want>>(32-have));
 }
-static void lr_fsk_decode(const int16_t *iq,size_t pairs,int peak)
+static bool lr_learn_proven(const fsk_pkt_t *p)
+{
+    return p->sync_known || p->sync_repeats>=2 || p->crc_kind!=FSK_CRC_NONE;
+}
+/* A word that can be a sync word: all of it and a byte after it were on the
+   air, not the padding past the end of the burst, and it is neither one
+   level held nor the preamble carrying on. */
+static bool lr_learn_word_ok(const fsk_pkt_t *p)
+{
+    if(p->sync_bits!=16 || p->len<4)return false;
+    const int turns=__builtin_popcount((p->sync^(p->sync>>1))&0x7FFFu);
+    return turns>=2 && turns<=13;
+}
+static bool lr_learn_same(const fsk_pkt_t *a,float adev,const fsk_pkt_t *b,float bdev)
+{
+    if(a->sync!=b->sync || a->inverted!=b->inverted)return false;
+    const uint32_t lo=a->baud<b->baud?a->baud:b->baud,hi=a->baud<b->baud?b->baud:a->baud;
+    if((hi-lo)*100u>hi*3u)return false;
+    if(adev<600.0f || bdev<600.0f)return true;
+    const float big=adev>bdev?adev:bdev;
+    return fabsf(adev-bdev)<=0.25f*big;
+}
+/* One decoded burst to LEARN. */
+static void lr_learn_offer(const fsk_pkt_t *p,float dev)
+{
+    if(s_lrf_learned || !p->len || p->baud<600 || p->baud>100000 || !p->sync_bits)return;
+    uint8_t bursts=1;
+    if(!lr_learn_proven(p)) {
+        if(!lr_learn_word_ok(p))return;
+        const uint32_t have=s_lrf_cands<LRF_CAND?s_lrf_cands:LRF_CAND;
+        bool agreed=false;
+        for(uint32_t i=0;i<have && !agreed;i++)
+            agreed=s_lrf_cand[i].capture!=s_lrf_capture &&
+                   lr_learn_same(&s_lrf_cand[i].pkt,s_lrf_cand[i].dev,p,dev);
+        if(!agreed) {
+            s_lrf_cand[s_lrf_cands%LRF_CAND].pkt=*p;
+            s_lrf_cand[s_lrf_cands%LRF_CAND].dev=dev;
+            s_lrf_cand[s_lrf_cands%LRF_CAND].capture=s_lrf_capture;
+            s_lrf_cand_baud=p->baud_std?p->baud_std:p->baud;
+            s_lrf_cands++;
+            return;
+        }
+        bursts=2;
+    }
+    s_lrf_learn_pkt=*p;
+    s_lrf_learn_dev=dev;
+    s_lrf_learn_bursts=bursts;
+    s_lrf_learned=true;
+}
+/* The decoder takes its floor from the capture itself, and the gate leaves
+   2 ms before a burst and 5 ms after: over 28 ms of burst that floor is the
+   burst. So the gate's own measurements go with the capture. Its floor is
+   the air before the burst (|I|+|Q|; three quarters of its square is the
+   power). The quiet that shut it is the air after, lower when the chip
+   turned its gain down for the burst. */
+static void lr_fsk_decode(const int16_t *iq,size_t pairs,int peak,int32_t air,bool tailed)
 {
     fsk_pkt_rf_t rf={0};
-    const size_t ne=fsk_pkt_iq16_edges(iq,pairs,REC_LR_IQ_RATE,s_lrf_edges,LRF_EDGES,&rf);
+    const float before=0.75f*(float)air*(float)air;
+    float after=0;
+    if(tailed && pairs>LRF_QUIET) {
+        double acc=0;
+        for(size_t k=pairs-LRF_QUIET;k<pairs;k++)
+            acc+=(double)iq[2*k]*iq[2*k]+(double)iq[2*k+1]*iq[2*k+1];
+        after=(float)(acc/(double)LRF_QUIET);
+    }
+    const size_t ne=fsk_pkt_iq16_gated_edges(iq,pairs,REC_LR_IQ_RATE,before,after,s_lrf_edges,LRF_EDGES,&rf);
     const int found=ne?fsk_pkt_from_edges(s_lrf_edges,ne,s_lrf_pkts,4):0;
     if(s_lrf_learning) {
-        for(int i=0;i<found && !s_lrf_learned;i++) {
-            const fsk_pkt_t *p=&s_lrf_pkts[i];
-            if(!p->len || p->baud<600 || p->baud>100000 || !p->sync_bits)continue;
-            s_lrf_learn_pkt=*p;
-            s_lrf_learn_dev=rf.deviation_hz;
-            s_lrf_learned=true;
-        }
+        s_lrf_capture++;
+        for(int i=0;i<found;i++)lr_learn_offer(&s_lrf_pkts[i],rf.deviation_hz);
         return;
     }
     const rec_fsk_mod_t m=s_fsk;
@@ -847,7 +920,7 @@ static void lr_fsk_worker(void *arg)
         (void)ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
         for(int b=0;b<2;b++)
             if(atomic_load(&s_lrf_full[b])) {
-                lr_fsk_decode(s_lrf_buf[b],s_lrf_len[b],s_lrf_peakv[b]);
+                lr_fsk_decode(s_lrf_buf[b],s_lrf_len[b],s_lrf_peakv[b],s_lrf_airv[b],s_lrf_tailed[b]);
                 atomic_store(&s_lrf_full[b],0);
             }
     }
@@ -859,14 +932,24 @@ static void lr_fsk_reset(void)
 static void lr_fsk_close(void)
 {
     const int b=s_lrf.buf;
+    const bool cut=s_lrf.n>=LRF_PAIRS;
     if(s_lrf.n>=LRF_MIN) {
         s_lrf_len[b]=s_lrf.n;
         s_lrf_peakv[b]=s_lrf.peak/16>255?255:s_lrf.peak/16;
+        s_lrf_airv[b]=s_lrf.air;
+        s_lrf_tailed[b]=!cut;
         atomic_store(&s_lrf_full[b],1);
         if(s_lrf_task)xTaskNotifyGive(s_lrf_task);
         s_lrf.buf=b^1;
     }
     lr_fsk_reset();
+    /* Still on the air when the buffer ran out: a carrier. The floor only
+       follows the air while the gate is shut, so the next sample would open
+       it again and the decoder would get the same carrier a second at a
+       time for as long as it lasted. The floor relearns on it instead, as
+       OOK WATCH does with a station: the gate stays shut until the carrier
+       drops or something stands over it. */
+    if(cut)s_lrf.warm=0;
 }
 static void lr_fsk_consume(void *ctx,const uint8_t *data,size_t bytes,bool spare)
 {
@@ -877,6 +960,7 @@ static void lr_fsk_consume(void *ctx,const uint8_t *data,size_t bytes,bool spare
         const int16_t sq=(int16_t)(data[i+2]|(data[i+3]<<8));
         const int32_t mag=(si<0?-(int32_t)si:si)+(sq<0?-(int32_t)sq:sq);
         if(!s_lrf.on) {
+            const int32_t air=s_lrf.floor;
             s_lrf.floor_acc+=mag-(s_lrf.floor_acc>>6);
             s_lrf.floor=s_lrf.floor_acc>>6;
             if(s_lrf.floor<8)s_lrf.floor=8;
@@ -886,6 +970,7 @@ static void lr_fsk_consume(void *ctx,const uint8_t *data,size_t bytes,bool spare
             if(s_lrf.warm<256){s_lrf.warm++;continue;}
             /* Both buffers waiting on the decoder: this burst is lost. */
             if(mag<=s_lrf.floor*4 || atomic_load(&s_lrf_full[s_lrf.buf]))continue;
+            s_lrf.air=air;
             s_lrf.on=true;s_lrf.quiet=0;s_lrf.peak=mag;
             int16_t *out=s_lrf_buf[s_lrf.buf];
             for(uint32_t k=0;k<s_lrf.pre_n;k++) {
@@ -1768,14 +1853,15 @@ static uint32_t sync_from(const uint8_t *b,int len)
            ((uint32_t)b[j+2]<<8)|b[j+3];
 }
 
-/* LEARN from one burst on the LR2021: its I/Q decoder measures the rate from
-   the preamble, the deviation from the two tones and reads the sync word, so
-   one press is enough. The SX1262 has no I/Q and keeps the search below,
-   which needs the same frame twice at each rate it tries. */
+/* LEARN on the LR2021: its I/Q decoder measures the rate from the preamble,
+   the deviation from the two tones and reads the sync word, so one press is
+   enough for a packet that proves itself and two for one that does not
+   (lr_learn_offer). The SX1262 has no I/Q and keeps the search below, which
+   needs the same frame twice at each rate it tries. */
 static bool learn_run_iq(uint32_t hz,uint32_t secs,char *result,size_t len)
 {
     (void)hz;
-    s_lrf_learned=false;s_lrf_learning=true;
+    s_lrf_learned=false;s_lrf_cands=0;s_lrf_learning=true;
     stage("Listening for one burst",5);
     if(!lr_fsk_iq_session(true)) {
         s_lrf_learning=false;
@@ -1784,16 +1870,23 @@ static bool learn_run_iq(uint32_t hz,uint32_t secs,char *result,size_t len)
     }
     const int64_t start=esp_timer_get_time(),end=start+(int64_t)secs*1000000;
     while(!s_scan_stop_req && !s_lrf_learned && esp_timer_get_time()<end) {
-        stage("Listening for one burst",5+(int)((esp_timer_get_time()-start)*90/((int64_t)secs*1000000)));
+        stage(s_lrf_cands?"Heard one burst - press it again":"Listening for one burst",
+              5+(int)((esp_timer_get_time()-start)*90/((int64_t)secs*1000000)));
         vTaskDelay(pdMS_TO_TICKS(50));
     }
     lr_fsk_iq_session(false);
     s_lrf_learning=false;
     stage("",0);
     if(s_scan_stop_req){memset(&s_learn,0,sizeof(s_learn));snprintf(result,len,"Learn stopped");return true;}
+    if(!s_lrf_learned && s_lrf_cands) {
+        snprintf(s_learn.note,sizeof(s_learn.note),"%s","one burst, nothing to confirm it");
+        snprintf(result,len,"Learn: one burst at %lu baud, not confirmed - press it twice",
+                 (unsigned long)s_lrf_cand_baud);
+        return true;
+    }
     if(!s_lrf_learned) {
         snprintf(s_learn.note,sizeof(s_learn.note),"%s","nothing heard");
-        snprintf(result,len,"Learn: heard no FSK packet - press the remote once");
+        snprintf(result,len,"Learn: heard no FSK packet - press the remote");
         return true;
     }
     const fsk_pkt_t *p=&s_lrf_learn_pkt;
@@ -1808,10 +1901,13 @@ static bool learn_run_iq(uint32_t hz,uint32_t secs,char *result,size_t len)
     if(!s_learn.deviation_hz){rec_fsk_mod_t m;rec_watch_fsk_get(&m);s_learn.deviation_hz=m.deviation_hz;}
     s_learn.sync_word=sync;
     s_learn.preamble_bits=(uint16_t)(p->preamble_bits>=8?p->preamble_bits:0);
-    s_learn.tried=1;s_learn.agreed=1;
-    s_learn.confidence=(uint8_t)(p->sync_known||p->sync_repeats>=2||p->crc_kind!=FSK_CRC_NONE?95:70);
+    /* A packet that proved itself, or two bursts alike, as two frames alike
+       are on the SX1262. */
+    s_learn.tried=s_learn.agreed=s_lrf_learn_bursts;
+    s_learn.confidence=(uint8_t)(lr_learn_proven(p)?95:80);
     s_learn.valid=true;
-    snprintf(s_learn.note,sizeof(s_learn.note),"one burst, %s deviation, %u-byte packet",
+    snprintf(s_learn.note,sizeof(s_learn.note),"%s, %s deviation, %u-byte packet",
+             s_lrf_learn_bursts>1?"two bursts agreed":"one burst",
              s_lrf_learn_dev>=600.0f?"measured":"assumed",(unsigned)p->len);
     LS_SNPRINTF(t_rec_watch_runtime_learn_lu_baud_sync, result,len,"Learn: %lu baud, sync %08lX, %u%% confident",
         (unsigned long)s_learn.bitrate,(unsigned long)s_learn.sync_word,s_learn.confidence);

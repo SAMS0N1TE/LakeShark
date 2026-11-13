@@ -279,3 +279,145 @@ const char *ls_desk_version(void) { return esp_app_get_description()->version; }
 #else
 const char *ls_desk_version(void) { return "lssim"; }
 #endif
+
+/* ------------------------------------------- the store, the card, memory -- */
+
+#include "esp_timer.h"
+#include "esp_heap_caps.h"
+#include "../ls_tui_screen.h"
+#include "../ls_term.h"
+#include "core/ls_vitals.h"
+
+extern bool ls_scr_music_play_file(const char *path) __attribute__((weak));
+
+#ifdef ESP_PLATFORM
+#include "nvs.h"
+#include "core/ls_nvs_safe.h"
+
+/* One blob in its own namespace, written from a task whose stack is in
+   internal RAM (ls_nvs_run): the UI task's is in PSRAM, where a flash write
+   asserts. */
+typedef struct { bool save; void *buf; const void *cbuf; size_t len; } store_job_t;
+static esp_err_t store_job(void *arg)
+{
+    store_job_t *j = arg;
+    nvs_handle_t h;
+    esp_err_t e = nvs_open("desk", j->save ? NVS_READWRITE : NVS_READONLY, &h);
+    if (e != ESP_OK) return e;
+    if (j->save) {
+        e = nvs_set_blob(h, "shell_v1", j->cbuf, j->len);
+        if (e == ESP_OK) e = nvs_commit(h);
+    } else {
+        size_t n = j->len;
+        e = nvs_get_blob(h, "shell_v1", j->buf, &n);
+        j->len = e == ESP_OK ? n : 0;
+    }
+    nvs_close(h);
+    return e;
+}
+size_t dk_sys_store_load(void *buf, size_t cap)
+{
+    store_job_t j = {.save = false, .buf = buf, .len = cap};
+    return ls_nvs_run(store_job, &j, 0) == ESP_OK ? j.len : 0;
+}
+bool dk_sys_store_save(const void *buf, size_t len)
+{
+    store_job_t j = {.save = true, .cbuf = buf, .len = len};
+    return ls_nvs_run(store_job, &j, 0) == ESP_OK;
+}
+const char *dk_sys_card_root(void) { return "/sdcard"; }
+
+extern bool ls_scr_files_show_path(const char *path, void (*on_return)(void)) __attribute__((weak));
+#else
+/* The host: LSSIM_DESK_STORE names a file to keep the store in between runs
+   (none: nothing is kept), LSSIM_DESK_ROOT the folder that stands for the card. */
+size_t dk_sys_store_load(void *buf, size_t cap)
+{
+    const char *p = getenv("LSSIM_DESK_STORE");
+    FILE *f = p ? fopen(p, "rb") : NULL;
+    if (!f) return 0;
+    const size_t n = fread(buf, 1, cap, f);
+    fclose(f);
+    return n;
+}
+bool dk_sys_store_save(const void *buf, size_t len)
+{
+    const char *p = getenv("LSSIM_DESK_STORE");
+    FILE *f = p ? fopen(p, "wb") : NULL;
+    if (!f) return false;
+    const bool ok = fwrite(buf, 1, len, f) == len;
+    fclose(f);
+    return ok;
+}
+const char *dk_sys_card_root(void)
+{
+    const char *d = getenv("LSSIM_DESK_ROOT");
+    return d ? d : "desk-card";
+}
+#endif
+
+static bool has_ext(const char *path, const char *const *exts)
+{
+    const char *e = strrchr(path, '.');
+    for (int i = 0; e && exts[i]; i++) if (!strcasecmp(e, exts[i])) return true;
+    return false;
+}
+
+/* A file opens in the app that plays or shows it: sound in MUSIC, anything
+   else in the SD CARD app with the file selected (its own viewers take over
+   from there). False when nothing on this board can. */
+bool dk_sys_open_file(const char *path)
+{
+    static const char *const AUDIO[] = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", NULL};
+    if (!path) return false;
+    if (has_ext(path, AUDIO) && ls_scr_music_play_file && ls_app_by_id("music")) {
+        if (ls_desk_open_app("music") < 0) return false;
+        return ls_scr_music_play_file && ls_scr_music_play_file(path);
+    }
+#ifdef ESP_PLATFORM
+    if (ls_scr_files_show_path && ls_app_by_id("files")) {
+        if (ls_desk_open_app("files") < 0) return false;
+        return ls_scr_files_show_path(path, NULL);
+    }
+#endif
+    return false;
+}
+
+/* A console word: TERMINAL runs it and shows what it printed. */
+bool dk_sys_console(const char *line)
+{
+    if (!line || !line[0] || !ls_app_by_id("terminal")) return false;
+    if (!ls_term_running() && !ls_term_start()) return false;
+    if (!ls_term_submit(line)) return false;
+    return ls_desk_open_app("terminal") >= 0;
+}
+
+/* The allocator is asked twice a second at most: the largest-block figure
+   walks the heap under its lock, and a gadget or the Task Manager would
+   otherwise ask every frame. */
+void dk_sys_perf(dk_perf_t *out)
+{
+    static dk_perf_t s_perf;
+    static int64_t s_perf_us;
+    const int64_t now = esp_timer_get_time();
+    dk_perf_t *o = &s_perf;
+    if (s_perf_us && now - s_perf_us < 500000) {
+        *out = s_perf;
+        out->uptime_s = (long)(now / 1000000);
+        return;
+    }
+    s_perf_us = now;
+    memset(o, 0, sizeof(*o));
+    o->internal_kb = (long)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024);
+    o->largest_kb = (long)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024);
+    o->psram_kb = (long)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
+    o->internal_low_kb = (long)(ls_vitals_internal_low() / 1024);
+    o->psram_low_kb = (long)(ls_vitals_psram_low() / 1024);
+    o->uptime_s = (long)(esp_timer_get_time() / 1000000);
+    uint32_t us = 0;
+    int cells = 0;
+    ls_tui_last_cost(&us, &cells);
+    o->frame_us = (int)us;
+    o->cells = cells;
+    *out = s_perf;
+}

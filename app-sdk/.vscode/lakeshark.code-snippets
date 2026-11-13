@@ -812,7 +812,7 @@
   "body": [
    "lap_service_start(${1:svc})"
   ],
-  "description": "int lap_service_start(const lap_service_t *svc)  From any callback. Copies *svc; calling it again changes the tick or the period. 0, or LAP_SVC_EACCES without LAP_CAP_SERVICE. Pointer contract: Service struct copied synchronously; retained callback code must be in the app image. Since API 2.1. Capability: LAP_CAP_SERVICE. Simulator: limited \u2014 Shared hide/reopen/stop lifecycle and tick budget; deterministic polling with host CPU timing differs from device scheduling.",
+  "description": "int lap_service_start(const lap_service_t *svc)  From any callback. Copies *svc; calling it again changes the tick or the period. 0, or LAP_SVC_EACCES without LAP_CAP_SERVICE. Pointer contract: Service struct copied synchronously; retained callback code must be in the app image. Since API 2.1. Capability: LAP_CAP_SERVICE. Simulator: limited \u2014 Shared per-instance hide/reopen/stop, resource tables and tick budget. LAPSIM_SERVICES=service_logger,service_notifier runs two residents with a foreground app; service_stop=ID stops one. Device scheduling and physical leases require board checks.",
   "scope": "c"
  },
  "lap_service_stop": {
@@ -820,7 +820,7 @@
   "body": [
    "lap_service_stop()"
   ],
-  "description": "void lap_service_stop(void)  Ends the service. Inside a tick with the screen closed, the app is unloaded after the tick returns, as lap_exit does. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.1. Capability: none. Simulator: limited \u2014 Shared hide/reopen/stop lifecycle and tick budget; deterministic polling with host CPU timing differs from device scheduling.",
+  "description": "void lap_service_stop(void)  Ends the service. Inside a tick with the screen closed, the app is unloaded after the tick returns, as lap_exit does. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.1. Capability: none. Simulator: limited \u2014 Shared per-instance hide/reopen/stop, resource tables and tick budget. LAPSIM_SERVICES=service_logger,service_notifier runs two residents with a foreground app; service_stop=ID stops one. Device scheduling and physical leases require board checks.",
   "scope": "c"
  },
  "lap_service_running": {
@@ -828,7 +828,7 @@
   "body": [
    "lap_service_running()"
   ],
-  "description": "bool lap_service_running(void)  Ends the service. Inside a tick with the screen closed, the app is unloaded after the tick returns, as lap_exit does. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.1. Capability: none. Simulator: limited \u2014 Shared hide/reopen/stop lifecycle and tick budget; deterministic polling with host CPU timing differs from device scheduling.",
+  "description": "bool lap_service_running(void)  Ends the service. Inside a tick with the screen closed, the app is unloaded after the tick returns, as lap_exit does. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.1. Capability: none. Simulator: limited \u2014 Shared per-instance hide/reopen/stop, resource tables and tick budget. LAPSIM_SERVICES=service_logger,service_notifier runs two residents with a foreground app; service_stop=ID stops one. Device scheduling and physical leases require board checks.",
   "scope": "c"
  },
  "lap_screen_open": {
@@ -836,7 +836,7 @@
   "body": [
    "lap_screen_open()"
   ],
-  "description": "bool lap_screen_open(void)  False inside a tick while the app's screen is closed. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.1. Capability: none. Simulator: limited \u2014 Shared hide/reopen/stop lifecycle and tick budget; deterministic polling with host CPU timing differs from device scheduling.",
+  "description": "bool lap_screen_open(void)  False inside a tick while the app's screen is closed. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.1. Capability: none. Simulator: limited \u2014 Shared per-instance hide/reopen/stop, resource tables and tick budget. LAPSIM_SERVICES=service_logger,service_notifier runs two residents with a foreground app; service_stop=ID stops one. Device scheduling and physical leases require board checks.",
   "scope": "c"
  },
  "lap_service_stats": {
@@ -844,7 +844,7 @@
   "body": [
    "lap_service_stats(${1:out})"
   ],
-  "description": "int lap_service_stats(lap_service_stats_t *out)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.1. Capability: none. Simulator: limited \u2014 Shared hide/reopen/stop lifecycle and tick budget; deterministic polling with host CPU timing differs from device scheduling.",
+  "description": "int lap_service_stats(lap_service_stats_t *out)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.1. Capability: none. Simulator: limited \u2014 Shared per-instance hide/reopen/stop, resource tables and tick budget. LAPSIM_SERVICES=service_logger,service_notifier runs two residents with a foreground app; service_stop=ID stops one. Device scheduling and physical leases require board checks.",
   "scope": "c"
  },
  "lap_seen_watch": {
@@ -1812,7 +1812,7 @@
   "body": [
    "lap_notify_post(${1:notice})"
   ],
-  "description": "int lap_notify_post(const lap_notification_t *notice)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_notify_post(const lap_notification_t *notice)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_notify_dismiss": {
@@ -1820,7 +1820,7 @@
   "body": [
    "lap_notify_dismiss(${1:notification})"
   ],
-  "description": "int lap_notify_dismiss(int notification)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_notify_dismiss(int notification)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_launch_data": {
@@ -1828,7 +1828,7 @@
   "body": [
    "lap_launch_data(${1:out})"
   ],
-  "description": "int lap_launch_data(lap_launch_data_t *out)  1 consumes a launch, 0=ordinary launch/no new activation. Retry after enter too: an already resident app receives activation on its next tick/draw. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_launch_data(lap_launch_data_t *out)  1 consumes a launch, 0=ordinary launch/no new activation. Retry after enter too: an already resident app receives activation on its next tick/draw. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_file_picker": {
@@ -1836,7 +1836,7 @@
   "body": [
    "lap_file_picker(${1:cfg})"
   ],
-  "description": "int lap_file_picker(const lap_file_picker_config_t *cfg)  Scope 0 is apps_data/<id>/files; positive scope handles are user-selected files/folders valid until app unload. Relative UTF-8 paths, max 127 bytes; no dot components, hidden files, backslashes or symlinks. Protected app, credentials and firmware folders can never be granted. READ mandatory; WRITE permits overwrite/creation. Four streams and four grants/instance. Each instance has one outstanding storage job, max 4096 bytes or 16 rows. Calls never perform filesystem I/O on the UI task. Open reserves a logical handle; existence/I/O errors arrive from read/write/list completion. Poll: 0=pending, 1=done (result is bytes/rows or negative error); completion consumes the job. Inputs are copied; output buffers are used only by poll. Reads/writes advance stream position on successful completion; seek and close return EBUSY while that stream has an outstanding job. Offset range is 0..INT32_MAX. Directory cursor is an entry offset, zero starts; next=0 means end. Directory mutations can invalidate pagination. Close is logical; writes complete only after fflush/fsync/close (FAT power loss still matters). Cached lap_file_* data is separate from the streaming files/ subfolder. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_file_picker(const lap_file_picker_config_t *cfg)  Scope 0 is apps_data/<id>/files; positive scope handles are user-selected files/folders valid until app unload. Relative UTF-8 paths, max 127 bytes; no dot components, hidden files, backslashes or symlinks. Protected app, credentials and firmware folders can never be granted. READ mandatory; WRITE permits overwrite/creation. Four streams and four grants/instance. Each instance has one outstanding storage job, max 4096 bytes or 16 rows. Calls never perform filesystem I/O on the UI task. Open reserves a logical handle; existence/I/O errors arrive from read/write/list completion. Poll: 0=pending, 1=done (result is bytes/rows or negative error); completion consumes the job. Inputs are copied; output buffers are used only by poll. Reads/writes advance stream position on successful completion; seek and close return EBUSY while that stream has an outstanding job. Offset range is 0..INT32_MAX. Directory cursor is an entry offset, zero starts; next=0 means end. Directory mutations can invalidate pagination. Close is logical; writes complete only after fflush/fsync/close (FAT power loss still matters). Cached lap_file_* data is separate from the streaming files/ subfolder. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_file_picker_poll": {
@@ -1844,7 +1844,7 @@
   "body": [
    "lap_file_picker_poll(${1:picker})"
   ],
-  "description": "int lap_file_picker_poll(int picker)  0=pending, positive=scope, negative=cancel/error; consumes completion. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_file_picker_poll(int picker)  0=pending, positive=scope, negative=cancel/error; consumes completion. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_file_scope_close": {
@@ -1852,7 +1852,7 @@
   "body": [
    "lap_file_scope_close(${1:scope})"
   ],
-  "description": "int lap_file_scope_close(int scope)  0=pending, positive=scope, negative=cancel/error; consumes completion. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_file_scope_close(int scope)  0=pending, positive=scope, negative=cancel/error; consumes completion. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_stream_open": {
@@ -1860,7 +1860,7 @@
   "body": [
    "lap_stream_open(${1:scope}, ${2:path}, ${3:flags})"
   ],
-  "description": "int lap_stream_open(int scope, const char *path, uint32_t flags)  0=pending, positive=scope, negative=cancel/error; consumes completion. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_stream_open(int scope, const char *path, uint32_t flags)  0=pending, positive=scope, negative=cancel/error; consumes completion. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_stream_read": {
@@ -1868,7 +1868,7 @@
   "body": [
    "lap_stream_read(${1:stream}, ${2:bytes})"
   ],
-  "description": "int lap_stream_read(int stream, uint32_t bytes)  0=pending, positive=scope, negative=cancel/error; consumes completion. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_stream_read(int stream, uint32_t bytes)  0=pending, positive=scope, negative=cancel/error; consumes completion. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_stream_write": {
@@ -1876,7 +1876,7 @@
   "body": [
    "lap_stream_write(${1:stream}, ${2:data}, ${3:bytes})"
   ],
-  "description": "int lap_stream_write(int stream, const void *data, uint32_t bytes)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_stream_write(int stream, const void *data, uint32_t bytes)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_stream_seek": {
@@ -1884,7 +1884,7 @@
   "body": [
    "lap_stream_seek(${1:stream}, ${2:offset})"
   ],
-  "description": "int lap_stream_seek(int stream, uint64_t offset)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_stream_seek(int stream, uint64_t offset)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_stream_close": {
@@ -1892,7 +1892,7 @@
   "body": [
    "lap_stream_close(${1:stream})"
   ],
-  "description": "int lap_stream_close(int stream)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_stream_close(int stream)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_dir_list": {
@@ -1900,7 +1900,7 @@
   "body": [
    "lap_dir_list(${1:scope}, ${2:path}, ${3:cursor})"
   ],
-  "description": "int lap_dir_list(int scope, const char *path, uint32_t cursor)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_dir_list(int scope, const char *path, uint32_t cursor)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_storage_poll": {
@@ -1908,7 +1908,7 @@
   "body": [
    "lap_storage_poll(${1:job}, ${2:out}, ${3:capacity}, ${4:outcome}, ${5:next})"
   ],
-  "description": "int lap_storage_poll(int job, void *out, uint32_t capacity, int32_t *outcome, uint32_t *next)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_storage_poll(int job, void *out, uint32_t capacity, int32_t *outcome, uint32_t *next)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_storage_cancel": {
@@ -1916,7 +1916,7 @@
   "body": [
    "lap_storage_cancel(${1:job})"
   ],
-  "description": "int lap_storage_cancel(int job)  Best effort: queued work is skipped; a write already running may complete. Poll still consumes the cancelled job. Cancellation does not roll back. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_storage_cancel(int job)  Best effort: queued work is skipped; a write already running may complete. Poll still consumes the cancelled job. Cancellation does not roll back. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_ipc_subscribe": {
@@ -1924,7 +1924,7 @@
   "body": [
    "lap_ipc_subscribe(${1:topic})"
   ],
-  "description": "int lap_ipc_subscribe(const char *topic)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_ipc_subscribe(const char *topic)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_ipc_unsubscribe": {
@@ -1932,7 +1932,7 @@
   "body": [
    "lap_ipc_unsubscribe(${1:topic})"
   ],
-  "description": "int lap_ipc_unsubscribe(const char *topic)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_ipc_unsubscribe(const char *topic)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_ipc_publish": {
@@ -1940,7 +1940,7 @@
   "body": [
    "lap_ipc_publish(${1:topic}, ${2:type}, ${3:data}, ${4:len})"
   ],
-  "description": "int lap_ipc_publish(const char *topic, uint32_t type, const void *data, uint32_t len)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_ipc_publish(const char *topic, uint32_t type, const void *data, uint32_t len)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_ipc_next": {
@@ -1948,7 +1948,7 @@
   "body": [
    "lap_ipc_next(${1:out})"
   ],
-  "description": "int lap_ipc_next(lap_ipc_message_t *out)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared API 2.5 copied notice/launch broker, boot-local bounded topic mailboxes and per-instance core/system state; paged firmware picker and async scoped host filesystem. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. One resident service retained; FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
+  "description": "int lap_ipc_next(lap_ipc_message_t *out)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.5. Capability: none. Simulator: limited \u2014 Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification.",
   "scope": "c"
  },
  "lap_desktop_info": {
@@ -2213,6 +2213,110 @@
    "lap_hid_device_report_map(${1:kind}, ${2:out}, ${3:cap})"
   ],
   "description": "int lap_hid_device_report_map(int kind, void *out, size_t cap)  Copy the exact standard report map; returns byte count or ELIMIT/ENOTSUP. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.6. Capability: none. Simulator: limited \u2014 Shared bounded peripheral database, copied ATT values, event and send queues. LAPSIM_SCRIPT periphconnect/periphdisconnect/periphread/periphwrite/periphsubscribe/periphmtu/periphbond/periphbusy/peripherror/periphack simulate peers. No RF; controller power, HOGP pairing and internal RAM need board verification. See BLE_PERIPHERAL.md.",
+  "scope": "c"
+ },
+ "lap_service_list": {
+  "prefix": "lap_service_list",
+  "body": [
+   "lap_service_list(${1:out}, ${2:max})"
+  ],
+  "description": "int lap_service_list(lap_service_info_t *out, int max)  Resident snapshots; list returns rows copied, query 1 found / 0 absent. The build selects 2 services on Nano, 3 on P4 by default, plus a foreground app. Each app retains its 4 MiB heap/cache cap and bounded private handle tables: TCP 6, HTTP 2, UDP 4, mDNS 2, BLE scan/client 1 each, mic 1, mixer 3, WAV 2, IQ/channel/decoder 1 each, packet/scan/TX/record 1 each, cached files 4, streams/scopes/storage jobs 4 each, IPC subscriptions 4. memory_bytes includes tracked heap/cache. pool_bytes accounts firmware handle tables, copied queues and live radio/audio buffers separately (2 MiB ceiling per slot); handles reports currently published handles. Exclusive hardware returns busy; opening a screen never steals a lease. No service auto-starts at boot. Stop residents from SETTINGS > SERVICES. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.6. Capability: none. Simulator: limited \u2014 Shared per-instance hide/reopen/stop, resource tables and tick budget. LAPSIM_SERVICES=service_logger,service_notifier runs two residents with a foreground app; service_stop=ID stops one. Device scheduling and physical leases require board checks.",
+  "scope": "c"
+ },
+ "lap_service_query": {
+  "prefix": "lap_service_query",
+  "body": [
+   "lap_service_query(${1:app_id}, ${2:out})"
+  ],
+  "description": "int lap_service_query(const char *app_id, lap_service_info_t *out)  Resident snapshots; list returns rows copied, query 1 found / 0 absent. The build selects 2 services on Nano, 3 on P4 by default, plus a foreground app. Each app retains its 4 MiB heap/cache cap and bounded private handle tables: TCP 6, HTTP 2, UDP 4, mDNS 2, BLE scan/client 1 each, mic 1, mixer 3, WAV 2, IQ/channel/decoder 1 each, packet/scan/TX/record 1 each, cached files 4, streams/scopes/storage jobs 4 each, IPC subscriptions 4. memory_bytes includes tracked heap/cache. pool_bytes accounts firmware handle tables, copied queues and live radio/audio buffers separately (2 MiB ceiling per slot); handles reports currently published handles. Exclusive hardware returns busy; opening a screen never steals a lease. No service auto-starts at boot. Stop residents from SETTINGS > SERVICES. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.6. Capability: none. Simulator: limited \u2014 Shared per-instance hide/reopen/stop, resource tables and tick budget. LAPSIM_SERVICES=service_logger,service_notifier runs two residents with a foreground app; service_stop=ID stops one. Device scheduling and physical leases require board checks.",
+  "scope": "c"
+ },
+ "lap_service_limit": {
+  "prefix": "lap_service_limit",
+  "body": [
+   "lap_service_limit()"
+  ],
+  "description": "int lap_service_limit(void)  Resident snapshots; list returns rows copied, query 1 found / 0 absent. The build selects 2 services on Nano, 3 on P4 by default, plus a foreground app. Each app retains its 4 MiB heap/cache cap and bounded private handle tables: TCP 6, HTTP 2, UDP 4, mDNS 2, BLE scan/client 1 each, mic 1, mixer 3, WAV 2, IQ/channel/decoder 1 each, packet/scan/TX/record 1 each, cached files 4, streams/scopes/storage jobs 4 each, IPC subscriptions 4. memory_bytes includes tracked heap/cache. pool_bytes accounts firmware handle tables, copied queues and live radio/audio buffers separately (2 MiB ceiling per slot); handles reports currently published handles. Exclusive hardware returns busy; opening a screen never steals a lease. No service auto-starts at boot. Stop residents from SETTINGS > SERVICES. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.6. Capability: none. Simulator: limited \u2014 Shared per-instance hide/reopen/stop, resource tables and tick budget. LAPSIM_SERVICES=service_logger,service_notifier runs two residents with a foreground app; service_stop=ID stops one. Device scheduling and physical leases require board checks.",
+  "scope": "c"
+ },
+ "lap_rx_dsp_start": {
+  "prefix": "lap_rx_dsp_start",
+  "body": [
+   "lap_rx_dsp_start(${1:channel}, ${2:config})"
+  ],
+  "description": "int lap_rx_dsp_start(int channel, const lap_dsp_config_t *config)  One hook per instance, on its own channel. Two copied input blocks and eight output messages; overflow drops newest and increments dropped. Channel reading remains available independently. Start returns a positive handle; errors use LAP_RX_*. next returns 1 result / 0 empty; too-small output returns ERANGE without consuming. status/next copy to callback stack or owned buffers. Close is async: retain state until STOPPED, OVERRUN or FAILED is reported. Channel close/unload cancels and joins the worker before image/state memory is freed. Stale/foreign handles are rejected. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.6. Capability: LAP_CAP_RADIO_RX. Simulator: limited \u2014 Copied channel blocks and private native worker; host thread deadline containment, two input blocks, eight results, drop/overrun accounting. LAPSIM_SCRIPT dspcost=US injects missed budgets and dspfail=1 injects memory admission failure; device FreeRTOS preemption and watchdog need board verification.",
+  "scope": "c"
+ },
+ "lap_rx_dsp_status": {
+  "prefix": "lap_rx_dsp_status",
+  "body": [
+   "lap_rx_dsp_status(${1:worker}, ${2:out})"
+  ],
+  "description": "int lap_rx_dsp_status(int worker, lap_dsp_status_t *out)  One hook per instance, on its own channel. Two copied input blocks and eight output messages; overflow drops newest and increments dropped. Channel reading remains available independently. Start returns a positive handle; errors use LAP_RX_*. next returns 1 result / 0 empty; too-small output returns ERANGE without consuming. status/next copy to callback stack or owned buffers. Close is async: retain state until STOPPED, OVERRUN or FAILED is reported. Channel close/unload cancels and joins the worker before image/state memory is freed. Stale/foreign handles are rejected. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.6. Capability: LAP_CAP_RADIO_RX. Simulator: limited \u2014 Copied channel blocks and private native worker; host thread deadline containment, two input blocks, eight results, drop/overrun accounting. LAPSIM_SCRIPT dspcost=US injects missed budgets and dspfail=1 injects memory admission failure; device FreeRTOS preemption and watchdog need board verification.",
+  "scope": "c"
+ },
+ "lap_rx_dsp_next": {
+  "prefix": "lap_rx_dsp_next",
+  "body": [
+   "lap_rx_dsp_next(${1:worker}, ${2:out}, ${3:data}, ${4:cap})"
+  ],
+  "description": "int lap_rx_dsp_next(int worker, lap_dsp_result_t *out, void *data, uint32_t cap)  One hook per instance, on its own channel. Two copied input blocks and eight output messages; overflow drops newest and increments dropped. Channel reading remains available independently. Start returns a positive handle; errors use LAP_RX_*. next returns 1 result / 0 empty; too-small output returns ERANGE without consuming. status/next copy to callback stack or owned buffers. Close is async: retain state until STOPPED, OVERRUN or FAILED is reported. Channel close/unload cancels and joins the worker before image/state memory is freed. Stale/foreign handles are rejected. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.6. Capability: LAP_CAP_RADIO_RX. Simulator: limited \u2014 Copied channel blocks and private native worker; host thread deadline containment, two input blocks, eight results, drop/overrun accounting. LAPSIM_SCRIPT dspcost=US injects missed budgets and dspfail=1 injects memory admission failure; device FreeRTOS preemption and watchdog need board verification.",
+  "scope": "c"
+ },
+ "lap_rx_dsp_close": {
+  "prefix": "lap_rx_dsp_close",
+  "body": [
+   "lap_rx_dsp_close(${1:worker})"
+  ],
+  "description": "void lap_rx_dsp_close(int worker)  One hook per instance, on its own channel. Two copied input blocks and eight output messages; overflow drops newest and increments dropped. Channel reading remains available independently. Start returns a positive handle; errors use LAP_RX_*. next returns 1 result / 0 empty; too-small output returns ERANGE without consuming. status/next copy to callback stack or owned buffers. Close is async: retain state until STOPPED, OVERRUN or FAILED is reported. Channel close/unload cancels and joins the worker before image/state memory is freed. Stale/foreign handles are rejected. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.6. Capability: LAP_CAP_RADIO_RX. Simulator: limited \u2014 Copied channel blocks and private native worker; host thread deadline containment, two input blocks, eight results, drop/overrun accounting. LAPSIM_SCRIPT dspcost=US injects missed budgets and dspfail=1 injects memory admission failure; device FreeRTOS preemption and watchdog need board verification.",
+  "scope": "c"
+ },
+ "lap_map_node": {
+  "prefix": "lap_map_node",
+  "body": [
+   "lap_map_node(${1:node})"
+  ],
+  "description": "int lap_map_node(const lap_map_node_t *node)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.6. Capability: none. Simulator: real \u2014 Shared app runtime and host renderer; target ABI/timing still require board validation.",
+  "scope": "c"
+ },
+ "lap_wifi_capture_start": {
+  "prefix": "lap_wifi_capture_start",
+  "body": [
+   "lap_wifi_capture_start(${1:config})"
+  ],
+  "description": "int lap_wifi_capture_start(const lap_wifi_capture_config_t *config)  start returns the handle (the source) or LAP_IO_EINVAL, EACCES, EBUSY, ENOTSUP. read returns bytes copied (0 is a valid empty frame), LAP_IO_EAGAIN when nothing waits, LAP_IO_ECLOSED when not started by this app; meta is always filled with a frame. A frame longer than cap is cut and consumed. Buffers are copied before return and may be on the stack. Closing the app stops its captures and returns the Wi-Fi radio to the channel it was on. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.7. Capability: LAP_CAP_RADIO_RX. Simulator: limited \u2014 Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md.",
+  "scope": "c"
+ },
+ "lap_ble_capture_start": {
+  "prefix": "lap_ble_capture_start",
+  "body": [
+   "lap_ble_capture_start(${1:config})"
+  ],
+  "description": "int lap_ble_capture_start(const lap_ble_capture_config_t *config)  start returns the handle (the source) or LAP_IO_EINVAL, EACCES, EBUSY, ENOTSUP. read returns bytes copied (0 is a valid empty frame), LAP_IO_EAGAIN when nothing waits, LAP_IO_ECLOSED when not started by this app; meta is always filled with a frame. A frame longer than cap is cut and consumed. Buffers are copied before return and may be on the stack. Closing the app stops its captures and returns the Wi-Fi radio to the channel it was on. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.7. Capability: LAP_CAP_RADIO_RX. Simulator: limited \u2014 Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md.",
+  "scope": "c"
+ },
+ "lap_capture_read": {
+  "prefix": "lap_capture_read",
+  "body": [
+   "lap_capture_read(${1:capture}, ${2:data}, ${3:cap}, ${4:meta})"
+  ],
+  "description": "int lap_capture_read(int capture, void *data, size_t cap, lap_capture_meta_t *meta)  start returns the handle (the source) or LAP_IO_EINVAL, EACCES, EBUSY, ENOTSUP. read returns bytes copied (0 is a valid empty frame), LAP_IO_EAGAIN when nothing waits, LAP_IO_ECLOSED when not started by this app; meta is always filled with a frame. A frame longer than cap is cut and consumed. Buffers are copied before return and may be on the stack. Closing the app stops its captures and returns the Wi-Fi radio to the channel it was on. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.7. Capability: LAP_CAP_RADIO_RX. Simulator: limited \u2014 Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md.",
+  "scope": "c"
+ },
+ "lap_capture_status": {
+  "prefix": "lap_capture_status",
+  "body": [
+   "lap_capture_status(${1:capture}, ${2:out})"
+  ],
+  "description": "int lap_capture_status(int capture, lap_capture_status_t *out)  start returns the handle (the source) or LAP_IO_EINVAL, EACCES, EBUSY, ENOTSUP. read returns bytes copied (0 is a valid empty frame), LAP_IO_EAGAIN when nothing waits, LAP_IO_ECLOSED when not started by this app; meta is always filled with a frame. A frame longer than cap is cut and consumed. Buffers are copied before return and may be on the stack. Closing the app stops its captures and returns the Wi-Fi radio to the channel it was on. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.7. Capability: none. Simulator: limited \u2014 Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md.",
+  "scope": "c"
+ },
+ "lap_capture_stop": {
+  "prefix": "lap_capture_stop",
+  "body": [
+   "lap_capture_stop(${1:capture})"
+  ],
+  "description": "void lap_capture_stop(int capture)   Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.7. Capability: none. Simulator: limited \u2014 Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md.",
   "scope": "c"
  },
  "lap_ui_keys_rows": {

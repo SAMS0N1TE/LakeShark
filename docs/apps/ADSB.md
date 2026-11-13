@@ -87,3 +87,24 @@ In landscape the list and the map sit side by side, with a traffic history along
 - [HackRF](../HACKRF_BRINGUP.md)
 - [Controls and navigation](../UI_CONTROLS.md)
 - [All apps](README.md)
+
+## On the desktop
+
+In a LakeShark Desktop window ADS-B is laid out around a table of aircraft.
+The handheld layout is one key away (Ctrl+L, and Ctrl+L again to come back).
+
+- **The table**: callsign, ICAO address, altitude, vertical rate, speed,
+  heading, range and bearing from home or GPS, squawk, source, last seen and
+  message count. Click a header to sort by it, again to turn the order
+  round, a third time for the tracker's own order. A value followed by `*`
+  has not been heard for a while.
+- **Emergencies** (squawk 7500, 7600, 7700 or a declared state) are drawn in
+  red, named on the frame, and kept at the top unless Emergencies first is
+  switched off.
+- **The map and This one** at the right: the same map the handheld draws,
+  and every field of the aircraft under the cursor with its altitude trend.
+- **The right button** on a row: its own page, Show on MAP, and Copy for the
+  callsign, the address, the position or the whole row as CSV.
+- **Keys**: Enter opens the aircraft's page, Ctrl+F finds by callsign,
+  address, squawk or EMERGENCY, Ctrl+E saves the table to `/sdcard/adsb` as
+  CSV. F, R, O, V, M, H, W, + and - do what they do on the handheld.

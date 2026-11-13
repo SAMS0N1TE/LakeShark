@@ -60,10 +60,15 @@ aside (its button reads PAUSED), and the banner turns magenta, counts down
 30 seconds and says "Press the remote", with what it is trying and how far it
 has got.
 
-- On the LR2021 one press is enough: LEARN listens through the chip's I/Q
-  stream and takes the first packet whole - the bit rate from its preamble,
-  the deviation from its two tones, the sync word read - and stops as soon
-  as it has it. Frames from 600 to 100 000 bd are heard.
+- On the LR2021 one press is usually enough: LEARN listens through the
+  chip's I/Q stream and takes a packet whole - the bit rate from its
+  preamble, the deviation from its two tones, the sync word read - and stops
+  as soon as it has it. A packet with a CRC that checks, or a radio chip's
+  default sync word, is taken from the one burst (95%). One with neither
+  could as well be a voice set keying up, so the banner asks for a second
+  press and takes it when both bursts carry the same word at the same rate
+  and deviation (80%); one such burst alone changes nothing. Frames from 600
+  to 100 000 bd are heard.
 - On the SX1262 keep pressing the transmitter: it looks at each of seven bit
   rates in turn, round after round, and needs the same frame twice at the
   right rate. Presses every second or two are enough.

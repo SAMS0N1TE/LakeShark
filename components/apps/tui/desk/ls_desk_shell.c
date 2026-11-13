@@ -53,7 +53,8 @@ static void about(tui_surface *sf, tui_rect c, tui_rect clip)
     /* Keys, as a short table. */
     static const char *const K[][2] = {
         {"F10", "Start"}, {"F6", "next window"}, {"F11", "full screen"},
-        {"F9", "scheme"}, {"Esc", "back, then the window menu"},
+        {"F9", "scheme"}, {"F2", "rename icon"}, {"Del", "icon to bin"},
+        {"F1", "this window"}, {"Esc", "back, then menu"},
     };
     int ky = c.y + 10, kx = c.x + 3;
     for (unsigned i = 0; i < sizeof(K) / sizeof(K[0]); i++) {
@@ -61,7 +62,8 @@ static void about(tui_surface *sf, tui_rect c, tui_rect clip)
         dk_text(sf, clip, col, row, K[i][0], dk_attr(R_ACCEL));
         dk_text(sf, clip, col + 4, row, K[i][1], st);
     }
-    dk_button(sf, clip, ok_rect(c), "OK", true, false);
+    dk_text(sf, clip, kx, ky + 3, "Ctrl+Tab switches windows, Ctrl+F4 closes one.", tx);
+    dk_button(sf, clip, ok_rect(c), "OK", true, dk_pressed(ok_rect(c)));
 }
 
 /* ---------------------------------------------------------- Shut Down -- */
@@ -114,8 +116,8 @@ static void shutdown(tui_surface *sf, tui_rect c, tui_rect clip)
         const tui_rect r = sd_row(c, i);
         dk_radio(sf, clip, r.x, r.y, s_sd_choice == i, SD_TEXT[i]);
     }
-    dk_button(sf, clip, sd_yes(c), "Yes", true, false);
-    dk_button(sf, clip, sd_no(c), "No", false, false);
+    dk_button(sf, clip, sd_yes(c), "Yes", true, dk_pressed(sd_yes(c)));
+    dk_button(sf, clip, sd_no(c), "No", false, dk_pressed(sd_no(c)));
 }
 
 int dk_open_shutdown(void)
@@ -147,12 +149,16 @@ void dk_shell_draw(tui_surface *sf, dk_win_t *w, tui_rect client, tui_rect clip,
     else if (w->shell == DK_SHELL_DISPLAY) dk_props_draw(sf, client, clip);
     else if (w->shell == DK_SHELL_SHUTDOWN) shutdown(sf, client, clip);
     else if (w->shell == DK_SHELL_STUDIO) dk_studio_draw(sf, client, clip);
+    else if (w->shell == DK_SHELL_CPL) dk_cpl_draw(sf, client, clip);
+    else dk_dialogs_draw(sf, w, client, clip);
 }
 
 bool dk_shell_tap(dk_win_t *w, tui_rect c, int col, int row)
 {
     if (w->shell == DK_SHELL_DISPLAY) return dk_props_tap(c, col, row);
     if (w->shell == DK_SHELL_STUDIO) return dk_studio_tap(w, c, col, row);
+    if (w->shell == DK_SHELL_CPL) return dk_cpl_tap(w, c, col, row);
+    if (w->shell >= DK_SHELL_PROMPT && w->shell != DK_SHELL_CPL) return dk_dialogs_tap(w, c, col, row);
     if (w->shell == DK_SHELL_SHUTDOWN) {
         for (int i = 0; i < SD_N; i++)
             if (tui_rect_contains(sd_row(c, i), col, row)) { s_sd_choice = i; return true; }
@@ -168,6 +174,8 @@ bool dk_shell_key(dk_win_t *w, ls_tk_t k, char ch)
 {
     if (w->shell == DK_SHELL_DISPLAY) return dk_props_key(k, ch);
     if (w->shell == DK_SHELL_STUDIO) return dk_studio_key(w, k, ch);
+    if (w->shell == DK_SHELL_CPL) return dk_cpl_key(w, k, ch);
+    if (w->shell >= DK_SHELL_PROMPT && w->shell != DK_SHELL_CPL) return dk_dialogs_key(w, k, ch);
     if (w->shell == DK_SHELL_SHUTDOWN) {
         if (k == LS_TK_UP) { s_sd_choice = (s_sd_choice + SD_N - 1) % SD_N; return true; }
         if (k == LS_TK_DOWN) { s_sd_choice = (s_sd_choice + 1) % SD_N; return true; }

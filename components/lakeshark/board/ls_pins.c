@@ -10,6 +10,9 @@
 #include "esp_log.h"
 #include "nvs.h"
 #include "ls_nvs_safe.h"
+#ifdef ESP_PLATFORM
+#include "ls_safe_mode.h"
+#endif
 #endif
 
 #define GPIO_MAX 54
@@ -110,6 +113,10 @@ static const int OWN[] = {
 #ifdef LS_BOARD_LCD_BL_GPIO
     LS_BOARD_LCD_BL_GPIO,
 #endif
+#if defined(LS_BOARD_PINS_RUNTIME) && LS_BOARD_PINS_RUNTIME
+    37, 38,                                   /* the console UART: the PC link and the desktop */
+    28, 29, 30, 31, 34, 35, 49, 50, 51, 52,   /* Ethernet RMII, MDC/MDIO, PHY reset, REF_CLK */
+#endif
     -1,
 };
 
@@ -117,6 +124,7 @@ static int8_t  s_now[LS_PIN_COUNT];
 static int8_t  s_next[LS_PIN_COUNT];
 static uint8_t s_imu_now, s_imu_next;
 static bool    s_init, s_loaded;
+static char    s_rejected[48];        /* why the saved table was not used this boot */
 
 static void init_defaults(void)
 {
@@ -181,10 +189,32 @@ void ls_pins_load(void)
     if (err == ESP_ERR_NVS_NOT_INITIALIZED) return;          /* try again later */
     if (err != ESP_OK) ESP_LOGW("ls_pins", "saved pins unreadable (%s): defaults", esp_err_to_name(err));
 #endif
-    memcpy(s_now, s_next, sizeof(s_now));
-    s_imu_now = s_imu_next;
-    s_loaded = true;
+    s_loaded = true;                  /* ls_pin_check reads the loaded table */
+    char why[48] = "";
+    bool ok = true;
+    for (int i = 0; i < LS_PIN_COUNT && ok; i++)
+        ok = ls_pin_check((ls_pin_id_t)i, s_next[i], why, sizeof(why));
+#ifdef ESP_PLATFORM
+    const ls_safe_boot_t *boot = ls_safe_boot_result();
+    if (ok && boot && boot->faults > 0) {
+        ok = false;
+        snprintf(why, sizeof(why), "the last start failed");
+    }
+#endif
+    if (ok) {
+        memcpy(s_now, s_next, sizeof(s_now));
+        s_imu_now = s_imu_next;
+        s_rejected[0] = 0;
+    } else {
+        /* s_now keeps the board defaults; s_next keeps what was saved, for PINS to show and fix */
+        snprintf(s_rejected, sizeof(s_rejected), "%s", why);
+#ifdef ESP_PLATFORM
+        ESP_LOGE("ls_pins", "saved pins not used this boot (%s): running the board defaults; fix them in PINS", why);
+#endif
+    }
 }
+
+const char *ls_pins_rejected(void) { if (!s_loaded) ls_pins_load(); return s_rejected[0] ? s_rejected : NULL; }
 
 bool ls_pins_ready(void) { if (!s_loaded) ls_pins_load(); return s_loaded; }
 
@@ -387,6 +417,7 @@ static void print_table(void)
     printf("%-10s 0x%02X  0x%02X  0x%02X\n", "imu.addr", ls_pins_imu_addr(),
            ls_pins_imu_addr_next(), default_imu_addr());
     if (!ls_pins_runtime()) printf("this board's pins are fixed.\n");
+    else if (ls_pins_rejected()) printf("saved pins NOT used this boot (%s): board defaults running.\n", ls_pins_rejected());
     else if (ls_pins_pending()) printf("changes apply at the next boot ('reboot').\n");
 }
 

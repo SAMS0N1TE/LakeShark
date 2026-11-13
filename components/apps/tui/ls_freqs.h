@@ -146,12 +146,18 @@ ls_freq_route_t ls_freq_route(int mode, uint32_t hz);
 
 /* ---------------------------------------------------------------- store -- */
 
+/* The scan, the load and its pump, and the writes may be called from any
+   task: the console and freq.save run beside the UI. What is loaded
+   (ls_freqs_at, the view) is the UI task's to read. */
+
 /* The set every unit has with no card: CSV text in the bank format. */
 const char *ls_freqs_builtin_text(void);
 
 /* Where the banks live; /sdcard/freqs unless the bench says otherwise. */
 void ls_freqs_set_root(const char *dir);
 const char *ls_freqs_root(void);
+/* The store's lock; ls_freqs_register makes it at boot. */
+void ls_freqs_lock_init(void);
 /* The bank files on the card, sorted; false without a card. */
 bool ls_freqs_scan(void);
 int  ls_freqs_banks(void);
@@ -184,6 +190,15 @@ int  ls_freqs_view(const ls_freq_filter_t *f, bool fix, double lat, double lon,
 
 /* Writing. `why` gets a sentence either way. */
 bool ls_freqs_append(const char *bank, const ls_freq_t *e, char *why, size_t n);
+/* A list into one bank, the file opened once. */
+bool ls_freqs_append_many(const char *bank, const ls_freq_t *list, int count, char *why, size_t n);
+/* Delete the loaded entries `idx` from their files, each file rewritten
+   once; answers how many went. What went is kept (as its lines were) until
+   the next call, and ls_freqs_undo puts it back at the end of its bank. */
+int  ls_freqs_remove(const uint16_t *idx, int n, char *why, size_t wn);
+int  ls_freqs_undo_count(void);
+int  ls_freqs_undo(char *why, size_t wn);
+void ls_freqs_undo_forget(void);
 /* Replace (or with NULL, delete) loaded entry `i` in its file, every other
    line - comments included - left exactly as it was. */
 bool ls_freqs_rewrite(int i, const ls_freq_t *with, char *why, size_t n);
@@ -198,6 +213,8 @@ bool ls_freqs_export(const uint16_t *idx, int n, const char *path, bool lscan,
                      char *why, size_t wn);
 /* A file in any format into a new bank beside the others. */
 bool ls_freqs_import(const char *path, char *why, size_t n);
+/* The bank the last import made, "" when it made none. */
+const char *ls_freqs_imported(void);
 
 /* ------------------------------------------------- saving from any app -- */
 

@@ -467,3 +467,10 @@ lap_rx_dsp_start
 lap_rx_dsp_status
 lap_rx_dsp_next
 lap_rx_dsp_close
+
+# API 2.7 raw Wi-Fi and Bluetooth capture
+lap_wifi_capture_start
+lap_ble_capture_start
+lap_capture_read
+lap_capture_status
+lap_capture_stop

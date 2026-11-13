@@ -129,9 +129,14 @@ unsigned ls_input_drain(void)
             if(!ls_tui_pixel_to_cell(e.px,e.py,&c,&r))c=r=-1;
             e.px=gx;e.py=gy;e.col=c;e.row=r;e.native_pixels=false;
         }
+        /* A screen may ask what its key() and touch() do not say. */
+        static uint8_t clicks;
+        if (e.kind == LS_IEV_PTR_DOWN && e.button == LS_IBTN_LEFT) clicks = e.clicks;
+        ls_tui_input_now(e.kind <= LS_IEV_WHEEL ? e.mods : 0, clicks);
         if (!ls_desk_active() || !ls_desk_input(&e)) fallback(&e, true);
         /* Reset also releases a legacy finger left held before the desk opened. */
         else if (e.kind == LS_IEV_RELEASE_ALL) fallback(&e, false);
+        ls_tui_input_now(0, 0);
         if (e.seq && (!s_applied || (int32_t)(e.seq - s_applied) > 0))
             __atomic_store_n(&s_applied, e.seq, __ATOMIC_RELEASE);
         n++;

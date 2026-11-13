@@ -47,6 +47,9 @@ bool ls_desk_tray_popup(const char *name, bool right);
 int  ls_desk_open_about(void);
 int  ls_desk_open_display(int tab);       /* Display Properties, on a tab (0 Background .. 3 Settings) */
 int  ls_desk_open_shutdown(void);
+/* The shell's other windows by name: "control" (arg: an applet, -1 the
+   panel), "run", "tasks", "bin", "folder". False for a name it has not. */
+bool ls_desk_shell_open(const char *name, int arg);
 void ls_desk_welcome(void);               /* the splash a new viewer sees */
 
 /* Window manager, for tests and the console. Ids are stable while a window

@@ -455,6 +455,11 @@
     "reason": "Shared bounded peripheral database, copied ATT values, event and send queues. LAPSIM_SCRIPT periphconnect/periphdisconnect/periphread/periphwrite/periphsubscribe/periphmtu/periphbond/periphbusy/peripherror/periphack simulate peers. No RF; controller power, HOGP pairing and internal RAM need board verification. See BLE_PERIPHERAL.md."
   },
   {
+    "name": "lap_ble_capture_start",
+    "status": "limited",
+    "reason": "Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md."
+  },
+  {
     "name": "lap_ble_connect",
     "status": "limited",
     "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
@@ -513,6 +518,21 @@
     "name": "lap_caps",
     "status": "limited",
     "reason": "Shared capability query; LAPSIM_HW configures Wi-Fi/BLE/GPS/etc. and LAPSIM_RADIO=none removes SIM radio; no physical hardware."
+  },
+  {
+    "name": "lap_capture_read",
+    "status": "limited",
+    "reason": "Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md."
+  },
+  {
+    "name": "lap_capture_status",
+    "status": "limited",
+    "reason": "Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md."
+  },
+  {
+    "name": "lap_capture_stop",
+    "status": "limited",
+    "reason": "Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md."
   },
   {
     "name": "lap_cell_px",
@@ -936,6 +956,11 @@
   },
   {
     "name": "lap_log",
+    "status": "real",
+    "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_map_node",
     "status": "real",
     "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
   },
@@ -1878,6 +1903,11 @@
     "name": "lap_wifi_aps",
     "status": "limited",
     "reason": "Host snapshots/stubs; no wireless backend, real scan lease or mesh delivery."
+  },
+  {
+    "name": "lap_wifi_capture_start",
+    "status": "limited",
+    "reason": "Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md."
   },
   {
     "name": "lap_wifi_connect",

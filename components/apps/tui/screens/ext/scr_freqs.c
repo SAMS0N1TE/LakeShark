@@ -24,6 +24,7 @@
 #include <string.h>
 #include <strings.h>
 #include "ls_textpack.h"
+#include "scr_freqs_desk.h"
 
 #define HUE TUI_YELLOW
 /* Lines read off the card each frame: a 1000-line bank in under a second,
@@ -152,7 +153,7 @@ static void refresh(void)
 /* A dial with its needle. At rest the needle stands where the entry under
    the cursor sits on the radio spectrum, 1 MHz to 3 GHz on a log scale; it
    sweeps the scale only while a bank is being read off the card. */
-static void dial(tui_surface *sf, tui_rect clip, int x, int y, const ls_freq_t *e, bool busy)
+void ls_freqs_dial(tui_surface *sf, tui_rect clip, int x, int y, const ls_freq_t *e, bool busy)
 {
     const uint8_t edge = TUI_ATTR(HUE, TUI_BLACK), tick = LS_ATTR_FAINT;
     const uint8_t needle = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
@@ -222,7 +223,7 @@ static int header(tui_surface *sf, tui_rect a, bool wide)
     ls_panel_box(sf, box, bank_title(), HUE);
     const ls_freq_t *e = selected();
     const bool busy = ls_freqs_loading();
-    dial(sf, box, box.x + box.w - 13, box.y + 1, e, busy);
+    ls_freqs_dial(sf, box, box.x + box.w - 13, box.y + 1, e, busy);
     char text[96];
     const ls_freq_tally_t *t = ls_freqs_tally();
     if (busy) snprintf(text, sizeof(text), "reading the card... %d", ls_freqs_count());
@@ -395,6 +396,10 @@ static const char *tune_value(void)
 
 static void draw(tui_surface *sf, tui_rect a)
 {
+#if LS_TUI_HAS_COMPACT
+    /* In a desk window FREQS is laid out as a desktop program is. */
+    if (ls_tui_compact()) { ls_freqs_desk_draw(sf, a); return; }
+#endif
     if (a.w < 36 || a.h < 18) {
         ls_panel_notice(sf, a, "FREQS", "Enlarge the pane", "the list keeps its place");
         return;
@@ -636,9 +641,8 @@ static void import_done(int i)
     if (i < 0 || i >= s_nfiles) return;
     char msg[96];
     if (ls_freqs_import(s_files[i], msg, sizeof(msg))) {
-        /* Straight to what came in: the new bank is the newest file. */
-        const char *base = strrchr(msg, ' ');
-        const int b = base ? ls_freqs_bank_find(base + 1) : -1;
+        /* Straight to what came in. */
+        const int b = ls_freqs_bank_find(ls_freqs_imported());
         ls_freqs_load(b >= 0 ? b : LS_FREQS_ALL);
         store_view();
     }
@@ -837,6 +841,12 @@ static void move(int d)
 
 static bool key(ls_tk_t k, char ch)
 {
+#if LS_TUI_HAS_COMPACT
+    if (ls_tui_compact()) return ls_freqs_desk_key(k, ch);
+#endif
+    /* The wheel is the desk layout's; here it is the arrows it always was. */
+    if (k == LS_TK_WHEEL_UP) k = LS_TK_UP;
+    if (k == LS_TK_WHEEL_DOWN) k = LS_TK_DOWN;
     if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
     if (k == LS_TK_UP) { move(-1); button_focus = -1; return true; }
     if (k == LS_TK_DOWN) { move(1); button_focus = -1; return true; }
@@ -864,6 +874,9 @@ static bool inside(tui_rect r, int col, int row)
 
 static bool touch(int col, int row)
 {
+#if LS_TUI_HAS_COMPACT
+    if (ls_tui_compact()) return ls_freqs_desk_touch(col, row);
+#endif
     int b = ls_btn_hit_slot(col, row, LS_BTN_SLOT_SCREEN);
     if (b >= 0) { if (ls_btn_enabled(0, b)) action(b); return true; }
     b = ls_btn_hit_slot(col, row, LS_BTN_SLOT_QUICK);
@@ -896,10 +909,14 @@ static void enter(void)
     if (!s_restored) { s_restored = true; restore_view(); }
     else if (ls_freqs_is_dirty() || !ls_freqs_count()) ls_freqs_load(ls_freqs_which());
     s_stale = true;
+#if LS_TUI_HAS_COMPACT
+    ls_freqs_desk_enter();
+#endif
 }
 
 const ls_tui_screen_t ls_scr_freqs = {
     .name = "FREQS",
     .hint = "T tune  S save  K bank  O options  B band  G group  N near  F find",
     .enter = enter, .draw = draw, .key = key, .touch = touch,
+    .wheel = true,
 };

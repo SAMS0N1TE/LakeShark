@@ -161,6 +161,11 @@ bool ls_tui_touch_px(int *x, int *y, int *x0, int *y0, int64_t *since)
     if (since) *since=s_client.since;
     return true;
 }
+/* What key() and touch() do not carry, for the event being delivered. */
+static uint8_t s_input_mods, s_input_clicks;
+void ls_tui_input_now(uint8_t mods, uint8_t clicks) { s_input_mods=mods; s_input_clicks=clicks; }
+uint8_t ls_tui_input_mods(void) { return s_input_mods; }
+uint8_t ls_tui_input_clicks(void) { return s_input_clicks; }
 static int s_pointer_col=-1, s_pointer_row=-1;
 void ls_tui_pointer_set(int col, int row) { s_pointer_col=col; s_pointer_row=row; }
 bool ls_tui_pointer_cell(int *col, int *row)

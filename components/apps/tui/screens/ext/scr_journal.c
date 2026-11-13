@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "ls_textpack.h"
+#include "scr_journal_desk.h"
 
 static int button_focus=-1, button_slot;
 EXT_RAM_BSS_ATTR static ls_field_state_t s;
@@ -151,8 +152,33 @@ static void text_rows(tui_surface *sf, tui_rect a, const char *text)
         col++;
     }
 }
+#if LS_TUI_HAS_COMPACT
+/* In a desk window JOURNAL is laid out as a desktop program
+   (scr_journal_desk.c), except while the live attachments are up or the
+   handheld layout was asked for. */
+static bool desk_layout(void) { return ls_tui_compact() && !ls_journal_desk_classic() && !s_sensors; }
+int  ls_scr_journal_selected(void) { return s_selected; }
+void ls_scr_journal_select(int index) { s_selected = index; }
+void ls_scr_journal_action(int i) { action(i); }
+const char *ls_scr_journal_feedback(void) { return s_feedback; }
+const char *ls_scr_journal_radio(void)
+{
+    const ls_btn_t b = ls_rsel_button(LS_RSEL_JOURNAL);
+    return b.value ? b.value : "";
+}
+#endif
+
 static void draw(tui_surface *sf, tui_rect a)
 {
+#if LS_TUI_HAS_COMPACT
+    if (desk_layout()) {
+        ls_field_snapshot(&s);
+        s_detail = false;
+        button_focus = -1;
+        ls_journal_desk_draw(sf, a, &s);
+        return;
+    }
+#endif
     if (a.h < 14 || a.w < 24) {
         ls_panel_box(sf, a, "JOURNAL", TUI_CYAN);
         tui_put_str(sf, a, a.x + 1, a.y + 1, "Enlarge the pane", LS_ATTR_DIM);
@@ -253,10 +279,22 @@ static void draw(tui_surface *sf, tui_rect a)
     ls_safe_line(sf, a, a.y + a.h - 1, s_feedback[0] ? s_feedback : ls_tui_keyboard_mode()?"ENTER read  ARROWS browse  BS back":s.storage, LS_ATTR_DIM);
 }
 static void enter(void) { button_focus=-1;button_slot=0; ls_field_start(); ls_field_watch(true); s_detail = s_sensors = false; s_scroll = 0;
-                          ls_field_snapshot(&s); ls_rsel_track(LS_RSEL_JOURNAL, attached); }
+                          ls_field_snapshot(&s); ls_rsel_track(LS_RSEL_JOURNAL, attached);
+#if LS_TUI_HAS_COMPACT
+                          ls_journal_desk_enter();
+#endif
+                          }
 static void leave(void) { s_rec_source=false; ls_field_watch(false); }
 static bool key(ls_tk_t k, char ch)
 {
+#if LS_TUI_HAS_COMPACT
+    if (desk_layout()) { if (ls_journal_desk_key(k, ch)) return true; }
+    else if (ls_tui_compact()) {
+        if (ls_journal_desk_classic_key(k, ch)) return true;
+        /* Esc is the way back on the desk, as Backspace is on the handheld. */
+        if (k == LS_TK_ESC && (s_detail || s_sensors)) { s_detail = s_sensors = false; return true; }
+    }
+#endif
     if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
     if(k==LS_TK_LEFT || k==LS_TK_RIGHT || k==LS_TK_TAB)return ls_btn_navigate(k,&button_slot,&button_focus,false);
     if(k==LS_TK_ENTER && button_focus>=0){if(ls_btn_enabled(0,button_focus))action(button_focus);return true;}
@@ -271,6 +309,9 @@ static bool key(ls_tk_t k, char ch)
 }
 static bool touch(int col, int row)
 {
+#if LS_TUI_HAS_COMPACT
+    if (desk_layout()) return ls_journal_desk_touch(col, row);
+#endif
     if(s_touch_nav){int i=ls_btn_hit_slot(col,row,LS_BTN_SLOT_WATERFALL);if(i>=0)return key(i==0?LS_TK_UP:i==1?LS_TK_DOWN:LS_TK_BACKSPACE,0);}
     int button = ls_btn_hit(col, row); if (button >= 0) { action(button); return true; }
     if (s_detail) { if(s_touch_nav || ls_drag_scroll_tap_is_lift(&s_text_drag))return true; if(s_sensors)s_sensors=false;else s_detail=false; return true; }

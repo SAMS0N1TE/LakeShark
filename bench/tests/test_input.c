@@ -22,6 +22,7 @@ static int64_t test_us;
 int64_t esp_timer_get_time(void) { return test_us; }
 void ls_shim_time_set(int64_t us) { test_us=us; }
 void ls_shim_time_advance(int64_t us) { test_us+=us; }
+static uint8_t now_mods, now_clicks, seen_mods[128], seen_clicks[128];
 bool ls_desk_active(void) { return active; }
 bool ls_desk_input(const ls_input_ev_t *e)
 {
@@ -33,8 +34,11 @@ bool ls_desk_input(const ls_input_ev_t *e)
         assert(!received[id][i]); received[id][i]=true; delivered++;
         return true;
     }
-    assert(seen_n < 128); seen[seen_n++] = *e; return consume;
+    assert(seen_n < 128);
+    seen_mods[seen_n] = now_mods; seen_clicks[seen_n] = now_clicks;
+    seen[seen_n++] = *e; return consume;
 }
+void ls_tui_input_now(uint8_t mods, uint8_t clicks) { now_mods = mods; now_clicks = clicks; }
 void ls_input_wake(void) { wakes++; }
 bool ls_tui_router_key(ls_tk_t key, char ch) { assert(key_n < 128); keys[key_n++] = key; last_ch = ch; return true; }
 bool ls_tui_router_touch(int c, int r) { tap_n++; tap_col = c; tap_row = r; return true; }
@@ -82,6 +86,15 @@ int main(void)
         assert(!memcmp(a,b,sizeof a));
     }
     assert(ls_input_applied_seq()==0x12340006);
+    /* What a screen's key() and touch() drop is there to ask for while an
+     * event is delivered, and gone after it. That press was the right button's. */
+    for (unsigned i=0; i<6; i++) assert(seen_mods[i]==15 && seen_clicks[i]==0);
+    assert(seen_mods[6]==0 && now_mods==0 && now_clicks==0);
+    seen_n=0;
+    post((ls_input_ev_t){.kind=LS_IEV_PTR_DOWN,.button=LS_IBTN_LEFT,.buttons=1,.clicks=2,.mods=LS_IMOD_CTRL});
+    post((ls_input_ev_t){.kind=LS_IEV_PTR_UP,.button=LS_IBTN_LEFT,.clicks=1,.mods=LS_IMOD_CTRL});
+    assert(seen_n==2 && seen_clicks[1]==2 && seen_mods[1]==LS_IMOD_CTRL && now_mods==0 && now_clicks==0);
+    seen_n=0;
     const unsigned before=wakes;
     /* A malformed later record must not enqueue an earlier valid record. */
     line[48]='0'; line[49]='2'; assert(!ls_input_decode_hex(line));

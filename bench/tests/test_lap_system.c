@@ -206,7 +206,7 @@ static void isolation(void) {
 }
 int main(void) {
     MKDIR("lap-system-sd");
-    assert(lap_api_version()==0x20006);
+    assert(lap_api_version()==0x20007);
     storage(); notices(); messaging(); picker(); desktop(); desktop_requests(); isolation();
     puts("system API 2.5 contracts PASS"); return 0;
 }

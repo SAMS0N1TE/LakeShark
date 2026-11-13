@@ -4,6 +4,7 @@
 
 #include "ls_desk_priv.h"
 
+#include "esp_attr.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -18,7 +19,7 @@ static dk_prefs_t s_edit;
 static int s_tab, s_item;
 static bool s_dirty;
 typedef struct { tui_rect r; uint8_t kind; int16_t arg; } hit_t;
-static hit_t s_hits[72];
+EXT_RAM_BSS_ATTR static hit_t s_hits[72];   /* UI task only; internal RAM is short on the Nano */
 static int s_nh;
 static char s_files[8][40];
 static const char *s_fnames[8];

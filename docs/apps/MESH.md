@@ -95,3 +95,29 @@ O, or the OPTIONS tab, opens the list. BACK goes up one level.
 - [Controls and navigation](../UI_CONTROLS.md)
 - [LoRa Labs and Notes](../FIELD_LABS.md)
 - [All apps](README.md)
+
+## On the desktop
+
+In a LakeShark Desktop window MESH is laid out as a messenger. The handheld
+layout is one key away (Ctrl+L, and Ctrl+L again to come back).
+
+- **Chats** at the left: the public channel, every channel with a key, then
+  the nodes. A chat with messages you have not looked at shows a count; the
+  count is since the board started, as the message log is. Click a chat to
+  open it.
+- **The conversation** in the middle: time, sender, text, and for your own
+  lines where they got to (queued, sending, sent, relayed, delivered,
+  failed). A rule marks where the new ones start. Type on the line at the
+  bottom and press Enter; `/commands` work as on the handheld. A message is
+  one line, up to 140 characters.
+- **Nodes** (toolbar, or Ctrl+2): every node heard, in a table. Click a
+  header to sort by name, last heard, signal, SNR, range or adverts; Enter or
+  a double click opens a chat with the node.
+- **The right button**: on a node, Message, Show on MAP, Inspect, Node page,
+  Save as a contact, Copy id, Copy position; on a message, Copy text, Copy
+  sender, Quote, Message the sender.
+- **Keys**: Ctrl+F finds in the chat, Ctrl+U goes to the next unread chat,
+  Ctrl+E saves the chat to `/sdcard/mesh` as text, Ctrl+C and Ctrl+V copy and
+  paste, PgUp and PgDn read back, Tab moves between the list and the line.
+- The pane at the right shows who has spoken on a channel and the radio's
+  own numbers, or the node you are writing to with its signal frame by frame.

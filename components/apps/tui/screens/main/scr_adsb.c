@@ -34,6 +34,7 @@
 #include "ls_gps.h"
 #include "ls_textpack.h"
 #include "../../ls_drag_scroll.h"
+#include "scr_adsb_desk.h"
 
 static bool s_radar_only;
 static tui_rect s_tools;
@@ -732,12 +733,13 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
         tui_put_str(sf, edge, title_end + 1, list.y, alarm, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED));
     }
 
-    int row = 0, shown = 0;
+    int row = 0;
     for (int k = 0; k < ordered && row < list_h - 1; k++) {
         const int slot = order[k];
         const adsb_aircraft_t *a = adsb_state_get(slot);
-        if (!a || !a->active) continue;
-        if (shown++ < s_top) continue;
+        /* k, not a count of rows drawn: sel_index and s_top are positions
+           in order[], and adsb_age (its own task) can drop one after it. */
+        if (!a || !a->active || k < s_top) continue;
 
         int age = (int)((now - a->last_seen_us) / 1000000);
         if (age < 0) age = 0;
@@ -761,7 +763,7 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
                      (unsigned long)a->icao, call, adsb_state_source_label(a, now), alt, speed,
                      hdg, age, (unsigned long)a->msg_count);
         const bool alarm = emergency_word(slot, now) != NULL;
-        uint8_t at = (shown - 1 == sel_index) ? (alarm ? TUI_ATTR(TUI_BLACK, TUI_RED | TUI_BRIGHT) : sel)
+        uint8_t at = (k == sel_index) ? (alarm ? TUI_ATTR(TUI_BLACK, TUI_RED | TUI_BRIGHT) : sel)
                    : alarm                   ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED)
                    : a->pos_valid            ? body : stale;
         tui_put_str(sf, list, list.x + 2, list.y + 2 + row, buf, at);
@@ -1076,6 +1078,15 @@ static void draw_weather(tui_surface *sf, tui_rect area, int64_t now)
     }
 }
 
+#if LS_TUI_HAS_COMPACT
+/* In a desk window ADS-B is laid out as a desktop program (scr_adsb_desk.c),
+   except while one of the handheld's own pages is up. */
+static bool desk_layout(void)
+{
+    return ls_tui_compact() && !ls_adsb_desk_classic() && !s_detail && !s_weather && !s_radar_only;
+}
+#endif
+
 static void draw(tui_surface *sf, tui_rect area)
 {
     const int64_t now = esp_timer_get_time();
@@ -1084,6 +1095,16 @@ static void draw(tui_surface *sf, tui_rect area)
     if (s_detail && !sel) s_detail = false;
 
     traffic_sample(now);
+#if LS_TUI_HAS_COMPACT
+    if (desk_layout()) {
+        s_list_rect = s_radar_rect = s_tools = tui_rect_make(0, -1, 0, 0);
+        s_nplot = 0;
+        s_rows = 0;
+        memset(s_nav, 0, sizeof(s_nav));
+        ls_adsb_desk_draw(sf, area, now);
+        return;
+    }
+#endif
 
     /* Nothing is claimed until a pane is drawn: a rect left over
        from the other posture, or from the list before the detail page
@@ -1195,6 +1216,13 @@ static void draw(tui_surface *sf, tui_rect area)
 
 static bool key(ls_tk_t k, char ch)
 {
+#if LS_TUI_HAS_COMPACT
+    if (desk_layout()) { if (ls_adsb_desk_key(k, ch)) return true; }
+    else if (ls_tui_compact() && ls_adsb_desk_classic_key(k, ch)) return true;
+    /* The wheel is the desk layout's; here it is the arrows it always was. */
+    if (k == LS_TK_WHEEL_UP) k = LS_TK_UP;
+    if (k == LS_TK_WHEEL_DOWN) k = LS_TK_DOWN;
+#endif
     if(k==LS_TK_CHAR && (ch=='='||ch=='+'||ch=='-')) {zoom_by(ch=='-'?-1:1);return true;}
     if(k==LS_TK_CHAR && (ch=='f'||ch=='F')) {follow_set(ls_follow_next(follow_mode()));return true;}
     if(k==LS_TK_CHAR && (ch=='r'||ch=='R')) {ls_rsel_open(LS_RSEL_ADSB,radio_chosen);return true;}
@@ -1254,6 +1282,10 @@ static bool key(ls_tk_t k, char ch)
     return false;
 }
 
+#if LS_TUI_HAS_COMPACT
+bool ls_scr_adsb_letter(char ch) { return key(LS_TK_CHAR, ch); }
+#endif
+
 /* Hit-test the last drawn panes. Radar taps select the nearest
    contact; a second tap opens it. List rows open their drawn ICAO directly. */
 static bool hit(tui_rect r, int col, int row)
@@ -1264,6 +1296,10 @@ static bool hit(tui_rect r, int col, int row)
 
 static bool touch(int col, int row)
 {
+#if LS_TUI_HAS_COMPACT
+    /* The map in the desk layout is this one: its taps are handled below. */
+    if (desk_layout() && !hit(s_radar_rect, col, row)) return ls_adsb_desk_touch(col, row);
+#endif
     if(hit(s_tools,col,row)) {
         int i=ls_btn_hit_slot(col,row,LS_BTN_SLOT_QUICK);
         if(i>=0 && i<8) return key(LS_TK_CHAR,"mhvf=-ro"[i]);
@@ -1323,7 +1359,38 @@ static void enter(void)
        places the mini map afresh, keeping any ZOOM+ or - on its fit. */
     ls_follow_reset(&s_follow);
     ls_rsel_track(LS_RSEL_ADSB,adsb_in_use);
+#if LS_TUI_HAS_COMPACT
+    ls_adsb_desk_enter();
+#endif
 }
+
+#if LS_TUI_HAS_COMPACT
+/* For the desk layout (scr_adsb_desk.h). */
+void ls_scr_adsb_radar(tui_surface *sf, tui_rect r) { draw_radar(sf, r); s_radar_rect = r; }
+void ls_scr_adsb_dash(tui_surface *sf, tui_rect r, int64_t now) { draw_dash(sf, r, now); }
+void ls_scr_adsb_trend(tui_surface *sf, tui_rect r, const adsb_aircraft_t *a) { draw_altitude_trend(sf, r, a); }
+const char *ls_scr_adsb_alarm(int slot, int64_t now) { return emergency_word(slot, now); }
+bool ls_scr_adsb_here(double *lat, double *lon) { return radar_center(lat, lon, NULL); }
+bool ls_scr_adsb_category(const adsb_aircraft_t *a, char *out, size_t n)
+{
+    if (!a->emitter_tc) return false;
+    const char *word = emitter_word(a->emitter_tc, a->emitter_ca);
+    snprintf(out, n, "%c%d %s", 'A' + (4 - a->emitter_tc), a->emitter_ca, word ? word : "not given");
+    return true;
+}
+int  ls_scr_adsb_sort_get(void) { return s_sort; }
+void ls_scr_adsb_sort_set(int sort) { s_sort = sort >= 0 && sort < SORT_N ? sort : SORT_TABLE; s_top = 0; s_free = false; }
+void ls_scr_adsb_page(bool on) { s_detail = on && adsb_select_get() != NULL; }
+const char *ls_scr_adsb_follow(void) { return ls_follow_name(follow_mode()); }
+void ls_scr_adsb_map_at(double lat, double lon)
+{
+    ls_args_t a = {0};
+    ls_val_t out;
+    ls_action_call("map.here", &a, &out, ls_quick_grant_builtin());
+    ls_map_follow_set(false);
+    ls_map_center(lat, lon);
+}
+#endif
 static void leave(void) { s_detail = s_weather = false; ls_map_preview_leave(); }
 
 const ls_tui_screen_t ls_scr_adsb = {
@@ -1336,4 +1403,7 @@ const ls_tui_screen_t ls_scr_adsb = {
     .draw = draw,
     .key = key,
     .touch = touch,
+#if LS_TUI_HAS_COMPACT
+    .wheel = true,
+#endif
 };

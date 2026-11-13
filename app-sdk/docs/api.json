@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "api_version": "2.6",
+  "api_version": "2.7",
   "calls": [
     {
       "name": "l3_apply",
@@ -1368,6 +1368,21 @@
       "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
     },
     {
+      "name": "lap_ble_capture_start",
+      "kind": "function",
+      "signature": "int lap_ble_capture_start(const lap_ble_capture_config_t *config)",
+      "doc": "start returns the handle (the source) or LAP_IO_EINVAL, EACCES, EBUSY, ENOTSUP. read returns bytes copied (0 is a valid empty frame), LAP_IO_EAGAIN when nothing waits, LAP_IO_ECLOSED when not started by this app; meta is always filled with a frame. A frame longer than cap is cut and consumed. Buffers are copied before return and may be on the stack. Closing the app stops its captures and returns the Wi-Fi radio to the channel it was on. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.7. Capability: LAP_CAP_RADIO_RX. Simulator: limited \u2014 Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md.",
+      "header": "lakeshark_app.h",
+      "since": "2.7",
+      "capability": "LAP_CAP_RADIO_RX",
+      "simulator": {
+        "status": "limited",
+        "reason": "Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
       "name": "lap_ble_connect",
       "kind": "function",
       "signature": "int lap_ble_connect(const uint8_t addr[6], uint8_t addr_type)",
@@ -1543,6 +1558,51 @@
       "simulator": {
         "status": "limited",
         "reason": "Shared capability query; LAPSIM_HW configures Wi-Fi/BLE/GPS/etc. and LAPSIM_RADIO=none removes SIM radio; no physical hardware."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
+      "name": "lap_capture_read",
+      "kind": "function",
+      "signature": "int lap_capture_read(int capture, void *data, size_t cap, lap_capture_meta_t *meta)",
+      "doc": "start returns the handle (the source) or LAP_IO_EINVAL, EACCES, EBUSY, ENOTSUP. read returns bytes copied (0 is a valid empty frame), LAP_IO_EAGAIN when nothing waits, LAP_IO_ECLOSED when not started by this app; meta is always filled with a frame. A frame longer than cap is cut and consumed. Buffers are copied before return and may be on the stack. Closing the app stops its captures and returns the Wi-Fi radio to the channel it was on. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.7. Capability: LAP_CAP_RADIO_RX. Simulator: limited \u2014 Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md.",
+      "header": "lakeshark_app.h",
+      "since": "2.7",
+      "capability": "LAP_CAP_RADIO_RX",
+      "simulator": {
+        "status": "limited",
+        "reason": "Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
+      "name": "lap_capture_status",
+      "kind": "function",
+      "signature": "int lap_capture_status(int capture, lap_capture_status_t *out)",
+      "doc": "start returns the handle (the source) or LAP_IO_EINVAL, EACCES, EBUSY, ENOTSUP. read returns bytes copied (0 is a valid empty frame), LAP_IO_EAGAIN when nothing waits, LAP_IO_ECLOSED when not started by this app; meta is always filled with a frame. A frame longer than cap is cut and consumed. Buffers are copied before return and may be on the stack. Closing the app stops its captures and returns the Wi-Fi radio to the channel it was on. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.7. Capability: none. Simulator: limited \u2014 Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md.",
+      "header": "lakeshark_app.h",
+      "since": "2.7",
+      "capability": null,
+      "simulator": {
+        "status": "limited",
+        "reason": "Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
+      "name": "lap_capture_stop",
+      "kind": "function",
+      "signature": "void lap_capture_stop(int capture)",
+      "doc": " Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.7. Capability: none. Simulator: limited \u2014 Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md.",
+      "header": "lakeshark_app.h",
+      "since": "2.7",
+      "capability": null,
+      "simulator": {
+        "status": "limited",
+        "reason": "Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md."
       },
       "exported": true,
       "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
@@ -2814,6 +2874,21 @@
       "doc": "to the console, prefixed with the app id Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 1.0. Capability: none. Simulator: real \u2014 Shared app runtime and host renderer; target ABI/timing still require board validation.",
       "header": "lakeshark_app.h",
       "since": "1.0",
+      "capability": null,
+      "simulator": {
+        "status": "real",
+        "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
+      "name": "lap_map_node",
+      "kind": "function",
+      "signature": "int lap_map_node(const lap_map_node_t *node)",
+      "doc": " Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.6. Capability: none. Simulator: real \u2014 Shared app runtime and host renderer; target ABI/timing still require board validation.",
+      "header": "lakeshark_app.h",
+      "since": "2.6",
       "capability": null,
       "simulator": {
         "status": "real",
@@ -5638,6 +5713,21 @@
       "simulator": {
         "status": "limited",
         "reason": "Host snapshots/stubs; no wireless backend, real scan lease or mesh delivery."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
+      "name": "lap_wifi_capture_start",
+      "kind": "function",
+      "signature": "int lap_wifi_capture_start(const lap_wifi_capture_config_t *config)",
+      "doc": "start returns the handle (the source) or LAP_IO_EINVAL, EACCES, EBUSY, ENOTSUP. read returns bytes copied (0 is a valid empty frame), LAP_IO_EAGAIN when nothing waits, LAP_IO_ECLOSED when not started by this app; meta is always filled with a frame. A frame longer than cap is cut and consumed. Buffers are copied before return and may be on the stack. Closing the app stops its captures and returns the Wi-Fi radio to the channel it was on. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.7. Capability: LAP_CAP_RADIO_RX. Simulator: limited \u2014 Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md.",
+      "header": "lakeshark_app.h",
+      "since": "2.7",
+      "capability": "LAP_CAP_RADIO_RX",
+      "simulator": {
+        "status": "limited",
+        "reason": "Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md."
       },
       "exported": true,
       "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."

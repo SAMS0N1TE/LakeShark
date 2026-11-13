@@ -1620,6 +1620,19 @@ static bool tui_session(void)
             if (rc < 0) ESP_LOGE("tdp_ui", "could not register app pins: %s", ls_app_register_why(rc));
         }
 #endif
+        /* BOOT LOG: this boot's log and the one before, to read and send.
+           Its own tile, a page of lines with one flagged. */
+        if (!cell_performance_active()) {
+            extern const ls_tui_screen_t ls_scr_bootlog;
+            static const char BOOTLOG_ART[LS_ICON_ROWS][LS_ICON_COLS + 1] = {
+                " .------. ", "|I ----  |", "|W --    |", "|E ---!  |", "|I --    |", " '------' ",
+            };
+            const ls_app_t bootlog = { "bootlog", "BOOT LOG", "startup log",
+                ls_icon_art(LS_ICON_ART_MAX - 3, BOOTLOG_ART, LS_ICON_JOURNAL), TUI_YELLOW,
+                LS_APP_EXTRA, &ls_scr_bootlog, nullptr, &ls_doc_bootlog };
+            const int rc = ls_app_register(&bootlog);
+            if (rc < 0) ESP_LOGE("tdp_ui", "could not register app bootlog: %s", ls_app_register_why(rc));
+        }
 
         {
             static const char *const TABS[] = { "home", "mesh", "radios", "set" };

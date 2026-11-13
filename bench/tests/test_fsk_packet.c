@@ -192,6 +192,61 @@ LS_CASE(noise_alone_is_nothing)
     LS_EQ_INT(decode_iq(pairs, p, 4, NULL), 0);
 }
 
+/* A capture a gate cut close: 2 ms before the burst and 5 ms after it.
+   Four fifths of it is the burst, so the capture's own floor is too, and
+   only the floor the gate measured finds the frame. */
+LS_CASE(a_burst_that_fills_its_capture_decodes_on_the_gates_floor)
+{
+    uint8_t body[8] = { 0x5A, 0x13, 0xC7, 0x81 };
+    with_crc(body, 4, 0x8005, 0xFFFF, 0);
+    uint8_t bits[512];
+    const int nb = frame(bits, 32, 0xD391, 2, body, 6);      /* 112 bits: 47 ms at 2400 bd */
+    const rf_t rf = { 2400, 4750, 0, 300, 20, false };
+    s_seed = 5;
+    synth(bits, nb, &rf, 20000);
+    const size_t lead = (size_t)(0.010f * FS), burst = (size_t)(nb * FS / 2400);
+    const int16_t *cut = s_iq + 2 * (lead - 250);
+    const size_t pairs = 250 + burst + 625;
+    const float air = 2 * 20.0f * 20.0f;
+    fsk_pkt_t p[4];
+    fsk_pkt_rf_t m;
+    LS_EQ_UINT(fsk_pkt_iq16_edges(cut, pairs, (uint32_t)FS, s_edges, 4096, NULL), 0);
+    const size_t n = fsk_pkt_iq16_gated_edges(cut, pairs, (uint32_t)FS, air, air, s_edges, 4096, &m);
+    LS_EQ_INT(n ? fsk_pkt_from_edges(s_edges, n, p, 4) : 0, 1);
+    LS_EQ_UINT(p[0].baud_std, 2400);
+    LS_EQ_INT(p[0].crc_kind, FSK_CRC_CC1101);
+    LS_CHECK(!memcmp(p[0].data, body, 4));
+    LS_NEAR(m.burst_ms, 46.7f, 1.0f);
+    LS_NEAR(m.snr_db, 20.5f, 1.5f);
+    /* A floor above the capture's own changes nothing: the lower stands. */
+    const size_t whole = fsk_pkt_iq16_edges(s_iq, 20000, (uint32_t)FS, s_edges, 4096, NULL);
+    LS_CHECK(whole > 0);
+    LS_EQ_UINT(fsk_pkt_iq16_gated_edges(s_iq, 20000, (uint32_t)FS, 100 * air, 100 * air, s_edges, 4096, NULL), whole);
+}
+
+/* Noise read against a floor far under it is carrier from end to end. A
+   minute of it makes the odd preamble-like run and sixteen bits, never a
+   packet that proves itself: no CRC, no chip's sync word, no word twice. */
+LS_CASE(noise_over_a_low_floor_proves_nothing)
+{
+    const rf_t rf = { 2400, 4750, 0, 0, 30, false };
+    uint8_t bits[8] = { 0 };
+    int proven = 0, keyed = 0;
+    for (uint32_t seed = 1; seed <= 200; seed++) {
+        s_seed = seed;
+        const size_t pairs = synth(bits, 0, &rf, MAX_PAIRS);
+        fsk_pkt_t p[4];
+        LS_EQ_UINT(fsk_pkt_iq16_edges(s_iq, pairs, (uint32_t)FS, s_edges, 4096, NULL), 0);
+        const size_t n = fsk_pkt_iq16_gated_edges(s_iq, pairs, (uint32_t)FS, 30, 0, s_edges, 4096, NULL);
+        keyed += n > 0;
+        const int found = n ? fsk_pkt_from_edges(s_edges, n, p, 4) : 0;
+        for (int i = 0; i < found; i++)
+            proven += p[i].crc_kind != FSK_CRC_NONE || p[i].sync_known || p[i].sync_repeats > 1;
+    }
+    LS_EQ_INT(keyed, 200);
+    LS_EQ_INT(proven, 0);
+}
+
 LS_CASE(two_bursts_two_packets_repeat_once)
 {
     uint8_t a[8] = { 0x01, 0x02 }, b[8] = { 0x03, 0x04 };

@@ -46,6 +46,7 @@ static ls_radio_panel_t s_radio = { .focus = -1 };
 static ls_radio_view_t s_view;
 #include "../../ls_p25_settings.h"
 #include "../../ls_dmr_view.h"
+#include "scr_p25_desk.h"
 
 static int s_page;   /* 0 decode, 1 signal, 2 scanner */
 
@@ -821,7 +822,7 @@ static void mark_observation(void)
    refused by the claim, because a row that cannot be chosen is worse than an
    absent one. */
 static EXT_RAM_BSS_ATTR char s_profiles[LS_PICKER_MAX][P25_PROGRAM_PATH_MAX];
-static char s_profile_detail[LS_PICKER_MAX][LS_PICKER_DETAIL];
+EXT_RAM_BSS_ATTR static char s_profile_detail[LS_PICKER_MAX][LS_PICKER_DETAIL];
 static int  s_profile_n;
 
 static int profile_order(const void *a, const void *b)
@@ -1226,6 +1227,9 @@ static void enter(void)
     register_p25_actions();
     p25_calls_live_register();
     ls_rsel_track(LS_RSEL_P25, p25_in_use);
+#if LS_TUI_HAS_COMPACT
+    ls_p25_desk_enter();
+#endif
 }
 
 /* VFO, WATERFALL and SCANNER are views of one receiver, carried as tabs the
@@ -1613,6 +1617,17 @@ static void radio_action(char c)
     if(c) ls_quick_key(c,quick(),quick_count(),ls_quick_grant_builtin(),NULL);
 }
 
+#if LS_TUI_HAS_COMPACT
+static bool desk_body(void)
+{
+    return ls_tui_compact() && s_page == PV_VFO && !s_keypad && !ls_calls_active() && !ls_p25_desk_classic();
+}
+/* For the desk layout (scr_p25_desk.h). */
+void ls_scr_p25_health(tui_surface *sf, tui_rect r) { draw_receiver_health(sf, r); }
+const char *ls_scr_p25_receive_label(void) { return receive_label(); }
+const char *ls_scr_p25_voice_status(void) { return voice_status(); }
+#endif
+
 static void draw(tui_surface *sf, tui_rect area)
 {
     /* Every page follows the call, so CALLS opens on the truth. */
@@ -1724,7 +1739,13 @@ static void draw(tui_surface *sf, tui_rect area)
         else if (s_page == PV_SCANNER) {
             radio_view();
             ls_radio_panel_draw(&s_radio, &s_view, sf, body);
-        } else draw_decode(sf, body);
+        }
+#if LS_TUI_HAS_COMPACT
+        /* In a desk window the VFO view's middle is the talkgroup table
+           (scr_p25_desk.c); the view bar above and the deck below stay. */
+        else if (desk_body()) ls_p25_desk_draw(sf, body);
+#endif
+        else draw_decode(sf, body);
     }
 
     /* The deck and the keyboard belong to the VFO view. The waterfall needs
@@ -1772,6 +1793,10 @@ static bool key(ls_tk_t k, char ch)
         if (k == LS_TK_CHAR && ((ch >= '0' && ch <= '9') || ch == '.'))
             return entry_char(ch);
     }
+#if LS_TUI_HAS_COMPACT
+    if (desk_body()) { if (ls_p25_desk_key(k, ch)) return true; }
+    else if (ls_tui_compact() && s_page == PV_VFO && !s_keypad && ls_p25_desk_classic_key(k, ch)) return true;
+#endif
     if (k == LS_TK_CHAR && ch == '5') { ls_calls_open("P25"); ls_wf_source_release(); return true; }
     if(k>=LS_TK_F1) return false;
     if (k == LS_TK_CHAR && ch == '6') { set_page(5); return true; }
@@ -1858,6 +1883,9 @@ static bool touch(int col, int row)
         keypad_set(!s_keypad);
         return true;
     }
+#if LS_TUI_HAS_COMPACT
+    if (desk_body() && ls_p25_desk_touch(col, row)) return true;
+#endif
     if (s_ctl_rect.h > 0 && tui_rect_contains(s_ctl_rect, col, row)) {
         const int i = ls_btn_hit_slot(col, row, LS_BTN_SLOT_SCREEN);
         if (i == PC_CALLS) { ls_calls_open("P25"); ls_wf_source_release(); }

@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 
 #include "../ls_tui_screen.h"
@@ -103,11 +104,12 @@ static void build(dk_menu_t *m)
         add(m, "Settings", MI_SUB, A_SUBMENU, M_SETTINGS);
         add(m, "Find", MI_SUB, A_SUBMENU, M_FIND);
         right(add(m, "Help", MI_ITEM, A_ABOUT, 0), "F1");
-        open_app_item(m, "Run command...", "terminal");
+        add(m, "Run...", MI_ITEM, A_RUN, 0);
         sep(m);
         add(m, "Lock screen", MI_ITEM, A_LOCK, 0);
-        it = add(m, "Disconnect viewer", MI_ITEM, A_NONE, 0);
-        if (it) it->off = true;
+        /* a browser or a network terminal watching: send it away */
+        it = add(m, "Disconnect viewer", MI_ITEM, A_KICK, 0);
+        if (it) it->off = !dk_net_viewer();
         add(m, "Shut down...", MI_ITEM, A_SHUTDOWN, 0);
         break;
     case M_PROGRAMS:
@@ -122,13 +124,21 @@ static void build(dk_menu_t *m)
         open_app_item(m, "Diagnostics", "diag");
         break;
     case M_DOCS:
-        it = add(m, "(no recent captures)", MI_ITEM, A_NONE, 0);
-        if (it) it->off = true;
+        /* what is on the card, and what was thrown away */
+        add(m, "SD card folder...", MI_ITEM, A_FOLDER, 0);
+        open_app_item(m, "Files (SD CARD app)", "files");
+        open_app_item(m, "Recordings", "rec");
+        open_app_item(m, "Notes", "notes");
+        sep(m);
+        it = add(m, "Recycle Bin", MI_ITEM, A_BIN, 0);
+        if (it) snprintf(it->right, sizeof(it->right), "%d", dk_items_binned(NULL, 0));
         break;
     case M_SETTINGS:
-        open_app_item(m, "Settings", "set");
+        add(m, "Control Panel", MI_SUB, A_SUBMENU, M_CPL);
+        open_app_item(m, "Settings app", "set");
         add(m, "Display...", MI_ITEM, A_DISPLAY, 0);
         add(m, "Theme", MI_SUB, A_SUBMENU, M_THEME);
+        add(m, "Task Manager", MI_ITEM, A_TASKS, 0);
         sep(m);
         add(m, "Leave the desktop", MI_ITEM, A_DESK_OFF, 0);
         break;
@@ -139,6 +149,7 @@ static void build(dk_menu_t *m)
         }
         break;
     case M_FIND:
+        add(m, "An app...", MI_ITEM, A_RUN, 0);
         open_app_item(m, "A signal (SWEEP)", "sweep");
         open_app_item(m, "A place (MAP)", "map");
         open_app_item(m, "A file", "files");
@@ -151,12 +162,76 @@ static void build(dk_menu_t *m)
         if (it) it->off = true;
         break;
     case M_DESKTOP:
-        add(m, "Arrange icons", MI_ITEM, A_ARRANGE, 0);
+        add(m, "Arrange icons", MI_SUB, A_SUBMENU, M_ARRANGE);
+        add(m, "New", MI_SUB, A_SUBMENU, M_NEW);
+        add(m, "Gadgets", MI_SUB, A_SUBMENU, M_GADGETS);
+        sep(m);
         add(m, "Wallpaper", MI_SUB, A_SUBMENU, M_WALLPAPER);
         add(m, "Theme", MI_SUB, A_SUBMENU, M_THEME);
         sep(m);
+        add(m, "Run...", MI_ITEM, A_RUN, 0);
+        add(m, "Control Panel", MI_ITEM, A_CPL, -1);
         add(m, "Properties", MI_ITEM, A_DISPLAY, 0);
         add(m, "Leave the desktop", MI_ITEM, A_DESK_OFF, 0);
+        break;
+    case M_NEW:
+        add(m, "Shortcut to an app...", MI_ITEM, A_NEW_APP, 0);
+        add(m, "File or folder shortcut...", MI_ITEM, A_NEW_FILE, 0);
+        break;
+    case M_ARRANGE:
+        add(m, "By name", MI_ITEM, A_ARRANGE_HOW, DK_ARR_NAME);
+        add(m, "Line up", MI_ITEM, A_ARRANGE_HOW, DK_ARR_LINEUP);
+        add(m, "Back to the columns", MI_ITEM, A_ARRANGE, 0);
+        break;
+    case M_GADGETS: {
+        static const struct { const char *name; int bit; } G[] = {
+            {"Clock and GPS", DKG_CLOCK}, {"Receiver", DKG_RADIO}, {"Mesh", DKG_MESH}, {"Board", DKG_SYSTEM},
+        };
+        for (unsigned i = 0; i < sizeof(G) / sizeof(G[0]); i++) {
+            it = add(m, G[i].name, MI_CHECK, A_GADGET, G[i].bit);
+            if (it) it->on = (dk_shell_gadgets() & G[i].bit) != 0;
+        }
+        break;
+    }
+    case M_ICON: {
+        const dk_icon_t *ic = dk_items_at(m->arg);
+        right(add(m, "Open", MI_ITEM, A_ITEM_OPEN, m->arg), "Enter");
+        sep(m);
+        right(add(m, "Rename...", MI_ITEM, A_ITEM_RENAME, m->arg), "F2");
+        it = add(m, "Delete", MI_ITEM, A_ITEM_DELETE, m->arg);
+        right(it, "Del");
+        if (it && ic && ic->kind == DKI_SYS && (ic->sys == DKS_BIN || ic->sys == DKS_CPL)) it->off = true;
+        sep(m);
+        add(m, "Properties", MI_ITEM, A_ITEM_PROPS, m->arg);
+        break;
+    }
+    case M_PIN:
+        add(m, "Open", MI_ITEM, A_OPEN_APP, m->arg);
+        add(m, "Add to desktop", MI_ITEM, A_PIN_APP, m->arg);
+        break;
+    case M_TASKBAR: {
+        bool any = false;
+        ls_desk_win_info_t wi;
+        for (int z = 0; ls_desk_window_at(z, &wi); z++) any |= wi.state != LS_DESK_WIN_MIN;
+        const bool none = ls_desk_window_count() == 0;
+        it = add(m, "Cascade", MI_ITEM, A_CASCADE, 0);
+        if (it) it->off = !any;
+        it = add(m, "Tile side by side", MI_ITEM, A_TILE, 1);
+        if (it) it->off = !any;
+        it = add(m, "Tile stacked", MI_ITEM, A_TILE, 2);
+        if (it) it->off = !any;
+        it = add(m, any || none ? "Show the desktop" : "Bring the windows back", MI_ITEM, A_MIN_ALL, 0);
+        if (it) it->off = none;
+        sep(m);
+        add(m, "Task Manager", MI_ITEM, A_TASKS, 0);
+        add(m, "Run...", MI_ITEM, A_RUN, 0);
+        add(m, "Control Panel", MI_ITEM, A_CPL, -1);
+        break;
+    }
+    case M_CPL:
+        add(m, "Open Control Panel", MI_ITEM, A_CPL, -1);
+        if (dk_cpl_count()) sep(m);
+        for (int i = 0; i < dk_cpl_count() && m->n < DK_MENU_ITEMS; i++) add(m, dk_cpl_at(i)->name, MI_ITEM, A_CPL, i);
         break;
     case M_WALLPAPER: {
         const uint32_t cur = dk_wall_current();
@@ -199,7 +274,7 @@ static void build(dk_menu_t *m)
         right(add(m, "Volume down", MI_ITEM, A_VOL_STEP, -5), "-5");
         sep(m);
         open_app_item(m, "Music player", "music");
-        open_app_item(m, "Sound settings", "set");
+        add(m, "Sound settings...", MI_ITEM, A_CPL, DK_CPL_SOUND);
         break;
     }
     case M_CLOCK: {
@@ -225,6 +300,7 @@ static void build(dk_menu_t *m)
         if (gps_time) info(m, "Source: GPS, %d satellites", s_menu_gps.sats_used);
         else info(m, "Source: %s", src == 2 ? "network time" : src == 1 ? "board clock (RTC)" : "none yet");
         open_app_item(m, "GPS...", "gps");
+        add(m, "Date, Time & GPS...", MI_ITEM, A_CPL, DK_CPL_DATE);
         break;
     }
     case M_RX: {
@@ -238,6 +314,7 @@ static void build(dk_menu_t *m)
         }
         sep(m);
         open_app_item(m, "Radios...", "radios");
+        add(m, "Radio settings...", MI_ITEM, A_CPL, DK_CPL_RADIOS);
         break;
     }
     case M_MESH: {
@@ -250,7 +327,7 @@ static void build(dk_menu_t *m)
         int up = 0;
         const int bonded = dk_sys_bt(&up);
         info(m, "Keyboards: %d paired, %d connected", bonded < 0 ? 0 : bonded, up);
-        open_app_item(m, "Bluetooth devices...", "set");
+        add(m, "Keyboards...", MI_ITEM, A_CPL, DK_CPL_INPUT);
         break;
     }
     case M_GPS:
@@ -279,10 +356,9 @@ static void build(dk_menu_t *m)
         it = add(m, "Restore", MI_ITEM, A_WIN_RESTORE, m->arg);
         if (it && w && w->state == LS_DESK_WIN_NORMAL) it->off = true;
         if (m->id == M_WINDOW) {
-            it = add(m, "Move", MI_ITEM, A_NONE, 0);
-            if (it) it->off = true;
-            it = add(m, "Size", MI_ITEM, A_NONE, 0);
-            if (it) it->off = true;
+            /* by the arrow keys: Enter keeps, Esc puts back */
+            add(m, "Move", MI_ITEM, A_WIN_MOVE, m->arg);
+            add(m, "Size", MI_ITEM, A_WIN_SIZE, m->arg);
         }
         add(m, "Minimize", MI_ITEM, A_WIN_MIN, m->arg);
         it = add(m, "Maximize", MI_ITEM, A_WIN_MAX, m->arg);
@@ -293,6 +369,12 @@ static void build(dk_menu_t *m)
         it = add(m, "Focused mode", MI_ITEM, A_WIN_FOCUS, m->arg);
         right(it, "Ctrl+F11");
         if (it && w && w->kind != DK_APP) it->off = true;
+        if (w && w->kind == DK_APP && w->app) {
+            /* this app as an icon on the desktop */
+            int ai = -1;
+            for (int i = 0; i < ls_app_count(); i++) if (ls_app_at(i) == w->app) ai = i;
+            if (ai >= 0) add(m, "Add to desktop", MI_ITEM, A_PIN_APP, ai);
+        }
         sep(m);
         right(add(m, "Close", MI_ITEM, A_WIN_CLOSE, m->arg), "Ctrl+F4");
         break;
@@ -486,7 +568,7 @@ static void draw_unfolding(tui_surface *sf, const dk_menu_t *m)
     const int shown = 2 + (int)((m->h - 2) * t / UNFOLD_US);
     const tui_rect r = tui_rect_intersect(tui_surface_rect(sf), tui_rect_make(m->x, m->y, m->w, m->h));
     if (r.w <= 0 || r.h <= 0) return;
-    tui_cell *keep = malloc((size_t)r.w * r.h * sizeof(tui_cell));
+    tui_cell *keep = heap_caps_malloc((size_t)r.w * r.h * sizeof(tui_cell), MALLOC_CAP_SPIRAM);   /* not the Nano's scarce internal RAM, each unfold frame */
     if (!keep) { draw_one(sf, m); return; }
     for (int y = 0; y < r.h; y++) memcpy(&keep[(size_t)y * r.w], &sf->back[(size_t)(r.y + y) * sf->w + r.x], (size_t)r.w * sizeof(tui_cell));
     draw_one(sf, m);
@@ -561,11 +643,22 @@ bool dk_menu_key(ls_tk_t k, char ch)
         return true;
     case LS_TK_CHAR: {
         const char want = (char)(ch >= 'a' && ch <= 'z' ? ch - 32 : ch);
+        int hits = 0, first = -1, next = -1;
         for (int i = 0; i < m->n; i++) {
             const char *l = m->it[i].label;
-            if (m->it[i].kind == MI_SEP || m->it[i].off || !l || !l[0]) continue;
+            if (!pickable(&m->it[i]) || !l || !l[0]) continue;
             const char c = (char)(l[0] >= 'a' && l[0] <= 'z' ? l[0] - 32 : l[0]);
-            if (c == want) { m->sel = i; activate(level, i); return true; }
+            if (c != want) continue;
+            hits++;
+            if (first < 0) first = i;
+            if (next < 0 && i > m->sel) next = i;
+        }
+        if (hits == 1) { m->sel = first; activate(level, first); }
+        else if (hits > 1) m->sel = next >= 0 ? next : first;      /* Enter then does it */
+        else if (s_m[0].id == M_START && ch > 32 && ch < 127) {
+            /* no row starts with it: the letter begins a search in Run */
+            dk_menu_close_all();
+            dk_run_open_with(ch);
         }
         return true;
     }
@@ -606,6 +699,13 @@ bool dk_menu_pointer(const ls_input_ev_t *ev)
         if (level < 0) {
             dk_menu_close_all();
             return true;              /* the click that closes a menu does nothing else */
+        }
+        if (row >= 0 && ev->button == LS_IBTN_RIGHT && s_m[level].it[row].act == A_OPEN_APP &&
+            s_m[level].it[row].arg >= 0 && s_m[level].id != M_PIN) {
+            const int app = s_m[level].it[row].arg;
+            dk_menu_close_all();
+            dk_menu_open(M_PIN, app, ev->col, ev->row);
+            return true;
         }
         s_down_level = level;
         s_down_row = row;

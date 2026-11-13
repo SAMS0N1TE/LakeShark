@@ -439,6 +439,11 @@ static void card_draw(tui_surface *sf, tui_rect r)
 
 static uint16_t card_tg(void) { return s_now.on ? s_now.tg : s_last.tg; }
 
+#if LS_TUI_HAS_COMPACT
+/* The same card, for P25's desk layout (scr_p25_desk.h). */
+void p25_calls_live_card(tui_surface *sf, tui_rect r) { card_draw(sf, r); }
+#endif
+
 static int live_keys(ls_calls_live_key_t out[2])
 {
     const uint16_t tg = card_tg();

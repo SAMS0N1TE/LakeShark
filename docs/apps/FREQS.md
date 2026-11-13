@@ -84,6 +84,67 @@ is none. A receiver that refuses a frequency says so on the bottom line.
 
 Band, sort, NEAR and the bank are kept across restarts.
 
+## On the desktop
+
+In a LakeShark Desktop window FREQS is laid out as a desktop program: a menu
+bar (File, Edit, View, Tune), a toolbar, a filter row with a Find field, a
+band ruler, the bank tree on the left, the table in the middle and the entry
+(or the form that edits it) on the right. It follows the window: a narrower
+one puts the details under the table, then drops them and the tree, and the
+table gives up its least useful columns first. The handheld letters (T S K O
+B G N F) still do what they do above.
+
+| Mouse | Does |
+|---|---|
+| Click a row | Select it. Ctrl+click adds or removes a row, Shift+click selects the run |
+| Double-click a row | Tune it |
+| Click a column header | Sort by it; again turns it round; a third time is the file's order |
+| Click the `*` column | Star or unstar that entry |
+| Right button | A menu for the row or the selection, the header (sort, columns) or the bank |
+| Drag a row | Over the table it sweeps out a selection; dropped on a bank it moves the selection there |
+| Wheel | Scroll the list |
+| Click the ruler | Go to the entry nearest that part of the dial |
+| Click a bank or a group | Open the bank; filter by the group (again to clear) |
+
+| Key | Does |
+|---|---|
+| Up, Down, PgUp, PgDn, Home, End | Move; with Shift, extend the selection |
+| Space | Tick or untick the row |
+| Enter | Tune |
+| Ins, F2, Del | New entry, edit, delete |
+| Ctrl+Z | Put back what the last delete took out |
+| Ctrl+X, Ctrl+C, Ctrl+V | Cut, copy, and paste into the bank in view |
+| Ctrl+D | A new entry that starts as a copy of this one |
+| Ctrl+A, Esc | Select all, select none |
+| Ctrl+F or / | Find: the list filters as you type; Esc clears |
+| `*` | Star or unstar |
+| Ctrl+E, F5 | Export the view as CSV; read the card again |
+| Tab | To the bank tree and back |
+| Alt+F, E, V, T | The menus |
+
+- **New and Edit** open a form, a field a line: MHz, name, mode, bandwidth,
+  group, tone, tags, notes, place and reach. Enter saves, and a field that
+  cannot be right (a frequency out of range, a mode FREQS does not know, a
+  latitude without a longitude) is marked and says why. A new entry goes into
+  the bank in view, or `mine` when all banks are in view.
+- **The star** is the tag `fav` in the CSV, so it travels with the file.
+  View > Starred only lists them.
+- **Duplicates** (the same frequency and mode in the same place) have their
+  MHz in red, and View > Duplicates only lists them side by side. Copy to
+  bank leaves out what the bank already has.
+- **File** makes, renames and trashes banks (a trashed bank is moved to
+  `/sdcard/freqs/trash`, not deleted), imports, and exports the view as CSV,
+  as a CHIRP CSV (FM, NFM and AM with tone and DCS) or as a scanner list.
+- **Tune > Scan in FM** replaces FM's scanner list with the NFM and P25
+  entries of the view or of the selection.
+- **The ruler** is the dial laid flat on a log scale: a mark where entries of
+  the view sit, taller where there are more, in their group's colour. Under
+  it are the entry the cursor is on and, when they are running, what FM and
+  P25 are tuned to now.
+
+Deleting more than one entry asks first. Undo holds the last delete only,
+and puts the lines back at the end of their bank exactly as they were.
+
 ## The bank format
 
 A bank is a CSV file in `/sdcard/freqs`, edited with anything that writes

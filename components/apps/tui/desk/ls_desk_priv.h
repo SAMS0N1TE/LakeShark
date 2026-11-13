@@ -124,8 +124,13 @@ void dk_spark(tui_surface *sf, tui_rect clip, int x, int y, const int *v, int n,
 
 /* ----------------------------------------------------------- windows -- */
 
+/* Eight windows, as ls_desk.h says, and two more kept for the shell's own
+   dialogs: a full desk can still say why it is full. */
+#define DK_WIN_SLOTS (LS_DESK_MAX_WIN + 2)
 enum { DK_APP = 1, DK_SHELL = 2 };
-enum { DK_SHELL_ABOUT = 1, DK_SHELL_DISPLAY = 2, DK_SHELL_SHUTDOWN = 3, DK_SHELL_STUDIO = 4 };
+enum { DK_SHELL_ABOUT = 1, DK_SHELL_DISPLAY = 2, DK_SHELL_SHUTDOWN = 3, DK_SHELL_STUDIO = 4,
+       DK_SHELL_PROMPT, DK_SHELL_MSG, DK_SHELL_PICK, DK_SHELL_FOLDER, DK_SHELL_BIN, DK_SHELL_TASKS,
+       DK_SHELL_CPL, DK_SHELL_ITEM };
 
 typedef struct {
     bool used;
@@ -176,6 +181,10 @@ enum {
     A_ARRANGE, A_WIN_RESTORE, A_WIN_MIN, A_WIN_MAX, A_WIN_CLOSE, A_WIN_FULL,
     A_BACK, A_OPTIONS, A_LOCK, A_PARK, A_CLOSE_ALL, A_KEYS,
     A_VOL_SET, A_VOL_STEP, A_MUTE, A_RX_RESUME, A_WALLPAPER, A_SHUTDOWN, A_STUDIO, A_WIN_FOCUS,
+    /* desktop items, the shell's own windows, window layout */
+    A_ITEM_OPEN, A_ITEM_RENAME, A_ITEM_DELETE, A_ITEM_PROPS, A_NEW_APP, A_NEW_FILE, A_PIN_APP,
+    A_ARRANGE_HOW, A_GADGET, A_CPL, A_RUN, A_TASKS, A_BIN, A_FOLDER, A_CASCADE, A_TILE, A_MIN_ALL,
+    A_WIN_MOVE, A_WIN_SIZE, A_KICK,
 };
 enum {
     M_START = 1, M_PROGRAMS, M_GROUP, M_DOCS, M_SETTINGS, M_THEME, M_FIND, M_SHUTDOWN,
@@ -183,6 +192,7 @@ enum {
     /* the tray's popups; their rows are rebuilt every frame from real state */
     M_VOLUME, M_SOUND, M_CLOCK, M_RX, M_MESH, M_BT, M_GPS, M_WALLPAPER,
     M_DEV,                  /* Programs > Development */
+    M_ICON, M_NEW, M_ARRANGE, M_GADGETS, M_TASKBAR, M_CPL, M_PIN,
 };
 
 #define DK_MENU_ITEMS 20
@@ -296,5 +306,148 @@ void dk_wall_glass(tui_surface *sf, tui_rect area);
 
 void *dk_psram(size_t bytes);
 void dk_psram_free(void *p);
+
+/* ------------------------------------------------------ desktop items -- */
+
+/* What sits on the desktop: shortcuts to apps, to files and folders on the
+   card, and the shell's own things. Made, renamed and deleted from the GUI;
+   kept in the desk's store (ls_desk_items.c). */
+enum { DKI_NONE, DKI_APP, DKI_FILE, DKI_FOLDER, DKI_SYS };
+enum { DKS_CPL = 1, DKS_BIN, DKS_TASKS, DKS_STUDIO, DKS_CARD };
+enum { DKI_F_MOVED = 1, DKI_F_BINNED = 2, DKI_F_STOCK = 4 };
+typedef struct {
+    uint8_t kind, flags, sys, spare;
+    int16_t x, y;                 /* where it was dragged to, with DKI_F_MOVED */
+    char target[40];              /* an app id; a path under the card's root */
+    char label[16];               /* empty: the target's own name */
+} dk_icon_t;
+#define DK_ICON_MAX 32
+#define DK_ICON_W 12
+#define DK_ICON_H 7
+
+void dk_items_load(void);
+int  dk_items_count(void);                       /* on the desktop now */
+dk_icon_t *dk_items_at(int i);
+tui_rect dk_items_rect(int i);
+int  dk_items_hit(int col, int row);
+const char *dk_items_label(const dk_icon_t *it);
+void dk_items_what(const dk_icon_t *it, char *buf, size_t n);   /* "Shortcut to FM", a path... */
+void dk_items_draw(tui_surface *sf, tui_rect work, int sel, int hover);
+void dk_items_draw_one(tui_surface *sf, tui_rect clip, int x, int y, const dk_icon_t *it, uint8_t ground);
+void dk_dialogs_press(dk_win_t *w, tui_rect c, int col, int row);
+void dk_items_open(int i);
+/* x < 0: the next free place. Returns its index on the desktop or -1 (full). */
+int  dk_items_add(int kind, int sys, const char *target, const char *label, int x, int y);
+void dk_items_rename(int i, const char *label);
+bool dk_items_delete(int i);                     /* to the bin; false for what cannot go */
+void dk_items_place(int i, int x, int y);        /* dragged; dk_items_dropped saves */
+void dk_items_dropped(int i);
+enum { DK_ARR_RESET, DK_ARR_NAME, DK_ARR_LINEUP };
+void dk_items_arrange(int how);
+int  dk_items_binned(dk_icon_t **out, int cap);
+void dk_items_restore(dk_icon_t *it);
+void dk_items_purge(dk_icon_t *it);              /* NULL: empty the bin */
+uint32_t dk_items_serial(void);                  /* changes with every edit, for the draw cache */
+
+/* The shell's own small choices, in the same store. */
+enum { DKG_CLOCK = 1, DKG_RADIO = 2, DKG_MESH = 4, DKG_SYSTEM = 8 };
+int  dk_shell_gadgets(void);
+void dk_shell_set_gadgets(int mask);
+int  dk_shell_dbl_ms(void);                      /* the double-click time */
+void dk_shell_set_dbl_ms(int ms);
+/* Where an app's window was last, so it opens there again. */
+bool dk_place_get(const char *app_id, int *x, int *y, int *w, int *h, int *state);
+void dk_place_put(const char *app_id, int x, int y, int w, int h, int state);
+void dk_store_tick(void);                        /* writes what changed, after a quiet moment */
+void dk_store_flush(void);
+
+/* ------------------------------------------------------------ gadgets -- */
+
+void dk_gadgets_draw(tui_surface *sf, tui_rect work);
+bool dk_gadgets_hit(int col, int row);
+bool dk_gadgets_click(int col, int row);         /* opens the app behind it */
+
+/* ------------------------------------------------- the shell's windows -- */
+
+int  dk_open_app_win(const ls_app_t *a);         /* ls_desk.c's open_app */
+bool dk_net_viewer(void);                        /* a browser or network terminal is watching */
+bool dk_click_double(void);                      /* the click now being handled was a double-click */
+bool dk_pressed(tui_rect r);                     /* the left button is held on r, and went down on it */
+/* The applets, in the panel's order (ls_desk_cplsys.c's table). */
+enum { DK_CPL_DISPLAY, DK_CPL_SOUND, DK_CPL_INPUT, DK_CPL_NETWORK, DK_CPL_RADIOS, DK_CPL_DATE,
+       DK_CPL_POWER, DK_CPL_STORAGE, DK_CPL_UPDATES, DK_CPL_SYSTEM };
+void dk_msg(const char *title, const char *line1, const char *line2);
+/* A line of text asked for: `done` gets it on OK (never on Cancel). */
+void dk_prompt(const char *title, const char *label, const char *initial, int max,
+               void (*done)(const char *text, int ctx), int ctx);
+void dk_run_open(void);
+void dk_run_open_with(char first);                /* a letter typed at the Start menu begins the search */
+void dk_pick_open(int x, int y);                 /* New shortcut to an app, placed at x,y */
+void dk_folder_open(const char *path, int x, int y);   /* NULL: the card's root */
+void dk_bin_open(void);
+void dk_tasks_open(void);
+void dk_item_props_open(int item);
+void dk_cpl_open(int applet);                    /* -1: the panel itself */
+void dk_dialogs_draw(tui_surface *sf, dk_win_t *w, tui_rect c, tui_rect clip);
+bool dk_dialogs_tap(dk_win_t *w, tui_rect c, int col, int row);
+bool dk_dialogs_key(dk_win_t *w, ls_tk_t k, char ch);
+void dk_dialogs_closed(dk_win_t *w);             /* its window went away */
+/* A drag that began on a row of the folder window: its name while it is
+   being carried, and the drop on the desktop. */
+bool dk_folder_drag_item(char *label, size_t n);
+void dk_folder_drop(int col, int row);
+void dk_cpl_draw(tui_surface *sf, tui_rect c, tui_rect clip);
+bool dk_cpl_tap(dk_win_t *w, tui_rect c, int col, int row);
+bool dk_cpl_key(dk_win_t *w, ls_tk_t k, char ch);
+/* A scrolling list, shared by the shell's windows. */
+typedef struct { const char *text, *right; uint8_t hue; int glyph; } dk_row_t;
+void dk_list_draw(tui_surface *sf, tui_rect clip, tui_rect r, int n, int top, int sel,
+                  void (*row)(int i, dk_row_t *out, void *ctx), void *ctx);
+void dk_list_keep(int n, int rows, int sel, int *top);
+/* Small pictures for the shell's own things, in the icons' dots. */
+enum { DK_PIC_BIN, DK_PIC_BIN_FULL, DK_PIC_CPL, DK_PIC_DOC, DK_PIC_TASKS, DK_PIC_CARD, DK_PIC_N };
+void dk_pic(tui_surface *sf, tui_rect clip, int x, int y, int pic, uint8_t attr);
+
+/* ------------------------------------------------------ Control Panel -- */
+
+/* An applet is a table of rows over existing settings (ls_desk_cplsys.c):
+   a row shows a value, and steps, switches or opens something. */
+enum { CR_INFO, CR_SWITCH, CR_LEVEL, CR_CHOICE, CR_GO, CR_ACTION };
+typedef struct {
+    const char *label;
+    uint8_t kind;
+    bool warn;                              /* a switch whose ON is the state to notice */
+    void (*show)(char *buf, size_t n);
+    void (*step)(int dir);                  /* a level or choice: -1, +1; a switch or action: +1 */
+    int  (*pct)(void);                      /* a level's meter, 0..100 */
+    void (*set)(int pct);                   /* a level set outright (a click on its track) */
+    int  (*on)(void);                       /* a switch */
+    const char *go;                         /* CR_GO: an app id, or "@display", "@tasks", "@about", "@folder" */
+    bool (*hidden)(void);
+} dk_cpl_row_t;
+typedef struct {
+    const char *name, *what;
+    uint8_t hue;
+    const char *art[3];                     /* three rows of six cells, drawn in the hue */
+    const dk_cpl_row_t *rows;
+    int n;
+    void (*summary)(char *buf, size_t n);   /* the tile's live line */
+    void (*enter)(void);                    /* the page opened: read what is slow to read */
+    const char *app;                        /* the app that has the rest, or NULL */
+} dk_cpl_applet_t;
+int dk_cpl_count(void);
+const dk_cpl_applet_t *dk_cpl_at(int i);
+
+/* More of the board around the desk (ls_desk_live.c; stubbed in the host test). */
+size_t dk_sys_store_load(void *buf, size_t cap);      /* 0: nothing saved */
+bool dk_sys_store_save(const void *buf, size_t len);
+const char *dk_sys_card_root(void);                   /* "/sdcard" */
+bool dk_sys_open_file(const char *path);              /* in the app that plays or shows it */
+bool dk_sys_console(const char *line);                /* a console word, run in TERMINAL */
+typedef struct {
+    long internal_kb, internal_low_kb, largest_kb, psram_kb, psram_low_kb, uptime_s;
+    int frame_us, cells;                               /* the last UI frame */
+} dk_perf_t;
+void dk_sys_perf(dk_perf_t *out);
 
 #endif

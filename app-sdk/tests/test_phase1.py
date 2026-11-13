@@ -62,7 +62,8 @@ class Phase1(unittest.TestCase):
         self.assertTrue(lap.supports_api(2,4))
         self.assertTrue(lap.supports_api(2,5))
         self.assertTrue(lap.supports_api(2,6))
-        self.assertFalse(lap.supports_api(2,7))
+        self.assertTrue(lap.supports_api(2,7))
+        self.assertFalse(lap.supports_api(2,8))
         self.assertTrue(lap.supports_api(1,3))
         self.assertFalse(lap.supports_api(1,4))
 

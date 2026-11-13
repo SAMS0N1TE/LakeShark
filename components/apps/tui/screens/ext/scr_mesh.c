@@ -41,6 +41,7 @@
 #include "ls_mesh.h"
 #include "ls_lora.h"
 #include "esp_attr.h"
+#include "scr_mesh_desk.h"
 
 /* ------------------------------------------------------------------ state */
 
@@ -1900,7 +1901,16 @@ static void enter(void)
     s_seen_msg = ls_mesh_msg_seq();
     s_seen_ev  = ls_mesh_event_seq();
     s_pulse = 0; s_flash_ttl = 0;
+#if LS_TUI_HAS_COMPACT
+    ls_mesh_desk_enter();
+#endif
 }
+
+#if LS_TUI_HAS_COMPACT
+/* In a desk window MESH is laid out as a messenger (scr_mesh_desk.c), except
+   while the handheld layout was asked for or a node's own page is up. */
+static bool desk_layout(void) { return ls_tui_compact() && !ls_mesh_desk_classic() && !s_detail; }
+#endif
 
 static void draw(tui_surface *sf, tui_rect area)
 {
@@ -1913,6 +1923,16 @@ static void draw(tui_surface *sf, tui_rect area)
 
     const uint32_t ms = ls_mesh_msg_seq();
     if (ms != s_seen_msg) { s_seen_msg = ms; s_pulse = 8; }
+#if LS_TUI_HAS_COMPACT
+    if (desk_layout()) {
+        /* The list at the left counts what arrived; the destination stays
+           where it was put. */
+        s_blink++;
+        if (s_flash_ttl > 0) s_flash_ttl--;
+        ls_mesh_desk_draw(sf, area, &st);
+        return;
+    }
+#endif
     conv_follow();
 
     s_blink++;
@@ -2273,6 +2293,15 @@ static bool key(ls_tk_t k, char ch)
         act_set_tx(!ls_mesh_tx_enabled());
         return true;
     }
+#if LS_TUI_HAS_COMPACT
+    if (k != LS_TK_MIC_HOLD) {
+        if (desk_layout()) return ls_mesh_desk_key(k, ch);
+        if (ls_tui_compact() && ls_mesh_desk_classic_key(k, ch)) return true;
+    }
+    /* The wheel is the desk layout's; here it is the arrows it always was. */
+    if (k == LS_TK_WHEEL_UP) k = LS_TK_UP;
+    if (k == LS_TK_WHEEL_DOWN) k = LS_TK_DOWN;
+#endif
     /* Hold arms it for good: auto transmit, which survives a reboot.
        The two live on one key because they are the same intention at two
        time scales - "transmit now" and "transmit from now on" - and because
@@ -2401,6 +2430,9 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
+#if LS_TUI_HAS_COMPACT
+    if (desk_layout()) return ls_mesh_desk_touch(col, row);
+#endif
     if (s_page == PAGE_CHAT && tui_rect_contains(s_feed_rect, col, row)) {
         if (ls_drag_scroll_tap_is_lift(&s_feed_drag)) return true;   /* the end of a drag */
         if (row < s_feed_rect.y + s_feed_rect.h / 2) { if (s_feed_back < LS_MESH_MAX_MSGS - 1) s_feed_back++; }
@@ -2567,6 +2599,50 @@ static bool touch(int col, int row)
 
 extern const ls_tui_screen_t ls_scr_mesh;
 static uint32_t s_told_msg;
+#if LS_TUI_HAS_COMPACT
+/* For the desk layout (scr_mesh_desk.h). */
+bool ls_scr_mesh_slash(const char *text) { return slash(text); }
+const char *ls_scr_mesh_said(void) { return s_flash_ttl > 0 && s_flash[0] ? s_flash : NULL; }
+void ls_scr_mesh_say(const char *text) { flash(text); }
+void ls_scr_mesh_options(void) { ls_opt_open(&CTX_MESH); }
+void ls_scr_mesh_radio(void) { mesh_radio_open(); }
+void ls_scr_mesh_start(bool on) { if (on) act_start_on(); else act_stop(); }
+void ls_scr_mesh_arm(bool on) { act_set_tx(on); }
+
+void ls_scr_mesh_node_act(const char *id, int which)
+{
+    const int n = ls_mesh_peers(s_peer_buf, LS_MESH_MAX_PEERS);
+    int at = -1;
+    for (int i = 0; i < n && at < 0; i++)
+        if (!strcasecmp(s_peer_buf[i].id, id)) at = i;
+    if (at < 0) { flash(LS_TEXT(t_scr_mesh_that_node_is_no, "that node is no longer in the list")); return; }
+    snprintf(s_detail_id, sizeof(s_detail_id), "%s", s_peer_buf[at].id);
+    if (which >= 3) {
+        /* The handheld's page, in the window, until Esc. */
+        s_page = PAGE_NODES;
+        s_sel = at;
+        s_node_free = false;
+        s_detail = true;
+        s_inspect_page = false;
+    }
+    if (which >= 0 && which < DETAIL_ACTS) detail_act(which);
+    if (which == 0) s_page = PAGE_CHAT;
+}
+
+void ls_scr_mesh_dest_set(const char *id, const char *name, int chan)
+{
+    if (id && *id) { chat_lock_to(id, name); return; }
+    chat_unlock();
+    s_conv_chan = chan;
+}
+
+void ls_scr_mesh_dest_get(char id[17], int *chan)
+{
+    snprintf(id, 17, "%s", s_lock_id);
+    *chan = conv_chan();
+}
+#endif
+
 static bool     s_told_init;
 static uint32_t s_told_mark;
 static uint32_t s_share_seen;
@@ -2624,4 +2700,7 @@ const ls_tui_screen_t ls_scr_mesh = {
     .draw = draw,
     .key = key,
     .touch = touch,
+#if LS_TUI_HAS_COMPACT
+    .wheel = true,
+#endif
 };

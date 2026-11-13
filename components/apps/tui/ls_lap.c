@@ -421,7 +421,7 @@ static void unload(void) {
    the stack comes from the LP RAM first, which the radios leave alone (P25
    decoding leaves no 6 KB piece of DRAM), then from DMA-capable DRAM.
    Linking DICE used 468 bytes of it; 2 KB leaves four times that. */
-#define RELOC_STACK 2048
+#define RELOC_STACK 3072   /* DICE left only 44 of 2048 bytes on 2026-11-13 */
 typedef struct {
     esp_elf_t *elf;
     const uint8_t *data;
@@ -461,9 +461,31 @@ static void reloc_task(void *arg) {
     xTaskNotifyGive(j->caller);
     vTaskSuspend(NULL); /* the caller deletes this task before freeing its stack */
 }
+/* The link stack and its TCB, set aside once at boot (after the console has
+   its block, before any radio app has cut DRAM into small pieces), so opening
+   an app never depends on finding 2 KB of internal RAM in one piece later. */
+static StackType_t *s_rsv_stack;
+static StaticTask_t *s_rsv_tcb;
+void ls_lap_reserve_link_memory(bool early) {
+#if CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP
+    /* At the start of boot the LP RAM is still empty: take it from there, so
+       the DRAM the console and radios need later is untouched. */
+    if (!s_rsv_stack) {
+        StackType_t *p = heap_caps_malloc(RELOC_STACK, MALLOC_CAP_RTCRAM | MALLOC_CAP_8BIT);
+        if (p && reloc_stack_ok(p)) s_rsv_stack = p; else heap_caps_free(p);
+    }
+    if (!s_rsv_tcb) s_rsv_tcb = heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_RTCRAM | MALLOC_CAP_8BIT);
+#endif
+    if (early) return;
+    if (!s_rsv_stack) s_rsv_stack = reloc_stack();
+    if (!s_rsv_tcb) s_rsv_tcb = heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    ESP_LOGI("lap", "app link memory %s (%u B stack)", s_rsv_stack && s_rsv_tcb ? "set aside" : "not set aside, found per load",
+             (unsigned)RELOC_STACK);
+}
 static int relocate_internal(esp_elf_t *elf, const uint8_t *data) {
-    StackType_t *stack = reloc_stack();
-    StaticTask_t *tcb = heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const bool own_stack = !s_rsv_stack, own_tcb = !s_rsv_tcb;   /* lap_io loads one app at a time */
+    StackType_t *stack = own_stack ? reloc_stack() : s_rsv_stack;
+    StaticTask_t *tcb = own_tcb ? heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) : s_rsv_tcb;
     int rc = -1;
     if (stack && tcb) {
         reloc_job j = {elf, data, -1, xTaskGetCurrentTaskHandle(), 0};
@@ -481,8 +503,8 @@ static int relocate_internal(esp_elf_t *elf, const uint8_t *data) {
         }
     } else
         LS_SNPUTS(t_ls_lap_memory_is_short_stop, lap_state.work_error, sizeof(lap_state.work_error), "memory is short: stop a radio app (RADIOS) and open again");
-    heap_caps_free(stack);
-    heap_caps_free(tcb);
+    if (own_stack) heap_caps_free(stack);
+    if (own_tcb) heap_caps_free(tcb);
     return rc;
 }
 static bool load(void) {

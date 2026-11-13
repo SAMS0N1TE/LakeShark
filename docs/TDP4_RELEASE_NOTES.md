@@ -1,5 +1,29 @@
 # LakeShark release notes
 
+## 2.22.0
+
+This release is for the Windows app (Desktop and Studio) and the ESP32-P4-NANO desktop board.
+
+**T-Display P4 boards: 2.21.3 is the current firmware.** Get it from [2.21.3](https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.21.3), the web flasher, or UPDATE on the board. Its update files are attached here too so UPDATE's GitHub fallback keeps working.
+
+Fixed:
+
+- A NANO no longer comes up with a black desktop window when memory at boot is tight: the console's memory is set aside from the start of boot.
+- Opening an app from the card no longer fails with "not enough memory" after radio apps have run.
+- PINS: the console and Ethernet pins can no longer be picked. Saved pins that conflict, or that were saved before a failed start, are not used: the board starts on its defaults and PINS says why.
+
+New:
+
+- BOOT LOG: this boot's log and the last one, saved to the card as `bootlog.txt`, with SAVE TO CARD and SAVE TO PC. Attach it to an issue when a board misbehaves.
+- Desktop shortcuts you make, rename, delete and arrange; Recycle Bin; a folder window for the card; Run and Start menu search; Task Manager; window switcher (Ctrl+Tab); windows remember where they were; resize from the edges; desktop gadgets.
+- Control Panel: Display, Sound, Mouse and Keyboard, Network, Radios, Date and Time, Power, Storage, Updates, System.
+- FREQS on the desktop: bank list, sortable table, details pane, band ruler with live FM and P25 marks, favourites, duplicates, scan list, CHIRP export, drag between banks, undo.
+- MESH as a messenger, ADS-B as a sortable aircraft table, P25 with a talkgroup table, JOURNAL with a reading pane. Find, export and a clipboard between apps.
+- App SDK 2.7: apps can capture raw Wi-Fi and BLE advertising frames.
+- TAP, a packet analyser app: Wi-Fi, BLE, LoRa and the board's decodes; packet list, protocol tree, hex, filters, statistics; saves pcapng that opens in Wireshark.
+- Wi-Fi capture on the NANO needs the C5 coprocessor update attached here: copy `lakeshark-nano-c5-2.22.0.bin` to the card and run `c6 flash /sdcard/lakeshark-nano-c5-2.22.0.bin` on the console.
+- `c6 mon 8` counts the Wi-Fi frames the coprocessor forwards.
+
 ## 2.21.4
 
 - LakeShark Studio and lsdk: installing an app on an ESP32-P4-NANO no longer stops with "invalid base64 chunk" or "sequence must be contiguous from zero". The upload keeps two lines in flight, and a line lost on the way starts the upload again one line at a time.

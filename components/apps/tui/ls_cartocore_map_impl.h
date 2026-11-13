@@ -47,14 +47,14 @@ static void map_collect_labels(render_state *state) {
         if(!n || n>=128 || map_label_count>=LS_CARTO_LABEL_MAX) continue;
         ls_carto_label *l=&map_labels[map_label_count++];
         l->x=start;l->y=y;l->attr=carto_attr(*c);
-        /* Shown folded to ASCII (the fonts have nothing else); matched against
+        /* Shown as cells (Cyrillic its own, other letters folded); matched against
          * the engine's names in the UTF-8 they are stored in, so a name with
          * Polish letters still finds its class. */
         static EXT_RAM_BSS_ATTR char utf8[128*4];
         size_t u=0;
         for(int k=0;k<n;k++) {
             uint32_t cp=cells[y*cols+start+k].codepoint;
-            l->text[k]=cp!=127?tui_fold_codepoint(cp):'?';
+            l->text[k]=cp!=127?tui_cell_codepoint_byte(cp):'?';
             if(cp<0x80) utf8[u++]=(char)cp;
             else if(cp<0x800) { utf8[u++]=(char)(0xC0|cp>>6);utf8[u++]=(char)(0x80|(cp&63)); }
             else if(cp<0x10000) { utf8[u++]=(char)(0xE0|cp>>12);utf8[u++]=(char)(0x80|((cp>>6)&63));utf8[u++]=(char)(0x80|(cp&63)); }
@@ -455,7 +455,7 @@ static size_t pix_labels(const render_state *s,int tw,int th,ls_carto_label *out
             while(at<f->name.size && k<(int)sizeof(l->text)-1) {
                 uint32_t c=f->name.data[at++];unsigned extra=c>=0xf0?3:c>=0xe0?2:c>=0xc0?1:0;
                 if(extra) { c&=0x3f>>extra; while(extra-- && at<f->name.size) c=(c<<6)|(f->name.data[at++]&63); }
-                l->text[k++]=c>=32 && c!=127?(char)tui_fold_codepoint(c):'?';
+                l->text[k++]=c>=32 && c!=127?tui_cell_codepoint_byte(c):'?';
             }
             l->text[k]=0;
             bool seen=false;for(size_t j=0;j<n && !seen;j++) seen=!strcmp(out[j].text,l->text);

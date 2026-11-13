@@ -68,8 +68,8 @@ void dk_studio_draw(tui_surface *sf, tui_rect c, tui_rect clip)
     const int64_t ago = esp_timer_get_time() - s_asked_us;
     if (s_asked_us && ago < 6000000)
         dk_text(sf, clip, x, c.y + c.h - 5, "Opening Studio on your PC...", dk_attr(R_GOOD));
-    dk_button(sf, clip, open_rect(c), "OPEN STUDIO", true, false);
-    dk_button(sf, clip, ok_rect(c), "OK", false, false);
+    dk_button(sf, clip, open_rect(c), "OPEN STUDIO", true, dk_pressed(open_rect(c)));
+    dk_button(sf, clip, ok_rect(c), "OK", false, dk_pressed(ok_rect(c)));
 }
 
 static void ask(void)

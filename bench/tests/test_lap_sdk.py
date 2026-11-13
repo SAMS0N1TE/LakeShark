@@ -68,13 +68,13 @@ class NativeSDK(unittest.TestCase):
     def test_network_capability_and_example(self):
         f=lap.build(ROOT/'app-sdk/apps/tcp_probe',BUILD/'tcp_probe.lap')
         raw=f.read_bytes();e=lap.Elf(raw)
-        self.assertEqual((e.manifest['api_major'],e.manifest['api_minor']),(2,6))
+        self.assertEqual((e.manifest['api_major'],e.manifest['api_minor']),(2,7))
         self.assertEqual(e.manifest['flags'],1)
         self.assertEqual(subprocess.run([str(INSPECT),str(f)],capture_output=True).returncode,0)
         offset=e.sections[e.names.index('.lap_app')][4]
         # MIC (bit 4) starts at API 2.4; unknown capability bits remain invalid.
         for major,minor,flags,valid in [(2,4,1,True),(2,3,1,True),(2,4,16,True),
-                                      (2,3,16,False),(2,4,128,False),(2,5,0,True),(2,6,0,True),(2,7,0,False),(2,0,0,True),
+                                      (2,3,16,False),(2,4,128,False),(2,5,0,True),(2,6,0,True),(2,7,0,True),(2,8,0,False),(2,0,0,True),
                                       (1,3,1,True),(1,2,1,False),(1,3,2,False)]:
             b=bytearray(raw);lap.struct.pack_into('<HH',b,offset+4,major,minor);b[offset+130]=flags
             path=BUILD/'network-manifest.lap';path.write_bytes(b)

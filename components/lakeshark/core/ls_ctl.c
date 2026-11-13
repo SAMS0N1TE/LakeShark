@@ -292,7 +292,7 @@ static int cmd_scan(int argc, char **argv)
     if (!strcmp(argv[1], "skip")) { scan_engine_skip(); printf("skip\n"); return 0; }
     if (!strcmp(argv[1], "hang")) {
         if (argc < 3) { printf("usage: scan hang <ms>\n"); return 0; }
-        scan_engine_set_hang_ms(atoi(argv[2])); printf("hang=%d ms\n", atoi(argv[2])); return 0;
+        scan_engine_set_hang_ms(atoi(argv[2])); printf("hang=%d ms\n", scan_engine_get_hang_ms()); return 0;
     }
     /**/
     if (!strcmp(argv[1], "thresh")) {

@@ -85,8 +85,10 @@ bool rec_watch_start(void)
     rec_decode_ook24(pulse,100,&state.decoded[0]);
     return true;
 }
-static bool sim_loading;
-bool rec_watch_enable(bool on){if(on && sim_loading)return false;state.enabled=on;return true;}
+static bool sim_loading,sim_refuse_off;
+/* A stop the runtime refuses: the worker not ready or a request in flight. */
+void rec_watch_sim_refuse_off(bool refuse){sim_refuse_off=refuse;}
+bool rec_watch_enable(bool on){if(on && sim_loading)return false;if(!on && sim_refuse_off)return false;state.enabled=on;return true;}
 bool rec_watch_enabled(void){return state.enabled;}
 /* The bench has no radio to refuse a session, so nothing ever went wrong
    and the reason is always empty. */
@@ -105,7 +107,8 @@ static rec_fsk_mod_t sim_fsk={4800,25000,0x2DD42DD4u,32,59};
 void rec_watch_fsk_get(rec_fsk_mod_t *out){if(out)*out=sim_fsk;}
 static bool sim_lr_fsk;
 bool rec_watch_lr_fsk(void){return sim_lr_fsk;}
-bool rec_watch_set_lr_fsk(bool fsk){sim_lr_fsk=fsk;return true;}
+/* Refused under a running WATCH, as the runtime does. */
+bool rec_watch_set_lr_fsk(bool fsk){if(state.enabled)return false;sim_lr_fsk=fsk;return true;}
 /* No radio to sweep, but the sweep is a state machine as far as the screen
    is concerned - busy or not, with or without findings - and every control
    that acts on a running sweep was unreachable from the bench while this
@@ -259,6 +262,9 @@ uint32_t ls_tui_touch_drags(int *a,int *b,int *c,int *d)
 {(void)a;(void)b;(void)c;(void)d;return 0;}
 void ls_tui_pointer_set(int col,int row) {(void)col;(void)row;}
 bool ls_tui_pointer_cell(int *col,int *row) {(void)col;(void)row;return false;}
+void ls_tui_input_now(uint8_t mods,uint8_t clicks) {(void)mods;(void)clicks;}
+uint8_t ls_tui_input_mods(void) {return 0;}
+uint8_t ls_tui_input_clicks(void) {return 0;}
 #endif
 
 static bool file_replay_busy;

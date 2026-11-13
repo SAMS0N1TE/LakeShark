@@ -576,6 +576,9 @@ ls_add_test(test_tui_p25_screen
     ${FW}/components/apps/tui/ls_tui_screen.c
     ${LS_TUI_APP_SRCS}
     ${FW}/components/apps/tui/screens/main/scr_p25.c
+    ${FW}/components/apps/tui/screens/main/scr_p25_desk.c
+    ${FW}/components/apps/tui/ls_p25_desk.c
+    ${FW}/components/apps/tui/ls_deskui.c
     ${FW}/components/apps/tui/screens/main/p25_calls_live.c
     ${FW}/components/apps/tui/ls_tui_chrome.c
     ${FW}/components/apps/tui/ls_theme.c
@@ -810,6 +813,9 @@ target_include_directories(test_ls_registry PRIVATE ${FW}/components/apps/tui)
 ls_add_test(test_ls_ota_core ${FW}/components/lakeshark/core/ls_ota_core.c)
 
 add_executable(lssim
+    ${FW}/components/apps/tui/screens/ext/scr_bootlog.c
+    ${FW}/components/lakeshark/core/ls_bootlog.c
+    shims/ls_bootlog_fake.c
     tools/lssim_digi.c
     ${FW}/components/apps/tui/screens/ext/scr_digi.c
     ${APP}/digi/digi_engine.c
@@ -995,13 +1001,19 @@ set(LS_DESK_SRCS
     ${FW}/components/apps/tui/desk/ls_desk_wall.c
     ${FW}/components/apps/tui/desk/ls_desk_anim.c
     ${FW}/components/apps/tui/desk/ls_desk_props.c
-    ${FW}/components/apps/tui/desk/ls_desk_studio.c)
-target_sources(lssim PRIVATE ${FW}/components/apps/tui/desk/ls_desk_live.c)
+    ${FW}/components/apps/tui/desk/ls_desk_studio.c
+    ${FW}/components/apps/tui/desk/ls_desk_items.c
+    ${FW}/components/apps/tui/desk/ls_desk_dialogs.c
+    ${FW}/components/apps/tui/desk/ls_desk_cpl.c
+    ${FW}/components/apps/tui/desk/ls_desk_gadgets.c)
+target_sources(lssim PRIVATE ${FW}/components/apps/tui/desk/ls_desk_live.c
+    ${FW}/components/apps/tui/desk/ls_desk_cplsys.c)
 target_sources(lssim PRIVATE ${LS_DESK_SRCS})
 # The desk's window manager over the real router, in a 160x45 grid.
 ls_add_test(test_desk_wm
     ${LS_TUI_APP_SRCS}
     ${LS_DESK_SRCS}
+    ${FW}/components/apps/tui/ls_deskui.c
     ${FW}/components/apps/tui/ls_tui_screen.c
     ${FW}/components/apps/tui/ls_tui_chrome.c
     ${FW}/components/apps/tui/ls_theme.c
@@ -1146,6 +1158,9 @@ ls_add_test(test_tui_render_cost
     ${FW}/components/apps/tui/ls_font_mono_16.c
     ${FW}/components/apps/tui/ls_font_mono_14.c
     ${FW}/components/apps/tui/screens/main/scr_p25.c
+    ${FW}/components/apps/tui/screens/main/scr_p25_desk.c
+    ${FW}/components/apps/tui/ls_p25_desk.c
+    ${FW}/components/apps/tui/ls_deskui.c
     ${FW}/components/apps/tui/screens/main/p25_calls_live.c
     ${APP}/p25/p25_tg_observed.c
     ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
@@ -1410,6 +1425,9 @@ ls_add_test(test_tui_render_dump
     ${FW}/components/apps/tui/ls_font_mono_16.c
     ${FW}/components/apps/tui/ls_font_mono_14.c
     ${FW}/components/apps/tui/screens/main/scr_p25.c
+    ${FW}/components/apps/tui/screens/main/scr_p25_desk.c
+    ${FW}/components/apps/tui/ls_p25_desk.c
+    ${FW}/components/apps/tui/ls_deskui.c
     ${FW}/components/apps/tui/screens/main/p25_calls_live.c
     ${APP}/p25/p25_tg_observed.c
     ${FW}/components/apps/tui/screens/main/scr_home.c
@@ -2069,6 +2087,11 @@ ls_add_test(test_ls_errlog
 target_include_directories(test_ls_errlog PRIVATE
     ${FW}/components/lakeshark/core)
 
+ls_add_test(test_ls_bootlog
+    ${FW}/components/lakeshark/core/ls_bootlog.c)
+target_include_directories(test_ls_bootlog PRIVATE
+    ${FW}/components/lakeshark/core)
+
 ls_add_test(test_ls_term
     ${FW}/components/apps/tui/ls_term_scroll.c)
 target_include_directories(test_ls_term PRIVATE
@@ -2274,6 +2297,15 @@ ls_add_test(test_freqs
 target_include_directories(test_freqs PRIVATE ${FW}/bench/shims ${FW}/components/apps/tui
     ${FW}/components/apps/tui/tuilib ${FW}/components/lakeshark/core)
 target_compile_definitions(test_freqs PRIVATE FREQS_TOOLS="${FW}/tools")
+# FREQS on the desk: its table orders, fields, bank moves and undo, and the desk widgets.
+ls_add_test(test_freqs_desk
+    ${FW}/components/apps/tui/ls_freqs.c
+    ${FW}/components/apps/tui/ls_freqs_desk.c
+    ${FW}/components/apps/tui/ls_deskui.c
+    ${FW}/components/lakeshark/core/scan_import.c
+    ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
+target_include_directories(test_freqs_desk PRIVATE ${FW}/bench/shims ${FW}/components/apps/tui
+    ${FW}/components/apps/tui/tuilib ${FW}/components/lakeshark/core)
 ls_add_test(test_scan_list_nh_ma
     ${FW}/components/lakeshark/core/scan_import.c
     ${FW}/components/lakeshark/core/scan_geo.c)
@@ -2714,7 +2746,8 @@ ls_add_test(test_subghz_runtime tests/subghz_runtime/radio_fake.c
     ${APP}/rec/rec_lr_iq.c ${APP}/rec/rec_sidecar.c
     ${APP}/subghz/subghz_file.c
     ${APP}/rec/rec_ook24.c ${APP}/rec/rec_watch.c ${APP}/rec/rec_lr_ook.c ${FW}/components/lakeshark/radio/ls_fsk_capture.c
-    ${APP}/rec/rec_ism.c ${APP}/rec/rec_fsk.c ${FW}/components/apps/tui/experiments/lr433_dec.c)
+    ${APP}/rec/rec_ism.c ${APP}/rec/rec_fsk.c ${FW}/components/apps/tui/experiments/lr433_dec.c
+    ${FW}/components/lakeshark/dsp/fsk_packet.c ${FW}/components/lakeshark/radio/ls_sub_fsk.c)
 target_include_directories(test_subghz_runtime PRIVATE tests/subghz_runtime)
 target_compile_options(test_subghz_runtime PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(test_subghz_runtime PRIVATE -Wl,--gc-sections)
@@ -3053,16 +3086,53 @@ target_sources(test_tui_screens PRIVATE ${APP}/fm/fm_hf.c ${APP}/fm/fm_spectrum.
 # FREQS: the library screen, its store, TUNE and the scanner hand-off.
 set(LS_FREQS_SRCS
     ${FW}/components/apps/tui/screens/ext/scr_freqs.c
+    ${FW}/components/apps/tui/screens/ext/scr_freqs_desk.c
     ${FW}/components/apps/tui/ls_freqs.c
+    ${FW}/components/apps/tui/ls_freqs_desk.c
+    ${FW}/components/apps/tui/ls_deskui.c
     ${FW}/components/apps/tui/ls_freqs_run.c
     ${FW}/components/lakeshark/core/scan_import.c
     shims/freqs_scan_import_fake.c)
 target_sources(lssim PRIVATE ${LS_FREQS_SRCS})
 target_sources(test_tui_screens PRIVATE ${LS_FREQS_SRCS})
+# The other apps laid out for a desk window: each is its screen's own file
+# beside it, and the part with no drawing in it, which has its own test.
+set(LS_DESK_APP_SRCS
+    ${FW}/components/apps/tui/screens/main/scr_adsb_desk.c
+    ${FW}/components/apps/tui/ls_adsb_desk.c
+    ${FW}/components/apps/tui/screens/ext/scr_journal_desk.c
+    ${FW}/components/apps/tui/ls_journal_desk.c)
+target_sources(lssim PRIVATE ${LS_DESK_APP_SRCS}
+    ${FW}/components/apps/tui/screens/ext/scr_mesh_desk.c
+    ${FW}/components/apps/tui/ls_mesh_desk.c
+    ${FW}/components/apps/tui/screens/main/scr_p25_desk.c
+    ${FW}/components/apps/tui/ls_p25_desk.c)
+ls_add_test(test_p25_desk ${FW}/components/apps/tui/ls_p25_desk.c ${APP}/p25/p25_tg_observed.c ${APP}/p25/p25_lcw.c)
+target_include_directories(test_p25_desk PRIVATE ${FW}/components/apps/tui ${APP}/p25 ${FW}/bench/shims)
+add_test(NAME test_p25_desk_ui COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_p25_desk_ui.py $<TARGET_FILE:lssim>)
+ls_add_test(test_journal_desk ${FW}/components/apps/tui/ls_journal_desk.c)
+target_include_directories(test_journal_desk PRIVATE ${FW}/components/apps/tui)
+add_test(NAME test_journal_desk_ui COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_journal_desk_ui.py $<TARGET_FILE:lssim>)
+target_sources(test_tui_screens PRIVATE ${LS_DESK_APP_SRCS})
+ls_add_test(test_adsb_desk ${FW}/components/apps/tui/ls_adsb_desk.c)
+target_include_directories(test_adsb_desk PRIVATE ${FW}/components/apps/tui)
+add_test(NAME test_adsb_desk_ui COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_adsb_desk_ui.py $<TARGET_FILE:lssim>)
+ls_add_test(test_mesh_desk ${FW}/components/apps/tui/ls_mesh_desk.c)
+target_include_directories(test_mesh_desk PRIVATE ${FW}/bench/shims ${FW}/components/apps/tui
+    ${FW}/components/meshcore)
+add_test(NAME test_mesh_desk_ui COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mesh_desk_ui.py $<TARGET_FILE:lssim>)
 target_compile_definitions(test_tui_screens PRIVATE LSSIM_FREQS_DIR="${FW}/bench/fixtures/freqs_test")
 
 add_test(NAME test_fm_vfo_ui COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fm_vfo_ui.py $<TARGET_FILE:lssim>)
+# FREQS in a desk window, by mouse and keyboard, at three window sizes.
+add_test(NAME test_freqs_desk_ui COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_freqs_desk_ui.py $<TARGET_FILE:lssim>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/freqs_test)
 
 # Count shared scan dispatch without replacing the scanner fixture's behavior.
 foreach(tune_action next skip hold stop)
@@ -3561,6 +3631,8 @@ foreach(t IN LISTS lap2_targets)
     if(NOT "${lap2_sources}" MATCHES "ls_extnodes\\.c")
       list(APPEND lap2_add ${LAP_TUI}/ls_extnodes.c)
     endif()
+    # API 2.7: raw capture; the host side replays a pcapng.
+    list(APPEND lap2_add ${LAP_TUI}/ls_lap_capture.c)
     # API 2.1: services and the board's controls. lssim draws them with the
     # real widgets; the other targets get recording stand-ins.
     list(APPEND lap2_add ${LAP_TUI}/ls_lap_service.c ${LAP_TUI}/ls_lap_kit.c ${LAP_TUI}/ls_lap_dsp.c)

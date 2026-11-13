@@ -1,3 +1,4 @@
+#include "tui/ls_lap_capture.h"
 #include "tui/ls_sweep_app.h"
 #include "tui/ls_rid.h"
 #include "tui/ls_ble_heard.h"
@@ -937,6 +938,8 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISC: {
         if (!s_run) return 0;
         ble_hid_advert(&event->disc);
+        ls_lap_capture_ble(event->disc.addr.val, event->disc.addr.type, event->disc.event_type,
+            event->disc.rssi, event->disc.data, event->disc.length_data, esp_timer_get_time());
         ble_link_observer_push(&s_adverts, event->disc.addr.val, event->disc.addr.type,
             event->disc.rssi, event->disc.event_type == BLE_HCI_ADV_RPT_EVTYPE_SCAN_RSP,
             event->disc.data, event->disc.length_data, esp_timer_get_time());

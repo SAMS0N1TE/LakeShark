@@ -70,7 +70,7 @@ static void discovery(void) {
     lap_caps_t stack_caps, *c = &stack_caps;
     assert(lap_caps((lap_caps_t *)1, sizeof(*c)) == LAP_RX_EINVAL);
     assert(lap_api_version() == ((LAP_API_MAJOR << 16) | LAP_API_MINOR));
-    assert(lap_api_version() == 0x20006);
+    assert(lap_api_version() == 0x20007);
     ls_lap_sys_host()->hardware = LAP_HW_WIFI | LAP_HW_SD | LAP_HW_DESKTOP;
     assert(lap_caps(c, sizeof(*c) - 1) == LAP_RX_EINVAL);
     assert(lap_caps(c, sizeof(*c)) == 0 && c->size == sizeof(*c) && c->version == 1);

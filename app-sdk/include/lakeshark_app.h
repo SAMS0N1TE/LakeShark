@@ -43,6 +43,7 @@ extern "C" {
    LAP_TARGET_API_23 builds for 2.3 firmware: the 2.4 calls are not declared.
    LAP_TARGET_API_24 builds for 2.4 firmware: the 2.5 calls are not declared.
    LAP_TARGET_API_25 builds for 2.5 firmware: the 2.6 calls are not declared.
+   LAP_TARGET_API_26 builds for 2.6 firmware: the 2.7 calls are not declared.
    API 2.5 games/assets: include lib/lap_assets.h, lap_game.h, lap_music.h.
    These helpers compile into the app and add no firmware imports. PNG assets
    use caller-owned bounded arenas; SD reads and PCM use existing services. */
@@ -84,11 +85,8 @@ extern "C" {
 #define LAP_API_23 1
 #define LAP_API_24 1
 #define LAP_API_25 1
-#else
-/* API 2.6: HackRF TX / desktop host and Bluetooth peripheral roles.
-   API 2.5: system services, games/assets, input devices and sensors.
-   Helpers compile into apps; descriptor stays 228 bytes. */
-/* API 2.6 services: concurrent residents and budgeted custom DSP. */
+#elif defined(LAP_TARGET_API_26)
+/* API 2.6: HackRF TX / desktop host, Bluetooth peripheral roles, services. */
 #define LAP_API_MAJOR 2
 #define LAP_API_MINOR 6
 #define LAP_API_21 1
@@ -97,6 +95,21 @@ extern "C" {
 #define LAP_API_24 1
 #define LAP_API_25 1
 #define LAP_API_26 1
+#else
+/* API 2.7: raw Wi-Fi and Bluetooth capture (lap_wifi_capture_start ...).
+   API 2.6: HackRF TX / desktop host and Bluetooth peripheral roles.
+   API 2.5: system services, games/assets, input devices and sensors.
+   Helpers compile into apps; descriptor stays 228 bytes. */
+/* API 2.6 services: concurrent residents and budgeted custom DSP. */
+#define LAP_API_MAJOR 2
+#define LAP_API_MINOR 7
+#define LAP_API_21 1
+#define LAP_API_22 1
+#define LAP_API_23 1
+#define LAP_API_24 1
+#define LAP_API_25 1
+#define LAP_API_26 1
+#define LAP_API_27 1
 #endif
 #define LAP_MAGIC     0x3150414Cu   /* "LAP1" */
 
@@ -2026,6 +2039,109 @@ typedef struct {
 } lap_map_node_t;
 int lap_map_node(const lap_map_node_t *node);
 #endif /* API 2.6: nodes of another mesh on MAP */
+
+/* ---- API 2.7: raw Wi-Fi and Bluetooth capture --------------------------- */
+#if defined(LAP_API_27)
+/* Receive only: frames as the radio heard them, for analysers. Nothing here
+   transmits, injects, deauthenticates or decrypts. Needs LAP_CAP_RADIO_RX.
+   One capture per source for the whole board; the handle IS the source
+   (LAP_CAPTURE_WIFI or LAP_CAPTURE_BLE), so lap_capture_status works before
+   a start and after a refused one and says why in `reason` and `why`.
+   Frames wait in a PSRAM ring owned by the firmware (256 frames); the app
+   polls from draw(). A full ring drops the NEWEST frame and counts it.
+
+   Wi-Fi: 802.11 MAC frames, header first, no FCS, no radiotap. The Wi-Fi
+   radio is a coprocessor behind the board's serial link, so capture works
+   only when its firmware forwards monitor frames. The firmware shipped with
+   LakeShark 2.21 (esp_hosted 2.12) does not: start then returns
+   LAP_IO_ENOTSUP with reason LAP_CAPTURE_NO_TRANSPORT. Always handle that.
+   Tuning away from the access point drops the board's own Wi-Fi (LINK,
+   remote screens, lap_tcp). A config that names channels is therefore
+   refused with LAP_IO_EBUSY / LAP_CAPTURE_LINK_IN_USE while the board is
+   joined to a network, unless the app sets LAP_CAPTURE_DROP_LINK after
+   asking its user. channel_count 0 never retunes: it listens where the
+   board already is and is always allowed.
+
+   Bluetooth: one record per advertising report from the board's passive
+   scanner (shared with LINK and lap_ble_scan). Data is the AD structures
+   (0..255 bytes), not the on-air PDU: the controller strips the header and
+   CRC, and does not report which of channels 37/38/39 it heard (channel 0).
+
+   SIMULATOR: lssim never invents frames. It replays the pcapng file named by
+   LAPSIM_CAPTURE (LINKTYPE 127 radiotap records feed Wi-Fi, 256 BLE LL
+   records feed Bluetooth), in file order at the file's own pace, once.
+   Without the variable both starts return LAP_IO_ENOTSUP with reason
+   LAP_CAPTURE_NO_FILE. */
+enum { LAP_CAPTURE_WIFI = 1, LAP_CAPTURE_BLE = 2 };
+enum {
+    LAP_CAPTURE_RUNNING = 0,
+    LAP_CAPTURE_STOPPED,        /* never started, or stopped */
+    LAP_CAPTURE_NO_RADIO,       /* this board has no such radio, or it is off */
+    LAP_CAPTURE_NO_TRANSPORT,   /* the Wi-Fi coprocessor firmware cannot forward monitor frames */
+    LAP_CAPTURE_LINK_IN_USE,    /* hopping would drop the joined network; see LAP_CAPTURE_DROP_LINK */
+    LAP_CAPTURE_BUSY,           /* another app holds this capture */
+    LAP_CAPTURE_NO_MEMORY,
+    LAP_CAPTURE_NO_FILE,        /* simulator: LAPSIM_CAPTURE unset, unreadable or not pcapng */
+    LAP_CAPTURE_REPLAY_END      /* simulator: every record of the file was delivered */
+};
+enum { LAP_WIFI_MGMT = 1, LAP_WIFI_CTRL = 2, LAP_WIFI_DATA = 4 };  /* 802.11 frame types */
+/* Legacy advertising PDU types as the controller reports them, plus EXT. */
+enum { LAP_BLE_ADV_IND = 0, LAP_BLE_ADV_DIRECT_IND, LAP_BLE_ADV_SCAN_IND,
+       LAP_BLE_ADV_NONCONN_IND, LAP_BLE_SCAN_RSP, LAP_BLE_ADV_EXT_IND = 7 };
+#define LAP_CAPTURE_DROP_LINK 1u   /* the user agreed to lose the Wi-Fi link */
+#define LAP_WIFI_HOP_MAX 16
+#define LAP_CAPTURE_SNAP_MAX 2346
+typedef struct {
+    uint16_t size, version;     /* sizeof, 1 */
+    uint32_t flags;             /* LAP_CAPTURE_DROP_LINK */
+    uint8_t types;              /* LAP_WIFI_* wanted; 0 = all three */
+    uint8_t channel_count;      /* 0: stay where the board is. 1: one channel. more: hop */
+    uint16_t dwell_ms;          /* per channel when hopping, 50..5000; 0 = 250 */
+    uint16_t snap_bytes;        /* keep this much of each frame, 64..2346; 0 = 512 */
+    uint16_t reserved;
+    uint8_t channels[LAP_WIFI_HOP_MAX];   /* 1..14 and 36..177 */
+} lap_wifi_capture_config_t;
+typedef struct {
+    uint16_t size, version;     /* sizeof, 1 */
+    uint32_t flags;             /* 0 */
+    uint8_t pdu_types;          /* bit n wants LAP_BLE_* type n; 0 = all */
+    uint8_t reserved[3];
+} lap_ble_capture_config_t;
+typedef struct {
+    uint16_t size, version;
+    uint32_t sequence, dropped; /* dropped: frames lost before this one, ever */
+    uint64_t timestamp_us;      /* board uptime at reception; the file's time in lssim */
+    uint16_t length;            /* bytes copied */
+    uint16_t original_length;   /* on air, without FCS; > length when cut to snap_bytes */
+    int8_t rssi;                /* dBm */
+    uint8_t source;             /* LAP_CAPTURE_WIFI or LAP_CAPTURE_BLE */
+    uint8_t channel;            /* Wi-Fi channel; Bluetooth 37..39, 0 unknown */
+    uint8_t kind;               /* Wi-Fi: LAP_WIFI_* of this frame. Bluetooth: LAP_BLE_* PDU type */
+    uint16_t rate_500kbps;      /* Wi-Fi legacy rate in 0.5 Mb/s units; 0 unknown (HT and later) */
+    uint8_t addr[6];            /* Bluetooth advertiser, as lap_ble_advert_t; zero for Wi-Fi */
+    uint8_t addr_type;          /* Bluetooth: 0 public, 1 random */
+    uint8_t reserved[7];
+} lap_capture_meta_t;
+typedef struct {
+    uint16_t size, version;
+    int32_t reason;             /* LAP_CAPTURE_* */
+    uint32_t frames, dropped, queued;
+    uint8_t source, channel, replay, hopping;   /* replay 1: frames come from a file (lssim) */
+    char why[72];               /* the reason in words, for the app to show as it is */
+} lap_capture_status_t;
+/* start returns the handle (the source) or LAP_IO_EINVAL, EACCES, EBUSY,
+   ENOTSUP. read returns bytes copied (0 is a valid empty frame),
+   LAP_IO_EAGAIN when nothing waits, LAP_IO_ECLOSED when not started by this
+   app; meta is always filled with a frame. A frame longer than cap is cut and
+   consumed. Buffers are copied before return and may be on the stack.
+   Closing the app stops its captures and returns the Wi-Fi radio to the
+   channel it was on. */
+int lap_wifi_capture_start(const lap_wifi_capture_config_t *config);
+int lap_ble_capture_start(const lap_ble_capture_config_t *config);
+int lap_capture_read(int capture, void *data, size_t cap, lap_capture_meta_t *meta);
+int lap_capture_status(int capture, lap_capture_status_t *out);
+void lap_capture_stop(int capture);
+#endif /* API 2.7: raw Wi-Fi and Bluetooth capture */
 #ifdef __cplusplus
 }
 #endif

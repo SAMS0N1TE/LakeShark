@@ -7,6 +7,7 @@ extern _Bool ls_lap_mic_active(void) __attribute__((weak));
    changes because a sample came in. */
 
 #include "ls_desk_priv.h"
+#include "../ls_deskui.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +30,8 @@ extern _Bool ls_lap_mic_active(void) __attribute__((weak));
 extern void ls_rterm_status(ls_rterm_status_t *out) __attribute__((weak));
 extern void ls_gps_get(ls_gps_state_t *out) __attribute__((weak));
 extern int  ls_notify_unread(void) __attribute__((weak));
+extern void ls_rterm_kick(void) __attribute__((weak));
+extern void ls_rterm_web_kick(void) __attribute__((weak));
 
 /* The desktop input side owns the latency meter; until it is linked, there
    is no figure and the tray shows none. */
@@ -50,11 +53,10 @@ enum { DRAG_NONE, DRAG_MOVE, DRAG_SIZE, DRAG_KEY, DRAG_CLIENT, DRAG_ICON };
 enum { KEY_MENU = 1, KEY_MIN, KEY_MAX, KEY_CLOSE };
 #define DESK_MIN_COLS 100
 #define DESK_MIN_ROWS 30
-#define DBL_US 400000
 
-EXT_RAM_BSS_ATTR static dk_win_t s_w[LS_DESK_MAX_WIN];
+EXT_RAM_BSS_ATTR static dk_win_t s_w[DK_WIN_SLOTS];
 EXT_RAM_BSS_ATTR static ls_gps_state_t s_gps;
-static int s_z[LS_DESK_MAX_WIN], s_nz;
+static int s_z[DK_WIN_SLOTS], s_nz;
 static int s_next_id = 1;
 static bool s_on, s_full, s_focus;
 static int64_t s_focus_banner_us;
@@ -78,7 +80,29 @@ static int s_synth_px, s_synth_py;
 static int s_lat[16], s_lat_n, s_lat_last = -1;
 static int64_t s_lat_us;
 static bool s_pressed_start;
+static bool s_click_dbl;                  /* the press being handled was a double-click */
+/* The items themselves are ls_desk_items.c's. */
+static int s_drag_icon = -1;
+static int s_icon_hover = -1;
+static bool s_desk_keys;                  /* the desktop has the keys: its ground was clicked last */
+static int s_ctx_col = -1, s_ctx_row = -1;   /* where the desktop's menu was asked for */
+static bool s_size_w, s_size_h;           /* which sides a resize drag moves */
+/* Move and Size from the window menu, by the arrow keys. */
+static int s_kbd_mode, s_kbd_win;         /* 0, 1 move, 2 size */
+static tui_rect s_kbd_was;
+/* The window switcher (Ctrl+Tab, Alt+Tab, F6): front first, as the windows were. */
+static bool s_sw_on, s_sw_sticky;
+static int s_sw_ids[DK_WIN_SLOTS], s_sw_n, s_sw_at;
+static int64_t s_sw_us;
+
+bool dk_click_double(void) { return s_click_dbl; }
 static const char *s_last_radio;          /* the receiver the tray can resume */
+
+/* A push button under a held press draws pressed, until the pointer leaves it. */
+bool dk_pressed(tui_rect r)
+{
+    return s_drag == DRAG_CLIENT && tui_rect_contains(r, s_down_col, s_down_row) && tui_rect_contains(r, s_ptr_col, s_ptr_row);
+}
 
 static void cancel_client_finger(void)
 {
@@ -92,7 +116,7 @@ static void cancel_client_finger(void)
 
 dk_win_t *dk_win(int id)
 {
-    for (int i = 0; i < LS_DESK_MAX_WIN; i++) if (s_w[i].used && s_w[i].id == id) return &s_w[i];
+    for (int i = 0; i < DK_WIN_SLOTS; i++) if (s_w[i].used && s_w[i].id == id) return &s_w[i];
     return NULL;
 }
 
@@ -241,6 +265,7 @@ static void clamp(dk_win_t *w)
 
 /* --------------------------------------------------------- z and focus -- */
 
+static tui_rect task_rect(int id);
 static void z_remove(int id)
 {
     int k = 0;
@@ -293,8 +318,6 @@ static void native_input(const dk_win_t *w, const ls_input_ev_t *ev) {
     ls_lap_input_event(&app_event, c.x * cw, c.y * ch);
 }
 
-static tui_rect task_rect(int id);
-
 void ls_desk_raise(int id)
 {
     dk_win_t *w = dk_win(id);
@@ -310,14 +333,18 @@ void ls_desk_raise(int id)
     z_remove(id);
     s_z[s_nz++] = id;
     s_icon_sel = -1;
+    s_desk_keys = false;
     if (changed) native_life(w, true);
 }
 
 int ls_desk_front(void) { const dk_win_t *w = dk_front_win(); return w ? w->id : -1; }
 
-static dk_win_t *alloc_win(void)
+static dk_win_t *alloc_win(bool dialog)
 {
-    for (int i = 0; i < LS_DESK_MAX_WIN; i++)
+    int used = 0;
+    for (int i = 0; i < DK_WIN_SLOTS; i++) used += s_w[i].used;
+    if (used >= (dialog ? DK_WIN_SLOTS : LS_DESK_MAX_WIN)) return NULL;
+    for (int i = 0; i < DK_WIN_SLOTS; i++)
         if (!s_w[i].used) {
             memset(&s_w[i], 0, sizeof(s_w[i]));
             s_w[i].used = true;
@@ -331,7 +358,7 @@ static void place_new(dk_win_t *w, int cw, int ch)
 {
     const tui_rect work = dk_work();
     int n = 0;
-    for (int i = 0; i < LS_DESK_MAX_WIN; i++) if (s_w[i].used && &s_w[i] != w) n++;
+    for (int i = 0; i < DK_WIN_SLOTS; i++) if (s_w[i].used && &s_w[i] != w) n++;
     w->w = cw + 2;
     w->h = ch + 3;
     if (w->w > work.w) w->w = work.w;
@@ -348,33 +375,49 @@ static void place_new(dk_win_t *w, int cw, int ch)
     clamp(w);
 }
 
-/* LakeShark Studio's desktop icon: not an app of the board's, a window
-   saying how to open Studio on the PC (ls_desk_studio.c). */
-static const ls_app_t s_studio_icon = {.id = "studio", .name = "LakeShark Studio", .icon = LS_ICON_TERMINAL,
-                                       .hue = TUI_YELLOW, .cat = LS_APP_EXTRA};
+static void no_room(void)
+{
+    dk_msg("LakeShark Desktop", "Eight windows are open: that is the limit.",
+           "Close one (Ctrl+F4), then open this again.");
+}
 
 static int open_app(const ls_app_t *a)
 {
-    if (a == &s_studio_icon) return dk_open_studio();
     if (!a || !a->screen) return -1;
-    for (int i = 0; i < LS_DESK_MAX_WIN; i++)
+    for (int i = 0; i < DK_WIN_SLOTS; i++)
         if (s_w[i].used && s_w[i].kind == DK_APP && s_w[i].app == a) {
             ls_desk_raise(s_w[i].id);
             return s_w[i].id;
         }
     const int si = ls_tui_screen_index_of(a->screen);
     if (si < 0) return -1;
-    dk_win_t *w = alloc_win();
-    if (!w) return -1;
+    dk_win_t *w = alloc_win(false);
+    if (!w) { no_room(); return -1; }
     w->kind = DK_APP;
     w->app = a;
     w->screen = si;
     snprintf(w->title, sizeof(w->title), "%s", a->name ? a->name : a->id);
     snprintf(w->label, sizeof(w->label), "%s", a->name ? a->name : a->id);
     place_new(w, 115, 27);
+    /* Where the owner left this app's window last time, and how big. */
+    int px, py, pw, ph, pstate;
+    if (dk_place_get(a->id, &px, &py, &pw, &ph, &pstate)) {
+        w->x = px; w->y = py; w->w = pw; w->h = ph;
+        clamp(w);
+    }
     ls_desk_raise(w->id);
-    dk_anim_zoom(task_rect(w->id), tui_rect_make(w->x, w->y, w->w, w->h));
+    tui_rect o;
+    dk_win_rects(w, &o, NULL);
+    dk_anim_zoom(task_rect(w->id), o);
     return w->id;
+}
+
+int dk_open_app_win(const ls_app_t *a) { return open_app(a); }
+
+static void remember_place(const dk_win_t *w)
+{
+    if (w && w->kind == DK_APP && w->app && w->app->id)
+        dk_place_put(w->app->id, w->x, w->y, w->w, w->h, w->state == LS_DESK_WIN_MAX ? LS_DESK_WIN_MAX : LS_DESK_WIN_NORMAL);
 }
 
 int ls_desk_open_app(const char *id)
@@ -385,13 +428,14 @@ int ls_desk_open_app(const char *id)
 
 int dk_open_shell(int shell, const char *title, int cw, int ch)
 {
-    for (int i = 0; i < LS_DESK_MAX_WIN; i++)
+    for (int i = 0; i < DK_WIN_SLOTS; i++)
         if (s_w[i].used && s_w[i].kind == DK_SHELL && s_w[i].shell == shell) {
             ls_desk_raise(s_w[i].id);
             return s_w[i].id;
         }
-    dk_win_t *w = alloc_win();
-    if (!w) return -1;
+    const bool dialog = shell == DK_SHELL_MSG || shell == DK_SHELL_PROMPT || shell == DK_SHELL_SHUTDOWN || shell == DK_SHELL_ITEM;
+    dk_win_t *w = alloc_win(dialog);
+    if (!w) { if (shell != DK_SHELL_MSG) no_room(); return -1; }
     w->kind = DK_SHELL;
     w->shell = (uint8_t)shell;
     snprintf(w->title, sizeof(w->title), "%s", title);
@@ -416,11 +460,23 @@ int ls_desk_open_display(int tab)
 }
 
 int ls_desk_open_shutdown(void) { return dk_open_shutdown(); }
+
+bool ls_desk_shell_open(const char *name, int arg)
+{
+    if (!name) return false;
+    if (!strcmp(name, "control")) dk_cpl_open(arg);
+    else if (!strcmp(name, "run")) dk_run_open();
+    else if (!strcmp(name, "tasks")) dk_tasks_open();
+    else if (!strcmp(name, "bin")) dk_bin_open();
+    else if (!strcmp(name, "folder")) dk_folder_open(NULL, -1, -1);
+    else return false;
+    return true;
+}
 void ls_desk_welcome(void) { dk_anim_splash(); }
 
 dk_win_t *dk_win_shell(int shell)
 {
-    for (int i = 0; i < LS_DESK_MAX_WIN; i++)
+    for (int i = 0; i < DK_WIN_SLOTS; i++)
         if (s_w[i].used && s_w[i].kind == DK_SHELL && s_w[i].shell == shell) return &s_w[i];
     return NULL;
 }
@@ -449,6 +505,7 @@ void ls_desk_maximize(int id)
     dk_win_rects(w, &b2, NULL);
     dk_anim_zoom(a, b2);
     ls_desk_raise(id);
+    remember_place(w);
 }
 
 void ls_desk_restore(int id)
@@ -483,6 +540,9 @@ void ls_desk_close(int id)
     if (!w) return;
     native_life(w, false);
     if (s_drag_win == id) cancel_client_finger();
+    if (s_kbd_win == id) s_kbd_mode = 0;
+    remember_place(w);
+    if (w->kind == DK_SHELL) dk_dialogs_closed(w);
     if (w->state != LS_DESK_WIN_MIN) {
         tui_rect o;
         dk_win_rects(w, &o, NULL);
@@ -495,14 +555,14 @@ void ls_desk_close(int id)
     w->used = false;
     if (s_drag_win == id) s_drag = DRAG_NONE;
     bool apps = false;
-    for (int i = 0; i < LS_DESK_MAX_WIN; i++) if (s_w[i].used && s_w[i].kind == DK_APP) apps = true;
+    for (int i = 0; i < DK_WIN_SLOTS; i++) if (s_w[i].used && s_w[i].kind == DK_APP) apps = true;
     if (!apps) dk_compat_release();
     if (!dk_front_win()) s_full = false;
 }
 
 void ls_desk_close_all(void)
 {
-    for (int i = 0; i < LS_DESK_MAX_WIN; i++) if (s_w[i].used) ls_desk_close(s_w[i].id);
+    for (int i = 0; i < DK_WIN_SLOTS; i++) if (s_w[i].used) ls_desk_close(s_w[i].id);
 }
 
 int ls_desk_window_count(void) { return s_nz; }
@@ -556,7 +616,7 @@ static const char *const GROUP_IDS[3][16] = {
     {"p25", "fm", "adsb", "falls", "mesh", "subghz", "digi", "labs", "experiments", "mixrf", "meters",
      "rec", "tmach", "radio", NULL},
     {"map", "tiles", "gps", "compass", "fox", "rfsurvey", "notes", "journal", "sweep", "drones", "cell", NULL},
-    {"set", "pins", "link", "radios", "update", "diag", "terminal", "files", "music", NULL},
+    {"set", "pins", "link", "radios", "update", "diag", "bootlog", "terminal", "files", "music", NULL},
 };
 
 const char *dk_group_name(int g) { return g >= 0 && g < 5 ? GROUP_NAMES[g] : ""; }
@@ -598,7 +658,7 @@ int dk_group_apps(int g, const ls_app_t **out, int cap)
 
 const char *dk_app_label(const ls_app_t *a)
 {
-    for (int i = 0; i < LS_DESK_MAX_WIN; i++)
+    for (int i = 0; i < DK_WIN_SLOTS; i++)
         if (s_w[i].used && s_w[i].kind == DK_APP && s_w[i].app == a && s_w[i].label[0]) {
             const char *l = s_w[i].label;
             const size_t n = strlen(a->name);
@@ -610,7 +670,12 @@ const char *dk_app_label(const ls_app_t *a)
 
 /* ------------------------------------------------------------- actions -- */
 
-static void reset_icons(void);
+static void rename_done(const char *text, int ctx);
+static uint8_t hue_fg(uint8_t hue, bool on_select);
+static uint8_t on(uint8_t attr, uint8_t fg);
+static tui_rect task_rect(int id);
+static void layout_windows(int how);
+static void kbd_drag_begin(int id, bool size);
 
 void dk_do(int act, int arg)
 {
@@ -626,11 +691,10 @@ void dk_do(int act, int arg)
     case A_SHUTDOWN: dk_open_shutdown(); break;
     case A_STUDIO: dk_open_studio(); break;
     case A_DESK_OFF: ls_desk_set_enabled(false); break;
-    case A_ARRANGE:
-        /* back to the columns, and forget where they were dragged */
-        reset_icons();
+    case A_ARRANGE: case A_ARRANGE_HOW:
+        /* back to the columns (forgetting where they were dragged), by name, or lined up */
+        dk_items_arrange(act == A_ARRANGE ? DK_ARR_RESET : arg);
         s_icon_sel = -1;
-        ls_tui_invalidate();
         break;
     case A_WIN_RESTORE: ls_desk_restore(arg); break;
     case A_WIN_MIN: ls_desk_minimize(arg); break;
@@ -648,87 +712,212 @@ void dk_do(int act, int arg)
     case A_MUTE: dk_sys_set_mute(arg != 0); break;
     case A_RX_RESUME: if (s_last_radio) ls_tui_radio_want(s_last_radio); break;
     case A_WALLPAPER: dk_wall_set((uint32_t)arg); break;
+    case A_ITEM_OPEN: dk_items_open(arg); break;
+    case A_ITEM_RENAME: {
+        const dk_icon_t *it = dk_items_at(arg);
+        if (it) dk_prompt("Rename", "A new name for this icon:", dk_items_label(it), 15, rename_done, arg);
+        break;
+    }
+    case A_ITEM_DELETE:
+        if (!dk_items_delete(arg)) dk_msg("Delete", "That one stays on the desktop.", "It is the way back to everything else.");
+        s_icon_sel = -1;
+        break;
+    case A_ITEM_PROPS: dk_item_props_open(arg); break;
+    case A_NEW_APP: dk_pick_open(s_ctx_col, s_ctx_row); break;
+    case A_NEW_FILE: dk_folder_open(NULL, s_ctx_col, s_ctx_row); break;
+    case A_PIN_APP: {
+        const ls_app_t *a = ls_app_at(arg);
+        if (a && dk_items_add(DKI_APP, 0, a->id, "", -1, -1) < 0 && dk_items_count() >= DK_ICON_MAX)
+            dk_msg("New Shortcut", "The desktop is full.", "Delete an icon, or empty the Recycle Bin.");
+        break;
+    }
+    case A_GADGET: dk_shell_set_gadgets(dk_shell_gadgets() ^ arg); break;
+    case A_CPL: dk_cpl_open(arg); break;
+    case A_RUN: dk_run_open(); break;
+    case A_TASKS: dk_tasks_open(); break;
+    case A_BIN: dk_bin_open(); break;
+    case A_FOLDER: dk_folder_open(NULL, -1, -1); break;
+    case A_CASCADE: layout_windows(0); break;
+    case A_TILE: layout_windows(arg); break;
+    case A_MIN_ALL: {
+        /* everything down to the bar; again, and they come back */
+        bool any = false;
+        for (int i = 0; i < DK_WIN_SLOTS; i++) if (s_w[i].used && s_w[i].state != LS_DESK_WIN_MIN) any = true;
+        if (any) {
+            for (int i = 0; i < DK_WIN_SLOTS; i++) if (s_w[i].used) ls_desk_minimize(s_w[i].id);
+            s_desk_keys = true;
+        } else {
+            for (int i = 0; i < s_nz; i++) { dk_win_t *m = dk_win(s_z[i]); if (m) m->state = LS_DESK_WIN_NORMAL; }
+            if (s_nz) ls_desk_raise(s_z[s_nz - 1]);
+        }
+        break;
+    }
+    case A_KICK:
+        if (ls_rterm_web_kick) ls_rterm_web_kick();
+        if (ls_rterm_kick) ls_rterm_kick();
+        break;
+    case A_WIN_MOVE: kbd_drag_begin(arg, false); break;
+    case A_WIN_SIZE: kbd_drag_begin(arg, true); break;
     default: break;
     }
 }
 
-/* --------------------------------------------------------------- icons -- */
-
-static const struct { const char *id, *label; } ICONS[] = {
-    {"diag", "MY BOARD"}, {"fm", "FM"}, {"map", "MAP"}, {"p25", "P25"}, {"adsb", "ADS-B"},
-    {"terminal", "TERMINAL"}, {"mesh", "MESH CHAT"}, {"sweep", "SWEEP"}, {"set", "SETTINGS"},
-    {"files", "SD CARD"}, {"radios", "RADIOS"}, {"gps", "GPS"}, {"studio", "STUDIO"},
-};
-#define N_ICONS ((int)(sizeof(ICONS) / sizeof(ICONS[0])))
-
-/* Where an icon was dragged to, cell for cell; -1 for its column slot. */
-static int16_t s_icon_x[N_ICONS], s_icon_y[N_ICONS];
-static bool s_icon_moved[N_ICONS];
-static int s_drag_icon = -1;
-
-static void load_icons(void)
+bool dk_net_viewer(void)
 {
-    for (int j = 0; j < N_ICONS; j++) {
-        const uint32_t v = dk_sys_saved_word(W_ICONS + j);
-        s_icon_moved[j] = (v & W_VALID) != 0;
-        s_icon_x[j] = (int16_t)(v & 0xFFF);
-        s_icon_y[j] = (int16_t)(v >> 12 & 0xFFF);
-    }
+    if (!ls_rterm_status) return false;
+    ls_rterm_status_t rs;
+    ls_rterm_status(&rs);
+    return rs.web_client || (rs.client && rs.authed);
 }
 
-static void save_icon(int j)
+static void rename_done(const char *text, int ctx)
 {
-    dk_sys_save_word(W_ICONS + j, s_icon_moved[j] ? W_VALID | (uint32_t)(s_icon_x[j] & 0xFFF) |
-                                                   (uint32_t)(s_icon_y[j] & 0xFFF) << 12 : 0);
+    if (text && text[0]) dk_items_rename(ctx, text);
 }
 
-static void reset_icons(void)
-{
-    for (int j = 0; j < N_ICONS; j++) if (s_icon_moved[j]) { s_icon_moved[j] = false; save_icon(j); }
-}
-
-/* The i-th icon that exists in this build, its slot rect and its table index. */
-static const ls_app_t *icon_find(int i, tui_rect *slot, int *index)
+/* Cascade (0), side by side (1) or stacked (2): every window on screen. */
+static void layout_windows(int how)
 {
     const tui_rect work = dk_work();
-    const int per_col = (work.h - 1) / 8 > 0 ? (work.h - 1) / 8 : 1;
-    int k = 0;
-    for (int j = 0; j < N_ICONS; j++) {
-        const ls_app_t *a = !strcmp(ICONS[j].id, "studio") ? &s_studio_icon : ls_app_by_id(ICONS[j].id);
-        if (!a || (!a->screen && a != &s_studio_icon)) continue;
-        if (k == i) {
-            if (slot) {
-                *slot = tui_rect_make(1 + (k / per_col) * 13, 1 + (k % per_col) * 8, 12, 7);
-                if (s_icon_moved[j]) {
-                    /* kept on the work area as the grid changes */
-                    int x = s_icon_x[j], y = s_icon_y[j];
-                    if (x > work.w - 12) x = work.w - 12;
-                    if (y > work.h - 7) y = work.h - 7;
-                    slot->x = x < 0 ? 0 : x;
-                    slot->y = y < 0 ? 0 : y;
-                }
-            }
-            if (index) *index = j;
-            return a;
-        }
-        k++;
+    int ids[DK_WIN_SLOTS], n = 0;
+    for (int i = 0; i < s_nz; i++) {
+        const dk_win_t *w = dk_win(s_z[i]);
+        if (w && w->state != LS_DESK_WIN_MIN && !(w->kind == DK_SHELL && w->shell == DK_SHELL_SHUTDOWN)) ids[n++] = w->id;
     }
-    return NULL;
+    if (!n) return;
+    int cols = 1, rows = 1;
+    if (how == 1) {
+        /* as many columns as an app's narrowest window allows, then rows */
+        cols = work.w / 62 > 0 ? work.w / 62 : 1;
+        if (cols > n) cols = n;
+        rows = (n + cols - 1) / cols;
+    } else if (how == 2) {
+        rows = work.h / 23 > 0 ? work.h / 23 : 1;
+        if (rows > n) rows = n;
+        cols = (n + rows - 1) / rows;
+    }
+    for (int k = 0; k < n; k++) {
+        dk_win_t *w = dk_win(ids[k]);
+        const int ow = w->w, oh = w->h;
+        w->state = LS_DESK_WIN_NORMAL;
+        if (!how) {
+            if (w->kind == DK_APP) { w->w = 117; w->h = 30; }
+            w->x = 2 + (k % 8) * 4;
+            w->y = (k % 8) * 2;
+        } else {
+            w->w = work.w / cols;
+            w->h = work.h / rows;
+            w->x = (k % cols) * w->w;
+            w->y = (k / cols) * w->h;
+            if (k == n - 1 && how == 1 && rows > 1) w->w = work.w - w->x;      /* the last takes what is left of its row */
+        }
+        clamp(w);
+        if (w->w != ow || w->h != oh) dk_compat_forget(w);
+        remember_place(w);
+    }
 }
-static const ls_app_t *icon_at(int i, tui_rect *slot) { return icon_find(i, slot, NULL); }
 
-static const char *icon_label(const ls_app_t *a)
+/* Move or Size by keys: the arrows step the window, Enter keeps it, Esc puts
+   it back where it was. */
+static void kbd_drag_begin(int id, bool size)
 {
-    for (int j = 0; j < N_ICONS; j++) if (!strcmp(ICONS[j].id, a->id)) return ICONS[j].label;
-    return a->name;
+    dk_win_t *w = dk_win(id);
+    if (!w) return;
+    if (w->state != LS_DESK_WIN_NORMAL) w->state = LS_DESK_WIN_NORMAL;
+    ls_desk_raise(id);
+    s_kbd_mode = size ? 2 : 1;
+    s_kbd_win = id;
+    s_kbd_was = tui_rect_make(w->x, w->y, w->w, w->h);
 }
 
-static int icon_hit(int col, int row)
+static bool kbd_drag_key(ls_tk_t k)
 {
-    tui_rect r;
-    for (int i = 0; icon_at(i, &r); i++) if (tui_rect_contains(r, col, row)) return i;
-    return -1;
+    dk_win_t *w = dk_win(s_kbd_win);
+    if (!w) { s_kbd_mode = 0; return false; }
+    const int dx = k == LS_TK_LEFT ? -2 : k == LS_TK_RIGHT ? 2 : 0, dy = k == LS_TK_UP ? -1 : k == LS_TK_DOWN ? 1 : 0;
+    if (dx || dy) {
+        const int ow = w->w, oh = w->h;
+        if (s_kbd_mode == 1) { w->x += dx; w->y += dy; }
+        else { w->w += dx; w->h += dy; }
+        clamp(w);
+        const tui_rect work = dk_work();
+        if (w->x + w->w > work.w && s_kbd_mode == 2) w->w = work.w - w->x;
+        if (w->y + w->h > work.h && s_kbd_mode == 2) w->h = work.h - w->y;
+        if (w->w != ow || w->h != oh) dk_compat_forget(w);
+        s_outline_step++;
+        return true;
+    }
+    if (k == LS_TK_ESC) {
+        if (w->w != s_kbd_was.w || w->h != s_kbd_was.h) dk_compat_forget(w);
+        w->x = s_kbd_was.x; w->y = s_kbd_was.y; w->w = s_kbd_was.w; w->h = s_kbd_was.h;
+        s_kbd_mode = 0;
+    } else if (k == LS_TK_ENTER) {
+        s_kbd_mode = 0;
+        remember_place(w);
+    }
+    return true;                                  /* nothing else while a window is in hand */
 }
+
+/* ------------------------------------------------------------ switcher -- */
+
+static void switch_commit(bool go)
+{
+    if (!s_sw_on) return;
+    s_sw_on = false;
+    if (go && s_sw_at >= 0 && s_sw_at < s_sw_n && dk_win(s_sw_ids[s_sw_at])) ls_desk_raise(s_sw_ids[s_sw_at]);
+}
+
+static void switch_step(int dir, bool sticky)
+{
+    if (!s_sw_on) {
+        cancel_client_finger();                   /* a finger held in the app does not outlive the switch */
+        s_sw_n = 0;
+        for (int i = s_nz - 1; i >= 0; i--) if (dk_win(s_z[i])) s_sw_ids[s_sw_n++] = s_z[i];
+        if (!s_sw_n) return;
+        s_sw_on = true;
+        s_sw_at = 0;
+        /* with the desktop in front, the first step is the window on top */
+        if (s_desk_keys || !dk_front_win()) s_sw_at = dir > 0 ? -1 : 0;
+    }
+    s_sw_sticky = sticky;
+    s_sw_at = (s_sw_at + dir + s_sw_n) % s_sw_n;
+    s_sw_us = esp_timer_get_time();
+}
+
+static void draw_switcher(tui_surface *sf)
+{
+    if (!s_sw_on) return;
+    /* A key that sends no release (F6, a keyboard on the board) commits by
+       itself a moment after the last step; a held Ctrl or Alt on its release. */
+    if (esp_timer_get_time() - s_sw_us > (s_sw_sticky ? 900000 : 6000000)) { switch_commit(true); return; }
+    int wide = 24;
+    for (int i = 0; i < s_sw_n; i++) {
+        const dk_win_t *w = dk_win(s_sw_ids[i]);
+        if (w && dk_text_len(w->label) + 8 > wide) wide = dk_text_len(w->label) + 8;
+    }
+    const tui_rect all = tui_surface_rect(sf);
+    const tui_rect r = tui_rect_make((s_cols - wide) / 2, (s_rows - s_sw_n - 4) / 2, wide, s_sw_n + 4);
+    dk_fill(sf, tui_rect_intersect(all, r), dk_attr(R_MENU));
+    dk_frame(sf, all, r, true);
+    dk_text(sf, r, r.x + 2, r.y + 1, "Switch to", dk_attr(R_STRONG));
+    for (int i = 0; i < s_sw_n; i++) {
+        const dk_win_t *w = dk_win(s_sw_ids[i]);
+        if (!w) continue;
+        const int y = r.y + 2 + i;
+        const bool sel = i == s_sw_at;
+        const uint8_t face = sel ? dk_attr(R_SELECT) : dk_attr(R_MENU);
+        const tui_rect row = tui_rect_make(r.x + 1, y, r.w - 2, 1);
+        if (sel) dk_fill(sf, row, face);
+        const uint8_t hue = w->app ? hue_fg(w->app->hue, sel) : hue_fg(TUI_YELLOW, sel);
+        ls_box_put(sf, row, r.x + 2, y, w->state == LS_DESK_WIN_MIN ? LS_SHAPE_SQUARE : LS_SHAPE_DOT, on(face, hue));
+        dk_text(sf, row, r.x + 4, y, w->label[0] ? w->label : w->title, face);
+    }
+    dk_text(sf, r, r.x + 2, r.y + r.h - 2, "Tab next  Enter  Esc", dk_attr(R_DISABLED));
+}
+
+/* --------------------------------------------------------------- icons -- */
+
+/* The items themselves are ls_desk_items.c's. */
 
 static void draw_desktop_cells(tui_surface *sf);
 
@@ -744,8 +933,8 @@ static void draw_desktop(tui_surface *sf)
         bool day, lat;
         uint8_t desk, text, select;
         tui_rect work;
-        int16_t ix[N_ICONS], iy[N_ICONS];
-        bool moved[N_ICONS];
+        uint32_t items;
+        int hover;
     } key, now;
     static tui_cell *cells;
     static size_t cells_n;
@@ -759,8 +948,7 @@ static void draw_desktop(tui_surface *sf)
     now.theme = ls_tui_get_theme(); now.day = ls_tui_daylight();
     now.desk = dk_attr(R_DESK); now.text = dk_attr(R_DESK_TEXT); now.select = dk_attr(R_SELECT);
     now.work = dk_work();
-    memcpy(now.ix, s_icon_x, sizeof(now.ix)); memcpy(now.iy, s_icon_y, sizeof(now.iy));
-    memcpy(now.moved, s_icon_moved, sizeof(now.moved));
+    now.items = dk_items_serial(); now.hover = s_drag == DRAG_NONE ? s_icon_hover : -1;
     if (cells && cells_n == n && !memcmp(&key, &now, sizeof(now))) {
         memcpy(sf->back, cells, n * sizeof(tui_cell));
         return;
@@ -781,37 +969,7 @@ static void draw_desktop_cells(tui_surface *sf)
 {
     const tui_rect work = dk_work();
     dk_wall_draw(sf, tui_rect_make(0, 0, s_cols, s_rows - 1));
-    tui_rect r;
-    /* the art first, glass over a picture; then the labels, solid */
-    for (int i = 0; icon_at(i, &r); i++) {
-        const ls_app_t *a = icon_at(i, NULL);
-        const uint8_t bg = TUI_ATTR_BG(dk_attr(R_DESK));
-        uint8_t hue = a->hue & 15;
-        if (!dk_light_desk() && hue != TUI_WHITE) hue |= TUI_BRIGHT;
-        if (dk_light_desk() && (hue & 7) == TUI_CYAN) hue = TUI_BLUE;
-        ls_icon_draw(sf, work, r.x + 1, r.y, a->icon, TUI_ATTR(hue, bg));
-    }
-    dk_wall_glass(sf, work);
-    for (int i = 0; icon_at(i, &r); i++) {
-        const ls_app_t *a = icon_at(i, NULL);
-        const char *l = icon_label(a);
-        const int n = dk_text_len(l);
-        const uint8_t la = i == s_icon_sel ? dk_attr(R_SELECT) : dk_attr(R_DESK_TEXT);
-        const int lx = r.x + (r.w - n) / 2;
-        if (dk_prefs()->labels || i == s_icon_sel)       /* a backing, so any wallpaper reads */
-            dk_fill(sf, tui_rect_intersect(work, tui_rect_make(lx - 1, r.y + 6, n + 2, 1)),
-                    i == s_icon_sel ? la : dk_attr(R_DESK_TEXT));
-        dk_text(sf, work, lx, r.y + 6, l, dk_attr(R_DESK_TEXT));
-        if (i == s_icon_sel) {
-            const int k = dk_anim_icon_progress(i), half = (n + 2) * k / 2000 + 1;
-            const int mid = lx + n / 2;
-            for (int x = lx - 1; x <= lx + n; x++)
-                if (x >= mid - half && x <= mid + half) {
-                    tui_cell *c = &sf->back[(size_t)(r.y + 6) * sf->w + x];
-                    if (tui_rect_contains(work, x, r.y + 6)) c->attr = la;
-                }
-        }
-    }
+    dk_items_draw(sf, work, s_icon_sel, s_drag == DRAG_NONE ? s_icon_hover : -1);
     /* The wordmark, and what the link is doing; only facts. */
     char line[96];
     snprintf(line, sizeof(line), " LakeShark Desktop - %s - %dx%d cells ", DK_BOARD, s_cols, s_rows);
@@ -829,7 +987,10 @@ static void draw_desktop_cells(tui_surface *sf)
 static void title_keys(const dk_win_t *w, tui_rect o, int *kmin, int *kmax, int *kclose)
 {
     *kclose = o.x + o.w - 3;
-    *kmax = w->kind == DK_APP || w->shell != DK_SHELL_ABOUT ? o.x + o.w - 6 : -1;
+    /* a dialog of fixed size has no maximize key */
+    const bool fixed = w->kind == DK_SHELL && (w->shell == DK_SHELL_ABOUT || w->shell == DK_SHELL_MSG ||
+                                               w->shell == DK_SHELL_PROMPT || w->shell == DK_SHELL_ITEM);
+    *kmax = !fixed ? o.x + o.w - 6 : -1;
     *kmin = *kmax >= 0 ? o.x + o.w - 9 : o.x + o.w - 6;
 }
 
@@ -913,8 +1074,7 @@ static void draw_window(tui_surface *sf, dk_win_t *w, bool front)
     int kmin, kmax, kclose;
     title_keys(w, o, &kmin, &kmax, &kclose);
     char title[64];
-    if (w->kind == DK_APP) snprintf(title, sizeof(title), "%s  (desk layout, %dx%d)", w->title, c.w, c.h);
-    else snprintf(title, sizeof(title), "%s", w->title);
+    snprintf(title, sizeof(title), "%s", w->title);      /* the size is in the status bar */
     const tui_rect tclip = tui_rect_intersect(clip, tui_rect_make(o.x + 6, o.y, kmin - o.x - 7, 1));
     dk_text(sf, tclip, o.x + 6, o.y, title, ta);
     const bool pressing = s_drag == DRAG_KEY && s_drag_win == w->id;
@@ -1104,7 +1264,7 @@ static int tray_build(seg_t *s, int cap_n)
 static int task_order(int *ids)
 {
     int n = 0;
-    for (int i = 0; i < LS_DESK_MAX_WIN; i++) if (s_w[i].used) ids[n++] = i;
+    for (int i = 0; i < DK_WIN_SLOTS; i++) if (s_w[i].used) ids[n++] = i;
     for (int a = 1; a < n; a++)
         for (int b = a; b > 0 && s_w[ids[b]].id < s_w[ids[b - 1]].id; b--) {
             const int t = ids[b]; ids[b] = ids[b - 1]; ids[b - 1] = t;
@@ -1128,7 +1288,7 @@ static void task_geometry(int *x0, int *bw, int *n, int *ids)
 
 static int task_hit(int col)
 {
-    int ids[LS_DESK_MAX_WIN], n, x0, bw;
+    int ids[DK_WIN_SLOTS], n, x0, bw;
     task_geometry(&x0, &bw, &n, ids);
     if (bw < 6 || col < x0) return -1;
     const int i = (col - x0) / (bw + 1);
@@ -1276,7 +1436,7 @@ static void draw_taskbar(tui_surface *sf)
     dk_wall_glass(sf, tui_rect_make(0, top, s_cols, 1));
     draw_tray(sf);
     draw_start(sf);
-    int ids[LS_DESK_MAX_WIN], n, x0, bw;
+    int ids[DK_WIN_SLOTS], n, x0, bw;
     task_geometry(&x0, &bw, &n, ids);
     const dk_win_t *front = dk_front_win();
     for (int i = 0; i < n && bw >= 6; i++) {
@@ -1291,7 +1451,7 @@ static void relayout(int cols, int rows)
 {
     s_cols = cols;
     s_rows = rows;
-    for (int i = 0; i < LS_DESK_MAX_WIN; i++) {
+    for (int i = 0; i < DK_WIN_SLOTS; i++) {
         dk_win_t *w = &s_w[i];
         if (!w->used) continue;
         clamp(w);
@@ -1328,6 +1488,7 @@ void ls_desk_draw(tui_surface *sf)
     if (sf->w != s_cols || sf->h != s_rows) relayout(sf->w, sf->h);
     palette_follow();
     poll_finger();
+    dk_store_tick();
 
     /* The window that just left the front keeps its last frame. */
     dk_win_t *front = dk_front_win();
@@ -1372,6 +1533,7 @@ void ls_desk_draw(tui_surface *sf)
     tui_frame_begin(sf);
     int64_t t0 = esp_timer_get_time(), t1;
     draw_desktop(sf);
+    dk_gadgets_draw(sf, dk_work());
     t1 = esp_timer_get_time(); dc_add(DC_DESKTOP, t1 - t0); t0 = t1;
     int64_t front_us = 0;
     for (int i = 0; i < s_nz; i++) {
@@ -1388,11 +1550,29 @@ void ls_desk_draw(tui_surface *sf)
     t1 = esp_timer_get_time(); dc_add(DC_AFTER, t1 - t0); t0 = t1;
     if ((s_drag == DRAG_MOVE || s_drag == DRAG_SIZE) && s_drag_moved && !dk_prefs()->live_drag)
         dk_frame_march(sf, dk_work(), s_outline, dk_attr(R_STRONG), s_outline_step);
+    if (s_kbd_mode && dk_win(s_kbd_win)) {
+        /* a window in hand: its outline marches as the arrows step it */
+        tui_rect o;
+        dk_win_rects(dk_win(s_kbd_win), &o, NULL);
+        dk_frame_march(sf, dk_work(), o, dk_attr(R_STRONG), s_outline_step);
+        const char *how = s_kbd_mode == 1 ? " Arrows move it   Enter keeps   Esc puts it back "
+                                          : " Arrows size it   Enter keeps   Esc puts it back ";
+        dk_text(sf, dk_work(), o.x + 2, o.y + 1, how, dk_attr(R_TIP));
+    }
+    char carried[40];
+    if (s_drag == DRAG_CLIENT && s_drag_moved && dk_win(s_drag_win) && dk_win(s_drag_win)->shell == DK_SHELL_FOLDER &&
+        dk_win(s_drag_win)->kind == DK_SHELL && dk_folder_drag_item(carried, sizeof(carried))) {
+        /* a row carried out of the folder window: where its icon will land */
+        const tui_rect g = tui_rect_make(s_ptr_col - DK_ICON_W / 2, s_ptr_row - DK_ICON_H / 2, DK_ICON_W, DK_ICON_H);
+        dk_frame_dashed(sf, dk_work(), g, dk_attr(R_STRONG));
+        dk_text(sf, tui_rect_intersect(dk_work(), dk_inner(g)), g.x + 1, g.y + DK_ICON_H - 2, carried, dk_attr(R_TIP));
+    }
     draw_taskbar(sf);
     t1 = esp_timer_get_time(); dc_add(DC_TASKBAR, t1 - t0); t0 = t1;
     dk_anim_draw_trails(sf);
     dimmed(sf);
     dk_menu_draw(sf);
+    draw_switcher(sf);
     draw_tip(sf);
     viewer_watch();
     if (dk_anim_splash_on()) dk_anim_draw(sf);
@@ -1403,7 +1583,7 @@ void ls_desk_draw(tui_surface *sf)
 /* The taskbar button of a window, for the zoom trails. */
 static tui_rect task_rect(int id)
 {
-    int ids[LS_DESK_MAX_WIN], n, x0, bw;
+    int ids[DK_WIN_SLOTS], n, x0, bw;
     task_geometry(&x0, &bw, &n, ids);
     for (int i = 0; i < n; i++)
         if (ids[i] == id && bw >= 6) return tui_rect_make(x0 + i * (bw + 1), s_rows - 1, bw, 1);
@@ -1459,8 +1639,16 @@ static void hover_at(int col, int row)
     if (win != s_hover_win || key != s_hover_key) { s_hover_win = win; s_hover_key = key; s_hover_us = esp_timer_get_time(); }
 }
 
+static dk_win_t *win_at(int col, int row);
 static bool tip_text(int col, int row, char *buf, size_t n)
 {
+    if (row < s_rows - 1 && s_icon_hover >= 0 && !win_at(col, row)) {
+        /* an icon: its whole name, and what it opens */
+        const dk_icon_t *it = dk_items_at(s_icon_hover);
+        char what[40];
+        dk_items_what(it, what, sizeof(what));
+        return it && snprintf(buf, n, "%s - %s", dk_items_label(it), what) > 0;
+    }
     if (s_hover_win >= 0 && s_hover_key)
         return snprintf(buf, n, "%s", s_hover_key == KEY_CLOSE ? "Close" : s_hover_key == KEY_MAX ? "Maximize" : "Minimize") > 0;
     if (row != s_rows - 1) return false;
@@ -1490,14 +1678,14 @@ static void draw_tip(tui_surface *sf)
     if (dk_menu_depth() || s_drag != DRAG_NONE || s_tip_col < 0) return;
     const int64_t held = esp_timer_get_time() - s_tip_us;
     if (held < 500000) return;
-    char t[48];
+    char t[72];
     if (!tip_text(s_tip_col, s_tip_row, t, sizeof(t))) return;
     const int n = dk_text_len(t);
     const int shown = dk_prefs()->anim ? (int)((held - 500000) / 18000) : n;
     int x = s_tip_col, y = s_tip_row == s_rows - 1 ? s_rows - 2 : s_tip_row + 1;
     if (x + n + 2 > sf->w) x = sf->w - n - 2;
     if (x < 0) x = 0;
-    char part[48];
+    char part[76];
     snprintf(part, sizeof(part), " %.*s", shown < n ? shown : n, t);
     const tui_rect r = tui_rect_make(x, y, (shown < n ? shown : n) + 2, 1);
     dk_fill(sf, r, dk_attr(R_TIP));
@@ -1531,12 +1719,6 @@ static dk_win_t *win_at(int col, int row)
     return NULL;
 }
 
-static void cycle_windows(void)
-{
-    if (s_nz < 2) { if (s_nz == 1) ls_desk_raise(s_z[0]); return; }
-    ls_desk_raise(s_z[0]);                        /* the bottom one comes up */
-}
-
 static void context_menu_for(dk_win_t *w, int col, int row, bool title)
 {
     cancel_client_finger();
@@ -1557,14 +1739,27 @@ static bool desk_key(ls_tk_t k, char ch, uint8_t mods)
     const bool ctrl = mods & LS_IMOD_CTRL, alt = mods & LS_IMOD_ALT;
     if (k == LS_TK_META || k == LS_TK_MENU || (ctrl && k == LS_TK_ESC) || k == LS_TK_F10) { toggle_start(); return true; }
     if (dk_menu_depth()) return dk_menu_key(k, ch);
+    if (s_kbd_mode) return kbd_drag_key(k);
+    /* The switcher: Tab steps it while Ctrl or Alt is held; F6 steps and lets go. */
+    if ((ctrl || alt) && k == LS_TK_TAB) { switch_step(mods & LS_IMOD_SHIFT ? -1 : 1, false); return true; }
+    if (k == LS_TK_F6 || (ctrl && k == LS_TK_CHAR && ch == '`')) { switch_step(1, true); return true; }
+    if (s_sw_on) {
+        if (k == LS_TK_TAB || k == LS_TK_DOWN || k == LS_TK_RIGHT) { switch_step(1, s_sw_sticky); return true; }
+        if (k == LS_TK_UP || k == LS_TK_LEFT) { switch_step(-1, s_sw_sticky); return true; }
+        if (k == LS_TK_ALT || k == LS_TK_CTRL || k == LS_TK_SHIFT) return true;
+        switch_commit(k != LS_TK_ESC);
+        return true;
+    }
     dk_win_t *front = dk_front_win();
+    /* Help: on the desktop and in the desk's own windows. An app in front
+       keeps its F1 (NOTES, CALLS and the tab keys use it). */
+    if (k == LS_TK_F1 && (!front || s_desk_keys || front->kind == DK_SHELL)) { ls_desk_open_about(); return true; }
     /* Focused mode's banner says F11 returns to the desk, so F11 alone leaves it too. */
     if ((ctrl || s_focus) && k == LS_TK_F11) { ls_desk_focus(!s_focus); return true; }
     if (k == LS_TK_F11 || (alt && k == LS_TK_ENTER)) { ls_desk_fullscreen(!s_full); return true; }
     if (k == LS_TK_F9) { ls_desk_set_theme((ls_desk_theme() + 1) % LS_DESK_THEME_COUNT); return true; }
-    if (k == LS_TK_F6 || (ctrl && k == LS_TK_CHAR && ch == '`')) { cycle_windows(); return true; }
-    if (ctrl && k == LS_TK_F4) { if (front) ls_desk_close(front->id); return true; }
-    if (front) {
+    if ((ctrl || alt) && k == LS_TK_F4) { if (front) ls_desk_close(front->id); return true; }
+    if (front && !s_desk_keys) {
         bool took = false;
         if (front->kind == DK_SHELL) took = dk_shell_key(front, k, ch);
         else took = dk_compat_key(k, ch);
@@ -1577,9 +1772,9 @@ static bool desk_key(ls_tk_t k, char ch, uint8_t mods)
         }
         return true;
     }
-    /* The desktop: arrows walk the icons, Enter opens. */
-    int count = 0;
-    while (icon_at(count, NULL)) count++;
+    /* The desktop: arrows walk the icons, Enter opens, F2 renames, Delete
+       sends to the bin; Tab hands the keys back to the window in front. */
+    const int count = dk_items_count();
     const tui_rect work = dk_work();
     const int per_col = (work.h - 1) / 8 > 0 ? (work.h - 1) / 8 : 1;
     switch (k) {
@@ -1587,9 +1782,27 @@ static bool desk_key(ls_tk_t k, char ch, uint8_t mods)
     case LS_TK_UP:    s_icon_sel = s_icon_sel <= 0 ? 0 : s_icon_sel - 1; break;
     case LS_TK_RIGHT: s_icon_sel = s_icon_sel < 0 ? 0 : s_icon_sel + per_col; break;
     case LS_TK_LEFT:  s_icon_sel = s_icon_sel < per_col ? 0 : s_icon_sel - per_col; break;
-    case LS_TK_ENTER: if (s_icon_sel >= 0) open_app(icon_at(s_icon_sel, NULL)); return true;
-    case LS_TK_ESC:   dk_menu_open(M_DESKTOP, 0, s_ptr_col, s_ptr_row); return true;
+    case LS_TK_HOME:  s_icon_sel = 0; break;
+    case LS_TK_END:   s_icon_sel = count - 1; break;
+    case LS_TK_ENTER: if (s_icon_sel >= 0) dk_items_open(s_icon_sel); return true;
+    case LS_TK_F2:    if (s_icon_sel >= 0) dk_do(A_ITEM_RENAME, s_icon_sel); return true;
+    case LS_TK_DELETE: if (s_icon_sel >= 0) dk_do(A_ITEM_DELETE, s_icon_sel); return true;
+    case LS_TK_ESC: {
+        /* the selected icon's menu, or the desktop's */
+        tui_rect r = tui_rect_make(s_ptr_col, s_ptr_row, 1, 1);
+        if (s_icon_sel >= 0) { r = dk_items_rect(s_icon_sel); dk_menu_open(M_ICON, s_icon_sel, r.x + 4, r.y + 3); }
+        else { s_ctx_col = s_ctx_row = -1; dk_menu_open(M_DESKTOP, 0, s_ptr_col, s_ptr_row); }
+        return true;
+    }
     case LS_TK_TAB:   if (s_nz) ls_desk_raise(s_z[s_nz - 1]); return true;
+    case LS_TK_CHAR:
+        /* a letter goes to the next icon whose name starts with it */
+        for (int d = 1; d <= count; d++) {
+            const int i = ((s_icon_sel < 0 ? -1 : s_icon_sel) + d) % count;
+            const char *l = dk_items_label(dk_items_at(i));
+            if (l[0] && (l[0] | 0x20) == (ch | 0x20)) { s_icon_sel = i; break; }
+        }
+        return true;
     default: return true;
     }
     if (s_icon_sel >= count) s_icon_sel = count - 1;
@@ -1625,7 +1838,11 @@ static void tray_click(int item, int button)
     const int x = tray_item_x(item), y = s_rows;      /* clamped up onto the bar */
     switch (item) {
     case TR_SPK:   dk_menu_open(button == LS_IBTN_RIGHT ? M_SOUND : M_VOLUME, 0, x, y); break;
-    case TR_CLOCK: dk_menu_open(M_CLOCK, 0, x, y); break;
+    case TR_CLOCK:
+        if (button == LS_IBTN_RIGHT) dk_cpl_open(DK_CPL_DATE);
+        else dk_menu_open(M_CLOCK, 0, x, y);
+        break;
+    case TR_LINK: if (button == LS_IBTN_RIGHT) dk_cpl_open(DK_CPL_NETWORK); break;
     case TR_RX:    dk_menu_open(M_RX, 0, x, y); break;
     case TR_MESH:  dk_menu_open(M_MESH, 0, x, y); break;
     case TR_BT:    dk_menu_open(M_BT, 0, x, y); break;
@@ -1673,6 +1890,7 @@ static bool desk_pointer(const ls_input_ev_t *ev)
     s_ptr_row = row;
     const int bar = s_rows - 1;
     if (ev->kind == LS_IEV_PTR_MOVE) {
+        s_icon_hover = s_drag == DRAG_NONE && !dk_menu_depth() && row < bar && !win_at(col, row) ? dk_items_hit(col, row) : -1;
         if (s_drag == DRAG_MOVE) {
             const tui_rect work = dk_work();
             int x = col - s_drag_dx, y = row - s_drag_dy;
@@ -1694,15 +1912,13 @@ static bool desk_pointer(const ls_input_ev_t *ev)
             if (x > work.w - 12) x = work.w - 12;
             if (y > work.h - 7) y = work.h - 7;
             if (s_drag_moved || col != s_down_col || row != s_down_row) {
-                s_icon_x[s_drag_icon] = (int16_t)x;
-                s_icon_y[s_drag_icon] = (int16_t)y;
-                s_icon_moved[s_drag_icon] = true;
+                dk_items_place(s_drag_icon, x, y);
                 s_drag_moved = true;
             }
         } else if (s_drag == DRAG_SIZE) {
             dk_win_t *w = dk_win(s_drag_win);
             if (w) {
-                int ww = col - s_outline.x + 1, hh = row - s_outline.y + 1;
+                int ww = s_size_w ? col - s_outline.x + 1 : s_outline.w, hh = s_size_h ? row - s_outline.y + 1 : s_outline.h;
                 if (ww < min_w(w)) ww = min_w(w);
                 if (hh < min_h(w)) hh = min_h(w);
                 const tui_rect work = dk_work();
@@ -1730,6 +1946,9 @@ static bool desk_pointer(const ls_input_ev_t *ev)
             for (int i=0, n=abs(ev->wheel); i<n; i++)
                 dk_compat_key(ev->wheel > 0 ? LS_TK_WHEEL_DOWN : LS_TK_WHEEL_UP, 0);
             ls_tui_pointer_set(-1,-1);
+        } else if (f && f->kind == DK_SHELL && !dk_menu_depth()) {
+            for (int i = 0, n = abs(ev->wheel); i < n; i++)
+                dk_shell_key(f, ev->wheel > 0 ? LS_TK_WHEEL_DOWN : LS_TK_WHEEL_UP, 0);
         }
         return true;
     }
@@ -1738,7 +1957,20 @@ static bool desk_pointer(const ls_input_ev_t *ev)
         const int drag = s_drag;
         s_drag = DRAG_NONE;
         if (drag == DRAG_ICON) {
-            if (s_drag_moved && s_drag_icon >= 0) save_icon(s_drag_icon);
+            if (s_drag_moved && s_drag_icon >= 0) {
+                /* let go over the Recycle Bin: into it; anywhere else it stays there */
+                int bin = -1;
+                for (int i = 0; i < dk_items_count(); i++) {
+                    const dk_icon_t *it = dk_items_at(i);
+                    if (it->kind == DKI_SYS && it->sys == DKS_BIN && i != s_drag_icon &&
+                        tui_rect_contains(dk_items_rect(i), col, row)) bin = i;
+                }
+                if (bin >= 0) {
+                    /* it does not come back sitting on the bin: back to its column */
+                    dk_items_at(s_drag_icon)->flags &= (uint8_t)~DKI_F_MOVED;
+                    dk_do(A_ITEM_DELETE, s_drag_icon);
+                } else dk_items_dropped(s_drag_icon);
+            }
             s_drag_icon = -1;
             s_drag_moved = false;
             return true;
@@ -1756,11 +1988,13 @@ static bool desk_pointer(const ls_input_ev_t *ev)
                 w->y = s_outline.y;
             }
             clamp(w);
+            remember_place(w);
         } else if (drag == DRAG_SIZE && w) {
             w->w = s_outline.w;
             w->h = s_outline.h;
             clamp(w);
             if (w->snap) dk_compat_forget(w);
+            remember_place(w);
         } else if (drag == DRAG_KEY && w) {
             tui_rect o;
             dk_win_rects(w, &o, NULL);
@@ -1774,6 +2008,15 @@ static bool desk_pointer(const ls_input_ev_t *ev)
                 if (at == KEY_CLOSE) ls_desk_close(w->id);
                 else if (at == KEY_MAX) ls_desk_maximize(w->id);
                 else if (at == KEY_MIN) ls_desk_minimize(w->id);
+            }
+        } else if (drag == DRAG_CLIENT && w && s_drag_moved && w->kind == DK_SHELL) {
+            /* a row dragged out of the folder window and let go on the desktop */
+            if (w->shell == DK_SHELL_FOLDER && row < bar && !win_at(col, row)) dk_folder_drop(col, row);
+            else if (row == s_down_row && abs(col - s_down_col) <= 2) {
+                /* the pointer slid a cell or two along a button: still its click */
+                tui_rect c;
+                dk_win_rects(w, NULL, &c);
+                dk_shell_tap(w, c, s_down_col, s_down_row);
             }
         } else if (drag == DRAG_CLIENT && w && s_drag_moved) {
             client_finger(ev, false);               /* the end of a drag inside the app */
@@ -1794,13 +2037,21 @@ static bool desk_pointer(const ls_input_ev_t *ev)
 
     /* A press. */
     const int64_t now = esp_timer_get_time();
+    /* The PC page counts a second press within 400 ms itself (it does not see
+       the link's jitter). The owner's double-click time decides: at 400 ms
+       and up the page's count stands and the board's clock adds the slower
+       pairs; set shorter, only the board's clock is believed. */
+    const int64_t dbl_us = (int64_t)dk_shell_dbl_ms() * 1000;
     const bool dbl = ev->button == LS_IBTN_LEFT &&
-                     (ev->clicks >= 2 || (col == s_last_down_col && row == s_last_down_row &&
-                                          s_last_down_us >= 0 && now - s_last_down_us < DBL_US));
+                     ((ev->clicks >= 2 && dbl_us >= 400000) ||
+                      (col == s_last_down_col && row == s_last_down_row && s_last_down_us >= 0 && now - s_last_down_us < dbl_us));
+    s_click_dbl = dbl;
     s_last_down_us = dbl ? -1 : now;
     s_last_down_col = col;
     s_last_down_row = row;
     s_drag_moved = false;
+    if (s_kbd_mode) { s_kbd_mode = 0; remember_place(dk_win(s_kbd_win)); }
+    switch_commit(false);
 
     /* The taskbar's Start closes its own menu; any other press outside a
        menu closes it and does nothing else. */
@@ -1811,7 +2062,11 @@ static bool desk_pointer(const ls_input_ev_t *ev)
     if (row == bar) {
         const int id = task_hit(col);
         dk_win_t *w = dk_win(id);
-        if (!w) return true;
+        if (!w) {
+            /* the bar itself: how the windows are laid out */
+            if (ev->button == LS_IBTN_RIGHT) dk_menu_open(M_TASKBAR, 0, col, row);
+            return true;
+        }
         if (ev->button == LS_IBTN_RIGHT) { dk_menu_open(M_WINDOW, w->id, col, row); return true; }
         if (w == dk_front_win()) ls_desk_minimize(w->id);
         else ls_desk_raise(w->id);
@@ -1820,17 +2075,25 @@ static bool desk_pointer(const ls_input_ev_t *ev)
 
     dk_win_t *w = win_at(col, row);
     if (!w) {
-        const int ic = icon_hit(col, row);
-        if (ev->button == LS_IBTN_RIGHT) { dk_menu_open(M_DESKTOP, 0, col, row); return true; }
-        if (ic >= 0 && dbl) open_app(icon_at(ic, NULL));
+        const int ic = dk_items_hit(col, row);
+        s_desk_keys = true;                         /* the desktop has the keys until a window is clicked */
+        if (ev->button == LS_IBTN_RIGHT) {
+            s_ctx_col = col;
+            s_ctx_row = row;
+            if (ic >= 0) { s_icon_sel = ic; dk_menu_open(M_ICON, ic, col, row); }
+            else dk_menu_open(M_DESKTOP, 0, col, row);
+            return true;
+        }
+        if (ev->button != LS_IBTN_LEFT) return true;
+        if (ic < 0 && dk_gadgets_click(col, row)) { s_icon_sel = -1; return true; }
+        if (ic >= 0 && dbl) dk_items_open(ic);
         else {
             if (ic != s_icon_sel && ic >= 0) dk_anim_icon(ic);
             s_icon_sel = ic;
-            tui_rect r;
-            int j = -1;
-            if (ic >= 0 && icon_find(ic, &r, &j)) {
+            if (ic >= 0) {
+                const tui_rect r = dk_items_rect(ic);
                 s_drag = DRAG_ICON;
-                s_drag_icon = j;
+                s_drag_icon = ic;
                 s_drag_dx = col - r.x;
                 s_drag_dy = row - r.y;
                 s_down_col = col;
@@ -1848,14 +2111,21 @@ static bool desk_pointer(const ls_input_ev_t *ev)
         return true;
     }
     if (ev->button == LS_IBTN_RIGHT) {
+        /* An app laid out for the desk may have a menu of its own under the right button. */
+        if (w->kind == DK_APP && tui_rect_contains(c, col, row) && dk_compat_prepare(w, c) &&
+            ls_dui_context_fire(col - c.x, row - c.y)) return true;
         context_menu_for(w, col, row, row == o.y);
         return true;
     }
     if (ev->button != LS_IBTN_LEFT) return true;
     if (row == o.y) { title_press(w, o, col, dbl); return true; }
-    const bool grip = w->state != LS_DESK_WIN_MAX &&
-                      ((col == o.x + o.w - 1 && row == o.y + o.h - 1) || (col == o.x + o.w - 2 && row == o.y + o.h - 2));
+    /* The grip sizes both ways; the right edge the width, the bottom edge the height. */
+    const bool corner = (col == o.x + o.w - 1 && row == o.y + o.h - 1) || (col == o.x + o.w - 2 && row == o.y + o.h - 2);
+    const bool right = col == o.x + o.w - 1, bottom = row == o.y + o.h - 1;
+    const bool grip = w->state != LS_DESK_WIN_MAX && (corner || right || bottom);
     if (grip) {
+        s_size_w = corner || right;
+        s_size_h = corner || bottom;
         s_drag = DRAG_SIZE;
         s_drag_win = w->id;
         s_outline = o;
@@ -1867,6 +2137,7 @@ static bool desk_pointer(const ls_input_ev_t *ev)
         s_down_col = col;
         s_down_row = row;
         s_down_was_front = was_front;
+        if (w->kind == DK_SHELL) dk_dialogs_press(w, c, col, row);
         if (w->kind == DK_APP && dk_compat_prepare(w, c)) {
             client_finger(ev, true);
             if (!was_front) native_input(w, ev);
@@ -1948,7 +2219,9 @@ bool ls_desk_input(const ls_input_ev_t *ev)
     }
     switch (ev->kind) {
     case LS_IEV_KEY_DOWN: return desk_key((ls_tk_t)ev->key, ev->ch, ev->mods);
-    case LS_IEV_KEY_UP: return true;
+    case LS_IEV_KEY_UP:
+        if (s_sw_on && !s_sw_sticky && (ev->key == LS_TK_CTRL || ev->key == LS_TK_ALT)) switch_commit(true);
+        return true;
     case LS_IEV_PTR_MOVE: case LS_IEV_PTR_DOWN: case LS_IEV_PTR_UP: case LS_IEV_WHEEL:
         return desk_pointer(ev);
     default:
@@ -2042,10 +2315,15 @@ void ls_desk_set_enabled(bool on)
     ls_desk_attach(on);
     /* Apps in windows draw their desk forms: one-row keys, no keypads. */
     ls_tui_set_compact(on);
+    s_kbd_mode = 0;
+    s_sw_on = false;
     if (!on) {
+        /* what the owner arranged is kept before the desk goes */
+        for (int i = 0; i < DK_WIN_SLOTS; i++) if (s_w[i].used) remember_place(&s_w[i]);
+        dk_store_flush();
         ls_tui_screen_set_full(false);
         dk_compat_release();
-        for (int i = 0; i < LS_DESK_MAX_WIN; i++) if (s_w[i].used) dk_compat_forget(&s_w[i]);
+        for (int i = 0; i < DK_WIN_SLOTS; i++) if (s_w[i].used) dk_compat_forget(&s_w[i]);
         s_last_front = -1;
     }
     if (on) {
@@ -2054,7 +2332,7 @@ void ls_desk_set_enabled(bool on)
         dk_prefs_set(&p);
         dk_wall_set(p.wall);
         palette_apply();
-        load_icons();
+        dk_items_load();
     }
     s_cols = s_rows = 0;
     ls_tui_invalidate();
@@ -2092,7 +2370,7 @@ static void apply_console(void)
     }
     else if (!strcmp(verb, "open")) {
         if (!s_on) ls_desk_set_enabled(true);
-        if (ls_desk_open_app(arg) < 0) printf("desk: no app '%s'\n", arg);
+        if (!ls_desk_shell_open(arg, -1) && ls_desk_open_app(arg) < 0) printf("desk: no app '%s'\n", arg);
     } else if (!strcmp(verb, "close")) {
         const int id = ls_desk_front();
         if (id >= 0) ls_desk_close(id);
@@ -2106,7 +2384,8 @@ int ls_desk_console(int argc, char **argv)
         printf("desk: %s, theme %s, %d window%s, %d PSRAM block%s\n", s_on ? "on" : "off",
                ls_desk_theme_name(ls_desk_theme()), s_nz, s_nz == 1 ? "" : "s",
                dk_compat_blocks(), dk_compat_blocks() == 1 ? "" : "s");
-        printf("desk on|off, desk theme <scheme>, desk open <app>, desk focus [app|off], desk close, desk list\n");
+        printf("desk on|off, desk theme <scheme>, desk open <app|control|run|tasks|bin|folder>,\n"
+               "desk focus [app|off], desk close, desk list, desk icons\n");
         return 0;
     }
     if (!strcmp(argv[1], "on") || !strcmp(argv[1], "off") || !strcmp(argv[1], "close") || !strcmp(argv[1], "focus") ||
@@ -2123,6 +2402,19 @@ int ls_desk_console(int argc, char **argv)
             printf("desk cost %-16s avg %6lu us  max %6lu us\n", DC_NAME[k], (unsigned long)s_dc_avg[k], (unsigned long)s_dc_max[k]);
             s_dc_max[k] = 0;
         }
+        return 0;
+    }
+    if (!strcmp(argv[1], "icons")) {
+        /* what is on the desktop and in the bin, as the store has it */
+        for (int i = 0; i < dk_items_count(); i++) {
+            const dk_icon_t *it = dk_items_at(i);
+            const tui_rect r = dk_items_rect(i);
+            char what[48];
+            dk_items_what(it, what, sizeof(what));
+            printf("desk: icon %2d %-15s %3d,%-3d %s%s\n", i, dk_items_label(it), r.x, r.y, what,
+                   it->flags & DKI_F_MOVED ? " (placed)" : "");
+        }
+        printf("desk: %d in the bin, gadgets %d, double-click %d ms\n", dk_items_binned(NULL, 0), dk_shell_gadgets(), dk_shell_dbl_ms());
         return 0;
     }
     if (!strcmp(argv[1], "list")) {

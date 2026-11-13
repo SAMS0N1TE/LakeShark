@@ -23,7 +23,7 @@ def since(entry, sdk):
     for line in before.splitlines():
         if re.match(r'\s*#\s*if', line): guards.append(line)
         elif re.match(r'\s*#\s*endif', line) and guards: guards.pop()
-    for minor in (6, 5, 4, 3, 2, 1):
+    for minor in (7, 6, 5, 4, 3, 2, 1):
         if any('LAP_API_2' + str(minor) in g for g in guards): return '2.' + str(minor)
     n = entry['name']
     if entry['header'] == 'lakeshark_ui.h': return '2.1'
@@ -106,6 +106,10 @@ def policy(n):
         cap = 'LAP_CAP_RADIO_TX | LAP_CAP_HID_DEVICE' if n.startswith('lap_hid_device_') and n != 'lap_hid_device_report_map' else 'LAP_CAP_RADIO_TX'
         if n in ('lap_ble_peripheral_status', 'lap_gatt_server_next', 'lap_hid_device_report_map', 'lap_ble_advertise_stop', 'lap_gatt_server_close', 'lap_hid_device_close'): cap = None
         status, reason = 'limited', 'Shared bounded peripheral database, copied ATT values, event and send queues. LAPSIM_SCRIPT periphconnect/periphdisconnect/periphread/periphwrite/periphsubscribe/periphmtu/periphbond/periphbusy/peripherror/periphack simulate peers. No RF; controller power, HOGP pairing and internal RAM need board verification. See BLE_PERIPHERAL.md.'
+    # API 2.7: raw capture. The simulator replays a file; it never invents frames.
+    if n in ('lap_wifi_capture_start', 'lap_ble_capture_start', 'lap_capture_read', 'lap_capture_status', 'lap_capture_stop'):
+        cap = None if n in ('lap_capture_status', 'lap_capture_stop') else 'LAP_CAP_RADIO_RX'
+        status, reason = 'limited', 'Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md.'
     if n == 'lap_text_size':
         status, reason = 'real', 'Shared renderer text measurement.'
     if n in ('lap_random', 'lap_millis', 'lap_frame'):

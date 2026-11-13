@@ -1418,10 +1418,9 @@ static void draw_labels(tui_surface *sf, tui_rect a, int sx, int sy,
         if (!dot_free) continue;
 
         /* Names in the tiles are UTF-8; everything below measures and cuts
-           by bytes, so it works on the name folded to one byte a cell. */
+           by bytes, so it works on the name as one byte a cell. */
         char text[CARTO_LABEL_MAX_TEXT];
-        snprintf(text, sizeof(text), "%s", lb->text);
-        tui_utf8_fold_str(text);
+        tui_utf8_to_cells(text, sizeof(text), lb->text);
         int len = (int)strlen(text);
         const int room = a.w / (s_basemap_busy?4:3);
         if (len > room) {
@@ -2259,14 +2258,12 @@ static bool place_label_key(tui_surface *sf, tui_rect a, int cx, int cy, int gap
     s_label_rect=tui_rect_make(0,-1,0,0);
     if(layer(L_NOLABEL)) return false;
     /* Node names and marks can be UTF-8; placement measures in bytes, so it
-       works on the names folded to one byte a cell. */
+       works on the names as one byte a cell. */
     char b1[64], b2[64];
-    snprintf(b1, sizeof(b1), "%s", l1);
-    tui_utf8_fold_str(b1);
+    tui_utf8_to_cells(b1, sizeof(b1), l1);
     l1 = b1;
     if (l2) {
-        snprintf(b2, sizeof(b2), "%s", l2);
-        tui_utf8_fold_str(b2);
+        tui_utf8_to_cells(b2, sizeof(b2), l2);
         l2 = b2;
     }
     const int n1 = (int)strlen(l1), n2 = l2 ? (int)strlen(l2) : 0;

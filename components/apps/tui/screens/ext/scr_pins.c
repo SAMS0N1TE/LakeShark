@@ -69,6 +69,7 @@ static void enter(void)
     load_saved();
     s_typed[0] = 0;
     if (!ls_pins_runtime()) say("This board's pins are fixed: read only.", TUI_YELLOW);
+    else if (ls_pins_rejected()) say("Saved pins not used this boot: board defaults running. Fix and save.", TUI_RED | TUI_BRIGHT);
     else if (ls_pins_pending()) say("Saved changes wait for a reboot (B).", TUI_YELLOW | TUI_BRIGHT);
     else say("Arrows pick and step, digits type a GPIO, N = none.", LS_DIM_FG);
 }
@@ -300,8 +301,9 @@ static void draw_map(tui_surface *sf, tui_rect r)
           TUI_ATTR(chip == LS_LORA_CHIP_NONE ? LS_DIM_FG : TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
     ls_kv(sf, r, r.h - 3, "IMU", ls_imu_present() ? "ICM-20948" : "not found",
           TUI_ATTR(ls_imu_present() ? TUI_GREEN | TUI_BRIGHT : LS_DIM_FG, TUI_BLACK));
-    ls_kv(sf, r, r.h - 2, "TABLE", !ls_pins_runtime() ? "fixed" : ls_pins_pending() ? "reboot pending" : "in use",
-          TUI_ATTR(ls_pins_pending() ? TUI_YELLOW | TUI_BRIGHT : TUI_CYAN, TUI_BLACK));
+    const char *rej = ls_pins_rejected();
+    ls_kv(sf, r, r.h - 2, "TABLE", !ls_pins_runtime() ? "fixed" : rej ? rej : ls_pins_pending() ? "reboot pending" : "in use",
+          TUI_ATTR(rej ? TUI_RED | TUI_BRIGHT : ls_pins_pending() ? TUI_YELLOW | TUI_BRIGHT : TUI_CYAN, TUI_BLACK));
 }
 
 static void draw(tui_surface *sf, tui_rect area)

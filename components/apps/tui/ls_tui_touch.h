@@ -46,6 +46,14 @@ bool ls_tui_touch_input_px(int *x, int *y, int *x0, int *y0, int64_t *since_us);
 void ls_tui_touch_client(int col, int row, int gx, int gy, bool down);
 void ls_tui_touch_client_clear(void);
 
+/* What a screen's key() and touch() do not carry: the modifiers held
+   (LS_IMOD_*, ls_input_ev.h) for the key or click now being delivered, and
+   the clicks of the left press behind it (2: a double click). The input
+   drain sets them around each delivery; both are zero outside one, so a key
+   from the board's own keyboard reads as unmodified. UI task. */
+void ls_tui_input_now(uint8_t mods, uint8_t clicks);
+uint8_t ls_tui_input_mods(void);
+uint8_t ls_tui_input_clicks(void);
 /* Pointer cell associated with the wheel currently being dispatched. UI task. */
 void ls_tui_pointer_set(int col, int row);
 bool ls_tui_pointer_cell(int *col, int *row);

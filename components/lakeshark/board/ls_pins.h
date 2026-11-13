@@ -80,6 +80,8 @@ bool ls_pins_pending(void);
 void ls_pins_load(void);
 /* True once the saved table has been read (NVS was up). */
 bool ls_pins_ready(void);
+/* Why the saved pins were not used this boot (a conflict, or a failed start before), or NULL. */
+const char *ls_pins_rejected(void);
 
 /* `pin` console command: pin | pin set <key> <gpio|none> | pin imu <addr>
    | pin reset. */

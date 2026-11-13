@@ -42,6 +42,7 @@
 /**/
 #include "ls_safe_mode.h"
 #include "panic_crumb.h"
+#include "ls_bootlog.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "driver/gpio.h"
@@ -1058,6 +1059,7 @@ static void defer_task(void *arg)
         }
 
         radio_reconcile();
+        ls_bootlog_tick();
         if (atomic_exchange(&s_console_retry, false)) {
             /* app_main's 8 KB internal stack is still live at the first
                attempt. Let it return and idle reclaim it before retrying.
@@ -1835,7 +1837,10 @@ static int cmd_c6(int argc, char **argv)
         return 0;
     }
 
-    if (!strcmp(argv[1], "update") || !strcmp(argv[1], "status")) {
+    if (!strcmp(argv[1], "mon")) {
+        extern int ls_hosted_promisc_test(int secs);
+        return ls_hosted_promisc_test(argc > 2 ? atoi(argv[2]) : 5);
+    } else if (!strcmp(argv[1], "update") || !strcmp(argv[1], "status") || !strcmp(argv[1], "flash")) {
         return ls_c6_update_command(argc, argv);
     } else if (!strcmp(argv[1], "ver")) {
         c6_print_versions();
@@ -3142,6 +3147,22 @@ static int cmd_wifi(int argc, char **argv)
 }
 
 /* full=false registers only the recovery set: safe mode has no radio/audio. */
+/* The REPL needs its task stack in one internal block, and by the time the
+   console starts (~9 s, after the C5/BLE, USB and audio) the Nano rarely
+   has one: a few hundred bytes more anywhere and it boots with no console,
+   which on the desktop edition is a black window. So the block is taken at
+   the start of boot, from the LP RAM the radios leave alone when it can be,
+   and handed back just before the REPL asks for it. */
+#define CONSOLE_HOLD_BYTES (4096 + 768)
+static void *s_console_hold;
+static void console_hold_take(void)
+{
+#if CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP
+    s_console_hold = heap_caps_malloc(CONSOLE_HOLD_BYTES, MALLOC_CAP_RTCRAM | MALLOC_CAP_8BIT);
+#endif
+    if (!s_console_hold) s_console_hold = heap_caps_malloc(CONSOLE_HOLD_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
 static bool console_start(bool full)
 {
     esp_console_repl_t *repl = NULL;
@@ -3155,6 +3176,7 @@ static bool console_start(bool full)
        heap - lazily, calling abort() if that fails. With internal RAM that
        short, decline here and leave it to the retry after the main task
        releases memory. */
+    if (s_console_hold) { heap_caps_free(s_console_hold); s_console_hold = NULL; }   /* the REPL's block, held since boot */
     const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
     if (largest < repl_cfg.task_stack_size + 256) {
         ESP_LOGW(TAG, "console deferred: internal largest %u, the REPL needs %u",
@@ -3311,6 +3333,7 @@ static bool console_start(bool full)
         ls_ctl_register_recovery_commands();
     }
     panic_crumb_register_command();
+    ls_bootlog_register_command();
 #if LS_HAS_CARTOCORE
     extern void ls_cartocore_register_command(void);
     ls_cartocore_register_command();
@@ -3325,10 +3348,13 @@ static bool console_start(bool full)
     return true;
 }
 
+extern void ls_lap_reserve_link_memory(bool early);
+
 static void console_retry_start(void)
 {
     if (console_start(true)) {
         ESP_LOGI(TAG, "console ready after main-task memory release");
+        ls_lap_reserve_link_memory(false);
         ls_eth_start();
     } else
         ESP_LOGE(TAG, "console retry failed; no further retries this boot");
@@ -3385,6 +3411,11 @@ static void headless_safe_main(const ls_safe_boot_plan_t *plan)
 void app_main(void)
 {
     bool wifi_autojoin_ready = false;
+    console_hold_take();                /* first: the console's block */
+    ls_bootlog_start();                 /* every line from here is kept (PSRAM) for BOOT LOG */
+    ls_lap_reserve_link_memory(true);   /* LP RAM is still empty now */
+    extern void ls_hosted_promisc_link(void);
+    ls_hosted_promisc_link();            /* Wi-Fi monitor calls over the coprocessor replace the weak stubs */
     cell_performance_boot();
     /* Bluetooth command dispatch does not require a wired UART worker. */
     flipper_link_set_host(&s_link_host);
@@ -3489,6 +3520,9 @@ void app_main(void)
            this profile has no hub. The TUI reads ls_sdcard_mounted directly. */
         if (sd == ESP_OK) {
             ESP_LOGI(TAG, "SD card mounted at %s", LS_SDCARD_MOUNT);
+            /* Now, so a boot that dies further on still leaves its log
+               on the card; again when the boot has settled. */
+            ls_bootlog_save(LS_BOOTLOG_DIR);
 
             const int pts = ls_track_attach();
             if (pts > 0)
@@ -3776,6 +3810,8 @@ void app_main(void)
 #endif
     if (console_up)
         ESP_LOGI(TAG, "console ready - type 'help' for commands");
+    if (console_up)
+        ls_lap_reserve_link_memory(false);   /* after the console's block, before radio apps fragment DRAM */
     else
         ESP_LOGW(TAG, "boot finished WITHOUT a serial console - see the REPL line above");
 

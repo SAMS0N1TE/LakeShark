@@ -1,4 +1,4 @@
-#define AppVersion "2.21.4"
+#define AppVersion "2.22.0"
 
 [Setup]
 AppId={{A5C91551-8E2E-48F2-AC5E-1D24866D8681}
@@ -6,7 +6,7 @@ AppName=LakeShark
 AppVersion={#AppVersion}
 AppVerName=LakeShark {#AppVersion}
 AppPublisher=Terminal Bay
-VersionInfoVersion=2.21.4.0
+VersionInfoVersion=2.22.0.0
 DefaultDirName={localappdata}\Programs\LakeShark
 DefaultGroupName=LakeShark
 PrivilegesRequired=lowest

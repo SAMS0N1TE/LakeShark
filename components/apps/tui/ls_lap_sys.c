@@ -1,3 +1,4 @@
+#include "ls_lap_capture.h"
 #include "ls_lap_ble_peripheral.h"
 #include "ls_lap_context.h"
 /* See ls_lap_sys.h. */
@@ -885,7 +886,7 @@ void ls_lap_sys_end(void)
     ls_lap_sensors_end();
     ls_lap_kit_end();
     ls_lap_input_enable(false);
-    ls_lap_net_end(); ls_lap_av_end();
+    ls_lap_net_end(); ls_lap_av_end(); ls_lap_capture_end();
     ls_lap_radio_end();                  /* the worker closes the session and frees the radio */
     if (!p4_sys.open) return;
     p4_sys.open = false;
@@ -1039,7 +1040,7 @@ void ls_lap_sys_frame(tui_rect area)
     p4_tones.tail = p4_tones.head;                    /* the bench has no speaker */
     ls_lap_radio_service();                     /* no worker here: one pass a frame */
 }
-void ls_lap_sys_end(void) { ls_lap_system_hide(); ls_lap_system_detach(); ls_lap_sensors_end(); ls_lap_kit_end(); ls_lap_input_enable(false); ls_lap_net_end(); ls_lap_av_end(); ls_lap_radio_end(); jobs_abandon(); }
+void ls_lap_sys_end(void) { ls_lap_system_hide(); ls_lap_system_detach(); ls_lap_sensors_end(); ls_lap_kit_end(); ls_lap_input_enable(false); ls_lap_net_end(); ls_lap_av_end(); if (ls_lap_capture_end) ls_lap_capture_end(); ls_lap_radio_end(); jobs_abandon(); }
 void ls_lap_sys_hide(void) { ls_lap_peripheral_release_inputs(); ls_lap_system_hide(); ls_lap_kit_end(); ls_lap_input_enable(false); }
 bool ls_lap_sys_service(void)
 {

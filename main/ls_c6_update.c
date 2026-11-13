@@ -15,6 +15,7 @@
 #include "esp_hosted_ota.h"
 #include "esp_hosted_event.h"
 #include "esp_timer.h"
+#include "esp_system.h"
 #include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -339,8 +340,56 @@ void ls_c6_publish(void)
                        "Update C6 from SD (path, force); radios stay off until P4 reboot");
 }
 
+/* c6 flash PATH: stream an ESP-Hosted coprocessor image from the card with
+   the SDK's own slave OTA, for boards without the T-Display updater (the
+   Nano's ESP32-C5). Checks the image is for the coprocessor this build
+   talks to, then activates it and restarts the board so both ends start
+   clean. Blocking, on the console task; a dev and bench tool. */
+#if defined(CONFIG_ESP_HOSTED_CP_TARGET_ESP32C5)
+#define COP_CHIP_ID 23
+#define COP_NAME "ESP32-C5"
+#else
+#define COP_CHIP_ID 13
+#define COP_NAME "ESP32-C6"
+#endif
+static int cop_flash(const char *path)
+{
+    if (strncmp(path, "/sdcard/", 8) || strstr(path, "..")) { puts("c6 flash: use a /sdcard/ path"); return 1; }
+    FILE *f = fopen(path, "rb");
+    if (!f) { printf("c6 flash: cannot open %s\n", path); return 1; }
+    uint8_t *buf = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
+    size_t n = buf ? fread(buf, 1, 4096, f) : 0;
+    if (n < 64 || buf[0] != 0xE9 || buf[12] != COP_CHIP_ID || buf[13] != 0) {
+        printf("c6 flash: %s is not an " COP_NAME " app image\n", path);
+        fclose(f); heap_caps_free(buf); return 1;
+    }
+    esp_err_t e = esp_hosted_slave_ota_begin();
+    if (e) {
+        printf("c6 flash: OTA begin failed: %s (no update slot on the coprocessor?)\n", esp_err_to_name(e));
+        fclose(f); heap_caps_free(buf); return 1;
+    }
+    size_t total = 0;
+    while (n > 0) {
+        e = esp_hosted_slave_ota_write(buf, (uint32_t)n);
+        if (e) break;
+        total += n;
+        if ((total & 0x3FFFF) < n) printf("c6 flash: %u bytes\n", (unsigned)total);
+        n = fread(buf, 1, 4096, f);
+    }
+    fclose(f); heap_caps_free(buf);
+    if (e) { printf("c6 flash: write failed at %u: %s; the running image is untouched\n", (unsigned)total, esp_err_to_name(e)); return 1; }
+    e = esp_hosted_slave_ota_end();
+    if (e) { printf("c6 flash: image rejected by the coprocessor: %s\n", esp_err_to_name(e)); return 1; }
+    e = esp_hosted_slave_ota_activate();
+    printf("c6 flash: %u bytes written, activate: %s; restarting the board\n", (unsigned)total, esp_err_to_name(e));
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    esp_restart();
+    return 0;
+}
+
 int ls_c6_update_command(int argc, char **argv)
 {
+    if (argc == 3 && !strcmp(argv[1], "flash")) return cop_flash(argv[2]);
     if (argc == 2 && !strcmp(argv[1], "status")) {
         ls_c6_result_t r;
         portENTER_CRITICAL(&s_mux); r = s_result; portEXIT_CRITICAL(&s_mux);
@@ -359,7 +408,7 @@ int ls_c6_update_command(int argc, char **argv)
         return rc == LS_ACT_OK ? 0 : 1;
     }
 usage:
-    puts("c6 update [" LS_C6_DEFAULT_PATH "] [force] | c6 status\n"
+    puts("c6 update [" LS_C6_DEFAULT_PATH "] [force] | c6 status | c6 flash /sdcard/IMAGE.bin\n"
          "Recovery: USB-UART on C6 header; see docs/TDP4_FIRST_FLASH.md");
     return 1;
 }

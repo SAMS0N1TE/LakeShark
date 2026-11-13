@@ -3370,7 +3370,7 @@ static const ls_opt_t OPT_SUBGHZ[]={
 #define OPT_FREQS 15
 #define OPT_CATCH 16
 _Static_assert(OPT_CATCH==OPT_ROWS-1 && OPT_ROWS<=32,"the row masks index OPT_SUBGHZ by these numbers");
-static ls_opt_t page_options[OPT_ROWS];
+EXT_RAM_BSS_ATTR static ls_opt_t page_options[OPT_ROWS];
 static ls_opt_ctx_t option_ctx={.name="SUB-GHZ",.radio=LS_RSEL_NONE};
 static const ls_opt_ctx_t *subghz_options(void)
 {
@@ -3442,12 +3442,16 @@ static void draw(tui_surface *sf,tui_rect a)
     if(listen_in && !listen_in_since)listen_in_since=esp_timer_get_time();
     if(listen_in && (s.ready || esp_timer_get_time()-listen_in_since>LISTEN_IN_US)) {
         const uint32_t hz=listen_in;listen_in=0;listen_in_since=0;
+        bool mode_ok=true;
         if(listen_in_fsk>=0 && rec_watch_source()==REC_SOURCE_SX1262 &&
            ls_lora_chip()==LS_LORA_CHIP_LR20XX && rec_watch_lr_fsk()!=(listen_in_fsk==1)) {
             if(rec_watch_enabled())watch_set(false);
-            rec_watch_set_lr_fsk(listen_in_fsk==1);
+            mode_ok=rec_watch_set_lr_fsk(listen_in_fsk==1);
         }
-        listen_from="FREQS";listen_here(hz);listen_from="BAND";
+        /* A WATCH that would not stop keeps the old receiver: listening on it
+           would not be the entry's mode. */
+        if(!mode_ok)snprintf(feedback,sizeof(feedback),"Stop WATCH to listen in %s",listen_in_fsk==1?"FSK":"OOK");
+        else {listen_from="FREQS";listen_here(hz);listen_from="BAND";}
     }
     /* LISTEN HERE, finished: the sweep has let go, so WATCH can have the
        radio - unless the runtime already started it, which it does when

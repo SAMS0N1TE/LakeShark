@@ -5,6 +5,8 @@
 #include "scan_import.h"
 
 #include <dirent.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -384,6 +386,58 @@ LS_CASE(store_loads_banks_in_order_and_falls_back_to_builtin)
     LS_EQ_INT(ls_freqs_count(), 1);
     load(LS_FREQS_BUILTIN);
     LS_CHECK(ls_freqs_count() >= 30);
+}
+
+/* The console's `freq` and a freq.save from any task scan the card and save
+   while the UI task is part way through a load. Every load still reads its
+   bank whole and every save lands as one line. */
+enum { RACE_SAVES = 300, RACE_LINES = 400 };
+static atomic_int race_done, race_failed;
+static void *race_saver(void *arg)
+{
+    (void)arg;
+    ls_freq_t e;
+    char why[128];
+    one_line("433.92,OOK,,GARAGE,MINE,subghz,,,,,", &e);
+    for (int i = 0; i < RACE_SAVES; i++) {
+        if (!ls_freqs_scan() || !ls_freqs_append("mine", &e, why, sizeof(why))) atomic_fetch_add(&race_failed, 1);
+    }
+    atomic_store(&race_done, 1);
+    return NULL;
+}
+LS_CASE(store_load_reads_whole_while_another_task_scans_and_saves)
+{
+    const char *dir = card();
+    char path[128];
+    snprintf(path, sizeof(path), "%s/big.csv", dir);
+    FILE *f = fopen(path, "w");
+    LS_CHECK(f != NULL);
+    if (!f) return;
+    fputs("freq_mhz,mode,bw_khz,name,group\n", f);
+    for (int i = 0; i < RACE_LINES; i++) fprintf(f, "%.4f,NFM,,BIG %03d,TEST\n", 150.0 + i * 0.0125, i);
+    fclose(f);
+    snprintf(path, sizeof(path), "%s/mine.csv", dir);
+    write_file(path, "freq_mhz,mode,bw_khz,name,group,tags,lat,lon,radius_km,tone,notes\n");
+    LS_CHECK(ls_freqs_scan());
+    const int big = ls_freqs_bank_find("big"), mine = ls_freqs_bank_find("mine");
+    LS_CHECK(big >= 0 && mine >= 0);
+    atomic_store(&race_done, 0);
+    atomic_store(&race_failed, 0);
+    pthread_t t;
+    LS_CHECK(pthread_create(&t, NULL, race_saver, NULL) == 0);
+    int loads = 0, short_loads = 0;
+    while (!atomic_load(&race_done) || loads < 20) {
+        ls_freqs_load(big);
+        while (ls_freqs_pump(7)) {}
+        short_loads += ls_freqs_count() != RACE_LINES || ls_freqs_tally()->skipped != 0;
+        loads++;
+    }
+    pthread_join(t, NULL);
+    LS_EQ_INT(short_loads, 0);
+    LS_EQ_INT(atomic_load(&race_failed), 0);
+    load(mine);
+    LS_EQ_INT(ls_freqs_count(), RACE_SAVES);
+    LS_EQ_INT(ls_freqs_tally()->skipped, 0);
 }
 
 LS_CASE(store_saves_edits_deletes_and_keeps_comments)

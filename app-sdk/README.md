@@ -1,11 +1,13 @@
 # LakeShark apps
 
 <!-- generated-api:start -->
-Current default target: **API 2.6**. Exported SDK calls: **383**.
+Current default target: **API 2.7**. Exported SDK calls: **389**.
 See the [generated API registry](docs/api.json) and [simulator coverage](docs/SIMULATOR.md).
 <!-- generated-api:end -->
 
 API 2.4 radio I/O: [packet/edge RX, scanning and channel banks, capture/local replay, TX and NFC](docs/RADIO_IO.md).
+
+API 2.7 raw capture: [Wi-Fi 802.11 frames and Bluetooth advertising reports, receive only](docs/CAPTURE.md). Example: `apps/tap`.
 
 API 2.6: [resident services, resource ownership and worker DSP](docs/SERVICES26.md).
 

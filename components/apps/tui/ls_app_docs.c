@@ -290,6 +290,14 @@ const ls_app_doc_t ls_doc_pins = {
     .gps     = LS_APP_GPS_UNUSED,
 };
 
+const ls_app_doc_t ls_doc_bootlog = {
+    .purpose = "Everything this boot logged from its first line, and the boot "
+               "before, with errors in red and warnings in yellow. Save it to "
+               "the card or the PC and attach bootlog.txt to a GitHub issue.",
+    .records = LS_APP_RECORDS_NOTHING,
+    .gps     = LS_APP_GPS_UNUSED,
+};
+
 const ls_app_doc_t ls_doc_tiles = {
     .purpose = LS_TXT(doc_tiles_purpose, "Install and manage CartoCore map regions on the SD card. Download over WiFi or receive a file from a laptop. OPEN displays the selected map."),
     .records = LS_APP_RECORDS_NOTHING,
@@ -423,6 +431,7 @@ const ls_app_doc_row_t ls_app_docs_all[] = {
     { "update",  &ls_doc_update   },
     { "set",     &ls_doc_settings},
     { "pins",    &ls_doc_pins    },
+    { "bootlog", &ls_doc_bootlog },
     { "map",     &ls_doc_map     },
     { "tiles",   &ls_doc_tiles   },
     { "gps",     &ls_doc_gps     },
