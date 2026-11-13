@@ -338,6 +338,29 @@ LS_CASE(list_follows_a_dragged_finger_and_keeps_the_selection) {
     LS_EQ_INT(s_first, s_count - rows);
     finger = false; draw(&sf, a);
 }
+/* A key that opens the reader mid-drag: the finger lifts there, and the
+   first tap back on the list, a second later, is a choice, not the lift. */
+LS_CASE(list_tap_after_a_drag_left_for_the_reader_is_not_the_lift) {
+    reset(); entry_count = 60;
+    for (int i = 0; i < entry_count; i++) snprintf(entries[i].d_name, 256, "f%02d", i);
+    s_sort = SORT_NAME; load_all();
+    ls_shim_time_set(1000000);
+    static tui_cell back[52 * 70], front[52 * 70]; tui_surface sf;
+    tui_surface_setup(&sf, back, front, 52, 70);
+    const tui_rect a = tui_rect_make(0, 0, 52, 70);
+    draw(&sf, a); draw(&sf, a);
+    const int rh = row_h(), col = s_list.x + 2, r0 = s_list.y + s_list.h - 2;
+    finger = true; finger_c0 = finger_c = col; finger_r0 = finger_r = r0;
+    draw(&sf, a); finger_r = r0 - 3 * rh; draw(&sf, a);
+    LS_EQ_INT(s_first, 3);
+    s_view = VIEW_TEXT;
+    memset(s_text, 'x', 2000); s_text_len = s_text_total = 2000; s_text_offset = 0;
+    draw(&sf, a); finger = false; draw(&sf, a);
+    ls_shim_time_advance(1000000);
+    LS_CHECK(go_up()); LS_EQ_INT(s_view, VIEW_LIST);
+    draw(&sf, a); LS_EQ_INT(s_first, 3);
+    touch(col, s_list.y + rh); LS_EQ_INT(s_selected, 4);
+}
 LS_CASE(text_crlf_tabs_nul_and_large_file_ranges) {
     reset(); memset(s_text, 'x', 52); memcpy(s_text + 52, "\r\n", 2); s_text_len = 54;
     LS_EQ_INT(text_rows(NULL, tui_rect_make(0, 0, 52, 2)), 2);

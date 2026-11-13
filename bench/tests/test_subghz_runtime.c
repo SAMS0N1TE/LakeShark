@@ -1,4 +1,5 @@
 #include "ls_test.h"
+#include <math.h>
 #include <stdint.h>
 #include <sys/stat.h>
 #ifdef _WIN32
@@ -13,10 +14,14 @@ uint32_t esp_random(void);
 #define eTaskGetState subghz_task_state
 #include "../../components/lakeshark/apps/rec/rec_watch_runtime.c"
 
-int subghz_task=1,subghz_lease,subghz_hold_attempts,subghz_cancel_hold;
+int subghz_task=1,subghz_lease,subghz_hold_attempts,subghz_cancel_hold,subghz_lr_stream;
+static void (*on_delay)(void);
 static int scan_begins,scan_ends,fsk_begins,fsk_ends,polls,cancel_pass,cancel_poll;
 static uint32_t frequency=433920000u;
 static bool refuse_tune,refuse_fsk,frame_every_poll;
+/* A sweep's rows: flat by default, or what a case draws for pass p. */
+static void (*scan_row)(float *row,int n,int pass);
+static int scan_passes;
 static void reset(void)
 {
     memset(&s_status,0,sizeof(s_status));s_status.ready=true;
@@ -28,13 +33,15 @@ static void reset(void)
     s_worker_task=(TaskHandle_t)2;subghz_task=1;subghz_lease=0;
     subghz_hold_attempts=subghz_cancel_hold=0;
     scan_begins=scan_ends=fsk_begins=fsk_ends=polls=0;cancel_pass=cancel_poll=0;
-    refuse_tune=refuse_fsk=frame_every_poll=false;s_learn_rewatch=false;frequency=433920000u;s_gate_db=12;s_on_hit_loaded=0;
+    subghz_lr_stream=0;on_delay=NULL;
+    refuse_tune=refuse_fsk=frame_every_poll=false;s_learn_rewatch=false;scan_row=NULL;scan_passes=0;frequency=433920000u;s_gate_db=12;s_on_hit_loaded=0;
 }
 TaskHandle_t subghz_current_task(void){return (TaskHandle_t)(uintptr_t)subghz_task;}
 void subghz_delay(TickType_t ticks)
 {
     extern void ls_shim_time_advance(int64_t);
     ls_shim_time_advance((int64_t)ticks*1000);
+    if(on_delay)on_delay();
     if(s_watch_pending) {
         int caller=subghz_task;subghz_task=2;
         s_watch_result=rec_watch_enable_owned(s_watch_on);s_watch_pending=false;
@@ -51,10 +58,15 @@ eTaskState subghz_task_state(TaskHandle_t task){(void)task;return s_fsk_exited?e
 uint32_t rec_get_freq(void){return frequency;}
 bool rec_set_freq(uint32_t hz){if(refuse_tune || s_status.enabled)return false;frequency=hz;return true;}
 uint32_t ls_lora_caps(void){return LS_LORA_CAP_RX_WIDE|LS_LORA_CAP_BAND_1G5_2G5;}
+const char *ls_lora_chip_name(void){return "LR2021";}
 esp_err_t ls_lora_scan_begin(uint32_t lo,uint32_t hi){(void)lo;(void)hi;scan_begins++;return ESP_OK;}
 esp_err_t ls_lora_scan_end(void){scan_ends++;return ESP_OK;}
 int ls_lora_scan_pass(float *row,int n,bool *done)
-{for(int i=0;i<n;i++)row[i]=-110;*done=true;if(cancel_pass)rec_watch_scan_stop();return n;}
+{
+    if(scan_row)scan_row(row,n,scan_passes++);
+    else for(int i=0;i<n;i++)row[i]=-110;
+    *done=true;if(cancel_pass)rec_watch_scan_stop();return n;
+}
 uint32_t ls_lora_scan_bin_hz(uint32_t lo,uint32_t hi,int n,int i){return lo+(uint64_t)(hi-lo)*i/(n-1);}
 uint32_t ls_lora_fsk_bw_snap(uint32_t hz){return hz;}
 esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg){(void)cfg;fsk_begins++;return refuse_fsk?ESP_FAIL:ESP_OK;}
@@ -95,22 +107,38 @@ LS_CASE(scan_stop_survives_acquisition_and_pass_cancellation)
     scan_band(433000000,434000000,30,8,result,sizeof(result));
     LS_EQ_INT(scan_ends,1);LS_EQ_INT(subghz_lease,0);LS_CHECK(strstr(result,"stopped"));
 }
-LS_CASE(sweep_floor_ignores_a_bad_low_bin)
+/* The SX1262 board's 902-928 MHz sweep with nothing on the air
+   (2026-11-12): -101 dBm to 919 MHz, a step to about -62, -29 and -24 dBm
+   in the top two bins, every pass - and a -132 dBm look in one bin, the
+   LR2021's of 2026-11-07. The old pass-floor detector reported 11
+   frequencies ~450 times each in 25 s. Through scan_band itself: the steady
+   shape is floor, and one keyfob press at 915 MHz is the only find. */
+static void sx915_row(float *row,int n,int pass)
 {
-    /* The LR2021 sweep of 2026-11-07: a -110 dBm band with one -132 look. */
-    float row[REC_SCAN_BINS];
-    for(int i=0;i<REC_SCAN_BINS;i++) row[i]=-110.0f+(float)(i%3);
-    row[5]=-132.0f;
-    LS_NEAR(pass_floor(row,REC_SCAN_BINS,NULL),-110.0f,0.01f);
-    /* A carrier does not lift it, and nothing but the carrier clears 30 dB. */
-    row[20]=-60.0f;
-    const float lo=pass_floor(row,REC_SCAN_BINS,NULL);
-    int above=0;
-    for(int i=0;i<REC_SCAN_BINS;i++) if(row[i]>=lo+30.0f) above++;
-    LS_EQ_INT(above,1);
-    /* Short rows (8 bins) and an empty one. */
-    LS_NEAR(pass_floor(row,8,NULL),-110.0f,1.01f);
-    LS_NEAR(pass_floor(row,0,NULL),-200.0f,0.01f);
+    static const float top[11]={-74,-70,-62,-61,-63,-62,-62,-62,-62,-29,-24};
+    for(int i=0;i<n;i++) {
+        const float wiggle=(float)(((pass*7+i*13)%5)-2)*0.5f;   /* +/-1 dB */
+        row[i]=(i<21?-101.0f:top[i-21])+wiggle;
+    }
+    if(pass==40)row[5]=-132.0f;
+    if(pass==150 || pass==151)row[16]=-60.0f;
+    if(pass>=300)rec_watch_scan_stop();
+}
+LS_CASE(a_steady_band_shape_is_floor_and_only_the_keyfob_is_found)
+{
+    const float gates[2]={12.0f,25.0f};
+    for(int g=0;g<2;g++) {
+        reset();s_gate_db=gates[g];s_scan_busy=true;scan_row=sx915_row;
+        char result[112];
+        scan_band(902000000,928000000,0,32,result,sizeof(result));
+        LS_EQ_INT(s_scan_n,1);
+        LS_EQ_UINT(s_scan[0].hz,ls_lora_scan_bin_hz(902000000,928000000,32,16));
+        LS_EQ_INT(s_scan_events,1);
+        LS_NEAR(s_scan[0].floor,-101.0f,1.5f);
+        /* The live row carries each bin's own floor for the chart. */
+        LS_NEAR(s_scan_live[31].floor,-24.0f,1.5f);
+        LS_NEAR(s_scan_live[3].floor,-101.0f,1.5f);
+    }
 }
 LS_CASE(learn_cancels_acquisition_measurement_and_rate_poll)
 {
@@ -264,4 +292,412 @@ LS_CASE(iq_replay_requires_matching_sidecar_and_tx_gate_before_radio)
     int held=subghz_hold_attempts;
     iq_replay(path,-9,result,sizeof(result));LS_EQ_INT(iq_sends,1);LS_EQ_INT(subghz_hold_attempts,held);
     LS_CHECK(strstr(result,"outside"));unlink(path);unlink("test-runtime-iq.json");
+}
+
+/* ---- FSK on the LR2021, from its I/Q stream ---------------------------- */
+
+static uint32_t lrf_seed;
+static int lrf_noise(int span)
+{
+    lrf_seed=lrf_seed*1664525u+1013904223u;
+    return (int)((lrf_seed>>16)%(uint32_t)(2*span+1))-span;
+}
+static int lrf_decodes,lrf_wait;
+static void lrf_begin(void)
+{
+    reset();
+    memset(&s_lrf,0,sizeof(s_lrf));s_lrf.floor=8;s_lrf.floor_acc=8<<6;
+    atomic_store(&s_lrf_full[0],0);atomic_store(&s_lrf_full[1],0);
+    s_lrf_task=NULL;s_lrf_learning=s_lrf_learned=false;
+    s_fsk.sync_word=0xD391D391u;
+    lrf_seed=1;lrf_decodes=lrf_wait=0;
+}
+/* The worker's pass over the buffers that are waiting. */
+static void lrf_work(void)
+{
+    for(int b=0;b<2;b++)
+        if(atomic_load(&s_lrf_full[b])) {
+            lr_fsk_decode(s_lrf_buf[b],s_lrf_len[b],s_lrf_peakv[b],s_lrf_airv[b],s_lrf_tailed[b]);
+            atomic_store(&s_lrf_full[b],0);lrf_decodes++;
+        }
+    lrf_wait=0;
+}
+/* One sample through the consumer. The worker takes 200 ms over a buffer,
+   so the gate has had every chance to reopen by the time it is free. */
+static void lrf_put(int i,int q)
+{
+    const uint8_t b[4]={(uint8_t)i,(uint8_t)(i>>8),(uint8_t)q,(uint8_t)(q>>8)};
+    lr_fsk_consume(NULL,b,4,false);
+    if(!atomic_load(&s_lrf_full[0]) && !atomic_load(&s_lrf_full[1])){lrf_wait=0;return;}
+    if(++lrf_wait>=25000)lrf_work();
+}
+static void lrf_quiet(int samples){for(int k=0;k<samples;k++)lrf_put(lrf_noise(3),lrf_noise(3));}
+/* 2-FSK at 9600 bd, 10 kHz deviation: `frames` of preamble, D391 D391, two
+   bytes and their CRC, the carrier dropped for `gap` samples after each. */
+static float lrf_phase;
+static double lrf_at;
+static void lrf_bit(int bit)
+{
+    for(lrf_at+=REC_LR_IQ_RATE/9600.0;lrf_at>=1.0;lrf_at-=1.0) {
+        lrf_phase+=(bit?1.0f:-1.0f)*2.0f*3.14159265f*10000.0f/(float)REC_LR_IQ_RATE;
+        lrf_put((int)(2000.0f*cosf(lrf_phase))+lrf_noise(3),(int)(2000.0f*sinf(lrf_phase))+lrf_noise(3));
+    }
+}
+static void lrf_frames(int frames,int gap)
+{
+    for(int f=0;f<frames;f++) {
+        uint8_t body[4]={0x10,(uint8_t)f};
+        const uint16_t crc=fsk_pkt_crc16(body,2,0x8005,0xFFFF);
+        body[2]=(uint8_t)(crc>>8);body[3]=(uint8_t)crc;
+        for(int k=0;k<32;k++)lrf_bit(!(k&1));
+        for(int r=0;r<2;r++)for(int k=15;k>=0;k--)lrf_bit((0xD391>>k)&1);
+        for(int n=0;n<4;n++)for(int k=7;k>=0;k--)lrf_bit((body[n]>>k)&1);
+        lrf_quiet(gap);
+    }
+}
+
+/* A carrier that stays up is decoded once, not once a second for as long as
+   it lasts, and the gate is back for the packet that follows it. */
+LS_CASE(lr_fsk_gate_gives_a_steady_carrier_to_the_decoder_once)
+{
+    lrf_begin();
+    lrf_quiet(4000);
+    for(int k=0;k<8*(int)LRF_PAIRS;k++)lrf_put(2000+lrf_noise(3),lrf_noise(3));
+    lrf_work();
+    LS_EQ_INT(lrf_decodes,1);
+    LS_CHECK(!s_lrf.on);
+    lrf_quiet(4000);
+    s_lrf_learning=true;
+    lrf_frames(1,4000);lrf_work();
+    LS_EQ_INT(lrf_decodes,2);
+    LS_CHECK(s_lrf_learned);
+    LS_EQ_UINT(s_lrf_learn_pkt.sync,0xD391);
+    s_lrf_learning=s_lrf_learned=false;
+}
+/* A remote held down sends its frame over and over with gaps too short to
+   shut the gate, for longer than the buffer. The floor relearned on one
+   frame falls again in the gap after it, so the gate is not left deaf:
+   every second of it still reaches the decoder. */
+LS_CASE(lr_fsk_gate_keeps_taking_frames_repeated_for_seconds)
+{
+    lrf_begin();
+    lrf_quiet(4000);
+    lrf_frames(300,560);     /* 4.4 s, 4.5 ms apart */
+    lrf_quiet(4000);lrf_work();
+    LS_CHECK(lrf_decodes>=4);
+}
+
+/* ---- LEARN on the LR2021 ---------------------------------------------- */
+
+/* A frame with a sync word no chip defaults to, sent once, and no CRC: the
+   remote LEARN cannot prove from one burst. `roll` changes its payload. */
+static void lrf_plain(uint16_t sync,int roll)
+{
+    const uint8_t body[6]={0x5A,0xC3,(uint8_t)(0x17+roll),(uint8_t)(0xE1^roll),0x3C,0x99};
+    for(int k=0;k<32;k++)lrf_bit(!(k&1));
+    for(int k=15;k>=0;k--)lrf_bit((sync>>k)&1);
+    for(int n=0;n<6;n++)for(int k=7;k>=0;k--)lrf_bit((body[n]>>k)&1);
+    lrf_quiet(4000);lrf_work();
+}
+/* An FM set keyed up on a tone: no packet, but a run of even half-cycles
+   the decoder reads as a preamble. */
+static void lrf_tone(float hz)
+{
+    float ph=0;
+    for(int k=0;k<2500;k++) {
+        const float f=3000.0f*sinf(2.0f*3.14159265f*hz*(float)k/(float)REC_LR_IQ_RATE)+(float)lrf_noise(400);
+        ph+=2.0f*3.14159265f*f/(float)REC_LR_IQ_RATE;
+        lrf_put((int)(2000.0f*cosf(ph))+lrf_noise(3),(int)(2000.0f*sinf(ph))+lrf_noise(3));
+    }
+    lrf_quiet(4000);lrf_work();
+}
+static void lrf_learning(void)
+{
+    lrf_begin();
+    s_lrf_cands=0;s_lrf_learning=true;
+    lrf_quiet(4000);
+}
+
+LS_CASE(lr_learn_takes_a_packet_that_proves_itself_from_one_burst)
+{
+    lrf_learning();
+    lrf_frames(1,4000);lrf_work();
+    LS_CHECK(s_lrf_learned);
+    LS_EQ_INT(s_lrf_learn_bursts,1);
+    LS_CHECK(s_lrf_learn_pkt.crc_kind!=FSK_CRC_NONE);
+    s_lrf_learning=s_lrf_learned=false;
+}
+/* No CRC and no known sync word: one burst is only a candidate. A second
+   with the same word at the same rate confirms it, whatever its payload;
+   a burst of something else in between neither confirms nor displaces it. */
+LS_CASE(lr_learn_wants_a_second_burst_for_a_packet_it_cannot_prove)
+{
+    lrf_learning();
+    lrf_plain(0xCB89,0);
+    LS_CHECK(!s_lrf_learned);
+    LS_EQ_UINT(s_lrf_cands,1);
+    LS_EQ_UINT(s_lrf_cand_baud,9600);
+    lrf_plain(0xC6B5,0);
+    LS_CHECK(!s_lrf_learned);
+    LS_EQ_UINT(s_lrf_cands,2);
+    lrf_plain(0xCB89,7);
+    LS_CHECK(s_lrf_learned);
+    LS_EQ_INT(s_lrf_learn_bursts,2);
+    LS_EQ_UINT(s_lrf_learn_pkt.sync,0xCB89);
+    LS_CHECK(s_lrf_learn_pkt.crc_kind==FSK_CRC_NONE && !s_lrf_learn_pkt.sync_known);
+    s_lrf_learning=s_lrf_learned=false;
+}
+/* A remote repeating its frame with no gap the gate can close in is one
+   burst, however many packets the capture holds: they do not confirm each
+   other, and a later capture still does. */
+static void lrf_plain_body(uint16_t sync,int roll)
+{
+    const uint8_t body[6]={0x5A,0xC3,(uint8_t)(0x17+roll),(uint8_t)(0xE1^roll),0x3C,0x99};
+    for(int k=0;k<32;k++)lrf_bit(!(k&1));
+    for(int k=15;k>=0;k--)lrf_bit((sync>>k)&1);
+    for(int n=0;n<6;n++)for(int k=7;k>=0;k--)lrf_bit((body[n]>>k)&1);
+}
+LS_CASE(lr_learn_is_not_confirmed_by_repeats_within_one_capture)
+{
+    lrf_learning();
+    for(int r=0;r<3;r++){lrf_plain_body(0xCB89,r);lrf_quiet(300);}   /* 2.4 ms apart */
+    lrf_quiet(4000);lrf_work();
+    LS_CHECK(!s_lrf_learned);
+    LS_CHECK(s_lrf_cands>=1);
+    lrf_plain(0xCB89,5);
+    LS_CHECK(s_lrf_learned);
+    LS_EQ_INT(s_lrf_learn_bursts,2);
+    s_lrf_learning=s_lrf_learned=false;
+}
+/* The same tone keyed up again and again is never a packet, however often
+   it repeats: what follows its "preamble" is the end of the burst or the
+   tone carrying on. */
+LS_CASE(lr_learn_is_not_taught_by_a_tone_keyed_up_repeatedly)
+{
+    for(int hz=2500;hz<=4000;hz+=500) {
+        lrf_learning();
+        for(int i=0;i<20;i++) {
+            lrf_seed=77u+(uint32_t)i;
+            lrf_tone((float)hz);
+        }
+        LS_CHECK(!s_lrf_learned);
+        LS_EQ_UINT(s_lrf_cands,0);
+    }
+    s_lrf_learning=false;
+}
+
+static int press,presses;
+static bool press_proven;
+static void press_remote(void)
+{
+    s_lrf_task=NULL;             /* no worker on the bench: lrf_work stands in */
+    if(press>=presses)return;
+    if(!press++)lrf_quiet(4000);
+    if(press_proven)lrf_frames(1,4000);else lrf_plain(0xCB89,press);
+    lrf_work();
+}
+/* The whole LEARN: one press of a remote it cannot prove teaches nothing
+   and says to press again; two teach it at the confidence two agreeing
+   frames get on the SX1262; a packet with a CRC is still learned at once. */
+LS_CASE(lr_learn_applies_nothing_from_one_unproven_burst)
+{
+    char result[112];rec_learn_t got;
+    reset();subghz_lr_stream=1;s_learn_busy=true;lrf_seed=1;
+    press=0;presses=1;press_proven=false;on_delay=press_remote;
+    memset(&s_learn,0,sizeof(s_learn));
+    LS_CHECK(learn_run_iq(frequency,5,result,sizeof(result)));
+    LS_CHECK(!rec_watch_learn_result(&got));
+    LS_CHECK(strstr(result,"not confirmed") && strstr(result,"9600"));
+    LS_EQ_INT(subghz_lease,0);
+
+    reset();subghz_lr_stream=1;s_learn_busy=true;lrf_seed=1;
+    press=0;presses=2;press_proven=false;on_delay=press_remote;
+    memset(&s_learn,0,sizeof(s_learn));
+    LS_CHECK(learn_run_iq(frequency,5,result,sizeof(result)));
+    LS_CHECK(rec_watch_learn_result(&got));
+    LS_EQ_UINT(got.bitrate,9600);LS_EQ_UINT(got.sync_word>>16,0xCB89);
+    LS_NEAR((float)got.deviation_hz,10000.0f,1000.0f);
+    LS_EQ_INT(got.confidence,80);LS_EQ_INT(got.agreed,2);
+    LS_CHECK(strstr(got.note,"two bursts agreed"));
+
+    reset();subghz_lr_stream=1;s_learn_busy=true;lrf_seed=1;
+    press=0;presses=1;press_proven=true;on_delay=press_remote;
+    memset(&s_learn,0,sizeof(s_learn));
+    LS_CHECK(learn_run_iq(frequency,5,result,sizeof(result)));
+    LS_CHECK(rec_watch_learn_result(&got));
+    LS_EQ_UINT(got.sync_word,0xD391D391u);
+    LS_EQ_INT(got.confidence,95);LS_EQ_INT(got.agreed,1);
+    LS_CHECK(strstr(got.note,"one burst"));
+    reset();
+}
+
+/* ---- The gate's captures as the LR2021 gives them ---------------------- */
+
+/* Three kinds of air. BENCH is the +/-3 counts the cases above use. AIR is
+   the chip's own noise as bench/tests/data/fsk_rec.iq16le has it (46 counts
+   of |I|+|Q|, band-limited) under a signal 14 dB over it; that noise never
+   gives the gate its 5 ms of quiet, so the capture runs the full second.
+   AGC is that recording's strong signal: the gain steps down over the first
+   4 ms of the burst and the noise sits 18 dB lower until 7 ms after it. */
+enum { LRF_BENCH, LRF_AIR, LRF_AGC };
+static float lrf_ni,lrf_nq;
+static float lrf_gauss(void)
+{
+    float a=0;
+    for(int i=0;i<4;i++) {
+        lrf_seed=lrf_seed*1664525u+1013904223u;
+        a+=(float)(lrf_seed>>8)/16777216.0f-0.5f;
+    }
+    return a*1.7320508f;
+}
+static void lrf_air(int model,float amp,float ph,float sigma)
+{
+    if(model==LRF_BENCH) {
+        lrf_put((int)(amp*cosf(ph))+lrf_noise(3),(int)(amp*sinf(ph))+lrf_noise(3));
+        return;
+    }
+    lrf_ni=0.86f*lrf_ni+0.51f*lrf_gauss();
+    lrf_nq=0.86f*lrf_nq+0.51f*lrf_gauss();
+    lrf_put((int)lrintf(amp*cosf(ph)+sigma*lrf_ni),(int)lrintf(amp*sinf(ph)+sigma*lrf_nq));
+}
+/* The carrier `k` samples into a burst, and the noise `k` samples after it. */
+static float lrf_amp(int model,int k)
+{
+    if(model==LRF_BENCH)return 2000.0f;
+    if(model==LRF_AIR)return 200.0f;
+    return !k?1050.0f:k<60?3800.0f:k<210?272.0f:k<460?93.0f:163.0f;
+}
+static float lrf_sigma(int model,int k)
+{
+    if(model!=LRF_AGC)return 28.0f;
+    return k<560?3.6f:k<870?14.0f:28.0f;
+}
+static void lrf_hush(int model,int samples,bool after)
+{
+    for(int k=0;k<samples;k++)lrf_air(model,0,0,after?lrf_sigma(model,k):28.0f);
+}
+/* `ms` of 2-FSK at `baud`: preamble, D391 D391, a body and its CRC, as long
+   a frame as fits (64 bytes at most) and then the same again 3 ms apart. */
+static uint8_t lrf_body[64];
+static int lrf_body_n;
+static void lrf_burst(int model,int baud,int ms)
+{
+    const float dev=baud<=2400?5000.0f:10000.0f;
+    const int want=ms*baud/1000;
+    int n=(want-64)/8;
+    if(n>62)n=62;
+    if(n<4)n=4;
+    for(int i=0;i<n-2;i++)lrf_body[i]=(uint8_t)(0x31+i*7+baud/600);
+    const uint16_t crc=fsk_pkt_crc16(lrf_body,(size_t)n-2,0x8005,0xFFFF);
+    lrf_body[n-2]=(uint8_t)(crc>>8);lrf_body[n-1]=(uint8_t)crc;
+    lrf_body_n=n-2;
+    static uint8_t bits[64+64*8];
+    int nb=0;
+    for(int k=0;k<32;k++)bits[nb++]=(uint8_t)!(k&1);
+    for(int r=0;r<2;r++)for(int k=15;k>=0;k--)bits[nb++]=(uint8_t)((0xD391>>k)&1);
+    for(int i=0;i<n;i++)for(int k=7;k>=0;k--)bits[nb++]=(uint8_t)((lrf_body[i]>>k)&1);
+    const int total=ms*(int)REC_LR_IQ_RATE/1000;
+    const double spb=(double)REC_LR_IQ_RATE/baud;
+    float ph=0;
+    int k=0;
+    do {
+        const int len=(int)(nb*spb);
+        for(int s=0;s<len;s++,k++) {
+            ph+=(bits[(int)(s/spb)]?1.0f:-1.0f)*2.0f*3.14159265f*dev/(float)REC_LR_IQ_RATE;
+            lrf_air(model,lrf_amp(model,k),ph,model==LRF_AGC?3.6f:28.0f);
+        }
+        if(k+375+len>total)break;
+        for(int s=0;s<375;s++,k++)lrf_air(model,0,0,model==LRF_AGC?3.6f:28.0f);
+    } while(1);
+}
+/* One burst through the gate and the decoder: was its frame read whole? */
+static bool lrf_heard(int model,int baud,int ms,uint32_t seed)
+{
+    lrf_begin();
+    lrf_seed=seed;lrf_ni=lrf_nq=0;
+    s_lrf_cands=0;s_lrf_learning=true;
+    lrf_hush(model,6000,false);lrf_work();
+    s_lrf_learned=false;s_lrf_cands=0;
+    lrf_burst(model,baud,ms);
+    lrf_hush(model,1000,true);
+    for(int k=0;k<200 && s_lrf.on;k++)lrf_hush(model,1000,false);
+    lrf_work();
+    const fsk_pkt_t *p=&s_lrf_learn_pkt;
+    const bool ok=s_lrf_learned && p->sync==0xD391 && p->crc_kind==FSK_CRC_CC1101 &&
+        p->baud_std==(uint32_t)baud && p->len==lrf_body_n && !memcmp(p->data,lrf_body,(size_t)lrf_body_n);
+    s_lrf_learning=s_lrf_learned=false;
+    return ok;
+}
+/* The gate leaves 2 ms before a burst and 5 ms after it, so the decoder's
+   own floor is inside any burst over 28 ms. */
+LS_CASE(lr_fsk_decodes_short_and_long_bursts_through_the_gate)
+{
+    static const int BAUD[]={1200,2400,4800,9600},MS[]={20,35,50,80,120,200,300,500,900};
+    static const char *const AIR[]={"bench","air","gain step"};
+    for(int m=LRF_BENCH;m<=LRF_AGC;m++)
+        for(int b=0;b<4;b++)
+            for(int j=0;j<9;j++)
+                for(uint32_t seed=1;seed<=3;seed++)
+                    LS_CHECK_MSG(lrf_heard(m,BAUD[b],MS[j],seed),"%s: %d bd, %d ms, seed %u",
+                                 AIR[m],BAUD[b],MS[j],(unsigned)seed);
+}
+/* The recording itself: ten 12.5 ms bursts of a 4800 bd frame with no CRC,
+   each cut out by the gate and read, the second confirming the first. */
+LS_CASE(lr_fsk_reads_every_burst_of_a_real_capture)
+{
+    static int16_t iq[2*REC_LR_IQ_SAMPLES];
+    char path[512];
+    snprintf(path,sizeof(path),"%s",__FILE__);
+    char *slash=strrchr(path,'/');
+    LS_CHECK(slash!=NULL);
+    if(!slash)return;
+    strcpy(slash+1,"data/fsk_rec.iq16le");
+    FILE *f=fopen(path,"rb");
+    LS_CHECK(f!=NULL);
+    if(!f)return;
+    const size_t n=fread(iq,4,REC_LR_IQ_SAMPLES,f);
+    fclose(f);
+    LS_EQ_UINT(n,REC_LR_IQ_SAMPLES);
+    lrf_begin();
+    s_lrf_cands=0;s_lrf_learning=true;
+    int read=0;
+    for(size_t k=n-3500;k<n;k++)lrf_put(iq[2*k],iq[2*k+1]);     /* its closing noise first */
+    for(size_t k=0;k<n;k++) {
+        const int was=s_lrf.buf;
+        lrf_put(iq[2*k],iq[2*k+1]);
+        if(s_lrf.buf==was)continue;
+        const uint32_t cands=s_lrf_cands;
+        s_lrf_learned=false;
+        lrf_work();
+        /* Unproven: the first is a candidate and each one after agrees. */
+        LS_CHECK(s_lrf_learned==(read>0));
+        if(s_lrf_learned) {
+            LS_EQ_UINT(s_lrf_learn_pkt.baud_std,4800);
+            LS_EQ_INT(s_lrf_learn_bursts,2);
+        }
+        if(s_lrf_learned || s_lrf_cands>cands)read++;
+    }
+    LS_EQ_INT(lrf_decodes,10);
+    LS_EQ_INT(read,10);
+    LS_EQ_UINT(s_lrf_cands,1);
+    s_lrf_learning=s_lrf_learned=false;
+}
+/* Noise is no packet: 20 s of the chip's own, then its floor stepping back
+   up as it does after a burst, which opens the gate on nothing. */
+LS_CASE(lr_fsk_noise_through_the_gate_is_no_packet)
+{
+    for(uint32_t seed=1;seed<=3;seed++) {
+        lrf_learning();
+        lrf_seed=seed;lrf_ni=lrf_nq=0;
+        lrf_hush(LRF_AIR,20*(int)LRF_PAIRS,false);
+        for(int i=0;i<20;i++) {
+            lrf_hush(LRF_AGC,870,true);
+            lrf_hush(LRF_AGC,(int)LRF_PAIRS+4000,false);
+        }
+        lrf_work();
+        LS_CHECK(lrf_decodes>0);
+        LS_CHECK(!s_lrf_learned);
+        LS_EQ_UINT(s_lrf_cands,0);
+    }
+    s_lrf_learning=false;
 }

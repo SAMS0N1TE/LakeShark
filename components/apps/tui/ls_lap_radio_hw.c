@@ -18,6 +18,7 @@
 #include "lr_wf_session.h"
 #include "ls_field.h"
 #include "ls_lora.h"
+#include "ls_lap_service.h"
 #include "ls_mixrf.h"
 #include "ls_mesh.h"
 #include "radio_endpoint.h"
@@ -318,8 +319,15 @@ static int lr_start(uint64_t hz) {
     return e == ESP_ERR_INVALID_ARG ? LAP_RX_ERANGE : e == ESP_ERR_NO_MEM ? LAP_RX_ENOMEM
          : e == ESP_ERR_NOT_SUPPORTED ? LAP_RX_EUNSUPPORTED : LAP_RX_EBUSY;
 }
+/* An app kept running as a hidden service has no screen to own the LoRa chip
+   for: its I/Q receiver there would be a foreground hold nobody can see, and
+   it kept the chip from every other app and from the mesh. It is refused,
+   and one already open closes on the next poll. Packet receive has its own
+   service lease (ls_lap_radio_io_hw.c). */
+static bool lr_hidden(void) { return ls_lap_service_on() && !ls_lap_service_shown(); }
 static int lr_open(const lap_rx_config_t *cfg, ls_lap_rx_actual_t *actual) {
     if (ls_lora_chip() != LS_LORA_CHIP_LR20XX) return LAP_RX_EUNSUPPORTED;
+    if (lr_hidden()) { lr_close(); return LAP_RX_EBUSY; }
     if (!ls_lora_packet_rx_hz_ok(ls_lora_caps(), (uint32_t)cfg->center_hz)) return LAP_RX_ERANGE;
     if (!lr.hold_asked) {
         if (ls_field_owned() || ls_lora_scanning() || lr_spec_center()) return LAP_RX_EBUSY;
@@ -377,6 +385,7 @@ static int hw_rate(uint32_t rate, ls_lap_rx_actual_t *actual) {
 }
 static int hw_poll(ls_lap_rx_actual_t *actual) {
     if (open_kind == K_LORA) {
+        if (lr_hidden()) { lr_close(); return LAP_RX_EBUSY; }
         lr_wf_stats st;
         lr_wf_get_stats(&st);
         return st.done && st.error != ESP_OK ? LAP_RX_EIO : 0;

@@ -34,6 +34,7 @@ void settings_set_autodim_timeout(int v) { s_dimt = v; }
 /* SET goes through display_ctl now; in lssim it is the same fake. */
 int  display_ctl_get_user(void) { return s_bright; }
 void display_ctl_set_user(int v) { s_bright = v; }
+void display_ctl_preview_user(int v) { s_bright = v; }
 bool display_ctl_autodim_enabled(void) { return s_autodim; }
 void display_ctl_set_autodim(bool v) { s_autodim = v; }
 int  display_ctl_autodim_timeout(void) { return s_dimt; }
@@ -113,6 +114,9 @@ uint32_t settings_get_map_layers(uint32_t fallback) { return s_map_layers_set ? 
 void settings_set_map_layers(uint32_t v) { s_map_layers = v; s_map_layers_set = true; }
 int  settings_get_subghz_colour(void) { return s_sg_colour; }
 void settings_set_subghz_colour(int v) { s_sg_colour = v; }
+static int s_sg_expert;
+int  settings_get_subghz_expert(void) { return s_sg_expert; }
+void settings_set_subghz_expert(int v) { s_sg_expert = v; }
 void settings_set_alert_vibe(bool v) { s_alert_vibe = v; }
 void settings_set_haptics(bool on) { (void)on; }
 int  settings_get_theme(void) { return 0; }
@@ -179,7 +183,8 @@ void rec_get_hub_status(rec_hub_status_t *out)
     *out = s_rec;
 }
 uint64_t rec_dir_free_bytes(void) { return 29ull * 1024 * 1024 * 1024; }
-const char *rec_dir(void) { return "/sdcard/rec"; }
+/* LSSIM_REC_DIR points SAVED and RECORD RAW at a folder of .sub files. */
+const char *rec_dir(void) { const char *d = getenv("LSSIM_REC_DIR"); return d && *d ? d : "/sdcard/rec"; }
 bool rec_active(void) { return s_rec_armed; }
 void rec_arm(void) { s_rec_armed = true; }
 void rec_arm_request(void) { s_rec_armed = true; }
@@ -194,6 +199,7 @@ uint32_t s_tune_freq_hz = 851012500u;
 
 int audio_volume_get(void) { return s_vol; }
 void audio_volume_set(int v) { s_vol = v; }
+void audio_volume_preview(int v) { s_vol = v; }
 static bool s_muted;
 bool audio_is_muted(void) { return s_muted; }
 void audio_toggle_mute(void) { s_muted = !s_muted; }
@@ -482,6 +488,10 @@ void lssim_seed_state(void)
     FM.pocsag_pages = 12;
     FM.scan_bins = 128;
     FM.scan_sweeps = 4;
+    /* The sweep range the receiver boots with (app_fm.c), which BAND used to
+       name whatever the dial was on. */
+    FM.scan_start_hz = 150000000u;
+    FM.scan_stop_hz = 162000000u;
 
     memset(&P25, 0, sizeof(P25));
     P25.dsd_nac = 0x293;

@@ -11,6 +11,8 @@
 
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "ls_textpack.h"
 #include "scan_import.h"
 #include "tuilib/tui_core.h"
@@ -756,6 +758,24 @@ static uint32_t s_gen;
 static ls_freq_tally_t s_tally;
 static EXT_RAM_BSS_ATTR char s_line[512];
 
+/* The UI task loads a bank a few lines a frame; the console's `freq` and a
+   freq.save called from any task scan the card and write to it meanwhile.
+   The bank list, what is loaded and the line buffer change under this. */
+static StaticSemaphore_t s_lock_memory;
+static SemaphoreHandle_t s_lock;
+/* Made at boot (ls_freqs_register), before any task can reach the store;
+   the fallback only serves the host bench, which never registers. */
+void ls_freqs_lock_init(void)
+{
+    if (!s_lock) s_lock = xSemaphoreCreateMutexStatic(&s_lock_memory);
+}
+static void lock(void)
+{
+    if (!s_lock) ls_freqs_lock_init();
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+}
+static void unlock(void) { xSemaphoreGive(s_lock); }
+
 void ls_freqs_set_root(const char *dir) { snprintf(s_root, sizeof(s_root), "%s", dir); }
 const char *ls_freqs_root(void) { return s_root; }
 
@@ -763,7 +783,7 @@ static void path_of(const char *bank, char *out, size_t n) { snprintf(out, n, "%
 
 static int by_name(const void *a, const void *b) { return strcasecmp((const char *)a, (const char *)b); }
 
-bool ls_freqs_scan(void)
+static bool scan_now(void)
 {
     static EXT_RAM_BSS_ATTR char found[LS_FREQ_BANKS][24];
     /* What is loaded is held by name: a bank added in front of it (an
@@ -775,10 +795,16 @@ bool ls_freqs_scan(void)
     DIR *d = opendir(s_root);
     if (!d) { s_dirty |= s_banks > 0; s_banks = 0; return false; }
     struct dirent *de;
-    while ((de = readdir(d)) && n < LS_FREQ_BANKS) {
+    while ((de = readdir(d))) {
         const char *name = de->d_name;
         const size_t len = strlen(name);
         if (name[0] == '.' || len < 5 || len - 4 >= sizeof(found[0]) || strcasecmp(name + len - 4, ".csv")) continue;
+        /* mine.csv is where SAVE writes: on a card with more banks than fit
+           it takes the last place rather than drop out of view. */
+        if (n >= LS_FREQ_BANKS) {
+            if (strcasecmp(name, "mine.csv")) continue;
+            n = LS_FREQ_BANKS - 1;
+        }
         snprintf(found[n], sizeof(found[n]), "%.*s", (int)(len - 4), name);
         n++;
     }
@@ -792,6 +818,13 @@ bool ls_freqs_scan(void)
         s_which = i >= 0 ? i : LS_FREQS_ALL;
     }
     return true;
+}
+bool ls_freqs_scan(void)
+{
+    lock();
+    const bool card = scan_now();
+    unlock();
+    return card;
 }
 int ls_freqs_banks(void) { return s_banks; }
 const char *ls_freqs_bank(int i)
@@ -820,7 +853,7 @@ static void close_source(void)
     s_bp = NULL;
 }
 
-void ls_freqs_load(int which)
+static void load_now(int which)
 {
     close_source();
     s_n = 0;
@@ -832,6 +865,12 @@ void ls_freqs_load(int which)
     /* The set is gone already: a view holding indices into it rebuilds now,
        not when the reload finishes. */
     s_gen++;
+}
+void ls_freqs_load(int which)
+{
+    lock();
+    load_now(which);
+    unlock();
 }
 
 /* The next thing to read: a bank file, or the built-in set when that is what
@@ -877,7 +916,8 @@ static bool next_line(void)
 
 bool ls_freqs_pump(int lines)
 {
-    if (s_dirty && !s_loading) ls_freqs_load(s_which);
+    lock();
+    if (s_dirty && !s_loading) load_now(s_which);
     while (s_loading && lines-- > 0) {
         if (!s_f && !s_bp && !open_next()) {
             s_loading = false;
@@ -908,7 +948,9 @@ bool ls_freqs_pump(int lines)
         s_e[s_n++] = e;
         s_tally.loaded++;
     }
-    return s_loading;
+    const bool more = s_loading;
+    unlock();
+    return more;
 }
 
 bool ls_freqs_loading(void) { return s_loading; }
@@ -956,7 +998,7 @@ static bool make_root(void)
     return make_dir(s_root) == 0;
 }
 
-bool ls_freqs_append(const char *bank, const ls_freq_t *e, char *why, size_t n)
+static bool append_now(const char *bank, const ls_freq_t *e, char *why, size_t n)
 {
     char path[96], line[256];
     if (!make_root()) { snprintf(why, n, "No SD card: nothing saved"); return false; }
@@ -990,12 +1032,19 @@ bool ls_freqs_append(const char *bank, const ls_freq_t *e, char *why, size_t n)
     }
     ok = ok && fprintf(f, "%s\n", line) > 0;
     ok = (fclose(f) == 0) && ok;
-    if (ok && ls_freqs_bank_find(bank) < 0) ls_freqs_scan();
+    if (ok && ls_freqs_bank_find(bank) < 0) scan_now();
     char mhz[16];
     ls_freq_mhz_text(e->hz, mhz, sizeof(mhz));
     if (ok) snprintf(why, n, "Saved %s %s to %s", mhz, e->name, bank);
     else snprintf(why, n, "Could not write %s.csv", bank);
     if (ok) s_dirty = true;
+    return ok;
+}
+bool ls_freqs_append(const char *bank, const ls_freq_t *e, char *why, size_t n)
+{
+    lock();
+    const bool ok = append_now(bank, e, why, n);
+    unlock();
     return ok;
 }
 
@@ -1005,7 +1054,7 @@ static void replace_file(const char *tmp, const char *path)
     rename(tmp, path);
 }
 
-bool ls_freqs_rewrite(int i, const ls_freq_t *with, char *why, size_t n)
+static bool rewrite_now(int i, const ls_freq_t *with, char *why, size_t n)
 {
     const ls_freq_t *e = ls_freqs_at(i);
     if (s_loading) { snprintf(why, n, "Still loading"); return false; }
@@ -1073,6 +1122,13 @@ bool ls_freqs_rewrite(int i, const ls_freq_t *with, char *why, size_t n)
     s_dirty = true;
     return true;
 }
+bool ls_freqs_rewrite(int i, const ls_freq_t *with, char *why, size_t n)
+{
+    lock();
+    const bool ok = rewrite_now(i, with, why, n);
+    unlock();
+    return ok;
+}
 
 static EXT_RAM_BSS_ATTR uint32_t s_seen[LS_FREQ_MAX];
 
@@ -1129,6 +1185,9 @@ bool ls_freqs_export(const uint16_t *idx, int n, const char *path, bool lscan, c
     return ls_freq_out_close(&o, path, why, wn);
 }
 
+static char s_imported[24];
+const char *ls_freqs_imported(void) { return s_imported; }
+
 typedef struct { FILE *out; int wrote; } import_t;
 static bool import_sink(const ls_freq_t *e, void *ctx)
 {
@@ -1175,8 +1234,12 @@ bool ls_freqs_import(const char *src, char *why, size_t n)
     ls_freq_read(in, "IMPORTED", import_sink, &im, &t, &kind);
     fclose(in);
     const bool ok = (fclose(im.out) == 0) && im.wrote > 0;
+    s_imported[0] = 0;
     if (!ok) remove(path);
-    else ls_freqs_scan();
+    else {
+        snprintf(s_imported, sizeof(s_imported), "%s", name);
+        ls_freqs_scan();
+    }
     if (ok && t.skipped)
         snprintf(why, n, "%s: %d into %s, %d skipped (line %d)", ls_freq_kind_name(kind), im.wrote, name,
                  t.skipped, t.first_bad);

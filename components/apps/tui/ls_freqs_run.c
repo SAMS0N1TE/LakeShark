@@ -154,6 +154,7 @@ static ls_act_status_t a_save(const ls_args_t *in, ls_val_t *out)
 
 void ls_freqs_register(void)
 {
+    ls_freqs_lock_init();
     ls_action_register("freq.save", "ssss", LS_CAP_STORE, a_save,
                        LS_TEXT(t_ls_freqs_run_save_help, "keep a frequency in FREQS mine.csv: MHz, mode, name, app"));
 }

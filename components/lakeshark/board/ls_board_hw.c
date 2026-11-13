@@ -123,8 +123,9 @@ bool ls_board_hw_ready(void)
    restored at boot, or made by an app, counts the same as one made in RADIOS. */
 #ifdef LS_BOARD_XL_RF_SW_VCTL
 static bool s_ant_external;
-/* MMCX1 also transmits; and a transmit moved to internal is not back yet. */
-static bool s_mmcx_tx, s_tx_moved;
+/* MMCX1 also transmits (the default: a transmit goes where the operator
+   pointed the switch); and a transmit moved to internal is not back yet. */
+static bool s_mmcx_tx = true, s_tx_moved;
 static uint32_t s_tx_moves, s_tx_returns;
 #endif
 
@@ -176,9 +177,11 @@ void ls_board_hw_antenna_set_mmcx_tx(bool tx)
 bool ls_board_hw_antenna_mmcx_tx(void)
 {
 #ifdef LS_BOARD_XL_RF_SW_VCTL
-#if LS_LORA_WIRED
-    if(ls_lora_fitted()==LS_LORA_CHIP_LR20XX)return false;
-#endif
+    /* The LR2021 used to be held to receive-only on MMCX1 whatever was
+       chosen, on a "port constraint" no source supports: the board has one
+       SKY13453 between the module and both antennas (t_display_p4.h), the
+       same switch the SX1262 transmits through. The choice is the
+       operator's on every module. */
     return s_mmcx_tx;
 #else
     return false;

@@ -582,6 +582,10 @@ static int replay_control(int i)
     return 1;
 }
 static bool player_embedded;
+/* SUB-GHZ's file page carries SEND, RENAME and DELETE on its own bar and
+   draws the player under it without the player's. */
+static bool player_bare;
+void ls_rec_player_bare(bool bare){player_bare=bare;}
 static void replay_draw(tui_surface *sf,tui_rect a)
 {
     replay_poll();replay_trace=tui_rect_make(0,0,0,0);
@@ -595,12 +599,14 @@ static void replay_draw(tui_surface *sf,tui_rect a)
         {"POWER-",power,'-',false,player.waiting || player.power==0},
         {"POWER+",power,'+',false,player.waiting || player.power==SUBGHZ_TX_STEPS-1},
         {player_embedded?"OTHER":"BROWSE",player_embedded?"FILE":"FILES",'o',false,player.waiting}};
-    int h=ls_tui_is_wide()?5:10;
-    if(a.h<h+12)h=5;
-    tui_rect bar=tui_rect_make(a.x,a.y,a.w,h);
-    if(!ls_tui_is_wide() && bar.w>38){bar.x+=(bar.w-38)/2;bar.w=38;}
-    ls_btn_bar_raised_slot(sf,bar,controls,4,-1,LS_BTN_SLOT_WATERFALL);
-    a.y+=h;a.h-=h;
+    if(!player_bare) {
+        int h=ls_tui_is_wide()?5:10;
+        if(a.h<h+12)h=5;
+        tui_rect bar=tui_rect_make(a.x,a.y,a.w,h);
+        if(!ls_tui_is_wide() && bar.w>38){bar.x+=(bar.w-38)/2;bar.w=38;}
+        ls_btn_bar_raised_slot(sf,bar,controls,4,-1,LS_BTN_SLOT_WATERFALL);
+        a.y+=h;a.h-=h;
+    }
     const bool ook=subghz_file_is_ook(&player.file);
     char title[40];
     /* The radio that will send it, as replay_file picks. */
@@ -672,7 +678,7 @@ static void replay_draw(tui_surface *sf,tui_rect a)
         tui_put_str(sf,a,a.x+2,replay_trace.y+replay_trace.h+1,text,ink);
     }
     if(player.waiting)LS_SNPRINTF(t_scr_rec_c_working_1fs_one, text,sizeof(text),"%c Working %.1fs - one bounded send",ls_motion_pip(true),(esp_timer_get_time()-player.started)/1e6);
-    else snprintf(text,sizeof(text),"%s",player.result[0]?player.result:"READY - press PLAY ONCE to transmit");
+    else snprintf(text,sizeof(text),"%s",player.result[0]?player.result:player_bare?"READY - SEND transmits it once":"READY - press PLAY ONCE to transmit");
     uint8_t level=ls_fresh_level(&replay_flash,1500);
     uint8_t result_color=player.waiting || !player.result[0]?TUI_CYAN:
                          !strncmp(player.result,"Sent",4)?TUI_GREEN:TUI_RED;
@@ -818,14 +824,14 @@ bool ls_rec_player_load(const char *path,const subghz_file_t *f,const int32_t *e
     player.loaded=true;
     ls_fresh_bump(&replay_flash);return true;
 }
-/* A file picked in FILES opens in REC's player, on SAVED's tab. */
+/* A file picked in FILES opens in the player, in SUB-GHZ. REC is no longer
+   an app of its own (it hosted SUB-GHZ for the capture radios); the player
+   and the recorder tools live on here for SUB-GHZ. */
+extern bool ls_scr_subghz_open(int which);
 bool ls_scr_rec_replay_file(const char *path,const subghz_file_t *f,const int32_t *edges)
 {
-    int i=ls_tui_screen_index_of(&ls_scr_rec);if(i<0)return false;
     if(!ls_rec_player_load(path,f,edges))return false;
-    if(ls_tui_screen_current()==i && rec_child_active && !recorder_csv() && !gps_view)ls_scr_subghz_show(0);
-    else {pending_page=0;ls_tui_screen_show(i);}
-    return true;
+    return ls_scr_subghz_open(0);
 }
 void ls_rec_player_draw(tui_surface *sf,tui_rect a){player_embedded=true;replay_draw(sf,a);}
 int  ls_rec_player_key(ls_tk_t k,char c){return replay_key_result(k,c);}
@@ -901,13 +907,15 @@ bool ls_rec_tools_touch(int x,int y){return touch(x,y);}
 bool ls_rec_tools_button_hit(int x,int y)
 { return s_btn.w>0 && x>=s_btn.x && x<s_btn.x+s_btn.w && y>=s_btn.y && y<s_btn.y+s_btn.h; }
 
-/* REC's recorder, full size: SUB-GHZ's RECORD view, from the SDR. */
+/* The recorder, full size: SUB-GHZ's RECORD view. With REC registered (the
+   bench's fixtures still host it), through REC; otherwise SUB-GHZ itself. */
 void ls_scr_rec_tools(void) {
     int index=ls_tui_screen_index_of(&ls_scr_rec);
     recorder_radio=LS_RSEL_SDR_RTL;recorder_loaded=true;recorder_mesh=false;gps_view=false;
+    if(index<0){ls_scr_subghz_open(2);return;}
     ls_scr_subghz_show(2);
     pending_page=2;
-    if(index>=0)ls_tui_screen_show(index);
+    ls_tui_screen_show(index);
 }
 
 const ls_tui_screen_t ls_scr_rec = {

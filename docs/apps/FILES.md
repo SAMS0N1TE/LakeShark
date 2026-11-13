@@ -5,7 +5,7 @@ Browse the SD card, look inside sub-GHz captures and text files, and send, renam
 | | |
 |---|---|
 | HOME group | RADIO |
-| Radio | None. Replay hands a capture to REC |
+| Radio | None. Replay hands a capture to SUB-GHZ |
 
 <img src="../screenshots/tdp4/development-20260923/files-preview-port.png" width="300" alt="FILES showing a .sub capture">
 
@@ -15,14 +15,14 @@ Browse the SD card, look inside sub-GHz captures and text files, and send, renam
 - Opens a `.sub` capture as a picture: frequency, modulation, a whole-capture overview, pulse lengths and a decode where the encoding is known.
 - Opens text files (notes, logs, tracks, CSV) for reading.
 - Copies a capture to the folder the Flipper LakeShark app reads.
-- Hands a capture to REC for replay.
+- Hands a capture to SUB-GHZ for replay.
 - Renames and deletes files and empty folders.
 
 FILES records nothing and does not use GPS.
 
 ## Radio
 
-FILES uses no radio itself. REPLAY opens the capture in REC (RECORD), which uses the transmitter that suits the file.
+FILES uses no radio itself. REPLAY opens the capture in SUB-GHZ, which uses the transmitter that suits the file.
 
 ## How to use it
 
@@ -42,7 +42,7 @@ Open **HOME > RADIO > FILES**.
 - Left / Right or Tab move between the top buttons. Enter presses the highlighted one.
 - Touch: tap a row to select it, tap it again to open it.
 - In portrait, and in the text view, a bottom bar adds PREV PAGE, NEXT PAGE and BACK.
-- At the top of the card, BACK leaves FILES. If REC sent you here to pick a file, BACK returns to REC.
+- At the top of the card, BACK leaves FILES. If SUB-GHZ sent you here to pick a file, BACK returns to SUB-GHZ.
 
 ### SORT
 
@@ -54,7 +54,7 @@ The list depends on the file:
 
 - **SEND TO FLIPPER** (`.sub` only): copies the capture to the REC folder on the card. On the Flipper it appears under LakeShark > FILES. A name already in use gets a number added.
 - **OPEN CAPTURE / REPLAY** (`.sub`, from the list): loads the capture, then shows the actions again.
-- **REPLAY** (`.sub`, in the capture view): opens it in REC (RECORD). OOK captures use the CC1101, CC1101 FSK captures use the CC1101 in FSK, and other FSK captures use the LoRa radio.
+- **REPLAY** (`.sub`, in the capture view): opens it in SUB-GHZ. OOK captures use the CC1101, CC1101 FSK captures use the CC1101 in FSK, and other FSK captures use the LoRa radio.
 - **REPLAY REFUSED** or **REPLAY UNAVAILABLE**: shown with the reason when a capture cannot be replayed.
 - **VIEW AS TEXT**: shows the file as written.
 - **INFO**: type, exact size, modified date and folder.

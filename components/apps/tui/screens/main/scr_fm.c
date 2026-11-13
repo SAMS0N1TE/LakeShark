@@ -10,6 +10,7 @@
 #include "../../ls_tui_screen.h"
 #include "../../ls_i18n.h"
 #include "../../ls_radio_panel.h"
+#include "../../ls_slider_drag.h"
 #include "../../ls_numpad.h"
 #include "../../ls_box.h"
 #include "../../ls_options.h"
@@ -26,6 +27,7 @@
 #include "fm_air_view.h"
 #include "fm_sstv_view.h"
 #include "apps/fm/fm_bcast.h"
+#include "apps/fm/fm_wx.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -208,6 +210,23 @@ static void radio_chosen(ls_rsel_radio_t radio)
     if ((radio == LS_RSEL_SDR_RTL || radio == LS_RSEL_SDR_HACKRF) &&
         held != LS_RSEL_NONE && held != radio) ls_rsel_restart_sdr();
 }
+
+/* No RTL-SDR and WFM, which the LR2021 does not carry: one tap puts the
+   receiver on NFM, which it does, and it falls back to the chip itself. */
+static bool hf_on(void);
+static bool choose_mode(fm_mode_t mode);
+static const char *lr_offer(void)
+{
+    if (FM.mode != FM_MODE_WFM || hf_on()) return NULL;
+    /* Asked as the RADIO list would be, for NFM here. */
+    ls_rsel_fm_context(FM.freq_hz, true);
+    const bool can = !ls_rsel_cant(LS_RSEL_FM, LS_RSEL_LORA) && !ls_rsel_absent(LS_RSEL_LORA);
+    ls_rsel_fm_context(FM.freq_hz, fm_lr_mode(FM.mode));
+    static char text[48];
+    snprintf(text, sizeof(text), "or tap here for NFM on the %s", ls_rsel_name(LS_RSEL_LORA));
+    return can ? text : NULL;
+}
+static void lr_offer_take(void) { if (lr_offer()) choose_mode(FM_MODE_LISTEN); }
 
 static void open_radio(void) { ls_rsel_fm_context(FM.freq_hz, fm_lr_mode(FM.mode)); ls_rsel_open(fm_job(), radio_chosen); }
 
@@ -424,11 +443,19 @@ static int kv(tui_surface *sf, tui_rect box, int x, int y, const char *k,
 
 /* WHAT EACH MODE CAN SAY ABOUT THE SIGNAL AND THE SQUELCH.
 
-   NFM measures quieting and gates on it, in percent. AM measures carrier
-   level and gates on that, in tenths of a percent. WFM has no squelch and the
-   decoders never write either reading, so FM.noise and FM.squelch_open there
-   are whatever NFM last left behind: those modes show "--" instead. */
-typedef enum { SIG_NONE, SIG_QUIETING, SIG_CARRIER } sig_kind_t;
+   Every FM mode measures quieting: NFM and the pager, APRS and SAME decoders
+   from the narrowband discriminator's noise, WFM from how far its envelope is
+   from constant (fm_dsp.c). AM, and ACARS on its AM channel, measure carrier
+   level. AIS reads raw I/Q with no channel demodulator here, so its meter is
+   the I/Q level; a sweep's is the strongest signal the sweep has found.
+
+   Only NFM, AM, POCSAG heard alongside its decoder and SAME's weather speaker
+   have a squelch: NFM gates on quieting in percent, AM on carrier level in
+   tenths of a percent. WFM used to read "--" for all of it, which on a live
+   station looked like a dead receiver, so a mode without a squelch now says
+   it has none, and still says whether a carrier is there when its quieting
+   can tell. */
+typedef enum { SIG_NONE, SIG_QUIETING, SIG_CARRIER, SIG_LEVEL } sig_kind_t;
 
 static const char *receiver_text(void)
 {
@@ -447,20 +474,94 @@ static const char *receiver_text(void)
 
 static sig_kind_t sig_kind(void)
 {
-    if (!s_lora_pager && receiver_text()) return SIG_NONE;
-    if (FM.mode == FM_MODE_LISTEN) return SIG_QUIETING;
-    if (FM.mode == FM_MODE_AM)     return SIG_CARRIER;
-    return SIG_NONE;
+    /* POCSAG on the LoRa chip has handed the SDR back: nothing here is
+       measuring, so there is nothing to read. */
+    if (s_lora_pager || receiver_text()) return SIG_NONE;
+    switch (FM.mode) {
+    case FM_MODE_LISTEN: case FM_MODE_WFM:  case FM_MODE_POCSAG:
+    case FM_MODE_FLEX:   case FM_MODE_APRS: case FM_MODE_SAME:
+        return SIG_QUIETING;
+    case FM_MODE_AM: case FM_MODE_ACARS: return SIG_CARRIER;
+    case FM_MODE_AIS: case FM_MODE_SCAN: return SIG_LEVEL;
+    default: return SIG_NONE;
+    }
 }
 
 /* How far along the meter the signal is, 0 to 1. AM's meter spans the same
-   0 to 10.0% the squelch is set on, so the gate lands where it was set. */
+   0 to 10.0% the squelch is set on, so the gate lands where it was set. AIS's
+   I/Q level is an RMS, which a full-scale carrier puts at 0.71, so it reads
+   doubled, as RX HEAD's meter reads it. */
 static float sig_level(sig_kind_t kind)
 {
-    float s = kind == SIG_CARRIER ? FM.iq_level * 10.0f : 1.0f - FM.noise;
-    if (s < 0.0f) s = 0.0f;
+    float s = kind == SIG_CARRIER ? FM.iq_level * 10.0f
+            : kind == SIG_QUIETING ? 1.0f - FM.noise
+            : FM.mode == FM_MODE_SCAN ? FM.scan_peak_db
+                                      : FM.iq_level * 2.0f;
+    if (!(s >= 0.0f)) s = 0.0f;
     if (s > 1.0f) s = 1.0f;
     return s;
+}
+
+/* Whether this mode's audio waits on the SQUELCH setting. NFM and AM gate
+   their speaker on it; POCSAG does when the channel is heard beside the
+   decoder (rx_voice), and SAME when the weather speaker is always on
+   (fm_wx.c). Everything else gates nothing. Unlike the panel's readings this
+   does not wait on the receiver: it is a setting, and a setting is true
+   whether or not the dongle is streaming. */
+static bool mode_has_squelch(void)
+{
+    switch (FM.mode) {
+    case FM_MODE_LISTEN: case FM_MODE_AM: return true;
+    case FM_MODE_POCSAG: return FM.pager_voice && !s_lora_pager;
+    case FM_MODE_SAME:   return fm_bcast_wx_audio() == FM_WX_AUDIO_ON;
+    default:             return false;
+    }
+}
+
+/* Where a mode with no squelch counts its quieting as a carrier, on the
+   meter's travel, or 0 when it cannot tell. WFM also counts its pilot or RDS
+   locking, which noise never does. */
+static float carrier_gate(sig_kind_t kind)
+{
+    if (kind != SIG_QUIETING || mode_has_squelch()) return 0.0f;
+    return 1.0f - (FM.mode == FM_MODE_WFM ? FM_WFM_CARRIER_NOISE : FM_NFM_CARRIER_NOISE);
+}
+
+static bool carrier_heard(sig_kind_t kind)
+{
+    if (FM.mode == FM_MODE_WFM && (fm_rds_stereo() || fm_rds_synced())) return true;
+    const float gate = carrier_gate(kind);
+    return gate > 0.0f && sig_level(kind) > gate;
+}
+
+/* The CARRIER readout: the squelch, OPEN or closed, where there is one; where
+   there is none, whether quieting says a carrier is there; and where a level
+   cannot say, that nothing is gated. `lit` is the open squelch, which blinks,
+   or a carrier found. */
+typedef struct { const char *key, *word; bool lit, open; } carrier_t;
+
+static carrier_t carrier_state(sig_kind_t kind)
+{
+    carrier_t c = { "CARRIER", "--", false, false };
+    if (kind == SIG_NONE) return c;
+    if (mode_has_squelch()) {
+        c.lit = c.open = FM.squelch_open;
+        c.word = c.open ? "OPEN" : "closed";
+    } else if (carrier_gate(kind) > 0.0f) {
+        c.lit = carrier_heard(kind);
+        c.word = c.lit ? "PRESENT" : "none";
+    } else {
+        c.key = "SQUELCH";
+        c.word = "NONE";
+    }
+    return c;
+}
+
+/* The meter's gate mark and the trace's colour break: the squelch where
+   there is one, the carrier test where there is only that. */
+static float sig_gate(sig_kind_t kind)
+{
+    return mode_has_squelch() ? lakeshark_fm_squelch_get() * 0.01f : carrier_gate(kind);
 }
 
 /* HF's squelch opens at a level on the dB meter: say the level. */
@@ -472,15 +573,15 @@ static bool hf_squelch_text(char *out, size_t n)
     return true;
 }
 
+/* The setting, in the units the mode's squelch reads it in; "NONE" where the
+   mode has no squelch, which "--" only looked like a fault for. */
 static void squelch_text(char *out, size_t n)
 {
     if (hf_squelch_text(out, n)) return;
-    switch (sig_kind()) {
-    case SIG_QUIETING: snprintf(out, n, "%d%%", lakeshark_fm_squelch_get()); break;
-    case SIG_CARRIER:  snprintf(out, n, "%d.%d%%", lakeshark_fm_squelch_get() / 10,
-                                lakeshark_fm_squelch_get() % 10); break;
-    default:           snprintf(out, n, "--"); break;
-    }
+    if (!mode_has_squelch()) snprintf(out, n, "NONE");
+    else if (FM.mode == FM_MODE_AM) snprintf(out, n, "%d.%d%%", lakeshark_fm_squelch_get() / 10,
+                                             lakeshark_fm_squelch_get() % 10);
+    else snprintf(out, n, "%d%%", lakeshark_fm_squelch_get());
 }
 
 static const char *squelch_hint(void)
@@ -664,7 +765,8 @@ static void draw_vfo(tui_surface *sf, tui_rect r)
 {
     const char *receiver = s_lora_pager ? NULL : receiver_text();
     const sig_kind_t kind = sig_kind();
-    const bool     open  = kind != SIG_NONE && FM.squelch_open;
+    const carrier_t car  = carrier_state(kind);
+    const bool     open  = car.open;
     const bool     wide  = ls_tui_is_wide();
     const uint8_t good  = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
     const uint8_t val   = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
@@ -698,9 +800,8 @@ static void draw_vfo(tui_surface *sf, tui_rect r)
     if (y > last) return;
 
     /* CARRIER blinks while open, so a burst and a held carrier differ. */
-    const char *carrier = receiver ? receiver : kind == SIG_NONE ? "--"
-                        : open ? "OPEN" : "closed";
-    x = kv(sf, r, x, y, "CARRIER", carrier, receiver ? warn : open ? good : dim);
+    x = kv(sf, r, x, y, receiver ? "CARRIER" : car.key, receiver ? receiver : car.word,
+           receiver ? warn : car.lit ? good : dim);
     if (open && ((s_blink / 12) & 1))
         tui_put_char(sf, r, x - 2, y, LS_TUI_SHADE_FULL, good);
     snprintf(buf, sizeof(buf), "%lu B/s", (unsigned long)FM.iq_bytes_sec);
@@ -708,9 +809,9 @@ static void draw_vfo(tui_surface *sf, tui_rect r)
     if (wide) draw_extra(sf, r, x, y, true);
     y++;
 
-    /* The bar, then the gate under it while there is a row for it. */
+    /* The bar, then the squelch's gate under it while there is a row for it. */
     if (y <= last) {
-        draw_level(sf, r, x0, y, iw, kind, open, y + 1 <= last);
+        draw_level(sf, r, x0, y, iw, kind, open, y + 1 <= last && mode_has_squelch());
         y += 2;
     }
     if (FM.lr_iq_active) {
@@ -987,6 +1088,8 @@ static int      s_ctl_n;
    drawn once, inside the control that sets it. A tap on the left third steps
    down, the right third up, and the value in the middle opens exact entry. */
 #define N_STEP 3
+/* Landscape's TUNE row: the step and seek keys over the cards. */
+#define TUNE_ROWS_WIDE 4
 static tui_rect s_quick_rect;
 static tui_rect s_step_box[N_STEP];
 static tui_rect s_step_down[N_STEP], s_step_value[N_STEP], s_step_up[N_STEP];
@@ -994,6 +1097,8 @@ static tui_rect s_step_down[N_STEP], s_step_value[N_STEP], s_step_up[N_STEP];
    Empty while a card is disabled, so a tap cannot promise an unavailable
    adjustment. */
 static tui_rect s_step_bar[N_STEP];
+/* A finger dragging one of those bars (ls_slider_drag.h). */
+static ls_slider_drag_t s_step_drag;
 /* A tap on a +/- key lights it for a few frames, the same acknowledgement
    ls_quick's own panel gives: the value changing is the real answer, but it
    lands a frame or two later, and a key that looks the same before and after
@@ -1475,7 +1580,7 @@ static int draw_controls(tui_surface *sf, tui_rect area, bool vfo)
     if (!vfo) {
         CTL(CTL_VOLUME, {wide ? "VOL" : "VOLUME", vol, 'v', false, false, false});
         CTL(CTL_SQUELCH, {wide ? "SQL" : "SQUELCH", sql, 'q',
-                          sig_kind() != SIG_NONE && FM.squelch_open, false, false});
+                          carrier_state(sig_kind()).open, false, false});
     }
     CTL(CTL_LOCK, {"LOCK", locked, 'k', lakeshark_fm_frequency_locked(), false, false});
     buttons[s_ctl_n] = ls_rsel_button(fm_job()); s_ctl_id[s_ctl_n++] = CTL_RADIO;
@@ -1506,6 +1611,12 @@ static void panel_set_volume_pct(int pct)
 static void panel_set_squelch_pct(int pct)
 {
     set_squelch((double)pct);
+}
+
+/* The scanner deck's volume under a dragging finger: heard, not saved. */
+static void panel_preview_volume_pct(int pct)
+{
+    audio_volume_preview(pct);
 }
 
 static void set_gain(double db)
@@ -1556,15 +1667,6 @@ static bool control_action(int slot)
 
 /* ------------------------------------------------------------ steppers -- */
 
-/* Squelch as the mode reads it: NFM in percent of quieting, AM in tenths of
-   a percent of carrier, and nothing where the mode has no squelch. Unlike the
-   panel's readings this does not wait on the receiver: it is a setting, and
-   a setting is true whether or not the dongle is streaming. */
-static bool mode_has_squelch(void)
-{
-    return FM.mode == FM_MODE_LISTEN || FM.mode == FM_MODE_AM;
-}
-
 /* The LR2021 path takes the chip's own gain as lr_wf_session copied it at
    open, not a live setting this screen can read or move: fm_lr_step()
    (app_fm.c) throws away the generic gain request it is handed, so a dial
@@ -1594,11 +1696,9 @@ static void step_value(int i, char *out, size_t n)
         else snprintf(out, n, "%d.%d", FM.gain_tenths / 10, FM.gain_tenths % 10);
         break;
     default:
-        if (hf_squelch_text(out, n)) break;
-        if (FM.mode == FM_MODE_AM)
-            snprintf(out, n, "%d.%d%%", lakeshark_fm_squelch_get() / 10, lakeshark_fm_squelch_get() % 10);
-        else if (mode_has_squelch()) snprintf(out, n, "%d%%", lakeshark_fm_squelch_get());
-        else snprintf(out, n, "--");
+        /* Squelch as the mode reads it: NFM in percent of quieting, AM in
+           tenths of a percent of carrier, NONE where it has none. */
+        squelch_text(out, n);
         break;
     }
 }
@@ -1803,7 +1903,8 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
     const bool wide = ls_tui_is_wide();
     const char *receiver = s_lora_pager ? NULL : receiver_text();
     const sig_kind_t kind = sig_kind();
-    const bool open = kind != SIG_NONE && FM.squelch_open;
+    const carrier_t car = carrier_state(kind);
+    const bool open = car.open;
     const uint8_t good = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
     const uint8_t val  = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
     const uint8_t dim  = TUI_ATTR(TUI_WHITE, TUI_BLACK);
@@ -1830,9 +1931,30 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
        line underneath, which also carries the step and the lock. */
     const uint32_t hz = FM.freq_hz;
     const int fig_w = wide ? (iw * 2) / 3 : iw;
-    y = ls_radio_glass_frequency(&s_glass, sf, r, y, hz,
-                                 s_freq_keyboard ? s_freq_entry : NULL, s_blink, wide);
+    /* Landscape's glass is as tall as the deck leaves it (see draw), and the
+       figures used to need a blank row over them as well as their five, with
+       the meter's row under them, so landscape never had them. Here the
+       meter's row, then the gate's, are kept under the figures, and the blank
+       row goes before the figures do. Short of six rows it keeps the one-line
+       dial. HF keeps it too: its passband scope needs those rows more. */
+    int below = 0;
+    bool gap = true;
+    if (wide && !hf_on()) {
+        const int rows = last - y + 1;
+        if (rows >= LS_RADIO_FIG_H + 1) {
+            below = rows >= LS_RADIO_FIG_H + 2 ? 2 : 1;
+            gap = rows >= LS_RADIO_FIG_H + below + 1;
+        }
+    }
+    const tui_rect fig_r = tui_rect_make(r.x, r.y, r.w, r.h - below);
+    y = ls_radio_glass_figures(&s_glass, sf, fig_r, y, hz,
+                               s_freq_keyboard ? s_freq_entry : NULL, s_blink, wide, gap);
     ls_radio_glass_wipe(&s_glass, sf, r, r.y + 2, y, (int)FM.mode);
+
+    char lr_loss[32] = "";
+    if (FM.lr_iq_active)
+        LS_SNPRINTF(t_scr_fm_lr_iq_lost_lu_2, lr_loss, sizeof(lr_loss), "LR IQ lost %lu gaps %lu",
+                 (unsigned long)FM.lr_lost_pairs, (unsigned long)FM.lr_gaps);
 
     /* The readouts: beside the figures in landscape, under them otherwise. */
     int rx = wide ? x0 + fig_w + 2 : x0;
@@ -1869,16 +1991,22 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
         ry++;
 
         /* CARRIER blinks while it is open, so a burst and a held carrier are
-           not the same steady word. */
-        const char *carrier = receiver ? receiver
-                            : kind == SIG_NONE ? "--"
-                            : open ? "OPEN" : "closed";
+           not the same steady word. A mode with no squelch says whether its
+           quieting finds a carrier, or that nothing is gated (carrier_state). */
+        const char *carrier_key = receiver ? "CARRIER" : car.key;
+        const char *carrier = receiver ? receiver : car.word;
         /* HF: the meter and the scope say what CARRIER would, so the row goes
            to the passband scope - unless the receiver has something wrong to
            report, which always gets its row. */
-        if (!hf_on() || receiver) {
-            int x = kv(sf, r, rx, ry, "CARRIER", carrier,
-                       receiver ? warn : open ? good : dim);
+        /* No dongle: say so where CARRIER OFFLINE was, and offer the LoRa
+           chip when it can take this mode and frequency. */
+        const int missing = ls_rsel_sdr_missing_draw(sf, r, rx, ry, rw,
+                                                     last - ry >= 2 ? 3 : last - ry + 1, fm_job(),
+                                                     lr_offer());
+        if (missing) ry += missing;
+        else if (!hf_on() || receiver) {
+            int x = kv(sf, r, rx, ry, carrier_key, carrier,
+                       receiver ? warn : car.lit ? good : dim);
             if (open && ((s_blink / 12) & 1))
                 tui_put_char(sf, r, x - 2, ry, LS_TUI_SHADE_FULL, good);
             if (!wide && !hf_on()) {
@@ -1889,7 +2017,7 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
         }
         if (hf_on() && ry <= last) { draw_hf_line(sf, r, rx, ry, rw); ry++; }
         if (ry <= last) {
-            if (wide && !hf_on()) {
+            if (wide && !hf_on() && !missing) {
                 snprintf(buf, sizeof(buf), "%lu B/s", (unsigned long)FM.iq_bytes_sec);
                 kv(sf, r, rx, ry, "IQ", buf, val);
                 ry++;
@@ -1899,6 +2027,9 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
            pager running this line would be blank, and a blank line is the
            hole the trace below would rather have. */
         if (ry <= last && draw_extra(sf, r, rx, ry, false) > rx) ry++;
+        /* Landscape's left column is the figures and the meter: LR's loss
+           count goes under the readouts instead. */
+        if (wide && lr_loss[0] && ry <= last) { tui_put_str(sf, r, rx, ry++, lr_loss, dim); lr_loss[0] = 0; }
         if (!wide) y = ry;
     }
 
@@ -1908,18 +2039,17 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
                     ((s_blink / 8) & 1) ? warn : LS_ATTR_DIM);
     }
 
-    if (FM.lr_iq_active && y <= last) {
-        LS_SNPRINTF(t_scr_fm_lr_iq_lost_lu_2, buf, sizeof(buf), "LR IQ lost %lu gaps %lu",
-                 (unsigned long)FM.lr_lost_pairs, (unsigned long)FM.lr_gaps);
-        tui_put_str(sf, r, x0, y++, buf, dim);
-    }
+    if (lr_loss[0] && y <= last - below) tui_put_str(sf, r, x0, y++, lr_loss, dim);
 
     /* The meter last, against the bottom rule, where the eye expects an
        instrument on a radio, with the trace in whatever is left between the
        readouts and it. */
     /* HF gives the meter's second row to the scope above it. */
     const int meter_rows = (last - y) >= 5 && !hf_on() ? 2 : 1;
-    int meter_y = last - meter_rows;
+    /* The row under it is the squelch gate's. A landscape glass that gave
+       that row to the figures puts the meter on its last row instead. */
+    const bool gate_room = below != 1 && last - y >= meter_rows;
+    int meter_y = last - meter_rows + (gate_room ? 0 : 1);
     if (meter_y < y) meter_y = y;
     /* One row of breathing room before the meter below, none before this:
        `y` is the row right after the readouts, and the trace starts there
@@ -1942,16 +2072,17 @@ static void draw_lcd(tui_surface *sf, tui_rect r)
                     TUI_ATTR(TUI_CYAN, TUI_BLACK));
         for (int x = 0; x < tw; ++x)
             tui_put_char(sf, r, x0 + 4 + x, ty + trace_h - 1, '-', LS_ATTR_DIM);
-        ls_radio_glass_trace(&s_glass, sf, r, x0 + 4, ty, tw, trace_h,
-                             lakeshark_fm_squelch_get() * 0.01f);
+        ls_radio_glass_trace(&s_glass, sf, r, x0 + 4, ty, tw, trace_h, sig_gate(kind));
     }
-    if (meter_y + meter_rows <= last)
+    if (meter_y + meter_rows - 1 <= last)
         /* Landscape's tone/IQ readouts own the right column, including
-           the rows shared with the meter. Never paint across that column. */
+           the rows shared with the meter. Never paint across that column.
+           The gate is drawn only where there is a squelch to mark. */
         ls_radio_glass_meter(&s_glass, sf, r, x0, meter_y, wide ? fig_w : iw, meter_rows,
                              kind == SIG_NONE ? 0.0f : sig_level(kind),
-                             kind != SIG_NONE, open, meter_y + meter_rows <= last,
-                             lakeshark_fm_squelch_get() * 0.01f, "SQL");
+                             kind != SIG_NONE, open,
+                             gate_room && meter_y + meter_rows <= last && mode_has_squelch(),
+                             sig_gate(kind), "SQL");
 }
 
 /* ========================================================== THE DECK === */
@@ -1976,6 +2107,10 @@ static void draw_step_card(tui_surface *sf, tui_rect b, int i, uint8_t hue)
     ls_radio_card_t card = {
         .label = NAME[i], .value = value, .hue = hue,
         .live = i == 2 ? mode_has_squelch() : i == 1 ? fm_gain_live() : true,
+        /* Every card's bar sets its value (step_touch, step_follow). The
+           desk's one-row form drops the travel of a card that says it
+           cannot, which left FM's sliders there drawn but dead. */
+        .settable = true,
         .frac = i == 0 ? audio_volume_get() / 100.0f
               : i == 1 ? FM.gain_tenths / 496.0f : lakeshark_fm_squelch_get() / 100.0f,
         .key_down = q->key_down, .key_up = q->key,
@@ -2038,9 +2173,12 @@ static void draw_quick_controls(tui_surface *sf, tui_rect area)
     /* Five-row keys leave three filled rows between their rules. Shorten
        the lower cards' bar travel to pay for the portrait TUNE enclosure. */
     const bool compact = ls_tui_compact();
-    const int tune_h = compact ? 1 : ls_tui_is_wide() ? 4 : 7;
+    const int tune_h = compact ? 1 : ls_tui_is_wide() ? TUNE_ROWS_WIDE : 7;
     ls_radio_tune_draw(&s_tune, sf, tui_rect_make(area.x, area.y, area.w, tune_h));
-    area.y += tune_h + (compact ? 0 : 1); area.h -= tune_h + (compact ? 0 : 1);
+    /* The row of air under TUNE is the last thing landscape gives the glass
+       (see draw): it goes before the cards drop under eight rows. */
+    const int air = compact || (ls_tui_is_wide() && area.h < tune_h + 1 + 8) ? 0 : 1;
+    area.y += tune_h + air; area.h -= tune_h + air;
     memset(s_freq_key, 0, sizeof(s_freq_key));
     memset(s_freq_action, 0, sizeof(s_freq_action));
 
@@ -2106,8 +2244,57 @@ static void draw_quick_controls(tui_surface *sf, tui_rect area)
     }
 }
 
+/* What a column on card i's bar stands for, in its setter's own units. */
+static double step_bar_value(int i, tui_rect bar, int col)
+{
+    const float f = ls_radio_vfo_card_bar_frac(bar, col);
+    return i == 0 ? f * 100.0 : i == 1 ? f * 49.6 : f * 100.0;
+}
+
+/* The tap's own setters: applied and saved where each one saves. */
+static void step_set(int i, double v)
+{
+    if (i == 0) set_volume(v);
+    else if (i == 1) set_gain(v);
+    else set_squelch(v);
+}
+
+/* A finger still dragging a bar: the speaker and the receiver follow it and
+   nothing is saved; step_set saves once when it lets go. Squelch is never
+   saved, so its own setter is its preview. */
+static void step_preview(int i, double v)
+{
+    if (i == 0) {
+        if (v >= 0 && v <= 100) audio_volume_preview((int)(v + 0.5));
+    } else if (i == 1) {
+        if (v >= 0 && v <= 49.6) lakeshark_fm_set_gain_live((int)(v * 10.0 + 0.5));
+    } else set_squelch(v);
+}
+
+/* Once a frame, before the deck is laid out again: a finger that went down
+   on a card's bar carries it, against the bars the last frame drew. A card
+   that went dead under the finger (the mode lost its squelch, the radio its
+   gain) is let go without a write, the same no-op its tap is. */
+static void step_drag_apply(int ev)
+{
+    const int i = s_step_drag.bar;
+    if ((i == 1 && !fm_gain_live()) || (i == 2 && !mode_has_squelch())) return;
+    const double v = step_bar_value(i, s_step_drag.rect, s_step_drag.col);
+    if (ev == LS_SLIDER_MOVE) step_preview(i, v);
+    else step_set(i, v);
+}
+
+static void step_follow(void)
+{
+    const int ev = ls_slider_drag(&s_step_drag, s_step_bar, N_STEP);
+    if (ev != LS_SLIDER_IDLE) step_drag_apply(ev);
+}
+
 static bool step_touch(int col, int row)
 {
+    /* The finger that just dragged a bar, coming up within a tap's reach of
+       where it went down: the drag already set the value. */
+    if (ls_slider_drag_tap_is_lift(&s_step_drag)) return true;
     if (ls_radio_tune_touch(&s_tune, col, row)) return true;
     for (int i = 0; i < N_STEP; i++) {
         const tui_rect b = s_step_box[i];
@@ -2133,10 +2320,7 @@ static bool step_touch(int col, int row)
             return true;
         }
         if (part == LS_RADIO_PART_BAR) {
-            const float f = ls_radio_vfo_card_bar_frac(s_step_bar[i], col);
-            if (i == 0) set_volume(f * 100.0);
-            else if (i == 1) set_gain(f * 49.6);
-            else set_squelch(f * 100.0);
+            step_set(i, step_bar_value(i, s_step_bar[i], col));
             return true;
         }
         if (part == LS_RADIO_PART_VALUE) {
@@ -2189,6 +2373,24 @@ static void show_page(int i)
 }
 
 /* Called by the UI task when the control head chooses FM or POCSAG. */
+/* Where the VFO deck's parts landed in the last draw (LS_RADIO_PART_*, card
+   0 VOLUME, 1 GAIN, 2 SQUELCH), so a test presses or drags the real thing,
+   as ls_scr_p25_control_rect does for P25's. */
+bool ls_scr_fm_control_rect(int card, int part, int *x, int *y, int *w, int *h)
+{
+    if (card < 0 || card >= N_STEP) return false;
+    const tui_rect r = part == LS_RADIO_PART_UP    ? s_step_up[card]
+                     : part == LS_RADIO_PART_VALUE ? s_step_value[card]
+                     : part == LS_RADIO_PART_BAR   ? s_step_bar[card]
+                                                   : s_step_down[card];
+    if (r.h <= 0 || r.w <= 0) return false;
+    if (x) *x = r.x;
+    if (y) *y = r.y;
+    if (w) *w = r.w;
+    if (h) *h = r.h;
+    return true;
+}
+
 void ls_scr_fm_show_page(int page)
 {
     if (page >= 0 && page < N_PAGES) {s_details=(page!=3);show_page(page);}
@@ -2198,25 +2400,33 @@ static void radio_view(void)
 {
     memset(&s_view,0,sizeof(s_view));
     s_view.fm=true;
+    s_view.sdr_job_set=true;s_view.sdr_job=(int)fm_job();
     s_view.tone_required=FM.tone_required;
     s_view.frequency=FM.freq_hz;
     s_view.standby=s_standby;
     s_view.mode=FM.mode==FM_MODE_LISTEN?"NFM":fm_mode_label(FM.mode);
     s_view.power=FM.iq_level;
+    fm_get_receiver_status(&s_view.receiver);
     {
         const sig_kind_t kind = sig_kind();
     s_view.volume = audio_volume_get();
     s_view.set_volume_pct = panel_set_volume_pct;
     s_view.set_squelch_pct = panel_set_squelch_pct;
+    /* Squelch is never saved, so its setter previews it as well. */
+    s_view.preview_volume_pct = panel_preview_volume_pct;
+    s_view.preview_squelch_pct = panel_set_squelch_pct;
+        const carrier_t car = carrier_state(kind);
         s_view.signal = kind == SIG_NONE ? 0.0f : sig_level(kind);
         s_view.gate = (float)lakeshark_fm_squelch_get() * 0.01f;
-        s_view.squelch_open = kind != SIG_NONE && FM.squelch_open;
-        s_view.has_squelch = kind != SIG_NONE;
+        s_view.squelch_open = car.open;
+        s_view.has_squelch = kind != SIG_NONE && mode_has_squelch();
+        s_view.has_signal = kind != SIG_NONE;
+        if (!s_view.receiver.receiver_streaming) snprintf(s_view.detail[0], 64, "CARRIER OFFLINE");
+        else snprintf(s_view.detail[0], 64, "%s %s", car.key,
+                      car.open ? "OPEN" : !strcmp(car.word, "closed") ? "CLOSED" : car.word);
     }
-    fm_get_receiver_status(&s_view.receiver);
     char sql[12];
     squelch_text(sql, sizeof(sql));
-    snprintf(s_view.detail[0],64,"CARRIER %s",s_view.receiver.receiver_streaming?(!s_view.has_squelch?"--":FM.squelch_open?"OPEN":"CLOSED"):"OFFLINE");
     LS_SNPRINTF(t_scr_fm_sql_s_gain_1f, s_view.detail[1],64,"SQL %s  GAIN %.1f dB",sql,FM.gain_tenths/10.0);
     snprintf(s_view.detail[2],64,"VOL %d  STEP %.1fk",audio_volume_get(),tune_step_hz()/1000.0);
     LS_SNPRINTF(t_scr_fm_s_more_mode_waterfall, s_view.detail[3],64,"%s / MORE: mode, waterfall, pager",
@@ -2309,6 +2519,11 @@ static int tab_bar_width(void)
 
 static void draw(tui_surface *sf, tui_rect area)
 {
+    /* Every frame, whatever is shown, so a drag always sees its finger lift;
+       then the bars are forgotten until the deck draws them again, so a
+       page without the deck has none for a finger to take. */
+    step_follow();
+    memset(s_step_bar, 0, sizeof(s_step_bar));
     ls_rsel_fm_context(FM.freq_hz, fm_lr_mode(FM.mode));
     if (ls_calls_active()) {
         LS_SNPUTS(t_scr_fm_up_down_calls_p, s_hint, sizeof(s_hint), "UP/DOWN calls  P play  S stop  D delete  O options  ESC back");
@@ -2415,6 +2630,21 @@ static void draw(tui_surface *sf, tui_rect area)
         int lcd_h = compact ? body.h - deck_min
                   : wide ? (body.h < 19 ? 7 : 8)
                          : (s_freq_keyboard ? 14 : body.h * 7 / 20);
+        /* Landscape: nine rows hold the rail, the big figures and the meter
+           under them, ten the squelch gate under the meter as well, eleven a
+           row of air over the figures. They come from the deck's spare rows
+           first, then from its cards down to eight rows - five-row keys, three
+           of them filled - and from the gap under the TUNE row
+           (draw_quick_controls). Short of nine the glass keeps its one-line
+           dial, and so does HF, whose passband scope wants those rows more
+           (draw_lcd). */
+        if (wide && !compact && !hf_on()) {
+            const int deck_full = TUNE_ROWS_WIDE + 1 + 9, deck_tight = TUNE_ROWS_WIDE + 8;
+            int want = body.h - deck_full;
+            if (want > 11) want = 11;
+            if (want < 10) want = body.h - deck_tight < 10 ? body.h - deck_tight : 10;
+            if (want >= 9) lcd_h = want;
+        }
         if (!wide && lcd_h > 24) lcd_h = 24;
         if (lcd_h > body.h) lcd_h = body.h;
         if (body.h - lcd_h < deck_min) {
@@ -2486,6 +2716,8 @@ static void draw(tui_surface *sf, tui_rect area)
 
 static void leave(void)
 {
+    /* Leaving under a finger still on a bar saves what it set. */
+    if (ls_slider_drag_drop(&s_step_drag)) step_drag_apply(LS_SLIDER_DONE);
     s_freq_keyboard = false;
     s_freq_invalid = false;
     fm_sstv_view_idle();
@@ -2634,6 +2866,7 @@ static bool touch_in(int col, int row)
     }
     if (tui_rect_contains(s_controls, col, row))
         return control_action(ls_btn_hit_slot(col, row, LS_BTN_SLOT_SCREEN));
+    if (ls_rsel_sdr_missing_touch(col, row, fm_job(), radio_chosen, lr_offer_take)) return true;
     if (row >= s_bar.y && row < s_bar.y + s_bar.h) {
         const int slot = ls_btn_hit_slot(col, row, LS_BTN_SLOT_QUICK);
         if (slot >= 0 && slot < s_tab_count) { show_page(s_tab_page[slot]); return true; }

@@ -1,3 +1,4 @@
+#include "rec_scope.h"
 /* REC worker owns storage and session lifetime. Consumer only copies. */
 #include "rec_lr_iq.h"
 #include "rec_sidecar.h"
@@ -98,6 +99,8 @@ static void iq_consume(void *ctx,const uint8_t *data,size_t bytes,bool spare)
 {
     (void)ctx;(void)spare;
     if(!data || atomic_load(&s_iq_full))return;
+    rec_scope_set_dbm(false);
+    rec_scope_iq16(data,bytes,REC_LR_OOK_US_PER_SAMPLE);
     for(size_t i=0;i+3<bytes;i+=4) {
         int si=(int16_t)(data[i]|(unsigned)data[i+1]<<8);
         int sq=(int16_t)(data[i+2]|(unsigned)data[i+3]<<8);

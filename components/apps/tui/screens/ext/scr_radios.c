@@ -6,6 +6,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
 #include "esp_attr.h"
 
 #include "../../ls_tui.h"
@@ -65,6 +68,8 @@ typedef struct {
 /* ------------------------------------------------------------------ rows -- */
 
 static const char *s_error;
+/* LORA on/off in progress on its worker: 1 turning on, 2 turning off. */
+static volatile int s_mesh_busy;
 static char s_error_text[80];
 static tui_rect s_options_hit;
 
@@ -302,11 +307,25 @@ static const char *mesh_action(void)
 {
     ls_mesh_socket_t s;
     ls_mesh_socket_get(&s);
+    if (s_mesh_busy) return s_mesh_busy == 1 ? "TURNING ON..." : "TURNING OFF...";
     if (s.blocked) return "ALLOW LORA";
     const char *stop = s.held ? stop_label(s.owner) : NULL;
     if (stop) return stop;
     if (s.held) return "STOP / BLOCK LORA";
     return ls_mesh_running() ? "TURN OFF" : "TURN ON";
+}
+
+static void mesh_worker(void *arg)
+{
+    const bool on = (intptr_t)arg != 0;
+    const esp_err_t err = on ? ls_mesh_start() : ls_mesh_stop();
+    s_error = err == ESP_OK ? NULL : on ? "LORA start failed" : "LORA stop failed";
+    s_mesh_busy = 0;
+    /* This used to run on the UI task's stack. A stop with messages not yet
+       on the card writes them from here, so say if it ever ran close. */
+    const UBaseType_t left = uxTaskGetStackHighWaterMark(NULL);
+    if (left < 1024) ESP_LOGW("radios", "LORA switch left %u bytes of its stack", (unsigned)left);
+    vTaskDelete(NULL);
 }
 
 /* Held by an app (ADSB or P25 on the LoRa chip, a sweep, CATCH...), the tap
@@ -335,9 +354,18 @@ static void mesh_set(bool on)
         s_error = s_error_text;
         return;
     }
+    if (s_mesh_busy) return;
     on = !ls_mesh_running();
-    const esp_err_t err = on ? ls_mesh_start() : ls_mesh_stop();
-    s_error = err == ESP_OK ? NULL : on ? "LORA start failed" : "LORA stop failed";
+    /* Off waits for MeshCore to wind down, park the chip and write its logs
+       to the card: 1.5 s on the bench, all of it a frozen screen when it ran
+       here. The worker does it; the button says so meanwhile. */
+    s_mesh_busy = on ? 1 : 2;
+    s_error = on ? "LORA turning on..." : "LORA turning off...";
+    if (xTaskCreatePinnedToCore(mesh_worker, "radios_mesh", 6144, (void *)(intptr_t)on, 3,
+                                NULL, tskNO_AFFINITY) != pdPASS) {
+        s_mesh_busy = 0;
+        s_error = "No memory to switch LORA";
+    }
 }
 #endif
 

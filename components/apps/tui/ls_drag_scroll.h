@@ -15,6 +15,7 @@ typedef struct {
     bool moved;       /* and has carried it at least one row */
     int start_first;  /* the first row when it went down */
     int64_t lift_us;  /* when the last drag that moved the list let go */
+    int64_t seen_us;  /* the last frame this list saw the finger held */
 } ls_drag_scroll_t;
 
 /* Updates *first (clamped to 0..total-visible) while a drag is under way.
@@ -24,7 +25,10 @@ static inline bool ls_drag_scroll(ls_drag_scroll_t *d, tui_rect list, int row_ce
 {
     int sc, sr, c, r;
     if (!ls_tui_touch_held(&sc, &sr, &c, &r)) {
-        if (d->held && d->moved) d->lift_us = esp_timer_get_time();
+        /* The lift is the last frame the finger was seen, not this one: a
+           view that took over mid-drag (a key opened a reader) can bring
+           the list back long after, and that tap is not the lift. */
+        if (d->held && d->moved) d->lift_us = d->seen_us;
         d->held = d->moved = false;
         return false;
     }
@@ -32,6 +36,7 @@ static inline bool ls_drag_scroll(ls_drag_scroll_t *d, tui_rect list, int row_ce
         if (!tui_rect_contains(list, sc, sr)) return false;
         d->held = true; d->moved = false; d->start_first = *first;
     }
+    d->seen_us = esp_timer_get_time();
     if (row_cells < 1) row_cells = 1;
     const int rows = (sr - r) / row_cells;
     if (!rows && !d->moved) return false;

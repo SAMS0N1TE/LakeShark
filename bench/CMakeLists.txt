@@ -82,6 +82,7 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_scan_view.c
     ${FW}/bench/tools/lssim_scan.c
     ${FW}/bench/tools/lssim_watch.c
+    ${FW}/components/lakeshark/apps/rec/rec_scope.c
     ${APP}/subghz/subghz_file.c
     ${APP}/rec/rec_ook24.c
     ${FW}/components/apps/tui/ls_compass.c
@@ -691,6 +692,7 @@ ls_add_test(test_fm_hf ${APP}/fm/fm_hf.c)
 target_include_directories(test_fm_hf PRIVATE ${APP}/fm ${FW}/components/lakeshark/radio)
 ls_add_test(test_wf_source ${FW}/components/apps/tui/ls_wf_source.c
     ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
+    ${FW}/components/lakeshark/dsp/ls_floor.c
     ${FW}/components/lakeshark/dsp/spectrum.c)
 target_include_directories(test_wf_source PRIVATE
     ${LS_TUI_APP_INCLUDES}
@@ -981,6 +983,7 @@ target_sources(lssim PRIVATE
     shims/rffe_settings_fake.c)
 target_sources(lssim PRIVATE ${FW}/components/lakeshark/core/ls_time.c
     ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
+    ${FW}/components/lakeshark/dsp/ls_floor.c
     ${FW}/components/lakeshark/dsp/spectrum.c)
 target_compile_definitions(lssim PRIVATE LS_TIME_HOST=1)
 target_link_libraries(lssim m music_decode_host)
@@ -1520,7 +1523,9 @@ target_include_directories(test_hosted_board PRIVATE
     ${FW}/managed_components/espressif__esp_hosted/host)
 ls_add_test(test_rec_scout_span  ${APP}/rec/rec_scout_span.c)
 ls_add_test(test_rec_space       ${APP}/rec/rec_space.c)
-ls_add_test(test_rec_lr_iq ${APP}/rec/rec_lr_iq.c ${APP}/rec/rec_lr_ook.c
+ls_add_test(test_rec_scope ${APP}/rec/rec_scope.c)
+target_include_directories(test_rec_scope PRIVATE ${APP}/rec)
+ls_add_test(test_rec_lr_iq ${APP}/rec/rec_lr_iq.c ${APP}/rec/rec_lr_ook.c ${APP}/rec/rec_scope.c
     ${APP}/rec/rec_ook_packet.c ${APP}/rec/rec_sidecar.c ${APP}/subghz/subghz_file.c
     ${FW}/components/lakeshark/dsp/fsk_packet.c
     ${APP}/rec/rec_unique_name.c
@@ -1537,6 +1542,9 @@ ls_add_test(test_rec_fsk ${APP}/rec/rec_fsk.c
     ${FW}/components/lakeshark/radio/ls_fsk_capture.c)
 target_include_directories(test_rec_fsk PRIVATE ${FW}/components/lakeshark/radio)
 # 2-FSK packets (preamble, sync, CRC) from LR2021 I/Q and from REC's slicer.
+# The per-bin noise floor behind BAND's LR I/Q view and its sweep detector.
+ls_add_test(test_ls_floor ${FW}/components/lakeshark/dsp/ls_floor.c)
+target_include_directories(test_ls_floor PRIVATE ${FW}/components/lakeshark/dsp)
 ls_add_test(test_fsk_packet ${FW}/components/lakeshark/dsp/fsk_packet.c ${APP}/rec/rec_fsk.c)
 target_include_directories(test_fsk_packet PRIVATE ${FW}/components/lakeshark/dsp)
 # The export writes a 2-FSK preset for a demodulated capture, so it needs
@@ -2713,8 +2721,10 @@ target_include_directories(test_adsb_rx PRIVATE
 ls_add_test(test_subghz_runtime tests/subghz_runtime/radio_fake.c
     ${APP}/rec/rec_lr_iq.c ${APP}/rec/rec_sidecar.c
     ${APP}/subghz/subghz_file.c
-    ${APP}/rec/rec_ook24.c ${APP}/rec/rec_watch.c ${APP}/rec/rec_lr_ook.c ${FW}/components/lakeshark/radio/ls_fsk_capture.c
-    ${APP}/rec/rec_ism.c ${APP}/rec/rec_fsk.c ${FW}/components/apps/tui/experiments/lr433_dec.c)
+    ${APP}/rec/rec_ook24.c ${APP}/rec/rec_watch.c ${APP}/rec/rec_lr_ook.c ${APP}/rec/rec_scope.c ${FW}/components/lakeshark/radio/ls_fsk_capture.c
+    ${APP}/rec/rec_ism.c ${APP}/rec/rec_fsk.c ${FW}/components/apps/tui/experiments/lr433_dec.c
+    ${FW}/components/lakeshark/dsp/fsk_packet.c ${FW}/components/lakeshark/radio/ls_sub_fsk.c
+    ${FW}/components/lakeshark/dsp/ls_floor.c)
 target_include_directories(test_subghz_runtime PRIVATE tests/subghz_runtime)
 target_compile_options(test_subghz_runtime PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(test_subghz_runtime PRIVATE -Wl,--gc-sections)
@@ -2764,6 +2774,38 @@ target_compile_definitions(test_mesh_backend PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P
 target_compile_options(test_mesh_backend PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(test_mesh_backend PRIVATE -Wl,--gc-sections)
 add_test(NAME test_mesh_backend COMMAND test_mesh_backend)
+
+# Nothing keeps the LoRa chip from the app on screen: every SUB-GHZ activity
+# on the chip, left for every other app that wants it (production runtime and
+# production lease).
+add_executable(test_radio_release tests/test_radio_release.c tests/radio_release/lease.cpp
+    tests/mesh_backend_fakes.cpp
+    ${FW}/components/meshcore/upstream/src/Dispatcher.cpp
+    ${FW}/components/meshcore/upstream/src/Mesh.cpp
+    ${FW}/components/meshcore/upstream/src/Packet.cpp
+    ${FW}/components/meshcore/upstream/src/Identity.cpp
+    ${FW}/components/meshcore/upstream/src/helpers/AdvertDataHelpers.cpp
+    ${FW}/components/meshcore/ls_mesh_inspect.c
+    ${MESH_HOST_ED}
+    ${APP}/rec/rec_lr_iq.c ${APP}/rec/rec_sidecar.c
+    ${APP}/subghz/subghz_file.c
+    ${APP}/rec/rec_ook24.c ${APP}/rec/rec_watch.c ${APP}/rec/rec_lr_ook.c ${APP}/rec/rec_scope.c ${FW}/components/lakeshark/radio/ls_fsk_capture.c
+    ${APP}/rec/rec_ism.c ${APP}/rec/rec_fsk.c ${FW}/components/apps/tui/experiments/lr433_dec.c
+    ${FW}/components/lakeshark/dsp/fsk_packet.c ${FW}/components/lakeshark/radio/ls_sub_fsk.c
+    ${FW}/components/lakeshark/dsp/ls_floor.c)
+target_link_libraries(test_radio_release ls_harness m)
+target_include_directories(test_radio_release BEFORE PRIVATE
+    tests/subghz_runtime
+    ${FW}/bench/shims/mesh ${FW}/bench/shims
+    ${FW}/components/meshcore/compat ${FW}/components/meshcore/upstream/src
+    ${FW}/components/meshcore/upstream/ed25519 ${FW}/components/meshcore
+    ${FW}/components/lakeshark ${FW}/components/lakeshark/core
+    ${FW}/components/lakeshark/board ${FW}/components/lakeshark/radio
+    ${FW}/components/lakeshark/dsp)
+target_compile_definitions(test_radio_release PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+target_compile_options(test_radio_release PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_radio_release PRIVATE -Wl,--gc-sections)
+add_test(NAME test_radio_release COMMAND test_radio_release)
 
 # The ed25519 base table computed at run time (components/meshcore), against
 # upstream's constant table and RFC 8032.

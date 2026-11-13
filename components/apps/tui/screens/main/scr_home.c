@@ -43,7 +43,7 @@ static const char *const GROUPS[] = {"RADIO", "FIELD", "SYSTEM", "USER"};
    FIELD, then SYSTEM. A built-in missing from this list still appears, at
    the end of RADIO, so a new app is never lost for want of a line here. */
 static const char *const LAYOUT[] = {
-    "p25", "fm", "adsb", "freqs", "falls", "mesh", "subghz", "digi", "labs", "rec", "radio", NULL,
+    "p25", "fm", "adsb", "freqs", "falls", "mesh", "subghz", "tmach", "digi", "labs", "radio", NULL,
     "map", "gps", "compass", "notes", "sweep", "drones", "cell", NULL,
     "set", "link", "radios", "update", "diag", "files", "music", NULL,
 };
@@ -56,7 +56,6 @@ static const struct {
     const char *kids[3];
 } FOLDERS[] = {
     { "labs",    "LABS",    "lora + trials",   { "experiments", "mixrf", "meters" } },
-    { "rec",     "REC",     "rec + rewind",    { "tmach" } },
     { "map",     "MAP",     "maps, regions",   { "tiles" } },
     { "compass", "COMPASS", "bearing, hunt",   { "fox", "rfsurvey" } },
     { "diag",    "DIAG",    "health, shell",   { "terminal" } },

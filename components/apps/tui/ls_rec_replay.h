@@ -16,6 +16,8 @@ bool ls_scr_rec_replay_file(const char *path,const subghz_file_t *file,const int
    means. */
 bool ls_rec_player_load(const char *path,const subghz_file_t *file,const int32_t *edges);
 void ls_rec_player_draw(tui_surface *sf,tui_rect area);
+/* Draw the player without its own PLAY/POWER bar: the host carries the keys. */
+void ls_rec_player_bare(bool bare);
 int  ls_rec_player_key(ls_tk_t k,char c);
 int  ls_rec_player_touch(int x,int y);
 bool ls_rec_player_busy(void);

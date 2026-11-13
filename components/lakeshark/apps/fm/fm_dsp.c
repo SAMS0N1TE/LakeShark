@@ -176,20 +176,48 @@ int IRAM_ATTR fm_demod_wide(fm_dsp_t *s, const uint8_t *iq, int iq_len,
     return out;
 }
 
+/* WFM'S NOISE READING: HOW FAR THE ENVELOPE IS FROM CONSTANT.
+
+   An FM carrier has a constant envelope, and noise does not: its power is
+   exponentially distributed, so the variance of |IQ|^2 over its mean squared
+   is 1 with nothing on the dial and falls toward 0 as a carrier rises out of
+   it, (2r + 1) / (r + 1)^2 at a carrier-to-noise power ratio r. It reads on
+   the same 0 quiet to 1 hiss travel as NFM's discriminator noise.
+
+   The discriminator's own noise above the multiplex was tried first, and on
+   dead air it reads whatever the dongle's anti-alias filter leaves near the
+   band edge: 1.0 for white noise, 0.44 behind a gentle FIR, which is where a
+   weak station sits. The envelope is Gaussian noise's whatever the filter
+   shape or the gain. Through synthesised broadcast in 8-bit I/Q
+   (test_wfm_rds): dead air 0.96 to 1.0 short of ADC clipping (0.58 with a
+   tenth of the samples clipped); a station 6 dB out of the noise 0.15 to 0.36,
+   at 12 dB 0.04 to 0.11, at 20 dB 0.02. Three integer multiplies a sample. */
 int fm_demod_disc(fm_dsp_t *s, const uint8_t *iq, int iq_len,
                   int16_t *disc, int max)
 {
     int out = 0;
+    uint64_t sum_p = 0, sum_p2 = 0;
+    uint32_t pairs = 0;
     for (int off = 0; off < iq_len && out < max; off += FM_DSP_CHUNK) {
         int n = iq_len - off;
         if (n > FM_DSP_CHUNK) n = FM_DSP_CHUNK;
         load_iq(s, iq + off, n);
+        const int16_t *lp = s->lowpassed;
+        for (int i = 0; i + 1 < s->lp_len; i += 2) {
+            const uint32_t p = (uint32_t)(lp[i] * lp[i] + lp[i + 1] * lp[i + 1]);
+            sum_p += p;
+            sum_p2 += (uint64_t)p * p;
+        }
+        pairs += (uint32_t)(s->lp_len / 2);
         fm_demod(s);
         int take = s->result_len;
         if (take > max - out) take = max - out;
         memcpy(disc + out, s->result, (size_t)take * sizeof(int16_t));
         out += take;
     }
+    if (pairs > 0 && sum_p > 0)
+        s->demod_noise = (float)((double)pairs * (double)sum_p2 /
+                                 ((double)sum_p * (double)sum_p) - 1.0);
     return out;
 }
 

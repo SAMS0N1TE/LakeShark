@@ -13,12 +13,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <malloc.h>
+#include <time.h>
 
 extern const ls_tui_screen_t ls_scr_music;
 bool ls_scr_music_play_file(const char *path);
 static ls_audio_analysis *analysis;
 ls_audio_analysis *ls_music_analysis(void){return analysis;}
-ls_audio_overview *ls_music_overview(void){return NULL;}
+static ls_audio_overview *overview_now;
+ls_audio_overview *ls_music_overview(void){return overview_now;}
 ls_audio_tools *ls_music_tools(void){return NULL;}
 bool ls_tui_cutout(tui_rect *cells){if(cells)*cells=tui_rect_make(0,0,0,0);return false;}
 static unsigned speed=1000;static uint32_t loop_a,loop_b;static bool looping;
@@ -58,8 +61,9 @@ bool ls_music_toggle(void){state=state==LS_MUSIC_PLAYING?LS_MUSIC_PAUSED:LS_MUSI
 void ls_music_stop(void){state=LS_MUSIC_STOPPED;}
 ls_music_state_t ls_music_state(void){return state;}
 int ls_music_volume(void){return volume;}
-uint32_t ls_music_position_ms(void){return 73000;}
-uint32_t ls_music_duration_ms(void){return 594000;}
+static uint32_t position_ms=73000,duration_ms=594000;
+uint32_t ls_music_position_ms(void){return position_ms;}
+uint32_t ls_music_duration_ms(void){return duration_ms;}
 static unsigned fixed_peak;
 unsigned ls_music_peak(int ch){static unsigned phase;if(fixed_peak)return state==LS_MUSIC_PLAYING?fixed_peak:0;return (phase++*997+ch*401)%32769;}
 static bool warm;
@@ -88,8 +92,11 @@ bool ls_music_spectrogram_line(ls_music_cursor_t *c,unsigned hop,float *p){gram_
 static tui_rect image_cells;static const uint16_t *image_px;static int image_w,image_h;static uint32_t image_serial;
 void ls_tui_geometry(int *cols,int *rows,int *cw,int *ch){if(cols)*cols=0;if(rows)*rows=0;if(cw)*cw=10;if(ch)*ch=17;}
 static int image_x0,image_moved;
-void ls_tui_image(tui_rect cells,const uint16_t *src,int w,int h,uint32_t serial){image_cells=cells;image_px=src;image_w=w;image_h=h;image_serial=serial;image_x0=0;}
-void ls_tui_image_ring(tui_rect cells,const uint16_t *src,int w,int h,int x0,int y0,int dx,int dy,uint32_t serial){(void)y0;(void)dy;ls_tui_image(cells,src,w,h,serial);image_x0=x0;image_moved=dx;}
+/* Whole new pictures handed over (not a ring that moved): each one the
+   present compares and copies in full on the P4. */
+static unsigned plain_pictures;static bool in_ring;
+void ls_tui_image(tui_rect cells,const uint16_t *src,int w,int h,uint32_t serial){if(src&&!in_ring&&(serial!=image_serial||src!=image_px))plain_pictures++;image_cells=cells;image_px=src;image_w=w;image_h=h;image_serial=serial;image_x0=0;}
+void ls_tui_image_ring(tui_rect cells,const uint16_t *src,int w,int h,int x0,int y0,int dx,int dy,uint32_t serial){(void)y0;(void)dy;in_ring=true;ls_tui_image(cells,src,w,h,serial);in_ring=false;image_x0=x0;image_moved=dx;}
 /* The picture as seen: column x of the ring starts at x0. */
 static uint16_t seen(int row,int col){return image_px[(size_t)row*image_w+(col+image_x0)%image_w];}
 bool ls_tui_image_now(tui_rect *cells,const uint16_t **src,int *w,int *h,uint32_t *serial){if(!image_px)return false;if(cells)*cells=image_cells;if(src)*src=image_px;if(w)*w=image_w;if(h)*h=image_h;if(serial)*serial=image_serial;return true;}
@@ -273,7 +280,7 @@ static void view_switch(int w,int h,int w2,int h2){
     spectrum_calls=gram_calls=0;paint(&sf,w,h);paint(&sf,w,h);
     LS_EQ_INT(spectrum_calls,0);LS_EQ_INT(gram_calls,0);
     /* VIEW lists the ten; the second is BANDS. */
-    tap_label(&sf,back,w,h,"VIEW:");LS_CHECK(ls_picker_key(LS_TK_DOWN,0));LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
+    tap_label(&sf,back,w,h,"VISUAL:");LS_CHECK(ls_picker_key(LS_TK_DOWN,0));LS_CHECK(ls_picker_key(LS_TK_ENTER,0));
     paint(&sf,w,h);
     LS_CHECK(spectrum_calls>0);LS_EQ_INT(gram_calls,0);
     LS_CHECK(contains(back,w,h," SPECTRUM 2/3 OCTAVE "));
@@ -612,4 +619,166 @@ LS_CASE(all_ten_views_are_reachable_and_options_have_safe_defaults){
     const ls_opt_t *speed_opt=&ls_music_playback_options.opt[0];speed_opt->set_num(speed_opt,9);LS_EQ_INT(speed,2000);speed_opt->set_num(speed_opt,0);LS_EQ_INT(speed,500);
     const ls_opt_t *level=&ls_music_generator_options.opt[4];LS_CHECK(level->num(level)==-24);level->set_num(level,1);LS_CHECK(level->num(level)==-12);level->set_num(level,-24);
     ls_scr_music.key(LS_TK_CHAR,'1');ls_scr_music.leave();
+}
+
+/* ------------------------------------------------ every view, timed -- */
+
+/* The P4 measured (tui cost, 2.21.3, MUSIC playing): the cell views draw in
+   about 2.2 ms with 0.2 ms of present; WAVE, SPECTRUM, SCOPE and MELODIC drew
+   in 7-14 ms and then spent 13-16 ms presenting a whole new picture every
+   frame; SPECTRO over a cached track drew in 160 ms, five frames a second,
+   which is the player "locking up". These cases run every view for a stretch
+   of frames with real audio arriving 40 ms at a time, the way the decoder
+   feeds it, over a whole-track overview and without one, in both
+   orientations, and hold each to:
+   - host time per frame within a margin of LEVEL's (the cheapest view): a
+     ratio, so the machine running the bench does not matter;
+   - a new picture (what the present has to compare and copy) at most every
+     other frame;
+   - no heap growth once the view has settled;
+   - a tap on PAUSE and PLAY answered on the next frame, whatever is shown. */
+#define VIS_RATE 44100u
+#define VIS_SECONDS 12u
+#define VIS_FRAME_MS 40u
+static int16_t *vis_pcm;
+static unsigned vis_at;
+static char vis_path[512];
+/* A tune with harmonics and a kick, left and right a little different, so
+   every view has something to draw: pitch, bands, a stereo scope. */
+static void vis_fixture(void){
+    if(vis_pcm)return;
+    const unsigned n=VIS_RATE*VIS_SECONDS;vis_pcm=malloc((size_t)n*4);
+    static const double notes[]={220,262,330,392,330,262,196,247};
+    uint32_t seed=1;
+    for(unsigned i=0;i<n;i++){
+        double t=(double)i/VIS_RATE,beat=fmod(t,.5),f=notes[(int)(t/.5)%8],s=0;
+        for(int h=1;h<=5;h++)s+=sin(2*M_PI*f*h*t)/h;
+        s*=.25*exp(-beat*3);
+        if(beat<.08)s+=.4*exp(-beat*40)*sin(2*M_PI*60*t);
+        seed=seed*1664525u+1013904223u;s+=.02*((seed>>16)/65536.0-.5);
+        double r=s*.8+.05*sin(2*M_PI*3000*t);
+        vis_pcm[2*i]=(int16_t)(fmax(-1,fmin(1,s))*20000);vis_pcm[2*i+1]=(int16_t)(fmax(-1,fmin(1,r))*20000);
+    }
+    snprintf(vis_path,sizeof(vis_path),"%s/visual-tune.wav",LS_MUSIC_FIXTURES);
+    FILE *f=fopen(vis_path,"wb");LS_CHECK(f!=NULL);if(!f)return;
+    uint32_t bytes=n*4,v;uint16_t u;
+    fwrite("RIFF",1,4,f);v=36+bytes;fwrite(&v,4,1,f);fwrite("WAVEfmt ",1,8,f);v=16;fwrite(&v,4,1,f);
+    u=1;fwrite(&u,2,1,f);u=2;fwrite(&u,2,1,f);v=VIS_RATE;fwrite(&v,4,1,f);v=VIS_RATE*4;fwrite(&v,4,1,f);
+    u=4;fwrite(&u,2,1,f);u=16;fwrite(&u,2,1,f);fwrite("data",1,4,f);fwrite(&bytes,4,1,f);
+    fwrite(vis_pcm,4,n,f);fclose(f);
+}
+/* One frame of the device: 40 ms of audio in, the clock on, a draw. */
+static double vis_frame(tui_surface *sf,int w,int h){
+    const unsigned step=VIS_RATE*VIS_FRAME_MS/1000,n=VIS_RATE*VIS_SECONDS;
+    if(analysis){
+        if(vis_at+step>n)vis_at=0;
+        ls_audio_analysis_append(analysis,vis_pcm+2*vis_at,step,2,VIS_RATE);vis_at+=step;
+    }
+    position_ms=(uint32_t)((uint64_t)vis_at*1000/VIS_RATE);
+    ls_shim_time_advance(VIS_FRAME_MS*1000);
+    struct timespec a,b;clock_gettime(CLOCK_MONOTONIC,&a);
+    paint(sf,w,h);
+    clock_gettime(CLOCK_MONOTONIC,&b);
+    return (b.tv_sec-a.tv_sec)*1e6+(b.tv_nsec-a.tv_nsec)/1e3;
+}
+typedef struct{double us;unsigned pictures;long grew;bool answered;}vis_cost;
+static const char VIS_KEYS[10]={'1','2','3','4','5','6','7','8','9','0'};
+static const char *const VIS_NAME[10]={"LEVEL","BANDS","SCAN","WATERFALL","WAVE","SPECTRO","MELODIC","SPECTRUM","SCOPE","TOOLS"};
+#define VIS_FRAMES 40
+static vis_cost vis_run(tui_surface *sf,tui_cell *cells,int w,int h,int view){
+    vis_cost c={0};
+    ls_scr_music.key(LS_TK_CHAR,VIS_KEYS[view]);
+    for(int i=0;i<8;i++)vis_frame(sf,w,h);         /* settle: buffers sized, caches warm */
+    struct mallinfo2 m0=mallinfo2();
+    unsigned pictures=plain_pictures;
+    double best=1e30;
+    /* The best of three runs: the least disturbed by whatever else the
+       machine is doing, the same rule for every view. */
+    for(int run=0;run<3;run++){
+        double total=0;
+        for(int i=0;i<VIS_FRAMES;i++){
+            total+=vis_frame(sf,w,h);
+        }
+        if(total<best)best=total;
+    }
+    c.us=best/VIS_FRAMES;c.pictures=(plain_pictures-pictures)/3;
+    struct mallinfo2 m1=mallinfo2();c.grew=(long)m1.uordblks-(long)m0.uordblks;
+    /* Input while this view runs: PAUSE then PLAY, each taken on the next frame. */
+    int x,y;
+    c.answered=locate(cells,w,h,"PAUSE",&x,&y)&&ls_scr_music.touch(x,y)&&state==LS_MUSIC_PAUSED;
+    vis_frame(sf,w,h);
+    c.answered=c.answered&&locate(cells,w,h,"PLAY",&x,&y)&&ls_scr_music.touch(x,y)&&state==LS_MUSIC_PLAYING;
+    vis_frame(sf,w,h);
+    return c;
+}
+/* Generous: LEVEL is the floor, and a picture view does real work. Before
+   the fix, SPECTRO over a cached track measured 55-100x here (73x on the P4),
+   MELODIC and SPECTRUM 17-18x; after it every view is under 11x, most of
+   that the analysis itself, which LEVEL does not run. */
+#define VIS_MAX_RATIO 15.0
+static void every_view(int w,int h,bool cached){
+    vis_fixture();
+    size_t n=(size_t)w*h;tui_cell *back=calloc(n,sizeof(*back)),*front=calloc(n,sizeof(*front));
+    tui_surface sf;tui_surface_setup(&sf,back,front,w,h);wide=w>h;rounded_height=0;keypad=false;music_muted=false;fixed_peak=0;
+    ls_scr_music.enter();
+    ls_audio_overview *o=NULL;
+    if(cached){
+        char cache[512];snprintf(cache,sizeof(cache),"%s/visual-cache",LS_MUSIC_FIXTURES);
+        o=ls_audio_overview_new(cache);LS_CHECK(o&&ls_audio_overview_request(o,vis_path,false));
+        for(int i=0;i<20000&&o&&!ls_audio_overview_ready(o);i++)ls_audio_overview_step(o,2048);
+        LS_CHECK(o&&ls_audio_overview_ready(o));
+        overview_now=o;duration_ms=VIS_SECONDS*1000;
+    }
+    vis_at=0;
+    tap_label(&sf,back,w,h,"PLAY");LS_EQ_INT(state,LS_MUSIC_PLAYING);
+    vis_cost c[10];
+    for(int v=0;v<10;v++)c[v]=vis_run(&sf,back,w,h,v);
+    const double floor_us=c[0].us>1?c[0].us:1;
+    for(int v=0;v<10;v++){
+        double ratio=c[v].us/floor_us;
+        /* Over the line once is as likely the machine as the view: the
+           bench runs eight suites at a time and LEVEL's frame is 70 us, so
+           one preemption moves the ratio by several x. Measured again with
+           LEVEL beside it, up to three times; the regression this guards
+           (55-100x) fails every time. */
+        for(int again=0;again<3 && ratio>VIS_MAX_RATIO;again++){
+            const vis_cost l=vis_run(&sf,back,w,h,0);
+            const vis_cost r=vis_run(&sf,back,w,h,v);
+            const double fresh=r.us/(l.us>1?l.us:1);
+            if(fresh<ratio){ratio=fresh;c[v].us=r.us*floor_us/(l.us>1?l.us:1);}
+        }
+        printf("  %dx%d %s %-9s %8.1f us/frame %5.1fx LEVEL  %2u pictures/%d frames  heap %+ld\n",
+               w,h,cached?"cached":"live  ",VIS_NAME[v],c[v].us,ratio,c[v].pictures,VIS_FRAMES,c[v].grew);
+        LS_CHECK_MSG(ratio<=VIS_MAX_RATIO,"%s at %dx%d %s: %.1fx LEVEL's frame (%.0f us vs %.0f us)",
+                     VIS_NAME[v],w,h,cached?"cached":"live",ratio,c[v].us,floor_us);
+        LS_CHECK_MSG(c[v].pictures*2<=VIS_FRAMES,"%s at %dx%d: %u new pictures in %d frames - the present copies each one",
+                     VIS_NAME[v],w,h,c[v].pictures,VIS_FRAMES);
+        LS_CHECK_MSG(c[v].grew<=4096,"%s at %dx%d: heap grew %ld bytes while it ran",VIS_NAME[v],w,h,c[v].grew);
+        LS_CHECK_MSG(c[v].answered,"%s at %dx%d: PAUSE/PLAY not answered while it ran",VIS_NAME[v],w,h);
+    }
+    ls_scr_music.key(LS_TK_CHAR,'1');ls_scr_music.key(LS_TK_CHAR,'s');ls_scr_music.leave();
+    overview_now=NULL;duration_ms=594000;position_ms=73000;
+    if(o)LS_CHECK(ls_audio_overview_free(o));
+    free(back);free(front);
+}
+LS_CASE(every_view_cost_portrait_cached){every_view(52,70,true);}
+LS_CASE(every_view_cost_portrait_live){every_view(52,70,false);}
+LS_CASE(every_view_cost_landscape_cached){every_view(118,31,true);}
+LS_CASE(every_view_cost_landscape_live){every_view(118,31,false);}
+/* Portrait has the tracks around the one playing under the visual: a tap
+   there plays that one, without opening the track list. */
+LS_CASE(portrait_track_list_under_the_visual){
+    tui_cell back[52*70],front[52*70];tui_surface sf;tui_surface_setup(&sf,back,front,52,70);
+    wide=false;rounded_height=0;tracks=24;last_play=-1;
+    ls_scr_music.enter();ls_scr_music.key(LS_TK_ENTER,0);LS_EQ_INT(last_play,0);
+    paint(&sf,52,70);LS_CHECK(contains(back,52,70,"TRACKS 1/24"));LS_CHECK(contains(back,52,70,"VISUAL: LEVEL"));
+    int x,y;LS_CHECK(locate(back,52,70,"Shark After Dark",&x,&y));
+    LS_CHECK(ls_scr_music.touch(x,y));LS_EQ_INT(last_play,2);
+    /* The row under the name is the same track's, for a finger. */
+    paint(&sf,52,70);LS_CHECK(locate(back,52,70,"Coral Radio",&x,&y));
+    LS_CHECK(ls_scr_music.touch(x,y+1));LS_EQ_INT(last_play,3);
+    paint(&sf,52,70);LS_CHECK(contains(back,52,70,"TRACKS 4/24"));
+    /* The transport is still all there below it. */
+    LS_CHECK(contains(back,52,70,"PAUSE"));LS_CHECK(contains(back,52,70,"VOL +"));LS_CHECK(contains(back,52,70,"STOP"));
+    ls_scr_music.key(LS_TK_CHAR,'s');ls_scr_music.leave();
 }

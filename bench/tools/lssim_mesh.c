@@ -390,7 +390,7 @@ bool ls_mesh_radio_bg(void) { return false; }
 void ls_mesh_radio_block(bool on) { (void)on; }
 bool ls_mesh_radio_blocked(void) { return false; }
 
-bool ls_lora_present(void) { return false; }
+bool ls_lora_present(void) { return getenv("LSSIM_LRIQ") != NULL; }   /* the sim's LR I/Q stand-in */
 bool ls_lora_fsk_active(void) { return false; }
 bool ls_lora_scanning(void) { return false; }
 esp_err_t ls_lora_scan_begin(uint32_t a, uint32_t b)

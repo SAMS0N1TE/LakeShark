@@ -381,3 +381,101 @@ LS_CASE(wfm_rds_decodes_from_fm_modulated_iq)
     LS_EQ_STR(in->rt, "IQ IN STATION CARD OUT");
     LS_EQ_INT(in->pty, 10);
 }
+
+/* ---- the noise reading -------------------------------------------------- */
+
+/* WFM's meter and the FM screen's CARRIER read fm_demod_disc's demod_noise.
+   It used to be left untouched in WFM, so the screen showed "--" over a live
+   station. These run broadcast through the dongle's path - complex Gaussian
+   noise at a carrier-to-noise ratio across the 256 kHz, an optional gentle
+   FIR for the dongle's anti-alias filter, levelled to `rms` LSB and
+   quantised to 8-bit I/Q - and read what the screen would. */
+
+static double gauss(ls_rng_t *r)
+{
+    const double u1 = ((double)ls_rng_u32(r) + 1.0) / 4294967297.0;
+    const double u2 = (double)ls_rng_u32(r) / 4294967296.0;
+    return sqrt(-2.0 * log(u1)) * cos(2.0 * PI_F * u2);
+}
+
+#define NO_CARRIER (-99.0)
+
+static float wfm_noise_reading(double cnr_db, bool shaped, double rms, unsigned seed)
+{
+    mpx_gen_t g = {0};
+    g.pilot_hz = 19000.0; g.pilot_amp = 0.09;
+    g.l_hz = 440; g.l_amp = 0.6; g.r_hz = 1700; g.r_amp = 0.4;
+    static fm_dsp_t dsp;
+    fm_dsp_init(&dsp);
+    ls_rng_t rng; ls_rng_seed(&rng, seed);
+    /* Carrier amplitude 1, noise per component so A^2 / (2 sigma^2) is the
+       ratio asked for; the level that reaches the ADC is set after. */
+    const double carrier = cnr_db <= NO_CARRIER ? 0.0 : 1.0;
+    const double sigma = cnr_db <= NO_CARRIER ? 1.0 : sqrt(0.5 / pow(10.0, cnr_db / 10.0));
+    const double total = sqrt(carrier * carrier + 2.0 * sigma * sigma);
+    double ph = 0.0;
+    double hi[3] = {0}, hq[3] = {0};
+    static uint8_t iq[16384];
+    float reading = 0.0f;
+    for (int block = 0; block < 6; ++block) {
+        for (int i = 0; i < 8192; ++i) {
+            ph += 2.0 * PI_F * 75000.0 * mpx_next(&g) / WFM_MPX_RATE;
+            double zi = carrier * cos(ph) + sigma * gauss(&rng);
+            double zq = carrier * sin(ph) + sigma * gauss(&rng);
+            if (shaped) {
+                /* [1 3 3 1] / 8: a binomial low-pass, down 9 dB at 64 kHz. */
+                const double fi = (zi + 3.0 * hi[0] + 3.0 * hi[1] + hi[2]) / 8.0;
+                const double fq = (zq + 3.0 * hq[0] + 3.0 * hq[1] + hq[2]) / 8.0;
+                hi[2] = hi[1]; hi[1] = hi[0]; hi[0] = zi;
+                hq[2] = hq[1]; hq[1] = hq[0]; hq[0] = zq;
+                zi = fi * 1.6; zq = fq * 1.6;          /* about unity on noise */
+            }
+            const double ki = 127.5 + zi * rms / total, kq = 127.5 + zq * rms / total;
+            iq[2 * i]     = (uint8_t)(ki < 0 ? 0 : ki > 255 ? 255 : lrint(ki));
+            iq[2 * i + 1] = (uint8_t)(kq < 0 ? 0 : kq > 255 ? 255 : lrint(kq));
+        }
+        /* As fm_wfm_block takes a block: four chunks, the reading averaged. */
+        float sum = 0.0f;
+        for (int off = 0; off < 16384; off += FM_DSP_CHUNK) {
+            fm_demod_disc(&dsp, iq + off, FM_DSP_CHUNK, s_disc, FM_DSP_CHUNK / 2);
+            sum += dsp.demod_noise;
+        }
+        reading = sum / 4.0f;
+    }
+    return reading;
+}
+
+LS_CASE(wfm_noise_reads_hiss_on_dead_air_whatever_the_filter_or_level)
+{
+    const struct { bool shaped; double rms; } dongle[] = {
+        { false, 40.0 }, { true, 40.0 }, { false, 3.0 }, { true, 60.0 },
+    };
+    for (unsigned k = 0; k < sizeof(dongle) / sizeof(dongle[0]); ++k) {
+        const float n = wfm_noise_reading(NO_CARRIER, dongle[k].shaped, dongle[k].rms, 11 + k);
+        LS_CHECK_MSG(n > 0.85f, "dead air (shaped %d, %.0f LSB) read %.3f",
+                     (int)dongle[k].shaped, dongle[k].rms, (double)n);
+        LS_CHECK_MSG(n > FM_WFM_CARRIER_NOISE, "dead air would read as a carrier");
+    }
+    /* Gain far too high: the ADC clips and flattens the envelope, and the
+       hiss still does not pass for a carrier. */
+    const float clipped = wfm_noise_reading(NO_CARRIER, false, 110.0, 31);
+    LS_CHECK_MSG(clipped > FM_WFM_CARRIER_NOISE, "clipping dead air read %.3f", (double)clipped);
+}
+
+LS_CASE(wfm_noise_falls_as_a_station_rises_out_of_it)
+{
+    const double cnr[] = { 0.0, 6.0, 12.0, 20.0, 35.0 };
+    for (int shaped = 0; shaped < 2; ++shaped) {
+        float prev = wfm_noise_reading(NO_CARRIER, shaped, 40.0, 3);
+        for (unsigned k = 0; k < sizeof(cnr) / sizeof(cnr[0]); ++k) {
+            const float n = wfm_noise_reading(cnr[k], shaped, 40.0, 5 + k);
+            LS_CHECK_MSG(n < prev, "%.0f dB read %.3f, not under %.3f", cnr[k], (double)n, (double)prev);
+            prev = n;
+        }
+        /* 6 dB out of the noise is a carrier; 20 dB is a quiet one. */
+        LS_CHECK(wfm_noise_reading(6.0, shaped, 40.0, 21) < FM_WFM_CARRIER_NOISE);
+        LS_CHECK(wfm_noise_reading(20.0, shaped, 40.0, 22) < 0.05f);
+    }
+    /* A strong station on a dongle turned right down still reads quiet. */
+    LS_CHECK(wfm_noise_reading(30.0, false, 3.0, 23) < FM_WFM_CARRIER_NOISE);
+}

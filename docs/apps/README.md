@@ -38,7 +38,6 @@ pick the receiver, O opens OPTIONS, and Esc or BACK goes back. See
 | [NOTES](NOTES.md) | Field notes on the SD card with the time, GPS, heading, map or radio inserted | None; GPS optional |
 | [COMPASS](COMPASS.md) | True-north compass, guidance to a saved place, FIND by signal strength, level | GPS optional; FIND uses the receiver you pick |
 | [SWEEP](SWEEP.md) | Passive scanner for nearby trackers, drones and camera hints | Bluetooth and Wi-Fi |
-| [REC](REC.md) | Capture what a radio receives to the SD card, and replay captures | RTL-SDR, CC1101, LoRa chip, GPS and others |
 | [MAP](MAP.md) | Offline map with your position, aircraft, mesh nodes and marks | GPS optional |
 | [TILES](TILES.md) | Install and manage offline map regions for MAP | Wi-Fi |
 | [GPS](GPS.md) | Fix state, satellites in view and a GPX track recorder | GPS |

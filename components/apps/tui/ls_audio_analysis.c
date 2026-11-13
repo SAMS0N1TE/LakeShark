@@ -39,6 +39,11 @@ struct ls_audio_analysis {
   ls_aa_track track[AA_TRACK];
   ls_aa_track pitch_track[AA_TRACK];
   ls_aa_result result;
+  /* The pitch class of each FFT bin (-1 outside 40 Hz-5 kHz), for the rate
+     and size it was worked out at: one table lookup per bin per window
+     instead of a logarithm. */
+  int8_t chroma_of[AA_N / 2 + 1];
+  unsigned chroma_rate, chroma_n;
 };
 static float db_power(double p) {
   return p > 1e-12 ? 10 * log10f((float)p) : -120;
@@ -477,6 +482,15 @@ unsigned ls_audio_analysis_process(ls_audio_analysis *a, unsigned max_windows) {
     unsigned peak_bin = 0;
     for (unsigned i = 0; i < 12; i++)
       a->result.chroma[i] = 0;
+    if (a->chroma_rate != rate || a->chroma_n != n) {
+      for (unsigned k = 0; k <= n / 2; k++) {
+        float hz = (float)k * rate / n;
+        int midi = (int)floorf(69 + 12 * log2f(fmaxf(hz, 1) / 440) + .5f);
+        a->chroma_of[k] = hz >= 40 && hz <= 5000 ? (int8_t)((midi % 12 + 12) % 12) : -1;
+      }
+      a->chroma_rate = rate;
+      a->chroma_n = n;
+    }
     for (unsigned k = 0; k <= n / 2; k++) {
       float power = (a->re[k] * a->re[k] + a->im[k] * a->im[k]) * scale;
       a->db[k] = db_power(power);
@@ -486,12 +500,8 @@ unsigned ls_audio_analysis_process(ls_audio_analysis *a, unsigned max_windows) {
         maximum = power;
         peak_bin = k;
       }
-      float hz = (float)k * rate / n;
-      if (hz >= 40 && hz <= 5000 && power > 1e-10f) {
-        int midi = (int)floorf(69 + 12 * log2f(hz / 440) + .5f);
-        int chroma = (midi % 12 + 12) % 12;
-        a->result.chroma[chroma] += power;
-      }
+      if (a->chroma_of[k] >= 0 && power > 1e-10f)
+        a->result.chroma[a->chroma_of[k]] += power;
     }
     a->result.peak_hz = 0;
     a->result.spectral_db = -120;

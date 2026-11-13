@@ -1,5 +1,19 @@
 # LakeShark release notes
 
+## 2.21.5
+
+- SUB-GHZ is one app: REC is folded into it, and HOME has one SUB-GHZ tile with TIME MACHINE beside it. It opens on five large cards, Flipper style: READ, RECORD RAW, SAVED, FREQUENCY ANALYZER and SETTINGS, each in its own colour, saying how it stands. Every page has BACK, its frequency and one big START/STOP; the radio, TX power, LEARN, the detect threshold, the chart and the pulse inspector are in SETTINGS. FILES' REPLAY opens a capture in SUB-GHZ. CSV recording is in NOTES and the GPS track in GPS, as before.
+- READ and RECORD RAW draw a live waveform while they listen: a second of what the radio hears, scrolling across the screen in braille dots, with a remote's burst lit green and its level shown.
+- FREQUENCY ANALYZER (was BAND) uses no radio until START, its title names the chart it draws (BARS draws bars), and it no longer paints the band solid red: every frequency is judged against its own noise floor. The SX1262 sweep of 902-928 MHz stops reporting hits that are only the shape of the band.
+- The LoRa chip is free when you leave SUB-GHZ: P25, FM, ADS-B, MESH and LORA LABS no longer show "LR2021 IN USE ELSEWHERE" after it, and START on READ is no longer refused with "Mesh would not release the radio".
+- Transmit goes out the antenna you select, on the LR2021 and the SX1262. RADIOS > OPTIONS > MMCX1 USE: RX ONLY keeps transmits on the internal antenna if you want that.
+- Drag the VOLUME, GAIN and SQUELCH bars on FM and P25, the scanner's bars, and SET's Volume and Brightness: the value follows your finger and is saved when you lift it.
+- RADIOS: LORA TURN OFF is instant instead of freezing the screen for a second or more.
+- MUSIC: no visual freezes the screen any more (SPECTRO drew at five frames a second), and the tracks are a list you tap.
+- FM: WFM has a live signal meter and CARRIER reads PRESENT or none (it read SIG -- and CARRIER -- while a station played), BAND names the band you are tuned to (103.3 MHz is FM bcast, not VHF land), the IQ rate is a real per-second figure, and landscape shows the frequency in big figures.
+- FM, P25 and ADS-B set to an RTL-SDR that is not plugged in say so, and FM on the LR2021 board offers NFM on the LR2021 instead.
+- LakeShark Desktop and Studio stay on 2.21.4.
+
 ## 2.21.4
 
 - LakeShark Studio and lsdk: installing an app on an ESP32-P4-NANO no longer stops with "invalid base64 chunk" or "sequence must be contiguous from zero". The upload keeps two lines in flight, and a line lost on the way starts the upload again one line at a time.

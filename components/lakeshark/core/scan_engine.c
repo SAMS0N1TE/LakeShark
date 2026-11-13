@@ -1498,12 +1498,15 @@ int scan_engine_candidate(void) { return s_candidate; }
 
 /* Kept across a restart, as the zone is. */
 static void tuning_save(void) { settings_set_scan_tuning(s_hang_ms, s_thresh, s_pri_ms); }
+/* The times are kept in tenths of a second, so that is what they are set in:
+   the value in use is the one that comes back after a restart. */
+static int tenths_ms(int ms) { return (ms + 50) / 100 * 100; }
 
 void scan_engine_set_hang_ms(int ms)
 {
     if (ms < 0) ms = 0;
     if (ms > 30000) ms = 30000;
-    s_hang_ms = ms;
+    s_hang_ms = tenths_ms(ms);
     tuning_save();
 }
 
@@ -1532,7 +1535,7 @@ void scan_engine_set_priority_ms(int ms)
 {
     if (ms > 0 && ms < 500) ms = 500;
     if (ms > 60000) ms = 60000;
-    s_pri_ms = ms > 0 ? ms : 0;
+    s_pri_ms = ms > 0 ? tenths_ms(ms) : 0;
     tuning_save();
 }
 

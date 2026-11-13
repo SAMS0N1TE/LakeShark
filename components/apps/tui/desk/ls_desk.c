@@ -554,7 +554,7 @@ bool ls_desk_focused(void) { return s_on && s_full && s_focus; }
 static const char *const GROUP_NAMES[5] = {"Radio", "Field", "System", "User apps", "Games"};
 static const char *const GROUP_IDS[3][16] = {
     {"p25", "fm", "adsb", "falls", "mesh", "subghz", "digi", "labs", "experiments", "mixrf", "meters",
-     "rec", "tmach", "radio", NULL},
+     "tmach", "radio", NULL},
     {"map", "tiles", "gps", "compass", "fox", "rfsurvey", "notes", "journal", "sweep", "drones", "cell", NULL},
     {"set", "pins", "link", "radios", "update", "diag", "terminal", "files", "music", NULL},
 };

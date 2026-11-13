@@ -6,6 +6,7 @@
 #include "../../ls_tui_screen.h"
 #include "../../ls_i18n.h"
 #include "../../ls_radio_panel.h"
+#include "../../ls_slider_drag.h"
 #include "audio/audio_out.h"
 #include "scan_engine.h"
 #include "settings.h"
@@ -614,8 +615,16 @@ static void draw_decode(tui_surface *sf, tui_rect area)
             snprintf(buf, sizeof(buf), "RX %u.%04u MHz", (unsigned)(rx / 1000000u),
                      (unsigned)((rx % 1000000u) / 100u));
         }
-        tui_put_str(sf, dial, dial.x + 2, below++, buf,
-                    scan_engine_active() ? value : idle);
+        /* No dongle and nothing else receiving: say so, with the tap onto
+           the LoRa chip where it can take P25. */
+        if (!s_keypad && !scan_engine_active() && !st.receiver_streaming && !P25.lora_rx &&
+            !P25.lora_wait && !P25.lr_iq_active &&
+            ls_rsel_sdr_missing_draw(sf, dial, dial.x + 2, below, dial.w - 4, 1,
+                                     LS_RSEL_P25, NULL))
+            below++;
+        else
+            tui_put_str(sf, dial, dial.x + 2, below++, buf,
+                        scan_engine_active() ? value : idle);
     }
 
     const float signal = level < 0.0f ? 0.0f : level > 1.0f ? 1.0f : level;
@@ -1294,6 +1303,7 @@ static int quick_count(void) { return lr_receiver() ? 2 : N_QUICK; }
 enum { P25_CARD_VOL, P25_CARD_GAIN, P25_N_CARD };
 static ls_radio_card_t s_deck[P25_N_CARD];
 static int  s_deck_n;
+static ls_slider_drag_t s_deck_drag;   /* a finger carrying a card's bar */
 static int  s_deck_flash = -1;
 static bool s_deck_flash_up;
 static int  s_deck_flash_ttl;
@@ -1536,9 +1546,51 @@ bool ls_scr_p25_pad_rect(char c, int *x, int *y)
     return false;
 }
 
+/* What a column on card i's bar stands for, in its setter's own units. */
+static double deck_bar_value(int i, tui_rect bar, int col)
+{
+    const float f = ls_radio_vfo_card_bar_frac(bar, col);
+    return i == P25_CARD_VOL ? f * 100.0 : f * 50.0;
+}
+
+/* The tap's own setters: the actions, which save. */
+static void deck_set(int i, double v)
+{
+    if (i == P25_CARD_VOL) volume_apply(v);
+    else gain_apply(v);
+}
+
+/* While a finger drags a bar: heard and received at once, saved by deck_set
+   when it lets go. p25_request_gain is the half of the action that moves
+   the receiver without saving. */
+static void deck_preview(int i, double v)
+{
+    if (i == P25_CARD_VOL) {
+        if (v >= 0 && v <= 100) audio_volume_preview((int)(v + 0.5));
+    } else if (!lr_receiver()) {
+        p25_request_gain((int)((v < 0 ? 0 : v > 50 ? 50 : v) * 10.0 + 0.5));
+    }
+}
+
+/* Once a frame, before the deck is laid out again, against the bars the
+   last frame drew. */
+static void deck_follow(void)
+{
+    tui_rect bars[P25_N_CARD];
+    for (int i = 0; i < P25_N_CARD; i++)
+        bars[i] = i < s_deck_n ? s_deck[i].bar : tui_rect_make(0, -1, 0, 0);
+    const int ev = ls_slider_drag(&s_deck_drag, bars, P25_N_CARD);
+    if (ev == LS_SLIDER_IDLE) return;
+    const double v = deck_bar_value(s_deck_drag.bar, s_deck_drag.rect, s_deck_drag.col);
+    if (ev == LS_SLIDER_MOVE) deck_preview(s_deck_drag.bar, v);
+    else deck_set(s_deck_drag.bar, v);
+}
+
 /* Step keys retain priority; bar and title value share exact entry. */
 static bool deck_touch(int col, int row)
 {
+    /* The lift of a drag that already set the value, not a press. */
+    if (ls_slider_drag_tap_is_lift(&s_deck_drag)) return true;
     for (int i = 0; i < s_deck_n; i++) {
         const ls_radio_card_t *c = &s_deck[i];
         const int part = ls_radio_vfo_card_hit(c->down, c->up, c->value_rect,
@@ -1558,9 +1610,7 @@ static bool deck_touch(int col, int row)
             return true;
         }
         if (part == LS_RADIO_PART_BAR) {
-            const float f = ls_radio_vfo_card_bar_frac(c->bar, col);
-            if (i == P25_CARD_VOL) volume_apply(f * 100.0);
-            else gain_apply(f * 50.0);
+            deck_set(i, deck_bar_value(i, c->bar, col));
             return true;
         }
         if (i == P25_CARD_VOL)
@@ -1573,6 +1623,8 @@ static bool deck_touch(int col, int row)
 }
 
 static void panel_set_volume_pct(int pct) { volume_apply((double)pct); }
+/* The scanner deck's volume under a dragging finger: heard, not saved. */
+static void panel_preview_volume_pct(int pct) { audio_volume_preview(pct); }
 
 static void radio_view(void)
 {
@@ -1580,8 +1632,10 @@ static void radio_view(void)
     /* The scanner deck's VOLUME travel sets through this; without it the
        bar drew as a slider and a tap did nothing. */
     s_view.set_volume_pct=panel_set_volume_pct;
+    s_view.preview_volume_pct=panel_preview_volume_pct;
     s_view.frequency=s_tune_freq_hz;
     s_view.mode="P25";
+    s_view.sdr_job_set = true; s_view.sdr_job = (int)LS_RSEL_P25;
     s_view.power=P25.iq_level;
     s_view.volume=audio_volume_get();
     p25_get_receiver_status(&s_view.receiver);
@@ -1615,6 +1669,11 @@ static void radio_action(char c)
 
 static void draw(tui_surface *sf, tui_rect area)
 {
+    /* Every frame, whatever is shown, so a drag always sees its finger lift;
+       then the deck is forgotten until it draws again, so a page without it
+       has no bar for a finger to take. */
+    deck_follow();
+    s_deck_n = 0;
     /* Every page follows the call, so CALLS opens on the truth. */
     p25_calls_live_tick();
     if (ls_calls_active()) {
@@ -1753,7 +1812,14 @@ static void draw(tui_surface *sf, tui_rect area)
 
 /* The feed follows the page, and leaving the app releases it whichever page
    was up - the spectrum must not keep costing FFTs behind another screen. */
-static void leave(void) { ls_calls_leave(); ls_wf_source_release(); }
+static void leave(void)
+{
+    /* Leaving under a finger still on a bar saves what it set. */
+    if (ls_slider_drag_drop(&s_deck_drag))
+        deck_set(s_deck_drag.bar, deck_bar_value(s_deck_drag.bar, s_deck_drag.rect,
+                                                 s_deck_drag.col));
+    ls_calls_leave(); ls_wf_source_release();
+}
 
 static bool key(ls_tk_t k, char ch)
 {
@@ -1858,6 +1924,7 @@ static bool touch(int col, int row)
         keypad_set(!s_keypad);
         return true;
     }
+    if (ls_rsel_sdr_missing_touch(col, row, LS_RSEL_P25, radio_chosen, NULL)) return true;
     if (s_ctl_rect.h > 0 && tui_rect_contains(s_ctl_rect, col, row)) {
         const int i = ls_btn_hit_slot(col, row, LS_BTN_SLOT_SCREEN);
         if (i == PC_CALLS) { ls_calls_open("P25"); ls_wf_source_release(); }

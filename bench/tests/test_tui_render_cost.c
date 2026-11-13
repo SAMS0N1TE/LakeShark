@@ -296,6 +296,9 @@ LS_CASE(bottom_controls_do_not_accept_taps_in_rounded_corners)
 
 /* The radio panel shows system volume; this screen test does not run audio. */
 int audio_volume_get(void) { return 60; }
+void audio_volume_preview(int v) { (void)v; }
+/* A slider drag on P25's GAIN moves the receiver through this. */
+void p25_request_gain(int tenths) { (void)tenths; }
 
 /* scr_p25.c gained a profile picker, which reaches the PROGRAM session.  That
    session lives in p25_program_sd.c, which the bench deliberately does not

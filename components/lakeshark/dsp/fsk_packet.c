@@ -18,7 +18,8 @@ typedef struct {
     const int16_t *iq;
     size_t pairs;
     float fs;
-    float gate;         /* smoothed power that counts as carrier          */
+    float gate;         /* smoothed power a carrier comes up through      */
+    float drop;         /* and the power it is gone below                 */
     unsigned g, m;      /* power and discriminator moving-average lengths */
 } iq_job_t;
 
@@ -35,6 +36,7 @@ static size_t iq_walk(const iq_job_t *j, uint32_t *hist, float mid,
     memset(d_ring, 0, sizeof(d_ring));
     size_t n_out = 0;
     int level = 0;              /* 1 mark, -1 space or no carrier, 0 none yet */
+    bool on = false;
     uint32_t run = 0, gated_run = 0, gated_best = 0;
     const float us_per = 1e6f / j->fs;
     const float to_hz = j->fs / (2 * PI_F);
@@ -52,7 +54,7 @@ static size_t iq_walk(const iq_job_t *j, uint32_t *hist, float mid,
         d_ring[at_d] = d;
         at_d = (at_d + 1) % j->m;
         const float dm = d_sum / (float)j->m;
-        const bool on = pw_sum / (float)j->g > j->gate && k >= j->g;
+        on = pw_sum / (float)j->g > (on ? j->drop : j->gate) && k >= j->g;
         if (on) {
             if (++gated_run > gated_best) gated_best = gated_run;
         } else {
@@ -122,10 +124,19 @@ static uint32_t preamble_symbol_us(const int32_t *e, size_t n);
 size_t fsk_pkt_iq16_edges(const int16_t *iq, size_t pairs, uint32_t fs,
                           int32_t *edges, size_t cap, fsk_pkt_rf_t *rf)
 {
+    return fsk_pkt_iq16_gated_edges(iq, pairs, fs, 0, 0, edges, cap, rf);
+}
+
+size_t fsk_pkt_iq16_gated_edges(const int16_t *iq, size_t pairs, uint32_t fs,
+                                float before_pw, float after_pw,
+                                int32_t *edges, size_t cap, fsk_pkt_rf_t *rf)
+{
     if (rf) memset(rf, 0, sizeof(*rf));
     if (!iq || pairs < 256 || fs < 8000 || !edges || !cap) return 0;
 
-    /* Floor: the 20th percentile of short window means. */
+    /* Floor: the 20th percentile of short window means, or what the caller
+       measured before the burst when that is lower. The percentile is
+       inside the burst once the burst is four fifths of the capture. */
     size_t w = fs / 1000;
     if (w < 16) w = 16;
     while (pairs / w > FLOOR_WINDOWS) w *= 2;
@@ -144,10 +155,12 @@ size_t fsk_pkt_iq16_edges(const int16_t *iq, size_t pairs, uint32_t fs,
     }
     sort_floats(means, nw);
     float flr = means[nw / 5];
+    if (before_pw > 0 && before_pw < flr) flr = before_pw;
     if (flr < 1) flr = 1;
     if (peak < 10 * flr) return 0;
 
-    iq_job_t j = { .iq = iq, .pairs = pairs, .fs = (float)fs, .gate = 10 * flr };
+    iq_job_t j = { .iq = iq, .pairs = pairs, .fs = (float)fs, .gate = 10 * flr, .drop = 10 * flr };
+    if (after_pw > 0 && after_pw < flr) j.drop = 10 * (after_pw < 1 ? 1 : after_pw);
     j.g = fs / 5000;
     if (j.g < 4) j.g = 4;
     if (j.g > MA_MAX) j.g = MA_MAX;

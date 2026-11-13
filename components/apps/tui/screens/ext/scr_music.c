@@ -86,6 +86,11 @@ static const uint8_t VIEW_HUE[VIEWS] = {TUI_GREEN, TUI_YELLOW, TUI_MAGENTA,
 EXT_RAM_BSS_ATTR static tui_rect hits[ACTIONS];
 EXT_RAM_BSS_ATTR static bool enabled[ACTIONS];
 static tui_rect rows_rect, progress_rect;
+/* The short track list under the visual in portrait: its rows, and the
+   track on its first row. Two cell rows a track, for a finger. */
+static tui_rect next_rect;
+static int next_top;
+#define NEXT_ROW 2
 static bool ready, library;
 static int selected, current = -1, top, source, focus = -1, row_height = 3,
                      visible_rows;
@@ -336,7 +341,7 @@ static void act(int id) {
   case VIEW_PICK: {
     static const char *const WHAT[VIEWS] = {"peak and hold", "octave bands", "the band scan", "time against frequency",
                                             "the waveform", "spectrogram", "notes heard", "the spectrum", "scope", "tools"};
-    ls_picker_open("VIEW", view_pick_done);
+    ls_picker_open("VISUAL", view_pick_done);
     for (int i = 0; i < VIEWS; i++) ls_picker_add(VIEW_NAME[i], WHAT[i]);
     ls_picker_select(view);
     break;
@@ -674,7 +679,7 @@ static void tabs(tui_surface *sf, tui_rect t, int rows) {
   {
     const int side = t.w / 5 < 6 ? 6 : t.w / 5;
     char label[32];
-    snprintf(label, sizeof(label), t.w - 2 * side >= 20 ? "VIEW: %s" : "%s", VIEW_NAME[view]);
+    snprintf(label, sizeof(label), t.w - 2 * side >= 22 ? "VISUAL: %s" : "%s", VIEW_NAME[view]);
     button(sf, VIEW_PREV, tui_rect_make(t.x, t.y, side, 3), "<", false, true);
     button(sf, VIEW_PICK, tui_rect_make(t.x + side, t.y, t.w - 2 * side, 3), label, true, true);
     button(sf, VIEW_NEXT, tui_rect_make(t.x + t.w - side, t.y, side, 3), ">", false, true);
@@ -1222,8 +1227,62 @@ static void draw_library(tui_surface *sf, tui_rect r) {
   button(sf, RESCAN, tui_rect_make(r.x + 2 * third, y, r.w - 2 * third, 3),
          "RESCAN", false, true);
 }
+/* The tracks around the one playing, in a box between the visual and the
+   keys: a tap plays one. The whole list is TRACKS. */
+static void up_next(tui_surface *sf, tui_rect r) {
+  next_rect = tui_rect_make(0, 0, 0, 0);
+  int count = ls_music_count();
+  int pad = 0;
+  for (int y = r.y; y < r.y + r.h; y++)
+    if (ls_tui_corner_pad(y) > pad)
+      pad = ls_tui_corner_pad(y);
+  if (r.x < pad) {
+    r.w -= pad - r.x;
+    r.x = pad;
+  }
+  if (r.x + r.w > tui_surface_rect(sf).w - pad)
+    r.w = tui_surface_rect(sf).w - pad - r.x;
+  if (count <= 0 || r.w < 20 || r.h < 2 + NEXT_ROW)
+    return;
+  const int shown = (r.h - 2) / NEXT_ROW, at = current >= 0 ? current : selected;
+  int first = at - 1;
+  if (first > count - shown)
+    first = count - shown;
+  if (first < 0)
+    first = 0;
+  char title[32];
+  snprintf(title, sizeof(title), " TRACKS %d/%d ", at + 1, count);
+  ls_panel_box(sf, r, title, TUI_CYAN);
+  next_rect = tui_rect_make(r.x + 1, r.y + 1, r.w - 2, shown * NEXT_ROW);
+  next_top = first;
+  for (int i = 0; i < shown && first + i < count; i++) {
+    const int index = first + i, y = next_rect.y + i * NEXT_ROW;
+    const bool now = index == current;
+    tui_rect row = tui_rect_make(next_rect.x, y, next_rect.w, NEXT_ROW);
+    if (now)
+      ls_fill_dither(sf, tui_rect_make(row.x, y, row.w, 1), LS_DITHER_MEDIUM, TUI_GREEN);
+    char num[16], name[96];
+    snprintf(num, sizeof(num), "%3d  ", index + 1);
+    snprintf(name, sizeof(name), "%s", ls_music_name(index));
+    char *dot = strrchr(name, '.');
+    if (dot)
+      *dot = 0;
+    int room = row.w - 12;
+    if (room < 1)
+      room = 1;
+    if ((int)strlen(name) > room)
+      name[room] = 0;
+    int x = row.x + 1;
+    seg(sf, row, &x, y, now ? ">" : " ", TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    seg(sf, row, &x, y, num, TUI_ATTR(TUI_YELLOW, TUI_BLACK));
+    seg(sf, row, &x, y, name, TUI_ATTR(now ? TUI_WHITE | TUI_BRIGHT : TUI_WHITE, TUI_BLACK));
+    if (now)
+      tui_put_str(sf, row, row.x + row.w - 5, y, " NOW", TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+  }
+}
 static void draw(tui_surface *sf, tui_rect r) {
   memset(hits, 0, sizeof(hits));
+  next_rect = tui_rect_make(0, 0, 0, 0);
   memset(enabled, 0, sizeof(enabled));
   bool playing = ls_music_state() == LS_MUSIC_PLAYING;
   if (playing)
@@ -1267,8 +1326,15 @@ static void draw(tui_surface *sf, tui_rect r) {
     else
       info_flat(sf, r, playing);
     int bottom = r.y + r.h - controls_rows(h, r.h - info_h);
-    panel(sf, tui_rect_make(r.x, r.y + info_h + 1, r.w, bottom - r.y - info_h - 2),
+    /* A tall screen has room for the tracks around this one between the
+       visual and the keys; the visual keeps at least 26 rows. */
+    int list_h = 2 + 4 * NEXT_ROW;
+    if (outside[0] || ls_music_count() <= 0 || bottom - r.y - info_h - 2 - list_h - 1 < 26)
+      list_h = 0;
+    panel(sf, tui_rect_make(r.x, r.y + info_h + 1, r.w, bottom - r.y - info_h - 2 - (list_h ? list_h + 1 : 0)),
           live, boxed);
+    if (list_h)
+      up_next(sf, tui_rect_make(r.x, bottom - 1 - list_h, r.w, list_h));
     controls(sf, tui_rect_make(r.x, bottom, r.w, controls_rows(h, r.h - info_h)), playing, h);
   }
 }
@@ -1430,6 +1496,12 @@ static bool touch(int x, int y) {
     }
     if (ls_audio_layers_touch(layers, x, y))
       return true;
+  }
+  if (!library && next_rect.w > 0 && tui_rect_contains(next_rect, x, y)) {
+    int i = next_top + (y - next_rect.y) / NEXT_ROW;
+    if (i < ls_music_count())
+      start(i);
+    return true;
   }
   if (library && tui_rect_contains(rows_rect, x, y)) {
     int i = top + (y - rows_rect.y) / row_height;

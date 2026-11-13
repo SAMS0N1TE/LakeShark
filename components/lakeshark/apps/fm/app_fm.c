@@ -327,6 +327,16 @@ static void fm_head_taps(int mode)
         fm_wx_audio(&s_dsp, s_front.nd, s_front.pcm, s_front.na);
 }
 
+/* The quieting the narrowband front measured on this block, for every mode it
+   ran in. NFM's voice plugin publishes it with its squelch; the pager, APRS
+   and SAME decoders run the same discriminator with no voice attached, and
+   without this their meter read whatever the last NFM session left. */
+static void fm_head_noise(void)
+{
+    if (s_head.stream.front == LS_RX_FRONT_NFM && s_front.nd > 0)
+        FM.noise = s_dsp.demod_noise;
+}
+
 /* Modes whose receive chain is the head's front and plugins. */
 static inline bool fm_head_mode(int mode)
 {
@@ -733,6 +743,7 @@ static void fm_lr_consume(void *ctx, const uint8_t *data, size_t bytes, bool spa
         ls_rx_front_lr(&s_front, &s_head, data, bytes, now);
         FM.iq_level = s_dsp.iq_block_peak;
         FM.audio_level = s_front.rms;
+        fm_head_noise();
         fm_head_taps(mode);
         ls_iq_control_set_streaming(&s_radio_control, true, LS_RADIO_OK);
         ls_iq_control_note_tune_result(&s_radio_control, s_lr_hz, LS_RADIO_OK, s_lr_hz);
@@ -1114,6 +1125,7 @@ static void fm_rx_run_once(void)
             FM.iq_level = FM.mode == FM_MODE_AIS ? fm_iq_rms(iq, FM_IQ_BLOCK_BYTES)
                         : ls_rx_head_has_audio(&s_head) ? s_dsp.iq_block_peak : s_dsp.iq_peak;
             FM.audio_level = s_front.rms;
+            fm_head_noise();
             if (FM.mode == FM_MODE_AIS) FM.squelch_open = false;
             fm_head_taps(FM.mode);
         } else if (FM.mode == FM_MODE_AM) {
@@ -1137,6 +1149,10 @@ static void fm_rx_run_once(void)
 
             int na = fm_wfm_block(&s_dsp, iq, FM_IQ_BLOCK_BYTES, pcm, 600);
             FM.iq_level = s_dsp.iq_peak;
+            /* WFM's noise reading (fm_demod_disc): the meter and the
+               screen's carrier read it. There is no squelch, so the audio is
+               always open. */
+            FM.noise = s_dsp.demod_noise;
             FM.squelch_open = true;
             if (na > 0) {
                 audio_write_mono(pcm, na);
@@ -1156,7 +1172,12 @@ static void fm_rx_run_once(void)
         if(!coverage_active || post_context_current)fm_observation_delivered((uint64_t)now);
         fm_coverage_block_done((uint64_t)now,post_context_current);
         if (now - stats_ts > 2000000LL) {
-            FM.iq_bytes_sec = iq_bucket; iq_bucket = 0; stats_ts = now;
+            /* A rate, as every reader labels it ("B/s", the console's bps):
+               the bucket alone was two seconds' worth and read nearly double
+               what the dongle's own count said. */
+            FM.iq_bytes_sec = (uint32_t)((uint64_t)iq_bucket * 1000000u /
+                                         (uint64_t)(now - stats_ts));
+            iq_bucket = 0; stats_ts = now;
 
             if (FM.mode == FM_MODE_SCAN) {
                 ESP_LOGI(TAG, "SCAN now=%.4f peak=%.4f (%d%%) sweeps=%lu iq=%d%%",
@@ -1189,9 +1210,9 @@ static void fm_rx_run_once(void)
                     FM.hf_level_db, FM.hf_gain_db, FM.squelch_open ? "open" : "mute");
             } else if (FM.mode == FM_MODE_WFM) {
                 char rds[128];
-                ESP_LOGI(TAG, "WFM %.4f iq=%d%% af=%d%% audio(drop=%lu under=%lu) %s",
+                ESP_LOGI(TAG, "WFM %.4f iq=%d%% af=%d%% nse=%d audio(drop=%lu under=%lu) %s",
                     FM.freq_hz / 1e6, (int)(FM.iq_level * 100.0f),
-                    (int)(FM.audio_level * 100.0f),
+                    (int)(FM.audio_level * 100.0f), (int)(FM.noise * 1000.0f),
                     (unsigned long)audio_drops_get(), (unsigned long)audio_underruns_get(),
                     fm_wfm_summary(rds, sizeof(rds)));
                 int core0_pct, core1_pct;

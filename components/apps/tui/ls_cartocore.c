@@ -1029,9 +1029,14 @@ static bool stream_update(stream_digest *s,const uint8_t *p,size_t n) {
     if(take && s->header_used==64) transfer_header(s->header);
     return mbedtls_sha256_update(&s->ctx,p,n)==0;
 }
-static bool verify_transfer(stream_digest *s,const char *sha,uint64_t expected,uint64_t bytes,int64_t deadline,char hex[65]) {
+/* A PMTiles v3 archive for MAP's PMTiles reader: magic and version. */
+static bool pmtiles_name(const char *path) {
+    const size_t n=strlen(path); return n>8 && !strcasecmp(path+n-8,".pmtiles");
+}
+static bool verify_transfer(stream_digest *s,const char *sha,uint64_t expected,uint64_t bytes,int64_t deadline,char hex[65],bool pmtiles) {
     if(atomic_load(&transfer_cancel) || esp_timer_get_time()>=deadline || (expected && bytes!=expected)) return false;
-    bool valid=cc_ctile_header_check(s->header,s->header_used,bytes);
+    bool valid=pmtiles?s->header_used>=8 && bytes>=127 && !memcmp(s->header,"PMTiles\x03",8)
+                      :cc_ctile_header_check(s->header,s->header_used,bytes);
     uint8_t digest[32]; if(mbedtls_sha256_finish(&s->ctx,digest)) return false;
     for(int i=0;i<32;i++) snprintf(hex+i*2,3,"%02x",digest[i]);
     return valid && (!sha[0] || !strcasecmp(hex,sha));
@@ -1201,8 +1206,19 @@ static void fetch_worker(void *arg)
     int close_error=close(fd); fd=-1;
     if (close_error) { why="SD flush/close failed"; goto done; }
     transfer_stage("verify");
-    if (!verify_transfer(&stream,j->sha,j->expected,bytes,start+TRANSFER_US,digest)) { why=atomic_load(&transfer_cancel)?"Cancelled; partial removed":"SHA / size / CTILE mismatch; partial removed"; goto done; }
+    const bool pmtiles=pmtiles_name(j->path);
+    if (!verify_transfer(&stream,j->sha,j->expected,bytes,start+TRANSFER_US,digest,pmtiles)) { why=atomic_load(&transfer_cancel)?"Cancelled; partial removed":pmtiles?"SHA / size / PMTiles mismatch; partial removed":"SHA / size / CTILE mismatch; partial removed"; goto done; }
     if(atomic_load(&transfer_cancel)) { why="Cancelled; partial removed"; goto done; }
+    if (pmtiles) {
+        /* Not CartoCore's: no digest cache or deferred swap, just the file. */
+        transfer_stage("publish");
+        struct stat st;
+        if(!stat(j->path,&st) && !j->force) { why="Already on the card; -f replaces it"; goto done; }
+        if((!stat(j->path,&st) && unlink(j->path)) || rename(part,j->path)) { why="SD publication failed"; goto done; }
+        own_part=false; success=true;
+        why=j->sha[0]?"Saved; SHA256 verified":"Saved; PMTiles header checked";
+        goto done;
+    }
     transfer_stage("publish");
     int published=publish_map(part,j->path,j->force,digest);
     if(published<0) { why="SD publication failed; installed map retained"; goto done; }
@@ -1526,7 +1542,7 @@ static esp_err_t recv_put(httpd_req_t *req)
     if (write_error || close_error) { why="SD flush/close failed"; goto done; }
     if (esp_timer_get_time()>=j->deadline) { why="Receiver timeout"; status="408 Request Timeout"; goto done; }
     transfer_stage("verify");
-    if (!verify_transfer(&stream,expected_sha,req->content_len,bytes,j->deadline,digest)) { why=atomic_load(&transfer_cancel)?"Cancelled; partial removed":"SHA / size / CTILE mismatch; partial removed"; goto done; }
+    if (!verify_transfer(&stream,expected_sha,req->content_len,bytes,j->deadline,digest,false)) { why=atomic_load(&transfer_cancel)?"Cancelled; partial removed":"SHA / size / CTILE mismatch; partial removed"; goto done; }
     if(atomic_load(&transfer_cancel)) { why="Cancelled; partial removed"; goto done; }
     transfer_stage("publish");
     int published=publish_map(part,path,force,digest);

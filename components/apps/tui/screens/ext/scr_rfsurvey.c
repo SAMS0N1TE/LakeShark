@@ -618,10 +618,24 @@ static void enter(void)
     ls_rfs_files_refresh();
 }
 
+/* A survey on the LoRa chip (LORA, LORA SWEEP, LR2021 IQ) holds it in the
+   foreground, so it ends with the screen: left running it kept the chip
+   from every other app and from the mesh. RTL, HackRF, CC1101 and SIM
+   surveys walk on in the background. */
+static void leave(void)
+{
+    static ls_rfs_view_t v;
+    if (!ls_rfs_running()) return;
+    ls_rfs_view(&v);
+    if (v.src == LS_RFS_SRC_LORA || v.src == LS_RFS_SRC_SWEEP || v.src == LS_RFS_SRC_LR_IQ)
+        ls_rfs_stop();
+}
+
 const ls_tui_screen_t ls_scr_rfsurvey = {
     .name = "RF SURVEY",
     .hint = s_hint,
     .enter = enter,
+    .leave = leave,
     .draw = draw,
     .key = key,
     .touch = touch,

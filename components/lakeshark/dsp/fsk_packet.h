@@ -64,6 +64,19 @@ typedef struct {
 size_t fsk_pkt_iq16_edges(const int16_t *iq, size_t pairs, uint32_t fs,
                           int32_t *edges, size_t cap, fsk_pkt_rf_t *rf);
 
+/* The same for a capture a gate cut close around its burst, where no
+   percentile of the capture is noise. Both are mean I*I+Q*Q as the gate
+   measured them: `before_pw` the air before the burst, which is the floor
+   when it is under the capture's own, and `after_pw` the quiet after it. A
+   receiver that turns its gain down for a strong burst leaves the burst
+   only a few dB over the air it interrupted, and less while the gain
+   settles, so a carrier comes up 10 dB over the floor and then stays until
+   it is under 10 dB over `after_pw`, when that is the lower. 0 for either
+   leaves it out. */
+size_t fsk_pkt_iq16_gated_edges(const int16_t *iq, size_t pairs, uint32_t fs,
+                                float before_pw, float after_pw,
+                                int32_t *edges, size_t cap, fsk_pkt_rf_t *rf);
+
 /* Packets from signed edges in us (positive = upper tone). Repeats of the
    same packet in one capture are reported once. Returns how many. */
 int fsk_pkt_from_edges(const int32_t *edges, size_t n, fsk_pkt_t *out, int max);

@@ -426,6 +426,10 @@ void vTaskGetInfo(TaskHandle_t task, TaskStatus_t *info, BaseType_t scan_stack, 
     }
 }
 
+/* The host has no task stacks to measure: plenty left. Weak, because a
+   suite that models a task's stack defines its own. */
+__attribute__((weak)) UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t task)
+{ (void)task; return 8192; }
 UBaseType_t uxTaskGetNumberOfTasks(void)
 {
     return 0;

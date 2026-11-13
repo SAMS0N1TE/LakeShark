@@ -146,12 +146,18 @@ ls_freq_route_t ls_freq_route(int mode, uint32_t hz);
 
 /* ---------------------------------------------------------------- store -- */
 
+/* The scan, the load and its pump, and the writes may be called from any
+   task: the console and freq.save run beside the UI. What is loaded
+   (ls_freqs_at, the view) is the UI task's to read. */
+
 /* The set every unit has with no card: CSV text in the bank format. */
 const char *ls_freqs_builtin_text(void);
 
 /* Where the banks live; /sdcard/freqs unless the bench says otherwise. */
 void ls_freqs_set_root(const char *dir);
 const char *ls_freqs_root(void);
+/* The store's lock; ls_freqs_register makes it at boot. */
+void ls_freqs_lock_init(void);
 /* The bank files on the card, sorted; false without a card. */
 bool ls_freqs_scan(void);
 int  ls_freqs_banks(void);
@@ -198,6 +204,8 @@ bool ls_freqs_export(const uint16_t *idx, int n, const char *path, bool lscan,
                      char *why, size_t wn);
 /* A file in any format into a new bank beside the others. */
 bool ls_freqs_import(const char *path, char *why, size_t n);
+/* The bank the last import made, "" when it made none. */
+const char *ls_freqs_imported(void);
 
 /* ------------------------------------------------- saving from any app -- */
 

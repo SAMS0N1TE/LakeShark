@@ -90,7 +90,8 @@ static bool autosq_only;
 uint8_t settings_get_scan_options(void) { return 0; }
 bool settings_set_scan_options(uint8_t options) { (void)options; return true; }
 bool settings_get_scan_tuning(int *h, int *t, int *p) { (void)h; (void)t; (void)p; return false; }
-void settings_set_scan_tuning(int h, int t, int p) { (void)h; (void)t; (void)p; }
+static int kept_hang_ms, kept_pri_ms;
+void settings_set_scan_tuning(int h, int t, int p) { (void)t; kept_hang_ms = h; kept_pri_ms = p; }
 int app_count(void) { return 2; }
 const app_t *app_at(int i) { static app_t apps[]={{.name="P25"},{.name="FM"}}; return i>=0 && i<2 ? &apps[i] : NULL; }
 void app_switch_to(int i) { foreground = *app_at(i); ++switched; }
@@ -931,4 +932,28 @@ LS_CASE(p25_seek_passes_a_strong_carrier_without_sync_and_completes_one_lap)
     LS_EQ_INT(tune_count, 3);
     LS_EQ_UINT(tuned[0], 150012500); LS_EQ_UINT(tuned[2], 150000000);
     scan_engine_stop(); foreground.name = "FM"; nfm_reset();
+}
+/* Hang and priority are kept in tenths of a second: what is set is rounded
+   to one, so the value in use, the one shown and the one kept all agree. */
+LS_CASE(hang_and_priority_are_set_in_the_tenths_they_are_kept_in)
+{
+    const int hang = scan_engine_get_hang_ms(), pri = scan_engine_get_priority_ms();
+    scan_engine_set_hang_ms(750);
+    LS_EQ_INT(scan_engine_get_hang_ms(), 800);
+    LS_EQ_INT(kept_hang_ms, 800);
+    scan_engine_set_hang_ms(1249);
+    LS_EQ_INT(scan_engine_get_hang_ms(), 1200);
+    scan_engine_set_hang_ms(30000 + 49);
+    LS_EQ_INT(scan_engine_get_hang_ms(), 30000);
+    scan_engine_set_hang_ms(40);
+    LS_EQ_INT(scan_engine_get_hang_ms(), 0);
+    scan_engine_set_priority_ms(2550);
+    LS_EQ_INT(scan_engine_get_priority_ms(), 2600);
+    LS_EQ_INT(kept_pri_ms, 2600);
+    scan_engine_set_priority_ms(120);
+    LS_EQ_INT(scan_engine_get_priority_ms(), 500);
+    scan_engine_set_priority_ms(0);
+    LS_EQ_INT(scan_engine_get_priority_ms(), 0);
+    scan_engine_set_hang_ms(hang);
+    scan_engine_set_priority_ms(pri);
 }

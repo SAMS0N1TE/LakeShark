@@ -1,3 +1,24 @@
+# REC (merged into SUB-GHZ)
+
+REC is no longer an app of its own. It was a second HOME tile for the same
+screen: for the RTL-SDR, the CC1101 and the LoRa chip it showed SUB-GHZ, and
+its other recorders already had homes of their own. Where everything went:
+
+| Was in REC | Now |
+|---|---|
+| Signal captures (RTL-SDR, CC1101, LoRa chip), replay, the .sub player | [SUB-GHZ](SUBGHZ.md): READ, RECORD RAW, SAVED |
+| Readings as CSV (HackRF, nRF24, NFC, Wi-Fi, Bluetooth, mesh traffic) | [NOTES](NOTES.md): RADIO picks the source |
+| GPS position track | [GPS](GPS.md) |
+| TIME MACHINE (in the REC folder) | its own tile, next to SUB-GHZ |
+| FILES > REPLAY | opens the capture in SUB-GHZ |
+
+The console command `rec` and the receiver mode named REC are unchanged:
+they are SUB-GHZ's recorder underneath.
+
+---
+
+The rest of this page describes REC as it was, for older builds.
+
 # REC
 
 Capture what a radio receives and save it to the SD card, then replay a saved capture.
@@ -45,11 +66,11 @@ The view below the RADIO box follows the radio. The hint line at the bottom show
 
 | Radio | Keys |
 |---|---|
-| RTL-SDR, CC1101, LoRa chip | W starts or stops WATCH. D records one raw capture (RTL-SDR, HackRF or LR2021). L learns a 2-FSK transmitter (LoRa chip). 1, 2 and 3 are READ, BAND and SAVED. G opens FILES. O opens OPTIONS |
+| RTL-SDR, CC1101, LoRa chip | SUB-GHZ's menu: 1 to 5 are READ, RECORD RAW, SAVED, FREQUENCY ANALYZER and SETTINGS. W starts or stops listening. D records one raw capture (RTL-SDR, HackRF or LR2021). L learns a 2-FSK transmitter (LoRa chip). G opens FILES from SAVED. O opens SETTINGS |
 | HackRF, nRF24, NFC, Wi-Fi, Bluetooth, mesh traffic | C turns RECORD (CSV) on or off. V shows the live SENSORS readings. O opens FILES |
 | GPS | T starts or stops the GPS track. M opens the map. O opens FILES |
 
-Capture radios show SUB-GHZ inside REC: READ, BAND and SAVED, with the frequency, capture setup, WATCH and the captured patterns. They work the same as in the SUB-GHZ app; see [SUB-GHZ](SUBGHZ.md).
+Capture radios show SUB-GHZ inside REC: its menu of READ, RECORD RAW, SAVED, FREQUENCY ANALYZER and SETTINGS. They work the same as in the SUB-GHZ app; see [SUB-GHZ](SUBGHZ.md).
 
 **RECORD** (D, or the RECORD key on READ) is the manual capture that READ RAW was. It arms for the next signal over the trigger while READ stays on screen; the banner shows RECORDING, the level against the trigger and the edges. The file lands in SAVED. D again stops it. Tap the RECORDING chip, or press V, for the full view below; BACK returns to READ.
 
@@ -81,7 +102,7 @@ Capture radios show SUB-GHZ inside REC: READ, BAND and SAVED, with the frequency
 
 ## Tips and limits
 
-- Stop WATCH before changing the radio or the frequency.
+- Stop listening before changing the radio.
 - The capture file itself carries no position. Position goes into the `samples.csv` rows of a CSV recording.
 - One PLAY ONCE is one bounded send. Wait for the result line before sending again.
 - CSV recordings and their files live under `/sdcard/journal`.

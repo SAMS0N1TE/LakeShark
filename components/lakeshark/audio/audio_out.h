@@ -56,6 +56,9 @@ void audio_mute_set(bool muted);
 bool audio_is_muted(void);
 void audio_volume_delta(int d);
 void audio_volume_set(int v);
+/* The level a finger is dragging a volume slider through: heard at once and
+   not saved. The audio_volume_set that ends the drag saves it. */
+void audio_volume_preview(int v);
 int  audio_volume_get(void);
 
 void audio_out_ensure_unmuted(void);

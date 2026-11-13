@@ -222,11 +222,10 @@ void ls_ink_flush(tui_surface *sf, tui_rect skip)
 void ls_ink_text(tui_surface *sf, tui_rect clip, int x, int y, const char *s, int n, uint8_t attr)
 {
     attr = ls_ink_tinted(attr);
-    /* `n` is bytes of UTF-8; each character takes one cell, folded to ASCII. */
-    const char *p = s, *end = s + n;
-    for (int i = 0; p < end && *p; i++) {
+    /* `n` cells, one byte each (tui_utf8_to_cells), Cyrillic included. */
+    for (int i = 0; i < n && s[i]; i++) {
         /* A space is see-through: the cell is left to the picture, which
            also clears anything the canvas put there. */
-        ls_tui_put_glass(sf, clip, x + i, y, tui_utf8_fold(&p), attr);
+        ls_tui_put_glass(sf, clip, x + i, y, s[i], attr);
     }
 }

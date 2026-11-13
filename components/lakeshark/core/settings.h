@@ -136,8 +136,9 @@ bool settings_get_antenna_external(void);
 bool settings_get_antenna_remember(void);
 void settings_set_antenna_remember(bool remember);
 void settings_set_antenna_external(bool external);
-/* Whether MMCX1 also transmits. False (the default): MMCX1 receives and a
-   transmit goes out the internal antenna. */
+/* Whether MMCX1 also transmits. True (the default): a transmit goes out the
+   antenna selected. False is RX ONLY: MMCX1 receives and a transmit goes out
+   the internal antenna. */
 bool settings_get_antenna_mmcx_tx(void);
 void settings_set_antenna_mmcx_tx(bool tx);
 /* Same value, readable before settings_init(). */
@@ -221,6 +222,8 @@ int  settings_get_subghz_style(void);        /* spectrum grain             */
 void settings_set_subghz_style(int style);
 bool settings_get_subghz_lr_fsk(void);       /* LR2021 WATCH: FSK, not OOK */
 void settings_set_subghz_lr_fsk(bool fsk);
+int  settings_get_subghz_expert(void);       /* SUB-GHZ SETTINGS, packed   */
+void settings_set_subghz_expert(int packed);
 int  settings_get_subghz_colour(void);       /* spectrum palette           */
 void settings_set_subghz_colour(int colour);
 /* The FSK receive parameters, which are the ones that take real effort to

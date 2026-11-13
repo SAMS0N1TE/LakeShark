@@ -1,3 +1,5 @@
+#include "rec_scope.h"
+#include "esp_timer.h"
 #include "rec_watch.h"
 #include "ls_mesh.h"
 #include "ls_mixrf.h"
@@ -85,12 +87,22 @@ bool rec_watch_start(void)
     rec_decode_ook24(pulse,100,&state.decoded[0]);
     return true;
 }
-static bool sim_loading;
-bool rec_watch_enable(bool on){if(on && sim_loading)return false;state.enabled=on;return true;}
+static bool sim_loading,sim_refuse_off;
+/* A stop the runtime refuses: the worker not ready or a request in flight. */
+void rec_watch_sim_refuse_off(bool refuse){sim_refuse_off=refuse;}
+bool rec_watch_enable(bool on){if(on && sim_loading)return false;if(!on && sim_refuse_off)return false;state.enabled=on;return true;}
 bool rec_watch_enabled(void){return state.enabled;}
 /* The bench has no radio to refuse a session, so nothing ever went wrong
    and the reason is always empty. */
 const char *rec_watch_error(void){return "";}
+/* LSSIM_WATCH_LENT=1 draws a WATCH that has lent the LoRa chip. */
+bool rec_watch_scan_busy(void);
+bool rec_watch_learn_busy(void);
+void rec_watch_scan_stop(void);
+bool rec_watch_lent(void){const char *e=getenv("LSSIM_WATCH_LENT");return e && *e=='1';}
+/* As the runtime: a sweep or LEARN ends with the screen. */
+void rec_watch_screen_left(void){if(rec_watch_scan_busy() || rec_watch_learn_busy())rec_watch_scan_stop();}
+void rec_watch_screen_front(bool on){(void)on;}
 /* No radio on the bench, so a replay goes nowhere - but it refuses under a
    running watch exactly as the real one does, which is the only outcome the
    screen has to say anything about. The power is kept so a test can check
@@ -105,7 +117,8 @@ static rec_fsk_mod_t sim_fsk={4800,25000,0x2DD42DD4u,32,59};
 void rec_watch_fsk_get(rec_fsk_mod_t *out){if(out)*out=sim_fsk;}
 static bool sim_lr_fsk;
 bool rec_watch_lr_fsk(void){return sim_lr_fsk;}
-bool rec_watch_set_lr_fsk(bool fsk){sim_lr_fsk=fsk;return true;}
+/* Refused under a running WATCH, as the runtime does. */
+bool rec_watch_set_lr_fsk(bool fsk){if(state.enabled)return false;sim_lr_fsk=fsk;return true;}
 /* No radio to sweep, but the sweep is a state machine as far as the screen
    is concerned - busy or not, with or without findings - and every control
    that acts on a running sweep was unreachable from the bench while this
@@ -127,8 +140,8 @@ bool rec_watch_request_scan(uint32_t lo,uint32_t hi,uint32_t secs,int bins)
     if(hi<=lo)return false;
     sim_sweeping=true;
     sim_found=2;
-    sim_bin[0].hz=lo+(hi-lo)/4;   sim_bin[0].dbm=-72.0f;
-    sim_bin[1].hz=lo+(hi-lo)*3/4; sim_bin[1].dbm=-88.0f;
+    sim_bin[0].hz=lo+(hi-lo)/4;   sim_bin[0].dbm=-72.0f; sim_bin[0].floor=-120.0f;
+    sim_bin[1].hz=lo+(hi-lo)*3/4; sim_bin[1].dbm=-88.0f; sim_bin[1].floor=-120.0f;
     return true;
 }
 bool rec_watch_scan_busy(void){return sim_sweeping;}
@@ -153,6 +166,7 @@ int rec_watch_scan_live(rec_scan_bin_t *o,int m)
         o[i].hz=433050000u+(uint32_t)i*54000u;
         o[i].dbm=d;
         o[i].hold=d+(i==9?4.0f:2.0f);
+        o[i].floor=-120.0f;
     }
     return n;
 }
@@ -220,7 +234,27 @@ bool rec_watch_learn_apply(void)
 bool rec_watch_fsk_set(const rec_fsk_mod_t *in){if(!in)return false;sim_fsk=*in;return true;}
 bool rec_watch_request_export(uint32_t id)
 {if(!id)return false;strcpy(state.export_status,"SIMULATED export; no SD write");return true;}
-void rec_watch_snapshot(rec_watch_status_t *out){if(out)*out=state;}
+/* READ's live trace while WATCH is on: a quiet band with a remote pressed
+   every 1.2 s (300 ms of on/off keying), on the simulator's clock. */
+static void sim_scope(void)
+{
+    static int64_t at;
+    const int64_t now=esp_timer_get_time();
+    if(!state.enabled){at=now;return;}
+    if(now-at>2000000)at=now-2000000;
+    rec_scope_set_dbm(true);
+    while(now-at>=4000) {
+        at+=4000;
+        const int64_t ms=at/1000;
+        /* six 36 ms frames with 12 ms gaps, fading and coming back */
+        const int64_t in=ms%1200;
+        const bool on=in<288 && (in%48)<36;
+        const float jitter=(float)((ms*7919)%9)-4.0f;
+        const float fade=on?(float)((in/48)%3)*-6.0f:0.0f;
+        rec_scope_level(on?-40.0f+fade+jitter:-86.0f+jitter*0.5f,4000);
+    }
+}
+void rec_watch_snapshot(rec_watch_status_t *out){sim_scope();if(out)*out=state;}
 bool rec_watch_request_pin(uint32_t id,bool pin)
 {for(int i=0;i<state.count;i++)if(state.event[i].id==id){state.event[i].pinned=pin;return true;}return false;}
 bool rec_watch_alert_target(const char *peer)

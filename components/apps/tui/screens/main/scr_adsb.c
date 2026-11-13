@@ -732,12 +732,13 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
         tui_put_str(sf, edge, title_end + 1, list.y, alarm, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED));
     }
 
-    int row = 0, shown = 0;
+    int row = 0;
     for (int k = 0; k < ordered && row < list_h - 1; k++) {
         const int slot = order[k];
         const adsb_aircraft_t *a = adsb_state_get(slot);
-        if (!a || !a->active) continue;
-        if (shown++ < s_top) continue;
+        /* k, not a count of rows drawn: sel_index and s_top are positions
+           in order[], and adsb_age (its own task) can drop one after it. */
+        if (!a || !a->active || k < s_top) continue;
 
         int age = (int)((now - a->last_seen_us) / 1000000);
         if (age < 0) age = 0;
@@ -761,7 +762,7 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
                      (unsigned long)a->icao, call, adsb_state_source_label(a, now), alt, speed,
                      hdg, age, (unsigned long)a->msg_count);
         const bool alarm = emergency_word(slot, now) != NULL;
-        uint8_t at = (shown - 1 == sel_index) ? (alarm ? TUI_ATTR(TUI_BLACK, TUI_RED | TUI_BRIGHT) : sel)
+        uint8_t at = (k == sel_index) ? (alarm ? TUI_ATTR(TUI_BLACK, TUI_RED | TUI_BRIGHT) : sel)
                    : alarm                   ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED)
                    : a->pos_valid            ? body : stale;
         tui_put_str(sf, list, list.x + 2, list.y + 2 + row, buf, at);
@@ -769,8 +770,12 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
         row++;
     }
     if (!active) {
-        tui_put_str(sf, list, list.x + 2, list.y + 3, adsb_receiver_status(),
-                    stale);
+        /* No dongle: say so plainly, with the tap onto the LoRa chip where
+           it hears Mode S (the LR2021), instead of the receiver's word. */
+        if (!ls_rsel_sdr_missing_draw(sf, list, list.x + 2, list.y + 3, list.w - 4, 2,
+                                      LS_RSEL_ADSB, NULL))
+            tui_put_str(sf, list, list.x + 2, list.y + 3, adsb_receiver_status(),
+                        stale);
         /* An empty list, with room: what will fill it and how to help. */
         static const char *const HOW[] = {
             "Aircraft show here as they are heard on 1090 MHz;",
@@ -1274,6 +1279,7 @@ static bool touch(int col, int row)
         if (hit(s_nav[i], col, row))
             return key(i == 0 ? LS_TK_UP : i == 1 ? LS_TK_ENTER : LS_TK_DOWN, 0);
     if (s_detail) return true;
+    if (ls_rsel_sdr_missing_touch(col, row, LS_RSEL_ADSB, radio_chosen, NULL)) return true;
 
     if (hit(s_radar_rect, col, row)) {
         int cw = 10, ch = 17;

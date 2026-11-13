@@ -1,5 +1,7 @@
 #include "ls_radio_panel.h"
+#include "ls_slider_drag.h"
 #include "ls_numpad.h"
+#include "ls_radio_select.h"
 #include "ls_glyph.h"
 #include "ls_tui.h"
 #include "ls_i18n.h"
@@ -82,6 +84,14 @@ static tui_rect s_card[N_CARD], s_card_down[N_CARD], s_card_up[N_CARD],
 static int      s_cards;          /* how many the last draw laid out      */
 static uint8_t  s_card_id[N_CARD];/* which setting each drawn slot is     */
 static tui_rect s_gate;           /* the squelch slider under the meter   */
+
+/* A finger dragging a travel or the gate row. The bars it is handed are
+   indexed by setting (CARD_*), the gate after them, so it keeps the setting
+   it took even if the deck lays out differently under it. While it moves,
+   the deck draws the value under the finger (s_drag_id, s_drag_value). */
+#define DRAG_GATE N_CARD
+static ls_slider_drag_t s_drag;
+static int s_drag_id = -1, s_drag_value;
 
 /* A tap on a +/- key lights it for a few frames, the acknowledgement the
    VFO's own cards give: the value lands a frame or two later, and a key that
@@ -210,7 +220,7 @@ static void meter(tui_surface *sf, tui_rect box, int x0, int y, int w,
     if (bw < 6) return;
     const int segs = bw / 2;
     if (segs < 2) return;
-    if (!v->has_squelch) {
+    if (!v->has_squelch && !v->has_signal) {
         tui_put_str(sf, box, bx, y, ls_tr("--"), LS_ATTR_DIM);
     } else {
         const float sig = v->signal < 0.0f ? 0.0f : v->signal > 1.0f ? 1.0f : v->signal;
@@ -282,18 +292,90 @@ static void card_fill(card_t *c, int id, const ls_radio_view_t *v)
                               (int)(c->frac * 100.0f + 0.5f));
         else snprintf(c->value, sizeof(c->value), "--");
         break;
-    case CARD_HANG:
+    case CARD_HANG: {
+        /* These two are applied when a dragging finger lets go, so until
+           then the card shows where the finger is. */
+        const int ms = id == s_drag_id ? s_drag_value : scan_engine_get_hang_ms();
         c->label = "HANG"; c->shortname = "HANG"; c->hue = TUI_YELLOW;
         c->live = c->settable = true;
-        c->frac = clampi(scan_engine_get_hang_ms(), 0, 30000) / 30000.0f;
-        snprintf(c->value, sizeof(c->value), "%.1fs", scan_engine_get_hang_ms() / 1000.0);
+        c->frac = clampi(ms, 0, 30000) / 30000.0f;
+        snprintf(c->value, sizeof(c->value), "%.1fs", ms / 1000.0);
         break;
-    default:
+    }
+    default: {
+        const int pct = id == s_drag_id ? s_drag_value : scan_engine_get_threshold_pct();
         c->label = "OPEN AT"; c->shortname = "OPEN"; c->hue = TUI_MAGENTA;
         c->live = c->settable = true;
-        c->frac = clampi(scan_engine_get_threshold_pct(), 0, 100) / 100.0f;
-        snprintf(c->value, sizeof(c->value), "%d%%", scan_engine_get_threshold_pct());
+        c->frac = clampi(pct, 0, 100) / 100.0f;
+        snprintf(c->value, sizeof(c->value), "%d%%", pct);
         break;
+    }
+    }
+}
+
+/* THE TRAVEL SETS, IT DOES NOT TYPE: the column under the thumb is the
+   value, in the card's own range and steps. Volume and squelch in percent,
+   hang in the half seconds its keys use, so the travel and the keys cannot
+   disagree about what a value is, and OPEN AT from 1. */
+static int card_value_at(int id, tui_rect bar, int x)
+{
+    const int span = bar.w > 1 ? bar.w - 1 : 1;
+    const int pos = clampi(x - bar.x, 0, span);
+    switch (id) {
+    case CARD_VOL:
+    case CARD_SQL:
+        return clampi(pos * 100 / span, 0, 100);
+    case CARD_HANG: {
+        const int ms = pos * 30000 / span;
+        return clampi((ms + 250) / 500 * 500, 0, 30000);
+    }
+    default:
+        return clampi(1 + pos * 99 / span, 1, 100);
+    }
+}
+
+/* One write, the tap's: saved wherever that setting saves. */
+static void card_set(const ls_radio_view_t *v, int id, int value)
+{
+    switch (id) {
+    case CARD_VOL:  if (v->set_volume_pct) v->set_volume_pct(value); break;
+    case CARD_SQL:  if (v->set_squelch_pct) v->set_squelch_pct(value); break;
+    case CARD_HANG: scan_engine_set_hang_ms(value); break;
+    default:        scan_engine_set_threshold_pct(value); break;
+    }
+}
+
+/* While the finger is still down: what the screen lets be heard now, saving
+   nothing. Hang and the threshold have nothing to hear until a scan stops
+   on something, so they wait for the lift. */
+static void card_preview(const ls_radio_view_t *v, int id, int value)
+{
+    if (id == CARD_VOL && v->preview_volume_pct) v->preview_volume_pct(value);
+    else if (id == CARD_SQL && v->preview_squelch_pct) v->preview_squelch_pct(value);
+}
+
+/* Once a frame, before the deck and the glass lay out again: a finger that
+   went down on a travel, or on the gate row, carries it. */
+static void deck_follow(const ls_radio_view_t *v)
+{
+    tui_rect bars[N_CARD + 1];
+    memset(bars, 0, sizeof(bars));
+    for (int i = 0; i < s_cards; ++i) bars[s_card_id[i]] = s_card_bar[i];
+    if (v->set_squelch_pct) bars[DRAG_GATE] = s_gate;
+    const int ev = ls_slider_drag(&s_drag, bars, N_CARD + 1);
+    if (ev == LS_SLIDER_IDLE) {
+        if (!ls_slider_drag_moving(&s_drag)) s_drag_id = -1;
+        return;
+    }
+    const int id = s_drag.bar == DRAG_GATE ? CARD_SQL : s_drag.bar;
+    const int value = card_value_at(id, s_drag.rect, s_drag.col);
+    if (ev == LS_SLIDER_MOVE) {
+        s_drag_id = id;
+        s_drag_value = value;
+        card_preview(v, id, value);
+    } else {
+        s_drag_id = -1;
+        card_set(v, id, value);
     }
 }
 
@@ -656,7 +738,13 @@ static void glass(tui_surface *sf, tui_rect r, const ls_radio_panel_t *p,
               v, true);
         row += 2;
     }
-    if (side.h > row) {
+    const int missing = side.h > row && v->sdr_job_set && !v->receiver.receiver_streaming
+        ? ls_rsel_sdr_missing_draw(sf, side, side.x + (wide ? 1 : 0), side.y + row,
+                                   side.w - (wide ? 2 : 0), side.h - row >= 4 ? 2 : 1,
+                                   (ls_rsel_job_t)v->sdr_job, NULL)
+        : 0;
+    if (missing) row += missing;
+    else if (side.h > row) {
         tui_put_str(sf, side, side.x + (wide ? 1 : 0), side.y + row,
                     ls_tr(!v->receiver.receiver_streaming        ? "RECEIVER OFFLINE"
                     : v->receiver.tune_state == LS_IQ_RESULT_PENDING ? "TUNE PENDING"
@@ -705,8 +793,7 @@ LS_COLD static bool deck_touch(const ls_radio_view_t *v, int x, int y, char *out
        cannot trust. */
     if (s_gate.h > 0 && tui_rect_contains(s_gate, x, y)) {
         if (!v->set_squelch_pct) return true;
-        const int pct = s_gate.w > 1 ? (x - s_gate.x) * 100 / (s_gate.w - 1) : 0;
-        v->set_squelch_pct(clampi(pct, 0, 100));
+        card_set(v, CARD_SQL, card_value_at(CARD_SQL, s_gate, x));
         return true;
     }
     for (int i = 0; i < s_cards; ++i) {
@@ -717,32 +804,11 @@ LS_COLD static bool deck_touch(const ls_radio_view_t *v, int x, int y, char *out
         if (!down && !up && !bar &&
             !(s_card_val[i].h > 0 && tui_rect_contains(s_card_val[i], x, y)))
             continue;
-        /* THE TRAVEL SETS, IT DOES NOT TYPE. One write, where it was pressed,
-           in the card's own range: the column under the thumb is the value.
-           Nothing here runs from a draw and nothing repeats. */
+        /* One write, where it was pressed (card_value_at). A tap never
+           repeats; a finger that drags the travel is deck_follow's, which
+           writes once when it lets go. */
         if (bar) {
-            const int span = s_card_bar[i].w > 1 ? s_card_bar[i].w - 1 : 1;
-            int pos = x - s_card_bar[i].x;
-            if (pos < 0) pos = 0;
-            if (pos > span) pos = span;
-            switch (id) {
-            case CARD_VOL:
-                if (v->set_volume_pct) v->set_volume_pct(clampi(pos * 100 / span, 0, 100));
-                break;
-            case CARD_SQL:
-                if (v->set_squelch_pct) v->set_squelch_pct(clampi(pos * 100 / span, 0, 100));
-                break;
-            case CARD_HANG: {
-                /* Half seconds, the step its keys use, so the travel and the
-                   keys cannot disagree about what a value is. */
-                const int ms = pos * 30000 / span;
-                scan_engine_set_hang_ms(clampi((ms + 250) / 500 * 500, 0, 30000));
-                break;
-            }
-            default:
-                scan_engine_set_threshold_pct(clampi(1 + pos * 99 / span, 1, 100));
-                break;
-            }
+            card_set(v, id, card_value_at(id, s_card_bar[i], x));
             return true;
         }
         if (down || up) {
@@ -1285,10 +1351,23 @@ void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
             v = &actual;
         }
     }
+    /* A drag first, against the bars the last frame drew; then they are
+       forgotten until the deck and the glass draw them again, so a layout
+       without them (the lists, a pane too small) has none to take or tap.
+       The value under a dragging finger is what the deck and gate show. */
+    deck_follow(v);
+    s_cards = 0;
+    s_gate = tui_rect_make(0, -1, 0, 0);
+    if (s_drag_id == CARD_VOL || s_drag_id == CARD_SQL) {
+        /* `actual` already holds the view, whichever one v points at. */
+        if (s_drag_id == CARD_VOL) actual.volume = s_drag_value;
+        else actual.gate = s_drag_value / 100.0f;
+        v = &actual;
+    }
     /* Once a frame, and only here: the activity trace advances by one reading
        and a key lit by a tap fades. Both are animation the panel owns, so
        neither costs the receiver anything. */
-    trace_push(v->signal, v->has_squelch);
+    trace_push(v->signal, v->has_squelch || v->has_signal);
     if (s_flash_ttl > 0 && --s_flash_ttl == 0) s_flash = -1;
     const bool wide = a.w > 72;
     p->scan_choice = false;
@@ -1461,7 +1540,11 @@ LS_COLD char ls_radio_panel_touch(ls_radio_panel_t *p, const ls_radio_view_t *v,
     /* The deck first: its keys and the gate slider are inside the body, so a
        tap there is never a tap on the bar, and the bar's own hit table only
        covers the rows it drew. */
+    /* The lift of a drag that already set its value, not a press. */
+    if (ls_slider_drag_tap_is_lift(&s_drag)) return 0;
     if (!p->lists) {
+        if (v->sdr_job_set &&
+            ls_rsel_sdr_missing_touch(x, y, (ls_rsel_job_t)v->sdr_job, NULL, NULL)) return 0;
         if (start_touch(p, v, x, y)) return 0;
         char pass = 0;
         if (deck_touch(v, x, y, &pass)) return pass;
@@ -1720,7 +1803,7 @@ uint32_t ls_radio_glass_tick(ls_radio_glass_t *g, uint32_t hz)
 }
 
 #define LCD_FIG_W 4
-#define LCD_FIG_H 5
+#define LCD_FIG_H LS_RADIO_FIG_H
 static const char *const LCD_FIG[11][LCD_FIG_H] = {
     {"XXXX","X..X","X..X","X..X","XXXX"},   /* 0 */
     {"..XX","..XX","..XX","..XX","..XX"},   /* 1 */
@@ -1938,6 +2021,13 @@ int ls_radio_glass_frequency(ls_radio_glass_t *g, tui_surface *sf, tui_rect r,
                              int y, uint32_t hz, const char *entry,
                              uint32_t blink, bool wide)
 {
+    return ls_radio_glass_figures(g, sf, r, y, hz, entry, blink, wide, true);
+}
+
+int ls_radio_glass_figures(ls_radio_glass_t *g, tui_surface *sf, tui_rect r,
+                           int y, uint32_t hz, const char *entry,
+                           uint32_t blink, bool wide, bool gap)
+{
     const int x0 = r.x + 2, iw = r.w - 4, last = r.y + r.h - 2;
     const uint8_t val = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
     const uint8_t key = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
@@ -1958,13 +2048,13 @@ int ls_radio_glass_frequency(ls_radio_glass_t *g, tui_surface *sf, tui_rect r,
     const int fig_w = wide ? (iw * 2) / 3 : iw;
     int xs = 2;
     while (xs > 1 && lcd_text_w(field, xs) + 5 > fig_w) xs--;
-    const bool big = last - y >= LCD_FIG_H &&
+    const bool big = last - y + 1 >= LCD_FIG_H + (gap ? 1 : 0) &&
                      lcd_text_w(field, 1) + 5 <= fig_w;
 
     if (big) {
         const int w = lcd_text_w(field, xs);
         const int fx = wide ? x0 : x0 + (fig_w - w - 4) / 2;
-        y++;
+        if (gap) y++;
         lcd_number(sf, r, fx, y, figures, against, xs, val,
                    TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), pad);
         /* The caret sits under the next figure, blinking, so a half-typed

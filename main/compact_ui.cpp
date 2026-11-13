@@ -403,6 +403,8 @@ extern "C" const ls_app_doc_t ls_doc_radio;
 extern "C" const ls_app_doc_t ls_doc_digi;
 static bool tui_live_adsb(void) { return tui_live_claim("ADS-B"); }
 static bool tui_live_rec(void)  { return tui_live_claim("REC"); }
+/* Listening, or the recorder armed: SUB-GHZ is doing something. */
+static bool tui_live_subghz(void) { return rec_watch_enabled() || tui_live_rec(); }
 /* The directory tile's live lamp. mesh.up is a bool published by
    ls_value, so this is the same one-line reader as the others and the tile
    lights whenever the stack is running - which is exactly what "live" means
@@ -1529,10 +1531,11 @@ static bool tui_session(void)
             { "fox", "FOX HUNT", "find a TX", LS_ICON_FOX, TUI_YELLOW,
               LS_APP_EXTRA, &ls_scr_fox, nullptr, &ls_doc_fox },
 
-            { "rec",  "REC",  "capture",   LS_ICON_RECORD, TUI_RED,
-              LS_APP_EXTRA, &ls_scr_rec, tui_live_rec, &ls_doc_rec },
-            { "subghz", "SUB-GHZ", "watch + replay", LS_ICON_SUBGHZ, TUI_GREEN,
-              LS_APP_EXTRA, &ls_scr_subghz, rec_watch_enabled, &ls_doc_subghz },
+            /* REC was a second tile for this one: it hosted SUB-GHZ's own
+               screen for the capture radios, and its CSV and GPS track
+               recorders are NOTES' and GPS's. One app, one tile. */
+            { "subghz", "SUB-GHZ", "rec + replay", LS_ICON_SUBGHZ, TUI_GREEN,
+              LS_APP_EXTRA, &ls_scr_subghz, tui_live_subghz, &ls_doc_subghz },
             { "files", "FILES", "the SD card", LS_ICON_FILES, TUI_YELLOW,
               LS_APP_EXTRA, &ls_scr_files, nullptr, &ls_doc_files },
             { "music", "MUSIC", "audio player", LS_ICON_MUSIC, TUI_MAGENTA,

@@ -24,12 +24,21 @@ static void board_default(void)
     s_board.present[LS_RSEL_SDR_RTL] = true;
     s_board.present[LS_RSEL_LORA] = true;
     s_board.present[LS_RSEL_GPS] = true;
+    /* LSSIM_RTL=absent: no dongle this boot; =gone: one was, and dropped off. */
+    const char *rtl = getenv("LSSIM_RTL");
+    if (rtl && (!strcmp(rtl, "absent") || !strcmp(rtl, "gone"))) {
+        s_board.present[LS_RSEL_SDR_RTL] = false;
+        s_board.sdr_seen[0] = !strcmp(rtl, "gone");
+    }
     const char *chip = getenv("LSSIM_LORA");
     if (chip && !strcmp(chip, "lr2021")) {
         s_board.lora_lr20xx = true;
         s_board.lora_name = "LR2021";
         s_board.lora_caps = LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_OOK_RX |
                             LS_LORA_CAP_MODES_RX | LS_LORA_CAP_WIDE_RX_BW | LS_LORA_CAP_RSSI_INST;
+        /* The LR2021 T-Display-P4 as shipped: no dongle, so SUB-GHZ BAND
+           opens on the chip's own I/Q (LSSIM_LRIQ feeds it). */
+        if (getenv("LSSIM_LRIQ")) s_board.present[LS_RSEL_SDR_RTL] = false;
     } else {
         s_board.lora_name = "SX126x";
         s_board.lora_caps = LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_OOK_RX |

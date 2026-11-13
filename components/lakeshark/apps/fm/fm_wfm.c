@@ -67,12 +67,17 @@ int fm_wfm_block(fm_dsp_t *dsp, const uint8_t *iq, int iq_len,
     if (!ensure()) return fm_demod_wide(dsp, iq, iq_len, pcm, max);
     wfm_mpx_set_rds(s_mpx, !fm_bcast_opt(FM_BC_RDS_OFF));
     wfm_mpx_set_mono(s_mpx, fm_bcast_opt(FM_BC_MONO));
-    int out = 0;
+    int out = 0, chunks = 0;
+    float noise = 0.0f;
     for (int off = 0; off < iq_len; off += FM_DSP_CHUNK) {
         const int n = iq_len - off < FM_DSP_CHUNK ? iq_len - off : FM_DSP_CHUNK;
         const int nd = fm_demod_disc(dsp, iq + off, n, s_disc, FM_DSP_CHUNK / 2);
+        noise += dsp->demod_noise;
+        chunks++;
         out += wfm_mpx_process(s_mpx, s_disc, nd, pcm + out, NULL, max - out);
     }
+    /* The noise reading over the whole block, not its last chunk. */
+    if (chunks > 1) dsp->demod_noise = noise / (float)chunks;
     offer_clock(&s_mpx->rds.info);
     /* The card when it changes; the meters about eight times a second. */
     if (s_mpx->rds.info.seq != s_pub.rds.seq || s_mpx->stereo != s_pub.stereo ||

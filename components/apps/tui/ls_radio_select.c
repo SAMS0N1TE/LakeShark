@@ -446,3 +446,109 @@ void ls_rsel_open_fixed(ls_rsel_radio_t radio, void (*done)(ls_rsel_radio_t))
     }
     ls_picker_select(at);
 }
+
+/* --------------------------------------------------------- NO RTL-SDR -- */
+
+ls_rsel_sdr_state_t ls_rsel_sdr_rule(bool present, bool seen, int64_t now_us, int64_t *since)
+{
+    if (present) { *since = 0; return LS_RSEL_SDR_HERE; }
+    /* Never here this boot: missing since boot, once the USB host has had
+       its time to find one. */
+    if (!seen) return now_us < LS_RSEL_SDR_BOOT_GRACE_US ? LS_RSEL_SDR_STARTING : LS_RSEL_SDR_NONE;
+    /* Here once: a replug or a recovery takes it off the bus for a while. */
+    if (!*since) *since = now_us ? now_us : 1;
+    return now_us - *since < LS_RSEL_SDR_GONE_AFTER_US ? LS_RSEL_SDR_STARTING : LS_RSEL_SDR_GONE;
+}
+
+static int64_t s_rtl_gone_since;
+ls_rsel_sdr_state_t ls_rsel_sdr_missing(ls_rsel_job_t job)
+{
+    if (!job_ok(job) || ls_rsel_effective(job) != LS_RSEL_SDR_RTL) return LS_RSEL_SDR_HERE;
+    const ls_rsel_hw_t *h = hw();
+    return ls_rsel_sdr_rule(h->present[LS_RSEL_SDR_RTL], h->sdr_seen[0],
+                            esp_timer_get_time(), &s_rtl_gone_since);
+}
+
+static tui_rect s_missing_hit;
+static ls_rsel_job_t s_missing_job = LS_RSEL_JOBS;
+static bool s_missing_offered;
+
+int ls_rsel_sdr_missing_draw(tui_surface *sf, tui_rect a, int x, int y, int w, int rows,
+                             ls_rsel_job_t job, const char *offer)
+{
+    s_missing_offered = false;
+    s_missing_hit = tui_rect_make(0, 0, 0, 0);
+    const ls_rsel_sdr_state_t st = ls_rsel_sdr_missing(job);
+    if (rows <= 0 || w <= 0 || (st != LS_RSEL_SDR_NONE && st != LS_RSEL_SDR_GONE)) return 0;
+    const uint8_t warn = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t tap = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
+    const char *lora = ls_rsel_name(LS_RSEL_LORA);
+    /* The app's own way onto the LoRa chip (FM: NFM on it), when the chip
+       cannot take the job as it is set now. */
+    const char *cant = why_not(job, LS_RSEL_LORA);
+    if (cant && offer) cant = NULL; else offer = NULL;
+    s_missing_offered = offer != NULL;
+    const char *head = st == LS_RSEL_SDR_GONE ? "RTL-SDR DROPPED OFF - replug it"
+                                              : "NO RTL-SDR - plug one in";
+    char line[128];
+    if (rows >= 2) {
+        tui_put_str(sf, a, x, y, head, warn);
+        s_missing_job = job;
+        if (!cant) {
+            if (offer) snprintf(line, sizeof(line), "%s", offer);
+            else snprintf(line, sizeof(line), "or tap here to use the %s", lora);
+            if ((int)strlen(line) > w) line[w] = 0;
+            tui_put_str(sf, a, x, y + 1, line, tap);
+            s_missing_hit = tui_rect_make(x, y, w, 2);
+            return 2;
+        }
+        /* Why the LoRa chip cannot stand in, wrapped at spaces over the
+           rows there are; what does not fit is cut. */
+        snprintf(line, sizeof(line), "%s: %s", lora, cant);
+        const char *p = line;
+        int used = 1;
+        while (*p && used < rows) {
+            int n = (int)strlen(p);
+            if (n > w) {
+                n = w;
+                while (n > 0 && p[n] != ' ') n--;
+                if (n == 0 || used + 1 == rows) n = w;
+            }
+            char part[128];
+            snprintf(part, sizeof(part), "%.*s", n, p);
+            tui_put_str(sf, a, x, y + used++, part, LS_ATTR_DIM);
+            p += n;
+            while (*p == ' ') p++;
+        }
+        return used;
+    }
+    /* One row: the whole sentence, a short one, or just what is missing. */
+    if (offer) snprintf(line, sizeof(line), "%s, %s", head, offer);
+    else snprintf(line, sizeof(line), "%s, or tap to use the %s", head, lora);
+    if (cant || (int)strlen(line) > w) {
+        if (offer) snprintf(line, sizeof(line), "NO RTL-SDR - %s", offer);
+        else snprintf(line, sizeof(line), "NO RTL-SDR - tap to use %s", lora);
+        if (cant || (int)strlen(line) > w) snprintf(line, sizeof(line), "%s", head);
+    }
+    if ((int)strlen(line) > w) line[w] = 0;
+    tui_put_str(sf, a, x, y, line, cant ? warn : tap);
+    if (!cant) s_missing_hit = tui_rect_make(x, y, w, 1);
+    s_missing_job = job;
+    return 1;
+}
+
+bool ls_rsel_sdr_missing_touch(int x, int y, ls_rsel_job_t job, void (*done)(ls_rsel_radio_t chosen),
+                               void (*offer)(void))
+{
+    if (job != s_missing_job || s_missing_hit.w <= 0 || !tui_rect_contains(s_missing_hit, x, y))
+        return false;
+    s_missing_hit = tui_rect_make(0, 0, 0, 0);
+    /* The app's offer moves its own settings; the saved radio is left as it
+       is, and the receiver falls back to the chip by itself. */
+    if (s_missing_offered) { if (offer) offer(); return true; }
+    if (why_not(job, LS_RSEL_LORA)) return true;
+    if (why_not(job, LS_RSEL_LORA)) return true;
+    ls_rsel_set(job, LS_RSEL_LORA);
+    if (done) done(LS_RSEL_LORA);
+    return true;
+}

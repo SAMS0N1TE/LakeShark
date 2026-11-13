@@ -636,9 +636,8 @@ static void import_done(int i)
     if (i < 0 || i >= s_nfiles) return;
     char msg[96];
     if (ls_freqs_import(s_files[i], msg, sizeof(msg))) {
-        /* Straight to what came in: the new bank is the newest file. */
-        const char *base = strrchr(msg, ' ');
-        const int b = base ? ls_freqs_bank_find(base + 1) : -1;
+        /* Straight to what came in. */
+        const int b = ls_freqs_bank_find(ls_freqs_imported());
         ls_freqs_load(b >= 0 ? b : LS_FREQS_ALL);
         store_view();
     }

@@ -628,7 +628,7 @@ static void draw_power_axis(tui_surface *sf, tui_rect r)
             tui_put_str(sf, axis, axis.x, axis.y + y, label, attr);
         }
         tui_put_str(sf, axis, axis.x, axis.y + 1,
-                    s_owner == LS_WF_OWNER_LORA && !s_feed.iq ? "dBm" : "dBFS", attr);
+                    s_feed.over_floor ? "dB" : s_owner == LS_WF_OWNER_LORA && !s_feed.iq ? "dBm" : "dBFS", attr);
     }
 }
 
@@ -862,7 +862,7 @@ static int draw_level_meter(tui_surface *sf, tui_rect r, int x)
     if (s_have_feed && s_feed.top_db > s_feed.floor_db) {
         const float db = s_feed.floor_db +
             (s_feed.top_db - s_feed.floor_db) * ((float)raw / 255.0f);
-        snprintf(val, sizeof(val), "%d %s", (int)db, s_owner == LS_WF_OWNER_LORA && !s_feed.iq ? "dBm" : "dBFS");
+        snprintf(val, sizeof(val), "%d %s", (int)db, s_feed.over_floor ? "dB" : s_owner == LS_WF_OWNER_LORA && !s_feed.iq ? "dBm" : "dBFS");
     } else {
         snprintf(val, sizeof(val), "%d%%", raw * 100 / 255);
     }
@@ -906,7 +906,7 @@ static void draw_readout(tui_surface *sf, tui_rect r)
         if (s_have_feed && s_feed.top_db > s_feed.floor_db) {
             const float db = s_feed.floor_db +
                 (s_feed.top_db - s_feed.floor_db) * ((float)raw / 255.0f);
-            snprintf(lvl, sizeof(lvl), "%d %s", (int)db, s_owner == LS_WF_OWNER_LORA && !s_feed.iq ? "dBm" : "dBFS");
+            snprintf(lvl, sizeof(lvl), "%d %s", (int)db, s_feed.over_floor ? "dB" : s_owner == LS_WF_OWNER_LORA && !s_feed.iq ? "dBm" : "dBFS");
         } else {
             snprintf(lvl, sizeof(lvl), "%d%%", raw * 100 / 255);
         }

@@ -548,6 +548,49 @@ LS_CASE(fm_band_presets_tune_without_starting_a_sweep)
     LS_EQ_STR("FM bcast", ls_wf_preset_current(LS_WF_SRC_FM));
 }
 
+/* BAND NAMES THE BAND THE DIAL IS IN.
+
+   The FM screen's BAND key reads ls_wf_preset_current. It used to name the
+   sweep's range whatever the dial did, and the range boots as VHF land, so a
+   receiver on 103.3 MHz in WFM said "VHF land". Listening, it now names the
+   band the dial is in, preferring the range BAND last chose where that holds
+   the dial; sweeping, it is still the range being swept. */
+LS_CASE(fm_band_label_follows_the_tuned_frequency)
+{
+    fresh();
+    FM.mode = FM_MODE_WFM;
+    FM.scan_start_hz = 150000000u;   /* the boot default (app_fm.c) */
+    FM.scan_stop_hz = 162000000u;
+    FM.freq_hz = 103300000u;
+    LS_EQ_STR("FM bcast", ls_wf_preset_current(LS_WF_SRC_FM));
+    /* Each way the dial moves - a step, a seek, a typed frequency - lands in
+       FM.freq_hz, and the face is read from it on every draw. */
+    FM.freq_hz = 88000000u;
+    LS_EQ_STR("FM bcast", ls_wf_preset_current(LS_WF_SRC_FM));
+    FM.freq_hz = 107900000u;
+    LS_EQ_STR("FM bcast", ls_wf_preset_current(LS_WF_SRC_FM));
+    FM.mode = FM_MODE_LISTEN;
+    FM.freq_hz = 155000000u;
+    LS_EQ_STR("VHF land", ls_wf_preset_current(LS_WF_SRC_FM));
+    FM.mode = FM_MODE_AM;
+    FM.freq_hz = 127500000u;
+    LS_EQ_STR("Air AM", ls_wf_preset_current(LS_WF_SRC_FM));
+    /* Outside every band on the list, it says so rather than name one. */
+    FM.mode = FM_MODE_LISTEN;
+    FM.freq_hz = 200000000u;
+    LS_EQ_STR("no band", ls_wf_preset_current(LS_WF_SRC_FM));
+    /* Where two bands hold the dial, the one BAND chose wins. */
+    FM.freq_hz = 157000000u;
+    LS_EQ_STR("VHF land", ls_wf_preset_current(LS_WF_SRC_FM));
+    LS_CHECK(ls_wf_preset_apply(LS_WF_SRC_FM, 4));          /* marine */
+    LS_EQ_UINT(157000000u, FM.freq_hz);
+    LS_EQ_STR("marine", ls_wf_preset_current(LS_WF_SRC_FM));
+    /* Sweeping, the face is the span being swept, wherever the dial was. */
+    FM.mode = FM_MODE_SCAN;
+    FM.freq_hz = 103300000u;
+    LS_EQ_STR("marine", ls_wf_preset_current(LS_WF_SRC_FM));
+}
+
 LS_CASE(fm_band_presets_keep_an_in_band_frequency)
 {
     fresh();

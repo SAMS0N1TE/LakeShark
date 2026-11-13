@@ -1036,13 +1036,17 @@ void settings_set_antenna_external(bool external)
 
 bool settings_get_antenna_mmcx_tx(void)
 {
-    if (!s_nvs_ok) return false;
-    uint8_t v = 0;
-    return nvs_get_u8(s_nvs, "ant_mmcx_tx", &v) == ESP_OK && v != 0;
+    /* Unset is RX+TX: transmit is not moved off the antenna chosen unless
+       somebody asked for RX ONLY. A stored 0 from before this default was
+       the old default written back, not a choice, so it is read under a new
+       key: only RX ONLY picked from now on keeps transmits internal. */
+    if (!s_nvs_ok) return true;
+    uint8_t v = 1;
+    return nvs_get_u8(s_nvs, "ant_tx_use", &v) != ESP_OK || v != 0;
 }
 void settings_set_antenna_mmcx_tx(bool tx)
 {
-    if (s_nvs_ok) sput_u8("ant_mmcx_tx", tx ? 1 : 0);
+    if (s_nvs_ok) sput_u8("ant_tx_use", tx ? 1 : 0);
 }
 
 bool settings_get_antenna_remember(void)
@@ -1390,6 +1394,20 @@ void settings_set_subghz_lr_fsk(bool fsk)
 {
     if (!s_nvs_ok) return;
     sput_u8("sg_lrfsk", fsk ? 1 : 0);
+}
+/* SUB-GHZ's own expert settings in one word - TX power step, pulse
+   inspector, after-a-send, LEARN window, analyzer band - laid out by
+   scr_subghz.c. Zero is every default. */
+int settings_get_subghz_expert(void)
+{
+    uint32_t v = 0;
+    if (!s_nvs_ok || nvs_get_u32(s_nvs, "sg_expert", &v) != ESP_OK || v > 0xffffu) return 0;
+    return (int)v;
+}
+void settings_set_subghz_expert(int packed)
+{
+    if (!s_nvs_ok || packed < 0 || packed > 0xffff) return;
+    sput_u32("sg_expert", (uint32_t)packed);
 }
 int settings_get_subghz_colour(void)
 {

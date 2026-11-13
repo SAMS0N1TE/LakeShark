@@ -24,7 +24,7 @@ page. An app's initial selects its tile. The number of tiles depends on the
 screen size. Disabled controls cannot be activated.
 
 Portrait NFC has block paging and a Back control. Tap a block, then VIEW for
-its bytes. NOTES supports touch keys and scrolling. SUB-GHZ has pattern paging.
+its bytes. NOTES supports touch keys and scrolling. SUB-GHZ opens on a menu of large items.
 RADIOS shows keyboard radio status and can open MIX-RF.
 
 ## P25 and FM radio screens
@@ -66,12 +66,13 @@ call activity. SLOT/S chooses BOTH, 1 or 2; HOLD/H holds a heard destination.
 OPTIONS offers slot, colour-code and talkgroup filters. Voice and DMR recording
 are unavailable. Encrypted calls are marked and muted.
 
-REC and SUB-GHZ share captures and the same three places: READ, BAND and
-SAVED (1, 2, 3). RADIO/R chooses the receiver. Stop WATCH before changing
-capture source. WATCH/W starts capture; RECORD/D keeps one raw capture and
-LEARN/L measures a 2-FSK transmitter, both on READ without leaving it. On BAND,
-LISTEN HERE tunes READ to a detection and starts WATCH. EXPORT and marks keep
-selected captures or observations.
+REC and SUB-GHZ share captures and the same menu: READ, RECORD RAW, SAVED,
+FREQUENCY ANALYZER and SETTINGS (1 to 5). Each page has BACK, the frequency
+as a key, and one main key: START/W listens on READ, RECORD/D keeps one raw
+capture on RECORD RAW, START/N sweeps on the analyzer. A capture opens to
+SEND and SAVE, a file to SEND, RENAME and DELETE. On the analyzer, LISTEN
+HERE tunes READ to a detection and starts it. The radio (R), TX power,
+LEARN/L and the rest are on SETTINGS. Leaving a page stops what it started.
 LoRa FSK captures and CC1101 raw OOK/FSK captures can be replayed where supported.
 An OOK24 row identifies a repeated pulse pattern, not a verified manufacturer.
 
@@ -112,10 +113,10 @@ AM, HF, WFM, POCSAG, ACARS), P25, LORA LABS, CELL WATCH and SUB-GHZ (a
 detection's menu on BAND, OPTIONS on READ) have a SAVE TO FREQS row; the
 banner that follows says whether it was written. See [FREQS](apps/FREQS.md).
 
-The SUB-GHZ BAND sweep is drawn as bars (eighth-block tops), an ASCII ramp or
+The SUB-GHZ analyzer's sweep is drawn as bars (eighth-block tops), an ASCII ramp or
 a pixel waterfall of the last passes (newest at the top, in FALLS's colours,
-dimmed below the gate and full strength from it up); CHART/U on BAND switches bars and waterfall,
-SPECTRUM STYLE in OPTIONS lists all three and SPECTRUM COLOUR the palette.
+dimmed below the gate and full strength from it up); U on the analyzer switches bars and waterfall,
+Analyzer chart in SETTINGS lists them all and Chart colour the palette. The frame's title names the chart drawn.
 The DETECT track, its number, the column taps and the band edges are the same
 in both. MUSIC's views are one VIEW key between < and >: tap VIEW to list the
 ten, 1-0 and V still select them. JOURNAL shows chips for recording, entry

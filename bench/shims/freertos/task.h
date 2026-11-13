@@ -36,6 +36,7 @@ unsigned ls_shim_task_info_calls(void);
 unsigned ls_shim_task_stack_scan_calls(void);
 unsigned ls_shim_system_state_calls(void);
 UBaseType_t uxTaskGetNumberOfTasks(void);
+UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t task);
 UBaseType_t uxTaskGetSystemState(TaskStatus_t *tasks,
                                  UBaseType_t capacity,
                                  uint32_t *total_runtime);

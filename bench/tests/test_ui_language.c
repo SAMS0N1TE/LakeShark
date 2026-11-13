@@ -137,8 +137,14 @@ LS_CASE(cyrillic_bytes_stay_clear_of_the_graphics_glyphs)
     LS_CHECK(strchr(cells, '?') == NULL);
     /* the Ukrainian apostrophe is the one the font has */
     LS_EQ_INT(tui_cell_codepoint_byte(0x2BC), '\'');
-    /* the ASCII-only fold the map labels use is unchanged */
+    /* the ASCII-only fold is unchanged */
     LS_EQ_INT(tui_fold_codepoint(0x0416), '?');
+    /* map labels take cells: a Cyrillic place name draws in Cyrillic, a Latin
+       letter with a diacritic as its base letter, anything else as '?' */
+    LS_CHECK(tui_cyr_slot((int)(signed char)tui_cell_codepoint_byte(0x0416)) >= 0);
+    LS_EQ_INT(tui_cell_codepoint_byte(0x0142), 'l');
+    LS_EQ_INT(tui_cell_codepoint_byte(0x00F3), 'o');
+    LS_EQ_INT(tui_cell_codepoint_byte(0x4E2D), '?');
 }
 
 LS_CASE(every_face_has_a_full_cyrillic_page)
