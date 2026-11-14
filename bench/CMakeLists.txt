@@ -692,6 +692,8 @@ target_compile_options(test_hf_demod PRIVATE -O2)
 # HF band plan, settings word and the RTL HF path choice.
 ls_add_test(test_fm_hf ${APP}/fm/fm_hf.c)
 target_include_directories(test_fm_hf PRIVATE ${APP}/fm ${FW}/components/lakeshark/radio)
+ls_add_test(test_usb_string)
+target_include_directories(test_usb_string PRIVATE ${FW}/components/lakeshark/radio)
 ls_add_test(test_wf_source ${FW}/components/apps/tui/ls_wf_source.c
     ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
     ${FW}/components/lakeshark/dsp/spectrum.c)
