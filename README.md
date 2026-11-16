@@ -40,9 +40,10 @@ On-chip waterfall · On-chip down-conversion · Background LoRa scan · FM at ha
     <tr><th>Hardware</th><th>Use</th><th>Firmware</th></tr>
   </thead>
   <tbody>
-    <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>2.21.5 stable</td></tr>
-    <tr><td><strong>LILYGO T-Display P4 TFT</strong></td><td>Handheld</td><td>2.21.5 stable</td></tr>
-    <tr><td><strong>LILYGO T-Display P4, LR edition</strong> (LR2021 only)</td><td>Handheld</td><td>2.21.5 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>2.23.2 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4 TFT</strong></td><td>Handheld</td><td>2.23.2 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4, LR edition</strong> (LR2021 only)</td><td>Handheld</td><td>2.23.2 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4, NET edition</strong> (AMOLED, Wi-Fi, Bluetooth and USB Ethernet)</td><td>Handheld</td><td>2.23.2 stable</td></tr>
     <tr><td><strong>Waveshare ESP32-P4-NANO-DB</strong> (P4 rev 3, ESP32-C5)</td><td>LakeShark Desktop</td><td>2.22.0 stable</td></tr>
     <tr><td><strong>Waveshare ESP32-P4-NANO</strong></td><td>Headless (serial, Flipper)</td><td>2.0.2 in the installer, newer from source</td></tr>
     <tr><td><strong>Waveshare Touch-LCD-4.3, Touch-LCD-4B, Smart 86 Box</strong></td><td>Touch screen</td><td>Up to 2.16.4, no longer updated</td></tr>
@@ -113,7 +114,7 @@ screen, mouse and keyboard over one USB cable.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.21.5">Get 2.21.5 for T-Display</a>
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.23.2">Get 2.23.2 for T-Display</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.22.0">Get 2.22.0 for Desktop and NANO</a>
   &nbsp;·&nbsp;
@@ -122,6 +123,7 @@ screen, mouse and keyboard over one USB cable.</p>
 
 <h2 align="center">What's New</h2>
 
+<p align="center"><strong>2.23.2 (T-Display P4):</strong> TAP packet analyser · Wi-Fi and Bluetooth apps in the app store · BUGHUNT for trackers and bugs · MESHTASTIC with an offline Spanish to English translator · LakeShark NET edition</p>
 <p align="center"><strong>2.21.5 (T-Display P4):</strong> SUB-GHZ as one app with a live waveform · FREQUENCY ANALYZER against each frequency's own noise floor · TX on the antenna you select · Draggable FM and P25 bars</p>
 <p align="center"><strong>2.22.0 (Desktop, Studio, ESP32-P4-NANO):</strong> Desktop shortcuts, Control Panel and Task Manager · BOOT LOG · FREQS, MESH, ADS-B and P25 laid out for the desktop · TAP packet analyser with Wi-Fi, BLE and LoRa capture</p>
 <p align="center"><strong>2.21.4 (Desktop, Studio, ESP32-P4-NANO):</strong> Studio app installs on the NANO no longer fail · New desktop and Studio installer · T-Display boards: see 2.21.5</p>
