@@ -40,6 +40,7 @@ idf_component_register(
     REQUIRES espressif__mdns ls_textpack espressif__elf_loader mbedtls console esp_timer libcarto pmtiles meshcore esp_event esp_wifi esp_netif lwip esp_hw_support esp_app_format nvs_flash esp_mm bsp_extra esp32_p4_wifi6_touch_lcd_4b espressif__esp_lcd_touch_gt911 esp_http_client esp_http_server json vfs lakeshark esp_adc esp_driver_jpeg chmorgan__esp-file-iterator chmorgan__esp-audio-player david-cermak__libssh)
 
 target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_LIST_DIR}/../../data/drone-watch/defaults.json" TEXT)
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-u lr433_decode" "-u lr433_proto_label" "-u lr433_proto_class")
 
 # The Ukrainian table (tui/ls_i18n_uk.h, edited as it is) built into zstd
 # frames where the decoder is linked; ls_i18n.c decodes it when Ukrainian is
