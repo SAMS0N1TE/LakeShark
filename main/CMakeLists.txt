@@ -33,6 +33,7 @@ target_sources(${COMPONENT_LIB} PRIVATE ls_eth.c)
 # headless main code does not, so the linker would pass main before
 # anything asked for it.
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-u ls_wireless_get")
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-u ls_p25_packs_command")
 idf_component_get_property(LS_HOSTED_DIR espressif__esp_hosted COMPONENT_DIR)
 target_include_directories(${COMPONENT_LIB} PRIVATE
     "${LS_HOSTED_DIR}/host/port/esp/freertos/include")
