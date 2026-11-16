@@ -382,7 +382,7 @@ static void build(dk_menu_t *m)
     default:
         if (m->id >= M_GROUP + 100) {
             const int g = m->id / 100 - 1;
-            const ls_app_t *list[LS_TUI_MAX_SCREENS];
+            const ls_app_t *list[DK_MENU_ITEMS];
             const int n = dk_group_apps(g, list, DK_MENU_ITEMS);
             for (int i = 0; i < n; i++) {
                 it = add(m, list[i]->name, MI_ITEM, A_OPEN_APP, app_index(list[i]));

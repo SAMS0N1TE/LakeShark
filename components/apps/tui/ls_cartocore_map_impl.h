@@ -15,7 +15,7 @@ static void map_invalidate_frame(void) { map_mail.frame_ready=false; } /* view_l
    cc_pixels_rgb565 into the back buffer and swapped under frame_take. The UI
    copies the front one out, so neither side writes what the other reads. */
 static EXT_RAM_BSS_ATTR struct {
-    uint16_t *buf[2]; size_t cap[2]; unsigned front,serial; int w,h; double lat,lon; unsigned z; bool valid,cells;
+    uint16_t *buf[2]; size_t cap[2]; unsigned front,serial; int w,h; double lat,lon; unsigned z; bool valid,cells,covered;
     size_t count,back_count; ls_carto_label names[LS_CARTO_LABEL_MAX],back_names[LS_CARTO_LABEL_MAX];
 } pix;
 static EXT_RAM_BSS_ATTR cc_pixel_style pix_style; /* view_lock */
@@ -106,6 +106,62 @@ size_t ls_carto_map_files(char (*paths)[128],size_t cap) {
     size_t n=map_file_count<cap?map_file_count:cap;
     memcpy(paths,map_files,n*sizeof(map_files[0]));xSemaphoreGive(view_lock);return n;
 }
+/* What the card can draw, for the way back from a view it cannot: one bit
+   per downloaded z8 cell and the bounds of each map file. Read with the map
+   files, when MAP opens or changes source. view_lock. */
+static EXT_RAM_BSS_ATTR uint8_t have_cells[8192];
+static EXT_RAM_BSS_ATTR float have_box[32][4]; /* west, south, east, north */
+static size_t have_boxes;
+static void have_scan(void) {
+    memset(have_cells,0,sizeof(have_cells));have_boxes=0;
+    DIR *d=opendir("/sdcard/maps/cells");struct dirent *e;
+    if(d) {
+        while((e=readdir(d))) {
+            unsigned x,y;int end=0;
+            if(sscanf(e->d_name,"8-%u-%u.ctile%n",&x,&y,&end)==2 && end && !e->d_name[end] && x<256 && y<256)
+                have_cells[(x*256u+y)/8u]|=(uint8_t)(1u<<((x*256u+y)%8u));
+        }
+        closedir(d);
+    }
+    for(size_t i=0;i<map_file_count && have_boxes<32;i++) {
+        uint8_t h[64];struct stat st;
+        if(!strcmp(map_files[i],"/sdcard/maps/cells") || stat(map_files[i],&st)) continue;
+        FILE *f=fopen(map_files[i],"rb");size_t got=f?fread(h,1,sizeof(h),f):0;if(f) fclose(f);
+        double w,s,e2,n;
+        if(!cc_ctile_header_check(h,got,st.st_size) || !carto_bounds(h,&w,&s,&e2,&n)) continue;
+        have_box[have_boxes][0]=(float)w;have_box[have_boxes][1]=(float)s;have_box[have_boxes][2]=(float)e2;have_box[have_boxes++][3]=(float)n;
+    }
+}
+static double have_merc(double lat) { return (1.0-asinh(tan(lat*3.14159265358979323846/180.0))/3.14159265358979323846)/2.0*256.0; }
+/* 2: a downloaded cell or a map file lies under (lat,lon). 1: none does, and
+   (*nlat,*nlon) is the nearest place one does. 0: the card has no map.
+   -1: not known this frame. Never waits. */
+int ls_carto_map_nearest(double lat,double lon,double *nlat,double *nlon) {
+    if(!view_lock || fabs(lat)>85.0 || xSemaphoreTake(view_lock,0)!=pdTRUE) return -1;
+    const double px=(lon+180.0)/360.0*256.0,py=have_merc(lat);
+    int result=0;double best=1e30;
+    for(size_t i=0;i<have_boxes && result!=2;i++) {
+        const float *b=have_box[i];
+        const double clon=lon<b[0]?b[0]:lon>b[2]?b[2]:lon,clat=lat<b[1]?b[1]:lat>b[3]?b[3]:lat;
+        if(clon==lon && clat==lat) { result=2;break; }
+        double dx=fabs((clon+180.0)/360.0*256.0-px),dy=have_merc(clat)-py;if(dx>128)dx=256-dx;
+        if(dx*dx+dy*dy<best) { best=dx*dx+dy*dy;*nlat=(b[1]+b[3])/2;*nlon=(b[0]+b[2])/2;result=1; }
+    }
+    for(unsigned k=0;k<8192 && result!=2;k++) {
+        if(!have_cells[k]) continue;
+        for(unsigned bit=0;bit<8;bit++) if(have_cells[k]&(1u<<bit)) {
+            const unsigned x=(k*8u+bit)/256u,y=(k*8u+bit)%256u;
+            if(x==(unsigned)px && y==(unsigned)py) { result=2;break; }
+            double dx=fabs(x+0.5-px),dy=y+0.5-py;if(dx>128)dx=256-dx;
+            if(dx*dx+dy*dy<best) {
+                best=dx*dx+dy*dy;result=1;
+                *nlon=(x+0.5)/256.0*360.0-180.0;
+                *nlat=atan(sinh(3.14159265358979323846*(1.0-2.0*(y+0.5)/256.0)))*180.0/3.14159265358979323846;
+            }
+        }
+    }
+    xSemaphoreGive(view_lock);return result;
+}
 static void map_scan_files(void) {
     xSemaphoreTake(file_lock,portMAX_DELAY);xSemaphoreTake(view_lock,portMAX_DELAY);
     map_file_count=0;
@@ -121,6 +177,7 @@ static void map_scan_files(void) {
         }
         closedir(d);
     }
+    have_scan();
     xSemaphoreGive(view_lock);xSemaphoreGive(file_lock);
 }
 
@@ -304,6 +361,11 @@ bool ls_carto_map_pixels(double lat,double lon,unsigned z,int pw,int ph,int tw,i
 /* The newest picture came from the downloaded states' cells. Zoomed out that
    is the national overview, whose bare ground is land, not a missing map. */
 bool ls_carto_map_picture_cells(void) { return pix.valid && pix.cells; }
+/* The view asked for could not be drawn; what is on screen is an older one. */
+bool ls_carto_map_failed(void) { return atomic_load(&map_status)<0; }
+/* The newest picture is centred on a downloaded cell: bare ground in it is
+   open country or open water, anywhere in the world. */
+bool ls_carto_map_picture_covered(void) { return pix.valid && pix.covered; }
 void ls_carto_map_leave(void) {
     ui_map_drawn=ui_map_fresh=false;ui_name_count=0;
     atomic_store(&map_wanted,false);atomic_fetch_add(&map_epoch,1);
@@ -345,7 +407,7 @@ static void map_service_locked(void) {
         int failed=select?select_source(map_worker_path):prepare_source(r.lat,r.lon,r.z);
         xSemaphoreTake(view_lock,portMAX_DELAY);
         cc_ctile map;
-        bool ok=!failed && open_map(&map) && carto_fit_map(&map,&r.lat,&r.lon,&r.z,!follow);
+        bool ok=!failed && open_map(&map) && carto_fit_map(&map,&r.lat,&r.lon,&r.z,select && !follow);
         if(epoch==atomic_load(&map_epoch) && atomic_load(&map_wanted)) {
             map_mail.epoch=epoch;map_mail.source_ready=map_prepared=ok;
             map_mail.frame_ready=false;map_mail.fit_pending=ok && !follow;
@@ -399,6 +461,13 @@ static void map_service_locked(void) {
         origin(r.cols,r.rows,r.z,&shown->left,&shown->top);
         cc_mode mode=r.braille?CC_BRAILLE:CC_QUADRANT;
         const int64_t render_start=esp_timer_get_time();
+        /* The same view failing again: said once, then asked again once a
+           minute (memory may come back), not every 5 s for as long as MAP is
+           open. A new view, zoom or style is a new request. */
+        static unsigned failed_serial;static unsigned failed_times;
+        if(failed_serial!=r.serial) { failed_serial=r.serial;failed_times=0; }
+        const bool again=failed_times>0;
+        memset(&sd_cost,0,sizeof(sd_cost));
         ls_map_trace("render",(int32_t)r.z,(int32_t)r.serial);
         ok=render_frame(shown,mode,CC_EDGES_SMOOTH,shown->left,shown->top);
         map_label_count=0;
@@ -406,8 +475,8 @@ static void map_service_locked(void) {
             ls_map_trace("rendered",(int32_t)r.z,ok);
             if(ok) ok=pix_commit(shown,&r);
             ls_map_trace("committed",(int32_t)r.z,ok);
-            pix_render_us=(uint32_t)(esp_timer_get_time()-render_start);
-            if(!ok) carto_failure("picture",r.cols,r.rows,r.z);
+            pix_render_us=(uint32_t)(esp_timer_get_time()-render_start);sd_cost_last=sd_cost;
+            if(!ok && !again) carto_failure("picture",r.cols,r.rows,r.z);
             if(ok) { map_mail.completed=r;shown->hint_count=shown->hint_next=0; }
         } else if(ok && r.labels) {
             map_collect_labels(shown);
@@ -420,18 +489,19 @@ static void map_service_locked(void) {
         if(!ok)printf("render failure arena peak=%zu used=%zu\n",shown->arena.peak,shown->arena.used);
 #endif
         if(!r.pixels) {
-        if(!ok) carto_failure("render/decode",r.cols,r.rows,r.z);
+        if(!ok && !again) carto_failure("render/decode",r.cols,r.rows,r.z);
         if(ok) ok=frame_commit(shown,false,r.lat,r.lon,r.braille,r.labels,map_labels,map_label_count);
-        if(!ok) carto_failure("complete frame publication",r.cols,r.rows,r.z);
+        if(!ok && !again) carto_failure("complete frame publication",r.cols,r.rows,r.z);
         }
         if(ok && !r.pixels) {
             map_mail.completed=r;
             shown->hint_count=shown->hint_next=0;
             if(shown->map.source) cc_ctile_prefetch_hint(&shown->map,r.z,shown->left,shown->top,r.cols,r.rows,0,0,queue_hint,shown);
         }
-    }
+        if(ok) failed_times=0; else failed_times++;
+        if(!ok) map_mail.retry_after=esp_timer_get_time()+(again?60000000:5000000);
+    } else map_mail.retry_after=esp_timer_get_time()+5000000;
     map_mail.frame_ready=ok;atomic_store(&map_status,ok?1:(carto_memory_failed?-3:-1));
-    if(!ok) map_mail.retry_after=esp_timer_get_time()+5000000;
     xSemaphoreGive(view_lock);
 }
 
@@ -487,8 +557,16 @@ static bool pix_commit(render_state *s,const map_request *r) {
     else cc_pixels_rgb565(&renderer->planes,&pix_style,pix.buf[back]);
     previous_style=pix_style;
     pix.back_count=r->labels?pix_labels(s,r->tcols,r->trows,pix.back_names,LS_CARTO_LABEL_MAX):0;
+    /* The cell under the centre is one the engine holds open for this
+       picture (its maps to z12, or its detail): no card I/O to ask. */
+    bool covered=false;
+    if(source_is_cells() && s->z>=8) {
+        const uint32_t id=1u+(uint32_t)floor((r->lon+180.0)/360.0*256.0)*256u+
+            (uint32_t)floor((1.0-asinh(tan(r->lat*3.14159265358979323846/180.0))/3.14159265358979323846)/2.0*256.0);
+        for(unsigned i=0;i<4;i++) covered|=sd_map->set->slots[i].used && (sd_map->set->slots[i].id==id || sd_map->set->slots[i].id==id+CC_DETAIL_ID);
+    }
     while(!frame_take()) vTaskDelay(1);
-    pix.front=back;pix.w=s->cols*2;pix.h=s->rows*4;pix.lat=r->lat;pix.lon=r->lon;pix.z=s->z;pix.cells=source_is_cells();
+    pix.front=back;pix.w=s->cols*2;pix.h=s->rows*4;pix.lat=r->lat;pix.lon=r->lon;pix.z=s->z;pix.cells=source_is_cells();pix.covered=covered;
     pix.count=pix.back_count;memcpy(pix.names,pix.back_names,pix.count*sizeof(pix.names[0]));
     pix.serial++;pix.valid=true;frame_give();return true;
 }

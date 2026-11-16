@@ -47,6 +47,7 @@ int rterm_ssh_console(int argc, char **argv)
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
 #include "lwip/sockets.h"
 #include "nvs.h"
 #include "ls_nvs_safe.h"
@@ -483,11 +484,21 @@ static bool listen_now(void)
 static void ssh_task(void *arg)
 {
     (void)arg;
-    if (ssh_init() != SSH_OK || !host_key_ready()) {
-        printf("term: ssh could not start\n");
-        s_task = NULL;
-        vTaskDelete(NULL);
+    /* On the Nano the first try can come while boot has DRAM cut into small
+       pieces; wait and try again rather than give up for the whole boot. */
+    bool said = false, inited = false;
+    for (int tries = 0;; tries++) {
+        if (!inited) inited = ssh_init() == SSH_OK;
+        if (inited && host_key_ready()) break;
+        if (!said) { printf("term: ssh not ready yet (memory); retrying\n"); said = true; }
+        if (tries >= 30) {
+            printf("term: ssh could not start\n");
+            s_task = NULL;
+            vTaskSuspend(NULL);          /* a PSRAM task: parked, not deleted from itself */
+        }
+        vTaskDelay(pdMS_TO_TICKS(10000));
     }
+    if (said) printf("term: ssh ready\n");
     for (;;) {
         if (!s_enabled || s_rebind) {
             unbind();
@@ -512,15 +523,41 @@ static bool task_start(void)
 {
     if (s_task) return true;
     if (!rterm_ensure_started()) return false;
-    StaticTask_t *tcb = heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    StackType_t *stack = heap_caps_malloc(SSH_STACK, MALLOC_CAP_SPIRAM);
-    if (tcb && stack) s_task = xTaskCreateStaticPinnedToCore(ssh_task, "ls_ssh", SSH_STACK, NULL, 2, stack, tcb, 0);
-    if (!s_task) {
-        heap_caps_free(tcb);
-        heap_caps_free(stack);
+    /* Stack and TCB both in PSRAM: the Nano has no internal RAM to spare for
+       a task that is idle until someone connects. */
+    TaskHandle_t t = NULL;
+    if (xTaskCreatePinnedToCoreWithCaps(ssh_task, "ls_ssh", SSH_STACK, NULL, 2, &t, 0, MALLOC_CAP_SPIRAM) != pdPASS)
         return false;
-    }
+    s_task = t;
     return true;
+}
+
+/* At boot the Nano can lack even the few hundred bytes of internal RAM the
+   terminal worker needs; SSH then starts a little later, by itself, instead
+   of staying off until the next boot. */
+static esp_timer_handle_t s_later;
+static int s_later_tries;
+static void later_cb(void *arg)
+{
+    (void)arg;
+    if (!s_enabled || task_start()) {
+        if (s_enabled) printf("term: ssh started after boot\n");
+        esp_timer_stop(s_later);
+        return;
+    }
+    if (++s_later_tries >= 60) {
+        printf("term: no memory for ssh\n");
+        esp_timer_stop(s_later);
+    }
+}
+static void start_later(void)
+{
+    if (!s_later) {
+        const esp_timer_create_args_t a = {.callback = later_cb, .name = "ssh_later"};
+        if (esp_timer_create(&a, &s_later) != ESP_OK) { printf("term: no memory for ssh\n"); return; }
+    }
+    s_later_tries = 0;
+    esp_timer_start_periodic(s_later, 5 * 1000000ULL);
 }
 
 /* --- for ls_rterm.c ----------------------------------------------------- */
@@ -542,7 +579,7 @@ void rterm_ssh_load(void)
         s_enabled = on;
         s_port = port ? port : SSH_PORT_DEFAULT;
     }
-    if (s_enabled && !task_start()) printf("term: no memory for ssh\n");
+    if (s_enabled && !task_start()) start_later();
 }
 
 void rterm_ssh_status(ls_rterm_status_t *o)

@@ -797,6 +797,32 @@ static esp_err_t scan_tune(uint32_t hz)
     return xfer(tx, NULL, sizeof(tx));
 }
 
+/* LoRa receive moved in place (ls_lora_rx_retune). Standby on the crystal,
+   so the TCXO keeps running; a new image calibration only when the step
+   leaves the window the last one covered, then a 32 MHz window from there,
+   so a scan list of 2 MHz steps calibrates once a band, not once a step. */
+static esp_err_t sx_rx_retune(uint32_t hz)
+{
+    if (!s_cfg_valid || s_fsk_active || s_scanning || s_tx_busy || s_probe_active)
+        return ESP_ERR_INVALID_STATE;
+    if (hz < 150000000u || hz > 960000000u) return ESP_ERR_INVALID_ARG;
+    uint8_t b = STANDBY_XOSC;
+    esp_err_t err = cmd(OP_SET_STANDBY, &b, 1, NULL, 0);
+    s_rx_mode = false;
+    const uint32_t mhz = hz / 1000000u;
+    if (err == ESP_OK && (mhz < s_cfg.cal_min_mhz || mhz >= s_cfg.cal_max_mhz)) {
+        s_cfg.cal_min_mhz = (uint16_t)(mhz / 4u * 4u);
+        s_cfg.cal_max_mhz = (uint16_t)(s_cfg.cal_min_mhz + 32u);
+        uint8_t tx[3] = { OP_CAL_IMAGE, (uint8_t)(s_cfg.cal_min_mhz / 4u), (uint8_t)(s_cfg.cal_max_mhz / 4u) };
+        err = xfer(tx, NULL, sizeof(tx));
+        if (err == ESP_OK && !ls_lora_hw_wait_not_busy(20)) err = ESP_ERR_TIMEOUT;
+    }
+    if (err == ESP_OK) err = scan_tune(hz);
+    if (err == ESP_OK) s_cfg.freq_hz = hz;
+    if (err == ESP_OK) err = sx_receive();
+    return err;
+}
+
 static ls_lora_scan_prof_t s_prof;
 
 static void sx_scan_profile(ls_lora_scan_prof_t *out)
@@ -1335,6 +1361,7 @@ const ls_lora_ops_t ls_lora_sx126x_ops = {
     .poll = sx_poll,
     .activity = sx_activity,
     .rssi_inst = sx_rssi_inst,
+    .rx_retune = sx_rx_retune,
     .airtime_ms = sx_airtime_ms,
     .fsk_begin = sx_fsk_begin,
     .fsk_poll = sx_fsk_poll,

@@ -77,6 +77,11 @@ int cc_ctile_scene(const cc_ctile *file,unsigned z,int64_t left,int64_t top,
                    int32_t cols,int32_t rows,cc_arena *arena,cc_scene *scene);
 int cc_ctile_scene_cached(const cc_ctile *file,unsigned z,int64_t left,int64_t top,
                    int32_t cols,int32_t rows,cc_arena *arena,cc_scene *scene,cc_decoded_cache *cache);
+/* Tile (z,x,y) of the file into scene at dot origin ox,oy; features wholly
+   outside the w x h window at the origin are left out. 1 added, 2 absent
+   (nothing added), 0 failed: arena->fails tells a short arena from bad data. */
+int cc_ctile_tile_window(const cc_ctile *file,unsigned z,uint32_t x,uint32_t y,int64_t ox,int64_t oy,int32_t w,int32_t h,
+                         cc_arena *arena,cc_decoded_cache *cache,cc_scene *scene);
 /* Append one tile at a caller-selected dot origin. Initialize scene to zero
    before the first append; the encompassing scene API provides rollback. */
 int cc_ctile_tile_scene(cc_str tile,int64_t ox,int64_t oy,cc_arena *arena,cc_scene *scene);

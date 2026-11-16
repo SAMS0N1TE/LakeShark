@@ -23,7 +23,7 @@ def since(entry, sdk):
     for line in before.splitlines():
         if re.match(r'\s*#\s*if', line): guards.append(line)
         elif re.match(r'\s*#\s*endif', line) and guards: guards.pop()
-    for minor in (7, 6, 5, 4, 3, 2, 1):
+    for minor in (8, 7, 6, 5, 4, 3, 2, 1):
         if any('LAP_API_2' + str(minor) in g for g in guards): return '2.' + str(minor)
     n = entry['name']
     if entry['header'] == 'lakeshark_ui.h': return '2.1'
@@ -110,6 +110,10 @@ def policy(n):
     if n in ('lap_wifi_capture_start', 'lap_ble_capture_start', 'lap_capture_read', 'lap_capture_status', 'lap_capture_stop'):
         cap = None if n in ('lap_capture_status', 'lap_capture_stop') else 'LAP_CAP_RADIO_RX'
         status, reason = 'limited', 'Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md.'
+    # API 2.8: network diagnostics. The simulator answers from a fixed LAN.
+    if n in ('lap_net_info', 'lap_ping_start', 'lap_ping_next', 'lap_ping_stop', 'lap_dns_resolve', 'lap_dns_result', 'lap_arp_probe', 'lap_arp_table'):
+        cap = None if n == 'lap_ping_stop' else 'LAP_CAP_NETWORK'
+        status, reason = 'faked', 'Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify.'
     if n == 'lap_text_size':
         status, reason = 'real', 'Shared renderer text measurement.'
     if n in ('lap_random', 'lap_millis', 'lap_frame'):

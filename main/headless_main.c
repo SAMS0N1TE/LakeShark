@@ -3239,7 +3239,7 @@ static bool console_start(bool full)
         { .command = "fm",     .help = LS_TXT(con_headless_main_fm_help, "FM sub-mode (hops into FM)"),
           .hint = LS_TXT(con_headless_main_fm_hint, "listen|scan|pocsag|wfm|am|acars|flex|same|aprs|ais"), .func = &cmd_fm },
         { .command = "wifi", .help = LS_TXT(con_headless_main_wifi_help, "Saved Wi-Fi networks; wifi add \"My Net\" pass"), .func = &cmd_wifi },
-#if CONFIG_LS_NANO_ETH
+#if CONFIG_LS_NANO_ETH || CONFIG_LS_USB_ETH
         { .command = "eth", .help = "Wired Ethernet: status, on, off, dhcp, static <ip> <mask> <gw>", .func = &ls_eth_command },
 #endif
         { .command = "vol",    .help = LS_TXT(con_headless_main_vol_help, "Volume 0-100 (or +n / -n)"), .hint = LS_TXT(con_headless_main_vol_hint, "<n|+n|-n>"),

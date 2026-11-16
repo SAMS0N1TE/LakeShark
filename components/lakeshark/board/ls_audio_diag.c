@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "ls_textpack.h"
@@ -70,6 +71,25 @@ void ls_audio_diag_report(void)
     printf("  out      volume %d  mute %d\n",
            audio_volume_get(), audio_is_muted() ? 1 : 0);
 
+    /* --- what the player is doing --------------------------------------- */
+    /* Idle parks the output, which reads exactly like a fault above (amp LOW,
+       DAC muted), so say which it is, and whether MUSIC holds the speaker. */
+    printf("  player   %s\n", ls_audio_hw_parked()
+           ? "parked - idle: clocks stopped, DAC muted, amp off; a sound wakes it"
+           : "running");
+    int64_t since_us = 0;
+    if (audio_out_media_held(&since_us))
+        printf("  media    HELD by the music player (MUSIC or CALLS replay) for %lld s:"
+               " every other sound is dropped\n",
+               since_us ? (long long)((esp_timer_get_time() - since_us) / 1000000) : -1LL);
+    else
+        printf("  media    free\n");
+    int64_t first_us = 0, last_us = 0;
+    const uint32_t starved = ls_audio_hw_starved(&first_us, &last_us);
+    printf("  counts   drops %lu  underruns %lu  starved %lu\n",
+           (unsigned long)audio_drops_get(), (unsigned long)audio_underruns_get(),
+           (unsigned long)starved);
+
 #if defined(LS_BOARD_CODEC_I2C_BUS)
     int gain = -1, mute = -1;
     const esp_err_t gain_err = ls_audio_hw_reg_read(0x32, &gain);
@@ -104,6 +124,9 @@ esp_err_t ls_audio_diag_pa(bool on)
 #ifdef LS_BOARD_XL_AUDIO_PWR_EN
     const esp_err_t e = ls_xl9535_out(LS_BOARD_XL_AUDIO_PWR_EN, on);
     LS_PRINTF(t_ls_audio_diag_audio_amp_enable_s, "audio: amp enable -> %s (%s)\n", on ? "HIGH" : "LOW", ok_str(e));
+    if (on && e == ESP_OK && ls_audio_hw_parked())
+        printf("audio: the output is parked (clocks stopped, DAC muted), so the amp alone"
+               " makes no sound; 'audio tone' wakes the whole chain\n");
     return e;
 #else
     (void)on;

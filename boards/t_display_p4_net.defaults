@@ -1,0 +1,62 @@
+# T-Display-P4 network profile (config t-display-p4-net): heavy Wi-Fi and BLE
+# work through the C6, with the RTL-SDR, FM and the USB host kept.
+# Overlay on sdkconfig.defaults + boards/t_display_p4.defaults.
+
+# Its own update folder /tdp4net/ (board T-Display-P4-NET).
+CONFIG_LS_EDITION_NET=y
+#
+# Every queue and pool raised here lives in PSRAM unless the line says
+# otherwise: the esp_hosted mempools (MEMPOOL_PREFER_SPIRAM), lwIP's pbufs and
+# PCBs (malloc with SPIRAM_MALLOC_ALWAYSINTERNAL=0) and NimBLE's pools
+# (MEM_ALLOC_MODE_EXTERNAL). What still costs internal DRAM is noted.
+
+# App space for USB Ethernet and a netdiag API later.
+# The native-app 3D renderer (~66 KiB) stays: games such as PINBALL use it.
+# MP3/FLAC/Ogg decoders (~91 KiB): WAV playback and recording stay.
+# CONFIG_LS_MUSIC_COMPRESSED is not set
+
+# Native app DNS-SD browse/registration stays off, as on the T-Display base.
+# Nothing else links the mDNS library, so it is not cheap: measured on this
+# profile it is ~39 KB of app (library ~35 KB + LAP ~4 KB) and ~2.4 KB of
+# static internal DRAM, plus mDNS's 4 KB internal task stack once started.
+# Enabling it leaves ~146 KB free. If it is turned on, keep mDNS's heap in
+# PSRAM:
+# CONFIG_LS_LAP_MDNS is not set
+CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
+
+# Coprocessor link: twice the frames in flight each way. The buffers are in
+# the PSRAM mempool; the FreeRTOS queues of 24-byte handles (3 priorities x
+# 2 directions) are internal, about 2.9 KB more than the default 20.
+CONFIG_ESP_HOSTED_SDIO_TX_Q_SIZE=40
+CONFIG_ESP_HOSTED_SDIO_RX_Q_SIZE=40
+
+# lwIP: more sockets for scanners and servers, deeper UDP and tcpip queues,
+# and a TCP send window to match the 32 KB receive window. The socket table
+# is static DRAM (~40 B a socket); mailboxes are FreeRTOS queues of pointers
+# in internal RAM (UDP 128 B a socket, tcpip 256 B). Send data is pbufs in
+# PSRAM.
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=32
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+# Internal stack: +1 KB.
+CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096
+
+# NimBLE: three links at once (HID host, GATT client, a scanner) and pools
+# for a busy scan. All allocated by nimble_platform_mem_calloc in PSRAM.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=48
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=24
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=40
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT=24
+CONFIG_BT_NIMBLE_GATT_MAX_PROCS=8
+
+# Capture: a 4096-frame ring (PSRAM, held only while a capture is open:
+# ~2.3 MB at the 512-byte default snap, ~4.4 MB at 1024) and the C6 forwarding
+# 1024 bytes of up to 1000 frames a second.
+CONFIG_LS_LAP_CAPTURE_SLOTS=4096
+CONFIG_LS_HOSTED_PROMISC_SNAP=1024
+CONFIG_LS_HOSTED_PROMISC_MAX_PER_S=1000
+
+# Ethernet over a USB adapter (CDC-ECM, RNDIS) on the OTG port the RTL-SDR uses
+CONFIG_LS_USB_ETH=y

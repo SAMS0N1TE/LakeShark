@@ -72,9 +72,6 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/lakeshark/audio/call_archive.c
     ${FW}/components/lakeshark/audio/call_recorder.c
     ${FW}/components/lakeshark/audio/call_store.c
-    ${FW}/bench/tools/lssim_survey.c
-    ${FW}/components/apps/tui/ls_survey.c
-    ${FW}/components/apps/tui/ls_survey_ui.c
     ${FW}/components/apps/tui/ls_compass_art.c
     ${FW}/bench/tools/lssim_p25_settings.c
     ${FW}/components/apps/tui/ls_radio_panel.c
@@ -82,6 +79,7 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_scan_view.c
     ${FW}/bench/tools/lssim_scan.c
     ${FW}/bench/tools/lssim_watch.c
+    ${FW}/components/lakeshark/apps/rec/rec_scope.c
     ${APP}/subghz/subghz_file.c
     ${APP}/rec/rec_ook24.c
     ${FW}/components/apps/tui/ls_compass.c
@@ -516,10 +514,26 @@ target_include_directories(test_exp_survey PRIVATE ${LS_TUI_APP_INCLUDES})
 # (app-sdk/apps/burst, carrier, iridium): their engines as the apps build them.
 ls_add_test(test_burst_app ${FW}/app-sdk/apps/burst/scope.c)
 target_include_directories(test_burst_app PRIVATE ${FW}/app-sdk/apps/burst)
+# WIFI WATCH (app-sdk/apps/wifi_watch): its engine and the shared 802.11
+# reader (app-sdk/lib/lap_dot11.c) on made-up frames.
+ls_add_test(test_wifi_watch_core ${FW}/app-sdk/apps/wifi_watch/watch_core.c ${FW}/app-sdk/lib/lap_dot11.c)
+target_include_directories(test_wifi_watch_core PRIVATE ${FW}/app-sdk/apps/wifi_watch ${FW}/app-sdk/lib ${FW}/app-sdk/include)
+# WIFI SURVEY (app-sdk/apps/wifi_survey): its recorder core, the WiGLE CSV
+# LINK's SURVEY tab wrote (moved into the app on 2026-11-15).
+ls_add_test(test_wifi_survey_rec ${FW}/app-sdk/apps/wifi_survey/survey_rec.c ${FW}/app-sdk/lib/lap_dot11.c)
+target_include_directories(test_wifi_survey_rec PRIVATE ${FW}/app-sdk/apps/wifi_survey ${FW}/app-sdk/lib ${FW}/app-sdk/include)
+# BUGHUNT (app-sdk/apps/bughunt): its detection core on synthetic RSSI
+# timelines, Bluetooth adverts (its tag engine, bh_tags.c) and 802.11 frames.
+ls_add_test(test_bughunt_core ${FW}/app-sdk/apps/bughunt/bh_core.c ${FW}/app-sdk/apps/bughunt/bh_tags.c ${FW}/app-sdk/lib/lap_dot11.c)
+target_include_directories(test_bughunt_core PRIVATE ${FW}/app-sdk/apps/bughunt ${FW}/app-sdk/lib ${FW}/app-sdk/include)
 ls_add_test(test_carrier_app ${FW}/app-sdk/apps/level/meter.c)
 target_include_directories(test_carrier_app PRIVATE ${FW}/app-sdk/apps/level)
 ls_add_test(test_iridium_app ${FW}/app-sdk/apps/iridium/irid.c)
 target_include_directories(test_iridium_app PRIVATE ${FW}/app-sdk/apps/iridium)
+# MESHTASTIC (app-sdk/apps/meshtastic): its offline Spanish -> English
+# translator and language detection, with the generated lexicon.
+ls_add_test(test_mt_xlate ${FW}/app-sdk/apps/meshtastic/mt_xlate.c)
+target_include_directories(test_mt_xlate PRIVATE ${FW}/app-sdk/apps/meshtastic)
 
 ls_add_test(test_exp_lr433
     ${LS_EXP_SRCS}
@@ -694,6 +708,7 @@ ls_add_test(test_fm_hf ${APP}/fm/fm_hf.c)
 target_include_directories(test_fm_hf PRIVATE ${APP}/fm ${FW}/components/lakeshark/radio)
 ls_add_test(test_wf_source ${FW}/components/apps/tui/ls_wf_source.c
     ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
+    ${FW}/components/lakeshark/dsp/ls_floor.c
     ${FW}/components/lakeshark/dsp/spectrum.c)
 target_include_directories(test_wf_source PRIVATE
     ${LS_TUI_APP_INCLUDES}
@@ -780,8 +795,6 @@ ls_add_test(test_tui_keyboard
 target_include_directories(test_tui_keyboard PRIVATE ${LS_TUI_APP_INCLUDES})
 
 ls_add_test(test_tui_wireless
-    ${FW}/components/apps/tui/ls_survey.c
-    ${FW}/components/apps/tui/ls_survey_ui.c
     ${FW}/components/apps/tui/ls_compass_art.c
     ${FW}/components/apps/tui/screens/ext/scr_wireless.c
     ${FW}/bench/shims/ls_rterm_fake.c
@@ -987,6 +1000,7 @@ target_sources(lssim PRIVATE
     shims/rffe_settings_fake.c)
 target_sources(lssim PRIVATE ${FW}/components/lakeshark/core/ls_time.c
     ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
+    ${FW}/components/lakeshark/dsp/ls_floor.c
     ${FW}/components/lakeshark/dsp/spectrum.c)
 target_compile_definitions(lssim PRIVATE LS_TIME_HOST=1)
 target_link_libraries(lssim m music_decode_host)
@@ -1538,7 +1552,9 @@ target_include_directories(test_hosted_board PRIVATE
     ${FW}/managed_components/espressif__esp_hosted/host)
 ls_add_test(test_rec_scout_span  ${APP}/rec/rec_scout_span.c)
 ls_add_test(test_rec_space       ${APP}/rec/rec_space.c)
-ls_add_test(test_rec_lr_iq ${APP}/rec/rec_lr_iq.c ${APP}/rec/rec_lr_ook.c
+ls_add_test(test_rec_scope ${APP}/rec/rec_scope.c)
+target_include_directories(test_rec_scope PRIVATE ${APP}/rec)
+ls_add_test(test_rec_lr_iq ${APP}/rec/rec_lr_iq.c ${APP}/rec/rec_lr_ook.c ${APP}/rec/rec_scope.c
     ${APP}/rec/rec_ook_packet.c ${APP}/rec/rec_sidecar.c ${APP}/subghz/subghz_file.c
     ${FW}/components/lakeshark/dsp/fsk_packet.c
     ${APP}/rec/rec_unique_name.c
@@ -1555,6 +1571,9 @@ ls_add_test(test_rec_fsk ${APP}/rec/rec_fsk.c
     ${FW}/components/lakeshark/radio/ls_fsk_capture.c)
 target_include_directories(test_rec_fsk PRIVATE ${FW}/components/lakeshark/radio)
 # 2-FSK packets (preamble, sync, CRC) from LR2021 I/Q and from REC's slicer.
+# The per-bin noise floor behind BAND's LR I/Q view and its sweep detector.
+ls_add_test(test_ls_floor ${FW}/components/lakeshark/dsp/ls_floor.c)
+target_include_directories(test_ls_floor PRIVATE ${FW}/components/lakeshark/dsp)
 ls_add_test(test_fsk_packet ${FW}/components/lakeshark/dsp/fsk_packet.c ${APP}/rec/rec_fsk.c)
 target_include_directories(test_fsk_packet PRIVATE ${FW}/components/lakeshark/dsp)
 # The export writes a 2-FSK preset for a demodulated capture, so it needs
@@ -1989,6 +2008,10 @@ ls_add_test(test_rflab ${FW}/app-sdk/apps/rflab/rflab_meas.c)
 target_include_directories(test_rflab PRIVATE ${FW}/app-sdk/apps/rflab)
 ls_add_test(test_usb_port_cycle
     ${FW}/components/lakeshark/radio/usb_port_cycle.c)
+# USB Ethernet adapters (CDC-ECM, RNDIS): descriptors from real adapters,
+# routing beside the SDR dongles, notifications and the frame path.
+ls_add_test(test_usb_net
+    ${FW}/components/lakeshark/radio/usb_net_desc.c)
 # boot recovery cycles the port for a device that is attached and silent,
 # and leaves an empty port alone.
 ls_add_test(test_usb_boot_retry
@@ -2142,6 +2165,8 @@ target_include_directories(test_ui_language PRIVATE
     ${FW}/components/lakeshark/core
     ${FW}/bench/shims)
 
+ls_add_test(test_ls_err_name ${FW}/components/lakeshark/core/ls_err_name.c)
+target_include_directories(test_ls_err_name PRIVATE ${FW}/components/lakeshark/core)
 ls_add_test(test_settings_schema
     ${FW}/components/lakeshark/core/settings_schema.c)
 target_include_directories(test_settings_schema PRIVATE
@@ -2238,6 +2263,11 @@ target_include_directories(test_textbuf PRIVATE ${LS_TUI_APP_INCLUDES})
 ls_add_test(test_compass ${FW}/components/apps/tui/ls_compass.c)
 target_include_directories(test_compass PRIVATE ${LS_TUI_APP_INCLUDES})
 target_compile_definitions(test_field PRIVATE LS_FIELD_TEST=1)
+
+ls_add_test(test_carto_block_cache)
+target_include_directories(test_carto_block_cache PRIVATE ${FW}/components/apps/tui)
+ls_add_test(test_map_view)
+target_include_directories(test_map_view PRIVATE ${FW}/components/lakeshark)
 
 ls_add_test(test_map_motion ${FW}/components/apps/tui/ls_map_motion.c)
 target_include_directories(test_map_motion PRIVATE ${LS_TUI_APP_INCLUDES})
@@ -2489,16 +2519,6 @@ ls_add_test(test_tui_p25_calls ${FW}/components/apps/tui/ls_calls.c ${FW}/compon
     ${FW}/components/apps/tui/ls_font_mono_24.c)
 target_include_directories(test_tui_p25_calls PRIVATE ${LS_TUI_APP_INCLUDES}
     ${FW}/components/lakeshark ${APP}/p25)
-ls_add_test(test_survey ${FW}/components/apps/tui/ls_survey.c)
-target_include_directories(test_survey PRIVATE ${FW}/components/apps/tui)
-
-ls_add_test(test_survey_runtime ${FW}/main/ls_survey_runtime.c
-    ${FW}/components/apps/tui/ls_survey.c
-    ${FW}/components/lakeshark/core/ls_track.c)
-target_include_directories(test_survey_runtime PRIVATE ${LS_TUI_APP_INCLUDES})
-target_compile_definitions(test_survey_runtime PRIVATE
-    LS_SURVEY_DIRECTORY="${CMAKE_CURRENT_BINARY_DIR}/survey-host")
-
 ls_add_test(test_route ${FW}/components/lakeshark/core/ls_route.c)
 
 ls_add_test(test_route_live
@@ -2620,6 +2640,20 @@ if(CARTOCORE_DIR)
     set_tests_properties(test_cartocore_cells_fixture PROPERTIES FIXTURES_SETUP carto_cells_inputs)
     add_test(NAME test_cartocore_cells COMMAND test_cartocore_cells "${CMAKE_CURRENT_BINARY_DIR}/cells-fixture")
     set_tests_properties(test_cartocore_cells PROPERTIES FIXTURES_REQUIRED carto_cells_inputs)
+    # Per-tile degrade over a short arena. test_cartocore_cells renames files in
+    # the fixture while it runs, hence the lock.
+    add_executable(test_carto_degrade tests/test_carto_degrade.c "${CC_ROOT}/src/ingest/host_cellset.c")
+    target_link_libraries(test_carto_degrade cartocore_host m)
+    target_compile_options(test_carto_degrade PRIVATE -UNDEBUG)
+    add_test(NAME test_carto_degrade COMMAND test_carto_degrade "${FW}/data/franklin_mini.ctile" "${CMAKE_CURRENT_BINARY_DIR}/cells-fixture")
+    set_tests_properties(test_carto_degrade test_cartocore_cells PROPERTIES RESOURCE_LOCK carto_cells_fixture_dir)
+    set_tests_properties(test_carto_degrade PROPERTIES FIXTURES_REQUIRED carto_cells_inputs)
+    add_test(NAME test_map_open_country COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_map_open_country.py" "$<TARGET_FILE:lssim>" "${CMAKE_CURRENT_BINARY_DIR}/cells-fixture")
+    set_tests_properties(test_map_open_country PROPERTIES FIXTURES_REQUIRED carto_cells_inputs)
+    add_test(NAME test_map_off_map COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_map_off_map.py" "$<TARGET_FILE:lssim>" "${CMAKE_CURRENT_BINARY_DIR}/cells-fixture")
+    set_tests_properties(test_map_off_map PROPERTIES FIXTURES_REQUIRED carto_cells_inputs)
+    add_test(NAME test_map_failed_view COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_map_failed_view.py" "$<TARGET_FILE:lssim>" "${CMAKE_CURRENT_BINARY_DIR}/cells-fixture")
+    set_tests_properties(test_map_failed_view PROPERTIES FIXTURES_REQUIRED carto_cells_inputs)
     add_custom_target(test_carto_sd
         COMMAND "${CMAKE_COMMAND}" -E env
             "CARTOCORE_DIR=${CC_ROOT}"
@@ -2745,9 +2779,10 @@ target_include_directories(test_adsb_rx PRIVATE
 ls_add_test(test_subghz_runtime tests/subghz_runtime/radio_fake.c
     ${APP}/rec/rec_lr_iq.c ${APP}/rec/rec_sidecar.c
     ${APP}/subghz/subghz_file.c
-    ${APP}/rec/rec_ook24.c ${APP}/rec/rec_watch.c ${APP}/rec/rec_lr_ook.c ${FW}/components/lakeshark/radio/ls_fsk_capture.c
+    ${APP}/rec/rec_ook24.c ${APP}/rec/rec_watch.c ${APP}/rec/rec_lr_ook.c ${APP}/rec/rec_scope.c ${FW}/components/lakeshark/radio/ls_fsk_capture.c
     ${APP}/rec/rec_ism.c ${APP}/rec/rec_fsk.c ${FW}/components/apps/tui/experiments/lr433_dec.c
-    ${FW}/components/lakeshark/dsp/fsk_packet.c ${FW}/components/lakeshark/radio/ls_sub_fsk.c)
+    ${FW}/components/lakeshark/dsp/fsk_packet.c ${FW}/components/lakeshark/radio/ls_sub_fsk.c
+    ${FW}/components/lakeshark/dsp/ls_floor.c)
 target_include_directories(test_subghz_runtime PRIVATE tests/subghz_runtime)
 target_compile_options(test_subghz_runtime PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(test_subghz_runtime PRIVATE -Wl,--gc-sections)
@@ -2797,6 +2832,38 @@ target_compile_definitions(test_mesh_backend PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P
 target_compile_options(test_mesh_backend PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(test_mesh_backend PRIVATE -Wl,--gc-sections)
 add_test(NAME test_mesh_backend COMMAND test_mesh_backend)
+
+# Nothing keeps the LoRa chip from the app on screen: every SUB-GHZ activity
+# on the chip, left for every other app that wants it (production runtime and
+# production lease).
+add_executable(test_radio_release tests/test_radio_release.c tests/radio_release/lease.cpp
+    tests/mesh_backend_fakes.cpp
+    ${FW}/components/meshcore/upstream/src/Dispatcher.cpp
+    ${FW}/components/meshcore/upstream/src/Mesh.cpp
+    ${FW}/components/meshcore/upstream/src/Packet.cpp
+    ${FW}/components/meshcore/upstream/src/Identity.cpp
+    ${FW}/components/meshcore/upstream/src/helpers/AdvertDataHelpers.cpp
+    ${FW}/components/meshcore/ls_mesh_inspect.c
+    ${MESH_HOST_ED}
+    ${APP}/rec/rec_lr_iq.c ${APP}/rec/rec_sidecar.c
+    ${APP}/subghz/subghz_file.c
+    ${APP}/rec/rec_ook24.c ${APP}/rec/rec_watch.c ${APP}/rec/rec_lr_ook.c ${APP}/rec/rec_scope.c ${FW}/components/lakeshark/radio/ls_fsk_capture.c
+    ${APP}/rec/rec_ism.c ${APP}/rec/rec_fsk.c ${FW}/components/apps/tui/experiments/lr433_dec.c
+    ${FW}/components/lakeshark/dsp/fsk_packet.c ${FW}/components/lakeshark/radio/ls_sub_fsk.c
+    ${FW}/components/lakeshark/dsp/ls_floor.c)
+target_link_libraries(test_radio_release ls_harness m)
+target_include_directories(test_radio_release BEFORE PRIVATE
+    tests/subghz_runtime
+    ${FW}/bench/shims/mesh ${FW}/bench/shims
+    ${FW}/components/meshcore/compat ${FW}/components/meshcore/upstream/src
+    ${FW}/components/meshcore/upstream/ed25519 ${FW}/components/meshcore
+    ${FW}/components/lakeshark ${FW}/components/lakeshark/core
+    ${FW}/components/lakeshark/board ${FW}/components/lakeshark/radio
+    ${FW}/components/lakeshark/dsp)
+target_compile_definitions(test_radio_release PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+target_compile_options(test_radio_release PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(test_radio_release PRIVATE -Wl,--gc-sections)
+add_test(NAME test_radio_release COMMAND test_radio_release)
 
 # The ed25519 base table computed at run time (components/meshcore), against
 # upstream's constant table and RFC 8032.
@@ -3010,6 +3077,14 @@ endforeach()
 # it, and the rules file the board ships, read by repo-relative path.
 ls_add_test(test_detector_app ${FW}/app-sdk/apps/detector/det_engine.c)
 target_include_directories(test_detector_app PRIVATE ${FW}/app-sdk/apps/detector)
+# BUGHUNT's tag watch (app-sdk/apps/bughunt/bh_tags.c, once the BLE WATCH
+# app): its tracker engine as the app builds it; test_ble_apps_sim runs the
+# app itself in lssim over a synthetic capture.
+ls_add_test(test_bughunt_tags ${FW}/app-sdk/apps/bughunt/bh_tags.c)
+target_include_directories(test_bughunt_tags PRIVATE ${FW}/app-sdk/apps/bughunt)
+# BLE EXPLORER (app-sdk/apps/ble_explorer): its GATT walk, decoders and JSON.
+ls_add_test(test_ble_explorer_app ${FW}/app-sdk/apps/ble_explorer/bx_core.c)
+target_include_directories(test_ble_explorer_app PRIVATE ${FW}/app-sdk/apps/ble_explorer ${FW}/app-sdk/include)
 set_tests_properties(test_detector_app PROPERTIES WORKING_DIRECTORY ${FW})
 # What the board hands a detector app (SDK 2.2 lap_seen_*): the queue, the
 # pseudonyms and drone watch's own alert when no app takes it.
@@ -3046,6 +3121,14 @@ set_source_files_properties(tests/test_map_share_mesh.c PROPERTIES COMPILE_OPTIO
 # Production MAP touch journeys and portrait/landscape review stills.
 add_test(NAME test_map_touch COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_map_touch.py" "$<TARGET_FILE:lssim>")
+add_test(NAME test_map_start COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_map_start.py" "$<TARGET_FILE:lssim>")
+add_test(NAME test_map_preview_style COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_map_preview_style.py" "$<TARGET_FILE:lssim>")
+# BUGHUNT's tag watch and BLE EXPLORER in lssim: a generated advertising
+# capture, both screen shapes, the following alert, the card log and the GATT JSON.
+add_test(NAME test_ble_apps_sim COMMAND ${Python3_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ble_apps_sim.py" "$<TARGET_FILE:lssim>")
 
 # Opt-in example: normal simulator builds keep the production directory.
 option(LS_EXAMPLE_APP "Enable the native example in lssim" OFF)
@@ -3583,6 +3666,11 @@ target_compile_definitions(test_lap_services26_nano PRIVATE CONFIG_LS_LAP_SERVIC
 add_test(NAME test_lap_services26_nano COMMAND test_lap_services26_nano)
 add_test(NAME test_lap_services26_examples COMMAND ${Python3_EXECUTABLE} ${FW}/app-sdk/tests/test_services26.py)
 set_tests_properties(test_lap_services26_examples PROPERTIES ENVIRONMENT "LS_BENCH_BUILD=${CMAKE_CURRENT_BINARY_DIR}")
+# API 2.7 capture over lssim: TAP (wide and handheld, heavy traffic) and the
+# WIFI WATCH / WIFI SURVEY apps on generated pcapng files.
+add_test(NAME test_lap_capture27 COMMAND ${Python3_EXECUTABLE} ${FW}/app-sdk/tests/test_capture27.py)
+add_test(NAME test_lap_wifi_apps COMMAND ${Python3_EXECUTABLE} ${FW}/app-sdk/tests/test_wifi_apps.py)
+set_tests_properties(test_lap_capture27 test_lap_wifi_apps PROPERTIES ENVIRONMENT "LS_BENCH_BUILD=${CMAKE_CURRENT_BINARY_DIR}")
 
 add_executable(test_lap_sensors tests/test_lap_sensors.c ${LAP_API_TEST_SOURCES})
 target_include_directories(test_lap_sensors PRIVATE ${LAP_TUI} ${FW}/components/lakeshark)
@@ -3602,7 +3690,7 @@ foreach(t IN LISTS lap2_targets)
     list(APPEND lap2_add ${LAP_TUI}/ls_desk_host.c ${LAP_TUI}/ls_lap_system.c ${LAP_TUI}/ls_lap_radio.c ${LAP_TUI}/ls_lap_radio_sim.c ${LAP_TUI}/ls_lap_audio.c
          ${LAP_TUI}/ls_lap_events.c ${LAP_TUI}/ls_lap_grants.c
          ${LAP_TUI}/ls_lap_net_audio.c ${LAP_TUI}/ls_lap_wifi_http.c ${LAP_TUI}/ls_lap_udp.c
-         ${LAP_TUI}/ls_lap_mdns.c ${LAP_TUI}/ls_lap_ble_client.c ${LAP_TUI}/ls_lap_sound.c)
+         ${LAP_TUI}/ls_lap_mdns.c ${LAP_TUI}/ls_lap_netdiag.c ${LAP_TUI}/ls_lap_ble_client.c ${LAP_TUI}/ls_lap_sound.c)
     target_compile_definitions(${t} PRIVATE LS_TIME_HOST=1)
     if(t STREQUAL "test_lap_host" OR t STREQUAL "test_lap_service")
       list(APPEND lap2_add ${FW}/bench/shims/lap_rx_log.c)
@@ -3898,11 +3986,22 @@ target_sources(lssim PRIVATE shims/lap_rx_log.c)
 # API 2.4 networking, Bluetooth and audio contracts (no GUI/external services).
 add_executable(test_lap_net_audio tests/test_lap_net_audio.c
   ${LAP_TUI}/ls_lap_net_audio.c ${LAP_TUI}/ls_lap_wifi_http.c
-  ${LAP_TUI}/ls_lap_udp.c ${LAP_TUI}/ls_lap_mdns.c
+  ${LAP_TUI}/ls_lap_udp.c ${LAP_TUI}/ls_lap_mdns.c ${LAP_TUI}/ls_lap_netdiag.c
   ${LAP_TUI}/ls_lap_ble_client.c ${LAP_TUI}/ls_lap_sound.c)
 target_include_directories(test_lap_net_audio PRIVATE ${LAP_TUI})
 target_link_libraries(test_lap_net_audio $<$<BOOL:${WIN32}>:ws2_32>)
 add_test(NAME test_lap_net_audio COMMAND test_lap_net_audio)
+
+# API 2.8 network diagnostics over the simulator's fixed LAN.
+add_executable(test_lap_netdiag tests/test_lap_netdiag.c
+  ${LAP_TUI}/ls_lap_net_audio.c ${LAP_TUI}/ls_lap_wifi_http.c
+  ${LAP_TUI}/ls_lap_udp.c ${LAP_TUI}/ls_lap_mdns.c ${LAP_TUI}/ls_lap_netdiag.c
+  ${LAP_TUI}/ls_lap_ble_client.c ${LAP_TUI}/ls_lap_sound.c)
+target_include_directories(test_lap_netdiag PRIVATE ${LAP_TUI})
+target_link_libraries(test_lap_netdiag $<$<BOOL:${WIN32}>:ws2_32>)
+add_test(NAME test_lap_netdiag COMMAND test_lap_netdiag)
+add_test(NAME test_lap_netdiag_apps COMMAND ${Python3_EXECUTABLE} ${FW}/app-sdk/tests/test_netdiag28.py)
+set_tests_properties(test_lap_netdiag_apps PROPERTIES ENVIRONMENT "LS_BENCH_BUILD=${CMAKE_CURRENT_BINARY_DIR}")
 
 # API 2.4 radio I/O: production protection also under the actual chip tests.
 get_property(radio_io_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)

@@ -49,16 +49,16 @@ BLOCK LORA, then ALLOW to undo it.
 | O | OPTIONS | Open OPTIONS |
 | Esc | | Back to HOME |
 
-USE MMCX1 switches in one tap and is remembered across reboots. MMCX1 is
-for receive unless MMCX1 USE says otherwise: each LoRa transmit goes out the
-internal antenna and the switch comes back to MMCX1 when it ends.
+USE MMCX1 switches in one tap and is remembered across reboots. Transmit
+goes out whichever antenna is selected, on the LR2021 and the SX1262 alike;
+MMCX1 USE can keep transmits on the internal antenna instead.
 
 OPTIONS holds:
 
-- **MMCX1 USE**: RX ONLY (default) keeps transmits on the internal antenna.
-  RX+TX transmits on MMCX1 too; only choose it with an antenna for the
-  transmit band on MMCX1, since TX into an open or mismatched port can damage
-  the radio. Console: `ant txuse rx|rxtx`.
+- **MMCX1 USE**: RX+TX (default) transmits on MMCX1 when it is selected, so
+  keep an antenna for the transmit band on it: TX into an open or mismatched
+  port can damage the radio. RX ONLY moves each LoRa transmit to the internal
+  antenna and back. Console: `ant txuse rx|rxtx`.
 - **BLE AT BOOT**: start Bluetooth on the Wi-Fi and Bluetooth co-processor at
   boot.
 - **WI-FI AT BOOT**: start Wi-Fi at boot.

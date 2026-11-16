@@ -1,4 +1,4 @@
 {
   "category": "radio",
-  "description": "Packet analyser: Wi-Fi 802.11, Bluetooth advertising, LoRa mesh and board decodes in one list, with a protocol tree, bytes, display filters, statistics and pcapng files for Wireshark. Receive only."
+  "description": "Packet analyser: Wi-Fi 802.11, Bluetooth advertising, LoRa mesh and board decodes in one list, with a protocol tree, bytes, Wireshark display filters and colouring rules, statistics, long captures to the card and pcapng files Wireshark opens. Receive only."
 }

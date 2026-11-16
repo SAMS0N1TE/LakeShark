@@ -95,9 +95,9 @@ const ls_app_doc_t ls_doc_mesh = {
 };
 
 const ls_app_doc_t ls_doc_labs = {
-    .purpose = LS_TXT(doc_labs_purpose, "The measurement bench: LoRa and FSK packet capture, a "
-               "spectrum trace, and a bearing plot that bins signal strength "
-               "against magnetic heading."),
+    .purpose = LS_TXT(doc_labs_purpose, "The measurement bench: LoRa and FSK packet capture and "
+               "a bearing plot that bins signal strength against magnetic "
+               "heading. SPECTRUM is the RF LAB app, on every radio."),
     .records     = LS_APP_RECORDS_MANUAL,
     .record_note = LS_TXT(doc_labs_record_note, "MARK keeps one observation - the frequency, signal and "
                    "packet counts at that moment, with the position and "
@@ -335,14 +335,11 @@ const ls_app_doc_t ls_doc_radios = {
 };
 
 const ls_app_doc_t ls_doc_link = {
-    .purpose = LS_TXT(doc_link_purpose, "Join Wi-Fi networks, connect a Flipper running LakeShark, "
-               "or record a passive Wi-Fi/BLE Survey. Bluetooth OPTIONS sets "
-               "the head pin, name filter and telemetry rate."),
-    .records = LS_APP_RECORDS_MANUAL,
-    .record_note = LS_TXT(doc_link_record_note, "Survey saves observed Wi-Fi/BLE identities and signal "
-                   "strength to SD CSV, with positions when a fresh fix is available."),
-    .gps = LS_APP_GPS_NAVIGATES,
-    .gps_note = LS_TXT(doc_link_gps_note, "Survey can require a fresh GPS fix before recording observations."),
+    .purpose = LS_TXT(doc_link_purpose, "Join Wi-Fi networks or connect a Flipper running LakeShark. "
+               "Bluetooth OPTIONS sets the head pin, name filter and telemetry rate. "
+               "Survey is in WIFI SURVEY (RECORD); V opens it."),
+    .records = LS_APP_RECORDS_NOTHING,
+    .gps = LS_APP_GPS_UNUSED,
 };
 
 const ls_app_doc_t ls_doc_music = {

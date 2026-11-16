@@ -18,6 +18,9 @@ static void seed_wfm(void)
     FM.mode = FM_MODE_WFM;
     FM.freq_hz = 98500000u;
     FM.iq_level = 0.62f;
+    /* A strong station's quieting, and the dongle's real rate. */
+    FM.noise = 0.07f;
+    FM.iq_bytes_sec = 512000;
     fm_wfm_status_t s;
     memset(&s, 0, sizeof(s));
     s.running = true;

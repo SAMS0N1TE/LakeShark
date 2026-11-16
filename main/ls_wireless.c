@@ -12,15 +12,12 @@
 #include <string.h>
 #include <stdlib.h>
 
-extern bool ls_survey_pending(void);
-extern void ls_survey_tick(void);
-
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_active, s_worker, s_observer;
 static bool s_find_ble_requested, s_find_ble_owned;
 static bool s_rid_requested, s_rid_owned, s_rid_failed, s_rid_retry;
 static bool s_drone_rid;
-/* Keep DRAM: JOIN/FORGET and survey operations reach NVS/storage. Nano's
+/* Keep DRAM: JOIN/FORGET operations reach NVS/storage. Nano's
  * measured 3100 B unused at 6144 permits 4608, retaining 1564 B for the
  * deeper paths. Reserve it across visits rather than allocating late. */
 #if CONFIG_LS_NANO_RAM_BUDGET
@@ -168,7 +165,7 @@ static void worker(void *arg)
         bool stop = find_ble == s_find_ble_owned && !s_active && !s_observer && !s_rid_requested && !s_rid_owned && op == LS_WIRELESS_NONE;
         portEXIT_CRITICAL(&s_mux);
         find_ble_tick(find_ble);
-        if (stop && !ls_survey_pending() && !ls_sweep_pending() && !ls_seen_pending()) {
+        if (stop && !ls_sweep_pending() && !ls_seen_pending()) {
             wipe(pass, sizeof(pass));
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             last_poll = 0;
@@ -207,7 +204,6 @@ static void worker(void *arg)
             last_poll = now_ms();
         }
         rid_tick();
-        ls_survey_tick();
         ls_sweep_tick();
         ls_seen_tick();
         vTaskDelay(pdMS_TO_TICKS(125));
@@ -287,7 +283,6 @@ bool ls_wireless_request(ls_wireless_op_t op, const char *ssid, const char *pass
 {
     if (op <= LS_WIRELESS_NONE || op > LS_WIRELESS_BT_TELEMETRY ||
         (ssid && strlen(ssid) > 32) || (pass && strlen(pass) > 64)) return false;
-    if (ls_survey_pending()) return false;
     portENTER_CRITICAL(&s_mux);
     bool accept = s_pending == LS_WIRELESS_NONE && !s_public.busy;
     if (accept) {

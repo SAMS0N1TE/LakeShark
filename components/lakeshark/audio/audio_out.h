@@ -16,6 +16,9 @@ esp_err_t audio_out_init(void);
    Release only after the decoder has stopped writing; restores radio format. */
 esp_err_t audio_out_media_acquire(void);
 void audio_out_media_release(void);
+/* True while MUSIC or CALLS replay holds the speaker; *since_us is when it
+   was taken (esp_timer). Every other sound is dropped meanwhile. */
+bool audio_out_media_held(int64_t *since_us);
 /* SDK mic lease preserves the 16 kHz stereo codec format against media. */
 esp_err_t audio_out_capture_acquire(void);
 void audio_out_capture_release(void);
@@ -56,6 +59,9 @@ void audio_mute_set(bool muted);
 bool audio_is_muted(void);
 void audio_volume_delta(int d);
 void audio_volume_set(int v);
+/* The level a finger is dragging a volume slider through: heard at once and
+   not saved. The audio_volume_set that ends the drag saves it. */
+void audio_volume_preview(int v);
 int  audio_volume_get(void);
 
 void audio_out_ensure_unmuted(void);

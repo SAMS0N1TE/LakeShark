@@ -7,6 +7,11 @@
 #include "rtl_adapter_private.h"
 #include "hackrf_adapter_private.h"
 #include "event_bus.h"
+#include "sdkconfig.h"
+#if CONFIG_LS_USB_ETH
+#include "usb_net.h"
+#include "usb_net_desc.h"
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -86,6 +91,9 @@ static void client_event_cb(const usb_host_client_event_msg_t *event_msg, void *
         ESP_LOGW(TAG, "USB device gone from the bus");
         (void)rtl_adapter_note_removed(event_msg->dev_gone.dev_hdl);
         (void)hackrf_adapter_note_removed(event_msg->dev_gone.dev_hdl);
+#if CONFIG_LS_USB_ETH
+        (void)ls_usb_net_note_removed(event_msg->dev_gone.dev_hdl);
+#endif
         xSemaphoreTake(driver_obj->constant.mux_lock, portMAX_DELAY);
         for (uint8_t i = 0; i < DEV_MAX_COUNT; i++) {
             if (driver_obj->mux_protected.device[i].dev_hdl ==
@@ -169,13 +177,33 @@ static void action_probe_dev(usb_device_t *d)
     bool valid = error == ESP_OK && descriptor;
     bool hackrf = valid && hackrf_adapter_matches(descriptor->idVendor,
                                                    descriptor->idProduct);
-    /* Both adapters share this USB client. Release the descriptor probe before
+#if CONFIG_LS_USB_ETH
+    /* USB Ethernet adapters are told apart by their interfaces, not VID:PID:
+       an RTL-SDR has one configuration of vendor interfaces only, so it never
+       leaves the SDR route. */
+    ls_usb_route_t route = LS_USB_ROUTE_SDR;
+    if (valid && !hackrf) {
+        const usb_config_desc_t *config = NULL;
+        if (usb_host_get_active_config_descriptor(device, &config) != ESP_OK) config = NULL;
+        route = ls_usbnet_route(false, descriptor->bNumConfigurations,
+                                (const uint8_t *)config, config ? config->wTotalLength : 0,
+                                ls_usbnet_config_learned(descriptor->idVendor,
+                                                         descriptor->idProduct));
+    }
+#endif
+    /* The adapters share this USB client. Release the descriptor probe before
      * starting exactly one adapter; overlapping opens return INVALID_STATE. */
     error = usb_host_device_close(d->client_hdl, device);
     if (error != ESP_OK || !valid) {
         ESP_LOGW(TAG, "USB descriptor probe could not hand off addr=%u", d->dev_addr);
         return;
     }
+#if CONFIG_LS_USB_ETH
+    if (route == LS_USB_ROUTE_NET || route == LS_USB_ROUTE_NET_PROBE) {
+        ls_usb_net_probe_async(d->dev_addr, d->client_hdl, route == LS_USB_ROUTE_NET_PROBE);
+        return;
+    }
+#endif
     if (hackrf) hackrf_adapter_probe_async(d->dev_addr, d->client_hdl);
     else rtl_adapter_probe_async(d->dev_addr, d->client_hdl);
 }

@@ -44,6 +44,7 @@ extern "C" {
    LAP_TARGET_API_24 builds for 2.4 firmware: the 2.5 calls are not declared.
    LAP_TARGET_API_25 builds for 2.5 firmware: the 2.6 calls are not declared.
    LAP_TARGET_API_26 builds for 2.6 firmware: the 2.7 calls are not declared.
+   LAP_TARGET_API_27 builds for 2.7 firmware: the 2.8 calls are not declared.
    API 2.5 games/assets: include lib/lap_assets.h, lap_game.h, lap_music.h.
    These helpers compile into the app and add no firmware imports. PNG assets
    use caller-owned bounded arenas; SD reads and PCM use existing services. */
@@ -95,12 +96,8 @@ extern "C" {
 #define LAP_API_24 1
 #define LAP_API_25 1
 #define LAP_API_26 1
-#else
-/* API 2.7: raw Wi-Fi and Bluetooth capture (lap_wifi_capture_start ...).
-   API 2.6: HackRF TX / desktop host and Bluetooth peripheral roles.
-   API 2.5: system services, games/assets, input devices and sensors.
-   Helpers compile into apps; descriptor stays 228 bytes. */
-/* API 2.6 services: concurrent residents and budgeted custom DSP. */
+#elif defined(LAP_TARGET_API_27)
+/* API 2.7: raw Wi-Fi and Bluetooth capture (lap_wifi_capture_start ...). */
 #define LAP_API_MAJOR 2
 #define LAP_API_MINOR 7
 #define LAP_API_21 1
@@ -110,6 +107,23 @@ extern "C" {
 #define LAP_API_25 1
 #define LAP_API_26 1
 #define LAP_API_27 1
+#else
+/* API 2.8: network diagnostics (lap_ping_start, lap_dns_resolve, lap_arp_*, lap_net_info).
+   API 2.7: raw Wi-Fi and Bluetooth capture (lap_wifi_capture_start ...).
+   API 2.6: HackRF TX / desktop host and Bluetooth peripheral roles.
+   API 2.5: system services, games/assets, input devices and sensors.
+   Helpers compile into apps; descriptor stays 228 bytes. */
+/* API 2.6 services: concurrent residents and budgeted custom DSP. */
+#define LAP_API_MAJOR 2
+#define LAP_API_MINOR 8
+#define LAP_API_21 1
+#define LAP_API_22 1
+#define LAP_API_23 1
+#define LAP_API_24 1
+#define LAP_API_25 1
+#define LAP_API_26 1
+#define LAP_API_27 1
+#define LAP_API_28 1
 #endif
 #define LAP_MAGIC     0x3150414Cu   /* "LAP1" */
 
@@ -1063,11 +1077,20 @@ int lap_channels_write(const char *bank, const lap_channel_t *rows, int count);
 /* Generic job status also covers channel writes. Completed job survives until
  * the next database request. No hardware or SD work happens in the callback. */
 int lap_io_status(int job, lap_io_status_t *out);
+/* version 1: dwell 20..10000 ms; a hit is a rising squelch event and the
+ * scanner holds while the carrier stays over squelch (hang_ms after it).
+ * version 2 (firmware after 2.23.1): dwell 1..10000 ms; the worker reads the RSSI
+ * as fast as the bus answers through each dwell and lap_scan_next gives one
+ * report per finished step whose PEAK reaches squelch (INT16_MIN: every
+ * step): rssi = the strongest reading, length = readings taken, sequence =
+ * the list index. It never holds by itself (HOLD still does); hang_ms is
+ * unused. Older firmware refuses version 2 with EINVAL: fall back to 1. */
+#define LAP_SCAN_VERSION_PEAKS 2
 typedef struct {
     uint16_t size, version;
     int32_t radio;
     lap_packet_config_t receiver;
-    uint32_t dwell_ms, hang_ms;   /* 20..10000; 0..10000 */
+    uint32_t dwell_ms, hang_ms;   /* 20..10000 (version 2: 1..10000); 0..10000 */
     int16_t squelch_tenths_dbm;   /* radio-relative RSSI, not a calibrated meter */
     uint16_t count;              /* 1..64 copied frequencies */
     uint64_t frequencies[LAP_SCAN_MAX];
@@ -2142,6 +2165,106 @@ int lap_capture_read(int capture, void *data, size_t cap, lap_capture_meta_t *me
 int lap_capture_status(int capture, lap_capture_status_t *out);
 void lap_capture_stop(int capture);
 #endif /* API 2.7: raw Wi-Fi and Bluetooth capture */
+
+/* ---- API 2.8: network diagnostics --------------------------------------- */
+#if defined(LAP_API_28)
+/* Ping, traceroute, DNS, ARP and the interface's addresses, for LAN tools.
+   Needs LAP_CAP_NETWORK, exactly like lap_tcp_*: without it every call but
+   lap_ping_stop returns LAP_IO_EACCES. IPv4 only. Every call returns at once:
+   the board's network worker sends, waits and parses, and the app polls
+   from draw(). Buffers are copied before return and may be on the stack.
+   Closing the app stops its pings and frees every handle.
+
+   SIMULATOR: lssim has no network for these calls. It answers from a fixed
+   LAN, 192.0.2.0/24 on Wi-Fi: the board is .2, hosts answer at .1 (gateway),
+   .3, .10, .23 and .42, every other address times out. Names resolve to
+   fixed addresses (localhost, gateway.lan, *.invalid fails), and a ping
+   outside the LAN crosses three routers, so traceroute shows four hops.
+   LAPSIM_SCRIPT netdown=1 takes the link down, dnsfail=1 fails lookups. */
+enum { LAP_IO_ENOTFOUND = -112,     /* the name did not resolve */
+       LAP_IO_ENETDOWN = -113 };    /* no interface is up with an address */
+/* Interfaces, for lap_net_info and lap_arp_entry_t. LAP_NETIF_ETH is
+   reserved for USB Ethernet; this firmware has none and reports it absent. */
+enum { LAP_NETIF_ACTIVE = 0, LAP_NETIF_NONE = 0, LAP_NETIF_WIFI = 1, LAP_NETIF_ETH = 2 };
+/* Reserved capture source for USB Ethernet frames (lap_capture_*). Not
+   implemented: nothing starts it yet. */
+enum { LAP_CAPTURE_ETH = 3 };
+typedef struct {
+    uint16_t size, version;     /* sizeof, 1 */
+    uint8_t kind;               /* LAP_NETIF_*; NONE when there is no such interface */
+    uint8_t link_up;            /* 1: up and holding an IPv4 address */
+    uint8_t mac[6];             /* the interface's own address */
+    char ip[16], mask[16], gateway[16], dns[16];   /* dotted quads; empty when down */
+    uint32_t reserved[2];
+} lap_net_info_t;
+/* iface LAP_NETIF_ACTIVE: the interface holding the default route (Wi-Fi
+   today). 0 and *out filled, LAP_IO_ENOTSUP for an interface this board
+   does not have (out->kind NONE), LAP_IO_EINVAL, LAP_IO_EACCES. A snapshot
+   the worker refreshes about twice a second. */
+int lap_net_info(int iface, lap_net_info_t *out);
+
+typedef struct {
+    uint16_t size, version;     /* sizeof, 1 */
+    uint16_t count;             /* echo requests, 1..1000; 0 = 4 */
+    uint16_t interval_ms;       /* between requests, 20..10000; 0 = 1000 */
+    uint16_t timeout_ms;        /* per request, 100..10000; 0 = 1000 */
+    uint8_t ttl;                /* 1..255; 0 = 64. Small values make routers answer: traceroute */
+    uint8_t reserved;
+    uint16_t payload_size;      /* ICMP data bytes, 0..1400; 0 = 32 */
+    uint16_t reserved2;
+} lap_ping_config_t;
+enum {
+    LAP_PING_REPLY = 0,         /* echo reply from the host */
+    LAP_PING_TTL_EXCEEDED,      /* a router on the way: `from` is that router */
+    LAP_PING_TIMEOUT,           /* nothing within timeout_ms */
+    LAP_PING_UNREACHABLE        /* ICMP destination unreachable; `code` says why */
+};
+typedef struct {
+    uint16_t size, version;
+    uint16_t seq;               /* 0 .. count-1, in the order the requests went */
+    uint8_t type;               /* LAP_PING_* */
+    uint8_t ttl;                /* the answer's IP TTL; 0 on timeout */
+    uint32_t rtt_us;            /* round trip; 0 on timeout */
+    char from[16];              /* who answered; empty on timeout */
+    uint8_t code;               /* ICMP code of an unreachable or exceeded answer */
+    uint8_t reserved[3];
+} lap_ping_reply_t;
+/* Four pings per app. host: numeric IPv4 or a name (resolved first, up to
+   5 s), <= 253 chars. NULL cfg: four requests a second apart. start returns
+   a handle or LAP_IO_EINVAL, EACCES, EBUSY (all four in use). next returns
+   1 and fills *out once per request (a reply, a router, unreachable or a
+   timeout, in request order per answer), LAP_IO_EAGAIN while waiting, 0
+   once every request has been reported, or an error that stays:
+   LAP_IO_ENOTFOUND, LAP_IO_ENETDOWN, LAP_IO_EIO, LAP_IO_ECLOSED. A request
+   is sent only while fewer than 8 answers wait unread. stop frees the
+   handle at once; an unanswered request is forgotten. */
+int lap_ping_start(const char *host, const lap_ping_config_t *cfg);
+int lap_ping_next(int h, lap_ping_reply_t *out);
+void lap_ping_stop(int h);
+/* Four lookups per app. timeout_ms 100..10000 (0 = 5000). result returns 0
+   and the address in ip, LAP_IO_EAGAIN while pending, or LAP_IO_ENOTFOUND,
+   LAP_IO_ETIMEOUT, LAP_IO_ENETDOWN. A final answer (0 or an error) frees the
+   handle: asking again is LAP_IO_ECLOSED. An answer nobody collects is
+   dropped 10 s after it arrives. */
+int lap_dns_resolve(const char *name, uint32_t timeout_ms);
+int lap_dns_result(int h, char ip[16]);
+typedef struct {
+    uint16_t size, version;
+    char ip[16];
+    uint8_t mac[6];
+    uint8_t iface;              /* LAP_NETIF_* */
+    uint8_t reserved;
+    uint32_t age_ms;            /* since this pair was last seen in the stack's table */
+} lap_arp_entry_t;
+/* probe: one ARP request for ip (dotted quad, on the active interface's
+   subnet) is queued; 0, LAP_IO_EAGAIN when 16 already wait, LAP_IO_EINVAL,
+   LAP_IO_ENETDOWN. Answers land in the stack's ARP table, which holds only
+   ten pairs, so the board keeps the last 32 it saw there for lap_arp_table.
+   table copies up to max (<= 32) pairs, lowest address first, and returns
+   how many. Pairs expire 5 minutes after they leave the stack's table. */
+int lap_arp_probe(const char *ip);
+int lap_arp_table(lap_arp_entry_t *out, int max);
+#endif /* API 2.8: network diagnostics */
 #ifdef __cplusplus
 }
 #endif

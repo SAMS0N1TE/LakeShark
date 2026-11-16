@@ -287,6 +287,9 @@ static int64_t        s_peerlog_due_us;
 static ls_rlog_t      s_msglog;
 static ls_mesh_msg_t *s_msglog_buf;
 static uint32_t       s_msglog_seq;      /* the s_msg_seq we last saw change */
+/* The sequence numbers the card has: stopping writes a log only when it is
+   behind (TURN OFF rewrote both every time, 1.2 to 2.8 s on the bench). */
+static uint32_t       s_msglog_saved, s_peerlog_saved;
 static int64_t        s_msglog_due_us;   /* 0 when there is nothing pending  */
 
 /* Hashes of our own recent sends, so a relayed copy coming back can
@@ -1739,6 +1742,8 @@ static void peerlog_flush(void)
 {
     if (!s_peerlog.open) return;
 
+    const uint32_t seq = s_peer_ident_seq;
+    bool ok = true;
     ls_rlog_clear(&s_peerlog);
     for (int i = 0; i < s_peer_count; i++) {
         ls_mesh_peer_rec_t r;
@@ -1750,8 +1755,9 @@ static void peerlog_flush(void)
         r.has_loc = s_peers[i].has_loc ? 1 : 0;
         r.lat_e6  = s_peers[i].lat_e6;
         r.lon_e6  = s_peers[i].lon_e6;
-        if (!ls_rlog_append(&s_peerlog, &r)) break;
+        if (!ls_rlog_append(&s_peerlog, &r)) { ok = false; break; }
     }
+    if (ok) s_peerlog_saved = seq;
 }
 
 static void peerlog_service(void)
@@ -1798,6 +1804,7 @@ static void peerlog_open(void)
         restored++;
     }
     s_peerlog_seq    = s_peer_ident_seq;
+    s_peerlog_saved  = s_peer_ident_seq;
     s_peerlog_due_us = 0;
     ESP_LOGI(TAG, "peers: %d restored as contacts, none heard yet", restored);
 }
@@ -1812,8 +1819,9 @@ static void msglog_flush(void)
             sizeof(ls_mesh_msg_t) * LS_MESH_MAX_MSGS, MALLOC_CAP_SPIRAM);
         if (!s_msglog_buf) { s_msglog.open = false; return; }
     }
+    const uint32_t seq = s_msg_seq;
     const int n = ls_mesh_messages(s_msglog_buf, LS_MESH_MAX_MSGS);
-    ls_rlog_replace(&s_msglog, s_msglog_buf, n);
+    if (ls_rlog_replace(&s_msglog, s_msglog_buf, n)) s_msglog_saved = seq;
 }
 
 static void msglog_service(void)
@@ -1903,6 +1911,7 @@ static void msglog_open(void)
     }
     if (legacy) msglog_flush();
     s_msglog_seq    = s_msg_seq;
+    s_msglog_saved  = s_msg_seq;
     s_msglog_due_us = 0;
     ESP_LOGI(TAG, "message history: %d restored", n);
 }
@@ -2142,6 +2151,7 @@ extern "C" esp_err_t ls_mesh_stop(void)
 {
     if (s_radio_hold || s_radio_held || ls_lora_fsk_active()) return ESP_ERR_INVALID_STATE;
     if (!s_task) return ESP_OK;
+    const int64_t t0 = esp_timer_get_time();
     s_stop = true;
     xTaskNotifyGive(s_task);
     for (int i = 0; i < 100 && eTaskGetState(s_task) != eSuspended; i++)
@@ -2150,10 +2160,13 @@ extern "C" esp_err_t ls_mesh_stop(void)
         ESP_LOGW(TAG, "stop pending; task has not released the radio");
         return ESP_ERR_TIMEOUT;
     }
+    const int64_t t1 = esp_timer_get_time();
     /* The suspended owner cannot re-arm RX or start another transmission. */
     for (int i = 0; i < 100 && !ls_lora_send_done(); i++)
         vTaskDelay(pdMS_TO_TICKS(10));
+    const int64_t t2 = esp_timer_get_time();
     const esp_err_t err = ls_lora_park();
+    const int64_t t3 = esp_timer_get_time();
     if (err != ESP_OK) return err;
     vTaskDelete(s_task);
     s_on_air = false;
@@ -2169,11 +2182,17 @@ extern "C" esp_err_t ls_mesh_stop(void)
     /* The task is gone, so nothing else is writing s_msgs: a last write here
        is what keeps the tail of a conversation the debounce had not got
        round to yet. */
-    msglog_flush();
-    peerlog_flush();
+    if (s_msg_seq != s_msglog_saved) msglog_flush();
+    if (s_peer_ident_seq != s_peerlog_saved) peerlog_flush();
     mesh_objects_free();
     memset(s_delivery, 0, sizeof(s_delivery));
     s_task = nullptr;
+    const int64_t t4 = esp_timer_get_time();
+    /* TURN OFF in RADIOS read as laggy: say where a slow stop went. */
+    if (t4 - t0 > 300000)
+        ESP_LOGW(TAG, "stop took %lld ms: task %lld, send %lld, park %lld, logs %lld",
+                 (long long)(t4 - t0) / 1000, (long long)(t1 - t0) / 1000, (long long)(t2 - t1) / 1000,
+                 (long long)(t3 - t2) / 1000, (long long)(t4 - t3) / 1000);
     return ESP_OK;
 }
 

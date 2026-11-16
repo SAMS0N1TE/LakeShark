@@ -528,36 +528,17 @@ int cc_ctile_tile_scene(cc_str tile,int64_t ox,int64_t oy,cc_arena *a,cc_scene *
 
 static void put32(uint8_t *p,uint32_t n) { p[0]=(uint8_t)n; p[1]=(uint8_t)(n>>8); p[2]=(uint8_t)(n>>16); p[3]=(uint8_t)(n>>24); }
 static void put16(uint8_t *p,int n) { p[0]=(uint8_t)n; p[1]=(uint8_t)((unsigned)n>>8); }
-int cc_ctile_decode_tile(cc_str tile,cc_arena *a,cc_str *out) {
-    if(cc_yield_hook) cc_yield_hook();
-    size_t mark=a->used;
-    if(zstd_tile(tile) && (!cc_zstd_decode(tile,a,&tile) || !v6(tile))) goto fail;
-    if(v6(tile)) {
-        if(!validate6(tile)) goto fail;
-        uint32_t ng=u32(tile.data+4); cc_str inner;
-        if(!cc_ctile_decode_tile((cc_str){tile.data+16,ng},a,&inner)) goto fail;
-        if(inner.data==tile.data+16) { *out=tile; return 1; }
-        size_t total=tile.size-ng+inner.size;
-        if(total>UINT32_MAX) goto fail;
-        uint8_t *d=cc_arena_alloc(a,total,1); if(!d) goto fail;
-        memcpy(d,tile.data,16); put32(d+4,(uint32_t)inner.size); memcpy(d+16,inner.data,inner.size);
-        memcpy(d+16+inner.size,tile.data+16+ng,tile.size-16-ng);
-        *out=(cc_str){d,total}; return 1;
-    }
-    int packed=compressed(tile);
-    if(!expand(&tile,a)) goto fail;
-    if(!packed && !(v4(tile)?validate4(tile):validate3(tile))) goto fail;
-    if(!v4(tile) || tile.data[2]!='5') { *out=tile; return 1; }
-    const uint8_t *b=tile.data;
+/* A validated CT5 as CT3: its size, written to d unless d is NULL. 0 keeps the
+   CT5 (features out of class order), past UINT32_MAX is too big. */
+static uint64_t ct3(const uint8_t *b,uint8_t *d) {
     uint32_t ns=u32(b+4),nf=u32(b+8),np=u32(b+12),nv=u32(b+16),fo=u32(b+24),po=u32(b+28),no=u32(b+20);
     /* Preserve even arbitrary validated feature order. Builder compact tiles
        are class ordered; unordered CT5 is retained in its original form. */
-    for(uint32_t i=1;i<nf;i++) if(b[fo+i*24]<b[fo+(i-1)*24]) { *out=tile; return 1; }
+    for(uint32_t i=1;i<nf;i++) if(b[fo+i*24]<b[fo+(i-1)*24]) return 0;
     size_t names=0;
-    for(uint32_t i=0;i<ns;i++) { size_t n=u32(b+no+i*8+4); if(n>UINT32_MAX-names) goto fail; names+=n; }
+    for(uint32_t i=0;i<ns;i++) { size_t n=u32(b+no+i*8+4); if(n>UINT32_MAX-names) return UINT64_MAX; names+=n; }
     uint64_t total=200+(uint64_t)ns*8+(uint64_t)nf*40+(uint64_t)np*8+(uint64_t)nv*4+names;
-    if(total>UINT32_MAX || total>SIZE_MAX) goto fail;
-    uint8_t *d=cc_arena_alloc(a,(size_t)total,4); if(!d) goto fail;
+    if(!d || total>UINT32_MAX || total>SIZE_MAX) return total;
     memset(d,0,200); memcpy(d,"CT3\0",4);
     put32(d+4,ns); put32(d+8,nf); put32(d+12,np); put32(d+16,nv);
     uint32_t nout=200,fout=nout+ns*8,pout=fout+nf*40,xout=pout+np*8,yout=xout+nv*2,strout=yout+nv*2;
@@ -584,7 +565,37 @@ int cc_ctile_decode_tile(cc_str tile,cc_arena *a,cc_str *out) {
             put16(d+xout+at*2,x); put16(d+yout+at*2,y);
         }
     }
-    *out=(cc_str){d,(size_t)total}; return 1;
+    return total;
+}
+int cc_ctile_decode_tile(cc_str tile,cc_arena *a,cc_str *out) {
+    if(cc_yield_hook) cc_yield_hook();
+    size_t mark=a->used; uint64_t n;
+    if(zstd_tile(tile) && (!cc_zstd_decode(tile,a,&tile) || !v6(tile))) goto fail;
+    if(v6(tile)) {
+        if(!validate6(tile)) goto fail;
+        uint32_t ng=u32(tile.data+4); cc_str g={tile.data+16,ng};
+        /* The group unpacked (validate6 checked it) and, a class-ordered CT5,
+           written as CT3 straight into the result: no CT3 copy beside it while
+           a dense tile decodes. */
+        if(!expand(&g,a)) goto fail;
+        n=v4(g) && g.data[2]=='5'?ct3(g.data,0):0;
+        if(!n && g.data==tile.data+16) { *out=tile; return 1; }
+        uint64_t gn=n?n:g.size;
+        if(gn>UINT32_MAX-tile.size) goto fail;
+        size_t total=tile.size-ng+(size_t)gn;
+        uint8_t *d=cc_arena_alloc(a,total,4); if(!d) goto fail;
+        memcpy(d,tile.data,16); put32(d+4,(uint32_t)gn);
+        if(n) ct3(g.data,d+16); else memcpy(d+16,g.data,g.size);
+        memcpy(d+16+gn,tile.data+16+ng,tile.size-16-ng);
+        *out=(cc_str){d,total}; return 1;
+    }
+    int packed=compressed(tile);
+    if(!expand(&tile,a)) goto fail;
+    if(!packed && !(v4(tile)?validate4(tile):validate3(tile))) goto fail;
+    if(!v4(tile) || tile.data[2]!='5' || !(n=ct3(tile.data,0))) { *out=tile; return 1; }
+    if(n>UINT32_MAX || n>SIZE_MAX) goto fail;
+    uint8_t *d=cc_arena_alloc(a,(size_t)n,4); if(!d) goto fail;
+    ct3(tile.data,d); *out=(cc_str){d,(size_t)n}; return 1;
 fail:
     a->used=mark; *out=(cc_str){0,0}; return 0;
 }
@@ -610,20 +621,40 @@ int cc_ctile_scene_cached(const cc_ctile *f,unsigned z,int64_t left,int64_t top,
     if(y0<0) y0=0;
     if(x1>=limit) x1=limit-1;
     if(y1>=limit) y1=limit-1;
+    /* Tile by tile into a part, merged when whole: a tile the arena cannot
+       hold is drawn from a coarser zoom and the rest are still tried in full. */
+    cc_scene *part=cc_arena_alloc(a,sizeof(*part),_Alignof(cc_scene));
+    if(!part) return 0;
     for(int64_t x=x0;x<=x1;x++) for(int64_t y=y0;y<=y1;y++) {
-        cc_str tile;
-        uint64_t stamp=cc_profiling?cc_ticks():0;
-        int found;
-        if(f->source) {
-            uint64_t off; uint32_t len;
-            found=cc_ctile_locate(f,z,(uint32_t)x,(uint32_t)y,&off,&len);
-            if(found==1 && !cc_ctile_source_tile(f,off,len,a,cache,&tile)) found=-1;
-        } else found=cc_ctile_find(f,z,(uint32_t)x,(uint32_t)y,&tile);
-        if(cc_profiling) { cc_profiling->ticks[CC_LOOKUP]+=cc_ticks()-stamp; stamp=cc_ticks(); }
-        if(found<0 || (found && ((!f->source && !(cache?cc_decoded_cache_get(cache,tile,a,&tile):expand(&tile,a))) || !(v6(tile)?scene6(tile,x*256-left,y*256-top,cols*2,rows*4,a,s):v4(tile)?scene4(tile,x*256-left,y*256-top,cols*2,rows*4,a,s):v3(tile)?scene3(tile,x*256-left,y*256-top,cols*2,rows*4,a,s):cc_ctile_tile_scene(tile,x*256-left,y*256-top,a,s))))) { a->used=mark; memset(s,0,sizeof(*s)); return 0; }
-        if(cc_profiling) cc_profiling->ticks[CC_DECODE]+=cc_ticks()-stamp;
+        size_t at=a->used,fails=a->fails; memset(part,0,sizeof(*part));
+        int ok=cc_ctile_tile_window(f,z,(uint32_t)x,(uint32_t)y,x*256-left,y*256-top,cols*2,rows*4,a,cache,part);
+        if(!ok && a->fails!=fails) {
+            a->used=at;
+            int64_t r[4]={x*256-left,y*256-top,x*256-left+256,y*256-top+256};
+            ok=cc_scene_coarser(f,z,z,(uint32_t)x,(uint32_t)y,left,top,cols,rows,r,a,cache,part);
+            s->degraded+=(size_t)ok;
+        }
+        if(!ok) { a->used=mark; memset(s,0,sizeof(*s)); return 0; }
+        /* Nothing of it in view (a margin tile): its decoded bytes go too. */
+        if(!part->features && !part->terrain) a->used=at;
+        cc_scene_merge(s,part);
     }
     return 1;
+}
+int cc_ctile_tile_window(const cc_ctile *f,unsigned z,uint32_t x,uint32_t y,int64_t ox,int64_t oy,int32_t w,int32_t h,
+                         cc_arena *a,cc_decoded_cache *cache,cc_scene *s) {
+    cc_str tile; int found;
+    uint64_t stamp=cc_profiling?cc_ticks():0;
+    if(f->source) {
+        uint64_t off; uint32_t len;
+        found=cc_ctile_locate(f,z,x,y,&off,&len);
+        if(found==1 && !cc_ctile_source_tile(f,off,len,a,cache,&tile)) found=-1;
+    } else found=cc_ctile_find(f,z,x,y,&tile);
+    if(cc_profiling) { cc_profiling->ticks[CC_LOOKUP]+=cc_ticks()-stamp; stamp=cc_ticks(); }
+    int ok=found<0?0:!found?2:(f->source || (cache?cc_decoded_cache_get(cache,tile,a,&tile):expand(&tile,a))) &&
+        (v6(tile)?scene6(tile,ox,oy,w,h,a,s):v4(tile)?scene4(tile,ox,oy,w,h,a,s):v3(tile)?scene3(tile,ox,oy,w,h,a,s):cc_ctile_tile_scene(tile,ox,oy,a,s));
+    if(cc_profiling) cc_profiling->ticks[CC_DECODE]+=cc_ticks()-stamp;
+    return ok;
 }
 
 int cc_ctile_scene(const cc_ctile *f,unsigned z,int64_t left,int64_t top,int32_t cols,int32_t rows,cc_arena *a,cc_scene *s) {

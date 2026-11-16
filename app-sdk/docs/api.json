@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "api_version": "2.7",
+  "api_version": "2.8",
   "calls": [
     {
       "name": "l3_apply",
@@ -1173,6 +1173,36 @@
       "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
     },
     {
+      "name": "lap_arp_probe",
+      "kind": "function",
+      "signature": "int lap_arp_probe(const char *ip)",
+      "doc": "probe: one ARP request for ip (dotted quad, on the active interface's subnet) is queued; 0, LAP_IO_EAGAIN when 16 already wait, LAP_IO_EINVAL, LAP_IO_ENETDOWN. Answers land in the stack's ARP table, which holds only ten pairs, so the board keeps the last 32 it saw there for lap_arp_table. table copies up to max (<= 32) pairs, lowest address first, and returns how many. Pairs expire 5 minutes after they leave the stack's table. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.8. Capability: LAP_CAP_NETWORK. Simulator: faked \u2014 Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify.",
+      "header": "lakeshark_app.h",
+      "since": "2.8",
+      "capability": "LAP_CAP_NETWORK",
+      "simulator": {
+        "status": "faked",
+        "reason": "Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
+      "name": "lap_arp_table",
+      "kind": "function",
+      "signature": "int lap_arp_table(lap_arp_entry_t *out, int max)",
+      "doc": "probe: one ARP request for ip (dotted quad, on the active interface's subnet) is queued; 0, LAP_IO_EAGAIN when 16 already wait, LAP_IO_EINVAL, LAP_IO_ENETDOWN. Answers land in the stack's ARP table, which holds only ten pairs, so the board keeps the last 32 it saw there for lap_arp_table. table copies up to max (<= 32) pairs, lowest address first, and returns how many. Pairs expire 5 minutes after they leave the stack's table. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.8. Capability: LAP_CAP_NETWORK. Simulator: faked \u2014 Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify.",
+      "header": "lakeshark_app.h",
+      "since": "2.8",
+      "capability": "LAP_CAP_NETWORK",
+      "simulator": {
+        "status": "faked",
+        "reason": "Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
       "name": "lap_audio_close",
       "kind": "function",
       "signature": "void lap_audio_close(int h)",
@@ -1873,6 +1903,36 @@
       "simulator": {
         "status": "limited",
         "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
+      "name": "lap_dns_resolve",
+      "kind": "function",
+      "signature": "int lap_dns_resolve(const char *name, uint32_t timeout_ms)",
+      "doc": "Four lookups per app. timeout_ms 100..10000 (0 = 5000). result returns 0 and the address in ip, LAP_IO_EAGAIN while pending, or LAP_IO_ENOTFOUND, LAP_IO_ETIMEOUT, LAP_IO_ENETDOWN. A final answer (0 or an error) frees the handle: asking again is LAP_IO_ECLOSED. An answer nobody collects is dropped 10 s after it arrives. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.8. Capability: LAP_CAP_NETWORK. Simulator: faked \u2014 Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify.",
+      "header": "lakeshark_app.h",
+      "since": "2.8",
+      "capability": "LAP_CAP_NETWORK",
+      "simulator": {
+        "status": "faked",
+        "reason": "Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
+      "name": "lap_dns_result",
+      "kind": "function",
+      "signature": "int lap_dns_result(int h, char ip[16])",
+      "doc": "Four lookups per app. timeout_ms 100..10000 (0 = 5000). result returns 0 and the address in ip, LAP_IO_EAGAIN while pending, or LAP_IO_ENOTFOUND, LAP_IO_ETIMEOUT, LAP_IO_ENETDOWN. A final answer (0 or an error) frees the handle: asking again is LAP_IO_ECLOSED. An answer nobody collects is dropped 10 s after it arrives. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.8. Capability: LAP_CAP_NETWORK. Simulator: faked \u2014 Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify.",
+      "header": "lakeshark_app.h",
+      "since": "2.8",
+      "capability": "LAP_CAP_NETWORK",
+      "simulator": {
+        "status": "faked",
+        "reason": "Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify."
       },
       "exported": true,
       "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
@@ -3318,6 +3378,21 @@
       "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
     },
     {
+      "name": "lap_net_info",
+      "kind": "function",
+      "signature": "int lap_net_info(int iface, lap_net_info_t *out)",
+      "doc": "iface LAP_NETIF_ACTIVE: the interface holding the default route (Wi-Fi today). 0 and *out filled, LAP_IO_ENOTSUP for an interface this board does not have (out->kind NONE), LAP_IO_EINVAL, LAP_IO_EACCES. A snapshot the worker refreshes about twice a second. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.8. Capability: LAP_CAP_NETWORK. Simulator: faked \u2014 Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify.",
+      "header": "lakeshark_app.h",
+      "since": "2.8",
+      "capability": "LAP_CAP_NETWORK",
+      "simulator": {
+        "status": "faked",
+        "reason": "Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
       "name": "lap_net_status",
       "kind": "function",
       "signature": "int lap_net_status(lap_net_status_t *out)",
@@ -3643,6 +3718,51 @@
       "simulator": {
         "status": "real",
         "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
+      "name": "lap_ping_next",
+      "kind": "function",
+      "signature": "int lap_ping_next(int h, lap_ping_reply_t *out)",
+      "doc": "Four pings per app. host: numeric IPv4 or a name (resolved first, up to 5 s), <= 253 chars. NULL cfg: four requests a second apart. start returns a handle or LAP_IO_EINVAL, EACCES, EBUSY (all four in use). next returns 1 and fills *out once per request (a reply, a router, unreachable or a timeout, in request order per answer), LAP_IO_EAGAIN while waiting, 0 once every request has been reported, or an error that stays: LAP_IO_ENOTFOUND, LAP_IO_ENETDOWN, LAP_IO_EIO, LAP_IO_ECLOSED. A request is sent only while fewer than 8 answers wait unread. stop frees the handle at once; an unanswered request is forgotten. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.8. Capability: LAP_CAP_NETWORK. Simulator: faked \u2014 Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify.",
+      "header": "lakeshark_app.h",
+      "since": "2.8",
+      "capability": "LAP_CAP_NETWORK",
+      "simulator": {
+        "status": "faked",
+        "reason": "Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
+      "name": "lap_ping_start",
+      "kind": "function",
+      "signature": "int lap_ping_start(const char *host, const lap_ping_config_t *cfg)",
+      "doc": "Four pings per app. host: numeric IPv4 or a name (resolved first, up to 5 s), <= 253 chars. NULL cfg: four requests a second apart. start returns a handle or LAP_IO_EINVAL, EACCES, EBUSY (all four in use). next returns 1 and fills *out once per request (a reply, a router, unreachable or a timeout, in request order per answer), LAP_IO_EAGAIN while waiting, 0 once every request has been reported, or an error that stays: LAP_IO_ENOTFOUND, LAP_IO_ENETDOWN, LAP_IO_EIO, LAP_IO_ECLOSED. A request is sent only while fewer than 8 answers wait unread. stop frees the handle at once; an unanswered request is forgotten. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.8. Capability: LAP_CAP_NETWORK. Simulator: faked \u2014 Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify.",
+      "header": "lakeshark_app.h",
+      "since": "2.8",
+      "capability": "LAP_CAP_NETWORK",
+      "simulator": {
+        "status": "faked",
+        "reason": "Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
+      "name": "lap_ping_stop",
+      "kind": "function",
+      "signature": "void lap_ping_stop(int h)",
+      "doc": "Four pings per app. host: numeric IPv4 or a name (resolved first, up to 5 s), <= 253 chars. NULL cfg: four requests a second apart. start returns a handle or LAP_IO_EINVAL, EACCES, EBUSY (all four in use). next returns 1 and fills *out once per request (a reply, a router, unreachable or a timeout, in request order per answer), LAP_IO_EAGAIN while waiting, 0 once every request has been reported, or an error that stays: LAP_IO_ENOTFOUND, LAP_IO_ENETDOWN, LAP_IO_EIO, LAP_IO_ECLOSED. A request is sent only while fewer than 8 answers wait unread. stop frees the handle at once; an unanswered request is forgotten. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.8. Capability: none. Simulator: faked \u2014 Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify.",
+      "header": "lakeshark_app.h",
+      "since": "2.8",
+      "capability": null,
+      "simulator": {
+        "status": "faked",
+        "reason": "Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify."
       },
       "exported": true,
       "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."

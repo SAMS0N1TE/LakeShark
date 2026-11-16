@@ -19,6 +19,11 @@ bool ls_music_play(int index);
 /* A caller-owned archive path; the decoder owns the file after queueing. */
 bool ls_music_play_path(const char *path);
 bool ls_music_is_open(void);
+/* True while a close is waiting for the microphone, analysis or decoder to
+   stop; the music player still holds the speaker until it completes. */
+bool ls_music_close_pending(void);
+/* Retries a pending close, at most every 200 ms. Call from the UI loop. */
+void ls_music_service(int64_t now_us);
 bool ls_music_toggle(void);
 bool ls_music_seek_ms(uint32_t ms);
 bool ls_music_speed_set(unsigned permille); /* 500..2000, varispeed */

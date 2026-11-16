@@ -12,8 +12,10 @@
      mesh (MESH > OPTIONS > AT BOOT > PRIMARY MESH) or KEEP RUNNING = ALWAYS */
 #include "lakeshark_app.h"
 #include "lakeshark_ui.h"
+#include "lap_scroll.h"
 #include "mt_pki.h"
 #include "mt_proto.h"
+#include "mt_xlate.h"
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -26,6 +28,9 @@
 #define MAX_SEEN   96
 #define HISTORY    40
 #define TEXT_MAX   200
+#define TR_MAX     400       /* a translation can run two or three times its original */
+#define SIG_N      24        /* a node's last signal readings */
+#define PER_MIN_N  30        /* packets a minute, the last half hour */
 #define TXQ        6
 #define NCH        4
 #define NODEINFO_EVERY_MS (3u * 3600u * 1000u)
@@ -59,6 +64,24 @@ static cfg_t cfg;
 static const uint16_t POS_MIN[] = { 15, 30, 60, 120 };
 static const uint16_t TELE_MIN[] = { 60, 30, 180, 0 };
 
+/* The screen and the translator: a slot of their own, so cfg2 keeps its size. */
+typedef struct {
+    uint8_t magic;          /* UI_MAGIC */
+    uint8_t xl_auto;        /* translate Spanish as it arrives */
+    uint8_t xl_show;        /* 0 both, 1 English only, 2 as sent */
+    uint8_t quick_es;       /* quick replies go out in Spanish */
+    uint8_t sort;           /* NODES: 0 heard, 1 signal, 2 distance, 3 name */
+    uint8_t zoom;           /* RADAR: 0 fit, then ZOOM_KM[] */
+    uint8_t labels;         /* RADAR: names beside the blips */
+    uint8_t anim;           /* 0 full motion, 1 calm */
+    uint8_t speak;          /* read new messages aloud: 0 no, 1 translations, 2 all */
+    uint8_t reserved[7];
+} ui_cfg_t;
+#define UI_MAGIC 0x5Au
+static ui_cfg_t ui;
+static const float ZOOM_KM[] = { 0, 1, 5, 20, 100, 500 };
+#define ZOOMS ((int)(sizeof(ZOOM_KM) / sizeof(ZOOM_KM[0])))
+
 /* Channel keys: [0] the primary (its name is cfg.channel), [1..3] more
    channels, each with its own name and key. */
 typedef struct {
@@ -77,7 +100,7 @@ static bool pki_ready;
 
 /* Saves go one at a time (the board refuses a second while one is pending),
    each at most 4 KB: what changed is marked and written in turn. */
-enum { SV_CFG = 1, SV_CHANS = 2, SV_PKI = 4, SV_NODES = 8 };
+enum { SV_CFG = 1, SV_CHANS = 2, SV_PKI = 4, SV_NODES = 8, SV_UI = 16, SV_HIST = 32 };
 static unsigned dirty;
 
 static void cfg_defaults(void)
@@ -119,6 +142,13 @@ static void chans_load(void)
     cfg.pki = 1;
     dirty |= SV_CHANS | SV_CFG;
 }
+static void ui_load(void)
+{
+    if (lap_load("ui", &ui, sizeof(ui)) == (int)sizeof(ui) && ui.magic == UI_MAGIC && ui.xl_show < 3 &&
+        ui.sort < 4 && ui.zoom < ZOOMS && ui.speak < 3) return;
+    memset(&ui, 0, sizeof(ui));
+    ui.magic = UI_MAGIC; ui.xl_auto = 1; ui.quick_es = 1; ui.labels = 1;
+}
 static void pki_load(void)
 {
     pki_ready = lap_load("pki", &pki, sizeof(pki)) == (int)sizeof(pki) && pki.magic == PKI_MAGIC;
@@ -142,7 +172,10 @@ typedef struct {
     uint32_t from, to, id, at_ms;
     int16_t rssi, snr;      /* tenths */
     uint8_t hops, mine, state, tries, ch, pki;
+    uint8_t lang;           /* mt_lang_t, as detected */
+    uint8_t view;           /* 0 the screen's choice, 1 as sent, 2 both */
     char text[TEXT_MAX + 1];
+    char tr[TR_MAX + 1];    /* English, when it came in Spanish */
 } msg_t;
 typedef struct {
     uint32_t num, last_ms, packets, asked_ms;
@@ -154,6 +187,8 @@ typedef struct {
     char short_name[6], long_name[32];
     char last[10];          /* what it sent last */
     uint8_t pubkey[32];
+    int8_t sig[SIG_N];      /* dBm of the last packets, oldest first (not saved) */
+    uint8_t sig_n;
 } node_t;
 typedef struct {
     uint32_t from, to, at_ms;
@@ -180,6 +215,9 @@ static int seen_head;
 static int rssi_hist[HISTORY];
 static int hist_n;
 static uint32_t heard, decoded, foreign, sent, gaps, relayed, unread, pki_in, pki_bad;
+static uint16_t per_min[PER_MIN_N];
+static uint32_t per_min_epoch;
+static uint32_t last_tx_ms, rx_from;    /* for the header's animation */
 static txq_t txq[TXQ];
 /* The shared key with each node, worked out once (an X25519 takes a while). */
 static struct { uint32_t num; uint8_t key[32]; } shared[MAX_NODES];
@@ -198,8 +236,35 @@ static uint32_t trace_id, trace_to, trace_ms;
 static char trace_fwd[72], trace_back[72];
 
 /* ---- screen ------------------------------------------------------------ */
-enum { TAB_CHAT, TAB_NODES, TAB_AIR, TABS };
+enum { TAB_CHAT, TAB_NODES, TAB_RADAR, TAB_AIR, TAB_LANG, TABS };
 static int tab, scroll, sel;
+static bool chat_new;               /* a message came: CHAT follows it down */
+static bool node_open;              /* NODES: one node's page */
+static uint32_t open_num;
+static int menu_h, pending_quick = -1, pending_phrase = -1;
+/* The translator keeps static buffers: it runs only inside poll(), on
+   whichever task polls (the screen's, or the service tick's), and the
+   screen asks for its work through these. */
+static volatile int xl_msg_req = -1;
+static volatile bool xl_try_req, xl_fill_req;
+static char try_es[TEXT_MAX + 1], try_en[TR_MAX + 1];
+static void xl_backfill(void);
+
+/* TRANSLATE's history: each TRY IT and each Spanish line heard, newest
+   first, kept on the card so it outlives the app. */
+#define MAX_HIST   16
+#define HIST_MAGIC 0x31545348u          /* "HST1" */
+typedef struct {
+    uint32_t from;                      /* who said it; 0 typed into TRY IT */
+    uint32_t unix;                      /* when, if the clock was set */
+    char es[TEXT_MAX + 1];
+    char en[TR_MAX + 1];                /* empty until translated */
+} hist_t;
+static struct { uint32_t magic, n; hist_t e[MAX_HIST]; } hist;
+#define HIST_HEAD (sizeof(hist) - sizeof(hist.e))
+static int xl_hist_req = -1;
+static uint32_t hist_clear_ms;          /* CLEAR armed; a second tap within 3 s empties it */
+static uint32_t hist_new_ms;            /* the top line arrived: lit a moment */
 static int dialog = -1, dialog_kind;    /* 1 text, 2 name, 3 channel, 4 DM, 5 fixed, 6 key, 7..9 channel 2..4 */
 static uint32_t dm_to;
 static char status_line[64];
@@ -212,16 +277,6 @@ static void say(const char *fmt, ...)
     vsnprintf(status_line, sizeof(status_line), fmt, ap);
     va_end(ap);
     status_ms = lap_millis();
-}
-
-static void print(int x, int y, uint8_t attr, const char *fmt, ...)
-{
-    char t[96];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(t, sizeof(t), fmt, ap);
-    va_end(ap);
-    lap_put_str(x, y, t, attr);
 }
 
 static const char *preset_name(void) { return MT_PRESETS[cfg.preset].name; }
@@ -446,7 +501,54 @@ static void save_pump(void)
     else if (dirty & SV_CHANS) { what = SV_CHANS; id = lap_save("chans", chans, sizeof(chans)); }
     else if (dirty & SV_PKI) { what = SV_PKI; id = lap_save("pki", &pki, sizeof(pki)); }
     else if (dirty & SV_NODES) { what = SV_NODES; id = nodes_write(); }
+    else if (dirty & SV_UI) { what = SV_UI; id = lap_save("ui", &ui, sizeof(ui)); }
+    else if (dirty & SV_HIST) { what = SV_HIST; id = lap_save("hist", &hist, HIST_HEAD + sizeof(hist_t) * hist.n); }
     if (id >= 0) { dirty &= ~what; save_job = id; save_what = what; }
+}
+
+static void hist_load(void)
+{
+    const int got = lap_load("hist", &hist, sizeof(hist));
+    if (got < (int)HIST_HEAD || hist.magic != HIST_MAGIC || hist.n > MAX_HIST ||
+        got != (int)(HIST_HEAD + sizeof(hist_t) * hist.n)) {
+        memset(&hist, 0, sizeof(hist));
+        hist.magic = HIST_MAGIC;
+        return;
+    }
+    for (uint32_t i = 0; i < hist.n; i++) { hist.e[i].es[TEXT_MAX] = 0; hist.e[i].en[TR_MAX] = 0; }
+}
+/* On top; a line said again moves up rather than filling a second slot. */
+static void hist_add(uint32_t from, const char *es, const char *en)
+{
+    if (!es || !es[0]) return;
+    char keep[TR_MAX + 1] = "";
+    uint32_t at = hist.n < MAX_HIST ? hist.n : MAX_HIST - 1;   /* the slot that goes */
+    for (uint32_t i = 0; i < hist.n; i++)
+        if (!strcmp(hist.e[i].es, es)) { at = i; memcpy(keep, hist.e[i].en, sizeof(keep)); break; }
+    const bool grows = at == hist.n;
+    memmove(&hist.e[1], &hist.e[0], sizeof(hist_t) * at);
+    hist_t *h = &hist.e[0];
+    memset(h, 0, sizeof(*h));
+    h->from = from;
+    lap_time_t now;
+    lap_time(&now);
+    h->unix = now.synced ? (uint32_t)now.unix : 0;
+    snprintf(h->es, sizeof(h->es), "%s", es);
+    snprintf(h->en, sizeof(h->en), "%s", en && en[0] ? en : keep);
+    if (grows) hist.n++;
+    hist_new_ms = lap_millis();
+    dirty |= SV_HIST;
+}
+/* A line translated later (tapped in CHAT, or AUTO turned on) brings its
+   English to the history too. */
+static void hist_fill(const char *es, const char *en)
+{
+    if (!en || !en[0]) return;
+    for (uint32_t i = 0; i < hist.n; i++)
+        if (!hist.e[i].en[0] && !strcmp(hist.e[i].es, es)) {
+            snprintf(hist.e[i].en, sizeof(hist.e[i].en), "%s", en);
+            dirty |= SV_HIST;
+        }
 }
 
 static const uint8_t *shared_key(const node_t *n)
@@ -476,14 +578,32 @@ static msg_t *msg_add(uint32_t from, uint32_t to, uint32_t id, const char *text,
     memset(m, 0, sizeof(*m));
     m->from = from; m->to = to; m->id = id; m->at_ms = lap_millis();
     m->rssi = rssi; m->snr = snr; m->hops = hops; m->mine = mine;
+    /* UTF-8 is kept as sent (the screen folds accents for its font, and the
+       translator needs them); control bytes go, and a letter cut off at the
+       end is dropped rather than left half there. */
     size_t j = 0;
     for (size_t i = 0; i < len && j < TEXT_MAX; i++) {
         const uint8_t c = (uint8_t)text[i];
-        if (c >= 32 && c < 127) m->text[j++] = (char)c;
-        else if (c >= 0xC0) m->text[j++] = '?';  /* first byte of a UTF-8 letter or emoji */
+        if (c == '\n' || c == '\t') m->text[j++] = ' ';
+        else if (c >= 32) m->text[j++] = (char)c;
+    }
+    size_t lead = j;                       /* the last letter: whole, or dropped */
+    while (lead > 0 && j - lead < 4 && ((uint8_t)m->text[lead - 1] & 0xC0) == 0x80) lead--;
+    if (lead > 0 && (uint8_t)m->text[lead - 1] >= 0xC0) {
+        const uint8_t b = (uint8_t)m->text[lead - 1];
+        const size_t need = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : 2;
+        if (j - (lead - 1) < need) j = lead - 1;
     }
     m->text[j] = 0;
-    if (tab == TAB_CHAT) scroll = 0;
+    if (!mine) {
+        int conf = 0;
+        mt_lang_t l = mt_xlate_detect(m->text, &conf);
+        if (l == MT_LANG_ES && conf < MT_XLATE_MIN_CONF) l = MT_LANG_UNKNOWN;
+        m->lang = (uint8_t)l;
+        if (l == MT_LANG_ES && ui.xl_auto) mt_xlate_es_en(m->text, m->tr, sizeof(m->tr));
+        if (l == MT_LANG_ES) hist_add(m->from, m->text, m->tr);
+    }
+    chat_new = true;
     return m;
 }
 
@@ -817,10 +937,22 @@ static void on_packet(uint8_t *buf, int n, const lap_packet_meta_t *meta)
         air_add(&h, meta, "MY ECHO");
         return;
     }
+    {
+        const uint32_t e = lap_millis() / 60000u;   /* packets a minute */
+        if (e - per_min_epoch >= PER_MIN_N) { memset(per_min, 0, sizeof(per_min)); per_min_epoch = e; }
+        while (per_min_epoch < e) per_min[++per_min_epoch % PER_MIN_N] = 0;
+        if (per_min[e % PER_MIN_N] < 0xFFFF) per_min[e % PER_MIN_N]++;
+    }
     const bool dup = seen_before(h.from, h.id);
     if (dup) cancel_relay(h.from, h.id);           /* someone else repeated it first */
     node_t *nd = node_get(h.from, true);
     nd->last_ms = lap_millis(); nd->packets++;
+    rx_from = h.from;
+    if (rssi != INT16_MIN) {
+        const int dbm = rssi / 10 < -127 ? -127 : rssi / 10 > 0 ? 0 : rssi / 10;
+        if (nd->sig_n == SIG_N) { memmove(nd->sig, nd->sig + 1, SIG_N - 1); nd->sig_n--; }
+        nd->sig[nd->sig_n++] = (int8_t)dbm;
+    }
     if (!dup || rssi > nd->rssi) { nd->rssi = rssi; nd->snr = snr; nd->hops = hops; }
     const bool to_me = h.dest == cfg.node;
     if (dup) {
@@ -896,9 +1028,17 @@ static void on_packet(uint8_t *buf, int n, const lap_packet_meta_t *meta)
         if (h.want_ack && to_me && cfg.tx_on) ack_to(h.from, h.id, ch);
         lap_sound(LAP_SOUND_CHIRP);
         lap_haptic(LAP_HAPTIC_TICK);
+        /* Spanish comes in English: in the banner, and aloud when asked */
+        const bool en = m->tr[0] != 0;
+        if (ui.speak == 2 || (ui.speak == 1 && en)) {
+            char t[160];
+            snprintf(t, sizeof(t), "%s%s says: %.120s", to_me ? "Direct. " : "", nd->long_name[0] ? nd->long_name : who(h.from),
+                     en ? m->tr : m->text);
+            lap_say(t);
+        }
         if (!lap_screen_open() || tab != TAB_CHAT) {
             char t[96];
-            snprintf(t, sizeof(t), "%s%s: %.70s", to_me ? "DM " : "", who(h.from), m->text);
+            snprintf(t, sizeof(t), "%s%s%s: %.70s", to_me ? "DM " : "", en ? "(ES>EN) " : "", who(h.from), en ? m->tr : m->text);
             lap_notify("MESHTASTIC", t);
             unread++;
         }
@@ -971,7 +1111,7 @@ static void tx_service(void)
                 msg_t *m = q->relay ? NULL : msg_by_id(q->id);
                 if (m && m->state == ST_QUEUED) m->state = tx_error ? ST_FAILED : ST_SENT;
                 if (m && !tx_error) m->at_ms = lap_millis();   /* the ack clock starts now */
-                if (!tx_error) { if (q->relay) relayed++; else sent++; util_add(q->len, true); }
+                if (!tx_error) { if (q->relay) relayed++; else sent++; util_add(q->len, true); last_tx_ms = lap_millis(); }
                 q->used = false;
             }
             if (tx_error) say("send failed (%d)", (int)tx_error);
@@ -1023,9 +1163,35 @@ static void gps_update(void)
 
 /* Radio work: from draw while the screen is open, from the service tick
    while it is not. */
+static void xl_service(void)
+{
+    if (xl_fill_req) { xl_fill_req = false; xl_backfill(); }
+    const int i = xl_msg_req;
+    if (i >= 0 && i < MAX_MSGS) {
+        xl_msg_req = -1;
+        if (!msgs[i].tr[0]) mt_xlate_es_en(msgs[i].text, msgs[i].tr, sizeof(msgs[i].tr));
+        hist_fill(msgs[i].text, msgs[i].tr);
+    }
+    const int hi = xl_hist_req;
+    if (hi >= 0 && hi < (int)hist.n) {
+        xl_hist_req = -1;
+        if (!hist.e[hi].en[0]) {
+            mt_xlate_es_en(hist.e[hi].es, hist.e[hi].en, sizeof(hist.e[hi].en));
+            dirty |= SV_HIST;
+        }
+    }
+    if (xl_try_req) {
+        xl_try_req = false;
+        try_en[0] = 0;
+        if (try_es[0]) mt_xlate_es_en(try_es, try_en, sizeof(try_en));
+        if (try_en[0]) hist_add(0, try_es, try_en);
+    }
+}
+
 static void poll(void)
 {
     static uint32_t gps_ms;
+    xl_service();
     if (lap_millis() - gps_ms > 1000) { gps_ms = lap_millis(); gps_update(); }
     save_pump();
     if (radio < 0) {
@@ -1104,12 +1270,28 @@ static void service_update(void)
 /* ---- OPTIONS ----------------------------------------------------------- */
 enum { OPT_REGION = 1, OPT_PRESET, OPT_TX, OPT_POWER, OPT_KEY, OPT_CHANNEL, OPT_NAME, OPT_POS, OPT_POSEVERY,
        OPT_RELAY, OPT_KEEP, OPT_HELLO, OPT_CLEAR, OPT_FIXED, OPT_SENDPOS, OPT_TELE, OPT_PKI, OPT_TELENOW,
-       OPT_CH2, OPT_CH3, OPT_CH4 };
+       OPT_CH2, OPT_CH3, OPT_CH4, OPT_XL_AUTO, OPT_XL_SHOW, OPT_QUICK, OPT_ANIM, OPT_LABELS, OPT_SPEAK };
 static const char *region_names[8], *preset_names[8];
 static const char *const POS_NAMES[] = { "OFF", "EXACT", "APPROX ~1KM" };
 static const char *const EVERY_NAMES[] = { "15 MIN", "30 MIN", "1 HOUR", "2 HOURS" };
 static const char *const TELE_NAMES[] = { "1 HOUR", "30 MIN", "3 HOURS", "OFF" };
 static const char *const KEEP_NAMES[] = { "WHEN PRIMARY", "ALWAYS", "NEVER" };
+static const char *const SHOW_NAMES[] = { "BOTH", "ENGLISH ONLY", "AS SENT" };
+static const char *const QUICK_NAMES[] = { "ENGLISH", "SPANISH" };
+static const char *const ANIM_NAMES[] = { "FULL", "CALM" };
+static const char *const SPEAK_NAMES[] = { "OFF", "TRANSLATIONS", "EVERY MESSAGE" };
+
+/* Spanish already on the screen gets its English when AUTO is turned on. */
+static void xl_backfill(void)
+{
+    for (int k = 0; k < msg_n; k++) {
+        msg_t *m = &msgs[(msg_head - 1 - k + MAX_MSGS * 2) % MAX_MSGS];
+        if (!m->mine && m->lang == MT_LANG_ES && !m->tr[0]) mt_xlate_es_en(m->text, m->tr, sizeof(m->tr));
+        if (!m->mine && m->lang == MT_LANG_ES) hist_fill(m->text, m->tr);
+    }
+    for (uint32_t i = 0; i < hist.n; i++)
+        if (!hist.e[i].en[0]) { mt_xlate_es_en(hist.e[i].es, hist.e[i].en, sizeof(hist.e[i].en)); dirty |= SV_HIST; }
+}
 /* Rows that edit text (a name or a key) are actions labelled with the value
    ("NAME LongFast"): a label holds 23 characters. */
 static char lbl[6][24];
@@ -1127,6 +1309,12 @@ static double opt_get(int id)
     case OPT_RELAY: return cfg.relay;
     case OPT_PKI: return cfg.pki;
     case OPT_KEEP: return cfg.keep % 3;
+    case OPT_XL_AUTO: return ui.xl_auto;
+    case OPT_XL_SHOW: return ui.xl_show % 3;
+    case OPT_QUICK: return ui.quick_es;
+    case OPT_ANIM: return ui.anim;
+    case OPT_LABELS: return ui.labels;
+    case OPT_SPEAK: return ui.speak % 3;
     default: return 0;
     }
 }
@@ -1170,6 +1358,12 @@ static void opt_set(int id, double v)
         if (cfg.tx_on) send_nodeinfo(false);            /* publish or withdraw the key */
         break;
     case OPT_KEEP: cfg.keep = (uint8_t)v; service_update(); break;
+    case OPT_XL_AUTO: ui.xl_auto = v != 0; if (ui.xl_auto) xl_fill_req = true; dirty |= SV_UI; return;
+    case OPT_XL_SHOW: ui.xl_show = (uint8_t)v; dirty |= SV_UI; return;
+    case OPT_QUICK: ui.quick_es = v != 0; dirty |= SV_UI; return;
+    case OPT_ANIM: ui.anim = v != 0; dirty |= SV_UI; return;
+    case OPT_LABELS: ui.labels = v != 0; dirty |= SV_UI; return;
+    case OPT_SPEAK: ui.speak = (uint8_t)v; dirty |= SV_UI; if (ui.speak) lap_say("Messages will be read aloud."); return;
     case OPT_HELLO: send_nodeinfo(true); break;
     case OPT_TELENOW: say(send_telemetry(MT_BROADCAST, 0) ? "telemetry queued" : "telemetry not sent"); break;
     case OPT_FIXED: {
@@ -1220,7 +1414,19 @@ static lap_opt_t NODE_ROWS[] = {
     { "KEEP RUNNING", LAP_OPT_CYCLE, OPT_KEEP, KEEP_NAMES, 3, 0, 0, 0, NULL, NULL },
     { "SAY HELLO (NODE INFO)", LAP_OPT_ACTION, OPT_HELLO, NULL, 0, 0, 0, 0, NULL, NULL },
 };
+static const lap_opt_t XL_ROWS[] = {
+    { "AUTO TRANSLATE", LAP_OPT_TOGGLE, OPT_XL_AUTO, NULL, 0, 0, 0, 0, NULL, NULL },
+    { "SHOW", LAP_OPT_CYCLE, OPT_XL_SHOW, SHOW_NAMES, 3, 0, 0, 0, NULL, NULL },
+    { "QUICK REPLIES IN", LAP_OPT_CYCLE, OPT_QUICK, QUICK_NAMES, 2, 0, 0, 0, NULL, NULL },
+    { "SPEAK MESSAGES", LAP_OPT_CYCLE, OPT_SPEAK, SPEAK_NAMES, 3, 0, 0, 0, NULL, NULL },
+};
+static const lap_opt_t SCREEN_ROWS[] = {
+    { "MOTION", LAP_OPT_CYCLE, OPT_ANIM, ANIM_NAMES, 2, 0, 0, 0, NULL, NULL },
+    { "MAP NAMES", LAP_OPT_TOGGLE, OPT_LABELS, NULL, 0, 0, 0, 0, NULL, NULL },
+};
 #define ROWS(a) ((int)(sizeof(a) / sizeof((a)[0])))
+static const lap_opt_list_t XL_LIST = { "TRANSLATE", XL_ROWS, ROWS(XL_ROWS), NULL, NULL };
+static const lap_opt_list_t SCREEN_LIST = { "SCREEN", SCREEN_ROWS, ROWS(SCREEN_ROWS), NULL, NULL };
 static const lap_opt_list_t RADIO_LIST = { "RADIO", radio_rows, ROWS(RADIO_ROWS), NULL, NULL };
 static const lap_opt_list_t CHAN_LIST = { "CHANNELS", chan_rows, ROWS(chan_rows), NULL, NULL };
 static const lap_opt_list_t POS_LIST = { "POSITION", POS_ROWS, ROWS(POS_ROWS), NULL, NULL };
@@ -1231,6 +1437,8 @@ static const lap_opt_t TOP_ROWS[] = {
     { "CHANNELS + KEYS", LAP_OPT_MENU, 0, NULL, 0, 0, 0, 0, NULL, &CHAN_LIST },
     { "POSITION", LAP_OPT_MENU, 0, NULL, 0, 0, 0, 0, NULL, &POS_LIST },
     { "THIS NODE", LAP_OPT_MENU, 0, NULL, 0, 0, 0, 0, NULL, &NODE_LIST },
+    { "TRANSLATE", LAP_OPT_MENU, 0, NULL, 0, 0, 0, 0, NULL, &XL_LIST },
+    { "SCREEN", LAP_OPT_MENU, 0, NULL, 0, 0, 0, 0, NULL, &SCREEN_LIST },
     { "CLEAR LISTS", LAP_OPT_ACTION, OPT_CLEAR, NULL, 0, 0, 0, 0, NULL, NULL },
 };
 static const lap_opt_list_t OPTIONS = { "MESHTASTIC", TOP_ROWS, ROWS(TOP_ROWS), opt_get, opt_set };
@@ -1262,11 +1470,14 @@ static void enter(void)
     }
     cfg_load();
     chans_load();
+    ui_load();
+    hist_load();
     pki_load();
     if (cfg.pki) pki_make();
     for (int i = 0; i < MT_REGION_COUNT && i < 8; i++) region_names[i] = MT_REGIONS[i].name;
     for (int i = 0; i < MT_PRESET_COUNT && i < 8; i++) preset_names[i] = MT_PRESETS[i].name;
     radio = -1; rxh = txh = 0; tx_slot = -1; dialog = -1; gps_lease = 0;
+    menu_h = 0; pending_quick = pending_phrase = -1; node_open = false;
     memset(txq, 0, sizeof(txq));
     memset(shared, 0, sizeof(shared));
     ch_epoch = lap_millis() / 10000u; tx_epoch = lap_millis() / 600000u;
@@ -1294,19 +1505,153 @@ static void leave(void)
 }
 
 /* ---- drawing ----------------------------------------------------------- */
+/* The look is the board's: its keys, bezels, chips and VFD meters, a radar
+   of the mesh in braille, ASCII bubbles for the chat. What moves is driven
+   by lap_millis() and holds still under OPTIONS > SCREEN > MOTION CALM.
+
+   Portrait: title, the header (radar beside the frequency), the < TAB >
+   strip, the panel in its bezel, four keys. Landscape: the header's parts
+   stacked down the left, the strip and panel on the right. */
+
+static int W, H;
+static bool wide;                       /* landscape */
+static int kr, tr, ty, sx, sw;          /* key rows; the strip's rows, y, x, width */
+static int hx, hy, hw, hh;              /* the header block */
+static int px, py, pw, ph;              /* inside the panel's bezel */
+static int clip0, clip1, smax;          /* the rows a list may use; how far it scrolls */
+static lap_scroll_t drag;
+static bool dragging;
+static lap_btn_t keys[4];
+static uint32_t now_ms;
+static double me_lat, me_lon;
+static bool me_ok;
+static bool kbd_used;                   /* the arrows moved the NODES choice */
+
+static bool calm(void) { return ui.anim != 0; }
+
+/* What a tap on the panel lands on, noted while the panel is drawn. */
+enum { HIT_MSG = 1, HIT_NODE, HIT_PHRASE, HIT_BLIP, HIT_XL_AUTO, HIT_XL_SHOW, HIT_TRY, HIT_AIR, HIT_HIST, HIT_HIST_CLEAR };
+typedef struct { int16_t x0, y0, x1, y1; uint8_t kind; int16_t idx; } hit_t;
+#define HITS 96
+static hit_t hits[HITS];
+static int hit_n;
+static void hit(int x0, int y0, int x1, int y1, int kind, int idx)
+{
+    if (y0 < clip0) y0 = clip0;
+    if (y1 > clip1) y1 = clip1;
+    if (y1 <= y0 || hit_n >= HITS) return;
+    hits[hit_n++] = (hit_t){ (int16_t)x0, (int16_t)y0, (int16_t)x1, (int16_t)y1, (uint8_t)kind, (int16_t)idx };
+}
+
+/* ---- text: UTF-8 in, one cell a letter ---- */
+static int u8_cells(const char *s, int n)
+{
+    int c = 0;
+    for (int i = 0; (n < 0 || i < n) && s[i]; i++) if (((uint8_t)s[i] & 0xC0) != 0x80) c++;
+    return c;
+}
+/* The bytes of s that fill at most `cells` cells. */
+static int u8_bytes(const char *s, int cells)
+{
+    int i = 0, c = 0;
+    for (; s[i]; i++) {
+        if (((uint8_t)s[i] & 0xC0) != 0x80) {
+            if (c == cells) break;
+            c++;
+        }
+    }
+    return i;
+}
+/* Text inside the clip rows, cut to w cells. Returns the cells drawn. */
+static int put(int x, int y, int w, uint8_t attr, const char *fmt, ...)
+{
+    if (w <= 0 || y < clip0 || y >= clip1) return 0;
+    char t[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(t, sizeof(t), fmt, ap);
+    va_end(ap);
+    /* the font has no inverted marks (they fold to '?'): they go */
+    int o = 0;
+    for (int i = 0; t[i]; i++) {
+        if ((uint8_t)t[i] == 0xC2 && ((uint8_t)t[i + 1] == 0xBF || (uint8_t)t[i + 1] == 0xA1)) { i++; continue; }
+        t[o++] = t[i];
+    }
+    t[o] = 0;
+    t[u8_bytes(t, w)] = 0;
+    lap_put_str(x, y, t, attr);
+    return u8_cells(t, -1);
+}
+static void cell(int x, int y, int16_t ch, uint8_t attr)
+{
+    if (y >= clip0 && y < clip1) lap_put_cell(x, y, ch, attr);
+}
+static void hfill(int x, int y, int w, int16_t ch, uint8_t attr)
+{
+    if (y >= clip0 && y < clip1 && w > 0) lap_hline(x, y, w, ch, attr);
+}
+
+typedef struct { int16_t at, n; } span_t;
+/* Lines of at most w cells, broken at spaces where it can. */
+static int wrap_spans(const char *s, int w, span_t *out, int max)
+{
+    int rows = 0, i = 0;
+    const int len = (int)strlen(s);
+    if (w < 4) w = 4;
+    while (i < len && rows < max) {
+        while (s[i] == ' ') i++;
+        if (i >= len) break;
+        int take = u8_bytes(s + i, w);
+        if (i + take < len && s[i + take] != ' ') {
+            int b = take;
+            while (b > 0 && s[i + b] != ' ') b--;
+            if (b > 0 && u8_cells(s + i, b) > w / 3) take = b;
+        }
+        out[rows].at = (int16_t)i; out[rows].n = (int16_t)take;
+        rows++;
+        i += take;
+    }
+    return rows;
+}
+static void put_span(int x, int y, const char *s, span_t sp, int show, uint8_t attr)
+{
+    char t[TR_MAX + 1];
+    int n = sp.n < TR_MAX ? sp.n : TR_MAX;
+    memcpy(t, s + sp.at, (size_t)n);
+    t[n] = 0;
+    if (show >= 0) t[u8_bytes(t, show)] = 0;      /* still typing in */
+    put(x, y, 255, attr, "%s", t);
+}
+
+static uint8_t A(uint8_t fg) { return LAP_ATTR(fg, LAP_BLACK); }
+
+/* lap_ui_bezel draws wherever it is told, even outside the list it belongs
+   to: scrolled, TRY IT's frame was painted over the header. Partly out of
+   the list, the same frame is drawn here a cell at a time, clipped. */
+static void bezel(int x, int y, int w, int h, const char *title)
+{
+    if (y >= clip0 && y + h <= clip1) { lap_ui_bezel(x, y, w, h, title); return; }
+    const uint8_t edge = A(LAP_CYAN);
+    for (int k = 0; k < w; k++) { cell(x + k, y, '=', edge); cell(x + k, y + h - 1, '=', edge); }
+    for (int r = 1; r < h - 1; r++) { cell(x, y + r, '|', edge); cell(x + w - 1, y + r, '|', edge); }
+    if (title && w > (int)strlen(title) + 8) put(x + 3, y, (int)strlen(title), A(LAP_CYAN | LAP_BRIGHT), "%s", title);
+}
+static uint8_t dim(uint8_t hue) { return (uint8_t)(hue & 7); }
+
 static void ago(uint32_t ms, char *out, size_t n)
 {
     if (!ms) { snprintf(out, n, "saved"); return; }
-    const uint32_t s = (lap_millis() - ms) / 1000u;
+    const uint32_t s = (now_ms - ms) / 1000u;
     if (s < 60) snprintf(out, n, "%us", (unsigned)s);
     else if (s < 3600) snprintf(out, n, "%um", (unsigned)(s / 60));
-    else snprintf(out, n, "%uh", (unsigned)(s / 3600));
+    else if (s < 86400) snprintf(out, n, "%uh", (unsigned)(s / 3600));
+    else snprintf(out, n, "%ud", (unsigned)(s / 86400));
 }
 
-static float km_bearing(double lat, double lon, const lap_gps_t *g, float *bearing)
+static float km_bearing(double la1d, double lo1d, double la2d, double lo2d, float *bearing)
 {
     const float d2r = 3.14159265f / 180.0f;
-    const float la1 = (float)g->lat * d2r, la2 = (float)lat * d2r, dn = (float)(lon - g->lon) * d2r;
+    const float la1 = (float)la1d * d2r, la2 = (float)la2d * d2r, dn = (float)(lo2d - lo1d) * d2r;
     const float dl = la2 - la1;
     const float a = sinf(dl / 2) * sinf(dl / 2) + cosf(la1) * cosf(la2) * sinf(dn / 2) * sinf(dn / 2);
     float b = atan2f(sinf(dn) * cosf(la2), cosf(la1) * sinf(la2) - sinf(la1) * cosf(la2) * cosf(dn)) / d2r;
@@ -1314,248 +1659,1290 @@ static float km_bearing(double lat, double lon, const lap_gps_t *g, float *beari
     if (bearing) *bearing = b;
     return 2 * 6371.0f * atan2f(sqrtf(a), sqrtf(1 - a));
 }
-
 static const char *compass(float b)
 {
     static const char *const P[] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
     return P[((int)((b + 22.5f) / 45.0f)) & 7];
 }
-
-static const char *const ART[] = {
-    "   /\\  ((o))",
-    "  /  \\  /\\  ",
-    " / /\\ \\/  \\ ",
-    "/_/  \\_/\\__\\",
-};
-
-static void draw_header(int w)
+static char arrow(float b)
 {
-    const uint8_t peak = LAP_ATTR(LAP_GREEN | LAP_BRIGHT, LAP_BLACK), wave = LAP_ATTR(LAP_CYAN | LAP_BRIGHT, LAP_BLACK);
-    for (int i = 0; i < 4; i++) lap_put_str(1, i, ART[i], peak);
-    /* The waves light for a moment when a packet arrives, and only then. */
-    const bool fresh = last_rx_ms && lap_millis() - last_rx_ms < 1500;
-    lap_put_str(8, 0, fresh ? "((o))" : " (o) ", fresh ? wave : LAP_UI_FAINT);
-    const int x = 15;
-    lap_put_str(x, 0, "MESHTASTIC", LAP_ATTR(LAP_YELLOW | LAP_BRIGHT, LAP_BLACK));
-    lap_ui_chip(w - 11, 0, cfg.tx_on ? "TX ARMED" : "RX ONLY", cfg.tx_on, cfg.tx_on ? LAP_RED : LAP_GREEN);
-    print(x, 1, LAP_ATTR(LAP_UI_VALUE, LAP_BLACK), "%s %s %u.%03u", MT_REGIONS[cfg.region].name, preset_name(),
-          (unsigned)(freq_hz / 1000000u), (unsigned)(freq_hz / 1000u % 1000u));
+    static const char P[] = { '^', '/', '>', '\\', 'v', '/', '<', '\\' };
+    return P[((int)((b + 22.5f) / 45.0f)) & 7];
+}
+static void dist_text(float km, char *out, size_t n)
+{
+    if (km < 1.0f) snprintf(out, n, "%d m", (int)(km * 1000.0f + 0.5f));
+    else if (km < 10.0f) snprintf(out, n, "%.1f km", (double)km);
+    else snprintf(out, n, "%d km", (int)(km + 0.5f));
+}
+
+/* 0..4 bars, by SNR when the radio gave one (LoRa reads below the noise). */
+static int sig_level(int16_t rssi, int16_t snr)
+{
+    if (snr != INT16_MIN && snr != 0) {
+        const int s = snr / 10;
+        return s > 5 ? 4 : s > 0 ? 3 : s > -7 ? 2 : s > -13 ? 1 : 0;
+    }
+    const int r = rssi / 10;
+    return r > -80 ? 4 : r > -95 ? 3 : r > -108 ? 2 : r > -118 ? 1 : 0;
+}
+static uint8_t level_hue(int l) { return l >= 3 ? (LAP_GREEN | LAP_BRIGHT) : l == 2 ? (LAP_YELLOW | LAP_BRIGHT) : (LAP_RED | LAP_BRIGHT); }
+/* Four rising bars in braille, unlit ones grey. */
+static void sig_bars(int x, int y, int level)
+{
+    static const uint8_t L[4] = { 0x01, 0x02, 0x04, 0x40 }, R[4] = { 0x08, 0x10, 0x20, 0x80 };
+    for (int b = 0; b < 4; b++) {
+        uint8_t d = 0;
+        for (int r = 3; r >= 3 - b; r--) d |= L[r] | R[r];
+        cell(x + b, y, LAP_BRAILLE(d), b < level ? A(level_hue(level)) : LAP_UI_FAINT);
+    }
+}
+/* [######--] 78%, or the plug when on power. Returns cells used. */
+static int battery(int x, int y, int cells, const node_t *n)
+{
+    if (!n->has_dev) return put(x, y, cells + 7, LAP_UI_FAINT, "[%*s] --", cells, "");
+    if (n->battery > 100) return put(x, y, cells + 7, A(LAP_CYAN | LAP_BRIGHT), "=[%.*s]- PWR", cells - 2 > 0 ? cells - 2 : 0, "########");
+    const int pct = n->battery, lit = (pct * cells + 50) / 100;
+    const uint8_t hue = pct > 50 ? (LAP_GREEN | LAP_BRIGHT) : pct > 20 ? (LAP_YELLOW | LAP_BRIGHT) : (LAP_RED | LAP_BRIGHT);
+    cell(x, y, '[', LAP_UI_DIM);
+    for (int i = 0; i < cells; i++) cell(x + 1 + i, y, i < lit ? LAP_BLOCK : LAP_SHADE_25, i < lit ? A(hue) : LAP_UI_FAINT);
+    cell(x + 1 + cells, y, ']', LAP_UI_DIM);
+    return 2 + cells + put(x + 2 + cells, y, 5, A(hue), " %d%%", pct);
+}
+
+/* ---- a braille canvas, bigger than lap_art's, with true circles ---- */
+#define CV_W 76
+#define CV_H 44
+typedef struct {
+    int x, y, w, h;
+    float ax;                           /* a dot's height over its width: rings stay round */
+    uint8_t dot[CV_H][CV_W], at[CV_H][CV_W];
+} canvas_t;
+static canvas_t cv;
+static void cv_begin(int x, int y, int w, int h)
+{
+    memset(cv.dot, 0, sizeof(cv.dot));
+    memset(cv.at, 0, sizeof(cv.at));
+    cv.x = x; cv.y = y;
+    cv.w = w < 0 ? 0 : w > CV_W ? CV_W : w;
+    cv.h = h < 0 ? 0 : h > CV_H ? CV_H : h;
+    int cw = 0, ch = 0;
+    lap_cell_px(&cw, &ch);
+    cv.ax = cw > 0 && ch > 0 ? ((float)ch / 4.0f) / ((float)cw / 2.0f) : 1.0f;
+}
+static void cv_dot(int x, int y, uint8_t attr)
+{
+    static const uint8_t bit[2][4] = { { 0x01, 0x02, 0x04, 0x40 }, { 0x08, 0x10, 0x20, 0x80 } };
+    if (x < 0 || y < 0 || x >= cv.w * 2 || y >= cv.h * 4) return;
+    cv.dot[y / 4][x / 2] |= bit[x & 1][y & 3];
+    if (attr) cv.at[y / 4][x / 2] = attr;
+}
+static int rnd(float f) { return (int)(f < 0 ? f - 0.5f : f + 0.5f); }
+static void cv_line(int x0, int y0, int x1, int y1, uint8_t attr)
+{
+    const int dx = x1 > x0 ? x1 - x0 : x0 - x1, dy = y1 > y0 ? y0 - y1 : y1 - y0;
+    const int stx = x0 < x1 ? 1 : -1, sty = y0 < y1 ? 1 : -1;
+    int e = dx + dy;
+    for (int i = 0; i < 512; i++) {
+        cv_dot(x0, y0, attr);
+        if (x0 == x1 && y0 == y1) break;
+        const int e2 = 2 * e;
+        if (e2 >= dy) { e += dy; x0 += stx; }
+        if (e2 <= dx) { e += dx; y0 += sty; }
+    }
+}
+/* A ring r dots across (taller or shorter in dots so it looks round);
+   every gap-th point left out. */
+static void cv_ring(float cx, float cy, float r, int gap, uint8_t attr)
+{
+    const int n = (int)(r * 7.0f) + 10;
+    for (int i = 0; i < n; i++) {
+        if (gap && i % gap == 0) continue;
+        const float t = 6.2831853f * (float)i / (float)n;
+        cv_dot(rnd(cx + r * cosf(t)), rnd(cy + r * sinf(t) / cv.ax), attr);
+    }
+}
+static void cv_flush(void)
+{
+    for (int r = 0; r < cv.h; r++)
+        for (int c = 0; c < cv.w; c++)
+            if (cv.dot[r][c]) cell(cv.x + c, cv.y + r, LAP_BRAILLE(cv.dot[r][c]), cv.at[r][c] ? cv.at[r][c] : A(LAP_CYAN));
+}
+
+/* ---- the mesh web ---- */
+/* The mesh as a network, not a radar: this node in the middle, every node
+   heard as a point, a line from each to the node it most likely came
+   through (direct ones straight to the middle, solid; relayed ones dashed,
+   to the nearest node one hop closer). A packet heard runs along its path
+   to the middle as a bright pulse; one sent runs out along every line.
+   With a position here and there, points sit by bearing and distance
+   (north up, on a faint map grid); without, by hops at an angle of their
+   own. */
+typedef struct { float fx, fy; uint8_t hue; bool placed; int node, parent; } blip_t;
+static blip_t blips[MAX_NODES];
+static int blip_n;
+static float radar_km;                  /* the edge, when nodes sit by distance */
+
+static float hash_ang(uint32_t num) { return 6.2831853f * (float)((num * 2654435761u) >> 20 & 1023u) / 1024.0f; }
+static float nice_km(float km)
+{
+    static const float S[] = { 0.3f, 0.6f, 1.5f, 3, 6, 15, 30, 45, 60, 90, 150, 300, 600, 1500, 3000, 6000 };
+    for (int i = 0; i < (int)(sizeof(S) / sizeof(S[0])); i++) if (km <= S[i]) return S[i];
+    return 20000;
+}
+static void make_blips(void)
+{
+    blip_n = 0;
+    float far = 0;
+    for (int i = 0; i < node_n; i++)
+        if (me_ok && nodes[i].has_pos) {
+            const float d = km_bearing(me_lat, me_lon, nodes[i].lat, nodes[i].lon, NULL);
+            if (d > far) far = d;
+        }
+    radar_km = ui.zoom ? ZOOM_KM[ui.zoom] : nice_km(far > 0 ? far * 1.08f : 1);
+    for (int i = 0; i < node_n && blip_n < MAX_NODES; i++) {
+        const node_t *n = &nodes[i];
+        blip_t *b = &blips[blip_n++];
+        b->node = i; b->parent = -1;
+        b->hue = hue_of(n->num);
+        float ang, r;
+        if (me_ok && n->has_pos) {
+            float brg = 0;
+            const float d = km_bearing(me_lat, me_lon, n->lat, n->lon, &brg);
+            ang = (brg - 90.0f) * 3.14159265f / 180.0f;            /* north up */
+            r = d / radar_km;
+            if (r > 1.0f) r = 1.04f;                                 /* off the scale: at the edge */
+            if (r < 0.05f) r = 0.05f;
+            b->placed = true;
+        } else {
+            ang = hash_ang(n->num);
+            r = 0.32f + 0.22f * (float)(n->hops > 3 ? 3 : n->hops);
+            b->placed = false;
+        }
+        b->fx = r * cosf(ang); b->fy = r * sinf(ang);
+    }
+    /* who each relayed node most likely came through: the nearest point one hop closer */
+    for (int i = 0; i < blip_n; i++) {
+        const int hops = nodes[blips[i].node].hops;
+        if (!hops) continue;
+        float best = 1e9f;
+        for (int j = 0; j < blip_n; j++) {
+            if (nodes[blips[j].node].hops != hops - 1) continue;
+            const float dx = blips[i].fx - blips[j].fx, dy = blips[i].fy - blips[j].fy, d = dx * dx + dy * dy;
+            if (d < best) { best = d; blips[i].parent = j; }
+        }
+    }
+}
+static void web_xy(const blip_t *b, float cx, float cy, float R, int *px, int *py)
+{
+    *px = rnd(cx + b->fx * R);
+    *py = rnd(cy + b->fy * R / cv.ax);
+}
+static void cv_dashed(int x0, int y0, int x1, int y1, uint8_t attr)
+{
+    const int dx = x1 > x0 ? x1 - x0 : x0 - x1, dy = y1 > y0 ? y0 - y1 : y1 - y0;
+    const int stx = x0 < x1 ? 1 : -1, sty = y0 < y1 ? 1 : -1;
+    int e = dx + dy;
+    for (int i = 0; i < 512; i++) {
+        if (i % 4 < 2) cv_dot(x0, y0, attr);
+        if (x0 == x1 && y0 == y1) break;
+        const int e2 = 2 * e;
+        if (e2 >= dy) { e += dy; x0 += stx; }
+        if (e2 <= dx) { e += dx; y0 += sty; }
+    }
+}
+/* A bright pulse f (0..1) of the way from (x0,y0) to (x1,y1), with a short tail. */
+static void pulse(int x0, int y0, int x1, int y1, float f, uint8_t head, uint8_t tail)
+{
+    for (int k = 2; k >= 0; k--) {
+        float g = f - 0.06f * (float)k;
+        if (g < 0) continue;
+        const int px2 = rnd((float)x0 + (float)(x1 - x0) * g), py2 = rnd((float)y0 + (float)(y1 - y0) * g);
+        const uint8_t at = k ? tail : head;
+        cv_dot(px2, py2, at);
+        if (!k) { cv_dot(px2 + 1, py2, at); cv_dot(px2, py2 + 1, at); cv_dot(px2 + 1, py2 + 1, at); }
+    }
+}
+/* The path from blip i to the middle: up to four legs. Returns legs. */
+static int web_path(int i, int lx[5], int ly[5], float cx, float cy, float R)
+{
+    int n = 0;
+    for (int b = i; b >= 0 && n < 4; b = blips[b].parent) { web_xy(&blips[b], cx, cy, R, &lx[n], &ly[n]); n++; }
+    lx[n] = rnd(cx); ly[n] = rnd(cy);
+    return n;
+}
+static void mesh_web(int x, int y, int w, int h, bool names, bool big)
+{
+    cv_begin(x, y, w, h);
+    const float cx = (float)cv.w - 0.5f, cy = (float)cv.h * 2.0f - 0.5f;
+    float R = cx - 2.0f;
+    if ((cy - 2.0f) * cv.ax < R) R = (cy - 2.0f) * cv.ax;
+    if (R < 4) return;
+    const bool moving = !calm();
+    /* the ground: a sparse map grid when points sit on the map */
+    if (big && me_ok) {
+        const int step = 8;
+        for (int gy = (int)cy % step; gy < cv.h * 4; gy += step)
+            for (int gx = (int)cx % step; gx < cv.w * 2; gx += step) cv_dot(gx, gy, LAP_UI_FAINT);
+    }
+    /* the lines, then traffic on them */
+    for (int i = 0; i < blip_n; i++) {
+        const blip_t *b = &blips[i];
+        int bx, by, qx, qy;
+        web_xy(b, cx, cy, R, &bx, &by);
+        if (b->parent >= 0) web_xy(&blips[b->parent], cx, cy, R, &qx, &qy);
+        else { qx = rnd(cx); qy = rnd(cy); }
+        const node_t *n = &nodes[b->node];
+        const bool stale = !n->last_ms || now_ms - n->last_ms > 1800000u;
+        if (!n->hops && b->parent < 0) cv_line(qx, qy, bx, by, stale ? LAP_UI_FAINT : A(dim(b->hue)));
+        else cv_dashed(qx, qy, bx, by, stale ? LAP_UI_FAINT : A(dim(b->hue)));
+        /* idle: a faint dot drifts in along each live direct line */
+        if (moving && !stale && !n->hops) {
+            const uint32_t period = 2600u + (n->num % 7u) * 300u;
+            const float f = (float)((now_ms + n->num * 97u) % period) / (float)period;
+            cv_dot(rnd((float)bx + (float)(qx - bx) * f), rnd((float)by + (float)(qy - by) * f), A(dim(b->hue)));
+        }
+    }
+    for (int i = 0; i < blip_n && moving; i++) {
+        const node_t *n = &nodes[blips[i].node];
+        if (!n->last_ms || now_ms - n->last_ms > 1500u) continue;
+        int lx[5], ly[5];
+        const int legs = web_path(i, lx, ly, cx, cy, R);
+        const float f = (float)(now_ms - n->last_ms) / 1500.0f * (float)legs;
+        const int leg = (int)f < legs ? (int)f : legs - 1;
+        pulse(lx[leg], ly[leg], lx[leg + 1], ly[leg + 1], f - (float)leg, A(LAP_WHITE | LAP_BRIGHT), A(blips[i].hue));
+    }
+    if (moving && last_tx_ms && now_ms - last_tx_ms < 1500u) {       /* ours, going out */
+        const float f = (float)(now_ms - last_tx_ms) / 1500.0f;
+        for (int i = 0; i < blip_n; i++) {
+            if (blips[i].parent >= 0) continue;
+            int bx, by;
+            web_xy(&blips[i], cx, cy, R, &bx, &by);
+            pulse(rnd(cx), rnd(cy), bx, by, f, A(LAP_YELLOW | LAP_BRIGHT), A(LAP_YELLOW));
+        }
+    }
+    /* the points */
+    for (int i = 0; i < blip_n; i++) {
+        const blip_t *b = &blips[i];
+        const node_t *n = &nodes[b->node];
+        int bx, by;
+        web_xy(b, cx, cy, R, &bx, &by);
+        const bool fresh = n->last_ms && now_ms - n->last_ms < 1500u;
+        const bool stale = !n->last_ms || now_ms - n->last_ms > 1800000u;
+        const uint8_t at = fresh && moving && (now_ms / 150u) % 2u ? A(LAP_WHITE | LAP_BRIGHT) : stale ? A(LAP_BLUE | LAP_BRIGHT)
+                         : A(b->placed ? b->hue : dim(b->hue));
+        cv_dot(bx, by, at); cv_dot(bx + 1, by, at); cv_dot(bx, by + 1, at); cv_dot(bx + 1, by + 1, at);
+        if (big) { cv_dot(bx - 1, by, at); cv_dot(bx + 2, by + 1, at); cv_dot(bx, by - 1, at); cv_dot(bx + 1, by + 2, at); }
+    }
+    /* this node: a diamond that beats while it listens */
+    const int mx = rnd(cx), my = rnd(cy);
+    const int s = big ? 3 : 2, beat = moving && rxh > 0 && (now_ms / 700u) % 2u ? 1 : 0;
+    const uint8_t me_at = A(cfg.tx_on ? (LAP_YELLOW | LAP_BRIGHT) : (LAP_WHITE | LAP_BRIGHT));
+    for (int k = -(s + beat); k <= s + beat; k++) {
+        const int a = s + beat - (k < 0 ? -k : k);
+        cv_dot(mx + k, my - a, me_at); cv_dot(mx + k, my + a, me_at);
+    }
+    cv_flush();
+    if (big && me_ok) {                                      /* north */
+        put(x, y, 3, A(LAP_YELLOW | LAP_BRIGHT), "N");
+        put(x, y + 1, 3, A(LAP_YELLOW), "^");
+    }
+    if (!names) return;
+    /* names, where they fit */
+    static uint8_t used[CV_H][CV_W / 8 + 1];
+    memset(used, 0, sizeof(used));
+    for (int i = 0; i < blip_n; i++) {
+        const blip_t *b = &blips[i];
+        const node_t *n = &nodes[b->node];
+        int bx, by;
+        web_xy(b, cx, cy, R, &bx, &by);
+        const int ccol = bx / 2, crow = by / 4;
+        hit(x + ccol - 1, y + crow - 1, x + ccol + 6, y + crow + 2, HIT_BLIP, b->node);
+        const int len = u8_cells(n->short_name, -1);
+        int lx = ccol + 2;
+        if (lx + len > cv.w) lx = ccol - 1 - len;
+        if (lx < 0 || crow < 0 || crow >= cv.h) continue;
+        bool free = true;
+        for (int k = lx - 1; k <= lx + len && free; k++)
+            if (k >= 0 && k < CV_W && (used[crow][k / 8] >> (k % 8) & 1)) free = false;
+        if (!free) continue;
+        for (int k = lx; k < lx + len && k < CV_W; k++) used[crow][k / 8] |= (uint8_t)(1u << (k % 8));
+        put(x + lx, y + crow, len, A(b->placed ? b->hue : dim(b->hue)), "%s", n->short_name);
+    }
+}
+
+/* ---- the frame: title, header, strip ---- */
+static void title_bar(void)
+{
+    const uint8_t tb = LAP_ATTR(LAP_BLACK, LAP_CYAN);
+    lap_fill(0, 0, W, 1, ' ', tb);
+    put(1, 0, 11, tb, "MESHTASTIC");
+    /* a light that blinks with each packet heard, steady while it listens */
+    const bool blink = last_rx_ms && now_ms - last_rx_ms < 300u;
+    put(12, 0, 3, blink ? LAP_ATTR(LAP_WHITE | LAP_BRIGHT, LAP_GREEN) : tb, "%s", rxh > 0 ? "(*)" : "( )");
+    char st[32];
+    uint8_t sa;
+    if (radio < 0) { snprintf(st, sizeof(st), " NO LORA RADIO "); sa = LAP_ATTR(LAP_WHITE | LAP_BRIGHT, LAP_RED); }
+    else if (txh > 0) { snprintf(st, sizeof(st), " SENDING "); sa = LAP_ATTR(LAP_BLACK, LAP_YELLOW | LAP_BRIGHT); }
+    else if (rx_error) { snprintf(st, sizeof(st), " RADIO BUSY "); sa = LAP_ATTR(LAP_BLACK, LAP_YELLOW | LAP_BRIGHT); }
+    else if (rxh > 0) { snprintf(st, sizeof(st), " LISTENING "); sa = LAP_ATTR(LAP_BLACK, LAP_GREEN | LAP_BRIGHT); }
+    else { snprintf(st, sizeof(st), " STARTING "); sa = LAP_ATTR(LAP_BLACK, LAP_WHITE); }
+    const int sl = (int)strlen(st);
+    put(16, 0, W - 17 - sl, tb, "!%08x  %u heard", (unsigned)cfg.node, (unsigned)heard);
+    put(W - sl, 0, sl, sa, "%s", st);
+    if (status_line[0] && now_ms - status_ms < 5000u) {
+        const uint8_t a = LAP_ATTR(LAP_BLACK, LAP_WHITE | LAP_BRIGHT);
+        lap_fill(0, 0, W, 1, ' ', a);
+        put(1, 0, W - 2, a, "%s", status_line);
+    }
+}
+
+static void chips_row(int x, int y, int w)
+{
+    lap_gps_t g;
+    const bool gps = lap_gps(&g), fix = gps && g.fix;
+    const struct { const char *t; bool on; uint8_t hue; } C[] = {
+        { "PRIMARY", primary, LAP_CYAN },
+        { "BKGND", lap_service_running(), LAP_BLUE },
+        { fix ? "GPS" : cfg.fixed ? "FIXED" : gps ? "GPS..." : "NO GPS", fix || cfg.fixed, LAP_GREEN },
+        { "PKI", cfg.pki && pki_ready, LAP_YELLOW },
+        { "RELAY", cfg.relay != 0, LAP_MAGENTA },
+        { "ES>EN", ui.xl_auto != 0, LAP_CYAN },
+    };
+    int cx = x;
+    for (int i = 0; i < (int)(sizeof(C) / sizeof(C[0])); i++) {
+        const int need = (int)strlen(C[i].t) + 2;
+        if (cx + need > x + w) break;
+        if (y >= clip0 && y < clip1) cx = lap_ui_chip(cx, y, C[i].t, C[i].on, C[i].hue) + 1;
+    }
+}
+
+/* 906.875 in 3x5 block figures, MHz beside; the last figure flickers
+   while a packet comes in. */
+static void big_freq(int x, int y, int w)
+{
+    char f[16];
+    snprintf(f, sizeof(f), "%u.%03u", (unsigned)(freq_hz / 1000000u), (unsigned)(freq_hz / 1000u % 1000u));
+    const uint8_t on = A(LAP_YELLOW | LAP_BRIGHT);
+    const bool hot = last_rx_ms && now_ms - last_rx_ms < 400u && !calm();
+    int cx = x;
+    for (const char *c = f; *c && cx + 3 <= x + w; c++) {
+        if (*c == '.') { cell(cx, y + 4, LAP_BLOCK, on); cx += 2; continue; }
+        lap_big_char(cx, y, *c, hot && !c[1] ? A(LAP_WHITE | LAP_BRIGHT) : on);
+        cx += 4;
+    }
+    if (cx + 3 <= x + w) put(cx, y + 4, 3, A(LAP_CYAN | LAP_BRIGHT), "MHz");
+}
+
+static void header(void)
+{
+    const int x = hx, y = hy;
+    /* the radar: portrait beside the figures, landscape under them */
+    int rx, ry, rw, rh, ix, iy, iw;
+    if (!wide) { rw = 17; rh = hh; rx = x; ry = y; ix = x + rw + 1; iy = y; iw = hw - rw - 1; }
+    else { ix = x; iy = y; iw = hw; rx = x + 1; ry = y + 10; rw = hw - 2; rh = hh - 10; }
+    if (rh > 2) mesh_web(rx, ry, rw, rh, false, false);
+    /* who this is, and whether it may transmit */
+    const int cw = lap_ui_chip(ix, iy, cfg.short_name, true, LAP_CYAN) - ix;
+    put(ix + cw + 1, iy, iw - cw - 12, LAP_UI_TEXT, "%s", cfg.long_name);
+    lap_ui_chip(ix + iw - (cfg.tx_on ? 10 : 9), iy, cfg.tx_on ? "TX ARMED" : "RX ONLY", cfg.tx_on, cfg.tx_on ? LAP_RED : LAP_GREEN);
+    /* the frequency, big: block figures, as the board's glass has them */
+    big_freq(ix, iy + 1, iw);
+    const int fy = iy + 6;
     char k[48];
     key_text(0, k, sizeof(k));
     const int more = ch_count() - 1;
-    print(x, 2, LAP_UI_DIM, "ch %s%s  slot %d/%d  key %.8s", channel_name(), more ? (more == 1 ? " +1" : more == 2 ? " +2" : " +3") : "",
-          slot, slots, k);
-    print(x, 3, LAP_UI_DIM, "!%08x %-5s", (unsigned)cfg.node, cfg.short_name);
-    print(x + 16, 3, LAP_ATTR(LAP_UI_LIVE, LAP_BLACK), "rx %u ok %u tx %u", (unsigned)heard,
-          (unsigned)decoded, (unsigned)sent);
-    /* tags: what this node is doing right now */
-    lap_gps_t g;
-    const bool gps = lap_gps(&g), fix = gps && g.fix;
-    char t[24];
-    int cx = 1;
-    const struct { const char *text; uint8_t hue; } T[] = {
-        { primary ? "PRIMARY MESH" : "MESHCORE IS PRIMARY", primary ? (LAP_CYAN | LAP_BRIGHT) : LAP_WHITE },
-        { lap_service_running() ? "BACKGROUND" : "OPEN ONLY", lap_service_running() ? (LAP_BLUE | LAP_BRIGHT) : LAP_WHITE },
-        { fix ? (cfg.pos_mode ? "GPS SHARED" : "GPS FIX") : cfg.fixed ? (cfg.pos_mode ? "FIXED SHARED" : "FIXED POS")
-              : !gps ? "NO GPS" : "GPS SEARCH", fix || cfg.fixed ? (LAP_GREEN | LAP_BRIGHT) : (LAP_YELLOW | LAP_BRIGHT) },
-        { cfg.pki && pki_ready ? "PKI" : NULL, LAP_YELLOW | LAP_BRIGHT },
-        { cfg.relay ? "RELAY" : NULL, LAP_MAGENTA | LAP_BRIGHT },
-    };
-    for (int i = 0; i < 5; i++) {
-        if (!T[i].text) continue;
-        snprintf(t, sizeof(t), "[%s]", T[i].text);
-        if (cx + (int)strlen(t) > w) break;
-        lap_put_str(cx, 4, t, LAP_ATTR(T[i].hue, LAP_BLACK));
-        cx += (int)strlen(t) + 1;
+    put(ix, fy, iw, A(LAP_UI_VALUE), "%s %s  %s%s  slot %d", MT_REGIONS[cfg.region].name, preset_name(), channel_name(),
+        more ? (more == 1 ? " +1" : more == 2 ? " +2" : " +3") : "", slot);
+    /* the channel: how busy, and this node's share */
+    const float cu = ch_util(), au = air_util();
+    put(ix, fy + 1, 3, LAP_UI_DIM, "CH");
+    const int bw = iw - 15 > 4 ? iw - 15 : 4;
+    lap_ui_bargraph(ix + 3, fy + 1, bw, 1, cu / 40.0f > 1 ? 1 : cu / 40.0f, -1);
+    put(ix + 4 + bw, fy + 1, 11, A(cu > 25 ? LAP_UI_WARN : LAP_UI_LIVE), "%3.0f%% tx%.1f", (double)cu, (double)au);
+    /* signal of the last packets */
+    put(ix, fy + 2, 3, LAP_UI_DIM, "SIG");
+    if (hist_n > 1) {
+        float v[HISTORY];
+        for (int i = 0; i < hist_n; i++) v[i] = (float)rssi_hist[i] / 10.0f;
+        const int sw2 = iw - 9 > HISTORY / 2 ? HISTORY / 2 : iw - 9;
+        lap_ui_history(ix + 4, fy + 2, sw2, 1, v, hist_n, -130, -50, LAP_GREEN | LAP_BRIGHT);
+        put(ix + iw - 4, fy + 2, 4, A(LAP_UI_LIVE), "%4d", rssi_hist[hist_n - 1] / 10);
+    } else {
+        static const char *const dots[] = { ".   ", "..  ", "... ", "...." };
+        put(ix + 4, fy + 2, iw - 4, LAP_UI_FAINT, "waiting for a packet%s", calm() ? "" : dots[(now_ms / 400u) % 4u]);
+    }
+    chips_row(ix, fy + 3, iw);
+}
+
+/* Three keys, < name >, drawn in the look of the board's key bar (see
+   lap_art.h: one lap_ui_keys a frame). */
+static void strip(int x, int y, int w, int h, const char *label, const char *value, bool badge)
+{
+    const uint8_t fr = A(LAP_CYAN | LAP_BRIGHT), fill = A(LAP_CYAN), face = A(LAP_WHITE | LAP_BRIGHT), val = A(LAP_YELLOW | LAP_BRIGHT);
+    if (h < 3 || w < 12) return;
+    for (int i = 0; i < 3; i++) {
+        const int x0 = x + i * w / 3, x1 = x + (i + 1) * w / 3, bx = x0 + (i ? 1 : 0), bwid = x1 - x0 - (i ? 1 : 0) - (i < 2 ? 1 : 0);
+        lap_box(bx, y, bwid, h, NULL, fr);
+        lap_fill(bx + 1, y + 1, bwid - 2, h - 2, LAP_SHADE_25, fill);
+        char t[40];
+        if (i != 1) {
+            snprintf(t, sizeof(t), " %s ", i ? ">" : "<");
+            lap_put_str(bx + (bwid - 3) / 2, y + h / 2, t, face);
+            continue;
+        }
+        const int ly = y + (h - (value ? 2 : 1)) / 2;
+        int n = snprintf(t, sizeof(t), " %.*s ", bwid - 4 > 0 ? bwid - 4 : 0, label);
+        lap_put_str(bx + (bwid - n) / 2, ly, t, face);
+        if (value) {
+            n = snprintf(t, sizeof(t), " %.*s ", bwid - 4 > 0 ? bwid - 4 : 0, value);
+            lap_put_str(bx + (bwid - n) / 2, ly + 1, t, val);
+        }
+        if (badge && ((now_ms / 400u) % 2u || calm())) lap_put_cell(bx + bwid - 2, y + 1, '*', A(LAP_RED | LAP_BRIGHT));
     }
 }
 
-static void draw_activity(int y, int w)
-{
-    lap_put_str(1, y, "AIR", LAP_UI_DIM);
-    int lv[HISTORY];
-    for (int i = 0; i < hist_n; i++) {          /* -130..-40 dBm into 0..8 */
-        int v = (rssi_hist[i] / 10 + 130) * 8 / 90;
-        lv[i] = v < 0 ? 0 : v > 8 ? 8 : v;
-    }
-    const int sw = w - 18 < HISTORY ? w - 18 : HISTORY;
-    if (hist_n) lap_ui_sparkline(5, y, sw, 1, lv + (hist_n > sw ? hist_n - sw : 0), hist_n > sw ? sw : hist_n, 8, -1);
-    else lap_put_str(5, y, "waiting for a packet", LAP_UI_FAINT);
-    print(w - 12, y, LAP_UI_DIM, "ch%3.0f%% tx%3.1f%%", (double)ch_util(), (double)air_util());
-}
-
-static int tab_x[TABS + 1];
-static void draw_tabs(int y)
-{
-    static const char *const T[TABS] = { "CHAT", "NODES", "AIR" };
-    int x = 1;
-    for (int i = 0; i < TABS; i++) {
-        tab_x[i] = x;
-        x += lap_ui_chip(x, y, T[i], tab == i, LAP_CYAN) + 1;
-    }
-    tab_x[TABS] = x;
-    if (unread) print(x + 1, y, LAP_ATTR(LAP_UI_WARN, LAP_BLACK), "%u new", (unsigned)unread);
-}
-
-static int wrap(const char *s, int w, int (*out)(void *, int, const char *, int), void *ctx)
-{
-    int rows = 0, len = (int)strlen(s);
-    while (len > 0) {
-        int take = len > w ? w : len;
-        if (take < len) { int b = take; while (b > 0 && s[b] != ' ') b--; if (b > w / 2) take = b; }
-        if (out) out(ctx, rows, s, take);
-        rows++;
-        s += take; len -= take;
-        while (*s == ' ') { s++; len--; }
-    }
-    return rows ? rows : 1;
-}
-
-typedef struct { int x, y; uint8_t attr; } line_ctx_t;
-static int put_line(void *c, int row, const char *s, int n)
-{
-    line_ctx_t *l = c;
-    char t[128];
-    if (n > 127) n = 127;
-    memcpy(t, s, (size_t)n); t[n] = 0;
-    lap_put_str(l->x, l->y + row, t, l->attr);
-    return 0;
-}
-
+/* ---- CHAT ---- */
 static const char *state_word(const msg_t *m)
 {
     switch (m->state) {
     case ST_QUEUED: return "sending";
     case ST_SENT: return m->to == MT_BROADCAST ? "sent" : "waiting for ack";
-    case ST_RELAYED: return "sent, repeated";
+    case ST_RELAYED: return "sent, heard repeated";
     case ST_DELIVERED: return "delivered";
     case ST_FAILED: return m->to == MT_BROADCAST ? "not sent" : "no ack";
     default: return "";
     }
 }
-
-static void draw_chat(int y0, int h, int w)
+/* 0 as sent, 1 both, 2 English only */
+static int msg_mode(const msg_t *m)
 {
-    if (!msg_n) {
-        lap_put_str(2, y0 + 1, "No messages yet.", LAP_UI_DIM);
-        print(2, y0 + 3, LAP_UI_FAINT, "Listening on %s / %s%s.", MT_REGIONS[cfg.region].name, channel_name(),
-              ch_count() > 1 ? " and more" : "");
-        lap_put_str(2, y0 + 4, cfg.tx_on ? "S: to everyone.  C: channel.  NODES, ENTER: to one node." : "Turn TRANSMIT on in OPTIONS to send.",
-                    LAP_UI_FAINT);
-        return;
+    if (!m->tr[0]) return 0;
+    if (m->view) return m->view - 1;
+    return ui.xl_show == 0 ? 1 : ui.xl_show == 1 ? 2 : 0;
+}
+#define WRAP_MAX 24
+static int bubble_rows(const msg_t *m, int tw, span_t *a, int *na, span_t *b, int *nb)
+{
+    const int mode = msg_mode(m);
+    *na = mode == 2 ? 0 : wrap_spans(m->text, tw, a, WRAP_MAX);
+    *nb = mode ? wrap_spans(m->tr, tw, b, WRAP_MAX) : 0;
+    if (!*na && !*nb) *na = wrap_spans(m->text, tw, a, WRAP_MAX);
+    return 2 + (*na ? *na : 1) + (mode == 1 ? 1 + *nb : *nb);
+}
+static void frame_row(int x, int y, int w, char l, char r, uint8_t at)
+{
+    cell(x, y, l, at);
+    hfill(x + 1, y, w - 2, '-', at);
+    cell(x + w - 1, y, r, at);
+}
+/* One message as a bubble at row y (may be partly outside the clip). */
+static void bubble(const msg_t *m, int idx, int x, int y, int bw)
+{
+    span_t a[WRAP_MAX], b[WRAP_MAX];
+    int na, nb;
+    const int tw = bw - 4;
+    const int rows = bubble_rows(m, tw, a, &na, b, &nb);
+    const bool dm = m->to != MT_BROADCAST;
+    const uint32_t age = now_ms - m->at_ms;
+    const bool fresh = !m->mine && age < 1500u && !calm();
+    uint8_t hue = m->mine ? (LAP_CYAN | LAP_BRIGHT) : hue_of(m->from);
+    if (dm) hue = LAP_MAGENTA | LAP_BRIGHT;
+    /* what this board sent sits on a filled background: blue, magenta for a DM */
+    const uint8_t bg = m->mine ? (dm ? LAP_MAGENTA : LAP_BLUE) : LAP_BLACK;
+#define AB(fg) LAP_ATTR((fg), bg)
+    if (m->mine)
+        for (int r = 0; r < rows; r++) hfill(x, y + r, bw, ' ', AB(LAP_WHITE));
+    const uint8_t fr = fresh ? AB(LAP_WHITE | LAP_BRIGHT) : m->mine ? AB(LAP_CYAN | LAP_BRIGHT) : A(dim(hue));
+    hit(x, y, x + bw, y + rows, HIT_MSG, idx);
+    /* top: the sender, its long name, what kind, how long ago */
+    frame_row(x, y, bw, '.', '.', fr);
+    char t[12];
+    ago(m->at_ms, t, sizeof(t));
+    const char *who_s = who(m->mine && dm ? m->to : m->from);
+    int cx = x + 2;
+    if (y >= clip0 && y < clip1) {
+        if (m->mine) {
+            const int tl = (int)strlen(t);
+            put(x + 2, y, tl + 2, AB(LAP_WHITE), " %s ", t);
+            char lab[24];
+            snprintf(lab, sizeof(lab), "%s%s", dm ? "DM " : "", dm ? who_s : cfg.short_name);
+            const int ll = (int)strlen(lab) + 2;
+            lap_ui_chip(x + bw - 2 - ll, y, lab, true, dm ? LAP_MAGENTA : LAP_CYAN);
+        } else {
+            cx = lap_ui_chip(cx, y, who_s, true, dim(hue)) + 1;
+            const node_t *n = node_get(m->from, false);
+            if (dm) cx = lap_ui_chip(cx, y, m->pki ? "DM PRIVATE" : "DM", true, LAP_MAGENTA) + 1;
+            else if (m->ch) cx = lap_ui_chip(cx, y, ch_name(m->ch), true, LAP_YELLOW) + 1;
+            const int tl = (int)strlen(t) + 2;
+            if (n && n->long_name[0] && x + bw - 3 - tl - cx > 4) put(cx, y, x + bw - 3 - tl - cx, LAP_UI_DIM, " %s ", n->long_name);
+            put(x + bw - 2 - tl, y, tl, LAP_UI_DIM, " %s ", t);
+        }
     }
-    int y = y0 + h;                       /* newest at the bottom */
-    for (int k = scroll; k < msg_n && y > y0; k++) {
-        const msg_t *m = &msgs[(msg_head - 1 - k + MAX_MSGS * 2) % MAX_MSGS];
-        const int rows = wrap(m->text, w - 4, NULL, NULL);
-        y -= rows + 1;
-        if (y < y0) break;
-        char t[12], line[72], chn[16] = "";
-        ago(m->at_ms, t, sizeof(t));
-        const bool dm = m->to != MT_BROADCAST;
-        if (!dm && m->ch) snprintf(chn, sizeof(chn), "[%s] ", ch_name(m->ch));
-        if (m->mine) snprintf(line, sizeof(line), "%s%s%s%s%s  %s", chn, dm ? (m->pki ? "to* " : "to ") : "", dm ? who(m->to) : "",
-                              dm ? "" : t, "", state_word(m));
-        else snprintf(line, sizeof(line), "%s%s%s  %d dBm  %d.%d dB  %d hop%s", chn, dm ? (m->pki ? "DM* " : "DM  ") : "", t,
-                      m->rssi / 10, m->snr / 10, m->snr < 0 ? -m->snr % 10 : m->snr % 10, m->hops, m->hops == 1 ? "" : "s");
-        const uint8_t hue = hue_of(m->mine && dm ? m->to : m->from);
-        lap_put_str(1, y, m->mine ? ">" : "<", LAP_ATTR(hue, LAP_BLACK));
-        lap_put_str(3, y, who(m->from), LAP_ATTR(hue_of(m->from), LAP_BLACK));
-        const uint8_t sattr = m->state == ST_DELIVERED || m->state == ST_RELAYED ? LAP_ATTR(LAP_UI_LIVE, LAP_BLACK)
-                            : m->state == ST_FAILED ? LAP_ATTR(LAP_UI_ALARM, LAP_BLACK)
-                            : dm ? LAP_ATTR(LAP_MAGENTA | LAP_BRIGHT, LAP_BLACK)
-                            : m->ch ? LAP_ATTR(LAP_YELLOW, LAP_BLACK) : LAP_UI_FAINT;
-        lap_put_str(10, y, line, sattr);
-        line_ctx_t l = { 3, y + 1, dm ? LAP_ATTR(LAP_MAGENTA | LAP_BRIGHT, LAP_BLACK) : LAP_UI_TEXT };
-        wrap(m->text, w - 4, put_line, &l);
+    /* the words, typing in for a moment when new */
+    int shown = fresh ? (int)(age / 12u) : -1;
+    int yy = y + 1;
+    const uint8_t text_at = m->mine ? AB(LAP_WHITE | LAP_BRIGHT) : dm ? A(LAP_MAGENTA | LAP_BRIGHT) : LAP_UI_TEXT;
+    for (int i = 0; i < na; i++, yy++) {
+        cell(x, yy, '|', fr); cell(x + bw - 1, yy, '|', fr);
+        int s = -1;
+        if (shown >= 0) { s = shown; shown -= a[i].n; if (shown < 0) shown = 0; }
+        put_span(x + 2, yy, m->text, a[i], s, text_at);
+    }
+    const int mode = msg_mode(m);
+    if (mode == 1) {                                     /* both: a rule, then the English */
+        cell(x, yy, '|', fr); cell(x + bw - 1, yy, '|', fr);
+        for (int k = x + 2; k < x + bw - 10; k += 2) cell(k, yy, '-', LAP_UI_FAINT);
+        put(x + bw - 9, yy, 7, A(LAP_CYAN), "ES > EN");
+        yy++;
+    }
+    for (int i = 0; i < nb; i++, yy++) {
+        cell(x, yy, '|', fr); cell(x + bw - 1, yy, '|', fr);
+        put_span(x + 2, yy, m->tr, b[i], -1, A(LAP_CYAN | LAP_BRIGHT));
+    }
+    if (mode == 2) put(x + bw - 9, y, 7, A(LAP_CYAN), "ES > EN");
+    /* bottom: the signal it came in on, or what became of ours */
+    frame_row(x, yy, bw, '\'', '\'', fr);
+    if (yy < clip0 || yy >= clip1) return;
+    if (m->mine) {
+        const char *w = state_word(m);
+        static const char spin[] = "|/-\\";
+        char st[32];
+        if (m->state == ST_QUEUED && !calm()) snprintf(st, sizeof(st), " %c %s ", spin[(now_ms / 120u) % 4u], w);
+        else if (m->state == ST_DELIVERED) snprintf(st, sizeof(st), " ** %s ", w);
+        else snprintf(st, sizeof(st), " %s ", w);
+        const uint8_t sa = m->state == ST_DELIVERED || m->state == ST_RELAYED ? LAP_ATTR(LAP_BLACK, LAP_GREEN | LAP_BRIGHT)
+                         : m->state == ST_FAILED ? LAP_ATTR(LAP_WHITE | LAP_BRIGHT, LAP_RED) : AB(LAP_YELLOW | LAP_BRIGHT);
+        put(x + bw - 2 - (int)strlen(st), yy, (int)strlen(st), sa, "%s", st);
+    } else {
+        const int l = sig_level(m->rssi, m->snr);
+        sig_bars(x + 2, yy, l);
+        put(x + 7, yy, bw - 9, LAP_UI_DIM, " %d dBm  %d.%d dB  %s ", m->rssi / 10, m->snr / 10,
+            m->snr < 0 ? -m->snr % 10 : m->snr % 10, m->hops ? (m->hops == 1 ? "1 hop" : m->hops == 2 ? "2 hops" : "3+ hops") : "direct");
+    }
+}
+#undef AB
+
+/* The empty chat: a tower on a hill, sending rings into the sky. */
+static void tower(int x, int y, int w, int h)
+{
+    static const char *const T[] = {
+        "     |     ",
+        "    /|\\    ",
+        "   / | \\   ",
+        "  /--+--\\  ",
+        "  \\  |  /  ",
+        "   \\ | /   ",
+        "  --\\|/--  ",
+        "  /  |  \\  ",
+        " /---+---\\ ",
+    };
+    const int n = (int)(sizeof(T) / sizeof(T[0]));
+    const int tx = x + (w - 11) / 2, top = y + 4;
+    if (top + n + 4 > y + h) return;
+    for (int i = 0; i < n; i++) put(tx, top + i, 11, A(LAP_WHITE), "%s", T[i]);
+    cell(tx + 5, top - 1, 'o', A(rxh > 0 ? (LAP_RED | LAP_BRIGHT) : LAP_RED));
+    /* rings: each born at the tip, opening and fading */
+    for (int r = 0; r < 3 && !calm(); r++) {
+        const int ph = (int)((now_ms / 260u + (uint32_t)(r * 4)) % 12u);
+        const int dx = 1 + ph, dy = ph / 3;
+        const uint8_t at = ph < 4 ? A(LAP_GREEN | LAP_BRIGHT) : ph < 8 ? A(LAP_GREEN) : LAP_UI_FAINT;
+        if (tx + 5 - dx - 1 >= x) { cell(tx + 5 - dx, top - 1 - dy, '(', at); cell(tx + 5 + dx, top - 1 - dy, ')', at); }
+    }
+    /* the hill */
+    for (int c = x + 1; c < x + w - 1; c++) {
+        const int d = c - (tx + 5) < 0 ? (tx + 5) - c : c - (tx + 5);
+        const int hy2 = top + n + (d > 14 ? 2 : d > 7 ? 1 : 0);
+        cell(c, hy2, (c + (int)(now_ms / 700u)) % 7 == 0 && !calm() ? '~' : '_', A(LAP_GREEN));
+    }
+    int ty2 = top + n + 3;
+    char f[24];
+    snprintf(f, sizeof(f), "%u.%03u MHz", (unsigned)(freq_hz / 1000000u), (unsigned)(freq_hz / 1000u % 1000u));
+    put(x + (w - 30) / 2, ty2++, w, LAP_UI_TEXT, "Listening on %s %s", f, channel_name());
+    ty2++;
+    put(x + 2, ty2++, w - 4, LAP_UI_DIM, cfg.tx_on ? "SEND talks to everyone on the channel." : "Turn TRANSMIT on (OPTIONS) to talk.");
+    put(x + 2, ty2++, w - 4, LAP_UI_DIM, "QUICK sends a ready phrase, in Spanish.");
+    put(x + 2, ty2++, w - 4, LAP_UI_DIM, "Spanish that comes in shows in English too.");
+}
+
+static void draw_chat(int x, int y, int w, int h)
+{
+    clip0 = y; clip1 = y + h;
+    if (!msg_n) { smax = 0; tower(x, y, w, h); return; }
+    const int bw = w - 4 < 24 ? w : w - 4;
+    span_t a[WRAP_MAX], b[WRAP_MAX];
+    int na, nb, total = 0;
+    for (int k = msg_n - 1; k >= 0; k--) total += bubble_rows(&msgs[(msg_head - 1 - k + MAX_MSGS * 2) % MAX_MSGS], bw - 4, a, &na, b, &nb);
+    const bool at_end = scroll >= smax;
+    smax = total > h ? total - h : 0;
+    if ((chat_new || at_end) && !dragging) scroll = smax;
+    chat_new = false;
+    if (scroll > smax) scroll = smax;
+    int yy = y - scroll;
+    if (total < h) yy = y + h - total;                   /* few: they sit at the bottom */
+    for (int k = msg_n - 1; k >= 0; k--) {
+        const int i = (msg_head - 1 - k + MAX_MSGS * 2) % MAX_MSGS;
+        const msg_t *m = &msgs[i];
+        const int rows = bubble_rows(m, bw - 4, a, &na, b, &nb);
+        if (yy + rows > y && yy < y + h) bubble(m, i, m->mine ? x + w - bw : x, yy, bw);
+        yy += rows;
     }
 }
 
+/* ---- NODES ---- */
 static int node_order[MAX_NODES];
+static float node_km(const node_t *n, float *brg)
+{
+    if (!me_ok || !n->has_pos) return -1;
+    return km_bearing(me_lat, me_lon, n->lat, n->lon, brg);
+}
+static bool node_before(const node_t *a, const node_t *b)
+{
+    switch (ui.sort) {
+    case 1: if (!a->last_ms != !b->last_ms) return a->last_ms != 0; return a->rssi > b->rssi;
+    case 2: {
+        const float da = node_km(a, NULL), db = node_km(b, NULL);
+        if ((da < 0) != (db < 0)) return da >= 0;
+        return da < db;
+    }
+    case 3: return strcmp(a->long_name[0] ? a->long_name : a->short_name, b->long_name[0] ? b->long_name : b->short_name) < 0;
+    default: return a->last_ms > b->last_ms;
+    }
+}
 static void sort_nodes(void)
 {
     for (int i = 0; i < node_n; i++) node_order[i] = i;
-    for (int i = 1; i < node_n; i++)         /* newest first */
-        for (int j = i; j > 0 && nodes[node_order[j]].last_ms > nodes[node_order[j - 1]].last_ms; j--) {
-            int t = node_order[j]; node_order[j] = node_order[j - 1]; node_order[j - 1] = t;
+    for (int i = 1; i < node_n; i++)
+        for (int j = i; j > 0 && node_before(&nodes[node_order[j]], &nodes[node_order[j - 1]]); j--) {
+            const int t = node_order[j]; node_order[j] = node_order[j - 1]; node_order[j - 1] = t;
         }
 }
+static const char *const SORT_NAMES[] = { "HEARD", "SIGNAL", "NEAREST", "NAME" };
+#define CARD 4
 
-static void draw_nodes(int y0, int h, int w)
+static void card(const node_t *n, int idx, int x, int y, int w, bool on)
 {
-    if (!node_n) { lap_put_str(2, y0 + 1, "No nodes heard yet.", LAP_UI_DIM); return; }
+    hit(x, y, x + w, y + CARD - 1, HIT_NODE, idx);
+    const uint8_t hue = hue_of(n->num);
+    const bool fresh = now_ms - n->last_ms < 1500u && !calm();
+    if (on) for (int r = 0; r < CARD - 1; r++) cell(x, y + r, '>', A(LAP_YELLOW | LAP_BRIGHT));
+    char t[12];
+    ago(n->last_ms, t, sizeof(t));
+    if (y >= clip0 && y < clip1) {
+        const int cx = lap_ui_chip(x + 1, y, n->short_name, true, fresh && (now_ms / 200u) % 2u ? LAP_WHITE : dim(hue)) + 1;
+        put(cx, y, w - (cx - x) - 6, A(hue), "%s", n->long_name[0] ? n->long_name : "(no name yet)");
+        put(x + w - 5, y, 5, fresh ? A(LAP_UI_LIVE) : LAP_UI_DIM, "%5s", t);
+    }
+    /* the link (a node from the saved list has none until it is heard) */
+    int cx;
+    if (n->last_ms) {
+        const int l = sig_level(n->rssi, n->snr);
+        sig_bars(x + 2, y + 1, l);
+        cx = x + 8 + put(x + 7, y + 1, 18, A(level_hue(l)), "%d dBm %d.%d dB", n->rssi / 10, n->snr / 10, n->snr < 0 ? -n->snr % 10 : n->snr % 10);
+    } else cx = x + 3 + put(x + 2, y + 1, 22, LAP_UI_FAINT, "not heard since start");
+    /* hops as a chain: me o-o-o node */
+    if (cx + 9 < x + w - 15) {
+        const int hops = n->hops > 3 ? 3 : n->hops;
+        if (!hops) put(cx, y + 1, 8, A(LAP_GREEN | LAP_BRIGHT), "direct");
+        else for (int k = 0; k <= hops; k++) {
+            cell(cx + k * 2, y + 1, 'o', A(k == hops ? hue : LAP_WHITE));
+            if (k < hops) cell(cx + k * 2 + 1, y + 1, '-', LAP_UI_FAINT);
+        }
+    }
+    battery(x + w - 14, y + 1, 6, n);
+    /* where, and what it is */
+    float brg = 0;
+    const float km = node_km(n, &brg);
+    cx = x + 2;
+    if (km >= 0) {
+        char d[16];
+        dist_text(km, d, sizeof(d));
+        cell(cx, y + 2, arrow(brg), A(LAP_YELLOW | LAP_BRIGHT));
+        cx += 2 + put(cx + 2, y + 2, 16, A(LAP_UI_VALUE), "%s %s", d, compass(brg));
+    } else if (n->has_pos) cx += put(cx, y + 2, 24, LAP_UI_DIM, "has position, no fix here");
+    else cx += put(cx, y + 2, 16, LAP_UI_FAINT, "no position");
+    cx += 2;
+    if (n->has_key) cx += 1 + put(cx, y + 2, 4, A(LAP_YELLOW), "KEY");
+    if (n->last[0]) put(cx, y + 2, x + w - cx - 1, LAP_UI_FAINT, "last %s", n->last);
+    for (int k = x + 2; k < x + w - 1; k += 3) cell(k, y + 3, '.', LAP_UI_FAINT);
+}
+
+static int find_node(uint32_t num)
+{
+    for (int i = 0; i < node_n; i++) if (nodes[i].num == num) return i;
+    return -1;
+}
+
+/* A compass rose with a needle that swings to the bearing. */
+static void compass_rose(int x, int y, int w, int h, float brg, bool have)
+{
+    static float shown = 0;
+    float d = brg - shown;
+    while (d > 180) d -= 360;
+    while (d < -180) d += 360;
+    shown = calm() ? brg : shown + d * 0.15f;
+    cv_begin(x, y, w, h);
+    const float cx = (float)cv.w - 0.5f, cy = (float)cv.h * 2.0f - 0.5f;
+    float R = cx - 1.0f;
+    if ((cy - 1.0f) * cv.ax < R) R = (cy - 1.0f) * cv.ax;
+    cv_ring(cx, cy, R, 0, A(LAP_CYAN));
+    for (int k = 0; k < 8; k++) {
+        const float t = (float)k * 0.785398f;
+        cv_line(rnd(cx + (R - 2) * cosf(t)), rnd(cy + (R - 2) * sinf(t) / cv.ax), rnd(cx + R * cosf(t)), rnd(cy + R * sinf(t) / cv.ax), LAP_UI_FAINT);
+    }
+    if (have) {
+        const float t = (shown - 90.0f) * 3.14159265f / 180.0f;
+        cv_line(rnd(cx), rnd(cy), rnd(cx + (R - 1) * cosf(t)), rnd(cy + (R - 1) * sinf(t) / cv.ax), A(LAP_YELLOW | LAP_BRIGHT));
+        cv_line(rnd(cx), rnd(cy), rnd(cx - (R * 0.4f) * cosf(t)), rnd(cy - (R * 0.4f) * sinf(t) / cv.ax), A(LAP_RED));
+    }
+    cv_dot(rnd(cx), rnd(cy), A(LAP_WHITE | LAP_BRIGHT));
+    cv_flush();
+    cell(x + w / 2, y, 'N', A(LAP_WHITE | LAP_BRIGHT));
+}
+
+static void draw_node_page(int x, int y, int w, int h)
+{
+    clip0 = y; clip1 = y + h;
+    const int i = find_node(open_num);
+    if (i < 0) { node_open = false; return; }
+    const node_t *n = &nodes[i];
+    const uint8_t hue = hue_of(n->num);
+    int yy = y - scroll;
+    /* the name, big */
+    int bx = x + 1;
+    for (const char *c = n->short_name; *c && bx + 3 < x + w; c++, bx += 4) {
+        const char ch = (char)(*c >= 'a' && *c <= 'z' ? *c - 32 : *c);
+        if (yy >= clip0 && yy + 5 <= clip1) lap_big_char(bx, yy, ch, A(hue));
+    }
+    const int tx = bx + 1, tw = x + w - tx - 1;
+    char t[12];
+    ago(n->last_ms, t, sizeof(t));
+    if (tw > 12) {
+        put(tx, yy, tw, A(hue), "%s", n->long_name[0] ? n->long_name : "(no name yet)");
+        put(tx, yy + 1, tw, LAP_UI_DIM, "!%08x", (unsigned)n->num);
+        if (n->last_ms) put(tx, yy + 2, tw, LAP_UI_DIM, "heard %s ago", t);
+        else put(tx, yy + 2, tw, LAP_UI_FAINT, "not heard since start");
+        put(tx, yy + 3, tw, LAP_UI_DIM, "%u packets  ch %s", (unsigned)n->packets, ch_name(n->ch));
+        put(tx, yy + 4, tw, n->has_key ? A(LAP_YELLOW) : LAP_UI_FAINT, n->has_key ? "private DMs: key known" : "no DM key yet");
+    }
+    yy += 6;
+    /* SIGNAL */
+    bezel(x, yy, w, 6, " SIGNAL ");
+    const int l = sig_level(n->rssi, n->snr);
+    const float frac = ((float)n->rssi / 10.0f + 130.0f) / 90.0f;
+    if (yy + 1 >= clip0 && yy + 3 <= clip1) lap_ui_bargraph(x + 2, yy + 1, w - 4, 2, frac < 0 ? 0 : frac > 1 ? 1 : frac, -1);
+    sig_bars(x + 2, yy + 3, l);
+    put(x + 7, yy + 3, w - 9, A(level_hue(l)), "%d dBm   SNR %d.%d dB   %s", n->rssi / 10, n->snr / 10, n->snr < 0 ? -n->snr % 10 : n->snr % 10,
+        n->hops ? (n->hops == 1 ? "1 hop" : n->hops == 2 ? "2 hops" : "3+ hops") : "direct");
+    if (n->sig_n > 1 && yy + 4 >= clip0 && yy + 4 < clip1) {
+        float v[SIG_N];
+        for (int k = 0; k < n->sig_n; k++) v[k] = (float)n->sig[k];
+        lap_ui_history(x + 2, yy + 4, w - 4 < SIG_N / 2 ? w - 4 : SIG_N / 2, 1, v, n->sig_n, -130, -50, hue);
+        put(x + 3 + SIG_N / 2, yy + 4, w - 6 - SIG_N / 2, LAP_UI_FAINT, "last %u packets", (unsigned)n->sig_n);
+    } else put(x + 2, yy + 4, w - 4, LAP_UI_FAINT, "history fills as it is heard");
+    yy += 7;
+    /* WHERE and POWER: side by side when there is room */
+    const bool side = w >= 60;
+    const int ww = side ? w / 2 - 1 : w, wh = 9;
+    bezel(x, yy, ww, wh, " WHERE ");
+    float brg = 0;
+    const float km = node_km(n, &brg);
+    compass_rose(x + 2, yy + 1, 13, 7, brg, km >= 0);
+    const int qx = x + 17, qw = ww - 19;
+    if (km >= 0) {
+        char d[16];
+        dist_text(km, d, sizeof(d));
+        put(qx, yy + 2, qw, A(LAP_UI_VALUE), "%s", d);
+        put(qx, yy + 3, qw, A(LAP_UI_VALUE), "%s  %.0f deg", compass(brg), (double)brg);
+    } else put(qx, yy + 2, qw, LAP_UI_FAINT, n->has_pos ? "no fix here" : "no position");
+    if (n->has_pos) {
+        put(qx, yy + 5, qw, LAP_UI_DIM, "%.5f", n->lat);
+        put(qx, yy + 6, qw, LAP_UI_DIM, "%.5f", n->lon);
+        put(qx, yy + 7, qw, LAP_UI_FAINT, "on the MAP");
+    } else put(qx, yy + 5, qw, LAP_UI_FAINT, "shared ones go on MAP");
+    const int ox = side ? x + ww + 2 : x, oy = side ? yy : yy + wh + 1, ow = side ? w - ww - 2 : w;
+    bezel(ox, oy, ow, wh, " POWER ");
+    if (n->has_dev) {
+        const float bf = n->battery > 100 ? 1.0f : (float)n->battery / 100.0f;
+        if (oy + 1 >= clip0 && oy + 3 <= clip1) lap_ui_bargraph(ox + 2, oy + 1, ow - 4, 2, bf, -1);
+        put(ox + 2, oy + 3, ow - 4, A(n->battery > 100 ? (LAP_CYAN | LAP_BRIGHT) : n->battery > 20 ? LAP_UI_LIVE : LAP_UI_ALARM),
+            n->battery > 100 ? "on power" : "battery %u%%", (unsigned)n->battery);
+        put(ox + 2, oy + 4, ow - 4, LAP_UI_DIM, "%.2f V", (double)n->voltage);
+        put(ox + 2, oy + 5, ow - 4, LAP_UI_DIM, "channel %.1f%%", (double)n->ch_util);
+        put(ox + 2, oy + 6, ow - 4, LAP_UI_DIM, "its air %.1f%%", (double)n->air_util);
+    } else {
+        put(ox + 2, oy + 2, ow - 4, LAP_UI_FAINT, "no telemetry yet");
+        put(ox + 2, oy + 4, ow - 4, LAP_UI_FAINT, "nodes send it hourly");
+    }
+    yy = (side ? yy : oy) + wh + 1;
+    /* ROUTE */
+    bezel(x, yy, w, 6, " ROUTE ");
+    if (trace_to == n->num && (trace_fwd[0] || trace_id)) {
+        if (trace_id && !trace_fwd[0]) {
+            static const char *const S[] = { ">   ", ">>  ", ">>> ", ">>>>" };
+            put(x + 2, yy + 2, w - 4, A(LAP_CYAN | LAP_BRIGHT), "tracing %s", calm() ? "..." : S[(now_ms / 250u) % 4u]);
+        } else {
+            span_t sp[4];
+            int r = 1, k = wrap_spans(trace_fwd, w - 4, sp, 2);
+            for (int q = 0; q < k; q++) put_span(x + 2, yy + r++, trace_fwd, sp[q], -1, A(LAP_CYAN | LAP_BRIGHT));
+            if (trace_back[0]) {
+                k = wrap_spans(trace_back, w - 4, sp, 2);
+                for (int q = 0; q < k; q++) put_span(x + 2, yy + r++, trace_back, sp[q], -1, A(LAP_CYAN));
+            }
+        }
+    } else {
+        put(x + 2, yy + 2, w - 4, LAP_UI_FAINT, "TRACE: the path there and back,");
+        put(x + 2, yy + 3, w - 4, LAP_UI_FAINT, "every hop with its SNR");
+    }
+    yy += 6;
+    const int total = yy + scroll - y;
+    smax = total > h ? total - h : 0;
+}
+
+static void draw_nodes(int x, int y, int w, int h)
+{
+    if (node_open) { draw_node_page(x, y, w, h); return; }
+    clip0 = y; clip1 = y + h;
+    if (!node_n) {
+        smax = 0;
+        mesh_web(x + (w - 30) / 2, y + 2, 30, 12, false, true);
+        put(x + (w - 19) / 2, y + 15, w, LAP_UI_TEXT, "No nodes heard yet.");
+        put(x + 2, y + 17, w - 4, LAP_UI_DIM, "A node shows up the first time it is heard.");
+        put(x + 2, y + 18, w - 4, LAP_UI_DIM, "Most send node info every few hours; HELLO");
+        put(x + 2, y + 19, w - 4, LAP_UI_DIM, "asks everyone in range to answer.");
+        return;
+    }
     sort_nodes();
     if (sel >= node_n) sel = node_n - 1;
     if (sel < 0) sel = 0;
-    lap_gps_t g;
-    const bool have = lap_gps(&g) && g.fix;
-    const int detail = 7, rows = h - 1 - detail;
-    if (sel < scroll) scroll = sel;
-    if (sel >= scroll + rows) scroll = sel - rows + 1;
-    print(1, y0, LAP_UI_FAINT, "%-5s %-15s %4s %5s %3s %4s %4s", "ID", "NAME", "DBM", "SNR", "HOP", "BAT", "SEEN");
-    for (int r = 0; r + scroll < node_n && r < rows; r++) {
-        const node_t *n = &nodes[node_order[r + scroll]];
-        const bool on = r + scroll == sel;
-        char t[8], bat[6], line[96];
-        ago(n->last_ms, t, sizeof(t));
-        if (!n->has_dev) snprintf(bat, sizeof(bat), " -- ");
-        else if (n->battery > 100) snprintf(bat, sizeof(bat), " PWR");
-        else snprintf(bat, sizeof(bat), "%3u%%", n->battery);
-        snprintf(line, sizeof(line), "%-15.15s %4d %3d.%d %3d %4s %4s", n->long_name[0] ? n->long_name : "(no name yet)",
-                 n->rssi / 10, n->snr / 10, n->snr < 0 ? -n->snr % 10 : n->snr % 10, n->hops, bat, t);
-        if (on) lap_fill(0, y0 + 1 + r, w, 1, ' ', LAP_ATTR(LAP_WHITE, LAP_BLUE));
-        lap_put_str(1, y0 + 1 + r, n->short_name, LAP_ATTR(hue_of(n->num), on ? LAP_BLUE : LAP_BLACK));
-        lap_put_str(7, y0 + 1 + r, line, on ? LAP_ATTR(LAP_WHITE | LAP_BRIGHT, LAP_BLUE) : LAP_UI_TEXT);
+    const int total = node_n * CARD;
+    smax = total > h ? total - h : 0;
+    if (scroll > smax) scroll = smax;
+    for (int r = 0; r < node_n; r++) {
+        const int yy = y - scroll + r * CARD;
+        if (yy + CARD <= y || yy >= y + h) continue;
+        card(&nodes[node_order[r]], node_order[r], x, yy, w, r == sel && kbd_used);
     }
-    /* The chosen node in full. */
-    const node_t *n = &nodes[node_order[sel]];
-    const int dy = y0 + h - detail;
-    lap_hline(0, dy, w, '.', LAP_UI_FAINT);
-    print(1, dy + 1, LAP_ATTR(hue_of(n->num), LAP_BLACK), "%s  %s", n->short_name, n->long_name[0] ? n->long_name : "");
-    print(1, dy + 2, LAP_UI_DIM, "!%08x  %u packets  last %s  %s", (unsigned)n->num, (unsigned)n->packets,
-          n->last[0] ? n->last : "-", n->has_key ? "key: PKI" : "no DM key");
-    if (n->has_dev)
-        print(1, dy + 3, LAP_UI_DIM, "battery %s%u%%  %.2f V  channel %.0f%%  air %.1f%%", n->battery > 100 ? ">" : "",
-              n->battery > 100 ? 100 : n->battery, (double)n->voltage, (double)n->ch_util, (double)n->air_util);
-    else lap_put_str(1, dy + 3, "no telemetry yet", LAP_UI_FAINT);
-    if (n->has_pos) {
-        if (have) {
-            float b = 0;
-            const float km = km_bearing(n->lat, n->lon, &g, &b);
-            print(1, dy + 4, LAP_ATTR(LAP_UI_VALUE, LAP_BLACK), "%.5f %.5f  %.1f km %s (%.0f)", n->lat, n->lon,
-                  (double)km, compass(b), (double)b);
-        } else print(1, dy + 4, LAP_ATTR(LAP_UI_VALUE, LAP_BLACK), "%.5f %.5f  (no GPS fix here)", n->lat, n->lon);
-    } else lap_put_str(1, dy + 4, "no position shared (on MAP once it does)", LAP_UI_FAINT);
-    if (trace_to == n->num && trace_fwd[0]) {
-        print(1, dy + 5, LAP_ATTR(LAP_CYAN | LAP_BRIGHT, LAP_BLACK), "%.*s", w - 2, trace_fwd);
-        if (trace_back[0]) print(1, dy + 6, LAP_ATTR(LAP_CYAN, LAP_BLACK), "%.*s", w - 2, trace_back);
-    } else {
-        lap_put_str(1, dy + 5, "R: traceroute (the path there and back)", LAP_UI_FAINT);
-    }
-    if (!(trace_to == n->num && trace_back[0]))
-        lap_put_str(1, dy + 6, cfg.tx_on ? "ENTER / D: message this node" : "TRANSMIT off: listen only", LAP_UI_FAINT);
 }
 
-static void draw_air(int y0, int h)
+/* ---- RADAR ---- */
+static void draw_radar(int x, int y, int w, int h)
 {
-    if (!air_n) { lap_put_str(2, y0 + 1, "Nothing on the air yet.", LAP_UI_DIM); return; }
-    print(1, y0, LAP_UI_FAINT, "%-5s %-5s %-10s %3s %4s %4s %4s", "FROM", "TO", "WHAT", "CH", "LEN", "DBM", "AGO");
-    for (int r = 0; r + scroll < air_n && r < h - 1; r++) {
-        const air_t *a = &air[(air_head - 1 - r - scroll + MAX_AIR * 2) % MAX_AIR];
+    clip0 = y; clip1 = y + h;
+    smax = 0;
+    const int rh = h - 3;
+    int rw = w;
+    if (rw > CV_W) rw = CV_W;
+    mesh_web(x + (w - rw) / 2, y, rw, rh, ui.labels != 0, true);
+    int placed = 0, hopped = 0;
+    for (int i = 0; i < blip_n; i++) { if (blips[i].placed) placed++; else hopped++; }
+    char sc[16];
+    dist_text(radar_km, sc, sizeof(sc));
+    if (me_ok) {
+        char ring[16];
+        dist_text(radar_km * 8.0f / (float)(rw * 2 > 8 ? rw : 8), ring, sizeof(ring));
+        put(x + 1, y + h - 3, w - 2, A(LAP_UI_VALUE), "edge %s  grid dot every %s  %s", sc, ring, ui.zoom ? "(ZOOM)" : "(FIT)");
+        put(x + 1, y + h - 2, w - 2, LAP_UI_DIM, "%d on the map, %d placed by hops", placed, hopped);
+    } else {
+        put(x + 1, y + h - 3, w - 2, A(LAP_UI_WARN), "No position here: placed by hops");
+        put(x + 1, y + h - 2, w - 2, LAP_UI_DIM, "Needs GPS or OPTIONS > POSITION > FIXED");
+    }
+    put(x + 1, y + h - 1, w - 2, LAP_UI_FAINT, "Dashed = relayed. Tap a node to open it.");
+}
+
+/* ---- AIR ---- */
+static uint8_t air_hue(const air_t *a)
+{
+    if (!strcmp(a->what, "MY ECHO")) return LAP_CYAN | LAP_BRIGHT;
+    if (!strcmp(a->what, "REPEAT")) return LAP_BLUE | LAP_BRIGHT;
+    if (!strcmp(a->what, "OTHER CH") || !strcmp(a->what, "PRIVATE") || !strncmp(a->what, "PKI ", 4)) return LAP_YELLOW | LAP_BRIGHT;
+    return LAP_GREEN | LAP_BRIGHT;
+}
+static const char *air_glyph(const air_t *a)
+{
+    static const struct { const char *what, *g; } G[] = {
+        { "TEXT", "[T]" }, { "POSITION", "(+)" }, { "NODEINFO", "[i]" }, { "TELEMETRY", "[%]" }, { "ROUTING", "[a]" },
+        { "TRACEROUTE", ">>>" }, { "NEIGHBORINFO", "[n]" }, { "PKI DM", "[#]" }, { "PRIVATE", "[?]" }, { "OTHER CH", "[?]" },
+        { "REPEAT", "[r]" }, { "MY ECHO", "[e]" },
+    };
+    for (int i = 0; i < (int)(sizeof(G) / sizeof(G[0])); i++) if (!strncmp(a->what, G[i].what, strlen(G[i].what))) return G[i].g;
+    return "[ ]";
+}
+/* The last minute of the air as LoRa chirps: each packet a run of rising
+   sweeps as long as it was on the air, newest at the right. */
+static void chirps(int x, int y, int w, int h)
+{
+    cv_begin(x, y, w, h);
+    const int dw = cv.w * 2, dh = cv.h * 4;
+    const float ms_per_dot = 60000.0f / (float)dw;
+    for (int k = 0; k < dw; k += 4) cv_dot(k, dh - 1, LAP_UI_FAINT);
+    for (int r = 0; r < air_n; r++) {
+        const air_t *a = &air[(air_head - 1 - r + MAX_AIR * 2) % MAX_AIR];
+        const uint32_t age = now_ms - a->at_ms;
+        if (age > 60000u) break;
+        const uint32_t on = airtime_ms(a->len);
+        int span = (int)((float)on / ms_per_dot);
+        if (span < 6) span = 6;                          /* a packet stays visible however short */
+        const int x1 = dw - 1 - (int)((float)age / ms_per_dot), x0 = x1 - span;
+        /* rising sweeps, each falling back at the end: LoRa's sawtooth */
+        const int sym = 4, top2 = 1, bot = dh - 2;
+        const uint8_t at = A(age < 1500u && !calm() ? (LAP_WHITE | LAP_BRIGHT) : air_hue(a));
+        int lx = x0, ly = bot;
+        for (int px2 = x0; px2 <= x1; px2++) {
+            const int ph2 = (px2 - x0) % sym;
+            const int yy = bot - ph2 * (bot - top2) / (sym - 1);
+            if (ph2 == 0 && px2 != x0) cv_line(lx, ly, px2, top2, at);   /* the wrap */
+            cv_line(ph2 == 0 ? px2 : lx, ph2 == 0 ? bot : ly, px2, yy, at);
+            lx = px2; ly = yy;
+        }
+    }
+    cv_flush();
+}
+
+static void draw_air(int x, int y, int w, int h)
+{
+    clip0 = y; clip1 = y + h;
+    int yy = y - scroll;
+    /* packets a minute, the last half hour */
+    int lv[PER_MIN_N], top = 4, now = 0;
+    const uint32_t e = now_ms / 60000u;
+    for (int i = 0; i < PER_MIN_N; i++) {
+        const int back = PER_MIN_N - 1 - i;              /* minutes ago */
+        const bool kept = (uint32_t)back <= e && e - (uint32_t)back <= per_min_epoch && per_min_epoch - (e - (uint32_t)back) < PER_MIN_N;
+        lv[i] = kept ? per_min[(e - (uint32_t)back) % PER_MIN_N] : 0;
+        if (lv[i] > top) top = lv[i];
+    }
+    now = lv[PER_MIN_N - 1];
+    put(x + 1, yy, 10, LAP_UI_DIM, "PER MINUTE");
+    if (yy >= clip0 && yy + 2 <= clip1) lap_ui_sparkline(x + 12, yy, w - 24 < PER_MIN_N ? w - 24 : PER_MIN_N, 2, lv + (w - 24 < PER_MIN_N ? PER_MIN_N - (w - 24) : 0), w - 24 < PER_MIN_N ? w - 24 : PER_MIN_N, top, -1);
+    put(x + w - 11, yy, 10, A(LAP_UI_LIVE), "%4d now", now);
+    put(x + w - 11, yy + 1, 10, LAP_UI_FAINT, "30 min");
+    yy += 3;
+    put(x + 1, yy, 10, LAP_UI_DIM, "LAST MIN");
+    put(x + 1, yy + 1, 10, LAP_UI_FAINT, "as chirps");
+    if (yy >= clip0 && yy + 4 <= clip1) chirps(x + 12, yy, w - 13, 4);
+    yy += 5;
+    const float cu = ch_util();
+    put(x + 1, yy, 10, LAP_UI_DIM, "CHANNEL");
+    if (yy >= clip0 && yy < clip1) lap_ui_bargraph(x + 12, yy, w - 24, 1, cu / 40.0f > 1 ? 1 : cu / 40.0f, -1);
+    put(x + w - 11, yy, 10, A(cu > 25 ? LAP_UI_WARN : LAP_UI_LIVE), "%4.1f%%", (double)cu);
+    yy++;
+    put(x + 1, yy, 10, LAP_UI_DIM, "MY AIR");
+    if (yy >= clip0 && yy < clip1) lap_ui_meter(x + 12, yy, w - 24, air_util() / 10.0f > 1 ? 1 : air_util() / 10.0f, LAP_CYAN | LAP_BRIGHT);
+    put(x + w - 11, yy, 10, A(LAP_CYAN | LAP_BRIGHT), "%4.1f%%/h", (double)air_util());
+    yy += 2;
+    /* totals as chips */
+    if (yy >= clip0 && yy < clip1) {
+        char t[24];
+        int cx = x + 1;
+        const struct { const char *l; uint32_t v; uint8_t hue; } C[] = {
+            { "HEARD", heard, LAP_GREEN }, { "READ", decoded, LAP_GREEN }, { "OTHER", foreign, LAP_YELLOW },
+            { "SENT", sent, LAP_CYAN }, { "RELAYED", relayed, LAP_MAGENTA }, { "PKI", pki_in, LAP_YELLOW }, { "LOST", gaps, LAP_RED },
+        };
+        for (int i = 0; i < (int)(sizeof(C) / sizeof(C[0])); i++) {
+            snprintf(t, sizeof(t), "%s %u", C[i].l, (unsigned)C[i].v);
+            if (cx + (int)strlen(t) + 2 > x + w) break;
+            cx = lap_ui_chip(cx, yy, t, C[i].v > 0, C[i].hue) + 1;
+        }
+    }
+    yy += 2;
+    put(x + 1, yy, w - 2, LAP_UI_FAINT, "    FROM   TO     WHAT        dBm   AGO");
+    yy++;
+    if (!air_n) {
+        put(x + 2, yy + 1, w - 4, LAP_UI_DIM, "Nothing on the air yet.");
+        put(x + 2, yy + 2, w - 4, LAP_UI_FAINT, "Every packet shows here, even unreadable ones.");
+    }
+    for (int r = 0; r < air_n; r++, yy++) {
+        const air_t *a = &air[(air_head - 1 - r + MAX_AIR * 2) % MAX_AIR];
+        if (yy < clip0 || yy >= clip1) continue;
+        const bool fresh = now_ms - a->at_ms < 1500u && !calm();
         char t[8], to[6];
         ago(a->at_ms, t, sizeof(t));
         if (a->to == MT_BROADCAST) snprintf(to, sizeof(to), "all");
         else snprintf(to, sizeof(to), "%s", who(a->to));
-        const bool ok = strcmp(a->what, "OTHER CH") && strcmp(a->what, "PRIVATE") && strcmp(a->what, "UNREADABLE") &&
-                        strcmp(a->what, "PKI FAIL") && strcmp(a->what, "PKI NO KEY");
-        lap_put_str(1, y0 + 1 + r, who(a->from), LAP_ATTR(hue_of(a->from), LAP_BLACK));
-        print(7, y0 + 1 + r, LAP_UI_DIM, "%-5s", to);
-        print(13, y0 + 1 + r, LAP_ATTR(ok ? LAP_UI_LIVE : LAP_UI_WARN, LAP_BLACK), "%-10s", a->what);
-        print(24, y0 + 1 + r, LAP_UI_DIM, "%02x  %4u %4d %4s", a->channel, a->len, a->rssi / 10, t);
+        if (fresh) lap_fill(x, yy, w, 1, ' ', LAP_ATTR(LAP_WHITE, LAP_BLUE));
+        const uint8_t bg = fresh ? LAP_BLUE : LAP_BLACK;
+        put(x + 1, yy, 3, LAP_ATTR(air_hue(a), bg), "%s", air_glyph(a));
+        put(x + 5, yy, 6, LAP_ATTR(hue_of(a->from), bg), "%s", who(a->from));
+        put(x + 12, yy, 6, LAP_ATTR(LAP_WHITE, bg), "%s", to);
+        put(x + 19, yy, 11, LAP_ATTR(air_hue(a), bg), "%s", a->what);
+        put(x + 31, yy, 5, LAP_ATTR(LAP_WHITE, bg), "%4d", a->rssi / 10);
+        put(x + 37, yy, 5, LAP_ATTR(LAP_WHITE, bg), "%4s", t);
+        hit(x, yy, x + w, yy + 1, HIT_AIR, r);
+    }
+    const int total = yy + scroll - y;
+    smax = total > h ? total - h : 0;
+}
+
+/* ---- TRANSLATE ---- */
+static void lang_art(int x, int y, int w)
+{
+    const int bx = x + (w - 30) / 2;
+    static const char *const B[] = { ".------.", "|  ES  |", "'---.--'" };
+    static const char *const C[] = { ".------.", "|  EN  |", "'--.---'" };
+    for (int i = 0; i < 3; i++) {
+        put(bx, y + i, 8, A(LAP_YELLOW | LAP_BRIGHT), "%s", B[i]);
+        put(bx + 22, y + i, 8, A(LAP_CYAN | LAP_BRIGHT), "%s", C[i]);
+    }
+    /* the words travel across */
+    const int n = 12, ph = calm() ? -1 : (int)((now_ms / 90u) % (uint32_t)(n + 4));
+    for (int k = 0; k < n; k++) {
+        const bool lit = ph >= 0 && (k == ph || k == ph - 1 || k == ph - 2);
+        cell(bx + 9 + k, y + 1, k == n - 1 ? '>' : '~', lit ? A(LAP_WHITE | LAP_BRIGHT) : A(ui.xl_auto ? LAP_GREEN : LAP_BLACK | LAP_BRIGHT));
+    }
+}
+static void draw_lang(int x, int y, int w, int h)
+{
+    clip0 = y; clip1 = y + h;
+    int yy = y - scroll;
+    lang_art(x, yy, w);
+    yy += 4;
+    /* the two switches, tappable */
+    if (yy >= clip0 && yy < clip1) {
+        int cx = x + 2;
+        cx = lap_ui_chip(cx, yy, ui.xl_auto ? "AUTO ON" : "AUTO OFF", ui.xl_auto != 0, LAP_GREEN) + 1;
+        hit(x + 2, yy, cx, yy + 1, HIT_XL_AUTO, 0);
+        const int c0 = cx;
+        cx = lap_ui_chip(cx, yy, ui.xl_show == 0 ? "SHOW BOTH" : ui.xl_show == 1 ? "ENGLISH ONLY" : "AS SENT", true, LAP_CYAN) + 1;
+        hit(c0, yy, cx, yy + 1, HIT_XL_SHOW, 0);
+        put(cx + 1, yy, x + w - cx - 2, LAP_UI_FAINT, "offline, on the board");
+    }
+    yy += 2;
+    /* TRY IT */
+    span_t sp[8];
+    const char *es = try_es[0] ? try_es : "Tap here and write some Spanish.";
+    const int ne = wrap_spans(es, w - 4, sp, 8);
+    span_t sq[8];
+    const int nt = try_en[0] ? wrap_spans(try_en, w - 4, sq, 8) : 0;
+    const int bh2 = 2 + ne + (nt ? nt + 1 : 0);
+    bezel(x, yy, w, bh2, " TRY IT ");
+    hit(x, yy, x + w, yy + bh2, HIT_TRY, 0);
+    int r = yy + 1;
+    for (int i = 0; i < ne; i++) put_span(x + 2, r++, es, sp[i], -1, try_es[0] ? LAP_UI_TEXT : LAP_UI_FAINT);
+    if (nt) {
+        for (int k = x + 2; k < x + w - 2; k += 2) cell(k, r, '-', LAP_UI_FAINT);
+        r++;
+        for (int i = 0; i < nt; i++) put_span(x + 2, r++, try_en, sq[i], -1, A(LAP_CYAN | LAP_BRIGHT));
+    }
+    yy += bh2 + 1;
+    /* HISTORY: each TRY IT and each Spanish line heard, kept on the card */
+    if (yy >= clip0 && yy < clip1) {
+        put(x + 1, yy, 8, A(LAP_UI_VALUE), "HISTORY");
+        if (hist.n) {
+            const bool armed = hist_clear_ms && now_ms - hist_clear_ms < 3000u;
+            const char *cl = armed ? "SURE? TAP" : "CLEAR";
+            const int c0 = x + w - (int)strlen(cl) - 3;
+            put(x + 9, yy, c0 - x - 10, LAP_UI_FAINT, "%u kept on the card", (unsigned)hist.n);
+            const int c1 = lap_ui_chip(c0, yy, cl, armed, LAP_RED);
+            hit(c0, yy, c1, yy + 1, HIT_HIST_CLEAR, 0);
+        } else put(x + 9, yy, w - 10, LAP_UI_FAINT, "kept on the card");
+    }
+    yy++;
+    lap_time_t tnow;
+    lap_time(&tnow);
+    for (uint32_t k = 0; k < hist.n; k++) {
+        const hist_t *e = &hist.e[k];
+        const int y0 = yy;
+        const bool fresh = k == 0 && hist_new_ms && now_ms - hist_new_ms < 1500u && !calm();
+        char t[8] = "";
+        if (e->unix && tnow.synced && (uint32_t)tnow.unix >= e->unix) {
+            const uint32_t s = (uint32_t)tnow.unix - e->unix;
+            if (s < 60) snprintf(t, sizeof(t), "now");
+            else if (s < 3600) snprintf(t, sizeof(t), "%um", (unsigned)(s / 60));
+            else if (s < 86400) snprintf(t, sizeof(t), "%uh", (unsigned)(s / 3600));
+            else snprintf(t, sizeof(t), "%ud", (unsigned)(s / 86400));
+        }
+        const char *name = e->from ? who(e->from) : "YOU";
+        const int cw2 = (int)strlen(name) + 1;
+        cell(x + 1, yy, fresh ? '>' : ' ', A(LAP_WHITE | LAP_BRIGHT));
+        put(x + 2, yy, cw2, e->from ? A(hue_of(e->from)) : A(LAP_YELLOW | LAP_BRIGHT), "%s", name);
+        put(x + 2 + cw2, yy, w - 8 - cw2, fresh ? A(LAP_WHITE | LAP_BRIGHT) : LAP_UI_TEXT, "%s", e->es);
+        put(x + w - 5, yy++, 4, LAP_UI_FAINT, "%4s", t);
+        put(x + 4, yy++, w - 6, e->en[0] ? A(LAP_CYAN | LAP_BRIGHT) : LAP_UI_FAINT, "%s",
+            e->en[0] ? e->en : "(not translated yet: tap)");
+        hit(x, y0, x + w, yy, HIT_HIST, (int)k);
+    }
+    if (!hist.n) {
+        put(x + 2, yy++, w - 4, LAP_UI_FAINT, "Nothing yet. Each TRY IT and each Spanish");
+        put(x + 2, yy++, w - 4, LAP_UI_FAINT, "line heard on the mesh is kept here.");
+    }
+    yy++;
+    /* the phrasebook */
+    put(x + 1, yy, w - 2, A(LAP_UI_VALUE), "PHRASEBOOK");
+    put(x + 12, yy++, w - 13, LAP_UI_FAINT, ui.quick_es ? "tap one to send it in Spanish" : "tap one to send it in English");
+    const int pn = mt_phrase_count();
+    const char *cat = NULL;
+    for (int i = 0; i < pn; i++) {
+        const mt_phrase_t p = mt_phrase(i);
+        if (!p.en[0]) continue;
+        if (!cat || strcmp(cat, p.category)) {
+            cat = p.category;
+            char up[16];
+            int k = 0;
+            for (; p.category[k] && k < 15; k++) up[k] = (char)(p.category[k] >= 'a' && p.category[k] <= 'z' ? p.category[k] - 32 : p.category[k]);
+            up[k] = 0;
+            put(x + 2, yy++, w - 4, LAP_UI_FAINT, "- %s -", up);
+        }
+        /* side by side when both fit, else the Spanish under the English */
+        const int half = (w - 4) / 2;
+        if (u8_cells(p.en, -1) < half && u8_cells(p.es, -1) <= w - 4 - half) {
+            put(x + 2, yy, half - 1, LAP_UI_TEXT, "%s", p.en);
+            put(x + 2 + half, yy, w - 4 - half, A(LAP_YELLOW | LAP_BRIGHT), "%s", p.es);
+            hit(x, yy, x + w, yy + 1, HIT_PHRASE, i);
+            yy++;
+        } else {
+            put(x + 2, yy, w - 4, LAP_UI_TEXT, "%s", p.en);
+            put(x + 4, yy + 1, w - 6, A(LAP_YELLOW | LAP_BRIGHT), "%s", p.es);
+            hit(x, yy, x + w, yy + 2, HIT_PHRASE, i);
+            yy += 2;
+        }
+    }
+    const int total = yy + scroll - y;
+    smax = total > h ? total - h : 0;
+}
+
+/* ---- layout and the whole frame ---- */
+static void layout(void)
+{
+    W = lap_cols(); H = lap_rows();
+    wide = W >= 90 && W > H * 2;
+    kr = lap_ui_keys_rows(4);
+    tr = lap_ui_keys_rows(3);
+    if (tr > 5) tr = 5;                 /* finger-sized, without eating the chat */
+    if (tr < 3) tr = 3;
+    if (!wide) {
+        hx = 0; hy = 1; hw = W; hh = 10;
+        sx = 0; sw = W; ty = hy + hh + 1;
+        py = ty + tr; px = 0; pw = W; ph = H - kr - py;
+    } else {
+        hw = 40; hx = 1; hy = 1; hh = H - kr - 1;
+        sx = hw + 2; sw = W - sx; ty = 1;
+        py = ty + tr; px = sx; pw = sw; ph = H - kr - py;
     }
 }
 
-static lap_btn_t keys[5];
+static void set_keys(void)
+{
+    const bool can = cfg.tx_on && radio >= 0;
+    static char v0[12], v2[12];
+    switch (tab) {
+    case TAB_CHAT:
+        snprintf(v0, sizeof(v0), "%.8s", ch_name(send_ch));
+        keys[0] = (lap_btn_t){ "SEND", v0, 's', false, !can, false };
+        keys[1] = (lap_btn_t){ "QUICK", ui.quick_es ? "ES" : "EN", 'q', false, !can, false };
+        snprintf(v2, sizeof(v2), "%d OF %d", send_ch + 1, ch_count());
+        keys[2] = (lap_btn_t){ "CHANNEL", v2, 'c', false, ch_count() < 2, false };
+        break;
+    case TAB_NODES:
+        if (node_open) {
+            const int i = find_node(open_num);
+            keys[0] = (lap_btn_t){ "DM", i >= 0 ? nodes[i].short_name : NULL, 'd', false, !can, false };
+            keys[1] = (lap_btn_t){ "TRACE", NULL, 'r', trace_id && trace_to == open_num, !can, false };
+            keys[2] = (lap_btn_t){ "BACK", NULL, 'b', false, false, false };
+        } else {
+            keys[0] = (lap_btn_t){ "SORT", SORT_NAMES[ui.sort % 4], 'g', false, !node_n, false };
+            keys[1] = (lap_btn_t){ "HELLO", NULL, 'n', false, !can, false };
+            keys[2] = (lap_btn_t){ "MAP", NULL, 'v', false, false, false };
+        }
+        break;
+    case TAB_RADAR:
+        snprintf(v0, sizeof(v0), "%s", ui.zoom ? "" : "FIT");
+        if (ui.zoom) dist_text(ZOOM_KM[ui.zoom], v0, sizeof(v0));
+        keys[0] = (lap_btn_t){ "ZOOM", v0, 'z', false, false, false };
+        keys[1] = (lap_btn_t){ "NAMES", ui.labels ? "ON" : "OFF", 'l', ui.labels != 0, false, false };
+        keys[2] = (lap_btn_t){ "NODES", NULL, 'u', false, false, false };
+        break;
+    case TAB_AIR:
+        keys[0] = (lap_btn_t){ "SEND", NULL, 's', false, !can, false };
+        keys[1] = (lap_btn_t){ "HELLO", NULL, 'n', false, !can, false };
+        keys[2] = (lap_btn_t){ "CLEAR", NULL, 'k', false, !air_n, false };
+        break;
+    default:
+        keys[0] = (lap_btn_t){ "TYPE", "ES > EN", 'y', false, false, false };
+        keys[1] = (lap_btn_t){ "AUTO", ui.xl_auto ? "ON" : "OFF", 'a', ui.xl_auto != 0, false, false };
+        keys[2] = (lap_btn_t){ "SHOW", ui.xl_show == 0 ? "BOTH" : ui.xl_show == 1 ? "ENGLISH" : "AS SENT", 'w', false, false, false };
+        break;
+    }
+    keys[3] = (lap_btn_t){ "MORE", NULL, 'm', false, false, false };
+}
+
+/* ---- dialogs ---- */
+static void open_send(const char *init)
+{
+    if (dialog >= 0) return;
+    if (!cfg.tx_on) { say("TRANSMIT is off: MORE > OPTIONS > TRANSMIT"); return; }
+    char prompt[48];
+    snprintf(prompt, sizeof(prompt), "MESSAGE TO EVERYONE ON %s", ch_name(send_ch));
+    dialog = lap_text_input(prompt, init ? init : "", TEXT_MAX, LAP_TEXT_LOWER);
+    dialog_kind = 1;
+}
+static void open_dm(uint32_t num)
+{
+    if (dialog >= 0) return;
+    if (!cfg.tx_on) { say("TRANSMIT is off: MORE > OPTIONS > TRANSMIT"); return; }
+    const node_t *n = node_get(num, false);
+    if (!n) return;
+    dm_to = num;
+    char prompt[48];
+    snprintf(prompt, sizeof(prompt), "DIRECT MESSAGE TO %s%s", n->short_name, cfg.pki && n->has_key ? " (PRIVATE)" : "");
+    dialog = lap_text_input(prompt, "", TEXT_MAX, LAP_TEXT_LOWER);
+    dialog_kind = 4;
+}
+static void open_try(void)
+{
+    if (dialog >= 0) return;
+    dialog = lap_text_input("SPANISH TO TRANSLATE", "", TEXT_MAX, LAP_TEXT_LOWER);
+    dialog_kind = 10;
+}
+static void quick_done(int index) { pending_quick = index; }
+static void open_quick(void)
+{
+    if (!cfg.tx_on) { say("TRANSMIT is off: MORE > OPTIONS > TRANSMIT"); return; }
+    if (!lap_picker_open(ui.quick_es ? "QUICK REPLY (SENT IN SPANISH)" : "QUICK REPLY", quick_done)) return;
+    const int n = mt_phrase_count();
+    for (int i = 0; i < n && i < 48; i++) {
+        const mt_phrase_t p = mt_phrase(i);
+        if (p.en[0]) lap_picker_add(ui.quick_es ? p.es : p.en, ui.quick_es ? p.en : p.es);
+    }
+}
+static void phrase_send(int i)
+{
+    const mt_phrase_t p = mt_phrase(i);
+    if (p.en[0]) open_send(ui.quick_es ? p.es : p.en);
+}
+
+enum { M_OPTIONS, M_HELLO, M_QUICK, M_XL, M_CLEAR, M_MOTION, M_CLOSE, M_N };
+static void more(void)
+{
+    if (menu_h > 0 || dialog >= 0) return;
+    static char xl[32], mo[32];
+    snprintf(xl, sizeof(xl), "AUTO TRANSLATE: %s", ui.xl_auto ? "ON" : "OFF");
+    snprintf(mo, sizeof(mo), "MOTION: %s", ui.anim ? "CALM" : "FULL");
+    static const char *items[M_N];
+    items[M_OPTIONS] = "OPTIONS"; items[M_HELLO] = "SAY HELLO (NODE INFO)"; items[M_QUICK] = "QUICK REPLY";
+    items[M_XL] = xl; items[M_CLEAR] = "CLEAR CHAT"; items[M_MOTION] = mo; items[M_CLOSE] = "CLOSE MESHTASTIC";
+    menu_h = lap_choose(items, M_N);
+    if (menu_h < 0) menu_h = 0;
+}
+static void menu_poll(void)
+{
+    if (menu_h <= 0) return;
+    int v = -1;
+    char none[4];
+    const int r = lap_dialog_poll(menu_h, none, sizeof(none), &v);
+    if (!r) return;
+    menu_h = 0;
+    if (r != 1) return;
+    switch (v) {
+    case M_OPTIONS: open_options(); break;
+    case M_HELLO: if (cfg.tx_on) { send_nodeinfo(true); say("hello sent: nodes in range answer"); } else say("TRANSMIT is off"); break;
+    case M_QUICK: open_quick(); break;
+    case M_XL: ui.xl_auto = !ui.xl_auto; if (ui.xl_auto) xl_fill_req = true; dirty |= SV_UI; break;
+    case M_CLEAR: msg_n = msg_head = 0; scroll = 0; say("chat cleared"); break;
+    case M_MOTION: ui.anim = !ui.anim; dirty |= SV_UI; break;
+    case M_CLOSE: lap_exit(); break;
+    }
+}
 
 /* "lat,lon" in degrees, to 1e-7: whole and fraction parts read separately
    (strtof alone would lose metres). */
@@ -1651,112 +3038,281 @@ static void handle_dialog(void)
             } else say("want: name key, e.g. friends 1PG7OiApB1nwvP+rz05pAQ==");
             dirty |= SV_CHANS;
             apply_channel();
+        } else if (dialog_kind == 10) {
+            snprintf(try_es, sizeof(try_es), "%s", text);
+            try_en[0] = 0;
+            xl_try_req = true;                           /* translated on the next poll */
         }
     }
     if (r != 0) dialog = -1;
 }
 
+
+static void to_tab(int t)
+{
+    tab = (t + TABS) % TABS;
+    scroll = 0;
+    lap_scroll_stop(&drag);
+    if (tab == TAB_CHAT) chat_new = true;               /* open at the newest */
+}
+static void open_node(int i)
+{
+    if (i < 0 || i >= node_n) return;
+    open_num = nodes[i].num;
+    node_open = true;
+    tab = TAB_NODES;
+    scroll = 0;
+    lap_scroll_stop(&drag);
+}
+
 static void draw(void)
 {
-    const int w = lap_cols(), h = lap_rows();
+    now_ms = lap_millis();
     if (radio < 0 && !(lap_frame() % 25)) { find_radio(); rx_open(); }
     if (!lap_service_running()) poll();   /* the tick does it while a service runs */
     /* A refused start (an old copy still stopping, say) is tried again. */
     static uint32_t svc_try;
-    if (want_background() && !lap_service_running() && lap_millis() - svc_try > 3000) {
-        svc_try = lap_millis();
+    if (want_background() && !lap_service_running() && now_ms - svc_try > 3000) {
+        svc_try = now_ms;
         primary = read_primary();
         service_update();
     }
     handle_dialog();
+    menu_poll();
+    if (pending_quick >= 0 && dialog < 0) { phrase_send(pending_quick); pending_quick = -1; }
+    if (pending_phrase >= 0 && dialog < 0) { phrase_send(pending_phrase); pending_phrase = -1; }
     if (tab == TAB_CHAT) unread = 0;
+    {
+        int32_t alt; uint32_t t;
+        me_ok = my_position(&me_lat, &me_lon, &alt, &t);
+    }
+    layout();
+    make_blips();
+    const int sw2 = lap_swipe();
+    if (sw2 == LAP_SWIPE_LEFT) to_tab(tab + 1);
+    else if (sw2 == LAP_SWIPE_RIGHT) to_tab(tab - 1);
+    /* the panel's list follows the finger (the bezel's rule rows excluded) */
+    clip0 = py + 1; clip1 = py + ph - 1;
+    dragging = lap_scroll_follow(&drag, &scroll, smax, clip0, clip1);
+    if (dragging && tab == TAB_NODES) kbd_used = false;
+    hit_n = 0;
 
     lap_clear(LAP_ATTR(LAP_WHITE, LAP_BLACK));
-    draw_header(w);
-    draw_activity(5, w);
-    draw_tabs(6);
-    const bool can = cfg.tx_on && radio >= 0;
-    static char send_sub[10];
-    snprintf(send_sub, sizeof(send_sub), "%.8s", send_ch ? ch_name(send_ch) : "ALL");
-    keys[0] = (lap_btn_t){ "SEND", send_sub, 's', false, !can, false };
-    keys[1] = (lap_btn_t){ "DM", tab == TAB_NODES && node_n ? nodes[node_order[sel < node_n ? sel : 0]].short_name : NULL, 'd', false,
-                           !can || tab != TAB_NODES || !node_n, false };
-    keys[2] = (lap_btn_t){ "VIEW", tab == TAB_CHAT ? "CHAT" : tab == TAB_NODES ? "NODES" : "AIR", 't', false, false, unread > 0 };
-    if (tab == TAB_NODES) keys[3] = (lap_btn_t){ "TRACE", NULL, 'r', false, !can || !node_n, false };
-    else keys[3] = (lap_btn_t){ "CHANNEL", ch_count() > 1 ? "NEXT" : "ONE", 'c', false, ch_count() < 2, false };
-    keys[4] = (lap_btn_t)LAP_BTN_OPTIONS;
-    const int kh = lap_ui_keys_rows(5);
-    const int body = 8, status = h - kh - 1, bh = status - body;
-    if (radio < 0) lap_put_str(2, body + 1, "No LoRa radio on this board.", LAP_ATTR(LAP_UI_ALARM, LAP_BLACK));
-    else if (tab == TAB_CHAT) draw_chat(body, bh, w);
-    else if (tab == TAB_NODES) draw_nodes(body, bh, w);
-    else draw_air(body, bh);
-    lap_hline(0, status, w, '-', LAP_UI_FAINT);
-    if (status_line[0] && lap_millis() - status_ms < 6000) lap_put_str(1, status, status_line, LAP_ATTR(LAP_UI_VALUE, LAP_BLACK));
-    else if (rx_error) print(1, status, LAP_ATTR(LAP_UI_WARN, LAP_BLACK), "radio: %d (busy? another app)", (int)rx_error);
-    else print(1, status, LAP_UI_FAINT, " %u nodes  %u other  %u relayed  %u pki  %u gaps", (unsigned)node_n, (unsigned)foreign,
-               (unsigned)relayed, (unsigned)pki_in, (unsigned)gaps);
-    lap_ui_keys(0, h - kh, w, kh, keys, 5, -1);
+    clip0 = 0; clip1 = H;
+    title_bar();
+    header();
+    if (wide) lap_vline(hw + 1, 1, H - kr - 1, ':', LAP_UI_FAINT);
+    /* the strip: < name >, with the count of what is new */
+    char sv[24];
+    if (unread && tab != TAB_CHAT) snprintf(sv, sizeof(sv), "%d/%d  %u NEW", tab + 1, TABS, (unsigned)unread);
+    else snprintf(sv, sizeof(sv), "%d/%d", tab + 1, TABS);
+    static const char *const TAB_NAME[TABS] = { "CHAT", "NODES", "MESH MAP", "AIR", "TRANSLATE" };
+    strip(sx, ty, sw, tr, node_open && tab == TAB_NODES ? "NODE" : TAB_NAME[tab], sv, unread && tab != TAB_CHAT);
+    /* the panel */
+    char bt[48];
+    switch (tab) {
+    case TAB_CHAT: snprintf(bt, sizeof(bt), " CHAT  %s  %d ", ch_name(send_ch), msg_n); break;
+    case TAB_NODES:
+        if (node_open) { const int i = find_node(open_num); snprintf(bt, sizeof(bt), " %s ", i >= 0 ? nodes[i].short_name : "NODE"); }
+        else snprintf(bt, sizeof(bt), " NODES %d  by %s ", node_n, SORT_NAMES[ui.sort % 4]);
+        break;
+    case TAB_RADAR: snprintf(bt, sizeof(bt), " MESH MAP  %d nodes ", node_n); break;
+    case TAB_AIR: snprintf(bt, sizeof(bt), " AIR  %u heard ", (unsigned)heard); break;
+    default: snprintf(bt, sizeof(bt), " SPANISH > ENGLISH "); break;
+    }
+    lap_ui_bezel(px, py, pw, ph, bt);
+    const int ix = px + 1, iy = py + 1, iw = pw - 2, ih = ph - 2;
+    if (radio < 0) {
+        clip0 = iy; clip1 = iy + ih;
+        put(ix + 1, iy + 1, iw - 2, A(LAP_UI_ALARM), "No LoRa radio on this board.");
+        put(ix + 1, iy + 2, iw - 2, LAP_UI_DIM, "MESHTASTIC needs the LR2021 or the SX1262.");
+    } else {
+        switch (tab) {
+        case TAB_CHAT: draw_chat(ix, iy, iw, ih); break;
+        case TAB_NODES: draw_nodes(ix, iy, iw, ih); break;
+        case TAB_RADAR: draw_radar(ix, iy, iw, ih); break;
+        case TAB_AIR: draw_air(ix, iy, iw, ih); break;
+        default: draw_lang(ix, iy, iw, ih); break;
+        }
+    }
+    clip0 = 0; clip1 = H;
+    if (smax > 0) {                                      /* where the panel is in its list */
+        const int at = ih > 1 ? iy + (int)((long)scroll * (ih - 1) / smax) : iy;
+        lap_put_cell(px + pw - 1, at, LAP_BLOCK, A(LAP_CYAN | LAP_BRIGHT));
+    }
+    set_keys();
+    lap_ui_keys(0, H - kr, W, kr, keys, 4, -1);
 }
 
 static void act(char c)
 {
-    if (c == 's') {
-        if (!cfg.tx_on) { say("TRANSMIT is off: OPTIONS > TRANSMIT"); return; }
-        char prompt[48];
-        snprintf(prompt, sizeof(prompt), "MESSAGE TO EVERYONE ON %s", ch_name(send_ch));
-        if (dialog < 0) { dialog = lap_text_input(prompt, "", TEXT_MAX, LAP_TEXT_LOWER); dialog_kind = 1; }
-    } else if (c == 'd' || c == 'r') {
-        if (!cfg.tx_on) { say("TRANSMIT is off: OPTIONS > TRANSMIT"); return; }
-        if (tab != TAB_NODES || !node_n) { say("pick a node in NODES first"); return; }
-        sort_nodes();
-        const node_t *n = &nodes[node_order[sel]];
-        if (c == 'r') { send_trace(n->num); return; }
-        dm_to = n->num;
-        char prompt[48];
-        snprintf(prompt, sizeof(prompt), "DIRECT MESSAGE TO %s%s", n->short_name, cfg.pki && n->has_key ? " (PRIVATE)" : "");
-        if (dialog < 0) { dialog = lap_text_input(prompt, "", TEXT_MAX, LAP_TEXT_LOWER); dialog_kind = 4; }
-    } else if (c == 'c') {
+    switch (c) {
+    case 's': open_send(NULL); break;
+    case 'q': open_quick(); break;
+    case 'c':
         for (int i = 1; i <= NCH; i++) {
             const int nc = (send_ch + i) % NCH;
             if (ch_on(nc)) { send_ch = nc; break; }
         }
         say("sending on %s", ch_name(send_ch));
-    } else if (c == 't') { tab = (tab + 1) % TABS; scroll = 0; }
-    else if (c == 'n') send_nodeinfo(true);
-    else if (c == 'o') open_options();
+        break;
+    case 'd':
+        if (tab == TAB_NODES && node_open) open_dm(open_num);
+        else if (tab == TAB_NODES && node_n) { sort_nodes(); open_dm(nodes[node_order[sel]].num); }
+        else say("open a node in NODES first");
+        break;
+    case 'r':
+        if (!cfg.tx_on) { say("TRANSMIT is off"); break; }
+        if (tab == TAB_NODES && node_open) send_trace(open_num);
+        else if (tab == TAB_NODES && node_n) { sort_nodes(); send_trace(nodes[node_order[sel]].num); }
+        break;
+    case 'b': node_open = false; scroll = 0; lap_scroll_stop(&drag); break;
+    case 'g': ui.sort = (uint8_t)((ui.sort + 1) % 4); dirty |= SV_UI; scroll = 0; say("nodes by %s", SORT_NAMES[ui.sort]); break;
+    case 'n':
+        if (!cfg.tx_on) { say("TRANSMIT is off"); break; }
+        if (tab == TAB_NODES && node_open) { send_nodeinfo_to(open_num, true); say("asked %s who it is", who(open_num)); }
+        else { send_nodeinfo(true); say("hello sent: nodes in range answer"); }
+        break;
+    case 'v': to_tab(TAB_RADAR); break;
+    case 'u': node_open = false; to_tab(TAB_NODES); break;
+    case 'z': ui.zoom = (uint8_t)((ui.zoom + 1) % ZOOMS); dirty |= SV_UI; break;
+    case 'l': ui.labels = !ui.labels; dirty |= SV_UI; break;
+    case 'k': air_n = air_head = 0; scroll = 0; break;
+    case 'y': open_try(); break;
+    case 'a': ui.xl_auto = !ui.xl_auto; if (ui.xl_auto) xl_fill_req = true; dirty |= SV_UI; say("auto translate %s", ui.xl_auto ? "on" : "off"); break;
+    case 'w': ui.xl_show = (uint8_t)((ui.xl_show + 1) % 3); dirty |= SV_UI; break;
+    case 'm': more(); break;
+    case 'o': open_options(); break;
+    case 't': to_tab(tab + 1); break;
+    default: break;
+    }
+}
+
+static void step(int by)
+{
+    scroll += by;
+    if (scroll > smax) scroll = smax;
+    if (scroll < 0) scroll = 0;
 }
 
 static bool key(lap_key_t k, char ch)
 {
-    if (k == LAP_KEY_CHAR) {
-        if (ch == 's' || ch == 'd' || ch == 't' || ch == 'n' || ch == 'o' || ch == 'c' || ch == 'r') { act(ch); return true; }
+    const int page = ph > 6 ? ph - 4 : 2;
+    switch (k) {
+    case LAP_KEY_LEFT: to_tab(tab - 1); return true;
+    case LAP_KEY_RIGHT: case LAP_KEY_TAB: to_tab(tab + 1); return true;
+    case LAP_KEY_UP: case LAP_KEY_WHEEL_UP:
+        if (tab == TAB_NODES && !node_open) { kbd_used = true; if (sel) sel--; if (sel * CARD < scroll) scroll = sel * CARD; }
+        else step(-2);
+        return true;
+    case LAP_KEY_DOWN: case LAP_KEY_WHEEL_DOWN:
+        if (tab == TAB_NODES && !node_open) {
+            kbd_used = true;
+            if (sel < node_n - 1) sel++;
+            if ((sel + 1) * CARD > scroll + ph - 2) scroll = (sel + 1) * CARD - (ph - 2);
+        } else step(2);
+        return true;
+    case LAP_KEY_PGUP: step(-page); return true;
+    case LAP_KEY_PGDN: step(page); return true;
+    case LAP_KEY_ENTER:
+        if (tab == TAB_NODES && !node_open && node_n) { sort_nodes(); open_node(node_order[sel]); }
+        else if (tab == TAB_NODES && node_open) act('d');
+        else if (tab == TAB_LANG) act('y');
+        else act('s');
+        return true;
+    case LAP_KEY_BACK:
+        if (tab == TAB_NODES && node_open) { act('b'); return true; }
         return false;
+    case LAP_KEY_MENU: more(); return true;
+    case LAP_KEY_CHAR: break;
+    default: return false;
     }
-    if (k == LAP_KEY_UP) { if (tab == TAB_NODES) { if (sel) sel--; } else scroll++; return true; }
-    if (k == LAP_KEY_DOWN) { if (tab == TAB_NODES) { if (sel < node_n - 1) sel++; } else if (scroll) scroll--; return true; }
-    if (k == LAP_KEY_LEFT) { tab = (tab + TABS - 1) % TABS; scroll = 0; return true; }
-    if (k == LAP_KEY_RIGHT || k == LAP_KEY_TAB) { tab = (tab + 1) % TABS; scroll = 0; return true; }
-    if (k == LAP_KEY_ENTER) { act(tab == TAB_NODES ? 'd' : 's'); return true; }
+    if (ch >= '1' && ch <= '0' + TABS) { to_tab(ch - '1'); return true; }
+    if (ch >= 'A' && ch <= 'Z') ch = (char)(ch + 32);
+    if (strchr("sqcdrbgnvuzlkyawmot", ch)) { act(ch); return true; }
     return false;
 }
 
 static bool touch(int col, int row)
 {
-    const int hit = lap_ui_key_hit(col, row);
-    if (hit >= 0) { act(keys[hit].key); return true; }
-    if (row == 6) {
-        for (int t = 0; t < TABS; t++)
-            if (col >= tab_x[t] && col < tab_x[t + 1]) { tab = t; scroll = 0; return true; }
+    if (row >= H - kr) {
+        if (dragging) return true;
+        const int b = lap_ui_key_hit(col, row);
+        if (b >= 0 && !keys[b].dim) act(keys[b].key);
+        return true;
     }
-    if (tab == TAB_NODES && row >= 9 && node_n) {          /* tap a node to choose it */
-        const int i = scroll + row - 9;
-        if (i >= 0 && i < node_n) { sel = i; return true; }
+    if (row >= ty && row < ty + tr && col >= sx && col < sx + sw) {
+        const int t = (col - sx) * 3 / (sw > 0 ? sw : 1);
+        if (t == 0) to_tab(tab - 1);
+        else if (t == 2) to_tab(tab + 1);
+        else if (tab == TAB_NODES && node_open) act('b');
+        return true;
     }
-    return false;
+    if (row == 0) {
+        if (status_line[0] && now_ms - status_ms < 5000u) status_ms = 0;
+        else more();
+        return true;
+    }
+    if (col >= hx && col < hx + hw && row >= hy && row < hy + hh && !(wide && row >= py)) {
+        if (!wide || row < hy + hh) { to_tab(TAB_RADAR); return true; }
+    }
+    if (dragging) return true;
+    /* The panel. A tap here is used even when it lands on nothing: unused,
+       the board would turn it into UP, ENTER or DOWN by where it fell. */
+    for (int i = hit_n - 1; i >= 0; i--) {
+        const hit_t *h = &hits[i];
+        if (col < h->x0 || col >= h->x1 || row < h->y0 || row >= h->y1) continue;
+        switch (h->kind) {
+        case HIT_MSG: {
+            msg_t *m = &msgs[h->idx];
+            if (m->tr[0]) {                              /* both > as sent > English > both */
+                const int cur = msg_mode(m), next = cur == 1 ? 0 : cur == 0 ? 2 : 1;
+                m->view = (uint8_t)(next + 1);
+            } else if (!m->mine && m->lang != MT_LANG_EN) {
+                xl_msg_req = h->idx;                     /* translated on the next poll */
+                m->view = 2;
+            } else if (!m->mine) {
+                const int ni = find_node(m->from);
+                if (ni >= 0) open_node(ni);
+            }
+            return true;
+        }
+        case HIT_NODE: kbd_used = false; open_node(h->idx); return true;
+        case HIT_BLIP: open_node(h->idx); return true;
+        case HIT_AIR: {
+            const air_t *a = &air[(air_head - 1 - h->idx + MAX_AIR * 2) % MAX_AIR];
+            const int ni = find_node(a->from);
+            if (ni >= 0) open_node(ni);
+            return true;
+        }
+        case HIT_PHRASE: pending_phrase = h->idx; return true;
+        case HIT_XL_AUTO: act('a'); return true;
+        case HIT_XL_SHOW: act('w'); return true;
+        case HIT_TRY: open_try(); return true;
+        case HIT_HIST: {
+            if (h->idx < 0 || h->idx >= (int)hist.n) return true;
+            const hist_t *e = &hist.e[h->idx];
+            if (!e->en[0]) { xl_hist_req = h->idx; return true; }
+            /* back into TRY IT, whole, to read or change */
+            snprintf(try_es, sizeof(try_es), "%s", e->es);
+            snprintf(try_en, sizeof(try_en), "%s", e->en);
+            scroll = 0;
+            return true;
+        }
+        case HIT_HIST_CLEAR:
+            if (hist_clear_ms && now_ms - hist_clear_ms < 3000u) {
+                hist.n = 0;
+                hist_clear_ms = 0;
+                dirty |= SV_HIST;
+                say("history cleared");
+            } else hist_clear_ms = now_ms ? now_ms : 1;
+            return true;
+        }
+    }
+    return true;
 }
 
-LAP_APP(.id = "meshtastic", .name = "MESHTASTIC", .sub = "be a Meshtastic node", .version = "0.3",
+LAP_APP(.id = "meshtastic", .name = "MESHTASTIC", .sub = "be a Meshtastic node", .version = "1.1",
         .author = "LakeShark", .color = LAP_GREEN,
         .icon_art = { "   /\\     ", "  /  \\ ((o", " / /\\ \\/  ", "/_/  \\_/\\_", "  ~ ~ ~ ~ ", "          " },
         .flags = LAP_CAP_RADIO_RX | LAP_CAP_RADIO_TX | LAP_CAP_SERVICE,

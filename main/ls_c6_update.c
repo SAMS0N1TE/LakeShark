@@ -381,7 +381,13 @@ static int cop_flash(const char *path)
     e = esp_hosted_slave_ota_end();
     if (e) { printf("c6 flash: image rejected by the coprocessor: %s\n", esp_err_to_name(e)); return 1; }
     e = esp_hosted_slave_ota_activate();
-    printf("c6 flash: %u bytes written, activate: %s; restarting the board\n", (unsigned)total, esp_err_to_name(e));
+    /* The coprocessor restarts into the new image as it activates it, often
+       before its answer gets back, so a failed reply here is the usual case
+       and not a failure: the image was checked by ota_end above. */
+    if (e == ESP_OK) printf("c6 flash: %u bytes written and activated; restarting the board\n", (unsigned)total);
+    else printf("c6 flash: %u bytes written and checked; the coprocessor restarted before answering the activate (%s), "
+                "which is normal. Restarting the board; 'c6 ver' and 'c6 mon 8' show the result\n",
+                (unsigned)total, esp_err_to_name(e));
     vTaskDelay(pdMS_TO_TICKS(1500));
     esp_restart();
     return 0;

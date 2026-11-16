@@ -443,6 +443,49 @@ LS_CASE(no_frame_in_a_full_session_is_an_sx126x_opcode_or_unlisted)
     LS_EQ_INT(fk.tx_hf, 0);
 }
 
+static int count_op(uint16_t op)
+{
+    int n = 0;
+    for (int i = 0; i < fk.nframes; i++)
+        if (!fk.frames[i].read2 && ((fk.frames[i].b[0] << 8) | fk.frames[i].b[1]) == op) n++;
+    return n;
+}
+/* A scanner's step on the LR2021: standby on the crystal, the new frequency,
+   receive again; never a front-end calibration (on the board a CalibFE from
+   here was refused sooner or later and wedged every later one until a
+   reset) and never the whole LoRa setup. The other input is refused, so the
+   caller configures afresh for it. */
+LS_CASE(rx_retune_moves_lora_receive_without_reprogramming_it)
+{
+    lr_up();
+    LS_EQ_INT(ls_lora_start(), ESP_OK);
+    ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg);
+    cfg.freq_hz = 905000000;
+    LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+    LS_EQ_INT(ls_lora_receive(), ESP_OK);
+    fk.nframes = 0;
+    LS_EQ_INT(ls_lora_rx_retune(907000000), ESP_OK);
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    LS_CHECK(ls_lora_is_receiving());
+    LS_EQ_INT(count_op(0x0200), 1);         /* SetRfFrequency */
+    LS_EQ_INT(count_op(0x0123), 0);         /* CalibFE */
+    LS_EQ_INT(count_op(0x0220), 0);         /* SetLoraModulationParams: nothing reprogrammed */
+    /* a plain step stays on the crystal (RC would stop the TCXO) */
+    for (int i = 0; i < fk.nframes; i++)
+        if (!fk.frames[i].read2 && fk.frames[i].b[0] == 0x01 && fk.frames[i].b[1] == 0x28)
+            LS_EQ_INT(fk.frames[i].b[2], 1);
+    LS_EQ_UINT(ls_lora_cfg()->freq_hz, 907000000u);
+    fk.nframes = 0;
+    LS_EQ_INT(ls_lora_rx_retune(935000000), ESP_OK);    /* 30 MHz on: still no calibration */
+    LS_EQ_INT(count_op(0x0123), 0);
+    LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
+    LS_EQ_INT(ls_lora_rx_retune(2440000000u), ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(fk.bad_mode, 0);
+    LS_EQ_INT(fk.bad_args, 0);
+    LS_EQ_INT(unknown_frames(), 0);
+    ls_lora_stop();
+}
+
 LS_CASE(mesh_startup_on_an_lr2021_configures_and_listens)
 {
     /* The sequence ls_mesh_start follows: default config, configure, and on

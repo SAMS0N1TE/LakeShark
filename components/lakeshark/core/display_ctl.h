@@ -11,6 +11,9 @@ void display_ctl_init(void);
 
 void display_ctl_set_user(int pct);
 int  display_ctl_get_user(void);
+/* The level a finger is dragging the brightness slider through: the panel
+   follows it and nothing is saved until display_ctl_set_user at the lift. */
+void display_ctl_preview_user(int pct);
 
 void display_ctl_set_autodim(bool enabled);
 bool display_ctl_autodim_enabled(void);

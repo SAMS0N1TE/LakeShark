@@ -90,6 +90,40 @@ ls_btn_t ls_rsel_button(ls_rsel_job_t job);
    chosen. Does nothing when no SDR receiver is running. */
 void ls_rsel_restart_sdr(void);
 
+/* NO RTL-SDR. A receiver whose radio is the RTL-SDR said only "CARRIER
+   OFFLINE  IQ 0 B/s" with no dongle in the port; now its receiver area says
+   so, and offers the LoRa chip with one tap where it can do the job.
+
+   Absent means definitively not there, not starting: a dongle never seen
+   this boot counts as missing only once the USB host has had
+   LS_RSEL_SDR_BOOT_GRACE_US to enumerate it, and one that was here and has
+   dropped off (a replug, a recovery's VBUS cycle) only after
+   LS_RSEL_SDR_GONE_AFTER_US without it. */
+#define LS_RSEL_SDR_BOOT_GRACE_US (10 * 1000000LL)
+#define LS_RSEL_SDR_GONE_AFTER_US (4 * 1000000LL)
+typedef enum {
+    LS_RSEL_SDR_HERE = 0,      /* present, or the job is not on the RTL-SDR */
+    LS_RSEL_SDR_STARTING,      /* not there yet, and too soon to say so     */
+    LS_RSEL_SDR_NONE,          /* not plugged in this boot                  */
+    LS_RSEL_SDR_GONE,          /* was here, has dropped off the bus         */
+} ls_rsel_sdr_state_t;
+/* The rule alone: `since` is the caller's, 0 until the dongle goes missing. */
+ls_rsel_sdr_state_t ls_rsel_sdr_rule(bool present, bool seen, int64_t now_us, int64_t *since);
+/* The rule for a job: HERE unless the job's radio is the RTL-SDR. */
+ls_rsel_sdr_state_t ls_rsel_sdr_missing(ls_rsel_job_t job);
+/* The message, in up to `rows` rows of width `w` at x,y inside `a`; the rows
+   it used, 0 when there is nothing to say. What is missing, then "or tap
+   here to use the LR2021" - or, where the chip cannot take the job as it is
+   set, the app's `offer` (NULL for none, and then why not, wrapped over the
+   rows left). One row: as much of that as fits. */
+int ls_rsel_sdr_missing_draw(tui_surface *sf, tui_rect a, int x, int y, int w, int rows,
+                             ls_rsel_job_t job, const char *offer);
+/* A tap on the last drawn message: runs the app's `offer` if that is what was
+   drawn (the saved radio is left alone), otherwise chooses the LoRa chip for
+   the job and calls `done` with it. True when the tap was on the message. */
+bool ls_rsel_sdr_missing_touch(int x, int y, ls_rsel_job_t job, void (*done)(ls_rsel_radio_t chosen),
+                               void (*offer)(void));
+
 /* What the board answers when ls_radio_select asks. ls_radio_select_hw.c on
    the device; the bench has its own, which it can set. */
 typedef struct {

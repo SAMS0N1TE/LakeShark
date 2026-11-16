@@ -30,6 +30,11 @@ void ls_carto_map_pixel_style(const uint32_t pal[7],int relief);
 bool ls_carto_map_pixels(double lat,double lon,unsigned z,int pw,int ph,int tw,int th,bool labels,uint16_t *dst,uint32_t *serial,
                          double *flat,double *flon,unsigned *fz);
 bool ls_carto_map_picture_cells(void);
+bool ls_carto_map_picture_covered(void);
+bool ls_carto_map_failed(void);
+int ls_carto_map_nearest(double lat,double lon,double *nlat,double *nlon);
+int ls_carto_covers(double lat,double lon,char *out,size_t cap);
+void ls_carto_status_print(void); /* what 'carto status' prints */
 size_t ls_carto_map_files(char (*)[128],size_t);
 #else
 #define LS_CARTOCORE_AVAILABLE 0
@@ -44,6 +49,11 @@ static inline bool ls_carto_map_pixels(double a,double b,unsigned z,int pw,int p
     (void)fa;(void)fo;(void)fz;
     (void)a;(void)b;(void)z;(void)pw;(void)ph;(void)tw;(void)th;(void)l;(void)d;(void)s;return false; }
 static inline bool ls_carto_map_picture_cells(void) { return false; }
+static inline bool ls_carto_map_picture_covered(void) { return false; }
+static inline bool ls_carto_map_failed(void) { return false; }
+static inline int ls_carto_map_nearest(double a,double b,double *c,double *d) { (void)a;(void)b;(void)c;(void)d;return -1; }
+static inline int ls_carto_covers(double a,double b,char *o,size_t n) { (void)a;(void)b;(void)o;(void)n;return 0; }
+static inline void ls_carto_status_print(void) {}
 static inline void ls_carto_hw_status(bool reset) { (void)reset; }
 static inline const char *ls_carto_map_status(void) { return "CartoCore map unavailable"; }
 static inline bool ls_carto_map_fresh(void) { return false; }

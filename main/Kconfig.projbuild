@@ -79,6 +79,16 @@ menu "LakeShark"
             driver and the apps that need a dongle (CELL, CATCH, ACARS), and
             spends the memory on the LR2021. The image refuses SX1262 boards.
 
+    config LS_EDITION_NET
+        bool "LakeShark NET: the network edition (its own update folder)"
+        depends on LS_BOARD_T_DISPLAY_P4 && !LS_LR2021_ONLY && !LS_TDP4_PANEL_HI8561
+        default n
+        help
+            Set by boards/t_display_p4_net.defaults. The image updates from
+            /tdp4net/ as board T-Display-P4-NET, so UPDATE never offers the
+            standard AMOLED image (smaller Wi-Fi/BLE buffers, no USB
+            Ethernet) to a board running the network build.
+
     config LS_SD_MAX_FREQ_KHZ
         int "SD card maximum clock (kHz)"
         range 20000 40000
@@ -127,6 +137,22 @@ menu "LakeShark"
             Starts the P4 EMAC with DHCP alongside the C5 Wi-Fi netif.
             Does not enable a listener: use 'term web on' explicitly.
             'eth off' persists across reboots; 'eth on' restores it.
+
+    config LS_USB_ETH
+        bool "Wired Ethernet through a USB adapter (CDC-ECM, RNDIS)"
+        depends on !LS_LR2021_ONLY && !LS_NANO_ETH
+        select USB_HOST_ENABLE_ENUM_FILTER_CALLBACK
+        default n
+        help
+            A USB Ethernet adapter on the USB host port (the RTL-SDR's port),
+            for boards with no Ethernet PHY. CDC-ECM adapters (RTL8152/8153
+            are switched to their ECM configuration, most "driverless"
+            adapters, Linux gadgets) and RNDIS (Android USB tethering).
+            AX88179 and other vendor protocols are not supported. One USB
+            device at a time: an adapter and an SDR share the port.
+
+            Same 'eth' console command, DHCP or static address, as the Nano's
+            wired port. Off until 'eth on'; the choice is saved.
 
     config LS_VBUS_EN_GPIO
         int "USB host VBUS enable GPIO (-1 if the port is hard-powered)"
@@ -194,6 +220,34 @@ menu "LakeShark"
             Native app DNS-SD discovery and registration. Off keeps Wi-Fi,
             HTTPS, UDP and time, returns unsupported and omits LAP_HW_MDNS.
             The network terminal's existing responder remains available.
+
+    config LS_LAP_CAPTURE_SLOTS
+        int "Native app capture ring (frames)"
+        range 64 16384
+        default 256
+        help
+            Frames each raw Wi-Fi/BLE capture can hold before the app reads
+            them; more are counted as dropped. A power of two. The ring is
+            PSRAM, allocated only while a capture is open: slots x (48 + snap)
+            bytes, about 140 KB at 256 and the 512-byte default snap.
+
+    config LS_HOSTED_PROMISC_SNAP
+        int "Wi-Fi monitor: bytes of each frame the coprocessor forwards"
+        depends on LS_C6_LINK
+        range 64 1600
+        default 512
+        help
+            Snap length asked of the coprocessor's monitor forwarder (it keeps
+            at most 1600). One frame buffer of this size is held in PSRAM.
+
+    config LS_HOSTED_PROMISC_MAX_PER_S
+        int "Wi-Fi monitor: frames a second the coprocessor forwards"
+        depends on LS_C6_LINK
+        range 1 5000
+        default 250
+        help
+            Rate limit asked of the coprocessor's monitor forwarder. Frames
+            above it are dropped on the coprocessor and counted there.
 
     # API 2.6: Bluetooth peripheral roles; board profiles may opt out.
     config LS_LAP_BLE_ADVERTISER

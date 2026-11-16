@@ -240,6 +240,15 @@ void rec_watch_submit_mod(rec_source_t source, uint32_t frequency,
    settings that did not hear them. */
 /* Why the last WATCH refused to start, or "" if it did. */
 const char *rec_watch_error(void);
+/* WATCH is on and has lent the LoRa chip to another holder (an app that
+   outranks it, the MESH screen, HOME); it takes it back by itself. */
+bool rec_watch_lent(void);
+/* The SUB-GHZ screen was left: stop the sweep, LEARN or I/Q record that
+   holds the LoRa chip in the foreground. WATCH keeps running. */
+void rec_watch_screen_left(void);
+/* The SUB-GHZ screen is up: a WATCH started now takes the LoRa chip as a
+   foreground holder (nothing in the background can refuse START). */
+void rec_watch_screen_front(bool on);
 
 void rec_watch_fsk_get(rec_fsk_mod_t *out);
 bool rec_watch_fsk_set(const rec_fsk_mod_t *in);
@@ -280,6 +289,12 @@ typedef struct {
        identically. */
     uint32_t seen;
     int64_t  first_us, last_us;
+    /* This frequency's own noise floor, dBm (ls_floor.h): what "over the
+       floor" means for this bin. The sweep's floor is not flat - the front
+       end, its calibration steps and nearby steady emitters move it tens of
+       dB across a band - so one floor for the whole row made the shape of
+       the band itself a detection on every pass. */
+    float    floor;
 } rec_scan_bin_t;
 
 /* `bins` is the resolution, and it is also the capture probability.
@@ -312,6 +327,7 @@ const char *rec_watch_scan_stage(void);
    appear. This is the live row; rec_watch_scan_result is the accumulated
    list of things that actually crossed the threshold. */
 int   rec_watch_scan_live(rec_scan_bin_t *out, int max);
+/* The median of the bins' own floors, for a readout that wants one number. */
 float rec_watch_scan_live_floor(void);
 /* The noise spread of recent passes, in dB (one standard deviation). */
 float rec_watch_scan_live_spread(void);

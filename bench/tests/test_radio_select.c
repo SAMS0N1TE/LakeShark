@@ -637,3 +637,91 @@ LS_CASE(wifi_bluetooth_gps_and_split_stay_whatever_the_keyboard_does)
     LS_CHECK(row_of("GPS") >= 0 && row_of("split") >= 0);
     ls_picker_close();
 }
+
+/* ------------------------------------------------------------ NO RTL-SDR -- */
+
+#include "esp_timer.h"
+
+LS_CASE(no_rtl_is_said_only_once_it_is_definitely_not_there)
+{
+    int64_t since = 0;
+    /* Present: nothing to say, and the clock is reset. */
+    LS_EQ_INT(ls_rsel_sdr_rule(true, true, 50000000, &since), LS_RSEL_SDR_HERE);
+    LS_EQ_INT(since, 0);
+    /* Never seen: starting while the USB host may still find it at boot. */
+    LS_EQ_INT(ls_rsel_sdr_rule(false, false, 0, &since), LS_RSEL_SDR_STARTING);
+    LS_EQ_INT(ls_rsel_sdr_rule(false, false, LS_RSEL_SDR_BOOT_GRACE_US - 1, &since),
+              LS_RSEL_SDR_STARTING);
+    LS_EQ_INT(ls_rsel_sdr_rule(false, false, LS_RSEL_SDR_BOOT_GRACE_US, &since),
+              LS_RSEL_SDR_NONE);
+    /* Seen, then gone: a replug or a recovery's VBUS cycle is not "missing"
+       until it has stayed away. */
+    since = 0;
+    const int64_t t = 60000000;
+    LS_EQ_INT(ls_rsel_sdr_rule(false, true, t, &since), LS_RSEL_SDR_STARTING);
+    LS_EQ_INT(ls_rsel_sdr_rule(false, true, t + LS_RSEL_SDR_GONE_AFTER_US - 1, &since),
+              LS_RSEL_SDR_STARTING);
+    LS_EQ_INT(ls_rsel_sdr_rule(false, true, t + LS_RSEL_SDR_GONE_AFTER_US, &since),
+              LS_RSEL_SDR_GONE);
+    /* Back: here, and a later drop starts its own wait. */
+    LS_EQ_INT(ls_rsel_sdr_rule(true, true, t + 9000000, &since), LS_RSEL_SDR_HERE);
+    LS_EQ_INT(ls_rsel_sdr_rule(false, true, t + 9500000, &since), LS_RSEL_SDR_STARTING);
+}
+
+static void draw_missing(ls_rsel_job_t job, const char *offer, int rows)
+{
+    tui_surface_setup(&g_sf, g_back, g_front, W, H);
+    tui_frame_begin(&g_sf);
+    ls_rsel_sdr_missing_draw(&g_sf, tui_rect_make(0, 0, W, H), 0, 0, W, rows, job, offer);
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) g_text[y][x] = g_back[y * W + x].ch;
+        g_text[y][W] = 0;
+    }
+}
+
+static int s_offers;
+static void take_offer(void) { s_offers++; }
+
+LS_CASE(no_rtl_offers_the_lr2021_with_one_tap_where_it_can_do_the_job)
+{
+    ls_shim_time_set(LS_RSEL_SDR_BOOT_GRACE_US + 1);
+    /* P25 on an SX1262 board with no dongle: said, with why the chip cannot. */
+    fresh(false, false, 1);
+    LS_EQ_INT(ls_rsel_sdr_missing(LS_RSEL_P25), LS_RSEL_SDR_NONE);
+    draw_missing(LS_RSEL_P25, NULL, 2);
+    LS_CHECK(strstr(g_text[0], "NO RTL-SDR - plug one in") != NULL);
+    LS_CHECK(row_of("tap") < 0);
+    LS_CHECK(!ls_rsel_sdr_missing_touch(1, 0, LS_RSEL_P25, on_done, NULL));
+    /* The LR2021 can: the radio falls back to it, so nothing is missing. */
+    fresh(false, false, 2);
+    LS_EQ_INT(ls_rsel_effective(LS_RSEL_P25), LS_RSEL_LORA);
+    LS_EQ_INT(ls_rsel_sdr_missing(LS_RSEL_P25), LS_RSEL_SDR_HERE);
+    /* FM on WFM, which the LR2021 does not carry: the app's own offer is
+       the tap, and taking it leaves the saved radio alone. */
+    fresh(false, false, 2);
+    ls_rsel_fm_context(162550000, false);
+    LS_EQ_INT(ls_rsel_sdr_missing(LS_RSEL_FM), LS_RSEL_SDR_NONE);
+    draw_missing(LS_RSEL_FM, "or tap here for NFM on the LR2021", 3);
+    LS_CHECK(row_of("or tap here for NFM on the LR2021") == 1);
+    s_offers = 0;
+    const int writes = s_writes;
+    LS_CHECK(ls_rsel_sdr_missing_touch(3, 1, LS_RSEL_FM, on_done, take_offer));
+    LS_EQ_INT(s_offers, 1);
+    LS_EQ_INT(s_writes, writes);
+    /* Without an offer, the reason, wrapped onto the rows given. */
+    draw_missing(LS_RSEL_FM, NULL, 3);
+    LS_CHECK(strstr(g_text[1], "LR2021:") != NULL);
+    /* A dongle that dropped off says so differently. */
+    s_board.sdr_seen[0] = true;
+    ls_rsel_forget();
+    LS_EQ_INT(ls_rsel_sdr_missing(LS_RSEL_FM), LS_RSEL_SDR_STARTING);
+    ls_shim_time_advance(LS_RSEL_SDR_GONE_AFTER_US + 1);
+    ls_rsel_forget();
+    LS_EQ_INT(ls_rsel_sdr_missing(LS_RSEL_FM), LS_RSEL_SDR_GONE);
+    draw_missing(LS_RSEL_FM, NULL, 1);
+    LS_CHECK(strstr(g_text[0], "RTL-SDR DROPPED OFF") != NULL);
+    /* Plugged in: nothing. */
+    board(true, false, 2);
+    LS_EQ_INT(ls_rsel_sdr_missing(LS_RSEL_FM), LS_RSEL_SDR_HERE);
+    ls_rsel_fm_context(154785000, true);
+}

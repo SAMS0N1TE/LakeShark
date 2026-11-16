@@ -54,6 +54,7 @@
 #include "ls_map.h"
 #include "ls_cartocore_map.h"
 #include "ls_carto_sd_io.h"
+#include "ls_carto_block_cache.h"
 #include "ls_cold.h"
 /* Digest files and map selection run when a map is chosen or checked. */
 LS_COLD_BEGIN
@@ -102,11 +103,17 @@ int ls_carto_unlink(const char *path) {
     xSemaphoreGive(file_lock);
     return result;
 }
+/* Card time inside the last MAP picture, for 'carto status': reads, bytes
+   and microseconds in them, cell files opened and microseconds in that. */
+static struct { uint32_t reads,bytes,read_us,opens,open_us; } sd_cost,sd_cost_last;
 static int sd_read(void *ctx,uint64_t offset,void *buffer,size_t length) {
     sd_source *s=ctx;
     if(buffer==s->directory && length>source_directory_hw)source_directory_hw=length;
     if(buffer==s->staging && length>source_staging_hw)source_staging_hw=length;
-    return carto_sd_read_at(s->fd,s->file_size,offset,buffer,length,s->bounce,s->bounce_capacity);
+    const int64_t t=esp_timer_get_time();
+    int ok=carto_sd_read_at(s->fd,s->file_size,offset,buffer,length,s->bounce,s->bounce_capacity);
+    sd_cost.reads++;sd_cost.bytes+=(uint32_t)length;sd_cost.read_us+=(uint32_t)(esp_timer_get_time()-t);
+    return ok;
 }
 static void close_sd(sd_source *s) {
     if(!s) return;
@@ -117,7 +124,7 @@ static void close_sd(sd_source *s) {
 }
 /* Four file descriptors share the existing SD bounce buffer; all callbacks
  * run on the same serialized worker. No per-cell internal/DMA allocations. */
-typedef struct { int fd; uint64_t size; sd_source *owner; } sd_cell_file;
+typedef struct { int fd; uint64_t size; sd_source *owner; ls_carto_block_cache blocks; } sd_cell_file;
 /* A dense cell (Miami) keeps carto-idle busy for 10 s of decode, raster and
    prefetch. Tile reads and the engine's cc_yield_hook give up the CPU once
    per 50 ms, so IDLE0 (below the worker) feeds the task watchdog. */
@@ -128,13 +135,22 @@ static void carto_yield(void) {
     if(now-last_yield>=50000) { vTaskDelay(1); last_yield=esp_timer_get_time(); }
 #endif
 }
-static int cell_read(void *ctx,uint64_t offset,void *dst,size_t bytes) {
+static int cell_read_card(void *ctx,uint64_t offset,void *dst,size_t bytes) {
     sd_cell_file *f=ctx;
     carto_yield();
-    return carto_sd_read_at(f->fd,f->size,offset,dst,bytes,f->owner->bounce,f->owner->bounce_capacity);
+    const int64_t t=esp_timer_get_time();
+    int ok=carto_sd_read_at(f->fd,f->size,offset,dst,bytes,f->owner->bounce,f->owner->bounce_capacity);
+    sd_cost.reads++;sd_cost.bytes+=(uint32_t)bytes;sd_cost.read_us+=(uint32_t)(esp_timer_get_time()-t);
+    return ok;
 }
-static void cell_close(void *ctx) { sd_cell_file *f=ctx;close(f->fd);source_handles_live-=sizeof(*f);heap_caps_free(f); }
+/* The engine's header and directory steps come from a few kept blocks. */
+static int cell_read(void *ctx,uint64_t offset,void *dst,size_t bytes) {
+    sd_cell_file *f=ctx;
+    return ls_carto_block_cached(&f->blocks,cell_read_card,f,f->size,offset,dst,bytes);
+}
+static void cell_close(void *ctx) { sd_cell_file *f=ctx;close(f->fd);source_handles_live-=sizeof(*f);heap_caps_free(f->blocks.memory);heap_caps_free(f); }
 static bool cells_file_current(uint32_t,const char *);
+static bool cells_file_listed(uint32_t,const char *);
 static bool cells_direct_active(void);
 static bool cells_direct_ready(void);
 static int cell_open(void *ctx,uint32_t id,void **handle,uint64_t *bytes) {
@@ -143,16 +159,26 @@ static int cell_open(void *ctx,uint32_t id,void **handle,uint64_t *bytes) {
     int prefix=(int)(slash-owner->path);
     if(id) LS_SNPRINTF(t_ls_cartocore_s_8_u_u, path,sizeof(path),"%.*s/8-%u-%u%s.ctile",prefix,owner->path,((id-1)%65536)/256,(id-1)%256,id>65536?".detail":"");
     else snprintf(path,sizeof(path),"%.*s/overview.ctile",prefix,owner->path);
-    if(!cells_file_current(id,path))return 0;
+    if(!cells_file_listed(id,path))return 0;
     int fd=open(path,O_RDONLY);if(fd<0) return errno==ENOENT?0:-1;
-    struct stat st;if(fstat(fd,&st) || !S_ISREG(st.st_mode) || st.st_size<64) { close(fd);return -1; }
+    struct stat st;if(fstat(fd,&st)) { close(fd);return -1; }
+    if(!S_ISREG(st.st_mode) || st.st_size<64) { close(fd);return 0; }
     sd_cell_file *f=heap_caps_malloc(sizeof(*f),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if(!f) { close(fd);return -1; }
     source_handles_live+=sizeof(*f);
     if(source_handles_live>source_handles_hw)source_handles_hw=source_handles_live;
-    *f=(sd_cell_file){fd,st.st_size,owner};*handle=f;*bytes=st.st_size;return 1;
+    *f=(sd_cell_file){fd,st.st_size,owner,{0}};*handle=f;*bytes=st.st_size;
+    /* Without the blocks every step is a card read, as before. */
+    f->blocks.memory=heap_caps_malloc(LS_CARTO_BLOCK_SLOTS*LS_CARTO_BLOCK_BYTES,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    return 1;
 }
 static double centre_lat=43.4445, centre_lon=-71.6473;
+static int cell_open_timed(void *ctx,uint32_t id,void **handle,uint64_t *bytes) {
+    const int64_t t=esp_timer_get_time();
+    int result=cell_open(ctx,id,handle,bytes);
+    sd_cost.opens++;sd_cost.open_us+=(uint32_t)(esp_timer_get_time()-t);
+    return result;
+}
 
 /* One versioned NVS record keeps source selection and view together. Hiding
    releases the source without changing this selection. */
@@ -279,15 +305,15 @@ LS_COLD void ls_carto_hw_status(bool reset) {
             shown->hot_arena.peak=shown->hot_arena.used;
             shown->decoded.peak=shown->decoded.used;
             shown->idle_arena.peak=shown->idle_arena.used;
-            shown->coarse_frames=0;
+            shown->coarse_frames=shown->degraded_frames=0;
         }
         carto_hw_sample(shown);
     }
-    LS_PRINTF(fmt_ls_cartocore_carto_hw_cold_decoded, "carto hw cold=%zu decoded=%zu idle=%zu hot=%zu cache=%zu cell_handles=%zu directory=%zu staging=%zu bounce=%zu cold_cap=%zu decoded_cap=%zu idle_alloc=%zu coarse_frames=%u%s\n",
+    LS_PRINTF(fmt_ls_cartocore_carto_hw_cold_decoded, "carto hw cold=%zu decoded=%zu idle=%zu hot=%zu cache=%zu cell_handles=%zu directory=%zu staging=%zu bounce=%zu cold_cap=%zu decoded_cap=%zu idle_alloc=%zu coarse_frames=%u degraded_frames=%u%s\n",
         carto_hw.cold,carto_hw.decoded,carto_hw.idle,carto_hw.hot,carto_hw.cache,
         source_handles_hw,source_directory_hw,source_staging_hw,carto_sd_bounce_peak,shown?shown->arena.size:0,
         shown?shown->decoded.size:0,shown && shown->idle_memory?shown->idle_arena.size:0,
-        shown?shown->coarse_frames:0,reset?" reset":"");
+        shown?shown->coarse_frames:0,shown?shown->degraded_frames:0,reset?" reset":"");
     xSemaphoreGive(view_lock);
 }
 static atomic_bool map_owned;
@@ -406,7 +432,7 @@ static bool frame_commit(render_state *s,bool console,double lat,double lon,bool
                          const ls_carto_label *names,size_t count) {
     carto_frame *f=&frames[frame_front^1];size_t n=(size_t)s->cols*s->rows;
 #ifdef LS_CARTOCORE_HOST
-    if(getenv("LSSIM_CARTO_CHECK_COMPLETE")) {
+    if(getenv("LSSIM_CARTO_CHECK_COMPLETE") && !s->renderer.scene.degraded) {
         /* Independent, cache-free render rejects partial cache/decode output,
          * even when enough nonblank cells would fool a visual density check. */
         void *memory=malloc(32u*1024u*1024u);cc_cell *reference=malloc(n*sizeof(*reference));
@@ -599,6 +625,13 @@ static bool cells_cover(double lat,double lon) {
     return !stat(path,&st) && cells_file_current(1u+x*256u+y,path);
 }
 static bool source_is_cells(void) { return sd_map && strstr(sd_map->path,"/sdcard/maps/cells/"); }
+/* For the console's 'map covers': 2 a downloaded cell draws (lat,lon), 1 the
+   map file named in out does, 0 nothing on the card, -1 busy. Asks the card. */
+int ls_carto_covers(double lat,double lon,char *out,size_t cap) {
+    if(!file_lock || xSemaphoreTake(file_lock,pdMS_TO_TICKS(2000))!=pdTRUE) return -1;
+    int result=cells_cover(lat,lon)?2:carto_file_covering("/sdcard/maps",lat,lon,22,out,cap)?1:0;
+    xSemaphoreGive(file_lock);return result;
+}
 #include "ls_cartocore_map_impl.h"
 static int queue_hint(void *ctx,unsigned z,uint32_t x,uint32_t y,uint64_t offset,uint32_t length) {
     (void)z; (void)x; (void)y;
@@ -729,7 +762,7 @@ static int select_map_locked(const char *requested,bool persist)
                     source_handles_live+=sizeof(*next->set);
                     if(source_handles_live>source_handles_hw)source_handles_hw=source_handles_live;
                 }
-                cc_cellset_io io={next,cell_open,cell_read,cell_close};
+                cc_cellset_io io={next,cell_open_timed,cell_read,cell_close};
                 ok=next->set && (direct?cc_cellset_open_direct(next->set,io,next->directory,dirbytes,next->staging,stagingbytes):cc_cellset_open(next->set,sd_read,next,size,io,next->directory,dirbytes,next->staging,stagingbytes));
                 if(ok) next->map=next->set->map;
             } else ok=cc_ctile_open_source(&next->map,&next->source,sd_read,next,size,
@@ -1654,9 +1687,14 @@ int ls_cartocore_command(int argc, char **argv)
             const map_request r=map_mail.request;char path[96];
             snprintf(path,sizeof(path),"%s",sd_map?sd_map->path:"none");
             const unsigned long us=(unsigned long)pix_render_us;
+            const unsigned long dh=shown?(unsigned long)shown->decoded.hits:0,dm=shown?(unsigned long)shown->decoded.misses:0,
+                de=shown?(unsigned long)shown->decoded.evictions:0,db=shown?(unsigned long)shown->decoded.bypasses:0;
             xSemaphoreGive(view_lock);
             LS_PRINTF(fmt_ls_cartocore_carto_view_z_source, "carto view z%u %.5f,%.5f %dx%d %s source=%s picture=%lu us\n",r.z,r.lat,r.lon,r.cols,r.rows,
                    r.pixels?"picture":r.braille?"braille":"quadrant",path,us);
+            printf("carto card: %lu reads %lu bytes %lu us, %lu opens %lu us\n",(unsigned long)sd_cost_last.reads,(unsigned long)sd_cost_last.bytes,
+                   (unsigned long)sd_cost_last.read_us,(unsigned long)sd_cost_last.opens,(unsigned long)sd_cost_last.open_us);
+            printf("carto decoded: %lu hits %lu misses %lu evictions %lu bypasses\n",dh,dm,de,db);
         } else puts("carto view: busy");
         return 0;
     }
@@ -1750,6 +1788,7 @@ usage:
     LS_PUTS(msg_ls_cartocore_carto_sdbench_mb_carto, "carto sdbench [MB] | carto pie | carto recv [PORT] [SECONDS] | carto fetch URL [NAME] [-f] | carto open [PATH|cells] | carto ls | carto tiles | carto xfer | carto goto LAT LON | carto bench [cols rows z braille|quadrant smooth|crisp N] | carto show [0..22] | carto pan DX DY | carto zoom 0..16 | carto hide");
     return 1;
 }
+void ls_carto_status_print(void) { char word[]="carto",*args[]={word,NULL};(void)ls_cartocore_command(1,args); }
 void ls_cartocore_register_command(void)
 {
     if (view_lock) return; /* console-start retries must not leak a mutex */

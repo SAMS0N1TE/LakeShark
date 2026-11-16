@@ -1149,6 +1149,14 @@ esp_err_t ls_lora_cw_end(void)
 esp_err_t ls_lora_fsk_receive(void) { LOCKED_RET(esp_err_t, s_ops->fsk_receive()); }
 esp_err_t ls_lora_fsk_end(void) { LOCKED_RET(esp_err_t, s_ops->fsk_end()); }
 bool ls_lora_fsk_active(void) { return s_ops->fsk_active(); }
+esp_err_t ls_lora_rx_retune(uint32_t freq_hz)
+{
+    ls_lora_hw_lock();
+    const esp_err_t e = (!s_present || !s_ops->rx_retune) ? ESP_ERR_NOT_SUPPORTED : s_ops->rx_retune(freq_hz);
+    ls_lora_hw_unlock();
+    return e;
+}
+
 esp_err_t ls_lora_fsk_retune(uint32_t freq_hz)
 {
     ls_lora_hw_lock();
@@ -1402,6 +1410,7 @@ esp_err_t ls_lora_fsk_receive(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_lora_fsk_end(void) { return ESP_ERR_NOT_SUPPORTED; }
 bool ls_lora_fsk_active(void) { return false; }
 esp_err_t ls_lora_fsk_retune(uint32_t f) { (void)f; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t ls_lora_rx_retune(uint32_t f) { (void)f; return ESP_ERR_NOT_SUPPORTED; }
 int ls_lora_fsk_stream_read(uint8_t *b, size_t n, bool *r)
 { (void)b; (void)n; if (r) *r = false; return -1; }
 esp_err_t ls_lora_scan_begin(uint32_t a, uint32_t b)

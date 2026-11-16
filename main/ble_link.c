@@ -2,7 +2,6 @@
 #include "tui/ls_sweep_app.h"
 #include "tui/ls_rid.h"
 #include "tui/ls_ble_heard.h"
-#include "tui/ls_survey.h"
 #include "tui/ls_ble_ad.h"
 #include "ble_link.h"
 #include "tui/ls_lap_net_audio.h"
@@ -135,7 +134,6 @@ static void heard_advert(const ble_link_advert_t *a, void *ctx)
     const uint8_t *name = ls_ble_ad_name(a->data, a->len, &name_len);
     ls_lap_ble_advert_push(a->addr,a->addr_type,a->rssi,a->scan_response,a->data,a->len,a->seen_us/1000);
     ls_ble_heard_note(a->addr, (const char *)name, name_len, a->rssi, a->seen_us);
-    ls_survey_ble(a->addr, a->addr_type, (const char *)name, name_len, a->rssi, a->seen_us);
 }
 
 static void advert_task(void *arg)
@@ -156,9 +154,9 @@ static bool advert_worker_start(void)
     ble_link_observer_subscribe(&s_adverts, heard_advert, NULL);
 #if CONFIG_LS_NANO_RAM_BUDGET
     /* Dispatch only: SWEEP/RID/SEEN update RAM/queues; HID pump prints.
-     * SURVEY writes only /sdcard/lakeshark/survey (no SPIFFS fallback),
-     * never flash/NVS. Keep all 4096 B for that FAT/stdio path. Re-audit
-     * before adding callbacks or changing LS_SURVEY_DIRECTORY to flash.
+     * Nothing here touches FAT, flash or NVS (the Wi-Fi/BLE survey that
+     * wrote SD from this task moved to the WIFI SURVEY app). Keep 4096 B;
+     * re-audit before adding a callback that does storage.
      * Permanent worker; any future deletion must be from another task
      * using vTaskDeleteWithCaps(s_advert_task). */
     const uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
@@ -1433,6 +1431,9 @@ static bool workers_start(void)
     return true;
 }
 
+static esp_err_t store_init_job(void *ctx) { (void)ctx; ble_store_config_init(); return ESP_OK; }
+static esp_err_t pinned_load_job(void *ctx) { (void)ctx; pinned_load_nvs(); return ESP_OK; }
+
 static esp_err_t link_start(void)
 {
     if (s_run) return ESP_ERR_INVALID_STATE;
@@ -1472,7 +1473,10 @@ static esp_err_t link_start(void)
 
     ble_npl_event_init(&s_scan_event, scan_refresh, NULL);
     s_scan_event_ready=true;
-    ble_store_config_init();
+    /* The two NVS reads of a cold start (security keys, pinned peer) go
+       through ls_nvs_run: callers include the SD app worker, whose stack is
+       PSRAM, and a flash read from there asserts. */
+    ls_nvs_run(store_init_job, NULL, 0);
     ESP_LOGI(TAG, "NimBLE ready; discarded %lu pre-init HCI packets",
              (unsigned long)ble_hci_rx_early_packets());
 
@@ -1507,7 +1511,7 @@ static esp_err_t link_start(void)
     ble_svc_gap_device_name_set("LakeShark " LS_BOARD_NAME);
 #endif
 
-    pinned_load_nvs();
+    ls_nvs_run(pinned_load_job, NULL, 0);
 
     /**/
     {
@@ -1856,7 +1860,6 @@ esp_err_t ble_link_c6_quiesce(void)
     } while (esp_timer_get_time() < until);
     return ESP_ERR_TIMEOUT;
 }
-esp_err_t ble_link_listen(void) { return start_mode(true, false); }
 esp_err_t ble_link_hid_observer(bool on) { if(on)return start_mode(true,4);stop_mode(4);return ESP_OK; }
 esp_err_t ble_link_sweep_observer(bool on)
 {
@@ -1883,7 +1886,12 @@ void ble_link_receiver(bool *running, bool *scanning, bool *failed)
     *running=s_run; *scanning=s_run && s_scanning; *failed=s_run && s_scan_failed;
 }
 
-int ls_lap_ble_lease(bool on) { if(on)return start_mode(true,5)==ESP_OK?0:LAP_IO_EBUSY; stop_mode(5);return 0; }
+int ls_lap_ble_lease(bool on) {
+    if (!on) { stop_mode(5); return 0; }
+    const esp_err_t e = start_mode(true, 5);
+    if (e != ESP_OK) ESP_LOGW(TAG, "app BLE lease refused: %s", esp_err_to_name(e));
+    return e == ESP_OK ? 0 : LAP_IO_EBUSY;
+}
 
 #if CONFIG_LS_LAP_BLE_ADVERTISER
 int ls_lap_peripheral_lease(bool on) {

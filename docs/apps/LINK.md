@@ -1,7 +1,8 @@
 # LINK
 
-Join Wi-Fi networks, connect a Flipper running LakeShark over Bluetooth, and
-record a passive Wi-Fi and Bluetooth survey.
+Join Wi-Fi networks and connect a Flipper running LakeShark over Bluetooth.
+The Wi-Fi and Bluetooth survey recorder is in WIFI SURVEY: see
+[Survey](#survey).
 
 | | |
 |---|---|
@@ -10,16 +11,16 @@ record a passive Wi-Fi and Bluetooth survey.
 
 ## What it does
 
-LINK has three tabs and a shortcut:
+LINK has three tabs (WI-FI, BLUETOOTH, REMOTE) and two shortcuts:
 
 - **WI-FI**: scan for networks, join one, and manage up to eight saved
   networks. UPDATE and TILES use this connection.
 - **BLUETOOTH**: link a Flipper running the LakeShark app as a control head.
   It sends commands to the board and receives radio telemetry.
-- **SURVEY**: a passive walk that records the Wi-Fi networks and Bluetooth
-  devices heard, with their signal and, with a GPS fix, where the signal was
-  strongest. It saves a CSV file to the SD card.
-- **DRONES**: opens the DRONES app.
+- **REMOTE**: the web page, terminal and SSH ways in from a phone or PC.
+- **DRONES** (G): opens the DRONES app.
+- **Survey** (V): opens WIFI SURVEY, an app on the card. Its RECORD tab is
+  the survey recorder that used to be a LINK tab.
 
 ## Radio
 
@@ -30,9 +31,10 @@ RADIOS > OPTIONS sets whether Wi-Fi and Bluetooth start at boot.
 
 | Key | Touch | Action |
 |---|---|---|
-| W, B, V | WI-FI, BLUETOOTH, SURVEY | Change tab |
-| Tab | | Switch between WI-FI and BLUETOOTH |
+| W, B, E | WI-FI, BLUETOOTH, REMOTE | Change tab |
+| Tab | | Next tab |
 | G | DRONES | Open DRONES |
+| V | | Open WIFI SURVEY (says where it is if it is not installed) |
 | Esc | | Back to HOME |
 
 ### WI-FI
@@ -67,20 +69,12 @@ BLUETOOTH OPTIONS:
 - **HEAD NAME FILTER**: a name filter for heads, up to 23 characters.
 - **TELEMETRY RATE**: 0 to 20 Hz. 0 turns telemetry off.
 
-### SURVEY
+### Survey
 
-| Key | Touch | Action |
-|---|---|---|
-| S | START, STOP | Start or stop a survey session |
-| R | SORT | Sort by STRONGEST, NEWEST or NAME |
-| O | OPTIONS | Open SURVEY options |
-| Enter, D | DETAIL, or tap an entry | Show details. BACK or Esc returns |
-| Up, Down, [ ] | PREV, NEXT | Select an entry, or page |
-
-SURVEY OPTIONS, changed while no session is running:
-
-- **RADIOS**: SCAN WI-FI, LISTEN BLE and SCAN INTERVAL (3 to 120 seconds).
-- **RECORDING**: ONLY WITH GPS FIX, and KEEP SESSIONS (1 to 50).
+Survey is in WIFI SURVEY: its RECORD tab records the Wi-Fi access points and
+Bluetooth devices heard, with a position when a fresh GPS fix exists, to the
+same files LINK's SURVEY tab wrote (`/sdcard/lakeshark/survey`, WiGLE CSV, and
+a `_summary.csv` beside each). See the app's README.
 
 ## What the screen shows
 
@@ -93,18 +87,9 @@ network is marked with `*`.
 panel that reads LINKED once connected, counts of commands received, frames
 sent and drops, a signal trace and a control traffic trace.
 
-**SURVEY** shows Wi-Fi and Bluetooth counts, new devices per minute, elapsed
-time, entries stored (up to 512), drops and GPS state (FRESH or WAIT). The
-detail view shows the name, address, signal, channel, first and last time
-heard and the position of the best signal when a fresh fix was available.
-
 ## Tips and limits
 
-- SURVEY only listens. It gives no bearings.
-- Random Bluetooth addresses rotate, so one device can appear more than once.
-- Survey files go to `/sdcard/lakeshark/survey`, named by date and time.
-- A survey position marks where this board heard the strongest signal, not
-  where the device is.
+- LINK records nothing to the card. The survey recorder is WIFI SURVEY's.
 
 ## More guides
 

@@ -76,14 +76,14 @@ static void native_fill(cc_planes *p,const cc_feature *f) {
     }
 }
 void cc_arena_init(cc_arena *a, void *buffer, size_t size) {
-    a->data = buffer; a->size = size; a->used = a->peak = 0;
+    a->data = buffer; a->size = size; a->used = a->peak = a->fails = 0;
 }
 void *cc_arena_alloc(cc_arena *a, size_t bytes, size_t alignment) {
     size_t pad;
     if (!alignment || (alignment & (alignment - 1))) return 0;
     pad = (size_t)(0 - ((uintptr_t)a->data + a->used)) & (alignment - 1);
     if (a->used > a->size || pad > a->size - a->used ||
-        bytes > a->size - a->used - pad) return 0;
+        bytes > a->size - a->used - pad) { a->fails++; return 0; }
     a->used += pad;
     { void *p = a->data + a->used; a->used += bytes; if(a->used>a->peak) a->peak=a->used; return p; }
 }

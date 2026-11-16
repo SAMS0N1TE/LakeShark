@@ -28,7 +28,17 @@ int main(void) {
     assert(b.cold==CARTO_CELLS_COLD && b.decoded==CARTO_CELLS_DECODED);
     assert(!carto_plan_budget(2u*CARTO_MIB,2u*CARTO_MIB,overhead,false,false,true,true,&b));
     assert(carto_plan_budget(free_bytes,free_bytes,overhead,false,false,true,true,&b));
-    assert(b.cold==2u*CARTO_MIB && b.decoded==2u*CARTO_MIB && b.idle==2u*CARTO_MIB && b.cache==0);
+    /* a single map file: 4 MiB of arena when PSRAM has it (2 MiB could not
+       draw central_nh_compact's lowest zoom), decoded and idle as before */
+    assert(b.cold==CARTO_FILE_COLD && b.decoded==2u*CARTO_MIB && b.idle==2u*CARTO_MIB && b.cache==0);
+    /* the LR2021 board opening that file (2026-11-14): 11.46 MB free */
+    assert(carto_plan_budget(11462680u,11462680u,401524u,false,false,true,true,&b));
+    assert(b.cold==CARTO_FILE_COLD && b.decoded==2u*CARTO_MIB && b.idle==2u*CARTO_MIB);
+    assert(b.cold+b.decoded+b.idle+401524u+CARTO_PSRAM_RESERVE<=11462680u);
+    /* short of memory the arena is what is left, never under the old 2 MiB */
+    assert(carto_plan_budget(9700000u,9700000u,401524u,false,false,true,true,&b));
+    assert(b.cold>=2u*CARTO_MIB && b.cold<CARTO_FILE_COLD && b.decoded==2u*CARTO_MIB);
+    assert(!carto_plan_budget(9000000u,9000000u,401524u,false,false,true,true,&b));
     assert(carto_plan_budget(64u*CARTO_MIB,64u*CARTO_MIB,overhead,true,false,true,true,&b));
     assert(b.cold==16u*CARTO_MIB && b.idle==4u*CARTO_MIB && b.decoded==2u*CARTO_MIB);
     assert(carto_plan_budget(free_bytes,free_bytes,overhead,false,false,false,true,&b) && b.cache==4u*CARTO_MIB);

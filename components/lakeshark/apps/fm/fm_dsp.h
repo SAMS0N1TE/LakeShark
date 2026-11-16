@@ -81,9 +81,23 @@ int  fm_demod_to_audio(fm_dsp_t *s, const float *demod, int n,
 int  fm_demod_wide(fm_dsp_t *s, const uint8_t *iq, int iq_len,
                    int16_t *pcm16k, int max);
 /* The raw wideband discriminator at FM_RTL_RATE (pi = 16384), before
-   de-emphasis or decimation: the stereo multiplex wfm_mpx.c reads. */
+   de-emphasis or decimation: the stereo multiplex wfm_mpx.c reads. It also
+   leaves WFM's noise reading in demod_noise, on the same 0 quiet to 1 hiss
+   travel NFM's has: how far the envelope is from constant (see fm_dsp.c). */
 int  fm_demod_disc(fm_dsp_t *s, const uint8_t *iq, int iq_len,
                    int16_t *disc, int max);
+
+/* WHERE A CHANNEL WITH NO SQUELCH COUNTS AS HAVING A CARRIER.
+
+   WFM and the pager, APRS and SAME decoders gate nothing - the speaker or the
+   decoder takes everything - but the screen still says whether a carrier is
+   there, from the noise reading each one already takes. The decoders read
+   the narrowband noise against the gate NFM's squelch has at its default of
+   30. WFM reads its envelope, where dead air sits at 0.96 or above (0.58 into
+   an ADC clipping a tenth of its samples) and a station 6 dB out of the noise
+   at 0.36 or below. */
+#define FM_NFM_CARRIER_NOISE 0.70f
+#define FM_WFM_CARRIER_NOISE 0.45f
 
 /* The AM envelope at FM_DEMOD_RATE as a float, carrier removed and divided
    by it (100% modulation swings +-1). ACARS's MSK tones ride an AM carrier,

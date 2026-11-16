@@ -27,6 +27,8 @@ static inline bool ls_desk_focused(void) { return false; }
 #endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "soc/assist_debug_reg.h"
+#include "soc/soc.h"
 #include "ls_keypad.h"
 #include "tui/ls_map.h"
 #include "tui/ls_rffe_ui.h"
@@ -81,6 +83,8 @@ extern "C" void ls_cell_publish(void);
 /* FREQS (ls_freqs.h): its action, the UI task's share and the console. */
 extern "C" void ls_freqs_register(void);
 extern "C" void ls_freqs_tick(void);
+/* MUSIC: a close that had to wait keeps the speaker until it is retried. */
+extern "C" void ls_music_service(int64_t now_us);
 extern "C" void ls_freqs_console_register(void);
 extern "C" void ls_rterm_picture_tx(uint32_t *bytes, uint32_t *lines, uint32_t *captures) __attribute__((weak));
 extern "C" bool cell_report_transport_known(const char *peer)
@@ -403,6 +407,8 @@ extern "C" const ls_app_doc_t ls_doc_radio;
 extern "C" const ls_app_doc_t ls_doc_digi;
 static bool tui_live_adsb(void) { return tui_live_claim("ADS-B"); }
 static bool tui_live_rec(void)  { return tui_live_claim("REC"); }
+/* Listening, or the recorder armed: SUB-GHZ is doing something. */
+static bool tui_live_subghz(void) { return rec_watch_enabled() || tui_live_rec(); }
 /* The directory tile's live lamp. mesh.up is a bool published by
    ls_value, so this is the same one-line reader as the others and the tile
    lights whenever the stack is running - which is exactly what "live" means
@@ -515,6 +521,8 @@ static volatile bool s_tui_shot_req = false;
    the text dump is taken there. The console task allocates the snapshot and
    waits; this task fills it and says so by clearing the request. */
 static volatile bool      s_tui_png_req = false;
+/* tui open ID: the screen task opens the app (index into ls_app_at), -1 none. */
+static volatile int       s_tui_open_req = -1;
 static uint16_t *volatile s_tui_png_buf = nullptr;
 static volatile uint32_t s_tui_png_wh;      /* w << 16 | h that s_tui_png_buf is for; 0 when the copy was refused */
 
@@ -1529,10 +1537,11 @@ static bool tui_session(void)
             { "fox", "FOX HUNT", "find a TX", LS_ICON_FOX, TUI_YELLOW,
               LS_APP_EXTRA, &ls_scr_fox, nullptr, &ls_doc_fox },
 
-            { "rec",  "REC",  "capture",   LS_ICON_RECORD, TUI_RED,
-              LS_APP_EXTRA, &ls_scr_rec, tui_live_rec, &ls_doc_rec },
-            { "subghz", "SUB-GHZ", "watch + replay", LS_ICON_SUBGHZ, TUI_GREEN,
-              LS_APP_EXTRA, &ls_scr_subghz, rec_watch_enabled, &ls_doc_subghz },
+            /* REC was a second tile for this one: it hosted SUB-GHZ's own
+               screen for the capture radios, and its CSV and GPS track
+               recorders are NOTES' and GPS's. One app, one tile. */
+            { "subghz", "SUB-GHZ", "rec + replay", LS_ICON_SUBGHZ, TUI_GREEN,
+              LS_APP_EXTRA, &ls_scr_subghz, tui_live_subghz, &ls_doc_subghz },
             { "files", "FILES", "the SD card", LS_ICON_FILES, TUI_YELLOW,
               LS_APP_EXTRA, &ls_scr_files, nullptr, &ls_doc_files },
             { "music", "MUSIC", "audio player", LS_ICON_MUSIC, TUI_MAGENTA,
@@ -1797,6 +1806,9 @@ static bool tui_session(void)
         ls_power_tick();
         /* FREQS: a save's banner, a console tune. */
         ls_freqs_tick();
+        /* MUSIC/CALLS: finish a close that had to wait, so the speaker is
+           not held after the screen that asked for it has gone. */
+        ls_music_service(esp_timer_get_time());
 
         /* Attachment selects landscape once, including a keyboard present at
            boot. Keep this state across session rebuilds so turning the board
@@ -1918,6 +1930,10 @@ static bool tui_session(void)
             if (!touch_edge_pending()) break;
         }
 
+        if (s_tui_open_req >= 0) {
+            ls_app_open(s_tui_open_req);
+            s_tui_open_req = -1;
+        }
         /* Between frames, where the grid is one whole frame. */
         if (s_tui_shot_req) {
             ls_tui_dump();
@@ -2312,17 +2328,30 @@ static void tui_stall_where(const char *name, char state, const uint32_t *top, c
     esp_rom_printf("%s\n", at);
 }
 
-/* Every task that is waiting, with where it waits: a stall is one task
- * waiting on another, and the other is usually the answer. */
+/* Every task that is not running, with where it is parked: a stall is one
+ * task waiting on another, and the other is usually the answer. Ready tasks
+ * too ('R'): the 2026-11-15 FM-switch stall left ls_tui ready for a minute
+ * with both cores idle, and a blocked-only list could not say where it was.
+ * Each core's running task and live PC (the assist-debug PC record) first. */
 static EXT_RAM_BSS_ATTR TaskStatus_t s_stall_tasks[64];
 static void tui_stall_dump(void)
 {
+    for (int core = 0; core < 2; core++) {
+        TaskHandle_t cur = xTaskGetCurrentTaskHandleForCore(core);
+        esp_rom_printf("stall: core%d runs %s pc=0x%08lx\n", core, cur ? pcTaskGetName(cur) : "?",
+                       (unsigned long)REG_READ(core ? ASSIST_DEBUG_CORE_1_RCD_PDEBUGPC_REG
+                                                    : ASSIST_DEBUG_CORE_0_RCD_PDEBUGPC_REG));
+    }
     const UBaseType_t n = uxTaskGetSystemState(s_stall_tasks, 64, nullptr);
     for (UBaseType_t i = 0; i < n; i++) {
         const TaskStatus_t *t = &s_stall_tasks[i];
-        if (t->eCurrentState != eBlocked && t->eCurrentState != eSuspended) continue;
+        const char st = t->eCurrentState == eBlocked ? 'B' : t->eCurrentState == eSuspended ? 'S'
+                      : t->eCurrentState == eReady ? 'R' : 0;
+        if (!st || (st == 'R' && !strncmp(t->pcTaskName, "IDLE", 4))) continue;
         const uint32_t *top = *(uint32_t *const *)t->xHandle;
-        tui_stall_where(t->pcTaskName, t->eCurrentState == eBlocked ? 'B' : 'S', top, top + 96);
+        char name[24];
+        snprintf(name, sizeof(name), "%s/%u", t->pcTaskName, (unsigned)t->uxCurrentPriority);
+        tui_stall_where(name, st, top, top + 96);
     }
 }
 
@@ -2621,8 +2650,12 @@ static int sd_cmd(int argc, char **argv)
        the card. Printed as it is, a line at a time. */
     if (argc >= 3 && !strcmp(argv[1], "cat")) {
         if (!ls_sdcard_mounted()) { printf("sd: not mounted\n"); return 1; }
-        FILE *f = fopen(argv[2], "r");
-        if (!f) { printf("sd: cannot open %s\n", argv[2]); return 1; }
+        /* The same paths 'sd ls' takes: "maps/x" is /sdcard/maps/x. Opened as
+           typed, only a full /sdcard/... path was ever found. */
+        char where[160];
+        if (!sd_path(argv[2], where, sizeof(where))) { printf("sd: refusing '%s'\n", argv[2]); return 1; }
+        FILE *f = fopen(where, "r");
+        if (!f) { printf("sd: cannot open %s\n", where); return 1; }
         char line[160];
         unsigned lines = 0;
         while (fgets(line, sizeof(line), f)) {
@@ -2814,6 +2847,27 @@ static int tui_cmd(int argc, char **argv)
     }
     if (argc == 2 && !strcmp(argv[1], "remote")) {
         ls_tui_remote_geometry();
+        return 0;
+    }
+    /* 'tui apps': every app id 'tui open' takes, one per line (sweep scripts). */
+    if (argc == 2 && !strcmp(argv[1], "apps")) {
+        for (int i = 0; ls_app_at(i); i++)
+            if (ls_app_at(i)->id)
+                printf("app %s %s\n", ls_app_at(i)->id, ls_app_at(i)->name ? ls_app_at(i)->name : "");
+        printf("apps end\n");
+        return 0;
+    }
+    /* 'tui open ID': open an app (built in or from the card) by its id, the
+       way its tile does, so a script needs no tile positions. */
+    if (argc == 3 && !strcmp(argv[1], "open")) {
+        if (!s_tui_task) { printf("tui: not running\n"); return 1; }
+        int found = -1;
+        for (int i = 0; ls_app_at(i); i++)
+            if (ls_app_at(i)->id && !strcmp(ls_app_at(i)->id, argv[2])) { found = i; break; }
+        if (found < 0) { printf("tui: no app '%s'\n", argv[2]); return 1; }
+        s_tui_open_req = found;
+        for (int i = 0; i < 50 && s_tui_open_req >= 0; i++) vTaskDelay(pdMS_TO_TICKS(20));
+        printf(s_tui_open_req < 0 ? "tui: opened %s\n" : "tui: %s queued\n", argv[2]);
         return 0;
     }
     if (argc >= 4 && !strcmp(argv[1], "tap")) {
@@ -4271,6 +4325,19 @@ static int map_cmd(int argc, char **argv)
 
     if (argc >= 4 && !strcmp(argv[1], "covers")) {
         const double lat = atof(argv[2]), lon = atof(argv[3]);
+        /* Under a CartoCore style the question is CartoCore's: the PMTiles
+           archive is not even open, and answered "outside" for everywhere. */
+        if (ls_map_cartocore_style()) {
+            char file[160] = ""; double la = 0, lo = 0;
+            const int c = ls_carto_covers(lat, lon, file, sizeof(file));
+            if (c == 2) printf("map: %.5f %.5f is on a downloaded cell\n", lat, lon);
+            else if (c == 1) printf("map: %.5f %.5f is on %s\n", lat, lon, file);
+            else if (c < 0) printf("map: busy, ask again\n");
+            else if (ls_carto_map_nearest(lat, lon, &la, &lo) == 1)
+                printf("map: no map at %.5f %.5f; the nearest is at %.5f %.5f\n", lat, lon, la, lo);
+            else printf("map: no map at %.5f %.5f\n", lat, lon);
+            return 0;
+        }
         const int z = ls_map_zoom_covering(lat, lon);
         if (z < 0)
             LS_PRINTF(fmt_compact_ui_map_is_outside_this, "map: %.5f %.5f is outside this archive at every zoom\n",
@@ -4290,6 +4357,15 @@ static int map_cmd(int argc, char **argv)
        exactly when there is a fault has it backwards: the fault is when it
        is needed. The reason is printed, and then everything else is printed
        anyway. */
+    /* CartoCore drawing: its own status is the whole answer. The lines below
+       are the picture engine's, which then has "not been started". */
+    if (ls_map_cartocore_style()) {
+        double la = 0, lo = 0;
+        ls_map_get_center(&la, &lo);
+        printf("map: CartoCore  z%d  %.5f %.5f\n", ls_map_zoom(), la, lo);
+        ls_carto_status_print();
+        return 0;
+    }
     ls_carto_hw_status(false);
     const char *why = ls_map_status();
     if (why) printf("map: %s\n", why);

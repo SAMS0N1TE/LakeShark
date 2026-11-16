@@ -103,6 +103,7 @@ static const char *carto_host_path(const char *path) {
     static char out[2][1024];static unsigned turn;
     if(strncmp(path,"/sdcard",7)) return path;
     const char *cells=getenv("LSSIM_CELLS");
+    if(cells && !strcmp(path,"/sdcard/maps/cells")) return cells;
     if(cells && !strncmp(path,"/sdcard/maps/cells/",19)) {
         char *p=out[(turn++)&1];snprintf(p,1024,"%s/%s",cells,path+19);return p;
     }

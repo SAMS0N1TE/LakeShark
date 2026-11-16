@@ -1,5 +1,65 @@
 # LakeShark release notes
 
+## 2.23.2
+
+Experimental. Everything in 2.23.1, plus the work since. Same four images (T-Display P4, LR, TFT and NET) and the same C6 file. The apps zip has the updated card apps.
+
+New apps and app updates (in `lakeshark-apps-2.23.2.zip`, copy to `/sdcard/apps`):
+
+- BUGHUNT 1.1: a receive-only sweep for hidden trackers and bugs. It listens on the LoRa radio (cellular uplink, ISM 315 / 433.92 / 902-924 MHz, the UHF bug band, and 2.4 GHz on an LR2021), on Bluetooth for AirTag, SmartTag, Tile, Chipolo and Google tags, and on Wi-Fi for camera makers' stations and steady video uploads, and says what it thinks each thing is. It takes in BLE WATCH (tag list, "a tag is following you", meter and tone), so BLE WATCH is retired; WIFI/BT KIT lists BUGHUNT in its place. Nothing transmits. The first run picks the region the board last knew it was in.
+- MESHTASTIC 1.1: a mesh web of the nodes you hear, chat bubbles, a page per node, and TRANSLATE: Spanish on the mesh arrives in English, offline, in the banner and the list, and can be read aloud. TRANSLATE keeps a history on the card.
+- WIFI SURVEY 1.3.0: RECORD, the Wi-Fi and Bluetooth survey recorder that used to live in LINK.
+
+Fixed and changed:
+
+- Sound: leaving MUSIC (or stopping a CALLS replay) while the player was still busy could keep the speaker, and every other sound stayed silent until a reboot. The board now finishes that close on its own a moment later.
+- Console `audio` says whether the output is idle (parked: clocks stopped, DAC muted, amplifier off, which is normal) or playing, whether MUSIC holds the speaker, and its drop counts. `audio pa on` on an idle output says the amplifier alone makes no sound; `audio tone` tests the whole chain.
+- LR2021: scans no longer fail after about 125 retunes, no -127 dBm readings after an app opens the radio, and MeshCore keeps its turn while a scan runs.
+- MAP opens at the view it was left at (else your saved home), a tile too big to hold is drawn coarser instead of losing the whole frame, a single map file draws its lowest zoom, and the mini maps (ADS-B and the rest) follow the saved MAP STYLE and frame themselves.
+- Opening a card app or starting Bluetooth from cold no longer risks a crash on a flash write.
+- HOME holds up to 96 apps, 48 from the card.
+- RF LAB has SPECTRUM; LORA LABS no longer carries its own.
+- Console: errors are named instead of UNKNOWN ERROR, `sd cat` takes the same paths as `sd ls`, `map` and `carto status` describe the CartoCore cache, and a crash report names where a stuck core was.
+
+## 2.23.1
+
+Experimental. Everything in 2.23.0, plus the fixes from testing it on the boards. Same four images (T-Display P4, LR, TFT and NET) and the same C6 file.
+
+- WIFI SURVEY no longer freezes while it hops channels with ALLOW LINK DROP on. Retuning happens behind the screen, and the board stops rejoining its network while the survey holds the radio (the Wi-Fi coprocessor refuses to change channel during a join). A retune can still take a few seconds now and then; the screen keeps answering while it does.
+- WIFI SURVEY 1.2.0: CHANNELS stays readable with dozens of networks. The plot is much taller, only the strongest networks are named (never on top of each other), yours is highlighted, ZOOM spreads the channels and you drag sideways to pan, and a tap on a channel lists its networks.
+- TAP 1.2.0, closer to Wireshark:
+  - CAPTURE TO CARD writes long captures to `/sdcard/captures` as ring files (size and count yours), so nothing is lost when the in-memory list fills.
+  - FILE > OPEN reads a saved capture back (pcapng or pcap).
+  - Wireshark display filters work: `wlan.addr`, `wlan.fc.type_subtype`, `wlan.ssid`, `btle.advertising_address`, `frame.len`, `&&`, `||`, `!`, `contains`, `matches`, `in {..}` and more. A bad filter turns red and says why.
+  - Colouring rules, time display (since start, since previous, time of day), marked packets, go to packet, find, and save all, displayed or marked.
+  - Statistics: protocol hierarchy, conversations, endpoints, an I/O graph and expert information.
+  - Files open cleanly in Wireshark: Bluetooth records carry their real CRC.
+  - Menus opened with a finger are finger-sized; from the keyboard they stay compact.
+- WIFI WATCH 1.2.0: alerts can go out over the LoRa mesh, to a channel or one node, rate limited with repeats counted (off until you turn it on), and each severity can sound, vibrate, speak or show a banner. Quiet hours and TEST ALERT. Sending on LoRa means it asks for transmit permission once.
+- TAP, WIFI WATCH and the other network apps: a tap between rows no longer opens a menu or starts something.
+
+## 2.23.0
+
+Firmware for the T-Display P4 boards, with a fourth image: **LakeShark NET**, for heavy Wi-Fi, Bluetooth and Ethernet work. LakeShark Desktop, Studio and the ESP32-P4-NANO stay on 2.22.0.
+
+New:
+
+- TAP, the packet analyser, on the T-Display: Wi-Fi, Bluetooth advertising, LoRa and the board's decodes in one list, with a protocol tree, hex, filters and statistics, saving pcapng that opens in Wireshark. It says why a source is missing and shows dropped frames.
+- Wi-Fi capture needs the coprocessor update attached here. Copy `lakeshark-tdp4-c6-2.23.0.bin` to the card as `lakeshark/c6/ls_c6_net.bin` and run `c6 flash /sdcard/lakeshark/c6/ls_c6_net.bin` on the console. It is the same ESP-Hosted 2.12.9 the board runs now, plus the monitor forwarder; Wi-Fi and Bluetooth work as before. `c6 mon 8` counts the frames it forwards.
+- LakeShark NET (`lakeshark-tdp4-net-2.23.0.zip`, AMOLED T-Display P4): larger Wi-Fi, Bluetooth, network and capture buffers (4096 capture slots, up to 1000 forwarded Wi-Fi frames a second), three Bluetooth connections, and wired Ethernet through a USB adapter on the RTL-SDR's port: CDC-ECM adapters, including RTL8152/8153, and RNDIS for Android USB tethering. The RTL-SDR still works. To make room it leaves out MP3/FLAC/Ogg playback; WAV stays. 3D games such as PINBALL run. It updates from its own folder, so UPDATE keeps a NET board on NET.
+- New apps for the card: WIFI SURVEY (access points, channels, signal history), WIFI WATCH (deauthentication and beacon floods, evil twins, handshakes), BLE WATCH (AirTag and other Find My tags, Tile, SmartTag and Google tags; warns when one stays with you), LAN SCAN (the hosts on your network and a port scan), NET DIAG (ping, traceroute, DNS, Wake-on-LAN) and THROUGHPUT (an iperf2 client). BLE EXPLORER 2.0 reads a device's whole GATT table and saves it.
+- These apps and TAP have finger-sized keys and lists that follow your finger.
+- HOME folds them into one WIFI/BT KIT tile in USER once two are installed.
+- App SDK 2.8: apps can ping, look up names, read the ARP table and the interface addresses. App SDK 2.7: apps can capture raw Wi-Fi and BLE advertising frames.
+- BOOT LOG: this boot's log and the last are saved to the card as `lakeshark/bootlog.txt` and `bootlog-prev.txt`.
+- Console: `tui open ID` opens an app by its id; `c6 flash PATH` puts an ESP-Hosted image from the card on the coprocessor.
+
+Fixed:
+
+- Opening an app from the card no longer fails with "not enough memory" after radio apps have run.
+
+Not tested yet: USB Ethernet has been checked against recorded adapter descriptors, not a real adapter, and THROUGHPUT has not been run against a real iperf2 server. Say on an issue which adapters work.
+
 ## 2.22.0
 
 This release is for the Windows app (Desktop and Studio) and the ESP32-P4-NANO desktop board.
@@ -23,6 +83,20 @@ New:
 - TAP, a packet analyser app: Wi-Fi, BLE, LoRa and the board's decodes; packet list, protocol tree, hex, filters, statistics; saves pcapng that opens in Wireshark.
 - Wi-Fi capture on the NANO needs the C5 coprocessor update attached here: copy `lakeshark-nano-c5-2.22.0.bin` to the card and run `c6 flash /sdcard/lakeshark-nano-c5-2.22.0.bin` on the console.
 - `c6 mon 8` counts the Wi-Fi frames the coprocessor forwards.
+
+## 2.21.5
+
+- SUB-GHZ is one app: REC is folded into it, and HOME has one SUB-GHZ tile with TIME MACHINE beside it. It opens on five large cards, Flipper style: READ, RECORD RAW, SAVED, FREQUENCY ANALYZER and SETTINGS, each in its own colour, saying how it stands. Every page has BACK, its frequency and one big START/STOP; the radio, TX power, LEARN, the detect threshold, the chart and the pulse inspector are in SETTINGS. FILES' REPLAY opens a capture in SUB-GHZ. CSV recording is in NOTES and the GPS track in GPS, as before.
+- READ and RECORD RAW draw a live waveform while they listen: a second of what the radio hears, scrolling across the screen in braille dots, with a remote's burst lit green and its level shown.
+- FREQUENCY ANALYZER (was BAND) uses no radio until START, its title names the chart it draws (BARS draws bars), and it no longer paints the band solid red: every frequency is judged against its own noise floor. The SX1262 sweep of 902-928 MHz stops reporting hits that are only the shape of the band.
+- The LoRa chip is free when you leave SUB-GHZ: P25, FM, ADS-B, MESH and LORA LABS no longer show "LR2021 IN USE ELSEWHERE" after it, and START on READ is no longer refused with "Mesh would not release the radio".
+- Transmit goes out the antenna you select, on the LR2021 and the SX1262. RADIOS > OPTIONS > MMCX1 USE: RX ONLY keeps transmits on the internal antenna if you want that.
+- Drag the VOLUME, GAIN and SQUELCH bars on FM and P25, the scanner's bars, and SET's Volume and Brightness: the value follows your finger and is saved when you lift it.
+- RADIOS: LORA TURN OFF is instant instead of freezing the screen for a second or more.
+- MUSIC: no visual freezes the screen any more (SPECTRO drew at five frames a second), and the tracks are a list you tap.
+- FM: WFM has a live signal meter and CARRIER reads PRESENT or none (it read SIG -- and CARRIER -- while a station played), BAND names the band you are tuned to (103.3 MHz is FM bcast, not VHF land), the IQ rate is a real per-second figure, and landscape shows the frequency in big figures.
+- FM, P25 and ADS-B set to an RTL-SDR that is not plugged in say so, and FM on the LR2021 board offers NFM on the LR2021 instead.
+- LakeShark Desktop and Studio stay on 2.21.4.
 
 ## 2.21.4
 

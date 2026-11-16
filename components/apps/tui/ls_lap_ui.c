@@ -69,6 +69,8 @@ static void sign(tui_surface *sf, tui_rect a, int x, int y, uint8_t c)
 static const char *hint(const char *why)
 {
     if (!why || !*why) return NULL;
+    /* A feature this image was built without is not fixed by updating. */
+    if (strstr(why, "needs l3_")) return "Needs 3D, which this firmware image leaves out. The standard image runs it.";
     if (strstr(why, "needs ") || strstr(why, "symbol")) return "Built for newer firmware. Update LakeShark, then try again.";
     if (strstr(why, "api") || strstr(why, "API")) return "Made for a different app version. Get the current one from the store.";
     if (strstr(why, "signature")) return "The file was changed after it was signed. Install it again.";
@@ -133,7 +135,7 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
                    : "It cannot transmit.",
                 net ? "It also asks for the network, every launch."
                     : "Asked once for this version; BACK denies.",
-                "It keeps running after it closes (STOP in RADIOS).",
+                "It keeps running when closed; RADIOS stops it.",
             };
             lines(sf, body, y + 6, why, rx && svc ? 6 : 5, TUI_ATTR(TUI_WHITE, TUI_BLACK));
         } else if (app && (app->manifest.flags & LAP_CAP_NETWORK)) {

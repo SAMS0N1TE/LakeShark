@@ -390,6 +390,16 @@
     "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
   },
   {
+    "name": "lap_arp_probe",
+    "status": "faked",
+    "reason": "Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify."
+  },
+  {
+    "name": "lap_arp_table",
+    "status": "faked",
+    "reason": "Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify."
+  },
+  {
     "name": "lap_audio_close",
     "status": "limited",
     "reason": "Shared mixer, PCM queues and WAV file parsing/recording; synthetic microphone; no host speaker. Hardware codec arbitration, mic indicator and real-time timing require board tests."
@@ -623,6 +633,16 @@
     "name": "lap_dir_list",
     "status": "limited",
     "reason": "Shared copied notice/launch broker, bounded topic mailboxes and per-instance storage/UI state; API 2.6 subscriptions/notices expire on unload while 2.5 persistence is retained. LAPSIM_SCRIPT desktop/pick/pickcancel/notice fixtures. FAT durability, actual viewer lifecycle and trusted launcher need board checks. PC URL/save requests negotiate desk1; bounded copied files and scripted completions; real OS dialogs/USB/RF need hardware verification."
+  },
+  {
+    "name": "lap_dns_resolve",
+    "status": "faked",
+    "reason": "Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify."
+  },
+  {
+    "name": "lap_dns_result",
+    "status": "faked",
+    "reason": "Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify."
   },
   {
     "name": "lap_dots",
@@ -1105,6 +1125,11 @@
     "reason": "Shared focused input queue, bounded GPS lease/motion delivery/navigation snapshots; LAPSIM_SCRIPT device/gamepad/contact/gpsfix/satellite/motionquality fixtures and host track/place files. BLE HID, controller IDs, UART and sensor accuracy require board tests. See INPUT_SENSORS.md."
   },
   {
+    "name": "lap_net_info",
+    "status": "faked",
+    "reason": "Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify."
+  },
+  {
     "name": "lap_net_status",
     "status": "limited",
     "reason": "Real nonblocking host IPv4 sockets and worker lifecycle; host DNS/Wi-Fi and wall-clock timing differ."
@@ -1213,6 +1238,21 @@
     "name": "lap_picker_select",
     "status": "real",
     "reason": "Shared app runtime and host renderer; target ABI/timing still require board validation."
+  },
+  {
+    "name": "lap_ping_next",
+    "status": "faked",
+    "reason": "Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify."
+  },
+  {
+    "name": "lap_ping_start",
+    "status": "faked",
+    "reason": "Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify."
+  },
+  {
+    "name": "lap_ping_stop",
+    "status": "faked",
+    "reason": "Shared handle limits, validation and worker lifecycle over a fixed LAN (192.0.2.0/24, board .2, hosts .1 .3 .10 .23 .42; outside addresses four hops away; names resolve to fixed addresses). LAPSIM_SCRIPT netdown=1 and dnsfail=1 inject failures. Board ICMP, ARP and DNS go through lwIP and need a joined network to verify."
   },
   {
     "name": "lap_put_cell",

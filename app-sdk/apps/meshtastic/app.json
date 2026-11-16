@@ -1,4 +1,22 @@
 {
   "category": "radio",
-  "description": "Talk to Meshtastic nodes from the board LoRa radio: nodes, channel chat and every packet heard; sends text and node info when TRANSMIT is on."
+  "description": "Talk to Meshtastic nodes from the board LoRa radio: nodes, channel chat and every packet heard; sends text and node info when TRANSMIT is on.",
+  "third_party": [
+    {
+      "name": "English Wiktionary, Spanish entries (as extracted by wiktextract / kaikki.org, dump of 2026-10-30): short English glosses for the translator's lexicon (mt_xlate_es_en.h)",
+      "license": "CC-BY-SA-4.0",
+      "url": "https://kaikki.org/dictionary/Spanish/",
+      "use": "data"
+    },
+    {
+      "name": "FrequencyWords by Hermit Dave, es and en 2018 lists (from OpenSubtitles): which lemmas the lexicon keeps, and the English words language detection knows",
+      "license": "CC-BY-SA-4.0",
+      "url": "https://github.com/hermitdave/FrequencyWords",
+      "use": "data"
+    }
+  ],
+  "references": [
+    "https://en.wiktionary.org/wiki/Wiktionary:Copyrights",
+    "https://creativecommons.org/share-your-work/licensing-considerations/compatible-licenses/"
+  ]
 }

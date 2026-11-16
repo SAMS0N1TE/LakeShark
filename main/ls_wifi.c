@@ -500,10 +500,13 @@ void ls_wifi_publish(void)
 
 /* ------------------------------------------------------------- events ---- */
 
+static _Atomic bool s_monitor_hold;
+
 static void reconnect_cb(void *arg)
 {
     (void)arg;
     if (s_c6_update) return;
+    if (s_monitor_hold) { esp_timer_start_once(s_reconnect_timer, 2000000ULL); return; }
     if (!ls_wifi_operation_try(&s_operation)) {
         /* The timer already exists; retry without blocking its task or
          * racing a scan/join. A concurrent scheduled retry is sufficient. */
@@ -565,6 +568,16 @@ static void pending_commit_locked(void)
 static void schedule_reconnect(void)
 {
     if (!s_sta_running) return;
+    /* A capture holds the radio: wait, and count nothing against the budget. */
+    if (s_monitor_hold) {
+        if (!s_reconnect_timer) {
+            const esp_timer_create_args_t args = { .callback = &reconnect_cb, .name = "ls_wifi_reconn" };
+            if (esp_timer_create(&args, &s_reconnect_timer) != ESP_OK) return;
+        }
+        esp_timer_stop(s_reconnect_timer);
+        esp_timer_start_once(s_reconnect_timer, 2000000ULL);
+        return;
+    }
     if (!ls_wifi_should_retry(s_sta_attempts, s_sta_reason)) {
         const char *why = ls_wifi_reason_text(s_sta_reason);
         ESP_LOGW(TAG, "wifi: giving up after %d attempts (%s); "
@@ -1126,7 +1139,7 @@ static esp_err_t sta_forget_locked(const char *ssid)
     return e;
 }
 
-static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap, bool passive);
+static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap);
 static esp_err_t sta_autojoin_excluding_locked(const char *excluded)
 {
     esp_err_t rc = store_run(0, NULL, NULL, NULL);
@@ -1142,7 +1155,7 @@ static esp_err_t sta_autojoin_excluding_locked(const char *excluded)
         ls_wifi_scan_ap_t *aps = heap_caps_malloc(16 * sizeof(*aps),
                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!aps) return ESP_ERR_NO_MEM;
-        int n = sta_scan_locked(aps, 16, false);
+        int n = sta_scan_locked(aps, 16);
         choice = ls_wifi_saved_candidate(s_saved, LS_WIFI_SAVED_MAX,
             s_visible_saved, LS_WIFI_SAVED_MAX, excluded);
         free(aps);
@@ -1184,10 +1197,9 @@ static void deferred_worker(void *arg)
     vTaskDeleteWithCaps(NULL);
 }
 
-static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap, bool passive)
+static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap)
 {
     if (!out || cap <= 0) return -1;
-    if (passive && (s_sta_running || s_ap_running)) return -1;
     if (ensure_stack() != ESP_OK) return -1;
 
     /* Scan requires WiFi to be started; enable STA transiently if idle. Do
@@ -1208,7 +1220,6 @@ static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap, bool passive)
     }
 
     wifi_scan_config_t sc = {0};
-    if (passive) { sc.scan_type = WIFI_SCAN_TYPE_PASSIVE; sc.show_hidden = true; }
     esp_err_t e = esp_wifi_scan_start(&sc, /* block=*/true);
     if (e != ESP_OK) {
         ESP_LOGW(TAG, "scan failed: %s", esp_err_to_name(e));
@@ -1270,7 +1281,7 @@ static int sta_scan_locked(ls_wifi_scan_ap_t *out, int cap, bool passive)
         out[written].ssid[sizeof(out[written].ssid) - 1] = '\0';
         /* Hidden and control-character names cannot be selected by this API;
          * don't let newline SSIDs corrupt a dropdown's option mapping. */
-        if (!passive && !ls_wifi_ssid_valid(out[written].ssid)) continue;
+        if (!ls_wifi_ssid_valid(out[written].ssid)) continue;
         memcpy(out[written].bssid, recs[i].bssid, 6);
         out[written].auth = recs[i].authmode;
         out[written].rssi   = recs[i].rssi;
@@ -1340,12 +1351,10 @@ static void status_locked(char *buf, int cap)
     }
 }
 
-static _Atomic bool s_survey;
-
 typedef enum {
     WIFI_OP_AP_START, WIFI_OP_AP_STOP, WIFI_OP_JOIN, WIFI_OP_LEAVE,
     WIFI_OP_FORGET, WIFI_OP_FORGET_ALL, WIFI_OP_SAVE, WIFI_OP_LIST, WIFI_OP_JOIN_SAVED, WIFI_OP_AUTOJOIN, WIFI_OP_SCAN, WIFI_OP_STA_STATUS,
-    WIFI_OP_STATUS, WIFI_OP_STA_INFO, WIFI_OP_SURVEY, WIFI_OP_SURVEY_BEGIN,
+    WIFI_OP_STATUS, WIFI_OP_STA_INFO,
 } wifi_operation_kind_t;
 
 typedef struct {
@@ -1368,13 +1377,7 @@ static int dispatch_operation(void *context)
         r->kind == WIFI_OP_FORGET || r->kind == WIFI_OP_FORGET_ALL ||
         r->kind == WIFI_OP_SAVE || r->kind == WIFI_OP_JOIN_SAVED || r->kind == WIFI_OP_AUTOJOIN)
         pending_commit_locked();
-    if (s_survey && (r->kind == WIFI_OP_AP_START || r->kind == WIFI_OP_JOIN ||
-                     r->kind == WIFI_OP_JOIN_SAVED || r->kind == WIFI_OP_AUTOJOIN || r->kind == WIFI_OP_SCAN))
-        return ESP_ERR_INVALID_STATE;
     switch (r->kind) {
-    case WIFI_OP_SURVEY_BEGIN:
-        if (s_sta_running || s_ap_running || s_survey) return ESP_ERR_INVALID_STATE;
-        s_survey = true; return ESP_OK;
     case WIFI_OP_AP_START: return ap_start_locked();
     case WIFI_OP_AP_STOP: return ap_stop_locked();
     case WIFI_OP_JOIN:
@@ -1407,8 +1410,7 @@ static int dispatch_operation(void *context)
         if (r->capacity && !ls_wifi_sta_needs_join(s_sta_running, s_sta_connected, s_sta_gave_up)) return ESP_OK;
         s_roam_used = false; s_roam_pending = false;
         return sta_autojoin_locked();
-    case WIFI_OP_SCAN: return sta_scan_locked(r->out, r->capacity, false);
-    case WIFI_OP_SURVEY: return s_survey ? sta_scan_locked(r->out, r->capacity, true) : -1;
+    case WIFI_OP_SCAN: return sta_scan_locked(r->out, r->capacity);
     case WIFI_OP_STA_STATUS: sta_status_locked(r->out, r->capacity); return ESP_OK;
     case WIFI_OP_STATUS: status_locked(r->out, r->capacity); return ESP_OK;
     case WIFI_OP_STA_INFO: {
@@ -1546,18 +1548,6 @@ void ls_wifi_status(char *buf, int cap)
         snprintf(buf, cap, "Wi-Fi busy; retry shortly");
 }
 
-int ls_wifi_survey_scan(ls_wifi_scan_ap_t *out, int cap)
-{
-    int rc = perform(WIFI_OP_SURVEY, NULL, NULL, out, cap);
-    return rc == ESP_ERR_INVALID_STATE ? -1 : rc;
-}
-
-esp_err_t ls_wifi_survey_mode(bool active)
-{
-    if (!active) { s_survey = false; return ESP_OK; }
-    return perform(WIFI_OP_SURVEY_BEGIN, NULL, NULL, NULL, 0);
-}
-
 void ls_wifi_link_status(ls_wifi_link_status_t *out)
 {
     memset(out,0,sizeof(*out));out->saved=-1;
@@ -1577,6 +1567,15 @@ esp_err_t ls_wifi_sta_ensure(void)
 
 bool ls_wifi_sta_gave_up(void) { return s_sta_gave_up; }
 
+void ls_wifi_monitor_hold(bool hold)
+{
+    s_monitor_hold = hold;
+    if (hold || !s_reconnect_timer || !s_sta_running || s_sta_connected || s_sta_gave_up) return;
+    s_reconnect_ms = ls_wifi_backoff_reset(LS_WIFI_BACKOFF_MIN_MS);
+    esp_timer_stop(s_reconnect_timer);
+    esp_timer_start_once(s_reconnect_timer, 200000ULL);
+}
+
 esp_err_t ls_wifi_c6_quiesce(void)
 {
     s_c6_update = true;
@@ -1591,7 +1590,6 @@ esp_err_t ls_wifi_c6_quiesce(void)
     s_roam_pending = s_cleanup_pending = false;
     s_sta_running = s_sta_connected = s_ap_running = false;
     s_sta_gave_up = true;
-    s_survey = false;
     s_ip_sta[0] = 0;
     esp_err_t error = ESP_OK;
     if (s_httpd) {

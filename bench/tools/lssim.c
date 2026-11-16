@@ -266,8 +266,6 @@ static const ls_app_t APPS[] = {
       LS_APP_MAIN, &ls_scr_adsb, NULL, &ls_doc_adsb },
     { "freqs", "FREQS", "frequency library", LS_ICON_FREQS, TUI_YELLOW,
       LS_APP_EXTRA, &ls_scr_freqs, NULL, &ls_doc_freqs },
-    { "rec",  "REC",  "capture",   LS_ICON_RECORD, TUI_RED,
-      LS_APP_EXTRA, &ls_scr_rec, NULL, &ls_doc_rec },
     { "diag", "DIAG", "health",    LS_ICON_CHIP,  TUI_WHITE,
       LS_APP_EXTRA, &ls_scr_diag, NULL, &ls_doc_diag },
     { "terminal", "TERMINAL", "console", LS_ICON_TERMINAL, TUI_GREEN,
@@ -299,7 +297,7 @@ static const ls_app_t APPS[] = {
     { "compass", "COMPASS", "bearings", LS_ICON_COMPASS, TUI_YELLOW, LS_APP_EXTRA, &ls_scr_compass, NULL, &ls_doc_compass },
     { "rfsurvey", "RF SURVEY", "heat map", LS_ICON_HEAT, TUI_MAGENTA, LS_APP_EXTRA, &ls_scr_rfsurvey, NULL, &ls_doc_rfsurvey },
     { "fox", "FOX HUNT", "find a TX", LS_ICON_FOX, TUI_YELLOW, LS_APP_EXTRA, &ls_scr_fox, NULL, &ls_doc_fox },
-    { "subghz", "SUB-GHZ", "passive watch", LS_ICON_SUBGHZ, TUI_GREEN, LS_APP_EXTRA, &ls_scr_subghz, NULL, &ls_doc_subghz },
+    { "subghz", "SUB-GHZ", "rec + replay", LS_ICON_SUBGHZ, TUI_GREEN, LS_APP_EXTRA, &ls_scr_subghz, NULL, &ls_doc_subghz },
     { "music", "MUSIC", "player", LS_ICON_MUSIC, TUI_CYAN, LS_APP_EXTRA, &ls_scr_music, NULL, &ls_doc_music },
     { "mixrf", "MIX-RF", "keyboard radios", LS_ICON_CHIP, TUI_CYAN, LS_APP_EXTRA, &ls_scr_mixrf, NULL, &ls_doc_mixrf },
     { "p25-design", "P25 DESIGN", "preview", LS_ICON_TOWER, TUI_CYAN, LS_APP_EXTRA, &lssim_p25_preview, NULL, &sim_preview_doc },
@@ -521,9 +519,11 @@ double lssim_map_scene_coord(double v,bool latitude) {
 }
 static void feed_map(void)
 {
-    if (getenv("LSSIM_CARTOCORE")) ls_map_center(43.4445,-71.6473);
+    /* LSSIM_MAP_START: leave the map unplaced, as after a boot */
+    const bool placed = !getenv("LSSIM_MAP_START");
+    if (getenv("LSSIM_CARTOCORE")) { if (placed) ls_map_center(43.4445,-71.6473); }
     else if (ls_map_open(s_map_archive))
-        ls_map_center(43.4445, -71.6473);
+        { if (placed) ls_map_center(43.4445, -71.6473); }
     else
         printf("lssim: no map archive at %s\n", s_map_archive);
     /* Markers and a drawn line, in a scratch file so a render never writes
@@ -1658,7 +1658,7 @@ int main(int argc, char **argv)
         settings_set_map_layers((layers&0x8fffffffU)|((uint32_t)(!strcmp(cc_fill,"braille")?4:!strcmp(cc_fill,"picture")?5:3)<<28));
         double lat=43.4445,lon=-71.6473;
         const char *center=getenv("LSSIM_CARTO_CENTER");if(center) sscanf(center,"%lf,%lf",&lat,&lon);
-        ls_map_center(lat,lon);
+        if(center || !getenv("LSSIM_MAP_START")) ls_map_center(lat,lon);
         const char *zoom=getenv("LSSIM_CARTO_ZOOM");
         ls_map_zoom_by((zoom?atoi(zoom):14)-ls_map_zoom());
     }

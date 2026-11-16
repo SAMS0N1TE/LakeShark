@@ -86,11 +86,20 @@ decode:;
         if(!copy) { a->used=mark; return 0; }
         memcpy(copy,out->data,out->size); out->data=copy;
     }
-    if(!c || !c->data) return 1;
-    size_t header=aligned(sizeof(block));
-    if(out->size>c->size-header) { c->bypasses++; return 1; }
-    size_t need=header+aligned(out->size); block *b=space(c,need);
-    if(!b) { c->bypasses++; return 1; }
+    size_t header=aligned(sizeof(block)),need=0; block *b=0;
+    if(c && c->data) {
+        if(out->size<=c->size-header) b=space(c,need=header+aligned(out->size));
+        if(!b) c->bypasses++;
+    }
+    if(!b) {
+        /* Left in the arena: keep the result alone, not what it was decoded
+           from (a dense v7 tile's zstd output is most of its size again). */
+        size_t at=mark+((size_t)(0-(uintptr_t)(a->data+mark))&7);
+        if(out->data>a->data+at && out->data+out->size==a->data+a->used) {
+            memmove(a->data+at,out->data,out->size); out->data=a->data+at; a->used=at+out->size;
+        }
+        return 1;
+    }
     if(b->span-need>=header+ALIGN) {
         block *next=(block*)((uint8_t*)b+need); memset(next,0,sizeof(*next)); next->span=b->span-need; b->span=need;
     }

@@ -15,6 +15,7 @@ extern void ls_lap_peripheral_host_pump(void);
 #include "host/ble_sm.h"
 #include "host/ble_store.h"
 #include "ls_board.h"
+#include "ls_nvs_safe.h"
 #include "nimble/nimble_port.h"
 #include "nvs.h"
 #include "os/os_mbuf.h"
@@ -1337,6 +1338,18 @@ static void timer_cb(struct ble_npl_event *ev)
     }
     ble_npl_callout_reset(&tick, ble_npl_time_ms_to_ticks32(10));
 }
+static esp_err_t load_saved_job(void *ctx)
+{
+    (void)ctx;
+    nvs_handle_t n;
+    if (!nvs_open("ls_hid", NVS_READONLY, &n)) {
+        size_t len = sizeof(s.saved);
+        if (nvs_get_blob(n, "devices_v1", s.saved, &len) != ESP_OK || len != sizeof(s.saved))
+            memset(s.saved, 0, sizeof(s.saved));
+        nvs_close(n);
+    }
+    return ESP_OK;
+}
 void ble_hid_init(void)
 {
     if (s.initialized)
@@ -1346,13 +1359,8 @@ void ble_hid_init(void)
         s.peers[i].conn = BLE_HS_CONN_HANDLE_NONE;
         s.peers[i].saved = -1;
     }
-    nvs_handle_t n;
-    if (!nvs_open("ls_hid", NVS_READONLY, &n)) {
-        size_t len = sizeof(s.saved);
-        if (nvs_get_blob(n, "devices_v1", s.saved, &len) != ESP_OK || len != sizeof(s.saved))
-            memset(s.saved, 0, sizeof(s.saved));
-        nvs_close(n);
-    }
+    /* BLE's cold start can run on the SD app worker, whose stack is PSRAM. */
+    ls_nvs_run(load_saved_job, NULL, 0);
     for (unsigned i = 0; i < HID_BONDS; i++) {
         s.saved[i].view.state = s.saved[i].blocked == HID_AUTHENTICATION_FAILED ? HID_NEEDS_PAIRING
                                 : s.saved[i].blocked                            ? HID_UNSUPPORTED

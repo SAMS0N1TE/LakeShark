@@ -33,4 +33,12 @@ int cc_cellset_open_direct(cc_cellset *set,cc_cellset_io io,void *directory,size
 int cc_cellset_resolve(cc_cellset *set,unsigned z,uint32_t x,uint32_t y,uint64_t *offset,uint32_t *length);
 int cc_cellset_scene(cc_cellset *set,unsigned z,int64_t left,int64_t top,int cols,int rows,
                      cc_arena *arena,cc_scene *scene,cc_decoded_cache *cache);
+/* Engine internals of the scene builders. Merge appends src to dst. Coarser:
+   the arena could not hold source tile (tz,tx,ty) drawn at zoom z, so its
+   nearest ancestor that fits stands in, scaled up and clipped to r, the tile's
+   share of the cols x rows view in view dots. 1 drawn (or nothing there), 0
+   when no ancestor fits or the data is bad; part is reset either way. */
+void cc_scene_merge(cc_scene *dst,cc_scene *src);
+int cc_scene_coarser(const cc_ctile *file,unsigned z,unsigned tz,uint32_t tx,uint32_t ty,int64_t left,int64_t top,
+                     int32_t cols,int32_t rows,const int64_t r[4],cc_arena *arena,cc_decoded_cache *cache,cc_scene *part);
 #endif

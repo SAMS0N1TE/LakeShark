@@ -1,5 +1,6 @@
-/* LINK: Wi-Fi, the Bluetooth control head, the Wi-Fi survey and the ways
-   into the board from a phone or a PC.
+/* LINK: Wi-Fi, the Bluetooth control head and the ways into the board
+   from a phone or a PC. The Wi-Fi/Bluetooth survey recorder is the WIFI
+   SURVEY app's RECORD tab now (same CSV, same folder); V opens it.
 
    One header says what is up before anything is tapped: the network, its
    address and level, the head, and which remote doors are open. The things
@@ -14,7 +15,7 @@
 #include "../../ls_tui_ui.h"
 #include "../../ls_keyboard.h"
 #include "../../ls_wireless.h"
-#include "../../ls_survey_ui.h"
+#include "../../ls_app.h"
 #include "../../ls_options.h"
 #include "../../ls_motion.h"
 #include "../../ls_rterm.h"
@@ -29,7 +30,7 @@
 #define WHITE INK(TUI_WHITE | TUI_BRIGHT)
 #define CYAN INK(TUI_CYAN | TUI_BRIGHT)
 
-enum { TAB_WIFI, TAB_BT, TAB_SURVEY, TAB_REMOTE };
+enum { TAB_WIFI, TAB_BT, TAB_REMOTE };
 
 typedef struct { tui_rect rect; char key; int ap; } hit_t;
 #define HIT_MAX 32
@@ -487,8 +488,16 @@ static void act(char ch)
 {
     if (ch == 'g' || ch == 'G') { ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_drones)); return; }
     if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
-    if (ch == 'w' || ch == 'b' || ch == 'v' || ch == 'e') {
-        s_tab = ch == 'e' ? TAB_REMOTE : ch == 'v' ? TAB_SURVEY : ch == 'b';
+    /* Survey is in WIFI SURVEY (its RECORD tab), an app from the card. */
+    if (ch == 'v') {
+        for (int i = 0; i < ls_app_count(); i++)
+            if (!strcmp(ls_app_at(i)->id, "wifi_survey")) { ls_app_open(i); return; }
+        s_tab = TAB_WIFI; s_hit_count = 0; s_focus = -1;
+        snprintf(s_note, sizeof(s_note), "Survey is in WIFI SURVEY: install it from the card");
+        return;
+    }
+    if (ch == 'w' || ch == 'b' || ch == 'e') {
+        s_tab = ch == 'e' ? TAB_REMOTE : ch == 'b';
         s_hit_count = 0; s_note[0] = 0; s_show_pass = false; s_focus = -1;
         return;
     }
@@ -826,18 +835,15 @@ static void draw(tui_surface *sf, tui_rect area)
     ls_rterm_status_t st;
     ls_rterm_status(&st);
     int y = area.y;
-    /* The survey is a dashboard of its own and wants the rows. */
-    if (s_tab != TAB_SURVEY) y += header(sf, area, &st, wide);
+    y += header(sf, area, &st, wide);
 
-    const int tab_h = wide ? 3 : 4, tab_w = area.w / 4;
+    const int tab_h = wide ? 3 : 4, tab_w = area.w / 3;
     button(sf, tui_rect_make(area.x, y, tab_w, tab_h), "WI-FI", 'W', s_tab == TAB_WIFI, false, -1);
     button(sf, tui_rect_make(area.x + tab_w, y, tab_w, tab_h),
            tab_w >= 13 ? "BLUETOOTH" : "BT", 'B', s_tab == TAB_BT, false, -1);
-    button(sf, tui_rect_make(area.x + tab_w * 2, y, tab_w, tab_h), "SURVEY", 'V', s_tab == TAB_SURVEY, false, -1);
-    button(sf, tui_rect_make(area.x + tab_w * 3, y, area.w - tab_w * 3, tab_h), "REMOTE", 'E', s_tab == TAB_REMOTE, false, -1);
+    button(sf, tui_rect_make(area.x + tab_w * 2, y, area.w - tab_w * 2, tab_h), "REMOTE", 'E', s_tab == TAB_REMOTE, false, -1);
     y += tab_h;
     tui_rect body = tui_rect_make(area.x, y, area.w, area.y + area.h - y);
-    if (s_tab == TAB_SURVEY) { ls_survey_draw(sf, body); return; }
 
     /* The big keys, under the thumb: what is done on the move. */
     ls_btn_t bar[4];
@@ -877,12 +883,11 @@ static void draw(tui_surface *sf, tui_rect area)
 static bool key(ls_tk_t k, char ch)
 {
     if (k == LS_TK_TAB) {
-        static const char NEXT[] = { 'b', 'v', 'e', 'w' };   /* the tabs, left to right */
-        act(NEXT[s_tab == TAB_WIFI ? 0 : s_tab == TAB_BT ? 1 : s_tab == TAB_SURVEY ? 2 : 3]);
+        static const char NEXT[] = { 'b', 'e', 'w' };   /* the tabs, left to right */
+        act(NEXT[s_tab == TAB_WIFI ? 0 : s_tab == TAB_BT ? 1 : 2]);
         return true;
     }
     if (k == LS_TK_CHAR && ch && strchr("gGvVwWbBeE", ch)) { act(ch); return true; }
-    if (s_tab == TAB_SURVEY) return ls_survey_key(k, ch);
     if (k == LS_TK_LEFT || k == LS_TK_RIGHT) return ls_btn_navigate(k, &s_slot, &s_focus, false);
     if (k == LS_TK_ENTER && s_focus >= 0 && s_focus < s_bar_n) {
         if (ls_btn_enabled(0, s_focus)) act(s_bar_keys[s_focus]);
@@ -920,7 +925,6 @@ static bool touch(int x, int y)
         else if (hit.key) act(hit.key);
         return true;
     }
-    if (s_tab == TAB_SURVEY) return ls_survey_touch(x, y);
     return true;
 }
 
@@ -933,6 +937,6 @@ static void enter(void) {
 static void leave(void) { s_hit_count = 0; ls_wireless_set_active(false); }
 
 const ls_tui_screen_t ls_scr_wireless = {
-    .name = "LINK", .hint = "W Wi-Fi  B Bluetooth  V Survey  E Remote  O options  G Drones",
+    .name = "LINK", .hint = "W Wi-Fi  B Bluetooth  E Remote  O options  G Drones  V Survey (WIFI SURVEY)",
     .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch,
 };

@@ -41,6 +41,21 @@ static bool s_btn_enabled[BTN_SLOTS][MAX_HITS];
 static char s_btn_keys[BTN_SLOTS][MAX_HITS];
 EXT_RAM_BSS_ATTR static uint32_t s_btn_value[BTN_SLOTS][MAX_HITS];
 EXT_RAM_BSS_ATTR static int64_t s_btn_change[BTN_SLOTS][MAX_HITS];
+/* Where the bar that last drew each key stood. An app may draw two bars in
+   one frame (a tab strip and its keys); each then overwrites the other's
+   record, and only a change within the same bar is a change. */
+EXT_RAM_BSS_ATTR static int32_t s_btn_at[BTN_SLOTS][MAX_HITS];
+
+/* Records key i's face; true while it shows a fresh change (a press, a new value). */
+static bool btn_changed(int slot, int i, uint32_t token, tui_rect bar, int64_t now)
+{
+    const int32_t at = (int32_t)(((uint32_t)(uint16_t)bar.y << 16) | (uint16_t)bar.x);
+    if (s_btn_value[slot][i] && s_btn_value[slot][i] != token && s_btn_at[slot][i] == at)
+        s_btn_change[slot][i] = now;
+    s_btn_value[slot][i] = token;
+    s_btn_at[slot][i] = at;
+    return s_btn_change[slot][i] && now - s_btn_change[slot][i] < 240000;
+}
 
 static hit_t s_tile_hit[MAX_HITS];
 static int   s_tile_n, s_tile_cols, s_tile_rows;
@@ -253,9 +268,7 @@ static void compact_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int 
         for (int p = 0; p < 2; p++) if (parts[p])
             for (const char *c = parts[p]; *c; c++) token = (token ^ (unsigned char)*c) * 16777619u;
         token ^= (btn[i].on ? 1u : 0u) | (btn[i].dim ? 2u : 0u);
-        if (s_btn_value[slot][i] && s_btn_value[slot][i] != token) s_btn_change[slot][i] = now;
-        s_btn_value[slot][i] = token;
-        const bool changed = s_btn_change[slot][i] && now - s_btn_change[slot][i] < 240000;
+        const bool changed = btn_changed(slot, i, token, bar, now);
         const int used = key1_paint(sf, bar, x, y, &btn[i], fit, i == focus, changed);
         const int k = s_btn_n[slot];
         s_btn_enabled[slot][k] = !btn[i].dim;
@@ -474,9 +487,7 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
             for (const char *c = parts[p]; *c; c++) token = (token ^ (unsigned char)*c) * 16777619u;
         token ^= (btn[i].on ? 1u : 0u) | (btn[i].dim ? 2u : 0u);
         int64_t now = esp_timer_get_time();
-        if (s_btn_value[slot][i] && s_btn_value[slot][i] != token) s_btn_change[slot][i] = now;
-        s_btn_value[slot][i] = token;
-        bool changed = s_btn_change[slot][i] && now - s_btn_change[slot][i] < 240000;
+        bool changed = btn_changed(slot, i, token, bar, now);
         uint8_t hue;
         int density;
         if (btn[i].dim)      { hue = TUI_BLACK | TUI_BRIGHT; density = LS_DITHER_LIGHT; }

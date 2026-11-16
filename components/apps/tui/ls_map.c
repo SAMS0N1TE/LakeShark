@@ -261,6 +261,7 @@ static const char *s_why = "no map archive loaded";
 
 static double s_lat = 43.4445, s_lon = -71.6473;   /* until told otherwise */
 static int    s_zoom = 12;
+static unsigned s_center_serial;                   /* counts every centring this boot */
 
 /* The last view that drew a tile, so "take me back" always has an
    answer. Seeded with the compiled default, which is inside the archive this
@@ -571,7 +572,11 @@ LS_COLD void ls_map_center(double lat, double lon)
     while (lon < -180.0) lon += 360.0;
     s_lat = lat;
     s_lon = lon;
+    s_center_serial++;
 }
+
+bool ls_map_placed(void) { return s_center_serial != 0; }
+unsigned ls_map_center_serial(void) { return s_center_serial; }
 
 bool ls_map_last_good(double *lat, double *lon, int *zoom)
 {

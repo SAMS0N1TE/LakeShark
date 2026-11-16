@@ -823,6 +823,16 @@ static bool touch(int x, int y)
     return true;
 }
 
+/* An experiment on the LoRa chip holds it in the foreground (it takes the
+   socket from MeshCore), so it ends with the screen: left running it kept
+   the chip from every other app and from the mesh. One that does not use
+   the chip (no_radio) carries on. */
+static void leave(void)
+{
+    const ls_experiment_t *e = ls_exp_wanted();
+    if (e && !e->no_radio) ls_exp_stop();
+}
+
 const ls_tui_screen_t ls_scr_experiments = {
-    .name = "EXPERIMENTS", .hint = s_hint, .enter = enter, .draw = draw, .key = key, .touch = touch,
+    .name = "EXPERIMENTS", .hint = s_hint, .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch,
 };

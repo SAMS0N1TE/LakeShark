@@ -376,9 +376,9 @@ int lap_radio_rssi(int h, lap_packet_meta_t *out) {
     return e;
 }
 int lap_scan_start(const lap_scan_config_t *cfg) {
-    if (!ptr(cfg, sizeof(*cfg)) || cfg->size != sizeof(*cfg) || cfg->version != 1 ||
-        cfg->count < 1 || cfg->count > 64 || cfg->dwell_ms < 20 || cfg->dwell_ms > 10000 ||
-        cfg->hang_ms > 10000)
+    if (!ptr(cfg, sizeof(*cfg)) || cfg->size != sizeof(*cfg) || cfg->version < 1 || cfg->version > 2 ||
+        cfg->count < 1 || cfg->count > 64 || cfg->dwell_ms < (cfg->version == 2 ? 1u : 20u) ||
+        cfg->dwell_ms > 10000 || cfg->hang_ms > 10000)
         return LAP_RX_EINVAL;
     lap_scan_config_t c = *cfg;
     for (unsigned i = 0; i < c.count; i++)
@@ -969,6 +969,14 @@ static LS_LAP_POOL struct {
     uint64_t deadline, last_signal;
     bool carrier;
     unsigned tries, tx_tries;
+    /* a version 2 scan step: readings taken, readings that answered, the
+       strongest, time spent reading; when the lease was last handed back */
+    unsigned reads, got;
+    int16_t peak;
+    uint32_t heard_us;
+    /* since when this app's sessions have held the radio without a break
+       (back-to-back scans count as one); when the last one let go */
+    uint64_t held_since, closed_at, reopen_at;
     bool seeking;
     uint64_t seek_target;
     FILE *file;
@@ -1055,6 +1063,152 @@ static int file_tx(const char *name, const char *id, lap_packet_config_t *cfg, i
     (void)cfg;
     return 0;
 }
+/* Move an open scan on to the next frequency of its list. In place when the
+   backend can (the radio lease is kept, so a step costs a retune instead of
+   a handover); a full close and open when it cannot. At the end of a pass of
+   the list, at most every SCAN_GIVE_EVERY_US, the scan closes and stays off
+   the radio for SCAN_GIVE_US: asking for the lease again at once leaves
+   MeshCore no time to take the chip (on the board its sends were refused for
+   a whole sweep), and a held chip is a paused mesh. */
+#define SCAN_GIVE_EVERY_US 2000000u
+#define SCAN_GIVE_US 250000u
+static void scan_advance(const ls_lap_io_backend_t *be, int id, int radio, lap_packet_config_t *cfg,
+                         const lap_scan_config_t *sc, uint64_t skip) {
+    const unsigned prev = p4_w.channel;
+    bool wrapped = false;
+    do {
+        p4_w.channel = (p4_w.channel + 1) % sc->count;
+        if (!p4_w.channel) {
+            wrapped = true;
+            lk();
+            p4_rx.ss.sweeps++;
+            ul();
+        }
+    } while ((skip & (1ull << p4_w.channel)) && p4_w.channel != prev);
+    if (skip & (1ull << p4_w.channel)) {
+        lk();
+        p4_rx.ss.state = LAP_IO_DONE;
+        p4_rx.status.state = LAP_IO_DONE;
+        ul();
+        be->close();
+        p4_w.opened = false;
+        lk();
+        p4_w.rx_done = true;
+        ul();
+        return;
+    }
+    cfg->frequency_hz = sc->frequencies[p4_w.channel];
+    const bool hand_back = wrapped && p4_w.held_since && now_us() - p4_w.held_since >= SCAN_GIVE_EVERY_US;
+    int e = 0;
+    if (hand_back) {
+        be->close();
+        e = LAP_RX_EAGAIN;                  /* opened again by the pass after the gap */
+        p4_w.held_since = 0;
+        p4_w.reopen_at = now_us() + SCAN_GIVE_US;
+    } else if (!be->retune || be->retune(cfg->frequency_hz) < 0) {
+        be->close();
+        e = be->open(radio, cfg, false);
+    }
+    p4_w.opened = e >= 0;
+    if (e >= 0)
+        p4_w.tries = 0;
+    p4_w.deadline = now_us() + (uint64_t)sc->dwell_ms * 1000;
+    p4_w.reads = p4_w.got = p4_w.heard_us = 0;
+    lk();
+    if (valid(id, p4_rx.id)) {
+        p4_rx.cfg = *cfg;
+        if (e < 0 && e != LAP_RX_EAGAIN) {
+            p4_w.rx_error = e;
+            p4_rx.status.state = p4_rx.ss.state = LAP_IO_FAILED;
+            p4_rx.status.error = e;
+            p4_rx.ss.error = e;
+        }
+    }
+    ul();
+}
+
+/* A version 2 scan listens through each dwell: the worker reads the RSSI as
+   fast as the bus answers and keeps the strongest, so a burst of a few
+   milliseconds is caught, and reports every step it finishes whose peak
+   reaches the squelch. It never holds on a signal (HOLD still holds). One
+   pass spends at most SCAN_PASS_US listening; a longer dwell carries on in
+   the next pass. Where the clock stands still for a pass (the bench), the
+   read and retune costs below stand in for it. */
+#define SCAN_PASS_US 8000u
+#define SCAN_READ_US 40u
+#define SCAN_MOVE_US 500u
+static void scan_listen(const ls_lap_io_backend_t *be, int id, int radio, lap_packet_config_t *cfg,
+                        const lap_scan_config_t *sc, unsigned control) {
+    const uint64_t start = now_us();
+    const uint32_t dwell_us = sc->dwell_ms * 1000u;
+    const unsigned reads_max = dwell_us / SCAN_READ_US ? dwell_us / SCAN_READ_US : 1;
+    lap_radio_info_t info;
+    const uint32_t flags =
+        !ls_lap_radio_snapshot(radio, &info) && info.kind == LAP_RADIO_KIND_SIM ? LAP_DATA_SYNTHETIC : 0;
+    lk();
+    if (control == LAP_SCAN_HOLD)
+        p4_rx.ss.held = 1;
+    if (control == LAP_SCAN_RESUME || control == LAP_SCAN_NEXT || control == LAP_SCAN_SKIP)
+        p4_rx.ss.held = 0;
+    if (control == LAP_SCAN_SKIP)
+        p4_rx.skip |= 1ull << p4_w.channel;
+    ul();
+    bool cut = control == LAP_SCAN_NEXT || control == LAP_SCAN_SKIP;
+    unsigned spent = 0;
+    while (p4_w.opened) {
+        while (!cut && p4_w.reads < reads_max && p4_w.heard_us < dwell_us) {
+            const uint64_t t = now_us();
+            int16_t v = INT16_MIN;
+            if (be->rssi(&v) >= 0 && v != INT16_MIN) {
+                if (!p4_w.got || v > p4_w.peak)
+                    p4_w.peak = v;
+                p4_w.got++;
+            }
+            p4_w.reads++;
+            p4_w.heard_us += (uint32_t)(now_us() - t);
+            spent += SCAN_READ_US;
+            if (spent >= SCAN_PASS_US || now_us() - start >= SCAN_PASS_US)
+                return;
+        }
+        lap_packet_meta_t m = {.frequency_hz = cfg->frequency_hz,
+                               .rssi_tenths_dbm = p4_w.got ? p4_w.peak : INT16_MIN,
+                               .snr_tenths_db = INT16_MIN,
+                               .sequence = p4_w.channel,
+                               .flags = flags,
+                               .length = (uint16_t)(p4_w.got > 65535u ? 65535u : p4_w.got)};
+        stamp(&m);
+        const bool open = p4_w.got && p4_w.peak >= sc->squelch_tenths_dbm;
+        lk();
+        bool held = false;
+        uint64_t skip = 0;
+        if (valid(id, p4_rx.id)) {
+            p4_rx.rssi = m;
+            if (open) {
+                if (p4_rx.hh - p4_rx.ht == 16)
+                    p4_rx.ss.dropped++;
+                else
+                    p4_rx.hits[p4_rx.hh++ % 16] = m;
+                p4_rx.ss.hits++;
+            }
+            p4_rx.ss.squelch_open = open;
+            p4_rx.ss.channel = p4_w.channel;
+            p4_rx.ss.frequency_hz = cfg->frequency_hz;
+            held = p4_rx.ss.held;
+            skip = p4_rx.skip;
+        }
+        ul();
+        p4_w.reads = p4_w.got = p4_w.heard_us = 0;
+        if (held && !cut)
+            p4_w.deadline = now_us() + dwell_us;
+        else
+            scan_advance(be, id, radio, cfg, sc, skip);
+        cut = false;
+        spent += SCAN_MOVE_US;
+        if (spent >= SCAN_PASS_US || now_us() - start >= SCAN_PASS_US)
+            return;
+    }
+}
+
 bool ls_lap_io_service(void) {
     const ls_lap_io_backend_t *be = ls_lap_io_backend();
     int id, kind, radio;
@@ -1073,6 +1227,8 @@ bool ls_lap_io_service(void) {
     if (p4_w.rx_id != id) {
         if (p4_w.rx_id)
             be->close();
+        if (p4_w.rx_id && p4_w.opened)
+            p4_w.closed_at = now_us();
         p4_w.opened = false;
         p4_w.tries = 0;
         p4_w.rx_id = id;
@@ -1081,6 +1237,16 @@ bool ls_lap_io_service(void) {
         p4_w.channel = 0;
         p4_w.carrier = false;
         p4_w.deadline = 0;
+        p4_w.reopen_at = 0;
+        /* An app that restarts its scan for every list (BUGHUNT's plan is
+           longer than 64) holds the radio as surely as one long scan: the
+           turn MeshCore is owed is kept across back-to-back sessions. */
+        if (id && now_us() - p4_w.closed_at > 250000u)
+            p4_w.held_since = 0;
+        if (id && kind == 3 && p4_w.held_since && now_us() - p4_w.held_since >= SCAN_GIVE_EVERY_US) {
+            p4_w.held_since = 0;
+            p4_w.reopen_at = now_us() + SCAN_GIVE_US;
+        }
     }
     /* A background app's session gives the LoRa chip to a radio app or to
        MeshCore that wants it, and waits queued (no tries counted) until it is
@@ -1090,11 +1256,14 @@ bool ls_lap_io_service(void) {
     if (aside) {
         be->close();
         p4_w.opened = false;
+        p4_w.held_since = 0;
     }
     if (id && kind != 4 && !p4_w.rx_error && !p4_w.rx_done) {
         int e = 0;
         if (aside)
             e = LAP_RX_EAGAIN;
+        else if (!p4_w.opened && now_us() < p4_w.reopen_at)
+            e = LAP_RX_EAGAIN;      /* a scan handing the lease back: MeshCore's turn */
         else if (!p4_w.opened) {
             e = be->open(radio, &cfg, kind == 2);
             if (e == LAP_RX_EAGAIN && ++p4_w.tries >= 250) {
@@ -1107,7 +1276,11 @@ bool ls_lap_io_service(void) {
             }
             if (e >= 0) {
                 p4_w.opened = true;
+                p4_w.tries = 0;     /* counts waits in a row, not over a scan's life */
                 p4_w.deadline = now_us() + (uint64_t)sc.dwell_ms * 1000;
+                p4_w.reads = p4_w.got = p4_w.heard_us = 0;
+                if (!p4_w.held_since)
+                    p4_w.held_since = now_us();
             }
         }
         lk();
@@ -1120,7 +1293,9 @@ bool ls_lap_io_service(void) {
             p4_rx.ss.error = e;
         }
         ul();
-        if (p4_w.opened) {
+        if (p4_w.opened && kind == 3 && sc.version == 2)
+            scan_listen(be, id, radio, &cfg, &sc, control);
+        else if (p4_w.opened) {
             lap_packet_meta_t m = {.frequency_hz = cfg.frequency_hz,
                                    .rssi_tenths_dbm = INT16_MIN,
                                    .snr_tenths_db = INT16_MIN};
@@ -1167,44 +1342,8 @@ bool ls_lap_io_service(void) {
                     (control == LAP_SCAN_NEXT || control == LAP_SCAN_SKIP ||
                      (now_us() >= p4_w.deadline &&
                       (!signal && now_us() - p4_w.last_signal >= (uint64_t)sc.hang_ms * 1000)))) {
-                    unsigned prev = p4_w.channel;
-                    do {
-                        p4_w.channel = (p4_w.channel + 1) % sc.count;
-                        if (!p4_w.channel) {
-                            lk();
-                            p4_rx.ss.sweeps++;
-                            ul();
-                        }
-                    } while ((skip & (1ull << p4_w.channel)) && p4_w.channel != prev);
-                    if (skip & (1ull << p4_w.channel)) {
-                        lk();
-                        p4_rx.ss.state = LAP_IO_DONE;
-                        p4_rx.status.state = LAP_IO_DONE;
-                        ul();
-                        be->close();
-                        p4_w.opened = false;
-                        lk();
-                        p4_w.rx_done = true;
-                        ul();
-                    } else {
-                        cfg.frequency_hz = sc.frequencies[p4_w.channel];
-                        be->close();
-                        e = be->open(radio, &cfg, false);
-                        p4_w.opened = e >= 0;
-                        p4_w.carrier = false;
-                        p4_w.deadline = now_us() + (uint64_t)sc.dwell_ms * 1000;
-                        lk();
-                        if (valid(id, p4_rx.id)) {
-                            p4_rx.cfg = cfg;
-                            if (e < 0 && e != LAP_RX_EAGAIN) {
-                                p4_w.rx_error = e;
-                                p4_rx.status.state = p4_rx.ss.state = LAP_IO_FAILED;
-                                p4_rx.status.error = e;
-                                p4_rx.ss.error = e;
-                            }
-                        }
-                        ul();
-                    }
+                    scan_advance(be, id, radio, &cfg, &sc, skip);
+                    p4_w.carrier = false;
                 }
             } else {
                 uint8_t data[BLOCK];

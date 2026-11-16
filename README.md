@@ -40,11 +40,10 @@ On-chip waterfall · On-chip down-conversion · Background LoRa scan · FM at ha
     <tr><th>Hardware</th><th>Use</th><th>Firmware</th></tr>
   </thead>
   <tbody>
-    <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>2.23.2 stable</td></tr>
-    <tr><td><strong>LILYGO T-Display P4 TFT</strong></td><td>Handheld</td><td>2.23.2 stable</td></tr>
-    <tr><td><strong>LILYGO T-Display P4, LR edition</strong> (LR2021 only)</td><td>Handheld</td><td>2.23.2 stable</td></tr>
-    <tr><td><strong>LILYGO T-Display P4, NET edition</strong> (AMOLED, Wi-Fi, Bluetooth and USB Ethernet)</td><td>Handheld</td><td>2.23.2 stable</td></tr>
-    <tr><td><strong>Waveshare ESP32-P4-NANO-DB</strong> (P4 rev 3, ESP32-C5)</td><td>LakeShark Desktop</td><td>2.22.0 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>2.21.2 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4 TFT</strong></td><td>Handheld</td><td>2.21.2 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4, LR edition</strong> (LR2021 only)</td><td>Handheld</td><td>2.21.2 stable</td></tr>
+    <tr><td><strong>Waveshare ESP32-P4-NANO-DB</strong> (P4 rev 3, ESP32-C5)</td><td>LakeShark Desktop</td><td>2.21.2 stable</td></tr>
     <tr><td><strong>Waveshare ESP32-P4-NANO</strong></td><td>Headless (serial, Flipper)</td><td>2.0.2 in the installer, newer from source</td></tr>
     <tr><td><strong>Waveshare Touch-LCD-4.3, Touch-LCD-4B, Smart 86 Box</strong></td><td>Touch screen</td><td>Up to 2.16.4, no longer updated</td></tr>
     <tr><td><strong>RTL-SDR Blog/Nooelec V3/V4</strong></td><td>USB SDR</td><td>All current builds except the LR edition</td></tr>
@@ -114,21 +113,13 @@ screen, mouse and keyboard over one USB cable.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.23.2">Get 2.23.2 for T-Display</a>
-  &nbsp;·&nbsp;
-  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.22.0">Get 2.22.0 for Desktop and NANO</a>
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.21.2">Get 2.21.2</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/SAMS0N1TE/LakeShark/blob/main/app-sdk/README.md#your-first-app-in-5-minutes">Make your first app</a>
 </p>
 
 <h2 align="center">What's New</h2>
 
-<p align="center"><strong>2.23.2 (T-Display P4):</strong> TAP packet analyser · Wi-Fi and Bluetooth apps in the app store · BUGHUNT for trackers and bugs · MESHTASTIC with an offline Spanish to English translator · LakeShark NET edition</p>
-<p align="center"><strong>2.21.5 (T-Display P4):</strong> SUB-GHZ as one app with a live waveform · FREQUENCY ANALYZER against each frequency's own noise floor · TX on the antenna you select · Draggable FM and P25 bars</p>
-<p align="center"><strong>2.22.0 (Desktop, Studio, ESP32-P4-NANO):</strong> Desktop shortcuts, Control Panel and Task Manager · BOOT LOG · FREQS, MESH, ADS-B and P25 laid out for the desktop · TAP packet analyser with Wi-Fi, BLE and LoRa capture</p>
-<p align="center"><strong>2.21.4 (Desktop, Studio, ESP32-P4-NANO):</strong> Studio app installs on the NANO no longer fail · New desktop and Studio installer · T-Display boards: see 2.21.5</p>
-<p align="center"><strong>2.21.3:</strong> FREQS frequency library with imports and NEAR · MESHTASTIC app · Lists scroll under a finger · FM waterfall ZOOM to 32x</p>
-<p align="center">SUB-GHZ WATCH, READ and BAND · P25 shows why a grant was not followed · The LR2021 moves cleanly between apps</p>
 <p align="center"><strong>2.21:</strong> DOPPLER RADAR with two boards · FREQ OFFSET for crystal LR2021 modules · UAT 978 hears every frame</p>
 <p align="center">New SETTINGS pages · POWER modes with WATCH · GPS standby saves about 23 mA · Redrawn MUSIC views</p>
 <p align="center"><strong>2.21.1 and 2.21.2:</strong> Sharp street-level MAP zooms · RTL-SDR Blog V4 FM and REC · Steady P25 GPS sites</p>
@@ -140,7 +131,7 @@ screen, mouse and keyboard over one USB cable.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.21.3">Release notes</a>
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.21.2">Release notes</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/SAMS0N1TE/LakeShark/releases">All releases</a>
 </p>

@@ -35,6 +35,7 @@
 #include "ls_gauge.h"
 #include "../../ls_braille.h"
 #include "../../ls_tui_touch.h"
+#include "../../ls_slider_drag.h"
 #include "../../ls_radio_panel.h"
 
 static int s_sel;
@@ -53,6 +54,9 @@ typedef struct {
     int  (*pct)(void);
     /* A level set outright, 0..100: what a finger on its slider does. */
     void (*set)(int pct);
+    /* The same while a finger is still dragging the slider: live, not saved;
+       `set` saves the level the finger lets go at. */
+    void (*preview)(int pct);
     /* A row with nothing to show right now (a service slot not in use). */
     bool (*hidden)(void);
     bool warn;
@@ -360,18 +364,38 @@ static void lang_next(void) { ls_i18n_set_lang(ls_i18n_next(ls_i18n_lang())); }
 
 static int vol_pct(void)      { return audio_volume_get(); }
 static int bri_pct(void)      { return display_ctl_get_user(); }
-/* Only on a change: both save, and a held finger asks every frame. */
+/* Both levels move in fives, the steps their keys take. */
+static int vol_level(int v) { v = (v + 2) / 5 * 5; return v < 0 ? 0 : v > 100 ? 100 : v; }
+static int bri_level(int v) { v = (v + 2) / 5 * 5; return v < 5 ? 5 : v > 100 ? 100 : v; }
+/* A level a drag has put on the speaker or the panel without saving it. */
+static bool s_vol_unsaved, s_bri_unsaved;
+/* Only on a change, since both save - or to save what a drag left live,
+   which is the level already showing. */
 static void vol_set(int v)
 {
-    v = (v + 2) / 5 * 5;
-    v = v < 0 ? 0 : v > 100 ? 100 : v;
-    if (v != audio_volume_get()) audio_volume_set(v);
+    v = vol_level(v);
+    if (v != audio_volume_get() || s_vol_unsaved) audio_volume_set(v);
+    s_vol_unsaved = false;
 }
 static void bri_set(int v)
 {
-    v = (v + 2) / 5 * 5;
-    v = v < 5 ? 5 : v > 100 ? 100 : v;
-    if (v != display_ctl_get_user()) display_ctl_set_user(v);
+    v = bri_level(v);
+    if (v != display_ctl_get_user() || s_bri_unsaved) display_ctl_set_user(v);
+    s_bri_unsaved = false;
+}
+static void vol_preview(int v)
+{
+    v = vol_level(v);
+    if (v == audio_volume_get()) return;
+    audio_volume_preview(v);
+    s_vol_unsaved = true;
+}
+static void bri_preview(int v)
+{
+    v = bri_level(v);
+    if (v == display_ctl_get_user()) return;
+    display_ctl_preview_user(v);
+    s_bri_unsaved = true;
 }
 static int mute_on(void)      { return audio_is_muted(); }
 static int rotlock_on(void)   { return !settings_get_auto_rotate(); }
@@ -451,8 +475,8 @@ typedef struct {
 static int s_page = SETP_ROOT;
 
 static const item_t QUICK_ITEMS[] = {
-    { .label = "Volume",      .show = vol_show,     .next = vol_next,     .step = vol_step, .pct = vol_pct, .set = vol_set },
-    { .label = "Brightness",  .show = bri_show,     .next = bri_next,     .step = bri_step, .pct = bri_pct, .set = bri_set },
+    { .label = "Volume",      .show = vol_show,     .next = vol_next,     .step = vol_step, .pct = vol_pct, .set = vol_set, .preview = vol_preview },
+    { .label = "Brightness",  .show = bri_show,     .next = bri_next,     .step = bri_step, .pct = bri_pct, .set = bri_set, .preview = bri_preview },
     { .label = "Mute",        .show = mute_show,    .next = mute_next,    .on = mute_on, .warn = true },
     { .label = "Screen lock", .show = lock_show,    .next = lock_next },
     { .label = "Rotate lock", .show = rotlock_show, .next = rotlock_next, .on = rotlock_on },
@@ -637,10 +661,11 @@ static void row_draw(tui_surface *sf, tui_rect a, const item_t *it, int i, uint8
 /* ---- the level sliders ------------------------------------------------------
    Volume and brightness drawn as the radio screens draw volume and gain: a
    card of upright bars, the bar pressed and everything left of it lit, and a
-   - and + key at the right. A finger held on the bars follows the drag. */
-static ls_radio_card_t s_lvc[2];
-static tui_rect        s_lv[2];
-static int             s_lvdrag = -1;
+   - and + key at the right. A finger dragged along the bars carries the
+   level with it (ls_slider_drag.h), the radio screens' own drag. */
+static ls_radio_card_t  s_lvc[2];
+static tui_rect         s_lv[2];
+static ls_slider_drag_t s_lvdrag;
 
 static void lv_draw(tui_surface *sf, tui_rect a, const item_t *it, int i, uint8_t hue)
 {
@@ -659,23 +684,27 @@ static void lv_draw(tui_surface *sf, tui_rect a, const item_t *it, int i, uint8_
     s_lv[i] = a;
 }
 
-static int lv_level(int i, int col)
+static int lv_level_at(tui_rect bar, int col)
 {
-    return (int)(ls_radio_vfo_card_bar_frac(s_lvc[i].bar, col) * 100.0f + 0.5f);
+    return (int)(ls_radio_vfo_card_bar_frac(bar, col) * 100.0f + 0.5f);
 }
+static int lv_level(int i, int col) { return lv_level_at(s_lvc[i].bar, col); }
 
-/* A finger that went down on a slider's bars sets it from the column it is
-   on now, each frame, until it lifts. */
+/* A finger that went down on a slider's bars and moves along them: the level
+   follows it each frame, heard or seen at once and saved once, by `set`,
+   when it lifts. Every frame, against the sliders the last frame drew, so a
+   page without them has none to take but a drag still sees its lift. */
 static void lv_follow(const item_t *items)
 {
-    int sc, sr, c, r;
-    if (!ls_tui_touch_held(&sc, &sr, &c, &r)) { s_lvdrag = -1; return; }
-    if (s_lvdrag < 0)
-        for (int i = 0; i < 2; i++)
-            if (s_lv[i].w && s_lvc[i].bar.w && tui_rect_contains(s_lvc[i].bar, sc, sr)) s_lvdrag = i;
-    if (s_lvdrag < 0) return;
-    s_sel = s_lvdrag;
-    items[s_lvdrag].set(lv_level(s_lvdrag, c));
+    tui_rect bars[2];
+    for (int i = 0; i < 2; i++) bars[i] = s_lv[i].w ? s_lvc[i].bar : tui_rect_make(0, -1, 0, 0);
+    const int ev = ls_slider_drag(&s_lvdrag, bars, 2);
+    if (ev == LS_SLIDER_IDLE) return;
+    const int i = s_lvdrag.bar;
+    const int level = lv_level_at(s_lvdrag.rect, s_lvdrag.col);
+    if (s_page == SETP_ROOT) s_sel = i;
+    if (ev == LS_SLIDER_MOVE) items[i].preview(level);
+    else items[i].set(level);
 }
 
 /* A tap on a slider card: - and + step, the bars set. True when it was one. */
@@ -1160,7 +1189,7 @@ static void draw(tui_surface *sf, tui_rect area)
     s_hit_n = 0;
     s_back.w = 0;
     /* a held finger on a slider, against where it was drawn last frame */
-    if (s_page == SETP_ROOT) lv_follow(QUICK_ITEMS);
+    lv_follow(QUICK_ITEMS);
     s_lv[0].w = s_lv[1].w = 0;
     if (s_page == SETP_POWER) services_refresh();
     visible_refresh();
@@ -1223,6 +1252,9 @@ static bool key(ls_tk_t k, char ch)
    new password is the one exception, and arms itself). */
 static bool touch(int col, int row)
 {
+    /* The finger that dragged a slider, coming up within a tap's reach of
+       where it went down: the drag has set the level already. */
+    if (ls_slider_drag_tap_is_lift(&s_lvdrag)) return true;
     if (s_back.w && tui_rect_contains(s_back, col, row)) { page_open(SETP_ROOT); return true; }
     for (int h = 0; h < s_hit_n; h++) {
         const hit_t *t = &s_hit[h];
@@ -1266,11 +1298,18 @@ static void enter(void)
     visible_refresh();
 }
 
+/* Leaving under a finger still on a slider saves the level it set. */
+static void leave(void)
+{
+    if (ls_slider_drag_drop(&s_lvdrag))
+        QUICK_ITEMS[s_lvdrag.bar].set(lv_level_at(s_lvdrag.rect, s_lvdrag.col));
+}
+
 const ls_tui_screen_t ls_scr_settings = {
     .name = "SET",
     .hint = "TAP to change  UP DOWN ENTER  < > step  ESC back",
     .enter = enter,
-    .leave = NULL,
+    .leave = leave,
     .draw = draw,
     .key = key,
     .touch = touch,

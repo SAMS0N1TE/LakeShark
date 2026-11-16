@@ -504,11 +504,16 @@ static void draw_radar(tui_surface *sf, tui_rect area)
     for(int i=0;i<n && s_nplot<ADSB_MAX_TRACKED;i++)
         s_plot[s_nplot++]=(radar_plot_t){(int16_t)plots[i].x,(int16_t)plots[i].y,plots[i].icao};
     ls_map_preview_labels(sf,body);
-    double width_nm=40075016.686*cos(vlat*M_PI/180.0)*(body.w*3)/
-        (ldexp(1.0,ls_map_zoom())*ls_map_tile_px()*LS_GEO_M_PER_NM);
+    /* The frame's own width and tile size: CartoCore draws two dots a cell
+       on 256-pixel tiles, the picture engine three on tiles sized to the font. */
+    int frame_w=body.w*3,frame_tile=ls_map_tile_px();
+    ls_map_preview_frame(body,&frame_w,NULL,&frame_tile);
+    double width_nm=40075016.686*cos(vlat*M_PI/180.0)*frame_w/
+        (ldexp(1.0,ls_map_zoom())*frame_tile*LS_GEO_M_PER_NM);
     snprintf(text,sizeof(text),ls_tr("%s z%d  %.1f NM across"),ls_tr(ls_map_render_busy()?"LOADING":"OFFLINE"),ls_map_zoom(),width_nm);
     tui_put_str(sf,area,area.x+2,area.y+area.h-3,text,LS_ATTR_DIM);
-    const char *why=ls_map_status();
+    /* that question is the picture engine's; CartoCore's maps are not its */
+    const char *why=ls_map_cartocore_style()?NULL:ls_map_status();
     tui_put_str(sf,area,area.x+2,area.y+area.h-2,
         ls_tr(why && !ls_map_render_busy()?"No tiles here; MAPS in full map":"Tap aircraft for details"),LS_ATTR_DIM);
 }
@@ -771,8 +776,12 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
         row++;
     }
     if (!active) {
-        tui_put_str(sf, list, list.x + 2, list.y + 3, adsb_receiver_status(),
-                    stale);
+        /* No dongle: say so plainly, with the tap onto the LoRa chip where
+           it hears Mode S (the LR2021), instead of the receiver's word. */
+        if (!ls_rsel_sdr_missing_draw(sf, list, list.x + 2, list.y + 3, list.w - 4, 2,
+                                      LS_RSEL_ADSB, NULL))
+            tui_put_str(sf, list, list.x + 2, list.y + 3, adsb_receiver_status(),
+                        stale);
         /* An empty list, with room: what will fill it and how to help. */
         static const char *const HOW[] = {
             "Aircraft show here as they are heard on 1090 MHz;",
@@ -1310,6 +1319,7 @@ static bool touch(int col, int row)
         if (hit(s_nav[i], col, row))
             return key(i == 0 ? LS_TK_UP : i == 1 ? LS_TK_ENTER : LS_TK_DOWN, 0);
     if (s_detail) return true;
+    if (ls_rsel_sdr_missing_touch(col, row, LS_RSEL_ADSB, radio_chosen, NULL)) return true;
 
     if (hit(s_radar_rect, col, row)) {
         int cw = 10, ch = 17;

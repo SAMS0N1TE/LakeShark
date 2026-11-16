@@ -184,7 +184,7 @@ static void home_choice(int choice)
         }
         lat=g.lat_deg; lon=g.lon_deg;
     } else if(choice==3) {
-        if(!ls_map_archive()) {home_feedback("NO MAP OPEN","Open MAPS first");return;}
+        if(!ls_map_archive() && !ls_map_cartocore_style()) {home_feedback("NO MAP OPEN","Open MAPS first");return;}
         ls_map_get_center(&lat,&lon);
     } else return;
     if(!isfinite(lat)||!isfinite(lon)||fabs(lat)>85||fabs(lon)>180) {

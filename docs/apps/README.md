@@ -20,7 +20,7 @@ pick the receiver, O opens OPTIONS, and Esc or BACK goes back. See
 | [FALLS](FALLS.md) | A waterfall of the last minute on the receiver you choose | RTL-SDR, HackRF or LoRa chip |
 | [CELL WATCH](CELL_WATCH.md) | Compare cellular downlink power with a learned site baseline | RTL-SDR; HackRF for HIGH RATE |
 | [MESH](MESH.md) | A MeshCore node: hear, relay and message over LoRa | LoRa chip (SX1262 or LR2021) |
-| [LORA LABS](LORA_LABS.md) | Packet capture, spectrum, bearing plot, FSK and pager receive | LoRa chip (SX1262 or LR2021) |
+| [LORA LABS](LORA_LABS.md) | Packet capture, bearing plot, FSK and pager receive (spectrum: the RF LAB app) | LoRa chip (SX1262 or LR2021) |
 | [EXPERIMENTS](EXPERIMENTS.md) | Radio trials that may grow into apps of their own | LoRa chip (SX1262 or LR2021) |
 | [SUB-GHZ](SUBGHZ.md) | Watch the sub-GHz bands, keep repeating patterns and decode known ones | RTL-SDR, HackRF, CC1101 or LoRa chip |
 | [FILES](FILES.md) | Browse the SD card, preview captures and text, send, rename or delete | None |
@@ -38,7 +38,6 @@ pick the receiver, O opens OPTIONS, and Esc or BACK goes back. See
 | [NOTES](NOTES.md) | Field notes on the SD card with the time, GPS, heading, map or radio inserted | None; GPS optional |
 | [COMPASS](COMPASS.md) | True-north compass, guidance to a saved place, FIND by signal strength, level | GPS optional; FIND uses the receiver you pick |
 | [SWEEP](SWEEP.md) | Passive scanner for nearby trackers, drones and camera hints | Bluetooth and Wi-Fi |
-| [REC](REC.md) | Capture what a radio receives to the SD card, and replay captures | RTL-SDR, CC1101, LoRa chip, GPS and others |
 | [MAP](MAP.md) | Offline map with your position, aircraft, mesh nodes and marks | GPS optional |
 | [TILES](TILES.md) | Install and manage offline map regions for MAP | Wi-Fi |
 | [GPS](GPS.md) | Fix state, satellites in view and a GPX track recorder | GPS |
@@ -52,7 +51,7 @@ pick the receiver, O opens OPTIONS, and Esc or BACK goes back. See
 | [UPDATE](UPDATE.md) | Install signed LakeShark builds over WiFi | Wi-Fi |
 | [SET](SET.md) | Volume, brightness, mute, screen lock, display, sounds and keyboard | None |
 | [RADIOS](RADIOS.md) | Every radio on the board, and power for each one | All |
-| [LINK](LINK.md) | Join Wi-Fi, connect a Flipper, record a Wi-Fi and Bluetooth survey | Wi-Fi and Bluetooth |
+| [LINK](LINK.md) | Join Wi-Fi, connect a Flipper, remote access (the survey recorder is WIFI SURVEY's RECORD tab) | Wi-Fi and Bluetooth |
 
 ## USER
 

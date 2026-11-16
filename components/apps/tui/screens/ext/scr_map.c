@@ -50,6 +50,7 @@ static int s_carto_audit_bad,s_carto_low_masked;
 #include "carto/style.h"
 #include "carto/raster.h"
 #include "core/settings.h"
+#include "core/ls_map_view.h"
 /* The nodes drawn on the map are the mesh's own peers. */
 #include "esp_attr.h"
 #include "ls_mesh.h"
@@ -318,18 +319,93 @@ static ls_act_status_t a_map_files(const ls_args_t *in, ls_val_t *out)
     return LS_ACT_OK;
 }
 
+/* Where MAP opens. Nothing has placed it yet this boot (a node's MAP button):
+   the view it was left at, else the saved home. Until 2026-11-14 it was the
+   compiled Franklin NH every boot, home or not.
+
+   The mini maps (ADS-B, notes) borrow the same map and frame it their own
+   way. That framing is not MAP's: coming back with nothing else having
+   placed the map, MAP is where MAP was, and the mini map gets its zoom back
+   when it is next drawn. A button that centres the map and opens MAP (FULL
+   MAP, a note's place) still lands there, but only a view moved in MAP
+   itself is kept across a restart. */
+static double s_kept_lat, s_kept_lon;
+static int s_kept_zoom = -1;
+static int64_t s_kept_since;
+static bool s_kept_fresh;
+static struct { double lat, lon; int zoom; bool valid; } s_own;
+static unsigned s_pv_serial;      /* ls_map_center_serial() as the last mini map frame left it */
+static int s_pv_zoom = -1;        /* the mini map's zoom, while MAP has the map */
+static bool s_pv_live, s_pv_back, s_pv_leaving;
+static void view_enter(void)
+{
+    const bool borrowed = s_pv_serial && s_pv_serial == ls_map_center_serial();
+    s_pv_back = s_pv_zoom >= 0;
+    if (s_kept_zoom < 0) {
+        double lat, lon; int zoom = borrowed ? 12 : ls_map_zoom();
+        float hl = 0, ho = 0;
+        const bool home = settings_get_home(&hl, &ho);
+        uint64_t saved = 0;
+        if (settings_get_map_view(&lat, &lon, &zoom)) saved = ls_map_view_pack(lat, lon, zoom);
+        else zoom = borrowed ? 12 : ls_map_zoom();
+        if ((!ls_map_placed() || borrowed) && ls_map_view_start(saved, home, hl, ho, &lat, &lon, &zoom)) {
+            ls_map_center(lat, lon);
+            ls_map_zoom_by(zoom - ls_map_zoom());
+        }
+    } else if (borrowed && s_own.valid) {
+        ls_map_center(s_own.lat, s_own.lon);
+        ls_map_zoom_by(s_own.zoom - ls_map_zoom());
+    }
+    /* What MAP opens on is not a view moved here: nothing to keep yet. Taken
+       at the first frame, since a button may centre the map after opening it. */
+    s_kept_zoom = 0; s_kept_fresh = true;
+}
+/* The view is kept once it has stood still three seconds, and on leaving. */
+static void view_keep(bool now)
+{
+    double lat, lon; ls_map_get_center(&lat, &lon);
+    const int zoom = ls_map_zoom();
+    const int64_t t = esp_timer_get_time();
+    if (s_kept_zoom < 0) return;
+    if (s_kept_fresh) {
+        if (now) return;
+        s_kept_fresh = false; s_kept_lat = lat; s_kept_lon = lon; s_kept_zoom = zoom; s_kept_since = 0;
+        return;
+    }
+    if (lat == s_kept_lat && lon == s_kept_lon && zoom == s_kept_zoom) { s_kept_since = 0; return; }
+    if (!now) {
+        static double held_lat, held_lon; static int held_zoom;
+        if (!s_kept_since || lat != held_lat || lon != held_lon || zoom != held_zoom) {
+            held_lat = lat; held_lon = lon; held_zoom = zoom; s_kept_since = t; return;
+        }
+        if (t - s_kept_since < 3000000) return;
+    }
+    s_kept_lat = lat; s_kept_lon = lon; s_kept_zoom = zoom; s_kept_since = 0;
+    settings_set_map_view(lat, lon, zoom);
+}
+
+/* The saved layers and STYLE, once. The mini maps need them as much as MAP:
+   loaded only on entering MAP, ADS-B's map drew the old picture engine
+   (no CartoCore) until MAP had been opened once that boot. */
+static void style_load(void)
+{
+    if (s_layers_loaded) return;
+    s_layers_loaded = true;
+    s_layers = settings_get_map_layers(LAYERS_DEFAULT) & LAYER_BITS;
+    palette_load();
+}
+
+bool ls_map_cartocore_style(void) { style_load(); return cartocore_view(); }
+
 static void drag_reset(void);
 static void enter(void)
 {
     drag_reset();
+    view_enter();
     register_view_action();
     s_notice_screen=ls_tui_screen_current();
     ls_notify_add_probe(marks_notice);
-    if (!s_layers_loaded) {
-        s_layers_loaded = true;
-        s_layers = settings_get_map_layers(LAYERS_DEFAULT) & LAYER_BITS;
-        palette_load();
-    }
+    style_load();
     if(cartocore_view()) {
         ls_map_external_view(0,0);cells_free();s_have_archive=false;s_opened=false;s_file_error=NULL;
         return;
@@ -391,6 +467,9 @@ static void leave(void)
     cells_free();
     ls_carto_map_leave();
     ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
+    if (s_pv_leaving) return;      /* a mini map's framing is neither kept nor MAP's */
+    view_keep(true);
+    ls_map_get_center(&s_own.lat, &s_own.lon); s_own.zoom = ls_map_zoom(); s_own.valid = true;
 }
 
 LS_COLD_END
@@ -445,6 +524,32 @@ static void flat_scale(double *ppx, double *ppy)
     const double k = cartocore_view() ? 1.0 : 256.0 / (ls_map_tile_px() > 0 ? ls_map_tile_px() : 256);
     *ppx = SUB_X * k; *ppy = sub_y() * k;
 }
+/* Off the card's maps under a CartoCore style: the way to the nearest cell
+   or map file it holds, anywhere in the world, or that it holds none. The
+   outlines' own chip names US states only, and the text styles said nothing
+   at all over bare ground. A tap on the chip goes there. */
+static bool near_chip(tui_surface *sf, tui_rect body, int y)
+{
+    static double at_lat, at_lon, to_lat, to_lon; static int found = -1;
+    double lat, lon; ls_map_get_center(&lat, &lon);
+    if (found < 0 || lat != at_lat || lon != at_lon) {
+        double la = 0, lo = 0;
+        const int r = ls_carto_map_nearest(lat, lon, &la, &lo);
+        if (r >= 0) { found = r; at_lat = lat; at_lon = lon; to_lat = la; to_lon = lo; }
+    }
+    if (found < 0 || found == 2) return false;
+    char b[48];
+    if (!found) snprintf(b, sizeof(b), " NO MAP ON CARD: GET ONE IN TILES ");
+    else {
+        static const char *const DIR[8] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
+        const double dy = (to_lat - lat) * 69.0, dx = (fmod(to_lon - lon + 540.0, 360.0) - 180.0) * 69.0 * cos(lat * M_PI / 180.0);
+        snprintf(b, sizeof(b), " NO MAP HERE: GO TO MAP %.0f mi %s > ", sqrt(dx * dx + dy * dy), DIR[(int)lrint(atan2(dx, dy) / (M_PI / 4)) & 7]);
+        s_near_rect = tui_rect_make(body.x, y, (int)strlen(b), 1); s_near_lat = (float)to_lat; s_near_lon = (float)to_lon;
+    }
+    tui_put_str(sf, body, body.x, y, b, TUI_ATTR(TUI_BLACK, TUI_WHITE | TUI_BRIGHT));
+    return true;
+}
+
 /* opening: the map is still loading its first frame, so the outlines stand in
    for it and nothing claims the card has no tiles here. */
 static bool map_flat(tui_surface *sf, tui_rect body, bool opening)
@@ -467,6 +572,7 @@ static bool map_flat(tui_surface *sf, tui_rect body, bool opening)
     tui_put_str(sf, body, body.x + 16, y, " ON CARD ", TUI_ATTR(TUI_BLACK, TUI_GREEN | TUI_BRIGHT));
     tui_put_str(sf, body, body.x + 26, y, " PART ", TUI_ATTR(TUI_BLACK, TUI_YELLOW | TUI_BRIGHT));
     /* how far, and which way, to the nearest map on the card */
+    if (cartocore_view()) { near_chip(sf, body, y - 1); return true; }
     char code[8]; float nla, nlo; bool inside = false;
     if (ls_globe_nearest(lat, lon, ls_maps_region_fill, NULL, code, &nla, &nlo, &inside) && inside) {
         /* in a region on the card, on a part of it the card has no tiles for */
@@ -1184,8 +1290,11 @@ static void flat_under(tui_surface *sf, tui_rect body, int pw, int ph, const uin
     const bool overview = pix == s_pic_view && ls_carto_map_picture_cells();
     if (!s_under_n || ((ls_map_zoom() > 7 || overview) && !all)) return;
     if (all && ls_map_zoom() > 7) {
-        /* close in, a frame of bare ground inside a region the card holds whole
-           is open country, not a missing map */
+        /* close in, a frame of bare ground over a cell the card holds, or
+           inside a region it holds whole, is open country, not a missing
+           map. The region list knows only US states: asked alone, open
+           pampa under downloaded Argentina was "NO TILES HERE, GO TO AL". */
+        if (pix == s_pic_view && ls_carto_map_picture_covered()) return;
         double lat, lon; ls_map_get_center(&lat, &lon);
         char code[8]; float la, lo; bool inside = false;
         if (ls_globe_nearest(lat, lon, ls_maps_region_fill, NULL, code, &la, &lo, &inside) && inside &&
@@ -4042,15 +4151,28 @@ LS_COLD_END
 void ls_map_preview_frame(tui_rect area, int *pw, int *ph, int *tile_px)
 {
     int cw=10;
+    style_load();
     ls_tui_geometry(NULL,NULL,&cw,NULL);
     if (pw) *pw=area.w*SUB_X;
     if (ph) *ph=area.h*sub_y();
     if (tile_px) *tile_px=cartocore_view()?256:256*SUB_X/(cw>0?cw:10);
 }
 
+static void preview_draw(tui_surface *sf, tui_rect area, double lat, double lon);
 void ls_map_preview(tui_surface *sf, tui_rect area, double lat, double lon)
 {
     if (area.w<1 || area.h<1) return;
+    if (!s_pv_live) {
+        s_pv_live = true;
+        if (s_pv_back && s_pv_zoom >= 0) ls_map_zoom_by(s_pv_zoom - ls_map_zoom());
+        s_pv_back = false;
+    }
+    preview_draw(sf, area, lat, lon);
+    s_pv_serial = ls_map_center_serial();
+}
+static void preview_draw(tui_surface *sf, tui_rect area, double lat, double lon)
+{
+    style_load();
     if (!cartocore_view() && !s_opened) { s_opened=true; rescan(); }
     /* The room the labels over this take starts empty every frame, picture
        or not: with no archive there is nothing to draw, but the aircraft and
@@ -4140,7 +4262,11 @@ int ls_map_preview_air(tui_surface *sf, tui_rect area, ls_map_plot_t *plots, int
     return n;
 }
 
-void ls_map_preview_leave(void) { leave(); }
+void ls_map_preview_leave(void)
+{
+    if (s_pv_live) { s_pv_live = false; s_pv_zoom = ls_map_zoom(); }
+    s_pv_leaving = true; leave(); s_pv_leaving = false;
+}
 
 /* ---------------------------------------------------------------- pad -- */
 
@@ -4394,6 +4520,7 @@ static void draw(tui_surface *sf, tui_rect area)
     previous_save=save_status;
     if(ls_place_search_active()) { ls_place_search_draw(sf,area);return; }
     drag_pan();
+    view_keep(false);
     const int64_t now = esp_timer_get_time();
     refresh_receiver(now);
     ls_map_follow_fix(s_receiver_fresh, s_receiver.lat_deg, s_receiver.lon_deg,
@@ -4612,6 +4739,12 @@ static void draw(tui_surface *sf, tui_rect area)
         map_sticky_end(s_live_history);
         mc_mark(MC_LIVE);
         if(cc && layer(L_PLACES) && !layer(L_NOLABEL)) draw_carto_labels(sf,body);
+        /* The view could not be drawn and an older picture stands in for it:
+           say so, where it used to sit frozen with nothing on the screen. */
+        if(cc && cc_ok && !ls_carto_map_fresh() && ls_carto_map_failed())
+            tui_put_str(sf,body,body.x,body.y," TOO MUCH MAP TO DRAW AT THIS ZOOM: ZOOM IN ",TUI_ATTR(TUI_BLACK,TUI_YELLOW|TUI_BRIGHT));
+        /* the text styles have no outline view to fall back on */
+        if(cc && !cc_picture() && cc_ok && ls_map_zoom()>7) near_chip(sf,body,body.y+body.h-1);
         mc_mark(MC_CLABELS);
         rings_canvas(sf, body, pw, ph, true);
         if (!cc && layer(L_PLACES) && !layer(L_NOLABEL)) draw_labels(sf, body, SUB_X, sub_y(), s_pad_rect);

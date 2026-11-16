@@ -285,6 +285,15 @@ esp_err_t ls_lora_fsk_receive(void);
    ESP_ERR_NOT_SUPPORTED on a part without it (the SX126x). */
 esp_err_t ls_lora_fsk_retune(uint32_t freq_hz);
 
+/* Move LoRa receive to `freq_hz` and listen there, keeping every other
+   setting and whoever holds the radio: for a scanner stepping through a list,
+   where configuring afresh at each step costs a full calibration. Image or
+   front-end calibration runs only when the step leaves the stretch the last
+   one covered. ESP_ERR_INVALID_STATE without a configured LoRa receiver, or
+   while an FSK session, a sweep or a transmit has the part; INVALID_ARG for a
+   frequency it cannot reach this way (on the LR20xx, the other input). */
+esp_err_t ls_lora_rx_retune(uint32_t freq_hz);
+
 esp_err_t ls_lora_fsk_end(void);
 bool      ls_lora_fsk_active(void);
 

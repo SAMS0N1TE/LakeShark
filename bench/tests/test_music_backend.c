@@ -84,6 +84,29 @@ static void reset(void){player_position=0;delete_result=0;ls_music_close();ls_mu
 LS_CASE(acquisition_failure_never_starts_decoder){reset();acquire_result=ESP_FAIL;LS_CHECK(!ls_music_open());LS_EQ_INT(created,0);LS_EQ_INT(releases,0);LS_CHECK(*ls_music_error());reset();}
 LS_CASE(decoder_allocation_failure_returns_lease){reset();new_result=ESP_ERR_NO_MEM;LS_CHECK(!ls_music_open());LS_EQ_INT(releases,1);reset();}
 LS_CASE(close_timeout_retains_lease_until_decoder_stops){reset();LS_CHECK(ls_music_open());delete_result=ESP_FAIL;ls_music_close();LS_EQ_INT(releases,0);LS_CHECK(ls_music_open());LS_EQ_INT(created,1);delete_result=0;ls_music_close();LS_EQ_INT(releases,1);reset();}
+/* Leaving MUSIC while the decoder is busy used to keep the speaker until a
+   reboot: the screen was gone and nothing asked again. */
+LS_CASE(deferred_close_releases_lease_from_the_ui_loop){
+    const int64_t t=4000000000LL;
+    reset();LS_CHECK(ls_music_open());delete_result=ESP_FAIL;ls_music_close();
+    LS_EQ_INT(releases,0);LS_CHECK(ls_music_is_open());LS_CHECK(ls_music_close_pending());
+    ls_music_service(t);LS_EQ_INT(releases,0);LS_CHECK(ls_music_close_pending());
+    delete_result=0;
+    ls_music_service(t+100000);LS_EQ_INT(releases,0);           /* throttled to 200 ms */
+    ls_music_service(t+250000);LS_EQ_INT(releases,1);
+    LS_CHECK(!ls_music_is_open());LS_CHECK(!ls_music_close_pending());
+    ls_music_service(t+900000);LS_EQ_INT(releases,1);           /* nothing left to do */
+    reset();}
+LS_CASE(reopening_cancels_a_deferred_close){
+    const int64_t t=5000000000LL;
+    reset();LS_CHECK(ls_music_open());delete_result=ESP_FAIL;ls_music_close();
+    LS_CHECK(ls_music_close_pending());LS_CHECK(ls_music_open());LS_EQ_INT(created,1);
+    LS_CHECK(!ls_music_close_pending());delete_result=0;
+    ls_music_service(t);LS_EQ_INT(releases,0);LS_CHECK(ls_music_is_open());
+    reset();}
+LS_CASE(a_clean_close_leaves_nothing_pending){
+    reset();LS_CHECK(ls_music_open());ls_music_close();
+    LS_EQ_INT(releases,1);LS_CHECK(!ls_music_close_pending());reset();}
 LS_CASE(play_failure_closes_file_pause_resume_and_rescan){
     reset();LS_CHECK(ls_music_open());LS_CHECK(ls_music_scan(0));
     LS_CHECK(!ls_music_play(-1));missing=true;LS_CHECK(!ls_music_play(0));LS_EQ_INT(closed,0);missing=false;

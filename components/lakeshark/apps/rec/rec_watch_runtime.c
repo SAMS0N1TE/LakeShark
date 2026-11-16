@@ -7,6 +7,8 @@
 #include "ls_fsk_capture.h"
 #include "rec_lr_ook.h"
 #include "rec_scan_live.h"
+#include "ls_floor.h"
+#include "rec_scope.h"
 #include "lr_wf_session.h"
 #include "ls_haptic.h"
 #include "settings.h"
@@ -177,6 +179,10 @@ static StaticTask_t s_worker_tcb;
    on such a build it is. */
 __attribute__((weak)) bool ls_mesh_radio_hold(bool hold){(void)hold;return true;}
 __attribute__((weak)) bool ls_mesh_radio_held(void){return true;}
+__attribute__((weak)) bool ls_mesh_radio_hold_bg(bool hold){(void)hold;return true;}
+__attribute__((weak)) bool ls_mesh_radio_wanted(void){return false;}
+__attribute__((weak)) bool ls_mesh_radio_blocked(void){return false;}
+__attribute__((weak)) bool ls_mesh_running(void){return false;}
 
 __attribute__((weak)) bool rec_watch_notify(const char *peer, const char *text)
 { (void)peer; (void)text; return false; }
@@ -308,6 +314,7 @@ static void pump_capture(void *context)
         consume_capture(cap,(capture_flow_t *)context);
 }
 static void sync_cc_watch(void);
+static void watch_lend(void);
 #include "rec_lr_iq_runtime.inc"
 
 static void worker(void *arg)
@@ -348,6 +355,7 @@ static void worker(void *arg)
             portEXIT_CRITICAL(&s_lock);
         }
         sync_cc_watch();
+        watch_lend();
         capture_t *cap=NULL;
         if(xQueueReceive(s_pending,&cap,pdMS_TO_TICKS(100))==pdTRUE) {
             consume_capture(cap,&flow);
@@ -567,10 +575,18 @@ static void fsk_poller(void *arg)
     (void)arg;
     static EXT_RAM_BSS_ATTR uint8_t bits[LS_FSK_CAPTURE_BYTES*8+1024+32];
     static EXT_RAM_BSS_ATTR int32_t raw[LS_FSK_CAPTURE_BYTES*8+1024+32];
+    int64_t scope_at=esp_timer_get_time();
+    rec_scope_reset();rec_scope_set_dbm(true);
     while(s_fsk_run) {
         uint8_t packet[LS_FSK_CAPTURE_BYTES];
         float rssi=-200.0f;
         const int n=ls_lora_fsk_poll(packet,sizeof(packet),&rssi);
+        /* The chip's RSSI between polls is READ's live trace: a packet
+           receiver has no samples of its own to draw. */
+        float level;
+        const int64_t now=esp_timer_get_time();
+        if(ls_lora_rssi_inst(&level)==ESP_OK)rec_scope_level(level,(uint32_t)(now-scope_at));
+        scope_at=now;
         if(n>0) {
             /* Stored as edge timings like every other source, so the archive,
                its card format, the preview strip and the .sub export all keep
@@ -596,6 +612,61 @@ static void fsk_poller(void *arg)
     vTaskSuspend(NULL);
 }
 
+/* WATCH on the LoRa chip is a background holder (ls_mesh.h), as P25, FM and
+   ADS-B on it are: it keeps listening while radio apps come and go, gives
+   the chip to whoever asks - a foreground holder (LORA LABS, FALLS,
+   MESHTASTIC), the MESH screen or a send, a newer background receiver (P25,
+   FM or ADS-B on the LR2021), HOME - and takes it back once they are done
+   (watch_lend). It used to be a foreground hold, and a WATCH left on behind
+   HOME kept the chip from every other app and from the mesh until somebody
+   went back and stopped it. Asked once WATCH is started; not given within a
+   second, the start fails as before. */
+/* Started from the SUB-GHZ screen, WATCH is somebody standing there
+   pressing START: it takes the chip as a foreground holder, as it did before
+   lending existed, and MeshCore, a send window or DRONE WATCH in the
+   background cannot refuse it. The screen stops it when left. Started from
+   the console, or still running once the screen has gone, it is a background
+   holder and lends the chip (watch_lend). */
+static volatile bool s_watch_front, s_watch_fg;
+void rec_watch_screen_front(bool on){ s_watch_front=on; }
+static void watch_lease_drop(void)
+{
+    if(s_watch_fg){ls_mesh_radio_hold(false);s_watch_fg=false;}
+    else ls_mesh_radio_hold_bg(false);
+}
+/* Why the chip could not be had, in words the screen can show. */
+static void watch_lease_refused(void)
+{
+    if(ls_mesh_radio_blocked())
+        snprintf(s_fsk_error,sizeof(s_fsk_error),"%s is blocked in RADIOS - tap ALLOW there",ls_lora_chip_name());
+    else
+        snprintf(s_fsk_error,sizeof(s_fsk_error),"%s busy: %s - try START again",ls_lora_chip_name(),
+                 ls_mesh_running()?"MeshCore is sending":"another app has it");
+}
+static bool watch_lease_take(void)
+{
+    const bool front=s_watch_front;
+    /* MeshCore can be part way through a send; three seconds covers its
+       longest frame at the slowest preset. */
+    const int64_t deadline=esp_timer_get_time()+(front?3000000:1000000);
+    bool held=false;
+    if(front) {
+        while((!s_scan_busy || s_catch_armed) && !(held=ls_mesh_radio_hold(true)) &&
+              esp_timer_get_time()<deadline)
+            vTaskDelay(pdMS_TO_TICKS(10));
+        if(held && (!s_scan_busy || s_catch_armed)){s_watch_fg=true;return true;}
+        ls_mesh_radio_hold(false);
+    } else {
+        while((!s_scan_busy || s_catch_armed) && !(held=ls_mesh_radio_hold_bg(true)) &&
+              esp_timer_get_time()<deadline)
+            vTaskDelay(pdMS_TO_TICKS(10));
+        if(held && (!s_scan_busy || s_catch_armed))return true;
+        ls_mesh_radio_hold_bg(false);
+    }
+    watch_lease_refused();
+    return false;
+}
+
 /* Take the radio, configure it, and start listening. The mesh owns the
    SX1262 the rest of the time, so this pauses it - loudly, by failing rather
    than half-starting when the mesh will not let go. */
@@ -604,14 +675,7 @@ static bool fsk_session(bool on)
     if(on) {
         if(s_fsk_run)return true;
         s_fsk_error[0]=0;
-        const int64_t deadline=esp_timer_get_time()+1000000;
-        while((!s_scan_busy || s_catch_armed) && !ls_mesh_radio_hold(true) && esp_timer_get_time()<deadline)
-            vTaskDelay(pdMS_TO_TICKS(10));
-        if((s_scan_busy && !s_catch_armed) || !ls_mesh_radio_held()){
-            ls_mesh_radio_hold(false);
-            LS_SNPUTS(t_rec_watch_runtime_mesh_would_not_release, s_fsk_error, sizeof(s_fsk_error), "Mesh would not release the radio");
-            return false;
-        }
+        if(!watch_lease_take())return false;
         ls_fsk_cfg_t cfg={0};
         cfg.freq_hz=rec_get_freq();
         cfg.bitrate=s_fsk.bitrate;
@@ -631,11 +695,11 @@ static bool fsk_session(bool on)
         if(ls_lora_caps() & LS_LORA_CAP_FSK_DETECT)
             cfg.preamble_detect_bits=cfg.preamble_bits>=16?16:8;
         if(s_scan_busy && !s_catch_armed) {
-            ls_mesh_radio_hold(false);return false;
+            watch_lease_drop();return false;
         }
         const esp_err_t err=ls_lora_fsk_begin(&cfg);
         if(err!=ESP_OK){
-            ls_mesh_radio_hold(false);
+            watch_lease_drop();
             snprintf(s_fsk_error,sizeof(s_fsk_error),"%s",
                 err==ESP_ERR_INVALID_STATE?"LoRa session busy; stop its receiver first":
                 err==ESP_ERR_NO_MEM?"No memory for FSK; retry later":
@@ -643,7 +707,7 @@ static bool fsk_session(bool on)
             return false;
         }
         if(s_scan_busy && !s_catch_armed) {
-            ls_lora_fsk_end();ls_mesh_radio_hold(false);return false;
+            ls_lora_fsk_end();watch_lease_drop();return false;
         }
         s_fsk_exited=false;s_fsk_run=true;
         s_fsk_task=xTaskCreateStaticPinnedToCore(fsk_poller,"subghz_fsk",
@@ -651,7 +715,7 @@ static bool fsk_session(bool on)
         if(!s_fsk_task) {
             s_fsk_run=false;
             ls_lora_fsk_end();
-            ls_mesh_radio_hold(false);
+            watch_lease_drop();
             LS_SNPUTS(t_rec_watch_runtime_no_memory_for_the, s_fsk_error, sizeof(s_fsk_error), "No memory for the receive task");
             return false;
         }
@@ -663,7 +727,7 @@ static bool fsk_session(bool on)
     while(!s_fsk_exited || eTaskGetState(s_fsk_task)!=eSuspended)vTaskDelay(pdMS_TO_TICKS(1));
     vTaskDelete(s_fsk_task);s_fsk_task=NULL;
     ls_lora_fsk_end();
-    ls_mesh_radio_hold(false);
+    watch_lease_drop();
     return true;
 }
 
@@ -698,8 +762,10 @@ static void lr_ook_emit(void *ctx,const int32_t *edge,int edges,int peak)
 static void lr_ook_consume(void *ctx,const uint8_t *data,size_t bytes,bool spare)
 {
     (void)ctx;(void)spare;
-    if(!data){rec_lr_ook_reset(&s_lr_ook);return;}
+    if(!data){rec_lr_ook_reset(&s_lr_ook);rec_scope_reset();return;}
     rec_lr_ook_feed(&s_lr_ook,data,bytes,lr_ook_emit,NULL);
+    rec_scope_set_dbm(false);
+    rec_scope_iq16(data,bytes,REC_LR_OOK_US_PER_SAMPLE);
 }
 static bool lr_ook_wanted(void)
 {
@@ -711,18 +777,11 @@ static bool lr_ook_session(bool on)
     if(on) {
         if(s_lr_run)return true;
         s_fsk_error[0]=0;
-        const int64_t deadline=esp_timer_get_time()+1000000;
-        while((!s_scan_busy || s_catch_armed) && !ls_mesh_radio_hold(true) && esp_timer_get_time()<deadline)
-            vTaskDelay(pdMS_TO_TICKS(10));
-        if((s_scan_busy && !s_catch_armed) || !ls_mesh_radio_held()) {
-            ls_mesh_radio_hold(false);
-            LS_SNPUTS(t_rec_watch_runtime_mesh_would_not_release, s_fsk_error, sizeof(s_fsk_error), "Mesh would not release the radio");
-            return false;
-        }
+        if(!watch_lease_take())return false;
         const rec_lr_ook_cfg_t cfg={.min_pulse_us=60,.gap_us=30000,.min_edges=6};
         rec_lr_ook_init(&s_lr_ook,&cfg);
         if(lr_wf_start_consumer(rec_get_freq(),lr_ook_consume,NULL)!=ESP_OK) {
-            ls_mesh_radio_hold(false);
+            watch_lease_drop();
             LS_SNPUTS(t_rec_watch_runtime_lr2021_stream_busy_close, s_fsk_error, sizeof(s_fsk_error), "LR2021 stream busy; close its waterfall first");
             return false;
         }
@@ -732,7 +791,7 @@ static bool lr_ook_session(bool on)
     if(!s_lr_run)return true;
     lr_wf_stop();
     s_lr_run=false;
-    ls_mesh_radio_hold(false);
+    watch_lease_drop();
     return true;
 }
 /* FSK on the LR2021, from its I/Q stream.
@@ -954,7 +1013,9 @@ static void lr_fsk_close(void)
 static void lr_fsk_consume(void *ctx,const uint8_t *data,size_t bytes,bool spare)
 {
     (void)ctx;(void)spare;
-    if(!data){lr_fsk_reset();return;}
+    if(!data){lr_fsk_reset();rec_scope_reset();return;}
+    rec_scope_set_dbm(false);
+    rec_scope_iq16(data,bytes,REC_LR_OOK_US_PER_SAMPLE);
     for(size_t i=0;i+3<bytes;i+=4) {
         const int16_t si=(int16_t)(data[i]|(data[i+1]<<8));
         const int16_t sq=(int16_t)(data[i+2]|(data[i+3]<<8));
@@ -1002,18 +1063,11 @@ static bool lr_fsk_iq_session(bool on)
         if(!s_lrf_task)
             s_lrf_task=xTaskCreateStaticPinnedToCore(lr_fsk_worker,"subghz_lrfsk",
                 LRF_STACK_WORDS,NULL,3,s_lrf_stack,&s_lrf_tcb,1);
-        const int64_t deadline=esp_timer_get_time()+1000000;
-        while((!s_scan_busy || s_catch_armed) && !ls_mesh_radio_hold(true) && esp_timer_get_time()<deadline)
-            vTaskDelay(pdMS_TO_TICKS(10));
-        if((s_scan_busy && !s_catch_armed) || !ls_mesh_radio_held()) {
-            ls_mesh_radio_hold(false);
-            LS_SNPUTS(t_rec_watch_runtime_mesh_would_not_release, s_fsk_error, sizeof(s_fsk_error), "Mesh would not release the radio");
-            return false;
-        }
+        if(!watch_lease_take())return false;
         memset(&s_lrf,0,sizeof(s_lrf));
         s_lrf.floor=8;s_lrf.floor_acc=8<<6;
         if(lr_wf_start_consumer(rec_get_freq(),lr_fsk_consume,NULL)!=ESP_OK) {
-            ls_mesh_radio_hold(false);
+            watch_lease_drop();
             LS_SNPUTS(t_rec_watch_runtime_lr2021_stream_busy_close, s_fsk_error, sizeof(s_fsk_error), "LR2021 stream busy; close its waterfall first");
             return false;
         }
@@ -1023,7 +1077,7 @@ static bool lr_fsk_iq_session(bool on)
     if(!s_lrf_run)return true;
     lr_wf_stop();
     s_lrf_run=false;
-    ls_mesh_radio_hold(false);
+    watch_lease_drop();
     return true;
 }
 /* The LoRa chip's WATCH: the OOK stream on an LR2021, its FSK from the same
@@ -1037,10 +1091,71 @@ static bool lora_session(bool on)
     return fsk_session(false) && ook && iq;
 }
 
+/* WATCH is on and its LoRa chip is lent to another holder; it comes back
+   by itself. The screen says PAUSED rather than LISTENING meanwhile. */
+static volatile bool s_watch_lent;
+bool rec_watch_lent(void){ return s_watch_lent; }
+/* The SUB-GHZ screen was left. What takes the LoRa chip as a foreground
+   holder for somebody standing at the screen stops: a sweep and its CATCH,
+   LEARN, an armed I/Q record. Left running, a sweep kept the chip from every
+   other app for up to three minutes. WATCH carries on, lending the chip. */
+void rec_watch_screen_left(void)
+{
+    s_watch_front=false;
+    portENTER_CRITICAL(&s_lock);
+    const bool sweep=s_scan_busy || s_scan_min || s_learn_busy || s_learn_secs;
+    const bool iq=s_iq_busy && s_iq_mode==0;
+    portEXIT_CRITICAL(&s_lock);
+    if(sweep)rec_watch_scan_stop();
+    if(iq)rec_watch_iq_stop();
+}
+/* On the worker, every pass of its loop (100 ms at most between jobs). A
+   holder that outranks WATCH is asking: let go, and say so. Lent and nobody
+   asking any more: take it back. The ask while lent keeps WATCH's claim,
+   so it is next in line behind whoever has the chip. */
+static void watch_lend(void)
+{
+    portENTER_CRITICAL(&s_lock);
+    const bool on=s_status.enabled && s_source==REC_SOURCE_SX1262;
+    const bool job=s_scan_busy || s_scan_min || s_learn_busy || s_learn_secs ||
+                   s_iq_busy || s_replay_busy || s_replay_id || s_replay_path[0] || s_watch_pending;
+    portEXIT_CRITICAL(&s_lock);
+    if(!on) {
+        if(s_watch_lent){ls_mesh_radio_hold_bg(false);s_watch_lent=false;}
+        return;
+    }
+    if(s_fsk_run || s_lr_run || s_lrf_run) {
+        /* Our own foreground hold reads as "wanted"; the screen is up and
+           somebody pressed START, so it is not lent. */
+        if(s_watch_fg) {
+            if(s_watch_front)return;
+            /* The screen has gone and WATCH carries on: it becomes a
+               background holder, retaken on the next pass, so it lends. */
+            lora_session(false);
+            s_watch_lent=true;
+            return;
+        }
+        if(!ls_mesh_radio_wanted())return;
+        lora_session(false);
+        s_watch_lent=true;
+        snprintf(s_fsk_error,sizeof(s_fsk_error),"WATCH paused: %s lent to another app",ls_lora_chip_name());
+        ESP_LOGI("subghz_io","WATCH lends the %s",ls_lora_chip_name());
+        return;
+    }
+    if(!s_watch_lent || job)return;
+    if(!ls_mesh_radio_hold_bg(true))return;
+    if(lora_session(true)) {
+        s_watch_lent=false;s_fsk_error[0]=0;
+        ESP_LOGI("subghz_io","WATCH has the %s back",ls_lora_chip_name());
+    }
+}
+
 static bool rec_watch_enable_owned(bool on)
 {
     portENTER_CRITICAL(&s_lock);bool ready=s_status.ready;portEXIT_CRITICAL(&s_lock);
     if(on && !ready)return false;
+    /* Started or stopped by hand, a lent WATCH's place in line goes with it. */
+    if(s_watch_lent){ls_mesh_radio_hold_bg(false);s_watch_lent=false;s_fsk_error[0]=0;}
     if(on)s_fsk_error[0]=0;
     /* A sweep or a LEARN run owns the SX1262 until it ends; starting a
        receive session under it would be two tasks driving one radio. */
@@ -1459,27 +1574,6 @@ int rec_watch_scan_result(rec_scan_bin_t *out,int max)
 }
 float rec_watch_scan_floor(void){ return s_scan_floor; }
 
-/* A pass's floor is its quarter-way reading, not its lowest. One bad low
-   look set the floor before: the LR2021 read one bin at -132 dBm in a
-   -110 dBm band (2026-11-07), so every other bin stood "30 dB over the
-   floor" and all 32 were detections. A quarter of the band can carry
-   signals before this moves. */
-static float pass_floor(const float *row,int nb,float *spread)
-{
-    float s[REC_SCAN_BINS];
-    const int n=nb<REC_SCAN_BINS?nb:REC_SCAN_BINS;
-    if(spread)*spread=0.0f;
-    if(n<=0)return -200.0f;
-    for(int i=0;i<n;i++) {
-        const float v=row[i];
-        int j=i;
-        while(j>0 && s[j-1]>v){s[j]=s[j-1];j--;}
-        s[j]=v;
-    }
-    if(spread)*spread=rec_scan_spread(s,n);
-    return s[n/4];
-}
-
 /* Sweep, and keep what each bin heard at its loudest.
 
    One pass takes about 200 ms and a button press lasts 60, so a single sweep
@@ -1527,6 +1621,9 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,int nb,char 
        to them - and a peak hold that decays 0.8 dB a pass keeps a
        marker from a band nobody is looking at any more for a minute. */
     s_scan_live_n=0;
+    /* Each frequency's own floor, learned from the first passes. */
+    static EXT_RAM_BSS_ATTR ls_floor_t floor;
+    ls_floor_init(&floor,&LS_FLOOR_SWEEP);
     /* ls_lora_scan_pass, not ls_lora_scan_sweep.
 
        Sweep takes every look for every bin before it returns, which on this
@@ -1544,12 +1641,17 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,int nb,char 
             for(int i=0;i<nb;i++) if(row[i]>peak[i]) peak[i]=row[i];
             passes++;
 
-            /* Publish the row as it is, for drawing, and work out the floor
-               from this pass rather than from the accumulated peaks - the
-               peaks only ever rise, so a floor taken from them would drift
-               up and stop detecting anything. */
-            float spread=0.0f;
-            const float lo=pass_floor(row,nb,&spread);
+            /* Every bin against ITS OWN floor (ls_floor.h), not the pass's
+               25th percentile. A floor shaped by the front end, its
+               calibration steps or a steady emitter nearby is learned as the
+               floor; a hit is a bin over its floor by the gate, ending only
+               once it falls back under it with hysteresis. With one floor
+               for the whole band, 919-928 MHz on the SX1262 board stood
+               40-77 dB over it every pass and was "detected" 450 times in
+               25 s with nothing transmitting (2026-11-12). */
+            const int rising=ls_floor_update(&floor,row,nb,rec_watch_scan_threshold());
+            const float lo=ls_floor_median_base(&floor);
+            const float spread=ls_floor_median_spread(&floor);
             /* The floor gets ballistics too, or the whole display shifts
                under the columns every pass; so does the noise spread. */
             if(s_scan_live_n) {
@@ -1559,10 +1661,12 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,int nb,char 
                 s_scan_live_floor = lo;
                 s_scan_live_spread = spread;
             }
-            const float attack=rec_scan_attack_level(s_scan_live_floor,s_scan_live_spread);
 
             for(int i=0;i<nb;i++) {
+                const float fl=ls_floor_base(&floor,i);
+                const float attack=rec_scan_attack_level(fl,s_scan_live_spread);
                 s_scan_live[i].hz=ls_lora_scan_bin_hz(min_hz,max_hz,nb,i);
+                s_scan_live[i].floor=fl;
                 if(!s_scan_live_n) { s_scan_live[i].dbm=row[i]; s_scan_live[i].hold=row[i]; continue; }
                 /* Instant attack for a signal, an even follow for noise:
                    rec_scan_live.h says why. */
@@ -1581,13 +1685,10 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,int nb,char 
                what counts as a detection would mean the release curve, not
                the receiver, chose what got recorded. */
             int fresh_hits=0; uint32_t fresh_hz=0; float fresh_dbm=-200.0f;
-            int rising=0; uint32_t rise_hz=0; float rise_dbm=-200.0f;
+            uint32_t rise_hz=0; float rise_dbm=-200.0f;
             for(int i=0;i<nb;i++) {
-                const bool above=row[i] >= lo+rec_watch_scan_threshold();
-                if(above && !s_scan_above[i]) {
-                    rising++;
-                    if(row[i]>rise_dbm){rise_dbm=row[i];rise_hz=s_scan_live[i].hz;}
-                }
+                const bool above=ls_floor_hit(&floor,i);
+                if(above && !s_scan_above[i] && row[i]>rise_dbm){rise_dbm=row[i];rise_hz=s_scan_live[i].hz;}
                 s_scan_above[i]=above;
                 if(!above) continue;
                 const uint32_t hz=s_scan_live[i].hz;
@@ -1596,11 +1697,13 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,int nb,char 
                 const int64_t now_us=esp_timer_get_time();
                 if(at>=0) {
                     if(row[i]>s_scan[at].dbm) s_scan[at].dbm=row[i];
+                    s_scan[at].floor=ls_floor_base(&floor,i);
                     if(s_scan[at].seen<UINT32_MAX) s_scan[at].seen++;
                     s_scan[at].last_us=now_us;
                 }
                 else if(s_scan_n<REC_SCAN_BINS) {
                     s_scan[s_scan_n].hz=hz; s_scan[s_scan_n].dbm=row[i];
+                    s_scan[s_scan_n].floor=ls_floor_base(&floor,i);
                     s_scan[s_scan_n].seen=1;
                     s_scan[s_scan_n].first_us=s_scan[s_scan_n].last_us=now_us;
                     s_scan_n++; s_scan_hits++;
@@ -1652,7 +1755,8 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,int nb,char 
         }
         const int64_t now=esp_timer_get_time();
         char what[40];
-        snprintf(what,sizeof(what),"%d pass%s, %d found",passes,passes==1?"":"es",s_scan_hits);
+        if(!ls_floor_ready(&floor)) snprintf(what,sizeof(what),"Learning the floor, pass %d",passes);
+        else snprintf(what,sizeof(what),"%d pass%s, %d found",passes,passes==1?"":"es",s_scan_hits);
         /* Elapsed rather than a fraction of a deadline: this runs until it is
            stopped, so there is no fraction to be a fraction of. */
         stage(what,(int)(((now-start)/1000000)%100));
@@ -1666,12 +1770,9 @@ static void scan_band(uint32_t min_hz,uint32_t max_hz,uint32_t secs,int nb,char 
         snprintf(result,len,"%s",s_scan_stop_req?"Scan stopped":"Scan: no sweep completed");
         return;
     }
-    /* The quietest bin THIS sweep measured. Only the first nb entries
-       were written; peak[] is a static that outlives the call, so
-       reducing over all of REC_SCAN_BINS mixes in whatever a previous
-       sweep of a different band left in the tail - which a narrow
-       sweep after a wide one reports as a floor tens of dB off. */
-    s_scan_floor=pass_floor(peak,nb,NULL);
+    /* The sweep's floor, for a readout that wants one number: the median of
+       the bins' own. Each detection carries its bin's floor as well. */
+    s_scan_floor=ls_floor_median_base(&floor);
 
     /* Strongest first, so the list opens on the thing worth looking at. */
     for(int i=1;i<s_scan_n;i++) {

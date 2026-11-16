@@ -136,8 +136,9 @@ bool settings_get_antenna_external(void);
 bool settings_get_antenna_remember(void);
 void settings_set_antenna_remember(bool remember);
 void settings_set_antenna_external(bool external);
-/* Whether MMCX1 also transmits. False (the default): MMCX1 receives and a
-   transmit goes out the internal antenna. */
+/* Whether MMCX1 also transmits. True (the default): a transmit goes out the
+   antenna selected. False is RX ONLY: MMCX1 receives and a transmit goes out
+   the internal antenna. */
 bool settings_get_antenna_mmcx_tx(void);
 void settings_set_antenna_mmcx_tx(bool tx);
 /* Same value, readable before settings_init(). */
@@ -212,6 +213,10 @@ void settings_set_fm_hf(uint32_t packed);
 uint32_t settings_get_fm_bcast(uint32_t fallback);
 void settings_set_fm_bcast(uint32_t value);
 uint32_t settings_get_map_layers(uint32_t fallback);  /* MAP overlay layer bits */
+/* The view MAP was left at; none once a new home is saved, so that MAP then
+   opens at the home. */
+bool settings_get_map_view(double *lat, double *lon, int *zoom);
+void settings_set_map_view(double lat, double lon, int zoom);
 void settings_set_map_layers(uint32_t layers);
 /* The ADS-B mini map's FOLLOW mode, 0 to 15 as the screen numbers it, or -1
    when none has been chosen. Read once, at ADS-B's registration. */
@@ -221,6 +226,8 @@ int  settings_get_subghz_style(void);        /* spectrum grain             */
 void settings_set_subghz_style(int style);
 bool settings_get_subghz_lr_fsk(void);       /* LR2021 WATCH: FSK, not OOK */
 void settings_set_subghz_lr_fsk(bool fsk);
+int  settings_get_subghz_expert(void);       /* SUB-GHZ SETTINGS, packed   */
+void settings_set_subghz_expert(int packed);
 int  settings_get_subghz_colour(void);       /* spectrum palette           */
 void settings_set_subghz_colour(int colour);
 /* The FSK receive parameters, which are the ones that take real effort to

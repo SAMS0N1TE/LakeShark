@@ -59,12 +59,14 @@ esp_err_t ls_wifi_sta_autojoin_boot(void);
 /* Rejoin saved networks only when stopped or exhausted; preserve an active join. */
 esp_err_t ls_wifi_sta_ensure(void);
 bool      ls_wifi_sta_gave_up(void);
+/* A capture owns the radio (hopping channels, or listening with the link
+   dropped): the station does not reconnect, and no attempt is counted, until
+   the hold is released. Releasing it tries again at once. */
+void      ls_wifi_monitor_hold(bool hold);
 int       ls_wifi_sta_scan(ls_wifi_scan_ap_t *out, int cap);
 /* Copy recent scan results without touching the driver; preserves their time.
  * Returns 0 for absent/expired results, -1 when the operation gate is busy. */
 int       ls_wifi_scan_cached(ls_wifi_scan_ap_t *out, int cap, int64_t *seen_us);
-esp_err_t ls_wifi_survey_mode(bool active);
-int       ls_wifi_survey_scan(ls_wifi_scan_ap_t *out, int cap);
 esp_err_t ls_wifi_sta_info(ls_wifi_scan_ap_t *out);
 bool      ls_wifi_sta_running(void);
 bool      ls_wifi_sta_connected(void);

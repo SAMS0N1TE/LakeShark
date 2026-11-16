@@ -18,6 +18,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "riscv/rvruntime-frames.h"
+#include "soc/assist_debug_reg.h"
+#include "soc/soc.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,6 +76,10 @@ typedef struct {
     uint32_t entries;   /* times this core entered the handler */
     uint32_t how;       /* 1 = interrupt-raised (watchdog, cache error), 2 = exception */
     uint32_t mepc, mcause, mtval, ra, sp;
+    /* The other core's PC and SP from the assist-debug PC record
+       (ESP_SYSTEM_HW_PC_RECORD): when it froze with interrupts masked, or
+       hung on the bus, this is the only place its PC survives. */
+    uint32_t other_pc, other_sp;
 } crumb_t;
 
 RTC_NOINIT_ATTR static crumb_t s_crumb[2];
@@ -97,6 +103,9 @@ static void IRAM_ATTR note(void *frame, uint32_t how)
         c->mtval = f->mtval;
         c->ra = f->ra;
         c->sp = f->sp;
+        const int other = !(esp_cpu_get_core_id() & 1);
+        c->other_pc = REG_READ(other ? ASSIST_DEBUG_CORE_1_RCD_PDEBUGPC_REG : ASSIST_DEBUG_CORE_0_RCD_PDEBUGPC_REG);
+        c->other_sp = REG_READ(other ? ASSIST_DEBUG_CORE_1_RCD_PDEBUGSP_REG : ASSIST_DEBUG_CORE_0_RCD_PDEBUGSP_REG);
     }
 }
 
@@ -137,6 +146,9 @@ static void print_last(void)
                core, c->how == 1 ? "interrupt" : "exception",
                (unsigned long)c->mcause, (unsigned long)c->mepc, (unsigned long)c->mtval,
                (unsigned long)c->ra, (unsigned long)c->sp, (unsigned long)c->entries);
+        if (c->other_pc)
+            printf("core%d saw core%d at pc=0x%08lx sp=0x%08lx\n", core, !core,
+                   (unsigned long)c->other_pc, (unsigned long)c->other_sp);
     }
     if (!any) printf("no panic recorded before this boot\n");
     char line[160];
@@ -159,6 +171,12 @@ bool panic_crumb_text(char *out, size_t n)
                  (unsigned long)c->mtval, (unsigned long)c->ra, (unsigned long)c->sp);
         k += (size_t)snprintf(out + k, n - k, "%s", line);
         if (k >= n) return any;
+        /* only when the other core never reached the handler: the hung one */
+        if (c->other_pc && s_last[!core].magic != CRUMB_MAGIC) {
+            k += (size_t)snprintf(out + k, n - k, "core%d saw core%d at pc %08lx sp %08lx\n", core, !core,
+                                  (unsigned long)c->other_pc, (unsigned long)c->other_sp);
+            if (k >= n) return any;
+        }
     }
     if (tick_line(line, sizeof(line)) && k < n) snprintf(out + k, n - k, "ticks: %s", line);
     return any;

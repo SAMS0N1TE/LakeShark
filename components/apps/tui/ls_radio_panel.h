@@ -28,6 +28,9 @@ typedef struct {
     float gate;
     bool  squelch_open;
     bool  has_squelch;
+    /* A reading with no squelch behind it (FM's WFM and decoders): the
+       meter and the trace still show it. */
+    bool  has_signal;
     uint16_t tone_required;
     char detail[4][64];
     /* How this screen sets the two things you reach for while a scan runs.
@@ -37,6 +40,16 @@ typedef struct {
        as unavailable - which is what a screen with no squelch wants. */
     void (*set_volume_pct)(int pct);
     void (*set_squelch_pct)(int pct);
+    /* The same two while a finger is still dragging their travel: apply now,
+       save nothing - the setter above runs once, when it lets go. NULL: the
+       card follows the finger and the setter applies it at the lift. */
+    void (*preview_volume_pct)(int pct);
+    void (*preview_squelch_pct)(int pct);
+    /* The receiver's radio job (ls_rsel_job_t), so the glass says NO
+       RTL-SDR, with a tap onto the LoRa chip, when that is why it is
+       offline (ls_radio_select.h). Unset: RECEIVER OFFLINE as before. */
+    bool sdr_job_set;
+    int  sdr_job;
 } ls_radio_view_t;
 
 void ls_radio_panel_draw(ls_radio_panel_t *, const ls_radio_view_t *, tui_surface *, tui_rect);
@@ -160,6 +173,13 @@ void ls_radio_glass_rail(tui_surface *, tui_rect, int x, int y, int width,
 int ls_radio_glass_frequency(ls_radio_glass_t *, tui_surface *, tui_rect,
                              int y, uint32_t hz, const char *entry,
                              uint32_t blink, bool wide);
+/* The block figures are this many rows tall. */
+#define LS_RADIO_FIG_H 5
+/* The same, with the blank row over the figures optional: without it five
+   rows hold them, which is what lets a short landscape glass have them. */
+int ls_radio_glass_figures(ls_radio_glass_t *, tui_surface *, tui_rect,
+                           int y, uint32_t hz, const char *entry,
+                           uint32_t blink, bool wide, bool gap);
 void ls_radio_glass_wipe(ls_radio_glass_t *, tui_surface *, tui_rect, int first_y, int end_y, int mode);
 /* The same, shading only blank cells: for a page change, behind its text. */
 void ls_radio_glass_wipe_behind(ls_radio_glass_t *, tui_surface *, tui_rect, int first_y, int end_y, int mode);

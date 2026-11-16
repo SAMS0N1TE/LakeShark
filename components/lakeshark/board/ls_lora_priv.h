@@ -20,7 +20,7 @@ extern "C" {
 /* One entry per public ls_lora_* call that depends on the part. A backend that
    does not implement a call still fills the slot, with a function that returns
    ESP_ERR_NOT_SUPPORTED (or the matching neutral value). Never NULL except
-   `stop`, `fsk_retune`, `fsk_stream_read`, the modes_* slots, the ook_* slots and the cw_* slots. A backend must never send another family's opcodes. */
+   `stop`, `fsk_retune`, `rx_retune`, `fsk_stream_read`, the modes_* slots, the ook_* slots and the cw_* slots. A backend must never send another family's opcodes. */
 typedef struct {
     ls_lora_chip_t kind;
     const char *name;                       /* default name; see name_fn */
@@ -53,6 +53,8 @@ typedef struct {
     /* NULL where the part cannot move a session in place: the dispatcher
        answers ESP_ERR_NOT_SUPPORTED. */
     esp_err_t (*fsk_retune)(uint32_t freq_hz);
+    /* The same for LoRa receive (ls_lora_rx_retune); NULL where it cannot. */
+    esp_err_t (*rx_retune)(uint32_t freq_hz);
     /* NULL where the part has no stream sessions: the dispatcher answers -1. */
     int       (*fsk_stream_read)(uint8_t *buf, size_t size, bool *restarted);
     esp_err_t (*scan_begin)(uint32_t min_hz, uint32_t max_hz);

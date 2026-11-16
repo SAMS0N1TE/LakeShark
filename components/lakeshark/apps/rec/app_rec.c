@@ -1,5 +1,7 @@
 /**/
 
+#include "rec_scope.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -356,6 +358,9 @@ static void slice_block(const uint8_t *iq, int len)
 
     /**/
     s_mag_now = blk_peak;
+    /* SUB-GHZ's live trace, a column per block's loudest sample. */
+    rec_scope_set_dbm(false);
+    rec_scope_level(20.0f * log10f((float)(blk_peak > 0 ? blk_peak : 1)), samples_to_us((uint32_t)(len / 2)));
 
     if (s_phase == REC_CAPTURING && blk_peak > s_capture_peak) {
         s_capture_peak = blk_peak;

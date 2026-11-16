@@ -351,9 +351,78 @@ __attribute__((weak)) esp_err_t ls_mesh_set_primary(int p) { return p ? ESP_ERR_
 __attribute__((weak)) void ls_mesh_radio_front(bool on) { (void)on; }
 
 #ifdef LS_WF_SOURCE_REAL
-/* Simulator has no raw hardware FIFO. */
-esp_err_t lr_wf_start(uint32_t hz) { (void)hz; return ESP_ERR_NOT_SUPPORTED; }
-void lr_wf_stop(void) {}
+/* Simulator has no raw hardware FIFO. LSSIM_LRIQ=hump stands in for the
+   LR2021's channel with nothing on the air: complex white noise through a
+   low-pass over the middle 60% of the span, over a floor ~36 dB down - the
+   receive filter's own shape, which BAND drew solid red. LSSIM_LRIQ=carrier
+   adds a tone a quarter of the way up, ~20 dB over the noise, from 3 s. Each call is
+   one 512-pair block, the session's slot, at the sim clock. */
+#include "lr_iq_spectrum.h"
+#include "esp_timer.h"
+#include <math.h>
+#include <stdlib.h>
+static uint32_t s_sim_iq_hz;
+static uint64_t s_sim_iq_pair;
+static uint32_t s_sim_rng = 0x2468ace1u;
+static float sim_gauss(void)
+{
+    float u, v;
+    do { s_sim_rng ^= s_sim_rng << 13; s_sim_rng ^= s_sim_rng >> 17; s_sim_rng ^= s_sim_rng << 5;
+         u = ((s_sim_rng >> 8) + 0.5f) / 16777216.0f;
+         s_sim_rng ^= s_sim_rng << 13; s_sim_rng ^= s_sim_rng >> 17; s_sim_rng ^= s_sim_rng << 5;
+         v = ((s_sim_rng >> 8) + 0.5f) / 16777216.0f; } while (u <= 0.0f);
+    return sqrtf(-2.0f * logf(u)) * cosf(6.2831853f * v);
+}
+static void sim_iq_block(uint32_t now_ms)
+{
+    enum { N = 512, TAPS = 63 };
+    static float taps[TAPS], hre[TAPS], him[TAPS];
+    static bool ready;
+    if (!ready) {
+        for (int k = 0; k < TAPS; k++) {
+            const float m = (float)(k - TAPS / 2), fc = 0.30f;
+            const float sinc = m == 0.0f ? 2.0f * fc : sinf(6.2831853f * fc * m) / (3.14159265f * m);
+            taps[k] = sinc * (0.54f - 0.46f * cosf(6.2831853f * (float)k / (TAPS - 1)));
+        }
+        ready = true;
+    }
+    /* The tone keys up three seconds in: one there from the start is the
+       floor by definition, as on the air. */
+    static uint32_t t0;
+    if (!t0) t0 = now_ms ? now_ms : 1;
+    const bool tone = !strcmp(getenv("LSSIM_LRIQ"), "carrier") && now_ms - t0 >= 3000;
+    static uint8_t buf[N * 4];
+    for (int n = 0; n < N; n++) {
+        memmove(hre, hre + 1, sizeof(float) * (TAPS - 1));
+        memmove(him, him + 1, sizeof(float) * (TAPS - 1));
+        hre[TAPS - 1] = sim_gauss(); him[TAPS - 1] = sim_gauss();
+        float re = 0, im = 0;
+        for (int k = 0; k < TAPS; k++) { re += taps[k] * hre[k]; im += taps[k] * him[k]; }
+        const float a = 6000.0f;
+        re = re * a + sim_gauss() * a * 0.016f;
+        im = im * a + sim_gauss() * a * 0.016f;
+        if (tone) {
+            const double ph = 6.283185307 * -0.25 * (double)(s_sim_iq_pair + (uint64_t)n);
+            re += (float)(a * 1.6 * cos(ph)); im += (float)(a * 1.6 * sin(ph));
+        }
+        const int16_t i16 = (int16_t)(re > 32767 ? 32767 : re < -32767 ? -32767 : re);
+        const int16_t q16 = (int16_t)(im > 32767 ? 32767 : im < -32767 ? -32767 : im);
+        buf[4*n] = (uint8_t)i16; buf[4*n+1] = (uint8_t)((uint16_t)i16 >> 8);
+        buf[4*n+2] = (uint8_t)q16; buf[4*n+3] = (uint8_t)((uint16_t)q16 >> 8);
+    }
+    lr_spec_feed(buf, sizeof(buf), s_sim_iq_pair, 1, now_ms, true);
+    s_sim_iq_pair += N;
+}
+esp_err_t lr_wf_start(uint32_t hz)
+{
+    if (!getenv("LSSIM_LRIQ")) { (void)hz; return ESP_ERR_NOT_SUPPORTED; }
+    if (hz != s_sim_iq_hz) { s_sim_iq_hz = hz; lr_spec_begin(hz); }
+    /* Enough blocks to finish a row whenever the clock has moved a row on. */
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    for (int k = 0; k < 3; k++) sim_iq_block(now);
+    return ESP_OK;
+}
+void lr_wf_stop(void) { if (s_sim_iq_hz) { s_sim_iq_hz = 0; lr_spec_end(); } }
 esp_err_t lr_wf_set_wide(bool on, int32_t offset_hz) { (void)on; (void)offset_hz; return ESP_OK; }
 void lr_wf_set_wide_chip(bool on) { (void)on; }
 #include "lr_wf_session.h"

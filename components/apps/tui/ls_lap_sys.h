@@ -46,6 +46,7 @@ typedef struct {
     lap_mesh_self_t self;
     uint8_t chan_private;       /* bit n: lap_mesh_channel_private(n) */
     int wifi_count;
+    uint32_t wifi_seq;          /* lap_wifi_seq: one more per finished scan */
     lap_wifi_ap_t aps[16];
     int ble_count;
     lap_ble_dev_t ble[24];

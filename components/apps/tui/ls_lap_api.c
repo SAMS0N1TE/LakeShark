@@ -55,6 +55,9 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#if !defined(LS_LAP_HOST_TEST)
+#include "esp_private/freertos_debug.h"   /* vTaskGetSnapshot: the app stack's end */
+#endif
 #define ALLOC(n) heap_caps_malloc((n), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 #define DEALLOC(p) heap_caps_free(p)
 #define RESIZE(p, n) heap_caps_realloc((p), (n), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
@@ -207,7 +210,7 @@ bool ls_lap_instance_service_info(unsigned slot, lap_service_info_t *out) {
     *out=(lap_service_info_t){.size=sizeof(*out),.version=1,.shown=c->state.shown,
         .period_ms=c->state.period_ms,.memory_bytes=atomic_load(&p->allocated),
         .memory_limit=LS_LAP_MAX_MEMORY,.tick_budget_us=LAP_SERVICE_BUDGET_US,.stats=c->state.st};
-    ls_lap_usage_t usage[]={ls_lap_net_usage(slot),ls_lap_http_usage(slot),ls_lap_udp_usage(slot),ls_lap_mdns_usage(slot),
+    ls_lap_usage_t usage[]={ls_lap_net_usage(slot),ls_lap_http_usage(slot),ls_lap_udp_usage(slot),ls_lap_mdns_usage(slot),ls_lap_netdiag_usage(slot),
         ls_lap_ble_usage(slot),ls_lap_sound_usage(slot),ls_lap_radio_usage(slot),ls_lap_io_usage(slot),ls_lap_audio_usage(slot),ls_lap_system_usage(slot),ls_lap_dsp_usage(slot),ls_lap_sys_usage(slot)};
     out->pool_bytes=sizeof(*p); out->pool_limit=2u*1024*1024; out->handle_limit=64;
     for(unsigned i=0;i<sizeof(usage)/sizeof(usage[0]);i++) { out->pool_bytes+=usage[i].bytes; out->handles+=usage[i].handles; }
@@ -490,7 +493,21 @@ void ls_lap_api_begin(const char *id, uint32_t gen, uint32_t opened_ms) {
     atomic_init(&runtime_state.log_tail, 0);
 }
 void ls_lap_api_callback(bool on) {
+    /* The top of the stack the app's callback runs on. A local of this
+       function sits two frames below the caller that then calls the app, so
+       an app struct in a shallow frame (helpers inlined into key()) landed
+       above it and every pointer to it was refused: lap_ping_start said
+       invalid on the board and nowhere else. The task's own stack end is the
+       real bound. */
     if (on) runtime_state.stack_top = (uintptr_t)&on;
+#if defined(ESP_PLATFORM) && !defined(LS_LAP_HOST_TEST)
+    if (on) {
+        TaskSnapshot_t snap;
+        if (vTaskGetSnapshot(xTaskGetCurrentTaskHandle(), &snap) == pdTRUE &&
+            (uintptr_t)snap.pxEndOfStack > runtime_state.stack_top)
+            runtime_state.stack_top = (uintptr_t)snap.pxEndOfStack;
+    }
+#endif
 #ifdef ESP_PLATFORM
     runtime_state.owner = on ? xTaskGetCurrentTaskHandle() : NULL;
 #endif
