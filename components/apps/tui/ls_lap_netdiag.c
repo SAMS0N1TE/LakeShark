@@ -225,7 +225,7 @@ static void tcpip_work(void *arg) {
         uint16_t sum = inet_chksum(d, 8 + x->size);
         memcpy(d + 2, &sum, 2);
         ip_addr_t dst;
-        ip_addr_set_ip4_u32(&dst, lwip_htonl(x->dst));
+        ip_addr_set_ip4_u32_val(dst, lwip_htonl(x->dst));
         pcb->ttl = x->ttl;
         unsigned w = x->seq % WINDOW;
         sent_key[x->g][w] = x->id; sent_seq[x->g][w] = x->seq;
