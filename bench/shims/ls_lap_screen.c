@@ -9,6 +9,7 @@
  *
  * LAPSIM_SCRIPT drives the sensors by frame, ';' between steps:
  *   N:tilt=AX,AY[,AZ]   the board's up vector from frame N on
+ *   N:heading=DEG       the compass heading lap_motion reports
  *   N:down=X,Y          a finger at app pixel X,Y (held until up)
  *   N:up                lift it
  *   N:swipe=U|D|L|R     a finished swipe
@@ -367,6 +368,10 @@ static void step(const char *c)
                 h->m.pitch = asinf(h->m.ay) * 57.29578f;
                 h->m.roll = asinf(h->m.ax) * 57.29578f;
                 h->m.heading = h->m.true_heading = -1;
+            } else if (sscanf(c, "heading=%f", &ax) == 1) {   /* the compass reads DEG (lap_motion) */
+                h->motion = true;
+                h->m.heading = h->m.true_heading = ax;
+                h->m.mag_valid = true;
             } else if (sscanf(c, "down=%d,%d", &x, &y) == 2) {
                 if (!h->down) { h->x0 = x; h->y0 = y; h->held_ms = 0; }
                 h->down = true; h->x = x; h->y = y;
@@ -401,6 +406,26 @@ static void step(const char *c)
                 }
             } else if (sscanf(c, "rx=%d", &x) == 1) {
                 h->self.rx_packets += (uint32_t)x;
+            } else if (sscanf(c, "wifi=%d", &x) == 1) {
+                /* A finished scan of x access points (lap_wifi_aps); made up
+                   names, the TEST- prefix marks them as the simulator's. */
+                static const struct { const char *ssid; int8_t rssi; uint8_t ch; bool secure; } AP[16] = {
+                    {"TEST-LakeNet", -48, 6, true}, {"TEST-OpenCafe", -71, 1, false}, {"TEST-Library", -63, 11, true},
+                    {"TEST-Printer", -80, 6, false}, {"TEST-Home5G", -58, 36, true}, {"TEST-Garage", -86, 3, true},
+                    {"TEST-Office", -55, 1, true}, {"TEST-Guest", -67, 11, false}, {"TEST-Upstairs", -74, 9, true},
+                    {"", -82, 6, true}, {"TEST-Camera", -77, 4, true}, {"TEST-Neighbour", -89, 13, true},
+                    {"TEST-Lab5", -61, 149, true}, {"TEST-Kitchen", -69, 2, true}, {"TEST-Shed", -91, 8, false},
+                    {"TEST-Hall", -65, 5, true}};
+                h->wifi_count = x < 0 ? 0 : x > 16 ? 16 : x;
+                for (int i = 0; i < h->wifi_count; i++) {
+                    memset(&h->aps[i], 0, sizeof(h->aps[i]));
+                    snprintf(h->aps[i].ssid, sizeof(h->aps[i].ssid), "%s", AP[i].ssid);
+                    h->aps[i].rssi = AP[i].rssi; h->aps[i].channel = AP[i].ch; h->aps[i].secure = AP[i].secure;
+                }
+                h->wifi_seq++;
+            } else if (sscanf(c, "wifiwalk=%d", &x) == 1) {
+                for (int i = 0; i < h->wifi_count; i++) h->aps[i].rssi = (int8_t)(h->aps[i].rssi + (i & 1 ? -x : x));
+                h->wifi_seq++;
             } else if (sscanf(c, "ble=%d", &x) == 1) {
                 h->ble_count = x > 24 ? 24 : x;
                 for (int i = 0; i < h->ble_count; i++) h->ble[i] = (lap_ble_dev_t){ .addr = { 1, 2, 3, 4, 5, (uint8_t)i }, .rssi = -70, .age_ms = 1000 };

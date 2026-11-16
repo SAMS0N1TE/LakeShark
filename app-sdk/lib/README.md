@@ -12,6 +12,14 @@ caller-owned memory; the asset file and music adapters import the existing
 SD/mixer services. See [games/assets contracts](../docs/GAMES_ASSETS.md) and
 the `arcade2d` / `flight3d` templates. No new firmware exports are added.
 
+`lap_dot11.h` reads 802.11 frames as `lap_capture_read` returns them
+(API 2.7): the MAC header and address roles, management bodies, SSID and
+channel elements, the RSN/WPA security suite, deauthentication reason codes,
+EAPOL-Key handshake message numbers and whether a PMKID is present (never
+its value), randomised addresses, channel/MHz conversion and airtime. Read
+only: nothing builds a frame. Used by `apps/wifi_watch` and
+`apps/wifi_survey`.
+
 `lap_loop_init(&loop, 60, 8, lap_millis())` sets 60 updates/second and at most
 eight catch-up updates per draw. `lap_loop_advance(&loop, lap_millis(), &alpha)`
 returns how many fixed updates to run (each with `dt = 1.0f / loop.hz`); draw

@@ -2,6 +2,7 @@
 #include "settings_schema.h"
 #include "home_widget_pref.h"
 #include "location_pref.h"
+#include "ls_map_view.h"
 #include "radio_choice.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
@@ -58,6 +59,7 @@ static uint32_t s_p25_step;
 static uint32_t s_drone_watch = SETTINGS_DRONE_WATCH_DEFAULT;
 static uint32_t s_wf_display = UINT32_MAX;
 static uint32_t s_map_layers;
+static uint64_t s_map_view;
 static bool s_map_layers_valid;
 static uint32_t s_fm_hf;
 static bool s_fm_hf_valid;
@@ -409,6 +411,7 @@ bool settings_init(void)
     nvs_get_u32(s_nvs, "p25_step_v1", &s_p25_step);
     if (!settings_p25_step_valid(s_p25_step)) s_p25_step=0;
     s_map_layers_valid=nvs_get_u32(s_nvs,"map_layers",&s_map_layers)==ESP_OK;
+    if(nvs_get_u64(s_nvs,"map_view_v1",&s_map_view)!=ESP_OK) s_map_view=0;
     s_fm_hf_valid=nvs_get_u32(s_nvs,"fm_hf_v1",&s_fm_hf)==ESP_OK;
     uint8_t lr_tcxo = 1, lr_dcdc = 0;
     if (nvs_get_u8(s_nvs, "lr_tcxo", &lr_tcxo) != ESP_OK || lr_tcxo > 1) lr_tcxo = 1;
@@ -734,8 +737,12 @@ static bool settings_put_location(uint64_t location)
 {
     if (!s_home_write_ready || !sput_u64("location_v1", location)) return false;
     portENTER_CRITICAL(&s_location_lock);
+    /* A new home is where MAP opens next: the view it was left at goes. */
+    const bool forget = s_location != location && location && s_map_view;
     s_location = location;
+    if (forget) s_map_view = 0;
     portEXIT_CRITICAL(&s_location_lock);
+    if (forget) (void)sput_u64("map_view_v1", 0);
     return true;
 }
 bool settings_set_home(float lat, float lon)
@@ -1036,13 +1043,17 @@ void settings_set_antenna_external(bool external)
 
 bool settings_get_antenna_mmcx_tx(void)
 {
-    if (!s_nvs_ok) return false;
-    uint8_t v = 0;
-    return nvs_get_u8(s_nvs, "ant_mmcx_tx", &v) == ESP_OK && v != 0;
+    /* Unset is RX+TX: transmit is not moved off the antenna chosen unless
+       somebody asked for RX ONLY. A stored 0 from before this default was
+       the old default written back, not a choice, so it is read under a new
+       key: only RX ONLY picked from now on keeps transmits internal. */
+    if (!s_nvs_ok) return true;
+    uint8_t v = 1;
+    return nvs_get_u8(s_nvs, "ant_tx_use", &v) != ESP_OK || v != 0;
 }
 void settings_set_antenna_mmcx_tx(bool tx)
 {
-    if (s_nvs_ok) sput_u8("ant_mmcx_tx", tx ? 1 : 0);
+    if (s_nvs_ok) sput_u8("ant_tx_use", tx ? 1 : 0);
 }
 
 bool settings_get_antenna_remember(void)
@@ -1355,6 +1366,23 @@ void settings_set_map_layers(uint32_t layers)
     if(s_nvs_ok && s_wq) sput_u32("map_layers",layers);
     else if(s_nvs_ok) ESP_LOGW(TAG,"map style persistence queue unavailable");
 }
+bool settings_get_map_view(double *lat, double *lon, int *zoom)
+{
+    portENTER_CRITICAL(&s_location_lock);
+    const uint64_t v = s_map_view;
+    portEXIT_CRITICAL(&s_location_lock);
+    return ls_map_view_unpack(v, lat, lon, zoom);
+}
+void settings_set_map_view(double lat, double lon, int zoom)
+{
+    const uint64_t v = ls_map_view_pack(lat, lon, zoom);
+    if (!v) return;
+    portENTER_CRITICAL(&s_location_lock);
+    const bool same = s_map_view == v;
+    s_map_view = v;
+    portEXIT_CRITICAL(&s_location_lock);
+    if (!same && s_nvs_ok && s_wq) (void)sput_u64("map_view_v1", v);
+}
 /* ADS-B: the mini map's FOLLOW mode; -1 when unset. */
 int settings_get_adsb_follow(void)
 {
@@ -1390,6 +1418,20 @@ void settings_set_subghz_lr_fsk(bool fsk)
 {
     if (!s_nvs_ok) return;
     sput_u8("sg_lrfsk", fsk ? 1 : 0);
+}
+/* SUB-GHZ's own expert settings in one word - TX power step, pulse
+   inspector, after-a-send, LEARN window, analyzer band - laid out by
+   scr_subghz.c. Zero is every default. */
+int settings_get_subghz_expert(void)
+{
+    uint32_t v = 0;
+    if (!s_nvs_ok || nvs_get_u32(s_nvs, "sg_expert", &v) != ESP_OK || v > 0xffffu) return 0;
+    return (int)v;
+}
+void settings_set_subghz_expert(int packed)
+{
+    if (!s_nvs_ok || packed < 0 || packed > 0xffff) return;
+    sput_u32("sg_expert", (uint32_t)packed);
 }
 int settings_get_subghz_colour(void)
 {

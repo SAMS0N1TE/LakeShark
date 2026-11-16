@@ -68,7 +68,8 @@ int main(int argc,char **argv) {
                 assert 'hot=' in text and 'cold=' in text and 'free_internal=' in text,text
             else:
                 assert 'CartoCore map unavailable' not in text,text
-                assert 'carto MAP: recentred' in text,text
+                # opening on its own never moves the view onto the map (2026-11-14)
+                assert 'carto MAP: recentred' not in text,text
                 assert 'carto arenas' in text,text
                 if case!='embedded':assert 'carto open /sdcard/maps/franklin_compact.ctile' in text,text
                 if case=='internal-fail':assert 'rejected internal allocation' in text and 'PSRAM fallback' in text,text

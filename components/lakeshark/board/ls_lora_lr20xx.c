@@ -2182,7 +2182,17 @@ static void heal(void)
 static esp_err_t step_lr(esp_err_t err, const char *what)
 {
     if (err == ESP_OK) err = lr20xx_check_last_ok();
-    if (err != ESP_OK) ESP_LOGE(TAG, "%s failed: %s", what, esp_err_to_name(err));
+    if (err != ESP_OK) {
+        /* A refusal names the chip's errors, then clears them, so the next
+           refusal names its own. */
+        uint16_t e = 0;
+        char names[64] = "";
+        if (err == ESP_ERR_INVALID_RESPONSE && lr20xx_get_errors(&e) == ESP_OK && e) {
+            err_names(e, names, sizeof(names));
+            (void)lr20xx_clear_errors();
+        }
+        ESP_LOGE(TAG, "%s failed: %s, chip errors 0x%04X %s", what, esp_err_to_name(err), (unsigned)e, names);
+    }
     return err;
 }
 
@@ -2947,6 +2957,42 @@ static esp_err_t lr_fsk_receive(void)
    sweep's rule), the new frequency, and Rx again: the modulation, packet and
    DC-DC settings stay as the session set them. One input only, because the
    path and its boost belong to the session's setup. */
+/* LoRa receive moved in place (ls_lora_rx_retune): the FSK retune's steps on
+   the LoRa session, the input never changing under it. */
+static esp_err_t lr_rx_retune(uint32_t hz)
+{
+    if (!lr.cfg_valid || !lr.programmed || lr.fsk_active || lr.scanning || lr.tx_busy || s_exp_active ||
+        lr20xx_modes_active())
+        return ESP_ERR_INVALID_STATE;
+    if (!ls_lora_packet_rx_hz_ok(lr_caps(), hz) || lr20xx_path_for_hz(hz) != lr20xx_path_for_hz(lr.cfg.freq_hz))
+        return ESP_ERR_INVALID_ARG;
+    /* Standby on the crystal, so the TCXO keeps running, the new frequency,
+       receive. No front-end calibration here. On the board (2026-11-15) a
+       CalibFE sent from this path, LoRa Rx then standby, was refused every
+       time, with GetErrors bit 14 (reserved in datasheet rev 2.2), and the
+       next setup's CalibFE at that frequency failed too, BUSY stuck high,
+       until the part was reset. Ruled out: a strong signal (`lora lrprobe`
+       calibrates the same 881 MHz cleanly from idle), a pending
+       RXFREQ_NO_FE_CAL (ClearErrors first changed nothing), standby RC
+       versus XOSC, the DC-DC workaround reset. The calibration of the last
+       full configure stands; a scan reconfigures at every lease hand-back
+       (every 2 s). Past ~10 MHz from it image rejection is weaker, which an
+       RSSI sweep tolerates. lr_fsk_retune still calibrates on this pattern;
+       not yet seen failing. */
+    esp_err_t err = step_lr(lr20xx_set_standby(true), "SetStandby");
+    lr.rx_mode = false;
+    if (err == ESP_OK) err = step_lr(lr20xx_set_rf_frequency(hz), "SetRfFrequency");
+    if (err == ESP_OK) lr.cfg.freq_hz = hz;
+    /* Receive again straight from the crystal: arm_lora_rx's standby RC would
+       stop the TCXO and every step would wait for it to start again. */
+    if (err == ESP_OK) err = step_lr(lr20xx_clear_rx_fifo(), "ClearRxFifo");
+    if (err == ESP_OK) err = step_lr(lr20xx_clear_irq(LR20XX_IRQ_ALL), "ClearIrq");
+    if (err == ESP_OK) err = lr20xx_set_rx(0xFFFFFFu);
+    if (err == ESP_OK) err = expect_mode(LR20XX_MODE_RX);
+    lr.rx_mode = err == ESP_OK;
+    return err;
+}
+
 static esp_err_t lr_fsk_retune(uint32_t hz)
 {
     if (!lr.fsk_active || lr.tx_busy) return ESP_ERR_INVALID_STATE;
@@ -5123,6 +5169,7 @@ const ls_lora_ops_t ls_lora_lr20xx_ops = {
     .fsk_end = lr_fsk_end,
     .fsk_active = lr_fsk_active,
     .fsk_retune = lr_fsk_retune,
+    .rx_retune = lr_rx_retune,
     .fsk_stream_read = lr_fsk_stream_read,
     .scan_begin = lr_scan_begin,
     .scan_sweep = lr_scan_sweep,

@@ -147,13 +147,13 @@ bool ls_ota_github_url(const char *url, char *out, size_t cap);
 
 /* Each edition has its own manifest folder and board name, so none is ever
    offered another's image: the standard AMOLED build /tdp4/ (T-Display-P4),
-   LakeShark LR /tdp4lr/ (T-Display-P4-LR) and the TFT panel /tdp4tft/
-   (T-Display-P4-TFT). A URL a board saved under another edition's folder (it
+   LakeShark LR /tdp4lr/ (T-Display-P4-LR), the TFT panel /tdp4tft/
+   (T-Display-P4-TFT) and the network build /tdp4net/ (T-Display-P4-NET). A URL a board saved under another edition's folder (it
    was flashed with that edition before) is moved to `dir`, channel and host
    kept: .../tdp4/test.txt on a TFT build is .../tdp4tft/test.txt. True and
    `out` written when it moved; false, `out` untouched, when the URL names no
    other edition's folder or `out` is too small. */
-#define LS_OTA_DIRS { "/tdp4/", "/tdp4lr/", "/tdp4tft/" }
+#define LS_OTA_DIRS { "/tdp4/", "/tdp4lr/", "/tdp4tft/", "/tdp4net/" }
 bool ls_ota_url_to_edition(const char *url, const char *dir, char *out, size_t cap);
 
 /* ------------------------------------------------- the background check

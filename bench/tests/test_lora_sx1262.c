@@ -270,6 +270,51 @@ LS_CASE(rssi_and_spectrum_reject_absent_or_failed_radio_responses)
     LS_EQ_INT(ls_lora_scan_end(),ESP_OK);ls_lora_stop();
 }
 
+/* A scanner's step: standby on the crystal, image calibration only when the
+   step leaves the window the last one covered, the new frequency and receive
+   again; nothing that would reconfigure the part. */
+static int rt_cal, rt_cfg, rt_rx, rt_standby_xosc;
+static uint8_t rt_freq[5], rt_cal_args[3];
+static void respond_retune(const uint8_t *tx, uint8_t *rx, size_t n, void *ctx)
+{
+    const uint8_t op = n ? tx[0] : 0;
+    if (op == 0x98 && n == 3) { rt_cal++; memcpy(rt_cal_args, tx, 3); }
+    if (op == 0x86 && n == 5) memcpy(rt_freq, tx, 5);
+    if (op == 0x82) rt_rx++;
+    if (op == 0x80 && n == 2 && tx[1] == 0x01) rt_standby_xosc++;
+    if (op == 0x8B || op == 0x89 || op == 0x96) rt_cfg++;   /* modulation, calibrate, regulator */
+    respond_rssi(tx, rx, n, ctx);
+}
+LS_CASE(rx_retune_moves_receive_and_calibrates_once_per_window)
+{
+    bring_up(0x22, 0x14, 0x24);
+    ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg);                /* 902-928 calibrated */
+    LS_CHECK(ls_lora_rx_retune(915000000) != ESP_OK);             /* nothing started or configured yet */
+    LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+    LS_EQ_INT(ls_lora_receive(), ESP_OK);
+    ls_shim_spi_on_transfer(respond_retune, &s_part);
+    rt_cal = rt_cfg = rt_rx = rt_standby_xosc = 0;
+    LS_EQ_INT(ls_lora_rx_retune(915000000), ESP_OK);
+    LS_EQ_INT(rt_cal, 0); LS_EQ_INT(rt_cfg, 0); LS_EQ_INT(rt_rx, 1); LS_EQ_INT(rt_standby_xosc, 1);
+    const uint32_t steps = (uint32_t)(((uint64_t)915000000 << 25) / 32000000u);
+    LS_EQ_INT(rt_freq[1], (steps >> 24) & 0xFF); LS_EQ_INT(rt_freq[4], steps & 0xFF);
+    LS_CHECK(ls_lora_is_receiving());
+    LS_EQ_UINT(ls_lora_cfg()->freq_hz, 915000000u);
+    LS_EQ_INT(ls_lora_rx_retune(703000000), ESP_OK);             /* a new band: one calibration */
+    LS_EQ_INT(rt_cal, 1); LS_EQ_INT(rt_cal_args[1], 700 / 4); LS_EQ_INT(rt_cal_args[2], 732 / 4);
+    for (uint32_t f = 705000000; f <= 731000000; f += 2000000) LS_EQ_INT(ls_lora_rx_retune(f), ESP_OK);
+    LS_EQ_INT(rt_cal, 1);                                         /* the window covers the band */
+    LS_EQ_INT(ls_lora_rx_retune(733000000), ESP_OK);
+    LS_EQ_INT(rt_cal, 2);
+    LS_EQ_INT(rt_cfg, 0);
+    LS_EQ_INT(ls_lora_rx_retune(100000000), ESP_ERR_INVALID_ARG);
+    LS_EQ_INT(ls_lora_scan_begin(902000000, 928000000), ESP_OK);
+    LS_EQ_INT(ls_lora_rx_retune(915000000), ESP_ERR_INVALID_STATE);  /* the sweep has the part */
+    LS_EQ_INT(ls_lora_scan_end(), ESP_OK);
+    LS_EQ_INT(ls_lora_rx_retune(915000000), ESP_OK);
+    ls_lora_stop();
+}
+
 LS_CASE(fsk_receive_preserves_lora_and_has_no_packet_restart)
 {
     bring_up(0x22, 0x14, 0x24);

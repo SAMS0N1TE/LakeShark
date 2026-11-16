@@ -11,6 +11,10 @@ bool ls_mesh_radio_hold(bool on)
     subghz_lease=subghz_task;return true;
 }
 bool ls_mesh_radio_held(void){return subghz_lease==subghz_task;}
+/* WATCH holds the chip in the background (rec_watch_runtime.c): the same
+   one lease here. */
+bool ls_mesh_radio_hold_bg(bool on){return ls_mesh_radio_hold(on) && (!on || ls_mesh_radio_held());}
+bool ls_mesh_radio_wanted(void){return false;}
 
 /* REC's LR2021 stream: none on the bench unless a case asks. */
 #include "ls_lora.h"

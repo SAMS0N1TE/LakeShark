@@ -61,6 +61,9 @@ typedef struct {
        the middle, channel 144 kHz up). The marker lands on it when it first
        appears or moves; 0 leaves the marker alone. */
     uint32_t mark_hz;
+    /* The bins are dB over each bin's own floor (ls_floor.h), not levels:
+       the readout says "dB" and floor_db..top_db are relative to it. */
+    bool     over_floor;
 } ls_wf_feed_t;
 
 typedef enum {

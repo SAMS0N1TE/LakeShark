@@ -5,8 +5,6 @@ static int starts, scans, leaves, rid_starts, rid_stops;
 static bool running, scanning, scan_failed;
 static esp_err_t rid_result;
 static char saved_join[33];
-bool ls_survey_pending(void) { return false; }
-void ls_survey_tick(void) {}
 bool ls_sweep_pending(void) { return false; }
 void ls_sweep_tick(void) {}
 TaskHandle_t ls_flash_task_create_static(TaskFunction_t fn, const char *name,

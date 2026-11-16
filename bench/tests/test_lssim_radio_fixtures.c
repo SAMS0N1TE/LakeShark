@@ -108,10 +108,10 @@ LS_CASE(labs_options_step_frequency_and_fsk_send_stays_on_the_screen)
     run("labs", "-k o -x @right", false, "13");
     LS_CHECK(strstr(output, "910.5500"));
     for (int wide = 0; wide < 2; wide++) {
-        run("labs", "-k mmmdt", wide, "13");
+        run("labs", "-k mmdt", wide, "13");
         LS_CHECK(strstr(output, "GFSK"));
         LS_CHECK(strstr(output, "SEND ONE LORA PACKET") == NULL);
-        run("labs", "-k mmmo", wide, "13");
+        run("labs", "-k mmo", wide, "13");
         LS_CHECK(strstr(output, "SYNC WORD"));
         LS_CHECK(strstr(output, "INVERT IQ") == NULL);
     }
@@ -124,21 +124,21 @@ LS_CASE(labs_page_history_wraps_the_suffix_and_touch_reaches_oldest_page)
     setenv("LSSIM_LABS_PAGES", "1", 1);
 #endif
     for (int wide = 0; wide < 2; wide++) {
-        run("labs", "-k mmmm", wide, "13");
+        run("labs", "-k mmm", wide, "13");
         LS_CHECK(strstr(output, "TAILVISIBLE"));
         LS_CHECK(strstr(output, "1 of 8"));
-        run("labs", "-k mmmm -x @down,@down,@down,@down,@down,@down,@down", wide, "13");
+        run("labs", "-k mmm -x @down,@down,@down,@down,@down,@down,@down", wide, "13");
         LS_CHECK(strstr(output, "8 of 8"));
         LS_CHECK(strstr(output, "TAILVISIBLE"));
     }
     /* NEXT > seven times reaches the last page; a tap on a page's row
        picks it. Positions as LORA LABS lays them out now: NEXT under the
        list (portrait row 25, landscape row 18), the pages from row 17. */
-    run("labs", "-k mmmm -x 28:25,28:25,28:25,28:25,28:25,28:25,28:25", false, "13");
+    run("labs", "-k mmm -x 28:25,28:25,28:25,28:25,28:25,28:25,28:25", false, "13");
     LS_CHECK(strstr(output, "8 of 8"));
-    run("labs", "-k mmmm -x 61:18,61:18,61:18,61:18,61:18,61:18,61:18", true, "13");
+    run("labs", "-k mmm -x 61:18,61:18,61:18,61:18,61:18,61:18,61:18", true, "13");
     LS_CHECK(strstr(output, "8 of 8"));
-    run("labs", "-k mmmm -x 5:18", false, "13");
+    run("labs", "-k mmm -x 5:18", false, "13");
     LS_CHECK(strstr(output, "2 of 8"));
 #ifdef _WIN32
     _putenv_s("LSSIM_LABS_PAGES", "");

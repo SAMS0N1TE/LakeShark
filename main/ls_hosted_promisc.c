@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include "sdkconfig.h"
 #include "esp_err.h"
 #include "esp_attr.h"
 #include "esp_log.h"
@@ -24,8 +25,16 @@
 #define LS_PROMISC_DATA 0x4C530103u   /* coprocessor -> host */
 #define LS_PROMISC_VER  1
 #define ACK_WAIT_MS     800
-#define SNAP            512           /* bytes of each frame forwarded */
-#define MAX_PER_S       250           /* frames a second the coprocessor forwards */
+#ifdef CONFIG_LS_HOSTED_PROMISC_SNAP
+#define SNAP            CONFIG_LS_HOSTED_PROMISC_SNAP       /* bytes of each frame forwarded */
+#else
+#define SNAP            512
+#endif
+#ifdef CONFIG_LS_HOSTED_PROMISC_MAX_PER_S
+#define MAX_PER_S       CONFIG_LS_HOSTED_PROMISC_MAX_PER_S  /* frames a second the coprocessor forwards */
+#else
+#define MAX_PER_S       250
+#endif
 
 enum { OP_PING = 0, OP_SET = 1, OP_CHANNEL = 2 };
 

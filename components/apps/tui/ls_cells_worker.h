@@ -444,6 +444,14 @@ static bool cells_file_current(uint32_t id,const char *path) {
     if(cw.direct) { struct stat st;return !stat(path,&st) && S_ISREG(st.st_mode) && st.st_size>=64; }
     return cells_matches(path,size,sha);
 }
+/* The same question for a file about to be opened, where the open answers
+   what the stat would. In a folder of a thousand cells each lookup of a
+   name is a walk of the folder: 20 to 145 ms measured on the LR2021 board,
+   and it was done twice for every cell opened. */
+static bool cells_file_listed(uint32_t id,const char *path) {
+    if(cw.initialized && cw.catalog>=0 && cw.direct) { uint32_t size;uint8_t sha[32];return cells_entry(id,&size,sha); }
+    return cells_file_current(id,path);
+}
 /* Failure records survive dl's per-attempt reset, including joined .pN parts.
  * Only failed assets allocate PSRAM; never evict a permanent stop automatically. */
 typedef struct cells_retry {

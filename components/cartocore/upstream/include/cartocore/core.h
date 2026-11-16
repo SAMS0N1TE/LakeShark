@@ -3,7 +3,9 @@
 #define CC_EMBED_API_VERSION 2
 #include <stddef.h>
 #include <stdint.h>
-typedef struct { uint8_t *data; size_t size, used, peak; } cc_arena;
+/* fails: allocations refused for want of space, so a caller can tell a short
+   arena from bad data. */
+typedef struct { uint8_t *data; size_t size, used, peak, fails; } cc_arena;
 void cc_arena_init(cc_arena *a, void *buffer, size_t size);
 void *cc_arena_alloc(cc_arena *a, size_t bytes, size_t alignment);
 static inline void *cc_arena_array(cc_arena *a,size_t n,size_t size,size_t alignment) {
@@ -70,6 +72,7 @@ typedef struct {
     cc_terrain *terrain;
     cc_feature *first[16], *last[16]; size_t features, points;
     cc_feature *label_first[6][16],*label_last[6][16]; int labels_indexed;
+    size_t degraded; /* tiles drawn from a coarser zoom: the arena was short */
 } cc_scene;
 /* Scale source geometry, keeping stroke/text size fixed. Caller-owned copies. */
 int cc_scene_overzoom(cc_scene *scene,unsigned shift,int32_t rx,int32_t ry,cc_arena *arena);

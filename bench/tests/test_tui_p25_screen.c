@@ -29,6 +29,7 @@ extern int ls_test_wf_releases;
 static void filter_option(const char *name);
 
 #include <string.h>
+#include <math.h>
 
 /* Link-time tripwires at the hardware/flash and command boundaries. */
 static unsigned option_locks, option_spi, option_nvs, option_actions, option_reads;
@@ -897,6 +898,114 @@ LS_CASE(the_p25_deck_bar_is_a_slider_and_the_title_value_opens_exact_entry)
                 }
         }
     }
+}
+
+/* THE BAR FOLLOWS THE FINGER. A finger that goes down on a deck card's bar
+   and moves along it sets the value from the column under it on every frame
+   - heard (audio_volume_preview) or received (p25_request_gain) at once,
+   never stored - and the card's own action, the one that stores, runs once
+   when it lifts, with the value it let go at. The tap the glass reports for
+   a short drag lands where it went down and must not undo it. Both
+   postures, both cards; the decode page under the deck stays put. */
+/* What a finger dragging the deck reaches while it is down: the speaker and
+   the receiver, never the store. The lift goes through the actions. */
+static int s_vol_previews = 0, s_vol_preview_last = -1;
+void audio_volume_preview(int v) { s_vol_previews++; s_vol_preview_last = v; }
+static int s_gain_requests = 0, s_gain_request_last = -1;
+void p25_request_gain(int tenths) { s_gain_requests++; s_gain_request_last = tenths; }
+void rec_watch_sim_finger(bool down, int sc, int sr, int c, int r);
+static int    s_deck_gain_saves;
+static double s_deck_gain_saved = -1;
+static ls_act_status_t a_deck_gain(const ls_args_t *in, ls_val_t *out)
+{
+    s_deck_gain_saves++;
+    s_deck_gain_saved = in->v[0].kind == LS_VAL_INT ? in->v[0].i : in->v[0].f;
+    out->kind = LS_VAL_FLOAT;
+    out->f = (float)s_deck_gain_saved;
+    return LS_ACT_OK;
+}
+static void deck_frame(tui_rect pane)
+{
+    fresh();
+    draw_pane(&ls_scr_p25, pane);
+}
+
+LS_CASE(the_p25_deck_bars_follow_a_dragging_finger_and_save_once_when_it_lifts)
+{
+    no_traffic();
+    P25.lora_rx = false;
+    ls_action_register("audio.volume", "i", LS_CAP_TUNE, a_deck_volume, "test volume");
+    ls_value_publish("sys.volume", "percent", v_deck_volume);
+    ls_action_register("p25.gain", "f", LS_CAP_TUNE, a_deck_gain, "test gain");
+    static const char *const NAME[2] = { "VOLUME", "GAIN" };
+    const tui_rect panes[] = {PORTRAIT, {1, 2, 113, 24}};
+    for (int posture = 0; posture < 2; ++posture)
+        for (int card = 0; card < 2; ++card) {
+            ls_numpad_close();
+            draw_decode_now(panes[posture]);
+            int x, y, w, h;
+            LS_CHECK(ls_scr_p25_control_rect(card, LS_RADIO_PART_BAR, &x, &y, &w, &h));
+            if (w < 8) { LS_CHECK_MSG(false, "%s bar is %d wide", NAME[card], w); continue; }
+            const int row = y + h / 2, start = x + 1;
+            /* What the finger has reached without storing (volume in percent,
+               gain in tenths of a dB), and how often. */
+            int *moves = card ? &s_gain_requests : &s_vol_previews;
+            int *moved_to = card ? &s_gain_request_last : &s_vol_preview_last;
+            s_deck_vol = -1;
+            s_deck_gain_saves = 0;
+            *moves = 0;
+            *moved_to = -1;
+            const unsigned nvs = option_nvs;
+
+            rec_watch_sim_finger(true, start, row, start, row);
+            deck_frame(panes[posture]);
+            LS_EQ_INT(*moves, 0);
+            int last = -1;
+            for (int k = 1; k <= 4; ++k) {
+                rec_watch_sim_finger(true, start, row, start + (w - 2) * k / 4, row);
+                deck_frame(panes[posture]);
+                LS_CHECK_MSG(*moved_to > last, "%s move %d reached %d (was %d)",
+                             NAME[card], k, *moved_to, last);
+                last = *moved_to;
+                LS_EQ_INT(*moves, k);
+                LS_EQ_INT(s_deck_vol, -1);
+                LS_EQ_INT(s_deck_gain_saves, 0);
+                LS_CHECK(!ls_numpad_active());
+            }
+            LS_EQ_INT(last, card ? 500 : 100);
+
+            /* Back to the middle, the thumb drifted below the row. */
+            rec_watch_sim_finger(true, start, row, x + w / 2, row + 2);
+            deck_frame(panes[posture]);
+            const int middle = *moved_to;
+            LS_CHECK_MSG(middle > (card ? 150 : 30) && middle < (card ? 350 : 70),
+                         "%s in the middle reached %d", NAME[card], middle);
+
+            LS_CHECK(ls_scr_p25.touch(start, row));
+            LS_EQ_INT(s_deck_vol, -1);
+            LS_EQ_INT(s_deck_gain_saves, 0);
+            rec_watch_sim_finger(false, 0, 0, 0, 0);
+            deck_frame(panes[posture]);
+            if (card) {
+                LS_EQ_INT(s_deck_gain_saves, 1);
+                LS_CHECK_MSG(fabs(s_deck_gain_saved * 10.0 - middle) < 0.6,
+                             "gain stored %.1f dB, the finger left %d tenths", s_deck_gain_saved, middle);
+                LS_EQ_INT(s_deck_vol, -1);
+            } else {
+                LS_EQ_INT(s_deck_vol, middle);
+                LS_EQ_INT(s_deck_gain_saves, 0);
+            }
+            deck_frame(panes[posture]);
+            LS_EQ_INT(s_deck_gain_saves, card ? 1 : 0);
+            LS_EQ_INT((unsigned)option_nvs, nvs);
+
+            int x2, y2;
+            LS_CHECK(ls_scr_p25_control_rect(card, LS_RADIO_PART_BAR, &x2, &y2, NULL, NULL));
+            LS_EQ_INT(x2, x);
+            LS_EQ_INT(y2, y);
+            LS_CHECK(!ls_numpad_active());
+            ls_shim_time_advance(300000);   /* past the lift's window */
+        }
 }
 
 /* TUNE IS STILL ON THE SCREEN, AND IT TYPES IN PLACE.

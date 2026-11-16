@@ -17,8 +17,6 @@ Modes:
 - PACKETS: channel RSSI and a hexadecimal preview of LoRa packets. Frequency,
   SF, bandwidth, coding rate, preamble, sync word, CRC and IQ polarity must
   match the transmitter.
-- SPECTRUM: channel energy across the selected band, or 1 MHz either side of
-  the centre frequency. It is an RSSI sweep, not decoded traffic.
 - BEARING: RSSI in 36 magnetic-heading bins. This is an experimental plot,
   not a validated transmitter bearing.
 - GFSK: receive-only FSK with bitrate, deviation, bandwidth and sync settings.
@@ -27,9 +25,12 @@ Modes:
   PAGER RECON and its 512N or 512I probe. Keep message text out
   of shared notes and examples.
 
+SPECTRUM left Labs: the RF LAB app (on the card) draws the spectrum on every
+radio, the LoRa chip included.
+
 SETUP/S and OPTIONS/O expose settings for the current mode. BAND/B chooses a
-frequency or spectrum span. SEND/T sends one typed LoRa packet with DIRECT on;
-SPECTRUM, GFSK and POCSAG do not transmit. MARK/J saves an observation to NOTES.
+frequency. SEND/T sends one typed LoRa packet with DIRECT on; GFSK and POCSAG
+do not transmit. MARK/J saves an observation to NOTES.
 REC/E controls lab recording. HOLD/H freezes the plot; CLEAR/X clears it.
 
 ## Notes
@@ -116,7 +117,7 @@ transmits above the nominal frequency; `lora lrfcorr PPM` changes it live and
 the window. Both settings are read before the radio starts, so the first frame
 after a boot already uses them.
 
-## Mesh INSPECT and LINK SURVEY
+## Mesh INSPECT and the Wi-Fi/BLE survey
 
 In MESH, open a node's details and choose INSPECT. TRACE shows the route;
 STATUS and TELEM request the node's status and telemetry. LOGIN uses the
@@ -124,19 +125,17 @@ password entered in OPTIONS; a blank password is a guest login. A node must
 support and permit the request. OPTIONS also sets timeouts and intervals.
 LakeShark answers telemetry requests according to its peer permissions.
 
-Open LINK > SURVEY, or press V in LINK. With SCAN WI-FI on, leave the Wi-Fi
-network first: LEAVE on the WI-FI tab, or `wifi leave` in TERMINAL. The
-screen says so if Wi-Fi is still on. START/S begins a walk;
-STOP/S ends it. SORT/R changes ordering; DETAIL/D or Enter opens an observation.
-OPTIONS sets SCAN WI-FI, LISTEN BLE, SCAN INTERVAL, ONLY WITH GPS FIX and KEEP
-SESSIONS. Wi-Fi, BLE and ONLY WITH GPS FIX are on by default, with a 10-second
-interval and 10 kept sessions. Turn ONLY WITH GPS FIX off to record without
-a position. Stop the session before changing options.
+The Wi-Fi/BLE survey recorder moved from LINK to the WIFI SURVEY app (V in
+LINK opens it). Its RECORD tab starts and stops a walk (REC/STOP); MORE there
+sets WI-FI ROWS, BLE ROWS, ONLY GPS FIX, SCAN EVERY and KEEP SESSIONS, changed
+while no session runs. Wi-Fi, BLE and ONLY GPS FIX are on by default, with 10
+kept sessions. Wi-Fi rows need a BSSID, which comes from the beacons frame
+capture hears (the C6 forwarder firmware); the Wi-Fi link can stay up.
 
-Each walk saves a CSV under `/sdcard/lakeshark/survey`. Entries include the
-heard Wi-Fi or BLE device, first and last sighting, best signal and position
-when a fresh GPS fix exists. Best-signal position is where the receiver was,
-not the device's location. Random BLE addresses can change. Keep device names,
+Each walk saves a CSV under `/sdcard/lakeshark/survey`, as before. Entries
+include the heard Wi-Fi or BLE device, first sighting, signal and position
+when a fresh GPS fix exists. A position is where the receiver was, not the
+device's location. Random BLE addresses can change. Keep device names,
 addresses and locations out of public examples.
 
 ## MixRF bring-up with the keyboard attached

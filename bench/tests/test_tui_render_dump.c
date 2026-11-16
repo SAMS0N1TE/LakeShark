@@ -140,6 +140,7 @@ void settings_set_autodim_timeout(int v) { s_dimt = v; }
 /* SET goes through display_ctl now; on the bench it is the same fake. */
 int  display_ctl_get_user(void) { return s_bright; }
 void display_ctl_set_user(int v) { s_bright = v; }
+void display_ctl_preview_user(int v) { s_bright = v; }
 bool display_ctl_autodim_enabled(void) { return s_autodim; }
 void display_ctl_set_autodim(bool v) { s_autodim = v; }
 int  display_ctl_autodim_timeout(void) { return s_dimt; }
@@ -206,6 +207,9 @@ void settings_set_df_channels(int s, const uint32_t *hz, int n) { (void)s; (void
 void settings_set_compass_options(int v) { s_compass_opt = v; }
 int  settings_get_subghz_colour(void) { return s_sg_colour; }
 void settings_set_subghz_colour(int v) { s_sg_colour = v; }
+static int s_sg_expert;
+int  settings_get_subghz_expert(void) { return s_sg_expert; }
+void settings_set_subghz_expert(int v) { s_sg_expert = v; }
 void settings_set_alert_vibe(bool v) { s_alert_vibe = v; }
 void settings_set_haptics(bool on) { (void)on; }
 int  settings_get_theme(void) { return 0; }
@@ -1063,6 +1067,9 @@ bool ls_track_rec_running(void) { return false; }
 /* The radio panel shows system volume; this dump does not run audio. */
 int audio_volume_get(void) { return 60; }
 void audio_volume_set(int v) { (void)v; sensor_volume_writes++; }
+void audio_volume_preview(int v) { (void)v; }
+/* A slider drag on P25's GAIN moves the receiver through this. */
+void p25_request_gain(int tenths) { (void)tenths; }
 bool audio_is_muted(void) { return false; }
 void audio_toggle_mute(void) {}
 

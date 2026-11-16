@@ -474,3 +474,13 @@ lap_ble_capture_start
 lap_capture_read
 lap_capture_status
 lap_capture_stop
+
+# API 2.8 network diagnostics
+lap_net_info
+lap_ping_start
+lap_ping_next
+lap_ping_stop
+lap_dns_resolve
+lap_dns_result
+lap_arp_probe
+lap_arp_table

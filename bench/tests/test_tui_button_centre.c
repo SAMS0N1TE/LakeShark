@@ -14,6 +14,7 @@
 #include "ls_test.h"
 #include "ls_tui_ui.h"
 #include "tui_core.h"
+#include "esp_timer.h"
 
 #include <ctype.h>
 #include <string.h>
@@ -318,5 +319,62 @@ LS_CASE(labels_borrow_room_and_abbreviate_instead_of_cutting_mid_word)
     surface();
     ls_btn_bar_raised(&s_sf, tui_rect_make(0,0,26,3), radio, 2, -1);
     LS_CHECK(!grid_has("RTL-S ")); LS_CHECK(grid_has("RTL"));
+    g_wide = true;
+}
+
+/* A screen may draw two bars in a frame on the one slot: an app's < NAME >
+   strip, then its keys. Each overwrote the other's record of what a key
+   said, so the second bar looked freshly pressed (lit cyan) on every frame. */
+static uint8_t face_attr(int bar_y)
+{
+    int x, y, w, h;
+    if (!ls_btn_rect_slot(LS_BTN_SLOT_SCREEN, 0, &x, &y, &w, &h)) return 0;
+    (void)bar_y;
+    return s_sf.back[(size_t)(y + h / 2) * s_sf.w + x + 1].attr;
+}
+
+LS_CASE(a_second_bar_in_the_frame_does_not_look_just_pressed)
+{
+    g_wide = false;
+    ls_shim_time_set(5000000);      /* a change is remembered by its time; 0 means none */
+    static const ls_btn_t strip[] = {{"<", NULL, 0, false, false, false},
+                                     {"PING", "1/5", 0, false, false, false},
+                                     {">", NULL, 0, false, false, false}};
+    static const ls_btn_t keys[] = {{"START", NULL, 0, false, false, false},
+                                    {"HOST", NULL, 0, false, false, false}};
+    static const ls_btn_t keys2[] = {{"STOP", NULL, 0, false, false, false},
+                                     {"HOST", NULL, 0, false, false, false}};
+    /* The keys alone, drawn twice: their resting face. */
+    surface();
+    ls_btn_bar_raised(&s_sf, tui_rect_make(0, 20, 40, 5), keys, 2, -1);
+    surface();
+    ls_btn_bar_raised(&s_sf, tui_rect_make(0, 20, 40, 5), keys, 2, -1);
+    const uint8_t rest = face_attr(20);
+    LS_CHECK(rest != 0);
+    /* Strip then keys, frame after frame: still resting. */
+    for (int f = 0; f < 4; f++) {
+        surface();
+        ls_btn_bar_raised(&s_sf, tui_rect_make(0, 1, 40, 5), strip, 3, -1);
+        ls_btn_bar_raised(&s_sf, tui_rect_make(0, 20, 40, 5), keys, 2, -1);
+        LS_EQ_INT(face_attr(20), rest);
+    }
+    /* A tap on a key of the second bar still lights it. */
+    int x, y, w, h;
+    LS_CHECK(ls_btn_rect_slot(LS_BTN_SLOT_SCREEN, 0, &x, &y, &w, &h));
+    LS_EQ_INT(ls_btn_hit_slot(x + 1, y + 1, LS_BTN_SLOT_SCREEN), 0);
+    surface();
+    ls_btn_bar_raised(&s_sf, tui_rect_make(0, 1, 40, 5), strip, 3, -1);
+    ls_btn_bar_raised(&s_sf, tui_rect_make(0, 20, 40, 5), keys, 2, -1);
+    LS_CHECK(face_attr(20) != rest);
+    /* And a bar on its own still lights a key whose words change. */
+    ls_shim_time_set(9000000);
+    surface();
+    ls_btn_bar_raised(&s_sf, tui_rect_make(0, 20, 40, 5), keys, 2, -1);
+    surface();
+    ls_btn_bar_raised(&s_sf, tui_rect_make(0, 20, 40, 5), keys, 2, -1);
+    LS_EQ_INT(face_attr(20), rest);
+    surface();
+    ls_btn_bar_raised(&s_sf, tui_rect_make(0, 20, 40, 5), keys2, 2, -1);
+    LS_CHECK(face_attr(20) != rest);
     g_wide = true;
 }

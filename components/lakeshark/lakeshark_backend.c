@@ -23,6 +23,11 @@
 #include "perf.h"
 #include "event_bus.h"
 #include "usb_host.h"
+#if CONFIG_LS_USB_ETH
+#include "usb_net.h"
+/* In the BSP; not in its header, which components without usb include. */
+void bsp_usb_host_set_enum_filter(usb_host_enum_filter_cb_t filter);
+#endif
 
 #include "p25_state.h"
 #include "dsd.h"
@@ -118,6 +123,10 @@ void lakeshark_backend_start(void)
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
 
 #if LS_HAS_USB_SDR
+#if CONFIG_LS_USB_ETH
+    /* RTL8152/8153 keep their ECM function in a second configuration. */
+    bsp_usb_host_set_enum_filter(ls_usb_net_enum_filter);
+#endif
     esp_err_t usb_error = bsp_usb_host_start(BSP_USB_HOST_POWER_MODE_USB_DEV, false);
     if (usb_error != ESP_OK) ESP_LOGE(TAG, "USB unavailable: %s", esp_err_to_name(usb_error));
     BaseType_t ok = usb_error == ESP_OK

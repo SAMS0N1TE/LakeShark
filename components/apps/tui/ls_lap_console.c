@@ -121,7 +121,7 @@ static bool finish(void *ctx, const char *name, size_t size, const uint8_t expec
         LS_SNPUTS(t_ls_lap_console_id_belongs_to_a, why, cap, "id belongs to a built-in app");
         goto done;
     }
-    if ((!existing || !existing->installed) && ls_app_count() >= LS_TUI_MAX_SCREENS) {
+    if ((!existing || !existing->installed) && ls_app_count() >= LS_APP_MAX) {
         snprintf(why, cap, "app registry full");
         goto done;
     }

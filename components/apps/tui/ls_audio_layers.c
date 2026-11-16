@@ -6,6 +6,7 @@
 #include <string.h>
 #include "ls_cold.h"
 #include "ls_textpack.h"
+#include "esp_timer.h"
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 #endif
@@ -34,7 +35,38 @@ struct ls_audio_layers {
   ls_aa_track tracks[256];
   char text[224], chunk[224], tick[12];
   int16_t reader[2];
+  /* The picture is handed to the present at most every
+     LS_LAYER_PICTURE_US: each new one costs the P4 a compare and a copy of
+     the whole image (13-16 ms measured), so a picture every 40 ms frame
+     left nothing for anything else. In between, the text rows still follow
+     every frame and the same picture stays up. */
+  int64_t picture_at;
+  bool dirty;                 /* a tap, zoom or hold: draw now */
+  int drawn_layer, lit;
+  tui_rect drawn_plot;
+  uint32_t drawn_sig;         /* what the last picture showed */
+  /* SPECTRO over the whole track: the bin each pixel row reads, the colour
+     of each overview code, and whether `pixels` holds that picture (less
+     the playhead column and pinned row, put back from the tables). */
+  int16_t *row_bin;
+  int row_cap;
+  uint16_t lut[256];
+  uint32_t table_sig, base_sig;
+  bool base_valid;
+  int base_x, base_y;
 };
+/* Ten pictures a second: a trace still moves, and the present's copies
+   drop from every frame to one in four at the board's 25 fps. */
+#define LS_LAYER_PICTURE_US 100000
+static uint32_t mix(uint32_t h, uint32_t v) {
+  h ^= v + 0x9e3779b9u + (h << 6) + (h >> 2);
+  return h;
+}
+static uint32_t mixf(uint32_t h, float f) {
+  uint32_t v;
+  memcpy(&v, &f, sizeof(v));
+  return mix(h, v);
+}
 static const char *const notes[] = {"C",  "C#", "D",  "D#", "E",  "F",
                                     "F#", "G",  "G#", "A",  "A#", "B"};
 static void *psalloc(size_t n) {
@@ -55,6 +87,7 @@ void ls_audio_layers_free(ls_audio_layers *p) {
     ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
   ls_pwf_free(&p->wf);
   free(p->pixels);
+  free(p->row_bin);
   free(p);
 }
 static int clamp(int v, int lo, int hi) {
@@ -140,10 +173,6 @@ static void text(tui_surface *sf, tui_rect r, int row, const char *s,
                  uint8_t fg) {
   tui_put_str(sf, r, r.x, r.y + row, s, TUI_ATTR(fg, TUI_BLACK));
 }
-static void show_image(ls_audio_layers *p, tui_surface *sf) {
-  ls_tui_image(p->plot, p->pixels, p->w, p->h, ++p->serial);
-  tui_fill(sf, p->plot, LS_TUI_IMAGE_CELL, TUI_ATTR(TUI_WHITE, TUI_BLACK));
-}
 static void waveform(ls_audio_layers *p, bool cached) {
   int mid = p->h / 2;
   line(p, 0, mid, p->w - 1, mid, 0x18e3);
@@ -175,24 +204,92 @@ static void waveform(ls_audio_layers *p, bool cached) {
     }
   }
 }
-static void cached_spectro(ls_audio_layers *p, const ls_aa_config *c) {
+/* SPECTRO over the whole track. It used to work out every pixel from
+   scratch every frame - two 64-bit divides, a logarithm's worth of axis and a
+   colour-map search each - which took the P4 160 ms a frame: the player ran
+   at five frames a second and read as locked up. Now the axis is a table of
+   bins per pixel row and the colour map a table per overview code, both
+   rebuilt only when the axis or reading changes; the picture is drawn whole
+   only when what it shows moves (zoom, a seek past the window, a new
+   reading), and otherwise only the playhead column and pinned row are put
+   back from the tables and drawn again. */
+static bool spectro_tables(ls_audio_layers *p, const ls_aa_config *c) {
   float top = fminf(20000, ls_audio_overview_rate(p->source) * .5f);
   if (top <= 40)
-    return;
-  for (int y = 0; y < p->h; y++) {
-    float hz = frequency(p, 1 - (float)y / (p->h - 1));
-    unsigned b = (unsigned)clamp(
-        (int)(logf(fmaxf(40, hz) / 40) / logf(top / 40) * (LS_OV_BINS - 1)), 0,
-        LS_OV_BINS - 1);
-    for (int x = 0; x < p->w; x++) {
-      uint64_t ms = p->start + (uint64_t)x * p->span / p->w;
-      unsigned col = (unsigned)(ms * LS_OV_COLUMNS / p->duration);
-      float db =
-          ls_audio_overview_spectro(p->source, col, b) * 120.0f / 255 - 120;
-      p->pixels[(size_t)y * p->w + x] =
-          colour((db + c->gain_db - c->floor_db) / c->range_db);
-    }
+    return false;
+  uint32_t sig = mix(mix(mix(0, (uint32_t)p->h), (uint32_t)c->log_axis), (uint32_t)p->layer);
+  sig = mixf(mixf(mixf(mixf(mixf(mixf(sig, p->lo), p->hi), top), c->gain_db), c->floor_db), c->range_db);
+  if (p->row_bin && p->row_cap >= p->h && sig == p->table_sig)
+    return true;
+  if (p->row_cap < p->h) {
+    int16_t *rows = psalloc((size_t)p->h * sizeof(int16_t));
+    if (!rows)
+      return false;
+    free(p->row_bin);
+    p->row_bin = rows;
+    p->row_cap = p->h;
   }
+  const float span = logf(top / 40);
+  for (int y = 0; y < p->h; y++) {
+    float hz = frequency(p, 1 - (float)y / (p->h > 1 ? p->h - 1 : 1));
+    p->row_bin[y] = (int16_t)clamp((int)(logf(fmaxf(40, hz) / 40) / span * (LS_OV_BINS - 1)),
+                                   0, LS_OV_BINS - 1);
+  }
+  for (int v = 0; v < 256; v++) {
+    float db = v * 120.0f / 255 - 120;
+    p->lut[v] = colour((db + c->gain_db - c->floor_db) / c->range_db);
+  }
+  p->table_sig = sig;
+  p->base_valid = false;
+  return true;
+}
+static unsigned spectro_column(const ls_audio_layers *p, int x) {
+  uint64_t ms = p->start + (uint64_t)x * p->span / p->w;
+  return (unsigned)(ms * LS_OV_COLUMNS / p->duration);
+}
+/* Columns x0..x1-1 of the picture from the tables: one overview column read
+   per distinct column, then a table lookup per pixel. */
+static void spectro_columns(ls_audio_layers *p, int x0, int x1) {
+  uint8_t codes[LS_OV_BINS];
+  unsigned last = UINT32_MAX;
+  for (int x = x0 < 0 ? 0 : x0; x < x1 && x < p->w; x++) {
+    unsigned col = spectro_column(p, x);
+    if (col != last) {
+      for (unsigned b = 0; b < LS_OV_BINS; b++)
+        codes[b] = ls_audio_overview_spectro(p->source, col, b);
+      last = col;
+    }
+    uint16_t *px = p->pixels + x;
+    for (int y = 0; y < p->h; y++, px += p->w)
+      *px = p->lut[codes[p->row_bin[y]]];
+  }
+}
+static void spectro_row(ls_audio_layers *p, int y) {
+  if (y < 0 || y >= p->h)
+    return;
+  uint16_t *row = p->pixels + (size_t)y * p->w;
+  const unsigned bin = (unsigned)p->row_bin[y];
+  for (int x = 0; x < p->w; x++)
+    row[x] = p->lut[ls_audio_overview_spectro(p->source, spectro_column(p, x), bin)];
+}
+static void cached_spectro(ls_audio_layers *p, const ls_aa_config *c) {
+  if (!spectro_tables(p, c)) {
+    memset(p->pixels, 0, (size_t)p->w * p->h * 2);
+    p->base_valid = false;
+    return;
+  }
+  uint32_t sig = mix(mix(mix(mix(p->table_sig, p->start), p->span), (uint32_t)p->w),
+                     (uint32_t)(uintptr_t)p->source);
+  if (p->base_valid && sig == p->base_sig) {
+    /* The same picture: only what was drawn over it goes back. */
+    if (p->base_x >= 0)
+      spectro_columns(p, p->base_x, p->base_x + 1);
+    spectro_row(p, p->base_y);
+  } else
+    spectro_columns(p, 0, p->w);
+  p->base_sig = sig;
+  p->base_valid = true;
+  p->base_x = p->base_y = -1;
 }
 static void live_spectro(ls_audio_layers *p, tui_surface *sf,
                          const ls_aa_config *c, const ls_aa_result *v,
@@ -587,6 +684,7 @@ void ls_audio_layers_draw(ls_audio_layers *p, tui_surface *sf, tui_rect r,
   p->w = p->plot.w * p->cw;
   p->h = p->plot.h * p->ch;
   size_t need = (size_t)p->w * p->h;
+  bool replaced = false;
   if (need > p->capacity) {
     uint16_t *mem = psalloc(need * 2);
     if (!mem) {
@@ -596,8 +694,8 @@ void ls_audio_layers_draw(ls_audio_layers *p, tui_surface *sf, tui_rect r,
     free(p->pixels);
     p->pixels = mem;
     p->capacity = need;
+    replaced = true;
   }
-  memset(p->pixels, 0, need * 2);
   if (changed) {
     ls_pwf_clear(&p->wf);
     p->last_frames = 0;
@@ -605,45 +703,80 @@ void ls_audio_layers_draw(ls_audio_layers *p, tui_surface *sf, tui_rect r,
   const bool live_wf = layer == LS_LAYER_SPECTRO && !cached;
   if (!live_wf)
     ls_pwf_release(&p->wf);
-  int lit = -1;
-  if (layer == LS_LAYER_WAVE)
-    waveform(p, cached);
-  else if (layer == LS_LAYER_SPECTRUM) {
-    int previous = p->h - 1, peak_previous = previous;
-    for (int x = 0; x < p->w; x++) {
-      float hz = frequency(p, (float)x / (p->w - 1));
-      float dbv = db_at(p, hz, false, slice), pk = db_at(p, hz, true, false);
-      int y = p->h - 1 -
-              level((dbv + c.gain_db - c.floor_db) / c.range_db, p->h - 1);
-      int py = p->h - 1 -
-               level((pk + c.gain_db - c.floor_db) / c.range_db, p->h - 1);
-      if (x) {
-        if (!slice)
-          line(p, x - 1, peak_previous, x, py, 0xffe0);
-        line(p, x - 1, previous, x, y, 0x07ff);
-      }
-      previous = y;
-      peak_previous = py;
-    }
-  } else if (layer == LS_LAYER_SCOPE)
-    scope(p);
-  else if (roll)
-    lit = melodic(p, v, &c, source_rate);
-  else if (cached)
-    cached_spectro(p, &c);
+  /* Whether to draw a new picture this frame. Over the whole track WAVE and
+     SPECTRO change only when what they show moves, so they draw when that
+     does; the live traces draw on the picture clock. A tap, a zoom, a new
+     view or a new size draws at once. */
+  const int64_t now = esp_timer_get_time();
+  const bool playhead = cached && !roll && layer != LS_LAYER_SCOPE && layer != LS_LAYER_SPECTRUM;
+  const int head_x = playhead ? (int)((uint64_t)(p->time - p->start) * (p->w - 1) / p->span) : -1;
+  const int pin_y = layer == LS_LAYER_SPECTRO && p->pinned ? freq_y(p, p->hz) : -1;
+  const bool still = cached && (layer == LS_LAYER_WAVE || layer == LS_LAYER_SPECTRO);
+  uint32_t sig = 0;
+  if (still) {
+    sig = mix(mix(mix(mix(mix(mix(0, p->start), p->span), (uint32_t)head_x), (uint32_t)pin_y),
+                  (uint32_t)layer), (uint32_t)c.log_axis);
+    sig = mixf(mixf(mixf(mixf(mixf(sig, c.gain_db), c.floor_db), c.range_db), p->lo), p->hi);
+  }
+  const bool must = changed || replaced || p->dirty || layer != p->drawn_layer ||
+                    memcmp(&p->plot, &p->drawn_plot, sizeof(p->plot)) || !p->serial;
+  const bool due = now - p->picture_at >= LS_LAYER_PICTURE_US || now < p->picture_at;
+  const bool fresh = must || (still ? due && sig != p->drawn_sig : due);
+  if (replaced || layer != LS_LAYER_SPECTRO || !cached)
+    p->base_valid = false;
   if (live_wf)
     live_spectro(p, sf, &c, v, hold);
-  else {
-    if (cached && !roll && layer != LS_LAYER_SCOPE && layer != LS_LAYER_SPECTRUM) {
-      int x = (int)((uint64_t)(p->time - p->start) * (p->w - 1) / p->span);
-      line(p, x, 0, x, p->h - 1, 0xffff);
+  else if (fresh) {
+    int lit = -1;
+    if (!(layer == LS_LAYER_SPECTRO && cached))
+      memset(p->pixels, 0, need * 2);
+    if (layer == LS_LAYER_WAVE)
+      waveform(p, cached);
+    else if (layer == LS_LAYER_SPECTRUM) {
+      int previous = p->h - 1, peak_previous = previous;
+      for (int x = 0; x < p->w; x++) {
+        float hz = frequency(p, (float)x / (p->w - 1));
+        float dbv = db_at(p, hz, false, slice), pk = db_at(p, hz, true, false);
+        int y = p->h - 1 -
+                level((dbv + c.gain_db - c.floor_db) / c.range_db, p->h - 1);
+        int py = p->h - 1 -
+                 level((pk + c.gain_db - c.floor_db) / c.range_db, p->h - 1);
+        if (x) {
+          if (!slice)
+            line(p, x - 1, peak_previous, x, py, 0xffe0);
+          line(p, x - 1, previous, x, y, 0x07ff);
+        }
+        previous = y;
+        peak_previous = py;
+      }
+    } else if (layer == LS_LAYER_SCOPE)
+      scope(p);
+    else if (roll)
+      lit = melodic(p, v, &c, source_rate);
+    else if (cached)
+      cached_spectro(p, &c);
+    if (head_x >= 0)
+      line(p, head_x, 0, head_x, p->h - 1, 0xffff);
+    if (pin_y >= 0)
+      line(p, 0, pin_y, p->w - 1, pin_y, 0xffff);
+    if (p->base_valid) {
+      p->base_x = head_x;
+      p->base_y = pin_y;
     }
-    if (layer == LS_LAYER_SPECTRO && p->pinned) {
-      int y = freq_y(p, p->hz);
-      line(p, 0, y, p->w - 1, y, 0xffff);
-    }
-    show_image(p, sf);
+    p->lit = lit;
+    p->serial++;
+    p->picture_at = now;
+    p->drawn_sig = sig;
+    p->dirty = false;
   }
+  p->drawn_layer = layer;
+  p->drawn_plot = p->plot;
+  if (!live_wf) {
+    /* The same serial when nothing was drawn: the present has nothing to do. */
+    ls_tui_image(p->plot, p->pixels, p->w, p->h, p->serial);
+    tui_fill(sf, p->plot, LS_TUI_IMAGE_CELL, TUI_ATTR(TUI_WHITE, TUI_BLACK));
+  }
+  const int lit = roll ? p->lit : -1;
   if (layer == LS_LAYER_SPECTRO)
     freq_gutter(p, sf, tui_rect_make(r.x, p->plot.y, gutter, p->plot.h));
   else if (roll)
@@ -703,8 +836,10 @@ tui_rect ls_audio_layers_strip(const ls_audio_layers *p) {
 }
 bool ls_audio_layers_pinned(const ls_audio_layers *p) { return p && p->pinned; }
 void ls_audio_layers_unpin(ls_audio_layers *p) {
-  if (p)
+  if (p) {
     p->pinned = false;
+    p->dirty = true;
+  }
 }
 LS_COLD bool ls_audio_layers_touch(ls_audio_layers *p, int x, int y) {
   if (!p || p->layer == LS_LAYER_TOOLS)
@@ -718,6 +853,7 @@ LS_COLD bool ls_audio_layers_touch(ls_audio_layers *p, int x, int y) {
   if (p->layer == LS_LAYER_MELODIC)
     return true;
   p->pinned = true;
+  p->dirty = true;
   if (p->duration) {
     unsigned offset = (unsigned)(x - p->plot.x),
              width = (unsigned)(p->plot.w > 1 ? p->plot.w - 1 : 1);
@@ -738,8 +874,10 @@ LS_COLD bool ls_audio_layers_touch(ls_audio_layers *p, int x, int y) {
   return true;
 }
 void ls_audio_layers_zoom(ls_audio_layers *p) {
-  if (p)
+  if (p) {
     p->zoom = (p->zoom + 1) % 6;
+    p->dirty = true;
+  }
 }
 uint32_t ls_audio_layers_time(const ls_audio_layers *p) {
   return p ? p->time : 0;

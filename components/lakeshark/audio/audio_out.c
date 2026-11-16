@@ -684,6 +684,16 @@ void audio_out_reset(void)
         ESP_LOGW(TAG, "audio_out_reset: player has not taken the reset yet");
 }
 
+/* When the media lease was taken (0: free). While it is held every other
+   sound is dropped, so the console's 'audio' reports it. */
+static volatile int64_t s_media_since_us;
+bool audio_out_media_held(int64_t *since_us)
+{
+    const bool held = s_media_request || s_media_owned;
+    if (since_us) *since_us = held ? s_media_since_us : 0;
+    return held;
+}
+
 esp_err_t audio_out_media_acquire(void)
 {
     portENTER_CRITICAL(&s_owner_lock);
@@ -694,7 +704,7 @@ esp_err_t audio_out_media_acquire(void)
     s_media_request = true;
     portEXIT_CRITICAL(&s_owner_lock);
     for (int i = 0; i < 100 && !s_media_owned; ++i) vTaskDelay(pdMS_TO_TICKS(5));
-    if (s_media_owned) return ESP_OK;
+    if (s_media_owned) { s_media_since_us = esp_timer_get_time(); return ESP_OK; }
     s_media_request = false;
     return ESP_ERR_TIMEOUT;
 }
@@ -702,6 +712,7 @@ esp_err_t audio_out_media_acquire(void)
 void audio_out_media_release(void)
 {
     if (!s_media_request) return;
+    s_media_since_us = 0;
     ++s_codec_reset_req;
     s_reprime = true;
     s_media_request = false;
@@ -717,31 +728,55 @@ void audio_volume_delta(int d)
     audio_volume_set(s_volume + d);
 }
 
-void audio_volume_set(int v)
+/* A level a finger dragging a slider left on the codec without saving it
+   (audio_volume_preview). The set that ends the drag asks for that same
+   level, and must save it rather than take it as nothing to do. */
+static bool s_volume_unsaved;
+
+/* Puts v on the codec under settings_lock: 1 when it changed, 0 when it was
+   already there, -1 when the codec did not take it. */
+static int volume_apply_locked(int v)
 {
-    settings_lock();
-    if (v < 0)   v = 0;
-    if (v > 100) v = 100;
 #if defined(LS_BOARD_CODEC_I2C_BUS)
     /* Do not cache a failed codec write as an applied volume, or the
        equal-value shortcut prevents a later retry after the bus recovers. */
-    if (v == s_volume && s_volume_applied) { settings_unlock(); return; }
+    if (v == s_volume && s_volume_applied) return 0;
     int set = 0;
     esp_err_t err = ls_audio_hw_volume(v, &set);
     s_volume_applied = err == ESP_OK;
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "codec volume %d not confirmed: %s", v, esp_err_to_name(err));
-        settings_unlock();
-        return;
+        return -1;
     }
     s_volume = v;
 #else
-    if (v == s_volume) { settings_unlock(); return; }
+    if (v == s_volume) return 0;
     s_volume = v;
     int set = 0;
     ls_audio_hw_volume(s_volume, &set);
 #endif
-    settings_set_volume(s_volume);
+    return 1;
+}
+
+void audio_volume_set(int v)
+{
+    settings_lock();
+    if (v < 0)   v = 0;
+    if (v > 100) v = 100;
+    const int applied = volume_apply_locked(v);
+    if (applied > 0 || (applied == 0 && s_volume_unsaved)) {
+        settings_set_volume(s_volume);
+        s_volume_unsaved = false;
+    }
+    settings_unlock();
+}
+
+void audio_volume_preview(int v)
+{
+    settings_lock();
+    if (v < 0)   v = 0;
+    if (v > 100) v = 100;
+    if (volume_apply_locked(v) > 0) s_volume_unsaved = true;
     settings_unlock();
 }
 

@@ -22,8 +22,10 @@ static struct {
     uint8_t ndef[2048];
     unsigned ev_pending;
     int tx_wait;
+    unsigned again, again_left;     /* ioagain=N: opens answer EAGAIN N times after each close */
 } sim;
 extern bool ls_lap_radio_sim_absent, ls_lap_radio_sim_hackrf;
+static unsigned sim_opens, sim_retunes;
 static unsigned max_vga=47; static bool amp_allowed=true, rx_busy;
 static int modes(int radio, lap_radio_modes_t *out) {
     if (ls_lap_radio_sim_absent)
@@ -51,17 +53,52 @@ static int open_rx(int radio, const lap_packet_config_t *cfg, bool edges) {
         return LAP_RX_EUNSUPPORTED;
     if (sim.open || sim.tx)
         return LAP_RX_EBUSY;
+    if (sim.again_left) {             /* ioagain=N: the lease is busy N times first */
+        sim.again_left--;
+        return LAP_RX_EAGAIN;
+    }
     if (cfg->modulation == LAP_MOD_FSK && cfg->crc)
         return LAP_RX_EUNSUPPORTED;
     sim.open = true;
     sim.cfg = *cfg;
     sim.edges = edges;
+    sim_opens++;
     return 0;
 }
+/* In place, as the LoRa backends do; ioretune=0 refuses, so the worker closes
+   and opens instead (the way every scan step went before). */
+static bool no_retune;
+static int retune(uint64_t hz) {
+    if (!sim.open || sim.edges || no_retune)
+        return LAP_RX_EUNSUPPORTED;
+    sim.cfg.frequency_hz = hz;
+    sim_retunes++;
+    return 0;
+}
+unsigned ls_lap_io_sim_opens(void) { return sim_opens; }
+unsigned ls_lap_io_sim_retunes(void) { return sim_retunes; }
+/* iorssif=MHZ,TENTHS gives one frequency (within 1 MHz) its own level; up to
+   16, TENTHS 0 clears that entry. ionoise=N adds +-N/2 tenths of jitter, from
+   a fixed seed so frames stay reproducible. Both only shape RSSI readings. */
+static struct { uint32_t khz; int level; } rssif[16];
+static struct { uint32_t khz, every, count; int level; } burst;   /* ioburst=MHZ,TENTHS,N */
+static int noise_tenths;
+static uint32_t noise_seed = 1;
 static int rssi(int16_t *out) {
     if (!sim.open)
         return LAP_RX_ENODEV;
-    *out = sim.rssi;
+    int v = sim.rssi;
+    const uint32_t khz = (uint32_t)(sim.cfg.frequency_hz / 1000u);
+    for (int i = 0; i < 16; i++)
+        if (rssif[i].khz && (khz > rssif[i].khz ? khz - rssif[i].khz : rssif[i].khz - khz) < 1000u)
+            v = rssif[i].level;
+    if (burst.every && (khz > burst.khz ? khz - burst.khz : burst.khz - khz) < 1000u && ++burst.count % burst.every == 0)
+        v = burst.level;
+    else if (noise_tenths > 0) {
+        noise_seed = noise_seed * 1103515245u + 12345u;
+        v += (int)((noise_seed >> 16) % (uint32_t)(noise_tenths + 1)) - noise_tenths / 2;
+    }
+    *out = (int16_t)v;
     return 0;
 }
 static int read_rx(void *data, int cap, lap_packet_meta_t *meta) {
@@ -95,7 +132,7 @@ static int read_rx(void *data, int cap, lap_packet_meta_t *meta) {
     meta->length = n;
     return n;
 }
-static void close_rx(void) { sim.open = false; }
+static void close_rx(void) { sim.open = false; sim.again_left = sim.again; }
 #ifdef ESP_PLATFORM
 #include "esp_timer.h"
 static uint64_t now_us(void) { return esp_timer_get_time(); }
@@ -218,8 +255,48 @@ static void nfc_close(void) { sim.ev_pending = 0; }
 bool ls_lap_io_sim_command(const char *c) {
     if (!strncmp(c, "iorsti=", 8))
         return false;
+    if (!strncmp(c, "ioagain=", 8)) {
+        sim.again = sim.again_left = (unsigned)atoi(c + 8);
+        return true;
+    }
     if (!strncmp(c, "iorssi=", 7)) {
         sim.rssi = atoi(c + 7);
+        return true;
+    }
+    if (!strncmp(c, "ioretune=", 9)) {
+        no_retune = atoi(c + 9) == 0;
+        return true;
+    }
+    if (!strncmp(c, "iorssif=", 8)) {
+        double mhz = 0;
+        int level = 0;
+        if (sscanf(c + 8, "%lf,%d", &mhz, &level) != 2 || mhz <= 0)
+            return false;
+        const uint32_t khz = (uint32_t)(mhz * 1000.0 + 0.5);
+        int slot = -1;
+        for (int i = 0; i < 16 && slot < 0; i++)
+            if (rssif[i].khz == khz) slot = i;
+        for (int i = 0; i < 16 && slot < 0; i++)
+            if (!rssif[i].khz) slot = i;
+        if (slot < 0)
+            return false;
+        rssif[slot].khz = level ? khz : 0;
+        rssif[slot].level = level;
+        return true;
+    }
+    if (!strncmp(c, "ioburst=", 8)) {
+        double mhz = 0;
+        int level = 0, every = 0;
+        if (sscanf(c + 8, "%lf,%d,%d", &mhz, &level, &every) != 3 || mhz <= 0 || every < 0)
+            return false;
+        burst.khz = (uint32_t)(mhz * 1000.0 + 0.5);
+        burst.level = level;
+        burst.every = (uint32_t)every;
+        burst.count = 0;
+        return true;
+    }
+    if (!strncmp(c, "ionoise=", 8)) {
+        noise_tenths = atoi(c + 8);
         return true;
     }
     if (!strncmp(c, "iomodes=", 8)) {
@@ -322,6 +399,7 @@ const ls_lap_io_backend_t *ls_lap_io_backend(void) {
     }
     static const ls_lap_io_backend_t be = {
         modes,     open_rx,  read_rx,  rssi,     close_rx,  transmit,  tx_poll,
-        tx_cancel, nfc_caps, nfc_open, nfc_read, nfc_write, nfc_close, ls_lap_io_channels};
+        tx_cancel, nfc_caps, nfc_open, nfc_read, nfc_write, nfc_close, ls_lap_io_channels,
+        NULL,      retune};
     return &be;
 }

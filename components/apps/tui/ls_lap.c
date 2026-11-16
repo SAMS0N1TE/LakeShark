@@ -134,7 +134,7 @@ static int register_info(const ls_lap_info_t *a) {
     if (slot < 0)
         slot = catalog.count;
     if (slot >= LS_LAP_MAX_APPS) {
-        LS_SNPUTS(t_ls_lap_native_directory_full_at, lap_state.error, sizeof(lap_state.error), "native directory full at 24 apps");
+        LS_SNPUTS(t_ls_lap_native_directory_full_at, lap_state.error, sizeof(lap_state.error), "native directory full at 48 apps");
         return -1;
     }
     if (!exists && ls_app_by_id(a->manifest.id)) {

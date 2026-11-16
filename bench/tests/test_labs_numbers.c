@@ -83,3 +83,15 @@ LS_CASE(option_numeric_setters_keep_fractional_frequency_and_integer_validation)
     LS_EQ_UINT(fsk_requests, 1); LS_EQ_UINT(accepted_fsk.payload_bytes, 65);
     o_fsk_set(&row, 256); LS_EQ_UINT(fsk_requests, 1);
 }
+
+/* SPECTRUM left LORA LABS (the RF LAB app has it on every radio): MODE never
+   lands on the worker's sweep, and leaves it for PACKETS when RF SURVEY or
+   COMPASS left the worker sweeping. */
+LS_CASE(mode_cycle_skips_the_sweep_and_leaves_it_for_packets)
+{
+    LS_EQ_INT(next_mode(LS_LAB_PACKETS), LS_LAB_BEARING);
+    LS_EQ_INT(next_mode(LS_LAB_BEARING), LS_LAB_GFSK);
+    LS_EQ_INT(next_mode(LS_LAB_GFSK), LS_LAB_POCSAG);
+    LS_EQ_INT(next_mode(LS_LAB_POCSAG), LS_LAB_PACKETS);
+    LS_EQ_INT(next_mode(LS_LAB_SPECTRUM), LS_LAB_PACKETS);
+}

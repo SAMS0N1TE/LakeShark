@@ -45,10 +45,9 @@ esp_err_t ls_board_hw_antenna_confirm_external(void);
 /* Always true: the route never blocks a transmit. Kept for older callers. */
 bool ls_board_hw_antenna_tx_allowed(void);
 
-/* MMCX1 is always receive-only on a fitted LR2021/LR20xx. The legacy
-   transmit option cannot override that physical port constraint. On other
-   supported socket routes false selects receive-only (the default). With
-   MMCX1 selected and receive only, the LoRa driver brackets each transmit
+/* Whether a transmit goes out MMCX1 when MMCX1 is selected. True (the
+   default): it goes where the switch points, on every module. False is the
+   operator's RX ONLY choice: with MMCX1 selected the LoRa driver brackets each transmit
    with tx_begin (switch to internal; an error means do not transmit) and
    tx_end (back to MMCX1 once the part reports it done), under its lock.
    ls_board_hw_antenna_is_external keeps saying the operator's choice. */

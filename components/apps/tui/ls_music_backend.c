@@ -702,9 +702,16 @@ static void event(audio_player_cb_ctx_t *ctx)
     if (ctx->audio_event == AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN_FILE_TYPE)
         atomic_store(&s_bad_format, true);
 }
+/* A close that could not finish (microphone, analysis or decoder still
+   busy) keeps the speaker, because the decoder may still be writing to it.
+   Nothing else plays while MUSIC holds it, so the close is retried from the
+   UI loop (ls_music_service) until it completes, instead of leaving the board
+   silent until a reboot once the screen that asked for it has gone. */
+static bool s_close_pending;
+static int64_t s_close_next_us;
 bool ls_music_open(void)
 {
-    if (s_up) return true;
+    if (s_up) { s_close_pending = false; return true; }   /* taken over: nothing left to close */
     s_low[0]=s_low[1]=0;s_tone_mix=0;s_new_source=true;
     s_mono_output=ls_audio_hw_output_is_mono();
     spectrum_open();
@@ -741,6 +748,7 @@ bool ls_music_open(void)
 }
 void ls_music_close(void)
 {
+    if (!s_close_pending && s_up) s_close_pending = true;
     mic_release();
     if(atomic_load(&s_mic_busy)){s_error="Microphone busy: audio retained";return;}
     if(!ls_audio_overview_free(s_overview)){s_error="Analysis busy: audio retained";return;}
@@ -764,10 +772,24 @@ void ls_music_close(void)
     ls_audio_analysis_free(s_analysis);s_analysis=NULL;
     ls_audio_tools_free(s_tools);s_tools=NULL;
     ls_audio_generator_free(s_generator);s_generator=NULL;
+    s_close_pending = false;
+}
+bool ls_music_close_pending(void) { return s_close_pending; }
+void ls_music_service(int64_t now_us)
+{
+    if (!s_close_pending || now_us < s_close_next_us) return;
+    s_close_next_us = now_us + 200000;
+    ls_music_close();
+    if (!s_close_pending) printf("music: speaker released after a deferred close\n");
 }
 bool ls_music_scan(int source)
 {
     if (source < 0 || source > 1) return false;
+#ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
+    /* The streaming player's 32 KB stack is PSRAM, and a SPIFFS read from a
+       PSRAM stack asserts (flash with the cache off). Music plays from the card. */
+    if (source == 1) { s_error = "Internal flash music is off in this build: use the SD card"; return false; }
+#endif
     if (!s_up && !ls_music_open()) return false;
     ls_music_stop();
     if(atomic_load(&s_mic_busy) || (s_up && audio_player_stop_wait(500)!=ESP_OK)) {

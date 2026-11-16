@@ -657,7 +657,8 @@ int flipper_link_scan_snapshot(char *buf, size_t len)
         const float v = bins[i].hold > bins[i].dbm ? bins[i].hold : bins[i].dbm;
         const float pv = bins[pk].hold > bins[pk].dbm ? bins[pk].hold : bins[pk].dbm;
         if (v > pv) pk = i;
-        int d = (int)(v - floor_dbm + 0.5f);
+        /* Over this bin's own floor: the sweep's floor is not flat. */
+        int d = (int)(v - bins[i].floor + 0.5f);
         if (d < 0) d = 0;
         if (d > 51) d = 51;
         lv[i] = (char)(d < 26 ? 'a' + d : 'A' + d - 26);

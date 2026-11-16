@@ -19,6 +19,9 @@ static void (*on_delay)(void);
 static int scan_begins,scan_ends,fsk_begins,fsk_ends,polls,cancel_pass,cancel_poll;
 static uint32_t frequency=433920000u;
 static bool refuse_tune,refuse_fsk,frame_every_poll;
+/* A sweep's rows: flat by default, or what a case draws for pass p. */
+static void (*scan_row)(float *row,int n,int pass);
+static int scan_passes;
 static void reset(void)
 {
     memset(&s_status,0,sizeof(s_status));s_status.ready=true;
@@ -31,7 +34,7 @@ static void reset(void)
     subghz_hold_attempts=subghz_cancel_hold=0;
     scan_begins=scan_ends=fsk_begins=fsk_ends=polls=0;cancel_pass=cancel_poll=0;
     subghz_lr_stream=0;on_delay=NULL;
-    refuse_tune=refuse_fsk=frame_every_poll=false;s_learn_rewatch=false;frequency=433920000u;s_gate_db=12;s_on_hit_loaded=0;
+    refuse_tune=refuse_fsk=frame_every_poll=false;s_learn_rewatch=false;scan_row=NULL;scan_passes=0;frequency=433920000u;s_gate_db=12;s_on_hit_loaded=0;
 }
 TaskHandle_t subghz_current_task(void){return (TaskHandle_t)(uintptr_t)subghz_task;}
 void subghz_delay(TickType_t ticks)
@@ -55,10 +58,15 @@ eTaskState subghz_task_state(TaskHandle_t task){(void)task;return s_fsk_exited?e
 uint32_t rec_get_freq(void){return frequency;}
 bool rec_set_freq(uint32_t hz){if(refuse_tune || s_status.enabled)return false;frequency=hz;return true;}
 uint32_t ls_lora_caps(void){return LS_LORA_CAP_RX_WIDE|LS_LORA_CAP_BAND_1G5_2G5;}
+const char *ls_lora_chip_name(void){return "LR2021";}
 esp_err_t ls_lora_scan_begin(uint32_t lo,uint32_t hi){(void)lo;(void)hi;scan_begins++;return ESP_OK;}
 esp_err_t ls_lora_scan_end(void){scan_ends++;return ESP_OK;}
 int ls_lora_scan_pass(float *row,int n,bool *done)
-{for(int i=0;i<n;i++)row[i]=-110;*done=true;if(cancel_pass)rec_watch_scan_stop();return n;}
+{
+    if(scan_row)scan_row(row,n,scan_passes++);
+    else for(int i=0;i<n;i++)row[i]=-110;
+    *done=true;if(cancel_pass)rec_watch_scan_stop();return n;
+}
 uint32_t ls_lora_scan_bin_hz(uint32_t lo,uint32_t hi,int n,int i){return lo+(uint64_t)(hi-lo)*i/(n-1);}
 uint32_t ls_lora_fsk_bw_snap(uint32_t hz){return hz;}
 esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg){(void)cfg;fsk_begins++;return refuse_fsk?ESP_FAIL:ESP_OK;}
@@ -99,22 +107,38 @@ LS_CASE(scan_stop_survives_acquisition_and_pass_cancellation)
     scan_band(433000000,434000000,30,8,result,sizeof(result));
     LS_EQ_INT(scan_ends,1);LS_EQ_INT(subghz_lease,0);LS_CHECK(strstr(result,"stopped"));
 }
-LS_CASE(sweep_floor_ignores_a_bad_low_bin)
+/* The SX1262 board's 902-928 MHz sweep with nothing on the air
+   (2026-11-12): -101 dBm to 919 MHz, a step to about -62, -29 and -24 dBm
+   in the top two bins, every pass - and a -132 dBm look in one bin, the
+   LR2021's of 2026-11-07. The old pass-floor detector reported 11
+   frequencies ~450 times each in 25 s. Through scan_band itself: the steady
+   shape is floor, and one keyfob press at 915 MHz is the only find. */
+static void sx915_row(float *row,int n,int pass)
 {
-    /* The LR2021 sweep of 2026-11-07: a -110 dBm band with one -132 look. */
-    float row[REC_SCAN_BINS];
-    for(int i=0;i<REC_SCAN_BINS;i++) row[i]=-110.0f+(float)(i%3);
-    row[5]=-132.0f;
-    LS_NEAR(pass_floor(row,REC_SCAN_BINS,NULL),-110.0f,0.01f);
-    /* A carrier does not lift it, and nothing but the carrier clears 30 dB. */
-    row[20]=-60.0f;
-    const float lo=pass_floor(row,REC_SCAN_BINS,NULL);
-    int above=0;
-    for(int i=0;i<REC_SCAN_BINS;i++) if(row[i]>=lo+30.0f) above++;
-    LS_EQ_INT(above,1);
-    /* Short rows (8 bins) and an empty one. */
-    LS_NEAR(pass_floor(row,8,NULL),-110.0f,1.01f);
-    LS_NEAR(pass_floor(row,0,NULL),-200.0f,0.01f);
+    static const float top[11]={-74,-70,-62,-61,-63,-62,-62,-62,-62,-29,-24};
+    for(int i=0;i<n;i++) {
+        const float wiggle=(float)(((pass*7+i*13)%5)-2)*0.5f;   /* +/-1 dB */
+        row[i]=(i<21?-101.0f:top[i-21])+wiggle;
+    }
+    if(pass==40)row[5]=-132.0f;
+    if(pass==150 || pass==151)row[16]=-60.0f;
+    if(pass>=300)rec_watch_scan_stop();
+}
+LS_CASE(a_steady_band_shape_is_floor_and_only_the_keyfob_is_found)
+{
+    const float gates[2]={12.0f,25.0f};
+    for(int g=0;g<2;g++) {
+        reset();s_gate_db=gates[g];s_scan_busy=true;scan_row=sx915_row;
+        char result[112];
+        scan_band(902000000,928000000,0,32,result,sizeof(result));
+        LS_EQ_INT(s_scan_n,1);
+        LS_EQ_UINT(s_scan[0].hz,ls_lora_scan_bin_hz(902000000,928000000,32,16));
+        LS_EQ_INT(s_scan_events,1);
+        LS_NEAR(s_scan[0].floor,-101.0f,1.5f);
+        /* The live row carries each bin's own floor for the chart. */
+        LS_NEAR(s_scan_live[31].floor,-24.0f,1.5f);
+        LS_NEAR(s_scan_live[3].floor,-101.0f,1.5f);
+    }
 }
 LS_CASE(learn_cancels_acquisition_measurement_and_rate_poll)
 {

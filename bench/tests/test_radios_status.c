@@ -137,14 +137,37 @@ LS_CASE(antenna_switches_in_one_tap_and_reports_refusal)
     switch_error = ESP_OK;
 }
 
+void ls_shim_task_execute_on_create(BaseType_t enabled);
+
+/* "TURN OFF was laggy": MeshCore winding down took 1.5 s on the UI task.
+   The tap now hands it to a worker and returns at once, the button saying
+   what is happening; a second tap meanwhile does nothing. */
+LS_CASE(lora_turn_off_does_not_block_the_screen)
+{
+    running = true; stop_error = ESP_OK;
+    memset(&socket_state, 0, sizeof(socket_state));
+    ls_shim_task_execute_on_create(pdFALSE);   /* the worker has not run yet */
+    mesh_set(false);
+    LS_CHECK(running);                         /* not stopped on the UI task */
+    LS_CHECK(!strcmp(mesh_action(), "TURNING OFF..."));
+    LS_CHECK(s_error && strstr(s_error, "turning off"));
+    mesh_set(false);                           /* impatient second tap */
+    LS_CHECK(running && !strcmp(mesh_action(), "TURNING OFF..."));
+    mesh_worker((void *)(intptr_t)0);          /* the worker runs */
+    LS_CHECK(!running && !s_error);
+    LS_CHECK(!strcmp(mesh_action(), "TURN ON"));
+}
+
 LS_CASE(lora_stop_failure_keeps_the_radio_on_and_reports_error)
 {
+    ls_shim_task_execute_on_create(pdTRUE);
     running = true; stop_error = ESP_FAIL;
     mesh_set(false);
     LS_CHECK(mesh_read() != RS_OFF && s_error);
     stop_error = ESP_OK; mesh_set(false);
     LS_EQ_INT(mesh_read(), RS_OFF);
     LS_CHECK(!s_error);
+    ls_shim_task_execute_on_create(pdFALSE);
 }
 
 LS_CASE(socket_owner_activity_and_named_refusal)

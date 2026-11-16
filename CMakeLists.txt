@@ -47,10 +47,10 @@ add_compile_options(
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-enum-enum-conversion")
 
-set(LS_PRODUCT_VERSION "2.22.0")
+set(LS_PRODUCT_VERSION "2.23.2")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/ls_build_identity.cmake")
 set(PROJECT_VER "${LS_PRODUCT_VERSION}")
-set(LS_PROJECT_VERSION "2.22.0")
+set(LS_PROJECT_VERSION "2.23.2")
 project(lakeshark VERSION ${LS_PROJECT_VERSION})
 
 # The selected task-only components use LTO; the SDK's unconditional driver flag
@@ -102,6 +102,11 @@ add_custom_target(ls_refresh_build_identity
     VERBATIM)
 add_dependencies(__idf_esp_app_format ls_refresh_build_identity)
 target_compile_options(__idf_esp_app_format PRIVATE -include "${_ls_identity_header}")
+
+# libssh (the SSH viewer) takes its memory from PSRAM; see cmake/ls_psram_malloc.h.
+if(TARGET __idf_david-cermak__libssh)
+    target_compile_options(__idf_david-cermak__libssh PRIVATE -include "${CMAKE_SOURCE_DIR}/cmake/ls_psram_malloc.h")
+endif()
 
 # Cold ESP-IDF libraries build for size. The project default is -O2
 # (CONFIG_COMPILER_OPTIMIZATION_PERF) for the radio, audio and render paths;

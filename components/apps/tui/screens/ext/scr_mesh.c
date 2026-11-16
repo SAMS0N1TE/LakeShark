@@ -2059,7 +2059,9 @@ static void detail_act(int which)
         /* Do not navigate to a map that cannot draw this node. */
 
         const double nlat = p->lat_e6 / 1e6, nlon = p->lon_e6 / 1e6;
-        const int z = ls_map_zoom_covering(nlat, nlon);
+        /* CartoCore's maps are not that archive: MAP itself says where the
+           card has nothing. Asked anyway, every node was "outside". */
+        const int z = ls_map_cartocore_style() ? ls_map_zoom() : ls_map_zoom_covering(nlat, nlon);
         if (z < 0) {
             flash(LS_TEXT(t_scr_mesh_that_node_is_outside, "that node is outside this map archive"));
             return;

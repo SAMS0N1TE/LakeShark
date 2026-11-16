@@ -183,7 +183,7 @@ static void ble_npl_eventq_put(void*q,struct ble_npl_event*e){(void)q;(void)e;if
 static bool workers_start(void){return !fail;}
 ble_link_state_t ble_link_state_step(ble_link_state_t state,ble_link_event_t event){(void)state;(void)event;return BLE_LINK_SCANNING;}
 static void start_scan(void);
-''' + body(source, 'static void scan_refresh(') + '\n' + body(source, 'static void start_scan(void)\n{') + '\nstatic int link_start(void){starts++;\n' + body(source, 'if (s_stack_up) {') + '\nreturn ESP_FAIL;}\n' + body(source, 'static void on_reset(') + '\n' + body(source, 'void ble_link_rescan(void)') + '\n' + body(source, 'static void stop_mode(') + '\n' + body(source, 'void ble_link_stop(void)') + '\n' + body(source, 'static esp_err_t start_mode(') + '\n' + body(source, 'esp_err_t ble_link_start(void)') + '\n' + body(source, 'esp_err_t ble_link_listen(void)') + '\n' + body(source, 'esp_err_t ble_link_sweep_observer(') + '\n' + body(source, 'esp_err_t ble_link_find_observer(') + '\n' + body(source, 'esp_err_t ble_link_rid_observer(') + '\nstatic int late_connect(int handle){struct {struct {int conn_handle;} connect;} report={{handle}},*event=&report;\n' + body(source, 'if (!s_run || s_passive) {') + '\nreturn 1;}\n' + r'''
+''' + body(source, 'static void scan_refresh(') + '\n' + body(source, 'static void start_scan(void)\n{') + '\nstatic int link_start(void){starts++;\n' + body(source, 'if (s_stack_up) {') + '\nreturn ESP_FAIL;}\n' + body(source, 'static void on_reset(') + '\n' + body(source, 'void ble_link_rescan(void)') + '\n' + body(source, 'static void stop_mode(') + '\n' + body(source, 'void ble_link_stop(void)') + '\n' + body(source, 'static esp_err_t start_mode(') + '\n' + body(source, 'esp_err_t ble_link_start(void)') + '\n' + body(source, 'esp_err_t ble_link_sweep_observer(') + '\n' + body(source, 'esp_err_t ble_link_find_observer(') + '\n' + body(source, 'esp_err_t ble_link_rid_observer(') + '\nstatic int late_connect(int handle){struct {struct {int conn_handle;} connect;} report={{handle}},*event=&report;\n' + body(source, 'if (!s_run || s_passive) {') + '\nreturn 1;}\n' + r'''
 static void pump(void){if(queued){queued=false;scan_refresh(&s_scan_event);}}
 #define CHECK(x) do {if(!(x)){fprintf(stderr,"line %d: %s\n",__LINE__,#x);return 1;}}while(0)
 int main(void){
@@ -205,7 +205,8 @@ int main(void){
  CHECK(late_connect(2)==0 && terminates==2);pump();
  CHECK(ble_link_start()==ESP_OK && !s_passive);pump();CHECK(ble_link_sweep_observer(false)==ESP_OK && s_run);
  ble_link_stop();pump();CHECK(!s_run && !locked && refreshes>=4 && !active);
- CHECK(ble_link_listen()==ESP_OK && s_primary && s_passive);pump();
+ /* a passive primary owner (LINK's survey had one; start_mode keeps the state) */
+ CHECK(start_mode(true,false)==ESP_OK && s_primary && s_passive);pump();
  CHECK(ble_link_start()==ESP_ERR_INVALID_STATE && s_primary && s_passive);
  ble_link_stop();pump();CHECK(!s_run);
  CHECK(ble_link_rid_observer(true)==ESP_OK && s_rid_observer && s_passive);pump();

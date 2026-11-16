@@ -115,6 +115,34 @@ static void packets(void) {
     ls_lap_io_sim_command("iomodes=255");
     finish();
 }
+/* A long scan whose every retune finds the lease busy a couple of times
+   first, as the board's does: it must keep stepping. The failure count once
+   carried over from step to step, and a scan failed with EBUSY after about
+   125 retunes. */
+static void scan_retunes(void) {
+    start(LAP_CAP_RADIO_RX);
+    lap_scan_config_t c = {.size = sizeof(c),
+                           .version = 1,
+                           .radio = 0,
+                           .receiver = pc(),
+                           .count = 2,
+                           .frequencies = {433920000, 434045000},
+                           .dwell_ms = 40,
+                           .hang_ms = 0,
+                           .squelch_tenths_dbm = -700};
+    ls_lap_io_sim_command("iorssi=-1000");
+    ls_lap_io_sim_command("ioagain=2");
+    int h = lap_scan_start(&c);
+    assert(h > 0);
+    pump_io(1500);
+    lap_scan_status_t s;
+    assert(!lap_scan_status(h, &s));
+    assert(s.state != LAP_IO_FAILED);
+    assert(s.sweeps > 150);
+    ls_lap_io_sim_command("ioagain=0");
+    lap_scan_stop(h);
+    finish();
+}
 static void scanning(void) {
     start(LAP_CAP_RADIO_RX);
     lap_scan_config_t c = {.size = sizeof(c),
@@ -152,6 +180,179 @@ static void scanning(void) {
     assert(!lap_scan_control(h, LAP_SCAN_RESUME));
     lap_scan_stop(h);
     pump_io(1);
+    finish();
+}
+/* Steps a scan takes in `passes` worker passes (40 ms each here). */
+extern unsigned ls_lap_io_sim_opens(void), ls_lap_io_sim_retunes(void);
+static unsigned scan_steps(int h, unsigned count, unsigned passes) {
+    lap_scan_status_t s;
+    assert(!lap_scan_status(h, &s));
+    const unsigned before = s.sweeps * count + s.channel;
+    pump_io(passes);
+    assert(!lap_scan_status(h, &s) && s.state != LAP_IO_FAILED);
+    return s.sweeps * count + s.channel - before;
+}
+static lap_scan_config_t list(unsigned version, unsigned count, uint32_t dwell_ms) {
+    lap_scan_config_t c = {.size = sizeof(c), .version = (uint16_t)version, .radio = 0, .receiver = pc(),
+                           .count = (uint16_t)count, .dwell_ms = dwell_ms,
+                           .squelch_tenths_dbm = version == 1 ? INT16_MAX : INT16_MIN};   /* v1 never holds; v2 reports all */
+    for (unsigned i = 0; i < count; i++)
+        c.frequencies[i] = 699000000ull + 2000000ull * i;
+    return c;
+}
+/* Steps retune the open receiver: no lease handover per step, so a step
+   costs one pass, not one plus however long the lease takes to come back
+   (ioagain=2: twice, as the board's mesh handover often does). The lease
+   is still handed back at the end of a pass of the list, once a second at
+   most. With retuning refused the worker closes and opens as before. */
+static void scan_in_place(void) {
+    start(LAP_CAP_RADIO_RX);
+    ls_lap_io_sim_command("iorssi=-1000");
+    ls_lap_io_sim_command("ioagain=2");
+    lap_scan_config_t c = list(1, 64, 20);
+    ls_lap_io_sim_command("ioretune=0");
+    int h = lap_scan_start(&c);
+    assert(h > 0);
+    pump_io(5);
+    const unsigned old_rate = scan_steps(h, 64, 250);
+    lap_scan_stop(h);
+    pump_io(1);
+    ls_lap_io_sim_command("ioretune=1");
+    h = lap_scan_start(&c);
+    assert(h > 0);
+    pump_io(5);
+    const unsigned opens0 = ls_lap_io_sim_opens(), retunes0 = ls_lap_io_sim_retunes();
+    const unsigned new_rate = scan_steps(h, 64, 250);
+    const unsigned opens = ls_lap_io_sim_opens() - opens0, retunes = ls_lap_io_sim_retunes() - retunes0;
+    printf("scan v1, 20 ms dwell, 64 steps, lease busy twice per open: %.1f steps/s closing, %.1f in place "
+           "(%u opens, %u retunes in 10 s)\n", old_rate / 10.0, new_rate / 10.0, opens, retunes);
+    fflush(stdout);
+    assert(old_rate > 0 && new_rate >= 2 * old_rate);
+    assert(retunes + 5 >= new_rate && opens <= 6);     /* handed back once per pass of the list */
+    /* the hand-back is a real gap: off the radio for 250 ms (six passes
+       here), so MeshCore can take the chip, then open again */
+    ls_lap_io_sim_command("ioagain=0");
+    unsigned run = 0, longest = 0;
+    for (int pass = 0; pass < 150; pass++) {
+        pump_io(1);
+        lap_scan_status_t st;
+        assert(!lap_scan_status(h, &st) && st.state != LAP_IO_FAILED);
+        run = st.state == LAP_IO_QUEUED ? run + 1 : 0;
+        if (run > longest) longest = run;
+    }
+    assert(longest >= 6 && longest <= 8);
+    lap_scan_stop(h);
+    pump_io(1);
+    /* An app that restarts its scan at the end of every list (BUGHUNT, whose
+       plan is longer than 64) owes the same turn: it was refused on the
+       board until the hold was counted across back-to-back sessions. */
+    lap_scan_config_t s4 = list(2, 4, 3);
+    h = lap_scan_start(&s4);
+    assert(h > 0);
+    run = longest = 0;
+    unsigned restarts = 0;
+    for (int pass = 0; pass < 150; pass++) {
+        pump_io(1);
+        lap_scan_status_t st;
+        assert(!lap_scan_status(h, &st) && st.state != LAP_IO_FAILED);
+        run = st.state == LAP_IO_QUEUED ? run + 1 : 0;
+        if (run > longest) longest = run;
+        if (st.sweeps >= 1) {                       /* the list is done: the next one */
+            lap_scan_stop(h);
+            h = lap_scan_start(&s4);
+            assert(h > 0);
+            restarts++;
+        }
+    }
+    assert(restarts > 20 && longest >= 6 && longest <= 8);
+    lap_scan_stop(h);
+    pump_io(1);
+    ls_lap_io_sim_command("ioagain=0");
+    finish();
+}
+/* Version 2: one report per step with the strongest reading of its dwell,
+   so a burst one reading long is caught every time it falls in a dwell,
+   where version 1's single reading a pass finds it about one time in N. */
+static void scan_peaks(void) {
+    start(LAP_CAP_RADIO_RX);
+    lap_scan_config_t c = list(2, 4, 2);
+    c.dwell_ms = 0;
+    assert(lap_scan_start(&c) == LAP_RX_EINVAL);
+    c.version = 3;
+    c.dwell_ms = 2;
+    assert(lap_scan_start(&c) == LAP_RX_EINVAL);
+    c = list(1, 4, 2);
+    assert(lap_scan_start(&c) == LAP_RX_EINVAL);        /* version 1 keeps its 20 ms floor */
+    ls_lap_io_sim_command("iorssi=-1100");
+    ls_lap_io_sim_command("ionoise=40");
+    ls_lap_io_sim_command("ioburst=703,-600,25");       /* one reading in 25 on 703 MHz */
+    c = list(2, 4, 2);
+    int h = lap_scan_start(&c);
+    assert(h > 0);
+    pump_io(1);
+    unsigned per[4] = {0}, burst_hit = 0, steps = 0;
+    lap_packet_meta_t r;
+    for (int pass = 0; pass < 100; pass++) {
+        pump_io(1);
+        while (lap_scan_next(h, &r) == 1) {
+            assert(r.sequence < 4 && r.frequency_hz == c.frequencies[r.sequence]);
+            assert(r.length >= 25 && r.rssi_tenths_dbm != INT16_MIN);
+            assert(r.flags & LAP_DATA_SYNTHETIC);
+            per[r.sequence]++;
+            steps++;
+            if (r.sequence == 2) burst_hit += r.rssi_tenths_dbm == -600;
+            else assert(r.rssi_tenths_dbm <= -1080);      /* the noise's own peak */
+        }
+    }
+    lap_scan_status_t s;
+    assert(!lap_scan_status(h, &s) && s.dropped == 0 && !s.held);
+    printf("scan v2, 2 ms dwell: %.1f steps/s, the one-reading burst caught in %u of %u dwells\n",
+           steps / 4.0, burst_hit, per[2]);
+    fflush(stdout);
+    assert(steps >= 250);                                /* 100 passes: about 60 steps a second or more */
+    assert(per[0] && per[1] && per[2] && per[3] && burst_hit == per[2]);
+    lap_scan_stop(h);
+    pump_io(1);
+    /* the squelch passes only steps that reached it */
+    c = list(2, 4, 2);
+    c.squelch_tenths_dbm = -900;
+    h = lap_scan_start(&c);
+    assert(h > 0);
+    pump_io(40);
+    unsigned n = 0;
+    while (lap_scan_next(h, &r) == 1) { assert(r.sequence == 2 && r.rssi_tenths_dbm == -600); n++; }
+    assert(n > 0 && n <= 16);
+    assert(!lap_scan_status(h, &s) && s.dropped > 0 && s.hits >= n);   /* unread reports are counted, not kept */
+    /* HOLD keeps it on one frequency, reporting each dwell; NEXT moves on */
+    while (lap_scan_next(h, &r) == 1) {}
+    assert(!lap_scan_control(h, LAP_SCAN_HOLD));
+    pump_io(1);
+    assert(!lap_scan_status(h, &s) && s.held);
+    const uint64_t at = s.frequency_hz;
+    pump_io(3);
+    assert(!lap_scan_status(h, &s) && s.frequency_hz == at);
+    assert(!lap_scan_control(h, LAP_SCAN_RESUME));
+    pump_io(2);
+    assert(!lap_scan_status(h, &s) && !s.held);
+    lap_scan_stop(h);
+    pump_io(1);
+    /* version 1 on the same air: one reading a pass, the burst mostly missed */
+    c = list(1, 4, 20);
+    h = lap_scan_start(&c);
+    assert(h > 0);
+    unsigned v1_burst = 0, v1_on = 0;
+    for (int pass = 0; pass < 100; pass++) {
+        pump_io(1);
+        lap_packet_meta_t m;
+        if (!lap_radio_rssi(h, &m) && m.frequency_hz == 703000000ull) { v1_on++; v1_burst += m.rssi_tenths_dbm == -600; }
+    }
+    printf("scan v1: the burst seen in %u of %u readings on its frequency\n", v1_burst, v1_on);
+    fflush(stdout);
+    assert(v1_on > 10 && v1_burst * 4 < v1_on);
+    lap_scan_stop(h);
+    pump_io(1);
+    ls_lap_io_sim_command("ioburst=703,0,0");
+    ls_lap_io_sim_command("ionoise=0");
     finish();
 }
 static void database(void) {
@@ -454,6 +655,9 @@ int main(void) {
     ls_lap_api_host_clock = io_clock;
     packets();
     scanning();
+    scan_retunes();
+    scan_in_place();
+    scan_peaks();
     database();
     recordings();
     sample_recordings();

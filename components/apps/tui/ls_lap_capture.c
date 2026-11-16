@@ -23,7 +23,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CAP_SLOTS 256u
+#if defined(ESP_PLATFORM) && !defined(LS_LAP_HOST_TEST)
+#include "sdkconfig.h"
+#endif
+#ifndef CONFIG_LS_LAP_CAPTURE_SLOTS
+#define CONFIG_LS_LAP_CAPTURE_SLOTS 256
+#endif
+#define CAP_SLOTS ((uint32_t)CONFIG_LS_LAP_CAPTURE_SLOTS)
+/* head and tail are free-running uint32_t: the slot index stays continuous
+ * across their wrap only for a power of two. */
+_Static_assert((CONFIG_LS_LAP_CAPTURE_SLOTS & (CONFIG_LS_LAP_CAPTURE_SLOTS - 1)) == 0,
+               "CONFIG_LS_LAP_CAPTURE_SLOTS must be a power of two");
 #define CAP_BLE_BYTES 255u
 #define CAP_PEND (LAP_CAPTURE_SNAP_MAX + 64u)
 
@@ -79,16 +89,85 @@ static void push(cap_t *c, lap_capture_meta_t *m, const uint8_t *data, size_t n)
 
 #if defined(ESP_PLATFORM) && !defined(LS_LAP_HOST_TEST)
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "ls_wireless.h"
+#include "../../../main/ls_wifi.h"
 static EXT_RAM_BSS_ATTR ls_wireless_snapshot_t wl;
 static void *ring_alloc(size_t n) { return heap_caps_malloc(n, MALLOC_CAP_SPIRAM); }
 static void ring_free(void *p) { heap_caps_free(p); }
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 static void nap(void) { vTaskDelay(1); }
+
+/* The hopper. A channel change is an RPC to the C6 that can take seconds
+   while the coprocessor is busy (a scan, a join, a full queue), so it never
+   runs on the app's task: the screen would stop with it. One task for the
+   life of the firmware, asleep unless a capture is tuning. */
+static struct {
+    TaskHandle_t task;
+    volatile bool run, drop;
+    volatile uint8_t restore;          /* home channel to go back to, 0 none */
+    volatile uint32_t fails;
+} hop;
+
+static void hopper(void *arg)
+{
+    (void)arg;
+    cap_t *c = &caps[0];
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, hop.run && c->count > 1 ? pdMS_TO_TICKS(c->dwell_ms) : portMAX_DELAY);
+        if (hop.drop) { hop.drop = false; esp_wifi_disconnect(); }
+        if (hop.run && c->count) {
+            const uint8_t at = (uint8_t)((c->at + 1) % c->count), ch = c->channels[at];
+            c->at = at;
+            const int64_t t0 = esp_timer_get_time();
+            const esp_err_t e = esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+            const uint32_t took = (uint32_t)((esp_timer_get_time() - t0) / 1000);
+            if (e == ESP_OK) c->channel = ch;
+            else hop.fails++;
+            /* A slow or refused retune is the C6's, and worth a line. */
+            if (e != ESP_OK || took > 400) {
+                static uint32_t slow;
+                if (slow++ % 20 == 0)
+                    ESP_LOGW("lap_hop", "ch %u: %s in %u ms (%u slow, %u failed)", ch, esp_err_to_name(e),
+                             (unsigned)took, (unsigned)slow, (unsigned)hop.fails);
+            }
+            /* One fixed channel: tuned once, then nothing to do until close. */
+            if (c->count == 1) hop.run = false;
+        } else if (!hop.run && hop.restore) {
+            const uint8_t home = hop.restore;
+            hop.restore = 0;
+            esp_wifi_set_channel(home, WIFI_SECOND_CHAN_NONE);
+            ls_wifi_monitor_hold(false);
+        }
+    }
+}
+
+static void hopper_start(cap_t *c, bool drop)
+{
+    if (!hop.task && xTaskCreatePinnedToCoreWithCaps(hopper, "lap_hop", 3072, NULL, 3, &hop.task, 1,
+                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        hop.task = NULL;
+        return;
+    }
+    hop.restore = 0;
+    hop.drop = drop;
+    c->at = (uint8_t)(c->count - 1);   /* the first turn goes to channels[0] */
+    c->channel = c->channels[0];
+    hop.run = true;
+    xTaskNotifyGive(hop.task);
+}
+
+static void hopper_stop(uint8_t home)
+{
+    hop.run = false;
+    hop.restore = home ? home : 1;
+    if (hop.task) xTaskNotifyGive(hop.task);
+    else ls_wifi_monitor_hold(false);
+}
 
 static void wifi_rx(void *buf, wifi_promiscuous_pkt_type_t type)
 {
@@ -111,7 +190,12 @@ static int wifi_open(cap_t *c, const lap_wifi_capture_config_t *cfg)
 {
     ls_wireless_get(&wl);
     if (!wl.wifi_available) { c->reason = LAP_CAPTURE_NO_RADIO; return LAP_IO_ENOTSUP; }
-    if (cfg->channel_count && wl.wifi_connected && !(cfg->flags & LAP_CAPTURE_DROP_LINK)) {
+    /* The wireless model is only refreshed while its worker is awake (LINK
+       open, a sweep): after a boot it can still say "not joined" with the
+       station on its network, and a hop then dropped the link (reason 8).
+       The station's own flag is current. */
+    const bool joined = wl.wifi_connected || ls_wifi_sta_connected();
+    if (cfg->channel_count && joined && !(cfg->flags & LAP_CAPTURE_DROP_LINK)) {
         c->reason = LAP_CAPTURE_LINK_IN_USE; return LAP_IO_EBUSY;
     }
     wifi_promiscuous_filter_t f = {.filter_mask = (c->filter & LAP_WIFI_MGMT ? WIFI_PROMIS_FILTER_MASK_MGMT : 0) |
@@ -128,30 +212,29 @@ static int wifi_open(cap_t *c, const lap_wifi_capture_config_t *cfg)
     if (esp_wifi_get_channel(&primary, &second) == ESP_OK) c->home = c->channel = primary;
     if (c->count) {
         c->retuned = 1;
-        c->channel = c->channels[0];
-        esp_wifi_set_channel(c->channel, WIFI_SECOND_CHAN_NONE);
-        c->hop_at = now_ms();
+        /* The station's reconnect waits while the radio is ours: its scans
+           and joins would fight the hopper for the channel. */
+        /* The C6 refuses a channel change while the station is joining
+           (RPC answers -1, sometimes after its 5 s timeout), so the hopper
+           first stops any join, and the reconnect waits until close. */
+        const bool hold = !joined || (cfg->flags & LAP_CAPTURE_DROP_LINK);
+        if (hold) ls_wifi_monitor_hold(true);
+        hopper_start(c, hold);
     }
     return 0;
 }
 static void wifi_close(cap_t *c)
 {
+    if (c->retuned) hopper_stop(c->home);
     esp_wifi_set_promiscuous(false);
     esp_wifi_set_promiscuous_rx_cb(NULL);
-    if (c->retuned && c->home) esp_wifi_set_channel(c->home, WIFI_SECOND_CHAN_NONE);
 }
-/* On the app's task, from its poll: one retune per dwell, no timer or task. */
+/* On the app's task, from its poll. Wi-Fi retunes are the hopper's. */
 static void service(cap_t *c)
 {
     if (c->source == LAP_CAPTURE_BLE) {
         if (now_ms() - c->hop_at >= 1000) { c->hop_at = now_ms(); ls_wireless_find_ble(true); }
         return;
-    }
-    if (c->count > 1 && now_ms() - c->hop_at >= c->dwell_ms) {
-        c->hop_at = now_ms();
-        c->at = (uint8_t)((c->at + 1) % c->count);
-        c->channel = c->channels[c->at];
-        esp_wifi_set_channel(c->channel, WIFI_SECOND_CHAN_NONE);
     }
 }
 static int ble_open(cap_t *c)
@@ -317,6 +400,8 @@ static int replay_open(cap_t *c)
 static int wifi_open(cap_t *c, const lap_wifi_capture_config_t *cfg)
 {
     if (!(ls_lap_sys_caps() & LAP_HW_WIFI)) { c->reason = LAP_CAPTURE_NO_RADIO; return LAP_IO_ENOTSUP; }
+    const char *bare = getenv("LAPSIM_CAPTURE_NO_TRANSPORT");   /* a coprocessor without the forwarder */
+    if (bare && bare[0] == '1') { c->reason = LAP_CAPTURE_NO_TRANSPORT; return LAP_IO_ENOTSUP; }
     const char *joined = getenv("LAPSIM_CAPTURE_JOINED");   /* the board is on a network */
     if (cfg->channel_count && joined && joined[0] == '1' && !(cfg->flags & LAP_CAPTURE_DROP_LINK)) {
         c->reason = LAP_CAPTURE_LINK_IN_USE; return LAP_IO_EBUSY;
@@ -334,11 +419,19 @@ static void ble_close(cap_t *c) { replay_close(c); }
 /* Records whose time has come move into the ring, as a radio would fill it. */
 static void service(cap_t *c)
 {
-    const char *pace = getenv("LAPSIM_CAPTURE_PACE");
+    const char *pace = getenv("LAPSIM_CAPTURE_PACE"), *lossy = getenv("LAPSIM_CAPTURE_DROP");
     const bool paced = !pace || pace[0] != '0';
     while (c->pending) {
         if (paced && (c->next.timestamp_us - c->first_us) / 1000 > now_ms() - c->start_ms) return;
-        if (c->head - c->tail >= CAP_SLOTS) return;             /* a file waits; nothing is lost */
+        if (c->head - c->tail >= CAP_SLOTS) {
+            /* A file waits and nothing is lost, unless LAPSIM_CAPTURE_DROP=1
+               asks for a radio's behaviour: a due frame meets a full ring
+               and is dropped and counted. */
+            if (!paced || !lossy || lossy[0] != '1') return;
+            c->dropped++;
+            c->pending = replay_next(c);
+            continue;
+        }
         lap_capture_meta_t m = c->next;
         if (m.channel) c->channel = m.channel;
         push(c, &m, c->pend, m.length);

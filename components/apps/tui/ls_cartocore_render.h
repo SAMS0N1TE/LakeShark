@@ -15,7 +15,7 @@ typedef struct {
     cc_arena arena,hot_arena; cc_renderer renderer; cc_ctile map;
     cc_decoded_cache decoded; cc_cell_cache tiles;
     size_t tile_fallbacks;
-    cc_ctile coarse_map; unsigned coarse_frames; int coarse;
+    cc_ctile coarse_map; unsigned coarse_frames,degraded_frames; int coarse;
     int cols,rows,labels; unsigned z; int64_t left,top;
     bool raster_only; /* MAP's picture: planes only, no cells */
     struct { uint64_t offset; uint32_t length; } hints[64];
@@ -64,6 +64,11 @@ static render_state *create(int cols,int rows,unsigned z,bool external,bool tile
     if(!carto_plan_budget(free_bytes,largest,overhead,v7,map.cellset!=NULL,map.source!=NULL,tilecache,&carto_last_budget)) {
         carto_failure("not enough memory (PSRAM budget)",cols,rows,z);return NULL;
     }
+#ifdef LS_CARTOCORE_HOST
+    /* Host measurements of the arena/decoded trade (ls_carto_budget.h), in 256 KiB units. */
+    if(getenv("LSSIM_CARTO_COLD")) carto_last_budget.cold=(size_t)atoi(getenv("LSSIM_CARTO_COLD"))*256u*1024u;
+    if(getenv("LSSIM_CARTO_DECODED")) carto_last_budget.decoded=(size_t)atoi(getenv("LSSIM_CARTO_DECODED"))*256u*1024u;
+#endif
     size_t capacity=carto_last_budget.cold;
     printf("carto budget free=%zu reserve=%u guard=%u cold=%zu decoded=%zu cache=%zu idle=%zu overhead=%zu\n",
            free_bytes,CARTO_PSRAM_RESERVE,256u*1024u,capacity,carto_last_budget.decoded,
@@ -151,6 +156,7 @@ static int render_frame(render_state *s,cc_mode mode,cc_edges edges,int64_t left
         s->renderer.terrain_strength=t; s->tiles.terrain_strength=t;
     }
 #ifdef LS_CARTOCORE_HOST
+    { const char *never=getenv("LSSIM_CARTO_FAIL_ZOOM");if(never && s->z==(unsigned)atoi(never)) return 0; }
     /* Poison unfinished output: a failed render must never reach publication. */
     static bool injected;
     if(!injected && s->z==13 && getenv("LSSIM_CARTO_FAIL_FRAME")) {
@@ -181,6 +187,18 @@ static int render_frame(render_state *s,cc_mode mode,cc_edges edges,int64_t left
 #endif
     s->coarse=0;
     int ok=cc_render(&s->renderer,&s->map,s->z,left,top,mode,s->labels,out);
+    if(ok && s->renderer.scene.degraded) {
+        /* Some tiles did not fit the arena and came from a coarser zoom; the
+           rest of the frame is at full detail. Said at most every 5 s. */
+        static int64_t next_note;
+        const int64_t now_us=esp_timer_get_time();
+        s->degraded_frames++;
+        if(now_us>=next_note) {
+            next_note=now_us+5000000;
+            LS_PRINTF(fmt_ls_cartocore_carto_map_coarser_tiles, "carto MAP: z%u drew %zu tile(s) coarser; arena peak=%zu size=%zu\n",
+                      s->z,s->renderer.scene.degraded,s->arena.peak,s->arena.size);
+        }
+    }
     if(!ok && s->map.cellset) {
         /* Say why, at most every 5 s: a frame drawn coarse is a frame that
            looks broken, and the counter alone does not say which budget ran out. */
@@ -205,6 +223,9 @@ static int render_frame(render_state *s,cc_mode mode,cc_edges edges,int64_t left
     }
 #ifdef LS_CARTOCORE_HOST
     s->arena.size=original_size;
+#endif
+#ifdef LS_CARTOCORE_HOST
+    if(getenv("LSSIM_CARTO_COLD")) printf("carto host: render z%u ok=%d coarse=%d degraded=%zu arena peak=%zu size=%zu decoded peak=%zu\n",s->z,ok,s->coarse,ok && !s->coarse?s->renderer.scene.degraded:0,s->arena.peak,s->arena.size,s->decoded.peak);
 #endif
     carto_hw_sample(s);
     /* Failure is transactional: invalidate scratch, keep the published frame.

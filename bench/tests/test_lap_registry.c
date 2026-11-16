@@ -32,10 +32,11 @@ void ls_anim_start(int icon, const char *name, uint8_t hue) {
     (void)hue;
 }
 int main(void) {
-    static char id[63][32], name[63][16];
+    enum { SHARED = 48 };   /* the card's apps, all on one screen: past the old 24 */
+    static char id[LS_APP_MAX][32], name[LS_APP_MAX][16];
     ls_app_t a = {.id = "home", .name = "HOME", .cat = LS_APP_MAIN, .screen = &home, .doc = &doc};
     assert(ls_app_register(&a) == 0);
-    for (int i = 0; i < 24; i++) {
+    for (int i = 0; i < SHARED; i++) {
         snprintf(id[i], 32, "probe%d", i);
         snprintf(name[i], 16, "PROBE%d", i);
         a = (ls_app_t){.id = id[i],
@@ -46,8 +47,8 @@ int main(void) {
                        .select = choose};
         assert(ls_app_register(&a) == 1);
     }
-    assert(count == 2 && ls_app_count() == 25);
-    for (int i = 1; i <= 24; i++) {
+    assert(count == 2 && ls_app_count() == SHARED + 1);
+    for (int i = 1; i <= SHARED; i++) {
         ls_app_open(i);
         assert(!strcmp(selected, id[i - 1]));
         assert(ls_app_current() == ls_app_at(i));
@@ -57,7 +58,7 @@ int main(void) {
     a.icon = 11;
     assert(ls_app_update(&a));
     assert(ls_app_by_id("probe3")->hue == 6);
-    for (int i = 0; i < 24; i++)
+    for (int i = 0; i < SHARED; i++)
         assert(ls_app_unregister(id[i]));
     assert(ls_app_count() == 1);
     a = (ls_app_t){.id = "again",
@@ -67,13 +68,13 @@ int main(void) {
                    .doc = &doc,
                    .select = choose};
     assert(ls_app_register(&a) == 1 && count == 2);
-    for (int i = 0; i < 62; i++) {
+    for (int i = 0; i < LS_APP_MAX - 2; i++) {
         snprintf(id[i], 32, "native%d", i);
         a.id = id[i];
         assert(ls_app_register(&a) == 1);
     }
-    assert(ls_app_count() == 64 && ls_app_register(&a) == LS_APP_REG_DIR_FULL);
+    assert(ls_app_count() == LS_APP_MAX && ls_app_register(&a) == LS_APP_REG_DIR_FULL);
     assert(!ls_app_unregister("home"));
-    puts("test_lap_registry: 5 cases passed (24 shared tiles, identity, refresh, reuse, capacity)");
+    puts("test_lap_registry: 5 cases passed (48 shared tiles, identity, refresh, reuse, capacity)");
     return 0;
 }

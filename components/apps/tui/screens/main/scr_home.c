@@ -24,7 +24,7 @@
 
 extern const ls_tui_screen_t ls_scr_home;
 
-#define MAX_TILES LS_TUI_MAX_SCREENS
+#define MAX_TILES LS_APP_MAX
 /* Directory capacity is not a TUI stack budget. The UI task is the sole
    caller; drawing and input reuse the same zero-init PSRAM scratch. */
 EXT_RAM_BSS_ATTR static ls_tile_t s_tiles[MAX_TILES];
@@ -43,42 +43,72 @@ static const char *const GROUPS[] = {"RADIO", "FIELD", "SYSTEM", "USER"};
    FIELD, then SYSTEM. A built-in missing from this list still appears, at
    the end of RADIO, so a new app is never lost for want of a line here. */
 static const char *const LAYOUT[] = {
-    "p25", "fm", "adsb", "freqs", "falls", "mesh", "subghz", "digi", "labs", "rec", "radio", NULL,
+    "p25", "fm", "adsb", "freqs", "falls", "mesh", "subghz", "tmach", "digi", "labs", "radio", NULL,
     "map", "gps", "compass", "notes", "sweep", "drones", "cell", NULL,
     "set", "link", "radios", "update", "diag", "files", "music", NULL,
 };
 
 /* Folders: one tile on HOME for a lead app and the apps that belong with it.
    The children stay registered with their own screens, so anything that
-   opens them by id or by screen index is unaffected; only HOME folds them. */
-static const struct {
+   opens them by id or by screen index is unaffected; only HOME folds them.
+
+   A folder of apps from the card has no lead app: its tile is the folder
+   itself (`self`), shown in USER once two of its apps are installed. With
+   one, that app has its own tile as before. */
+#define FOLDER_KIDS 8
+typedef struct {
     const char *lead, *name, *sub;
-    const char *kids[3];
-} FOLDERS[] = {
-    { "labs",    "LABS",    "lora + trials",   { "experiments", "mixrf", "meters" } },
-    { "rec",     "REC",     "rec + rewind",    { "tmach" } },
-    { "map",     "MAP",     "maps, regions",   { "tiles" } },
-    { "compass", "COMPASS", "bearing, hunt",   { "fox", "rfsurvey" } },
-    { "diag",    "DIAG",    "health, shell",   { "terminal" } },
+    const char *kids[FOLDER_KIDS];
+    const ls_app_t *self;
+} folder_t;
+
+static const ls_app_t KIT_WIFIBT = {
+    .id = "kit.wifibt", .name = "WIFI/BT KIT", .sub = "capture, scan, net",
+    .icon = LS_ICON_WIRELESS, .hue = TUI_CYAN, .cat = LS_APP_USER,
+};
+
+static const folder_t FOLDERS[] = {
+    { "labs",    "LABS",    "lora + trials",   { "experiments", "mixrf", "meters" }, NULL },
+    { "map",     "MAP",     "maps, regions",   { "tiles" }, NULL },
+    { "compass", "COMPASS", "bearing, hunt",   { "fox", "rfsurvey" }, NULL },
+    { "diag",    "DIAG",    "health, shell",   { "terminal" }, NULL },
+    { NULL,      "WIFI/BT KIT", "capture, scan, net",
+      { "tap", "wifi_survey", "wifi_watch", "bughunt", "ble_explorer", "lan_scan", "net_diag", "throughput" },
+      &KIT_WIFIBT },
 };
 #define N_FOLDERS (int)(sizeof(FOLDERS) / sizeof(FOLDERS[0]))
 
 /* The open folder, or -1 for the group's own tiles. */
 static int s_folder = -1;
 
+static const char *folder_id(int f) { return FOLDERS[f].self ? FOLDERS[f].self->id : FOLDERS[f].lead; }
+
+static int kids_present(int f)
+{
+    int n = 0;
+    for (int k = 0; k < FOLDER_KIDS; k++) n += FOLDERS[f].kids[k] && ls_app_by_id(FOLDERS[f].kids[k]);
+    return n;
+}
+
+/* The folder shows: its lead is in this build, or two of a card folder's apps are installed. */
+static bool folder_shown(int f)
+{
+    return FOLDERS[f].self ? kids_present(f) >= 2 : ls_app_by_id(FOLDERS[f].lead) != NULL;
+}
+
 /* Folded away, and reachable: a build without the lead shows the child. */
 static bool in_folder(const char *id)
 {
     for (int f = 0; f < N_FOLDERS; f++)
-        for (int k = 0; k < 3; k++)
+        for (int k = 0; k < FOLDER_KIDS; k++)
             if (FOLDERS[f].kids[k] && !strcmp(FOLDERS[f].kids[k], id))
-                return ls_app_by_id(FOLDERS[f].lead) != NULL;
+                return folder_shown(f);
     return false;
 }
 
 static int folder_of(const char *id)
 {
-    for (int f = 0; f < N_FOLDERS; f++) if (!strcmp(FOLDERS[f].lead, id)) return f;
+    for (int f = 0; f < N_FOLDERS; f++) if (!strcmp(folder_id(f), id)) return f;
     return -1;
 }
 
@@ -101,7 +131,7 @@ static void add_tile(ls_tile_t *out, const ls_app_t **apps, int *n, const ls_app
     if (f < 0) return;
     /* A folder says how much is behind it, and is live when anything in it
        is, so a running TIME MACHINE still shows on HOME. */
-    for (int k = 0; k < 3; k++) {
+    for (int k = 0; k < FOLDER_KIDS; k++) {
         const ls_app_t *c = FOLDERS[f].kids[k] ? ls_app_by_id(FOLDERS[f].kids[k]) : NULL;
         if (!c) continue;
         t->more++;
@@ -115,9 +145,9 @@ static int build_tiles(ls_tile_t *out, const ls_app_t **apps, int cap)
     int n = 0;
     if (s_folder >= 0) {
         /* Inside a folder: the lead app first, then the rest of it. */
-        const ls_app_t *a = ls_app_by_id(FOLDERS[s_folder].lead);
+        const ls_app_t *a = FOLDERS[s_folder].lead ? ls_app_by_id(FOLDERS[s_folder].lead) : NULL;
         if (a) add_tile(out, apps, &n, a, false);
-        for (int k = 0; k < 3 && n < cap; k++) {
+        for (int k = 0; k < FOLDER_KIDS && n < cap; k++) {
             a = FOLDERS[s_folder].kids[k] ? ls_app_by_id(FOLDERS[s_folder].kids[k]) : NULL;
             if (a) add_tile(out, apps, &n, a, false);
         }
@@ -130,12 +160,18 @@ static int build_tiles(ls_tile_t *out, const ls_app_t **apps, int cap)
             const ls_app_t *a = g == s_group ? ls_app_by_id(LAYOUT[i]) : NULL;
             if (a && a->cat != LS_APP_USER) add_tile(out, apps, &n, a, true);
         }
+    } else {
+        /* USER: the card folders first, then the apps outside them. */
+        for (int f = 0; f < N_FOLDERS && n < cap; f++)
+            if (FOLDERS[f].self && folder_shown(f)) add_tile(out, apps, &n, FOLDERS[f].self, true);
     }
     for (int i = 0; i < ls_app_count() && n < cap; i++) {
         const ls_app_t *a = ls_app_at(i);
         if (!a || !a->id || a->screen == &ls_scr_home) continue;
         if (a->cat == LS_APP_USER ? s_group != 3 : s_group != 0) continue;
-        if (a->cat != LS_APP_USER) {
+        if (a->cat == LS_APP_USER) {
+            if (in_folder(a->id)) continue;
+        } else {
             /* Built-ins the layout or a folder already placed. */
             bool placed = in_folder(a->id);
             for (unsigned l = 0; l < sizeof(LAYOUT) / sizeof(LAYOUT[0]) && !placed; l++)
@@ -345,7 +381,7 @@ static bool key(ls_tk_t k, char ch)
     }
     if (k==LS_TK_ESC && s_folder>=0) {
         /* Back on the folder's own tile, where the operator left. */
-        const char *lead=FOLDERS[s_folder].lead;
+        const char *lead=folder_id(s_folder);
         s_folder=-1; s_sel=0;
         const int m=build_tiles(tiles,apps,MAX_TILES);
         for(int i=0;i<m;i++) if(!strcmp(apps[i]->id,lead)) s_sel=i;

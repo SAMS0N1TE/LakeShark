@@ -15,7 +15,6 @@ void ls_gps_get(ls_gps_state_t *out) {*out=gps;}
 void ls_wireless_wake(void) {}
 bool ls_wifi_sta_running(void) {return external_wifi;}
 bool ls_wifi_running(void) {return false;}
-esp_err_t ls_wifi_survey_mode(bool on) {if(on && wifi_fail) return ESP_ERR_INVALID_STATE;owned_wifi=on;return ESP_OK;}
 ble_link_state_t ble_link_state(void) {return external_ble || owned_ble?BLE_LINK_SCANNING:BLE_LINK_OFF;}
 esp_err_t ble_link_sweep_observer(bool on) {
     if(!on) {if(owned_ble && !external_ble) {stops++;owned_ble=false;}leased=false;return ESP_OK;}
@@ -23,10 +22,6 @@ esp_err_t ble_link_sweep_observer(bool on) {
     leased=true;return ESP_OK;
 }
 void ls_sweep_transport_stats(ls_sweep_transport_stats_t *out) {memset(out,0,sizeof(*out));out->scanning=external_ble || owned_ble;}
-int ls_wifi_survey_scan(ls_wifi_scan_ap_t *out,int cap) {
-    LS_CHECK(!external_wifi && cap>=1);if(!owned_wifi) return -1;
-    scans++;*out=(ls_wifi_scan_ap_t){.bssid={0,0x40,0x8c,1,2,3},.rssi=-50};return 1;
-}
 int ls_wifi_scan_cached(ls_wifi_scan_ap_t *out,int cap,int64_t *us) {
     LS_CHECK(cap>=1);cached++;if(wifi_fail) return -1;*us=cache_us?cache_us:esp_timer_get_time();
     *out=(ls_wifi_scan_ap_t){.bssid={0,0x40,0x8c,1,2,3},.rssi=-50};return 1;

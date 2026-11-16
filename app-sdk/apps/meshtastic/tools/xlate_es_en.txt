@@ -1,0 +1,1860 @@
+# Hand-written Spanish -> English data for mt_xlate (MESHTASTIC app).
+# Written for this app; GPL-3.0-or-later like the rest of LakeShark.
+# gen_xlate.py, next to this file, reads it together with the Wiktionary lexicon and
+# writes ../mt_xlate_es_en.h. Spanish keys may carry accents; the generator
+# folds them (lower case, accents off, n-tilde kept).
+#
+# Fields are separated by " | ". Lines starting with # are comments.
+
+# ---------------------------------------------------------------------------
+@func
+# key | CLASS[:info] | english [| english when it stands alone]
+# DET info: s/p number, def, clit (can also be an object pronoun), q (question)
+el | DET:s,def | the
+la | DET:s,def,clit | the
+los | DET:p,def,clit | the
+las | DET:p,def,clit | the
+lo | DET:s,clit | the | it
+un | DET:s | a | one
+una | DET:s | a | one
+unos | DET:p | some | some
+unas | DET:p | some | some
+mi | DET:s | my
+mis | DET:p | my
+tu | DET:s | your
+tus | DET:p | your
+su | DET:s | their
+sus | DET:p | their
+nuestro | DET:s | our | ours
+nuestra | DET:s | our | ours
+nuestros | DET:p | our | ours
+nuestras | DET:p | our | ours
+vuestro | DET:s | your
+vuestra | DET:s | your
+vuestros | DET:p | your
+vuestras | DET:p | your
+este | DET:s | this | this
+esta | DET:s | this | this
+estos | DET:p | these | these
+estas | DET:p | these | these
+ese | DET:s | that | that
+esa | DET:s | that | that
+esos | DET:p | those | those
+esas | DET:p | those | those
+aquel | DET:s | that | that
+aquella | DET:s | that | that
+aquellos | DET:p | those | those
+aquellas | DET:p | those | those
+algún | DET:s | some
+alguno | DET:s | some | some
+alguna | DET:s | some | some
+algunos | DET:p | some | some
+algunas | DET:p | some | some
+ningún | DET:s,neg | no
+ninguno | DET:s,neg | no | none
+ninguna | DET:s,neg | no | none
+cada | DET:s | each | each
+otro | DET:s | another | another
+otra | DET:s | another | another
+otros | DET:p | other | others
+otras | DET:p | other | others
+mucho | DET:s | a lot of | a lot
+mucha | DET:s | a lot of | a lot
+muchos | DET:p | many | many
+muchas | DET:p | many | many
+poco | DET:s | little | little
+poca | DET:s | little | little
+pocos | DET:p | few | few
+pocas | DET:p | few | few
+todo | DET:s | all | everything
+toda | DET:s | all | all
+todos | DET:p | all | everyone
+todas | DET:p | all | all
+varios | DET:p | several | several
+varias | DET:p | several | several
+demasiado | DET:s | too much | too much
+demasiada | DET:s | too much | too much
+demasiados | DET:p | too many | too many
+demasiadas | DET:p | too many | too many
+tanto | DET:s | so much | so much
+tanta | DET:s | so much | so much
+tantos | DET:p | so many | so many
+tantas | DET:p | so many | so many
+cuánto | DET:s,q | how much | how much
+cuánta | DET:s,q | how much | how much
+cuántos | DET:p,q | how many | how many
+cuántas | DET:p,q | how many | how many
+ambos | DET:p | both | both
+ambas | DET:p | both | both
+cierto | DET:s | a certain
+#
+# Subject pronouns. info: person 1-6, u = usted/ustedes (English "you")
+yo | PRON:1 | I
+tú | PRON:2 | you
+vos | PRON:2 | you
+él | PRON:3 | he
+ella | PRON:3 | she
+usted | PRON:3,u | you
+ud | PRON:3,u | you
+nosotros | PRON:4 | we
+nosotras | PRON:4 | we
+vosotros | PRON:5 | you
+vosotras | PRON:5 | you
+ustedes | PRON:6,u | you
+uds | PRON:6,u | you
+ellos | PRON:6 | they
+ellas | PRON:6 | they
+#
+# Object pronouns placed before a verb. info: person, io = indirect, do = direct
+me | CLIT:1 | me
+te | CLIT:2 | you
+se | CLIT:3,refl | them
+nos | CLIT:4 | us
+os | CLIT:5 | you
+le | CLIT:3,io | him
+les | CLIT:6,io | them
+#
+# Other pronouns. alt = form inside a negative or question clause
+esto | PRONX | this
+eso | PRONX | that
+aquello | PRONX | that
+ello | PRONX | it
+algo | PRONX | something | anything
+nada | PRONX:neg | nothing | anything
+alguien | PRONX | someone | anyone
+nadie | PRONX:neg | nobody | anybody
+mí | PRONX | me
+ti | PRONX | you
+conmigo | PRONX | with me
+contigo | PRONX | with you
+consigo | PRONX | with them
+uno | NUM | one
+#
+# Prepositions
+a | PREP | to
+ante | PREP | before
+bajo | PREP | under
+con | PREP | with
+contra | PREP | against
+de | PREP | of
+desde | PREP | from
+durante | PREP | during
+en | PREP | in
+entre | PREP | between
+hacia | PREP | toward
+hasta | PREP | until
+mediante | PREP | through
+para | PREP | for
+pa | PREP | for
+por | PREP | for
+según | PREP | according to
+sin | PREP | without
+sobre | PREP | about
+tras | PREP | after
+vía | PREP | via
+excepto | PREP | except
+salvo | PREP | except
+del | PREP:del | of the
+al | PREP:al | to the
+#
+# Conjunctions
+y | CONJ | and
+e | CONJ | and
+o | CONJ | or
+u | CONJ | or
+ni | CONJ:neg | nor
+pero | CONJ | but
+sino | CONJ | but
+porque | CONJ:why | because
+que | CONJ:que | that
+si | CONJ:si | if
+aunque | CONJ | although
+cuando | CONJ:q | when
+mientras | CONJ | while
+como | CONJ:como | like
+pues | CONJ | well
+donde | CONJ:q | where
+quien | CONJ:q | who
+quienes | CONJ:q | who
+cual | CONJ:q | which
+cuales | CONJ:q | which
+cuanto | CONJ:q | as much
+#
+# Negation
+no | NEG | not | no
+nunca | NEG | never | ever
+jamás | NEG | never | ever
+tampoco | NEG | not either | either
+#
+# Question words (accented spelling; the unaccented ones are CONJ above and
+# become questions at the start of a question)
+qué | Q | what
+quién | Q | who
+quiénes | Q | who
+dónde | Q | where
+adónde | Q | where
+cuándo | Q | when
+cómo | Q | how
+cuál | Q | which
+cuáles | Q | which
+#
+# Adverbs and particles that steer the grammar
+ya | ADV:ya | already
+acá | ADV | here
+aca | ADV | here
+aquí | ADV | here
+ahí | ADV | there
+allí | ADV | there
+allá | ADV | over there
+también | ADV | too
+muy | ADV:int | very
+re | ADV:int | really
+más | ADV:mas | more
+menos | ADV | less
+bien | ADV | well | fine
+mal | ADV | badly | bad
+mejor | ADV | better
+peor | ADV | worse
+ahora | ADV | now
+luego | ADV | later
+después | ADV | later
+antes | ADV | before
+siempre | ADV | always
+todavía | ADV | still
+aún | ADV | still
+aun | ADV | still
+hoy | ADV | today
+ayer | ADV:past | yesterday
+anoche | ADV:past | last night
+mañana | ADV | tomorrow
+temprano | ADV | early
+tarde | ADV | late
+pronto | ADV | soon
+enseguida | ADV | right away
+despacio | ADV | slowly
+cerca | ADV | near
+lejos | ADV | far
+arriba | ADV | up
+abajo | ADV | down
+adentro | ADV | inside
+afuera | ADV | outside
+adelante | ADV | ahead
+atrás | ADV | behind
+casi | ADV | almost
+solo | ADV:solo | only
+sólo | ADV | only
+solamente | ADV | only
+apenas | ADV | barely
+bastante | ADV | quite
+tan | ADV:int | so
+quizás | ADV | maybe
+quizá | ADV | maybe
+capaz | ADV | maybe
+igual | ADV | anyway
+recién | ADV:past | just
+entonces | ADV | so
+así | ADV | like this
+aparte | ADV | besides
+nomás | ADV | just
+nomas | ADV | just
+sí | INTJ:si | yes
+#
+# Interjections and chat words
+hola | INTJ | hi
+holis | INTJ | hi
+chau | INTJ | bye
+chao | INTJ | bye
+adiós | INTJ | goodbye
+gracias | INTJ | thanks
+che | INTJ | hey
+dale | INTJ | ok
+vale | INTJ | ok
+ok | INTJ | ok
+okey | INTJ | ok
+oka | INTJ | ok
+okis | INTJ | ok
+ey | INTJ | hey
+eh | INTJ | hey
+epa | INTJ | whoa
+uy | INTJ | oops
+ay | INTJ | ouch
+ah | INTJ | ah
+oh | INTJ | oh
+bueno | INTJ:adj | ok | ok
+ojo | INTJ | watch out
+ojalá | ADV | hopefully
+cuidado | INTJ | careful
+perdón | INTJ | sorry
+salud | INTJ | cheers
+joya | INTJ | great
+genial | INTJ:adj | great
+buenísimo | INTJ:adj | great
+listo | INTJ:adj | ready | done
+claro | INTJ:adj | sure
+obvio | INTJ | obviously
+exacto | INTJ | exactly
+posta | INTJ | for real
+tranqui | INTJ | relax
+haha | INTJ | haha
+socorro | INTJ | help
+auxilio | INTJ | help
+cambio | INTJ | over
+afirmativo | INTJ | affirmative
+negativo | INTJ | negative
+roger | INTJ | roger
+#
+# Number words
+dos | NUM | two
+tres | NUM | three
+cuatro | NUM | four
+cinco | NUM | five
+seis | NUM | six
+siete | NUM | seven
+ocho | NUM | eight
+nueve | NUM | nine
+diez | NUM | ten
+once | NUM | eleven
+doce | NUM | twelve
+quince | NUM | fifteen
+veinte | NUM | twenty
+treinta | NUM | thirty
+cuarenta | NUM | forty
+cincuenta | NUM | fifty
+cien | NUM | a hundred
+ciento | NUM | hundred
+mil | NUM | thousand
+primero | NUM | first
+primer | NUM | first
+primera | NUM | first
+segundo | NUM | second
+tercero | NUM | third
+tercer | NUM | third
+último | NUM | last
+última | NUM | last
+medio | NUM | half
+media | NUM | half
+
+# ---------------------------------------------------------------------------
+@phrase
+# spanish words | english | CLASS[:flags]
+# CLASS: PH (any chunk), CL (a whole clause: no subject added), INTJ, ADV, PREP,
+# CONJ, Q (question word), DET (before a noun).
+# flags: A = only when it is the whole clause, S = only at the start of a clause,
+#        E = only at the end of a clause
+# Greetings and sign-offs
+buenos días | good morning | INTJ
+buen día | good morning | INTJ
+buenas tardes | good afternoon | INTJ
+buenas noches | good night | INTJ
+buenas | hi | INTJ:A
+hola che | hey | INTJ
+hola a todos | hi everyone | INTJ
+qué tal | how's it going | Q
+que tal | how's it going | Q:S
+cómo estás | how are you | CL
+como estas | how are you | CL:S
+cómo andás | how are you doing | CL
+como andas | how are you doing | CL:S
+cómo andan | how are you all doing | CL
+cómo va | how's it going | CL
+como va | how's it going | CL:S
+todo bien | all good | CL
+todo tranqui | all calm | CL
+qué onda | what's up | CL
+que onda | what's up | CL:S
+qué hacés | what are you up to | CL
+que haces | what are you up to | CL:S
+qué contás | what's new | CL
+que contas | what's new | CL:S
+qué pasa | what's happening | CL
+que pasa | what's happening | CL:S
+qué pasó | what happened | CL
+que paso | what happened | CL:S
+mucho gusto | nice to meet you | INTJ
+un gusto | nice to meet you | INTJ:A
+encantado | nice to meet you | INTJ:A
+bienvenido | welcome | INTJ
+bienvenidos | welcome | INTJ
+hasta luego | see you later | INTJ
+hasta mañana | see you tomorrow | INTJ
+hasta pronto | see you soon | INTJ
+hasta la próxima | until next time | INTJ
+nos vemos | see you | CL
+nos vemos mañana | see you tomorrow | CL
+nos hablamos | we'll talk | CL
+un abrazo | hugs | INTJ
+abrazo | hugs | INTJ:A
+saludos | regards | INTJ
+besos | kisses | INTJ
+cuidate | take care | CL
+cuídense | take care | CL
+que estés bien | be well | CL
+buen viaje | have a good trip | INTJ
+buena suerte | good luck | INTJ
+feliz cumpleaños | happy birthday | INTJ
+felices fiestas | happy holidays | INTJ
+# Politeness
+por favor | please | INTJ
+de nada | you're welcome | INTJ
+muchas gracias | thanks a lot | INTJ
+mil gracias | thanks a lot | INTJ
+gracias igual | thanks anyway | INTJ
+no hay problema | no problem | CL
+no pasa nada | no worries | CL
+no te preocupes | don't worry | CL
+perdón por | sorry for | PH
+con permiso | excuse me | INTJ
+disculpá | sorry | INTJ
+disculpa | sorry | INTJ:A
+disculpe | excuse me | INTJ
+lo siento | I'm sorry | CL
+ni idea | no idea | INTJ
+# Yes, no, agreement
+sí señor | yes sir | INTJ
+creo que sí | I think so | CL
+creo que no | I don't think so | CL
+eso sí | that's for sure | CL
+claro que sí | of course | INTJ
+claro que no | of course not | INTJ
+por supuesto | of course | INTJ
+de acuerdo | agreed | INTJ
+estoy de acuerdo | I agree | CL
+está bien | it's ok | CL
+esta bien | it's ok | CL
+ya está | that's it | CL
+ya esta | that's it | CL
+ya fue | forget it | CL
+ya voy | I'm coming | CL
+ya vengo | I'll be right back | CL
+ya llego | I'm almost there | CL
+ya salgo | I'm leaving now | CL
+dale que va | go ahead | INTJ
+dale nomás | go ahead | INTJ
+de una | sure thing | INTJ:A
+ni ahí | no way | INTJ
+ni loco | no way | INTJ
+para nada | not at all | INTJ
+nada que ver | no way | INTJ
+qué sé yo | who knows | CL
+que se yo | who knows | CL
+me parece bien | sounds good | CL
+me parece | I think so | CL:A
+no sé | I don't know | CL
+no se | I don't know | CL:E
+no entiendo | I don't understand | CL
+no te entiendo | I don't understand you | CL
+mirá vos | how about that | INTJ
+viste | you know | INTJ:A
+# Radio and mesh
+te copio | I copy you | CL
+copiado | copy that | INTJ
+recibido | received | INTJ
+me copiás | do you copy | CL
+me copias | do you copy | CL
+me escuchás | can you hear me | CL
+me escuchas | can you hear me | CL
+me oís | can you hear me | CL
+me oyes | can you hear me | CL
+te escucho | I hear you | CL
+te escucho bien | I hear you fine | CL
+te escucho mal | I hear you badly | CL
+cinco por cinco | five by five | PH
+fuerte y claro | loud and clear | PH
+alto y claro | loud and clear | PH
+sin señal | no signal | PH
+sin batería | no battery | PH
+poca señal | weak signal | PH
+buena señal | good signal | PH
+mala señal | bad signal | PH
+batería baja | low battery | PH
+cambio y fuera | over and out | INTJ
+fuera de alcance | out of range | PH
+en línea | online | PH
+en el aire | on the air | PH
+# Time and place
+a veces | sometimes | ADV
+de vez en cuando | now and then | ADV
+otra vez | again | ADV
+de nuevo | again | ADV
+a la una | at one | ADV
+a eso de | around | PREP
+por la mañana | in the morning | ADV
+por la tarde | in the afternoon | ADV
+por la noche | at night | ADV
+a la mañana | in the morning | ADV
+a la tarde | in the afternoon | ADV
+a la noche | at night | ADV
+de la mañana | in the morning | ADV
+de la tarde | in the afternoon | ADV
+de la noche | at night | ADV
+de madrugada | before dawn | ADV
+esta mañana | this morning | ADV
+esta tarde | this afternoon | ADV
+esta noche | tonight | ADV
+hoy en día | nowadays | ADV
+el fin de semana | the weekend | PH
+fin de semana | weekend | PH
+todos los días | every day | ADV
+todo el día | all day | ADV
+toda la noche | all night | ADV
+la semana que viene | next week | ADV
+el año que viene | next year | ADV
+la semana pasada | last week | ADV
+el año pasado | last year | ADV
+pasado mañana | the day after tomorrow | ADV
+antes de ayer | the day before yesterday | ADV
+anteayer | the day before yesterday | ADV
+ahora mismo | right now | ADV
+ahorita | right now | ADV
+ahora no | not now | ADV
+al toque | right away | ADV
+un toque | a moment | PH
+en un rato | in a while | ADV
+un rato | a while | PH
+hace rato | a while ago | ADV
+hace un rato | a while ago | ADV
+en un minuto | in a minute | ADV
+un momento | one moment | PH
+en camino | on the way | ADV
+de camino | on the way | ADV
+en casa | at home | ADV
+a casa | home | ADV
+para casa | home | ADV
+por acá | around here | ADV
+por aca | around here | ADV
+por aquí | around here | ADV
+por ahí | around there | ADV
+por allá | over there | ADV
+cerca de | near | PREP
+lejos de | far from | PREP
+al lado de | next to | PREP
+delante de | in front of | PREP
+enfrente de | across from | PREP
+detrás de | behind | PREP
+atrás de | behind | PREP
+encima de | on top of | PREP
+debajo de | under | PREP
+adentro de | inside | PREP
+dentro de | inside | PREP
+afuera de | outside | PREP
+fuera de | outside | PREP
+antes de | before | PREP
+después de | after | PREP
+alrededor de | around | PREP
+a través de | through | PREP
+además de | besides | PREP
+en vez de | instead of | PREP
+en lugar de | instead of | PREP
+a partir de | from | PREP
+a pesar de | despite | PREP
+acerca de | about | PREP
+junto a | next to | PREP
+frente a | facing | PREP
+hasta que | until | CONJ
+para que | so that | CONJ
+ya que | since | CONJ
+así que | so | CONJ
+a menos que | unless | CONJ
+en cuanto | as soon as | CONJ
+lo que | what | PH
+todos los | all the | DET:p
+todas las | all the | DET:p
+todo el | the whole | DET
+toda la | the whole | DET
+yo también | me too | INTJ
+yo tampoco | me neither | INTJ
+no me digas | you don't say | INTJ
+me voy a | I'm going to | PH
+nos vamos a | we're going to | PH
+de casa | from home | ADV
+agua potable | drinking water | PH
+hacer de | act as | PH
+a la derecha | right | ADV
+a la izquierda | left | ADV
+de atrás | in the back | ADV
+de adelante | in front | ADV
+en todo el | all over the | PREP
+en toda la | all over the | PREP
+en todo | all over | PREP
+perdón la demora | sorry for the delay | INTJ
+perdón por la demora | sorry for the delay | INTJ
+disculpen la demora | sorry for the delay | INTJ
+mucho mejor | much better | ADV
+mucho peor | much worse | ADV
+ojo que | careful, | INTJ
+ojalá que | hopefully | ADV
+ojala que | hopefully | ADV
+en lo de | at the place of | PREP
+buena onda | nice | PH
+qué buena onda | how nice | INTJ
+que buena onda | how nice | INTJ:S
+mala onda | not nice | PH
+el otro día | the other day | ADV
+el otro | the other | DET
+la otra | the other | DET
+los otros | the other | DET:p
+las otras | the other | DET:p
+zona sur | the south side | PH
+zona norte | the north side | PH
+zona oeste | the west side | PH
+zona este | the east side | PH
+por la red | over the network | ADV
+por radio | by radio | ADV
+de acá | from here | ADV
+de aca | from here | ADV
+de aquí | from here | ADV
+de allá | from there | ADV
+de ahí | from there | ADV
+dónde queda | where is it | CL
+donde queda | where is it | CL
+un abrazo grande | big hug | INTJ
+qué frío hace | it's so cold | INTJ
+que frio hace | it's so cold | INTJ
+qué calor hace | it's so hot | INTJ
+que calor hace | it's so hot | INTJ
+un poco de | a bit of | DET
+vámonos | let's go | CL
+vamonos | let's go | CL
+lo mismo | the same | PH
+lo mejor | the best | PH
+lo peor | the worst | PH
+lo antes posible | as soon as possible | ADV
+cuanto antes | as soon as possible | ADV
+lo más pronto posible | as soon as possible | ADV
+sin embargo | however | ADV
+por eso | that's why | ADV
+por lo menos | at least | ADV
+al menos | at least | ADV
+más o menos | more or less | ADV
+más tarde | later | ADV
+más temprano | earlier | ADV
+cada vez más | more and more | ADV
+tal vez | maybe | ADV
+a lo mejor | maybe | ADV
+capaz que | maybe | ADV
+por las dudas | just in case | ADV
+por si acaso | just in case | ADV
+en serio | seriously | ADV
+de verdad | really | ADV
+la verdad | honestly | ADV:S
+o sea | I mean | ADV
+es decir | that is | ADV
+por ejemplo | for example | ADV
+de todos modos | anyway | ADV
+de todas formas | anyway | ADV
+igual que | same as | PREP
+un poco | a bit | ADV
+un poquito | a little bit | ADV
+un montón | a lot | ADV
+una banda | a lot | ADV
+mucho más | much more | ADV
+nada más | nothing else | PH
+algo más | anything else | PH
+por qué | why | Q
+porqué | why | Q
+para qué | what for | Q
+a qué hora | what time | Q
+qué hora es | what time is it | CL
+es la una | it is one o'clock | CL
+son las | it is | PH:S
+era la una | it was one o'clock | CL
+cuántos años tenés | how old are you | CL
+cuántos años tienes | how old are you | CL
+cómo te llamás | what's your name | CL
+como te llamas | what's your name | CL
+cómo se llama | what's it called | CL
+me llamo | my name is | CL
+se llama | it's called | CL
+qué querés | what do you want | CL
+de dónde sos | where are you from | CL
+de donde sos | where are you from | CL
+de dónde eres | where are you from | CL
+de donde eres | where are you from | CL
+dónde estás | where are you | CL
+donde estas | where are you | CL
+dónde están | where are you | CL
+donde estan | where are you | CL
+en dónde | where | Q
+a dónde | where | Q
+a donde | where | Q
+qué es eso | what's that | CL
+que es eso | what's that | CL
+qué lástima | what a pity | INTJ
+que lastima | what a pity | INTJ
+qué bueno | great | INTJ
+que bueno | great | INTJ:S
+qué suerte | how lucky | INTJ
+qué bien | great | INTJ
+que bien | great | INTJ:S
+qué raro | how strange | INTJ
+qué garrón | what a drag | INTJ
+qué macana | what a shame | INTJ
+qué quilombo | what a mess | INTJ
+qué frío | it's so cold | INTJ
+qué calor | it's so hot | INTJ
+# Rioplatense and other chat
+al pedo | for nothing | ADV
+está al pedo | it's pointless | CL
+me copa | I like it | CL
+me re copa | I really like it | CL
+la re puta madre | damn it | INTJ
+la puta madre | damn it | INTJ
+puta madre | damn | INTJ
+la concha de la lora | damn it | INTJ
+mala leche | bad luck | PH
+qué mala leche | what bad luck | INTJ
+re bien | really good | PH
+de diez | perfect | PH
+mil disculpas | so sorry | INTJ
+un beso | kisses | INTJ
+vamos | let's go | CL:A
+vamos che | come on | CL
+vamos a ver | let's see | CL
+a ver | let's see | ADV
+vení | come here | CL:A
+veni | come here | CL:A
+avisame | let me know | CL
+avísame | let me know | CL
+te aviso | I'll let you know | CL
+les aviso | I'll let you know | CL
+bancame | hang on | CL
+bancá | hang on | CL
+esperá | wait | CL:A
+espera | wait | CL:A
+esperame | wait for me | CL
+mirá | look | CL:A
+fijate | check | CL
+fíjate | check | CL
+dejá | leave it | CL:A
+dale gas | step on it | CL
+tengo que irme | I have to go | CL
+me tengo que ir | I have to go | CL
+me voy | I'm leaving | CL
+nos vamos | we're leaving | CL
+me fui | I'm off | CL
+ahí voy | I'm coming | CL
+ahí vamos | here we go | CL
+ahí va | there it goes | CL
+ahí está | there it is | CL
+ahí estoy | I'll be there | CL
+ya llegué | I'm here | CL
+ya llegue | I'm here | CL
+llegué | I made it | CL:A
+estoy llegando | I'm almost there | CL
+estamos llegando | we're almost there | CL
+voy para allá | I'm on my way | CL
+voy para alla | I'm on my way | CL
+voy en camino | I'm on my way | CL
+estoy en camino | I'm on my way | CL
+voy yendo | I'm on my way | CL
+estoy bien | I'm fine | CL
+estoy re bien | I'm really good | CL
+estamos bien | we're fine | CL
+todo ok | all ok | CL
+todo en orden | all in order | CL
+sin novedad | nothing new | PH
+sin novedades | nothing new | PH
+hay alguien | is anyone there | CL
+alguien me escucha | can anyone hear me | CL
+alguien en línea | anyone online | CL
+quién anda | who's around | CL
+necesito ayuda | I need help | CL
+necesitamos ayuda | we need help | CL
+pedir ayuda | call for help | PH
+llamen a | call | PH
+estoy perdido | I'm lost | CL
+estoy perdida | I'm lost | CL
+estamos perdidos | we're lost | CL
+hay un herido | someone is hurt | CL
+se cortó la luz | the power went out | CL
+se corto la luz | the power went out | CL
+volvió la luz | the power is back | CL
+volvio la luz | the power is back | CL
+no hay luz | there's no power | CL
+no hay señal | there's no signal | CL
+no anda | it doesn't work | CL
+anda bien | it works fine | CL
+anda mal | it isn't working | CL
+se cortó | it cut out | CL
+se corto | it cut out | CL
+se cae | it keeps dropping | CL
+se me apagó | mine turned off | CL
+se apagó | it turned off | CL
+se apago | it turned off | CL
+se me murió la batería | my battery died | CL
+me quedé sin batería | my battery ran out | CL
+me quede sin bateria | my battery ran out | CL
+a cargar | to charge | PH
+está cargando | it's charging | CL
+cargando | charging | PH:A
+hace buen tiempo | the weather is nice | CL
+hace mal tiempo | the weather is bad | CL
+está lloviendo | it's raining | CL
+esta lloviendo | it's raining | CL
+está nublado | it's cloudy | CL
+esta nublado | it's cloudy | CL
+llueve | it's raining | CL:A
+va a llover | it's going to rain | CL
+hay tormenta | there's a storm | CL
+cómo está el clima | how's the weather | CL
+como esta el clima | how's the weather | CL
+cómo está el tiempo | how's the weather | CL
+como esta el tiempo | how's the weather | CL
+me gusta | I like it | CL:A
+me encanta | I love it | CL:A
+te quiero | I love you | CL:A
+te quiero mucho | I love you so much | CL
+te amo | I love you | CL:A
+te extraño | I miss you | CL:A
+dale que sí | sure | INTJ
+
+# ---------------------------------------------------------------------------
+@abbr
+# chat spelling | what it stands for (Spanish words)
+q | que
+k | que
+ke | que
+qe | que
+xq | porque
+xk | porque
+pq | porque
+pk | porque
+porq | porque
+porke | porque
+xke | porque
+tb | también
+tmb | también
+tbn | también
+tamb | también
+bn | bien
+bno | bueno
+dnd | donde
+xfa | por favor
+xfavor | por favor
+porfa | por favor
+porfis | por favor
+porfavor | por favor
+plis | por favor
+pls | por favor
+msj | mensaje
+msje | mensaje
+msjs | mensajes
+finde | fin de semana
+x | por
+d | de
+toy | estoy
+toi | estoy
+tamos | estamos
+tas | estás
+ta | está
+nd | nada
+na | nada
+ntp | no te preocupes
+tqm | te quiero mucho
+tkm | te quiero mucho
+slds | saludos
+salu2 | saludos
+grax | gracias
+grs | gracias
+grcs | gracias
+grac | gracias
+sip | sí
+sep | sí
+seh | sí
+nop | no
+nel | no
+vdd | verdad
+dsp | después
+dps | después
+desp | después
+mñn | mañana
+mna | mañana
+hr | hora
+hrs | horas
+hs | horas
+min | minutos
+mins | minutos
+seg | segundos
+c | se
+xa | para
+pal | para el
+aki | aquí
+tmp | tampoco
+nse | no sé
+nose | no sé
+nc | no sé
+bss | besos
+abz | abrazo
+info | información
+cel | celular
+compu | computadora
+depto | departamento
+cumple | cumpleaños
+bici | bicicleta
+tele | televisión
+profe | profesor
+facu | facultad
+mjr | mejor
+aprox | aproximadamente
+salu | saludos
+bue | bueno
+weno | bueno
+wenas | buenas
+ola | hola
+oki | ok
+okk | ok
+okay | ok
+dalee | dale
+daleee | dale
+siii | sí
+sii | sí
+noo | no
+nooo | no
+graciass | gracias
+holaa | hola
+holaaa | hola
+chauu | chau
+
+# ---------------------------------------------------------------------------
+@lex
+# lemma | POS[:gender or flags] | english
+# Hand choices for chat, the mesh and the outdoors. They win over Wiktionary.
+# POS: N noun (m/f/u = uncountable in English), A adjective, V verb (i = its
+# subject usually follows: llega el bus), R adverb, I interjection.
+# Verb glosses: "wait+for" = "wait", plus "for" before an object;
+# "let * know" puts the object where * is.
+ser | V:i | be
+estar | V:i | be
+haber | V | have
+tener | V | have
+ir | V:i | go
+irse | V:i | leave
+venir | V:i | come
+llegar | V:i | arrive
+salir | V:i | go out
+volver | V:i | come back
+regresar | V:i | return
+quedar | V:i | stay
+quedarse | V:i | stay
+pasar | V | pass
+funcionar | V:i | work
+andar | V:i | go
+caer | V:i | fall
+caerse | V:i | fall down
+faltar | V | need
+sobrar | V:i | be left over
+empezar | V:i | start
+comenzar | V:i | start
+terminar | V:i | finish
+acabar | V:i | finish
+morir | V:i | die
+nacer | V:i | be born
+sonar | V:i | sound
+aparecer | V:i | show up
+desaparecer | V:i | disappear
+existir | V:i | exist
+entrar | V:i | come in
+subir | V | go up
+bajar | V | go down
+hacer | V | do
+poder | V | be able
+deber | V | have to
+querer | V | want
+decir | V | say
+ver | V | see
+mirar | V | look+at
+dar | V | give
+saber | V | know
+conocer | V | know
+poner | V | put
+traer | V | bring
+llevar | V | take
+buscar | V | look+for
+encontrar | V | find
+encontrarse | V | meet
+juntarse | V | meet up
+esperar | V | wait+for
+escuchar | V | hear
+oír | V | hear
+copiar | V | copy
+recibir | V | receive
+mandar | V | send
+enviar | V | send
+transmitir | V | transmit
+llamar | V | call
+hablar | V | talk
+contestar | V | answer
+responder | V | answer
+avisar | V | let * know
+probar | V | test
+descargarse | V:i | run down
+doblar | V | turn
+inundar | V | flood
+inundarse | V:i | flood
+descomponer | V | break
+descomponerse | V:i | get sick
+pronosticar | V | forecast
+evacuar | V | evacuate
+pinchar | V | puncture
+armar | V | set up
+cargar | V | charge
+apagar | V | turn off
+prender | V | turn on
+encender | V | turn on
+apagarse | V:i | turn off
+cortarse | V:i | cut out
+conectar | V | connect
+conectarse | V | connect
+desconectar | V | disconnect
+configurar | V | set up
+actualizar | V | update
+reiniciar | V | restart
+necesitar | V | need
+ayudar | V | help
+pedir | V | ask+for
+preguntar | V | ask
+creer | V | think
+pensar | V | think
+parecer | V:i | seem
+gustar | V:i | like
+encantar | V:i | love
+importar | V | care+about
+doler | V:i | hurt
+molestar | V:i | bother
+interesar | V:i | interest
+preocupar | V | worry
+preocuparse | V | worry
+tratar | V | try
+intentar | V | try
+usar | V | use
+comer | V | eat
+tomar | V | take
+beber | V | drink
+dormir | V | sleep
+trabajar | V | work
+laburar | V | work
+caminar | V | walk
+correr | V | run
+manejar | V | drive
+viajar | V | travel
+cruzar | V | cross
+seguir | V | continue
+levantarse | V:i | get up
+acostarse | V:i | go to bed
+despertarse | V:i | wake up
+acordarse | V | remember
+olvidarse | V | forget
+darse | V | give
+sentir | V | feel
+sentirse | V:i | feel
+perder | V | lose
+perderse | V:i | get lost
+romper | V | break
+romperse | V:i | break
+arreglar | V | fix
+comprar | V | buy
+vender | V | sell
+pagar | V | pay
+abrir | V | open
+cerrar | V | close
+dejar | V | leave
+vivir | V | live
+jugar | V | play
+leer | V | read
+escribir | V | write
+entender | V | understand
+aprender | V | learn
+explicar | V | explain
+contar | V | tell
+mostrar | V | show
+cambiar | V | change
+mover | V | move
+moverse | V:i | move
+sacar | V | take out
+tirar | V | throw
+agarrar | V | grab
+tocar | V | touch
+cuidar | V | take care of
+cuidarse | V:i | take care
+morfar | V | eat
+chamuyar | V | sweet-talk
+copar | V | like
+chatear | V | chat
+bancar | V | put up with
+garpar | V | pay
+afanar | V | steal
+joder | V | annoy
+coger | V | take
+mensajear | V | text
+# nouns
+batería | N:f | battery
+pila | N:f | battery
+señal | N:f | signal
+nodo | N:m | node
+malla | N:f | mesh
+red | N:f | network
+antena | N:f | antenna
+canal | N:m | channel
+frecuencia | N:f | frequency
+mensaje | N:m | message
+alcance | N:m | range
+cobertura | N:f | coverage
+potencia | N:f | power
+enlace | N:m | link
+repetidor | N:m | repeater
+ruido | N:m | noise
+prueba | N:f | test
+radio | N:f | radio
+equipo | N:m | gear
+aparato | N:m | device
+dispositivo | N:m | device
+celular | N:m | cell phone
+teléfono | N:m | phone
+cargador | N:m | charger
+cable | N:m | cable
+configuración | N:f | settings
+handy | N:m | handheld radio
+goma | N:f | tire
+piquete | N:m | roadblock
+archivo | N:m | file
+crédito | N:m | credit
+clave | N:f | password
+contraseña | N:f | password
+mapa | N:m | map
+posición | N:f | position
+ubicación | N:f | location
+dirección | N:f | address
+luz | N:f | power
+zona | N:f | area
+corte | N:m | outage
+cerro | N:m | hill
+techo | N:m | roof
+terraza | N:f | rooftop
+azotea | N:f | rooftop
+ruta | N:f | highway
+esquina | N:f | corner
+cuadra | N:f | block
+barrio | N:m | neighborhood
+plaza | N:f | square
+estación | N:f | station
+colectivo | N:m | bus
+bondi | N:m | bus
+auto | N:m | car
+coche | N:m | car
+carro | N:m | car
+bicicleta | N:f | bike
+moto | N:f | motorbike
+refugio | N:m | shelter
+punto | N:m | point
+encuentro | N:m | meeting
+agua | N:f,u | water
+comida | N:f,u | food
+linterna | N:f | flashlight
+carpa | N:f | tent
+mochila | N:f | backpack
+brújula | N:f | compass
+herido | N:m | injured person
+español | N:m | Spanish
+inglés | N:m | English
+portugués | N:m | Portuguese
+ayuda | N:f,u | help
+emergencia | N:f | emergency
+peligro | N:m | danger
+incendio | N:m | fire
+fuego | N:m | fire
+humo | N:m,u | smoke
+lluvia | N:f,u | rain
+tormenta | N:f | storm
+viento | N:m | wind
+nube | N:f | cloud
+nieve | N:f,u | snow
+granizo | N:m,u | hail
+rayo | N:m | lightning
+inundación | N:f | flood
+temblor | N:m | tremor
+apagón | N:m | blackout
+clima | N:m | weather
+tiempo | N:m,u | time
+plata | N:f,u | money
+guita | N:f,u | money
+laburo | N:m | job
+trabajo | N:m | job
+birra | N:f | beer
+cerveza | N:f | beer
+quilombo | N:m | mess
+boludo | N:m | dude
+boluda | N:f | dude
+pibe | N:m | kid
+piba | N:f | girl
+mina | N:f | girl
+chabón | N:m | guy
+flaco | N:m | dude
+loco | N:m | dude
+amigo | N:m | friend
+amiga | N:f | friend
+gente | N:f,u | people
+casa | N:f | house
+hora | N:f | hour
+minuto | N:m | minute
+segundo | N:m | second
+día | N:m | day
+noche | N:f | night
+tarde | N:f | afternoon
+semana | N:f | week
+mes | N:m | month
+año | N:m | year
+vez | N:f | time
+cosa | N:f | thing
+lugar | N:m | place
+camino | N:m | road
+viaje | N:m | trip
+mate | N:m | mate
+asado | N:m | barbecue
+facultad | N:f | college
+departamento | N:m | apartment
+cumpleaños | N:m | birthday
+televisión | N:f | TV
+computadora | N:f | computer
+información | N:f,u | information
+mañana | N:f | morning
+problema | N:m | problem
+idea | N:f | idea
+verdad | N:f | truth
+gusto | N:m | taste
+toque | N:m | moment
+bajón | N:m | bummer
+garrón | N:m | drag
+# adjectives
+bueno | A | good
+malo | A | bad
+lindo | A | nice
+copado | A | cool
+piola | A | cool
+groso | A | awesome
+grosso | A | awesome
+bárbaro | A | great
+zarpado | A | crazy
+trucho | A | fake
+cansado | A | tired
+listo | A | ready
+roto | A | broken
+lleno | A | full
+vacío | A | empty
+bajo | A | low
+alto | A | high
+fuerte | A | strong
+débil | A | weak
+claro | A | clear
+nublado | A | cloudy
+mojado | A | wet
+seco | A | dry
+perdido | A | lost
+herido | A | hurt
+seguro | A | safe
+tranquilo | A | calm
+contento | A | happy
+feliz | A | happy
+enfermo | A | sick
+ocupado | A | busy
+libre | A | free
+abierto | A | open
+cerrado | A | closed
+apagado | A | off
+prendido | A | on
+encendido | A | on
+conectado | A | connected
+cargado | A | charged
+cortado | A | closed
+
+# ---------------------------------------------------------------------------
+@tener
+# tener + noun -> be + adjective (tengo frío -> I am cold)
+hambre | hungry
+sed | thirsty
+frío | cold
+calor | hot
+sueño | sleepy
+miedo | scared
+razón | right
+prisa | in a hurry
+apuro | in a hurry
+suerte | lucky
+cuidado | careful
+vergüenza | ashamed
+fiaca | lazy
+
+# ---------------------------------------------------------------------------
+@hacer
+# hace + noun -> it is + adjective (hace frío -> it is cold)
+frío | cold
+calor | hot
+sol | sunny
+viento | windy
+fresco | chilly
+
+# ---------------------------------------------------------------------------
+@enirr
+# English irregular verbs: base | past | past participle
+be | was | been
+have | had | had
+do | did | done
+go | went | gone
+come | came | come
+get | got | gotten
+make | made | made
+know | knew | known
+think | thought | thought
+take | took | taken
+see | saw | seen
+say | said | said
+tell | told | told
+give | gave | given
+find | found | found
+leave | left | left
+feel | felt | felt
+bring | brought | brought
+begin | began | begun
+keep | kept | kept
+hold | held | held
+write | wrote | written
+stand | stood | stood
+hear | heard | heard
+let | let | let
+mean | meant | meant
+set | set | set
+meet | met | met
+run | ran | run
+pay | paid | paid
+sit | sat | sat
+speak | spoke | spoken
+lie | lay | lain
+lead | led | led
+read | read | read
+grow | grew | grown
+lose | lost | lost
+fall | fell | fallen
+send | sent | sent
+build | built | built
+understand | understood | understood
+draw | drew | drawn
+break | broke | broken
+spend | spent | spent
+cut | cut | cut
+rise | rose | risen
+drive | drove | driven
+buy | bought | bought
+wear | wore | worn
+choose | chose | chosen
+seek | sought | sought
+throw | threw | thrown
+catch | caught | caught
+deal | dealt | dealt
+win | won | won
+forget | forgot | forgotten
+sell | sold | sold
+fight | fought | fought
+teach | taught | taught
+eat | ate | eaten
+drink | drank | drunk
+sleep | slept | slept
+sing | sang | sung
+swim | swam | swum
+fly | flew | flown
+ride | rode | ridden
+hide | hid | hidden
+shoot | shot | shot
+steal | stole | stolen
+wake | woke | woken
+bite | bit | bitten
+freeze | froze | frozen
+hang | hung | hung
+shake | shook | shaken
+light | lit | lit
+feed | fed | fed
+forgive | forgave | forgiven
+hurt | hurt | hurt
+put | put | put
+quit | quit | quit
+shut | shut | shut
+spread | spread | spread
+bet | bet | bet
+bend | bent | bent
+blow | blew | blown
+dig | dug | dug
+lend | lent | lent
+shine | shone | shone
+sink | sank | sunk
+slide | slid | slid
+stick | stuck | stuck
+strike | struck | struck
+swear | swore | sworn
+sweep | swept | swept
+swing | swung | swung
+tear | tore | torn
+bear | bore | born
+beat | beat | beaten
+become | became | become
+bleed | bled | bled
+dream | dreamt | dreamt
+flee | fled | fled
+forbid | forbade | forbidden
+hit | hit | hit
+kneel | knelt | knelt
+lay | laid | laid
+ring | rang | rung
+shrink | shrank | shrunk
+split | split | split
+spin | spun | spun
+spit | spat | spat
+undergo | underwent | undergone
+undo | undid | undone
+upset | upset | upset
+weep | wept | wept
+wind | wound | wound
+withdraw | withdrew | withdrawn
+overcome | overcame | overcome
+mislead | misled | misled
+arise | arose | arisen
+awake | awoke | awoken
+can | could | been able
+
+# ---------------------------------------------------------------------------
+@enpl
+# English plurals the rules get wrong: singular | plural (- = no plural)
+man | men
+woman | women
+child | children
+person | people
+foot | feet
+tooth | teeth
+mouse | mice
+goose | geese
+fish | fish
+sheep | sheep
+deer | deer
+knife | knives
+life | lives
+wife | wives
+leaf | leaves
+half | halves
+wolf | wolves
+shelf | shelves
+thief | thieves
+loaf | loaves
+potato | potatoes
+tomato | tomatoes
+hero | heroes
+echo | echoes
+information | -
+water | -
+money | -
+food | -
+help | -
+news | -
+advice | -
+equipment | -
+gear | -
+people | -
+rain | -
+snow | -
+smoke | -
+hail | -
+weather | -
+furniture | -
+luggage | -
+traffic | -
+music | -
+
+# ---------------------------------------------------------------------------
+@book
+# category | English | Spanish to send (Rioplatense: vos)
+basic | OK | Dale
+basic | Yes | Sí
+basic | No | No
+basic | Thanks | Gracias
+basic | Hello, how are you? | Hola, ¿cómo andás?
+basic | Good morning | Buen día
+basic | Good night | Buenas noches
+basic | See you later | Nos vemos
+basic | Sorry, I don't understand | Perdón, no entiendo
+basic | Please write slowly / simply | Escribí simple, por favor
+basic | I speak little Spanish | Hablo poco español
+radio | Copy that | Copiado
+radio | Can you hear me? | ¿Me escuchás?
+radio | I hear you loud and clear | Te escucho fuerte y claro
+radio | I hear you weak | Te escucho débil
+radio | Your signal is weak | Tu señal está débil
+radio | Good signal here | Acá llega buena señal
+radio | No signal here | Acá no hay señal
+radio | Who is on the mesh? | ¿Quién está en la red?
+radio | Testing, please answer | Probando, contestá por favor
+radio | Message received | Mensaje recibido
+radio | Over and out | Cambio y fuera
+radio | Is anyone there? | ¿Hay alguien?
+status | On my way | Voy en camino
+status | I'm here | Ya llegué
+status | I'm almost there | Ya llego
+status | Wait for me | Esperame
+status | I'm busy, talk later | Estoy ocupado, hablamos después
+status | All good here | Todo bien por acá
+status | I'm leaving now | Ya salgo
+status | Running late | Llego tarde
+battery | My battery is low | Tengo poca batería
+battery | I'm charging | Estoy cargando
+battery | My battery is dying, I'm going offline | Me queda poca batería, me desconecto
+battery | Back online | Ya estoy conectado de nuevo
+meetup | Where are you? | ¿Dónde estás?
+meetup | See you at the square | Nos vemos en la plaza
+meetup | See you at ... | Nos vemos en ...
+meetup | What time? | ¿A qué hora?
+meetup | In 10 minutes | En 10 minutos
+meetup | Meet at the usual place | Nos juntamos en el lugar de siempre
+meetup | Send me your location | Mandame tu ubicación
+meetup | Let me know when you arrive | Avisame cuando llegues
+emergency | I need help | Necesito ayuda
+emergency | Emergency! | ¡Emergencia!
+emergency | Someone is hurt | Hay un herido
+emergency | Call an ambulance | Llamen a una ambulancia
+emergency | I'm lost | Estoy perdido
+emergency | We are safe | Estamos bien
+emergency | I need water | Necesito agua
+emergency | The power is out | Se cortó la luz
+emergency | Stay where you are | Quedate donde estás
+weather | It's raining here | Acá está lloviendo
+weather | A storm is coming | Se viene una tormenta
+weather | It's very cold | Hace mucho frío
+weather | It's very hot | Hace mucho calor
+weather | How is the weather there? | ¿Cómo está el clima por allá?
+
+# ---------------------------------------------------------------------------
+@lex2
+# More hand choices where Wiktionary's first sense is not the everyday one.
+estado | N:m | state
+chica | N:f | girl
+chico | N:m | boy
+policía | N:f | police
+cuenta | N:f | bill
+señora | N:f | lady
+niña | N:f | girl
+clase | N:f | class
+tipo | N:m | guy
+noticia | N:f | news
+oído | N:m | ear
+carta | N:f | letter
+sueño | N:m | dream
+ropa | N:f,u | clothes
+pena | N:f | pity
+mayor | A | older
+cámara | N:f | camera
+navidad | N:f | Christmas
+dedo | N:m | finger
+juicio | N:m | trial
+nervioso | A | nervous
+encantado | A | delighted
+nena | N:f | girl
+copa | N:f | cup
+defensa | N:f | defense
+cuarto | N:m | room
+camión | N:m | truck
+avión | N:m | plane
+carne | N:f,u | meat
+programa | N:m | program
+montón | N:m | lot
+pieza | N:f | piece
+siquiera | R | even
+acaso | R | maybe
+trato | N:m | deal
+juego | N:m | game
+cita | N:f | appointment
+guardia | N:m | guard
+trampa | N:f | trap
+cariño | N:m | darling
+peligroso | A | dangerous
+hermoso | A | beautiful
+próximo | A | next
+maldito | A | damn
+asesinato | N:m | murder
+hecho | N:m | fact
+trago | N:m | drink
+tía | N:f | aunt
+vieja | N:f | old lady
+viejo | N:m | old man
+pregunta | N:f | question
+llamada | N:f | call
+salida | N:f | exit
+llegada | N:f | arrival
+entrada | N:f | entrance
+vuelta | N:f | return
+herida | N:f | wound
+vista | N:f | view
+paso | N:m | step
+vino | N:m,u | wine
+cuento | N:m | story
+cambio | N:m | change
+regular | A | so-so
+callar | V | shut up
+desayunar | V | have breakfast
+cenar | V | have dinner
+almorzar | V | have lunch
+fastidiar | V | annoy
+animarse | V | dare
+curarse | V | recover
+correrse | V | move over
+envenenarse | V | be poisoned
+engancharse | V | get hooked
+encerrarse | V | lock oneself in
+enterrar | V | bury
+apoyar | V | support
+confiar | V | trust
+alejar | V | move away
+apurar | V | rush
+apurarse | V | hurry
+adelantarse | V | get ahead
+demorar | V | take
+atender | V | answer
+abrirse | V | open up
+cambiarse | V | change
+cumplirse | V | come true
+divertirse | V | have fun
+encenderse | V | turn on
+equivocarse | V | be wrong
+fijarse | V | check
+deshacerse | V | get rid
+reparar | V | repair
+regalar | V | give
+rendir | V | yield
+revisar | V | check
+ponerse | V | put on
+parar | V | stop
+pararse | V | stand up
+oponer | V | oppose
+operarse | V | have surgery
+mantenerse | V | stay
+largar | V | let go
+hallarse | V | be
+ganar | V | win
+ganarse | V | earn
+tomarse | V | take
+quitarse | V | take off
+probarse | V | try on
+irse | V:i | leave
+mamá | N:f | mom
+papá | N:m | dad
+vez | N:f | time
+día | N:m | day
+mismo | A | same
+mío | A | mine
+tuyo | A | yours
+suyo | A | theirs
+nuestro | A | ours
+
+# ---------------------------------------------------------------------------
+@drop
+# Wiktionary entries that read worse than nothing (homographs of verb forms,
+# rare senses). lemma | POS
+era | N
+son | N
+ser | N
+hacer | N
+pasa | N
+señor | A
+decir | N
+grande | N
+padre | A
+noche | R
+mismo | R
+mira | N
+van | N
+nueva | N
+deja | N
+dije | N
+dije | A
+llama | N
+haya | N
+haber | N
+escucha | N
+toma | N
+habla | N
+vaya | N
+trata | N
+queda | N
+tipo | A
+pienso | N
+mala | N
+haz | N
+malo | N
+amo | N
+incluso | A
+lamento | N
+traje | N
+loca | N
+pase | N
+rápido | N
+través | N
+vivir | N
+dan | N
+ido | A
+ido | N
+cargo | N
+perro | A
+dejado | A
+comer | N
+par | A
+paso | A
+sentido | A
+tuya | N
+juro | N
+partes | N
+cuidado | A
+baja | N
+segunda | N
+dado | N
+veras | N
+dejo | N
+san | N
+alta | N
+ama | N
+verme | N
+tony | N
+miles | N
+matado | A
+bob | N
+llegue | N
+repente | N
+blanca | N
+flores | N
+toca | N
+piernas | N
+tomado | A
+salido | A
+real | N
+santa | N
+damas | N
+cabo | N
+sentir | N
+embarazado | A
+café | A
+negro | N
+perra | N
+trasero | A
+mayor | N
+dicho | A
+supuesto | A
+supuesto | N
+marcha | N
+muestra | N
+busca | N
+demonios | R
+diablos | R
+joder | R
+mierda | R
+putas | R
+cantidad | R
+cheque | R
+narices | R
+cuernos | R
+tela | R
+so | R
+so | I
+am | R
+pm | R
+whisky | I
+to | I
+ji | I
+po | I
+bo | I
+ta | I
+cho | I
+ave | I
+alo | I
+detente | N
+anda | N
+extraña | N
+maría | N
+charles | N
+tenia | N
+negra | N
+oro | A
+china | N
+mata | N
+informe | A
+basta | N
+romo | A
+beber | N
+ocurrido | A
+sabido | A
+entender | N
+pongo | N
+apuesto | N
+pete | N
+menudo | A
+contado | A
+corta | N
+doctora | N
+lisa | N
+milla | N
+tomo | N
+leído | A
+completo | N
+fría | N
+clara | N
+notas | N
+bordo | N
+limpia | N
+estudiante | A
+ocupada | A
+abrir | N
+comido | A
+saca | N
+parecer | N
+poder | N
+saber | N
+placer | V
+miar | V
+nuclear | V
+linear | V
+normar | V
+musicar | V
+solar | V
+ciar | V
+dallar | V
+clivar | V
+adir | V
+barbar | V
+brear | V
+sacrificado | V
+liarse | V
+montarse | V
+ponerle | V
+mascarse | V
+marcarse | V
+mandarse | V
+pasarlo | V
+parir | V
+molar | V
+chuparse | V
+agitarse | V
+aumentarse | V
+anunciarse | V
+arrojarse | V
+botarse | V
+colocarse | V
+componerse | V
+considerarse | V
+darsela | V
+despegarse | V
+dorarse | V
+evitarse | V
+amanecerse | V
+anularse | V
+esforzar | V
+provocarse | V
+proporcionarse | V
+pillarse | V
+plantarse | V
+rodarse | V
+cargarse | V
+cobrarse | V
+andarse | V
+regular | V
+quedo | A

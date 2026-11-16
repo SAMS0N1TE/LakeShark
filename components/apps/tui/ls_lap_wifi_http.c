@@ -717,6 +717,7 @@ void ls_lap_av_script(const char *c) {
     ls_lap_peripheral_script(c);
     ls_lap_mdns_script(c);
     ls_lap_udp_script(c);
+    ls_lap_netdiag_script(c);
     if (!av_take(&lock))
         return;
     if (!strncmp(c, "wifierror=", 10))

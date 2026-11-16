@@ -85,6 +85,8 @@ lssim **replays a capture file. It never invents frames.**
 | `LAPSIM_CAPTURE=file.pcapng` | the file to replay, once, in file order |
 | `LAPSIM_CAPTURE_PACE=0` | deliver as fast as the app polls (default: the file's own pace) |
 | `LAPSIM_CAPTURE_JOINED=1` | the board is on a network, to test the link guard |
+| `LAPSIM_CAPTURE_NO_TRANSPORT=1` | Wi-Fi start fails with `LAP_CAPTURE_NO_TRANSPORT`, as on a coprocessor without the frame forwarder |
+| `LAPSIM_CAPTURE_DROP=1` | at the file's pace, a frame that finds the 256-frame ring full is dropped and counted, as a radio would; by default the file waits |
 
 - LINKTYPE 127 (802.11 radiotap) records feed Wi-Fi; channel, signal and
   rate come from the radiotap header, an FCS flagged there is removed.

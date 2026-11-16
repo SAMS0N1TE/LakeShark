@@ -23,6 +23,10 @@ typedef struct {
        screen opened or closed under a held lease. The worker closes an open
        session and waits, queued, without counting tries. NULL: never. */
     bool (*step_aside)(int radio);
+    /* Move the open receive session to hz, keeping the radio lease and every
+       other setting, and return once readings there can be believed. 0, or
+       negative when it cannot (the worker then closes and opens). NULL: never. */
+    int (*retune)(uint64_t hz);
 } ls_lap_io_backend_t;
 const ls_lap_io_backend_t *ls_lap_io_backend(void);
 void ls_lap_io_begin(const lap_app_t *app);

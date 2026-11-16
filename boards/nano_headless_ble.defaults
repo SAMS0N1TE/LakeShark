@@ -40,3 +40,8 @@ CONFIG_ESP_TIMER_ISR_AFFINITY_CPU0=y
 # The SPI interrupt path stays in flash on the Nano (about 9 KB of internal
 # RAM): the LoRa driver polls, and a flash write only delays a transfer.
 # CONFIG_SPI_MASTER_ISR_IN_IRAM is not set
+
+# Software AES and SHA: the hardware engines take DMA descriptors from internal
+# RAM the Nano does not have to spare, which stopped SSH (and any TLS) at random.
+CONFIG_MBEDTLS_HARDWARE_AES=n
+CONFIG_MBEDTLS_HARDWARE_SHA=n

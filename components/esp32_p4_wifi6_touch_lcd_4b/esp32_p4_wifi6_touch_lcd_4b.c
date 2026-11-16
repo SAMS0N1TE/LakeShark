@@ -690,6 +690,26 @@ static void usb_lib_task(void *arg)
     }
 }
 
+#if CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK
+/* With the filter compiled in, IDF refuses every device unless a callback
+   says yes, so there is always one; it defers to the registered hook. */
+static usb_host_enum_filter_cb_t s_enum_filter;
+
+/* Call before bsp_usb_host_start(); the hook runs in the USB lib task.
+   Declared by its caller: this BSP's header is included without usb. */
+void bsp_usb_host_set_enum_filter(usb_host_enum_filter_cb_t filter);
+void bsp_usb_host_set_enum_filter(usb_host_enum_filter_cb_t filter)
+{
+    s_enum_filter = filter;
+}
+
+static bool bsp_usb_enum_filter(const usb_device_desc_t *dev_desc, uint8_t *config_value)
+{
+    usb_host_enum_filter_cb_t filter = s_enum_filter;
+    return filter ? filter(dev_desc, config_value) : true;
+}
+#endif
+
 esp_err_t bsp_usb_host_start(bsp_usb_host_power_mode_t mode, bool limit_500mA)
 {
     if (usb_host_task) return ESP_OK;
@@ -698,6 +718,9 @@ esp_err_t bsp_usb_host_start(bsp_usb_host_power_mode_t mode, bool limit_500mA)
     const usb_host_config_t host_config = {
         .skip_phy_setup = false,
         .intr_flags = ESP_INTR_FLAG_LEVEL1,
+#if CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK
+        .enum_filter_cb = bsp_usb_enum_filter,
+#endif
     };
     esp_err_t install_error = usb_host_install(&host_config);
     if (install_error != ESP_OK) return install_error;

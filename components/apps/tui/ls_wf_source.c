@@ -3,6 +3,7 @@
 #include "ls_field.h"
 #include "ls_radio_select.h"
 #include "lr_iq_spectrum.h"
+#include "ls_floor.h"
 #include "lr_wf_session.h"
 #include "lr_chip_wf.h"
 #include "scan_engine.h"
@@ -444,6 +445,22 @@ LS_COLD const char *ls_wf_preset_current(ls_wf_src_t src)
         return s_pre_label;
     }
     if (src == LS_WF_SRC_FM) {
+        /* Listening, the face names the band the dial is in. It used to
+           name the sweep's range whatever the dial did, and the range starts
+           on VHF land, so a receiver on 103.3 MHz said "VHF land". The range
+           still wins where it holds the dial (VHF land and marine overlap),
+           so it agrees with what BAND last chose. */
+        if (FM.mode != FM_MODE_SCAN) {
+            const char *at = NULL;
+            for (int i = 0; i < FM_BAND_N; i++) {
+                if (FM.freq_hz < FM_BANDS[i].lo_hz || FM.freq_hz > FM_BANDS[i].hi_hz) continue;
+                if (FM_BANDS[i].lo_hz == FM.scan_start_hz && FM_BANDS[i].hi_hz == FM.scan_stop_hz)
+                    return FM_BANDS[i].name;
+                if (!at) at = FM_BANDS[i].name;
+            }
+            return at ? at : "no band";
+        }
+        /* Sweeping, it is the span being swept. */
         for (int i = 0; i < FM_BAND_N; i++)
             if (FM_BANDS[i].lo_hz == FM.scan_start_hz &&
                 FM_BANDS[i].hi_hz == FM.scan_stop_hz)
@@ -517,15 +534,40 @@ static bool p25_running(void)
     return st.receiver_streaming;
 }
 
+/* SUB-GHZ BAND's LR I/Q view, drawn against each bin's own floor.
+
+   The LR2021's receive filter shapes its own noise: with nothing on the air
+   the 125 kHz row is a hump ~36 dB over its edges, and through the
+   waterfall's one window for the whole row that hump was painted solid red.
+   Each bin is drawn as dB over the floor it has learned (ls_floor.h), so
+   noise is dark wherever the filter put it and only a signal climbs. The
+   readout then says dB over the floor rather than dBFS. Only for BAND: FM
+   and P25 tap the same rows for their own views. */
+static EXT_RAM_BSS_ATTR ls_floor_t s_lr_floor;
+static bool s_lr_floor_init;
+#define LR_FLOOR_GATE_DB 12.0f   /* over it, a bin's floor holds still */
+static void lr_floor_row(ls_wf_feed_t *f, bool restart)
+{
+    if (!s_lr_floor_init || restart) { ls_floor_init(&s_lr_floor, &LS_FLOOR_IQ); s_lr_floor_init = true; }
+    (void)ls_floor_iq_row(&s_lr_floor, s_bins, LS_WF_BINS_MAX, LR_FLOOR_GATE_DB);
+    f->floor_db = -LS_FLOOR_IQ_PAD_DB;
+    f->top_db = LS_FLOOR_IQ_WINDOW_DB - LS_FLOOR_IQ_PAD_DB;
+    f->scaled = true;
+    f->over_floor = true;
+}
+
 static bool push_live(ls_wf_owner_t owner, uint32_t sequence, const ls_wf_feed_t *feed)
 {
     if (s_live_owner == owner && s_live_seq == sequence) return true;
-    if (s_live_owner != owner || s_live_center != feed->center_hz || s_live_span != feed->span_hz)
-        ls_wf_claim(LS_WF_OWNER_NONE, NULL);
+    const bool moved = s_live_owner != owner || s_live_center != feed->center_hz ||
+                       s_live_span != feed->span_hz;
+    if (moved) ls_wf_claim(LS_WF_OWNER_NONE, NULL);
     s_live_seq = sequence; s_live_owner = owner;
     s_live_center = feed->center_hz; s_live_span = feed->span_hz;
     ls_wf_claim(owner, owner == LS_WF_OWNER_LORA ? "LR IQ" : owner == LS_WF_OWNER_P25 ? "P25" : "FM");
-    ls_wf_push(owner, s_bins, LS_WF_BINS_MAX, feed);
+    ls_wf_feed_t f = *feed;
+    if (owner == LS_WF_OWNER_LORA && feed->iq && s_want == LS_WF_SRC_LORA) lr_floor_row(&f, moved);
+    ls_wf_push(owner, s_bins, LS_WF_BINS_MAX, &f);
     return true;
 }
 

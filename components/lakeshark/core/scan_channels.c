@@ -128,6 +128,12 @@ bool scan_channels_batch_end(void)
 /**/
 bool scan_channels_batching(void) { return s_batch > 0; }
 
+static esp_err_t replace_job(void *len)
+{
+    if (nvs_set_blob(s_nvs, BLOBK, s_blob, *(size_t *)len) != ESP_OK) return ESP_FAIL;
+    return nvs_commit(s_nvs);
+}
+
 bool scan_channels_replace(const scan_channel_t *channels, int count)
 {
     if (!s_ok || s_batch || !channels || count < 1 || count > SCAN_MAX_CHANNELS) return false;
@@ -145,9 +151,11 @@ bool scan_channels_replace(const scan_channel_t *channels, int count)
     memcpy(s_blob + sizeof(hdr), channels, (size_t)count * sizeof(*channels));
     if (scan_sd_available()) {
         if (!scan_sd_write("active", channels, count)) return false;
-    } else if (count > SCAN_FLASH_CHANNELS ||
-        nvs_set_blob(s_nvs, BLOBK, s_blob, sizeof(hdr) + (size_t)count * sizeof(*channels)) != ESP_OK ||
-        nvs_commit(s_nvs) != ESP_OK) return false;
+    } else {
+        /* The SD app worker calls this with a PSRAM stack: flash goes through ls_nvs_call. */
+        size_t len = sizeof(hdr) + (size_t)count * sizeof(*channels);
+        if (count > SCAN_FLASH_CHANNELS || ls_nvs_call(replace_job, &len, 0) != ESP_OK) return false;
+    }
     s_count = 0;
     memcpy(s_ch, channels, (size_t)count * sizeof(*channels));
     s_count = count;

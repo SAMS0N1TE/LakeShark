@@ -73,6 +73,13 @@ idf_component_register(
         klatt_tts
 )
 
+# esp_err_to_name() answers "UNKNOWN ERROR" for every code, ESP_OK included,
+# when IDF's name table is compiled out (as this board's image does for app
+# space). Route every caller to a small table instead (core/ls_err_name.c).
+if(NOT CONFIG_ESP_ERR_TO_NAME_LOOKUP)
+    target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_err_to_name" "-Wl,-u,__wrap_esp_err_to_name")
+endif()
+
 set(P25_C_SOURCES
     apps/p25/scanner.c
     apps/p25/dsd_main.c

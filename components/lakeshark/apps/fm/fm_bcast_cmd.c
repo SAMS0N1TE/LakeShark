@@ -30,7 +30,11 @@ static void show(void)
     static fm_air_status_t a;
     fm_wfm_status(&w);
     fm_air_status(&a);
-    LS_PRINTF(t_fm_bcast_cmd_fm_mode_d_freq, "FM mode=%d freq=%lu\n", (int)FM.mode, (unsigned long)FM.freq_hz);
+    /* What the FM screen's meter and CARRIER read: noise is 0 quiet to 1000
+       hiss (WFM: its envelope, fm_dsp.c), level the carrier in thousandths. */
+    LS_PRINTF(t_fm_bcast_cmd_fm_mode_d_freq, "FM mode=%d freq=%lu iq=%luB/s noise=%d level=%d sq=%d\n",
+              (int)FM.mode, (unsigned long)FM.freq_hz, (unsigned long)FM.iq_bytes_sec,
+              (int)(FM.noise * 1000.0f), (int)(FM.iq_level * 1000.0f), (int)FM.squelch_open);
     if (w.running)
         LS_PRINTF(t_fm_bcast_cmd_wfm_s_pilot_d, "WFM %s pilot=%d%% L=%.2f R=%.2f RDS %s PI=%04X PS=[%s] PTY=%u RT=[%s] CT=%s groups=%lu ok=%lu fixed=%lu bad=%lu\n",
                w.stereo ? "STEREO" : "mono", (int)(w.pilot_level * 100.0f + 0.5f), w.lvl_l, w.lvl_r,

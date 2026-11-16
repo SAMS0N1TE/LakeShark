@@ -180,6 +180,17 @@ void display_ctl_set_user(int pct)
     apply_now(perceptual(pct));
 }
 
+void display_ctl_preview_user(int pct)
+{
+    if (pct < 5)   pct = 5;
+    if (pct > 100) pct = 100;
+    s_user_pct = pct;
+    s_off      = false;
+    s_dimmed   = false;
+    keypad_follow();
+    apply_now(perceptual(pct));
+}
+
 int display_ctl_get_user(void) { return s_user_pct; }
 
 void display_ctl_set_autodim(bool enabled)

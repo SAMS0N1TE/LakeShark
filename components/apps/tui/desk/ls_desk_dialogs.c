@@ -334,15 +334,16 @@ static bool prompt_key(ls_tk_t k, char ch)
 
 /* -------------------------------------------------- New shortcut (apps) -- */
 
-EXT_RAM_BSS_ATTR static struct { const ls_app_t *app[LS_TUI_MAX_SCREENS]; uint8_t group[LS_TUI_MAX_SCREENS]; int n, sel, top, x, y; } s_pick;
+EXT_RAM_BSS_ATTR static struct { const ls_app_t *app[LS_APP_MAX]; uint8_t group[LS_APP_MAX]; int n, sel, top, x, y; } s_pick;
 
 void dk_pick_open(int x, int y)
 {
     s_pick.n = 0;
     for (int g = 0; g < 5; g++) {
-        const ls_app_t *list[LS_TUI_MAX_SCREENS];
-        const int n = dk_group_apps(g, list, LS_TUI_MAX_SCREENS);
-        for (int i = 0; i < n && s_pick.n < LS_TUI_MAX_SCREENS; i++) {
+        /* Off the stack: sized for the whole directory. */
+        EXT_RAM_BSS_ATTR static const ls_app_t *list[LS_APP_MAX];
+        const int n = dk_group_apps(g, list, LS_APP_MAX);
+        for (int i = 0; i < n && s_pick.n < LS_APP_MAX; i++) {
             s_pick.app[s_pick.n] = list[i];
             s_pick.group[s_pick.n++] = (uint8_t)g;
         }

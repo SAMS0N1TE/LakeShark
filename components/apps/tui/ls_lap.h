@@ -11,7 +11,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-#define LS_LAP_MAX_APPS 24
+#define LS_LAP_MAX_APPS 48
 typedef enum { LS_LAP_IDLE, LS_LAP_LOADING, LS_LAP_RUNNING, LS_LAP_FAILED } ls_lap_state_t;
 typedef struct {
     ls_lap_state_t state;

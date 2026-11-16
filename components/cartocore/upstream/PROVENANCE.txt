@@ -8,6 +8,15 @@ cc_palette16_line), src/core/core.c (zoom-gated classes, two-dot main roads),
 src/core/render.c (sets zoom), src/core/style.c (16-colour ranks),
 src/out/out.c (line vs ground colour, tonal relief and forest ground,
 braille lines in quadrant mode).
+Local changes (2026-11-15, coarse frames over dense Buenos Aires cells):
+include/cartocore/core.h (cc_arena.fails, cc_scene.degraded), ctile.h and
+cellset.h (cc_ctile_tile_window, cc_scene_merge, cc_scene_coarser),
+src/core/core.c (counts refused allocations), src/core/ctile.c (a CT5 group
+decodes as CT3 straight into its CT6; scenes are built tile by tile and a tile
+the arena cannot hold is drawn from its nearest ancestor that fits, clipped to
+its square), src/core/cellset.c (scaled-up tiles keep only what is in view;
+the same per-tile stand-in), src/core/decoded_cache.c (a decode left in the
+arena keeps its result alone).
 
 Taken: canonical embedded sources.cmake, all public include/cartocore headers,
 its firmware/core/output/media/inflate sources, P4 assembly, private header

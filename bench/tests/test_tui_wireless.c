@@ -3,7 +3,7 @@
 #include "ls_tui_screen.h"
 #include "ls_keyboard.h"
 #include "ls_options.h"
-#include "ls_survey.h"
+#include "ls_app.h"
 #include "ls_rterm.h"
 #include "esp_timer.h"
 #include <stdio.h>
@@ -31,11 +31,12 @@ bool ls_wireless_request(ls_wireless_op_t op, const char *ssid, const char *pass
     return true;
 }
 bool ls_tui_is_wide(void) { return wide; }
-/* SURVEY's panel frame and chips, without the radio panel and its scanner. */
-void ls_radio_bezel(tui_surface *sf, tui_rect r, const char *title)
-{ tui_box(sf, r, title, TUI_ATTR(TUI_CYAN, TUI_BLACK)); }
-int ls_radio_chip(tui_surface *sf, tui_rect r, int x, int y, const char *t, bool on, uint8_t hue)
-{ (void)on; tui_put_str(sf, r, x, y, t, TUI_ATTR(hue, TUI_BLACK)); return x + (int)strlen(t) + 3; }
+/* V opens WIFI SURVEY when it is on the card: the apps the screen can find. */
+static ls_app_t card_apps[2] = {{.id = "home"}, {.id = "wifi_survey"}};
+static int card_app_count, opened_app = -1;
+int ls_app_count(void) { return card_app_count; }
+const ls_app_t *ls_app_at(int index) { return index >= 0 && index < card_app_count ? &card_apps[index] : NULL; }
+void ls_app_open(int index) { opened_app = index; }
 static bool keyboard;
 bool ls_tui_keyboard_mode(void) { return keyboard; }
 void ls_tui_split(tui_rect a, tui_rect *first, tui_rect *second)
@@ -253,40 +254,6 @@ void ls_tui_geometry(int *cols, int *rows, int *cw, int *ch)
     if (ch) *ch = 17;
 }
 
-static ls_survey_view_t survey;
-static ls_survey_entry_t survey_entries[12];
-bool ls_survey_run(bool start, const ls_survey_options_t *options)
-{
-    survey.running = start;
-    survey.options = *options;
-    if (!start) {
-        strcpy(survey.path, "/sdcard/lakeshark/survey/20261007_120000.csv");
-        strcpy(survey.status, "Session saved / random BLE addresses rotate");
-    }
-    return true;
-}
-void ls_survey_view(ls_survey_view_t *out) { *out = survey; }
-bool ls_survey_at(unsigned rank, int sort, ls_survey_entry_t *out)
-{
-    (void)sort;
-    if (rank >= survey.wifi + survey.ble) return false;
-    *out = survey_entries[rank];
-    return true;
-}
-
-static void survey_dump(const char *page)
-{
-    const char *folder = getenv("LS_SURVEY_DUMP");
-    if (!folder) return;
-    char path[512];
-    snprintf(path, sizeof(path), "%s/survey-%s-%s.cells", folder, wide ? "landscape" : "portrait", page);
-    FILE *f = fopen(path, "wb");
-    LS_CHECK(f != NULL); if (!f) return;
-    fprintf(f, "%d %d\n", width, height);
-    for (int i = 0; i < width * height; i++) { fputc((unsigned char)back[i].ch, f); fputc(back[i].attr, f); }
-    fclose(f);
-}
-
 static bool on_screen(const char *text)
 {
     for (int y = 0; y < height; y++) {
@@ -333,75 +300,6 @@ LS_CASE(saved_network_selection_forgets_one_in_both_orientations)
         operation = LS_WIRELESS_NONE;
         ls_scr_wireless.key(LS_TK_CHAR, 'f');
         LS_EQ_INT(operation, LS_WIRELESS_NONE); /* no implicit current target */
-    }
-}
-
-LS_CASE(survey_list_uses_the_height_and_start_failures_fit_in_both_postures)
-{
-    for (int landscape = 0; landscape < 2; landscape++) {
-        setup(landscape);
-        memset(&survey, 0, sizeof(survey));
-        survey.wifi = 6; survey.ble = 6; survey.cached = 12; survey.gps_fresh = true;
-        for (int i = 0; i < 12; i++) {
-            survey_entries[i] = (ls_survey_entry_t){.kind = LS_SURVEY_WIFI, .rssi = -40 - i};
-            snprintf(survey_entries[i].name, 33, "Survey%02d", i);
-        }
-        /* The reasons ls_survey_runtime.c reports, each whole on one line. */
-        static const char *const WHY[] = {
-            "Wi-Fi is on: turn STA and AP off first", "BLE link is on: turn it off first",
-            "SD card not writable", "GPS would not start (fix-only is on)" };
-        LS_CHECK(tap("SURVEY")); draw();
-        for (unsigned i = 0; i < sizeof(WHY) / sizeof(WHY[0]); i++) {
-            snprintf(survey.status, sizeof(survey.status), "%s", WHY[i]);
-            draw(); LS_CHECK_MSG(on_screen(WHY[i]), "cut: %s", WHY[i]);
-        }
-        survey_dump("list");
-        /* Three-row touch targets: five fit in portrait, one in this short landscape. */
-        LS_CHECK(on_screen(landscape ? "Survey00" : "Survey04"));
-        LS_CHECK(on_screen(landscape ? "1-1 / 12" : "1-5 / 12"));
-        snprintf(survey.status, sizeof(survey.status), "%s", WHY[0]);
-        draw(); survey_dump("fail");
-    }
-}
-
-LS_CASE(survey_touch_and_keys_never_request_join_or_head_scan)
-{
-    for (int landscape = 0; landscape < 2; landscape++) {
-        setup(landscape);
-        memset(&survey, 0, sizeof(survey));
-        survey.wifi = 6; survey.ble = 6; survey.cached = 12; survey.gps_fresh = true;
-        strcpy(survey.status, "Passive survey / GPS fresh");
-        for (int i = 0; i < 12; i++) {
-            survey_entries[i] = (ls_survey_entry_t){.kind=i < 6 ? LS_SURVEY_WIFI : LS_SURVEY_BLE, .rssi=-40-i};
-            survey_entries[i].addr[5] = i + 1;
-            survey_entries[i].channel = 6; survey_entries[i].auth = 3;
-            survey_entries[i].positioned = true; survey_entries[i].lat = 42; survey_entries[i].lon = -71;
-            snprintf(survey_entries[i].name, 33, "Survey%02d", i);
-        }
-        operation = LS_WIRELESS_NONE;
-        LS_CHECK(tap("SURVEY")); draw();
-        LS_CHECK(tap("START")); draw(); LS_CHECK(survey.running); survey_dump("walk");
-        LS_CHECK(tap("[N] NEXT")); draw();
-        LS_CHECK(tap("[D] DETAIL")); draw(); survey_dump("detail");
-        LS_CHECK(tap("[D] BACK")); draw();
-        LS_CHECK(tap("OPTIONS"));
-        LS_CHECK(opened_options && !strcmp(opened_options->name, "SURVEY"));
-        LS_EQ_INT(opened_options->n, 2);
-        LS_EQ_INT(opened_options->radio, LS_RSEL_NONE);
-        LS_EQ_INT(opened_options->opt[0].kind, LS_OPT_MENU);
-        const ls_opt_ctx_t *radios = opened_options->opt[0].sub;
-        LS_EQ_INT(radios->n, 3);
-        LS_EQ_INT(radios->opt[2].kind, LS_OPT_LEVEL);
-        LS_CHECK(radios->opt[0].why_not(&radios->opt[0]) != NULL);
-        LS_CHECK(tap("STOP")); draw(); LS_CHECK(!survey.running); survey_dump("summary");
-        LS_CHECK(radios->opt[0].why_not(&radios->opt[0]) == NULL);
-        const ls_opt_t *interval = &radios->opt[2];
-        interval->set_num(interval, 12); LS_NEAR(interval->num(interval), 12, 0);
-        interval->set_num(interval, 10);
-        const ls_opt_ctx_t *recording = opened_options->opt[1].sub;
-        LS_EQ_INT(recording->n, 2);
-        LS_EQ_INT(recording->opt[1].kind, LS_OPT_LEVEL);
-        LS_EQ_INT(operation, LS_WIRELESS_NONE);
     }
 }
 
@@ -456,17 +354,6 @@ LS_CASE(bluetooth_options_queue_named_pin_filter_and_telemetry) {
     opened_options->opt[3].set_num(&opened_options->opt[3],0);
     LS_EQ_INT(operation,LS_WIRELESS_BT_TELEMETRY); LS_CHECK(!strcmp(joined,"0"));
 }
-LS_CASE(survey_idle_is_static_until_an_observation_arrives) {
-    setup(false); memset(&survey,0,sizeof(survey)); survey.running=true;
-    ls_scr_wireless.key(LS_TK_CHAR,'v'); draw();
-    static tui_cell copy[128*72]; memcpy(copy,back,sizeof(copy));
-    ls_shim_time_set(123000000); draw(); survey_dump("idle");
-    LS_CHECK(!memcmp(copy,back,width*height*sizeof(back[0])));
-    LS_CHECK(on_screen("SURVEY / LIVE"));
-    survey.activity_revision++; draw();
-    LS_CHECK(memcmp(copy,back,width*height*sizeof(back[0])));   /* the observation pulses */
-}
-
 LS_CASE(long_status_wraps_inside_border_and_notes_stay_on_their_tab) {
     for(int landscape=0;landscape<2;++landscape) {
         setup(landscape); model.ap_count=0;
@@ -493,30 +380,26 @@ LS_CASE(password_title_keeps_ssid_through_validation_retry) {
     ls_keyboard_key(LS_TK_ESC,0);
 }
 
-LS_CASE(survey_stats_show_real_counts_file_and_space_in_both_postures)
+LS_CASE(survey_is_in_wifi_survey_and_v_opens_it)
 {
-    for (int landscape=0; landscape<2; landscape++) {
-        setup(landscape); memset(&survey,0,sizeof(survey));
-        survey.wifi=100; survey.ble=20; survey.wifi_minute=7; survey.ble_minute=3;
-        survey.security[0]=2; survey.security[1]=1; survey.security[2]=4;
-        survey.security[3]=80; survey.security[4]=13;
-        survey.top_channel[0]=6; survey.top_count[0]=30;
-        survey.top_channel[1]=1; survey.top_count[1]=20;
-        survey.top_channel[2]=11; survey.top_count[2]=10;
-        survey.rows=125; survey.free_bytes=512*1024*1024; survey.sd_known=true;
-        survey.gps_fresh=survey.utc_valid=true;
-        strcpy(survey.path,"/sdcard/lakeshark/survey/20261007_120000.csv");
-        ls_scr_wireless.key(LS_TK_CHAR,'v'); draw(); survey_dump("stats");
-        LS_CHECK(on_screen("Wi-Fi 100 +7/min | BLE 20 +3/min"));
-        LS_CHECK(on_screen("OPEN      2")); LS_CHECK(on_screen("WEP       1"));
-        LS_CHECK(on_screen("WPA       4")); LS_CHECK(on_screen("WPA2     80"));
-        LS_CHECK(on_screen("WPA3     13"));
-        if (!landscape) {   /* the short landscape panel has no room for channels */
-            LS_CHECK(on_screen("CH 6     30")); LS_CHECK(on_screen("CH 1     20"));
-            LS_CHECK(on_screen("CH 11    10"));
-        }
-        LS_CHECK(on_screen("SD 512 MiB free | 125 rows"));
-        LS_CHECK(on_screen("GPS FIX")); LS_CHECK(on_screen("UTC OK"));
-        LS_CHECK(on_screen("File: 20261007_120000.csv"));
+    for (int landscape = 0; landscape < 2; landscape++) {
+        setup(landscape);
+        /* Three tabs: WI-FI, BLUETOOTH, REMOTE. The survey recorder moved. */
+        LS_CHECK(on_screen("REMOTE"));
+        LS_CHECK(!on_screen("SURVEY"));
+        /* Not on the card: V says where the survey is and stays on WI-FI. */
+        card_app_count = 1; opened_app = -1;
+        LS_CHECK(ls_scr_wireless.key(LS_TK_CHAR, 'v')); draw();
+        LS_EQ_INT(opened_app, -1);
+        LS_CHECK(on_screen("Survey is in WIFI SURVEY"));
+        /* Installed: V opens it. */
+        card_app_count = 2;
+        LS_CHECK(ls_scr_wireless.key(LS_TK_CHAR, 'V'));
+        LS_EQ_INT(opened_app, 1);
+        LS_EQ_INT(operation, LS_WIRELESS_NONE);
+        /* TAB walks the three tabs and comes back to WI-FI. */
+        ls_scr_wireless.key(LS_TK_CHAR, 'w');
+        for (int i = 0; i < 3; i++) ls_scr_wireless.key(LS_TK_TAB, 0);
+        draw(); LS_CHECK(on_screen("JOIN"));
     }
 }

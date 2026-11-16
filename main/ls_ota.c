@@ -82,7 +82,7 @@
 
 static const char *TAG = "ota";
 
-/* LakeShark LR and the TFT panel build have their own manifests and board
+/* LakeShark LR, the TFT panel build and the NET build have their own manifests and board
    names, so no edition is ever offered another's image: the panel driver is
    chosen at build time, and an AMOLED image on a TFT board drives the wrong
    panel. A URL saved by another edition is moved to this edition's folder,
@@ -93,6 +93,9 @@ static const char *TAG = "ota";
 #elif CONFIG_LS_TDP4_PANEL_HI8561
 #define OTA_DIR       "/tdp4tft/"
 #define BOARD_NAME    "T-Display-P4-TFT"
+#elif CONFIG_LS_EDITION_NET
+#define OTA_DIR       "/tdp4net/"
+#define BOARD_NAME    "T-Display-P4-NET"
 #else
 #define OTA_DIR       "/tdp4/"
 #define BOARD_NAME    "T-Display-P4"

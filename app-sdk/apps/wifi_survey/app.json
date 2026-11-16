@@ -1,0 +1,4 @@
+{
+  "category": "radio",
+  "description": "Wi-Fi site survey: access points with signal, channel and security, 2.4 GHz channel occupancy, per-AP signal history and, with capture, frames and airtime per channel. RECORD logs every access point and Bluetooth device heard, with GPS position, as WiGLE CSV (the survey recorder that was in LINK). Receive only."
+}

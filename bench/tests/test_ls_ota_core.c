@@ -279,10 +279,16 @@ LS_CASE(a_url_saved_by_another_edition_moves_to_this_editions_folder)
     LS_EQ_STR(out, "https://lakeshark-ota.pages.dev/tdp4/stable.txt");
     LS_CHECK(ls_ota_url_to_edition("https://ota.terminalbay.com/tdp4tft/beta.txt", "/tdp4lr/", out, sizeof(out)));
     LS_EQ_STR(out, "https://ota.terminalbay.com/tdp4lr/beta.txt");
+    /* A standard board flashed with the NET build, and back. */
+    LS_CHECK(ls_ota_url_to_edition("https://ota.terminalbay.com/tdp4/stable.txt", "/tdp4net/", out, sizeof(out)));
+    LS_EQ_STR(out, "https://ota.terminalbay.com/tdp4net/stable.txt");
+    LS_CHECK(ls_ota_url_to_edition("https://ota.terminalbay.com/tdp4net/dev.txt", "/tdp4/", out, sizeof(out)));
+    LS_EQ_STR(out, "https://ota.terminalbay.com/tdp4/dev.txt");
     /* Its own folder, or no edition folder at all, is left alone. */
     char keep[160] = "keep";
     LS_CHECK(!ls_ota_url_to_edition("https://ota.terminalbay.com/tdp4tft/stable.txt", "/tdp4tft/", keep, sizeof(keep)));
     LS_CHECK(!ls_ota_url_to_edition("https://ota.terminalbay.com/tdp4lr/stable.txt", "/tdp4lr/", keep, sizeof(keep)));
+    LS_CHECK(!ls_ota_url_to_edition("https://ota.terminalbay.com/tdp4net/stable.txt", "/tdp4net/", keep, sizeof(keep)));
     LS_CHECK(!ls_ota_url_to_edition("https://example.com/other/stable.txt", "/tdp4/", keep, sizeof(keep)));
     /* /tdp4/ is not found inside /tdp4lr/ or /tdp4tft/: the slash ends it. */
     LS_CHECK(!ls_ota_url_to_edition("https://ota.terminalbay.com/tdp4lr/stable.txt", "/tdp4lr/", keep, sizeof(keep)));

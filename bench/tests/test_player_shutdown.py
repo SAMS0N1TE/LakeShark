@@ -94,6 +94,7 @@ constexpr int ESP_OK=0;
 static std::atomic<bool> s_mic_run{true},s_mic_busy{true},s_generate{true};
 static void *s_mic_task=(void*)1,*s_mic_stack=(void*)2,*s_mic_tcb=(void*)3,*s_mic_buf=(void*)4;
 static bool s_up=true;
+static bool s_close_pending;
 static void *s_list=(void*)5;
 static void *s_overview=(void*)6,*s_marks=(void*)7,*s_analysis=(void*)8,*s_tools=(void*)9,*s_generator=(void*)10;
 static const char *s_error;

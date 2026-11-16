@@ -3,6 +3,7 @@
 #include "ls_tx_unlock.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "esp_rom_sys.h"
 #include "lr_iq_spectrum.h"
 #include "ls_cc_capture.h"
 #include "ls_field.h"
@@ -173,6 +174,22 @@ static bool step_aside(int radio) {
         return false;
     return ls_mesh_radio_svc_yield();
 }
+/* Until an RSSI reading through this filter can be believed (300 us at
+   500 kHz); never more than 2 ms on the worker, however narrow the filter. */
+static void settle(uint32_t bw_hz) {
+    const uint32_t us = ls_lora_scan_settle_us(bw_hz ? bw_hz : 125000);
+    esp_rom_delay_us(us > 2000 ? 2000 : us);
+}
+/* After a full configure the part starts its TCXO from standby RC (5 ms on
+   the SX1262 board) and reads -127.5 dBm until it runs: wait for a sane
+   reading, 6 ms at most, then the filter's settling time. */
+static void settle_open(uint32_t bw_hz) {
+    const int64_t t0 = esp_timer_get_time();
+    float f = -200;
+    while (esp_timer_get_time() - t0 < 6000 && (ls_lora_rssi_inst(&f) != ESP_OK || f <= -125.0f))
+        esp_rom_delay_us(200);
+    settle(bw_hz);
+}
 static int open_rx(int radio, const lap_packet_config_t *cfg, bool edges) {
     lap_radio_info_t r;
     if (ls_lap_radio_snapshot(radio, &r) < 0 || !r.present)
@@ -206,7 +223,24 @@ static int open_rx(int radio, const lap_packet_config_t *cfg, bool edges) {
         e = map(ls_lora_receive());
     if (e < 0)
         close_rx();
+    else if (cfg->modulation != LAP_MOD_OOK)
+        settle_open(cfg->bandwidth_hz);
     return e;
+}
+/* A scan step: the session moves, the lease and the settings stay. */
+static int retune(uint64_t hz) {
+    if (!hw.opened || hw.mix || hw.edges || hz > UINT32_MAX)
+        return LAP_RX_EUNSUPPORTED;
+    esp_err_t r = ESP_ERR_NOT_SUPPORTED;
+    if (hw.mod == LAP_MOD_LORA)
+        r = ls_lora_rx_retune((uint32_t)hz);
+    else if (hw.mod == LAP_MOD_FSK)
+        r = ls_lora_fsk_retune((uint32_t)hz);
+    if (r != ESP_OK)
+        return map(r);
+    hw.cfg.frequency_hz = hz;
+    settle(hw.cfg.bandwidth_hz);
+    return 0;
 }
 static int rssi(int16_t *out) {
     if (hw.mix) {
@@ -461,7 +495,7 @@ const ls_lap_io_backend_t *ls_lap_io_backend(void) {
     static const ls_lap_io_backend_t be = {
         modes,     open_rx,  read_rx,  rssi,     close_rx,  tx_start,  tx_poll,
         tx_cancel, nfc_caps, nfc_open, nfc_read, nfc_write, nfc_close, ls_lap_io_channels,
-        step_aside};
+        step_aside, retune};
     return &be;
 }
 bool ls_lap_io_sim_command(const char *command) {

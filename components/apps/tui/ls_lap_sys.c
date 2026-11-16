@@ -997,7 +997,7 @@ int lap_wifi_aps(lap_wifi_ap_t *out, int max)
     memcpy(out, host.aps, (size_t)n * sizeof(*out));
     return n;
 }
-uint32_t lap_wifi_seq(void) { return (uint32_t)host.wifi_count; }
+uint32_t lap_wifi_seq(void) { return host.wifi_seq; }
 void lap_ble_scan(bool on) { (void)on; }
 int lap_ble_devices(lap_ble_dev_t *out, int max)
 {

@@ -56,6 +56,7 @@ code = r'''
 #endif
 #include "ls_carto_digest.h"
 #include "ls_carto_sd_io.h"
+#include "ls_carto_block_cache.h"
 #define CELLS_ROOT "maps/"
 #define LS_SNPRINTF(tag,...) snprintf(__VA_ARGS__)
 #define heap_caps_malloc(n,caps) malloc(n)
@@ -75,7 +76,7 @@ static bool cells_digest(const char *p,uint64_t n,uint8_t sha[32]) {
     return true;
 }
 typedef struct { char path[128]; } sd_source;
-typedef struct { int fd;uint64_t size;sd_source *owner; } sd_cell_file;
+typedef struct { int fd;uint64_t size;sd_source *owner;ls_carto_block_cache blocks; } sd_cell_file;
 static size_t source_handles_live,source_handles_hw;
 /* The worker reads catalog rows from PSRAM when it can; this test reads the card. */
 static bool cells_catalog_read(uint64_t off,void *dst,size_t n) {
@@ -88,7 +89,7 @@ static void opened(sd_source *owner,uint32_t id) {
     sd_cell_file *f=handle;uint8_t data[64];
     assert(f->size==64 && read(f->fd,data,64)==64);
     for(unsigned i=0;i<64;i++)assert(data[i]=='x');
-    close(f->fd);source_handles_live-=sizeof(*f);free(f);
+    close(f->fd);source_handles_live-=sizeof(*f);free(f->blocks.memory);free(f);
 }
 int main(void) {
     cw.initialized=true;cw.entries=2;cw.index_size=64;

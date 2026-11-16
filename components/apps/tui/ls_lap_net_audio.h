@@ -31,6 +31,7 @@ void ls_lap_av_set_wake(void (*wake)(void));
 bool ls_lap_wifi_http_service(void);
 bool ls_lap_udp_service(void);
 bool ls_lap_mdns_service(void);
+bool ls_lap_netdiag_service(void);
 bool ls_lap_ble_service(void);
 bool ls_lap_sound_service(void);
 bool ls_lap_mic_active(void);
@@ -58,6 +59,7 @@ void ls_lap_sound_script(const char *command);
 void ls_lap_ble_script(const char *command);
 void ls_lap_mdns_script(const char *command);
 void ls_lap_udp_script(const char *command);
+void ls_lap_netdiag_script(const char *command);
 #endif
 /* Old handles cannot overwrite a newer close request for a reused slot. */
 static inline void av_cancel(atomic_int *slot, int ticket) {

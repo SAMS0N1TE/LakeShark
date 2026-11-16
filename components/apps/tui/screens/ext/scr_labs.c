@@ -33,11 +33,22 @@ static tui_rect s_expand_hit;
 static float s_heading = NAN;
 static int64_t s_heading_us;
 static ls_fresh_t packet_arrival;
-EXT_RAM_BSS_ATTR static float s_trace[LS_FIELD_BINS], s_spectrum[LS_FIELD_BINS], s_bearing[36];
+EXT_RAM_BSS_ATTR static float s_trace[LS_FIELD_BINS], s_bearing[36];
 EXT_RAM_BSS_ATTR static uint16_t s_bearing_count[36];
-static const char *const modes[] = {"PACKETS", "SPECTRUM", "BEARING",
+/* LS_LAB_SPECTRUM is the field worker's sweep, which RF SURVEY and COMPASS's
+   LoRa BAND drive. It is not a Labs mode any more: SPECTRUM is the RF LAB
+   app, on every radio. Labs only names it when one of those left the
+   worker sweeping. */
+static const char *const modes[] = {"PACKETS", "SWEEP", "BEARING",
                                     "GFSK", "POCSAG"};
 #define MODE_N ((int)(sizeof(modes) / sizeof(modes[0])))
+static ls_lab_mode_t next_mode(ls_lab_mode_t m)
+{
+    if (m == LS_LAB_SPECTRUM) return LS_LAB_PACKETS;
+    int n = ((int)m + 1) % MODE_N;
+    if (n == LS_LAB_SPECTRUM) n = (n + 1) % MODE_N;
+    return (ls_lab_mode_t)n;
+}
 static const char *const settings[] = {"FREQUENCY", "SPREAD FACTOR", "BANDWIDTH", "CODING RATE", "POWER", "PREAMBLE", "SYNC WORD", "CRC", "INVERT IQ"};
 static const uint32_t bandwidths[] = {7810, 10420, 15630, 20830, 31250, 41670, 62500, 125000, 250000, 500000};
 
@@ -90,28 +101,6 @@ static const struct { const char *name; double mhz; } LABS_BANDS[] = {
 };
 #define LABS_BAND_N ((int)(sizeof(LABS_BANDS) / sizeof(LABS_BANDS[0])))
 
-/* What SPECTRUM can sweep instead of the 2 MHz round the tuned frequency, on
-   a part that reaches past 960 MHz (the LR2021, asked rather than assumed).
-   Spans, not points: the sweep can cover more than the LoRa packet bands;
-   only the sweep moves, and these ranges grant no transmit permission. */
-static const struct { const char *name; uint32_t lo, hi; } LABS_SPANS[] = {
-    { "airband",   108000000u,  137000000u },
-    { "aviation",  960000000u, 1100000000u },
-    { "L band",   1100000000u, 1499000000u },
-    { "GPS L1",   1570000000u, 1581000000u },
-    { "Iridium",  1616000000u, 1626500000u },
-    { "2.4G ISM", 2400000000u, 2483500000u },
-};
-#define LABS_SPAN_N ((int)(sizeof(LABS_SPANS) / sizeof(LABS_SPANS[0])))
-/* Picker rows past the points -> LABS_SPANS, as the list was last opened. */
-EXT_RAM_BSS_ATTR static int labs_span_row[LABS_SPAN_N];
-static int labs_span_rows;
-
-static bool spans_offered(void)
-{
-    return s.mode == LS_LAB_SPECTRUM && (ls_lora_caps() & LS_LORA_CAP_RX_WIDE);
-}
-
 /* The same move the numeric entry makes for frequency, including the 4 MHz
    calibration window - a retune with a stale window is what makes the part
    come back deaf. */
@@ -120,19 +109,10 @@ static void set_band(int i)
 {
     if (i >= LABS_BAND_N && i < LABS_BAND_N + labs_hf_rows) {
         s_setting = 0;
-        if (s.span_lo_hz) ls_field_spectrum_span(0, 0);
         set_number(i == LABS_BAND_N ? 1900 : 2400);
         return;
     }
-    if (i >= LABS_BAND_N) i -= labs_hf_rows;
-    if (i >= LABS_BAND_N && i < LABS_BAND_N + labs_span_rows) {
-        const int k = labs_span_row[i - LABS_BAND_N];
-        result(ls_field_spectrum_span(LABS_SPANS[k].lo, LABS_SPANS[k].hi));
-        return;
-    }
     if (i < 0 || i >= LABS_BAND_N) return;
-    /* A point after a span sweeps round the point again. */
-    if (s.span_lo_hz && (ls_lora_caps() & LS_LORA_CAP_RX_WIDE)) ls_field_spectrum_span(0, 0);
     const double mhz = LABS_BANDS[i].mhz;
     ls_lora_cfg_t cfg = s.config;
     cfg.freq_hz = (uint32_t)llround(mhz * 1e6);
@@ -149,20 +129,10 @@ static void open_band_picker(void)
         snprintf(detail, sizeof(detail), "%.4f", LABS_BANDS[i].mhz);
         ls_picker_add(LABS_BANDS[i].name, detail);
     }
-    labs_span_rows = 0;
     labs_hf_rows = (ls_lora_caps() & LS_LORA_CAP_BAND_1G5_2G5) ? 2 : 0;
     if (labs_hf_rows) {
         ls_picker_add("HF RX 1900-2200 MHz", "1900.0000");
         ls_picker_add("HF RX 2400-2500 MHz", "2400.0000");
-    }
-    if (!spans_offered()) return;
-    const uint32_t caps = ls_lora_caps();
-    for (int i = 0; i < LABS_SPAN_N; i++) {
-        if (!ls_lora_rx_range_ok(caps, LABS_SPANS[i].lo, LABS_SPANS[i].hi)) continue;
-        char detail[24];
-        snprintf(detail, sizeof(detail), "sweep %.1f-%.1f", LABS_SPANS[i].lo / 1e6, LABS_SPANS[i].hi / 1e6);
-        labs_span_row[labs_span_rows++] = i;
-        ls_picker_add(LABS_SPANS[i].name, detail);
     }
 }
 
@@ -246,10 +216,6 @@ static void pages_list(tui_surface *sf, tui_rect r)
 static const char *band_now(void)
 {
     static char buf[16];
-    if (s.mode == LS_LAB_SPECTRUM && s.span_lo_hz)
-        for (int i = 0; i < LABS_SPAN_N; i++)
-            if (LABS_SPANS[i].lo == s.span_lo_hz && LABS_SPANS[i].hi == s.span_hi_hz)
-                return LABS_SPANS[i].name;
     for (int i = 0; i < LABS_BAND_N; i++)
         if ((uint32_t)llround(LABS_BANDS[i].mhz * 1e6) == s.config.freq_hz)
             return LABS_BANDS[i].name;
@@ -476,7 +442,6 @@ static void o_freqs_show(const ls_opt_t *o, char *out, size_t n) { (void)o; snpr
 static const ls_opt_t OPT_LORA[] = {
     LORA_LEVEL(0, "FREQUENCY", 150, 2500, .025), LORA_LEVEL(1, "SPREAD FACTOR", 5, 12, 1), { .label = "BANDWIDTH", .kind = LS_OPT_CYCLE, .names = BW_NAMES, .n = 10, .get = o_bw, .set = o_set_bw, .step = 1 }, LORA_LEVEL(3, "CODING RATE", 5, 8, 1), LORA_LEVEL(4, "POWER", -9, 22, 1),
     LORA_LEVEL(5, "PREAMBLE", 1, 65535, 1), LORA_LEVEL(6, "SYNC WORD", 0, 255, 1), LORA_ROW(7, "CRC"), LORA_ROW(8, "INVERT IQ"), LABS_COMMON };
-static const ls_opt_t OPT_SPECTRUM[] = { LORA_LEVEL(0, "FREQUENCY", 150, 2500, .025), LABS_COMMON };
 static const ls_opt_t OPT_GFSK[] = {
     FSK_ROW(0, "FREQUENCY"), FSK_LEVEL(1, "BITRATE", 600, 300000, 100), FSK_LEVEL(2, "DEVIATION", 600, 200000, 100), FSK_LEVEL(3, "BANDWIDTH", 4800, 467000, 100), FSK_LEVEL(4, "SYNC WORD", 0, 4294967295, 1), FSK_LEVEL(5, "PAYLOAD", 1, 255, 1), LABS_COMMON };
 static const ls_opt_t OPT_POCSAG[] = {
@@ -501,7 +466,6 @@ static const ls_opt_t OPT_POCSAG_STREAM[] = {
 #undef LORA_LEVEL
 static const ls_opt_ctx_t CTX_LABS[] = {
     [LS_LAB_PACKETS]  = { .name = "PACKETS", .job = LS_RSEL_LABS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_LORA) },
-    [LS_LAB_SPECTRUM] = { .name = "SPECTRUM", .job = LS_RSEL_LABS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_SPECTRUM) },
     [LS_LAB_BEARING]  = { .name = "BEARING", .job = LS_RSEL_LABS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_LORA) },
     [LS_LAB_GFSK]     = { .name = "GFSK", .job = LS_RSEL_LABS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_GFSK) },
     [LS_LAB_POCSAG]   = { .name = "POCSAG", .job = LS_RSEL_LABS, .radio = LS_RSEL_NONE, LS_OPT_ROWS(OPT_POCSAG) },
@@ -512,7 +476,7 @@ static const ls_opt_ctx_t CTX_POCSAG_STREAM = {
 static const ls_opt_ctx_t *labs_options(void)
 {
     if (s.mode == LS_LAB_POCSAG && (ls_lora_caps() & LS_LORA_CAP_FSK_STREAM)) return &CTX_POCSAG_STREAM;
-    const int m = (int)s.mode;
+    const int m = s.mode == LS_LAB_SPECTRUM ? LS_LAB_PACKETS : (int)s.mode;
     return m >= 0 && m < (int)(sizeof(CTX_LABS) / sizeof(CTX_LABS[0])) ? &CTX_LABS[m] : NULL;
 }
 
@@ -521,7 +485,7 @@ static void action(int i)
 {
     s_feedback[0] = 0;
     if (i == 0) result(ls_field_direct(!(s.direct || s.requested)));
-    else if (i == 1) result(ls_field_mode((ls_lab_mode_t)((s.mode + 1) % MODE_N)));
+    else if (i == 1) result(ls_field_mode(next_mode(s.mode)));
     else if (i == 2) { if (LS_LAB_IS_FSK(s.mode)) setup_fsk(); else setup(); }
     else if (i == 3) open_band_picker();
     else if (i == 4) {
@@ -531,7 +495,7 @@ static void action(int i)
     } else if (i == 5) result(ls_field_mark_lora());
     /* The survey log: samples.csv, one row per sample, carrying RSSI, SNR,
        frequency and packet counts alongside GPS and the IMU. It is what
-       BEARING and SPECTRUM are worth keeping - not packet payloads, which
+       BEARING is worth keeping - not packet payloads, which
        this writer does not carry. JOURNAL has had this button all along;
        the screen actually doing the measuring did not. */
     else if (i == 6) result(ls_field_record_source(LS_FIELD_LORA, !s.recording));
@@ -903,7 +867,7 @@ static void draw(tui_surface *sf, tui_rect a)
     s_heading = ls_compass_ease(s_heading, s.sample.imu_valid && s.sample.imu.mag_valid ? s.sample.heading : NAN, 1 - expf(-dt / .12f));
     s_heading_us = now;
     if (!s_hold) {
-        memcpy(s_trace, s.trace, sizeof(s_trace)); memcpy(s_spectrum, s.spectrum, sizeof(s_spectrum));
+        memcpy(s_trace, s.trace, sizeof(s_trace));
         memcpy(s_bearing, s.bearing, sizeof(s_bearing)); memcpy(s_bearing_count, s.bearing_count, sizeof(s_bearing_count));
     }
     if (s_full_compass) { full_compass_draw(sf,a); return; }
@@ -947,23 +911,14 @@ static void draw(tui_surface *sf, tui_rect a)
     if (plot_h > 18) plot_h = 18;
     tui_rect plot = tui_rect_make(panel.x + 2, panel.y + 4, panel.w - 4, plot_h);
     if (s.mode == LS_LAB_BEARING) polar(sf, plot);
-    else if(s.mode==LS_LAB_SPECTRUM) {
-        bool fresh=s.direct && s.spectrum_us>0 && now>=s.spectrum_us && now-s.spectrum_us<3000000;
-        if(fresh) {
-            graph(sf,plot,s_spectrum);
-            int peak=0;for(int i=1;i<LS_FIELD_BINS;i++)if(s_spectrum[i]>s_spectrum[peak])peak=i;
-            snprintf(line,sizeof(line),"Peak %.1f dBm / bin %d of %d",s_spectrum[peak],peak+1,LS_FIELD_BINS);
-            tui_put_str(sf,plot,plot.x,plot.y,line,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
-        }
-        else tui_put_str(sf,plot,plot.x+1,plot.y+1,s.direct?"No complete fresh sweep":"Enable DIRECT to scan; Mesh will pause",TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
-        uint32_t lo = s.span_lo_hz, hi = s.span_hi_hz;
-        ls_labs_span(ls_lora_caps(), s.config.freq_hz, &lo, &hi);
-        snprintf(line,sizeof(line),"%.3f <- MHz -> %.3f | -140..-30 dBm",lo/1e6,hi/1e6);
-        tui_put_str(sf,plot,plot.x,plot.y+plot.h-1,line,LS_ATTR_DIM);
+    else if (s.mode == LS_LAB_SPECTRUM) {
+        /* RF SURVEY or COMPASS left the worker sweeping. */
+        tui_put_str(sf, plot, plot.x + 1, plot.y + 1, "SPECTRUM is the RF LAB app (HOME > USER)", TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, plot, plot.x + 1, plot.y + 3, "The LoRa chip is sweeping for RF SURVEY", LS_ATTR_DIM);
+        tui_put_str(sf, plot, plot.x + 1, plot.y + 4, "or COMPASS. MODE goes back to PACKETS.", LS_ATTR_DIM);
     } else if (s.mode == LS_LAB_POCSAG) pages_list(sf, plot);
     else graph(sf, plot, s_trace);
     const char *caption = s.mode == LS_LAB_BEARING ? "Yellow: board top | Red N: north" :
-        s.mode == LS_LAB_SPECTRUM ? "Swept energy: brief packets may fall between looks" :
         s.mode == LS_LAB_POCSAG ? "Tap pages or PREVIOUS/NEXT | UP/DOWN" :
         s.direct ? "6.4 seconds | channel RSSI -140..-30 dBm" : "Last mesh packet RSSI | -140..-30 dBm";
     panel_note(sf, panel, plot.y + plot.h + 1, caption);
@@ -974,10 +929,6 @@ static void draw(tui_surface *sf, tui_rect a)
             s.calibrated ? s.calibration_saved ? "calibration saved on SD" : "calibration in RAM" : "CALIBRATION REQUIRED");
         else snprintf(line, sizeof(line), "Waiting for a valid magnetic reading");
         tui_put_str(sf, panel, panel.x + 2, plot.y + plot.h + 2, line, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
-    }
-    if(s.mode==LS_LAB_SPECTRUM) {
-        snprintf(line,sizeof(line),"%s sweeps %lu / errors %lu / age %s",ls_rsel_name(LS_RSEL_LORA),(unsigned long)s.spectrum_sweeps,(unsigned long)s.spectrum_errors,s.direct&&s.spectrum_us&&now>=s.spectrum_us&&now-s.spectrum_us<3000000?"<3s":"STALE");
-        tui_put_str(sf,panel,panel.x+2,plot.y+plot.h+2,line,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
     }
     if (panel.h > 36) {
         tui_rect info = tui_rect_make(panel.x + 1, plot.y + plot.h + 3, panel.w - 2, panel.h - plot.h - 11);

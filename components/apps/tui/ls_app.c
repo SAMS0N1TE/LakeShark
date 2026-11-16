@@ -7,7 +7,7 @@
 #include "ls_anim.h"
 #include "ls_textpack.h"
 
-#define MAX_APPS LS_TUI_MAX_SCREENS
+#define MAX_APPS LS_APP_MAX
 
 EXT_RAM_BSS_ATTR static ls_app_t s_app[MAX_APPS];
 EXT_RAM_BSS_ATTR static int      s_screen_index[MAX_APPS];

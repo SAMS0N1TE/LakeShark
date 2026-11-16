@@ -98,6 +98,11 @@ typedef struct {
    apps they are entries in the loader's own bounded storage. */
 int  ls_app_register(const ls_app_t *app);
 
+/* How many apps the directory holds: the built-in ones (about 40) and the
+   card's (LS_LAP_MAX_APPS). The card's share one screen, so this is not the
+   screen table's size (LS_TUI_MAX_SCREENS). */
+#define LS_APP_MAX 96
+
 /* Why a registration was refused. All negative, so `< 0` still means
    refused. */
 #define LS_APP_REG_BAD_ARGS   (-1)  /* no descriptor, or no screen          */

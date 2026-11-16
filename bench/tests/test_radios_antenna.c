@@ -41,9 +41,9 @@ static int vctl_since(int from)
     return level;
 }
 
-/* MMCX1 receive-only (the default): the transmit goes out the internal
-   antenna (VCTL high) and MMCX1 (low) is back once the part reports it
-   done. The operator's choice reads MMCX1 throughout. */
+/* MMCX1 RX ONLY (chosen; no longer the default): the transmit goes out the
+   internal antenna (VCTL high) and MMCX1 (low) is back once the part
+   reports it done. The operator's choice reads MMCX1 throughout. */
 LS_CASE(receive_only_mmcx1_moves_transmit_to_internal_and_back)
 {
     radio_up(FK_LR);
@@ -76,25 +76,29 @@ LS_CASE(receive_only_mmcx1_moves_transmit_to_internal_and_back)
     LS_CHECK(!ls_lora_is_transmitting());
 }
 
-LS_CASE(lr2021_rx_only_port_cannot_be_overridden)
+/* "Make sure we are not forcing the internal antenna for TX anymore": the
+   LR2021 transmitted out the internal antenna with MMCX1 selected however
+   MMCX1 USE was set. Now the transmit goes where the switch points (VCTL low
+   for MMCX1) unless RX ONLY was chosen, on the LR2021 and the SX1262. */
+LS_CASE(transmit_follows_the_selected_antenna_on_every_module)
 {
-    radio_up(FK_LR);
-    uint8_t data = 1;
-    ls_board_hw_antenna_set_mmcx_tx(true);
-    LS_CHECK(!ls_board_hw_antenna_mmcx_tx());
-    LS_EQ_INT(ls_board_hw_antenna_external(true), ESP_OK);
-    int mark = fk_xl_log_n;
-    LS_EQ_INT(ls_lora_send(&data, 1), ESP_OK);
-    LS_EQ_INT(vctl_since(mark), 1);
-    fk.irq |= LR20XX_IRQ_TX_DONE;
-    LS_CHECK(ls_lora_send_done());
-    ls_board_hw_antenna_set_mmcx_tx(false);
-    LS_EQ_INT(ls_board_hw_antenna_external(false), ESP_OK);
-    mark = fk_xl_log_n;
-    LS_EQ_INT(ls_lora_send(&data, 1), ESP_OK);
-    LS_EQ_INT(vctl_since(mark), -1);
-    fk.irq |= LR20XX_IRQ_TX_DONE;
-    LS_CHECK(ls_lora_send_done());
+    for (int kind = FK_LR; kind <= FK_SX_STATUS; ++kind) {
+        radio_up((fk_kind_t)kind);
+        uint8_t data = 1;
+        ls_board_hw_antenna_set_mmcx_tx(true);
+        LS_CHECK(ls_board_hw_antenna_mmcx_tx());
+        LS_EQ_INT(ls_board_hw_antenna_external(true), ESP_OK);
+        int mark = fk_xl_log_n;
+        LS_EQ_INT(ls_lora_send(&data, 1), ESP_OK);
+        LS_EQ_INT(vctl_since(mark), -1);        /* not moved to internal */
+        LS_CHECK(ls_lora_is_transmitting());
+        LS_CHECK(ls_board_hw_antenna_is_external());
+        if (kind == FK_LR) {
+            fk.irq |= LR20XX_IRQ_TX_DONE;
+            LS_CHECK(ls_lora_send_done());
+            LS_EQ_INT(vctl_since(mark), -1);    /* nothing to put back */
+        }
+    }
 }
 
 LS_CASE(transmitting_socket_refuses_route_changes)

@@ -99,6 +99,41 @@ int cc_cellset_resolve(cc_cellset *s,unsigned z,uint32_t x,uint32_t y,uint64_t *
     return cc_ctile_locate(&s->map,z,x,y,off,len);
 }
 #include "cellset_clip.h"
+void cc_scene_merge(cc_scene *dst,cc_scene *src) { merge_scene(dst,src); dst->degraded+=src->degraded; }
+/* r cut to the cols x rows view plus an 8-dot margin; 0 when nothing is left. */
+static int cut(const int64_t r[4],int32_t cols,int32_t rows,int32_t c[4]) {
+    int64_t lim[4]={-8,-8,(int64_t)cols*2+8,(int64_t)rows*4+8};
+    for(unsigned k=0;k<4;k++) c[k]=(int32_t)(k<2?(r[k]>lim[k]?r[k]:lim[k]):(r[k]<lim[k]?r[k]:lim[k]));
+    return c[0]<c[2] && c[1]<c[3];
+}
+/* Source tile (tz,tx,ty) drawn at zoom z: features wholly outside c (view
+   dots) left out, scaled up, clipped to k. 1 drawn, 2 absent, 0 failed. */
+static int draw(const cc_ctile *f,unsigned z,unsigned tz,uint32_t tx,uint32_t ty,int64_t left,int64_t top,
+                const int32_t c[4],const int32_t k[4],cc_arena *a,cc_decoded_cache *cache,cc_scene *part) {
+    unsigned shift=z-tz;
+    /* View dots scaled down to the source zoom (>> floors): u=(view+rx)>>shift. */
+    int64_t rx=left&((INT64_C(1)<<shift)-1),ry=top&((INT64_C(1)<<shift)-1);
+    int64_t wx=(c[0]+rx)>>shift,wy=(c[1]+ry)>>shift;
+    memset(part,0,sizeof(*part));
+    int got=cc_ctile_tile_window(f,tz,tx,ty,(int64_t)tx*256-(left>>shift)-wx,(int64_t)ty*256-(top>>shift)-wy,
+                                 (int32_t)(((c[2]+rx)>>shift)+1-wx),(int32_t)(((c[3]+ry)>>shift)+1-wy),a,cache,part);
+    return got!=1?got:cc_scene_overzoom(part,shift,(int32_t)(rx-(wx<<shift)),(int32_t)(ry-(wy<<shift)),a) &&
+                      clip_scene(part,k[0],k[1],k[2],k[3],a);
+}
+int cc_scene_coarser(const cc_ctile *f,unsigned z,unsigned tz,uint32_t tx,uint32_t ty,int64_t left,int64_t top,
+                     int32_t cols,int32_t rows,const int64_t r[4],cc_arena *a,cc_decoded_cache *cache,cc_scene *part) {
+    int32_t c[4]; size_t mark=a->used; int ok=1;
+    memset(part,0,sizeof(*part));
+    if(!cut(r,cols,rows,c)) return 1;
+    /* An absent ancestor (a level the pyramid skips) passes to the next. */
+    while(tz>f->zmin && z-tz<16) {
+        tz--; tx>>=1; ty>>=1;
+        size_t fails=a->fails;
+        if((ok=draw(f,z,tz,tx,ty,left,top,c,c,a,cache,part))==1) return 1;
+        if(!ok) { a->used=mark; if(a->fails==fails) break; } /* bad data, not a short arena */
+    }
+    memset(part,0,sizeof(*part)); return ok!=0;
+}
 int cc_cellset_scene(cc_cellset *s,unsigned z,int64_t left,int64_t top,int cols,int rows,
                      cc_arena *a,cc_scene *scene,cc_decoded_cache *cache) {
     memset(scene,0,sizeof(*scene));
@@ -155,15 +190,22 @@ int cc_cellset_scene(cc_cellset *s,unsigned z,int64_t left,int64_t top,int cols,
             if(firsty<owner_firsty)firsty=owner_firsty;
             if(x!=(firstx>x0?firstx:x0) || y!=(firsty>y0?firsty:y0))continue;
         }
-        uint64_t off;uint32_t len;int found=cc_ctile_locate(&map,tz,tx,ty,&off,&len);
-        if(found<0) goto fail;
-        if(!found) continue; /* installed empty is empty */
-        cc_str tile;cc_scene part={0};
-        if(!cc_ctile_source_tile(&map,off,len,a,cache,&tile) || !cc_ctile_tile_scene(tile,0,0,a,&part)) goto fail;
-        if(!cc_scene_overzoom(&part,z-tz,(int32_t)(left-((int64_t)tx*256<<(z-tz))),
-                             (int32_t)(top-((int64_t)ty*256<<(z-tz))),a)) goto fail;
-        if(!clip_scene(&part,(int32_t)(ownerx*span-left),(int32_t)(ownery*span-top),
-                       (int32_t)((ownerx+1)*span-left),(int32_t)((ownery+1)*span-top),a)) goto fail;
+        /* Clipped to the owner's square; features out of view are left out, as
+           on the native path, so a dense tile scaled up keeps only what shows.
+           Installed empty (absent) is empty. */
+        int64_t own[4]={ownerx*span-left,ownery*span-top,(ownerx+1)*span-left,(ownery+1)*span-top};
+        int32_t clip[4]={(int32_t)own[0],(int32_t)own[1],(int32_t)own[2],(int32_t)own[3]},c[4];
+        cc_scene part;size_t at=a->used,fails=a->fails;
+        if(!cut(own,cols,rows,c)) continue;
+        if(!draw(&map,z,tz,tx,ty,left,top,c,clip,a,cache,&part)) {
+            /* Short arena: this source tile's share from a coarser zoom. */
+            if(a->fails==fails) goto fail;
+            a->used=at;
+            int64_t ox=((int64_t)tx*256<<shift)-left,oy=((int64_t)ty*256<<shift)-top,sz=INT64_C(256)<<shift;
+            int64_t r[4]={ox>own[0]?ox:own[0],oy>own[1]?oy:own[1],ox+sz<own[2]?ox+sz:own[2],oy+sz<own[3]?oy+sz:own[3]};
+            if(!cc_scene_coarser(&map,z,tz,tx,ty,left,top,cols,rows,r,a,cache,&part)) goto fail;
+            scene->degraded++;
+        }
         merge_scene(scene,&part);
     }
     return 1;

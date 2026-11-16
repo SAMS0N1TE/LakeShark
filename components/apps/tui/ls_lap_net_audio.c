@@ -56,5 +56,6 @@ bool ls_lap_av_service(void) {
     busy = ls_lap_peripheral_service() || busy;
     busy = ls_lap_udp_service() || busy;
     busy = ls_lap_mdns_service() || busy;
+    busy = ls_lap_netdiag_service() || busy;
     return ls_lap_wifi_http_service() || busy;
 }
