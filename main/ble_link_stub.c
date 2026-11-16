@@ -98,6 +98,7 @@ esp_err_t ble_link_rssi(int *rssi)
 esp_err_t ble_link_rid_observer(bool on) { return on ? ESP_ERR_NOT_SUPPORTED : ESP_OK; }
 esp_err_t ble_link_find_observer(bool on) { return on ? ESP_ERR_NOT_SUPPORTED : ESP_OK; }
 esp_err_t ble_link_hid_observer(bool on) { return on ? ESP_ERR_NOT_SUPPORTED : ESP_OK; }
+esp_err_t ble_link_sweep_observer(bool on) { return on ? ESP_ERR_NOT_SUPPORTED : ESP_OK; }
 void ble_link_receiver(bool *running,bool *scanning,bool *failed) { *running=false; *scanning=false; *failed=false; }
 
 int ls_lap_ble_lease(bool on) { (void)on; return -103; }
