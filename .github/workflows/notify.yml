@@ -1,16 +1,25 @@
-name: Star ping
+name: Repo ping
 
-# Native GitHub events, no polling: 'watch/started' fires the moment someone
-# stars the repo, 'fork' fires on a fork. Each pushes one line to an ntfy topic.
 on:
   watch:
     types: [started]
   fork:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review]
+  issues:
+    types: [opened, reopened]
+  issue_comment:
+    types: [created]
+  discussion:
+    types: [created]
 
 permissions: {}
 
 jobs:
   ping:
+    if: >-
+      !endsWith(github.actor, '[bot]') &&
+      (github.event_name != 'issue_comment' || github.actor != github.repository_owner)
     runs-on: ubuntu-latest
     steps:
       - name: Push to ntfy
@@ -18,16 +27,68 @@ jobs:
           TOPIC: lakeshark-0a69be2a81a0c5a026
           ACTOR: ${{ github.actor }}
           EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
           STARS: ${{ github.event.repository.stargazers_count }}
           FORKS: ${{ github.event.repository.forks_count }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          ISSUE_NUM: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          ISSUE_IS_PR: ${{ github.event.issue.pull_request != null }}
+          COMMENT_URL: ${{ github.event.comment.html_url }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          DISC_NUM: ${{ github.event.discussion.number }}
+          DISC_TITLE: ${{ github.event.discussion.title }}
+          DISC_URL: ${{ github.event.discussion.html_url }}
         run: |
-          if [ "$EVENT" = "fork" ]; then
-            TITLE="LakeShark forked"
-            BODY="$ACTOR forked it - $FORKS forks now"
-            TAGS="fork"
-          else
-            TITLE="LakeShark starred"
-            BODY="$ACTOR starred it - $STARS stars now"
-            TAGS="star"
-          fi
-          curl -sS --fail-with-body -H "Title: $TITLE" -H "Tags: $TAGS" -d "$BODY" "https://ntfy.sh/$TOPIC"
+          clean() { printf '%s' "$1" | tr -d '\000-\037\177' | cut -c1-"${2:-200}"; }
+          PRIO=default
+          CLICK=""
+          case "$EVENT" in
+            fork)
+              TITLE="LakeShark forked"
+              BODY="$ACTOR forked it - $FORKS forks now"
+              TAGS="fork"
+              ;;
+            watch)
+              TITLE="LakeShark starred"
+              BODY="$ACTOR starred it - $STARS stars now"
+              TAGS="star"
+              ;;
+            pull_request_target)
+              TITLE="LakeShark PR #$PR_NUM $ACTION"
+              BODY="$ACTOR: $(clean "$PR_TITLE")"
+              TAGS="twisted_rightwards_arrows"
+              PRIO=high
+              CLICK="$PR_URL"
+              ;;
+            issues)
+              TITLE="LakeShark issue #$ISSUE_NUM $ACTION"
+              BODY="$ACTOR: $(clean "$ISSUE_TITLE")"
+              TAGS="bug"
+              PRIO=high
+              CLICK="$ISSUE_URL"
+              ;;
+            issue_comment)
+              KIND=issue
+              [ "$ISSUE_IS_PR" = "true" ] && KIND=PR
+              TITLE="LakeShark comment on $KIND #$ISSUE_NUM"
+              BODY="$ACTOR on \"$(clean "$ISSUE_TITLE" 80)\": $(clean "$COMMENT_BODY" 240)"
+              TAGS="speech_balloon"
+              CLICK="$COMMENT_URL"
+              ;;
+            discussion)
+              TITLE="LakeShark discussion #$DISC_NUM"
+              BODY="$ACTOR: $(clean "$DISC_TITLE")"
+              TAGS="speech_balloon"
+              CLICK="$DISC_URL"
+              ;;
+            *)
+              exit 0
+              ;;
+          esac
+          set -- -sS --fail-with-body -H "Title: $TITLE" -H "Tags: $TAGS" -H "Priority: $PRIO"
+          [ -n "$CLICK" ] && set -- "$@" -H "Click: $CLICK"
+          curl "$@" --data-binary "$BODY" "https://ntfy.sh/$TOPIC"
