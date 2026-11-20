@@ -1,8 +1,44 @@
 # LakeShark release notes
 
+## 3.0.0
+
+One firmware for every T-Display P4: the board finds its radio (SX1262 or LR2021) and its screen at boot. TFT boards keep their own image until one has been tested on this one.
+
+Update over Wi-Fi from UPDATE, or install `lakeshark-tdp4-3.0.0.zip` with the web flasher on terminalbay.com. LakeShark Desktop, Studio and the ESP32-P4-NANO stay on 2.22.0.
+
+New:
+
+- FREQS by location: a frequency database built from public data (FCC licences for P25, DMR, NXDN and public-safety FM, airports, NOAA weather radio, marine channels). Pick the areas you want in PACKS and install them over Wi-Fi, from terminalbay.com, or by copying to the card. In the field, GPS picks among the packs you installed, with no network. Installed packs update themselves on Wi-Fi.
+- GPS is on from the first boot, and apps that care about where you are use it.
+- World maps: line maps of the whole world in the style of an air-traffic terminal (roads, borders, coastlines, place names), streamed and cached as you move, or downloaded ahead for an area in TILES. LOOK switches DETAILED, DOTS and SIMPLE; GOTO GPS centres on your fix. Panning and zooming move the map with its markers instead of redrawing in bands.
+- WARDRIVE: Wi-Fi, Bluetooth and radio sightings with GPS, live views and exports to the card.
+- STORE on the board: browse, install and update apps over Wi-Fi.
+- LOCKER: send files between the board and terminalbay.com. CHAT: an anonymous chat room for the world, your country or your area. REPORT A BUG: sends the board's report to us from the board.
+- Lock screen: a PIN, automatic dimming, and wake on tap. A tap that wakes the screen never presses a button.
+- HOME: coloured group tabs; card apps sit in their own group with a mark.
+- MUSIC: equaliser and gain, and no more pauses every few seconds.
+- The C6 Wi-Fi coprocessor updates from the board, with no cable.
+- More room: many built-in apps now live on the board's own storage and come back by themselves after an update.
+
+Fixed:
+
+- The board answers about 11 s after power on (the map's card scan no longer holds the screen up).
+- MAP: a large area download can no longer erase the tiles already saved, a damaged map tile can no longer restart the board, and memory is freed when MAP closes.
+- P25: ESC leaves the app again. FM: AIRBAND keys say why they are off on an LR2021 board. LABS POCSAG and DRONES Remote ID options are all reachable.
+- SWEEP: a saved hunt target no longer silences tracker alerts outside SWEEP.
+- The PIN is saved in one piece, and wrong tries are remembered across a restart.
+- MUSIC REC works on a card with no music folder. NOTES, COMPASS, FILES, BOOT LOG, METERS and TIME MACHINE fixes.
+- Updates over Wi-Fi offer only the image for your board's radio and screen.
+
+Good to know:
+
+- The PIN protects the screen, not the card: anyone with the card or a USB cable can read your files.
+
+Store apps updated alongside this release (they also run on 2.23.x): MESHTASTIC 1.4 (full settings, channel sharing, and a translator for nine languages via MESH LANGUAGES), SUPREME T. 0.9.1, PINBALL 2.1, MESHLING 1.3, DETECTOR 3.1, RF LAB 2.1, BURST SCOPE, IRIDIUM BURSTS and CARRIER LEVEL 1.1.
+
 ## 2.23.2
 
-Experimental. Everything in 2.23.1, plus the work since. Same four images (T-Display P4, LR, TFT and NET) and the same C6 file. The apps zip has the updated card apps.
+The stable release for the T-Display P4, after 2.21.5. It takes in the 2.23.0 and 2.23.1 test builds (below) plus the work since. Four images (T-Display P4, LR, TFT and NET), the C6 file for Wi-Fi capture, and the card apps, which are also in the LakeShark app store on terminalbay.com.
 
 New apps and app updates (in `lakeshark-apps-2.23.2.zip`, copy to `/sdcard/apps`):
 

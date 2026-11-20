@@ -22,6 +22,7 @@ static EXT_RAM_BSS_ATTR cc_pixel_style pix_style; /* view_lock */
 static bool pix_style_set;
 static uint16_t (*pix_shades)[256];
 static uint32_t pix_render_us; /* the last picture, raster to publish */
+static uint32_t pix_raster_us,pix_paint_us; /* its two halves: decode + raster, then paint + publish */
 static bool pix_commit(render_state *s,const map_request *r);
 /* MAP left: the pictures go back to PSRAM. Worker only. */
 static void pix_release(void) {
@@ -98,6 +99,14 @@ size_t ls_carto_map_labels(ls_carto_label *labels,size_t cap,int cols,int rows) 
     if(n>cap) n=cap;
     memcpy(labels,ui_names,n*sizeof(*labels));return n;
 }
+/* The names of the picture on screen, fresh or not: MAP moves them with the
+   picture while the next one renders, where they used to blink out on
+   every pan step. */
+size_t ls_carto_map_labels_held(ls_carto_label *labels,size_t cap,int cols,int rows) {
+    size_t n=ui_map_drawn && cols==ui_map_area.w && rows==ui_map_area.h?ui_name_count:0;
+    if(n>cap) n=cap;
+    memcpy(labels,ui_names,n*sizeof(*labels));return n;
+}
 size_t ls_carto_map_files(char (*paths)[128],size_t cap) {
     /* A few tries before giving up: the renderer holds this lock in short spells. */
     bool got=false;
@@ -162,6 +171,10 @@ int ls_carto_map_nearest(double lat,double lon,double *nlat,double *nlon) {
     }
     xSemaphoreGive(view_lock);return result;
 }
+static atomic_bool have_scan_wanted;
+static atomic_uint have_scan_serial;
+void ls_carto_map_scan_request(void) { atomic_store(&have_scan_wanted,true); }
+unsigned ls_carto_map_scan_serial(void) { return atomic_load(&have_scan_serial); }
 static void map_scan_files(void) {
     xSemaphoreTake(file_lock,portMAX_DELAY);xSemaphoreTake(view_lock,portMAX_DELAY);
     map_file_count=0;
@@ -178,6 +191,7 @@ static void map_scan_files(void) {
         closedir(d);
     }
     have_scan();
+    atomic_store(&have_scan_wanted,false);atomic_fetch_add(&have_scan_serial,1);
     xSemaphoreGive(view_lock);xSemaphoreGive(file_lock);
 }
 
@@ -227,8 +241,79 @@ static uint8_t carto_style_attr(uint8_t a) {
     }
     return TUI_ATTR(fg,bg);
 }
+/* The last frame moved, and in dots scaled, to the view while the next one
+   renders: view dot x shows frame dot ax + x * k (a dot is a world pixel at
+   256 a tile). Copying the screen as it was instead kept the map where the
+   last frame had it, under markers already at the new view, with the last
+   frame's markers and names baked into it. */
+static bool ui_warp_ok;
+static double ui_warp_ax,ui_warp_ay,ui_warp_k;
+bool ls_carto_map_held_warp(double *ax,double *ay,double *k) {
+    if(!ui_warp_ok) return false;
+    *ax=ui_warp_ax;*ay=ui_warp_ay;*k=ui_warp_k;return true;
+}
+/* The view's middle in world dots, from MAP (which has the projection): no
+   maths library on this side of the boundary (bench/tools/test_carto_stack.py). */
+static struct { double lat,lon,x,y; unsigned z; bool set; } ui_view_dot;
+void ls_carto_map_view_dot(double lat,double lon,unsigned z,double x,double y) {
+    ui_view_dot.lat=lat;ui_view_dot.lon=lon;ui_view_dot.z=z;ui_view_dot.x=x;ui_view_dot.y=y;ui_view_dot.set=true;
+}
+static int held_floor(double v) { const int i=(int)v; return i-(v<(double)i); }
+static bool held_dots(tui_cell c) { return c.ch>=0x2800 && c.ch<=0x28ff; }
+/* Each column's two dots and middle in the old frame, worked out once a frame:
+   doubles are done in software on the P4, eight a cell cost 10 ms. */
+#define HELD_COLS_MAX 320
+static EXT_RAM_BSS_ATTR int held_x[HELD_COLS_MAX*3];
+static void held_moved(tui_surface *sf,tui_rect area,const carto_frame *f,unsigned z) {
+    static const uint8_t BIT[4][2]={{0,3},{1,4},{2,5},{6,7}};
+    const int dz=(int)f->z-(int)z,cols=f->cols,rows=f->rows,pw=cols*2,ph=rows*4;
+    const double k=dz>=0?(double)(1u<<dz):1.0/(double)(1u<<-dz),ws=256.0*(double)(1u<<f->z);
+    /* view dot x shows frame dot ax + x * k */
+    double ax=ui_view_dot.x*k-(double)(f->left+cols)+pw/2.0*(1.0-k);
+    if(ax>ws/2) ax-=ws;
+    if(ax<-ws/2) ax+=ws;
+    double ay=ui_view_dot.y*k-(double)(f->top+rows*2)+ph/2.0*(1.0-k);
+    if(!dz) { ax=held_floor(ax+0.5);ay=held_floor(ay+0.5); }
+    ui_warp_ax=ax;ui_warp_ay=ay;ui_warp_k=k;ui_warp_ok=true;
+    uint8_t ground=f->cells[0].attr;
+    if(carto_style_tint || carto_style_ground) ground=carto_style_attr(ground);
+    ground=TUI_ATTR(TUI_ATTR_BG(ground),TUI_ATTR_BG(ground));
+    const int across=cols<area.w?cols:area.w;
+    for(int x=0;x<across && x<HELD_COLS_MAX;x++) {
+        held_x[x*3]=held_floor(ax+(x*2+0.5)*k);held_x[x*3+1]=held_floor(ax+(x*2+1.5)*k);
+        held_x[x*3+2]=held_floor(ax+(x*2+1)*k);
+    }
+    for(int y=0;y<rows && y<area.h;y++) {
+        int dot_y[4];
+        for(int r=0;r<4;r++) dot_y[r]=held_floor(ay+(y*4+r+0.5)*k);
+        const int my=held_floor(ay+(y*4+2)*k);
+        for(int x=0;x<across && x<HELD_COLS_MAX;x++) {
+        if(!tui_rect_contains(tui_surface_rect(sf),area.x+x,area.y+y)) continue;
+        /* the frame's cell under this cell's middle */
+        const int mx=held_x[x*3+2];
+        tui_cell c={' ',ground};
+        if(mx>=0 && my>=0 && mx<pw && my<ph) {
+            const tui_cell src=f->cells[(my>>2)*cols+(mx>>1)];
+            c=src;
+            if(f->braille && held_dots(src)) {
+                /* dots: each of the cell's eight from wherever it now falls */
+                unsigned bits=0;
+                for(int r=0;r<4;r++) for(int q=0;q<2;q++) {
+                    const int sx=held_x[x*3+q],sy=dot_y[r];
+                    if(sx<0 || sy<0 || sx>=pw || sy>=ph) continue;
+                    const tui_cell s=f->cells[(sy>>2)*cols+(sx>>1)];
+                    if(held_dots(s) && ((s.ch-0x2800)>>BIT[sy&3][sx&1]&1)) bits|=1u<<BIT[r][q];
+                }
+                c.ch=(int16_t)(0x2800+bits);
+            }
+            if(carto_style_tint || carto_style_ground) c.attr=carto_style_attr(c.attr);
+        }
+        ls_braille_put(sf,area,area.x+x,area.y+y,c.ch,c.attr);
+        }
+    }
+}
 bool ls_carto_map_draw(tui_surface *sf,tui_rect area,double lat,double lon,unsigned z,bool braille,bool labels) {
-    ui_map_fresh=false;
+    ui_map_fresh=false;ui_warp_ok=false;
     if(!view_lock || area.w<1 || area.h<1 || z>22 || !atomic_load(&map_wanted)) return false;
     if(xSemaphoreTake(view_lock,0)==pdTRUE) {
         map_request *r=&map_mail.request;
@@ -278,6 +363,15 @@ bool ls_carto_map_draw(tui_surface *sf,tui_rect area,double lat,double lon,unsig
             ui_name_count=f->count;memcpy(ui_names,f->names,f->count*sizeof(*ui_names));
             ui_map_area=area;ui_map_drawn=true;frame_give();return true;
         }
+        if(ready && f->braille==braille && f->cols==area.w && f->rows==area.h && f->z<=22 && f->cols<=HELD_COLS_MAX &&
+           (int)f->z-(int)z>=-4 && (int)f->z-(int)z<=4 && ui_view_dot.set &&
+           ui_view_dot.lat==lat && ui_view_dot.lon==lon && ui_view_dot.z==z) {
+            /* Panned or zoomed, the next frame rendering: this one moved to
+               the view, its names with it (draw_carto_labels). */
+            held_moved(sf,area,f,z);
+            ui_name_count=f->count;memcpy(ui_names,f->names,f->count*sizeof(*ui_names));
+            ui_map_area=area;ui_map_drawn=true;frame_give();return true;
+        }
         frame_give();
     }
     if(held) for(int y=0;y<area.h;y++) for(int x=0;x<area.w;x++) {
@@ -292,6 +386,7 @@ static uint32_t pix_mix(uint32_t a,uint32_t b,int n,int d) {
     for(int k=0;k<24;k+=8) { int x=(int)((a>>k)&255),y=(int)((b>>k)&255);out|=(uint32_t)(x+(y-x)*n/d)<<k; }
     return out;
 }
+static void pix_style_apply(const uint32_t rgb[CC_INK_COUNT],uint32_t river,int relief);
 /* MAP's palette (ground, water, park, building, road_lo, road_hi, major) to
    one colour per CartoCore ink, ranked the way FIELD draws them. */
 void ls_carto_map_pixel_style(const uint32_t pal[7],int relief) {
@@ -314,7 +409,22 @@ void ls_carto_map_pixel_style(const uint32_t pal[7],int relief) {
     rgb[CC_BOUNDARY]=pix_mix(ground,lo,1,2);
     rgb[CC_CONTOUR]=pix_mix(ground,park,1,2);
     rgb[CC_INDEX_CONTOUR]=park;
-    const uint32_t river=pix_mix(water,0xffffff,1,3);
+    pix_style_apply(rgb,pix_mix(water,0xffffff,1,3),relief);
+}
+void ls_carto_map_pixel_atlas(const uint32_t ink[LS_ATLAS__COUNT],int relief) {
+    uint32_t rgb[CC_INK_COUNT];
+    rgb[CC_NONE]=rgb[CC_LAND]=ink[LS_ATLAS_LAND];
+    rgb[CC_RESIDENTIAL]=ink[LS_ATLAS_RESIDENTIAL];rgb[CC_INDUSTRIAL]=ink[LS_ATLAS_INDUSTRIAL];
+    rgb[CC_FARM]=ink[LS_ATLAS_FARM];rgb[CC_PARK]=ink[LS_ATLAS_PARK];rgb[CC_WOOD]=ink[LS_ATLAS_WOOD];
+    rgb[CC_WATER]=ink[LS_ATLAS_WATER];rgb[CC_BUILDING]=ink[LS_ATLAS_BUILDING];
+    rgb[CC_SERVICE]=ink[LS_ATLAS_SERVICE];rgb[CC_MINOR]=ink[LS_ATLAS_MINOR];
+    rgb[CC_SECONDARY]=ink[LS_ATLAS_SECONDARY];rgb[CC_MAJOR]=ink[LS_ATLAS_MAJOR];
+    rgb[CC_MOTORWAY]=ink[LS_ATLAS_MOTORWAY];rgb[CC_RAIL]=ink[LS_ATLAS_RAIL];
+    rgb[CC_BOUNDARY]=ink[LS_ATLAS_BOUNDARY];rgb[CC_CONTOUR]=ink[LS_ATLAS_CONTOUR];
+    rgb[CC_INDEX_CONTOUR]=ink[LS_ATLAS_INDEX];
+    pix_style_apply(rgb,ink[LS_ATLAS_RIVER],relief);
+}
+static void pix_style_apply(const uint32_t rgb[CC_INK_COUNT],uint32_t river,int relief) {
     if(!view_lock || xSemaphoreTake(view_lock,0)!=pdTRUE) return;
     bool same=pix_style_set && pix_style.river==river && pix_style.relief==relief;
     for(unsigned k=0;k<CC_INK_COUNT && same;k++) same=pix_style.rgb[k]==rgb[k];
@@ -367,7 +477,7 @@ bool ls_carto_map_failed(void) { return atomic_load(&map_status)<0; }
    open country or open water, anywhere in the world. */
 bool ls_carto_map_picture_covered(void) { return pix.valid && pix.covered; }
 void ls_carto_map_leave(void) {
-    ui_map_drawn=ui_map_fresh=false;ui_name_count=0;
+    ui_map_drawn=ui_map_fresh=ui_warp_ok=false;ui_name_count=0;
     atomic_store(&map_wanted,false);atomic_fetch_add(&map_epoch,1);
 }
 bool ls_carto_map_limits(unsigned *lo,unsigned *hi) {
@@ -469,11 +579,15 @@ static void map_service_locked(void) {
         const bool again=failed_times>0;
         memset(&sd_cost,0,sizeof(sd_cost));
         ls_map_trace("render",(int32_t)r.z,(int32_t)r.serial);
+        const int64_t raster_wall=carto_wall_us();
         ok=render_frame(shown,mode,CC_EDGES_SMOOTH,shown->left,shown->top);
         map_label_count=0;
         if(r.pixels) {
             ls_map_trace("rendered",(int32_t)r.z,ok);
+            const int64_t paint_start=carto_wall_us();
+            pix_raster_us=(uint32_t)(paint_start-raster_wall);
             if(ok) ok=pix_commit(shown,&r);
+            pix_paint_us=(uint32_t)(carto_wall_us()-paint_start);
             ls_map_trace("committed",(int32_t)r.z,ok);
             pix_render_us=(uint32_t)(esp_timer_get_time()-render_start);sd_cost_last=sd_cost;
             if(!ok && !again) carto_failure("picture",r.cols,r.rows,r.z);
@@ -572,5 +686,7 @@ static bool pix_commit(render_state *s,const map_request *r) {
 }
 static void map_service(void) {
     if(xSemaphoreTake(command_lock,0)!=pdTRUE) return;
+    /* MAP on world tiles asks what the card could draw instead. */
+    if(atomic_load(&have_scan_wanted) && !atomic_load(&view_active)) map_scan_files();
     map_service_locked();xSemaphoreGive(command_lock);
 }

@@ -35,7 +35,7 @@ typedef struct { int16_t x0, y0, x1, y1; } hit_t;
    will draw, and a second copy of this number is a second chance for
    the two to disagree about whether a word will fit. */
 #define BTN_MAX_W 16
-static hit_t s_btn_hit[BTN_SLOTS][MAX_HITS];
+EXT_RAM_BSS_ATTR static hit_t s_btn_hit[BTN_SLOTS][MAX_HITS];
 static int   s_btn_n[BTN_SLOTS];
 static bool s_btn_enabled[BTN_SLOTS][MAX_HITS];
 static char s_btn_keys[BTN_SLOTS][MAX_HITS];
@@ -57,7 +57,7 @@ static bool btn_changed(int slot, int i, uint32_t token, tui_rect bar, int64_t n
     return s_btn_change[slot][i] && now - s_btn_change[slot][i] < 240000;
 }
 
-static hit_t s_tile_hit[MAX_HITS];
+EXT_RAM_BSS_ATTR static hit_t s_tile_hit[MAX_HITS];
 static int   s_tile_n, s_tile_cols, s_tile_rows;
 
 static void hit_clear(hit_t *h, int *n) { *n = 0; (void)h; }
@@ -83,7 +83,7 @@ static int hit_find(const hit_t *h, int n, int col, int row)
    . : v V v :, five frames a second off the same clock as the LIVE spinner. */
 static char drip_glyph(void)
 {
-    return ".:vVv:"[(esp_timer_get_time() / 200000) % 6];
+    return 'v';   /* steady: it falls only when there is something new, not on a clock */
 }
 
 /* A label that does not fit is shortened on purpose, not cut mid-word.
@@ -146,6 +146,54 @@ static const ls_btn_t *tr_buttons(const ls_btn_t *btn, int n, ls_btn_t *copy)
 static bool s_compact;
 bool ls_tui_compact(void) { return s_compact; }
 void ls_tui_set_compact(bool on) { s_compact = on; }
+/* Colour roles (ls_tui_ui.h): filled by the desk for the frame it draws. */
+uint8_t ls_ink_tab[LS_INK_COUNT];
+bool ls_ink_on;
+EXT_RAM_BSS_ATTR static ls_ink_keep_t s_ink_keep;
+void ls_ink_set(const uint8_t *tab)
+{
+    ls_ink_on = tab != NULL;
+    if (tab) memcpy(ls_ink_tab, tab, sizeof(ls_ink_tab));
+    s_ink_keep.n = 0;
+}
+void ls_ink_keep(tui_rect r)
+{
+    if (!ls_ink_on || r.w < 1 || r.h < 1 || s_ink_keep.n >= LS_INK_KEEP_MAX) return;
+    const int i = s_ink_keep.n++;
+    s_ink_keep.r[i].x = (int16_t)r.x; s_ink_keep.r[i].y = (int16_t)r.y;
+    s_ink_keep.r[i].w = (int16_t)r.w; s_ink_keep.r[i].h = (int16_t)r.h;
+}
+ls_ink_keep_t *ls_ink_kept(void) { return &s_ink_keep; }
+/* A popup over a scope is not scope: its rect is cut out of what the frame
+   keeps black, each kept rect it crosses becoming the strips around it. */
+void ls_ink_unkeep(tui_rect h)
+{
+    if (!ls_ink_on || h.w < 1 || h.h < 1 || !s_ink_keep.n) return;
+    ls_ink_keep_t out;
+    out.n = 0;
+    for (int i = 0; i < s_ink_keep.n; i++) {
+        const int x0 = s_ink_keep.r[i].x, y0 = s_ink_keep.r[i].y;
+        const int x1 = x0 + s_ink_keep.r[i].w, y1 = y0 + s_ink_keep.r[i].h;
+        const int cx0 = h.x > x0 ? h.x : x0, cy0 = h.y > y0 ? h.y : y0;
+        const int cx1 = h.x + h.w < x1 ? h.x + h.w : x1, cy1 = h.y + h.h < y1 ? h.y + h.h : y1;
+        int16_t p[4][4];
+        int n = 0;
+        if (cx0 >= cx1 || cy0 >= cy1) {
+            p[n][0] = (int16_t)x0; p[n][1] = (int16_t)y0; p[n][2] = (int16_t)(x1 - x0); p[n][3] = (int16_t)(y1 - y0); n++;
+        } else {
+            if (cy0 > y0) { p[n][0] = (int16_t)x0; p[n][1] = (int16_t)y0; p[n][2] = (int16_t)(x1 - x0); p[n][3] = (int16_t)(cy0 - y0); n++; }
+            if (y1 > cy1) { p[n][0] = (int16_t)x0; p[n][1] = (int16_t)cy1; p[n][2] = (int16_t)(x1 - x0); p[n][3] = (int16_t)(y1 - cy1); n++; }
+            if (cx0 > x0) { p[n][0] = (int16_t)x0; p[n][1] = (int16_t)cy0; p[n][2] = (int16_t)(cx0 - x0); p[n][3] = (int16_t)(cy1 - cy0); n++; }
+            if (x1 > cx1) { p[n][0] = (int16_t)cx1; p[n][1] = (int16_t)cy0; p[n][2] = (int16_t)(x1 - cx1); p[n][3] = (int16_t)(cy1 - cy0); n++; }
+        }
+        for (int k = 0; k < n && out.n < LS_INK_KEEP_MAX; k++) {
+            out.r[out.n].x = p[k][0]; out.r[out.n].y = p[k][1]; out.r[out.n].w = p[k][2]; out.r[out.n].h = p[k][3];
+            out.n++;
+        }
+    }
+    s_ink_keep = out;
+}
+
 #else
 void ls_tui_set_compact(bool on) { (void)on; }
 #endif
@@ -201,6 +249,14 @@ static int key1_paint(tui_surface *sf, tui_rect clip, int x, int y,
     else if (focus || changed) { cap_bg = TUI_BLUE; ink = TUI_WHITE | TUI_BRIGHT; vink = TUI_YELLOW | TUI_BRIGHT; accel = TUI_YELLOW | TUI_BRIGHT; }
     else if (b->on)            { cap_bg = TUI_GREEN; ink = TUI_BLACK; vink = TUI_WHITE | TUI_BRIGHT; accel = TUI_RED; }
     else                       { cap_bg = TUI_WHITE; ink = TUI_BLACK; vink = TUI_BLUE; accel = TUI_RED; }
+    if (ls_ink_on && !b->dim) {
+        /* In a desk window: the scheme's Selected Items, title and Button colours. */
+        const bool lit = focus || changed;
+        const uint8_t a = ls_ink(lit ? LS_INK_SELECT : b->on ? LS_INK_KEY_ON : LS_INK_KEY, 0);
+        cap_bg = TUI_ATTR_BG(a);
+        ink = vink = TUI_ATTR_FG(a);
+        accel = lit || b->on || cap_bg != TUI_BLACK ? ink : TUI_ATTR_FG(ls_ink(LS_INK_ACCEL, 0));
+    }
     const uint8_t cap = TUI_ATTR(ink, cap_bg);
     int cx = x;
     tui_put_char(sf, clip, cx++, y, '[', TUI_ATTR(b->dim ? LS_FAINT_FG : (TUI_WHITE | TUI_BRIGHT), TUI_BLACK));
@@ -296,11 +352,12 @@ void ls_field1_draw(tui_surface *sf, tui_rect clip, int x, int y, int w,
         tui_put_char(sf, clip, x + 1 + i, y, i < n ? t[i] : ' ', well);
     /* The caret is an inverse cell, steady: nothing blinks on a timer. */
     if (caret && n < room)
-        tui_put_char(sf, clip, x + 1 + n, y, ' ', TUI_ATTR(TUI_BLACK, ink & 0x07));
+        tui_put_char(sf, clip, x + 1 + n, y, ' ', ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, ink & 0x07)));
 }
 
 void ls_dialog1_frame(tui_surface *sf, tui_rect r, const char *title, uint8_t hue)
 {
+    ls_ink_unkeep(r);                    /* over a scope a dialog is still the scheme's */
     if (!sf || r.w < 4 || r.h < 3) return;
     const uint8_t hi = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
     const uint8_t lo = TUI_ATTR(LS_FAINT_FG, TUI_BLACK);
@@ -352,7 +409,7 @@ void ls_slider1_draw(tui_surface *sf, tui_rect r, const char *label,
     /* The keys at the right end, then the travel between. */
     const int right = r.x + r.w;
     const tui_rect kd = tui_rect_make(right - 6, y, 3, 1), ku = tui_rect_make(right - 3, y, 3, 1);
-    const uint8_t kcap = live ? TUI_ATTR(TUI_BLACK, TUI_WHITE) : LS_ATTR_DIM;
+    const uint8_t kcap = live ? ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, TUI_WHITE)) : LS_ATTR_DIM;
     for (int k = 0; k < 2; k++) {
         const tui_rect key = k ? ku : kd;
         tui_put_char(sf, r, key.x, y, '[', TUI_ATTR(live ? (TUI_WHITE | TUI_BRIGHT) : LS_FAINT_FG, TUI_BLACK));
@@ -384,6 +441,7 @@ void ls_slider1_draw(tui_surface *sf, tui_rect r, const char *label,
 }
 
 static int s_force_rows;
+static const uint8_t *s_btn_hues;
 static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
                         int focus, int slot, bool raised, bool stretch, bool single_row)
 {
@@ -490,7 +548,12 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
         bool changed = btn_changed(slot, i, token, bar, now);
         uint8_t hue;
         int density;
+        /* A key with a colour of its own (HOME's groups) fills in it: bright
+           when it is the open one, its darker shade when not. */
+        const uint8_t own = s_btn_hues ? s_btn_hues[i] & 7 : 0;
+        const bool lit = sel || changed || btn[i].on;
         if (btn[i].dim)      { hue = TUI_BLACK | TUI_BRIGHT; density = LS_DITHER_LIGHT; }
+        else if (own)        { hue = lit ? own | TUI_BRIGHT : own; density = lit ? LS_DITHER_HEAVY : LS_DITHER_LIGHT; }
         else if (sel || changed) { hue = TUI_CYAN | TUI_BRIGHT; density = LS_DITHER_HEAVY; }
         else if (btn[i].on)  { hue = TUI_GREEN | TUI_BRIGHT; density = LS_DITHER_HEAVY; }
         /* Cyan, not blue. Blue was the last of the old palette left
@@ -503,9 +566,11 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
            exception is a dim button, whose whole point is to recede. */
         /* An unavailable control still has to say what it is - a
            label you cannot read is not a disabled button, it is a blank. */
-        const uint8_t face = TUI_ATTR(btn[i].dim ? LS_DIM_FG
-                                                 : (TUI_WHITE | TUI_BRIGHT),
-                                      TUI_BLACK);
+        /* A coloured key's words sit on its colour: dark on the bright
+           face, light on the dark one. */
+        const uint8_t face = own && !btn[i].dim
+                           ? (lit ? TUI_ATTR(TUI_BLACK, hue) : TUI_ATTR(TUI_WHITE | TUI_BRIGHT, hue))
+                           : TUI_ATTR(btn[i].dim ? LS_DIM_FG : (TUI_WHITE | TUI_BRIGHT), TUI_BLACK);
 
         tui_rect box = tui_rect_make(x0, y0, w - 1, h);
         ls_fill_dither(sf, box, density, hue);
@@ -515,14 +580,10 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
            gets none; three or more is a key and looks like one. */
         if (h >= 3) {
             const uint8_t edge = TUI_ATTR(hue, TUI_BLACK);
-            for (int c = 0; c < box.w; c++) {
-                tui_put_char(sf, box, box.x + c, box.y, tall ? '=' : '-', edge);
-                tui_put_char(sf, box, box.x + c, box.y + h - 1, tall ? '=' : '-', edge);
-            }
-            for (int r = 1; r < h - 1; r++) {
-                tui_put_char(sf, box, box.x, box.y + r, '|', edge);
-                tui_put_char(sf, box, box.x + box.w - 1, box.y + r, '|', edge);
-            }
+            tui_hline(sf, box, box.x, box.y, box.w, tall ? '=' : '-', edge);
+            tui_hline(sf, box, box.x, box.y + h - 1, box.w, tall ? '=' : '-', edge);
+            tui_vline(sf, box, box.x, box.y + 1, h - 2, '|', edge);
+            tui_vline(sf, box, box.x + box.w - 1, box.y + 1, h - 2, '|', edge);
             tui_put_char(sf, box, box.x, box.y, '+', edge);
             tui_put_char(sf, box, box.x + box.w - 1, box.y, '+', edge);
             tui_put_char(sf, box, box.x, box.y + h - 1, '+', edge);
@@ -691,6 +752,14 @@ void ls_btn_bar_raised(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
                        int focus)
 {
     button_bar(sf, bar, btn, n, focus, LS_BTN_SLOT_SCREEN, true, false, false);
+}
+
+void ls_btn_bar_raised_hued(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
+                            int focus, const uint8_t *hues)
+{
+    s_btn_hues = hues;
+    button_bar(sf, bar, btn, n, focus, LS_BTN_SLOT_SCREEN, true, false, false);
+    s_btn_hues = NULL;
 }
 
 /* A fixed row for screens that budget labels and large touch targets together. */
@@ -908,6 +977,8 @@ void ls_tile_grid(tui_surface *sf, tui_rect area, const ls_tile_t *tile,
 
         uint8_t hue = tile[i].hue ? tile[i].hue : (uint8_t)(TUI_CYAN);
         uint8_t frame = TUI_ATTR(sel_now ? (hue | TUI_BRIGHT) : hue, TUI_BLACK);
+        const uint8_t sel_at = ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, hue));   /* the chosen tile */
+        const uint8_t sel_bg = TUI_ATTR_BG(sel_at);
 
         tui_fill(sf, box, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
         tui_box(sf, box, NULL, frame);
@@ -915,15 +986,15 @@ void ls_tile_grid(tui_surface *sf, tui_rect area, const ls_tile_t *tile,
 
         if (sel_now)
             tui_fill(sf, tui_rect_make(box.x + 1, box.y + 1, box.w - 2, box.h - 2),
-                     ' ', TUI_ATTR(TUI_BLACK, hue));
+                     ' ', sel_at);
 
-        const uint8_t on_tile = sel_now ? TUI_ATTR(TUI_BLACK, hue)
+        const uint8_t on_tile = sel_now ? sel_at
                                         : TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK);
-        const uint8_t name_at = sel_now ? TUI_ATTR(TUI_BLACK, hue)
+        const uint8_t name_at = sel_now ? sel_at
                                         : TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
         /* The subtitle under every tile on the directory - the
            single most-looked-at grey in the interface. */
-        const uint8_t sub_at  = sel_now ? TUI_ATTR(TUI_BLACK, hue)
+        const uint8_t sub_at  = sel_now ? sel_at
                                         : LS_ATTR_DIM;
 
         /* The contents sit in the middle of the tile. */
@@ -989,11 +1060,15 @@ void ls_tile_grid(tui_surface *sf, tui_rect area, const ls_tile_t *tile,
                 tui_put_str(sf, box, box.x + box.w - 6, box.y + box.h - 1, tag,
                             TUI_ATTR(hue == TUI_YELLOW ? TUI_WHITE | TUI_BRIGHT : TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
         }
+        /* An app from the card says so at the other end of that border. */
+        if (tile[i].sd && box.w >= 12)
+            tui_put_str(sf, box, box.x + 2, box.y + box.h - 1, "[SD]",
+                        TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
 
         /* A live app says so in words, in its top border. */
 
         if (tile[i].live && box.w >= 10) {
-            tui_put_char(sf, box, box.x + box.w - 8, box.y, "|/-\\"[(esp_timer_get_time()/200000)%4],
+            tui_put_char(sf, box, box.x + box.w - 8, box.y, '*',
                          TUI_ATTR(TUI_GREEN | TUI_BRIGHT,TUI_BLACK));
             tui_put_str(sf, box, box.x + box.w - 6, box.y, ls_tr("LIVE"),
                         sel_now ? TUI_ATTR(TUI_BLACK, TUI_GREEN | TUI_BRIGHT)
@@ -1002,12 +1077,12 @@ void ls_tile_grid(tui_surface *sf, tui_rect area, const ls_tile_t *tile,
         else if (tile[i].live)
             tui_put_char(sf, box, box.x + box.w - 2, box.y, LS_TUI_BLOCK_FULL,
                          TUI_ATTR(TUI_GREEN | TUI_BRIGHT,
-                                  sel_now ? hue : TUI_BLACK));
+                                  sel_now ? sel_bg : TUI_BLACK));
 
         /* Something new in there, in the same place and the same way as LIVE,
            in the colour of the update pop-up. */
         if (tile[i].badge && !tile[i].live) {
-            const uint8_t dot = TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, sel_now ? hue : TUI_BLACK);
+            const uint8_t dot = TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, sel_now ? sel_bg : TUI_BLACK);
             const char g = drip_glyph();
             if (box.w >= 10) {
                 char tag[16];
@@ -1042,9 +1117,7 @@ void ls_fill_dither(tui_surface *sf, tui_rect r, int density, uint8_t hue)
                  : (density == LS_DITHER_MEDIUM) ? LS_TUI_SHADE_50
                                                  : LS_TUI_SHADE_25;
     const uint8_t at = TUI_ATTR(hue, TUI_BLACK);
-    for (int y = 0; y < r.h; y++)
-        for (int x = 0; x < r.w; x++)
-            tui_put_char(sf, r, r.x + x, r.y + y, g, at);
+    tui_fill(sf, r, g, at);   /* clipped to r and the surface once, not per cell */
 }
 
 void ls_dither_label(tui_surface *sf, tui_rect r, int row, const char *text,
@@ -1065,13 +1138,33 @@ void ls_dither_label(tui_surface *sf, tui_rect r, int row, const char *text,
         tui_put_char(sf, r, x + i, y, tui_str_cell(&p), attr);
 }
 
+__attribute__((noinline, optimize("Os"))) void ls_rframe(tui_surface *sf, tui_rect clip, tui_rect r, char h, uint8_t at)
+{
+    if (r.w < 2 || r.h < 2) return;
+    /* Solid line glyphs: rounded and light, or square and double for '='. */
+    const bool dbl = h == '=';
+    const int x1 = r.x + r.w - 1, y1 = r.y + r.h - 1;
+    for (int x = r.x + 1; x < x1; x++) {
+        ls_box_put(sf, clip, x, r.y, dbl ? LS_BOX_DBL_H : LS_BOX_H, at);
+        ls_box_put(sf, clip, x, y1, dbl ? LS_BOX_DBL_H : LS_BOX_H, at);
+    }
+    for (int y = r.y + 1; y < y1; y++) {
+        ls_box_put(sf, clip, r.x, y, dbl ? LS_BOX_DBL_V : LS_BOX_V, at);
+        ls_box_put(sf, clip, x1, y, dbl ? LS_BOX_DBL_V : LS_BOX_V, at);
+    }
+    ls_box_put(sf, clip, r.x, r.y, dbl ? LS_BOX_DBL_DR : LS_BOX_ARC_DR, at);
+    ls_box_put(sf, clip, x1, r.y, dbl ? LS_BOX_DBL_DL : LS_BOX_ARC_DL, at);
+    ls_box_put(sf, clip, r.x, y1, dbl ? LS_BOX_DBL_UR : LS_BOX_ARC_UR, at);
+    ls_box_put(sf, clip, x1, y1, dbl ? LS_BOX_DBL_UL : LS_BOX_ARC_UL, at);
+}
+
 void ls_panel_box(tui_surface *sf, tui_rect r, const char *title, uint8_t hue)
 {
     tui_box(sf, r, NULL, TUI_ATTR(hue, TUI_BLACK));
     title = ls_tr(title);
     if (title && r.w > 6)
         tui_put_str(sf, r, r.x + 2, r.y, title,
-                    TUI_ATTR(TUI_BLACK, hue | TUI_BRIGHT));
+                    ls_ink(LS_INK_CAPTION, TUI_ATTR(TUI_BLACK, hue | TUI_BRIGHT)));
 }
 
 /* An instrument with nothing to show says so in a panel its own size, in the middle of the space. */

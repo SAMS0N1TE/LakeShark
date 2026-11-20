@@ -4,6 +4,7 @@
 #include "settings.h"
 #include "notification_tone.h"
 #include "esp_attr.h"
+#include "ls_nano_psram.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -18,7 +19,7 @@
 void audio_tone(float freq, float dur_s, float amp)
 {
     int total = (int)(AUDIO_RATE_HZ * dur_s);
-    static int16_t buf[256];
+    static EXT_RAM_BSS_ATTR int16_t buf[256];
 
     audio_out_play_now();
     for (int i = 0; i < total; i += 256) {
@@ -34,7 +35,7 @@ void audio_tone(float freq, float dur_s, float amp)
 
 void snd_p25_chirp(void)
 {
-    static int16_t buf[2048];
+    static EXT_RAM_BSS_ATTR int16_t buf[2048];
     const float f1 = 1760.0f, f2 = 2350.0f;
     const float amp = 4800.0f;
     const int n1 = (int)(AUDIO_RATE_HZ * 0.045f);
@@ -165,7 +166,7 @@ void snd_position_fix(void)
 static void moto_tone(float freq, float dur_s, float amp)
 {
     int total = (int)(AUDIO_RATE_HZ * dur_s);
-    static int16_t buf[256];
+    static EXT_RAM_BSS_ATTR int16_t buf[256];
     const int fade = (int)(AUDIO_RATE_HZ * 0.003f);
 
     audio_out_play_now();
@@ -243,7 +244,7 @@ static const char *TEST_NAMES[SND_TEST_COUNT] = {
 static QueueHandle_t s_test_q = NULL;
 static StaticQueue_t s_test_q_ctrl;
 static uint8_t       s_test_q_store[2 * sizeof(uint8_t)];
-static StackType_t   s_test_stack[TEST_STACK_WORDS];
+static LS_NANO_EXT_BSS StackType_t s_test_stack[TEST_STACK_WORDS];
 static StaticTask_t  s_test_tcb;
 static TaskHandle_t  s_test_task;
 static volatile bool s_test_busy = false;
@@ -335,7 +336,7 @@ LS_COLD static void test_noise(void)
 LS_COLD static void test_tone_long(float freq, float dur_s)
 {
     const int total = (int)(AUDIO_RATE_HZ * dur_s);
-    static int16_t buf[256];
+    static EXT_RAM_BSS_ATTR int16_t buf[256];
     float ph = 0.0f;
     audio_out_play_now();
     for (int i = 0; i < total; i += 256) {

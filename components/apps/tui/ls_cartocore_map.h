@@ -8,6 +8,11 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+/* The Detailed look: one 0xRRGGBB per class of ground and line, in this order.
+   Declared for every build: MAP's palette code names the classes either way. */
+enum { LS_ATLAS_LAND, LS_ATLAS_RESIDENTIAL, LS_ATLAS_INDUSTRIAL, LS_ATLAS_FARM, LS_ATLAS_PARK, LS_ATLAS_WOOD,
+       LS_ATLAS_WATER, LS_ATLAS_RIVER, LS_ATLAS_BUILDING, LS_ATLAS_SERVICE, LS_ATLAS_MINOR, LS_ATLAS_SECONDARY,
+       LS_ATLAS_MAJOR, LS_ATLAS_MOTORWAY, LS_ATLAS_RAIL, LS_ATLAS_BOUNDARY, LS_ATLAS_CONTOUR, LS_ATLAS_INDEX, LS_ATLAS__COUNT };
 #define LS_CARTO_LABEL_MAX 64
 typedef struct { int16_t x,y; uint8_t attr, label_class; char text[128]; } ls_carto_label;
 #if (defined(ESP_PLATFORM) && LS_HAS_CARTOCORE) || defined(LS_CARTOCORE_HOST)
@@ -23,10 +28,21 @@ bool ls_carto_map_limits(unsigned *,unsigned *);
 const char *ls_carto_map_status(void);
 void ls_carto_hw_status(bool reset);
 size_t ls_carto_map_labels(ls_carto_label *,size_t,int,int);
+size_t ls_carto_map_labels_held(ls_carto_label *,size_t,int,int);
+/* The last draw showed the previous frame moved (and, in dots, scaled) to the
+   view while the next renders: view dot x is that frame's dot ax + x * k. */
+bool ls_carto_map_held_warp(double *ax,double *ay,double *k);
+/* Before ls_carto_map_draw: the view's middle in world dots (256 a tile at z). */
+void ls_carto_map_view_dot(double lat,double lon,unsigned z,double x,double y);
 /* Picture view: MAP's palette as 0xRRGGBB (ground, water, park, building, road_lo, road_hi,
    major), relief 0..100. Then request a pw x ph picture for a tw x th cell area; true while
    dst holds one (copied in when *serial differs), names then come from ls_carto_map_labels. */
 void ls_carto_map_pixel_style(const uint32_t pal[7],int relief);
+void ls_carto_map_pixel_atlas(const uint32_t ink[LS_ATLAS__COUNT],int relief);
+/* Ask the worker to read what the card holds (cells, map files) for ls_carto_map_nearest;
+   the serial moves when it has. Never waits. */
+void ls_carto_map_scan_request(void);
+unsigned ls_carto_map_scan_serial(void);
 bool ls_carto_map_pixels(double lat,double lon,unsigned z,int pw,int ph,int tw,int th,bool labels,uint16_t *dst,uint32_t *serial,
                          double *flat,double *flon,unsigned *fz);
 bool ls_carto_map_picture_cells(void);
@@ -43,7 +59,13 @@ static inline bool ls_carto_map_draw(tui_surface *s,tui_rect a,double lat,double
 }
 static inline size_t ls_carto_map_files(char (*p)[128],size_t n) { (void)p;(void)n;return 0; }
 static inline size_t ls_carto_map_labels(ls_carto_label *p,size_t n,int w,int h) { (void)p;(void)n;(void)w;(void)h;return 0; }
+static inline size_t ls_carto_map_labels_held(ls_carto_label *p,size_t n,int w,int h) { (void)p;(void)n;(void)w;(void)h;return 0; }
+static inline bool ls_carto_map_held_warp(double *a,double *b,double *k) { (void)a;(void)b;(void)k;return false; }
+static inline void ls_carto_map_view_dot(double a,double b,unsigned z,double x,double y) { (void)a;(void)b;(void)z;(void)x;(void)y; }
 static inline void ls_carto_map_pixel_style(const uint32_t p[7],int e) { (void)p;(void)e; }
+static inline void ls_carto_map_pixel_atlas(const uint32_t *p,int e) { (void)p;(void)e; }
+static inline void ls_carto_map_scan_request(void) {}
+static inline unsigned ls_carto_map_scan_serial(void) { return 0; }
 static inline bool ls_carto_map_pixels(double a,double b,unsigned z,int pw,int ph,int tw,int th,bool l,uint16_t *d,uint32_t *s,
                                        double *fa,double *fo,unsigned *fz) {
     (void)fa;(void)fo;(void)fz;

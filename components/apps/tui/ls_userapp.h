@@ -39,6 +39,7 @@ typedef struct {
     char    sub[LS_UA_STR];
     uint8_t icon;              /* ls_icon_t                                */
     uint8_t hue;               /* TUI_*                                    */
+    uint8_t group;             /* LS_APP_GROUP_*, 0 for USER               */
     uint8_t n;
     ls_ua_elem_t elem[LS_UA_MAX_ELEMS];
 } ls_ua_model_t;

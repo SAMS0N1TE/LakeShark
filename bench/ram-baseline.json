@@ -1,0 +1,38 @@
+{
+  "p4-nano-v3-dsi": {
+    "commit": "75a64fd42",
+    "dram": 200652,
+    "iram_text": 98380,
+    "map": "build_nano_v3_dsi/lakeshark.map"
+  },
+  "t-display-p4": {
+    "commit": "2cabc7cee",
+    "dram": 67456,
+    "iram_text": 92192,
+    "map": "../ls-ovh-universal/build_tdp4/lakeshark.map"
+  },
+  "t-display-p4-lr": {
+    "commit": "2cabc7cee",
+    "dram": 83520,
+    "iram_text": 91054,
+    "map": "../ls-ovh-universal/build_tdp4_lronly/lakeshark.map"
+  },
+  "t-display-p4-net": {
+    "commit": "2cabc7cee",
+    "dram": 67520,
+    "iram_text": 92192,
+    "map": "../ls-ovh-universal/build_tdp4_net/lakeshark.map"
+  },
+  "t-display-p4-tft": {
+    "commit": "2cabc7cee",
+    "dram": 67456,
+    "iram_text": 92192,
+    "map": "../ls-ovh-universal/build_tdp4_tft/lakeshark.map"
+  },
+  "t-display-p4-universal": {
+    "commit": "75a64fd42",
+    "dram": 82496,
+    "iram_text": 92192,
+    "map": "build_tdp4_u/lakeshark.map"
+  }
+}

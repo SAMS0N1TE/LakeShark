@@ -10,6 +10,9 @@ static float counted_atan(float x, float y) { trig_calls++; return atan2f(x,y); 
 #define cosf counted_cos
 #define atan2f counted_atan
 #include "../../components/apps/tui/ls_compass_art.c"
+/* Colour roles belong to the desk (ls_tui_ui.c); this suite has no desk, so the roles stay off. */
+uint8_t ls_ink_tab[LS_INK_COUNT];
+bool ls_ink_on;
 #undef sinf
 #undef cosf
 #undef atan2f

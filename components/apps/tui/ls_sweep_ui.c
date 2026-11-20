@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "ls_textpack.h"
+#include "ls_text.h"
 
 /* SWEEP screen.
 
@@ -43,7 +44,7 @@ static bool owner_selected;
    SELECT DEVICE used to change only a one-cell marker, or nothing at all. */
 static char note[72];
 static int64_t note_until;
-static ls_sweep_device_t near_target;
+EXT_RAM_BSS_ATTR static ls_sweep_device_t near_target;
 static tui_rect list_area;
 typedef enum { VIEW_LIST, VIEW_HUNT } sweep_view_t;
 static sweep_view_t screen_view; /* Retained across app visits; no frame-time NVS. */
@@ -51,7 +52,11 @@ static const char *const view_names[]={"LIST","HUNT"};
 static unsigned list_shown;
 static bool slow;
 static int mode_row=-1; /* HUNT: the averaging line, which toggles FAST/SLOW on a tap */
+#ifndef LS_MODULE_BUILD /* a module would bind this stub, not the real one */
 __attribute__((weak)) bool ls_sweep_find_target(const uint8_t *mac,uint8_t radio,const char *label) {(void)mac;(void)radio;(void)label;return false;}
+#else
+bool ls_sweep_find_target(const uint8_t *mac,uint8_t radio,const char *label); /* firmware stub -> FIND module */
+#endif
 static const char *const modes[]={"OFF","SOUND","MUTED"};
 static const char *const filters[]={"ALL","CAMERA","BODYCAM","DRONE","TRACKER","ATTACK"};
 static int get(const ls_opt_t *o) {
@@ -96,7 +101,7 @@ static const ls_opt_ctx_t ctx={.name="SWEEP",.job=-1,.radio=LS_RSEL_NONE,.back_t
 
 #define FRESH_US INT64_C(2000000)
 #define STALE_US INT64_C(10000000)
-#define INK(c)   TUI_ATTR((c),TUI_BLACK)
+#define INK(c)   ls_ink_hue(TUI_ATTR((c),TUI_BLACK))
 #define CHROME   INK(TUI_CYAN)
 #define VALUE    INK(TUI_WHITE|TUI_BRIGHT)
 #define NOTE     LS_ATTR_DIM
@@ -566,7 +571,7 @@ static void draw_hunt(tui_surface *sf,tui_rect a,const cols_t *c,int y,const ls_
     if(fy<fb) fact(sf,a,fx,fw,fy++,"STATE",d->match.state==SW_STATE_SEPARATED?"separated from owner":d->match.state==SW_STATE_NEAR?"near its owner":"not reported");
     snprintf(t,sizeof(t),"%lu  (%.1f/s)",(unsigned long)d->adverts,ls_sweep_rate(d,now));
     if(fy<fb) fact(sf,a,fx,fw,fy++,"ADVERTS",t);
-    snprintf(t,sizeof(t),"%lds ago",(long)(age/1000000));
+    snprintf(t,sizeof(t),"%lds ago",ls_age_q((long)(age/1000000)));
     if(fy<fb) fact(sf,a,fx,fw,fy++,"HEARD",t);
     /* The averaging row is the FAST/SLOW control; a tap toggles it. */
     if(fy<fb) {fact(sf,a,fx,fw,fy,"AVERAGE",slow?"SLOW 8 s":"FAST 2 s");right(sf,a,fx+20,fw-20,fy,slow?"tap for FAST":"tap for SLOW",NOTE);mode_row=fy++;}
@@ -596,7 +601,7 @@ static void draw(tui_surface *sf,tui_rect a) {
     }
     for(unsigned i=0;i<count;i++) if(view[i].serial==selected) {pick=i;found=true;break;}
     if(!found) {selected=0;pick=0;owner_selected=false;screen_view=VIEW_LIST;if(s.hunt) ls_sweep_hunt(NULL,0,0);}
-    if(a.w<26 || a.h<18) {ls_panel_notice(sf,a,"SWEEP",LS_TEXT(t_ls_sweep_ui_more_screen_space_needed, "More screen space needed"),"Use a smaller font");return;}
+    if(a.w<26 || a.h<18) {ls_panel_notice(sf,a,NULL,LS_TEXT(t_ls_sweep_ui_more_screen_space_needed, "More screen space needed"),"Use a smaller font");return;}
     int bh=ls_tui_compact()?1:ls_tui_is_wide()?3:5;
     ls_btn_t b[]={ {st.requested?"STOP":"START","RX",'s',false,false,false},
         {screen_view==VIEW_HUNT?"FIND":"SELECT",screen_view==VIEW_HUNT?"TURN FOR BEARING":"DEVICE",screen_view==VIEW_HUNT?'f':'h',false,!count && !st.owner_nearby,false},
@@ -609,6 +614,8 @@ static void draw(tui_surface *sf,tui_rect a) {
     list_area=a;list_shown=0;mode_row=-1;for(unsigned i=0;i<128;i++) row_device[i]=-1;
     int y=header(sf,a,&c,&s,&st,fix,now)+1;
     if(screen_view==VIEW_HUNT && selected && (count || owner_selected)) {
+        /* While this is on screen the speaker plays the hunt's clicks only. */
+        ls_sweep_hunt_view_seen(now);
         draw_hunt(sf,a,&c,y,owner_selected?&near_target:&view[pick],fix,now);
         return;
     }

@@ -1,0 +1,123 @@
+{
+  "_comment": "Built-in apps kept in the internal app storage as firmware modules (tui/ls_mod.h). srcs leave the firmware image when CONFIG_LS_APP_MODULES is on; screens keep their symbol as a proxy; syms are what the firmware still calls by name (stubs in tui/ls_mod_stubs.c); init runs once when the module is loaded. Optional: if / unless (a CONFIG_ name without the prefix), opt (-O2), cflags.",
+  "modules": [
+    {
+      "id": "compass",
+      "srcs": ["components/apps/tui/screens/ext/scr_compass.c",
+               "components/apps/tui/screens/ext/scr_labs.c"],
+      "screens": ["ls_scr_compass", "ls_scr_labs"],
+      "syms": ["ls_scr_compass_console", "ls_scr_labs_tune_marker", "ls_sweep_find_target"]
+    },
+    {
+      "id": "experiments",
+      "srcs": ["components/apps/tui/screens/ext/scr_experiments.c",
+               "components/apps/tui/screens/ext/scr_meters.c",
+               "components/apps/tui/ls_experiments.c",
+               "components/apps/tui/ls_experiments_builtin.c",
+               "components/apps/tui/ls_experiments_hw.c",
+               "components/apps/tui/ls_meters.c",
+               "components/apps/tui/ls_meters_rt.c",
+               "components/apps/tui/experiments/aviation_decode.c",
+               "components/apps/tui/experiments/dfm_decode.c",
+               "components/apps/tui/experiments/exp_aviation.c",
+               "components/apps/tui/experiments/exp_dfm17.c",
+               "components/apps/tui/experiments/exp_loramon.c",
+               "components/apps/tui/experiments/exp_lr433.c",
+               "components/apps/tui/experiments/exp_p25site.c",
+               "components/apps/tui/experiments/exp_pagers.c",
+               "components/apps/tui/experiments/exp_radar.c",
+               "components/apps/tui/experiments/exp_rf.c",
+               "components/apps/tui/experiments/exp_rs41.c",
+               "components/apps/tui/experiments/exp_survey.c",
+               "components/apps/tui/experiments/exp_uat.c",
+               "components/apps/tui/experiments/exp_wisun.c",
+               "components/apps/tui/experiments/exp_zwave.c",
+               "components/apps/tui/experiments/lorafam_decode.c",
+               "components/apps/tui/experiments/lr433_history.c",
+               "components/apps/tui/experiments/p25_sitefind.c",
+               "components/apps/tui/experiments/pager_recon.c",
+               "components/apps/tui/experiments/radar_dsp.c",
+               "components/apps/tui/experiments/rs41_decode.c",
+               "components/apps/tui/experiments/rs41_store.c",
+               "components/apps/tui/experiments/rs41_stream.c",
+               "components/apps/tui/experiments/sensor_history.c"],
+      "screens": ["ls_scr_experiments", "ls_scr_meters"],
+      "init": "ls_exp_register_builtin",
+      "syms": ["ls_exp_console", "ls_exp_running", "ls_meters_command", "rs41_show_map", "rs41_store_copy"]
+    },
+    {
+      "id": "digi",
+      "srcs": ["components/apps/tui/screens/ext/scr_digi.c",
+               "components/lakeshark/apps/digi/digi_engine.c",
+               "components/lakeshark/apps/digi/digi_fft.c",
+               "components/lakeshark/apps/digi/digi_ftx.c",
+               "components/lakeshark/apps/digi/digi_ftx_tables.c",
+               "components/lakeshark/apps/digi/digi_msg.c",
+               "components/lakeshark/apps/digi/digi_wspr.c"],
+      "screens": ["ls_scr_digi"],
+      "syms": ["digi_console_command", "digi_running", "digi_sink_wanted", "digi_sink_push"]
+    },
+    {
+      "id": "tiles",
+      "if": "LS_BOARD_T_DISPLAY_P4",
+      "srcs": ["components/apps/tui/screens/ext/scr_tiles.c"],
+      "screens": ["ls_scr_tiles"],
+      "syms": ["ls_tiles_search_globe"]
+    },
+    {
+      "id": "sweep",
+      "srcs": ["components/apps/tui/ls_sweep_ui.c"],
+      "screens": ["ls_scr_sweep"]
+    },
+    {
+      "id": "drones",
+      "srcs": ["components/apps/tui/ls_drone_ui.c"],
+      "screens": ["ls_scr_drones"]
+    },
+    {
+      "id": "field",
+      "srcs": ["components/apps/tui/screens/ext/scr_fox.c",
+               "components/apps/tui/screens/ext/scr_rfsurvey.c"],
+      "screens": ["ls_scr_fox", "ls_scr_rfsurvey"]
+    },
+    {
+      "id": "tmach",
+      "srcs": ["components/apps/tui/screens/ext/scr_tmach.c"],
+      "screens": ["ls_scr_tmach"]
+    },
+    {
+      "id": "files",
+      "srcs": ["components/apps/tui/screens/ext/scr_files.c"],
+      "screens": ["ls_scr_files"],
+      "syms": ["ls_scr_files_show_path"]
+    },
+    {
+      "id": "music",
+      "srcs": ["components/apps/tui/screens/ext/scr_music.c"],
+      "screens": ["ls_scr_music"],
+      "syms": ["ls_scr_music_play_file"]
+    },
+    {
+      "id": "cell",
+      "unless": "LS_LR2021_ONLY",
+      "srcs": ["components/apps/tui/screens/ext/scr_cell.c"],
+      "screens": ["ls_scr_cell"],
+      "init": "ls_cell_publish"
+    },
+    {
+      "id": "wardrive",
+      "srcs": ["components/apps/tui/screens/ext/scr_wardrive.c",
+               "components/apps/tui/wardrive/wd_core.c",
+               "components/apps/tui/wardrive/wd_view3d.c",
+               "components/apps/tui/wardrive/wd_feed_board.c"],
+      "screens": ["ls_scr_wardrive"],
+      "syms": ["ls_wardrive_running"]
+    },
+    {
+      "id": "tools",
+      "srcs": ["components/apps/tui/screens/ext/scr_mixrf.c",
+               "components/apps/tui/screens/ext/scr_bootlog.c"],
+      "screens": ["ls_scr_mixrf", "ls_scr_bootlog"]
+    }
+  ]
+}

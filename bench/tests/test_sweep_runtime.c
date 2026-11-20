@@ -86,7 +86,9 @@ LS_CASE(sweep_mute_preserves_system_volume_and_receive_runtime) {
     LS_CHECK(ls_sweep_hunt(device.mac,device.radio,device.address_type));ls_sweep_tick();LS_CHECK(sounds==before);
     LS_EQ_INT(ls_sweep_command(3,off),0);ls_shim_time_set(61000000);ls_sweep_tick();
     LS_CHECK(sounds==before && volume==23 && !muted);
-    ls_shim_time_set(65000000);ls_sweep_tick();LS_CHECK(sounds==before+1 && volume==23);ls_sweep_settings_get(&s);LS_CHECK(s.muted==2 && s.enabled==15);
+    /* The hunt clicks while SWEEP shows its HUNT view (elsewhere a saved
+       target no longer narrows the speaker). */
+    ls_shim_time_set(65000000);ls_sweep_hunt_view_seen(65000000);ls_sweep_tick();LS_CHECK(sounds==before+1 && volume==23);ls_sweep_settings_get(&s);LS_CHECK(s.muted==2 && s.enabled==15);
     ls_sweep_start(false);ls_sweep_tick();
 }
 

@@ -3,7 +3,8 @@
     python app-sdk/catalog.py --key STORE.pem --site SITE_DIR [app-sdk/apps/<name> ...]
 
 Each app folder has its C files and an app.json with "category",
-"description"; for work in progress "status": "wip"; and optionally "thumb", "screens" and "clip" (site paths). Writes SITE_DIR/apps/files/<id>-<version>.lap and rewrites
+"description", optionally "group" (the HOME tab: radio, field, system or
+user; lap.py compiles it in); for work in progress "status": "wip"; and optionally "thumb", "screens" and "clip" (site paths). Writes SITE_DIR/apps/files/<id>-<version>.lap and rewrites
 SITE_DIR/apps/catalog.json from what the files themselves say, so the store
 never lists a name, size or checksum the board would disagree with.
 """
@@ -43,7 +44,8 @@ def main():
             open(os.path.join(out_dir, name), 'wb').write(data)
             entries.append({
                 'id': m['id'], 'name': m['name'], 'sub': m['sub'], 'version': m['version'],
-                'author': m['author'], 'category': meta['category'], 'color': m['color'],
+                'author': m['author'], 'category': meta['category'], 'group': m.get('group', ''),
+                'color': m['color'], 'caps': m['flags'],   # LAP_CAP_* bits: the board's STORE shows them as USES
                 'icon_art': m['icon_art'], 'description': meta.get('description', ''),
                 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest(), 'signed': True,
                 'file': 'apps/files/' + name, 'min_firmware': a.min_firmware,

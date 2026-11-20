@@ -1,0 +1,507 @@
+# Hand-written Polish -> English data for mt_xlate_lang (MESHTASTIC app).
+# Written for this app; GPL-3.0-or-later like the rest of LakeShark.
+# gen_xlate_lang.py reads it with the Wiktionary lexicon and writes ../lang/pl.bin.
+# The format is described at the top of xlate_pt_en.txt. Keys fold ą ć ę ł ń ó
+# ś ź ż to plain letters (l for ł), as chat typed without them does. There
+# are no articles; the subject is often left out (słyszę cię: I hear you).
+
+@func
+# Determiners
+ten | DET | this | this
+ta | DET | this | this
+te | DET:pl | these | these
+tamten | DET | that | that
+tamta | DET | that | that
+mój | DET:poss | my | mine
+moja | DET:poss | my | mine
+moje | DET:poss | my | mine
+moi | DET:poss,pl | my | mine
+mojego | DET:poss | my
+mojej | DET:poss | my
+moją | DET:poss | my
+twój | DET:poss | your | yours
+twoja | DET:poss | your | yours
+twoje | DET:poss | your | yours
+twojego | DET:poss | your
+twojej | DET:poss | your
+twoją | DET:poss | your
+nasz | DET:poss | our | ours
+nasza | DET:poss | our | ours
+nasze | DET:poss | our | ours
+wasz | DET:poss | your | yours
+wasza | DET:poss | your | yours
+wasze | DET:poss | your | yours
+jego | DET:poss,obj | his | him
+jej | DET:poss,obj | her | her
+ich | DET:poss,obj | their | them
+swój | DET:poss | own
+swoja | DET:poss | own
+swoje | DET:poss | own
+swoją | DET:poss | own
+każdy | DET | every | everyone
+inny | DET | other | another
+inne | DET:pl | other | others
+jaki | DET:q | what | which
+jaka | DET:q | what | which
+jakie | DET:pl,q | what | which
+który | DET:q | which | which
+która | DET:q | which | which
+które | DET:pl,q | which | which
+dużo | DET | a lot of | a lot
+mało | DET | little | little
+kilka | DET:pl | a few | a few
+wszyscy | DET:pl | all | everyone
+wszystkie | DET:pl | all | all
+#
+# Subject pronouns; alt is the object form
+ja | PRON:1 | I | me
+ty | PRON:2 | you | you
+on | PRON:3 | he | him
+ona | PRON:3 | she | her
+ono | PRON:3 | it | it
+my | PRON:4 | we | us
+wy | PRON:2 | you | you
+oni | PRON:6 | they | them
+one | PRON:6 | they | them
+#
+# Object pronouns (before the verb they come after it in English)
+mnie | CLIT:1 | me
+mi | CLIT:1 | me
+cię | CLIT:2 | you
+ciebie | CLIT:2 | you
+ci | CLIT:2 | you
+tobie | CLIT:2 | you
+go | CLIT:3 | him
+mu | CLIT:3 | him
+nas | CLIT:4 | us
+nam | CLIT:4 | us
+was | CLIT:5 | you
+wam | CLIT:5 | you
+im | CLIT:6 | them
+się | CLIT:3,refl | themselves
+sobie | CLIT:3,refl | themselves
+#
+# Other pronouns
+to | PRONX | this
+coś | PRONX | something | anything
+ktoś | PRONX | someone | anyone
+nic | PRONX | nothing | anything
+nikt | PRONX | nobody | anybody
+wszystko | PRONX | everything
+mną | PRONX | me
+tobą | PRONX | you
+#
+# Prepositions
+w | PREP | in
+we | PREP | in
+na | PREP | on
+z | PREP | with
+ze | PREP | with
+do | PREP | to
+od | PREP | from
+dla | PREP | for
+bez | PREP | without
+o | PREP | about | at
+po | PREP | after
+przy | PREP | at
+przed | PREP | in front of
+za | PREP | in
+pod | PREP | under
+nad | PREP | above
+przez | PREP | through
+u | PREP | at
+koło | PREP | near
+obok | PREP | next to
+między | PREP | between
+około | PREP | around
+#
+# Conjunctions
+i | CONJ | and
+a | CONJ | and
+oraz | CONJ | and
+ale | CONJ | but
+lub | CONJ | or
+albo | CONJ | or
+że | CONJ:sub,que | that | what
+bo | CONJ:sub | because
+ponieważ | CONJ:sub | because
+jeśli | CONJ:sub | if
+jeżeli | CONJ:sub | if
+gdy | CONJ:sub | when
+żeby | CONJ:sub | so that
+więc | CONJ | so
+#
+# Negation
+nie | NEG | not | no
+nigdy | NEG:never | never | never
+nie ma | EXIST:neg | there is no | no
+#
+# Question words
+co | Q | what
+kto | Q:sub | who | who
+gdzie | Q:sub | where | where
+kiedy | Q:sub | when | when
+jak | Q:sub | how | like
+dlaczego | Q | why
+czemu | Q | why
+ile | Q | how much
+o której | Q | at what time
+która godzina | CL | what time is it
+czy | SKIP | _
+#
+# Adverbs
+tu | ADV | here
+tutaj | ADV | here
+tam | ADV | there
+teraz | ADV | now
+dziś | ADV | today
+dzisiaj | ADV | today
+wczoraj | ADV:past | yesterday
+jutro | ADV | tomorrow
+potem | ADV | later
+później | ADV | later
+zaraz | ADV | right away
+wcześnie | ADV | early
+późno | ADV | late
+zawsze | ADV | always
+już | ADV | already
+jeszcze | ADV | still
+też | ADV | too
+także | ADV | also
+bardzo | ADV:int | very
+trochę | ADV | a bit
+dobrze | ADV | well | ok
+źle | ADV | badly | bad
+szybko | ADV | fast
+wolno | ADV | slowly
+razem | ADV | together
+prawie | ADV | almost
+tylko | ADV | only
+naprawdę | ADV | really
+blisko | ADV | near
+daleko | ADV | far
+w domu | ADV | at home
+do domu | ADV | home
+znowu | ADV | again
+głośno | ADV | loud
+słabo | ADV | weakly
+tak | INTJ | yes
+no | INTJ:S | well
+#
+# Interjections and chat words
+cześć | INTJ | hi
+hej | INTJ | hey
+siema | INTJ | hi
+witam | INTJ | hello
+witajcie | INTJ | hello everyone
+dzień dobry | INTJ | good morning
+dobry wieczór | INTJ | good evening
+dobranoc | INTJ | good night
+do widzenia | INTJ | goodbye
+do zobaczenia | INTJ | see you
+na razie | INTJ | see you
+pa | INTJ | bye
+dzięki | INTJ | thanks
+dziękuję | INTJ | thank you
+dzięki wielkie | INTJ | thanks a lot
+proszę | INTJ | please
+przepraszam | INTJ | sorry
+sorki | INTJ | sorry
+ok | INTJ | ok
+okej | INTJ | ok
+dobra | INTJ:A | ok
+jasne | INTJ | sure
+super | INTJ | great
+spoko | INTJ | cool
+świetnie | INTJ | great
+haha | INTJ | haha
+pomocy | INTJ | help
+uwaga | INTJ | careful
+odbiór | INTJ | over
+przyjąłem | INTJ | copy that
+przyjęłam | INTJ | copy that
+#
+# Number words
+jeden | NUM | one
+jedna | NUM | one
+dwa | NUM | two
+dwie | NUM | two
+trzy | NUM | three
+cztery | NUM | four
+pięć | NUM | five
+sześć | NUM | six
+siedem | NUM | seven
+osiem | NUM | eight
+dziewięć | NUM | nine
+dziesięć | NUM | ten
+dwadzieścia | NUM | twenty
+sto | NUM | a hundred
+tysiąc | NUM | thousand
+pierwszy | NUM | first
+ostatni | NUM | last
+#
+# There is / is anyone
+jest ktoś | CL | is anyone there
+ktoś jest | CL | is anyone there
+czy ktoś jest | CL | is anyone there
+#
+# Phrases
+co słychać | CL | how's it going
+jak się masz | CL | how are you
+co tam | CL | what's up
+wszystko w porządku | CL | all good
+w porządku | INTJ | ok
+nie wiem | CL | I don't know
+nie rozumiem | CL | I don't understand
+nie ma problemu | INTJ | no problem
+bez problemu | INTJ | no problem
+nie ma za co | INTJ | you're welcome
+głośno i wyraźnie | ADV | loud and clear
+bez odbioru | INTJ | over and out
+jak mnie słyszysz | CL | how do you hear me
+na miejscu | ADV | here
+w drodze | ADV | on the way
+w sieci | ADV | online
+pada deszcz | CL | it's raining
+pada | CL | it's raining
+jest zimno | CL | it's cold
+jest gorąco | CL | it's hot
+jest bardzo zimno | CL | it's very cold
+jest bardzo gorąco | CL | it's very hot
+bardzo zimno | CL | very cold
+bardzo gorąco | CL | very hot
+nie ma prądu | CL | the power is out
+cześć wszystkim | INTJ | hi everyone
+siema wszystkim | INTJ | hi everyone
+hej wszystkim | INTJ | hi everyone
+rano | ADV | in the morning
+wieczorem | ADV | in the evening
+w nocy | ADV | at night
+mam nadzieję | CL | I hope
+dziękuję bardzo | INTJ | thank you very much
+bardzo dziękuję | INTJ | thank you very much
+zaraz będę | CL | I'll be right there
+do pracy | ADV | to work
+w pracy | ADV | at work
+zadzwoń do mnie | CL | call me
+napisz do mnie | CL | write to me
+wszystko dobrze | CL | all good
+za godzinę | ADV | in an hour
+za minutę | ADV | in a minute
+
+@abbr
+nwm | nie wiem
+spk | spoko
+dzk | dzięki
+dzx | dzięki
+pzdr | pozdrawiam
+cb | ciebie
+mn | mnie
+xd | haha
+zw | zaraz wracam
+jj | jasne
+tz | to znaczy
+
+@verbs
+być | BE,IT
+mieć | HAVE
+móc | CAN
+chcieć | WANT
+musieć | MUST
+potrzebować | NEED
+działać | IT
+padać | IT
+wydawać | IT
+
+@lex
+być | V | be
+mieć | V | have
+móc | V | can
+chcieć | V | want
+musieć | V | must
+potrzebować | V | need
+słyszeć | V | hear
+usłyszeć | V | hear
+widzieć | V | see
+zobaczyć | V | see
+mówić | V | talk
+powiedzieć | V | say
+wiedzieć | V | know
+robić | V | do
+zrobić | V | do
+iść | V | go
+pójść | V | go
+jechać | V | drive
+przyjechać | V | arrive
+przyjść | V | come
+czekać | V | wait+for
+poczekać | V | wait+for
+dzwonić | V | call
+zadzwonić | V | call
+pisać | V | write
+napisać | V | write
+wysłać | V | send
+wysyłać | V | send
+odebrać | V | receive
+odpowiedzieć | V | answer
+odpowiadać | V | answer
+działać | V | work
+ładować | V | charge
+naładować | V | charge
+sprawdzić | V | check
+pomóc | V | help
+znaleźć | V | find
+szukać | V | look+for
+wziąć | V | take
+dać | V | give
+rozumieć | V | understand
+zrozumieć | V | understand
+myśleć | V | think
+mieszkać | V | live
+wrócić | V | come back
+wychodzić | V | go out
+wyjść | V | go out
+słuchać | V | listen+to
+zgubić | V | lose
+padać | V | fall
+spóźnić | V | be late
+spotkać | V | meet
+rozłączać | V | disconnect
+bateria | N:f | battery
+akumulator | N:m | battery
+ładowarka | N:f | charger
+sygnał | N:m | signal
+antena | N:f | antenna
+radio | N:n | radio
+krótkofalówka | N:f | radio
+węzeł | N:m | node
+sieć | N:f | network
+wiadomość | N:f | message
+kanał | N:m | channel
+częstotliwość | N:f | frequency
+przekaźnik | N:m | repeater
+telefon | N:m | phone
+pomoc | N:f,u | help
+woda | N:f,u | water
+jedzenie | N:n,u | food
+prąd | N:m,u | power
+deszcz | N:m,u | rain
+burza | N:f | storm
+dom | N:m | house
+miejsce | N:n | place
+plac | N:m | square
+wzgórze | N:n | hill
+góra | N:f | mountain
+ulica | N:f | street
+godzina | N:f | hour
+minuta | N:f | minute
+dzień | N:m | day
+noc | N:f | night
+tydzień | N:m | week
+test | N:m | test
+lokalizacja | N:f | location
+karetka | N:f | ambulance
+pogoda | N:f,u | weather
+zasięg | N:m,u | reception
+mapa | N:f | map
+dobry | A | good
+zły | A | bad
+nowy | A | new
+stary | A | old
+słaby | A | weak
+silny | A | strong
+gotowy | A | ready
+zepsuty | A | broken
+bezpieczny | A | safe
+zmęczony | A | tired
+zimny | A | cold
+gorący | A | hot
+zajęty | A | busy
+ranny | A | hurt
+
+@drop
+
+@book
+OK | OK
+Yes | Tak
+No | Nie
+Thanks | Dzięki
+Hello, how are you? | Cześć, co słychać?
+Good morning | Dzień dobry
+Good night | Dobranoc
+See you later | Na razie
+Sorry, I don't understand | Przepraszam, nie rozumiem
+Please write slowly / simply | Pisz prosto, proszę
+I speak little Spanish | Mówię trochę po polsku
+Copy that | Przyjąłem
+Can you hear me? | Słyszysz mnie?
+I hear you loud and clear | Słyszę cię głośno i wyraźnie
+I hear you weak | Słyszę cię słabo
+Your signal is weak | Twój sygnał jest słaby
+Good signal here | Dobry sygnał tutaj
+No signal here | Brak sygnału tutaj
+Who is on the mesh? | Kto jest w sieci?
+Testing, please answer | Test, odpowiedz proszę
+Message received | Wiadomość odebrana
+Over and out | Bez odbioru
+Is anyone there? | Jest ktoś?
+On my way | Jestem w drodze
+I'm here | Jestem na miejscu
+I'm almost there | Jestem prawie na miejscu
+Wait for me | Poczekaj na mnie
+I'm busy, talk later | Jestem zajęty, pogadamy później
+All good here | Tutaj wszystko w porządku
+I'm leaving now | Wychodzę teraz
+Running late | Spóźnię się
+My battery is low | Mam słabą baterię
+I'm charging | Ładuję się
+My battery is dying, I'm going offline | Bateria mi pada, rozłączam się
+Back online | Znowu jestem online
+Where are you? | Gdzie jesteś?
+See you at the square | Widzimy się na placu
+See you at ... | Widzimy się przy ...
+What time? | O której?
+In 10 minutes | Za 10 minut
+Meet at the usual place | Spotkajmy się tam, gdzie zwykle
+Send me your location | Wyślij mi swoją lokalizację
+Let me know when you arrive | Daj znać, jak dotrzesz
+I need help | Potrzebuję pomocy
+Emergency! | Nagły wypadek!
+Someone is hurt | Ktoś jest ranny
+Call an ambulance | Wezwijcie karetkę
+I'm lost | Zgubiłem się
+We are safe | Jesteśmy bezpieczni
+I need water | Potrzebuję wody
+The power is out | Nie ma prądu
+Stay where you are | Zostań tam, gdzie jesteś
+It's raining here | Tutaj pada deszcz
+A storm is coming | Nadchodzi burza
+It's very cold | Jest bardzo zimno
+It's very hot | Jest bardzo gorąco
+How is the weather there? | Jaka jest u was pogoda?
+
+@detect
+cześć | 13
+siema | 13
+dzięki | 13
+dzieki | 12
+nie | 6
+jest | 10
+się | 11
+sie | 10
+słyszę | 12
+slysze | 11
+słyszysz | 12
+slyszysz | 11
+gdzie | 12
+jestem | 12
+jestes | 11
+jesteś | 12
+proszę | 11
+prosze | 10
+przepraszam | 13
+dobranoc | 12
+spoko | 12
+nwm | 12
+xd | 6
+pzdr | 12

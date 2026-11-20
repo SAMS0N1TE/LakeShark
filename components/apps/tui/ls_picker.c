@@ -56,10 +56,10 @@ static ls_drag_scroll_t s_drag;
 static bool s_free;
 
 #define ROWS_MAX 24
-static tui_rect s_hit_row[ROWS_MAX];
+EXT_RAM_BSS_ATTR static tui_rect s_hit_row[ROWS_MAX];
 static int      s_hit_row_at[ROWS_MAX];   /* which s_order entry it shows */
 static int      s_hit_rows;
-static tui_rect s_hit_dec[ROWS_MAX], s_hit_inc[ROWS_MAX];
+EXT_RAM_BSS_ATTR static tui_rect s_hit_dec[ROWS_MAX], s_hit_inc[ROWS_MAX];
 static tui_rect s_hit_prev, s_hit_next, s_hit_close, s_hit_back;
 
 /* ------------------------------------------------------------------ open -- */
@@ -493,6 +493,7 @@ void ls_picker_draw(tui_surface *sf, tui_rect area)
     s_hit_rows = 0;
     s_hit_prev.w = s_hit_next.w = s_hit_close.w = s_hit_back.w = 0;
 
+    ls_ink_unkeep(area);                 /* over a scope the picker is still the scheme's */
     tui_fill(sf, area, ' ', A(TUI_WHITE, TUI_BLACK));
     ls_panel_box(sf, area, s_title, TUI_CYAN);
 

@@ -208,7 +208,7 @@ void rx_pages_list(rx_pages_t *v, const rx_pages_src_t *src, tui_surface *sf, tu
                    const char *title, const char *empty)
 {
     const uint8_t frame = TUI_ATTR(TUI_CYAN, TUI_BLACK);
-    const uint8_t sel   = TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT);
+    const uint8_t sel   = ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT));
     const uint8_t addr  = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
     const uint8_t body  = TUI_ATTR(TUI_WHITE, TUI_BLACK);
     const uint8_t dim = LS_ATTR_DIM;

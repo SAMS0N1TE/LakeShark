@@ -11,12 +11,13 @@
 #include "ls_textpack.h"
 
 #if defined(LS_BOARD_PANEL_RM69A10) || defined(LS_BOARD_PANEL_HI8561)
-#if defined(LS_BOARD_PANEL_HI8561)
-#define PANEL_TAG "hi8561"
+/* Both T-Display-P4 panels are in the image. The one that answers its ID
+   read at boot is s_pd from then on (ls_profile.h says who is asked, and in
+   what order). */
 #include "driver/ledc.h"
-#else
-#define PANEL_TAG "rm69a10"
-#endif
+#include "ls_profile.h"
+static const ls_panel_desc_t *s_pd;
+#define PANEL_TAG (s_pd ? s_pd->name : "panel")
 #include "ls_xl9535.h"
 #include "ls_board_hw.h"
 #include "esp_attr.h"
@@ -53,12 +54,13 @@ static uint32_t s_max_gap_at_us;
 /* the Flipper can start P25 while HOME stays visible. Count scan
  * gaps here, where every TUI screen is covered, instead of in the retired
  * LVGL shell. A late callback is evidence of a gap, not proof of its cause. */
-#define PANEL_FRAME_PIXELS ((uint32_t)((uint64_t)(LS_BOARD_LCD_H_RES + \
-    LS_BOARD_LCD_HSYNC + LS_BOARD_LCD_HBP + LS_BOARD_LCD_HFP) * \
-    (LS_BOARD_LCD_V_RES + LS_BOARD_LCD_VSYNC + LS_BOARD_LCD_VBP + \
-    LS_BOARD_LCD_VFP)))
-static unsigned s_pixel_clock_mhz = LS_BOARD_LCD_DPI_CLK_MHZ;
-static uint32_t s_frame_us = PANEL_FRAME_PIXELS / LS_BOARD_LCD_DPI_CLK_MHZ;
+static uint32_t frame_pixels(const ls_panel_desc_t *pd)
+{
+    return (uint32_t)(pd->w + pd->hsync + pd->hbp + pd->hfp) *
+           (uint32_t)(pd->h + pd->vsync + pd->vbp + pd->vfp);
+}
+static unsigned s_pixel_clock_mhz = 48;
+static uint32_t s_frame_us = 20000;     /* until a panel answers */
 
 static bool IRAM_ATTR refresh_done(esp_lcd_panel_handle_t panel,
     esp_lcd_dpi_panel_event_data_t *event,void *ctx)
@@ -84,29 +86,29 @@ static bool IRAM_ATTR refresh_done(esp_lcd_panel_handle_t panel,
 
 bool ls_panel_fb(ls_panel_fb_t *out)
 {
-    if (!out || !s_frames[s_back]) return false;
+    if (!out || !s_pd || !s_frames[s_back]) return false;
     out->pixels = s_frames[s_back];
-    out->width  = LS_BOARD_LCD_H_RES;
-    out->height = LS_BOARD_LCD_V_RES;
+    out->width  = s_pd->w;
+    out->height = s_pd->h;
     return true;
 }
 
 void ls_panel_fb_present(void)
 {
-    ls_panel_fb_present_rows(0, LS_BOARD_LCD_V_RES);
+    if (s_pd) ls_panel_fb_present_rows(0, s_pd->h);
 }
 
 void ls_panel_fb_present_rows(int y0, int y1)
 {
-    if (!s_panel || !s_frames[s_back]) return;
+    if (!s_panel || !s_pd || !s_frames[s_back]) return;
     if (y0 < 0) y0 = 0;
-    if (y1 > LS_BOARD_LCD_V_RES) y1 = LS_BOARD_LCD_V_RES;
+    if (y1 > s_pd->h) y1 = s_pd->h;
     if (y1 <= y0) return;
     /* The pixels are already in the buffer being scanned; this writes the
        cache back so the scan sees them. The DPI driver only uses the pointer
        to find which framebuffer it is in and writes back just rows y0..y1. */
     esp_lcd_panel_draw_bitmap(s_panel, 0, y0,
-                              LS_BOARD_LCD_H_RES, y1,
+                              s_pd->w, y1,
                               s_frames[s_back]);
     static uint32_t reported, last_report_ms;
     uint32_t late = __atomic_load_n(&s_late_frames, __ATOMIC_RELAXED);
@@ -146,7 +148,6 @@ void ls_panel_diagnostics(void)
     LS_PRINTF(t_ls_panel_panel_pixel_clock_u, "panel: pixel_clock=%u MHz performance=%u\n",s_pixel_clock_mhz,cell_performance_active());
 }
 
-#if defined(LS_BOARD_PANEL_HI8561)
 /* Vendor hi8561.h kInitSequence, as { command, length, parameters... }.
    Page select is 0xDE; 0xCC 0x31 selects two lanes. Sleep-out and display-on
    follow in hi8561_init. */
@@ -275,18 +276,18 @@ static esp_err_t hi8561_init(uint8_t id[2])
 #define BL_BITS    LEDC_TIMER_10_BIT
 static bool s_bl_ready;
 
-static esp_err_t backlight_init(void)
+static esp_err_t backlight_init(const ls_panel_desc_t *pd)
 {
     if (s_bl_ready) return ESP_OK;
     const ledc_timer_config_t timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE, .duty_resolution = BL_BITS,
-        .timer_num = BL_TIMER, .freq_hz = LS_BOARD_LCD_BL_PWM_MAX_HZ,
+        .timer_num = BL_TIMER, .freq_hz = pd->backlight_pwm_hz,
         .clk_cfg = LEDC_AUTO_CLK,
     };
     esp_err_t err = ledc_timer_config(&timer);
     if (err != ESP_OK) return err;
     const ledc_channel_config_t channel = {
-        .gpio_num = LS_BOARD_LCD_BL_GPIO, .speed_mode = LEDC_LOW_SPEED_MODE,
+        .gpio_num = pd->backlight_gpio, .speed_mode = LEDC_LOW_SPEED_MODE,
         .channel = BL_CHANNEL, .timer_sel = BL_TIMER, .duty = 0,
     };
     err = ledc_channel_config(&channel);
@@ -302,51 +303,47 @@ static esp_err_t backlight_set(unsigned percent)
                                   (max * percent + 50) / 100);
     return err == ESP_OK ? ledc_update_duty(LEDC_LOW_SPEED_MODE, BL_CHANNEL) : err;
 }
-#endif
 
-esp_err_t ls_panel_test_start(void)
+#define TRY(call) do { err = (call); if (err != ESP_OK) return err; } while (0)
+
+static void bus_down(void)
 {
-    if (s_panel) return ESP_OK;
+    if (s_io) { esp_lcd_panel_io_del(s_io); s_io = NULL; }
+    if (s_bus) { esp_lcd_del_dsi_bus(s_bus); s_bus = NULL; }
+}
+
+/* Reset the panel and open the DSI link for commands. Every candidate gets
+   this from scratch, so the second one probed meets the same bus the first
+   did: a read that timed out leaves nothing behind. */
+static esp_err_t bus_up(const ls_panel_desc_t *pd)
+{
     esp_err_t err;
-#ifdef LS_BOARD_LCD_DPI_PERF_CLK_MHZ
-    s_pixel_clock_mhz = cell_performance_active() ? LS_BOARD_LCD_DPI_PERF_CLK_MHZ : LS_BOARD_LCD_DPI_CLK_MHZ;
-    s_frame_us = PANEL_FRAME_PIXELS / s_pixel_clock_mhz;
-#endif
-#define TRY(call) do { err = (call); if (err != ESP_OK) goto fail; } while (0)
-    esp_ldo_channel_config_t ldo = { .chan_id = 3, .voltage_mv = 2500 };
-    TRY(esp_ldo_acquire_channel(&ldo, &s_ldo3));
-    ldo.chan_id = 4; ldo.voltage_mv = 3300;
-    TRY(esp_ldo_acquire_channel(&ldo, &s_ldo4));
-    /* Repeat after the display supplies settle, as in vendor InitPower ->
-       InitScreen/InitGt9895. The console can repeat this with i2c reset-touch. */
-    TRY(ls_board_hw_touch_reset());
     TRY(ls_xl9535_out(LS_BOARD_XL_SCREEN_RST, false));
     vTaskDelay(pdMS_TO_TICKS(10));
     TRY(ls_xl9535_set(LS_BOARD_XL_SCREEN_RST, true));
     vTaskDelay(pdMS_TO_TICKS(120));
     esp_lcd_dsi_bus_config_t bus = {
-        .bus_id = 0, .num_data_lanes = LS_BOARD_LCD_DSI_LANES,
+        .bus_id = 0, .num_data_lanes = pd->dsi_lanes,
         .phy_clk_src = MIPI_DSI_PHY_CLK_SRC_DEFAULT,
-        .lane_bit_rate_mbps = LS_BOARD_LCD_DSI_MBPS,
+        .lane_bit_rate_mbps = pd->dsi_mbps,
     };
     TRY(esp_lcd_new_dsi_bus(&bus, &s_bus));
     esp_lcd_dbi_io_config_t io = { .lcd_cmd_bits = 8, .lcd_param_bits = 8 };
-    TRY(esp_lcd_new_panel_io_dbi(s_bus, &io, &s_io));
-#if defined(LS_BOARD_PANEL_HI8561)
-    uint8_t ids[2] = {0};
-    TRY(hi8561_init(ids));
-    /* Dark until the TUI's first present lights it. */
-    TRY(backlight_init());
-    const unsigned id = (unsigned)ids[0] << 8 | ids[1];
-#else
+    return esp_lcd_new_panel_io_dbi(s_bus, &io, &s_io);
+}
+
+static esp_err_t rm69a10_init(const ls_panel_desc_t *pd, unsigned *id_out)
+{
+    esp_err_t err;
     uint8_t id = 0;
-    if (!ls_panel_read_id(&id)) { err = ESP_ERR_TIMEOUT; goto fail; }
-    if (id != 0x01) { err = ESP_ERR_NOT_FOUND; goto fail; }
+    if (!ls_panel_read_id(&id)) return ESP_ERR_TIMEOUT;
+    if (id != 0x01) return ESP_ERR_NOT_FOUND;
+    *id_out = id;
 
     const uint8_t unlock[][2] = { {0xFE, 0xFD}, {0x80, 0xFC}, {0xFE, 0x00} };
     for (unsigned i = 0; i < sizeof(unlock) / sizeof(unlock[0]); ++i)
         TRY(esp_lcd_panel_io_tx_param(s_io, unlock[i][0], &unlock[i][1], 1));
-    uint16_t xmax = LS_BOARD_LCD_H_RES - 1, ymax = LS_BOARD_LCD_V_RES - 1;
+    uint16_t xmax = pd->w - 1, ymax = pd->h - 1;
     uint8_t col[] = {0, 0, xmax >> 8, xmax & 255};
     uint8_t row[] = {0, 0, ymax >> 8, ymax & 255};
     uint8_t partial[] = {0, 3, (xmax - 3) >> 8, (xmax - 3) & 255};
@@ -360,9 +357,29 @@ esp_err_t ls_panel_test_start(void)
     TRY(esp_lcd_panel_io_tx_param(s_io, 0x51, &zero, 1));
     TRY(esp_lcd_panel_io_tx_param(s_io, 0x11, NULL, 0));
     vTaskDelay(pdMS_TO_TICKS(120));
-    TRY(esp_lcd_panel_io_tx_param(s_io, 0x29, NULL, 0));
-#endif
+    return esp_lcd_panel_io_tx_param(s_io, 0x29, NULL, 0);
+}
 
+/* One candidate: is it there, and if so its command sequence. A panel that
+   does not answer costs its ID reads' bound (250 ms each) and no more. */
+static esp_err_t panel_try(const ls_panel_desc_t *pd, unsigned *id)
+{
+    esp_err_t err = bus_up(pd);
+    if (err != ESP_OK) return err;
+    if (pd->kind == LS_PANEL_KIND_HI8561) {
+        uint8_t ids[2] = {0};
+        TRY(hi8561_init(ids));
+        /* Dark until the TUI's first present lights it. */
+        TRY(backlight_init(pd));
+        *id = (unsigned)ids[0] << 8 | ids[1];
+        return ESP_OK;
+    }
+    return rm69a10_init(pd, id);
+}
+
+static esp_err_t video_up(const ls_panel_desc_t *pd)
+{
+    esp_err_t err;
     esp_lcd_dpi_panel_config_t dpi = {
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
         .dpi_clock_freq_mhz = s_pixel_clock_mhz,
@@ -370,13 +387,13 @@ esp_err_t ls_panel_test_start(void)
         .out_color_format = LCD_COLOR_FMT_RGB565,
         .num_fbs = 2,
         .video_timing = {
-            .h_size = LS_BOARD_LCD_H_RES, .v_size = LS_BOARD_LCD_V_RES,
-            .hsync_pulse_width = LS_BOARD_LCD_HSYNC,
-            .hsync_back_porch = LS_BOARD_LCD_HBP,
-            .hsync_front_porch = LS_BOARD_LCD_HFP,
-            .vsync_pulse_width = LS_BOARD_LCD_VSYNC,
-            .vsync_back_porch = LS_BOARD_LCD_VBP,
-            .vsync_front_porch = LS_BOARD_LCD_VFP,
+            .h_size = pd->w, .v_size = pd->h,
+            .hsync_pulse_width = pd->hsync,
+            .hsync_back_porch = pd->hbp,
+            .hsync_front_porch = pd->hfp,
+            .vsync_pulse_width = pd->vsync,
+            .vsync_back_porch = pd->vbp,
+            .vsync_front_porch = pd->vfp,
         },
     };
     /* IDF owns both PSRAM framebuffers; only a completed frame is scanned. */
@@ -385,20 +402,61 @@ esp_err_t ls_panel_test_start(void)
        the first frame. No DSI test pattern: enabling one stops the bridge
        under a DMA transfer already in flight, and switching it off again
        could leave the scan stopped after one frame. */
-    TRY(esp_lcd_panel_init(s_panel));
-    ESP_LOGI(PANEL_TAG, "ID 0x%02x; %dx%d scanning", (unsigned)id,
-             LS_BOARD_LCD_H_RES, LS_BOARD_LCD_V_RES);
-    return ESP_OK;
-fail:
+    return esp_lcd_panel_init(s_panel);
+}
+
+esp_err_t ls_panel_test_start(void)
+{
+    if (s_panel) return ESP_OK;
+    esp_err_t err;
+    const ls_board_profile_t *board = ls_profile();
+    const ls_profile_prefs_t *prefs = ls_profile_prefs();
+    const ls_panel_desc_t *order[4];
+    const int n = ls_profile_panel_order(board, board->panel_forced, prefs->panel,
+                                         prefs->panel_seen, order, 4);
+    if (n < 1) return ESP_ERR_NOT_SUPPORTED;
+
+    esp_ldo_channel_config_t ldo = { .chan_id = 3, .voltage_mv = 2500 };
+    err = esp_ldo_acquire_channel(&ldo, &s_ldo3);
+    ldo.chan_id = 4; ldo.voltage_mv = 3300;
+    if (err == ESP_OK) err = esp_ldo_acquire_channel(&ldo, &s_ldo4);
+    /* Repeat after the display supplies settle, as in vendor InitPower ->
+       InitScreen/InitGt9895. The console can repeat this with i2c reset-touch. */
+    if (err == ESP_OK) err = ls_board_hw_touch_reset();
+
+    unsigned id = 0;
+    for (int i = 0; err == ESP_OK && i < n; i++) {
+        s_pd = order[i];
+        esp_err_t e = panel_try(s_pd, &id);
+        if (e == ESP_OK) break;
+        bus_down();
+        if (i + 1 < n) {
+            ESP_LOGW("panel", "no %s (%s), trying %s", s_pd->name, esp_err_to_name(e), order[i + 1]->name);
+        } else {
+            err = e;
+        }
+    }
+    if (err == ESP_OK) {
+        s_pixel_clock_mhz = cell_performance_active() ? s_pd->perf_clk_mhz : s_pd->clk_mhz;
+        s_frame_us = frame_pixels(s_pd) / s_pixel_clock_mhz;
+        err = video_up(s_pd);
+    }
+    if (err == ESP_OK) {
+        ls_profile_note_panel(s_pd);
+        /* Found by its ID: the next boot asks this one first. */
+        if (n > 1 && !prefs->panel) ls_profile_remember_panel(s_pd->kind);
+        ESP_LOGI(PANEL_TAG, "ID 0x%02x; %ux%u scanning", id, s_pd->w, s_pd->h);
+        return ESP_OK;
+    }
     if (s_panel) { esp_lcd_panel_del(s_panel); s_panel = NULL; }
-    if (s_io) { esp_lcd_panel_io_del(s_io); s_io = NULL; }
-    if (s_bus) { esp_lcd_del_dsi_bus(s_bus); s_bus = NULL; }
+    bus_down();
     if (s_ldo4) { esp_ldo_release_channel(s_ldo4); s_ldo4 = NULL; }
     if (s_ldo3) { esp_ldo_release_channel(s_ldo3); s_ldo3 = NULL; }
     ESP_LOGE(PANEL_TAG, "panel bring-up failed: %s", esp_err_to_name(err));
+    s_pd = NULL;
     return err;
-#undef TRY
 }
+#undef TRY
 
 esp_err_t ls_panel_start(void)
 {
@@ -426,21 +484,23 @@ esp_err_t ls_panel_start(void)
 static unsigned s_level;
 static bool s_blanked;
 
+static esp_err_t level_write(unsigned percent)
+{
+    if (s_pd->backlight == LS_BACKLIGHT_PWM) return backlight_set(percent);
+    uint8_t value = (percent * 255 + 50) / 100;
+    return esp_lcd_panel_io_tx_param(s_io, 0x51, &value, 1);
+}
+
 esp_err_t ls_panel_set_brightness(unsigned percent)
 {
-    if (!s_io) return ESP_ERR_INVALID_STATE;
+    if (!s_io || !s_pd) return ESP_ERR_INVALID_STATE;
     if (s_blanked) return ESP_OK;
     /* 0 is dark, not the dimmest lit level: the boot keeps the glass dark
        until the first frame is up. */
     if (percent && percent < 5) percent = 5;
     if (percent > 100) percent = 100;
     s_level = percent;
-#if defined(LS_BOARD_PANEL_HI8561)
-    return backlight_set(percent);
-#else
-    uint8_t value = (percent * 255 + 50) / 100;
-    return esp_lcd_panel_io_tx_param(s_io, 0x51, &value, 1);
-#endif
+    return level_write(percent);
 }
 
 /* Fade to black and switch the panel off, for good. The glass is dark and
@@ -449,7 +509,7 @@ esp_err_t ls_panel_set_brightness(unsigned percent)
    panel is brought up afresh. */
 esp_err_t ls_panel_blank(unsigned fade_ms)
 {
-    if (!s_io) return ESP_ERR_INVALID_STATE;
+    if (!s_io || !s_pd) return ESP_ERR_INVALID_STATE;
     if (s_blanked) return ESP_OK;
     const unsigned steps = fade_ms >= 40 ? 8 : 1;
     const unsigned from = s_level ? s_level : 5;
@@ -457,12 +517,7 @@ esp_err_t ls_panel_blank(unsigned fade_ms)
         ls_panel_set_brightness(from - from * i / steps);
         vTaskDelay(pdMS_TO_TICKS(fade_ms / steps));
     }
-#if defined(LS_BOARD_PANEL_HI8561)
-    esp_err_t e = backlight_set(0);
-#else
-    uint8_t zero = 0;
-    esp_err_t e = esp_lcd_panel_io_tx_param(s_io, 0x51, &zero, 1);
-#endif
+    esp_err_t e = level_write(0);
     s_blanked = true;
     s_level = 0;
     if (e == ESP_OK) e = esp_lcd_panel_io_tx_param(s_io, 0x28, NULL, 0);   /* display off */

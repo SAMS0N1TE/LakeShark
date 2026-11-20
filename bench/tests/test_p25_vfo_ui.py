@@ -49,7 +49,7 @@ for tft in (False, True):
             assert 'SCAN  ' in text and 'HELD' not in text
         text, _ = render('stopped', '-k', '.HX')
         assert 'SCAN  HELD' not in text and 'TUNE  ' in text
-        for word in ('P25 / RECEIVER', 'DECODE / SIGNAL', 'ACTIVITY',
+        for word in ('=== RECEIVER', 'DECODE / SIGNAL', 'ACTIVITY',
                      'RECEIVER HEALTH', 'AUDIO drops', 'DECODE 0.0', 'VOLUME', 'GAIN'):
             assert word in text, (suffix, word)
         if not wide and not tft:

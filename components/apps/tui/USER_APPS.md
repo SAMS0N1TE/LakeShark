@@ -57,6 +57,7 @@ text=tap a bin to read its frequency
 | `sub=TEXT` | one line under the name in the directory |
 | `icon=NAME` | `tower` `wave` `plane` `record` `falls` `map` `files` `gear` `pager` `chip` `star` `shark` |
 | `color=NAME` | `red` `green` `yellow` `blue` `magenta` `cyan` `white` |
+| `group=NAME` | the HOME tab it sits on: `radio` `field` `system` `user` (default `user`); its tile carries `[SD]` |
 | `panel=TITLE` | starts a framed panel; everything after it goes inside |
 | `value=LABEL\|path` | a label and a published value |
 | `bar=LABEL\|path` | the value as a meter, for anything 0..1 |

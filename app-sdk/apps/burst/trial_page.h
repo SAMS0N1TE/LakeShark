@@ -243,9 +243,14 @@ static inline int trial_wrap(int x, int y, int w, int rows, const char *text, ui
     return used;
 }
 
-/* Keys, frame, readout (t->lines[0..n-1]) and status. Returns how many
-   readout lines there was room for, which the next frame can fill. */
-static inline int trial_draw(trial_t *t, int n)
+/* ---- the frame and its instruments ------------------------------------ */
+
+typedef struct { int x, y, w, h; } trial_rect_t;
+
+/* Keys, the bezel with the trial's name and how far along it is, and the
+   status line at its foot. Returns the cells inside for the trial's own
+   instrument (h 0 when there is no room). */
+static inline trial_rect_t trial_frame(trial_t *t)
 {
     trial_note_progress(t);
     const lap_radio_info_t *r = t->src >= 0 && t->src < t->nradios ? &t->radios[t->src] : NULL;
@@ -271,30 +276,202 @@ static inline int trial_draw(trial_t *t, int n)
                 TRIAL_A(!strcmp(t->maturity, "WORKS") ? LAP_GREEN | LAP_BRIGHT
                         : !strcmp(t->maturity, "TRYING") ? LAP_YELLOW | LAP_BRIGHT : LAP_WHITE));
     const int x = 2, w = W - 4, top = by + 1, last = by + bh - 2;
-    if (w < 4 || last - top < 2) return 0;
-    int y = top;
-    y += trial_wrap(x, y, w, last - y > 3 ? 2 : 1, t->sub, LAP_UI_DIM);
+    trial_rect_t in = { x, top, w, last - top - 1 };
+    if (w < 4 || in.h < 2) in.h = 0;
+
+    char state[64], status[80];
+    trial_state(t, state, sizeof(state));
+    const bool running = t->on && t->run_ms;
+    const bool failed = !t->on && t->why[0];
+    snprintf(status, sizeof(status), "%c %s", running ? '*' : failed ? '!' : '-', state);
+    lap_put_str(x, last, status, running ? TRIAL_A(LAP_GREEN | LAP_BRIGHT)
+                                 : failed ? TRIAL_A(LAP_YELLOW | LAP_BRIGHT) : LAP_UI_DIM);
+    if (t->feedback[0]) lap_put_str(1, H - 1, t->feedback, LAP_UI_DIM);
+    return in;
+}
+
+/* Keys, frame, readout (t->lines[0..n-1]) and status. Returns how many
+   readout lines there was room for, which the next frame can fill. */
+static inline int trial_draw(trial_t *t, int n)
+{
+    const trial_rect_t in = trial_frame(t);
+    if (!in.h) return 0;
+    int y = in.y;
+    const int last = in.y + in.h + 1;
+    y += trial_wrap(in.x, y, in.w, last - y > 3 ? 2 : 1, t->sub, LAP_UI_DIM);
     if (t->needs && y < last - 1) {
         char needs[160];
         snprintf(needs, sizeof(needs), "NEEDS %s", t->needs);
-        y += trial_wrap(x, y, w, 2, needs, TRIAL_A(LAP_YELLOW | LAP_BRIGHT));
+        y += trial_wrap(in.x, y, in.w, 2, needs, TRIAL_A(LAP_YELLOW | LAP_BRIGHT));
     }
     if (y < last - 1) y++;
     int room = last - y - 1;
     if (room > TRIAL_LINES) room = TRIAL_LINES;
     if (room < 0) room = 0;
-    const bool running = t->on && t->run_ms;
-    const uint8_t ink = running ? TRIAL_A(LAP_CYAN | LAP_BRIGHT) : LAP_UI_DIM;
-    for (int i = 0; i < n && i < room; i++) lap_put_str(x, y + i, t->lines[i], ink);
-
-    char state[64], status[80];
-    trial_state(t, state, sizeof(state));
-    const bool failed = !t->on && t->why[0];
-    snprintf(status, sizeof(status), "%c %s", running ? (lap_frame() / 12 % 2 ? '*' : '+') : '-', state);
-    lap_put_str(x, last, status, running ? TRIAL_A(LAP_GREEN | LAP_BRIGHT)
-                                 : failed ? TRIAL_A(LAP_YELLOW | LAP_BRIGHT) : LAP_UI_DIM);
-    if (t->feedback[0]) lap_put_str(1, H - 1, t->feedback, LAP_UI_DIM);
+    const uint8_t ink = t->on && t->run_ms ? TRIAL_A(LAP_CYAN | LAP_BRIGHT) : LAP_UI_DIM;
+    for (int i = 0; i < n && i < room; i++) lap_put_str(in.x, y + i, t->lines[i], ink);
     return room;
+}
+
+/* Sections flow down a column and on into the next: one column in portrait,
+   two or three side by side in landscape. */
+typedef struct { trial_rect_t r; int cols, col, cw, y; } trial_flow_t;
+
+static inline void trial_flow_init(trial_flow_t *f, trial_rect_t r, int min_w)
+{
+    f->r = r;
+    f->cols = min_w > 0 ? r.w / min_w : 1;
+    if (f->cols < 1) f->cols = 1;
+    if (f->cols > 3) f->cols = 3;
+    f->cw = (r.w - 2 * (f->cols - 1)) / f->cols;
+    f->col = 0;
+    f->y = r.y;
+}
+
+/* Room for a section h rows tall, a blank row before it unless it opens a
+   column. False when no column has the room left. */
+static inline bool trial_flow_take(trial_flow_t *f, int h, int *x, int *y, int *w)
+{
+    for (;;) {
+        const int gap = f->y > f->r.y ? 1 : 0;
+        if (f->y + gap + h <= f->r.y + f->r.h) {
+            *x = f->r.x + f->col * (f->cw + 2);
+            *y = f->y + gap;
+            *w = f->cw;
+            f->y = *y + h;
+            return true;
+        }
+        if (f->col + 1 >= f->cols || f->y == f->r.y) return false;
+        f->col++;
+        f->y = f->r.y;
+    }
+}
+
+/* The rest of the column (at least min_h rows), for a list that fills it. */
+static inline bool trial_flow_rest(trial_flow_t *f, int min_h, int *x, int *y, int *w, int *h)
+{
+    if (!trial_flow_take(f, min_h, x, y, w)) return false;
+    *h = f->r.y + f->r.h - *y;
+    f->y = f->r.y + f->r.h;
+    return true;
+}
+
+/* A section rule: "== TITLE ======== right ==". */
+static inline void trial_rule(int x, int y, int w, const char *title, const char *right, uint8_t hue)
+{
+    if (w < 6) return;
+    lap_hline(x, y, w, '=', TRIAL_A(LAP_CYAN));
+    char t[48];
+    snprintf(t, sizeof(t), " %s ", title);
+    lap_put_str(x + 2, y, t, TRIAL_A(hue));
+    if (right && right[0]) {
+        snprintf(t, sizeof(t), " %s ", right);
+        const int rx = x + w - 2 - (int)strlen(t);
+        if (rx > x + 4 + (int)strlen(title)) lap_put_str(rx, y, t, LAP_UI_DIM);
+    }
+}
+
+/* How far over the floor, as a colour: cyan faint, green clear, yellow
+   strong, red very strong. */
+static inline uint8_t trial_ramp(float over_db)
+{
+    return TRIAL_A(over_db < 8 ? LAP_CYAN | LAP_BRIGHT : over_db < 16 ? LAP_GREEN | LAP_BRIGHT
+                   : over_db < 26 ? LAP_YELLOW | LAP_BRIGHT : LAP_RED | LAP_BRIGHT);
+}
+
+/* A tick bar, "||||||......" or "======......": `fill` of `cells` lit in
+   `ink` with `lit`. */
+static inline void trial_ticks(int x, int y, int cells, int fill, uint8_t ink, char lit)
+{
+    for (int i = 0; i < cells; i++)
+        lap_put_cell(x + i, y, i < fill ? lit : '.', i < fill ? ink : LAP_UI_FAINT);
+}
+
+/* History in braille, two readings a cell and four dots high a row, newest
+   at the right; a column over `mark` is drawn in `hot`, the rest in `ink`.
+   trace: a line joining each reading to the one before, as a scope draws;
+   else columns filled from the bottom. Values under -199 are holes
+   (nothing was listening). Cells without a dot are left as they are, so a
+   guide drawn first shows through. */
+static inline void trial_braille(int x, int y, int w, int h, const float *v, int n, float lo, float hi,
+                                 float mark, uint8_t ink, uint8_t hot, bool trace)
+{
+    static const uint8_t COL[2][4] = { { 0x40, 0x04, 0x02, 0x01 }, { 0x80, 0x20, 0x10, 0x08 } };
+    if (w < 1 || h < 1 || !(hi > lo)) return;
+    const int dots = h * 4;
+    int prev = -1;
+    for (int c = 0; c < w; c++) {
+        int a[2] = { -1, -1 }, b[2] = { -2, -2 };
+        bool over = false;
+        for (int s = 0; s < 2; s++) {
+            const int i = n - (w - c) * 2 + s;
+            if (i < 0 || v[i] < -199.0f) { prev = -1; continue; }
+            float f = (v[i] - lo) / (hi - lo);
+            if (!(f > 0)) f = 0;
+            if (f > 1) f = 1;
+            const int d = (int)(f * (float)(dots - 1) + 0.5f);
+            if (!trace) { a[s] = 0; b[s] = d; }
+            else if (prev < 0) { a[s] = b[s] = d; }
+            else { a[s] = prev < d ? prev : d; b[s] = prev < d ? d : prev; }
+            prev = d;
+            if (v[i] >= mark) over = true;
+        }
+        for (int row = 0; row < h; row++) {
+            const int base = (h - 1 - row) * 4;
+            uint8_t bits = 0;
+            for (int s = 0; s < 2; s++)
+                for (int d = 0; d < 4; d++)
+                    if (base + d >= a[s] && base + d <= b[s]) bits |= COL[s][d];
+            if (bits) lap_put_cell(x + c, y + row, LAP_BRAILLE(bits), over ? hot : ink);
+        }
+    }
+}
+
+/* Digits in 3x5 figures (lap_big_char) with a one-cell point; returns the
+   width used. */
+static inline int trial_big(int x, int y, const char *s, uint8_t attr)
+{
+    int at = x;
+    for (; *s; s++) {
+        if (*s == '.') { lap_put_cell(at, y + 4, '.', attr); at += 2; continue; }
+        if (*s == '-') { lap_hline(at, y + 2, 3, LAP_BLOCK, attr); at += 4; continue; }
+        if (*s == ' ') { at += 2; continue; }
+        if (lap_big_char(at, y, *s, attr)) at += 4;
+    }
+    return at - x;
+}
+
+/* The frequency as the radio glass shows it: the board's rolling figures
+   when there is the width, 3x5 figures in a narrow column, else one line.
+   Returns the first row under it. */
+static inline int trial_freq(int x, int y, int w, int h, uint32_t hz)
+{
+    if (w >= 44) {
+        const int below = lap_ui_frequency(x - 2, y, w + 4, h, hz, NULL);
+        if (below > y) return below;
+    }
+    char f[16];
+    snprintf(f, sizeof(f), "%lu.%04lu", (unsigned long)(hz / 1000000u), (unsigned long)(hz % 1000000u / 100u));
+    if (h >= 5 && w >= 32) {
+        const int bw = trial_big(x, y, f, TRIAL_A(LAP_YELLOW | LAP_BRIGHT));
+        lap_put_str(x + bw, y + 4, "MHz", TRIAL_A(LAP_CYAN | LAP_BRIGHT));
+        return y + 5;
+    }
+    lap_put_str(x, y, f, TRIAL_A(LAP_YELLOW | LAP_BRIGHT));
+    lap_put_str(x + (int)strlen(f) + 1, y, "MHz", TRIAL_A(LAP_CYAN | LAP_BRIGHT));
+    return y + 1;
+}
+
+/* Art: n lines from x, y, each in its own ink (or all in inks[0] when the
+   rest are 0), clipped to w. */
+static inline void trial_art(int x, int y, int w, const char *const *lines, int n, const uint8_t *inks)
+{
+    for (int i = 0; i < n; i++) {
+        char line[64];
+        snprintf(line, sizeof(line), "%s", lines[i]);
+        if ((int)strlen(line) > w && w > 0 && w < (int)sizeof(line)) line[w] = 0;
+        lap_put_str(x, y + i, line, inks[i] ? inks[i] : inks[0]);
+    }
 }
 
 /* The page's own keys: RADIO (while stopped) and NOTE. START/STOP and

@@ -34,11 +34,18 @@ int ls_map_preview_air(tui_surface *sf, tui_rect area, ls_map_plot_t *plots, int
 #define LS_MAP_AIR_SHOW_US   (120 * 1000000LL)
 #define LS_MAP_AIR_RECKON_US  (20 * 1000000LL)
 void ls_map_end(void);
+/* Free the tile store and pan history, keeping the frame and the source:
+   MAP calls it on leave so megabytes of tiles are not held behind other apps. */
+void ls_map_trim(void);
 /* Geographic viewport only; closes the libcarto archive and frees all its buffers. */
 void ls_map_external_view(int px_w,int px_h);
 
 /* Failed opens preserve the current archive. */
 bool ls_map_open(const char *path);
+/* The world source instead of an archive: tiles from the card's cache, and
+   from tiles.terminalbay.com when Wi-Fi is up (ls_maptiles.h). */
+bool ls_map_open_world(void);
+bool ls_map_world(void);
 const char *ls_map_open_error(void);
 const char *ls_map_archive(void);
 /* Header compatibility only; opening also validates the directory. */
@@ -115,6 +122,8 @@ void ls_map_classify_row(const uint16_t *px, uint8_t *out, int n);
    default; the map screen sets it from its own sub-cell resolution. */
 void ls_map_set_tile_px(int px);
 int  ls_map_tile_px(void);
+/* Roads as hairlines (the line look) instead of class-wide bars. */
+void ls_map_set_thin(bool thin);
 
 /* The place names in the frame that was last rendered. */
 
@@ -139,6 +148,12 @@ bool ls_map_frame_is_internal(void);
    difference between a frame that came back empty and one that has not
    finished arriving, because those are opposite messages. */
 bool ls_map_render_busy(void);
+int ls_map_render_unfinished(void);
+/* The view the frame ls_map_render last handed back was drawn for. A render
+   draws off to one side and the frame shown is the last finished one, so
+   after a pan or a zoom this is not the centre: the screen moves the frame
+   to the view until the next one is done. False when there is no frame. */
+bool ls_map_render_view(double *lat, double *lon, int *zoom);
 
 /* How much one slice of a render may do. */
 
@@ -165,6 +180,8 @@ void ls_map_set_cache_budget(uint32_t bytes);
 typedef struct {
     int      tiles_wanted;
     int      tiles_drawn;
+    int      tiles_waiting;   /* world source: asked for, still to arrive */
+    int      tiles_under;     /* drawn from a coarser tile meanwhile */
     uint32_t render_us;
     uint32_t arena_peak;
     /* Where the render's time went, split two ways. */

@@ -46,7 +46,13 @@ static void install(const ls_opt_t *o)
     ls_args_t args = {.n = 2, .v = {{.kind = LS_VAL_TEXT, .s = s_path},
                                    {.kind = LS_VAL_BOOL, .i = s_force}}};
     ls_val_t out;
-    ls_act_status_t rc = ls_action_call("c6.update", &args, &out, LS_CAP_STORE | LS_CAP_POWER);
+    ls_act_status_t rc;
+    if (s_force || strcmp(s_path, LS_C6_DEFAULT_PATH)) /* a chosen file or force: exactly that */
+        rc = ls_action_call("c6.update", &args, &out, LS_CAP_STORE | LS_CAP_POWER);
+    else { /* normal path: SD image if present, else download, then install */
+        args.n = 0;
+        rc = ls_action_call("c6.auto", &args, &out, LS_CAP_STORE | LS_CAP_POWER);
+    }
     s_force = false; /* one request, never a persistent downgrade permission */
     snprintf(s_notice, sizeof(s_notice), "%s", rc == LS_ACT_OK ? "" : ls_act_status_str(rc));
 }
@@ -174,14 +180,18 @@ void ls_c6_view_draw(tui_surface *sf, tui_rect a)
         stage == LS_C6_BEGIN ? "PREP" : stage == LS_C6_END ? "VERIFY" :
         stage == LS_C6_ACTIVATE ? "BOOT" : stage == LS_C6_WAIT ? "LINK" : "READY";
     ls_btn_t buttons[] = {{s_confirm ? "CANCEL" : "BACK", "ESC", 0, false, false, false},
-        {s_confirm ? "CONFIRM" : "INSTALL", s_confirm ? "Y" : "I", s_confirm ? 'y' : 'i', s_confirm, off, false},
+        {s_confirm ? "CONFIRM" : "UPDATE", s_confirm ? "Y" : "I", s_confirm ? 'y' : 'i', s_confirm, off, false},
         {"CHECK SD", "R", 'r', false, off || s_confirm, false},
         {"OPTIONS", "O", 'o', false, off || s_confirm, false}};
-    ls_btn_bar_raised_row(sf,tui_rect_make(a.x,a.y,a.w,5),buttons,4,-1);
-    tui_rect body = tui_rect_make(a.x,a.y+5,a.w,a.h-5);
+    /* One-row keys in a window; the body takes the rows the raised bar would. */
+    const int bh = ls_tui_compact() ? 2 : 5;
+    ls_btn_bar_raised_row(sf,tui_rect_make(a.x,a.y,a.w,bh == 2 ? 1 : bh),buttons,4,-1);
+    tui_rect body = tui_rect_make(a.x,a.y+bh,a.w,a.h-bh);
     ls_panel_box(sf,body,s_confirm ? "CONFIRM C6 INSTALL" : "C6 FIRMWARE / SD UPDATE",hue);
     tui_rect in = tui_rect_make(body.x+2,body.y+1,body.w-4,body.h-2);
-    const bool wide = in.w >= 80;
+    /* Side by side also when the page is short: stacked, the text would
+       start below a small window's last row. */
+    const bool wide = in.w >= 80 || (in.h < 44 && in.w >= 66);
     tui_rect art = in, detail = in;
     if (wide) {
         art.w = 38;
@@ -204,7 +214,8 @@ void ls_c6_view_draw(tui_surface *sf, tui_rect a)
         snprintf(num,sizeof(num),"%ld",size>0 ? sent*100/size : 0);
         label = num;
     }
-    figures(sf,tui_rect_make(art.x,art.y+(wide ? 14 : 18),art.w,5),label,hue);
+    if (art.y + (wide ? 19 : 23) <= in.y + in.h)                   /* the big word only where it fits */
+        figures(sf,tui_rect_make(art.x,art.y+(wide ? 14 : 18),art.w,5),label,hue);
     ls_safe_line(sf,art,art.y+(wide ? 19 : 24),stage==LS_C6_WRITE ? "PERCENT / ACKNOWLEDGED BY C6" :
                  done ? "NEW BOOT + VERSION VERIFIED" : failed ? "NO AUTOMATIC RETRY" :
                  s_confirm ? "YOUR APPROVAL IS REQUIRED" : "KEEP POWER CONNECTED",TUI_ATTR(hue,TUI_BLACK));
@@ -224,8 +235,8 @@ void ls_c6_view_draw(tui_surface *sf, tui_rect a)
     if(s_notice[0]) y=paragraph(sf,detail,y,s_notice,TUI_RED|TUI_BRIGHT);
     if (s_confirm) {
         y=paragraph(sf,detail,y+1,"INSTALL PLAN",TUI_MAGENTA|TUI_BRIGHT);
-        y=paragraph(sf,detail,y,LS_TEXT(t_ls_c6_view_recheck_sd_sha_256, "Recheck SD + SHA-256 + power; stop Wi-Fi/BLE; write inactive C6 slot; restart C6 and verify its version."),TUI_WHITE);
-        y=paragraph(sf,detail,y+1,LS_TEXT(t_ls_c6_view_wi_fi_ble_stay, "Wi-Fi/BLE stay OFF until you reboot P4."),TUI_YELLOW|TUI_BRIGHT);
+        y=paragraph(sf,detail,y,LS_TEXT(t_ls_c6_view_recheck_sd_sha_256, "Use the SD image, or download it (Wi-Fi) and check it; stop Wi-Fi/BLE; write the C6 spare slot; verify the new version. KEEP POWER ON."),TUI_WHITE);
+        y=paragraph(sf,detail,y+1,LS_TEXT(t_ls_c6_view_wi_fi_ble_stay, "The board restarts by itself when done."),TUI_YELLOW|TUI_BRIGHT);
         y=paragraph(sf,detail,y,s_force ? "FORCE ON: same/older version permitted once." : "Only a newer version is allowed.",TUI_YELLOW);
     } else {
         y=paragraph(sf,detail,y+1,failed ? "RECOVERY / NEXT STEP" : "CHECKS / SAFETY",hue|TUI_BRIGHT);
@@ -234,14 +245,14 @@ void ls_c6_view_draw(tui_surface *sf, tui_rect a)
         y=paragraph(sf,detail,y,done ? "Reboot P4 to use Wi-Fi/BLE again." :
                     "Provisioned two-slot layout required. Keep power connected.",TUI_YELLOW);
     }
-    y=paragraph(sf,detail,y+1,LS_TEXT(t_ls_c6_view_if_c6_fails_to, "If C6 fails to boot: USB-UART recovery on the C6 header. After radio shutdown, reboot P4 before retry."),TUI_YELLOW);
+    y=paragraph(sf,detail,y+1,LS_TEXT(t_ls_c6_view_if_c6_fails_to, "Cable recovery is only for a C6 that no longer boots."),TUI_YELLOW);
     if (y+3 < detail.y+detail.h) {
         y=paragraph(sf,detail,y+1,"IMAGE ON SD",TUI_CYAN|TUI_BRIGHT);
         y=paragraph(sf,detail,y,s_path,TUI_WHITE);
     }
     if (!off && y+2 < detail.y+detail.h)
         paragraph(sf,detail,y+1,s_confirm ? "Tap CONFIRM [Y] to start / CANCEL [ESC] to keep current firmware." :
-                  "Tap INSTALL [I] to review / CHECK SD [R] to refresh / OPTIONS [O].",TUI_CYAN);
+                  "Tap UPDATE [I] to review / CHECK SD [R] to refresh / OPTIONS [O].",TUI_CYAN);
 }
 bool ls_c6_view_key(ls_tk_t key, char ch)
 {

@@ -156,6 +156,9 @@ void settings_set_usb_autoreboot(bool v) { s_usb = v; }
 static bool s_update_check = true;
 bool settings_get_update_check(void) { return s_update_check; }
 void settings_set_update_check(bool v) { s_update_check = v; }
+bool settings_get_gps_on(void) { return true; }
+bool settings_get_auto_data(void) { return true; }
+void settings_set_auto_data(bool v) { (void)v; }
 /* Both default on, the way the firmware's do. */
 static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_ant_ext;

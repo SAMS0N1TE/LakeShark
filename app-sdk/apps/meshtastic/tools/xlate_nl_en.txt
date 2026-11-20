@@ -1,0 +1,532 @@
+# Hand-written Dutch -> English data for mt_xlate_lang (MESHTASTIC app).
+# Written for this app; GPL-3.0-or-later like the rest of LakeShark.
+# gen_xlate_lang.py reads it with the Wiktionary lexicon and writes ../lang/nl.bin.
+# The format is described at the top of xlate_pt_en.txt. As in German, a verb at
+# the end of the clause comes forward and a separable particle (bel ... op)
+# joins its verb.
+
+@func
+# Articles and determiners
+de | DET:def | the
+het | DET:def | the | it
+een | DET | a | one
+geen | DET:neg | no | none
+mijn | DET:poss | my | mine
+m'n | DET:poss | my
+jouw | DET:poss | your | yours
+je | DET:poss,you | your | you
+uw | DET:poss | your
+zijn | DET:poss | his
+z'n | DET:poss | his
+haar | DET:poss | her | her
+ons | DET:poss | our | us
+onze | DET:poss | our
+jullie | DET:poss,you | your | you
+hun | DET:poss | their | them
+dit | DET | this | this
+dat | DET | that | that
+deze | DET | this | this
+die | DET | that | that
+elke | DET | every
+ieder | DET | every
+iedere | DET | every
+alle | DET:pl | all | all
+veel | DET | a lot of | a lot
+weinig | DET | little | little
+sommige | DET:pl | some | some
+welke | DET:q | which | which
+welk | DET:q | which | which
+hoeveel | DET:q | how many | how much
+#
+# Subject pronouns; alt is the object form
+ik | PRON:1 | I | me
+jij | PRON:2 | you | you
+u | PRON:2 | you | you
+hij | PRON:3 | he | him
+zij | PRON:3,amb | she | they
+ze | PRON:3,amb | she | they
+wij | PRON:4 | we | us
+we | PRON:4 | we | us
+men | PRON:2 | you | you
+#
+# Object pronouns (after the verb; written where they stand)
+mij | PRONX | me
+me | PRONX | me
+jou | PRONX | you
+hem | PRONX | him
+hen | PRONX | them
+zich | CLIT:3,refl | themselves
+#
+# Other pronouns
+iets | PRONX | something | anything
+iemand | PRONX | someone | anyone
+niemand | PRONX | nobody | anybody
+niets | PRONX | nothing | anything
+niks | PRONX | nothing | anything
+alles | PRONX | everything
+iedereen | PRONX | everyone
+allemaal | PRONX | everyone
+#
+# Prepositions
+in | PREP | in
+op | PREP | on
+aan | PREP | at
+bij | PREP | at
+met | PREP | with
+van | PREP | of
+voor | PREP | for
+naar | PREP | to
+om | PREP | at
+uit | PREP | from
+door | PREP | through
+over | PREP | about
+onder | PREP | under
+tegen | PREP | against
+zonder | PREP | without
+tot | PREP | until
+na | PREP | after
+sinds | PREP | since
+tussen | PREP | between
+achter | PREP | behind
+naast | PREP | next to
+vlakbij | PREP | near
+in de buurt van | PREP | near
+#
+# Conjunctions
+en | CONJ | and
+of | CONJ:sub | or
+maar | CONJ | but
+want | CONJ | because
+omdat | CONJ:sub | because
+als | CONJ:sub | if
+toen | CONJ:sub | when
+terwijl | CONJ:sub | while
+hoewel | CONJ:sub | although
+voordat | CONJ:sub | before
+nadat | CONJ:sub | after
+zodat | CONJ:sub | so that
+zodra | CONJ:sub | as soon as
+dus | CONJ | so
+#
+# Negation: niet after the verb
+niet | NEG2 | _ | not
+nooit | NEG2:never | never | never
+nog niet | NEG2 | yet | not yet
+niet meer | NEG2 | anymore | no more
+#
+# Question words
+waar | Q:sub | where | where
+wanneer | Q:sub | when | when
+hoe | Q:sub | how | how
+waarom | Q | why
+wie | Q:sub | who | who
+wat | Q:sub | what | what
+hoe laat | Q | what time
+#
+# Adverbs
+hier | ADV | here
+daar | ADV | there
+er | SKIP | _
+ook | ADV | too
+heel | ADV:int | very
+erg | ADV:int | very
+te | ADV:int | too
+goed | ADV | well | fine
+slecht | ADV | badly
+beter | ADV | better
+meer | ADV | more
+minder | ADV | less
+nu | ADV | now
+vandaag | ADV | today
+gisteren | ADV:past | yesterday
+morgen | ADV | tomorrow
+vanavond | ADV | tonight
+vannacht | ADV | tonight
+vroeg | ADV | early
+laat | ADV | late
+straks | ADV | later
+zo | ADV | soon
+meteen | ADV | right away
+altijd | ADV | always
+vaak | ADV | often
+soms | ADV | sometimes
+nog | ADV | still
+al | ADV | already
+misschien | ADV | maybe
+snel | ADV | fast
+langzaam | ADV | slowly
+bijna | ADV | almost
+alleen | ADV | only
+echt | ADV | really
+samen | ADV | together
+buiten | ADV | outside
+binnen | ADV | inside
+ver | ADV | far
+dichtbij | ADV | near
+thuis | ADV | at home
+naar huis | ADV | home
+weer | ADV | again
+genoeg | ADV | enough
+even | SKIP | _
+maar even | SKIP | _
+toch | SKIP | _
+wel | SKIP | _
+ja | INTJ | yes
+nee | INTJ | no
+#
+# Interjections and chat words
+hoi | INTJ | hi
+hallo | INTJ | hello
+hey | INTJ | hey
+doei | INTJ | bye
+dag | INTJ:A | bye
+tot ziens | INTJ | goodbye
+tot straks | INTJ | see you later
+tot morgen | INTJ | see you tomorrow
+tot zo | INTJ | see you soon
+dank je | INTJ | thanks
+dank je wel | INTJ | thank you very much
+dank u | INTJ | thank you
+dankjewel | INTJ | thank you
+bedankt | INTJ | thanks
+alsjeblieft | INTJ | please
+alstublieft | INTJ | please
+graag gedaan | INTJ | you're welcome
+sorry | INTJ | sorry
+ok | INTJ | ok
+oke | INTJ | ok
+oké | INTJ | ok
+prima | INTJ | fine
+top | INTJ:A | great
+mooi | INTJ:A | nice
+lekker | INTJ:A | nice
+klopt | INTJ | right
+precies | INTJ | exactly
+natuurlijk | INTJ | of course
+haha | INTJ | haha
+help | INTJ | help
+let op | INTJ | careful
+ontvangen | INTJ:A | received
+begrepen | INTJ | understood
+groetjes | INTJ | regards
+groeten | INTJ | regards
+#
+# Number words
+twee | NUM | two
+drie | NUM | three
+vier | NUM | four
+vijf | NUM | five
+zes | NUM | six
+zeven | NUM | seven
+acht | NUM | eight
+negen | NUM | nine
+tien | NUM | ten
+twintig | NUM | twenty
+dertig | NUM | thirty
+honderd | NUM | a hundred
+duizend | NUM | thousand
+eerste | NUM | first
+laatste | NUM | last
+half | NUM | half
+#
+# There is / are
+er is | EXIST | there is
+er zijn | EXIST:pl | there are
+is er | EXIST | there is
+zijn er | EXIST:pl | there are
+er is geen | EXIST:neg | there is no
+er was | EXIST:past | there was
+is er iemand | CL | is anyone there
+iemand daar | CL | anyone there
+#
+# Phrases
+goedemorgen | INTJ | good morning
+goede morgen | INTJ | good morning
+goedemiddag | INTJ | good afternoon
+goedenavond | INTJ | good evening
+goedenacht | INTJ | good night
+welterusten | INTJ | good night
+hoe gaat het | CL | how are you
+hoe is het | CL | how are you
+hoe gaat het met je | CL | how are you
+hoe gaat het met jou | CL | how are you
+het gaat goed | CL | I'm fine
+alles goed | CL | how are you | all good
+alles oké | CL | all good
+alles ok | CL | all good
+wat is er | CL | what's up
+wat is er gebeurd | CL | what happened
+geen idee | CL | no idea
+geen probleem | INTJ | no problem
+maakt niet uit | CL | never mind
+ik weet het niet | CL | I don't know
+weet ik niet | CL | I don't know
+luid en duidelijk | ADV | loud and clear
+vijf bij vijf | ADV | five by five
+hoe laat is het | CL | what time is it
+om hoe laat | Q | at what time
+het weekend | PH | the weekend
+het weer | PH | the weather
+dit weekend | ADV | this weekend
+volgende week | ADV | next week
+ontmoetingsplek | PH | meeting point
+het regent | CL | it's raining
+het is koud | CL | it's cold
+het is warm | CL | it's hot
+het is heel koud | CL | it's very cold
+het is erg koud | CL | it's very cold
+het is heel warm | CL | it's very hot
+succes | INTJ | good luck
+
+@abbr
+ff | even
+idd | inderdaad
+mss | misschien
+wss | waarschijnlijk
+gwn | gewoon
+nie | niet
+ni | niet
+k | ik
+t | het
+mn | mijn
+zn | zijn
+da | dat
+w8 | wacht
+vd | van de
+sws | sowieso
+kweet | ik weet
+kben | ik ben
+kheb | ik heb
+kga | ik ga
+egt | echt
+dr | er
+tis | het is
+wa | wat
+
+@verbs
+zijn | BE,IT,PERFBE
+hebben | HAVE
+worden | PERFBE
+gaan | GOING,PERFBE
+kunnen | CAN
+willen | WANT
+moeten | MUST
+zullen | WILL
+mogen | MAY
+hoeven | NEED
+komen | PERFBE
+blijven | PERFBE
+vertrekken | PERFBE
+aankomen | PERFBE
+vallen | PERFBE
+sterven | PERFBE
+beginnen | PERFBE
+vliegen | PERFBE
+regenen | IT
+werken | IT
+lijken | IT
+kosten | IT
+gebeuren | PERFBE,IT
+
+@lex
+zijn | V | be
+hebben | V | have
+worden | V | become
+gaan | V | go
+kunnen | V | can
+willen | V | want
+moeten | V | must
+zullen | V | will
+mogen | V | may
+hoeven | V | need
+komen | V | come
+zien | V | see
+horen | V | hear
+ontvangen | V | receive
+praten | V | talk
+zeggen | V | say
+weten | V | know
+kennen | V | know
+doen | V | do
+maken | V | make
+sturen | V | send
+versturen | V | send
+bellen | V | call
+opbellen | V | call
+antwoorden | V | answer
+wachten | V | wait
+werken | V | work
+laden | V | charge
+opladen | V | charge
+testen | V | test
+proberen | V | try
+vinden | V | find
+zoeken | V | look+for
+helpen | V | help
+ontmoeten | V | meet
+aankomen | V | arrive
+vertrekken | V | leave
+terugkomen | V | come back
+aanzetten | V | turn on
+uitzetten | V | turn off
+regenen | V | rain
+blijven | V | stay
+begrijpen | V | understand
+snappen | V | get
+denken | V | think
+geven | V | give
+nemen | V | take
+brengen | V | bring
+schrijven | V | write
+lezen | V | read
+verliezen | V | lose
+laten | V | let
+accu | N:m | battery
+batterij | N:f | battery
+signaal | N:n | signal
+antenne | N:f | antenna
+radio | N:f | radio
+node | N:m | node
+knooppunt | N:n | node
+netwerk | N:n | network
+net | N:n | network
+mesh | N:n | mesh
+bericht | N:n | message
+berichtje | N:n | message
+kanaal | N:n | channel
+frequentie | N:f | frequency
+repeater | N:m | repeater
+telefoon | N:m | phone
+mobiel | N:m | cell phone
+oplader | N:m | charger
+hulp | N:f,u | help
+water | N:n,u | water
+eten | N:n,u | food
+stroom | N:m,u | power
+regen | N:m,u | rain
+onweer | N:n | storm
+storm | N:m | storm
+huis | N:n | house
+mensen | N:m | people
+plek | N:f | place
+plein | N:n | square
+heuvel | N:m | hill
+berg | N:m | mountain
+straat | N:f | street
+uur | N:n | hour
+minuut | N:f | minute
+dag | N:m | day
+nacht | N:m | night
+week | N:f | week
+test | N:m | test
+locatie | N:f | location
+ambulance | N:f | ambulance
+noodgeval | N:n | emergency
+gewonde | N:m | injured person
+weer | N:n,u | weather
+bereik | N:n,u | reception
+nodighebben | V | need
+kaart | N:f | map
+nieuw | A | new
+goed | A | good
+zwak | A | weak
+sterk | A | strong
+klaar | A | ready
+aan | R | on
+uit | R | off
+kapot | A | broken
+verloren | A | lost
+gewond | A | hurt
+druk | A | busy
+moe | A | tired
+koud | A | cold
+warm | A | hot
+leeg | A | empty
+vol | A | full
+veilig | A | safe
+
+@drop
+
+@book
+OK | Oké
+Yes | Ja
+No | Nee
+Thanks | Bedankt
+Hello, how are you? | Hoi, hoe gaat het?
+Good morning | Goedemorgen
+Good night | Welterusten
+See you later | Tot straks
+Sorry, I don't understand | Sorry, ik begrijp het niet
+Please write slowly / simply | Schrijf alsjeblieft eenvoudig
+I speak little Spanish | Ik spreek een beetje Nederlands
+Copy that | Begrepen
+Can you hear me? | Hoor je me?
+I hear you loud and clear | Ik hoor je luid en duidelijk
+I hear you weak | Ik hoor je zwak
+Your signal is weak | Je signaal is zwak
+Good signal here | Goed signaal hier
+No signal here | Geen signaal hier
+Who is on the mesh? | Wie is er op het netwerk?
+Testing, please answer | Test, antwoord alsjeblieft
+Message received | Bericht ontvangen
+Over and out | Over en sluiten
+Is anyone there? | Is er iemand?
+On my way | Ik ben onderweg
+I'm here | Ik ben er
+I'm almost there | Ik ben er bijna
+Wait for me | Wacht op mij
+I'm busy, talk later | Ik ben bezig, we praten later
+All good here | Alles goed hier
+I'm leaving now | Ik vertrek nu
+Running late | Ik ben te laat
+My battery is low | Mijn batterij is bijna leeg
+I'm charging | Ik ben aan het laden
+My battery is dying, I'm going offline | Mijn batterij is bijna op, ik ga offline
+Back online | Weer online
+Where are you? | Waar ben je?
+See you at the square | Tot op het plein
+See you at ... | Tot bij ...
+What time? | Hoe laat?
+In 10 minutes | Over 10 minuten
+Meet at the usual place | Afspreken op de vaste plek
+Send me your location | Stuur me je locatie
+Let me know when you arrive | Laat me weten wanneer je er bent
+I need help | Ik heb hulp nodig
+Emergency! | Noodgeval!
+Someone is hurt | Er is iemand gewond
+Call an ambulance | Bel een ambulance
+I'm lost | Ik ben verdwaald
+We are safe | We zijn veilig
+I need water | Ik heb water nodig
+The power is out | De stroom is uitgevallen
+Stay where you are | Blijf waar je bent
+It's raining here | Het regent hier
+A storm is coming | Er komt onweer aan
+It's very cold | Het is erg koud
+It's very hot | Het is erg warm
+How is the weather there? | Hoe is het weer daar?
+
+@detect
+ik | 13
+niet | 12
+het | 11
+een | 11
+jij | 11
+je | 9
+wat | 10
+heb | 11
+ben | 11
+hoi | 12
+doei | 12
+bedankt | 13
+dankje | 12
+alsjeblieft | 13
+graag | 10
+goed | 9
+ff | 10
+idd | 10
+mss | 10
+wss | 10
+gwn | 11
+kweet | 11
+oke | 6

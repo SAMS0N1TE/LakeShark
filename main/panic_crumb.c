@@ -14,7 +14,9 @@
 #include "esp_cpu.h"
 #include "esp_freertos_hooks.h"
 #include "esp_log.h"
+#include "esp_memory_utils.h"
 #include "esp_private/cache_utils.h"
+#include "esp_private/panic_internal.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "riscv/rvruntime-frames.h"
@@ -80,20 +82,42 @@ typedef struct {
        (ESP_SYSTEM_HW_PC_RECORD): when it froze with interrupts masked, or
        hung on the bus, this is the only place its PC survives. */
     uint32_t other_pc, other_sp;
+    /* The task running on the other core right now. The tick crumbs only
+       name the task its last tick interrupted: on 2026-11-17 that said
+       'meshcore' (an LP-RAM stack) while the frozen core's SP was in PSRAM,
+       so another task had been switched in after that tick. */
+    char other_task[CONFIG_FREERTOS_MAX_TASK_NAME_LEN];
+    /* abort()/assert text: an mcause 2 at panic_abort is all the PCs say
+       (lap_io, 2026-11-15). */
+    char why[64];
 } crumb_t;
 
+/* Not CRUMB_MAGIC: a record laid out by an older build reads as none. */
+#define CRUMB_REC_MAGIC 0x4C534333u
+
 RTC_NOINIT_ATTR static crumb_t s_crumb[2];
-static crumb_t s_last[2];
+EXT_RAM_BSS_ATTR static crumb_t s_last[2];   /* read at boot and by the console only */
 
 void __real_panicHandler(void *frame);
 void __real_xt_unhandled_exception(void *frame);
+
+/* Bounded copy from a pointer the panicking code handed over: only when it
+   can be read without the cache, or the cache is up. */
+static void IRAM_ATTR copy_text(char *dst, size_t n, const char *src)
+{
+    dst[0] = '\0';
+    if (!src || !(esp_ptr_internal(src) || spi_flash_cache_enabled())) return;
+    size_t i = 0;
+    for (; i + 1 < n && src[i]; i++) dst[i] = src[i] >= ' ' && src[i] < 127 ? src[i] : ' ';
+    dst[i] = '\0';
+}
 
 static void IRAM_ATTR note(void *frame, uint32_t how)
 {
     const RvExcFrame *f = (const RvExcFrame *)frame;
     crumb_t *c = &s_crumb[esp_cpu_get_core_id() & 1];
-    if (c->magic != CRUMB_MAGIC) {
-        c->magic = CRUMB_MAGIC;
+    if (c->magic != CRUMB_REC_MAGIC) {
+        c->magic = CRUMB_REC_MAGIC;
         c->entries = 0;
     }
     if (c->entries++ == 0) {
@@ -106,6 +130,11 @@ static void IRAM_ATTR note(void *frame, uint32_t how)
         const int other = !(esp_cpu_get_core_id() & 1);
         c->other_pc = REG_READ(other ? ASSIST_DEBUG_CORE_1_RCD_PDEBUGPC_REG : ASSIST_DEBUG_CORE_0_RCD_PDEBUGPC_REG);
         c->other_sp = REG_READ(other ? ASSIST_DEBUG_CORE_1_RCD_PDEBUGSP_REG : ASSIST_DEBUG_CORE_0_RCD_PDEBUGSP_REG);
+        /* TCBs are internal (IDF allocates them there even for WithCaps
+           tasks), and both lookups are IRAM on the P4 build. */
+        const TaskHandle_t h = xTaskGetCurrentTaskHandleForCore(other);
+        copy_text(c->other_task, sizeof(c->other_task), h && esp_ptr_internal(h) ? pcTaskGetName(h) : NULL);
+        copy_text(c->why, sizeof(c->why), g_panic_abort ? g_panic_abort_details : NULL);
     }
 }
 
@@ -140,15 +169,17 @@ static void print_last(void)
     bool any = false;
     for (int core = 0; core < 2; core++) {
         const crumb_t *c = &s_last[core];
-        if (c->magic != CRUMB_MAGIC) continue;
+        if (c->magic != CRUMB_REC_MAGIC) continue;
         any = true;
         printf("core%d %s mcause=0x%08lx mepc=0x%08lx mtval=0x%08lx ra=0x%08lx sp=0x%08lx entries=%lu\n",
                core, c->how == 1 ? "interrupt" : "exception",
                (unsigned long)c->mcause, (unsigned long)c->mepc, (unsigned long)c->mtval,
                (unsigned long)c->ra, (unsigned long)c->sp, (unsigned long)c->entries);
+        if (c->why[0]) printf("core%d abort: %.*s\n", core, (int)sizeof(c->why), c->why);
         if (c->other_pc)
-            printf("core%d saw core%d at pc=0x%08lx sp=0x%08lx\n", core, !core,
-                   (unsigned long)c->other_pc, (unsigned long)c->other_sp);
+            printf("core%d saw core%d at pc=0x%08lx sp=0x%08lx in '%.*s'\n", core, !core,
+                   (unsigned long)c->other_pc, (unsigned long)c->other_sp,
+                   (int)sizeof(c->other_task), c->other_task);
     }
     if (!any) printf("no panic recorded before this boot\n");
     char line[160];
@@ -164,17 +195,23 @@ bool panic_crumb_text(char *out, size_t n)
     char line[160];
     for (int core = 0; core < 2; core++) {
         const crumb_t *c = &s_last[core];
-        if (c->magic != CRUMB_MAGIC) continue;
+        if (c->magic != CRUMB_REC_MAGIC) continue;
         any = true;
         LS_SNPRINTF(t_panic_crumb_core_d_s_mcause, line, sizeof(line), "core%d %s mcause %lx pc %08lx tval %lx ra %08lx sp %08lx\n", core,
                  c->how == 1 ? "int" : "exc", (unsigned long)c->mcause, (unsigned long)c->mepc,
                  (unsigned long)c->mtval, (unsigned long)c->ra, (unsigned long)c->sp);
         k += (size_t)snprintf(out + k, n - k, "%s", line);
         if (k >= n) return any;
+        /* The record keeps 256 bytes: the abort text is cut to fit the ticks line. */
+        if (c->why[0]) {
+            k += (size_t)snprintf(out + k, n - k, "abort: %.48s\n", c->why);
+            if (k >= n) return any;
+        }
         /* only when the other core never reached the handler: the hung one */
-        if (c->other_pc && s_last[!core].magic != CRUMB_MAGIC) {
-            k += (size_t)snprintf(out + k, n - k, "core%d saw core%d at pc %08lx sp %08lx\n", core, !core,
-                                  (unsigned long)c->other_pc, (unsigned long)c->other_sp);
+        if (c->other_pc && s_last[!core].magic != CRUMB_REC_MAGIC) {
+            k += (size_t)snprintf(out + k, n - k, "core%d saw core%d at pc %08lx sp %08lx in '%.*s'\n", core, !core,
+                                  (unsigned long)c->other_pc, (unsigned long)c->other_sp,
+                                  (int)sizeof(c->other_task), c->other_task);
             if (k >= n) return any;
         }
     }
@@ -219,7 +256,7 @@ void panic_crumb_boot(void)
 {
     for (int core = 0; core < 2; core++) {
         s_last[core] = s_crumb[core];
-        if (s_last[core].magic == CRUMB_MAGIC)
+        if (s_last[core].magic == CRUMB_REC_MAGIC)
             ESP_LOGW("crumb", "last panic, core%d: mcause=0x%08lx mepc=0x%08lx mtval=0x%08lx ra=0x%08lx",
                      core, (unsigned long)s_last[core].mcause, (unsigned long)s_last[core].mepc,
                      (unsigned long)s_last[core].mtval, (unsigned long)s_last[core].ra);
@@ -231,7 +268,7 @@ void panic_crumb_boot(void)
         memset(&s_tick[core], 0, sizeof(s_tick[core]));
     }
     char line[160];
-    if ((s_last[0].magic == CRUMB_MAGIC || s_last[1].magic == CRUMB_MAGIC) && tick_line(line, sizeof(line)))
+    if ((s_last[0].magic == CRUMB_REC_MAGIC || s_last[1].magic == CRUMB_REC_MAGIC) && tick_line(line, sizeof(line)))
         ESP_LOGW("crumb", "ticks: %s", line);
     for (int core = 0; core < 2; core++)
         esp_register_freertos_tick_hook_for_cpu(tick_note, core);

@@ -40,7 +40,7 @@ void ls_age_str(char *out, size_t cap, uint32_t then, uint32_t now)
     if (!then || now < then) { snprintf(out, cap, " -- "); return; }
 
     const uint32_t d = now - then;
-    if (d < 60)          snprintf(out, cap, "%2lus", (unsigned long)d);
+    if (d < 60)          snprintf(out, cap, "%2lus", (unsigned long)ls_age_q((long)d));
     else if (d < 3600)   snprintf(out, cap, "%2lum", (unsigned long)(d / 60));
     else if (d < 86400)  snprintf(out, cap, "%2luh", (unsigned long)(d / 3600));
     else                 snprintf(out, cap, "%2lud", (unsigned long)(d / 86400));

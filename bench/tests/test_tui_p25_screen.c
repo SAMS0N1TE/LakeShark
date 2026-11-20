@@ -788,7 +788,7 @@ LS_CASE(the_merged_decode_page_has_the_large_dial_and_receive_history)
     ls_shim_time_set(4 * 1000000LL);
     draw_decode_now(PORTRAIT);
 
-    LS_CHECK(rect_has(PORTRAIT, "P25 / RECEIVER"));
+    LS_CHECK(rect_has(PORTRAIT, "RECEIVER"));
     LS_CHECK(rect_has(PORTRAIT, "ACTIVITY"));
     LS_CHECK(rect_has(PORTRAIT, "4321"));
     LS_CHECK(rect_has(PORTRAIT, "SCAN"));
@@ -809,7 +809,7 @@ LS_CASE(the_large_font_grid_keeps_history_and_all_quick_actions)
     ls_shim_time_set(2 * 1000000LL);
     draw_decode_now(large_font);
 
-    LS_CHECK(rect_has(large_font, "P25 / RECEIVER"));
+    LS_CHECK(rect_has(large_font, "RECEIVER"));
     LS_CHECK(rect_has(large_font, "ACTIVITY"));
     LS_CHECK(rect_has(large_font, "2468"));
     LS_CHECK(rect_has(large_font, "VOLUME"));
@@ -1181,7 +1181,7 @@ LS_CASE(the_scanner_workflow_remains_reachable_from_the_merged_screen)
     LS_CHECK(!scan_engine_active());
     ls_scr_p25.key(LS_TK_CHAR, 'm');
     fresh(); draw_pane(&ls_scr_p25, PORTRAIT);
-    LS_CHECK(rect_has(PORTRAIT, "P25 / RECEIVER"));
+    LS_CHECK(rect_has(PORTRAIT, "RECEIVER"));
 }
 
 LS_CASE(held_p25_keeps_a_working_hold_button_in_both_postures)

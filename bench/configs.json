@@ -1,5 +1,5 @@
 {
-  "_comment": "Board build profiles. Set usb_serial to the target device before using bench/flash.ps1.",
+  "_comment": "Board build profiles. ram_budget_kb / ram_growth_kb: internal-RAM statics limit and allowed growth over bench/ram-baseline.json (bench/ramgate.py). Set usb_serial to the target device before using bench/flash.ps1.",
   "configs": [
     {
       "name": "p4-nano",
@@ -37,6 +37,8 @@
     },
     {
       "name": "p4-nano-v3-dsi",
+      "ram_budget_kb": 250,
+      "ram_growth_kb": 6,
       "dir": "build_nano_v3_dsi",
       "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/nano_headless_ble.defaults;boards/p4_rev3.defaults;boards/nano_c5.defaults;boards/nano_dsi.defaults",
@@ -47,6 +49,8 @@
     },
     {
       "name": "p4-nano-v3-dsi-txunlocked",
+      "ram_budget_kb": 250,
+      "ram_growth_kb": 6,
       "dir": "build_nano_v3_dsi_txunlocked",
       "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/nano_headless_ble.defaults;boards/p4_rev3.defaults;boards/nano_c5.defaults;boards/nano_dsi.defaults;boards/tx_unlocked.defaults",
@@ -57,6 +61,8 @@
     },
     {
       "name": "t-display-p4",
+      "ram_budget_kb": 88,
+      "ram_growth_kb": 6,
       "dir": "build_tdp4",
       "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/t_display_p4.defaults",
@@ -67,6 +73,8 @@
     },
     {
       "name": "t-display-p4-tft",
+      "ram_budget_kb": 88,
+      "ram_growth_kb": 6,
       "dir": "build_tdp4_tft",
       "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/t_display_p4.defaults;boards/t_display_p4_tft.defaults",
@@ -77,6 +85,8 @@
     },
     {
       "name": "t-display-p4-lr2021",
+      "ram_budget_kb": 96,
+      "ram_growth_kb": 6,
       "dir": "build_tdp4_lr",
       "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/t_display_p4.defaults",
@@ -87,6 +97,8 @@
     },
     {
       "name": "t-display-p4-lr",
+      "ram_budget_kb": 96,
+      "ram_growth_kb": 6,
       "dir": "build_tdp4_lronly",
       "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/t_display_p4.defaults;boards/t_display_p4_lr2021.defaults",
@@ -97,6 +109,8 @@
     },
     {
       "name": "t-display-p4-net",
+      "ram_budget_kb": 88,
+      "ram_growth_kb": 6,
       "dir": "build_tdp4_net",
       "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/t_display_p4.defaults;boards/t_display_p4_net.defaults",
@@ -106,7 +120,21 @@
       "board": "T-Display-P4"
     },
     {
+      "name": "t-display-p4-universal",
+      "ram_budget_kb": 88,
+      "ram_growth_kb": 6,
+      "dir": "build_tdp4_u",
+      "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
+      "defaults": "sdkconfig.defaults;boards/t_display_p4.defaults;boards/t_display_p4_universal.defaults",
+      "enabled": false,
+      "usb_serial": "5C84301528",
+      "flash_mb": 16,
+      "board": "T-Display-P4"
+    },
+    {
       "name": "t-display-p4-txunlocked",
+      "ram_budget_kb": 88,
+      "ram_growth_kb": 6,
       "dir": "build_tdp4_txunlocked",
       "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/t_display_p4.defaults;boards/tx_unlocked.defaults",
@@ -117,6 +145,8 @@
     },
     {
       "name": "t-display-p4-lr2021-txunlocked",
+      "ram_budget_kb": 96,
+      "ram_growth_kb": 6,
       "dir": "build_tdp4_lr_txunlocked",
       "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/t_display_p4.defaults;boards/tx_unlocked.defaults",
@@ -137,6 +167,8 @@
     },
     {
       "name": "p4-nano-dsi-c6",
+      "ram_budget_kb": 250,
+      "ram_growth_kb": 6,
       "dir": "build_nano_dsi_c6",
       "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/nano_headless_ble.defaults;boards/nano_c6.defaults;boards/nano_dsi.defaults",
@@ -147,6 +179,8 @@
     },
     {
       "name": "p4-nano-v3-dsi-c6",
+      "ram_budget_kb": 250,
+      "ram_growth_kb": 6,
       "dir": "build_nano_v3_dsi_c6",
       "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/nano_headless_ble.defaults;boards/p4_rev3.defaults;boards/nano_c6.defaults;boards/nano_dsi.defaults",
@@ -157,6 +191,8 @@
     },
     {
       "name": "p4-nano-dsi-c5",
+      "ram_budget_kb": 250,
+      "ram_growth_kb": 6,
       "dir": "build_nano_dsi_c5",
       "idf_export": "C:/esp/v5.5.4/esp-idf/export.ps1",
       "defaults": "sdkconfig.defaults;boards/nano_headless_ble.defaults;boards/nano_c5.defaults;boards/nano_dsi.defaults",

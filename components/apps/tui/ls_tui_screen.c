@@ -44,9 +44,20 @@ static portMUX_TYPE s_trans_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static bool s_locked;
 static int s_unlock_step;
+static const ls_tui_lock_page_t *s_lock_page;
+void ls_tui_set_lock_page(const ls_tui_lock_page_t *page) { s_lock_page = page; }
+
+/* The two-tap page below is the bench's: on a board ls_lock's page is the
+   lock, and with none installed nothing locks (there is no way back out). */
+#ifdef ESP_PLATFORM
+#define LOCK_FALLBACK 0
+#else
+#define LOCK_FALLBACK 1
+#endif
 
 void ls_tui_set_locked(bool locked)
 {
+    if (locked && !s_lock_page && !LOCK_FALLBACK) return;
     s_locked = locked;
     s_unlock_step = 0;
     ls_tui_invalidate();
@@ -304,6 +315,18 @@ LS_COLD void ls_tui_screen_show(int index)
         ls_tui_invalidate();
 }
 
+static volatile int s_show_later = -1;
+void ls_tui_screen_show_later(int index)
+{
+    if (index >= 0 && index < s_count) s_show_later = index;
+}
+int ls_tui_screen_take_later(void)
+{
+    const int n = s_show_later;
+    if (n < 0) return -1;
+    s_show_later = -1;
+    return s_locked || n >= s_count ? -1 : n;
+}
 void ls_tui_screen_next(void) { if (s_count) ls_tui_screen_show((s_current + 1) % s_count); }
 void ls_tui_screen_prev(void) { if (s_count) ls_tui_screen_show((s_current + s_count - 1) % s_count); }
 
@@ -360,6 +383,19 @@ static void draw_battery(tui_surface *sf, tui_rect all, int x, uint8_t bar)
 {
     ls_gauge_t g;
     if (!ls_gauge_get(&g) || !g.present) return;
+
+    /* The shown percent follows the pack with a one-point dead band: a
+       reading that wanders +-1 under load does not redraw the status row.
+       It moves down while discharging, up while charging, and on a plug. */
+    static uint8_t shown = 255;
+    static bool shown_chg;
+    if (shown > 100 || shown_chg != g.charging ||
+        (g.charging ? g.percent > shown : g.percent < shown) ||
+        (g.percent > shown ? g.percent - shown : shown - g.percent) >= 3) {
+        shown = g.percent;
+        shown_chg = g.charging;
+    }
+    g.percent = shown;
 
     /* Partial blocks used to expose black rectangular grounds in the cyan
        status band, just like the inverted help control beside the clock. */
@@ -424,8 +460,16 @@ static bool hole_gap(int row, int n, int *g0, int *g1)
 
 #if defined(CONFIG_LS_LR2021_ONLY) && CONFIG_LS_LR2021_ONLY
 static const char BRAND[] = "LAKESHARK LR";
+#define BRAND_LEN ((int)sizeof(BRAND) - 1)
+#elif defined(CONFIG_LS_TDP4_UNIVERSAL) && CONFIG_LS_TDP4_UNIVERSAL
+/* Found at boot: "LAKESHARK LR" when an LR2021 answered (board/ls_profile.h).
+   The row is laid out per frame, so it follows whichever it is. */
+extern bool ls_profile_is_lr(void);
+#define BRAND (ls_profile_is_lr() ? "LAKESHARK LR" : "LAKESHARK")
+#define BRAND_LEN ((int)strlen(BRAND))
 #else
 static const char BRAND[] = "LAKESHARK";
+#define BRAND_LEN ((int)sizeof(BRAND) - 1)
 #endif
 
 /* Where everything on the status row goes. */
@@ -441,8 +485,8 @@ static ls_tui_status_layout_t status_place(int cols, int *x0, int *x1,
         right_edge = *x1 - batt_w - 1;
     }
     const ls_tui_screen_t *s = s_screens[s_current];
-    const char *name = (s && s->name) ? ls_tr(s->name) : "";
-    const int brand = (int)sizeof(BRAND) - 1, nl = (int)strlen(name);
+    const char *name = s_locked ? ls_tr("LOCKED") : (s && s->name) ? ls_tr(s->name) : "";
+    const int brand = BRAND_LEN, nl = (int)strlen(name);
     const int ll = (int)strlen(s_status_left), rl = (int)strlen(s_status_right);
 
     /* Around the camera: clock to its left, the rest to its right,
@@ -473,7 +517,7 @@ static void draw_status(tui_surface *sf, int cols)
     if (batt_x >= 0) draw_battery(sf, all, batt_x, bar);
 
     const ls_tui_screen_t *s = s_screens[s_current];
-    const char *name = (s && s->name) ? ls_tr(s->name) : "";
+    const char *name = s_locked ? ls_tr("LOCKED") : (s && s->name) ? ls_tr(s->name) : "";
 
     /* The clock uses the status band's own colours. */
     if (l.clock_x >= 0 && s_status_clock[0])
@@ -488,7 +532,7 @@ static void draw_status(tui_surface *sf, int cols)
 
     const char *mesh_tx = ls_scr_mesh_tx_status ? ls_tr(ls_scr_mesh_tx_status()) : NULL;
     if (mesh_tx && l.brand_x >= 0) {
-        tui_fill(sf, tui_rect_make(l.brand_x, 0, (int)sizeof(BRAND) - 1, 1), ' ', bar);
+        tui_fill(sf, tui_rect_make(l.brand_x, 0, BRAND_LEN, 1), ' ', bar);
         tui_put_str(sf, all, l.brand_x, 0, mesh_tx, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED));
     }
 
@@ -498,7 +542,7 @@ static void draw_status(tui_surface *sf, int cols)
     if (unread > 0 && !mesh_tx && l.brand_x >= 0) {
         char badge[12];
         snprintf(badge, sizeof(badge), ls_tr("%d MSG"), unread > 99 ? 99 : unread);
-        for (int i = 0; i < (int)sizeof(BRAND) - 1; i++)
+        for (int i = 0; i < BRAND_LEN; i++)
             tui_put_char(sf, all, l.brand_x + i, 0, ' ', bar);
 
         const bool inv = ls_notify_badge_inverted();
@@ -791,8 +835,8 @@ static void draw_help(tui_surface *sf, int cols, int rows)
     const int lblw = 12;
     const int wrapw = w - 4 - lblw;
 
-    static char    lbl[HELP_ROWS_MAX][HELP_LBL_MAX];
-    static char    val[HELP_ROWS_MAX][HELP_VAL_MAX];
+    EXT_RAM_BSS_ATTR static char    lbl[HELP_ROWS_MAX][HELP_LBL_MAX];
+    EXT_RAM_BSS_ATTR static char    val[HELP_ROWS_MAX][HELP_VAL_MAX];
     static uint8_t ind[HELP_ROWS_MAX];
     int n = 0;
 
@@ -865,6 +909,10 @@ static void draw_help(tui_surface *sf, int cols, int rows)
 void ls_tui_router_draw(tui_surface *sf)
 {
     if (!sf || !s_count) return;
+    {                                   /* asked from inside the last frame's screen: now it has returned */
+        const int n = ls_tui_screen_take_later();
+        if (n >= 0) ls_tui_screen_show(n);
+    }
     TRANS_LOCK();
     s_trans_draw_started = esp_timer_get_time();
     s_trans_body = false;
@@ -897,13 +945,19 @@ void ls_tui_router_draw(tui_surface *sf)
         tui_rect all = tui_surface_rect(sf);
         tui_fill(sf, all, ' ', ink);
         draw_status(sf, cols);
+        tui_rect hole;
+        if (s_lock_page && s_lock_page->draw)
+            s_lock_page->draw(sf, tui_rect_make(0, 1, cols, rows - 1));
+#if LOCK_FALLBACK
+        else {
         int x = cols > 38 ? (cols - 38) / 2 : 1;
         tui_put_str(sf, all, x, rows / 2 - 3, ls_tr("LAKESHARK / SCREEN LOCKED"), TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
         tui_put_str(sf, all, x, rows / 2 - 1, ls_tr("Receivers continue running"), ink);
         tui_put_str(sf, all, x, rows / 2 + 1,
                     s_unlock_step ? ls_tr("2. Tap RIGHT half to unlock") : ls_tr("1. Tap LEFT half to begin"), ink);
         tui_put_str(sf, all, x, rows / 2 + 3, ls_tr("Keyboard: LEFT then RIGHT"), ink);
-        tui_rect hole;
+        }
+#endif
         if (on_grid && ls_tui_cutout(&hole)) ls_tui_cutout_runaround(sf, hole);
         return;
     }
@@ -997,6 +1051,11 @@ LS_COLD bool ls_tui_router_touch(int col, int row)
 
 LS_COLD static bool router_touch_dispatch(int col, int row)
 {
+    if (s_locked && s_lock_page && s_lock_page->touch) {
+        (void)s_lock_page->touch(col, row);
+        return true;
+    }
+#if LOCK_FALLBACK
     if (s_locked) {
         int cols, rows;
         drawn_size(&cols, &rows);
@@ -1005,6 +1064,7 @@ LS_COLD static bool router_touch_dispatch(int col, int row)
         else if (s_unlock_step) ls_tui_set_locked(false);
         return true;
     }
+#endif
 
 
     /* The banner first, because it is drawn over everything. Only
@@ -1072,12 +1132,18 @@ LS_COLD bool ls_tui_router_key(ls_tk_t key, char ch)
     extern bool ls_cartocore_dismiss(void);
     if (key != LS_TK_NONE && ls_cartocore_dismiss()) return true;
 #endif
+    if (s_locked && s_lock_page && s_lock_page->key) {
+        (void)s_lock_page->key(key, ch);
+        return true;
+    }
+#if LOCK_FALLBACK
     if (s_locked) {
         if (key == LS_TK_LEFT) s_unlock_step = 1;
         else if (key == LS_TK_RIGHT && s_unlock_step) ls_tui_set_locked(false);
         else s_unlock_step = 0;
         return true;
     }
+#endif
 
     /* Help swallows everything while it is up, so there is always a way out
        of it and it can never trap a key the screen underneath wanted. */

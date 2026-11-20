@@ -1,12 +1,15 @@
 #include "radio_decode_worker.h"
 
 #include "esp_attr.h"
+#include "ls_nano_psram.h"
 
-/* a permanent 16 KiB FM stack remained reserved while P25 allocated another 16 KiB cache-safe DSD stack. */
+/* On the Nano the stack lives in PSRAM (ls_nano_psram.h): the decoders never
+   write flash or NVS directly, that goes through ls_nvs_run.
+   A permanent 16 KiB FM stack remained reserved while P25 allocated another 16 KiB cache-safe DSD stack. */
 /* Plain static: .bss is internal RAM already. DRAM_ATTR would put the stack
    in .data and store 16 KiB of zeros in the app image. */
 
-static StackType_t s_decode_stack[LS_RADIO_DECODE_STACK_BYTES]
+static LS_NANO_EXT_BSS StackType_t s_decode_stack[LS_RADIO_DECODE_STACK_BYTES]
     __attribute__((aligned(16)));
 static StaticTask_t s_decode_tcb;
 static TaskHandle_t s_decode_task;

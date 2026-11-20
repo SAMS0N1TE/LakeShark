@@ -51,6 +51,18 @@ void display_ctl_nudge(void);
    a dim time is set. FULL is (100, 0, 0). Not saved. */
 void display_ctl_set_power_policy(int cap_pct, int dim_s, int off_s);
 
+/* The user's own "screen off": with auto-dim on, the panel goes dark this
+   many seconds after it dimmed (0 never). Saved. */
+void display_ctl_set_off_after(int seconds);
+int  display_ctl_off_after(void);
+
+/* Whether the screen goes dark by itself: a power mode's off time, or the
+   user's screen-off after auto-dim. Off on the Nano out of the box. */
+bool display_ctl_off_armed(void);
+/* Seconds since the last touch, key or turn of the board (0 on the boards
+   where LVGL keeps the clock). */
+unsigned display_ctl_idle_s(void);
+
 #ifdef __cplusplus
 }
 #endif

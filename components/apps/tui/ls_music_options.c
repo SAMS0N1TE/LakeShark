@@ -285,3 +285,36 @@ const ls_opt_ctx_t ls_music_generator_options = {.name = "GENERATOR",
                                                  .job = -1,
                                                  .radio = LS_RSEL_NONE,
                                                  LS_OPT_ROWS(generator)};
+
+/* SOUND: the EQ and pre-amp. The labels are the band centres, so the rows
+   read as a graphic EQ from low to high. */
+enum { EQ_PRESET_ROW = 200, EQ_PRE_ROW, EQ_BAND_ROW };
+static int eq_get(const ls_opt_t *o) {
+  return o->arg == EQ_PRESET_ROW ? ls_music_eq_preset() : 0;
+}
+static void eq_set(const ls_opt_t *o, int v) {
+  if (o->arg == EQ_PRESET_ROW) ls_music_eq_preset_set(v);
+}
+static double eq_num(const ls_opt_t *o) {
+  return o->arg == EQ_PRE_ROW ? ls_music_preamp_get()
+                              : ls_music_eq_get(o->arg - EQ_BAND_ROW);
+}
+static void eq_set_num(const ls_opt_t *o, double value) {
+  int v = (int)lround(fmax(o->lo, fmin(o->hi, value)));
+  if (o->arg == EQ_PRE_ROW) ls_music_preamp_set(v);
+  else ls_music_eq_set(o->arg - EQ_BAND_ROW, v);
+}
+static const char *const eq_presets[] = {"FLAT", "BASS", "VOCAL", "TREBLE", "CUSTOM"};
+#define EQ_BAND(label_, i_)                                                      {.label = label_, .kind = LS_OPT_LEVEL, .arg = EQ_BAND_ROW + (i_), .lo = -12,    .hi = 12, .step = 1, .unit = "dB", .num = eq_num, .set_num = eq_set_num}
+static const ls_opt_t sound[] = {
+    {.label = "PRESET", .kind = LS_OPT_CYCLE, .arg = EQ_PRESET_ROW,
+     .names = eq_presets, .n = 5, .step = 1, .get = eq_get, .set = eq_set},
+    {.label = "PRE-AMP", .kind = LS_OPT_LEVEL, .arg = EQ_PRE_ROW, .lo = -12,
+     .hi = 8, .step = 1, .unit = "dB, soft limited", .num = eq_num,
+     .set_num = eq_set_num},
+    EQ_BAND("90 HZ", 0), EQ_BAND("300 HZ", 1), EQ_BAND("1 KHZ", 2),
+    EQ_BAND("3.5 KHZ", 3), EQ_BAND("10 KHZ", 4)};
+const ls_opt_ctx_t ls_music_sound_options = {.name = "SOUND",
+                                             .job = -1,
+                                             .radio = LS_RSEL_NONE,
+                                             LS_OPT_ROWS(sound)};

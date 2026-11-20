@@ -352,3 +352,31 @@ LS_CASE(nearby_adverts_are_per_target_and_clicks_survive_rotation) {
     ls_sweep_start(false);ls_sweep_start(true);ls_sweep_observe(d.mac,0,1,-50,&m,2000000);
     LS_CHECK(ls_sweep_nearby_target(&d,2000000));LS_EQ_UINT(d.adverts,1);
 }
+
+LS_CASE(tracker_alert_still_fires_while_a_hunt_target_is_saved_and_sweep_is_closed) {
+    /* A hunt target is saved (and survives leaving and a reboot), but it only
+       narrows the speaker while SWEEP shows the hunt. With SWEEP closed, a new
+       tracker must still sound. */
+    reset();ls_sweep_match_t cam={.category=SW_CAMERA,.label="Hunted camera"};
+    ls_sweep_observe(mac,0,0,-60,&cam,1000000);
+    bool click=true;LS_EQ_INT(ls_sweep_alert_scoped(1000000,&click),SW_CAMERA);LS_CHECK(!click);
+    LS_CHECK(ls_sweep_hunt(mac,0,0));
+    ls_sweep_settings_t s;ls_sweep_settings_get(&s);LS_CHECK(s.hunt);
+    uint8_t tag[6]={0x42,1,2,3,4,5};ls_sweep_match_t trk={.category=SW_TRACKER,.state=SW_STATE_SEPARATED,.label="Follower"};
+    ls_sweep_observe(tag,0,1,-55,&trk,3000000);
+    /* SWEEP closed: the tracker sounds as a tracker, not as a hunt click. */
+    click=true;LS_EQ_INT(ls_sweep_alert_scoped(3000000,&click),SW_TRACKER);LS_CHECK(!click);
+    /* The unscoped engine call is the hunt's own view of it: hunt clicks only. */
+    uint8_t tag2[6]={0x43,1,2,3,4,5};ls_sweep_observe(tag2,0,1,-55,&trk,4000000);
+    LS_EQ_INT(ls_sweep_alert(4000000),-1);
+    /* SWEEP showing its HUNT view: other alerts wait, the target's adverts click. */
+    uint8_t tag3[6]={0x44,1,2,3,4,5};ls_sweep_observe(tag3,0,1,-55,&trk,5000000);
+    ls_sweep_hunt_view_seen(5000000);
+    click=false;LS_EQ_INT(ls_sweep_alert_scoped(5000000,&click),-1);LS_CHECK(click);
+    ls_sweep_observe(mac,0,0,-58,&cam,5100000);
+    click=false;LS_EQ_INT(ls_sweep_alert_scoped(5100000,&click),SW_CAMERA);LS_CHECK(click);
+    /* A second after the view was last drawn, it counts as closed again. */
+    uint8_t tag4[6]={0x45,1,2,3,4,5};ls_sweep_observe(tag4,0,1,-55,&trk,7000000);
+    click=true;LS_EQ_INT(ls_sweep_alert_scoped(7000000,&click),SW_TRACKER);LS_CHECK(!click);
+    LS_CHECK(ls_sweep_hunt(NULL,0,0));
+}

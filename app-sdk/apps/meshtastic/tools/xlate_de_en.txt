@@ -1,0 +1,646 @@
+# Hand-written German -> English data for mt_xlate_lang (MESHTASTIC app).
+# Written for this app; GPL-3.0-or-later like the rest of LakeShark.
+# gen_xlate_lang.py reads it with the Wiktionary lexicon and writes ../lang/de.bin.
+# The format is described at the top of xlate_pt_en.txt. Keys fold umlauts as
+# ae, oe, ue and sharp s as ss (fuer, schoen); the generator also lets common
+# words typed without umlauts through (fur, schon is "already" and stays so).
+# The reader brings a verb at the end of the clause (weil ich da bin, habe ...
+# gesehen) forward and joins a separable particle (rufe ... an) to its verb.
+
+@func
+# Articles and determiners
+der | DET:def | the | who
+die | DET:def | the | that
+das | DET:def | the | that
+den | DET:def | the | them
+dem | DET:def | the | him
+des | DET:def | of the
+ein | DET | a | one
+eine | DET | a | one
+einen | DET | a | one
+einem | DET | a | one
+einer | DET | a | one
+eines | DET | a | one
+kein | DET:neg | no | none
+keine | DET:neg | no | none
+keinen | DET:neg | no | none
+keinem | DET:neg | no | none
+keiner | DET:neg | no | nobody
+mein | DET:poss | my | mine
+meine | DET:poss | my | mine
+meinen | DET:poss | my
+meinem | DET:poss | my
+meiner | DET:poss | my
+dein | DET:poss | your | yours
+deine | DET:poss | your | yours
+deinen | DET:poss | your
+deinem | DET:poss | your
+deiner | DET:poss | your
+sein | DET:poss | his
+seine | DET:poss | his
+seinen | DET:poss | his
+seinem | DET:poss | his
+seiner | DET:poss | his
+ihr | DET:poss,you | her | you
+ihre | DET:poss | her | hers
+ihren | DET:poss | her
+ihrem | DET:poss | her
+ihrer | DET:poss | her
+unser | DET:poss | our
+unsere | DET:poss | our
+unseren | DET:poss | our
+unserem | DET:poss | our
+euer | DET:poss | your
+eure | DET:poss | your
+euren | DET:poss | your
+dieser | DET | this | this
+diese | DET | this | this
+dieses | DET | this | this
+diesen | DET | this | this
+diesem | DET | this | this
+jeder | DET | every | everyone
+jede | DET | every | everyone
+jedes | DET | every | each
+jeden | DET | every | every
+alle | DET:pl | all | everyone
+alles | PRONX | everything
+viele | DET:pl | many | many
+viel | DET | a lot of | a lot
+wenig | DET | little | little
+wenige | DET:pl | few | few
+einige | DET:pl | some | some
+welche | DET:q | which | which
+welcher | DET:q | which | which
+welches | DET:q | which | which
+welchen | DET:q | which | which
+#
+# Subject pronouns; alt is the object form
+ich | PRON:1 | I | me
+du | PRON:2 | you | you
+er | PRON:3 | he | him
+sie | PRON:3,amb,you | she | they
+es | PRON:3 | it | it
+wir | PRON:4 | we | us
+man | PRON:2 | you | you
+#
+# Object pronouns (after the verb in German; written where they stand)
+mich | PRONX | me
+mir | PRONX | me
+dich | PRONX | you
+dir | PRONX | you
+ihn | PRONX | him
+ihm | PRONX | him
+uns | PRONX | us
+euch | PRONX | you
+ihnen | PRONX | them
+sich | CLIT:3,refl | themselves
+#
+# Other pronouns
+etwas | PRONX | something | anything
+was | Q:sub | what | what
+jemand | PRONX | someone | anyone
+niemand | PRONX | nobody | anybody
+nichts | PRONX | nothing | anything
+nix | PRONX | nothing | anything
+dort | ADV | there
+da | ADV | there
+#
+# Prepositions
+in | PREP | in
+im | PREP:the | in the
+ins | PREP:the | into the
+an | PREP | at
+am | PREP:the | at the
+auf | PREP | on
+aus | PREP | from
+bei | PREP | at
+beim | PREP:the | at the
+mit | PREP | with
+nach | PREP | to
+seit | PREP | since
+von | PREP | from
+vom | PREP:the | from the
+zu | PREP | to
+zum | PREP:the | to the
+zur | PREP:the | to the
+für | PREP | for
+ohne | PREP | without
+gegen | PREP | against
+um | PREP | at
+über | PREP | about
+unter | PREP | under
+vor | PREP | in front of
+hinter | PREP | behind
+neben | PREP | next to
+zwischen | PREP | between
+durch | PREP | through
+wegen | PREP | because of
+bis | PREP | until
+#
+# Conjunctions
+und | CONJ | and
+oder | CONJ | or
+aber | CONJ | but
+denn | CONJ | because
+sondern | CONJ | but
+dass | CONJ:sub,que | that
+weil | CONJ:sub | because
+wenn | CONJ:sub | if
+ob | CONJ:sub | whether
+als | CONJ:sub | when
+obwohl | CONJ:sub | although
+damit | CONJ:sub | so that
+bevor | CONJ:sub | before
+nachdem | CONJ:sub | after
+während | CONJ:sub | while
+falls | CONJ:sub | in case
+sobald | CONJ:sub | as soon as
+also | CONJ | so
+#
+# Negation: nicht after the verb
+nicht | NEG2 | _ | not
+nie | NEG2:never | never | never
+niemals | NEG2:never | never | never
+noch nicht | NEG2 | yet | not yet
+nicht mehr | NEG2 | anymore | no more
+kein mehr | NEG2 | anymore | no more
+#
+# Question words
+wo | Q:sub | where | where
+wann | Q | when
+wie | Q:sub | how | like
+warum | Q | why
+wieso | Q | why
+weshalb | Q | why
+wer | Q:sub | who | who
+woher | Q | where from
+wohin | Q | where to
+wie viel | Q | how much
+wieviel | Q | how much
+wie viele | Q | how many
+wie spät | Q | what time
+um wie viel uhr | Q | at what time
+#
+# Adverbs
+hier | ADV | here
+auch | ADV | too
+sehr | ADV:int | very
+zu sehr | ADV | too much
+gut | ADV | well | fine
+schlecht | ADV | badly
+besser | ADV | better
+mehr | ADV | more
+weniger | ADV | less
+jetzt | ADV | now
+heute | ADV | today
+gestern | ADV:past | yesterday
+morgen | ADV | tomorrow
+heute abend | ADV | tonight
+heute nacht | ADV | tonight
+früh | ADV | early
+spät | ADV | late
+bald | ADV | soon
+gleich | ADV | right away
+sofort | ADV | right away
+immer | ADV | always
+oft | ADV | often
+manchmal | ADV | sometimes
+noch | ADV | still
+schon | ADV | already
+vielleicht | ADV | maybe
+schnell | ADV | fast
+langsam | ADV | slowly
+fast | ADV | almost
+nur | ADV | only
+wirklich | ADV | really
+zusammen | ADV | together
+draußen | ADV | outside
+drinnen | ADV | inside
+weit | ADV | far
+nah | ADV | near
+zu hause | ADV | at home
+zuhause | ADV | at home
+nach hause | ADV | home
+wieder | ADV | again
+genug | ADV | enough
+ziemlich | ADV:int | quite
+ganz | ADV:int | quite
+echt | ADV | really
+eigentlich | ADV | actually
+leider | ADV | unfortunately
+ja | INTJ | yes
+nein | INTJ | no
+nee | INTJ | no
+nö | INTJ | no
+doch | SKIP | _
+mal | SKIP | _
+halt | SKIP | _
+eben | SKIP | _
+#
+# Interjections and chat words
+hallo | INTJ | hello
+hi | INTJ | hi
+moin | INTJ | hi
+servus | INTJ | hi
+tschüss | INTJ | bye
+tschüs | INTJ | bye
+ciao | INTJ | bye
+danke | INTJ | thanks
+danke schön | INTJ | thank you very much
+vielen dank | INTJ | thanks a lot
+bitte | INTJ | please
+bitte schön | INTJ | you're welcome
+gern geschehen | INTJ | you're welcome
+gerne | INTJ | gladly
+entschuldigung | INTJ | sorry
+sorry | INTJ | sorry
+ok | INTJ | ok
+okay | INTJ | ok
+alles klar | CL | all right
+klar | INTJ | sure
+super | INTJ:A | great
+toll | INTJ:A | great
+prima | INTJ | great
+genau | INTJ | exactly
+stimmt | INTJ | right
+ach | INTJ | oh
+oh | INTJ | oh
+na | INTJ | well
+hey | INTJ | hey
+haha | INTJ | haha
+hilfe | INTJ | help
+achtung | INTJ | careful
+vorsicht | INTJ | careful
+empfangen | INTJ | received
+verstanden | INTJ | understood
+over | INTJ | over
+#
+# Number words
+zwei | NUM | two
+drei | NUM | three
+vier | NUM | four
+fünf | NUM | five
+sechs | NUM | six
+sieben | NUM | seven
+acht | NUM | eight
+neun | NUM | nine
+zehn | NUM | ten
+zwanzig | NUM | twenty
+dreißig | NUM | thirty
+hundert | NUM | a hundred
+tausend | NUM | thousand
+erste | NUM | first
+erster | NUM | first
+ersten | NUM | first
+letzte | NUM | last
+letzten | NUM | last
+halb | NUM | half
+#
+# There is / are
+es gibt | EXIST | there is
+gibt es | EXIST | there is
+gibt's | EXIST | there is
+gibts | EXIST | there is
+es gibt keinen | EXIST:neg | there is no
+es gibt keine | EXIST:neg | there is no
+es gibt kein | EXIST:neg | there is no
+ist jemand da | CL | is anyone there
+jemand da | CL | anyone there
+#
+# Phrases
+guten morgen | INTJ | good morning
+guten tag | INTJ | good day
+guten abend | INTJ | good evening
+gute nacht | INTJ | good night
+auf wiedersehen | INTJ | goodbye
+bis später | INTJ | see you later
+bis bald | INTJ | see you soon
+bis morgen | INTJ | see you tomorrow
+bis dann | INTJ | see you
+wie geht's | CL | how are you
+wie gehts | CL | how are you
+wie geht es dir | CL | how are you
+wie geht es ihnen | CL | how are you
+mir geht's gut | CL | I'm fine
+mir geht es gut | CL | I'm fine
+was geht | CL | what's up
+was ist los | CL | what's going on
+was ist passiert | CL | what happened
+keine ahnung | CL | no idea
+kein problem | INTJ | no problem
+keine sorge | INTJ | no worries
+macht nichts | CL | never mind
+ich weiß nicht | CL | I don't know
+weiß nicht | CL | I don't know
+laut und deutlich | ADV | loud and clear
+fünf mal fünf | ADV | five by five
+wie spät ist es | CL | what time is it
+das wetter | PH | the weather
+am wochenende | ADV | at the weekend
+nächste woche | ADV | next week
+treffpunkt | PH | meeting point
+es regnet | CL | it's raining
+wir sehen uns | CL | see you
+in sicherheit | ADV | safe
+gleich da | ADV | almost there
+hallo zusammen | INTJ | hi everyone
+moin zusammen | INTJ | hi everyone
+guten morgen zusammen | INTJ | good morning everyone
+es schneit | CL | it's snowing
+es ist kalt | CL | it's cold
+es ist heiß | CL | it's hot
+es ist sehr kalt | CL | it's very cold
+es ist sehr heiß | CL | it's very hot
+viel glück | INTJ | good luck
+lg | INTJ | regards
+vg | INTJ | regards
+liebe grüße | INTJ | regards
+viele grüße | INTJ | regards
+grüße | INTJ | regards
+gruß | INTJ | regards
+mfg | INTJ | regards
+
+@abbr
+hdl | hab dich lieb
+kp | kein Plan
+ka | keine Ahnung
+bzw | beziehungsweise
+evtl | eventuell
+gn8 | gute Nacht
+n8 | Nacht
+wg | wegen
+nen | einen
+ne | eine
+is | ist
+hab | habe
+grad | gerade
+bissl | bisschen
+bisl | bisschen
+sry | sorry
+thx | danke
+dank | danke
+jo | ja
+jup | ja
+jep | ja
+mom | Moment
+vllt | vielleicht
+vlt | vielleicht
+sicha | sicher
+nich | nicht
+nit | nicht
+net | nicht
+ned | nicht
+nimmer | nicht mehr
+
+@verbs
+sein | BE,IT,PERFBE
+haben | HAVE
+werden | WILL,PERFBE
+können | CAN
+wollen | WANT
+müssen | MUST
+sollen | SHOULD
+dürfen | MAY
+brauchen | NEED
+gehen | PERFBE,GOING
+kommen | PERFBE
+fahren | PERFBE
+fliegen | PERFBE
+laufen | PERFBE
+bleiben | PERFBE
+passieren | PERFBE,IT
+ankommen | PERFBE
+abfahren | PERFBE
+aufstehen | PERFBE
+sterben | PERFBE
+fallen | PERFBE
+reisen | PERFBE
+einschlafen | PERFBE
+zurückkommen | PERFBE
+losfahren | PERFBE
+mitkommen | PERFBE
+regnen | IT
+funktionieren | IT
+klappen | IT
+scheinen | IT
+kosten | IT
+
+@lex
+sein | V | be
+haben | V | have
+werden | V | become
+können | V | can
+wollen | V | want
+müssen | V | must
+sollen | V | should
+dürfen | V | may
+mögen | V | like
+brauchen | V | need
+gehen | V | go
+kommen | V | come
+fahren | V | drive
+sehen | V | see
+hören | V | hear
+empfangen | V | receive
+sprechen | V | talk
+sagen | V | say
+wissen | V | know
+kennen | V | know
+machen | V | do
+tun | V | do
+senden | V | send
+schicken | V | send
+anrufen | V | call
+rufen | V | call
+melden | V | report
+antworten | V | answer
+warten | V | wait
+funktionieren | V | work
+klappen | V | work
+laden | V | charge
+aufladen | V | charge
+testen | V | test
+probieren | V | try
+versuchen | V | try
+finden | V | find
+suchen | V | look+for
+helfen | V | help
+treffen | V | meet
+ankommen | V | arrive
+abfahren | V | leave
+losfahren | V | set off
+mitkommen | V | come along
+zurückkommen | V | come back
+einschalten | V | turn on
+ausschalten | V | turn off
+anmachen | V | turn on
+ausmachen | V | turn off
+regnen | V | rain
+bleiben | V | stay
+verstehen | V | understand
+denken | V | think
+glauben | V | believe
+geben | V | give
+nehmen | V | take
+bringen | V | bring
+schreiben | V | write
+lesen | V | read
+verlieren | V | lose
+Akku | N:m | battery
+Ladung | N:f | charge
+Akkustand | N:m | battery level
+Batterie | N:f | battery
+Signal | N:n | signal
+Antenne | N:f | antenna
+Funk | N:m | radio
+Funkgerät | N:n | radio
+Radio | N:n | radio
+Knoten | N:m | node
+Node | N:m | node
+Netz | N:n | network
+Netzwerk | N:n | network
+Mesh | N:n | mesh
+Nachricht | N:f | message
+Kanal | N:m | channel
+Frequenz | N:f | frequency
+Repeater | N:m | repeater
+Handy | N:n | cell phone
+Ladegerät | N:n | charger
+Hilfe | N:f,u | help
+Wasser | N:n,u | water
+Essen | N:n,u | food
+Strom | N:m,u | power
+Regen | N:m,u | rain
+Gewitter | N:n | storm
+Sturm | N:m | storm
+Haus | N:n | house
+Leute | N:m | people
+Ort | N:m | place
+Platz | N:m | square
+Hügel | N:m | hill
+Berg | N:m | mountain
+Straße | N:f | street
+Stunde | N:f | hour
+Minute | N:f | minute
+Tag | N:m | day
+Nacht | N:f | night
+Woche | N:f | week
+Test | N:m | test
+Standort | N:m | location
+Position | N:f | location
+Krankenwagen | N:m | ambulance
+Notfall | N:m | emergency
+Notruf | N:m | emergency call
+Verletzte | N:m | injured person
+Wetter | N:n,u | weather
+Empfang | N:m,u | reception
+Reichweite | N:f | range
+Karte | N:f | map
+neu | A | new
+gut | A | good
+schwach | A | weak
+stark | A | strong
+fertig | A | ready
+an | R | on
+aus | R | off
+kaputt | A | broken
+verloren | A | lost
+verletzt | A | hurt
+beschäftigt | A | busy
+müde | A | tired
+kalt | A | cold
+heiß | A | hot
+warm | A | warm
+leer | A | empty
+voll | A | full
+sicher | A | safe
+schön | A | nice
+spät | A | late
+
+@drop
+
+@book
+OK | OK
+Yes | Ja
+No | Nein
+Thanks | Danke
+Hello, how are you? | Hallo, wie geht's?
+Good morning | Guten Morgen
+Good night | Gute Nacht
+See you later | Bis später
+Sorry, I don't understand | Entschuldigung, ich verstehe nicht
+Please write slowly / simply | Bitte schreib einfach
+I speak little Spanish | Ich spreche wenig Deutsch
+Copy that | Verstanden
+Can you hear me? | Hörst du mich?
+I hear you loud and clear | Ich höre dich laut und deutlich
+I hear you weak | Ich höre dich schwach
+Your signal is weak | Dein Signal ist schwach
+Good signal here | Gutes Signal hier
+No signal here | Kein Signal hier
+Who is on the mesh? | Wer ist im Netz?
+Testing, please answer | Test, bitte antworten
+Message received | Nachricht empfangen
+Over and out | Ende
+Is anyone there? | Ist jemand da?
+On my way | Bin unterwegs
+I'm here | Ich bin da
+I'm almost there | Bin gleich da
+Wait for me | Warte auf mich
+I'm busy, talk later | Bin beschäftigt, wir reden später
+All good here | Hier alles gut
+I'm leaving now | Ich gehe jetzt los
+Running late | Ich komme später
+My battery is low | Mein Akku ist fast leer
+I'm charging | Ich lade gerade
+My battery is dying, I'm going offline | Mein Akku ist gleich leer, ich gehe offline
+Back online | Wieder online
+Where are you? | Wo bist du?
+See you at the square | Wir treffen uns auf dem Platz
+See you at ... | Wir treffen uns bei ...
+What time? | Um wie viel Uhr?
+In 10 minutes | In 10 Minuten
+Meet at the usual place | Treffen am üblichen Ort
+Send me your location | Schick mir deinen Standort
+Let me know when you arrive | Sag Bescheid, wenn du da bist
+I need help | Ich brauche Hilfe
+Emergency! | Notfall!
+Someone is hurt | Jemand ist verletzt
+Call an ambulance | Ruft einen Krankenwagen
+I'm lost | Ich habe mich verlaufen
+We are safe | Wir sind in Sicherheit
+I need water | Ich brauche Wasser
+The power is out | Der Strom ist weg
+Stay where you are | Bleib, wo du bist
+It's raining here | Hier regnet es
+A storm is coming | Ein Gewitter kommt
+It's very cold | Es ist sehr kalt
+It's very hot | Es ist sehr heiß
+How is the weather there? | Wie ist das Wetter bei dir?
+
+@detect
+ich | 13
+nicht | 13
+ist | 12
+und | 12
+bin | 11
+hab | 11
+habe | 11
+wir | 11
+mich | 11
+dich | 11
+gibt | 10
+gut | 9
+danke | 13
+bitte | 12
+hallo | 9
+moin | 12
+servus | 10
+tschüss | 12
+nee | 8
+jo | 6
+lg | 8
+hdl | 10
+kp | 6
+grad | 8
+gerade | 9

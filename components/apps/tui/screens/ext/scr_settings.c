@@ -1,6 +1,7 @@
 /* Settings: a first page of what changes often, and menus for the rest. */
 
 #include "../../ls_tui_screen.h"
+#include "esp_attr.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -37,6 +38,9 @@
 #include "../../ls_tui_touch.h"
 #include "../../ls_slider_drag.h"
 #include "../../ls_radio_panel.h"
+#include "../../ls_lock.h"
+#include "../../ls_netui.h"
+#include "ls_hub.h"
 
 static int s_sel;
 
@@ -349,6 +353,8 @@ static void ap_next(void)
 
 static void lock_show(char *b, size_t n) { snprintf(b, n, "%s", ls_tr("lock now")); }
 static void lock_next(void) { ls_tui_set_locked(true); }
+static bool no_pin(void) { return !ls_lock_has_pin(); }
+static void rmpin_show(char *b, size_t n) { snprintf(b, n, "%s", ls_tr("asks for the PIN")); }
 
 /* Holds the screen the way it is now: the board stops turning it to match
    how it is held. Attaching the keyboard still turns it. */
@@ -487,6 +493,10 @@ static const item_t DISPLAY_ITEMS[] = {
     { .label = "Font",      .show = font_show,  .next = font_next },
     { .label = "Auto dim",  .show = dim_show,   .next = dim_next, .on = dim_on },
     { .label = "Dim after", .show = dimt_show,  .next = dimt_next, .step = dimt_step, .pct = dimt_pct },
+    { .label = "Screen off", .show = ls_lock_off_show, .next = ls_lock_off_next, .step = ls_lock_off_step },
+    { .label = "Lock PIN",   .show = ls_lock_pin_show, .next = ls_lock_pin_edit, .go = true },
+    { .label = "Lock when",  .show = ls_lock_when_show, .next = ls_lock_when_next, .step = ls_lock_when_step, .hidden = no_pin },
+    { .label = "Remove PIN", .show = rmpin_show, .next = ls_lock_pin_remove, .hidden = no_pin, .warn = true },
 };
 static const item_t SOUND_ITEMS[] = {
     { .label = "Boot sound",   .show = boot_show,   .next = boot_next },
@@ -509,14 +519,45 @@ static const item_t RADIO_ITEMS[] = {
     { .label = "LoRa radio",  .show = loraport_show, .next = loraport_next },
     { .label = "LoRa module", .show = loramod_show,  .next = loramod_next },
 };
+/* Settings > GPS (the receiver runs from boot) and Auto data (packs for
+   installed packs are refreshed on Wi-Fi; installing is the user's choice). */
+static int  gpson_on(void) { return settings_get_gps_on(); }
+static void gpson_show(char *b, size_t n) { snprintf(b, n, "%s", ls_tr(gpson_on() ? "On" : "Off")); }
+static void gpson_next(void)
+{
+    ls_args_t a = { .n = 1 };
+    ls_val_t out;
+    a.v[0].kind = LS_VAL_INT; a.v[0].i = !gpson_on();
+    (void)ls_action_call("loc.gps", &a, &out, ls_quick_grant_builtin());
+}
+static int  autodata_on(void) { return settings_get_auto_data(); }
+static void autodata_show(char *b, size_t n) { snprintf(b, n, "%s", ls_tr(autodata_on() ? "On" : "Off")); }
+static void autodata_next(void) { settings_set_auto_data(!autodata_on()); }
+/* Data packs: what the pack service says, and ENTER opens PACKS. */
+static void packs_show(char *b, size_t n)
+{
+    ls_val_t v;
+    snprintf(b, n, "%s", ls_value_read("packs.state", &v, NULL) && v.kind == LS_VAL_TEXT && v.s ? v.s : "--");
+}
+static void packs_next(void)
+{
+    for (int k = 0; k < ls_app_count(); k++)
+        if (!strcmp(ls_app_at(k)->id, "packs")) { ls_app_open(k); return; }
+}
 static const item_t NETWORK_ITEMS[] = {
     { .label = "Hotspot",           .show = ap_show,     .next = ap_next },
     { .label = "Update",            .show = update_show, .next = update_next, .go = true },
     { .label = "Check for updates", .show = updchk_show, .next = updchk_next, .on = updchk_on },
+    { .label = "GPS",               .show = gpson_show,    .next = gpson_next,    .on = gpson_on },
+    { .label = "Data packs",        .show = packs_show,    .next = packs_next,    .go = true },
+    { .label = "Update packs",        .show = autodata_show, .next = autodata_next, .on = autodata_on },
 };
+/* SEND REPORT, the sheet DIAG has too: what goes, a note, to the team. */
+static void report_show(char *b, size_t n) { snprintf(b, n, "%s", ls_report_offer_pending() ? "crash waiting" : "send"); }
 static const item_t SYSTEM_ITEMS[] = {
     { .label = "Language",       .show = lang_show, .next = lang_next },
     { .label = "USB autoreboot", .show = usb_show,  .next = usb_next, .on = usb_on },
+    { .label = "Bug report",     .show = report_show, .next = ls_report_sheet_open, .go = true },
 };
 #define COUNT(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
@@ -529,7 +570,7 @@ static void panel_system(tui_surface *sf, tui_rect r, uint8_t hue);
 
 static const set_page_t SET_PAGES[SETP_COUNT] = {
     [SETP_ROOT]    = { "SETTINGS", NULL, TUI_CYAN, LS_ICON_GEAR, QUICK_ITEMS, COUNT(QUICK_ITEMS), NULL },
-    [SETP_DISPLAY] = { "DISPLAY", "theme, font, dimming", TUI_CYAN, LS_ICON_TERMINAL,
+    [SETP_DISPLAY] = { "DISPLAY", "theme, dimming, lock", TUI_CYAN, LS_ICON_TERMINAL,
                        DISPLAY_ITEMS, COUNT(DISPLAY_ITEMS), panel_display, 8 },
     [SETP_SOUND]   = { "SOUND", "boot, voice, alerts", TUI_MAGENTA, LS_ICON_MUSIC,
                        SOUND_ITEMS, COUNT(SOUND_ITEMS), panel_sound, 8 },
@@ -576,7 +617,7 @@ static void page_open(int p)
 #define HUE_HI(h) ((uint8_t)((h) | TUI_BRIGHT))
 
 typedef struct { tui_rect r; int item; int page; } hit_t;
-static hit_t    s_hit[MAX_ITEMS + N_CARDS + 2];
+EXT_RAM_BSS_ATTR static hit_t    s_hit[MAX_ITEMS + N_CARDS + 2];
 static int      s_hit_n;
 static tui_rect s_back;
 static tui_rect s_dec[MAX_ITEMS], s_inc[MAX_ITEMS];
@@ -600,7 +641,7 @@ static void value_draw(tui_surface *sf, tui_rect clip, int x, int y, int w, int 
     s_dec[i].w = s_inc[i].w = 0;
     if (w < 6) return;
     if (it->step && w >= 16) {
-        const uint8_t key = TUI_ATTR(TUI_BLACK, sel ? HUE_HI(hue) : hue);
+        const uint8_t key = sel ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, HUE_HI(hue))) : ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, hue));
         const int kw = w >= 30 ? 5 : 3;
         s_dec[i] = tui_rect_make(x, ky, kw, kh);
         s_inc[i] = tui_rect_make(x + w - kw, ky, kw, kh);
@@ -617,7 +658,7 @@ static void value_draw(tui_surface *sf, tui_rect clip, int x, int y, int w, int 
             tui_put_str(sf, clip, ix + (mw >= 6 ? mw + 1 : 0), y, buf, words);
         } else {
             const int tw = (int)strlen(buf);
-            tui_put_str(sf, clip, ix + (iw > tw ? (iw - tw) / 2 : 0), y, buf, TUI_ATTR(HUE_HI(hue), TUI_BLACK));
+            tui_put_str(sf, clip, ix + (iw > tw ? (iw - tw) / 2 : 0), y, buf, ls_ink_hue(TUI_ATTR(HUE_HI(hue), TUI_BLACK)));
         }
         return;
     }
@@ -639,8 +680,8 @@ static void value_draw(tui_surface *sf, tui_rect clip, int x, int y, int w, int 
     }
     const int tw = (int)strlen(buf) + (it->go ? 2 : 0);
     const int tx = x + (w > tw ? w - tw : 0);
-    tui_put_str(sf, tui_rect_make(x, y, w, 1), tx, y, buf, it->warn ? TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK) : words);
-    if (it->go) tui_put_str(sf, clip, x + w - 1, y, ">", TUI_ATTR(HUE_HI(hue), TUI_BLACK));
+    tui_put_str(sf, tui_rect_make(x, y, w, 1), tx, y, buf, it->warn ? ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)) : words);
+    if (it->go) tui_put_str(sf, clip, x + w - 1, y, ">", ls_ink_hue(TUI_ATTR(HUE_HI(hue), TUI_BLACK)));
 }
 
 /* A setting as a box to press: the label on its top rule, the value inside. */
@@ -648,7 +689,7 @@ static void row_draw(tui_surface *sf, tui_rect a, const item_t *it, int i, uint8
 {
     ls_panel_box(sf, a, NULL, sel ? HUE_HI(hue) : hue);
     const char *label = ls_tr(it->label);
-    const uint8_t name = TUI_ATTR(sel ? TUI_BLACK : (TUI_WHITE | TUI_BRIGHT), sel ? HUE_HI(hue) : TUI_BLACK);
+    const uint8_t name = sel ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, HUE_HI(hue))) : TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
     char lb[40];
     snprintf(lb, sizeof(lb), " %s ", label);
     tui_put_str(sf, a, a.x + 1, a.y, lb, name);
@@ -724,9 +765,9 @@ static bool lv_touch(int i, const item_t *it, int col, int row)
 /* A setting as one line, label left and value right, for the short boxes. */
 static void line_draw(tui_surface *sf, tui_rect a, const item_t *it, int i, uint8_t hue, bool sel)
 {
-    if (sel) tui_fill(sf, a, ' ', TUI_ATTR(TUI_WHITE, TUI_BLUE));
+    if (sel) tui_fill(sf, a, ' ', ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_WHITE, TUI_BLUE)));
     tui_put_str(sf, a, a.x + 1, a.y, ls_tr(it->label),
-                TUI_ATTR(TUI_WHITE | TUI_BRIGHT, sel ? TUI_BLUE : TUI_BLACK));
+                sel ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLUE)) : TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
     const int lw = 19;
     value_draw(sf, a, a.x + lw, a.y, a.w - lw - 1, a.y, a.h, it, i, hue, sel);
 }
@@ -735,7 +776,7 @@ static void line_draw(tui_surface *sf, tui_rect a, const item_t *it, int i, uint
 
 static void kv(tui_surface *sf, tui_rect r, int x, int y, const char *k, const char *v, uint8_t hue)
 {
-    tui_put_str(sf, r, x, y, k, TUI_ATTR(hue, TUI_BLACK));
+    tui_put_str(sf, r, x, y, k, ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
     tui_put_str(sf, r, x + 11, y, v, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
 }
 
@@ -750,11 +791,11 @@ static void panel_display(tui_surface *sf, tui_rect r, uint8_t hue)
     for (int i = 0; i < 16 && sw >= 1; i++)
         for (int k = 0; k < sw; k++)
             tui_put_char(sf, r, r.x + (i % 8) * sw + k, sy + i / 8,
-                         k == sw - 1 ? ' ' : LS_TUI_SHADE_FULL, TUI_ATTR(i, TUI_BLACK));
+                         k == sw - 1 ? ' ' : LS_TUI_SHADE_FULL, ls_ink_hue(TUI_ATTR(i, TUI_BLACK)));
     if (sy + 2 < r.y + r.h) {
         char v[16];
         snprintf(v, sizeof(v), "%d %%", display_ctl_get_user());
-        tui_put_str(sf, r, r.x, sy + 2, ls_tr("PANEL"), TUI_ATTR(hue, TUI_BLACK));
+        tui_put_str(sf, r, r.x, sy + 2, ls_tr("PANEL"), ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
         ls_meter_ascii(sf, r, r.x + 6, sy + 2, r.w - 13 > 6 ? r.w - 13 : 6, display_ctl_get_user() / 100.0f, HUE_HI(hue));
         tui_put_str(sf, r, r.x + r.w - 6, sy + 2, v, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
     }
@@ -765,13 +806,13 @@ static void panel_sound(tui_surface *sf, tui_rect r, uint8_t hue)
     char v[32];
     const bool muted = audio_is_muted();
     snprintf(v, sizeof(v), "%d %%", audio_volume_get());
-    tui_put_str(sf, r, r.x, r.y, ls_tr("VOLUME"), TUI_ATTR(hue, TUI_BLACK));
+    tui_put_str(sf, r, r.x, r.y, ls_tr("VOLUME"), ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
     ls_meter_ascii(sf, r, r.x + 7, r.y, r.w - 14 > 6 ? r.w - 14 : 6, audio_volume_get() / 100.0f,
                    muted ? (TUI_BLACK | TUI_BRIGHT) : HUE_HI(hue));
     tui_put_str(sf, r, r.x + r.w - 6, r.y, v, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
     if (r.h >= 2)
         tui_put_str(sf, r, r.x, r.y + 1, ls_tr(muted ? "MUTED" : "sound on"),
-                    TUI_ATTR(muted ? (TUI_RED | TUI_BRIGHT) : (TUI_GREEN | TUI_BRIGHT), TUI_BLACK));
+                    ls_ink_hue(TUI_ATTR(muted ? (TUI_RED | TUI_BRIGHT) : (TUI_GREEN | TUI_BRIGHT), TUI_BLACK)));
     if (r.h >= 3) { voice_show(v, sizeof(v)); kv(sf, r, r.x, r.y + 2, ls_tr("VOICE"), v, hue); }
     if (r.h >= 4) { boot_show(v, sizeof(v)); kv(sf, r, r.x, r.y + 3, ls_tr("BOOT"), v, hue); }
 }
@@ -793,7 +834,7 @@ static void battery_art(tui_surface *sf, tui_rect r, int x, int y, int w, int pc
     tui_put_char(sf, r, x + in + 2, y + 1, LS_TUI_SHADE_FULL, edge);
     for (int c = 0; c < in; c++)
         tui_put_char(sf, r, x + 1 + c, y + 1, c < lit ? LS_TUI_SHADE_FULL : LS_TUI_SHADE_25,
-                     TUI_ATTR(c < lit ? fill : LS_FAINT_FG, TUI_BLACK));
+                     ls_ink_hue(TUI_ATTR(c < lit ? fill : LS_FAINT_FG, TUI_BLACK)));
     if (charging) tui_put_char(sf, r, x + 1 + in / 2, y + 1, '+', TUI_ATTR(TUI_BLACK, fill));
 }
 
@@ -812,14 +853,14 @@ static void panel_power(tui_surface *sf, tui_rect r, uint8_t hue)
             snprintf(v, sizeof(v), "%d mA  ~%.1f h", ma, (double)g.remaining_mah / (double)(-ma));
         else
             snprintf(v, sizeof(v), "%+d mA %s", ma, ls_tr(g.charging ? "charging" : ""));
-        tui_put_str(sf, r, r.x + bw + 7, r.y + 1, v, TUI_ATTR(ma < 0 ? HUE_HI(hue) : (TUI_CYAN | TUI_BRIGHT), TUI_BLACK));
+        tui_put_str(sf, r, r.x + bw + 7, r.y + 1, v, ls_ink_hue(TUI_ATTR(ma < 0 ? HUE_HI(hue) : (TUI_CYAN | TUI_BRIGHT), TUI_BLACK)));
     } else {
         tui_put_str(sf, r, r.x, r.y, ls_tr("no battery gauge on this board"), LS_ATTR_DIM);
     }
     const int y = r.y + (have ? 3 : 1);
     if (y < r.y + r.h) {
         snprintf(v, sizeof(v), "%s", ls_tr(ls_power_mode_name(ls_power_mode())));
-        tui_put_str(sf, r, r.x, y, ls_tr("MODE"), TUI_ATTR(hue, TUI_BLACK));
+        tui_put_str(sf, r, r.x, y, ls_tr("MODE"), ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
         tui_put_str(sf, r, r.x + 5, y, v, TUI_ATTR(TUI_BLACK, HUE_HI(hue)));
         tui_put_str(sf, r, r.x + 6 + (int)strlen(v), y, ls_tr(ls_power_mode_what(ls_power_mode())), LS_ATTR_DIM);
     }
@@ -841,7 +882,7 @@ static void panel_power(tui_surface *sf, tui_rect r, uint8_t hue)
     for (int i = 0; i < n; i++) { const int a = h[i] < 0 ? -h[i] : h[i]; if (a > peak) peak = a; }
     const int scale = (peak + 99) / 100 * 100;
     snprintf(v, sizeof(v), ls_tr("CURRENT  %d min  top %d mA"), n, scale);
-    tui_put_str(sf, r, r.x, gy, v, TUI_ATTR(hue, TUI_BLACK));
+    tui_put_str(sf, r, r.x, gy, v, ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
     const int cols = r.w < n / 2 + 1 ? r.w : (n + 1) / 2;
     const int first = n - cols * 2 < 0 ? 0 : n - cols * 2;
     const int levels = gh * 4;
@@ -861,7 +902,7 @@ static void panel_power(tui_surface *sf, tui_rect r, uint8_t hue)
                 if (k > 0) bits |= ls_braille_column((unsigned)k, half);
             }
             if (bits) ls_braille_put(sf, r, r.x + c, gy + gh - row, (int16_t)(0x2800 | bits),
-                                     TUI_ATTR(row >= gh * 3 / 4 ? (TUI_YELLOW | TUI_BRIGHT) : HUE_HI(hue), TUI_BLACK));
+                                     ls_ink_hue(TUI_ATTR(row >= gh * 3 / 4 ? (TUI_YELLOW | TUI_BRIGHT) : HUE_HI(hue), TUI_BLACK)));
         }
     }
 }
@@ -896,7 +937,7 @@ static void panel_system(tui_surface *sf, tui_rect r, uint8_t hue)
     if (r.h >= 2) {
         kv(sf, r, r.x, r.y + 1, ls_tr("RAM FREE"), v, hue);
         /* internal RAM is the scarce one: amber under 24 KB, red under 12 */
-        if (ram < 24) tui_put_str(sf, r, r.x + 11, r.y + 1, v, TUI_ATTR(ram < 12 ? (TUI_RED | TUI_BRIGHT) : (TUI_YELLOW | TUI_BRIGHT), TUI_BLACK));
+        if (ram < 24) tui_put_str(sf, r, r.x + 11, r.y + 1, v, ls_ink_hue(TUI_ATTR(ram < 12 ? (TUI_RED | TUI_BRIGHT) : (TUI_YELLOW | TUI_BRIGHT), TUI_BLACK)));
     }
     snprintf(v, sizeof(v), "%u KB", (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
     if (r.h >= 3) kv(sf, r, r.x, r.y + 2, ls_tr("PSRAM FREE"), v, hue);
@@ -914,14 +955,14 @@ static void status_line(tui_surface *sf, tui_rect r, int y)
     if (ls_gauge_get(&g) && g.present) {
         const uint8_t c = g.percent > 50 ? (TUI_GREEN | TUI_BRIGHT) : g.percent > 20 ? (TUI_YELLOW | TUI_BRIGHT) : (TUI_RED | TUI_BRIGHT);
         snprintf(v, sizeof(v), "%s %u%%", ls_tr(g.charging ? "CHARGING" : "BATTERY"), (unsigned)g.percent);
-        tui_put_str(sf, r, x, y, v, TUI_ATTR(c, TUI_BLACK));
+        tui_put_str(sf, r, x, y, v, ls_ink_hue(TUI_ATTR(c, TUI_BLACK)));
         x += (int)strlen(v) + 2;
         snprintf(v, sizeof(v), "%+d mA", g.milliamps);
         tui_put_str(sf, r, x, y, v, LS_ATTR_DIM);
         x += (int)strlen(v) + 2;
     }
     snprintf(v, sizeof(v), "%s %s", ls_tr("POWER"), ls_tr(ls_power_mode_name(ls_power_mode())));
-    tui_put_str(sf, r, x, y, v, TUI_ATTR(ls_power_mode() == LS_PWR_FULL ? TUI_WHITE : (TUI_GREEN | TUI_BRIGHT), TUI_BLACK));
+    tui_put_str(sf, r, x, y, v, ls_ink_hue(TUI_ATTR(ls_power_mode() == LS_PWR_FULL ? TUI_WHITE : (TUI_GREEN | TUI_BRIGHT), TUI_BLACK)));
 }
 
 /* A card: its colour, its art and the first of its settings as they stand. */
@@ -932,16 +973,16 @@ static void card_draw(tui_surface *sf, tui_rect a, int p, bool sel)
     ls_panel_box(sf, a, NULL, sel ? HUE_HI(hue) : hue);
     char t[24];
     snprintf(t, sizeof(t), " %s ", ls_tr(pg->title));
-    tui_put_str(sf, a, a.x + 1, a.y, t, TUI_ATTR(TUI_BLACK, HUE_HI(hue)));
-    tui_put_char(sf, a, a.x + a.w - 2, a.y + a.h / 2, '>', TUI_ATTR(HUE_HI(hue), TUI_BLACK));
+    tui_put_str(sf, a, a.x + 1, a.y, t, ls_ink(LS_INK_CAPTION, TUI_ATTR(TUI_BLACK, HUE_HI(hue))));
+    tui_put_char(sf, a, a.x + a.w - 2, a.y + a.h / 2, '>', ls_ink_hue(TUI_ATTR(HUE_HI(hue), TUI_BLACK)));
     const tui_rect in = tui_rect_make(a.x + 1, a.y + 1, a.w - 3, a.h - 2);
     if (sel) ls_fill_dither(sf, in, LS_DITHER_LIGHT, hue);
     int tx = in.x + 1, ty = in.y, tw = in.w - 1, th = in.h;
     if (in.h >= LS_ICON_ROWS && in.w >= LS_ICON_COLS + 20) {
-        ls_icon_draw(sf, in, in.x + 1, in.y + (in.h - LS_ICON_ROWS) / 2, pg->icon, TUI_ATTR(HUE_HI(hue), TUI_BLACK));
+        ls_icon_draw(sf, in, in.x + 1, in.y + (in.h - LS_ICON_ROWS) / 2, pg->icon, ls_ink_hue(TUI_ATTR(HUE_HI(hue), TUI_BLACK)));
         tx = in.x + LS_ICON_COLS + 3; tw = in.x + in.w - tx;
     } else if (in.h >= LS_ICON_ROWS + 3 && in.w >= LS_ICON_COLS + 2) {
-        ls_icon_draw(sf, in, in.x + (in.w - LS_ICON_COLS) / 2, in.y, pg->icon, TUI_ATTR(HUE_HI(hue), TUI_BLACK));
+        ls_icon_draw(sf, in, in.x + (in.w - LS_ICON_COLS) / 2, in.y, pg->icon, ls_ink_hue(TUI_ATTR(HUE_HI(hue), TUI_BLACK)));
         ty = in.y + LS_ICON_ROWS; th = in.h - LS_ICON_ROWS;
     }
     /* The page's first settings, a line each, as many as fit. */
@@ -952,12 +993,18 @@ static void card_draw(tui_surface *sf, tui_rect a, int p, bool sel)
         if (it->hidden && it->hidden()) continue;
         char v[64];
         it->show(v, sizeof(v));
-        const uint8_t va = it->on ? TUI_ATTR(it->on() ? (it->warn ? TUI_RED | TUI_BRIGHT : TUI_GREEN | TUI_BRIGHT) : LS_FAINT_FG, TUI_BLACK)
+        const uint8_t va = it->on ? ls_ink_hue(TUI_ATTR(it->on() ? (it->warn ? TUI_RED | TUI_BRIGHT : TUI_GREEN | TUI_BRIGHT) : LS_FAINT_FG, TUI_BLACK))
                                   : TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
         const tui_rect ln = tui_rect_make(tx, ty + line, tw, 1);
+        /* A value cut by the card says so: a hotspot password one letter
+           short read as the whole password. */
+        const int room = tw >= 34 ? tw - 18 : tw;
+        bool ascii = true;
+        for (const char *c = v; *c; c++) if ((unsigned char)*c >= 0x80) { ascii = false; break; }
+        if (ascii && room > 3 && (int)strlen(v) > room && (int)sizeof(v) > room) { v[room - 2] = v[room - 1] = '.'; v[room] = 0; }
         if (tw >= 34) {
             /* label and value */
-            tui_put_str(sf, tui_rect_make(tx, ty + line, 17, 1), tx, ty + line, ls_tr(it->label), TUI_ATTR(hue, TUI_BLACK));
+            tui_put_str(sf, tui_rect_make(tx, ty + line, 17, 1), tx, ty + line, ls_tr(it->label), ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
             tui_put_str(sf, ln, tx + 18, ty + line, v, va);
         } else {
             /* narrow: a switch is its name lit green or grey, the rest the value */
@@ -1052,6 +1099,9 @@ static const struct { const char *label, *what; } HELP[] = {
     { "USB autoreboot", "Restart when a PC flashes the board over USB." },
     { "Update", "Check for and install new firmware over Wi-Fi." },
     { "Check for updates", "Daily looks for new firmware by itself; Off never does." },
+    { "GPS", "On keeps the GPS running from power-up; Off leaves it to the apps that need it." },
+    { "Data packs", "Pick the frequency data regions to keep on the card, or install everything near you in one tap." },
+    { "Update packs", "On refreshes the data packs you installed when a newer list is out. Installing is your choice." },
 };
 static const char *help_for(const char *label)
 {
@@ -1090,13 +1140,13 @@ static void draw_page(tui_surface *sf, tui_rect body, const set_page_t *pg)
     const int bh = 3;
     s_back = tui_rect_make(head.x, head.y, 12, bh);
     ls_panel_box(sf, s_back, NULL, HUE_HI(hue));
-    tui_fill(sf, tui_rect_make(s_back.x + 1, s_back.y + 1, s_back.w - 2, 1), ' ', TUI_ATTR(TUI_BLACK, HUE_HI(hue)));
-    tui_put_str(sf, s_back, s_back.x + 2, s_back.y + 1, ls_tr("< BACK"), TUI_ATTR(TUI_BLACK, HUE_HI(hue)));
+    tui_fill(sf, tui_rect_make(s_back.x + 1, s_back.y + 1, s_back.w - 2, 1), ' ', ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, HUE_HI(hue))));
+    tui_put_str(sf, s_back, s_back.x + 2, s_back.y + 1, ls_tr("< BACK"), ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, HUE_HI(hue))));
     char t[40];
-    snprintf(t, sizeof(t), "%s  %s", ls_tr("SETTINGS"), ls_tr(pg->title));
-    tui_put_str(sf, head, head.x + 14, head.y + 1, t, TUI_ATTR(HUE_HI(hue), TUI_BLACK));
+    snprintf(t, sizeof(t), "%s", ls_tr(pg->title));
+    tui_put_str(sf, head, head.x + 14, head.y + 1, t, ls_ink_hue(TUI_ATTR(HUE_HI(hue), TUI_BLACK)));
     for (int c = head.x + 14; c < head.x + head.w - 1; c++)
-        ls_box_put(sf, head, c, head.y + 2, LS_BOX_H, TUI_ATTR(hue, TUI_BLACK));
+        ls_box_put(sf, head, c, head.y + 2, LS_BOX_H, ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
     /* the live panel: the page's art and what its settings act on */
     /* the panel takes what the rows leave, so a short page is not a long
        empty one */
@@ -1111,7 +1161,7 @@ static void draw_page(tui_surface *sf, tui_rect body, const set_page_t *pg)
         const tui_rect in = tui_rect_make(pb.x + 1, pb.y + 1, pb.w - 2, pb.h - 2);
         int px = in.x + 1;
         if (in.h >= LS_ICON_ROWS && in.w >= LS_ICON_COLS + 24) {
-            ls_icon_draw(sf, in, in.x + 1, in.y + (in.h - LS_ICON_ROWS) / 2, pg->icon, TUI_ATTR(HUE_HI(hue), TUI_BLACK));
+            ls_icon_draw(sf, in, in.x + 1, in.y + (in.h - LS_ICON_ROWS) / 2, pg->icon, ls_ink_hue(TUI_ATTR(HUE_HI(hue), TUI_BLACK)));
             px = in.x + LS_ICON_COLS + 3;
         }
         if (pg->panel) pg->panel(sf, tui_rect_make(px, in.y, in.x + in.w - px, in.h), hue);
@@ -1141,7 +1191,7 @@ static void draw_page(tui_surface *sf, tui_rect body, const set_page_t *pg)
     if (left >= 3 && s_sel < s_vis_n) {
         const item_t *it = &pg->items[s_vis[s_sel]];
         const int y = list.y + used + 1;
-        tui_put_str(sf, list, list.x + 1, y, ls_tr(it->label), TUI_ATTR(HUE_HI(hue), TUI_BLACK));
+        tui_put_str(sf, list, list.x + 1, y, ls_tr(it->label), ls_ink_hue(TUI_ATTR(HUE_HI(hue), TUI_BLACK)));
         wrap(sf, list, list.x + 1, y + 1, list.w - 2, left - 2, ls_tr(help_for(it->label)), LS_ATTR_DIM);
     }
 }
@@ -1151,14 +1201,14 @@ static void draw_compact(tui_surface *sf, tui_rect body, const set_page_t *pg)
 {
     int w = body.w > 76 ? 76 : body.w;
     const int x = body.x + 1;
-    tui_put_str(sf, body, x + 1, body.y, ls_tr("SETTING"), TUI_ATTR(pg->hue, TUI_BLACK));
-    tui_put_str(sf, body, x + 23, body.y, ls_tr("VALUE"), TUI_ATTR(pg->hue, TUI_BLACK));
+    tui_put_str(sf, body, x + 1, body.y, ls_tr("SETTING"), ls_ink_hue(TUI_ATTR(pg->hue, TUI_BLACK)));
+    tui_put_str(sf, body, x + 23, body.y, ls_tr("VALUE"), ls_ink_hue(TUI_ATTR(pg->hue, TUI_BLACK)));
     for (int c = 0; c < w - 2; c++)
         ls_box_put(sf, body, x + c, body.y + 1, LS_BOX_H, TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
     int y = body.y + 2;
     if (s_page != SETP_ROOT) {
         s_back = tui_rect_make(x, y, w - 2, 1);
-        tui_put_str(sf, body, x + 1, y++, ls_tr("< SETTINGS"), TUI_ATTR(HUE_HI(pg->hue), TUI_BLACK));
+        tui_put_str(sf, body, x + 1, y++, ls_tr("< SETTINGS"), ls_ink_hue(TUI_ATTR(HUE_HI(pg->hue), TUI_BLACK)));
     }
     for (int k = 0; k < s_vis_n && y < body.y + body.h; k++, y++) {
         const tui_rect row = tui_rect_make(x, y, w - 2, 1);
@@ -1170,21 +1220,34 @@ static void draw_compact(tui_surface *sf, tui_rect body, const set_page_t *pg)
             const set_page_t *cp = &SET_PAGES[c + 1];
             const tui_rect row = tui_rect_make(x, y, w - 2, 1);
             const bool sel = s_sel == s_vis_n + c;
-            if (sel) tui_fill(sf, row, ' ', TUI_ATTR(TUI_WHITE, TUI_BLUE));
-            tui_put_str(sf, row, row.x + 1, y, ls_tr(cp->title), TUI_ATTR(HUE_HI(cp->hue), sel ? TUI_BLUE : TUI_BLACK));
-            tui_put_str(sf, row, row.x + 19, y, ls_tr(cp->what), TUI_ATTR(TUI_WHITE, sel ? TUI_BLUE : TUI_BLACK));
-            tui_put_char(sf, row, row.x + row.w - 2, y, '>', TUI_ATTR(HUE_HI(cp->hue), sel ? TUI_BLUE : TUI_BLACK));
+            /* In a desk window the chosen row is the scheme's selection, words and all. */
+            const uint8_t bar = ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_WHITE, TUI_BLUE));
+            const bool own = !ls_ink_on || !sel;
+            if (sel) tui_fill(sf, row, ' ', bar);
+            tui_put_str(sf, row, row.x + 1, y, ls_tr(cp->title), own ? TUI_ATTR(HUE_HI(cp->hue), sel ? TUI_BLUE : TUI_BLACK) : bar);
+            tui_put_str(sf, row, row.x + 19, y, ls_tr(cp->what), own ? TUI_ATTR(TUI_WHITE, sel ? TUI_BLUE : TUI_BLACK) : bar);
+            tui_put_char(sf, row, row.x + row.w - 2, y, '>', own ? TUI_ATTR(HUE_HI(cp->hue), sel ? TUI_BLUE : TUI_BLACK) : bar);
             hit_add(row, -1, c + 1);
         }
     if (body.w >= w + 28 && s_page != SETP_ROOT && pg->panel && body.h >= 9) {
         const tui_rect side = tui_rect_make(body.x + w + 1, body.y, body.w - w - 1, 8);
-        tui_box(sf, side, ls_tr(pg->title), TUI_ATTR(pg->hue, TUI_BLACK));
+        tui_box(sf, side, ls_tr(pg->title), ls_ink_hue(TUI_ATTR(pg->hue, TUI_BLACK)));
         pg->panel(sf, tui_rect_make(side.x + 2, side.y + 1, side.w - 4, side.h - 2), pg->hue);
     }
 }
 
+/* The hint row: SETTINGS' keys, or the report sheet's while it is up. */
+#define SET_HINT "TAP to change  UP DOWN ENTER  < > step  ESC back"
+EXT_RAM_BSS_ATTR static char s_hint[64];
+static void hint_follow(void)
+{
+    snprintf(s_hint, sizeof(s_hint), "%s", ls_report_sheet_active() ? LS_REPORT_SHEET_HINT : SET_HINT);
+}
+
 static void draw(tui_surface *sf, tui_rect area)
 {
+    hint_follow();
+    if (ls_report_sheet_active()) { ls_report_sheet_draw(sf, area); return; }
     const set_page_t *pg = page_get();
     s_hit_n = 0;
     s_back.w = 0;
@@ -1194,7 +1257,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if (s_page == SETP_POWER) services_refresh();
     visible_refresh();
     if (s_sel >= entries()) s_sel = entries() ? entries() - 1 : 0;
-    ls_panel_box(sf, area, ls_tr(pg->title), pg->hue);
+    ls_panel_box(sf, area, NULL, pg->hue);
     if (area.h < 6 || area.w < 18) return;
     const tui_rect body = tui_rect_make(area.x + 1, area.y + 1, area.w - 2, area.h - 2);
     /* the desk form, and a pane too small for boxes: a line a setting */
@@ -1221,7 +1284,7 @@ static void press(const item_t *it)
 
 static bool key(ls_tk_t k, char ch)
 {
-    (void)ch;
+    if (ls_report_sheet_active()) return ls_report_sheet_key(k, ch);
     const int n = entries();
     if (n <= 0) return false;
     if (s_sel >= n) s_sel = 0;
@@ -1254,6 +1317,7 @@ static bool touch(int col, int row)
 {
     /* The finger that dragged a slider, coming up within a tap's reach of
        where it went down: the drag has set the level already. */
+    if (ls_report_sheet_active()) return ls_report_sheet_touch(col, row);
     if (ls_slider_drag_tap_is_lift(&s_lvdrag)) return true;
     if (s_back.w && tui_rect_contains(s_back, col, row)) { page_open(SETP_ROOT); return true; }
     for (int h = 0; h < s_hit_n; h++) {
@@ -1292,6 +1356,7 @@ static bool touch(int col, int row)
 /* Settings opens on its first page every time. */
 static void enter(void)
 {
+    hint_follow();
     s_ap_armed = false;
     s_page = SETP_ROOT;
     s_sel = 0;
@@ -1307,7 +1372,7 @@ static void leave(void)
 
 const ls_tui_screen_t ls_scr_settings = {
     .name = "SET",
-    .hint = "TAP to change  UP DOWN ENTER  < > step  ESC back",
+    .hint = s_hint,
     .enter = enter,
     .leave = leave,
     .draw = draw,

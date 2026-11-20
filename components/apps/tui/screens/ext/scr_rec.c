@@ -243,9 +243,9 @@ static void human_bytes(char *buf, size_t len, uint64_t n)
 
 static void draw_facts(tui_surface *sf, tui_rect a, const rec_hub_status_t *st)
 {
-    const uint8_t val  = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t good = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t hot  = TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t val  = ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    const uint8_t good = ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    const uint8_t hot  = ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
     const uint8_t dim  = TUI_ATTR(TUI_WHITE, TUI_BLACK);
     char buf[48];
 
@@ -307,9 +307,9 @@ static void draw_level(tui_surface *sf, tui_rect a, const rec_hub_status_t *st,
                        bool sampled)
 {
     const uint8_t dim = LS_ATTR_DIM;
-    const uint8_t val  = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t hot  = TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t on   = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t val  = ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    const uint8_t hot  = ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+    const uint8_t on   = ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
     char buf[48];
 
     ls_panel_box(sf, a, "LEVEL", TUI_CYAN);
@@ -662,7 +662,7 @@ static void replay_draw(tui_surface *sf,tui_rect a)
                 if(distance==0)fg=TUI_WHITE|TUI_BRIGHT;
             }
             if(x==head)head_y=y;
-            uint8_t color=TUI_ATTR(fg,TUI_BLACK);
+            uint8_t color=ls_ink_hue(TUI_ATTR(fg,TUI_BLACK));
             if(prev>=0 && prev!=y)for(int k=replay_trace.y;k<replay_trace.y+replay_trace.h;k++)tui_put_char(sf,a,replay_trace.x+x,k,'|',color);
             tui_put_char(sf,a,replay_trace.x+x,y,'-',color);prev=y;
         }
@@ -849,7 +849,7 @@ static tui_rect files_key;
 static void recorder_draw(tui_surface *sf,tui_rect a) {
     source_bar=files_key=tui_rect_make(0,0,0,0);
     ls_scr_subghz_host(recorder_sources,replay_browse);
-    if(a.w<24 || a.h<12) { ls_panel_notice(sf,a,"REC","Enlarge pane",""); return; }
+    if(a.w<24 || a.h<12) { ls_panel_notice(sf,a,NULL,"Enlarge pane",""); return; }
     if(!recorder_csv() && !gps_view) {
         recorder_child()->draw(sf,a);
         snprintf(recorder_hint,sizeof(recorder_hint),"%s",recorder_child()->hint?recorder_child()->hint:"");
@@ -869,8 +869,8 @@ static void recorder_draw(tui_surface *sf,tui_rect a) {
         recorder_child()->draw(sf,a);
     }
     if(recorder_notice[0] && esp_timer_get_time()<recorder_notice_until) {
-        tui_fill(sf,tui_rect_make(a.x,a.y+a.h-1,a.w,1),' ',TUI_ATTR(TUI_RED|TUI_BRIGHT,TUI_BLACK));
-        tui_put_str(sf,a,a.x,a.y+a.h-1,recorder_notice,TUI_ATTR(TUI_RED|TUI_BRIGHT,TUI_BLACK));
+        tui_fill(sf,tui_rect_make(a.x,a.y+a.h-1,a.w,1),' ',ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED|TUI_BRIGHT,TUI_BLACK)));
+        tui_put_str(sf,a,a.x,a.y+a.h-1,recorder_notice,ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED|TUI_BRIGHT,TUI_BLACK)));
     }
 }
 static bool recorder_key(ls_tk_t k,char c) {

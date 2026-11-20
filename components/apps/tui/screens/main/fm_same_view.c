@@ -154,8 +154,11 @@ static void draw_wx(tui_surface *sf, tui_rect a, int row)
             tui_put_str(sf, a, x0 + 13 + bw + 1, y, db, LS_ATTR_DIM);
         }
     }
+    /* FIND STRONGEST is an SDR row (options[] above): on the LR2021 the hint
+       would point at a row that is not there. */
     if (!any)
         tui_put_str(sf, a, x0 + 1, a.y + row + 10, w.found_none ? "nothing above the floor here"
+                    : FM.lr_iq_active ? "measuring all seven needs an SDR"
                     : "OPTIONS > FIND STRONGEST measures all seven", LS_ATTR_DIM);
 }
 
@@ -166,10 +169,15 @@ void fm_same_draw(tui_surface *sf, tui_rect a)
     buttons = tui_rect_make(a.x, a.y + a.h - h, a.w, h);
     list = tui_rect_make(a.x, a.y, a.w, a.h - h);
     ls_btn_bar_raised_slot(sf, buttons, controls, 3, -1, LS_BTN_SLOT_WATERFALL);
+    const bool have = same_store_get(selected, &shown);
+    /* Nothing to open: an ENTER or OPEN with no alert must not leave the
+       page titled ALERT, nor spend the next ESC closing it. */
+    if (!have) detail = false;
     ls_panel_box(sf, list, detail ? "SAME / ALERT" : "SAME / RECEIVED ALERTS", TUI_CYAN);
-    if (!same_store_get(selected, &shown)) {
+    if (!have) {
         draw_wx(sf, list, 2);
-        line(sf, list, 12, LS_TEXT(t_fm_same_view_520_83_baud_waiting, "520.83 baud / waiting for repeated headers"), LS_ATTR_DIM);
+        /* draw_wx's own hint sits on row 12 (row + 10). */
+        line(sf, list, 13, LS_TEXT(t_fm_same_view_520_83_baud_waiting, "520.83 baud / waiting for repeated headers"), LS_ATTR_DIM);
         ls_motion_busy(sf, list, true); return;
     }
     if (!detail) draw_wx_line(sf, list, 1);
@@ -180,7 +188,7 @@ void fm_same_draw(tui_surface *sf, tui_rect a)
             if (!same_store_get(i, &shown)) break;
             snprintf(buf, sizeof(buf), "%c %s %-3s / %s%s", i == selected ? '>' : ' ',
                      shown.test ? "TEST" : "ALERT", shown.event, shown.sender, shown.ended ? " / END" : "");
-            line(sf, list, 2 + i - start, buf, i == selected ? TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT) : LS_ATTR_DIM);
+            line(sf, list, 2 + i - start, buf, i == selected ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT)) : LS_ATTR_DIM);
         }
         return;
     }

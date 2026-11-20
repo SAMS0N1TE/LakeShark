@@ -36,6 +36,31 @@ void ls_dui_context_claim(bool (*fn)(int col, int row));
 /* The desk asks; false when the current screen has no claim or declined. */
 bool ls_dui_context_fire(int col, int row);
 
+/* ------------------------------------------------------------ the pointer -- */
+
+/* Where the mouse rests in the window being drawn, in its own cells; the
+   desk says before each frame. False when it is not over the window. */
+void ls_dui_pointer_set(int col, int row);
+bool ls_dui_pointer(int *col, int *row);
+bool ls_dui_over(tui_rect r);
+
+/* ---------------------------------------------------- the desk's own menus -- */
+
+/* A window whose app draws a menu bar (ls_dui_bar_draw) has no second bar
+   from the desk above it. The desk's menus hang from the app's bar instead:
+   " Desk  Window  Help " after the app's titles. The desk reads where they
+   were drawn after the frame and opens them itself; a click there never
+   reaches the app. */
+#define LS_DUI_SHELL_TITLES 3
+typedef struct {
+    bool drawn;                             /* the app drew a bar this frame */
+    int16_t y, x[LS_DUI_SHELL_TITLES + 1];  /* the row; where each title starts, x[0] < 0 when none fitted */
+} ls_dui_shellbar_t;
+/* The desk, before a frame: forget the last bar; `open` is the desk menu
+   that is down (0..2), -1 none. */
+void ls_dui_shellbar_begin(int open);
+const ls_dui_shellbar_t *ls_dui_shellbar(void);
+
 /* ------------------------------------------------------------ text field -- */
 
 #define LS_DUI_TEXT 160
@@ -75,10 +100,18 @@ static inline tui_rect ls_dui_pane(tui_surface *sf, tui_rect r, const char *titl
 {
     if (r.w < 2 || r.h < 2) return tui_rect_make(r.x, r.y, 0, 0);
     ls_panel_box(sf, r, title, lit ? (uint8_t)(hue | TUI_BRIGHT) : hue);
+    int t = 0;
+    while (title && title[t]) t++;
+    /* The pane the keyboard is in wears the scheme's title colours on its caption. */
+    if (lit && t && r.w > t + 6) {
+        const uint8_t cap = ls_ink(LS_INK_TITLE, TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
+        tui_put_char(sf, r, r.x + 1, r.y, ' ', cap);
+        tui_put_str(sf, r, r.x + 2, r.y, title, cap);
+        tui_put_char(sf, r, r.x + 2 + t, r.y, ' ', cap);
+    }
     if (note && *note) {
-        int w = 0, t = 0;
+        int w = 0;
         while (note[w]) w++;
-        while (title && title[t]) t++;
         const int x = r.x + r.w - w - 2;
         if (x > r.x + t + 4) tui_put_str(sf, r, x, r.y, note, TUI_ATTR(hue, TUI_BLACK));
     }
@@ -143,6 +176,8 @@ typedef struct {
     int16_t x[LS_DUI_COLS];             /* per column id: where it starts, -1 when not shown */
     uint8_t w[LS_DUI_COLS];
     int first, rows;                    /* the window on the list */
+    int16_t band_row;                   /* the body row ls_dui_table_row put a band on, -1 none */
+    uint8_t band_attr;
 } ls_dui_table_t;
 
 /* Lay `n` columns out in `r` (one header row, then the rows, a two-cell
@@ -155,6 +190,15 @@ void ls_dui_table_head(tui_surface *sf, const ls_dui_table_t *t, const ls_dui_co
 /* One cell's text in its column on body row `r`, cut to the column. */
 void ls_dui_table_cell(tui_surface *sf, const ls_dui_table_t *t, const ls_dui_col_t *cols, int col,
                        int r, const char *text, uint8_t attr);
+/* Begin body row `r`: the selection bar when `on` (the scheme's Selected
+   Items colour; its quieter one when the keyboard is elsewhere, `focus`
+   false), a quiet band when the pointer rests on the row, nothing
+   otherwise. The cells of that row then take the band's colours. Answers
+   true when the pointer is on the row. */
+bool ls_dui_table_row(tui_surface *sf, ls_dui_table_t *t, int r, bool on, bool focus);
+/* The colours for a line the pointer or the selection is on, outside a
+   table: 0 when neither (draw as usual), else the band to fill and write in. */
+uint8_t ls_dui_line(tui_surface *sf, tui_rect line, bool on, bool focus);
 /* Keep `sel` inside the window, and the window inside the list. */
 void ls_dui_table_follow(ls_dui_table_t *t, int sel, int total);
 void ls_dui_table_clamp(ls_dui_table_t *t, int total);

@@ -1,5 +1,6 @@
 #include "radar_dsp.h"
 #include <math.h>
+#include "esp_attr.h"
 #include <string.h>
 
 #define PI_F 3.14159265358979f
@@ -172,7 +173,7 @@ static void make_row(radar_dsp_t *s, radar_row_t *row)
     }
     if (pc <= 0) pc = 1e-30f;
     if (ptot <= 0) ptot = 1e-30;
-    static float tmp[RADAR_N];
+    static EXT_RAM_BSS_ATTR float tmp[RADAR_N];
     int nt = 0;
     for (int k = 0; k < RADAR_N; k++) {
         const float p = s->re[k] * s->re[k] + s->im[k] * s->im[k];

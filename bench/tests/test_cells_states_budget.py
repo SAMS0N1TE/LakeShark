@@ -52,6 +52,9 @@ static int fake_stat(const char *path,struct stat *st) {
 /* The worker's pause and its streaming flag: no file streams in this test. */
 static void cells_pause(int64_t *since) { (void)since; }
 static bool cells_receiving(void) { return false; }
+/* The tick off the card after each checked cell (1 kHz tick). */
+static unsigned yields;
+static void vTaskDelay(unsigned ticks) { now+=1000*(int64_t)ticks;yields++; }
 ''' + rows + publish + r'''
 static unsigned finish(unsigned limit) {
     unsigned steps=0;
@@ -81,6 +84,8 @@ int main(void) {
     }
     cost=15000;cells_states_publish();assert(cells_states_walk.active && !cells_work.states[0] && checked<=14);
     assert(finish(14)>9 && !strcmp(cells_work.states,expected));
+    /* Every cell read from the card is followed by a tick off it. */
+    assert(yields && yields*2==checked);
     /* Chunk progress changes without touching the completed state scan. */
     unsigned before=checked;
     for(unsigned i=0;i<100;i++) {

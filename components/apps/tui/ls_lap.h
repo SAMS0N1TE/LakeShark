@@ -28,9 +28,21 @@ typedef struct {
         signature_checked; /* pending until open/probe; never label pending as trusted */
     uint8_t sha256[32];
     bool has_icon_px;                       /* LAP_ICON_PX: colour dots, 0xFF clear */
+    uint8_t group;                          /* LAP_GROUP: the HOME tab, 0 undeclared */
     uint8_t icon_px[LAP_PX_H][LAP_PX_W];
 } ls_lap_info_t;
 int ls_lap_scan_file(const char *path); /* boot scan, no execution */
+/* Internal app storage: apps here need no card. Scanned before the card;
+   when both hold the same id, the newer version is the one tile. */
+#define LS_LAP_INTERNAL_DIR "/spiffs/apps"
+int ls_lap_scan_internal(void);
+/* Links a firmware module (ls_mod.c) with its own symbol resolver, sharing
+   the app loader's link stack. `elf` is an esp_elf_t. 0 on success; on a
+   failure `why` says what went wrong (loader error, link memory, timeout). */
+int ls_lap_link_module(void *elf, const uint8_t *data, uintptr_t (*resolver)(const char *), char *why,
+                       size_t cap);
+/* Bytes of the link stack the last link never touched. */
+unsigned ls_lap_link_spare(void);
 /* Worker/console only: stream SHA256 + verify signature without executing code. */
 bool ls_lap_inspect_file(const char *path, ls_lap_info_t *out, char *why, size_t cap);
 const char *ls_lap_last_error(void);
@@ -55,6 +67,13 @@ bool ls_lap_maintenance_begin(const char *id);
 void ls_lap_maintenance_end(void);
 bool ls_lap_publish(const ls_lap_info_t *info);
 void ls_lap_console_expire(void); /* lap_io worker only */
+/* Any task but the UI's: the file at src (size bytes, expected SHA-256) is
+ * checked as `app put` checks an upload and renamed to dest; need_signed
+ * refuses a file no store key signed. HOME picks it up on the next poll. */
+bool ls_lap_install_file(const char *src, const char *dest, size_t size, const uint8_t sha256[32],
+                         bool need_signed, char *why, size_t cap);
+/* `app rm`: true when the file is gone (why may still say a detail). */
+bool ls_lap_remove(const char *id, bool data, char *why, size_t cap);
 #ifdef __cplusplus
 }
 #endif

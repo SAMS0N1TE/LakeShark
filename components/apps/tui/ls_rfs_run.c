@@ -449,7 +449,9 @@ static void pass_begin(void)
 static void finish(const char *why)
 {
     source_release();
-    if (w.f) { fflush(w.f); fclose(w.f); w.f = NULL; }
+    /* A file just closed: list the card again, so REPLAY offers it the
+       first time it is opened rather than the second. */
+    if (w.f) { fflush(w.f); fclose(w.f); w.f = NULL; s_list_req = true; }
     w.on = false;
     lock();
     s_view.elapsed_s = (uint32_t)((esp_timer_get_time() - w.start_us) / 1000000);
@@ -898,9 +900,9 @@ int ls_rfs_command(int argc, char **argv)
        it - `rfsurvey start rtl ...` and `rfsurvey status` both rebooted the
        board with a stack protection fault in console_repl. The console is
        one task, so one copy serves every call. */
-    static ls_rfs_view_t v;
+    EXT_RAM_BSS_ATTR static ls_rfs_view_t v;
     if (argc >= 2 && !strcmp(argv[1], "start")) {
-        static ls_rfs_settings_t s;
+        EXT_RAM_BSS_ATTR static ls_rfs_settings_t s;
         ls_rfs_settings_default(&s);
         for (int i = 2; i < argc; i++) {
             const char *a = argv[i];
@@ -935,7 +937,7 @@ int ls_rfs_command(int argc, char **argv)
     if (argc >= 2 && !strcmp(argv[1], "export")) return ls_rfs_export(argc > 2 ? argv[2] : NULL) ? 0 : 1;
     if (argc == 2 && !strcmp(argv[1], "files")) {
         list_files();
-        static char names[FILES_MAX][40];
+        EXT_RAM_BSS_ATTR static char names[FILES_MAX][40];
         const int n = ls_rfs_files(names, FILES_MAX);
         for (int i = 0; i < n; i++) printf("  %s\n", names[i]);
         printf("%d survey file(s) in " LS_RFS_DIR "\n", n);
@@ -943,7 +945,7 @@ int ls_rfs_command(int argc, char **argv)
     }
     if (argc == 2 && !strcmp(argv[1], "plans")) {
         for (int i = 0; i < ls_rfs_preset_count(); i++) {
-            static ls_rfs_plan_t p; ls_rfs_preset(i, &p);
+            EXT_RAM_BSS_ATTR static ls_rfs_plan_t p; ls_rfs_preset(i, &p);
             LS_PRINTF(t_ls_rfs_run_plan_d_12s_2d, "  plan=%d  %-12s %2d ch  %.4f-%.4f MHz\n", i, p.name, p.n, p.ch[0].hz / 1e6, p.ch[p.n - 1].hz / 1e6);
         }
         return 0;

@@ -28,6 +28,14 @@ void ls_music_volume_step(int d){vol+=d;if(vol<0)vol=0;if(vol>100)vol=100;}
 const char*ls_music_output(void){return "SIMULATED AUDIO";}
 bool ls_music_warm(void){return warm;}
 void ls_music_set_warm(bool b){warm=b;}
+static int eq_db[LS_MUSIC_EQ_BANDS],pre_db;
+const char *ls_music_eq_name(int b){(void)b;return "";}
+int ls_music_eq_get(int b){return b>=0&&b<LS_MUSIC_EQ_BANDS?eq_db[b]:0;}
+void ls_music_eq_set(int b,int d){if(b>=0&&b<LS_MUSIC_EQ_BANDS)eq_db[b]=d;}
+int ls_music_preamp_get(void){return pre_db;}
+void ls_music_preamp_set(int d){pre_db=d;}
+int ls_music_eq_preset(void){return 4;}
+void ls_music_eq_preset_set(int p){(void)p;for(int i=0;i<LS_MUSIC_EQ_BANDS;i++)eq_db[i]=0;}
 unsigned ls_music_peak(int ch){double t=esp_timer_get_time()/1000000.0;return ls_music_live()?(unsigned)((.12+.8*fabs(sin(t*7+ch*.9))*fabs(sin(t*1.3)))*32768):0;}
 /* A falling tilt with each band breathing at its own rate. */
 int ls_music_spectrum(float lo,float hi,int n,float*db){(void)lo;(void)hi;double t=esp_timer_get_time()/1000000.0;for(int i=0;i<n;i++)db[i]=ls_music_live()?(float)(-10-2.2*i+9*sin(t*(1.7+.37*i)+i)):-INFINITY;return ls_music_live()?n:0;}

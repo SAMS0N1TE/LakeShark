@@ -90,15 +90,16 @@ assert csv[1].startswith('A77000,N55EM,3500,-900,120,140,') and ',7700,EMERGENCY
 
 # Enter is the aircraft's own page, Esc comes back; V is MAP ONLY and back; Ctrl+L the handheld layout.
 c = run('page', OPEN + ',@enter,~3')
-assert 'A1B2C3' in c[2] and 'CALLSIGN' in c[3] and 'RX CRC' in c[row_of(c, 'RX CRC')]
+assert ' File  View  Window  Help' in c[1]          # the desk's bar, where the app's own was
+assert 'A1B2C3' in c[3] and 'CALLSIGN' in c[4] and 'RX CRC' in c[row_of(c, 'RX CRC')]
 c = run('pageback', OPEN + ',@enter,~2,@esc,~2')
 assert ' Receiver  View  Aircraft' in c[1]
 c = run('maponly', OPEN + ',+v,~3')
-assert 'MAP ONLY' not in c[1] and '[ LIST ]' in c[1]
+assert ' File  View  Window  Help' in c[1] and 'MAP ONLY' not in c[2] and '[ LIST ]' in c[2]
 c = run('maponly2', OPEN + ',+v,~2,+v,~2')
 assert ' Receiver  View  Aircraft' in c[1]
 c = run('classic', OPEN + ',M4,+l,M0,~3')
-assert 'AIRCRAFT (* stale)' in c[2]
+assert ' File  View  Window  Help' in c[1] and 'AIRCRAFT (* stale)' in c[3]
 c = run('classic2', OPEN + ',M4,+l,+l,M0,~3')
 assert ' Receiver  View  Aircraft' in c[1]
 

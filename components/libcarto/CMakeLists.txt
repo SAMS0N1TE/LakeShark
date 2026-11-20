@@ -26,4 +26,6 @@ target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-unused-parameter)
 # -O2. Built for size it drew a tile in 148 ms against 22 ms (z10, LR board).
 if(CONFIG_COMPILER_OPTIMIZATION_SIZE)
     target_compile_options(${COMPONENT_LIB} PRIVATE -O2)
+    # Not in the per-pixel path: the class tables and the per-tile setup.
+    set_source_files_properties(upstream/src/style.c upstream/src/carto.c PROPERTIES COMPILE_OPTIONS "-Os")
 endif()

@@ -100,6 +100,13 @@ typedef struct {
     bool m_down, m_moved;
     int m_col, m_row;
     void (*write)(const char *, size_t);   /* where its frames go: the UART, the web screen's socket */
+    /* The cell feed looks only at rows that changed since this viewer's last
+       update (snap_rows): one bit a row, or all of them. A pointer moving
+       over a 360x105 desktop changes two or three rows; reading the other
+       hundred out of PSRAM to find them equal was most of an update's cost. */
+    uint8_t row_bits[64];
+    bool rows_all;
+    bool neutral;                     /* picture cells went as placeholders last time (cell_feed_key) */
 } session_t;
 
 static void (*s_key)(int, char);
@@ -133,6 +140,13 @@ static volatile bool s_want;
 /* The snapshot handoff: release when one side is done with the buffers, acquire
    before the other touches them (two cores, RISC-V's weak ordering). */
 static bool s_ready;
+static bool s_snap_live;              /* s_snap holds the last captured grid, every row of it */
+/* A snapshot came while a viewer still owed its acks (or its socket was
+   full) and went unsent to it. The screen may not change again for a while:
+   without this the last step of a drag or the last letter typed stayed
+   unseen until something else moved. The next capture after the viewer has
+   caught up is taken even with nothing new on the screen. Under s_mu. */
+static bool s_owed;
 static bool s_input_new;              /* a key or tap went to the UI since the last capture */
 
 /* The snapshot, written by the UI task while !s_ready and read by the worker while s_ready. */
@@ -339,6 +353,24 @@ static void visual_unavailable(void)
     s_picture=(visual_picture){.ready=true,.unavailable=true,.generation=++s_picture_generation};
 }
 
+/* Where two rows first and last differ, a block at a time: a panned map's
+   rows are equal but for the strip that came into view, and comparing them
+   pixel by pixel out of PSRAM was most of a pan step's capture. */
+static int visual_diff_first(const uint16_t *a,const uint16_t *b,int n)
+{
+    int i=0;
+    while(i+32<=n && !memcmp(a+i,b+i,64)) i+=32;
+    while(i<n && a[i]==b[i]) i++;
+    return i;
+}
+static int visual_diff_last(const uint16_t *a,const uint16_t *b,int lo,int n)
+{
+    int i=n;
+    while(i-32>=lo && !memcmp(a+i-32,b+i-32,64)) i-=32;
+    while(i>lo && a[i-1]==b[i-1]) i--;
+    return i;
+}
+
 static void visual_source_copy(uint16_t *dst,const uint16_t *src,size_t bytes)
 {
     memcpy(dst,src,bytes);s_picture.copy_bytes+=(uint32_t)bytes;
@@ -347,9 +379,21 @@ static void visual_source_copy(uint16_t *dst,const uint16_t *src,size_t bytes)
 /* Called only by the UI, before publishing the snapshot. Copy the source,
    not a scaled maximum-size canvas. Ring offsets are applied by the encoder.
    Masks use exactly the glass renderer's coverage and halo rules. */
+/* The glass masks (O records) are made of the glass bits, the glyphs of the
+   cells under the picture, its place and the font. `cells_new`: one of the
+   first two may have changed since the last call. Rebuilding them for every
+   capture rendered each glass glyph again, hundreds of them over a map, for
+   a pointer that had moved somewhere else on the desktop. */
+static bool s_masks_stale;
+/* The picture layer holds something a viewer has not been sent (put off
+   behind input, or by a rate cap) and the screen may now stay still: one
+   more capture is owed, as s_owed is for cells. Under s_mu. */
+static bool s_owed_picture;
+static int64_t s_owed_picture_us;
 static void visual_capture(tui_rect r, const uint16_t *src, int w, int h,
-                           int x0, int y0, uint32_t serial, int64_t now,bool input)
+                           int x0, int y0, uint32_t serial, int64_t now,bool input,bool cells_new)
 {
+    if(cells_new) s_masks_stale=true;
     s_picture.ready=false;
     s_picture.copy_bytes=0;
     bool vectors=__atomic_load_n(&s_visual_vectors,__ATOMIC_ACQUIRE);
@@ -370,6 +414,8 @@ static void visual_capture(tui_rect r, const uint16_t *src, int w, int h,
            s_picture.src && r.w>0 && r.h>0) {
             s_picture.rect=r;s_picture.w=r.w*s_cell_w;s_picture.h=r.h*s_cell_h;
         }
+        if(pixels && (s_masks_stale || src!=s_picture.identity || serial!=s_picture.serial ||
+                      x0!=s_picture.x0 || y0!=s_picture.y0)) s_owed_picture=true;
         s_frame_line_count=0;s_vectors_hash=0;return;
     }
     if(!vectors) {
@@ -397,7 +443,10 @@ static void visual_capture(tui_rect r, const uint16_t *src, int w, int h,
     bool ring=ls_tui_image_ring_state(&epoch,&columns,&rows);
     const bool ring_step=ring && s_picture.ring && s_picture.identity==src &&
         s_picture.sw==w && s_picture.sh==h && epoch==s_picture.ring_epoch;
-    if(now-s_picture_us<(pan?16000:ring_step?RING_US:PICTURE_US)) return;
+    if(now-s_picture_us<(pan?16000:ring_step?RING_US:PICTURE_US)) {
+        if(s_masks_stale) s_owed_picture=true;
+        return;
+    }
     s_picture_us=now;
     if (!src || w<=0 || h<=0 || r.w<=0 || r.h<=0) {
         heap_caps_free(s_picture.src); heap_caps_free(s_picture.masks);heap_caps_free(s_picture.dirty_lo);heap_caps_free(s_picture.dirty_hi);heap_caps_free(s_picture.palette_lut);heap_caps_free(s_picture.palette);
@@ -452,11 +501,19 @@ static void visual_capture(tui_rect r, const uint16_t *src, int w, int h,
         for(int y=0;y<h;y++) {
             uint16_t *out=s_picture.src+(size_t)y*w;const uint16_t *in=src+(size_t)y*w;
             int lo=0,hi=w;
-            if(reuse) {while(lo<hi && out[lo]==in[lo])lo++;while(hi>lo && out[hi-1]==in[hi-1])hi--;}
+            if(reuse) {lo=visual_diff_first(out,in,w);hi=visual_diff_last(out,in,lo,w);}
             s_picture.dirty_lo[y]=(uint16_t)lo;s_picture.dirty_hi[y]=(uint16_t)hi;
             if(hi>lo)visual_source_copy(out+lo,in+lo,(size_t)(hi-lo)*2);
-            if(s_picture.palette_lut && s_picture.palette && !s_picture.palette_overflow)
-                for(int x=lo;x<hi;x++)if(!visual_palette_add(in[x]))break;
+            /* A map is runs of one colour: only a pixel unlike the one before
+               it is looked up (the table is 128 KB of PSRAM). */
+            if(s_picture.palette_lut && s_picture.palette && !s_picture.palette_overflow) {
+                int before=-1;
+                for(int x=lo;x<hi;x++) {
+                    if(in[x]==before) continue;
+                    before=in[x];
+                    if(!visual_palette_add(in[x]))break;
+                }
+            }
         }
         if(s_picture.palette_n && !s_picture.palette_overflow) {
             if(!reuse || palette_before!=s_picture.palette_n || !s_picture.palette_generation)
@@ -495,6 +552,23 @@ static void visual_capture(tui_rect r, const uint16_t *src, int w, int h,
     s_picture.identity=src; s_picture.serial=serial;
     s_picture.sw=w;s_picture.sh=h;s_picture.rect=r;
     s_picture.w=r.w*s_cell_w;s_picture.h=r.h*s_cell_h;s_picture.x0=x0;s_picture.y0=y0;
+    EXT_RAM_BSS_ATTR static struct { tui_rect r; int cols,rows,cw,ch,font; } masks_for;
+    if(s_picture.masks && !s_masks_stale && !memcmp(&masks_for.r,&r,sizeof(r)) && masks_for.cols==s_cols &&
+       masks_for.rows==s_rows && masks_for.cw==s_cell_w && masks_for.ch==s_cell_h && masks_for.font==s_font_i) {
+        s_picture.unavailable=false;
+        s_picture.ready=true;
+        return;
+    }
+    if(input && s_picture.masks) {
+        /* Masks do not go out behind input (visual_pan_render), and a window
+           being dragged would have every glass glyph rendered again at each
+           step: they are made once the input stops, by the owed capture. */
+        s_masks_stale=true;s_owed_picture=true;
+        s_picture.unavailable=false;
+        s_picture.ready=true;
+        return;
+    }
+    masks_for.r=r;masks_for.cols=s_cols;masks_for.rows=s_rows;masks_for.cw=s_cell_w;masks_for.ch=s_cell_h;masks_for.font=s_font_i;
     size_t count=0;
     tui_rect visible=tui_rect_intersect(r,tui_rect_make(0,0,s_cols,s_rows));
     for(int y=visible.y;y<visible.y+visible.h;y++) for(int x=visible.x;x<visible.x+visible.w;x++) {
@@ -522,6 +596,7 @@ static void visual_capture(tui_rect r, const uint16_t *src, int w, int h,
         }
     }
     s_picture.masks_hash=visual_hash(s_picture.masks,n);
+    s_masks_stale=false;
     s_picture.unavailable=false;
     s_picture.ready=true;
 }
@@ -578,6 +653,7 @@ static bool grid_buffers(size_t cells)
     s_frame = b[11].next;
     s_buffer_cells = cells;
     if (changed) {
+        s_snap_live = false;
         s_serial_n = 0;
         s_ser.unacked = 0;
         if (!ssh_busy) s_sshq_n = 0;
@@ -622,11 +698,26 @@ static bool session_buffers(session_t *session)
 
 /* --- the frame --------------------------------------------------------- */
 
+static bool rows_none(const uint8_t *rows);
+static void snap_rows(const tui_cell *front, int cols, int rows_n, const uint8_t *rows, bool keys_all);
+
+/* Who reads the colours sampled from a picture (s_top, s_bot): terminal
+   text, and a cell viewer whose picture cells are not placeholders. */
+static bool colours_wanted(void)
+{
+    session_t *const all[] = {&s_ser, &s_net, &s_web, &s_ssh};
+    for (size_t k = 0; k < sizeof(all) / sizeof(all[0]); k++)
+        if (all[k]->on && !(all[k]->cells && all[k]->visual.pixels && !s_picture.unavailable)) return true;
+    return false;
+}
+/* The picture s_top and s_bot were last sampled from, src NULL for none. */
+EXT_RAM_BSS_ATTR static struct { const uint16_t *src; uint32_t serial; tui_rect r; int w, h, x0, y0, cols, rows; void *top; } s_sampled;
+
 static void capture_locked(void)
 {
     if (__atomic_load_n(&s_ready, __ATOMIC_ACQUIRE)) return;
     if (!s_want) {
-        visual_capture((tui_rect){0},NULL,0,0,0,0,0,0,false);
+        visual_capture((tui_rect){0},NULL,0,0,0,0,0,0,false,true);
         return;
     }
     const int64_t now = esp_timer_get_time();
@@ -639,7 +730,15 @@ static void capture_locked(void)
        every frame the screen draws can go (a 40 ms frame against the 50 ms cap
        sent every other one). */
     const bool cells_only = !s_net.on && !s_ssh.on && (!s_ser.on || s_ser.cells) && (!s_web.on || s_web.cells);
-    if (!answer && now - s_last_cap < (cells_only ? TERM_CELLS_FRAME_US : TERM_FRAME_US)) return;
+    /* An update a viewer missed, now that it can take one (see s_owed). */
+    const bool can_take =
+        !(s_ser.on && s_ser.acks && s_ser.unacked >= TERM_AHEAD && now - s_ser.ack_wait_us < TERM_ACK_US) &&
+        !(s_web.on && s_web.acks && s_web.unacked >= TERM_AHEAD && now - s_web.ack_wait_us < TERM_ACK_US) &&
+        !(s_web.on && s_web_viewer >= 0 && ls_ws_tx_pending(&s_wc[s_web_viewer].tx));
+    /* The picture layer's own: at most one such capture every PICTURE_US. */
+    const bool owed_picture = s_owed_picture && can_take && now - s_owed_picture_us >= PICTURE_US;
+    const bool owed = (s_owed && can_take) || owed_picture;
+    if (!answer && !owed && now - s_last_cap < (cells_only ? TERM_CELLS_FRAME_US : TERM_FRAME_US)) return;
     tui_surface *sf = ls_tui_surface();
     if (!sf || !sf->front || (size_t)sf->w * sf->h > TERM_CELLS_MAX) return;
     if (!grid_buffers((size_t)sf->w * sf->h)) {
@@ -653,10 +752,15 @@ static void capture_locked(void)
     }
     size_t gn = 0;
     const uint8_t *g = ls_tui_glass_now(&gn);
+    /* The rows the screen changed since the last capture. Unknown (a new
+       grid, an invalidate, new buffers here): every row is looked at. */
+    uint8_t rows[sizeof(s_ser.row_bits)];
+    const bool rows_known = ls_tui_front_rows_take(rows, sizeof(rows)) && s_snap_live &&
+                            s_cols == sf->w && s_rows == sf->h;
     /* Nothing new on the screen (cells, glass, picture) and no input to answer:
        nothing to send. A static MAP cost the UI ~6 ms a frame here, every frame. */
     {
-        static struct { const uint16_t *src; uint32_t serial, pan_epoch, lines_hash; tui_rect r;
+        EXT_RAM_BSS_ATTR static struct { const uint16_t *src; uint32_t serial, pan_epoch, lines_hash; tui_rect r;
                         int x0, y0; int32_t pan_left, pan_top; size_t lines; bool valid; } last;
         tui_rect ir = {0}; const uint16_t *isrc = NULL; int iw = 0, ih = 0, ix0 = 0, iy0 = 0; uint32_t iser = 0;
         if (ls_tui_image_now(&ir, &isrc, &iw, &ih, &iser)) ls_tui_image_ring_offset(&ix0, &iy0);
@@ -676,10 +780,11 @@ static void capture_locked(void)
                                  s_picture.y0 == iy0 && !memcmp(&s_picture.rect, &ir, sizeof(ir))));
         const ls_tui_theme_t *th = ls_tui_theme_effective(ls_tui_get_theme(), ls_tui_daylight());
         const size_t gl = g && gn <= (s_buffer_cells + 7) / 8 ? gn : 0;
-        if (!answer && same_image && s_cols == sf->w && s_rows == sf->h && gl == s_glass_n &&
+        if (!answer && !owed && same_image && s_cols == sf->w && s_rows == sf->h && gl == s_glass_n &&
             (!th || !memcmp(s_pal, th->palette, sizeof(s_pal))) && ls_tui_font_at(s_font_i) == ls_tui_font() &&
             (!gl || !memcmp(s_glass, g, gl)) &&
-            !memcmp(s_snap, sf->front, (size_t)s_cols * s_rows * sizeof(tui_cell))) {
+            (rows_known ? rows_none(rows) : !memcmp(s_snap, sf->front, (size_t)s_cols * s_rows * sizeof(tui_cell)))) {
+            s_snap_live = true;
             s_last_cap = now;
             return;
         }
@@ -689,9 +794,14 @@ static void capture_locked(void)
     }
     s_cols = sf->w;
     s_rows = sf->h;
-    memcpy(s_snap, sf->front, (size_t)s_cols * s_rows * sizeof(tui_cell));
-    s_glass_n = g && gn <= (s_buffer_cells + 7) / 8 ? gn : 0;
-    if (s_glass_n) memcpy(s_glass, g, s_glass_n);
+    /* What a sent cell is made of besides the cell (cell_key): the glass
+       bits and the picture's place and colours. A change in those and every
+       row is looked at again. */
+    const size_t glass_n = g && gn <= (s_buffer_cells + 7) / 8 ? gn : 0;
+    bool keys_all = glass_n != s_glass_n || (glass_n && memcmp(s_glass, g, glass_n));
+    const tui_rect img_before = s_img;
+    s_glass_n = glass_n;
+    if (s_glass_n && keys_all) memcpy(s_glass, g, s_glass_n);
     tui_rect r={0};
     const uint16_t *src = NULL;
     int w = 0, h = 0, x0 = 0, y0 = 0;
@@ -702,23 +812,53 @@ static void capture_locked(void)
     if (have_image && src && r.x >= 0 && r.y >= 0 &&
         r.x + r.w <= s_cols && r.y + r.h <= s_rows) {
         /* Sampling every cell of a picture cost ~10 ms a frame on the Nano with
-           MAP up, for a picture that had not changed: only a new one is sampled. */
-        static struct { const uint16_t *src; uint32_t serial; tui_rect r; int w, h, x0, y0, cols, rows; void *top; } done;
-        if (done.src != src || done.serial != serial || memcmp(&done.r, &r, sizeof(r)) || done.w != w || done.h != h ||
-            done.x0 != x0 || done.y0 != y0 || done.cols != s_cols || done.rows != s_rows || done.top != (void *)s_top) {
+           MAP up, for a picture that had not changed: only a new one is sampled.
+           And only for a viewer that reads the colours: one that takes the
+           picture itself gets placeholders, and for it every step of a pan or
+           of a window dragged across the desk was sampled for nothing, and
+           every row then compared again because the colours had changed. */
+        if (!colours_wanted()) s_sampled.src = NULL;
+        else if (s_sampled.src != src || s_sampled.serial != serial || memcmp(&s_sampled.r, &r, sizeof(r)) ||
+                 s_sampled.w != w || s_sampled.h != h || s_sampled.x0 != x0 || s_sampled.y0 != y0 ||
+                 s_sampled.cols != s_cols || s_sampled.rows != s_rows || s_sampled.top != (void *)s_top) {
             ls_vt_sample_image(r, s_cols, src, w, h, x0, y0, s_top, s_bot);
-            done.src = src; done.serial = serial; done.r = r; done.w = w; done.h = h;
-            done.x0 = x0; done.y0 = y0; done.cols = s_cols; done.rows = s_rows; done.top = (void *)s_top;
+            keys_all = true;
+            s_sampled.src = src; s_sampled.serial = serial; s_sampled.r = r; s_sampled.w = w; s_sampled.h = h;
+            s_sampled.x0 = x0; s_sampled.y0 = y0; s_sampled.cols = s_cols; s_sampled.rows = s_rows;
+            s_sampled.top = (void *)s_top;
         }
         s_img = r;
-    }
+    } else s_sampled.src = NULL;
+    if (memcmp(&img_before, &s_img, sizeof(s_img))) keys_all = true;
+    /* Did a cell under the picture, or the glass, change? Its masks follow. */
+    bool cells_new = keys_all || !rows_known;
+    if (!cells_new && have_image)       /* r, not s_img: a window partly off the grid has masks too */
+        for (int y = r.y < 0 ? 0 : r.y; y < r.y + r.h && y < s_rows && !cells_new; y++)
+            if (rows[y >> 3] >> (y & 7) & 1) cells_new = true;
+    snap_rows(sf->front, s_cols, s_rows, rows_known ? rows : NULL, keys_all);
+    s_snap_live = true;
     const ls_tui_theme_t *th = ls_tui_theme_effective(ls_tui_get_theme(), ls_tui_daylight());
     if (th) memcpy(s_pal, th->palette, sizeof(s_pal));
     for (s_font_i = 0; s_font_i < ls_tui_font_count() - 1; s_font_i++)
         if (ls_tui_font_at(s_font_i) == ls_tui_font()) break;
     ls_tui_geometry(NULL, NULL, &s_cell_w, &s_cell_h);
-    visual_capture(r, have_image ? src : NULL, w, h, x0, y0, serial, now,answer);
+    const bool colours_before = colours_wanted();
+    /* The owed picture capture is not held behind input: under a pointer
+       that keeps moving every frame answers input, and the picture layer
+       (a waterfall's new lines, the masks) would wait for it to stop. */
+    visual_capture(r, have_image ? src : NULL, w, h, x0, y0, serial, now, answer && !owed_picture, cells_new);
+    if (!colours_before && s_img.w > 0 && colours_wanted()) {
+        /* The picture layer just gave up (no memory, too large): its viewers
+           are back to coloured picture cells, which were not sampled above. */
+        ls_vt_sample_image(r, s_cols, src, w, h, x0, y0, s_top, s_bot);
+        s_sampled.src = src; s_sampled.serial = serial; s_sampled.r = r; s_sampled.w = w; s_sampled.h = h;
+        s_sampled.x0 = x0; s_sampled.y0 = y0; s_sampled.cols = s_cols; s_sampled.rows = s_rows;
+        s_sampled.top = (void *)s_top;
+        s_ser.rows_all = s_net.rows_all = s_web.rows_all = s_ssh.rows_all = true;
+    }
     if (answer) ls_map_trace("answer frame", (int32_t)applied, 0);
+    if (owed) s_owed = false;
+    if (owed_picture) { s_owed_picture = false; s_owed_picture_us = now; }
     s_snap_seq = applied;             /* this snapshot was drawn after UI drain */
     s_snap_epoch = epoch;
     s_last_cap = now;
@@ -726,12 +866,28 @@ static void capture_locked(void)
     if (s_task) xTaskNotifyGive(s_task);
 }
 
+/* 'term cost': what the feed took since it was last asked. Captures are the
+   UI task's share (the frames it handed over, and all its calls), updates the
+   worker's (encode and deflate, not the UART). Under s_mu. */
+EXT_RAM_BSS_ATTR static struct {
+    uint32_t calls, calls_us, captures, capture_us, capture_max, busy;
+    uint32_t updates, update_us, update_max, raw, picture;
+} s_cost;
+
 void ls_rterm_capture(void)
 {
     if (!s_mu || !s_want) return;
     /* A slow network/UART consumer must never park the UI task. */
-    if (xSemaphoreTakeRecursive(s_mu, 0) != pdTRUE) return;
+    if (xSemaphoreTakeRecursive(s_mu, 0) != pdTRUE) { s_cost.busy++; return; }
+    const int64_t t0 = esp_timer_get_time();
+    const bool was = __atomic_load_n(&s_ready, __ATOMIC_ACQUIRE);
     capture_locked();
+    const uint32_t us = (uint32_t)(esp_timer_get_time() - t0);
+    s_cost.calls++; s_cost.calls_us += us;
+    if (!was && __atomic_load_n(&s_ready, __ATOMIC_ACQUIRE)) {
+        s_cost.captures++; s_cost.capture_us += us;
+        if (us > s_cost.capture_max) s_cost.capture_max = us;
+    }
     xSemaphoreGiveRecursive(s_mu);
 }
 
@@ -888,6 +1044,29 @@ static ls_vt_cell cell_key(size_t i, int c, int r)
 }
 static bool same(const ls_vt_cell *a, const ls_vt_cell *b) { return a->cp == b->cp && a->fg == b->fg && a->bg == b->bg; }
 
+/* The snapshot follows the screen row by row. `rows`: one bit for each row
+   whose cells changed since the last call, NULL when any may have; those
+   rows are copied and every session is told to look at them. keys_all: what
+   else a sent cell is made of changed (glass, the picture), so all rows. */
+static bool rows_none(const uint8_t *rows)
+{
+    for (size_t i = 0; i < sizeof(s_ser.row_bits); i++) if (rows[i]) return false;
+    return true;
+}
+static void snap_rows(const tui_cell *front, int cols, int rows_n, const uint8_t *rows, bool keys_all)
+{
+    if ((size_t)rows_n > sizeof(s_ser.row_bits) * 8) rows = NULL;
+    if (!rows) memcpy(s_snap, front, (size_t)cols * rows_n * sizeof(tui_cell));
+    else for (int r = 0; r < rows_n; r++)
+        if (rows[r >> 3] >> (r & 7) & 1)
+            memcpy(s_snap + (size_t)r * cols, front + (size_t)r * cols, (size_t)cols * sizeof(tui_cell));
+    session_t *const all[] = {&s_ser, &s_net, &s_web, &s_ssh};
+    for (size_t k = 0; k < sizeof(all) / sizeof(all[0]); k++) {
+        if (!rows || keys_all) { all[k]->rows_all = true; continue; }
+        for (size_t i = 0; i < sizeof(all[k]->row_bits); i++) all[k]->row_bits[i] |= rows[i];
+    }
+}
+
 static ls_vt_cell cell_feed_key(const session_t *s,size_t i,int c,int r)
 {
     ls_vt_cell key=cell_key(i,c,r);
@@ -917,7 +1096,13 @@ static size_t cells_render(session_t *s, ls_vt_out_fn out)
         memcpy(s->cpal, s_pal, sizeof(s->cpal));
     }
     const int cols = s->cols, n = s->cols * s->rows;
+    /* Only the rows that changed since this viewer's last update, unless
+       something else a cell's record is made of did. */
+    const bool neutral = s->visual.pixels && !s_picture.unavailable;
+    const bool every_row = full || s->rows_all || neutral != s->neutral || (size_t)s->rows > sizeof(s->row_bits) * 8;
+    s->neutral = neutral;
     for (int i = 0; i < n;) {
+        if (!every_row && i % cols == 0 && !(s->row_bits[(i / cols) >> 3] >> ((i / cols) & 7) & 1)) { i += cols; continue; }
         ls_vt_cell key = cell_feed_key(s, (size_t)i, i % cols, i / cols);
         if (!full && same(&key, &s->shown[i])) { i++; continue; }
         const bool special = key.cp >> 24;
@@ -953,6 +1138,8 @@ static size_t cells_render(session_t *s, ls_vt_out_fn out)
         }
         i = last + 1;
     }
+    memset(s->row_bits, 0, sizeof(s->row_bits));
+    s->rows_all = false;
     const bool latency = s_snap_seq && s->input_epoch == s_snap_epoch && s->latency_seq != s_snap_seq;
     if (latency) {
         /* Append after cells: old pages stop at unknown records. */
@@ -960,6 +1147,7 @@ static size_t cells_render(session_t *s, ls_vt_out_fn out)
         s->latency_seq = s_snap_seq;
     }
     visual_render(s, &k, full, latency);
+    if (visual_pending(&s->visual)) s_owed_picture = true;
     cs_flush(&k);
     /* Palette-only updates also need an end frame and an acknowledgement. */
     return k.total;
@@ -970,7 +1158,7 @@ static void render(session_t *s, ls_vt_out_fn out)
     const int64_t now = esp_timer_get_time();
     if (!s->on || !s->shown || now < s->start_us || !s_now_cols) return;
     if (s->acks && s->unacked >= TERM_AHEAD) {
-        if (now - s->ack_wait_us < TERM_ACK_US) return;   /* the next one diffs against what it has */
+        if (now - s->ack_wait_us < TERM_ACK_US) { s_owed = true; return; }   /* the next one diffs against what it has */
         s->unacked = 0;
     }
     s_sink = s->write;
@@ -998,11 +1186,18 @@ static void render(session_t *s, ls_vt_out_fn out)
         s->scr.full = true;
         s->need_enter = false;
     }
+    const uint32_t picture_before = s_pic_tx_bytes;
     const size_t drawn = s->cells ? cells_render(s, out) : ls_vt_render(&s->scr, s_now, out, NULL);
     if (z && s_zin) {
         tdefl_compress_buffer(s_z, NULL, 0, TDEFL_FINISH);
         if (s_zpay_n) frames(0x1C, s_zpay, s_zpay_n);
         s_zpay_n = 0;
+    }
+    if (drawn) {
+        const uint32_t us = (uint32_t)(esp_timer_get_time() - now);
+        s_cost.updates++; s_cost.update_us += us; s_cost.raw += (uint32_t)drawn;
+        s_cost.picture += s_pic_tx_bytes - picture_before;
+        if (us > s_cost.update_max) s_cost.update_max = us;
     }
     if (drawn && s->acks) {
         static const char end[] = "\x1e" "0000" "\x1f" "ffff";   /* empty frame: CRC-16 of nothing */
@@ -1935,6 +2130,7 @@ static void worker(void *arg)
              * newest snapshot against the last encoded baseline. */
             if (s_web_viewer >= 0 && !ls_ws_tx_pending(&s_wc[s_web_viewer].tx))
                 render(&s_web, frames_out);
+            else if (s_web_viewer >= 0 && s_web.on) s_owed = true;
             ssh_render();
             __atomic_store_n(&s_ready, false, __ATOMIC_RELEASE);
         }
@@ -2177,6 +2373,21 @@ void ls_rterm_start(void)
 int ls_rterm_console(int argc, char **argv)
 {
     const char *verb = argc >= 2 ? argv[1] : "";
+    if (!strcmp(verb, "cost")) {
+        /* To the viewer as a line of its own when the serial screen is on:
+           a printf would land inside an update. */
+        char line[240];
+        if (s_mu) xSemaphoreTakeRecursive(s_mu, portMAX_DELAY);
+        snprintf(line, sizeof(line),
+                 "term: cost calls %u us %u captures %u us %u max %u busy %u updates %u us %u max %u raw %u picture %u moves %u",
+                 (unsigned)s_cost.calls, (unsigned)s_cost.calls_us, (unsigned)s_cost.captures, (unsigned)s_cost.capture_us,
+                 (unsigned)s_cost.capture_max, (unsigned)s_cost.busy, (unsigned)s_cost.updates, (unsigned)s_cost.update_us,
+                 (unsigned)s_cost.update_max, (unsigned)s_cost.raw, (unsigned)s_cost.picture, (unsigned)ls_input_coalesced());
+        memset(&s_cost, 0, sizeof(s_cost));
+        if (s_mu) xSemaphoreGiveRecursive(s_mu);
+        ls_rterm_viewer_line(line);
+        return 0;
+    }
     if (!strcmp(verb, "caps")) {
         if (s_mu) {
             xSemaphoreTakeRecursive(s_mu, portMAX_DELAY);

@@ -17,6 +17,7 @@
 #include <limits.h>
 #include <unistd.h>
 static unsigned image_calls, image_clears;
+bool ls_tui_cutout(tui_rect *cells) { (void)cells; return false; }   /* no TFT camera hole on the host */
 void ls_tui_image(tui_rect r, const uint16_t *p, int w, int h, uint32_t serial) {
     if (!p) {
         assert(!r.w && !r.h);

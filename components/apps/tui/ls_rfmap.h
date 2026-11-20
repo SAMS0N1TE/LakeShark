@@ -28,6 +28,10 @@ typedef struct {
     int64_t now_us;
 } ls_rfmap_frame_t;
 
+/* One more layer drawn with the heat, under the same frame: an app module's
+   points (WARDRIVE's drive). NULL removes it. UI task only. */
+typedef void (*ls_rfmap_layer_t)(const ls_rfmap_frame_t *f);
+void ls_rfmap_set_extra(ls_rfmap_layer_t fn);
 bool ls_rfmap_has_heat(void);
 bool ls_rfmap_has_fox(void);
 void ls_rfmap_heat(const ls_rfmap_frame_t *f);

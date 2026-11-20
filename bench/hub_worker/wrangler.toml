@@ -1,0 +1,36 @@
+name = "lakeshark-hub"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+routes = [
+  { pattern = "hub.terminalbay.com", custom_domain = true }
+]
+
+[observability]
+enabled = false
+
+[[r2_buckets]]
+binding = "REPORTS"
+bucket_name = "lakeshark-reports"
+
+[[r2_buckets]]
+binding = "LOCKER"
+bucket_name = "lakeshark-locker"
+
+[[durable_objects.bindings]]
+name = "CHAT"
+class_name = "ChatRoom"
+
+[[durable_objects.bindings]]
+name = "LOCKER_DO"
+class_name = "Locker"
+
+[[durable_objects.bindings]]
+name = "REGISTRY"
+class_name = "Registry"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChatRoom", "Locker", "Registry"]
+
+# Secrets (set with wrangler secret put, never in this file): MOD_SECRET, NTFY_TOPIC

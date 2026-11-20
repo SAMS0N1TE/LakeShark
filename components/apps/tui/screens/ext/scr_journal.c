@@ -180,7 +180,7 @@ static void draw(tui_surface *sf, tui_rect a)
     }
 #endif
     if (a.h < 14 || a.w < 24) {
-        ls_panel_box(sf, a, "JOURNAL", TUI_CYAN);
+        ls_panel_box(sf, a, NULL, TUI_CYAN);
         tui_put_str(sf, a, a.x + 1, a.y + 1, "Enlarge the pane", LS_ATTR_DIM);
         return;
     }

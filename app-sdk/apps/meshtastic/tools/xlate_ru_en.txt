@@ -1,0 +1,567 @@
+# Hand-written Russian -> English data for mt_xlate_lang (MESHTASTIC app).
+# Written for this app; GPL-3.0-or-later like the rest of LakeShark.
+# gen_xlate_lang.py reads it with the Wiktionary lexicon and writes ../lang/ru.bin.
+# The format is described at the top of xlate_pt_en.txt. Keys are written in
+# Cyrillic and folded to their transliteration (BGN/PCGN without marks: zh kh ts
+# ch sh shch y yu ya; e for e and yo; the soft and hard signs left out), so
+# a line typed in Latin ("privet, kak dela") meets the same entries. Chat
+# spellings may be Latin or Cyrillic. There are no articles; a subject that is
+# a pronoun with no verb gets "is" (ya doma: I am at home).
+
+@func
+# Determiners
+этот | DET | this | this
+эта | DET | this | this
+эти | DET:pl | these | these
+тот | DET | that | that
+та | DET | that | that
+те | DET:pl | those | those
+мой | DET:poss | my | mine
+моя | DET:poss | my | mine
+моё | DET:poss | my | mine
+мои | DET:poss,pl | my | mine
+твой | DET:poss | your | yours
+твоя | DET:poss | your | yours
+твоё | DET:poss | your | yours
+твои | DET:poss,pl | your | yours
+наш | DET:poss | our | ours
+наша | DET:poss | our | ours
+наше | DET:poss | our | ours
+наши | DET:poss,pl | our | ours
+ваш | DET:poss | your | yours
+ваша | DET:poss | your | yours
+ваше | DET:poss | your | yours
+ваши | DET:poss,pl | your | yours
+его | DET:poss,obj | his | him
+её | DET:poss,obj | her | her
+их | DET:poss,obj | their | them
+свой | DET:poss | own
+своя | DET:poss | own
+своё | DET:poss | own
+свои | DET:poss,pl | own
+все | DET:pl | all | everything
+весь | DET | all | everything
+вся | DET | all | everything
+каждый | DET | every | everyone
+другой | DET | other | another
+другие | DET:pl | other | others
+какой | DET:q | what | which
+какая | DET:q | what | which
+какое | DET:q | what | which
+какие | DET:pl,q | what | which
+много | DET | a lot of | a lot
+мало | DET | little | little
+несколько | DET:pl | a few | a few
+#
+# Subject pronouns; alt is the object form
+я | PRON:1 | I | me
+ты | PRON:2 | you | you
+он | PRON:3 | he | him
+она | PRON:3 | she | her
+оно | PRON:3 | it | it
+мы | PRON:4 | we | us
+вы | PRON:2 | you | you
+они | PRON:6 | they | them
+#
+# Object pronouns (before the verb they come after it in English)
+меня | CLIT:1 | me
+мне | CLIT:1 | me
+тебя | CLIT:2 | you
+тебе | CLIT:2 | you
+нас | CLIT:4 | us
+нам | CLIT:4 | us
+вас | CLIT:5 | you
+вам | CLIT:5 | you
+ему | CLIT:3 | him
+ей | CLIT:3 | her
+им | CLIT:6 | them
+себя | CLIT:3,refl | themselves
+себе | CLIT:3,refl | themselves
+#
+# Other pronouns
+это | PRONX | this
+что-то | PRONX | something | anything
+что-нибудь | PRONX | anything | anything
+кто-то | PRONX | someone | anyone
+кто-нибудь | PRONX | anyone | anyone
+ничего | PRONX | nothing | anything
+никто | PRONX | nobody | anybody
+мной | PRONX | me
+тобой | PRONX | you
+#
+# Prepositions
+в | PREP | in | at
+во | PREP | in
+на | PREP | on
+с | PREP | with
+со | PREP | with
+к | PREP | to
+ко | PREP | to
+у | PREP | at
+от | PREP | from
+до | PREP | until
+из | PREP | from
+за | PREP | behind
+под | PREP | under
+над | PREP | above
+о | PREP | about
+об | PREP | about
+про | PREP | about
+по | PREP | along
+для | PREP | for
+без | PREP | without
+через | PREP | in
+после | PREP | after
+перед | PREP | in front of
+около | PREP | near
+возле | PREP | near
+рядом с | PREP | next to
+между | PREP | between
+против | PREP | against
+при | PREP | at
+#
+# Conjunctions
+и | CONJ | and
+а | CONJ | and
+но | CONJ | but
+или | CONJ | or
+что | CONJ:sub,que | that | what
+чтобы | CONJ:sub | so that
+потому что | CONJ:sub | because
+так как | CONJ:sub | because
+если | CONJ:sub | if
+пока | CONJ:sub | while | bye
+тоже | ADV | too
+также | ADV | also
+#
+# Negation
+не | NEG | not | no
+нет | EXIST:neg | there is no | no
+никогда | NEG:never | never | never
+#
+# Question words
+где | Q:sub | where | where
+куда | Q | where to
+откуда | Q | where from
+когда | Q:sub | when | when
+как | Q:sub | how | like
+почему | Q | why
+зачем | Q | why
+кто | Q:sub | who | who
+сколько | Q | how much
+во сколько | Q | at what time
+который час | CL | what time is it
+#
+# Adverbs and particles
+здесь | ADV | here
+тут | ADV | here
+там | ADV | there
+сейчас | ADV | now
+сегодня | ADV | today
+вчера | ADV:past | yesterday
+завтра | ADV | tomorrow
+потом | ADV | later
+позже | ADV | later
+скоро | ADV | soon
+рано | ADV | early
+поздно | ADV | late
+всегда | ADV | always
+уже | ADV | already
+ещё | ADV | still
+очень | ADV:int | very
+немного | ADV | a bit
+чуть | ADV | a bit
+хорошо | ADV | well | ok
+плохо | ADV | badly | bad
+быстро | ADV | fast
+медленно | ADV | slowly
+вместе | ADV | together
+почти | ADV | almost
+только | ADV | only
+правда | ADV | really
+близко | ADV | near
+далеко | ADV | far
+дома | ADV | at home
+домой | ADV | home
+снова | ADV | again
+опять | ADV | again
+громко | ADV | loud
+слабо | ADV | weakly
+нормально | ADV | fine | fine
+надо | PH | need to
+мне надо | CL | I need to
+мне нужно | CL | I need to
+мне нужна | CL | I need
+мне нужен | CL | I need
+мне нужны | CL | I need
+тебе надо | CL | you need to
+тебе нужно | CL | you need to
+нужно | PH | need to
+можно | PH | may
+должен | PH | must
+должна | PH | must
+должны | PH | must
+ли | SKIP | _
+же | SKIP | _
+бы | SKIP | _
+ведь | SKIP | _
+да | INTJ | yes
+ага | INTJ | yeah
+ну | INTJ | well
+вот | INTJ | here
+#
+# Interjections and chat words
+привет | INTJ | hi
+приветик | INTJ | hi
+здравствуйте | INTJ | hello
+здравствуй | INTJ | hello
+здорово | INTJ | hi
+спасибо | INTJ | thanks
+спасибо большое | INTJ | thanks a lot
+пожалуйста | INTJ | please
+извините | INTJ | sorry
+извини | INTJ | sorry
+простите | INTJ | sorry
+прости | INTJ | sorry
+ок | INTJ | ok
+окей | INTJ | ok
+ладно | INTJ | ok
+понятно | INTJ | got it
+понял | INTJ | got it
+поняла | INTJ | got it
+отлично | INTJ | great
+супер | INTJ | great
+круто | INTJ | cool
+класс | INTJ:A | great
+хз | INTJ | who knows
+ха | INTJ | ha
+хаха | INTJ | haha
+ахах | INTJ | haha
+помогите | INTJ | help
+внимание | INTJ | careful
+приём | INTJ | over
+принято | INTJ | copy that
+#
+# Number words
+один | NUM | one
+одна | NUM | one
+два | NUM | two
+две | NUM | two
+три | NUM | three
+четыре | NUM | four
+пять | NUM | five
+шесть | NUM | six
+семь | NUM | seven
+восемь | NUM | eight
+девять | NUM | nine
+десять | NUM | ten
+двадцать | NUM | twenty
+сто | NUM | a hundred
+тысяча | NUM | thousand
+первый | NUM | first
+последний | NUM | last
+#
+# There is / have
+есть | EXIST | there is
+у меня есть | CL | I have
+у меня нет | CL | I don't have
+у тебя есть | CL | do you have | you have
+у вас есть | CL | do you have | you have
+есть кто-нибудь | CL | is anyone there
+есть кто | CL | is anyone there
+кто-нибудь есть | CL | is anyone there
+#
+# Phrases
+доброе утро | INTJ | good morning
+добрый день | INTJ | good afternoon
+добрый вечер | INTJ | good evening
+спокойной ночи | INTJ | good night
+до встречи | INTJ | see you
+до свидания | INTJ | goodbye
+до завтра | INTJ | see you tomorrow
+всем привет | INTJ | hi everyone
+привет всем | INTJ | hi everyone
+как дела | CL | how are you
+как ты | CL | how are you
+как у тебя дела | CL | how are you
+что нового | CL | what's new
+все хорошо | CL | all good
+все нормально | CL | all fine
+не знаю | CL | I don't know
+не понимаю | CL | I don't understand
+ничего страшного | CL | no problem
+без проблем | INTJ | no problem
+не за что | INTJ | you're welcome
+как слышно | CL | how do you hear me
+как слышишь | CL | how do you hear me
+слышу хорошо | CL | I hear you well
+громко и четко | ADV | loud and clear
+конец связи | INTJ | over and out
+на связи | ADV | online
+на месте | ADV | here
+в пути | ADV | on the way
+в безопасности | ADV | safe
+идет дождь | CL | it's raining
+очень холодно | CL | it's very cold
+очень жарко | CL | it's very hot
+холодно | CL | it's cold
+жарко | CL | it's hot
+вызовите скорую | CL | call an ambulance
+утром | ADV | in the morning
+вечером | ADV | in the evening
+днём | ADV | in the afternoon
+ночью | ADV | at night
+у меня | CL | I have
+сейчас буду | CL | I'll be right there
+скоро буду | CL | I'll be there soon
+на работу | ADV | to work
+на работе | ADV | at work
+все в порядке | CL | is everything OK | everything is OK
+через час | ADV | in an hour
+через минуту | ADV | in a minute
+
+@abbr
+спс | спасибо
+пжлст | пожалуйста
+плз | пожалуйста
+щас | сейчас
+счас | сейчас
+чё | что
+норм | нормально
+прив | привет
+мб | может быть
+кст | кстати
+spasibki | спасибо
+spasib | спасибо
+pls | пожалуйста
+prvt | привет
+shto | что
+
+@verbs
+быть | BE,IT
+иметь | HAVE
+мочь | CAN
+смочь | CAN
+уметь | CAN
+хотеть | WANT
+захотеть | WANT
+начать | IT
+работать | IT
+казаться | IT
+идти | IT
+
+@lex
+быть | V | be
+мочь | V | can
+смочь | V | can
+хотеть | V | want
+слышать | V | hear
+услышать | V | hear
+видеть | V | see
+увидеть | V | see
+говорить | V | talk
+сказать | V | say
+знать | V | know
+делать | V | do
+сделать | V | do
+идти | V | go
+пойти | V | go
+ехать | V | drive
+приехать | V | arrive
+прийти | V | come
+ждать | V | wait+for
+подождать | V | wait+for
+звонить | V | call
+позвонить | V | call
+писать | V | write
+написать | V | write
+отправить | V | send
+отправлять | V | send
+прислать | V | send
+послать | V | send
+получить | V | receive
+получать | V | receive
+ответить | V | answer
+отвечать | V | answer
+работать | V | work
+заряжать | V | charge
+зарядить | V | charge
+проверить | V | check
+проверять | V | check
+помочь | V | help
+найти | V | find
+искать | V | look+for
+взять | V | take
+дать | V | give
+понимать | V | understand
+понять | V | understand
+думать | V | think
+жить | V | live
+вернуться | V | come back
+выйти | V | go out
+выходить | V | go out
+уйти | V | leave
+слушать | V | listen+to
+потерять | V | lose
+садиться | V | run down
+сесть | V | run down
+отключаться | V | go offline
+опаздывать | V | be late
+встретиться | V | meet
+батарея | N:f | battery
+аккумулятор | N:m | battery
+акб | N:m | battery
+заряд | N:m | charge
+зарядка | N:f | charger
+сигнал | N:m | signal
+антенна | N:f | antenna
+рация | N:f | radio
+радио | N:n | radio
+узел | N:m | node
+нода | N:f | node
+сеть | N:f | network
+меш | N:m | mesh
+сообщение | N:n | message
+канал | N:m | channel
+частота | N:f | frequency
+ретранслятор | N:m | repeater
+репитер | N:m | repeater
+телефон | N:m | phone
+помощь | N:f,u | help
+вода | N:f,u | water
+еда | N:f,u | food
+свет | N:m,u | power
+электричество | N:n,u | power
+дождь | N:m,u | rain
+гроза | N:f | storm
+дом | N:m | house
+место | N:n | place
+площадь | N:f | square
+холм | N:m | hill
+гора | N:f | mountain
+улица | N:f | street
+час | N:m | hour
+минута | N:f | minute
+день | N:m | day
+ночь | N:f | night
+неделя | N:f | week
+тест | N:m | test
+проверка | N:f | test
+местоположение | N:n | location
+локация | N:f | location
+координаты | N:f | coordinates
+скорая | N:f | ambulance
+погода | N:f,u | weather
+связь | N:f,u | connection
+приём | N:m,u | reception
+карта | N:f | map
+хороший | A | good
+плохой | A | bad
+новый | A | new
+старый | A | old
+слабый | A | weak
+сильный | A | strong
+готов | A | ready
+сломан | A | broken
+занят | A | busy
+устал | A | tired
+холодный | A | cold
+горячий | A | hot
+ранен | A | hurt
+устать | V | get tired
+
+@drop
+
+@book
+OK | Хорошо
+Yes | Да
+No | Нет
+Thanks | Спасибо
+Hello, how are you? | Привет, как дела?
+Good morning | Доброе утро
+Good night | Спокойной ночи
+See you later | До встречи
+Sorry, I don't understand | Извини, я не понимаю
+Please write slowly / simply | Пиши проще, пожалуйста
+I speak little Spanish | Я немного говорю по-русски
+Copy that | Принято
+Can you hear me? | Ты меня слышишь?
+I hear you loud and clear | Слышу тебя громко и чётко
+I hear you weak | Слышу тебя слабо
+Your signal is weak | Твой сигнал слабый
+Good signal here | Здесь хороший сигнал
+No signal here | Здесь нет сигнала
+Who is on the mesh? | Кто в сети?
+Testing, please answer | Проверка, ответь, пожалуйста
+Message received | Сообщение получено
+Over and out | Конец связи
+Is anyone there? | Есть кто-нибудь?
+On my way | Я в пути
+I'm here | Я на месте
+I'm almost there | Я почти на месте
+Wait for me | Подожди меня
+I'm busy, talk later | Я занят, поговорим позже
+All good here | У нас всё хорошо
+I'm leaving now | Я выхожу
+Running late | Я опаздываю
+My battery is low | У меня садится батарея
+I'm charging | Я на зарядке
+My battery is dying, I'm going offline | Батарея садится, я отключаюсь
+Back online | Снова на связи
+Where are you? | Где ты?
+See you at the square | Встретимся на площади
+See you at ... | Встретимся у ...
+What time? | Во сколько?
+In 10 minutes | Через 10 минут
+Meet at the usual place | Встретимся на обычном месте
+Send me your location | Пришли мне своё местоположение
+Let me know when you arrive | Напиши, когда доберёшься
+I need help | Мне нужна помощь
+Emergency! | Экстренная ситуация!
+Someone is hurt | Есть раненый
+Call an ambulance | Вызовите скорую
+I'm lost | Я заблудился
+We are safe | Мы в безопасности
+I need water | Мне нужна вода
+The power is out | Отключили свет
+Stay where you are | Оставайся на месте
+It's raining here | Здесь идёт дождь
+A storm is coming | Надвигается гроза
+It's very cold | Очень холодно
+It's very hot | Очень жарко
+How is the weather there? | Какая у вас погода?
+
+@detect
+privet | 13
+spasibo | 13
+poka | 8
+khorosho | 12
+horosho | 12
+normalno | 11
+seychas | 11
+sejchas | 11
+slyshu | 12
+slyshish | 12
+menya | 10
+tebya | 10
+chto | 11
+gde | 9
+kogda | 10
+pochemu | 11
+zdes | 10
+pozhaluysta | 12
+pozhalujsta | 12
+izvini | 11
+zdravstvuyte | 13
+dela | 8
+nichego | 10
+segodnya | 11
+zavtra | 11
+spokoynoy | 11
+nochi | 8
+dobroe | 10
+utro | 9
+svyaz | 11
+batareya | 10
+signal | 3
+doma | 8

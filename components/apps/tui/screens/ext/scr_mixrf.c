@@ -101,9 +101,13 @@ static void cards_open(void)
 static void nfc_mode(int i)
 {
     ls_mixrf_card_scan(false);ls_mixrf_nfc_watch(false);
-    if(i==1)ls_mixrf_card_scan(true);
-    if(i==2)ls_mixrf_nfc_watch(true);
+    bool ok=true;
+    if(i==1)ok=ls_mixrf_card_scan(true);
+    if(i==2)ok=ls_mixrf_nfc_watch(true);
     radio_chosen(LS_RSEL_NFC);ls_rsel_set(LS_RSEL_MIXRF,LS_RSEL_NFC);
+    /* With no keyboard (or a busy reader) the start fails: say so, rather
+       than showing NFC DETECTOR OFF as if it had been asked for. */
+    if(!ok)LS_SNPUTS(t_scr_mixrf_nfc_reader_unavailable_use, feedback, sizeof(feedback), "NFC reader unavailable; use PROBE");
 }
 static void action(int i)
 {
@@ -161,7 +165,7 @@ static void leave(void){card_suite=false;ls_field_watch(false);}
 static void draw(tui_surface *sf,tui_rect a)
 {
     if(card_suite){ls_scr_nfc.draw(sf,a);return;}
-    if(a.w<30 || a.h<17){ls_panel_notice(sf,a,"MIX-RF","Enlarge the pane",LS_TEXT(t_scr_mixrf_receive_monitor_keeps_its, "Receive monitor keeps its state"));return;}
+    if(a.w<30 || a.h<17){ls_panel_notice(sf,a,NULL,"Enlarge the pane",LS_TEXT(t_scr_mixrf_receive_monitor_keeps_its, "Receive monitor keeps its state"));return;}
     LS_SNPUTS(t_scr_mixrf_m_monitor_r_radio, hint, sizeof(hint), "M monitor  S scan  N NFC  V view  J mark  O options  (P probe  C cards  X stop  R radio)");
     ls_mixrf_snapshot(&state);
     enabled=state.receive_requested && state.cc_owner==LS_MIXRF_OWNER_MONITOR;scan_enabled=state.scan_requested && state.scan_owner==LS_MIXRF_OWNER_MONITOR;nfc_enabled=state.card_requested;
@@ -229,7 +233,7 @@ static void draw(tui_surface *sf,tui_rect a)
     if(view_nfc && chart.h>(wide?13:23)) {
         int top=chart.y+(wide?2:10),bottom=chart.y+chart.h-5;
         const char *banner=state.card_present?"((( CARD DETECTED )))":state.card_scanning?"[ MOVE CARD SLOWLY / HOLD 1 SECOND ]":state.nfc_watching?(state.nfc_field?"[ EXTERNAL FIELD PRESENT ]":"[ WAITING FOR READER FIELD ]"):"[ NFC DETECTOR OFF ]";
-        tui_put_str(sf,chart,chart.x+2,top,banner,state.card_present?TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM);
+        tui_put_str(sf,chart,chart.x+2,top,banner,state.card_present?ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK)):LS_ATTR_DIM);
         if(!state.nfc_requested){
         tui_put_str(sf,chart,chart.x+2,top+1,LS_TEXT(t_scr_mixrf_rx_level_0_15, "RX level 0 <--------------------> 15"),LS_ATTR_DIM);
         int rows=bottom-top-2;
@@ -244,8 +248,8 @@ static void draw(tui_surface *sf,tui_rect a)
             uint8_t color=result==3?TUI_GREEN:result==2?TUI_WHITE:result==1?TUI_YELLOW:TUI_CYAN;
             int fill=state.card_level[i]*width/15;
             for(int x=0;x<width;x++)
-                tui_put_char(sf,chart,chart.x+4+x,y,x<fill?(age<3?'#':':'):'.',x<fill?TUI_ATTR(color|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM);
-            tui_put_char(sf,chart,chart.x+chart.w-3,y,result==3?'C':result==2?'R':result==1?'!':'-',TUI_ATTR(color|TUI_BRIGHT,TUI_BLACK));
+                tui_put_char(sf,chart,chart.x+4+x,y,x<fill?(age<3?'#':':'):'.',x<fill?ls_ink_hue(TUI_ATTR(color|TUI_BRIGHT,TUI_BLACK)):LS_ATTR_DIM);
+            tui_put_char(sf,chart,chart.x+chart.w-3,y,result==3?'C':result==2?'R':result==1?'!':'-',ls_ink_hue(TUI_ATTR(color|TUI_BRIGHT,TUI_BLACK)));
         }
         tui_put_str(sf,chart,chart.x+2,chart.y+chart.h-3,LS_TEXT(t_scr_mixrf_noise_r_reply_c, "! noise  R reply  C confirmed / newest below"),LS_ATTR_DIM);
         tui_put_str(sf,chart,chart.x+2,chart.y+chart.h-2,LS_TEXT(t_scr_mixrf_13_56_mhz_rx, "13.56 MHz RX history / uncalibrated level"),LS_ATTR_DIM);
@@ -267,7 +271,7 @@ static void draw(tui_surface *sf,tui_rect a)
             int y=bottom-(int)(level*height);
             if(view_24)for(int row=y;row<=bottom;row++)
                 tui_put_char(sf,chart,chart.x+2+x,row,'|',TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
-            else tui_put_char(sf,chart,chart.x+2+x,y,'*',TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK));
+            else tui_put_char(sf,chart,chart.x+2+x,y,'*',ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK)));
         }
         tui_put_str(sf,chart,chart.x+2,chart.y+chart.h-3,view_24?"2400 MHz <--- activity ---> 2483 MHz":"CC1101 energy; packets not decoded",LS_ATTR_DIM);
         tui_put_str(sf,chart,chart.x+2,chart.y+chart.h-2,view_24?"RPD ~-64 dBm threshold; no packet IDs":"V switches survey / NFC field views",LS_ATTR_DIM);

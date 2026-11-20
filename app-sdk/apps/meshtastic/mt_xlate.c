@@ -15,6 +15,7 @@
    The data is mt_xlate_es_en.h (tools/gen_xlate.py). No malloc: everything
    lives in the static buffers below, so one caller at a time. */
 #include "mt_xlate.h"
+#include "mt_xlate_int.h"
 #include "mt_xlate_es_en.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -2915,7 +2916,8 @@ int mt_xlate_es_en(const char *in, char *out, size_t cap)
 
 /* ------------------------------------------------------------- detection */
 
-mt_lang_t mt_xlate_detect(const char *in, int *conf)
+/* Spanish or English (mt_xlate_lang.c weighs this with every other language) */
+mt_lang_t mtx_detect_es_en(const char *in, int *conf)
 {
     int es = 0, en = 0, pos = 0, t;
     if (conf) *conf = 0;
@@ -3002,12 +3004,22 @@ mt_lang_t mt_xlate_detect(const char *in, int *conf)
 
 int mt_xlate_incoming(const char *in, char *out, size_t cap)
 {
-    int conf = 0;
-    if (!out || !cap) return 0;
-    out[0] = 0;
-    if (mt_xlate_detect(in, &conf) != MT_LANG_ES || conf < MT_XLATE_MIN_CONF) return 0;
-    return mt_xlate_es_en(in, out, cap);
+    return mt_xlate_incoming_in(in, MT_LANG_BIT(MT_LANG_ES), out, cap, 0);
 }
+
+/* A word Spanish's own tables know: a function word, a chat spelling, an irregular verb form. */
+int mtx_es_word(const char *key, int acc)
+{
+    return phr_find(key, acc, 0) >= 0 || find(XL_ABBR, NABBR, key) >= 0 || find(XL_IRR, NIRR, key) >= 0;
+}
+
+int mtx_es_lemma(const char *key) { return find(XL_LEX, NLEX, key) >= 0; }
+
+/* The English side, for mt_xlate_lang.c */
+void mtx_en_form(const char *verb, int form, char *dst, int cap) { en_form(verb, form, dst, cap); }
+void mtx_en_plural(const char *g, char *dst, int cap) { en_plural(g, dst, cap); }
+void mtx_negate(char *w, int cap) { negate(w, cap); }
+int mtx_vowel_start(const char *w) { return is_vowel_start(w); }
 
 int mt_xlate_fold_ascii(char *s)
 {
@@ -3017,6 +3029,35 @@ int mt_xlate_fold_ascii(char *s)
         int n, acc, up, l;
         if (*r < 0x80) { *w++ = *r++; continue; }
         if (r[0] == 0xC2 && (r[1] == 0xBF || r[1] == 0xA1)) { r += 2; continue; }
+        /* two letters for one, in the same two bytes: sharp s, ae, oe */
+        if (r[0] == 0xC3 && (r[1] == 0x9F || r[1] == 0x86 || r[1] == 0xA6)) {
+            const int cap2 = r[1] == 0x86;
+            w[0] = (unsigned char)(r[1] == 0x9F ? 's' : cap2 ? 'A' : 'a');
+            w[1] = (unsigned char)(r[1] == 0x9F ? 's' : cap2 ? 'E' : 'e');
+            w += 2; r += 2;
+            continue;
+        }
+        if (r[0] == 0xC5 && (r[1] == 0x92 || r[1] == 0x93)) {
+            w[0] = (unsigned char)(r[1] == 0x92 ? 'O' : 'o');
+            w[1] = (unsigned char)(r[1] == 0x92 ? 'E' : 'e');
+            w += 2; r += 2;
+            continue;
+        }
+        if (r[0] == 0xC3 && (r[1] == 0xBD || r[1] == 0xBF || r[1] == 0x9D)) { *w++ = r[1] == 0x9D ? 'Y' : 'y'; r += 2; continue; }
+        if ((r[0] == 0xCC && (r[1] & 0xC0) == 0x80) || (r[0] == 0xCD && r[1] >= 0x80 && r[1] < 0xB0)) { r += 2; continue; }  /* combining marks */
+        /* Polish and the rest of Latin Extended-A: the plain letter (l for l with stroke) */
+        if (mtx_lata(r)) { *w++ = (unsigned char)mtx_lata(r); r += 2; continue; }
+        /* Cyrillic: its Latin, two letters at most so it fits where it was */
+        {
+            int cup;
+            const char *cl = mtx_cyr2(r, &cup);
+            if (cl) {
+                for (int k = 0; cl[k]; k++) *w++ = (unsigned char)(cup && !k ? cl[k] - 32 : cl[k]);
+                r += 2;
+                continue;
+            }
+        }
+        if (r[0] == 0xC3 && (r[1] == 0xB8 || r[1] == 0x98)) { *w++ = r[1] == 0x98 ? 'O' : 'o'; r += 2; continue; }
         l = letter(r, &n, &acc, &up);
         if (l) {
             int c = l == 0xF1 ? 'n' : l;
@@ -3027,7 +3068,8 @@ int mt_xlate_fold_ascii(char *s)
         /* any other sequence: one '?' */
         *w++ = '?';
         r++;
-        while (*r >= 0x80 && !(r[0] == 0xC3 && letter(r, &n, &acc, &up)) && !(r[0] == 0xC2 && (r[1] == 0xBF || r[1] == 0xA1)))
+        while (*r >= 0x80 && !(r[0] >= 0xC3 && r[0] <= 0xD3 && r[1] >= 0x80 && r[1] <= 0xBF) &&
+               !(r[0] == 0xC2 && (r[1] == 0xBF || r[1] == 0xA1)))
             r++;
     }
     *w = 0;

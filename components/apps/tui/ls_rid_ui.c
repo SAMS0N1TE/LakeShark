@@ -14,7 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "ls_textpack.h"
-#define INK(c) TUI_ATTR((c),TUI_BLACK)
+#define INK(c) ls_ink_hue(TUI_ATTR((c),TUI_BLACK))
 #define WHITE INK(TUI_WHITE|TUI_BRIGHT)
 #define CYAN INK(TUI_CYAN|TUI_BRIGHT)
 static EXT_RAM_BSS_ATTR ls_rid_drone_t view[LS_RID_MAX], selected;
@@ -175,7 +175,7 @@ static void show_detail(tui_surface *sf,tui_rect a,int64_t now) {
 static void draw_body(tui_surface *sf,tui_rect a,int64_t now);
 void ls_rid_draw(tui_surface *sf,tui_rect a) {
     int64_t now=esp_timer_get_time(); refresh(now);
-    if(a.w<26 || a.h<18) { ls_panel_notice(sf,a,"DRONES",LS_TEXT(t_ls_rid_ui_more_screen_space_needed, "More screen space needed"),"Use a smaller font"); return; }
+    if(a.w<26 || a.h<18) { ls_panel_notice(sf,a,NULL,LS_TEXT(t_ls_rid_ui_more_screen_space_needed, "More screen space needed"),"Use a smaller font"); return; }
     int bar_h=ls_tui_is_wide()?3:5;
     ls_btn_t buttons[]={ {detail?"BACK":"DETAIL",detail?"LIST":"SELECTED",detail?'b':'d',false,!detail&&!count,false},
         {receiver()==LS_RID_RX_LISTENING?"PREV":"RECEIVE",receiver()==LS_RID_RX_LISTENING?"DRONE":"START / R",receiver()==LS_RID_RX_LISTENING?'[':'r',false,detail || (receiver()==LS_RID_RX_LISTENING && !count),false},
@@ -186,7 +186,7 @@ void ls_rid_draw(tui_surface *sf,tui_rect a) {
 }
 void ls_rid_draw_body(tui_surface *sf,tui_rect a) {
     int64_t now=esp_timer_get_time(); refresh(now);
-    if(a.w<26 || a.h<12) { ls_panel_notice(sf,a,"REMOTE ID",LS_TEXT(t_ls_rid_ui_more_screen_space_needed, "More screen space needed"),"Use a smaller font"); return; }
+    if(a.w<26 || a.h<12) { ls_panel_notice(sf,a,NULL,LS_TEXT(t_ls_rid_ui_more_screen_space_needed, "More screen space needed"),"Use a smaller font"); return; }
     draw_body(sf,a,now);
 }
 bool ls_rid_in_detail(void) { return detail; }

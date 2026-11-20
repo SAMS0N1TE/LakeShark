@@ -26,6 +26,9 @@ typedef struct {
     int               minzoom_key_idx;
     int               rank_key_idx;
     int            class_key_idx;
+    int            detail_key_idx;   /* LS DEVIATION 5 */
+    int            extent;
+    float          zeff;
 } mvt_ctx;
 
 static uint64_t rvarint(const uint8_t *b, size_t len, size_t *pos) {
@@ -45,6 +48,17 @@ static int32_t zigzag(uint32_t n) {
     return (int32_t)((n >> 1) ^ (0u - (n & 1)));
 }
 
+/* LS DEVIATION 6: a tile is bytes off a card or a network, and a damaged one
+   must draw wrong, not run off the end of anything. Lengths are held inside
+   the buffer, coordinates wrap and are clamped to a frame-sized range. */
+#define SPAN(l, p, len) do { if ((l) > (uint64_t)((len) - (p))) (l) = (uint64_t)((len) - (p)); } while (0)
+static inline int32_t step(int32_t at, uint64_t v) {
+    return (int32_t)((uint32_t)at + (uint32_t)zigzag((uint32_t)v));
+}
+static inline int px_at(float v) {
+    return v > 1000000.0f ? 1000000 : (v < -1000000.0f ? -1000000 : (int)v);
+}
+
 /* The plain name, not one of the forty localisations beside it. A tile
    carries name, name:en, name:ja and so on; matching a prefix would take
    whichever came first in the key table, which is arbitrary. */
@@ -58,6 +72,10 @@ static int key_is_minzoom(const uint8_t *p, int len) {
 
 static int key_is_rank(const uint8_t *p, int len) {
     return len == 15 && memcmp(p, "population_rank", 15) == 0;
+}
+
+static int key_is_detail(const uint8_t *p, int len) {
+    return len == 11 && memcmp(p, "kind_detail", 11) == 0;
 }
 
 static int key_is_class(const uint8_t *p, int len) {
@@ -88,6 +106,7 @@ static void parse_value(const uint8_t *b, size_t len,
         uint32_t fn = (uint32_t)(key >> 3), wt = (uint32_t)(key & 7);
         if (wt == 2) {
             uint64_t l = rvarint(b, len, &p);
+            SPAN(l, p, len);
             if (fn == 1) { *sptr = b + p; *slen = (int)l; }
             p += (size_t)l;
         } else if (wt == 0) {
@@ -96,14 +115,14 @@ static void parse_value(const uint8_t *b, size_t len,
             if (fn == 4 || fn == 5 || fn == 7) *num = (int)v;
             else if (fn == 6) *num = (int)zigzag((uint32_t)v);   /* sint */
         } else if (wt == 5) {
-            if (num && fn == 2) {
+            if (num && fn == 2 && len - p >= 4) {
                 float f;
                 memcpy(&f, b + p, sizeof f);
                 *num = (int)(f + 0.5f);
             }
             p += 4;
         } else if (wt == 1) {
-            if (num && fn == 3) {
+            if (num && fn == 3 && len - p >= 8) {
                 double d;
                 memcpy(&d, b + p, sizeof d);
                 *num = (int)(d + 0.5);
@@ -129,6 +148,10 @@ static void feature_colors(const mvt_ctx *m, int prio, carto_rgb *fill,
             *lw = w < 1 ? 1 : w;
             break;
         }
+        case CARTO_LAYER_BOUNDARY:
+            *fill = *line = *pt = s->boundary;
+            *lw = prio >= 3 ? 2 : 1;
+            break;
         default: *fill = *line = *pt = s->label_color; break;
     }
 }
@@ -140,9 +163,9 @@ static void geom_bbox_ext(const uint8_t *g, size_t glen, int *w, int *h) {
         uint64_t cmd = rvarint(g, glen, &p);
         uint32_t id = (uint32_t)(cmd & 7), count = (uint32_t)(cmd >> 3);
         if (id == 1 || id == 2) {
-            for (uint32_t k = 0; k < count; ++k) {
-                cx += zigzag((uint32_t)rvarint(g, glen, &p));
-                cy += zigzag((uint32_t)rvarint(g, glen, &p));
+            for (uint32_t k = 0; k < count && p < glen; ++k) {
+                cx = step(cx, rvarint(g, glen, &p));
+                cy = step(cy, rvarint(g, glen, &p));
                 if (!have) { minx = maxx = cx; miny = maxy = cy; have = 1; }
                 else {
                     if (cx < minx) minx = cx;
@@ -160,17 +183,38 @@ static void geom_bbox_ext(const uint8_t *g, size_t glen, int *w, int *h) {
 
 int g_mvt_scratch_peak;
 
+/* LS DEVIATION 5: a water polygon as its outline. A tile's polygons are cut
+   at the tile's edge (and a little past it), so an edge of the ring that runs
+   along or outside the tile's square is the cut, not a shore, and is left
+   out: filled water needed no such care, but its seams showed as lines. */
+static void ring_stroke(mvt_ctx *m, const carto_ipt *p, int n, carto_rgb c) {
+    const int x0 = px_at(m->ox), y0 = px_at(m->oy);
+    const int x1 = px_at(m->ox + m->extent * m->per_ext), y1 = px_at(m->oy + m->extent * m->per_ext);
+    for (int i = 0; i < n; ++i) {
+        const carto_ipt a = p[i], b = p[i + 1 < n ? i + 1 : 0];
+        if ((a.x <= x0 && b.x <= x0) || (a.x >= x1 && b.x >= x1) ||
+            (a.y <= y0 && b.y <= y0) || (a.y >= y1 && b.y >= y1)) continue;
+        carto_draw_line(m->fb, a.x, a.y, b.x, b.y, 1, c);
+    }
+}
+
 static void render_feature(mvt_ctx *m, const uint8_t *g, size_t glen,
                            int geomtype, int prio) {
     carto_rgb fillc, linec, ptc;
     int lw;
     feature_colors(m, prio, &fillc, &linec, &ptc, &lw);
+    /* LS DEVIATION 5: points draw nothing. A place is its name, and a square
+       per village is clutter on a line map. */
+    if (geomtype == 1) return;
 
     if ((geomtype == 2 || geomtype == 3) && m->per_ext > 0.0) {
         int bw, bh;
         geom_bbox_ext(g, glen, &bw, &bh);
-        float thresh = (geomtype == 2 ? CARTO_MIN_LINE_PX : CARTO_MIN_POLY_PX)
-                        / m->per_ext;
+        /* LS DEVIATION 5: as outlines, ponds smaller than a few pixels are
+           specks; left out. */
+        const float min_px = geomtype == 2 ? CARTO_MIN_LINE_PX
+            : (m->style->water_outline && m->category == CARTO_LAYER_WATER) ? 10.0f : CARTO_MIN_POLY_PX;
+        float thresh = min_px / m->per_ext;
         if ((float)bw < thresh && (float)bh < thresh) return;
     }
 
@@ -190,11 +234,11 @@ static void render_feature(mvt_ctx *m, const uint8_t *g, size_t glen,
             SCRATCH_MARK();
             if (geomtype == 2 && n >= 2) carto_polyline(m->fb, pts, n, lw, linec);
             n = 0;
-            for (uint32_t k = 0; k < count; ++k) {
-                cx += zigzag((uint32_t)rvarint(g, glen, &p));
-                cy += zigzag((uint32_t)rvarint(g, glen, &p));
-                int fx = (int)(m->ox + cx * m->per_ext);
-                int fy = (int)(m->oy + cy * m->per_ext);
+            for (uint32_t k = 0; k < count && p < glen; ++k) {
+                cx = step(cx, rvarint(g, glen, &p));
+                cy = step(cy, rvarint(g, glen, &p));
+                int fx = px_at(m->ox + cx * m->per_ext);
+                int fy = px_at(m->oy + cy * m->per_ext);
                 if (geomtype == 1) {
                     carto_fill_rect(m->fb, fx - 1, fy - 1, 3, 3, ptc);
                 } else if (n < m->scratch_cap) {
@@ -202,18 +246,21 @@ static void render_feature(mvt_ctx *m, const uint8_t *g, size_t glen,
                 }
             }
         } else if (id == 2) {
-            for (uint32_t k = 0; k < count; ++k) {
-                cx += zigzag((uint32_t)rvarint(g, glen, &p));
-                cy += zigzag((uint32_t)rvarint(g, glen, &p));
+            for (uint32_t k = 0; k < count && p < glen; ++k) {
+                cx = step(cx, rvarint(g, glen, &p));
+                cy = step(cy, rvarint(g, glen, &p));
                 if (n < m->scratch_cap) {
-                    pts[n].x = (int)(m->ox + cx * m->per_ext);
-                    pts[n].y = (int)(m->oy + cy * m->per_ext);
+                    pts[n].x = px_at(m->ox + cx * m->per_ext);
+                    pts[n].y = px_at(m->oy + cy * m->per_ext);
                     ++n;
                 }
             }
         } else if (id == 7) {
             SCRATCH_MARK();
-            if (geomtype == 3 && n >= 3) carto_fill_polygon(m->fb, pts, n, fillc);
+            if (geomtype == 3 && n >= 3) {
+                if (m->style->water_outline && m->category == CARTO_LAYER_WATER) ring_stroke(m, pts, n, fillc);
+                else carto_fill_polygon(m->fb, pts, n, fillc);
+            }
             n = 0;
         }
     }
@@ -222,16 +269,17 @@ static void render_feature(mvt_ctx *m, const uint8_t *g, size_t glen,
     #undef SCRATCH_MARK
 }
 
-static void feature_class(mvt_ctx *m, const uint8_t *tags, size_t taglen,
-                          char *out, int outcap) {
+/* Out of line: four callers, none of them per pixel. */
+static __attribute__((noinline)) void feature_class(mvt_ctx *m, const uint8_t *tags, size_t taglen,
+                          int key_idx, char *out, int outcap) {
     out[0] = 0;
-    if (m->class_key_idx < 0 || !tags) return;
+    if (key_idx < 0 || !tags) return;
     size_t tp = 0;
     while (tp < taglen) {
         uint32_t ki = (uint32_t)rvarint(tags, taglen, &tp);
         if (tp >= taglen) break;
         uint32_t vi = (uint32_t)rvarint(tags, taglen, &tp);
-        if ((int)ki == m->class_key_idx && (int)vi < m->nvals
+        if ((int)ki == key_idx && vi < (uint32_t)m->nvals
                 && m->val_len[vi] > 0) {
             int cl = m->val_len[vi];
             if (cl > outcap - 1) cl = outcap - 1;
@@ -255,7 +303,7 @@ static void feature_tags(mvt_ctx *m, const uint8_t *tags, size_t taglen,
         uint32_t ki = (uint32_t)rvarint(tags, taglen, &tp);
         if (tp >= taglen) break;
         uint32_t vi = (uint32_t)rvarint(tags, taglen, &tp);
-        if ((int)vi >= m->nvals) continue;
+        if (vi >= (uint32_t)m->nvals) continue;
 
         if ((int)ki == m->name_key_idx && m->val_len[vi] > 0 && !name[0]) {
             int cl = m->val_len[vi];
@@ -282,10 +330,10 @@ static int feature_point(mvt_ctx *m, const uint8_t *g, size_t glen,
         const uint32_t id = cmd & 7, count = cmd >> 3;
         if (id != 1) return 0;                    /* not a MoveTo: not a point */
         if (count < 1) return 0;
-        cx += zigzag((uint32_t)rvarint(g, glen, &p));
-        cy += zigzag((uint32_t)rvarint(g, glen, &p));
-        *out_x = (int)(m->ox + cx * m->per_ext);
-        *out_y = (int)(m->oy + cy * m->per_ext);
+        cx = step(cx, rvarint(g, glen, &p));
+        cy = step(cy, rvarint(g, glen, &p));
+        *out_x = px_at(m->ox + cx * m->per_ext);
+        *out_y = px_at(m->oy + cy * m->per_ext);
         return 1;
     }
     return 0;
@@ -343,6 +391,7 @@ static void render_feature_msg(mvt_ctx *m, const uint8_t *b, size_t len) {
             if (fn == 3) geomtype = (int)v;
         } else if (wt == 2) {
             uint64_t l = rvarint(b, len, &p);
+            SPAN(l, p, len);
             if (fn == 4) { geom = b + p; geomlen = (size_t)l; }
             else if (fn == 2) { tags = b + p; taglen = (size_t)l; }
             p += (size_t)l;
@@ -355,14 +404,33 @@ static void render_feature_msg(mvt_ctx *m, const uint8_t *b, size_t len) {
     int prio = CARTO_ROAD_PRIO_MIN;
     if (m->category == CARTO_LAYER_ROAD || m->category == CARTO_LAYER_LANDUSE) {
         char cls[40];
-        feature_class(m, tags, taglen, cls, (int)sizeof cls);
+        feature_class(m, tags, taglen, m->class_key_idx, cls, (int)sizeof cls);
         if (m->category == CARTO_LAYER_ROAD) {
             prio = carto_road_priority(cls);
+            if (prio > 0 && m->detail_key_idx >= 0) {
+                char det[24];
+                feature_class(m, tags, taglen, m->detail_key_idx, det, (int)sizeof det);
+                const int fine = carto_road_detail_priority(det);
+                if (fine) prio = fine;
+            }
             if (prio < m->min_road_prio)
                 return;
         } else if (!is_park_kind(cls)) {
             return;
         }
+    } else if (m->category == CARTO_LAYER_BOUNDARY) {
+        char cls[24];
+        feature_class(m, tags, taglen, m->class_key_idx, cls, (int)sizeof cls);
+        prio = carto_boundary_rank(cls);
+        /* Countries from the start, states from 4, counties from 8. */
+        if (!prio || (prio == 2 && m->zeff < 4.0f) || (prio == 1 && m->zeff < 8.0f)) return;
+    } else if (m->category == CARTO_LAYER_WATER && m->class_key_idx >= 0) {
+        char cls[24];
+        feature_class(m, tags, taglen, m->class_key_idx, cls, (int)sizeof cls);
+        if (!strcmp(cls, "swimming_pool") || !strcmp(cls, "fountain") || !strcmp(cls, "basin") ||
+            !strcmp(cls, "ditch") || !strcmp(cls, "drain") ||
+            (!strcmp(cls, "stream") && m->zeff < 11.5f))
+            return;
     }
 
     if (m->category == CARTO_LAYER_PLACE)
@@ -379,6 +447,7 @@ static void render_layer(mvt_ctx *m, const uint8_t *b, size_t len) {
     name[0] = 0;
     m->nvals = 0;
     m->class_key_idx = -1;
+    m->detail_key_idx = -1;
     m->name_key_idx = -1;
     m->minzoom_key_idx = -1;
     m->rank_key_idx = -1;
@@ -388,6 +457,7 @@ static void render_layer(mvt_ctx *m, const uint8_t *b, size_t len) {
         uint32_t fn = (uint32_t)(key >> 3), wt = (uint32_t)(key & 7);
         if (wt == 2) {
             uint64_t l = rvarint(b, len, &p);
+            SPAN(l, p, len);
             if (fn == 1) {
                 int cn = (int)l; if (cn > 79) cn = 79;
                 for (int i = 0; i < cn; ++i) name[i] = (char)b[p + i];
@@ -395,6 +465,8 @@ static void render_layer(mvt_ctx *m, const uint8_t *b, size_t len) {
             } else if (fn == 3) {
                 if (m->class_key_idx < 0 && key_is_class(b + p, (int)l))
                     m->class_key_idx = key_idx;
+                if (m->detail_key_idx < 0 && key_is_detail(b + p, (int)l))
+                    m->detail_key_idx = key_idx;
                 if (m->name_key_idx < 0 && key_is_name(b + p, (int)l))
                     m->name_key_idx = key_idx;
                 if (m->minzoom_key_idx < 0 && key_is_minzoom(b + p, (int)l))
@@ -422,7 +494,8 @@ static void render_layer(mvt_ctx *m, const uint8_t *b, size_t len) {
     }
 
     if (carto_classify_layer(name) != m->category) return;
-    m->per_ext = m->tile_px / (float)(extent > 0 ? extent : 4096);
+    m->extent = extent > 0 && extent <= 65536 ? extent : 4096;
+    m->per_ext = m->tile_px / (float)m->extent;
 
     p = 0;
     while (p < len) {
@@ -430,6 +503,7 @@ static void render_layer(mvt_ctx *m, const uint8_t *b, size_t len) {
         uint32_t fn = (uint32_t)(key >> 3), wt = (uint32_t)(key & 7);
         if (wt == 2) {
             uint64_t l = rvarint(b, len, &p);
+            SPAN(l, p, len);
             if (fn == 2) render_feature_msg(m, b + p, (size_t)l);
             p += (size_t)l;
         } else if (wt == 0) { rvarint(b, len, &p); }
@@ -466,6 +540,7 @@ void carto_mvt_render_category(carto_framebuffer *fb, const carto_style *style,
     m.oy = (float)oy;
     m.tile_px = tile_px;
     m.per_ext = tile_px / 4096.0;
+    m.extent = 4096;
     m.category = category;
     m.scratch = scratch;
     m.scratch_cap = scratch_cap;
@@ -476,6 +551,8 @@ void carto_mvt_render_category(carto_framebuffer *fb, const carto_style *style,
     m.road_scale = rs < 0.125 ? 0.125 : (rs > 0.55 ? 0.55 : rs);
     int mp = (int)(18.5 - zeff);
     m.min_road_prio = mp < 1 ? 1 : (mp > 10 ? 10 : mp);
+    m.zeff = (float)zeff;
+    m.detail_key_idx = -1;
 
     m.nvals = 0;
     m.class_key_idx = -1;
@@ -486,6 +563,7 @@ void carto_mvt_render_category(carto_framebuffer *fb, const carto_style *style,
         uint32_t fn = (uint32_t)(key >> 3), wt = (uint32_t)(key & 7);
         if (wt == 2) {
             uint64_t l = rvarint(tile, len, &p);
+            SPAN(l, p, len);
             if (fn == 3) render_layer(&m, tile + p, (size_t)l);
             p += (size_t)l;
         } else if (wt == 0) { rvarint(tile, len, &p); }

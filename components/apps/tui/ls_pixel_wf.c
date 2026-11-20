@@ -284,7 +284,5 @@ void ls_pwf_show(ls_pwf_t *p, tui_surface *sf, tui_rect cells)
     else
         ls_tui_image_ring(cells, p->img, p->w, p->h, 0, p->pos, 0, p->moved, p->serial);
     p->moved = 0;
-    for (int y = cells.y; y < cells.y + cells.h; y++)
-        for (int x = cells.x; x < cells.x + cells.w; x++)
-            tui_put_char(sf, cells, x, y, LS_TUI_IMAGE_CELL, 0);
+    tui_fill(sf, cells, LS_TUI_IMAGE_CELL, 0);
 }

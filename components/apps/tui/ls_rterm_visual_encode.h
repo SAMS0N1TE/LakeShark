@@ -53,6 +53,17 @@ static size_t visual_vectors(session_t *s,cell_sink *k,size_t budget) {
     v->vectors_hash=s_vectors_hash;v->vectors_full=false;
     return cost;
 }
+/* The board holds picture, placement or masks this viewer has not been sent
+   in full. Only what the next opportunity would really send counts: a still
+   screen is captured again for it (s_owed_picture), and that must end. */
+static bool visual_pending(const visual_view *v) {
+    if(!v->pixels || s_picture.unavailable || !s_picture.ready || !s_picture.src) return false;
+    if(v->invalidate || v->picture_serial!=s_picture.generation || v->remaining>0 || v->pending_columns ||
+       v->sw!=s_picture.sw || v->sh!=s_picture.sh || v->w!=s_picture.w || v->h!=s_picture.h ||
+       memcmp(&v->rect,&s_picture.rect,sizeof(v->rect))) return true;
+    if(s_picture.pan && !v->pan_active) return true;
+    return v->masks_hash!=s_picture.masks_hash && s_picture.masks_n>=3;
+}
 static void visual_render(session_t *s,cell_sink *k,bool full,bool input) {
     visual_view *v=&s->visual;
     int64_t now=esp_timer_get_time();

@@ -39,8 +39,8 @@
 
 #define HUE TUI_CYAN
 #define WHITE TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK)
-#define INK(h) TUI_ATTR((h) | TUI_BRIGHT, TUI_BLACK)
-#define SOFT(h) TUI_ATTR((h), TUI_BLACK)
+#define INK(h) ls_ink_hue(TUI_ATTR((h) | TUI_BRIGHT, TUI_BLACK))
+#define SOFT(h) ls_ink_hue(TUI_ATTR((h), TUI_BLACK))
 
 static EXT_RAM_BSS_ATTR ls_jrnd_row_t s_row[LS_JOURNAL_CAP];
 static EXT_RAM_BSS_ATTR uint8_t s_order[LS_JOURNAL_CAP], s_view[LS_JOURNAL_CAP];
@@ -381,8 +381,8 @@ static void draw_table(tui_surface *sf)
         const int k = s_t.first + row, y = b.y + row;
         const ls_jrnd_row_t *r = at(k);
         const bool on = k == s_sel;
-        if (on) ls_fill_dither(sf, tui_rect_make(b.x, y, b.w, 1), LS_DITHER_MEDIUM, HUE);
-        if (on) ls_box_put(sf, b, b.x, y, LS_SHAPE_RIGHT, WHITE);
+        (void)y;
+        ls_dui_table_row(sf, &s_t, row, on, !s_find_focus);
         ls_jrnd_cell(r, LS_JC_TITLE, text, sizeof(text));
         ls_dui_table_cell(sf, &s_t, COLS, LS_JC_TITLE, row, text, on ? WHITE : r->title[0] ? INK(HUE) : LS_ATTR_DIM);
         ls_dui_table_cell(sf, &s_t, COLS, LS_JC_WHEN, row, r->when, r->clock ? TUI_ATTR(TUI_WHITE, TUI_BLACK) : LS_ATTR_DIM);
@@ -488,7 +488,7 @@ void ls_journal_desk_draw(tui_surface *sf, tui_rect a, const ls_field_state_t *s
     s_hits.n = 0;
     ls_dui_context_claim(context);
     if (a.w < 50 || a.h < 12) {
-        ls_panel_notice(sf, a, "JOURNAL", "Enlarge the window", "the list keeps its place");
+        ls_panel_notice(sf, a, NULL, "Enlarge the window", "the list keeps its place");
         return;
     }
     rebuild(false);

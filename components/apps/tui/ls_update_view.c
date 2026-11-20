@@ -862,11 +862,11 @@ void ls_update_view_draw(tui_surface *sf, tui_rect a)
     if (s_c6_page) { ls_c6_view_draw(sf, a); return; }
     long st = -1;
     if (!get_int("ota.stage", &st)) {
-        ls_panel_notice(sf, a, "UPDATE", LS_TEXT(t_ls_update_view_updates_over_wifi_are, "Updates over WiFi are not in this build"), "ESC goes back");
+        ls_panel_notice(sf, a, NULL, LS_TEXT(t_ls_update_view_updates_over_wifi_are, "Updates over WiFi are not in this build"), "ESC goes back");
         return;
     }
     if (a.w < 30 || a.h < 18) {
-        ls_panel_notice(sf, a, "UPDATE", "Enlarge the pane", "ESC goes back");
+        ls_panel_notice(sf, a, NULL, "Enlarge the pane", "ESC goes back");
         return;
     }
     int64_t t = 0; /* Only byte acknowledgements advance scene motion. */
@@ -936,7 +936,7 @@ void ls_update_view_draw(tui_surface *sf, tui_rect a)
         { press ? press : "WAIT", busy ? DOING[st] : !press ? "trial" : ready ? bsub : st == LS_OTA_ST_AVAILABLE ? sub : "again",
           0, tappable, !press, false },
         { "CHANNEL", chan[0] ? chan : "?", 'h', false, busy || ready, !strcmp(chan, "STABLE") },
-        { "C6", "SD CARD", 'c', false, false, false },
+        { "C6", "RADIO FW", 'c', false, false, false },
     };
     ls_btn_bar_raised_row(sf, tui_rect_make(a.x, a.y, a.w, 5), btn, 4, -1);
 

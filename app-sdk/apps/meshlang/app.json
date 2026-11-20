@@ -1,0 +1,24 @@
+{
+  "category": "tools",
+  "group": "radio",
+  "version": "1.0",
+  "description": "The translator languages for MESHTASTIC, over Wi-Fi: Portuguese, French, German, Italian, Dutch, Polish, Russian and Ukrainian (155-198 KB each). Lists each with its size and where it is (on the card, a PACKS pack, or not there), downloads one from terminalbay.com, checks its size and sha256 against the pack list, writes it where MESHTASTIC reads it and reads it back, and removes one to free the card. Works on firmware 2.23.0 and later.",
+  "third_party": [
+    {
+      "name": "English Wiktionary, Portuguese, French, German, Italian, Dutch, Polish, Russian and Ukrainian entries (as extracted by wiktextract / kaikki.org, dumps of 2026-11-19): short English glosses and the inflection tables the rules are learned from, in the language files this app downloads (lang-<code>.bin)",
+      "license": "CC-BY-SA-4.0",
+      "url": "https://kaikki.org/dictionary/",
+      "use": "data"
+    },
+    {
+      "name": "FrequencyWords by Hermit Dave, pt_br, fr, de, it, nl, pl, ru and uk 2018 lists (from OpenSubtitles): which lemmas the language files keep",
+      "license": "CC-BY-SA-4.0",
+      "url": "https://github.com/hermitdave/FrequencyWords",
+      "use": "data"
+    }
+  ],
+  "references": [
+    "https://en.wiktionary.org/wiki/Wiktionary:Copyrights",
+    "https://creativecommons.org/share-your-work/licensing-considerations/compatible-licenses/"
+  ]
+}

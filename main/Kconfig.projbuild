@@ -56,11 +56,16 @@ menu "LakeShark"
     choice LS_TDP4_PANEL
         prompt "T-Display-P4 display SKU"
         depends on LS_BOARD_T_DISPLAY_P4
+        default LS_TDP4_PANEL_AUTO if LS_TDP4_UNIVERSAL
         default LS_TDP4_PANEL_RM69A10
         help
             The T-Display-P4 ships with one of two MIPI-DSI panels. They differ
-            in resolution, timings, brightness control and touch controller,
-            so the image must be built for the one fitted.
+            in resolution, timings, brightness control and touch controller.
+            Both drivers are in every image; "detect" reads the panel's ID at
+            boot, the other two choices force one (board/ls_profile.h).
+
+        config LS_TDP4_PANEL_AUTO
+            bool "Detect at boot (AMOLED RM69A10 or TFT HI8561)"
 
         config LS_TDP4_PANEL_RM69A10
             bool "4.1\" AMOLED, RM69A10 568x1232, GT9895 touch"
@@ -79,9 +84,22 @@ menu "LakeShark"
             driver and the apps that need a dongle (CELL, CATCH, ACARS), and
             spends the memory on the LR2021. The image refuses SX1262 boards.
 
+    config LS_TDP4_UNIVERSAL
+        bool "T-Display-P4 universal image: radio, panel and edition found at boot"
+        depends on LS_BOARD_T_DISPLAY_P4 && !LS_LR2021_ONLY
+        default n
+        help
+            One image for the SX1262 and LR2021 boards with either panel
+            (boards/t_display_p4_universal.defaults). The LoRa part and the
+            panel are probed at boot; an LR2021 board leaves the USB host off
+            unless 'board usb on' asks for it, as LakeShark LR does; the
+            network edition's large capture buffers are the 'board net on'
+            setting. Updates from /tdp4u/ as board T-Display-P4-U, and from
+            the hardware's old folder while /tdp4u/ has nothing.
+
     config LS_EDITION_NET
         bool "LakeShark NET: the network edition (its own update folder)"
-        depends on LS_BOARD_T_DISPLAY_P4 && !LS_LR2021_ONLY && !LS_TDP4_PANEL_HI8561
+        depends on LS_BOARD_T_DISPLAY_P4 && !LS_LR2021_ONLY && !LS_TDP4_PANEL_HI8561 && !LS_TDP4_UNIVERSAL
         default n
         help
             Set by boards/t_display_p4_net.defaults. The image updates from
@@ -334,6 +352,28 @@ menu "LakeShark"
             'term ssh on' serves the screen over SSH (libssh, about 230 KB).
             Off, telnet and the web screen still work; the T-Display builds
             turn it off to fit their app slot.
+
+    config LS_APP_MODULES
+        bool "Keep large built-in apps in the internal app storage"
+        default n
+        help
+            The apps listed in components/apps/modules/modules.json are built
+            as firmware modules (<id>.lsm) and stored in the storage
+            partition (/spiffs/apps) instead of the app slot. They look and
+            behave as built-ins and need no SD card; the first open loads the
+            module into PSRAM. For boards whose app slot is the limit (the
+            T-Display's 4.5 MB). Off: everything is compiled in as before.
+
+    config LS_DEV_CONSOLE
+        bool "Developer and bench console verbs"
+        default y
+        help
+            Console verbs and sub-verbs that only a developer or a bench
+            script uses: benchmarks, self-tests, stall tests, raw capture
+            dumps, trace and timing printouts and synthetic test sources.
+            The T-Display release builds turn them off for app space; every
+            user-facing verb and the crash/crumb/safemode/bootlog/report/
+            version/app/sd/wifi/packs/fetch/tui/term/vol/mute/audio set stay.
 
     config EXAMPLE_ENABLE_SD_CARD
         bool "Enable SD Card"

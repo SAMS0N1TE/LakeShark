@@ -202,6 +202,27 @@ typedef struct {
 #define LAP_ICON_PX(...) \
     LAP_ICON_PX_ATTR const lap_icon_px_t lap_icon_px = { { 'L', 'I', 'C', '1' }, { __VA_ARGS__ } }
 
+/* The HOME tab the app's tile sits on, beside the board's own apps, with an
+   [SD] mark: LAP_GROUP(LAP_GROUP_RADIO). Optional, and app.json's "group"
+   writes it for you (lap.py). Without it the board goes by the capabilities:
+   radio to RADIO, network to SYSTEM, anything else to USER. A board that
+   predates it ignores it and shows the app in USER. */
+#define LAP_GROUP_RADIO  1
+#define LAP_GROUP_FIELD  2
+#define LAP_GROUP_SYSTEM 3
+#define LAP_GROUP_USER   4
+typedef struct {
+    char magic[4];                          /* "LGP1" */
+    uint8_t group, pad[3];                  /* LAP_GROUP_* */
+} lap_group_t;
+#if defined(__riscv)
+#define LAP_GROUP_ATTR __attribute__((section(".lap_group"), used, retain, aligned(4)))
+#elif !defined(LAP_GROUP_ATTR)
+#define LAP_GROUP_ATTR static __attribute__((used))
+#endif
+#define LAP_GROUP(g) \
+    LAP_GROUP_ATTR const lap_group_t lap_group = { { 'L', 'G', 'P', '1' }, (g), { 0, 0, 0 } }
+
 /* The app's descriptor. The loader reads the fields up to icon_art straight
    from the file, before any code runs, to put the tile on HOME. */
 typedef struct {
@@ -322,7 +343,9 @@ void     lap_exit(void);        /* back to HOME after this callback returns */
 /* ---- the radio, read only ---------------------------------------------- */
 
 /* The same named values .lsapp layouts read: p25.freq, fm.level, adsb.aircraft,
-   sys.uptime ... (USER_APPS.md has the list). False when there is no value. */
+   sys.uptime ... (USER_APPS.md has the list). False when there is no value.
+   "ui.cutout" (text only) is the TFT's camera hole as "x,y,w,h" in the
+   app's own cells, false on a panel without one: keep text short of it. */
 bool lap_value_text(const char *path, char *out, size_t cap);
 bool lap_value_float(const char *path, float *out);
 

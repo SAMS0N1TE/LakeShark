@@ -22,7 +22,7 @@ if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/private_console.cpp)
 endif()
 
 idf_component_register(
-    SRCS headless_main.c compact_ui.cpp sx1262_console.cpp ${LS_PRIVATE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c ls_sweep_runtime.c ls_ota.c ls_p25_packs.c ls_c6_update.c ls_c6_core.c ls_hosted_promisc.c flipper_link.c flipper_link_telemetry.c flipper_link_aux.c ${LS_BLE_SRC} bsod.c ls_hosted_board.c panic_crumb.c cache_sync_lock.c console_lock.c console_fast.c ls_console_text.c
+    SRCS headless_main.c compact_ui.cpp sx1262_console.cpp ${LS_PRIVATE_SRC} ls_wifi.c ls_wifi_sta_core.c ls_wireless.c ls_sweep_runtime.c ls_ota.c ls_fetch.c ls_packs.c ls_p25_packs.c ls_hub.c ls_report.c ls_locker.c ls_chat.c ls_c6_update.c ls_c6_core.c ls_hosted_promisc.c flipper_link.c flipper_link_telemetry.c flipper_link_aux.c ${LS_BLE_SRC} bsod.c ls_hosted_board.c panic_crumb.c cache_sync_lock.c console_lock.c console_fast.c ls_console_text.c
     INCLUDE_DIRS .
     PRIV_REQUIRES ls_textpack console esp_driver_uart esp_driver_gpio esp_timer lakeshark apps meshcore espressif__esp_hosted
                   esp_eth esp_netif esp_event esp_http_client app_update esp_app_format mbedtls nvs_flash spi_flash bt ${LS_BLE_REQ})
@@ -33,6 +33,9 @@ target_sources(${COMPONENT_LIB} PRIVATE ls_eth.c)
 # headless main code does not, so the linker would pass main before
 # anything asked for it.
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-u ls_wireless_get")
+# The same for the services apps call: the downloader and the data packs.
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-u ls_fetch_start" "-u ls_packs_get_here"
+    "-u ls_report_send" "-u ls_locker_pair" "-u ls_chat_join")
 idf_component_get_property(LS_HOSTED_DIR espressif__esp_hosted COMPONENT_DIR)
 target_include_directories(${COMPONENT_LIB} PRIVATE
     "${LS_HOSTED_DIR}/host/port/esp/freertos/include")
@@ -73,7 +76,13 @@ endif()
 # entirely printf.
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wformat -Wno-format-truncation)
 
-spiffs_create_partition_image(storage ../spiffs FLASH_IN_PROJECT)
+# The storage partition is also the internal app storage: with firmware
+# modules its image is spiffs/ plus apps/<id>.lsm, staged by build_modules.py.
+if(CONFIG_LS_APP_MODULES)
+    spiffs_create_partition_image(storage ${CMAKE_BINARY_DIR}/storage_root FLASH_IN_PROJECT DEPENDS ls_modules_gen)
+else()
+    spiffs_create_partition_image(storage ../spiffs FLASH_IN_PROJECT)
+endif()
 
 if(CONFIG_LS_BLE_HEAD)
     target_sources(${COMPONENT_LIB} PRIVATE ble_link_legacy.c)

@@ -8,6 +8,8 @@
 #include "ls_version.h"
 #include "ls_safe_mode.h"
 #include "../../ls_tui_touch.h"
+#include "../../ls_deskui.h"
+#include "../../ls_input_ev.h"
 #include "../../ls_tui_ui.h"
 #include "../../ls_radio_panel.h"
 #include "../../ls_radio_select.h"
@@ -38,6 +40,8 @@
 #include "board/ls_gauge.h"
 #include "ls_mesh.h"
 #include "ls_textpack.h"
+#include "../../ls_netui.h"
+#include "ls_hub.h"
 
 /* Which number just moved, as opposed to which has ever moved. */
 
@@ -96,10 +100,22 @@ static void row(tui_surface *sf, tui_rect a, int y, const char *label,
     /* Inverse of whatever the row already was, so the highlight does not
        throw away what the colour was telling you. */
     const uint8_t attr = (level >= 128)
-        ? TUI_ATTR(TUI_BLACK, (uint8_t)(va & 0x0F))
+        ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, (uint8_t)(va & 0x0F)))
         : va;
 
     tui_rect inside = tui_rect_make(a.x + 1, a.y + 1, a.w - 2, a.h - 2);
+    /* A value wider than the panel loses whole fields (they are set apart by
+       two spaces), not the last digits of one. */
+    char cut[96];
+    const int room = a.w - 16;
+    if (room > 0 && (int)strlen(value) > room) {
+        snprintf(cut, sizeof(cut), "%s", value);
+        if (room < (int)sizeof(cut)) cut[room] = 0;
+        char *gap = NULL;
+        for (char *p = strstr(cut, "  "); p; p = strstr(p + 1, "  ")) gap = p;
+        if (gap) *gap = 0;
+        value = cut;
+    }
     tui_put_str(sf, inside, a.x + 15, a.y + y, value, attr);
 }
 
@@ -108,8 +124,8 @@ static void row(tui_surface *sf, tui_rect a, int y, const char *label,
    visible from across a bench. */
 static uint8_t count_attr(uint32_t n)
 {
-    return n ? TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)
-             : TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
+    return n ? ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK))
+             : ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
 }
 
 /* A row's own history, drawn to the right of its number. */
@@ -139,7 +155,7 @@ static void trend_row(tui_surface *sf, tui_rect a, int y, const ls_trend_t *t,
         const uint8_t hue = lvl >= 4 ? (TUI_GREEN | TUI_BRIGHT)
                                      : (TUI_YELLOW | TUI_BRIGHT);
         tui_put_char(sf, a, x1 - 1 - i, a.y + y, LS_TUI_TRACE(lvl),
-                     TUI_ATTR(hue, TUI_BLACK));
+                     ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
     }
 }
 
@@ -186,6 +202,7 @@ static tui_rect      s_band[D__COUNT];
 static tui_rect      s_back_hit = { 0, -1, 0, 0 };
 static tui_rect      s_next_hit = { 0, -1, 0, 0 };
 static tui_rect      s_err_hit  = { 0, -1, 0, 0 };
+static tui_rect      s_rep_hit  = { 0, -1, 0, 0 };   /* SEND REPORT, under the error log */
 
 /* The error log page: the saved records newest first, then this run's own
    errors and warnings so far. A record is read from flash when its page is
@@ -325,9 +342,18 @@ static void check_sd(void)
     }
 }
 
-static void on_enter(void) { s_detail_us = 0; }
+static void dk_enter(void);
+/* The hint row: DIAG's keys, or the report sheet's while it is up. */
+#define DIAG_HINT "TAP A BLOCK for detail  E M A R  L errors  P report  T alerts  S card  ESC back"
+EXT_RAM_BSS_ATTR static char s_hint[96];
+static void hint_follow(void)
+{
+    snprintf(s_hint, sizeof(s_hint), "%s", ls_report_sheet_active() ? LS_REPORT_SHEET_HINT : DIAG_HINT);
+}
 
-static bool on_key(ls_tk_t key, char ch)
+static void on_enter(void) { s_detail_us = 0; dk_enter(); hint_follow(); }
+
+static bool page_key(ls_tk_t key, char ch)
 {
 
     if (key == LS_TK_ESC || key == LS_TK_BACKSPACE) {
@@ -350,6 +376,7 @@ static bool on_key(ls_tk_t key, char ch)
     case 'a': case 'A': s_detail = D_ALERTS;   s_detail_us = 0; return true;
     case 'r': case 'R': s_detail = D_SENSORS;  s_detail_us = 0; return true;
     case 'l': case 'L': err_open(); return true;
+    case 'p': case 'P': ls_report_sheet_open(); return true;
     default: break;
     }
     if (s_detail == D_ERRORS) {
@@ -366,7 +393,7 @@ static bool hit(tui_rect r, int col, int row)
            col >= r.x && col < r.x + r.w;
 }
 
-static bool on_touch(int col, int row)
+static bool page_touch(int col, int row)
 {
     /* BACK first, and while a detail is open nothing else is live -
        the buttons and bands underneath were drawn by the list, which is not
@@ -387,6 +414,7 @@ static bool on_touch(int col, int row)
     if (hit(s_test_hit, col, row)) { self_test(); return true; }
     if (hit(s_sd_hit, col, row))   { check_sd();  return true; }
     if (hit(s_err_hit, col, row))  { err_open();  return true; }
+    if (hit(s_rep_hit, col, row))  { ls_report_sheet_open(); return true; }
 
     /* The blocks, last, so a button sitting inside one still wins. */
     for (int i = 1; i < D__COUNT; i++)
@@ -1009,9 +1037,9 @@ static void detail_errors(tui_surface *sf, tui_rect a, uint8_t val,
 static void draw_detail(tui_surface *sf, tui_rect a, int64_t now_us)
 {
     const uint8_t frame = TUI_ATTR(TUI_CYAN, TUI_BLACK);
-    const uint8_t val   = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t good  = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t bad   = TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t val   = ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    const uint8_t good  = ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    const uint8_t bad   = ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
     const uint8_t dim   = TUI_ATTR(TUI_WHITE, TUI_BLACK);
 
     if (s_detail == D_SENSORS || s_detail == D_ALERTS || s_detail == D_ENDPOINT)
@@ -1082,9 +1110,9 @@ static void draw_detail(tui_surface *sf, tui_rect a, int64_t now_us)
 static void draw_list(tui_surface *sf, tui_rect left)
 {
     const uint8_t frame = TUI_ATTR(TUI_CYAN, TUI_BLACK);
-    const uint8_t val   = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t good  = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t bad   = TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t val   = ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    const uint8_t good  = ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    const uint8_t bad   = ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
     const uint8_t dim   = TUI_ATTR(TUI_WHITE, TUI_BLACK);
     char buf[48], b2[24];
 
@@ -1380,10 +1408,10 @@ static void draw_list(tui_surface *sf, tui_rect left)
                                          i < fill ? LS_TUI_BLOCK_FULL
                                                   : LS_TUI_TRACE(1),
                                          i < fill
-                                            ? TUI_ATTR(pct < 20 ? TUI_RED
+                                            ? ls_ink_hue(TUI_ATTR(pct < 20 ? TUI_RED
                                                      : pct < 50 ? TUI_YELLOW
                                                                 : TUI_GREEN,
-                                                       TUI_BLACK)
+                                                       TUI_BLACK))
                                             : LS_ATTR_FAINT);
                     }
                 }
@@ -1398,12 +1426,12 @@ static void draw_list(tui_surface *sf, tui_rect left)
 
 }
 
-static void draw(tui_surface *sf, tui_rect area)
+static void draw_page(tui_surface *sf, tui_rect area)
 {
     const uint8_t frame = TUI_ATTR(TUI_CYAN, TUI_BLACK);
-    const uint8_t val   = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t good  = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t bad   = TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t val   = ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    const uint8_t good  = ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    const uint8_t bad   = ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
     const uint8_t dim   = TUI_ATTR(TUI_WHITE, TUI_BLACK);
     char buf[48], b2[24];
 
@@ -1436,6 +1464,7 @@ static void draw(tui_surface *sf, tui_rect area)
         s_band[D_ERRORS]   = tui_rect_make(0, -1, 0, 0);  /* the row on the right */
         s_band[D_TRIAL]    = tui_rect_make(0, -1, 0, 0);
         s_err_hit          = tui_rect_make(0, -1, 0, 0);  /* until it is drawn */
+        s_rep_hit          = tui_rect_make(0, -1, 0, 0);  /* and SEND REPORT, gone on a short pane */
         /* A band that does not fit the pane is not offered: the rows it
            would open on are not being drawn either. */
         for (int i = 1; i < D__COUNT; i++)
@@ -1596,6 +1625,14 @@ static void draw(tui_surface *sf, tui_rect area)
                 }
             }
         }
+        /* SEND REPORT: the log above, the board's state, a note, to the team. */
+        if (s_detail == D_NONE && 25 <= right.h - 5) {
+            const tui_rect rep = tui_rect_make(right.x + 1, right.y + 22, right.w - 2, 3);
+            const bool crash = ls_report_offer_pending();
+            ls_panel_box(sf, rep, NULL, crash ? TUI_YELLOW | TUI_BRIGHT : TUI_MAGENTA | TUI_BRIGHT);
+            row(sf, right, 23, "P REPORT", crash ? "a crash is waiting: send it" : "send this to the team", crash ? bad : val);
+            s_rep_hit = rep;
+        } else s_rep_hit = tui_rect_make(0, -1, 0, 0);
     }
 
     uint32_t us = 0; int cells = 0;
@@ -1628,13 +1665,236 @@ static void draw(tui_surface *sf, tui_rect area)
         taps ? good : reads ? val : dim);
 }
 
+/* ------------------------------------------------- the desk's layout -- */
+
+/* In a desk window DIAG is a program a mouse drives: a menu bar (Tools,
+   View, then the desk's own titles), its sections listed down the left with
+   the one that is open on the selection bar, and a menu under the right
+   button. The page itself is the handheld's, drawn in what those leave, so
+   every number and every block is the same code on both. Only a build with
+   the desk carries any of it. */
+#if LS_TUI_HAS_COMPACT
+#define DK_HUE   TUI_CYAN
+#define DK_NAV_W 26
+#define DK_NMENUS 2
+enum { DC_TEST = 1, DC_SD, DC_ERR_NEXT, DC_ERR_CLEAR, DC_REPORT, DC_SECTION = 16 };
+static const char *const DK_MENUS[DK_NMENUS] = {"Tools", "View"};
+static const struct { uint8_t d; char key; const char *name; } DK_SECTION[] = {
+    {D_NONE, 'O', "Overview"},          {D_ENDPOINT, 'E', "Endpoint"},
+    {D_MEMORY, 'M', "Memory"},          {D_ALERTS, 'A', "Alerts"},
+    {D_SENSORS, 'R', "Radios and sensors"}, {D_ERRORS, 'L', "Error log"},
+    {D_TRIAL, 0, "Receiver trial"},
+};
+#define DK_NSECTION ((int)(sizeof(DK_SECTION) / sizeof(DK_SECTION[0])))
+static EXT_RAM_BSS_ATTR ls_dui_menu_t s_dk_menu;
+static EXT_RAM_BSS_ATTR int16_t s_dk_bar_x[DK_NMENUS + 1];
+static EXT_RAM_BSS_ATTR tui_rect s_dk_bar, s_dk_nav, s_dk_item[DK_NSECTION];
+static bool s_dk_on;                    /* the last frame was the desk's layout */
+
+static void dk_enter(void) { s_dk_menu.pop.open = false; s_dk_on = false; }
+
+static int dk_section(void)
+{
+    for (int i = 0; i < DK_NSECTION; i++) if (DK_SECTION[i].d == (uint8_t)s_detail) return i;
+    return 0;
+}
+
+static void dk_go(int i)
+{
+    if (i < 0) i = 0;
+    if (i >= DK_NSECTION) i = DK_NSECTION - 1;
+    s_clear_armed = false;
+    if (DK_SECTION[i].d == D_ERRORS) { if (s_detail != D_ERRORS) err_open(); return; }
+    s_detail = (diag_detail_t)DK_SECTION[i].d;
+    s_detail_us = 0;
+}
+
+static void dk_sections(void)
+{
+    for (int i = 0; i < DK_NSECTION; i++) {
+        const char key[2] = {DK_SECTION[i].key, 0};
+        ls_dui_menu_item(&s_dk_menu, DK_SECTION[i].name, key[0] ? key : NULL, DC_SECTION + i,
+                         i == dk_section() ? LS_DUI_CHECK : 0);
+    }
+}
+
+static void dk_tools(void)
+{
+    const int log = s_detail == D_ERRORS ? 0 : LS_DUI_OFF;
+    ls_dui_menu_item(&s_dk_menu, "Test alert", "T", DC_TEST, 0);
+    ls_dui_menu_item(&s_dk_menu, "Check the SD card", "S", DC_SD, 0);
+    ls_dui_menu_item(&s_dk_menu, "Send a report...", "P", DC_REPORT, 0);
+    ls_dui_menu_rule(&s_dk_menu);
+    ls_dui_menu_item(&s_dk_menu, "Next error record", "N", DC_ERR_NEXT, log);
+    ls_dui_menu_item(&s_dk_menu, s_clear_armed ? "Clear the error log: confirm" : "Clear the error log...", "C",
+                     DC_ERR_CLEAR, log);
+}
+
+static void dk_open(int which)
+{
+    if (which < 0) which = DK_NMENUS - 1;
+    if (which >= DK_NMENUS) which = 0;
+    ls_dui_menu_begin(&s_dk_menu);
+    if (which == 0) dk_tools();
+    else dk_sections();
+    ls_dui_menu_open(&s_dk_menu, s_dk_bar_x[which], s_dk_bar.y + 1, which, DK_HUE);
+}
+
+/* The right button, anywhere in the window: where to go, then what to run. */
+static bool dk_context(int col, int row)
+{
+    ls_dui_menu_begin(&s_dk_menu);
+    ls_dui_menu_item(&s_dk_menu, "DIAG", NULL, -1, LS_DUI_HEAD);
+    dk_sections();
+    ls_dui_menu_rule(&s_dk_menu);
+    dk_tools();
+    ls_dui_menu_open(&s_dk_menu, col, row, -1, DK_HUE);
+    return true;
+}
+
+static void dk_result(int r)
+{
+    if (r == LS_DUI_PREV) dk_open(s_dk_menu.pop.bar - 1);
+    else if (r == LS_DUI_NEXT) dk_open(s_dk_menu.pop.bar + 1);
+    else if (r == DC_TEST) self_test();
+    else if (r == DC_SD) check_sd();
+    else if (r == DC_REPORT) ls_report_sheet_open();
+    else if (r == DC_ERR_NEXT) err_step(1);
+    else if (r == DC_ERR_CLEAR) err_clear();
+    else if (r >= DC_SECTION) dk_go(r - DC_SECTION);
+}
+
+static bool dk_key(ls_tk_t key, char ch)
+{
+    if (s_dk_menu.pop.open) { dk_result(ls_dui_popup_key(&s_dk_menu.pop, key, ch)); return true; }
+    const char low = ch >= 'A' && ch <= 'Z' ? (char)(ch + 32) : ch;
+    if (key == LS_TK_CHAR && (ls_tui_input_mods() & LS_IMOD_ALT)) {
+        if (low == 't') dk_open(0);
+        else if (low == 'v') dk_open(1);
+        else return false;
+        return true;
+    }
+    if (key == LS_TK_UP) { dk_go(dk_section() - 1); return true; }
+    if (key == LS_TK_DOWN) { dk_go(dk_section() + 1); return true; }
+    if (key == LS_TK_HOME || (key == LS_TK_CHAR && low == 'o')) { dk_go(0); return true; }
+    if (key == LS_TK_END) { dk_go(DK_NSECTION - 1); return true; }
+    return false;
+}
+
+static bool dk_touch(int col, int row)
+{
+    if (s_dk_menu.pop.open) {
+        const int bar = s_dk_menu.pop.bar;
+        const int r = ls_dui_popup_tap(&s_dk_menu.pop, col, row);
+        if (r == LS_DUI_CLOSED && row == s_dk_bar.y) {
+            const int i = ls_dui_bar_hit(s_dk_bar_x, DK_NMENUS, col);
+            if (i >= 0 && i != bar) dk_open(i);
+        } else dk_result(r);
+        return true;
+    }
+    if (row == s_dk_bar.y) {
+        const int i = ls_dui_bar_hit(s_dk_bar_x, DK_NMENUS, col);
+        if (i >= 0) dk_open(i);
+        return true;
+    }
+    for (int i = 0; i < DK_NSECTION; i++)
+        if (tui_rect_contains(s_dk_item[i], col, row)) { dk_go(i); return true; }
+    return tui_rect_contains(s_dk_nav, col, row);
+}
+
+/* The bar and the list; answers the room the page has. */
+static tui_rect dk_draw(tui_surface *sf, tui_rect area)
+{
+    s_dk_bar = tui_rect_make(area.x, area.y, area.w, 1);
+    ls_dui_bar_draw(sf, s_dk_bar, DK_MENUS, DK_NMENUS, s_dk_menu.pop.open ? s_dk_menu.pop.bar : -1, DK_HUE, s_dk_bar_x);
+    s_dk_nav = tui_rect_make(area.x, area.y + 1, DK_NAV_W, area.h - 1);
+    char note[24];
+    snprintf(note, sizeof(note), "%d of %d", dk_section() + 1, DK_NSECTION);
+    const tui_rect in = ls_dui_pane(sf, s_dk_nav, "SECTIONS", note, DK_HUE, true);
+    const int sel = dk_section();
+    for (int i = 0; i < DK_NSECTION; i++) {
+        const tui_rect line = tui_rect_make(in.x, in.y + i, in.w, i < in.h ? 1 : 0);
+        s_dk_item[i] = line;
+        if (!line.h) continue;
+        const uint8_t band = ls_dui_line(sf, line, i == sel, true);
+        tui_put_char(sf, line, in.x, line.y, i == sel ? '>' : ' ',
+                     band ? band : TUI_ATTR(DK_HUE | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, line, in.x + 2, line.y, DK_SECTION[i].name,
+                    band ? band : ls_ink(LS_INK_TEXT, TUI_ATTR(TUI_WHITE, TUI_BLACK)));
+        if (DK_SECTION[i].key)
+            tui_put_char(sf, line, in.x + in.w - 2, line.y, DK_SECTION[i].key,
+                         band ? band : ls_ink(LS_INK_ACCEL, TUI_ATTR(DK_HUE | TUI_BRIGHT, TUI_BLACK)));
+    }
+    /* Under the list: what the keys do here, and the probe that is DIAG's own mark. */
+    static const char *const HOW[] = {"Up/Down  section", "Alt+T    tools", "Alt+V    view", "Esc      overview"};
+    int y = in.y + DK_NSECTION + 1;
+    if (y + 5 < in.y + in.h) {
+        for (int x = in.x; x < in.x + in.w; x++)
+            tui_put_char(sf, in, x, y, '-', ls_ink(LS_INK_RULE, LS_ATTR_FAINT));
+        y++;
+        for (unsigned i = 0; i < sizeof(HOW) / sizeof(HOW[0]); i++)
+            tui_put_str(sf, in, in.x + 1, y++, HOW[i], ls_ink(LS_INK_DIM, LS_ATTR_DIM));
+    }
+    static const char *const PROBE[] = {
+        "   .---.         ",
+        "  ( o o )--.     ",
+        "   '---'   |  /\\ ",
+        "     |     '-/  \\",
+        "    =+=    probe ",
+    };
+    const int art = (int)(sizeof(PROBE) / sizeof(PROBE[0]));
+    if (in.y + in.h - art > y + 1)
+        for (int i = 0; i < art; i++)
+            tui_put_str(sf, in, in.x + 2, in.y + in.h - art + i, PROBE[i],
+                        TUI_ATTR(i < 2 ? (DK_HUE | TUI_BRIGHT) : i < 4 ? TUI_MAGENTA : LS_FAINT_FG, TUI_BLACK));
+    return tui_rect_make(area.x + DK_NAV_W, area.y + 1, area.w - DK_NAV_W, area.h - 1);
+}
+#else
+static void dk_enter(void) {}
+#endif
+
+static void draw(tui_surface *sf, tui_rect area)
+{
+    hint_follow();
+    if (ls_report_sheet_active()) { ls_report_sheet_draw(sf, area); return; }
+#if LS_TUI_HAS_COMPACT
+    s_dk_on =ls_tui_compact() && area.w >= 100 && area.h >= 20;
+    if (s_dk_on) {
+        ls_dui_context_claim(dk_context);
+        draw_page(sf, dk_draw(sf, area));
+        ls_dui_popup_draw(sf, area, &s_dk_menu.pop);
+        return;
+    }
+    s_dk_menu.pop.open = false;
+#endif
+    draw_page(sf, area);
+}
+
+static bool on_key(ls_tk_t key, char ch)
+{
+    if (ls_report_sheet_active()) return ls_report_sheet_key(key, ch);
+#if LS_TUI_HAS_COMPACT
+    if (s_dk_on && dk_key(key, ch)) return true;
+#endif
+    return page_key(key, ch);
+}
+
+static bool on_touch(int col, int row)
+{
+    if (ls_report_sheet_active()) return ls_report_sheet_touch(col, row);
+#if LS_TUI_HAS_COMPACT
+    if (s_dk_on && dk_touch(col, row)) return true;
+#endif
+    return page_touch(col, row);
+}
+
 const ls_tui_screen_t ls_scr_diag = {
     .name = "DIAG",
     /* What the colours mean, said accurately. "RED is moving" read
        as "red while it is moving", and these counters are cumulative - red
        means it moved at some point, which is a different and more useful
        claim. The highlight is the one that means now. */
-    .hint = "TAP A BLOCK for detail  E M A R  L errors  T alerts  S card  ESC back",
+    .hint = s_hint,
     .enter = on_enter,
     .leave = NULL,
     .draw = draw,

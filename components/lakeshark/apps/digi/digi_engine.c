@@ -943,6 +943,7 @@ static int cmd_digi(int argc, char **argv)
     if (!strcmp(a, "trim") && argc > 2) { digi_set_time_trim((float)atof(argv[2])); printf("digi: trim %+.2f s\n", s_trim); return 0; }
     if (!strcmp(a, "lag") && argc > 2) { digi_set_gps_lag_ms(atoi(argv[2])); LS_PRINTF(t_digi_engine_digi_gps_lag_d, "digi: gps lag %d ms\n", s_gps_lag); return 0; }
     if (!strcmp(a, "clear")) { digi_clear(); return 0; }
+#if CONFIG_LS_DEV_CONSOLE
     if ((!strcmp(a, "selftest") || (!strcmp(a, "wav") && argc > 2))) {
         if (!s_done) s_done = xSemaphoreCreateBinary();
         if (s_task) { printf("digi: stop the receiver first (digi stop)\n"); return 1; }
@@ -959,10 +960,14 @@ static int cmd_digi(int argc, char **argv)
         xSemaphoreTake(s_done, pdMS_TO_TICKS(60000));
         return 0;
     }
+#endif
     printf("digi status | start [ft8|ft4|wspr] | stop | mode <m> | band <20m> | test [on|off]\n"
            "     selftest [ft8|ft4|wspr] | wav <file.wav> [ft8|ft4|wspr] | log [on|off] | trim <s> | lag <ms> | clear\n");
     return 1;
 }
+
+/* The verb itself, for a firmware that keeps DIGI in a module (ls_mod_stubs.c). */
+int digi_console_command(int argc, char **argv) { return cmd_digi(argc, argv); }
 
 void digi_console_register(void)
 {

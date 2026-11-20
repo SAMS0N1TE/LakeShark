@@ -25,6 +25,7 @@ static bool s_off         = false;
 static int  s_pwr_cap     = 100;
 static int  s_pwr_dim_s   = 0;
 static int  s_pwr_off_s   = 0;
+static int  s_off_after_s = 0;
 
 /* The keyboard backlight follows the screen down and back, when asked to,
    and always under a power mode. A screen turned off takes it too: the
@@ -64,15 +65,18 @@ static void apply_now(int applied)
 static void dim_policy(uint32_t idle_ms)
 {
     if (s_off) return;
-    if (s_pwr_off_s > 0 && idle_ms > (uint32_t)s_pwr_off_s * 1000u) {
-        display_ctl_set_off(true);
-        return;
-    }
     /* A power mode's dim time is a ceiling: it turns auto-dim on, and a
        shorter time of the user's own still wins. */
     const bool dim_on = s_autodim || s_pwr_dim_s > 0;
     int dim_s = s_autodim ? s_timeout_s : s_pwr_dim_s;
     if (s_pwr_dim_s > 0 && s_pwr_dim_s < dim_s) dim_s = s_pwr_dim_s;
+    /* Dark: the power mode's time, or the user's own once dimmed. */
+    if ((s_pwr_off_s > 0 && idle_ms > (uint32_t)s_pwr_off_s * 1000u) ||
+        (s_autodim && s_off_after_s > 0 &&
+         idle_ms > (uint32_t)(dim_s + s_off_after_s) * 1000u)) {
+        display_ctl_set_off(true);
+        return;
+    }
     if (display_dim_due(dim_on, dim_s, idle_ms)) {
         if (!s_dimmed) { s_dimmed = true; keypad_follow(); }
     } else if (s_dimmed) {
@@ -124,11 +128,20 @@ void display_ctl_tick(void)
     const int64_t idle_us = now - s_last_input_us;
     dim_policy(idle_us > 0 ? (uint32_t)(idle_us / 1000) : 0u);
 }
+
+unsigned display_ctl_idle_s(void)
+{
+    const int64_t idle_us = esp_timer_get_time() - s_last_input_us;
+    return idle_us > 0 ? (unsigned)(idle_us / 1000000) : 0u;
+}
 #else
 void display_ctl_activity(void) {}
 void display_ctl_nudge(void) {}
 void display_ctl_tick(void) {}
+unsigned display_ctl_idle_s(void) { return 0; }
 #endif
+
+bool display_ctl_off_armed(void) { return s_pwr_off_s > 0 || (s_autodim && s_off_after_s > 0); }
 
 void display_ctl_init(void)
 {
@@ -136,6 +149,7 @@ void display_ctl_init(void)
     s_autodim   = settings_get_autodim();
     s_timeout_s = settings_get_autodim_timeout();
     s_key_dim   = settings_get_keyboard_dim();
+    s_off_after_s = settings_get_screen_off();
     s_dimmed    = false;
 #if LS_HAS_COMPACT_UI
     /* The glass stays dark until the TUI's first frame is on it (the
@@ -232,6 +246,19 @@ void display_ctl_set_autodim_timeout(int seconds)
 }
 
 int display_ctl_autodim_timeout(void) { return s_timeout_s; }
+
+void display_ctl_set_off_after(int seconds)
+{
+    if (seconds < 0)   seconds = 0;
+    if (seconds > 600) seconds = 600;
+    s_off_after_s = seconds;
+    settings_set_screen_off(seconds);
+#if LS_HAS_COMPACT_UI
+    s_last_input_us = esp_timer_get_time();
+#endif
+}
+
+int display_ctl_off_after(void) { return s_off_after_s; }
 
 void display_ctl_set_power_policy(int cap_pct, int dim_s, int off_s)
 {

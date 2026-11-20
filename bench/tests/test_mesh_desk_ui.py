@@ -120,14 +120,15 @@ assert saved[2].split('\t')[2:] == ['SHARK', 'copy, hearing you at -74', 'relaye
 
 # The handheld layout and a node's INSPECT page are still there; Ctrl+L and Esc come back.
 c, _ = run('classic', OPEN + ',M4,+l,M0,~3')
-assert 'PUBLIC CHANNEL' in c[2] and 'HEARD' in c[2] and 'Ctrl+L brings the desktop one back' in c[44]
+assert ' File  View  Window  Help' in c[1]          # the desk's bar, where the app's own was
+assert 'PUBLIC CHANNEL' in c[3] and 'HEARD' in c[3] and 'Ctrl+L brings the desktop one back' in c[44]
 c, _ = run('back', OPEN + ',M4,+l,+l,M0,~3')
 assert ' Mesh  Chat  View  Node' in c[1]
 c, _ = run('menu', OPEN + ',R%d:%d,~2' % (kb_x, kb + 1))
 insp = row_of(c, 'Inspect: ping')
 insp_x = c[insp].index('Inspect')
 c, _ = run('inspect', OPEN + ',R%d:%d,~2,C%d:%d,~3' % (kb_x, kb + 1, insp_x, insp))
-assert 'INSPECT' in c[2] and 'NORTHFIELD' in c[3] and has(c, 'TRACE route')
+assert ' File  View  Window  Help' in c[1] and 'INSPECT' in c[3] and 'NORTHFIELD' in c[4] and has(c, 'TRACE route')
 c, _ = run('inspectback', OPEN + ',R%d:%d,~2,C%d:%d,~3,@esc,@esc,~2' % (kb_x, kb + 1, insp_x, insp))
 assert ' Mesh  Chat  View  Node' in c[1]
 

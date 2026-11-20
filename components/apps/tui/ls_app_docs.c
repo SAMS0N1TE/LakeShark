@@ -275,6 +275,16 @@ const ls_app_doc_t ls_doc_update = {
     .gps     = LS_APP_GPS_UNUSED,
 };
 
+const ls_app_doc_t ls_doc_packs = {
+    .purpose = LS_TXT(doc_packs_purpose, "The frequency data packs on the card: pick countries and states "
+               "to install or remove, or INSTALL MY AREA for everything near you. "
+               "P25, FM and FREQS list what is near from them, offline."),
+    .records = LS_APP_RECORDS_NOTHING,
+    .gps     = LS_APP_GPS_NAVIGATES,
+    .gps_note = LS_TXT(doc_packs_gps, "INSTALL MY AREA gets the packs around the position; the position "
+               "picks among the installed packs."),
+};
+
 const ls_app_doc_t ls_doc_settings = {
     .purpose = LS_TXT(doc_settings_purpose, "Volume, brightness, mute and screen lock, with menus for "
                "the display, sounds and alerts, and the keyboard and USB."),
@@ -288,6 +298,23 @@ const ls_app_doc_t ls_doc_pins = {
                "its GPIO, save, and reboot to apply.",
     .records = LS_APP_RECORDS_NOTHING,
     .gps     = LS_APP_GPS_UNUSED,
+};
+
+const ls_app_doc_t ls_doc_store = {
+    .purpose = "Apps from terminalbay.com: browse by HOME group, install, update "
+               "and remove signed apps on the SD card. Each file is checked "
+               "(size, SHA-256, store signature) before it replaces anything.",
+    .records = LS_APP_RECORDS_NOTHING,
+    .gps     = LS_APP_GPS_UNUSED,
+};
+
+const ls_app_doc_t ls_doc_wardrive = {
+    .purpose = "One drive, every Wi-Fi network, Bluetooth device, LTE cell and drone heard, "
+               "with speed, heading and distance; a 3D view of the route with a pillar per network.",
+    .records = LS_APP_RECORDS_MANUAL,
+    .record_note = "START logs a WiGLE CSV (WigleWifi-1.4) to /sdcard/wardrive; STOP adds the GPX track.",
+    .gps     = LS_APP_GPS_STAMPS,
+    .gps_note = "Each find is placed where it was strongest; your position is in both files.",
 };
 
 const ls_app_doc_t ls_doc_bootlog = {
@@ -348,6 +375,19 @@ const ls_app_doc_t ls_doc_music = {
     .gps = LS_APP_GPS_UNUSED,
 };
 
+const ls_app_doc_t ls_doc_digi = {
+    .purpose = LS_TXT(doc_digi_purpose, "Receive FT8, FT4 and WSPR from SSB audio: who is on the band now, "
+               "their signal, timing and distance. Slots follow GPS time, or NTP/RTC "
+               "without a fix. Receive only; nothing is transmitted."),
+    .records = LS_APP_RECORDS_AUTOMATIC,
+    .record_note = LS_TXT(doc_digi_record_note, "Each decode is appended to /sdcard/lakeshark/digi/YYYYMMDD.csv: UTC, mode, "
+                   "dial, audio offset, SNR, DT, message, call, grid, distance and bearing. "
+                   "LOG TO SD in OPTIONS turns it off."),
+    .gps = LS_APP_GPS_NAVIGATES,
+    .gps_note = LS_TXT(doc_digi_gps_note, "GPS time slots the decoder; your fix gives distance and bearing to each "
+                "station's grid square. Your position is not logged."),
+};
+
 const ls_app_doc_t ls_doc_drones = {
     .purpose = LS_TXT(doc_drones_purpose, "Receive-only early warning for drone links: ELRS 900 and 2.4 GHz "
                "control, 900 MHz hoppers, 2.4 GHz wideband links, 5.8 GHz analog "
@@ -398,6 +438,21 @@ const ls_app_doc_t ls_doc_meters = {
     .gps = LS_APP_GPS_UNUSED,
 };
 
+const ls_app_doc_t ls_doc_locker = {
+    .purpose = "Files between this board and a computer over Wi-Fi: link with a 6-digit code at "
+               "terminalbay.com/locker, upload from the card, download to /sdcard/inbox. Files stay 14 days.",
+    .records = LS_APP_RECORDS_NOTHING,
+    .gps     = LS_APP_GPS_UNUSED,
+};
+
+const ls_app_doc_t ls_doc_chat = {
+    .purpose = "Anonymous text chat with everyone: #global, your country and your area. "
+               "The relay shows no address; handles are made by the server.",
+    .records = LS_APP_RECORDS_NOTHING,
+    .gps     = LS_APP_GPS_NAVIGATES,
+    .gps_note = "Picks the country and area rooms; the position itself is never sent.",
+};
+
 const ls_app_doc_row_t ls_app_docs_all[] = {
     { "tmach", &ls_doc_tmach },
     { "meters", &ls_doc_meters },
@@ -426,9 +481,13 @@ const ls_app_doc_row_t ls_app_docs_all[] = {
     { "diag",    &ls_doc_diag    },
     { "terminal", &ls_doc_terminal },
     { "update",  &ls_doc_update   },
+    { "packs",   &ls_doc_packs    },
     { "set",     &ls_doc_settings},
     { "pins",    &ls_doc_pins    },
     { "bootlog", &ls_doc_bootlog },
+    { "store",   &ls_doc_store   },
+    { "locker",  &ls_doc_locker  },
+    { "chat",    &ls_doc_chat    },
     { "map",     &ls_doc_map     },
     { "tiles",   &ls_doc_tiles   },
     { "gps",     &ls_doc_gps     },

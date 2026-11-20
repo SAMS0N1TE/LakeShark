@@ -511,7 +511,8 @@
       "release_blocker": true,
       "summary": "2026-09-30 on 2.6.0-rc1 with Flipper app 2.8 (release asset, md5 match): relaunch, all-off, independent outputs, SDR loss/recovery and settings pass (bench/evidence/flipper-alerts-20260930.json). Capture alert remains open.",
       "affected_build": "2.6.0-rc1-g3f1e7bbcc526 with Flipper app 2.8",
-      "clearance": null
+      "clearance": null,
+      "note": "2026-11-19 review: STILL OPEN. In-tree Flipper app (flipper-app/lakeshark_p25.c, last changed 2.20.0) has no all-off/independent-output settings and no capture alert; only voice blink and SDR lost/recovered cues. Evidence of 09-30 used a separate app 2.8 asset. Needs Flipper hardware."
     },
     {
       "id": "UNIVERSAL-RADIO-TOOLS-20260915",
@@ -520,7 +521,8 @@
       "release_blocker": true,
       "summary": "All nine sources stay visible; source-specific adapter gaps remain tracked.",
       "affected_build": "2.1.1 and current candidates",
-      "clearance": null
+      "clearance": null,
+      "note": "2026-11-19 review: STILL OPEN. Standing audit rule; universal_sources still lists pending adapter gaps for every non-RTL source (raw IQ/packet REC, spectrum adapters). Guarded by quality.py audit tests, not closable by code reading."
     },
     {
       "id": "COM-SCANNER-RESET-20260915",
@@ -529,7 +531,8 @@
       "release_blocker": true,
       "summary": "COM scanner guard candidate installed; broader hardware acceptance pending.",
       "affected_build": "TT NFC Reader installed exe SHA256 0d1de5f4d88e11aa38847c972d7d5e7bcaa8306faa879ac121c2a8542ddab6ac",
-      "clearance": null
+      "clearance": null,
+      "note": "2026-11-19 review: STILL OPEN. Affected artifact is the external TT NFC Reader exe, not in this tree. Repo tools (cell_console, ls_remote, p25_*, sd_put, lswifi, quality.py) all set DTR/RTS low before open; ls_remote filters by VID/PID. No protected-port refusal code exists here."
     },
     {
       "id": "ROUNDED-BORDER-20260915",
@@ -555,7 +558,8 @@
       "release_blocker": true,
       "summary": "USB boot recovery remains intermittent in recorded restart trials.",
       "affected_build": "b0f35d1c",
-      "clearance": null
+      "clearance": null,
+      "note": "2026-11-19 review: fixed in code (usb_boot_retry.c: stand-down only on devices that reached the client, empty port skipped, max 3 retries; Release 2.16.0) and guarded by host test_usb_boot_retry. Hardware warm-reset series on current build not recorded, so state stays candidate."
     },
     {
       "id": "RECORDING-WATCHDOG-20260915",
@@ -564,14 +568,16 @@
       "release_blocker": true,
       "summary": "Historical recording watchdog cause remains unresolved.",
       "affected_build": "4213f5cb05e37b02be4d1e9f38195f3ac13eb1da8caea6d1a7267e18f0225397",
-      "clearance": null
+      "clearance": null,
+      "note": "2026-11-19 review: STILL OPEN (cause unproven). Candidate 4213f5cb is gone; 00807fe18 (2026-11-11) fixed a related task-WDT starvation from checkpoints at raised priority, and test_rec_watch covers pumped checkpoints, but the original HP_SYS WDT reset has no matching ELF and no WATCH soak on current code."
     },
     {
       "id": "GPS-TRACK-REBOOT-20260915",
       "contract": "gps-track-map",
       "state": "open",
       "release_blocker": true,
-      "summary": "GPS startup allocation fixed; fresh-fix route recording acceptance remains open."
+      "summary": "GPS startup allocation fixed; fresh-fix route recording acceptance remains open.",
+      "note": "2026-11-19 review: STILL OPEN. Startup allocation fix (2.2.2) and ring/failure host tests (test_track, test_gps_storage) exist; the drive-length fresh-fix recording on hardware is the remaining acceptance."
     },
     {
       "id": "P25-GPS-IDLE-WATCHDOG-20260916",
@@ -597,21 +603,24 @@
       "release_blocker": true,
       "summary": "Intermittent LoRa waterfall selection reset remains tracked.",
       "affected_build": "1626b8a5, firmware sha256 4c9e91f6912a15a68da9e74be420e1e3dc21751bb3bedae367aa557fe8f923f1",
-      "clearance": null
+      "clearance": null,
+      "note": "2026-11-19 review: STILL OPEN, probably superseded. Labs SPECTRUM page was removed in dbae62157 (2026-11-15; RF LAB owns the plot); field-worker sweep remains and is guarded by test_field spectrum_publishes_only_complete_sweeps. The reported reset was never characterized, so it cannot be called obsolete without the original record."
     },
     {
       "id": "CC1101-REPLAY-ACCEPTANCE-20260922",
       "contract": "cc1101-ook-replay",
       "state": "open",
       "release_blocker": true,
-      "summary": "CC1101 file replay implemented; independent RF acceptance remains open."
+      "summary": "CC1101 file replay implemented; independent RF acceptance remains open.",
+      "note": "2026-11-19 review: STILL OPEN. Replay code present (ls_mixrf.c) with test_subghz_file/test_mixrf_control; acceptance needs an independent Flipper receiver comparing payload and timing."
     },
     {
       "id": "ADSB-MAP-WATCHDOG-20260922",
       "contract": "map-rec-ui-release",
       "state": "open",
       "release_blocker": true,
-      "summary": "Aircraft mini map and saved home implemented; historical map watchdog remains tracked."
+      "summary": "Aircraft mini map and saved home implemented; historical map watchdog remains tracked.",
+      "note": "2026-11-19 review: STILL OPEN, likely mitigated. Map renderer replaced by CartoCore tiles (329ad6746: damaged tile can no longer hang; 612c2a528: stale zoom no longer hangs render; 99a4c05af mini map). No loaded ADS-B map soak recorded."
     }
   ],
   "memory_baseline": "454c97e0f21acca75c605198a23c3e9ac31d0b99",

@@ -1,6 +1,7 @@
 /* See ls_keyboard.h. The keyboard, and the box that shows what you have
    typed into it. */
 #include "ls_keyboard.h"
+#include "esp_attr.h"
 #include "ls_keypad.h"
 
 #include <stdio.h>
@@ -19,7 +20,7 @@ static bool               s_secret;
 static bool               s_reveal;
 static int                s_flash_slot = -1, s_flash_frames;
 static char               s_title[96];
-static char               s_buf[LS_KEYBOARD_MAX + 1];
+EXT_RAM_BSS_ATTR static char               s_buf[LS_KEYBOARD_MAX + 1];
 static int                s_len;
 static int                s_max;
 static int                s_layer;
@@ -55,7 +56,7 @@ static const char *const LAYER_ROW2[LAYER__COUNT] = {
 #define SLOT_REVEAL 34
 #define N_SLOTS     35
 
-static tui_rect s_hit[N_SLOTS];
+EXT_RAM_BSS_ATTR static tui_rect s_hit[N_SLOTS];
 static int      s_hit_n;
 
 /* ------------------------------------------------------------------ open -- */
@@ -339,6 +340,7 @@ void ls_keyboard_draw(tui_surface *sf, tui_rect full)
 
     /* Black behind the overlay's own rows, so nothing of the screen shows
        through the keys themselves. */
+    ls_ink_unkeep(area);                 /* over a scope the keyboard is still the scheme's */
     tui_fill(sf, area, ' ', A(TUI_WHITE, TUI_BLACK));
     ls_panel_box(sf, area, s_title, TUI_CYAN);
 

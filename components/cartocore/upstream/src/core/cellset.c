@@ -117,7 +117,7 @@ static int draw(const cc_ctile *f,unsigned z,unsigned tz,uint32_t tx,uint32_t ty
     memset(part,0,sizeof(*part));
     int got=cc_ctile_tile_window(f,tz,tx,ty,(int64_t)tx*256-(left>>shift)-wx,(int64_t)ty*256-(top>>shift)-wy,
                                  (int32_t)(((c[2]+rx)>>shift)+1-wx),(int32_t)(((c[3]+ry)>>shift)+1-wy),a,cache,part);
-    return got!=1?got:cc_scene_overzoom(part,shift,(int32_t)(rx-(wx<<shift)),(int32_t)(ry-(wy<<shift)),a) &&
+    return got!=1?got:cc_scene_overzoom(part,shift,(int32_t)(rx-wx*(INT64_C(1)<<shift)),(int32_t)(ry-wy*(INT64_C(1)<<shift)),a) &&
                       clip_scene(part,k[0],k[1],k[2],k[3],a);
 }
 int cc_scene_coarser(const cc_ctile *f,unsigned z,unsigned tz,uint32_t tx,uint32_t ty,int64_t left,int64_t top,

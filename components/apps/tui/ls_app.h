@@ -90,7 +90,17 @@ typedef struct {
     const ls_app_doc_t *doc;
     /* Optional selector for apps sharing one screen; called on the UI task. */
     void (*select)(const char *id);
+    /* A card app's HOME group, LS_APP_GROUP_*; 0 is USER. Built-ins are
+       placed by HOME's own layout. Last, so positional tables stay valid. */
+    uint8_t group;
 } ls_app_t;
+
+/* The HOME groups an app from the card can ask for (LAP_GROUP_* and the
+   .lsapp group= key use the same numbers). */
+#define LS_APP_GROUP_RADIO  1
+#define LS_APP_GROUP_FIELD  2
+#define LS_APP_GROUP_SYSTEM 3
+#define LS_APP_GROUP_USER   4
 
 /* Registers the app and its screen together, so the two lists cannot get out
    of step. Returns the screen index, or one of the LS_APP_REG_* codes below.

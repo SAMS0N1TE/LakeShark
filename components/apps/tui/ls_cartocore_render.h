@@ -5,6 +5,9 @@
 #define CARTO_INTERNAL_KEEP (48u*1024u)
 /* What the SD bounce buffer leaves of the DMA pool. */
 #define CARTO_DMA_KEEP (24u*1024u)
+/* PSRAM held back from the plan for what MAP allocates after it, so the
+   board keeps about 3 MB with MAP open (reserve 2 MiB + guard + this). */
+#define CARTO_MAP_HEADROOM (1u*1024u*1024u)
 #include "ls_carto_budget.h"
 static bool carto_memory_failed;
 static carto_budget carto_last_budget;
@@ -61,6 +64,10 @@ static render_state *create(int cols,int rows,unsigned z,bool external,bool tile
     size_t hot_bytes=cc_renderer_hot_bytes(cols,rows);
     size_t overhead=sizeof(render_state)+hot_bytes+(size_t)cols*rows*(sizeof(cc_cell)+2*sizeof(tui_cell));
     size_t free_bytes=heap_caps_get_free_size(caps),largest=heap_caps_get_largest_free_block(caps);
+    /* MAP's own buffers (picture, cell handles and blocks, labels) come after
+       this plan: without room for them the board fell to 1.3 MB free with MAP
+       open (2026-11-20, LR2021). The planner's reserve stays as measured. */
+    free_bytes=free_bytes>CARTO_MAP_HEADROOM?free_bytes-CARTO_MAP_HEADROOM:0;
     if(!carto_plan_budget(free_bytes,largest,overhead,v7,map.cellset!=NULL,map.source!=NULL,tilecache,&carto_last_budget)) {
         carto_failure("not enough memory (PSRAM budget)",cols,rows,z);return NULL;
     }

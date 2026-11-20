@@ -61,9 +61,9 @@ static bool nameget(const ls_lap_reader_t *r, section s, uint32_t index, char ou
         return false;
     return memchr(out, 0, n) != NULL;
 }
-static bool head(const ls_lap_reader_t *r, header *h, char *why, size_t cap) {
+static bool head_max(const ls_lap_reader_t *r, header *h, char *why, size_t cap, size_t max) {
     uint8_t b[52];
-    if (!r || !r->read || r->size > LS_LAP_MAX_BYTES || !get(r, 0, b, sizeof(b)))
+    if (!r || !r->read || r->size > max || !get(r, 0, b, sizeof(b)))
         return fail(why, cap, LS_TEXT(t_ls_lap_manifest_elf_truncated_or_larger, "ELF truncated or larger than 512 KB"));
     if (memcmp(b, "\177ELF\1\1\1", 7) || u16(b + 16) != 3 || u16(b + 18) != 243 ||
         u32(b + 20) != 1 || u16(b + 40) != 52)
@@ -76,6 +76,9 @@ static bool head(const ls_lap_reader_t *r, header *h, char *why, size_t cap) {
                    overlap(h->ph, h->np * 32u, h->sh, h->ns * 40u))))
         return fail(why, cap, LS_TEXT(t_ls_lap_manifest_invalid_elf_header_tables, "invalid ELF header tables"));
     return true;
+}
+static bool head(const ls_lap_reader_t *r, header *h, char *why, size_t cap) {
+    return head_max(r, h, why, cap, LS_LAP_MAX_BYTES);
 }
 bool ls_lap_plain_name(const char *name, size_t max) {
     if (!name || !*name || *name == '.' || !max || max > 48)
@@ -221,8 +224,10 @@ static bool memread(void *ctx, size_t off, void *p, size_t n) {
     memcpy(p, (const uint8_t *)ctx + off, n);
     return true;
 }
-bool ls_lap_icon_read(const ls_lap_reader_t *r, uint8_t out[LAP_PX_H][LAP_PX_W]) {
-    memset(out, 0xFF, LAP_PX_H * LAP_PX_W);
+/* An optional section by name, read whole into `out` when it is exactly
+   `size` bytes of file data starting with `magic`. */
+static bool section_read(const ls_lap_reader_t *r, const char *want, void *out, size_t size,
+                         const char *magic) {
     header h;
     section s, strings;
     char name[256];
@@ -230,26 +235,35 @@ bool ls_lap_icon_read(const ls_lap_reader_t *r, uint8_t out[LAP_PX_H][LAP_PX_W])
     if (!r || !head(r, &h, why, sizeof(why)) || !shget(r, &h, h.strings, &strings))
         return false;
     for (unsigned i = 1; i < h.ns; i++) {
-        if (!shget(r, &h, i, &s) || !nameget(r, strings, s.name, name) || strcmp(name, ".lap_icon"))
+        if (!shget(r, &h, i, &s) || !nameget(r, strings, s.name, name) || strcmp(name, want))
             continue;
-        lap_icon_px_t icon;
-        if (s.type != 1 || s.size != sizeof(icon) || !range(s.off, s.size, r->size) ||
-            !get(r, s.off, &icon, sizeof(icon)) || memcmp(icon.magic, "LIC1", 4))
-            return false;
-        for (int y = 0; y < LAP_PX_H; y++)
-            for (int x = 0; x < LAP_PX_W; x++) {
-                const char c = icon.rows[y][x];
-                const int v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
-                            : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
-                if (v < 0 && c != '.' && c != ' ' && c) {
-                    memset(out, 0xFF, LAP_PX_H * LAP_PX_W);
-                    return false;
-                }
-                out[y][x] = v < 0 ? 0xFF : (uint8_t)v;
-            }
-        return true;
+        return s.type == 1 && s.size == size && range(s.off, s.size, r->size) &&
+               get(r, s.off, out, size) && !memcmp(out, magic, 4);
     }
     return false;
+}
+uint8_t ls_lap_group_read(const ls_lap_reader_t *r) {
+    lap_group_t g;
+    return section_read(r, ".lap_group", &g, sizeof(g), "LGP1") && g.group <= LAP_GROUP_USER
+               ? g.group : 0;
+}
+bool ls_lap_icon_read(const ls_lap_reader_t *r, uint8_t out[LAP_PX_H][LAP_PX_W]) {
+    memset(out, 0xFF, LAP_PX_H * LAP_PX_W);
+    lap_icon_px_t icon;
+    if (!section_read(r, ".lap_icon", &icon, sizeof(icon), "LIC1"))
+        return false;
+    for (int y = 0; y < LAP_PX_H; y++)
+        for (int x = 0; x < LAP_PX_W; x++) {
+            const char c = icon.rows[y][x];
+            const int v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                        : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+            if (v < 0 && c != '.' && c != ' ' && c) {
+                memset(out, 0xFF, LAP_PX_H * LAP_PX_W);
+                return false;
+            }
+            out[y][x] = v < 0 ? 0xFF : (uint8_t)v;
+        }
+    return true;
 }
 bool ls_lap_manifest(const void *bytes, size_t size, lap_app_t *out, char *why, size_t cap) {
     if (!bytes)
@@ -269,17 +283,28 @@ static bool mapped(const ls_lap_reader_t *r, const header *h, uint32_t addr, siz
     }
     return false;
 }
-bool ls_lap_preflight_resolved(const void *bytes, size_t size, ls_lap_resolve_fn resolve, char *why,
-                               size_t cap) {
-    lap_app_t m;
+/* A firmware module's failure names the relocation (type, place, section):
+   a module has no author to read a generic line. */
+static bool reloc_fail(const ls_lap_reader_t *r, const header *h, const section *s, uint32_t type,
+                       uint32_t at, const char *what, char *why, size_t cap) {
+    section shs;
+    char sec[256];
+    if (!shget(r, h, h->strings, &shs) || !nameget(r, shs, s->name, sec))
+        snprintf(sec, sizeof(sec), "section ?");
+    if (why && cap)
+        snprintf(why, cap, "%s %u at %#x in %.24s", what, (unsigned)type, (unsigned)at, sec);
+    return false;
+}
+static bool preflight_elf(const void *bytes, size_t size, size_t max, ls_lap_resolve_fn resolve, char *why,
+                          size_t cap, bool module) {
     header h;
     section s, t, strings;
     char name[256];
     uint8_t b[16];
-    if (!ls_lap_manifest(bytes, size, &m, why, cap))
-        return false;
     ls_lap_reader_t r = {memread, (void *)bytes, size};
-    if (!head(&r, &h, why, cap) || (h.entry & 1u) || !mapped(&r, &h, h.entry, 2, 1))
+    if (!head_max(&r, &h, why, cap, max))
+        return false;   /* why says which header check */
+    if ((h.entry & 1u) || !mapped(&r, &h, h.entry, 2, 1))
         return fail(why, cap, LS_TEXT(t_ls_lap_manifest_entry_outside_executable_segment, "entry outside executable segment"));
     const uint8_t *raw = bytes;
     if ((u32(raw + 36) & ~1u) != 2u)
@@ -327,16 +352,38 @@ bool ls_lap_preflight_resolved(const void *bytes, size_t size, ls_lap_resolve_fn
                 if (!get(&r, s.off + j, b, 12))
                     return fail(why, cap, "bad relocation");
                 uint32_t info = u32(b + 4), type = info & 255;
-                if ((info >> 8) >= t.size / 16 ||
-                    (type != 0 && type != 1 && type != 3 && type != 5) ||
+                /* esp_elf_arch_relocate (RISC-V) applies 32, RELATIVE and
+                   JUMP_SLOT; it logs and skips any other type, and the
+                   caller ignores that, so the code would run unrelocated. */
+                const bool known = type == 0 || type == 1 || type == 3 || type == 5;
+                if (module && (info >> 8) >= t.size / 16)
+                    return reloc_fail(&r, &h, &s, info >> 8, u32(b), "reloc symbol", why, cap);
+                if (module && !known)
+                    return reloc_fail(&r, &h, &s, type, u32(b), "reloc type", why, cap);
+                if (module && type && (u32(b) % 4 || !mapped(&r, &h, u32(b), 4, 2)))
+                    return reloc_fail(&r, &h, &s, type, u32(b), "text reloc", why, cap);
+                if ((info >> 8) >= t.size / 16 || !known ||
                     (type && (u32(b) % 4 || !mapped(&r, &h, u32(b), 4, 2))))
                     return fail(why, cap, LS_TEXT(t_ls_lap_manifest_unsupported_or_text_relocation, "unsupported or text relocation"));
                 if (type == 3 && !mapped(&r, &h, u32(b + 8), 0, 0))
-                    return fail(why, cap, LS_TEXT(t_ls_lap_manifest_relative_addend_outside_app, "relative addend outside app"));
+                    return module ? reloc_fail(&r, &h, &s, type, u32(b), "reloc addend", why, cap)
+                                  : fail(why, cap, LS_TEXT(t_ls_lap_manifest_relative_addend_outside_app, "relative addend outside app"));
             }
         }
     }
     return true;
+}
+bool ls_lap_preflight_resolved(const void *bytes, size_t size, ls_lap_resolve_fn resolve, char *why,
+                               size_t cap) {
+    lap_app_t m;
+    if (!ls_lap_manifest(bytes, size, &m, why, cap))
+        return false;
+    return preflight_elf(bytes, size, LS_LAP_MAX_BYTES, resolve, why, cap, false);
+}
+bool ls_lap_preflight_module(const void *bytes, size_t size, ls_lap_resolve_fn resolve, char *why, size_t cap) {
+    if (!bytes)
+        return fail(why, cap, "no input");
+    return preflight_elf(bytes, size, LS_MOD_MAX_ELF_BYTES, resolve, why, cap, true);
 }
 
 bool ls_lap_preflight(const void *bytes, size_t size, char *why, size_t cap) {

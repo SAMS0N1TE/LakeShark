@@ -78,6 +78,11 @@ static char s_fp[56];                              /* SHA256:... of the host key
 static int s_sd_keys;                              /* lines on the SD card, as last read */
 static int64_t s_learn_until;
 static SemaphoreHandle_t s_kmu;
+/* Static: on a Nano boot with internal RAM cut small a heap mutex can fail,
+   and every xSemaphoreTake on the NULL handle then asserts (3 of 3 starts
+   panicked in host_key_ready this way). */
+static StaticSemaphore_t s_kmu_buf;
+static void kmu_init(void) { if (!s_kmu) s_kmu = xSemaphoreCreateMutexStatic(&s_kmu_buf); }
 static TaskHandle_t s_task;
 
 /* The connection. Only the SSH task touches these but for the status. */
@@ -484,6 +489,7 @@ static bool listen_now(void)
 static void ssh_task(void *arg)
 {
     (void)arg;
+    kmu_init();
     /* On the Nano the first try can come while boot has DRAM cut into small
        pieces; wait and try again rather than give up for the whole boot. */
     bool said = false, inited = false;
@@ -564,7 +570,7 @@ static void start_later(void)
 
 void rterm_ssh_load(void)
 {
-    if (!s_kmu) s_kmu = xSemaphoreCreateMutex();
+    kmu_init();
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
         uint8_t on = 0;
@@ -606,7 +612,7 @@ void rterm_ssh_kick(void) { if (s_client) s_kick = true; }
 
 bool ls_rterm_ssh_set(bool on)
 {
-    if (!s_kmu) s_kmu = xSemaphoreCreateMutex();
+    kmu_init();
     if (on && (!rterm_pass_ensure() || !task_start())) return false;
     s_enabled = on;
     return save();

@@ -627,13 +627,22 @@ static __attribute__((noinline)) void tile(l3_scene *s, l3_rect r, int worker) {
     w->y0 = r.y0;
     s->lamp_mask[worker] = band_lamps(s,r);
     unsigned dirty = 0, n = (unsigned)(r.x1-r.x0) * (unsigned)(r.y1-r.y0);
+    int span0 = r.x1, span1 = r.x0;
     if (s->reuse) {
         for (int y = r.y0; y < r.y1; y++)
             for (int x = r.x0; x < r.x1; x++) {
                 L3_BYTES(s, worker, 1);
-                dirty += s->dirty_mask[y * s->w + x] != 0;
+                if (s->dirty_mask[y * s->w + x]) {
+                    dirty++;
+                    if (x < span0) span0 = x;
+                    if (x >= span1) span1 = x + 1;
+                }
             }
     } else dirty = n;
+    /* A partly dirty tile works only across its dirty columns: the frame's
+       dirty box spans every change (a ball up top, a flipper below), and each
+       command was walking that whole width per tile to find a few dots. */
+    if (dirty && dirty < n) { r.x0 = span0; r.x1 = span1; }
     if (!dirty) {
         if (s->pass == 6) {
             atomic_store_explicit(&s->tile_ready[r.y0/2],1,memory_order_release);

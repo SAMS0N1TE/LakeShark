@@ -33,6 +33,10 @@ bool ls_lap_preflight(const void *bytes, size_t size, char *why, size_t cap);
 typedef uintptr_t (*ls_lap_resolve_fn)(const char *name);
 bool ls_lap_preflight_resolved(const void *bytes, size_t size, ls_lap_resolve_fn resolve, char *why,
                                size_t cap);
+/* The same checks for a firmware module (ls_mod.c: no manifest, up to 1 MB);
+ * a bad relocation is named by type, offset and section in `why`. */
+#define LS_MOD_MAX_ELF_BYTES (1024u * 1024u)
+bool ls_lap_preflight_module(const void *bytes, size_t size, ls_lap_resolve_fn resolve, char *why, size_t cap);
 /* Shared SD name policy: ASCII, no leading dot or '..', 1..max characters (max<=48). */
 bool ls_lap_plain_name(const char *name, size_t max);
 bool ls_lap_name_equal(const char *a, const char *b); /* FAT ASCII case folding */
@@ -41,4 +45,7 @@ bool ls_lap_fields_valid(const lap_app_t *app, char *why, size_t cap);
    False when the app has none or it is malformed; out is then all clear.
    Call after ls_lap_manifest_read accepted the same reader. */
 bool ls_lap_icon_read(const ls_lap_reader_t *r, uint8_t out[LAP_PX_H][LAP_PX_W]);
+/* The optional .lap_group section (LAP_GROUP): LAP_GROUP_*, or 0 when the
+   app has none or it is malformed. */
+uint8_t ls_lap_group_read(const ls_lap_reader_t *r);
 #endif

@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+bool ls_tui_cutout(tui_rect *cells) { (void)cells; return false; }   /* no TFT camera hole on the host */
 void ls_tui_image(tui_rect r, const uint16_t *p, int w, int h, uint32_t serial) { (void)r; (void)p; (void)w; (void)h; (void)serial; }
 void ls_tui_image_ring(tui_rect r, const uint16_t *p, int w, int h, int x0, int y0, int dx, int dy, uint32_t serial) {
     (void)r; (void)p; (void)w; (void)h; (void)x0; (void)y0; (void)dx; (void)dy; (void)serial;

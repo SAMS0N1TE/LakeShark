@@ -21,7 +21,7 @@
    registry leaves what was last seen. */
 static bool endpoint_present(const char *id, char *owner, size_t cap, bool *seen)
 {
-    static ls_radio_endpoint_info_t cached[2];
+    EXT_RAM_BSS_ATTR static ls_radio_endpoint_info_t cached[2];
     static bool had[2];
     const int slot = !strcmp(id, LS_RADIO_ENDPOINT_HACKRF_USB);
     ls_radio_endpoint_info_t *info = &cached[slot];

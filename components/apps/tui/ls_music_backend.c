@@ -22,6 +22,7 @@
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "settings.h"
 #endif
 
 static void music_heap_checkpoint(const char *name, int result)
@@ -281,6 +282,132 @@ static void ring_push(const int16_t *mono,size_t frames)
     unsigned fill=atomic_load(&s_ring_fill);
     if(fill<RING_N)atomic_store(&s_ring_fill,fill+frames<RING_N?fill+(unsigned)frames:RING_N);
 }
+/* EQ and pre-amp: five float biquads per channel (low shelf, three peaks,
+   high shelf) and a soft limiter, run by the decoder thread on the PCM it is
+   about to queue. The UI only writes the atomic targets and bumps s_dsp_rev;
+   the decoder recomputes coefficients when the revision or the rate changes.
+   Flat with 0 dB pre-amp bypasses all of it. Never touches the codec volume. */
+static const float EQ_HZ[LS_MUSIC_EQ_BANDS]={90.f,300.f,1000.f,3500.f,10000.f};
+static const char *const EQ_NAME[LS_MUSIC_EQ_BANDS]={"90 HZ","300 HZ","1 KHZ","3.5 KHZ","10 KHZ"};
+static const signed char EQ_PRESET[4][LS_MUSIC_EQ_BANDS]={
+    {0,0,0,0,0},{6,4,0,0,0},{-3,-1,3,3,-1},{-1,0,0,4,6}};
+static atomic_int s_eq_db[LS_MUSIC_EQ_BANDS];
+static atomic_int s_pre_db;
+static atomic_uint s_dsp_rev=1;
+static bool s_eq_loaded;
+static float s_bq[LS_MUSIC_EQ_BANDS][5]; /* b0 b1 b2 a1 a2, a0 divided out */
+static float s_bz[2][LS_MUSIC_EQ_BANDS][2];
+static float s_pre_gain=1.f;
+static unsigned s_dsp_seen,s_dsp_rate;
+static bool s_dsp_on;
+const char *ls_music_eq_name(int band){return band>=0&&band<LS_MUSIC_EQ_BANDS?EQ_NAME[band]:"";}
+static int eq_clamp(int v,int lo,int hi){return v<lo?lo:v>hi?hi:v;}
+static void eq_save(void)
+{
+#ifdef ESP_PLATFORM
+    uint64_t v=1ull<<40;
+    for(int i=0;i<LS_MUSIC_EQ_BANDS;i++)v|=(uint64_t)(atomic_load(&s_eq_db[i])+12)<<(5*i);
+    v|=(uint64_t)(atomic_load(&s_pre_db)+12)<<25;
+    (void)settings_set_music_eq(v);
+#endif
+}
+static void eq_load(void)
+{
+    if(s_eq_loaded)return;
+    s_eq_loaded=true;
+#ifdef ESP_PLATFORM
+    uint64_t v;
+    if(!settings_get_music_eq(&v)||!(v>>40&1))return;
+    for(int i=0;i<LS_MUSIC_EQ_BANDS;i++)atomic_store(&s_eq_db[i],eq_clamp((int)(v>>(5*i)&31)-12,-12,12));
+    atomic_store(&s_pre_db,eq_clamp((int)(v>>25&31)-12,-12,8));
+    atomic_fetch_add(&s_dsp_rev,1);
+#endif
+}
+int ls_music_eq_get(int band){eq_load();return band>=0&&band<LS_MUSIC_EQ_BANDS?atomic_load(&s_eq_db[band]):0;}
+int ls_music_preamp_get(void){eq_load();return atomic_load(&s_pre_db);}
+void ls_music_eq_set(int band,int db)
+{
+    eq_load();
+    if(band<0||band>=LS_MUSIC_EQ_BANDS)return;
+    atomic_store(&s_eq_db[band],eq_clamp(db,-12,12));
+    atomic_fetch_add(&s_dsp_rev,1);eq_save();
+}
+void ls_music_preamp_set(int db)
+{
+    eq_load();
+    atomic_store(&s_pre_db,eq_clamp(db,-12,8));
+    atomic_fetch_add(&s_dsp_rev,1);eq_save();
+}
+int ls_music_eq_preset(void)
+{
+    eq_load();
+    for(int p=0;p<4;p++){
+        bool same=true;
+        for(int i=0;i<LS_MUSIC_EQ_BANDS;i++)if(atomic_load(&s_eq_db[i])!=EQ_PRESET[p][i])same=false;
+        if(same)return p;
+    }
+    return 4;
+}
+void ls_music_eq_preset_set(int p)
+{
+    eq_load();
+    if(p<0||p>3)return; /* CUSTOM is whatever the bands are now */
+    for(int i=0;i<LS_MUSIC_EQ_BANDS;i++)atomic_store(&s_eq_db[i],EQ_PRESET[p][i]);
+    atomic_fetch_add(&s_dsp_rev,1);eq_save();
+}
+static void dsp_prepare(unsigned rate)
+{
+    if(!rate)rate=44100;
+    const unsigned rev=atomic_load(&s_dsp_rev);
+    s_dsp_seen=rev;s_dsp_rate=rate;
+    const float fs=(float)rate;
+    bool any=false;
+    for(int b=0;b<LS_MUSIC_EQ_BANDS;b++){
+        const float db=(float)atomic_load(&s_eq_db[b]);
+        float *c=s_bq[b];
+        if(db==0.f||EQ_HZ[b]>=fs*0.45f){c[0]=1.f;c[1]=c[2]=c[3]=c[4]=0.f;continue;}
+        any=true;
+        const float A=powf(10.f,db/40.f),w=6.2831853f*EQ_HZ[b]/fs,cs=cosf(w),sn=sinf(w);
+        float b0,b1,b2,a0,a1,a2;
+        if(b==0||b==LS_MUSIC_EQ_BANDS-1){
+            const float al2=2.f*sqrtf(A)*(sn*0.70710678f);
+            if(b==0){
+                b0=A*((A+1)-(A-1)*cs+al2);b1=2*A*((A-1)-(A+1)*cs);b2=A*((A+1)-(A-1)*cs-al2);
+                a0=(A+1)+(A-1)*cs+al2;a1=-2*((A-1)+(A+1)*cs);a2=(A+1)+(A-1)*cs-al2;
+            }else{
+                b0=A*((A+1)+(A-1)*cs+al2);b1=-2*A*((A-1)+(A+1)*cs);b2=A*((A+1)+(A-1)*cs-al2);
+                a0=(A+1)-(A-1)*cs+al2;a1=2*((A-1)-(A+1)*cs);a2=(A+1)-(A-1)*cs-al2;
+            }
+        }else{
+            const float al=sn/(2.f*0.9f);
+            b0=1+al*A;b1=-2*cs;b2=1-al*A;a0=1+al/A;a1=-2*cs;a2=1-al/A;
+        }
+        const float r=1.f/a0;
+        c[0]=b0*r;c[1]=b1*r;c[2]=b2*r;c[3]=a1*r;c[4]=a2*r;
+    }
+    const int pre=atomic_load(&s_pre_db);
+    s_pre_gain=powf(10.f,pre/20.f);
+    const bool on=any||pre!=0;
+    if(on&&!s_dsp_on)memset(s_bz,0,sizeof(s_bz));
+    s_dsp_on=on;
+}
+/* Soft knee at 3/4 of full scale: the slope is 1 up to it, then the excess is
+   squeezed (t/(1+t)) so the peak approaches but never reaches full scale. */
+static inline float dsp_run(int ch,float x)
+{
+    for(int b=0;b<LS_MUSIC_EQ_BANDS;b++){
+        const float *c=s_bq[b];float *z=s_bz[ch][b];
+        const float y=c[0]*x+z[0];
+        z[0]=c[1]*x-c[3]*y+z[1];
+        z[1]=c[2]*x-c[4]*y;
+        x=y;
+    }
+    x*=s_pre_gain*(1.f/32768.f);
+    const float a=x<0?-x:x,k=0.75f;
+    if(a>k){const float t=(a-k)/(1.f-k),y=k+(1.f-k)*t/(1.f+t);x=x<0?-y:y;}
+    return x*32700.f;
+}
+
 static void peaks_publish(const unsigned peaks[2])
 {
     for(int ch=0;ch<2;ch++) {
@@ -310,7 +437,7 @@ static int16_t tone(int ch,int32_t x)
    and on clicks. 250 ms in PSRAM, emptied by a writer above the decoder.
    Pause, seek, stop, a new track or format drop what is queued, so they still
    act at once; the shown position is moved back by what is still queued. */
-#define PCM_RING_MS 250u
+#define PCM_RING_MS 500u
 #define PCM_RING_BYTES (48000u * 4u * PCM_RING_MS / 1000u)
 #define PCM_CHUNK 2048u
 static StreamBufferHandle_t s_pcm_ring;
@@ -331,6 +458,21 @@ static void pcm_writer(void *arg)
         /* Ran dry while playing: data came after the I2S buffer had emptied. */
         if (last_write_us && got_us - last_write_us < 200000 && got_us - wait_us > 40000)
             LS_TRACE("ring dry", (int32_t)((got_us - wait_us) / 1000), 0);
+        /* Lowest queue depth in each second: a decoder that falls behind shows
+           here long before the speaker runs dry ('carto trace': ring low). */
+        {
+            static int64_t win_us;
+            static size_t win_min = (size_t)-1;
+            const size_t q = xStreamBufferBytesAvailable(s_pcm_ring);
+            if (q < win_min) win_min = q;
+            if (got_us - win_us >= 1000000) {
+                const unsigned per_ms = atomic_load(&s_pcm_bytes_per_ms);
+                if (win_us && per_ms && win_min / per_ms < PCM_RING_MS / 3)
+                    LS_TRACE("ring low", (int32_t)(win_min / per_ms), (int32_t)PCM_RING_MS);
+                win_us = got_us;
+                win_min = (size_t)-1;
+            }
+        }
         size_t drop = atomic_load(&s_pcm_drop);
         if (drop) {
             const size_t d = drop < n ? drop : n;
@@ -407,6 +549,12 @@ static esp_err_t write_pcm(void *data,size_t len,size_t *written,uint32_t timeou
     if(source_rate){s_expected_source_frames+=count/step;s_expected_source_ms=(uint32_t)(s_expected_source_frames*1000/source_rate);}
     unsigned peaks[2]={0,0};
     bool warm=atomic_load(&s_warm);
+    {
+        eq_load();
+        unsigned dr=atomic_load(&s_rate);
+        if(!dr)dr=source_rate;
+        if(s_dsp_seen!=atomic_load(&s_dsp_rev)||s_dsp_rate!=dr)dsp_prepare(dr);
+    }
     int16_t mix[128];
     size_t mixed=0;
     for(size_t i=0;i+step<=count;i+=step) {
@@ -417,6 +565,12 @@ static esp_err_t write_pcm(void *data,size_t len,size_t *written,uint32_t timeou
         /* This board has a mono DAC: preserve both source channels rather
            than letting the codec select only the left slot. No gain boost. */
         if(s_mono_output)l=r=(l+r)/2;
+        if(s_dsp_on){
+            float fl=dsp_run(0,(float)l);
+            l=(int32_t)fl;
+            if(s_mono_output||mono)r=l;
+            else r=(int32_t)dsp_run(1,(float)r);
+        }
         if(warm && s_tone_mix<1024)s_tone_mix++;
         if(!warm && s_tone_mix)s_tone_mix--;
         pcm[i]=tone(0,l);
@@ -496,6 +650,10 @@ static bool wav_header(FILE *f,uint32_t data_bytes)
 static bool mic_open_file(void)
 {
     if(s_mic_file || atomic_load(&s_save_failed))return false;
+    /* A fresh card has no music folder; REC makes it rather than refusing. */
+#ifdef ESP_PLATFORM
+    mkdir(roots[0],0777);
+#endif
     for(int n=1;n<1000;n++) {
         snprintf(s_mic_path,sizeof(s_mic_path),"%s/REC-%03d.wav",roots[0],n);
         struct stat st;
@@ -712,7 +870,7 @@ static int64_t s_close_next_us;
 bool ls_music_open(void)
 {
     if (s_up) { s_close_pending = false; return true; }   /* taken over: nothing left to close */
-    s_low[0]=s_low[1]=0;s_tone_mix=0;s_new_source=true;
+    s_low[0]=s_low[1]=0;s_tone_mix=0;s_new_source=true;eq_load();
     s_mono_output=ls_audio_hw_output_is_mono();
     spectrum_open();
     lakeshark_radio_park();
@@ -724,7 +882,7 @@ bool ls_music_open(void)
     (void)pcm_ring_start();          /* without it the decoder writes I2S itself, as before */
 #endif
     audio_player_config_t config = {.mute_fn=mute, .clk_set_fn=clock_set,
-        .write_fn=write_pcm, .source_format_fn=source_format, .priority=5, .coreID=1,
+        .write_fn=write_pcm, .source_format_fn=source_format, .priority=10, .coreID=1,
         .file_close_fn=call_store_playback_close, .service_fn=transport_service};
     err = audio_player_new(config);
     music_heap_checkpoint("after player new", err);

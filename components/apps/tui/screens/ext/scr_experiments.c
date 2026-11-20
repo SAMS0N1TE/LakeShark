@@ -96,8 +96,8 @@ static const ls_opt_ctx_t *options(const ls_experiment_t *e)
 static uint8_t badge_attr(ls_exp_maturity_t m)
 {
     switch (m) {
-    case LS_EXP_WORKS:  return TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
-    case LS_EXP_TRYING: return TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    case LS_EXP_WORKS:  return ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    case LS_EXP_TRYING: return ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
     default:            return LS_ATTR_DIM;
     }
 }
@@ -321,7 +321,7 @@ static void draw_list(tui_surface *sf, tui_rect a)
     const int count = ls_exp_count();
     if (s_sel >= count) s_sel = count ? count - 1 : 0;
     tui_rect body = tui_rect_make(a.x, a.y, a.w, a.h - 1);
-    ls_panel_box(sf, body, run ? run->name : "EXPERIMENTS", run ? TUI_GREEN : TUI_CYAN);
+    ls_panel_box(sf, body, run ? run->name : NULL, run ? TUI_GREEN : TUI_CYAN);
     ls_motion_busy(sf, body, run != NULL);
     tui_rect grid = tui_rect_make(body.x + 1, body.y + 1, body.w - 2, body.h - 2);
     s_rows_hit = grid;
@@ -528,11 +528,11 @@ static void draw_profile(tui_surface *sf, tui_rect g, const rs41_sonde_t *s, boo
             const int fb = rows - 1 - y;
             char c;
             uint8_t attr;
-            if (fb < h - 1) { c = ls_scan_glyph(level, 8); attr = TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK); }
+            if (fb < h - 1) { c = ls_scan_glyph(level, 8); attr = ls_ink_hue(TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK)); }
             else if (fb < h) {
                 const int part = he - fb * 8;
                 c = ls_scan_glyph(level, part < 1 ? 1 : part);
-                attr = TUI_ATTR(hue, TUI_BLACK);
+                attr = ls_ink_hue(TUI_ATTR(hue, TUI_BLACK));
             } else if (fb == 0) { c = LS_TUI_SHADE_25; attr = TUI_ATTR(TUI_CYAN, TUI_BLACK); }
             else continue;
             tui_put_char(sf, g, g.x + x, g.y + y, c, attr);
@@ -562,7 +562,7 @@ static void draw_profile(tui_surface *sf, tui_rect g, const rs41_sonde_t *s, boo
     int tx = g.x + peak_x + 2;
     if (tx + pw > g.x + g.w) tx = g.x + peak_x - pw - 1;
     if (tx < g.x) tx = g.x;
-    tui_put_str(sf, g, tx, g.y, pk, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, g, tx, g.y, pk, ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
 }
 
 /* What an empty list says: START only when nothing is listening. */
@@ -597,12 +597,12 @@ static void draw_sondes(tui_surface *sf, tui_rect a)
             if (!rs41_store_copy(s_sonde_order[idx],&s_sonde,now)) continue;
             const bool pick = idx == s_sonde_sel;
             LS_SNPRINTF(t_scr_experiments_s_frame_u_llds, line,sizeof(line),"%s / frame %u / %llds ago",s_sonde.report.serial,s_sonde.report.frame,(long long)((now-s_sonde.heard_us)/1000000));
-            sonde_line(sf,in,y,line,pick,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK),TUI_ATTR(TUI_BLACK,TUI_CYAN|TUI_BRIGHT));
+            sonde_line(sf,in,y,line,pick,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK),ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK,TUI_CYAN|TUI_BRIGHT)));
             if (s_sonde.fix_us) LS_SNPRINTF(t_scr_experiments_alt_0f_m_climb, line,sizeof(line),"ALT %.0f m / CLIMB %+.1f m/s / fix %llds",s_sonde.report.alt,(double)s_sonde.report.climb,(long long)((now-s_sonde.fix_us)/1000000));
             else snprintf(line,sizeof(line),"ALT -- / CLIMB --");
-            sonde_line(sf,in,y+1,line,pick,LS_ATTR_DIM,TUI_ATTR(TUI_BLACK,TUI_CYAN));
+            sonde_line(sf,in,y+1,line,pick,LS_ATTR_DIM,ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK,TUI_CYAN)));
             sonde_range(range,sizeof(range),&s_sonde,now);
-            sonde_line(sf,in,y+2,range,pick,LS_ATTR_DIM,TUI_ATTR(TUI_BLACK,TUI_CYAN));
+            sonde_line(sf,in,y+2,range,pick,LS_ATTR_DIM,ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK,TUI_CYAN)));
         }
         if (!s_sonde_count) tui_put_str(sf,in,in.x,in.y,sonde_empty(),LS_ATTR_DIM);
     } else {
@@ -665,7 +665,7 @@ static void draw_page(tui_surface *sf, tui_rect a, const ls_experiment_t *e)
     if (e->needs && y < last - 1) {
         char needs[160];
         snprintf(needs, sizeof(needs), "NEEDS %s", e->needs);
-        y += wrap(sf, in, y, 2, needs, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        y += wrap(sf, in, y, 2, needs, ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
     }
     if (y < last - 1) y++;
 
@@ -678,8 +678,8 @@ static void draw_page(tui_surface *sf, tui_rect a, const ls_experiment_t *e)
     char state[80];
     ls_exp_state_line(e, state, sizeof(state));
     const bool failed = !live && strcmp(state, "stopped") != 0;
-    const uint8_t sattr = running ? TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)
-                        : failed  ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)
+    const uint8_t sattr = running ? ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK))
+                        : failed  ? ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK))
                                   : LS_ATTR_DIM;
     char status[96];
     snprintf(status, sizeof(status), "%c %s", ls_motion_pip(running), state);
@@ -715,11 +715,14 @@ static void draw(tui_surface *sf, tui_rect a)
     const ls_experiment_t *e = opened();
     snprintf(s_hint, sizeof(s_hint), "%s", e ? "S start/stop  R radio  O options  N note  ESC back"
                                              : "arrows pick  ENTER open  X stop  N note  ESC home");
-    if (s_history) snprintf(s_hint, sizeof(s_hint), is_rs41(e) ? (s_sonde_detail >= 0 ? "G recover  O options  ESC flights" : "ENTER detail  O options  ESC back") : "ENTER detail  O options  N name  G graph  ESC back");
+    /* NAME and GRAPH are a sensor's own: the list has neither button. */
+    if (s_history) snprintf(s_hint, sizeof(s_hint), is_rs41(e) ? (s_sonde_detail >= 0 ? "G recover  O options  ESC flights" : "ENTER detail  O options  ESC back")
+                                                          : s_sensor_detail >= 0 ? "N name  G graph  O options  ESC sensors"
+                                                          : "ENTER detail  O options  ESC back");
     if (a.w < 24 || a.h < 12) {
         s_bar_n = 0;
         s_rows_hit = tui_rect_make(0, 0, 0, 0);
-        ls_panel_notice(sf, a, "EXPERIMENTS", "Enlarge the pane", LS_TEXT(t_scr_experiments_a_running_one_keeps, "A running one keeps going"));
+        ls_panel_notice(sf, a, NULL, "Enlarge the pane", LS_TEXT(t_scr_experiments_a_running_one_keeps, "A running one keeps going"));
         return;
     }
     if (e) draw_page(sf, a, e);

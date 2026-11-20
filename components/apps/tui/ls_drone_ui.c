@@ -22,7 +22,7 @@
 #include <string.h>
 #include "ls_textpack.h"
 
-#define INK(c)  TUI_ATTR((c), TUI_BLACK)
+#define INK(c)  ls_ink_hue(TUI_ATTR((c), TUI_BLACK))
 #define BRIGHT(c) INK((c) | TUI_BRIGHT)
 
 enum { PG_WATCH, PG_BANDS, PG_RID, PG_FIND, PG_N };
@@ -34,7 +34,7 @@ static int s_count, s_order[LS_DW_ENTRIES];
 static int s_page, s_pick, s_rows = 1;
 static uint64_t s_pick_id;
 static int64_t s_refreshed;
-static ls_drone_watch_status_t s_status;
+EXT_RAM_BSS_ATTR static ls_drone_watch_status_t s_status;
 static ls_dw_cursor_t s_cur[LS_DW_SOURCES];
 static int64_t s_cur_seen[LS_DW_SOURCES];
 static unsigned s_rotor;            /* advances once per real measurement */
@@ -222,7 +222,8 @@ static void watch_page(tui_surface *sf, tui_rect a, int64_t now)
             s_status.enabled ? BRIGHT(TUI_GREEN) : BRIGHT(TUI_YELLOW));
         put(sf, a, a.x + 2, a.y + 3, ls_tr(s_status.enabled ? "No drone link heard on any band."
                                                            : "Tap WATCH or press W to listen."), LS_ATTR_DIM);
-        for (int i = 0; i < LS_DW_SOURCES && 5 + i * 2 < a.h - 1; i++) {
+        /* Each source takes two rows (name, reason): both inside the box. */
+        for (int i = 0; i < LS_DW_SOURCES && 6 + i * 2 < a.h - 1; i++) {
             char s[128];
             const bool on = s_status.running[i];
             tui_put_char(sf, a, a.x + 2, a.y + 5 + i * 2, on ? '*' : '.', on ? BRIGHT(TUI_GREEN) : LS_ATTR_FAINT);
@@ -438,7 +439,7 @@ static void draw(tui_surface *sf, tui_rect a)
 {
     const int64_t now = esp_timer_get_time();
     refresh(now);
-    if (a.w < 30 || a.h < 16) { ls_panel_notice(sf, a, "DRONES", LS_TEXT(t_ls_drone_ui_more_screen_space_needed, "More screen space needed"), "Use a smaller font"); return; }
+    if (a.w < 30 || a.h < 16) { ls_panel_notice(sf, a, NULL, LS_TEXT(t_ls_drone_ui_more_screen_space_needed, "More screen space needed"), "Use a smaller font"); return; }
     const bool wide = ls_tui_is_wide();
     const int bar_h = wide ? 3 : 8;   /* portrait: two rows of thumb-sized keys */
     ls_btn_t b[] = {
@@ -469,6 +470,9 @@ static void select_step(int d)
 
 static bool key(ls_tk_t k, char ch)
 {
+    /* The Remote ID page has its own OPTIONS (sort, units, alerts, BLE
+       receiver), which its own text points at: O opens those there. */
+    if (s_page == PG_RID && (ch == 'o' || ch == 'O')) return ls_rid_key(k, ch);
     if (ls_opt_key(&CTX, ch)) return true;
     if (s_page == PG_RID && ls_rid_in_detail()) {
         if (k == LS_TK_ESC || ch == 'b' || ch == 'B') { ls_rid_close_detail(); return true; }
@@ -497,9 +501,14 @@ static bool touch(int x, int y)
     const int hit = ls_btn_hit(x, y);
     if (hit == 0) { if (s_page == PG_WATCH) watch_toggle(); s_page = PG_WATCH; return true; }
     if (hit == 1) { s_page = PG_BANDS; return true; }
-    if (hit == 2) { s_page = PG_RID; return true; }
+    /* REMOTE ID again closes a drone's detail: the bar has no BACK. */
+    if (hit == 2) { if (s_page == PG_RID && ls_rid_in_detail()) ls_rid_close_detail(); s_page = PG_RID; return true; }
     if (hit == 3) { s_page = PG_FIND; return true; }
-    if (hit == 4) { ls_opt_open(&CTX); return true; }
+    if (hit == 4) {
+        if (s_page == PG_RID) return ls_rid_key(LS_TK_CHAR, 'o');
+        ls_opt_open(&CTX);
+        return true;
+    }
     if (s_page == PG_RID) return ls_rid_touch_body(x, y);
     if (s_page == PG_WATCH && s_count && x >= s_list.x && x < s_list.x + s_list.w &&
         y > s_list.y && y < s_list.y + s_list.h - 1) {

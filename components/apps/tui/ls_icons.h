@@ -74,7 +74,19 @@ void ls_icon_draw(tui_surface *sf, tui_rect clip, int x, int y,
    Returns an icon number ls_icon_draw takes, or `fallback` when the slot is
    out of range or the art is empty. The art is copied. */
 #define LS_ICON_ART_FIRST 64
-#define LS_ICON_ART_MAX   24
+#define LS_ICON_ART_MAX   64   /* 0..47 card apps (LS_LAP_MAX_APPS), the top slots built-in art */
+/* Built-in apps with their own character art take these slots, from the top down, so they never
+   meet a card app (0..LS_LAP_MAX_APPS-1). Add new ones HERE, never as a bare LS_ICON_ART_MAX - n. */
+enum {
+    LS_ICON_SLOT_METER    = LS_ICON_ART_MAX - 1,
+    LS_ICON_SLOT_PINS     = LS_ICON_ART_MAX - 2,
+    LS_ICON_SLOT_BOOTLOG  = LS_ICON_ART_MAX - 3,
+    LS_ICON_SLOT_STORE    = LS_ICON_ART_MAX - 4,
+    LS_ICON_SLOT_PACKS    = LS_ICON_ART_MAX - 5,
+    LS_ICON_SLOT_LOCKER   = LS_ICON_ART_MAX - 6,
+    LS_ICON_SLOT_CHAT     = LS_ICON_ART_MAX - 7,
+    LS_ICON_SLOT_WARDRIVE = LS_ICON_ART_MAX - 8,
+};
 int ls_icon_art(int slot, const char art[LS_ICON_ROWS][LS_ICON_COLS + 1], int fallback);
 /* The same for a colour icon in dots, 20 x 18, colours 0-15, 0xFF clear. */
 int ls_icon_px(int slot, const uint8_t px[LS_ICON_ROWS * 3][LS_ICON_COLS * 2], int fallback);

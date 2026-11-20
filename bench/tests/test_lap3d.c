@@ -413,8 +413,8 @@ LS_CASE(disjoint_dynamic_bounds_count_union) {
         l3_flags(s, L3_STATIC);
         l3_floor(s, -1, 0);
         l3_flags(s, 0);
-        l3_sphere(s, l3v(-1.4f, 0, 0), 0.2f, 0);
-        l3_sphere(s, l3v(1.4f, 0, 0), 0.2f, 0);
+        l3_sphere(s, l3v(-1.4f + f * .05f, 0, 0), 0.2f, 0); /* both move: an unchanged one is not redrawn */
+        l3_sphere(s, l3v(1.4f - f * .05f, 0, 0), 0.2f, 0);
         l3_end(s);
     }
     unsigned count = 0;
@@ -701,9 +701,9 @@ LS_CASE(partial_redraw_matches_full_render) {
                 by1 = y > by1 ? y : by1;
             }
         if (diff)
-            ls_note("frame %d: %u differ in x%d-%d y%d-%d; dirty x%d-%d y%d-%d prev x%d-%d y%d-%d", frame, diff,
+            ls_note("frame %d: %u differ in x%d-%d y%d-%d; dirty x%d-%d y%d-%d mask x%d-%d y%d-%d", frame, diff,
                     bx0, bx1, by0, by1, s->dirty.x0, s->dirty.x1, s->dirty.y0, s->dirty.y1,
-                    s->previous_dynamic.x0, s->previous_dynamic.x1, s->previous_dynamic.y0, s->previous_dynamic.y1);
+                    s->mask_rect.x0, s->mask_rect.x1, s->mask_rect.y0, s->mask_rect.y1);
         if (diff > worst) worst = diff;
         l3_destroy(fresh);
     }

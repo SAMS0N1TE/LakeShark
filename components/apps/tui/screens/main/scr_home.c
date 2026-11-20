@@ -44,8 +44,8 @@ static const char *const GROUPS[] = {"RADIO", "FIELD", "SYSTEM", "USER"};
    the end of RADIO, so a new app is never lost for want of a line here. */
 static const char *const LAYOUT[] = {
     "p25", "fm", "adsb", "freqs", "falls", "mesh", "subghz", "tmach", "digi", "labs", "radio", NULL,
-    "map", "gps", "compass", "notes", "sweep", "drones", "cell", NULL,
-    "set", "link", "radios", "update", "diag", "files", "music", NULL,
+    "wardrive", "map", "gps", "compass", "notes", NULL,   /* SWEEP, DRONES, CELL WATCH: in WARDRIVE's folder */
+    "set", "link", "radios", "update", "store", "packs", "locker", "chat", "diag", "files", "music", NULL,
 };
 
 /* Folders: one tile on HOME for a lead app and the apps that belong with it.
@@ -65,12 +65,14 @@ typedef struct {
 static const ls_app_t KIT_WIFIBT = {
     .id = "kit.wifibt", .name = "WIFI/BT KIT", .sub = "capture, scan, net",
     .icon = LS_ICON_WIRELESS, .hue = TUI_CYAN, .cat = LS_APP_USER,
+    .group = LS_APP_GROUP_SYSTEM,          /* beside LINK */
 };
 
 static const folder_t FOLDERS[] = {
     { "labs",    "LABS",    "lora + trials",   { "experiments", "mixrf", "meters" }, NULL },
     { "map",     "MAP",     "maps, regions",   { "tiles" }, NULL },
     { "compass", "COMPASS", "bearing, hunt",   { "fox", "rfsurvey" }, NULL },
+    { "wardrive", "WARDRIVE", "on the move",   { "drones", "cell", "sweep" }, NULL },
     { "diag",    "DIAG",    "health, shell",   { "terminal" }, NULL },
     { NULL,      "WIFI/BT KIT", "capture, scan, net",
       { "tap", "wifi_survey", "wifi_watch", "bughunt", "ble_explorer", "lan_scan", "net_diag", "throughput" },
@@ -121,12 +123,16 @@ static bool update_known(void)
     return ls_value_read("ota.notify", &v, NULL) && v.kind == LS_VAL_INT && v.i != 0;
 }
 
+/* Tiles carry the main title only; the subtitle row stays, blank, so nothing
+   else moves. `#define TILE_SUB(s) (s)` brings the subtitles back. */
+#define TILE_SUB(s) ""
+
 static void add_tile(ls_tile_t *out, const ls_app_t **apps, int *n, const ls_app_t *a, bool fold)
 {
     ls_tile_t *t = &out[*n];
     apps[(*n)++] = a;
-    *t = (ls_tile_t){ a->name, a->sub, a->icon, a->hue, a->live && a->live(),
-                      !strcmp(a->id, "update") && update_known(), 0 };
+    *t = (ls_tile_t){ a->name, TILE_SUB(a->sub), a->icon, a->hue, a->live && a->live(),
+                      !strcmp(a->id, "update") && update_known(), 0, a->cat == LS_APP_USER };
     const int f = fold ? folder_of(a->id) : -1;
     if (f < 0) return;
     /* A folder says how much is behind it, and is live when anything in it
@@ -137,7 +143,15 @@ static void add_tile(ls_tile_t *out, const ls_app_t **apps, int *n, const ls_app
         t->more++;
         if (c->live && c->live()) t->live = true;
     }
-    if (t->more) { t->name = FOLDERS[f].name; t->sub = FOLDERS[f].sub; }
+    if (t->more) { t->name = FOLDERS[f].name; t->sub = TILE_SUB(FOLDERS[f].sub); }
+}
+
+/* The tab an app lives on: a built-in the layout does not place goes in
+   RADIO, an app from the card in the group its manifest names. */
+static int home_group(const ls_app_t *a)
+{
+    if (a->cat != LS_APP_USER) return 0;
+    return a->group >= 1 && a->group <= 4 ? a->group - 1 : 3;
 }
 
 static int build_tiles(ls_tile_t *out, const ls_app_t **apps, int cap)
@@ -160,15 +174,16 @@ static int build_tiles(ls_tile_t *out, const ls_app_t **apps, int cap)
             const ls_app_t *a = g == s_group ? ls_app_by_id(LAYOUT[i]) : NULL;
             if (a && a->cat != LS_APP_USER) add_tile(out, apps, &n, a, true);
         }
-    } else {
-        /* USER: the card folders first, then the apps outside them. */
-        for (int f = 0; f < N_FOLDERS && n < cap; f++)
-            if (FOLDERS[f].self && folder_shown(f)) add_tile(out, apps, &n, FOLDERS[f].self, true);
     }
+    /* Then the card's own: its folders, then the apps outside them, each in
+       the group it asked for (USER when it did not say). */
+    for (int f = 0; f < N_FOLDERS && n < cap; f++)
+        if (FOLDERS[f].self && folder_shown(f) && home_group(FOLDERS[f].self) == s_group)
+            add_tile(out, apps, &n, FOLDERS[f].self, true);
     for (int i = 0; i < ls_app_count() && n < cap; i++) {
         const ls_app_t *a = ls_app_at(i);
         if (!a || !a->id || a->screen == &ls_scr_home) continue;
-        if (a->cat == LS_APP_USER ? s_group != 3 : s_group != 0) continue;
+        if (home_group(a) != s_group) continue;
         if (a->cat == LS_APP_USER) {
             if (in_folder(a->id)) continue;
         } else {
@@ -186,9 +201,9 @@ static int build_tiles(ls_tile_t *out, const ls_app_t **apps, int cap)
 static void draw_status(tui_surface *sf, tui_rect a)
 {
     char buf[48];
-    const uint8_t val  = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t good = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t bad  = TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t val  = ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    const uint8_t good = ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    const uint8_t bad  = ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
     const uint8_t dim  = TUI_ATTR(TUI_WHITE, TUI_BLACK);
 
     ls_panel_box(sf, a, "RECEIVER", TUI_CYAN);
@@ -219,14 +234,25 @@ static void draw_status(tui_surface *sf, tui_rect a)
     ls_kv(sf, a, row++, "ADS-B CRC TOTAL", buf, perf_get_crc_err() ? dim : good);
 
     if (row < a.h - 3) row++;
-    const size_t inter = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    /* Heap figures move with every allocation; shown in 4 KB steps with a
+       dead band so an idle HOME does not redraw for a few bytes. */
+    static size_t inter_shown, psram_shown;
+    size_t inter = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    if (inter + 4096 <= inter_shown || inter >= inter_shown + 4096 || !inter_shown) inter_shown = inter;
+    const bool inter_low = inter < 40000;
+    inter = inter_shown;
     snprintf(buf, sizeof(buf), ls_tr("%u KB"), (unsigned)(inter / 1024));
-    ls_kv(sf, a, row++, "INTERNAL", buf, inter < 40000 ? bad : val);
-    snprintf(buf, sizeof(buf), ls_tr("%u KB"),
-             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+    ls_kv(sf, a, row++, "INTERNAL", buf, inter_low ? bad : val);
+    {
+        const size_t ps = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        if (ps + 16384 <= psram_shown || ps >= psram_shown + 16384 || !psram_shown) psram_shown = ps;
+    }
+    snprintf(buf, sizeof(buf), ls_tr("%u KB"), (unsigned)(psram_shown / 1024));
     ls_kv(sf, a, row++, "PSRAM", buf, val);
 
-    const int64_t up = esp_timer_get_time() / 1000000;
+    /* Seconds in steps of ten: an idle HOME is not redrawn every second. */
+    int64_t up = esp_timer_get_time() / 1000000;
+    up -= up % 10;
     snprintf(buf, sizeof(buf), "%lld:%02lld:%02lld", (long long)(up / 3600),
              (long long)((up / 60) % 60), (long long)(up % 60));
     ls_kv(sf, a, row++, "UPTIME", buf, dim);
@@ -234,7 +260,7 @@ static void draw_status(tui_surface *sf, tui_rect a)
     const char *e = ls_userapp_last_error();
     if (e && row < a.h - 1)
         tui_put_str(sf, a, a.x + 2, a.y + a.h - 2, e,
-                    TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+                    ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)));
 }
 
 static void draw_error(tui_surface *sf, tui_rect area, const char *error)
@@ -288,7 +314,11 @@ static void draw(tui_surface *sf, tui_rect area)
     }
     const int nb = s_folder >= 0 ? 2 : 4;
     const int bar_h = ls_btn_raised_height(area, nb);
-    ls_btn_bar_raised(sf, tui_rect_make(area.x, area.y, area.w, bar_h), groups, nb, -1);
+    /* Each group in its own colour; an open folder in its group's. */
+    static const uint8_t HUES[4] = { TUI_GREEN, TUI_YELLOW, TUI_CYAN, TUI_MAGENTA };
+    const uint8_t folder_hues[2] = { 0, HUES[s_group] };
+    ls_btn_bar_raised_hued(sf, tui_rect_make(area.x, area.y, area.w, bar_h), groups, nb, -1,
+                           s_folder >= 0 ? folder_hues : HUES);
     tui_rect body=tui_rect_make(area.x,area.y+bar_h,area.w,area.h-bar_h-1);
     int status_w = 0;
     if (ls_tui_is_wide()) {
@@ -299,7 +329,7 @@ static void draw(tui_surface *sf, tui_rect area)
         s_error_banner = tui_rect_make(body.x, body.y, body.w, 3);
         tui_put_str(sf, s_error_banner, body.x + 1, body.y, ls_tr("SD app error: tap / E"), TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
         tui_put_str(sf, s_error_banner, body.x + 1, body.y + 1, error,
-                    TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+                    ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)));
         body.y += 3; body.h -= 3;
     }
     /* Preserve the icon, label and comfortable touch area on every tile. */

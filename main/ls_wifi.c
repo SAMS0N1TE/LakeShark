@@ -278,7 +278,7 @@ static esp_err_t h_ul(httpd_req_t *r)
         return ESP_FAIL;
     }
 
-    static char buf[2048];
+    static EXT_RAM_BSS_ATTR char buf[2048];
     int  remaining = r->content_len;
     FILE *f = NULL;
     bool  in_body = false;

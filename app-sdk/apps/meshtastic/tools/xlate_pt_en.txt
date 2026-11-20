@@ -1,0 +1,784 @@
+# Hand-written Portuguese -> English data for mt_xlate_lang (MESHTASTIC app).
+# Written for this app; GPL-3.0-or-later like the rest of LakeShark.
+# gen_xlate_lang.py reads it with the Wiktionary lexicon and writes ../lang/pt.bin
+# (and the phrasebook and detection words into ../mt_xlate_langs.h).
+# Brazilian chat first: você, a gente, tá, pra, vc, blz, kkk.
+# Fields are separated by " | ". Keys may carry accents; the generator folds them
+# (lower case, accents off) and keeps whether the key was written with one, so
+# "é" (is) and "e" (and) stay apart when the accent is typed.
+#
+# @func  key (one to five words) | CLASS[:flags] | english [| english standing alone]
+#   DET: def, pl, poss, neg, q     PRON: person 1-6 (English: 1 I, 2 you, 3 he, 4 we, 5 you, 6 they),
+#   alt = object form              CLIT: object pronoun before the verb, english = object
+#   NEG: before the verb           NEG2: after the verb, english in a negative clause | alone
+#   PREP: the = carries "the"      CONJ: sub = subordinate clause
+#   EXIST: there is (pl: are, neg: isn't)   CL: a whole clause   PH, INTJ, ADV, Q, PRONX, NUM, SKIP
+#   A = only as the whole clause, S = only at the start of a clause
+# @abbr  chat spelling | what it stands for (Portuguese words)
+# @verbs lemma | roles (BE HAVE PROG GOING CAN WANT MUST SHOULD WILL MAY PERFBE IT NEED)
+# @lex   lemma | POS[:m,f,n,u] | gloss   (u: English noun without a plural)
+# @drop  lemma | POS
+# @book  English line of the phrasebook (xlate_es_en.txt) | Portuguese to send
+# @detect word | weight 1-15 (chat words for language detection)
+
+@func
+# Articles and determiners
+o | DET:def | the | it
+a | DET:def | the
+os | DET:def,pl | the | them
+as | DET:def,pl | the
+um | DET | a | one
+uma | DET | a | one
+uns | DET:pl | some
+umas | DET:pl | some
+meu | DET:poss | my | mine
+minha | DET:poss | my | mine
+meus | DET:poss,pl | my | mine
+minhas | DET:poss,pl | my | mine
+teu | DET:poss | your | yours
+tua | DET:poss | your | yours
+teus | DET:poss,pl | your
+tuas | DET:poss,pl | your
+seu | DET:poss | your | yours
+sua | DET:poss | your | yours
+seus | DET:poss,pl | your
+suas | DET:poss,pl | your
+nosso | DET:poss | our | ours
+nossa | DET:poss | our | wow
+nossos | DET:poss,pl | our
+nossas | DET:poss,pl | our
+dele | DET | his | his
+dela | DET | her | hers
+deles | DET | their | theirs
+delas | DET | their | theirs
+este | DET | this | this
+esta | DET | this | this
+estes | DET:pl | these | these
+estas | DET:pl | these | these
+esse | DET | that | that
+essa | DET | that | that
+esses | DET:pl | those | those
+essas | DET:pl | those | those
+aquele | DET | that | that
+aquela | DET | that | that
+aqueles | DET:pl | those | those
+aquelas | DET:pl | those | those
+algum | DET | some | any
+alguma | DET | some | any
+alguns | DET:pl | some | some
+algumas | DET:pl | some | some
+nenhum | DET:neg | no | none
+nenhuma | DET:neg | no | none
+cada | DET | each | each
+outro | DET | another | another
+outra | DET | another | another
+outros | DET:pl | other | others
+outras | DET:pl | other | others
+muito | DET:int | a lot of | a lot
+muita | DET | a lot of | a lot
+muitos | DET:pl | many | many
+muitas | DET:pl | many | many
+pouco | DET | little | little
+pouca | DET | little | little
+poucos | DET:pl | few | few
+poucas | DET:pl | few | few
+todo | DET | all | all
+toda | DET | all | all
+todos | DET:pl | all | everyone
+todas | DET:pl | all | all
+quanto | DET:q | how much | how much
+quanta | DET:q | how much | how much
+quantos | DET:pl,q | how many | how many
+quantas | DET:pl,q | how many | how many
+qual | DET:q | which | which
+quais | DET:pl,q | which | which
+vários | DET:pl | several
+várias | DET:pl | several
+ambos | DET:pl | both | both
+mesmo | DET | same | really
+mesma | DET | same | same
+#
+# Subject pronouns; alt is the object form
+eu | PRON:1 | I | me
+você | PRON:2 | you | you
+vc | PRON:2 | you | you
+cê | PRON:2 | you | you
+tu | PRON:2 | you | you
+ele | PRON:3 | he | him
+ela | PRON:3 | she | her
+a gente | PRON:4 | we | us
+nós | PRON:4 | we | us
+vocês | PRON:5 | you | you
+vcs | PRON:5 | you | you
+eles | PRON:6 | they | them
+elas | PRON:6 | they | them
+#
+# Object pronouns before (or, after a hyphen, after) the verb
+me | CLIT:1 | me
+te | CLIT:2 | you
+lhe | CLIT:3 | you
+nos | CLIT:4 | us
+lo | CLIT:hyph | it
+la | CLIT:hyph | it
+los | CLIT:hyph | them
+las | CLIT:hyph | them
+#
+# Other pronouns
+isso | PRONX | that
+isto | PRONX | this
+aquilo | PRONX | that
+algo | PRONX | something | anything
+alguém | PRONX | someone | anyone
+ninguém | PRONX:neg | nobody | anybody
+tudo | PRONX | everything
+mim | PRONX | me
+ti | PRONX | you
+comigo | PRONX | with me
+contigo | PRONX | with you
+conosco | PRONX | with us
+#
+# Prepositions and their contractions with the article
+de | PREP | of
+em | PREP | in
+para | PREP | for
+pra | PREP | for
+pro | PREP:the | for the
+pros | PREP:the | for the
+com | PREP | with
+sem | PREP | without
+por | PREP | for
+até | PREP | until
+desde | PREP | since
+sobre | PREP | about
+entre | PREP | between
+contra | PREP | against
+durante | PREP | during
+perto de | PREP | near
+longe de | PREP | far from
+depois de | PREP | after
+antes de | PREP | before
+dentro de | PREP | inside
+fora de | PREP | outside
+ao lado de | PREP | next to
+em frente a | PREP | in front of
+do | PREP:the | of the
+da | PREP:the | of the
+dos | PREP:the | of the
+das | PREP:the | of the
+no | PREP:the | in the
+na | PREP:the | in the
+nas | PREP:the | in the
+num | PREP | in a
+numa | PREP | in a
+ao | PREP:the | to the
+aos | PREP:the | to the
+à | PREP:the | to the
+às | PREP:the | at
+pelo | PREP:the | for the
+pela | PREP:the | for the
+pelos | PREP:the | through the
+pelas | PREP:the | through the
+neste | PREP | in this
+nesta | PREP | in this
+nesse | PREP | in that
+nessa | PREP | in that
+desse | PREP | of that
+dessa | PREP | of that
+deste | PREP | of this
+desta | PREP | of this
+#
+# Conjunctions
+e | CONJ | and
+ou | CONJ | or
+mas | CONJ | but
+porque | CONJ:sub | because
+pq | CONJ:sub | because
+que | CONJ:sub,que | that
+se | CONJ:sub,refl | if
+enquanto | CONJ:sub | while
+embora | CONJ:sub | although
+então | CONJ | so
+entao | CONJ | so
+nem | CONJ | nor
+#
+# Negation
+não | NEG | not | no
+nao | NEG | not | no
+naum | NEG | not | no
+nunca | NEG:never | never | never
+jamais | NEG:never | never | never
+nada | NEG2 | anything | nothing
+também não | ADV | not either
+#
+# Question words
+o que | Q | what
+oq | Q | what
+quem | Q | who
+onde | Q:sub | where | where
+cadê | Q | where is
+quando | Q:sub | when | when
+como | Q:sub | how | like
+por que | Q | why
+por quê | Q | why
+porquê | Q | why
+#
+# Adverbs
+já | ADV | already
+aqui | ADV | here
+aí | ADV | there
+ali | ADV | there
+lá | ADV | there
+cá | ADV | here
+também | ADV | too
+
+bem | ADV | well | fine
+mal | ADV | badly
+melhor | ADV | better
+pior | ADV | worse
+mais | ADV | more
+menos | ADV | less
+agora | ADV | now
+hoje | ADV | today
+ontem | ADV:past | yesterday
+amanhã | ADV | tomorrow
+cedo | ADV | early
+tarde | ADV | late
+logo | ADV | soon
+depois | ADV | later
+antes | ADV | before
+sempre | ADV | always
+ainda | ADV | still
+quase | ADV | almost
+só | ADV | only
+somente | ADV | only
+apenas | ADV | only
+bastante | ADV | quite
+tão | ADV:int | so
+talvez | ADV | maybe
+assim | ADV | like this
+devagar | ADV | slowly
+rápido | ADV | fast
+perto | ADV | near
+longe | ADV | far
+lá fora | ADV | outside
+mais ou menos | ADV | more or less
+ponto de encontro | PH | meeting point
+lá dentro | ADV | inside
+de novo | ADV | again
+de volta | ADV | back
+
+demais | ADV | too much
+sim | INTJ | yes
+#
+# Interjections and chat words
+oi | INTJ | hi
+olá | INTJ | hello
+tchau | INTJ | bye
+obrigado | INTJ | thanks
+obrigada | INTJ | thanks
+valeu | INTJ | thanks
+falou | INTJ:A | bye
+beleza | INTJ | ok
+blz | INTJ | ok
+ok | INTJ | ok
+tá | INTJ:A | ok
+ta | INTJ:A | ok
+certo | INTJ:A | right
+claro | INTJ | sure
+legal | INTJ:A | cool
+show | INTJ:A | great
+massa | INTJ:A | awesome
+top | INTJ:A | great
+
+caramba | INTJ | wow
+eita | INTJ | whoa
+opa | INTJ | hey
+ei | INTJ | hey
+ah | INTJ | ah
+oh | INTJ | oh
+kkk | INTJ | haha
+haha | INTJ | haha
+rs | INTJ | lol
+socorro | INTJ | help
+cuidado | INTJ | careful
+desculpa | INTJ | sorry
+desculpe | INTJ | sorry
+parabéns | INTJ | congratulations
+câmbio | INTJ | over
+cambio | INTJ | over
+positivo | INTJ:A | affirmative
+negativo | INTJ:A | negative
+#
+# Number words
+dois | NUM | two
+duas | NUM | two
+três | NUM | three
+quatro | NUM | four
+cinco | NUM | five
+seis | NUM | six
+sete | NUM | seven
+oito | NUM | eight
+nove | NUM | nine
+dez | NUM | ten
+vinte | NUM | twenty
+trinta | NUM | thirty
+cem | NUM | a hundred
+mil | NUM | thousand
+primeiro | NUM | first
+primeira | NUM | first
+segundo | NUM | second
+último | NUM | last
+última | NUM | last
+meia | NUM | half
+#
+# There is / are
+tem | EXIST:S | there is
+há | EXIST | there is
+não tem | EXIST:neg | there is no
+não há | EXIST:neg | there is no
+tinha | EXIST:S,past | there was
+tem alguém | CL | is anyone
+tem alguém aí | CL | is anyone there
+alguém aí | CL | anyone there
+#
+# Phrases
+bom dia | INTJ | good morning
+boa tarde | INTJ | good afternoon
+boa noite | INTJ | good night
+tudo bem | CL | how are you
+oi pessoal | INTJ | hi everyone
+oi galera | INTJ | hi guys
+bom dia a todos | INTJ | good morning everyone
+daqui | ADV | from here
+dali | ADV | from there
+tudo bom | CL | how are you
+td bem | CL | how are you
+tudo certo | CL | all good
+tudo tranquilo | CL | all quiet
+tudo joia | CL | all good
+e aí | INTJ | hey
+e ai | INTJ | hey
+de nada | INTJ | you're welcome
+por favor | INTJ | please
+com licença | INTJ | excuse me
+até logo | INTJ | see you later
+até mais | INTJ | see you
+até amanhã | INTJ | see you tomorrow
+até já | INTJ | see you soon
+a gente se vê | CL | see you
+nos vemos | CL | see you
+fica bem | CL | take care
+se cuida | CL | take care
+tamo junto | CL | we're together
+tmj | CL | we're together
+não sei | CL | I don't know
+sei lá | CL | who knows
+sem problema | INTJ | no problem
+sem problemas | INTJ | no problem
+de boa | ADV | fine
+pelo menos | ADV | at least
+tanto faz | CL | whatever
+pode ser | CL | maybe
+com certeza | ADV | for sure
+na hora | ADV | right away
+agora mesmo | ADV | right now
+daqui a pouco | ADV | in a bit
+mais tarde | ADV | later
+fim de semana | PH | weekend
+final de semana | PH | weekend
+semana que vem | ADV | next week
+cada vez | ADV | every time
+às vezes | ADV | sometimes
+a pé | ADV | on foot
+de carro | ADV | by car
+em casa | ADV | at home
+pra casa | ADV | home
+lá em casa | ADV | at home
+alto e claro | ADV | loud and clear
+cinco por cinco | ADV | five by five
+na escuta | CL | listening
+qual é | Q | what is
+que horas são | CL | what time is it
+que horas | Q | what time
+a que horas | Q | at what time
+quanto tempo | Q | how long
+o que houve | CL | what happened
+o que aconteceu | CL | what happened
+o que foi | CL | what happened
+copiado | INTJ | copy that
+recebido | INTJ | received
+câmbio desligo | CL | over and out
+cambio desligo | CL | over and out
+câmbio final | CL | over and out
+estou na escuta | CL | I'm listening
+tô na escuta | CL | I'm listening
+fica na escuta | CL | stay tuned
+mensagem recebida | CL | message received
+ta chegando | CL | arriving
+#
+# Silent words
+né | SKIP | _
+ne | SKIP | _
+aí sim | INTJ | nice
+
+@abbr
+vc | você
+vcs | vocês
+tb | também
+tbm | também
+tmb | também
+q | que
+pq | porque
+td | tudo
+tds | todos
+hj | hoje
+amnh | amanhã
+agr | agora
+aki | aqui
+aq | aqui
+mto | muito
+mt | muito
+mta | muita
+qdo | quando
+qnd | quando
+qd | quando
+dps | depois
+ngm | ninguém
+alg | alguém
+obg | obrigado
+vlw | valeu
+flw | falou
+msg | mensagem
+n | não
+nd | nada
+ta | está
+to | estou
+tava | estava
+tamo | estamos
+cmg | comigo
+ctg | contigo
+fds | fim de semana
+blz | beleza
+pfv | por favor
+pfvr | por favor
+plmns | pelo menos
+cel | celular
+kd | cadê
+sla | sei lá
+oq | o que
+eh | é
+
+@verbs
+ser | BE,IT
+estar | BE,PROG,IT
+ficar | IT
+ter | HAVE
+haver | HAVE
+ir | GOING
+poder | CAN
+conseguir | CAN
+querer | WANT
+dever | MUST
+precisar | NEED,DE
+gostar | DE
+acabar | JUST
+chover | IT
+funcionar | IT
+parecer | IT
+acontecer | IT
+custar | IT
+pegar | IT
+
+@lex
+ser | V | be
+estar | V | be
+ter | V | have
+haver | V | have
+ir | V | go
+vir | V | come
+poder | V | can
+querer | V | want
+dever | V | must
+precisar | V | need
+conseguir | V | manage
+saber | V | know
+fazer | V | do
+falar | V | talk
+dizer | V | say
+ouvir | V | hear
+escutar | V | hear
+chegar | V | arrive
+sair | V | leave
+voltar | V | come back
+ficar | V | stay
+pegar | V | pick up
+mandar | V | send
+enviar | V | send
+receber | V | receive
+chamar | V | call
+ligar | V | call
+desligar | V | turn off
+testar | V | test
+funcionar | V | work
+achar | V | think
+ver | V | see
+dar | V | give
+levar | V | take
+trazer | V | bring
+encontrar | V | find
+esperar | V | wait+for
+avisar | V | let * know
+carregar | V | charge
+subir | V | go up
+descer | V | go down
+copiar | V | copy
+responder | V | answer
+perder | V | lose
+achar | V | think
+gostar | V | like
+morar | V | live
+trabalhar | V | work
+chover | V | rain
+ajudar | V | help
+cair | V | fall
+quebrar | V | break
+consertar | V | fix
+rodar | V | run
+pegar | V | get
+bateria | N:f | battery
+sinal | N:m | signal
+antena | N:f | antenna
+rádio | N:m | radio
+radio | N:m | radio
+nó | N:m | node
+no | N:m | node
+rede | N:f | network
+malha | N:f | mesh
+mensagem | N:f | message
+canal | N:m | channel
+frequência | N:f | frequency
+repetidor | N:m | repeater
+celular | N:m | cell phone
+carregador | N:m | charger
+ajuda | N:f,u | help
+água | N:f,u | water
+comida | N:f,u | food
+luz | N:f,u | power
+energia | N:f,u | power
+chuva | N:f,u | rain
+tempestade | N:f | storm
+casa | N:f | house
+gente | N:f | people
+galera | N:f | guys
+pessoal | N:m | everyone
+cara | N:m | dude
+mano | N:m | bro
+lugar | N:m | place
+praça | N:f | square
+morro | N:m | hill
+serra | N:f | mountains
+rua | N:f | street
+hora | N:f | hour
+minuto | N:m | minute
+dia | N:m | day
+noite | N:f | night
+semana | N:f | week
+teste | N:m | test
+nova | A | new
+novo | A | new
+bom | A | good
+boa | A | good
+fraco | A | weak
+forte | A | strong
+pronto | A | ready
+ligado | A | on
+desligado | A | off
+quebrado | A | broken
+perdido | A | lost
+ferido | A | hurt
+seguro | A | safe
+cansado | A | tired
+frio | A | cold
+quente | A | hot
+fraca | A | weak
+longe | R | far
+perto | R | near
+legal | A | cool
+carro | N:m | car
+homem | N:m | man
+conta | N:f | bill
+incrível | A | incredible
+errado | A | wrong
+sentir | V | feel
+sentar | V | sit
+importar | V | matter
+confiar | V | trust
+atirar | V | shoot
+partir | V | leave
+tirar | V | take off
+colocar | V | put
+jogo | N:m | game
+fato | N:m | fact
+carta | N:f | letter
+quarto | N:m | room
+namorado | N:m | boyfriend
+namorada | N:f | girlfriend
+localização | N:f | location
+ubicação | N:f | location
+caminho | N:m | way
+tempo | N:m,u | weather
+clima | N:m,u | weather
+frio | N:m,u | cold
+calor | N:m,u | heat
+ambulância | N:f | ambulance
+emergência | N:f | emergency
+ferido | N:m | injured person
+perdido | A | lost
+ocupado | A | busy
+atrasado | A | late
+online | A | online
+acabar | V | run out
+chegando | A | arriving
+entender | V | understand
+pilha | N:f | battery
+placa | N:f | board
+mapa | N:m | map
+encontrar | V | meet
+estação | N:f | station
+lembrar | V | remember
+
+@drop
+fez | N
+acha | N
+sao | A
+sao | N
+vao | A
+vao | N
+veja | N
+ira | N
+linda | N
+saia | N
+medo | A
+deixa | N
+amo | N
+fora | N
+falar | N
+ser | N
+tempo | I
+senhor | A
+homem | A
+mulher | A
+boa | N
+novo | N
+nova | N
+gente | I
+otimo | N
+proximo | N
+pequena | N
+tanto | N
+era | N
+preciso | A
+conta | I
+sei | I
+vamos | I
+
+@book
+OK | Beleza
+Yes | Sim
+No | Não
+Thanks | Obrigado
+Hello, how are you? | Oi, tudo bem?
+Good morning | Bom dia
+Good night | Boa noite
+See you later | Até mais
+Sorry, I don't understand | Desculpa, não entendi
+Please write slowly / simply | Escreve simples, por favor
+I speak little Spanish | Falo pouco português
+Copy that | Copiado
+Can you hear me? | Você me ouve?
+I hear you loud and clear | Te ouço alto e claro
+I hear you weak | Te ouço fraco
+Your signal is weak | Seu sinal está fraco
+Good signal here | Sinal bom aqui
+No signal here | Sem sinal aqui
+Who is on the mesh? | Quem está na rede?
+Testing, please answer | Testando, responde por favor
+Message received | Mensagem recebida
+Over and out | Câmbio, desligo
+Is anyone there? | Tem alguém aí?
+On my way | Estou a caminho
+I'm here | Cheguei
+I'm almost there | Estou quase chegando
+Wait for me | Me espera
+I'm busy, talk later | Estou ocupado, falamos depois
+All good here | Tudo certo por aqui
+I'm leaving now | Estou saindo agora
+Running late | Vou me atrasar
+My battery is low | Minha bateria está fraca
+I'm charging | Estou carregando
+My battery is dying, I'm going offline | Minha bateria está acabando, vou desligar
+Back online | De volta online
+Where are you? | Onde você está?
+See you at the square | Nos vemos na praça
+See you at ... | Nos vemos em ...
+What time? | Que horas?
+In 10 minutes | Em 10 minutos
+Meet at the usual place | Nos encontramos no lugar de sempre
+Send me your location | Me manda sua localização
+Let me know when you arrive | Me avisa quando chegar
+I need help | Preciso de ajuda
+Emergency! | Emergência!
+Someone is hurt | Tem alguém ferido
+Call an ambulance | Chamem uma ambulância
+I'm lost | Estou perdido
+We are safe | Estamos seguros
+I need water | Preciso de água
+The power is out | Acabou a luz
+Stay where you are | Fica onde você está
+It's raining here | Está chovendo aqui
+A storm is coming | Vem uma tempestade
+It's very cold | Está muito frio
+It's very hot | Está muito calor
+How is the weather there? | Como está o tempo aí?
+
+@detect
+vc | 14
+vcs | 12
+você | 13
+tb | 6
+tbm | 10
+blz | 12
+kkk | 12
+kkkk | 12
+td | 6
+hj | 10
+mto | 8
+agr | 8
+obg | 10
+vlw | 10
+flw | 8
+naum | 10
+tô | 10
+pra | 9
+cê | 8
+oi | 6
+tchau | 10
+galera | 10
+beleza | 9
+não | 13
+também | 11
+está | 9
+estou | 11
+estamos | 10
+obrigado | 12
+obrigada | 12
+olá | 9
+bom | 8
+dia | 7
+boa | 8
+noite | 9
+sinal | 8
+rede | 7
+alguém | 11
+aí | 9
+câmbio | 9

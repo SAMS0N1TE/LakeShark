@@ -319,7 +319,7 @@ bool audio_write_speech(const int16_t *samples, int n)
 void audio_write_p25_voice(const int16_t *src8k, int n)
 {
     if (n <= 0) return;
-    static int16_t up16k[1024];
+    static EXT_RAM_BSS_ATTR int16_t up16k[1024];
     static int16_t prev = 0;
     int i = 0;
     while (i < n) {

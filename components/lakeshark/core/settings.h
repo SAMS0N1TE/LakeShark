@@ -82,6 +82,16 @@ bool settings_get_autodim(void);
 void settings_set_autodim(bool en);
 int  settings_get_autodim_timeout(void);
 void settings_set_autodim_timeout(int seconds);
+int  settings_get_screen_off(void);
+void settings_set_screen_off(int seconds);
+/* The screen lock's record (ls_lock.c): one blob, so the length, salt and
+   hash can never be half written. set writes it through to flash before it
+   returns and says whether it stuck. */
+bool settings_get_lock(uint32_t *cfg, uint32_t *salt, uint64_t *hash);
+bool settings_set_lock(uint32_t cfg, uint32_t salt, uint64_t hash);
+/* Wrong PINs since the last right one, kept over a reboot. Written through. */
+uint32_t settings_get_lock_fails(void);
+bool settings_set_lock_fails(uint32_t n);
 
 /* SETTINGS > POWER: the mode and what WATCH keeps running (ls_power.h). */
 int  settings_get_power_mode(void);
@@ -269,6 +279,18 @@ void settings_set_wifi_at_boot(bool enabled);
    Off, which means no background network traffic for updates at all. */
 bool settings_get_update_check(void);
 void settings_set_update_check(bool daily);
+
+/* Settings > GPS: the receiver runs from boot (the default) or only when an
+   app asks. Settings > Auto data: packs for where the board is are fetched by
+   themselves on Wi-Fi (the default) or only from GET DATA FOR HERE. */
+bool settings_get_gps_on(void);
+void settings_set_gps_on(bool on);
+bool settings_get_auto_data(void);
+void settings_set_auto_data(bool on);
+
+/* MUSIC EQ and pre-amp (one packed word; see ls_music_backend.c). */
+bool settings_get_music_eq(uint64_t *packed);
+bool settings_set_music_eq(uint64_t packed);
 
 /* Settings > DEVICE > Language: 0 English (the default), 1 Ukrainian; see
    ls_i18n.h. RAM after settings_init, so the UI may read it any time. */

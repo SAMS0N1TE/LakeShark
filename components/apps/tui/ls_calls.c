@@ -558,15 +558,15 @@ int ls_calls_chip(tui_surface *sf, tui_rect clip, int x, int y,
    read as the content and the frame as the furniture. */
 static void rule(tui_surface *sf, tui_rect r, int y, const char *title,
                  uint8_t hue, bool bright) {
-  const uint8_t line = TUI_ATTR(hue, TUI_BLACK);
+  const uint8_t line = ls_ink_hue(TUI_ATTR(hue, TUI_BLACK));
   for (int x = r.x; x < r.x + r.w; x++)
     tui_put_char(sf, r, x, y, '=', line);
   if (title && r.w > (int)strlen(title) + 6) {
     char cap[48];
     snprintf(cap, sizeof(cap), "[ %s ]", title);
     tui_put_str(sf, r, r.x + 2, y, cap,
-                TUI_ATTR(bright ? (TUI_WHITE | TUI_BRIGHT) : (hue | TUI_BRIGHT),
-                         TUI_BLACK));
+                ls_ink_hue(TUI_ATTR(bright ? (TUI_WHITE | TUI_BRIGHT) : (hue | TUI_BRIGHT),
+                         TUI_BLACK)));
   }
 }
 
@@ -599,9 +599,9 @@ static void button(tui_surface *sf, void *ctx, int id, tui_rect r,
   (void)ctx;
   hits[id] = r;
   enabled[id] = can;
-  tui_box(sf, r, NULL, TUI_ATTR(can ? TUI_CYAN : LS_FAINT_FG, TUI_BLACK));
+  tui_box(sf, r, NULL, ls_ink_hue(TUI_ATTR(can ? TUI_CYAN : LS_FAINT_FG, TUI_BLACK)));
   uint8_t ink =
-      can ? TUI_ATTR(on ? TUI_BLACK : TUI_WHITE, on ? TUI_CYAN : TUI_BLACK)
+      can ? (on ? ls_ink(LS_INK_KEY_ON, TUI_ATTR(TUI_BLACK, TUI_CYAN)) : TUI_ATTR(TUI_WHITE, TUI_BLACK))
           : LS_ATTR_FAINT;
   tui_rect inner = tui_rect_make(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
   if (inner.h < 1)
@@ -614,7 +614,7 @@ static void button(tui_surface *sf, void *ctx, int id, tui_rect r,
               inner.y + inner.h / 2, label, ink);
   if (focus == id)
     tui_put_char(sf, r, r.x, r.y, '>',
-                 TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+                 ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
 }
 
 /* A row of keys, each as wide as its label needs and the spare shared out,
@@ -685,23 +685,23 @@ static void draw_header(tui_surface *sf, tui_rect r, const char *title,
                                                          : (int)strlen(space);
   const int sx = r.x + r.w - sw - 1;
   /* The emblem: a handset under its own signal, in the receiver's hue. */
-  const uint8_t ink = TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK);
+  const uint8_t ink = ls_ink_hue(TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
   int x = r.x + 1;
   if (sx - x >= 6) {
     tui_put_str(sf, r, x, r.y, "((|))", ink);
-    tui_put_str(sf, r, x, r.y + 1, " _|_ ", TUI_ATTR(hue, TUI_BLACK));
+    tui_put_str(sf, r, x, r.y + 1, " _|_ ", ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
     x += 6;
   }
   if (sx - x >= (int)strlen(title) + 2) {
     tui_put_str(sf, r, x, r.y, title, ink);
     for (int i = 0; i < (int)strlen(title); i++)
-      tui_put_char(sf, r, x + i, r.y + 1, '=', TUI_ATTR(hue, TUI_BLACK));
+      tui_put_char(sf, r, x + i, r.y + 1, '=', ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
   }
   tui_put_str(sf, r, sx, r.y, stats, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
   tui_put_str(sf, r, sx, r.y + 1, note[0] ? note : space,
-              note[0] ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)
+              note[0] ? ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK))
               : card.paused || !card.valid
-                  ? TUI_ATTR(TUI_YELLOW, TUI_BLACK)
+                  ? ls_ink_hue(TUI_ATTR(TUI_YELLOW, TUI_BLACK))
                   : LS_ATTR_DIM);
 }
 
@@ -820,7 +820,7 @@ static void draw_stage(tui_surface *sf, tui_rect r, bool replaying,
       else
         snprintf(shout, sizeof(shout), "%.3f", e->meta.hz / 1e6);
       ls_calls_big_text(sf, r, clear_x(r, y + 1, LS_CALLS_BIG_ROWS) + 2, y + 1, shout,
-                        TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
+                        ls_ink_hue(TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK)));
       y += LS_CALLS_BIG_ROWS + 2;
     }
     char stamp[40] = "time unknown";
@@ -831,7 +831,7 @@ static void draw_stage(tui_surface *sf, tui_rect r, bool replaying,
     int x = clear_x(r, y, 1) + 2;
     const bool named = big && !shouted_alias;
     if (!named || shouted_alias) {
-      tui_put_str(sf, r, x, y, name, TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
+      tui_put_str(sf, r, x, y, name, ls_ink_hue(TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK)));
       x += (int)strlen(name) + 2;
     }
     if (alias && !shouted_alias && x + (int)strlen(alias) < r.x + r.w - 1) {
@@ -896,19 +896,19 @@ static void draw_card(tui_surface *sf, tui_rect clip, int y,
   const int x0 = clip.x, w = clip.w;
   for (int k = 0; k < (tall ? 3 : 2); k++)
     tui_put_char(sf, clip, x0, y + k, LS_TUI_BLOCK_LEFT,
-                 TUI_ATTR(hue | (sel || fresh ? TUI_BRIGHT : 0), TUI_BLACK));
+                 ls_ink_hue(TUI_ATTR(hue | (sel || fresh ? TUI_BRIGHT : 0), TUI_BLACK)));
   tui_rect line = tui_rect_make(x0 + 1, y, w - 1, 1);
-  const uint8_t base = sel ? TUI_ATTR(TUI_BLACK, TUI_CYAN) : TUI_ATTR(TUI_WHITE, TUI_BLACK);
+  const uint8_t base = sel ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_CYAN)) : TUI_ATTR(TUI_WHITE, TUI_BLACK);
   tui_fill(sf, line, ' ', base);
   char name[32], dur[16], text[96];
   call_name(&e->meta, name, sizeof(name));
   duration_text(dur, sizeof(dur), e->duration_ms);
   int x = x0 + 2;
   if (index == playing_index) {
-    tui_put_str(sf, line, x, y, ">", sel ? base : TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, line, x, y, ">", sel ? base : ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
     x += 2;
   }
-  tui_put_str(sf, line, x, y, name, sel ? base : TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
+  tui_put_str(sf, line, x, y, name, sel ? base : ls_ink_hue(TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK)));
   x += (int)strlen(name) + 2;
   const char *alias = p25 ? tg_alias(e->meta.talkgroup) : NULL;
   int right = x0 + w - (int)strlen(dur) - 1;
@@ -917,7 +917,7 @@ static void draw_card(tui_surface *sf, tui_rect clip, int y,
     tui_put_str(sf, room, x, y, alias, sel ? base : TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
   }
   tui_put_str(sf, line, right, y, dur,
-              sel ? base : TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+              sel ? base : ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
   /* Second row: unit and clock on the left, the length bar on the right. */
   char stamp[16] = "--:--";
   struct tm tm;
@@ -931,17 +931,17 @@ static void draw_card(tui_surface *sf, tui_rect clip, int y,
   int tags = x0 + w - 1;
   if (e->drops) {
     tags -= 3;
-    tui_put_str(sf, clip, tags, y + 1, "GAP", TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, clip, tags, y + 1, "GAP", ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)));
     tags--;
   }
   if (e->kept) {
     tags -= 4;
-    tui_put_str(sf, clip, tags, y + 1, "KEEP", TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, clip, tags, y + 1, "KEEP", ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
     tags--;
   }
   if (fresh) {
     tags -= 3;
-    tui_put_str(sf, clip, tags, y + 1, "NEW", TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, clip, tags, y + 1, "NEW", ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
     tags--;
   }
   const int bx = x0 + 2 + (int)strlen(text) + 2, bw = tags - bx - 1;
@@ -951,7 +951,7 @@ static void draw_card(tui_surface *sf, tui_rect clip, int y,
       fill = 1;
     for (int i = 0; i < bw; i++)
       tui_put_char(sf, clip, bx + i, y + 1, i < fill ? '=' : '-',
-                   i < fill ? TUI_ATTR(hue | (sel ? TUI_BRIGHT : 0), TUI_BLACK)
+                   i < fill ? ls_ink_hue(TUI_ATTR(hue | (sel ? TUI_BRIGHT : 0), TUI_BLACK))
                             : LS_ATTR_FAINT);
   }
   if (tall) {

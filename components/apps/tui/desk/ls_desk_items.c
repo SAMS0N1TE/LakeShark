@@ -43,7 +43,7 @@ EXT_RAM_BSS_ATTR static dk_icon_t s_it[DK_ICON_MAX];
 EXT_RAM_BSS_ATTR static place_t s_place[PLACES];
 static int s_n;
 static uint8_t s_gadgets = DKG_CLOCK | DKG_RADIO;
-static uint16_t s_dbl_ms = 400, s_stamp;
+static uint16_t s_dbl_ms = 400, s_stamp, s_word;
 static uint32_t s_serial = 1;
 static bool s_dirty;
 static int64_t s_dirty_us;
@@ -55,7 +55,6 @@ static void touch(void)
     s_serial++;
     s_dirty = true;
     s_dirty_us = esp_timer_get_time();
-    ls_tui_invalidate();
 }
 
 void dk_store_flush(void)
@@ -65,7 +64,7 @@ void dk_store_flush(void)
     const size_t cap = sizeof(store_hdr_t) + sizeof(s_it) + sizeof(s_place);
     uint8_t *b = dk_psram(cap);
     if (!b) return;
-    store_hdr_t h = {.magic = STORE_MAGIC, .version = 1, .n_icons = (uint8_t)s_n, .gadgets = s_gadgets, .dbl_ms = s_dbl_ms};
+    store_hdr_t h = {.magic = STORE_MAGIC, .version = 1, .n_icons = (uint8_t)s_n, .gadgets = s_gadgets, .dbl_ms = s_dbl_ms, .spare = s_word};
     size_t at = sizeof(h);
     memcpy(b + at, s_it, (size_t)s_n * sizeof(dk_icon_t));
     at += (size_t)s_n * sizeof(dk_icon_t);
@@ -157,6 +156,7 @@ void dk_items_load(void)
         for (int i = 0; i < PLACES; i++) s_place[i].id[sizeof(s_place[i].id) - 1] = 0;
         s_gadgets = h.gadgets & 15;
         s_dbl_ms = h.dbl_ms >= 200 && h.dbl_ms <= 900 ? h.dbl_ms : 400;
+        s_word = h.spare;
     } else {
         defaults();
         s_gadgets = DKG_CLOCK | DKG_RADIO;
@@ -172,6 +172,8 @@ void dk_items_load(void)
 int dk_shell_gadgets(void) { return s_gadgets; }
 void dk_shell_set_gadgets(int mask) { if ((mask & 15) != s_gadgets) { s_gadgets = (uint8_t)(mask & 15); touch(); } }
 int dk_shell_dbl_ms(void) { return s_dbl_ms; }
+int dk_shell_word(void) { return s_word; }
+void dk_shell_set_word(int v) { if ((uint16_t)v != s_word) { s_word = (uint16_t)v; touch(); } }
 void dk_shell_set_dbl_ms(int ms)
 {
     ms = ms < 200 ? 200 : ms > 900 ? 900 : ms;
@@ -444,7 +446,7 @@ void dk_items_draw_one(tui_surface *sf, tui_rect clip, int x, int y, const dk_ic
     else if (it->sys == DKS_BIN) dk_pic(sf, clip, x, y, dk_items_binned(NULL, 0) ? DK_PIC_BIN_FULL : DK_PIC_BIN, at);
 }
 
-void dk_items_draw(tui_surface *sf, tui_rect work, int sel, int hover)
+void dk_items_draw(tui_surface *sf, tui_rect work, int sel, uint32_t mask, int hover)
 {
     const int n = dk_items_count();
     /* the art first, glass over a picture; then the labels, solid */
@@ -471,8 +473,8 @@ void dk_items_draw(tui_surface *sf, tui_rect work, int sel, int hover)
             else snprintf(l[1], sizeof(l[1]), "%s", full + cut + 1);
         } else snprintf(l[0], sizeof(l[0]), "%.*s~", DK_ICON_W - 1, full);
         const uint8_t plain = dk_attr(R_DESK_TEXT);
-        const bool hov = i == hover && i != sel;
-        const uint8_t la = i == sel ? dk_attr(R_SELECT) : hov ? dk_attr(R_SELECT_DIM) : plain;
+        const bool on = i == sel || (i < 32 && ((mask >> i) & 1)), hov = i == hover && !on;
+        const uint8_t la = on ? dk_attr(R_SELECT) : hov ? dk_attr(R_SELECT_DIM) : plain;
         for (int line = 0; line < 2 && l[line][0]; line++) {
             const int len = dk_text_len(l[line]), y = r.y + 6 + line;
             const int lx = r.x + (r.w - len) / 2;

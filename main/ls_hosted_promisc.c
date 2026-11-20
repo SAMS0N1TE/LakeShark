@@ -25,16 +25,18 @@
 #define LS_PROMISC_DATA 0x4C530103u   /* coprocessor -> host */
 #define LS_PROMISC_VER  1
 #define ACK_WAIT_MS     800
-#ifdef CONFIG_LS_HOSTED_PROMISC_SNAP
-#define SNAP            CONFIG_LS_HOSTED_PROMISC_SNAP       /* bytes of each frame forwarded */
-#else
-#define SNAP            512
+#ifndef CONFIG_LS_HOSTED_PROMISC_SNAP
+#define CONFIG_LS_HOSTED_PROMISC_SNAP 512
 #endif
-#ifdef CONFIG_LS_HOSTED_PROMISC_MAX_PER_S
-#define MAX_PER_S       CONFIG_LS_HOSTED_PROMISC_MAX_PER_S  /* frames a second the coprocessor forwards */
-#else
-#define MAX_PER_S       250
+#ifndef CONFIG_LS_HOSTED_PROMISC_MAX_PER_S
+#define CONFIG_LS_HOSTED_PROMISC_MAX_PER_S 250
 #endif
+/* Bytes of each frame forwarded, and frames a second the coprocessor sends.
+   The build's numbers unless the board's network profile raised them at
+   boot, before the first capture allocates its frame buffer. */
+static uint16_t s_snap = CONFIG_LS_HOSTED_PROMISC_SNAP, s_max_per_s = CONFIG_LS_HOSTED_PROMISC_MAX_PER_S;
+#define SNAP      s_snap
+#define MAX_PER_S s_max_per_s
 
 enum { OP_PING = 0, OP_SET = 1, OP_CHANNEL = 2 };
 
@@ -196,3 +198,9 @@ int ls_hosted_promisc_test(int secs)
 
 /* Called once at boot so this file is linked and its calls replace the weak stubs. */
 void ls_hosted_promisc_link(void) {}
+
+void ls_hosted_promisc_tune(unsigned snap, unsigned per_s)
+{
+    if (snap >= 64 && snap <= 1600) s_snap = (uint16_t)snap;
+    if (per_s >= 1 && per_s <= 5000) s_max_per_s = (uint16_t)per_s;
+}

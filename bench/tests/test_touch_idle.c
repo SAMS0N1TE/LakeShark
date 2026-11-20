@@ -1,8 +1,14 @@
 #include "ls_test.h"
 #include "ls_touch.h"
 #include "ls_i2c.h"
+#include "ls_profile.h"
+#include "ls_board_hw.h"
 #include <string.h>
 
+static const ls_panel_desc_t amoled = { .kind = LS_PANEL_KIND_RM69A10, .w = 568, .h = 1232,
+    .touch = LS_TOUCH_KIND_GT9895, .touch_addr = 0x5d };
+const ls_panel_desc_t *ls_profile_panel(void) { return &amoled; }
+esp_err_t ls_board_hw_touch_reset(void) { return ESP_OK; }
 static uint8_t report[18];
 static unsigned reads, bytes, acks;
 static bool fail_read, fail_ack;

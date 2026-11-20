@@ -46,13 +46,17 @@ void carto_style_default(carto_style *out) {
     out->aircraft_halo_color      = black;
 
     out->draw_labels = false;
+    out->boundary = (carto_rgb){150, 110, 170};
 }
 
 int carto_road_priority(const char *cls) {
     if (!cls) return 1;
     static const struct { const char *name; int prio; } table[] = {
         {"highway", 10}, {"motorway", 10}, {"trunk", 9}, {"primary", 8},
+        {"major_road", 7}, {"medium_road", 6},
         {"secondary", 7}, {"tertiary", 6}, {"minor_road", 5},
+        /* Not roads: left off a road map. */
+        {"rail", 0}, {"ferry", 0}, {"pier", 0}, {"aerialway", 0},
         {"residential", 4}, {"street", 4}, {"service", 3},
         {"path", 2}, {"footway", 2}, {"cycleway", 2}, {"track", 2},
         {"other", 1},
@@ -61,6 +65,29 @@ int carto_road_priority(const char *cls) {
         if (strcmp(cls, table[i].name) == 0) return table[i].prio;
     }
     return 1;
+}
+
+int carto_road_detail_priority(const char *d) {
+    if (!d || !*d) return 0;
+    static const struct { const char *name; int prio; } table[] = {
+        {"motorway", 10}, {"trunk", 9}, {"primary", 8}, {"motorway_link", 8},
+        {"secondary", 7}, {"trunk_link", 7}, {"tertiary", 6}, {"primary_link", 6},
+        {"runway", 6}, {"secondary_link", 5}, {"tertiary_link", 5},
+        {"residential", 4}, {"unclassified", 4}, {"living_street", 3},
+        {"service", 3}, {"taxiway", 3}, {"pedestrian", 2}, {"track", 2},
+        {"path", 2}, {"footway", 2}, {"cycleway", 2}, {"bridleway", 2},
+    };
+    for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); ++i)
+        if (strcmp(d, table[i].name) == 0) return table[i].prio;
+    return 0;
+}
+
+int carto_boundary_rank(const char *k) {
+    if (!k) return 0;
+    if (!strcmp(k, "country")) return 3;
+    if (!strcmp(k, "region") || !strcmp(k, "macroregion")) return 2;
+    if (!strcmp(k, "county")) return 1;
+    return 0;
 }
 
 carto_layer_kind carto_classify_layer(const char *layer_name) {
@@ -85,6 +112,8 @@ carto_layer_kind carto_classify_layer(const char *layer_name) {
         {"streets",         CARTO_LAYER_ROAD},
         {"street_polygons", CARTO_LAYER_ROAD},
         {"bridges",         CARTO_LAYER_ROAD},
+        {"boundaries",      CARTO_LAYER_BOUNDARY},
+        {"boundary",        CARTO_LAYER_BOUNDARY},
         {"places",          CARTO_LAYER_PLACE},
         {"place",           CARTO_LAYER_PLACE},
         {"place_labels",    CARTO_LAYER_PLACE},

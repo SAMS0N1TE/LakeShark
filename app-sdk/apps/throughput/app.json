@@ -1,1 +1,1 @@
-{"category":"tools","description":"iperf2-compatible TCP and UDP client with a live Mbit/s graph and the UDP server report. API 2.8."}
+{"category":"tools","group":"system","description":"iperf2-compatible TCP and UDP client with a live Mbit/s graph and the UDP server report. API 2.8."}

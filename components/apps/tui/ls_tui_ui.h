@@ -55,6 +55,10 @@ void ls_btn_bar_transport(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n
 void ls_btn_bar_transport_slot(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus,int slot);
 void ls_btn_bar_raised(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
                        int focus);
+/* The same with a colour per key (TUI_* hue, 0 for the usual): each key
+   filled in its own, bright when on, its darker shade when not. */
+void ls_btn_bar_raised_hued(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
+                            int focus, const uint8_t *hues);
 /* Keep a single raised row; caller must budget enough width for its labels. */
 void ls_btn_bar_raised_row(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus);
 /* Tabs in exactly `rows` rows, in a hit slot of the caller's choosing. */
@@ -143,6 +147,7 @@ typedef struct {
     bool        live;    /* something is happening in there right now   */
     bool        badge;   /* something new inside: a dot and NEW         */
     uint8_t     more;    /* a folder: how many apps sit behind this one */
+    bool        sd;      /* lives on the card: [SD] in the bottom border    */
 } ls_tile_t;
 
 /* A grid of large tiles filling `area`. Column count follows the width, so
@@ -174,6 +179,75 @@ void ls_tile_shape(int *cols, int *rows);
 #define LS_ATTR_DIM    TUI_ATTR(LS_DIM_FG, TUI_BLACK)
 #define LS_ATTR_FAINT  TUI_ATTR(LS_FAINT_FG, TUI_BLACK)
 
+/* COLOUR ROLES.
+
+   A screen says what a coloured thing IS and keeps the colour it has always
+   had as the fallback: ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, hue)).
+   In a desk window the desk fills the roles from the active scheme (Selected
+   Items, Button face, Menu, Title bar, the scheme's good/warn/bad hues), so
+   the bar is the scheme's; everywhere else the fallback is drawn, unchanged.
+   A build with no desk folds ls_ink() to its second argument: no code, no
+   RAM, the same cells as before.
+
+   Role attributes are in the app's own colour space (text on TUI_BLACK is
+   text on the window's face); the desk translates them with everything else
+   when it copies the app into its window. Take the fg or bg of a role with
+   TUI_ATTR_FG / TUI_ATTR_BG when a cell mixes two. */
+enum {
+    LS_INK_SELECT,      /* the selected row, tab, tile or menu line: a band */
+    LS_INK_SELECT_DIM,  /* the same in a pane the keyboard is not in */
+    LS_INK_KEY,         /* a key cap or a column header: a band (the face itself in a Win95 scheme) */
+    LS_INK_KEY_ON,      /* a key that is latched on, a lit caption: a band */
+    LS_INK_MENU,        /* a menu or popup face and its words */
+    LS_INK_TITLE,       /* a caption band across a panel */
+    LS_INK_TEXT,        /* plain words on the ground */
+    LS_INK_STRONG,      /* values, headings */
+    LS_INK_DIM,         /* greyed, unavailable */
+    LS_INK_ACCENT,      /* the scheme's information hue */
+    LS_INK_GOOD, LS_INK_WARN, LS_INK_BAD,   /* never alike in any scheme */
+    LS_INK_RULE,        /* separators and quiet lines */
+    LS_INK_ACCEL,       /* the letter a key answers to */
+    LS_INK_CAPTION,     /* a panel's caption: a band (the inactive title bar's colours) */
+    LS_INK_COUNT
+};
+#if LS_TUI_HAS_COMPACT
+extern uint8_t ls_ink_tab[LS_INK_COUNT];
+extern bool ls_ink_on;
+static inline uint8_t ls_ink(int role, uint8_t fallback) { return ls_ink_on ? ls_ink_tab[role] : fallback; }
+/* The desk: the roles for the frame about to be drawn; NULL ends it. */
+void ls_ink_set(const uint8_t *tab);
+/* A scope, waterfall or spectrum keeps its black ground in any scheme: the
+   screen names the rect (surface cells) each frame it draws one. */
+#define LS_INK_KEEP_MAX 12
+typedef struct { uint8_t n; struct { int16_t x, y, w, h; } r[LS_INK_KEEP_MAX]; } ls_ink_keep_t;
+void ls_ink_keep(tui_rect r);
+ls_ink_keep_t *ls_ink_kept(void);
+/* A popup drawn over a scope takes its rect back out: it is the scheme's, not the scope's. */
+void ls_ink_unkeep(tui_rect r);
+/* A hue on the ground that says a state, by what it says: yellow warns, red
+   is bad, green is good. For a colour a screen works out as it draws, or one
+   it draws at the quiet weight (kept quiet on a dark face); any
+   other hue, and any band, is handed back as it came. Not for cells inside
+   an ls_ink_keep rect: those stay on black and keep their literals. */
+static inline uint8_t ls_ink_hue(uint8_t lit)
+{
+    if (!ls_ink_on || (lit >> 4)) return lit;
+    const uint8_t h = lit & 7;
+    if (h != TUI_YELLOW && h != TUI_RED && h != TUI_GREEN) return lit;
+    const uint8_t role = ls_ink_tab[h == TUI_YELLOW ? LS_INK_WARN : h == TUI_RED ? LS_INK_BAD : LS_INK_GOOD];
+    /* The scheme's hue is this one, bright, and the screen drew it quiet: a
+       dark face, where the quiet weight reads and is meant. */
+    if ((role & 7) == h && (role & TUI_BRIGHT) && !(lit & TUI_BRIGHT) && !(role >> 4)) return lit;
+    return role;
+}
+#else
+#define ls_ink(role, fallback) ((uint8_t)(fallback))
+#define ls_ink_hue(lit) ((uint8_t)(lit))
+enum { ls_ink_on = 0 };
+#define ls_ink_keep(r) ((void)0)
+#define ls_ink_unkeep(r) ((void)0)
+#endif
+
 void ls_fill_dither(tui_surface *sf, tui_rect r, int density, uint8_t hue);
 
 /* Lettering inside a dithered field: the word on true black with a space
@@ -182,6 +256,10 @@ void ls_dither_label(tui_surface *sf, tui_rect r, int row, const char *text,
                      uint8_t attr);
 
 void ls_panel_box(tui_surface *sf, tui_rect r, const char *title, uint8_t hue);
+
+/* The lock page's card: rounded corners and rules of `h` ('-', or '=' for
+   the chosen one), clipped to `clip`. No title: the status row is the title. */
+void ls_rframe(tui_surface *sf, tui_rect clip, tui_rect r, char h, uint8_t attr);
 
 void ls_panel_notice(tui_surface *sf, tui_rect area, const char *title,
                      const char *reason, const char *remedy);

@@ -290,7 +290,7 @@ static int covered(void)
 static void header(tui_surface *sf, tui_rect a, const ls_fox_hunt_t *h)
 {
     const bool aimed = s_fit.valid || s_est.valid;
-    ls_radio_bezel(sf, a, !s_on ? "FOX HUNT / IDLE" : aimed ? "FOX HUNT / AIMED" : "FOX HUNT / TURN");
+    ls_radio_bezel(sf, a, !s_on ? "IDLE" : aimed ? "AIMED" : "TURN");
     int x = a.x + 2;
     const bool heard = ls_fresh(&s_heard, s_reads, 400) > 100;
     x = ls_radio_chip(sf, a, x, a.y + 1, "RX", heard, TUI_GREEN);
@@ -328,6 +328,7 @@ static void scope(tui_surface *sf, tui_rect a)
 {
     ls_panel_box(sf, a, "TURN SCOPE", TUI_YELLOW);
     const tui_rect in = tui_rect_make(a.x + 1, a.y + 1, a.w - 2, a.h - 2);
+    ls_ink_keep(in);                    /* a scope stays on black in any scheme */
     s_scope = in;
     if (in.w < 10 || in.h < 6) return;
     const float k = dot_aspect();
@@ -506,7 +507,7 @@ static void hunt_plan(tui_surface *sf, tui_rect a, const ls_fox_hunt_t *h)
 
 static void options_preview(tui_surface *sf, tui_rect a)
 {
-    ls_panel_box(sf, a, "FOX HUNT / HOW", TUI_YELLOW);
+    ls_panel_box(sf, a, "HOW", TUI_YELLOW);
     static const char *const L[] = {
         "1  Hold the board out at arm's length",
         "2  Turn slowly, a full circle, 20 s",
@@ -546,7 +547,7 @@ static void draw(tui_surface *sf, tui_rect area)
         if (sw < 30) sw = 30;
         if (sw > area.w / 2) sw = area.w / 2;
         scope(sf, tui_rect_make(area.x, body_y, sw, body_h));
-        ls_panel_box(sf, tui_rect_make(area.x + sw, body_y, area.w - sw, body_h), "HUNT", TUI_RED);
+        ls_panel_box(sf, tui_rect_make(area.x + sw, body_y, area.w - sw, body_h), "READOUT", TUI_RED);
         const int tw = area.w - sw - 3 > 50 ? 50 : area.w - sw - 3;
         readout(sf, tui_rect_make(area.x + sw + 2, body_y + 1, tw, body_h - 2), &h);
         if (area.w - sw - tw - 5 >= 16)
@@ -554,7 +555,7 @@ static void draw(tui_surface *sf, tui_rect area)
     } else {
         const int rh = body_h * 2 / 5 < 10 ? 10 : body_h * 2 / 5;
         scope(sf, tui_rect_make(area.x, body_y, area.w, body_h - rh));
-        ls_panel_box(sf, tui_rect_make(area.x, body_y + body_h - rh, area.w, rh), "HUNT", TUI_RED);
+        ls_panel_box(sf, tui_rect_make(area.x, body_y + body_h - rh, area.w, rh), "READOUT", TUI_RED);
         readout(sf, tui_rect_make(area.x + 2, body_y + body_h - rh + 1, area.w - 4, rh - 2), &h);
     }
     if (!wide) ls_safe_line(sf, area, area.y + area.h - bar_h - 1, s_hint, LS_ATTR_DIM);

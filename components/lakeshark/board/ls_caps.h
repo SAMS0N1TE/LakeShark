@@ -30,6 +30,14 @@
 #define LS_HAS_CARTOCORE 0
 #endif
 
+/* The screen dims and goes dark on its own out of the box (the T-Display);
+   other compact boards leave that to the user. */
+#if defined(CONFIG_LS_BOARD_T_DISPLAY_P4) && CONFIG_LS_BOARD_T_DISPLAY_P4
+#define LS_HAS_AUTODIM_DEFAULT 1
+#else
+#define LS_HAS_AUTODIM_DEFAULT 0
+#endif
+
 /* A software-controlled VBUS switch.  This is what lets a wedged RTL dongle
    be power-cycled and re-enumerated without touching the hardware. */
 #if defined(LS_BOARD_VBUS_EN_GPIO) && (LS_BOARD_VBUS_EN_GPIO >= 0)
@@ -257,13 +265,32 @@
 /* LakeShark LR (CONFIG_LS_LR2021_ONLY): LR2021 boards only. No USB host or
    dongle drivers, no SX1262 driver, and no apps that need a dongle. */
 #if defined(CONFIG_LS_LR2021_ONLY) && CONFIG_LS_LR2021_ONLY
+#define LS_LR_EDITION_BUILD  1
 #define LS_LR_EDITION        1
 #define LS_HAS_USB_SDR       0
 #define LS_HAS_SX126X        0
 #else
-#define LS_LR_EDITION        0
+/* LS_LR_EDITION_BUILD: the dongle code is not in the image (preprocessor).
+   LS_LR_EDITION: the board runs without dongles right now. In the universal
+   image that is a boot-time fact (the USB host was left off: an LR2021 board
+   on its default, or 'board usb off'), so it is an expression, not a
+   constant: use it in if (), never in #if. */
+#define LS_LR_EDITION_BUILD  0
 #define LS_HAS_USB_SDR       1
 #define LS_HAS_SX126X        1
+#if defined(CONFIG_LS_TDP4_UNIVERSAL) && CONFIG_LS_TDP4_UNIVERSAL
+#include <stdbool.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+bool ls_profile_usb_host(void);
+#ifdef __cplusplus
+}
+#endif
+#define LS_LR_EDITION        (!ls_profile_usb_host())
+#else
+#define LS_LR_EDITION        0
+#endif
 #endif
 
 #endif

@@ -1,12 +1,14 @@
-/* The Control Panel's applets: tables of rows over settings the board
-   already has. Nothing here invents a setting. A row reads the same getter
-   the SETTINGS app, the tray or the console reads, and changes it through
-   the same setter, so the two never disagree. What has no setter on the
-   board (a time zone, the hotspot switch) is not offered; what would cut
-   off the viewer you are using (the web screen) is shown and left to the
-   app that owns it. */
+/* The Control Panel's applets: property sheets over settings the board
+   already has. Nothing here invents a setting. A control reads the same
+   getter the SETTINGS app, the tray or the console reads, and writes it
+   through the same setter, so the two never disagree; what it wrote is
+   read back after Apply, so a write the board refused shows as refused.
+   What has no setter on the board (a time zone, the hotspot switch) is a
+   line of fact, not a field; what would cut off the viewer you are using
+   (the web screen) is shown and left to the app that owns it. Display is
+   Display Properties (ls_desk_props.c). */
 
-#include "ls_desk_priv.h"
+#include "ls_desk_sheet.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -41,7 +43,14 @@
 #include "../ls_wireless.h"
 
 #define COUNT(a) ((int)(sizeof(a) / sizeof((a)[0])))
-static const char *onoff(bool on) { return on ? "on" : "off"; }
+#define GROUP(t) {.kind = SH_GROUP, .label = t}
+#define FACT(l, f) {.kind = SH_TEXT, .label = l, .show = f}
+#define FACT_IF(l, f, h) {.kind = SH_TEXT, .label = l, .show = f, .hidden = h}
+#define NOTE(t) {.kind = SH_NOTE, .label = t}
+#define CHECK(l, g, s) {.kind = SH_CHECK, .label = l, .get = g, .set = s}
+#define DROP(l, g, s, c, t) {.kind = SH_DROP, .label = l, .get = g, .set = s, .count = c, .text = t}
+#define OPEN(l, c, where) {.kind = SH_BUTTON, .label = l, .cap = c, .go = where}
+#define PAGE(t, c) {.title = t, .ctl = c, .n = COUNT(c)}
 
 /* A named value as text, or "--" when the board does not publish it. */
 static void value_text(const char *path, char *b, size_t n)
@@ -56,149 +65,58 @@ static void value_text(const char *path, char *b, size_t n)
     else snprintf(b, n, "--");
 }
 
-/* ============================================================== Display == */
-
-static void scheme_show(char *b, size_t n) { snprintf(b, n, "%s", ls_desk_theme_name(ls_desk_theme())); }
-static void scheme_step(int d) { ls_desk_set_theme((ls_desk_theme() + (d < 0 ? LS_DESK_THEME_COUNT - 1 : 1)) % LS_DESK_THEME_COUNT); }
-static void wall_show(char *b, size_t n)
-{
-    const uint32_t w = dk_wall_current();
-    if (w & DK_WP_FILE) {
-        const char *names[8];
-        uint32_t ids[8];
-        const int nf = dk_wall_files(names, ids, 8);
-        for (int i = 0; i < nf; i++) if (ids[i] == w) { snprintf(b, n, "%s", names[i]); return; }
-        snprintf(b, n, "a picture");
-    } else snprintf(b, n, "%s", dk_wall_builtin_name((int)w));
-}
-static void wall_step(int d)
-{
-    /* the built-in grounds; pictures are picked in Display Properties */
-    const int count = dk_wall_builtin_count();
-    const uint32_t w = dk_wall_current();
-    int i = w & DK_WP_FILE ? 0 : (int)w;
-    i = (i + (d < 0 ? count - 1 : 1)) % count;
-    dk_prefs_t p = *dk_prefs();
-    p.wall = (uint32_t)i;
-    ls_desk_apply_prefs(&p);
-}
-static int anim_on(void) { return dk_prefs()->anim; }
-static void anim_show(char *b, size_t n) { snprintf(b, n, "%s", onoff(dk_prefs()->anim)); }
-static void anim_step(int d) { (void)d; dk_prefs_t p = *dk_prefs(); p.anim = !p.anim; ls_desk_apply_prefs(&p); }
-static int live_on(void) { return dk_prefs()->live_drag; }
-static void live_show(char *b, size_t n) { snprintf(b, n, "%s", dk_prefs()->live_drag ? "contents" : "outline"); }
-static void live_step(int d) { (void)d; dk_prefs_t p = *dk_prefs(); p.live_drag = !p.live_drag; ls_desk_apply_prefs(&p); }
-static int day_on(void) { return ls_tui_daylight(); }
-static void day_show(char *b, size_t n) { snprintf(b, n, "%s", onoff(ls_tui_daylight())); }
-static void day_step(int d) { (void)d; const bool on = !ls_tui_daylight(); ls_tui_set_daylight(on); settings_set_daylight(on); }
-static void bri_show(char *b, size_t n) { snprintf(b, n, "%d %%", display_ctl_get_user()); }
-static int bri_pct(void) { return display_ctl_get_user(); }
-static void bri_set(int v)
-{
-    v = (v + 2) / 5 * 5;
-    v = v < 5 ? 5 : v > 100 ? 100 : v;             /* never stepped dark */
-    if (v != display_ctl_get_user()) display_ctl_set_user(v);
-}
-static void bri_step(int d) { bri_set(display_ctl_get_user() + d * 10); }
-static int dim_on(void) { return display_ctl_autodim_enabled(); }
-static void dim_show(char *b, size_t n) { snprintf(b, n, "%s", onoff(display_ctl_autodim_enabled())); }
-static void dim_step(int d) { (void)d; display_ctl_set_autodim(!display_ctl_autodim_enabled()); }
-static const int DIM_STEPS[] = {15, 30, 60, 120, 240};
-static void dimt_show(char *b, size_t n) { snprintf(b, n, "%d s", display_ctl_autodim_timeout()); }
-static int dimt_pct(void) { return display_ctl_autodim_timeout() * 100 / 240; }
-static void dimt_step(int d)
-{
-    const int cur = display_ctl_autodim_timeout();
-    if (d > 0) { for (int i = 0; i < COUNT(DIM_STEPS); i++) if (DIM_STEPS[i] > cur) { display_ctl_set_autodim_timeout(DIM_STEPS[i]); return; } }
-    else for (int i = COUNT(DIM_STEPS) - 1; i >= 0; i--) if (DIM_STEPS[i] < cur) { display_ctl_set_autodim_timeout(DIM_STEPS[i]); return; }
-}
-static void grid_show(char *b, size_t n)
-{
-    int cols = 0, rows = 0, cw = 0, ch = 0;
-    ls_tui_geometry(&cols, &rows, &cw, &ch);
-    snprintf(b, n, "%d x %d cells of %d x %d dots", cols, rows, cw, ch);
-}
-static void go_show_appearance(char *b, size_t n) { snprintf(b, n, "colours, pictures, effects"); }
-/* The desktop's gadgets, one switch each. */
-static void gadget_flip(int bit) { dk_shell_set_gadgets(dk_shell_gadgets() ^ bit); }
-#define GADGET(name, bit) static int name##_on(void) { return (dk_shell_gadgets() & (bit)) != 0; } \
-    static void name##_show(char *b, size_t n) { snprintf(b, n, "%s", onoff(name##_on())); } \
-    static void name##_step(int d) { (void)d; gadget_flip(bit); }
-GADGET(gclock, DKG_CLOCK) GADGET(gradio, DKG_RADIO) GADGET(gmesh, DKG_MESH) GADGET(gboard, DKG_SYSTEM)
-#undef GADGET
-static int labels_on(void) { return dk_prefs()->labels; }
-static void labels_show(char *b, size_t n) { snprintf(b, n, "%s", dk_prefs()->labels ? "on their own backing" : "on the wallpaper"); }
-static void labels_step(int d) { (void)d; dk_prefs_t p = *dk_prefs(); p.labels = !p.labels; ls_desk_apply_prefs(&p); }
 static void display_sum(char *b, size_t n) { snprintf(b, n, "%s, %s", ls_desk_theme_name(ls_desk_theme()), ls_tui_daylight() ? "daylight" : "night ground"); }
-
-static const dk_cpl_row_t DISPLAY_ROWS[] = {
-    {.label = "Scheme", .kind = CR_CHOICE, .show = scheme_show, .step = scheme_step},
-    {.label = "Desktop ground", .kind = CR_CHOICE, .show = wall_show, .step = wall_step},
-    {.label = "Daylight", .kind = CR_SWITCH, .show = day_show, .step = day_step, .on = day_on},
-    {.label = "Animations", .kind = CR_SWITCH, .show = anim_show, .step = anim_step, .on = anim_on},
-    {.label = "Dragging shows", .kind = CR_SWITCH, .show = live_show, .step = live_step, .on = live_on},
-    {.label = "Icon names", .kind = CR_SWITCH, .show = labels_show, .step = labels_step, .on = labels_on},
-    {.label = "Gadget: clock, GPS", .kind = CR_SWITCH, .show = gclock_show, .step = gclock_step, .on = gclock_on},
-    {.label = "Gadget: receiver", .kind = CR_SWITCH, .show = gradio_show, .step = gradio_step, .on = gradio_on},
-    {.label = "Gadget: mesh", .kind = CR_SWITCH, .show = gmesh_show, .step = gmesh_step, .on = gmesh_on},
-    {.label = "Gadget: board", .kind = CR_SWITCH, .show = gboard_show, .step = gboard_step, .on = gboard_on},
-    {.label = "Panel brightness", .kind = CR_LEVEL, .show = bri_show, .step = bri_step, .pct = bri_pct, .set = bri_set},
-    {.label = "Panel auto dim", .kind = CR_SWITCH, .show = dim_show, .step = dim_step, .on = dim_on},
-    {.label = "Dim after", .kind = CR_LEVEL, .show = dimt_show, .step = dimt_step, .pct = dimt_pct},
-    {.label = "This window", .kind = CR_INFO, .show = grid_show},
-    {.label = "Appearance", .kind = CR_GO, .show = go_show_appearance, .go = "@display"},
-};
 
 /* ================================================================ Sound == */
 
-static void vol_show(char *b, size_t n) { snprintf(b, n, "%d %%", audio_volume_get()); }
-static int vol_pct(void) { return audio_volume_get(); }
+static void pct_text(int v, char *b, size_t n) { snprintf(b, n, "%d %%", v); }
 static void vol_set(int v)
 {
     v = (v + 2) / 5 * 5;
     v = v < 0 ? 0 : v > 100 ? 100 : v;
     if (v != audio_volume_get()) audio_volume_set(v);
 }
-static void vol_step(int d) { vol_set(audio_volume_get() + d * 5); }
-static int mute_on(void) { return audio_is_muted(); }
-static void mute_show(char *b, size_t n) { snprintf(b, n, "%s", audio_is_muted() ? "MUTED" : "sound on"); }
-static void mute_step(int d) { (void)d; audio_mute_set(!audio_is_muted()); }      /* explicit, never a blind toggle */
-static void boot_show(char *b, size_t n)
+static int mute_get(void) { return audio_is_muted(); }
+static void mute_set(int v) { audio_mute_set(v != 0); }                 /* explicit, never a blind toggle */
+static int boot_count(void) { return speech_available() ? 3 : 2; }
+static int boot_get(void)
 {
-    static const char *const M[] = {"off", "chirp", "spoken"};
     int m = settings_get_boot_sound();
     if (m == 2 && !speech_available()) m = 1;
-    snprintf(b, n, "%s", m >= 0 && m < 3 ? M[m] : "?");
+    return m < 0 ? 0 : m;
 }
-static void boot_step(int d)
+static void boot_set(int v) { settings_set_boot_sound(v); }
+static void boot_text(int v, char *b, size_t n)
 {
-    const int modes = speech_available() ? 3 : 2;
-    int m = settings_get_boot_sound();
-    if (m == 2 && !speech_available()) m = 1;
-    settings_set_boot_sound((m + (d < 0 ? modes - 1 : 1)) % modes);
+    static const char *const M[] = {"Off", "Chirp", "Spoken"};
+    snprintf(b, n, "%s", v >= 0 && v < 3 ? M[v] : "?");
 }
-static int ring_on(void) { return settings_get_alert_ring(); }
-static void ring_show(char *b, size_t n) { snprintf(b, n, "%s", onoff(settings_get_alert_ring())); }
-static void ring_step(int d)
+static int ring_get(void) { return settings_get_alert_ring(); }
+static void ring_set(int v)
 {
-    (void)d;
-    settings_set_alert_ring(!settings_get_alert_ring());
+    settings_set_alert_ring(v != 0);
     ls_notify_set_alerts(settings_get_alert_ring(), ls_notify_vibe());
 }
-static void nsound_show(char *b, size_t n)
+static int nsound_count(void) { int count = 0, cur = 0; (void)settings_notification_sound_names(&count, &cur); return count; }
+static int nsound_get(void) { int count = 0, cur = 0; (void)settings_notification_sound_names(&count, &cur); return cur < 0 ? 0 : cur; }
+static void nsound_text(int v, char *b, size_t n)
 {
     int count = 0, cur = 0;
     const char *const *names = settings_notification_sound_names(&count, &cur);
-    snprintf(b, n, "%s", names && cur >= 0 && cur < count ? names[cur] : "?");
+    snprintf(b, n, "%s", names && v >= 0 && v < count ? names[v] : "?");
 }
-static void nsound_step(int d) { (void)d; settings_cycle_notification_sound(); (void)snd_alert_start(); }   /* heard, not read */
-static bool vibe_now(void) { return ls_haptic_enabled() && settings_get_alert_vibe(); }
-static int vibe_on(void) { return vibe_now(); }
-static void vibe_show(char *b, size_t n) { snprintf(b, n, "%s", onoff(vibe_now())); }
-static void vibe_step(int d)
+static void nsound_set(int v)
 {
-    (void)d;
-    const bool en = !vibe_now();
+    /* the board's setter steps to the next sound: step until it is the one */
+    for (int i = nsound_count(); i > 0 && nsound_get() != v; i--) settings_cycle_notification_sound();
+    (void)snd_alert_start();                                             /* heard, not read */
+}
+static bool vibe_now(void) { return ls_haptic_enabled() && settings_get_alert_vibe(); }
+static int vibe_get(void) { return vibe_now(); }
+static void vibe_set(int v)
+{
+    const bool en = v != 0;
+    if (en == vibe_now()) return;
     settings_set_alert_vibe(en);
     if (settings_get_alert_vibe() != en) return;       /* a refused write changes nothing */
     if (!en) ls_haptic_stop();
@@ -212,30 +130,38 @@ static void voice_show(char *b, size_t n)
     if (speech_available()) snprintf(b, n, "%s %d%%", speech_voice_name(speech_voice_get()), speech_volume_get());
     else snprintf(b, n, "no voice in this build");
 }
-static void music_go_show(char *b, size_t n) { snprintf(b, n, "play from the card"); }
 static void sound_sum(char *b, size_t n)
 {
     if (audio_is_muted()) snprintf(b, n, "muted (volume %d %%)", audio_volume_get());
     else snprintf(b, n, "volume %d %%", audio_volume_get());
 }
 
-static const dk_cpl_row_t SOUND_ROWS[] = {
-    {.label = "Volume", .kind = CR_LEVEL, .show = vol_show, .step = vol_step, .pct = vol_pct, .set = vol_set},
-    {.label = "Mute", .kind = CR_SWITCH, .warn = true, .show = mute_show, .step = mute_step, .on = mute_on},
-    {.label = "Boot sound", .kind = CR_CHOICE, .show = boot_show, .step = boot_step},
-    {.label = "Alert sound", .kind = CR_SWITCH, .show = ring_show, .step = ring_step, .on = ring_on},
-    {.label = "Notify sound", .kind = CR_CHOICE, .show = nsound_show, .step = nsound_step},
-    {.label = "Vibrate", .kind = CR_SWITCH, .show = vibe_show, .step = vibe_step, .on = vibe_on},
-    {.label = "Voice", .kind = CR_GO, .show = voice_show, .go = "set"},
-    {.label = "Music player", .kind = CR_GO, .show = music_go_show, .go = "music"},
+static const dk_sh_ctl_t SND_VOLUME[] = {
+    GROUP("Speaker"),
+    {.kind = SH_SLIDER, .flags = SHF_LIVE, .label = "&Volume", .get = audio_volume_get, .set = vol_set, .text = pct_text, .min = 0, .max = 100, .step = 5},
+    {.kind = SH_CHECK, .flags = SHF_WARN, .label = "&Mute all sound", .get = mute_get, .set = mute_set},
+    GROUP("Start-up"),
+    DROP("&Boot sound", boot_get, boot_set, boot_count, boot_text),
 };
+static const dk_sh_ctl_t SND_ALERTS[] = {
+    GROUP("When something needs you"),
+    CHECK("Play a &sound", ring_get, ring_set),
+    DROP("&Notify sound", nsound_get, nsound_set, nsound_count, nsound_text),
+    CHECK("V&ibrate", vibe_get, vibe_set),
+    NOTE("The notify sound plays once when it is applied."),
+};
+static const dk_sh_ctl_t SND_MORE[] = {
+    GROUP("Voice"),
+    FACT("Voice", voice_show),
+    OPEN("Voice settings", "Open SETTINGS...", "set"),
+    GROUP("Music"),
+    OPEN("Music player", "Open MUSIC...", "music"),
+};
+static const dk_sh_page_t SND_PAGES[] = {PAGE("&Volume", SND_VOLUME), PAGE("A&lerts", SND_ALERTS), PAGE("Voice & M&usic", SND_MORE)};
 
 /* ===================================================== Mouse & Keyboard == */
 
-static void dbl_show(char *b, size_t n) { snprintf(b, n, "%d ms", dk_shell_dbl_ms()); }
-static int dbl_pct(void) { return (dk_shell_dbl_ms() - 200) * 100 / 700; }
-static void dbl_set(int pct) { dk_shell_set_dbl_ms((200 + pct * 7 + 25) / 50 * 50); }
-static void dbl_step(int d) { dk_shell_set_dbl_ms(dk_shell_dbl_ms() + d * 50); }
+static void ms_text(int v, char *b, size_t n) { snprintf(b, n, "%d ms", v); }
 
 #if defined(ESP_PLATFORM) && defined(CONFIG_LS_BLE_HEAD) && CONFIG_LS_BLE_HEAD
 #include "../../../../main/ble_hid.h"
@@ -271,27 +197,20 @@ static void bt_show(char *b, size_t n)
 static bool no_bt(void) { return dk_sys_bt(NULL) < 0; }
 /* Pairing is the console's: `ble hid scan`, then `ble hid pair <id>` with
    the passkey it prints. Run the scan in TERMINAL, where its list shows. */
-static void pair_show(char *b, size_t n) { snprintf(b, n, "scan in TERMINAL"); }
-static void pair_step(int d)
+static void pair_press(void)
 {
-    (void)d;
     if (!dk_sys_console("ble hid scan 20"))
         dk_msg("Pair a keyboard", "TERMINAL is busy or not in this build.", "On the console: ble hid scan, then ble hid pair <id>");
 }
-static int bleboot_on(void) { return settings_get_ble_at_boot(); }
-static void bleboot_show(char *b, size_t n) { snprintf(b, n, "%s", onoff(settings_get_ble_at_boot())); }
-static void bleboot_step(int d) { (void)d; settings_set_ble_at_boot(!settings_get_ble_at_boot()); }
-static int keylight_on(void) { return settings_get_keyboard_light(); }
-static void keylight_show(char *b, size_t n) { snprintf(b, n, "%s", onoff(settings_get_keyboard_light())); }
-static void keylight_step(int d)
+static int bleboot_get(void) { return settings_get_ble_at_boot(); }
+static void bleboot_set(int v) { settings_set_ble_at_boot(v != 0); }
+static int keylight_get(void) { return settings_get_keyboard_light(); }
+static void keylight_set(int v)
 {
-    (void)d;
-    const bool on = !settings_get_keyboard_light();
-    if (ls_keypad_backlight(on) == ESP_OK) settings_set_keyboard_light(on);    /* no keypad: the row stays as it was */
+    if (ls_keypad_backlight(v != 0) == ESP_OK) settings_set_keyboard_light(v != 0);    /* no keypad: it stays as it was */
 }
-static int keydim_on(void) { return display_ctl_keyboard_dim(); }
-static void keydim_show(char *b, size_t n) { snprintf(b, n, "%s", display_ctl_keyboard_dim() ? "with the screen" : "off"); }
-static void keydim_step(int d) { (void)d; display_ctl_set_keyboard_dim(!display_ctl_keyboard_dim()); }
+static int keydim_get(void) { return display_ctl_keyboard_dim(); }
+static void keydim_set(int v) { display_ctl_set_keyboard_dim(v != 0); }
 static void input_sum(char *b, size_t n)
 {
     int up = 0;
@@ -300,18 +219,26 @@ static void input_sum(char *b, size_t n)
     else snprintf(b, n, "%d keyboard%s, %d connected", bonded, bonded == 1 ? "" : "s", up);
 }
 
-static const dk_cpl_row_t INPUT_ROWS[] = {
-    {.label = "Double-click time", .kind = CR_LEVEL, .show = dbl_show, .step = dbl_step, .pct = dbl_pct, .set = dbl_set},
-    {.label = "Bluetooth keyboards", .kind = CR_INFO, .show = bt_show},
-    {.label = "Keyboard 1", .kind = CR_INFO, .show = kb_show_0, .hidden = kb_hide_0},
-    {.label = "Keyboard 2", .kind = CR_INFO, .show = kb_show_1, .hidden = kb_hide_1},
-    {.label = "Keyboard 3", .kind = CR_INFO, .show = kb_show_2, .hidden = kb_hide_2},
-    {.label = "Keyboard 4", .kind = CR_INFO, .show = kb_show_3, .hidden = kb_hide_3},
-    {.label = "Pair a keyboard", .kind = CR_ACTION, .show = pair_show, .step = pair_step, .hidden = no_bt},
-    {.label = "Bluetooth at boot", .kind = CR_SWITCH, .show = bleboot_show, .step = bleboot_step, .on = bleboot_on},
-    {.label = "Keypad light", .kind = CR_SWITCH, .show = keylight_show, .step = keylight_step, .on = keylight_on},
-    {.label = "Keypad dims", .kind = CR_SWITCH, .show = keydim_show, .step = keydim_step, .on = keydim_on},
+static const dk_sh_ctl_t IN_MOUSE[] = {
+    GROUP("Double-click"),
+    {.kind = SH_SLIDER, .label = "&Speed", .get = dk_shell_dbl_ms, .set = dk_shell_set_dbl_ms, .text = ms_text, .min = 200, .max = 900, .step = 50},
+    NOTE("Two clicks within this time open an icon. Shorter is"),
+    NOTE("stricter; longer suits a slow link to the board."),
 };
+static const dk_sh_ctl_t IN_KEYS[] = {
+    GROUP("Bluetooth keyboards"),
+    FACT("Paired", bt_show),
+    FACT_IF("Keyboard 1", kb_show_0, kb_hide_0),
+    FACT_IF("Keyboard 2", kb_show_1, kb_hide_1),
+    FACT_IF("Keyboard 3", kb_show_2, kb_hide_2),
+    FACT_IF("Keyboard 4", kb_show_3, kb_hide_3),
+    {.kind = SH_BUTTON, .label = "Pair another", .cap = "Scan in TERMINAL...", .press = pair_press, .hidden = no_bt},
+    CHECK("&Bluetooth on at start-up", bleboot_get, bleboot_set),
+    GROUP("Built-in keypad"),
+    CHECK("Keypad &light", keylight_get, keylight_set),
+    CHECK("&Dim the keypad with the screen", keydim_get, keydim_set),
+};
+static const dk_sh_page_t IN_PAGES[] = {PAGE("&Mouse", IN_MOUSE), PAGE("&Keyboards", IN_KEYS)};
 
 /* ============================================================== Network == */
 
@@ -355,9 +282,8 @@ static void ip_show(char *b, size_t n)
     net_get(&t);
     snprintf(b, n, "%s", t.connected && t.ip[0] ? t.ip : "--");
 }
-static int wifiboot_on(void) { return settings_get_wifi_at_boot(); }
-static void wifiboot_show(char *b, size_t n) { snprintf(b, n, "%s", onoff(settings_get_wifi_at_boot())); }
-static void wifiboot_step(int d) { (void)d; settings_set_wifi_at_boot(!settings_get_wifi_at_boot()); }
+static int wifiboot_get(void) { return settings_get_wifi_at_boot(); }
+static void wifiboot_set(int v) { settings_set_wifi_at_boot(v != 0); }
 static void ap_show(char *b, size_t n)
 {
     ls_val_t on, ssid;
@@ -403,8 +329,6 @@ static void ssh_show(char *b, size_t n)
     if (rs.ssh_on) snprintf(b, n, "%s, port %d, %d key%s", rs.ssh_listening ? "listening" : "waiting for the network", rs.ssh_port, rs.ssh_keys, rs.ssh_keys == 1 ? "" : "s");
     else snprintf(b, n, "off");
 }
-static void wifi_go_show(char *b, size_t n) { snprintf(b, n, "join, scan, forget"); }
-static void link_go_show(char *b, size_t n) { snprintf(b, n, "viewers and passwords"); }
 static void net_sum(char *b, size_t n)
 {
     net_t t;
@@ -413,19 +337,33 @@ static void net_sum(char *b, size_t n)
     else snprintf(b, n, "Wi-Fi not joined");
 }
 
-static const dk_cpl_row_t NET_ROWS[] = {
-    {.label = "Wi-Fi", .kind = CR_INFO, .show = wifi_show},
-    {.label = "Address", .kind = CR_INFO, .show = ip_show},
-    {.label = "Wi-Fi at boot", .kind = CR_SWITCH, .show = wifiboot_show, .step = wifiboot_step, .on = wifiboot_on},
-    {.label = "Networks", .kind = CR_GO, .show = wifi_go_show, .go = "wireless"},
-    {.label = "Hotspot", .kind = CR_INFO, .show = ap_show},
-    {.label = "Hotspot password", .kind = CR_INFO, .show = appass_show, .hidden = no_ap},
-    {.label = "Watching now", .kind = CR_INFO, .show = viewers_show},
-    {.label = "Web screen", .kind = CR_INFO, .show = web_show},
-    {.label = "Network terminal", .kind = CR_INFO, .show = tcp_show},
-    {.label = "SSH", .kind = CR_INFO, .show = ssh_show},
-    {.label = "Remote screens", .kind = CR_GO, .show = link_go_show, .go = "link"},
+static const dk_sh_ctl_t NET_WIFI[] = {
+    GROUP("Connection"),
+    FACT("Wi-Fi", wifi_show),
+    FACT("Address", ip_show),
+    CHECK("&Join Wi-Fi at start-up", wifiboot_get, wifiboot_set),
+    GROUP("Networks"),
+    OPEN("Join, scan, forget", "Open WIRELESS...", "wireless"),
 };
+static const dk_sh_ctl_t NET_AP[] = {
+    GROUP("Hotspot"),
+    FACT("Hotspot", ap_show),
+    FACT_IF("Password", appass_show, no_ap),
+    NOTE("The hotspot is switched on and off in WIRELESS."),
+    OPEN("Hotspot switch", "Open WIRELESS...", "wireless"),
+};
+static const dk_sh_ctl_t NET_REMOTE[] = {
+    GROUP("Watching now"),
+    FACT("Viewers", viewers_show),
+    GROUP("Ways in"),
+    FACT("Web screen", web_show),
+    FACT("Network terminal", tcp_show),
+    FACT("SSH", ssh_show),
+    NOTE("Switching one off here could cut off the screen you are"),
+    NOTE("looking at, so the switches stay in LINK."),
+    OPEN("Viewers and passwords", "Open LINK...", "link"),
+};
+static const dk_sh_page_t NET_PAGES[] = {PAGE("&Wi-Fi", NET_WIFI), PAGE("&Hotspot", NET_AP), PAGE("&Remote screens", NET_REMOTE)};
 
 /* =============================================================== Radios == */
 
@@ -435,8 +373,7 @@ static void rx_show(char *b, size_t n)
     if (r) snprintf(b, n, "receiving: %s", r);
     else snprintf(b, n, "parked");
 }
-static void park_show(char *b, size_t n) { snprintf(b, n, "park the receiver"); }
-static void park_step(int d) { (void)d; ls_tui_radio_want(NULL); }
+static void park_press(void) { ls_tui_radio_want(NULL); }
 static bool nothing_claimed(void) { return ls_tui_radio_claimed() == NULL; }
 static void radio_show(int r, char *b, size_t n)
 {
@@ -468,7 +405,7 @@ static void loraport_show(char *b, size_t n)
     if (!ls_lora_port_same(&shown, ls_lora_port())) snprintf(b, n, "%s, reboot to apply", what);
     else snprintf(b, n, "%s%s", what, ls_lora_port_blocks_keyboard() ? ", keyboard off" : "");
 }
-static void loraport_step(int d) { (void)d; char why[96]; (void)ls_lora_port_toggle(why, sizeof(why)); }
+static void loraport_press(void) { char why[96]; (void)ls_lora_port_toggle(why, sizeof(why)); }
 static void loramod_show(char *b, size_t n)
 {
     ls_lora_port_t next;
@@ -480,23 +417,32 @@ static void loramod_show(char *b, size_t n)
     if (!ls_lora_port_same(&shown, ls_lora_port())) snprintf(b, n, "%s, reboot to apply", what);
     else snprintf(b, n, "%s", what);
 }
-static void loramod_step(int d) { (void)d; char why[96]; (void)ls_lora_port_next_module(why, sizeof(why)); }
-static void radios_go_show(char *b, size_t n) { snprintf(b, n, "switch each radio on and off"); }
+static void loramod_press(void) { char why[96]; (void)ls_lora_port_next_module(why, sizeof(why)); }
 static void radios_sum(char *b, size_t n) { rx_show(b, n); }
 
-static const dk_cpl_row_t RADIO_ROWS[] = {
-    {.label = "Receiver", .kind = CR_INFO, .show = rx_show},
-    {.label = "Stop receiving", .kind = CR_ACTION, .show = park_show, .step = park_step, .hidden = nothing_claimed},
-    {.label = "LoRa chip", .kind = CR_INFO, .show = lora_show},
-    {.label = "Radio", .kind = CR_INFO, .show = radio_show_1, .hidden = radio_hide_1},
-    {.label = "Radio", .kind = CR_INFO, .show = radio_show_2, .hidden = radio_hide_2},
-    {.label = "Radio", .kind = CR_INFO, .show = radio_show_3, .hidden = radio_hide_3},
-    {.label = "Radio", .kind = CR_INFO, .show = radio_show_4, .hidden = radio_hide_4},
-    {.label = "Radio", .kind = CR_INFO, .show = radio_show_5, .hidden = radio_hide_5},
-    {.label = "LoRa radio port", .kind = CR_CHOICE, .show = loraport_show, .step = loraport_step},
-    {.label = "LoRa module", .kind = CR_CHOICE, .show = loramod_show, .step = loramod_step},
-    {.label = "Power and state", .kind = CR_GO, .show = radios_go_show, .go = "radios"},
+static const dk_sh_ctl_t RAD_RX[] = {
+    GROUP("Receiver"),
+    FACT("Now", rx_show),
+    {.kind = SH_BUTTON, .label = "Stop receiving", .cap = "&Park the receiver", .press = park_press, .off = nothing_claimed},
+    GROUP("Fitted"),
+    {.kind = SH_NOTE, .show = radio_show_1, .hidden = radio_hide_1},
+    {.kind = SH_NOTE, .show = radio_show_2, .hidden = radio_hide_2},
+    {.kind = SH_NOTE, .show = radio_show_3, .hidden = radio_hide_3},
+    {.kind = SH_NOTE, .show = radio_show_4, .hidden = radio_hide_4},
+    {.kind = SH_NOTE, .show = radio_show_5, .hidden = radio_hide_5},
+    OPEN("Power and state", "Open RADIOS...", "radios"),
 };
+static const dk_sh_ctl_t RAD_LORA[] = {
+    GROUP("LoRa"),
+    FACT("Chip", lora_show),
+    FACT("Radio port", loraport_show),
+    {.kind = SH_BUTTON, .label = "Change port", .cap = "&Switch port", .press = loraport_press},
+    FACT("Module", loramod_show),
+    {.kind = SH_BUTTON, .label = "Change module", .cap = "&Next module", .press = loramod_press},
+    NOTE("These two are saved at once and take effect after a"),
+    NOTE("restart; the line says so until then."),
+};
+static const dk_sh_page_t RAD_PAGES[] = {PAGE("&Receiver", RAD_RX), PAGE("&LoRa", RAD_LORA)};
 
 /* ========================================================= Date and GPS == */
 
@@ -531,16 +477,14 @@ static void tsrc_show(char *b, size_t n)
     if (g->alive && g->year >= 2024) snprintf(b, n, "GPS, %d satellites", g->sats_used);
     else snprintf(b, n, "%s", src == 2 ? "network time" : src == 1 ? "board clock (RTC)" : "none yet");
 }
-static int gps_on(void) { return ls_gps_running(); }
-static void gpson_show(char *b, size_t n) { snprintf(b, n, "%s", ls_gps_running() ? "on" : "off"); }
-static void gpson_step(int d)
+static int gpson_get(void) { return ls_gps_running(); }
+static void gpson_set(int v)
 {
-    (void)d;
     /* through the board's own action, so power policy and the app agree */
     ls_args_t in = {0};
     in.n = 1;
     in.v[0].kind = LS_VAL_BOOL;
-    in.v[0].i = !ls_gps_running();
+    in.v[0].i = v != 0;
     ls_val_t out;
     (void)ls_action_call("gps.on", &in, &out, ls_quick_grant_builtin());
 }
@@ -552,6 +496,7 @@ static void fix_show(char *b, size_t n)
     else snprintf(b, n, "no fix yet");
 }
 static void sats_show(char *b, size_t n) { const ls_gps_state_t *g = gps(); snprintf(b, n, "%d used of %d in view", g->sats_used, g->sats_visible); }
+static int sats_get(void) { return gps()->sats_used; }
 static void pos_show(char *b, size_t n)
 {
     const ls_gps_state_t *g = gps();
@@ -559,7 +504,6 @@ static void pos_show(char *b, size_t n)
     snprintf(b, n, "%.5f %c  %.5f %c  %.0f m", g->lat_deg < 0 ? -g->lat_deg : g->lat_deg, g->lat_deg < 0 ? 'S' : 'N',
              g->lon_deg < 0 ? -g->lon_deg : g->lon_deg, g->lon_deg < 0 ? 'W' : 'E', (double)g->alt_m);
 }
-static void gps_go_show(char *b, size_t n) { snprintf(b, n, "sky view and signal"); }
 static void date_sum(char *b, size_t n)
 {
     struct tm g;
@@ -568,24 +512,44 @@ static void date_sum(char *b, size_t n)
     else snprintf(b, n, "clock not set");
 }
 
-static const dk_cpl_row_t DATE_ROWS[] = {
-    {.label = "Date", .kind = CR_INFO, .show = date_show},
-    {.label = "Time", .kind = CR_INFO, .show = time_show},
-    {.label = "Set by", .kind = CR_INFO, .show = tsrc_show},
-    {.label = "GPS receiver", .kind = CR_SWITCH, .show = gpson_show, .step = gpson_step, .on = gps_on},
-    {.label = "Fix", .kind = CR_INFO, .show = fix_show},
-    {.label = "Satellites", .kind = CR_INFO, .show = sats_show},
-    {.label = "Position", .kind = CR_INFO, .show = pos_show},
-    {.label = "GPS", .kind = CR_GO, .show = gps_go_show, .go = "gps"},
+static const dk_sh_ctl_t DATE_CLOCK[] = {
+    GROUP("Clock"),
+    FACT("Date", date_show),
+    FACT("Time", time_show),
+    FACT("Set by", tsrc_show),
+    NOTE("The clock sets itself from GPS or the network and is"),
+    NOTE("kept in UTC; the board has no time zone to choose."),
 };
+static const dk_sh_ctl_t DATE_GPS[] = {
+    GROUP("Receiver"),
+    CHECK("&GPS receiver on", gpson_get, gpson_set),
+    FACT("Fix", fix_show),
+    {.kind = SH_GAUGE, .label = "Satellites", .get = sats_get, .show = sats_show, .min = 0, .max = 16},
+    FACT("Position", pos_show),
+    GROUP("More"),
+    OPEN("Sky view and signal", "Open GPS...", "gps"),
+};
+static const dk_sh_page_t DATE_PAGES[] = {PAGE("&Date & Time", DATE_CLOCK), PAGE("&GPS", DATE_GPS)};
 
 /* ================================================================ Power == */
 
-static void pmode_show(char *b, size_t n) { snprintf(b, n, "%s", ls_power_mode_name(ls_power_mode())); }
-static void pmode_step(int d) { ls_power_set_mode((ls_pwr_mode_t)(((int)ls_power_mode() + (d < 0 ? LS_PWR_MODES - 1 : 1)) % LS_PWR_MODES)); }
-static void pwhat_show(char *b, size_t n) { snprintf(b, n, "%s", ls_power_mode_what(ls_power_mode())); }
-static void pkeep_show(char *b, size_t n) { snprintf(b, n, "%s", ls_power_keep_name(ls_power_keep())); }
-static void pkeep_step(int d) { ls_power_set_keep((ls_pwr_keep_t)(((int)ls_power_keep() + (d < 0 ? LS_KEEPS - 1 : 1)) % LS_KEEPS)); }
+static int pmode_count(void) { return LS_PWR_MODES; }
+static int pmode_get(void) { return (int)ls_power_mode(); }
+static void pmode_set(int v) { ls_power_set_mode((ls_pwr_mode_t)v); }
+static void pmode_text(int v, char *b, size_t n) { snprintf(b, n, "%s", ls_power_mode_name(v)); }
+static int pkeep_count(void) { return LS_KEEPS; }
+static int pkeep_get(void) { return (int)ls_power_keep(); }
+static void pkeep_set(int v) { ls_power_set_keep((ls_pwr_keep_t)v); }
+static void pkeep_text(int v, char *b, size_t n) { snprintf(b, n, "%s", ls_power_keep_name(v)); }
+enum { PWR_MODE_AT = 1 };                   /* where the mode's list sits on its tab */
+/* What the mode in the list means, before it is applied. */
+static void pwhat_show(char *b, size_t n)
+{
+    const dk_sheet_t *s = dk_sheet_now();
+    int m = (int)ls_power_mode();
+    if (s && s->pages[0].n > PWR_MODE_AT && s->pages[0].ctl[PWR_MODE_AT].get == pmode_get) m = dk_sheet_val(&s->pages[0].ctl[PWR_MODE_AT]);
+    snprintf(b, n, "%s", ls_power_mode_what(m));
+}
 static void batt_show(char *b, size_t n)
 {
     ls_gauge_t g;
@@ -597,6 +561,23 @@ static int batt_pct(void) { ls_gauge_t g; return ls_gauge_get(&g) && g.present ?
 static bool no_gauge(void) { ls_gauge_t g; return !ls_gauge_get(&g) || !g.present; }
 static bool has_gauge(void) { return !no_gauge(); }
 static void parked_show(char *b, size_t n) { const char *p = ls_power_parked(); snprintf(b, n, "%s", p && p[0] ? p : "nothing"); }
+static int dim_get(void) { return display_ctl_autodim_enabled(); }
+static void dim_set(int v) { display_ctl_set_autodim(v != 0); }
+static const int DIM_STEPS[] = {15, 30, 60, 120, 240};
+static int dimt_get(void)
+{
+    const int cur = display_ctl_autodim_timeout();
+    int at = 0;
+    for (int i = 0; i < COUNT(DIM_STEPS); i++) if (DIM_STEPS[i] <= cur) at = i;
+    return at;
+}
+static void dimt_set(int v) { if (v >= 0 && v < COUNT(DIM_STEPS)) display_ctl_set_autodim_timeout(DIM_STEPS[v]); }
+static void dimt_text(int v, char *b, size_t n)
+{
+    const int s = DIM_STEPS[v >= 0 && v < COUNT(DIM_STEPS) ? v : 0];
+    if (s >= 120) snprintf(b, n, "%d minutes", s / 60);
+    else snprintf(b, n, "%d seconds", s);
+}
 static void power_sum(char *b, size_t n)
 {
     ls_gauge_t g;
@@ -604,21 +585,28 @@ static void power_sum(char *b, size_t n)
     else snprintf(b, n, "%s", ls_power_mode_name(ls_power_mode()));
 }
 
-static const dk_cpl_row_t POWER_ROWS[] = {
-    {.label = "Power mode", .kind = CR_CHOICE, .show = pmode_show, .step = pmode_step},
-    {.label = "Which means", .kind = CR_INFO, .show = pwhat_show},
-    {.label = "WATCH keeps", .kind = CR_CHOICE, .show = pkeep_show, .step = pkeep_step},
-    {.label = "Held off by power", .kind = CR_INFO, .show = parked_show},
-    {.label = "Battery", .kind = CR_LEVEL, .show = batt_show, .pct = batt_pct, .hidden = no_gauge},
-    {.label = "Battery", .kind = CR_INFO, .show = batt_show, .hidden = has_gauge},
-    {.label = "Panel auto dim", .kind = CR_SWITCH, .show = dim_show, .step = dim_step, .on = dim_on},
-    {.label = "Dim after", .kind = CR_LEVEL, .show = dimt_show, .step = dimt_step, .pct = dimt_pct},
+static const dk_sh_ctl_t PWR_MODE[] = {
+    GROUP("Power mode"),
+    DROP("&Mode", pmode_get, pmode_set, pmode_count, pmode_text),           /* PWR_MODE_AT */
+    FACT("Which means", pwhat_show),
+    DROP("&WATCH keeps", pkeep_get, pkeep_set, pkeep_count, pkeep_text),
+    GROUP("Now"),
+    FACT("Held off by power", parked_show),
 };
+static const dk_sh_ctl_t PWR_BATT[] = {
+    GROUP("Battery"),
+    {.kind = SH_GAUGE, .label = "Charge", .get = batt_pct, .show = batt_show, .min = 0, .max = 100, .hidden = no_gauge},
+    FACT_IF("Battery", batt_show, has_gauge),
+    GROUP("Screen"),
+    CHECK("&Dim the panel when nothing is touched", dim_get, dim_set),
+    {.kind = SH_SPIN, .label = "Dim a&fter", .get = dimt_get, .set = dimt_set, .text = dimt_text, .min = 0, .max = COUNT(DIM_STEPS) - 1, .step = 1},
+};
+static const dk_sh_page_t PWR_PAGES[] = {PAGE("Power &mode", PWR_MODE), PAGE("&Battery & screen", PWR_BATT)};
 
 /* ============================================================== Storage == */
 
 /* The card's size is a slow read (the FAT's free count): taken when the
-   page opens and on Read again, never from a frame. */
+   page opens and on Measure again, never from a frame. */
 static struct { bool have; uint64_t total, free_b; } s_sd;
 static void sd_enter(void) { s_sd.have = ls_sdcard_mounted() && ls_sdcard_size(&s_sd.total, &s_sd.free_b); }
 static void sd_show(char *b, size_t n)
@@ -641,27 +629,26 @@ static void sdfree_show(char *b, size_t n)
     snprintf(b, n, "%s free", f);
 }
 static int sdused_pct(void) { return s_sd.have && s_sd.total ? (int)((s_sd.total - s_sd.free_b) * 100 / s_sd.total) : 0; }
-static void sdread_show(char *b, size_t n) { snprintf(b, n, "read again"); }
-static void sdread_step(int d) { (void)d; sd_enter(); }
 static void walls_show(char *b, size_t n)
 {
     const char *names[8];
     uint32_t ids[8];
     snprintf(b, n, "%d on the card (desk/wallpapers)", dk_wall_files(names, ids, 8));
 }
-static void folder_go_show(char *b, size_t n) { snprintf(b, n, "browse the card"); }
-static void files_go_show(char *b, size_t n) { snprintf(b, n, "copy, delete, play"); }
 static void sd_sum(char *b, size_t n) { snprintf(b, n, "%s", ls_sdcard_mounted() ? "card mounted" : "no card"); }
 
-static const dk_cpl_row_t STORAGE_ROWS[] = {
-    {.label = "SD card", .kind = CR_INFO, .show = sd_show},
-    {.label = "Size", .kind = CR_INFO, .show = sdsize_show},
-    {.label = "In use", .kind = CR_LEVEL, .show = sdfree_show, .pct = sdused_pct},
-    {.label = "Measure", .kind = CR_ACTION, .show = sdread_show, .step = sdread_step},
-    {.label = "Wallpaper pictures", .kind = CR_INFO, .show = walls_show},
-    {.label = "Folder window", .kind = CR_GO, .show = folder_go_show, .go = "@folder"},
-    {.label = "SD CARD app", .kind = CR_GO, .show = files_go_show, .go = "files"},
+static const dk_sh_ctl_t SD_CARD[] = {
+    GROUP("SD card"),
+    FACT("Card", sd_show),
+    FACT("Size", sdsize_show),
+    {.kind = SH_GAUGE, .label = "In use", .get = sdused_pct, .show = sdfree_show, .min = 0, .max = 100},
+    {.kind = SH_BUTTON, .label = "Measure", .cap = "&Measure again", .press = sd_enter},
+    GROUP("On the card"),
+    FACT("Wallpaper pictures", walls_show),
+    OPEN("Folder window", "Browse the card...", "@folder"),
+    OPEN("SD CARD app", "Copy, delete, play...", "files"),
 };
+static const dk_sh_page_t SD_PAGES[] = {{.title = "&SD card", .ctl = SD_CARD, .n = COUNT(SD_CARD), .enter = sd_enter}};
 
 /* ============================================================== Updates == */
 
@@ -674,20 +661,21 @@ static void ota_show(char *b, size_t n)
 }
 static void otach_show(char *b, size_t n) { value_text("ota.channel", b, n); }
 static bool no_channel(void) { ls_val_t v; return !ls_value_read("ota.channel", &v, NULL); }
-static int updchk_on(void) { return settings_get_update_check(); }
-static void updchk_show(char *b, size_t n) { snprintf(b, n, "%s", settings_get_update_check() ? "daily" : "never by itself"); }
-static void updchk_step(int d) { (void)d; settings_set_update_check(!settings_get_update_check()); }
-/* Checking and installing stay in UPDATE: the owner starts an install there. */
-static void upd_go_show(char *b, size_t n) { snprintf(b, n, "check and install"); }
+static int updchk_get(void) { return settings_get_update_check(); }
+static void updchk_set(int v) { settings_set_update_check(v != 0); }
 static void upd_sum(char *b, size_t n) { ota_show(b, n); }
 
-static const dk_cpl_row_t UPDATE_ROWS[] = {
-    {.label = "Running", .kind = CR_INFO, .show = ver_show},
-    {.label = "State", .kind = CR_INFO, .show = ota_show},
-    {.label = "Channel", .kind = CR_INFO, .show = otach_show, .hidden = no_channel},
-    {.label = "Look for updates", .kind = CR_SWITCH, .show = updchk_show, .step = updchk_step, .on = updchk_on},
-    {.label = "UPDATE", .kind = CR_GO, .show = upd_go_show, .go = "update"},
+/* Checking and installing stay in UPDATE: the owner starts an install there. */
+static const dk_sh_ctl_t UPD_CTL[] = {
+    GROUP("This board"),
+    FACT("Running", ver_show),
+    FACT("State", ota_show),
+    FACT_IF("Channel", otach_show, no_channel),
+    GROUP("Checking"),
+    CHECK("&Look for updates once a day", updchk_get, updchk_set),
+    OPEN("Check and install", "Open UPDATE...", "update"),
 };
+static const dk_sh_page_t UPD_PAGES[] = {PAGE("&Updates", UPD_CTL)};
 
 /* =============================================================== System == */
 
@@ -710,63 +698,77 @@ static void reset_show(char *b, size_t n)
     if (!sb) { snprintf(b, n, "--"); return; }
     snprintf(b, n, "%s%s", ls_safe_reset_name(sb->reset), sb->safe ? "  (SAFE MODE)" : "");
 }
-static void lang_show(char *b, size_t n) { snprintf(b, n, "%s", ls_i18n_lang_name(ls_i18n_lang())); }
-static void lang_step(int d) { (void)d; ls_i18n_set_lang(ls_i18n_next(ls_i18n_lang())); }
-static void tasks_go_show(char *b, size_t n) { snprintf(b, n, "windows and memory"); }
-static void diag_go_show(char *b, size_t n) { snprintf(b, n, "health, logs, tests"); }
-static void bootlog_go_show(char *b, size_t n) { snprintf(b, n, "this boot and the last"); }
-static void about_go_show(char *b, size_t n) { snprintf(b, n, "keys and credits"); }
+static int lang_count(void) { return LS_LANG_COUNT; }
+static int lang_get(void) { return (int)ls_i18n_lang(); }
+static void lang_set(int v) { if (ls_i18n_lang_valid(v)) ls_i18n_set_lang((ls_lang_t)v); }
+static void lang_text(int v, char *b, size_t n) { snprintf(b, n, "%s", ls_i18n_lang_name((ls_lang_t)v)); }
 static void sys_sum(char *b, size_t n) { snprintf(b, n, "%s", ls_desk_version()); }
 
-static const dk_cpl_row_t SYSTEM_ROWS[] = {
-    {.label = "Firmware", .kind = CR_INFO, .show = ver_show},
-    {.label = "Board", .kind = CR_INFO, .show = board_show},
-    {.label = "Built", .kind = CR_INFO, .show = built_show},
-    {.label = "Up for", .kind = CR_INFO, .show = up_show},
-    {.label = "Memory", .kind = CR_INFO, .show = ram_show},
-    {.label = "Last reset", .kind = CR_INFO, .show = reset_show},
-    {.label = "Language", .kind = CR_CHOICE, .show = lang_show, .step = lang_step},
-    {.label = "Task Manager", .kind = CR_GO, .show = tasks_go_show, .go = "@tasks"},
-    {.label = "MY BOARD", .kind = CR_GO, .show = diag_go_show, .go = "diag"},
-    {.label = "Boot log...", .kind = CR_GO, .show = bootlog_go_show, .go = "bootlog"},
-    {.label = "About", .kind = CR_GO, .show = about_go_show, .go = "@about"},
+static const dk_sh_ctl_t SYS_GENERAL[] = {
+    GROUP("This board"),
+    FACT("Firmware", ver_show),
+    FACT("Board", board_show),
+    FACT("Built", built_show),
+    FACT("Up for", up_show),
+    FACT("Memory", ram_show),
+    FACT("Last reset", reset_show),
+    GROUP("Language"),
+    DROP("&Language", lang_get, lang_set, lang_count, lang_text),
 };
+static const dk_sh_ctl_t SYS_TOOLS[] = {
+    GROUP("Tools"),
+    OPEN("Task Manager", "Windows and memory...", "@tasks"),
+    OPEN("MY BOARD", "Health, logs, tests...", "diag"),
+    OPEN("Boot log", "This boot and the last...", "bootlog"),
+    OPEN("About", "Keys and credits...", "@about"),
+};
+static const dk_sh_page_t SYS_PAGES[] = {PAGE("&General", SYS_GENERAL), PAGE("&Tools", SYS_TOOLS)};
 
 /* ============================================================ the panel == */
 
 /* Marks: six cells by three, lines only. */
 static const dk_cpl_applet_t APPLETS[] = {
-    {"Display", "scheme, ground, effects", TUI_CYAN,
-     {"╭────╮", "│╱╲╱ │", "╰─┬┬─╯"},
-     DISPLAY_ROWS, COUNT(DISPLAY_ROWS), display_sum, NULL, NULL},
-    {"Sound", "volume, alerts, boot sound", TUI_MAGENTA,
-     {" ┌╱ ╮ ", "═╡  │ ", " └╲ ╯ "},
-     SOUND_ROWS, COUNT(SOUND_ROWS), sound_sum, NULL, "music"},
-    {"Mouse & Keyboard", "clicks, Bluetooth keyboards", TUI_YELLOW,
-     {"┌┬┬┬┬┐", "├┴┴┴┴┤", "└────┘"},
-     INPUT_ROWS, COUNT(INPUT_ROWS), input_sum, NULL, NULL},
-    {"Network", "Wi-Fi, hotspot, viewers", TUI_BLUE,
-     {" ╭──╮ ", "╭─••─╮", "  ╲╱  "},
-     NET_ROWS, COUNT(NET_ROWS), net_sum, NULL, "wireless"},
-    {"Radios", "receiver, LoRa, what is fitted", TUI_RED,
-     {"╲ │ ╱ ", " ╲│╱  ", "──┴── "},
-     RADIO_ROWS, COUNT(RADIO_ROWS), radios_sum, NULL, "radios"},
-    {"Date, Time & GPS", "the clock and its source", TUI_GREEN,
-     {"╭───╮ ", "│ │─ │ ", "╰───╯ "},
-     DATE_ROWS, COUNT(DATE_ROWS), date_sum, NULL, "gps"},
-    {"Power", "mode, WATCH, battery", TUI_GREEN,
-     {"┌────┐", "│═══ ├", "└────┘"},
-     POWER_ROWS, COUNT(POWER_ROWS), power_sum, NULL, NULL},
-    {"Storage", "the SD card", TUI_CYAN,
-     {"┌───╮ ", "│║║║│ ", "└───┘ "},
-     STORAGE_ROWS, COUNT(STORAGE_ROWS), sd_sum, sd_enter, "files"},
-    {"Updates", "version, channel, checks", TUI_YELLOW,
-     {"  │   ", " ╲│╱  ", "└───┘ "},
-     UPDATE_ROWS, COUNT(UPDATE_ROWS), upd_sum, NULL, "update"},
-    {"System", "board, memory, language", TUI_WHITE,
-     {"┬┬┬┬┬ ", "│ ╱╲ │", "┴┴┴┴┴ "},
-     SYSTEM_ROWS, COUNT(SYSTEM_ROWS), sys_sum, NULL, "diag"},
+    {"Display", "Scheme, wallpaper, panel light", TUI_CYAN,
+     {"╭────╮", "│╱╲╱ │", "╰─┬┬─╯"}, display_sum, NULL},
+    {"Sound", "Volume, alerts, voice", TUI_MAGENTA,
+     {" ┌╱ ╮ ", "═╡  │ ", " └╲ ╯ "}, sound_sum, "music"},
+    {"Mouse & Keyboard", "Double-click, keyboards, keypad", TUI_YELLOW,
+     {"┌┬┬┬┬┐", "├┴┴┴┴┤", "└────┘"}, input_sum, NULL},
+    {"Network", "Wi-Fi, hotspot, remote screens", TUI_BLUE,
+     {" ╭──╮ ", "╭─••─╮", "  ╲╱  "}, net_sum, "wireless"},
+    {"Radios", "Receiver, LoRa, what is fitted", TUI_RED,
+     {"╲ │ ╱ ", " ╲│╱  ", "──┴── "}, radios_sum, "radios"},
+    {"Date, Time & GPS", "Clock, its source, GPS receiver", TUI_GREEN,
+     {"╭───╮ ", "│ │─ │ ", "╰───╯ "}, date_sum, "gps"},
+    {"Power", "Power mode, battery, dimming", TUI_GREEN,
+     {"┌────┐", "│═══ ├", "└────┘"}, power_sum, NULL},
+    {"Storage", "The SD card and what is on it", TUI_CYAN,
+     {"┌───╮ ", "│║║║│ ", "└───┘ "}, sd_sum, "files"},
+    {"Updates", "Version, channel, daily check", TUI_YELLOW,
+     {"  │   ", " ╲│╱  ", "└───┘ "}, upd_sum, "update"},
+    {"System", "Board, memory, language, tools", TUI_WHITE,
+     {"┬┬┬┬┬ ", "│ ╱╲ │", "┴┴┴┴┴ "}, sys_sum, "diag"},
 };
+
+#define SHEET(t, p, h) {.title = t, .pages = p, .n = COUNT(p), .hue = h}
+static const dk_sheet_t SHEETS[] = {
+    {0},                                                 /* Display: dk_display_sheet() */
+    SHEET("Sound Properties", SND_PAGES, TUI_MAGENTA),
+    SHEET("Mouse & Keyboard Properties", IN_PAGES, TUI_YELLOW),
+    SHEET("Network Properties", NET_PAGES, TUI_BLUE),
+    SHEET("Radios Properties", RAD_PAGES, TUI_RED),
+    SHEET("Date, Time & GPS Properties", DATE_PAGES, TUI_GREEN),
+    SHEET("Power Properties", PWR_PAGES, TUI_GREEN),
+    SHEET("Storage Properties", SD_PAGES, TUI_CYAN),
+    SHEET("Updates Properties", UPD_PAGES, TUI_YELLOW),
+    SHEET("System Properties", SYS_PAGES, TUI_WHITE),
+};
+_Static_assert(COUNT(SHEETS) == COUNT(APPLETS), "a sheet for every applet");
 
 int dk_cpl_count(void) { return COUNT(APPLETS); }
 const dk_cpl_applet_t *dk_cpl_at(int i) { return i >= 0 && i < COUNT(APPLETS) ? &APPLETS[i] : NULL; }
+const dk_sheet_t *dk_cpl_sheet(int i)
+{
+    if (i == DK_CPL_DISPLAY) return dk_display_sheet();
+    return i > 0 && i < COUNT(SHEETS) ? &SHEETS[i] : NULL;
+}

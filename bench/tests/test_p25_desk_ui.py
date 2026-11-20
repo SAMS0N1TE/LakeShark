@@ -101,11 +101,13 @@ assert csv[1].startswith('1041,FIRE DISP') and ',851.2625,293,lcw,' in csv[1]
 # The handheld is still there: the receiver view by Ctrl+L and back, the
 # frequency keyboard by T and Esc, the other views by their digits.
 c = run('classic', OPEN + ',M4,+l,M0,~3')
-assert 'P25 / RECEIVER' in c[2] and has(c, 'ACTIVITY')
+assert ' File  View  Window  Help' in c[1]          # the desk's bar, where the app's own was
+assert has(c, ' RECEIVER ==') and has(c, 'ACTIVITY')
 c = run('classic2', OPEN + ',M4,+l,+l,M0,~3')
 assert ' Receiver  View  Talkgroup' in c[2]
 c = run('keypad', OPEN + ',+t,~3')
-assert 'ENTER FREQUENCY' in c[2] and 'FREQUENCY [' in c[43] and not has(c, 'TALKGROUPS 7')
+assert ' File  View  Window  Help' in c[1]
+assert 'ENTER FREQUENCY' in c[3] and 'FREQUENCY [' in c[43] and not has(c, 'TALKGROUPS 7')
 c = run('keypad2', OPEN + ',+t,~2,@esc,~2')
 assert ' Receiver  View  Talkgroup' in c[2]
 # Shift+L is still the handheld's "load a profile"; plain L locked out above.

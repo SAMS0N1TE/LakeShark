@@ -15,6 +15,14 @@ extern "C" {
 int ls_wrap_text(const char *text, int width, char *dst, size_t stride,
                  int max_lines);
 
+/* Seconds of age as an idle screen shows them: exact for the first ten, then
+   in steps of ten, so a counter beside data that stopped does not redraw the
+   screen every second (nothing moves but when its data does). */
+static inline long ls_age_q(long s)
+{
+    return s < 10 ? (s < 0 ? 0 : s) : s - s % 10;
+}
+
 /* How long ago, in four columns. */
 
 void ls_age_str(char *out, size_t cap, uint32_t then, uint32_t now);

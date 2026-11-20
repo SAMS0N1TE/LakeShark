@@ -4,8 +4,9 @@
 #include "ls_fsk_capture.h"
 
 #include <string.h>
+#include "esp_attr.h"
 
-static ls_fsk_capture_t s_ring[LS_FSK_CAPTURE_MAX];
+static EXT_RAM_BSS_ATTR ls_fsk_capture_t s_ring[LS_FSK_CAPTURE_MAX];
 static int      s_count;
 static uint32_t s_evicted;
 

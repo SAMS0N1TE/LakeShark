@@ -90,6 +90,14 @@ static const char *TAG = "ota";
 #if CONFIG_LS_LR2021_ONLY
 #define OTA_DIR       "/tdp4lr/"
 #define BOARD_NAME    "T-Display-P4-LR"
+#elif CONFIG_LS_TDP4_UNIVERSAL
+/* The universal image: every T-Display-P4 reads this one folder. While it
+   holds nothing for the channel, the check goes on to the folder of the
+   edition this hardware used to run (legacy_check), so a board is never left
+   without updates between the two schemes. */
+#define OTA_DIR       "/tdp4u/"
+#define BOARD_NAME    "T-Display-P4-U"
+#define OTA_LEGACY_FALLBACK 1
 #elif CONFIG_LS_TDP4_PANEL_HI8561
 #define OTA_DIR       "/tdp4tft/"
 #define BOARD_NAME    "T-Display-P4-TFT"
@@ -256,7 +264,7 @@ static bool wifi_ready(void)
 /* Opened and past the headers, following up to three redirects, every one
    of them to https. *status is -1 when the server could not be reached and
    -2 for a redirect that leaves https, -3 for the total deadline; all return NULL. */
-static esp_http_client_handle_t open_url(const char *url, int timeout_ms, int64_t deadline, int64_t *length, int *status, const char *token)
+static esp_http_client_handle_t open_url(const char *url, int timeout_ms, int64_t deadline, int64_t *length, int *status, const char *token, uint32_t from)
 {
     esp_http_client_config_t cfg = {
         .url = url,
@@ -269,6 +277,12 @@ static esp_http_client_handle_t open_url(const char *url, int timeout_ms, int64_
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) { *status = bad; return NULL; }
     if (token && *token) esp_http_client_set_header(c, "X-LakeShark-Token", token);
+    if (from) {
+        /* ls_fetch resuming a part file: the rest of the body only */
+        char range[32];
+        snprintf(range, sizeof(range), "bytes=%u-", (unsigned)from);
+        esp_http_client_set_header(c, "Range", range);
+    }
     for (int hop = 0; hop < 4; hop++) {
         if (deadline) {
             const int wait = ls_ota_check_wait_ms(deadline, esp_timer_get_time());
@@ -313,7 +327,7 @@ static int sources(const char *url, char out[SOURCES][256])
    the first's *status is reported with a NULL handle, so the caller can
    tell unreachable (< 0) from a plain 404. *via (may be NULL) is the
    source that answered: 0 the URL, 1 the other host, 2 GitHub. */
-static esp_http_client_handle_t open_url_fallback(const char *url, int timeout_ms, int64_t deadline, int64_t *length, int *status, const char *token, int *via)
+static esp_http_client_handle_t open_url_fallback(const char *url, int timeout_ms, int64_t deadline, int64_t *length, int *status, const char *token, int *via, uint32_t from)
 {
     char (*alt)[256] = malloc(SOURCES * 256);
     if (!alt) { *status = -1; return NULL; }
@@ -325,10 +339,10 @@ static esp_http_client_handle_t open_url_fallback(const char *url, int timeout_m
         int64_t len = 0;
         int st = 0;
         if (i) ESP_LOGW(TAG, "%s failed (%d), trying %s", alt[i - 1], i == 1 ? first : *status, alt[i]);
-        c = open_url(alt[i], timeout_ms, deadline, &len, &st, token);
+        c = open_url(alt[i], timeout_ms, deadline, &len, &st, token, from);
         if (!i) first = st;
         *status = st;
-        if (c && st == 200) {
+        if (c && (st == 200 || (from && st == 206))) {
             *length = len;
             if (via) *via = i;
             break;
@@ -360,12 +374,17 @@ static bool key_accepts(size_t key, void *ctx)
     return ls_signature_verify(LS_OTA_PUBLIC_KEYS[key], c->hash, c->m->sig, c->m->sig_len);
 }
 
+bool ls_ota_hash_signed_by_us(const uint8_t hash[32], const ls_ota_manifest_t *m)
+{
+    sig_ctx_t c = { hash, m };
+    return ls_ota_verify_any(LS_OTA_PUBLIC_KEY_COUNT, key_accepts, &c);
+}
+
 bool ls_ota_signed_by_us(const char *text, const ls_ota_manifest_t *m)
 {
     uint8_t hash[32];
     if (mbedtls_sha256((const unsigned char *)text, m->signed_len, hash, 0) != 0) return false;
-    sig_ctx_t c = { hash, m };
-    return ls_ota_verify_any(LS_OTA_PUBLIC_KEY_COUNT, key_accepts, &c);
+    return ls_ota_hash_signed_by_us(hash, m);
 }
 
 /* No manifest for the channel is not a failure: nothing newer exists, so the
@@ -404,6 +423,54 @@ static void notice_found(const ls_ota_manifest_t *m, bool post)
 
 static const char *job_url(void) { return s_stable_once && !s_bg ? DEFAULT_URL : s_url; }
 
+/* Set for the second look of a check: the old edition folder's manifest and
+   the board name it carries. NULL for the ordinary look. */
+static const char *s_alt_url, *s_alt_board;
+static char s_read_dir[12];        /* the folder the last manifest came from */
+
+static bool do_check(void);
+
+#ifdef OTA_LEGACY_FALLBACK
+#include "ls_profile.h"
+/* Nothing in /tdp4u/ for this channel: read the same channel from the folder
+   of the edition this hardware ran before. That folder's image is built for
+   exactly this radio and panel, so it is safe here; its manifest names the
+   old board, which is accepted for this one look only. Not while the panel
+   or radio went unfound, or the hardware was found to be another edition
+   last boot (ls_profile_legacy_dir): the wrong image would be offered. */
+static bool legacy_check(bool *result)
+{
+    if (s_alt_url) return false;                    /* already the second look */
+    static char url[sizeof(s_url)];
+    const char *board = NULL, *dir = ls_profile_legacy_dir(&board);
+    if (!dir) { ESP_LOGI(TAG, "nothing in " OTA_DIR "; old folder not sure this boot"); return false; }
+    if (!ls_ota_url_to_edition(job_url(), dir, url, sizeof(url))) return false;
+    ESP_LOGI(TAG, "nothing in " OTA_DIR ", reading %s", dir);
+    s_alt_url = url;
+    s_alt_board = board;
+    *result = do_check();
+    s_alt_url = s_alt_board = NULL;
+    return true;
+}
+#else
+static bool legacy_check(bool *result) { (void)result; return false; }
+#endif
+
+/* "Nothing published", unless the hardware's old folder has something. */
+static bool none_found(void)
+{
+    bool r = false;
+    return legacy_check(&r) ? r : nothing_published();
+}
+
+static void note_dir(const char *url)
+{
+    static const char *const DIRS[] = LS_OTA_DIRS;
+    s_read_dir[0] = 0;
+    for (size_t i = 0; i < sizeof(DIRS) / sizeof(DIRS[0]); i++)
+        if (strstr(url, DIRS[i])) snprintf(s_read_dir, sizeof(s_read_dir), "%s", DIRS[i]);
+}
+
 static bool do_check(void)
 {
     if (s_bg ? !wifi_up() : !wifi_ready()) return false;
@@ -416,12 +483,13 @@ static bool do_check(void)
     int status = 0;
     const int64_t deadline = esp_timer_get_time() + (int64_t)LS_OTA_CHECK_MAX_MS * 1000;
     int via = 0;
-    const char *url = job_url();
-    esp_http_client_handle_t c = open_url_fallback(url, LS_OTA_CHECK_READ_MS, deadline, &length, &status, NULL, &via);
+    const char *url = s_alt_url ? s_alt_url : job_url();
+    const char *board = s_alt_board ? s_alt_board : BOARD_NAME;
+    esp_http_client_handle_t c = open_url_fallback(url, LS_OTA_CHECK_READ_MS, deadline, &length, &status, NULL, &via, 0);
     const int response = ls_ota_manifest_status(status);
     if (!c || response != 1) {
         if (c) shut(c);
-        if (response == 0) return nothing_published();
+        if (response == 0) return none_found();
         char w[32];
         snprintf(w, sizeof(w), "update server answered %d", status);
         fail(status == -3 ? "manifest timed out: retry" : status == -2 ? "redirect not on https" : status < 0 ? "can't reach the update server" : w);
@@ -466,12 +534,13 @@ static bool do_check(void)
         else fail(w);
     }
     else if (!ls_ota_signed_by_us(text, &m))            fail("manifest not signed by LakeShark");
-    else if (strcmp(m.board, BOARD_NAME))        fail("manifest is for another board");
+    else if (strcmp(m.board, board))             fail("manifest is for another board");
     else if (!ls_ota_channel_ok(&m, url))        fail("manifest is for another channel");
     else                                         ok = true;
     free(text);
-    if (none) return nothing_published();
+    if (none) return none_found();
     if (!ok) return false;
+    note_dir(url);
 
     const ls_ota_verdict_t found = ls_ota_judge(running_build(), &m);
     /* A build that already failed to start here is offered, never announced. */
@@ -551,7 +620,7 @@ static const char *download(const char *url, slot_job_t *out, bool *network)
     *network = true;
     int64_t length = 0;
     int status = 0;
-    esp_http_client_handle_t c = open_url(url, 8000, 0, &length, &status, NULL);
+    esp_http_client_handle_t c = open_url(url, 8000, 0, &length, &status, NULL, 0);
     if (!c || status != 200) {
         if (c) shut(c);
         return status == -2 ? "redirect not on https" : status < 0 ? "can't reach the update server"
@@ -720,9 +789,17 @@ static start_t start_job(int job)
    the same `live` the HOME tiles use, which covers EXPERIMENTS and SUB-GHZ
    watch. MESH and GPS are lit whenever their stack is up, so they say nothing
    about a streaming receiver and are left out. */
+#ifdef ESP_PLATFORM
+extern bool ls_music_live(void);
+#endif
 static bool rf_busy(void)
 {
     if (ls_tui_radio_claimed()) return true;
+#ifdef ESP_PLATFORM
+    /* A track playing: TLS, hashing and card writes of a background download
+       would stall the decoder, so they wait until it stops. */
+    if (ls_music_live()) return true;
+#endif
     for (int i = 0; i < ls_app_count(); i++) {
         const ls_app_t *a = ls_app_at(i);
         if (!a || !a->live || !a->id) continue;
@@ -1059,6 +1136,7 @@ static int ota_cmd(int argc, char **argv)
             s_state = LS_OTA_ST_IDLE;
         }
         printf("ota: manifest %s\n", s_url);
+        if (s_read_dir[0]) printf("ota: last read from %s (board %s)\n", s_read_dir, BOARD_NAME);
         return 0;
     }
     if (!strcmp(sub, "stable")) {          /* the CHANNEL key: stable once, or back */
@@ -1135,5 +1213,15 @@ esp_http_client_handle_t ls_ota_open_data(const char *url, const char *token,
 {
     char other[256];
     if (!ls_ota_other_host(url, other, sizeof(other))) { *status = -2; return NULL; }
-    return open_url_fallback(url, 2000, deadline, length, status, token, NULL);
+    return open_url_fallback(url, 2000, deadline, length, status, token, NULL, 0);
 }
+
+/* ls_fetch: any https URL, `from` bytes in (0: the whole body). Update-host
+   URLs get the same other-host and GitHub fallback as a manifest. */
+esp_http_client_handle_t ls_ota_open_from(const char *url, const char *token, uint32_t from,
+                                        int64_t deadline, int64_t *length, int *status)
+{
+    if (strncmp(url, "https://", 8)) { *status = -2; return NULL; }
+    return open_url_fallback(url, 8000, deadline, length, status, token, NULL, from);
+}
+bool ls_ota_rf_busy(void) { return rf_busy(); }

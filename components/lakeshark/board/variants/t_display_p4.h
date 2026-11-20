@@ -85,65 +85,92 @@
    so LS_BOARD_LCD_RST_GPIO / LS_BOARD_TOUCH_*_GPIO cannot be defined here at
    all.  Bringing a panel up on this board needs the expander driver first. */
 
-/* Two SKUs, chosen in menuconfig (LS_TDP4_PANEL). The panel and its touch
-   share the 2-lane DSI bus, the XL9535 resets and I2C port 1 either way. */
+/* Two SKUs. Both panels and their touch controllers are in every image and
+   share the 2-lane DSI bus, the XL9535 resets and I2C port 1; ls_panel.c
+   reads the panel's ID at boot and picks one (LS_TDP4_PANEL_AUTO), or is
+   told which (LS_TDP4_PANEL_RM69A10 / _HI8561). The numbers below are each
+   panel's own; board/ls_profile.c turns them into the two descriptors. */
 
-#if defined(CONFIG_LS_TDP4_PANEL_HI8561)
 /* TFT SKU. Vendor lilygo_device_driver t_display_p4/config.h, hi8561:
    540x1168, hsync 28 hbp 26 hfp 20, vsync 2 vbp 22 vfp 200, 2 lanes at
    1000 Mbps, touch (same die) at 0x68 on port 1. The IMU's 0x68 is on the
    secondary bus, so the two do not collide. */
-#define LS_BOARD_LCD_H_RES       540
-#define LS_BOARD_PANEL_HI8561    1
+#define LS_TDP4_TFT_H_RES        540
+#define LS_TDP4_TFT_V_RES        1168
 /* Camera cutout in native portrait pixels, measured from a photo.
    Confirm centre and radius on hardware. */
-#define LS_PANEL_CUTOUT_CX      270
-#define LS_PANEL_CUTOUT_CY      38
-#define LS_PANEL_CUTOUT_R       28
-#define LS_BOARD_LCD_V_RES       1168
+#define LS_TDP4_TFT_CUTOUT_CX    270
+#define LS_TDP4_TFT_CUTOUT_CY    38
+#define LS_TDP4_TFT_CUTOUT_R     28
 /* Unmeasured on glass: a smaller margin than the AMOLED's until someone
    checks how far the bezel covers the corners. */
-#define LS_BOARD_LCD_CORNER_R    40
-#define LS_BOARD_LCD_DSI_LANES   2
-#define LS_BOARD_LCD_DSI_MBPS    1000
+#define LS_TDP4_TFT_CORNER_R     40
 /* The vendor runs 60 MHz (~70 Hz). Scanout competes with capture for PSRAM
    the same way it does on the AMOLED, so start from the clocks that proved
    out there: 48 MHz is ~56 Hz here, 40 MHz ~47 Hz. */
-#define LS_BOARD_LCD_DPI_CLK_MHZ 48
-#define LS_BOARD_LCD_DPI_PERF_CLK_MHZ 40
-#define LS_BOARD_LCD_HSYNC       28
-#define LS_BOARD_LCD_HBP         26
-#define LS_BOARD_LCD_HFP         20
-#define LS_BOARD_LCD_VSYNC       2
-#define LS_BOARD_LCD_VBP         22
-#define LS_BOARD_LCD_VFP         200
-#define LS_BOARD_TOUCH_I2C_ADDR  0x68
-#else
-/* 4.1" AMOLED SKU. */
+#define LS_TDP4_TFT_DPI_CLK_MHZ  48
+#define LS_TDP4_TFT_DPI_PERF_CLK_MHZ 40
+#define LS_TDP4_TFT_HSYNC        28
+#define LS_TDP4_TFT_HBP          26
+#define LS_TDP4_TFT_HFP          20
+#define LS_TDP4_TFT_VSYNC        2
+#define LS_TDP4_TFT_VBP          22
+#define LS_TDP4_TFT_VFP          200
+#define LS_TDP4_TFT_TOUCH_ADDR   0x68
 
-#define LS_BOARD_LCD_H_RES       568
-#define LS_BOARD_PANEL_RM69A10   1
-#define LS_BOARD_LCD_V_RES       1232
+/* 4.1" AMOLED SKU. */
+#define LS_TDP4_AMOLED_H_RES     568
+#define LS_TDP4_AMOLED_V_RES     1232
 /* Keep text inside the rounded glass; matches the renderer's panel mask. */
-#define LS_BOARD_LCD_CORNER_R    72
-#define LS_BOARD_LCD_DSI_LANES   2
-#define LS_BOARD_LCD_DSI_MBPS    1000
+#define LS_TDP4_AMOLED_CORNER_R  72
 /* 60 MHz produced whole-screen flashes and 37 ms refresh gaps on the
    20 ms frame schedule under normal load. 48 MHz gives scanout headroom
    while retaining ~40 Hz; 40 MHz stopped flashes but felt slightly slower. */
-#define LS_BOARD_LCD_DPI_CLK_MHZ 48
+#define LS_TDP4_AMOLED_DPI_CLK_MHZ 48
 /* High-rate capture + DSP + SD share PSRAM with scanout. The previously
    exercised 40 MHz timing gives ~33 Hz and 17% less scanout demand. */
-#define LS_BOARD_LCD_DPI_PERF_CLK_MHZ 40
-#define LS_BOARD_LCD_HSYNC       50
-#define LS_BOARD_LCD_HBP         150
-#define LS_BOARD_LCD_HFP         50
-#define LS_BOARD_LCD_VSYNC       40
-#define LS_BOARD_LCD_VBP         120
-#define LS_BOARD_LCD_VFP         80
-#define LS_BOARD_TOUCH_I2C_ADDR  0x5D
+#define LS_TDP4_AMOLED_DPI_PERF_CLK_MHZ 40
+#define LS_TDP4_AMOLED_HSYNC     50
+#define LS_TDP4_AMOLED_HBP       150
+#define LS_TDP4_AMOLED_HFP       50
+#define LS_TDP4_AMOLED_VSYNC     40
+#define LS_TDP4_AMOLED_VBP       120
+#define LS_TDP4_AMOLED_VFP       80
+#define LS_TDP4_AMOLED_TOUCH_ADDR 0x5D
+
+/* Same on both. */
+#define LS_BOARD_LCD_DSI_LANES   2
+#define LS_BOARD_LCD_DSI_MBPS    1000
+
+/* Both drivers are compiled; these say so to ls_caps.h and the drivers. */
+#define LS_BOARD_PANEL_RM69A10   1
+#define LS_BOARD_PANEL_HI8561    1
+
+/* Which panels the boot may bring up: 0 reads the ID, else one is forced. */
+#if defined(CONFIG_LS_TDP4_PANEL_HI8561)
+#define LS_BOARD_PANEL_FORCED    2      /* LS_PANEL_KIND_HI8561 */
+#elif defined(CONFIG_LS_TDP4_PANEL_AUTO)
+#define LS_BOARD_PANEL_FORCED    0
+#else
+#define LS_BOARD_PANEL_FORCED    1      /* LS_PANEL_KIND_RM69A10 */
 #endif
 
+/* The glass as one set of numbers, for code that sizes itself before a
+   panel has answered (LS_HAS_DISPLAY) and for the host simulator's --tft.
+   Firmware asks ls_panel_desc() instead: with detection these are only the
+   larger panel's. */
+#if defined(CONFIG_LS_TDP4_PANEL_HI8561)
+#define LS_BOARD_LCD_H_RES       LS_TDP4_TFT_H_RES
+#define LS_BOARD_LCD_V_RES       LS_TDP4_TFT_V_RES
+#define LS_BOARD_LCD_CORNER_R    LS_TDP4_TFT_CORNER_R
+#define LS_PANEL_CUTOUT_CX       LS_TDP4_TFT_CUTOUT_CX
+#define LS_PANEL_CUTOUT_CY       LS_TDP4_TFT_CUTOUT_CY
+#define LS_PANEL_CUTOUT_R        LS_TDP4_TFT_CUTOUT_R
+#else
+#define LS_BOARD_LCD_H_RES       LS_TDP4_AMOLED_H_RES
+#define LS_BOARD_LCD_V_RES       LS_TDP4_AMOLED_V_RES
+#define LS_BOARD_LCD_CORNER_R    LS_TDP4_AMOLED_CORNER_R
+#endif
 /* Neither SKU is 480x800.  's waterfall ring buffer and the refresh counters are sized off LS_BOARD_LCD_*, and this is a 1232-line
    panel in portrait - both want re-checking before anyone trusts a
    frame-timing number here. */

@@ -13,7 +13,6 @@ sdkconfig.old
 
 # Shipped artefact, not build output: the C6 must match the pinned host.
 !/c6_firmware/*.bin
-!/c6_firmware/net/*.bin
 
 *.log
 serial*.txt

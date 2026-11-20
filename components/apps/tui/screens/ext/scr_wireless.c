@@ -26,7 +26,7 @@
 #include <strings.h>
 #include "ls_textpack.h"
 
-#define INK(c) TUI_ATTR((c), TUI_BLACK)
+#define INK(c) ls_ink_hue(TUI_ATTR((c), TUI_BLACK))
 #define WHITE INK(TUI_WHITE | TUI_BRIGHT)
 #define CYAN INK(TUI_CYAN | TUI_BRIGHT)
 
@@ -34,7 +34,7 @@ enum { TAB_WIFI, TAB_BT, TAB_REMOTE };
 
 typedef struct { tui_rect rect; char key; int ap; } hit_t;
 #define HIT_MAX 32
-static hit_t s_hits[HIT_MAX];
+EXT_RAM_BSS_ATTR static hit_t s_hits[HIT_MAX];
 static int s_hit_count, s_tab, s_selected, s_page_size = 3;
 static int s_saved_selected = -1;
 static int s_saved_page_size = 1;
@@ -414,7 +414,10 @@ static void remote_panels(tui_surface *sf, tui_rect area, const ls_rterm_status_
     tui_rect ssh = tui_rect_make(right.x, y, right.w, 6);
     if (ssh.y + ssh.h > right.y + right.h) return;
     ls_panel_box(sf, ssh, "SSH", st->ssh_on ? TUI_GREEN : TUI_CYAN);
-    if (!st->ssh_on) {
+    const bool ssh_built = st->ssh_port != 0;   /* port 0: built without SSH (the T-Display's app slot) */
+    if (!ssh_built) {
+        line(sf, ssh, 1, "Not in this build: use the terminal above", LS_ATTR_DIM);
+    } else if (!st->ssh_on) {
         line(sf, ssh, 1, LS_TEXT(t_scr_wireless_off_encrypted_a_saved, "OFF   encrypted; a saved key needs no password"), LS_ATTR_DIM);
     } else if (!s_view.wifi_connected || !st->ssh_listening) {
         LS_SNPRINTF(t_scr_wireless_on_port_d_waiting, text, sizeof(text), "ON  port %d, waiting for Wi-Fi", st->ssh_port);
@@ -434,8 +437,10 @@ static void remote_panels(tui_surface *sf, tui_rect area, const ls_rterm_status_
                  st->ssh_learn_s);
     else snprintf(text, sizeof(text), "KEYS %d of %d%s", st->ssh_keys, st->ssh_keys_max,
                   st->ssh_keys ? "" : "   OPTIONS: LEARN, then log in once");
-    line(sf, ssh, 3, text, st->ssh_learn_s ? INK(TUI_YELLOW | TUI_BRIGHT) : WHITE);
-    line(sf, ssh, 4, st->ssh_fp[0] ? st->ssh_fp : "Host key: made when first turned on", LS_ATTR_DIM);
+    if (ssh_built) {
+        line(sf, ssh, 3, text, st->ssh_learn_s ? INK(TUI_YELLOW | TUI_BRIGHT) : WHITE);
+        line(sf, ssh, 4, st->ssh_fp[0] ? st->ssh_fp : "Host key: made when first turned on", LS_ATTR_DIM);
+    }
     y += ssh.h;
 
     tui_rect usb = tui_rect_make(right.x, y, right.w, 4);
@@ -597,15 +602,15 @@ static int header(tui_surface *sf, tui_rect a, const ls_rterm_status_t *st, bool
     const int tx = a.x + (wide ? 11 : 12), tw = a.w - (tx - a.x) - 1;
     const tui_rect clip = tui_rect_make(tx, a.y, tw > 0 ? tw : 0, wide ? 4 : 6);
 
-    tui_put_str(sf, clip, tx, a.y, "LINK", WHITE);
+    tui_put_str(sf, clip, tx, a.y, s_view.wifi_connected ? "ONLINE" : "OFFLINE", WHITE);
     int row = 1;
     if (s_view.wifi_connected) {
         snprintf(s, sizeof(s), "%.32s", s_view.ssid);
-        tui_put_str(sf, clip, tx + 6, a.y, s, INK(TUI_GREEN | TUI_BRIGHT));
+        tui_put_str(sf, clip, tx + 7, a.y, s, INK(TUI_GREEN | TUI_BRIGHT));   /* one clear of ONLINE */
         snprintf(s, sizeof(s), "IP %s  %d dBm  CH %d", s_view.ip, s_view.wifi_rssi, s_view.channel);
         tui_put_str(sf, clip, tx, a.y + row++, s, WHITE);
     } else {
-        tui_put_str(sf, clip, tx + 6, a.y, s_view.wifi_available ? "NO WI-FI" : "WI-FI UNAVAILABLE",
+        tui_put_str(sf, clip, tx + 8, a.y, s_view.wifi_available ? "NO WI-FI" : "WI-FI UNAVAILABLE",   /* clear of OFFLINE */
                     s_view.wifi_available ? INK(TUI_YELLOW | TUI_BRIGHT) : LS_ATTR_DIM);
         /* A refusal says why and what to do; it wraps rather than being
            cut, over up to four rows in portrait, ahead of the BT and
@@ -828,7 +833,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if (s_selected >= s_view.ap_count) s_selected = 0;
     s_hit_count = 0; s_bar_n = 0;
     if (area.w < 32 || area.h < 22) {
-        ls_panel_notice(sf, area, "LINK", LS_TEXT(t_scr_wireless_more_screen_space_needed, "More screen space needed"), LS_TEXT(t_scr_wireless_use_a_smaller_display, "Use a smaller display font"));
+        ls_panel_notice(sf, area, NULL, LS_TEXT(t_scr_wireless_more_screen_space_needed, "More screen space needed"), LS_TEXT(t_scr_wireless_use_a_smaller_display, "Use a smaller display font"));
         return;
     }
     const bool wide = ls_tui_is_wide();
@@ -852,7 +857,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if (s_tab == TAB_REMOTE) {
         bar[n++] = (ls_btn_t){"WEB", st.web_on ? "ON" : "OFF", 'm', st.web_on, false};
         bar[n++] = (ls_btn_t){"TERMINAL", st.net_on ? "ON" : "OFF", 't', st.net_on, false};
-        bar[n++] = (ls_btn_t){"SSH", st.ssh_on ? "ON" : "OFF", 's', st.ssh_on, false};
+        bar[n++] = (ls_btn_t){"SSH", st.ssh_on ? "ON" : "OFF", 's', st.ssh_on, !st.ssh_port};   /* dim when not built */
         bar[n++] = ls_opt_button(&REMOTE_CTX);
     } else if (s_tab == TAB_BT) {
         const bool dim = s_view.busy || !s_view.bt_available;

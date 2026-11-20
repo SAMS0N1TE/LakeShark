@@ -19,6 +19,26 @@ keep `.ctile.part` files, which are listed as PARTIAL. Re-download starts over;
 it does not resume. Installed files are replaced only after size/header/SHA
 verification. DELETE confirms before removing the installed and partial files.
 
+## World tiles
+
+MAP's SOURCE (OPTIONS > Source) is Auto, Local only or Online only. Auto draws
+downloaded CartoCore maps where the card has them and the world tiles
+elsewhere. World tiles come from `https://tiles.terminalbay.com/v1/{z}/{x}/{y}.mvt`
+(a Worker reading the Protomaps planet build; source in `bench/maps/tiles_worker`)
+and are kept in `/sdcard/maps/cache/{z}/{x}/{y}.mvt`, an empty file for open
+sea, oldest deleted first past 512 MB. Offline, MAP draws from that cache and
+enlarges a coarser saved tile where a finer one is missing.
+
+DOWNLOAD MAP AREA (here, or MAP > OPTIONS > Source > Download this area)
+fetches what MAP is showing for every zoom to 14, up to 20000 tiles. WORLD
+TILES ON CARD counts them; CLEAR WORLD TILES asks twice. Map data (c)
+OpenStreetMap contributors (ODbL).
+
+In the simulator `LSSIM_TILE_CACHE` names the cache folder and
+`bench/maps/tiles_prefill.py` fills one; `LSSIM_MAP_AT=lat,lon`,
+`LSSIM_MAP_SOURCE` and `LSSIM_MAP_LOOK` place and style the view, and
+`LSSIM_MAP_STRESS=N` runs the zoom/pan/marker stress for N frames.
+
 ## Catalog format
 
 ```json

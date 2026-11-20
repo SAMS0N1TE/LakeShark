@@ -1,0 +1,42 @@
+# T-Display-P4 universal image (config t-display-p4-universal): one build for
+# the SX1262 and LR2021 boards with the AMOLED or the TFT panel.
+# Overlay on sdkconfig.defaults + boards/t_display_p4.defaults.
+#
+# Found at boot (components/lakeshark/board/ls_profile.h): the LoRa part, the
+# panel and its touch controller. Owner's choices, console `board`: the USB
+# host (off on an LR2021 board unless asked, as LakeShark LR), the network
+# edition's capture buffers, a forced panel.
+#
+# Updates from /tdp4u/ as board T-Display-P4-U; while that folder is empty
+# for a channel, from the folder of the edition the hardware ran before.
+CONFIG_LS_TDP4_UNIVERSAL=y
+CONFIG_LS_TDP4_PANEL_AUTO=y
+
+# What the network edition raised at build time and cannot be changed at run
+# time: FreeRTOS queue lengths, lwIP's socket table and mailboxes, NimBLE's
+# pool counts. All of it is small or in PSRAM (see t_display_p4_net.defaults
+# for where each one lives), so the universal image always carries it:
+# about 5 KB more internal RAM than the standard build, measured there as
+# 2.9 KB of queues, 1 KB of stack and the socket table.
+CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
+CONFIG_ESP_HOSTED_SDIO_TX_Q_SIZE=40
+CONFIG_ESP_HOSTED_SDIO_RX_Q_SIZE=40
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=32
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=48
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=24
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=40
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT=24
+CONFIG_BT_NIMBLE_GATT_MAX_PROCS=8
+
+# The capture ring (4096 frames) and the monitor snap (1024 bytes, 1000
+# frames a second) are PSRAM held only while a capture is open: sized at boot
+# from `board net on`, the build's standard numbers otherwise.
+
+# Ethernet over a USB adapter (CDC-ECM, RNDIS) on the OTG port. Off until
+# `eth on`; needs the USB host (on an LR2021 board: `board usb on`).
+CONFIG_LS_USB_ETH=y

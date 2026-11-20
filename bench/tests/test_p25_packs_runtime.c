@@ -8,13 +8,15 @@ static unsigned opened;
 static bool trusted = true;
 static int http_status = 200;
 static char stored_token[192];
-struct esp_http_client { int unused; } client;
-esp_http_client_handle_t ls_ota_open_data(const char *url, const char *auth, int64_t deadline, int64_t *length, int *status)
-{ (void)url; (void)auth; (void)deadline; opened++; offset = 0; *length = strlen(response); *status = http_status; return &client; }
-int esp_http_client_read(esp_http_client_handle_t c, char *out, int cap)
-{ (void)c; size_t n = strlen(response) - offset; if (n > (size_t)cap) n = (size_t)cap; memcpy(out, response + offset, n); offset += n; return (int)n; }
-esp_err_t esp_http_client_close(esp_http_client_handle_t c) { (void)c; return ESP_OK; }
-esp_err_t esp_http_client_cleanup(esp_http_client_handle_t c) { (void)c; return ESP_OK; }
+ls_fetch_result_t ls_fetch_run(const ls_fetch_req_t *q, uint32_t *got, int *http)
+{
+    opened++; offset = 0;
+    if (http) *http = http_status;
+    if (http_status != 200 || !q->buf || strlen(response) >= q->cap) return LS_FETCH_HTTP;
+    strcpy(q->buf, response);
+    if (got) *got = (uint32_t)strlen(response);
+    return LS_FETCH_OK;
+}
 bool ls_ota_signed_by_us(const char *text, const ls_ota_manifest_t *m) { (void)text; (void)m; return trusted; }
 void p25_sites_init(void) {}
 bool p25_sites_reload(void) { return true; }

@@ -336,3 +336,58 @@ LS_CASE(reserved_waterfall_resizes_without_allocating_or_showing_old_rows)
     LS_EQ_UINT(switch_budget_end(), 0);
     ls_pwf_free(&p);
 }
+
+/* Idle cadence: the renderer reports a present that changed nothing, and
+   the gate slows only after a run of identical frames with nothing busy. */
+#include "ls_tui_idle.h"
+
+LS_CASE(idle_present_is_clean_only_when_nothing_changed)
+{
+    LS_CHECK(ls_tui_begin(568, 1232));
+    tui_surface *sf = ls_tui_surface();
+    tui_frame_begin(sf);
+    tui_put_char(sf, tui_surface_rect(sf), 3, 5, 'A', 7);
+    ls_tui_present();
+    LS_CHECK(!ls_tui_present_clean());
+    for (int i = 0; i < 3; i++) {
+        tui_frame_begin(sf);
+        tui_put_char(sf, tui_surface_rect(sf), 3, 5, 'A', 7);
+        LS_EQ_INT(ls_tui_present(), 0);
+        LS_CHECK(ls_tui_present_clean());
+    }
+    tui_frame_begin(sf);
+    tui_put_char(sf, tui_surface_rect(sf), 3, 5, 'B', 7);
+    LS_CHECK(ls_tui_present() > 0);
+    LS_CHECK(!ls_tui_present_clean());
+}
+
+LS_CASE(idle_gate_slows_after_a_run_and_wakes_at_once)
+{
+    ls_idle_t g = {0};
+    int p = 0;
+    for (int i = 0; i < LS_IDLE_AFTER - 1; i++) p = ls_idle_period(&g, true, false, 40);
+    LS_EQ_INT(p, 40);
+    p = ls_idle_period(&g, true, false, 40);
+    LS_EQ_INT(p, LS_IDLE_SLOW_MS);
+    LS_EQ_INT(ls_idle_period(&g, true, false, 40), LS_IDLE_SLOW_MS);
+    /* One changed frame: the change frame itself is paced fast, a few fast
+       frames follow, then slow again. Two changes in a row are full rate. */
+    LS_EQ_INT(ls_idle_period(&g, false, false, 40), 40);
+    for (int i = 0; i < LS_IDLE_SETTLE - 1; i++) LS_EQ_INT(ls_idle_period(&g, true, false, 40), 40);
+    LS_EQ_INT(ls_idle_period(&g, true, false, 40), LS_IDLE_SLOW_MS);
+    LS_EQ_INT(ls_idle_period(&g, false, false, 40), 40);
+    LS_EQ_INT(ls_idle_period(&g, false, false, 40), 40);
+    LS_EQ_INT(g.streak, 0);
+    for (int i = 0; i < LS_IDLE_AFTER + 5; i++) p = ls_idle_period(&g, true, true, 40);
+    LS_EQ_INT(p, 40);
+    /* Input ends the run: the next frames are full rate for another run. */
+    for (int i = 0; i < LS_IDLE_AFTER + 1; i++) p = ls_idle_period(&g, true, false, 40);
+    LS_EQ_INT(p, LS_IDLE_SLOW_MS);
+    ls_idle_wake(&g);
+    LS_EQ_INT(g.wakes, 1);
+    LS_EQ_INT(ls_idle_period(&g, true, false, 40), 40);
+    /* A base period already slower than the idle tick is never made faster. */
+    ls_idle_t h = {0};
+    for (int i = 0; i < 2 * LS_IDLE_AFTER; i++) p = ls_idle_period(&h, true, false, 250);
+    LS_EQ_INT(p, 250);
+}

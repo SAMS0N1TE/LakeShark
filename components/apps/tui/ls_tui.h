@@ -35,8 +35,20 @@ int ls_tui_present(void);
    cache-off work up with the screen's frames. */
 uint32_t ls_tui_present_count(void);
 
+/* True when the last present changed nothing on the glass (no cell drawn,
+   no row sent): the frame was identical to the one before. */
+bool ls_tui_present_clean(void);
+
+/* 'tui idle why': print the last few presents that changed the glass. */
+void ls_tui_changes_print(void);
+
 /* Force the next present to redraw every cell. */
 void ls_tui_invalidate(void);
+/* The rows whose shown cells changed since the last call, one bit a row
+   (bit r&7 of rows[r>>3]); false when anything may have changed (a new grid,
+   an invalidate) and the caller must look at every row. Clears the record.
+   UI task only: the remote feed's capture is the one caller. */
+bool ls_tui_front_rows_take(uint8_t *rows, size_t bytes);
 void ls_tui_invalidate_stats(uint32_t *n, void **by);   /* count since last call, last caller */
 
 /* No glass (a screen that is only a terminal): present keeps the cells and

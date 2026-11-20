@@ -561,3 +561,7 @@ LS_CASE(table_drops_columns_that_do_not_fit)
 
 /* The widgets ask which screen is drawing; here there is one. */
 int ls_tui_screen_current(void) { return 0; }
+/* Colour roles are the desk's to fill (ls_tui_ui.c holds them); here there is no desk. */
+uint8_t ls_ink_tab[LS_INK_COUNT];
+bool ls_ink_on;
+void ls_ink_unkeep(tui_rect r) { (void)r; }

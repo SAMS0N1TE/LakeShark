@@ -708,8 +708,10 @@ esp_err_t audio_player_new(audio_player_config_t config)
     ESP_RETURN_ON_FALSE(NULL != instance.event_queue, -1, TAG, "xQueueCreate");
 
     /** See https://github.com/ultraembedded/libhelix-mp3/blob/0a0e0673f82bc6804e5a3ddb15fb6efdcde747cd/testwrap/main.c#L74 */
-    /* LakeShark: a 4608-byte PCM output buffer for WAV playback. */
-    instance.output.samples_capacity = 2304;
+    /* LakeShark: a 16 KB PCM output buffer (was 2304 bytes). Each fill is one
+       card read: small reads queued behind the C6 on the shared SD controller
+       and each wait was a chance to starve the speaker. */
+    instance.output.samples_capacity = 16384;
     instance.output.samples_capacity_max = instance.output.samples_capacity * 2;
     #ifdef CONFIG_AUDIO_PLAYER_ENABLE_STREAMING
     instance.output.samples=static_cast<uint8_t*>(heap_caps_malloc(instance.output.samples_capacity_max,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));

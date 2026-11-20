@@ -506,11 +506,11 @@ LS_CASE(a_notice_with_nowhere_to_go_is_read_when_its_banner_ends)
                  ls_notify_unread());
 }
 
-LS_CASE(the_badge_blinks_only_while_something_is_unread)
+LS_CASE(the_badge_is_steady_with_or_without_unread_messages)
 {
-    /* And it must be steady when there is nothing to say: a chrome
-       row with something flashing in it for no reason is worse than one that
-       never flashes at all. */
+    /* The badge never flashes (owner rule: motion only from real data; a
+       blinking badge also kept the idle power gate at full frame rate). An
+       unread message shows as a count, not as a blink. */
     setup(115, 27);
     ls_notify_clear();
 
@@ -519,19 +519,18 @@ LS_CASE(the_badge_blinks_only_while_something_is_unread)
         ls_notify_poll(0);
         if (ls_notify_badge_inverted()) seen_on = true; else seen_off = true;
     }
-    LS_CHECK_MSG(!seen_on,
-                 "the badge inverted with nothing unread");
+    LS_CHECK_MSG(!seen_on, "the badge inverted with nothing unread");
 
     post_on(1, "A MESSAGE");
     seen_on = seen_off = false;
-    /* Two seconds at 25 frames a second covers a full cycle either way. */
     for (int i = 0; i < 50; i++) {
         ls_notify_poll(0);
         if (ls_notify_badge_inverted()) seen_on = true; else seen_off = true;
     }
-    LS_CHECK_MSG(seen_on && seen_off,
-                 "the badge did not change state across two seconds with a "
-                 "message unread - on %d, off %d", seen_on, seen_off);
+    LS_CHECK_MSG(!(seen_on && seen_off),
+                 "the badge changed state across two seconds with a message "
+                 "unread (it must not blink) - on %d, off %d", seen_on, seen_off);
+    LS_EQ_INT(1, ls_notify_unread());
 
     ls_notify_clear();
 }

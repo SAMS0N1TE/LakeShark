@@ -151,6 +151,17 @@ bool ls_userapp_parse(const char *text, size_t len, ls_ua_model_t *out,
             fail(err, line_no, "unknown color name");
             return false;
         }
+        if (KEY_IS("group")) {
+            /* The HOME tab, numbered as LS_APP_GROUP_*. */
+            static const char *const GROUP[] = { "radio", "field", "system", "user" };
+            for (unsigned k = 0; k < 4; k++)
+                if (val_n == strlen(GROUP[k]) && memcmp(val, GROUP[k], val_n) == 0) {
+                    m.group = (uint8_t)(k + 1);
+                    goto next_line;
+                }
+            fail(err, line_no, "unknown group name");
+            return false;
+        }
 
         /* Elements. */
         {
@@ -332,12 +343,12 @@ static ls_tui_screen_t s_screen[LS_UA_MAX_APPS];
 static char           s_id[LS_UA_MAX_APPS][16];
 static char           s_hint[LS_UA_MAX_APPS][40];
 static int            s_loaded;
-static char           s_last_err[384];
+EXT_RAM_BSS_ATTR static char           s_last_err[384];
 
 /* The contract answers, the same for every user app: a described screen
    reads published values and draws them. Only the purpose line differs,
    and it names the file the app came from. */
-static char           s_purpose[LS_UA_MAX_APPS][192];
+EXT_RAM_BSS_ATTR static char           s_purpose[LS_UA_MAX_APPS][192];
 static ls_app_doc_t   s_doc[LS_UA_MAX_APPS];
 
 /* One draw function per slot, because a screen descriptor has no user
@@ -347,12 +358,15 @@ static ls_app_doc_t   s_doc[LS_UA_MAX_APPS];
 #define UA_SLOT(n) \
     static void ua_draw_##n(tui_surface *sf, tui_rect a) \
     { ls_userapp_draw(&s_model[n], sf, a); }
-UA_SLOT(0) UA_SLOT(1) UA_SLOT(2) UA_SLOT(3) UA_SLOT(4) UA_SLOT(5)
+UA_SLOT(0) UA_SLOT(1) UA_SLOT(2) UA_SLOT(3) UA_SLOT(4) UA_SLOT(5) UA_SLOT(6) UA_SLOT(7)
 #undef UA_SLOT
 
-static void (*const UA_DRAW[LS_UA_MAX_APPS])(tui_surface *, tui_rect) = {
-    ua_draw_0, ua_draw_1, ua_draw_2, ua_draw_3, ua_draw_4, ua_draw_5,
+/* One per app the directory carries: the 7th and 8th had no draw and were
+   refused as "no room left in the screen table". */
+static void (*const UA_DRAW[])(tui_surface *, tui_rect) = {
+    ua_draw_0, ua_draw_1, ua_draw_2, ua_draw_3, ua_draw_4, ua_draw_5, ua_draw_6, ua_draw_7,
 };
+_Static_assert(sizeof(UA_DRAW) / sizeof(UA_DRAW[0]) == LS_UA_MAX_APPS, "a draw slot per user app");
 
 const char *ls_userapp_last_error(void)
 {
@@ -370,11 +384,17 @@ static bool load_one(const char *path, const char *fname)
        allocation. This runs once at boot from whatever task starts the shell,
        and LS_UA_MAX_BYTES is far more than that stack should be asked to
        carry. */
-    EXT_RAM_BSS_ATTR static char buf[LS_UA_MAX_BYTES + 1];
-    size_t n = fread(buf, 1, LS_UA_MAX_BYTES, f);
-    const bool over = !feof(f);
+    EXT_RAM_BSS_ATTR static char buf[LS_UA_MAX_BYTES + 2];
+    /* One byte past the limit says "bigger": feof is only set after a read
+       past the end, so a file of exactly the limit read as too large. */
+    size_t n = fread(buf, 1, LS_UA_MAX_BYTES + 1, f);
+    const bool bad = ferror(f) != 0;
     fclose(f);
-    if (over) {
+    if (bad) {
+        snprintf(s_last_err, sizeof(s_last_err), "%s: could not be read", fname);
+        return false;
+    }
+    if (n > LS_UA_MAX_BYTES) {
         LS_SNPRINTF(t_ls_userapp_s_larger_than_d, s_last_err, sizeof(s_last_err), "%s: larger than %d KB", fname, LS_UA_MAX_BYTES / 1024);
         return false;
     }
@@ -419,6 +439,7 @@ static bool load_one(const char *path, const char *fname)
         .screen = &s_screen[slot],
         .live   = NULL,
         .doc    = &s_doc[slot],
+        .group  = s_model[slot].group,
     };
     const int rc = ls_app_register(&app);
     if (rc < 0) {

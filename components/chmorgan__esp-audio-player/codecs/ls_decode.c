@@ -43,6 +43,8 @@ static void codec_free(void *p) { free(p); }
 #define DR_FLAC_IMPLEMENTATION
 #define DR_FLAC_NO_SIMD
 #define DR_FLAC_NO_STDIO
+/* Size: forced inlining of the Rice decoder costs 25 KB of flash. */
+#define DR_FLAC_NO_FORCED_INLINE
 #include "vendor/dr_flac.h"
 #define STB_VORBIS_NO_PUSHDATA_API
 #define get_bits stb_vorbis_get_bits

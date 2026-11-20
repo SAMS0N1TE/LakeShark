@@ -26,6 +26,33 @@ bool ls_dui_context_fire(int col, int row)
     return s_context(col, row);
 }
 
+/* ------------------------------------------------------------ the pointer -- */
+
+static int16_t s_ptr_col = -1, s_ptr_row = -1;
+
+void ls_dui_pointer_set(int col, int row) { s_ptr_col = (int16_t)col; s_ptr_row = (int16_t)row; }
+bool ls_dui_pointer(int *col, int *row)
+{
+    if (col) *col = s_ptr_col;
+    if (row) *row = s_ptr_row;
+    return s_ptr_col >= 0 && s_ptr_row >= 0;
+}
+bool ls_dui_over(tui_rect r) { return s_ptr_col >= 0 && tui_rect_contains(r, s_ptr_col, s_ptr_row); }
+
+/* ---------------------------------------------------- the desk's own menus -- */
+
+static ls_dui_shellbar_t s_shellbar;
+static int8_t s_shell_open = -1;
+static const char *const SHELL_TITLES[LS_DUI_SHELL_TITLES] = { "Desk", "Window", "Help" };
+
+void ls_dui_shellbar_begin(int open)
+{
+    s_shellbar.drawn = false;
+    s_shellbar.x[0] = -1;
+    s_shell_open = (int8_t)open;
+}
+const ls_dui_shellbar_t *ls_dui_shellbar(void) { return &s_shellbar; }
+
 /* ------------------------------------------------------------ text field -- */
 
 void ls_dui_edit_set(ls_dui_edit_t *e, const char *text, int max)
@@ -80,14 +107,15 @@ void ls_dui_edit_draw(tui_surface *sf, tui_rect clip, int x, int y, int w,
 {
     if (!sf || w < 3) return;
     const int room = w - 2, off = edit_off(e, room, focus);
-    const uint8_t well = TUI_ATTR(ink, TUI_BLACK);
-    tui_put_char(sf, clip, x, y, '[', focus ? TUI_ATTR(ink | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_FAINT);
-    tui_put_char(sf, clip, x + w - 1, y, ']', focus ? TUI_ATTR(ink | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_FAINT);
+    const uint8_t well = ls_ink(LS_INK_STRONG, TUI_ATTR(ink, TUI_BLACK));
+    const uint8_t rim = ls_ink(LS_INK_RULE, LS_ATTR_FAINT);
+    tui_put_char(sf, clip, x, y, '[', focus ? TUI_ATTR(ink | TUI_BRIGHT, TUI_BLACK) : rim);
+    tui_put_char(sf, clip, x + w - 1, y, ']', focus ? TUI_ATTR(ink | TUI_BRIGHT, TUI_BLACK) : rim);
     for (int i = 0; i < room; i++) {
         const int k = off + i;
         const char c = k < e->len ? e->text[k] : ' ';
         /* The caret is an inverse cell, steady: nothing blinks on a timer. */
-        tui_put_char(sf, clip, x + 1 + i, y, c, focus && k == e->caret ? TUI_ATTR(TUI_BLACK, ink & 0x07) : well);
+        tui_put_char(sf, clip, x + 1 + i, y, c, focus && k == e->caret ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, ink & 0x07)) : well);
     }
 }
 
@@ -173,8 +201,14 @@ void ls_dui_popup_draw(tui_surface *sf, tui_rect area, ls_dui_popup_t *p)
     if (p->sel >= 0 && p->sel < p->first) p->first = p->sel;
     if (p->sel >= p->first + rows) p->first = p->sel - rows + 1;
     if (p->first > p->n - rows) p->first = p->n - rows > 0 ? p->n - rows : 0;
-    const uint8_t edge = TUI_ATTR(p->hue | TUI_BRIGHT, TUI_BLACK), low = TUI_ATTR(p->hue, TUI_BLACK);
-    tui_fill(sf, box, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    /* The scheme's Menu colours; a hue is kept only where the menu is on the ground it was chosen for. */
+    const uint8_t face = ls_ink(LS_INK_MENU, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    const bool ground = TUI_ATTR_BG(face) == TUI_BLACK;
+    const uint8_t edge = ground ? TUI_ATTR(p->hue | TUI_BRIGHT, TUI_BLACK) : face;
+    const uint8_t low = ground ? TUI_ATTR(p->hue, TUI_BLACK) : face;
+    const uint8_t off = ground ? ls_ink(LS_INK_DIM, LS_ATTR_FAINT) : face;
+    ls_ink_unkeep(box);                  /* a menu over a scope is still the scheme's */
+    tui_fill(sf, box, ' ', face);
     for (int i = 1; i < w - 1; i++) {
         ls_box_put(sf, box, x + i, y, LS_BOX_H, edge);
         ls_box_put(sf, box, x + i, y + h - 1, LS_BOX_H, low);
@@ -191,24 +225,36 @@ void ls_dui_popup_draw(tui_surface *sf, tui_rect area, ls_dui_popup_t *p)
     if (p->first) ls_box_put(sf, box, x + w - 3, y, LS_SHAPE_UP, edge);
     if (p->first + rows < p->n) ls_box_put(sf, box, x + w - 3, y + h - 1, LS_SHAPE_DOWN, edge);
     const tui_rect in = tui_rect_make(x + 1, y + 1, w - 2, rows);
+    /* The bar follows the pointer, as a menu's does, when the pointer moves. */
+    {
+        static int16_t seen_c = -1, seen_r = -1;
+        int pc, pr;
+        if (ls_dui_pointer(&pc, &pr) && (pc != seen_c || pr != seen_r) && tui_rect_contains(in, pc, pr)) {
+            const int i = p->first + pr - in.y;
+            if (i >= 0 && i < p->n && chooses(&p->items[i])) p->sel = i;
+        }
+        seen_c = (int16_t)pc; seen_r = (int16_t)pr;
+    }
     for (int r = 0; r < rows && p->first + r < p->n; r++) {
         const int i = p->first + r, ry = in.y + r;
         const ls_dui_item_t *it = &p->items[i];
         if (it->flags & LS_DUI_SEP) {
-            for (int k = 0; k < in.w; k++) ls_box_put(sf, in, in.x + k, ry, LS_BOX_H, LS_ATTR_FAINT);
+            for (int k = 0; k < in.w; k++) ls_box_put(sf, in, in.x + k, ry, LS_BOX_H, ground ? ls_ink(LS_INK_RULE, LS_ATTR_FAINT) : face);
             continue;
         }
         const bool on = i == p->sel && chooses(it);
         const uint8_t hue = it->hue ? it->hue : p->hue;
-        uint8_t ink = it->flags & LS_DUI_OFF ? LS_ATTR_FAINT
-                    : it->flags & LS_DUI_HEAD ? TUI_ATTR(hue, TUI_BLACK) : TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
-        uint8_t key = it->flags & LS_DUI_OFF ? LS_ATTR_FAINT : TUI_ATTR(hue, TUI_BLACK);
+        uint8_t ink = it->flags & LS_DUI_OFF ? off
+                    : it->flags & LS_DUI_HEAD ? (ground ? TUI_ATTR(hue, TUI_BLACK) : face) : face;
+        uint8_t key = it->flags & LS_DUI_OFF ? off : ground ? TUI_ATTR(hue, TUI_BLACK) : face;
         if (on) {
             /* The bar under the pointer: the one solid thing in a menu. */
-            ink = key = TUI_ATTR(TUI_BLACK, p->hue & 0x07);
+            ink = key = ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, p->hue & 0x07));
             tui_fill(sf, tui_rect_make(in.x, ry, in.w, 1), ' ', ink);
         }
-        if (it->flags & LS_DUI_CHECK) ls_box_put(sf, in, in.x + 1, ry, LS_SHAPE_CHECK, on ? ink : TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+        if (it->flags & LS_DUI_CHECK)
+            ls_box_put(sf, in, in.x + 1, ry, LS_SHAPE_CHECK,
+                       on ? ink : ground ? ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)) : face);
         if (it->label) tui_put_str(sf, tui_rect_make(in.x, ry, in.w - (kw ? kw + 2 : 0), 1), in.x + 3 - ((it->flags & LS_DUI_HEAD) ? 2 : 0), ry, it->label, ink);
         if (it->keys) tui_put_str(sf, in, in.x + in.w - 1 - (int)strlen(it->keys), ry, it->keys, key);
     }
@@ -267,17 +313,34 @@ void ls_dui_bar_draw(tui_surface *sf, tui_rect row, const char *const *titles, i
                      uint8_t hue, int16_t *x)
 {
     int at = row.x;
-    for (int i = 0; i < n; i++) {
-        const int w = (int)strlen(titles[i]) + 2;
-        x[i] = (int16_t)at;
-        const bool on = i == open;
-        const uint8_t ink = on ? TUI_ATTR(TUI_BLACK, hue & 0x07) : TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
-        if (on) tui_fill(sf, tui_rect_intersect(row, tui_rect_make(at, row.y, w, 1)), ' ', ink);
-        tui_put_str(sf, row, at + 1, row.y, titles[i], ink);
+    const uint8_t face = ls_ink(LS_INK_MENU, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    const bool ground = TUI_ATTR_BG(face) == TUI_BLACK;
+    if (!ground) tui_fill(sf, row, ' ', face);
+    /* The app's titles, then the desk's own three when there is room. */
+    int shell = 0;
+    for (int i = 0; i < LS_DUI_SHELL_TITLES; i++) shell += (int)strlen(SHELL_TITLES[i]) + 2;
+    for (int i = 0; i < n; i++) shell += (int)strlen(titles[i]) + 2;
+    const bool desk = ls_ink_on && shell + 1 <= row.w;
+    s_shellbar.drawn = ls_ink_on;
+    s_shellbar.y = (int16_t)row.y;
+    s_shellbar.x[0] = -1;
+    for (int i = 0; i < n + (desk ? LS_DUI_SHELL_TITLES : 0); i++) {
+        const bool own = i < n;
+        const char *title = own ? titles[i] : SHELL_TITLES[i - n];
+        const int w = (int)strlen(title) + 2;
+        if (own) x[i] = (int16_t)at;
+        else s_shellbar.x[i - n] = (int16_t)at;
+        const bool on = own ? i == open : i - n == s_shell_open;
+        const bool over = !on && ls_dui_over(tui_rect_make(at, row.y, w, 1));
+        const uint8_t ink = on ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, hue & 0x07))
+                          : over ? ls_ink(LS_INK_SELECT_DIM, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK)) : face;
+        if (on || over) tui_fill(sf, tui_rect_intersect(row, tui_rect_make(at, row.y, w, 1)), ' ', ink);
+        tui_put_str(sf, row, at + 1, row.y, title, ink);
         /* The letter Alt takes, picked out. */
-        if (!on) tui_put_char(sf, row, at + 1, row.y, titles[i][0], TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
+        if (!on && !over && ground) tui_put_char(sf, row, at + 1, row.y, title[0], TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
         at += w;
     }
+    if (desk) s_shellbar.x[LS_DUI_SHELL_TITLES] = (int16_t)at;
     x[n] = (int16_t)at;
 }
 
@@ -335,6 +398,7 @@ int ls_dui_hits_at(const ls_dui_hits_t *hits, int col, int row)
 void ls_dui_table_layout(ls_dui_table_t *t, tui_rect r, const ls_dui_col_t *cols, int n, uint32_t shown)
 {
     if (n > LS_DUI_COLS) n = LS_DUI_COLS;
+    t->band_row = -1;
     t->head = tui_rect_make(r.x, r.y, r.w > 2 ? r.w - 2 : 0, r.h > 0 ? 1 : 0);
     t->body = tui_rect_make(r.x, r.y + 1, r.w > 2 ? r.w - 2 : 0, r.h > 1 ? r.h - 1 : 0);
     t->strip = tui_rect_make(r.x + r.w - 2, r.y + 1, 2, r.h > 1 ? r.h - 1 : 0);
@@ -390,12 +454,19 @@ void ls_dui_table_layout(ls_dui_table_t *t, tui_rect r, const ls_dui_col_t *cols
 void ls_dui_table_head(tui_surface *sf, const ls_dui_table_t *t, const ls_dui_col_t *cols, int n,
                        int sort_col, bool desc, uint8_t hue)
 {
+    /* A header is a row of buttons: the scheme's Button face, the one under the pointer lit. */
+    const uint8_t cap = ls_ink(LS_INK_KEY, TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    const bool band = TUI_ATTR_BG(cap) != TUI_BLACK;
+    if (band) tui_fill(sf, tui_rect_make(t->head.x, t->head.y, t->head.w + t->strip.w, 1), ' ', cap);
     for (int i = 0; i < n && i < LS_DUI_COLS; i++) {
         if (t->x[i] < 0) continue;
         const bool on = i == sort_col;
         const int len = (int)strlen(cols[i].title), w = t->w[i];
         const tui_rect clip = tui_rect_intersect(t->head, tui_rect_make(t->x[i], t->head.y, w, 1));
-        const uint8_t ink = on ? TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK) : TUI_ATTR(TUI_CYAN, TUI_BLACK);
+        const bool over = ls_dui_over(clip);
+        const uint8_t ink = over ? ls_ink(LS_INK_SELECT_DIM, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK))
+                          : band ? cap : on ? TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK) : cap;
+        if (over) tui_fill(sf, clip, ' ', ink);
         int x = t->x[i];
         if ((cols[i].flags & LS_DUI_RIGHT) && len + (on ? 1 : 0) < w) x += w - len - (on ? 1 : 0);
         tui_put_str(sf, clip, x, t->head.y, cols[i].title, ink);
@@ -411,9 +482,31 @@ void ls_dui_table_cell(tui_surface *sf, const ls_dui_table_t *t, const ls_dui_co
     const tui_rect clip = tui_rect_intersect(t->body, tui_rect_make(t->x[col], t->body.y + r, w, 1));
     int x = t->x[col];
     if ((cols[col].flags & LS_DUI_RIGHT) && len < w) x += w - len;
+    if (r == t->band_row) attr = t->band_attr;
     tui_put_str(sf, clip, x, t->body.y + r, text, attr);
     /* Cut short: the last cell says there is more. */
-    if (len > w && w > 1) tui_put_char(sf, clip, t->x[col] + w - 1, t->body.y + r, '~', LS_ATTR_FAINT);
+    if (len > w && w > 1) tui_put_char(sf, clip, t->x[col] + w - 1, t->body.y + r, '~', r == t->band_row ? attr : LS_ATTR_FAINT);
+}
+
+uint8_t ls_dui_line(tui_surface *sf, tui_rect line, bool on, bool focus)
+{
+    const bool over = ls_dui_over(line);
+    if (!on && !over) return 0;
+    const uint8_t a = on && focus ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_WHITE))
+                                  : ls_ink(LS_INK_SELECT_DIM, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK | TUI_BRIGHT));
+    tui_fill(sf, line, ' ', a);
+    return a;
+}
+
+bool ls_dui_table_row(tui_surface *sf, ls_dui_table_t *t, int r, bool on, bool focus)
+{
+    const tui_rect line = tui_rect_make(t->body.x, t->body.y + r, t->body.w, 1);
+    const bool over = ls_dui_over(line);
+    const uint8_t a = ls_dui_line(sf, line, on, focus);
+    t->band_row = (int16_t)(a ? r : -1);
+    t->band_attr = a;
+    if (on) ls_box_put(sf, t->body, t->body.x, line.y, LS_SHAPE_RIGHT, a);
+    return over;
 }
 
 void ls_dui_table_clamp(ls_dui_table_t *t, int total)
@@ -472,8 +565,14 @@ int ls_dui_key(tui_surface *sf, tui_rect clip, int x, int y, const char *label, 
                uint8_t hue, tui_rect *hit)
 {
     const int w = (int)strlen(label) + 2;
-    const uint8_t edge = off ? LS_ATTR_FAINT : TUI_ATTR(hue, TUI_BLACK);
-    const uint8_t ink = off ? LS_ATTR_FAINT : on ? TUI_ATTR(TUI_BLACK, hue & 0x07) : TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
+    /* A key is the scheme's Button face; latched on, its title colours;
+       under the pointer it lights. The hue stays on its brackets. */
+    const bool over = !off && ls_dui_over(tui_rect_intersect(clip, tui_rect_make(x, y, w, 1)));
+    const uint8_t dim = ls_ink(LS_INK_DIM, LS_ATTR_FAINT);
+    const uint8_t edge = off ? dim : TUI_ATTR(over ? hue | TUI_BRIGHT : hue, TUI_BLACK);
+    const uint8_t ink = off ? dim : on ? ls_ink(LS_INK_KEY_ON, TUI_ATTR(TUI_BLACK, hue & 0x07))
+                      : over ? ls_ink(LS_INK_SELECT_DIM, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK))
+                      : ls_ink(LS_INK_KEY, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
     tui_put_char(sf, clip, x, y, '[', edge);
     tui_put_str(sf, clip, x + 1, y, label, ink);
     tui_put_char(sf, clip, x + w - 1, y, ']', edge);

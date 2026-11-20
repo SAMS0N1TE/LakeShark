@@ -634,6 +634,7 @@ static void draw_power_axis(tui_surface *sf, tui_rect r)
 
 static void draw_spectrum(tui_surface *sf, tui_rect r)
 {
+    ls_ink_keep(r);              /* a scope stays on black in any scheme */
     if (r.h < 1 || r.w < 4) return;
     for (int x = 0; x < r.w; x++) {
         uint8_t raw = sample(0, x, r.w);
@@ -745,6 +746,7 @@ static void draw_stall(tui_surface *sf, tui_rect r)
 
 static void draw_falls(tui_surface *sf, tui_rect r)
 {
+    ls_ink_keep(r);              /* a scope stays on black in any scheme */
     if (r.h < 1 || r.w < 4) return;
 
     const int per_cell = (s_cfg.grain == LS_WF_GRAIN_DENSE) ? 2 : 1;

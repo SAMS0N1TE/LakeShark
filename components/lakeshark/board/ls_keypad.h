@@ -28,6 +28,8 @@ void ls_keypad_tick(void);
 
 /* Next queued event, or false when the FIFO is empty.  Non-blocking. */
 bool ls_keypad_read(ls_keypad_event_t *out);
+/* True when a key is waiting or held; takes nothing (see ls_keypad.c). */
+bool ls_keypad_pending(void);
 
 /* Keyboard backlight, 0 disables.  Board declares the pin; boards without one
    return ESP_ERR_NOT_SUPPORTED. */

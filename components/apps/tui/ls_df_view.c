@@ -199,7 +199,7 @@ int ls_df_heat_draw(tui_surface *sf, tui_rect area, const ls_df_heat_t *h)
         EXT_RAM_BSS_ATTR static char label[16];
         snprintf(label, sizeof(label), "%-*.*s", lw - 1, lw - 1, h->labels && h->labels[r] ? h->labels[r] : "");
         tui_put_str(sf, area, area.x, y, label,
-                    r == h->selected ? TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT) : LS_ATTR_DIM);
+                    r == h->selected ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT)) : LS_ATTR_DIM);
         const uint8_t *row = h->cells + r * LS_DF_BINS;
         for (int c = 0; c < gw; c++) {
             /* The strongest bin the column spans. */

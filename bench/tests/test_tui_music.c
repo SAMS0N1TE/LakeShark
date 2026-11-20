@@ -15,6 +15,17 @@
 #include <stdio.h>
 #include <malloc.h>
 #include <time.h>
+#ifdef _WIN32
+/* mingw has no mallinfo2: count what the CRT heap has handed out. */
+struct mallinfo2 { size_t uordblks; };
+static struct mallinfo2 mallinfo2(void)
+{
+    struct mallinfo2 m = { 0 };
+    _HEAPINFO h = { 0 };
+    while (_heapwalk(&h) == _HEAPOK) if (h._useflag == _USEDENTRY) m.uordblks += h._size;
+    return m;
+}
+#endif
 
 extern const ls_tui_screen_t ls_scr_music;
 bool ls_scr_music_play_file(const char *path);
@@ -69,6 +80,14 @@ unsigned ls_music_peak(int ch){static unsigned phase;if(fixed_peak)return state=
 static bool warm;
 bool ls_music_warm(void){return warm;}
 void ls_music_set_warm(bool enabled){warm=enabled;}
+static int eq_db[LS_MUSIC_EQ_BANDS],pre_db;
+const char *ls_music_eq_name(int b){(void)b;return "";}
+int ls_music_eq_get(int b){return b>=0&&b<LS_MUSIC_EQ_BANDS?eq_db[b]:0;}
+void ls_music_eq_set(int b,int d){if(b>=0&&b<LS_MUSIC_EQ_BANDS)eq_db[b]=d;}
+int ls_music_preamp_get(void){return pre_db;}
+void ls_music_preamp_set(int d){pre_db=d;}
+int ls_music_eq_preset(void){return 4;}
+void ls_music_eq_preset_set(int p){(void)p;for(int i=0;i<LS_MUSIC_EQ_BANDS;i++)eq_db[i]=0;}
 void ls_music_volume_step(int d){volume+=d;}
 const char *ls_music_output(void){return "TEST AUDIO";}
 static bool keypad;
@@ -124,7 +143,7 @@ static void exercise(int w,int h) {
     ls_scr_music.enter();paint(&sf,w,h);
     /* A button where the row can spell it, and the key everywhere. */
     if(!wide){opened=NULL;tap_label(&sf,back+1,w,h,"OPTIONS");
-        LS_CHECK(opened && !strcmp(opened->name,"MUSIC") && opened->n==11);}
+        LS_CHECK_MSG(opened && !strcmp(opened->name,"MUSIC") && opened->n==12,"MUSIC options n=%d",opened?(int)opened->n:-1);}
     opened=NULL;LS_CHECK(ls_scr_music.key(LS_TK_CHAR,'o'));LS_CHECK(opened!=NULL);
     tap_label(&sf,back+1,w,h,"PLAY");LS_EQ_INT(last_play,0);LS_EQ_INT(state,LS_MUSIC_PLAYING);
     tap_label(&sf,back+1,w,h,"PAUSE");LS_EQ_INT(state,LS_MUSIC_PAUSED);
@@ -733,7 +752,9 @@ static void every_view(int w,int h,bool cached){
     tap_label(&sf,back,w,h,"PLAY");LS_EQ_INT(state,LS_MUSIC_PLAYING);
     vis_cost c[10];
     for(int v=0;v<10;v++)c[v]=vis_run(&sf,back,w,h,v);
-    const double floor_us=c[0].us>1?c[0].us:1;
+    /* LEVEL is 20 us on a quiet fast host: a ratio over so small a frame measures the clock more
+       than the view. The floor keeps it to what the guard is for (a view 55-100x LEVEL). */
+    const double floor_us=c[0].us>40?c[0].us:40;
     for(int v=0;v<10;v++){
         double ratio=c[v].us/floor_us;
         /* Over the line once is as likely the machine as the view: the
@@ -744,8 +765,8 @@ static void every_view(int w,int h,bool cached){
         for(int again=0;again<3 && ratio>VIS_MAX_RATIO;again++){
             const vis_cost l=vis_run(&sf,back,w,h,0);
             const vis_cost r=vis_run(&sf,back,w,h,v);
-            const double fresh=r.us/(l.us>1?l.us:1);
-            if(fresh<ratio){ratio=fresh;c[v].us=r.us*floor_us/(l.us>1?l.us:1);}
+            const double fresh=r.us/(l.us>40?l.us:40);
+            if(fresh<ratio){ratio=fresh;c[v].us=r.us*floor_us/(l.us>40?l.us:40);}
         }
         printf("  %dx%d %s %-9s %8.1f us/frame %5.1fx LEVEL  %2u pictures/%d frames  heap %+ld\n",
                w,h,cached?"cached":"live  ",VIS_NAME[v],c[v].us,ratio,c[v].pictures,VIS_FRAMES,c[v].grew);

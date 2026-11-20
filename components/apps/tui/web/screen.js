@@ -56,10 +56,112 @@ class FrameParser {
     }
   }
 }
+const CRC16 = Uint16Array.from({ length: 256 }, (_, i) => {
+  let c = i << 8;
+  for (let k = 0; k < 8; k++) c = c & 0x8000 ? ((c << 1) ^ 0x1021) & 0xffff : (c << 1) & 0xffff;
+  return c;
+});
 function crc16(b) {
   let c = 0xffff;
-  for (const x of b) { c ^= x << 8; for (let k = 0; k < 8; k++) c = c & 0x8000 ? ((c << 1) ^ 0x1021) & 0xffff : (c << 1) & 0xffff; }
+  for (let i = 0; i < b.length; i++) c = ((c << 8) & 0xffff) ^ CRC16[(c >> 8) ^ b[i]];
   return c;
+}
+// Raw deflate, at once. A pointer move or a typed letter is an update of a few
+// dozen bytes; a DecompressionStream for each (a Blob, a Response, two task
+// hops) took longer than the update did to cross the wire. Larger updates
+// still go to the stream, which is faster by the byte.
+const INFLATE_NOW = 8192;
+const Z_LBASE = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
+const Z_LEXT = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+const Z_DBASE = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577];
+const Z_DEXT = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+const Z_ORDER = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+function zTable(lengths, off, num) {
+  const count = new Uint16Array(16), symbol = new Uint16Array(num), offs = new Uint16Array(16);
+  for (let i = 0; i < num; i++) count[lengths[off + i]]++;
+  count[0] = 0;
+  for (let i = 1; i < 15; i++) offs[i + 1] = offs[i] + count[i];
+  for (let i = 0; i < num; i++) if (lengths[off + i]) symbol[offs[lengths[off + i]]++] = i;
+  return { count, symbol };
+}
+let zFixed = null;
+function inflateNow(parts) {                           // null: not a stream this reads
+  let total = 0; for (const q of parts) total += q.length;
+  const src = new Uint8Array(total); let o = 0; for (const q of parts) { src.set(q, o); o += q.length; }
+  let pos = 0, buf = 0, cnt = 0, out = new Uint8Array(Math.max(1024, total * 6)), n = 0, bad = false;
+  const bits = (need) => {
+    let v = buf;
+    while (cnt < need) { if (pos >= total) { bad = true; return 0; } v |= src[pos++] << cnt; cnt += 8; }
+    buf = v >>> need; cnt -= need;
+    return v & ((1 << need) - 1);
+  };
+  const decode = (h) => {
+    let code = 0, first = 0, index = 0;
+    for (let len = 1; len <= 15; len++) {
+      code |= bits(1);
+      const c = h.count[len];
+      if (code - c < first) return h.symbol[index + (code - first)];
+      index += c; first += c; first <<= 1; code <<= 1;
+    }
+    bad = true; return 0;
+  };
+  const room = (k) => { if (n + k > out.length) { const big = new Uint8Array(Math.max(out.length * 2, n + k)); big.set(out.subarray(0, n)); out = big; } };
+  for (let last = 0; !last && !bad;) {
+    last = bits(1);
+    const type = bits(2);
+    if (type === 0) {
+      buf = 0; cnt = 0;
+      if (pos + 4 > total) return null;
+      const len = src[pos] | src[pos + 1] << 8; pos += 4;
+      if (pos + len > total) return null;
+      room(len); out.set(src.subarray(pos, pos + len), n); n += len; pos += len;
+      continue;
+    }
+    if (type === 3) return null;
+    let lit, dist;
+    if (type === 1) {
+      if (!zFixed) {
+        const l = new Uint8Array(318);
+        l.fill(8, 0, 144); l.fill(9, 144, 256); l.fill(7, 256, 280); l.fill(8, 280, 288); l.fill(5, 288, 318);
+        zFixed = [zTable(l, 0, 288), zTable(l, 288, 30)];
+      }
+      lit = zFixed[0]; dist = zFixed[1];
+    } else {
+      const nl = bits(5) + 257, nd = bits(5) + 1, nc = bits(4) + 4, l = new Uint8Array(320);
+      if (nl > 286 || nd > 30) return null;
+      for (let i = 0; i < nc; i++) l[Z_ORDER[i]] = bits(3);
+      const ch = zTable(l, 0, 19);
+      l.fill(0, 0, 19);
+      for (let i = 0; i < nl + nd && !bad;) {
+        const sym = decode(ch);
+        if (sym < 16) l[i++] = sym;
+        else {
+          let v = 0, k;
+          if (sym === 16) { if (!i) return null; v = l[i - 1]; k = 3 + bits(2); }
+          else if (sym === 17) k = 3 + bits(3);
+          else k = 11 + bits(7);
+          if (i + k > nl + nd) return null;
+          while (k--) l[i++] = v;
+        }
+      }
+      if (bad || !l[256]) return null;
+      lit = zTable(l, 0, nl); dist = zTable(l, nl, nd);
+    }
+    while (!bad) {
+      const sym = decode(lit);
+      if (sym < 256) { room(1); out[n++] = sym; continue; }
+      if (sym === 256) break;
+      if (sym > 285) return null;
+      const len = Z_LBASE[sym - 257] + bits(Z_LEXT[sym - 257]), ds = decode(dist);
+      if (ds > 29) return null;
+      const back = Z_DBASE[ds] + bits(Z_DEXT[ds]);
+      if (bad || back > n) return null;
+      room(len);
+      if (back >= len) { out.copyWithin(n, n - back, n - back + len); n += len; }
+      else for (let k = 0; k < len; k++, n++) out[n] = out[n - back];
+    }
+  }
+  return bad ? null : out.subarray(0, n);
 }
 async function inflate(parts) {
   const ds = new DecompressionStream('deflate-raw');
@@ -187,6 +289,35 @@ function visualToggle(which) {
   if (cm) cm.visualFull = true;
   requestVisuals(); schedulePaint(); drawPanel();
 }
+// The cells a layer (the picture, the glass masks, smooth lines) has to draw
+// again: a flag a cell and the columns touched in each row. A Set of cell
+// numbers cost an insert per cell and a lookup per cell: a maximized map is
+// 34,000 cells an update.
+function dirtyNew(cols, rows) {
+  return { cols, f: new Uint8Array(cols * rows), lo: new Int16Array(rows).fill(cols), hi: new Int16Array(rows), any: false };
+}
+function dirtyAdd(d, i) {
+  if (d.f[i]) return;
+  d.f[i] = 1;
+  const r = (i / d.cols) | 0, c = i - r * d.cols;
+  if (c < d.lo[r]) d.lo[r] = c;
+  if (c >= d.hi[r]) d.hi[r] = c + 1;
+  d.any = true;
+}
+function dirtyRun(d, row, a, b) {
+  if (b <= a) return;
+  d.f.fill(1, row * d.cols + a, row * d.cols + b);
+  if (a < d.lo[row]) d.lo[row] = a;
+  if (b > d.hi[row]) d.hi[row] = b;
+  d.any = true;
+}
+function dirtyClear(d) {
+  if (!d.any) return;
+  for (let r = 0; r < d.lo.length; r++) if (d.hi[r] > d.lo[r]) {
+    d.f.fill(0, r * d.cols + d.lo[r], r * d.cols + d.hi[r]); d.lo[r] = d.cols; d.hi[r] = 0;
+  }
+  d.any = false;
+}
 function cellsStart(cols, rows) {
   cm = { pal: new Uint32Array(16).fill(0xff000000), pal565: new Uint16Array(16) };
   cellsGrid(cols, rows, 0, CELL_W, CELL_H);
@@ -202,8 +333,11 @@ function cellsGrid(cols, rows, font, cw, ch) {
   cm.px = new Uint32Array(cm.img.data.buffer);
   cm.px.fill(0xff000000);
   cm.dirty = [0, 0, cols, rows];
+  // Per row, the columns drawn since the canvas last took them (putBands).
+  cm.rlo = new Int16Array(rows).fill(cols); cm.rhi = new Int16Array(rows);
+  cm.layout = '';
   cm.picture = null; cm.coverage = new Map(); cm.lines = []; cm.lineCells = new Map();
-  cm.visualDirty = new Set(); cm.visualFull = true; cm.visualPending = false;
+  cm.visualDirty = dirtyNew(cols, rows); cm.visualFull = true; cm.visualPending = false;
 }
 const c565 = (v) => (((v >> 11 & 31) * 255 / 31) | 0) | (((v >> 5 & 63) * 255 / 63) | 0) << 8 |
                     (((v & 31) * 255 / 31) | 0) << 16 | 0xff000000;     // RGB565 to ImageData's ABGR
@@ -212,25 +346,69 @@ function pictureMapping(p) {
   p.xs ||= new Uint16Array(p.w); p.ys ||= new Uint16Array(p.h);
   for (let x = 0; x < p.w; x++) p.xs[x] = (Math.floor(x * p.sw / p.w) + p.x0) % p.sw;
   for (let y = 0; y < p.h; y++) p.ys[y] = (Math.floor(y * p.sh / p.h) + p.y0) % p.sh;
+  // And back: the picture rows (columns) a source row (column) is shown on, a
+  // run each, so a record marks its own cells without a walk of the picture.
+  p.ylo ||= new Int32Array(p.sh); p.yhi ||= new Int32Array(p.sh); p.xlo ||= new Int32Array(p.sw); p.xhi ||= new Int32Array(p.sw);
+  p.ylo.fill(p.h); p.yhi.fill(0); p.xlo.fill(p.w); p.xhi.fill(0);
+  for (let x = 0; x < p.w; x++) { const sx = p.xs[x]; if (x < p.xlo[sx]) p.xlo[sx] = x; p.xhi[sx] = x + 1; }
+  for (let y = 0; y < p.h; y++) { const sy = p.ys[y]; if (y < p.ylo[sy]) p.ylo[sy] = y; p.yhi[sy] = y + 1; }
 }
-function pictureDirty(p, first = 0, count = p.sh) {
-  const left = Math.max(0, p.x / cm.cw), right = Math.min(cm.cols, (p.x + p.w) / cm.cw);
-  for (let y = 0; y < p.h; y++) {
-    if (p.ys[y] < first || p.ys[y] >= first + count) continue;
-    const row = Math.floor((p.y + y) / cm.ch); if (row < 0 || row >= cm.rows) continue;
-    for (let col = left; col < right; col++) cm.visualDirty.add(row * cm.cols + col);
+// Source rows first..first+count changed, in source columns left..left+width.
+function pictureDirty(p, first = 0, count = p.sh, left = 0, width = p.sw) {
+  const cw = cm.cw, ch = cm.ch, d = cm.visualDirty;
+  let a = Math.max(0, p.x / cw), b = Math.min(cm.cols, (p.x + p.w) / cw);
+  if (width < p.sw && !p.x0) {                        // part of a row: only its columns
+    const xa = Math.floor((left * p.w + p.sw - 1) / p.sw), xb = Math.floor(((left + width) * p.w + p.sw - 1) / p.sw);
+    if (xb <= xa) return;
+    a = Math.max(a, Math.floor((p.x + xa) / cw)); b = Math.min(b, Math.floor((p.x + xb - 1) / cw) + 1);
+  }
+  let last = -1;
+  for (let sy = first; sy < first + count; sy++) for (let y = p.ylo[sy]; y < p.yhi[sy]; y++) {
+    const row = Math.floor((p.y + y) / ch);
+    if (row === last || row < 0 || row >= cm.rows) continue;
+    last = row; dirtyRun(d, row, a, b);
   }
 }
 function pictureColumnDirty(p, first, count) {
-  for (let x = 0; x < p.w; x++) {
-    if (p.xs[x] < first || p.xs[x] >= first + count) continue;
-    const col = Math.floor((p.x + x) / cm.cw); if (col < 0 || col >= cm.cols) continue;
-    for (let row = Math.max(0, p.y / cm.ch); row < Math.min(cm.rows, (p.y + p.h) / cm.ch); row++) cm.visualDirty.add(row * cm.cols + col);
+  const cw = cm.cw, d = cm.visualDirty, r0 = Math.max(0, p.y / cm.ch), r1 = Math.min(cm.rows, (p.y + p.h) / cm.ch);
+  let last = -1;
+  for (let sx = first; sx < first + count; sx++) for (let x = p.xlo[sx]; x < p.xhi[sx]; x++) {
+    const col = Math.floor((p.x + x) / cw);
+    if (col === last || col < 0 || col >= cm.cols) continue;
+    last = col;
+    for (let row = r0; row < r1; row++) dirtyAdd(d, row * cm.cols + col);
   }
+}
+// n 16-bit little-endian values of an update as an array (a view when it can be).
+const HOST_LE = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+function words(raw, at, n) {
+  const o = raw.byteOffset + at;
+  if (!HOST_LE) { const v = new DataView(raw.buffer, o, n * 2); return Uint16Array.from({ length: n }, (_, i) => v.getUint16(i * 2, true)); }
+  return o & 1 ? new Uint16Array(raw.slice(at, at + n * 2).buffer) : new Uint16Array(raw.buffer, o, n);
+}
+// A glass cell's mask as the compositor reads it: alpha a pixel, and where the
+// halo falls (no ink, ink of 6/15 or more beside it).
+function coverageExpand(o) {
+  const cw = cm.cw, ch = cm.ch, al = new Uint8Array(cw * ch), nr = new Uint8Array(cw * ch);
+  for (let k = 0; k < cw * ch; k++) al[k] = (o.cov[k >> 1] >> ((k & 1) * 4) & 15) * 17;
+  if (o.halo) for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+    if (al[y * cw + x]) continue;
+    let near = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const xx = x + dx, yy = y + dy;
+      if (xx >= 0 && yy >= 0 && xx < cw && yy < ch && al[yy * cw + xx] > near) near = al[yy * cw + xx];
+    }
+    if (near >= 6 * 17) nr[y * cw + x] = 1;
+  }
+  o.al = al; o.nr = nr;
+  return al;
 }
 function cellsApply(raw) {
   const v = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   let at = 0, repaint = false;
+  // The layers' own list of changed cells is kept only while a layer is on;
+  // without one it grew to the whole grid and cost a Set insert per cell.
+  const layered = !!((boardPixels && cm.picture) || smoothLines);
   while (at < raw.length) {
     const t = raw[at++];
     if (t === 0x47 && at + 7 <= raw.length) {          // G: the grid
@@ -256,7 +434,7 @@ function cellsApply(raw) {
         cm.a[i] = raw[at + 2];
         if (t === 0x58) { cm.k[i] = raw[at + 3]; cm.c1[i] = v.getUint16(at + 4, true); cm.c2[i] = v.getUint16(at + 6, true); }
         else cm.k[i] = 0;
-        cm.visualDirty.add(i);
+        if (layered) dirtyAdd(cm.visualDirty, i); else cm.visualFull = true;
         if (!repaint) cellDraw(i);
       }
     } else if (t === 0x49 && at + 21 <= raw.length) { // I: reset, source row patch, or ring origin
@@ -278,7 +456,7 @@ function cellsApply(raw) {
         if (row + n > sh || at + sw * n * 2 > raw.length) break;
         const p = cm.picture;
         if (p && p.x === x && p.y === y && p.w === w && p.h === h && p.sw === sw && p.sh === sh) {
-          for (let i = 0; i < sw * n; i++) p.px[row * sw + i] = v.getUint16(at + i * 2, true);
+          p.px.set(words(raw, at, sw * n), row * sw);
           p.valid.fill(1, row, row + n);
           p.known.fill(1, row * sw, (row + n) * sw); p.rowKnown.fill(sw, row, row + n);
           pictureDirty(p, row, n);
@@ -307,7 +485,7 @@ function cellsApply(raw) {
         const p = cm.picture;
         if (p && p.sw === sw && p.sh === sh) {
           pictureDirty(p);
-          for (const i of cm.lineCells.keys()) cm.visualDirty.add(i);
+          for (const i of cm.lineCells.keys()) dirtyAdd(cm.visualDirty, i);
           cm.lines = []; cm.lineCells.clear(); // ordinary dots until a fresh V
           const moved = new Map(), dx = (x - p.x) / cm.cw, dy = (y - p.y) / cm.ch;
           const clipped = x < 0 || y < 0 || x + w > cm.cols * cm.cw || y + h > cm.rows * cm.ch;
@@ -324,15 +502,22 @@ function cellsApply(raw) {
         const dx = row << 16 >> 16, dy = n << 16 >> 16, p = cm.picture;
         if (Math.abs(dx) >= sw || Math.abs(dy) >= sh || x0 || y0) break;
         if (p && p.x === x && p.y === y && p.w === w && p.h === h && p.sw === sw && p.sh === sh) {
+          // Rows moved whole (copyWithin is a memmove), top first or bottom
+          // first so a row is read before it is written over; what comes into
+          // view is ground.
+          const ppx = p.px, kn = p.known, xa = Math.max(0, -dx), xb = Math.min(sw, sw - dx);
           for (let j = 0; j < sh; j++) {
-            const y = dy < 0 ? sh - 1 - j : j, sy = y + dy;
-            for (let i = 0; i < sw; i++) {
-              const x = dx < 0 ? sw - 1 - i : i, sx = x + dx, dst = y * sw + x;
-              const inside = sx >= 0 && sx < sw && sy >= 0 && sy < sh;
-              p.px[dst] = inside ? p.px[sy * sw + sx] : ground;
-              p.known[dst] = inside ? p.known[sy * sw + sx] : 1;
+            const y = dy < 0 ? sh - 1 - j : j, sy = y + dy, d0 = y * sw;
+            if (sy < 0 || sy >= sh) { ppx.fill(ground, d0, d0 + sw); kn.fill(1, d0, d0 + sw); p.rowKnown[y] = sw; p.valid[y] = 1; continue; }
+            const s0 = sy * sw, whole = p.rowKnown[sy] === sw;
+            ppx.copyWithin(d0 + xa, s0 + xa + dx, s0 + xb + dx);
+            if (whole) kn.fill(1, d0, d0 + sw);
+            else {
+              kn.copyWithin(d0 + xa, s0 + xa + dx, s0 + xb + dx);
+              kn.fill(1, d0, d0 + xa); kn.fill(1, d0 + xb, d0 + sw);
             }
-            let known = 0; for (let x = 0; x < sw; x++) known += p.known[y * sw + x];
+            ppx.fill(ground, d0, d0 + xa); ppx.fill(ground, d0 + xb, d0 + sw);
+            let known = sw; if (!whole) { known = 0; for (let x = 0; x < sw; x++) known += kn[d0 + x]; }
             p.rowKnown[y] = known; p.valid[y] = known === sw ? 1 : 0;
           }
           pictureDirty(p);
@@ -356,24 +541,39 @@ function cellsApply(raw) {
         if (end > raw.length) break;
         const p = cm.picture;
         if (p && p.x === x && p.y === y && p.w === w && p.h === h && p.sw === sw && p.sh === sh) {
+          const d0 = row * sw + left, ppx = p.px, pal = p.palette;
           if (codec >= 2) {
-            let valid = !!p.palette;
-            for (let j = 0; valid && j < width; j++) {
-              const index = codec === 2 ? raw[start + j] : raw[start + (j >> 1)] >> ((j & 1) * 4) & 15;
-              if (index >= p.palette.length) valid = false;
+            // Decoded aside first: an index past the palette must leave the retained pixels alone.
+            if (!pal) break;
+            const tmp = (p.span ||= new Uint16Array(sw)), np = pal.length;
+            let ok = true;
+            if (codec === 2) for (let j = 0; j < width; j++) {
+              const ix = raw[start + j];
+              if (ix >= np) { ok = false; break; }
+              tmp[j] = pal[ix];
+            } else if (np >= 16) for (let j = 0, q = start; j < width; j += 2, q++) {
+              const two = raw[q];
+              tmp[j] = pal[two & 15];
+              if (j + 1 < width) tmp[j + 1] = pal[two >> 4];
+            } else for (let j = 0; j < width; j++) {
+              const ix = raw[start + (j >> 1)] >> ((j & 1) * 4) & 15;
+              if (ix >= np) { ok = false; break; }
+              tmp[j] = pal[ix];
             }
-            if (!valid) break;
+            if (!ok) break;
+            ppx.set(width === sw ? tmp : tmp.subarray(0, width), d0);
+          } else if (!codec) ppx.set(words(raw, start, width), d0);
+          else for (let j = 0, dst = d0; j < runs; j++) {
+            const len = v.getUint16(start + 2 + j * 4, true);
+            ppx.fill(v.getUint16(start + 4 + j * 4, true), dst, dst + len); dst += len;
           }
-          let dst = row * sw + left;
-          const put = c => { p.px[dst] = c; if (!p.known[dst]) { p.known[dst] = 1; p.rowKnown[row]++; } dst++; };
-          if (!codec) for (let j = 0; j < width; j++) put(v.getUint16(start + j * 2, true));
-          else if (codec >= 2) for (let j = 0; j < width; j++)
-            put(p.palette[codec === 2 ? raw[start + j] : raw[start + (j >> 1)] >> ((j & 1) * 4) & 15]);
-          else for (let j = 0; j < runs; j++) {
-            const len = v.getUint16(start + 2 + j * 4, true), c = v.getUint16(start + 4 + j * 4, true);
-            for (let i = 0; i < len; i++) put(c);
+          if (!p.valid[row]) {
+            let fresh = width;                         // a row with nothing known yet: all of the span is new
+            if (p.rowKnown[row]) { fresh = 0; for (let j = 0; j < width; j++) if (!p.known[d0 + j]) fresh++; }
+            p.known.fill(1, d0, d0 + width); p.rowKnown[row] += fresh;
+            p.valid[row] = p.rowKnown[row] === sw ? 1 : 0;
           }
-          p.valid[row] = p.rowKnown[row] === sw ? 1 : 0; pictureDirty(p, row, 1);
+          pictureDirty(p, row, 1, left, width);
         }
         at = end;
       } else if (op === 7) {
@@ -400,10 +600,10 @@ function cellsApply(raw) {
     } else if (t === 0x4f && at + 3 <= raw.length) { // O: exact glass coverage, packed nibbles
       const op = raw[at++], n = v.getUint16(at, true), size = Math.ceil(cm.cw * cm.ch / 2); at += 2;
       if (at + n * (5 + size) > raw.length) break;
-      if (op === 0) { for (const i of cm.coverage.keys()) cm.visualDirty.add(i); cm.coverage.clear(); }
+      if (op === 0) { for (const i of cm.coverage.keys()) dirtyAdd(cm.visualDirty, i); cm.coverage.clear(); }
       for (let j = 0; j < n; j++) {
         const i = v.getUint16(at, true), halo = raw[at + 2], glyph = v.getUint16(at + 3, true); at += 5;
-        if (i < cm.g.length) { cm.coverage.set(i, { halo, glyph, cov: raw.slice(at, at + size) }); cm.visualDirty.add(i); }
+        if (i < cm.g.length) { cm.coverage.set(i, { halo, glyph, cov: raw.slice(at, at + size) }); dirtyAdd(cm.visualDirty, i); }
         at += size;
       }
       cm.visualPending = true;
@@ -417,13 +617,13 @@ function cellsApply(raw) {
       const count = v.getUint16(at, true); at += 2;
       if (count > 1024 || at + count * 6 > raw.length) break;
       cm.lines = lines;
-      for (const i of cm.lineCells.keys()) cm.visualDirty.add(i);
+      for (const i of cm.lineCells.keys()) dirtyAdd(cm.visualDirty, i);
       cm.lineCells.clear();
       for (let j = 0; j < count; j++, at += 6) {
         const i = v.getUint16(at, true);
         if (i < cm.g.length) cm.lineCells.set(i, { glyph: v.getUint16(at + 2, true), attr: raw[at + 4], bits: raw[at + 5],
           color: cm.pal[raw[at + 4] & 15] });
-        if (i < cm.g.length) cm.visualDirty.add(i);
+        if (i < cm.g.length) dirtyAdd(cm.visualDirty, i);
       }
       cm.visualPending = true;
     } else if (t === 0x4c && at + 4 <= raw.length) { // L: sequence in this completed UI frame
@@ -451,23 +651,28 @@ function visualImage() {
   if (!p && !smoothLines) return cm.img;
   if (!cm.composite || cm.composite.width !== cm.img.width || cm.composite.height !== cm.img.height) {
     cm.composite = new ImageData(cm.img.width, cm.img.height);
+    cm.compositePx = new Uint32Array(cm.composite.data.buffer);
     cm.visualFull = true;
   }
-  const px = new Uint32Array(cm.composite.data.buffer), W = cm.cols * cm.cw;
-  const todo = cm.visualFull ? null : cm.visualDirty;
-  if (todo && !todo.size) return cm.composite;
-  if (!todo) cm.composite.data.set(cm.img.data);
-  else for (const i of todo) {
-    const x = i % cm.cols * cm.cw, y = Math.floor(i / cm.cols) * cm.ch;
-    for (let row = 0; row < cm.ch; row++) {
-      const at = (y + row) * W + x; px.set(cm.px.subarray(at, at + cm.cw), at);
+  const px = cm.compositePx, cols = cm.cols, cw = cm.cw, ch = cm.ch, W = cols * cw;
+  const d = cm.visualDirty, todo = cm.visualFull ? null : d, flags = d.f;
+  if (todo && !todo.any) return cm.composite;
+  // The glyph image under the layers: all of it, or the changed cells a run at a time.
+  if (!todo) px.set(cm.px);
+  else for (let r = 0; r < cm.rows; r++) {
+    const hi = d.hi[r], base = r * cols;
+    for (let c = d.lo[r]; c < hi;) {
+      if (!flags[base + c]) { c++; continue; }
+      let e = c + 1; while (e < hi && flags[base + e]) e++;
+      for (let y = 0; y < ch; y++) { const at = (r * ch + y) * W + c * cw; px.set(cm.px.subarray(at, at + (e - c) * cw), at); }
+      c = e;
     }
   }
-  const finish = () => { cm.visualFull = false; cm.visualDirty.clear(); return cm.composite; };
+  const finish = () => { cm.visualFull = false; dirtyClear(d); return cm.composite; };
   if (smoothLines) {
     const saved = cm.px, savedDirty = cm.dirty; cm.px = px;
     for (const [i] of cm.lineCells) {
-      if (todo && !todo.has(i)) continue;
+      if (todo && !flags[i]) continue;
       const bits = lineMask(i); if (!bits) continue;
       const g = cm.g[i]; cm.g[i] = g & ~bits; cellDraw(i); cm.g[i] = g;
     }
@@ -475,54 +680,87 @@ function visualImage() {
   }
   if (!p) return finish();
   // Cell-oriented iteration keeps one exact coverage/halo mask per glass cell.
-  for (let cy = Math.max(0, p.y / cm.ch); cy < Math.min(cm.rows, (p.y + p.h) / cm.ch); cy++) for (let cx = Math.max(0, p.x / cm.cw); cx < Math.min(cm.cols, (p.x + p.w) / cm.cw); cx++) {
-    const i = cy * cm.cols + cx, o = cm.coverage.get(i);
-    if (todo && !todo.has(i)) continue;
-    // A partly off-grid desk window retains the old C stream. Its image
-    // marker and explicit glass coverage still identify the visible picture.
-    const clipped = p.x < 0 || p.y < 0 || p.x + p.w > W || p.y + p.h > cm.rows * cm.ch;
-    const kind = cm.k[i] || (clipped && cm.g[i] === 0xb0 ? 1 : clipped && o && o.glyph === cm.g[i] ? 2 : 0);
-    if (kind !== 1 && kind !== 2) continue;
-    const removed = lineMask(i), fg = cm.pal565[cm.a[i] & 15], bg = cm.pal565[cm.a[i] >> 4];
-    if (kind === 2 && (!o || o.glyph !== cm.g[i])) {
-      /* No mask for this glyph yet (the board sends them after the frames a
-         pan or zoom answers): the picture shows through the cell's flat
-         ground, so a ring or a mark never flashes on a black box. */
-      /* Unsigned, as px holds it: c565 sets the alpha byte, which makes it
-         negative, and a signed ground never matched, so the box stayed black. */
-      const ground = c565(cm.c1[i]) >>> 0;
-      for (let y = 0; y < cm.ch; y++) {
-        const sy = p.ys[cy * cm.ch + y - p.y]; if (!p.rowKnown[sy]) continue;
-        for (let x = 0; x < cm.cw; x++) {
-          const at = (cy * cm.ch + y) * W + cx * cm.cw + x;
-          if (px[at] !== ground) continue;
-          const sx = p.xs[cx * cm.cw + x - p.x];
-          if (p.known[sy * p.sw + sx]) px[at] = pictureColors[p.px[sy * p.sw + sx]];
-        }
+  // A partly off-grid desk window retains the old C stream. Its image
+  // marker and explicit glass coverage still identify the visible picture.
+  const clipped = p.x < 0 || p.y < 0 || p.x + p.w > W || p.y + p.h > cm.rows * ch;
+  const cy0 = Math.max(0, p.y / ch), cy1 = Math.min(cm.rows, (p.y + p.h) / ch);
+  const cx0 = Math.max(0, p.x / cw), cx1 = Math.min(cols, (p.x + p.w) / cw);
+  const xs = p.xs, ys = p.ys, ppx = p.px, known = p.known, rowKnown = p.rowKnown, valid = p.valid, sw = p.sw;
+  const colors = pictureColors, glyphs = cm.g, kinds = cm.k;
+  for (let cy = cy0; cy < cy1; cy++) {
+    const a = todo ? Math.max(cx0, d.lo[cy]) : cx0, b = todo ? Math.min(cx1, d.hi[cy]) : cx1;
+    for (let cx = a; cx < b; cx++) {
+      const i = cy * cols + cx;
+      if (todo && !flags[i]) continue;
+      let kind = kinds[i], o;
+      if (kind !== 1) {
+        o = cm.coverage.get(i);
+        if (!kind) kind = clipped && glyphs[i] === 0xb0 ? 1 : clipped && o && o.glyph === glyphs[i] ? 2 : 0;
       }
-      continue;
-    }
-    const coverage = (x, y) => {
-      if (!o || x < 0 || y < 0 || x >= cm.cw || y >= cm.ch) return 0;
-      if (removed) {
-        const bit = cm.g[i] >= 0x2800 ? [[0, 3], [1, 4], [2, 5], [6, 7]][Math.floor(y * 4 / cm.ch)][Math.floor(x * 2 / cm.cw)]
-          : Math.floor(y * 3 / cm.ch) * 2 + Math.floor(x * 2 / cm.cw);
+      if (kind !== 1 && kind !== 2) continue;
+      const py = cy * ch - p.y, pxo = cx * cw - p.x, out = cy * ch * W + cx * cw;
+      if (kind === 1) {                                // a picture cell: its pixels, as far as they are known
+        for (let y = 0; y < ch; y++) {
+          const sy = ys[py + y]; if (!rowKnown[sy]) continue;
+          const row = sy * sw, at = out + y * W;
+          if (valid[sy]) for (let x = 0; x < cw; x++) px[at + x] = colors[ppx[row + xs[pxo + x]]];
+          else for (let x = 0; x < cw; x++) { const si = row + xs[pxo + x]; if (known[si]) px[at + x] = colors[ppx[si]]; }
+        }
+        continue;
+      }
+      if (!o || o.glyph !== glyphs[i]) {
+        /* No mask for this glyph yet (the board sends them after the frames a
+           pan or zoom answers): the picture shows through the cell's flat
+           ground, so a ring or a mark never flashes on a black box. */
+        /* Unsigned, as px holds it: c565 sets the alpha byte, which makes it
+           negative, and a signed ground never matched, so the box stayed black. */
+        const ground = c565(cm.c1[i]) >>> 0;
+        for (let y = 0; y < ch; y++) {
+          const sy = ys[py + y]; if (!rowKnown[sy]) continue;
+          const row = sy * sw, at = out + y * W;
+          for (let x = 0; x < cw; x++) {
+            if (px[at + x] !== ground) continue;
+            const si = row + xs[pxo + x];
+            if (known[si]) px[at + x] = colors[ppx[si]];
+          }
+        }
+        continue;
+      }
+      const removed = lineMask(i), fg = cm.pal565[cm.a[i] & 15], bg = cm.pal565[cm.a[i] >> 4];
+      if (!removed) {                                  // the mask as sent: alpha and halo a pixel
+        const al = o.al || coverageExpand(o), nr = o.nr;
+        for (let y = 0; y < ch; y++) {
+          const sy = ys[py + y]; if (!rowKnown[sy]) continue;
+          const row = sy * sw, at = out + y * W;
+          for (let x = 0; x < cw; x++) {
+            const si = row + xs[pxo + x];
+            if (!known[si]) continue;
+            let c = ppx[si];
+            const k = y * cw + x;
+            if (al[k]) c = blend565(fg, c, al[k]); else if (nr[k]) c = blend565(bg, c, 200);
+            px[at + x] = colors[c];
+          }
+        }
+        continue;
+      }
+      const coverage = (x, y) => {
+        if (x < 0 || y < 0 || x >= cw || y >= ch) return 0;
+        const bit = glyphs[i] >= 0x2800 ? [[0, 3], [1, 4], [2, 5], [6, 7]][Math.floor(y * 4 / ch)][Math.floor(x * 2 / cw)]
+          : Math.floor(y * 3 / ch) * 2 + Math.floor(x * 2 / cw);
         if (removed & 1 << bit) return 0;
-      }
-      const a = y * cm.cw + x; return o.cov[a >> 1] >> ((a & 1) * 4) & 15;
-    };
-    for (let y = 0; y < cm.ch; y++) {
-      const sy = p.ys[cy * cm.ch + y - p.y]; if (!p.rowKnown[sy]) continue;
-      for (let x = 0; x < cm.cw; x++) {
-        const sx = p.xs[cx * cm.cw + x - p.x];
-        if (!p.known[sy * p.sw + sx]) continue;
-        let c = p.px[sy * p.sw + sx];
-        if (kind === 2 && o) {
-          const a = coverage(x, y); let near = 0;
-          if (!a && o.halo) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) near = Math.max(near, coverage(x + dx, y + dy));
-          if (a) c = blend565(fg, c, a * 17); else if (near >= 6) c = blend565(bg, c, 200);
+        const k = y * cw + x; return o.cov[k >> 1] >> ((k & 1) * 4) & 15;
+      };
+      for (let y = 0; y < ch; y++) {
+        const sy = ys[py + y]; if (!rowKnown[sy]) continue;
+        for (let x = 0; x < cw; x++) {
+          const si = sy * sw + xs[pxo + x];
+          if (!known[si]) continue;
+          let c = ppx[si];
+          const al = coverage(x, y); let near = 0;
+          if (!al && o.halo) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) near = Math.max(near, coverage(x + dx, y + dy));
+          if (al) c = blend565(fg, c, al * 17); else if (near >= 6) c = blend565(bg, c, 200);
+          px[out + y * W + x] = colors[c];
         }
-        px[(cy * cm.ch + y) * W + cx * cm.cw + x] = pictureColors[c];
       }
     }
   }
@@ -682,8 +920,10 @@ function cellDraw(i) {
   const cw = cm.cw, ch = cm.ch, W = cm.cols * cw, px = cm.px;
   const col = i % cm.cols, row = (i / cm.cols) | 0, x0 = col * cw, y0 = row * ch;
   const d = cm.dirty;
-  if (d) { d[0] = Math.min(d[0], col); d[1] = Math.min(d[1], row); d[2] = Math.max(d[2], col + 1); d[3] = Math.max(d[3], row + 1); }
+  if (d) { if (col < d[0]) d[0] = col; if (row < d[1]) d[1] = row; if (col >= d[2]) d[2] = col + 1; if (row >= d[3]) d[3] = row + 1; }
   else cm.dirty = [col, row, col + 1, row + 1];
+  if (col < cm.rlo[row]) cm.rlo[row] = col;
+  if (col >= cm.rhi[row]) cm.rhi[row] = col + 1;
   const kind = cm.k[i], at = cm.a[i];
   if (kind === 1) {                                    // a picture cell: its two halves
     const top = c565(cm.c1[i]), bot = c565(cm.c2[i]), half = ch >> 1;
@@ -714,33 +954,66 @@ function cellDraw(i) {
     }
   }
 }
+// The canvas takes the rows drawn since it last did, each run of rows by its
+// own columns: a clock in one corner and a pointer in the other are two small
+// rectangles, not the whole screen between them.
+function putBands(ctx, img, r0, r1) {
+  const cw = cm.cw, ch = cm.ch, lo = cm.rlo, hi = cm.rhi;
+  for (let r = r0; r < r1;) {
+    if (hi[r] <= lo[r]) { r++; continue; }
+    let a = lo[r], b = hi[r], e = r + 1;
+    for (; e < r1 && hi[e] > lo[e]; e++) { if (lo[e] < a) a = lo[e]; if (hi[e] > b) b = hi[e]; }
+    ctx.putImageData(img, 0, 0, a * cw, r * ch, (b - a) * cw, (e - r) * ch);
+    r = e;
+  }
+}
 function paintCells() {
   const stage = $('stage');
   const w = cm.cols * cm.cw, h = cm.rows * cm.ch;
-  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; cm.dirty = [0, 0, cm.cols, cm.rows]; }
-  const fit = denseDesktop() ? 1 / (window.devicePixelRatio || 1)
-    : Math.max(0.05, Math.min(stage.clientWidth / w, stage.clientHeight / h));
-  canvas.style.width = w * fit + 'px';
-  canvas.style.height = h * fit + 'px';
-  canvas.style.imageRendering = denseDesktop() || fit >= 1 ? 'pixelated' : 'auto';
-  // Flex centring may land on half a device pixel. Align the image's origin
-  // as well as its size so a DPR of 1.5 still maps every bitmap pixel exactly.
-  canvas.style.transform = '';
-  if (denseDesktop()) {
-    const dpr = window.devicePixelRatio || 1, r = canvas.getBoundingClientRect();
-    canvas.style.transform = `translate(${(Math.round(r.left * dpr) - r.left * dpr) / dpr}px, ${(Math.round(r.top * dpr) - r.top * dpr) / dpr}px)`;
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; cm.dirty = [0, 0, cm.cols, cm.rows]; cm.layout = ''; }
+  // The canvas's place on the page is settled when the page's shape changes,
+  // not on every paint: writing its style and then measuring it made the
+  // browser lay the page out again for each update.
+  const dense = denseDesktop(), dpr = window.devicePixelRatio || 1;
+  const sw = stage.clientWidth, sh = stage.clientHeight;
+  const layout = `${w} ${h} ${sw} ${sh} ${dpr} ${dense}`;
+  if (layout !== cm.layout) {
+    cm.layout = layout;
+    const fit = dense ? 1 / dpr : Math.max(0.05, Math.min(sw / w, sh / h));
+    canvas.style.width = w * fit + 'px';
+    canvas.style.height = h * fit + 'px';
+    canvas.style.imageRendering = dense || fit >= 1 ? 'pixelated' : 'auto';
+    // Flex centring may land on half a device pixel. Align the image's origin
+    // as well as its size so a DPR of 1.5 still maps every bitmap pixel exactly.
+    canvas.style.transform = '';
+    if (dense) {
+      const r = canvas.getBoundingClientRect();
+      canvas.style.transform = `translate(${(Math.round(r.left * dpr) - r.left * dpr) / dpr}px, ${(Math.round(r.top * dpr) - r.top * dpr) / dpr}px)`;
+    }
   }
   const d = cm.dirty;
   if (!d && !cm.visualPending) return;
   // Full glyph redraws (including another viewer's text-font toggle) refresh
   // this cache without any changes to cellDraw's glyph implementation.
-  if (d && d[0] === 0 && d[1] === 0 && d[2] === cm.cols && d[3] === cm.rows) cm.visualFull = true;
+  const full = !!d && d[0] === 0 && d[1] === 0 && d[2] === cm.cols && d[3] === cm.rows;
+  if (full) cm.visualFull = true;
   cm.dirty = null; cm.visualPending = false;
   const ctx = canvas.getContext('2d', { alpha: false });
   if ((boardPixels && cm.picture) || smoothLines) {
-    ctx.putImageData(visualImage(), 0, 0); paintVectors(ctx);
-  } else if (d) ctx.putImageData(cm.img, 0, 0, d[0] * cm.cw, d[1] * cm.ch,
-                         (d[2] - d[0]) * cm.cw, (d[3] - d[1]) * cm.ch);
+    // Smooth lines are stroked over the image each time, so the whole image
+    // goes under them; a picture alone changes only the cells in its list.
+    const all = cm.visualFull || (smoothLines && cm.lines.length > 0);
+    const vd = cm.visualDirty;
+    if (!all && vd.any) for (let row = 0; row < cm.rows; row++) if (vd.hi[row] > vd.lo[row]) {
+      if (vd.lo[row] < cm.rlo[row]) cm.rlo[row] = vd.lo[row];
+      if (vd.hi[row] > cm.rhi[row]) cm.rhi[row] = vd.hi[row];
+    }
+    const img = visualImage();
+    if (all) ctx.putImageData(img, 0, 0); else putBands(ctx, img, 0, cm.rows);
+    paintVectors(ctx);
+  } else if (full) ctx.putImageData(cm.img, 0, 0);
+  else if (d) putBands(ctx, cm.img, d[1], d[3]);
+  cm.rlo.fill(cm.cols); cm.rhi.fill(0);
 }
 // The grid on show, whichever way it is drawn.
 function grid() { return cm ? [cm.cols, cm.rows] : term ? [term.cols, term.rows] : [0, 0]; }
@@ -1063,13 +1336,23 @@ function begin(cols, rows, cells = false) {
   const ack = () => { if (live === l) say('term ack'); };
   l.parser = new FrameParser((body, z) => {
     if (!body) { l.zparts = []; l.bad = true; return; }                // bad CRC: drop; the next update repaints
+    // Cells are acknowledged once applied, not once painted: applying is in order and costs
+    // little, the canvas takes whatever has arrived at its next frame, and the board is not
+    // held a frame behind (it stops at two unanswered updates) while a moving pointer waits.
     if (cm) {                                            // cells: an update's records, whole, then drawn
       if (body.length) { l.zparts.push(body); l.z = z; return; }
       if (l.bad) { l.bad = false; l.zparts = []; say('term redraw'); schedulePaint(ack); return; }
       const parts = l.zparts, wasZ = l.z; l.zparts = [];
+      // A small update, with none before it still being inflated: applied now.
+      if (wasZ && parts.length && !l.waiting && parts.length * 4000 <= INFLATE_NOW + 4000) {
+        let small = 0; for (const q of parts) small += q.length;
+        const raw = small <= INFLATE_NOW ? inflateNow(parts) : null;
+        if (raw) { try { cellsApply(raw); } catch (e) { say('term redraw'); } ack(); schedulePaint(); return; }
+      }
+      l.waiting = (l.waiting || 0) + 1;
       l.chain = l.chain.then(() => !parts.length ? null : wasZ ? inflate(parts)
         : new Blob(parts).arrayBuffer().then(b => new Uint8Array(b)))
-        .then((raw) => { if (live === l && raw && cm) cellsApply(raw); }).catch(() => { if (live === l) say('term redraw'); }).then(() => { if (live === l) schedulePaint(ack); });
+        .then((raw) => { if (live === l && raw && cm) cellsApply(raw); }).catch(() => { if (live === l) say('term redraw'); }).then(() => { l.waiting--; if (live === l) { ack(); schedulePaint(); } });
       return;
     }
     if (z) { l.zparts.push(body); return; }
@@ -1473,7 +1756,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') releaseInput();
   if (document.visibilityState === 'visible' && !stopped && (!ws || ws.readyState > 1) && $('login').hidden) connect();
 });
-window.addEventListener('resize', () => { sigs = null; schedulePaint(); fitSoon(); });
+window.addEventListener('resize', () => { sigs = null; if (cm) cm.layout = ''; schedulePaint(); fitSoon(); });
 function watchPixelRatio() {
   const media = matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
   media.addEventListener?.('change', () => { watchPixelRatio(); schedulePaint(); fitSoon(); }, { once: true });

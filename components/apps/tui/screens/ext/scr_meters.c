@@ -29,7 +29,7 @@
 #include "esp_timer.h"
 #include "ls_textpack.h"
 
-#define INK(c)  TUI_ATTR((c), TUI_BLACK)
+#define INK(c)  ls_ink_hue(TUI_ATTR((c), TUI_BLACK))
 #define CHROME  INK(TUI_CYAN)
 #define VALUE   INK(TUI_WHITE | TUI_BRIGHT)
 #define NOTE    LS_ATTR_DIM
@@ -304,15 +304,18 @@ static void header(tui_surface *sf, tui_rect r, int64_t now_us)
         snprintf(where, sizeof(where), "%s", ls_rsel_name(radio()));
         snprintf(state, sizeof(state), "%s", s_why[0] ? s_why : "paused");
     }
-    panel(sf, r, " METERS ", TUI_YELLOW | TUI_BRIGHT, where, NOTE);
+    panel(sf, r, " READINGS ", TUI_YELLOW | TUI_BRIGHT, where, NOTE);
     if (r.h < 3) return;
+    /* The LoRa chip's start can fail after it was asked (an SX1262 has no
+       OOK or FSK receiver for ERT): then it is not listening, whatever was asked. */
+    const bool on = s_src != SRC_NONE && (s_src != SRC_LR || ls_exp_running() == lr433() || ls_exp_busy());
     const bool lit = now_us < s_lamp_until;
-    str(sf, r, r.x + 2, r.y + 1, 3, lit ? "(*)" : s_src ? "(o)" : "( )",
-        lit ? WHEEL : s_src ? INK(TUI_GREEN) : GHOST);
+    str(sf, r, r.x + 2, r.y + 1, 3, lit ? "(*)" : on ? "(o)" : "( )",
+        lit ? WHEEL : on ? INK(TUI_GREEN) : GHOST);
     char line[96];
-    LS_SNPRINTF(t_scr_meters_s_d_meter_s, line, sizeof(line), "%s  %d meter%s  %lu reading%s", s_src ? "LISTENING" : "STOPPED", s_n,
+    LS_SNPRINTF(t_scr_meters_s_d_meter_s, line, sizeof(line), "%s  %d meter%s  %lu reading%s", on ? "LISTENING" : "STOPPED", s_n,
              s_n == 1 ? "" : "s", (unsigned long)readings, readings == 1 ? "" : "s");
-    str(sf, r, r.x + 6, r.y + 1, r.w - 8, line, s_src ? VALUE : NOTE);
+    str(sf, r, r.x + 6, r.y + 1, r.w - 8, line, on ? VALUE : NOTE);
     if (r.h >= 4) str(sf, r, r.x + 6, r.y + 2, r.w - 8, state, NOTE);
 }
 
@@ -458,7 +461,7 @@ static void draw(tui_surface *sf, tui_rect a)
     refresh(now_us);
     CTX.radio = radio();
     const lsm_meter_t *sel = selected();
-    if (a.w < 30 || a.h < 16) { ls_panel_notice(sf, a, "METERS", LS_TEXT(t_scr_meters_more_screen_space_needed, "More screen space needed"), "Use a smaller font"); return; }
+    if (a.w < 30 || a.h < 16) { ls_panel_notice(sf, a, NULL, LS_TEXT(t_scr_meters_more_screen_space_needed, "More screen space needed"), "Use a smaller font"); return; }
 
     ls_btn_t b[] = {
         { "RADIO", ls_rsel_name(radio()), 'r', false, false, false },
@@ -483,9 +486,12 @@ static void draw(tui_surface *sf, tui_rect a)
             rec_ism_listen_status(&st);
             LS_SNPRINTF(t_scr_meters_listening_at_3f_mhz, l1, sizeof(l1), "Listening at %.3f MHz", st.hz / 1e6);
             LS_SNPUTS(t_scr_meters_sdr_sees_0_25, l2, sizeof(l2), "SDR sees 0.25 MHz of 902-928; meters hop");
-        } else if (s_src == SRC_LR) {
+        } else if (s_src == SRC_LR && (ls_exp_running() == lr433() || ls_exp_busy())) {
             LS_SNPUTS(t_scr_meters_listening_at_912_600, l1, sizeof(l1), "Listening at 912.600 MHz, 2.2 MHz wide");
             LS_SNPUTS(t_scr_meters_meters_send_every_30, l2, sizeof(l2), "Meters send every 30 s to a few minutes");
+        } else if (s_src == SRC_LR) {          /* asked, and the chip said no: its reason, and the way on */
+            ls_exp_state_line(lr433(), l1, sizeof(l1));
+            LS_SNPUTS(t_scr_meters_listen_starts_it_radio, l2, sizeof(l2), "LISTEN starts it; RADIO picks SDR or LR2021");
         } else {
             snprintf(l1, sizeof(l1), "%s", s_why[0] ? s_why : "Paused");
             LS_SNPUTS(t_scr_meters_listen_starts_it_radio, l2, sizeof(l2), "LISTEN starts it; RADIO picks SDR or LR2021");

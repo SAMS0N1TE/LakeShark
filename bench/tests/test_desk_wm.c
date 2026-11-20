@@ -276,7 +276,7 @@ LS_CASE(open_raise_move_minimize_maximize_close_and_nothing_leaks)
         ptr(LS_IEV_PTR_UP, LS_IBTN_LEFT, still.x + 20, still.y + 5);
         frame(160, 45);
         LS_CHECK(info(a, &wa));
-        LS_EQ_INT(62, wa.w); LS_EQ_INT(23, wa.h);
+        LS_EQ_INT(62, wa.w); LS_EQ_INT(24, wa.h);      /* title, menu bar, 20 rows, status, frame */
         LS_EQ_INT(60, wa.cw); LS_EQ_INT(20, wa.ch);
         /* Minimize with its title key: the other comes to the front. */
         click(wa.x + wa.w - 8, wa.y);
@@ -764,4 +764,205 @@ LS_CASE(native_pointer_buttons_keep_capture_and_client_pixels)
     ls_desk_minimize(id); LS_EQ_INT(1, native_lost);
     ls_desk_raise(id); LS_EQ_INT(1, native_resumed);
     win->app = original;
+}
+
+/* Every text role has 4.5 to 1 on its own ground in every scheme's own
+   palette, greyed text is apart from live text, and the light schemes keep
+   their colours: good, warn, bad, info and mesh are five hues, none black. */
+LS_CASE(roles_read_in_every_scheme)
+{
+    setup();
+    static const int TEXT[] = {R_DESK_TEXT, R_FACE, R_STRONG, R_TITLE_ON, R_TITLE_OFF, R_SELECT, R_SELECT_DIM, R_KEY,
+                               R_KEY_DOWN, R_ACCEL, R_TIP, R_GOOD, R_WARN, R_BAD, R_INFO, R_MESH, R_STRIPE, R_TASKKEY,
+                               R_TASKHOVER, R_TRAY, R_MENU};
+    for (int s = 0; s < dk_scheme_count(); s++) {
+        ls_desk_set_theme(s);
+        frame(160, 45);
+        for (unsigned i = 0; i < sizeof(TEXT) / sizeof(TEXT[0]); i++) {
+            const uint8_t a = dk_attr(TEXT[i]);
+            if (dk_contrast(TUI_ATTR_FG(a), TUI_ATTR_BG(a)) < 45)
+                printf("scheme %d (%s) role %d: %d\n", s, dk_scheme_name(s), TEXT[i], dk_contrast(TUI_ATTR_FG(a), TUI_ATTR_BG(a)));
+            LS_CHECK(dk_contrast(TUI_ATTR_FG(a), TUI_ATTR_BG(a)) >= 45);
+        }
+        const uint8_t face = dk_attr(R_FACE), dis = dk_attr(R_DISABLED);
+        LS_CHECK(dk_contrast(TUI_ATTR_FG(dis), TUI_ATTR_BG(dis)) >= 18);
+        if (dk_light_face() || s == LS_DESK_THEME_BAY95) {
+            LS_CHECK(TUI_ATTR_FG(dis) != TUI_ATTR_FG(face));
+            LS_CHECK(TUI_ATTR_FG(dis) != TUI_ATTR_FG(dk_attr(R_STRONG)));
+        }
+        if (dk_light_face()) {
+            static const int HUES[] = {R_GOOD, R_WARN, R_BAD, R_INFO, R_MESH};
+            for (int i = 0; i < 5; i++) {
+                const uint8_t fi = TUI_ATTR_FG(dk_attr(HUES[i])) & 7;
+                LS_CHECK(fi != TUI_BLACK && fi != TUI_WHITE);
+                for (int j = 0; j < i; j++) LS_CHECK(fi != (TUI_ATTR_FG(dk_attr(HUES[j])) & 7));
+            }
+            LS_CHECK(dk_contrast(TUI_ATTR_FG(dk_hue(TUI_CYAN)), dk_face_bg()) >= 45);
+        }
+    }
+    ls_desk_set_theme(0);
+    frame(160, 45);
+}
+
+/* What the grid shows, as text: a row holds s. */
+static bool grid_has(const char *s)
+{
+    char line[400];
+    for (int y = 0; y < g_sf.h; y++) {
+        int n = 0;
+        for (int x = 0; x < g_sf.w && n < (int)sizeof(line) - 1; x++) {
+            const int ch = g_sf.back[(size_t)y * g_sf.w + x].ch;
+            line[n++] = ch >= 32 && ch < 127 ? (char)ch : ' ';
+        }
+        line[n] = 0;
+        if (strstr(line, s)) return true;
+    }
+    return false;
+}
+static void key_mod(ls_tk_t k, char ch, uint8_t mods)
+{
+    ls_input_ev_t e = {.kind = LS_IEV_KEY_DOWN, .source = LS_ISRC_LOCAL, .clicks = 1, .key = (uint16_t)k, .ch = ch, .mods = mods};
+    LS_CHECK(ls_desk_input(&e));
+}
+
+/* Shift+Tab walks the focus backwards (from the first control to the tab
+   strip, where Right changes the tab; a plain Tab goes on to the next
+   control, where it does not), and Alt with a tab's marked letter brings
+   that tab up. */
+LS_CASE(sheet_shift_tab_and_alt_letter)
+{
+    setup();
+    ls_desk_open_display(0); frame(160, 45);
+    LS_CHECK(grid_has("Wallpaper") || grid_has("Picture"));
+    LS_CHECK(!grid_has("Scheme:"));
+    key_mod(LS_TK_TAB, 0, 0); key(LS_TK_RIGHT); frame(160, 45);
+    LS_CHECK(!grid_has("Scheme:"));                     /* Tab forward: still on Background */
+    ls_desk_close(ls_desk_front());
+    ls_desk_open_display(0); frame(160, 45);
+    key_mod(LS_TK_TAB, 0, LS_IMOD_SHIFT); key(LS_TK_RIGHT); frame(160, 45);
+    LS_CHECK(grid_has("Scheme:"));                      /* Shift+Tab: the tab strip, Right: Appearance */
+    key_mod(LS_TK_CHAR, 'n', LS_IMOD_ALT); frame(160, 45);
+    LS_CHECK(grid_has("Brightness:"));                  /* Alt+N: Settings */
+    key_mod(LS_TK_CHAR, 'e', LS_IMOD_ALT); frame(160, 45);
+    LS_CHECK(grid_has("Animations") || !grid_has("Brightness:"));
+    ls_desk_close_all(); frame(160, 45);
+}
+
+/* A slider that is heard or seen as it moves goes back when its sheet is
+   closed by the title key, as it does on Cancel. */
+LS_CASE(sheet_closed_by_its_title_key_is_cancel)
+{
+    extern int display_ctl_get_user(void);
+    setup();
+    const int was = display_ctl_get_user();
+    ls_desk_open_display(3); frame(160, 45); frame(160, 45);   /* the sheet sizes its window in its first frame */
+    LS_CHECK(grid_has("Brightness:"));
+    key(LS_TK_RIGHT); frame(160, 45);
+    LS_CHECK(display_ctl_get_user() != was);            /* live: the panel light moved */
+    ls_desk_close(ls_desk_front()); frame(160, 45);     /* the title bar's X */
+    LS_EQ_INT(was, display_ctl_get_user());
+    ls_desk_open_display(3); frame(160, 45);
+    key(LS_TK_RIGHT); frame(160, 45);
+    key(LS_TK_ENTER); frame(160, 45);                   /* OK keeps it */
+    LS_CHECK(display_ctl_get_user() != was);
+    ls_desk_open_display(3); frame(160, 45);
+    key(LS_TK_LEFT); key(LS_TK_ENTER); frame(160, 45);
+    LS_EQ_INT(was, display_ctl_get_user());
+}
+
+/* F10 is the menu bar of the window in front; with no window, Start. */
+LS_CASE(f10_is_the_front_windows_menu_bar)
+{
+    setup();
+    key(LS_TK_F10); frame(160, 45);
+    LS_EQ_INT(1, dk_menu_depth()); LS_EQ_INT(M_START, dk_menu_at(0)->id);
+    key(LS_TK_F10); frame(160, 45);
+    LS_EQ_INT(0, dk_menu_depth());
+    const int id = ls_desk_open_app("fm"); frame(160, 45); frame(160, 45);
+    LS_CHECK(id >= 0);
+    key(LS_TK_F10); frame(160, 45);
+    LS_EQ_INT(1, dk_menu_depth());
+    LS_CHECK(dk_menu_at(0)->id >= M_BAR_FILE && dk_menu_at(0)->id <= M_BAR_HELP);
+    LS_EQ_INT(id, dk_menu_at(0)->arg);
+    key(LS_TK_RIGHT); frame(160, 45);
+    LS_EQ_INT(1, dk_menu_depth());
+    key(LS_TK_F10); frame(160, 45);
+    LS_EQ_INT(0, dk_menu_depth());
+    ls_desk_close_all(); frame(160, 45);
+}
+
+/* Shut Down: Tab moves the ring from the choices to Yes and No, Shift+Tab
+   back; Enter on No closes it and nothing else happens. */
+LS_CASE(shut_down_buttons_take_tab_and_enter)
+{
+    setup();
+    ls_desk_open_app("fm"); frame(160, 45);
+    ls_desk_open_shutdown(); frame(160, 45);
+    LS_EQ_INT(2, ls_desk_window_count());
+    key(LS_TK_DOWN);                                    /* Close all windows */
+    key_mod(LS_TK_TAB, 0, 0); key_mod(LS_TK_TAB, 0, 0); /* Yes, then No */
+    key(LS_TK_ENTER); frame(160, 45);
+    LS_EQ_INT(1, ls_desk_window_count());               /* No: the app window is still there */
+    ls_desk_open_shutdown(); frame(160, 45);
+    key(LS_TK_DOWN);
+    key_mod(LS_TK_TAB, 0, 0); key_mod(LS_TK_TAB, 0, 0); key_mod(LS_TK_TAB, 0, LS_IMOD_SHIFT);   /* back on Yes */
+    key(LS_TK_ENTER); frame(160, 45);
+    LS_EQ_INT(0, ls_desk_window_count());
+}
+
+/* Several icons at once: Ctrl+click adds one, a rubber band over the ground
+   takes what it touches, and the group is dragged as one. */
+void ls_shim_time_advance(int64_t us);
+static void ptr_mod(int kind, int col, int row, uint8_t mods)
+{
+    ls_input_ev_t e = {.kind = (uint8_t)kind, .source = LS_ISRC_LOCAL, .button = LS_IBTN_LEFT,
+                       .buttons = kind == LS_IEV_PTR_UP ? 0 : 1, .clicks = 1, .col = (int16_t)col, .row = (int16_t)row, .mods = mods};
+    LS_CHECK(ls_desk_input(&e));
+}
+static void drag_icon(int from_col, int from_row, int dx, int dy)
+{
+    ptr_mod(LS_IEV_PTR_DOWN, from_col, from_row, 0);
+    for (int k = 1; k <= 4; k++) ptr_mod(LS_IEV_PTR_MOVE, from_col + dx * k / 4, from_row + dy * k / 4, 0);
+    ptr_mod(LS_IEV_PTR_UP, from_col + dx, from_row + dy, 0);
+    frame(160, 45);
+}
+LS_CASE(icons_select_together_and_move_as_a_group)
+{
+    setup();
+    LS_CHECK(dk_items_count() >= 3);
+    tui_rect r0 = dk_items_rect(0), r1 = dk_items_rect(1), r2 = dk_items_rect(2);
+    /* Ctrl+click: 0 and 1, then 0 is dragged and 1 comes with it; 2 stays */
+    ptr_mod(LS_IEV_PTR_DOWN, r0.x + 3, r0.y + 2, 0); ptr_mod(LS_IEV_PTR_UP, r0.x + 3, r0.y + 2, 0);
+    ls_shim_time_advance(1000000);                      /* not a double-click */
+    ptr_mod(LS_IEV_PTR_DOWN, r1.x + 3, r1.y + 2, LS_IMOD_CTRL); ptr_mod(LS_IEV_PTR_UP, r1.x + 3, r1.y + 2, LS_IMOD_CTRL);
+    ls_shim_time_advance(1000000);
+    drag_icon(r0.x + 3, r0.y + 2, 60, 4);
+    LS_EQ_INT(r0.x + 60, dk_items_rect(0).x); LS_EQ_INT(r0.y + 4, dk_items_rect(0).y);
+    LS_EQ_INT(r1.x + 60, dk_items_rect(1).x); LS_EQ_INT(r1.y + 4, dk_items_rect(1).y);
+    LS_EQ_INT(r2.x, dk_items_rect(2).x); LS_EQ_INT(r2.y, dk_items_rect(2).y);
+    /* a plain click on the ground lets them go: now 0 moves alone */
+    ls_shim_time_advance(1000000);
+    LS_CHECK(dk_items_hit(30, 40) < 0);
+    ptr_mod(LS_IEV_PTR_DOWN, 30, 40, 0); ptr_mod(LS_IEV_PTR_UP, 30, 40, 0);
+    ls_shim_time_advance(1000000);
+    r0 = dk_items_rect(0); r1 = dk_items_rect(1);
+    drag_icon(r0.x + 3, r0.y + 2, 0, -2);
+    LS_EQ_INT(r0.y - 2, dk_items_rect(0).y);
+    LS_EQ_INT(r1.y, dk_items_rect(1).y);
+    /* a rubber band from the ground across 0 and 1 takes both */
+    ls_shim_time_advance(1000000);
+    r0 = dk_items_rect(0); r1 = dk_items_rect(1);
+    const int bx = r0.x + r0.w + 14, by = r0.y - 1;
+    LS_CHECK(dk_items_hit(bx, by) < 0);
+    ptr_mod(LS_IEV_PTR_DOWN, bx, by, 0);
+    ptr_mod(LS_IEV_PTR_MOVE, r0.x + 5, r0.y + 2, 0);
+    ptr_mod(LS_IEV_PTR_MOVE, r1.x + 5, r1.y + 2, 0);
+    frame(160, 45);                                     /* the band is on the ground */
+    ptr_mod(LS_IEV_PTR_UP, r1.x + 5, r1.y + 2, 0);
+    ls_shim_time_advance(1000000);
+    drag_icon(r1.x + 3, r1.y + 2, 10, 0);
+    LS_EQ_INT(r0.x + 10, dk_items_rect(0).x);
+    LS_EQ_INT(r1.x + 10, dk_items_rect(1).x);
+    LS_EQ_INT(r2.x, dk_items_rect(2).x);
+    dk_items_arrange(DK_ARR_RESET);
 }

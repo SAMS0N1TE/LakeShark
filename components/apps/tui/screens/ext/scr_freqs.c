@@ -5,6 +5,7 @@
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
 #include "../../ls_freqs.h"
+#include "../../ls_here.h"
 #include "../../ls_picker.h"
 #include "../../ls_drag_scroll.h"
 #include "../../ls_keyboard.h"
@@ -155,7 +156,7 @@ static void refresh(void)
    sweeps the scale only while a bank is being read off the card. */
 void ls_freqs_dial(tui_surface *sf, tui_rect clip, int x, int y, const ls_freq_t *e, bool busy)
 {
-    const uint8_t edge = TUI_ATTR(HUE, TUI_BLACK), tick = LS_ATTR_FAINT;
+    const uint8_t edge = ls_ink_hue(TUI_ATTR(HUE, TUI_BLACK)), tick = LS_ATTR_FAINT;
     const uint8_t needle = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
     tui_put_str(sf, clip, x, y, ".---------.", edge);
     tui_put_str(sf, clip, x, y + 1, "|", edge);
@@ -173,7 +174,7 @@ void ls_freqs_dial(tui_surface *sf, tui_rect clip, int x, int y, const ls_freq_t
         for (uint32_t edge = 1600000u; at < 8 && e->hz >= edge; edge = edge / 10 * 27) at++;
     } else at = 4;
     tui_put_char(sf, clip, x + 1 + at, y + 1, '|', needle);
-    tui_put_char(sf, clip, x + 1 + at, y, 'v', TUI_ATTR(HUE | TUI_BRIGHT, TUI_BLACK));
+    tui_put_char(sf, clip, x + 1 + at, y, 'v', ls_ink_hue(TUI_ATTR(HUE | TUI_BRIGHT, TUI_BLACK)));
 }
 
 /* ------------------------------------------------------------- the face -- */
@@ -208,7 +209,7 @@ static const char *bank_label(int which)
 static const char *bank_title(void)
 {
     static char t[40];
-    snprintf(t, sizeof(t), "FREQS / %s", bank_label(ls_freqs_which()));
+    snprintf(t, sizeof(t), "%s", bank_label(ls_freqs_which()));
     return t;
 }
 
@@ -216,7 +217,7 @@ static const char *bank_title(void)
    house digits with its name, group, mode and how far away it is. */
 static int header(tui_surface *sf, tui_rect a, bool wide)
 {
-    const uint8_t white = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), amber = TUI_ATTR(HUE | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t white = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), amber = ls_ink_hue(TUI_ATTR(HUE | TUI_BRIGHT, TUI_BLACK));
     const int h = wide ? 10 : 11;
     tui_rect box = tui_rect_make(a.x, a.y, a.w, h);
     s_head = box;
@@ -268,17 +269,21 @@ static const char *near_value(void)
     return !s_f.near ? "OFF" : s_fix ? "ON" : "NO FIX";
 }
 
+/* HERE: everything near you in the data packs on the card (ls_here.c). */
+static const ls_here_cfg_t HERE = { .kinds = LS_PK_ALL, .hue = HUE };
+
 static void filters(tui_surface *sf, tui_rect r)
 {
-    ls_btn_t b[4] = {
+    ls_btn_t b[5] = {
         { "BAND", ls_freq_band_name(s_f.band), 'b', s_f.band != LS_FB_ALL, false, false },
         { "GROUP", s_f.group[0] ? ls_freq_group_tag(s_f.group) : "ALL", 'g', s_f.group[0] != 0, false, false },
         { "NEAR", near_value(), 'n', s_f.near && s_fix, false, false },
         { "FIND", s_f.find[0] ? s_f.find : "ANY", 'f', s_f.find[0] != 0, false, false },
+        { "HERE", ls_here_count(&HERE), 'h', false, false, false },
     };
     /* A group without a tag of its own shows its own name. */
     if (s_f.group[0] && !strcmp(b[1].value, "---")) b[1].value = s_f.group;
-    ls_btn_bar_rows_slot(sf, r, b, 4, -1, LS_BTN_SLOT_QUICK, 1);
+    ls_btn_bar_rows_slot(sf, r, b, 5, -1, LS_BTN_SLOT_QUICK, 1);
 }
 
 /* Landscape's spare column: everything about the entry under the cursor
@@ -349,15 +354,15 @@ static void list(tui_surface *sf, tui_rect panel, bool wide)
         if (on) {
             ls_fill_dither(sf, tui_rect_make(s_list.x, y, w, s_per), LS_DITHER_MEDIUM, HUE);
             for (int i = 0; i < s_per; i++)
-                tui_put_char(sf, s_list, s_list.x, y + i, LS_TUI_BLOCK_FULL, TUI_ATTR(HUE | TUI_BRIGHT, TUI_BLACK));
+                tui_put_char(sf, s_list, s_list.x, y + i, LS_TUI_BLOCK_FULL, ls_ink_hue(TUI_ATTR(HUE | TUI_BRIGHT, TUI_BLACK)));
         }
         const uint8_t hue = ls_freq_group_hue(e->group), ink = on ? TUI_WHITE | TUI_BRIGHT : TUI_WHITE;
-        tui_put_str(sf, s_list, x0, y, ls_freq_group_tag(e->group), TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, s_list, x0, y, ls_freq_group_tag(e->group), ls_ink_hue(TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK)));
         char text[96], dist[24];
         ls_freq_mhz_text(e->hz, dist, sizeof(dist));
         snprintf(text, sizeof(text), "%9s", dist);
-        tui_put_str(sf, s_list, x0 + 4, y, text, TUI_ATTR(on ? HUE | TUI_BRIGHT : TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
-        tui_put_str(sf, name_clip, x0 + 14, y, e->name, TUI_ATTR(ink, TUI_BLACK));
+        tui_put_str(sf, s_list, x0 + 4, y, text, ls_ink_hue(TUI_ATTR(on ? HUE | TUI_BRIGHT : TUI_WHITE | TUI_BRIGHT, TUI_BLACK)));
+        tui_put_str(sf, name_clip, x0 + 14, y, e->name, ls_ink_hue(TUI_ATTR(ink, TUI_BLACK)));
         tui_put_str(sf, s_list, mode_x, y, ls_freq_mode_name(e->mode), TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
         const bool placed = e->lat_e5 != LS_FREQ_NOWHERE;
         distance_text(e, dist, sizeof(dist));
@@ -365,7 +370,7 @@ static void list(tui_surface *sf, tui_rect panel, bool wide)
             /* The tags are in THIS ONE beside the list; a column cut to a
                few letters says nothing. */
             snprintf(text, sizeof(text), "%s", placed ? dist : "");
-            tui_put_str(sf, s_list, mode_x + 8, y, text, placed && s_fix ? TUI_ATTR(HUE, TUI_BLACK) : LS_ATTR_DIM);
+            tui_put_str(sf, s_list, mode_x + 8, y, text, placed && s_fix ? ls_ink_hue(TUI_ATTR(HUE, TUI_BLACK)) : LS_ATTR_DIM);
         } else {
             snprintf(text, sizeof(text), "%s%s%s  %s", e->group, placed ? "  " : "", placed ? dist : "",
                      e->tags[0] ? e->tags : e->notes);
@@ -374,13 +379,13 @@ static void list(tui_surface *sf, tui_rect panel, bool wide)
     }
     /* The scroll strip: where the window is in the whole list. */
     const int sh = s_scroll.h;
-    tui_put_char(sf, panel, s_scroll.x, s_scroll.y, '^', s_first ? TUI_ATTR(HUE | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_FAINT);
+    tui_put_char(sf, panel, s_scroll.x, s_scroll.y, '^', s_first ? ls_ink_hue(TUI_ATTR(HUE | TUI_BRIGHT, TUI_BLACK)) : LS_ATTR_FAINT);
     tui_put_char(sf, panel, s_scroll.x, s_scroll.y + sh - 1, 'v',
-                 s_first + s_rows < s_n ? TUI_ATTR(HUE | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_FAINT);
+                 s_first + s_rows < s_n ? ls_ink_hue(TUI_ATTR(HUE | TUI_BRIGHT, TUI_BLACK)) : LS_ATTR_FAINT);
     if (sh > 4 && s_n > s_rows) {
         const int span = sh - 2, top = s_first * span / s_n, len = s_rows * span / s_n;
         for (int i = 0; i <= len && top + i < span; i++)
-            tui_put_char(sf, panel, s_scroll.x, s_scroll.y + 1 + top + i, LS_TUI_BLOCK_FULL, TUI_ATTR(HUE, TUI_BLACK));
+            tui_put_char(sf, panel, s_scroll.x, s_scroll.y + 1 + top + i, LS_TUI_BLOCK_FULL, ls_ink_hue(TUI_ATTR(HUE, TUI_BLACK)));
     }
 }
 
@@ -396,12 +401,13 @@ static const char *tune_value(void)
 
 static void draw(tui_surface *sf, tui_rect a)
 {
+    if (ls_here_up(&HERE)) { ls_here_draw(sf, a); return; }
 #if LS_TUI_HAS_COMPACT
     /* In a desk window FREQS is laid out as a desktop program is. */
     if (ls_tui_compact()) { ls_freqs_desk_draw(sf, a); return; }
 #endif
     if (a.w < 36 || a.h < 18) {
-        ls_panel_notice(sf, a, "FREQS", "Enlarge the pane", "the list keeps its place");
+        ls_panel_notice(sf, a, NULL, "Enlarge the pane", "the list keeps its place");
         return;
     }
     refresh();
@@ -438,7 +444,7 @@ static void draw(tui_surface *sf, tui_rect a)
                            LS_BTN_SLOT_SCREEN);
     const bool fresh = s_say[0] && esp_timer_get_time() - s_said_us < 8000000;
     ls_safe_line(sf, a, a.y + a.h - 1, fresh ? s_say : e && r.note ? r.note : "ENTER tunes; tap a row twice to tune it",
-                 fresh ? TUI_ATTR(HUE | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+                 fresh ? ls_ink_hue(TUI_ATTR(HUE | TUI_BRIGHT, TUI_BLACK)) : LS_ATTR_DIM);
 }
 
 /* ---------------------------------------------------------------- input -- */
@@ -526,6 +532,7 @@ static void filter_action(int i)
         if (s_f.find[0]) { s_f.find[0] = 0; changed(); }
         else ls_keyboard_open(LS_TEXT(t_scr_freqs_find_prompt, "FIND: NAME, TAG, GROUP OR MHZ"), "", sizeof(s_f.find) - 1, find_done);
     }
+    else if (i == 4) ls_here_open(&HERE);
 }
 
 /* ---- SAVE: from what FM or P25 is on, typed, or a copy of this one -- */
@@ -841,6 +848,8 @@ static void move(int d)
 
 static bool key(ls_tk_t k, char ch)
 {
+    if (ls_here_up(&HERE)) return ls_here_key(k, ch);
+    if (k == LS_TK_CHAR && ch == '7') { ls_here_open(&HERE); return true; }
 #if LS_TUI_HAS_COMPACT
     if (ls_tui_compact()) return ls_freqs_desk_key(k, ch);
 #endif
@@ -862,8 +871,8 @@ static bool key(ls_tk_t k, char ch)
     if (k != LS_TK_CHAR) return false;
     const char *p = strchr("tsko", ch);
     if (p) { action((int)(p - "tsko")); return true; }
-    p = strchr("bgnf", ch);
-    if (p) { filter_action((int)(p - "bgnf")); return true; }
+    p = strchr("bgnfh", ch);
+    if (p) { filter_action((int)(p - "bgnfh")); return true; }
     return false;
 }
 
@@ -874,6 +883,7 @@ static bool inside(tui_rect r, int col, int row)
 
 static bool touch(int col, int row)
 {
+    if (ls_here_up(&HERE)) return ls_here_touch(col, row);
 #if LS_TUI_HAS_COMPACT
     if (ls_tui_compact()) return ls_freqs_desk_touch(col, row);
 #endif
@@ -916,7 +926,7 @@ static void enter(void)
 
 const ls_tui_screen_t ls_scr_freqs = {
     .name = "FREQS",
-    .hint = "T tune  S save  K bank  O options  B band  G group  N near  F find",
+    .hint = "T tune  S save  K bank  O options  B band  G group  N near  F find  H here",
     .enter = enter, .draw = draw, .key = key, .touch = touch,
     .wheel = true,
 };

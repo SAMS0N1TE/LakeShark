@@ -56,6 +56,9 @@ void carto_set_label_sink(carto_ctx *ctx, carto_label_sink *sink);
 
 int carto_render_tile(carto_ctx *ctx, const uint8_t *mvt, size_t len,
                       int tile_x, int tile_y, int tile_z);
+/* LS DEVIATION 5: see carto.c. */
+int carto_render_tile_under(carto_ctx *ctx, const uint8_t *mvt, size_t len,
+                            int parent_x, int parent_y, int shift, int tile_x, int tile_y);
 int carto_render_overlay(carto_ctx *ctx, const carto_overlay_point *pts, int n);
 void carto_end(carto_ctx *ctx);
 

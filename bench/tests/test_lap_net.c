@@ -80,11 +80,13 @@ int main(void) {
        after a timeout. It must never target a new app's reused slot. */
     delay_dns = true;
     for (int round = 0; round < 3; ++round) {
-        int d1 = lap_tcp_connect(app.host, port, 1), d2 = lap_tcp_connect(app.host, port, 1000);
+        /* d1's deadline is short but not so short that a loaded host (the gate runs
+           tests in parallel) lets it expire before the first service starts its lookup. */
+        int d1 = lap_tcp_connect(app.host, port, 20), d2 = lap_tcp_connect(app.host, port, 1000);
         assert(d1 >= 0 && d2 >= 0); ls_lap_net_service();
         assert(dns[0].ctx && dns[1].ctx);
-        /* Past Windows' ~15 ms tick, or the 1 ms deadline can read as unexpired. */
-        pause_ms(40); ls_lap_net_service();
+        /* Past Windows' ~15 ms tick plus the 20 ms deadline, or it can read as unexpired. */
+        pause_ms(80); ls_lap_net_service();
         assert(lap_tcp_state(d1) == LAP_NET_ETIMEOUT);
         ls_lap_net_end(); ls_lap_net_begin(true); ls_lap_net_service();
         /* Pending old DNS owns two slots; the other four remain usable. */

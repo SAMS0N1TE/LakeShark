@@ -29,7 +29,15 @@
 #ifndef CONFIG_LS_LAP_CAPTURE_SLOTS
 #define CONFIG_LS_LAP_CAPTURE_SLOTS 256
 #endif
-#define CAP_SLOTS ((uint32_t)CONFIG_LS_LAP_CAPTURE_SLOTS)
+/* Frames a ring holds. The build's number unless the board asked for more
+   at boot (the network profile, board/ls_profile.h); a capture keeps the
+   count it was opened with. A power of two, as the build option is. */
+static uint32_t s_cap_slots = (uint32_t)CONFIG_LS_LAP_CAPTURE_SLOTS;
+void ls_lap_capture_set_slots(uint32_t slots)
+{
+    if (slots >= 64 && slots <= 16384 && !(slots & (slots - 1))) s_cap_slots = slots;
+}
+#define CAP_SLOTS (c->slots)
 /* head and tail are free-running uint32_t: the slot index stays continuous
  * across their wrap only for a power of two. */
 _Static_assert((CONFIG_LS_LAP_CAPTURE_SLOTS & (CONFIG_LS_LAP_CAPTURE_SLOTS - 1)) == 0,
@@ -45,6 +53,7 @@ typedef struct {
     uint8_t *ring;                      /* CAP_SLOTS x (meta + snap), then CAP_PEND for the replay */
     uint8_t *pend;
     uint32_t snap, head, tail, sequence, dropped, frames;
+    uint32_t slots;                     /* this capture's ring length */
     int32_t reason;
     /* Wi-Fi tuning */
     uint8_t channels[LAP_WIFI_HOP_MAX], count, at, home, retuned;
@@ -479,6 +488,7 @@ static int start(int source, uint8_t filter, uint32_t snap, const lap_wifi_captu
         memcpy(c->channels, wifi->channels, sizeof(c->channels));
         c->dwell_ms = wifi->dwell_ms ? wifi->dwell_ms : 250;
     }
+    c->slots = s_cap_slots;
     c->ring = ring_alloc((size_t)CAP_SLOTS * slot_bytes(c) + CAP_PEND);
     if (!c->ring) { c->reason = LAP_CAPTURE_NO_MEMORY; return LAP_IO_ELIMIT; }
     c->pend = c->ring + (size_t)CAP_SLOTS * slot_bytes(c);

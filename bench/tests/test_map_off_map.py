@@ -25,8 +25,9 @@ for style in ('picture','smooth','braille'):
     text=run(style,'43.5,-71.0')
     assert 'NO MAP' not in text and 'GO TO MAP' not in text,(style,text)
 # a tap on the chip goes to that cell
+# -71.015625 is an exact tie at five places: the C runtimes print it either way, so match the prefix
 text=run('picture','42.5,-71.0','5:47,~14')
-assert 'MARK HERE 43.58039,-71.01562' in text and 'NO MAP' not in text,text
+assert 'MARK HERE 43.58039,-71.0156' in text and 'NO MAP' not in text,text
 # nothing on the card at all
 text=run('picture',None,cellsdir=None)
 assert 'NO MAP ON CARD: GET ONE IN TILES' in text,text
