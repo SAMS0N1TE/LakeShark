@@ -15,6 +15,7 @@
 #include "../../ls_app.h"
 #include "../../ls_here.h"
 #include "../../ls_globe.h"
+#include "../../ls_drag_scroll.h"
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
 #include "ls_location.h"
@@ -58,6 +59,13 @@ static bool s_find_here;
 static int s_km_i = 1;
 static tui_rect s_list, s_globe;
 static const float KM[] = { 25, 50, 100, 200 };
+/* Fingers: the list scrolls under a drag (s_lfree: the cursor may be off
+   screen until a key moves it); the globe turns under one, and zooms by its
+   [+] [-] keys. A drag's lift is not a tap. */
+static ls_drag_scroll_t s_ldrag;
+static bool s_lfree;
+static struct { bool held, moved; float lat0, lon0; int64_t lift_us; } s_gd;
+static tui_rect s_zin, s_zout;
 
 /* ------------------------------------------------------------- the model -- */
 
@@ -334,8 +342,12 @@ static void tree(tui_surface *sf, tui_rect r, const ls_packs_status_t *st)
     }
     s_per = ls_tui_compact() || r.h < 10 ? 1 : 2;
     s_rows = r.h / s_per;
-    if (s_cur < s_first) s_first = s_cur;
-    if (s_cur >= s_first + s_rows) s_first = s_cur - s_rows + 1;
+    if (s_rows > 0 && ls_drag_scroll(&s_ldrag, r, s_per, &s_first, s_nvis, s_rows)) s_lfree = true;
+    if (!s_lfree) {
+        if (s_cur < s_first) s_first = s_cur;
+        if (s_cur >= s_first + s_rows) s_first = s_cur - s_rows + 1;
+    }
+    if (s_first > s_nvis - s_rows) s_first = s_nvis - s_rows;
     if (s_first < 0) s_first = 0;
     for (int k = 0; k < s_rows && s_first + k < s_nvis; k++) row(sf, r, r.y + k * s_per, s_first + k, s_first + k == s_cur);
     if (s_nvis > s_rows) {
@@ -393,11 +405,40 @@ static void draw(tui_surface *sf, tui_rect a)
     /* The globe in the wide column a window has too; stacked windows keep the rows for the list. */
     const int gh = wide ? left.h - (compact ? 4 : 8) : compact ? 0 : body.h >= 56 ? 18 : body.h >= 40 ? 12 : 0;
     s_globe = tui_rect_make(left.x, left.y, left.w, gh > 0 ? gh : 0);
+    /* zoom keys on the globe's top edge, right: a finger's width each, the
+       row under them takes the touch too */
+    s_zin = s_zout = tui_rect_make(0, 0, 0, 0);
+    const int zx = s_globe.x + s_globe.w - 12;
+    if (gh > 0 && s_globe.w >= 16) {
+        s_zin = tui_rect_make(zx, s_globe.y, 5, 2);
+        s_zout = tui_rect_make(zx + 6, s_globe.y, 5, 2);
+    }
+    /* A finger that went down on the globe (not on its zoom keys) turns it. */
+    int sc, sr, fc, fr;
+    if (gh > 0 && ls_tui_touch_held(&sc, &sr, &fc, &fr)) {
+        if (!s_gd.held && tui_rect_contains(s_globe, sc, sr) && !tui_rect_contains(s_zin, sc, sr) &&
+            !tui_rect_contains(s_zout, sc, sr)) {
+            s_gd.held = true; s_gd.moved = false;
+            ls_globe_view(&s_gd.lat0, &s_gd.lon0, NULL);
+        }
+        if (s_gd.held && (fc != sc || fr != sr)) {
+            s_gd.moved = true;
+            ls_globe_drag(s_gd.lat0, s_gd.lon0, fc - sc, fr - sr);
+        }
+    } else {
+        if (s_gd.held && s_gd.moved) s_gd.lift_us = esp_timer_get_time();
+        s_gd.held = s_gd.moved = false;
+    }
     if (gh > 0) {
         if (ls_globe_load(OUTLINES) == LS_GLOBE_READY || ls_globe_has_shapes()) {
             char code[8] = "";
             if (s_cur < s_nvis && !s_vis[s_cur].head) code_of(&s_u[s_vis[s_cur].u], code);
             ls_globe_draw(sf, s_globe, fill, NULL, code[0] ? code : NULL);
+            if (s_zin.w) {
+                const uint8_t kc = ls_ink(LS_INK_KEY, A(TUI_BLACK, TUI_WHITE));
+                tui_put_str(sf, s_globe, zx, s_globe.y, "  +  ", kc);
+                tui_put_str(sf, s_globe, zx + 6, s_globe.y, "  -  ", kc);
+            }
         } else wire_globe(sf, s_globe);
     }
     int y = left.y + (gh > 0 ? gh : 0);
@@ -430,8 +471,16 @@ static void toggle(int v)
     ls_globe_refill();
 }
 
+static void zoom(bool in)
+{
+    float la, lo, z;
+    ls_globe_view(&la, &lo, &z);
+    ls_globe_target(la, lo, in ? z * 1.6f : z / 1.6f);
+}
+
 static void move(int d)
 {
+    s_lfree = false;
     s_cur += d;
     if (s_cur < 0) s_cur = 0;
     if (s_cur >= s_nvis) s_cur = s_nvis ? s_nvis - 1 : 0;
@@ -460,6 +509,7 @@ static bool key(ls_tk_t k, char ch)
     if (p) { button((int)(p - "ixurb")); return true; }
     if (ch == 'a') { area(); return true; }
     if (ch == 'k') { s_km_i = (s_km_i + 1) % 4; return true; }
+    if (ch == '+' || ch == '=' || ch == '-') { zoom(ch != '-'); return true; }
     return false;
 }
 
@@ -470,12 +520,19 @@ static bool touch(int col, int row)
     b = ls_btn_hit_slot(col, row, LS_BTN_SLOT_QUICK);
     if (b == 0) { area(); return true; }
     if (b == 1) { s_km_i = (s_km_i + 1) % 4; return true; }
+    if (tui_rect_contains(s_zin, col, row) || tui_rect_contains(s_zout, col, row)) {
+        zoom(tui_rect_contains(s_zin, col, row));
+        return true;
+    }
     if (tui_rect_contains(s_list, col, row) && s_nvis) {
+        if (ls_drag_scroll_tap_is_lift(&s_ldrag)) return true;     /* the end of a scroll, not a pick */
         const int v = s_first + (row - s_list.y) / (s_per ? s_per : 1);
         if (v < s_nvis) { s_cur = v; toggle(v); aim(); }
         return true;
     }
     char code[8];
+    /* the lift of a finger that turned the globe */
+    if (s_gd.moved || (s_gd.lift_us && esp_timer_get_time() - s_gd.lift_us < 250000)) return true;
     if (s_globe.h > 0 && tui_rect_contains(s_globe, col, row) && ls_globe_hit(col, row, code, NULL, NULL) >= 0) {
         /* A state marks itself; a country without states too; a country
            with states unfolds them. */
@@ -499,12 +556,13 @@ static void enter(void)
     s_say[0] = 0;
     s_ncat = -1;
     s_find_here = true;
+    s_lfree = false;
     if (ls_location_here(&la, &lo) != LS_LOC_SRC_NONE) ls_globe_target((float)la, (float)lo, 3.0f);
 }
 
 const ls_tui_screen_t ls_scr_packs = {
     .name  = "PACKS",
-    .hint  = "UP/DOWN move  SPACE mark  I install  X remove  U update  A my area  K radius  R refresh",
+    .hint  = "UP/DOWN move  SPACE mark  I install  X remove  U update  A my area  K radius  R refresh  +/- zoom",
     .enter = enter,
     .draw  = draw,
     .key   = key,

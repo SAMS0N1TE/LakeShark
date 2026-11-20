@@ -223,6 +223,18 @@ void ls_globe_view(float *lat, float *lon, float *zoom)
     if (lon) *lon = s_tlon;
     if (zoom) *zoom = s_tzoom;
 }
+/* A finger grabbed the globe when the view was at lat0/lon0 and has moved
+   (dcol, drow) cells since: the place under it follows it, at the scale of
+   the last draw (2 x 3 dots a cell). No easing: the view is the finger's. */
+void ls_globe_drag(float lat0, float lon0, int dcol, int drow)
+{
+    if (s_R <= 0) return;
+    float cl = cosf(lat0 * (float)M_PI / 180.0f);
+    if (cl < 0.2f) cl = 0.2f;
+    const float k = 180.0f / (float)M_PI / s_R;          /* degrees a dot, at the centre */
+    ls_globe_target(lat0 + (float)drow * 3.0f * k / DOT_ASPECT, lon0 - (float)dcol * 2.0f * k / cl, s_tzoom);
+    s_lat = s_tlat; s_lon = s_tlon; s_zoom = s_tzoom;
+}
 bool ls_globe_moving(void)
 {
     float dl = s_tlon - s_lon;

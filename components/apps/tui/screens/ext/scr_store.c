@@ -28,6 +28,7 @@ EXT_RAM_BSS_ATTR static struct {
     ls_drag_scroll_t drag;
     char lines[8][72], btn_have[16], btn_all[12];   /* card text and button values */
     char focus[32];                 /* store.open: the card to show once the catalog has it */
+    bool free;                      /* a finger scrolled the list: the pick may be off screen until a key moves it */
 } S;
 
 #define A(fg) TUI_ATTR((fg), TUI_BLACK)
@@ -271,9 +272,11 @@ static void draw_list(tui_surface *sf, tui_rect r, const ls_store_status_t *st)
     tui_fill(sf, r, ' ', TUI_DEFAULT_ATTR);
     S.list = r;
     S.rows = r.h / 2 > 0 ? r.h / 2 : 1;
-    ls_drag_scroll(&S.drag, r, 2, &S.top, S.nvis, S.rows);
-    if (S.sel < S.top) S.top = S.sel;
-    if (S.sel >= S.top + S.rows) S.top = S.sel - S.rows + 1;
+    if (ls_drag_scroll(&S.drag, r, 2, &S.top, S.nvis, S.rows)) S.free = true;
+    if (!S.free) {
+        if (S.sel < S.top) S.top = S.sel;
+        if (S.sel >= S.top + S.rows) S.top = S.sel - S.rows + 1;
+    }
     if (S.top > S.nvis - S.rows) S.top = S.nvis - S.rows;
     if (S.top < 0) S.top = 0;
     if (!S.nvis) {
@@ -384,7 +387,7 @@ static void focus_apply(const ls_store_status_t *st)
     S.cat = C_ALL;
     build();
     for (int k = 0; k < S.nvis; k++)
-        if (S.vis[k] == i) { S.sel = k; S.top = k; break; }  /* draw_list keeps it in view */
+        if (S.vis[k] == i) { S.sel = k; S.top = k; S.free = false; break; }  /* draw_list keeps it in view */
     S.focus[0] = 0;
 }
 
@@ -443,10 +446,12 @@ static void set_cat(int c)
 {
     S.cat = (c + C_N) % C_N;
     S.sel = S.top = 0;
+    S.free = false;
 }
 
 static bool key(ls_tk_t k, char ch)
 {
+    S.free = false;
     switch (k) {
     case LS_TK_UP:         S.sel--; break;
     case LS_TK_DOWN:       S.sel++; break;

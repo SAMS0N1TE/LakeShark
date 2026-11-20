@@ -35,6 +35,9 @@ bool ls_globe_has_shapes(void);
    toward it over a few frames, so a change of view is seen, not jumped. */
 void ls_globe_target(float lat, float lon, float zoom);
 void ls_globe_view(float *lat, float *lon, float *zoom);
+/* A drag that started with the view at lat0/lon0 and has moved (dcol, drow)
+   cells: the place under the finger follows it, at once (no easing). */
+void ls_globe_drag(float lat0, float lon0, int dcol, int drow);
 
 /* The fill for a state, by code ("US-NH"): a TUI colour, or 0 for none.
    `level` 1 asks about US states; countries are outline only. */
