@@ -12,7 +12,7 @@ Trim logs to the relevant section. Remove passwords, tokens, private messages an
 
 ## Getting set up
 
-Start with the [README](README.md) for hardware requirements and board-specific build commands. Firmware builds use ESP-IDF 5.4.3. Keep a separate build directory and sdkconfig for each board; do not reuse a CMake cache from another machine or target.
+Start with the [README](README.md) for hardware requirements and board-specific build commands. Firmware builds use ESP-IDF 5.5.4 with the patches in `bench/patches/`. Keep a separate build directory and sdkconfig for each board; do not reuse a CMake cache from another machine or target.
 
 The [test guide](bench/README.md) covers the host checks and firmware build gates. Host checks need PowerShell 7, Python 3, CMake, Ninja and a host C/C++ compiler. From the repository root:
 

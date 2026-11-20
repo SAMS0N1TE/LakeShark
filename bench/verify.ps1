@@ -169,7 +169,7 @@ function Invoke-SpiDmaFaultCheck {
     $profile = $cfg.configs | Where-Object { $_.name -eq 't-display-p4' } | Select-Object -First 1
     if (-not $profile.idf_export) { return }
     $sdk = Split-Path -Parent $profile.idf_export
-    if (-not (Test-Path (Join-Path $sdk 'components/esp_driver_spi/src/gpspi/spi_master.c'))) {
+    if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($sdk, 'components/esp_driver_spi/src/gpspi/spi_master.c')))) {
         Say '    SPI DMA SDK fault injection skipped (profile SDK absent)' 'DarkGray'
         return
     }
@@ -217,7 +217,7 @@ function Invoke-HeaderCxxCheck {
     $headers = Get-ChildItem "$root/components/lakeshark" -Filter '*.h' -Recurse -File |
                Where-Object { $wanted.ContainsKey($_.Name) -and $_.FullName -notlike '*board*variants*' }
 
-    $tmp  = Join-Path $env:TEMP "ls_hdr_$([guid]::NewGuid().ToString('N')).cpp"
+    $tmp  = Join-Path ([IO.Path]::GetTempPath()) "ls_hdr_$([guid]::NewGuid().ToString('N')).cpp"
     $bad  = 0
 
     foreach ($h in $headers) {
@@ -375,7 +375,7 @@ Set-Location '$root'
 idf.py -B '$($c.dir)' -D SDKCONFIG='$($c.dir)/sdkconfig' -D SDKCONFIG_DEFAULTS='$($c.defaults)' -D IDF_TARGET='$($cfg.target)' build
 exit `$LASTEXITCODE
 "@
-        $tmp = Join-Path $env:TEMP "ls_build_$($c.name)_$([guid]::NewGuid().ToString('N')).ps1"
+        $tmp = Join-Path ([IO.Path]::GetTempPath()) "ls_build_$($c.name)_$([guid]::NewGuid().ToString('N')).ps1"
         Set-Content -Path $tmp -Value $script -Encoding UTF8
 
         $out = & pwsh -NoProfile -ExecutionPolicy Bypass -File $tmp 2>&1

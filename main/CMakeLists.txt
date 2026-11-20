@@ -33,6 +33,7 @@ target_sources(${COMPONENT_LIB} PRIVATE ls_eth.c)
 # headless main code does not, so the linker would pass main before
 # anything asked for it.
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-u ls_wireless_get")
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-u ls_p25_packs_command")
 # The same for the services apps call: the downloader and the data packs.
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-u ls_fetch_start" "-u ls_packs_get_here"
     "-u ls_report_send" "-u ls_locker_pair" "-u ls_chat_join")
