@@ -152,18 +152,16 @@ static int s_force_view = -1;     /* the simulator pins an engine for its tests 
 static bool s_use_archive;        /* a .pmtiles file was opened by hand */
 static void engine_update(void);
 static bool world_source(void) { return s_force_view < 0 && s_source != SRC_LOCAL; }
-/* The z8 cell where the card's engine drew nothing for Auto: the cell files
-   there can be left from an older download the active catalog does not list,
-   so the card "has" it but CartoCore will not draw it. engine_update then
-   gives that cell to the world tiles. UINT32_MAX: none. */
-static uint32_t s_cc_miss_key = UINT32_MAX;
-static uint32_t z8_key(double lat, double lon)
-{
-    if (!isfinite(lat) || !isfinite(lon) || fabs(lat) > 85.05) return UINT32_MAX - 1;
-    const double x = floor((lon + 180.0) / 360.0 * 256.0);
-    const double y = floor((1.0 - asinh(tan(lat * M_PI / 180.0)) / M_PI) / 2.0 * 256.0);
-    return (uint32_t)(x < 0 ? 0 : x > 255 ? 255 : x) * 256u + (uint32_t)(y < 0 ? 0 : y > 255 ? 255 : y);
-}
+/* 'carto frames' (the frame trace, near draw): what this frame did that the
+   picture alone does not show. */
+static bool s_mf_on;
+static int s_mf_fill;       /* map cells the outlines stood in for */
+static char s_mf_sw;        /* the engine changed: why (a letter), else 0 */
+static bool s_mf_pan;       /* a finger moved the view */
+static int s_mf_lc;         /* place names the engine handed over this frame */
+/* The card's engine holds the view's middle (engine_update, from the worker's
+   list of catalogued cells and map files). */
+static bool s_card_covers;
 static bool cartocore_view(void);
 /* Drawn as lines: the line look, and Detailed where the card has no
    detailed map and the world line map stands in for it. */
@@ -438,7 +436,7 @@ static void drag_reset(void);
 static void enter(void)
 {
     drag_reset();
-    s_cc_miss_key = UINT32_MAX;   /* the card may have new cells since */
+    ls_carto_map_scan_request();  /* the card may have new cells since */
     view_enter();
     register_view_action();
     s_notice_screen=ls_tui_screen_current();
@@ -1200,14 +1198,15 @@ static const uint16_t *world_view(const uint16_t *px, int pw, int ph, uint32_t k
         if (!s_world_view) return px;
     }
     static map_warp_t built;
+    static int built_blank;
     if (s_wv_src != key || s_wv_lat != lat || s_wv_lon != lon || s_wv_z != z) {
         if (!warp(px, s_world_view, pw, ph, flat, flon, fz, lat, lon, z, (double)ls_map_tile_px(), ground, &built)) {
             s_wv_src = UINT32_MAX; return px;
         }
         s_wv_src = key; s_wv_lat = lat; s_wv_lon = lon; s_wv_z = z; s_wv_shown++;
-        s_wv_blank = s_warp_blank;
+        built_blank = s_warp_blank;
     }
-    s_wv_on = true; s_world_warp = built;
+    s_wv_on = true; s_world_warp = built; s_wv_blank = built_blank;
     return s_world_view;
 }
 
@@ -1416,6 +1415,14 @@ static bool warp(const uint16_t *src, uint16_t *dst, int pw, int ph, double slat
 }
 static map_warp_t s_pic_warp = { 0, 0, 1 };   /* s_pic_view from s_pic */
 static int s_pic_blank;
+/* What the view shows of a pw x ph picture moved by w: the fraction of the
+   view across and down that the picture reaches. The rest is waiting for the
+   next render, not empty ground. */
+static void mf_reach(map_warp_t w, int pw, int ph, double r[4])
+{
+    r[0] = fmax(0.0, -w.ax / w.k) / pw; r[1] = fmin((double)pw, (pw - w.ax) / w.k) / pw;
+    r[2] = fmax(0.0, -w.ay / w.k) / ph; r[3] = fmin((double)ph, (ph - w.ay) / w.k) / ph;
+}
 /* CartoCore's text frames move with the view by its middle in world dots. */
 static void view_dot(double lat, double lon, unsigned z)
 {
@@ -1539,7 +1546,13 @@ EXT_RAM_BSS_ATTR static uint8_t s_under_empty[UNDER_MAX];
 static uint32_t s_under_shown = UINT32_MAX;
 static int s_under_w, s_under_h, s_under_n;
 static bool map_flat(tui_surface *sf, tui_rect body, bool opening);
-static void flat_under(tui_surface *sf, tui_rect body, int pw, int ph, const uint16_t *pix, uint32_t serial)
+/* reach: the part of the view the picture reaches (mf_reach); cells beyond it
+   wait for the render and never take outlines, so a pan never paints the
+   coarse world over its new edge for the detail to replace a moment later.
+   fresh: the picture was drawn for this very view and is finished; only then
+   is a frame with nothing in it a frame of nothing. */
+static void flat_under(tui_surface *sf, tui_rect body, int pw, int ph, const uint16_t *pix, uint32_t serial,
+                       const double reach[4], bool fresh)
 {
     const int n = body.w * body.h;
     if (n <= 0 || n > UNDER_MAX) return;
@@ -1548,55 +1561,48 @@ static void flat_under(tui_surface *sf, tui_rect body, int pw, int ph, const uin
     /* Pictures only (CartoCore's and FIELD's): the text views draw a lake or a
        forest as the same cell everywhere, which cannot be told from nothing.
        A failed text frame still gets the outlines (map_flat). */
-    const bool pic = pix != NULL;
-    if (!pic) return;
+    if (!pix) return;
     const uint16_t ground = cartocore_view() ? s_pic_built_ground : carto_rgb565(palette()->ground);
     if (s_under_shown != serial || s_under_w != body.w || s_under_h != body.h) {
         s_under_n = 0;
         for (int r = 0; r < body.h; r++)
             for (int c = 0; c < body.w; c++) {
-                bool e;
-                if (pic) {
-                    e = true;
-                    const int x0 = c * pw / body.w, x1 = (c + 1) * pw / body.w, y0 = r * ph / body.h, y1 = (r + 1) * ph / body.h;
-                    for (int y = y0; e && y < y1; y++)
-                        for (int x = x0; x < x1; x++)
-                            if (pix[(size_t)y * pw + x] != ground) { e = false; break; }
-                } else e = false;
+                bool e = (double)c / body.w >= reach[0] && (double)(c + 1) / body.w <= reach[1] + 1e-9 &&
+                         (double)r / body.h >= reach[2] && (double)(r + 1) / body.h <= reach[3] + 1e-9;
+                const int x0 = c * pw / body.w, x1 = (c + 1) * pw / body.w, y0 = r * ph / body.h, y1 = (r + 1) * ph / body.h;
+                for (int y = y0; e && y < y1; y++)
+                    for (int x = x0; x < x1; x++)
+                        if (pix[(size_t)y * pw + x] != ground) { e = false; break; }
                 s_under_empty[r * body.w + c] = e; s_under_n += e;
             }
         s_under_shown = serial; s_under_w = body.w; s_under_h = body.h;
     }
-    const bool all = s_under_n == n;
+    const bool all = fresh && s_under_n == n;
     /* Zoomed out over the downloaded states the picture is the national
        overview, whose bare ground is land between its roads and rivers: there
        only a frame with nothing in it at all is a missing map. */
     const bool overview = pix == s_pic_view && ls_carto_map_picture_cells();
     if (!s_under_n || ((ls_map_zoom() > 7 || overview) && !all)) return;
     if (all && ls_map_zoom() > 7) {
-        /* close in, a frame of bare ground over a cell the card holds, or
-           inside a region it holds whole, is open country, not a missing
-           map. The region list knows only US states: asked alone, open
-           pampa under downloaded Argentina was "NO TILES HERE, GO TO AL". */
-        if (pix == s_pic_view && ls_carto_map_picture_covered()) return;
+        /* close in, a frame of bare ground where the card's engine holds the
+           place (a downloaded cell, a map file around it, a region held
+           whole) is open country or open water, not a missing map. The region
+           list knows only US states: asked alone, open pampa under downloaded
+           Argentina was "NO TILES HERE, GO TO AL". */
+        if (pix == s_pic_view && (ls_carto_map_picture_covered() || s_card_covers)) return;
         double lat, lon; ls_map_get_center(&lat, &lon);
         char code[8]; float la, lo; bool inside = false;
         if (ls_globe_nearest(lat, lon, ls_maps_region_fill, NULL, code, &la, &lo, &inside) && inside &&
             ls_maps_region_fill(code, NULL) == TUI_GREEN) return;
     }
     for (int r = 0; r < body.h; r++) memcpy(&s_under_keep[r * body.w], &sf->back[(body.y + r) * sf->w + body.x], (size_t)body.w * sizeof(tui_cell));
-    /* Close in, a whole frame of nothing from the card's engine: on Auto,
-       hand this cell to the world tiles (engine_update reads the key). */
-    if (all && ls_map_zoom() > 7 && pix == s_pic_view && s_source != SRC_LOCAL) {
-        double lat, lon; ls_map_get_center(&lat, &lon);
-        s_cc_miss_key = z8_key(lat, lon);
-    }
-    if (all) { if (map_flat(sf, body, false)) return; }
+    if (all) { if (map_flat(sf, body, false)) { s_mf_fill = n; return; } }
     else {
         double lat, lon, ppx, ppy; ls_map_get_center(&lat, &lon); flat_scale(&ppx, &ppy);
         if (ls_globe_flat_lazy(sf, body, lat, lon, ls_map_zoom(), ppx, ppy, true, ls_maps_region_fill, NULL)) {
             for (int i = 0; i < n; i++)
                 if (!s_under_empty[i]) sf->back[(body.y + i / body.w) * sf->w + body.x + i % body.w] = s_under_keep[i];
+            s_mf_fill = s_under_n;
             return;
         }
     }
@@ -1784,6 +1790,7 @@ static void draw_labels(tui_surface *sf, tui_rect a, int sx, int sy,
 {
     const carto_label *L = NULL;
     const int n = ls_map_labels(&L);
+    s_mf_lc = n;
     if (!L || n <= 0) return;
 
     const int zoom = ls_map_zoom();
@@ -1903,6 +1910,7 @@ static void draw_carto_labels(tui_surface *sf,tui_rect a) {
 #ifdef LS_MAP_AUDIT
     s_carto_audit_count=n;
 #endif
+    s_mf_lc=(int)n;
     /* Engine classes 1/2 are places, 3 water, 4/5 roads. Stable ordering
      * keeps place names ahead of minor labels regardless of scanline order. */
     int order[LS_CARTO_LABEL_MAX];
@@ -4200,56 +4208,94 @@ static void engine_update(void)
 {
     style_load();
     map_view_t want;
+    /* Why the engine changes, for 'carto frames': L look, S source, C what
+       the card covers, F forced, A an archive or anything else. */
+    static map_look_t was_look = LOOK__COUNT; static map_source_t was_source = SRC__COUNT;
+    static bool was_cover;
+    bool now_cover = false;
     if (s_force_view >= 0) want = (map_view_t)s_force_view;
     else {
         bool cc = false;
 #if LS_CARTOCORE_AVAILABLE
         if (s_source != SRC_ONLINE && !(s_use_archive && ls_map_archive())) {
-            /* What TILES already knows is on the card (states and region
-               files): nothing here reads the card from the UI. Asked once on
-               arriving, then when the view has moved. */
+            /* What the card's engine can draw, from the map worker's list of
+               it (catalogued cells and map files, ls_carto_map_nearest): asked
+               on arriving, then when the view has moved, never from a frame. */
             static double at_lat = 999, at_lon;
             static int64_t at_us;
-            static bool covered;
-            static EXT_RAM_BSS_ATTR ls_tiles_catalog cat;
+            static bool covered, cover_known;
+            /* The lowest zoom the map under the view draws (a map file's own,
+               the cells catalog's): zoomed out past it the card cannot hold
+               the view, and MAP goes on out over the world tiles instead of
+               the card's engine pulling the zoom back (11-20: stuck at z8
+               over a region file). Kept with the answer, so it needs no lock. */
+            static unsigned cover_lo;
+            static int at_z = -1;
             double lat, lon;
             ls_map_get_center(&lat, &lon);
             const int64_t now = esp_timer_get_time();
             const bool moved = fabs(lat - at_lat) > 0.02 || fabs(lon - at_lon) > 0.02;
-            /* The card itself, read by the map worker when asked: cells and
-               map files TILES does not list (pushed over USB, a region file)
-               count as well. Asked on arriving; answered a moment later. */
+            /* The worker reads the card when asked (cells and map files TILES
+               does not list, pushed over USB, a region file count as well) and
+               the serial moves once it has. */
             static unsigned scan_seen = ~0u;
             const unsigned scan = ls_carto_map_scan_serial();
             if (at_lat > 900) ls_carto_map_scan_request();
-            if (at_lat > 900 || (moved && now - at_us > 1500000) || now - at_us > 20000000 || scan != scan_seen) {
-                scan_seen = scan;
-                char code[8];
-                float la, lo;
-                bool inside = false;
-                covered = ls_globe_nearest(lat, lon, ls_maps_region_fill, NULL, code, &la, &lo, &inside) && inside &&
-                          ls_maps_region_fill(code, NULL) == TUI_GREEN;
-                if (!covered && ls_tiles_snapshot(&cat))
-                    for (int i = 0; i < cat.count && i < LS_TILES_MAX && !covered; i++) {
-                        const ls_tile_region *r = &cat.region[i];
-                        covered = r->status == 1 && lon >= r->bbox[0] && lon <= r->bbox[2] &&
-                                  lat >= r->bbox[1] && lat <= r->bbox[3];
-                    }
-                if (!covered) {
-                    double nla, nlo;
-                    covered = ls_carto_map_nearest(lat, lon, &nla, &nlo) == 2;
+            if (at_lat > 900 || (moved && now - at_us > 1500000) || now - at_us > 20000000 || scan != scan_seen ||
+                ls_map_zoom() != at_z) {
+                /* Old cells the active catalog does not list never count, so a
+                   stale download cannot take the view from the world tiles.
+                   While the worker holds its list (it does through every
+                   render) the answer is "not known" and the engine stays: read
+                   as "not covered", every pan that landed on a render switched
+                   to the world tiles and back a moment later. Until the first
+                   answer the engine drawn last stays too. */
+                double nla, nlo;
+                unsigned zlo = 0;
+                int near = scan ? ls_carto_map_nearest_lo(lat, lon, &nla, &nlo, &zlo) : -1;
+                if (near >= 0 && near != 2) {
+                    /* A map file TILES installed counts when it is one the
+                       worker lists (it reads /sdcard/maps): one installed
+                       where CartoCore never looks drew nothing (11-20). A
+                       state TILES holds whole is catalogued cells. */
+                    static EXT_RAM_BSS_ATTR ls_tiles_catalog cat;
+                    static EXT_RAM_BSS_ATTR char files[32][128];
+                    char code[8]; float la, lo; bool inside = false;
+                    if (ls_globe_nearest(lat, lon, ls_maps_region_fill, NULL, code, &la, &lo, &inside) && inside &&
+                        ls_maps_region_fill(code, NULL) == TUI_GREEN) { near = 2; zlo = ls_carto_map_cells_lo(); }
+                    const size_t nf = near == 2 ? 0 : ls_carto_map_files(files, 32);
+                    if (near != 2 && !ls_tiles_snapshot(&cat)) near = -1;   /* TILES busy: ask again */
+                    else if (near != 2)
+                        for (int i = 0; i < cat.count && i < LS_TILES_MAX && near != 2; i++) {
+                            const ls_tile_region *r = &cat.region[i];
+                            if (r->status != 1 || lon < r->bbox[0] || lon > r->bbox[2] || lat < r->bbox[1] || lat > r->bbox[3]) continue;
+                            if (!nf) { near = -1; break; }   /* the worker holds its list: ask again */
+                            const char *want = strrchr(r->file, '/') ? strrchr(r->file, '/') + 1 : r->file;
+                            for (size_t k = 0; k < nf && near != 2; k++) {
+                                const char *have = strrchr(files[k], '/') ? strrchr(files[k], '/') + 1 : files[k];
+                                if (*want && !strcmp(want, have)) { near = 2; zlo = 0; }
+                            }
+                        }
                 }
-                at_lat = lat; at_lon = lon; at_us = now;
+                if (near >= 0) {
+                    covered = near == 2; cover_known = true; cover_lo = covered ? zlo : 0;
+                    scan_seen = scan; at_lat = lat; at_lon = lon; at_us = now; at_z = ls_map_zoom();
+                } else if (!cover_known) covered = cartocore_view();
             }
-            /* A cell the engine has already drawn empty is the world's. */
-            cc = (covered && z8_key(lat, lon) != s_cc_miss_key) || s_source == SRC_LOCAL;
+            const bool drawn = covered && ls_map_zoom() >= (int)cover_lo;
+            now_cover = drawn; s_card_covers = drawn && cover_known;
+            cc = drawn || s_source == SRC_LOCAL;
         }
 #endif
         want = cc ? (s_look == LOOK_BLOCKS ? MAP_VIEW_CC_SMOOTH : s_look == LOOK_DOTS ? MAP_VIEW_CC_BRAILLE : MAP_VIEW_CC_PICTURE)
                   : (s_look == LOOK_BLOCKS ? MAP_VIEW_COLOUR : s_look == LOOK_DOTS ? MAP_VIEW_MONO : MAP_VIEW_FIELD);
         s_detail_missing = s_look == LOOK_DETAILED && !cc;
     }
+    const char why = s_force_view >= 0 ? 'F' : s_look != was_look ? 'L' : s_source != was_source ? 'S' :
+                     now_cover != was_cover ? 'C' : 'A';
+    was_look = s_look; was_source = s_source; was_cover = now_cover;
     if (want == s_view) return;
+    s_mf_sw = why;
     s_view = want;
     if (!cartocore_view()) ls_carto_map_leave();
     if (!cc_picture()) picture_release();
@@ -5069,10 +5115,262 @@ static void probe_frame(int64_t now)
     }
 }
 
+/* ---------------------------------------------------------- frame trace -- */
+
+/* 'carto frames on', then 'carto frames' prints (and empties) one line per
+   frame MAP committed, that is a frame where anything on the map changed:
+     mf <ms> v=<engine> lk=<look> z x y pic off pend fill lost lab wait under sw fl lc
+   x y: the view's middle in world pixels (256 a tile) at z. pic: the serial
+   of the picture under the overlays. off: world pixels between the view that
+   picture was drawn for and this one (9999 another zoom). pend: per mille of
+   the view the picture does not reach yet. fill: map cells the outlines
+   stood in for. lost: per mille of the blocks of ground shown in the last
+   committed frame that kept less than half their map (detail went back).
+   wait/under: world tiles still coming, and drawn from a coarser tile (on
+   cells: tiles of the picture drawn coarser, 1000 all). sw: the engine
+   changed this frame, and why (engine_update). fl: 1 a pan, 2 a finger down.
+   lc: place names the engine handed over (lab of them were drawn).
+   PSRAM; nothing is measured while it is off. */
+typedef struct {
+    uint32_t ms, pic;
+    int32_t x, y;
+    int16_t off, pend, fill, lost, lab, wait, under, lc;
+    uint8_t view, look, z, flags;
+    char sw;
+} mf_rec;
+#define MF_N 1024
+EXT_RAM_BSS_ATTR static mf_rec s_mf[MF_N];
+static unsigned s_mf_n, s_mf_shown;   /* written, and printed so far */
+static bool s_mf_force;               /* keep the next frame whatever it shows */
+
+/* Map per block of 4 x 4 cells, anchored in the world so a frame can be held
+   against the last one wherever the view has moved: 0..250 of the block is
+   map, 255 not measured (the picture does not reach it yet). */
+#define MF_B 4
+#define MF_BX (CELL_COLS_MAX / MF_B)
+#define MF_BY 40
+EXT_RAM_BSS_ATTR static uint8_t s_mfd[2][MF_BY][MF_BX];
+static double s_mfd_x[2], s_mfd_y[2], s_mfd_w[2], s_mfd_h[2];
+static int s_mfd_nx[2], s_mfd_ny[2], s_mfd_z[2] = { -1, -1 }, s_mfd_at;
+static int s_mf_lost;
+
+
+/* This frame's blocks, then held against the last measured frame's. pix:
+   the picture under the overlays, its pixel (0,0) at world pixel origin[]
+   in the picture's own pixels, unit world pixels (256 a tile) each; its
+   blocks are cut on the world's grid, so a picture that only moved counts
+   the same in every block. NULL: the cells drawn on the surface, in blocks
+   of the view (pw < 0: no map at all). */
+static void mf_measure(tui_surface *sf, tui_rect body, const uint16_t *pix, int pw, int ph, uint16_t ground,
+                       const double reach[4], const double origin[2], double unit)
+{
+    s_mf_lost = -1;
+    /* a picture scaled for a zoom is not held against anything */
+    if (pix && !origin) { s_mfd_z[s_mfd_at] = -1; return; }
+    const int at = s_mfd_at ^ 1;
+    double lat, lon, ppx, ppy; ls_map_get_center(&lat, &lon); flat_scale(&ppx, &ppy);
+    const int z = ls_map_zoom();
+    const double world = 256.0 * ldexp(1.0, z);
+    int nx, ny;
+    if (pix && origin) {
+        const int bw = MF_B * pw / body.w, bh = MF_B * ph / body.h;
+        if (bw < 2 || bh < 2) return;
+        const int64_t L = llround(origin[0]), T = llround(origin[1]);
+        const int64_t gx0 = L >= 0 ? (L + bw - 1) / bw : -((-L) / bw), gy0 = T >= 0 ? (T + bh - 1) / bh : -((-T) / bh);
+        nx = (int)((L + pw - gx0 * bw) / bw); ny = (int)((T + ph - gy0 * bh) / bh);
+        if (nx > MF_BX) nx = MF_BX;
+        if (ny > MF_BY) ny = MF_BY;
+        if (nx < 2 || ny < 2) return;
+        s_mfd_w[at] = bw * unit; s_mfd_h[at] = bh * unit;
+        s_mfd_x[at] = (double)(gx0 * bw) * unit; s_mfd_y[at] = (double)(gy0 * bh) * unit;
+        for (int by = 0; by < ny; by++)
+            for (int bx = 0; bx < nx; bx++) {
+                const int x0 = (int)((gx0 + bx) * bw - L), y0 = (int)((gy0 + by) * bh - T);
+                if (x0 < reach[0] * pw || x0 + bw > reach[1] * pw + 0.5 || y0 < reach[2] * ph || y0 + bh > reach[3] * ph + 0.5) {
+                    s_mfd[at][by][bx] = 255; continue;
+                }
+                int ink = 0, all = 0;
+                for (int y = y0; y < y0 + bh; y += 2)
+                    for (int x = x0; x < x0 + bw; x += 2, all++) ink += pix[(size_t)y * pw + x] != ground;
+                s_mfd[at][by][bx] = (uint8_t)(all ? ink * 250 / all : 0);
+            }
+    } else {
+        nx = body.w / MF_B; ny = body.h / MF_B;
+        if (nx < 2 || ny < 2 || nx > MF_BX || ny > MF_BY) return;
+        s_mfd_w[at] = MF_B * ppx; s_mfd_h[at] = MF_B * ppy;
+        s_mfd_x[at] = (lon + 180.0) / 360.0 * world - body.w * ppx / 2.0;
+        s_mfd_y[at] = merc_y(lat) * world - body.h * ppy / 2.0;
+        for (int by = 0; by < ny; by++)
+            for (int bx = 0; bx < nx; bx++) {
+                const double fx0 = (double)(bx * MF_B) / body.w, fx1 = (double)((bx + 1) * MF_B) / body.w;
+                const double fy0 = (double)(by * MF_B) / body.h, fy1 = (double)((by + 1) * MF_B) / body.h;
+                if (fx0 < reach[0] || fx1 > reach[1] || fy0 < reach[2] || fy1 > reach[3]) { s_mfd[at][by][bx] = 255; continue; }
+                int ink = 0, all = 0;
+                if (pw < 0) all = 1;
+                else
+                    for (int r = by * MF_B; r < (by + 1) * MF_B; r++)
+                        for (int c = bx * MF_B; c < (bx + 1) * MF_B; c++, all++) {
+                            const int16_t ch = sf->back[(body.y + r) * sf->w + body.x + c].ch;
+                            ink += ch != ' ' && ch != 0 && ch != (int16_t)(uint8_t)LS_TUI_IMAGE_CELL;
+                        }
+                s_mfd[at][by][bx] = (uint8_t)(all ? ink * 250 / all : 0);
+            }
+    }
+    s_mfd_nx[at] = nx; s_mfd_ny[at] = ny; s_mfd_z[at] = z;
+    s_mfd_at = at;
+    const int was = at ^ 1;
+    if (s_mfd_z[was] != z) return;
+    int compared = 0, lost = 0;
+    for (int by = 0; by < ny; by++)
+        for (int bx = 0; bx < nx; bx++) {
+            const int now = s_mfd[at][by][bx];
+            if (now == 255) continue;
+            /* the last frame's map at this block's middle: its own block on
+               the same grid, else between its four nearest blocks */
+            const double ox = (s_mfd_x[at] + (bx + 0.5) * s_mfd_w[at] - s_mfd_x[was]) / s_mfd_w[was] - 0.5;
+            const double oy = (s_mfd_y[at] + (by + 0.5) * s_mfd_h[at] - s_mfd_y[was]) / s_mfd_h[was] - 0.5;
+            double old;
+            const int rx = (int)lround(ox), ry = (int)lround(oy);
+            if (fabs(ox - rx) < 1e-6 && fabs(oy - ry) < 1e-6 && s_mfd_w[at] == s_mfd_w[was] && s_mfd_h[at] == s_mfd_h[was]) {
+                if (rx < 0 || ry < 0 || rx >= s_mfd_nx[was] || ry >= s_mfd_ny[was] || s_mfd[was][ry][rx] == 255) continue;
+                old = s_mfd[was][ry][rx];
+            } else {
+                const int ix = (int)floor(ox), iy = (int)floor(oy);
+                if (ix < 0 || iy < 0 || ix + 1 >= s_mfd_nx[was] || iy + 1 >= s_mfd_ny[was]) continue;
+                const int a = s_mfd[was][iy][ix], b = s_mfd[was][iy][ix + 1], c = s_mfd[was][iy + 1][ix], d = s_mfd[was][iy + 1][ix + 1];
+                if (a == 255 || b == 255 || c == 255 || d == 255) continue;
+                const double tx = ox - ix, ty = oy - iy;
+                old = (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
+            }
+            compared++;
+            if (old >= 12 && now * 2 < old && old - now >= 8) lost++;
+        }
+    s_mf_lost = compared ? lost * 1000 / compared : -1;
+}
+
+/* Measure what is under the overlays, once each time it changes. key: the
+   shown picture's serial; flat: no map, only outlines or a notice. */
+static void mf_shown(tui_surface *sf, tui_rect body, int pw, int ph, bool cc, uint32_t key, bool flat, const uint16_t *px)
+{
+    static uint32_t was_key = UINT32_MAX; static double was_lat, was_lon; static int was_z = -1, was_view = -1;
+    double lat, lon; ls_map_get_center(&lat, &lon);
+    const int z = ls_map_zoom();
+    if (flat) key = 0xF1A70000u;
+    if (key == was_key && lat == was_lat && lon == was_lon && z == was_z && (int)s_view == was_view) return;
+    was_key = key; was_lat = lat; was_lon = lon; was_z = z; was_view = (int)s_view;
+    double reach[4] = { 0, 1, 0, 1 }, origin[2];
+    map_warp_t w;
+    if (flat) mf_measure(sf, body, NULL, -1, 0, 0, reach, NULL, 1);
+    else if (cc && cc_picture()) {
+        if (!s_pic_view || !s_pic_have) return;
+        mf_reach(s_pic_warp, pw, ph, reach);
+        /* the picture's own corner, moved as it is shown */
+        const double world = 256.0 * ldexp(1.0, (int)s_pic_z);
+        origin[0] = floor((s_pic_lon + 180.0) / 360.0 * world - pw / 2.0 + 0.5) + s_pic_warp.ax;
+        origin[1] = floor(merc_y(s_pic_lat) * world - ph / 2.0 + 0.5) + s_pic_warp.ay;
+        mf_measure(sf, body, s_pic_view, pw, ph, s_pic_built_ground, reach, s_pic_warp.k == 1.0 ? origin : NULL, 1.0);
+    } else if (cc) {
+        if (ls_carto_map_held_warp(&w.ax, &w.ay, &w.k)) mf_reach(w, body.w * 2, body.h * 4, reach);
+        mf_measure(sf, body, NULL, 0, 0, 0, reach, NULL, 1);
+    } else {
+        if (s_wv_on) mf_reach(s_world_warp, pw, ph, reach);
+        /* blocks and dots are laid out from the renderer's own picture: held as that */
+        static uint16_t raw_ground;
+        if (!raw_ground) { carto_style st; carto_style_default(&st); raw_ground = carto_rgb565(st.bg); }
+        const bool field = s_view == MAP_VIEW_FIELD;
+        const uint16_t *p = s_wv_on ? s_world_view : field ? s_field_pixels : px;
+        double flat_, flon; int fz;
+        if (!p || !ls_map_render_view(&flat_, &flon, &fz)) return;
+        const double tile = (double)(ls_map_tile_px() > 0 ? ls_map_tile_px() : 256), wf = tile * ldexp(1.0, fz);
+        origin[0] = floor((flon + 180.0) / 360.0 * wf - pw / 2.0 + 0.5) + (s_wv_on ? s_world_warp.ax : 0);
+        origin[1] = floor(merc_y(flat_) * wf - ph / 2.0 + 0.5) + (s_wv_on ? s_world_warp.ay : 0);
+        mf_measure(sf, body, p, pw, ph, field ? carto_rgb565(palette()->ground) : raw_ground, reach,
+                   s_world_warp.k == 1.0 && fz == z ? origin : NULL, 256.0 / tile);
+    }
+}
+
+void ls_map_frames_command(const char *what)
+{
+    if (!strcmp(what, "on")) { s_mf_on = true; s_mf_force = true; s_mf_shown = s_mf_n; s_mfd_z[0] = s_mfd_z[1] = -1; puts("frames: on"); return; }
+    if (!strcmp(what, "off")) { s_mf_on = false; puts("frames: off"); return; }
+    const unsigned total = __atomic_load_n(&s_mf_n, __ATOMIC_ACQUIRE);
+    unsigned from = s_mf_shown;
+    if (total - from > MF_N) { printf("frames: %u not kept\n", total - from - MF_N); from = total - MF_N; }
+    static const char *const VIEW[MAP_VIEW__COUNT] = { "FLD", "COL", "MON", "CCS", "CCB", "CCP" };
+    static const char LOOK[LOOK__COUNT] = { 'S', 'F', 'B', 'O', 'D' };
+    for (unsigned k = from; k < total; k++) {
+        const mf_rec *m = &s_mf[k % MF_N];
+        printf("mf %lu v=%s lk=%c z=%u x=%ld y=%ld pic=%lu off=%d pend=%d fill=%d lost=%d lab=%d wait=%d under=%d sw=%c fl=%u lc=%d\n",
+               (unsigned long)m->ms, m->view < MAP_VIEW__COUNT ? VIEW[m->view] : "?", m->look < LOOK__COUNT ? LOOK[m->look] : '?',
+               m->z, (long)m->x, (long)m->y, (unsigned long)m->pic, m->off, m->pend, m->fill, m->lost, m->lab, m->wait,
+               m->under, m->sw ? m->sw : '-', m->flags, m->lc);
+    }
+    s_mf_shown = total;
+    printf("frames: %u%s, now %lu ms\n", total - from, s_mf_on ? "" : " (off: 'carto frames on')",
+           (unsigned long)(esp_timer_get_time() / 1000));
+}
+
+/* The picture under the overlays: its serial, and how far (world pixels at
+   256 a tile) the view it was drawn for is from this one; 9999 another zoom. */
+static int mf_pic(bool cc, uint32_t *pic)
+{
+    double lat, lon, plat, plon; int pz;
+    ls_map_get_center(&lat, &lon);
+    const int z = ls_map_zoom();
+    if (cc && cc_picture()) {
+        *pic = s_pic_serial;
+        if (!s_pic_have) return 9999;
+        plat = s_pic_lat; plon = s_pic_lon; pz = (int)s_pic_z;
+    } else if (cc) {
+        *pic = ls_carto_map_frame_serial();
+        double ax, ay, k;
+        if (ls_carto_map_fresh()) return 0;
+        if (!ls_carto_map_held_warp(&ax, &ay, &k) || k != 1.0) return 9999;
+        return (int)(fabs(ax) + fabs(ay));
+    } else {
+        *pic = ls_map_render_serial();
+        if (!ls_map_render_view(&plat, &plon, &pz)) return 9999;
+    }
+    if (pz != z) return 9999;
+    const double world = 256.0 * ldexp(1.0, z);
+    double dl = (lon - plon) / 360.0;
+    if (dl > 0.5) dl -= 1;
+    if (dl < -0.5) dl += 1;
+    return (int)(fabs(dl * world) + fabs((merc_y(lat) - merc_y(plat)) * world) + 0.5);
+}
+
+/* The frame just drawn, when anything on it differs from the last one kept. */
+static void mf_frame(int64_t now, bool cc, uint32_t pic, int off)
+{
+    double lat, lon; ls_map_get_center(&lat, &lon);
+    const int z = ls_map_zoom();
+    const double world = 256.0 * ldexp(1.0, z);
+    mf_rec m;
+    memset(&m, 0, sizeof(m));
+    m.ms = (uint32_t)(now / 1000); m.pic = pic;
+    m.x = (int32_t)floor((lon + 180.0) / 360.0 * world); m.y = (int32_t)floor(merc_y(lat) * world);
+    m.off = (int16_t)(off > 9999 ? 9999 : off); m.pend = (int16_t)s_probe_blank; m.fill = (int16_t)s_mf_fill;
+    m.lost = (int16_t)s_mf_lost; m.lab = (int16_t)s_probe_labels; m.lc = (int16_t)s_mf_lc;
+    if (cc) m.under = (int16_t)(cc_picture() ? ls_carto_map_picture_degraded() : 0);
+    else { ls_map_stats_t ms; ls_map_stats(&ms); m.wait = (int16_t)ms.tiles_waiting; m.under = (int16_t)ms.tiles_under; }
+    m.view = (uint8_t)s_view; m.look = (uint8_t)s_look; m.z = (uint8_t)z; m.sw = s_mf_sw;
+    int sc, sr, c, r;
+    m.flags = (uint8_t)((s_mf_pan ? 1 : 0) | (ls_tui_touch_held(&sc, &sr, &c, &r) ? 2 : 0));
+    s_mf_sw = 0; s_mf_pan = false; s_mf_lost = -1;
+    static mf_rec last;
+    mf_rec cmp = m; cmp.ms = last.ms; cmp.flags = last.flags; cmp.lost = last.lost;
+    if (s_mf_n && !s_mf_force && !memcmp(&cmp, &last, sizeof(cmp)) && !m.flags && m.lost < 0) return;
+    s_mf_force = false;
+    last = m;
+    s_mf[s_mf_n % MF_N] = m;
+    __atomic_store_n(&s_mf_n, s_mf_n + 1, __ATOMIC_RELEASE);
+}
+
 static void draw(tui_surface *sf, tui_rect area)
 {
     s_mc_t = esp_timer_get_time();
     s_probe_labels = 0;
+    s_mf_fill = 0; s_mf_lc = 0;
     static const char *previous_save;
     const char *save_status=ls_marks_save_status();
     if(save_status && (save_status!=previous_save || strstr(save_status,"NOT SAVED"))) say(save_status);
@@ -5229,6 +5527,7 @@ static void draw(tui_surface *sf, tui_rect area)
         s_pad_rect = s_controls_hidden ? tui_rect_make(0, -1, 0, 0) : pad_rect_for(body);
         s_card_rect = tui_rect_make(0, -1, 0, 0);
         s_map_cells = body;
+        if (s_mf_on) { s_mf_fill = body.w * body.h; mf_shown(sf, body, pw, ph, cc, 0, true, px); }
         draw_pan_pad(sf, s_pad_rect);
         /* Say it: outlines in place of the map read as the map having changed
            its look, when it is a map that could not be drawn. */
@@ -5241,6 +5540,7 @@ static void draw(tui_surface *sf, tui_rect area)
     } else if (!px && !cc_ok) {
         ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
         draw_placeholder(sf, body, why ? why : "the map has not been started");
+        if (s_mf_on) mf_shown(sf, body, pw, ph, cc, 0, true, px);
         s_pad_rect = tui_rect_make(0, -1, 0, 0);
         s_card_rect = tui_rect_make(0, -1, 0, 0);
     } else if (why && !ls_map_render_busy()) {
@@ -5248,6 +5548,7 @@ static void draw(tui_surface *sf, tui_rect area)
            arriving the picture is worth showing, gaps and all, and "nothing
            here" waits until there is nothing left to arrive. */
         draw_placeholder(sf, body, why);
+        if (s_mf_on) mf_shown(sf, body, pw, ph, cc, 0, true, px);
         s_pad_rect = tui_rect_make(0, -1, 0, 0);
         s_card_rect = tui_rect_make(0, -1, 0, 0);
     } else if(!cc || cc_picture() || ls_carto_map_fresh() || cc_moved) {
@@ -5260,11 +5561,23 @@ static void draw(tui_surface *sf, tui_rect area)
             picture_present(sf, body, pw, ph);
             ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
         } else ls_tui_basemap(sf,body,cc?s_cc_colours:s_map_colours);
-        if(cc_picture() && s_pic_view && pw == s_pic_w && ph == s_pic_h)
-            flat_under(sf, body, pw, ph, s_pic_view, s_pic_shown);
-        else if(s_view == MAP_VIEW_FIELD && s_field_pixels && s_field_valid && pw == s_field_w && ph == s_field_h)
+        if(cc_picture() && s_pic_view && pw == s_pic_w && ph == s_pic_h) {
+            double reach[4], vlat, vlon; mf_reach(s_pic_warp, pw, ph, reach); ls_map_get_center(&vlat, &vlon);
+            const bool fresh = s_pic_have && s_pic_z == (unsigned)ls_map_zoom() && s_pic_lat == vlat && s_pic_lon == vlon;
+            flat_under(sf, body, pw, ph, s_pic_view, s_pic_shown, reach, fresh);
+        } else if(s_view == MAP_VIEW_FIELD && s_field_pixels && s_field_valid && pw == s_field_w && ph == s_field_h) {
+            /* A first render still filling in reaches nothing it can vouch for. */
+            double reach[4] = { 0, 1, 0, 1 };
+            const bool unfinished = ls_map_render_unfinished() > 0;
+            if (s_wv_on) mf_reach(s_world_warp, pw, ph, reach);
+            if (unfinished) reach[1] = reach[3] = 0;
             flat_under(sf, body, pw, ph, s_wv_on ? s_world_view : s_field_pixels,
-                       s_wv_on ? 0x5EED0000u ^ s_wv_shown : s_field_serial ^ 0x80000000u ^ ((uint32_t)s_field_pal << 20));
+                       s_wv_on ? 0x5EED0000u ^ s_wv_shown : s_field_serial ^ 0x80000000u ^ ((uint32_t)s_field_pal << 20),
+                       reach, !s_wv_on && !unfinished);
+        }
+        if (s_mf_on)
+            mf_shown(sf, body, pw, ph, cc, cc_picture() ? s_pic_shown : cc ? ls_carto_map_frame_serial() ^ (uint32_t)cc_moved << 31
+                     : s_wv_on ? 0x5EED0000u ^ s_wv_shown : ls_map_render_serial(), false, px);
         mc_mark(MC_PICTURE);
         overlay_reset(body, s_pad_rect, s_card_rect);
 
@@ -5405,6 +5718,7 @@ static void draw(tui_surface *sf, tui_rect area)
 #endif
     probe_view(cc, cc_ok, px, pw, ph);
     probe_frame(now);
+    if (s_mf_on) { uint32_t pic = 0; const int off = mf_pic(cc, &pic); mf_frame(now, cc, pic, off); }
     mc_mark(MC_TAIL);
 }
 
@@ -5422,6 +5736,7 @@ static void pan(double dx, double dy)
 {
     s_delete_armed=false;
     s_track = false;
+    s_mf_pan = true;
     /* CartoCore owns its raster scale; ls_map owns only centre and zoom.
        Do not depend on the last draw/preview having set its tile size. */
     const double k=cartocore_view() ? ls_map_tile_px()/256.0 : 1.0;

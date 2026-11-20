@@ -24,6 +24,11 @@
 
 #define CHUNK 8192
 #define HUB_TIMEOUT_MS 15000
+/* A hub answer is never bigger than a 25 MB locker file, and a call never takes longer than these,
+   however slowly the bytes come: a hostile or broken server cannot fill the card or hold the task. */
+#define HUB_DL_MAX (26u * 1024u * 1024u)
+#define HUB_FILE_US (10LL * 60 * 1000000)
+#define HUB_MEM_US (40LL * 1000000)
 
 typedef struct { uint8_t op; uint8_t flag; char a[110]; } job_t;
 
@@ -184,6 +189,8 @@ int hub_call(const hub_req_t *q, uint32_t *got_out)
     }
     esp_http_client_fetch_headers(c);
     status = esp_http_client_get_status_code(c);
+    const int64_t t0 = esp_timer_get_time();
+    if (q->outfile && status == 200 && esp_http_client_get_content_length(c) > (int64_t)HUB_DL_MAX) status = -2;
     if (q->outfile && status == 200) {
         snprintf(part, sizeof(part), "%s.part", q->outfile);
         f = fopen(part, "wb");
@@ -194,6 +201,7 @@ int hub_call(const hub_req_t *q, uint32_t *got_out)
             const int n = esp_http_client_read(c, (char *)chunk, CHUNK);
             if (n < 0 || (n == 0 && !esp_http_client_is_complete_data_received(c))) { status = -2; break; }
             if (n == 0) break;
+            if (got + (uint32_t)n > HUB_DL_MAX || esp_timer_get_time() - t0 > HUB_FILE_US) { status = -2; break; }
             if (fwrite(chunk, 1, (size_t)n, f) != (size_t)n) { status = -3; break; }
             got += (uint32_t)n;
             hub_progress(got, (uint32_t)esp_http_client_get_content_length(c));
@@ -205,6 +213,7 @@ int hub_call(const hub_req_t *q, uint32_t *got_out)
     } else if (q->out && q->ocap) {
         for (;;) {
             if (got + 1 >= q->ocap) break;
+            if (esp_timer_get_time() - t0 > HUB_MEM_US) { status = -2; break; }
             const int n = esp_http_client_read(c, q->out + got, (int)(q->ocap - 1 - got));
             if (n < 0 || (n == 0 && !esp_http_client_is_complete_data_received(c))) { status = -2; break; }   /* cut off: not a 200 */
             if (n == 0) break;

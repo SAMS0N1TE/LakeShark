@@ -47,8 +47,15 @@ bool ls_carto_map_pixels(double lat,double lon,unsigned z,int pw,int ph,int tw,i
                          double *flat,double *flon,unsigned *fz);
 bool ls_carto_map_picture_cells(void);
 bool ls_carto_map_picture_covered(void);
+/* 'carto frames': the newest text frame's number, and how many tiles of the
+   newest picture came from a coarser zoom (1000: all of it). */
+unsigned ls_carto_map_frame_serial(void);
+int ls_carto_map_picture_degraded(void);
 bool ls_carto_map_failed(void);
 int ls_carto_map_nearest(double lat,double lon,double *nlat,double *nlon);
+/* As ls_carto_map_nearest; *lo: the lowest zoom what covers (lat,lon) draws. */
+int ls_carto_map_nearest_lo(double lat,double lon,double *nlat,double *nlon,unsigned *lo);
+unsigned ls_carto_map_cells_lo(void);
 int ls_carto_covers(double lat,double lon,char *out,size_t cap);
 void ls_carto_status_print(void); /* what 'carto status' prints */
 size_t ls_carto_map_files(char (*)[128],size_t);
@@ -72,8 +79,12 @@ static inline bool ls_carto_map_pixels(double a,double b,unsigned z,int pw,int p
     (void)a;(void)b;(void)z;(void)pw;(void)ph;(void)tw;(void)th;(void)l;(void)d;(void)s;return false; }
 static inline bool ls_carto_map_picture_cells(void) { return false; }
 static inline bool ls_carto_map_picture_covered(void) { return false; }
+static inline unsigned ls_carto_map_frame_serial(void) { return 0; }
+static inline int ls_carto_map_picture_degraded(void) { return 0; }
 static inline bool ls_carto_map_failed(void) { return false; }
 static inline int ls_carto_map_nearest(double a,double b,double *c,double *d) { (void)a;(void)b;(void)c;(void)d;return -1; }
+static inline int ls_carto_map_nearest_lo(double a,double b,double *c,double *d,unsigned *e) { (void)a;(void)b;(void)c;(void)d;(void)e;return -1; }
+static inline unsigned ls_carto_map_cells_lo(void) { return 0; }
 static inline int ls_carto_covers(double a,double b,char *o,size_t n) { (void)a;(void)b;(void)o;(void)n;return 0; }
 static inline void ls_carto_status_print(void) {}
 static inline void ls_carto_hw_status(bool reset) { (void)reset; }

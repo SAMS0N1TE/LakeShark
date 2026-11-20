@@ -1750,6 +1750,13 @@ int ls_cartocore_command(int argc, char **argv)
     if (argc==2 && !strcmp(argv[1],"tiles")) { ls_tiles_diagnostics(); return 0; }
 #endif
     if (argc==2 && !strcmp(argv[1],"trace")) { ls_map_trace_dump(); return 0; }
+    /* MAP's frames, one line each, for the pan probe: on, off, or print. */
+    if (argc>=2 && !strcmp(argv[1],"frames")) {
+        extern void ls_map_frames_command(const char *what) __attribute__((weak));
+        if (ls_map_frames_command) ls_map_frames_command(argc>=3?argv[2]:"");
+        else puts("frames: MAP is not in this build");
+        return 0;
+    }
 #if CONFIG_LS_DEV_CONSOLE
     if (argc==2 && !strcmp(argv[1],"cost")) { extern void ls_map_cost_print(void) __attribute__((weak)); if (ls_map_cost_print) ls_map_cost_print(); return 0; }
 #endif

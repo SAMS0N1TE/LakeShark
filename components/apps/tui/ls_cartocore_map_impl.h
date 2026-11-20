@@ -16,6 +16,7 @@ static void map_invalidate_frame(void) { map_mail.frame_ready=false; } /* view_l
    copies the front one out, so neither side writes what the other reads. */
 static EXT_RAM_BSS_ATTR struct {
     uint16_t *buf[2]; size_t cap[2]; unsigned front,serial; int w,h; double lat,lon; unsigned z; bool valid,cells,covered;
+    int degraded; /* tiles drawn from a coarser zoom, 1000: the whole picture */
     size_t count,back_count; ls_carto_label names[LS_CARTO_LABEL_MAX],back_names[LS_CARTO_LABEL_MAX];
 } pix;
 static EXT_RAM_BSS_ATTR cc_pixel_style pix_style; /* view_lock */
@@ -120,6 +121,11 @@ size_t ls_carto_map_files(char (*paths)[128],size_t cap) {
    files, when MAP opens or changes source. view_lock. */
 static EXT_RAM_BSS_ATTR uint8_t have_cells[8192];
 static EXT_RAM_BSS_ATTR float have_box[32][4]; /* west, south, east, north */
+static uint8_t have_box_lo[32]; /* the lowest zoom each map file draws */
+/* The lowest zoom the cells catalog draws, once a cells source has been
+   opened (0 until then). Below it, and below a map file's own lowest zoom,
+   the card does not hold the view: MAP zooms out onto the world tiles. */
+static unsigned cells_lo;
 static size_t have_boxes;
 static void have_scan(void) {
     memset(have_cells,0,sizeof(have_cells));have_boxes=0;
@@ -127,8 +133,13 @@ static void have_scan(void) {
     if(d) {
         while((e=readdir(d))) {
             unsigned x,y;int end=0;
-            if(sscanf(e->d_name,"8-%u-%u.ctile%n",&x,&y,&end)==2 && end && !e->d_name[end] && x<256 && y<256)
-                have_cells[(x*256u+y)/8u]|=(uint8_t)(1u<<((x*256u+y)%8u));
+            if(sscanf(e->d_name,"8-%u-%u.ctile%n",&x,&y,&end)!=2 || !end || e->d_name[end] || x>=256 || y>=256) continue;
+            /* Only cells the active catalog lists: CartoCore reads no other, so
+               an older download left on the card must not send MAP's view to
+               an engine that draws nothing there (decided here from the list,
+               never from a frame that is still rendering). */
+            char path[64];snprintf(path,sizeof(path),"/sdcard/maps/cells/%.40s",e->d_name);
+            if(cells_file_listed(1u+x*256u+y,path)) have_cells[(x*256u+y)/8u]|=(uint8_t)(1u<<((x*256u+y)%8u));
         }
         closedir(d);
     }
@@ -138,29 +149,34 @@ static void have_scan(void) {
         FILE *f=fopen(map_files[i],"rb");size_t got=f?fread(h,1,sizeof(h),f):0;if(f) fclose(f);
         double w,s,e2,n;
         if(!cc_ctile_header_check(h,got,st.st_size) || !carto_bounds(h,&w,&s,&e2,&n)) continue;
-        have_box[have_boxes][0]=(float)w;have_box[have_boxes][1]=(float)s;have_box[have_boxes][2]=(float)e2;have_box[have_boxes++][3]=(float)n;
+        have_box_lo[have_boxes]=h[28];have_box[have_boxes][0]=(float)w;have_box[have_boxes][1]=(float)s;have_box[have_boxes][2]=(float)e2;have_box[have_boxes++][3]=(float)n;
     }
 }
 static double have_merc(double lat) { return (1.0-asinh(tan(lat*3.14159265358979323846/180.0))/3.14159265358979323846)/2.0*256.0; }
-/* 2: a downloaded cell or a map file lies under (lat,lon). 1: none does, and
-   (*nlat,*nlon) is the nearest place one does. 0: the card has no map.
-   -1: not known this frame. Never waits. */
-int ls_carto_map_nearest(double lat,double lon,double *nlat,double *nlon) {
+/* 2: a downloaded cell or a map file lies under (lat,lon), and *lo is the
+   lowest zoom one of them draws. 1: none does, and (*nlat,*nlon) is the
+   nearest place one does. 0: the card has no map. -1: not known this frame.
+   Never waits. */
+int ls_carto_map_nearest_lo(double lat,double lon,double *nlat,double *nlon,unsigned *lo) {
     if(!view_lock || fabs(lat)>85.0 || xSemaphoreTake(view_lock,0)!=pdTRUE) return -1;
     const double px=(lon+180.0)/360.0*256.0,py=have_merc(lat);
-    int result=0;double best=1e30;
-    for(size_t i=0;i<have_boxes && result!=2;i++) {
+    int result=0;double best=1e30;unsigned low=99;
+    for(size_t i=0;i<have_boxes;i++) {
         const float *b=have_box[i];
         const double clon=lon<b[0]?b[0]:lon>b[2]?b[2]:lon,clat=lat<b[1]?b[1]:lat>b[3]?b[3]:lat;
-        if(clon==lon && clat==lat) { result=2;break; }
+        if(clon==lon && clat==lat) { result=2;if(have_box_lo[i]<low) low=have_box_lo[i];continue; }
+        if(result==2) continue;
         double dx=fabs((clon+180.0)/360.0*256.0-px),dy=have_merc(clat)-py;if(dx>128)dx=256-dx;
         if(dx*dx+dy*dy<best) { best=dx*dx+dy*dy;*nlat=(b[1]+b[3])/2;*nlon=(b[0]+b[2])/2;result=1; }
+    }
+    const unsigned hx=(unsigned)px,hy=(unsigned)py;
+    if(hx<256 && hy<256 && (have_cells[(hx*256u+hy)/8u]&(1u<<((hx*256u+hy)%8u)))) {
+        result=2;if(cells_lo<low) low=cells_lo;
     }
     for(unsigned k=0;k<8192 && result!=2;k++) {
         if(!have_cells[k]) continue;
         for(unsigned bit=0;bit<8;bit++) if(have_cells[k]&(1u<<bit)) {
             const unsigned x=(k*8u+bit)/256u,y=(k*8u+bit)%256u;
-            if(x==(unsigned)px && y==(unsigned)py) { result=2;break; }
             double dx=fabs(x+0.5-px),dy=y+0.5-py;if(dx>128)dx=256-dx;
             if(dx*dx+dy*dy<best) {
                 best=dx*dx+dy*dy;result=1;
@@ -169,8 +185,11 @@ int ls_carto_map_nearest(double lat,double lon,double *nlat,double *nlon) {
             }
         }
     }
+    if(lo) *lo=result==2?low:0;
     xSemaphoreGive(view_lock);return result;
 }
+int ls_carto_map_nearest(double lat,double lon,double *nlat,double *nlon) { return ls_carto_map_nearest_lo(lat,lon,nlat,nlon,NULL); }
+unsigned ls_carto_map_cells_lo(void) { return cells_lo; }
 static atomic_bool have_scan_wanted;
 static atomic_uint have_scan_serial;
 void ls_carto_map_scan_request(void) { atomic_store(&have_scan_wanted,true); }
@@ -476,6 +495,8 @@ bool ls_carto_map_failed(void) { return atomic_load(&map_status)<0; }
 /* The newest picture is centred on a downloaded cell: bare ground in it is
    open country or open water, anywhere in the world. */
 bool ls_carto_map_picture_covered(void) { return pix.valid && pix.covered; }
+unsigned ls_carto_map_frame_serial(void) { return atomic_load(&frame_valid)?frames[frame_front].generation:0; }
+int ls_carto_map_picture_degraded(void) { return pix.valid?pix.degraded:0; }
 void ls_carto_map_leave(void) {
     ui_map_drawn=ui_map_fresh=ui_warp_ok=false;ui_name_count=0;
     atomic_store(&map_wanted,false);atomic_fetch_add(&map_epoch,1);
@@ -523,7 +544,7 @@ static void map_service_locked(void) {
             map_mail.frame_ready=false;map_mail.fit_pending=ok && !follow;
             if(ok) {
                 map_mail.lat=r.lat;map_mail.lon=r.lon;map_mail.z=r.z;
-                map_mail.lo=map.zmin;map_mail.hi=(map.source?map.source->header[8]:map.bytes.data[8])==7?16:map.zmax;map_mail.retry_after=0;
+                map_mail.lo=map.zmin;if(source_is_cells()) cells_lo=map.zmin;map_mail.hi=(map.source?map.source->header[8]:map.bytes.data[8])==7?16:map.zmax;map_mail.retry_after=0;
                 atomic_store(&map_status,0);
             } else {
                 map_mail.retry_after=esp_timer_get_time()+5000000;atomic_store(&map_status,sd_map?-1:-2);
@@ -681,6 +702,7 @@ static bool pix_commit(render_state *s,const map_request *r) {
     }
     while(!frame_take()) vTaskDelay(1);
     pix.front=back;pix.w=s->cols*2;pix.h=s->rows*4;pix.lat=r->lat;pix.lon=r->lon;pix.z=s->z;pix.cells=source_is_cells();pix.covered=covered;
+    pix.degraded=s->coarse?1000:(int)s->renderer.scene.degraded;
     pix.count=pix.back_count;memcpy(pix.names,pix.back_names,pix.count*sizeof(pix.names[0]));
     pix.serial++;pix.valid=true;frame_give();return true;
 }

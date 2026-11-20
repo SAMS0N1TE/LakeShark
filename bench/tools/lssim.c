@@ -2262,6 +2262,7 @@ int main(int argc, char **argv)
     }
     { const char *at=getenv("LSSIM_MAP_AT"); double la,lo; if(at && sscanf(at,"%lf,%lf",&la,&lo)==2) ls_map_center(la,lo); }
     if(mz) ls_map_zoom_by(atoi(mz)-ls_map_zoom());
+    if(getenv("LSSIM_MAP_FRAMES")) { extern void ls_map_frames_command(const char *); ls_map_frames_command("on"); }
     /* -C: what the board registers, counted. The built-in sets went in above;
        MAP and P25 add theirs when entered, so every screen is entered once.
        CELL is not linked here and adds 3 values and 2 actions on the board,
@@ -2692,6 +2693,8 @@ int main(int argc, char **argv)
         fclose(f);
     }
     if (getenv("LSSIM_FEED_OUT") && write_feed(getenv("LSSIM_FEED_OUT")) != 0) return 1;
+    /* LSSIM_MAP_FRAMES=1: MAP's frame trace ('carto frames'), printed at the end. */
+    if (getenv("LSSIM_MAP_FRAMES")) { extern void ls_map_frames_command(const char *); ls_map_frames_command(""); }
     if (write_bmp(out) != 0) {
         printf("lssim: cannot write %s\n", out);
         return 1;

@@ -2728,6 +2728,8 @@ if(CARTOCORE_DIR)
     set_tests_properties(test_map_off_map PROPERTIES FIXTURES_REQUIRED carto_cells_inputs)
     add_test(NAME test_map_failed_view COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_map_failed_view.py" "$<TARGET_FILE:lssim>" "${CMAKE_CURRENT_BINARY_DIR}/cells-fixture")
     set_tests_properties(test_map_failed_view PROPERTIES FIXTURES_REQUIRED carto_cells_inputs)
+    add_test(NAME test_map_pan COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_map_pan.py" "$<TARGET_FILE:lssim>" "${CMAKE_CURRENT_BINARY_DIR}/cells-fixture")
+    set_tests_properties(test_map_pan PROPERTIES FIXTURES_REQUIRED carto_cells_inputs)
     add_custom_target(test_carto_sd
         COMMAND "${CMAKE_COMMAND}" -E env
             "CARTOCORE_DIR=${CC_ROOT}"
