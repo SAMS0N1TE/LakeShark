@@ -391,14 +391,14 @@ LS_CASE(wav_plays_copies_and_moves_to_music) {
     strcpy(entries[2].d_name, "120000_42.wav.keep"); entry_count = 3;
     s_sort = SORT_NAME; load_all(); LS_EQ_STR(selected_name(), "120000_42.wav");
     played[0] = 0; open_selected(); LS_EQ_STR(played, ROOT "/lakeshark/calls/20261007/120000_42.wav");
-    actions_open(); LS_EQ_INT(s_menu_n, 6); LS_EQ_INT(s_menu[0], 'P'); LS_EQ_INT(s_menu[1], 'C'); LS_EQ_INT(s_menu[2], 'M');
+    actions_open(); LS_EQ_INT(s_menu_n, 7); LS_EQ_INT(s_menu[0], 'P'); LS_EQ_INT(s_menu[1], 'C'); LS_EQ_INT(s_menu[2], 'M');
     copy_to_music(); LS_EQ_INT(s_job, JOB_COPY); drain();
     LS_EQ_STR(copied, ROOT "/music/120000_42.wav"); LS_EQ_STR(s_feedback, "Copied to MUSIC");
     /* The stub finds every name, so the move steps past it to -1. */
     unlinks = 0; move_to_music(); LS_EQ_INT(rename_calls, 1); LS_EQ_STR(renamed_to, ROOT "/music/120000_42-1.wav");
     LS_EQ_INT(unlinks, 2); LS_EQ_STR(deleted, ROOT "/lakeshark/calls/20261007/120000_42.wav.meta");
     strcpy(s_open_path, ROOT "/music/120000_42.wav"); s_view = VIEW_SUB;
-    actions_open(); LS_EQ_INT(s_menu_n, 4); LS_EQ_INT(s_menu[0], 'P');
+    actions_open(); LS_EQ_INT(s_menu_n, 5); LS_EQ_INT(s_menu[0], 'P');
     rename_calls = 0; move_to_music(); LS_EQ_INT(rename_calls, 0); LS_EQ_STR(s_feedback, "Already in MUSIC");
 }
 LS_CASE(card_jobs_are_bounded_and_copy_cancel_removes_only_new_file) {

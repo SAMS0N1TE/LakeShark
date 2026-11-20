@@ -14,6 +14,9 @@ CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 # Telnet and the web screen still serve the network terminal.
 # CONFIG_LS_SSH is not set
 
+# Bench-only console verbs cost about 40 KB of the 4.5 MB app slot.
+# CONFIG_LS_DEV_CONSOLE is not set
+
 CONFIG_LS_VBUS_EN_GPIO=-1
 
 CONFIG_LS_C6_LINK=y
@@ -164,3 +167,11 @@ CONFIG_MBEDTLS_ECDSA_DETERMINISTIC=n
 CONFIG_COMPILER_CXX_RTTI=n
 # The web screen's page and icons (~80 KB): USB screen and telnet stay.
 CONFIG_LS_RTERM_WEB=n
+# NimBLE is a central/observer here (HID keyboards, Remote ID scans): no
+# controller test mode, no periodic-advertising sync (max syncs is 0) and no
+# HCI error-name table; the Wi-Fi 6 TWT host calls are never made.
+# CONFIG_BT_NIMBLE_DTM_MODE_TEST is not set
+# CONFIG_BT_NIMBLE_ENABLE_PERIODIC_SYNC is not set
+# CONFIG_BT_NIMBLE_PRINT_ERR_NAME is not set
+# CONFIG_ESP_HOSTED_ENABLE_ITWT is not set
+CONFIG_LS_APP_MODULES=y

@@ -2,6 +2,7 @@
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
 #include "esp_console.h"
+#include "ls_mod.h"
 #include "ls_textpack.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -65,29 +66,26 @@ static bool memory_read(void *ctx, size_t off, void *out, size_t n) {
     memcpy(out, (const uint8_t *)ctx + off, n);
     return true;
 }
-static bool finish(void *ctx, const char *name, size_t size, const uint8_t expected[32], char *why,
-                   size_t cap) {
-    (void)ctx;
+/* The file at src (size bytes, expected SHA-256) becomes dest after the
+   loader's checks; the console's upload and the STORE's download both end
+   here. Caller holds the mutex. */
+static bool install_locked(const char *src, const char *dest, size_t size, const uint8_t expected[32],
+                           bool need_signed, char *why, size_t cap) {
     bool ok = false, lease = false;
     uint8_t actual[32];
     uint8_t *bytes = NULL;
     FILE *f = NULL;
-    if (!s.incoming || fclose(s.incoming)) {
-        s.incoming = NULL;
-        LS_SNPUTS(t_ls_lap_console_incoming_close_failed, why, cap, "incoming close failed");
-        goto done;
-    }
-    s.incoming = NULL;
-    if (mbedtls_sha256_finish(&s.sha, actual) || memcmp(actual, expected, 32)) {
-        snprintf(why, cap, "SHA256 mismatch");
-        goto done;
-    }
-    mbedtls_sha256_free(&s.sha);
-    s.hash_live = false;
     struct stat st;
-    if (stat(INCOMING, &st) || st.st_size != (long)size ||
+    /* The internal app storage changes with the firmware only: a SPIFFS
+       write from the store's PSRAM stack or the console's TCM stack turns
+       the cache off under it (cache_utils assert). */
+    if (!strncmp(dest, "/spiffs/", 8)) {
+        snprintf(why, cap, "app comes with the firmware");
+        return false;
+    }
+    if (stat(src, &st) || st.st_size != (long)size ||
         !(bytes = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)) ||
-        !(f = fopen(INCOMING, "rb")) || fread(bytes, 1, size, f) != size) {
+        !(f = fopen(src, "rb")) || fread(bytes, 1, size, f) != size) {
         LS_SNPUTS(t_ls_lap_console_cannot_read_incoming, why, cap, "cannot read incoming");
         goto done;
     }
@@ -105,11 +103,16 @@ static bool finish(void *ctx, const char *name, size_t size, const uint8_t expec
         !ls_lap_manifest(bytes, elf_size, &s.candidate.manifest, why, cap) ||
         !ls_lap_preflight(bytes, elf_size, why, cap))
         goto done;
+    if (need_signed && !is_signed) {
+        snprintf(why, cap, "not signed by a store key");
+        goto done;
+    }
     {
         const ls_lap_reader_t er = {memory_read, bytes, elf_size};
         s.candidate.has_icon_px = ls_lap_icon_read(&er, s.candidate.icon_px);
+        s.candidate.group = ls_lap_group_read(&er);
     }
-    snprintf(s.candidate.path, sizeof(s.candidate.path), "/sdcard/apps/%s", name);
+    snprintf(s.candidate.path, sizeof(s.candidate.path), "%s", dest);
     lease = ls_lap_maintenance_begin(s.candidate.manifest.id);
     if (!lease) {
         LS_SNPUTS(t_ls_lap_console_native_app_open_or, why, cap, "native app open or refresh pending");
@@ -151,7 +154,7 @@ static bool finish(void *ctx, const char *name, size_t size, const uint8_t expec
     s.candidate.installed = true;
     s.candidate.needs_confirmation = existing && existing->needs_confirmation;
     memcpy(s.candidate.sha256, actual, 32);
-    if (!ls_lap_replace(INCOMING, s.candidate.path)) {
+    if (!ls_lap_replace(src, s.candidate.path)) {
         LS_SNPUTS(t_ls_lap_console_atomic_rename_failed, why, cap, "atomic rename failed");
         goto done;
     }
@@ -167,6 +170,26 @@ done:
     if (lease)
         ls_lap_maintenance_end();
     return ok;
+}
+static bool finish(void *ctx, const char *name, size_t size, const uint8_t expected[32], char *why,
+                   size_t cap) {
+    (void)ctx;
+    uint8_t actual[32];
+    if (!s.incoming || fclose(s.incoming)) {
+        s.incoming = NULL;
+        LS_SNPUTS(t_ls_lap_console_incoming_close_failed, why, cap, "incoming close failed");
+        return false;
+    }
+    s.incoming = NULL;
+    if (mbedtls_sha256_finish(&s.sha, actual) || memcmp(actual, expected, 32)) {
+        snprintf(why, cap, "SHA256 mismatch");
+        return false;
+    }
+    mbedtls_sha256_free(&s.sha);
+    s.hash_live = false;
+    char dest[64];
+    snprintf(dest, sizeof(dest), "/sdcard/apps/%s", name);
+    return install_locked(INCOMING, dest, size, expected, false, why, cap);
 }
 static void print_info(const ls_lap_info_t *a) {
     /* Manifest text is percent encoded so a store name cannot forge reply lines. */
@@ -205,6 +228,83 @@ static void inspect_info(const ls_lap_info_t *a) {
 static bool data_name(const char *name) { return ls_lap_plain_name(name, 48); }
 static void rx_line(const char *text) { puts(text); }
 
+enum { RM_OK, RM_ABSENT, RM_BUSY, RM_IO, RM_REFRESH, RM_DATA, RM_INTERNAL };
+/* Caller holds the mutex. data: the app's folder under apps_data goes too. */
+static int remove_locked(const char *id, bool data) {
+    const ls_lap_info_t *a = ls_lap_by_id(id);
+    if (!a || !a->installed)
+        return RM_ABSENT;
+    if (!strncmp(a->path, "/spiffs/", 8))     /* internal storage: see install_locked */
+        return RM_INTERNAL;
+    if (!ls_lap_maintenance_begin(a->manifest.id))
+        return RM_BUSY;
+    s.candidate = *a;
+    s.candidate.installed = false;
+    if (remove(a->path)) {
+        ls_lap_maintenance_end();
+        return RM_IO;
+    }
+    bool data_ok = true;
+    if (data) {
+        char dir[128];
+        LS_SNPRINTF(t_ls_lap_console_sdcard_apps_data_s, dir, sizeof(dir), "/sdcard/apps_data/%s", a->manifest.id);
+        if (!ls_lap_recover_dir(dir))
+            data_ok = false;
+        DIR *d = opendir(dir);
+        if (d) {
+            struct dirent *e;
+            while ((e = readdir(d))) {
+                if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
+                    continue;
+                if (!data_name(e->d_name) && strcmp(e->d_name, ".lap-write")) {
+                    data_ok = false;
+                    continue;
+                }
+                char full[192];
+                snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
+                if (remove(full))
+                    data_ok = false;
+            }
+            closedir(d);
+            if (rmdir(dir))
+                data_ok = false;
+        }
+    }
+    if (!ls_lap_publish(&s.candidate)) {
+        ls_lap_maintenance_end();
+        return RM_REFRESH;
+    }
+    return data_ok ? RM_OK : RM_DATA;
+}
+bool ls_lap_install_file(const char *src, const char *dest, size_t size, const uint8_t sha256[32],
+                         bool need_signed, char *why, size_t cap) {
+    if (!mutex) {
+        snprintf(why, cap, "app loader not started");
+        return false;
+    }
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    bool ok = !s.transfer.active && !ls_lap_catalog_busy();
+    if (!ok)
+        snprintf(why, cap, "an upload or tile refresh is under way");
+    else
+        ok = install_locked(src, dest, size, sha256, need_signed, why, cap);
+    xSemaphoreGive(mutex);
+    return ok;
+}
+bool ls_lap_remove(const char *id, bool data, char *why, size_t cap) {
+    static const char *const WHY[] = {"", "not installed", "app open or refresh pending", "could not delete the file",
+                                      "removed; restart to refresh HOME", "removed; some data files remain",
+                                      "it comes with the firmware"};
+    if (!mutex) {
+        snprintf(why, cap, "app loader not started");
+        return false;
+    }
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    const int rc = ls_lap_catalog_busy() ? RM_BUSY : remove_locked(id, data);
+    xSemaphoreGive(mutex);
+    snprintf(why, cap, "%s", WHY[rc]);
+    return rc == RM_OK || rc == RM_REFRESH || rc == RM_DATA;
+}
 static int command(int argc, char **argv) {
     xSemaphoreTake(mutex, portMAX_DELAY);
     char reply[160];
@@ -261,55 +361,15 @@ static int command(int argc, char **argv) {
         goto done;
     }
     if ((argc == 3 || (argc == 4 && !strcmp(argv[3], "all"))) && !strcmp(argv[1], "rm")) {
-        const ls_lap_info_t *a = ls_lap_by_id(argv[2]);
-        if (!a || !a->installed) {
-            LS_PUTS(t_ls_lap_console_app_err_absent_unknown, "APP ERR absent unknown app id");
-            goto done;
+        switch (remove_locked(argv[2], argc == 4)) {
+        case RM_ABSENT: LS_PUTS(t_ls_lap_console_app_err_absent_unknown, "APP ERR absent unknown app id"); break;
+        case RM_BUSY: LS_PUTS(t_ls_lap_console_app_err_busy_native, "APP ERR busy native app open or refresh pending"); break;
+        case RM_IO: LS_PUTS(t_ls_lap_console_app_err_io_app, "APP ERR io app removal failed"); break;
+        case RM_REFRESH: LS_PUTS(t_ls_lap_console_app_err_refresh_removed, "APP ERR refresh removed; restart to refresh"); break;
+        case RM_DATA: LS_PUTS(t_ls_lap_console_app_err_data_app, "APP ERR data app removed; some data files remain"); break;
+        case RM_INTERNAL: puts("APP ERR internal app comes with the firmware"); break;
+        default: LS_PUTS(t_ls_lap_console_app_ok_rm_refresh, "APP OK rm refresh=queued"); break;
         }
-        if (!ls_lap_maintenance_begin(a->manifest.id)) {
-            LS_PUTS(t_ls_lap_console_app_err_busy_native, "APP ERR busy native app open or refresh pending");
-            goto done;
-        }
-        s.candidate = *a;
-        s.candidate.installed = false;
-        if (remove(a->path)) {
-            ls_lap_maintenance_end();
-            LS_PUTS(t_ls_lap_console_app_err_io_app, "APP ERR io app removal failed");
-            goto done;
-        }
-        bool data_ok = true;
-        if (argc == 4) {
-            char dir[128];
-            LS_SNPRINTF(t_ls_lap_console_sdcard_apps_data_s, dir, sizeof(dir), "/sdcard/apps_data/%s", a->manifest.id);
-            if (!ls_lap_recover_dir(dir))
-                data_ok = false;
-            DIR *d = opendir(dir);
-            if (d) {
-                struct dirent *e;
-                while ((e = readdir(d))) {
-                    if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
-                        continue;
-                    if (!data_name(e->d_name) && strcmp(e->d_name, ".lap-write")) {
-                        data_ok = false;
-                        continue;
-                    }
-                    char full[192];
-                    snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
-                    if (remove(full))
-                        data_ok = false;
-                }
-                closedir(d);
-                if (rmdir(dir))
-                    data_ok = false;
-            }
-        }
-        if (!ls_lap_publish(&s.candidate)) {
-            ls_lap_maintenance_end();
-            LS_PUTS(t_ls_lap_console_app_err_refresh_removed, "APP ERR refresh removed; restart to refresh");
-        } else if (!data_ok)
-            LS_PUTS(t_ls_lap_console_app_err_data_app, "APP ERR data app removed; some data files remain");
-        else
-            LS_PUTS(t_ls_lap_console_app_ok_rm_refresh, "APP OK rm refresh=queued");
         goto done;
     }
     LS_PUTS(t_ls_lap_console_app_err_args_use, "APP ERR args use list|put|data|end|rm|info|rx|svc|stop");
@@ -333,6 +393,8 @@ void ls_lap_console_register(void) {
     if (!ls_lap_start_worker())
         return;
     cancel(NULL); /* discard any interrupted transfer on boot */
+    const esp_console_cmd_t mod = {.command = "mod", .help = "Firmware modules: list | load <id> | fetch", .func = ls_mod_command};
+    esp_console_cmd_register(&mod);
     const esp_console_cmd_t cmd = {
         .command = "app", .help = LS_TXT(con_ls_lap_console_app_help, "Native SD apps: list|put|data|end|rm|info|rx"), .func = command};
     if (esp_console_cmd_register(&cmd) == ESP_OK)

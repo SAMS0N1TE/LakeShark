@@ -1,0 +1,542 @@
+# Hand-written Ukrainian -> English data for mt_xlate_lang (MESHTASTIC app).
+# Written for this app; GPL-3.0-or-later like the rest of LakeShark.
+# gen_xlate_lang.py reads it with the Wiktionary lexicon and writes ../lang/uk.bin.
+# The format is described at the top of xlate_pt_en.txt. Keys are written in
+# Cyrillic and folded to their transliteration as Ukrainian has it (h for г,
+# g for ґ, y for и, i for і, yi for ї, ye for є; the soft sign and the
+# apostrophe left out), so a line typed in Latin ("pryvit, yak spravy") meets
+# the same entries. There are no articles; a subject that is a pronoun with no
+# verb gets "is" (ya vdoma: I am at home).
+
+@func
+# Determiners
+цей | DET | this | this
+ця | DET | this | this
+ці | DET:pl | these | these
+той | DET | that | that
+та | CONJ | and
+ті | DET:pl | those | those
+мій | DET:poss | my | mine
+моя | DET:poss | my | mine
+моє | DET:poss | my | mine
+мої | DET:poss,pl | my | mine
+твій | DET:poss | your | yours
+твоя | DET:poss | your | yours
+твоє | DET:poss | your | yours
+твої | DET:poss,pl | your | yours
+наш | DET:poss | our | ours
+наша | DET:poss | our | ours
+наше | DET:poss | our | ours
+наші | DET:poss,pl | our | ours
+ваш | DET:poss | your | yours
+ваша | DET:poss | your | yours
+ваше | DET:poss | your | yours
+ваші | DET:poss,pl | your | yours
+його | DET:poss,obj | his | him
+її | DET:poss,obj | her | her
+їх | DET:poss,obj | their | them
+свій | DET:poss | own
+своя | DET:poss | own
+своє | DET:poss | own
+свої | DET:poss,pl | own
+всі | DET:pl | all | everyone
+усі | DET:pl | all | everyone
+весь | DET | all | everything
+вся | DET | all | everything
+кожен | DET | every | everyone
+кожний | DET | every | everyone
+інший | DET | other | another
+інші | DET:pl | other | others
+який | DET:q | what | which
+яка | DET:q | what | which
+яке | DET:q | what | which
+які | DET:pl,q | what | which
+багато | DET | a lot of | a lot
+мало | DET | little | little
+кілька | DET:pl | a few | a few
+#
+# Subject pronouns; alt is the object form
+я | PRON:1 | I | me
+ти | PRON:2 | you | you
+він | PRON:3 | he | him
+вона | PRON:3 | she | her
+воно | PRON:3 | it | it
+ми | PRON:4 | we | us
+ви | PRON:2 | you | you
+вони | PRON:6 | they | them
+#
+# Object pronouns (before the verb they come after it in English)
+мене | CLIT:1 | me
+мені | CLIT:1 | me
+тебе | CLIT:2 | you
+тобі | CLIT:2 | you
+нас | CLIT:4 | us
+нам | CLIT:4 | us
+вас | CLIT:5 | you
+вам | CLIT:5 | you
+йому | CLIT:3 | him
+їй | CLIT:3 | her
+їм | CLIT:6 | them
+себе | CLIT:3,refl | themselves
+собі | CLIT:3,refl | themselves
+#
+# Other pronouns
+це | PRONX | this
+все | PRONX | everything
+усе | PRONX | everything
+щось | PRONX | something | anything
+хтось | PRONX | someone | anyone
+ніщо | PRONX | nothing | anything
+нічого | PRONX | nothing | anything
+ніхто | PRONX | nobody | anybody
+мною | PRONX | me
+тобою | PRONX | you
+#
+# Prepositions
+в | PREP | in | at
+у | PREP | in
+на | PREP | on
+з | PREP | with
+із | PREP | from
+зі | PREP | with
+до | PREP | to
+від | PREP | from
+для | PREP | for
+без | PREP | without
+про | PREP | about
+по | PREP | along
+під | PREP | under
+над | PREP | above
+за | PREP | behind
+через | PREP | in
+після | PREP | after
+перед | PREP | in front of
+біля | PREP | near
+поруч з | PREP | next to
+між | PREP | between
+проти | PREP | against
+о | PREP | at
+об | PREP | at
+#
+# Conjunctions
+і | CONJ | and
+й | CONJ | and
+а | CONJ | and
+але | CONJ | but
+або | CONJ | or
+що | CONJ:sub,que | that | what
+щоб | CONJ:sub | so that
+бо | CONJ:sub | because
+тому що | CONJ:sub | because
+якщо | CONJ:sub | if
+поки | CONJ:sub | while | bye
+теж | ADV | too
+також | ADV | also
+#
+# Negation
+не | NEG | not | no
+немає | EXIST:neg | there is no | no
+нема | EXIST:neg | there is no | no
+ніколи | NEG:never | never | never
+ні | INTJ | no
+#
+# Question words
+де | Q:sub | where | where
+куди | Q | where to
+звідки | Q | where from
+коли | Q:sub | when | when
+як | Q:sub | how | like
+чому | Q | why
+навіщо | Q | why
+хто | Q:sub | who | who
+скільки | Q | how much
+о котрій | Q | at what time
+котра година | CL | what time is it
+#
+# Adverbs and particles
+тут | ADV | here
+там | ADV | there
+зараз | ADV | now
+сьогодні | ADV | today
+вчора | ADV:past | yesterday
+учора | ADV:past | yesterday
+завтра | ADV | tomorrow
+потім | ADV | later
+пізніше | ADV | later
+скоро | ADV | soon
+рано | ADV | early
+пізно | ADV | late
+завжди | ADV | always
+вже | ADV | already
+уже | ADV | already
+ще | ADV | still
+дуже | ADV:int | very
+трохи | ADV | a bit
+добре | ADV | well | ok
+погано | ADV | badly | bad
+швидко | ADV | fast
+повільно | ADV | slowly
+разом | ADV | together
+майже | ADV | almost
+тільки | ADV | only
+лише | ADV | only
+справді | ADV | really
+близько | ADV | near
+далеко | ADV | far
+вдома | ADV | at home
+удома | ADV | at home
+додому | ADV | home
+знову | ADV | again
+гучно | ADV | loud
+слабко | ADV | weakly
+нормально | ADV | fine | fine
+треба | PH | need to
+потрібно | PH | need to
+можна | PH | may
+мені треба | CL | I need to
+мені потрібно | CL | I need to
+мені потрібна | CL | I need
+мені потрібен | CL | I need
+мені потрібні | CL | I need
+тобі треба | CL | you need to
+чи | SKIP | _
+ж | SKIP | _
+же | SKIP | _
+б | SKIP | _
+би | SKIP | _
+так | INTJ | yes
+ага | INTJ | yeah
+ну | INTJ | well
+ось | INTJ | here
+#
+# Interjections and chat words
+привіт | INTJ | hi
+вітаю | INTJ | hello
+добрий день | INTJ | good afternoon
+доброго дня | INTJ | good afternoon
+доброго ранку | INTJ | good morning
+добрий ранок | INTJ | good morning
+добрий вечір | INTJ | good evening
+на добраніч | INTJ | good night
+до побачення | INTJ | goodbye
+бувай | INTJ | bye
+па | INTJ | bye
+дякую | INTJ | thanks
+дуже дякую | INTJ | thanks a lot
+будь ласка | INTJ | please
+вибач | INTJ | sorry
+вибачте | INTJ | sorry
+ок | INTJ | ok
+окей | INTJ | ok
+гаразд | INTJ | ok
+зрозуміло | INTJ | got it
+зрозумів | INTJ | got it
+зрозуміла | INTJ | got it
+чудово | INTJ | great
+супер | INTJ | great
+класно | INTJ | cool
+хаха | INTJ | haha
+допоможіть | INTJ | help
+увага | INTJ | careful
+прийом | INTJ | over
+прийнято | INTJ | copy that
+#
+# Number words
+один | NUM | one
+одна | NUM | one
+два | NUM | two
+дві | NUM | two
+три | NUM | three
+чотири | NUM | four
+п'ять | NUM | five
+шість | NUM | six
+сім | NUM | seven
+вісім | NUM | eight
+дев'ять | NUM | nine
+десять | NUM | ten
+двадцять | NUM | twenty
+сто | NUM | a hundred
+тисяча | NUM | thousand
+перший | NUM | first
+останній | NUM | last
+#
+# There is / have
+є | EXIST | there is
+у мене є | CL | I have
+у мене немає | CL | I don't have
+у тебе є | CL | do you have | you have
+у вас є | CL | do you have | you have
+є хтось | CL | is anyone there
+хтось є | CL | is anyone there
+#
+# Phrases
+всім привіт | INTJ | hi everyone
+привіт усім | INTJ | hi everyone
+привіт всім | INTJ | hi everyone
+як справи | CL | how are you
+як ти | CL | how are you
+що нового | CL | what's new
+все добре | CL | all good
+усе добре | CL | all good
+все гаразд | CL | all good
+усе гаразд | CL | all good
+не знаю | CL | I don't know
+не розумію | CL | I don't understand
+нічого страшного | CL | no problem
+без проблем | INTJ | no problem
+немає за що | INTJ | you're welcome
+як чути | CL | how do you hear me
+як чуєш | CL | how do you hear me
+гучно і чітко | ADV | loud and clear
+кінець зв'язку | INTJ | over and out
+на зв'язку | ADV | online
+на місці | ADV | here
+в дорозі | ADV | on the way
+в безпеці | ADV | safe
+у безпеці | ADV | safe
+іде дощ | CL | it's raining
+йде дощ | CL | it's raining
+дуже холодно | CL | it's very cold
+дуже спекотно | CL | it's very hot
+холодно | CL | it's cold
+спекотно | CL | it's hot
+викличте швидку | CL | call an ambulance
+слава україні | INTJ | glory to Ukraine
+героям слава | INTJ | glory to the heroes
+ввечері | ADV | in the evening
+вночі | ADV | at night
+вдень | ADV | in the afternoon
+у мене | CL | I have
+в мене | CL | I have
+зараз буду | CL | I'll be right there
+скоро буду | CL | I'll be there soon
+дякую дуже | INTJ | thanks a lot
+на роботу | ADV | to work
+на роботі | ADV | at work
+за годину | ADV | in an hour
+через годину | ADV | in an hour
+за хвилину | ADV | in a minute
+
+@abbr
+дяк | дякую
+дяки | дякую
+будьласка | будь ласка
+плз | будь ласка
+прив | привіт
+норм | нормально
+шо | що
+dyakuju | дякую
+diakuiu | дякую
+
+@verbs
+бути | BE,IT
+мати | HAVE
+могти | CAN
+змогти | CAN
+вміти | CAN
+хотіти | WANT
+захотіти | WANT
+мусити | MUST
+працювати | IT
+здаватися | IT
+
+@lex
+бути | V | be
+мати | V | have
+могти | V | can
+змогти | V | can
+хотіти | V | want
+чути | V | hear
+почути | V | hear
+бачити | V | see
+побачити | V | see
+говорити | V | talk
+казати | V | say
+сказати | V | say
+знати | V | know
+робити | V | do
+зробити | V | do
+йти | V | go
+іти | V | go
+піти | V | go
+їхати | V | drive
+приїхати | V | arrive
+прийти | V | come
+чекати | V | wait+for
+зачекати | V | wait+for
+дзвонити | V | call
+подзвонити | V | call
+писати | V | write
+написати | V | write
+надіслати | V | send
+надсилати | V | send
+отримати | V | receive
+отримувати | V | receive
+відповісти | V | answer
+відповідати | V | answer
+працювати | V | work
+заряджати | V | charge
+зарядити | V | charge
+перевірити | V | check
+допомогти | V | help
+знайти | V | find
+шукати | V | look+for
+взяти | V | take
+дати | V | give
+розуміти | V | understand
+зрозуміти | V | understand
+думати | V | think
+жити | V | live
+повернутися | V | come back
+вийти | V | go out
+виходити | V | go out
+піти | V | leave
+слухати | V | listen+to
+загубити | V | lose
+сідати | V | run down
+сісти | V | run down
+відключатися | V | go offline
+запізнюватися | V | be late
+зустрітися | V | meet
+батарея | N:f | battery
+акумулятор | N:m | battery
+заряд | N:m | charge
+зарядка | N:f | charger
+сигнал | N:m | signal
+антена | N:f | antenna
+рація | N:f | radio
+радіо | N:n | radio
+вузол | N:m | node
+нода | N:f | node
+мережа | N:f | network
+повідомлення | N:n | message
+канал | N:m | channel
+частота | N:f | frequency
+ретранслятор | N:m | repeater
+телефон | N:m | phone
+допомога | N:f,u | help
+вода | N:f,u | water
+їжа | N:f,u | food
+світло | N:n,u | power
+електрика | N:f,u | power
+дощ | N:m,u | rain
+гроза | N:f | storm
+будинок | N:m | house
+місце | N:n | place
+площа | N:f | square
+пагорб | N:m | hill
+гора | N:f | mountain
+вулиця | N:f | street
+година | N:f | hour
+хвилина | N:f | minute
+день | N:m | day
+ніч | N:f | night
+тиждень | N:m | week
+тест | N:m | test
+перевірка | N:f | test
+місцезнаходження | N:n | location
+локація | N:f | location
+швидка | N:f | ambulance
+погода | N:f,u | weather
+зв'язок | N:m,u | connection
+карта | N:f | map
+добрий | A | good
+поганий | A | bad
+новий | A | new
+старий | A | old
+слабкий | A | weak
+сильний | A | strong
+готовий | A | ready
+зламаний | A | broken
+зайнятий | A | busy
+втомлений | A | tired
+холодний | A | cold
+гарячий | A | hot
+поранений | A | hurt
+втомитися | V | get tired
+повертатися | V | come back
+зустрічатися | V | meet
+розряджений | A | flat
+
+@drop
+
+@book
+OK | Добре
+Yes | Так
+No | Ні
+Thanks | Дякую
+Hello, how are you? | Привіт, як справи?
+Good morning | Доброго ранку
+Good night | На добраніч
+See you later | До зустрічі
+Sorry, I don't understand | Вибач, я не розумію
+Please write slowly / simply | Пиши простіше, будь ласка
+I speak little Spanish | Я трохи говорю українською
+Copy that | Прийнято
+Can you hear me? | Ти мене чуєш?
+I hear you loud and clear | Чую тебе гучно і чітко
+I hear you weak | Чую тебе слабко
+Your signal is weak | Твій сигнал слабкий
+Good signal here | Тут добрий сигнал
+No signal here | Тут немає сигналу
+Who is on the mesh? | Хто в мережі?
+Testing, please answer | Перевірка, відповідай, будь ласка
+Message received | Повідомлення отримано
+Over and out | Кінець зв'язку
+Is anyone there? | Є хтось?
+On my way | Я в дорозі
+I'm here | Я на місці
+I'm almost there | Я майже на місці
+Wait for me | Зачекай на мене
+I'm busy, talk later | Я зайнятий, поговоримо пізніше
+All good here | У нас усе добре
+I'm leaving now | Я виходжу
+Running late | Я запізнююся
+My battery is low | У мене сідає батарея
+I'm charging | Я на зарядці
+My battery is dying, I'm going offline | Батарея сідає, я відключаюся
+Back online | Знову на зв'язку
+Where are you? | Де ти?
+See you at the square | Зустрінемося на площі
+See you at ... | Зустрінемося біля ...
+What time? | О котрій?
+In 10 minutes | За 10 хвилин
+Meet at the usual place | Зустрінемося на звичному місці
+Send me your location | Надішли мені своє місцезнаходження
+Let me know when you arrive | Напиши, коли доберешся
+I need help | Мені потрібна допомога
+Emergency! | Надзвичайна ситуація!
+Someone is hurt | Є поранений
+Call an ambulance | Викличте швидку
+I'm lost | Я заблукав
+We are safe | Ми в безпеці
+I need water | Мені потрібна вода
+The power is out | Вимкнули світло
+Stay where you are | Залишайся на місці
+It's raining here | Тут іде дощ
+A storm is coming | Насувається гроза
+It's very cold | Дуже холодно
+It's very hot | Дуже спекотно
+How is the weather there? | Яка у вас погода?
+
+@detect
+pryvit | 13
+spravy | 12
+dyakuyu | 13
+dyakuju | 13
+budlaska | 10
+shcho | 10
+zaraz | 10
+chuyesh | 12
+chuyu | 12
+mene | 6
+tebe | 6
+sohodni | 11
+zavtra | 6
+dobre | 6
+harazd | 12
+duzhe | 11
+tut | 4
+nemaye | 11
+zvyazku | 11
+vdoma | 11

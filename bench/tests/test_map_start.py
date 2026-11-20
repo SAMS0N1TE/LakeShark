@@ -43,7 +43,7 @@ def adsb(script,**extra):
         p=subprocess.run([str(exe),'adsb','-d','-f','6','-o',str(Path(tmp)/'out.bmp'),'-x',script],
                          cwd=root/'bench',env=env,text=True,capture_output=True,check=True)
     return p.stdout+p.stderr
-TO_MAP='5:3,~3,18:9,~3,7:34,~4,7:34,~30,=600,~6'      # HOME, FIELD, MAP (group, app)
+TO_MAP='5:3,~3,18:9,~3,23:34,~4,23:34,~30,=600,~6'      # HOME, FIELD, MAP (group, app)
 TO_ADSB='5:3,~3,17:8,~3,5:9,~3,40:20,~4,40:20,~12'      # HOME, BACK, RADIO, ADSB
 # ADS-B first, then MAP from the launcher: MAP is where it was left, and that is not saved again
 text=adsb(TO_MAP+',=5000,~2',LSSIM_MAP_SAVED='-34.6,-58.38,13')

@@ -24,6 +24,10 @@ else()
     list(FILTER LS_SRCS EXCLUDE REGEX "/lr_only_stubs\.c$")
 endif()
 
+# Apps kept in the internal app storage as firmware modules (apps/tui/ls_mod.h).
+include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/ls_modules.cmake)
+ls_modules_filter(LS_SRCS "components/lakeshark/")
+
 file(GLOB LS_APP_DIR_CANDIDATES ${CMAKE_CURRENT_SOURCE_DIR}/apps/*)
 set(LS_APP_INCLUDES "")
 foreach(d ${LS_APP_DIR_CANDIDATES})
@@ -79,6 +83,12 @@ idf_component_register(
 if(NOT CONFIG_ESP_ERR_TO_NAME_LOOKUP)
     target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_err_to_name" "-Wl,-u,__wrap_esp_err_to_name")
 endif()
+
+# REC's ISM decoder (apps/rec/rec_ism.c) uses the 433 MHz decoder that lives in
+# the apps component (tui/experiments/lr433_dec.c). On builds where nothing in
+# the apps library refers to it first (the headless NANO and LCD configs), the
+# linker would skip that object; ask for its symbols up front.
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,-u,lr433_decode" "-Wl,-u,lr433_proto_class")
 
 set(P25_C_SOURCES
     apps/p25/scanner.c
@@ -154,7 +164,11 @@ if(CONFIG_COMPILER_OPTIMIZATION_SIZE)
               apps/fm/fm_lifecycle.c apps/p25/p25_iq_capture_command.c
               apps/p25/scan_ctrl_nvs.c apps/p25/p25_entry_settings.c
               apps/p25/p25_tg_roster.c apps/p25/p25_pack.c apps/p25/p25_p2_follow.c
-              apps/adsb/uat_console.c apps/adsb/adsb_demo.c apps/dmr/dmr_report.c)
+              apps/adsb/uat_console.c apps/adsb/adsb_demo.c apps/dmr/dmr_report.c
+              # control and bookkeeping around the receivers (archive, scan
+              # and mode control, USB descriptors, tones, speech): -Os saves
+              # about 6 KB and none of it touches a sample.
+              audio/call_archive.c audio/notification_tone.c audio/audio_events.c audio/plane_audio.c audio/speech.c audio/call_recorder.c audio/mesh_phrase.c radio/usb_net_desc.c radio/usb_host.c radio/iq_coverage.c radio/hackrf_radio.c apps/fm/air_scan.c apps/fm/fm_air.c apps/fm/fm_wx.c apps/fm/fm_bcast.c apps/adsb/app_adsb.c apps/adsb/adsb_state.c apps/acars/acars_app.c apps/p25/scanner.c apps/p25/p25_qual.c apps/p25/p25_voice_hold.c apps/p25/p25_lr_frontend.c)
         list(REMOVE_ITEM LS_HOT_SRCS ${CMAKE_CURRENT_LIST_DIR}/${f})
     endforeach()
     # -mno-save-restore: the component is built with -msave-restore (root

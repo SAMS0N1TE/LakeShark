@@ -208,6 +208,9 @@ def scan_file(path, rel):
     return found
 
 
+SKIP_PATHS = set()   # --skip=<file>: sources that are not part of this image (firmware modules)
+
+
 def scan(dirs, root):
     texts = {}
     order = []
@@ -220,6 +223,8 @@ def scan(dirs, root):
                     continue
                 path = os.path.join(base, name)
                 rel = os.path.relpath(path, root).replace('\\', '/')
+                if rel in SKIP_PATHS:
+                    continue
                 for ident, data, src, r, line in scan_file(path, rel):
                     if ident in texts:
                         if texts[ident][0] != data:
@@ -512,6 +517,10 @@ def main(argv):
             root = None
             if args and args[0].startswith('--root='):
                 root = args[0][7:]
+                args = args[1:]
+            if args and args[0].startswith('--skip='):
+                with open(args[0][7:], encoding='utf-8') as f:
+                    SKIP_PATHS.update(ln.strip() for ln in f if ln.strip())
                 args = args[1:]
             out_dir, dirs = args[0], args[1:]
             job_text(out_dir, dirs, root or os.path.commonpath([os.path.abspath(d) for d in dirs]),

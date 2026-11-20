@@ -31,6 +31,7 @@
 #endif
 #include <ctype.h>
 #include <limits.h>
+#include <time.h>
 static bool carto_host_worker,carto_host_nvs;
 static unsigned carto_host_locks;
 typedef int SemaphoreHandle_t;
@@ -119,9 +120,34 @@ static DIR *carto_opendir(const char *p) { CARTO_IO_ASSERT();return opendir(cart
 static int carto_stat(const char *p,struct stat *st) { CARTO_IO_ASSERT();return stat(carto_host_path(p),st); }
 static int carto_unlink(const char *p) { CARTO_IO_ASSERT();return unlink(carto_host_path(p)); }
 static int carto_rename(const char *a,const char *b) { CARTO_IO_ASSERT();return rename(carto_host_path(a),carto_host_path(b)); }
-static int carto_open(const char *p,int flags) { CARTO_IO_ASSERT();return open(carto_host_path(p),flags|O_BINARY); }
+/* LSSIM_CARTO_STRESS: a card that fails. Of a thousand opens or reads, this
+   many fail outright (EIO), come back short, or come back as noise. */
+static unsigned carto_host_fault_rate,carto_host_fault_seed=2463534242u,carto_host_faults;
+static unsigned carto_host_fault(void) {
+    if(!carto_host_fault_rate) return 0;
+    carto_host_fault_seed^=carto_host_fault_seed<<13;carto_host_fault_seed^=carto_host_fault_seed>>17;carto_host_fault_seed^=carto_host_fault_seed<<5;
+    if(carto_host_fault_seed%1000u>=carto_host_fault_rate) return 0;
+    carto_host_faults++;return 1u+(carto_host_fault_seed>>10)%3u;
+}
+static int carto_open(const char *p,int flags) {
+    CARTO_IO_ASSERT();
+    if(carto_host_fault()) { errno=EIO;return -1; }
+    return open(carto_host_path(p),flags|O_BINARY);
+}
 static uint64_t carto_host_read_bytes;
-static ssize_t carto_read(int fd,void *p,size_t n) { CARTO_IO_ASSERT();ssize_t got=read(fd,p,n);if(got>0)carto_host_read_bytes+=got;return got; }
+static ssize_t carto_read(int fd,void *p,size_t n) {
+    CARTO_IO_ASSERT();
+    const unsigned fault=carto_host_fault();
+    if(fault==1) { errno=EIO;return -1; }
+    ssize_t got=read(fd,p,n);
+    if(fault==2 && got>1) got/=2;
+    if(fault==3 && got>0) for(ssize_t i=0;i<got;i+=7) ((unsigned char *)p)[i]^=(unsigned char)(carto_host_fault_seed>>(i&15));
+    if(got>0)carto_host_read_bytes+=got;return got;
+}
+static int64_t carto_wall_us(void) {
+    struct timespec ts;timespec_get(&ts,TIME_UTC);
+    return (int64_t)ts.tv_sec*1000000+ts.tv_nsec/1000;
+}
 static int carto_close(int fd) { CARTO_IO_ASSERT();return close(fd); }
 static size_t carto_fread(void *p,size_t s,size_t n,FILE *f) { CARTO_IO_ASSERT();return fread(p,s,n,f); }
 static int carto_fclose(FILE *f) { CARTO_IO_ASSERT();return fclose(f); }

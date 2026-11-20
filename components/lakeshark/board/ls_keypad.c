@@ -259,6 +259,17 @@ void ls_keypad_tick(void)
     ls_keypad_start();
 }
 
+/* A key waiting (or a held key's repeat due), without taking it: the UI's
+   slow idle tick asks this every 20 ms so a key still wakes it at once while
+   drawing is slow. One register read, about a hundred microseconds. */
+bool ls_keypad_pending(void)
+{
+    if (!s_present) return false;
+    if (s_held) return true;
+    uint8_t count = 0;
+    return reg_read(REG_KEY_LCK_EC, &count) && (count & 0x0F) != 0;
+}
+
 bool ls_keypad_read(ls_keypad_event_t *out)
 {
     if (!s_present || !out) return false;
@@ -491,6 +502,7 @@ esp_err_t ls_keypad_start(void) { return ESP_ERR_NOT_SUPPORTED; }
 bool ls_keypad_present(void) { return false; }
 void ls_keypad_tick(void) { }
 bool ls_keypad_read(ls_keypad_event_t *out) { (void)out; return false; }
+bool ls_keypad_pending(void) { return false; }
 esp_err_t ls_keypad_backlight(bool on) { (void)on; return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_keypad_backlight_dim(bool dim) { (void)dim; return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t ls_keypad_backlight_tune(uint32_t f, int d)

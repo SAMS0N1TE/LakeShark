@@ -38,6 +38,8 @@ static EXT_RAM_BSS_ATTR bool s_art_set[LS_ICON_ART_MAX];
 static EXT_RAM_BSS_ATTR uint8_t s_px[LS_ICON_ART_MAX][LS_ICON_ROWS * 3][LS_ICON_COLS * 2];
 static EXT_RAM_BSS_ATTR bool s_px_set[LS_ICON_ART_MAX];
 
+static uint32_t s_px_gen;   /* bumped when card art changes: cached cells go stale */
+
 int ls_icon_px(int slot, const uint8_t px[LS_ICON_ROWS * 3][LS_ICON_COLS * 2], int fallback)
 {
     if (!px || slot < 0 || slot >= LS_ICON_ART_MAX) return fallback;
@@ -49,15 +51,21 @@ int ls_icon_px(int slot, const uint8_t px[LS_ICON_ROWS * 3][LS_ICON_COLS * 2], i
         }
     s_px_set[slot] = any;
     s_art_set[slot] = false;
+    s_px_gen++;
     return any ? LS_ICON_ART_FIRST + slot : fallback;
 }
 
-void ls_icon_draw_px(tui_surface *sf, tui_rect clip, int x, int y,
-                     const uint8_t px[LS_ICON_ROWS * 3][LS_ICON_COLS * 2], uint8_t attr)
+/* One icon as the cells it paints: ch 0 where no dot is lit. */
+typedef struct { uint8_t ch, attr; } icon_cell_t;
+typedef struct { int icon; uint8_t attr; uint32_t gen; bool used; icon_cell_t cell[LS_ICON_ROWS][LS_ICON_COLS]; } icon_cache_t;
+
+static void icon_cells(icon_cell_t out[LS_ICON_ROWS][LS_ICON_COLS],
+                       const uint8_t px[LS_ICON_ROWS * 3][LS_ICON_COLS * 2], uint8_t attr)
 {
     const int ground = TUI_ATTR_BG(attr);
     for (int r = 0; r < LS_ICON_ROWS; r++)
         for (int c = 0; c < LS_ICON_COLS; c++) {
+            out[r][c].ch = 0;
             int col[6], count[6] = { 0 };
             bool lit = false;
             for (int k = 0; k < 6; k++) {
@@ -76,8 +84,49 @@ void ls_icon_draw_px(tui_surface *sf, tui_rect clip, int x, int y,
             const int fg = col[ink], bg = paper >= 0 ? col[paper] : ground;
             int bits = 0;
             for (int k = 0; k < 6; k++) if (col[k] == fg) bits |= 1 << k;
-            tui_put_char(sf, clip, x + c, y + r, (char)(0xC0 | bits), TUI_ATTR(fg, bg));
+            out[r][c].ch = (uint8_t)(0xC0 | bits);
+            out[r][c].attr = TUI_ATTR(fg, bg);
         }
+}
+
+static void icon_blit(tui_surface *sf, tui_rect clip, int x, int y, const icon_cell_t cell[LS_ICON_ROWS][LS_ICON_COLS])
+{
+    for (int r = 0; r < LS_ICON_ROWS; r++)
+        for (int c = 0; c < LS_ICON_COLS; c++)
+            if (cell[r][c].ch) tui_put_char(sf, clip, x + c, y + r, (char)cell[r][c].ch, cell[r][c].attr);
+}
+
+void ls_icon_draw_px(tui_surface *sf, tui_rect clip, int x, int y,
+                     const uint8_t px[LS_ICON_ROWS * 3][LS_ICON_COLS * 2], uint8_t attr)
+{
+    icon_cell_t cell[LS_ICON_ROWS][LS_ICON_COLS];
+    icon_cells(cell, px, attr);
+    icon_blit(sf, clip, x, y, cell);
+}
+
+/* HOME draws the same fifteen icons every frame; their cells depend only on
+   the icon, its colour and (for a card app's art) which art is loaded, so the
+   work of choosing them is done once. */
+#define ICON_CACHE_N 32
+static EXT_RAM_BSS_ATTR icon_cache_t s_icon_cache[ICON_CACHE_N];
+static uint8_t s_icon_next;
+
+static const icon_cache_t *icon_find(int icon, uint8_t attr)
+{
+    for (int i = 0; i < ICON_CACHE_N; i++) {
+        const icon_cache_t *e = &s_icon_cache[i];
+        if (e->used && e->icon == icon && e->attr == attr && e->gen == s_px_gen) return e;
+    }
+    return NULL;
+}
+
+static void icon_store_draw(tui_surface *sf, tui_rect clip, int x, int y, int icon, uint8_t attr,
+                            const uint8_t px[LS_ICON_ROWS * 3][LS_ICON_COLS * 2])
+{
+    icon_cache_t *e = &s_icon_cache[s_icon_next++ % ICON_CACHE_N];
+    icon_cells(e->cell, px, attr);
+    e->icon = icon; e->attr = attr; e->gen = s_px_gen; e->used = true;
+    icon_blit(sf, clip, x, y, e->cell);
 }
 
 int ls_icon_art(int slot, const char art[LS_ICON_ROWS][LS_ICON_COLS + 1], int fallback)
@@ -96,6 +145,7 @@ int ls_icon_art(int slot, const char art[LS_ICON_ROWS][LS_ICON_COLS + 1], int fa
     }
     s_art_set[slot] = any;
     s_px_set[slot] = false;
+    s_px_gen++;
     return any ? LS_ICON_ART_FIRST + slot : fallback;
 }
 
@@ -106,7 +156,9 @@ void ls_icon_draw(tui_surface *sf, tui_rect clip, int x, int y,
     if (icon >= LS_ICON_ART_FIRST) {
         const int k = icon - LS_ICON_ART_FIRST;
         if (k < LS_ICON_ART_MAX && s_px_set[k]) {
-            ls_icon_draw_px(sf, clip, x, y, s_px[k], attr);
+            const icon_cache_t *e = icon_find(icon, attr);
+            if (e) icon_blit(sf, clip, x, y, e->cell);
+            else icon_store_draw(sf, clip, x, y, icon, attr, s_px[k]);
             return;
         }
         if (k >= LS_ICON_ART_MAX || !s_art_set[k]) icon = LS_ICON_STAR;
@@ -117,6 +169,8 @@ void ls_icon_draw(tui_surface *sf, tui_rect clip, int x, int y,
             return;
         }
     }
+    const icon_cache_t *e = icon_find(icon, attr);
+    if (e) { icon_blit(sf, clip, x, y, e->cell); return; }
     uint8_t px[PX_H][PX_W];
-    if (unpack(icon, attr, px)) ls_icon_draw_px(sf, clip, x, y, px, attr);
+    if (unpack(icon, attr, px)) icon_store_draw(sf, clip, x, y, icon, attr, px);
 }

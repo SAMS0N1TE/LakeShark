@@ -66,11 +66,58 @@ void carto_fill_rect(carto_framebuffer *fb, int x, int y, int w, int h, carto_rg
             carto_put_px(fb, xx, yy, c);
 }
 
+/* LS DEVIATION 7: Cohen-Sutherland. A segment that crosses the frame is cut
+   to it before it is walked: tile coordinates are clamped to +-1e6, so an
+   unclipped crossing line was up to ~2M steps with no yield, and a corrupt
+   cached tile could hold the UI task until the watchdog reset the board. */
+enum { CS_LEFT = 1, CS_RIGHT = 2, CS_TOP = 4, CS_BOTTOM = 8 };
+static int cs_code(double x, double y, double xmin, double ymin, double xmax, double ymax) {
+    int code = 0;
+    if (x < xmin) code |= CS_LEFT; else if (x > xmax) code |= CS_RIGHT;
+    if (y < ymin) code |= CS_TOP;  else if (y > ymax) code |= CS_BOTTOM;
+    return code;
+}
+static int cs_round(double v) { return (int)(v < 0 ? v - 0.5 : v + 0.5); }
+static int clip_segment(int *x0, int *y0, int *x1, int *y1,
+                        double xmin, double ymin, double xmax, double ymax) {
+    double ax = *x0, ay = *y0, bx = *x1, by = *y1;
+    int ca = cs_code(ax, ay, xmin, ymin, xmax, ymax);
+    int cb = cs_code(bx, by, xmin, ymin, xmax, ymax);
+    for (int guard = 0; guard < 8; ++guard) {
+        if (!(ca | cb)) {
+            *x0 = cs_round(ax); *y0 = cs_round(ay);
+            *x1 = cs_round(bx); *y1 = cs_round(by);
+            return 1;
+        }
+        if (ca & cb) return 0;
+        const int out = ca ? ca : cb;
+        double x, y;
+        /* The edge crossed is one the other end is inside of, so the
+           divisor is never zero. */
+        if (out & CS_BOTTOM)     { x = ax + (bx - ax) * (ymax - ay) / (by - ay); y = ymax; }
+        else if (out & CS_TOP)   { x = ax + (bx - ax) * (ymin - ay) / (by - ay); y = ymin; }
+        else if (out & CS_RIGHT) { y = ay + (by - ay) * (xmax - ax) / (bx - ax); x = xmax; }
+        else                     { y = ay + (by - ay) * (xmin - ax) / (bx - ax); x = xmin; }
+        if (out == ca) { ax = x; ay = y; ca = cs_code(ax, ay, xmin, ymin, xmax, ymax); }
+        else           { bx = x; by = y; cb = cs_code(bx, by, xmin, ymin, xmax, ymax); }
+    }
+    return 0;
+}
+
 void carto_draw_line(carto_framebuffer *fb, int x0, int y0, int x1, int y1,
                      int width, carto_rgb c) {
     if (!fb) return;
     if (width < 1) width = 1;
     int half = width / 2;
+    /* LS DEVIATION 6: a line wholly off one side draws nothing, and is not
+       walked a pixel at a time to find that out. */
+    if ((x0 < -half && x1 < -half) || (y0 < -half && y1 < -half) ||
+        (x0 >= fb->width + half && x1 >= fb->width + half) ||
+        (y0 >= fb->height + half && y1 >= fb->height + half)) return;
+    /* LS DEVIATION 7: the rest is cut to the frame (and the pen's reach
+       past it), so a walk is never longer than the frame is wide and tall. */
+    if (!clip_segment(&x0, &y0, &x1, &y1, -half, -half,
+                      fb->width - 1 + half, fb->height - 1 + half)) return;
 
     int dx = x1 - x0; if (dx < 0) dx = -dx;
     int dy = y1 - y0; if (dy < 0) dy = -dy;

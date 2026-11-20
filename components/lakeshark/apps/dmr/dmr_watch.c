@@ -45,7 +45,7 @@ typedef struct {
     dmr_emb_asm_t emb;
 } flywheel_t;
 
-static dmr_watch_t   s_state;
+static EXT_RAM_BSS_ATTR dmr_watch_t   s_state;
 static dmr_framer_t  s_framer[2];         /* [0] as received, [1] negated  */
 static flywheel_t    s_fly[2][2];         /* [polarity][slot - 1]          */
 static uint32_t      s_bits;              /* bits pushed into each framer  */
@@ -55,7 +55,7 @@ static uint32_t      s_ms_ref_bit;        /* mobile slot numbering anchor  */
 static uint8_t       s_ms_ref_slot;
 static uint32_t      s_gen, s_pub_gen;
 static bool          s_started;
-static dmr_watch_t   s_published;
+static EXT_RAM_BSS_ATTR dmr_watch_t   s_published;
 static atomic_uint   s_symbols;
 static atomic_bool   s_samples_fed;
 

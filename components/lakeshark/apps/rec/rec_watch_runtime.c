@@ -220,8 +220,8 @@ static void ism_decode(const capture_t *cap, int slot)
 static void publish(void)
 {
     rec_ook24_t decoded[REC_WATCH_SLOTS] = {0};
-    static subghz_pwm_t pwm[REC_WATCH_SLOTS];
-    static subghz_nrz_t nrz[REC_WATCH_SLOTS];
+    static EXT_RAM_BSS_ATTR subghz_pwm_t pwm[REC_WATCH_SLOTS];
+    static EXT_RAM_BSS_ATTR subghz_nrz_t nrz[REC_WATCH_SLOTS];
     memset(pwm, 0, sizeof(pwm));
     memset(nrz, 0, sizeof(nrz));
     for(int i=0;i<REC_WATCH_SLOTS;i++) if(s_catalog->record[i].event.id) {

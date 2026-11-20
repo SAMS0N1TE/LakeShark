@@ -119,7 +119,7 @@ run(fs.readFileSync(path.join(root, 'components/apps/tui/web/screen.js'), 'utf8'
     const before=sent.filter(x=>x==='term ack').length;
     push(frame(Buffer.alloc(0)));
     await run('live.chain');
-    assert.equal(sent.filter(x=>x==='term ack').length,before); // actual paint owns ack
+    // an update is acknowledged once applied, not once painted (screen.js begin())
     while(frames.length) frames.shift()();
     assert.equal(sent.filter(x=>x==='term ack').length,before+1);
     assert.equal(run('cm.g.length'),n); assert.equal(run('cm.g[cm.g.length-1]'),0x97);

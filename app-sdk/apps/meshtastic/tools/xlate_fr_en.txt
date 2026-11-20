@@ -1,0 +1,643 @@
+# Hand-written French -> English data for mt_xlate_lang (MESHTASTIC app).
+# Written for this app; GPL-3.0-or-later like the rest of LakeShark.
+# gen_xlate_lang.py reads it with the Wiktionary lexicon and writes ../lang/fr.bin.
+# The format is described at the top of xlate_pt_en.txt. Elisions keep their
+# apostrophe (l', j', qu'); a word after a hyphen (es-tu, dis-moi) is marked so.
+# obj on a DET or PREP: before a verb it is an object pronoun, its english the alt.
+
+@func
+# Articles and determiners
+le | DET:def,obj | the | it
+la | DET:def,obj | the | it
+l' | DET:def,obj | the | it
+les | DET:def,pl,obj | the | them
+un | DET | a | one
+une | DET | a | one
+des | DET:pl,amb | some | of the
+mon | DET:poss | my
+ma | DET:poss | my
+mes | DET:poss,pl | my
+ton | DET:poss | your
+ta | DET:poss | your
+tes | DET:poss,pl | your
+son | DET:poss | his
+sa | DET:poss | her
+ses | DET:poss,pl | their
+notre | DET:poss | our
+nos | DET:poss,pl | our
+votre | DET:poss | your
+vos | DET:poss,pl | your
+leur | DET:poss,obj | their | them
+leurs | DET:poss,pl | their
+ce | DET | this | it
+cet | DET | this
+cette | DET | this
+ces | DET:pl | these
+quel | DET:q | which | what
+quelle | DET:q | which | what
+quels | DET:pl,q | which | what
+quelles | DET:pl,q | which | what
+aucun | DET:neg | no | none
+aucune | DET:neg | no | none
+chaque | DET | each
+autre | DET | other | other
+autres | DET:pl | other | others
+plusieurs | DET:pl | several | several
+quelques | DET:pl | a few | a few
+tout | DET | all | everything
+toute | DET | all | all
+tous | DET:pl | all | everyone
+toutes | DET:pl | all | all
+même | DET | same | even
+#
+# Subject pronouns; alt is the object form
+je | PRON:1 | I | me
+j' | PRON:1 | I | me
+tu | PRON:2 | you | you
+t' | PRON:2 | you | you
+il | PRON:3 | he | him
+elle | PRON:3 | she | her
+on | PRON:4 | we | us
+nous | PRON:4 | we | us
+vous | PRON:2 | you | you
+ils | PRON:6 | they | them
+elles | PRON:6 | they | them
+#
+# Object pronouns before the verb
+me | CLIT:1 | me
+m' | CLIT:1 | me
+te | CLIT:2 | you
+se | CLIT:3,refl | themselves
+s' | CLIT:3,refl | themselves
+lui | CLIT:3 | him
+y | CLIT | there
+en | PREP:obj | in | some
+#
+# Other pronouns
+moi | PRONX | me
+toi | PRONX | you
+eux | PRONX | them
+ça | PRONX | that
+ca | PRONX | that
+cela | PRONX | that
+ceci | PRONX | this
+c' | PRONX | it
+quelqu'un | PRONX | someone | anyone
+quelque chose | PRONX | something | anything
+tout le monde | PRONX | everyone
+chacun | PRONX | everyone
+#
+# Prepositions
+à | PREP | to | at
+au | PREP:the | to the
+aux | PREP:the | to the
+de | PREP | of
+d' | PREP | of
+du | DET:amb | some | of the
+dans | PREP | in
+sur | PREP | on
+sous | PREP | under
+avec | PREP | with
+sans | PREP | without
+pour | PREP | for
+par | PREP | by
+chez | PREP | at
+vers | PREP | toward
+depuis | PREP | since
+pendant | PREP | during
+après | PREP | after
+avant | PREP | before
+entre | PREP | between
+contre | PREP | against
+jusqu'à | PREP | until
+jusqu'au | PREP:the | until the
+près de | PREP | near
+près du | PREP:the | near the
+loin de | PREP | far from
+à côté de | PREP | next to
+en face de | PREP | in front of
+derrière | PREP | behind
+devant | PREP | in front of
+au-dessus de | PREP | above
+au bord de | PREP | at the edge of
+#
+# Conjunctions
+et | CONJ | and
+ou | CONJ | or
+mais | CONJ | but
+donc | CONJ | so
+car | CONJ | because
+parce que | CONJ:sub | because
+parce qu' | CONJ:sub | because
+que | CONJ:sub,que | that
+qu' | CONJ:sub,que | that
+si | CONJ:sub | if
+s'il | CONJ:sub | if he
+lorsque | CONJ:sub | when
+lorsqu' | CONJ:sub | when
+puisque | CONJ:sub | since
+comme | CONJ | like
+pendant que | CONJ:sub | while
+alors | CONJ | so
+ni | CONJ | nor
+#
+# Negation: ne before, pas after
+ne | NEG | not | not
+n' | NEG | not | not
+pas | NEG2 | _ | not
+plus | NEG2 | anymore | more
+jamais | NEG2:never | never | never
+rien | NEG2 | anything | nothing
+pas de | NEG2 | any | no
+pas d' | NEG2 | any | no
+pas encore | NEG2 | yet | not yet
+pas mal | ADV | not bad
+non plus | ADV | either
+#
+# Question words
+où | Q | where
+quoi | Q | what
+qui | Q:sub | who | who
+comment | Q | how
+pourquoi | Q | why
+quand | Q:sub | when | when
+combien | Q | how much
+combien de | Q | how many
+qu'est-ce que | Q | what
+qu'est-ce qu' | Q | what
+qu'est-ce qui | Q | what
+est-ce que | SKIP | _
+est-ce qu' | SKIP | _
+c'est quoi | CL | what is it
+#
+# Adverbs
+ici | ADV | here
+là | ADV | there
+là-bas | ADV | over there
+aussi | ADV | too
+très | ADV:int | very
+trop | ADV:int | too
+bien | ADV | well | fine
+mal | ADV | badly
+mieux | ADV | better
+moins | ADV | less
+encore | ADV | still
+déjà | ADV | already
+maintenant | ADV | now
+aujourd'hui | ADV | today
+hier | ADV:past | yesterday
+demain | ADV | tomorrow
+ce soir | ADV | tonight
+cette nuit | ADV | tonight
+tôt | ADV | early
+tard | ADV | late
+bientôt | ADV | soon
+toujours | ADV | always
+souvent | ADV | often
+parfois | ADV | sometimes
+peut-être | ADV | maybe
+vite | ADV | fast
+lentement | ADV | slowly
+tout de suite | ADV | right away
+beaucoup | ADV | a lot
+peu | ADV | little
+un peu | ADV | a bit
+assez | ADV | enough
+presque | ADV | almost
+seulement | ADV | only
+vraiment | ADV | really
+ensemble | ADV | together
+dehors | ADV | outside
+dedans | ADV | inside
+loin | ADV | far
+près | ADV | near
+à la maison | ADV | at home
+de nouveau | ADV | again
+en ce moment | ADV | right now
+tout à l'heure | ADV | in a while
+oui | INTJ | yes
+ouais | INTJ | yeah
+non | INTJ | no
+#
+# Interjections and chat words
+salut | INTJ | hi
+salut à tous | INTJ | hi everyone
+bonjour à tous | INTJ | hello everyone
+bonsoir à tous | INTJ | good evening everyone
+bonjour | INTJ | hello
+bonsoir | INTJ | good evening
+coucou | INTJ | hey
+bonne nuit | INTJ | good night
+bonne journée | INTJ | have a good day
+bonne soirée | INTJ | have a good evening
+au revoir | INTJ | goodbye
+à plus | INTJ | see you
+a plus | INTJ | see you
+à bientôt | INTJ | see you soon
+à demain | INTJ | see you tomorrow
+merci | INTJ | thanks
+merci beaucoup | INTJ | thanks a lot
+de rien | INTJ | you're welcome
+s'il te plaît | INTJ | please
+s'il vous plaît | INTJ | please
+stp | INTJ | please
+svp | INTJ | please
+pardon | INTJ | sorry
+désolé | INTJ | sorry
+désolée | INTJ | sorry
+d'accord | INTJ | ok
+ok | INTJ | ok
+okay | INTJ | ok
+bravo | INTJ | well done
+super | INTJ:A | great
+génial | INTJ:A | great
+cool | INTJ:A | cool
+parfait | INTJ:A | perfect
+bon | INTJ:A | well
+voilà | INTJ | there you go
+hé | INTJ | hey
+eh | INTJ | hey
+ah | INTJ | ah
+oh | INTJ | oh
+haha | INTJ | haha
+au secours | INTJ | help
+attention | INTJ | careful
+reçu | INTJ | received
+bien reçu | INTJ | received
+copié | INTJ | copy that
+terminé | INTJ:A | over
+à vous | INTJ | over
+#
+# Number words
+deux | NUM | two
+trois | NUM | three
+quatre | NUM | four
+cinq | NUM | five
+six | NUM | six
+sept | NUM | seven
+huit | NUM | eight
+neuf | NUM | nine
+dix | NUM | ten
+vingt | NUM | twenty
+trente | NUM | thirty
+cent | NUM | a hundred
+mille | NUM | thousand
+premier | NUM | first
+première | NUM | first
+dernier | NUM | last
+dernière | NUM | last
+demi | NUM | half
+demie | NUM | half
+#
+# There is / are
+il y a | EXIST | there is
+y a | EXIST | there is
+il n'y a pas | EXIST:neg | there is no
+il n'y a pas de | EXIST:neg | there is no
+il n'y a pas d' | EXIST:neg | there is no
+il n'y a plus | EXIST:neg | there is no more
+il n'y a plus de | EXIST:neg | there is no more
+y a pas | EXIST:neg | there is no
+y a pas de | EXIST:neg | there is no
+il y avait | EXIST:past | there was
+il y a quelqu'un | CL | is anyone there
+y a quelqu'un | CL | is anyone there
+#
+# Phrases
+ça va | CL | how are you | I'm fine
+ca va | CL | how are you | I'm fine
+comment ça va | CL | how are you
+comment vas-tu | CL | how are you
+comment allez-vous | CL | how are you
+quoi de neuf | CL | what's new
+c'est bon | CL | it's fine
+c'est ça | CL | that's it
+ça marche | CL | ok | it works
+pas de problème | INTJ | no problem
+pas de souci | INTJ | no worries
+pas grave | CL | no matter
+c'est pas grave | CL | it doesn't matter
+je ne sais pas | CL | I don't know
+je sais pas | CL | I don't know
+sais pas | CL | I don't know
+il faut | PH | we have to
+t'inquiète | INTJ | don't worry
+t'inquiète pas | INTJ | don't worry
+j'arrive | CL | I'm coming
+trop bien | INTJ | awesome
+trop cool | INTJ | awesome
+en sécurité | ADV | safe
+on se voit | CL | see you
+on se voit demain | CL | see you tomorrow
+j'ai besoin de | CL | I need
+j'ai besoin d' | CL | I need
+on a besoin de | CL | we need
+on a besoin d' | CL | we need
+tu as besoin de | CL | you need
+tu as besoin d' | CL | you need
+besoin de | PH | need
+besoin d' | PH | need
+faut | PH | we have to
+fort et clair | ADV | loud and clear
+cinq sur cinq | ADV | five by five
+à quelle heure | Q | at what time
+quelle heure est-il | CL | what time is it
+il est quelle heure | CL | what time is it
+le week-end | PH | the weekend
+ce week-end | PH | this weekend
+le point de rendez-vous | PH | the meeting point
+point de rendez-vous | PH | meeting point
+en train de | SKIP | _
+tout va bien | CL | all good
+tout est ok | CL | all good
+à pied | ADV | on foot
+en voiture | ADV | by car
+bonne chance | INTJ | good luck
+à tout de suite | INTJ | see you in a bit
+il pleut | CL | it's raining
+il fait froid | CL | it's cold
+il fait chaud | CL | it's hot
+il fait beau | CL | the weather is nice
+il fait très froid | CL | it's very cold
+il fait très chaud | CL | it's very hot
+quel temps | Q | what weather
+
+@abbr
+slt | salut
+bjr | bonjour
+bsr | bonsoir
+cc | coucou
+pk | pourquoi
+pq | pourquoi
+pcq | parce que
+psk | parce que
+tkt | t'inquiète
+jsp | je sais pas
+dsl | désolé
+bcp | beaucoup
+qq | quelques
+qqn | quelqu'un
+qqch | quelque chose
+auj | aujourd'hui
+ajd | aujourd'hui
+pr | pour
+ds | dans
+tt | tout
+tjr | toujours
+tjrs | toujours
+msg | message
+rdv | rendez-vous
+c | c'est
+g | j'ai
+koi | quoi
+ki | qui
+oqp | occupé
+vrmt | vraiment
+mm | même
+cv | ça va
+chui | je suis
+chuis | je suis
+jsuis | je suis
+ya | il y a
+dac | d'accord
+dacc | d'accord
+pb | problème
+pbm | problème
+dc | donc
+mtn | maintenant
+ac | avec
+avc | avec
+nn | non
+ui | oui
+frr | frère
+dmn | demain
+tlm | tout le monde
+
+@verbs
+être | BE,IT,PERFBE
+avoir | HAVE
+aller | GOING,PERFBE
+pouvoir | CAN
+vouloir | WANT
+devoir | MUST
+venir | PERFBE,JUST
+arriver | PERFBE
+partir | PERFBE
+rester | PERFBE
+tomber | PERFBE
+entrer | PERFBE
+sortir | PERFBE
+monter | PERFBE
+descendre | PERFBE
+mourir | PERFBE
+devenir | PERFBE
+revenir | PERFBE
+retourner | PERFBE
+rentrer | PERFBE
+passer | PERFBE
+pleuvoir | IT
+marcher | IT
+fonctionner | IT
+sembler | IT
+coûter | IT
+
+@lex
+être | V | be
+avoir | V | have
+aller | V | go
+pouvoir | V | can
+vouloir | V | want
+devoir | V | must
+savoir | V | know
+faire | V | do
+dire | V | say
+venir | V | come
+voir | V | see
+entendre | V | hear
+recevoir | V | receive
+écouter | V | listen+to
+parler | V | talk
+arriver | V | arrive
+partir | V | leave
+rester | V | stay
+attendre | V | wait+for
+appeler | V | call
+envoyer | V | send
+répondre | V | answer
+marcher | V | work
+fonctionner | V | work
+charger | V | charge
+tester | V | test
+essayer | V | try
+trouver | V | find
+chercher | V | look+for
+aider | V | help
+prévenir | V | let * know
+rentrer | V | go home
+sortir | V | go out
+passer | V | come by
+mettre | V | put
+prendre | V | take
+donner | V | give
+comprendre | V | understand
+penser | V | think
+croire | V | believe
+connaître | V | know
+pleuvoir | V | rain
+couper | V | cut
+allumer | V | turn on
+éteindre | V | turn off
+capter | V | pick up
+perdre | V | lose
+batterie | N:f | battery
+signal | N:m | signal
+antenne | N:f | antenna
+radio | N:f | radio
+nœud | N:m | node
+noeud | N:m | node
+réseau | N:m | network
+maillage | N:m | mesh
+message | N:m | message
+canal | N:m | channel
+fréquence | N:f | frequency
+relais | N:m | repeater
+répéteur | N:m | repeater
+portable | N:m | cell phone
+chargeur | N:m | charger
+aide | N:f,u | help
+eau | N:f,u | water
+nourriture | N:f,u | food
+courant | N:m,u | power
+électricité | N:f,u | power
+pluie | N:f,u | rain
+orage | N:m | storm
+tempête | N:f | storm
+maison | N:f | house
+gens | N:m | people
+endroit | N:m | place
+place | N:f | square
+colline | N:f | hill
+montagne | N:f | mountain
+rue | N:f | street
+heure | N:f | hour
+minute | N:f | minute
+jour | N:m | day
+nuit | N:f | night
+semaine | N:f | week
+essai | N:m | test
+test | N:m | test
+position | N:f | location
+localisation | N:f | location
+ambulance | N:f | ambulance
+urgence | N:f | emergency
+blessé | N:m | injured person
+temps | N:m,u | weather
+froid | N:m,u | cold
+chaud | A | hot
+nouveau | A | new
+nouvelle | A | new
+bon | A | good
+bonne | A | good
+faible | A | weak
+fort | A | strong
+prêt | A | ready
+allumé | A | on
+éteint | A | off
+cassé | A | broken
+perdu | A | lost
+blessé | A | hurt
+occupé | A | busy
+fatigué | A | tired
+froid | A | cold
+carte | N:f | map
+mec | N:m | guy
+pote | N:m | buddy
+
+@drop
+
+@book
+OK | D'accord
+Yes | Oui
+No | Non
+Thanks | Merci
+Hello, how are you? | Salut, ça va ?
+Good morning | Bonjour
+Good night | Bonne nuit
+See you later | À plus tard
+Sorry, I don't understand | Désolé, je ne comprends pas
+Please write slowly / simply | Écris simplement, s'il te plaît
+I speak little Spanish | Je parle un peu français
+Copy that | Bien reçu
+Can you hear me? | Tu m'entends ?
+I hear you loud and clear | Je te reçois fort et clair
+I hear you weak | Je te reçois faiblement
+Your signal is weak | Ton signal est faible
+Good signal here | Bon signal ici
+No signal here | Pas de signal ici
+Who is on the mesh? | Qui est sur le réseau ?
+Testing, please answer | Test, réponds s'il te plaît
+Message received | Message reçu
+Over and out | Terminé
+Is anyone there? | Il y a quelqu'un ?
+On my way | J'arrive
+I'm here | Je suis là
+I'm almost there | J'y suis presque
+Wait for me | Attends-moi
+I'm busy, talk later | Je suis occupé, on parle plus tard
+All good here | Tout va bien ici
+I'm leaving now | Je pars maintenant
+Running late | Je suis en retard
+My battery is low | Ma batterie est faible
+I'm charging | Je recharge
+My battery is dying, I'm going offline | Ma batterie est presque vide, je me déconnecte
+Back online | De retour en ligne
+Where are you? | Où es-tu ?
+See you at the square | On se retrouve sur la place
+See you at ... | On se retrouve à ...
+What time? | À quelle heure ?
+In 10 minutes | Dans 10 minutes
+Meet at the usual place | Rendez-vous au même endroit
+Send me your location | Envoie-moi ta position
+Let me know when you arrive | Préviens-moi quand tu arrives
+I need help | J'ai besoin d'aide
+Emergency! | Urgence !
+Someone is hurt | Il y a un blessé
+Call an ambulance | Appelez une ambulance
+I'm lost | Je suis perdu
+We are safe | Nous sommes en sécurité
+I need water | J'ai besoin d'eau
+The power is out | Il n'y a plus de courant
+Stay where you are | Reste où tu es
+It's raining here | Il pleut ici
+A storm is coming | Un orage arrive
+It's very cold | Il fait très froid
+It's very hot | Il fait très chaud
+How is the weather there? | Quel temps fait-il là-bas ?
+
+@detect
+slt | 12
+bjr | 12
+cc | 6
+stp | 12
+svp | 12
+tkt | 12
+jsp | 12
+mdr | 12
+ptdr | 12
+dsl | 10
+bcp | 10
+qqn | 10
+ouais | 12
+ça | 13
+c' | 12
+j' | 12
+qu' | 12
+n' | 10
+oui | 12
+merci | 12
+salut | 12
+bonjour | 12
+bonsoir | 12
+réseau | 10
+reçois | 10
+est-ce | 12

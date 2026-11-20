@@ -86,9 +86,10 @@ def ws_recv(sock):
     elif n == 127:
         n = struct.unpack(">Q", exact(8))[0]
     mask = exact(4) if h[1] & 128 else b"\0\0\0\0"
-    data = bytearray(exact(n) or b"")
-    for i in range(len(data)):
-        data[i] ^= mask[i % 4]
+    data = exact(n) or b""
+    if data and mask != b"\0\0\0\0":           # every key and pointer move: unmasked in one step
+        key = (mask * (len(data) // 4 + 1))[:len(data)]
+        data = (int.from_bytes(data, "little") ^ int.from_bytes(key, "little")).to_bytes(len(data), "little")
     return op, bytes(data)
 
 
@@ -122,7 +123,8 @@ class Split:
         self.buf += data
         frames = bytearray()
         while self.buf:
-            i = next((k for k, b in enumerate(self.buf) if b in (0x1E, 0x1C)), -1)
+            i, j = self.buf.find(0x1E), self.buf.find(0x1C)
+            i = j if i < 0 or 0 <= j < i else i
             if i < 0:
                 self.text += self.buf
                 self.buf.clear()
@@ -630,6 +632,18 @@ class Handler(BaseHTTPRequestHandler):
         def pump():                              # the board's bytes to the page while the screen runs
             updates, nbytes, since = 0, 0, time.time()
             split = Split()
+            # An update's frames go to the page as one message, when the empty
+            # frame that ends it has come: a frame a message was a send, a
+            # packet and a wake of the page for each 4000 bytes, and the page
+            # cannot draw any of it before the last. A picture's long update
+            # still goes on its way every 64 KB.
+            update = bytearray()
+
+            def on_frame(frame):
+                update.extend(frame)
+                if len(frame) == 10 or len(update) >= 65536:
+                    socket_send(bytes(update))
+                    update.clear()
             while not gone.is_set():
                 if DEBUG and time.time() - since >= DEBUG_EVERY:
                     dt = time.time() - since
@@ -664,7 +678,7 @@ class Handler(BaseHTTPRequestHandler):
                     updates += data.count(b"\x1e0000\x1fffff")     # the empty frame that ends each update
                     nbytes += len(data)
                     try:
-                        _, lines = split.feed(data, on_frame=lambda frame: socket_send(frame))
+                        _, lines = split.feed(data, on_frame=on_frame)
                         for line in lines:               # the board's replies, for the settings panel
                             heard(line)
                             socket_send(("console " + line[:900]).encode(), text=True)

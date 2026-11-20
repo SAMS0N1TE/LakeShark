@@ -25,9 +25,16 @@ if(EXISTS "${CC_ROOT}/src/media/stream.c")
     target_sources(${COMPONENT_LIB} PRIVATE "${CC_ROOT}/src/media/stream.c")
 endif()
 
-# The PIE kernels fault on P4 rev 3 (the Nano v3.1 panicked at cc_pie_task_enter on its
-# first boot with TILES): rev 3 builds take the portable C kernels.
-if(IDF_TARGET STREQUAL "esp32p4" AND NOT (CONFIG_ESP32P4_REV_MIN_FULL GREATER_EQUAL 300))
+# The PIE kernels are off on every board; the portable C kernels do the same work.
+# Two field hardware-watchdog resets on the SX T-Display (2.23.1, 2.23.2, MAP open)
+# had core0 frozen with interrupts masked inside FreeRTOS's lazy PIE context save
+# (rtos_save_pie_coproc, the q-register store into the previous PIE owner's save
+# area, which sits at the bottom of that task's PSRAM stack). CartoCore is the only
+# PIE code in the image, so without it that trap path never runs. They also fault
+# on P4 rev 3 (the Nano v3.1 panicked at cc_pie_task_enter). -DLS_CARTO_PIE=ON
+# brings them back for a bench comparison (`carto pie`, `carto bench`).
+option(LS_CARTO_PIE "CartoCore PIE (SIMD) bit-row kernels on ESP32-P4 rev < 3" OFF)
+if(LS_CARTO_PIE AND IDF_TARGET STREQUAL "esp32p4" AND NOT (CONFIG_ESP32P4_REV_MIN_FULL GREATER_EQUAL 300))
     target_sources(${COMPONENT_LIB} PRIVATE "${CC_P4_ASM}")
     target_compile_definitions(${COMPONENT_LIB} PUBLIC CC_HAVE_ESP32P4_PIE=1)
     set_source_files_properties("${CC_P4_ASM}"
@@ -45,3 +52,11 @@ endif()
 # decoder is never reached: build zstd with the short decoder alone (about 9 KB).
 set_property(SOURCE "${CC_ROOT}/src/core/zstd.c" APPEND PROPERTY
     COMPILE_DEFINITIONS ZSTD_FORCE_DECOMPRESS_SEQUENCES_SHORT=1)
+
+# Tile decode only. zstd inlines its Huffman/FSE templates into several copies
+# (-O2, forced inline); one copy at -Os is about 20 KB smaller and the tiles it
+# decodes are cached, so the slower decode is paid once per tile.
+set_property(SOURCE "${CC_ROOT}/src/core/zstd.c" APPEND PROPERTY
+    COMPILE_DEFINITIONS ZSTD_NO_INLINE=1)
+set_property(SOURCE "${CC_ROOT}/src/core/zstd.c" APPEND PROPERTY
+    COMPILE_OPTIONS -Os)

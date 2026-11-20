@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "ls_textpack.h"
-static ls_nfc_suite_status_t card;
+EXT_RAM_BSS_ATTR static ls_nfc_suite_status_t card;
 static unsigned selected_block;
 static bool detail,key_b;
 static int focus=-1,slot;
@@ -54,7 +54,7 @@ static void draw(tui_surface *sf,tui_rect a){
  }
  ls_btn_t buttons[]={{"SCAN","ID",'i',false,card.busy},{"READ","A + B",'r',card.reading,card.busy},{"STOP","KEEP",'x',false,!card.busy},{"VIEW",detail?"HEX":"MAP",'v',detail,false},{"KEY A","SET",'a',false,card.busy},{"KEY B","SET",'b',false,card.busy},{"SAVE","SD",'s',false,card.busy||!card.identified},{"MARK","JOURNAL",'j',false,!card.identified}};
  int h=ls_btn_raised_height(a,8);ls_btn_bar_raised(sf,tui_rect_make(a.x,a.y,a.w,h),buttons,8,focus);
- tui_rect box=tui_rect_make(a.x,a.y+h,a.w,a.h-h-2);ls_panel_box(sf,box,LS_TEXT(t_scr_nfc_nfc_card_workbench, "NFC / CARD WORKBENCH"),TUI_CYAN);
+ tui_rect box=tui_rect_make(a.x,a.y+h,a.w,a.h-h-2);ls_panel_box(sf,box,LS_TEXT(t_scr_nfc_card_workbench, "CARD WORKBENCH"),TUI_CYAN);
  ls_motion_busy(sf,box,card.busy);
  char line[112],uid[32]={0};for(unsigned n=0;n<card.uid_len;n++)snprintf(uid+n*2,sizeof(uid)-n*2,"%02X",card.uid[n]);
  LS_SNPRINTF(t_scr_nfc_uid_s_atqa_04x, line,sizeof(line),"UID %s  ATQA %04X  SAK %02X",card.identified?uid:"--",card.atqa,card.sak);tui_put_str(sf,box,box.x+2,box.y+1,card.identified?line:"UID --  ATQA --  SAK --",LS_ATTR_DIM);
@@ -87,7 +87,7 @@ static void draw(tui_surface *sf,tui_rect a){
     int x=cells.x+(n%columns)*cell_width,y=cells.y+(n/columns)*cell_height;
     if(portrait)ls_fill_dither(sf,tui_rect_make(x,y,cell_width-1,cell_height-1),LS_DITHER_LIGHT,color);
     if(v==LS_CARD_ACTIVE)text[0]=ls_motion_pip(card.busy);
-    tui_put_str(sf,cells,x,y+(portrait?1:0),text,TUI_ATTR(color|(b==selected_block?TUI_BRIGHT:0),TUI_BLACK));
+    tui_put_str(sf,cells,x,y+(portrait?1:0),text,ls_ink_hue(TUI_ATTR(color|(b==selected_block?TUI_BRIGHT:0),TUI_BLACK)));
    }
    if(box.w>=110){
     tui_rect preview=tui_rect_make(box.x+84,box.y+5,box.w-86,box.h-8);
@@ -109,7 +109,7 @@ static void draw(tui_surface *sf,tui_rect a){
  tui_put_str(sf,box,box.x+2,box.y+box.h-2,portrait?"Grey ? / Green read / Yellow auth / Red error":"Grey unread / cyan active / green read / yellow auth failed / red error / purple NAK",LS_ATTR_DIM);
  if(card.blocks && !detail){
   int width=box.w-4;if(width>40)width=40;
-  for(int x=0;x<width;x++)tui_put_char(sf,box,box.x+2+x,box.y+4,x*card.blocks<card.read_blocks*width?'=':'.',TUI_ATTR(TUI_GREEN,TUI_BLACK));
+  for(int x=0;x<width;x++)tui_put_char(sf,box,box.x+2+x,box.y+4,x*card.blocks<card.read_blocks*width?'=':'.',ls_ink_hue(TUI_ATTR(TUI_GREEN,TUI_BLACK)));
  }
  snprintf(line,sizeof(line),"%c %s",ls_motion_pip(card.busy),feedback[0]?feedback:card.status);
  ls_safe_line(sf,a,a.y+a.h-2,line,LS_ATTR_DIM);

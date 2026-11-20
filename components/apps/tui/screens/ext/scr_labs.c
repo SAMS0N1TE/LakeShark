@@ -195,7 +195,7 @@ static void pages_list(tui_surface *sf, tui_rect r)
         snprintf(row, sizeof(row), "%c %lu  %s", on ? '>' : ' ',
                  (unsigned long)p->address, p->text);
         tui_put_str(sf, r, r.x, r.y + i, row,
-                    on ? TUI_ATTR(TUI_BLACK, TUI_CYAN) : LS_ATTR_DIM);
+                    on ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_CYAN)) : LS_ATTR_DIM);
     }
     const ls_field_page_t *sel = &s.page_log[s_page_sel];
     snprintf(row, sizeof(row), "%d of %d | addr %lu | f%u | %u bd",
@@ -458,6 +458,9 @@ static const ls_opt_t OPT_POCSAG_STREAM[] = {
       .get = o_pager_baud, .set = o_set_pager_baud },
     { .label = "POLARITY", .kind = LS_OPT_TOGGLE, .names = POLARITY,
       .get = o_polarity, .set = o_set_polarity },
+    /* The rows that left the face live here in every mode; without them a
+       touch-only LR2021 board had no RADIO, MARK or SAVE TO FREQS in POCSAG. */
+    LABS_COMMON,
 };
 #undef LABS_COMMON
 #undef LORA_ROW
@@ -853,7 +856,7 @@ static void panel_note(tui_surface *sf, tui_rect panel, int row, const char *tex
 static void draw(tui_surface *sf, tui_rect a)
 {
     if (a.h < 14 || a.w < 24) {
-        ls_panel_box(sf, a, "LORA LABS", TUI_CYAN);
+        ls_panel_box(sf, a, NULL, TUI_CYAN);
         tui_put_str(sf, a, a.x + 1, a.y + 1, "Enlarge the pane", LS_ATTR_DIM);
         return;
     }
@@ -884,7 +887,7 @@ static void draw(tui_surface *sf, tui_rect a)
     ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 5, button_slot==0?button_focus:-1);
     const int top = bar_h;
     tui_rect panel = tui_rect_make(a.x, a.y + top, a.w, a.h - top - 2);
-    ls_panel_box(sf, panel, "LORA LABS", TUI_CYAN);
+    ls_panel_box(sf, panel, NULL, TUI_CYAN);
     ls_motion_busy(sf,panel,s.busy || s.transmitting || (s.requested && !s.direct));
     char line[100];
     /* Spreading factor and coding rate are LoRa's and mean nothing to the FSK

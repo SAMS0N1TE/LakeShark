@@ -55,9 +55,9 @@ static void lock(void);
 static void unlock(void);
 static ls_sweep_stats_t stats;
 static EXT_RAM_BSS_ATTR recent_t nearby[LS_SWEEP_CAP];
-static ls_sweep_device_t near_signal;
+EXT_RAM_BSS_ATTR static ls_sweep_device_t near_signal;
 static uint32_t rate_count[60];
-static int64_t rate_second[60];
+EXT_RAM_BSS_ATTR static int64_t rate_second[60];
 static void advert(int64_t now) {
     int64_t sec=now/1000000; unsigned i=sec%60;
     if(rate_second[i]!=sec) {rate_second[i]=sec;rate_count[i]=0;}
@@ -568,21 +568,32 @@ bool ls_sweep_hunt(const uint8_t mac[6],uint8_t radio,uint8_t type) {
     for(unsigned i=0;i<LS_SWEEP_CAP;i++) if(mac && table[i].serial && table[i].radio==radio && table[i].address_type==type && !memcmp(table[i].mac,mac,6)) hunt_consumed=table[i].adverts;
     unlock();return ls_sweep_settings_set(&o);
 }
-int ls_sweep_alert(int64_t now) {
+/* The last frame SWEEP drew its HUNT view (ls_sweep_hunt_view_seen). A saved
+   hunt target narrows the speaker to its clicks only while that view is on
+   screen: anywhere else, trackers and every other alert sound as usual. */
+static int64_t hunt_view_us;
+void ls_sweep_hunt_view_seen(int64_t now) {__atomic_store_n(&hunt_view_us,now,__ATOMIC_RELAXED);}
+static bool hunt_view_open(int64_t now) {
+    const int64_t at=__atomic_load_n(&hunt_view_us,__ATOMIC_RELAXED);
+    return at && now>=at && now-at<1000000;
+}
+static int alert(int64_t now,bool scoped,bool *click) {
     lock();recover(now);int c=-1;
+    const bool hunting=settings.hunt && (!scoped || hunt_view_open(now));
+    if(click) *click=hunting;
     if(detector() || !status.requested || settings.alerts_muted) {
         queued=0;
         if(settings.hunt && near_signal.adverts && !memcmp(near_signal.mac,settings.hunt_mac,6)) hunt_consumed=near_sequence;
         for(unsigned i=0;i<LS_SWEEP_CAP;i++) if(settings.hunt && table[i].serial && table[i].radio==settings.hunt_radio && table[i].address_type==settings.hunt_type && !memcmp(table[i].mac,settings.hunt_mac,6)) hunt_consumed=table[i].adverts;
         unlock();return -1;
     }
-    if(settings.hunt) for(unsigned i=0;i<LS_SWEEP_CAP;i++) {
+    if(hunting) for(unsigned i=0;i<LS_SWEEP_CAP;i++) {
         ls_sweep_device_t *d=&table[i];
         if(!d->serial || d->radio!=settings.hunt_radio || d->address_type!=settings.hunt_type || memcmp(d->mac,settings.hunt_mac,6) || now-d->seen_us>5000000 || (storm && d->match.category==SW_TRACKER)) continue;
         /* Each advert may produce one click, never a timer pulse. */
         if(d->adverts!=hunt_consumed) {hunt_consumed=d->adverts;hunt_sound=d->seen_us;c=d->match.category;}break;
     }
-    if(settings.hunt) {
+    if(hunting) {
         ls_sweep_device_t *d=&near_signal;
         if(d->adverts && d->radio==settings.hunt_radio && d->address_type==settings.hunt_type && !memcmp(d->mac,settings.hunt_mac,6) && now-d->seen_us<5000000 && near_sequence!=hunt_consumed) {hunt_consumed=near_sequence;c=d->match.category;}
         queued=0;unlock();return c>=0 && !(settings.muted&(1<<c))?c:-1;}
@@ -590,6 +601,8 @@ int ls_sweep_alert(int64_t now) {
     if(c>=0 && (!(settings.enabled&(1<<c)) || (settings.muted&(1<<c)) || (storm && c==SW_TRACKER))) c=-1;
     unlock();return c;
 }
+int ls_sweep_alert(int64_t now) {return alert(now,false,NULL);}
+int ls_sweep_alert_scoped(int64_t now,bool *click) {return alert(now,true,click);}
 void ls_sweep_clear(void) {lock();memset(table,0,sizeof(table));memset(recent,0,sizeof(recent));memset(unique,0,sizeof(unique));memset(nearby,0,sizeof(nearby));memset(&near_signal,0,sizeof(near_signal));memset(rate_count,0,sizeof(rate_count));status.last_advert_us=0;status.gps_fix=false;queued=log_count=0;storm=false;flood_until=last_sound=hunt_sound=tracker_window=0;tracker_beeps=spam_count=0;unlock();}
 void ls_sweep_mac_text(char *s,const ls_sweep_device_t *d) {
     const uint8_t *p=d->mac;LS_SNPRINTF(t_ls_sweep_02x_02x_02x_02x, s,18,"%02X:%02X:%02X:%02X:%02X:%02X",p[d->radio?0:5],p[d->radio?1:4],p[d->radio?2:3],p[d->radio?3:2],p[d->radio?4:1],p[d->radio?5:0]);

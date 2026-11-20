@@ -3,7 +3,7 @@
 #include "p25_program.h"
 #include "p25_controls.h"
 #include "p25_geo.h"
-#include "ls_gps.h"
+#include "ls_location.h"
 #include "ls_nvs_safe.h"
 #include "nvs.h"
 #include "esp_attr.h"
@@ -145,20 +145,23 @@ int p25_sites_poll(bool may_tune)
         heap_caps_free(active); active = next;
         memset(&geo, 0, sizeof(geo)); geo.chosen = -1;
     }
-    static EXT_RAM_BSS_ATTR ls_gps_state_t gps;
-    ls_gps_get(&gps);
+    /* The location service keeps the receiver running by itself (Settings >
+       GPS), so following needs no other app to have started it. */
+    ls_location_t gps;
+    if (atomic_load(&enabled)) ls_location_want();
+    ls_location_get(&gps);
     const p25_program_t *p = p25_program_session();
     bool paused = !atomic_load(&enabled) || (p && p->geo_paused);
-    bool fix = ls_gps_running() && gps.fix && gps.last_fix_us > 0 &&
-               gps.last_fix_us <= esp_timer_get_time() &&
-               esp_timer_get_time() - gps.last_fix_us <= P25_GEO_FIX_MAX_AGE_US;
+    bool fix = gps.fix && gps.fix_us > 0 &&
+               gps.fix_us <= esp_timer_get_time() &&
+               esp_timer_get_time() - gps.fix_us <= P25_GEO_FIX_MAX_AGE_US;
     int index = -1;
     if (!paused && may_tune && active && active->count &&
         !p25_program_survey_active_now() && (!p || p->state != P25_PROGRAM_BUSY)) {
         /* Work on a copy: a busy PROGRAM must not consume a geo decision. */
         p25_geo_t candidate = geo;
         index = p25_geo_select_many(&candidate, active->records, active->count,
-                                    fix, gps.lat_deg, gps.lon_deg, gps.last_fix_us, esp_timer_get_time());
+                                    fix, gps.lat, gps.lon, gps.fix_us, esp_timer_get_time());
         if (index < 0 || p25_program_site_now(&active->records[index / P25_PROFILE_CONTROL_MAX],
                                              index % P25_PROFILE_CONTROL_MAX)) geo = candidate;
         else index = -1;

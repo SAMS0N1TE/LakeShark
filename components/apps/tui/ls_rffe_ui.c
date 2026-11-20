@@ -162,7 +162,7 @@ static const char *o_lr_span_why(const ls_opt_t *o)
 /* ON-CHIP: the LR2021 takes 1 MHz and picks the channel out on its own CPU,
    for every app on the shared session. Saved; on by default. With it on,
    WIDE I/Q only matters if the radio refuses the program. */
-static const char *const LR_CHIP_NAMES[] = { "OFF  the handheld filters", "ON  1 MHz, the radio picks the channel" };
+static const char *const LR_CHIP_NAMES[] = { "OFF  the handheld filters", "ON  1 MHz, chip picks channel" };
 static int o_lr_chip(const ls_opt_t *o) { (void)o; return settings_get_lr_chip(); }
 static void o_set_lr_chip(const ls_opt_t *o, int v) { (void)o; (void)settings_set_lr_chip(v != 0); }
 static const char *o_lr_wide_why(const ls_opt_t *o)

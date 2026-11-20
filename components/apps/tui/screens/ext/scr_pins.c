@@ -55,7 +55,7 @@ static uint8_t group_hue(const char *g)
 static void say(const char *text, uint8_t hue)
 {
     snprintf(s_msg, sizeof(s_msg), "%s", text);
-    s_msg_attr = TUI_ATTR(hue, TUI_BLACK);
+    s_msg_attr = ls_ink_hue(TUI_ATTR(hue, TUI_BLACK));
 }
 
 static void load_saved(void)
@@ -260,7 +260,7 @@ static void draw_map(tui_surface *sf, tui_rect r)
         uint8_t a;
         char cell[8];
         if (who >= 0) {
-            a = TUI_ATTR(group_hue(ls_pin_info((ls_pin_id_t)who)->group), TUI_BLACK);
+            a = ls_ink_hue(TUI_ATTR(group_hue(ls_pin_info((ls_pin_id_t)who)->group), TUI_BLACK));
             snprintf(cell, sizeof(cell), "%02d", g);
         } else if (ls_pin_board_own(g)) {
             a = TUI_ATTR(LS_DIM_FG, TUI_BLACK);
@@ -284,8 +284,8 @@ static void draw_map(tui_surface *sf, tui_rect r)
     int x = r.x + 2;
     static const char *const G[] = { "GPS", "LORA", "IMU", "LINK" };
     for (int k = 0; k < 4; k++) {
-        tui_put_str(sf, r, x, y, "^^", TUI_ATTR(group_hue(G[k]), TUI_BLACK));
-        tui_put_str(sf, r, x + 3, y, G[k], TUI_ATTR(group_hue(G[k]), TUI_BLACK));
+        tui_put_str(sf, r, x, y, "^^", ls_ink_hue(TUI_ATTR(group_hue(G[k]), TUI_BLACK)));
+        tui_put_str(sf, r, x + 3, y, G[k], ls_ink_hue(TUI_ATTR(group_hue(G[k]), TUI_BLACK)));
         x += 9;
     }
     tui_put_str(sf, r, x, y, "== BOARD", TUI_ATTR(LS_DIM_FG, TUI_BLACK));
@@ -295,15 +295,15 @@ static void draw_map(tui_surface *sf, tui_rect r)
     ls_gps_get(&gs);
     snprintf(t, sizeof(t), "%s", !ls_gps_running() ? "off" : gs.fix ? "fix" : gs.alive ? "NMEA, no fix" : "silent");
     ls_kv(sf, r, r.h - 5, "GPS", t,
-          TUI_ATTR(gs.fix ? TUI_GREEN | TUI_BRIGHT : gs.alive ? TUI_YELLOW : LS_DIM_FG, TUI_BLACK));
+          ls_ink_hue(TUI_ATTR(gs.fix ? TUI_GREEN | TUI_BRIGHT : gs.alive ? TUI_YELLOW : LS_DIM_FG, TUI_BLACK)));
     const ls_lora_chip_t chip = ls_lora_fitted();
     ls_kv(sf, r, r.h - 4, "LORA", chip == LS_LORA_CHIP_NONE ? "not found" : ls_lora_fitted_name(),
-          TUI_ATTR(chip == LS_LORA_CHIP_NONE ? LS_DIM_FG : TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+          ls_ink_hue(TUI_ATTR(chip == LS_LORA_CHIP_NONE ? LS_DIM_FG : TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
     ls_kv(sf, r, r.h - 3, "IMU", ls_imu_present() ? "ICM-20948" : "not found",
-          TUI_ATTR(ls_imu_present() ? TUI_GREEN | TUI_BRIGHT : LS_DIM_FG, TUI_BLACK));
+          ls_ink_hue(TUI_ATTR(ls_imu_present() ? TUI_GREEN | TUI_BRIGHT : LS_DIM_FG, TUI_BLACK)));
     const char *rej = ls_pins_rejected();
     ls_kv(sf, r, r.h - 2, "TABLE", !ls_pins_runtime() ? "fixed" : rej ? rej : ls_pins_pending() ? "reboot pending" : "in use",
-          TUI_ATTR(rej ? TUI_RED | TUI_BRIGHT : ls_pins_pending() ? TUI_YELLOW | TUI_BRIGHT : TUI_CYAN, TUI_BLACK));
+          ls_ink_hue(TUI_ATTR(rej ? TUI_RED | TUI_BRIGHT : ls_pins_pending() ? TUI_YELLOW | TUI_BRIGHT : TUI_CYAN, TUI_BLACK)));
 }
 
 static void draw(tui_surface *sf, tui_rect area)

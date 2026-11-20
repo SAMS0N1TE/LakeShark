@@ -346,7 +346,8 @@ int usb_host_root_port_attached(void)
 
 bool usb_host_root_port_has_device(void)
 {
-    return root_port_device_count() > 0;
+    /* No host this boot (ls_profile_usb_host): nothing to count or cycle. */
+    return s_driver_obj && root_port_device_count() > 0;
 }
 
 /**/
@@ -357,5 +358,6 @@ usb_port_cycle_result_t usb_host_root_port_cycle(void)
         .device_count = root_port_device_count,
         .delay_ms = root_port_delay_ms,
     };
+    if (!s_driver_obj) return USB_PORT_CYCLE_NOTHING;
     return usb_port_cycle_run(&ops);
 }

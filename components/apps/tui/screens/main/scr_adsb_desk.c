@@ -41,8 +41,8 @@
 
 #define HUE TUI_CYAN
 #define WHITE TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK)
-#define INK(h) TUI_ATTR((h) | TUI_BRIGHT, TUI_BLACK)
-#define SOFT(h) TUI_ATTR((h), TUI_BLACK)
+#define INK(h) ls_ink_hue(TUI_ATTR((h) | TUI_BRIGHT, TUI_BLACK))
+#define SOFT(h) ls_ink_hue(TUI_ATTR((h), TUI_BLACK))
 
 static EXT_RAM_BSS_ATTR ls_adsbd_row_t s_row[ADSB_MAX_TRACKED];
 static EXT_RAM_BSS_ATTR uint8_t s_order[ADSB_MAX_TRACKED], s_view[ADSB_MAX_TRACKED];
@@ -464,9 +464,12 @@ static void draw_table(tui_surface *sf)
         const ls_adsbd_row_t *r = at(k);
         const bool on = k == s_sel, alarm = r->alarm != NULL, pos = r->have & LS_AF_POS;
         const tui_rect line = tui_rect_make(s_t.body.x, y, s_t.body.w, 1);
-        if (alarm) tui_fill(sf, line, ' ', TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED));
-        else if (on) ls_fill_dither(sf, line, LS_DITHER_MEDIUM, HUE);
-        if (on) ls_box_put(sf, s_t.body, s_t.body.x, y, LS_SHAPE_RIGHT, alarm ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED) : WHITE);
+        /* An alarm stays red whatever is selected or pointed at; its mark says it is the selected one. */
+        if (alarm) {
+            s_t.band_row = -1;
+            tui_fill(sf, line, ' ', TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED));
+            if (on) ls_box_put(sf, s_t.body, s_t.body.x, y, LS_SHAPE_RIGHT, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED));
+        } else ls_dui_table_row(sf, &s_t, row, on, !s_find_focus);
         /* On red everything is white; otherwise each column has its own ink. */
 #define CELL(col, attr) do { ls_adsbd_cell(r, (col), text, sizeof(text)); \
         ls_dui_table_cell(sf, &s_t, COLS, (col), row, text, alarm ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED) : (attr)); } while (0)
@@ -585,7 +588,7 @@ void ls_adsb_desk_draw(tui_surface *sf, tui_rect a, int64_t now)
     s_hits.n = 0;
     ls_dui_context_claim(context);
     if (a.w < 50 || a.h < 12) {
-        ls_panel_notice(sf, a, "ADS-B", "Enlarge the window", "the table keeps its place");
+        ls_panel_notice(sf, a, NULL, "Enlarge the window", "the table keeps its place");
         return;
     }
     refresh(now);

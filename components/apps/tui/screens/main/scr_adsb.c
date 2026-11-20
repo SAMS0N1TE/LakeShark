@@ -181,8 +181,8 @@ static void draw_detail(tui_surface *sf, tui_rect area,
 {
     const uint8_t frame = TUI_ATTR(TUI_CYAN, TUI_BLACK);
     const uint8_t val   = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t good  = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t warn  = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t good  = ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    const uint8_t warn  = ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
     const uint8_t dim = LS_ATTR_DIM;
     char buf[48];
 
@@ -225,7 +225,7 @@ static void draw_detail(tui_surface *sf, tui_rect area,
     else
         snprintf(buf, sizeof(buf), "not heard yet");
     ls_kv(sf, area, row++, "SQUAWK", buf,
-          emergency ? TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK) : squawk ? val : dim);
+          emergency ? ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)) : squawk ? val : dim);
 
     reading(buf, sizeof(buf), a->altitude, "ft", a->altitude_valid, a->altitude_ts_us, now);
     ls_kv(sf, area, row++, "ALTITUDE", buf, val);
@@ -467,7 +467,7 @@ static void follow_row(tui_surface *sf, tui_rect area, bool live, double rx_lat,
     const int cw = (int)strlen(chip);
     const int cx = area.x + 2 + inner - cw;
     tui_put_str(sf, area, cx, area.y + 1, chip,
-                on ? TUI_ATTR(TUI_BLACK, TUI_CYAN) : LS_ATTR_DIM);
+                on ? ls_ink(LS_INK_KEY_ON, TUI_ATTR(TUI_BLACK, TUI_CYAN)) : LS_ATTR_DIM);
 
     char text[40];
     snprintf(text, sizeof(text), "%s %.4f, %.4f", live ? "GPS" : ls_tr_ctx("place|HOME", "HOME"), rx_lat, rx_lon);
@@ -606,7 +606,7 @@ static void draw_dash(tui_surface *sf, tui_rect r, int64_t now)
         if (eighths < 1) eighths = 1;
         if (eighths > 8) eighths = 8;
         tui_put_char(sf, r, r.x + 2 + x, gy, LS_TUI_TRACE(eighths),
-                     TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+                     ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
     }
 
     snprintf(buf, sizeof(buf), "%d", top);
@@ -672,8 +672,8 @@ static void select_step_shown(int dir)
 static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
 {
     const uint8_t frame  = TUI_ATTR(TUI_CYAN, TUI_BLACK);
-    const uint8_t head   = TUI_ATTR(TUI_BLACK, TUI_CYAN);
-    const uint8_t sel    = TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT);
+    const uint8_t head   = ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, TUI_CYAN));
+    const uint8_t sel    = ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT));
     const uint8_t body   = TUI_ATTR(TUI_WHITE, TUI_BLACK);
     const uint8_t stale = LS_ATTR_DIM;
     char buf[128];
@@ -784,16 +784,16 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
                         stale);
         /* An empty list, with room: what will fill it and how to help. */
         static const char *const HOW[] = {
-            "Aircraft show here as they are heard on 1090 MHz;",
-            "the map beside plots the ones that send a position.",
+            "Aircraft show here as heard on 1090 MHz;",
+            "the map plots the ones that send a position.",
             "",
-            "Hear further: a vertical antenna about 6.9 cm long,",
+            "Hear further: a vertical antenna 6.9 cm long,",
             "as high and as clear of walls as it can go.",
             "F follows the nearest   R picks the radio",
         };
         for (int i = 0; i < (int)(sizeof(HOW) / sizeof(HOW[0])) && list.y + 5 + i < list.y + list.h - 1; i++)
             tui_put_str(sf, list, list.x + 2, list.y + 5 + i, ls_tr(HOW[i]),
-                        i == 5 ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : TUI_ATTR(TUI_WHITE, TUI_BLACK));
+                        i == 5 ? ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)) : TUI_ATTR(TUI_WHITE, TUI_BLACK));
     }
 
     /* A sparkline of message rate, from the model's own 60-sample ring - the
@@ -814,13 +814,13 @@ static void draw_list(tui_surface *sf, tui_rect area, int64_t now)
                timeline of quiet, not as a missing graph. */
             tui_put_char(sf, foot, foot.x + 2 + x, foot.y + 1,
                          LS_TUI_TRACE(eighths ? eighths : 1),
-                         eighths ? TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK) : TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
+                         eighths ? ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)) : TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
         }
     }
     snprintf(buf, sizeof(buf), ls_tr("%d active   %d msg/s   %d crc err"),
              active, perf_get_msgs_per_sec(), perf_get_crc_err());
     tui_put_str(sf, foot, foot.x + 2, foot.y + 2,
-                buf, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+                buf, ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
 }
 
 /* ------------------------------------------------------------- OPTIONS -- */

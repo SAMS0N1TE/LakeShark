@@ -1,5 +1,6 @@
 /* Exercise the actual owner handoff and cached status without SD or hardware. */
 #include "ls_test.h"
+#include "ls_gps.h"
 #include "../../components/lakeshark/apps/p25/p25_sites.c"
 static p25_program_t program;
 static ls_gps_state_t fix;
@@ -14,6 +15,13 @@ void p25_program_geo_resume_now(void) { program.geo_paused = false; }
 bool p25_owner_post(void (*fn)(uint32_t), uint32_t arg) { fn(arg); return true; }
 bool ls_gps_running(void) { return running; }
 void ls_gps_get(ls_gps_state_t *out) { *out = fix; }
+void ls_location_want(void) {}
+void ls_location_get(ls_location_t *o)
+{
+    memset(o, 0, sizeof(*o));
+    o->fix = o->have = running && fix.fix;
+    o->lat = fix.lat_deg; o->lon = fix.lon_deg; o->fix_us = fix.last_fix_us;
+}
 esp_err_t ls_nvs_run(ls_nvs_fn_t fn, void *ctx, unsigned stack) { (void)stack; return fn(ctx); }
 esp_err_t nvs_open(const char *ns, int mode, nvs_handle_t *out)
 { (void)ns; (void)mode; *out = 1; return fail_nvs ? ESP_FAIL : ESP_OK; }

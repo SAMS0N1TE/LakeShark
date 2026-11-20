@@ -45,7 +45,7 @@
 #define HUE TUI_YELLOW
 #define PUMP_LINES 48
 #define WHITE TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK)
-#define AMBER TUI_ATTR(HUE | TUI_BRIGHT, TUI_BLACK)
+#define AMBER ls_ink_hue(TUI_ATTR(HUE | TUI_BRIGHT, TUI_BLACK))
 
 /* ----------------------------------------------------------------- state -- */
 
@@ -908,7 +908,7 @@ static void form_draw(tui_surface *sf, tui_rect in)
         const int x = in.x + (f / rows) * cw, y = in.y + f % rows;
         const bool on = f == s_form_at, bad = f == s_form_bad;
         tui_put_str(sf, in, x, y, ls_freqd_field_label(f),
-                    bad ? TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK) : on ? AMBER : LS_ATTR_DIM);
+                    bad ? ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)) : on ? AMBER : LS_ATTR_DIM);
         s_fld_r[f] = tui_rect_make(x + 7, y, cw - 8, 1);
         ls_dui_edit_draw(sf, in, x + 7, y, cw - 8, &s_fld[f], on, bad ? TUI_RED : on ? HUE : TUI_WHITE);
     }
@@ -1215,7 +1215,7 @@ static void draw_menu(tui_surface *sf)
     char text[64];
     snprintf(text, sizeof(text), "FREQS / %s", bank_label(ls_freqs_which()));
     const int x = s_r_menu.x + s_r_menu.w - (int)strlen(text) - 1;
-    if (x > s_bar_x[NMENUS] + 2) tui_put_str(sf, s_r_menu, x, s_r_menu.y, text, TUI_ATTR(HUE, TUI_BLACK));
+    if (x > s_bar_x[NMENUS] + 2) tui_put_str(sf, s_r_menu, x, s_r_menu.y, text, ls_ink_hue(TUI_ATTR(HUE, TUI_BLACK)));
 }
 
 static void draw_tools(tui_surface *sf)
@@ -1323,7 +1323,7 @@ static void draw_ruler(tui_surface *sf)
        view fall in it, in the colour of the first one's group. */
     for (int x = 0; x < w; x++) {
         const int n = s_rule_n[x];
-        const uint8_t ink = TUI_ATTR(s_rule_hue[x] | TUI_BRIGHT, TUI_BLACK);
+        const uint8_t ink = ls_ink_hue(TUI_ATTR(s_rule_hue[x] | TUI_BRIGHT, TUI_BLACK));
         if (!n) ls_box_put(sf, r, r.x + x, r.y + 1, LS_BOX_DASH_H, LS_ATTR_FAINT);
         else if (n == 1) ls_box_put(sf, r, r.x + x, r.y + 1, LS_BOX_HALF_D, ink);
         else if (n < 4) ls_box_put(sf, r, r.x + x, r.y + 1, LS_BOX_V, ink);
@@ -1348,7 +1348,7 @@ static void draw_ruler(tui_surface *sf)
         at[n] = r.x + rule_x((float)hz * 1e-6f, w);
         ls_freq_mhz_text(hz, mhz, sizeof(mhz));
         snprintf(text[n], sizeof(text[n]), "%s %s", LIVE[i].name, mhz);
-        ink[n] = TUI_ATTR(LIVE[i].hue | TUI_BRIGHT, TUI_BLACK);
+        ink[n] = ls_ink_hue(TUI_ATTR(LIVE[i].hue | TUI_BRIGHT, TUI_BLACK));
         ls_box_put(sf, r, at[n], r.y + 1, LS_BOX_VH, ink[n]);
         n++;
     }
@@ -1384,14 +1384,16 @@ static void tree_row(tui_surface *sf, tui_rect in, int y, int kind, int arg, con
     if (row >= s_ntree) s_ntree = row + 1;
     const bool cursor = s_focus == F_BANKS && row == s_bank_cur;
     const bool drop = s_drag.on && s_drag.drop == row && kind == T_BANK;
-    if (drop || cursor) ls_fill_dither(sf, tui_rect_make(in.x, y, in.w, 1), drop ? LS_DITHER_MEDIUM : LS_DITHER_LIGHT, drop ? TUI_MAGENTA : HUE);
-    if (on) ls_box_put(sf, in, in.x, y, LS_SHAPE_RIGHT, AMBER);
+    uint8_t band = 0;
+    if (drop) ls_fill_dither(sf, tui_rect_make(in.x, y, in.w, 1), LS_DITHER_MEDIUM, TUI_MAGENTA);
+    else band = ls_dui_line(sf, tui_rect_make(in.x, y, in.w, 1), cursor, true);
+    if (on) ls_box_put(sf, in, in.x, y, LS_SHAPE_RIGHT, band ? band : AMBER);
     char n[8] = "";
     if (count >= 0) snprintf(n, sizeof(n), "%d", count);
     const int nw = (int)strlen(n);
     tui_put_str(sf, tui_rect_make(in.x, y, in.w - nw - 1, 1), in.x + 2, y, name,
-                TUI_ATTR(on ? hue | TUI_BRIGHT : hue, TUI_BLACK));
-    tui_put_str(sf, in, in.x + in.w - nw, y, n, on ? WHITE : LS_ATTR_DIM);
+                band ? band : ls_ink_hue(TUI_ATTR(on ? hue | TUI_BRIGHT : hue, TUI_BLACK)));
+    tui_put_str(sf, in, in.x + in.w - nw, y, n, band ? band : on ? WHITE : LS_ATTR_DIM);
 }
 
 static void draw_banks(tui_surface *sf)
@@ -1413,7 +1415,7 @@ static void draw_banks(tui_surface *sf)
     tree_row(sf, in, y++, T_BUILTIN, 0, "BUILT-IN", -1, TUI_GREEN, which == LS_FREQS_BUILTIN);
     if (y + 2 >= in.y + in.h) return;
     for (int x = 0; x < in.w; x++) ls_box_put(sf, in, in.x + x, y, LS_BOX_H, LS_ATTR_FAINT);
-    tui_put_str(sf, in, in.x + 1, y++, " GROUPS ", TUI_ATTR(HUE, TUI_BLACK));
+    tui_put_str(sf, in, in.x + 1, y++, " GROUPS ", ls_ink_hue(TUI_ATTR(HUE, TUI_BLACK)));
     for (int g = 0; g < s_ngroups; g++) {
         if (y == in.y + in.h - 1 && g + 1 < s_ngroups) {
             char more[24];
@@ -1456,29 +1458,32 @@ static void draw_table(tui_surface *sf)
         const ls_freq_t *e = at(k);
         if (!e) continue;
         const bool on = k == s_sel, tick = picked(k);
-        if (tick) ls_fill_dither(sf, tui_rect_make(s_t.body.x, y, s_t.body.w, 1), LS_DITHER_LIGHT, TUI_CYAN);
-        if (on) ls_fill_dither(sf, tui_rect_make(s_t.body.x, y, s_t.body.w, 1), LS_DITHER_MEDIUM, HUE);
-        if (on) ls_box_put(sf, s_t.body, s_t.body.x, y, LS_SHAPE_RIGHT, s_focus == F_TABLE ? AMBER : LS_ATTR_DIM);
-        else if (tick) ls_box_put(sf, s_t.body, s_t.body.x, y, LS_SHAPE_CHECK, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        /* The cursor's row is the selection bar; the other picked rows wear its quieter colours. */
+        ls_dui_table_row(sf, &s_t, row, on, s_focus == F_TABLE);
+        if (tick && !on) {
+            s_t.band_row = (int16_t)row;
+            s_t.band_attr = ls_dui_line(sf, tui_rect_make(s_t.body.x, y, s_t.body.w, 1), true, false);
+            ls_box_put(sf, s_t.body, s_t.body.x, y, LS_SHAPE_CHECK, s_t.band_attr);
+        }
         char text[64];
         const uint8_t ink = on || tick ? WHITE : TUI_ATTR(TUI_WHITE, TUI_BLACK);
         const bool starred = ls_freqd_starred(e), dup = ls_dui_bit(s_dup, s_idx[k]);
         ls_dui_table_cell(sf, &s_t, COLS, LS_FC_STAR, row, starred ? "*" : ".", starred ? AMBER : LS_ATTR_FAINT);
         ls_freq_mhz_text(e->hz, text, sizeof(text));
         ls_dui_table_cell(sf, &s_t, COLS, LS_FC_FREQ, row, text,
-                          dup ? TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK) : on ? AMBER : WHITE);
+                          dup ? ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)) : on ? AMBER : WHITE);
         ls_dui_table_cell(sf, &s_t, COLS, LS_FC_NAME, row, e->name, ink);
         ls_dui_table_cell(sf, &s_t, COLS, LS_FC_MODE, row, ls_freq_mode_name(e->mode), TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
         const int band = ls_freqd_band(e->hz);
         ls_dui_table_cell(sf, &s_t, COLS, LS_FC_BAND, row, band ? ls_freq_band_name(band) : "-", LS_ATTR_DIM);
         ls_dui_table_cell(sf, &s_t, COLS, LS_FC_GROUP, row, e->group,
-                          TUI_ATTR(ls_freq_group_hue(e->group) | (on || tick ? TUI_BRIGHT : 0), TUI_BLACK));
+                          ls_ink_hue(TUI_ATTR(ls_freq_group_hue(e->group) | (on || tick ? TUI_BRIGHT : 0), TUI_BLACK)));
         ls_dui_table_cell(sf, &s_t, COLS, LS_FC_TONE, row, e->tone, TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, TUI_BLACK));
         if (e->lat_e5 != LS_FREQ_NOWHERE) {
             distance_text(e, text, sizeof(text));
-            ls_dui_table_cell(sf, &s_t, COLS, LS_FC_DIST, row, text, s_fix ? TUI_ATTR(HUE, TUI_BLACK) : LS_ATTR_FAINT);
+            ls_dui_table_cell(sf, &s_t, COLS, LS_FC_DIST, row, text, s_fix ? ls_ink_hue(TUI_ATTR(HUE, TUI_BLACK)) : LS_ATTR_FAINT);
         }
-        ls_dui_table_cell(sf, &s_t, COLS, LS_FC_BANK, row, ls_freqs_bank(e->bank), TUI_ATTR(TUI_GREEN, TUI_BLACK));
+        ls_dui_table_cell(sf, &s_t, COLS, LS_FC_BANK, row, ls_freqs_bank(e->bank), ls_ink_hue(TUI_ATTR(TUI_GREEN, TUI_BLACK)));
         ls_dui_table_cell(sf, &s_t, COLS, LS_FC_TAGS, row, e->tags, LS_ATTR_DIM);
         ls_dui_table_cell(sf, &s_t, COLS, LS_FC_NOTES, row, e->notes, LS_ATTR_DIM);
     }
@@ -1564,7 +1569,7 @@ static void draw_detail(tui_surface *sf, tui_rect r)
     const char *value[7] = { e->tone, bw, e->tags, e->notes, place, dist, line };
     const uint8_t ink[7] = { TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, TUI_BLACK), TUI_ATTR(TUI_WHITE, TUI_BLACK), TUI_ATTR(TUI_WHITE, TUI_BLACK),
                              TUI_ATTR(TUI_WHITE, TUI_BLACK), TUI_ATTR(TUI_WHITE, TUI_BLACK),
-                             s_fix ? TUI_ATTR(HUE, TUI_BLACK) : LS_ATTR_DIM, TUI_ATTR(TUI_GREEN, TUI_BLACK) };
+                             s_fix ? ls_ink_hue(TUI_ATTR(HUE, TUI_BLACK)) : LS_ATTR_DIM, ls_ink_hue(TUI_ATTR(TUI_GREEN, TUI_BLACK)) };
     for (int i = 0; i < 7 && y < in.y + in.h; i++) {
         if (!value[i][0]) continue;
         tui_put_str(sf, kv, kx, y, label[i], LS_ATTR_FAINT);
@@ -1578,7 +1583,7 @@ static void draw_detail(tui_surface *sf, tui_rect r)
         } while (*p && i == 3 && y < in.y + in.h);
     }
     if (ls_dui_bit(s_dup, s_idx[s_sel]) && y < in.y + in.h)
-        tui_put_str(sf, kv, kx, y, "listed more than once in this view", TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, kv, kx, y, "listed more than once in this view", ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)));
 }
 
 static void draw_status(tui_surface *sf)
@@ -1612,7 +1617,7 @@ static void draw_dialog(tui_surface *sf)
     if (w > a.w - 2) w = a.w - 2;
     const int h = s_dlg_prompt ? 8 : 7;
     const tui_rect r = tui_rect_make(a.x + (a.w - w) / 2, a.y + (a.h - h) / 2, w, h);
-    ls_dialog1_frame(sf, r, "FREQS", HUE);
+    ls_dialog1_frame(sf, r, s_dlg_prompt ? "CONFIRM" : "NOTICE", HUE);
     tui_put_str(sf, r, r.x + 3, r.y + 2, s_dlg_text[0], WHITE);
     tui_put_str(sf, r, r.x + 3, r.y + 3, s_dlg_text[1], LS_ATTR_DIM);
     int y = r.y + 4;
@@ -1684,7 +1689,7 @@ void ls_freqs_desk_draw(tui_surface *sf, tui_rect a)
     s_nhit = 0;
     ls_dui_context_claim(context);
     if (a.w < 56 || a.h < 12) {
-        ls_panel_notice(sf, a, "FREQS", "Enlarge the window", "the list keeps its place");
+        ls_panel_notice(sf, a, NULL, "Enlarge the window", "the list keeps its place");
         return;
     }
     refresh();

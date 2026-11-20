@@ -47,6 +47,7 @@
 
 #include "../../ls_quick.h"
 #include "../../ls_freqs.h"
+#include "../../ls_here.h"
 #include "../../ls_picker.h"
 #include "../../ls_radio_select.h"
 #include "../../ls_field.h"
@@ -925,7 +926,10 @@ static void draw_pages(tui_surface *sf, tui_rect whole)
     else snprintf(box, sizeof(box), "DECODED PAGES");
     /* FLEX with the chip chosen: the chip reads POCSAG only, so FLEX
        stays on the SDR, and says so rather than looking deaf. */
-    const bool flex_sdr = FM.mode == FM_MODE_FLEX && ls_rsel_saved(LS_RSEL_PAGER) == LS_RSEL_LORA;
+    /* The LR2021 reads FLEX through its I/Q stream (fm_lr_mode); only the
+       SX1262's FSK route is POCSAG-only. */
+    const bool flex_sdr = FM.mode == FM_MODE_FLEX && ls_rsel_saved(LS_RSEL_PAGER) == LS_RSEL_LORA &&
+                          ls_lora_chip() != LS_LORA_CHIP_LR20XX;
     if (flex_sdr) LS_SNPRINTF(t_scr_fm_flex_needs_an_sdr, why, sizeof(why), "FLEX needs an SDR; the %s reads POCSAG",
                            ls_rsel_name(LS_RSEL_LORA));
     rx_pages_list(&s_pv, &FM_PAGES, sf, area, box, flex_sdr ? why : NULL);
@@ -933,6 +937,7 @@ static void draw_pages(tui_surface *sf, tui_rect whole)
 
 static void draw_sweep(tui_surface *sf, tui_rect area)
 {
+    ls_ink_keep(area);              /* a scope stays on black in any scheme */
     ls_wf_note_full_view();
     ls_wf_source_select(LS_WF_SRC_FM);
     ls_wf_source_pump();
@@ -1004,7 +1009,7 @@ static void draw_acars(tui_surface *sf, tui_rect area)
         if (!msg) break;
         snprintf(buf, sizeof(buf), "%s %s %s", msg->reg, msg->label, msg->text);
         tui_put_str(sf, area, area.x + 2, s_pv.list.y + 1 + row * rx_pages_row_h(),
-                    buf, index == s_pv.sel ? TUI_ATTR(TUI_BLACK, TUI_CYAN) : val);
+                    buf, index == s_pv.sel ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_CYAN)) : val);
     }
 }
 
@@ -1081,8 +1086,12 @@ static tui_rect s_controls;
    bar drops OPTIONS for a mode with nothing to set, so a slot is not an
    action until this says which. */
 enum { CTL_MODE, CTL_BAND, CTL_VOLUME, CTL_SQUELCH, CTL_LOCK,
-       CTL_RADIO, CTL_OPTIONS, CTL_CALLS, CTL_MUTE, CTL__COUNT };
+       CTL_RADIO, CTL_OPTIONS, CTL_CALLS, CTL_MUTE, CTL_HERE, CTL__COUNT };
 static uint8_t  s_ctl_id[CTL__COUNT];
+/* HERE: stations near you from the data packs (ls_here.c); a tap tunes. */
+static const ls_here_cfg_t HERE = { .kinds = LS_PK_FM | LS_PK_AIR | LS_PK_WX | LS_PK_MAR | LS_PK_BC,
+                                    .hue = TUI_YELLOW };
+static void here_open(void) { ls_wf_source_release(); ls_here_open(&HERE); }
 static int      s_ctl_n;
 /* The VFO page's VOLUME, GAIN and SQUELCH steppers: one row, each value
    drawn once, inside the control that sets it. A tap on the left third steps
@@ -1266,8 +1275,10 @@ static void o_set_baud(const ls_opt_t *o, int i)
 static void o_show_baud(const ls_opt_t *o, char *out, size_t n)
 {
     if (!FM.pocsag_auto) { snprintf(out, n, "%d", FM.pocsag_baud); return; }
-    /* On AUTO, the rate in use once there is one to name. */
-    if (o->arg) snprintf(out, n, "AUTO (%d)", s_lora_pager && s_lora_baud ? s_lora_baud : 1200);
+    /* On AUTO, the rate in use once there is one to name. The SX1262 pages
+       through its FSK route (s_lora_pager); the LR2021 pages through its
+       I/Q stream with the SDR decoder, which reports its lock like a dongle. */
+    if (o->arg && s_lora_pager) snprintf(out, n, "AUTO (%d)", s_lora_baud ? s_lora_baud : 1200);
     else if (FM.pocsag_lock_baud) snprintf(out, n, "AUTO (%d)", FM.pocsag_lock_baud);
     else snprintf(out, n, "AUTO");
 }
@@ -1285,6 +1296,13 @@ static void o_show_polarity(const ls_opt_t *o, char *out, size_t n)
     (void)o;
     if (s_lora_pol) snprintf(out, n, "%s", POLARITY[s_lora_pol]);
     else snprintf(out, n, "AUTO (%s)", s_lora_inv ? "inverted" : "normal");
+}
+/* Only the SX1262's FSK route has a polarity to hold; the LR2021's I/Q
+   decoder takes either sense of the sync word by itself. */
+static const char *o_polarity_why(const ls_opt_t *o)
+{
+    (void)o;
+    return ls_lora_chip() == LS_LORA_CHIP_LR20XX ? "the I/Q decoder takes both" : NULL;
 }
 
 /* ACARS: the three North American channels. */
@@ -1501,7 +1519,8 @@ static const ls_opt_t OPT_POCSAG[] = {
     { .label = "BAUD", .kind = LS_OPT_CYCLE, .radios = LS_OPT_LORA, .arg = 1,
       .names = BAUD_CHIP, .n = 3, .get = o_baud, .set = o_set_baud, .show = o_show_baud },
     { .label = "POLARITY", .kind = LS_OPT_CYCLE, .radios = LS_OPT_LORA,
-      .names = POLARITY, .n = 3, .get = o_polarity, .set = o_set_polarity, .show = o_show_polarity },
+      .names = POLARITY, .n = 3, .get = o_polarity, .set = o_set_polarity, .show = o_show_polarity,
+      .why_not = o_polarity_why },
     /* The RX HEAD runs the voice beside the decoder: hear the channel too. */
     { .label = "HEAR CHANNEL", .kind = LS_OPT_TOGGLE, .radios = LS_OPT_SDR | LS_OPT_LORA,
       .get = o_pager_voice, .set = o_set_pager_voice },
@@ -1553,7 +1572,7 @@ static int ctl_count(bool vfo)
     const int opts = ls_opt_count(fm_options()) ? 1 : 0;
     /* The keyboard/keypad toggle moved to its own button beside the view
        tabs (see draw_kbd_toggle); it no longer takes a slot here. */
-    return vfo ? 6 + opts : 8 + opts;
+    return vfo ? 7 + opts : 9 + opts;
 }
 
 static int draw_controls(tui_surface *sf, tui_rect area, bool vfo)
@@ -1586,6 +1605,7 @@ static int draw_controls(tui_surface *sf, tui_rect area, bool vfo)
     buttons[s_ctl_n] = ls_rsel_button(fm_job()); s_ctl_id[s_ctl_n++] = CTL_RADIO;
     if (opts) { buttons[s_ctl_n] = ls_opt_button(fm_options()); s_ctl_id[s_ctl_n++] = CTL_OPTIONS; }
     CTL(CTL_CALLS, {"CALLS", NULL, '5', false, false, false});
+    CTL(CTL_HERE, {"HERE", ls_here_count(&HERE), '7', false, false, false});
     CTL(CTL_MUTE, {"MUTE", audio_is_muted() ? "ON" : "OFF", 'b', audio_is_muted(), false, false});
 #undef CTL
     s_controls = area;
@@ -1661,6 +1681,7 @@ static bool control_action(int slot)
     case CTL_OPTIONS: ls_opt_open(fm_options()); return true;
     case CTL_CALLS:   ls_calls_open("FM"); ls_wf_source_release(); return true;
     case CTL_MUTE:    audio_toggle_mute(); return true;
+    case CTL_HERE:    here_open(); return true;
     default:          return false;
     }
 }
@@ -2525,6 +2546,11 @@ static void draw(tui_surface *sf, tui_rect area)
     step_follow();
     memset(s_step_bar, 0, sizeof(s_step_bar));
     ls_rsel_fm_context(FM.freq_hz, fm_lr_mode(FM.mode));
+    if (ls_here_up(&HERE)) {
+        LS_SNPUTS(t_scr_fm_here_hint, s_hint, sizeof(s_hint), "UP/DOWN move  ENTER open/tune  G GPS  P packs  ESC back");
+        ls_here_draw(sf, area);
+        return;
+    }
     if (ls_calls_active()) {
         LS_SNPUTS(t_scr_fm_up_down_calls_p, s_hint, sizeof(s_hint), "UP/DOWN calls  P play  S stop  D delete  O options  ESC back");
         ls_wf_source_release(); ls_calls_draw(sf, area); return;
@@ -2866,7 +2892,10 @@ static bool touch_in(int col, int row)
     }
     if (tui_rect_contains(s_controls, col, row))
         return control_action(ls_btn_hit_slot(col, row, LS_BTN_SLOT_SCREEN));
-    if (ls_rsel_sdr_missing_touch(col, row, fm_job(), radio_chosen, lr_offer_take)) return true;
+    /* The no-dongle line is drawn by draw_lcd only; its last spot must not
+       take a tap on a page that does not show it. */
+    if (s_page != 1 && s_page != 2 &&
+        ls_rsel_sdr_missing_touch(col, row, fm_job(), radio_chosen, lr_offer_take)) return true;
     if (row >= s_bar.y && row < s_bar.y + s_bar.h) {
         const int slot = ls_btn_hit_slot(col, row, LS_BTN_SLOT_QUICK);
         if (slot >= 0 && slot < s_tab_count) { show_page(s_tab_page[slot]); return true; }
@@ -2893,6 +2922,8 @@ static bool touch_in(int col, int row)
    after, whichever of the many places in them moved it. */
 static bool key(ls_tk_t k, char ch)
 {
+    if (ls_here_up(&HERE)) return ls_here_key(k, ch);
+    if (k == LS_TK_CHAR && ch == '7' && s_details && !s_freq_keyboard && !ls_calls_active()) { here_open(); return true; }
     rx_pages_refind(&s_pv, &FM_PAGES);
     const bool handled = key_in(k, ch);
     rx_pages_remember(&s_pv, &FM_PAGES);
@@ -2901,6 +2932,7 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
+    if (ls_here_up(&HERE)) return ls_here_touch(col, row);
     rx_pages_refind(&s_pv, &FM_PAGES);
     const bool handled = touch_in(col, row);
     rx_pages_remember(&s_pv, &FM_PAGES);

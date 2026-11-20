@@ -30,7 +30,7 @@
 #endif
 
 #define LAND_MS 2200            /* how long a new decode stays lit */
-#define ATTR(f) TUI_ATTR((f), TUI_BLACK)
+#define ATTR(f) ls_ink_hue(TUI_ATTR((f), TUI_BLACK))
 
 EXT_RAM_BSS_ATTR static digi_view_t s_v;
 static uint32_t s_seen;
@@ -156,6 +156,13 @@ static void enter(void)
     if (!digi_running()) digi_start();
 }
 
+/* Leaving is the end of it, as opening was the start: the decoder held
+   ~0.8 MB of PSRAM and ran an FFT every 250 ms behind every other app. */
+static void leave(void)
+{
+    if (digi_running()) digi_stop();
+}
+
 /* ---- drawing --------------------------------------------------------------------- */
 
 static uint8_t snr_ink(int snr)
@@ -206,7 +213,7 @@ static void head(tui_surface *sf, tui_rect r)
 {
     char title[32];
     const digi_band_t *b = digi_band(s_v.band);
-    snprintf(title, sizeof(title), "DIGI / %s %s", digi_mode_name(s_v.mode), b ? b->band : "");
+    snprintf(title, sizeof(title), "%s %s", digi_mode_name(s_v.mode), b ? b->band : "");
     ls_panel_box(sf, r, title, TUI_CYAN);
     const bool live = s_v.running && s_v.source != DIGI_SRC_NONE;
     const float frac = s_v.slot_ms ? (float)s_v.slot_pos_ms / (float)s_v.slot_ms : 0;
@@ -595,18 +602,7 @@ static bool touch(int col, int row)
 const ls_tui_screen_t ls_scr_digi = {
     .name = "DIGI",
     .hint = "s Start/Stop  b Band  m Mode  t Test  o Options  Up/Down, drag or tap list ends to scroll",
-    .enter = enter, .draw = draw, .key = key, .touch = touch,
+    .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch,
 };
 
-const ls_app_doc_t ls_doc_digi = {
-    .purpose = LS_TXT(doc_digi_purpose, "Receive FT8, FT4 and WSPR from SSB audio: who is on the band now, "
-               "their signal, timing and distance. Slots follow GPS time, or NTP/RTC "
-               "without a fix. Receive only; nothing is transmitted."),
-    .records = LS_APP_RECORDS_AUTOMATIC,
-    .record_note = LS_TXT(doc_digi_record_note, "Each decode is appended to /sdcard/lakeshark/digi/YYYYMMDD.csv: UTC, mode, "
-                   "dial, audio offset, SNR, DT, message, call, grid, distance and bearing. "
-                   "LOG TO SD in OPTIONS turns it off."),
-    .gps = LS_APP_GPS_NAVIGATES,
-    .gps_note = LS_TXT(doc_digi_gps_note, "GPS time slots the decoder; your fix gives distance and bearing to each "
-                "station's grid square. Your position is not logged."),
-};
+/* ls_doc_digi is in ls_app_docs.c with the other built-in docs. */

@@ -340,6 +340,7 @@ static void pulse_at(tui_surface *sf, tui_rect r, int cx, int cy)
 static void draw_scope(tui_surface *sf, tui_rect r)
 {
     ls_panel_box(sf, r, "CHANNEL", TUI_GREEN);
+    ls_ink_keep(tui_rect_make(r.x + 1, r.y + 1, r.w - 2, r.h - 2));   /* a scope stays on black in any scheme */
     const int w = r.w - 2, h = r.h - 2;
     if (w < 4 || h < 1) return;
 
@@ -723,8 +724,10 @@ static void draw_nodes(tui_surface *sf, tui_rect r, uint32_t now, bool compact)
                          (double)s_peer_buf[i].snr);
             tui_put_str(sf, r, r.x + 2 + 18, y, meta, dim);
             sigmeter(sf, r, r.x + r.w - 6, y, 4, s_peer_buf[i].rssi, TUI_MAGENTA);
+            /* The first line already shows the name when there is one, so
+               the line under it carries the id rather than the name again. */
             if (rh >= 3 && s_peer_buf[i].name[0])
-                tui_put_str(sf, r, r.x + 2, y + 1, s_peer_buf[i].name, dim);
+                tui_put_str(sf, r, r.x + 2, y + 1, s_peer_buf[i].id, dim);
         } else {
             char meta[48];
             LS_SNPRINTF(t_scr_mesh_s_4_0f_dbm, meta, sizeof(meta), "%s  %4.0f dBm  %4.1f dB  x%lu",
@@ -1324,7 +1327,8 @@ static void o_field_show(const ls_opt_t *o, char *out, size_t n)
     field_value(o->arg, v, sizeof(v));
     const char *unit = FIELDS[o->arg].unit;
     /* SF11 and 4/5, the way they are written; MHz and dBm after the number. */
-    if (!unit) snprintf(out, n, "%s", v);
+    /* A word ("never") takes no unit after it. */
+    if (!unit || (v[0] && (v[0] < '0' || v[0] > '9') && v[0] != '-')) snprintf(out, n, "%s", v);
     else if (!strcmp(unit, "SF")) snprintf(out, n, "SF%s", v);
     else if (!strcmp(unit, "4/x")) snprintf(out, n, "4/%s", v);
     else snprintf(out, n, "%s %s", v, unit);

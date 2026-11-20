@@ -15,6 +15,7 @@
  * reference is out, as the PPM to add in its FRONT END.
  *
  * Keys: r source, t tune, c channel, h hold, o options. */
+#define LAP_TARGET_API_22     /* API 2.2, as the store has listed it: nothing newer is used */
 #include "lakeshark_app.h"
 #include "lakeshark_ui.h"
 #include "rflab_meas.h"
@@ -500,27 +501,78 @@ static void draw_rail(int x, int y, int w)
     lap_put_str(x, y + 1, t, s.hold ? HI(LAP_YELLOW) : LAP_UI_DIM);
 }
 
+/* SNR quality by colour: good green, usable amber, poor red. */
+static uint8_t snr_hue(float snr) { return snr >= 20 ? LAP_GREEN : snr >= 10 ? LAP_YELLOW : LAP_RED; }
+
+/* The SNR of the last readings as one braille line, oldest at the left, each
+   cell in the colour of what it reached, over faint rules at 10 and 20 dB.
+   A new point arrives only with a new reading. */
 static void draw_history(int x, int y, int w, int h)
 {
-    if (h < 4 || w < 20 || s.hist_n < 1) return;
+    if (h < 5 || w < 20 || s.hist_n < 1) return;
     lap_ui_bezel(x, y, w, h, " SNR HISTORY ");
-    const int n = s.hist_n < (w - 2) * 2 ? s.hist_n : (w - 2) * 2;
+    const int px = x + 4, py = y + 1, pw = w - 5, ph = h - 3;
+    if (pw < 8 || ph < 2) return;
+    const int n = s.hist_n < pw * 2 ? s.hist_n : pw * 2;
+    const float *v = s.hist + HIST - n;
     float lo = 1e9f, hi = -1e9f;
-    for (int i = HIST - n; i < HIST; ++i) {
-        if (s.hist[i] < lo) lo = s.hist[i];
-        if (s.hist[i] > hi) hi = s.hist[i];
+    for (int i = 0; i < n; ++i) {
+        if (v[i] < lo) lo = v[i];
+        if (v[i] > hi) hi = v[i];
     }
     lo = floorf(lo / 5) * 5 - 5; hi = ceilf(hi / 5) * 5 + 5;
+    if (lo < 0) lo = 0;
+    if (hi - lo < 20) hi = lo + 20;
+    const int dots = ph * 4;
+    char t[16];
+    /* The quality rules and the scale. */
+    for (int g = 10; g <= 20; g += 10) {
+        if (g <= lo || g >= hi) continue;
+        const int gy = py + (int)((hi - g) / (hi - lo) * (dots - 1)) / 4;
+        for (int cx = px; cx < px + pw; cx += 2) lap_put_cell(cx, gy, '.', LAP_UI_FAINT);
+        snprintf(t, sizeof(t), "%3d", g);
+        lap_put_str(x + 1, gy, t, A(snr_hue((float)g)));
+    }
+    snprintf(t, sizeof(t), "%3.0f", hi);
+    lap_put_str(x + 1, py, t, LAP_UI_DIM);
+    snprintf(t, sizeof(t), "%3.0f", lo);
+    lap_put_str(x + 1, py + ph - 1, t, LAP_UI_DIM);
+    /* The line: a dot per reading, joined to the one before. */
+    static const uint8_t BITS[4][2] = { { 0x01, 0x08 }, { 0x02, 0x10 }, { 0x04, 0x20 }, { 0x40, 0x80 } };
+    const int first = pw * 2 - n;            /* right-aligned: newest at the edge */
+    int prev = -1;
+    for (int cx = 0; cx < pw; ++cx) {
+        uint8_t cell[64];
+        const int rows = ph < 64 ? ph : 64;
+        memset(cell, 0, (size_t)rows);
+        float best = -1e9f;
+        bool any = false;
+        for (int half = 0; half < 2; ++half) {
+            const int k = cx * 2 + half - first;
+            if (k < 0 || k >= n) continue;
+            int d = iround((hi - v[k]) / (hi - lo) * (dots - 1));
+            d = d < 0 ? 0 : d >= dots ? dots - 1 : d;
+            int a = d, b = d;
+            if (prev >= 0) { a = prev < d ? prev : d; b = prev < d ? d : prev; }
+            for (int q = a; q <= b; ++q)
+                if (q / 4 < rows) cell[q / 4] |= BITS[q % 4][half];
+            prev = d;
+            if (v[k] > best) best = v[k];
+            any = true;
+        }
+        if (!any) continue;
+        const uint8_t ink = HI(snr_hue(best));
+        for (int r = 0; r < rows; ++r)
+            if (cell[r]) lap_put_cell(px + cx, py + r, LAP_BRAILLE(cell[r]), ink);
+    }
+    /* The latest reading on the top rule, and how far back the line goes. */
     const float last = s.hist[HIST - 1];
-    lap_ui_history(x + 1, y + 1, w - 2, h - 2, s.hist + HIST - n, n, lo, hi,
-                   (last >= 20 ? LAP_GREEN : last >= 10 ? LAP_YELLOW : LAP_RED) | LAP_BRIGHT);
-    char t[12];
-    snprintf(t, sizeof(t), "%.0f", hi);
-    lap_put_str(x + w - 1 - (int)strlen(t), y, t, LAP_UI_DIM);
-    snprintf(t, sizeof(t), "%.0f dB", lo);
-    lap_put_str(x + w - 1 - (int)strlen(t), y + h - 1, t, LAP_UI_DIM);
+    snprintf(t, sizeof(t), " %.1f dB ", last);
+    lap_put_str(x + w - 1 - (int)strlen(t), y, t, HI(snr_hue(last)));
+    snprintf(t, sizeof(t), "%d readings", n);
+    lap_put_str(px, y + h - 2, t, LAP_UI_FAINT);
+    lap_put_str(px + pw - 3, y + h - 2, "now", LAP_UI_DIM);
 }
-
 static int draw_keys(void)
 {
     const lap_radio_info_t *r = s.src >= 0 && s.src < s.nradios ? &s.radios[s.src] : NULL;
@@ -537,13 +589,53 @@ static int draw_keys(void)
     return kh;
 }
 
+static void centre(int x, int w, int y, const char *t, uint8_t attr)
+{
+    const int n = (int)strlen(t);
+    lap_put_str(x + (w - n > 0 ? (w - n) / 2 : 0), y, t, attr);
+}
+
+/* Before the first reading: the bench analyser itself, its screen an empty
+   graticule with what it is doing written on it, its RUN lamp lit only
+   while the radio really streams. */
 static void draw_notice(int y)
 {
+    const int W = lap_cols(), H = lap_rows();
     const char *a = s.why[0] ? s.why : s.h > 0 ? "measuring..." : "looking for a radio";
     const char *b = "SOURCE picks the radio; RF LAB tunes it to TUNE";
-    lap_put_str((lap_cols() - 6) / 2, y + 2, "RF LAB", HI(LAP_YELLOW));
-    lap_put_str((lap_cols() - (int)strlen(a)) / 2 > 0 ? (lap_cols() - (int)strlen(a)) / 2 : 0, y + 4, a, LAP_UI_TEXT);
-    lap_put_str((lap_cols() - (int)strlen(b)) / 2 > 0 ? (lap_cols() - (int)strlen(b)) / 2 : 0, y + 6, b, A(LAP_CYAN));
+    const int cw = W - 4 < 46 ? W - 4 : 46, ch = 12;
+    if (cw < 30 || H - y < ch + 4) {
+        centre(0, W, y + 2, "RF LAB", HI(LAP_YELLOW));
+        centre(0, W, y + 4, a, LAP_UI_TEXT);
+        centre(0, W, y + 6, b, A(LAP_CYAN));
+        return;
+    }
+    const int cx = (W - cw) / 2, cy = y + (H - y - ch - 4) / 3;
+    const bool live = s.h > 0 && s.st.state == LAP_RX_RUNNING;
+    lap_box(cx, cy, cw, ch, " RF LAB ", A(LAP_CYAN));
+    /* the screen */
+    const int sx = cx + 2, sy = cy + 1, sw = cw - 14, sh = ch - 3;
+    lap_box(sx, sy, sw, sh, "", A(LAP_BLUE));
+    for (int r = 1; r < sh - 1; ++r)
+        for (int k = 1; k < sw - 1; ++k)
+            if (k % 5 == 0 || r == sh / 2) lap_put_cell(sx + k, sy + r, k % 5 == 0 && r == sh / 2 ? '+' : k % 5 == 0 ? ':' : '.', LAP_UI_FAINT);
+    char t[48];
+    snprintf(t, sizeof(t), " %.32s ", a);
+    centre(sx + 1, sw - 2, sy + sh / 2 - 1, t, s.why[0] ? LAP_UI_WARN : LAP_UI_TEXT);
+    snprintf(t, sizeof(t), " %.4f MHz ", s.hz / 1e6);
+    centre(sx + 1, sw - 2, sy + sh / 2 + 1, t, HI(LAP_YELLOW));
+    /* the front panel: knobs, keys, the RUN lamp and the input */
+    const int fx = cx + cw - 11;
+    lap_put_str(fx, sy, ".-.  .-.", LAP_UI_DIM);
+    lap_put_str(fx, sy + 1, "(o)  (o)", HI(LAP_YELLOW));
+    lap_put_str(fx, sy + 2, "'-'  '-'", LAP_UI_DIM);
+    lap_put_str(fx, sy + 3, "TUNE CHAN", LAP_UI_FAINT);
+    lap_put_str(fx, sy + 5, "[==] [==]", LAP_UI_DIM);
+    lap_put_cell(fx, sy + 7, live ? '*' : 'o', live ? LAP_UI_LIVE : LAP_UI_FAINT);
+    lap_put_str(fx + 2, sy + 7, live ? "RUN" : "RUN", live ? LAP_UI_LIVE : LAP_UI_FAINT);
+    lap_put_str(sx, cy + ch - 2, "IN (@)", A(LAP_CYAN));
+    lap_put_str(sx + 8, cy + ch - 2, "I/Q  16384 pairs a reading", LAP_UI_FAINT);
+    centre(0, W, cy + ch + 1, b, A(LAP_CYAN));
 }
 
 static void draw(void)
@@ -637,7 +729,7 @@ static void leave(void)
     memset(&s, 0, sizeof(s));
 }
 
-LAP_APP(.id = "rflab", .name = "RF LAB", .sub = "measurements", .version = "2.0",
+LAP_APP(.id = "rflab", .name = "RF LAB", .sub = "measurements", .version = "2.1",
         .author = "LakeShark", .icon = LAP_ICON_WAVE, .color = LAP_YELLOW, .flags = LAP_CAP_RADIO_RX,
         .icon_art = { "  .----.  ", " | /\\/\\ | ", " |/    \\| ", " '------' ", "  RF LAB  ", "          " },
         .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch);

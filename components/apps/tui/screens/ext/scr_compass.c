@@ -278,7 +278,7 @@ static void mag_lamp(tui_surface *sf, tui_rect a, int x, int y)
 {
     const uint8_t colour = s_r.quality == LS_COMPASS_GOOD ? TUI_GREEN :
                            s_r.quality == LS_COMPASS_DISTURBED ? TUI_RED : TUI_YELLOW;
-    const uint8_t rim = TUI_ATTR(colour | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t rim = ls_ink_hue(TUI_ATTR(colour | TUI_BRIGHT, TUI_BLACK));
     const uint8_t lamp = rim;
     tui_put_str(sf, a, x, y, "+-------+", rim);
     tui_put_str(sf, a, x, y + 1, "|", rim);
@@ -299,11 +299,11 @@ static void readout(tui_surface *sf, tui_rect a, int y)
     const float h = shown_heading();
     const int w = 3 * (LS_GLYPH_COLS + 1) - 1;
     const int x = a.x + (a.w - w - 5) / 2;
-    big_number(sf, a, x, y, h, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    big_number(sf, a, x, y, h, ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
     /* Beside the number it qualifies. */
     if (x - a.x >= MAG_LAMP_W + 2) mag_lamp(sf, a, x - MAG_LAMP_W - 2, y + 1);
     tui_put_str(sf, a, x + w + 1, y, ref(), TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
-    tui_put_str(sf, a, x + w + 1, y + 2, cardinal(h), TUI_ATTR(ls_compass_letter_ink(false, s_white_letters), TUI_BLACK));
+    tui_put_str(sf, a, x + w + 1, y + 2, cardinal(h), ls_ink_hue(TUI_ATTR(ls_compass_letter_ink(false, s_white_letters), TUI_BLACK)));
 }
 
 /* THE TUI STACK IS 6 KB, IN DRAM, and COMPASS was 600 bytes from its end:
@@ -315,8 +315,8 @@ __attribute__((noinline)) static void info_lines(tui_surface *sf, tui_rect a, in
     const float h = shown_heading();
     int n = 0;
 #define LINE(attr) do { if (n < rows) ls_safe_line(sf, a, y + n++, line, (attr)); } while (0)
-    const uint8_t quality_ink = TUI_ATTR((s_r.quality == LS_COMPASS_GOOD ? TUI_GREEN :
-        s_r.quality == LS_COMPASS_DISTURBED ? TUI_RED : TUI_YELLOW) | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t quality_ink = ls_ink_hue(TUI_ATTR((s_r.quality == LS_COMPASS_GOOD ? TUI_GREEN :
+        s_r.quality == LS_COMPASS_DISTURBED ? TUI_RED : TUI_YELLOW) | TUI_BRIGHT, TUI_BLACK));
     snprintf(line, sizeof(line), "FIELD %s", ls_compass_quality_name(s_r.quality)); LINE(quality_ink);
     if (s_r.quality == LS_COMPASS_DISTURBED) {
         LS_SNPUTS(t_scr_compass_magnet_or_metal_nearby, line, sizeof(line), "magnet or metal nearby,"); LINE(quality_ink);
@@ -336,7 +336,7 @@ __attribute__((noinline)) static void info_lines(tui_surface *sf, tui_rect a, in
     else LS_SNPRINTF(fmt_scr_compass_dip_ut_true_north, line, sizeof(line), "DIP %.0f  %.0f uT  true north needs a GPS fix once", s_r.dip, s_r.field_ut);
     LINE(LS_ATTR_DIM);
     float el = NAN; const float sun = sun_azimuth(&el);
-    if (isfinite(sun)) { LS_SNPRINTF(t_scr_compass_sun_03_0f_s, line, sizeof(line), "SUN %03.0f %s  %.0f deg up", to_dial(sun), ref(), el); LINE(TUI_ATTR(TUI_YELLOW, TUI_BLACK)); }
+    if (isfinite(sun)) { LS_SNPRINTF(t_scr_compass_sun_03_0f_s, line, sizeof(line), "SUN %03.0f %s  %.0f deg up", to_dial(sun), ref(), el); LINE(ls_ink_hue(TUI_ATTR(TUI_YELLOW, TUI_BLACK))); }
     LS_SNPRINTF(t_scr_compass_back_03_0f_tilt, line, sizeof(line), "BACK %03.0f  TILT %.0f", isfinite(h) ? fmodf(h + 180.0f, 360.0f) : 0.0f, s_r.tilt);
     LINE(LS_ATTR_DIM);
     if (isfinite(s_lock) && isfinite(h)) {
@@ -348,7 +348,7 @@ __attribute__((noinline)) static void info_lines(tui_surface *sf, tui_rect a, in
     if (target_nav(&tb, &tm, tn, sizeof(tn))) {
         char d[24]; distance_text(tm, d, sizeof(d));
         LS_SNPRINTF(t_scr_compass_20s_03_0f_s, line, sizeof(line), "%.20s  %03.0f %s  %s", tn, to_dial((float)tb), ref(), d);
-        LINE(TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+        LINE(ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
     }
 #undef LINE
 }
@@ -1062,7 +1062,7 @@ __attribute__((noinline)) static int cal_lines(tui_surface *sf, tui_rect side, i
 {
     EXT_RAM_BSS_ATTR static char line[120];
     const uint8_t head = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK), dim = LS_ATTR_DIM;
-    const uint8_t good = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK), warn = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t good = ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)), warn = ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
     LS_SNPRINTF(t_scr_compass_beacon_calibration_2f_mhz, line, sizeof(line), "BEACON CALIBRATION  %.2f MHz  %s%s  %s", s_dfs_freq / 1e6,
              ls_dfs_name(s_dfs_source), s_dfs_source == LS_DFS_LORA && s_cal_hz != BEACON_915 ? " (EXT ANT)" : "",
              method_name());
@@ -1150,10 +1150,10 @@ __attribute__((noinline)) static void draw_log(tui_surface *sf, tui_rect side)
         else snprintf(age, sizeof(age), "%3dm", secs / 60 > 999 ? 999 : secs / 60);
         LS_SNPRINTF(t_scr_compass_2d_s_c_10, line, sizeof(line), "%2d %s  %c %-10.10s %6.1f %4.0f %s %2u  %s", i + 1, age, track_tag(h->track),
                  where, h->peak, h->snr, brg, h->count > 99 ? 99 : h->count, flags);
-        uint8_t at = hit_believed(h) ? TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM;
-        if (h->flags) at = TUI_ATTR(TUI_YELLOW, TUI_BLACK);
-        if (ls_df_hit_open(h, hit_cfg(), now)) at = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
-        if (i == s_log_pick) at = TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT);
+        uint8_t at = hit_believed(h) ? ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)) : LS_ATTR_DIM;
+        if (h->flags) at = ls_ink_hue(TUI_ATTR(TUI_YELLOW, TUI_BLACK));
+        if (ls_df_hit_open(h, hit_cfg(), now)) at = ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+        if (i == s_log_pick) at = ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT));
         ls_safe_line(sf, side, y + r, line, at);
     }
     y = side.y + side.h - 4;
@@ -1268,7 +1268,7 @@ __attribute__((noinline)) static void draw_find(tui_surface *sf, tui_rect body)
         if (s_est.valid) LS_SNPRINTF(t_scr_compass_signal_at_03_0f, line, sizeof(line), "SIGNAL AT %03.0f %s  +/-%.0f", to_dial(s_est.bearing), ref(), s_est.spread);
         else snprintf(line, sizeof(line), "%s", s_method == LS_DF_PEAK ? "Turn slowly through a full circle" :
                                           "Board to your chest, turn a full circle");
-        ls_safe_line(sf, side, y++, line, TUI_ATTR((s_est.valid ? TUI_GREEN : TUI_YELLOW) | TUI_BRIGHT, TUI_BLACK));
+        ls_safe_line(sf, side, y++, line, ls_ink_hue(TUI_ATTR((s_est.valid ? TUI_GREEN : TUI_YELLOW) | TUI_BRIGHT, TUI_BLACK)));
         if (s_method == LS_DF_FIT) {
             const ls_df_fit_t *ft = &s_tf[s_sel];
             const ls_df_pattern_t *pat = &s_pat[s_sel / LS_DFS_CHANNELS];
@@ -1282,7 +1282,7 @@ __attribute__((noinline)) static void draw_find(tui_surface *sf, tui_rect body)
             ls_safe_line(sf, side, y++, line, LS_ATTR_DIM);
             if (ft->valid && ft->ambiguous) {
                 LS_SNPRINTF(t_scr_compass_or_03_0f_s, line, sizeof(line), "OR %03.0f %s: front and back look alike", to_dial(ft->alt), ref());
-                ls_safe_line(sf, side, y++, line, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+                ls_safe_line(sf, side, y++, line, ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
             }
         }
         /* Every other channel's answer, in one line. */
@@ -1292,7 +1292,7 @@ __attribute__((noinline)) static void draw_find(tui_surface *sf, tui_rect body)
                 if (t != s_sel && track_live(t))
                     n += s_te[t].valid ? snprintf(line + n, sizeof(line) - n, "  %c %03.0f", track_tag(t), to_dial(s_te[t].bearing))
                                        : snprintf(line + n, sizeof(line) - n, "  %c ---", track_tag(t));
-            ls_safe_line(sf, side, y++, line, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+            ls_safe_line(sf, side, y++, line, ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)));
         }
         /* The newest believed hit, so a burst is not missed between frames. */
         for (int i = 0; i < ls_df_log_count(&s_log); i++) {
@@ -1302,7 +1302,7 @@ __attribute__((noinline)) static void draw_find(tui_surface *sf, tui_rect body)
             LS_SNPRINTF(fmt_scr_compass_last_hit_ch_db, line, sizeof(line), "LAST HIT %s ch %c  %.0f dB over  facing %03.0f  %ds ago", where,
                      track_tag(h->track), h->snr, isfinite(h->heading) ? to_dial(h->heading) : 0.0f,
                      (int)((now - h->last_us) / 1000000));
-            ls_safe_line(sf, side, y++, line, TUI_ATTR(TUI_GREEN, TUI_BLACK));
+            ls_safe_line(sf, side, y++, line, ls_ink_hue(TUI_ATTR(TUI_GREEN, TUI_BLACK)));
             break;
         }
     }
@@ -1321,10 +1321,10 @@ __attribute__((noinline)) static void draw_find(tui_surface *sf, tui_rect body)
     }
     if (s_fix.valid) {
         LS_SNPRINTF(t_scr_compass_fix_5f_5f_0f, line, sizeof(line), "FIX %.5f, %.5f  +/-%.0f m", s_fix.lat, s_fix.lon, s_fix.radius_m);
-        ls_safe_line(sf, side, y++, line, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+        ls_safe_line(sf, side, y++, line, ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
     }
     if (!s_r.calibrated)
-        ls_safe_line(sf, side, y++, "Calibrate first: a bent heading bends the bearing", TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        ls_safe_line(sf, side, y++, "Calibrate first: a bent heading bends the bearing", ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
 }
 
 __attribute__((noinline)) static void draw_goto(tui_surface *sf, tui_rect body)
@@ -1349,11 +1349,11 @@ __attribute__((noinline)) static void draw_goto(tui_surface *sf, tui_rect body)
         ls_safe_line(sf, side, y++, "a mesh node, the map centre, home or a fix.", LS_ATTR_DIM);
         return;
     }
-    ls_safe_line(sf, side, y++, name, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    ls_safe_line(sf, side, y++, name, ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
     if (route->valid && route->arrived) { ls_safe_line(sf,side,y++,"Arrived at route end",TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));return; }
-    if (!have) { ls_safe_line(sf, side, y++, "Waiting for a GPS fix to measure from", TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)); return; }
+    if (!have) { ls_safe_line(sf, side, y++, "Waiting for a GPS fix to measure from", ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK))); return; }
     const float bearing = to_dial((float)tb);
-    big_number(sf, side, side.x + 2, y, bearing, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    big_number(sf, side, side.x + 2, y, bearing, ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
     char d[24]; distance_text(tm, d, sizeof(d));
     tui_put_str(sf, side, side.x + 2 + 3 * (LS_GLYPH_COLS + 1), y, ref(), TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     tui_put_str(sf, side, side.x + 2 + 3 * (LS_GLYPH_COLS + 1), y + 2, d, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
@@ -1363,7 +1363,7 @@ __attribute__((noinline)) static void draw_goto(tui_surface *sf, tui_rect body)
         const float off = fmodf(bearing - h + 540.0f, 360.0f) - 180.0f;
         if (fabsf(off) < 5) LS_SNPUTS(t_scr_compass_straight_ahead, line, sizeof(line), ">>> STRAIGHT AHEAD <<<");
         else snprintf(line, sizeof(line), "%s %.0f deg %s", off > 0 ? "TURN RIGHT" : "TURN LEFT", fabsf(off), off > 0 ? "-->" : "<--");
-        ls_safe_line(sf, side, y++, line, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        ls_safe_line(sf, side, y++, line, ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
     }
     EXT_RAM_BSS_ATTR static ls_gps_state_t g; ls_gps_get(&g);
     if (g.fix && g.speed_kts > 0.8f) {
@@ -1393,14 +1393,14 @@ __attribute__((noinline)) static void draw_level(tui_surface *sf, tui_rect body)
     const int px = cx + (int)lroundf(bx * rx), py = cy + (int)lroundf(by * ry);
     const bool level = fabsf(s_r.pitch) < 0.5f && fabsf(s_r.roll) < 0.5f;
     const uint8_t hue = level ? TUI_GREEN | TUI_BRIGHT : TUI_YELLOW | TUI_BRIGHT;
-    tui_put_str(sf, box, px - 1, py - 1, " _ ", TUI_ATTR(hue, TUI_BLACK));
-    tui_put_str(sf, box, px - 1, py, "(O)", TUI_ATTR(hue, TUI_BLACK));
+    tui_put_str(sf, box, px - 1, py - 1, " _ ", ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
+    tui_put_str(sf, box, px - 1, py, "(O)", ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
     EXT_RAM_BSS_ATTR static char line[100];
     LS_SNPRINTF(t_scr_compass_pitch_5_1f_roll, line, sizeof(line), "PITCH %+5.1f   ROLL %+5.1f   TILT %.1f", s_r.pitch, s_r.roll, s_r.tilt);
     ls_safe_line(sf, body, body.y + body.h - 6, line, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
-    ls_safe_line(sf, body, body.y + body.h - 5, level ? "LEVEL" : "Lay it on the surface; the bubble shows the high side",
-                 TUI_ATTR(hue, TUI_BLACK));
-    LS_SNPRINTF(fmt_scr_compass_stood_on_an_edge, line, sizeof(line), "Stood on an edge, TILT is the slope: %.1f deg, %.0f%% grade",
+    ls_safe_line(sf, body, body.y + body.h - 5, level ? "LEVEL" : "Lay it flat; the bubble shows the high side",
+                 ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
+    LS_SNPRINTF(fmt_scr_compass_stood_on_an_edge, line, sizeof(line), "On an edge, the slope: %.1f deg, %.0f%% grade",
              90 - s_r.tilt, tanf((90 - s_r.tilt) * 0.0174533f) * 100);
     if (s_r.tilt > 45) ls_safe_line(sf, body, body.y + body.h - 4, line, LS_ATTR_DIM);
 }
@@ -1413,7 +1413,7 @@ static void find_requests(void);
 static void draw(tui_surface *sf, tui_rect a)
 {
     if (a.h < 16 || a.w < 30) {
-        ls_panel_box(sf, a, "COMPASS", TUI_CYAN);
+        ls_panel_box(sf, a, NULL, TUI_CYAN);
         tui_put_str(sf, a, a.x + 1, a.y + 1, "Enlarge the pane", LS_ATTR_DIM);
         return;
     }
@@ -2177,6 +2177,8 @@ static bool key(ls_tk_t k, char ch)
     }
     const int b = ls_btn_shortcut(ch, 0);
     if (b >= 0) { action(b); return true; }
+    /* The hint offers K on every page; only DIAL has a K button. */
+    if (ch == 'k' || ch == 'K') { more_done(M_CAL); return true; }
     return false;
 }
 
@@ -2203,7 +2205,9 @@ static char sweep_target_label[48];
 static void enter(void)
 {
     static bool ready;
-    if (!ready) { ready = true; ls_df_log_clear(&s_log); clear_all(); }
+    /* GO TO > SET TARGET lists notes with a place: their index is read
+       once here, or it stayed empty until NOTES had been opened. */
+    if (!ready) { ready = true; ls_df_log_clear(&s_log); clear_all(); (void)ls_notes_start(); }
     button_focus = -1; button_slot = 0; s_feedback[0] = 0;
     const int opt = settings_get_compass_options();
     s_simple = opt & 1; s_magnetic = opt & 2;

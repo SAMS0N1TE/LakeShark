@@ -378,7 +378,7 @@ static void draw(tui_surface *sf, tui_rect area)
     tui_rect summary=body;
     if(framed) {
         s_view_hit=tui_rect_make(body.x,body.y,body.w/2-1,5);
-        ls_panel_box(sf,s_view_hit,"GPS VIEW",TUI_CYAN);
+        ls_panel_box(sf,s_view_hit,"VIEW",TUI_CYAN);
         summary=tui_rect_make(body.x+body.w/2,body.y,body.w-body.w/2,5);
         ls_panel_box(sf,summary,"TRACK LOG",TUI_CYAN);
     } else {

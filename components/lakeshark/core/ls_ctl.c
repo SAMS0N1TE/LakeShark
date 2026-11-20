@@ -708,12 +708,14 @@ static int p25_lr_command(int argc, char **argv)
 {
     if (argc >= 1 && !strcmp(argv[0], "record"))
         return p25_lr_iq_record_command(argc - 1, argv + 1);
+#if CONFIG_LS_DEV_CONSOLE
     if (argc >= 1 && !strcmp(argv[0], "bench")) {
         if (P25.lr_iq_active) { puts("P25LRBENCH: stop P25 first; it shares the core"); return 1; }
         p25_lr_bench_one("internal", MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         p25_lr_bench_one("psram", MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         return 0;
     }
+#endif
     if (argc && (strcmp(argv[0], "mode") || argc > 2 ||
                  (argc == 2 && strcmp(argv[1], "iq")))) {
         LS_PUTS(msg_ls_ctl_p25_on_lr2021_uses, "P25 on LR2021 uses IQ only; usage: p25 lr [mode [iq] | record ...]");
@@ -997,19 +999,23 @@ static int cmd_p25(int argc, char **argv)
         return p25_lrwide_command(argc - 2, argv + 2);
     if (argc >= 2 && !strcmp(argv[1], "follow"))
         return p25_follow_command(argc - 2, argv + 2);
+#if CONFIG_LS_DEV_CONSOLE
     if (argc >= 2 && !strcmp(argv[1], "sym"))
         return p25_sym_command(argc - 2, argv + 2);
     if (argc >= 2 && !strcmp(argv[1], "imbe"))
         return p25_imbe_command(argc - 2, argv + 2);
+#endif
     if (argc >= 2 && !strcmp(argv[1], "profile"))
         return p25_profile_command(argc - 2, argv + 2);
+#if CONFIG_LS_DEV_CONSOLE
     if (argc >= 3 && !strcmp(argv[1], "capture") && !strcmp(argv[2], "save"))
         return p25_capture_save(argc >= 4 ? argv[3] : NULL);
     if (argc >= 3 && !strcmp(argv[1], "capture"))
         return p25_iq_capture_command(argc - 2, argv + 2,
             (uint32_t)(esp_timer_get_time() / 1000LL));
+#endif
     if (argc != 2 || strcmp(argv[1], "acquisition")) {
-        LS_PUTS(msg_ls_ctl_usage_p25_acquisition_profile, "usage: p25 acquisition | follow [on|off|list off|allow|none|linger <ms>] | profile [name] | capture start [blocks] | status | cancel | read <offset> [bytes] | save [name] | free");
+        LS_PUTS(msg_ls_ctl_usage_p25_acquisition_profile, "usage: p25 acquisition | follow [on|off|list off|allow|none|linger <ms>] | profile [name]");
         return 0;
     }
     return print_p25_acquisition();
@@ -1245,7 +1251,7 @@ static int cmd_spec(int argc, char **argv)
 
     /* Rank a COPY. FM.scan_db is live sweep data owned by the rx task; a
        listing must never consume it to mark what it has already printed. */
-    static float snap[FM_SCAN_BINS_MAX];
+    EXT_RAM_BSS_ATTR static float snap[FM_SCAN_BINS_MAX];
     for (int i = 0; i < bins; i++) snap[i] = FM.scan_db[i];
 
     /* Strongest bins first - on a finder that is the entire question. */
@@ -1405,8 +1411,10 @@ void ls_ctl_register_recovery_commands(void)
 void ls_ctl_register_commands(void)
 {
     const esp_console_cmd_t cmds[] = {
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "celliq", .help = LS_TXT(con_ls_ctl_celliq_help, "Bounded passive cellular IQ capture and transport diagnostics"),
           .func = &cell_iq_command },
+#endif
         { .command = "cellreport", .help = LS_TXT(con_ls_ctl_cellreport_help, "Addressed cellular observations over MeshCore"),
           .func = &cell_report_command },
         /**/
@@ -1426,18 +1434,22 @@ void ls_ctl_register_commands(void)
           .func = &fm_bcast_command },
         { .command = "wf", .help = LS_TXT(con_ls_ctl_wf_help, "LR2021 IQ waterfall: on, centre, lines, gaps, skipped"),
           .func = &cmd_wf },
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "p25tsbk",
           .help = LS_TXT(con_ls_ctl_p25tsbk_help, "P25 control-channel state: IDEN, neighbours, unhandled opcodes"),
           .func = &cmd_p25tsbk },
+#endif
         { .command = "p25",
           .help = LS_TXT(con_ls_ctl_p25_help, "P25 acquisition and IQ diagnostics; 'p25 profile [name]' lists or loads a profile"),
           .hint = LS_TXT(con_ls_ctl_p25_hint, "acquisition | profile [name]"), .func = &cmd_p25 },
         { .command = "radios",
           .help = LS_TXT(con_ls_ctl_radios_help, "Which radios start at boot: 'radios', 'radios ble off'"),
           .hint = LS_TXT(con_ls_ctl_radios_hint, "[ble|wifi] [on|off]"), .func = &cmd_radios },
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "dmr",
           .help = LS_TXT(con_ls_ctl_dmr_help, "DMR seen on the P25 symbol stream: bursts, colour code, last LC"),
           .func = &cmd_dmr },
+#endif
         /**/
         { .command = "p25enc",
           .help = LS_TXT(con_ls_ctl_p25enc_help, "P25 encryption gate: status, counters, and leave-on-encrypted"),
@@ -1454,8 +1466,10 @@ void ls_ctl_register_commands(void)
         { .command = "scan", .help = LS_TXT(con_ls_ctl_scan_help, "Channel scanner control"),
           .hint = LS_TXT(con_ls_ctl_scan_hint, "on|off|status|skip|hang|thresh|pri|src <preset|band>|band <a> <b> [step]"), .func = &cmd_scan },
         /**/
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "spec", .help = LS_TXT(con_ls_ctl_spec_help, "Strongest bins of the FM SWEEP spectrum"),
           .hint = LS_TXT(con_ls_ctl_spec_hint, "[count]"), .func = &cmd_spec },
+#endif
         /**/
         { .command = "search", .help = LS_TXT(con_ls_ctl_search_help, "Repeating wideband search on the RTL: what keeps showing up"),
           .hint = LS_TXT(con_ls_ctl_search_hint, "[start [lo_MHz hi_MHz] | stop | clear | dump]"), .func = &ls_search_command },

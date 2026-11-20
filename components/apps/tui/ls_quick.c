@@ -293,7 +293,7 @@ static void draw_field(tui_surface *sf, tui_rect area, int x, int y,
     for (int r = 0; r < h; r++)
         for (int c = 0; c < w; c++)
             tui_put_char(sf, area, x + c, y + r, LS_TUI_SHADE_25,
-                         TUI_ATTR(hue, TUI_BLACK));
+                         ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
 }
 
 /* Draw the figure centred in the rect, scaled to fill it without spilling. */
@@ -414,8 +414,8 @@ static int compact_flow(tui_surface *sf, tui_rect area, const ls_quick_t *items,
             const bool have = action_index(items[i].action) >= 0;
             const char *st = ls_quick_state(&items[i]);
             if (two_way(&items[i])) {
-                const uint8_t lab = have ? TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM;
-                const uint8_t val = have ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM;
+                const uint8_t lab = have ? ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)) : LS_ATTR_DIM;
+                const uint8_t val = have ? ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)) : LS_ATTR_DIM;
                 int cx = x;
                 tui_put_str(sf, area, cx, y, items[i].label, lab);
                 cx += (int)strlen(items[i].label) + 1;
@@ -423,7 +423,7 @@ static int compact_flow(tui_surface *sf, tui_rect area, const ls_quick_t *items,
                 for (int k = 0; k < 2; k++) {
                     const bool lit = s_flash_target == i * 2 + k && s_flash_ttl > 0;
                     const ls_btn_t b = { .label = k ? "+" : "-", .dim = !have };
-                    tui_put_char(sf, area, cx, y, '[', TUI_ATTR(have ? (TUI_WHITE | TUI_BRIGHT) : LS_FAINT_FG, TUI_BLACK));
+                    tui_put_char(sf, area, cx, y, '[', ls_ink_hue(TUI_ATTR(have ? (TUI_WHITE | TUI_BRIGHT) : LS_FAINT_FG, TUI_BLACK)));
                     tui_put_char(sf, area, cx + 1, y, b.label[0],
                                  !have ? LS_ATTR_DIM : lit ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLUE)
                                        : TUI_ATTR(TUI_BLACK, TUI_WHITE));
@@ -504,7 +504,7 @@ int ls_quick_draw_posture(tui_surface *sf, tui_rect area, bool wide,
             if (--s_say_ttl == 0) s_say[0] = 0;
             if (s_say[0] && used < area.h) {
                 tui_put_str(sf, area, area.x + 1, area.y + used, s_say,
-                            TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+                            ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
                 used++;
             }
         }
@@ -514,13 +514,13 @@ int ls_quick_draw_posture(tui_surface *sf, tui_rect area, bool wide,
 
     hit_reset();
 
-    const uint8_t lab  = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t val  = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t lab  = ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    const uint8_t val  = ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
     const uint8_t dim = LS_ATTR_DIM;
-    const uint8_t lit  = TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT);
+    const uint8_t lit  = ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT));
     const uint8_t edge = TUI_ATTR(TUI_CYAN, TUI_BLACK);
-    const uint8_t on   = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t off  = TUI_ATTR(TUI_RED, TUI_BLACK);
+    const uint8_t on   = ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    const uint8_t off  = ls_ink_hue(TUI_ATTR(TUI_RED, TUI_BLACK));
 
     int across=panel_columns(items,n,area.w,wide);
 
@@ -602,9 +602,9 @@ int ls_quick_draw_posture(tui_surface *sf, tui_rect area, bool wide,
                 const bool lit_hi = (s_flash_target == i * 2 + 1) && s_flash_ttl > 0;
 
                 const uint8_t f_lo = !have ? dim : lit_lo ? lit
-                                     : TUI_ATTR(TUI_GREEN, TUI_BLACK);
+                                     : ls_ink_hue(TUI_ATTR(TUI_GREEN, TUI_BLACK));
                 const uint8_t f_hi = !have ? dim : lit_hi ? lit
-                                     : TUI_ATTR(TUI_GREEN, TUI_BLACK);
+                                     : ls_ink_hue(TUI_ATTR(TUI_GREEN, TUI_BLACK));
                 draw_field(sf, area, x + 1, y + 1, half - 1, bh - 2, f_lo);
                 draw_field(sf, area, x + half + 1, y + 1, w - half - 2,
                            bh - 2, f_hi);
@@ -673,7 +673,7 @@ int ls_quick_draw_posture(tui_surface *sf, tui_rect area, bool wide,
         if (--s_say_ttl == 0) s_say[0] = 0;
         if (s_say[0] && area.y + used < area.y + area.h) {
             tui_put_str(sf, area, area.x + 1, area.y + used, s_say,
-                        TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+                        ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
             used++;
         }
     }

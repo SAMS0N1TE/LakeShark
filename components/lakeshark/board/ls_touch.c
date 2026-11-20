@@ -11,13 +11,15 @@ extern void ls_touch_frame(const ls_touch_contact_t *,unsigned) __attribute__((w
 static bool touch_multi_ready;
 bool ls_touch_multitouch(void) { return touch_multi_ready; }
 #if defined(LS_BOARD_PANEL_RM69A10)
+#include "ls_profile.h"
+static const ls_panel_desc_t *t_pd;
 #include "ls_i2c.h"
 #include "esp_log.h"
 #include <string.h>
-static i2c_master_dev_handle_t s_dev;
-static uint32_t s_data;
+static i2c_master_dev_handle_t gt_dev;
+static uint32_t gt_data;
 
-static uint16_t s_last_x, s_last_y;
+static uint16_t gt_last_x, gt_last_y;
 static uint16_t le16(const uint8_t *p) { return p[0] | (uint16_t)p[1] << 8; }
 static uint32_t le32(const uint8_t *p) { return le16(p) | (uint32_t)le16(p+2) << 16; }
 static bool checksum(const uint8_t *p, size_t n)
@@ -30,14 +32,14 @@ static bool checksum(const uint8_t *p, size_t n)
 static esp_err_t read_reg(uint32_t a, uint8_t *p, size_t n)
 {
     uint8_t reg[] = {a>>24, a>>16, a>>8, a};
-    return i2c_master_transmit_receive(s_dev, reg, 4, p, n, 30);
+    return i2c_master_transmit_receive(gt_dev, reg, 4, p, n, 30);
 }
-esp_err_t ls_touch_init(void)
+static esp_err_t gt9895_init(void)
 {
-    if (s_data) return ESP_OK;
-    esp_err_t e = ls_i2c_probe(LS_I2C_PRIMARY, LS_BOARD_TOUCH_I2C_ADDR, 30);
+    if (gt_data) return ESP_OK;
+    esp_err_t e = ls_i2c_probe(LS_I2C_PRIMARY, t_pd->touch_addr, 30);
     if (e != ESP_OK) return e;
-    e = ls_i2c_device(LS_I2C_PRIMARY, LS_BOARD_TOUCH_I2C_ADDR, 100000, &s_dev);
+    e = ls_i2c_device(LS_I2C_PRIMARY, t_pd->touch_addr, 100000, &gt_dev);
     if (e != ESP_OK) return e;
     uint8_t fw[28], info[1024];
     e = read_reg(0x10014, fw, sizeof(fw));
@@ -58,42 +60,42 @@ esp_err_t ls_touch_init(void)
         off += bytes;
     }
     if (n-2-off < 48) { e=ESP_ERR_INVALID_SIZE; goto fail; }
-    s_data=le32(info+off+44);
-    if (!s_data) { e=ESP_ERR_INVALID_RESPONSE; goto fail; }
-    ESP_LOGI("gt9895", "touch ready at 0x%lx", (unsigned long)s_data);
+    gt_data=le32(info+off+44);
+    if (!gt_data) { e=ESP_ERR_INVALID_RESPONSE; goto fail; }
+    ESP_LOGI("gt9895", "touch ready at 0x%lx", (unsigned long)gt_data);
     return ESP_OK;
 fail:
-    i2c_master_bus_rm_device(s_dev); s_dev=NULL;
+    i2c_master_bus_rm_device(gt_dev); gt_dev=NULL;
     return e;
 }
-bool ls_touch_read(uint16_t *x, uint16_t *y, bool *pressed)
+static bool gt9895_read(uint16_t *x, uint16_t *y, bool *pressed)
 {
-    if (!s_data) return false;
+    if (!gt_data) return false;
     uint8_t p[18];
     /* Only a zero status is idle; a ready report with no contacts is a
        release and must still pass the full checksum and ack path below. */
-    if (read_reg(s_data,p,1) != ESP_OK || !p[0]) return false;
-    if (read_reg(s_data,p,sizeof(p)) != ESP_OK || !p[0] || !checksum(p,8)) return false;
+    if (read_reg(gt_data,p,1) != ESP_OK || !p[0]) return false;
+    if (read_reg(gt_data,p,sizeof(p)) != ESP_OK || !p[0] || !checksum(p,8)) return false;
     unsigned count=p[2]&15;
     if (count>10) return false;
     bool down=(p[0]&0x80) && count;
     if (down && count==1 && !checksum(p+8,10)) return false;
-    uint8_t ack[]={s_data>>24,s_data>>16,s_data>>8,s_data,0};
-    if (i2c_master_transmit(s_dev,ack,sizeof(ack),30)!=ESP_OK) return false;
+    uint8_t ack[]={gt_data>>24,gt_data>>16,gt_data>>8,gt_data,0};
+    if (i2c_master_transmit(gt_dev,ack,sizeof(ack),30)!=ESP_OK) return false;
     if (down) {
         /* Vendor a47cf73e: raw 1060x2400 maps to native 568x1232. */
-        unsigned nx=(uint32_t)le16(p+10)*LS_BOARD_LCD_H_RES/1060;
-        unsigned ny=(uint32_t)le16(p+12)*LS_BOARD_LCD_V_RES/2400;
-        s_last_x=nx<LS_BOARD_LCD_H_RES ? nx : LS_BOARD_LCD_H_RES-1;
-        s_last_y=ny<LS_BOARD_LCD_V_RES ? ny : LS_BOARD_LCD_V_RES-1;
+        unsigned nx=(uint32_t)le16(p+10)*t_pd->w/1060;
+        unsigned ny=(uint32_t)le16(p+12)*t_pd->h/2400;
+        gt_last_x=nx<t_pd->w ? nx : t_pd->w-1;
+        gt_last_y=ny<t_pd->h ? ny : t_pd->h-1;
     }
 
-    *x=s_last_x;
-    *y=s_last_y;
+    *x=gt_last_x;
+    *y=gt_last_y;
     *pressed=down;
     return true;
 }
-#elif defined(LS_BOARD_PANEL_HI8561)
+/* ---- HI8561 (TFT SKU) ---- */
 /* HI8561 touch (TFT SKU), adapted from LILYGO_L cpp_bus_driver
  * hi8561_touch.cpp. The firmware publishes a section table in ERAM; the
  * coordinate report's address is read from it, then polled. Read-only apart
@@ -110,16 +112,14 @@ bool ls_touch_read(uint16_t *x, uint16_t *y, bool *pressed)
 #define ESRAM_COUNT     (DSRAM_TABLE + 25 * 8)
 #define ESRAM_TABLE     (ESRAM_COUNT + 4)
 #define MAX_CONTACTS    10
-static i2c_master_dev_handle_t s_dev;
+static i2c_master_dev_handle_t hi_dev;
 static uint32_t s_report;
 static uint16_t s_res_x, s_res_y;
-static uint16_t s_last_x, s_last_y;
-static uint16_t le16(const uint8_t *p) { return p[0] | (uint16_t)p[1] << 8; }
-static uint32_t le32(const uint8_t *p) { return le16(p) | (uint32_t)le16(p+2) << 16; }
+static uint16_t hi_last_x, hi_last_y;
 static esp_err_t read_mem(uint32_t a, uint8_t *p, size_t n)
 {
     const uint8_t cmd[] = {0xF3, a>>24, a>>16, a>>8, a, 0x03};
-    return i2c_master_transmit_receive(s_dev, cmd, sizeof(cmd), p, n, 30);
+    return i2c_master_transmit_receive(hi_dev, cmd, sizeof(cmd), p, n, 30);
 }
 static esp_err_t read_eram(uint32_t a, uint8_t *p, size_t n)
 {
@@ -137,7 +137,7 @@ static esp_err_t backdoor(bool on)
 {
     static const uint8_t enter[] = {0xF2, 0xAA, 0xF0, 0x0F, 0x55, 0x68};
     static const uint8_t leave[] = {0xF2, 0xAA, 0x88, 0x00, 0x00, 0x00};
-    return i2c_master_transmit(s_dev, on ? enter : leave, sizeof(enter), 30);
+    return i2c_master_transmit(hi_dev, on ? enter : leave, sizeof(enter), 30);
 }
 /* The coordinate range the firmware reports in, from its config section.
    Left at 0 (native pixels assumed) if any step fails. */
@@ -151,16 +151,16 @@ static void read_resolution(unsigned dsram_count)
     if (backdoor(false) != ESP_OK || e != ESP_OK) return;
     if (le16(cfg) && le16(cfg+2)) { s_res_x = le16(cfg); s_res_y = le16(cfg+2); }
 }
-esp_err_t ls_touch_init(void)
+static esp_err_t hi8561_touch_init(void)
 {
     if (s_report) return ESP_OK;
     /* Same die as the panel: reset the touch side again now the display is
        running, as the vendor's InitHi8561Touch does after InitScreen. */
     esp_err_t e = ls_board_hw_touch_reset();
     if (e != ESP_OK) return e;
-    e = ls_i2c_probe(LS_I2C_PRIMARY, LS_BOARD_TOUCH_I2C_ADDR, 30);
+    e = ls_i2c_probe(LS_I2C_PRIMARY, t_pd->touch_addr, 30);
     if (e != ESP_OK) return e;
-    e = ls_i2c_device(LS_I2C_PRIMARY, LS_BOARD_TOUCH_I2C_ADDR, 400000, &s_dev);
+    e = ls_i2c_device(LS_I2C_PRIMARY, t_pd->touch_addr, 400000, &hi_dev);
     if (e != ESP_OK) return e;
     uint8_t d[4];
     bool ready = false;
@@ -186,10 +186,10 @@ esp_err_t ls_touch_init(void)
     s_report = addr;
     read_resolution(dsram_count);
     ESP_LOGI("hi8561", "touch ready at 0x%lx, range %ux%u", (unsigned long)s_report,
-             s_res_x ? s_res_x : LS_BOARD_LCD_H_RES, s_res_y ? s_res_y : LS_BOARD_LCD_V_RES);
+             s_res_x ? s_res_x : t_pd->w, s_res_y ? s_res_y : t_pd->h);
     return ESP_OK;
 fail:
-    i2c_master_bus_rm_device(s_dev); s_dev=NULL;
+    i2c_master_bus_rm_device(hi_dev); hi_dev=NULL;
     return e;
 }
 static uint16_t scale(uint16_t v, uint16_t range, int native)
@@ -197,7 +197,7 @@ static uint16_t scale(uint16_t v, uint16_t range, int native)
     uint32_t n = range ? (uint32_t)v * native / range : v;
     return n < (uint32_t)native ? n : native - 1;
 }
-bool ls_touch_read(uint16_t *x, uint16_t *y, bool *pressed)
+static bool hi8561_touch_read(uint16_t *x, uint16_t *y, bool *pressed)
 {
     if (!s_report) return false;
     /* count, sequence, gesture, then the first contact: x, y big-endian,
@@ -207,13 +207,26 @@ bool ls_touch_read(uint16_t *x, uint16_t *y, bool *pressed)
     const uint16_t rx = (uint16_t)p[3] << 8 | p[4], ry = (uint16_t)p[5] << 8 | p[6];
     const bool down = p[0] && !(rx == 0xFFFF && ry == 0xFFFF);
     if (down) {
-        s_last_x = scale(rx, s_res_x, LS_BOARD_LCD_H_RES);
-        s_last_y = scale(ry, s_res_y, LS_BOARD_LCD_V_RES);
+        hi_last_x = scale(rx, s_res_x, t_pd->w);
+        hi_last_y = scale(ry, s_res_y, t_pd->h);
     }
-    *x=s_last_x;
-    *y=s_last_y;
+    *x=hi_last_x;
+    *y=hi_last_y;
     *pressed=down;
     return true;
+}
+/* The panel that answered at boot says which controller is behind it. */
+esp_err_t ls_touch_init(void)
+{
+    t_pd = ls_profile_panel();
+    if (!t_pd) return ESP_ERR_INVALID_STATE;
+    return t_pd->touch == LS_TOUCH_KIND_HI8561 ? hi8561_touch_init() : gt9895_init();
+}
+bool ls_touch_read(uint16_t *x, uint16_t *y, bool *pressed)
+{
+    if (!t_pd) return false;
+    return t_pd->touch == LS_TOUCH_KIND_HI8561 ? hi8561_touch_read(x, y, pressed)
+                                               : gt9895_read(x, y, pressed);
 }
 #elif defined(LS_BOARD_PANEL_RUNTIME)
 /* GT911 on a Waveshare DSI panel (ESP32-P4-NANO connector). Registers are

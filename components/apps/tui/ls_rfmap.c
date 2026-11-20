@@ -63,9 +63,13 @@ static bool stipple(int x, int y, int step)
     }
 }
 
+static ls_rfmap_layer_t s_extra;
+void ls_rfmap_set_extra(ls_rfmap_layer_t fn) { s_extra = fn; }
+
 void ls_rfmap_heat(const ls_rfmap_frame_t *f)
 {
     if (!f || !f->dot) return;
+    if (s_extra) s_extra(f);
     int ch; ls_rfs_metric_t m;
     ls_rfs_shown(&ch, &m);
     EXT_RAM_BSS_ATTR static double tlat[LS_RFS_TRACK], tlon[LS_RFS_TRACK];

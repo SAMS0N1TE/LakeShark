@@ -67,6 +67,8 @@ bool ls_input_post(const ls_input_ev_t *ev);
  * applied_seq is sampled only AFTER the UI finishes drawing/presenting a frame. */
 unsigned ls_input_drain(void);
 uint32_t ls_input_applied_seq(void);
+/* Hover moves that were replaced by a later one before the UI drained them. */
+uint32_t ls_input_coalesced(void);
 /* A new remote viewer discards the previous session's pending input and queues
  * a release/reset barrier. Sequence counters may restart. The returned epoch
  * must match applied_epoch at frame capture before echoing a sequence. */

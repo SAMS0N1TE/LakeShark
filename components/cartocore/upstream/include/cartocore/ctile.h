@@ -13,6 +13,7 @@ typedef enum { CT_WATER=1, CT_RIVER, CT_STREAM, CT_CANAL, CT_WOOD, CT_PARK, CT_F
 enum { CT_CONTOUR=22, CT_INDEX_CONTOUR=23 };
 /* Exact pread: return nonzero only when all len bytes were read. */
 typedef int (*cc_ctile_read)(void *ctx,uint64_t offset,void *buf,size_t len);
+#define CC_CTILE_MEMO 64u
 typedef struct {
     uint64_t generation;
     const void *generation_owner;
@@ -22,6 +23,12 @@ typedef struct {
     uint64_t file_size; uint32_t page_first,page_count,page_entries,max_blob;
     uint32_t version; int resident;
     size_t reads,bytes_read,directory_reads,blob_reads;
+    /* Where the tiles last asked for are (or that they are absent): a pan or
+       a redraw asks for the same few again, and each answer was a binary
+       search across the directory on the card. Valid while the source is
+       open: its files do not change under it. */
+    struct { uint64_t off; uint32_t x,y,len; uint8_t z,state; } memo[CC_CTILE_MEMO];
+    size_t memo_hits;
 } cc_ctile_source;
 typedef struct { cc_str bytes; uint32_t count; uint8_t zmin,zmax; cc_ctile_source *source; struct cc_cellset *cellset,*directory_owner; } cc_ctile;
 /* Header and directory validated at open; blobs validated on first decode.

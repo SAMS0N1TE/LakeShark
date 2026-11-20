@@ -59,17 +59,16 @@ LS_CASE(sonde_layer_switch_is_independent)
 }
 
 uint32_t settings_get_map_layers(uint32_t fallback) { (void)fallback;return saved_layers; }
-LS_CASE(cartocore_fills_roundtrip_settings_without_changing_layers_or_legacy_fills)
+LS_CASE(style_look_and_source_roundtrip_settings_without_changing_layers)
 {
-    for(int mode=0;mode<MAP_VIEW__COUNT;mode++) {
-        s_view=(map_view_t)mode;s_palette=2;
+    /* Since 11-18 the saved style is the colours, the look and the one Source setting. */
+    for(int src=0;src<SRC__COUNT;src++) for(int look=0;look<LOOK__COUNT;look++) {
+        s_source=(map_source_t)src;s_look=(map_look_t)look;s_palette=2;
         layers_set(LAYERS_DEFAULT);
         LS_EQ_UINT(LAYERS_DEFAULT,saved_layers&LAYER_BITS);
-        s_view=MAP_VIEW_FIELD;s_palette=0;palette_load();
-        LS_EQ_INT(mode,s_view);LS_EQ_INT(2,s_palette);
+        s_source=SRC_AUTO;s_look=LOOK_LINES;s_palette=0;palette_load();
+        LS_EQ_INT(src,s_source);LS_EQ_INT(look,s_look);LS_EQ_INT(2,s_palette);
     }
-    LS_CHECK(!strcmp(VIEW_NAME[MAP_VIEW_CC_SMOOTH],"CartoCore smooth"));
-    LS_CHECK(!strcmp(VIEW_NAME[MAP_VIEW_CC_BRAILLE],"CartoCore braille"));
 }
 int ls_map_tile_px(void) { return 256; }
 static int test_zoom=14;
@@ -110,7 +109,7 @@ LS_CASE(all_map_themes_switch_live_and_reserve_the_data_accent)
 {
     for(int i=0;i<=ls_tui_theme_count();i++) {
         test_theme=i==ls_tui_theme_count()?&ls_theme_daylight:ls_tui_theme_at(i);
-        s_palette=0;s_basemap_busy=false;
+        s_palette=0;s_basemap_busy=false;s_look=LOOK_FILLED; /* the line look (default since 11-18) draws no fills to tell apart */
         const map_palette_t *p=palette();
         LS_CHECK(!strcmp(p->name,test_theme->name));
         unsigned normal=colour_distance(carto_rgb565(p->ground),carto_rgb565(p->water));

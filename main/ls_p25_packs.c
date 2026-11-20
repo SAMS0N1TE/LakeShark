@@ -1,12 +1,12 @@
 /* See ls_p25_packs.h. No I/O in registry readers or action handlers. */
 #include "ls_p25_packs.h"
 #include "ls_ota.h"
+#include "ls_fetch.h"
 #include "p25_sites.h"
 #include "p25_controls.h"
 #include "tui/ls_action.h"
 #include "tui/ls_value.h"
 #include "ls_nvs_safe.h"
-#include "esp_http_client.h"
 #include "esp_heap_caps.h"
 #include "esp_attr.h"
 #include "esp_timer.h"
@@ -26,6 +26,7 @@
  * the OTA task needs 12 KB for the same path, this one adds the download
  * buffers on top. PSRAM, so the margin costs no internal RAM. */
 #define P25_PACKS_STACK 16384
+#define P25_DATA_BASE "https://data.terminalbay.com/p25/"
 static EXT_RAM_BSS_ATTR p25_pack_catalog_t catalog;
 static EXT_RAM_BSS_ATTR ls_p25_pack_info_t info[P25_PACK_STATE_MAX];
 static EXT_RAM_BSS_ATTR char catalog_text[LS_OTA_DATA_MAX_TEXT + 1], token[192];
@@ -103,24 +104,15 @@ static void installed(void)
 static void refresh(void)
 {
     state("refreshing");
-    int status = 0; int64_t length;
-    const int64_t deadline = esp_timer_get_time() + 30000000;
-    esp_http_client_handle_t c = ls_ota_open_data(P25_PACK_CATALOG_URL, NULL, deadline, &length, &status);
-    if (!c || status != 200) {
-        if (c) esp_http_client_cleanup(c);
+    int status = 0; uint32_t len = 0;
+    /* The data host first; the update host still carries the same files. */
+    const ls_fetch_req_t q = { .url = P25_DATA_BASE "catalog.txt", .fallback = P25_PACK_CATALOG_URL, .buf = catalog_text, .cap = sizeof(catalog_text), .timeout_s = 30 };
+    if (ls_fetch_run(&q, &len, &status) != LS_FETCH_OK) {
         state(status == 404 ? "no site packs published yet" : "catalog unavailable");
         return;
     }
-    size_t len = 0; int n = 0;
-    while (len < sizeof(catalog_text) && esp_timer_get_time() < deadline) {
-        n = esp_http_client_read(c, catalog_text + len, 1);
-        if (n <= 0) break;
-        len += (size_t)n;
-    }
-    esp_http_client_close(c); esp_http_client_cleanup(c);
     p25_pack_catalog_t *candidate = heap_caps_malloc(sizeof(*candidate), MALLOC_CAP_SPIRAM);
-    bool ok = candidate && n == 0 && len <= LS_OTA_DATA_MAX_TEXT && esp_timer_get_time() < deadline &&
-              p25_pack_catalog_parse(candidate, catalog_text, len, ls_ota_signed_by_us);
+    bool ok = candidate && p25_pack_catalog_parse(candidate, catalog_text, len, ls_ota_signed_by_us);
     if (ok) { catalog = *candidate; installed(); state("ready"); }
     else state("catalog refused: format or signature");
     heap_caps_free(candidate);
@@ -143,37 +135,26 @@ static bool install_pack(const char *tmp, const char *path)
     if (have) remove(backup);
     return true;
 }
+static void progress(uint32_t g, uint32_t t, void *ctx)
+{ (void)t; (void)ctx; portENTER_CRITICAL(&mux); got = g; portEXIT_CRITICAL(&mux); }
 static void download(const char *st)
 {
     const p25_pack_entry_t *e = NULL;
     for (unsigned i = 0; i < catalog.count; i++) if (!strcmp(st, catalog.entries[i].state)) e = &catalog.entries[i];
     if (!e) { state("refresh catalog first; state not listed"); return; }
     if (!p25_pack_allowed(e, token)) { state("plus pack requires an entitlement token"); return; }
-    char path[80], tmp[96], url[256];
+    char path[80], tmp[96], url[128], old[128];
     path_for(st, path, sizeof(path)); snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-    snprintf(url, sizeof(url), "https://" LS_OTA_HOST_PRIMARY "/p25/%s", e->file);
+    snprintf(url, sizeof(url), P25_DATA_BASE "%s", e->file);
+    snprintf(old, sizeof(old), "https://" LS_OTA_HOST_PRIMARY "/p25/%s", e->file);
     mkdir("/sdcard/p25", 0775); mkdir("/sdcard/p25/sites", 0775);
     state("downloading");
     portENTER_CRITICAL(&mux); got = 0; total = e->bytes; portEXIT_CRITICAL(&mux);
-    const int64_t deadline = esp_timer_get_time() + 120000000;
-    int status; int64_t length;
-    esp_http_client_handle_t c = ls_ota_open_data(url, token, deadline, &length, &status);
-    FILE *f = c && status == 200 ? fopen(tmp, "wb") : NULL;
-    bool ok = f && (length <= 0 || length == e->bytes);
-    uint32_t bytes = 0; char buf[1024];
-    while (ok && esp_timer_get_time() < deadline) {
-        int n = esp_http_client_read(c, buf, sizeof(buf));
-        if (n < 0) { ok = false; break; }
-        if (!n) break;
-        if ((size_t)n > e->bytes - bytes || fwrite(buf, 1, (size_t)n, f) != (size_t)n) { ok = false; break; }
-        bytes += (unsigned)n;
-        portENTER_CRITICAL(&mux); got = bytes; portEXIT_CRITICAL(&mux);
-    }
-    if (f && fclose(f)) ok = false;
-    if (c) { esp_http_client_close(c); esp_http_client_cleanup(c); }
-    uint8_t digest[32]; size_t hashed;
-    ok = ok && esp_timer_get_time() < deadline && bytes == e->bytes &&
-         hash_file(tmp, digest, &hashed) && p25_pack_digest_ok(e, hashed, digest);
+    /* ls_fetch leaves tmp only once its size and hash match the signed catalog. */
+    const ls_fetch_req_t q = { .url = url, .fallback = old, .dest = tmp, .bytes = e->bytes, .sha256 = e->sha256, .token = token,
+                               .max_bytes = P25_PACK_MAX_BYTES, .progress = progress };
+    uint32_t bytes = 0; FILE *f;
+    bool ok = ls_fetch_run(&q, &bytes, NULL) == LS_FETCH_OK;
     /* Hash is authoritative; profile syntax is checked before installation too. */
     p25_pack_db_t *db = NULL; p25_profile_parse_scratch_t *scratch = NULL; char *text = NULL;
     if (ok) {
@@ -233,6 +214,7 @@ static bool request(char op, const char *arg)
     if (xQueueSend(queue, &r, 0) == pdTRUE) return true;
     portENTER_CRITICAL(&mux); busy = false; portEXIT_CRITICAL(&mux); return false;
 }
+bool ls_p25_packs_request(char op, const char *arg) { return request(op, arg); }
 unsigned ls_p25_pack_entry(unsigned index, ls_p25_pack_info_t *out)
 {
     portENTER_CRITICAL(&mux); unsigned n = count; if (out && index < n) *out = info[index]; portEXIT_CRITICAL(&mux); return n;

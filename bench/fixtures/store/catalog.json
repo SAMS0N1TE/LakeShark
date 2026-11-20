@@ -1,0 +1,348 @@
+{
+ "schema": 1,
+ "generated": "2026-11-19T00:00:00Z",
+ "apps": [
+  {
+   "id": "meshtastic",
+   "name": "MESHTASTIC",
+   "sub": "be a Meshtastic node",
+   "version": "1.1",
+   "author": "LakeShark",
+   "category": "radio",
+   "color": 2,
+   "icon_art": [
+    "   /\\     ",
+    "  /  \\ ((o",
+    " / /\\ \\/  ",
+    "/_/  \\_/\\_",
+    "  ~ ~ ~ ~ ",
+    "          "
+   ],
+   "description": "Talk to Meshtastic nodes from the board LoRa radio: nodes, channel chat and every packet heard; sends text and node info when TRANSMIT is on.",
+   "size": 313829,
+   "sha256": "dcab8cdaa57ffffed10bee8018d863ccd98ecebeb4507d1e677885388768fc63",
+   "signed": true,
+   "file": "apps/files/meshtastic-1.1.lap",
+   "min_firmware": "2.23.0",
+   "third_party": [
+    {
+     "name": "English Wiktionary, Spanish entries (as extracted by wiktextract / kaikki.org, dump of 2026-10-30): short English glosses for the translator's lexicon (mt_xlate_es_en.h)",
+     "license": "CC-BY-SA-4.0",
+     "url": "https://kaikki.org/dictionary/Spanish/",
+     "use": "data"
+    },
+    {
+     "name": "FrequencyWords by Hermit Dave, es and en 2018 lists (from OpenSubtitles): which lemmas the lexicon keeps, and the English words language detection knows",
+     "license": "CC-BY-SA-4.0",
+     "url": "https://github.com/hermitdave/FrequencyWords",
+     "use": "data"
+    }
+   ],
+   "caps": 7
+  },
+  {
+   "id": "meshlang",
+   "name": "MESH LANGUAGES",
+   "sub": "translator languages",
+   "version": "1.0",
+   "author": "LakeShark",
+   "category": "tools",
+   "group": "radio",
+   "color": 5,
+   "icon_art": [
+    " .------. ",
+    "( Ola Hoi)",
+    "( Privet )",
+    " '-.----' ",
+    "   \\ ((o ",
+    "  pt..uk  "
+   ],
+   "description": "The translator languages for MESHTASTIC, over Wi-Fi: Portuguese, French, German, Italian, Dutch, Polish, Russian and Ukrainian (155-198 KB each). Downloads, checks and removes them.",
+   "size": 14872,
+   "sha256": "d4d8031bd73ec1845533b143a8cac2cb9524f23e46e157aee284b2977b1ef92d",
+   "signed": true,
+   "file": "apps/files/meshlang-1.0.lap",
+   "min_firmware": "2.23.0",
+   "third_party": [
+    {
+     "name": "English Wiktionary entries (wiktextract / kaikki.org): glosses and inflection tables in the language files",
+     "license": "CC-BY-SA-4.0",
+     "url": "https://kaikki.org/dictionary/",
+     "use": "data"
+    },
+    {
+     "name": "FrequencyWords by Hermit Dave: which lemmas the language files keep",
+     "license": "CC-BY-SA-4.0",
+     "url": "https://github.com/hermitdave/FrequencyWords",
+     "use": "data"
+    }
+   ],
+   "caps": 1
+  },
+  {
+   "id": "tap",
+   "name": "TAP",
+   "sub": "packet sniffer",
+   "version": "1.2.0",
+   "author": "LakeShark",
+   "category": "radio",
+   "color": 6,
+   "icon_art": [
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "description": "Packet analyser: Wi-Fi 802.11, Bluetooth advertising, LoRa mesh and board decodes in one list, with a protocol tree, bytes, Wireshark display filters and colouring rules, statistics, long captures to the card and pcapng files Wireshark opens. Receive only.",
+   "size": 102389,
+   "sha256": "adc36a9ece127070b3ce34e14b2d9896e846a5609039abbf5ead280e6050d415",
+   "signed": true,
+   "file": "apps/files/tap-1.2.0.lap",
+   "min_firmware": "2.23.0",
+   "caps": 3
+  },
+  {
+   "id": "wifi_survey",
+   "name": "WIFI SURVEY",
+   "sub": "APs, channels, record",
+   "version": "1.3.0",
+   "author": "LakeShark",
+   "category": "radio",
+   "color": 2,
+   "icon_art": [
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "description": "Wi-Fi site survey: access points with signal, channel and security, 2.4 GHz channel occupancy, per-AP signal history and, with capture, frames and airtime per channel. RECORD logs every access point and Bluetooth device heard, with GPS position, as WiGLE CSV (the survey recorder that was in LINK). Receive only.",
+   "size": 60593,
+   "sha256": "3f251cae22fba01392d56cb37c2d281414a38905df9760b992b165d65bfe3568",
+   "signed": true,
+   "file": "apps/files/wifi_survey-1.3.0.lap",
+   "min_firmware": "2.23.0",
+   "caps": 1
+  },
+  {
+   "id": "detector",
+   "name": "DETECTOR",
+   "sub": "rule matches",
+   "version": "3.0",
+   "author": "LakeShark",
+   "category": "radio",
+   "color": 6,
+   "icon_art": [
+    "  .----.  ",
+    " / .--. \\ ",
+    "| ( () ) |",
+    " \\ '--' / ",
+    "  '----'  ",
+    " DETECTOR "
+   ],
+   "description": "Rules over what the board's watchers see: SWEEP's Bluetooth and Wi-Fi categories, Remote ID, drone links, aircraft, the pager decoder, P25, REC and the mesh. Raises a banner, chirp, vibration, speech, an SD log or a mesh share, keeps watching in the background, and reads the same /sdcard/detector/rules.json the built-in DETECTOR did. Needs firmware with SDK 2.2.",
+   "size": 39326,
+   "sha256": "82048d9bf0f1b9ff1f4b10b0af7d53b58012bc50cd546940158ffcaf72ab0d5d",
+   "signed": true,
+   "file": "apps/files/detector-3.0.lap",
+   "min_firmware": "2.19.0",
+   "caps": 2
+  },
+  {
+   "id": "dice",
+   "name": "DICE",
+   "sub": "tilt & roll",
+   "version": "2.1",
+   "author": "LakeShark",
+   "category": "games",
+   "color": 1,
+   "icon_art": [
+    " .----.   ",
+    " |o  o|.-.",
+    " | o  ||o|",
+    " |o  o|'-'",
+    " '----'   ",
+    " SHAKE ME "
+   ],
+   "description": "Real dice in a felt tray, drawn in 3D like COMPASS. Tilt the board and they slide and tumble; shake it or fling a finger to throw them. The face that lands on top is the one that counts.",
+   "size": 16337,
+   "sha256": "f54d124b8381f20a12ee61d26a54a8b852b18b7dffba1139bcbee03810a4764b",
+   "signed": true,
+   "file": "apps/files/dice-2.1.lap",
+   "min_firmware": "2.18.0",
+   "caps": 0
+  },
+  {
+   "id": "pinball",
+   "name": "PINBALL",
+   "sub": "flip & tilt",
+   "version": "1.1",
+   "author": "LakeShark",
+   "category": "games",
+   "color": 5,
+   "icon_art": [
+    "|  .--.  |",
+    "| ( () ) |",
+    "|  '--'  |",
+    "|  o     |",
+    "|\\_    _/|",
+    "  \\    /  "
+   ],
+   "description": "One full table: bumpers, slingshots, drop targets and the MESH bank. Hold a side to flip, shake to nudge; the best score stays on the card.",
+   "size": 22040,
+   "sha256": "3af6b8d43547c92b43b98dd28387e851bdb75210b27cda15e623fc5c77aa83fe",
+   "signed": true,
+   "file": "apps/files/pinball-1.1.lap",
+   "min_firmware": "2.18.0"
+  },
+  {
+   "id": "carrier",
+   "name": "SUPREME T.",
+   "sub": "Supreme Treacherous",
+   "version": "0.8",
+   "author": "LakeShark",
+   "category": "games",
+   "color": 3,
+   "icon_art": [
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "description": "A space trading and combat game in early access. Fly from the cockpit or a chase camera, trade between stations, take missions, fight pirates and jump between systems, while the aircraft your board hears on ADS-B fly by as ships. Drag with the mouse or a finger to steer. Still in progress, so expect changes.",
+   "size": 292193,
+   "sha256": "81de50df90d563f82b77f23ed551cb47bef5c643584244d3ba389c86ccb80c87",
+   "signed": true,
+   "file": "apps/files/carrier-0.8.lap",
+   "min_firmware": "2.19.0",
+   "status": "wip"
+  },
+  {
+   "id": "net_diag",
+   "name": "NET DIAG",
+   "sub": "ping trace dns",
+   "version": "1.1.0",
+   "author": "LakeShark",
+   "category": "tools",
+   "color": 2,
+   "icon_art": [
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "description": "Ping with an RTT graph, traceroute, DNS lookup, Wake-on-LAN and the interface addresses and ARP table. API 2.8.",
+   "size": 22214,
+   "sha256": "8143a914b61b1cf5f0c048426bc5ce7604e62221d6b01b9d6b9e11fa534624e2",
+   "signed": true,
+   "file": "apps/files/net_diag-1.1.0.lap",
+   "min_firmware": "2.23.0",
+   "caps": 1
+  },
+  {
+   "id": "lan_scan",
+   "name": "LAN SCAN",
+   "sub": "hosts + ports",
+   "version": "1.1.0",
+   "author": "LakeShark",
+   "category": "tools",
+   "color": 6,
+   "icon_art": [
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "description": "Finds the hosts on the joined network: ARP and ping sweep, MAC vendor, mDNS and SSDP names, a TCP port scan of one host, CSV export. API 2.8.",
+   "size": 22497,
+   "sha256": "0c1cead489f6378d4e4719f7abee8c28e2d2edc17ee4eabe4833c56d33dd2e2a",
+   "signed": true,
+   "file": "apps/files/lan_scan-1.1.0.lap",
+   "min_firmware": "2.23.0",
+   "caps": 1
+  },
+  {
+   "id": "level",
+   "name": "CARRIER LEVEL",
+   "sub": "signal level",
+   "version": "1.0",
+   "author": "LakeShark",
+   "category": "radio",
+   "color": 2,
+   "icon_art": [
+    "      .   ",
+    "     ##   ",
+    "   ####   ",
+    " ######   ",
+    "__________",
+    " CARRIER  "
+   ],
+   "description": "CARRIER LEVEL from EXPERIMENTS: the level of one frequency, a 12.5 kHz channel read every 2 ms on any radio the board has (LR2021, RTL-SDR, HackRF): now, over the last second and since START, with a bar.",
+   "size": 11709,
+   "sha256": "5f6a0f923d78e0a21da487aaddf20106a798fb9e5179aef6e971c1611d63b720",
+   "signed": true,
+   "file": "apps/files/level-1.0.lap",
+   "min_firmware": "2.19.0",
+   "caps": 0,
+   "group": "field"
+  },
+  {
+   "id": "iridium",
+   "name": "IRIDIUM BURSTS",
+   "sub": "satellite bursts",
+   "version": "1.0",
+   "author": "LakeShark",
+   "category": "radio",
+   "color": 6,
+   "icon_art": [
+    " [=]o[=]  ",
+    "    |     ",
+    "   / \\    ",
+    "  /   \\   ",
+    "__________",
+    " IRIDIUM  "
+   ],
+   "description": "IRIDIUM BURSTS from EXPERIMENTS: hops Iridium's simplex channels at 1626 MHz (or the whole 1616-1626.5 MHz band) on the LR2021 or an SDR, counts the satellites' TDMA bursts per channel and traces which channel was strongest each cycle as the Doppler shift moves it. Energy and timing only. Needs open sky.",
+   "size": 18160,
+   "sha256": "3d9b90eec655fd2b58f4b0cd5a333e08ffe1f3a2757e2dfeeec63a6dd9f6329d",
+   "signed": true,
+   "file": "apps/files/iridium-1.0.lap",
+   "min_firmware": "2.19.0",
+   "caps": 2
+  },
+  {
+   "id": "wardrive",
+   "name": "WARDRIVE",
+   "sub": "Wi-Fi BLE cell + GPS",
+   "version": "0.9",
+   "author": "LakeShark",
+   "category": "radio",
+   "group": "field",
+   "color": 3,
+   "caps": 3,
+   "icon_art": [
+    "   .--.   ",
+    "  ( () )  ",
+    "   `--`   ",
+    "  /|  |\\  ",
+    " ~~~~~~~~ ",
+    "  .  .  . "
+   ],
+   "description": "Wi-Fi, BLE, cell and drones logged along your GPS track, with a 3D view of the drive and WiGLE CSV export.",
+   "size": 211000,
+   "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+   "signed": true,
+   "file": "apps/files/wardrive-0.9.lap",
+   "min_firmware": "2.24.0"
+  }
+ ]
+}

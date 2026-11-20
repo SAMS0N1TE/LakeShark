@@ -7,6 +7,7 @@
 #include "ls_desk.h"
 #include "../ls_box.h"
 #include "../ls_app.h"
+#include "../ls_theme.h"
 
 /* ------------------------------------------------------------- roles -- */
 
@@ -53,6 +54,10 @@ typedef struct {
 int  dk_scheme_count(void);
 const char *dk_scheme_name(int i);
 const char *dk_scheme_palette(int i);   /* the TUI theme's name */
+/* The palette a scheme is drawn in: a TUI theme, or the desk's own for the
+   light schemes (dk_theme_own: not in the TUI's cycle, never saved). */
+const ls_tui_theme_t *dk_scheme_theme(int i);
+bool dk_theme_own(const ls_tui_theme_t *t);
 const char *dk_item_name(int it);
 const dk_prefs_t *dk_prefs(void);
 void dk_prefs_set(const dk_prefs_t *p);   /* takes effect at once; ls_desk_apply_prefs saves */
@@ -60,9 +65,20 @@ void dk_item_colors(const dk_prefs_t *p, int item, uint8_t *fg, uint8_t *bg);
 uint8_t dk_attr_with(const dk_prefs_t *p, int role);   /* for previews */
 bool dk_light_face(void);
 bool dk_light_desk(void);
-/* A hue (TUI colour) as foreground on the face. */
-uint8_t dk_hue(uint8_t hue);
 uint8_t dk_face_bg(void);
+
+/* ---------------------------------------------------------------- inks -- */
+
+/* dk_attr answers a role as it reads in the palette in use: every text role
+   has 4.5 to 1 on its own ground, whatever the scheme, the owner's Window
+   colours or Daylight did to it (ls_desk_widgets.c). The same check for
+   anything else that is drawn: */
+uint8_t dk_hue(uint8_t hue);            /* a TUI colour as text on the face */
+uint8_t dk_art(uint8_t hue);            /* the same as line art, a lamp, a meter's fill (3 to 1) */
+uint8_t dk_fit(uint8_t fg, uint8_t bg, int min_x10);
+int     dk_contrast(uint8_t fg, uint8_t bg);   /* WCAG ratio x 10 in the palette in use; 0 with none */
+uint8_t dk_accel_on(uint8_t attr);      /* the accelerator letter on that ground */
+void    dk_roles_sync(void);            /* once a frame: the palette may have changed */
 
 /* ----------------------------------------------------------- widgets -- */
 
@@ -113,14 +129,64 @@ bool dk_props_key(ls_tk_t k, char ch);
 void dk_wall_preview(tui_surface *sf, tui_rect r, const dk_prefs_t *p);
 /* `[_]` style key on KEY; the glyph is a codepoint or ASCII. */
 void dk_key(tui_surface *sf, tui_rect clip, int x, int y, int cp, uint8_t glyph_attr);
-/* A three-row push button; the double frame when it is the default. */
-void dk_button(tui_surface *sf, tui_rect clip, tui_rect r, const char *label, bool is_default, bool pressed);
-void dk_check(tui_surface *sf, tui_rect clip, int x, int y, bool on, const char *label);
 void dk_radio(tui_surface *sf, tui_rect clip, int x, int y, bool on, const char *label);
 /* `[=========-------]` with the value beside it. */
 void dk_meter(tui_surface *sf, tui_rect clip, int x, int y, int w, int permille, uint8_t hue);
 /* Braille sparkline of n samples scaled to max. */
 void dk_spark(tui_surface *sf, tui_rect clip, int x, int y, const int *v, int n, int max, uint8_t attr);
+
+/* --------------------------------------- desktop widgets (2026-11-18) -- */
+
+/* Stateless: the caller keeps selection, scroll position and focus, draws
+   with these and asks the _hit functions what a click landed on. Notes and
+   examples: desk-ui-20261118/shell/WIDGETS.md. */
+
+/* The pointer, for hover states: where it is, and whether it rests on r
+   (false while something is being dragged or a menu is up, and false in a
+   window's client where another window covers that cell). */
+void dk_pointer(int *col, int *row);
+bool dk_hover(tui_rect r);
+/* r belongs to window `win`'s client: also false when another window covers the cell. */
+struct dk_win;
+bool dk_hover_in(const struct dk_win *win, tui_rect r);
+
+/* Labels with a marked accelerator: "&Open", "Save &as" ("&&" and "& " are an
+   ampersand). mark: draw the letter in the accelerator colour for that ground. */
+int  dk_label(tui_surface *sf, tui_rect clip, int x, int y, const char *s, uint8_t attr, bool mark);
+int  dk_label_len(const char *s);
+char dk_label_key(const char *s);               /* upper case, or 0 */
+
+/* The push button: one row (r.h is taken as 1). It finds the pointer over it
+   and a held press itself; ON is a key that stays down (a view choice). */
+enum { DK_BS_DEFAULT = 1, DK_BS_FOCUS = 2, DK_BS_DISABLED = 4, DK_BS_PRESSED = 8, DK_BS_HOVER = 16, DK_BS_ON = 32 };
+void dk_pushbtn(tui_surface *sf, tui_rect clip, tui_rect r, const char *label, unsigned state);
+/* A sunken text field; caret < 0: none. */
+void dk_field(tui_surface *sf, tui_rect clip, int x, int y, int w, const char *text, int caret, bool focus);
+/* Check boxes, drop-down lists, spin fields, sliders, tabs and group boxes
+   are the property sheet's (ls_desk_sheet.h). */
+
+/* A vertical scrollbar, one column wide, h >= 3 rows. */
+enum { DK_SB_NONE, DK_SB_UP, DK_SB_DOWN, DK_SB_PGUP, DK_SB_PGDN, DK_SB_THUMB };
+void dk_vscroll(tui_surface *sf, tui_rect clip, int x, int y, int h, int total, int page, int top);
+int  dk_vscroll_hit(int y, int h, int total, int page, int top, int row);
+int  dk_vscroll_drag(int y, int h, int total, int page, int row);    /* the top for a thumb held at row */
+bool dk_vscroll_click(int x, int y, int h, int total, int page, int *top, int col, int row);
+
+/* A list view with a header row and a scrollbar. Column width 0: the rest. */
+typedef struct { const char *title; int16_t w; bool right; } dk_col_t;
+typedef void (*dk_cell_fn)(int row, int col, char *buf, size_t n, uint8_t *hue, int *glyph, void *ctx);
+enum { DK_LV_NONE = -1, DK_LV_HEADER = -2, DK_LV_BAR = -3 };
+void dk_listview(tui_surface *sf, tui_rect clip, tui_rect r, const dk_col_t *cols, int ncols, int n, int top,
+                 int sel, bool focus, dk_cell_fn cell, void *ctx);
+int  dk_listview_rows(tui_rect r);
+int  dk_listview_hit(tui_rect r, int n, int top, int col, int row);  /* a row, or DK_LV_* */
+int  dk_listview_col(tui_rect r, const dk_col_t *cols, int ncols, int n, int col);
+tui_rect dk_listview_bar(tui_rect r);                                 /* for dk_vscroll_click / _drag */
+
+/* A menu bar row; `keys`: this window has the keys (accelerators lit, hover tracked). */
+void dk_menubar(tui_surface *sf, tui_rect clip, int x, int y, int w, const char *const *names, int n, int open, bool keys);
+int  dk_menubar_hit(int x, int y, const char *const *names, int n, int col, int row);
+int  dk_menubar_x(int x, const char *const *names, int i);
 
 /* ----------------------------------------------------------- windows -- */
 
@@ -132,7 +198,7 @@ enum { DK_SHELL_ABOUT = 1, DK_SHELL_DISPLAY = 2, DK_SHELL_SHUTDOWN = 3, DK_SHELL
        DK_SHELL_PROMPT, DK_SHELL_MSG, DK_SHELL_PICK, DK_SHELL_FOLDER, DK_SHELL_BIN, DK_SHELL_TASKS,
        DK_SHELL_CPL, DK_SHELL_ITEM };
 
-typedef struct {
+typedef struct dk_win {
     bool used;
     uint8_t kind;           /* DK_APP or DK_SHELL */
     uint8_t shell;          /* DK_SHELL_* */
@@ -145,6 +211,7 @@ typedef struct {
     int sw, sh;
     char title[40];
     char label[28];         /* the taskbar line, as last seen live */
+    bool own_bar;           /* DK_APP: its app drew a menu bar of its own in its last frame */
 } dk_win_t;
 
 /* Geometry the frame decides: outer and client in grid cells, as drawn. */
@@ -165,7 +232,12 @@ void dk_compat_draw_snapshot(tui_surface *sf, dk_win_t *w, tui_rect client, tui_
 /* The live surface into w's snapshot (when w is the one drawn live). */
 void dk_compat_snapshot(dk_win_t *w);
 void dk_compat_forget(dk_win_t *w);       /* free its snapshot */
+/* The desk's menus in an app's own bar (ls_dui_shellbar): which is down, the one under a client cell, where one is. */
+extern int dk_compat_shell_open;
+int dk_compat_shell_hit(const dk_win_t *w, int col, int row, int *x);
+int dk_compat_shell_at(const dk_win_t *w, int i, int *x, int *y);
 void dk_compat_release(void);             /* free the live surface */
+void dk_compat_full_inks(bool on);        /* the scheme's roles around a full-screen app's draw */
 int  dk_compat_blocks(void);
 /* The window whose frame is in the live surface, or -1. */
 int  dk_compat_live_id(void);
@@ -185,7 +257,13 @@ enum {
     A_ITEM_OPEN, A_ITEM_RENAME, A_ITEM_DELETE, A_ITEM_PROPS, A_NEW_APP, A_NEW_FILE, A_PIN_APP,
     A_ARRANGE_HOW, A_GADGET, A_CPL, A_RUN, A_TASKS, A_BIN, A_FOLDER, A_CASCADE, A_TILE, A_MIN_ALL,
     A_WIN_MOVE, A_WIN_SIZE, A_KICK,
+    A_DLG,                  /* a command for the shell window in front: arg is a DKC_* */
 };
+/* What the folder, bin and task windows' menus ask of them (dk_dialogs_cmd). */
+enum { DKC_FOLD_OPEN = 1, DKC_FOLD_UP, DKC_FOLD_SHORTCUT, DKC_FOLD_REFRESH, DKC_BIN_RESTORE, DKC_BIN_DELETE,
+       DKC_BIN_EMPTY, DKC_TASK_SWITCH, DKC_TASK_END };
+void dk_dialogs_cmd(int cmd);
+bool dk_dialogs_can(int cmd);                 /* false: its menu row is greyed */
 enum {
     M_START = 1, M_PROGRAMS, M_GROUP, M_DOCS, M_SETTINGS, M_THEME, M_FIND, M_SHUTDOWN,
     M_DESKTOP, M_WINDOW, M_APPCTX,
@@ -193,6 +271,8 @@ enum {
     M_VOLUME, M_SOUND, M_CLOCK, M_RX, M_MESH, M_BT, M_GPS, M_WALLPAPER,
     M_DEV,                  /* Programs > Development */
     M_ICON, M_NEW, M_ARRANGE, M_GADGETS, M_TASKBAR, M_CPL, M_PIN,
+    /* a window's menu bar; arg is the window */
+    M_BAR_FILE, M_BAR_VIEW, M_BAR_WINDOW, M_BAR_HELP,
 };
 
 #define DK_MENU_ITEMS 20
@@ -205,6 +285,7 @@ typedef struct {
     bool on, off;           /* checked / disabled */
     uint8_t lamp;           /* 0, or a role for a leading lamp dot */
     int act, arg;
+    uint8_t acc;            /* which cell of the label is its accelerator; 0xFF: none */
 } dk_item_t;
 
 typedef struct {
@@ -219,6 +300,9 @@ typedef struct {
 } dk_menu_t;
 
 void dk_menu_open(int id, int arg, int x, int y);
+void dk_menu_open_kbd(int id, int arg, int x, int y);   /* by a key: its first row selected */
+uint8_t dk_mods(void);                         /* the modifiers of the key being handled (LS_IMOD_*) */
+bool dk_held(const struct dk_win *w);          /* the left button is held on w's client */
 /* The deepest menu's (id, arg) when one is open, for the taskbar's look. */
 int  dk_menu_top_id(void);
 void dk_menu_close_all(void);
@@ -332,7 +416,8 @@ tui_rect dk_items_rect(int i);
 int  dk_items_hit(int col, int row);
 const char *dk_items_label(const dk_icon_t *it);
 void dk_items_what(const dk_icon_t *it, char *buf, size_t n);   /* "Shortcut to FM", a path... */
-void dk_items_draw(tui_surface *sf, tui_rect work, int sel, int hover);
+/* sel: the icon with the keys; mask: a bit for every icon selected with it. */
+void dk_items_draw(tui_surface *sf, tui_rect work, int sel, uint32_t mask, int hover);
 void dk_items_draw_one(tui_surface *sf, tui_rect clip, int x, int y, const dk_icon_t *it, uint8_t ground);
 void dk_dialogs_press(dk_win_t *w, tui_rect c, int col, int row);
 void dk_items_open(int i);
@@ -355,6 +440,10 @@ int  dk_shell_gadgets(void);
 void dk_shell_set_gadgets(int mask);
 int  dk_shell_dbl_ms(void);                      /* the double-click time */
 void dk_shell_set_dbl_ms(int ms);
+/* Sixteen bits of how the shell's own windows were left: bit 0 the Control
+   Panel's Details view, bits 1-2 its sort column + 1, bit 3 descending. */
+int  dk_shell_word(void);
+void dk_shell_set_word(int v);
 /* Where an app's window was last, so it opens there again. */
 bool dk_place_get(const char *app_id, int *x, int *y, int *w, int *h, int *state);
 void dk_place_put(const char *app_id, int x, int y, int w, int h, int state);
@@ -373,6 +462,7 @@ int  dk_open_app_win(const ls_app_t *a);         /* ls_desk.c's open_app */
 bool dk_net_viewer(void);                        /* a browser or network terminal is watching */
 bool dk_click_double(void);                      /* the click now being handled was a double-click */
 bool dk_pressed(tui_rect r);                     /* the left button is held on r, and went down on it */
+bool dk_pointer_cell(int *col, int *row);        /* where the pointer is; false while it drags a window or an icon */
 /* The applets, in the panel's order (ls_desk_cplsys.c's table). */
 enum { DK_CPL_DISPLAY, DK_CPL_SOUND, DK_CPL_INPUT, DK_CPL_NETWORK, DK_CPL_RADIOS, DK_CPL_DATE,
        DK_CPL_POWER, DK_CPL_STORAGE, DK_CPL_UPDATES, DK_CPL_SYSTEM };
@@ -392,6 +482,7 @@ void dk_dialogs_draw(tui_surface *sf, dk_win_t *w, tui_rect c, tui_rect clip);
 bool dk_dialogs_tap(dk_win_t *w, tui_rect c, int col, int row);
 bool dk_dialogs_key(dk_win_t *w, ls_tk_t k, char ch);
 void dk_dialogs_closed(dk_win_t *w);             /* its window went away */
+void dk_sheet_closed(void);                      /* the sheet's window is going: its title key is Cancel */
 /* A drag that began on a row of the folder window: its name while it is
    being carried, and the drop on the desktop. */
 bool dk_folder_drag_item(char *label, size_t n);
@@ -410,29 +501,13 @@ void dk_pic(tui_surface *sf, tui_rect clip, int x, int y, int pic, uint8_t attr)
 
 /* ------------------------------------------------------ Control Panel -- */
 
-/* An applet is a table of rows over existing settings (ls_desk_cplsys.c):
-   a row shows a value, and steps, switches or opens something. */
-enum { CR_INFO, CR_SWITCH, CR_LEVEL, CR_CHOICE, CR_GO, CR_ACTION };
-typedef struct {
-    const char *label;
-    uint8_t kind;
-    bool warn;                              /* a switch whose ON is the state to notice */
-    void (*show)(char *buf, size_t n);
-    void (*step)(int dir);                  /* a level or choice: -1, +1; a switch or action: +1 */
-    int  (*pct)(void);                      /* a level's meter, 0..100 */
-    void (*set)(int pct);                   /* a level set outright (a click on its track) */
-    int  (*on)(void);                       /* a switch */
-    const char *go;                         /* CR_GO: an app id, or "@display", "@tasks", "@about", "@folder" */
-    bool (*hidden)(void);
-} dk_cpl_row_t;
+/* An applet of the panel (ls_desk_cplsys.c): its name, its picture, its live
+   line. Its settings are a property sheet (dk_cpl_sheet). */
 typedef struct {
     const char *name, *what;
     uint8_t hue;
     const char *art[3];                     /* three rows of six cells, drawn in the hue */
-    const dk_cpl_row_t *rows;
-    int n;
-    void (*summary)(char *buf, size_t n);   /* the tile's live line */
-    void (*enter)(void);                    /* the page opened: read what is slow to read */
+    void (*summary)(char *buf, size_t n);   /* the live line */
     const char *app;                        /* the app that has the rest, or NULL */
 } dk_cpl_applet_t;
 int dk_cpl_count(void);

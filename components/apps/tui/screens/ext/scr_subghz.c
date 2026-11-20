@@ -195,9 +195,9 @@ static void level_meter(tui_surface *sf, tui_rect r, int x, int y, int w,
     for (int i = 0; i < w; i++) {
         const bool lit = i < fill;
         char g = lit ? LS_TUI_BLOCK_FULL : LS_TUI_TRACE(1);
-        uint8_t at = lit ? TUI_ATTR((hot ? TUI_RED : TUI_GREEN) | TUI_BRIGHT, TUI_BLACK)
+        uint8_t at = lit ? ls_ink_hue(TUI_ATTR((hot ? TUI_RED : TUI_GREEN) | TUI_BRIGHT, TUI_BLACK))
                          : LS_ATTR_DIM;
-        if (i == mark) { g = '|'; at = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK); }
+        if (i == mark) { g = '|'; at = ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)); }
         tui_put_char(sf, r, x + i, y, g, at);
     }
 }
@@ -279,7 +279,7 @@ static void state_banner(tui_surface *sf, tui_rect r,
                  (long long)left);
     } else
         snprintf(line, sizeof(line), " %c %s ", ls_motion_pip(live), word);
-    tui_put_str(sf, r, r.x, r.y, line, TUI_ATTR(TUI_BLACK, hue | TUI_BRIGHT));
+    tui_put_str(sf, r, r.x, r.y, line, ls_ink(LS_INK_CAPTION, TUI_ATTR(TUI_BLACK, hue | TUI_BRIGHT)));
     const int chip_w = (int)strlen(line);
     rec_chip_hit = recording ? tui_rect_make(r.x, r.y, chip_w, 2) : tui_rect_make(0, 0, 0, 0);
 
@@ -304,14 +304,14 @@ static void state_banner(tui_surface *sf, tui_rect r,
         chip_w + 13 + 14 < r.w) {
         static const char *const M = "MESH PAUSED";
         tui_put_str(sf, r, r.x + chip_w + 1, r.y, M,
-                    TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+                    ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
     }
     det_hit = tui_rect_make(0, 0, 0, 0);
     /* WATCH has lent the LoRa chip to an app that outranks it, or to the
        mesh; it takes it back by itself, and says so meanwhile. */
     if (lent) {
         tui_put_str(sf, r, r.x + 1, r.y + 1, "Radio lent to another app - WATCH resumes after",
-                    TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+                    ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
         return;
     }
     /* What the job in hand is doing, in place of the session counters: the
@@ -340,8 +340,8 @@ static void state_banner(tui_surface *sf, tui_rect r,
             for (int i = 0; i < bar; i++)
                 tui_put_char(sf, r, bx + i, r.y + 1,
                              i < full ? LS_TUI_BLOCK_FULL : LS_TUI_TRACE(1),
-                             TUI_ATTR((i < full ? TUI_MAGENTA : TUI_BLUE) | TUI_BRIGHT,
-                                      TUI_BLACK));
+                             ls_ink_hue(TUI_ATTR((i < full ? TUI_MAGENTA : TUI_BLUE) | TUI_BRIGHT,
+                                      TUI_BLACK)));
             snprintf(line, sizeof(line), "%3d%%", pct);
             tui_put_str(sf, r, bx + bar + 1, r.y + 1, line,
                         TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
@@ -356,7 +356,7 @@ static void state_banner(tui_surface *sf, tui_rect r,
         else
             snprintf(line, sizeof(line), "Press the remote");
         tui_put_str(sf, r, r.x + 1, r.y + 1, line,
-                    TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+                    ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)));
         /* The level against the trigger, which is the one thing worth
            watching while it waits. */
         const int mx = r.x + 1 + (int)strlen(line) + 2;
@@ -368,7 +368,7 @@ static void state_banner(tui_surface *sf, tui_rect r,
     if (tuning) {
         snprintf(line, sizeof(line), "Handing %.4f MHz to READ", listen_pending / 1e6);
         tui_put_str(sf, r, r.x + 1, r.y + 1, line,
-                    TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+                    ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
         return;
     }
     const uint32_t up = (s->enabled && listening_since)
@@ -409,7 +409,7 @@ static void state_banner(tui_surface *sf, tui_rect r,
     if ((int)strlen(line) + 4 < r.w)
         tui_put_str(sf, r, r.x + r.w - 1 - (int)strlen(line), r.y + 1, line,
                     (lost || s->save_failed)
-                        ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)
+                        ? ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK))
                         : LS_ATTR_DIM);
 }
 /* What the SOURCE button should read. The CC1101 is in the keyboard, so it
@@ -508,8 +508,7 @@ static void fsk_done(int i)
     if(i==5) {
         const rec_fsk_mod_t d={.bitrate=4800,.deviation_hz=25000,
             .sync_word=0x2DD42DD4u,.preamble_bits=32,.bandwidth_khz=59};
-        rec_watch_fsk_set(&d);
-        snprintf(feedback,sizeof(feedback),"Defaults restored");
+        snprintf(feedback,sizeof(feedback),"%s",rec_watch_fsk_set(&d)?"Defaults restored":"Defaults refused");
         return;
     }
     if(i<0 || i>4)return;
@@ -562,7 +561,9 @@ static void setup_done(int i)
    LR2021's own I/Q. The CC1101 and the SX1262 have neither. */
 static bool can_record(void)
 {
-    return rec_watch_source()==REC_SOURCE_RTL ||
+    /* An SDR source with no dongle fitted can no more record than the
+       CC1101: say so at once, not after five seconds of RECORDING. */
+    return (rec_watch_source()==REC_SOURCE_RTL && !ls_rsel_absent(source_radio())) ||
            (rec_watch_source()==REC_SOURCE_SX1262 && ls_lora_chip()==LS_LORA_CHIP_LR20XX);
 }
 /* LEARN measures a 2-FSK transmitter, which only the LoRa chip demodulates. */
@@ -939,13 +940,13 @@ static void tx_gauge(tui_surface *sf, tui_rect box)
     const int y = box.y + box.h - 1;
     const bool blink = tx_busy() && (esp_timer_get_time() / 160000) % 2 == 0;
     tui_put_str(sf, box, x, y, t, blink ? TUI_ATTR(TUI_BLACK, TUI_YELLOW | TUI_BRIGHT)
-                                  : LS_TX_UNLOCKED ? TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)
+                                  : LS_TX_UNLOCKED ? ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK))
                                   : TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
     for (int j = 0; j < TX_STEPS; j++) {
         const float over = 10.0f + 36.0f * j / (TX_STEPS - 1);
         const bool lit = j <= tx_step;
         const char g = lit ? scan_glyph(12, 2 + 2 * j) : LS_TUI_TRACE(1);
-        const uint8_t at = lit ? TUI_ATTR(scan_colour(over, SCAN_WINDOW_DB) | TUI_BRIGHT, TUI_BLACK)
+        const uint8_t at = lit ? ls_ink_hue(TUI_ATTR(scan_colour(over, SCAN_WINDOW_DB) | TUI_BRIGHT, TUI_BLACK))
                                : LS_ATTR_DIM;
         tui_put_char(sf, box, x + tw + j * 2, y, g, at);
         tui_put_char(sf, box, x + tw + j * 2 + 1, y, g, at);
@@ -1057,7 +1058,7 @@ static void hits_table(tui_surface *sf, tui_rect r)
                  (unsigned long)hit[i].seen, age);
         /* The strongest is what a glance should land on. */
         tui_put_str(sf, r, r.x, r.y + 2 + i-det_first, line,
-                    i == det_sel ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)
+                    i == det_sel ? ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK))
                            : TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
     }
     if(n>rows) {
@@ -1252,6 +1253,7 @@ static void waterfall_colours(float span, float noise_db, float gate_db)
 static void waterfall(tui_surface *sf, tui_rect cells, int n, float span, float noise_db,
                       float gate_db, int mark_bin)
 {
+    ls_ink_keep(cells);              /* a scope stays on black in any scheme */
     if (cells.w < 4 || cells.h < 2 || n < 2) return;
     if (!ls_tui_has_images()) {
         /* A surface without pictures (the text feed): the fall in cells. */
@@ -1323,6 +1325,7 @@ static void waterfall(tui_surface *sf, tui_rect cells, int n, float span, float 
 
 static void spectrum(tui_surface *sf, tui_rect r)
 {
+    ls_ink_keep(r);              /* a scope stays on black in any scheme */
     scan_look_load();
     gate_follow_drag();
     static EXT_RAM_BSS_ATTR rec_scan_bin_t bins[REC_SCAN_BINS];
@@ -2754,7 +2757,10 @@ static void action(char c)
     } else if(c=='g') {
         if(host_files)host_files();
     } else if(c=='x') {
-#if !LS_LR_EDITION
+#if !LS_LR_EDITION_BUILD
+        /* CATCH spots bursts with an RTL-SDR: nothing to start with the USB
+           host left off. */
+        if(LS_LR_EDITION){snprintf(feedback,sizeof(feedback),"CATCH needs the USB port: 'board usb on'");return;}
         /* CATCH is BAND's other way of finding a transmitter, so it starts
            there, and lets go of the sweep and WATCH as SCAN does. */
         if(page!=PG_BAND)go(PG_BAND);
@@ -2909,7 +2915,7 @@ static void waveform(tui_surface *sf,tui_rect a)
     snprintf(text,sizeof(text),"%s #%lu / %s",ls_rsel_name(rec_source_radio((rec_source_t)e->source)),(unsigned long)e->id,
        s.ism[selected][0]?s.ism[selected]:
        e->end_reason==REC_END_SPAN || e->end_reason==REC_END_EDGES?"TRUNCATED":s.decoded[selected].repeats?"OOK24 VERIFIED":e->count>1?"REPEAT MATCH":"RAW CANDIDATE");
-    tui_put_str(sf,a,a.x+2,a.y+1,text,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+    tui_put_str(sf,a,a.x+2,a.y+1,text,ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)));
     int w=a.w-10;if(w<2)return;
     pulse_hit=tui_rect_make(a.x+7,a.y+2,w,4);
     tui_put_str(sf,a,a.x+1,a.y+2,"HIGH",LS_ATTR_DIM);
@@ -2921,7 +2927,7 @@ static void waveform(tui_surface *sf,tui_rect a)
             end+=s.preview[selected][edge]<0?-(int64_t)s.preview[selected][edge]:s.preview[selected][edge];edge++;
         }
         int y=a.y+(s.preview[selected][edge]>0?2:4);
-        uint8_t color=TUI_ATTR((edge==pulse_selected?TUI_YELLOW:TUI_GREEN)|TUI_BRIGHT,TUI_BLACK);
+        uint8_t color=ls_ink_hue(TUI_ATTR((edge==pulse_selected?TUI_YELLOW:TUI_GREEN)|TUI_BRIGHT,TUI_BLACK));
         if(previous>=0 && (previous!=y || edge!=previous_edge)) {
             tui_put_char(sf,a,pulse_hit.x+x,a.y+2,'+',color);
             tui_put_char(sf,a,pulse_hit.x+x,a.y+3,'|',color);
@@ -2932,7 +2938,7 @@ static void waveform(tui_surface *sf,tui_rect a)
     LS_SNPRINTF(t_scr_subghz_0_2f_ms_first, text,sizeof(text),"0 -> %.2f ms | first %d/%u edges",pulse_total/1000.,n,e->edges);
     tui_put_str(sf,a,a.x+2,a.y+6,text,LS_ATTR_DIM);
     LS_SNPRINTF(t_scr_subghz_tap_trace_d_s, text,sizeof(text),"Tap trace: #%d %s %lu us",pulse_selected+1,s.preview[selected][pulse_selected]>0?"HIGH":"LOW",(unsigned long)(s.preview[selected][pulse_selected]<0?-(int64_t)s.preview[selected][pulse_selected]:s.preview[selected][pulse_selected]));
-    tui_put_str(sf,a,a.x+2,a.y+7,text,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+    tui_put_str(sf,a,a.x+2,a.y+7,text,ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)));
     if(a.h>10) {
         LS_SNPRINTF(t_scr_subghz_range_lu_lu_us, text,sizeof(text),"Range %lu..%lu us / %s",(unsigned long)low,(unsigned long)high,e->end_reason==REC_END_GAP?"GAP end":"LIMIT end");
         tui_put_str(sf,a,a.x+2,a.y+8,text,LS_ATTR_DIM);
@@ -3078,8 +3084,8 @@ static void menu_item(tui_surface *sf,tui_rect r,int i,const char *state,bool on
     ls_panel_box(sf,r,NULL,focus || on?hi:hue);
     char line[64];
     snprintf(line,sizeof(line)," %d %s ",i+1,MENU[i].name);
-    tui_put_str(sf,r,r.x+1,r.y,line,TUI_ATTR(TUI_BLACK,hi));
-    if(r.h>=3)tui_put_char(sf,r,r.x+r.w-2,r.y+r.h/2,'>',TUI_ATTR(hi,TUI_BLACK));
+    tui_put_str(sf,r,r.x+1,r.y,line,ls_ink(LS_INK_CAPTION,TUI_ATTR(TUI_BLACK,hi)));
+    if(r.h>=3)tui_put_char(sf,r,r.x+r.w-2,r.y+r.h/2,'>',ls_ink_hue(TUI_ATTR(hi,TUI_BLACK)));
     const tui_rect in=tui_rect_make(r.x+1,r.y+1,r.w-3,r.h-2);
     if(focus)ls_fill_dither(sf,in,LS_DITHER_LIGHT,hue);
     else if(on)ls_fill_dither(sf,in,LS_DITHER_LIGHT,TUI_GREEN);
@@ -3091,10 +3097,10 @@ static void menu_item(tui_surface *sf,tui_rect r,int i,const char *state,bool on
     }
     int tx=in.x+1,ty=in.y,tw=in.w-1,th=in.h;
     if(in.h>=LS_ICON_ROWS && in.w>=LS_ICON_COLS+20) {
-        ls_icon_draw(sf,in,in.x+1,in.y+(in.h-LS_ICON_ROWS)/2,MENU[i].icon,TUI_ATTR(hi,TUI_BLACK));
+        ls_icon_draw(sf,in,in.x+1,in.y+(in.h-LS_ICON_ROWS)/2,MENU[i].icon,ls_ink_hue(TUI_ATTR(hi,TUI_BLACK)));
         tx=in.x+LS_ICON_COLS+3;tw=in.x+in.w-tx;
     } else if(in.h>=LS_ICON_ROWS+3 && in.w>=LS_ICON_COLS+2) {
-        ls_icon_draw(sf,in,in.x+(in.w-LS_ICON_COLS)/2,in.y,MENU[i].icon,TUI_ATTR(hi,TUI_BLACK));
+        ls_icon_draw(sf,in,in.x+(in.w-LS_ICON_COLS)/2,in.y,MENU[i].icon,ls_ink_hue(TUI_ATTR(hi,TUI_BLACK)));
         ty=in.y+LS_ICON_ROWS;th=in.h-LS_ICON_ROWS;
     }
     if(tw<6 || th<1)return;
@@ -3107,7 +3113,7 @@ static void menu_item(tui_surface *sf,tui_rect r,int i,const char *state,bool on
     const tui_rect clip=tui_rect_make(tx,ty,tw,th);
     tui_put_str(sf,clip,tx,y++,brief?MENU[i].brief:MENU[i].what,LS_ATTR_DIM);
     for(int k=0;k<nf && y<ty+th;k++)
-        tui_put_str(sf,clip,tx,y++,facts[k],k==0?TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK):TUI_ATTR(hue,TUI_BLACK));
+        tui_put_str(sf,clip,tx,y++,facts[k],k==0?TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK):ls_ink_hue(TUI_ATTR(hue,TUI_BLACK)));
 }
 static void draw_menu(tui_surface *sf,tui_rect a)
 {
@@ -3177,7 +3183,7 @@ static void live_trace(tui_surface *sf,tui_rect r,bool running)
 {
     if(r.w<8 || r.h<2)return;
     const bool live=running && rec_scope_age_ms()<500;
-    static uint8_t col[REC_SCOPE_N];
+    EXT_RAM_BSS_ATTR static uint8_t col[REC_SCOPE_N];
     const int n=live?rec_scope_read(col,TRACE_WINDOW):0;
     const bool hot_now=n && (col[n-1]&REC_SCOPE_HOT);
     char label[80];
@@ -3213,7 +3219,7 @@ static void live_trace(tui_surface *sf,tui_rect r,bool running)
             /* Not running: the flat line the Flipper shows before START. */
             if(!n)h[sub]=1;
         }
-        const uint8_t attr=hot?TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK):
+        const uint8_t attr=hot?ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK)):
                            live?TUI_ATTR(TUI_CYAN,TUI_BLACK):LS_ATTR_DIM;
         for(int row=0;row<g.h;row++) {
             unsigned bits=0;
@@ -3261,7 +3267,7 @@ static void draw_read(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,
     char line[110];
     if(cc_source && cc->raw_overflows) {
         snprintf(line,sizeof(line),"CC buffer overflows %lu",(unsigned long)cc->raw_overflows);
-        tui_put_str(sf,content,body.x+2,body.y+1,line,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+        tui_put_str(sf,content,body.x+2,body.y+1,line,ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)));
     }
     /* Listening, the trace sits over the list: what is on the air now,
        above what has been caught. */
@@ -3303,7 +3309,7 @@ static void draw_read(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,
         char low[110];bool device;
         capture_lines(k,line,sizeof(line),low,sizeof(low),&device);
         tui_put_str(sf,list,list.x,y,line,TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
-        tui_put_str(sf,list,list.x,y+1,low,device?TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM);
+        tui_put_str(sf,list,list.x,y+1,low,device?ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK)):LS_ATTR_DIM);
     }
     if(notes) {
         tui_rect info=tui_rect_make(body.x+1,body.y+1,body.w-2,body.h-2);
@@ -3338,7 +3344,7 @@ static void draw_read(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,
     const uint8_t hand=ls_fresh_level(&handoff,1500);
     const uint8_t heat=learned>hand?learned:hand;
     const uint8_t fb_at=!feedback[0]?LS_ATTR_DIM:
-                        heat>=128?TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK):
+                        heat>=128?ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK)):
                         feedback_undo?TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM;
     ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:s.export_status[0]?s.export_status:
                  s.count?"Tap a capture to open it":"",fb_at);
@@ -3371,10 +3377,10 @@ static void draw_raw(tui_surface *sf,tui_rect a)
     raw_list=tui_rect_make(0,0,0,0);
     int y=in.y+1;
     if(no) {
-        tui_put_str(sf,in,in.x,y,no,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+        tui_put_str(sf,in,in.x,y,no,ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)));
         tui_put_str(sf,in,in.x,y+1,"SETTINGS > Radio picks one that can.",LS_ATTR_DIM);
     } else if(rec_mine) {
-        tui_put_str(sf,in,in.x,y,"Armed - press the remote now.",TUI_ATTR(TUI_RED|TUI_BRIGHT,TUI_BLACK));
+        tui_put_str(sf,in,in.x,y,"Armed - press the remote now.",ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED|TUI_BRIGHT,TUI_BLACK)));
         tui_put_str(sf,in,in.x,y+1,"The next burst is saved as a .sub file.",LS_ATTR_DIM);
     } else {
         tui_put_str(sf,in,in.x,y,"Press RECORD, then press the remote.",TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
@@ -3389,7 +3395,7 @@ static void draw_raw(tui_surface *sf,tui_rect a)
     }
     if(y+3<in.y+in.h) {
         tui_put_str(sf,in,in.x,y,saved_files?"RECORDINGS ON THE CARD - newest first":"No recordings on the card yet.",
-                    saved_files?TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM);
+                    saved_files?ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)):LS_ATTR_DIM);
         y++;
         raw_list=tui_rect_make(in.x,y,in.w,(in.y+in.h-y)/2*2);
         const int rows=raw_list.h/2;
@@ -3409,7 +3415,7 @@ static void draw_raw(tui_surface *sf,tui_rect a)
         }
     }
     ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:saved_files?"Tap a recording to open it":"",
-                 recorded>=128?TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM);
+                 recorded>=128?ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK)):LS_ATTR_DIM);
 }
 
 /* ---------------------------------------------------- FREQUENCY ANALYZER */
@@ -3494,7 +3500,7 @@ static void draw_band(tui_surface *sf,tui_rect a)
     chart_drawn=-1;
     ls_btn_t side[2];int ns=0;
     ls_btn_t primary;
-#if !LS_LR_EDITION
+#if !LS_LR_EDITION_BUILD
     if(band_catch) {
         bool watch_on=false;
         const char *watch_label=ls_catch_watch_label(&watch_on);
@@ -3517,7 +3523,7 @@ static void draw_band(tui_surface *sf,tui_rect a)
     tui_rect body=tui_rect_make(a.x,a.y,a.w,a.h-1);
     page_body=body;
     band_mark_hz=0;
-#if !LS_LR_EDITION
+#if !LS_LR_EDITION_BUILD
     if(band_catch) {
         ls_catch_body_draw(sf,body);
         ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:"ENTER on a burst: LISTEN HERE",LS_ATTR_DIM);
@@ -3543,7 +3549,7 @@ static void draw_band(tui_surface *sf,tui_rect a)
         tui_put_str(sf,w,w.x,w.y,"Find the frequency of a remote:",TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
         tui_put_str(sf,w,w.x,w.y+2,"1. Press START",LS_ATTR_DIM);
         tui_put_str(sf,w,w.x,w.y+3,"2. Hold the remote's button",LS_ATTR_DIM);
-        tui_put_str(sf,w,w.x,w.y+4,"3. Tap the peak, then LISTEN HERE",TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK));
+        tui_put_str(sf,w,w.x,w.y+4,"3. Tap the peak, then LISTEN HERE",ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK)));
         char where[64];
         LS_SNPRINTF(t_scr_subghz_sweeps_on_the_s, where,sizeof(where),"Sweeps on the %s; mesh pauses meanwhile.",ls_rsel_name(LS_RSEL_LORA));
         tui_put_str(sf,w,w.x,w.y+6,where,LS_ATTR_DIM);
@@ -3617,7 +3623,7 @@ static void draw_saved(tui_surface *sf,tui_rect a)
         if(i==saved_first || i==s.count) {
             const char *head=i<s.count?"CAUGHT - this boot and the archive":
                              saved_truncated?"FILES ON THE CARD - newest 48":"FILES ON THE CARD";
-            tui_put_str(sf,saved_list,saved_list.x,y,head,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+            tui_put_str(sf,saved_list,saved_list.x,y,head,ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)));
             y++;
             if(y+1>=saved_list.y+saved_list.h)break;
         }
@@ -3688,13 +3694,13 @@ static void draw_detail(tui_surface *sf,tui_rect a)
     capture_lines(selected,line,sizeof(line),low,sizeof(low),&device);
     snprintf(line,sizeof(line),"%.4f MHz   %s",e->frequency/1e6,e->deviation_hz?"2-FSK":"OOK");
     tui_put_str(sf,in,in.x,in.y+1,line,TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
-    tui_put_str(sf,in,in.x,in.y+2,low,device?TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK):TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
+    tui_put_str(sf,in,in.x,in.y+2,low,device?ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK)):TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
     snprintf(line,sizeof(line),"%u edges  %.1f ms  heard x%lu%s",e->edges,e->span_us/1000.,(unsigned long)e->count,
              e->pinned?"  PINNED":"");
     tui_put_str(sf,in,in.x,in.y+3,line,LS_ATTR_DIM);
     if(!can_send && in.h>6) {
         snprintf(line,sizeof(line),"%s cannot transmit this one",ls_rsel_name(rec_source_radio((rec_source_t)e->source)));
-        tui_put_str(sf,in,in.x,in.y+4,line,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+        tui_put_str(sf,in,in.x,in.y+4,line,ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)));
     }
     if(inspector) {
         if(body.w>90 && body.h>=11)
@@ -3745,7 +3751,7 @@ static void draw_record(tui_surface *sf,tui_rect a)
     controls_drawn=1;                  /* REC's own ARM, below */
     page_body=a;
     if(feedback[0] && a.h>12) {
-        ls_safe_line(sf,a,a.y+a.h-1,feedback,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+        ls_safe_line(sf,a,a.y+a.h-1,feedback,ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)));
         a.h--;
     }
     const char *no=can_record()?NULL:disabled_reason('d');
@@ -3885,12 +3891,14 @@ static const char *o_apply_why(const ls_opt_t *o)
     (void)o;rec_learn_t r;
     return !rec_watch_learn_result(&r)?"Nothing learned yet":rec_watch_learn_busy()?"LEARN is measuring":NULL;
 }
-static void o_recview(const ls_opt_t *o){(void)o;action('v');}
+/* Straight to RECORD's view: action('v') is VIEW on the BAND page. */
+static void o_recview(const ls_opt_t *o){(void)o;go(PG_RECORD);}
 static void o_recview_show(const ls_opt_t *o,char *out,size_t n){(void)o;snprintf(out,n,"level, trigger");}
 static const char *o_recview_why(const ls_opt_t *o){(void)o;return can_record()?NULL:"Needs the SDR or the LR2021";}
-#if !LS_LR_EDITION
+#if !LS_LR_EDITION_BUILD
 static void o_catch(const ls_opt_t *o){(void)o;action('x');}
 static void o_catch_show(const ls_opt_t *o,char *out,size_t n){(void)o;snprintf(out,n,"%s",ls_catch_running()?"STOP":"RTL spots, LoRa decodes");}
+static const char *o_catch_why(const ls_opt_t *o){(void)o;return LS_LR_EDITION?"Needs the USB port on":NULL;}
 #endif
 /* Save to FREQS: what READ is tuned to, as it receives it, into mine.csv.
    The LoRa chip's packet receiver is FSK, and so is the LR2021 once set to
@@ -3932,8 +3940,8 @@ static const ls_opt_t OPT_SUBGHZ[]={
     /* REC's full level view, for setting RECORD RAW's trigger. */
     {.label="Recorder view",.kind=LS_OPT_ACTION,.act=o_recview,.leaves=true,.show=o_recview_show,.why_not=o_recview_why},
     {.label="Save to FREQS",.kind=LS_OPT_ACTION,.act=o_freqs,.show=o_freqs_show},
-#if !LS_LR_EDITION
-    {.label="CATCH bursts",.kind=LS_OPT_ACTION,.act=o_catch,.leaves=true,.show=o_catch_show},
+#if !LS_LR_EDITION_BUILD
+    {.label="CATCH bursts",.kind=LS_OPT_ACTION,.act=o_catch,.leaves=true,.show=o_catch_show,.why_not=o_catch_why},
 #endif
     /* CATCH's own settings, under its name, filled in at run time: the
        table is const and the CATCH context is another file's. Last. */
@@ -3999,7 +4007,7 @@ bool ls_scr_subghz_holds_radio(void)
 
 static void draw(tui_surface *sf,tui_rect a)
 {
-    if(a.w<24 || a.h<17) {ls_panel_notice(sf,a,"SUB-GHZ","Enlarge the pane","");return;}
+    if(a.w<24 || a.h<17) {ls_panel_notice(sf,a,NULL,"Enlarge the pane","");return;}
     rec_watch_snapshot(&s);
     static uint32_t scan_generation,learn_generation;
     static bool was_sweeping;
@@ -4150,7 +4158,7 @@ static bool back_key(ls_tk_t k,char ch)
 static bool go_back(void)
 {
     if(page==PG_MENU)return false;
-#if !LS_LR_EDITION
+#if !LS_LR_EDITION_BUILD
     if(page==PG_BAND && band_catch){ls_catch_stop();band_catch=false;feedback[0]=0;return true;}
 #endif
     go(page_parent(page));
@@ -4162,7 +4170,7 @@ static bool go_back(void)
    LISTEN HERE first. */
 static void band_enter(void)
 {
-#if !LS_LR_EDITION
+#if !LS_LR_EDITION_BUILD
     if(band_catch) {
         const uint32_t hz=ls_catch_selected_hz();
         if(hz)band_menu_open(BAND_BURST,hz,NULL);
@@ -4341,7 +4349,7 @@ static bool touch(int x,int y)
         }
         return true;
     case PG_BAND:
-#if !LS_LR_EDITION
+#if !LS_LR_EDITION_BUILD
         if(band_catch) {
             /* First tap picks a burst, a tap on the picked one opens it. */
             const int before=ls_catch_selected_index();

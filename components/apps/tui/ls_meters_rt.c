@@ -27,13 +27,12 @@
 /* A mutex, not a critical section: the store is 20 KB and a copy of it
    must not run with interrupts off. Every caller is a task. */
 static portMUX_TYPE s_init_lock = portMUX_INITIALIZER_UNLOCKED;
-static StaticSemaphore_t s_mutex_mem;
 static SemaphoreHandle_t s_mutex;
 static void lock(void)
 {
     if (!s_mutex) {
         portENTER_CRITICAL(&s_init_lock);
-        if (!s_mutex) s_mutex = xSemaphoreCreateMutexStatic(&s_mutex_mem);
+        if (!s_mutex) s_mutex = xSemaphoreCreateMutex();   /* internal heap: a module's statics are PSRAM */
         portEXIT_CRITICAL(&s_init_lock);
     }
     xSemaphoreTake(s_mutex, portMAX_DELAY);

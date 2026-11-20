@@ -26,6 +26,7 @@ static int s_carto_audit_bad,s_carto_low_masked;
 #include "../../ls_geo.h"
 #include "../../ls_keyboard.h"
 #include "../../ls_map.h"
+#include "../../ls_maptiles.h"
 #include "../../ls_route_live.h"
 #include "../../ls_map_ink.h"
 #include "../../ls_globe.h"
@@ -136,8 +137,37 @@ static bool layer(uint32_t bit) { return (s_layers & bit) != 0; }
 /* What a LAYERS row shows: on, for the two that are stored as off bits. */
 static bool layer_shown(uint32_t bit) { return layer(bit) != ((bit & (L_RF_HIDE | L_FOX_HIDE)) != 0); }
 
-#define LAYER_BITS 0x00FFFFFFu
-
+#define LAYER_BITS 0x001FFFFFu
+/* Above the layers: where the map comes from (SOURCE) and how it is drawn
+   (STYLE). Bit 23 marks a save in this layout; one without it is from before
+   the source setting and takes the defaults. */
+#define STYLE_V2 (1u << 23)
+typedef enum { SRC_AUTO = 0, SRC_LOCAL, SRC_ONLINE, SRC__COUNT } map_source_t;
+/* DETAILED is the newest and keeps the saved numbers of the others; STYLE
+   lists it second (LOOK_ORDER). */
+typedef enum { LOOK_LINES = 0, LOOK_FILLED, LOOK_BLOCKS, LOOK_DOTS, LOOK_DETAILED, LOOK__COUNT } map_look_t;
+static map_source_t s_source;
+static map_look_t s_look;
+static int s_force_view = -1;     /* the simulator pins an engine for its tests */
+static bool s_use_archive;        /* a .pmtiles file was opened by hand */
+static void engine_update(void);
+static bool world_source(void) { return s_force_view < 0 && s_source != SRC_LOCAL; }
+/* The z8 cell where the card's engine drew nothing for Auto: the cell files
+   there can be left from an older download the active catalog does not list,
+   so the card "has" it but CartoCore will not draw it. engine_update then
+   gives that cell to the world tiles. UINT32_MAX: none. */
+static uint32_t s_cc_miss_key = UINT32_MAX;
+static uint32_t z8_key(double lat, double lon)
+{
+    if (!isfinite(lat) || !isfinite(lon) || fabs(lat) > 85.05) return UINT32_MAX - 1;
+    const double x = floor((lon + 180.0) / 360.0 * 256.0);
+    const double y = floor((1.0 - asinh(tan(lat * M_PI / 180.0)) / M_PI) / 2.0 * 256.0);
+    return (uint32_t)(x < 0 ? 0 : x > 255 ? 255 : x) * 256u + (uint32_t)(y < 0 ? 0 : y > 255 ? 255 : y);
+}
+static bool cartocore_view(void);
+/* Drawn as lines: the line look, and Detailed where the card has no
+   detailed map and the world line map stands in for it. */
+static bool look_lines(void) { return s_look == LOOK_LINES || (s_look == LOOK_DETAILED && !cartocore_view()); }
 static void palette_load(void);
 static uint32_t style_bits(void);
 
@@ -164,11 +194,15 @@ static const ls_quick_t QUICK[] = {
     { .label = "ROUTE", .kind = LS_QUICK_ACTION, .action = "map.route", .key = 'u' },
     { .label = "OPTIONS", .kind = LS_QUICK_ACTION, .action = "map.route_options", .key = 'o' },
     { .label = "FOLLOW", .kind = LS_QUICK_ACTION, .action = "map.track", .key = 'g' },
+    /* Two words a line where the box is narrow (min_rows), one line wide. */
+    { .label = "GOTO GPS", .min_rows = 5, .kind = LS_QUICK_ACTION, .action = "map.gps", .key = 'p' },
     { .label = "MARK", .kind = LS_QUICK_ACTION, .action = "map.mark", .key = 'k' },
     { .label = "DRAW", .kind = LS_QUICK_ACTION, .action = "map.draw", .key = 'd' },
     { .label = "LAYERS", .kind = LS_QUICK_ACTION, .action = "map.layers", .key = 'l' },
+    { .label = "SET HOME", .min_rows = 5, .kind = LS_QUICK_ACTION, .action = "map.home", .key = 'h' },
+    /* The label is the look now shown (quick_table). */
+    { .label = "LOOK", .min_rows = 5, .kind = LS_QUICK_ACTION, .action = "map.view", .key = 'v' },
     { .label = "STYLE", .kind = LS_QUICK_ACTION, .action = "map.style", .key = 's' },
-    { .label = "SET HOME", .kind = LS_QUICK_ACTION, .action = "map.home", .key = 'h' },
 };
 #define N_QUICK ((int)(sizeof(QUICK) / sizeof(QUICK[0])))
 
@@ -270,6 +304,9 @@ static void pick_archive(int i)
         s_file_error = ls_map_open_error();
         return;
     }
+    /* A file opened by hand is the map until SOURCE says otherwise. */
+    s_source = SRC_LOCAL; s_use_archive = true;
+    layers_set(s_layers);
     s_file_error = NULL;
     s_have_archive = true;
     archive_view(s_archives[i]);
@@ -395,17 +432,18 @@ static void style_load(void)
     palette_load();
 }
 
-bool ls_map_cartocore_style(void) { style_load(); return cartocore_view(); }
+bool ls_map_cartocore_style(void) { engine_update(); return cartocore_view(); }
 
 static void drag_reset(void);
 static void enter(void)
 {
     drag_reset();
+    s_cc_miss_key = UINT32_MAX;   /* the card may have new cells since */
     view_enter();
     register_view_action();
     s_notice_screen=ls_tui_screen_current();
     ls_notify_add_probe(marks_notice);
-    style_load();
+    engine_update();
     if(cartocore_view()) {
         ls_map_external_view(0,0);cells_free();s_have_archive=false;s_opened=false;s_file_error=NULL;
         return;
@@ -416,11 +454,7 @@ static void enter(void)
        frame of a screen somebody just tapped into. */
     if (!s_opened) {
         s_opened = true;
-        char path[128];
-        if (find_archive(path, sizeof(path))) {
-            s_have_archive = ls_map_open(path);
-            if(s_have_archive) archive_view(path);
-        }
+        rescan();
         return;
     }
     /* Nothing open means look again, every time this screen is entered: the
@@ -437,6 +471,11 @@ static void rescan(void)
     if(cartocore_view()) {
         ls_map_external_view(0,0);s_have_archive=false;s_opened=false;s_file_error=NULL;
         ls_carto_map_leave();return;
+    }
+    if (world_source()) {
+        s_file_error = ls_map_open_world() ? NULL : ls_map_open_error();
+        s_have_archive = ls_map_world();
+        return;
     }
     char path[128];
     if (!find_archive(path, sizeof(path))) {
@@ -466,6 +505,8 @@ static void leave(void)
     s_card_rect = tui_rect_make(0, -1, 0, 0);
     cells_free();
     ls_carto_map_leave();
+    /* The world tile store can be megabytes; the next app may need them. */
+    ls_map_trim();
     ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
     if (s_pv_leaving) return;      /* a mini map's framing is neither kept nor MAP's */
     view_keep(true);
@@ -610,7 +651,17 @@ static map_view_t s_view;
 static bool cartocore_view(void) { return s_view>=MAP_VIEW_CC_SMOOTH; }
 static bool cc_picture(void) { return s_view==MAP_VIEW_CC_PICTURE; }
 
-static const char *const VIEW_NAME[MAP_VIEW__COUNT] = { "field", "blocks", "lines", "CartoCore smooth", "CartoCore braille", "CartoCore" };
+static const char *const LOOK_NAME[LOOK__COUNT] = { "lines", "filled", "blocks", "dots", "detailed" };
+static const uint8_t LOOK_ORDER[LOOK__COUNT] = { LOOK_LINES, LOOK_DETAILED, LOOK_FILLED, LOOK_BLOCKS, LOOK_DOTS };
+static const char *const LOOK_WHAT[LOOK__COUNT] = {
+    "roads, borders, coast as lines", "water, parks, buildings filled",
+    "coloured blocks of text cells", "outlines drawn in characters",
+    "full colour atlas from card maps" };
+/* The LOOK key's word for each look: lines is the simple one. */
+static const char *const LOOK_WORD[LOOK__COUNT] = { "SIMPLE", "FILLED", "BLOCKS", "DOTS", "DETAILED" };
+static const char *look_word(map_look_t l) { return l < LOOK__COUNT ? LOOK_WORD[l] : "?"; }
+/* What the picture is made from right now, for the header. */
+static const char *source_word(void) { return cartocore_view() ? "cells" : ls_map_world() ? "world" : "file"; }
 
 /* The map's colours. Each names what every class libcarto draws becomes,
    whether water and parks are filled or only outlined, which roads are
@@ -656,7 +707,7 @@ static const map_palette_t PALETTES[] = {
       {0, 105, 40}, {0, 66, 26}, PF_EDGE_WATER, 7, TUI_GREEN },
 };
 #define N_PALETTES ((int)(sizeof(PALETTES) / sizeof(PALETTES[0])))
-enum { PAL_NIGHT = 0, PAL_PAPER = 1, PAL_VECTOR = 6 };
+enum { PAL_NIGHT = 0, PAL_PAPER = 1, PAL_RED = 2, PAL_VECTOR = 6 };
 
 /* The STYLE colour choice, as saved: 0 and 6 follow the TUI theme (with
    NIGHT's fills, or VECTOR's outlines), the others name a palette. Before
@@ -698,6 +749,50 @@ static carto_rgb rgb565(uint16_t c) {
 static carto_rgb rgb_mix(carto_rgb a,carto_rgb b,int n,int d) {
     return (carto_rgb){a.r+(b.r-a.r)*n/d,a.g+(b.g-a.g)*n/d,a.b+(b.b-a.b)*n/d};
 }
+
+/* The line look's inks, one per class, each set by its contrast on the
+   ground rather than by a fixed share of the ink, so a dim theme's roads do
+   not sink into its ground: the ATC video map, minor roads faint but there,
+   main roads bright, water outlined in its own shade, names brightest. */
+enum { LI_SERVICE, LI_MINOR, LI_SECONDARY, LI_MAJOR, LI_MOTORWAY, LI_BORDER, LI_WATER, LI_RAIL, LI__COUNT };
+/* Contrast on the ground x10 (WCAG ratio): the bright tier, and the dim one
+   for night vision and the radar scopes (dim, never gone). */
+static const uint8_t LI_RATIO[2][LI__COUNT] = {
+    { 26, 34, 50, 80, 110, 30, 36, 28 },
+    { 19, 23, 31, 44, 58, 20, 25, 19 },
+};
+static carto_rgb s_line[LI__COUNT];
+static float lum1(int v) { const float x = v / 255.0f; return x * x * (0.7f + 0.3f * x); }
+static float lum(carto_rgb c) { return 0.2126f * lum1(c.r) + 0.7152f * lum1(c.g) + 0.0722f * lum1(c.b); }
+static float contrast(carto_rgb a, carto_rgb b)
+{
+    const float x = lum(a) + 0.05f, y = lum(b) + 0.05f;
+    return x > y ? x / y : y / x;
+}
+/* The first colour on the way from the ground to the ink, and on past the
+   ink to white (black on a light ground) when the ink is too faint, that
+   stands `ratio` off the ground. Every class comes off one ink: one hue. */
+static carto_rgb ink_at(carto_rgb ground, carto_rgb ink, float ratio)
+{
+    const carto_rgb far = lum(ground) < 0.2f ? (carto_rgb){255, 255, 255} : (carto_rgb){0, 0, 0};
+    int lo = 0, hi = 512;
+    while (lo < hi) {
+        const int t = (lo + hi) / 2;
+        const carto_rgb c = t <= 256 ? rgb_mix(ground, ink, t, 256) : rgb_mix(ink, far, t - 256, 256);
+        if (contrast(c, ground) >= ratio) hi = t; else lo = t + 1;
+    }
+    return lo <= 256 ? rgb_mix(ground, ink, lo, 256) : rgb_mix(ink, far, lo - 256, 256);
+}
+static void line_inks(carto_rgb ground, carto_rgb ink, carto_rgb wet, carto_rgb label, bool dim, bool busy)
+{
+    const float names = contrast(label, ground) * 0.7f;   /* names stay the brightest */
+    for (int i = 0; i < LI__COUNT; i++) {
+        float r = LI_RATIO[dim][i] / 10.0f;
+        if (busy) r = 1.0f + (r - 1.0f) * 0.85f;           /* live overlays: a step back */
+        if (r > names) r = names;
+        s_line[i] = ink_at(ground, i == LI_WATER ? wet : ink, r);
+    }
+}
 static const map_palette_t *palette(void)
 {
     static map_palette_t p;
@@ -705,12 +800,12 @@ static const map_palette_t *palette(void)
     static int key=-1;
     const ls_tui_theme_t *t=ls_tui_active_theme();
     const int own=palette_own();
-    const int next=(own+1)*2+(s_palette==STYLE_THEME_OUTLINES?40:0)+(s_basemap_busy?1:0);
+    const int next=(own+1)*2+(look_lines()?40:0)+(s_basemap_busy?1:0);
     if(previous==t && key==next) return &p;
     previous=t;key=next;s_palette_key++;
     if(own>=0) p=PALETTES[own];
     else {
-        p=PALETTES[s_palette==STYLE_THEME_OUTLINES?PAL_VECTOR:PAL_NIGHT];
+        p=PALETTES[PAL_NIGHT];
         p.name=t->name;p.tint=0;
         carto_rgb ground=rgb565(t->palette[0]), blue=rgb565(t->palette[TUI_BLUE]);
         carto_rgb green=rgb565(t->palette[TUI_GREEN]), white=rgb565(t->palette[TUI_WHITE]);
@@ -723,7 +818,25 @@ static const map_palette_t *palette(void)
         p.major=rgb_mix(p.ground,white,7,8);
         p.edge=p.water;
     }
-    if(s_basemap_busy) {
+    if(look_lines()) {
+        /* One ink on the ground, like a radar terminal's video map: roads by
+           weight and brightness, coast and water as outlines, nothing filled.
+           The colours are the palette's or the theme's; the look is not. */
+        const carto_rgb label=rgb565(t->palette[TUI_WHITE|TUI_BRIGHT]);
+        const carto_rgb ink=own>=0?p.major:label;
+        /* Water's own shade: the palette's water, or the theme's blue, which in
+           the one-colour themes is still their colour. */
+        const carto_rgb wet=rgb_mix(own<0?rgb565(t->palette[TUI_BLUE|TUI_BRIGHT]):(p.fill&PF_WATER)?p.water:p.edge,ink,1,3);
+        const bool dim=own<0?t==&ls_theme_night:(own==PAL_RED||own>=PAL_VECTOR);   /* Night, RED, the scopes */
+        line_inks(p.ground,ink,wet,label,dim,s_basemap_busy);
+        p.fill=PF_EDGE_WATER;p.road_min=1;
+        p.water=p.park=p.building=p.ground;
+        p.edge=s_line[LI_WATER];
+        p.road_lo=s_line[LI_SERVICE];p.road_hi=s_line[LI_SECONDARY];
+        p.major=s_line[LI_MAJOR];
+        if(own<0) p.tint=0;
+    }
+    if(s_basemap_busy && !look_lines()) {
         p.water=rgb_mix(p.ground,p.water,3,4);p.park=rgb_mix(p.ground,p.park,3,4);
         p.building=rgb_mix(p.ground,p.building,3,4);
         p.road_lo=rgb_mix(p.ground,p.road_lo,3,4);p.road_hi=rgb_mix(p.ground,p.road_hi,3,4);
@@ -784,15 +897,24 @@ static void glass(tui_surface *sf, tui_rect clip, int x, int y, char ch, uint8_t
     ls_tui_put_glass(sf, clip, x, y, ch, ls_ink_tinted(attr));
 }
 
+/* LOOK: the three ways of drawing a tap apart, DETAILED (the atlas where the
+   card has it), DOTS (outlines in characters), SIMPLE (lines). STYLE keeps
+   every look; from FILLED or BLOCKS a tap comes back to DETAILED. Saved the
+   way STYLE saves it. */
+static const uint8_t LOOK_CYCLE[3] = { LOOK_DETAILED, LOOK_DOTS, LOOK_LINES };
 static ls_act_status_t a_map_view(const ls_args_t *in, ls_val_t *out)
 {
     (void)in;
-    s_view = (map_view_t)((s_view + 1) % MAP_VIEW__COUNT);
-    if(!cartocore_view()) ls_carto_map_leave();
-    if(!cc_picture()) picture_release();
+    int at = 0;
+    while (at < 3 && LOOK_CYCLE[at] != s_look) at++;
+    s_look = (map_look_t)LOOK_CYCLE[at < 3 ? (at + 1) % 3 : 0];
     layers_set(s_layers);
+    engine_update();
+    static char said[64];
+    snprintf(said, sizeof(said), "%s: %s", look_word(s_look), LOOK_WHAT[s_look]);
+    say(said);
     out->kind = LS_VAL_TEXT;
-    out->s = VIEW_NAME[s_view];
+    out->s = said;
     return LS_ACT_OK;
 }
 
@@ -812,11 +934,11 @@ static int s_field_w, s_field_h;
 static uint32_t s_field_serial;
 static bool s_field_valid;
 
-static uint8_t s_acc[CELL_COLS_MAX * 4];
-static uint8_t s_ink[CELL_COLS_MAX * 4];
+EXT_RAM_BSS_ATTR static uint8_t s_acc[CELL_COLS_MAX * 4];
+EXT_RAM_BSS_ATTR static uint8_t s_ink[CELL_COLS_MAX * 4];
 static EXT_RAM_BSS_ATTR uint8_t s_prev[CELL_COLS_MAX * 3];
 
-static uint8_t s_cur[CELL_COLS_MAX * 3];
+EXT_RAM_BSS_ATTR static uint8_t s_cur[CELL_COLS_MAX * 3];
 
 /* The one ink mono draws in. White because the point of a single-colour
    mode is contrast; the Flipper's orange is its screen, not its design. */
@@ -846,10 +968,13 @@ static bool cells_fit(int w, int h)
     return true;
 }
 
+static uint16_t *s_world_view;
+static int s_wv_w, s_wv_h;
 static void cells_free(void)
 {
     heap_caps_free(s_field_pixels); s_field_pixels = NULL;
     s_field_valid = false;
+    heap_caps_free(s_world_view); s_world_view = NULL; s_wv_w = s_wv_h = 0;
     heap_caps_free(s_cc_glyph);  s_cc_glyph = NULL;
     heap_caps_free(s_cc_attr);   s_cc_attr = NULL;
     s_cc_w = s_cc_h = 0;
@@ -952,10 +1077,10 @@ static void build_cells(tui_rect a, const uint16_t *px, int pw, int ph)
    the colour libcarto drew it in - ground, water, park, building, a road
    of some priority, a major road - and then painted as the palette says.
    Outlines need the neighbours' names, so three rows of names are kept. */
-enum { K_GROUND = 0, K_WATER, K_PARK, K_BUILDING, K_ROAD = 4, K_MAJOR = 4 + CARTO_ROAD_PRIO_MAX, K_OTHER };
+enum { K_GROUND = 0, K_WATER, K_PARK, K_BUILDING, K_ROAD = 4, K_MAJOR = 4 + CARTO_ROAD_PRIO_MAX, K_BORDER, K_OTHER };
 
 typedef struct { uint16_t rgb; uint8_t k; } field_key_t;
-static field_key_t s_keys[5 + CARTO_ROAD_PRIO_MAX];
+static field_key_t s_keys[6 + CARTO_ROAD_PRIO_MAX];
 static int s_nkeys;
 
 static void field_keys(void)
@@ -968,6 +1093,7 @@ static void field_keys(void)
     s_keys[s_nkeys++] = (field_key_t){ carto_rgb565(st.park), K_PARK };
     s_keys[s_nkeys++] = (field_key_t){ carto_rgb565(st.road_color), K_MAJOR };
     s_keys[s_nkeys++] = (field_key_t){ carto_rgb565(st.building), K_BUILDING };
+    s_keys[s_nkeys++] = (field_key_t){ carto_rgb565(st.boundary), K_BORDER };
     for (int p = CARTO_ROAD_PRIO_MIN; p < CARTO_ROAD_PRIO_MAX; p++)
         s_keys[s_nkeys++] = (field_key_t){ carto_rgb565(st.road_color_by_prio[p]), (uint8_t)(K_ROAD + p) };
 }
@@ -1002,6 +1128,16 @@ static void field_paint(const map_palette_t *pal, const uint16_t *px, uint16_t *
                         : mix565(pal->road_lo, pal->road_hi, p - CARTO_ROAD_PRIO_MIN,
                                  CARTO_ROAD_PRIO_MAX - 1 - CARTO_ROAD_PRIO_MIN);
     ink[K_MAJOR] = carto_rgb565(pal->major);
+    ink[K_BORDER] = mix565(pal->ground, pal->major, 9, 16);
+    if (look_lines()) {
+        /* Tracks and service ways, streets, secondaries, primaries and
+           trunks, motorways: each class its own contrast. */
+        static const uint8_t TIER[CARTO_ROAD_PRIO_MAX] = { 0, LI_SERVICE, LI_SERVICE, LI_SERVICE, LI_MINOR, LI_MINOR,
+                                                          LI_SECONDARY, LI_SECONDARY, LI_MAJOR, LI_MAJOR };
+        for (int p = CARTO_ROAD_PRIO_MIN; p < CARTO_ROAD_PRIO_MAX; p++) ink[K_ROAD + p] = carto_rgb565(s_line[TIER[p]]);
+        ink[K_MAJOR] = carto_rgb565(s_line[LI_MOTORWAY]);
+        ink[K_BORDER] = carto_rgb565(s_line[LI_BORDER]);
+    }
     const uint16_t edge = carto_rgb565(pal->edge);
     const bool edges = (pal->fill & (PF_EDGE_WATER | PF_EDGE_PARK)) != 0;
     if (pw > CELL_COLS_MAX * 3) pw = CELL_COLS_MAX * 3;
@@ -1018,6 +1154,8 @@ static void field_paint(const map_palette_t *pal, const uint16_t *px, uint16_t *
         for (int x = 0; x < pw; x++) {
             const uint8_t k = cur[x];
             uint16_t c = k == K_OTHER ? ink[K_BUILDING] : ink[k];
+            /* Borders are dashed, whichever way they run. */
+            if (k == K_BORDER && (((x + 2 * y) >> 1) & 1)) c = ground;
             if (edges && ((k == K_WATER && (pal->fill & PF_EDGE_WATER)) ||
                           (k == K_PARK && (pal->fill & PF_EDGE_PARK)))) {
                 const bool rim = (x > 0 && cur[x - 1] != k) || (x + 1 < pw && cur[x + 1] != k) ||
@@ -1031,9 +1169,52 @@ static void field_paint(const map_palette_t *pal, const uint16_t *px, uint16_t *
 
 static int s_field_pal = -1;
 
+/* How a picture drawn for one view is shown for another: view pixel x is
+   source pixel ax + x * k, and y alike. Its names ride along through the
+   same numbers. */
+typedef struct { double ax, ay, k; } map_warp_t;
+static const map_warp_t WARP_NONE = { 0, 0, 1 };
+static int s_warp_blank;    /* per mille of the last warp's view the source did not reach */
+static bool warp(const uint16_t *src, uint16_t *dst, int pw, int ph, double slat, double slon, int sz,
+                 double lat, double lon, int z, double tile, uint16_t ground, map_warp_t *w);
+
+/* World tiles: the last finished frame, moved and scaled to the view the
+   overlays are drawn for, until the next render is done (ls_map_render_view).
+   PSRAM. s_world_warp is how; draw_labels moves the names by it. */
+static int s_wv_z = -1, s_wv_blank;
+static uint32_t s_wv_src = UINT32_MAX, s_wv_shown;
+static double s_wv_lat, s_wv_lon;
+static bool s_wv_on;
+static map_warp_t s_world_warp = { 0, 0, 1 };
+static const uint16_t *world_view(const uint16_t *px, int pw, int ph, uint32_t key, uint16_t ground)
+{
+    double lat, lon, flat, flon; int fz;
+    ls_map_get_center(&lat, &lon);
+    const int z = ls_map_zoom();
+    s_wv_on = false; s_world_warp = WARP_NONE; s_wv_blank = 0;
+    if (!ls_map_render_view(&flat, &flon, &fz) || (flat == lat && flon == lon && fz == z)) return px;
+    if (!s_world_view || s_wv_w != pw || s_wv_h != ph) {
+        heap_caps_free(s_world_view);
+        s_world_view = heap_caps_malloc((size_t)pw * ph * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_wv_w = s_world_view ? pw : 0; s_wv_h = s_world_view ? ph : 0; s_wv_src = UINT32_MAX;
+        if (!s_world_view) return px;
+    }
+    static map_warp_t built;
+    if (s_wv_src != key || s_wv_lat != lat || s_wv_lon != lon || s_wv_z != z) {
+        if (!warp(px, s_world_view, pw, ph, flat, flon, fz, lat, lon, z, (double)ls_map_tile_px(), ground, &built)) {
+            s_wv_src = UINT32_MAX; return px;
+        }
+        s_wv_src = key; s_wv_lat = lat; s_wv_lon = lon; s_wv_z = z; s_wv_shown++;
+        s_wv_blank = s_warp_blank;
+    }
+    s_wv_on = true; s_world_warp = built;
+    return s_world_view;
+}
+
 static void draw_cells(tui_surface *sf, tui_rect a,
                        const uint16_t *px, int pw, int ph)
 {
+    s_wv_on = false; s_world_warp = WARP_NONE; s_wv_blank = 0;
     if (a.w <= 0 || a.h <= 0 || !px) return;
     if (s_view == MAP_VIEW_FIELD) {
         const uint32_t serial = ls_map_render_serial();
@@ -1049,7 +1230,9 @@ static void draw_cells(tui_surface *sf, tui_rect a,
             field_paint(pal, px, s_field_pixels, pw, ph);
             s_field_serial = serial; s_field_valid = true; s_field_pal = pal_i;
         }
-        ls_tui_image(a, s_field_pixels ? s_field_pixels : px, pw, ph, serial ^ ((uint32_t)pal_i << 24));
+        const uint32_t key = serial ^ ((uint32_t)pal_i << 24);
+        const uint16_t *show = s_field_pixels ? world_view(s_field_pixels, pw, ph, key, carto_rgb565(pal->ground)) : px;
+        ls_tui_image(a, show, pw, ph, s_wv_on ? 0x5EED0000u ^ s_wv_shown : key);
         for (int y = a.y; y < a.y + a.h; y++)
             for (int x = a.x; x < a.x + a.w; x++)
                 tui_put_char(sf, a, x, y, LS_TUI_IMAGE_CELL, 0);
@@ -1063,8 +1246,14 @@ static void draw_cells(tui_surface *sf, tui_rect a,
         return;
     }
 
-    const uint32_t serial = ls_map_render_serial();
     palette();
+    /* The cells are laid out from the frame as it is shown: moved to the
+       view like FIELD's picture, its bare ground the renderer's own. */
+    static uint16_t raw_ground;
+    if (!raw_ground) { carto_style st; carto_style_default(&st); raw_ground = carto_rgb565(st.bg); }
+    const uint32_t drawn = ls_map_render_serial() ^ 0x80000000u;
+    px = world_view(px, pw, ph, drawn, raw_ground);
+    const uint32_t serial = s_wv_on ? 0x5EED0000u ^ s_wv_shown : drawn;
     const int cc_key = (int)s_view * 65536 + s_palette_key;
     if (!s_cc_valid || s_cc_serial != serial || s_cc_view != cc_key) {
         const int64_t t0 = esp_timer_get_time();
@@ -1088,12 +1277,66 @@ static void draw_cells(tui_surface *sf, tui_rect a,
 /* The picture view's colours are the MAP palette's (NIGHT, PAPER, the tints),
    per CartoCore ink, so it looks like FIELD and follows STYLE the same way. */
 static uint32_t pack_rgb(carto_rgb c) { return (uint32_t)c.r << 16 | (uint32_t)c.g << 8 | (uint32_t)c.b; }
+/* Detailed: an atlas. Every class of ground and road has its own colour:
+   towns, industry, farmland, parks and forest as fills, lakes against
+   rivers, buildings on their blocks, and the road hierarchy from grey lanes
+   through white streets to yellow highways and orange motorways. One sheet
+   for a dark ground and one for a light one (PAPER, daylight); the ground
+   itself stays the palette's, so the map sits in the theme. */
+static const uint32_t ATLAS_DARK[LS_ATLAS__COUNT] = {
+    0x0b1014, 0x1b2026, 0x2a2434, 0x26301a, 0x1d5230, 0x123c22, 0x14507e, 0x3a8cc8, 0x6a5d50,
+    0x4c5258, 0x8b9299, 0xeceff2, 0xf4c84e, 0xff8f3a, 0xa890d0, 0xc060a8, 0x4d3d28, 0x705838 };
+static const uint32_t ATLAS_LIGHT[LS_ATLAS__COUNT] = {
+    0xf2efe6, 0xe4dfd4, 0xe2d6e2, 0xecefc8, 0xbfe0aa, 0xa3cf98, 0xa2cbea, 0x5b9fd4, 0xc4b3a2,
+    0xbab4a8, 0x8c877d, 0x4e4a43, 0xdf861a, 0xd8452a, 0x66568a, 0xae4c98, 0xd4bf9a, 0xb8996a };
+static uint32_t atlas_mix(uint32_t a, uint32_t b, int n, int d)
+{
+    uint32_t out = 0;
+    for (int k = 0; k < 24; k += 8) {
+        const int x = (int)((a >> k) & 255), y = (int)((b >> k) & 255);
+        out |= (uint32_t)(x + (y - x) * n / d) << k;
+    }
+    return out;
+}
 static void picture_style(void)
 {
     const map_palette_t *p = palette();
+    /* The night-vision tints and the scopes stay one hue: their own inks. */
+    if (s_look == LOOK_DETAILED && !p->tint && (p->fill & PF_WATER)) {
+        const uint32_t ground = pack_rgb(p->ground);
+        const bool light = p->ground.r * 3 + p->ground.g * 6 + p->ground.b > 1280;
+        const uint32_t *sheet = light ? ATLAS_LIGHT : ATLAS_DARK;
+        uint32_t ink[LS_ATLAS__COUNT];
+        /* Under live overlays the fills step back a quarter; lines keep their weight. */
+        for (int i = 0; i < LS_ATLAS__COUNT; i++)
+            ink[i] = s_basemap_busy && i < LS_ATLAS_SERVICE && i != LS_ATLAS_RIVER ? atlas_mix(ground, sheet[i], 3, 4) : sheet[i];
+        /* The sheet's ground, moved onto the palette's. */
+        for (int i = LS_ATLAS_RESIDENTIAL; i <= LS_ATLAS_FARM; i++) ink[i] = atlas_mix(ground, ink[i], 3, 4);
+        ink[LS_ATLAS_LAND] = ground;
+        ls_carto_map_pixel_atlas(ink, 70);
+        return;
+    }
+    if (s_look == LOOK_LINES) {
+        /* Lines: nothing filled. Water comes back in a key one step off the
+           ground, and water_rims() keeps only its shore. */
+        uint32_t ink[LS_ATLAS__COUNT];
+        const uint32_t ground = pack_rgb(p->ground);
+        for (int i = 0; i < LS_ATLAS__COUNT; i++) ink[i] = ground;
+        ink[LS_ATLAS_WATER] = ground ^ 0x08;
+        ink[LS_ATLAS_RIVER] = pack_rgb(s_line[LI_WATER]);
+        ink[LS_ATLAS_SERVICE] = pack_rgb(s_line[LI_SERVICE]);
+        ink[LS_ATLAS_MINOR] = pack_rgb(s_line[LI_MINOR]);
+        ink[LS_ATLAS_SECONDARY] = pack_rgb(s_line[LI_SECONDARY]);
+        ink[LS_ATLAS_MAJOR] = pack_rgb(s_line[LI_MAJOR]);
+        ink[LS_ATLAS_MOTORWAY] = pack_rgb(s_line[LI_MOTORWAY]);
+        ink[LS_ATLAS_RAIL] = pack_rgb(s_line[LI_RAIL]);
+        ink[LS_ATLAS_BOUNDARY] = pack_rgb(s_line[LI_BORDER]);
+        ls_carto_map_pixel_atlas(ink, 0);
+        return;
+    }
     const uint32_t pal[7] = { pack_rgb(p->ground), pack_rgb(p->water), pack_rgb(p->park), pack_rgb(p->building),
                               pack_rgb(p->road_lo), pack_rgb(p->road_hi), pack_rgb(p->major) };
-    ls_carto_map_pixel_style(pal, 70);
+    ls_carto_map_pixel_style(pal, s_look == LOOK_LINES ? 0 : 70);
 }
 static double merc_y(double lat);
 
@@ -1110,15 +1353,94 @@ static bool s_pic_have;
    serial, so the image layer neither redraws nor re-compares it. */
 static bool s_pic_built;
 static uint32_t s_pic_built_serial;
-static int s_pic_built_dx, s_pic_built_dy;
 static uint16_t s_pic_built_ground;
 static int s_pic_built_z = -1;              /* the zoom it was built for */
 static double s_pic_built_lat, s_pic_built_lon;
 static uint32_t s_pic_epoch;
 static int32_t s_pic_left,s_pic_top;
 static unsigned s_pic_epoch_z;
-static uint32_t s_pic_preview_serial;
-static int64_t s_pic_pending_us;
+/* 'carto trace' prints a pan or zoom frame by frame: what each frame showed
+   under the overlays. err: picture pixels between where the picture is and
+   where the overlays put the view (999: another view entirely); blank: per
+   mille of it that is ground fill, not map; fresh: rendered for this view. */
+static int s_probe_err, s_probe_blank, s_probe_labels;
+static bool s_probe_fresh;
+
+/* dst: src, a pw x ph picture drawn for (slat, slon) at zoom sz, moved and
+   scaled to show (lat, lon) at zoom z, `tile` pixels a tile, ground where it
+   does not reach. One rule for every picture MAP shows, so a pan moves the
+   map with its markers in the same frame and a zoom scales it about the
+   centre at once; the next render replaces it whole. False past four zooms. */
+static bool warp(const uint16_t *src, uint16_t *dst, int pw, int ph, double slat, double slon, int sz,
+                 double lat, double lon, int z, double tile, uint16_t ground, map_warp_t *w)
+{
+    const int dz = sz - z;
+    if (dz < -4 || dz > 4 || pw <= 0 || ph <= 0) return false;
+    const double ws = tile * ldexp(1.0, sz), k = ldexp(1.0, dz);
+    double dl = (lon - slon) / 360.0;
+    if (dl > 0.5) dl -= 1;
+    if (dl < -0.5) dl += 1;
+    double ax = dl * ws + pw / 2.0 * (1.0 - k), ay = (merc_y(lat) - merc_y(slat)) * ws + ph / 2.0 * (1.0 - k);
+    if (!dz) { ax = floor(ax + 0.5); ay = floor(ay + 0.5); }
+    w->ax = ax; w->ay = ay; w->k = k;
+    const double x0 = fmax(0.0, -ax / k), x1 = fmin((double)pw, (pw - ax) / k);
+    const double y0 = fmax(0.0, -ay / k), y1 = fmin((double)ph, (ph - ay) / k);
+    const double seen = (x1 > x0 && y1 > y0) ? (x1 - x0) * (y1 - y0) : 0.0;
+    s_warp_blank = (int)(1000.0 - seen * 1000.0 / ((double)pw * ph) + 0.5);
+    if (!dz) {
+        /* A pan: rows of the old picture, shifted. */
+        const int dx = (int)ax, dy = (int)ay;
+        const int c0 = dx < 0 ? (-dx < pw ? -dx : pw) : 0, c1 = dx > 0 ? (dx < pw ? pw - dx : 0) : pw;
+        for (int y = 0; y < ph; y++) {
+            uint16_t *out = dst + (size_t)y * pw;
+            const int sy = y + dy;
+            if (sy < 0 || sy >= ph || c1 <= c0) { for (int x = 0; x < pw; x++) out[x] = ground; continue; }
+            for (int x = 0; x < c0; x++) out[x] = ground;
+            memcpy(out + c0, src + (size_t)sy * pw + c0 + dx, (size_t)(c1 - c0) * sizeof(uint16_t));
+            for (int x = c1; x < pw; x++) out[x] = ground;
+        }
+        return true;
+    }
+    /* Source columns in 16.16 fixed point: a double floor per pixel cost
+       ~40 ms a frame on the P4. */
+    const int64_t fx0 = (int64_t)floor(ax * 65536.0), fstep = (int64_t)llround(k * 65536.0);
+    for (int y = 0; y < ph; y++) {
+        uint16_t *out = dst + (size_t)y * pw;
+        const int sy = (int)floor(ay + y * k);
+        if (sy < 0 || sy >= ph) { for (int x = 0; x < pw; x++) out[x] = ground; continue; }
+        const uint16_t *in = src + (size_t)sy * pw;
+        int64_t f = fx0;
+        for (int x = 0; x < pw; x++, f += fstep) { const int64_t sx = f >> 16; out[x] = sx >= 0 && sx < pw ? in[sx] : ground; }
+    }
+    return true;
+}
+static map_warp_t s_pic_warp = { 0, 0, 1 };   /* s_pic_view from s_pic */
+static int s_pic_blank;
+/* CartoCore's text frames move with the view by its middle in world dots. */
+static void view_dot(double lat, double lon, unsigned z)
+{
+    const double world = 256.0 * ldexp(1.0, (int)z);
+    ls_carto_map_view_dot(lat, lon, z, (lon + 180.0) / 360.0 * world, merc_y(lat) * world);
+}
+
+/* Lines on CartoCore: water arrives in its key colour; the pixels of it
+   that touch bare ground become the shore, the rest ground. Two passes, so
+   the first only ever reads keys and ground it has not changed. */
+static void water_rims(uint16_t *px, int pw, int ph)
+{
+    const carto_rgb g = palette()->ground;
+    const uint16_t ground = carto_rgb565(g), key = carto_rgb565((carto_rgb){g.r, g.g, (uint8_t)(g.b ^ 0x08)});
+    const uint16_t shore = carto_rgb565(s_line[LI_WATER]);
+    for (int y = 0; y < ph; y++) {
+        uint16_t *row = px + (size_t)y * pw;
+        for (int x = 0; x < pw; x++) {
+            if (row[x] != key) continue;
+            if ((x > 0 && row[x - 1] == ground) || (x + 1 < pw && row[x + 1] == ground) ||
+                (y > 0 && row[x - pw] == ground) || (y + 1 < ph && row[x + pw] == ground)) row[x] = shore;
+        }
+    }
+    for (size_t i = 0, n = (size_t)pw * ph; i < n; i++) if (px[i] == key) px[i] = ground;
+}
 
 static bool picture_prepare(double lat, double lon, unsigned z, int pw, int ph, int tw, int th, bool labels)
 {
@@ -1152,75 +1474,37 @@ static bool picture_prepare(double lat, double lon, unsigned z, int pw, int ph, 
         if (!s_pic || !s_pic_view) { s_pic_have = false; return false; }
     }
     double flat, flon; unsigned fz;
+    const uint32_t was = s_pic_serial;
     if (ls_carto_map_pixels(lat, lon, z, pw, ph, tw, th, labels, s_pic, &s_pic_serial, &flat, &flon, &fz)) {
         s_pic_have = true; s_pic_lat = flat; s_pic_lon = flon; s_pic_z = fz;
+        if (s_pic_serial != was && s_look == LOOK_LINES) water_rims(s_pic, pw, ph);
     }
     if (!s_pic_have) return false;
     const uint16_t ground = carto_rgb565(palette()->ground);
-    if (s_pic_z != z) {
-        /* Zoomed, and the new picture is still rendering: the last one scaled
-           to this zoom, at once. The outline fallback drawn instead projected
-           the world's outlines again on the UI task (~340 ms on a Nano), and
-           every click waited behind it while the tiles sat still. Coarse for
-           a moment; the render replaces it. */
-        const int dz = (int)s_pic_z - (int)z;
-        if (dz < -4 || dz > 4) return false;
-        if (s_pic_built && s_pic_built_serial == s_pic_serial && s_pic_built_z == (int)z &&
-            s_pic_built_lat == lat && s_pic_built_lon == lon && s_pic_built_ground == ground) return true;
-        const double wt = 256.0 * ldexp(1.0, (int)z), ws = 256.0 * ldexp(1.0, (int)s_pic_z), k = ws / wt;
-        const double ax = ((lon + 180.0) / 360.0 * wt - pw / 2.0) * k - (s_pic_lon + 180.0) / 360.0 * ws + pw / 2.0;
-        const double ay = (merc_y(lat) * wt - ph / 2.0) * k - merc_y(s_pic_lat) * ws + ph / 2.0;
-        /* Source columns in 16.16 fixed point: a double floor per pixel cost
-           ~40 ms a frame on the P4. */
-        const int64_t fx0 = (int64_t)floor(ax * 65536.0), fstep = (int64_t)llround(k * 65536.0);
-        for (int y = 0; y < ph; y++) {
-            uint16_t *out = s_pic_view + (size_t)y * pw;
-            const int sy = (int)floor(ay + y * k);
-            if (sy < 0 || sy >= ph) { for (int x = 0; x < pw; x++) out[x] = ground; continue; }
-            const uint16_t *in = s_pic + (size_t)sy * pw;
-            int64_t f = fx0;
-            for (int x = 0; x < pw; x++, f += fstep) { const int64_t sx = f >> 16; out[x] = sx >= 0 && sx < pw ? in[sx] : ground; }
-        }
-        s_pic_epoch++; s_pic_epoch_z = z;
-        s_pic_left = (int32_t)llround((lon + 180.0) / 360.0 * wt) - pw / 2;
-        s_pic_top = (int32_t)llround(merc_y(lat) * wt) - ph / 2;
-        s_pic_built = true; s_pic_built_serial = s_pic_serial; s_pic_built_z = (int)z;
-        s_pic_built_lat = lat; s_pic_built_lon = lon; s_pic_built_ground = ground;
-        s_pic_built_dx = INT32_MAX; s_pic_built_dy = INT32_MAX;   /* the real picture always rebuilds */
-        s_pic_pending_us = 0; s_pic_preview_serial = 0;
-        ls_map_trace("zoom preview", (int32_t)z, dz);
-        s_pic_shown++;
-        return true;
-    }
-    /* World pixels at this zoom, the picture's own unit. */
+    if (s_pic_built && s_pic_built_serial == s_pic_serial && s_pic_built_z == (int)z &&
+        s_pic_built_lat == lat && s_pic_built_lon == lon && s_pic_built_ground == ground) return true;
+    /* The newest picture as it is when it was drawn for this view; else moved
+       (a pan) or scaled (a zoom) to it in this frame, where the markers are
+       drawn. Waiting for a fast render first left the picture a third of the
+       view behind them for two frames on every pan. Zoomed, the outline
+       fallback drawn instead projected the world's outlines again on the UI
+       task (~340 ms on a Nano). Coarse or edged with ground for a moment; the
+       render replaces it. */
+    if (s_pic_z == z && s_pic_lat == lat && s_pic_lon == lon) {
+        memcpy(s_pic_view, s_pic, (size_t)pw * ph * 2);
+        s_pic_warp = WARP_NONE; s_warp_blank = 0;
+    } else if (!warp(s_pic, s_pic_view, pw, ph, s_pic_lat, s_pic_lon, (int)s_pic_z, lat, lon, (int)z, 256.0, ground, &s_pic_warp)) {
+        return false;
+    } else if (s_pic_z != z) ls_map_trace("zoom preview", (int32_t)z, (int)s_pic_z - (int)z);
+    s_pic_blank = s_warp_blank;
+    /* The desk's copy scrolls within an epoch: a new one for a new zoom, a
+       new ground, or a picture that is scaled rather than moved. */
+    if (s_pic_epoch_z != z || s_pic_z != z || (s_pic_built && s_pic_built_ground != ground)) { s_pic_epoch++; s_pic_epoch_z = z; }
     const double world = 256.0 * ldexp(1.0, (int)z);
-    const int dx = (int)(llround((lon+180.0)/360.0*world)-llround((s_pic_lon+180.0)/360.0*world));
-    const int dy = (int)(llround(merc_y(lat)*world)-llround(merc_y(s_pic_lat)*world));
-    if(!dx && !dy) {s_pic_pending_us=0;s_pic_preview_serial=0;}
-    if (s_pic_built && s_pic_built_serial == s_pic_serial && s_pic_built_dx == dx &&
-        s_pic_built_dy == dy && s_pic_built_ground == ground) return true;
-    /* A fast completed frame needs no intermediate shifted publication. Wait
-       at most 50 ms for it; a slow render still gets an immediate cheap scroll. */
-    bool pending=dx || dy;
-    if(pending && s_pic_preview_serial!=s_pic_serial) {
-        if(!s_pic_pending_us) s_pic_pending_us=esp_timer_get_time();
-        if(s_pic_built && esp_timer_get_time()-s_pic_pending_us<50000) return true;
-        s_pic_preview_serial=s_pic_serial;
-    }
-    if(!pending) {s_pic_pending_us=0;s_pic_preview_serial=0;}
-    if(s_pic_epoch_z!=z || (s_pic_built && s_pic_built_ground!=ground)) {s_pic_epoch++;s_pic_epoch_z=z;}
-    s_pic_left=(int32_t)llround((lon+180.0)/360.0*world)-pw/2;
-    s_pic_top=(int32_t)llround(merc_y(lat)*world)-ph/2;
+    s_pic_left = (int32_t)llround((lon + 180.0) / 360.0 * world) - pw / 2;
+    s_pic_top = (int32_t)llround(merc_y(lat) * world) - ph / 2;
     s_pic_built = true; s_pic_built_serial = s_pic_serial; s_pic_built_z = (int)z;
-    s_pic_built_dx = dx; s_pic_built_dy = dy; s_pic_built_ground = ground;
-    if (!dx && !dy) { memcpy(s_pic_view, s_pic, (size_t)pw * ph * 2); }
-    else for (int y = 0; y < ph; y++) {
-        uint16_t *out = s_pic_view + (size_t)y * pw;
-        const int sy = y + dy;
-        if (sy < 0 || sy >= ph) { for (int x = 0; x < pw; x++) out[x] = ground; continue; }
-        const uint16_t *in = s_pic + (size_t)sy * pw;
-        for (int x = 0; x < pw; x++) { const int sx = x + dx; out[x] = sx >= 0 && sx < pw ? in[sx] : ground; }
-    }
+    s_pic_built_lat = lat; s_pic_built_lon = lon; s_pic_built_ground = ground;
     s_pic_shown++;
     return true;
 }
@@ -1230,7 +1514,7 @@ static void picture_release(void)
     ls_tui_image(tui_rect_make(0, 0, 0, 0), NULL, 0, 0, 0);
     heap_caps_free(s_pic); heap_caps_free(s_pic_view);
     s_pic = s_pic_view = NULL; s_pic_w = s_pic_h = 0; s_pic_have = false; s_pic_serial = 0;
-    s_pic_built = false;s_pic_epoch++;s_pic_pending_us=0;s_pic_preview_serial=0;
+    s_pic_built = false;s_pic_epoch++;
 }
 
 static void picture_present(tui_surface *sf, tui_rect a, int pw, int ph)
@@ -1301,6 +1585,12 @@ static void flat_under(tui_surface *sf, tui_rect body, int pw, int ph, const uin
             ls_maps_region_fill(code, NULL) == TUI_GREEN) return;
     }
     for (int r = 0; r < body.h; r++) memcpy(&s_under_keep[r * body.w], &sf->back[(body.y + r) * sf->w + body.x], (size_t)body.w * sizeof(tui_cell));
+    /* Close in, a whole frame of nothing from the card's engine: on Auto,
+       hand this cell to the world tiles (engine_update reads the key). */
+    if (all && ls_map_zoom() > 7 && pix == s_pic_view && s_source != SRC_LOCAL) {
+        double lat, lon; ls_map_get_center(&lat, &lon);
+        s_cc_miss_key = z8_key(lat, lon);
+    }
     if (all) { if (map_flat(sf, body, false)) return; }
     else {
         double lat, lon, ppx, ppy; ls_map_get_center(&lat, &lon); flat_scale(&ppx, &ppy);
@@ -1517,8 +1807,9 @@ static void draw_labels(tui_surface *sf, tui_rect a, int sx, int sy,
     for (int k = 0; k < m && drawn < map_label_cap(a); k++) {
         const carto_label *lb = &L[order[k]];
 
-        const int cx = lb->x / sx;
-        const int cy = lb->y / sy;
+        /* The names are the shown frame's: moved with it (world_view). */
+        const int cx = (int)floor((lb->x - s_world_warp.ax) / s_world_warp.k / sx);
+        const int cy = (int)floor((lb->y - s_world_warp.ay) / s_world_warp.k / sy);
         if (cx < 0 || cy < 0 || cx >= a.w || cy >= a.h) continue;
         if (in_rect(avoid, a.x + cx, a.y + cy)) continue;
         s_tier = 1;
@@ -1558,7 +1849,7 @@ static void draw_labels(tui_surface *sf, tui_rect a, int sx, int sy,
 #ifdef LS_MAP_AUDIT
         audit_label(x0, y, len);
 #endif
-        drawn++;
+        drawn++; s_probe_labels++;
     }
 }
 
@@ -1582,8 +1873,33 @@ static int carto_audit_cells(const tui_surface *sf) {
     return bad;
 }
 #endif
+/* The names of a picture shown for another view (map_warp_t), moved with it,
+   each by its middle: a pane of a.w x a.h cells over a pw x ph picture. */
+static size_t labels_warped(ls_carto_label *l,size_t n,tui_rect a,int pw,int ph,map_warp_t w) {
+    size_t kept=0;
+    for(size_t i=0;i<n;i++) {
+        ls_carto_label m=l[i];
+        const int len=(int)strlen(m.text),half=len/2;
+        const double sx=(m.x+half+0.5)*pw/a.w,sy=(m.y+0.5)*ph/a.h;
+        m.x=(int16_t)((int)floor((sx-w.ax)/w.k*a.w/pw)-half);
+        m.y=(int16_t)floor((sy-w.ay)/w.k*a.h/ph);
+        if(m.y<0 || m.y>=a.h || m.x<=-len || m.x>=a.w) continue;
+        l[kept++]=m;
+    }
+    return kept;
+}
 static void draw_carto_labels(tui_surface *sf,tui_rect a) {
     size_t n=ls_carto_map_labels(s_carto_labels,LS_CARTO_LABEL_MAX,a.w,a.h);
+    map_warp_t held;
+    if(!n && cc_picture() && s_pic_have && s_pic_built && s_pic_w>0 && s_pic_h>0) {
+        /* A picture moved or scaled while its successor renders: its names
+           ride along. Dropped while zoomed, they blinked out on every step. */
+        n=ls_carto_map_labels_held(s_carto_labels,LS_CARTO_LABEL_MAX,a.w,a.h);
+        n=labels_warped(s_carto_labels,n,a,s_pic_w,s_pic_h,s_pic_warp);
+    } else if(!n && !cc_picture() && ls_carto_map_held_warp(&held.ax,&held.ay,&held.k)) {
+        n=ls_carto_map_labels_held(s_carto_labels,LS_CARTO_LABEL_MAX,a.w,a.h);
+        n=labels_warped(s_carto_labels,n,a,a.w*2,a.h*4,held);
+    }
 #ifdef LS_MAP_AUDIT
     s_carto_audit_count=n;
 #endif
@@ -1623,7 +1939,7 @@ static void draw_carto_labels(tui_surface *sf,tui_rect a) {
 #endif
             tui_put_char(sf,a,a.x+x+k,a.y+y,l->text[k],l->attr);
         }
-        box_take(x,x+len-1,y);drawn++;if(l->label_class>=3) minor++;
+        box_take(x,x+len-1,y);drawn++;s_probe_labels++;if(l->label_class>=3) minor++;
 #ifdef LS_MAP_AUDIT
         audit_label(x,y,len);l->x=a.x+x;l->y=a.y+y;
 #endif
@@ -1801,8 +2117,8 @@ static void select_mark(sel_kind_t kind, int index)
 
 /* The existing MAP key bar owns both tap and shortcut dispatch. Only the
  * current context is materialised; no extra screen or persistent UI table. */
-static EXT_RAM_BSS_ATTR ls_quick_t s_context[14];
-static EXT_RAM_BSS_ATTR const char *s_context_args[14];
+static EXT_RAM_BSS_ATTR ls_quick_t s_context[16];
+static EXT_RAM_BSS_ATTR const char *s_context_args[16];
 static int s_context_n;
 static void context_add(const char *label,const char *command,char shortcut)
 {
@@ -1837,6 +2153,9 @@ static const ls_quick_t *quick_table(int *n)
         context_add("DONE","q",'q');
     } else {
         memcpy(s_context,QUICK,sizeof(QUICK));s_context_n=N_QUICK;
+        static char look[16];
+        snprintf(look,sizeof(look),"LOOK %s",look_word(s_look));
+        for(int i=0;i<N_QUICK;i++) if(!strcmp(s_context[i].action,"map.view")) s_context[i].label=look;
         context_add("SELECT","j",'j');
         context_add("HIDE","x",'x');
     }
@@ -3864,41 +4183,108 @@ static ls_act_status_t a_map_layers(const ls_args_t *in, ls_val_t *out)
 /* STYLE: the map's palette, and how the picture is filled. */
 static uint32_t style_bits(void)
 {
-    return ((uint32_t)(s_palette & 0x0F) << 24) | ((uint32_t)(s_view & 0x07) << 28);
+    return STYLE_V2 | ((uint32_t)s_source << 21) | ((uint32_t)(s_palette & 0x0F) << 24) | ((uint32_t)s_look << 28);
+}
+
+void ls_scr_map_force_view(int view) { s_force_view = view >= 0 && view < MAP_VIEW__COUNT ? view : -1; }
+/* Detailed is chosen and the card has no detailed map under the view: the
+   world line map is drawn, and a chip says so and leads to TILES. */
+static bool s_detail_missing;
+static tui_rect s_detail_rect;
+
+/* Which engine draws, from SOURCE and the look: downloaded CartoCore cells
+   where the card has them, the world tiles (or a .pmtiles file) elsewhere.
+   The look is the same word in both, so nobody chooses tiles by choosing a
+   style. */
+static void engine_update(void)
+{
+    style_load();
+    map_view_t want;
+    if (s_force_view >= 0) want = (map_view_t)s_force_view;
+    else {
+        bool cc = false;
+#if LS_CARTOCORE_AVAILABLE
+        if (s_source != SRC_ONLINE && !(s_use_archive && ls_map_archive())) {
+            /* What TILES already knows is on the card (states and region
+               files): nothing here reads the card from the UI. Asked once on
+               arriving, then when the view has moved. */
+            static double at_lat = 999, at_lon;
+            static int64_t at_us;
+            static bool covered;
+            static EXT_RAM_BSS_ATTR ls_tiles_catalog cat;
+            double lat, lon;
+            ls_map_get_center(&lat, &lon);
+            const int64_t now = esp_timer_get_time();
+            const bool moved = fabs(lat - at_lat) > 0.02 || fabs(lon - at_lon) > 0.02;
+            /* The card itself, read by the map worker when asked: cells and
+               map files TILES does not list (pushed over USB, a region file)
+               count as well. Asked on arriving; answered a moment later. */
+            static unsigned scan_seen = ~0u;
+            const unsigned scan = ls_carto_map_scan_serial();
+            if (at_lat > 900) ls_carto_map_scan_request();
+            if (at_lat > 900 || (moved && now - at_us > 1500000) || now - at_us > 20000000 || scan != scan_seen) {
+                scan_seen = scan;
+                char code[8];
+                float la, lo;
+                bool inside = false;
+                covered = ls_globe_nearest(lat, lon, ls_maps_region_fill, NULL, code, &la, &lo, &inside) && inside &&
+                          ls_maps_region_fill(code, NULL) == TUI_GREEN;
+                if (!covered && ls_tiles_snapshot(&cat))
+                    for (int i = 0; i < cat.count && i < LS_TILES_MAX && !covered; i++) {
+                        const ls_tile_region *r = &cat.region[i];
+                        covered = r->status == 1 && lon >= r->bbox[0] && lon <= r->bbox[2] &&
+                                  lat >= r->bbox[1] && lat <= r->bbox[3];
+                    }
+                if (!covered) {
+                    double nla, nlo;
+                    covered = ls_carto_map_nearest(lat, lon, &nla, &nlo) == 2;
+                }
+                at_lat = lat; at_lon = lon; at_us = now;
+            }
+            /* A cell the engine has already drawn empty is the world's. */
+            cc = (covered && z8_key(lat, lon) != s_cc_miss_key) || s_source == SRC_LOCAL;
+        }
+#endif
+        want = cc ? (s_look == LOOK_BLOCKS ? MAP_VIEW_CC_SMOOTH : s_look == LOOK_DOTS ? MAP_VIEW_CC_BRAILLE : MAP_VIEW_CC_PICTURE)
+                  : (s_look == LOOK_BLOCKS ? MAP_VIEW_COLOUR : s_look == LOOK_DOTS ? MAP_VIEW_MONO : MAP_VIEW_FIELD);
+        s_detail_missing = s_look == LOOK_DETAILED && !cc;
+    }
+    if (want == s_view) return;
+    s_view = want;
+    if (!cartocore_view()) ls_carto_map_leave();
+    if (!cc_picture()) picture_release();
+    s_opened = false;
 }
 
 static void palette_load(void)
 {
     const uint32_t v = settings_get_map_layers(LAYERS_DEFAULT);
-    const int p = (int)((v >> 24) & 0x0F), w = (int)((v >> 28) & 0x07);
-    s_palette = p < STYLE__COUNT ? p : STYLE_THEME;
-    s_view = w < MAP_VIEW__COUNT ? (map_view_t)w : MAP_VIEW_FIELD;
+    const int p = (int)((v >> 24) & 0x0F), src = (int)((v >> 21) & 3);
+    const bool v2 = (v & STYLE_V2) != 0;
+    s_palette = p < STYLE__COUNT && p != STYLE_THEME_OUTLINES ? p : STYLE_THEME;
+    s_look = v2 && ((v >> 28) & 7) < LOOK__COUNT ? (map_look_t)((v >> 28) & 7) : LOOK_LINES;
+    s_source = v2 && src < SRC__COUNT ? (map_source_t)src : SRC_AUTO;
 }
-
-static const char *const VIEW_WHAT[MAP_VIEW__COUNT] = {
-    "the picture itself", "coloured blocks of text cells", "outlines drawn in characters", "active CTILE, smooth quadrants", "active CTILE, smooth braille dots",
-    "active CTILE as a picture, with relief" };
 
 /* STYLE rows: the theme twice (fills, outlines), every palette, every fill,
    then the map file. */
-enum { ROW_PALETTES = 2, ROW_VIEWS = ROW_PALETTES + N_PALETTES, ROW_FILE = ROW_VIEWS + MAP_VIEW__COUNT };
+enum { ROW_PALETTES = 1, ROW_LOOKS = ROW_PALETTES + N_PALETTES, ROW_END = ROW_LOOKS + LOOK__COUNT };
 
 static void style_pick(int i)
 {
     const char *what;
-    if (i == ROW_FILE) { ls_val_t out; a_map_files(NULL, &out);ls_picker_back(open_style); return; }
-    if (i == 0 || i == 1) {
-        s_palette = i ? STYLE_THEME_OUTLINES : STYLE_THEME;
-        what = i ? "TUI theme colours, coast and major roads" : "TUI theme colours";
-    } else if (i >= ROW_PALETTES && i < ROW_VIEWS) {
+    if (i == 0) {
+        s_palette = STYLE_THEME;
+        what = "colours follow the TUI theme";
+    } else if (i >= ROW_PALETTES && i < ROW_LOOKS) {
         s_palette = palette_style(i - ROW_PALETTES);
         what = PALETTES[i - ROW_PALETTES].what;
-    } else if (i >= ROW_VIEWS && i < ROW_FILE) {
-        s_view = (map_view_t)(i - ROW_VIEWS);
-        what = VIEW_WHAT[s_view];
+    } else if (i >= ROW_LOOKS && i < ROW_END) {
+        s_look = (map_look_t)LOOK_ORDER[i - ROW_LOOKS];
+        what = LOOK_WHAT[s_look];
     } else return;
-    if(!cartocore_view()) ls_carto_map_leave();
     layers_set(s_layers);
+    engine_update();
     say(what);
 }
 
@@ -3908,25 +4294,21 @@ static ls_act_status_t a_map_style(const ls_args_t *in, ls_val_t *out)
     ls_picker_open("MAP STYLE", style_pick);
     ls_picker_back(open_options);
     const int own = style_palette(s_palette);
-    ls_picker_add("Theme fills", own < 0 && s_palette != STYLE_THEME_OUTLINES ? "[ON] follows TUI theme" : "follows TUI theme");
-    ls_picker_add("Theme outlines", s_palette == STYLE_THEME_OUTLINES ? "[ON] TUI theme, coast and main roads"
-                                                                      : "TUI theme, coast and main roads");
+    ls_picker_add("Theme colours", own < 0 ? "[ON] follows TUI theme" : "follows TUI theme");
     for (int i = 0; i < N_PALETTES; i++) {
         char d[LS_PICKER_DETAIL];
         snprintf(d, sizeof(d), "%s%s", i == own ? "[ON] " : "", PALETTES[i].what);
         ls_picker_add(PALETTES[i].name, d);
     }
-    for (int i = 0; i < MAP_VIEW__COUNT; i++) {
+    for (int k = 0; k < LOOK__COUNT; k++) {
+        const int i = LOOK_ORDER[k];
         char lab[LS_PICKER_TEXT], d[LS_PICKER_DETAIL];
-        snprintf(lab, sizeof(lab), "Fill: %s", VIEW_NAME[i]);
-        snprintf(d, sizeof(d), "%s%s", i == (int)s_view ? "[ON] " : "", VIEW_WHAT[i]);
+        snprintf(lab, sizeof(lab), i == LOOK_DETAILED ? "Draw: Detailed" : "Draw: %s", LOOK_NAME[i]);
+        snprintf(d, sizeof(d), "%s%s", i == (int)s_look ? "[ON] " : "", LOOK_WHAT[i]);
         ls_picker_add(lab, d);
     }
-    const char *arch = ls_map_archive();
-    const char *leaf = arch ? strrchr(arch, '/') : NULL;
-    ls_picker_add(LS_TEXT(t_scr_map_map_file_on_the, "Map file on the card"), leaf ? leaf + 1 : "none open");
     out->kind = LS_VAL_TEXT;
-    out->s = "choose the colours (TUI theme or a map palette) and a fill";
+    out->s = "colours, and how the map is drawn";
     return LS_ACT_OK;
 }
 
@@ -4027,6 +4409,43 @@ static ls_act_status_t a_map_track(const ls_args_t *in, ls_val_t *out)
     return LS_ACT_OK;
 }
 
+/* GOTO GPS: the map to where the board is, once (FOLLOW keeps it there). The
+   live fix; else the last fix, saying how old it is; else nothing to go to.
+   Zoomed far out it comes in to streets. */
+static ls_act_status_t a_map_gps(const ls_args_t *in, ls_val_t *out)
+{
+    (void)in;
+    static char said[64];
+    out->kind = LS_VAL_TEXT; out->s = said;
+    (void)ls_gps_start();
+    const int64_t now = esp_timer_get_time();
+    refresh_receiver(now);
+    double lat, lon;
+    float flat, flon;
+    if (s_receiver_fresh) {
+        lat = s_receiver.lat_deg; lon = s_receiver.lon_deg;
+        snprintf(said, sizeof(said), "on the GPS fix, %u sats", (unsigned)s_receiver.sats_used);
+    } else if (s_receiver.last_fix_us > 0 && now > s_receiver.last_fix_us &&
+               isfinite(s_receiver.lat_deg) && fabs(s_receiver.lat_deg) <= 85 &&
+               isfinite(s_receiver.lon_deg) && fabs(s_receiver.lon_deg) <= 180) {
+        char age[16];
+        age_words(age, sizeof(age), (uint32_t)((now - s_receiver.last_fix_us) / 1000000));
+        lat = s_receiver.lat_deg; lon = s_receiver.lon_deg;
+        snprintf(said, sizeof(said), "no fix now: last GPS fix, %s old", age);
+    } else if (settings_get_last_fix(&flat, &flon) && fabs(flat) <= 85 && fabs(flon) <= 180) {
+        lat = flat; lon = flon;
+        snprintf(said, sizeof(said), "no fix now: last GPS fix, from before restart");
+    } else {
+        snprintf(said, sizeof(said), "no GPS fix yet");
+        say(said);
+        return LS_ACT_UNAVAILABLE;
+    }
+    jump_to(lat, lon);
+    if (ls_map_zoom() < 11) ls_map_zoom_by(15 - ls_map_zoom());
+    say(said);
+    return LS_ACT_OK;
+}
+
 /* ROUTE keeps file names in PSRAM; the picker lends their labels to the UI. */
 #define ROUTE_DIR "/sdcard/lakeshark/routes"
 EXT_RAM_BSS_ATTR static char s_routes[LS_PICKER_MAX-1][128];
@@ -4086,11 +4505,83 @@ static void open_lines(void) {
     }
     ls_picker_empty_reason(LS_TEXT(t_scr_map_d_draws_a_line, "D draws a line; ENTER adds points; O finishes"));
 }
+/* SOURCE: where the map comes from, and keeping an area for offline use. */
+static const char *const SOURCE_NAME[SRC__COUNT] = { "Auto", "Local only", "Online only" };
+static const char *const SOURCE_WHAT[SRC__COUNT] = {
+    "local maps, else world tiles", "only maps on the card", "world tiles, saved or Wi-Fi" };
+static void open_source(void);
+/* The ground the last frame showed. */
+static void view_bbox(double *w, double *s, double *e, double *n)
+{
+    double lat, lon;
+    ls_map_get_center(&lat, &lon);
+    *w = lon - 0.05; *e = lon + 0.05; *s = lat - 0.05; *n = lat + 0.05;
+    if (s_pw > 0 && s_ph > 0) {
+        frame_ll(0, 0, s_pw, s_ph, n, w);
+        frame_ll(s_pw, s_ph, s_pw, s_ph, s, e);
+    }
+}
+/* TILES asks for the same thing from its own menu. */
+bool ls_scr_map_download_view(void)
+{
+    double w, s, e, n;
+    view_bbox(&w, &s, &e, &n);
+    return ls_maptiles_download_area(w, s, e, n, 0, LS_MAPTILES_AREA_MAXZ);
+}
+static void source_pick(int i)
+{
+    ls_val_t out;
+    ls_maptiles_stats_t st;
+    if (i >= 0 && i < SRC__COUNT) {
+        s_source = (map_source_t)i; s_use_archive = false; s_opened = false;
+        layers_set(s_layers);
+        engine_update();
+        say(SOURCE_WHAT[i]);
+        open_source();
+    } else if (i == SRC__COUNT) {
+        ls_maptiles_stats(&st);
+        if (st.job) ls_maptiles_cancel();
+        else {
+            double w, s, e, n;
+            view_bbox(&w, &s, &e, &n);
+            ls_maptiles_download_area(w, s, e, n, 0, LS_MAPTILES_AREA_MAXZ);
+        }
+        ls_maptiles_stats(&st);
+        say(st.job ? "stopping the download" : st.note);
+        ls_picker_close();
+    } else if (i == SRC__COUNT + 1) { a_map_files(NULL, &out); ls_picker_back(open_source); }
+    else if (i == SRC__COUNT + 2) { ls_picker_close(); open_app("tiles"); }
+}
+static void open_source(void)
+{
+    char d[LS_PICKER_DETAIL];
+    ls_picker_open("MAP SOURCE", source_pick);
+    ls_picker_back(open_options);
+    for (int i = 0; i < SRC__COUNT; i++) {
+        snprintf(d, sizeof(d), "%s%s", i == (int)s_source ? "[ON] " : "", SOURCE_WHAT[i]);
+        ls_picker_add(SOURCE_NAME[i], d);
+    }
+    ls_maptiles_stats_t st;
+    ls_maptiles_stats(&st);
+    if (st.job) snprintf(d, sizeof(d), "%u of %u tiles so far", (unsigned)st.job_done, (unsigned)st.job_total);
+    else {
+        double w, s, e, n;
+        view_bbox(&w, &s, &e, &n);
+        const uint32_t tiles = ls_maptiles_area_tiles(w, s, e, n, 0, LS_MAPTILES_AREA_MAXZ);
+        if (tiles > LS_MAPTILES_AREA_MAX) snprintf(d, sizeof(d), "zoom in first");
+        else snprintf(d, sizeof(d), "%u tiles, to zoom %d", (unsigned)tiles, LS_MAPTILES_AREA_MAXZ);
+    }
+    ls_picker_add(st.job ? "Stop download" : "Download this area", d);
+    const char *arch = ls_map_archive();
+    const char *leaf = arch ? strrchr(arch, '/') : NULL;
+    ls_picker_add(LS_TEXT(t_scr_map_map_file_on_the, "Map file on the card"), leaf ? leaf + 1 : "choose a file");
+    ls_picker_add("Tile manager", "what is on the card, clear saved tiles");
+}
 static void options_pick(int i) {
     ls_val_t out;
     if(i==0) a_map_layers(NULL,&out);
     if(i==1) open_style();
-    if(i==2) { a_map_files(NULL,&out);ls_picker_back(open_options); }
+    if(i==2) open_source();
     if(i==3) { ls_opt_open(ls_route_options());ls_opt_back(open_options); }
     if(i==4) save_or_say();
     if(i==5) { s_cover_lat=999;cover_update();open_options(); }
@@ -4103,7 +4594,7 @@ static void open_options(void) {
     ls_picker_open("MAP OPTIONS",options_pick);
     ls_picker_add("Layers","overlay switches");
     ls_picker_add("Style","map rendering");
-    ls_picker_add("Map files","SD archives");
+    ls_picker_add("Source",SOURCE_WHAT[s_source]);
     ls_picker_add("Guidance","route settings");
     ls_picker_add("Retry saving marks",ls_marks_save_status());
     ls_picker_add("Reset coverage",LS_TEXT(t_scr_map_fresh_direct_receptions_from, "fresh direct receptions from now"));
@@ -4124,8 +4615,8 @@ static void register_view_action(void)
 {
     static bool done;
     if (done) return;
-    done = ls_action_register("map.view", "", LS_CAP_UI, a_map_view,
-                              LS_TEXT(t_scr_map_field_blocks_or_line, "field, blocks, or line art"));
+    done = ls_action_register("map.view", "", LS_CAP_UI, a_map_view, "look: detailed, dots or simple");
+    ls_action_register("map.gps", "", LS_CAP_UI, a_map_gps, "centre once on the GPS fix");
     ls_action_register("map.context", "s", LS_CAP_UI, a_map_context, LS_TEXT(t_scr_map_selected_map_item_controls, "selected map item controls"));
     ls_action_register("map.route", "", LS_CAP_UI, a_map_route, LS_TEXT(t_scr_map_follow_gpx_or_backtrack, "follow GPX or backtrack a walk"));
     ls_action_register("map.route_options", "", LS_CAP_UI, a_route_options, LS_TEXT(t_scr_map_route_guidance_settings, "route guidance settings"));
@@ -4172,7 +4663,7 @@ void ls_map_preview(tui_surface *sf, tui_rect area, double lat, double lon)
 }
 static void preview_draw(tui_surface *sf, tui_rect area, double lat, double lon)
 {
-    style_load();
+    engine_update();
     if (!cartocore_view() && !s_opened) { s_opened=true; rescan(); }
     /* The room the labels over this take starts empty every frame, picture
        or not: with no archive there is nothing to draw, but the aircraft and
@@ -4191,6 +4682,7 @@ static void preview_draw(tui_surface *sf, tui_rect area, double lat, double lon)
         }
         palette();
         ls_carto_map_style(palette()->tint,palette_own()==PAL_PAPER?2:1);
+        view_dot(lat,lon,z);
         if(ls_carto_map_draw(sf,area,lat,lon,z,s_view==MAP_VIEW_CC_BRAILLE,layer(L_PLACES) && !layer(L_NOLABEL)))
             ls_tui_basemap(sf,area,s_cc_colours);
         return;
@@ -4501,6 +4993,8 @@ static void mc_mark(int k)
     const uint32_t u = (uint32_t)(t - s_mc_t);
     s_mc_avg[k] = s_mc_avg[k] ? (s_mc_avg[k] * 7 + u) / 8 : u;
     if (u > s_mc_max[k]) s_mc_max[k] = u;
+    /* 'carto trace': a stage of a MAP frame long enough to be seen */
+    if (u > 15000) ls_map_trace(MC_NAME[k], (int32_t)(u / 1000), k);
     s_mc_t = t;
 }
 void ls_map_cost_print(void)
@@ -4511,14 +5005,80 @@ void ls_map_cost_print(void)
     }
 }
 
+/* What is under the overlays this frame (see s_probe_err), after they are drawn. */
+static double s_fresh_lat, s_fresh_lon;
+static int s_fresh_z = -1;
+static void probe_view(bool cc, bool cc_ok, const uint16_t *px, int pw, int ph)
+{
+    double lat, lon; ls_map_get_center(&lat, &lon);
+    const int z = ls_map_zoom();
+    s_probe_err = 0; s_probe_blank = 0; s_probe_fresh = false;
+    if (cc && cc_picture()) {
+        if (!cc_ok || !s_pic_have) { s_probe_blank = 1000; return; }
+        s_probe_err = (s_pic_built_z == z && s_pic_built_lat == lat && s_pic_built_lon == lon) ? 0 : 999;
+        s_probe_blank = s_pic_blank;
+        s_probe_fresh = s_pic_z == (unsigned)z && s_pic_lat == lat && s_pic_lon == lon;
+    } else if (cc) {
+        double ax, ay, k;
+        if (ls_carto_map_fresh()) { s_probe_fresh = true; s_fresh_lat = lat; s_fresh_lon = lon; s_fresh_z = z; return; }
+        if (!cc_ok) { s_probe_blank = 1000; return; }
+        if (ls_carto_map_held_warp(&ax, &ay, &k)) {
+            const double x0 = fmax(0.0, -ax / k), x1 = fmin((double)pw, (pw - ax) / k);
+            const double y0 = fmax(0.0, -ay / k), y1 = fmin((double)ph, (ph - ay) / k);
+            const double seen = (x1 > x0 && y1 > y0) ? (x1 - x0) * (y1 - y0) : 0.0;
+            s_probe_blank = (int)(1000.0 - seen * 1000.0 / ((double)pw * ph) + 0.5);
+            return;
+        }
+        if (s_fresh_z != z) { s_probe_err = 999; return; }
+        const double world = 256.0 * ldexp(1.0, z);
+        s_probe_err = (int)(fabs((lon - s_fresh_lon) / 360.0 * world) + fabs((merc_y(lat) - merc_y(s_fresh_lat)) * world));
+    } else {
+        if (!px) { s_probe_blank = 1000; return; }
+        double flat, flon; int fz;
+        const bool own = ls_map_render_view(&flat, &flon, &fz) && flat == lat && flon == lon && fz == z;
+        if (s_wv_on) { s_probe_blank = s_wv_blank; return; }
+        s_probe_err = own ? 0 : 999;
+        s_probe_blank = ls_map_render_unfinished();
+        s_probe_fresh = own && !s_probe_blank;
+    }
+}
+static int64_t s_tr_us;
+static int s_tr_frames, s_tr_off, s_tr_blank, s_tr_z = -1;
+static double s_tr_lat, s_tr_lon;
+static void probe_frame(int64_t now)
+{
+    double lat, lon; ls_map_get_center(&lat, &lon);
+    const int z = ls_map_zoom();
+    if (lat != s_tr_lat || lon != s_tr_lon || z != s_tr_z) {
+        if (s_tr_z >= 0) {
+            if (!s_tr_us) s_tr_frames = s_tr_off = s_tr_blank = 0;
+            s_tr_us = now;
+        }
+        s_tr_lat = lat; s_tr_lon = lon; s_tr_z = z;
+    }
+    if (!s_tr_us) return;
+    s_tr_frames++;
+    if (s_probe_err) s_tr_off++;
+    if (s_probe_blank) s_tr_blank++;
+    ls_map_trace("frame", (int32_t)s_view * 10000 + (s_probe_err > 9999 ? 9999 : s_probe_err),
+                 (int32_t)s_probe_labels * 10000 + s_probe_blank);
+    if ((s_probe_fresh && !s_probe_err && !s_probe_blank) || now - s_tr_us > 8000000) {
+        ls_map_trace(s_probe_fresh ? "settled" : "unsettled", (int32_t)((now - s_tr_us) / 1000), s_tr_frames);
+        ls_map_trace("bad frames", s_tr_off, s_tr_blank);
+        s_tr_us = 0;
+    }
+}
+
 static void draw(tui_surface *sf, tui_rect area)
 {
     s_mc_t = esp_timer_get_time();
+    s_probe_labels = 0;
     static const char *previous_save;
     const char *save_status=ls_marks_save_status();
     if(save_status && (save_status!=previous_save || strstr(save_status,"NOT SAVED"))) say(save_status);
     previous_save=save_status;
     if(ls_place_search_active()) { ls_place_search_draw(sf,area);return; }
+    engine_update();
     drag_pan();
     view_keep(false);
     const int64_t now = esp_timer_get_time();
@@ -4551,6 +5111,7 @@ static void draw(tui_surface *sf, tui_rect area)
     int cw = 10;
     ls_tui_geometry(NULL, NULL, &cw, NULL);
     ls_map_set_tile_px(cartocore_view()?256:256 * SUB_X / (cw > 0 ? cw : 10));
+    ls_map_set_thin(look_lines());
     bool cc_ready=true;
     if(cartocore_view()) {
         ls_map_external_view(body.w*SUB_X,body.h*sub_y());
@@ -4592,9 +5153,12 @@ static void draw(tui_surface *sf, tui_rect area)
         ls_tui_reserve(tui_rect_make(0,0,0,0));
         ls_tui_image(tui_rect_make(0,0,0,0),NULL,0,0,0);
         ls_carto_map_style(palette()->tint,palette_own()==PAL_PAPER?2:1);
+        view_dot(lat,lon,ls_map_zoom());
         cc_ok=ls_carto_map_draw(sf,body,lat,lon,ls_map_zoom(),s_view==MAP_VIEW_CC_BRAILLE,layer(L_PLACES) && !layer(L_NOLABEL));
     }
     const char *why = cc?(cc_ok?NULL:ls_carto_map_status()):ls_map_status();
+    double held_ax, held_ay, held_k;
+    const bool cc_moved = cc && !cc_picture() && cc_ok && ls_carto_map_held_warp(&held_ax, &held_ay, &held_k);
     if(!why && (cc ? cc_ok && ls_carto_map_fresh() : px && !ls_map_render_busy())) {
         ls_map_get_center(&s_covered_lat,&s_covered_lon);s_have_covered_view=true;
     }
@@ -4629,25 +5193,25 @@ static void draw(tui_surface *sf, tui_rect area)
     if (s_ring_nm > 0) snprintf(rings, sizeof(rings), "  rings %gnm", s_ring_nm);
     if (ls_tui_is_wide()) {
         LS_SNPRINTF(t_scr_map_s_s_s_air, title, sizeof(title), "[%s %s/S]  AIR %d  MESH %d  MARK %d%s  vec %ds  GPS %s",
-                 palette()->name, VIEW_NAME[s_view], count_air_positions(), nmesh, ls_marks_count(),
+                 palette()->name, source_word(), count_air_positions(), nmesh, ls_marks_count(),
                  rings, s_vector_s, gps);
         tui_put_str(sf, heading, area.x, area.y, title, head);
     } else {
-        snprintf(title, sizeof(title), "[ %s %s ]  %s", palette()->name, VIEW_NAME[s_view],
+        snprintf(title, sizeof(title), "[ %s %s ]  %s", palette()->name, source_word(),
                  ls_sketch_drawing() ? "DRAWING" : "MAP");
         tui_put_str(sf, heading, area.x, area.y, title, head);
         char b[24];
         snprintf(b, sizeof(b), "AIR %d", count_air_positions());
-        tui_put_str(sf, area, area.x, area.y + 1, b, TUI_ATTR(TUI_YELLOW, TUI_BLACK));
+        tui_put_str(sf, area, area.x, area.y + 1, b, ls_ink_hue(TUI_ATTR(TUI_YELLOW, TUI_BLACK)));
         snprintf(b, sizeof(b), "MESH %d", nmesh);
         tui_put_str(sf, area, area.x + 8, area.y + 1, b, TUI_ATTR(TUI_MAGENTA, TUI_BLACK));
         snprintf(b, sizeof(b), "MARK %d", ls_marks_count());
-        tui_put_str(sf, area, area.x + 16, area.y + 1, b, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, area, area.x + 16, area.y + 1, b, ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
         snprintf(b, sizeof(b), "GPS %s", gps);
         tui_put_str(sf, area, area.x + 24, area.y + 1, b, TUI_ATTR(TUI_CYAN, TUI_BLACK));
     }
     tui_put_str(sf, area, s_controls_hit.x, area.y, s_controls_hidden ? "[SHOW KEYS]" : "[HIDE KEYS]",
-                TUI_ATTR(TUI_BLACK, TUI_CYAN));
+                ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, TUI_CYAN)));
 
     mc_mark(MC_HEAD);
     s_nhits = 0;
@@ -4657,6 +5221,7 @@ static void draw(tui_surface *sf, tui_rect area)
     /* No frame, or a frame with nothing in it: the outlines, with the pan
        pad, instead of a notice that leaves nowhere to go. */
     const bool flat_ok = cc || s_view == MAP_VIEW_FIELD;
+    bool noted = false;                 /* the map's top row carries a notice */
     const bool opening = cc ? why && !strncmp(why, "opening", 7) : ls_map_render_busy();
     if (flat_ok && ((!px && !cc_ok) || (why && !ls_map_render_busy())) && map_flat(sf, body, opening)) {
         ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
@@ -4668,6 +5233,7 @@ static void draw(tui_surface *sf, tui_rect area)
         /* Say it: outlines in place of the map read as the map having changed
            its look, when it is a map that could not be drawn. */
         if (why && !opening && body.w >= 20) {
+            noted = true;
             char note[80];
             snprintf(note, sizeof(note), " OUTLINES ONLY: %.60s ", why);
             tui_put_str(sf, body, body.x + 1, body.y, note, TUI_ATTR(TUI_BLACK, TUI_YELLOW | TUI_BRIGHT));
@@ -4684,7 +5250,9 @@ static void draw(tui_surface *sf, tui_rect area)
         draw_placeholder(sf, body, why);
         s_pad_rect = tui_rect_make(0, -1, 0, 0);
         s_card_rect = tui_rect_make(0, -1, 0, 0);
-    } else if(!cc || cc_picture() || ls_carto_map_fresh()) {
+    } else if(!cc || cc_picture() || ls_carto_map_fresh() || cc_moved) {
+        /* cc_moved: the last text frame moved to this view (held_moved) is a
+           map the markers and names belong on, not a frame to skip them in. */
         s_pad_rect = s_controls_hidden ? tui_rect_make(0, -1, 0, 0) : pad_rect_for(body);
         s_card_rect = card_rect_for(body);
         if(!cc) draw_cells(sf, body, px, pw, ph);
@@ -4695,7 +5263,8 @@ static void draw(tui_surface *sf, tui_rect area)
         if(cc_picture() && s_pic_view && pw == s_pic_w && ph == s_pic_h)
             flat_under(sf, body, pw, ph, s_pic_view, s_pic_shown);
         else if(s_view == MAP_VIEW_FIELD && s_field_pixels && s_field_valid && pw == s_field_w && ph == s_field_h)
-            flat_under(sf, body, pw, ph, s_field_pixels, s_field_serial ^ 0x80000000u ^ ((uint32_t)s_field_pal << 20));
+            flat_under(sf, body, pw, ph, s_wv_on ? s_world_view : s_field_pixels,
+                       s_wv_on ? 0x5EED0000u ^ s_wv_shown : s_field_serial ^ 0x80000000u ^ ((uint32_t)s_field_pal << 20));
         mc_mark(MC_PICTURE);
         overlay_reset(body, s_pad_rect, s_card_rect);
 
@@ -4759,21 +5328,42 @@ static void draw(tui_surface *sf, tui_rect area)
         mc_mark(MC_TEXT);
     }
 
+    /* World tiles: who the map is by, or how many tiles are still coming. */
+    if (!cc && ls_map_world() && body.h > 6 && body.w > 34) {
+        ls_map_stats_t ms;
+        ls_map_stats(&ms);
+        char w[40];
+        if (ms.tiles_waiting) snprintf(w, sizeof(w), " GETTING %d TILES ", ms.tiles_waiting);
+        else snprintf(w, sizeof(w), "%s", LS_MAPTILES_ATTRIBUTION);
+        tui_put_str(sf, body, body.x + body.w - (int)strlen(w), body.y + body.h - 1, w, LS_ATTR_DIM);
+    }
+    s_detail_rect = tui_rect_make(0, -1, 0, 0);
+    if (s_detail_missing && !cc && body.h > 6 && body.w >= 30) {
+        const char *chip = body.w >= 50 ? " NO DETAILED MAP HERE: WORLD LINES SHOWN  GET IT > " : " NO DETAILED MAP HERE  GET IT > ";
+        s_detail_rect = tui_rect_make(body.x, body.y + (noted ? 1 : 0), (int)strlen(chip), 1);
+        tui_put_str(sf, body, body.x, s_detail_rect.y, chip, TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT));
+    }
     centre_reticle(sf,body);
     double lat = 0, lon = 0;
     ls_map_get_center(&lat, &lon);
     const ls_sketch_t *open = ls_sketch_open();
     snprintf(s_note,sizeof(s_note),"MARK HERE %.5f,%.5f",lat,lon);
     if(open) snprintf(s_note+strlen(s_note),sizeof(s_note)-strlen(s_note),"  %d POINTS",open->n);
-    ls_tui_status_set(s_toast[0] && now-s_toast_us<4000000 ? s_toast : s_note, NULL);
+    const bool toast = s_toast[0] && now-s_toast_us<4000000;
+    ls_tui_status_set(toast ? s_toast : s_note, NULL);
     int coord_row=area.y+(ls_tui_is_wide() ? 1 : 2);
-    tui_put_str(sf,area,area.x,coord_row,s_note,TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+    tui_put_str(sf,area,area.x,coord_row,s_note,ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)));
     const char *hint=ls_sketch_drawing() ? "A ADD  U UNDO  O FINISH  C CANCEL  +/- ZOOM" :
         selected_received() ? "W SAVE  V DELETE  Q DONE" :
         s_sel==SEL_MARK ? "P PREV J NEXT E NAME M MOVE V DEL S SEND Q DONE" :
         s_sel==SEL_LINE ? "P PREV J NEXT E RENAME V DELETE S SEND Q DONE" :
         s_sel==SEL_NODE ? "Z CENTRE  C MESSAGE  Q DONE" : "K MARK  J SELECT  D DRAW  B PEER  O OPTIONS";
-    tui_put_str(sf,area,area.x,coord_row+1,hint,LS_ATTR_DIM);
+    /* The answer to a key takes the browsing hint row for a moment: the
+       portrait status row has no room for it, and LOOK or GOTO GPS said
+       nothing. A selection's or a drawing's keys stay. */
+    if (toast && !ls_sketch_drawing() && s_sel == SEL_NONE)
+        tui_put_str(sf,area,area.x,coord_row+1,s_toast,ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK)));
+    else tui_put_str(sf,area,area.x,coord_row+1,hint,LS_ATTR_DIM);
 
 
     s_dl_row = -1;
@@ -4786,14 +5376,14 @@ static void draw(tui_surface *sf, tui_rect area)
         const int room = area.w - (int)strlen(tail) - 4;
         snprintf(strip, sizeof(strip), "GET %.*s", room > 0 ? room : 0, dl[0]);
         s_dl_row = body.y;
-        for (int x = area.x; x < area.x + area.w; x++) tui_put_char(sf, area, x, s_dl_row, ' ', TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
-        tui_put_str(sf, area, area.x, s_dl_row, strip, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
-        tui_put_str(sf, area, area.x + area.w - (int)strlen(tail), s_dl_row, tail, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+        for (int x = area.x; x < area.x + area.w; x++) tui_put_char(sf, area, x, s_dl_row, ' ', ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
+        tui_put_str(sf, area, area.x, s_dl_row, strip, ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
+        tui_put_str(sf, area, area.x + area.w - (int)strlen(tail), s_dl_row, tail, ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
     }
     if (guidance) {
         char strip[96];ls_route_guidance(strip,sizeof(strip));
         tui_put_str(sf,area,area.x,area.y+s_header_h-1,strip,
-            TUI_ATTR(ls_route_live()->off_route ? TUI_YELLOW|TUI_BRIGHT : TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
+            ls_ink_hue(TUI_ATTR(ls_route_live()->off_route ? TUI_YELLOW|TUI_BRIGHT : TUI_CYAN|TUI_BRIGHT,TUI_BLACK)));
     }
     if (ctl_h) ls_quick_draw_posture(sf, s_quick_rect, ls_tui_is_wide(), quick, nq);
     /* The tab strip follows the controls (a selection can bring the controls
@@ -4813,6 +5403,8 @@ static void draw(tui_surface *sf, tui_rect area)
 #ifdef LS_MAP_AUDIT
     s_carto_audit_bad=carto_audit_cells(sf); /* before an external modal covers MAP */
 #endif
+    probe_view(cc, cc_ok, px, pw, ph);
+    probe_frame(now);
     mc_mark(MC_TAIL);
 }
 
@@ -5074,6 +5666,7 @@ static bool touch(int col, int row)
     if(ls_place_search_active())return ls_place_search_touch(col,row);
     if (s_dragging) { drag_pan(); s_dragging = false; return true; }
     if (in_rect(s_controls_hit, col, row) || in_rect(s_show_rect, col, row)) return key(LS_TK_CHAR, 'x');
+    if (in_rect(s_detail_rect, col, row)) { open_app("tiles"); return true; }
     if (in_rect(s_near_rect, col, row)) {
         jump_to(s_near_lat, s_near_lon);
         if (ls_map_zoom() > 8) ls_map_zoom_by(8 - (int)ls_map_zoom());

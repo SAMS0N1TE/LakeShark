@@ -29,6 +29,7 @@ STATUS_LINK = "https://terminalbay.com/?m=lakeshark-apps#submit/mine"
 DEVICE_PAGE = "https://github.com/login/device"
 
 CATEGORIES = ["games", "tools", "radio", "maps", "utilities"]
+GROUPS = ["radio", "field", "system", "user"]   # the HOME tab; optional, user when left out
 AI_USES = ["none", "assisted", "substantial", "generated"]
 AI_TEXT = {"none": "no AI at all", "assisted": "AI helped (suggestions, fixes, review)",
            "substantial": "AI wrote large parts", "generated": "AI wrote most or all of it"}
@@ -330,6 +331,9 @@ def check_meta(meta, source_id=None):
         missing.append("category")
     elif cat not in CATEGORIES:
         errors.append("category: one of %s" % ", ".join(CATEGORIES))
+    group = meta.get("group")
+    if group and group not in GROUPS:
+        errors.append("group: one of %s (or leave it out: user)" % ", ".join(GROUPS))
     desc = meta.get("description")
     if not isinstance(desc, str) or not desc.strip():
         missing.append("description")

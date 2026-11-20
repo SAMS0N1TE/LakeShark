@@ -46,8 +46,8 @@
 
 #define HUE TUI_CYAN
 #define WHITE TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK)
-#define INK(h) TUI_ATTR((h) | TUI_BRIGHT, TUI_BLACK)
-#define SOFT(h) TUI_ATTR((h), TUI_BLACK)
+#define INK(h) ls_ink_hue(TUI_ATTR((h) | TUI_BRIGHT, TUI_BLACK))
+#define SOFT(h) ls_ink_hue(TUI_ATTR((h), TUI_BLACK))
 
 /* ----------------------------------------------------------------- state -- */
 
@@ -785,10 +785,10 @@ static void draw_list(tui_surface *sf)
             const bool open = i == s_cur, at = i == s_list_cur && s_focus == F_LIST;
             const uint8_t hue = c->kind == LS_MC_DM ? role_hue(c->role) : HUE;
             s_list_row[row] = (int8_t)i;
-            if (open) ls_fill_dither(sf, tui_rect_make(in.x, y, in.w, 1), LS_DITHER_MEDIUM, HUE);
-            else if (at) ls_fill_dither(sf, tui_rect_make(in.x, y, in.w, 1), LS_DITHER_LIGHT, HUE);
-            if (at || open) ls_box_put(sf, in, in.x, y, LS_SHAPE_RIGHT, at ? WHITE : INK(HUE));
-            tui_put_char(sf, in, in.x + 1, y, conv_glyph(c), c->kind == LS_MC_DM && !c->heard ? LS_ATTR_FAINT : INK(hue));
+            /* The open conversation wears the selection bar; the keyboard's place and the pointer a quieter one. */
+            const uint8_t band = ls_dui_line(sf, tui_rect_make(in.x, y, in.w, 1), open || at, open);
+            if (at || open) ls_box_put(sf, in, in.x, y, LS_SHAPE_RIGHT, band ? band : at ? WHITE : INK(HUE));
+            tui_put_char(sf, in, in.x + 1, y, conv_glyph(c), band ? band : c->kind == LS_MC_DM && !c->heard ? LS_ATTR_FAINT : INK(hue));
             char name[LS_MESH_PEER_NAME + 2], tail[12];
             tail[0] = 0;
             if (c->unread) snprintf(tail, sizeof(tail), " %d ", c->unread);
@@ -798,11 +798,11 @@ static void draw_list(tui_surface *sf)
             }
             const int tw = (int)strlen(tail), room = in.w - 4 - tw;
             snprintf(name, sizeof(name), "%.*s", room > 0 ? room : 0, c->name);
-            const uint8_t ink = c->unread || open ? WHITE : c->total ? TUI_ATTR(TUI_WHITE, TUI_BLACK)
+            const uint8_t ink = band ? band : c->unread || open ? WHITE : c->total ? TUI_ATTR(TUI_WHITE, TUI_BLACK)
                               : c->kind == LS_MC_DM && !c->heard ? LS_ATTR_FAINT : LS_ATTR_DIM;
             tui_put_str(sf, in, in.x + 3, y, name, ink);
             if (tw) tui_put_str(sf, in, in.x + in.w - tw, y, tail,
-                                c->unread ? TUI_ATTR(TUI_BLACK, TUI_YELLOW) : LS_ATTR_DIM);
+                                c->unread ? TUI_ATTR(TUI_BLACK, TUI_YELLOW) : band ? band : LS_ATTR_DIM);
         }
         row++;
     }
@@ -1157,8 +1157,8 @@ static void draw_nodes(tui_surface *sf)
         const bool on = k == s_nsel;
         const uint8_t hue = role_hue(p->type);
         char text[48];
-        if (on) ls_fill_dither(sf, tui_rect_make(s_t.body.x, y, s_t.body.w, 1), LS_DITHER_MEDIUM, TUI_MAGENTA);
-        if (on) ls_box_put(sf, s_t.body, s_t.body.x, y, LS_SHAPE_RIGHT, s_focus == F_TABLE ? WHITE : LS_ATTR_DIM);
+        (void)y;
+        ls_dui_table_row(sf, &s_t, row, on, s_focus == F_TABLE);
         ls_dui_table_cell(sf, &s_t, NCOLS, LS_MN_NAME, row, p->name[0] ? p->name : "(no name)",
                           p->name[0] ? (on ? WHITE : INK(hue)) : LS_ATTR_DIM);
         ls_dui_table_cell(sf, &s_t, NCOLS, LS_MN_ID, row, p->id, LS_ATTR_DIM);
@@ -1215,7 +1215,7 @@ void ls_mesh_desk_draw(tui_surface *sf, tui_rect a, const ls_mesh_stats_t *st)
     s_nhit = 0;
     ls_dui_context_claim(context);
     if (a.w < 44 || a.h < 12) {
-        ls_panel_notice(sf, a, "MESH", "Enlarge the window", "the chat keeps its place");
+        ls_panel_notice(sf, a, NULL, "Enlarge the window", "the chat keeps its place");
         return;
     }
     fetch();

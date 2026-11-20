@@ -1,15 +1,16 @@
 /* See ls_vitals.h. */
 #include "ls_vitals.h"
+#include "esp_attr.h"
 
 #include "esp_heap_caps.h"
 
 #include <stdio.h>
 #include <string.h>
 
-static ls_trend_t s_internal;
-static ls_trend_t s_largest;
-static ls_trend_t s_psram;
-static ls_trend_t s_dma;
+static EXT_RAM_BSS_ATTR ls_trend_t s_internal;
+static EXT_RAM_BSS_ATTR ls_trend_t s_largest;
+static EXT_RAM_BSS_ATTR ls_trend_t s_psram;
+static EXT_RAM_BSS_ATTR ls_trend_t s_dma;
 static uint32_t   s_internal_low;
 static uint32_t   s_psram_low;
 static uint32_t   s_dma_low;
@@ -71,7 +72,7 @@ uint32_t ls_vitals_watched_s(void)
     return (uint32_t)((uint64_t)s_samples * LS_VITALS_INTERVAL_US / 1000000u);
 }
 
-static ls_vitals_mark_t s_marks[LS_VITALS_MARKS];
+static EXT_RAM_BSS_ATTR ls_vitals_mark_t s_marks[LS_VITALS_MARKS];
 static int              s_mark_n;
 
 void ls_vitals_mark(const char *name)

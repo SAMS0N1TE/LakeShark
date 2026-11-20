@@ -1310,7 +1310,7 @@ DRFLAC_API drflac_bool32 drflac_next_cuesheet_track(drflac_cuesheet_track_iterat
         #define DRFLAC_GNUC_INLINE_HINT inline
     #endif
 
-    #if (__GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ >= 2)) || defined(__clang__)
+    #if ((__GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ >= 2)) || defined(__clang__)) && !defined(DR_FLAC_NO_FORCED_INLINE)
         #define DRFLAC_INLINE DRFLAC_GNUC_INLINE_HINT __attribute__((always_inline))
     #else
         #define DRFLAC_INLINE DRFLAC_GNUC_INLINE_HINT

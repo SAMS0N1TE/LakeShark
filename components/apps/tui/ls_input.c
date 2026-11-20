@@ -30,6 +30,7 @@ static uint32_t s_epoch, s_applied_epoch;
 static int s_p50, s_p95;
 static int64_t s_latency_us;
 static bool s_latency_valid;
+static uint32_t s_coalesced;          /* hover moves replaced while waiting (ls_input_post) */
 
 __attribute__((weak)) bool ls_desk_active(void) { return false; }
 __attribute__((weak)) bool ls_desk_input(const ls_input_ev_t *ev) { (void)ev; return false; }
@@ -50,6 +51,23 @@ bool ls_input_post(const ls_input_ev_t *ev)
 {
     if (!ev || ev->kind > LS_IEV_CONTACT_UP) return false;
     LOCK();
+    /* A pointer moving with no button held says only where it is now: one
+       still waiting for the UI is replaced by the next. The page sends 60 a
+       second and a busy desk draws 15 to 25 frames; every one of them was
+       hit-tested and hovered, in order, before the frame that showed only
+       the last. A move with a button held is kept: a drag's path is what a
+       drawing or a gesture is made of. Contacts (touch) are other kinds. */
+    if (ev->kind == LS_IEV_PTR_MOVE && !ev->buttons && s_count && !s_reset) {
+        ls_input_ev_t *const last = &s_ring[(s_read + s_count - 1) % INPUT_N];
+        if (last->kind == LS_IEV_PTR_MOVE && !last->buttons && last->source == ev->source &&
+            last->device == ev->device && last->mods == ev->mods && last->native_pixels == ev->native_pixels) {
+            *last = *ev;
+            s_coalesced++;
+            UNLOCK();
+            ls_input_wake();
+            return true;
+        }
+    }
     const bool room = s_count < INPUT_N && !s_reset;
     if (room) s_ring[(s_read + s_count++) % INPUT_N] = *ev;
     else s_reset = true;
@@ -143,6 +161,8 @@ unsigned ls_input_drain(void)
     }
     return n;
 }
+
+uint32_t ls_input_coalesced(void) { return __atomic_load_n(&s_coalesced, __ATOMIC_RELAXED); }
 
 uint32_t ls_input_applied_seq(void) { return __atomic_load_n(&s_applied, __ATOMIC_ACQUIRE); }
 uint32_t ls_input_applied_epoch(void) { return __atomic_load_n(&s_applied_epoch, __ATOMIC_ACQUIRE); }

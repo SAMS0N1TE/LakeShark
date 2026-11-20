@@ -317,15 +317,15 @@ static void simple_face(tui_surface *sf, tui_rect area, const ls_compass_scene_t
         const int x = cx + (int)(sinf(angle) * rx), y = cy - (int)(cosf(angle) * ry);
         char c = i % 6 ? '.' : '+';
         uint8_t at = valid ? LS_ATTR_DIM_COMPAT : LS_ATTR_FAINT_COMPAT;
-        if (near_angle(deg, sc->target, 3.0f)) { c = '@'; at = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK); }
-        else if (near_angle(deg, sc->sun, 3.0f)) { c = '*'; at = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK); }
+        if (near_angle(deg, sc->target, 3.0f)) { c = '@'; at = ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)); }
+        else if (near_angle(deg, sc->sun, 3.0f)) { c = '*'; at = ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)); }
         else if (near_angle(deg, sc->lock, 3.0f)) { c = '#'; at = TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, TUI_BLACK); }
-        else if (near_angle(deg, sc->df, 3.0f)) { c = 'X'; at = TUI_ATTR(DF_INK, TUI_BLACK); }
+        else if (near_angle(deg, sc->df, 3.0f)) { c = 'X'; at = ls_ink_hue(TUI_ATTR(DF_INK, TUI_BLACK)); }
         tui_put_char(sf, area, x, y, c, at);
         if (valid && sc->lobe && sc->lobe[i] > 0 && sc->fill != LS_COMPASS_FILL_OFF) {
             const float v = 0.1f + 0.9f * fminf(1.0f, sc->lobe[i]);
             tui_put_char(sf, area, cx + (int)(sinf(angle) * rx * v), cy - (int)(cosf(angle) * ry * v), '*',
-                         TUI_ATTR(heat(fminf(1.0f, sc->lobe[i])), TUI_BLACK));
+                         ls_ink_hue(TUI_ATTR(heat(fminf(1.0f, sc->lobe[i])), TUI_BLACK)));
         }
     }
     if (valid) {
@@ -333,7 +333,7 @@ static void simple_face(tui_surface *sf, tui_rect area, const ls_compass_scene_t
         for (int i = 0; i < 4; i++) {
             const float angle = (i * 90 - heading) * RAD;
             tui_put_char(sf, area, cx + (int)lroundf(sinf(angle) * rx * .72f), cy - (int)lroundf(cosf(angle) * ry * .72f),
-                         cardinals[i], TUI_ATTR(ls_compass_letter_ink(i == 0, sc->white_letters), TUI_BLACK));
+                         cardinals[i], ls_ink_hue(TUI_ATTR(ls_compass_letter_ink(i == 0, sc->white_letters), TUI_BLACK)));
         }
         if (area.h >= 22 && area.w >= 34)
             for (int degrees = 0; degrees < 360; degrees += 30) {
@@ -349,7 +349,7 @@ static void simple_face(tui_surface *sf, tui_rect area, const ls_compass_scene_t
             if (!isfinite(h->bearing)) continue;
             const float angle = (h->bearing - heading) * RAD, v = 0.2f + 0.7f * fmaxf(0.0f, fminf(1.0f, h->strength));
             tui_put_char(sf, area, cx + (int)lroundf(sinf(angle) * rx * v), cy - (int)lroundf(cosf(angle) * ry * v), 'o',
-                         TUI_ATTR(h->age < 0.4f ? (TUI_GREEN | TUI_BRIGHT) : TUI_GREEN, TUI_BLACK));
+                         ls_ink_hue(TUI_ATTR(h->age < 0.4f ? (TUI_GREEN | TUI_BRIGHT) : TUI_GREEN, TUI_BLACK)));
         }
         for (int m = 0; m < sc->mark_count && sc->marks; m++) {
             if (!isfinite(sc->marks[m].bearing)) continue;
@@ -359,8 +359,8 @@ static void simple_face(tui_surface *sf, tui_rect area, const ls_compass_scene_t
         }
     }
     const int marker_y = cy - (int)lroundf(ry) - 2;
-    tui_put_char(sf, area, cx, marker_y, '^', TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
-    tui_put_char(sf, area, cx, marker_y + 1, '|', TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    tui_put_char(sf, area, cx, marker_y, '^', ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
+    tui_put_char(sf, area, cx, marker_y + 1, '|', ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
     tui_put_char(sf, area, cx, cy, '+', LS_ATTR_DIM_COMPAT);
     if (!valid) tui_put_str(sf, area, cx - 4, cy + 1, "NO MAG", LS_ATTR_DIM_COMPAT);
 }
@@ -388,6 +388,11 @@ void ls_dots_blit(tui_surface *sf, tui_rect area, const ls_dot_t *dots, int dots
             for (int k = 0; k < 6; k++) {
                 const ls_dot_t *q = &dots[(3 * r + k / 2) * dots_w + 2 * c + (k & 1)];
                 col[k] = q->set ? q->colour : -1;
+            }
+            /* Most cells are one colour all over, or empty: no voting needed. */
+            if (col[0] == col[1] && col[1] == col[2] && col[2] == col[3] && col[3] == col[4] && col[4] == col[5]) {
+                if (col[0] >= 0) tui_put_char(sf, area, area.x + c, area.y + r, LS_TUI_SEXT(63), TUI_ATTR(col[0], TUI_BLACK));
+                continue;
             }
             for (int k = 0; k < 6; k++) for (int m = 0; m < 6; m++) count[k] += col[m] == col[k];
             int ink = -1;
@@ -487,10 +492,10 @@ static void art_draw(tui_surface *sf, tui_rect area, const ls_compass_scene_t *s
         const float az = i * 90.0f;
         const uint8_t dim = TUI_BLACK | TUI_BRIGHT;
         const uint8_t fg = sc->valid ? ls_compass_letter_ink(i == 0, sc->white_letters) : dim;
-        label(sf, area, &v, az, 0.70f, 0, CARD_N[i], TUI_ATTR(fg, TUI_BLACK));
+        label(sf, area, &v, az, 0.70f, 0, CARD_N[i], ls_ink_hue(TUI_ATTR(fg, TUI_BLACK)));
         if (v.rpx > 150)
             label(sf, area, &v, az + 45.0f, 0.70f, 0, CARD_I[i],
-                  TUI_ATTR(sc->valid ? ls_compass_letter_ink(false, sc->white_letters) : dim, TUI_BLACK));
+                  ls_ink_hue(TUI_ATTR(sc->valid ? ls_compass_letter_ink(false, sc->white_letters) : dim, TUI_BLACK)));
     }
     /* Degrees round the outside of the bezel as solid chips of colour, one
        colour per quarter: a filled block reads far stronger than coloured
@@ -513,7 +518,7 @@ static void art_draw(tui_surface *sf, tui_rect area, const ls_compass_scene_t *s
         float px, py;
         project(&v, sc->heading, BEZEL_OUT + 0.08f, H_BEZEL, &px, &py);
         tui_put_char(sf, area, area.x + (int)(px / cw), area.y + (int)(py / ch), 'v',
-                     TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+                     ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
     }
 }
 

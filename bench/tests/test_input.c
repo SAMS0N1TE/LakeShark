@@ -174,6 +174,36 @@ int main(void)
     v2[1]=LS_IEV_CONTACT_DOWN;v2[28]=42;v2[30]=8;v2[48]=v2[49]=0;
     for(unsigned i=0;i<52;i++)sprintf(wire2+i*2,"%02x",v2[i]);
     assert(ls_input_decode_hex(wire2) && ls_input_drain()==1 && seen[1].contact==42);
+    /* Hover moves waiting for the UI collapse to the last one; a click
+     * between them, a held button or another device keeps what came before. */
+    {
+        consume=active=true; seen_n=0;
+        const uint32_t c0=ls_input_coalesced();
+        for (int i=0; i<5; i++) {
+            ls_input_ev_t e={.kind=LS_IEV_PTR_MOVE,.col=(int16_t)(10+i),.row=3,.seq=(uint32_t)(900+i)};
+            assert(ls_input_post(&e));
+        }
+        assert(ls_input_drain()==1 && seen_n==1 && seen[0].col==14 && seen[0].seq==904);
+        assert(ls_input_coalesced()-c0==4 && ls_input_applied_seq()==904);
+        seen_n=0;
+        ls_input_ev_t m={.kind=LS_IEV_PTR_MOVE,.col=1,.seq=910}; assert(ls_input_post(&m));
+        ls_input_ev_t d={.kind=LS_IEV_PTR_DOWN,.button=LS_IBTN_LEFT,.buttons=1,.col=1,.clicks=1,.seq=911}; assert(ls_input_post(&d));
+        m.col=2; m.buttons=1; m.seq=912; assert(ls_input_post(&m));       /* a drag: every step kept */
+        m.col=3; m.seq=913; assert(ls_input_post(&m));
+        ls_input_ev_t u={.kind=LS_IEV_PTR_UP,.button=LS_IBTN_LEFT,.col=3,.seq=914}; assert(ls_input_post(&u));
+        m.col=4; m.buttons=0; m.seq=915; assert(ls_input_post(&m));
+        m.col=5; m.seq=916; m.mods=LS_IMOD_SHIFT; assert(ls_input_post(&m));   /* Shift went down between: kept */
+        m.col=6; m.seq=917; assert(ls_input_post(&m));                         /* replaces the one before */
+        m.col=7; m.seq=918; m.device=7; assert(ls_input_post(&m));             /* another device: kept */
+        assert(ls_input_drain()==8 && seen_n==8);
+        static const int16_t cols[]={1,1,2,3,3,4,6,7};
+        static const uint8_t kinds[]={LS_IEV_PTR_MOVE,LS_IEV_PTR_DOWN,LS_IEV_PTR_MOVE,LS_IEV_PTR_MOVE,LS_IEV_PTR_UP,
+                                      LS_IEV_PTR_MOVE,LS_IEV_PTR_MOVE,LS_IEV_PTR_MOVE};
+        for (int i=0; i<8; i++) assert(seen[i].col==cols[i] && seen[i].kind==kinds[i]);
+        assert(ls_input_applied_seq()==918);
+        ls_input_ev_t r={.kind=LS_IEV_RELEASE_ALL}; assert(ls_input_post(&r)); ls_input_drain();
+        seen_n=0;
+    }
     /* Four task producers while the UI drains: no torn events, duplicate
      * deliveries, or loss of any event for which post returned true. */
     concurrent=true; consume=active=true;

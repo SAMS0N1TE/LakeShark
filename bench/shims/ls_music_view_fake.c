@@ -13,6 +13,14 @@ bool ls_music_muted(void){return false;}
 uint32_t ls_music_position_ms(void){return 0;}
 bool ls_music_seek_ms(uint32_t ms){(void)ms;return false;}
 void ls_music_mic_stop(void){}
+/* The equaliser has no band to move without a decoder. */
+const char *ls_music_eq_name(int band){(void)band;return "";}
+int ls_music_eq_get(int band){(void)band;return 0;}
+void ls_music_eq_set(int band,int db){(void)band;(void)db;}
+int ls_music_preamp_get(void){return 0;}
+void ls_music_preamp_set(int db){(void)db;}
+int ls_music_eq_preset(void){return 0;}
+void ls_music_eq_preset_set(int preset){(void)preset;}
 
 #endif
 

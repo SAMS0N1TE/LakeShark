@@ -144,6 +144,9 @@ void settings_set_usb_autoreboot(bool v) { s_usb = v; }
 static bool s_update_check = true;
 bool settings_get_update_check(void) { return s_update_check; }
 void settings_set_update_check(bool v) { s_update_check = v; }
+bool settings_get_gps_on(void) { return true; }
+bool settings_get_auto_data(void) { return true; }
+void settings_set_auto_data(bool v) { (void)v; }
 /* Both default on, the way the firmware's do. */
 static bool s_alert_ring = true, s_alert_vibe = true;
 static bool s_ant_ext;
@@ -6628,8 +6631,10 @@ LS_CASE(subghz_leaving_a_page_stops_what_it_started)
    does on a Flipper. */
 LS_CASE(subghz_saved_file_opens_to_send_rename_delete)
 {
-    char dir[]="/tmp/ls_sg_saved_XXXXXX";
-    LS_CHECK(mkdtemp(dir)!=NULL);
+    char dir[96];
+    ls_test_fixture_dir(dir,sizeof(dir),"ls_sg_saved");
+    ls_test_rmdir(dir);
+    LS_CHECK(ls_test_mkdir(dir)==0);
     char path[160],to[160];
     snprintf(path,sizeof(path),"%s/garage.sub",dir);
     FILE *f=fopen(path,"w");
@@ -6961,20 +6966,26 @@ LS_CASE(home_card_apps_fold_into_the_wifi_bt_kit_from_two_installed)
         {.id="bughunt",.name="BUGHUNT",.cat=LS_APP_USER,.screen=&ls_scr_fm,.doc=&k_fixture_doc},
         {.id="dice",.name="DICE",.cat=LS_APP_USER,.screen=&ls_scr_fm,.doc=&k_fixture_doc}};
     int x,y;
-    /* One kit app on the card: its own tile, no folder. */
+    /* One kit app on the card: its own tile, no folder, marked as the card's. */
     ls_app_register(&card[0]); ls_app_register(&card[2]);
     ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
     ls_anim_cancel();
     ls_scr_home.key(LS_TK_F4,0);
     fresh();draw_pane(&ls_scr_home,PANES[0]);
     LS_CHECK(find_text("WIFI SURVEY",&x,&y));
+    LS_CHECK(find_text("[SD]",&x,&y));
     LS_CHECK(!find_text("WIFI/BT KIT",&x,&y));
-    /* Two: one folder tile in USER, the apps inside it, DICE beside it. */
+    /* Two: one folder tile in SYSTEM beside LINK, the apps inside it; DICE
+       stays in USER. */
     ls_app_register(&card[1]);
+    fresh();draw_pane(&ls_scr_home,PANES[0]);
+    LS_CHECK(!find_text("WIFI/BT KIT",&x,&y));
+    LS_CHECK(find_text("DICE",&x,&y));
+    ls_scr_home.key(LS_TK_F3,0);
     fresh();draw_pane(&ls_scr_home,PANES[0]);
     LS_CHECK(find_text("WIFI/BT KIT",&x,&y));
     LS_CHECK(find_text("[+2]",&x,&y));
-    LS_CHECK(find_text("DICE",&x,&y));
+    LS_CHECK(!find_text("DICE",&x,&y));
     LS_CHECK(!find_text("BUGHUNT",&x,&y));
     LS_CHECK(ls_scr_home.key(LS_TK_CHAR,'w'));
     LS_CHECK(ls_scr_home.key(LS_TK_ENTER,0));
@@ -6989,6 +7000,26 @@ LS_CASE(home_card_apps_fold_into_the_wifi_bt_kit_from_two_installed)
     LS_CHECK(find_text("WIFI/BT KIT",&x,&y));
     LS_CHECK(!find_text("< BACK",&x,&y));
     for(int i=0;i<3;i++) ls_app_unregister(card[i].id);
+    ls_scr_home.key(LS_TK_F1,0);
+}
+
+LS_CASE(home_card_app_sits_in_the_group_it_names)
+{
+    apps_once();
+    static const ls_app_t card={.id="rflab",.name="RF LAB",.cat=LS_APP_USER,.screen=&ls_scr_fm,
+                                .doc=&k_fixture_doc,.group=LS_APP_GROUP_FIELD};
+    int x,y;
+    ls_app_register(&card);
+    ls_tui_screen_show(ls_tui_screen_index_of(&ls_scr_home));
+    ls_anim_cancel();
+    ls_scr_home.key(LS_TK_F4,0);
+    fresh();draw_pane(&ls_scr_home,PANES[0]);
+    LS_CHECK(!find_text("RF LAB",&x,&y));
+    ls_scr_home.key(LS_TK_F2,0);
+    fresh();draw_pane(&ls_scr_home,PANES[0]);
+    LS_CHECK(find_text("RF LAB",&x,&y));
+    LS_CHECK(find_text("[SD]",&x,&y));
+    ls_app_unregister(card.id);
     ls_scr_home.key(LS_TK_F1,0);
 }
 
@@ -8222,13 +8253,13 @@ LS_CASE(freqs_face_carries_header_filters_list_and_four_keys)
         const tui_rect pane = PANES[layout];
         freqs_open(pane);
         int x, y;
-        LS_CHECK(find_text("FREQS / ALL BANKS", &x, &y));
+        LS_CHECK(find_text("ALL BANKS", &x, &y));
         LS_CHECK(find_text("21 of 21", &x, &y));
         LS_CHECK(find_text("CORDOBA TWR", &x, &y));
         { char under[W + 1]; LS_CHECK(find_text("NEAR", &x, &y)); row_text(y + 1, under, sizeof(under));
           LS_CHECK(strstr(under, "OFF") != NULL); }
         LS_EQ_INT(ls_btn_count_slot(LS_BTN_SLOT_SCREEN), 4);
-        LS_EQ_INT(ls_btn_count_slot(LS_BTN_SLOT_QUICK), 4);
+        LS_EQ_INT(ls_btn_count_slot(LS_BTN_SLOT_QUICK), 5); /* the quick row gained a HERE filter with the data packs */
         LS_CHECK(find_text("TUNE", &x, &y));
         LS_CHECK(find_text("OPTIONS", &x, &y));
         LS_EQ_INT(escaped(pane), 0);
@@ -8485,7 +8516,7 @@ LS_CASE(freqs_import_with_skipped_lines_opens_the_new_bank)
     for (int i = 0; i < 40 && ls_freqs_loading(); i++) { fresh(); ls_scr_freqs.draw(&g_sf, pane); }
     fresh(); ls_scr_freqs.draw(&g_sf, pane);
     int x, y;
-    LS_CHECK(find_text("FREQS / TOWER", &x, &y));
+    LS_CHECK(find_text("TOWER", &x, &y));
     LS_CHECK(find_text("1 skipped", &x, &y));
     remove(path);
     ls_freqs_load(LS_FREQS_ALL);

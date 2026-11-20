@@ -1,11 +1,12 @@
 #include "p25_qual.h"
 #include "freertos/FreeRTOS.h"
 #include <limits.h>
+#include "esp_attr.h"
 #include <string.h>
 
 #define QUAL_CAP 32
 
-static p25_qual_rec_t s_recs[QUAL_CAP];
+static EXT_RAM_BSS_ATTR p25_qual_rec_t s_recs[QUAL_CAP];
 static int s_head = 0;
 static int s_n    = 0;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;

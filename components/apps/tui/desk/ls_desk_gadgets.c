@@ -30,7 +30,7 @@ EXT_RAM_BSS_ATTR static int s_level[TRACE_N];
 static int s_level_n;
 static int64_t s_level_us;
 
-static uint8_t ground(uint8_t fg) { return (uint8_t)((dk_attr(R_DESK) & 0xF0) | (fg & 0x0F)); }
+static uint8_t ground(uint8_t fg) { return dk_fit(fg, TUI_ATTR_BG(dk_attr(R_DESK)), 30); }
 /* A colour on the desktop's ground: bright on a dark one, plain on a light. */
 static uint8_t tint(uint8_t hue)
 {

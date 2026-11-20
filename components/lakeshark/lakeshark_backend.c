@@ -13,6 +13,7 @@
 
 #include "app_registry.h"
 #include "ls_board.h"
+#include "ls_profile.h"
 #include "settings.h"
 #include "ls_haptic.h"
 #include "cell_performance.h"
@@ -123,6 +124,14 @@ void lakeshark_backend_start(void)
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
 
 #if LS_HAS_USB_SDR
+    /* The LoRa part has answered by now (ls_lora_start runs first), so the
+       profile can say whether this board wants its USB host: an LR2021 board
+       keeps the stack's internal RAM for the LR2021 unless asked. */
+    ls_profile_decide_usb();
+    if (!ls_profile_usb_host()) {
+        ESP_LOGW(TAG, "USB host left off (%s): 'board usb on' starts it at boot",
+                 ls_profile_is_lr() ? "LR2021 board" : "board usb off");
+    } else {
 #if CONFIG_LS_USB_ETH
     /* RTL8152/8153 keep their ECM function in a second configuration. */
     bsp_usb_host_set_enum_filter(ls_usb_net_enum_filter);
@@ -134,6 +143,7 @@ void lakeshark_backend_start(void)
         : pdFAIL;
     if (ok != pdTRUE) {
         ESP_LOGE(TAG, "failed to start class_driver_task");
+    }
     }
 #endif
 

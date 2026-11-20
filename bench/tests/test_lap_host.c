@@ -199,6 +199,7 @@ void ls_tui_screen_show(int index) {
     if (screens[current]->enter)
         screens[current]->enter();
 }
+bool ls_tui_cutout(tui_rect *cells) { (void)cells; return false; }   /* no TFT camera hole on the host */
 void ls_tui_image(tui_rect r, const uint16_t *p, int w, int h, uint32_t serial) {
     (void)r;
     (void)p;

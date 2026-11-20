@@ -1,0 +1,15 @@
+name = "lakeshark-tiles"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = false
+routes = [{ pattern = "tiles.terminalbay.com", custom_domain = true }]
+
+[[r2_buckets]]
+binding = "CACHE"
+bucket_name = "lakeshark-tiles-cache"
+
+[vars]
+BUILDS_URL = "https://build-metadata.protomaps.dev/builds.json"
+BUILD_BASE = "https://build.protomaps.com/"
+FALLBACK_URL = "https://data.source.coop/protomaps/openstreetmap/v4.pmtiles"
+# ARCHIVE_URL = "https://<our own copy>/planet.pmtiles"   # set once the planet is copied to our storage

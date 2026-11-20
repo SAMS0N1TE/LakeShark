@@ -12,6 +12,7 @@
 /* T-Display: the TUI shell, the panel it owns, and its console commands. */
 #include "compact_ui.h"
 #include "ls_board.h"
+#include "ls_profile.h"
 #include "ls_textpack.h"
 #if LS_HAS_COMPACT_UI
 #include "ls_panel.h"
@@ -68,10 +69,12 @@ extern "C" {
 #include "ls_haptic.h"
 #include "ls_mesh.h"
 #include "tui/ls_tui.h"
+#include "tui/ls_tui_idle.h"
 #include "tui/ls_ui_perf.h"
 #include "tui/ls_theme.h"
 #include "tui/ls_i18n.h"
 #include "tui/ls_tui_screen.h"
+#include "tui/ls_lock.h"
 /* Notices from apps that are not the one on screen. */
 #include "tui/ls_notify.h"
 
@@ -86,7 +89,10 @@ extern "C" void ls_freqs_tick(void);
 /* MUSIC: a close that had to wait keeps the speaker until it is retried. */
 extern "C" void ls_music_service(int64_t now_us);
 extern "C" void ls_freqs_console_register(void);
+/* WARDRIVE (a module): its session runs on after the app is left. */
+extern "C" bool ls_wardrive_running(void);
 extern "C" void ls_rterm_picture_tx(uint32_t *bytes, uint32_t *lines, uint32_t *captures) __attribute__((weak));
+extern "C" void ls_carto_boot_reads_done(void) __attribute__((weak));
 extern "C" bool cell_report_transport_known(const char *peer)
 {return ls_mesh_peer_known(peer);}
 extern "C" bool cell_report_transport_send(const char *peer,const char *text)
@@ -112,6 +118,9 @@ extern "C" int cell_report_transport_state(const char *peer,const char *text)
 #include "tui/ls_action.h"
 #include "tui/ls_userapp.h"
 #include "tui/ls_lap.h"
+#include "tui/ls_store.h"
+#include "tui/ls_mod.h"
+#include "tui/ls_netui.h"
 #include "ls_touch.h"
 #include "esp_timer.h"
 #include "soc/soc.h"
@@ -131,6 +140,7 @@ extern "C" int cell_report_transport_state(const char *peer,const char *text)
 #include "nvs.h"
 #include "ls_wifi.h"
 #include "ls_ota.h"
+#include "ls_packs.h"
 #include "ls_c6_update.h"
 #include "tui/ls_wireless.h"
 /* No LVGL shell headers: see compact_ui_start. */
@@ -215,6 +225,13 @@ static unsigned s_edge_head, s_edge_tail;
    takes it now rather than at the end of its 40 ms sleep; not the task
    notification, which starts sessions. */
 static SemaphoreHandle_t s_tui_wake;
+static ls_idle_t s_idle;   /* idle cadence state and counters, `tui idle` */
+/* Why a frame was held at full rate, one counter each (`tui idle why`). */
+enum { IDLE_B_DESK, IDLE_B_FULL, IDLE_B_RTERM, IDLE_B_REC, IDLE_B_WF, IDLE_B_TOUCH, IDLE_B_EDGE, IDLE_B_N };
+static const char *const IDLE_B_NAME[IDLE_B_N] = { "desk build", "full-screen app", "remote terminal", "recorder",
+                                                   "waterfall source", "touch held", "touch edge" };
+static uint32_t s_idle_busy_n[IDLE_B_N];
+static uint32_t s_idle_busy_last;
 static void touch_task(void *)
 {
     TouchSample sample={};
@@ -266,11 +283,11 @@ static bool tui_touch_source(int *x, int *y, bool *pressed)
         ls_ui_perf_input(&s_perf, sample.received);
     previous = sample;
     *x = sample.x; *y = sample.y;
-    /* A finger on the glass is the auto-dim clock's input. On a dark screen
-       it only lights it: the press is held back until the finger lifts, so
-       a blind tap cannot start whatever happened to be under it. */
+    /* A finger on the glass is the auto-dim clock's input. On a dark or a
+       dimmed screen it only lights it: the press is held back until the
+       finger lifts, so a blind tap cannot change whatever was under it. */
     static bool s_wake_press;
-    if (sample.pressed && display_ctl_off()) s_wake_press = true;
+    if (sample.pressed && (display_ctl_off() || display_ctl_dimmed())) s_wake_press = true;
     if (sample.pressed) display_ctl_activity();
     if (s_wake_press) {
         if (!sample.pressed) s_wake_press = false;
@@ -1348,13 +1365,14 @@ static void boot_splash_run(void)
 {
     ls_tui_set_font_index(ls_tui_font_for_view(load_font_index(),
                           ls_tui_screen_name(ls_tui_screen_current()), false));
-#ifdef LS_PANEL_CUTOUT_R
-    ls_tui_set_rotation_cw(s_rotation != 3);
-    ls_tui_set_cutout(LS_PANEL_CUTOUT_CX, LS_PANEL_CUTOUT_CY, LS_PANEL_CUTOUT_R);
-#endif
-#ifdef LS_BOARD_LCD_CORNER_R
-    ls_tui_set_corner_radius(LS_BOARD_LCD_CORNER_R);
-#endif
+    /* The glass that answered at boot: its camera hole and corner radius. */
+    if (const ls_panel_desc_t *glass = ls_profile_panel()) {
+        if (glass->cutout_r) {
+            ls_tui_set_rotation_cw(s_rotation != 3);
+            ls_tui_set_cutout(glass->cutout_cx, glass->cutout_cy, glass->cutout_r);
+        }
+        if (glass->corner_r) ls_tui_set_corner_radius(glass->corner_r);
+    }
     const ls_font_t *boot_face = ls_tui_font_at(ls_tui_font_index());
     ls_panel_ws_term_refont(boot_face->cell_w, boot_face->cell_h);
     int lw = 0, lh = 0;
@@ -1415,13 +1433,14 @@ static bool tui_session(void)
     /* The TUI knows nothing about LVGL now, so hand it the logical size. */
     /* The glass's corner radius, before the grid is laid out against
        it. Board fact in, layout arithmetic inside. */
-#ifdef LS_PANEL_CUTOUT_R
-    ls_tui_set_rotation_cw(s_rotation != 3);
-    ls_tui_set_cutout(LS_PANEL_CUTOUT_CX, LS_PANEL_CUTOUT_CY, LS_PANEL_CUTOUT_R);
-#endif
-#ifdef LS_BOARD_LCD_CORNER_R
-    ls_tui_set_corner_radius(LS_BOARD_LCD_CORNER_R);
-#endif
+    /* The glass that answered at boot: its camera hole and corner radius. */
+    if (const ls_panel_desc_t *glass = ls_profile_panel()) {
+        if (glass->cutout_r) {
+            ls_tui_set_rotation_cw(s_rotation != 3);
+            ls_tui_set_cutout(glass->cutout_cx, glass->cutout_cy, glass->cutout_r);
+        }
+        if (glass->corner_r) ls_tui_set_corner_radius(glass->corner_r);
+    }
 
     static bool s_look_restored;
     if (!s_look_restored) {
@@ -1503,6 +1522,7 @@ static bool tui_session(void)
         ls_freqs_register();
         ls_cell_publish();
         ls_ota_publish();
+        ls_services_start();
 
         static const ls_app_t APPS[] = {
             { "home", "HOME", "directory", LS_ICON_SHARK, TUI_CYAN,
@@ -1517,7 +1537,7 @@ static bool tui_session(void)
               LS_APP_EXTRA, &ls_scr_falls, nullptr, &ls_doc_falls },
             { "freqs","FREQS","frequency list", LS_ICON_FREQS, TUI_YELLOW,
               LS_APP_EXTRA, &ls_scr_freqs, nullptr, &ls_doc_freqs },
-#if !LS_LR_EDITION
+#if !LS_LR_EDITION_BUILD
             { "cell", "CELL WATCH", "cell survey", LS_ICON_CELL, TUI_CYAN,
               LS_APP_EXTRA, &ls_scr_cell, nullptr, &ls_doc_cell },
 #endif
@@ -1597,6 +1617,8 @@ static bool tui_session(void)
                       "Built-in apps exceed the screen registry capacity");
         for (unsigned i = 0; i < sizeof(APPS) / sizeof(APPS[0]); i++) {
             if(cell_performance_active() && strcmp(APPS[i].id,"cell"))continue;
+            /* No USB host this boot: CELL WATCH has no receiver to open. */
+            if(LS_LR_EDITION && !strcmp(APPS[i].id,"cell"))continue;
             const int rc = ls_app_register(&APPS[i]);
             if (rc < 0)
                 ESP_LOGE("tdp_ui", "could not register app %s: %s",
@@ -1609,7 +1631,7 @@ static bool tui_session(void)
                 " .------. ", "| [0562] |", "|  .--.  |", "| ( /  ) |", "|  '--'  |", " '------' ",
             };
             const ls_app_t meters = { "meters", "METERS", "utility meters",
-                ls_icon_art(LS_ICON_ART_MAX - 1, METER_ART, LS_ICON_SUBGHZ), TUI_YELLOW,
+                ls_icon_art(LS_ICON_SLOT_METER, METER_ART, LS_ICON_SUBGHZ), TUI_YELLOW,
                 LS_APP_EXTRA, &ls_scr_meters, nullptr, &ls_doc_meters };
             const int rc = ls_app_register(&meters);
             if (rc < 0) ESP_LOGE("tdp_ui", "could not register app meters: %s", ls_app_register_why(rc));
@@ -1623,7 +1645,7 @@ static bool tui_session(void)
                 " .------. ", " |oooooo| ", " |oooooo| ", " '------' ", "  ||||||  ", "  ''''''  ",
             };
             const ls_app_t pins = { "pins", "PINS", "add-on wiring",
-                ls_icon_art(LS_ICON_ART_MAX - 2, PINS_ART, LS_ICON_CHIP), TUI_GREEN,
+                ls_icon_art(LS_ICON_SLOT_PINS, PINS_ART, LS_ICON_CHIP), TUI_GREEN,
                 LS_APP_EXTRA, &ls_scr_pins, nullptr, &ls_doc_pins };
             const int rc = ls_app_register(&pins);
             if (rc < 0) ESP_LOGE("tdp_ui", "could not register app pins: %s", ls_app_register_why(rc));
@@ -1637,10 +1659,48 @@ static bool tui_session(void)
                 " .------. ", "|I ----  |", "|W --    |", "|E ---!  |", "|I --    |", " '------' ",
             };
             const ls_app_t bootlog = { "bootlog", "BOOT LOG", "startup log",
-                ls_icon_art(LS_ICON_ART_MAX - 3, BOOTLOG_ART, LS_ICON_JOURNAL), TUI_YELLOW,
+                ls_icon_art(LS_ICON_SLOT_BOOTLOG, BOOTLOG_ART, LS_ICON_JOURNAL), TUI_YELLOW,
                 LS_APP_EXTRA, &ls_scr_bootlog, nullptr, &ls_doc_bootlog };
             const int rc = ls_app_register(&bootlog);
             if (rc < 0) ESP_LOGE("tdp_ui", "could not register app bootlog: %s", ls_app_register_why(rc));
+        }
+        /* STORE: signed apps from terminalbay.com. Its tile is a crate. */
+        if (!cell_performance_active()) {
+            extern const ls_tui_screen_t ls_scr_store;
+            static const char STORE_ART[LS_ICON_ROWS][LS_ICON_COLS + 1] = {
+                " .------. ", " |\\    /| ", " | \\  / | ", " | APPS | ", " |/    \\| ", " '------' ",
+            };
+            const ls_app_t store = { "store", "STORE", "apps",
+                ls_icon_art(LS_ICON_SLOT_STORE, STORE_ART, LS_ICON_UPDATE), TUI_CYAN,
+                LS_APP_EXTRA, &ls_scr_store, nullptr, &ls_doc_store };
+            const int rc = ls_app_register(&store);
+            if (rc < 0) ESP_LOGE("tdp_ui", "could not register app store: %s", ls_app_register_why(rc));
+            ls_netui_register();            /* LOCKER, CHAT and the after-crash report offer */
+        }
+        /* PACKS: the frequency data packs on the card. A globe over a list. */
+        if (!cell_performance_active()) {
+            extern const ls_tui_screen_t ls_scr_packs;
+            static const char PACKS_ART[LS_ICON_ROWS][LS_ICON_COLS + 1] = {
+                "  .-~~-.  ", " /|-+-+|\\ ", "|-+-+-+-+|", " \\|-+-+|/ ", "  '-..-'  ", " [PDNFAW] ",
+            };
+            const ls_app_t packs = { "packs", "PACKS", "frequency data",
+                ls_icon_art(LS_ICON_SLOT_PACKS, PACKS_ART, LS_ICON_TILES), TUI_CYAN,
+                LS_APP_EXTRA, &ls_scr_packs, nullptr, &ls_doc_packs };
+            const int rc = ls_app_register(&packs);
+            if (rc < 0) ESP_LOGE("tdp_ui", "could not register app packs: %s", ls_app_register_why(rc));
+        }
+        /* WARDRIVE: Wi-Fi, Bluetooth, cells and drones logged with GPS. A
+           car with its aerial; the app itself is a module (modules.json). */
+        if (!cell_performance_active()) {
+            extern const ls_tui_screen_t ls_scr_wardrive;
+            static const char WARDRIVE_ART[LS_ICON_ROWS][LS_ICON_COLS + 1] = {
+                "    | ))) ", "  __|___  ", " /_|__|_\\_", "|  .  .  |", "'-(o)-(o)'", " :  .  :  ",
+            };
+            const ls_app_t wardrive = { "wardrive", "WARDRIVE", "wifi bt cell gps",
+                ls_icon_art(LS_ICON_SLOT_WARDRIVE, WARDRIVE_ART, LS_ICON_WIRELESS), TUI_YELLOW,
+                LS_APP_EXTRA, &ls_scr_wardrive, ls_wardrive_running, &ls_doc_wardrive };
+            const int rc = ls_app_register(&wardrive);
+            if (rc < 0) ESP_LOGE("tdp_ui", "could not register app wardrive: %s", ls_app_register_why(rc));
         }
 
         {
@@ -1653,6 +1713,12 @@ static bool tui_session(void)
                 if (si >= 0) idx[n++] = si;
             }
             if (n) ls_tui_screen_set_tabs(idx, n);
+        }
+        /* The lock page, and the lock at boot when a PIN asks for it. Once:
+           a rotation rebuilds the session, not the unit. */
+        {
+            static bool s_lock_ready;
+            if (!s_lock_ready) { s_lock_ready = true; ls_lock_init(); }
         }
 
         /* What each app tells the rest of the unit while it is not
@@ -1673,13 +1739,16 @@ static bool tui_session(void)
 
         /* User apps last, so they land after the built-ins in the directory
            and can never displace one. A missing card is not an error. */
+        if (!cell_performance_active()) ls_lap_scan_internal();
         const int user = cell_performance_active()?0:ls_userapp_load_dir("/sdcard/apps");
         if (user) printf("tui: %d user app(s) from /sdcard/apps\n", user);
         if (ls_userapp_last_error())
             printf("tui: user app rejected - %s\n", ls_userapp_last_error());
+        /* The boot reads of the card are done: the map worker's scans may start. */
+        if (ls_carto_boot_reads_done) ls_carto_boot_reads_done();
         /* The first registered screen is already current, so screen_show(0)
          * intentionally skips its enter hook. A focused session starts it here. */
-#if !LS_LR_EDITION
+#if !LS_LR_EDITION_BUILD
         if(cell_performance_active() && ls_scr_cell.enter)ls_scr_cell.enter();
 #endif
     }
@@ -1802,6 +1871,20 @@ static bool tui_session(void)
 
         /* The auto-dim clock; it gates itself to five ticks a second. */
         display_ctl_tick();
+        /* The screen went dark: a PIN set to lock then locks now, so the
+           tap that lights it again lands on the lock page. */
+        /* Where it never goes dark by itself (the Nano: no auto-dim, no
+           screen-off), the dim stands in, or with no dim either the idle
+           time a dim would wait. */
+        {
+            static bool s_was_due;
+            const bool due = display_ctl_off() ||
+                             (!display_ctl_off_armed() &&
+                              (display_ctl_dimmed() ||
+                               display_ctl_idle_s() >= (unsigned)display_ctl_autodim_timeout()));
+            if (due && !s_was_due) ls_lock_dark();
+            s_was_due = due;
+        }
         /* WATCH parks and restores around the dark (ls_power.h). */
         ls_power_tick();
         /* FREQS: a save's banner, a console tune. */
@@ -1884,8 +1967,8 @@ static bool tui_session(void)
         while (ls_keypad_read(&ev)) {
             /* The hardware FIFO has no timestamps: first software receipt. */
             ls_ui_perf_input(&s_perf, esp_timer_get_time());
-            /* A key on a dark screen lights it and does nothing else. */
-            const bool was_dark = display_ctl_off();
+            /* A key on a dark or dimmed screen lights it and does nothing else. */
+            const bool was_dark = display_ctl_off() || display_ctl_dimmed();
             display_ctl_activity();
             const ls_keymap_entry_t *k = ls_keymap_lookup(ev.row, ev.col);
             if (!k) continue;
@@ -2097,6 +2180,7 @@ static bool tui_session(void)
         s_ph_input_us = ph_avg(s_ph_input_us, ph_draw - ph_start);
         const uint32_t wf_before = ls_wf_full_draw_sequence();
         ls_lap_poll();
+        ls_mod_poll();
         tui_draw_frame(sf);
         if (!cell_performance_active() && !s_tui_stop && !tui_desk_on()) {
             const int wanted = ls_tui_font_for_view(s_preferred_font,
@@ -2112,7 +2196,8 @@ static bool tui_session(void)
         const int64_t ph_present = esp_timer_get_time();
         s_ph_draw_us = ph_avg(s_ph_draw_us, ph_present - ph_draw);
         /* A dark WATCH panel shows nothing: the frame is not sent to it. */
-        if (!ls_power_dark()) ls_tui_present();
+        bool frame_clean = false;
+        if (!ls_power_dark()) { ls_tui_present(); frame_clean = ls_tui_present_clean(); }
         /* A remote terminal watching: the grid just presented, when its last
            frame has gone. Here rather than before the input, so a key's
            result goes out this frame and not after the next sleep. */
@@ -2148,8 +2233,24 @@ static bool tui_session(void)
         else if (ls_map_render_busy()) sleep_ms = 5;
         else {
             const int spent_ms = (int)((esp_timer_get_time() - ph_start) / 1000);
-            /* Focused mode (the desk's one-app full rate): a 20 ms period. */
-            sleep_ms = ls_power_frame_ms(LS_DESK_BUILD && ls_desk_focused() ? 20 : 40) - spent_ms;
+            /* Focused mode (the desk's one-app full rate): a 20 ms period.
+               A full-screen app (an immersive game: PINBALL, CARRIER) runs a
+               33 ms period, 30 frames a second; the rest keep 40 ms. */
+            const int base_ms = ls_power_frame_ms(LS_DESK_BUILD ? (ls_desk_focused() ? 20 : 40)
+                                                  : ls_tui_screen_is_full() ? 33 : 40);
+            /* Idle: the same frame for a while, nobody touching or watching
+               and no source streaming, so the loop slows until something
+               changes or input wakes it (ls_tui_idle.h). The draw still runs. */
+            /* A keypad no longer holds full rate: the sleep below asks it for a
+               key every 20 ms, so a press still wakes at once. */
+            const bool why[IDLE_B_N] = { LS_DESK_BUILD != 0, ls_tui_screen_is_full(), ls_rterm_active(),
+                                         s_rec_on || s_rec_busy, ls_wf_owner() != LS_WF_OWNER_NONE,
+                                         touch_snapshot().pressed, touch_edge_pending() };
+            bool busy = false;
+            s_idle_busy_last = 0;
+            for (int b = 0; b < IDLE_B_N; b++)
+                if (why[b]) { busy = true; s_idle_busy_n[b]++; s_idle_busy_last |= 1u << b; }
+            sleep_ms = ls_idle_period(&s_idle, frame_clean, busy, base_ms) - spent_ms;
             /* A full-screen game draws every frame and its frames run long;
                a 15 ms floor after a 50 ms frame was a quarter of its rate.
                It still yields 4 ms a frame to the tasks below it. */
@@ -2158,8 +2259,18 @@ static bool tui_session(void)
         }
         /* An injected key or tap, or a touch edge, ends the sleep. */
         const int64_t ph_nap = esp_timer_get_time();
-        if (s_tui_wake) xSemaphoreTake(s_tui_wake, pdMS_TO_TICKS(sleep_ms));
-        else vTaskDelay(pdMS_TO_TICKS(sleep_ms));
+        /* With a keypad the nap is cut in 20 ms slices and each asks the part
+           whether a key waits (one register read), so drawing can slow down
+           and a key still lands within 20 ms. */
+        const bool kp = sleep_ms > 20 && ls_keypad_present();
+        for (int left = sleep_ms; left > 0;) {
+            const int slice = kp && left > 20 ? 20 : left;
+            if (s_tui_wake) {
+                if (xSemaphoreTake(s_tui_wake, pdMS_TO_TICKS(slice)) == pdTRUE) { ls_idle_wake(&s_idle); break; }
+            } else vTaskDelay(pdMS_TO_TICKS(slice));
+            left -= slice;
+            if (kp && ls_keypad_pending()) { ls_idle_wake(&s_idle); break; }
+        }
         if (esp_timer_get_time() - ph_nap > (int64_t)sleep_ms * 1000 + 30000)   /* woke late: another task had the core */
             ls_map_trace("late wake", (int32_t)((esp_timer_get_time() - ph_nap) / 1000), sleep_ms);
         s_ph_sleep_us = ph_avg(s_ph_sleep_us, esp_timer_get_time() - ph_sleep);
@@ -2771,6 +2882,7 @@ static int tui_cmd(int argc, char **argv)
        and never measured, and measuring it needs an eye on the panel rather
        than a test. A regrid re-runs ls_tui_begin, so this settles it in
        seconds instead of one reflash per trial. */
+#if CONFIG_LS_DEV_CONSOLE
     if (argc >= 2 && !strcmp(argv[1], "corner")) {
         if (argc >= 3) {
             ls_tui_set_corner_radius(atoi(argv[2]));
@@ -2782,6 +2894,7 @@ static int tui_cmd(int argc, char **argv)
                ls_tui_corner_radius(), cols, rows, cw, ch);
         return 0;
     }
+#endif
     /* Above the already-running guard on purpose: a theme is a live
        setting, and the common case is changing it while looking at it. */
     if (argc >= 2 && !strcmp(argv[1], "theme")) {
@@ -2933,6 +3046,39 @@ static int tui_cmd(int argc, char **argv)
                ls_tui_screen_current(), scr ? scr : "?");
         return 0;
     }
+    if (argc >= 3 && !strcmp(argv[1], "idle") && !strcmp(argv[2], "why")) {
+        /* What keeps the loop at full rate: the frames that changed the glass
+           (rows and text), the exclusions counted, and the run lengths. */
+        ls_tui_changes_print();
+        printf("tui idle why: %lu frames, %lu changed while not busy, longest identical run %lu (need %d), streak now %lu\n",
+               (unsigned long)s_idle.frames, (unsigned long)s_idle.breaks, (unsigned long)s_idle.best,
+               LS_IDLE_AFTER, (unsigned long)s_idle.streak);
+        printf("tui idle why: held at full rate by");
+        bool any = false;
+        for (int b = 0; b < IDLE_B_N; b++)
+            if (s_idle_busy_n[b]) { printf(" %s %lu;", IDLE_B_NAME[b], (unsigned long)s_idle_busy_n[b]); any = true; }
+        printf("%s; keypad %s (polled in the slow tick, not an exclusion); last frame busy mask 0x%lx\n",
+               any ? "" : " nothing", ls_keypad_present() ? "attached" : "absent", (unsigned long)s_idle_busy_last);
+        return 0;
+    }
+    if (argc >= 2 && !strcmp(argv[1], "idle")) {
+        /* Frames, presents and identical frames since the last look, and how
+           many were paced slow (ls_tui_idle.h). Kept in every build. */
+        static int64_t t_prev;
+        static uint32_t f_prev, c_prev, s_prev, p_prev;
+        const int64_t now = esp_timer_get_time();
+        const uint32_t pc = ls_tui_present_count();
+        const uint32_t df = s_idle.frames - f_prev, dc = s_idle.clean - c_prev, ds = s_idle.slow - s_prev;
+        const unsigned ms = t_prev ? (unsigned)((now - t_prev) / 1000) : 0;
+        printf("tui idle: %lu frames %lu identical %lu slow in %u ms; %lu presents (%lu/s); "
+               "streak %lu, %lu input wakes total; slow tick %d ms after %d identical\n",
+               (unsigned long)df, (unsigned long)dc, (unsigned long)ds, ms,
+               (unsigned long)(pc - p_prev), ms ? (unsigned long)((uint64_t)(pc - p_prev) * 1000u / ms) : 0ul,
+               (unsigned long)s_idle.streak, (unsigned long)s_idle.wakes, LS_IDLE_SLOW_MS, LS_IDLE_AFTER);
+        t_prev = now; f_prev = s_idle.frames; c_prev = s_idle.clean; s_prev = s_idle.slow; p_prev = pc;
+        return 0;
+    }
+#if CONFIG_LS_DEV_CONSOLE
     if (argc >= 2 && !strcmp(argv[1], "membench")) {
         /* Raw framebuffer bandwidth, so the blitter's cost can be read
            against what the memory itself allows. Scribbles the glass for a
@@ -2958,12 +3104,16 @@ static int tui_cmd(int argc, char **argv)
         ls_tui_invalidate();
         return 0;
     }
+#endif
+#if CONFIG_LS_DEV_CONSOLE
     if (argc >= 2 && !strcmp(argv[1], "stalltest")) {
         LS_PRINTF(fmt_compact_ui_tui_stalltest_the_ui, "tui stalltest: the UI stops drawing; the stall check reports at %d s and ends the run at %d s\n",
                TUI_STALL_WARN_S, TUI_STALL_ABORT_S);
         __atomic_store_n(&s_tui_stall_test, true, __ATOMIC_RELEASE);
         return 0;
     }
+#endif
+#if CONFIG_LS_DEV_CONSOLE
     if (argc >= 2 && !strcmp(argv[1], "touch")) {
         ls_tui_touch_event_t e[16];
         const int n = ls_tui_touch_history(e, 16);
@@ -2976,6 +3126,8 @@ static int tui_cmd(int argc, char **argv)
         }
         return 0;
     }
+#endif
+#if CONFIG_LS_DEV_CONSOLE
     if (argc >= 2 && !strcmp(argv[1], "trans")) {
         ls_tui_transition_t t[8];
         const int n = ls_tui_transitions(t);
@@ -2991,6 +3143,8 @@ static int tui_cmd(int argc, char **argv)
         }
         return 0;
     }
+#endif
+#if CONFIG_LS_DEV_CONSOLE
     if (argc >= 2 && !strcmp(argv[1], "cost")) {
 
         uint32_t us = 0;
@@ -3096,6 +3250,7 @@ static int tui_cmd(int argc, char **argv)
         }
         return 0;
     }
+#endif
     if (argc >= 2 && !strcmp(argv[1], "splash")) {
         if (!s_tui_task) { printf("tui: not running\n"); return 1; }
         const int frame = argc >= 3 ? atoi(argv[2]) : SPLASH_FRAMES;
@@ -3880,6 +4035,7 @@ static int adsb_lr_cmd(int argc, char **argv)
    short critical section; it sends the chip nothing. */
 static int adsb_cmd(int argc, char **argv)
 {
+#if CONFIG_LS_DEV_CONSOLE
     if (argc >= 2 && !strcmp(argv[1], "chips")) {
         if (argc >= 3 && !strcmp(argv[2], "reset")) {
             adsb_chip_diag_reset();
@@ -3891,6 +4047,7 @@ static int adsb_cmd(int argc, char **argv)
         adsb_chip_diag_print();
         return 0;
     }
+#endif
     if (argc >= 2 && !strcmp(argv[1], "lr")) return adsb_lr_cmd(argc, argv);
     printf("adsb: source %s\n", adsb_active_source_name());
     fputs(LS_TEXT(msg_compact_ui_adsb_adsb_chips_prints, "adsb: 'adsb chips' prints the last 8 raw chip frames from the LR20xx, the counters and "
@@ -4596,7 +4753,9 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
         .hint=LS_TXT(con_compact_ui_call_hint, "<action> [args...]"),.func=call_cmd,.argtable=nullptr};
     esp_console_cmd_register(&call_c);
     ls_ota_console_register();
+    ls_services_console_register();
     ls_lap_console_register();
+    ls_store_console_register();
     ls_power_console_register();
     ls_freqs_console_register();
     static const esp_console_cmd_t cmd={.command="display",.help=LS_TXT(con_compact_ui_display_help, "Display: rotate | 0 | 90 | 180 | 270 | on | off | brightness 5..100 | timeout 5..240 | autodim on|off"),.hint=nullptr,.func=display_cmd,.argtable=nullptr};
@@ -4605,7 +4764,7 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     ls_keypad_start();
     if (ls_keypad_present()) s_rotation = 1;
     static const esp_console_cmd_t tui={.command="tui",
-        .help=LS_TXT(con_compact_ui_tui_help, "TUI: 'tui' starts it, 'tui off' stops it, 'tui rotate' turns it, 'tui shot' prints the screen as text, 'tui png [name]' sends the real pixels as a PNG, 'tui doc' the open app's own help, 'tui tap C R' taps a cell, 'tui trans' switch history, 'tui touch' the last touches and why each did or did not tap, 'tui stalltest' proves the UI stall check (ends the run), 'tui cost' the last frame, 'tui corner [px]' the corner standoff, 'tui theme [name]' the colours, 'tui daylight on|off' black on white for the sun"),
+        .help=LS_TXT(con_compact_ui_tui_help, "TUI: 'tui' starts it, 'tui off' stops it, 'tui rotate' turns it, 'tui shot' prints the screen as text, 'tui png [name]' sends the real pixels as a PNG, 'tui doc' the open app's own help, 'tui tap C R' taps a cell, 'tui theme [name]' the colours, 'tui daylight on|off' black on white for the sun"),
         .hint=nullptr,.func=tui_cmd,.argtable=nullptr};
     esp_console_cmd_register(&tui);
     static const esp_console_cmd_t term={.command="term",
@@ -4625,10 +4784,12 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     ls_rterm_set_input(term_key, term_tap);
     ls_rterm_set_resize(term_resize);
     ls_rterm_set_serial(term_uart_write, term_uart_wait, term_uart_baud);
+#if CONFIG_LS_DEV_CONSOLE
     static const esp_console_cmd_t perf={.command="perf",
         .help=LS_TXT(con_compact_ui_perf_help, "TUI/panel performance windows; perf reset clears samples"),
         .hint=nullptr,.func=perf_cmd,.argtable=nullptr};
     esp_console_cmd_register(&perf);
+#endif
     static const esp_console_cmd_t sd={.command="sd",
         .help=LS_TXT(con_compact_ui_sd_help, "SD card: 'sd' states, 'sd mount' retries, 'sd ls [dir]' lists, 'sd cat FILE' prints a text file, 'sd get FILE' sends any file as base64, 'sd rm PATH' and 'sd mkdir PATH', "
               "'sd put [dir/]<name> [base64]' writes (no payload truncates)"),
@@ -4668,25 +4829,31 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     ls_private_console_register();
 #  endif
 #endif
+#if CONFIG_LS_DEV_CONSOLE
     static const esp_console_cmd_t spi={.command="spi",
         .help=LS_TXT(con_compact_ui_spi_help, "SPI: 'spi' reports the bus, 'spi up' creates it"),
         .hint=nullptr,.func=spi_cmd,.argtable=nullptr};
     esp_console_cmd_register(&spi);
+#endif
     static const esp_console_cmd_t audio={.command="audio",
         .help=LS_TXT(con_compact_ui_audio_help, "Audio: report the codec, I2S pins and amplifier, and try each "
               "one - 'audio swap', 'audio pa on|off', 'audio tone'"),
         .hint=nullptr,.func=audio_cmd,.argtable=nullptr};
     esp_console_cmd_register(&audio);
+#if CONFIG_LS_DEV_CONSOLE
     static const esp_console_cmd_t mapc={.command="map",
         .help=LS_TXT(con_compact_ui_map_help, "Map: the last render's cost, split into fetching tiles and "
               "rasterising them"),
         .hint=nullptr,.func=map_cmd,.argtable=nullptr};
     esp_console_cmd_register(&mapc);
+#endif
+#if CONFIG_LS_DEV_CONSOLE
     static const esp_console_cmd_t keys={.command="keys",
         .help=LS_TXT(con_compact_ui_keys_help, "Keypad: probe, 'keys watch' to print events for 10 seconds, "
               "'keys bl sweep' to chase the backlight whine"),
         .hint=nullptr,.func=keys_cmd,.argtable=nullptr};
     esp_console_cmd_register(&keys);
+#endif
 
     app_park();
 

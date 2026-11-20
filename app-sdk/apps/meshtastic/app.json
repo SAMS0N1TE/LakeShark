@@ -1,7 +1,27 @@
 {
   "category": "radio",
-  "description": "Talk to Meshtastic nodes from the board LoRa radio: nodes, channel chat and every packet heard; sends text and node info when TRANSMIT is on.",
+  "group": "radio",
+  "version": "1.4",
+  "description": "Be a Meshtastic node on the board LoRa radio in any of the 26 Meshtastic regions: conversations with replies and reactions, eight channels shared as a link and QR code, nodes with favourites and requests, waypoints, neighbour links, range test, store and forward, the settings laid out as the official apps have them, and an offline translator for Spanish, Portuguese, French, German, Italian, Dutch, Polish, Russian and Ukrainian chat (the eight after Spanish come from STORE > MESH LANGUAGES, or PACKS > LANGUAGES where the board has it).",
   "third_party": [
+    {
+      "name": "Meshtastic protobufs (mesh.proto, portnums.proto, config.proto, channel.proto, apponly.proto, storeforward.proto): field numbers, enum values and the hardware-model and role names, ported into mt_proto.c / mt_proto.h and main.c",
+      "license": "GPL-3.0-only",
+      "url": "https://github.com/meshtastic/protobufs",
+      "use": "code"
+    },
+    {
+      "name": "Meshtastic firmware (RadioInterface.cpp, MeshRadio.h, Channels.cpp, DisplayFormatters.cpp, StoreForwardModule.cpp, NeighborInfoModule.cpp, RangeTestModule.cpp): the slot rule, preset names, role and rebroadcast behaviour, the range-test CSV columns, how neighbour info and store and forward work",
+      "license": "GPL-3.0-only",
+      "url": "https://github.com/meshtastic/firmware",
+      "use": "reference"
+    },
+    {
+      "name": "QR Code generator library (C) by Project Nayuki: qrcodegen.c / qrcodegen.h, for the channel link's QR code",
+      "license": "MIT",
+      "url": "https://github.com/nayuki/QR-Code-generator",
+      "use": "code"
+    },
     {
       "name": "English Wiktionary, Spanish entries (as extracted by wiktextract / kaikki.org, dump of 2026-10-30): short English glosses for the translator's lexicon (mt_xlate_es_en.h)",
       "license": "CC-BY-SA-4.0",
@@ -13,9 +33,23 @@
       "license": "CC-BY-SA-4.0",
       "url": "https://github.com/hermitdave/FrequencyWords",
       "use": "data"
+    },
+    {
+      "name": "English Wiktionary, Portuguese, French, German, Italian, Dutch, Polish, Russian and Ukrainian entries (as extracted by wiktextract / kaikki.org, dumps of 2026-11-19): short English glosses and the inflection tables the rules are learned from, for the card lexicons (lang/<code>.bin), and which Cyrillic words are Russian or Ukrainian for detection",
+      "license": "CC-BY-SA-4.0",
+      "url": "https://kaikki.org/dictionary/",
+      "use": "data"
+    },
+    {
+      "name": "FrequencyWords by Hermit Dave, pt_br, fr, de, it, nl, pl, ru and uk 2018 lists (from OpenSubtitles): which lemmas the card lexicons keep, and the built-in detection words of all ten languages (mt_xlate_langs.h)",
+      "license": "CC-BY-SA-4.0",
+      "url": "https://github.com/hermitdave/FrequencyWords",
+      "use": "data"
     }
   ],
   "references": [
+    "https://github.com/meshtastic/protobufs",
+    "https://github.com/meshtastic/firmware",
     "https://en.wiktionary.org/wiki/Wiktionary:Copyrights",
     "https://creativecommons.org/share-your-work/licensing-considerations/compatible-licenses/"
   ]

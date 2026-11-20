@@ -178,7 +178,7 @@ int ls_radio_chip(tui_surface *sf, tui_rect box, int x, int y, const char *text,
     /* A lit chip is a filled field with the word ON it, not a word with two
        coloured crumbs beside it: the letters carry the hue as their ground. */
     tui_put_str(sf, box, x + 1, y, text,
-                on ? TUI_ATTR(TUI_BLACK, hue | TUI_BRIGHT)
+                on ? ls_ink(LS_INK_KEY_ON, TUI_ATTR(TUI_BLACK, hue | TUI_BRIGHT))
                    : TUI_ATTR(LS_DIM_FG, TUI_BLACK));
     return x + n + 3;
 }
@@ -194,6 +194,7 @@ void ls_radio_filament(tui_surface *sf, tui_rect box, int x, int y, int rows, ui
    not read as one more card in a stack of cards. */
 void ls_radio_bezel(tui_surface *sf, tui_rect r, const char *title)
 {
+    ls_ink_keep(r);              /* a scope stays on black in any scheme */
     title = ls_tr(title);
     const uint8_t edge = TUI_ATTR(TUI_CYAN, TUI_BLACK);
     for (int x = 0; x < r.w; ++x) {

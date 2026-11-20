@@ -1,4 +1,5 @@
 #pragma once
+#include <stdbool.h>
 #include <stdint.h>
 
 /* Updates over WiFi from the signed manifest on the update server. */
@@ -16,6 +17,14 @@ void ls_ota_publish(void);
  * The worker owns closing and cleaning up the returned client. */
 struct esp_http_client *ls_ota_open_data(const char *url, const char *token,
                                       int64_t deadline_us, int64_t *length, int *status);
+
+/* For ls_fetch: any https URL, starting `from` bytes in (a Range request;
+ * the answer is then 206, or 200 when the server sent it all). The caller
+ * closes and cleans up. *status < 0: -1 unreachable, -2 left https, -3 deadline. */
+struct esp_http_client *ls_ota_open_from(const char *url, const char *token, uint32_t from,
+                                      int64_t deadline, int64_t *length, int *status);
+/* An RF app is streaming or receiving: background traffic waits. */
+bool ls_ota_rf_busy(void);
 
 /* The `ota` console command. */
 void ls_ota_console_register(void);

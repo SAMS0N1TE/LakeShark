@@ -120,35 +120,49 @@ bool ls_freqs_keep(const ls_freq_t *e, char *msg, size_t n)
     return ok;
 }
 
-static ls_act_status_t a_save(const ls_args_t *in, ls_val_t *out)
+static EXT_RAM_BSS_ATTR char s_said[96];
+
+/* MHz, mode and name of a save or a tune into `e`. */
+static bool entry_of(const ls_args_t *in, ls_freq_t *e, ls_val_t *out)
 {
-    static EXT_RAM_BSS_ATTR char said[96];
     char *end;
     const double mhz = strtod(in->v[0].s, &end);
     const int mode = ls_freq_mode_parse(in->v[1].s);
+    out->kind = LS_VAL_TEXT;
+    out->s = s_said;
     if (end == in->v[0].s || mhz < 0.009 || mhz > 6000 || mode < 0) {
-        snprintf(said, sizeof(said), "%s", mode < 0 ? "Not a mode FREQS knows" : "Not a frequency FREQS can keep");
-        out->kind = LS_VAL_TEXT;
-        out->s = said;
-        return LS_ACT_BADARG;
+        snprintf(s_said, sizeof(s_said), "%s", mode < 0 ? "Not a mode FREQS knows" : "Not a frequency FREQS can keep");
+        return false;
     }
+    memset(e, 0, sizeof(*e));
+    e->hz = (uint32_t)(mhz * 1e6 + 0.5);
+    e->mode = (uint8_t)mode;
+    e->lat_e5 = e->lon_e5 = LS_FREQ_NOWHERE;
+    if (in->v[2].s && in->v[2].s[0]) snprintf(e->name, sizeof(e->name), "%s", in->v[2].s);
+    return true;
+}
+
+/* TUNE from anywhere (HERE's lists): the UI task only, as it opens an app. */
+static ls_act_status_t a_tune(const ls_args_t *in, ls_val_t *out)
+{
     ls_freq_t e;
-    memset(&e, 0, sizeof(e));
-    e.hz = (uint32_t)(mhz * 1e6 + 0.5);
-    e.mode = (uint8_t)mode;
-    e.lat_e5 = e.lon_e5 = LS_FREQ_NOWHERE;
+    if (!entry_of(in, &e, out)) return LS_ACT_BADARG;
+    return ls_freqs_tune(&e, s_said, sizeof(s_said)) ? LS_ACT_OK : LS_ACT_FAILED;
+}
+
+static ls_act_status_t a_save(const ls_args_t *in, ls_val_t *out)
+{
+    ls_freq_t e;
+    if (!entry_of(in, &e, out)) return LS_ACT_BADARG;
     snprintf(e.group, sizeof(e.group), "MINE");
     const char *app = in->v[3].s ? in->v[3].s : "";
     char mtext[16];
     ls_freq_mhz_text(e.hz, mtext, sizeof(mtext));
-    if (in->v[2].s && in->v[2].s[0]) snprintf(e.name, sizeof(e.name), "%s", in->v[2].s);
-    else snprintf(e.name, sizeof(e.name), "%s%s%s", app, *app ? " " : "", mtext);
+    if (!e.name[0]) snprintf(e.name, sizeof(e.name), "%s%s%s", app, *app ? " " : "", mtext);
     for (char *p = e.name; *p; p++) if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
     if (*app) snprintf(e.tags, sizeof(e.tags), "%s", app);
     for (char *p = e.tags; *p; p++) if (*p >= 'A' && *p <= 'Z') *p = (char)(*p + 32);
-    const bool ok = ls_freqs_keep(&e, said, sizeof(said));
-    out->kind = LS_VAL_TEXT;
-    out->s = said;
+    const bool ok = ls_freqs_keep(&e, s_said, sizeof(s_said));
     return ok ? LS_ACT_OK : LS_ACT_FAILED;
 }
 
@@ -157,6 +171,8 @@ void ls_freqs_register(void)
     ls_freqs_lock_init();
     ls_action_register("freq.save", "ssss", LS_CAP_STORE, a_save,
                        LS_TEXT(t_ls_freqs_run_save_help, "keep a frequency in FREQS mine.csv: MHz, mode, name, app"));
+    ls_action_register("freq.tune", "sss", LS_CAP_TUNE, a_tune,
+                       LS_TEXT(t_ls_freqs_run_tune_help, "tune a frequency in the app its mode belongs to: MHz, mode, name"));
 }
 
 /* -------------------------------------------------------------- console -- */

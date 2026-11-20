@@ -22,6 +22,7 @@
 EXT_RAM_BSS_ATTR static struct {
     int tab;                            /* 0 this boot, 1 the boot before */
     int top, col, rows;
+    int hit;                            /* the line E NEXT last found, -1 none */
     int n, n_err, n_warn;
     size_t len;
     uint32_t seen_seq;
@@ -40,7 +41,7 @@ EXT_RAM_BSS_ATTR static struct {
 static void say(const char *text, uint8_t hue)
 {
     snprintf(S.msg, sizeof(S.msg), "%s", text);
-    S.msg_attr = TUI_ATTR(hue, TUI_BLACK);
+    S.msg_attr = ls_ink_hue(TUI_ATTR(hue, TUI_BLACK));
 }
 
 /* 'E' 'W' 'I' 'D' 'V' for a log line, 'H' for the lines this firmware puts
@@ -97,6 +98,7 @@ static void load(bool to_end)
     }
     S.read_us = esp_timer_get_time();
     index_text();
+    if (S.hit >= S.n) S.hit = -1;
     if (to_end) S.top = last_top();
     clamp();
 }
@@ -106,6 +108,7 @@ static void set_tab(int tab)
     if (tab == S.tab) return;
     S.tab = tab;
     S.top = S.col = 0;
+    S.hit = -1;
     S.msg[0] = '\0';
     load(false);
 }
@@ -114,6 +117,7 @@ static void enter(void)
 {
     if (S.rows < 1) S.rows = 10;
     S.msg[0] = '\0';
+    S.hit = -1;
     load(false);
 }
 
@@ -154,11 +158,23 @@ static void save_card(void)
     else say("Not saved: no SD card?", TUI_RED | TUI_BRIGHT);
 }
 
+/* From the line it found last, not from the top: near the end the top is
+   held at the last page, and searching from there found the same line for
+   ever. The line found is lit, so a log that fits one page shows it too. */
 static void next_problem(void)
 {
+    const int from = S.hit >= 0 && S.hit < S.n ? S.hit : S.top - 1;
     for (int k = 1; k <= S.n; k++) {
-        const int i = (S.top + k) % S.n;
-        if (S.lvl[i] == 'E' || S.lvl[i] == 'W') { S.top = i; clamp(); return; }
+        const int i = ((from + k) % S.n + S.n) % S.n;
+        if (S.lvl[i] == 'E' || S.lvl[i] == 'W') {
+            S.hit = i;
+            if (i < S.top || i >= S.top + S.rows) S.top = i;
+            clamp();
+            char m[48];
+            snprintf(m, sizeof(m), "%s on line %d of %d", S.lvl[i] == 'E' ? "Error" : "Warning", i + 1, S.n);
+            say(m, S.lvl[i] == 'E' ? TUI_RED | TUI_BRIGHT : TUI_YELLOW | TUI_BRIGHT);
+            return;
+        }
     }
     say("No errors or warnings in this log.", TUI_GREEN | TUI_BRIGHT);
 }
@@ -189,12 +205,12 @@ static bool act(char key)
 static uint8_t line_attr(char lv)
 {
     switch (lv) {
-    case 'E': return TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK);
-    case 'W': return TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    case 'E': return ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+    case 'W': return ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
     case 'H': return TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
     case 'M': return TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, TUI_BLACK);
     case 'D': case 'V': return LS_ATTR_DIM;
-    case 'I': return TUI_ATTR(TUI_GREEN, TUI_BLACK);
+    case 'I': return ls_ink_hue(TUI_ATTR(TUI_GREEN, TUI_BLACK));
     default:  return TUI_ATTR(TUI_WHITE, TUI_BLACK);
     }
 }
@@ -209,7 +225,7 @@ static void draw_head(tui_surface *sf, tui_rect r)
         const bool sel = t == S.tab;
         tui_put_char(sf, r, x, r.y, sel ? '[' : ' ', TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
         tui_put_str(sf, r, x + 1, r.y, NAME[t],
-                    sel ? TUI_ATTR(TUI_BLACK, TUI_CYAN) : TUI_ATTR(TUI_CYAN, TUI_BLACK));
+                    sel ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_CYAN)) : TUI_ATTR(TUI_CYAN, TUI_BLACK));
         const int w = (int)strlen(NAME[t]) + 2;
         tui_put_char(sf, r, x + w - 1, r.y, sel ? ']' : ' ', TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
         S.tab_x[t] = x; S.tab_w[t] = w;
@@ -291,7 +307,10 @@ static void draw(tui_surface *sf, tui_rect area)
                 tui_put_str(sf, body, body.x, body.y + r, num, TUI_ATTR(TUI_CYAN, TUI_BLACK));
             }
             const char *l = S.text + S.line[i];
-            if ((int)strlen(l) > S.col) tui_put_str(sf, text, text.x, text.y + r, l + S.col, line_attr(S.lvl[i]));
+            if (i == S.hit) tui_fill(sf, tui_rect_make(text.x, text.y + r, text.w, 1), ' ', TUI_ATTR(TUI_BLACK, TUI_YELLOW | TUI_BRIGHT));
+            if ((int)strlen(l) > S.col)
+                tui_put_str(sf, text, text.x, text.y + r, l + S.col,
+                            i == S.hit ? TUI_ATTR(TUI_BLACK, TUI_YELLOW | TUI_BRIGHT) : line_attr(S.lvl[i]));
             else if (S.col && *l) tui_put_char(sf, text, text.x, text.y + r, '<', LS_ATTR_FAINT);
         }
     }

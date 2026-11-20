@@ -104,6 +104,18 @@ bool ls_music_mic_step(void);
 bool ls_music_live(void);
 /* Codec attenuation at the current volume setting. */
 float ls_music_volume_db(void);
+/* EQ: five bands (low shelf, three peaks, high shelf), -12..+12 dB each, and
+   a pre-amp of -12..+8 dB with a soft limiter. Saved in settings, applied in
+   float to the PCM the codec is sent; the codec volume is never touched.
+   Presets 0 FLAT 1 BASS 2 VOCAL 3 TREBLE; 4 CUSTOM is what the bands are. */
+#define LS_MUSIC_EQ_BANDS 5
+const char *ls_music_eq_name(int band);
+int ls_music_eq_get(int band);
+void ls_music_eq_set(int band, int db);
+int ls_music_preamp_get(void);
+void ls_music_preamp_set(int db);
+int ls_music_eq_preset(void);
+void ls_music_eq_preset_set(int preset);
 bool ls_music_warm(void);
 void ls_music_set_warm(bool enabled);
 void ls_music_volume_step(int delta);

@@ -27,6 +27,11 @@ else()
     list(FILTER APPS_C_SRCS EXCLUDE REGEX "/ls_catch_stub\.c$")
 endif()
 
+# Apps kept in the internal app storage as firmware modules (tui/ls_mod.h)
+# are not compiled into the image; build_modules.py builds them below.
+include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/ls_modules.cmake)
+ls_modules_filter(APPS_C_SRCS "components/apps/")
+
 # Glyph bitmaps packed where the zstd decoder is linked: these four are
 # compiled from a generated copy (below) instead of as they are.
 set(LS_FONT_PACKED ls_font_mono_11.c ls_font_mono_13.c ls_font_mono_14.c ls_font_mono_16.c ls_font_mono_24.c ls_font_cyr.c)
@@ -41,6 +46,27 @@ idf_component_register(
 
 target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_LIST_DIR}/../../data/drone-watch/defaults.json" TEXT)
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-u lr433_decode" "-u lr433_proto_label" "-u lr433_proto_class")
+
+# Firmware modules: built from the same tree with the firmware's own flags,
+# before this component compiles, because the image carries their hashes,
+# their proxy screens and the table of symbols they import. The script only
+# rewrites what changed. The storage image (main/CMakeLists.txt) is made
+# from build/storage_root, which it also stages.
+if(NOT CMAKE_BUILD_EARLY_EXPANSION AND CONFIG_LS_APP_MODULES)
+    idf_build_get_property(LS_MOD_PY PYTHON)
+    idf_build_get_property(LS_MOD_PROJECT PROJECT_DIR)
+    set(LS_MOD_OUT ${CMAKE_BINARY_DIR}/ls_modules)
+    add_custom_target(ls_modules_gen ALL
+        COMMAND ${LS_MOD_PY} ${CMAKE_CURRENT_LIST_DIR}/modules/build_modules.py
+                --project ${LS_MOD_PROJECT} --build ${CMAKE_BINARY_DIR}
+        BYPRODUCTS ${LS_MOD_OUT}/ls_mod_exports.S ${LS_MOD_OUT}/ls_mod_table.inc ${LS_MOD_OUT}/ls_mod_config.h
+        COMMENT "Building firmware modules"
+        VERBATIM)
+    add_dependencies(${COMPONENT_LIB} ls_modules_gen)
+    set_source_files_properties(${LS_MOD_OUT}/ls_mod_exports.S PROPERTIES GENERATED TRUE)
+    target_sources(${COMPONENT_LIB} PRIVATE ${LS_MOD_OUT}/ls_mod_exports.S)
+    target_include_directories(${COMPONENT_LIB} PUBLIC ${LS_MOD_OUT})
+endif()
 
 # The Ukrainian table (tui/ls_i18n_uk.h, edited as it is) built into zstd
 # frames where the decoder is linked; ls_i18n.c decodes it when Ukrainian is

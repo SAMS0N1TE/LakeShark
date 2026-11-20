@@ -55,6 +55,11 @@ set(DMR_WATCH_SRCS
     ${DMR_CORE_SRCS}
     ${APP}/dmr/dmr_watch.c ${APP}/dmr/dmr_report.c ${APP}/dmr/dmr_listen.c)
 set(LS_TUI_APP_SRCS
+    ${FW}/components/apps/tui/screens/ext/scr_report.c
+    ${FW}/components/apps/tui/screens/ext/scr_locker.c
+    ${FW}/components/apps/tui/screens/ext/scr_chat.c
+    ${FW}/bench/shims/ls_hub_host.c
+    ${FW}/components/apps/tui/ls_lock.c
     ${FW}/components/apps/tui/ls_sweep.c
     ${FW}/components/apps/tui/ls_sweep_ui.c
     ${FW}/components/apps/tui/ls_rid.c
@@ -90,6 +95,8 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_icons.c
     ${FW}/components/apps/tui/ls_tui_ui.c
     ${FW}/components/apps/tui/ls_update_view.c
+    ${FW}/components/apps/tui/ls_here.c
+    ${FW}/bench/tools/lssim_packs.c
     ${FW}/components/apps/tui/ls_c6_view.c
     ${FW}/components/apps/tui/ls_skyplot.c
     ${FW}/components/apps/tui/ls_skyview.c
@@ -254,6 +261,7 @@ add_library(ls_harness STATIC
     harness/shim_impl.c
     shims/pagers_settings_fake.c
     shims/freertos_shim.c
+    shims/freertos_stack_hwm.c
     shims/spi_shim.c
     shims/ls_trail_host.c
     fixtures/pocsag_gen.c
@@ -532,8 +540,17 @@ ls_add_test(test_iridium_app ${FW}/app-sdk/apps/iridium/irid.c)
 target_include_directories(test_iridium_app PRIVATE ${FW}/app-sdk/apps/iridium)
 # MESHTASTIC (app-sdk/apps/meshtastic): its offline Spanish -> English
 # translator and language detection, with the generated lexicon.
-ls_add_test(test_mt_xlate ${FW}/app-sdk/apps/meshtastic/mt_xlate.c)
+ls_add_test(test_mt_xlate ${FW}/app-sdk/apps/meshtastic/mt_xlate.c ${FW}/app-sdk/apps/meshtastic/mt_xlate_lang.c)
 target_include_directories(test_mt_xlate PRIVATE ${FW}/app-sdk/apps/meshtastic)
+# The other languages (pt fr de it nl), read from the card files in lang/.
+ls_add_test(test_mt_xlate_lang ${FW}/app-sdk/apps/meshtastic/mt_xlate.c ${FW}/app-sdk/apps/meshtastic/mt_xlate_lang.c)
+target_include_directories(test_mt_xlate_lang PRIVATE ${FW}/app-sdk/apps/meshtastic)
+target_compile_definitions(test_mt_xlate_lang PRIVATE MT_LANG_DIR="${FW}/app-sdk/apps/meshtastic/lang")
+# Its protocol messages (waypoints, neighbour info, store and forward, the
+# channel-set link, replies and reactions) against the protobuf field numbers.
+ls_add_test(test_mt_proto ${FW}/app-sdk/apps/meshtastic/mt_proto.c ${FW}/app-sdk/apps/meshtastic/mt_aes.c
+    ${FW}/app-sdk/apps/meshtastic/mt_pki.c)
+target_include_directories(test_mt_proto PRIVATE ${FW}/app-sdk/apps/meshtastic)
 
 ls_add_test(test_exp_lr433
     ${LS_EXP_SRCS}
@@ -933,7 +950,11 @@ add_executable(lssim
     ${FW}/components/apps/tui/ls_fox_run.c
     ${FW}/components/apps/tui/ls_rfmap.c
     tools/lssim_rfs.c
-    ${FW}/components/apps/tui/ls_map.c
+    ${FW}/components/apps/tui/screens/ext/scr_wardrive.c
+    ${FW}/components/apps/tui/wardrive/wd_core.c
+    ${FW}/components/apps/tui/wardrive/wd_view3d.c
+    tools/lssim_wardrive.c
+    ${FW}/components/apps/tui/ls_map.c ${FW}/components/apps/tui/ls_maptiles.c
     ${FW}/components/apps/tui/ls_map_ink.c
     ${FW}/components/apps/tui/ls_map_marks.c
     ${FW}/components/apps/tui/ls_map_share.c
@@ -984,7 +1005,8 @@ target_include_directories(lssim PRIVATE
 target_sources(lssim PRIVATE
     tools/lssim_i2c.c
     harness/shim_impl.c
-    shims/freertos_shim.c)
+    shims/freertos_shim.c
+    shims/freertos_stack_hwm.c)
 target_compile_definitions(lssim PRIVATE LS_CALLS_HOST_AUDIO=1 CALL_ARCHIVE_HOST_TEST=1
     CONFIG_LS_BOARD_T_DISPLAY_P4=1
     LS_WF_SOURCE_REAL
@@ -1019,6 +1041,7 @@ set(LS_DESK_SRCS
     ${FW}/components/apps/tui/desk/ls_desk_items.c
     ${FW}/components/apps/tui/desk/ls_desk_dialogs.c
     ${FW}/components/apps/tui/desk/ls_desk_cpl.c
+    ${FW}/components/apps/tui/desk/ls_desk_sheet.c
     ${FW}/components/apps/tui/desk/ls_desk_gadgets.c)
 target_sources(lssim PRIVATE ${FW}/components/apps/tui/desk/ls_desk_live.c
     ${FW}/components/apps/tui/desk/ls_desk_cplsys.c)
@@ -1032,11 +1055,12 @@ ls_add_test(test_desk_wm
     ${FW}/components/apps/tui/ls_tui_chrome.c
     ${FW}/components/apps/tui/ls_theme.c
     ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c shims/ls_rterm_line_none.c
-    shims/lap_system_none.c)
+    shims/lap_system_none.c shims/desk_cpl_none.c)
 target_include_directories(test_desk_wm PRIVATE
     ${LS_TUI_APP_INCLUDES}
     ${FW}/components/apps/tui
     ${FW}/components/apps/tui/tuilib
+    ${FW}/components/lakeshark
     ${FW}/bench/shims)
 
 # Runs the lssim above with -C, which links everything the board registers.
@@ -1044,14 +1068,28 @@ ls_add_test(test_lssim_census)
 add_dependencies(test_lssim_census lssim)
 target_compile_definitions(test_lssim_census PRIVATE LSSIM_EXE="$<TARGET_FILE:lssim>")
 
+# The store.open action an SD app calls: STORE at that app's card, or the list.
+ls_add_test(test_lssim_store_open)
+add_dependencies(test_lssim_store_open lssim)
+target_compile_definitions(test_lssim_store_open PRIVATE LSSIM_EXE="$<TARGET_FILE:lssim>"
+                           LSSIM_BMP="${CMAKE_CURRENT_BINARY_DIR}/store_open.bmp")
+
 # lssim --term driven like a terminal: a key opens FM, a click opens SET, Ctrl-] quits and restores.
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME test_lssim_term_key COMMAND "${Python3_EXECUTABLE}" -I
              "${CMAKE_CURRENT_SOURCE_DIR}/tools/term_check.py" "$<TARGET_FILE:lssim>" home --keys 2 --expect "LAKESHARK  FM")
     add_test(NAME test_lssim_term_tap COMMAND "${Python3_EXECUTABLE}" -I
-             "${CMAKE_CURRENT_SOURCE_DIR}/tools/term_check.py" "$<TARGET_FILE:lssim>" home --tap 70:1 --expect "-SETTINGS-")
+             "${CMAKE_CURRENT_SOURCE_DIR}/tools/term_check.py" "$<TARGET_FILE:lssim>" home --tap 70:1 --expect "LAKESHARK  SET")
 endif()
+
+# The desktop feed copies and encodes only the rows ls_tui says changed
+# (ls_tui_front_rows_take): windows, a drag, the Start menu, typing, maximize and
+# the wheel, every frame checked against a copy of the one before. Exit 2 on a miss.
+add_test(NAME test_lssim_rows_audit COMMAND lssim desk -l -F 4
+         -x "!fm,~3,D60:1>120:30,!map,~4,C4:59,~2,H6:52,H6:48,@esc,!run,+ab,^,^,W60:30:1,!control,~2,W60:30:2"
+         -f 2 -o "${CMAKE_CURRENT_BINARY_DIR}/rows_audit.bmp")
+set_tests_properties(test_lssim_rows_audit PROPERTIES ENVIRONMENT "LSSIM_ROWS_AUDIT=1;LSSIM_GRID=200x60")
 
 # MESH driven through lssim: taps, keys and what the mesh stub was asked to send.
 ls_add_test(test_lssim_mesh)
@@ -1100,7 +1138,7 @@ target_compile_definitions(test_pmtiles PRIVATE
 target_link_libraries(test_pmtiles m)
 
 ls_add_test(test_map
-    ${FW}/components/apps/tui/ls_map.c
+    ${FW}/components/apps/tui/ls_map.c ${FW}/components/apps/tui/ls_maptiles.c
     ${PMT}/upstream/zeromesh_pmtiles.c
     ${CARTO}/src/carto.c
     ${CARTO}/src/framebuffer.c
@@ -1516,7 +1554,7 @@ ls_add_test(test_flex ${APP}/fm/flex.c fixtures/flex_gen.c)
 ls_add_test(test_rec_storage_label ${APP}/rec/rec_storage_label.c)
 ls_add_test(test_rec_unique_name ${APP}/rec/rec_unique_name.c)
 ls_add_test(test_files_safety ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
-    ${FW}/components/apps/tui/ls_tui_ui.c ${FW}/components/apps/tui/ls_icons.c shims/ls_app_none.c)
+    ${FW}/components/apps/tui/ls_tui_ui.c ${FW}/components/apps/tui/ls_icons.c shims/ls_app_none.c shims/ls_hub_host.c)
 target_include_directories(test_files_safety BEFORE PRIVATE
     ${FW}/bench/tests/files_shims ${LS_TUI_APP_INCLUDES})
 target_compile_options(test_files_safety PRIVATE -ffunction-sections -fdata-sections)
@@ -2352,6 +2390,42 @@ ls_add_test(test_scan_list_all
 target_compile_definitions(test_scan_list_all PRIVATE
     SCAN_LIST_ALL_PATH="${FW}/tools/scanlist_all.lscan")
 ls_add_test(test_hub_transfer)
+
+# Fault injection: the HTTP server, the card and the heap misbehave on request.
+function(ls_add_fault_test name)
+    add_executable(${name} tests/${name}.c tests/fault_shims/ls_fault_shims.c ${ARGN})
+    target_link_libraries(${name} ls_harness m)
+    target_include_directories(${name} BEFORE PRIVATE tests/fault_shims)
+    target_include_directories(${name} PRIVATE ${FW}/main ${FW}/components/ls_textpack/include ${FW}/components/apps ${FW}/components/apps/tui)
+    target_compile_definitions(${name} PRIVATE
+        xTaskCreatePinnedToCoreWithCaps=lf_t_create xTaskNotifyGive=lf_t_give
+        ulTaskNotifyTake=lf_t_take vTaskDelay=lf_t_delay
+        heap_caps_get_free_size=lf_heap_free_size)
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+function(ls_fault_unit_flags)
+    set_source_files_properties(${ARGN} PROPERTIES COMPILE_OPTIONS "-include;${FW}/bench/tests/fault_shims/ls_fault_fs.h")
+endfunction()
+ls_add_fault_test(test_fault_fetch ${FW}/main/ls_fetch.c)
+ls_fault_unit_flags(${FW}/main/ls_fetch.c)
+ls_add_fault_test(test_fault_packs ${FW}/main/ls_fetch.c)
+ls_fault_unit_flags(${FW}/bench/tests/test_fault_packs.c)
+# The same cases over ls_packs.c as it was before LANG catalog rows (the last
+# such commit), so a catalog with LANG rows is known to leave those builds alone.
+execute_process(COMMAND git -C ${FW} show ba4bd79c7:main/ls_packs.c
+    OUTPUT_FILE ${CMAKE_CURRENT_BINARY_DIR}/ls_packs_before_lang.c RESULT_VARIABLE LS_PACKS_OLD_RC ERROR_QUIET)
+if(LS_PACKS_OLD_RC EQUAL 0)
+    add_executable(test_fault_packs_old tests/test_fault_packs.c tests/fault_shims/ls_fault_shims.c ${FW}/main/ls_fetch.c)
+    target_link_libraries(test_fault_packs_old ls_harness m)
+    target_include_directories(test_fault_packs_old BEFORE PRIVATE tests/fault_shims)
+    target_include_directories(test_fault_packs_old PRIVATE ${FW}/main ${FW}/components/ls_textpack/include ${FW}/components/apps ${FW}/components/apps/tui)
+    target_compile_definitions(test_fault_packs_old PRIVATE
+        xTaskCreatePinnedToCoreWithCaps=lf_t_create xTaskNotifyGive=lf_t_give
+        ulTaskNotifyTake=lf_t_take vTaskDelay=lf_t_delay
+        heap_caps_get_free_size=lf_heap_free_size
+        LS_PACKS_OLD_SRC="${CMAKE_CURRENT_BINARY_DIR}/ls_packs_before_lang.c")
+    add_test(NAME test_fault_packs_old COMMAND test_fault_packs_old)
+endif()
 target_include_directories(test_scan_engine PRIVATE
     ${FW}/components/lakeshark
     ${FW}/components/lakeshark/radio
@@ -2588,7 +2662,7 @@ target_compile_definitions(test_lssim_rs41 PRIVATE
     RS41_ROUTE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/route.gpx")
 
 # TILES uses its production screen with explicit transfer fixtures on the host.
-target_sources(lssim PRIVATE tools/lssim_tiles.c ${FW}/components/apps/tui/screens/ext/scr_tiles.c ${FW}/components/apps/tui/ls_place_search.c ${FW}/components/apps/tui/ls_globe.c)
+target_sources(lssim PRIVATE ${FW}/components/apps/tui/screens/ext/scr_packs.c tools/lssim_tiles.c ${FW}/components/apps/tui/screens/ext/scr_tiles.c ${FW}/components/apps/tui/ls_place_search.c ${FW}/components/apps/tui/ls_globe.c)
 target_compile_definitions(lssim PRIVATE LS_TILES_HOST=1)
 
 # Real CartoCore MAP renderer, pinned in-tree unless overridden for development.
@@ -3198,6 +3272,8 @@ ls_add_test(test_journal_desk ${FW}/components/apps/tui/ls_journal_desk.c)
 target_include_directories(test_journal_desk PRIVATE ${FW}/components/apps/tui)
 add_test(NAME test_journal_desk_ui COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_journal_desk_ui.py $<TARGET_FILE:lssim>)
+add_test(NAME test_diag_desk_ui COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_diag_desk_ui.py $<TARGET_FILE:lssim>)
 target_sources(test_tui_screens PRIVATE ${LS_DESK_APP_SRCS})
 ls_add_test(test_adsb_desk ${FW}/components/apps/tui/ls_adsb_desk.c)
 target_include_directories(test_adsb_desk PRIVATE ${FW}/components/apps/tui)
@@ -3399,6 +3475,9 @@ if(LAP_MBEDTLS_DIR)
 endif()
 
 target_sources(lssim PRIVATE ${LAP_TUI}/ls_lap.c shims/ls_lap_screen.c)
+# STORE: the screen and its backend over bench/fixtures/store
+target_sources(lssim PRIVATE ${LAP_TUI}/ls_store.c ${LAP_TUI}/screens/ext/scr_store.c shims/ls_store_host.c)
+set_source_files_properties(shims/ls_store_host.c PROPERTIES COMPILE_DEFINITIONS LS_STORE_FIXTURES="${FW}/bench/fixtures/store")
 target_sources(lssim PRIVATE ${APP}/adsb/adsb_demo.c)
 # The API resolver references ADS-B for every app, including non-radio test apps.
 target_sources(test_lap_api PRIVATE ${APP}/adsb/adsb_state.c ${APP}/adsb/adsb_demo.c)
@@ -3539,6 +3618,17 @@ target_link_options(test_lap3d PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,-
 add_executable(l3bench tools/l3bench.c shims/lap3d_io.c)
 target_include_directories(l3bench PRIVATE ${FW}/app-sdk/include)
 target_link_libraries(l3bench lap3d_host m)
+# PINBALL (store app): production game with the real renderer, and its
+# per-stage frame cost with a model of the firmware present.
+add_executable(test_pinball tests/test_pinball.c shims/lap3d_io.c)
+target_include_directories(test_pinball PRIVATE ${FW}/app-sdk/include)
+target_compile_options(test_pinball PRIVATE -O2 -Wall -Wextra -Werror)
+target_link_libraries(test_pinball lap3d_host m)
+add_test(NAME test_pinball COMMAND test_pinball)
+add_executable(pinball_perf tools/pinball_perf.c)
+target_include_directories(pinball_perf PRIVATE ${FW}/app-sdk/include)
+target_compile_options(pinball_perf PRIVATE -O2)
+target_link_libraries(pinball_perf lap3d_host m)
 
 add_test(NAME test_lap3d_exports COMMAND ${Python3_EXECUTABLE}
     ${FW}/bench/tests/test_lap3d_exports.py)
@@ -3951,7 +4041,7 @@ endif()
 
 # MAP pointer math over the real viewport and input channels.
 ls_add_test(test_map_navigation
-    ${FW}/components/apps/tui/ls_map.c ${FW}/components/apps/tui/ls_tui_touch.c
+    ${FW}/components/apps/tui/ls_map.c ${FW}/components/apps/tui/ls_maptiles.c ${FW}/components/apps/tui/ls_tui_touch.c
     ${PMT}/upstream/zeromesh_pmtiles.c
     ${CARTO}/src/carto.c ${CARTO}/src/framebuffer.c ${CARTO}/src/geom.c
     ${CARTO}/src/mvt.c ${CARTO}/src/raster.c ${CARTO}/src/style.c)

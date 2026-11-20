@@ -56,12 +56,15 @@ bool l3_reserve(l3_scene *s, int commands, int vertices, int triangles) {
     int bands = ((s->h > L3_SHADOW ? s->h : L3_SHADOW) + 3) / 4;
     int stride = commands + triangles * 2;
     l3_bin *bin = l3_alloc(((size_t)stride+(stride+15)/16)*sizeof(*bin));
-    if (!c || !v || !t || !particles || !column || !bin) {
-        free(c); free(v); free(t); free(particles); free(column); free(bin);
+    l3_dyn *dyn = l3_alloc((size_t)commands * 2 * sizeof(*dyn));
+    if (!c || !v || !t || !particles || !column || !bin || !dyn) {
+        free(c); free(v); free(t); free(particles); free(column); free(bin); free(dyn);
         return false;
     }
     free(s->particle); free(s->cmd); free(s->vertices); free(s->tri);
     free(s->bin);
+    free(s->dyn[0]);
+    s->dyn[0] = dyn; s->dyn[1] = dyn + commands; s->ndyn = 0;
     free(s->column); s->column = column;
     s->columncap = (s->w > L3_SHADOW ? s->w : L3_SHADOW)*2;
     s->particle = particles;
@@ -107,18 +110,17 @@ LS_COLD bool l3_resize(l3_scene *s, int w, int h) {
         if (internal[i]) staged_internal += tile_bytes;
         if (!scratch[i]) scratch[i] = l3_alloc(tile_bytes);
     }
-    uint8_t *d = l3_alloc(n), *dirty = l3_alloc(n), *previous = l3_alloc(n);
+    uint8_t *d = l3_alloc(n), *dirty = l3_alloc(n);
     l3_lighting *lighting[2];
     for (int i = 0; i < 2; i++) lighting[i] = l3_alloc((size_t)w*4*sizeof(l3_lighting));
     atomic_uchar *tile_ready = l3_alloc((size_t)(h*3+1)/2*sizeof(*tile_ready));
     if (!lighting[0] || !lighting[1] || !tile_ready ||
-        !columns || !land || !keys || !scratch[0] || !scratch[1] || !p || !c || !d || !dirty || !previous) {
+        !columns || !land || !keys || !scratch[0] || !scratch[1] || !p || !c || !d || !dirty) {
         free(lighting[0]); free(lighting[1]); free(tile_ready); free(land); free(columns);
         free(keys);
         free(scratch[0]);
         free(scratch[1]);
         free(dirty);
-        free(previous);
         free(p);
         free(c);
         free(d);
@@ -129,12 +131,10 @@ LS_COLD bool l3_resize(l3_scene *s, int w, int h) {
     memset(keys, 0, n * sizeof(*keys));
     memset(d, LAP_DOT_CLEAR, n);
     memset(dirty, 0, n);
-    memset(previous, 0, n);
     free(s->pixels);
     free(s->cache);
     free(s->dots);
     free(s->dirty_mask);
-    free(s->previous_mask);
     free(s->keys);
     s->keys = keys;
     for (int i = 0; i < 2; i++) free(s->scratch[i]);
@@ -182,7 +182,8 @@ LS_COLD bool l3_resize(l3_scene *s, int w, int h) {
     s->cache = c;
     s->dots = d;
     s->dirty_mask = dirty;
-    s->previous_mask = previous;
+    s->mask_rect = (l3_rect){0, 0, 0, 0};
+    s->ndyn = 0;
     s->bin_bands = (h*3 > L3_SHADOW ? h*3 : L3_SHADOW)+3;
     s->bin_bands /= 4;
     s->w = w * 2;
@@ -243,7 +244,7 @@ void l3_destroy(l3_scene *s) {
     free(s->cache);
     free(s->dots);
     free(s->dirty_mask);
-    free(s->previous_mask);
+    free(s->dyn[0]);
     free(s->shadow);
     free(s->tile_ready);
     free(s->lighting[0]); free(s->lighting[1]);

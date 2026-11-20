@@ -128,7 +128,10 @@ static void draw_dmr(tui_surface *sf, tui_rect area)
                  dmr_listen_matches(&s_dmr_filter, i + 1, c) ? "MATCH" : "FILTERED");
         ls_safe_line(sf, pane, pane.y + 4, line, LS_ATTR_DIM);
     }
-    snprintf(line, sizeof(line), "%s / slot unknown %u", have ? "Watching symbols" : "Start C4FM receiver",
+    /* Only the dongle's C4FM path feeds the DMR watcher (app_p25.c); on the
+       LR2021's I/Q nothing ever will, however long the receiver runs. */
+    snprintf(line, sizeof(line), "%s / slot unknown %u",
+             have ? "Watching symbols" : P25.lr_iq_active ? "DMR needs an SDR" : "Start C4FM receiver",
              (unsigned)s_dmr_snapshot.unknown_slot);
     ls_safe_line(sf, body, body.y + 15, line, LS_ATTR_DIM);
     if (body.h > 19) {

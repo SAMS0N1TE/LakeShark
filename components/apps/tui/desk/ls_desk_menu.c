@@ -345,6 +345,78 @@ static void build(dk_menu_t *m)
         open_app_item(m, "GPS...", "gps");
         open_app_item(m, "Map", "map");
         break;
+    case M_BAR_FILE: {
+        const dk_win_t *w = dk_win(m->arg);
+        if (w && w->kind == DK_APP && w->app) {
+            int ai = -1;
+            for (int i = 0; i < ls_app_count(); i++) if (ls_app_at(i) == w->app) ai = i;
+            it = add(m, "Add to desktop", MI_ITEM, A_PIN_APP, ai);
+            if (it && ai < 0) it->off = true;
+            add(m, "Run...", MI_ITEM, A_RUN, 0);
+        } else if (w && w->shell == DK_SHELL_FOLDER) {
+            it = add(m, "Open", MI_ITEM, A_DLG, DKC_FOLD_OPEN); right(it, "Enter");
+            if (it) it->off = !dk_dialogs_can(DKC_FOLD_OPEN);
+            it = add(m, "Up one level", MI_ITEM, A_DLG, DKC_FOLD_UP); right(it, "Bksp");
+            if (it) it->off = !dk_dialogs_can(DKC_FOLD_UP);
+            it = add(m, "Shortcut on the desktop", MI_ITEM, A_DLG, DKC_FOLD_SHORTCUT); right(it, "D");
+            right(add(m, "Refresh", MI_ITEM, A_DLG, DKC_FOLD_REFRESH), "F5");
+        } else if (w && w->shell == DK_SHELL_BIN) {
+            it = add(m, "Restore", MI_ITEM, A_DLG, DKC_BIN_RESTORE); right(it, "Enter");
+            if (it) it->off = !dk_dialogs_can(DKC_BIN_RESTORE);
+            it = add(m, "Delete for good", MI_ITEM, A_DLG, DKC_BIN_DELETE); right(it, "Del");
+            if (it) it->off = !dk_dialogs_can(DKC_BIN_DELETE);
+            it = add(m, "Empty the bin", MI_ITEM, A_DLG, DKC_BIN_EMPTY);
+            if (it) it->off = !dk_dialogs_can(DKC_BIN_EMPTY);
+        } else if (w && w->shell == DK_SHELL_TASKS) {
+            it = add(m, "Switch to", MI_ITEM, A_DLG, DKC_TASK_SWITCH); right(it, "Enter");
+            if (it) it->off = !dk_dialogs_can(DKC_TASK_SWITCH);
+            it = add(m, "End task", MI_ITEM, A_DLG, DKC_TASK_END); right(it, "Del");
+            if (it) it->off = !dk_dialogs_can(DKC_TASK_END);
+            add(m, "New task (Run...)", MI_ITEM, A_RUN, 0);
+        }
+        sep(m);
+        right(add(m, "Close", MI_ITEM, A_WIN_CLOSE, m->arg), "Ctrl+F4");
+        break;
+    }
+    case M_BAR_VIEW: {
+        const dk_win_t *w = dk_win(m->arg);
+        if (w && w->kind == DK_APP) {
+            right(add(m, "Back", MI_ITEM, A_BACK, m->arg), "Esc");
+            right(add(m, "Options...", MI_ITEM, A_OPTIONS, m->arg), "o");
+            sep(m);
+            right(add(m, "Full screen", MI_ITEM, A_WIN_FULL, m->arg), "F11");
+            right(add(m, "Focused mode", MI_ITEM, A_WIN_FOCUS, m->arg), "Ctrl+F11");
+            sep(m);
+        }
+        add(m, "Theme", MI_SUB, A_SUBMENU, M_THEME);
+        add(m, "Display properties...", MI_ITEM, A_DISPLAY, 0);
+        add(m, "Control Panel", MI_ITEM, A_CPL, -1);
+        break;
+    }
+    case M_BAR_WINDOW: {
+        const dk_win_t *w = dk_win(m->arg);
+        it = add(m, "Restore", MI_ITEM, A_WIN_RESTORE, m->arg);
+        if (it && w && w->state == LS_DESK_WIN_NORMAL) it->off = true;
+        it = add(m, "Move", MI_ITEM, A_WIN_MOVE, m->arg);
+        if (it && w && w->state == LS_DESK_WIN_MAX) it->off = true;
+        it = add(m, "Size", MI_ITEM, A_WIN_SIZE, m->arg);
+        if (it && w && w->state == LS_DESK_WIN_MAX) it->off = true;
+        add(m, "Minimize", MI_ITEM, A_WIN_MIN, m->arg);
+        it = add(m, "Maximize", MI_ITEM, A_WIN_MAX, m->arg);
+        if (it && w && w->state == LS_DESK_WIN_MAX) it->off = true;
+        sep(m);
+        add(m, "Cascade", MI_ITEM, A_CASCADE, 0);
+        add(m, "Tile side by side", MI_ITEM, A_TILE, 1);
+        add(m, "Tile stacked", MI_ITEM, A_TILE, 2);
+        add(m, "Show the desktop", MI_ITEM, A_MIN_ALL, 0);
+        sep(m);
+        add(m, "Task Manager", MI_ITEM, A_TASKS, 0);
+        break;
+    }
+    case M_BAR_HELP:
+        add(m, "Keys", MI_ITEM, A_KEYS, m->arg);
+        right(add(m, "About LakeShark Desktop", MI_ITEM, A_ABOUT, 0), "F1");
+        break;
     case M_WINDOW:
     case M_APPCTX: {
         const dk_win_t *w = dk_win(m->arg);
@@ -397,6 +469,48 @@ static void build(dk_menu_t *m)
     }
 }
 
+/* Each row gets a letter of its own: its first letter when that is free,
+   else the first letter of a later word, else any letter still free. The
+   letter is lit, and pressing it runs the row (no second key to confirm). */
+static void accels(dk_menu_t *m)
+{
+    bool used[128] = {0};
+    for (int i = 0; i < m->n; i++) m->it[i].acc = 0xFF;
+    const int passes = m->id == M_START ? 2 : 3;     /* Start keeps its spare letters for the Run search */
+    for (int pass = 0; pass < passes; pass++)
+        for (int i = 0; i < m->n; i++) {
+            dk_item_t *it = &m->it[i];
+            const char *l = it->label;
+            if (it->acc != 0xFF || it->kind == MI_SEP || it->kind == MI_INFO || it->kind == MI_SLIDER || !l) continue;
+            int cell = 0;
+            for (const char *c = l; *c && cell < 0xFF; c++) {
+                const unsigned char u = (unsigned char)*c;
+                if ((u & 0xC0) == 0x80) continue;                    /* inside a UTF-8 character */
+                const bool start = c == l, word = c > l && c[-1] == ' ';
+                const bool fits = pass == 0 ? start : pass == 1 ? word : true;
+                const char up = (char)(u >= 'a' && u <= 'z' ? u - 32 : u);
+                if (fits && u < 128 && ((up >= 'A' && up <= 'Z') || (up >= '0' && up <= '9')) && !used[(int)up]) {
+                    used[(int)up] = true;
+                    it->acc = (uint8_t)cell;
+                    break;
+                }
+                if (pass == 0) break;
+                cell++;
+            }
+        }
+}
+
+static char accel_of(const dk_item_t *it)
+{
+    if (it->acc == 0xFF || !it->label) return 0;
+    int cell = 0;
+    for (const char *c = it->label; *c; c++) {
+        if (((unsigned char)*c & 0xC0) == 0x80) continue;
+        if (cell++ == it->acc) return (char)(*c >= 'a' && *c <= 'z' ? *c - 32 : *c);
+    }
+    return 0;
+}
+
 static void place(dk_menu_t *m, int x, int y)
 {
     int lw = 0, rw = 0;
@@ -438,6 +552,7 @@ static void open_level(int level, int id, int arg, int x, int y, bool select_fir
     m->id = id;
     m->arg = arg;
     build(m);
+    accels(m);
     place(m, x, y);
     m->up = m->y < y;
     m->t0 = esp_timer_get_time();
@@ -448,6 +563,11 @@ static void open_level(int level, int id, int arg, int x, int y, bool select_fir
 void dk_menu_open(int id, int arg, int x, int y)
 {
     open_level(0, id, arg, x, y, id == M_START);
+}
+
+void dk_menu_open_kbd(int id, int arg, int x, int y)
+{
+    open_level(0, id, arg, x, y, true);
 }
 
 /* The submenu of item `row` of menu `level`, beside it. */
@@ -546,8 +666,12 @@ static void draw_one(tui_surface *sf, const dk_menu_t *m)
         else if (it->lamp)
             ls_box_put(sf, row, ix + 1, y, LS_SHAPE_DOT,
                        sel ? face : (uint8_t)((face & 0xF0) | (dk_attr(it->lamp) & 0x0F)));
-        if (it->off || sel) dk_text(sf, row, ix + 3, y, it->label, face);
-        else dk_text_accel(sf, row, ix + 3, y, it->label, face, MENU_ON(R_ACCEL));
+        dk_text(sf, row, ix + 3, y, it->label, face);
+        if (!it->off && !sel && accel_of(it)) {
+            const int ax = ix + 3 + it->acc;
+            if (tui_rect_contains(tui_rect_intersect(row, all), ax, y))
+                sf->back[(size_t)y * sf->w + ax].attr = MENU_ON(R_ACCEL);
+        }
         int rx = ix + iw - 1;
         if (it->kind == MI_SUB) { ls_box_put(sf, row, rx, y, LS_SHAPE_RIGHT, face); rx -= 2; }
         if (it->right[0]) {
@@ -590,6 +714,7 @@ void dk_menu_draw(tui_surface *sf)
         if (live_menu(s_m[i].id)) {
             const int sel = s_m[i].sel;
             build(&s_m[i]);
+            accels(&s_m[i]);
             if (sel < s_m[i].n) s_m[i].sel = sel;
         }
     for (int i = 0; i < s_n; i++) draw_unfolding(sf, &s_m[i]);
@@ -645,10 +770,9 @@ bool dk_menu_key(ls_tk_t k, char ch)
         const char want = (char)(ch >= 'a' && ch <= 'z' ? ch - 32 : ch);
         int hits = 0, first = -1, next = -1;
         for (int i = 0; i < m->n; i++) {
-            const char *l = m->it[i].label;
-            if (!pickable(&m->it[i]) || !l || !l[0]) continue;
-            const char c = (char)(l[0] >= 'a' && l[0] <= 'z' ? l[0] - 32 : l[0]);
-            if (c != want) continue;
+            if (!pickable(&m->it[i])) continue;
+            const char c = accel_of(&m->it[i]);
+            if (!c || c != want) continue;
             hits++;
             if (first < 0) first = i;
             if (next < 0 && i > m->sel) next = i;

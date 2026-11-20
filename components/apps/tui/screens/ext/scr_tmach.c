@@ -31,12 +31,13 @@
 #include "../../ls_options.h"
 #include "../../ls_theme.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_text.h"
 #include "esp_attr.h"
 #include "esp_timer.h"
 #include "ls_tmach.h"
 #include "ls_textpack.h"
 
-#define INK(c)  TUI_ATTR((c), TUI_BLACK)
+#define INK(c)  ls_ink_hue(TUI_ATTR((c), TUI_BLACK))
 #define CHROME  INK(TUI_CYAN)
 #define VALUE   INK(TUI_WHITE | TUI_BRIGHT)
 #define NOTE    LS_ATTR_DIM
@@ -178,8 +179,8 @@ static const char *radio_short(unsigned r)
 static void age_text(char *out, size_t n, int64_t age_us)
 {
     const long s = age_us > 0 ? (long)(age_us / 1000000) : 0;
-    if (s < 60) snprintf(out, n, "%lds ago", s);
-    else if (s < 3600) snprintf(out, n, "%ldm%02lds ago", s / 60, s % 60);
+    if (s < 60) snprintf(out, n, "%lds ago", ls_age_q(s));
+    else if (s < 3600) snprintf(out, n, "%ldm%02lds ago", s / 60, ls_age_q(s % 60));
     else snprintf(out, n, "%ldh%02ldm ago", s / 3600, (s / 60) % 60);
 }
 
@@ -244,7 +245,7 @@ static int header(tui_surface *sf, tui_rect a)
     str(sf, a, x + 4, y + 2, 3, "===", tape);
     const int tx = x + 13, tw = a.x + a.w - tx - 1;
     char t[96];
-    str(sf, a, tx, y, tw, "TIME MACHINE", VALUE);
+    str(sf, a, tx, y, tw, "REWIND BUFFER", VALUE);
     /* The lamp: lit while samples are being kept. */
     right(sf, a, tx, tw, y, rec ? "* REC" : s_have_st && s_st.enabled ? "o IDLE" : "o OFF",
           rec ? INK(TUI_RED | TUI_BRIGHT) : NOTE);
@@ -329,10 +330,13 @@ static int draw_tape(tui_surface *sf, tui_rect a, int y, int rows)
     for (int acc = 0, v = 0; v < 256 && have; v++) { acc += hist[v]; if (acc * 5 >= have) { floor_lv = v; break; } }
     for (int acc = 0, v = 0; v < 256 && have; v++) { acc += phist[v]; if (acc * 2 >= have) { floor_pk = v; break; } }
     const int range = 80;                            /* 40 dB above the floor fills it */
-    static EXT_RAM_BSS_ATTR int col_h[256], col_pk[256];
-    static EXT_RAM_BSS_ATTR uint8_t col_flags[256];
-    static EXT_RAM_BSS_ATTR bool col_has[256];
-    for (int c = 0; c < dots && c < 256; c++) {
+    /* Two dots a cell: 512 covers a 256-column tape (landscape at the small
+       fonts, a wide desk window), where 256 left the newest end blank. */
+#define TAPE_DOTS 512
+    static EXT_RAM_BSS_ATTR int col_h[TAPE_DOTS], col_pk[TAPE_DOTS];
+    static EXT_RAM_BSS_ATTR uint8_t col_flags[TAPE_DOTS];
+    static EXT_RAM_BSS_ATTR bool col_has[TAPE_DOTS];
+    for (int c = 0; c < dots && c < TAPE_DOTS; c++) {
         const int k0 = first + c * span / dots, k1 = first + (c + 1) * span / dots;
         int lv = -1, pk = -1;
         col_flags[c] = 0;
@@ -369,7 +373,7 @@ static int draw_tape(tui_surface *sf, tui_rect a, int y, int rows)
             uint8_t bits = 0;
             for (int half = 0; half < 2; half++) {
                 const int c = cx * 2 + half;
-                if (c >= 256 || !col_has[c]) continue;
+                if (c >= TAPE_DOTS || !col_has[c]) continue;
                 int fill = col_h[c] - base;
                 if (fill > 4) fill = 4;
                 if (fill > 0) bits |= ls_braille_column((unsigned)fill, half);
@@ -383,7 +387,7 @@ static int draw_tape(tui_surface *sf, tui_rect a, int y, int rows)
     const int my = gy + rows, ay = my + 1;
     /* What the decoders said on this receiver, first, so nothing covers it.
        Rows from another radio happened somewhere else and are not marked. */
-    static EXT_RAM_BSS_ATTR uint16_t mark[256];
+    static EXT_RAM_BSS_ATTR uint16_t mark[TAPE_DOTS];
     memset(mark, 0, sizeof(mark));
     if (s_tape_n && !s_scroll) {
         const int64_t t0 = first >= 0 ? s_tape[first].end_us : s_tape[0].end_us;
@@ -393,10 +397,10 @@ static int draw_tape(tui_surface *sf, tui_rect a, int y, int rows)
             const int k = tick_at(e->at_us);
             const int tk = k < 0 ? (int)s_tape_n - 1 : k;
             const int c = (int)((long long)(tk - first) * dots / span) / 2;
-            if (c >= 0 && c < gw && c < 256) mark[c] = e->kind;
+            if (c >= 0 && c < gw && c < TAPE_DOTS / 2) mark[c] = e->kind;
         }
     }
-    for (int c = 0; c < dots && c < 256; c++) {
+    for (int c = 0; c < dots && c < TAPE_DOTS; c++) {
         const uint8_t f = col_flags[c];
         const int cx = c / 2;
         if (mark[cx]) continue;
@@ -414,7 +418,7 @@ static int draw_tape(tui_surface *sf, tui_rect a, int y, int rows)
             if (clear) str(sf, a, sx + cx + 1, my, n, f2, NOTE);
         } else if (f & (LS_TM_TICK_GAP | LS_TM_TICK_HELD)) tui_put_char(sf, a, sx + cx, my, '~', NOTE);
     }
-    for (int cx = 0; cx < gw && cx < 256; cx++)
+    for (int cx = 0; cx < gw && cx < TAPE_DOTS / 2; cx++)
         if (mark[cx]) tui_put_char(sf, a, sx + cx, my, ls_tm_kind_letter(mark[cx]), INK(kind_hue(mark[cx]) | TUI_BRIGHT));
     /* Axis: a tick every ten seconds, now at the right edge. */
     for (int cx = 0; cx < gw; cx++) tui_put_char(sf, a, sx + cx, ay, '-', CHROME);
@@ -614,7 +618,7 @@ static void draw(tui_surface *sf, tui_rect a)
     snprintf(s_hint, sizeof(s_hint), s_view == VIEW_TIMELINE ?
              "W what was that  V tape  P replay  J/K newer/older  Enter play card  O options" :
              "W what was that  V timeline  P replay  O options");
-    if (a.w < 30 || a.h < 18) { ls_panel_notice(sf, a, "TIME MACHINE", LS_TEXT(t_scr_tmach_more_screen_space_needed, "More screen space needed"), "Use a smaller font"); return; }
+    if (a.w < 30 || a.h < 18) { ls_panel_notice(sf, a, NULL, LS_TEXT(t_scr_tmach_more_screen_space_needed, "More screen space needed"), "Use a smaller font"); return; }
     const bool wide = ls_tui_is_wide();
     /* The bar at the bottom and the big key by the thumb: over the bar in
        portrait, beside it in landscape, where rows are what is short. */
@@ -686,7 +690,10 @@ static bool key(ls_tk_t k, char ch)
     if (k == LS_TK_CHAR) {
         switch (ch | 0x20) {
         case 'w': what_was_that(); return true;
-        case 'v': s_view = s_view == VIEW_TAPE ? VIEW_TIMELINE : VIEW_TAPE; return true;
+        case 'v':
+            s_view = s_view == VIEW_TAPE ? VIEW_TIMELINE : VIEW_TAPE;
+            if (s_view == VIEW_TAPE) { s_scroll = 0; s_sel = -1; }   /* TAPE is now: its marks and RECENT read from the newest */
+            return true;
         case 'p': {
             uint32_t no = 0;
             if (s_view == VIEW_TIMELINE && s_sel >= (int)s_scroll && s_sel < (int)(s_scroll + s_ev_n))

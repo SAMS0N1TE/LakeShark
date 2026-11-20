@@ -263,6 +263,7 @@ static const ls_opt_t OPT_MUSIC[] = {
     {.label="VIEW",.kind=LS_OPT_CYCLE,.arg=TAB_LEVEL,.names=VIEW_NAME,.n=VIEWS,.step=1,.get=o_get,.set=o_set},
     {.label="COLOUR",.kind=LS_OPT_CYCLE,.arg=COLOUR,.names=PALETTE_NAME,.n=PALETTES,.step=1,.get=o_get,.set=o_set},
     {.label="SPAN",.kind=LS_OPT_LEVEL,.arg=SPAN,.lo=0,.hi=2,.step=1,.num=o_num,.set_num=o_set_num,.show=o_show},
+    {.label="SOUND",.kind=LS_OPT_MENU,.sub=&ls_music_sound_options},
     {.label="PLAYBACK",.kind=LS_OPT_MENU,.sub=&ls_music_playback_options},
     {.label="ANALYSIS",.kind=LS_OPT_MENU,.sub=&ls_music_analysis_options},
     {.label="GENERATOR",.kind=LS_OPT_MENU,.sub=&ls_music_generator_options},
@@ -560,7 +561,7 @@ static void button(tui_surface *sf, int id, tui_rect r, const char *label,
     hue |= TUI_BRIGHT, density = LS_DITHER_HEAVY;
   ls_fill_dither(sf, r, density, hue);
   const bool tall = r.h >= 5;
-  const uint8_t edge = TUI_ATTR(hue, TUI_BLACK);
+  const uint8_t edge = ls_ink_hue(TUI_ATTR(hue, TUI_BLACK));
   for (int x = r.x + 1; x < r.x + r.w - 1; x++) {
     tui_put_char(sf, r, x, r.y, tall ? '=' : '-', edge);
     tui_put_char(sf, r, x, r.y + r.h - 1, tall ? '=' : '-', edge);
@@ -575,8 +576,8 @@ static void button(tui_surface *sf, int id, tui_rect r, const char *label,
   tui_put_char(sf, r, r.x + r.w - 1, r.y + r.h - 1, '+', edge);
   const uint8_t face =
       available ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM;
-  const uint8_t ink = TUI_ATTR(available ? (role_hue(id) | TUI_BRIGHT) : LS_FAINT_FG,
-                               TUI_BLACK);
+  const uint8_t ink = ls_ink_hue(TUI_ATTR(available ? (role_hue(id) | TUI_BRIGHT) : LS_FAINT_FG,
+                               TUI_BLACK));
   const int inner_y = r.y + 1, inner_h = r.h - 2;
   int label_y = inner_y + (inner_h - 1) / 2;
   const char *const *pic = button_art(id);
@@ -619,7 +620,7 @@ static void button(tui_surface *sf, int id, tui_rect r, const char *label,
     int n = snprintf(badge, sizeof(badge), "[%s]", KEYS[id]);
     if (n + 2 < r.w)
       tui_put_str(sf, r, r.x + r.w - 1 - n, r.y, badge,
-                  TUI_ATTR(available ? TUI_YELLOW | TUI_BRIGHT : TUI_WHITE, TUI_BLACK));
+                  ls_ink_hue(TUI_ATTR(available ? TUI_YELLOW | TUI_BRIGHT : TUI_WHITE, TUI_BLACK)));
   }
 }
 
@@ -652,7 +653,7 @@ static void strip(tui_surface *sf, tui_rect r, bool waterfall, float lo_db,
     return;
   for (int i = 0; i < 16; i++)
     tui_put_char(sf, r, r.x + 1 + i, r.y + 1, LS_TUI_BLOCK_FULL,
-                 TUI_ATTR(ramp(i), TUI_BLACK));
+                 ls_ink_hue(TUI_ATTR(ramp(i), TUI_BLACK)));
   char text[16];
   snprintf(text, sizeof(text), "%.0f", (double)lo_db);
   tui_put_str(sf, r, r.x + 1, r.y + 2, text, LS_ATTR_DIM);
@@ -719,7 +720,7 @@ static void format_line(tui_surface *sf, tui_rect clip, int x, int y) {
     return;
   }
   char v[16];
-  const uint8_t val = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+  const uint8_t val = ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
   snprintf(v, sizeof(v), "%u.%u", f.rate_hz / 1000, f.rate_hz % 1000 / 100);
   seg(sf, clip, &x, y, v, val);
   seg(sf, clip, &x, y, " kHz  ", LS_ATTR_DIM);
@@ -735,7 +736,7 @@ static void output_line(tui_surface *sf, tui_rect clip, int x, int y) {
   seg(sf, clip, &x, y, f.mono_out ? "MONO" : "STEREO", white);
   seg(sf, clip, &x, y, "  TONE ", LS_ATTR_DIM);
   seg(sf, clip, &x, y, ls_music_warm() ? "WARM" : "FLAT",
-      ls_music_warm() ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : white);
+      ls_music_warm() ? ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)) : white);
 }
 static void panel(tui_surface *sf, tui_rect p, bool playing, bool boxed) {
   int pad = ls_tui_corner_pad(p.y);
@@ -781,15 +782,18 @@ static void panel(tui_surface *sf, tui_rect p, bool playing, bool boxed) {
   }
   switch (view) {
   case VIEW_LEVEL:
+    ls_ink_keep(body);   /* the picture stays on black in any scheme */
     ls_audio_view_draw(sf, body, view, palette, span_step, playing);
     LS_SNPUTS(t_scr_music_output_dbfs_after_volume, line, sizeof(line), "OUTPUT dBFS AFTER VOLUME  <> SOURCE BEFORE IT");
     break;
   case VIEW_BANDS:
+    ls_ink_keep(body);   /* the picture stays on black in any scheme */
     ls_audio_view_draw(sf, body, view, palette, span_step, playing);
     LS_SNPRINTF(t_scr_music_fft_d_hann_1f, line, sizeof(line), "FFT %d HANN  %.1f Hz/BIN  %s",
              LS_MUSIC_FFT_SIZE, (double)rate / LS_MUSIC_FFT_SIZE, source_name());
     break;
   case VIEW_SCAN: {
+    ls_ink_keep(plot);   /* the picture stays on black in any scheme */
     ls_audio_view_draw(sf, plot, view, palette, span_step, playing);
     strip(sf, controls_row, false, SCAN_FLOOR_DB, SCAN_TOP_DB);
     char lo[8], hi[8];
@@ -801,6 +805,7 @@ static void panel(tui_surface *sf, tui_rect p, bool playing, bool boxed) {
   }
   default: {
     push_waterfall();
+    ls_ink_keep(plot);   /* the picture stays on black in any scheme */
     ls_audio_view_draw(sf, plot, view, palette, span_step, playing);
     strip(sf, controls_row, true, (float)wf_floor, (float)(wf_floor + wf_range));
     char hi[12];
@@ -832,16 +837,19 @@ static void title_text(char *text, size_t n, const char **artist,
     *song = split + 3;
   }
 }
-/* A title too long for its line scrolls while it plays. */
+/* A title too long for its line is cut in the middle ("Some long na...end");
+   the track list and the title bar of OPTIONS carry the whole name. Static:
+   nothing slides, so a paused or steady screen can go to the slow tick. */
 static const char *scrolled(const char *song, int width) {
-  int overflow = (int)strlen(song) - width;
-  if (overflow > 0 && ls_music_state() == LS_MUSIC_PLAYING) {
-    unsigned phase = (frame / 8) % (unsigned)(overflow + 14);
-    song += phase > 7 ? (phase - 7 > (unsigned)overflow ? (unsigned)overflow
-                                                        : phase - 7)
-                      : 0;
-  }
-  return song;
+  static char cut[96];
+  const int len = (int)strlen(song);
+  if (width < 8 || len <= width)
+    return song;
+  if (width > (int)sizeof(cut) - 1)
+    width = (int)sizeof(cut) - 1;
+  const int tail = (width - 3) / 3, head = width - 3 - tail;
+  snprintf(cut, sizeof(cut), "%.*s...%s", head, song, song + len - tail);
+  return cut;
 }
 static const char *state_name(bool playing) {
   ls_music_mic_t mic = ls_music_mic_state();
@@ -919,10 +927,10 @@ static void info_boxed(tui_surface *sf, tui_rect r, bool playing) {
     int len = snprintf(n, sizeof(n), " TRACK %d/%d ",
                        (current >= 0 ? current : selected) + 1, count);
     tui_put_str(sf, box, box.x + box.w - 2 - len, box.y, n,
-                TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
+                ls_ink_hue(TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK)));
   }
   ls_icon_draw(sf, box, box.x + 2, box.y + 1, LS_ICON_MUSIC,
-               TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
+               ls_ink_hue(TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK)));
   const int tx = box.x + 2 + LS_ICON_COLS + 2, tw = box.x + box.w - 2 - tx;
   tui_rect text = tui_rect_make(tx, box.y + 1, tw, 6);
   ls_music_mic_t mic = ls_music_mic_state();
@@ -950,7 +958,7 @@ static void info_boxed(tui_surface *sf, tui_rect r, bool playing) {
   }
   format_line(sf, text, tx, text.y + 2);
   if (*error)
-    tui_put_str(sf, text, tx, text.y + 3, error, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, text, tx, text.y + 3, error, ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)));
   else
     output_line(sf, text, tx, text.y + 3);
   char clock[48];
@@ -981,7 +989,7 @@ static void info_flat(tui_surface *sf, tui_rect r, bool playing) {
   const uint8_t hue = state_hue(playing);
   ls_safe_line(sf, left, r.y + 1, state_name(playing),
                mic == LS_MIC_RECORDING ? TUI_ATTR(TUI_BLACK, TUI_RED | TUI_BRIGHT)
-                                       : TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
+                                       : ls_ink_hue(TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK)));
   top_keys(sf, x, r.y, bw, 3);
   unsigned elapsed, total;
   const char *error = ls_music_error();
@@ -1005,7 +1013,7 @@ static void info_flat(tui_surface *sf, tui_rect r, bool playing) {
     total = on_track() ? ls_music_duration_ms() / 1000 : 0;
   }
   if (*error)
-    ls_safe_line(sf, r, r.y + 5, error, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+    ls_safe_line(sf, r, r.y + 5, error, ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)));
   tui_rect clock_rect = tui_rect_make(r.x, r.y + 6, r.w, 1);
   if (mic != LS_MIC_OFF) {
     char clock[48];
@@ -1022,7 +1030,7 @@ static void info_flat(tui_surface *sf, tui_rect r, bool playing) {
     int len = snprintf(n, sizeof(n), "TRACK %d/%d",
                        (current >= 0 ? current : selected) + 1, count);
     tui_put_str(sf, r, r.x + r.w - 2 - len, r.y + 6, n,
-                TUI_ATTR(hue, TUI_BLACK));
+                ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
   }
   seek_bar(sf, tui_rect_make(r.x + 2, r.y + 7, r.w - 4, 1), true, elapsed * 1000, total * 1000);
 }
@@ -1202,15 +1210,15 @@ static void draw_library(tui_surface *sf, tui_rect r) {
     int x = row.x + 1;
     char lead[2] = {sel ? '>' : ' ', 0};
     seg(sf, row, &x, ty, lead, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
-    seg(sf, row, &x, ty, num, TUI_ATTR(TUI_YELLOW, TUI_BLACK));
+    seg(sf, row, &x, ty, num, ls_ink_hue(TUI_ATTR(TUI_YELLOW, TUI_BLACK)));
     seg(sf, row, &x, ty, "  ", TUI_ATTR(TUI_WHITE, TUI_BLACK));
-    seg(sf, row, &x, ty, name, TUI_ATTR(sel || now ? TUI_WHITE | TUI_BRIGHT : TUI_WHITE, TUI_BLACK));
+    seg(sf, row, &x, ty, name, ls_ink_hue(TUI_ATTR(sel || now ? TUI_WHITE | TUI_BRIGHT : TUI_WHITE, TUI_BLACK)));
     seg(sf, row, &x, ty, " ", TUI_ATTR(TUI_WHITE, TUI_BLACK));
     if (now) {
       int tx = row.x + row.w - tag;
-      tui_put_char(sf, row, tx, ty, ' ', TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
-      tui_put_char(sf, row, tx + 1, ty, LS_TUI_SEXT(0x1D), TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
-      tui_put_str(sf, row, tx + 2, ty, "NOW", TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+      tui_put_char(sf, row, tx, ty, ' ', ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
+      tui_put_char(sf, row, tx + 1, ty, LS_TUI_SEXT(0x1D), ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
+      tui_put_str(sf, row, tx + 2, ty, "NOW", ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
     }
   }
   int y = r.y + r.h - 7, half = r.w / 2;
@@ -1273,11 +1281,11 @@ static void up_next(tui_surface *sf, tui_rect r) {
     if ((int)strlen(name) > room)
       name[room] = 0;
     int x = row.x + 1;
-    seg(sf, row, &x, y, now ? ">" : " ", TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
-    seg(sf, row, &x, y, num, TUI_ATTR(TUI_YELLOW, TUI_BLACK));
-    seg(sf, row, &x, y, name, TUI_ATTR(now ? TUI_WHITE | TUI_BRIGHT : TUI_WHITE, TUI_BLACK));
+    seg(sf, row, &x, y, now ? ">" : " ", ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
+    seg(sf, row, &x, y, num, ls_ink_hue(TUI_ATTR(TUI_YELLOW, TUI_BLACK)));
+    seg(sf, row, &x, y, name, ls_ink_hue(TUI_ATTR(now ? TUI_WHITE | TUI_BRIGHT : TUI_WHITE, TUI_BLACK)));
     if (now)
-      tui_put_str(sf, row, row.x + row.w - 5, y, " NOW", TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+      tui_put_str(sf, row, row.x + row.w - 5, y, " NOW", ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
   }
 }
 static void draw(tui_surface *sf, tui_rect r) {

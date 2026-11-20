@@ -71,7 +71,7 @@ int scan_engine_seek_direction(void) { return s_seek_dir; }
 /* Set across the autosquelch sweep, which tunes as fast as a scan does. */
 static volatile bool s_autosq_busy = false;
 static bool s_mixed, s_location, s_handoff;
-static scan_geo_t s_geo;
+static EXT_RAM_BSS_ATTR scan_geo_t s_geo;
 static portMUX_TYPE s_geo_lock = portMUX_INITIALIZER_UNLOCKED;
 static scan_geo_t geo_snapshot(void) {
     portENTER_CRITICAL(&s_geo_lock);
@@ -217,7 +217,7 @@ typedef struct {
    a pointer store, so the scan task never reads a half-rebuilt copy. One
    writer at a time; the status path (the UI, every frame) refreshes at most
    every SNAP_STATUS_US and skips when the scan task is mid-refresh. */
-static scan_radio_snapshot_t s_snap_buf[2];
+static EXT_RAM_BSS_ATTR scan_radio_snapshot_t s_snap_buf[2];
 static const scan_radio_snapshot_t *volatile s_snap = &s_snap_buf[0];
 static portMUX_TYPE s_snap_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_snap_busy;

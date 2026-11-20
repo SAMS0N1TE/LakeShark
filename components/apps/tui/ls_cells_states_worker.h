@@ -209,6 +209,10 @@ static void cells_states_publish(void) {
             cells_name(id+1+65536,name,sizeof(name),false);snprintf(path,sizeof(path),CELLS_ROOT "%s",name);
             if(detail && cells_entry_checked(id+1+65536,&bytes,sha,&error) && cells_matches_checked(path,bytes,sha,&error))cells_states_walk.detail++;
             if(error) { cells_states_walk.active=false;cells_states_dirty=true;return; }
+            /* A cell is two or three lookups in a folder of hundreds of
+               names. A tick off the card after each lets a screen waiting
+               for it in between, not after the whole turn. */
+            vTaskDelay(1);
             /* One unknown cell may hash slowly, with idle sleeps inside the hash. */
             if(++checked>=16 || esp_timer_get_time()-began>=200000)return;
         }

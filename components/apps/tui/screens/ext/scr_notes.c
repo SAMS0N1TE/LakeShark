@@ -144,7 +144,9 @@ static void poll_saves(void)
                 if (s_done_requested) { s_view = V_READ; s_read_scroll = 0; }
             }
             s_done_requested = false;
-            say(result > 0 ? "Saved to the SD card" : "SAVE FAILED: edits kept. DONE retries");
+            /* Saved, but not the latest text (a tick since): the next save says so. */
+            if (result <= 0 || !strcmp(s_text, s_saved))
+                say(result > 0 ? "Saved to the SD card" : "SAVE FAILED: edits kept. DONE retries");
         }
     }
     if (s_png_ticket) {
@@ -363,7 +365,7 @@ static int draw_line(tui_surface *sf, tui_rect clip, int x, int y, int w, const 
     if (line[0] == '#') {
         int level = 0; while (line[level] == '#') level++;
         body = line + level; while (body < limit && *body == ' ') body++;
-        attr = TUI_ATTR((level == 1 ? TUI_CYAN : TUI_GREEN) | TUI_BRIGHT, TUI_BLACK);
+        attr = ls_ink_hue(TUI_ATTR((level == 1 ? TUI_CYAN : TUI_GREEN) | TUI_BRIGHT, TUI_BLACK));
     } else if (line[0] == '>' ) {
         const char *tag = line + 1; while (tag < limit && *tag == ' ') tag++;
         int tl = 0; while (tag + tl < limit && tag[tl] != ' ') tl++;
@@ -372,11 +374,11 @@ static int draw_line(tui_surface *sf, tui_rect clip, int x, int y, int w, const 
         if (sf) tui_put_str(sf, clip, x, y, chip, TUI_ATTR(TUI_BLACK, hue | TUI_BRIGHT));
         indent = (int)strlen(chip) + 1;
         body = tag + tl; while (body < limit && *body == ' ') body++;
-        attr = TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK);
+        attr = ls_ink_hue(TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
     } else if (!strncmp(line, "- [ ]", 5) || !strncmp(line, "- [x]", 5) || !strncmp(line, "- [X]", 5)) {
         const bool done = line[3] != ' ';
         if (sf) tui_put_str(sf, clip, x, y, done ? "[x]" : "[ ]",
-                    TUI_ATTR((done ? TUI_GREEN : TUI_YELLOW) | TUI_BRIGHT, TUI_BLACK));
+                    ls_ink_hue(TUI_ATTR((done ? TUI_GREEN : TUI_YELLOW) | TUI_BRIGHT, TUI_BLACK)));
         indent = 4; body = line + 5; while (body < limit && *body == ' ') body++;
         attr = done ? LS_ATTR_DIM : text;
     } else if (n == 3 && !strncmp(line, "---", 3)) {
@@ -406,7 +408,7 @@ static int draw_line(tui_surface *sf, tui_rect clip, int x, int y, int w, const 
 static void art(tui_surface *sf, tui_rect a, int x, int y, bool wide, int lines, bool busy)
 {
     const uint8_t edge = TUI_ATTR(TUI_CYAN, TUI_BLACK), lit = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
-    const uint8_t pen = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t pen = ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
     static const char *const RULE[3] = { "~~~~~~~", "~~~~~~~", "~~~~" };
     const int n = wide ? 1 : 3;
     tui_put_str(sf, a, x, y, wide ? ".=========." : ".=========.", edge);
@@ -431,11 +433,10 @@ static int list_header(tui_surface *sf, tui_rect a, int total)
     const int tx = a.x + 16, tw = a.w - 17;
     const tui_rect clip = tui_rect_make(tx, a.y, tw > 0 ? tw : 0, wide ? 3 : 5);
     char s[96];
-    tui_put_str(sf, clip, tx, a.y, "NOTES", TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
     if (ls_notes_scanning()) snprintf(s, sizeof(s), "reading the card...");
     else if (s_filter[0]) snprintf(s, sizeof(s), "%d of %d match \"%s\"", total, count, s_filter);
     else snprintf(s, sizeof(s), count == 1 ? "%d on the card" : "%d on the card", count);
-    tui_put_str(sf, clip, tx + 7, a.y, s, ls_notes_scanning() ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+    tui_put_str(sf, clip, tx, a.y, s, ls_notes_scanning() ? ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)) : LS_ATTR_DIM);
     ls_note_info_t n;
     const int idx = total ? visible_index(s_sel) : -1;
     if (idx >= 0 && ls_notes_at(idx, &n)) {
@@ -473,7 +474,7 @@ static void draw_list(tui_surface *sf, tui_rect a)
     const int bar_h = ls_btn_raised_height(a, 3);
     ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 3, button_focus);
     tui_rect panel = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - 1);
-    char title[40]; snprintf(title, sizeof(title), "NOTES  %d", ls_notes_count());
+    char title[40]; snprintf(title, sizeof(title), "%d SAVED", ls_notes_count());
     ls_panel_box(sf, panel, title, TUI_CYAN);
     s_list_area = tui_rect_make(panel.x + 2, panel.y + 2, panel.w - 8, panel.h - 3);
     const int per = 3, rows = s_list_area.h / per;
@@ -511,7 +512,7 @@ static void draw_list(tui_surface *sf, tui_rect a)
         if (n.checks_open + n.checks_done) {
             char c[24]; snprintf(c, sizeof(c), "[%u/%u]", n.checks_done, n.checks_open + n.checks_done);
             const int cx = s_list_area.x + s_list_area.w - (int)strlen(c) - 1;
-            tui_put_str(sf, panel, cx, y, c, TUI_ATTR((n.checks_open ? TUI_YELLOW : TUI_GREEN) | TUI_BRIGHT, TUI_BLACK));
+            tui_put_str(sf, panel, cx, y, c, ls_ink_hue(TUI_ATTR((n.checks_open ? TUI_YELLOW : TUI_GREEN) | TUI_BRIGHT, TUI_BLACK)));
         }
     }
     tui_put_char(sf, panel, s_list_area.x + s_list_area.w + 2, s_list_area.y, '^', LS_ATTR_DIM);
@@ -555,7 +556,7 @@ static void draw_read(tui_surface *sf, tui_rect a)
                 ls_map_preview(sf, box, lat, lon);
                 int px, py;
                 if (ls_map_preview_point(lat, lon, box, &px, &py))
-                    tui_put_char(sf, box, px, py, '+', TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+                    tui_put_char(sf, box, px, py, '+', ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)));
             }
             row += MAP_ROWS; total += MAP_ROWS;
         }
@@ -595,7 +596,7 @@ static void draw_edit(tui_surface *sf, tui_rect a)
         const bool line_start = start == 0 || s_text[start - 1] == '\n';
         uint8_t attr = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
         if (line_start && s_text[start] == '#') attr = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
-        else if (line_start && s_text[start] == '>') attr = TUI_ATTR(tag_hue(s_text + start + 2) | TUI_BRIGHT, TUI_BLACK);
+        else if (line_start && s_text[start] == '>') attr = ls_ink_hue(TUI_ATTR(tag_hue(s_text + start + 2) | TUI_BRIGHT, TUI_BLACK));
         for (int i = start; i < end; i++)
             tui_put_char(sf, s_text_area, s_text_area.x + i - start, s_text_area.y + r, s_text[i], attr);
         if (next == start || (next >= s_tb.len && end >= s_tb.len)) break;
@@ -603,11 +604,11 @@ static void draw_edit(tui_surface *sf, tui_rect a)
     }
     int crow, ccol;
     ls_textbuf_locate(&s_tb, w, &crow, &ccol);
-    const bool blink = (esp_timer_get_time() / 500000) % 2 == 0;
+    const bool blink = true;   /* steady caret: nothing blinks on a timer */
     if (crow >= s_tb.scroll && crow < s_tb.scroll + rows && blink) {
         const int cx = s_text_area.x + ccol, cy = s_text_area.y + crow - s_tb.scroll;
         const char under = s_tb.cursor < s_tb.len && s_text[s_tb.cursor] != '\n' ? s_text[s_tb.cursor] : ' ';
-        tui_put_char(sf, s_text_area, cx, cy, under, TUI_ATTR(TUI_BLACK, TUI_GREEN | TUI_BRIGHT));
+        tui_put_char(sf, s_text_area, cx, cy, under, ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_GREEN | TUI_BRIGHT)));
     }
     if (dock_h) ls_keydock_draw(sf, s_dock_area);
     char foot[100];
@@ -629,7 +630,7 @@ static void draw_map(tui_surface *sf, tui_rect a)
     ls_map_preview(sf, box, lat, lon);
     int px, py;
     if (ls_map_preview_point(lat, lon, box, &px, &py))
-        tui_put_char(sf, box, px, py, '+', TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+        tui_put_char(sf, box, px, py, '+', ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)));
     char line[100];
     /* ls_map_status() is NULL when the map is fine; a NULL under %s took the
        board down on the first finished frame. */
@@ -642,12 +643,19 @@ static void draw_map(tui_surface *sf, tui_rect a)
 static void draw(tui_surface *sf, tui_rect a)
 {
     poll_saves();
+    {   /* each view has its own buttons: a focus left on the last view's BACK made ENTER dead here */
+        static int drawn = -1;
+        if ((int)s_view != drawn) { button_focus = -1; drawn = (int)s_view; }
+    }
     if (a.h < 16 || a.w < 30) {
-        ls_panel_box(sf, a, "NOTES", TUI_CYAN);
+        ls_panel_box(sf, a, NULL, TUI_CYAN);
         tui_put_str(sf, a, a.x + 1, a.y + 1, "Enlarge the pane", LS_ATTR_DIM);
         return;
     }
     if (s_view == V_EDIT && s_tb.dirty && esp_timer_get_time() - s_last_edit_us > AUTOSAVE_US) save_now();
+    /* A tick made while the last tick was still saving: save it now. */
+    if (s_view == V_READ && s_tb.dirty && s_loaded && !s_save_ticket && !s_trash_ticket &&
+        esp_timer_get_time() - s_last_edit_us > 1000000) save_now();   /* a second apart, so a failing card is not hammered */
     switch (s_view) {
     case V_LIST: draw_list(sf, a); break;
     case V_READ: draw_read(sf, a); break;
@@ -889,7 +897,7 @@ static void enter(void)
 
 static void leave(void)
 {
-    if (s_view == V_EDIT || s_view == V_MAP) save_now();
+    if (s_tb.dirty || s_view == V_EDIT || s_view == V_MAP) save_now();
     ls_map_preview_leave();
     ls_field_watch(false);
 }

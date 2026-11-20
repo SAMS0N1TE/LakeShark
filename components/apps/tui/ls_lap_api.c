@@ -716,9 +716,14 @@ void lap_image(int x, int y, int w, int h, const uint16_t *p, int pw, int ph, ui
     tui_rect rct = tui_rect_make(runtime_state.area.x + l, runtime_state.area.y + t, r - l, b - t);
     bool changed = !runtime_state.image_active || runtime_state.image_pixels != p || runtime_state.image_w != pw || runtime_state.image_h != ph ||
                    runtime_state.image_serial != serial || memcmp(&runtime_state.image_area, &rct, sizeof(rct));
-    /* Stationary ring mode uses the shared image renderer without allocating its comparison copy.
-     */
-    ls_tui_image_ring(rct, p, pw, ph, 0, 0, changed ? -1 : 0, changed ? -1 : 0, serial);
+    /* A picture of up to 64 K pixels (a 3D game's dots, 43 KB at 52x70 cells) keeps a PSRAM copy, so
+       a new serial pushes only the cells whose source pixels changed instead of all of them (PINBALL:
+       ~3640 cells, ~29 ms a frame on the P4, down to the ball and flippers). Bigger pictures keep the
+       stationary ring mode, which needs no comparison copy. */
+    if ((size_t)pw * (size_t)ph <= 65536u)
+        ls_tui_image(rct, p, pw, ph, serial);
+    else
+        ls_tui_image_ring(rct, p, pw, ph, 0, 0, changed ? -1 : 0, changed ? -1 : 0, serial);
     runtime_state.image_called = runtime_state.image_active = true;
     runtime_state.image_area = rct;
     runtime_state.image_pixels = p;
@@ -933,9 +938,18 @@ void ls_lap_api_log_service(void) {
     }
 }
 
+bool ls_tui_cutout(tui_rect *cells);
 bool lap_value_text(const char *path, char *out, size_t cap) {
     ls_val_t v;
     const char *unit;
+    /* "ui.cutout": the TFT's camera hole as x,y,w,h in the app's own cells
+       (false on a panel without one), so an app can route around it. */
+    if (inside() && path && out && cap && !strcmp(path, "ui.cutout")) {
+        tui_rect h;
+        if (!ls_tui_cutout(&h)) return false;
+        snprintf(out, cap, "%d,%d,%d,%d", h.x - runtime_state.area.x, h.y - runtime_state.area.y, h.w, h.h);
+        return true;
+    }
     if (!inside() || !path || !out || !cap || !ls_value_read(path, &v, &unit))
         return false;
     switch (v.kind) {

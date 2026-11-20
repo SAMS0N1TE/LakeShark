@@ -19,7 +19,8 @@ typedef enum {
     CARTO_LAYER_BUILDING = 2,
     CARTO_LAYER_ROAD     = 3,
     CARTO_LAYER_PLACE    = 4,
-    CARTO_LAYER_COUNT    = 5
+    CARTO_LAYER_BOUNDARY = 5,   /* LS DEVIATION 5: borders, as lines */
+    CARTO_LAYER_COUNT    = 6
 } carto_layer_kind;
 
 #define CARTO_ROAD_PRIO_MIN 1
@@ -45,6 +46,8 @@ typedef struct {
     carto_rgb aircraft_halo_color;
 
     bool draw_labels;
+    carto_rgb boundary;         /* LS DEVIATION 5 */
+    bool water_outline;         /* LS DEVIATION 5: shores as lines, no fill */
 } carto_style;
 
 #define CARTO_MIN_LINE_PX 3.0f
@@ -52,6 +55,10 @@ typedef struct {
 
 void carto_style_default(carto_style *out);
 int carto_road_priority(const char *cls);
+/* LS DEVIATION 5: the finer class (kind_detail); 0 for one it does not know. */
+int carto_road_detail_priority(const char *detail);
+/* Country 3, region 2, county 1, anything else 0 (not drawn). */
+int carto_boundary_rank(const char *kind);
 carto_layer_kind carto_classify_layer(const char *layer_name);
 
 #ifdef __cplusplus

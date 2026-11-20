@@ -66,6 +66,12 @@ UNUSED_GET(i8, int8_t)
 UNUSED_GET(u32, uint32_t)
 UNUSED_GET(i32, int32_t)
 UNUSED_GET(u64, uint64_t)
+/* The lock record's blob and the old keys it replaces: not read here. */
+esp_err_t nvs_get_blob(nvs_handle_t h, const char *k, void *v, size_t *n)
+{ (void)h; (void)k; (void)v; (void)n; return ESP_ERR_NVS_NOT_FOUND; }
+esp_err_t nvs_set_blob(nvs_handle_t h, const char *k, const void *v, size_t n)
+{ (void)h; (void)k; (void)v; (void)n; return ESP_OK; }
+esp_err_t nvs_erase_key(nvs_handle_t h, const char *k) { (void)h; (void)k; return ESP_OK; }
 esp_err_t nvs_commit(nvs_handle_t h) { (void)h; commit_count++; return ESP_OK; }
 esp_err_t ls_nvs_run(ls_nvs_fn_t fn, void *ctx, unsigned bytes)
 { (void)bytes; return fn(ctx); }

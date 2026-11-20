@@ -19,6 +19,20 @@ sys.path.insert(0, str(ROOT))
 from api_registry import version as sdk_api_version
 MAX_BYTES = 512 * 1024
 MAGIC = b'LSG1'
+# HOME's tabs, in LAP_GROUP_* order (1-based on the board).
+GROUPS = ('radio', 'field', 'system', 'user')
+
+
+def group_source(directory, sources):
+    """app.json's "group" as a LAP_GROUP line to compile in, unless the source
+    already says LAP_GROUP itself. None when there is nothing to add."""
+    meta = Path(directory) / 'app.json'
+    if not meta.is_file(): return None
+    group = json.loads(meta.read_text(encoding='utf-8')).get('group')
+    if not group: return None
+    if group not in GROUPS: raise ValueError('app.json group: one of ' + ', '.join(GROUPS))
+    if any('LAP_GROUP(' in Path(s).read_text(encoding='utf-8', errors='replace') for s in sources): return None
+    return '#include "lakeshark_app.h"\nLAP_GROUP(LAP_GROUP_%s);\n' % group.upper()
 
 def supports_api(major, minor):
     current_major, current_minor = sdk_api_version(ROOT)
@@ -105,6 +119,13 @@ class Elf:
             if b'\0' not in row or any(c and not 32<=c<=126 for c in row): raise ValueError('invalid icon art')
             art.append(row.split(b'\0')[0].decode('ascii'))
         self.manifest.update(icon=icon,color=color,flags=flags,reserved=reserved,icon_art=art,signature_present=self.sig is not None,signature_checked=False,size=len(data))
+        # LAP_GROUP: the HOME tab, '' when the app does not say (the board then goes by its capabilities).
+        group=''
+        if '.lap_group' in self.names:
+            s=self.sections[self.names.index('.lap_group')]
+            g=d[s[4]:s[4]+8] if s[1]==1 and s[5]==8 else b''
+            if g[:4]==b'LGP1' and 1<=g[4]<=len(GROUPS): group=GROUPS[g[4]-1]
+        self.manifest['group']=group
 
     def mapped(self,a,n,flags=0):
         return any(p[6]&flags==flags and p[2]<=a and a+n<=p[2]+p[5] for p in self.segments)
@@ -177,11 +198,16 @@ def build(directory,output=None,log=None):
     directory=Path(directory).resolve(); cc=compiler()
     sources=project_sources(directory)
     if not sources: raise ValueError('no .c files in '+str(directory))
+    grouping=group_source(directory,sources)
     sources += sorted((ROOT/'lib').glob('*.c'))
     output=Path(output) if output else directory/(directory.name+'.lap')
     output.parent.mkdir(parents=True,exist_ok=True)
     fd,temp_name=tempfile.mkstemp(prefix=output.name+'.',suffix='.build',dir=output.parent)
     os.close(fd);temporary=Path(temp_name)
+    if grouping:   # app.json's "group", compiled in as the .lap_group section
+        fd,group_name=tempfile.mkstemp(prefix=output.name+'.group.',suffix='.c',dir=output.parent)
+        with os.fdopen(fd,'w',encoding='utf-8') as f: f.write(grouping)
+        sources.append(Path(group_name))
     args=['-march=rv32imafc_zicsr_zifencei','-mabi=ilp32f','-Os','-fPIC','-shared','-nostdlib','-nostartfiles','-e','lap_main',
           '-ffunction-sections','-fdata-sections','-Wl,--gc-sections','-fvisibility=hidden',
           '-Wl,-Bsymbolic,--exclude-libs,ALL,-z,noexecstack,-z,max-page-size=4096', '-I'+str(ROOT/'include'), '-I'+str(ROOT/'lib'), '-I'+str(directory),
@@ -200,6 +226,7 @@ def build(directory,output=None,log=None):
         temporary.replace(output)
     finally:
         temporary.unlink(missing_ok=True)
+        if grouping: Path(group_name).unlink(missing_ok=True)
     if log is None: print(f'{output}: {len(e.data)} bytes; {e.manifest["id"]} {e.manifest["version"]}')
     return output
 

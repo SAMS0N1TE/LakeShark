@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "ls_textpack.h"
+#include "../../ls_text.h"
 static EXT_RAM_BSS_ATTR aprs_packet_t shown, opened;
 static EXT_RAM_BSS_ATTR aprs_packet_t stations[APRS_STATIONS];
 static EXT_RAM_BSS_ATTR ls_gps_state_t gps;
@@ -148,8 +149,8 @@ void fm_aprs_draw(tui_surface *sf, tui_rect a)
         if (opened.position) snprintf(b, sizeof(b), "%s%.5f / %.5f", opened.ambiguous ? "~ " : "", opened.lat, opened.lon);
         else LS_SNPUTS(t_fm_aprs_view_no_position_in_this, b, sizeof(b), "No position in this packet");
         line(sf, list, 5, b, LS_ATTR_DIM);
-        if (km >= 0) LS_SNPRINTF(t_fm_aprs_view_1f_km_03_0f, b, sizeof(b), "%.1f km / %03.0f %s / %llds ago", km, brg, ls_geo_compass(brg), (long long)((now-opened.heard_us)/1000000));
-        else LS_SNPRINTF(t_fm_aprs_view_range_needs_fresh_gps, b, sizeof(b), "Range needs fresh GPS / %llds ago", (long long)((now-opened.heard_us)/1000000));
+        if (km >= 0) LS_SNPRINTF(t_fm_aprs_view_1f_km_03_0f, b, sizeof(b), "%.1f km / %03.0f %s / %llds ago", km, brg, ls_geo_compass(brg), (long long)ls_age_q((long)((now-opened.heard_us)/1000000)));
+        else LS_SNPRINTF(t_fm_aprs_view_range_needs_fresh_gps, b, sizeof(b), "Range needs fresh GPS / %llds ago", (long long)ls_age_q((long)((now-opened.heard_us)/1000000)));
         line(sf, list, 6, b, LS_ATTR_DIM);
         if (opened.kind == APRS_MESSAGE) { snprintf(b, sizeof(b), "TO %s", opened.recipient); line(sf, list, 7, b, LS_ATTR_DIM); }
         else if (opened.weather) {
@@ -176,7 +177,7 @@ void fm_aprs_draw(tui_surface *sf, tui_rect a)
         if (km >= 0) snprintf(distance, sizeof(distance), "%.0fkm %03.0f", km, brg); else snprintf(distance, sizeof(distance), "--km ---");
         LS_SNPRINTF(t_fm_aprs_view_c_c_11s_s, b, sizeof(b), "%c %c %-11s %s %lldm%s", i == selected ? '>' : ' ', shown.symbol,
                  shown.call, distance, (long long)((now-shown.heard_us)/60000000), shown.weather ? " WX" : "");
-        line(sf, list, 4+i-start, b, i == selected ? TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT) : LS_ATTR_DIM);
+        line(sf, list, 4+i-start, b, i == selected ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT)) : LS_ATTR_DIM);
     }
     if (!row_count) line(sf, list, 4, LS_TEXT(t_fm_aprs_view_waiting_for_ax_25, "Waiting for AX.25 UI packets / NFM"), LS_ATTR_DIM);
 }

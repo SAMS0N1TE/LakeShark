@@ -53,7 +53,24 @@ int cc_ctile_open_source(cc_ctile *f,cc_ctile_source *s,cc_ctile_read read,void 
     return 1;
 fail: memset(f,0,sizeof(*f)); return 0;
 }
+static int locate(const cc_ctile *f,unsigned z,uint32_t x,uint32_t y,uint64_t *off,uint32_t *len);
 int cc_ctile_locate(const cc_ctile *f,unsigned z,uint32_t x,uint32_t y,uint64_t *off,uint32_t *len) {
+    cc_ctile_source *s=f->source;
+    if(!s || z>255) return locate(f,z,x,y,off,len);
+    const unsigned slot=(unsigned)((x*UINT32_C(0x9E3779B1)^y*UINT32_C(0x85EBCA6B)^z*UINT32_C(0xC2B2AE35))>>26)%CC_CTILE_MEMO;
+    if(s->memo[slot].state && s->memo[slot].z==z && s->memo[slot].x==x && s->memo[slot].y==y) {
+        s->memo_hits++;
+        if(s->memo[slot].state==2) return 0;
+        *off=s->memo[slot].off;*len=s->memo[slot].len;return 1;
+    }
+    int found=locate(f,z,x,y,off,len);
+    if(found>=0) {
+        s->memo[slot].state=found?1:2;s->memo[slot].z=(uint8_t)z;s->memo[slot].x=x;s->memo[slot].y=y;
+        s->memo[slot].off=found?*off:0;s->memo[slot].len=found?*len:0;
+    }
+    return found;
+}
+static int locate(const cc_ctile *f,unsigned z,uint32_t x,uint32_t y,uint64_t *off,uint32_t *len) {
     if(f->directory_owner) return cc_cellset_resolve(f->directory_owner,z,x,y,off,len);
     uint32_t lo=0,hi=f->count; cc_ctile_source *s=f->source;
     if(!s) {

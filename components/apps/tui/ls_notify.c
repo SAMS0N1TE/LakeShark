@@ -19,7 +19,7 @@
    in the way of the screen it is covering. */
 #define SHOW_FRAMES 150
 
-#define MAX_PROBES 6
+#define MAX_PROBES 8
 static ls_notify_probe_t s_probe[MAX_PROBES];
 static int               s_probes;
 
@@ -165,6 +165,31 @@ static void edge_at(tui_rect r, int i, int *x, int *y, char *ch)
     *ch = corner ? '+' : (*y == r.y || *y == r.y + h - 1) ? '-' : '|';
 }
 
+/* Break msg into at most maxl (1..3) rows of `width` columns, at spaces where
+   one is near. Returns the row count; row i is msg[st[i] .. st[i]+ln[i]). */
+static int wrap_lines(const char *msg, int width, int maxl, int *st, int *ln)
+{
+    if (maxl > 3) maxl = 3;
+    if (maxl < 1) maxl = 1;
+    if (width < 8) width = 8;
+    const int len = (int)strlen(msg);
+    int pos = 0, n = 0;
+    while (n < maxl) {
+        while (pos < len && msg[pos] == ' ') pos++;
+        st[n] = pos;
+        int take = len - pos;
+        if (take > width && n < maxl - 1) {
+            int k = width;
+            while (k > width / 2 && msg[pos + k] != ' ') k--;
+            take = (k > width / 2) ? k : width;
+        } else if (take > width) take = width;
+        ln[n++] = take;
+        pos += take;
+        if (pos >= len) break;
+    }
+    return n ? n : 1;
+}
+
 void ls_notify_draw(tui_surface *sf, tui_rect area)
 {
     s_rect = tui_rect_make(0, -1, 0, 0);
@@ -178,8 +203,25 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
 
        A steady notice (an event, not a message) is this same banner without
        the decoration: full height from the first frame, no pulse, no light.
-       Its body still scrolls, because that is reading, not decoration. */
-    const int full = s_now.activate && s_now.actions[0][0] ? 5 : 4;
+       Its body wraps. */
+    /* The message wraps onto as many rows as it needs (three at most, the
+       last cut short with "..."); nothing slides, so a notice that is not
+       changing lets the screen go to the slow tick. */
+    const char *body = ls_tr(s_now.body), *title = ls_tr(s_now.title);
+    const char *msg = body;
+    char head[LS_NOTIFY_TITLE + LS_NOTIFY_BODY + 8];
+    const char *colon = strstr(body, ": ");
+    if (!s_now.accent && colon && colon - body < 40) {
+        snprintf(head, sizeof(head), ls_tr("%s  FROM %.*s"), title, (int)(colon - body), body);
+        msg = colon + 2;
+    } else {
+        snprintf(head, sizeof(head), "%s", title);
+    }
+    int pad0 = 0;
+    for (int y = area.y; y < area.y + 7; y++) { const int p = ls_tui_corner_pad(y); if (p > pad0) pad0 = p; }
+    const int width = area.w - 2 * pad0 - 4;
+    int ls_[3], ln_[3], nl = wrap_lines(msg, width, area.h - 4 - (s_now.activate && s_now.actions[0][0] ? 1 : 0), ls_, ln_);
+    const int full = 3 + nl + (s_now.activate && s_now.actions[0][0] ? 1 : 0);
     const bool still = s_now.steady;
 
     const int age = s_life - s_ttl;
@@ -215,21 +257,6 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
     ls_panel_box(sf, r, NULL, hue | TUI_BRIGHT);
 
     if (h == full) {
-        /* "name: message" is split so who sent it sits in the title bar. */
-        /* A fixed notice reads in the interface language; a message is
-           whatever its sender wrote. */
-        const char *body = ls_tr(s_now.body), *title = ls_tr(s_now.title);
-        const char *msg = body;
-        char head[LS_NOTIFY_TITLE + LS_NOTIFY_BODY + 8];
-        const char *colon = strstr(body, ": ");
-        if (!s_now.accent && colon && colon - body < 40) {
-            snprintf(head, sizeof(head), ls_tr("%s  FROM %.*s"), title,
-                     (int)(colon - body), body);
-            msg = colon + 2;
-        } else {
-            snprintf(head, sizeof(head), "%s", title);
-        }
-
         /* The bar pulses red and white for its first two seconds. */
         const bool pulse = !still && age < FLASH_FRAMES * 2 && ((age / 5) & 1);
         const uint8_t bar = pulse ? A(hue, TUI_WHITE | TUI_BRIGHT)
@@ -238,25 +265,18 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
         tui_put_str(sf, r, r.x + 2, r.y + 1, head, bar);
         tui_put_str(sf, r, r.x + r.w - 5, r.y + 1, ls_tr("[X]"), bar);
 
-        /* A message longer than the line scrolls through it, pausing at
-           each end so both are readable. */
-        const int width = r.w - 4;
-        s_line = width;
-        const int len = (int)strlen(msg);
-        int off = 0;
-        if (len > width) {
-            const int travel = len - width, pause = 20;
-            const int t = (age / 3) % (travel + 2 * pause);
-            off = t < pause ? 0 : t < pause + travel ? t - pause : travel;
+        s_line = r.w - 4;
+        for (int i = 0; i < nl; i++) {
+            char line[LS_NOTIFY_BODY];
+            const bool cut = (i == nl - 1) && (ls_[i] + ln_[i] < (int)strlen(msg));
+            snprintf(line, sizeof(line), "%.*s%s", cut ? ln_[i] - 3 : ln_[i], msg + ls_[i], cut ? "..." : "");
+            tui_put_str(sf, r, r.x + 2, r.y + 2 + i, line, A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
         }
-        char line[LS_NOTIFY_BODY];
-        snprintf(line, sizeof(line), "%.*s", width, msg + off);
-        tui_put_str(sf, r, r.x + 2, r.y + 2, line, A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
-        if (full == 5) {
+        if (s_now.activate && s_now.actions[0][0]) {
             int aw = (r.w - 9) / 2;
             for (int i=0;i<2;i++) if (s_now.actions[i][0]) {
                 char label[20]; snprintf(label,sizeof(label),"[%.*s]",aw-2,s_now.actions[i]);
-                tui_put_str(sf,r,r.x+2+i*aw,r.y+3,label,A(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
+                tui_put_str(sf,r,r.x+2+i*aw,r.y+2+nl,label,A(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
             }
         }
 
@@ -285,7 +305,7 @@ void ls_notify_draw(tui_surface *sf, tui_rect area)
 
 bool ls_notify_badge_inverted(void)
 {
-    return s_unread > 0 && ((s_frame / 13) & 1);
+    return false;   /* steady while unread: the count is the news, a blink was a clock */
 }
 
 /* --------------------------------------------------------------- input -- */
@@ -303,7 +323,7 @@ bool ls_notify_touch(int col, int row)
     ls_tui_invalidate();
     if (!close && s_now.activate) {
         int action=-1;
-        if (s_rect.h==5 && row==s_rect.y+3) {
+        if (s_rect.h>=5 && row==s_rect.y+s_rect.h-2) {
             int aw=(s_rect.w-9)/2;
             action=col>=s_rect.x+2+aw?1:0;
             if (!s_now.actions[action][0]) action=-1;

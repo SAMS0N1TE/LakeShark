@@ -3,7 +3,8 @@
 param(
     [Parameter(Mandatory = $true, Position = 0)]
     [string] $Config,
-    [switch] $Clean
+    [switch] $Clean,
+    [switch] $RamFail   # fail the build step when internal-RAM statics break the budget/baseline (bench/ramgate.py); default is a loud warning
 )
 
 $ErrorActionPreference = 'Stop'
@@ -73,3 +74,16 @@ try {
 if ($rc -ne 0) { throw "$($c.name): build failed (exit $rc)" }
 Write-Host "built $($c.name) into $dir" -ForegroundColor Green
 Write-Host "flash it with:  pwsh -File bench/flash.ps1 $($c.name) -AppOnly" -ForegroundColor DarkGray
+
+# Internal-RAM gate: big statics that land in internal RAM abort boot ("Could not reserve internal/DMA pool").
+$gate = Join-Path $PSScriptRoot 'ramgate.py'
+$py = (Get-Command python -ErrorAction SilentlyContinue)
+if (-not $py) { $py = (Get-Command py -ErrorAction SilentlyContinue) }
+if ($py -and (Test-Path $gate)) {
+    $gateArgs = @($gate, '--config', $c.name)
+    if (-not $RamFail) { $gateArgs += '--warn-only' }
+    & $py.Source @gateArgs
+    if ($LASTEXITCODE) { throw "$($c.name): internal-RAM gate failed (bench/ramgate.py); move big buffers to PSRAM (EXT_RAM_BSS_ATTR)" }
+} else {
+    Write-Host 'ramgate skipped: no python on PATH' -ForegroundColor Yellow
+}

@@ -101,6 +101,15 @@ int ls_tui_transitions(ls_tui_transition_t out[8]);
 void ls_tui_transition_present(uint32_t present_us, int cells, uint32_t sync_us);
 
 void ls_tui_screen_show(int index);
+/* The same, made at the start of the next frame's draw: for a switch asked
+   from inside the screen that would leave (an SD app's callback, through
+   lap_action), so that screen is not closed while its own code runs. */
+void ls_tui_screen_show_later(int index);
+/* The switch show_later left, taken once: -1 when there is none, and dropped
+   (-1) while the lock is up, so it never lands under the lock page. The
+   router takes it at the start of its draw; the desk at the start of its own,
+   where it opens that app's window. */
+int ls_tui_screen_take_later(void);
 /* Drop the tab strip while the current screen wants its room; any screen
    switch brings it back. */
 void ls_tui_screen_set_bare(bool on);
@@ -130,6 +139,15 @@ void ls_tui_screen_prev(void);
    present; the caller decides when, because it owns the frame cadence. */
 void ls_tui_set_locked(bool locked);
 bool ls_tui_locked(void);
+/* The page drawn while locked, below the status row (ls_lock.c installs
+   one). Without it the router draws its own two-tap page. Its touch and key
+   take everything while locked. */
+typedef struct {
+    void (*draw)(tui_surface *sf, tui_rect area);
+    bool (*touch)(int col, int row);
+    bool (*key)(ls_tk_t k, char ch);
+} ls_tui_lock_page_t;
+void ls_tui_set_lock_page(const ls_tui_lock_page_t *page);
 
 /* Lays out from the surface it is handed (sf->w x sf->h), not the grid, so
    the desk can run it in a window's own surface; taps then arrive in that

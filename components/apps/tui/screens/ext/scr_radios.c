@@ -733,7 +733,7 @@ static void draw(tui_surface *sf, tui_rect area)
 
     s_hit_n = 0;
     s_options_hit = s_page_prev = s_page_next = tui_rect_make(0, 0, 0, 0);
-    ls_panel_box(sf, area, "RADIOS", TUI_CYAN);
+    ls_panel_box(sf, area, NULL, TUI_CYAN);
     if (area.h < 8 || area.w < 20) return;
     if (ls_tui_compact() && area.w >= 72 && area.h >= 12) {
         const int live = count_live();

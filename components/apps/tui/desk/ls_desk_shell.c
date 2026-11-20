@@ -8,11 +8,14 @@
 
 #include "../ls_braille.h"
 
-/* The OK / Close button of a shell window, bottom right of its client. */
-static tui_rect ok_rect(tui_rect c) { return tui_rect_make(c.x + c.w - 16, c.y + c.h - 3, 14, 3); }
+/* The buttons of a shell window: one row, bottom right of its client, the
+   same size and place as the dialogs' (ls_desk_dialogs.c). */
+#define BTN_W 12
+static tui_rect btn(tui_rect c, int from_right) { return tui_rect_make(c.x + c.w - 1 - (BTN_W + 1) * (from_right + 1), c.y + c.h - 2, BTN_W, 1); }
+static tui_rect ok_rect(tui_rect c) { return btn(c, 0); }
 
-static uint8_t on_face(uint8_t fg) { return (uint8_t)((dk_attr(R_FACE) & 0xF0) | (fg & 0x0F)); }
-static uint8_t hue(uint8_t light, uint8_t dark) { return on_face(dk_light_face() ? light : dark); }
+/* A picture's colour on the face, by the face's lightness, made to read. */
+static uint8_t hue(uint8_t light, uint8_t dark) { return dk_fit(dk_light_face() ? light : dark, dk_face_bg(), 30); }
 
 /* The About window: a fin cutting a sea of signal, the name, what it is. */
 static void about(tui_surface *sf, tui_rect c, tui_rect clip)
@@ -52,7 +55,7 @@ static void about(tui_surface *sf, tui_rect c, tui_rect clip)
     dk_hline(sf, clip, c.x + 2, c.y + 9, c.w - 4, LS_BOX_H, dk_attr(R_SHADOW));
     /* Keys, as a short table. */
     static const char *const K[][2] = {
-        {"F10", "Start"}, {"F6", "next window"}, {"F11", "full screen"},
+        {"F10", "menu bar"}, {"F6", "next window"}, {"F11", "full screen"},
         {"F9", "scheme"}, {"F2", "rename icon"}, {"Del", "icon to bin"},
         {"F1", "this window"}, {"Esc", "back, then menu"},
     };
@@ -62,24 +65,25 @@ static void about(tui_surface *sf, tui_rect c, tui_rect clip)
         dk_text(sf, clip, col, row, K[i][0], dk_attr(R_ACCEL));
         dk_text(sf, clip, col + 4, row, K[i][1], st);
     }
-    dk_text(sf, clip, kx, ky + 3, "Ctrl+Tab switches windows, Ctrl+F4 closes one.", tx);
-    dk_button(sf, clip, ok_rect(c), "OK", true, dk_pressed(ok_rect(c)));
+    dk_text(sf, clip, kx, ky + 3, "Ctrl+Esc Start   Ctrl+Tab switches windows   Ctrl+F4 closes one", tx);
+    dk_pushbtn(sf, clip, ok_rect(c), "OK", DK_BS_DEFAULT | DK_BS_FOCUS);
 }
 
 /* ---------------------------------------------------------- Shut Down -- */
 
 enum { SD_LEAVE, SD_CLOSE, SD_PARK, SD_LOCK, SD_N };
 static const char *const SD_TEXT[SD_N] = {
-    "Leave the desktop (the board's own screens)",
-    "Close all windows",
-    "Park the receiver",
-    "Lock the screen",
+    "&Leave the desktop (the board's own screens)",
+    "&Close all windows",
+    "&Park the receiver",
+    "Loc&k the screen",
 };
 static int s_sd_choice;
+static int s_sd_focus;                  /* 0 the choices, 1 Yes, 2 No: Tab walks them */
 
 static tui_rect sd_row(tui_rect c, int i) { return tui_rect_make(c.x + 16, c.y + 3 + i, c.w - 18, 1); }
-static tui_rect sd_yes(tui_rect c) { return tui_rect_make(c.x + c.w - 30, c.y + c.h - 3, 12, 3); }
-static tui_rect sd_no(tui_rect c) { return tui_rect_make(c.x + c.w - 16, c.y + c.h - 3, 12, 3); }
+static tui_rect sd_yes(tui_rect c) { return btn(c, 1); }
+static tui_rect sd_no(tui_rect c) { return btn(c, 0); }
 
 /* A monitor with the power mark on its screen, the dialog's picture. */
 static void sd_art(tui_surface *sf, tui_rect clip, int x, int y)
@@ -114,17 +118,23 @@ static void shutdown(tui_surface *sf, tui_rect c, tui_rect clip)
     dk_text(sf, clip, c.x + 16, c.y + 1, "Are you sure you want to:", dk_attr(R_STRONG));
     for (int i = 0; i < SD_N; i++) {
         const tui_rect r = sd_row(c, i);
-        dk_radio(sf, clip, r.x, r.y, s_sd_choice == i, SD_TEXT[i]);
+        const bool on = s_sd_choice == i, lit = on && s_sd_focus == 0;
+        if (lit) dk_fill(sf, tui_rect_intersect(clip, tui_rect_make(r.x + 3, r.y, dk_label_len(SD_TEXT[i]) + 2, 1)), dk_attr(R_SELECT));
+        else if (dk_hover(r)) dk_fill(sf, tui_rect_intersect(clip, tui_rect_make(r.x + 3, r.y, dk_label_len(SD_TEXT[i]) + 2, 1)), dk_attr(R_TASKHOVER));
+        dk_radio(sf, clip, r.x, r.y, on, NULL);
+        dk_label(sf, clip, r.x + 4, r.y, SD_TEXT[i], lit ? dk_attr(R_SELECT) : dk_hover(r) ? dk_attr(R_TASKHOVER) : dk_attr(R_FACE), !lit && !dk_hover(r));
     }
-    dk_button(sf, clip, sd_yes(c), "Yes", true, dk_pressed(sd_yes(c)));
-    dk_button(sf, clip, sd_no(c), "No", false, dk_pressed(sd_no(c)));
+    /* Enter presses the button with the ring; with the ring on the choices, Yes */
+    dk_pushbtn(sf, clip, sd_yes(c), "&Yes", (s_sd_focus != 2 ? DK_BS_DEFAULT : 0) | (s_sd_focus == 1 ? DK_BS_FOCUS : 0));
+    dk_pushbtn(sf, clip, sd_no(c), "&No", (s_sd_focus == 2 ? DK_BS_DEFAULT | DK_BS_FOCUS : 0));
 }
 
 int dk_open_shutdown(void)
 {
     s_sd_choice = SD_LEAVE;
+    s_sd_focus = 0;
     dk_anim_dim();
-    return dk_open_shell(DK_SHELL_SHUTDOWN, "Shut Down LakeShark Desktop", 70, 12);
+    return dk_open_shell(DK_SHELL_SHUTDOWN, "Shut Down LakeShark Desktop", 70, 10);
 }
 
 static void sd_yes_do(dk_win_t *w)
@@ -161,7 +171,12 @@ bool dk_shell_tap(dk_win_t *w, tui_rect c, int col, int row)
     if (w->shell >= DK_SHELL_PROMPT && w->shell != DK_SHELL_CPL) return dk_dialogs_tap(w, c, col, row);
     if (w->shell == DK_SHELL_SHUTDOWN) {
         for (int i = 0; i < SD_N; i++)
-            if (tui_rect_contains(sd_row(c, i), col, row)) { s_sd_choice = i; return true; }
+            if (tui_rect_contains(sd_row(c, i), col, row)) {
+                s_sd_choice = i;
+                s_sd_focus = 0;
+                if (dk_click_double()) sd_yes_do(w);
+                return true;
+            }
         if (tui_rect_contains(sd_yes(c), col, row)) { sd_yes_do(w); return true; }
         if (tui_rect_contains(sd_no(c), col, row)) { ls_desk_close(w->id); return true; }
         return false;
@@ -177,12 +192,24 @@ bool dk_shell_key(dk_win_t *w, ls_tk_t k, char ch)
     if (w->shell == DK_SHELL_CPL) return dk_cpl_key(w, k, ch);
     if (w->shell >= DK_SHELL_PROMPT && w->shell != DK_SHELL_CPL) return dk_dialogs_key(w, k, ch);
     if (w->shell == DK_SHELL_SHUTDOWN) {
-        if (k == LS_TK_UP) { s_sd_choice = (s_sd_choice + SD_N - 1) % SD_N; return true; }
-        if (k == LS_TK_DOWN) { s_sd_choice = (s_sd_choice + 1) % SD_N; return true; }
-        if (k == LS_TK_ENTER) { sd_yes_do(w); return true; }
+        if (k == LS_TK_UP) { s_sd_choice = (s_sd_choice + SD_N - 1) % SD_N; s_sd_focus = 0; return true; }
+        if (k == LS_TK_DOWN) { s_sd_choice = (s_sd_choice + 1) % SD_N; s_sd_focus = 0; return true; }
+        if (k == LS_TK_TAB) { s_sd_focus = (s_sd_focus + ((dk_mods() & LS_IMOD_SHIFT) ? 2 : 1)) % 3; return true; }
+        if (k == LS_TK_LEFT || k == LS_TK_RIGHT) { s_sd_focus = s_sd_focus == 1 ? 2 : 1; return true; }
+        if (k == LS_TK_ENTER || (k == LS_TK_CHAR && ch == ' ' && s_sd_focus)) {
+            if (s_sd_focus == 2) ls_desk_close(w->id);
+            else sd_yes_do(w);
+            return true;
+        }
         if (k == LS_TK_ESC) { ls_desk_close(w->id); return true; }
+        if (k == LS_TK_CHAR) {                        /* a marked letter, with Alt or alone */
+            const char up = (char)(ch >= 'a' && ch <= 'z' ? ch - 32 : ch);
+            if (up == 'Y') { sd_yes_do(w); return true; }
+            if (up == 'N') { ls_desk_close(w->id); return true; }
+            for (int i = 0; i < SD_N; i++) if (dk_label_key(SD_TEXT[i]) == up) { s_sd_choice = i; s_sd_focus = 0; }
+        }
         return true;                                  /* modal: nothing else */
     }
-    if (k == LS_TK_ENTER || k == LS_TK_ESC) { ls_desk_close(w->id); return true; }
+    if (k == LS_TK_ENTER || k == LS_TK_ESC || (k == LS_TK_CHAR && ch == ' ')) { ls_desk_close(w->id); return true; }
     return false;
 }

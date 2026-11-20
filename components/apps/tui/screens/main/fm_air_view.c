@@ -14,6 +14,7 @@
 
 #include "../../ls_braille.h"
 #include "../../ls_motion.h"
+#include "../../ls_radio_select.h"
 #include "../../ls_tui_ui.h"
 #include "apps/fm/fm_bcast.h"
 #include "apps/fm/fm_state.h"
@@ -251,6 +252,14 @@ static void draw_idle(tui_surface *sf, tui_rect a, int x0, int iw, int y, int la
         tui_put_str(sf, a, x0, y, TEXT[i], LS_ATTR_DIM);
 }
 
+/* The scanner lives on a dongle's wide capture: app_fm.c polls it only on
+   the SDR path. On the LR2021, or with no dongle held, a plan would queue a
+   request nothing takes, so the plans are dimmed and the page says why. */
+static bool air_can_scan(void)
+{
+    return !FM.lr_iq_active && ls_rsel_sdr_held_by("fm") != LS_RSEL_NONE;
+}
+
 void fm_air_draw(tui_surface *sf, tui_rect area)
 {
     snap();
@@ -269,7 +278,15 @@ void fm_air_draw(tui_surface *sf, tui_rect area)
 
     if (!running) {
         draw_idle(sf, a, x0, iw, y + 1, last);
-        ls_btn_bar_raised_slot(sf, s_buttons, START, N_START, -1, LS_BTN_SLOT_WATERFALL);
+        if (air_can_scan()) {
+            ls_btn_bar_raised_slot(sf, s_buttons, START, N_START, -1, LS_BTN_SLOT_WATERFALL);
+            return;
+        }
+        ls_btn_t dim[N_START];
+        for (int i = 0; i < N_START; ++i) { dim[i] = START[i]; dim[i].dim = true; }
+        tui_put_str(sf, a, x0, last, "Channel scan needs an RTL-SDR or HackRF",
+                    TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        ls_btn_bar_raised_slot(sf, s_buttons, dim, N_START, -1, LS_BTN_SLOT_WATERFALL);
         return;
     }
 
@@ -347,7 +364,7 @@ void fm_air_draw(tui_surface *sf, tui_rect area)
         const int idx = s_list_first + r;
         const air_hit_t *h = &s_st.hits[s_order[idx]];
         const bool sel = idx == s_sel, live = s_st.listen_ch == h->channel;
-        const uint8_t base = sel ? TUI_ATTR(TUI_BLACK, TUI_CYAN) : TUI_ATTR(TUI_WHITE, TUI_BLACK);
+        const uint8_t base = sel ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_CYAN)) : TUI_ATTR(TUI_WHITE, TUI_BLACK);
         char f[16], age[12];
         fmt_hz(f, sizeof(f), h->hz);
         fmt_age(age, sizeof(age), s_st.now_us - h->last_us);
@@ -410,7 +427,7 @@ bool fm_air_touch(int col, int row)
     if (tui_rect_contains(s_buttons, col, row)) {
         const int slot = ls_btn_hit_slot(col, row, LS_BTN_SLOT_WATERFALL);
         if (!running) {
-            if (slot >= 0 && slot < N_START) {
+            if (slot >= 0 && slot < N_START && air_can_scan()) {
                 /* The stored-channel scanner owns the tuner too: one at a time. */
                 scan_engine_stop();
                 fm_air_request(FM_AIR_REQ_PRESET, START_PRESET[slot]);

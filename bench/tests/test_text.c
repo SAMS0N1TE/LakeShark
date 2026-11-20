@@ -16,7 +16,7 @@ static const char *age(uint32_t then, uint32_t now)
 LS_CASE(an_age_uses_the_largest_unit_that_leaves_a_whole_number)
 {
     LS_EQ_STR(" 0s", age(100, 100));
-    LS_EQ_STR("59s", age(1, 60));
+    LS_EQ_STR("50s", age(1, 60));   /* ages step in tens after ten seconds (ls_age_q) */
     LS_EQ_STR(" 1m", age(0 + 1, 61));
     LS_EQ_STR("59m", age(1, 1 + 3599));
     LS_EQ_STR(" 1h", age(1, 1 + 3600));

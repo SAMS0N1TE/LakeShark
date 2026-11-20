@@ -1,0 +1,43 @@
+{
+ "schema": 1,
+ "channel": "community",
+ "generated": "2026-11-01T21:38:09Z",
+ "apps": [
+  {
+   "id": "hello",
+   "name": "HELLO",
+   "sub": "a first app",
+   "version": "0.1",
+   "author": "LakeShark",
+   "category": "utilities",
+   "color": 6,
+   "icon_art": [
+    "    /|    ",
+    "   / |    ",
+    "  /__|__  ",
+    "~~~~~~~~~~",
+    "          ",
+    "  hello!  "
+   ],
+   "description": "The sample app for the community catalog: counts hellos, with a chirp you can turn on in OPTIONS.",
+   "size": 4648,
+   "sha256": "81044bc889686ad33b1368ad6e43b43eea922277d17cb0f027f0258d9cfa5f9c",
+   "signed": true,
+   "file": "files/hello-0.1.lap",
+   "min_firmware": "2.20.0",
+   "channel": "community",
+   "publisher": {
+    "login": "SAMS0N1TE",
+    "github_id": 115175137
+   },
+   "license": "MIT",
+   "ai": {
+    "use": "none",
+    "tools": [],
+    "extent": ""
+   },
+   "source": "https://github.com/SAMS0N1TE/lakeshark-apps/tree/main/apps/hello"
+  }
+ ],
+ "files": []
+}

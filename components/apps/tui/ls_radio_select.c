@@ -141,7 +141,7 @@ const char *ls_rsel_cant(ls_rsel_job_t job, ls_rsel_radio_t r)
                     ? (s_fm_hz < LS_LORA_RX_EXT_MIN_HZ || s_fm_hz > LS_LORA_RX_EXT_MAX_HZ)
                     : (s_fm_hz < LS_LORA_RX_MIN_HZ || s_fm_hz > LS_LORA_RX_NARROW_MAX_HZ))
                 return hw()->lora_lr20xx ? "LR tunes 104-2740 MHz" : "LoRa tunes 150-960 MHz";
-            if (!s_fm_nfm) return "LR IQ carries NFM, AM, APRS, SAME and ACARS";
+            if (!s_fm_nfm) return "LR IQ carries NFM, AM, pagers, APRS, SAME, ACARS";
             return hw()->lora_lr20xx ? NULL : "NFM IQ needs LR2021";
         }
         return kind ? kind : "No IQ stream to demodulate audio";

@@ -583,6 +583,41 @@ LS_CASE(classifying_a_row_agrees_with_classifying_each_pixel)
                      i, (unsigned)ink[i], (int)ls_map_classify(ink[i]));
 }
 
+/* A pan does not blank the map: the finished frame is what is handed back,
+   with the view it was drawn for, until the next one is finished whole. */
+LS_CASE(a_render_under_way_shows_the_finished_frame_until_it_is_done)
+{
+    if (!ready()) { LS_CHECK_MSG(false, "fixture: %s", ls_map_status()); return; }
+    ls_map_set_step_limit(0, 0);
+    static uint16_t before[W * H];
+    memcpy(before, render_all(NULL, NULL), sizeof(before));
+    const carto_label *L = NULL;
+    const int names = ls_map_labels(&L);
+    double lat, lon; int z;
+    LS_CHECK(ls_map_render_view(&lat, &lon, &z) && lat == LAT && lon == LON && z == ls_map_zoom());
+
+    ls_map_set_step_limit(0, 1);
+    ls_map_pan(40, 0);
+    const uint16_t *px = ls_map_render(NULL, NULL);
+    LS_CHECK_MSG(ls_map_render_busy(), "a one tile slice finished it all");
+    LS_CHECK_MSG(px && !memcmp(before, px, sizeof(before)), "a render under way handed back a part drawn frame");
+    LS_CHECK_MSG(ls_map_render_view(&lat, &lon, &z) && lat == LAT && lon == LON,
+                 "the frame handed back does not say it is the old view");
+    LS_EQ_INT(names, ls_map_labels(&L));
+
+    /* A little further while it draws: it carries on, then the next starts. */
+    ls_map_pan(8, 0);
+    int calls = 0;
+    while (ls_map_render_busy() && calls < 512) { px = ls_map_render(NULL, NULL); calls++; }
+    px = render_all(NULL, NULL);
+    double clat, clon; ls_map_get_center(&clat, &clon);
+    LS_CHECK(ls_map_render_view(&lat, &lon, &z) && lat == clat && lon == clon);
+    LS_CHECK(px && memcmp(before, px, sizeof(before)) != 0);
+    ls_map_set_step_limit(0, 0);
+    ls_map_center(LAT, LON);
+    render_all(NULL, NULL);
+}
+
 LS_CASE(a_teardown_does_not_leave_a_render_in_flight)
 {
     if (!ready()) { LS_CHECK_MSG(false, "fixture: %s", ls_map_status()); return; }
@@ -817,4 +852,130 @@ LS_CASE(cartocore_external_view_closes_pmtiles_and_can_return_to_libcarto)
     ls_map_pan(2,4);ls_map_get_center(&lat,&lon);LS_CHECK(lat!=LAT && lon!=LON);
     LS_CHECK(ready());LS_CHECK(ls_map_archive()!=NULL);LS_CHECK(render_all(NULL,NULL)!=NULL);
     ls_map_end();
+}
+
+/* ------------------------------------------------- line clipping (#3) -- */
+
+#include "carto/framebuffer.h"
+#include <time.h>
+
+LS_CASE(a_line_crossing_the_frame_from_far_off_is_cut_to_it_not_walked)
+{
+    /* Tile coordinates are clamped to +-1e6: walked a pixel at a time, a
+       line across the frame from there is ~2M steps, and a corrupt tile
+       with many of them held the UI task until the watchdog fired. */
+    static uint16_t px[64 * 64];
+    carto_framebuffer fb;
+    LS_CHECK(carto_fb_init(&fb, 64, 64, CARTO_FMT_RGB565, (uint8_t *)px) == 0);
+    memset(px, 0, sizeof(px));
+    const carto_rgb ink = { 255, 255, 255 };
+    const clock_t t0 = clock();
+    for (int i = 0; i < 2000; i++)
+        carto_draw_line(&fb, -1000000, -1000000, 1000000, 1000000, 1, ink);
+    const double secs = (double)(clock() - t0) / CLOCKS_PER_SEC;
+    LS_CHECK_MSG(secs < 1.0, "2000 frame-crossing lines took %.2f s: not clipped", secs);
+    /* And clipping still draws the part in the frame, every pixel of it. */
+    int diag = 0, off = 0;
+    for (int y = 0; y < 64; y++)
+        for (int x = 0; x < 64; x++) {
+            if (!px[y * 64 + x]) continue;
+            if (x == y) diag++; else off++;
+        }
+    LS_EQ_INT(64, diag);
+    LS_EQ_INT(0, off);
+    /* A steep line from far above to far below lands in its column. */
+    memset(px, 0, sizeof(px));
+    carto_draw_line(&fb, 20, -900000, 20, 900000, 1, ink);
+    int col = 0;
+    for (int y = 0; y < 64; y++) col += px[y * 64 + 20] != 0;
+    LS_EQ_INT(64, col);
+}
+
+/* ------------------------------------------------ tile cache tidy (#2) -- */
+
+#include "ls_maptiles.h"
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <utime.h>
+#ifdef _WIN32
+#include <direct.h>
+#define T_MKDIR(p) _mkdir(p)
+#else
+#include <unistd.h>
+#define T_MKDIR(p) mkdir(p, 0777)
+#endif
+
+#define T_TILE (1024 * 1024)
+static char s_cache[256];
+
+static void cache_at(const char *name)
+{
+    snprintf(s_cache, sizeof(s_cache), "build/test_map_cache_%s", name);
+#ifdef _WIN32
+    char env[300];
+    snprintf(env, sizeof(env), "LSSIM_TILE_CACHE=%s", s_cache);
+    _putenv(env);
+#else
+    setenv("LSSIM_TILE_CACHE", s_cache, 1);
+#endif
+    T_MKDIR("build");
+    T_MKDIR(s_cache);
+    ls_maptiles_clear();                  /* a fresh, empty cache */
+    T_MKDIR(s_cache);
+}
+
+/* One 1 MiB tile at z14/x/7 written at `when`. */
+static bool put_tile(unsigned x, time_t when)
+{
+    static char body[T_TILE];
+    char p[320];
+    snprintf(p, sizeof(p), "%s/14", s_cache); T_MKDIR(p);
+    snprintf(p, sizeof(p), "%s/14/%u", s_cache, x); T_MKDIR(p);
+    snprintf(p, sizeof(p), "%s/14/%u/7.mvt", s_cache, x);
+    FILE *f = fopen(p, "wb");
+    if (!f) return false;
+    const bool ok = fwrite(body, 1, sizeof(body), f) == sizeof(body);
+    fclose(f);
+    struct utimbuf t = { when, when };
+    return ok && utime(p, &t) == 0;
+}
+
+static ls_maptiles_stats_t tidied(void)
+{
+    ls_maptiles_set_cap(16ull << 20);     /* the smallest cap there is */
+    ls_maptiles_count();                  /* the host tidies at once */
+    ls_maptiles_stats_t st;
+    ls_maptiles_stats(&st);
+    return st;
+}
+
+LS_CASE(an_over_full_tile_cache_with_no_clock_is_not_wiped)
+{
+    /* Every tile one age (a card written with no clock): nothing orders
+       them, and wiping them all took saved areas with them. */
+    cache_at("noclock");
+    for (unsigned x = 0; x < 20; x++) LS_CHECK(put_tile(x, 315532800));
+    const ls_maptiles_stats_t st = tidied();
+    LS_CHECK(st.counted);
+    LS_EQ_INT(20, (int)st.files);
+    LS_CHECK(ls_maptiles_has(14, 19, 7));
+    ls_maptiles_clear();
+}
+
+LS_CASE(a_tidy_cuts_the_oldest_until_under_and_never_wipes)
+{
+    /* Ages bunched at the new end: each pass's cut takes one tile, so it
+       needs many passes. Three passes and then a wipe deleted everything. */
+    cache_at("skew");
+    const time_t hi = 1760000000;
+    LS_CHECK(put_tile(0, hi));
+    for (unsigned k = 0; k < 19; k++) LS_CHECK(put_tile(k + 1, hi - ((time_t)1 << k) * 4));
+    const ls_maptiles_stats_t st = tidied();
+    const uint64_t held = st.bytes + (uint64_t)st.files * 8192u;
+    LS_CHECK_MSG(st.files > 0, "the tidy wiped every tile");
+    LS_CHECK_MSG(held <= (16ull << 20) - (16ull << 20) / 5,
+                 "still over the tidy's target: %u tiles", (unsigned)st.files);
+    LS_CHECK_MSG(ls_maptiles_has(14, 0, 7), "the newest tile went");
+    LS_CHECK_MSG(!ls_maptiles_has(14, 19, 7), "the oldest tile stayed");
+    ls_maptiles_clear();
 }

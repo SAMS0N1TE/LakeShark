@@ -16,6 +16,10 @@
 
 #if defined(CONFIG_LS_LR2021_ONLY) && CONFIG_LS_LR2021_ONLY
 #define LS_EDITION_NAME "LakeShark LR"
+#elif defined(CONFIG_LS_TDP4_UNIVERSAL) && CONFIG_LS_TDP4_UNIVERSAL
+/* Found at boot: the LoRa part that answered (board/ls_profile.h). */
+extern bool ls_profile_is_lr(void);
+#define LS_EDITION_NAME (ls_profile_is_lr() ? "LakeShark LR" : "LakeShark")
 #else
 #define LS_EDITION_NAME "LakeShark"
 #endif
@@ -55,8 +59,8 @@ int ls_version_format(char *out, size_t len, const ls_version_info_t *v)
     const char *dirty = ls_version_is_dirty(v->version) ? "  [DIRTY]" : "";
 
     int n = snprintf(out, len,
-                     LS_EDITION_NAME " %s%s  board=%s  built %s %s  IDF %s",
-                     ver, dirty, bd, date, tm, idf);
+                     "%s %s%s  board=%s  built %s %s  IDF %s",
+                     LS_EDITION_NAME, ver, dirty, bd, date, tm, idf);
     if (n < 0) { out[0] = '\0'; return 0; }
     if ((size_t)n >= len) n = (int)len - 1;
     return n;

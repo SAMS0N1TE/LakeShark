@@ -26,6 +26,7 @@ static const char *TAG = "ls_tui";
 static const ls_font_t *s_font = &ls_font_mono_16;
 static tui_surface  s_surface;
 static tui_cell    *s_back, *s_front;
+static bool s_rows_all;              /* see ls_tui_front_rows_take */
 static int          s_cols, s_rows, s_cw, s_ch;
 /* The panel's corners are physically rounded and were cutting the edge
    cells off. A terminal can simply start further in: the grid is inset by a
@@ -1142,6 +1143,7 @@ LS_COLD bool ls_tui_begin(int screen_w, int screen_h)
     extern void ls_wf_prepare(int, int) __attribute__((weak));
     if (ls_wf_prepare) ls_wf_prepare(screen_w, screen_h);
     tui_surface_setup(&s_surface, s_back, s_front, s_cols, s_rows);
+    s_rows_all = true;
     ESP_LOGI(TAG, "grid %dx%d cells, %s at %dx%d px, inset %d,%d, %s",
              s_cols, s_rows, s_font->name, s_cw, s_ch, s_ox, s_oy,
              s_landscape ? "landscape" : "portrait");
@@ -1195,6 +1197,31 @@ void ls_tui_set_pixels_off(bool off)
 }
 bool ls_tui_pixels_off(void) { return s_pixels_off; }
 
+/* Which rows of the front buffer changed since a watcher last asked: the
+   remote feed copies and encodes those rows instead of the whole grid (on a
+   360x105 desktop a moving pointer changes two or three rows of 105).
+   s_rows_all: anything may have (a new grid, an invalidate, a reserved
+   rectangle handed back). Written and read by the UI task only. */
+#define FRONT_ROWS_MAX 512
+static uint8_t s_rows_changed[FRONT_ROWS_MAX / 8];
+static bool s_rows_all = true;
+static inline void front_row_changed(int row)
+{
+    if ((unsigned)row < FRONT_ROWS_MAX) s_rows_changed[row >> 3] |= (uint8_t)(1u << (row & 7));
+    else s_rows_all = true;
+}
+bool ls_tui_front_rows_take(uint8_t *rows, size_t bytes)
+{
+    const bool known = !s_rows_all && rows && bytes * 8 >= (size_t)s_rows && s_rows <= FRONT_ROWS_MAX;
+    if (known) {
+        memset(rows, 0, bytes);
+        memcpy(rows, s_rows_changed, (size_t)(s_rows + 7) / 8);
+    }
+    memset(s_rows_changed, 0, sizeof(s_rows_changed));
+    s_rows_all = false;
+    return known;
+}
+
 /* 'tui cost': how often the whole grid was thrown away, and by whom last. */
 static uint32_t s_inval_n;
 static void *s_inval_by;
@@ -1206,6 +1233,7 @@ void ls_tui_invalidate(void)
     s_inval_by = __builtin_return_address(0);
     /* A cell that cannot occur forces every comparison to differ. */
     if (s_front) memset(s_front, 0xFF, (size_t)s_cols * s_rows * sizeof(tui_cell));
+    s_rows_all = true;
     s_bar_sig[0] = s_bar_sig[1] = UINT32_MAX;
 }
 
@@ -1345,6 +1373,7 @@ void ls_tui_reserve(tui_rect cells)
                    whatever the back buffer holds and is redrawn once. */
                 s_front[(size_t)row * s_cols + col].ch = 0;
                 s_front[(size_t)row * s_cols + col].attr = 0xFF;
+                s_rows_all = true;
             }
         }
     }
@@ -1517,6 +1546,66 @@ static bool bits_clear(const uint8_t *bits, size_t start, size_t n)
 static volatile uint32_t s_present_count;
 
 uint32_t ls_tui_present_count(void) { return s_present_count; }
+/* The last present drew no cell and sent no row: the glass already held the frame. */
+static bool s_last_clean;
+bool ls_tui_present_clean(void) { return s_last_clean; }
+
+/* 'tui idle why': the last presents that changed the glass, and where. A row
+   number and a short excerpt of the first changed row is enough to name a
+   clock, a spinner or a counter that keeps an idle screen awake. */
+#define CHG_N 8
+static struct { uint32_t at; uint16_t cells, nrows; uint8_t rows[3], col0; bool margin, flush; char txt[21]; } s_chg[CHG_N];
+static uint32_t s_chg_n;
+static uint16_t s_cur_cells, s_cur_nrows;
+static uint8_t s_cur_rows[3], s_cur_col0;
+static int s_cur_last_row;
+
+static inline void chg_cell(int row, int col)
+{
+    if (row != s_cur_last_row) {
+        s_cur_last_row = row;
+        if (s_cur_nrows < 3) { s_cur_rows[s_cur_nrows] = (uint8_t)row; if (!s_cur_nrows) s_cur_col0 = (uint8_t)col; }
+        s_cur_nrows++;
+    }
+    s_cur_cells++;
+}
+
+static void chg_end(bool margin, bool flush)
+{
+    typeof(s_chg[0]) *e = &s_chg[s_chg_n++ % CHG_N];
+    memset(e, 0, sizeof(*e));
+    e->at = s_present_count;
+    e->cells = s_cur_cells;
+    e->nrows = s_cur_nrows;
+    memcpy(e->rows, s_cur_rows, sizeof(e->rows));
+    e->col0 = s_cur_col0;
+    e->margin = margin;
+    e->flush = flush;
+    if (s_cur_nrows && s_cur_rows[0] < s_rows) {
+        const int c0 = s_cur_col0 > 6 ? s_cur_col0 - 6 : 0;
+        for (int i = 0; i < 20 && c0 + i < s_cols; i++) {
+            const unsigned ch = s_back[(size_t)s_cur_rows[0] * s_cols + c0 + i].ch;
+            e->txt[i] = ch >= 32 && ch < 127 ? (char)ch : '.';
+        }
+    }
+}
+
+void ls_tui_changes_print(void)
+{
+    const int n = s_chg_n < CHG_N ? s_chg_n : CHG_N;
+    printf("tui idle why: last %d presents that changed the glass (oldest first); grid %dx%d\n", n, s_cols, s_rows);
+    uint32_t prev = 0;
+    for (int k = 0; k < n; k++) {
+        const int i = s_chg_n < CHG_N ? k : (s_chg_n + k) % CHG_N;
+        printf("  present %lu (+%lu): %u cells in %u rows (r%u r%u r%u) from col %u%s%s |%s|\n",
+               (unsigned long)s_chg[i].at, (unsigned long)(prev ? s_chg[i].at - prev : 0),
+               (unsigned)s_chg[i].cells, (unsigned)s_chg[i].nrows,
+               (unsigned)s_chg[i].rows[0], (unsigned)s_chg[i].rows[1], (unsigned)s_chg[i].rows[2],
+               (unsigned)s_chg[i].col0, s_chg[i].margin ? " look-change" : "",
+               s_chg[i].flush && !s_chg[i].cells ? " picture-only" : "", s_chg[i].txt);
+        prev = s_chg[i].at;
+    }
+}
 
 int ls_tui_present(void)
 {
@@ -1541,6 +1630,7 @@ int ls_tui_present(void)
     s_image_shifted = !s_pixels_off && !margin && s_image_dirty && image_can_shift();
     if (s_image_shifted) { image_shift(fb.pixels, fb.width); s_total_shifts++; }
     int drawn = 0;
+    s_cur_cells = s_cur_nrows = 0; s_cur_last_row = -1;
     bool image_cell_invalidated = false;
     bool image_area_touched = false;
     for (int row = 0; row < s_rows; row++) {
@@ -1594,6 +1684,8 @@ int ls_tui_present(void)
             if (row == 0) s_bar_row_drawn[0] = true;
             if (row == s_rows - 1) s_bar_row_drawn[1] = true;
             s_front[i] = s_back[i];
+            front_row_changed(row);
+            chg_cell(row, col);
             drawn++;
         }
     }
@@ -1668,6 +1760,8 @@ int ls_tui_present(void)
     extern void ls_anim_presented(void) __attribute__((weak));
     if (ls_anim_presented) ls_anim_presented();
     s_present_count++;
+    s_last_clean = !drawn && !margin && !s_present_flush_bytes;
+    if (!s_last_clean) chg_end(margin, s_present_flush_bytes != 0);
     return drawn;
 }
 

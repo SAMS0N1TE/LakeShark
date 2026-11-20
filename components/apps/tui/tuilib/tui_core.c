@@ -74,8 +74,10 @@ static tui_rect clip_to_surface(const tui_surface *s, tui_rect clip) {
 
 void tui_put_char(tui_surface *s, tui_rect clip, int x, int y, char ch,
                   uint8_t attr) {
-    tui_rect c = clip_to_surface(s, clip);
-    if (!tui_rect_contains(c, x, y))
+    /* The clip, the surface and the point, tested without building the
+       intersection: this is called for every cell of every line and fill. */
+    if (x < clip.x || y < clip.y || x >= clip.x + clip.w || y >= clip.y + clip.h ||
+        x < 0 || y < 0 || x >= s->w || y >= s->h)
         return;
     tui_cell *cell = &s->back[y * s->w + x];
     cell->ch = ch;
@@ -312,14 +314,26 @@ void tui_fill(tui_surface *s, tui_rect r, char ch, uint8_t attr) {
 
 void tui_hline(tui_surface *s, tui_rect clip, int x, int y, int len, char ch,
                uint8_t attr) {
-    for (int i = 0; i < len; i++)
-        tui_put_char(s, clip, x + i, y, ch, attr);
+    /* Clipped once, then written straight into the row. */
+    const tui_rect c = clip_to_surface(s, clip);
+    if (y < c.y || y >= c.y + c.h) return;
+    int x0 = x < c.x ? c.x : x;
+    int x1 = x + len < c.x + c.w ? x + len : c.x + c.w;
+    if (x1 <= x0) return;
+    tui_cell *row = &s->back[y * s->w];
+    for (; x0 < x1; x0++) { row[x0].ch = ch; row[x0].attr = attr; }
 }
 
 void tui_vline(tui_surface *s, tui_rect clip, int x, int y, int len, char ch,
                uint8_t attr) {
-    for (int i = 0; i < len; i++)
-        tui_put_char(s, clip, x, y + i, ch, attr);
+    const tui_rect c = clip_to_surface(s, clip);
+    if (x < c.x || x >= c.x + c.w) return;
+    int y0 = y < c.y ? c.y : y;
+    int y1 = y + len < c.y + c.h ? y + len : c.y + c.h;
+    for (; y0 < y1; y0++) {
+        tui_cell *cell = &s->back[y0 * s->w + x];
+        cell->ch = ch; cell->attr = attr;
+    }
 }
 
 void tui_box(tui_surface *s, tui_rect r, const char *title, uint8_t attr) {

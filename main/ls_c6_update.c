@@ -5,6 +5,8 @@
 #include "ls_board.h"
 #include "ls_gauge.h"
 #include "ls_wifi.h"
+#include "ls_fetch.h"
+#include <sys/stat.h>
 #include "ble_link.h"
 #include "ls_task_reap.h"
 #include "tui/ls_action.h"
@@ -26,7 +28,7 @@
 #include <string.h>
 #include "ls_textpack.h"
 
-static bool s_busy, s_latched;
+static bool s_busy, s_latched, s_auto, s_restart_after;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 EXT_RAM_BSS_ATTR static ls_c6_result_t s_result;
 static bool s_probe;
@@ -46,7 +48,7 @@ static void report(void *ctx, const ls_c6_result_t *r)
     portENTER_CRITICAL(&s_mux);
     s_result = *r;
     portEXIT_CRITICAL(&s_mux);
-    if (r->stage == LS_C6_WRITE && percent == last_percent) return;
+    if (r->stage <= LS_C6_WRITE && r->sent && percent == last_percent) return;
     last_percent = percent;
     printf("c6: %u/%u bytes (%u%%): %s\n", (unsigned)r->sent, (unsigned)r->size,
            percent, r->message);
@@ -216,6 +218,12 @@ static void worker(void *arg)
     ls_c6_result_t result;
     ls_c6_run(data, (size_t)length, s_force, hash, &io, &result);
     esp_event_handler_instance_unregister(ESP_HOSTED_EVENT, ESP_HOSTED_EVENT_CP_INIT, s_event);
+    if (s_restart_after && result.stage == LS_C6_DONE) {
+        /* Radios stay latched off until a P4 reboot; restart so Wi-Fi and BLE return. */
+        puts("c6: new radio firmware verified; restarting the board in 4 s");
+        vTaskDelay(pdMS_TO_TICKS(4000));
+        esp_restart();
+    }
 done:
     if (file) fclose(file);
     free(data);
@@ -226,10 +234,11 @@ done:
     ls_task_retire_self();
 }
 
-static ls_act_status_t start(const char *path, bool force, bool probe)
+/* `restart`: reboot the board after a good write, so Wi-Fi and BLE return. */
+static ls_act_status_t start(const char *path, bool force, bool probe, bool restart)
 {
 #if !LS_HAS_C6_OTA
-    (void)path; (void)force; (void)probe;
+    (void)path; (void)force; (void)probe; (void)restart;
     preflight_failure("C6 OTA requires provisioned T-Display-P4");
     return LS_ACT_UNAVAILABLE;
 #else
@@ -254,6 +263,7 @@ static ls_act_status_t start(const char *path, bool force, bool probe)
     }
     s_force = force;
     s_probe = probe;
+    s_restart_after = restart;
     ls_c6_result_t r = {.stage = LS_C6_VALIDATE};
     snprintf(r.message, sizeof(r.message), "Reading SD image; validating before C6 writes");
     report(NULL, &r);
@@ -266,6 +276,154 @@ static ls_act_status_t start(const char *path, bool force, bool probe)
     }
     return LS_ACT_OK;
 #endif
+}
+
+/* ---- Automatic update: no cable, no manual SD copy ------------------------
+   Image from the card if one is there, else downloaded (Wi-Fi) to the card
+   from the signed manifest at data.terminalbay.com/c6/. The whole file is
+   on the card, sha256-checked against the signed manifest, before the first
+   byte goes to the C6; the install itself is start() above, unchanged. */
+#define C6_MANIFEST "https://data.terminalbay.com/c6/manifest.txt"
+#define C6_BIN_URL  "https://data.terminalbay.com/c6/network_adapter.bin"
+
+static void auto_say(ls_c6_stage_t st, size_t sent, size_t size, const char *msg)
+{
+    ls_c6_result_t r = {.stage = st, .sent = sent, .size = size};
+    portENTER_CRITICAL(&s_mux);
+    memcpy(r.old_version, s_result.old_version, sizeof(r.old_version));
+    portEXIT_CRITICAL(&s_mux);
+    snprintf(r.message, sizeof(r.message), "%s", msg);
+    report(NULL, &r);
+}
+static void dl_progress(uint32_t got, uint32_t total, void *ctx)
+{
+    (void)ctx;
+    auto_say(LS_C6_VALIDATE, got, total, "Downloading C6 firmware. Keep power on.");
+}
+static bool plain_version(const char *v)
+{
+    unsigned a, b, c; char t;
+    return sscanf(v, "%u.%u.%u%c", &a, &b, &c, &t) == 3;
+}
+static bool hex32(const char *h, uint8_t out[32])
+{
+    for (int i = 0; i < 32; ++i) {
+        unsigned v;
+        char two[3] = {h[2 * i], h[2 * i + 1], 0};
+        if (!two[0] || !two[1] || sscanf(two, "%2x", &v) != 1) return false;
+        out[i] = (uint8_t)v;
+    }
+    return true;
+}
+/* Version of the validated image on the card, "" when none or not valid. */
+static void sd_image_version(char out[32])
+{
+    out[0] = 0;
+    struct stat st;
+    if (stat(LS_C6_DEFAULT_PATH, &st) || st.st_size < 24 || st.st_size > (long)LS_C6_SLOT_SIZE) return;
+    uint8_t *d = heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    FILE *f = d ? fopen(LS_C6_DEFAULT_PATH, "rb") : NULL;
+    if (f && fread(d, 1, (size_t)st.st_size, f) == (size_t)st.st_size) {
+        ls_c6_image_t img;
+        if (!ls_c6_validate(d, (size_t)st.st_size, LS_C6_SLOT_SIZE, hash, &img)) snprintf(out, 32, "%s", img.version);
+    }
+    if (f) fclose(f);
+    free(d);
+}
+static const char *manifest_field(const char *m, const char *key, char *out, size_t cap)
+{
+    size_t k = strlen(key);
+    while (m && *m) {
+        if (!strncmp(m, key, k) && m[k] == '=') {
+            size_t n = strcspn(m + k + 1, "\r\n");
+            if (n >= cap) return NULL;
+            memcpy(out, m + k + 1, n); out[n] = 0;
+            return out;
+        }
+        m = strchr(m, '\n');
+        if (m) ++m;
+    }
+    return NULL;
+}
+
+static void auto_worker(void *arg)
+{
+    (void)arg;
+    char run[32] = "", target[32] = "", num[16], sha[80];
+    char *man = NULL;
+    uint32_t size = 0;
+    uint8_t digest[32];
+    bool force = false;
+    int e = version(NULL, run);
+    if (e) { auto_say(LS_C6_FAILED, 0, 0, "Cannot read the C6 version; is the C6 up? Nothing changed."); goto out; }
+    portENTER_CRITICAL(&s_mux);
+    memcpy(s_result.old_version, run, sizeof(run));
+    portEXIT_CRITICAL(&s_mux);
+    auto_say(LS_C6_VALIDATE, 0, 0, "Checking the C6 radio firmware");
+    sd_image_version(target);
+    bool have_sd = target[0] != 0;
+    if (!have_sd) {
+        if (!ls_fetch_online()) {
+            auto_say(LS_C6_FAILED, 0, 0, "No Wi-Fi and no image on the SD card. Join Wi-Fi in SETTINGS, or copy network_adapter.bin to /sdcard/lakeshark/c6/. Nothing changed.");
+            goto out;
+        }
+        man = heap_caps_calloc(1, 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        ls_fetch_req_t q = {.url = C6_MANIFEST, .buf = man, .cap = 1024, .timeout_s = 30, .flags = LS_FETCH_SIGNED};
+        ls_fetch_result_t fr = man ? ls_fetch_run(&q, NULL, NULL) : LS_FETCH_SD;
+        if (fr != LS_FETCH_OK || !manifest_field(man, "version", target, sizeof(target)) ||
+            !manifest_field(man, "size", num, sizeof(num)) || !manifest_field(man, "sha256", sha, sizeof(sha)) ||
+            (size = (uint32_t)strtoul(num, NULL, 10)) < 24 || size > LS_C6_SLOT_SIZE || !hex32(sha, digest)) {
+            auto_say(LS_C6_FAILED, 0, 0, fr == LS_FETCH_OK ? "Manifest unusable. Nothing changed." :
+                     "Cannot fetch the signed C6 manifest. Nothing changed.");
+            goto out;
+        }
+    }
+    if (!strcmp(run, target)) { auto_say(LS_C6_IDLE, 0, 0, "C6 radio firmware is up to date"); goto out; }
+    if (!ls_c6_version_allowed(target, run, false)) {
+        if (plain_version(run)) { auto_say(LS_C6_IDLE, 0, 0, "C6 radio firmware is newer than the bundled image; left alone"); goto out; }
+        force = true; /* factory or unnumbered build: the bundled image replaces it */
+    }
+    if (!have_sd) {
+        ls_fetch_req_t q = {.url = C6_BIN_URL, .dest = LS_C6_DEFAULT_PATH, .bytes = size, .sha256 = digest,
+                            .timeout_s = 300, .flags = LS_FETCH_RESUME, .progress = dl_progress};
+        ls_fetch_result_t fr = ls_fetch_run(&q, NULL, NULL);
+        if (fr != LS_FETCH_OK) {
+            char m[96];
+            snprintf(m, sizeof(m), "Download failed: %s. Nothing changed; try again.", ls_fetch_result_text(fr));
+            auto_say(LS_C6_FAILED, 0, 0, m);
+            goto out;
+        }
+    }
+    /* Image is whole and verified on the card. Hand over to the normal install. */
+    ls_act_status_t rc = start(LS_C6_DEFAULT_PATH, force, false, true);
+    if (rc != LS_ACT_OK) {
+        auto_say(LS_C6_FAILED, 0, 0, "Install did not start (busy or battery). Image kept on the SD card.");
+    }
+out:
+    free(man);
+    s_auto = false;
+    ls_task_retire_self();
+}
+
+static ls_act_status_t auto_start(void)
+{
+#if !LS_HAS_C6_OTA
+    return LS_ACT_UNAVAILABLE;
+#else
+    if (s_busy || s_auto || __atomic_load_n(&s_latched, __ATOMIC_ACQUIRE)) return LS_ACT_BUSY;
+    s_auto = true;
+    if (xTaskCreateWithCaps(auto_worker, "c6_auto", 12288, NULL, 3, NULL,
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        s_auto = false;
+        return LS_ACT_FAILED;
+    }
+    return LS_ACT_OK;
+#endif
+}
+static ls_act_status_t auto_action(const ls_args_t *in, ls_val_t *out)
+{
+    (void)in; (void)out;
+    return auto_start();
 }
 
 static bool state(ls_val_t *out)
@@ -284,7 +442,7 @@ static bool state(ls_val_t *out)
 static bool busy(ls_val_t *out)
 {
     *out = (ls_val_t){.kind = LS_VAL_BOOL,
-        .i = __atomic_load_n(&s_busy, __ATOMIC_ACQUIRE) || __atomic_load_n(&s_latched, __ATOMIC_ACQUIRE)};
+        .i = __atomic_load_n(&s_busy, __ATOMIC_ACQUIRE) || s_auto || __atomic_load_n(&s_latched, __ATOMIC_ACQUIRE)};
     return true;
 }
 static bool percent(ls_val_t *out)
@@ -298,7 +456,7 @@ static bool percent(ls_val_t *out)
 static ls_act_status_t action(const ls_args_t *in, ls_val_t *out)
 {
     (void)out;
-    return start(in->v[0].s, in->v[1].i != 0, false);
+    return start(in->v[0].s, in->v[1].i != 0, false, false);
 }
 /* Bounded cache reads only; SD and Hosted RPC stay on c6_update. */
 #define C6_NUMBER(fn, expr) \
@@ -320,7 +478,7 @@ C6_TEXT(image_value, s_image)
 static ls_act_status_t inspect(const ls_args_t *in, ls_val_t *out)
 {
     (void)out;
-    return start(in->v[0].s, false, true);
+    return start(in->v[0].s, false, true, false);
 }
 void ls_c6_publish(void)
 {
@@ -336,6 +494,8 @@ void ls_c6_publish(void)
     ls_value_publish("c6.state", NULL, state);
     ls_value_publish("c6.busy", NULL, busy);
     ls_value_publish("c6.percent", "%", percent);
+    ls_action_register("c6.auto", "", LS_CAP_STORE | LS_CAP_POWER, auto_action,
+                       "Update the C6 radio firmware by itself (SD image, else download); restarts after");
     ls_action_register("c6.update", "sb", LS_CAP_STORE | LS_CAP_POWER, action,
                        "Update C6 from SD (path, force); radios stay off until P4 reboot");
 }
@@ -404,17 +564,22 @@ int ls_c6_update_command(int argc, char **argv)
                r.message[0] ? r.message : "Idle; no update attempted");
         return 0;
     }
+    if (argc == 3 && !strcmp(argv[1], "update") && !strcmp(argv[2], "auto")) {
+        ls_act_status_t rc = auto_start();
+        printf("c6: %s\n", rc == LS_ACT_OK ? "auto update started; c6 status shows progress" : ls_act_status_str(rc));
+        return rc == LS_ACT_OK ? 0 : 1;
+    }
     if (argc >= 2 && argc <= 4 && !strcmp(argv[1], "update")) {
         const char *path = argc >= 3 ? argv[2] : LS_C6_DEFAULT_PATH;
         bool force = argc == 4 && !strcmp(argv[3], "force");
         if (argc == 4 && !force) goto usage;
         if (argc == 3 && !strcmp(path, "force")) { path = LS_C6_DEFAULT_PATH; force = true; }
-        ls_act_status_t rc = start(path, force, false);
+        ls_act_status_t rc = start(path, force, false, false);
         printf("c6: %s\n", rc == LS_ACT_OK ? "update queued; c6 status shows progress" : ls_act_status_str(rc));
         return rc == LS_ACT_OK ? 0 : 1;
     }
 usage:
-    puts("c6 update [" LS_C6_DEFAULT_PATH "] [force] | c6 status | c6 flash /sdcard/IMAGE.bin\n"
-         "Recovery: USB-UART on C6 header; see docs/TDP4_FIRST_FLASH.md");
+    puts("c6 update auto | c6 update [" LS_C6_DEFAULT_PATH "] [force] | c6 status | c6 flash /sdcard/IMAGE.bin\n"
+         "Cable recovery only if the C6 no longer boots: docs/TDP4_FIRST_FLASH.md");
     return 1;
 }

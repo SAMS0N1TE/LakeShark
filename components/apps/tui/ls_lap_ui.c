@@ -25,19 +25,19 @@ static int card(tui_surface *sf, tui_rect a, const ls_lap_info_t *app, uint8_t f
     for (int y = 0; y < LAP_ICON_H; y++) art |= app->manifest.icon_art[y][0] != 0;
     const int ix = r.x + 2, iy = r.y + 2;
     if (app->has_icon_px)
-        ls_icon_draw_px(sf, r, ix, iy, app->icon_px, TUI_ATTR(hue, TUI_BLACK));
+        ls_icon_draw_px(sf, r, ix, iy, app->icon_px, ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
     else if (art)
         for (int y = 0; y < LAP_ICON_H; y++)
-            tui_put_str(sf, r, ix, iy + y, app->manifest.icon_art[y], TUI_ATTR(hue, TUI_BLACK));
+            tui_put_str(sf, r, ix, iy + y, app->manifest.icon_art[y], ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
     else
         ls_icon_draw(sf, r, ix, iy, app->manifest.icon > 0 && app->manifest.icon < LS_ICON__COUNT ? app->manifest.icon : LS_ICON_STAR,
-                     TUI_ATTR(hue, TUI_BLACK));
+                     ls_ink_hue(TUI_ATTR(hue, TUI_BLACK)));
     const int tx = ix + LS_ICON_COLS + 3;
     tui_put_str(sf, r, tx, r.y + 2, app->manifest.name, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
     tui_put_str(sf, r, tx, r.y + 3, app->manifest.sub, TUI_ATTR(TUI_CYAN, TUI_BLACK));
     char line[64];
     snprintf(line, sizeof(line), "v%s", app->manifest.version);
-    tui_put_str(sf, r, tx, r.y + 5, line, TUI_ATTR(TUI_YELLOW, TUI_BLACK));
+    tui_put_str(sf, r, tx, r.y + 5, line, ls_ink_hue(TUI_ATTR(TUI_YELLOW, TUI_BLACK)));
     if (app->manifest.author[0]) {
         snprintf(line, sizeof(line), "by %s", app->manifest.author);
         tui_put_str(sf, r, tx, r.y + 6, line, TUI_ATTR(TUI_MAGENTA, TUI_BLACK));
@@ -56,13 +56,13 @@ static void lines(tui_surface *sf, tui_rect a, int y, const char *const *text, i
 /* The warning sign, in three colours: a frame, the bar, the dot. */
 static void sign(tui_surface *sf, tui_rect a, int x, int y, uint8_t c)
 {
-    tui_put_str(sf, a, x, y,     "   /\\   ", TUI_ATTR(c, TUI_BLACK));
-    tui_put_str(sf, a, x, y + 1, "  /  \\  ", TUI_ATTR(c, TUI_BLACK));
-    tui_put_str(sf, a, x, y + 2, " / || \\ ", TUI_ATTR(c, TUI_BLACK));
-    tui_put_str(sf, a, x, y + 3, "/  ()  \\", TUI_ATTR(c, TUI_BLACK));
-    tui_put_str(sf, a, x, y + 4, "'------'", TUI_ATTR(c, TUI_BLACK));
+    tui_put_str(sf, a, x, y,     "   /\\   ", ls_ink_hue(TUI_ATTR(c, TUI_BLACK)));
+    tui_put_str(sf, a, x, y + 1, "  /  \\  ", ls_ink_hue(TUI_ATTR(c, TUI_BLACK)));
+    tui_put_str(sf, a, x, y + 2, " / || \\ ", ls_ink_hue(TUI_ATTR(c, TUI_BLACK)));
+    tui_put_str(sf, a, x, y + 3, "/  ()  \\", ls_ink_hue(TUI_ATTR(c, TUI_BLACK)));
+    tui_put_str(sf, a, x, y + 4, "'------'", ls_ink_hue(TUI_ATTR(c, TUI_BLACK)));
     tui_put_str(sf, a, x + 3, y + 2, "||", TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
-    tui_put_str(sf, a, x + 3, y + 3, "()", TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, a, x + 3, y + 3, "()", ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)));
 }
 
 /* A plain-words hint for the reasons a load fails most often. */
@@ -89,7 +89,7 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
     }
     const bool ask = st && st->state == LS_LAP_FAILED && st->needs_confirmation;
     const bool loading = st && (st->state == LS_LAP_LOADING || st->state == LS_LAP_IDLE);
-    const uint8_t frame = TUI_ATTR(ask ? TUI_YELLOW : loading ? TUI_CYAN : TUI_RED, TUI_BLACK);
+    const uint8_t frame = ls_ink_hue(TUI_ATTR(ask ? TUI_YELLOW : loading ? TUI_CYAN : TUI_RED, TUI_BLACK));
     int y = card(sf, area, app, frame) + 1;
     tui_rect body = tui_rect_make(area.x + 2, y, area.w - 4, area.y + area.h - y);
 
@@ -106,7 +106,7 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
 
     if (st && st->state == LS_LAP_RUNNING) {
         /* Running without a draw callback: it works in the background. */
-        ls_safe_line(sf, body, y, "RUNNING", TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+        ls_safe_line(sf, body, y, "RUNNING", ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
         ls_safe_line(sf, body, y + 2, LS_TEXT(t_ls_lap_ui_this_app_draws_nothing, "This app draws nothing; it keeps working while"), LS_ATTR_DIM);
         ls_safe_line(sf, body, y + 3, LS_TEXT(t_ls_lap_ui_it_is_open_esc, "it is open. ESC returns to HOME."), LS_ATTR_DIM);
         return;
@@ -117,7 +117,7 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
         const int tx = body.x + 10;
         tui_rect text = tui_rect_make(tx, y, body.x + body.w - tx, 6);
         if (app && (app->manifest.flags & LAP_CAP_MIC) && !ls_lap_grant_has(app, app->manifest.flags)) {
-            tui_put_str(sf,text,tx,y,"ALLOW MICROPHONE ACCESS?",TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK));
+            tui_put_str(sf,text,tx,y,"ALLOW MICROPHONE ACCESS?",ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)));
             const char *const why[] = {"This app can capture microphone audio", "and record it in its own SD folder.",
                 "MIC ON stays visible while capture runs.", "Other declared access also applies.", "BACK denies access."};
             lines(sf,body,y+6,why,5,TUI_ATTR(TUI_WHITE,TUI_BLACK));
@@ -125,8 +125,8 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
             const bool send = app->manifest.flags & LAP_CAP_RADIO_TX, net = app->manifest.flags & LAP_CAP_NETWORK;
             const bool rx = app->manifest.flags & LAP_CAP_RADIO_RX, svc = app->manifest.flags & LAP_CAP_SERVICE;
             tui_put_str(sf, text, tx, y, !rx ? "ALLOW BACKGROUND SERVICE?" : "ALLOW RADIO ACCESS?",
-                        TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
-            if (crashed) tui_put_str(sf, text, tx, y + 1, LS_TEXT(t_ls_lap_ui_it_stopped_the_board, "It stopped the board last time"), TUI_ATTR(TUI_RED, TUI_BLACK));
+                        ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
+            if (crashed) tui_put_str(sf, text, tx, y + 1, LS_TEXT(t_ls_lap_ui_it_stopped_the_board, "It stopped the board last time"), ls_ink_hue(TUI_ATTR(TUI_RED, TUI_BLACK)));
             const char *const why[] = {
                 rx ? "This app can tune the radios, read their" : "This app can keep working after you",
                 rx ? "samples and audio, and hear what the" : "leave it, and post notices.",
@@ -139,8 +139,8 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
             };
             lines(sf, body, y + 6, why, rx && svc ? 6 : 5, TUI_ATTR(TUI_WHITE, TUI_BLACK));
         } else if (app && (app->manifest.flags & LAP_CAP_NETWORK)) {
-            tui_put_str(sf, text, tx, y, LS_TEXT(t_ls_lap_ui_allow_network_access, "ALLOW NETWORK ACCESS?"), TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
-            if (crashed) tui_put_str(sf, text, tx, y + 1, LS_TEXT(t_ls_lap_ui_it_stopped_the_board, "It stopped the board last time"), TUI_ATTR(TUI_RED, TUI_BLACK));
+            tui_put_str(sf, text, tx, y, LS_TEXT(t_ls_lap_ui_allow_network_access, "ALLOW NETWORK ACCESS?"), ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
+            if (crashed) tui_put_str(sf, text, tx, y + 1, LS_TEXT(t_ls_lap_ui_it_stopped_the_board, "It stopped the board last time"), ls_ink_hue(TUI_ATTR(TUI_RED, TUI_BLACK)));
             static const char *const why[] = {
                 "This app can connect to devices and servers",
                 "using the network already joined in LINK.",
@@ -149,8 +149,8 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
             };
             lines(sf, body, y + 6, why, 4, TUI_ATTR(TUI_WHITE, TUI_BLACK));
         } else if (crashed) {
-            tui_put_str(sf, text, tx, y, LS_TEXT(t_ls_lap_ui_it_stopped_the_board_2, "IT STOPPED THE BOARD"), TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
-            tui_put_str(sf, text, tx, y + 1, "LAST TIME IT RAN", TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+            tui_put_str(sf, text, tx, y, LS_TEXT(t_ls_lap_ui_it_stopped_the_board_2, "IT STOPPED THE BOARD"), ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)));
+            tui_put_str(sf, text, tx, y + 1, "LAST TIME IT RAN", ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)));
             static const char *const why[] = {
                 "The board restarted while this app",
                 "was drawing or reading a key.",
@@ -160,8 +160,8 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
             };
             lines(sf, body, y + 6, why, 5, TUI_ATTR(TUI_WHITE, TUI_BLACK));
         } else {
-            tui_put_str(sf, text, tx, y, "NOT FROM THE STORE", TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
-            tui_put_str(sf, text, tx, y + 1, LS_TEXT(t_ls_lap_ui_no_lakeshark_signature, "no LakeShark signature"), TUI_ATTR(TUI_YELLOW, TUI_BLACK));
+            tui_put_str(sf, text, tx, y, "NOT FROM THE STORE", ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
+            tui_put_str(sf, text, tx, y + 1, LS_TEXT(t_ls_lap_ui_no_lakeshark_signature, "no LakeShark signature"), ls_ink_hue(TUI_ATTR(TUI_YELLOW, TUI_BLACK)));
             static const char *const why[] = {
                 "An app runs with the whole board: the card,",
                 "the screen, every value the radios publish.",
@@ -181,13 +181,13 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
     }
 
     /* Failed: what happened, in the board's words and in plain ones. */
-    tui_put_str(sf, body, body.x, y,     " __  __ ", TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
-    tui_put_str(sf, body, body.x, y + 1, " \\ \\/ / ", TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
-    tui_put_str(sf, body, body.x, y + 2, "  >  <  ", TUI_ATTR(TUI_RED, TUI_BLACK));
-    tui_put_str(sf, body, body.x, y + 3, " /_/\\_\\ ", TUI_ATTR(TUI_RED, TUI_BLACK));
-    tui_put_str(sf, body, body.x + 10, y, "COULD NOT OPEN", TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, body, body.x, y,     " __  __ ", ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)));
+    tui_put_str(sf, body, body.x, y + 1, " \\ \\/ / ", ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)));
+    tui_put_str(sf, body, body.x, y + 2, "  >  <  ", ls_ink_hue(TUI_ATTR(TUI_RED, TUI_BLACK)));
+    tui_put_str(sf, body, body.x, y + 3, " /_/\\_\\ ", ls_ink_hue(TUI_ATTR(TUI_RED, TUI_BLACK)));
+    tui_put_str(sf, body, body.x + 10, y, "COULD NOT OPEN", ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK)));
     tui_rect why = tui_rect_make(body.x + 10, y + 1, body.w - 10, 2);
-    tui_put_str(sf, why, why.x, y + 1, error && *error ? error : "unknown error", TUI_ATTR(TUI_YELLOW, TUI_BLACK));
+    tui_put_str(sf, why, why.x, y + 1, error && *error ? error : "unknown error", ls_ink_hue(TUI_ATTR(TUI_YELLOW, TUI_BLACK)));
     const char *h = hint(error);
     if (h) {
         char a[64], b2[64];

@@ -218,7 +218,7 @@ static void draw(tui_surface *sf, tui_rect a)
     s_out_hit = s_in_hit = tui_rect_make(0, 0, 0, 0);
     if (a.w < 24 || a.h < 10) {
         s_bar_n = 0;
-        ls_panel_notice(sf, a, "TERMINAL", "Enlarge the pane", LS_TEXT(t_scr_terminal_a_running_command_keeps, "A running command keeps going"));
+        ls_panel_notice(sf, a, NULL, "Enlarge the pane", LS_TEXT(t_scr_terminal_a_running_command_keeps, "A running command keeps going"));
         return;
     }
     const bool busy = ls_term_busy();
@@ -232,7 +232,7 @@ static void draw(tui_surface *sf, tui_rect a)
     bar(sf, &a, btn, 5);
 
     tui_rect body = tui_rect_make(a.x, a.y, a.w, a.h - 1);
-    ls_panel_box(sf, body, "TERMINAL", TUI_GREEN);
+    ls_panel_box(sf, body, NULL, TUI_GREEN);
     ls_motion_busy(sf, body, busy);
     tui_rect in = tui_rect_make(body.x + 2, body.y + 1, body.w - 4, body.h - 2);
     if (in.w < 8 || in.h < 2) return;

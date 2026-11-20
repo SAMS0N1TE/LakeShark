@@ -42,6 +42,9 @@ static bool         s_keyboard_light = true;
 /* Settings > DEVICE > Check for updates: Daily (true) or Off. Read by the update
    scheduler's timer, so it is RAM only; loaded once in settings_init. */
 static bool         s_update_check = true;
+/* Settings > GPS and Settings > Auto data (ls_location, ls_packs): both on
+   until switched off. RAM copies, loaded once in settings_init. */
+static bool         s_gps_on = true, s_auto_data = true;
 /* Settings > DEVICE > Language, loaded once in settings_init. */
 static int          s_ui_lang;
 /* Accepted choices must be visible before the delayed write reaches NVS. */
@@ -379,6 +382,7 @@ bool settings_init(void)
     __atomic_store_n(&s_ble_at_boot,true,__ATOMIC_RELEASE);
     __atomic_store_n(&s_wifi_at_boot,true,__ATOMIC_RELEASE);
     __atomic_store_n(&s_update_check,true,__ATOMIC_RELEASE);
+    s_gps_on = s_auto_data = true;
     __atomic_store_n(&s_ui_lang,0,__ATOMIC_RELEASE);
     home_widget_pref_init(false, 0);
     s_home_write_ready = false;
@@ -442,6 +446,10 @@ bool settings_init(void)
     uint8_t upd_check = 1;
     if(nvs_get_u8(s_nvs,"upd_check",&upd_check)==ESP_OK)
         __atomic_store_n(&s_update_check,upd_check!=0,__ATOMIC_RELEASE);
+    uint8_t svc_flag = 1;
+    if(nvs_get_u8(s_nvs,"gps_on",&svc_flag)==ESP_OK) s_gps_on = svc_flag!=0;
+    svc_flag = 1;
+    if(nvs_get_u8(s_nvs,"auto_data",&svc_flag)==ESP_OK) s_auto_data = svc_flag!=0;
     uint8_t ui_lang = 0;
     if(nvs_get_u8(s_nvs,"ui_lang",&ui_lang)==ESP_OK && settings_ui_lang_valid(ui_lang))
         __atomic_store_n(&s_ui_lang,(int)ui_lang,__ATOMIC_RELEASE);
@@ -930,10 +938,20 @@ void settings_set_brightness(int pct)
     sput_u8("brightness", (uint8_t)pct);
 }
 
-#if LS_HAS_COMPACT_UI
-#define AUTODIM_DEFAULT false
+/* The T-Display dims after 30 s and goes dark a minute later out of the box;
+   the other compact boards (the Nano's desk) leave it to the user. */
+#if LS_HAS_AUTODIM_DEFAULT
+#define AUTODIM_DEFAULT    true
+#define AUTODIM_TO_DEFAULT 30
+#define SCREEN_OFF_DEFAULT 60
+#elif LS_HAS_COMPACT_UI
+#define AUTODIM_DEFAULT    false
+#define AUTODIM_TO_DEFAULT 120
+#define SCREEN_OFF_DEFAULT 0
 #else
-#define AUTODIM_DEFAULT true
+#define AUTODIM_DEFAULT    true
+#define AUTODIM_TO_DEFAULT 120
+#define SCREEN_OFF_DEFAULT 0
 #endif
 
 bool settings_get_autodim(void)
@@ -950,9 +968,9 @@ void settings_set_autodim(bool en)
 }
 int settings_get_autodim_timeout(void)
 {
-    if (!s_nvs_ok) return 120;
+    if (!s_nvs_ok) return AUTODIM_TO_DEFAULT;
     uint8_t v = 0;
-    if (nvs_get_u8(s_nvs, "autodim_to", &v) != ESP_OK || v < 5) return 120;
+    if (nvs_get_u8(s_nvs, "autodim_to", &v) != ESP_OK || v < 5) return AUTODIM_TO_DEFAULT;
     return (int)v;
 }
 void settings_set_autodim_timeout(int seconds)
@@ -961,6 +979,90 @@ void settings_set_autodim_timeout(int seconds)
     if (seconds < 5)   seconds = 5;
     if (seconds > 240) seconds = 240;
     sput_u8("autodim_to", (uint8_t)seconds);
+}
+/* Seconds from dim to dark, 0 never. */
+int settings_get_screen_off(void)
+{
+    if (!s_nvs_ok) return SCREEN_OFF_DEFAULT;
+    uint32_t v = 0;
+    if (nvs_get_u32(s_nvs, "scr_off", &v) != ESP_OK || v > 600) return SCREEN_OFF_DEFAULT;
+    return (int)v;
+}
+void settings_set_screen_off(int seconds)
+{
+    if (!s_nvs_ok) return;
+    sput_u32("scr_off", (uint32_t)(seconds < 0 ? 0 : seconds > 600 ? 600 : seconds));
+}
+/* The screen lock: its options, and a salted hash of the PIN - never the
+   PIN itself (ls_lock.c). hash 0 is no PIN. */
+/* "lk_rec" is the whole record in one NVS entry, which NVS replaces in one
+   step: a reset mid-write leaves the old record or the new, never the new
+   salt beside the old hash. The three keys 2.23 wrote (lk_cfg, lk_salt,
+   lk_hash) are read only while no lk_rec exists, and go once one is written. */
+typedef struct { uint32_t ver, cfg, salt, spare; uint64_t hash; } lock_rec_t;
+#define LOCK_REC_VER 1
+
+static esp_err_t lock_get_job(void *ctx)
+{
+    size_t n = sizeof(lock_rec_t);
+    const esp_err_t err = nvs_get_blob(s_nvs, "lk_rec", ctx, &n);
+    if (err != ESP_OK) return err;
+    return n == sizeof(lock_rec_t) && ((const lock_rec_t *)ctx)->ver == LOCK_REC_VER ? ESP_OK
+                                                                                     : ESP_ERR_NVS_INVALID_LENGTH;
+}
+static esp_err_t lock_set_job(void *ctx)
+{
+    esp_err_t err = nvs_set_blob(s_nvs, "lk_rec", ctx, sizeof(lock_rec_t));
+    if (err == ESP_OK) err = nvs_commit(s_nvs);
+    if (err != ESP_OK) return err;
+    /* Only now are the old keys spare; a failed erase leaves them unread. */
+    nvs_erase_key(s_nvs, "lk_cfg");
+    nvs_erase_key(s_nvs, "lk_salt");
+    nvs_erase_key(s_nvs, "lk_hash");
+    (void)nvs_commit(s_nvs);
+    return ESP_OK;
+}
+
+bool settings_get_lock(uint32_t *cfg, uint32_t *salt, uint64_t *hash)
+{
+    *cfg = 0; *salt = 0; *hash = 0;
+    if (!s_nvs_ok) return false;
+    lock_rec_t r;
+    memset(&r, 0, sizeof(r));
+    const esp_err_t err = ls_nvs_run(lock_get_job, &r, 0);
+    if (err == ESP_OK) {
+        *cfg = r.cfg; *salt = r.salt; *hash = r.hash;
+        return *hash != 0;
+    }
+    if (err != ESP_ERR_NVS_NOT_FOUND) return false;   /* there is a record and it is not readable: no PIN */
+    if (nvs_get_u64(s_nvs, "lk_hash", hash) != ESP_OK) { *hash = 0; return false; }
+    if (nvs_get_u32(s_nvs, "lk_salt", salt) != ESP_OK) *salt = 0;
+    if (nvs_get_u32(s_nvs, "lk_cfg", cfg) != ESP_OK) *cfg = 0;
+    return *hash != 0;
+}
+bool settings_set_lock(uint32_t cfg, uint32_t salt, uint64_t hash)
+{
+    if (!s_nvs_ok) return false;
+    lock_rec_t r = { LOCK_REC_VER, cfg, salt, 0, hash };
+    const esp_err_t err = ls_nvs_run(lock_set_job, &r, 0);
+    if (err != ESP_OK) ESP_LOGE(TAG, "lock record not saved: %s", esp_err_to_name(err));
+    return err == ESP_OK;
+}
+uint32_t settings_get_lock_fails(void)
+{
+    uint32_t n = 0;
+    if (!s_nvs_ok || nvs_get_u32(s_nvs, "lk_fail", &n) != ESP_OK) return 0;
+    return n > 255 ? 255 : n;
+}
+bool settings_set_lock_fails(uint32_t n)
+{
+    if (!s_nvs_ok) return false;
+    set_write_t w;
+    memset(&w, 0, sizeof(w));
+    strlcpy(w.key, "lk_fail", sizeof(w.key));
+    w.type = SV_U32;
+    w.v.u32 = n;
+    return ls_nvs_run(write_now_job, &w, 0) == ESP_OK;
 }
 
 /* The power mode and what its WATCH keeps (ls_power.h), as small numbers. */
@@ -1639,6 +1741,21 @@ void settings_set_update_check(bool daily)
     if (s_nvs_ok && sput_u8("upd_check", daily ? 1 : 0))
         __atomic_store_n(&s_update_check,daily,__ATOMIC_RELEASE);
 }
+
+bool settings_get_gps_on(void) { return s_gps_on; }
+void settings_set_gps_on(bool on) { if (s_nvs_ok && sput_u8("gps_on", on)) s_gps_on = on; }
+bool settings_get_auto_data(void) { return s_auto_data; }
+void settings_set_auto_data(bool on) { if (s_nvs_ok && sput_u8("auto_data", on)) s_auto_data = on; }
+
+/* MUSIC EQ and pre-amp, packed by the player into one word. */
+bool settings_get_music_eq(uint64_t *packed)
+{
+    uint64_t v = 0;
+    if (!packed || !s_nvs_ok || nvs_get_u64(s_nvs, "music_eq", &v) != ESP_OK) return false;
+    *packed = v;
+    return true;
+}
+bool settings_set_music_eq(uint64_t packed) { return sput_u64("music_eq", packed); }
 
 int settings_get_ui_lang(void)
 {

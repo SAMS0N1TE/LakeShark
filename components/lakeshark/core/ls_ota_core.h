@@ -95,6 +95,9 @@ const char  *ls_ota_err_text(ls_ota_err_t e);
 
 /* Device verifier shared with signed data catalogs (implemented by OTA). */
 bool ls_ota_signed_by_us(const char *text, const ls_ota_manifest_t *manifest);
+/* The same over a SHA-256 already taken (a signed file too big for RAM):
+   only manifest->sig and sig_len are read. */
+bool ls_ota_hash_signed_by_us(const uint8_t hash[32], const ls_ota_manifest_t *manifest);
 
 /* The channel a manifest URL asks for: its file name less any query and
    ".txt". False when there is none. */
@@ -153,7 +156,9 @@ bool ls_ota_github_url(const char *url, char *out, size_t cap);
    kept: .../tdp4/test.txt on a TFT build is .../tdp4tft/test.txt. True and
    `out` written when it moved; false, `out` untouched, when the URL names no
    other edition's folder or `out` is too small. */
-#define LS_OTA_DIRS { "/tdp4/", "/tdp4lr/", "/tdp4tft/", "/tdp4net/" }
+/* /tdp4u/ (T-Display-P4-U) is the universal image: one build for all four,
+   which finds its radio and panel at boot. */
+#define LS_OTA_DIRS { "/tdp4/", "/tdp4lr/", "/tdp4tft/", "/tdp4net/", "/tdp4u/" }
 bool ls_ota_url_to_edition(const char *url, const char *dir, char *out, size_t cap);
 
 /* ------------------------------------------------- the background check

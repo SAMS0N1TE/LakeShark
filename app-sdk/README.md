@@ -161,7 +161,7 @@ device:
 | Area | Calls |
 |---|---|
 | Touch | `lap_touch` (the finger while it is down, in pixels), `lap_swipe`, every key including F1-F11 and RECORD |
-| Screen | `lap_dots` (COMPASS's 2 x 3 dot packing), `lap_palette`, `lap_put_glass`, `lap_cell_px`, `lap_fullscreen`, `lap_hold_rotation`, `lap_keep_awake`, `lap_brightness`, and `LAP_ICON_PX` for a tile icon in colour dots |
+| Screen | `lap_dots` (COMPASS's 2 x 3 dot packing), `lap_palette`, `lap_put_glass`, `lap_cell_px`, `lap_fullscreen`, `lap_hold_rotation`, `lap_keep_awake`, `lap_brightness`, `LAP_ICON_PX` for a tile icon in colour dots, and `LAP_GROUP` for the HOME tab the tile sits on |
 | Motion | `lap_motion`: the 9-axis sensor in screen axes, pitch and roll, tilt-compensated heading |
 | Sound and feel | `lap_tone` (sine, square, triangle, saw, noise, queued without gaps), `lap_haptic`, `lap_vibrate` |
 | Where and when | `lap_gps`, `lap_time`, `lap_battery` |
@@ -603,7 +603,10 @@ lsdk submissions           # what became of it
 ```
 
 - **app.json** says what the app is and how it was made (schema 2): category,
-  description, license, whether AI was used and how much (`none`, `assisted`,
+  description, optionally `group` (the HOME tab the tile sits on, beside the
+  board's own apps and marked `[SD]`: `radio`, `field`, `system` or `user`;
+  `lap.py` compiles it in as `LAP_GROUP`; left out, the board goes by the
+  capabilities: radio to RADIO, network to SYSTEM, the rest to USER), license, whether AI was used and how much (`none`, `assisted`,
   `substantial`, `generated`, with the tools and what they did), every outside
   piece of code, data or art under `third_party`, sources under `references`,
   and four declarations that must all be true. `lsdk new` writes it with those

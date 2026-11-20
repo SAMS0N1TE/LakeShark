@@ -90,6 +90,7 @@
 /**/
 #include "rec_space.h"
 #include "ls_board.h"
+#include "ls_profile.h"
 #include "ls_pins.h"
 #include "ls_vitals.h"
 #include "ls_sdcard.h"
@@ -603,7 +604,9 @@ static void gpio_init(void)
 
 static int cmd_p2(int argc,char **argv)
 {
+#if CONFIG_LS_DEV_CONSOLE
     if(argc > 1 && !strcmp(argv[1],"test")) return p25_p2_bench_command(argc,argv);
+#endif
     if(argc==2 && !strcmp(argv[1],"off"))p25_p2_enable(false);
     else if(argc==2 && !strcmp(argv[1],"on")){scan_engine_stop();p25_p2_enable(true);}
     else if(argc==6 && !strcmp(argv[1],"config")) {
@@ -675,8 +678,11 @@ void ls_hackrf_tx_limits(unsigned vga, bool amp);
 void ls_hackrf_snap(void);
 static int cmd_hackrf(int argc, char **argv)
 {
-    if (argc >= 2 && !strcmp(argv[1], "dump")) ls_hackrf_dump();
+    if (0) { }
+#if CONFIG_LS_DEV_CONSOLE
+    else if (argc >= 2 && !strcmp(argv[1], "dump")) ls_hackrf_dump();
     else if (argc >= 2 && !strcmp(argv[1], "snap")) ls_hackrf_snap();
+#endif
     else if (argc == 4 && !strcmp(argv[1], "txlimits")) ls_hackrf_tx_limits((unsigned)atoi(argv[2]), atoi(argv[3])!=0);
     else if (argc >= 3 && !strcmp(argv[1], "ppm")) ls_hackrf_set_ppm(atoi(argv[2]));
     else ls_hackrf_print_status();
@@ -2217,6 +2223,7 @@ static int cmd_trail(int argc, char **argv)
    belongs to the TUI task. */
 static int cmd_compass(int argc, char **argv)
 {
+#if CONFIG_LS_DEV_CONSOLE
     if (argc > 1 && !strcmp(argv[1], "still")) {
         char *end = NULL;
         const long seconds = argc > 2 ? strtol(argv[2], &end, 10) : 60;
@@ -2229,6 +2236,7 @@ static int cmd_compass(int argc, char **argv)
         ls_field_imu_trace(argc > 2 ? (float)atof(argv[2]) : 5.0f);
         return 0;
     }
+#endif
     if (argc > 1 && !strcmp(argv[1], "learn")) {
         if (argc > 2) ls_field_compass_learn(!strcmp(argv[2], "off") ? 0 : !strcmp(argv[2], "on") ? 1 : 2);
         ls_field_compass_learn_report();
@@ -3208,17 +3216,30 @@ static bool console_start(bool full)
        immutable descriptors in flash instead; normal boot subsequently has
        to initialize the complete compact UI on this same task. */
     static const esp_console_cmd_t cmds[] = {
+#if CONFIG_LS_DEV_CONSOLE
         { .command="observations", .help=LS_TXT(con_headless_main_observations_help, "Read-only bounded JSONL receipt: scanner log, detector, CALLS, FM delivered IQ; no RF coverage claim"), .hint=LS_TXT(con_headless_main_observations_hint, "[json]"), .func=ls_observation_command },
+#endif
+#if CONFIG_LS_DEV_CONSOLE
         { .command="rx-plan", .help=LS_TXT(con_headless_main_rx_plan_help, "Bounded receive-only RTL USB FM LISTEN schedule; existing receiver required"), .hint=LS_TXT(con_headless_main_rx_plan_hint, "load|show|start|stop|json"), .func=ls_rx_plan_command },
+#endif
+#if CONFIG_LS_DEV_CONSOLE
         { .command="rx-coverage", .help=LS_TXT(con_headless_main_rx_coverage_help, "Track software read/DSP intervals; physical RF continuity unknown"), .hint=LS_TXT(con_headless_main_rx_coverage_hint, "[start|stop|status|json]"), .func=ls_coverage_command },
+#endif
+#if CONFIG_LS_DEV_CONSOLE
         { .command="receiver-trial", .help=LS_TXT(con_headless_main_receiver_trial_help, "Save/compare read-only receiver snapshots; never changes RF settings"), .hint=LS_TXT(con_headless_main_receiver_trial_hint, "[baseline|compare|reset|status|json]"), .func=lakeshark_receiver_trial_command },
+#endif
         { .command="sweep", .help=LS_TXT(con_headless_main_sweep_help, "Passive nearby signals: on|off|status|stats|list|hunt MAC|mute on|off|mute CAT|rules reload"), .func=ls_sweep_command },
         { .command="rfsurvey", .help=LS_TXT(con_headless_main_rfsurvey_help, "RF SURVEY: status | start [sim|rtl|hackrf|lora|sweep|iq|iqwide|cc1101] [plan=N] [range=LO:HI:N] [step=M] [cell=M] [thresh=DB] | stop | replay [FILE] [ROWS/S] | export [FILE] | files | plans"), .func=ls_rfs_command },
+        { .command="board", .help="Board profile: what was found at boot | usb auto|on|off | net on|off | panel auto|amoled|tft", .func=ls_profile_command },
         { .command="fox", .help=LS_TXT(con_headless_main_fox_help, "FOX HUNT bearings: fox | fox add BEARING [SPREAD] | undo | new | load"), .func=ls_fox_command },
+#if CONFIG_LS_DEV_CONSOLE
         { .command="rfsim", .help=LS_TXT(con_headless_main_rfsim_help, "Simulated position and transmitters for RF SURVEY and FOX HUNT: here LAT LON | walk LAT LON [COURSE] [M/S] | fox LAT LON | off"), .func=ls_rfsim_command },
+#endif
         { .command="rid", .help=LS_TXT(con_headless_main_rid_help, "Passive Remote ID: list | detail N | clear"), .func=ls_rid_command },
         { .command="drones", .help=LS_TXT(con_headless_main_drones_help, "Drone Watch: list | on|off | src elrs900|elrs24|hopper900|wide24|analog58|rid on|off"), .func=ls_drone_watch_command },
+#if CONFIG_LS_DEV_CONSOLE
         { .command="cellperf", .help=LS_TXT(con_headless_main_cellperf_help, "HackRF focused session; on/off restarts, ordinary reset returns to normal"), .func=cell_performance_command },
+#endif
         { .command = "status", .help = LS_TXT(con_headless_main_status_help, "Show mode, freq, volume, gain, mute, heap"),
           .func = &cmd_status },
         { .command = "p2", .help = LS_TXT(con_headless_main_p2_help, "Experimental Phase II manual voice: on|off|status|config WACN SYS NAC slot"), .func = &cmd_p2 },
@@ -3254,14 +3275,18 @@ static bool console_start(bool full)
         { .command = "rec",    .help = LS_TXT(con_headless_main_rec_help, "OOK recorder - captures to a Flipper SubGhz .sub file"),
           .hint = LS_TXT(con_headless_main_rec_hint, "<freq MHz|gain <dB>|arm|stop|save <name>|list|cat <name>|rm <name>>"),
           .func = &cmd_rec },
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "beep",   .help = LS_TXT(con_headless_main_beep_help, "Play the boot chime - proves the speaker path"),
           .func = &cmd_beep },
+#endif
         { .command = "ble",    .help = LS_TXT(con_headless_main_ble_help, "BLE control head link (P4 is central)"),
           .hint = LS_TXT(con_headless_main_ble_hint, "<on|off|rescan|passkey <code>|name <s>|tel <hz>|"
                   "verbose <0|1>|pin [addr]|unpin|forget|show>"),
           .func = &cmd_ble },
 #if CONFIG_LS_BLE_HEAD
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "input", .help = "Input event tracing (off by default)", .hint = "watch [on|off]", .func = &ble_hid_input_console },
+#endif
 #endif
         { .command = "c6",     .help = LS_TXT(con_headless_main_c6_help, "ESP32-C6 co-processor: enable line, transport, firmware versions, SD update"),
           .hint = LS_TXT(con_headless_main_c6_hint, "<0|1|up|ver|reset|release|update [path] [force]|status>"), .func = &cmd_c6 },
@@ -3272,26 +3297,38 @@ static bool console_start(bool full)
           .func = &cmd_link },
         { .command = "moto",   .help = LS_TXT(con_headless_main_moto_help, "Motorola-style radio alerts on the speaker"),
           .hint = LS_TXT(con_headless_main_moto_hint, "[on|alert|bonk|all]"), .func = &cmd_moto },
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "i2c",    .help = LS_TXT(con_headless_main_i2c_help, "I2C: scan the buses, or 'i2c read <bus> <addr> <reg> [n]' to identify a part"),
           .func = &cmd_i2c },
+#endif
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "mic",    .help = LS_TXT(con_headless_main_mic_help, "Microphone: capture and report the level. 'mic <ms> [gain dB]'"),
           .func = &cmd_mic },
+#endif
         { .command = "find",   .help = LS_TXT(con_headless_main_find_help, "COMPASS FIND: what it hears, its hit log, and control of it"),
           .hint = LS_TXT(con_headless_main_find_hint, "[status|log|src <radio> [2]|off2|ch <MHz,...> [2]|show <1-8|A-H>|clear|view <v>|method <m>|set <k> <v>]"),
           .func = &cmd_find },
         { .command = "ant",    .help = LS_TXT(con_headless_main_ant_help, "Antenna path: internal or external through MMCX1"),
           .hint = LS_TXT(con_headless_main_ant_hint, "[int|ext]"), .func = &cmd_ant },
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "snd", .help = LS_TXT(con_headless_main_snd_help, "Queue a synthesized sound test (respects volume and mute)"),
           .hint = LS_TXT(con_headless_main_snd_hint, "test <name>"), .func = &cmd_snd },
+#endif
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "notify", .help = LS_TXT(con_headless_main_notify_help, "Post a test notice through the real path: banner, count, ring and vibrate"),
           .hint = LS_TXT(con_headless_main_notify_hint, "[ring|vibe|quiet|sound <alert|radiokey|roger|chirp|off>]"), .func = &cmd_notify },
+#endif
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "haptic", .help = LS_TXT(con_headless_main_haptic_help, "Vibration: play an effect, buzz for a time, measure the motor, or off|on"),
           .hint = LS_TXT(con_headless_main_haptic_hint, "[tick|click|confirm|alert|warn|buzz <ms> [pct]|stop|diag|off|on|state]"),
           .func = &cmd_haptic },
+#endif
         { .command = "track",  .help = LS_TXT(con_headless_main_track_help, "GPS track: 'track on|off' records to the card, 'track export' writes GPX, 'track rule <m> <s>' sets how often a point is kept"),
           .func = &cmd_track },
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "imu",    .help = LS_TXT(con_headless_main_imu_help, "Nine-axis sensor: accel, gyro, magnetometer, heading and pose. 'imu <n>' repeats"),
           .func = &cmd_imu },
+#endif
         { .command = "compass", .help = LS_TXT(con_headless_main_compass_help, "Compass state; still [secs] stability test (default 60), trace [secs], learn [on|off|forget]"),
           .func = &cmd_compass },
         { .command = "trail",  .help = LS_TXT(con_headless_main_trail_help, "Where each busy task last was: this run, and the run a watchdog reset ended"),
@@ -3300,16 +3337,26 @@ static bool console_start(bool full)
         { .command = "heap",   .help = LS_TXT(con_headless_main_heap_help, "Internal/DMA/PSRAM free, USB IQ slots, NVS write stats. 'heap dma' dumps the regions, 'heap stages' the boot profile"),
           .func = &cmd_heap },
         /**/
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "top",    .help = LS_TXT(con_headless_main_top_help, "Which task has the CPU: each task's share of a core over a second ('top <ms>'). 'top irq' measures what interrupts take on each core and the PSRAM bus rate"),
           .func = &cmd_top },
+#endif
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "log",   .help = LS_TXT(con_headless_main_log_help, "Runtime log level per tag (hot tags are quiet by default)"),
           .hint = LS_TXT(con_headless_main_log_hint, "<tag|*> <none|error|warn|info|debug|verbose>"), .func = &cmd_log },
+#endif
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "tel",    .help = LS_TXT(con_headless_main_tel_help, "Print the flipper-link telemetry frame N times (0.5s apart)"),
           .hint = LS_TXT(con_headless_main_tel_hint, "[n]"), .func = &cmd_tel },
+#endif
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "fl",     .help = LS_TXT(con_headless_main_fl_help, "Run one flipper-link protocol line locally"),
           .hint = LS_TXT(con_headless_main_fl_hint, "<PING|FREQ|VOL|GAIN|DEMOD|...>"), .func = &cmd_fl },
+#endif
+#if CONFIG_LS_DEV_CONSOLE
         { .command = "adsbdemo", .help = LS_TXT(con_headless_main_adsbdemo_help, "Synthetic aircraft around home or the map centre, for testing"),
           .hint = LS_TXT(con_headless_main_adsbdemo_hint, "<0-8>"), .func = &cmd_adsbdemo },
+#endif
     };
     ls_text_warm();     /* text packs decoded here, on the boot task (ls_textpack.h) */
     esp_console_register_help_command();
@@ -3450,6 +3497,17 @@ void app_main(void)
        static cache-safe DRAM, so this does not depend on heap availability. */
     esp_err_t nvs_worker_err = ls_nvs_init();
     ls_pins_load();
+    /* The board's saved choices (panel, USB host, capture buffers), before
+       the panel is probed and before anything sizes itself from them. */
+    ls_profile_boot();
+    {
+        extern void ls_lap_capture_set_slots(uint32_t slots);
+        extern void ls_hosted_promisc_tune(unsigned snap, unsigned per_s);
+        ls_profile_net_t net;
+        ls_profile_net_sizes(ls_profile_net(), &net);
+        ls_lap_capture_set_slots(net.capture_slots);
+        ls_hosted_promisc_tune(net.promisc_snap, net.promisc_per_s);
+    }
     if (nvs_worker_err != ESP_OK)
         ESP_LOGE(TAG, "NVS dispatcher init failed: %s",
                  esp_err_to_name(nvs_worker_err));

@@ -9,6 +9,7 @@
 #include "ls_keyboard.h"
 #include "ls_picker.h"
 #include "ls_app.h"
+#include "ls_store.h"
 #include "ls_gps.h"
 #include "ls_track_log.h"
 /* The saved home, the fallback under a live fix. */
@@ -184,7 +185,9 @@ static void home_choice(int choice)
         }
         lat=g.lat_deg; lon=g.lon_deg;
     } else if(choice==3) {
-        if(!ls_map_archive() && !ls_map_cartocore_style()) {home_feedback("NO MAP OPEN","Open MAPS first");return;}
+        /* World tiles (MAP's Auto default where the card has no local map)
+           are a map with a centre too. */
+        if(!ls_map_archive() && !ls_map_world() && !ls_map_cartocore_style()) {home_feedback("NO MAP OPEN","Open MAPS first");return;}
         ls_map_get_center(&lat,&lon);
     } else return;
     if(!isfinite(lat)||!isfinite(lon)||fabs(lat)>85||fabs(lon)>180) {
@@ -250,6 +253,17 @@ static ls_act_status_t a_ui_prev(const ls_args_t *in, ls_val_t *out)
     ls_tui_screen_prev();
     out->kind = LS_VAL_TEXT;
     out->s = ls_tui_screen_name(ls_tui_screen_current());
+    return LS_ACT_OK;
+}
+
+/* STORE at an app's card: what an SD app may do to the interface (READ, as
+   any app is granted), so it can send people to another app, as MESHTASTIC
+   sends them to MESH LANGUAGES. The switch is made at the next frame. */
+static ls_act_status_t a_store_open(const ls_args_t *in, ls_val_t *out)
+{
+    if (!ls_store_focus(in->v[0].s)) return LS_ACT_UNAVAILABLE;
+    out->kind = LS_VAL_TEXT;
+    out->s = "STORE";
     return LS_ACT_OK;
 }
 
@@ -566,6 +580,8 @@ void ls_action_register_builtin(void)
                        "next screen");
     ls_action_register("ui.prev",        "",  LS_CAP_UI,   a_ui_prev,
                        "previous screen");
+    ls_action_register("store.open",     "s", LS_CAP_READ, a_store_open,
+                       "STORE at an app's card (its id), or the list");
 
     ls_action_register("wf.palette",     "i", LS_CAP_UI,   a_wf_palette,
                        LS_TEXT(t_ls_action_builtin_0_heat_1_ice, "0 heat, 1 ice, 2 phosphor, 3 neon"));

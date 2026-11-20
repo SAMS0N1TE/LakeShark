@@ -19,7 +19,13 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION AND (CONFIG_LS_BOARD_T_DISPLAY_P4 OR CONFIG_L
         list(APPEND LS_TEXT_GLOBS ${d}/*.c ${d}/*.cpp ${d}/*.cc ${d}/*.h ${d}/*.hpp ${d}/*.inc)
     endforeach()
     file(GLOB_RECURSE LS_TEXT_SCANNED CONFIGURE_DEPENDS ${LS_TEXT_GLOBS})
-    set(LS_TEXT_CMD ${LS_TEXT_PY} ${LS_TEXT_GEN} text --root=${LS_PROJECT_DIR} ${LS_TEXT_OUT} ${LS_TEXT_DIRS})
+    # Sources that live in firmware modules keep their own text: not packed here.
+    include(${LS_PROJECT_DIR}/cmake/ls_modules.cmake)
+    ls_modules_list(LS_TEXT_SKIPPED)
+    string(REPLACE ";" "\n" LS_TEXT_SKIP_TEXT "${LS_TEXT_SKIPPED}")
+    file(MAKE_DIRECTORY ${LS_TEXT_OUT})
+    file(WRITE ${LS_TEXT_OUT}/skip.txt "${LS_TEXT_SKIP_TEXT}\n")
+    set(LS_TEXT_CMD ${LS_TEXT_PY} ${LS_TEXT_GEN} text --root=${LS_PROJECT_DIR} --skip=${LS_TEXT_OUT}/skip.txt ${LS_TEXT_OUT} ${LS_TEXT_DIRS})
     # Once at configure time as well, so the id header exists before any
     # component that includes it starts compiling.
     execute_process(COMMAND ${LS_TEXT_CMD} RESULT_VARIABLE LS_TEXT_RC)

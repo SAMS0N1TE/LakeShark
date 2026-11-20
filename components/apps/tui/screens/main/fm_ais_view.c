@@ -3,11 +3,13 @@
 #include "ls_gps.h"
 #include "../../ls_motion.h"
 #include "../../ls_geo.h"
+#include "../../ls_radio_select.h"
 #include "esp_attr.h"
 #include "esp_timer.h"
 #include <stdio.h>
 #include <string.h>
 #include "ls_textpack.h"
+#include "../../ls_text.h"
 static EXT_RAM_BSS_ATTR ais_vessel_t opened, vessels[AIS_VESSELS];
 static EXT_RAM_BSS_ATTR ls_gps_state_t gps;
 static EXT_RAM_BSS_ATTR int rows[AIS_VESSELS];
@@ -112,9 +114,16 @@ void fm_ais_draw(tui_surface *sf, tui_rect a)
     bool live = last > 0 && now >= last && now-last < 2500000;
     static const char *const pulse[] = { "[>    ]", "[ >   ]", "[  >  ]", "[   > ]", "[    >]", "[   < ]", "[  <  ]", "[ <   ]" };
     char b[160], speed[48];
-    snprintf(b, sizeof(b), "%s %s / 87B+88B RX", live ? pulse[ls_motion_phase(8, 1000)] : "[  .  ]",
-             live ? "PACKET HEARD" : "LISTENING");
-    line(sf, list, 2, b, live ? TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+    /* AIS is a dongle mode: with no dongle fitted the page says so rather
+       than claiming to listen. */
+    const bool absent = ls_rsel_absent(ls_rsel_effective(LS_RSEL_FM)) != NULL;
+    if (absent && !live)
+        snprintf(b, sizeof(b), "[  x  ] NO RECEIVER / AIS needs an SDR");
+    else
+        snprintf(b, sizeof(b), "%s %s / 87B+88B RX", live ? pulse[ls_motion_phase(8, 1000)] : "[  .  ]",
+                 live ? "PACKET HEARD" : "LISTENING");
+    line(sf, list, 2, b, absent && !live ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)
+                         : live ? TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
     ls_motion_busy(sf, list, live);
     if (detail) {
         bool found = false;
@@ -133,8 +142,8 @@ void fm_ais_draw(tui_surface *sf, tui_rect a)
         if (opened.heading < 360) snprintf(b, sizeof(b), "%s / HDG %03u", speed, opened.heading);
         else snprintf(b, sizeof(b), "%s / HDG ---", speed);
         line(sf, list, 7, b, LS_ATTR_DIM);
-        if (km >= 0) LS_SNPRINTF(t_fm_ais_view_1f_km_03_0f, b, sizeof(b), "%.1f km / %03.0f %s / %llds ago", km, brg, ls_geo_compass(brg), (long long)((now-opened.heard_us)/1000000));
-        else LS_SNPRINTF(t_fm_ais_view_range_needs_fresh_gps, b, sizeof(b), "Range needs fresh GPS / %llds ago", (long long)((now-opened.heard_us)/1000000));
+        if (km >= 0) LS_SNPRINTF(t_fm_ais_view_1f_km_03_0f, b, sizeof(b), "%.1f km / %03.0f %s / %llds ago", km, brg, ls_geo_compass(brg), (long long)ls_age_q((long)((now-opened.heard_us)/1000000)));
+        else LS_SNPRINTF(t_fm_ais_view_range_needs_fresh_gps, b, sizeof(b), "Range needs fresh GPS / %llds ago", (long long)ls_age_q((long)((now-opened.heard_us)/1000000)));
         line(sf, list, 8, b, LS_ATTR_DIM);
         static const char *const nav[] = { "UNDER WAY / ENGINE", "AT ANCHOR", "NOT UNDER COMMAND", "RESTRICTED MANOEUVRE",
             "CONSTRAINED BY DRAUGHT", "MOORED", "AGROUND", "FISHING", "UNDER WAY / SAIL", "RESERVED", "RESERVED",
@@ -155,7 +164,7 @@ void fm_ais_draw(tui_surface *sf, tui_rect a)
         else snprintf(identity, sizeof(identity), "%09lu", (unsigned long)p->mmsi);
         if (km >= 0) snprintf(distance, sizeof(distance), "%.0fkm %03.0f", km, brg); else snprintf(distance, sizeof(distance), "--km ---");
         motion(p, speed, sizeof(speed));
-        uint8_t attr = i == selected ? TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT) : LS_ATTR_DIM;
+        uint8_t attr = i == selected ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT)) : LS_ATTR_DIM;
         snprintf(b, sizeof(b), "%c %.20s / %s %u", i == selected ? '>' : ' ', identity, p->message == 4 ? "BASE" : type_name(p->ship_type), p->ship_type);
         line(sf, list, 4+2*(i-start), b, attr);
         snprintf(b, sizeof(b), "  %s %s %lldm", speed, distance, (long long)((now-p->heard_us)/60000000));

@@ -18,6 +18,7 @@
 #include "carto/style.h"
 
 #include "zeromesh_pmtiles.h"
+#include "ls_maptiles.h"
 #include "ls_cold.h"
 
 
@@ -41,8 +42,14 @@ static uint32_t s_tile_cap;
    drawn again; no difference and the pixels stand. */
 
 #define LABELS_MAX 64
-static carto_label      s_labels[LABELS_MAX];
+EXT_RAM_BSS_ATTR static carto_label      s_labels[LABELS_MAX];
 static carto_label_sink s_label_sink = { s_labels, LABELS_MAX, 0 };
+/* A render draws into its own frame and names, and they become the shown
+   ones only when it is done. Drawn into the shown frame, every pan and zoom
+   blanked the map and repainted it a band of tiles at a time, the names
+   dropping out with it, and again each time waiting tiles arrived. */
+EXT_RAM_BSS_ATTR static carto_label      s_draw_labels[LABELS_MAX];
+static carto_label_sink s_draw_sink = { s_draw_labels, LABELS_MAX, 0 };
 
 /* Anything that frees what a part-drawn render points at has to
    abandon it first. Declared here because begin, end and open all come
@@ -60,8 +67,12 @@ static int  s_tz_used;      /* the zoom the last render actually fetched */
 
 uint32_t ls_map_render_serial(void) { return s_serial; }
 
+static bool s_front_ok;
+/* The names of the frame ls_map_render hands back: the finished one, or
+   until there is one, the render under way as it collects them. */
 int ls_map_labels(const carto_label **out)
 {
+    if (!s_front_ok) { if (out) *out = s_draw_labels; return s_draw_sink.n; }
     if (out) *out = s_labels;
     return s_label_sink.n;
 }
@@ -70,12 +81,25 @@ static bool   s_cache_valid;
 static double s_cache_lat, s_cache_lon;
 static int    s_cache_zoom, s_cache_w, s_cache_h;
 
-static uint16_t   *s_pixels;
+static uint16_t   *s_pixels;      /* the shown frame */
+static uint16_t   *s_draw;        /* the one a render is drawing */
+/* s_front_ok (above): s_pixels holds a finished render... */
+static double      s_front_lat, s_front_lon;
+static int         s_front_zoom;  /* ...of this view */
 static uint8_t    *s_arena_buf;
 static int         s_w, s_h;
 
 static PmTiles    *s_pm;
 
+/* The world source: no archive, tiles off the card's cache or the network. */
+static bool     s_world;
+static uint32_t s_world_serial;     /* ls_maptiles_serial() as the frame began */
+static int64_t  s_world_drawn_us;
+static int      s_waiting;
+#define WORLD_TILE_MAX (768u * 1024u)
+#define SRC_ON (s_pm || s_world)
+static int src_zmin(void) { return s_pm ? pmtiles_min_zoom(s_pm) : 0; }
+static int src_zmax(void) { return s_pm ? pmtiles_max_zoom(s_pm) : LS_MAPTILES_MAXZ; }
 /* The tiles a pan did not move off the screen. */
 
 /* Six megabytes, and the size is the whole difference between this working and not. */
@@ -84,6 +108,8 @@ static PmTiles    *s_pm;
 
 #define TILE_CACHE_BUDGET (6u * 1024u * 1024u)
 #define TILE_CACHE_MAX    256
+/* PSRAM the cache never takes the board below (the radio apps need it). */
+#define LS_MAP_PSRAM_FLOOR (3u * 1024u * 1024u)
 
 typedef struct {
     uint8_t *buf;
@@ -178,6 +204,16 @@ static void tile_cache_put(uint8_t z, uint32_t x, uint32_t y,
         if (!victim) return;               /* nothing left to give */
         tile_cache_drop(victim);
     }
+#ifdef ESP_PLATFORM
+    /* The budget is a ceiling, not a claim: the rest of the board keeps
+       LS_MAP_PSRAM_FLOOR. Older tiles go first; with none left this one is
+       drawn and not kept. */
+    while (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < (size_t)len + LS_MAP_PSRAM_FLOOR) {
+        tile_slot_t *victim = tile_cache_oldest();
+        if (!victim) return;
+        tile_cache_drop(victim);
+    }
+#endif
 
     tile_slot_t *slot = NULL;
     for (int i = 0; i < TILE_CACHE_MAX; i++)
@@ -212,8 +248,9 @@ static void tile_cache_put(uint8_t z, uint32_t x, uint32_t y,
    have to. A tile that is absent is NOT cached: absence is cheap to
    rediscover and caching it would spend a slot on nothing. */
 static bool tile_bytes(uint8_t z, uint32_t x, uint32_t y,
-                       const uint8_t **out, size_t *out_len)
+                       const uint8_t **out, size_t *out_len, bool want, bool *empty)
 {
+    if (empty) *empty = false;
     tile_slot_t *hit = tile_cache_find(z, x, y);
     if (hit) {
         hit->used = ++s_tc_clock;
@@ -226,8 +263,12 @@ static bool tile_bytes(uint8_t z, uint32_t x, uint32_t y,
        slot before the length is known, and the render happens from here
        either way - what the store keeps is a copy. */
     size_t len = 0;
-    if (!pmtiles_get_tile(s_pm, z, x, y, s_tile, s_tile_cap, &len) || !len) {
-
+    if (s_world) {
+        const ls_mt_result r = ls_maptiles_get(z, x, y, s_tile, s_tile_cap, &len, want);
+        if (r == LS_MT_WAIT) s_waiting++;
+        if (r == LS_MT_EMPTY && empty) *empty = true;
+        if (r != LS_MT_HAVE || !len) { s_tc_absent++; return false; }
+    } else if (!s_pm || !pmtiles_get_tile(s_pm, z, x, y, s_tile, s_tile_cap, &len) || !len) {
         s_tc_absent++;
         return false;
     }
@@ -298,17 +339,31 @@ void ls_map_end(void)
     step_abandon();
     tile_cache_free();
     if (s_pm) { pmtiles_close(s_pm); s_pm = NULL; }
+    s_world = false;
     heap_caps_free(s_pixels);   s_pixels = NULL;
+    heap_caps_free(s_draw);     s_draw = NULL;
+    s_front_ok = false;
     heap_caps_free(s_arena_buf); s_arena_buf = NULL;
     heap_caps_free(s_tile); s_tile = NULL; s_tile_cap = 0;
     s_w = s_h = 0;
     s_why = "no map archive loaded";
 }
 
+/* MAP is closing: give back the tile store and the pan history (megabytes
+   on a busy view). The frame, arena and source stay, so coming back is a
+   re-read of tiles from the card, not a fresh start. */
+void ls_map_trim(void)
+{
+    history_free();
+    s_cache_valid = false;
+    step_abandon();     /* a render in progress may hold cached tiles */
+    tile_cache_free();
+}
+
 /* CartoCore borrows the geographic view, without allocating a libcarto framebuffer. */
 static bool s_external_view;
 void ls_map_external_view(int w,int h) {
-    if(!s_external_view || s_pm) ls_map_end();
+    if(!s_external_view || SRC_ON) ls_map_end();
     s_external_view=true;s_w=w;s_h=h;
 }
 bool ls_map_begin(int px_w, int px_h)
@@ -324,18 +379,23 @@ bool ls_map_begin(int px_w, int px_h)
     step_abandon();
 
     heap_caps_free(s_pixels);
+    heap_caps_free(s_draw);
     heap_caps_free(s_arena_buf);
     s_pixels = NULL;
+    s_draw = NULL;
+    s_front_ok = false;
     s_arena_buf = NULL;
 
     /* PSRAM, and internal RAM is NOT an option. */
 
     const size_t px = (size_t)px_w * (size_t)px_h * sizeof(uint16_t);
     s_pixels = heap_caps_malloc(px, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_draw = heap_caps_malloc(px, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_arena_buf = heap_caps_malloc(ARENA_BYTES,
                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_pixels || !s_arena_buf) {
+    if (!s_pixels || !s_draw || !s_arena_buf) {
         heap_caps_free(s_pixels);   s_pixels = NULL;
+        heap_caps_free(s_draw);     s_draw = NULL;
         heap_caps_free(s_arena_buf); s_arena_buf = NULL;
         s_w = s_h = 0;
         s_alloc_failed = true;
@@ -347,7 +407,8 @@ bool ls_map_begin(int px_w, int px_h)
     s_h = px_h;
     s_alloc_failed = false;
     memset(s_pixels, 0, px);
-    if (!s_pm) s_why = "no map archive loaded";
+    memset(s_draw, 0, px);
+    if (!SRC_ON) s_why = "no map archive loaded";
     return true;
 }
 
@@ -360,9 +421,23 @@ LS_COLD void ls_map_set_tile_px(int px)
     history_free();
     s_tile_px = px;
     s_cache_valid = false;
+    s_front_ok = false;         /* drawn at the old scale: not a picture of any view now */
 }
 
 int ls_map_tile_px(void) { return s_tile_px; }
+
+/* Hairline roads for the line look: one pixel, two for the biggest roads
+   once zoomed in. The frame is a third of the panel's pixels across, so a
+   default-width road is a bar on the glass. */
+static bool s_thin;
+void ls_map_set_thin(bool thin)
+{
+    if (thin == s_thin) return;
+    s_thin = thin;
+    step_abandon();
+    history_free();
+    s_cache_valid = false;
+}
 
 const char *ls_map_check_archive(const char *path)
 {
@@ -417,6 +492,7 @@ LS_COLD bool ls_map_open(const char *path)
     s_cache_valid = false;
 
     s_pm = next;
+    s_world = false;
     s_have_good = false;
 
     snprintf(s_path, sizeof(s_path), "%s", path);
@@ -434,6 +510,34 @@ LS_COLD bool ls_map_open(const char *path)
     s_why = NULL;
     return true;
 }
+
+LS_COLD bool ls_map_open_world(void)
+{
+    if (s_world && s_tile) return true;
+    uint8_t *tile = heap_caps_malloc(WORLD_TILE_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!tile) {
+        s_open_error = "no memory for map tiles";
+        if (!SRC_ON) s_why = s_open_error;
+        return false;
+    }
+    history_free();
+    step_abandon();
+    tile_cache_free();
+    if (s_pm) { pmtiles_close(s_pm); s_pm = NULL; }
+    heap_caps_free(s_tile);
+    s_tile = tile;
+    s_tile_cap = WORLD_TILE_MAX;
+    s_world = true;
+    s_cache_valid = false;
+    s_have_good = false;
+    s_path[0] = 0;
+    s_open_error = NULL;
+    s_why = NULL;
+    if (s_zoom < 0) s_zoom = 0;
+    return true;
+}
+
+bool ls_map_world(void) { return s_world; }
 
 const char *ls_map_status(void)
 {
@@ -604,8 +708,8 @@ int ls_map_zoom(void) { return s_zoom; }
 
 void ls_map_zoom_limits(int *lo, int *hi)
 {
-    const int max_source = !s_external_view && s_pm ? pmtiles_max_zoom(s_pm) : 22;
-    if (lo) *lo = !s_external_view && s_pm ? pmtiles_min_zoom(s_pm) : 0;
+    const int max_source = !s_external_view && SRC_ON ? src_zmax() : 22;
+    if (lo) *lo = !s_external_view && SRC_ON ? src_zmin() : 0;
     if (hi) *hi = max_source < 19 ? max_source + 3 : 22;
 }
 
@@ -623,7 +727,7 @@ LS_COLD void ls_map_zoom_by(int dz)
    after them (request, render, picture, the feed to a desk), newest last, so
    a slow or stuck change shows where its time went. */
 #define MAP_TRACE_N 192
-static struct { int64_t us; const char *what; int32_t a, b; } s_trace[MAP_TRACE_N];
+EXT_RAM_BSS_ATTR static struct { int64_t us; const char *what; int32_t a, b; } s_trace[MAP_TRACE_N];
 static unsigned s_trace_n;
 
 void ls_map_trace_reset(void) { __atomic_store_n(&s_trace_n, 0, __ATOMIC_RELEASE); }
@@ -678,8 +782,8 @@ static bool tile_at(int z, double lat, double lon, uint32_t *tx, uint32_t *ty)
 
 LS_COLD int ls_map_zoom_covering(double lat, double lon)
 {
+    if (s_world) return s_zoom > LS_MAPTILES_MAXZ ? LS_MAPTILES_MAXZ : s_zoom;
     if (!s_pm) return -1;
-
     const int zmin = pmtiles_min_zoom(s_pm);
     const int zmax = pmtiles_max_zoom(s_pm);
     uint32_t tx = 0, ty = 0;
@@ -735,8 +839,8 @@ void ls_map_stats(ls_map_stats_t *out) { if (out) *out = s_st; }
 
 void ls_map_zoom_range(int *lo, int *hi)
 {
-    if (lo) *lo = !s_external_view && s_pm ? pmtiles_min_zoom(s_pm) : 0;
-    if (hi) *hi = s_pm ? pmtiles_max_zoom(s_pm) : 0;
+    if (lo) *lo = !s_external_view && SRC_ON ? src_zmin() : 0;
+    if (hi) *hi = SRC_ON ? src_zmax() : 0;
 }
 
 int ls_map_source_zoom(void) { return s_tz_used; }
@@ -774,13 +878,41 @@ static void step_abandon(void)
     s_step_on = false;
 }
 
-static bool step_matches(void)
+/* A render for a view the map has since moved from is still worth finishing
+   while it overlaps by half: the screen moves the finished frame to the view
+   (ls_map_render_view), and a drag gets fresh pictures as it goes instead of
+   none until it stops. Another zoom or size, or further away, it is dropped. */
+static bool step_useful(void)
 {
-    return s_step_on && s_step_lat == s_lat && s_step_lon == s_lon &&
-           s_step_zoom == s_zoom && s_step_w == s_w && s_step_h == s_h;
+    if (!s_step_on || s_step_zoom != s_zoom || s_step_w != s_w || s_step_h != s_h) return false;
+    if (s_step_lat == s_lat && s_step_lon == s_lon) return true;
+    const double world = ldexp(1.0, s_zoom) * (double)s_tile_px;
+    double dx = carto_lon_to_norm(s_lon) - carto_lon_to_norm(s_step_lon);
+    if (dx > 0.5) dx -= 1;
+    if (dx < -0.5) dx += 1;
+    const double dy = carto_lat_to_norm(s_lat) - carto_lat_to_norm(s_step_lat);
+    return fabs(dx * world) < s_w / 2.0 && fabs(dy * world) < s_h / 2.0;
 }
 
+static const uint16_t *shown_frame(void) { return s_front_ok ? s_pixels : s_draw; }
+
 bool ls_map_render_busy(void) { return s_step_on; }
+
+bool ls_map_render_view(double *lat, double *lon, int *zoom)
+{
+    if (s_front_ok) { *lat = s_front_lat; *lon = s_front_lon; *zoom = s_front_zoom; return true; }
+    if (s_step_on) { *lat = s_step_lat; *lon = s_step_lon; *zoom = s_step_zoom; return true; }
+    return false;
+}
+/* 'carto trace': how much of the frame shown a first render has not drawn
+   yet, per mille (after the first, the finished frame is what is shown). */
+int ls_map_render_unfinished(void)
+{
+    if (!s_step_on || s_front_ok) return 0;
+    const int total = (s_step_tx1 - s_step_tx0 + 1) * (s_step_ty1 - s_step_ty0 + 1);
+    const int done = (int)s_step_st.tiles_wanted;
+    return total > 0 && done < total ? (total - done) * 1000 / total : 0;
+}
 
 /* One step of a render: as many tiles as the budget allows, then hand back
    whatever the frame holds. */
@@ -804,10 +936,23 @@ static const uint16_t *step_render(void)
             size_t len = 0;
             const uint8_t *bytes = NULL;
             const int64_t tf = esp_timer_get_time();
+            bool empty = false;
             const bool got = tile_bytes((uint8_t)s_step_tz, (uint32_t)wx,
-                                        (uint32_t)s_step_y, &bytes, &len);
+                                        (uint32_t)s_step_y, &bytes, &len, true, &empty);
+            /* Not here yet (or never, offline): the nearest coarser tile the
+               card has stands in for it, inside this tile's square only. */
+            if (!got && !empty && s_world) {
+                for (int k = 1; k <= 5 && k <= s_step_tz; k++) {
+                    if (!tile_bytes((uint8_t)(s_step_tz - k), (uint32_t)wx >> k,
+                                    (uint32_t)s_step_y >> k, &bytes, &len, false, NULL)) continue;
+                    /* An arithmetic shift, so a tile left of the antimeridian
+                       keeps its unwrapped place. */
+                    if (carto_render_tile_under(s_step_ctx, bytes, len, tx >> k, s_step_y >> k,
+                                                k, tx, s_step_y) >= 0) s_step_st.tiles_under++;
+                    break;
+                }
+            }
             s_step_st.fetch_us += (uint32_t)(esp_timer_get_time() - tf);
-
             if (got && len) {
                 /* tx, not wx: the renderer places the tile against the world
                    origin, and at the antimeridian the unwrapped index is the
@@ -819,16 +964,17 @@ static const uint16_t *step_render(void)
                 if (rc >= 0) s_step_st.tiles_drawn++;
             }
 
-            /* The picture is republished every few tiles, not every tile. */
+            /* The first picture there is is shown as it fills, every few
+               tiles; after that the finished one stands until the next is. */
 
-            if ((s_step_st.tiles_wanted & 3) == 0) s_serial++;
+            if (!s_front_ok && (s_step_st.tiles_wanted & 3) == 0) { s_serial++; ls_map_trace("world part", (int32_t)s_step_st.tiles_wanted, 0); }
 
             /* Whichever limit runs out first. See ls_map_set_step_limit for
                why there are two. */
             done_here++;
             if (s_step_max_tiles && done_here >= s_step_max_tiles)
-                return s_pixels;
-            if (esp_timer_get_time() >= deadline) return s_pixels;
+                return shown_frame();
+            if (esp_timer_get_time() >= deadline) return shown_frame();
         }
         s_step_y++;
         s_step_x = s_step_tx0;
@@ -842,22 +988,36 @@ static const uint16_t *step_render(void)
     s_step_st.arena_peak = (uint32_t)carto_arena_peak(&s_step_arena);
     s_step_st.scratch_peak = carto_scratch_peak();
     s_step_st.render_us = (uint32_t)(esp_timer_get_time() - s_step_t0);
+    ls_map_trace("world drawn", (int32_t)(s_step_st.render_us / 1000), (int32_t)s_step_st.tiles_drawn);
+    s_step_st.tiles_waiting = s_waiting;
     s_st = s_step_st;
-
-    s_why = s_st.tiles_drawn ? NULL : "no tiles here at this zoom";
-
-    /* Remember a view that worked. See ls_map.h. */
+    s_world_drawn_us = esp_timer_get_time();
+    s_why = (s_st.tiles_drawn || s_st.tiles_under) ? NULL
+          : !s_world ? "no tiles here at this zoom"
+          : s_waiting ? "loading map tiles"
+          : ls_maptiles_online() ? "no map data here" : "no saved map here: connect Wi-Fi";
+    /* Remember a view that worked. See ls_map.h. The view is the one this
+       render was for, which the map may have moved on from since. */
     if (s_st.tiles_drawn > 0) {
-        s_good_lat = s_lat;
-        s_good_lon = s_lon;
-        s_good_zoom = s_zoom;
+        s_good_lat = s_step_lat;
+        s_good_lon = s_step_lon;
+        s_good_zoom = s_step_zoom;
         s_have_good = true;
     }
 
+    /* The finished frame and its names become the shown ones. */
+    uint16_t *done = s_draw;
+    s_draw = s_pixels;
+    s_pixels = done;
+    memcpy(s_labels, s_draw_labels, (size_t)s_draw_sink.n * sizeof(s_labels[0]));
+    s_label_sink.n = s_draw_sink.n;
+    s_front_ok = true;
+    s_front_lat = s_step_lat; s_front_lon = s_step_lon; s_front_zoom = s_step_zoom;
+
     s_serial++;
     s_cache_valid = true;
-    s_cache_lat = s_lat; s_cache_lon = s_lon;
-    s_cache_zoom = s_zoom; s_cache_w = s_w; s_cache_h = s_h;
+    s_cache_lat = s_step_lat; s_cache_lon = s_step_lon;
+    s_cache_zoom = s_step_zoom; s_cache_w = s_step_w; s_cache_h = s_step_h;
     return s_pixels;
 }
 
@@ -865,17 +1025,41 @@ const uint16_t *ls_map_render(int *w, int *h)
 {
     if (w) *w = s_w;
     if (h) *h = s_h;
-    if (!s_pixels || !s_pm || !s_tile) return NULL;
+    if (!s_pixels || !SRC_ON || !s_tile) return NULL;
 
-    /* Drop a stale render BEFORE anything else, including before the cache is consulted. */
+    /* A zoom left by another view (CartoCore goes to 22, an archive may stop
+       at 12) is held to what this source draws: the tile scale below is a
+       shift by the difference, and a shift by a negative or huge count hung
+       the render. */
+    {
+        int lo, hi;
+        ls_map_zoom_limits(&lo, &hi);
+        if (s_zoom < lo) s_zoom = lo;
+        if (s_zoom > hi) s_zoom = hi;
+    }
 
-    if (s_step_on && !step_matches()) step_abandon();
+    /* Tiles that were on their way when this frame was drawn: draw it again
+       once they are all in, or every few seconds while they keep coming. */
+    if (s_world && s_cache_valid && s_st.tiles_waiting) {
+        const int64_t since = esp_timer_get_time() - s_world_drawn_us;
+        bool again = since > 12000000;
+        if (!again && ls_maptiles_serial() != s_world_serial && since > 400000) {
+            ls_maptiles_stats_t q;
+            ls_maptiles_stats(&q);
+            again = !q.queued || since > 2500000;
+        }
+        if (again) { s_cache_valid = false; s_history_valid = false; }
+    }
+    /* Drop a render that is no use any more BEFORE anything else, including
+       before the cache is consulted. */
+
+    if (s_step_on && !step_useful()) step_abandon();
 
     if (s_cache_valid && s_cache_lat == s_lat && s_cache_lon == s_lon &&
         s_cache_zoom == s_zoom && s_cache_w == s_w && s_cache_h == s_h)
         return s_pixels;
 
-    /* A render already under way for this exact view carries on. */
+    /* A render already under way for this view, or one near it, carries on. */
     if (s_step_on) return step_render();
 
     /* Keep one completed view for returning from a pan or zoom. */
@@ -905,7 +1089,9 @@ const uint16_t *ls_map_render(int *w, int *h)
         s_cache_lat = s_lat; s_cache_lon = s_lon;
         s_cache_zoom = s_zoom; s_cache_w = s_w; s_cache_h = s_h;
         s_cache_valid = true;
-        s_tz_used = s_zoom > pmtiles_max_zoom(s_pm) ? pmtiles_max_zoom(s_pm) : s_zoom;
+        s_front_ok = true;
+        s_front_lat = s_lat; s_front_lon = s_lon; s_front_zoom = s_zoom;
+        s_tz_used = s_zoom > src_zmax() ? src_zmax() : s_zoom;
         s_why = s_st.tiles_drawn ? NULL : "no tiles here at this zoom";
         if (s_st.tiles_drawn) {
             s_good_lat = s_lat; s_good_lon = s_lon;
@@ -913,6 +1099,7 @@ const uint16_t *ls_map_render(int *w, int *h)
         }
         s_serial++;
         s_st.render_us = (uint32_t)(esp_timer_get_time() - restored_at);
+        ls_map_trace("world restore", s_zoom, 0);
         return s_pixels;
     }
     if (s_cache_valid) {
@@ -937,13 +1124,24 @@ const uint16_t *ls_map_render(int *w, int *h)
     s_step_t0 = esp_timer_get_time();
     carto_scratch_peak_reset();
 
-    carto_fb_init(&s_step_fb, s_w, s_h, CARTO_FMT_RGB565, (uint8_t *)s_pixels);
+    carto_fb_init(&s_step_fb, s_w, s_h, CARTO_FMT_RGB565, (uint8_t *)s_draw);
     carto_arena_init(&s_step_arena, s_arena_buf, ARENA_BYTES);
     carto_style_default(&s_step_style);
+    if (s_thin) {
+        static const uint8_t thin[CARTO_ROAD_PRIO_MAX + 1] = { 0, 1, 1, 1, 1, 1, 1, 2, 2, 3, 4 };
+        memcpy(s_step_style.road_width, thin, sizeof(thin));
+        s_step_style.water_outline = true;
+    }
 
     /* Keep native tiles at every available level. Beyond the archive maximum,
        magnify its finest vectors, bounded to 8x. This adds no map detail. */
-    s_step_tz = s_zoom > pmtiles_max_zoom(s_pm) ? pmtiles_max_zoom(s_pm) : s_zoom;
+    s_step_tz = s_zoom > src_zmax() ? src_zmax() : s_zoom;
+    if (s_step_tz < src_zmin()) s_step_tz = src_zmin();
+    if (s_world) {
+        s_world_serial = ls_maptiles_serial();
+        s_waiting = 0;
+        ls_maptiles_forget();
+    }
     s_tz_used = s_step_tz;
 
     carto_viewport vp;
@@ -953,7 +1151,7 @@ const uint16_t *ls_map_render(int *w, int *h)
     vp.zoom = s_step_tz;
     vp.fb_w = s_w;
     vp.fb_h = s_h;
-    vp.tile_px = s_tile_px * (1 << (s_zoom - s_step_tz));
+    vp.tile_px = s_zoom >= s_step_tz ? s_tile_px * (1 << (s_zoom - s_step_tz)) : s_tile_px;
 
     /* carto_begin clears the frame to the background and computes the world
        origin; every tile below is placed against that same origin, which is
@@ -966,8 +1164,8 @@ const uint16_t *ls_map_render(int *w, int *h)
 
     /* Names are collected across the whole frame and not per tile: a place
        belongs to the view, not to whichever tile happened to carry it. */
-    s_label_sink.n = 0;
-    carto_set_label_sink(s_step_ctx, &s_label_sink);
+    s_draw_sink.n = 0;
+    carto_set_label_sink(s_step_ctx, &s_draw_sink);
 
     /* Which tiles the frame touches. The origin is the world pixel at the
        frame's top left, so the range is that divided by the tile size,
@@ -991,6 +1189,7 @@ const uint16_t *ls_map_render(int *w, int *h)
     s_step_lat = s_lat; s_step_lon = s_lon;
     s_step_zoom = s_zoom; s_step_w = s_w; s_step_h = s_h;
     s_step_on = true;
+    ls_map_trace("world render", s_zoom, (s_step_tx1 - s_step_tx0 + 1) * (s_step_ty1 - s_step_ty0 + 1));
 
     return step_render();
 }

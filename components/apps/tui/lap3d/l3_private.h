@@ -118,6 +118,17 @@ typedef struct { uint32_t entry; uint16_t first, last; } l3_bin;
 /* Full-frame PSRAM visibility layer, gradient normal packed in two bytes. */
 typedef struct { float depth; uint16_t command; uint8_t mat; int8_t nx, nz; } l3_land;
 
+/* A dynamic command as last drawn: its signature, its own box of dots, the
+ * capsule its shadow sweeps (o along the sun for t, radius; n steps, 0 for
+ * none) and its box on the sun map, so only changed ones redraw. */
+typedef struct {
+    uint64_t sig;
+    l3_rect rect, sun;
+    l3_vec o;
+    float t, radius;
+    int cmd, n;
+    bool changed, caster;
+} l3_dyn;
 typedef struct { float t, u, plane, lo, hi; l3_vec n; int mat; bool hit; } l3_wall_column;
 typedef struct { l3_vec p; float x, y, z, rx, ry; l3_rect rect; int cmd; } l3_particle;
 typedef struct {
@@ -171,17 +182,21 @@ struct l3_scene {
     uint16_t shape_idx[192 * 3];
     void *scratch[2];
     bool scratch_internal[2];
-    uint8_t *dots, *dirty_mask, *previous_mask;
+    uint8_t *dots, *dirty_mask;
     l3_view camera, view, sunview;
     l3_vec ortho_half;
-    l3_rect dirty, previous_dynamic, current_dynamic;
-    uint64_t static_hash, previous_hash;
+    l3_rect dirty, mask_rect;   /* this frame's dirty box; what dirty_mask holds set */
+    l3_dyn *dyn[2];             /* dynamic commands, this frame and last, cmdcap each */
+    int ndyn, dyn_flip;
+    l3_vec reach_min, reach_max;    /* receiver bounds the last sweeps used */
+    float floor_lo;
+    l3_rect sweep_ball[66];         /* mark_shadow's spheres: two sweeps of up to 33 */
+    uint64_t static_hash, previous_hash, shadow_hash;
     bool reuse, shadow_valid, shadow_changed;
     bool ordered, cacheable, partial, have_frame;
     bool land_active, walls_first;
     uint8_t lamp_mask[2];
     float lamp_inv[4];
-    uint64_t shadow_hash, static_hash_all;
     l3_counts counts[2];
     l3_stats_t stats;
     /* Scratch belongs to the scene, never the TUI stack. */

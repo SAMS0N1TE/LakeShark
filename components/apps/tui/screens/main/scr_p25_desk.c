@@ -44,8 +44,8 @@
 
 #define HUE TUI_CYAN
 #define WHITE TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK)
-#define INK(h) TUI_ATTR((h) | TUI_BRIGHT, TUI_BLACK)
-#define SOFT(h) TUI_ATTR((h), TUI_BLACK)
+#define INK(h) ls_ink_hue(TUI_ATTR((h) | TUI_BRIGHT, TUI_BLACK))
+#define SOFT(h) ls_ink_hue(TUI_ATTR((h), TUI_BLACK))
 
 static EXT_RAM_BSS_ATTR p25_tg_observed_snapshot_t s_snap;
 static EXT_RAM_BSS_ATTR ls_p25d_row_t s_row[LS_P25D_ROWS];
@@ -463,15 +463,15 @@ static void draw_table(tui_surface *sf)
         /* Brightness is freshness: on air, in the last minute, older, never. */
         const uint32_t ago = r->heard && s_now_ms >= r->last_ms ? (s_now_ms - r->last_ms) / 1000u : 99999u;
         const uint8_t ink = locked ? LS_ATTR_FAINT : live || ago < 60 ? INK(hue) : r->heard ? SOFT(hue) : LS_ATTR_DIM;
-        if (on) ls_fill_dither(sf, tui_rect_make(b.x, y, b.w, 1), LS_DITHER_MEDIUM, HUE);
-        else if (live) ls_fill_dither(sf, tui_rect_make(b.x, y, b.w, 1), LS_DITHER_LIGHT, hue);
-        if (on) ls_box_put(sf, b, b.x, y, LS_SHAPE_RIGHT, WHITE);
+        if (!on && live && !ls_dui_over(tui_rect_make(b.x, y, b.w, 1))) ls_fill_dither(sf, tui_rect_make(b.x, y, b.w, 1), LS_DITHER_LIGHT, hue);
+        ls_dui_table_row(sf, &s_t, row, on, true);
         if (s_t.x[LS_PT_FLAGS] >= 0) {
             int x = s_t.x[LS_PT_FLAGS] + 1;
-            if (r->flags & LS_PF_HELD) tui_put_char(sf, b, x++, y, 'H', INK(TUI_YELLOW));
-            if (r->flags & LS_PF_LOCKED) tui_put_char(sf, b, x++, y, 'L', INK(TUI_RED));
-            if (r->flags & LS_PF_ALLOW) tui_put_char(sf, b, x++, y, 'A', INK(TUI_GREEN));
-            if ((r->flags & LS_PF_ENC) && x < s_t.x[LS_PT_FLAGS] + 4) tui_put_char(sf, b, x++, y, 'E', INK(TUI_MAGENTA));
+            const uint8_t band = s_t.band_row == row ? s_t.band_attr : 0;   /* on a bar the letters wear the bar */
+            if (r->flags & LS_PF_HELD) tui_put_char(sf, b, x++, y, 'H', band ? band : ls_ink(LS_INK_WARN, INK(TUI_YELLOW)));
+            if (r->flags & LS_PF_LOCKED) tui_put_char(sf, b, x++, y, 'L', band ? band : ls_ink(LS_INK_BAD, INK(TUI_RED)));
+            if (r->flags & LS_PF_ALLOW) tui_put_char(sf, b, x++, y, 'A', band ? band : ls_ink(LS_INK_GOOD, INK(TUI_GREEN)));
+            if ((r->flags & LS_PF_ENC) && x < s_t.x[LS_PT_FLAGS] + 4) tui_put_char(sf, b, x++, y, 'E', band ? band : INK(TUI_MAGENTA));
         }
         ls_p25d_cell(r, LS_PT_TG, s_now_ms, text, sizeof(text));
         ls_dui_table_cell(sf, &s_t, COLS, LS_PT_TG, row, text, on ? WHITE : ink);
@@ -483,9 +483,10 @@ static void draw_table(tui_surface *sf)
         if (s_t.x[LS_PT_BUSY] >= 0 && r->heard)
             for (int m = 0; m < P25_TG_OBSERVED_MINUTES; m++) {
                 const int v = r->minute[m];
-                if (!v) { ls_box_put(sf, b, s_t.x[LS_PT_BUSY] + m, y, LS_SHAPE_DOT, LS_ATTR_FAINT); continue; }
+                const uint8_t bar = s_t.band_row == row ? s_t.band_attr : 0;      /* on a bar the trace wears the bar */
+                if (!v) { ls_box_put(sf, b, s_t.x[LS_PT_BUSY] + m, y, LS_SHAPE_DOT, bar ? bar : LS_ATTR_FAINT); continue; }
                 tui_put_char(sf, b, s_t.x[LS_PT_BUSY] + m, y, LS_TUI_TRACE(1 + v * 7 / most),
-                             m >= P25_TG_OBSERVED_MINUTES - 2 ? INK(hue) : SOFT(hue));
+                             bar ? bar : m >= P25_TG_OBSERVED_MINUTES - 2 ? INK(hue) : SOFT(hue));
             }
         ls_p25d_cell(r, LS_PT_CHAN, s_now_ms, text, sizeof(text));
         ls_dui_table_cell(sf, &s_t, COLS, LS_PT_CHAN, row, text, SOFT(TUI_YELLOW));
@@ -521,7 +522,7 @@ void ls_p25_desk_draw(tui_surface *sf, tui_rect a)
     s_hits.n = 0;
     ls_dui_context_claim(context);
     if (a.w < 50 || a.h < 9) {
-        ls_panel_notice(sf, a, "P25", "Enlarge the window", "the table keeps its place");
+        ls_panel_notice(sf, a, NULL, "Enlarge the window", "the table keeps its place");
         return;
     }
     refresh();

@@ -55,6 +55,32 @@ landuse polygon on a 720 wide map is hundreds of thousands of switches a frame.
 format this board has and gets straight stores, everything else falls back to
 the general path.
 
+## 5. Protomaps kinds, borders, shore outlines, a stand-in tile
+
+The world tiles are the Protomaps basemap. Roads take their class from
+`kind_detail` when the tile has it (`kind` alone folds primary to tertiary into
+`major_road`); rail, ferries and piers are not roads. `boundaries` is a layer
+of its own (`CARTO_LAYER_BOUNDARY`, `carto_style.boundary`): countries always,
+states from zoom 4, counties from 8. Points draw nothing: a place is its name.
+
+`carto_style.water_outline` draws water polygons as their rings instead of
+filling them, leaving out ring edges that run along or outside the tile's own
+square (those are where the tile was cut, not shores).
+
+`carto_render_tile_under` draws a coarser tile enlarged, clipped to one finer
+tile's square, for a tile that has not arrived or is not on the card.
+
+## 6. A damaged tile cannot run off anything
+
+Tiles now also come off a network into a cache, so the decoder is held to its
+buffer: every length is clamped to what is left (`SPAN`), tag value indexes are
+compared unsigned, coordinate sums wrap and are clamped to +-1e6 pixels, point
+counts stop at the end of the geometry, and `carto_draw_line` returns for a
+line wholly off one side. Before this a bit-flipped tile read past the tile
+(a geometry length of 672 KB in a 4 KB layer) or walked a line 880 million
+pixels long. `fuzz_mvt.c` in the overhaul notes draws 1219 damaged tiles at
+four scales under UBSan.
+
 ## Licence
 
 CartoTUI is GPL-3.0 and so is LakeShark, so vendoring carries no new

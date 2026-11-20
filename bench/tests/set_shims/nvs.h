@@ -8,6 +8,8 @@
 #define ESP_ERR_NVS_NOT_FOUND 0x1102
 #define ESP_ERR_NVS_NO_FREE_PAGES 0x110d
 #define ESP_ERR_NVS_NEW_VERSION_FOUND 0x1110
+#define ESP_ERR_NVS_INVALID_LENGTH 0x110c
+#include <stddef.h>
 typedef unsigned nvs_handle_t;
 typedef void *nvs_iterator_t;
 typedef struct { char key[NVS_KEY_NAME_MAX_SIZE]; } nvs_entry_info_t;
@@ -29,3 +31,5 @@ esp_err_t nvs_get_i32(nvs_handle_t, const char *, int32_t *);
 esp_err_t nvs_set_i32(nvs_handle_t, const char *, int32_t);
 esp_err_t nvs_get_u64(nvs_handle_t, const char *, uint64_t *);
 esp_err_t nvs_set_u64(nvs_handle_t, const char *, uint64_t);
+esp_err_t nvs_get_blob(nvs_handle_t, const char *, void *, size_t *);
+esp_err_t nvs_set_blob(nvs_handle_t, const char *, const void *, size_t);

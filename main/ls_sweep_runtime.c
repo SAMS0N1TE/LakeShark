@@ -90,7 +90,9 @@ void ls_sweep_tick(void) {
     }
     now=esp_timer_get_time();
     /* Consume alerts even while muted: unmuting never plays a stale backlog. */
-    if(!snd_test_busy()) {int c=ls_sweep_alert(now);if(c>=0 && !audio_is_muted() && audio_volume_get()>0) {ls_sweep_settings_t o;ls_sweep_settings_get(&o);if(o.hunt) snd_sweep_click();else snd_sweep_start(c);}}
+    /* A saved hunt target only narrows the sound while SWEEP shows the hunt:
+       elsewhere a tracker following you still sounds. */
+    if(!snd_test_busy()) {bool click=false;int c=ls_sweep_alert_scoped(now,&click);if(c>=0 && !audio_is_muted() && audio_volume_get()>0) {if(click) snd_sweep_click();else snd_sweep_start(c);}}
     while(ls_sweep_log_event(&event)) {
         FILE *f=fopen(LS_SWEEP_DIR "/alerts.csv","a");
         if(!f) {ls_sweep_runtime_status(rx.scanning,"Alert log unavailable");break;}

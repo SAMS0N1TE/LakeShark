@@ -14,18 +14,15 @@ Bluetooth. This folder holds the firmware it needs: ESP-Hosted 2.12.9.
 
 ## First install
 
-A new board, or a C6 that does not respond at all, needs all four files
-written over the C6's UART header with a 3.3 V USB-to-UART adapter. Follow
-[Flash the C6 co-processor](../docs/TDP4_FIRST_FLASH.md#flash-the-c6-co-processor).
+No cable needed. After the P4 is flashed, the board updates its C6 by itself: SYSTEM > UPDATE > C6 RADIO FW > UPDATE, or `c6 update auto`. See [The C6 radio firmware](../docs/TDP4_FIRST_FLASH.md#the-c6-radio-firmware). A UART adapter is only for a C6 that no longer boots.
 
 ## Update from the SD card
 
-Once the C6 has been installed this way, later updates of `network_adapter.bin`
-can be done from the SD card, without the adapter.
+UPDATE uses this file when it is on the card and downloads it when it is not.
 
 1. Copy `network_adapter.bin` to `/lakeshark/c6/network_adapter.bin` on the card.
 2. Charge the battery to at least 20%.
-3. Open SYSTEM > UPDATE > C6 FIRMWARE, choose INSTALL, then CONFIRM.
+3. Open SYSTEM > UPDATE > C6 RADIO FW, choose UPDATE, then CONFIRM.
    Keep the board powered until it finishes.
 4. When it reports success, restart the board.
 
@@ -43,5 +40,5 @@ restart the board, even if the update fails.
 ## If something goes wrong
 
 If an update stops partway or the C6 does not come back after a restart,
-reinstall it over the UART header with the first-install steps above. An update
+reinstall it over the UART header with the recovery steps in the first-flash guide. An update
 from the card cannot repair a C6 that no longer responds.

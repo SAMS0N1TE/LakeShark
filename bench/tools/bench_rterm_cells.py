@@ -16,11 +16,13 @@ root = Path(__file__).resolve().parents[2]
 cc, miniz, snapshot = sys.argv[1:4]
 out = root / 'bench/build-rterm-resolution'
 out.mkdir(exist_ok=True)
-src = (root / 'components/apps/tui/ls_rterm.c').read_text()
+src = (root / 'components/apps/tui/ls_rterm.c').read_text(encoding='utf-8')
 session = src[src.index('typedef struct {'):src.index('} session_t;') + len('} session_t;')]
 framing = src[src.index('static uint16_t crc16('):src.index('static void net_close(')]
 cells = src[src.index('typedef struct { uint8_t b[512]'):src.index('/* --- input ')]
 defines = '#define CONFIG_LS_PANEL_RUNTIME 1\n' + src[src.index('#if CONFIG_LS_PANEL_RUNTIME'):src.index('#define AUTH_US')]
+# what render() counts for 'term cost'
+cost = src[src.index('EXT_RAM_BSS_ATTR static struct {\n    uint32_t calls'):src.index('} s_cost;') + len('} s_cost;')]
 code = r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -28,8 +30,11 @@ code = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "ls_vt.h"
+static void ls_map_trace(const char *w,int32_t a,int32_t b){(void)w;(void)a;(void)b;}
+#define EXT_RAM_BSS_ATTR
 #define MINIZ_NO_STDIO
 #define MINIZ_NO_ARCHIVE_APIS
 #define MINIZ_NO_ZLIB_APIS
@@ -40,7 +45,9 @@ static int64_t esp_timer_get_time(void) { return now; }
 static void *heap_caps_malloc(size_t n, int caps) { (void)caps; return malloc(n); }
 static void *heap_caps_calloc(size_t n,size_t size,int caps) { (void)caps; return calloc(n,size); }
 static void heap_caps_free(void *p) { free(p); }
-static session_t s_ser;
+static session_t s_ser, s_net, s_web, s_ssh;
+static bool s_owed, s_owed_picture;
+''' + cost + r'''
 static int s_now_cols=360, s_now_rows=105, s_font_i=4, s_cell_w=7, s_cell_h=13;
 static tui_cell *s_snap;
 static uint8_t *s_glass;
@@ -117,11 +124,12 @@ int main(int argc,char **argv) {
     return 0;
 }
 '''
-(out / 'bench.c').write_text(code)
+(out / 'bench.c').write_text(code, encoding='utf-8')
 subprocess.run([cc, '-std=gnu11', '-O2', '-Wall', '-Wextra',
                 '-I' + str(root / 'components/apps/tui'), str(out / 'bench.c'),
                 str(root / 'components/apps/tui/tuilib/tui_core.c'),
-                '-Wno-misleading-indentation', '-Wno-attributes', '-o', str(out / 'bench.exe')], check=True)
+                '-Wno-misleading-indentation', '-Wno-attributes', '-Wno-unused-function', '-Wno-unused-variable',
+                '-o', str(out / 'bench.exe')], check=True)
 result = subprocess.run([str(out / 'bench.exe'), str(Path(snapshot).resolve()), str(out)],
                         check=True, capture_output=True, text=True)
 

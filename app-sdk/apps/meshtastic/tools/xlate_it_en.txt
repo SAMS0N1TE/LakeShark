@@ -1,0 +1,637 @@
+# Hand-written Italian -> English data for mt_xlate_lang (MESHTASTIC app).
+# Written for this app; GPL-3.0-or-later like the rest of LakeShark.
+# gen_xlate_lang.py reads it with the Wiktionary lexicon and writes ../lang/it.bin.
+# The format is described at the top of xlate_pt_en.txt. Elisions keep their
+# apostrophe (l', dell', c'); e' typed for è is a chat spelling.
+
+@func
+# Articles and determiners
+il | DET:def | the
+lo | DET:def,obj | the | it
+la | DET:def,obj | the | it
+l' | DET:def,obj | the | it
+i | DET:def,pl | the
+gli | DET:def,pl,obj | the | him
+le | DET:def,pl,obj | the | them
+un | DET | a | one
+uno | DET | a | one
+una | DET | a | one
+un' | DET | a | one
+dei | DET:pl | some
+degli | DET:pl | some
+delle | DET:pl | some
+mio | DET:poss | my | mine
+mia | DET:poss | my | mine
+miei | DET:poss,pl | my | mine
+mie | DET:poss,pl | my | mine
+tuo | DET:poss | your | yours
+tua | DET:poss | your | yours
+tuoi | DET:poss,pl | your
+tue | DET:poss,pl | your
+suo | DET:poss | his | his
+sua | DET:poss | her | hers
+suoi | DET:poss,pl | his
+sue | DET:poss,pl | her
+nostro | DET:poss | our | ours
+nostra | DET:poss | our | ours
+nostri | DET:poss,pl | our
+nostre | DET:poss,pl | our
+vostro | DET:poss | your
+vostra | DET:poss | your
+vostri | DET:poss,pl | your
+loro | DET:poss | their | they
+questo | DET | this | this
+questa | DET | this | this
+questi | DET:pl | these | these
+queste | DET:pl | these | these
+quest' | DET | this
+quello | DET | that | that
+quella | DET | that | that
+quelli | DET:pl | those | those
+quelle | DET:pl | those | those
+quel | DET | that
+qualche | DET | some
+nessun | DET:neg | no
+nessuna | DET:neg | no | none
+ogni | DET | every
+altro | DET | another | another
+altra | DET | another | another
+altri | DET:pl | other | others
+altre | DET:pl | other | others
+molto | DET:int | a lot of | a lot
+molta | DET | a lot of | a lot
+molti | DET:pl | many | many
+molte | DET:pl | many | many
+poco | DET | little | little
+poca | DET | little | little
+pochi | DET:pl | few | few
+tanto | DET:int | so much | so much
+tanti | DET:pl | so many | so many
+tutto | DET | all | everything
+tutta | DET | all | all
+tutti | DET:pl | all | everyone
+tutte | DET:pl | all | all
+quale | DET:q | which | which
+quali | DET:pl,q | which | which
+quanto | DET:q | how much | how much
+quanta | DET:q | how much | how much
+quanti | DET:pl,q | how many | how many
+quante | DET:pl,q | how many | how many
+stesso | DET | same | same
+#
+# Subject pronouns; alt is the object form
+io | PRON:1 | I | me
+tu | PRON:2 | you | you
+lui | PRON:3 | he | him
+lei | PRON:3 | she | her
+noi | PRON:4 | we | us
+voi | PRON:5 | you | you
+#
+# Object pronouns before the verb (or on its end: dimmi, aspettami)
+mi | CLIT:1 | me
+m' | CLIT:1 | me
+ti | CLIT:2 | you
+t' | CLIT:2 | you
+ci | CLIT:4 | us
+vi | CLIT:5 | you
+si | CLIT:3,refl | themselves
+s' | CLIT:3,refl | themselves
+li | CLIT:6 | them
+ne | CLIT | some
+#
+# Other pronouns
+me | PRONX | me
+te | PRONX | you
+qualcuno | PRONX | someone | anyone
+qualcosa | PRONX | something | anything
+qualcos' | PRONX | something | anything
+ciò | PRONX | that
+#
+# Prepositions and their contractions with the article
+di | PREP | of
+d' | PREP | of
+a | PREP | to | at
+ad | PREP | to
+da | PREP | from
+in | PREP | in
+con | PREP | with
+su | PREP | on
+per | PREP | for
+tra | PREP | between
+fra | PREP | in
+senza | PREP | without
+dopo | PREP | after
+prima di | PREP | before
+vicino a | PREP | near
+lontano da | PREP | far from
+accanto a | PREP | next to
+davanti a | PREP | in front of
+dietro | PREP | behind
+verso | PREP | toward
+fino a | PREP | until
+durante | PREP | during
+del | PREP:the | of the
+dello | PREP:the | of the
+della | PREP:the | of the
+dell' | PREP:the | of the
+al | PREP:the | to the
+allo | PREP:the | to the
+alla | PREP:the | to the
+all' | PREP:the | to the
+ai | PREP:the | to the
+agli | PREP:the | to the
+alle | PREP:the | to the | at
+dal | PREP:the | from the
+dallo | PREP:the | from the
+dalla | PREP:the | from the
+dall' | PREP:the | from the
+dai | PREP:the | from the
+dagli | PREP:the | from the
+dalle | PREP:the | from the
+nel | PREP:the | in the
+nello | PREP:the | in the
+nella | PREP:the | in the
+nell' | PREP:the | in the
+nei | PREP:the | in the
+negli | PREP:the | in the
+nelle | PREP:the | in the
+sul | PREP:the | on the
+sullo | PREP:the | on the
+sulla | PREP:the | on the
+sull' | PREP:the | on the
+sui | PREP:the | on the
+sugli | PREP:the | on the
+sulle | PREP:the | on the
+col | PREP:the | with the
+#
+# Conjunctions
+e | CONJ | and
+ed | CONJ | and
+o | CONJ | or
+oppure | CONJ | or
+ma | CONJ | but
+però | CONJ | but
+perché | Q:sub | why | because
+che | CONJ:sub,que | that
+se | CONJ:sub | if
+quando | Q:sub | when | when
+mentre | CONJ:sub | while
+anche se | CONJ:sub | even if
+come | Q:sub | how | like
+dove | Q:sub | where | where
+quindi | CONJ | so
+allora | CONJ | so
+né | CONJ | nor
+#
+# Negation
+non | NEG | not | no
+mai | NEG2:never | ever | never
+niente | NEG2 | anything | nothing
+nulla | NEG2 | anything | nothing
+nessuno | NEG2 | anyone | nobody
+più | NEG2 | anymore | more
+mica | NEG2 | _ | not
+ancora | ADV | still
+non ancora | ADV | not yet
+#
+# Question words
+chi | Q | who
+cosa | Q:S | what
+che cosa | Q | what
+cos' | Q | what
+cos'è | CL | what is it
+dov' | Q | where
+dov'è | Q | where is
+com' | Q | how
+com'è | Q | how is
+#
+# Adverbs
+qui | ADV | here
+qua | ADV | here
+lì | ADV | there
+là | ADV | there
+anche | ADV | too
+molto bene | ADV | very well
+troppo | ADV:int | too
+bene | ADV | well | fine
+male | ADV | badly
+meglio | ADV | better
+peggio | ADV | worse
+meno | ADV | less
+già | ADV | already
+ora | ADV | now
+adesso | ADV | now
+oggi | ADV | today
+ieri | ADV:past | yesterday
+domani | ADV | tomorrow
+stasera | ADV | tonight
+stanotte | ADV | tonight
+presto | ADV | soon
+tardi | ADV | late
+sempre | ADV | always
+spesso | ADV | often
+forse | ADV | maybe
+piano | ADV | slowly
+subito | ADV | right away
+quasi | ADV | almost
+solo | ADV | only
+soltanto | ADV | only
+davvero | ADV | really
+insieme | ADV | together
+fuori | ADV | outside
+dentro | ADV | inside
+lontano | ADV | far
+vicino | ADV | near
+a casa | ADV | at home
+di nuovo | ADV | again
+abbastanza | ADV | enough
+un po' | ADV | a bit
+po' | ADV | a bit
+poi | ADV | then
+comunque | ADV | anyway
+sì | INTJ | yes
+si si | INTJ | yes
+no | INTJ | no
+#
+# Interjections and chat words
+ciao | INTJ | hi
+ciao a tutti | INTJ | hi everyone
+buongiorno a tutti | INTJ | good morning everyone
+buonasera a tutti | INTJ | good evening everyone
+salve | INTJ | hello
+buongiorno | INTJ | good morning
+buon giorno | INTJ | good morning
+buonasera | INTJ | good evening
+buona sera | INTJ | good evening
+buonanotte | INTJ | good night
+buona notte | INTJ | good night
+arrivederci | INTJ | goodbye
+grazie | INTJ | thanks
+grazie mille | INTJ | thanks a lot
+prego | INTJ | you're welcome
+per favore | INTJ | please
+per piacere | INTJ | please
+scusa | INTJ | sorry
+scusate | INTJ | sorry
+scusi | INTJ | excuse me
+ok | INTJ | ok
+okay | INTJ | ok
+d'accordo | INTJ | ok
+va bene | INTJ | ok
+perfetto | INTJ:A | perfect
+ottimo | INTJ:A | great
+bravo | INTJ:A | well done
+boh | INTJ | who knows
+eh | INTJ | hey
+ehi | INTJ | hey
+ah | INTJ | ah
+oh | INTJ | oh
+haha | INTJ | haha
+aiuto | INTJ | help
+attenzione | INTJ | careful
+ricevuto | INTJ | received
+passo | INTJ:A | over
+passo e chiudo | INTJ | over and out
+#
+# Number words
+due | NUM | two
+tre | NUM | three
+quattro | NUM | four
+cinque | NUM | five
+
+sette | NUM | seven
+otto | NUM | eight
+nove | NUM | nine
+dieci | NUM | ten
+venti | NUM | twenty
+trenta | NUM | thirty
+cento | NUM | a hundred
+mille | NUM | thousand
+primo | NUM | first
+prima | NUM | first
+ultimo | NUM | last
+ultima | NUM | last
+mezzo | NUM | half
+mezza | NUM | half
+#
+# There is / are
+c'è | EXIST | there is
+ci sono | EXIST:pl | there are
+non c'è | EXIST:neg | there isn't
+non ci sono | EXIST:neg | there aren't
+c'era | EXIST:past | there was
+c'è qualcuno | CL | is anyone there
+qualcuno c'è | CL | is anyone there
+#
+# Phrases
+come stai | CL | how are you
+ho bisogno di | CL | I need
+ho bisogno d' | CL | I need
+abbiamo bisogno di | CL | we need
+hai bisogno di | CL | do you need
+bisogno di | PH | need of
+al sicuro | ADV | safe
+appena | ADV | just
+come va | CL | how's it going
+tutto bene | CL | how are you | all good
+tutto ok | CL | all good
+tutto a posto | CL | all good
+sto bene | CL | I'm fine
+ci vediamo | CL | see you
+a dopo | INTJ | see you later
+a presto | INTJ | see you soon
+a domani | INTJ | see you tomorrow
+non lo so | CL | I don't know
+non so | CL | I don't know
+boh non so | CL | I don't know
+non fa niente | CL | never mind
+di niente | INTJ | you're welcome
+figurati | INTJ | no problem
+nessun problema | INTJ | no problem
+forte e chiaro | ADV | loud and clear
+cinque su cinque | ADV | five by five
+che ore sono | CL | what time is it
+a che ora | Q | at what time
+che ora | Q | what time
+fine settimana | PH | weekend
+weekend | PH | weekend
+punto d'incontro | PH | meeting point
+punto di incontro | PH | meeting point
+in bocca al lupo | INTJ | good luck
+piove | CL | it's raining
+fa freddo | CL | it's cold
+fa caldo | CL | it's hot
+fa molto freddo | CL | it's very cold
+fa molto caldo | CL | it's very hot
+che tempo fa | CL | how is the weather
+
+@abbr
+cmq | comunque
+nn | non
+xké | perché
+xche | perché
+xk | perché
+pk | perché
+ke | che
+k | che
+x | per
+tvb | ti voglio bene
+tt | tutto
+qlc | qualcosa
+qlcs | qualcosa
+qlcn | qualcuno
+qnd | quando
+qnt | quanto
+dv | dove
+sn | sono
+cn | con
+nnt | niente
+grz | grazie
+bn | bene
+msg | messaggio
+anke | anche
+ki | chi
+cs | cosa
+cm | come
+xò | però
+dp | dopo
+prox | prossimo
+sett | settimana
+risp | rispondi
+e' | è
+c'e | c'è
+pò | po'
+xfavore | per favore
+pfv | per favore
+
+@verbs
+essere | BE,IT,PERFBE
+stare | PROG,BE,PERFBE
+avere | HAVE
+andare | GOING,PERFBE
+potere | CAN
+riuscire | CAN,PERFBE
+volere | WANT
+dovere | MUST
+venire | PERFBE
+arrivare | PERFBE
+partire | PERFBE
+tornare | PERFBE
+uscire | PERFBE
+entrare | PERFBE
+restare | PERFBE
+rimanere | PERFBE
+diventare | PERFBE
+cadere | PERFBE
+morire | PERFBE
+nascere | PERFBE
+succedere | PERFBE,IT
+salire | PERFBE
+scendere | PERFBE
+piovere | IT
+nevicare | IT
+funzionare | IT
+sembrare | IT
+costare | IT
+servire | IT
+bastare | IT
+mancare | IT
+
+@lex
+essere | V | be
+stare | V | be
+avere | V | have
+andare | V | go
+potere | V | can
+volere | V | want
+dovere | V | must
+riuscire | V | manage
+sapere | V | know
+fare | V | do
+dire | V | say
+venire | V | come
+vedere | V | see
+sentire | V | hear
+ricevere | V | receive
+ascoltare | V | listen+to
+parlare | V | talk
+arrivare | V | arrive
+partire | V | leave
+tornare | V | come back
+restare | V | stay
+rimanere | V | stay
+aspettare | V | wait+for
+chiamare | V | call
+mandare | V | send
+inviare | V | send
+rispondere | V | answer
+funzionare | V | work
+caricare | V | charge
+provare | V | try
+trovare | V | find
+cercare | V | look+for
+aiutare | V | help
+avvisare | V | let * know
+uscire | V | go out
+entrare | V | come in
+mettere | V | put
+prendere | V | take
+dare | V | give
+capire | V | understand
+pensare | V | think
+credere | V | believe
+conoscere | V | know
+piovere | V | rain
+accendere | V | turn on
+spegnere | V | turn off
+perdere | V | lose
+incontrare | V | meet
+batteria | N:f | battery
+stazione | N:f | station
+segnale | N:m | signal
+antenna | N:f | antenna
+radio | N:f | radio
+nodo | N:m | node
+rete | N:f | network
+messaggio | N:m | message
+canale | N:m | channel
+frequenza | N:f | frequency
+ripetitore | N:m | repeater
+cellulare | N:m | cell phone
+telefono | N:m | phone
+caricabatterie | N:m | charger
+aiuto | N:m,u | help
+acqua | N:f,u | water
+cibo | N:m,u | food
+corrente | N:f,u | power
+luce | N:f,u | power
+pioggia | N:f,u | rain
+temporale | N:m | storm
+tempesta | N:f | storm
+casa | N:f | house
+gente | N:f,u | people
+posto | N:m | place
+piazza | N:f | square
+collina | N:f | hill
+montagna | N:f | mountain
+monte | N:m | mountain
+strada | N:f | street
+via | N:f | street
+ora | N:f | hour
+minuto | N:m | minute
+giorno | N:m | day
+notte | N:f | night
+settimana | N:f | week
+prova | N:f | test
+posizione | N:f | location
+ambulanza | N:f | ambulance
+emergenza | N:f | emergency
+ferito | N:m | injured person
+tempo | N:m,u | weather
+freddo | N:m,u | cold
+caldo | N:m,u | heat
+mappa | N:f | map
+ragazzi | N:m | guys
+nuovo | A | new
+nuova | A | new
+buono | A | good
+buona | A | good
+debole | A | weak
+forte | A | strong
+pronto | A | ready
+acceso | A | on
+spento | A | off
+rotto | A | broken
+perso | A | lost
+ferito | A | hurt
+occupato | A | busy
+stanco | A | tired
+scarica | A | flat
+scarico | A | flat
+sicuro | A | safe
+bello | A | nice
+
+@drop
+
+@book
+OK | Ok
+Yes | Sì
+No | No
+Thanks | Grazie
+Hello, how are you? | Ciao, come stai?
+Good morning | Buongiorno
+Good night | Buonanotte
+See you later | A dopo
+Sorry, I don't understand | Scusa, non capisco
+Please write slowly / simply | Scrivi semplice, per favore
+I speak little Spanish | Parlo poco italiano
+Copy that | Ricevuto
+Can you hear me? | Mi senti?
+I hear you loud and clear | Ti sento forte e chiaro
+I hear you weak | Ti sento debole
+Your signal is weak | Il tuo segnale è debole
+Good signal here | Buon segnale qui
+No signal here | Niente segnale qui
+Who is on the mesh? | Chi c'è sulla rete?
+Testing, please answer | Prova, rispondi per favore
+Message received | Messaggio ricevuto
+Over and out | Passo e chiudo
+Is anyone there? | C'è qualcuno?
+On my way | Sto arrivando
+I'm here | Sono qui
+I'm almost there | Ci sono quasi
+Wait for me | Aspettami
+I'm busy, talk later | Sono occupato, ci sentiamo dopo
+All good here | Tutto bene qui
+I'm leaving now | Parto adesso
+Running late | Sono in ritardo
+My battery is low | La batteria è scarica
+I'm charging | Sto caricando
+My battery is dying, I'm going offline | La batteria sta finendo, mi disconnetto
+Back online | Di nuovo online
+Where are you? | Dove sei?
+See you at the square | Ci vediamo in piazza
+See you at ... | Ci vediamo a ...
+What time? | A che ora?
+In 10 minutes | Tra 10 minuti
+Meet at the usual place | Ci vediamo al solito posto
+Send me your location | Mandami la tua posizione
+Let me know when you arrive | Avvisami quando arrivi
+I need help | Ho bisogno di aiuto
+Emergency! | Emergenza!
+Someone is hurt | C'è un ferito
+Call an ambulance | Chiamate un'ambulanza
+I'm lost | Mi sono perso
+We are safe | Siamo al sicuro
+I need water | Ho bisogno di acqua
+The power is out | È andata via la corrente
+Stay where you are | Resta dove sei
+It's raining here | Qui piove
+A storm is coming | Sta arrivando un temporale
+It's very cold | Fa molto freddo
+It's very hot | Fa molto caldo
+How is the weather there? | Che tempo fa lì?
+
+@detect
+cmq | 12
+nn | 6
+xké | 12
+xk | 8
+ke | 8
+tvb | 12
+grz | 12
+anke | 10
+ciao | 10
+grazie | 13
+sono | 11
+è | 11
+non | 9
+c'è | 13
+perché | 12
+anche | 11
+buongiorno | 12
+buonasera | 12
+qualcuno | 11
+segnale | 9
+ahah | 10
+ahahah | 10

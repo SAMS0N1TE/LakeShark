@@ -217,8 +217,8 @@ static const ls_opt_t O_SURVEY[] = {
     { .label = "LR2021 WIDE IQ", .kind = LS_OPT_TOGGLE, .get = get_wide, .set = set_wide, .why_not = idle_why },
 };
 static const ls_opt_t O_BAND[] = {
-    { .label = "CUSTOM LOW", .kind = LS_OPT_NUMBER, .arg = 4, .num = num, .set_num = set_num, .lo = 1, .hi = 6000, .unit = "MHz", .why_not = idle_why },
-    { .label = "CUSTOM HIGH", .kind = LS_OPT_NUMBER, .arg = 5, .num = num, .set_num = set_num, .lo = 1, .hi = 6000, .unit = "MHz", .why_not = idle_why },
+    { .label = "CUSTOM LOW", .kind = LS_OPT_NUMBER, .arg = 4, .num = num, .set_num = set_num, .lo = 1, .hi = 4294, .unit = "MHz", .why_not = idle_why },
+    { .label = "CUSTOM HIGH", .kind = LS_OPT_NUMBER, .arg = 5, .num = num, .set_num = set_num, .lo = 1, .hi = 4294, .unit = "MHz", .why_not = idle_why },
     { .label = "CUSTOM CELLS", .kind = LS_OPT_LEVEL, .arg = 6, .num = num, .set_num = set_num, .lo = 1, .hi = 32, .step = 1, .unit = "channels", .why_not = idle_why },
     { .label = "USE CUSTOM", .kind = LS_OPT_ACTION, .act = act_custom, .why_not = idle_why },
 };
@@ -284,8 +284,8 @@ static void emblem(tui_surface *sf, tui_rect a, int x, int y)
 
 static void header(tui_surface *sf, tui_rect a)
 {
-    const char *state = s_v.busy ? "RF SURVEY / BUSY" : s_v.running ? "RF SURVEY / LIVE" :
-                        s_v.replaying ? "RF SURVEY / REPLAY" : "RF SURVEY / READY";
+    const char *state = s_v.busy ? "BUSY" : s_v.running ? "LIVE" :
+                        s_v.replaying ? "REPLAY" : "READY";
     ls_radio_bezel(sf, a, state);
     int x = a.x + 2;
     const bool heard = ls_fresh(&s_pass_fresh, s_v.pass_serial, 700) > 128;
@@ -525,7 +525,7 @@ static void stats(tui_surface *sf, tui_rect a, int y)
 
 static void options_preview(tui_surface *sf, tui_rect a)
 {
-    ls_panel_box(sf, a, "RF SURVEY / PLAN", TUI_MAGENTA);
+    ls_panel_box(sf, a, "PLAN", TUI_MAGENTA);
     emblem(sf, a, a.x + 2, a.y + 2);
     char t[64];
     snprintf(t, sizeof(t), "%s on %s", ls_rfs_src_name(s_set.src), s_set.plan.name);
@@ -624,7 +624,7 @@ static void enter(void)
    surveys walk on in the background. */
 static void leave(void)
 {
-    static ls_rfs_view_t v;
+    EXT_RAM_BSS_ATTR static ls_rfs_view_t v;
     if (!ls_rfs_running()) return;
     ls_rfs_view(&v);
     if (v.src == LS_RFS_SRC_LORA || v.src == LS_RFS_SRC_SWEEP || v.src == LS_RFS_SRC_LR_IQ)

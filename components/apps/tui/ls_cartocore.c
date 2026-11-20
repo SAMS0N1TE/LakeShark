@@ -50,6 +50,9 @@
 #include <ctype.h>
 #include <limits.h>
 #endif
+#ifndef LS_CARTOCORE_HOST
+static int64_t carto_wall_us(void) { return esp_timer_get_time(); }
+#endif
 #include "ls_map_marks.h"
 #include "ls_map.h"
 #include "ls_cartocore_map.h"
@@ -413,6 +416,7 @@ done:
 typedef struct {
     tui_cell *cells; size_t capacity,count;
     int cols,rows; double lat,lon; unsigned z,generation;
+    int64_t left,top;   /* the world dot (256 a tile at z) at its top left */
     bool console,braille,labels;
     ls_carto_label names[LS_CARTO_LABEL_MAX];
 } carto_frame;
@@ -453,7 +457,7 @@ static bool frame_commit(render_state *s,bool console,double lat,double lon,bool
         heap_caps_free(f->cells);f->cells=p;f->capacity=n;
     }
     for(size_t i=0;i<n;i++) f->cells[i]=(tui_cell){glyph(s->cells[i].codepoint),carto_attr(s->cells[i])};
-    f->cols=s->cols;f->rows=s->rows;f->lat=lat;f->lon=lon;f->z=s->z;
+    f->cols=s->cols;f->rows=s->rows;f->lat=lat;f->lon=lon;f->z=s->z;f->left=s->left;f->top=s->top;
     f->console=console;f->braille=braille;f->labels=labels;f->count=count;
     if(count) memcpy(f->names,names,count*sizeof(*names));
 #ifdef LS_CARTOCORE_HOST
@@ -515,6 +519,21 @@ static int redraw(render_state *s,const char *action)
  * Low priority and a yield every turn keep console/touch tasks schedulable. */
 static void cells_service(void);
 static bool cells_receiving(void);
+/* The screen task reads the card while it builds HOME (about twenty app
+   files). The boot catalog check and state count here are 100 s of
+   lookups in a folder of hundreds of cells, and this task wins the card back
+   after every call, so each of the screen's reads waited out lookups: HOME
+   froze 40 s after every boot (2026-11-20). Card scans start once the screen
+   says its boot reads are done, or 60 s into a boot without a screen. */
+static atomic_bool boot_reads_done;
+void ls_carto_boot_reads_done(void) { atomic_store(&boot_reads_done,true); }
+static bool boot_scan_allowed(void) {
+#ifdef LS_CARTOCORE_HOST
+    return true;
+#else
+    return atomic_load(&boot_reads_done) || esp_timer_get_time()>60000000;
+#endif
+}
 static void cache_step(void) {
     static bool boot_recovered;
     static int64_t recovery_after;
@@ -522,7 +541,8 @@ static void cache_step(void) {
     /* MAP first: a cells step can run long (catalog install, queue checks),
        and MAP sat on "opening map..." behind it with nothing allocated. */
     map_service();
-    {
+    const bool scans=boot_scan_allowed();
+    if(scans) {
         const int64_t t=esp_timer_get_time();
         cells_service();
         const int64_t ms=(esp_timer_get_time()-t)/1000;
@@ -575,7 +595,7 @@ static void cache_step(void) {
     /* SD mounting can finish after console registration. Try once when
        maps becomes available; an open source defers publication to close. */
     int64_t now=esp_timer_get_time();
-    if(!boot_recovered && now>=recovery_after) {
+    if(scans && !boot_recovered && now>=recovery_after) {
         struct stat st;recovery_after=now+1000000;
         if(!stat("/sdcard/maps",&st) && S_ISDIR(st.st_mode)) boot_recovered=recover_maps();
     }
@@ -1341,9 +1361,12 @@ static void worker(void *arg)
     }
     else if (j->operation==2) j->result=map_directory(NULL,0);
     else if (j->operation==3) j->result=goto_view(j->lat,j->lon);
+#if CONFIG_LS_DEV_CONSOLE
     else if (j->operation==4) j->result=sdbench(j->n);
+#endif
     else if (j->move) j->result=move_view(j->dx,j->dy,j->move==2?j->z:0);
     else if (j->display) j->result=show(j->z);
+#if CONFIG_LS_DEV_CONSOLE
     else if (j->defaults) {
         int successes=0;
         for (int config=0;config<3;config++) for (int ram=0;ram<2;ram++) for (int cache=0;cache<2;cache++)
@@ -1356,6 +1379,9 @@ static void worker(void *arg)
             successes+=bench_one(j->cols,j->rows,j->z,j->mode,j->edges,j->n,ram,cache);
         j->result=successes?0:1;
     }
+#else
+    else j->result=1;
+#endif
     if(j->operation!=6)LS_PRINTF(t_ls_cartocore_carto_worker_stack_unused, "carto worker stack unused=%u bytes\n",(unsigned)uxTaskGetStackHighWaterMark(NULL));
     xSemaphoreGive(j->done);
     vTaskSuspend(NULL);
@@ -1692,12 +1718,14 @@ int ls_cartocore_command(int argc, char **argv)
             xSemaphoreGive(view_lock);
             LS_PRINTF(fmt_ls_cartocore_carto_view_z_source, "carto view z%u %.5f,%.5f %dx%d %s source=%s picture=%lu us\n",r.z,r.lat,r.lon,r.cols,r.rows,
                    r.pixels?"picture":r.braille?"braille":"quadrant",path,us);
+            printf("carto picture: raster %lu us, paint %lu us\n",(unsigned long)pix_raster_us,(unsigned long)pix_paint_us);
             printf("carto card: %lu reads %lu bytes %lu us, %lu opens %lu us\n",(unsigned long)sd_cost_last.reads,(unsigned long)sd_cost_last.bytes,
                    (unsigned long)sd_cost_last.read_us,(unsigned long)sd_cost_last.opens,(unsigned long)sd_cost_last.open_us);
             printf("carto decoded: %lu hits %lu misses %lu evictions %lu bypasses\n",dh,dm,de,db);
         } else puts("carto view: busy");
         return 0;
     }
+#if CONFIG_LS_DEV_CONSOLE
     if (argc==2 && !strcmp(argv[1],"pie")) {
         xSemaphoreTake(command_lock,portMAX_DELAY);
         int enabled=cc_arch_task_enable();
@@ -1707,6 +1735,7 @@ int ls_cartocore_command(int argc, char **argv)
         xSemaphoreGive(command_lock);
         return enabled && ok?0:1;
     }
+#endif
     if (argc==2 && !strcmp(argv[1],"xfer")) {
         ls_carto_transfer t; ls_carto_transfer_snapshot(&t);
         static const char *states[]={"idle","running","saved","failed"};
@@ -1717,18 +1746,24 @@ int ls_cartocore_command(int argc, char **argv)
             t.start_us?(now-t.start_us)/1e6:0.0,t.stage_us?(now-t.stage_us)/1e6:0.0,
             atomic_load(&fetch_running),t.last_error[0]?t.last_error:"none"); return 0;
     }
+#if CONFIG_LS_DEV_CONSOLE
     if (argc==2 && !strcmp(argv[1],"tiles")) { ls_tiles_diagnostics(); return 0; }
+#endif
     if (argc==2 && !strcmp(argv[1],"trace")) { ls_map_trace_dump(); return 0; }
+#if CONFIG_LS_DEV_CONSOLE
     if (argc==2 && !strcmp(argv[1],"cost")) { extern void ls_map_cost_print(void) __attribute__((weak)); if (ls_map_cost_print) ls_map_cost_print(); return 0; }
+#endif
     if (argc>=2 && !strcmp(argv[1],"recv")) return recv_start(argc,argv);
     if (argc>=2 && !strcmp(argv[1],"fetch")) return fetch_start_expected(argc,argv,NULL,0);
     job j={.z=saved.z,.n=50,.mode=CC_QUADRANT,.edges=CC_EDGES_CRISP};
     if(argc>=2 && !strcmp(argv[1],"upload")) { j.operation=6;j.argc=argc;j.argv=argv;
     } else if (argc==2 && !strcmp(argv[1],"hide")) {
         ls_cartocore_dismiss(); j.operation=5;
+#if CONFIG_LS_DEV_CONSOLE
     } else if (argc>=2 && !strcmp(argv[1],"sdbench")) {
         j.operation=4; j.n=8;
         if(argc>3 || (argc==3 && !number(argv[2],1,256,&j.n))) goto usage;
+#endif
     } else if (argc>=2 && !strcmp(argv[1],"open")) {
         if (argc>3) goto usage;
         j.operation=1; j.path=argc==3?argv[2]:NULL;
@@ -1751,6 +1786,7 @@ int ls_cartocore_command(int argc, char **argv)
     } else if (argc>=2 && !strcmp(argv[1],"show")) {
         j.display=true;
         if (argc>3 || (argc==3 && !number(argv[2],0,22,&j.z))) goto usage;
+#if CONFIG_LS_DEV_CONSOLE
     } else if (argc>=2 && !strcmp(argv[1],"bench")) {
         if (argc==2) j.defaults=true;
         else {
@@ -1761,6 +1797,7 @@ int ls_cartocore_command(int argc, char **argv)
             if (!strcmp(argv[6],"smooth")) j.edges=CC_EDGES_SMOOTH;
             else if (strcmp(argv[6],"crisp")) goto usage;
         }
+#endif
     } else goto usage;
     xSemaphoreTake(command_lock,portMAX_DELAY);
     size_t before=internal_free(),dma_before=dma_free();
@@ -1785,7 +1822,7 @@ int ls_cartocore_command(int argc, char **argv)
     xSemaphoreGive(command_lock); return j.result;
 usage:
     if(argc>=2 && !strcmp(argv[1],"show")) LS_PUTS(msg_ls_cartocore_carto_show_invalid_arguments, "carto show: invalid arguments; expected optional zoom 0..22");
-    LS_PUTS(msg_ls_cartocore_carto_sdbench_mb_carto, "carto sdbench [MB] | carto pie | carto recv [PORT] [SECONDS] | carto fetch URL [NAME] [-f] | carto open [PATH|cells] | carto ls | carto tiles | carto xfer | carto goto LAT LON | carto bench [cols rows z braille|quadrant smooth|crisp N] | carto show [0..22] | carto pan DX DY | carto zoom 0..16 | carto hide");
+    LS_PUTS(msg_ls_cartocore_carto_sdbench_mb_carto, "carto recv [PORT] [SECONDS] | fetch URL [NAME] [-f] | open [PATH|cells] | ls | xfer | goto LAT LON | show [0..22] | pan DX DY | zoom 0..16 | hide");
     return 1;
 }
 void ls_carto_status_print(void) { char word[]="carto",*args[]={word,NULL};(void)ls_cartocore_command(1,args); }
@@ -1811,8 +1848,8 @@ void ls_cartocore_register_command(void)
         vSemaphoreDelete(command_lock); command_lock=NULL;
         vSemaphoreDelete(view_lock); view_lock=NULL; LS_PUTS(t_ls_cartocore_carto_idle_worker_allocation, "carto: idle worker allocation failed"); return;
     }
-    const esp_console_cmd_t command={.command="carto",.help=LS_TXT(con_ls_cartocore_carto_help, "SD CartoCore bench and quadrant display"),
-                                   .hint=LS_TXT(con_ls_cartocore_carto_hint, "sdbench|pie|tiles|xfer|recv|fetch|open|ls|goto|bench|show|pan|zoom|hide"),.func=ls_cartocore_command};
+    const esp_console_cmd_t command={.command="carto",.help=LS_TXT(con_ls_cartocore_carto_help, "SD CartoCore map files and display"),
+                                   .hint=LS_TXT(con_ls_cartocore_carto_hint, "xfer|recv|fetch|open|ls|goto|show|pan|zoom|hide"),.func=ls_cartocore_command};
     esp_err_t err=esp_console_cmd_register(&command);
     if (err!=ESP_OK) {
         vTaskDeleteWithCaps(idle); vSemaphoreDelete(view_lock); view_lock=NULL;
@@ -1872,6 +1909,15 @@ static void lssim_carto_console_test(void) {
     free(previous);ls_cartocore_dismiss();cache_step();
     LS_PUTS(msg_ls_cartocore_pass_carto_show_zoom, "PASS: carto show zoom/pan, busy render/publication locks and poisoned failed frame retain complete cells");
 }
+void lssim_carto_faults(unsigned per_thousand) { carto_host_fault_rate=per_thousand; }
+unsigned lssim_carto_fault_count(void) { return carto_host_faults; }
+/* The newest picture: its serial and zoom, and what the worker spent on it. */
+unsigned lssim_carto_picture(unsigned *z,uint32_t *raster_us,uint32_t *paint_us,uint32_t *reads,uint32_t *read_bytes) {
+    *z=pix.z;*raster_us=pix_raster_us;*paint_us=pix_paint_us;*reads=sd_cost_last.reads;*read_bytes=sd_cost_last.bytes;
+    return pix.valid?pix.serial:0;
+}
+unsigned lssim_carto_frame_serial(void) { return atomic_load(&frame_valid)?frames[frame_front].generation:0; }
+bool lssim_carto_idle(void) { return !shown || (!shown->tiles.pending && shown->hint_next>=shown->hint_count); }
 bool lssim_carto_frame_info(tui_rect *area,unsigned *z,unsigned *generation,bool *fresh) {
     *area=ui_map_area;*z=frames[frame_front].z;*generation=frames[frame_front].generation;
     *fresh=ui_map_fresh;return ui_map_drawn;

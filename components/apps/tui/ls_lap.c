@@ -27,8 +27,13 @@
 #include "ls_lap_ui.h"
 #include "mbedtls/sha256.h"
 #include "sdkconfig.h"
+#include <errno.h>
 #include <stdatomic.h>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include "core/ls_nvs_safe.h"
 #ifndef LS_LAP_DATA_ROOT
 #define LS_LAP_DATA_ROOT "/sdcard/apps_data"
 #endif
@@ -160,7 +165,12 @@ static int register_info(const ls_lap_info_t *a) {
                     .cat = LS_APP_USER,
                     .screen = &ls_lap_screen,
                     .doc = &doc,
-                    .select = ls_lap_select};
+                    .select = ls_lap_select,
+                    /* Its HOME tab: what it declared, else by what it may use. */
+                    .group = info->group ? info->group
+                             : info->manifest.flags & (LAP_CAP_RADIO_RX | LAP_CAP_RADIO_TX) ? LS_APP_GROUP_RADIO
+                             : info->manifest.flags & LAP_CAP_NETWORK ? LS_APP_GROUP_SYSTEM
+                                                                       : LS_APP_GROUP_USER};
     int rc = exists ? (ls_app_update(&app) ? 1 : -1) : ls_app_register(&app);
     if (rc < 0) {
         snprintf(lap_state.error, sizeof(lap_state.error), "%s", ls_app_register_why(rc));
@@ -207,17 +217,80 @@ bool ls_lap_publish(const ls_lap_info_t *info) {
     atomic_store_explicit(&pending, true, memory_order_release);
     return true;
 }
+/* Internal app storage (/spiffs/apps) is SPIFFS on the main flash: reading it
+   turns the cache off, which a PSRAM stack (lap_io, the fetch task) may not
+   be on. So an internal file is read whole into PSRAM by the flash-safe
+   worker and parsed from memory; card files are read as before. */
+static bool internal_path(const char *path) { return path && !strncmp(path, "/spiffs/", 8); }
+typedef struct {
+    const char *path;
+    uint8_t *data;
+    size_t size;
+} slurp_job;
+static esp_err_t slurp_run(void *ctx) {
+    slurp_job *j = ctx;
+    struct stat st;
+    if (stat(j->path, &st) || st.st_size < 52 || (uint64_t)st.st_size > LS_LAP_MAX_BYTES)
+        return ESP_FAIL;
+    uint8_t *data = heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    const int fd = data ? open(j->path, O_RDONLY) : -1;
+    size_t got = 0;
+    while (fd >= 0 && got < (size_t)st.st_size) {
+        const int n = read(fd, data + got, (size_t)st.st_size - got > 8192 ? 8192 : (size_t)st.st_size - got);
+        if (n <= 0)
+            break;
+        got += (size_t)n;
+    }
+    if (fd >= 0)
+        close(fd);
+    if (got != (size_t)st.st_size) {
+        heap_caps_free(data);
+        return ESP_FAIL;
+    }
+    j->data = data;
+    j->size = got;
+    return ESP_OK;
+}
+static uint8_t *slurp_internal(const char *path, size_t *size) {
+    slurp_job j = {path, NULL, 0};
+    ls_nvs_run(slurp_run, &j, 0);
+    *size = j.size;
+    return j.data;
+}
+/* Dotted versions, numerically: 1.10 is newer than 1.9. */
+static int version_cmp(const char *a, const char *b) {
+    while (*a || *b) {
+        unsigned long x = 0, y = 0;
+        while (*a >= '0' && *a <= '9') x = x * 10 + (unsigned long)(*a++ - '0');
+        while (*b >= '0' && *b <= '9') y = y * 10 + (unsigned long)(*b++ - '0');
+        if (x != y)
+            return x < y ? -1 : 1;
+        while (*a && (*a < '0' || *a > '9')) a++;
+        while (*b && (*b < '0' || *b > '9')) b++;
+    }
+    return 0;
+}
 static bool read_info(const char *path, ls_lap_info_t *a, bool verify, char *why, size_t cap) {
     struct stat st;
     FILE *f = NULL;
+    uint8_t *mem = NULL;
     bool ok = false;
-    if (!path || strlen(path) >= sizeof(a->path) || stat(path, &st) || st.st_size < 52 ||
-        (uint64_t)st.st_size > LS_LAP_MAX_BYTES || !(f = fopen(path, "rb"))) {
+    if (internal_path(path) && strlen(path) < sizeof(a->path)) {
+        size_t n = 0;
+        if (!(mem = slurp_internal(path, &n))) {
+            LS_SNPUTS(t_ls_lap_invalid_size_path_or, why, cap, "invalid size/path or unreadable app");
+            return false;
+        }
+        st.st_size = (off_t)n;
+    } else if (!path || strlen(path) >= sizeof(a->path) || stat(path, &st) || st.st_size < 52 ||
+               (uint64_t)st.st_size > LS_LAP_MAX_BYTES || !(f = fopen(path, "rb"))) {
         LS_SNPUTS(t_ls_lap_invalid_size_path_or, why, cap, "invalid size/path or unreadable app");
         return false;
     }
     memset(a, 0, sizeof(*a));
     ls_lap_reader_t r = {file_read, f, (size_t)st.st_size};
+    if (mem)
+        r = (ls_lap_reader_t){memory_read, mem, (size_t)st.st_size};
     size_t elf_size;
     bool present;
     if (verify) {
@@ -231,6 +304,7 @@ static bool read_info(const char *path, ls_lap_info_t *a, bool verify, char *why
     if (!ls_lap_manifest_read(&er, &a->manifest, why, cap))
         goto done;
     a->has_icon_px = ls_lap_icon_read(&er, a->icon_px);
+    a->group = ls_lap_group_read(&er);
     a->size = r.size;
     a->signature_present = present;
     a->signature_checked = verify;
@@ -239,7 +313,9 @@ static bool read_info(const char *path, ls_lap_info_t *a, bool verify, char *why
     snprintf(a->path, sizeof(a->path), "%s", path);
     ok = true;
 done:
-    fclose(f);
+    if (f)
+        fclose(f);
+    heap_caps_free(mem);
     return ok;
 }
 bool ls_lap_inspect_file(const char *path, ls_lap_info_t *out, char *why, size_t cap) {
@@ -262,13 +338,56 @@ int ls_lap_scan_file(const char *path) {
         LS_SNPRINTF(t_ls_lap_15s_stopped_the_board, lap_state.crash, sizeof(lap_state.crash), "%.15s stopped the board", a->manifest.name);
     const ls_lap_info_t *other = ls_lap_by_id(a->manifest.id);
     if (other && other->installed) {
-        LS_SNPRINTF(t_ls_lap_duplicate_app_id_31s, lap_state.error, sizeof(lap_state.error), "duplicate app id %.31s", a->manifest.id);
-        goto done;
+        /* The same app in the internal storage and on the card: one tile,
+           the newer version (the card's when they are equal: scanned last). */
+        if (!strcmp(other->path, a->path) || ls_lap_is_open(a->manifest.id) ||
+            version_cmp(a->manifest.version, other->manifest.version) < 0) {
+            rc = 0;
+            goto done;
+        }
     }
     rc = register_info(a);
 done:
     heap_caps_free(a);
     return rc;
+}
+
+/* The apps in the internal app storage (/spiffs/apps/<name>.lap), before the
+   card's: the names are listed by the flash-safe worker, each file is then
+   scanned like a card app. Returns how many were added. */
+#define INTERNAL_APPS 16
+typedef struct {
+    char names[INTERNAL_APPS][40];
+    int count;
+} internal_list;
+static esp_err_t internal_list_run(void *ctx) {
+    internal_list *l = ctx;
+    DIR *d = opendir(LS_LAP_INTERNAL_DIR);
+    if (!d)
+        return ESP_OK;
+    struct dirent *e;
+    while (l->count < INTERNAL_APPS && (e = readdir(d)) != NULL) {
+        const char *dot = strrchr(e->d_name, '.');
+        if (dot && !strcmp(dot, ".lap") && strlen(e->d_name) < sizeof(l->names[0]))
+            strcpy(l->names[l->count++], e->d_name);
+    }
+    closedir(d);
+    return ESP_OK;
+}
+int ls_lap_scan_internal(void) {
+    internal_list *l = heap_caps_calloc(1, sizeof(*l), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int added = 0;
+    if (!l)
+        return 0;
+    ls_nvs_run(internal_list_run, l, 0);
+    for (int i = 0; i < l->count; i++) {
+        char path[64];
+        snprintf(path, sizeof(path), LS_LAP_INTERNAL_DIR "/%s", l->names[i]);
+        if (ls_lap_scan_file(path) > 0)
+            added++;
+    }
+    heap_caps_free(l);
+    return added;
 }
 
 const char *ls_lap_last_error(void) { return lap_state.error[0] ? lap_state.error : NULL; }
@@ -421,13 +540,16 @@ static void unload(void) {
    the stack comes from the LP RAM first, which the radios leave alone (P25
    decoding leaves no 6 KB piece of DRAM), then from DMA-capable DRAM.
    Linking DICE used 468 bytes of it; 2 KB leaves four times that. */
-#define RELOC_STACK 3072   /* DICE left only 44 of 2048 bytes on 2026-11-13 */
+#define RELOC_STACK 3072   /* DICE left only 44 of 2048 bytes on 2026-11-13. COMPASS's "left 0 of 3072" (2026-11-19) was
+                              not a dry stack: the wait ended before the link ran (see relocate_internal) */
+static unsigned s_link_spare;      /* stack the last link left, for the module load line */
+unsigned ls_lap_link_spare(void) { return s_link_spare; }
 typedef struct {
     esp_elf_t *elf;
     const uint8_t *data;
     int rc;
-    TaskHandle_t caller;
     unsigned spare;                 /* bytes of the stack never touched */
+    atomic_bool done;               /* rc and spare are the link's own */
 } reloc_job;
 static bool reloc_stack_ok(const void *p) {
     const uint8_t *a = p, *b = a + RELOC_STACK - 1;
@@ -458,8 +580,19 @@ static void reloc_task(void *arg) {
     reloc_job *j = arg;
     j->rc = esp_elf_relocate(j->elf, j->data);
     j->spare = (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t));
-    xTaskNotifyGive(j->caller);
+    atomic_store_explicit(&j->done, true, memory_order_release);
     vTaskSuspend(NULL); /* the caller deletes this task before freeing its stack */
+}
+/* What esp_elf_relocate's error means, for a status line. */
+static const char *elf_error_text(int rc) {
+    switch (-rc) {
+    case ENOMEM: return "no PSRAM for it";
+    case ENOSYS: return "a symbol did not resolve";
+    case EINVAL: return "bad ELF layout";
+    case EOVERFLOW: return "sections overflow";
+    case EIO: return "cache sync failed";
+    default: return "loader error";
+    }
 }
 /* The link stack and its TCB, set aside once at boot (after the console has
    its block, before any radio app has cut DRAM into small pieces), so opening
@@ -482,29 +615,68 @@ void ls_lap_reserve_link_memory(bool early) {
     ESP_LOGI("lap", "app link memory %s (%u B stack)", s_rsv_stack && s_rsv_tcb ? "set aside" : "not set aside, found per load",
              (unsigned)RELOC_STACK);
 }
-static int relocate_internal(esp_elf_t *elf, const uint8_t *data) {
+/* Failures are written to why (the app's or the module's status line). */
+static int relocate_internal(esp_elf_t *elf, const uint8_t *data, char *why, size_t cap) {
     const bool own_stack = !s_rsv_stack, own_tcb = !s_rsv_tcb;   /* lap_io loads one app at a time */
     StackType_t *stack = own_stack ? reloc_stack() : s_rsv_stack;
     StaticTask_t *tcb = own_tcb ? heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) : s_rsv_tcb;
     int rc = -1;
     if (stack && tcb) {
-        reloc_job j = {elf, data, -1, xTaskGetCurrentTaskHandle(), 0};
+        reloc_job j = {.elf = elf, .data = data, .rc = -1};
+        atomic_init(&j.done, false);
         TaskHandle_t t = xTaskCreateStaticPinnedToCore(reloc_task, "lap_reloc", RELOC_STACK / sizeof(StackType_t), &j,
                                                        uxTaskPriorityGet(NULL), stack, tcb, xPortGetCoreID());
         if (t) {
-            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10000))) {
+            /* Wait on the job's own flag, never on the caller's task
+               notification: that belongs to whoever wakes the caller. The UI
+               task keeps one pending from boot (compact_ui_start notifies it
+               during the splash) and lap_io is woken by its apps; taking one
+               of those ended the wait before the link had run, so the first
+               module opened after boot failed as "linking left 0 of 6144",
+               "link failed" (COMPASS, 2026-11-19). */
+            const TickType_t t0 = xTaskGetTickCount();
+            while (!atomic_load_explicit(&j.done, memory_order_acquire) &&
+                   xTaskGetTickCount() - t0 < pdMS_TO_TICKS(10000))
+                vTaskDelay(1);
+            if (atomic_load_explicit(&j.done, memory_order_acquire)) {
                 rc = j.rc;
+                s_link_spare = j.spare;
                 if (j.spare < 512)          /* an app with far more relocations than any so far */
                     ESP_LOGW("lap", "linking left %u of %u stack bytes", j.spare, (unsigned)RELOC_STACK);
             }
             else
-                LS_SNPUTS(t_ls_lap_elf_relocation_timed_out, lap_state.work_error, sizeof(lap_state.work_error), "ELF relocation timed out");
+                LS_SNPUTS(t_ls_lap_elf_relocation_timed_out, why, cap, "ELF relocation timed out");
             vTaskDelete(t);
-        }
+        } else
+            snprintf(why, cap, "no task for the link");
     } else
-        LS_SNPUTS(t_ls_lap_memory_is_short_stop, lap_state.work_error, sizeof(lap_state.work_error), "memory is short: stop a radio app (RADIOS) and open again");
+        LS_SNPUTS(t_ls_lap_memory_is_short_stop, why, cap, "memory is short: stop a radio app (RADIOS) and open again");
     if (own_stack) heap_caps_free(stack);
     if (own_tcb) heap_caps_free(tcb);
+    return rc;
+}
+/* One link at a time: the loader's symbol resolver and the link stack are
+   single. Apps link on lap_io, firmware modules (ls_mod.c) on the UI task. */
+static atomic_flag s_linking = ATOMIC_FLAG_INIT;
+static void link_lock(void) {
+    while (atomic_flag_test_and_set(&s_linking))
+        vTaskDelay(1);
+}
+static void link_unlock(void) { atomic_flag_clear(&s_linking); }
+int ls_lap_link_module(void *elf, const uint8_t *data, uintptr_t (*resolver)(const char *), char *why,
+                       size_t cap) {
+    link_lock();
+    elf_set_symbol_resolver(resolver);
+    why[0] = 0;
+    int rc = esp_elf_init(elf);
+    if (rc)
+        snprintf(why, cap, "loader init failed (%d)", rc);
+    else if ((rc = relocate_internal(elf, data, why, cap)) != 0 && !why[0])
+        snprintf(why, cap, "link: %s (%d)", elf_error_text(rc), rc);
+    if (rc)
+        esp_elf_deinit(elf);
+    elf_set_symbol_resolver(ls_lap_resolve);
+    link_unlock();
     return rc;
 }
 static bool load(void) {
@@ -514,11 +686,13 @@ static bool load(void) {
     FILE *f = NULL;
     bool ok = false;
     lap_state.work_error[0] = 0;
-    if (stat(a->path, &st) || st.st_size != (long)a->size ||
-        !(data = heap_caps_malloc(a->size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)) ||
-        !(f = fopen(a->path, "rb")))
-        goto done;
-    if (fread(data, 1, a->size, f) != a->size)
+    if (internal_path(a->path)) {
+        size_t n = 0;
+        if (!(data = slurp_internal(a->path, &n)) || n != a->size)
+            goto done;
+    } else if (stat(a->path, &st) || st.st_size != (long)a->size ||
+               !(data = heap_caps_malloc(a->size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)) ||
+               !(f = fopen(a->path, "rb")) || fread(data, 1, a->size, f) != a->size)
         goto done;
     ls_lap_reader_t r = {memory_read, data, a->size};
     uint8_t hash[32];
@@ -541,11 +715,17 @@ static bool load(void) {
         LS_SNPUTS(t_ls_lap_app_manifest_changed_since, lap_state.work_error, sizeof(lap_state.work_error), "app manifest changed since scan");
         goto done;
     }
+    link_lock();
     elf_set_symbol_resolver(ls_lap_resolve);
-    if (esp_elf_init(&lap_state.elf) || relocate_internal(&lap_state.elf, data)) {
-        if (!lap_state.work_error[0])
-            snprintf(lap_state.work_error, sizeof(lap_state.work_error), "%s",
-                     ls_lap_missing_symbol()[0] ? ls_lap_missing_symbol() : "ELF relocation failed");
+    const int link_rc = esp_elf_init(&lap_state.elf) ? -1 : relocate_internal(&lap_state.elf, data, lap_state.work_error,
+                                                                              sizeof(lap_state.work_error));
+    link_unlock();
+    if (link_rc) {
+        if (!lap_state.work_error[0] && ls_lap_missing_symbol()[0])
+            snprintf(lap_state.work_error, sizeof(lap_state.work_error), "%s", ls_lap_missing_symbol());
+        else if (!lap_state.work_error[0])
+            snprintf(lap_state.work_error, sizeof(lap_state.work_error), "ELF relocation failed: %s (%d)",
+                     elf_error_text(link_rc), link_rc);
         goto done;
     }
     /* RISC-V loader 1.3.5 adds svaddr when applying relocations: require zero base. */
@@ -1023,6 +1203,7 @@ int ls_lap_scan_file(const char *path) {
     (void)path;
     return -1;
 }
+int ls_lap_scan_internal(void) { return 0; }
 bool ls_lap_inspect_file(const char *path, ls_lap_info_t *out, char *why, size_t cap) {
     (void)path;
     (void)out;

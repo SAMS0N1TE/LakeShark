@@ -5,10 +5,13 @@
 
 #include "ls_desk_priv.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "../ls_braille.h"
+#include "../ls_theme.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 
 #define K  TUI_BLACK
@@ -45,11 +48,11 @@ typedef struct {
 
 static const scheme_t SCHEMES[] = {
     {"Bay 95", K, W, W, K, WB, WB, KB, WB, B, W, KB, WB, B, WB, KB, YB, K, Y, GB, YB, RB, CB, MB, CB, B, W, "Terminal Bay"},
-    {"Classic 95", C, WB, K, W, K, WB, KB, WB, B, W, KB, WB, B, K, WB, TUI_RED, K, Y,
-     TUI_GREEN, TUI_RED, TUI_RED, TUI_BLUE, TUI_MAGENTA, CB, B, KB, "Terminal Bay"},
+    {"Classic 95", C, WB, K, W, K, WB, KB, WB, B, W, KB, WB, B, K, WB, TUI_RED, K, YB,
+     TUI_GREEN, TUI_YELLOW, TUI_RED, TUI_BLUE, TUI_MAGENTA, CB, B, KB, "Classic"},
     {"High Contrast", K, WB, WB, K, YB, WB, WB, K, CB, WB, B, K, CB, K, WB, YB, K, YB, GB, YB, RB, CB, MB, K, CB, W, "Terminal Bay"},
     {"Teal", B, WB, K, W, K, WB, KB, WB, C, W, KB, WB, C, K, WB, TUI_RED, K, CB,
-     TUI_GREEN, TUI_RED, TUI_RED, TUI_BLUE, TUI_MAGENTA, WB, C, KB, "Terminal Bay"},
+     TUI_GREEN, TUI_YELLOW, TUI_RED, TUI_BLUE, TUI_MAGENTA, WB, C, KB, "Classic"},
     {"Amber phosphor", K, Y, Y, K, YB, YB, Y, K, YB, YB, K, K, Y, K, Y, WB, K, YB, YB, YB, RB, YB, YB, K, Y, Y, "Amber"},
     {"Night", B, WB, W, K, WB, CB, B, WB, TUI_MAGENTA, W, B, WB, TUI_MAGENTA, WB, B, CB, K, CB, GB, YB, RB, CB, MB,
      WB, TUI_MAGENTA, W, "Night"},
@@ -67,14 +70,40 @@ int dk_scheme_count(void) { return N_SCHEMES; }
 const char *dk_scheme_name(int i) { return i >= 0 && i < N_SCHEMES ? SCHEMES[i].name : "Custom"; }
 const char *dk_scheme_palette(int i) { return i >= 0 && i < N_SCHEMES ? SCHEMES[i].palette : NULL; }
 
+/* The light schemes' own palette: Terminal Bay's greys and brights, and six
+   plain hues dark enough to be text on silver (4.7 to 1 and better), the way
+   the sixteen VGA colours gave Windows 95 its navy and maroon. It is not in
+   the TUI's theme cycle: the desk sets it, and takes it away when it goes. */
+static const ls_tui_theme_t s_theme_classic = {
+    .name = "Classic",
+    .desc = "silver faces and dark inks, for the desk's light schemes",
+    .palette = {0x0000, 0x80A2, 0x0A43, 0x59E0, 0x1191, 0x68CF, 0x0249, 0xAD97,
+                0x3A09, 0xFB4D, 0x6F0F, 0xFE4A, 0x6DBF, 0xDC5F, 0x5F1C, 0xF7BF},
+};
+const ls_tui_theme_t *dk_scheme_theme(int i)
+{
+    const char *name = dk_scheme_palette(i);
+    if (!name) return NULL;
+    return !strcmp(name, s_theme_classic.name) ? &s_theme_classic : ls_tui_theme_by_name(name);
+}
+bool dk_theme_own(const ls_tui_theme_t *t) { return t == &s_theme_classic; }
+
 static const char *const ITEMS[DK_IT_COUNT] = {
     "Desktop", "Title bar, active", "Title bar, inactive", "Menu", "Selected items", "Window",
     "Button face", "Tooltip",
 };
 const char *dk_item_name(int it) { return it >= 0 && it < DK_IT_COUNT ? ITEMS[it] : ""; }
 
-/* Light grounds (silver, white, yellow, cyan) take dark hues; dark ones bright. */
-static bool light(uint8_t c) { return c == W || c == WB || c == CB || c == YB || c == Y || c == C; }
+/* Light grounds (silver, white, a bright yellow) take dark hues; dark ones
+   bright. By the colour itself in the palette in use: the light schemes'
+   cyan is a dark teal, and Daylight's black is white. */
+static bool cr_build(void);
+EXT_RAM_BSS_ATTR static uint16_t s_light;      /* a bit per colour: black reads on it better than white */
+static bool light(uint8_t c)
+{
+    if (cr_build()) return (s_light >> (c & 15)) & 1;
+    return c == W || c == WB || c == CB || c == YB || c == Y || c == C;
+}
 
 static void fill_roles(uint8_t r[R_COUNT][2], const dk_prefs_t *p)
 {
@@ -114,9 +143,120 @@ static void fill_roles(uint8_t r[R_COUNT][2], const dk_prefs_t *p)
     #undef SET
 }
 
-static uint8_t s_roles[R_COUNT][2];
+static uint8_t s_roles[R_COUNT][2];            /* as the scheme names them */
+EXT_RAM_BSS_ATTR static uint8_t s_ink[R_COUNT];   /* as they are drawn: made to read in the palette in use */
 static dk_prefs_t s_prefs = {.scheme = 0, .live_drag = true, .anim = true, .labels = true};
 static bool s_roles_ok;
+
+/* ------------------------------------------------------------------ inks -- */
+
+/* The role table names colours; whether one reads depends on the palette in
+   use (a scheme's own, or Daylight over it) and on the owner's own Window
+   colours. So every role is checked against the real colours once per
+   palette: text wants 4.5 to 1 on its ground, and where the named colour
+   has less, its bright (or plain) twin is taken, else the strong ink, else
+   black or white. Everything drawn through dk_attr reads. */
+EXT_RAM_BSS_ATTR static uint8_t s_cr[16][16];  /* WCAG contrast x 10 of every pair */
+static const ls_tui_theme_t *s_cr_for;
+
+static float lin(int v8)
+{
+    const float c = (float)v8 / 255.0f;
+    return c <= 0.03928f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
+}
+
+static const ls_tui_theme_t *palette_now(void)
+{
+    const ls_tui_theme_t *t = ls_tui_active_theme();
+    return t ? t : ls_tui_get_theme();
+}
+
+static bool cr_build(void)
+{
+    const ls_tui_theme_t *t = palette_now();
+    if (!t) return false;
+    if (t == s_cr_for) return true;
+    s_cr_for = t;
+    float lum[16];
+    for (int i = 0; i < 16; i++) {
+        const uint16_t p = t->palette[i];
+        lum[i] = 0.2126f * lin((p >> 11) * 255 / 31) + 0.7152f * lin(((p >> 5) & 63) * 255 / 63) + 0.0722f * lin((p & 31) * 255 / 31);
+    }
+    s_light = 0;
+    for (int i = 0; i < 16; i++) if (lum[i] > 0.18f) s_light |= (uint16_t)(1u << i);
+    for (int i = 0; i < 16; i++)
+        for (int j = 0; j < 16; j++) {
+            const float hi = lum[i] > lum[j] ? lum[i] : lum[j], lo = lum[i] > lum[j] ? lum[j] : lum[i];
+            const float r = (hi + 0.05f) / (lo + 0.05f) * 10.0f;
+            s_cr[i][j] = (uint8_t)(r > 250.0f ? 250 : (int)r);
+        }
+    return true;
+}
+
+int dk_contrast(uint8_t fg, uint8_t bg) { return cr_build() ? s_cr[fg & 15][bg & 15] : 0; }
+
+uint8_t dk_fit(uint8_t fg, uint8_t bg, int min)
+{
+    fg &= 15; bg &= 15;
+    if (!cr_build() || s_cr[fg][bg] >= min) return TUI_ATTR(fg, bg);
+    const uint8_t twin = (uint8_t)(fg ^ TUI_BRIGHT);
+    if (s_cr[twin][bg] >= min) return TUI_ATTR(twin, bg);
+    const uint8_t strong = s_roles[R_STRONG][0] & 15;
+    if ((s_roles[R_STRONG][1] & 15) == bg && s_cr[strong][bg] >= min) return TUI_ATTR(strong, bg);
+    return TUI_ATTR(s_cr[WB][bg] >= s_cr[K][bg] ? WB : K, bg);
+}
+
+static void fit_roles(void)
+{
+    /* what each role's ink must have against its own ground, x 10; 0: a line or a ground, left alone */
+    static const uint8_t NEED[R_COUNT] = {
+        [R_DESK] = 45, [R_DESK_TEXT] = 45, [R_FACE] = 45, [R_STRONG] = 45, [R_TITLE_ON] = 45, [R_TITLE_OFF] = 45,
+        [R_SELECT] = 45, [R_SELECT_DIM] = 45, [R_KEY] = 45, [R_KEY_DOWN] = 45, [R_ACCEL] = 45, [R_CLOSE] = 30,
+        [R_TIP] = 45, [R_GOOD] = 45, [R_WARN] = 45, [R_BAD] = 45, [R_INFO] = 45, [R_MESH] = 45, [R_STRIPE] = 45,
+        [R_TASKKEY] = 45, [R_TASKHOVER] = 45, [R_TRAY] = 45, [R_MENU] = 45,
+    };
+    for (int r = 0; r < R_COUNT; r++)
+        s_ink[r] = NEED[r] ? dk_fit(s_roles[r][0], s_roles[r][1], NEED[r]) : TUI_ATTR(s_roles[r][0], s_roles[r][1]);
+    if (!cr_build()) return;
+    /* A band no ink reads on (a dim palette's title colour: Night's is red on
+       red): the best ink there is, on the band or on its other weight. */
+    for (int r = 0; r < R_COUNT; r++) {
+        uint8_t bg = TUI_ATTR_BG(s_ink[r]), best = TUI_ATTR_FG(s_ink[r]);
+        if (!NEED[r] || s_cr[best][bg] >= NEED[r] || bg == (s_roles[R_FACE][1] & 15)) continue;
+        for (int pass = 0; pass < 2 && s_cr[best][bg] < NEED[r]; pass++) {
+            const uint8_t g = pass ? (uint8_t)(bg ^ TUI_BRIGHT) : bg;
+            uint8_t top = 0;
+            for (uint8_t k = 1; k < 16; k++) if (s_cr[k][g] > s_cr[top][g]) top = k;
+            if (s_cr[top][g] > s_cr[best][bg]) { best = top; bg = g; }
+        }
+        s_ink[r] = TUI_ATTR(best, bg);
+    }
+    /* Greyed text: apart from the text and the values, and still there. A
+       scheme of one ink has no such colour: its dashes and brackets say it. */
+    const uint8_t bg = s_roles[R_FACE][1] & 15, face = TUI_ATTR_FG(s_ink[R_FACE]), strong = TUI_ATTR_FG(s_ink[R_STRONG]);
+    const uint8_t tries[] = {s_roles[R_DISABLED][0], s_roles[R_SHADOW][0], KB, W};
+    s_ink[R_DISABLED] = TUI_ATTR(face, bg);
+    for (unsigned i = 0; i < sizeof(tries); i++) {
+        const uint8_t d = tries[i] & 15;
+        if (d == face || d == strong || s_cr[d][bg] < 18 || s_cr[d][bg] >= s_cr[face][bg]) continue;
+        s_ink[R_DISABLED] = TUI_ATTR(d, bg);
+        break;
+    }
+}
+
+static void roles_build(void)
+{
+    fill_roles(s_roles, &s_prefs);
+    fit_roles();
+    s_roles_ok = true;
+}
+
+/* Once a frame: the palette may have changed under the roles (Daylight, a
+   theme chosen in Settings). */
+void dk_roles_sync(void)
+{
+    if (!s_roles_ok || palette_now() != s_cr_for) roles_build();
+}
 
 const dk_prefs_t *dk_prefs(void) { return &s_prefs; }
 
@@ -124,8 +264,7 @@ void dk_prefs_set(const dk_prefs_t *p)
 {
     s_prefs = *p;
     if (s_prefs.scheme >= N_SCHEMES) s_prefs.scheme = 0;
-    fill_roles(s_roles, &s_prefs);
-    s_roles_ok = true;
+    roles_build();
 }
 
 void dk_item_colors(const dk_prefs_t *p, int item, uint8_t *fg, uint8_t *bg)
@@ -148,12 +287,9 @@ uint8_t dk_attr_with(const dk_prefs_t *p, int role)
 
 uint8_t dk_attr(int role)
 {
-    if (!s_roles_ok) {
-        fill_roles(s_roles, &s_prefs);
-        s_roles_ok = true;
-    }
+    if (!s_roles_ok) roles_build();
     if (role < 0 || role >= R_COUNT) role = R_FACE;
-    return TUI_ATTR(s_roles[role][0], s_roles[role][1]);
+    return s_ink[role];
 }
 
 uint8_t dk_face_bg(void) { return TUI_ATTR_BG(dk_attr(R_FACE)); }
@@ -161,17 +297,28 @@ uint8_t dk_face_bg(void) { return TUI_ATTR_BG(dk_attr(R_FACE)); }
 bool dk_light_face(void) { return light(dk_face_bg()); }
 bool dk_light_desk(void) { return light(TUI_ATTR_BG(dk_attr(R_DESK))); }
 
-uint8_t dk_hue(uint8_t hue)
+/* A TUI colour as ink on the face: bright on a dark face and plain on a
+   light one, then made to read like any role. White and black are the
+   strong ink. dk_hue is text; dk_art is line art, a lamp, a meter's fill. */
+static uint8_t hue_on_face(uint8_t hue, int min)
 {
-    uint8_t fg = hue & 15;
-    if (!dk_light_face()) {
-        if (fg != TUI_BLACK && fg != TUI_WHITE) fg |= TUI_BRIGHT;   /* hues read on dark faces when bright */
-        if (fg == TUI_WHITE) fg = WB;
-    } else {
-        fg &= 7;                                                   /* and on light ones when not */
-        if (fg == TUI_WHITE || fg == TUI_YELLOW) fg = fg == TUI_YELLOW ? TUI_RED : TUI_BLACK;
-    }
-    return TUI_ATTR(fg, dk_face_bg());
+    const uint8_t fg = hue & 7;
+    if (fg == TUI_BLACK || fg == TUI_WHITE) return dk_attr(R_STRONG);
+    return dk_fit(dk_light_face() ? fg : (uint8_t)(fg | TUI_BRIGHT), dk_face_bg(), min);
+}
+uint8_t dk_hue(uint8_t hue) { return hue_on_face(hue, 45); }
+uint8_t dk_art(uint8_t hue) { return hue_on_face(hue, 30); }
+
+/* The accelerator letter on a ground: the scheme's colour for it when that
+   reads there and differs from the text, else the letter in reverse. */
+uint8_t dk_accel_on(uint8_t attr)
+{
+    const uint8_t fg = TUI_ATTR_FG(attr), bg = TUI_ATTR_BG(attr), a = TUI_ATTR_FG(dk_attr(R_ACCEL));
+    if (!cr_build()) return TUI_ATTR(a, bg);
+    if (a != fg && s_cr[a][bg] >= 45) return TUI_ATTR(a, bg);
+    const uint8_t twin = (uint8_t)(a ^ TUI_BRIGHT);
+    if (twin != fg && s_cr[twin][bg] >= 45) return TUI_ATTR(twin, bg);
+    return TUI_ATTR(bg, fg);
 }
 
 void *dk_psram(size_t bytes)
@@ -369,34 +516,13 @@ void dk_key(tui_surface *sf, tui_rect clip, int x, int y, int cp, uint8_t glyph_
     tui_put_char(sf, clip, x + 2, y, ']', key);
 }
 
-void dk_button(tui_surface *sf, tui_rect clip, tui_rect r, const char *label, bool is_default, bool pressed)
-{
-    if (r.w < 4 || r.h < 3) return;
-    dk_fill(sf, tui_rect_intersect(r, clip), dk_attr(R_FACE));
-    /* The default button's frame is the strong colour all round, as the
-       dark outline of a Windows 95 default button. */
-    if (is_default) edge_frame(sf, clip, r, R_STRONG, R_STRONG);
-    else dk_frame(sf, clip, r, !pressed);
-    const int n = dk_text_len(label);
-    const int x = r.x + (r.w - n) / 2 + (pressed ? 1 : 0);
-    dk_text_accel(sf, clip, x, r.y + r.h / 2, label, dk_attr(is_default ? R_STRONG : R_FACE), dk_attr(R_ACCEL));
-}
-
-void dk_check(tui_surface *sf, tui_rect clip, int x, int y, bool on, const char *label)
-{
-    tui_put_char(sf, clip, x, y, '[', dk_attr(R_SHADOW));
-    tui_put_char(sf, clip, x + 1, y, on ? 'x' : ' ', dk_attr(R_STRONG));
-    tui_put_char(sf, clip, x + 2, y, ']', dk_attr(R_HILITE));
-    if (label) dk_text_accel(sf, clip, x + 4, y, label, dk_attr(R_FACE), dk_attr(R_ACCEL));
-}
-
 void dk_radio(tui_surface *sf, tui_rect clip, int x, int y, bool on, const char *label)
 {
     tui_put_char(sf, clip, x, y, '(', dk_attr(R_SHADOW));
     if (on) ls_box_put(sf, clip, x + 1, y, LS_SHAPE_DOT, dk_attr(R_STRONG));
     else tui_put_char(sf, clip, x + 1, y, ' ', dk_attr(R_FACE));
     tui_put_char(sf, clip, x + 2, y, ')', dk_attr(R_HILITE));
-    if (label) dk_text_accel(sf, clip, x + 4, y, label, dk_attr(R_FACE), dk_attr(R_ACCEL));
+    if (label) dk_label(sf, clip, x + 4, y, label, dk_attr(R_FACE), true);
 }
 
 void dk_meter(tui_surface *sf, tui_rect clip, int x, int y, int w, int permille, uint8_t hue)
@@ -407,7 +533,7 @@ void dk_meter(tui_surface *sf, tui_rect clip, int x, int y, int w, int permille,
     const int in = w - 2, on = (in * permille + 500) / 1000;
     tui_put_char(sf, clip, x, y, '[', dk_attr(R_FACE));
     for (int i = 0; i < in; i++)
-        tui_put_char(sf, clip, x + 1 + i, y, i < on ? '=' : '-', i < on ? dk_hue(hue) : dk_attr(R_SHADOW));
+        tui_put_char(sf, clip, x + 1 + i, y, i < on ? '=' : '-', i < on ? dk_art(hue) : dk_attr(R_SHADOW));
     tui_put_char(sf, clip, x + w - 1, y, ']', dk_attr(R_FACE));
 }
 
@@ -426,3 +552,325 @@ void dk_spark(tui_surface *sf, tui_rect clip, int x, int y, const int *v, int n,
         ls_braille_put(sf, clip, x + i / 2, y, (int16_t)bits, attr);
     }
 }
+
+/* ------------------------------------------------- desktop-pass widgets -- */
+
+/* Everything below is stateless: the caller keeps the selection, the scroll
+   position and the focus, draws with these and asks the _hit functions what
+   a click landed on. Hover comes from dk_hover(rect) (ls_desk.c). */
+
+static uint8_t on_bg(uint8_t ground, int role) { return (uint8_t)((ground & 0xF0) | (dk_attr(role) & 0x0F)); }
+
+static void put_cp(tui_surface *sf, tui_rect clip, int x, int y, int cp, uint8_t attr)
+{
+    if (cp < 0x80) tui_put_char(sf, clip, x, y, (char)cp, attr);
+    else ls_box_put(sf, clip, x, y, cp, attr);
+}
+
+/* "&Open", "Save &as": the letter after & is the accelerator; "&&" and
+   "& " are an ampersand. */
+static bool label_hot(const char *s) { return s[0] == '&' && s[1] && s[1] != ' ' && s[1] != '&'; }
+
+int dk_label_len(const char *s)
+{
+    int n = 0;
+    for (; s && *s; s++) {
+        if (label_hot(s)) continue;
+        if (s[0] == '&' && s[1] == '&') s++;
+        n++;
+    }
+    return n;
+}
+
+char dk_label_key(const char *s)
+{
+    for (; s && *s; s++) {
+        if (label_hot(s)) return (char)(s[1] >= 'a' && s[1] <= 'z' ? s[1] - 32 : s[1]);
+        if (s[0] == '&' && s[1] == '&') s++;
+    }
+    return 0;
+}
+
+int dk_label(tui_surface *sf, tui_rect clip, int x, int y, const char *s, uint8_t attr, bool mark)
+{
+    int n = 0;
+    for (; s && *s; s++) {
+        bool key = false;
+        if (label_hot(s)) { s++; key = mark; }
+        else if (s[0] == '&' && s[1] == '&') s++;
+        tui_put_char(sf, clip, x + n, y, *s, key ? dk_accel_on(attr) : attr);
+        n++;
+    }
+    return n;
+}
+
+/* The push button, one row, sized for a mouse: a band of the key face with
+   a bevel line at each end, heavy ends on the default one. Focus and a held
+   press show as the selection colours, the pointer over it as the hover
+   face (both found here; the flags force them). Greyed: no band, its ends
+   and dashes in the disabled ink, so it reads as off in a one-ink scheme. */
+void dk_pushbtn(tui_surface *sf, tui_rect clip, tui_rect r, const char *label, unsigned state)
+{
+    if (r.w < 4) return;
+    r.h = 1;
+    const bool dis = (state & DK_BS_DISABLED) != 0;
+    const bool down = !dis && ((state & DK_BS_PRESSED) || dk_pressed(r));
+    const bool hov = !dis && ((state & DK_BS_HOVER) || dk_hover(r));
+    const tui_rect row = tui_rect_intersect(clip, r);
+    const int n = dk_label_len(label), x = r.x + (r.w - n) / 2 + (down ? 1 : 0);
+    if (dis) {
+        const uint8_t d = dk_attr(R_DISABLED);
+        tui_put_char(sf, row, r.x, r.y, '[', d);
+        tui_put_char(sf, row, r.x + r.w - 1, r.y, ']', d);
+        for (int i = r.x + 1; i < x - 1; i++) ls_box_put(sf, row, i, r.y, LS_BOX_DASH_H, d);
+        for (int i = x + n + 1; i < r.x + r.w - 1; i++) ls_box_put(sf, row, i, r.y, LS_BOX_DASH_H, d);
+        dk_label(sf, row, x, r.y, label, d, false);
+        return;
+    }
+    const bool lit = down || (state & (DK_BS_FOCUS | DK_BS_ON));
+    const uint8_t face = lit ? dk_attr(R_SELECT) : hov ? dk_attr(R_TASKHOVER) : dk_attr(R_KEY);
+    dk_fill(sf, row, face);
+    if (state & DK_BS_DEFAULT) {
+        ls_box_put(sf, row, r.x, r.y, LS_BOX_DBL_V, face);
+        ls_box_put(sf, row, r.x + r.w - 1, r.y, LS_BOX_DBL_V, face);
+    } else {
+        ls_box_put(sf, row, r.x, r.y, LS_EDGE_L, on_bg(face, down ? R_SHADOW : R_HILITE));
+        ls_box_put(sf, row, r.x + r.w - 1, r.y, LS_EDGE_R, on_bg(face, down ? R_HILITE : R_SHADOW));
+    }
+    dk_label(sf, tui_rect_intersect(row, tui_rect_make(r.x + 1, r.y, r.w - 2, 1)), x, r.y, label, face, !lit && !hov);
+}
+
+/* A sunken one-row field: brackets in the bevel colours, the text strong,
+   the caret a line under its cell while the field has the keys. */
+static void field_ends(tui_surface *sf, tui_rect clip, int x, int y, int w, bool focus)
+{
+    tui_put_char(sf, clip, x, y, '[', focus ? dk_attr(R_STRONG) : dk_attr(R_SHADOW));
+    tui_put_char(sf, clip, x + w - 1, y, ']', focus ? dk_attr(R_STRONG) : dk_attr(R_HILITE));
+}
+
+void dk_field(tui_surface *sf, tui_rect clip, int x, int y, int w, const char *text, int caret, bool focus)
+{
+    if (w < 3) return;
+    field_ends(sf, clip, x, y, w, focus);
+    const tui_rect in = tui_rect_intersect(tui_rect_intersect(clip, tui_surface_rect(sf)), tui_rect_make(x + 1, y, w - 2, 1));
+    dk_fill(sf, in, dk_attr(R_FACE));
+    const int n = dk_text_len(text), room = w - 3;
+    const int skip = caret >= 0 && n > room ? n - room : 0;         /* the tail stays in view while typing */
+    const char *s = text ? text : "";
+    for (int k = 0; k < skip && *s; k++) s++;
+    dk_text(sf, in, x + 1, y, s, dk_attr(R_STRONG));
+    if (focus && caret >= 0) {
+        const int cx = x + 1 + (caret > n ? n : caret) - skip;
+        if (tui_rect_contains(in, cx, y)) {
+            tui_cell *c = &sf->back[(size_t)y * sf->w + cx];
+            if (c->ch == ' ' || c->ch == 0) { c->ch = (int16_t)LS_EDGE_B; c->attr = dk_attr(R_ACCEL); }
+            else c->attr = dk_attr(R_SELECT);
+        }
+    }
+}
+
+/* A vertical scrollbar, one column: an arrow key at each end, a dashed
+   track, and a thumb as long as the part in view. */
+static void vscroll_geom(int h, int total, int page, int top, int *ty, int *th)
+{
+    const int len = h - 2;
+    if (total < 1) total = 1;
+    if (page > total) page = total;
+    int t = len * page / total;
+    if (t < 1) t = 1;
+    if (t > len) t = len;
+    const int span = total - page;
+    int at = span > 0 ? (int)(((long)(len - t) * top + span / 2) / span) : 0;
+    if (at > len - t) at = len - t;
+    if (at < 0) at = 0;
+    *ty = at;
+    *th = t;
+}
+
+void dk_vscroll(tui_surface *sf, tui_rect clip, int x, int y, int h, int total, int page, int top)
+{
+    if (h < 3) return;
+    const bool live = total > page;
+    const tui_rect up = tui_rect_make(x, y, 1, 1), dn = tui_rect_make(x, y + h - 1, 1, 1);
+    const uint8_t key = dk_attr(R_KEY), dead = on_bg(key, R_DISABLED);
+    ls_box_put(sf, clip, x, y, LS_SHAPE_UP, !live ? dead : dk_hover(up) ? dk_attr(R_TASKHOVER) : key);
+    ls_box_put(sf, clip, x, y + h - 1, LS_SHAPE_DOWN, !live ? dead : dk_hover(dn) ? dk_attr(R_TASKHOVER) : key);
+    int ty = 0, th = 0;
+    vscroll_geom(h, total, page, top, &ty, &th);
+    for (int k = 0; k < h - 2; k++) {
+        const bool thumb = live && k >= ty && k < ty + th;
+        if (thumb) {
+            const tui_rect cell = tui_rect_intersect(clip, tui_rect_make(x, y + 1 + k, 1, 1));
+            dk_fill(sf, cell, key);
+            if (th >= 3 && k == ty + th / 2) ls_box_put(sf, cell, x, y + 1 + k, LS_BOX_H, on_bg(key, R_SHADOW));
+        } else {
+            ls_box_put(sf, clip, x, y + 1 + k, LS_BOX_DASH_V, dk_attr(R_SHADOW));
+        }
+    }
+}
+
+int dk_vscroll_hit(int y, int h, int total, int page, int top, int row)
+{
+    if (h < 3 || row < y || row >= y + h) return DK_SB_NONE;
+    if (row == y) return DK_SB_UP;
+    if (row == y + h - 1) return DK_SB_DOWN;
+    int ty = 0, th = 0;
+    vscroll_geom(h, total, page, top, &ty, &th);
+    const int k = row - y - 1;
+    return k < ty ? DK_SB_PGUP : k >= ty + th ? DK_SB_PGDN : DK_SB_THUMB;
+}
+
+/* The top row that puts the middle of the thumb at `row`: a drag of the thumb. */
+int dk_vscroll_drag(int y, int h, int total, int page, int row)
+{
+    const int len = h - 2, span = total - page;
+    if (len < 1 || span <= 0) return 0;
+    int ty = 0, th = 0;
+    vscroll_geom(h, total, page, 0, &ty, &th);
+    int at = row - y - 1 - th / 2;
+    if (at < 0) at = 0;
+    if (at > len - th) at = len - th;
+    return len - th > 0 ? (int)(((long)at * span + (len - th) / 2) / (len - th)) : 0;
+}
+
+/* A click on the bar at col,row: the arrows step a row, the track pages,
+   the thumb goes where it is put. True when the click was on the bar. */
+bool dk_vscroll_click(int x, int y, int h, int total, int page, int *top, int col, int row)
+{
+    if (col != x) return false;
+    const int part = dk_vscroll_hit(y, h, total, page, *top, row);
+    if (part == DK_SB_NONE) return false;
+    int t = *top;
+    switch (part) {
+    case DK_SB_UP: t--; break;
+    case DK_SB_DOWN: t++; break;
+    case DK_SB_PGUP: t -= page > 1 ? page - 1 : 1; break;
+    case DK_SB_PGDN: t += page > 1 ? page - 1 : 1; break;
+    default: t = dk_vscroll_drag(y, h, total, page, row); break;
+    }
+    if (t > total - page) t = total - page;
+    if (t < 0) t = 0;
+    *top = t;
+    return true;
+}
+
+/* A list view: a sunken frame, a header row of column titles on key faces,
+   the rows, and a scrollbar when there are more rows than fit. A column of
+   width 0 takes what the others leave. */
+tui_rect dk_listview_bar(tui_rect r) { return tui_rect_make(r.x + r.w - 2, r.y + 2, 1, r.h - 3); }
+int dk_listview_rows(tui_rect r) { return r.h - 3 > 0 ? r.h - 3 : 0; }
+
+static int lv_col_w(const dk_col_t *cols, int ncols, int i, int room)
+{
+    int fixed = 0;
+    for (int k = 0; k < ncols; k++) fixed += cols[k].w > 0 ? cols[k].w : 0;
+    const int rest = room - fixed;
+    return cols[i].w > 0 ? cols[i].w : rest > 4 ? rest : 4;
+}
+
+void dk_listview(tui_surface *sf, tui_rect clip, tui_rect r, const dk_col_t *cols, int ncols, int n, int top,
+                 int sel, bool focus, dk_cell_fn cell, void *ctx)
+{
+    if (r.w < 8 || r.h < 4) return;
+    dk_frame(sf, clip, r, false);
+    const tui_rect in = tui_rect_intersect(clip, dk_inner(r));
+    const int rows = dk_listview_rows(r);
+    const bool bar = n > rows;
+    const int x0 = r.x + 1, room = r.w - 2 - (bar ? 1 : 0);
+    /* the header: one band of key face, a line between the titles */
+    const uint8_t head = dk_attr(R_KEY);
+    dk_fill(sf, tui_rect_intersect(in, tui_rect_make(x0, r.y + 1, r.w - 2, 1)), head);
+    int cx = x0;
+    for (int k = 0; k < ncols; k++) {
+        const int cw = lv_col_w(cols, ncols, k, room);
+        const tui_rect hc = tui_rect_intersect(in, tui_rect_make(cx, r.y + 1, cw, 1));
+        const int tl = dk_text_len(cols[k].title);
+        dk_text(sf, hc, cols[k].right ? cx + cw - 1 - tl : cx + 1, r.y + 1, cols[k].title, head);
+        if (k) ls_box_put(sf, hc, cx, r.y + 1, LS_EDGE_L, on_bg(head, R_SHADOW));
+        cx += cw;
+    }
+    const tui_rect body = tui_rect_make(x0, r.y + 2, room, rows);
+    int ptr_col = -1, ptr_row = -1;
+    const bool hov = dk_hover(body);
+    if (hov) dk_pointer(&ptr_col, &ptr_row);
+    for (int k = 0; k < rows && top + k < n; k++) {
+        const int i = top + k, y = r.y + 2 + k;
+        const bool s = i == sel, hot = !s && hov && ptr_row == y;
+        const uint8_t face = s ? (focus ? dk_attr(R_SELECT) : dk_attr(R_SELECT_DIM)) : hot ? dk_attr(R_TASKHOVER) : dk_attr(R_FACE);
+        const tui_rect rr = tui_rect_intersect(in, tui_rect_make(x0, y, room, 1));
+        if (s || hot) dk_fill(sf, rr, face);
+        cx = x0;
+        for (int c = 0; c < ncols; c++) {
+            const int cw = lv_col_w(cols, ncols, c, room);
+            char buf[64];
+            uint8_t hue = 0;
+            int glyph = 0;
+            buf[0] = 0;
+            cell(i, c, buf, sizeof(buf), &hue, &glyph, ctx);
+            const tui_rect cc = tui_rect_intersect(rr, tui_rect_make(cx, y, cw - (c + 1 < ncols ? 1 : 0), 1));
+            const uint8_t plain = c ? dk_attr(R_FACE) : dk_attr(R_STRONG);
+            int tx = cx + 1;
+            if (glyph) { put_cp(sf, cc, tx, y, glyph, s || hot ? face : dk_art(hue ? hue : TUI_WHITE)); tx += 2; }
+            if (cols[c].right) tx = cx + cw - 1 - dk_text_len(buf);
+            dk_text(sf, cc, tx, y, buf, s || hot ? face : glyph || !hue ? plain : dk_hue(hue));
+            cx += cw;
+        }
+    }
+    if (bar) { const tui_rect b = dk_listview_bar(r); dk_vscroll(sf, in, b.x, b.y, b.h, n, rows, top); }
+}
+
+int dk_listview_hit(tui_rect r, int n, int top, int col, int row)
+{
+    if (col <= r.x || col >= r.x + r.w - 1 || row <= r.y || row >= r.y + r.h - 1) return DK_LV_NONE;
+    if (row == r.y + 1) return DK_LV_HEADER;
+    if (n > dk_listview_rows(r) && col == r.x + r.w - 2) return DK_LV_BAR;
+    const int i = top + row - r.y - 2;
+    return i < n ? i : DK_LV_NONE;
+}
+
+/* The header column under a cell, or -1. */
+int dk_listview_col(tui_rect r, const dk_col_t *cols, int ncols, int n, int col)
+{
+    const int room = r.w - 2 - (n > dk_listview_rows(r) ? 1 : 0);
+    int cx = r.x + 1;
+    for (int k = 0; k < ncols; k++) {
+        const int cw = lv_col_w(cols, ncols, k, room);
+        if (col >= cx && col < cx + cw) return k;
+        cx += cw;
+    }
+    return -1;
+}
+
+/* A menu bar: one row of titles on the menu face; the open one on the
+   selection colours, the one under the pointer on the hover face. */
+static int bar_x(int x, const char *const *names, int i)
+{
+    for (int k = 0; k < i; k++) x += dk_label_len(names[k]) + 2;
+    return x;
+}
+
+void dk_menubar(tui_surface *sf, tui_rect clip, int x, int y, int w, const char *const *names, int n, int open, bool keys)
+{
+    const uint8_t face = dk_attr(R_MENU);
+    const tui_rect row = tui_rect_intersect(clip, tui_rect_make(x, y, w, 1));
+    dk_fill(sf, row, face);
+    for (int i = 0; i < n; i++) {
+        const int tx = bar_x(x, names, i), tw = dk_label_len(names[i]) + 2;
+        const tui_rect t = tui_rect_intersect(row, tui_rect_make(tx, y, tw, 1));
+        const uint8_t a = i == open ? dk_attr(R_SELECT) : keys && dk_hover(t) ? dk_attr(R_TASKHOVER) : face;
+        if (a != face) dk_fill(sf, t, a);
+        dk_label(sf, t, tx + 1, y, names[i], a, a == face && keys);
+    }
+}
+
+int dk_menubar_hit(int x, int y, const char *const *names, int n, int col, int row)
+{
+    if (row != y) return -1;
+    for (int i = 0; i < n; i++) {
+        const int tx = bar_x(x, names, i);
+        if (col >= tx && col < tx + dk_label_len(names[i]) + 2) return i;
+    }
+    return -1;
+}
+
+int dk_menubar_x(int x, const char *const *names, int i) { return bar_x(x, names, i); }

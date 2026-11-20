@@ -16,6 +16,7 @@
 #include "../../ls_keyboard.h"
 #include "../../ls_app.h"
 #include "../../ls_cartocore_map.h"
+#include "ls_hub.h"
 #include "rec_state.h"
 #include "rec_watch.h"
 #include "rec_file_open.h"
@@ -600,7 +601,7 @@ static void actions_done(int i)
 {
     if (i < 0 || i >= s_menu_n) return;
     switch (s_menu[i]) {
-    case 'O': s_replay_menu = true; open_selected(); break;
+    case 'O': s_replay_menu = true; open_selected(); if (s_job != JOB_SUB) s_replay_menu = false; break;
     case 'F': send_to_flipper(); break;
     case 'R': replay_open(); break;
     case 'T': open_text(); break;
@@ -609,6 +610,9 @@ static void actions_done(int i)
     case 'C': copy_to_music(); break;
     case 'M': move_to_music(); break;
     case 'I': info_open(); break;
+    case 'L':
+        snprintf(s_feedback, sizeof(s_feedback), ls_locker_upload(s_open_path) ? "Sending to the locker, see LOCKER" : "The hub is busy, try again");
+        break;
     case 'N':
         snprintf(s_rename_from, sizeof(s_rename_from), "%s", s_open_path);
         ls_keyboard_open("RENAME", open_name(), 255, rename_done);
@@ -671,6 +675,7 @@ static void actions_open(void)
     }
     if (!dir && is_map(open_name())) menu_add('A', "OPEN IN MAP", "Show this map in MAP");
     if (!dir && is_text(open_name()) && s_view != VIEW_TEXT) menu_add('T', "VIEW AS TEXT", "The file as written");
+    if (!dir) menu_add('L', "SEND TO LOCKER", "Over Wi-Fi to your locker");
     menu_add('I', "INFO", LS_TEXT(t_scr_files_size_date_where_it, "Size, date, where it is"));
     menu_add('N', "RENAME", "Type a new name");
     menu_add('D', "DELETE", dir ? "Only if the folder is empty" : "Remove it from the card");
@@ -695,7 +700,6 @@ static void sort_open(void)
     static const char *const WHY[SORT__COUNT] = {"A to Z", "Most recent at the top",
         "Oldest at the top", "Biggest at the top", "Grouped by extension"};
     ls_picker_open("SORT", sort_done);
-    ls_picker_back(more_open);
     for (int i = 0; i < SORT__COUNT; i++)
         ls_picker_add(SORT_NAME_TEXT[i], i == (int)s_sort ? "in use" : WHY[i]);
 }
@@ -719,7 +723,7 @@ static void more_done(int i)
 {
     if (i < 0 || i >= s_menu_n) return;
     const char id = s_menu[i];
-    if (id == 'S') { sort_open(); return; }
+    if (id == 'S') { sort_open(); ls_picker_back(more_open); return; }   /* BACK to OPTIONS only when it came from there */
     if (id >= '0' && id <= '4') { goto_path(GOTO_PATH[id - '0']); return; }
     if (id == 'F') {
         ls_picker_open("SHOW", filter_done);
@@ -919,7 +923,7 @@ static void sub_overview(tui_surface *sf, tui_rect r)
         }
         const double frac = on / dt;
         const char g = frac > 0.85 ? '#' : frac > 0.4 ? '=' : frac > 0.02 ? '-' : '_';
-        const uint8_t at = frac > 0.02 ? TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)
+        const uint8_t at = frac > 0.02 ? ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK))
                                        : TUI_ATTR(TUI_BLUE, TUI_BLACK);
         tui_put_char(sf, r, r.x + (int)(c % (uint64_t)r.w), r.y + (int)(c / (uint64_t)r.w), g, at);
     }
@@ -942,7 +946,7 @@ static int sub_histogram(tui_surface *sf, tui_rect r)
     const int label_w = 13, half = (r.w - label_w - 2) / 2;
     if (half < 4) return 0;
     tui_put_str(sf, r, r.x, r.y, "PULSE LENGTH", LS_ATTR_DIM);
-    tui_put_str(sf, r, r.x + label_w, r.y, "MARK", TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, r, r.x + label_w, r.y, "MARK", ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
     tui_put_str(sf, r, r.x + label_w + half + 1, r.y, "SPACE", TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     int y = r.y + 1;
     for (int b = 0; b < BINS && y < r.y + r.h; b++) {
@@ -955,8 +959,8 @@ static int sub_histogram(tui_surface *sf, tui_rect r)
         const int wh = (int)((uint64_t)hi[b] * (uint64_t)(half - 1) / top);
         const int wl = (int)((uint64_t)lo[b] * (uint64_t)(half - 1) / top);
         for (int x = 0; x < wh; x++)
-            tui_put_char(sf, r, r.x + label_w + x, y, '#', TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
-        if (hi[b] && !wh) tui_put_char(sf, r, r.x + label_w, y, '.', TUI_ATTR(TUI_GREEN, TUI_BLACK));
+            tui_put_char(sf, r, r.x + label_w + x, y, '#', ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
+        if (hi[b] && !wh) tui_put_char(sf, r, r.x + label_w, y, '.', ls_ink_hue(TUI_ATTR(TUI_GREEN, TUI_BLACK)));
         for (int x = 0; x < wl; x++)
             tui_put_char(sf, r, r.x + label_w + half + 1 + x, y, '#', TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
         if (lo[b] && !wl) tui_put_char(sf, r, r.x + label_w + half + 1, y, '.', TUI_ATTR(TUI_CYAN, TUI_BLACK));
@@ -973,7 +977,7 @@ static void draw_sub(tui_surface *sf, tui_rect p)
     tui_rect in = tui_rect_make(x, p.y + 1, w, p.h - 2);
     char name[80];
     fit_name(open_name(), w, name, sizeof(name));
-    tui_put_str(sf, in, x, y++, name, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, in, x, y++, name, ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
     snprintf(line, sizeof(line), "%.4f MHz   %s", s_sub.freq_hz / 1e6,
              s_sub.protocol[0] ? s_sub.protocol : "?");
     tui_put_str(sf, in, x, y++, line, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
@@ -1071,7 +1075,7 @@ static void draw_list(tui_surface *sf, tui_rect p)
 {
     s_list = tui_rect_make(p.x + 2, p.y + 2, p.w - 4, p.h - 3);
     s_tall_rows = s_list.w < 70;
-    tui_put_str(sf, p, p.x + 2, p.y + 1, s_path, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, p, p.x + 2, p.y + 1, s_path, ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK)));
     {
         char how[40];
         snprintf(how, sizeof(how), "%s%s%s", SORT_NAME_TEXT[s_sort],
@@ -1140,24 +1144,25 @@ static void draw(tui_surface *sf, tui_rect a)
         LS_SNPRINTF(t_scr_files_s_lu_s_back, progress, sizeof(progress), "%s %lu %s - BACK or tap to cancel",
                  s_job == JOB_DIR ? "Reading folder" : s_job == JOB_SUB ? "Loading capture" : "Copying",
                  s_job_bytes, s_job == JOB_DIR ? "entries" : "bytes");
-        ls_panel_box(sf, a, "FILES", TUI_CYAN);
+        ls_panel_box(sf, a, NULL, TUI_CYAN);
         tui_put_str(sf, a, a.x + 1, a.y + 2, progress, LS_ATTR_DIM);
         job_step();
         return;
     }
     if (a.h < 14 || a.w < 24) {
-        ls_panel_box(sf, a, "FILES", TUI_CYAN);
+        ls_panel_box(sf, a, NULL, TUI_CYAN);
         tui_put_str(sf, a, a.x + 1, a.y + 1, "Enlarge the pane", LS_ATTR_DIM);
         return;
     }
     s_touch_nav = s_view == VIEW_TEXT || (a.w < 90 && a.h > 35);
     if (s_touch_nav) {
         const bool list = s_view == VIEW_LIST;
+        const bool sub = s_view == VIEW_SUB;   /* a capture is one page: PREV/NEXT have nothing to move */
         const int rows = list_rows();
         ls_btn_t nav[] = {
-            {"PREV", "PAGE", 0, false, list ? s_selected < rows : s_scroll == 0 && !s_text_offset},
+            {"PREV", "PAGE", 0, false, list ? s_selected < rows : sub || (s_scroll == 0 && !s_text_offset)},
             {"NEXT", "PAGE", 0, false, list ? s_selected / rows * rows + rows >= s_count
-                                            : s_scroll >= s_scroll_max && s_text_offset + (long)s_text_len >= s_text_total},
+                                            : sub || (s_scroll >= s_scroll_max && s_text_offset + (long)s_text_len >= s_text_total)},
             {"BACK", list ? "FOLDER" : "LIST", 0, false, !can_go_up()}};
         ls_btn_bar_raised_slot(sf, tui_rect_make(a.x, a.y + a.h - 5, a.w, 5), nav, 3, -1,
                                LS_BTN_SLOT_WATERFALL);
@@ -1179,7 +1184,7 @@ static void draw(tui_surface *sf, tui_rect a)
     ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), btn, 5, button_focus);
     tui_rect panel = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - 1);
     char title[80];
-    if (list) snprintf(title, sizeof(title), "FILES  %s%d", s_truncated ? "first " : "", s_count);
+    if (list) snprintf(title, sizeof(title), "%s%d ENTRIES", s_truncated ? "FIRST " : "", s_count);
     else if (s_view == VIEW_TEXT) LS_SNPRINTF(t_scr_files_text_ld_ld_ld, title, sizeof(title), "TEXT %ld-%ld/%ld bytes", s_text_offset, s_text_offset + (long)s_text_len, s_text_total);
     else snprintf(title, sizeof(title), "CAPTURE");
     ls_panel_box(sf, panel, title, TUI_CYAN);

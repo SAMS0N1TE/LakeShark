@@ -1,6 +1,8 @@
 {
   "category": "radio",
-  "description": "CARRIER LEVEL from EXPERIMENTS: the level of one frequency, a 12.5 kHz channel read every 2 ms on any radio the board has (LR2021, RTL-SDR, HackRF): now, over the last second and since START, with a bar.",
+  "group": "radio",
+  "version": "1.1",
+  "description": "CARRIER LEVEL from EXPERIMENTS: the level of one frequency, a 12.5 kHz channel read every 2 ms on any radio the board has (LR2021, RTL-SDR, HackRF): now in big figures, the board's VFD bargraph holding the last second's peak, the second and the whole run as spans on a -100 to 0 dBFS scale, and a braille history of the level.",
   "thumb": "apps/media/level/thumb-20261029.png",
   "screens": [
     "apps/media/level/1-20261029.png"
