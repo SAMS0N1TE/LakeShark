@@ -286,6 +286,20 @@ bool ls_lap_rx_physical_busy(void) {
     for(unsigned i=0;i<LS_LAP_CONTEXTS;i++) if(atomic_load(&p4_state_slots[i])!=ST_IDLE && p4_mail_slots[i].radio>=0) return true;
     return false;
 }
+/* A USB SDR (RTL-SDR, HackRF) runs on its own capture task and bus, so it
+   may receive beside a packet or scan session on the socket radio (an app
+   such as BUGHUNT's DUAL hunt uses both on one frequency). An I/Q session on
+   the socket radio itself (the LR2021) still excludes them. */
+static bool usb_sdr_kind(uint8_t kind) { return kind == LAP_RADIO_KIND_RTL || kind == LAP_RADIO_KIND_HACKRF; }
+bool ls_lap_rx_socket_busy(void) {
+    for(unsigned i=0;i<LS_LAP_CONTEXTS;i++) {
+        if(atomic_load(&p4_state_slots[i])==ST_IDLE || p4_mail_slots[i].radio<0) continue;
+        const int r=p4_mail_slots[i].radio;
+        lk(); const bool usb = r<atomic_load(&radio_count) && usb_sdr_kind(radios[r].kind); ulk();
+        if(!usb) return true;
+    }
+    return false;
+}
 int lap_rx_open(int radio, const lap_rx_config_t *cfg) {
     if (!ls_lap_api_inside()) return LAP_RX_EINVAL;
     if (!rx_allowed()) return LAP_RX_EACCES;
@@ -298,7 +312,7 @@ int lap_rx_open(int radio, const lap_rx_config_t *cfg) {
     ulk();
     if(radio==-1)r=(lap_radio_info_t){.present=true,.features=LAP_RXF_IQ|LAP_RXF_SPECTRUM,.min_hz=1,.max_hz=UINT64_MAX,.min_rate=1,.max_rate=2400000,.gain_min=INT16_MIN,.gain_max=INT16_MAX};
     else if(radio<0||radio>=n)return LAP_RX_ENODEV;
-    if(radio>=0 && ls_lap_io_radio_busy())return LAP_RX_EBUSY;
+    if(radio>=0 && ls_lap_io_radio_busy() && !usb_sdr_kind(r.kind))return LAP_RX_EBUSY;
     if (!r.present) return LAP_RX_ENODEV;
     if (!(r.features & LAP_RXF_IQ)) return LAP_RX_EUNSUPPORTED;
     if (r.busy) return LAP_RX_EBUSY;

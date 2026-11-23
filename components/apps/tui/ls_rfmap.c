@@ -64,12 +64,14 @@ static bool stipple(int x, int y, int step)
 }
 
 static ls_rfmap_layer_t s_extra;
-void ls_rfmap_set_extra(ls_rfmap_layer_t fn) { s_extra = fn; }
+static char s_extra_label[40];
+void ls_rfmap_set_extra(ls_rfmap_layer_t fn) { s_extra = fn; if (!fn) s_extra_label[0] = 0; }
+void ls_rfmap_set_extra_label(const char *label) { snprintf(s_extra_label, sizeof(s_extra_label), "%s", label ? label : ""); }
+void ls_rfmap_extra(const ls_rfmap_frame_t *f) { if (f && f->dot && s_extra) s_extra(f); }
 
 void ls_rfmap_heat(const ls_rfmap_frame_t *f)
 {
     if (!f || !f->dot) return;
-    if (s_extra) s_extra(f);
     int ch; ls_rfs_metric_t m;
     ls_rfs_shown(&ch, &m);
     EXT_RAM_BSS_ATTR static double tlat[LS_RFS_TRACK], tlon[LS_RFS_TRACK];
@@ -163,11 +165,17 @@ void ls_rfmap_fox(const ls_rfmap_frame_t *f)
 tui_rect ls_rfmap_legend(tui_surface *sf, tui_rect body, bool heat, bool fox)
 {
     tui_rect r = tui_rect_make(body.x, body.y, 0, 0);
-    if (!heat && !fox) return r;
+    const bool extra = s_extra && s_extra_label[0];
+    if (!heat && !fox && !extra) return r;
     const int w = body.w < 30 ? body.w : 30;
     int row = body.y;
     const uint8_t ink = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), dim = LS_ATTR_DIM;
     char line[48];
+    if (extra) {
+        for (int x = 0; x < w; x++) tui_put_char(sf, body, body.x + x, row, ' ', ink);
+        tui_put_str(sf, body, body.x, row, s_extra_label, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        row++;
+    }
     if (heat) {
         EXT_RAM_BSS_ATTR static ls_rfs_view_t v;
         ls_rfs_view(&v);

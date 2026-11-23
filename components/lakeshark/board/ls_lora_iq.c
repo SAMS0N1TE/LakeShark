@@ -24,8 +24,13 @@ bool lr20xx_iq_route_build(lr20xx_iq_route_t kind, uint8_t code, uint32_t source
 {
     if (!out || !rate || !format) return false;
     if (kind == LR20XX_IQ_SOURCE2) {
+        /* 4 x the LoRa bandwidth, measured for 31.25..250 kHz. The four
+           narrow bandwidths' rates (31.25, 41.7, 62.5 and 83.3 ksample/s) are
+           `lora lrprobe`'s to measure. */
         if (source2_rate != 125000 && source2_rate != 250000 &&
-            source2_rate != 500000 && source2_rate != 1000000) return false;
+            source2_rate != 500000 && source2_rate != 1000000 &&
+            source2_rate != 31252 && source2_rate != 41668 &&
+            source2_rate != 62500 && source2_rate != 83332) return false;
         const uint8_t a[11] = {0xFF, 0, 0, 0, 0, 0x0A, 0, 0, 0, 0, 1};
         memcpy(out, a, sizeof(a));
         *rate = source2_rate; *format = LR20XX_IQ16;

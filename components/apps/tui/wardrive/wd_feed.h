@@ -32,6 +32,7 @@ bool wd_feed_worker_alive(void);
 void wd_lock(void);
 void wd_unlock(void);
 void *wd_feed_alloc(size_t bytes);  /* zeroed, PSRAM on the board */
+void wd_feed_free(void *p);
 
 /* The card. */
 bool wd_feed_card(void);

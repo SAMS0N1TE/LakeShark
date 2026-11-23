@@ -21,6 +21,10 @@ typedef struct cc_cellset {
     struct { void *handle; uint64_t bytes,age; uint32_t id; int used; } slots[4];
     size_t opens,evictions,fallbacks; int missing,indexless;
     void *directory,*staging; size_t directory_bytes,staging_bytes;
+    /* Zooms 8 through this draw the overview's z7 scaled up instead of the z8
+       cells (0: none): a view far enough out to show only what the overview
+       holds reads no cells and decodes a fraction. Caller option, per frame. */
+    unsigned overview_through;
 } cc_cellset;
 int cc_cellset_open(cc_cellset *set,cc_ctile_read index_read,void *index_ctx,uint64_t index_bytes,
                     cc_cellset_io io,void *directory,size_t directory_bytes,void *staging,size_t staging_bytes);

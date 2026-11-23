@@ -42,5 +42,21 @@ int main(void) {
     assert(carto_plan_budget(64u*CARTO_MIB,64u*CARTO_MIB,overhead,true,false,true,true,&b));
     assert(b.cold==16u*CARTO_MIB && b.idle==4u*CARTO_MIB && b.decoded==2u*CARTO_MIB);
     assert(carto_plan_budget(free_bytes,free_bytes,overhead,false,false,false,true,&b) && b.cache==4u*CARTO_MIB);
+    /* LEAN: where the full plan says no, a smaller map instead of none */
+    assert(!carto_plan_budget(6u*CARTO_MIB,6u*CARTO_MIB,401524u,false,false,true,true,&b));
+    assert(carto_plan_budget_lean(6u*CARTO_MIB,6u*CARTO_MIB,401524u,false,false,&b));
+    assert(b.idle==0 && b.cache==0 && b.decoded==768u*1024u && b.cold>=2u*CARTO_MIB);
+    assert(b.cold+b.decoded+401524u+CARTO_PSRAM_RESERVE_LEAN<=6u*CARTO_MIB);
+    /* cells on 5 MB free: the full plan fails, the lean one draws */
+    assert(!carto_plan_budget(5u*CARTO_MIB,5u*CARTO_MIB,overhead,true,true,true,true,&b));
+    assert(carto_plan_budget_lean(5u*CARTO_MIB,5u*CARTO_MIB,overhead,true,true,&b));
+    assert(b.decoded==CARTO_MIB && b.cold>=CARTO_LEAN_COLD_MIN);
+    /* the board's case (11-22): 3.8 MB free after MAP's pictures took theirs, cells re-open */
+    assert(carto_plan_budget_lean(3826752u,3826752u,401556u,true,true,&b) && b.cold>=CARTO_MIB);
+    /* fragmented: the arena is no bigger than the largest block */
+    assert(carto_plan_budget_lean(9u*CARTO_MIB,1536u*1024u,overhead,false,false,&b) && b.cold==1536u*1024u);
+    assert(!carto_plan_budget_lean(9u*CARTO_MIB,512u*1024u,overhead,false,false,&b));
+    /* and there is a floor: 2 MB free draws nothing */
+    assert(!carto_plan_budget_lean(2u*CARTO_MIB,2u*CARTO_MIB,overhead,false,false,&b));
     puts("PASS: lean cell total, measured margin, reserve, fragmentation and unchanged single-file budgets");
 }

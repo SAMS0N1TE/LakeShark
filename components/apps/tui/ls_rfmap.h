@@ -32,6 +32,10 @@ typedef struct {
    points (WARDRIVE's drive). NULL removes it. UI task only. */
 typedef void (*ls_rfmap_layer_t)(const ls_rfmap_frame_t *f);
 void ls_rfmap_set_extra(ls_rfmap_layer_t fn);
+/* What the extra layer is, for MAP's legend ("" or NULL: no line). It is
+   drawn whatever the RF survey heat's own HIDE says: ls_rfmap_extra. */
+void ls_rfmap_set_extra_label(const char *label);
+void ls_rfmap_extra(const ls_rfmap_frame_t *f);
 bool ls_rfmap_has_heat(void);
 bool ls_rfmap_has_fox(void);
 void ls_rfmap_heat(const ls_rfmap_frame_t *f);

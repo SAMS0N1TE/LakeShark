@@ -45,7 +45,7 @@ static const char *const GROUPS[] = {"RADIO", "FIELD", "SYSTEM", "USER"};
 static const char *const LAYOUT[] = {
     "p25", "fm", "adsb", "freqs", "falls", "mesh", "subghz", "tmach", "digi", "labs", "radio", NULL,
     "wardrive", "map", "gps", "compass", "notes", NULL,   /* SWEEP, DRONES, CELL WATCH: in WARDRIVE's folder */
-    "set", "link", "radios", "update", "store", "packs", "locker", "chat", "diag", "files", "music", NULL,
+    "set", "link", "radios", "update", "store", "packs", "locker", "chat", "diag", "files", "music", "bootlog", NULL,
 };
 
 /* Folders: one tile on HOME for a lead app and the apps that belong with it.
@@ -65,7 +65,7 @@ typedef struct {
 static const ls_app_t KIT_WIFIBT = {
     .id = "kit.wifibt", .name = "WIFI/BT KIT", .sub = "capture, scan, net",
     .icon = LS_ICON_WIRELESS, .hue = TUI_CYAN, .cat = LS_APP_USER,
-    .group = LS_APP_GROUP_SYSTEM,          /* beside LINK */
+    .group = LS_APP_GROUP_FIELD,           /* the scanners and hunters: beside WARDRIVE */
 };
 
 static const folder_t FOLDERS[] = {
@@ -148,9 +148,17 @@ static void add_tile(ls_tile_t *out, const ls_app_t **apps, int *n, const ls_app
 
 /* The tab an app lives on: a built-in the layout does not place goes in
    RADIO, an app from the card in the group its manifest names. */
+/* Card apps whose manifest asks for a group they do not belong in: the
+   group HOME puts them in instead, whatever version is installed. */
+static const struct { const char *id; int group; } GROUP_FIX[] = {
+    { "meshlang", LS_APP_GROUP_SYSTEM },    /* MESH LANGUAGES: a settings-like utility, not a receiver */
+};
+
 static int home_group(const ls_app_t *a)
 {
     if (a->cat != LS_APP_USER) return 0;
+    for (unsigned i = 0; i < sizeof(GROUP_FIX) / sizeof(GROUP_FIX[0]); i++)
+        if (a->id && !strcmp(a->id, GROUP_FIX[i].id)) return GROUP_FIX[i].group - 1;
     return a->group >= 1 && a->group <= 4 ? a->group - 1 : 3;
 }
 

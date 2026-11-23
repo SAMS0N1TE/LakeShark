@@ -287,6 +287,8 @@ void ls_gps_get(ls_gps_state_t *out)
 static bool s_lora_fitted, s_lora_fg, s_lora_bg;
 static ls_mesh_stats_t s_mesh_stats;
 bool ls_lora_present(void) { return s_lora_fitted; }
+#include "ls_lora_lr20xx.h"
+bool lr20xx_chip_health(lr20xx_health_t *out) { (void)out; return false; }
 bool ls_mesh_radio_wanted(void) { return s_lora_fg; }
 bool ls_mesh_radio_bg(void) { return s_lora_bg; }
 bool ls_gps_running(void) { return false; }
@@ -6975,13 +6977,13 @@ LS_CASE(home_card_apps_fold_into_the_wifi_bt_kit_from_two_installed)
     LS_CHECK(find_text("WIFI SURVEY",&x,&y));
     LS_CHECK(find_text("[SD]",&x,&y));
     LS_CHECK(!find_text("WIFI/BT KIT",&x,&y));
-    /* Two: one folder tile in SYSTEM beside LINK, the apps inside it; DICE
+    /* Two: one folder tile in FIELD beside WARDRIVE, the apps inside it; DICE
        stays in USER. */
     ls_app_register(&card[1]);
     fresh();draw_pane(&ls_scr_home,PANES[0]);
     LS_CHECK(!find_text("WIFI/BT KIT",&x,&y));
     LS_CHECK(find_text("DICE",&x,&y));
-    ls_scr_home.key(LS_TK_F3,0);
+    ls_scr_home.key(LS_TK_F2,0);
     fresh();draw_pane(&ls_scr_home,PANES[0]);
     LS_CHECK(find_text("WIFI/BT KIT",&x,&y));
     LS_CHECK(find_text("[+2]",&x,&y));

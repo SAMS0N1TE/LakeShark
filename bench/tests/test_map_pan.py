@@ -73,4 +73,11 @@ for look in (2, 3, 4):
 # 2. the card's engine pinned, each style
 for style in ('picture', 'smooth', 'braille'):
     judge(run(pans, cells, LSSIM_CARTOCORE=style, LSSIM_CARTO_ZOOM=12), style)
+# 3. Far out (z6) over the edge of the downloaded cells: the middle crosses it, the cells stay in view, and
+#    the card's engine keeps the view (decided by the middle alone, every pan across a coast swapped the
+#    whole map to the world tiles and back)
+edge = '~30,+------,~60,' + ','.join(['S30:20>22:20,~60,S22:20>30:20,~60'] * 2)
+z6 = [f for f in run(edge, cells, LSSIM_MAP_SOURCE=0, LSSIM_MAP_LOOK=4, LSSIM_MAP_AT='44.0,-69.0') if f['z'] == 6]
+assert z6 and z6[0]['v'] == 'CCP', z6[:2]
+judge(z6, 'edge of the cells at z6')
 print('PASS: MAP pans without engine changes, edge outlines, lost detail or late redraws')

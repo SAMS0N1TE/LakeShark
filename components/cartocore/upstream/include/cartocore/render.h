@@ -16,6 +16,11 @@ typedef struct {
     int scene_ready;
     int pixel_reuse,pixel_dx,pixel_dy; /* saved borrows 10 bytes/cell as prior pixel state */
     int encoded; /* saved holds the cells of the current raster */
+    /* Zoom levels fewer to choose the drawn classes, rivers and bold roads
+       for (planes.zoom = z - this, at least 1): a picture shows more ground
+       per screen than cells do, so far out it draws what a farther view of
+       cells would, and decodes, rasters and simplifies less. Caller option. */
+    int detail_less, active_detail_less;
 } cc_renderer;
 int cc_renderer_init(cc_renderer *r,cc_arena *arena,int cols,int rows,cc_cell *saved);
 size_t cc_renderer_hot_bytes(int cols,int rows);

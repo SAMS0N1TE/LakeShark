@@ -199,6 +199,7 @@ bool wd_feed_worker_alive(void) { return false; }
 void wd_lock(void) { }
 void wd_unlock(void) { }
 void *wd_feed_alloc(size_t bytes) { return calloc(1, bytes); }
+void wd_feed_free(void *p) { free(p); }
 bool wd_feed_card(void) { return true; }
 const char *wd_feed_dir(void)
 {

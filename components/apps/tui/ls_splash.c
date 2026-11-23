@@ -3,6 +3,7 @@
 #include "ls_splash_world.h"
 #include "ls_tui_ui.h"
 #include "ls_wordmark.h"
+#include "esp_timer.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -20,6 +21,9 @@ static const uint8_t SPLASH_LADDER[5] = {
 #define HOME_LAT   28.0f
 #define HOME_LON  -96.0f
 #define SPIN_DEG  150.0f
+/* Degrees a second the globe turns: by the clock, not by boot's progress,
+   so it never stops on a stage and never jumps when one finishes. */
+#define SPIN_RATE  24.0f
 /* Sunlight from the upper left, toward the viewer: the lit side of the globe
    is the bright one, and the limb fades round to the night side. */
 #define SUN_X -0.55f
@@ -176,6 +180,29 @@ static void land(const view_t *v)
     }
 }
 
+/* Cities on the night side, as points of light: they come on as the
+   terminator passes over them while the globe turns. */
+static void city_lights(const view_t *v)
+{
+    static const int16_t CITY[][2] = {     /* lat, lon, whole degrees */
+        { 41, -74 }, { 34, -118 }, { 42, -88 }, { 30, -95 }, { 26, -80 }, { 39, -77 }, { 47, -122 }, { 43, -71 },
+        { 19, -99 }, { 45, -74 }, { -23, -47 }, { -35, -58 }, { 4, -74 }, { -12, -77 }, { 51, 0 }, { 49, 2 },
+        { 52, 13 }, { 40, -4 }, { 42, 12 }, { 55, 37 }, { 41, 29 }, { 30, 31 }, { 6, 3 }, { -26, 28 },
+        { 25, 55 }, { 19, 73 }, { 28, 77 }, { 13, 100 }, { 1, 104 }, { 31, 121 }, { 40, 116 }, { 37, 127 },
+        { 35, 139 }, { 22, 114 }, { -6, 107 }, { 14, 121 }, { -34, 151 }, { -38, 145 }, { 61, -150 }, { 21, -158 },
+    };
+    for (unsigned i = 0; i < sizeof(CITY) / sizeof(CITY[0]); i++) {
+        const float la = CITY[i][0] * (float)M_PI / 180, lo = CITY[i][1] * (float)M_PI / 180;
+        float n[3];
+        int x, y;
+        turn(v, cosf(la) * sinf(lo), sinf(la), cosf(la) * cosf(lo), n);
+        const float l = lit(n);
+        if (l > 0.02f || !project(v, n, &x, &y)) continue;
+        /* the deep night brighter than the dusk */
+        dot(v, x, y, l < -0.25f ? TUI_YELLOW | TUI_BRIGHT : TUI_YELLOW, P_LAND);
+    }
+}
+
 /* Amber corner marks on the title window. */
 static void corners(const view_t *v)
 {
@@ -237,10 +264,11 @@ void ls_splash_draw(tui_surface *sf, int cols, int rows, int frame,
     const int win_w = mw + 6;
     const int win_x = tc - win_w / 2;
 
-    /* The globe: it closes in, tilts down and turns to home, slowing as it
-       arrives, so the last frames are nearly still for the hand-off. */
-    const float zoom = ease_out(t / 0.6f), spin = ease_out(t);
-    const float lon = (HOME_LON - SPIN_DEG * (1 - spin)) * (float)M_PI / 180;
+    /* The globe: it closes in and tilts down as boot goes, and turns all the
+       while at its own steady rate, from a little west of home. */
+    const float zoom = ease_out(t / 0.6f);
+    const double secs = esp_timer_get_time() / 1e6;
+    const float lon = (float)(fmod(HOME_LON - SPIN_DEG + secs * SPIN_RATE + 540.0, 360.0) - 180.0) * (float)M_PI / 180;
     const float lat = (HOME_LAT + 14 * (1 - zoom)) * (float)M_PI / 180;
     view_t v = {
         .cx = gx, .cy = gy, .r = full * (0.62f + 0.38f * zoom),
@@ -255,6 +283,7 @@ void ls_splash_draw(tui_surface *sf, int cols, int rows, int frame,
         graticule(&v);
         limb(&v);
         land(&v);
+        city_lights(&v);
         corners(&v);
 
         /* Progress as a hairline through the window: a dotted track, the

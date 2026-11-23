@@ -109,6 +109,7 @@
       "srcs": ["components/apps/tui/screens/ext/scr_wardrive.c",
                "components/apps/tui/wardrive/wd_core.c",
                "components/apps/tui/wardrive/wd_view3d.c",
+               "components/apps/tui/wardrive/wd_replay.c",
                "components/apps/tui/wardrive/wd_feed_board.c"],
       "screens": ["ls_scr_wardrive"],
       "syms": ["ls_wardrive_running"]

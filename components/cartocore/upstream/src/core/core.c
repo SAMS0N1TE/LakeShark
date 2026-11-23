@@ -107,7 +107,7 @@ int cc_planes_init_split(cc_planes *p, cc_arena *a, cc_arena *cold, int32_t cols
     size_t n, mark = a->used, cm=cold->used;
     if (cols < 1 || rows < 1 || cols > 16384 || rows > 16384) return 0;
     p->terrain_strength=p->terrain_active=0; p->terrain_phase_x=p->terrain_phase_y=0; p->terrain_palette_strength=-1;
-    p->reuse_fill=0; p->palette=NULL; p->ordered=0; p->zoom=0; p->colors16=0; p->edges_mode=CC_EDGES_SMOOTH; p->native_unclipped_lines=0; p->cols = cols; p->rows = rows; n = (size_t)cols * (size_t)rows;
+    p->reuse_fill=0; p->palette=NULL; p->ordered=0; p->zoom=0; p->detail_less=0; p->colors16=0; p->edges_mode=CC_EDGES_SMOOTH; p->native_unclipped_lines=0; p->cols = cols; p->rows = rows; n = (size_t)cols * (size_t)rows;
     p->words = ((size_t)cols + CC_WORD_BITS) / CC_WORD_BITS;
     p->dots = cc_arena_alloc(a, n, 1); p->ink = cc_arena_alloc(a, n, 1);
     p->dot_priority = cc_arena_alloc(a, n, 1); p->fill = cc_arena_alloc(a, n, 1);
@@ -513,8 +513,17 @@ static int ink_shown(const cc_planes *p,uint8_t ink) {
 static int line_big_enough(const cc_planes *p,const cc_feature *f) {
     if(!p->zoom || p->zoom>=10 || f->style.line!=CC_WATER || f->type==3 || !f->bounds_valid) return 1;
     const int64_t w=(int64_t)f->bounds_max.x-f->bounds_min.x,h=(int64_t)f->bounds_max.y-f->bounds_min.y;
-    const int64_t need=p->zoom<=5?24:p->zoom<=7?16:8;
+    /* a thinned picture holds more ground per dot of screen: a river must span more dots */
+    const int64_t need=(int64_t)(p->zoom<=5?24:p->zoom<=7?16:8)<<(p->detail_less>2?2:p->detail_less);
     return w>=need || h>=need;
+}
+/* Drawn at this zoom: the feature's class (or its line or fill) shows. Its
+   name is worth placing only then. */
+int cc_feature_shown(const cc_planes *p,const cc_feature *f) {
+    if(p->zoom && f->style.minzoom>p->zoom) return 0;
+    if(!f->style.line && !f->style.fill) return 1;
+    if(f->style.fill && f->type==3 && ink_shown(p,f->style.fill)) return 1;
+    return f->style.line && ink_shown(p,f->style.line) && line_big_enough(p,f);
 }
 /* Main roads two dots wide, so they read as the skeleton of the map. */
 static int ink_bold(const cc_planes *p,uint8_t ink) {

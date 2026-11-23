@@ -52,6 +52,10 @@ bool ls_carto_map_picture_covered(void);
 unsigned ls_carto_map_frame_serial(void);
 int ls_carto_map_picture_degraded(void);
 bool ls_carto_map_failed(void);
+/* The last try was short of memory; ask again now; the map open is the lean one. */
+bool ls_carto_map_short(void);
+void ls_carto_map_retry(void);
+bool ls_carto_map_lean(void);
 int ls_carto_map_nearest(double lat,double lon,double *nlat,double *nlon);
 /* As ls_carto_map_nearest; *lo: the lowest zoom what covers (lat,lon) draws. */
 int ls_carto_map_nearest_lo(double lat,double lon,double *nlat,double *nlon,unsigned *lo);
@@ -82,6 +86,9 @@ static inline bool ls_carto_map_picture_covered(void) { return false; }
 static inline unsigned ls_carto_map_frame_serial(void) { return 0; }
 static inline int ls_carto_map_picture_degraded(void) { return 0; }
 static inline bool ls_carto_map_failed(void) { return false; }
+static inline bool ls_carto_map_short(void) { return false; }
+static inline void ls_carto_map_retry(void) {}
+static inline bool ls_carto_map_lean(void) { return false; }
 static inline int ls_carto_map_nearest(double a,double b,double *c,double *d) { (void)a;(void)b;(void)c;(void)d;return -1; }
 static inline int ls_carto_map_nearest_lo(double a,double b,double *c,double *d,unsigned *e) { (void)a;(void)b;(void)c;(void)d;(void)e;return -1; }
 static inline unsigned ls_carto_map_cells_lo(void) { return 0; }

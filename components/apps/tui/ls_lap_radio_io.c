@@ -278,7 +278,7 @@ static int open_rx(int radio, const lap_packet_config_t *cfg, int kind,
         return e;
     if (!(modes.modes & modbit(&c)) || (kind == 2 && !(modes.modes & LAP_MODE_EDGES)))
         return LAP_RX_EUNSUPPORTED;
-    if (ls_lap_rx_physical_busy())
+    if (ls_lap_rx_socket_busy())
         return LAP_RX_EBUSY;
     lk();
     if (atomic_load(&p4_physical_tx) || p4_rx.id || p4_tx.status.state == LAP_IO_RUNNING ||

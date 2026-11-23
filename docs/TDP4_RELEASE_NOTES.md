@@ -1,5 +1,35 @@
 # LakeShark release notes
 
+## 3.1.0
+
+Update over Wi-Fi from UPDATE, or install `lakeshark-tdp4-3.1.0.zip` with the web flasher on terminalbay.com. LakeShark Desktop, Studio and the ESP32-P4-NANO stay on 2.22.0.
+
+New:
+
+- WARDRIVE REPLAY: play back any saved drive (R, or OPTIONS > REPLAY A DRIVE) from 1x to 32x, with pause and a seek bar. A three hour drive opens in about 11 seconds.
+- WARDRIVE 3D: your drive over the real map, with place names. Turn, tilt and zoom with the keys or drag to pan; FOLLOW stays on the board, CHASE rides behind it, and FIT ALL shows the whole drive. Tap a marker for the network's card and every place it was seen. Zoomed out, finds gather into labelled columns.
+- WARDRIVE 3D: HIDE gives the whole screen to the view, and LIGHT MAP switches to a light map. Speed, heading and counts sit on top, and the route is coloured by finds per minute.
+- Card apps can use a USB SDR (RTL-SDR or HackRF) and the board's radio at the same time, for BUGHUNT's DUAL hunt.
+
+Better:
+
+- MAP always opens: when memory is short it starts with a lighter map, makes room, and returns to full detail by itself.
+- MAP keeps your downloaded map while a pan crosses a coast or the edge of the downloaded area.
+- MAP draws zoomed-out views much faster, and far out it keeps them readable: big rivers and main roads, with place names spread across the picture.
+- WARDRIVE: the LIST scrolls with a finger, and MAP LAYER shows your drive on the map.
+- The boot globe turns smoothly the whole time, with city lights on the night side.
+- HOME: the WIFI/BT KIT folder sits in FIELD beside WARDRIVE, and BOOT LOG and MESH LANGUAGES are in SYSTEM.
+
+Better on LR2021 boards:
+
+- RTL-SDR and HackRF dongles work on LR2021 boards with the one firmware.
+- LR2021 modules without a TCXO keep their crystal setting, and a learned frequency correction can be set from another board's packets.
+- LoRa hears nodes that sit off frequency: up to a third of the channel width either side (41 kHz at 125 kHz), up from about 31 kHz. Nodes on modules without a TCXO now decode.
+- LoRa takes the narrow bandwidths 7.8, 10.4, 15.6 and 20.8 kHz, and a long packet at those bandwidths is allowed the time it needs to send.
+- DIAG shows the LR2021's own temperature and supply voltage.
+- LoRa packet details show each packet's own coding rate.
+- The radio checks every answer before using it, and front-end calibration tries again when a strong nearby signal interrupts it.
+
 ## 3.0.2
 
 Update over Wi-Fi from UPDATE, or install `lakeshark-tdp4-3.0.2.zip` with the web flasher on terminalbay.com. LakeShark Desktop, Studio and the ESP32-P4-NANO stay on 2.22.0.

@@ -63,6 +63,12 @@ void ls_btn_bar_raised_hued(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, 
 void ls_btn_bar_raised_row(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus);
 /* Tabs in exactly `rows` rows, in a hit slot of the caller's choosing. */
 void ls_btn_bar_rows_slot(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus,int slot,int rows);
+/* A key grid: raised keys in exactly `rows` rows, each row across the bar's
+   whole width (keys are not capped at the bar's usual width), down into the
+   panel's rounded corners with the outer keys' sides following the curve.
+   `hues` (or NULL) gives each key a colour of its own, as on HOME. */
+void ls_btn_bar_grid_slot(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus,int slot,int rows,
+                          const uint8_t *hues);
 void ls_btn_bar_raised_slot(tui_surface *sf, tui_rect bar, const ls_btn_t *btn,
                             int n, int focus, int slot);
 /* Clip and inset one line against the physical corner at its absolute row. */

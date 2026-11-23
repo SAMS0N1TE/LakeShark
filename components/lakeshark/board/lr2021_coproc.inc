@@ -359,8 +359,7 @@ static int cop_scan_pass_locked(float *dbm, int n, bool *row_done)
     const uint32_t moved = f > lr.cal_hz ? f - lr.cal_hz : lr.cal_hz - f;
     if (!s_cop_scan_rx || moved >= CALIB_FE_STEP_HZ || lr20xx_path_for_hz(f) != lr20xx_path_for_hz(lr.cal_hz)) {
         err = lr20xx_set_standby(true);
-        if (err == ESP_OK) err = lr20xx_calib_fe_hz(f, lr20xx_path_for_hz(f));
-        if (err == ESP_OK) err = lr20xx_check_last_ok();
+        if (err == ESP_OK) err = lr20xx_calib_fe_hz_checked(f, lr20xx_path_for_hz(f));
         if (err == ESP_OK) { lr.cal_hz = f; err = lr20xx_set_rf_frequency(f); }
         if (err == ESP_OK) err = lr20xx_set_rx(0xFFFFFFu);
         if (err == ESP_OK) {

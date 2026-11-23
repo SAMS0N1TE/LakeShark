@@ -25,7 +25,10 @@
 static bool g_wide = true;
 bool ls_tui_is_wide(void) { return g_wide; }
 bool ls_tui_keyboard_mode(void) { return false; }
-int  ls_tui_corner_pad(int row) { (void)row; return 0; }
+/* The panel's rounded corner: from g_corner_row down, g_corner_pad cells
+   either side are off the glass (none by default). */
+static int g_corner_row = 1 << 20, g_corner_pad;
+int  ls_tui_corner_pad(int row) { return row >= g_corner_row ? g_corner_pad : 0; }
 
 #define MAX_W 160
 #define MAX_H  40
@@ -231,6 +234,78 @@ LS_CASE(a_tap_anywhere_in_a_button_finds_that_button)
     }
 }
 
+
+/* A key grid (WARDRIVE's 3D D-pad: twelve keys, four rows of three) takes
+   the bar's whole width, rows as asked, and every key answers its own taps.
+   The capped bar left five empty columns either side of a 52-column panel. */
+static bool grid_has(const char *want);
+LS_CASE(a_key_grid_fills_the_width_in_the_rows_asked)
+{
+    static const ls_btn_t K[12] = {
+        {"ZOOM -",NULL,0,false,false,false}, {"TILT ^",NULL,0,false,false,false}, {"ZOOM +",NULL,0,false,false,false},
+        {"< TURN",NULL,0,false,false,false}, {"FOLLOW",NULL,0,false,false,false}, {"TURN >",NULL,0,false,false,false},
+        {"FIT ALL",NULL,0,false,false,false}, {"TILT v",NULL,0,false,false,false}, {"CHASE",NULL,0,false,false,false},
+        {"BACK",NULL,0,false,false,false}, {"LIGHT MAP",NULL,0,false,false,false}, {"HIDE",NULL,0,false,false,false},
+    };
+    g_wide = false;
+    surface();
+    ls_btn_bar_grid_slot(&s_sf, tui_rect_make(0, 10, 52, 24), K, 12, -1, LS_BTN_SLOT_SCREEN, 4, NULL);
+    LS_EQ_INT(12, ls_btn_count_slot(LS_BTN_SLOT_SCREEN));
+    for (int r = 0; r < 4; r++) {
+        int x0 = 0, y0 = 0, w0 = 0, h0 = 0, x2 = 0, y2 = 0, w2 = 0, h2 = 0;
+        LS_CHECK(ls_btn_rect_slot(LS_BTN_SLOT_SCREEN, r * 3, &x0, &y0, &w0, &h0));
+        LS_CHECK(ls_btn_rect_slot(LS_BTN_SLOT_SCREEN, r * 3 + 2, &x2, &y2, &w2, &h2));
+        LS_CHECK_MSG(x0 <= 1 && x2 + w2 >= 51, "row %d spans %d..%d of 52", r, x0, x2 + w2);
+        LS_EQ_INT(y0, y2);
+        LS_CHECK_MSG(h0 >= 5, "row %d is %d tall", r, h0);
+    }
+    for (int i = 0; i < 12; i++) {
+        int x = 0, y = 0, w = 0, h = 0;
+        LS_CHECK(ls_btn_rect_slot(LS_BTN_SLOT_SCREEN, i, &x, &y, &w, &h));
+        LS_EQ_INT(i, ls_btn_hit_slot(x + w / 2, y + h / 2, LS_BTN_SLOT_SCREEN));
+    }
+    LS_CHECK(grid_has("LIGHT MAP"));
+    g_wide = true;
+}
+
+/* The grid runs down into the panel's rounded corners: on a row the curve
+   reaches, the outer keys' frames step in by what the glass lacks there and
+   what is under the curve stays empty; rows above it keep the full width.
+   Each key fills in the colour it is given. */
+LS_CASE(a_key_grid_fits_the_rounded_corners_and_takes_its_colours)
+{
+    static const ls_btn_t K[6] = {
+        {"ZOOM -",NULL,0,false,false,false}, {"FOLLOW",NULL,0,false,false,false}, {"ZOOM +",NULL,0,false,false,false},
+        {"BACK",NULL,0,false,false,false}, {"LIGHT",NULL,0,false,false,false}, {"HIDE",NULL,0,false,false,false},
+    };
+    static const uint8_t HUE[6] = { TUI_BLUE, TUI_GREEN, TUI_BLUE, TUI_RED, TUI_CYAN, TUI_RED };
+    g_wide = false;
+    surface();
+    /* the bar ends on row 21; its last two rows are in the curve, 3 cells in */
+    g_corner_row = 20; g_corner_pad = 3;
+    const int W = s_sf.w;   /* the bar spans the panel, as on the board */
+    ls_btn_bar_grid_slot(&s_sf, tui_rect_make(0, 10, W, 12), K, 6, -1, LS_BTN_SLOT_SCREEN, 2, HUE);
+    g_corner_row = 1 << 20; g_corner_pad = 0;
+    int x = 0, y = 0, w = 0, h = 0;
+    LS_CHECK(ls_btn_rect_slot(LS_BTN_SLOT_SCREEN, 3, &x, &y, &w, &h));
+    LS_CHECK_MSG(x <= 1, "BACK starts at %d: the rows above the curve are full width", x);
+    LS_EQ_INT(21, y + h - 1);
+    /* above the curve the frame is at the edge */
+    LS_CHECK(cell_at(x, 19) == '|');
+    /* in it, the edge is three cells in and nothing is drawn outside it */
+    for (int r = 20; r <= 21; r++) {
+        for (int c = 0; c < 3; c++) LS_CHECK_MSG(cell_at(c, r) == ' ', "row %d col %d is under the curve", r, c);
+        LS_CHECK_MSG(cell_at(3, r) == '|' || cell_at(3, r) == '+', "row %d: the frame steps in to col 3 (got '%c')", r, cell_at(3, r));
+        for (int c = W - 3; c < W; c++) LS_CHECK_MSG(cell_at(c, r) == ' ', "row %d col %d is under the curve", r, c);
+        LS_CHECK_MSG(cell_at(W - 4, r) == '|' || cell_at(W - 4, r) == '+', "row %d: the right frame steps in to col %d (got '%c')", r, W - 4, cell_at(W - 4, r));
+    }
+    /* colours: BACK's frame is red, ZOOM -'s blue */
+    LS_EQ_INT(TUI_RED, TUI_ATTR_FG(s_sf.back[(size_t)19 * s_sf.w + x].attr) & 7);
+    int zx = 0, zy = 0, zw = 0, zh = 0;
+    LS_CHECK(ls_btn_rect_slot(LS_BTN_SLOT_SCREEN, 0, &zx, &zy, &zw, &zh));
+    LS_EQ_INT(TUI_BLUE, TUI_ATTR_FG(s_sf.back[(size_t)(zy + 1) * s_sf.w + zx].attr) & 7);
+    g_wide = true;
+}
 
 /* The grid as text, so a test can ask whether a word survived the layout. */
 static bool grid_has(const char *want)

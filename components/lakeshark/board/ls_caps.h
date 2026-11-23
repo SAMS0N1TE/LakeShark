@@ -272,8 +272,8 @@
 #else
 /* LS_LR_EDITION_BUILD: the dongle code is not in the image (preprocessor).
    LS_LR_EDITION: the board runs without dongles right now. In the universal
-   image that is a boot-time fact (the USB host was left off: an LR2021 board
-   on its default, or 'board usb off'), so it is an expression, not a
+   image that is a boot-time fact (the owner set 'board usb off'; auto is on
+   for every board with the port), so it is an expression, not a
    constant: use it in if (), never in #if. */
 #define LS_LR_EDITION_BUILD  0
 #define LS_HAS_USB_SDR       1

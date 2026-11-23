@@ -394,6 +394,14 @@ void ls_mesh_radio_block(bool on) { (void)on; }
 bool ls_mesh_radio_blocked(void) { return false; }
 
 bool ls_lora_present(void) { return getenv("LSSIM_LRIQ") != NULL; }   /* the sim's LR I/Q stand-in */
+#include "ls_lora_lr20xx.h"
+/* DIAG's LR2021 temperature and supply: a plausible reading with the LR stand-in. */
+bool lr20xx_chip_health(lr20xx_health_t *out)
+{
+    if (!getenv("LSSIM_LRIQ") || !out) return false;
+    out->temp_c10 = 327; out->vbat_mv = 3328; out->age_s = 7; out->read_us = 3700;
+    return true;
+}
 bool ls_lora_fsk_active(void) { return false; }
 bool ls_lora_scanning(void) { return false; }
 esp_err_t ls_lora_scan_begin(uint32_t a, uint32_t b)

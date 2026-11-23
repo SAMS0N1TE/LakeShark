@@ -40,6 +40,7 @@ static inline bool ls_desk_focused(void) { return false; }
 #include "ls_lora.h"
 #include "ls_lora_port.h"
 #include "ls_lora_lr20xx.h"
+#include "ls_tx_unlock.h"
 #include "lr_wf_session.h"
 extern "C" {
 #include "lr_iq_spectrum.h"   /* a C header without its own guards */
@@ -1349,7 +1350,7 @@ static inline uint32_t ph_avg(uint32_t avg, int64_t dt)
    progress line fills as boot really gets through its stages, and both reach
    the end together when compact_ui_start hands over. Drawn on the UI's own
    worker before its first session, so nothing else draws meanwhile. */
-#define BOOT_SPLASH_STEP_MS 40
+#define BOOT_SPLASH_STEP_MS 25
 static volatile int s_boot_pct;
 static const char *volatile s_boot_label;
 static volatile bool s_boot_splash_wanted, s_boot_splash_shown, s_boot_splash_handed;
@@ -3105,6 +3106,24 @@ static int tui_cmd(int argc, char **argv)
         return 0;
     }
 #endif
+    /* 'tui memhog MB' holds that much PSRAM in 256 KB pieces (what other
+       apps holding memory looks like to MAP); 'tui memhog 0' gives it back. */
+    if (argc >= 3 && !strcmp(argv[1], "memhog")) {
+        static void *held[256];
+        static int n;
+        const int mb = atoi(argv[2]);
+        const int want = mb < 0 ? 0 : mb > 64 ? 256 : mb * 4;
+        while (n > want) heap_caps_free(held[--n]);
+        while (n < want && n < 256) {
+            void *p = heap_caps_malloc(256 * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!p) break;
+            held[n++] = p;
+        }
+        printf("tui: memhog holds %d KB, psram free %u largest %u\n", n * 256,
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        return 0;
+    }
 #if CONFIG_LS_DEV_CONSOLE
     if (argc >= 2 && !strcmp(argv[1], "stalltest")) {
         LS_PRINTF(fmt_compact_ui_tui_stalltest_the_ui, "tui stalltest: the UI stops drawing; the stall check reports at %d s and ends the run at %d s\n",
@@ -3720,6 +3739,20 @@ static int lora_cmd(int argc, char **argv)
     if (lr20xx_stream_source2_active() && !(argc >= 2 && !strcmp(argv[1], "lrgain"))) {
         puts(LS_TEXT(msg_compact_ui_lora_live_iq_owns, "lora: live IQ owns the radio; switch away from LR2021 in RADIO first"));
         return 1;
+    }
+    /* lrx own takes the part for raw probes: the mesh lets go first, as
+       for the FSK receive commands, and gets it back when the probes end. */
+    if (LS_TX_UNLOCKED && argc == 4 && !strcmp(argv[1], "lrx") && !strcmp(argv[2], "own") &&
+        (!strcmp(argv[3], "on") || !strcmp(argv[3], "off"))) {
+        const bool on = !strcmp(argv[3], "on");
+        if (on) {
+            const int64_t deadline = esp_timer_get_time() + 1000000;
+            while (!ls_mesh_radio_hold(true) && esp_timer_get_time() < deadline) vTaskDelay(pdMS_TO_TICKS(10));
+            if (!ls_mesh_radio_held()) { ls_mesh_radio_hold(false); puts("lrx: radio busy"); return 1; }
+        }
+        const int r = lr20xx_clock_command(argc, argv);
+        if (!on || r) ls_mesh_radio_hold(false);
+        return r;
     }
     const int lr_clock = lr20xx_clock_command(argc, argv);
     if (lr_clock >= 0) return lr_clock;

@@ -158,9 +158,10 @@ typedef struct {
 int ls_profile_panel_order(const ls_board_profile_t *b, int build_forced, int owner_forced,
                            int last_seen, const ls_panel_desc_t **out, int cap);
 
-/* Whether the USB host starts. Auto keeps it off on an LR2021 board, where
-   the stack's ~34 KB of internal RAM goes to the LR2021's I/Q path instead,
-   and on for every other board with the port. */
+/* Whether the USB host starts. Auto is on for every board with the port,
+   LR2021 boards included: the universal image is the RTL + LR build. An LR
+   board that wants the stack's internal RAM back runs the LR-only image or
+   sets 'board usb off'. */
 bool ls_profile_usb_wanted(const ls_board_profile_t *b, int pref, uint32_t radio);
 
 /* The pre-universal edition this hardware belongs to: its update folder and

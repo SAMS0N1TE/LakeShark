@@ -163,6 +163,19 @@ bool wd_begin(uint32_t now, const bool src[WD_KINDS], bool only_fix)
     return true;
 }
 
+bool wd_begin_replay(uint32_t now)
+{
+    const bool all[WD_KINDS] = { true, true, true, true };
+    const wd_fix_t keep = S.fix;
+    const uint32_t keep_ms = S.fix_ms;
+    S.fix.fix = false;                 /* the drive's first fix sets the origin, not where the board is now */
+    S.fix_ms = 0;
+    if (!wd_begin(now, all, false)) { S.fix = keep; S.fix_ms = keep_ms; return false; }
+    S.replay = true;
+    S.utc_base = 0;
+    return true;
+}
+
 void wd_set_sources(const bool src[WD_KINDS], bool only_fix)
 {
     for (int k = 0; k < WD_KINDS; k++) S.src[k] = src[k];
@@ -430,7 +443,7 @@ int wd_note(const wd_obs_t *o, uint32_t now)
         e->flags |= WD_F_PLACED;
     }
     if (stronger) e->rssi = o->rssi;
-    if ((o->kind == WD_WIFI || o->kind == WD_BLE) && fresh && S.utc_base) {
+    if ((o->kind == WD_WIFI || o->kind == WD_BLE) && fresh && S.utc_base && !S.replay) {
         bool want = !(e->flags & WD_F_ROW) || o->rssi >= e->row_rssi + 6;
         if (!want) {
             float ax, az, bx, bz;
@@ -659,14 +672,15 @@ void wd_step(uint32_t now)
     memset(&f, 0, sizeof(f));
     f.speed_mps = f.course_deg = f.compass_deg = -1;
     wd_lock();
-    const bool running = S.running;
+    const bool running = S.running && !S.replay, replay = S.replay;
     wd_unlock();
-    wd_feed_fix(&f, now);
+    if (!replay) wd_feed_fix(&f, now);
     unsigned scans = 0;
     const int n = running ? wd_feed_poll(obs, 128, now, &scans) : 0;
     wd_lock();
-    wd_fix_note(&f, now);
-    if (S.running) {
+    /* A replay owns the fix and the finds; the worker only finishes files. */
+    if (!S.replay) wd_fix_note(&f, now);
+    if (S.running && !S.replay) {
         for (int i = 0; i < n; i++) wd_note(&obs[i], now);
         if (scans) { S.scans += scans; S.scan_ms = now ? now : 1; }
     }
@@ -684,4 +698,4 @@ void wd_step(uint32_t now)
     locker_next();
 }
 
-bool wd_busy(void) { return S.running || req || gpx_pending || csv_f; }
+bool wd_busy(void) { return (S.running && !S.replay) || req || gpx_pending || csv_f; }

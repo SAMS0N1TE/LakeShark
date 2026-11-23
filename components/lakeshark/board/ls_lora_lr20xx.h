@@ -71,6 +71,8 @@ extern "C" {
 #define LR20XX_OP_GET_STATUS       0x0100
 #define LR20XX_OP_GET_VERSION      0x0101
 #define LR20XX_OP_GET_ERRORS       0x0110
+#define LR20XX_OP_GET_VBAT         0x0124   /* 6.5.1 */
+#define LR20XX_OP_GET_TEMP         0x0125   /* 6.5.2 */
 #define LR20XX_OP_CLEAR_ERRORS     0x0111
 #define LR20XX_OP_WRITE_REG_MASK   0x0105   /* 6.2.2 */
 #define LR20XX_OP_READ_REG         0x0106   /* 6.2.3 */
@@ -91,6 +93,8 @@ extern "C" {
 #define LR20XX_OP_SET_RF_FREQUENCY 0x0200
 #define LR20XX_OP_SET_RX_PATH      0x0201
 #define LR20XX_OP_GET_RSSI_INST    0x020B
+#define LR20XX_OP_SET_CCA          0x0218   /* 6.3.15 */
+#define LR20XX_OP_GET_CCA_RESULT   0x0219   /* 7.3.8 */
 #define LR20XX_OP_SET_RX           0x020C
 #define LR20XX_OP_SET_FALLBACK     0x0206   /* 6.3.7 */
 #define LR20XX_OP_SET_PACKET_TYPE  0x0207   /* 8.1.1 */
@@ -424,6 +428,17 @@ typedef struct {
 } lr20xx_chip_stats_t;
 void lr20xx_chip_stats(lr20xx_chip_stats_t *out);
 
+/* The part's own junction temperature and supply (GetTemp 0x0125, GetVbat
+   0x0124, datasheet 6.5), read in standby at the end of a setup, at most
+   every 30 s. false with no LR20xx or before the first reading. */
+typedef struct {
+    int16_t  temp_c10;       /* 0.1 C, Vbe sensor */
+    uint16_t vbat_mv;
+    uint32_t age_s;          /* since the reading */
+    uint32_t read_us;        /* what the three measurements cost */
+} lr20xx_health_t;
+bool lr20xx_chip_health(lr20xx_health_t *out);
+
 esp_err_t lr20xx_set_standby(bool xosc);
 esp_err_t lr20xx_set_rf_frequency(uint32_t hz);
 esp_err_t lr20xx_set_rx_path(lr20xx_rx_path_t path, uint8_t boost);
@@ -431,6 +446,11 @@ esp_err_t lr20xx_set_rx_path(lr20xx_rx_path_t path, uint8_t boost);
    zero words are skipped by the chip. Standby only (datasheet 6.4.2). */
 esp_err_t lr20xx_calib_fe(const uint16_t words[3]);
 esp_err_t lr20xx_calib_fe_hz(uint32_t hz, lr20xx_rx_path_t path);
+/* CalibFE, then the next GetStatus judges it. Refused because a strong signal
+   saturated it (GetErrors bit 14), it runs again after 5 ms, three tries in
+   all; refused for anything else, it is not repeated. */
+esp_err_t lr20xx_calib_fe_checked(const uint16_t words[3]);
+esp_err_t lr20xx_calib_fe_hz_checked(uint32_t hz, lr20xx_rx_path_t path);
 /* 24-bit timeout in 32 kHz periods: 0 single, 0xFFFFFF continuous. */
 esp_err_t lr20xx_set_rx(uint32_t timeout);
 esp_err_t lr20xx_get_rssi_inst(float *dbm);
@@ -527,8 +547,9 @@ esp_err_t lr20xx_configure_dios(void);
 
 esp_err_t lr20xx_set_packet_type(uint8_t type);
 
-/* The LoRa bandwidths the part has. This is not the SX126x ladder: there is no
-   rung below 31.25 kHz, and the codes come from RadioLib's LR2021 table. */
+/* The LoRa bandwidths the part has, 7.8 kHz to 1 MHz. This is not the SX126x
+   ladder (it adds 83.3 kHz and the SX128x rungs), and the codes come from
+   RadioLib's LR2021 table. */
 typedef struct { uint32_t hz; uint8_t code; } lr20xx_lora_bw_t;
 extern const lr20xx_lora_bw_t lr20xx_lora_bw_table[];
 extern const int              lr20xx_lora_bw_table_n;

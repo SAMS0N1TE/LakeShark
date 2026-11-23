@@ -162,6 +162,13 @@ typedef struct {
     bool     fail_next_write;
     uint16_t fail_op;              /* a write with this opcode answers CMD_FAIL */
     bool     bad_read_stat;        /* frame 2 of a read carries Stat 0xFFFF */
+    /* That many read answers are clocked before they are ready: frame 2
+       carries the default stream (Stat with CMD_OK, then the IRQ word) and
+       the answer stays pending for the next frame (RadioLib issue #1857). */
+    int      stale_reads;
+    /* That many CalibFE commands fail with error bit 14, RSSI saturation
+       during the self-reception calibration (a strong signal on the input). */
+    int      calfe_saturate;
     uint16_t stuck_after_frame1;   /* opcode whose BUSY never falls         */
     uint32_t last_freq_hz;
     uint8_t  last_path, last_boost;
@@ -177,6 +184,8 @@ typedef struct {
     unsigned tx_fifo_write_count, tx_fifo_fail_on_write, tx_fifo_total_written;
     unsigned tx_cancel_on_fifo_write;
     int      thr_writes;
+    uint32_t lora_tol;          /* 0xF30A2C, the LoRa frequency tolerance field */
+    int      lora_tol_writes, cr_latch_clears, meas_clears;
     int      bad_reg;              /* register accesses to any other address    */
 
     /* What the Mode S session programs, as the part would hold it. */
@@ -302,6 +311,18 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
     const bool violated = fk_busy_for > 0;
     if (violated) fk.violations++;
 
+    if (fk.read_pending && fk.stale_reads > 0 && !violated) {
+        /* Frame 2, too early: the default stream, and the answer still to come. */
+        fk.stale_reads--;
+        fk_log(tx, len, true);
+        memset(rx, 0, len);
+        const uint16_t s = (uint16_t)((2u << 9) | (fk.irq ? 0x100u : 0u) |
+                                      ((unsigned)fk.reset_src << 4) | (fk.mode & 7u));
+        if (len >= 2) { rx[0] = (uint8_t)(s >> 8); rx[1] = (uint8_t)s; }
+        for (size_t i = 2; i < len && i < 6; i++) rx[i] = (uint8_t)(fk.irq >> (8 * (5 - i)));
+        fk_busy_for = 1;
+        return;
+    }
     if (fk.read_pending) {
         /* Frame 2. */
         uint8_t d[16] = { 0 };
@@ -360,6 +381,9 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
             n = 4;
             break;
         case 0x0291: d[0] = 4; d[1] = 0; n = 2; break;
+        case 0x0125: d[0] = 0x20; d[1] = 0xB3; n = 2; break;          /* 32.7 C: 1046/32 << 3 */
+        case 0x0124: d[0] = 0x0D; d[1] = 0x00; n = 2; break;          /* 3328 mV */
+        case 0x0219: d[0] = 200; d[1] = 150; d[2] = 190; d[3] = 0; n = 4; break;
         case 0x0212: d[0] = (uint8_t)(fk.rx_pkt_len >> 8); d[1] = (uint8_t)fk.rx_pkt_len; n = 2; break;
         case 0x022A: d[0] = 0x11; d[1] = (uint8_t)fk.rx_pkt_len; d[2] = (uint8_t)fk.lora_snr_q;
                      d[3] = fk.lora_rssi_hi; d[4] = fk.lora_rssi_hi; d[5] = fk.lora_rssi_flags; d[6] = (uint32_t)fk.lora_fei >> 16; d[7] = (uint32_t)fk.lora_fei >> 8; d[8] = fk.lora_fei; n = 9; break;
@@ -419,6 +443,7 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
         fk.cmd_status = LS_FK_OK_;
         if (fk.has_next_mode) { fk.mode = fk.next_mode; fk.has_next_mode = false; }
         return;
+    case 0x0124: case 0x0125: case 0x0219:
     case 0x0101: case 0x0110: case 0x020B: case 0x0117: case 0x011C: case 0x011B: case 0x011D: case 0x0287: case 0x0106: case 0x0291:
     case 0x0212: case 0x022A: case 0x0246: case 0x0247: case 0x0272: case 0x0273: case 0x0299: case 0x029A:
         fk.read_pending = true;
@@ -462,7 +487,7 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
     static const struct { uint16_t op; uint8_t n; } nargs_of[] = {
         { 0x0104, 7 }, { 0x0105, 11 }, { 0x012D, 1 }, { 0x0290, 11 }, { 0x0111, 0 }, { 0x0112, 2 }, { 0x0113, 2 }, { 0x0114, 2 }, { 0x0115, 5 },
         { 0x0116, 4 }, { 0x011E, 0 }, { 0x011F, 0 }, { 0x0120, 5 }, { 0x0121, 1 }, { 0x0122, 1 }, { 0x0123, 6 }, { 0x0128, 1 },
-        { 0x0200, 4 }, { 0x0201, 2 }, { 0x0202, 3 }, { 0x0203, 2 }, { 0x0206, 1 }, { 0x0207, 1 },
+        { 0x0200, 4 }, { 0x0201, 2 }, { 0x0218, 3 }, { 0x0202, 3 }, { 0x0203, 2 }, { 0x0206, 1 }, { 0x0207, 1 },
         { 0x020C, 3 }, { 0x020D, 3 }, { 0x020F, 1 }, { 0x021A, 1 },
         { 0x0220, 2 }, { 0x0221, 4 }, { 0x0223, 1 }, { 0x0240, 9 }, { 0x0241, 7 }, { 0x0244, 9 },
         { 0x0281, 7 }, { 0x0282, 6 }, { 0x0284, 5 }, { 0x0288, 5 }, { 0x0293, 7 },
@@ -498,6 +523,9 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
         const uint32_t mask = ((uint32_t)t[5] << 24) | ((uint32_t)t[6] << 16) | ((uint32_t)t[7] << 8) | t[8];
         const uint32_t data = ((uint32_t)t[9] << 24) | ((uint32_t)t[10] << 16) | ((uint32_t)t[11] << 8) | t[12];
         if (addr == 0xF20024u) { fk.dcdc_sw = (fk.dcdc_sw & ~mask) | (data & mask); fk.dcdc_writes++; break; }
+        if (addr == 0xF30A2Cu) { fk.lora_tol = (fk.lora_tol & ~mask) | (data & mask); fk.lora_tol_writes++; break; }
+        if (addr == 0x8003C4u) { if (mask == 0xFu && !data) fk.cr_latch_clears++; else fk.bad_reg++; break; }
+        if (addr == 0xF40500u) { fk.meas_clears++; break; }
         if (addr != 0xF30E14u) { fk.bad_reg++; fk.cmd_status = 1; break; }
         fk.thr_reg = (fk.thr_reg & ~mask) | (data & mask);
         fk.thr_writes++;
@@ -596,7 +624,10 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
         if (fk.mode == 4) { fk.cmd_status = 0; fk.bad_mode++; break; }
         fk.mode = 4; fk.rx_arms++;
         break;
-    case 0x0123: if (fk.mode == 4) fk.cmd_status = 0; break;   /* CalibFE refuses in Rx */
+    case 0x0123:                                               /* CalibFE refuses in Rx */
+        if (fk.mode == 4) fk.cmd_status = 0;
+        else if (fk.calfe_saturate > 0) { fk.calfe_saturate--; fk.cmd_status = 0; fk.errors |= 0x4000u; }
+        break;
     case 0x0200: fk.last_freq_hz = ((uint32_t)t[2] << 24) | ((uint32_t)t[3] << 16) |
                                    ((uint32_t)t[4] << 8) | t[5]; break;
     case 0x0201: fk.last_path = t[2]; fk.last_boost = t[3]; break;

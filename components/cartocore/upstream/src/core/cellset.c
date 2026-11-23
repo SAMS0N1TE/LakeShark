@@ -143,6 +143,17 @@ int cc_cellset_scene(cc_cellset *s,unsigned z,int64_t left,int64_t top,int cols,
     size_t mark=a->used;s->missing=0;
     cc_ctile map=s->map;map.cellset=0;
     if(z<8) return cc_ctile_scene_cached(&map,z,left,top,cols,rows,a,scene,cache);
+    if(z<=s->overview_through) {
+        /* The overview's z7, scaled up to this view: coarser geometry, which
+           this far out is all a dot can show. */
+        const unsigned shift=z-7;const int factor=1<<shift;
+        const int64_t pl=left/factor-(left<0 && left%factor),pt=top/factor-(top<0 && top%factor);
+        if(!cc_ctile_scene_cached(&map,7,pl,pt,(cols+factor-1)/factor+1,(rows+factor-1)/factor+1,a,scene,cache) ||
+           !cc_scene_overzoom(scene,shift,(int32_t)(left-pl*factor),(int32_t)(top-pt*factor),a)) {
+            a->used=mark;memset(scene,0,sizeof(*scene));return 0;
+        }
+        return 1;
+    }
     int64_t span=INT64_C(256)<<(z-8),limit=INT64_C(1)<<z;
     int64_t x0=(left-8)/256,y0=(top-8)/256,x1=(left+cols*2+8)/256,y1=(top+rows*4+8)/256;
     if(x0<0)x0=0;

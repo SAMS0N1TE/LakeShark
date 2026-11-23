@@ -58,7 +58,7 @@ static uint16_t s_stat;
 static uint32_t s_irq;
 static bool     s_bound;
 static lr20xx_info_t s_info;
-static bool s_tcxo, s_dcdc, s_xtal_fallback;
+static bool s_tcxo, s_dcdc, s_xtal_fallback, s_tcxo_retry;
 static esp_err_t s_cal_result = ESP_ERR_INVALID_STATE;
 static uint16_t s_cal_errors;
 static void err_names(uint16_t errors, char *out, size_t n);
@@ -220,6 +220,24 @@ esp_err_t lr20xx_write(uint16_t op, const uint8_t *args, size_t n)
     LOCKED_RET(esp_err_t, write_locked(op, args, n));
 }
 
+/* Read answers per opcode, for `lora lrreads`: how many carried CMD_DAT; how
+   many came back first as the part's default stream (CMD_OK and the IRQ word,
+   the frame clocked before the answer was ready: RadioLib issue #1857); how
+   many of those never turned into an answer; and how many said anything else
+   (a refusal, or a bus that reads as nothing). */
+#define READ_STAT_SLOTS 24
+typedef struct { uint16_t op; uint32_t dat, early, refused, other; } read_stat_t;
+static read_stat_t s_read_stat[READ_STAT_SLOTS];
+
+static read_stat_t *LORA_HOT read_stat_slot(uint16_t op)
+{
+    for (int i = 0; i < READ_STAT_SLOTS; i++) {
+        if (s_read_stat[i].op == op) return &s_read_stat[i];
+        if (!s_read_stat[i].op) { s_read_stat[i].op = op; return &s_read_stat[i]; }
+    }
+    return NULL;
+}
+
 static esp_err_t LORA_HOT read_locked(uint16_t op, const uint8_t *args, size_t n,
                              uint8_t *out, size_t m)
 {
@@ -238,7 +256,10 @@ static esp_err_t LORA_HOT read_locked(uint16_t op, const uint8_t *args, size_t n
     if (err != ESP_OK) return err;
 
     /* The step that is easy to forget: the part is preparing the answer and
-       BUSY says so. Clocking the second frame early reads nothing. */
+       BUSY says so. Clocking the second frame early reads nothing. BUSY rises
+       a moment after the first frame ends, so it is not sampled at once: a
+       BUSY that has not risen yet reads the same as an answer that is ready. */
+    esp_rom_delay_us(1);
     if (!ls_lora_hw_wait_not_busy(20)) {
         ESP_LOGW(TAG, "busy stuck high after the first frame of read 0x%04X",
                  (unsigned)op);
@@ -247,6 +268,39 @@ static esp_err_t LORA_HOT read_locked(uint16_t op, const uint8_t *args, size_t n
     }
     memset(buf, 0, 2 + m);
     err = frame(buf, 2 + m);
+    read_stat_t *rs = read_stat_slot(op);
+    if (err == ESP_OK && LR20XX_STAT_CMD(s_stat) == LR20XX_CMD_OK) {
+        /* An answer says CMD_DAT. CMD_OK with the IRQ word behind it is the
+           default stream: this frame came before the answer did, and its
+           bytes are not the answer (a packet length read this way is the top
+           of the IRQ word, 4 on a plain RxDone). The answer is still to come,
+           so clock it again, once. */
+        if (rs) rs->early++;
+        esp_rom_delay_us(1);
+        if (!ls_lora_hw_wait_not_busy(20)) {
+            ESP_LOGW(TAG, "busy stuck high before the answer to read 0x%04X", (unsigned)op);
+            s_fail_run++;
+            return ESP_ERR_TIMEOUT;
+        }
+        memset(buf, 0, 2 + m);
+        err = frame(buf, 2 + m);
+        if (err == ESP_OK && LR20XX_STAT_CMD(s_stat) == LR20XX_CMD_OK) {
+            if (rs) rs->refused++;
+            ESP_LOGW(TAG, "read 0x%04X: no answer, only the default stream (stat 0x%04X)",
+                     (unsigned)op, (unsigned)s_stat);
+            s_fail_run++;
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+    }
+    if (rs && err == ESP_OK) {
+        if (LR20XX_STAT_CMD(s_stat) == LR20XX_CMD_DAT) rs->dat++;
+        else rs->other++;
+    }
+    /* A refusal (CMD_FAIL, CMD_PERR) or a bus that reads as nothing carries no
+       answer: its bytes are not copied out as if they were one. */
+    if (err == ESP_OK && (!lr20xx_stat_plausible(s_stat) || s_stat == 0x0000 ||
+                          LR20XX_STAT_CMD(s_stat) < LR20XX_CMD_OK))
+        return ESP_ERR_INVALID_RESPONSE;
     if (err == ESP_OK && out && m) memcpy(out, &buf[2], m);
     return err;
 }
@@ -415,6 +469,52 @@ esp_err_t lr20xx_calib_fe_hz(uint32_t hz, lr20xx_rx_path_t path)
     return lr20xx_calib_fe(words);
 }
 
+/* GetErrors bit 14: RSSI saturated during the self-reception cancellation
+   (SRC) calibration. Datasheet Rev 2.2 calls bits 12-15 RFU; Semtech's own
+   driver (v2.1.0, LR20XX_SYSTEM_ERRORS_SRC_SATURATION_CALIB_MASK) names it,
+   "may come from an interferer". RadioLib's setFrequency runs CalibFE again
+   on that one cause, 5 ms apart; any other refusal is final. */
+#define LR20XX_ERR_SRC_SATURATION 0x4000u
+#define CALIB_FE_TRIES            3
+static uint32_t s_calfe_saturated;
+
+esp_err_t lr20xx_calib_fe_checked(const uint16_t words[3])
+{
+    esp_err_t err = ESP_ERR_INVALID_RESPONSE;
+    /* The part answered every one of these frames: a refusal for saturation
+       must not count toward the reset a part that stopped answering gets. */
+    const unsigned fail_run = s_fail_run;
+    for (int i = 0; i < CALIB_FE_TRIES; i++) {
+        /* Cleared before a retry only: a clear before every CalibFE would cost
+           each tune a frame. A bit 14 left from earlier costs at most the two
+           retries. */
+        if (i) {
+            err = lr20xx_clear_errors();
+            if (err != ESP_OK) return err;
+            vTaskDelay(pdMS_TO_TICKS(5) ? pdMS_TO_TICKS(5) : 1);
+        }
+        err = lr20xx_calib_fe(words);
+        if (err == ESP_OK) err = lr20xx_check_last_ok();
+        if (err != ESP_ERR_INVALID_RESPONSE) return err;   /* accepted, or the bus failed */
+        uint16_t errors = 0;
+        if (lr20xx_get_errors(&errors) != ESP_OK || !(errors & LR20XX_ERR_SRC_SATURATION))
+            return err;
+        s_fail_run = fail_run;
+        s_calfe_saturated++;
+        ESP_LOGW(TAG, "CalibFE: a strong signal saturated it (errors 0x%04X), try %d of %d",
+                 (unsigned)errors, i + 1, CALIB_FE_TRIES);
+    }
+    return err;
+}
+
+esp_err_t lr20xx_calib_fe_hz_checked(uint32_t hz, lr20xx_rx_path_t path)
+{
+    const uint16_t w = lr20xx_calib_fe_word(hz, path);
+    if (!w) return ESP_ERR_INVALID_ARG;
+    const uint16_t words[3] = { w, 0, 0 };
+    return lr20xx_calib_fe_checked(words);
+}
+
 esp_err_t lr20xx_set_rx(uint32_t timeout)
 {
     if (timeout > 0xFFFFFFu) return ESP_ERR_INVALID_ARG;
@@ -488,8 +588,7 @@ esp_err_t lr20xx_tune_rx(uint32_t hz, int boost)
     const lr20xx_rx_path_t path = lr20xx_path_for_hz(hz);
     const uint8_t b = boost >= 0 ? (uint8_t)boost : (path == LR20XX_PATH_HF ? 4 : 0);
 
-    esp_err_t err = lr20xx_calib_fe_hz(hz, path);
-    if (err == ESP_OK) err = lr20xx_check_last_ok();
+    esp_err_t err = lr20xx_calib_fe_hz_checked(hz, path);
     if (err == ESP_OK) err = lr20xx_set_rf_frequency(hz);
     if (err == ESP_OK) err = lr20xx_check_last_ok();
     if (err == ESP_OK) err = lr20xx_set_rx_path(path, b);
@@ -548,10 +647,77 @@ esp_err_t lr20xx_calibrate(uint8_t blocks)
     LOCKED_RET(esp_err_t, calibrate_locked(blocks));
 }
 
+/* The part's temperature and supply, refreshed from standby by the setup
+   at most every 30 s. 11-bit readings; Vbe and the crystal sensor agree
+   within 0.3 C on the board (2026-11-21). A failed reading keeps the last. */
+#define HEALTH_EVERY_US (30 * 1000000LL)
+/* Written under the radio lock, read by DIAG without it (an I/Q stream can
+   hold the lock for minutes): a sequence count, odd while a write is under
+   way, and a reader that copies until it sees the same even count twice. */
+static struct { int16_t temp_c10; uint16_t vbat_mv; int64_t at_us; uint32_t read_us; bool ok; } s_health;
+static volatile uint32_t s_health_seq;
+static int64_t s_health_try_us;
+
+/* Semtech's driver clears the measurement unit state after each reading. */
+static void health_meas_clear(void)
+{
+    (void)lr20xx_write_reg_mask32(0xF40500u, 0x3u << 8, 0);
+}
+
+static void health_read_locked(void)
+{
+    const int64_t t0 = esp_timer_get_time();
+    if (s_health_try_us && t0 - s_health_try_us < HEALTH_EVERY_US) return;
+    s_health_try_us = t0;
+    const unsigned fail_run = s_fail_run;
+    uint8_t t[2] = {0}, v[2] = {0};
+    const uint8_t a_t = (1u << 3) | 3u, a_v = (1u << 3) | 3u;   /* unit format, 11 bits, Vbe */
+    esp_err_t err = read_locked(LR20XX_OP_GET_TEMP, &a_t, 1, t, 2);
+    health_meas_clear();                 /* after any attempt: it may have measured */
+    if (err == ESP_OK) {
+        err = read_locked(LR20XX_OP_GET_VBAT, &a_v, 1, v, 2);
+        health_meas_clear();
+    }
+    /* A part that will not answer a measurement is not a wedged radio: the
+       reading is skipped, and the refusals do not count toward a reset. */
+    s_fail_run = fail_run;
+    if (err != ESP_OK) return;
+    const int raw = ((t[0] << 8) | t[1]) >> 3;          /* Temp(12:5).(4:0) */
+    s_health_seq++;
+    __sync_synchronize();
+    s_health.temp_c10 = (int16_t)((raw * 10) / 32);
+    s_health.vbat_mv = (uint16_t)(((v[0] & 0x1F) << 8) | v[1]);
+    s_health.at_us = esp_timer_get_time();
+    s_health.read_us = (uint32_t)(s_health.at_us - t0);
+    s_health.ok = true;
+    __sync_synchronize();
+    s_health_seq++;
+}
+
+bool lr20xx_chip_health(lr20xx_health_t *out)
+{
+    for (int tries = 0; tries < 8; tries++) {
+        const uint32_t a = s_health_seq;
+        __sync_synchronize();
+        const typeof(s_health) h = s_health;
+        __sync_synchronize();
+        if ((a & 1u) || a != s_health_seq) continue;
+        if (!h.ok) return false;
+        if (out) {
+            out->temp_c10 = h.temp_c10;
+            out->vbat_mv = h.vbat_mv;
+            out->age_s = (uint32_t)((esp_timer_get_time() - h.at_us) / 1000000);
+            out->read_us = h.read_us;
+        }
+        return true;
+    }
+    return false;
+}
+
 /* LilyGO InitLr2021 order; retain the receive paths' calibration mask. */
 static esp_err_t initialize_locked(void)
 {
-    s_tcxo = settings_get_lr_tcxo() && !s_xtal_fallback;
+    s_tcxo = (settings_get_lr_tcxo() || s_tcxo_retry) && !s_xtal_fallback;
     s_dcdc = settings_get_lr_dcdc();
     esp_err_t err = lr20xx_set_standby(false);
     if (err == ESP_OK) err = lr20xx_check_last_ok();
@@ -580,13 +746,38 @@ static esp_err_t initialize_locked(void)
     const esp_err_t eerr = lr20xx_get_errors(&errors);
     if (s_tcxo && eerr == ESP_OK && (errors & ((1u << 0) | (1u << 2)))) {
         s_xtal_fallback = true;
-        ESP_LOGW(TAG, "TCXO errors 0x%04X, using xtal for this boot", (unsigned)errors);
+        ESP_LOGW(TAG, "TCXO errors 0x%04X, trying the crystal", (unsigned)errors);
+        err = ls_lora_hw_reset();
+        s_cop_loaded = false;
+        s_reset_seen = true;
+        s_agc_forced = false;
+        if (err == ESP_OK) err = initialize_locked();
+        /* A module with a crystal and no TCXO (Waveshare Core2021-XF) fails
+           the TCXO start every boot. When the crystal then comes up clean,
+           keep it, so later boots start on it without the failed attempt. */
+        uint16_t xerr = 0;
+        if (err == ESP_OK && lr20xx_get_errors(&xerr) == ESP_OK &&
+            !(xerr & ((1u << 0) | (1u << 2))) && settings_get_lr_tcxo()) {
+            if (settings_set_lr_tcxo(false))
+                ESP_LOGW(TAG, "no TCXO on this module: crystal saved ('lora lrclk tcxo' undoes); "
+                              "a crystal is off by tens of ppm, 'lora lrfcorr learn' measures it");
+        }
+    } else if (!s_tcxo && !s_xtal_fallback && !s_tcxo_retry && eerr == ESP_OK &&
+               (errors & ((1u << 0) | (1u << 2)))) {
+        /* Saved as crystal but the oscillator did not start: a TCXO module
+           after a module swap. Try the TCXO for this boot; the saved choice
+           stays until 'lora lrclk' changes it. */
+        s_tcxo_retry = true;
+        ESP_LOGW(TAG, "crystal errors 0x%04X, trying the TCXO for this boot", (unsigned)errors);
         err = ls_lora_hw_reset();
         s_cop_loaded = false;
         s_reset_seen = true;
         s_agc_forced = false;
         if (err == ESP_OK) err = initialize_locked();
     }
+#ifdef ESP_PLATFORM   /* a measurement of the part itself; the host fakes have nothing to measure */
+    if (err == ESP_OK) health_read_locked();
+#endif
     return err;
 }
 
@@ -854,8 +1045,11 @@ esp_err_t lr20xx_set_packet_type(uint8_t type)
 
 /* RadioLib's LR2021 table, narrowest first. 101.5625, 203.125, 406.25 and
    812.5 kHz are rounded to the nearest hertz; the airtime they give is within
-   a microsecond a symbol. */
+   a microsecond a symbol. The four below 31.25 kHz (7.8125, 10.417, 15.625
+   and 20.833 kHz) are RFU in datasheet Rev 2.2; RadioLib measured them
+   working against an SX1262 (its #1929, commit 16567089). */
 const lr20xx_lora_bw_t lr20xx_lora_bw_table[] = {
+    {    7813, 0x00 }, {   10417, 0x08 }, {   15625, 0x01 }, {   20833, 0x09 },
     {   31250, 0x02 }, {   41667, 0x0A }, {   62500, 0x03 }, {   83333, 0x0B },
     {  101563, 0x0C }, {  125000, 0x04 }, {  203125, 0x0D }, {  250000, 0x05 },
     {  406250, 0x0E }, {  500000, 0x06 }, {  812500, 0x0F }, { 1000000, 0x07 },
@@ -2041,7 +2235,12 @@ static esp_err_t lr_read_reg(uint16_t a, uint8_t *b, size_t l)
 /* How long one ls_lora_scan_pass may run before it hands back. */
 #define SCAN_PASS_BUDGET_US  20000
 /* RadioLib's front-end calibration policy: once the part has moved 20 MHz
-   from where CalibFE last ran, it runs again. */
+   from where CalibFE last ran, it runs again. A retune across a 4 MHz cell
+   inside that keeps the old calibration, and costs nothing measurable:
+   `lora lrprobe ... cal=` on this board's LR2021 (2.21 tree), tone level
+   within 0.5 dB with CalibFE in the tone's own cell, the next cell (10 kHz
+   away) or 16 to 68 MHz away, at 320, 448 and 928 MHz (the TCXO's and P4
+   crystal's harmonics) and off air at 800 MHz, gain fixed, no error bits. */
 #define CALIB_FE_STEP_HZ     20000000u
 
 /* The packet paths' state. PSRAM: no DMA reaches it, and internal RAM is the
@@ -2224,6 +2423,34 @@ static esp_err_t setup_radio(uint8_t pkt_type, uint32_t freq_hz)
 }
 
 /* lr.cfg into the part. Standby afterwards, or on failure. */
+/* Measured on the board 2026-11-21, SF7 125 kHz, an SX1262 sending off
+   frequency: the default LoRa receiver lost every frame from 32 kHz off;
+   with 0xF30A2C bits 17:16 = 1 (datasheet 9.7, Semtech's driver: frequency
+   error up to +/-33% of the bandwidth) every offset to 45 kHz decoded as at
+   0 Hz. Crystal-only modules (the Waveshare Core2021) sit ~20 kHz off at 900
+   MHz. Once per setup, after the modulation. */
+#define LORA_FREQ_TOL_REG   0xF30A2Cu
+#define LORA_FREQ_TOL_MASK  0x00030000u
+#define LORA_FREQ_TOL_WIDE  0x00010000u
+static esp_err_t lora_wide_tolerance(void)
+{
+    esp_err_t err = lr20xx_write_reg_mask32(LORA_FREQ_TOL_REG, LORA_FREQ_TOL_MASK, LORA_FREQ_TOL_WIDE);
+    return step_lr(err, "LoRa frequency tolerance");
+}
+
+/* GetLoraPacketStatus' coding rate is the OR of every header since reset
+   (meshtastic/lr2021-cr-probe; on the board 2026-11-21 4/5, 4/8, 4/6 read 1,
+   5, 7). The latch is the low nibble of RAM word 0x8003C4: cleared in
+   standby before each receive, the next frame reads its own rate (1, 4, 1).
+   Only ever in standby, so no header can land between read and write. */
+#define LORA_CR_LATCH_ADDR  0x8003C4u
+static void lora_cr_latch_clear(void)
+{
+    /* An undocumented RAM word: only on the ROM it was measured on (1.24). */
+    if (s_info.fw_major != 1 || s_info.fw_minor != 24) return;
+    (void)lr20xx_write_reg_mask32(LORA_CR_LATCH_ADDR, 0x0000000Fu, 0);
+}
+
 static esp_err_t program_lora_once(void)
 {
     const ls_lora_cfg_t *c = &lr.cfg;
@@ -2243,6 +2470,7 @@ static esp_err_t program_lora_once(void)
         err = step_lr(lr20xx_lora_set_packet(c->preamble, c->implicit_rx_bytes?c->implicit_rx_bytes:255, c->implicit_rx_bytes!=0, c->crc_on, c->invert_iq),
                       "SetLoraPacketParams");
     if (err == ESP_OK) err = step_lr(lr20xx_lora_set_syncword(c->sync_word), "SetLoraSyncword");
+    if (err == ESP_OK) err = lora_wide_tolerance();
     if (err == ESP_OK && tx_hz_ok(c->freq_hz))
         err = lr20xx_set_pa_lf(c->power_dbm);
     if (err == ESP_OK) lr.programmed = true;
@@ -2309,6 +2537,7 @@ static esp_err_t arm_lora_rx(void)
                                              lr.cfg.invert_iq), "SetLoraPacketParams");
     if (err == ESP_OK) err = step_lr(lr20xx_clear_rx_fifo(), "ClearRxFifo");
     if (err == ESP_OK) err = step_lr(lr20xx_clear_irq(LR20XX_IRQ_ALL), "ClearIrq");
+    if (err == ESP_OK) lora_cr_latch_clear();
     if (err == ESP_OK) err = lr20xx_set_rx(0xFFFFFFu);
     if (err == ESP_OK) err = expect_mode(LR20XX_MODE_RX);
     lr.rx_mode = err == ESP_OK;
@@ -2372,7 +2601,14 @@ static esp_err_t start_tx(size_t len, int8_t power_dbm, const char *what)
     lr.tx_busy = true;
     lr.rx_mode = false;
     lr.rearm = false;
-    lr.tx_deadline = esp_timer_get_time() + (int64_t)TX_TIMEOUT_MS * 1000;
+    /* At the narrow bandwidths a LoRa packet outlasts the fixed limit (32
+       bytes at SF12, 7.8 kHz: ~29 s): the deadline follows the airtime. */
+    uint32_t limit_ms = TX_TIMEOUT_MS;
+    if (!lr.fsk_active) {
+        const uint32_t air = lr_airtime_ms((int)len);
+        if (air + air / 4 + 1000 > limit_ms) limit_ms = air + air / 4 + 1000;
+    }
+    lr.tx_deadline = esp_timer_get_time() + (int64_t)limit_ms * 1000;
     ESP_LOGI(TAG, "%s: %u bytes at %d dBm, %lu Hz", what, (unsigned)len, (int)power_dbm,
              (unsigned long)s_rf_hz);
     return ESP_OK;
@@ -2729,6 +2965,17 @@ static esp_err_t lr_fsk_begin(const ls_fsk_cfg_t *cfg)
     if (!ls_lora_hw_pkt()) return ESP_ERR_INVALID_STATE;
 
     const lr20xx_rx_bw_t bw = lr20xx_fsk_rx_bw(cfg->bandwidth_hz);
+    /* Datasheet 11.1.3: the packet engine demodulates only with a filter no
+       wider than 8 x the bitrate and a modulation index 2*dev/rate up to
+       8.33. Measured 2026-11-21: 4800 baud at +/-25 kHz from an SX1262 (a
+       58.6 kHz filter, h = 10.4) decodes nothing at 433.92, 868.3 or 915 MHz,
+       with the signal at -52 dBm; 4800 at +/-5 kHz and 9600 or 50000 at
+       +/-25 kHz decode every frame. A stream session samples above the
+       signal's own rate, so this is about packet sessions only. */
+    if (!cfg->stream && (bw.hz > 8u * cfg->bitrate || 600u * cfg->deviation_hz > 2500u * cfg->bitrate))
+        ESP_LOGW(TAG, "FSK %lu baud +/-%lu Hz in a %lu Hz filter is past the packet engine's limits "
+                 "(filter <= 8 x rate, 2*dev/rate <= 8.33): expect no packets",
+                 (unsigned long)cfg->bitrate, (unsigned long)cfg->deviation_hz, (unsigned long)bw.hz);
     lr.restore_rx = lr.rx_mode || lr.rearm;
     lr.fsk_active = true;
     lr.programmed = false;
@@ -3007,7 +3254,8 @@ static esp_err_t lr_fsk_retune(uint32_t hz)
     lr.rx_mode = false;
     const uint32_t moved = hz > lr.cal_hz ? hz - lr.cal_hz : lr.cal_hz - hz;
     if (err == ESP_OK && moved >= CALIB_FE_STEP_HZ) {
-        err = step_lr(lr20xx_calib_fe_hz(hz, lr20xx_path_for_hz(hz)), "CalibFE");
+        err = lr20xx_calib_fe_hz_checked(hz, lr20xx_path_for_hz(hz));
+        if (err != ESP_OK) ESP_LOGE(TAG, "CalibFE failed: %s", esp_err_to_name(err));
         if (err == ESP_OK) lr.cal_hz = hz;
     }
     if (err == ESP_OK) err = step_lr(lr20xx_set_rf_frequency(hz), "SetRfFrequency");
@@ -3092,6 +3340,31 @@ static void lr_scan_profile(ls_lora_scan_prof_t *out)
 }
 
 /* The part's RSSI, believed only from a Stat that says it is receiving. */
+/* SetCca (6.3.15) for a window, its Timeout IRQ, then GetCcaResult's peak
+   at half-dB resolution (7.3.8). Under the lock, from standby on the tune. */
+#define SCAN_CCA_EXTRA_US 100u
+static bool s_scan_cca;
+static esp_err_t scan_cca_peak(uint32_t window_us, float *peak)
+{
+    const uint32_t ticks = window_us * 32u;
+    const uint8_t a[3] = { (uint8_t)(ticks >> 16), (uint8_t)(ticks >> 8), (uint8_t)ticks };
+    esp_err_t err = lr20xx_clear_irq(LR20XX_IRQ_TIMEOUT);
+    if (err == ESP_OK) err = lr20xx_write(LR20XX_OP_SET_CCA, a, sizeof a);
+    const int64_t deadline = esp_timer_get_time() + window_us + 5000;
+    bool done = false;
+    if (err == ESP_OK) esp_rom_delay_us(window_us);
+    while (err == ESP_OK && !done) {
+        uint32_t irq = 0;
+        err = lr20xx_get_and_clear_irq(&irq);
+        done = (irq & LR20XX_IRQ_TIMEOUT) != 0;
+        if (!done && esp_timer_get_time() > deadline) err = ESP_ERR_TIMEOUT;
+    }
+    uint8_t r[4] = {0};
+    if (err == ESP_OK) err = lr20xx_read(LR20XX_OP_GET_CCA_RESULT, NULL, 0, r, sizeof r);
+    if (err == ESP_OK && peak) *peak = -(float)((r[1] << 1) | ((r[3] >> 1) & 1u)) / 2.0f;
+    return err;
+}
+
 static bool scan_rssi(float *dbm)
 {
     return lr20xx_get_rssi_inst(dbm) == ESP_OK &&
@@ -3133,25 +3406,33 @@ static int lr_scan_pass(float *dbm, int n, bool *row_done)
         mark = esp_timer_get_time();
         const uint32_t moved = hz > lr.cal_hz ? hz - lr.cal_hz : lr.cal_hz - hz;
         if (moved >= CALIB_FE_STEP_HZ) {
-            if (lr20xx_calib_fe_hz(hz, lr20xx_path_for_hz(hz)) != ESP_OK ||
-                lr20xx_check_last_ok() != ESP_OK) { failed = true; break; }
+            if (lr20xx_calib_fe_hz_checked(hz, lr20xx_path_for_hz(hz)) != ESP_OK) { failed = true; break; }
             lr.cal_hz = hz;
         }
         if (lr20xx_set_rf_frequency(hz) != ESP_OK) { failed = true; break; }
         t_tune += (uint32_t)(esp_timer_get_time() - mark);
 
-        mark = esp_timer_get_time();
-        if (lr20xx_set_rx(0xFFFFFFu) != ESP_OK) { failed = true; break; }
-        t_rx += (uint32_t)(esp_timer_get_time() - mark);
-
-        mark = esp_timer_get_time();
-        esp_rom_delay_us(lr.scan_plan.settle_us);
-        t_settle += (uint32_t)(esp_timer_get_time() - mark);
-
         float v = 0;
-        mark = esp_timer_get_time();
-        if (!scan_rssi(&v)) { failed = true; break; }
-        t_rssi += (uint32_t)(esp_timer_get_time() - mark);
+        if (s_scan_cca) {
+            /* The chip's clear-channel measurement: it receives for the
+               window and keeps the peak itself, so a burst anywhere in the
+               window counts, not only one at the instant of a read. */
+            mark = esp_timer_get_time();
+            if (scan_cca_peak(lr.scan_plan.settle_us + SCAN_CCA_EXTRA_US, &v) != ESP_OK) { failed = true; break; }
+            t_rssi += (uint32_t)(esp_timer_get_time() - mark);
+        } else {
+            mark = esp_timer_get_time();
+            if (lr20xx_set_rx(0xFFFFFFu) != ESP_OK) { failed = true; break; }
+            t_rx += (uint32_t)(esp_timer_get_time() - mark);
+
+            mark = esp_timer_get_time();
+            esp_rom_delay_us(lr.scan_plan.settle_us);
+            t_settle += (uint32_t)(esp_timer_get_time() - mark);
+
+            mark = esp_timer_get_time();
+            if (!scan_rssi(&v)) { failed = true; break; }
+            t_rssi += (uint32_t)(esp_timer_get_time() - mark);
+        }
 
         /* The first look of a row writes; every later one keeps the peak. */
         if (k == 0 || v > dbm[i]) dbm[i] = v;
@@ -3253,12 +3534,14 @@ static esp_err_t exp_arm(void)
     esp_err_t err = step_ok(lr20xx_set_standby(false), "SetStandby");
     if (err == ESP_OK) err = step_ok(lr20xx_clear_rx_fifo(), "ClearRxFifo");
     if (err == ESP_OK) err = step_ok(lr20xx_clear_irq(LR20XX_IRQ_ALL), "ClearIrq");
+    if (err == ESP_OK && s_exp_engine == LR20XX_ENGINE_LORAMON) lora_cr_latch_clear();
     if (err == ESP_OK) err = step_ok(s_exp_engine == LR20XX_ENGINE_ZWAVE ?
                                     lr20xx_zwave_scan() : lr20xx_set_rx(0xFFFFFFu), "Experimental Rx");
     return err;
 }
 static esp_err_t exp_program_once(void)
 {
+    if (s_exp_engine == (lr20xx_engine_t)0x7F) return lr20xx_set_standby(false);   /* lrx own */
     if (s_exp_engine == LR20XX_ENGINE_BLE) {
         /* Advertising channels 37, 38, 39 sit at 2402, 2426, 2480 MHz. Whitening
            seeds with the channel index (bit 6 set), bit reversed: 0x53 for 37. */
@@ -3299,6 +3582,7 @@ static esp_err_t exp_program_once(void)
         if (err == ESP_OK) err = step_ok(lr20xx_lora_set_syncword(sync), "LoRa sync");
         if (err == ESP_OK) err = step_ok(lr20xx_lora_side_config(sf, bw, sides, 3), "LoRa sides");
         if (err == ESP_OK) err = step_ok(lr20xx_lora_side_sync(syncs, 3), "LoRa side sync");
+        if (err == ESP_OK) err = lora_wide_tolerance();
     } else if (s_exp_engine == LR20XX_ENGINE_ZWAVE) {
         if (err == ESP_OK) err = step_ok(lr20xx_zwave_params(1, lr20xx_fsk_rx_bw(200000).index, 0, 255, 0, 32, true), "Z-Wave params");
         if (err == ESP_OK) err = step_ok(lr20xx_zwave_scan_config(US_ZWAVE, 3, 0, true), "Z-Wave scan config");
@@ -4199,6 +4483,10 @@ static struct {
     lr20xx_rx_path_t path;
     uint16_t errors_tuned;
     esp_err_t tune_err;
+    /* cal=: calibrate at these (kHz) instead of at hz, to measure what a
+       calibration made elsewhere costs. 0 = unused. */
+    uint32_t cal_khz[3];
+    uint32_t cal_us;
 } s_probe;
 
 static esp_err_t probe_program_locked(void)
@@ -4206,11 +4494,16 @@ static esp_err_t probe_program_locked(void)
     s_pa_lf = false;
     uint16_t errors = 0;
     esp_err_t err = lr20xx_clear_errors();
-    const uint16_t w = lr20xx_calib_fe_word(s_probe.hz, s_probe.path);
-    if (err == ESP_OK && w) {
-        const uint16_t words[3] = { w, 0, 0 };
+    uint16_t words[3] = { lr20xx_calib_fe_word(s_probe.hz, s_probe.path), 0, 0 };
+    if (s_probe.cal_khz[0])
+        for (int i = 0; i < 3; i++)
+            words[i] = s_probe.cal_khz[i] ? lr20xx_calib_fe_word(s_probe.cal_khz[i] * 1000u,
+                           lr20xx_path_for_hz(s_probe.cal_khz[i] * 1000u)) : 0;
+    if (err == ESP_OK && words[0]) {
+        const int64_t t0 = esp_timer_get_time();
         err = lr20xx_calib_fe(words);
         if (err == ESP_OK) err = lr20xx_wait_ready(200);
+        s_probe.cal_us = (uint32_t)(esp_timer_get_time() - t0);
     }
     if (err == ESP_OK) {
         const uint32_t hz = s_probe.hz;
@@ -4769,9 +5062,27 @@ LR_CMD lrprobe_command(int argc, char **argv)
     int boost = -1;
     lr20xx_rx_path_t path = 0;
     bool auto_path = true, hex = false;
-    bool ok = argc >= 3 && probe_number(argv[2], 3800000, &khz) && khz >= 30000;
+    /* A last word cal=<kHz>[,<kHz>[,<kHz>]] calibrates there instead. */
+    uint32_t cal_khz[3] = { 0, 0, 0 };
+    bool ok = true;
+    if (argc > 3 && !strncmp(argv[argc - 1], "cal=", 4)) {
+        char *p = argv[argc - 1] + 4;
+        for (int i = 0; ok && i < 3 && *p; i++) {
+            char *e;
+            const unsigned long v = strtoul(p, &e, 10);
+            ok = e != p && v >= 30000 && v <= 3800000 && (*e == ',' || !*e);
+            cal_khz[i] = (uint32_t)v;
+            p = *e == ',' ? e + 1 : e;
+        }
+        ok = ok && !*p;
+        argc--;
+    }
+    ok = ok && argc >= 3 && probe_number(argv[2], 3800000, &khz) && khz >= 30000;
+    /* The four narrow bandwidths' source-2 rates (4 x bandwidth) are what
+       this measures; the delivered rate is bytes over elapsed_us. */
     if (ok && argc > 3) ok = probe_number(argv[3], 250000, &bw) &&
-        (bw == 31250 || bw == 62500 || bw == 125000 || bw == 250000);
+        (bw == 7813 || bw == 10417 || bw == 15625 || bw == 20833 ||
+         bw == 31250 || bw == 62500 || bw == 125000 || bw == 250000);
     if (ok && argc > 4) ok = probe_number(argv[4], 14, &gain);   /* 14: host auto */
     if (ok && argc > 5) { char *e; long b = strtol(argv[5], &e, 10); ok = *argv[5] && !*e && b >= -1 && b <= 7; boost = (int)b; }
     if (ok && argc > 6) {
@@ -4784,6 +5095,7 @@ LR_CMD lrprobe_command(int argc, char **argv)
     if (!ok || argc > 9) {
         puts(LS_TEXT(msg_ls_lora_lr20xx_usage_lora_lrprobe_khz, "usage: lora lrprobe <kHz 30000..3800000> [bw 31250|62500|125000|250000] [gain 0..13, 14 auto]"
              " [boost -1..7] [lf|hf|auto] [ms 1..250] [hex]   (receive only)"));
+        puts("       narrow bw 7813|10417|15625|20833; last word cal=<kHz>[,<kHz>[,<kHz>]] calibrates there");
         return 1;
     }
     const uint32_t hz = khz * 1000u;
@@ -4804,7 +5116,8 @@ LR_CMD lrprobe_command(int argc, char **argv)
     ls_lora_hw_lock();
     s_probe = (__typeof__(s_probe)){ .active = true, .hz = hz, .bw_hz = bw, .bw_code = b.code,
         .gain = (uint8_t)gain, .path = path,
-        .boost = (uint8_t)(boost >= 0 ? boost : (path == LR20XX_PATH_HF ? 4 : 0)) };
+        .boost = (uint8_t)(boost >= 0 ? boost : (path == LR20XX_PATH_HF ? 4 : 0)),
+        .cal_khz = { cal_khz[0], cal_khz[1], cal_khz[2] } };
     ls_lora_hw_unlock();
     iq_collect_t collected = {data, 0, capacity};
     lr20xx_stream_result_t result;
@@ -4819,8 +5132,14 @@ LR_CMD lrprobe_command(int argc, char **argv)
     ls_lora_hw_lock();
     const uint16_t errors = s_probe.errors_tuned;
     const esp_err_t tune_err = s_probe.tune_err;
+    const uint32_t cal_us = s_probe.cal_us;
     s_probe.active = false;
     ls_lora_hw_unlock();
+    if (cal_khz[0])
+        printf("lrprobe-cal: at %lu,%lu,%lu kHz (tuned %lu), %lu us\n", (unsigned long)cal_khz[0],
+               (unsigned long)cal_khz[1], (unsigned long)cal_khz[2], (unsigned long)khz, (unsigned long)cal_us);
+    else
+        printf("lrprobe-cal: at the tuned cell, %lu us\n", (unsigned long)cal_us);
 
     char names[96];
     err_names(errors, names, sizeof names);
@@ -4908,6 +5227,9 @@ LR_CMD lrble_command(int argc, char **argv)
 
 #include "lr2021_tx_upload.inc"
 #include "lr2021_coproc.inc"
+#if LS_TX_UNLOCKED   /* bench probes: never in a release image */
+#include "lr2021_lab.inc"
+#endif
 
 /* lr.cfg programmed again after something the frames depend on changed
    (the clock, the regulator, the frequency correction), receiving again if it
@@ -4954,12 +5276,79 @@ static void print_fcorr(int32_t ppb)
 /* lora lrfcorr [ppm] - the reference error of this module, saved.
    Positive when the crystal runs fast: the radio then sits that far above
    the frequency it was told, and the correction sets it lower. */
+/* lora lrfcorr learn [secs] - set the correction from the frequency error of
+   LoRa packets heard from a reference transmitter (a TCXO board on the same
+   settings). Takes the median FEI of good packets heard under the current
+   correction, so one stray transmitter does not move it. */
+#define FCORR_LEARN_MAX 64
+static int fcorr_learn(int secs)
+{
+    if (!s_bound || !lr.cfg_valid) { puts("lora: lrfcorr learn: LoRa is not configured"); return 1; }
+    const int32_t start_ppb = settings_get_lr_fcorr_ppb();
+    int32_t fei[FCORR_LEARN_MAX];
+    int n = 0;
+    ls_lora_hw_lock();
+    uint32_t seen = s_rxs.ok;
+    ls_lora_hw_unlock();
+    const esp_err_t rxe = ls_lora_receive();
+    if (rxe != ESP_OK) { printf("lora: lrfcorr learn: receive: %s\n", esp_err_to_name(rxe)); return 1; }
+    printf("lora: lrfcorr learn: listening %d s at %.4f MHz for packets from a reference board\n",
+           secs, lr.cfg.freq_hz / 1e6);
+    const int64_t end = esp_timer_get_time() + (int64_t)secs * 1000000;
+    while (esp_timer_get_time() < end && n < FCORR_LEARN_MAX) {
+        uint8_t pkt[256];
+        float prssi, psnr;
+        (void)ls_lora_poll(pkt, sizeof(pkt), &prssi, &psnr);   /* drives the receive and its stats */
+        vTaskDelay(pdMS_TO_TICKS(20));
+        ls_lora_hw_lock();
+        const typeof(s_rxs) r = s_rxs;
+        ls_lora_hw_unlock();
+        if (r.ok == seen) continue;
+        seen = r.ok;
+        if (r.fcorr_ppb != start_ppb || r.snr_db < -5.0f) continue;
+        fei[n++] = r.fei_hz;
+        printf("lora: lrfcorr learn: packet %d fei %+ld Hz snr %.1f dB\n", n, (long)r.fei_hz, (double)r.snr_db);
+    }
+    if (n < 3) {
+        printf("lora: lrfcorr learn: %d packet%s heard, need 3; correction unchanged. At more than "
+               "about a quarter of the bandwidth off, packets fail their header: learn at a wider "
+               "bandwidth first (lora config MHz sf 250)\n", n, n == 1 ? "" : "s");
+        return 1;
+    }
+    for (int i = 1; i < n; i++)              /* insertion sort: n <= 64 */
+        for (int j = i; j > 0 && fei[j] < fei[j - 1]; j--) { int32_t t = fei[j]; fei[j] = fei[j - 1]; fei[j - 1] = t; }
+    const int32_t med = (n & 1) ? fei[n / 2] : (int32_t)(((int64_t)fei[n / 2 - 1] + fei[n / 2]) / 2);
+    /* FEI is how far the sender sits above where this radio listened: this
+       radio is that much low, so its correction (+ = runs fast) goes down. */
+    const int64_t want = (int64_t)start_ppb - ((int64_t)med * 1000000000LL) / (int64_t)lr.cfg.freq_hz;
+    if (want > LS_LR_FCORR_MAX_PPB || want < -LS_LR_FCORR_MAX_PPB) {
+        printf("lora: lrfcorr learn: %+.3f ppm is outside the +-%d ppm the radio accepts; unchanged\n",
+               want / 1000.0, LS_LR_FCORR_MAX_PPB / 1000);
+        return 1;
+    }
+    ls_lora_hw_lock();
+    esp_err_t err = ESP_OK;
+    if (lr.tx_busy) err = ESP_ERR_INVALID_STATE;
+    else if (!settings_set_lr_fcorr_ppb((int32_t)want)) err = ESP_ERR_INVALID_STATE;
+    else err = reprogram_locked("frequency correction change");
+    ls_lora_hw_unlock();
+    printf("lora: lrfcorr learn: median fei %+ld Hz over %d packets\n", (long)med, n);
+    print_fcorr(settings_get_lr_fcorr_ppb());
+    if (err != ESP_OK) printf("lora: lrfcorr: %s\n", esp_err_to_name(err));
+    return err == ESP_OK ? 0 : 1;
+}
+
 LR_CMD fcorr_command(int argc, char **argv)
 {
     if (argc == 2) { print_fcorr(settings_get_lr_fcorr_ppb()); return 0; }
+    if (argc >= 3 && !strcmp(argv[2], "learn")) {
+        const int secs = argc > 3 ? atoi(argv[3]) : 60;
+        if (argc > 4 || secs < 5 || secs > 600) { puts("usage: lora lrfcorr learn [5..600 s]"); return 1; }
+        return fcorr_learn(secs);
+    }
     int32_t ppb = 0;
     if (argc != 3 || !parse_ppm(argv[2], &ppb)) {
-        printf("usage: lora lrfcorr [ppm]   (-%d..%d, + when the module transmits above nominal)\n",
+        printf("usage: lora lrfcorr [ppm | learn [secs]]   (-%d..%d, + when the module transmits above nominal)\n",
                LS_LR_FCORR_MAX_PPB / 1000, LS_LR_FCORR_MAX_PPB / 1000);
         return 1;
     }
@@ -5026,6 +5415,10 @@ LR_CMD clock_reg_command(int argc, char **argv)
                tcxo ? "tcxo" : "xtal", fallback ? " (boot fallback)" : "",
                dcdc ? "dcdc" : "ldo", (unsigned)errors, names, esp_err_to_name(err),
                esp_err_to_name(cal), (unsigned)cal_errors);
+        lr20xx_health_t h;
+        if (lr20xx_chip_health(&h))
+            printf("lora: chip %.1f C, supply %u mV, read %lu s ago in %lu us\n", h.temp_c10 / 10.0,
+                   (unsigned)h.vbat_mv, (unsigned long)h.age_s, (unsigned long)h.read_us);
         return err == ESP_OK ? 0 : 1;
     }
     const bool current = clock ? settings_get_lr_tcxo() : settings_get_lr_dcdc();
@@ -5046,16 +5439,48 @@ LR_CMD clock_reg_command(int argc, char **argv)
         if (lr.tx_busy) err = ESP_ERR_INVALID_STATE;
         else if (!(clock ? settings_set_lr_tcxo(value) : settings_set_lr_dcdc(value)))
             err = ESP_ERR_INVALID_STATE;
-        else err = reprogram_locked("clock/regulator change");
+        else {
+            /* an explicit choice starts over: the next start tries it first */
+            if (clock) { s_xtal_fallback = false; s_tcxo_retry = false; }
+            err = reprogram_locked("clock/regulator change");
+        }
     }
+    const bool fell_back = clock && value && s_xtal_fallback;
     ls_lora_hw_unlock();
     printf("lora: %s=%s: %s\n", argv[1], value ? on : off, esp_err_to_name(err));
+    if (fell_back) puts("lora: the TCXO did not start on this module: running and saved as xtal");
     return err == ESP_OK ? 0 : 1;
+}
+
+/* `lora lrreads [reset]`: read answers by command status, per opcode. */
+LR_CMD lrreads_command(int argc, char **argv)
+{
+    if (argc != 2 && (argc != 3 || strcmp(argv[2], "reset"))) {
+        puts("usage: lora lrreads [reset]"); return 1;
+    }
+    puts("lrreads: answers by command status since boot (dat: CMD_DAT; early: default stream first,"
+         " clocked again; refused: never answered; other: any other status)");
+    for (int i = 0; i < READ_STAT_SLOTS; i++) {
+        ls_lora_hw_lock();
+        const read_stat_t r = s_read_stat[i];
+        ls_lora_hw_unlock();
+        if (!r.op) break;
+        printf("lrreads: 0x%04X dat=%lu early=%lu refused=%lu other=%lu\n", (unsigned)r.op,
+               (unsigned long)r.dat, (unsigned long)r.early,
+               (unsigned long)r.refused, (unsigned long)r.other);
+    }
+    ls_lora_hw_lock();
+    const uint32_t saturated = s_calfe_saturated;
+    if (argc == 3) { memset(s_read_stat, 0, sizeof(s_read_stat)); s_calfe_saturated = 0; }
+    ls_lora_hw_unlock();
+    printf("lrreads: CalibFE saturated and repeated %lu times\n", (unsigned long)saturated);
+    return 0;
 }
 
 int lr20xx_clock_command(int argc, char **argv)
 {
     if (argc > 1 && !strcmp(argv[1], "lrroute")) return lrroute_command(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "lrreads")) return lrreads_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrspi")) {
         if (argc != 2 && (argc != 3 || (strcmp(argv[2], "16") && strcmp(argv[2], "26")))) {
             puts("usage: lora lrspi [16|26]"); return 1;
@@ -5121,6 +5546,9 @@ int lr20xx_clock_command(int argc, char **argv)
     if (argc > 1 && !strcmp(argv[1], "lrscan")) return lrscan_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrchipddc")) return lrddc_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrcap")) return capture_probe_command(argc);
+#if LS_TX_UNLOCKED
+    if (argc > 1 && !strcmp(argv[1], "lrx")) return lrx_command(argc, argv);
+#endif
     return clock_reg_command(argc, argv);
 }
 
@@ -5222,6 +5650,7 @@ esp_err_t lr20xx_chip_sweep(const lr20xx_chip_sweep_cfg_t *cfg, float *dbm, lr20
     return ESP_ERR_NOT_SUPPORTED;
 }
 void lr20xx_chip_stats(lr20xx_chip_stats_t *out) { if (out) memset(out, 0, sizeof(*out)); }
+bool lr20xx_chip_health(lr20xx_health_t *out) { (void)out; return false; }
 esp_err_t lr20xx_chip_ddc_live(const lr20xx_chip_ddc_cfg_t *cfg, lr20xx_chip_ddc_sink_t sink, void *ctx,
                                lr20xx_chip_ddc_result_t *out)
 {

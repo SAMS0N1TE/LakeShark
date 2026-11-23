@@ -326,6 +326,7 @@ void wd_lock(void)
 void wd_unlock(void) { if (s_mutex) xSemaphoreGive(s_mutex); }
 
 void *wd_feed_alloc(size_t bytes) { return heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT); }
+void wd_feed_free(void *p) { heap_caps_free(p); }
 
 bool wd_feed_card(void) { return ls_sdcard_mounted(); }
 

@@ -6,7 +6,10 @@
           networks raining down as they are found, newest underneath.
    3D     the drive in lap3d: the ribbon of the route, a pillar per network.
    LIST   strongest or newest, by kind; a row opens its address and where.
-   MAP    MAP with the drive drawn over it (the RF SURVEY layer's frame).
+   MAP    MAP with the drive drawn over it (the RF SURVEY layer's frame),
+          framed to fit the whole drive.
+   REPLAY a saved drive played back through all of the above (wd_replay.h):
+          R, OPTIONS > REPLAY A DRIVE, or the REPLAY chip on the idle page.
 
    A session keeps running when the app is left (a worker task does the
    scanning and the writing). STOP writes the GPX and closes the WiGLE CSV in
@@ -18,6 +21,9 @@
 #include "../../wardrive/wd_core.h"
 #include "../../wardrive/wd_feed.h"
 #include "../../wardrive/wd_view3d.h"
+#include "../../wardrive/wd_replay.h"
+#include "../../ls_drag_scroll.h"
+#include "../../ls_picker.h"
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
 #include "../../ls_text.h"
@@ -51,6 +57,34 @@ static int s_page;
 static bool s_src[WD_KINDS] = { true, true, true, true };
 static int s_pace = WD_PACE_NORMAL, s_units, s_only_fix;
 static int s_filter, s_sort, s_sel, s_top, s_rows_shown;
+static int s_sel_dev = -1;           /* the device the selection is on, kept across re-sorts */
+static ls_drag_scroll_t s_drag;
+static tui_rect s_bar;               /* the list's scroll bar */
+static char s_say[64];               /* a one-line answer to the last key (MAP with nothing to show) */
+static uint32_t s_say_ms;
+static tui_rect s_replay_chip, s_rp_bar, s_rp_btn[4], s_show_chip;
+/* The 3D page's keys: a D-pad (tilt up/down, turn left/right, FOLLOW in the
+   middle), the zooms over it, FIT ALL and CHASE under it, then BACK, LIGHT
+   MAP and HIDE. HIDE gives the view the page until SHOW KEYS. */
+enum { K_BACK = -1, K_HIDE = -2 };
+static const int GRID[] = {
+    WD3D_OUT,  WD3D_UP,     WD3D_IN,
+    WD3D_LEFT, WD3D_FOLLOW, WD3D_RIGHT,
+    WD3D_FIT,  WD3D_DOWN,   WD3D_CHASE,
+    K_BACK,    WD3D_LIGHT,  K_HIDE,
+};
+#define GRID_N ((int)(sizeof(GRID) / sizeof(GRID[0])))
+/* Colour by what a key does: zoom blue, tilt magenta, turn yellow, where the
+   camera goes (FOLLOW, FIT ALL, CHASE) green, leaving the view (BACK, HIDE)
+   red, the map's look cyan. A lit key is its bright shade. */
+static const uint8_t GRID_HUE[] = {
+    TUI_BLUE,   TUI_MAGENTA, TUI_BLUE,
+    TUI_YELLOW, TUI_GREEN,   TUI_YELLOW,
+    TUI_GREEN,  TUI_MAGENTA, TUI_GREEN,
+    TUI_RED,    TUI_CYAN,    TUI_RED,
+};
+_Static_assert(sizeof(GRID_HUE) == sizeof(GRID) / sizeof(GRID[0]), "a colour for every key");
+static bool s_keys_hidden;
 static EXT_RAM_BSS_ATTR uint16_t s_order[WD_CAP];
 static int s_norder;
 static uint32_t s_order_ms, s_step_ms;
@@ -60,7 +94,9 @@ static EXT_RAM_BSS_ATTR wd_stats_t st;                       /* this frame's cop
 static EXT_RAM_BSS_ATTR wd_drop_t drops[WD_DROPS];
 static int ndrops;
 
-static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+static uint32_t real_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+/* The session's clock: the board's, or a replay's own. */
+static uint32_t now_ms(void) { return wd_replay_now(real_ms()); }
 static uint8_t a_text(void)   { return ls_ink(LS_INK_TEXT, TUI_ATTR(TUI_WHITE, TUI_BLACK)); }
 static uint8_t a_strong(void) { return ls_ink(LS_INK_STRONG, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK)); }
 static uint8_t a_dim(void)    { return ls_ink(LS_INK_DIM, LS_ATTR_FAINT); }
@@ -112,9 +148,12 @@ static void meter(tui_surface *sf, tui_rect clip, int x, int y, int cells, int r
 
 /* ------------------------------------------------------------ session */
 
+static void say_now(const char *t) { snprintf(s_say, sizeof(s_say), "%s", t); s_say_ms = real_ms(); }
+
 static void session_start(void)
 {
-    const uint32_t now = now_ms();
+    if (wd_replay_on()) wd_replay_close();
+    const uint32_t now = real_ms();
     bool src[WD_KINDS];
     for (int k = 0; k < WD_KINDS; k++) src[k] = s_src[k] && wd_feed_has(k);
     wd_lock();
@@ -131,17 +170,49 @@ static void session_start(void)
 static void session_stop(void)
 {
     wd_lock();
-    wd_end(now_ms());
+    wd_end(real_ms());
     wd_request(WD_REQ_EXPORT);
     wd_unlock();
     wd_feed_stop();
     (void)wd_feed_spawn();
 }
 
-static void session_toggle(void) { if (wd_stats()->running) session_stop(); else session_start(); }
+static void session_toggle(void)
+{
+    if (wd_replay_on()) { wd_replay_close(); s_sel = s_top = 0; s_sel_dev = -1; s_order_ms = 0; return; }
+    if (wd_stats()->running) session_stop(); else session_start();
+}
 
-/* Running in the background: HOME's lamp. */
-bool ls_wardrive_running(void) { return wd_stats()->running; }
+/* Running in the background: HOME's lamp. A replay is not a drive. */
+bool ls_wardrive_running(void) { return wd_stats()->running && !wd_stats()->replay; }
+
+/* ------------------------------------------------------------ REPLAY */
+
+static char s_logs[WD_REPLAY_LIST][WD_REPLAY_NAME];
+static int s_nlogs;
+static void page(int p);
+static void replay_picked(int i)
+{
+    if (i < 0 || i >= s_nlogs) return;
+    char why[64];
+    /* The 3D view and its map hold megabytes a long drive needs (more the
+       longer it was looked around): give them back first. While the drive
+       is read the 3D page draws only the notice, so it takes them back after. */
+    wd3d_leave();
+    if (!wd_replay_open(s_logs[i], real_ms(), why, sizeof(why))) { say_now(why); return; }
+    ls_rfmap_set_extra(NULL);
+    s_sel = s_top = 0; s_sel_dev = -1; s_order_ms = 0;
+    page(PG_3D);
+}
+static void replay_pick(void)
+{
+    if (wd_stats()->running && !wd_stats()->replay) { say_now("STOP the drive first, then replay"); return; }
+    static char detail[WD_REPLAY_LIST][40];
+    s_nlogs = wd_replay_list(s_logs, detail, WD_REPLAY_LIST);
+    ls_picker_open("REPLAY A DRIVE", replay_picked);
+    if (!s_nlogs) ls_picker_empty_reason(wd_feed_card() ? "No saved drives in /sdcard/wardrive yet" : "No card in the board");
+    for (int i = 0; i < s_nlogs; i++) ls_picker_add(s_logs[i], detail[i]);
+}
 
 /* ------------------------------------------------------------ MAP layer */
 
@@ -171,12 +242,51 @@ static void map_layer(const ls_rfmap_frame_t *f)
     wd_unlock();
 }
 
+/* MAP with the drive on it, framed so the whole drive is in view: the
+   route's and the finds' extent, at the zoom where it fills most of the
+   screen. With nothing placed yet there is nothing to show, and it says so
+   here instead of opening a map with nothing of the drive on it. */
 static void open_map(void)
 {
     const ls_app_t *m = ls_app_by_id("map");
     if (!m || !m->screen) return;
+    double lo_lat = 90, hi_lat = -90, lo_lon = 180, hi_lon = -180;
+    int n = 0;
+    wd_lock();
+    for (int i = 0; i < wd_trail_count(); i++) {
+        const wd_pt_t *p = wd_trail_at(i);
+        lo_lat = fmin(lo_lat, p->lat); hi_lat = fmax(hi_lat, p->lat);
+        lo_lon = fmin(lo_lon, p->lon); hi_lon = fmax(hi_lon, p->lon); n++;
+    }
+    for (int i = 0; i < wd_dev_count(); i++) {
+        const wd_dev_t *e = wd_dev_at(i);
+        if (!(e->flags & WD_F_PLACED)) continue;
+        lo_lat = fmin(lo_lat, e->lat); hi_lat = fmax(hi_lat, e->lat);
+        lo_lon = fmin(lo_lon, e->lon); hi_lon = fmax(hi_lon, e->lon); n++;
+    }
+    const bool fix = st.origin && st.fix_ms && st.fix.fix;
+    wd_unlock();
+    if (!n && !fix) {
+        say_now(st.running ? "MAP: nothing placed yet, waiting for a GPS fix" : "MAP: START a drive or REPLAY one first");
+        return;
+    }
+    if (!n) { lo_lat = hi_lat = st.fix.lat; lo_lon = hi_lon = st.fix.lon; }
+    const double lat = (lo_lat + hi_lat) / 2, lon = (lo_lon + hi_lon) / 2;
+    /* metres across, then the zoom whose 256-dot tiles put that in ~250 dots */
+    const double span = fmax(fmax((hi_lat - lo_lat) * 111320.0, (hi_lon - lo_lon) * 111320.0 * cos(lat * M_PI / 180)), 150.0);
+    int z = (int)floor(log2(156543.0 * cos(lat * M_PI / 180) * 250.0 / span));
+    z = z < 3 ? 3 : z > 17 ? 17 : z;
+    char label[40];
+    wd_replay_info_t ri;
+    wd_replay_info(&ri);
+    if (ri.on) snprintf(label, sizeof(label), "REPLAY %.18s  %u found", ri.name, st.total[0] + st.total[1] + st.total[2] + st.total[3]);
+    else snprintf(label, sizeof(label), "WARDRIVE %.1f %s  %u found", (double)dist_shown(st.dist_m), dist_unit(),
+                  st.total[0] + st.total[1] + st.total[2] + st.total[3]);
     ls_rfmap_set_extra(map_layer);
-    if (st.origin && st.fix_ms) ls_map_center(st.fix.lat, st.fix.lon);
+    ls_rfmap_set_extra_label(label);
+    ls_map_follow_set(false);
+    ls_map_center(lat, lon);
+    ls_map_zoom_by(z - ls_map_zoom());
     ls_tui_screen_show(ls_tui_screen_index_of(m->screen));
 }
 
@@ -269,6 +379,12 @@ static void idle_extras(tui_surface *sf, tui_rect a, int *py)
         if (s_card.newest[0] && y <= bottom) {
             put(sf, a, a.x + 2, y, "NEWEST", a_strong());
             put(sf, a, a.x + 18, y++, s_card.newest, a_accent());
+        }
+        if (s_card.logs + s_card.tracks > 0 && y <= bottom) {
+            static const char chip[] = " REPLAY A DRIVE IN 3D (R) ";
+            put(sf, a, a.x + 18, y, chip, ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, TUI_CYAN)));
+            s_replay_chip = tui_rect_make(a.x + 18, y, (int)sizeof(chip) - 1, 1);
+            y++;
         }
     }
     *py = y;
@@ -383,8 +499,8 @@ static void band(tui_surface *sf, tui_rect a, int y)
 {
     char t[16], key[32];
     int x = a.x + 1;
-    put(sf, a, x, y, " REC ", ls_ink(LS_INK_KEY_ON, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED)));
-    x += 6;
+    if (st.replay) { put(sf, a, x, y, " REPLAY ", ls_ink(LS_INK_KEY_ON, TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT))); x += 9; }
+    else { put(sf, a, x, y, " REC ", ls_ink(LS_INK_KEY_ON, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED))); x += 6; }
     clock_text(t, sizeof(t), now_ms() - st.start_ms);
     put(sf, a, x, y, t, a_strong());
     x += (int)strlen(t) + 1;
@@ -647,28 +763,64 @@ static void live_page(tui_surface *sf, tui_rect a, uint32_t now)
 static void page_3d(tui_surface *sf, tui_rect a, uint32_t now)
 {
     s_3d = a;
-    if (!wd3d_draw(sf, a, now)) {
+    {
+        wd_replay_info_t ri;
+        wd_replay_info(&ri);
+        if (ri.loading) {
+            char t[48];
+            snprintf(t, sizeof(t), "%.27s  %d%%", ri.name, ri.read_pct);
+            ls_panel_notice(sf, a, "REPLAY", "Reading the drive", t);
+            return;
+        }
+    }
+    wd_replay_info_t ri;
+    wd_replay_info(&ri);
+    /* the top row says where and what; the replay's bar and keys take the
+       bottom two; the view and its keys get the rest */
+    /* the top row says where, what and how fast; the view gets the rest */
+    const tui_rect view = tui_rect_make(a.x, a.y + 1, a.w, a.h - 1);
+    if (!wd3d_draw(sf, view, now)) {
         ls_panel_notice(sf, a, "3D", "Not enough memory for the 3D view", "Close other apps and try again");
         return;
     }
     char s[96];
-    const uint8_t hud = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
-    if (st.fix.fix && st.fix_ms) snprintf(s, sizeof(s), " %.0f %s  %03.0f ", (double)speed_shown(st.speed), speed_unit(), (double)(st.heading >= 0 ? st.heading : 0));
-    else snprintf(s, sizeof(s), " NO FIX ");
-    put(sf, a, a.x, a.y, s, hud);
-    snprintf(s, sizeof(s), " W%u B%u C%u D%u ", st.total[WD_WIFI], st.total[WD_BLE], st.total[WD_CELL], st.total[WD_DRONE]);
-    put(sf, a, a.x + a.w - (int)strlen(s), a.y, s, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
-    snprintf(s, sizeof(s), " %s  < turn | zoom/follow | turn > ", wd3d_mode());
-    put(sf, a, a.x, a.y + a.h - 1, s, TUI_ATTR(TUI_WHITE, TUI_BLACK));
-    if (s_perf) {
-        unsigned us, dots;
-        wd3d_stats(&us, &dots);
-        snprintf(s, sizeof(s), " 3D %.1f ms  %u dots ", us / 1000.0, dots);
-        put(sf, a, a.x, a.y + 1, s, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    tui_fill(sf, tui_rect_make(a.x, a.y, a.w, 1), ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    int x = a.x;
+    if (ri.on) {
+        snprintf(s, sizeof(s), " REPLAY %.14s ", ri.name);
+        put(sf, a, x, a.y, s, TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT));
+        x += (int)strlen(s) + 1;
     }
-    if (!st.running && !st.ever) {
-        const char *m = " START a drive to see it here ";
-        put(sf, a, a.x + (a.w - (int)strlen(m)) / 2, a.y + a.h / 2, m, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+    /* the speed, live or as the replay drove it */
+    if (st.fix.fix && st.fix_ms && st.speed >= 0) {
+        snprintf(s, sizeof(s), "%.0f %s", (double)speed_shown(st.speed), speed_unit());
+        put(sf, a, x, a.y, s, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        x += (int)strlen(s) + 2;
+        if (st.heading >= 0) {
+            snprintf(s, sizeof(s), "%03.0f", (double)st.heading);
+            put(sf, a, x, a.y, s, TUI_ATTR(TUI_WHITE, TUI_BLACK));
+            x += (int)strlen(s) + 2;
+        }
+    } else {
+        put(sf, a, x, a.y, "NO FIX", TUI_ATTR(TUI_YELLOW, TUI_BLACK));
+        x += 8;
+    }
+    /* SHOW: what the pillars are, a tap steps it */
+    char lab[16];
+    const char *sh = wd3d_label(WD3D_SHOW, lab, sizeof(lab));
+    snprintf(s, sizeof(s), " SHOW %s ", sh);
+    const int cw = (int)strlen(s), cx = a.x + a.w - cw;
+    put(sf, a, cx, a.y, s, ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, wd3d_lit(WD3D_SHOW) ? TUI_CYAN | TUI_BRIGHT : TUI_WHITE)));
+    s_show_chip = tui_rect_make(cx, a.y, cw, 1);
+    snprintf(s, sizeof(s), "W%u B%u ", st.total[WD_WIFI], st.total[WD_BLE]);
+    if (x + (int)strlen(s) <= cx) put(sf, a, cx - (int)strlen(s), a.y, s, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    if (!st.running) {
+        const char *m = st.ever ? " the last drive, at its end " : " START a drive to see it here ";
+        put(sf, a, a.x + (a.w - (int)strlen(m)) / 2, a.y + a.h / 2 - 1, m, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        static const char chip[] = " REPLAY A SAVED DRIVE (R) ";
+        const int cx = a.x + (a.w - (int)sizeof(chip) + 1) / 2;
+        put(sf, a, cx, a.y + a.h / 2 + 1, chip, ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, TUI_CYAN)));
+        s_replay_chip = tui_rect_make(cx, a.y + a.h / 2 + 1, (int)sizeof(chip) - 1, 1);
     } else if (!st.origin) {
         const char *m = " waiting for a GPS fix ";
         put(sf, a, a.x + (a.w - (int)strlen(m)) / 2, a.y + a.h / 2, m, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
@@ -706,7 +858,25 @@ static void order(uint32_t now)
     for (int i = 0; i < n; i++) if (wanted(wd_dev_at(i))) s_order[s_norder++] = (uint16_t)i;
     qsort(s_order, (size_t)s_norder, sizeof(s_order[0]), by_order);
     wd_unlock();
+    /* Strongest first re-sorts as signals change: the selection stays on
+       the network it was on, not on the row number. */
+    if (s_sel_dev >= 0) {
+        for (int i = 0; i < s_norder; i++)
+            if (s_order[i] == s_sel_dev) {
+                const int moved = i - s_sel;
+                s_sel = i;
+                s_top += moved;      /* and its row stays where it was on screen */
+                if (s_top < 0) s_top = 0;
+                break;
+            }
+    }
     if (s_sel >= s_norder) s_sel = s_norder ? s_norder - 1 : 0;
+}
+
+static void sel_set(int i)
+{
+    s_sel = i < 0 ? 0 : i >= s_norder ? (s_norder ? s_norder - 1 : 0) : i;
+    s_sel_dev = s_norder ? s_order[s_sel] : -1;
 }
 
 static void list_page(tui_surface *sf, tui_rect a, uint32_t now)
@@ -736,10 +906,35 @@ static void list_page(tui_surface *sf, tui_rect a, uint32_t now)
         put(sf, a, a.x + 2, top + 1, st.ever ? "nothing of this kind heard" : "START a drive and what it hears is listed here", a_dim());
         return;
     }
-    if (s_sel < s_top) s_top = s_sel;
-    if (s_sel >= s_top + s_rows_shown) s_top = s_sel - s_rows_shown + 1;
+    /* A finger dragged up or down carries the list (the selection stays in
+       view); otherwise the list follows the selection. */
+    const int last_top = s_norder > s_rows_shown ? s_norder - s_rows_shown : 0;
+    if (ls_drag_scroll(&s_drag, s_list, 1, &s_top, s_norder, s_rows_shown)) {
+        if (s_sel < s_top) sel_set(s_top);
+        else if (s_sel >= s_top + s_rows_shown) sel_set(s_top + s_rows_shown - 1);
+    } else {
+        if (s_sel < s_top) s_top = s_sel;
+        if (s_sel >= s_top + s_rows_shown) s_top = s_sel - s_rows_shown + 1;
+    }
+    if (s_top > last_top) s_top = last_top;
+    if (s_top < 0) s_top = 0;
     const bool wide = a.w >= 80;
-    const int namew = a.w - (wide ? 52 : 25);
+    const int namew = a.w - (wide ? 52 : 25) - 1;     /* one column for the scroll bar */
+    /* The scroll bar: where this screenful sits in the whole list. */
+    s_bar = tui_rect_make(0, -1, 0, 0);
+    if (s_norder > s_rows_shown && s_rows_shown > 2) {
+        const int bx = a.x + a.w - 1, h = s_rows_shown;
+        int th = h * s_rows_shown / s_norder;
+        if (th < 1) th = 1;
+        const int ty = last_top ? (h - th) * s_top / last_top : 0;
+        for (int r = 0; r < h; r++)
+            tui_put_char(sf, a, bx, top + r, r >= ty && r < ty + th ? '#' : '|',
+                         r >= ty && r < ty + th ? LIT(TUI_CYAN) : a_rule());
+        s_bar = tui_rect_make(bx - 1, top, 2, h);
+        char cnt[24];
+        snprintf(cnt, sizeof(cnt), "%d-%d/%d", s_top + 1, s_top + s_rows_shown < s_norder ? s_top + s_rows_shown : s_norder, s_norder);
+        put(sf, a, a.x + a.w - 1 - (int)strlen(cnt), top - 1, cnt, a_dim());
+    }
     wd_lock();
     for (int r = 0; r < s_rows_shown && s_top + r < s_norder; r++) {
         const wd_dev_t *e = wd_dev_at(s_order[s_top + r]);
@@ -845,7 +1040,9 @@ static void act_locker(const ls_opt_t *o)
     wd_lock(); wd_request(WD_REQ_EXPORT | WD_REQ_LOCKER); wd_unlock();
     (void)wd_feed_spawn();
 }
-static const char *why_saved(const ls_opt_t *o) { (void)o; return wd_stats()->ever ? NULL : "drive first"; }
+static const char *why_saved(const ls_opt_t *o) { (void)o; return wd_stats()->ever && !wd_stats()->replay ? NULL : "drive first"; }
+static void act_replay(const ls_opt_t *o) { (void)o; replay_pick(); }
+static const char *why_replay(const ls_opt_t *o) { (void)o; return wd_stats()->running && !wd_stats()->replay ? "STOP first" : NULL; }
 static void show_files(const ls_opt_t *o, char *out, size_t n)
 {
     (void)o;
@@ -867,6 +1064,7 @@ static const ls_opt_t SOURCES[] = {
 };
 static const ls_opt_ctx_t SOURCES_CTX = {.name = "SOURCES", .job = -1, .radio = LS_RSEL_NONE, LS_OPT_ROWS(SOURCES)};
 static const ls_opt_t OPTIONS[] = {
+    {.label = "REPLAY A DRIVE",   .kind = LS_OPT_ACTION, .act = act_replay, .why_not = why_replay},
     {.label = "SOURCES",          .kind = LS_OPT_MENU, .sub = &SOURCES_CTX},
     {.label = "SCAN PACE",        .kind = LS_OPT_CYCLE, .arg = 10, .names = PACE_N, .n = 3, .get = opt_get, .set = opt_set},
     {.label = "UNITS",            .kind = LS_OPT_CYCLE, .arg = 11, .names = UNIT_N, .n = 2, .get = opt_get, .set = opt_set},
@@ -878,9 +1076,83 @@ static const ls_opt_ctx_t CTX = {.name = "WARDRIVE", .job = -1, .radio = LS_RSEL
 
 /* ------------------------------------------------------------ screen */
 
+/* The 3D page's keys and, while a replay plays, its transport and seek bar,
+   from the bottom of `*ap` up; `*ap` is left with what the view gets. */
+static void keys_3d(tui_surface *sf, tui_rect *ap, bool wide)
+{
+    /* The 3D page's own keys take the bar's place, big enough for a
+       thumb: the view's controls and the way back, then the replay's. */
+    /* The keys run to the bottom of the panel: the grid fits the outer
+       keys' sides to its rounded corners (ls_btn_bar_grid_slot). */
+    if (s_keys_hidden) {
+        /* HIDE: the view gets the page; one key brings the keys back */
+        static const ls_btn_t k1[1] = { { "SHOW KEYS", NULL, 'h', false, false, false } };
+        static const uint8_t h1[1] = { TUI_RED };
+        const int kb = ls_tui_compact() ? 1 : wide ? 2 : 4;
+        ls_btn_bar_grid_slot(sf, tui_rect_make(ap->x, ap->y + ap->h - kb, ap->w, kb), k1, 1, -1, LS_BTN_SLOT_SCREEN, 1, h1);
+        ap->h -= kb;
+        s_rp_bar = tui_rect_make(0, -1, 0, 0);
+        return;
+    }
+    char lab[GRID_N][16];
+    ls_btn_t v[GRID_N];
+    for (int i = 0; i < GRID_N; i++) {
+        const int k = GRID[i];
+        if (k == K_BACK) { v[i] = (ls_btn_t){ "BACK", NULL, 0, false, false, false }; continue; }
+        if (k == K_HIDE) { v[i] = (ls_btn_t){ "HIDE", NULL, 'h', false, false, false }; continue; }
+        const char *l = wd3d_label(k, lab[i], sizeof(lab[i]));
+        if (l != lab[i]) snprintf(lab[i], sizeof(lab[i]), "%s", l);
+        v[i] = (ls_btn_t){ lab[i], NULL, 0, wd3d_lit(k), false, false };
+    }
+    /* a D-pad, three to a row and four rows, each key a full third of the
+       width (no margins either side) and six rows tall in portrait */
+    const int vb = ls_tui_compact() ? 4 : wide ? 8 : 24;
+    ls_btn_bar_grid_slot(sf, tui_rect_make(ap->x, ap->y + ap->h - vb, ap->w, vb), v, GRID_N, -1, LS_BTN_SLOT_SCREEN, GRID_N / 3,
+                         GRID_HUE);
+    ap->h -= vb;
+    wd_replay_info_t ri;
+    wd_replay_info(&ri);
+    if (ri.on) {
+        ls_btn_t r[4] = {
+            { "SLOWER", NULL, ',', false, ri.speed <= 1, false },
+            { ri.done ? "AGAIN" : ri.paused ? "PLAY" : "PAUSE", NULL, ' ', ri.paused, false, false },
+            { "FASTER", NULL, '.', false, ri.speed >= 32, false },
+            { "END", "REPLAY", 'x', false, false, false },
+        };
+        const int rb = ls_tui_compact() ? 1 : wide ? 3 : 4;
+        ls_btn_bar_raised_slot(sf, tui_rect_make(ap->x, ap->y + ap->h - rb, ap->w, rb), r, 4, -1, LS_BTN_SLOT_QUICK);
+        ap->h -= rb;
+        /* the seek bar over them, with where and how fast */
+        const int by = ap->y + ap->h - 1, bw = ap->w - 18 > 8 ? ap->w - 18 : ap->w - 2;
+        tui_fill(sf, tui_rect_make(ap->x, by, ap->w, 1), ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        const int lit = ri.len_s ? (int)((uint64_t)ri.pos_s * (unsigned)bw / ri.len_s) : bw;
+        for (int i = 0; i < bw; i++)
+            tui_put_char(sf, *ap, ap->x + 1 + i, by, i < lit ? '=' : '-', i < lit ? TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK) : TUI_ATTR(TUI_BLUE, TUI_BLACK));
+        if (lit < bw) tui_put_char(sf, *ap, ap->x + 1 + lit, by, '>', TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+        s_rp_bar = tui_rect_make(ap->x + 1, by, bw, 1);
+        char t1[16], t2[16], t[40];
+        clock_text(t1, sizeof(t1), ri.pos_s * 1000u);
+        clock_text(t2, sizeof(t2), ri.len_s * 1000u);
+        snprintf(t, sizeof(t), "%dx %s", ri.speed, t1);
+        if (bw + 3 + (int)strlen(t) <= ap->w) tui_put_str(sf, *ap, ap->x + bw + 2, by, t, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        (void)t2;
+        ap->h -= 1;
+    } else s_rp_bar = tui_rect_make(0, -1, 0, 0);
+}
+
 static void draw(tui_surface *sf, tui_rect a)
 {
+    {
+        static bool was;
+        wd_replay_tick(real_ms());
+        wd_replay_info_t ri;
+        wd_replay_info(&ri);
+        if (was && !ri.loading && !ri.on && wd_replay_error()[0]) say_now(wd_replay_error());
+        if (was && !ri.loading && ri.on && ri.full) say_now("long drive: replaying the part that fits");
+        was = ri.loading;
+    }
     const uint32_t now = now_ms();
+    s_replay_chip = tui_rect_make(0, -1, 0, 0);
     /* No worker (the simulator, or a task that could not start): step here. */
     if (!wd_feed_worker_alive() && wd_busy() && now - s_step_ms >= 250) { s_step_ms = now; wd_step(now); }
     wd_lock();
@@ -896,16 +1168,28 @@ static void draw(tui_surface *sf, tui_rect a)
     if (all) snprintf(list_count, sizeof(list_count), "%u", all);
     else snprintf(list_count, sizeof(list_count), "--");
     ls_btn_t b[] = {
-        {st.running ? "STOP" : "START", st.running ? "REC" : "DRIVE", 's', st.running, false, false},
+        {st.replay ? "END" : st.running ? "STOP" : "START", st.replay ? "REPLAY" : st.running ? "REC" : "DRIVE", 's', st.running, false, false},
         {"LIVE", "DASH", '1', s_page == PG_LIVE, false, false},
         {"3D", "VIEW", '2', s_page == PG_3D, false, false},
         {"LIST", list_count, '3', s_page == PG_LIST, false, false},
-        {"MAP", "LAYER", 'm', false, !st.origin, false},
+        {"MAP", "LAYER", 'm', false, !st.origin && !st.ever, false},
         ls_opt_button(&CTX),
     };
     static const uint8_t hues[6] = { TUI_RED, 0, 0, 0, 0, 0 };
-    ls_btn_bar_raised_hued(sf, tui_rect_make(a.x, a.y + a.h - bar_h, a.w, bar_h), b, 6, -1, hues);
-    a.h -= bar_h + 1;
+    if (s_page == PG_3D) {
+        keys_3d(sf, &a, wide);
+    } else {
+        ls_btn_bar_raised_hued(sf, tui_rect_make(a.x, a.y + a.h - bar_h, a.w, bar_h), b, 6, -1, hues);
+        a.h -= bar_h + 1;
+    }
+    if (s_say[0] && real_ms() - s_say_ms < 4000) {
+        /* the answer to the last key, on the bottom row of the page */
+        char t[70];
+        snprintf(t, sizeof(t), " %s ", s_say);
+        tui_put_str(sf, a, a.x + (a.w - (int)strlen(t)) / 2 > a.x ? a.x + (a.w - (int)strlen(t)) / 2 : a.x, a.y + a.h - 1, t,
+                    TUI_ATTR(TUI_BLACK, TUI_YELLOW | TUI_BRIGHT));
+        a.h--;
+    } else s_say[0] = 0;
     if (s_page != PG_3D) wd3d_leave();
     switch (s_page) {
     case PG_3D: page_3d(sf, a, now); break;
@@ -929,22 +1213,37 @@ static bool key(ls_tk_t k, char ch)
     if (ch == '2') { page(PG_3D); return true; }
     if (ch == '3') { page(PG_LIST); return true; }
     if (ch == 'm' || ch == 'M') { open_map(); return true; }
+    if (ch == 'r' || ch == 'R') { replay_pick(); return true; }
+    if (wd_replay_on()) {
+        const uint32_t r = real_ms();
+        if (ch == ' ' || (k == LS_TK_ENTER && s_page != PG_LIST)) { wd_replay_pause(r); return true; }
+        if (ch == ',' || ch == '<') { wd_replay_speed(-1, r); return true; }
+        if (ch == '.' || ch == '>') { wd_replay_speed(+1, r); return true; }
+        if (ch == '[' || ch == ']') {
+            wd_replay_info_t ri; wd_replay_info(&ri);
+            const float f = ri.len_s ? (float)ri.pos_s / ri.len_s : 0;
+            wd_replay_seek(f + (ch == '[' ? -0.1f : 0.1f), r);
+            return true;
+        }
+        if (ch == 'x' || ch == 'X') { session_toggle(); return true; }
+    }
     if (k == LS_TK_ESC || ch == 'b' || ch == 'B') {
         if (s_page != PG_LIVE) { page(PG_LIVE); return true; }
         return false;
     }
     if (s_page == PG_3D) {
         if (ch == 'p' || ch == 'P') { s_perf = !s_perf; return true; }
+        if (ch == 'h' || ch == 'H') { s_keys_hidden = !s_keys_hidden; return true; }
         return wd3d_key(k, ch, now);
     }
     if (s_page == PG_LIST) {
-        if (k == LS_TK_UP) { if (s_sel > 0) s_sel--; return true; }
-        if (k == LS_TK_DOWN) { if (s_sel + 1 < s_norder) s_sel++; return true; }
-        if (k == LS_TK_PGUP) { s_sel = s_sel > s_rows_shown ? s_sel - s_rows_shown : 0; return true; }
-        if (k == LS_TK_PGDN) { s_sel = s_sel + s_rows_shown < s_norder ? s_sel + s_rows_shown : (s_norder ? s_norder - 1 : 0); return true; }
+        if (k == LS_TK_UP) { sel_set(s_sel - 1); return true; }
+        if (k == LS_TK_DOWN) { sel_set(s_sel + 1); return true; }
+        if (k == LS_TK_PGUP) { sel_set(s_sel - s_rows_shown); return true; }
+        if (k == LS_TK_PGDN) { sel_set(s_sel + s_rows_shown); return true; }
         if (k == LS_TK_LEFT || k == LS_TK_RIGHT) {
             s_filter = (s_filter + (k == LS_TK_LEFT ? F_N - 1 : 1)) % F_N;
-            s_sel = s_top = 0; s_order_ms = 0;
+            s_sel = s_top = 0; s_sel_dev = -1; s_order_ms = 0;
             return true;
         }
         if (ch == 'n' || ch == 'N') { s_sort = !s_sort; s_order_ms = 0; return true; }
@@ -957,25 +1256,72 @@ static bool touch(int x, int y)
 {
     const uint32_t now = now_ms();
     const int hit = ls_btn_hit(x, y);
+    if (s_page == PG_3D) {
+        if (s_keys_hidden) {
+            if (hit == 0) { s_keys_hidden = false; return true; }
+        } else if (hit >= 0 && hit < GRID_N) {
+            const int k = GRID[hit];
+            if (k == K_BACK) page(PG_LIVE);
+            else if (k == K_HIDE) s_keys_hidden = true;
+            else wd3d_act(k);
+            return true;
+        }
+        if (s_show_chip.h > 0 && y == s_show_chip.y && x >= s_show_chip.x && x < s_show_chip.x + s_show_chip.w) { wd3d_act(WD3D_SHOW); return true; }
+        const int rp = ls_btn_hit_slot(x, y, LS_BTN_SLOT_QUICK);
+        const uint32_t r = real_ms();
+        if (rp == 0) { wd_replay_speed(-1, r); return true; }
+        if (rp == 1) { wd_replay_pause(r); return true; }
+        if (rp == 2) { wd_replay_speed(+1, r); return true; }
+        if (rp == 3) { session_toggle(); return true; }
+        if (s_rp_bar.h > 0 && y == s_rp_bar.y && x >= s_rp_bar.x && x < s_rp_bar.x + s_rp_bar.w) {
+            wd_replay_seek((float)(x - s_rp_bar.x) / (float)(s_rp_bar.w > 1 ? s_rp_bar.w - 1 : 1), r);
+            return true;
+        }
+        if (s_replay_chip.h > 0 && y == s_replay_chip.y && x >= s_replay_chip.x && x < s_replay_chip.x + s_replay_chip.w) { replay_pick(); return true; }
+        return wd3d_tap(x, y, s_3d, now);
+    }
     if (hit == 0) { session_toggle(); return true; }
     if (hit == 1) { page(PG_LIVE); return true; }
     if (hit == 2) { page(PG_3D); return true; }
     if (hit == 3) { page(PG_LIST); return true; }
     if (hit == 4) { open_map(); return true; }
     if (hit == 5) { ls_opt_open(&CTX); return true; }
+    if (s_replay_chip.h > 0 && y == s_replay_chip.y && x >= s_replay_chip.x && x < s_replay_chip.x + s_replay_chip.w) { replay_pick(); return true; }
+    if (s_page == PG_3D && wd_replay_on()) {
+        const uint32_t r = real_ms();
+        if (s_rp_bar.h > 0 && y == s_rp_bar.y && x >= s_rp_bar.x && x < s_rp_bar.x + s_rp_bar.w) {
+            wd_replay_seek((float)(x - s_rp_bar.x) / (float)(s_rp_bar.w > 1 ? s_rp_bar.w - 1 : 1), r);
+            return true;
+        }
+        for (int i = 0; i < 4; i++) {
+            const tui_rect b = s_rp_btn[i];
+            if (b.h <= 0 || y != b.y || x < b.x || x >= b.x + b.w) continue;
+            if (i == 0) wd_replay_speed(-1, r);
+            else if (i == 1) wd_replay_pause(r);
+            else if (i == 2) wd_replay_speed(+1, r);
+            else session_toggle();
+            return true;
+        }
+    }
     if (s_page == PG_3D) return wd3d_tap(x, y, s_3d, now);
     if (s_page == PG_LIST) {
         for (int f = 0; f <= F_N; f++) {
             const tui_rect r = s_chip[f];
             if (y == r.y && x >= r.x && x < r.x + r.w) {
                 if (f == F_N) s_sort = !s_sort;
-                else { s_filter = f; s_sel = s_top = 0; }
+                else { s_filter = f; s_sel = s_top = 0; s_sel_dev = -1; }
                 s_order_ms = 0;
                 return true;
             }
         }
+        if (ls_drag_scroll_tap_is_lift(&s_drag)) return true;
+        /* A tap on the scroll bar pages to that part of the list. */
+        if (s_bar.h > 0 && y >= s_bar.y && y < s_bar.y + s_bar.h && x >= s_bar.x) {
+            sel_set((y - s_bar.y) * s_norder / s_bar.h);
+            return true;
+        }
         if (y >= s_list.y && y < s_list.y + s_list.h && s_top + (y - s_list.y) < s_norder) {
-            s_sel = s_top + (y - s_list.y);
+            sel_set(s_top + (y - s_list.y));
             return true;
         }
     }
@@ -989,10 +1335,13 @@ static void enter(void)
     s_card.known = false;
 }
 
-static void leave(void) { wd3d_leave(); }
+/* A replay only plays while WARDRIVE draws, and its events hold up to ~4 MB
+   of PSRAM that MAP needs: leaving ends it (the drive's devices and track
+   stay in the session, so MAP's layer still shows them). */
+static void leave(void) { wd3d_leave(); wd_replay_close(); }
 
 const ls_tui_screen_t ls_scr_wardrive = {
     .name = "WARDRIVE",
-    .hint = "S start/stop  1 live  2 3D  3 list  M map  O options",
+    .hint = "S start/stop  1 live  2 3D  3 list  M map  R replay  O options",
     .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch,
 };

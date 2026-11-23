@@ -216,7 +216,7 @@ static void map_scan_files(void) {
 
 const char *ls_carto_map_status(void) {
     int status=atomic_load(&map_status);
-    return status==-3?"Not enough memory for map":status==-2?"No map installed":status<0?"CartoCore map unavailable":"opening map...";
+    return status==-3?"Making room for the map":status==-2?"No map installed":status<0?"CartoCore map unavailable":"opening map...";
 }
 bool ls_carto_map_prepare(double *lat,double *lon,unsigned *z) {
     if(!view_lock || xSemaphoreTake(view_lock,0)!=pdTRUE) return false;
@@ -492,6 +492,14 @@ bool ls_carto_map_pixels(double lat,double lon,unsigned z,int pw,int ph,int tw,i
 bool ls_carto_map_picture_cells(void) { return pix.valid && pix.cells; }
 /* The view asked for could not be drawn; what is on screen is an older one. */
 bool ls_carto_map_failed(void) { return atomic_load(&map_status)<0; }
+/* The last try could not get the memory it needed. */
+bool ls_carto_map_short(void) { return atomic_load(&map_status)==-3; }
+/* Memory may be back (MAKE ROOM freed some): try again now, not at the
+   next retry. Any task. */
+static atomic_bool map_retry_now;
+void ls_carto_map_retry(void) { atomic_store(&map_retry_now,true); }
+/* The open map runs on the lean plan (ls_carto_budget.h). */
+bool ls_carto_map_lean(void) { return carto_lean && atomic_load(&map_status)==1; }
 /* The newest picture is centred on a downloaded cell: bare ground in it is
    open country or open water, anywhere in the world. */
 bool ls_carto_map_picture_covered(void) { return pix.valid && pix.covered; }
@@ -524,6 +532,7 @@ static void map_service_locked(void) {
     unsigned epoch=atomic_load(&map_epoch);
     map_request r=map_mail.request;
     bool prepare=!map_prepared || !map_mail.source_ready || map_mail.epoch!=epoch;
+    if(atomic_exchange(&map_retry_now,false)) map_mail.retry_after=0;
     if(esp_timer_get_time()<map_mail.retry_after) { xSemaphoreGive(view_lock);return; }
     bool select=map_mail.select;map_mail.select=false;
     /* A switch made by following the view keeps the view as it is. */
@@ -582,7 +591,27 @@ static void map_service_locked(void) {
             }
         }
     }
-    if(!map_owned || !shown || shown->cols!=r.cols || shown->rows!=r.rows) {
+    /* On the lean plan while memory came back: the full plan again, at
+       most every 10 s. Counts what the lean map holds as free, since it is
+       let go first; a full plan that still does not fit goes lean again. */
+    bool grow=false;
+    if(shown && carto_lean && map_owned) {
+        static int64_t grow_at;const int64_t now=esp_timer_get_time();
+        if(now>=grow_at) {
+            grow_at=now+10000000;
+            const uint32_t caps=MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT;
+            const size_t held=carto_last_budget.cold+carto_last_budget.decoded;
+            const size_t f=heap_caps_get_free_size(caps)+held;
+            const size_t overhead=sizeof(render_state)+cc_renderer_hot_bytes(r.cols,r.rows)+(size_t)r.cols*r.rows*(sizeof(cc_cell)+2*sizeof(tui_cell));
+            const bool v7=(shown->map.source?shown->map.source->header[8]:shown->map.bytes.data[8])==7;
+            carto_budget b;
+            /* a megabyte over what the full plan needs, so it does not flip back */
+            grow=f>CARTO_MAP_HEADROOM+CARTO_MIB &&
+                 carto_plan_budget(f-CARTO_MAP_HEADROOM-CARTO_MIB,f,overhead,v7,shown->map.cellset!=NULL,shown->map.source!=NULL,true,&b);
+            if(grow) printf("carto MAP: memory is back, leaving the lean plan\n");
+        }
+    }
+    if(grow || !map_owned || !shown || shown->cols!=r.cols || shown->rows!=r.rows) {
         release(shown);shown=NULL;
         shown=create(r.cols,r.rows,r.z,true,true);map_owned=true;
     }
@@ -634,8 +663,10 @@ static void map_service_locked(void) {
             if(shown->map.source) cc_ctile_prefetch_hint(&shown->map,r.z,shown->left,shown->top,r.cols,r.rows,0,0,queue_hint,shown);
         }
         if(ok) failed_times=0; else failed_times++;
-        if(!ok) map_mail.retry_after=esp_timer_get_time()+(again?60000000:5000000);
-    } else map_mail.retry_after=esp_timer_get_time()+5000000;
+        /* Out of memory is asked again every 2 s (the board frees it as apps
+           close); a view that will not draw for other reasons once a minute. */
+        if(!ok) map_mail.retry_after=esp_timer_get_time()+(carto_memory_failed?2000000:again?60000000:5000000);
+    } else map_mail.retry_after=esp_timer_get_time()+(carto_memory_failed?2000000:5000000);
     map_mail.frame_ready=ok;atomic_store(&map_status,ok?1:(carto_memory_failed?-3:-1));
     xSemaphoreGive(view_lock);
 }
@@ -646,10 +677,16 @@ static void map_service_locked(void) {
 static size_t pix_labels(const render_state *s,int tw,int th,ls_carto_label *out,size_t cap) {
     const cc_scene *sc=&s->renderer.scene;const int w=s->cols*2,h=s->rows*4;size_t n=0;
     if(tw<1 || th<1) return 0;
+    /* Far out the names come in tile order, so the first tiles' small towns
+       took every place MAP draws (the picture's corner named, its cities not):
+       names keep apart there, and are handed over one per part of the picture
+       at a time (below), so the few MAP draws are spread over it. */
+    const bool far=s->z<=8;
     for(unsigned rank=1;rank<=5 && n<cap;rank++) for(unsigned pr=0;pr<16 && n<cap;pr++)
         for(const cc_feature *f=sc->labels_indexed?sc->label_first[rank][pr]:sc->first[pr];f && n<cap;
             f=sc->labels_indexed?f->label_next:f->next) {
             if(f->label_class!=rank || !f->name.size) continue;
+            if(!cc_feature_shown(&s->renderer.planes,f)) continue;   /* a road or river not drawn: nor its name */
             cc_point a=f->anchor;
             if(f->type!=1 && f->type!=3) {
                 if(!f->count || !f->paths[0].count) continue;
@@ -666,8 +703,26 @@ static size_t pix_labels(const render_state *s,int tw,int th,ls_carto_label *out
             bool seen=false;for(size_t j=0;j<n && !seen;j++) seen=!strcmp(out[j].text,l->text);
             if(seen || !k) continue;
             l->x=(int16_t)(a.x*tw/w-k/2);l->y=(int16_t)(a.y*th/h);
+            if(far) {
+                bool near=false;
+                for(size_t j=0;j<n && !near;j++) near=abs(out[j].x-l->x)<k+8 && abs(out[j].y-l->y)<3;
+                if(near) continue;
+            }
             l->attr=TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK);l->label_class=(uint8_t)rank;n++;
         }
+    if(far && n>1) {
+        /* One name per sixth of the picture, then a second per sixth...:
+           stable within a class (MAP orders by class, keeping this order). */
+        static EXT_RAM_BSS_ATTR ls_carto_label sorted[LS_CARTO_LABEL_MAX];
+        uint8_t key[LS_CARTO_LABEL_MAX],seen[6]={0};
+        for(size_t i=0;i<n;i++) {
+            const int bx=out[i].x<0?0:out[i].x*3/tw>2?2:out[i].x*3/tw,by=out[i].y<0?0:out[i].y*2/th>1?1:out[i].y*2/th;
+            const int b=by*3+bx;key[i]=(uint8_t)(seen[b]<40?seen[b]++:40);
+        }
+        size_t m=0;
+        for(unsigned round=0;round<=40 && m<n;round++) for(size_t i=0;i<n;i++) if(key[i]==round) sorted[m++]=out[i];
+        memcpy(out,sorted,n*sizeof(*out));
+    }
     return n;
 }
 static bool pix_commit(render_state *s,const map_request *r) {

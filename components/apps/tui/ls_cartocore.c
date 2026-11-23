@@ -574,7 +574,7 @@ static void cache_step(void) {
                 if(!map_owned) redraw(shown,"later");
             }
         }
-        if(shown && !shown->tiles.pending && shown->hint_next<shown->hint_count) {
+        if(shown && !shown->tiles.pending && shown->idle_arena.size && shown->hint_next<shown->hint_count) {
             if(shown->map.cellset) {
                 cc_renderer_invalidate(&shown->renderer);
                 shown->arena.used=shown->renderer.mark;

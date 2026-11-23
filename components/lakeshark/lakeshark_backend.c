@@ -124,13 +124,11 @@ void lakeshark_backend_start(void)
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
 
 #if LS_HAS_USB_SDR
-    /* The LoRa part has answered by now (ls_lora_start runs first), so the
-       profile can say whether this board wants its USB host: an LR2021 board
-       keeps the stack's internal RAM for the LR2021 unless asked. */
+    /* The profile says whether this board starts its USB host: on wherever
+       the port exists unless the owner set 'board usb off'. */
     ls_profile_decide_usb();
     if (!ls_profile_usb_host()) {
-        ESP_LOGW(TAG, "USB host left off (%s): 'board usb on' starts it at boot",
-                 ls_profile_is_lr() ? "LR2021 board" : "board usb off");
+        ESP_LOGW(TAG, "USB host left off (board usb off): 'board usb on' starts it at boot");
     } else {
 #if CONFIG_LS_USB_ETH
     /* RTL8152/8153 keep their ECM function in a second configuration. */

@@ -405,7 +405,9 @@ LS_CASE(clock_modes_reinit_fallback_and_receive_status)
         fk.nframes = 0;
         const int resets = fk.resets;
         LS_EQ_INT(lr20xx_clock_command(3, tcxo), 0);
-        LS_CHECK(fk_lr_tcxo);
+        /* the TCXO failed and the crystal came up clean: the crystal is saved
+           (a module with no TCXO); a TCXO module heals on its next start */
+        LS_CHECK(!fk_lr_tcxo);
         LS_CHECK(fk.resets >= resets + 2);
         int tcxo_count = 0;
         for (int i = 0; i < fk.nframes; i++)
@@ -416,7 +418,7 @@ LS_CASE(clock_modes_reinit_fallback_and_receive_status)
         fk.nframes = 0;
         LS_EQ_INT(lr20xx_initialize(), ESP_OK);
         LS_EQ_INT(first_op(0x0120), -1);
-        LS_CHECK(fk_lr_tcxo);
+        LS_CHECK(!fk_lr_tcxo);
     }
 }
 

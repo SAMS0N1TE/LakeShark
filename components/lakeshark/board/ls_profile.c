@@ -286,7 +286,8 @@ bool ls_profile_usb_wanted(const ls_board_profile_t *b, int pref, uint32_t radio
     if (!b || !(b->radios & LS_RADIO_USB_SDR)) return false;
     if (pref == LS_PREF_ON) return true;
     if (pref == LS_PREF_OFF) return false;
-    return radio != LS_RADIO_LR2021;
+    (void)radio;
+    return true;
 }
 
 void ls_profile_legacy_edition(int panel_kind, uint32_t radio, bool net,

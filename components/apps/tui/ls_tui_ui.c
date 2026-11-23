@@ -441,6 +441,8 @@ void ls_slider1_draw(tui_surface *sf, tui_rect r, const char *label,
 }
 
 static int s_force_rows;
+/* A key grid lays its rows out full width and fits the corners after (grid_fit_corners). */
+static bool s_grid_fit;
 static const uint8_t *s_btn_hues;
 static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n,
                         int focus, int slot, bool raised, bool stretch, bool single_row)
@@ -497,8 +499,8 @@ static void button_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int n
            The bottom row must not shrink every row above it. */
         int row_x=bar.x,row_w=bar.w;
         if(stretch) {
-            int pad=ls_tui_corner_pad(bar.y+r*row_h);
-            int end_pad=ls_tui_corner_pad(bar.y+(r+1)*row_h-1);
+            int pad=s_grid_fit?0:ls_tui_corner_pad(bar.y+r*row_h);
+            int end_pad=s_grid_fit?0:ls_tui_corner_pad(bar.y+(r+1)*row_h-1);
             if(end_pad>pad)pad=end_pad;
             int right=bar.x+bar.w,cols=tui_surface_rect(sf).w;
             if(row_x<pad)row_x=pad;
@@ -773,6 +775,47 @@ void ls_btn_bar_rows_slot(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n
     s_force_rows=rows;
     button_bar(sf,bar,btn,n,focus,slot,false,false,false);
     s_force_rows=0;
+}
+
+/* A key grid down into the panel's rounded corners: on each row the curve
+   reaches, an outer key's side steps in by the cells the glass lacks there,
+   and what lies under the curve is left empty. The hit rects stay whole (a
+   finger on the curve has no glass to land on anyway). */
+static void grid_fit_corners(tui_surface *sf, tui_rect bar, int slot)
+{
+    if (!sf || slot < 0 || slot >= BTN_SLOTS) return;
+    const tui_cell blank = { ' ', TUI_ATTR(TUI_BLACK, TUI_BLACK) };
+    for (int y = bar.y; y < bar.y + bar.h && y < sf->h; y++) {
+        const int p = ls_tui_corner_pad(y);
+        if (y < 0 || p <= 0) continue;
+        tui_cell *row = &sf->back[(size_t)y * sf->w];
+        for (int i = 0; i < s_btn_n[slot]; i++) {
+            const hit_t *r = &s_btn_hit[slot][i];
+            if (y < r->y0 || y > r->y1) continue;
+            if (r->x0 < p && p < r->x1 - 2) {
+                row[p] = row[r->x0 < 0 ? 0 : r->x0];
+                for (int x = r->x0 < 0 ? 0 : r->x0; x < p; x++) row[x] = blank;
+            }
+            const int lim = sf->w - 1 - p;
+            if (r->x1 > lim && lim > r->x0 + 2) {
+                row[lim] = row[r->x1 < sf->w ? r->x1 : sf->w - 1];
+                for (int x = lim + 1; x <= r->x1 && x < sf->w; x++) row[x] = blank;
+            }
+        }
+    }
+}
+
+void ls_btn_bar_grid_slot(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus,int slot,int rows,
+                          const uint8_t *hues)
+{
+    s_force_rows=rows;
+    s_btn_hues=hues;
+    s_grid_fit=true;
+    button_bar(sf,bar,btn,n,focus,slot,true,true,false);
+    s_grid_fit=false;
+    s_btn_hues=NULL;
+    s_force_rows=0;
+    grid_fit_corners(sf,bar,slot);
 }
 
 void ls_btn_bar_transport(tui_surface *sf,tui_rect bar,const ls_btn_t *btn,int n,int focus)

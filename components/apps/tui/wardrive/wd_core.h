@@ -84,6 +84,7 @@ typedef struct {
 
 typedef struct {
     bool running, ever, origin, only_fix;
+    bool replay;                /* the session is a saved drive played back (wd_replay.h) */
     bool src[WD_KINDS];         /* which sources the session listens to */
     uint32_t start_ms, stop_ms;
     double lat0, lon0;
@@ -111,6 +112,9 @@ typedef struct {
 
 bool wd_begin(uint32_t now_ms, const bool src[WD_KINDS], bool only_fix);
 void wd_end(uint32_t now_ms);
+/* A session for REPLAY: every source, nothing written, nothing read from
+   the scanners; the replay feeds wd_fix_note and wd_note itself. */
+bool wd_begin_replay(uint32_t now_ms);
 void wd_set_sources(const bool src[WD_KINDS], bool only_fix);
 const wd_stats_t *wd_stats(void);
 int  wd_dev_count(void);

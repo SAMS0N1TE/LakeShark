@@ -1,6 +1,6 @@
 {
   "category": "tools",
-  "group": "radio",
+  "group": "system",
   "version": "1.0",
   "description": "The translator languages for MESHTASTIC, over Wi-Fi: Portuguese, French, German, Italian, Dutch, Polish, Russian and Ukrainian (155-198 KB each). Lists each with its size and where it is (on the card, a PACKS pack, or not there), downloads one from terminalbay.com, checks its size and sha256 against the pack list, writes it where MESHTASTIC reads it and reads it back, and removes one to free the card. Works on firmware 2.23.0 and later.",
   "third_party": [

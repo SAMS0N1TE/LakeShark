@@ -953,6 +953,7 @@ add_executable(lssim
     ${FW}/components/apps/tui/screens/ext/scr_wardrive.c
     ${FW}/components/apps/tui/wardrive/wd_core.c
     ${FW}/components/apps/tui/wardrive/wd_view3d.c
+    ${FW}/components/apps/tui/wardrive/wd_replay.c
     tools/lssim_wardrive.c
     ${FW}/components/apps/tui/ls_map.c ${FW}/components/apps/tui/ls_maptiles.c
     ${FW}/components/apps/tui/ls_map_ink.c
@@ -2678,6 +2679,11 @@ if(CARTOCORE_DIR)
     endif()
     add_library(cartocore_host STATIC ${CC_CORE_SRCS} ${CC_OUT_SRCS})
     target_include_directories(cartocore_host PUBLIC ${CC_PUBLIC_INCLUDE_DIRS})
+    add_executable(test_wd_replay tests/test_wd_replay.c
+        ${FW}/components/apps/tui/wardrive/wd_replay.c ${FW}/components/apps/tui/wardrive/wd_core.c)
+    target_include_directories(test_wd_replay PRIVATE "${FW}/components/apps/tui")
+    target_link_libraries(test_wd_replay PRIVATE m)
+    add_test(NAME test_wd_replay COMMAND test_wd_replay)
     add_executable(test_carto_budget tests/test_carto_budget.c)
     target_include_directories(test_carto_budget PRIVATE "${FW}/components/apps/tui")
     add_test(NAME test_carto_budget COMMAND test_carto_budget)

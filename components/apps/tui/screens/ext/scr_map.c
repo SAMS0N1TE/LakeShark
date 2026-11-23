@@ -4253,6 +4253,23 @@ static void engine_update(void)
                 double nla, nlo;
                 unsigned zlo = 0;
                 int near = scan ? ls_carto_map_nearest_lo(lat, lon, &nla, &nlo, &zlo) : -1;
+                if (near == 1 && s_map_cells.w > 0 && s_map_cells.h > 0) {
+                    /* The card's ground still in view: the card keeps the view
+                       (its engine draws the rest from its overview). Decided
+                       by the middle alone, every pan across a coast or a
+                       download's edge swapped the whole map to the world
+                       tiles and back (desk 11-20, z5-z6 over Florida). The
+                       span is the narrowest look's (two dots a cell); the
+                       nearest place is a cell's middle, so half a z8 cell
+                       more, no more than the span itself (close in, the
+                       middle decides as before). */
+                    const double world = 256.0 * ldexp(1.0, ls_map_zoom());
+                    const double half_lon = s_map_cells.w * 2 / 2.0 / world * 360.0;
+                    const double half_lat = s_map_cells.h * 4 / 2.0 / world * 360.0 * cos(lat * M_PI / 180.0);
+                    const double slack = fmin(0.7, half_lon);
+                    const double dlo = fabs(fmod(nlo - lon + 540.0, 360.0) - 180.0);
+                    if (dlo < half_lon + slack && fabs(nla - lat) < half_lat + slack) { near = 2; zlo = ls_carto_map_cells_lo(); }
+                }
                 if (near >= 0 && near != 2) {
                     /* A map file TILES installed counts when it is one the
                        worker lists (it reads /sdcard/maps): one installed
@@ -4926,6 +4943,30 @@ static void route_line(double x0,double y0,double x1,double y1,int pw,int ph,uin
    frame's projection. */
 static int s_rf_pw, s_rf_ph;
 static tui_rect s_rf_legend;
+/* MAKE ROOM: the map was short of memory. Give back what MAP holds that the
+   CartoCore view does not draw from (the world tile store, megabytes on a
+   busy view) and ask the worker to try again now. Automatic every few
+   seconds while it stays short; a tap on the notice does it at once. */
+static tui_rect s_room_rect;
+static int64_t s_room_us;
+static unsigned s_room_tries;
+static void make_room(bool now_please)
+{
+    const int64_t t = esp_timer_get_time();
+    if (!now_please && s_room_us && t - s_room_us < 3000000) return;
+    s_room_us = t;
+    s_room_tries++;
+#ifdef ESP_PLATFORM
+    const size_t before = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#endif
+    ls_map_trim();
+    cells_free();
+#ifdef ESP_PLATFORM
+    printf("map: make room %u: psram %zu -> %zu\n", s_room_tries, before,
+           heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#endif
+    ls_carto_map_retry();
+}
 static bool rf_dot(double lat, double lon, int *x, int *y)
 {
     double fx, fy;
@@ -4938,6 +4979,7 @@ static void rf_canvas(tui_rect a, int pw, int ph, int64_t now)
 {
     s_rf_pw = pw; s_rf_ph = ph;
     const ls_rfmap_frame_t f = { .dot = rf_dot, .w = a.w * 2, .h = a.h * 3, .now_us = now };
+    ls_rfmap_extra(&f);     /* an app's own layer (WARDRIVE's drive): asked for, so always drawn */
     if (!layer(L_RF_HIDE)) ls_rfmap_heat(&f);
     if (!layer(L_FOX_HIDE)) ls_rfmap_fox(&f);
 }
@@ -5455,6 +5497,9 @@ static void draw(tui_surface *sf, tui_rect area)
         cc_ok=ls_carto_map_draw(sf,body,lat,lon,ls_map_zoom(),s_view==MAP_VIEW_CC_BRAILLE,layer(L_PLACES) && !layer(L_NOLABEL));
     }
     const char *why = cc?(cc_ok?NULL:ls_carto_map_status()):ls_map_status();
+    if (cc && ls_carto_map_short()) make_room(false);
+    else if (cc && cc_ok) s_room_tries = 0;
+    s_room_rect = tui_rect_make(0, -1, 0, 0);
     double held_ax, held_ay, held_k;
     const bool cc_moved = cc && !cc_picture() && cc_ok && ls_carto_map_held_warp(&held_ax, &held_ay, &held_k);
     if(!why && (cc ? cc_ok && ls_carto_map_fresh() : px && !ls_map_render_busy())) {
@@ -5534,8 +5579,11 @@ static void draw(tui_surface *sf, tui_rect area)
         if (why && !opening && body.w >= 20) {
             noted = true;
             char note[80];
-            snprintf(note, sizeof(note), " OUTLINES ONLY: %.60s ", why);
+            if (cc && ls_carto_map_short())
+                snprintf(note, sizeof(note), " MAKING ROOM FOR THE MAP (%u)  TAP TO TRY NOW ", s_room_tries);
+            else snprintf(note, sizeof(note), " OUTLINES ONLY: %.60s ", why);
             tui_put_str(sf, body, body.x + 1, body.y, note, TUI_ATTR(TUI_BLACK, TUI_YELLOW | TUI_BRIGHT));
+            if (cc && ls_carto_map_short()) s_room_rect = tui_rect_make(body.x + 1, body.y, (int)strlen(note), 1);
         }
     } else if (!px && !cc_ok) {
         ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
@@ -5992,6 +6040,7 @@ static bool touch(int col, int row)
         if (t) ls_tui_screen_show(ls_tui_screen_index_of(t->screen));
         return true;
     }
+    if (s_room_rect.h > 0 && in_rect(s_room_rect, col, row)) { make_room(true); return true; }
     if (s_rf_legend.h > 0 && in_rect(s_rf_legend, col, row)) { ls_rfmap_pick(); return true; }
     if (s_map_cells.h > 0 && row >= s_map_cells.y - s_header_h && row < s_map_cells.y &&
         col >= s_map_cells.x && col < s_map_cells.x + 20) {

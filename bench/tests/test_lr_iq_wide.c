@@ -50,6 +50,19 @@ LS_CASE(source2_preserves_its_route_and_iq16_rates)
     }
 }
 
+LS_CASE(source2_takes_the_four_narrow_bandwidths_rates_for_the_probe)
+{
+    /* 4 x 7813, 10417, 15625 and 20833 Hz: what lrprobe asks for. */
+    const uint32_t rates[] = {31252, 41668, 62500, 83332};
+    for (unsigned i = 0; i < sizeof(rates) / sizeof(rates[0]); i++) {
+        uint8_t route[11]; uint32_t rate; lr20xx_iq_format_t format;
+        LS_CHECK(lr20xx_iq_route_build(LR20XX_IQ_SOURCE2, 0, rates[i], route, &rate, &format));
+        LS_EQ_UINT(rate, rates[i]); LS_EQ_INT(format, LR20XX_IQ16);
+    }
+    uint8_t route[11]; uint32_t rate; lr20xx_iq_format_t format;
+    LS_CHECK(!lr20xx_iq_route_build(LR20XX_IQ_SOURCE2, 0, 31250, route, &rate, &format));
+}
+
 LS_CASE(raw_route_serializes_all_four_rate_bytes)
 {
     uint8_t route[11];

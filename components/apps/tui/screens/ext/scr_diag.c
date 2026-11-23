@@ -32,6 +32,7 @@
 #include "radio/radio_health.h"
 #include "lakeshark_backend.h"
 #include "board/ls_lora.h"
+#include "board/ls_lora_lr20xx.h"
 #include "board/ls_gps.h"
 #include "board/ls_imu.h"
 #include "board/ls_imu_heading_math.h"
@@ -872,9 +873,19 @@ static void detail_sensors(tui_surface *sf, tui_rect a, uint8_t val,
         memset(&ms, 0, sizeof(ms));
         ls_mesh_get_stats(&ms);
 
-        row(sf, a, 12, "owner", ls_mesh_radio_wanted() ? "foreground session"
+        const char *owner = ls_mesh_radio_wanted() ? "foreground session"
             : ls_mesh_radio_bg() ? "background session"
-            : ms.running ? "mesh" : "idle", val);
+            : ms.running ? "mesh" : "idle";
+        /* An LR2021 reports its own temperature and supply (read in standby
+           during a setup); a hot or sagging part shows here first. */
+        lr20xx_health_t ch;
+        if (lr20xx_chip_health(&ch)) {
+            snprintf(buf, sizeof(buf), "%s  chip %.1f C %.2f V", owner, ch.temp_c10 / 10.0,
+                     ch.vbat_mv / 1000.0);
+            row(sf, a, 12, "owner", buf, val);
+        } else {
+            row(sf, a, 12, "owner", owner, val);
+        }
         if (!ms.running || ls_mesh_radio_wanted() || ls_mesh_radio_bg()) {
             row(sf, a, 13, "mesh", ms.running ? "paused" : "stopped", dim);
             row(sf, a, 14, "airtime", "unavailable", dim);

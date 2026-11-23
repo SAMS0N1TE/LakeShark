@@ -10,6 +10,7 @@
 #define CARTO_MAP_HEADROOM (1u*1024u*1024u)
 #include "ls_carto_budget.h"
 static bool carto_memory_failed;
+static bool carto_lean;     /* the open map runs on the lean plan */
 static carto_budget carto_last_budget;
 typedef struct {
     void *memory,*hot_memory,*decoded_memory,*cell_memory,*idle_memory;
@@ -67,9 +68,16 @@ static render_state *create(int cols,int rows,unsigned z,bool external,bool tile
     /* MAP's own buffers (picture, cell handles and blocks, labels) come after
        this plan: without room for them the board fell to 1.3 MB free with MAP
        open (2026-11-20, LR2021). The planner's reserve stays as measured. */
+    const size_t free_all=free_bytes;
     free_bytes=free_bytes>CARTO_MAP_HEADROOM?free_bytes-CARTO_MAP_HEADROOM:0;
+    carto_lean=false;
     if(!carto_plan_budget(free_bytes,largest,overhead,v7,map.cellset!=NULL,map.source!=NULL,tilecache,&carto_last_budget)) {
-        carto_failure("not enough memory (PSRAM budget)",cols,rows,z);return NULL;
+        /* Short of memory: a smaller map, not none (ls_carto_budget.h). */
+        if(!carto_plan_budget_lean(free_all,largest,overhead,v7,map.cellset!=NULL,&carto_last_budget)) {
+            carto_failure("not enough memory (PSRAM budget)",cols,rows,z);return NULL;
+        }
+        carto_lean=true;free_bytes=free_all;
+        printf("carto MAP: lean plan, %zu free largest %zu\n",free_all,largest);
     }
 #ifdef LS_CARTOCORE_HOST
     /* Host measurements of the arena/decoded trade (ls_carto_budget.h), in 256 KiB units. */
@@ -90,8 +98,9 @@ static render_state *create(int cols,int rows,unsigned z,bool external,bool tile
        again. Decoded steps down until it fits; cold then takes what is left. */
     const char *step="decoded allocation";
     size_t decoded=carto_last_budget.decoded;
-    while(!(s->decoded_memory=heap_caps_aligned_alloc(16,decoded,caps)) && map.cellset && decoded>CARTO_CELLS_DECODED_MIN)
-        decoded=decoded>2u*CARTO_CELLS_DECODED_MIN?decoded-CARTO_CELLS_DECODED_MIN:CARTO_CELLS_DECODED_MIN;
+    const size_t decoded_min=carto_lean?512u*1024u:map.cellset?CARTO_CELLS_DECODED_MIN:decoded;
+    while(!(s->decoded_memory=heap_caps_aligned_alloc(16,decoded,caps)) && decoded>decoded_min)
+        decoded=decoded>2u*decoded_min?decoded-decoded_min:decoded_min;
     if(!s->decoded_memory) goto fail;
     carto_last_budget.decoded=decoded;
     size_t left=heap_caps_get_largest_free_block(caps);
@@ -99,7 +108,7 @@ static render_state *create(int cols,int rows,unsigned z,bool external,bool tile
     if(capacity>left) capacity=left;
     carto_last_budget.cold=capacity;
     step="cold allocation";
-    if(capacity<2u*CARTO_MIB || !(s->memory=heap_caps_aligned_alloc(16,capacity,caps))) goto fail;
+    if(capacity<(carto_lean?CARTO_LEAN_COLD_MIN:2u*CARTO_MIB) || !(s->memory=heap_caps_aligned_alloc(16,capacity,caps))) goto fail;
     /* Internal RAM is the DMA pool BLE, Wi-Fi and the SPI radios share; the
        hot arena only goes there while that pool keeps its headroom. */
     if(!v7 && heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)>hot_bytes+CARTO_INTERNAL_KEEP)
@@ -120,7 +129,7 @@ static render_state *create(int cols,int rows,unsigned z,bool external,bool tile
     s->renderer.terrain_strength=saved.terrain_on?saved.terrain_strength:0;
     /* The raster cache retains borrowed tile scenes; a callback's staging
        is ephemeral. Streaming uses the source-aware renderer/decoded cache. */
-    if (tilecache && !s->map.source) {
+    if (tilecache && !s->map.source && carto_last_budget.cache) {
         s->cell_memory=heap_caps_aligned_alloc(16,CELL_BYTES,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
         step="cellcache"; if (!s->cell_memory || !cc_cell_cache_init(&s->tiles,s->cell_memory,CELL_BYTES)) goto fail;
         s->tiles.terrain_strength=s->renderer.terrain_strength; s->tiles.colors16=1; s->tiles.decoded_cache=&s->decoded; s->tiles.deferred=1;
@@ -154,9 +163,41 @@ static int carto_terrain_for_zoom(int strength,int z)
     if(strength<=0 || z>=14) return 0;
     return z==13?(strength+1)/2:strength;
 }
+/* MAP's picture puts six pixels across a text cell where the text views put
+   two dots, so at one zoom it shows three times the ground across: far out
+   the classes chosen for cells (core.c ink_shown) made a picture of every
+   road and river in the region, and decoded every z8 cell under it. Far out
+   it draws what a view this many zooms farther would. z6 and z7 (a state
+   with its main roads) and z9 on are as they were; z8 draws z7's classes
+   from the overview (it read and decoded every z8 cell in view, ~0.7 s, for
+   county lines and land use the eye cannot place at that scale); z5 and
+   out keep only the rivers that span a good part of the picture, z4 and out
+   lose the motorways too (land, water and the outlines carry a continent). */
+static int carto_picture_detail_less(unsigned z)
+{
+    return z>=9 ? 0 : z==8 ? 1 : z>=6 ? 0 : z>=4 ? 1 : 2;
+}
+/* The highest zoom whose picture shows only what the cells' overview holds
+   (motorways, trunk and main roads, water, rivers: the classes to z7), so it
+   is drawn from the overview scaled up and reads no z8 cell. */
+static unsigned carto_overview_through(void)
+{
+    for(unsigned z=10;z>=8;z--) if((int)z-carto_picture_detail_less(z)<=7) return z;
+    return 0;
+}
 static int render_frame(render_state *s,cc_mode mode,cc_edges edges,int64_t left,int64_t top)
 {
     carto_memory_failed=false;
+    {
+        const int less=s->raster_only?carto_picture_detail_less(s->z):0;
+        s->renderer.detail_less=less;
+        if(s->map.cellset) {
+            const unsigned through=less?carto_overview_through():0;
+            if(s->map.cellset->overview_through!=through) {
+                s->map.cellset->overview_through=through;cc_renderer_invalidate(&s->renderer);
+            }
+        }
+    }
     {
         /* The cell cache clears itself when the strength changes (cache.c). */
         const int t=carto_terrain_for_zoom(saved.terrain_on?saved.terrain_strength:0,s->z);

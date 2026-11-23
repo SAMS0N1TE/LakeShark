@@ -17,6 +17,13 @@ the arena cannot hold is drawn from its nearest ancestor that fits, clipped to
 its square), src/core/cellset.c (scaled-up tiles keep only what is in view;
 the same per-tile stand-in), src/core/decoded_cache.c (a decode left in the
 arena keeps its result alone).
+Local changes (2026-11-20, MAP's picture far out draws less):
+include/cartocore/render.h (cc_renderer.detail_less), include/cartocore/core.h
+(cc_planes.detail_less, cc_feature_shown), include/cartocore/cellset.h
+(cc_cellset.overview_through), src/core/render.c (classes chosen at zoom
+minus detail_less), src/core/core.c (rivers must span more dots when thinned;
+cc_feature_shown), src/core/cellset.c (zooms through overview_through drawn
+from the overview's z7 scaled up).
 
 Taken: canonical embedded sources.cmake, all public include/cartocore headers,
 its firmware/core/output/media/inflate sources, P4 assembly, private header

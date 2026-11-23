@@ -33,6 +33,7 @@ void ls_lap_io_begin(const lap_app_t *app);
 void ls_lap_io_end(void);
 bool ls_lap_io_radio_busy(void);
 bool ls_lap_rx_physical_busy(void);
+bool ls_lap_rx_socket_busy(void);      /* an I/Q session on anything but a USB SDR */
 void ls_lap_io_file_fault(int error);
 void ls_lap_io_tx_interrupt(void);
 bool ls_lap_io_service(void);

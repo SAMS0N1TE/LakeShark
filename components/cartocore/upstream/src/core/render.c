@@ -85,12 +85,13 @@ int cc_render(cc_renderer *r,const cc_ctile *map,unsigned z,int64_t left,int64_t
               cc_mode mode,int labels,cc_cell *cells) {
     r->pixel_reuse=0;
     cc_edges edges=cc_edges_resolve(r->edges_mode,mode);
-    int changed=r->terrain_strength!=r->active_terrain_strength || r->colors16!=r->active_colors16 || edges!=r->active_edges || !r->valid || r->map!=map || r->z!=z || r->left!=left || r->top!=top;
+    int changed=r->terrain_strength!=r->active_terrain_strength || r->colors16!=r->active_colors16 || edges!=r->active_edges || !r->valid || r->map!=map || r->z!=z || r->left!=left || r->top!=top ||
+        r->detail_less!=r->active_detail_less;
     if(changed) {
         int64_t dx=(int64_t)((uint64_t)left-(uint64_t)r->left),dy=(int64_t)((uint64_t)top-(uint64_t)r->top);
         int reuse=!cells && !r->encoded && r->valid && r->map==map && r->z==z &&
             r->active_edges==edges && r->active_colors16==r->colors16 &&
-            r->active_terrain_strength==r->terrain_strength &&
+            r->active_terrain_strength==r->terrain_strength && r->active_detail_less==r->detail_less &&
             dx%2==0 && dy%4==0 && dx>-r->planes.cols*2 && dx<r->planes.cols*2 &&
             dy>-r->planes.rows*4 && dy<r->planes.rows*4;
         r->pixel_reuse=reuse;r->pixel_dx=reuse?(int)dx:0;r->pixel_dy=reuse?(int)dy:0;
@@ -111,7 +112,11 @@ int cc_render(cc_renderer *r,const cc_ctile *map,unsigned z,int64_t left,int64_t
         }
         r->planes.colors16=r->active_colors16=r->colors16; r->planes.edges_mode=edges; r->active_edges=edges;
         r->planes.terrain_strength=r->active_terrain_strength=r->terrain_strength;
-        r->planes.zoom=(uint8_t)(z>255?255:z);
+        {
+            const int less=r->detail_less<0?0:r->detail_less,gz=!z?0:(int)z-less<1?1:(int)z-less;
+            r->planes.zoom=(uint8_t)(gz>255?255:gz);r->active_detail_less=r->detail_less;
+            r->planes.detail_less=(uint8_t)(z?(int)z-gz:0);
+        }
         if(reuse) {
             shift_fill(&r->planes,(int)(dx/2),(int)(dy/4));
             r->planes.keep_x0=keep_x0;r->planes.keep_x1=keep_x1;

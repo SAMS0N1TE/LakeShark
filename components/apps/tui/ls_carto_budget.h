@@ -79,4 +79,29 @@ static bool carto_plan_budget(size_t free_bytes,size_t largest,size_t overhead,
     if(b->cold>available) b->cold=available;
     return b->cold>=2u*CARTO_MIB;
 }
+/* PSRAM kept for the rest of the board when MAP runs lean. */
+#define CARTO_PSRAM_RESERVE_LEAN (512u*1024u)
+/* The smallest arena a lean plan takes. Under the full plan's 2 MiB a file
+   map loses its lowest zoom (one big tile) and a cells view draws some tiles
+   from a coarser zoom, but every other zoom draws: a map with gaps at z8
+   beats "not enough memory" at every zoom. */
+#define CARTO_LEAN_COLD_MIN (768u*1024u)
+/* When carto_plan_budget says no: half the reserve, the smallest decoded
+   cache, no idle scratch and no raster cache, and whatever arena is left
+   (capped as before). Needs about 2.5 MB free where the full plan needs 7 to
+   10 (2026-11-22, LR2021 with 11 MB held elsewhere: z13 cells drew on 4.4 MB), so MAP opens beside apps that hold memory instead of saying it cannot.
+   Prefetch hints and the idle fill have no arena then and are skipped; a
+   frame decodes again where it would have hit the cache. */
+static bool carto_plan_budget_lean(size_t free_bytes,size_t largest,size_t overhead,
+                                   bool v7,bool cells,carto_budget *b) {
+    *b=(carto_budget){v7?(cells?CARTO_CELLS_COLD:16u*CARTO_MIB):CARTO_FILE_COLD,
+                     cells?CARTO_MIB:768u*1024u,0,0};
+    const size_t fixed=CARTO_PSRAM_RESERVE_LEAN+256u*1024u+overhead+b->decoded;
+    if(free_bytes<=fixed) return false;
+    size_t available=free_bytes-fixed;
+    if(available>largest) available=largest;
+    available=available/(256u*1024u)*(256u*1024u);
+    if(b->cold>available) b->cold=available;
+    return b->cold>=CARTO_LEAN_COLD_MIN;
+}
 #endif

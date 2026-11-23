@@ -1,0 +1,60 @@
+### lora lrprobe 927999 7813 10 -1 auto 120  (0.5 s)
+lrprobe: f=927999 kHz path=LF bw=7813 rate=31252 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=15000 buf=int max_level=60 polls=2205 elapsed_us=120044 flags=0x03 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=31252 segs=3 dc=-0.1,-0.3 rms=6.2 (-74.5 dBFS) floor=35.8 dB pk1=+1007Hz:+37.9 pk2=-244Hz:+10.9 pk3=+1617Hz:+9.5
+### lora lrprobe 927998 7813 10 -1 auto 120  (0.5 s)
+lrprobe: f=927998 kHz path=LF bw=7813 rate=31252 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=15000 buf=int max_level=40 polls=2209 elapsed_us=120026 flags=0x03 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=31252 segs=3 dc=0.1,-0.5 rms=6.1 (-74.5 dBFS) floor=35.4 dB pk1=+2014Hz:+37.5 pk2=-1190Hz:+11.6 pk3=-1068Hz:+10.6
+### lora lrprobe 927997 7813 10 -1 auto 120  (0.5 s)
+lrprobe: f=927997 kHz path=LF bw=7813 rate=31252 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=15000 buf=int max_level=40 polls=2223 elapsed_us=120012 flags=0x03 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=31252 segs=3 dc=-0.0,-0.3 rms=5.9 (-74.8 dBFS) floor=35.8 dB pk1=+2990Hz:+37.4 pk2=-2716Hz:+10.7 pk3=+1220Hz:+10.3
+### lora lrprobe 927996 7813 10 -1 auto 120  (0.5 s)
+lrprobe: f=927996 kHz path=LF bw=7813 rate=31252 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=15000 buf=int max_level=36 polls=2225 elapsed_us=120033 flags=0x03 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=31252 segs=3 dc=0.1,-0.2 rms=7.1 (-73.3 dBFS) floor=36.1 dB pk1=+3998Hz:+37.2 pk2=-4120Hz:+11.0 pk3=-2502Hz:+10.3
+### lora lrprobe 927995 7813 10 -1 auto 120  (0.5 s)
+lrprobe: f=927995 kHz path=LF bw=7813 rate=31252 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=15000 buf=int max_level=32 polls=2219 elapsed_us=120030 flags=0x03 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=31252 segs=3 dc=-0.1,-0.2 rms=5.3 (-75.8 dBFS) floor=36.0 dB pk1=+5005Hz:+36.4 pk2=+305Hz:+9.5 pk3=-518Hz:+9.3
+### lora lrprobe 927994 7813 10 -1 auto 120  (0.5 s)
+lrprobe: f=927994 kHz path=LF bw=7813 rate=31252 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=15000 buf=int max_level=40 polls=2225 elapsed_us=120043 flags=0x03 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=31252 segs=3 dc=-0.0,-0.2 rms=7.8 (-72.4 dBFS) floor=35.8 dB pk1=+6012Hz:+35.3 pk2=-488Hz:+11.0 pk3=-976Hz:+10.9
+### lora lrprobe 927992 7813 10 -1 auto 120  (0.5 s)
+lrprobe: f=927992 kHz path=LF bw=7813 rate=31252 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=15000 buf=int max_level=36 polls=2237 elapsed_us=120019 flags=0x03 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=31252 segs=3 dc=0.2,-0.1 rms=7.3 (-73.1 dBFS) floor=36.2 dB pk1=+7996Hz:+33.7 pk2=+1495Hz:+12.4 pk3=-1190Hz:+11.3
+### lora lrprobe 927990 7813 10 -1 auto 120  (0.5 s)
+lrprobe: f=927990 kHz path=LF bw=7813 rate=31252 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=14996 buf=int max_level=32 polls=2219 elapsed_us=120008 flags=0x03 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=31252 segs=3 dc=0.0,-0.3 rms=3.4 (-79.7 dBFS) floor=36.2 dB pk1=+10010Hz:+30.1 pk2=-366Hz:+11.4 pk3=+732Hz:+10.1
+### lora lrprobe 927988 7813 10 -1 auto 120  (0.5 s)
+lrprobe: f=927988 kHz path=LF bw=7813 rate=31252 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=15000 buf=int max_level=20 polls=2248 elapsed_us=120052 flags=0x03 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=31252 segs=3 dc=-0.0,-0.3 rms=2.9 (-81.1 dBFS) floor=36.1 dB pk1=+11994Hz:+26.8 pk2=-732Hz:+12.1 pk3=+2105Hz:+10.4
+### lora lrprobe 927986 7813 10 -1 auto 120  (0.5 s)
+lrprobe: f=927986 kHz path=LF bw=7813 rate=31252 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=15000 buf=int max_level=32 polls=2202 elapsed_us=120018 flags=0x03 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=31252 segs=3 dc=0.2,-0.1 rms=6.5 (-74.1 dBFS) floor=36.1 dB pk1=+14008Hz:+22.0 pk2=+732Hz:+12.4 pk3=-5401Hz:+10.0
+### lora lrprobe 927999 31250 10 -1 auto 120  (0.5 s)
+lrprobe: f=927999 kHz path=LF bw=31250 rate=125000 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=59988 buf=psram max_level=152 polls=1825 elapsed_us=120014 flags=0x04 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=125000 segs=14 dc=-0.0,-0.2 rms=7.1 (-73.3 dBFS) floor=49.0 dB pk1=+976Hz:+31.2 pk2=+41625Hz:+10.3 pk3=-5493Hz:+8.7
+### lora lrprobe 927998 31250 10 -1 auto 120  (0.5 s)
+lrprobe: f=927998 kHz path=LF bw=31250 rate=125000 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=60000 buf=psram max_level=224 polls=1829 elapsed_us=120086 flags=0x00 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=125000 segs=14 dc=-0.0,-0.4 rms=7.1 (-73.3 dBFS) floor=49.2 dB pk1=+1953Hz:+30.3 pk2=-20874Hz:+11.0 pk3=-4516Hz:+7.1
+### lora lrprobe 927997 31250 10 -1 auto 120  (0.5 s)
+lrprobe: f=927997 kHz path=LF bw=31250 rate=125000 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=59992 buf=psram max_level=236 polls=1830 elapsed_us=120025 flags=0x04 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=125000 segs=14 dc=0.0,-0.4 rms=7.1 (-73.2 dBFS) floor=49.1 dB pk1=+3051Hz:+30.4 pk2=-20874Hz:+14.1 pk3=-4638Hz:+8.5
+### lora lrprobe 927996 31250 10 -1 auto 120  (0.5 s)
+lrprobe: f=927996 kHz path=LF bw=31250 rate=125000 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=59984 buf=psram max_level=200 polls=1816 elapsed_us=120002 flags=0x00 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=125000 segs=14 dc=-0.0,-0.3 rms=7.2 (-73.2 dBFS) floor=49.2 dB pk1=+4028Hz:+31.0 pk2=-20874Hz:+15.8 pk3=+10375Hz:+7.7
+### lora lrprobe 927995 31250 10 -1 auto 120  (0.5 s)
+lrprobe: f=927995 kHz path=LF bw=31250 rate=125000 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=59984 buf=psram max_level=256 polls=1821 elapsed_us=120011 flags=0x04 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=125000 segs=14 dc=0.1,-0.2 rms=7.2 (-73.1 dBFS) floor=49.2 dB pk1=+5004Hz:+31.5 pk2=-20874Hz:+12.4 pk3=+8178Hz:+7.8
+### lora lrprobe 927994 31250 10 -1 auto 120  (0.5 s)
+lrprobe: f=927994 kHz path=LF bw=31250 rate=125000 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=59984 buf=psram max_level=252 polls=1797 elapsed_us=120008 flags=0x04 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=125000 segs=14 dc=0.0,-0.3 rms=7.2 (-73.2 dBFS) floor=49.2 dB pk1=+5981Hz:+31.2 pk2=-20874Hz:+13.8 pk3=-610Hz:+8.4
+### lora lrprobe 927992 31250 10 -1 auto 120  (0.5 s)
+lrprobe: f=927992 kHz path=LF bw=31250 rate=125000 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=60000 buf=psram max_level=124 polls=1835 elapsed_us=120034 flags=0x00 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=125000 segs=14 dc=-0.0,-0.2 rms=7.2 (-73.2 dBFS) floor=49.4 dB pk1=+8056Hz:+29.8 pk2=-20874Hz:+9.7 pk3=+10253Hz:+8.1
+### lora lrprobe 927990 31250 10 -1 auto 120  (0.6 s)
+lrprobe: f=927990 kHz path=LF bw=31250 rate=125000 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=60000 buf=psram max_level=360 polls=1815 elapsed_us=120037 flags=0x04 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=125000 segs=14 dc=0.1,-0.3 rms=7.1 (-73.2 dBFS) floor=49.2 dB pk1=+10009Hz:+31.2 pk2=-20874Hz:+15.4 pk3=-2563Hz:+8.0
+### lora lrprobe 927988 31250 10 -1 auto 120  (0.5 s)
+lrprobe: f=927988 kHz path=LF bw=31250 rate=125000 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=60000 buf=psram max_level=216 polls=1825 elapsed_us=120059 flags=0x04 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=125000 segs=14 dc=-0.1,-0.3 rms=7.1 (-73.3 dBFS) floor=49.2 dB pk1=+11962Hz:+30.6 pk2=-20874Hz:+14.6 pk3=+1708Hz:+7.2
+### lora lrprobe 927986 31250 10 -1 auto 120  (0.5 s)
+lrprobe: f=927986 kHz path=LF bw=31250 rate=125000 gain=10 boost=0 tune=ESP_OK errors=0x0000 bytes=59988 buf=psram max_level=364 polls=1811 elapsed_us=120014 flags=0x04 result=ESP_OK recovery=ESP_OK
+lrprobe-spec: rate=125000 segs=14 dc=0.1,-0.3 rms=6.9 (-73.6 dBFS) floor=49.0 dB pk1=+14038Hz:+30.3 pk2=-20874Hz:+15.6 pk3=+41625Hz:+7.8

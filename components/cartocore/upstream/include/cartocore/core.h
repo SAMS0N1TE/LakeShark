@@ -102,6 +102,9 @@ typedef struct {
     /* Map zoom being drawn, 0 when unknown. Set, it hides detail a terminal
        cell cannot carry at that zoom and widens the main roads. */
     uint8_t zoom;
+    /* Zoom levels the renderer took off zoom for a picture (cc_renderer.detail_less):
+       rivers must then span more dots to show. */
+    uint8_t detail_less;
     /* Retained overlap, in cells. The renderer excludes clipped stroke bounds
        because viewport clipping can change their Bresenham phase. */
     int reuse_fill,keep_x0,keep_y0,keep_x1,keep_y1;
@@ -131,6 +134,8 @@ extern int cc_native_rasters;
    share the even-odd fill. Samples are at cell centres (2*x+1,4*y+2).
    Highest priority wins, equal priority uses the last writer. */
 void cc_raster(cc_planes *p, const cc_scene *scene);
+/* The feature's class is drawn at the planes' zoom (minzoom, class gates, rivers by size). */
+int cc_feature_shown(const cc_planes *p,const cc_feature *f);
 void cc_terrain_blit(cc_planes *p,const cc_scene *scene);
 void cc_terrain_palette(cc_planes *p);
 /* Q16.16 affine transform, floor toward negative infinity. */

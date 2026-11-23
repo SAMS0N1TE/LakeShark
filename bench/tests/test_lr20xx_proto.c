@@ -52,6 +52,16 @@ static int unknown_frames(void)
     return bad;
 }
 
+/* Command frames (not answers) with this opcode. */
+static int frames_with_op(uint16_t op)
+{
+    int n = 0;
+    for (int i = 0; i < fk.nframes; i++)
+        if (!fk.frames[i].read2 && fk.frames[i].len >= 2 &&
+            (uint16_t)((fk.frames[i].b[0] << 8) | fk.frames[i].b[1]) == op) n++;
+    return n;
+}
+
 static void lr_up(void)
 {
     /* Bring a first start through so the SPI device exists, then start clean. */
@@ -257,7 +267,32 @@ LS_CASE(a_command_the_chip_rejects_is_reported_by_the_next_status)
     LS_EQ_UINT(fk.mode, LR20XX_MODE_RX);
     fk.nframes = 0;
     LS_EQ_INT(lr20xx_tune_rx(868000000u, -1), ESP_ERR_INVALID_RESPONSE);
-    LS_EQ_INT(fk.nframes, 2);                   /* stopped at the first failure */
+    /* Stopped at the first failure: CalibFE, GetStatus, and GetErrors to see
+       whether a strong signal was the cause. It was not, so no second try. */
+    LS_EQ_INT(fk.nframes, 4);
+    LS_EQ_INT(frames_with_op(0x0123), 1);
+    FK_FRAME(2, 0x01, 0x10);
+}
+
+LS_CASE(a_calibration_a_strong_signal_saturated_is_run_again)
+{
+    lr_up();
+    LS_EQ_INT(ls_lora_start(), ESP_OK);
+    fk.nframes = 0;
+    fk.calfe_saturate = 2;
+    LS_EQ_INT(lr20xx_tune_rx(915000000u, -1), ESP_OK);
+    LS_EQ_INT(frames_with_op(0x0123), 3);
+    LS_EQ_INT(frames_with_op(0x0111), 2);       /* ClearErrors before each repeat */
+    LS_EQ_INT(frames_with_op(0x0200), 1);       /* tuned once, after the good one */
+    LS_EQ_INT(fk.violations, 0);
+
+    /* It keeps saturating: three tries, then the caller's failure path. */
+    fk.nframes = 0;
+    fk.calfe_saturate = 100;
+    LS_EQ_INT(lr20xx_tune_rx(915000000u, -1), ESP_ERR_INVALID_RESPONSE);
+    LS_EQ_INT(frames_with_op(0x0123), 3);
+    LS_EQ_INT(frames_with_op(0x0200), 0);       /* never tuned on a failed calibration */
+    fk.calfe_saturate = 0;
 }
 
 LS_CASE(a_read_waits_for_busy_between_its_two_frames)
@@ -271,6 +306,39 @@ LS_CASE(a_read_waits_for_busy_between_its_two_frames)
     LS_EQ_INT(fk.violations, 0);
     LS_EQ_INT(fk.nframes, 2);
     LS_CHECK(fk.frames[1].read2);
+}
+
+LS_CASE(a_read_answer_clocked_before_it_was_ready_is_clocked_again)
+{
+    lr_up();
+    LS_EQ_INT(ls_lora_start(), ESP_OK);
+    /* The default stream behind an early frame: Stat with CMD_OK, then the IRQ
+       word, whose high half reads 4 with RxDone set. Believed, that is a
+       4-byte packet that was never sent. */
+    fk.rx_pkt_len = 23; fk.irq = LR20XX_IRQ_RX_DONE;
+    fk.nframes = 0;
+    fk.stale_reads = 1;
+    uint16_t len = 0;
+    LS_EQ_INT(lr20xx_get_rx_pkt_length(&len), ESP_OK);
+    LS_EQ_UINT(len, 23);
+    LS_EQ_INT(fk.nframes, 3);                   /* the command, the early frame, the answer */
+    LS_CHECK(fk.frames[1].read2 && fk.frames[2].read2);
+    LS_EQ_INT(fk.violations, 0);
+    fk.irq = 0;
+}
+
+LS_CASE(a_read_that_never_carries_its_answer_is_refused_not_believed)
+{
+    lr_up();
+    LS_EQ_INT(ls_lora_start(), ESP_OK);
+    fk.rx_pkt_len = 23; fk.irq = LR20XX_IRQ_RX_DONE;
+    fk.nframes = 0;
+    fk.stale_reads = 2;
+    uint16_t len = 0;
+    LS_EQ_INT(lr20xx_get_rx_pkt_length(&len), ESP_ERR_INVALID_RESPONSE);
+    LS_EQ_UINT(len, 0);
+    LS_EQ_INT(fk.nframes, 3);                   /* one more frame, then give up */
+    fk.stale_reads = 0; fk.read_pending = false; fk.irq = 0;
 }
 
 LS_CASE(the_fake_catches_a_second_frame_clocked_while_busy_is_high)
@@ -1587,7 +1655,7 @@ LS_CASE(a_lora_configure_at_22_dbm_programs_exactly_these_frames)
 
     int ix[80];
     const int n = cmds(ix, 80);
-    LS_EQ_INT(n, 37);
+    LS_EQ_INT(n, 38);
     CMD(0,  0x01, 0x28, 0x00);                               /* SetStandby, RC            */
     CMD(1, 0x01, 0x11);
     CMD(2, 0x01, 0x20, 0x07, 0x00, 0x00, 0x80, 0x00);
@@ -1622,9 +1690,10 @@ LS_CASE(a_lora_configure_at_22_dbm_programs_exactly_these_frames)
     CMD(31, 0x02, 0x00, 0x36, 0x45, 0x82, 0x48);             /* and the frequency again   */
     CMD(32, 0x02, 0x21, 0x00, 0x20, 0xFF, 0x02);             /* 32 symbols, 255, explicit, CRC, IQ standard */
     CMD(33, 0x02, 0x23, 0x12);                               /* the one-byte sync word    */
-    CMD(34, 0x02, 0x0F, 0x00);                               /* SelPa: the LF PA          */
-    CMD(35, 0x02, 0x02, 0x00, 0x67, 0x10);                   /* PaSel LF; duty 6, slices 7; HF unused */
-    CMD(36, 0x02, 0x03, 0x23, 0x05);                         /* power 35, 48 us ramp      */
+    CMD(34, 0x01, 0x05, 0xF3, 0x0A, 0x2C, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00); /* +/-33% BW tolerance */
+    CMD(35, 0x02, 0x0F, 0x00);                               /* SelPa: the LF PA          */
+    CMD(36, 0x02, 0x02, 0x00, 0x67, 0x10);                   /* PaSel LF; duty 6, slices 7; HF unused */
+    CMD(37, 0x02, 0x03, 0x23, 0x05);                         /* power 35, 48 us ramp      */
 
     LS_EQ_UINT(fk.mode, LR20XX_MODE_STBY_RC);
     LS_EQ_UINT(fk.packet_type, 0x00);
@@ -1679,15 +1748,15 @@ LS_CASE(the_lf_pa_is_radiolibs_table_for_the_power_and_is_clamped_to_minus_9_to_
 
 LS_CASE(the_lora_bandwidth_is_the_lr2021_table_snapped_to_the_nearest_rung)
 {
-    LS_EQ_INT(lr20xx_lora_bw_table_n, 12);
+    LS_EQ_INT(lr20xx_lora_bw_table_n, 16);
     for (int i = 1; i < lr20xx_lora_bw_table_n; i++)
         LS_CHECK(lr20xx_lora_bw_table[i].hz > lr20xx_lora_bw_table[i - 1].hz);
     lr20xx_lora_bw_t b = lr20xx_lora_bw_nearest(62500);   LS_EQ_UINT(b.hz, 62500);  LS_EQ_UINT(b.code, 0x03);
     b = lr20xx_lora_bw_nearest(125000);                   LS_EQ_UINT(b.hz, 125000); LS_EQ_UINT(b.code, 0x04);
     b = lr20xx_lora_bw_nearest(250000);                   LS_EQ_UINT(b.hz, 250000); LS_EQ_UINT(b.code, 0x05);
     b = lr20xx_lora_bw_nearest(500000);                   LS_EQ_UINT(b.hz, 500000); LS_EQ_UINT(b.code, 0x06);
-    b = lr20xx_lora_bw_nearest(7810);                     LS_EQ_UINT(b.hz, 31250);  LS_EQ_UINT(b.code, 0x02);
-    b = lr20xx_lora_bw_nearest(41670);                    LS_EQ_UINT(b.hz, 41667);  LS_EQ_UINT(b.code, 0x0A);
+    b = lr20xx_lora_bw_nearest(31000);                    LS_EQ_UINT(b.hz, 31250);  LS_EQ_UINT(b.code, 0x02);
+    b = lr20xx_lora_bw_nearest(41670);                   LS_EQ_UINT(b.hz, 41667);  LS_EQ_UINT(b.code, 0x0A);
     b = lr20xx_lora_bw_nearest(100000);                   LS_EQ_UINT(b.hz, 101563); LS_EQ_UINT(b.code, 0x0C);
     b = lr20xx_lora_bw_nearest(160000);                   LS_EQ_UINT(b.hz, 125000);
     b = lr20xx_lora_bw_nearest(200000);                   LS_EQ_UINT(b.hz, 203125); LS_EQ_UINT(b.code, 0x0D);
@@ -1699,10 +1768,30 @@ LS_CASE(the_lora_bandwidth_is_the_lr2021_table_snapped_to_the_nearest_rung)
     LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
     LS_EQ_UINT(fk.lora_mod[0], 0x74);
     LS_EQ_UINT(ls_lora_cfg()->bw_hz, 125000);
-    cfg.bw_hz = 10420;                                    /* an SX126x rung this part does not have */
+    cfg.bw_hz = 10420;                                    /* the SX126x's 10.4 kHz: code 0x08 */
     LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
-    LS_EQ_UINT(fk.lora_mod[0], 0x72);
-    LS_EQ_UINT(ls_lora_cfg()->bw_hz, 31250);              /* what was set is what is reported */
+    LS_EQ_UINT(fk.lora_mod[0], 0x78);
+    LS_EQ_UINT(ls_lora_cfg()->bw_hz, 10417);              /* what was set is what is reported */
+    cfg.bw_hz = 7810;
+    LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+    LS_EQ_UINT(fk.lora_mod[0], 0x70);
+    LS_EQ_UINT(ls_lora_cfg()->bw_hz, 7813);
+}
+
+LS_CASE(the_four_narrow_lora_bandwidths_below_31_kHz_have_their_own_codes)
+{
+    /* Reserved in datasheet Rev 2.2, measured working by RadioLib (#1929):
+       7.8, 10.4, 15.6 and 20.8 kHz, codes 0x00, 0x08, 0x01 and 0x09. */
+    lr20xx_lora_bw_t b = lr20xx_lora_bw_nearest(7810);  LS_EQ_UINT(b.hz, 7813);  LS_EQ_UINT(b.code, 0x00);
+    b = lr20xx_lora_bw_nearest(10420);                  LS_EQ_UINT(b.hz, 10417); LS_EQ_UINT(b.code, 0x08);
+    b = lr20xx_lora_bw_nearest(15630);                  LS_EQ_UINT(b.hz, 15625); LS_EQ_UINT(b.code, 0x01);
+    b = lr20xx_lora_bw_nearest(20830);                  LS_EQ_UINT(b.hz, 20833); LS_EQ_UINT(b.code, 0x09);
+    b = lr20xx_lora_bw_nearest(0);                      LS_EQ_UINT(b.hz, 7813);
+    b = lr20xx_lora_bw_nearest(26000);                  LS_EQ_UINT(b.hz, 20833); /* nearer 20.8 than 31.25 */
+    b = lr20xx_lora_bw_nearest(27000);                  LS_EQ_UINT(b.hz, 31250); LS_EQ_UINT(b.code, 0x02);
+    /* A 7.8 kHz symbol is long: SF7 already needs the low data rate flag. */
+    LS_CHECK(lr20xx_lora_ldro(7, 7813));
+    LS_CHECK(!lr20xx_lora_ldro(6, 7813));
 }
 
 LS_CASE(ldro_is_on_from_a_16_ms_symbol)
@@ -2515,6 +2604,23 @@ LS_CASE(mode_s_takes_the_part_from_lora_and_gives_it_back_reprogrammed)
     LS_EQ_UINT(fk.tx_freq_hz, 910525000u);
     LS_EQ_INT(fk.bad_mode, 0);
     no_hf_transmit();
+}
+
+/* Measured 2026-11-21 on the T-Display-P4 LR2021: the wide frequency
+   tolerance (0xF30A2C bits 17:16 = 1) decodes an SX1262 45 kHz off at SF7
+   125 kHz where the default lost everything from 32 kHz; the coding-rate
+   latch (low nibble of 0x8003C4) must be cleared before each receive or
+   GetLoraPacketStatus reports the OR of every header. Both on a plain
+   LoRa receive, both only from standby. */
+LS_CASE(a_lora_receive_widens_the_frequency_tolerance_and_clears_the_cr_latch)
+{
+    fk.lora_tol = 0; fk.lora_tol_writes = 0; fk.cr_latch_clears = 0;
+    lora_up(NULL);
+    LS_EQ_UINT(fk.lora_tol & 0x00030000u, 0x00010000u);
+    LS_CHECK(fk.lora_tol_writes >= 1);
+    LS_CHECK(fk.cr_latch_clears >= 1);
+    LS_EQ_INT(fk.bad_reg, 0);
+    LS_CHECK(ls_lora_is_receiving());
 }
 
 LS_CASE(a_failed_hand_back_from_mode_s_is_finished_by_the_next_poll)
