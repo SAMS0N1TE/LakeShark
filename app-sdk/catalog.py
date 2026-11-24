@@ -7,8 +7,14 @@ Each app folder has its C files and an app.json with "category",
 user; lap.py compiles it in); for work in progress "status": "wip"; and optionally "thumb", "screens" and "clip" (site paths). Writes SITE_DIR/apps/files/<id>-<version>.lap and rewrites
 SITE_DIR/apps/catalog.json from what the files themselves say, so the store
 never lists a name, size or checksum the board would disagree with.
+
+Each entry carries "updated", the UTC time its version first appeared: kept
+from the previous catalog when the id and version match, else the build time.
+The previous catalog is SITE_DIR/apps/catalog.json, or --previous (a file or a
+URL, e.g. https://terminalbay.com/apps/catalog.json when signing into a
+scratch --site). The website's store sorts by it.
 """
-import argparse, hashlib, json, os, sys, tempfile, time
+import argparse, hashlib, json, os, sys, tempfile, time, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lap  # noqa: E402
@@ -16,13 +22,32 @@ import lap  # noqa: E402
 CATEGORIES = {'games', 'tools', 'radio', 'maps', 'utilities'}
 
 
+def previous_dates(src):
+    """(id, version) -> "updated" from an earlier catalog; empty when there is none."""
+    try:
+        if src.startswith(('http://', 'https://')):
+            req = urllib.request.Request(src, headers={'User-Agent': 'lakeshark-catalog'})
+            cat = json.loads(urllib.request.urlopen(req, timeout=30).read().decode('utf-8'))
+        elif os.path.exists(src):
+            cat = json.load(open(src, encoding='utf-8'))
+        else:
+            return {}
+    except (OSError, ValueError) as e:
+        sys.exit('previous catalog %s: %s' % (src, e))
+    return {(e.get('id'), e.get('version')): e['updated'] for e in cat.get('apps', []) if e.get('updated')}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--key', required=True, help='store signing key (PEM, outside any repository)')
     ap.add_argument('--site', required=True, help='site folder; apps/ is written inside it')
     ap.add_argument('--min-firmware', default='2.18.0')
+    ap.add_argument('--previous', help='earlier catalog (file or URL) whose "updated" times are kept; '
+                                       'default SITE_DIR/apps/catalog.json')
     ap.add_argument('apps', nargs='*')
     a = ap.parse_args()
+    now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    dates = previous_dates(a.previous or os.path.join(a.site, 'apps', 'catalog.json'))
     here = os.path.dirname(os.path.abspath(__file__))
     dirs = a.apps or sorted(os.path.join(here, 'apps', d) for d in os.listdir(os.path.join(here, 'apps')))
     out_dir = os.path.join(a.site, 'apps', 'files')
@@ -44,6 +69,7 @@ def main():
             open(os.path.join(out_dir, name), 'wb').write(data)
             entries.append({
                 'id': m['id'], 'name': m['name'], 'sub': m['sub'], 'version': m['version'],
+                'updated': dates.get((m['id'], m['version']), now),
                 'author': m['author'], 'category': meta['category'], 'group': m.get('group', ''),
                 'color': m['color'], 'caps': m['flags'],   # LAP_CAP_* bits: the board's STORE shows them as USES
                 'icon_art': m['icon_art'], 'description': meta.get('description', ''),
@@ -56,7 +82,7 @@ def main():
                 if meta.get(k):
                     entries[-1][k] = meta[k]
             print('%-8s %-6s %6d B  %s' % (m['id'], m['version'], len(data), name))
-    cat = {'schema': 1, 'generated': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'apps': entries}
+    cat = {'schema': 1, 'generated': now, 'apps': entries}
     open(os.path.join(a.site, 'apps', 'catalog.json'), 'w', encoding='utf-8', newline='\n').write(json.dumps(cat, indent=1) + '\n')
     print('catalog: %d apps' % len(entries))
 
