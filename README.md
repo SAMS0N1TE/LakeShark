@@ -36,7 +36,7 @@
   </thead>
   <tbody>
     <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>3.1.0 stable</td></tr>
-    <tr><td><strong>LILYGO T-Display P4 TFT</strong></td><td>Handheld</td><td>2.23.2 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4 TFT</strong> (SX1262 or LR2021)</td><td>Handheld</td><td>2.23.2 experimental, not yet tested by us</td></tr>
     <tr><td><strong>LILYGO T-Display P4, LR and NET editions</strong></td><td>Handheld</td><td>3.1.0 stable</td></tr>
     <tr><td><strong>Waveshare ESP32-P4-NANO-DB</strong> (P4 rev 3, ESP32-C5)</td><td>LakeShark Desktop</td><td>2.22.0 stable</td></tr>
     <tr><td><strong>Waveshare ESP32-P4-NANO</strong></td><td>Headless (serial, Flipper)</td><td>2.0.2 in the installer, newer from source</td></tr>
