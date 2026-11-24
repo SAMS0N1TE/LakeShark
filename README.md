@@ -49,28 +49,11 @@
 </table>
 <table align="center">
   <thead>
-    <tr>
-      <th>Hardware</th>
-      <th>Capabilities</th>
-    </tr>
+    <tr><th>Radio</th><th>What it does on its own</th></tr>
   </thead>
   <tbody>
-    <tr>
-      <td><strong>T-Display P4 + LR2021</strong></td>
-      <td>Onboard P25 voice, FM, ADS-B, pagers, MeshCore and LoRa tools</td>
-    </tr>
-    <tr>
-      <td><strong>T-Display P4 + SX1262</strong></td>
-      <td>MeshCore, LoRa and POCSAG. Add an RTL-SDR for FM, P25 and ADS-B</td>
-    </tr>
-    <tr>
-      <td><strong>RTL-SDR Blog V3/V4</strong></td>
-      <td>External SDR reception, P25 Phase I trunking and sub-GHz captures</td>
-    </tr>
-    <tr>
-      <td><strong>MIX-RF keyboard</strong></td>
-      <td>Optional physical controls, CC1101, nRF24 and NFC</td>
-    </tr>
+    <tr><td><strong>LR2021</strong></td><td>P25 voice, FM, ADS-B, pagers, MeshCore and LoRa tools, no dongle</td></tr>
+    <tr><td><strong>SX1262</strong></td><td>MeshCore, LoRa and pagers. Add an RTL-SDR for FM, P25 and ADS-B</td></tr>
   </tbody>
 </table>
 
@@ -80,7 +63,7 @@
 
 <h2 align="center">LakeShark Desktop and Studio</h2>
 
-<p align="center"><strong>Run every app in windows on your PC. Write your own in minutes.</strong><br>New in 2.20.0.</p>
+<p align="center"><strong>Run every app in windows on your PC. Write your own in minutes.</strong></p>
 
 <h3 align="center"><a href="https://github.com/SAMS0N1TE/LakeShark/blob/main/app-sdk/README.md#your-first-app-in-5-minutes">Make your first app →</a></h3>
 
@@ -108,17 +91,16 @@ screen, mouse and keyboard over one USB cable.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.21.2">Get 2.21.2</a>
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.22.0">Get Desktop 2.22.0</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/SAMS0N1TE/LakeShark/blob/main/app-sdk/README.md#your-first-app-in-5-minutes">Make your first app</a>
 </p>
 
 <h2 align="center">What's New</h2>
 
-<p align="center"><strong>2.21:</strong> DOPPLER RADAR with two boards · FREQ OFFSET for crystal LR2021 modules · UAT 978 hears every frame</p>
-<p align="center">New SETTINGS pages · POWER modes with WATCH · GPS standby saves about 23 mA · Redrawn MUSIC views</p>
-<p align="center"><strong>2.21.1 and 2.21.2:</strong> Sharp street-level MAP zooms · RTL-SDR Blog V4 FM and REC · Steady P25 GPS sites</p>
-<p align="center"><strong>2.20:</strong> LR2021 on-chip waterfall and down-conversion · LakeShark Desktop · App SDK 2.6 and Studio · <a href="https://terminalbay.com/?m=lakeshark-apps">App store with one-click installs</a></p>
+<p align="center"><strong>3.1:</strong> WARDRIVE replays your drives in 3D over the real map · MAP always opens and draws far out faster · LR2021 hears off-frequency LoRa nodes</p>
+<p align="center"><strong>3.0:</strong> One firmware for every T-Display P4 · FREQS by location · World maps · <a href="https://terminalbay.com/?m=lakeshark-apps">App store</a> on the board · LOCKER and CHAT · Lock screen</p>
+<p align="center"><strong>2.20:</strong> LR2021 on-chip programs · LakeShark Desktop · App SDK and Studio</p>
 
 <p align="center">
   <img width="48%" alt="CARRIER, an early access space game" src="docs/screenshots/apps/carrier-0.4.gif">
@@ -126,7 +108,7 @@ screen, mouse and keyboard over one USB cable.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v2.21.2">Release notes</a>
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v3.1.0">3.1.0 release notes</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/SAMS0N1TE/LakeShark/releases">All releases</a>
 </p>
@@ -178,7 +160,7 @@ screen, mouse and keyboard over one USB cable.</p>
 
 ## Applications
 
-About thirty apps: P25 voice and trunking, FM with pagers, ADS-B, waterfalls, MeshCore, Sub-GHz capture and replay, FT8, offline maps, compass, GPS and music. Each one has a guide in the [wiki](https://terminalbay.com/?m=wiki#tdp4/APPS).
+About thirty built in: P25 voice and trunking, FM with pagers, ADS-B, waterfalls, MeshCore, Sub-GHz capture and replay, FT8, wardriving, world maps, compass, GPS and music. More in the [app store](https://terminalbay.com/?m=lakeshark-apps), including community apps. Each one has a guide in the [wiki](https://terminalbay.com/?m=wiki#tdp4/APPS).
 
 The [web tools](https://terminalbay.com/?m=lakeshark) make P25 profiles, GPS scan lists, channel memories and map tiles. See also [replay and aircraft details](docs/REPLAY_AND_AIRCRAFT.md).
 
@@ -279,10 +261,13 @@ pwsh -File bench/patch-idf.ps1 -IdfPath /path/to/esp-idf -Apply
 One build directory per target:
 
 ```sh
-# T-Display P4 AMOLED (568 × 1232, 16 MB)
+# T-Display P4, every edition: the release image (radio and screen found at boot)
+idf.py -B build_tdp4_u -D SDKCONFIG=build_tdp4_u/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/t_display_p4.defaults;boards/t_display_p4_universal.defaults" build
+
+# T-Display P4 AMOLED only (568 × 1232, 16 MB)
 idf.py -B build_tdp4 -D SDKCONFIG=build_tdp4/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/t_display_p4.defaults" build
 
-# T-Display P4 TFT (HI8561, 540 × 1168)
+# T-Display P4 TFT only (HI8561, 540 × 1168)
 idf.py -B build_tdp4_tft -D SDKCONFIG=build_tdp4_tft/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;boards/t_display_p4.defaults;boards/t_display_p4_tft.defaults" build
 
 # LakeShark LR: LR2021 only, no USB host, RTL-SDR, HackRF or SX1262
@@ -306,6 +291,10 @@ idf.py -B build_nano -D SDKCONFIG=build_nano/sdkconfig -D SDKCONFIG_DEFAULTS="sd
       <td><a href="https://github.com/zenobik">@zenobik</a></td>
       <td>T-Display P4 TFT support (<a href="https://github.com/SAMS0N1TE/LakeShark/pull/8">#8</a>), UTF-8 text shown as ASCII letters (<a href="https://github.com/SAMS0N1TE/LakeShark/pull/9">#9</a>), LR2021 frequency correction for modules without a TCXO (<a href="https://github.com/SAMS0N1TE/LakeShark/pull/19">#19</a>)</td>
     </tr>
+    <tr>
+      <td>Community apps</td>
+      <td><a href="https://github.com/zenobik">zenobik</a> (WM-BUS) and <a href="https://github.com/old386">old386</a> (FISHNOID) in the <a href="https://terminalbay.com/?m=lakeshark-apps">app store</a></td>
+    </tr>
   </tbody>
 </table>
 
@@ -322,6 +311,10 @@ idf.py -B build_nano -D SDKCONFIG=build_nano/sdkconfig -D SDKCONFIG_DEFAULTS="sd
     <tr>
       <td><a href="https://github.com/beala/lr2021-re">lr2021-re</a></td>
       <td>Alex Beal. Patch RAM programs for the LR2021's internal CPU that LakeShark runs on the radio: the on-chip FFT waterfall, the band sweep and the LoRa scanner. Our on-chip down-conversion is built with his ARC toolchain and loader. <a href="https://beala.substack.com/p/your-node-doesnt-need-a-microcontroller">Write-up</a>. MIT</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/Lora-net/usp">Semtech LR20xx driver</a></td>
+      <td>Semtech. The LR2021 Patch RAM image used by the bench build's radio probes. Clear BSD</td>
     </tr>
     <tr>
       <td><a href="https://osmocom.org/projects/rtl-sdr">rtl-sdr / librtlsdr</a></td>
