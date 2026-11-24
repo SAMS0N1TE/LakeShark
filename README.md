@@ -2,14 +2,15 @@
   <img src="assets/lakeshark-banner.png" alt="LakeShark" width="900">
 </p>
 
-<h3 align="center">A handheld SDR powered by a LoRa chip, RTL-SDR, and HackRF</h3>
+<h3 align="center">A radio lab that fits in your hand</h3>
 
 <p align="center">
-  <strong>P25 Digital Voice · FM Radio · ADS-B Aircraft · Pagers · MeshCore · RF Tools</strong>
+  <strong>P25 voice · FM · Aircraft · Pagers · MeshCore · Wardriving · Wi-Fi and Bluetooth tools</strong>
 </p>
 
 <p align="center">
-  Turn the <a href="https://lilygo.cc/en-us/products/t-display-p4">LILYGO T-Display P4</a>, Waveshare ESP32-P4 Nano DB, and Wifi6, into an open-source handheld radio multitool.
+  Open-source firmware for the <a href="https://lilygo.cc/en-us/products/t-display-p4">LILYGO T-Display P4</a>.<br>
+  Install it from your browser in a minute, then it updates itself over Wi-Fi.
 </p>
 
 <p align="center">
@@ -20,18 +21,12 @@
   <strong><a href="https://terminalbay.com/?m=wiki">Documentation</a></strong>
 </p>
 
-<h2 align="center">LR2021 LoRa Chip</h2>
+<h2 align="center">No dongle needed</h2>
 
-<p align="center"><strong>The onboard LR2021 receives P25 voice, aircraft, Analog FM and pagers. No external SDR required.</strong></p>
+<p align="center">On LR2021 boards the LoRa chip is the radio. P25 voice, aircraft, FM and pagers with nothing plugged in, plus live waterfalls, raw I/Q capture and programs that run on the chip's own CPU.</p>
 
-<p align="center"><strong>Raw I/Q capture · Live waterfalls · Software demodulation · Experimental I/Q transmission</strong></p>
+<p align="center"><sub>The on-chip programs build on <a href="https://github.com/beala/lr2021-re">Alex Beal's lr2021-re</a>: his FFT, sweep and LoRa scanner, and the ARC toolchain and Patch RAM loader. <a href="https://beala.substack.com/p/your-node-doesnt-need-a-microcontroller">Read his write-up</a> · <a href="https://github.com/SAMS0N1TE/lr2021-sdr">Explore LR2021-SDR</a></sub></p>
 
-<p align="center"><strong>New in 2.20.0: the LR2021 runs programs on its own CPU.</strong><br>
-On-chip waterfall · On-chip down-conversion · Background LoRa scan · FM at half the CPU</p>
-
-<p align="center">The programs on the radio come from <a href="https://github.com/beala/lr2021-re">Alex Beal's lr2021-re</a>, which builds on LR2021-SDR: his on-chip FFT, sweep and LoRa scanner, and the ARC toolchain and Patch RAM loader we used for our own. <a href="https://beala.substack.com/p/your-node-doesnt-need-a-microcontroller">Read his write-up</a>.</p>
-
-<p align="center"><strong><a href="https://github.com/SAMS0N1TE/lr2021-sdr">Explore LR2021-SDR →</a></strong></p>
 <p align="center">
   <img src="assets/lakeshark-divider.png" alt="" width="900">
 </p>
@@ -40,14 +35,14 @@ On-chip waterfall · On-chip down-conversion · Background LoRa scan · FM at ha
     <tr><th>Hardware</th><th>Use</th><th>Firmware</th></tr>
   </thead>
   <tbody>
-    <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>2.21.2 stable</td></tr>
-    <tr><td><strong>LILYGO T-Display P4 TFT</strong></td><td>Handheld</td><td>2.21.2 stable</td></tr>
-    <tr><td><strong>LILYGO T-Display P4, LR edition</strong> (LR2021 only)</td><td>Handheld</td><td>2.21.2 stable</td></tr>
-    <tr><td><strong>Waveshare ESP32-P4-NANO-DB</strong> (P4 rev 3, ESP32-C5)</td><td>LakeShark Desktop</td><td>2.21.2 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>3.1.0 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4 TFT</strong></td><td>Handheld</td><td>2.23.2 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4, LR and NET editions</strong></td><td>Handheld</td><td>3.1.0 stable</td></tr>
+    <tr><td><strong>Waveshare ESP32-P4-NANO-DB</strong> (P4 rev 3, ESP32-C5)</td><td>LakeShark Desktop</td><td>2.22.0 stable</td></tr>
     <tr><td><strong>Waveshare ESP32-P4-NANO</strong></td><td>Headless (serial, Flipper)</td><td>2.0.2 in the installer, newer from source</td></tr>
     <tr><td><strong>Waveshare Touch-LCD-4.3, Touch-LCD-4B, Smart 86 Box</strong></td><td>Touch screen</td><td>Up to 2.16.4, no longer updated</td></tr>
-    <tr><td><strong>RTL-SDR Blog/Nooelec V3/V4</strong></td><td>USB SDR</td><td>All current builds except the LR edition</td></tr>
-    <tr><td><strong>HackRF One</strong></td><td>USB SDR (experimental)</td><td>All current builds except the LR edition</td></tr>
+    <tr><td><strong>RTL-SDR Blog/Nooelec V3/V4</strong></td><td>USB SDR</td><td>All current builds</td></tr>
+    <tr><td><strong>HackRF One</strong></td><td>USB SDR (experimental)</td><td>All current builds</td></tr>
     <tr><td><strong>MIX-RF keyboard</strong></td><td>Keys, CC1101, nRF24, NFC</td><td>T-Display P4 builds</td></tr>
     <tr><td><strong>Flipper Zero</strong></td><td>Control head (LakeShark-Flipper app)</td><td>T-Display P4 and headless NANO</td></tr>
   </tbody>
