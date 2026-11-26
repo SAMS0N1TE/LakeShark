@@ -10,7 +10,13 @@
 #include "wardrive/wd_radio.h"
 #include "party/party_wd_peer.h"
 #include "esp_timer.h"
+#ifdef _WIN32
 #include <direct.h>
+#define WD_MKDIR(p) _mkdir(p)
+#else
+#include <sys/stat.h>
+#define WD_MKDIR(p) mkdir(p, 0777)
+#endif
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -426,7 +432,7 @@ const char *wd_feed_dir(void)
 {
     static char dir[200];
     snprintf(dir, sizeof(dir), "%s/lssim_wardrive", getenv("TEMP") ? getenv("TEMP") : ".");
-    _mkdir(dir);
+    WD_MKDIR(dir);
     return dir;
 }
 const char *wd_feed_board(void) { return "lssim"; }

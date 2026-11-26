@@ -12,19 +12,14 @@ jobs:
       matrix:
         include:
           - name: p4-nano
-            idf_version: v5.4.3
             defaults: boards/nano_headless_ble.defaults
           - name: p4-wifi6
-            idf_version: v5.4.3
             defaults: boards/wifi6_headless_ble.defaults
           - name: p4-nano-nobt
-            idf_version: v5.4.3
             defaults: boards/nano_headless_nobt.defaults
           - name: t-display-p4
-            idf_version: v5.5.4
             defaults: boards/t_display_p4.defaults
           - name: t-display-p4-tft
-            idf_version: v5.5.4
             defaults: boards/t_display_p4.defaults;boards/t_display_p4_tft.defaults
 
     name: ${{ matrix.name }}
@@ -34,18 +29,13 @@ jobs:
       - name: Build
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: ${{ matrix.idf_version }}
+          esp_idf_version: v5.5.4
           target: esp32p4
           command: |
             set -eu
-            if [ "${{ matrix.idf_version }}" = "v5.5.4" ]; then
-              patch_dir="$PWD/bench/patches"
-              for patch in "$patch_dir"/esp-idf-v5.5.4-*.patch; do
-                git -C "$IDF_PATH" apply "$patch"
-              done
-            else
-              python tools/prepare_sdk.py --idf "$IDF_PATH"
-            fi
+            for patch in "$PWD"/bench/patches/esp-idf-v5.5.4-*.patch; do
+              git -C "$IDF_PATH" apply "$patch"
+            done
             idf.py -B build -DSDKCONFIG=build/sdkconfig \
               -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;${{ matrix.defaults }}" build
 

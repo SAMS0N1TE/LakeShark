@@ -11,6 +11,9 @@
 #include <stdio.h>
 #ifdef _WIN32
 #include <direct.h>
+#else
+#include <sys/stat.h>
+#define _mkdir(p) mkdir(p, 0777)
 #endif
 
 void lf_task_pump(void);

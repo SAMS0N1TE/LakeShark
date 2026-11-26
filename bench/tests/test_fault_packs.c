@@ -11,6 +11,12 @@
 #include "esp_timer.h"
 #include "mbedtls/sha256.h"
 #include <math.h>
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#define _mkdir(p) mkdir(p, 0777)
+#endif
 #ifdef LS_PACKS_OLD_SRC
 #include LS_PACKS_OLD_SRC
 #else

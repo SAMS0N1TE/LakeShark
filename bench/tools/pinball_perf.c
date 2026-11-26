@@ -12,8 +12,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
 __declspec(dllimport) int __stdcall QueryPerformanceCounter(long long *);
 __declspec(dllimport) int __stdcall QueryPerformanceFrequency(long long *);
+#else
+#include <time.h>
+static int QueryPerformanceCounter(long long *t)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    *t = (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+    return 1;
+}
+static int QueryPerformanceFrequency(long long *f) { *f = 1000000000LL; return 1; }
+#endif
 static double pb_sum[8];
 static long long pb_last;
 static void pb_mark(int i)
