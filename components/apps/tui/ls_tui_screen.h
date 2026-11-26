@@ -174,6 +174,17 @@ bool ls_tui_router_key(ls_tk_t key, char ch);
 
 bool ls_tui_router_touch(int col, int row);
 
+/* Pocket lock, inside any app: the app keeps running and drawing, but
+   touch (taps, drags, a store app's own touch) does nothing. A tap shows an
+   UNLOCK key somewhere else on the screen for four seconds; tapping that
+   key unlocks. Keys still work. Lock by holding the status row for a
+   second, by Ctrl+L, from an app's OPTIONS, or by an app's auto lock. */
+bool ls_tui_pocket_locked(void);
+void ls_tui_pocket_set(bool on);
+/* Lock after this long with no touch or key (0 off). An app sets it while
+   it is on screen and clears it when it leaves. */
+void ls_tui_pocket_auto(uint32_t ms);
+
 /* How many of the registered screens are on the tab strip. */
 
 void ls_tui_screen_set_tab_count(int n);

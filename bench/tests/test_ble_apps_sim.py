@@ -12,6 +12,7 @@ the table as JSON.
     python bench/tests/test_ble_apps_sim.py path/to/lssim
 """
 import json
+import re
 import os
 from pathlib import Path
 import subprocess
@@ -25,6 +26,9 @@ import bughunt_tags_fixture  # noqa: E402
 EXE = Path(sys.argv[1]).resolve()
 failures = []
 
+
+# BUGHUNT 1.2's HUNT gauge scale: -100 on the left, the closeness word, -30 on the right
+GAUGE = re.compile(r'-100 +[A-Z]+ +-30')
 
 def check(what, ok, detail=''):
     print(('PASS ' if ok else 'FAIL ') + what)
@@ -85,7 +89,7 @@ with tempfile.TemporaryDirectory() as tmp:
     check('the following alert shows on SWEEP', 'with you for' in t and 'tap: HUNT' in t and 'CHOOSE A SWEEP' in t, t)
     # and BLE WATCH's L key hunts the alert's tag
     t = run('bughunt', d, '-f', '260', script='100:key=l', capture=cap)
-    check('L hunts the alert\'s tag', 'HUNTING' in t and 'closer = louder' in t and 'GFMDN' in t and '-100 cold' in t, t)
+    check('L hunts the alert\'s tag', 'HUNTING' in t and 'closer = louder' in t and 'GFMDN' in t and GAUGE.search(t), t)
     check('hunting it clears the banner', 'tap: HUNT' not in t and 'FOLLOWING' in t, t)
 
     # ALL: every device, with advert types
@@ -103,7 +107,7 @@ with tempfile.TemporaryDirectory() as tmp:
     (old / 'watch-20261101-090000.csv').write_text('x\n')
     (old / 'watch-20261102-100000.csv').write_text('x\n')
     t = run('bughunt', d, '-f', '40', script=TAGS + ';20:key=@enter', capture=cap)
-    check('HUNT a tag shows BLE WATCH\'s meter and tone', 'dBm' in t and 'close' in t and '-100 cold' in t and 'hot -30' in t
+    check('HUNT a tag shows BLE WATCH\'s meter and tone', 'dBm' in t and 'close' in t and GAUGE.search(t)
           and 'TONE' in t and 'LAST' in t, t)
     t = run('bughunt', d, '-f', '40', script=TAGS + ';8:key=v;9:key=v', capture=cap)
     check('tags INFO names the capture source', 'advert capture (API 2.7)' in t and 'alerts go by time' in t, t)

@@ -30,6 +30,9 @@
 #define bw_label      bh_bw_label
 #define bw_distance_m bh_bw_distance_m
 #define bw_csv        bh_bw_csv
+#define bw_mark       bh_bw_mark
+#define bw_watch      bh_bw_watch
+#define bw_kind_bit   bh_bw_kind_bit
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -99,7 +102,15 @@ typedef struct {
     float moved_m;
     uint8_t alert;                  /* 1 once the following alert has fired */
     uint32_t alert_ms;
+    uint8_t mark;                   /* BW_MARK_*: carried through rotations */
+    uint8_t gone;                   /* WATCH: 1 once "left behind" fired, until heard again */
 } bw_dev_t;
+
+/* What you told it about a tag. MINE never alerts (your own keys); WATCH
+   alerts when it goes quiet for watch_ms (left behind, or taken) and again
+   when it comes back. */
+enum { BW_MARK_NONE = 0, BW_MARK_MINE = 1, BW_MARK_WATCH = 2 };
+enum { BW_EV_GONE = 1, BW_EV_BACK = 2 };
 
 typedef struct {
     bw_dev_t dev[BW_MAX_DEV];
@@ -109,6 +120,8 @@ typedef struct {
     float follow_m;             /* ... and moved this far when there is a fix */
     uint32_t gap_ms;            /* unseen longer than this starts presence again */
     bool alert_possible;        /* also alert on level-1 (possible) trackers */
+    uint16_t kind_off;          /* bw_kind_bit(cls) set: that kind never alerts (still listed) */
+    uint32_t watch_ms;          /* a WATCH tag unheard this long is gone */
     bool fix;
     double lat, lon;
     bool ever_fix;              /* a fix was seen since the app opened */
@@ -136,6 +149,12 @@ void bw_hist(const bw_dev_t *d, uint32_t now_ms, int8_t out[BW_HIST]); /* oldest
 int bw_trend(const bw_dev_t *d, uint32_t now_ms);                    /* +1 stronger, -1 weaker, 0 steady */
 uint32_t bw_span_ms(const bw_dev_t *d);                              /* how long the chain has been about */
 bool bw_alertable(const bw_t *w, const bw_dev_t *d);
+uint16_t bw_kind_bit(int cls);          /* the kind's bit in kind_off (Apple's two kinds share one) */
+/* Mark a tag; it lands on the newest address of its chain and stays through rotations. */
+void bw_mark(bw_t *w, int i, uint8_t mark);
+/* A WATCH tag gone quiet or back: its index and *event (BW_EV_*), or -1.
+   One at a time; call it often. */
+int bw_watch(bw_t *w, uint32_t now_ms, int *event);
 const char *bw_class_tag(int cls);      /* short, for lists */
 const char *bw_class_name(int cls);     /* long, for the detail view */
 const char *bw_class_note(int cls);     /* one line of advice, or "" */

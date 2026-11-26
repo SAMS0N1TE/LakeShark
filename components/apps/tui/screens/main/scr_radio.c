@@ -20,6 +20,7 @@
 
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 #include "../../ls_i18n.h"
 #include "../../ls_radio_panel.h"
 #include "../../ls_radio_select.h"
@@ -186,13 +187,16 @@ static void draw(tui_surface *sf, tui_rect area)
     memcpy(deck, DECK, sizeof(deck));
     deck[1].value = PRESETS[preset_now()].name;
     deck[2].value = ls_opt_button(&CTX_HEAD).value;
-    const int deck_h = wide ? 3 : 5;
+    /* A desk window: the deck is one toolbar row, the frequency big on the
+       glass (a VFD), the spectrum on black glass, the decoders a tab strip. */
+    const bool desk = ls_tui_compact();
+    const int deck_h = desk ? 1 : wide ? 3 : 5;
     s_deck = wide ? tui_rect_make(area.x, area.y, area.w, deck_h)
                   : tui_rect_make(area.x, area.y + area.h - deck_h, area.w, deck_h);
     tui_rect body = wide ? tui_rect_make(area.x, area.y + deck_h, area.w, area.h - deck_h)
                          : tui_rect_make(area.x, area.y, area.w, area.h - deck_h);
 
-    const int glass_h = wide ? 6 : 11;
+    const int glass_h = desk && body.h >= 26 ? 11 : wide ? 6 : 11;
     if (body.h < glass_h + 8) { draw_glass(sf, body, h); goto deck; }
     draw_glass(sf, tui_rect_make(body.x, body.y, body.w, glass_h), h);
     body.y += glass_h; body.h -= glass_h;
@@ -207,8 +211,14 @@ static void draw(tui_surface *sf, tui_rect area)
         tui_put_str(sf, body, body.x + 2, body.y, idle, LS_ATTR_DIM);
         body.y += 1; body.h -= 1;
     } else {
+        if (desk) {
+            const tui_rect in = ls_dui_glass(sf, tui_rect_make(body.x, body.y, body.w, wf_h + 2));
+            ls_wf_draw_mini(sf, in);
+            body.y += wf_h + 2; body.h -= wf_h + 2;
+        } else {
         ls_wf_draw_mini(sf, tui_rect_make(body.x, body.y, body.w, wf_h));
         body.y += wf_h; body.h -= wf_h;
+        }
     }
 
     /* A tab for each plugin, in its hue's words. */
@@ -217,10 +227,11 @@ static void draw(tui_surface *sf, tui_rect area)
         const ls_rx_panel_t *pn = ls_rx_panel_for(h->slot[i].p);
         tabs[i] = (ls_btn_t){ pn->tab ? pn->tab : h->slot[i].p->name, NULL, (char)('1' + i), i == s_focus };
     }
-    const int tab_h = 3;
+    const int tab_h = desk ? 1 : 3;
     s_tabs = tui_rect_make(body.x, body.y, body.w, tab_h);
     if (n > 1) {
-        ls_btn_bar_slot(sf, s_tabs, tabs, n, -1, SLOT_TABS);
+        if (desk) ls_btn_tabs_slot(sf, s_tabs, tabs, n, -1, SLOT_TABS);
+        else ls_btn_bar_slot(sf, s_tabs, tabs, n, -1, SLOT_TABS);
         body.y += tab_h; body.h -= tab_h;
     } else s_tabs = tui_rect_make(0, -1, 0, 0);
 

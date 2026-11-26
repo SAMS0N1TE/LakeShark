@@ -37,6 +37,7 @@ and the GPS receiver are doing.
 | L | Tap L LOG | Open the ERROR LOG |
 | T | T TEST ALERT | Post a test notice. With alerts on, it rings and buzzes |
 | S | S CHECK SD | Mount and check the SD card |
+| P | P REPORT | Open the report sheet to send a bug report |
 | Esc, Backspace | ESC BACK | Close a detail page; on the main page, back to HOME |
 
 In the ERROR LOG:
@@ -77,11 +78,25 @@ some point. Counters add up over the session.
 
 The ERROR LOG shows each saved record, newest first: its number, when, why,
 the firmware it ran, where it stopped and its last log lines. After the
-records, THIS RUN SO FAR shows errors and warnings from the current session.
+records, THIS RUN SO FAR shows errors and warnings from the current session,
+and whether a crash dump is stored.
+
+## Crash reports
+
+After a crash the board keeps a crash dump. The report block then reads "a
+crash is waiting: send it". P REPORT (also SET > SYSTEM > Bug report) shows
+what will be sent, takes an optional note, and sends it over Wi-Fi. The
+report carries the error log and the crash: the task that stopped, the code
+address it stopped at and the panic reason. Only addresses are taken from the
+dump, never memory contents. Location stays off unless you turn it on. The
+report id comes back on the sheet.
+
+From TERMINAL, `crash` prints the same crash summary.
 
 ## Tips and limits
 
-- After a crash, press L in DIAG to see what the board was doing.
+- After a crash, press L in DIAG to see what the board was doing, then P to
+  send it.
 - The SD card line reads "unchecked (S)" until you press S.
 - Memory traces cover only the time the screen has been running, not full
   uptime.
@@ -90,5 +105,6 @@ records, THIS RUN SO FAR shows errors and warnings from the current session.
 
 - [TERMINAL](TERMINAL.md)
 - [RADIOS](RADIOS.md)
+- [SET](SET.md)
 - [Controls and navigation](../UI_CONTROLS.md)
 - [All apps](README.md)

@@ -67,6 +67,11 @@ typedef struct {
     const char *title;
 } ls_desk_win_info_t;
 int  ls_desk_window_count(void);
+/* An app (by ls_app_t id) has a window on the desk, in front or behind; any
+   radio app (a screen that names a receiver) has one. Its services keep
+   running for MAP and the other windows that show what they hear. */
+bool ls_desk_app_open(const char *id);
+bool ls_desk_radio_app_open(void);
 /* Back to front: index 0 is the bottom window. */
 bool ls_desk_window_at(int z, ls_desk_win_info_t *out);
 int  ls_desk_front(void);
@@ -78,6 +83,27 @@ void ls_desk_maximize(int id);   /* toggles maximize and restore */
 void ls_desk_restore(int id);
 void ls_desk_close(int id);
 void ls_desk_close_all(void);
+/* App windows have size presets instead of free sizes: 0 Small (82x28
+   outer), 1 Medium (102x34), 2 Large (122x42), 3 Maximized. Each is
+   clamped to the work area; a preset that does not fit is not taken (Small
+   always is). ls_desk_resize snaps to the smallest preset at least that big.
+   ls_desk_size answers the window's preset, -1 for a shell window. */
+enum { LS_DESK_SIZE_SMALL, LS_DESK_SIZE_MEDIUM, LS_DESK_SIZE_LARGE, LS_DESK_SIZE_MAX };
+int  ls_desk_size(int id);
+void ls_desk_set_size(int id, int preset);
+
+/* The desktop's resolution: the grid no longer follows the PC window. The
+   owner picks one of ls_desk_res_count() presets (ls_desk_res_at: 100x37,
+   120x45, 148x50) and the page scales the cells to fit, letterboxed. Saved
+   on the board. ls_desk_res_get answers false while none is held (the grid
+   follows the window, as before). ls_desk_res_set(0, 0) lets go; a size
+   applies at once where the screen is a terminal (a Nano) and answers false
+   for one under 100x30 or where the screen keeps its own grid. For Control
+   Panel > Display and the console's 'desk res WxH|auto'. UI task. */
+int  ls_desk_res_count(void);
+bool ls_desk_res_at(int i, int *cols, int *rows);
+bool ls_desk_res_get(int *cols, int *rows);
+bool ls_desk_res_set(int cols, int rows);
 /* PSRAM blocks the desk holds now (live surface plus snapshots). */
 int  ls_desk_alloc_blocks(void);
 /* Full screen for the front window (Alt+Enter / F11). */

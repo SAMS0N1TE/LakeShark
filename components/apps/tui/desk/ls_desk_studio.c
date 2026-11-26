@@ -36,9 +36,11 @@ static void art(tui_surface *sf, tui_rect clip, int x, int y)
     ls_box_put(sf, clip, x, y + 6, LS_BOX_ARC_UR, hi);
     dk_hline(sf, clip, x + 1, y + 6, 14, LS_BOX_H, lo);
     ls_box_put(sf, clip, x + 15, y + 6, LS_BOX_ARC_UL, lo);
-    const uint8_t kw = hue(TUI_BLUE, TUI_CYAN | TUI_BRIGHT), fn = hue(TUI_BLACK, TUI_WHITE | TUI_BRIGHT);
-    const uint8_t st = hue(TUI_RED, TUI_YELLOW | TUI_BRIGHT), cm = hue(TUI_GREEN, TUI_GREEN | TUI_BRIGHT);
-    dk_text(sf, clip, x + 2, y + 1, "#include", hue(TUI_RED, TUI_RED | TUI_BRIGHT));
+    /* The little monitor's screen is black glass in every scheme, its code in an editor's bright colours. */
+    dk_fill(sf, tui_rect_intersect(clip, tui_rect_make(x + 1, y + 1, 14, 5)), TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    const uint8_t kw = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK), fn = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
+    const uint8_t st = TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK), cm = TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK);
+    dk_text(sf, clip, x + 2, y + 1, "#include", TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
     dk_text(sf, clip, x + 2, y + 2, "static", kw);
     dk_text(sf, clip, x + 9, y + 2, "draw", fn);
     dk_text(sf, clip, x + 3, y + 3, "lap_put", fn);
@@ -63,7 +65,12 @@ void dk_studio_draw(tui_surface *sf, tui_rect c, tui_rect clip)
     dk_text(sf, clip, x + 2, c.y + 8, "F7 build   F5 run on the PC", url);
     dk_text(sf, clip, x + 2, c.y + 9, "F8 install on this board", url);
     dk_text(sf, clip, x, c.y + 11, "No window? On the PC run", tx);
-    dk_text(sf, clip, x + 2, c.y + 12, "python app-sdk/lsdk.py studio", url);
+    {   /* the command in a read-only edit, the way a dialog shows a line to copy */
+        static const char CMD[] = "python app-sdk/lsdk.py studio";
+        const tui_rect in = dk_well_field(sf, clip, x + 1, c.y + 12, (int)sizeof(CMD) + 2);
+        dk_text(sf, tui_rect_intersect(clip, in), x + 3, c.y + 12, CMD, dk_attr(R_WELL));
+        (void)url;
+    }
     dk_hline(sf, clip, c.x + 2, c.y + c.h - 3, c.w - 4, LS_BOX_H, dk_attr(R_SHADOW));
     /* Left of the buttons, on their row: the note that the PC was asked. */
     const int64_t ago = esp_timer_get_time() - s_asked_us;

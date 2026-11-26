@@ -20,6 +20,7 @@
 #include "../../ls_spectro.h"
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 #include "esp_attr.h"
 #include "esp_timer.h"
 #include <math.h>
@@ -537,6 +538,20 @@ static uint8_t role_hue(int id) {
    heavy when it is on, cyan and heavy with the keyboard's focus on it. */
 static void button(tui_surface *sf, int id, tui_rect r, const char *label,
                    bool on, bool available) {
+  if (ls_tui_compact()) {
+    /* A desk window: a one-row key, centred in the room it was given. */
+    const ls_btn_t b = {label, NULL, 0, on, !available, false};
+    int kw = ls_key1_width(&b);
+    if (kw > r.w)
+      kw = r.w;
+    if (kw < 3)
+      return;
+    const int x = r.x + (r.w - kw) / 2, y = r.y + (r.h - 1) / 2;
+    ls_key1_draw(sf, tui_rect_make(x, y, kw, 1), x, y, &b, id == focus);
+    hits[id] = tui_rect_make(x, y, kw, 1);
+    enabled[id] = available;
+    return;
+  }
   int pad = ls_tui_corner_pad(r.y), bottom = ls_tui_corner_pad(r.y + r.h - 1);
   if (bottom > pad)
     pad = bottom;
@@ -681,9 +696,9 @@ static void tabs(tui_surface *sf, tui_rect t, int rows) {
     const int side = t.w / 5 < 6 ? 6 : t.w / 5;
     char label[32];
     snprintf(label, sizeof(label), t.w - 2 * side >= 22 ? "VISUAL: %s" : "%s", VIEW_NAME[view]);
-    button(sf, VIEW_PREV, tui_rect_make(t.x, t.y, side, 3), "<", false, true);
-    button(sf, VIEW_PICK, tui_rect_make(t.x + side, t.y, t.w - 2 * side, 3), label, true, true);
-    button(sf, VIEW_NEXT, tui_rect_make(t.x + t.w - side, t.y, side, 3), ">", false, true);
+    button(sf, VIEW_PREV, tui_rect_make(t.x, t.y, side, t.h < 3 ? t.h : 3), "<", false, true);
+    button(sf, VIEW_PICK, tui_rect_make(t.x + side, t.y, t.w - 2 * side, t.h < 3 ? t.h : 3), label, true, true);
+    button(sf, VIEW_NEXT, tui_rect_make(t.x + t.w - side, t.y, side, t.h < 3 ? t.h : 3), ">", false, true);
     return;
   }
   if (t.w / VIEWS >= 8) {
@@ -756,15 +771,18 @@ static void panel(tui_surface *sf, tui_rect p, bool playing, bool boxed) {
   /* Every view has a full-size tab across the top of the panel: one or two
      rows of them, or four and MORE where the panel is short. The format
      lines go under them when the now-playing box does not carry them. */
+  const bool desk = ls_tui_compact();
   const int rows = tab_rows_for(in.w, in.h >= 30 ? 2 : 1);
-  tabs(sf, tui_rect_make(in.x, in.y, in.w, 3 * rows), rows);
-  int body_y = in.y + 3 * rows;
+  tabs(sf, tui_rect_make(in.x, in.y, in.w, desk ? 1 : 3 * rows), rows);
+  int body_y = in.y + (desk ? 1 : 3 * rows);
   if (!boxed) {
     format_line(sf, in, in.x + 1, body_y);
     output_line(sf, in, in.x + 1, body_y + 1);
     body_y += 2;
   }
   tui_rect body = tui_rect_make(in.x, body_y, in.w, in.y + in.h - 1 - body_y);
+  if (desk && body.h >= 6)
+    body = ls_dui_glass(sf, body);   /* a desk window: the visual on sunken black glass */
   if (body.h < 4)
     return;
   tui_rect plot = tui_rect_make(body.x, body.y, body.w, body.h - 3);
@@ -973,6 +991,8 @@ static void info_boxed(tui_surface *sf, tui_rect r, bool playing) {
      it, the row above or the frame below moves playback there. */
   seek_bar(sf, tui_rect_make(box.x + 2, box.y + 7, box.w - 4, 1), mic == LS_MIC_OFF, elapsed * 1000,
            total * 1000);
+  if (ls_tui_compact())
+    return;
   int bw = (r.w - 3) / 4;
   top_keys(sf, r.x + (r.w - (4 * bw + 3)) / 2, r.y + 9, bw, 3);
 }
@@ -1260,14 +1280,21 @@ static void up_next(tui_surface *sf, tui_rect r) {
     first = 0;
   char title[32];
   snprintf(title, sizeof(title), " TRACKS %d/%d ", at + 1, count);
-  ls_panel_box(sf, r, title, TUI_CYAN);
+  const bool desk = ls_tui_compact();
+  if (desk)
+    ls_dui_well(sf, r, title);
+  else
+    ls_panel_box(sf, r, title, TUI_CYAN);
   next_rect = tui_rect_make(r.x + 1, r.y + 1, r.w - 2, shown * NEXT_ROW);
   next_top = first;
   for (int i = 0; i < shown && first + i < count; i++) {
     const int index = first + i, y = next_rect.y + i * NEXT_ROW;
     const bool now = index == current;
     tui_rect row = tui_rect_make(next_rect.x, y, next_rect.w, NEXT_ROW);
-    if (now)
+    const uint8_t band = ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_CYAN));
+    if (now && desk)
+      tui_fill(sf, tui_rect_make(row.x, y, row.w, 1), ' ', band);
+    else if (now)
       ls_fill_dither(sf, tui_rect_make(row.x, y, row.w, 1), LS_DITHER_MEDIUM, TUI_GREEN);
     char num[16], name[96];
     snprintf(num, sizeof(num), "%3d  ", index + 1);
@@ -1281,13 +1308,76 @@ static void up_next(tui_surface *sf, tui_rect r) {
     if ((int)strlen(name) > room)
       name[room] = 0;
     int x = row.x + 1;
-    seg(sf, row, &x, y, now ? ">" : " ", ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
-    seg(sf, row, &x, y, num, ls_ink_hue(TUI_ATTR(TUI_YELLOW, TUI_BLACK)));
-    seg(sf, row, &x, y, name, ls_ink_hue(TUI_ATTR(now ? TUI_WHITE | TUI_BRIGHT : TUI_WHITE, TUI_BLACK)));
+    const bool lit = now && desk;
+    seg(sf, row, &x, y, now ? ">" : " ", lit ? band : ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
+    seg(sf, row, &x, y, num, lit ? band : ls_ink_hue(TUI_ATTR(TUI_YELLOW, TUI_BLACK)));
+    seg(sf, row, &x, y, name, lit ? band : ls_ink_hue(TUI_ATTR(now ? TUI_WHITE | TUI_BRIGHT : TUI_WHITE, TUI_BLACK)));
     if (now)
-      tui_put_str(sf, row, row.x + row.w - 5, y, " NOW", ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
+      tui_put_str(sf, row, row.x + row.w - 5, y, " NOW", lit ? band : ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK)));
   }
 }
+/* One toolbar key at x; answers the next free column. */
+static int tool(tui_surface *sf, tui_rect bar, int x, int id, const char *label, bool on, bool can) {
+  const ls_btn_t b = {label, NULL, 0, on, !can, false};
+  const int kw = ls_key1_width(&b);
+  if (x + kw > bar.x + bar.w)
+    return x;
+  ls_key1_draw(sf, bar, x, bar.y, &b, id == focus);
+  hits[id] = tui_rect_make(x, bar.y, kw, 1);
+  enabled[id] = can;
+  return x + kw + 1;
+}
+
+/* A desk window: one toolbar (the player and the page keys), the visual on
+   black glass in its group box on the left; on the right what is playing in
+   a group box, seek and mute keys, the volume slider and the playlist in a
+   white well. No boxed touch keys. */
+static void draw_desk(tui_surface *sf, tui_rect r, bool playing, bool live) {
+  tui_fill(sf, r, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+  const bool can = ready && ls_music_count() > 0;
+  const bool going = on_track() && ls_music_state() != LS_MUSIC_STOPPED;
+  const ls_music_mic_t mic = ls_music_mic_state();
+  const tui_rect bar = tui_rect_make(r.x, r.y, r.w, 1);
+  int x = r.x;
+  x = tool(sf, bar, x, PREV, "PREV", false, can);
+  x = tool(sf, bar, x, PLAY, playing ? "PAUSE" : "PLAY", playing, can || outside[0]);
+  x = tool(sf, bar, x, NEXT, "NEXT", false, can);
+  x = tool(sf, bar, x, STOP, "STOP", false, going || mic != LS_MIC_OFF);
+  x = tool(sf, bar, x + 1, LIBRARY, "TRACKS", false, true);
+  x = tool(sf, bar, x, MIC, "MIC", mic == LS_MIC_LIVE, ready);
+  x = tool(sf, bar, x, REC, "REC", mic == LS_MIC_RECORDING, ready);
+  tool(sf, bar, x, OPTIONS, "OPTIONS", false, true);
+  const tui_rect body = tui_rect_make(r.x, r.y + 1, r.w, r.h - 1);
+  int split = body.w * 58 / 100;
+  if (body.w - split < 36)
+    split = body.w - 36;
+  panel(sf, tui_rect_make(body.x, body.y, split, body.h), live, true);
+  const tui_rect side = tui_rect_make(body.x + split + 1, body.y, body.w - split - 1, body.h);
+  info_boxed(sf, side, playing);
+  int y = side.y + 9;
+  /* Seek and mute, then the volume as a slider. */
+  const bool muted = ls_music_muted();
+  x = side.x + 1;
+  const tui_rect keys = tui_rect_make(side.x, y, side.w, 1);
+  x = tool(sf, keys, x, SEEK_BACK, "<< 5s", false, going);
+  x = tool(sf, keys, x, SEEK_FWD, "5s >>", false, going);
+  tool(sf, keys, x, SILENCE, muted ? "UNMUTE" : "MUTE", muted, true);
+  int value = ls_music_volume();
+  if (value < 0) value = 0;
+  if (value > 100) value = 100;
+  char vol[24];
+  if (value) snprintf(vol, sizeof(vol), "%d%% %.1f dB", value, (double)ls_music_volume_db());
+  else snprintf(vol, sizeof(vol), "MUTED");
+  tui_rect down, up, val, slide;
+  ls_slider1_draw(sf, tui_rect_make(side.x, y + 1, side.w, 1), "VOL", vol, value / 100.0f, TUI_CYAN, true,
+                  &down, &up, &val, &slide);
+  hits[QUIETER] = down; enabled[QUIETER] = value > 0;
+  hits[LOUDER] = up; enabled[LOUDER] = value < 100;
+  y += 3;
+  if (side.y + side.h - y >= 2 + NEXT_ROW)
+    up_next(sf, tui_rect_make(side.x, y, side.w, side.y + side.h - y));
+}
+
 static void draw(tui_surface *sf, tui_rect r) {
   memset(hits, 0, sizeof(hits));
   next_rect = tui_rect_make(0, 0, 0, 0);
@@ -1305,6 +1395,10 @@ static void draw(tui_surface *sf, tui_rect r) {
     return;
   }
   bool live = ls_music_live();
+  if (ls_tui_compact()) {
+    draw_desk(sf, r, playing, live);
+    return;
+  }
 
   bool wide = r.w > r.h * 2;
   if (wide) {

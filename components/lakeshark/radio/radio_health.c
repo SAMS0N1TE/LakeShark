@@ -340,6 +340,8 @@ void radio_health_tick(void)
         if (ls_radio_endpoint_info(i, &info) == LS_RADIO_OK)
             tick_endpoint(&info, now);
     }
+    /* Same cadence, same task: an SDR nobody is using goes to standby. */
+    ls_radio_endpoint_idle_tick();
 }
 
 static bool health_copy(const char *endpoint_id, bool expected,
@@ -391,17 +393,30 @@ int radio_health_report(const char *endpoint_id, char *buf, size_t len)
     bool have_health = radio_health_get(endpoint_id, &health);
     bool have_endpoint = endpoint_id &&
         ls_radio_endpoint_get(endpoint_id, &info) == LS_RADIO_OK;
+    /* Whether the dongle's own chips are powered: the USB-A port's 5 V has
+       no switch, so standby is the only off an idle SDR has. */
+    char power[40] = "";
+    if (have_endpoint && info.present && info.standby_capable) {
+        if (info.standby)
+            LS_SNPRINTF(t_radio_health_power_standby, power, sizeof(power), " power=standby x%lu",
+                        (unsigned long)info.standbys);
+        else if (info.streaming || !info.standby_in_ms)
+            LS_SNPUTS(t_radio_health_power_on, power, sizeof(power), " power=on");
+        else
+            LS_SNPRINTF(t_radio_health_power_on_standby_in, power, sizeof(power), " power=on standby_in=%lus",
+                        (unsigned long)((info.standby_in_ms + 999) / 1000));
+    }
     if (!have_health)
-        return LS_SNPRINTF(t_radio_health_s_health_unknown_present, buf, len, "%s health=unknown present=%s stream=%s",
+        return LS_SNPRINTF(t_radio_health_s_health_unknown_present, buf, len, "%s health=unknown present=%s stream=%s%s",
                         endpoint_id ? endpoint_id : "radio",
                         have_endpoint ? (info.present ? "1" : "0") : "?",
-                        have_endpoint ? (info.streaming ? "1" : "0") : "?");
+                        have_endpoint ? (info.streaming ? "1" : "0") : "?", power);
     /* ctlio is the run of control requests the device has failed.
        The incident's line read "ok ... stream=0" while every register access
        failed; a diagnostic that goes quiet during a fault has it backwards. */
     return LS_SNPRINTF(t_radio_health_s_s_present_d, buf, len,
                     "%s %s present=%d stream=%d bps=%lu stall=%ds ctlio=%lu "
-                    "rec=%lu attach=%lu detach=%lu",
+                    "rec=%lu attach=%lu detach=%lu%s",
                     health.endpoint_id, radio_health_state_name(health.state),
                     have_endpoint && info.present ? 1 : 0,
                     have_endpoint && info.streaming ? 1 : 0,
@@ -409,7 +424,7 @@ int radio_health_report(const char *endpoint_id, char *buf, size_t len)
                     (unsigned long)(have_endpoint ? info.control_io_errors : 0),
                     (unsigned long)health.recoveries,
                     (unsigned long)health.attaches,
-                    (unsigned long)health.detaches);
+                    (unsigned long)health.detaches, power);
 }
 
 void radio_health_init(const radio_health_hooks_t *hooks)

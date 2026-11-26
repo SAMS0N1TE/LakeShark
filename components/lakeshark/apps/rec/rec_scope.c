@@ -21,7 +21,12 @@ static void push(float db)
 {
     if (!s_floor_set) { s_floor = db; s_floor_set = true; }
     float over = db - s_floor;
-    if (over < 6.0f) s_floor += (db - s_floor) * (over < 0.0f ? 0.25f : 0.02f);
+    /* A packet radio's RSSI (the SX1262 in READ, s_dbm) is one noisy
+       reading a poll that dips 10 dB below its noise now and then. Falling
+       to every dip parked the floor under the noise, so quiet air drew as an
+       11 dB bar and lit SIGNAL: it follows quiet readings both ways at the
+       same slow rate instead, and settles in the middle of the noise. */
+    if (over < 6.0f) s_floor += (db - s_floor) * (over < 0.0f && !s_dbm ? 0.25f : 0.02f);
     else             s_floor += 0.005f;   /* a carrier that never ends is the floor in the end */
     if (over < 0.0f) over = 0.0f;
     if (over > 127.0f) over = 127.0f;

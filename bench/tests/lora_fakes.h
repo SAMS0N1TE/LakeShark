@@ -161,6 +161,7 @@ typedef struct {
     uint8_t  next_mode;
     bool     fail_next_write;
     uint16_t fail_op;              /* a write with this opcode answers CMD_FAIL */
+    int rssi_cal_sends;            /* SetRssiCalibration frames taken          */
     bool     bad_read_stat;        /* frame 2 of a read carries Stat 0xFFFF */
     /* That many read answers are clocked before they are ready: frame 2
        carries the default stream (Stat with CMD_OK, then the IRQ word) and
@@ -495,6 +496,12 @@ static void fk_respond_lr(const uint8_t *tx, uint8_t *rx, size_t len)
     const size_t nargs = len > 2 ? len - 2 : 0;
     if (op == 0x0224 || op == 0x0225) {
         if (nargs > 3) { fk.bad_args++; fk.cmd_status=1; } return;
+    }
+    if (op == 0x0205) {     /* SetRssiCalibration: a mask (bit 0 LF, bit 1 HF), 81 bytes a table */
+        const unsigned tables = (t[2] & 1u) + ((t[2] >> 1) & 1u);
+        if (!tables || t[2] > 3 || nargs != 1 + 81u * tables) { fk.bad_args++; fk.cmd_status = 1; }
+        fk.rssi_cal_sends++;
+        return;
     }
     if (op == 0x029C) {
         if (nargs < 14 || nargs > 19 || nargs != 4 + 5 * (t[2] >> 4)) { fk.bad_args++; fk.cmd_status=1; } return;

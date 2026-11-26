@@ -66,6 +66,12 @@ static bool key(lap_key_t key, char ch) {
     }
     return false;
 }
+LAP_ICON_PX("...........eee..ee..", "..............ee.e..", "............ee.e..e.", ".............ee.e.e.",
+            "..............e.e.e.", "fffffffffffff.......", "fffffffffffff.......", "fffffffffffff.......",
+            "ffbbbbfffffff.......", "ffbbbbfffffff.......", "ff3333fffffff.......", "ffbbbbfffffff.......",
+            "fffffffffffff.......", "fffffffffffff.......", "ff77777777fff.......", "fffffffffffff.......",
+            "fffffffffffff.......", "....................");
+
 LAP_APP(.id = "nfc_tags", .name = "NFC TAGS", .sub = "UID / bounded NDEF", .version = "1.0",
         .author = "LakeShark", .icon = LAP_ICON_CHIP, .color = LAP_CYAN, .enter = enter,
         .leave = leave, .draw = draw, .key = key);

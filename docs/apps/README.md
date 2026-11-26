@@ -9,6 +9,10 @@ USER. Arrows and Enter open a tile, or tap it. In an app, R opens RADIO to
 pick the receiver, O opens OPTIONS, and Esc or BACK goes back. See
 [Controls and navigation](../UI_CONTROLS.md) for the shared controls.
 
+Pocket lock works in every app: hold the top row, or press CTRL then L. The
+app keeps running while touch is ignored. To unlock, tap the screen, then tap
+UNLOCK.
+
 ## RADIO
 
 | App | What it does | Radio |
@@ -18,7 +22,7 @@ pick the receiver, O opens OPTIONS, and Esc or BACK goes back. See
 | [ADSB](ADSB.md) | Aircraft on 1090 MHz as a list and an offline mini map | RTL-SDR, HackRF or LR2021 |
 | [FREQS](FREQS.md) | The frequency list every app tunes from and saves into: banks on the card, near me, import and export | None; TUNE opens the app for the mode |
 | [FALLS](FALLS.md) | A waterfall of the last minute on the receiver you choose | RTL-SDR, HackRF or LoRa chip |
-| [CELL WATCH](CELL_WATCH.md) | Compare cellular downlink power with a learned site baseline | RTL-SDR; HackRF for HIGH RATE |
+| [CELL WATCH](CELL_WATCH.md) | Compare cellular downlink power with a learned site baseline. In the WARDRIVE folder | RTL-SDR; HackRF for HIGH RATE |
 | [MESH](MESH.md) | A MeshCore node: hear, relay and message over LoRa | LoRa chip (SX1262 or LR2021) |
 | [LORA LABS](LORA_LABS.md) | Packet capture, bearing plot, FSK and pager receive (spectrum: the RF LAB app) | LoRa chip (SX1262 or LR2021) |
 | [EXPERIMENTS](EXPERIMENTS.md) | Radio trials that may grow into apps of their own | LoRa chip (SX1262 or LR2021) |
@@ -27,7 +31,7 @@ pick the receiver, O opens OPTIONS, and Esc or BACK goes back. See
 | [MUSIC](MUSIC.md) | Play WAV files, watch levels and spectra, record the microphone | None |
 | [MIX-RF](MIXRF.md) | The keyboard board radios: sub-GHz monitor, 2.4 GHz survey and NFC | CC1101, nRF24 and NFC (keyboard board) |
 | [NFC](NFC.md) | Identify and read MIFARE Classic cards you own, view blocks and save a capture. Opens from MIX-RF | NFC reader (keyboard board) |
-| [DRONES](DRONES.md) | Bluetooth Remote ID drones and their operators | Bluetooth |
+| [DRONES](DRONES.md) | Bluetooth Remote ID drones and their operators. In the WARDRIVE folder | Bluetooth |
 | [DIGI](DIGI.md) | Decode FT8, FT4 and WSPR from HF sideband audio, with signal, timing, distance and a WHERE ring | HF receiver in FM: RTL-SDR or HackRF |
 | [METERS](METERS.md) | List Itron ERT utility meters on 902 to 928 MHz with reading and use per hour. In the LABS folder | RTL-SDR, HackRF or LR2021 |
 
@@ -35,9 +39,11 @@ pick the receiver, O opens OPTIONS, and Esc or BACK goes back. See
 
 | App | What it does | Radio |
 |---|---|---|
+| [WARDRIVE](WARDRIVE.md) | Log Wi-Fi, Bluetooth, cells, drones, sub-GHz, aircraft and LoRa with where they were heard; HUNT for targets, ATLAS across drives | Wi-Fi, Bluetooth and GPS; LoRa chip and RTL-SDR or HackRF optional |
+| [PARTY](PARTY.md) | Share where you are and what you find with other LakeShark users, ping a place, send small files | LoRa chip; GPS |
 | [NOTES](NOTES.md) | Field notes on the SD card with the time, GPS, heading, map or radio inserted | None; GPS optional |
 | [COMPASS](COMPASS.md) | True-north compass, guidance to a saved place, FIND by signal strength, level | GPS optional; FIND uses the receiver you pick |
-| [SWEEP](SWEEP.md) | Passive scanner for nearby trackers, drones and camera hints | Bluetooth and Wi-Fi |
+| [SWEEP](SWEEP.md) | Passive scanner for nearby trackers, drones and camera hints. In the WARDRIVE folder | Bluetooth and Wi-Fi |
 | [MAP](MAP.md) | Offline map with your position, aircraft, mesh nodes and marks | GPS optional |
 | [TILES](TILES.md) | Install and manage offline map regions for MAP | Wi-Fi |
 | [GPS](GPS.md) | Fix state, satellites in view and a GPX track recorder | GPS |
@@ -46,10 +52,10 @@ pick the receiver, O opens OPTIONS, and Esc or BACK goes back. See
 
 | App | What it does | Radio |
 |---|---|---|
-| [DIAG](DIAG.md) | Memory, temperature, SD card, radio health and the error log | None |
+| [DIAG](DIAG.md) | Memory, temperature, SD card, radio health, the error log and crash reports | None |
 | [TERMINAL](TERMINAL.md) | The serial console commands, typed on the board | None |
 | [UPDATE](UPDATE.md) | Install signed LakeShark builds over WiFi | Wi-Fi |
-| [SET](SET.md) | Volume, brightness, mute, screen lock, display, sounds and keyboard | None |
+| [SET](SET.md) | Volume, brightness, mute, screen lock, display, sound, power, time zone and clock | None |
 | [RADIOS](RADIOS.md) | Every radio on the board, and power for each one | All |
 | [LINK](LINK.md) | Join Wi-Fi, connect a Flipper, remote access (the survey recorder is WIFI SURVEY's RECORD tab) | Wi-Fi and Bluetooth |
 

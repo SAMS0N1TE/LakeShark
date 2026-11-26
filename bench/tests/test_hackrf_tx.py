@@ -49,7 +49,7 @@ enum { HACKRF_REQ_SET_TXVGA_GAIN=21,HACKRF_REQ_SET_AMP_ENABLE=17,HACKRF_REQ_SET_
 #define portEXIT_CRITICAL(x) ((void)(x))
 static int s_lifecycle;
 typedef struct {void *dev_hdl;} usb_t;
-typedef struct {usb_t usb;unsigned shift_hz;bool streaming;} hackrf_dev_t;
+typedef struct {usb_t usb;unsigned shift_hz;bool streaming;volatile bool standby;} hackrf_dev_t;
 typedef struct {unsigned required_caps;const char *preferred_endpoint_id;uint64_t min_hz,max_hz;} ls_radio_requirements_t;
 typedef struct usb_transfer usb_transfer_t;
 struct usb_transfer {uint8_t *data_buffer;void *device_handle;unsigned bEndpointAddress,num_bytes,actual_num_bytes,timeout_ms;int status;void(*callback)(usb_transfer_t*);};

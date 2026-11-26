@@ -113,5 +113,11 @@ static bool key(lap_key_t k,char ch) {
 }
 static void enter(void) { memset(&s,0,sizeof(s)); lap_caps(&s.caps,sizeof(s.caps)); lap_rx_decoder_catalog(&s.catalog,sizeof(s.catalog)); }
 static void leave(void) { stop(); lap_audio_listen(false); }
+LAP_ICON_PX("77777777777777777777", "7..................7", "7eeeeeeee..........7", "7e......eee.......ee",
+            "7..........eeeeeeee7", "7..................7", "7..................7", "7.999..ffffffffff..7",
+            "7.999..ffffffffff..7", "7..................7", "7.aaa..fffffffffffff", "7.aaa..fffffffffffff",
+            "7..................7", "7.bbb..ffffffff....7", "7.bbb..ffffffff....7", "7..................7",
+            "7..................7", "77777777777777777777");
+
 LAP_APP(.id="decoder-viewer",.name="DECODER VIEWER",.sub="typed firmware decoder events",.version="1.0",.author="LakeShark",
         .icon=LAP_ICON_WAVE,.color=LAP_CYAN,.flags=LAP_CAP_RADIO_RX,.enter=enter,.leave=leave,.draw=draw,.key=key);

@@ -20,6 +20,7 @@
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -429,14 +430,146 @@ static void put_rf_hz(uint8_t a[4], uint32_t nominal_hz)
     a[2] = (uint8_t)(hz >> 8);  a[3] = (uint8_t)hz;
 }
 
+/* ---------------------------------------------------- RSSI calibration --
+
+   Semtech's measured gain and noise figure for each of the 27 receive gain
+   steps (G1..G11, then G12 and G13 with LNA boost 0..7), from the LoRa USP
+   v1.3.0 reference BSP (examples/radio_hal/ral_lr20xx_bsp.c, Clear BSD,
+   Semtech 2025): the numbers the part turns into the RSSI it reports. The
+   part ships with one LF table; Semtech measured three, and the 490 MHz one
+   is the closer fit at 433. Gain is dB in 8.2 fixed point (signed, 10 bits),
+   noise figure dB in 6.2. SetRssiCalibration 0x0205: a byte saying which
+   tables follow (bit 0 LF, bit 1 HF), then 3 bytes a step.
+
+   Measured at three places; the part tunes 104 MHz - 2.74 GHz. Across the
+   LF path (to 1.5 GHz) each step is a straight line between the 490 MHz
+   table and the 868/915 one (taken as 890 MHz), carried on at the same slope
+   to 300 MHz and to 1 GHz and held flat past them: an estimate that never
+   wanders far from a measurement. The HF path (1.5 - 2.74 GHz) has the one
+   2.4 GHz table. A bench measurement would replace the estimate.
+
+   Sent at init (LF + HF) and again, LF only, when a retune moves to another
+   10 MHz step of the estimate. 'lora lrrssical' shows it, and holds the
+   490 or 868 table as measured for an A/B. */
+#define RSSI_CAL_STEPS      27
+#define RSSI_CAL_LF_A_HZ    490000000u   /* the 490 MHz table              */
+#define RSSI_CAL_LF_B_HZ    890000000u   /* the 868/915 MHz table          */
+#define RSSI_CAL_LF_LO_HZ   300000000u   /* slope carried this far, then flat */
+#define RSSI_CAL_LF_HI_HZ   1000000000u
+#define RSSI_CAL_BUCKET_HZ  10000000u
+typedef struct { int16_t gain_q2; uint8_t nf_q2; } rssi_cal_step_t;
+static const rssi_cal_step_t RSSI_CAL_LF_868_915[RSSI_CAL_STEPS] = {
+    { -32,219}, {  -8,204}, {  16,194}, {  36,175}, {  56,156}, {  73,137}, {  90,122},
+    { 112, 95}, { 130, 62}, { 152, 41}, { 173, 26}, { 190, 16}, { 196, 13}, { 200, 13},
+    { 202, 13}, { 203, 12}, { 205, 12}, { 207, 12}, { 208, 12}, { 214, 12}, { 220, 11},
+    { 223, 11}, { 226, 10}, { 227, 10}, { 228, 11}, { 230, 10}, { 232,  9},
+};
+static const rssi_cal_step_t RSSI_CAL_LF_490[RSSI_CAL_STEPS] = {
+    { -46,221}, { -22,205}, {   2,190}, {  24,169}, {  44,147}, {  63,130}, {  84,113},
+    { 104, 87}, { 138, 46}, { 158, 30}, { 181, 18}, { 200, 13}, { 196, 13}, { 208, 13},
+    { 210, 13}, { 211, 13}, { 215, 12}, { 217, 12}, { 218, 12}, { 224, 12}, { 228, 12},
+    { 231, 12}, { 234, 12}, { 237, 11}, { 238, 11}, { 240, 10}, { 242, 10},
+};
+static const rssi_cal_step_t RSSI_CAL_HF_2G4[RSSI_CAL_STEPS] = {
+    { -58,240}, { -34,221}, { -10,208}, {   7,190}, {  25,171}, {  40,153}, {  53,137},
+    {  77,113}, { 102, 89}, { 126, 65}, { 146, 47}, { 163, 34}, { 166, 32}, { 168, 31},
+    { 170, 30}, { 171, 30}, { 172, 29}, { 176, 26}, { 175, 27}, { 187, 29}, { 190, 29},
+    { 193, 27}, { 194, 26}, { 195, 26}, { 196, 25}, { 198, 24}, { 199, 24},
+};
+
+#define RSSI_CAL_NONE (-1)
+static int s_rssi_cal_lf = RSSI_CAL_NONE;   /* the 10 MHz step the part holds   */
+static const rssi_cal_step_t *s_rssi_cal_hold;   /* 'lora lrrssical 490|868' */
+static esp_err_t s_rssi_cal_err = ESP_OK;
+static rssi_cal_step_t s_rssi_cal_est[RSSI_CAL_STEPS];
+/* The last LF frequency asked for: a reset forgets s_rf_hz, and the part
+   comes back up for the band it is about to be tuned to. */
+static uint32_t s_rssi_cal_hz;
+
+/* The step of the estimate a frequency falls in; 0 for "not tuned yet",
+   which takes the 868/915 table as measured, as Semtech's BSP does. */
+static int rssi_cal_bucket(uint32_t hz)
+{
+    if (!hz) return 0;
+    if (hz < RSSI_CAL_LF_LO_HZ) hz = RSSI_CAL_LF_LO_HZ;
+    if (hz > RSSI_CAL_LF_HI_HZ) hz = RSSI_CAL_LF_HI_HZ;
+    return (int)((hz + RSSI_CAL_BUCKET_HZ / 2) / RSSI_CAL_BUCKET_HZ);
+}
+static int rssi_cal_round(float v) { return (int)(v < 0 ? v - 0.5f : v + 0.5f); }
+/* The LF table for a bucket, into s_rssi_cal_est. */
+static const rssi_cal_step_t *rssi_cal_lf_est(int bucket)
+{
+    if (!bucket) return RSSI_CAL_LF_868_915;
+    const float f = (float)bucket * (float)RSSI_CAL_BUCKET_HZ;
+    const float t = (f - (float)RSSI_CAL_LF_A_HZ) / (float)(RSSI_CAL_LF_B_HZ - RSSI_CAL_LF_A_HZ);
+    for (int i = 0; i < RSSI_CAL_STEPS; i++) {
+        const rssi_cal_step_t a = RSSI_CAL_LF_490[i], b = RSSI_CAL_LF_868_915[i];
+        int g = rssi_cal_round((float)a.gain_q2 + t * (float)(b.gain_q2 - a.gain_q2));
+        int n = rssi_cal_round((float)a.nf_q2 + t * (float)(b.nf_q2 - a.nf_q2));
+        if (g < -512) g = -512;
+        if (g > 511) g = 511;          /* 10-bit signed */
+        if (n < 0) n = 0;
+        if (n > 255) n = 255;
+        s_rssi_cal_est[i].gain_q2 = (int16_t)g;
+        s_rssi_cal_est[i].nf_q2 = (uint8_t)n;
+    }
+    return s_rssi_cal_est;
+}
+static uint8_t *rssi_cal_put(uint8_t *at, const rssi_cal_step_t *t)
+{
+    for (int i = 0; i < RSSI_CAL_STEPS; i++) {
+        const uint16_t g = (uint16_t)t[i].gain_q2;
+        *at++ = (uint8_t)(g >> 8); *at++ = (uint8_t)g; *at++ = t[i].nf_q2;
+    }
+    return at;
+}
+/* The lock is taken here (it nests), and the frame goes from the one DMA
+   buffer, as the FIFO writes do: 165 bytes is past FRAME_MAX. */
+static esp_err_t rssi_cal_send(const rssi_cal_step_t *lf, const rssi_cal_step_t *hf)
+{
+    ls_lora_hw_lock();
+    esp_err_t err = ESP_OK;
+    uint8_t *pkt = ls_lora_hw_pkt();
+    if (!pkt) err = ESP_ERR_INVALID_STATE;
+    else if (!ls_lora_hw_wait_not_busy(20)) { s_fail_run++; err = ESP_ERR_TIMEOUT; }
+    if (err == ESP_OK) {
+        pkt[0] = 0x02; pkt[1] = 0x05;
+        pkt[2] = (uint8_t)((lf ? 0x01 : 0) | (hf ? 0x02 : 0));
+        uint8_t *at = &pkt[3];
+        if (lf) at = rssi_cal_put(at, lf);
+        if (hf) at = rssi_cal_put(at, hf);
+        err = frame(pkt, (size_t)(at - pkt));
+        /* The part answers in the next frame's status. */
+        if (err == ESP_OK) err = lr20xx_check_last_ok();
+    }
+    ls_lora_hw_unlock();
+    s_rssi_cal_err = err;
+    if (err == ESP_OK && lf) s_rssi_cal_lf = s_rssi_cal_hold ? RSSI_CAL_NONE : rssi_cal_bucket(s_rssi_cal_hz);
+    if (err != ESP_OK) ESP_LOGW(TAG, "RSSI calibration not taken: %s", esp_err_to_name(err));
+    return err;
+}
+/* Before a retune: the LF table for where it is going, if that is another
+   step of the estimate. A failure is logged and never stops the retune. The
+   step is taken from hz, which s_rf_hz becomes once the retune lands. */
+static void rssi_cal_follow(uint32_t hz)
+{
+    if (hz >= LR20XX_HF_PATH_MIN_HZ) return;
+    s_rssi_cal_hz = hz;
+    if (s_rssi_cal_hold || s_rssi_cal_lf == RSSI_CAL_NONE) return;
+    const int b = rssi_cal_bucket(hz);
+    if (b == s_rssi_cal_lf) return;
+    if (rssi_cal_send(rssi_cal_lf_est(b), NULL) == ESP_OK) s_rssi_cal_lf = b;
+}
+
 esp_err_t lr20xx_set_rf_frequency(uint32_t hz)
 {
     if (hz < LR20XX_FREQ_MIN_HZ || hz > LR20XX_FREQ_MAX_HZ) return ESP_ERR_INVALID_ARG;
+    rssi_cal_follow(hz);
     uint8_t a[4];
     put_rf_hz(a, hz);
     /* Forgotten before the frame goes out, so a frame that fails cannot leave
        a transmit armed for a frequency the part may now be on. */
-    if (LS_TX_UNLOCKED ? (hz >= LR20XX_HF_PATH_MIN_HZ) != s_pa_hf
+    if (LS_TX_UNLOCKED_BUILD ? (hz >= LR20XX_HF_PATH_MIN_HZ) != s_pa_hf
                        : (hz >= LR20XX_TX_FREQ_LIMIT_HZ || hz < LR20XX_TX_FREQ_MIN_HZ)) s_pa_lf = false;
     s_rf_hz = 0;
     const esp_err_t err = lr20xx_write(LR20XX_OP_SET_RF_FREQUENCY, a, sizeof(a));
@@ -742,6 +875,12 @@ static esp_err_t initialize_locked(void)
     if (err == ESP_OK)
         err = lr20xx_calibrate(LR20XX_CAL_LF_RC | LR20XX_CAL_HF_RC | LR20XX_CAL_PLL |
                                LR20XX_CAL_AAF | LR20XX_CAL_MU | LR20XX_CAL_PA_OFF);
+    /* A reset forgot the tables; the part reports RSSI on its own until they
+       are back. Not a reason to fail the bring-up. */
+    s_rssi_cal_lf = RSSI_CAL_NONE;
+    if (err == ESP_OK)
+        (void)rssi_cal_send(s_rssi_cal_hold ? s_rssi_cal_hold : rssi_cal_lf_est(rssi_cal_bucket(s_rssi_cal_hz)),
+                            RSSI_CAL_HF_2G4);
     uint16_t errors = 0;
     const esp_err_t eerr = lr20xx_get_errors(&errors);
     if (s_tcxo && eerr == ESP_OK && (errors & ((1u << 0) | (1u << 2)))) {
@@ -1010,7 +1149,7 @@ static esp_err_t configure_dios_mask(uint32_t irq_mask)
        routes Tx HF to the antenna is refused before a single frame goes out.
        Tx LF is the transmit state this driver uses. */
     const ls_lora_port_t *port = ls_lora_port();
-    for (int i = 0; !LS_TX_UNLOCKED && i < port->rfsw_n; i++)
+    for (int i = 0; !LS_TX_UNLOCKED_BUILD && i < port->rfsw_n; i++)
         if (port->rfsw[i].config & LR20XX_RFSW_TX_HF) {
             ESP_LOGE(TAG, "RF switch table sets the HF transmit state on DIO%u", (unsigned)port->rfsw[i].dio);
             return ESP_ERR_INVALID_ARG;
@@ -1374,6 +1513,61 @@ esp_err_t lr20xx_get_gfsk_rx_stats(lr20xx_gfsk_rx_stats_t *out)
     return ESP_OK;
 }
 
+/* ---- FLRC --------------------------------------------------------------- */
+
+esp_err_t lr20xx_flrc_set_modulation(uint8_t rate_code, uint8_t cr, uint8_t pulse_shape)
+{
+    if (rate_code > 7 || cr > 3 || (pulse_shape && pulse_shape != 4 && pulse_shape != 5 && pulse_shape != 7))
+        return ESP_ERR_INVALID_ARG;
+    /* 18.4.1: bitrate_bw, then cr(7:4) with pulse_shape(3:0). */
+    const uint8_t a[2] = { rate_code, (uint8_t)((cr << 4) | pulse_shape) };
+    return lr20xx_write(LR20XX_OP_SET_FLRC_MOD, a, sizeof(a));
+}
+
+esp_err_t lr20xx_flrc_set_packet_fixed(uint8_t preamble_code, uint16_t payload_len)
+{
+    if (preamble_code > 7 || payload_len > 511) return ESP_ERR_INVALID_ARG;
+    /* 18.4.2: preamble_len(5:2) | sync_word_len(1:0) with 2 = four bytes;
+       then tx_syncword(7:6) = slot 1, match_sync_word(5:3) = slot 1,
+       header_type(2) = 1 fixed length, crc_type(1:0) = 0 none; then the
+       payload length, big-endian. */
+    const uint8_t a[4] = { (uint8_t)((preamble_code << 2) | 0x02),
+                           (uint8_t)((1u << 6) | (1u << 3) | (1u << 2) | 0x00),
+                           (uint8_t)(payload_len >> 8), (uint8_t)payload_len };
+    return lr20xx_write(LR20XX_OP_SET_FLRC_PKT, a, sizeof(a));
+}
+
+esp_err_t lr20xx_flrc_set_syncword(uint8_t slot, uint32_t sync_word)
+{
+    if (slot < 1 || slot > 3) return ESP_ERR_INVALID_ARG;
+    /* 18.4.5: the slot, then the word's bytes MSB first. */
+    const uint8_t a[5] = { slot, (uint8_t)(sync_word >> 24), (uint8_t)(sync_word >> 16),
+                           (uint8_t)(sync_word >> 8), (uint8_t)sync_word };
+    return lr20xx_write(LR20XX_OP_SET_FLRC_SYNC, a, sizeof(a));
+}
+
+esp_err_t lr20xx_get_flrc_packet_status(lr20xx_flrc_pkt_status_t *out)
+{
+    uint8_t d[8] = { 0 };
+    ls_lora_hw_lock();
+    esp_err_t err = lr20xx_read(LR20XX_OP_GET_FLRC_PKT_ST, NULL, 0, d, sizeof(d));
+    if (err == ESP_OK && !read_stat_ok()) err = ESP_ERR_INVALID_RESPONSE;
+    ls_lora_hw_unlock();
+    if (err != ESP_OK) return err;
+    if (out) {
+        /* 18.4.4: pkt_len(2), RssiAvg(8:1), RssiSync(8:1), a byte with
+           RssiAvg(0) in bit 2, RssiSync(0) in bit 0 and the sync slot in
+           7:4, then the frequency offset, 24-bit signed. */
+        out->pkt_len = (uint16_t)((d[0] << 8) | d[1]);
+        out->rssi_avg_dbm  = -(float)(((unsigned)d[2] << 1) | ((d[4] >> 2) & 1u)) / 2.0f;
+        out->rssi_sync_dbm = -(float)(((unsigned)d[3] << 1) | (d[4] & 1u)) / 2.0f;
+        int32_t fo = (int32_t)(((uint32_t)d[5] << 16) | ((uint32_t)d[6] << 8) | d[7]);
+        if (fo & 0x800000) fo -= 0x1000000;
+        out->freq_offset_hz = fo;
+    }
+    return ESP_OK;
+}
+
 esp_err_t lr20xx_write_reg32(uint32_t addr, uint32_t data)
 {
     if (addr > 0xFFFFFFu) return ESP_ERR_INVALID_ARG;
@@ -1473,7 +1667,8 @@ lr20xx_pa_lf_t lr20xx_pa_lf_for_dbm(int dbm)
 
 static bool tx_hz_ok(uint32_t hz)
 {
-    if (LS_TX_UNLOCKED) return hz >= LR20XX_FREQ_MIN_HZ && hz <= LR20XX_FREQ_MAX_HZ;
+    if (LS_TX_UNLOCKED_BUILD) return hz >= LR20XX_FREQ_MIN_HZ && hz <= LR20XX_FREQ_MAX_HZ;
+    if (LS_TX_UNLOCKED) return hz >= LR20XX_FREQ_MIN_HZ && hz < LR20XX_TX_FREQ_LIMIT_HZ;
     return hz >= LR20XX_TX_FREQ_MIN_HZ && hz < LR20XX_TX_FREQ_LIMIT_HZ;
 }
 
@@ -1505,7 +1700,7 @@ static esp_err_t set_pa_lf_locked(int dbm)
     s_pa_lf = false;
     s_pa_hf = false;
     if (!lr20xx_tx_allowed()) return ESP_ERR_NOT_SUPPORTED;
-    if (LS_TX_UNLOCKED && s_rf_hz >= LR20XX_HF_PATH_MIN_HZ) return set_pa_hf_locked(dbm);
+    if (LS_TX_UNLOCKED_BUILD && s_rf_hz >= LR20XX_HF_PATH_MIN_HZ) return set_pa_hf_locked(dbm);
     const lr20xx_pa_lf_t pa = lr20xx_pa_lf_for_dbm(dbm);
     /* SelPa 0 is the LF PA. SetPaConfig: PaSel 0 (LF) in bit 7 with the LF
        mode (0, full single-ended) below it; LF duty cycle and slices; and the
@@ -2203,7 +2398,7 @@ static uint32_t lr_caps(void)
     uint32_t c = LS_LORA_CAP_LORA | LS_LORA_CAP_FSK | LS_LORA_CAP_RSSI_INST |
                  LS_LORA_CAP_WIDE_RX_BW | LS_LORA_CAP_MODES_RX | LS_LORA_CAP_RX_WIDE |
                  LS_LORA_CAP_FSK_STREAM | LS_LORA_CAP_FSK_DETECT;
-    if (s_info.lr2021) c |= LS_LORA_CAP_BAND_1G5_2G5 | LS_LORA_CAP_RX_EXT;
+    if (s_info.lr2021) c |= LS_LORA_CAP_BAND_1G5_2G5 | LS_LORA_CAP_RX_EXT | LS_LORA_CAP_FLRC;
     return c;
 }
 
@@ -2684,6 +2879,17 @@ static struct {
     int64_t at_us;
 } s_rxs;
 
+/* Interrupt line gate. With the module's interrupt DIO wired to lora.irq,
+   lr_poll reads the status over SPI only while the line is high, plus once a
+   second in case a chip reset or a dead line hides an event, so an idle
+   receiver puts no SPI traffic next to the radio. A status read that finds an
+   event pending while the line read low counts as a miss; three turn the gate
+   off. 'lora lrirq [on|off]' shows and sets it. */
+#define IRQ_GATE_FALLBACK_US 1000000
+static bool s_irq_gate = true;
+static uint32_t s_irq_reads, s_irq_skips, s_irq_misses;
+static int64_t s_irq_last_read_us;
+
 static void rx_stat_error(uint32_t irq)
 {
     if (irq & LR20XX_IRQ_LORA_HDR_ERROR) s_rxs.hdr_err++;
@@ -2725,7 +2931,18 @@ static int lr_poll(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db)
     }
     if (!lr.rx_mode && !lr.tx_busy) return 0;
 
-    /* Stat and the IRQ word in one six-byte frame: no DIO to read first. */
+    const ls_lora_port_t *port = ls_lora_port();
+    const bool gated = s_irq_gate && port->irq_gpio >= 0 && port->irq_dio >= 0;
+    const bool line = gated && gpio_get_level((gpio_num_t)port->irq_gpio);
+    const int64_t now_us = esp_timer_get_time();
+    if (gated && !line && now_us - s_irq_last_read_us < IRQ_GATE_FALLBACK_US) {
+        s_irq_skips++;
+        return 0;
+    }
+    s_irq_last_read_us = now_us;
+    s_irq_reads++;
+
+    /* Stat and the IRQ word in one six-byte frame. */
     lr20xx_status_t st;
     if (lr20xx_get_status(&st) != ESP_OK || !lr20xx_stat_plausible(st.stat)) return 0;
     if (take_reset(st.stat)) {
@@ -2739,6 +2956,11 @@ static int lr_poll(uint8_t *buf, size_t max, float *rssi_dbm, float *snr_db)
         return 0;
     }
     const uint32_t irq = st.irq & PKT_IRQ_MASK;
+    if (gated && !line && irq && ++s_irq_misses >= 3) {
+        s_irq_gate = false;
+        ESP_LOGW(TAG, "interrupt line GPIO%d read low with 0x%08lx pending, 3 times: polling over SPI again",
+                 port->irq_gpio, (unsigned long)irq);
+    }
     const bool left_rx = LR20XX_STAT_MODE(st.stat) != LR20XX_MODE_RX;
     if (irq && lr20xx_clear_irq(irq) != ESP_OK) return 0;
     if (irq & LR20XX_IRQ_TX_DONE) lr.tx_busy = false;
@@ -2850,6 +3072,12 @@ static uint32_t lr_airtime_ms(int len)
    session's, transmit 0. */
 static esp_err_t fsk_packet(uint16_t payload_bytes, uint8_t detect_bits)
 {
+    /* An FLRC session: the same fixed-length frame on the FLRC engine, its
+       preamble in 4-bit steps (code 0 is 4 bits, 7 is 32). */
+    if (lr.fsk_cfg.flrc) {
+        const unsigned code = lr.fsk_pre_bits >= 32 ? 7u : lr.fsk_pre_bits < 4 ? 0u : lr.fsk_pre_bits / 4u - 1u;
+        return step_lr(lr20xx_flrc_set_packet_fixed((uint8_t)code, payload_bytes), "SetFlrcPacketParams");
+    }
     return step_lr(lr20xx_gfsk_set_packet_fixed(lr.fsk_pre_bits, detect_bits, payload_bytes),
                    "SetGfskPacketParams");
 }
@@ -2899,6 +3127,23 @@ static esp_err_t lr_fsk_end(void)
 static esp_err_t fsk_program_once(void)
 {
     const ls_fsk_cfg_t *cfg = &lr.fsk_cfg;
+    if (cfg->flrc) {
+        /* FLRC: packet type 0x05, SetFlrcModulationParams (code, CR, no
+           shaping), the DC-DC retiming for whatever decimation that chose,
+           the fixed packet, the sync word in slot 1, the PA, Rx. */
+        esp_err_t err = setup_radio(LR20XX_PKT_TYPE_FLRC, lr.fsk_freq_hz);
+        if (err == ESP_OK)
+            err = step_lr(lr20xx_flrc_set_modulation((uint8_t)(cfg->flrc - 1), cfg->flrc_cr, 0),
+                          "SetFlrcModulationParams");
+        if (err == ESP_OK) err = lr20xx_dcdc_workaround_set();
+        if (err == ESP_OK) err = fsk_packet(lr.fsk_bytes, 0);
+        if (err == ESP_OK) err = step_lr(lr20xx_flrc_set_syncword(1, cfg->sync_word), "SetFlrcSyncword");
+        if (err == ESP_OK && tx_hz_ok(cfg->freq_hz)) err = lr20xx_set_pa_lf(cfg->power_dbm);
+        if (err == ESP_OK && (cfg->rx_gain_step || s_agc_forced))
+            err = step_lr(lr20xx_set_agc_gain(cfg->rx_gain_step), "SetAgcGainManual");
+        if (err == ESP_OK) err = fsk_arm_rx();
+        return err;
+    }
     const lr20xx_rx_bw_t bw = lr20xx_fsk_rx_bw(cfg->bandwidth_hz);
     esp_err_t err = setup_radio(LR20XX_PKT_TYPE_GFSK, lr.fsk_freq_hz);
     if (err == ESP_OK && cfg->rx_boost_step)
@@ -2939,13 +3184,29 @@ static esp_err_t fsk_program(void)
    gets a filter no narrower than it asked for. A stream session is the
    exception to the payload and filter checks: it has no payload length,
    and it samples the signal at a bitrate above the signal's own. */
+/* An FLRC session's own checks: the LR2021 (not the LR2022/LR2012), a code
+   from Table 18-1, a fixed payload, a whole 32-bit sync word, a band the
+   transmitter can use. None of the GFSK filter rules apply. */
+static bool flrc_cfg_ok(const ls_fsk_cfg_t *cfg)
+{
+    return s_info.lr2021 && cfg->flrc >= 1 && cfg->flrc <= 8 && cfg->flrc_cr <= 3 &&
+           cfg->payload_bytes && !cfg->stream && !cfg->stream_sync_prefix && !cfg->rssi_at_sync &&
+           (!cfg->sync_bits || cfg->sync_bits == 32) && !cfg->preamble_detect_bits && !cfg->rx_boost_step &&
+           !cfg->pulse_shape && cfg->rx_gain_step <= LR20XX_MODES_GAIN_MAX &&
+           (!cfg->preamble_bits || cfg->preamble_bits >= 4) &&
+           cfg->freq_hz >= 150000000u && cfg->freq_hz <= LS_LORA_RX_NARROW_MAX_HZ &&
+           cfg->power_dbm >= LR20XX_TX_POWER_MIN_DBM && cfg->power_dbm <= LR20XX_TX_POWER_MAX_DBM;
+}
+
 static esp_err_t lr_fsk_begin(const ls_fsk_cfg_t *cfg)
 {
+    if (cfg && cfg->flrc && !flrc_cfg_ok(cfg)) return ESP_ERR_INVALID_ARG;
+    if (cfg && !cfg->flrc && cfg->flrc_cr) return ESP_ERR_INVALID_ARG;
     /* Receive reaches 1100 MHz on the LF input, where the Mode S session
        already works, so UAT at 978 MHz can be heard, and 1500-2500 MHz on the
        HF input of a part that has one; a transmit above 960 MHz is still
        refused by lr20xx_set_tx. The engine runs to 2 Mbps. */
-    if (!cfg || !ls_lora_rx_range_ok(lr_caps(), cfg->freq_hz, cfg->freq_hz) ||
+    if (!cfg || (!cfg->flrc && (!ls_lora_rx_range_ok(lr_caps(), cfg->freq_hz, cfg->freq_hz) ||
         cfg->bitrate < LR20XX_FSK_BITRATE_MIN || cfg->bitrate > LR20XX_FSK_BITRATE_MAX ||
         cfg->deviation_hz < 600 || cfg->deviation_hz > LR20XX_FSK_DEVIATION_MAX ||
         (!cfg->stream && !cfg->payload_bytes) || !cfg->bandwidth_hz ||
@@ -2958,7 +3219,7 @@ static esp_err_t lr_fsk_begin(const ls_fsk_cfg_t *cfg)
         (cfg->sync_bits && (cfg->sync_bits > 32 || cfg->sync_bits % 8)) ||
         cfg->preamble_detect_bits > 32 || cfg->preamble_detect_bits % 8 ||
         cfg->rx_boost_step > 8 || cfg->rx_gain_step > LR20XX_MODES_GAIN_MAX ||
-        cfg->power_dbm < LR20XX_TX_POWER_MIN_DBM || cfg->power_dbm > LR20XX_TX_POWER_MAX_DBM)
+        cfg->power_dbm < LR20XX_TX_POWER_MIN_DBM || cfg->power_dbm > LR20XX_TX_POWER_MAX_DBM)))
         return ESP_ERR_INVALID_ARG;
     if (lr.fsk_active || lr.scanning || lr.tx_busy || s_exp_active || lr20xx_modes_active())
         return ESP_ERR_INVALID_STATE;
@@ -2972,7 +3233,7 @@ static esp_err_t lr_fsk_begin(const ls_fsk_cfg_t *cfg)
        with the signal at -52 dBm; 4800 at +/-5 kHz and 9600 or 50000 at
        +/-25 kHz decode every frame. A stream session samples above the
        signal's own rate, so this is about packet sessions only. */
-    if (!cfg->stream && (bw.hz > 8u * cfg->bitrate || 600u * cfg->deviation_hz > 2500u * cfg->bitrate))
+    if (!cfg->flrc && !cfg->stream && (bw.hz > 8u * cfg->bitrate || 600u * cfg->deviation_hz > 2500u * cfg->bitrate))
         ESP_LOGW(TAG, "FSK %lu baud +/-%lu Hz in a %lu Hz filter is past the packet engine's limits "
                  "(filter <= 8 x rate, 2*dev/rate <= 8.33): expect no packets",
                  (unsigned long)cfg->bitrate, (unsigned long)cfg->deviation_hz, (unsigned long)bw.hz);
@@ -3006,6 +3267,11 @@ static esp_err_t lr_fsk_begin(const ls_fsk_cfg_t *cfg)
     logged.set = true; logged.stream = cfg->stream; logged.f = cfg->freq_hz;
     logged.br = cfg->bitrate; logged.dev = cfg->deviation_hz; logged.bw = bw.hz;
     if (same) return ESP_OK;
+    if (cfg->flrc) {
+        ESP_LOGI(TAG, "FLRC session: %lu Hz, %lu kbps raw, CR code %u", (unsigned long)cfg->freq_hz,
+                 (unsigned long)ls_lora_flrc_kbps(cfg->flrc), (unsigned)cfg->flrc_cr);
+        return ESP_OK;
+    }
     ESP_LOGI(TAG, "FSK %s: %lu Hz, %lu bps, deviation %lu Hz, filter %lu Hz",
              cfg->stream ? "stream" : "session", (unsigned long)cfg->freq_hz,
              (unsigned long)cfg->bitrate, (unsigned long)cfg->deviation_hz, (unsigned long)bw.hz);
@@ -3052,6 +3318,11 @@ static int lr_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm)
         return fsk_rx_fault(irq, len);
     }
     if (rssi_dbm) *rssi_dbm = lr.fsk_rssi_at_sync ? NAN : -200.0f;
+    if (lr.fsk_cfg.flrc) {
+        lr20xx_flrc_pkt_status_t fs;
+        if (lr20xx_get_flrc_packet_status(&fs) == ESP_OK && rssi_dbm) *rssi_dbm = fs.rssi_avg_dbm;
+        return lr.fsk_bytes;
+    }
     lr20xx_gfsk_pkt_status_t ps;
     if (lr20xx_get_gfsk_packet_status(&ps) == ESP_OK && rssi_dbm)
         *rssi_dbm = lr.fsk_rssi_at_sync ? ps.rssi_sync_dbm : ps.rssi_avg_dbm;
@@ -5227,7 +5498,7 @@ LR_CMD lrble_command(int argc, char **argv)
 
 #include "lr2021_tx_upload.inc"
 #include "lr2021_coproc.inc"
-#if LS_TX_UNLOCKED   /* bench probes: never in a release image */
+#if LS_TX_UNLOCKED_BUILD   /* bench probes: never in a release image */
 #include "lr2021_lab.inc"
 #endif
 
@@ -5365,6 +5636,29 @@ LR_CMD fcorr_command(int argc, char **argv)
     return err == ESP_OK ? 0 : 1;
 }
 
+/* lora lrirq [on|off] - the interrupt line gate on LoRa status reads. */
+LR_CMD irq_gate_command(int argc, char **argv)
+{
+    if (argc == 3 && (!strcmp(argv[2], "on") || !strcmp(argv[2], "off"))) {
+        s_irq_gate = !strcmp(argv[2], "on");
+        s_irq_reads = s_irq_skips = s_irq_misses = 0;
+    } else if (argc != 2) {
+        puts("usage: lora lrirq [on|off]");
+        return 1;
+    }
+    const ls_lora_port_t *p = ls_lora_port();
+    if (p->irq_gpio < 0 || p->irq_dio < 0) {
+        printf("lora: lrirq: no interrupt line (lora.irq %d, DIO %d): status read over SPI every poll\n",
+               p->irq_gpio, p->irq_dio);
+        return 0;
+    }
+    printf("lora: lrirq %s: DIO%d to GPIO%d, line %s; status reads %lu, skipped %lu, misses %lu\n",
+           s_irq_gate ? "on" : "off", p->irq_dio, p->irq_gpio,
+           gpio_get_level((gpio_num_t)p->irq_gpio) ? "high" : "low", (unsigned long)s_irq_reads,
+           (unsigned long)s_irq_skips, (unsigned long)s_irq_misses);
+    return 0;
+}
+
 /* lora lrrx [reset] - LoRa receive outcomes, for judging a correction. */
 LR_CMD rxstat_command(int argc, char **argv)
 {
@@ -5477,8 +5771,38 @@ LR_CMD lrreads_command(int argc, char **argv)
     return 0;
 }
 
+/* 'lora lrrssical [auto|490|868]': which LF RSSI table the part holds, and
+   an A/B: 490 or 868 holds that table whatever the tuning (until auto or a
+   reboot); auto follows the band again and sends its table now. */
+static int lrrssical_command(int argc, char **argv)
+{
+    if (argc == 3 && (!strcmp(argv[2], "490") || !strcmp(argv[2], "868") || !strcmp(argv[2], "auto"))) {
+        const bool fixed = strcmp(argv[2], "auto") != 0;
+        const rssi_cal_step_t *lf = !fixed ? rssi_cal_lf_est(rssi_cal_bucket(s_rssi_cal_hz)) :
+                                    !strcmp(argv[2], "490") ? RSSI_CAL_LF_490 : RSSI_CAL_LF_868_915;
+        s_rssi_cal_hold = fixed ? lf : NULL;   /* held: rssi_cal_follow leaves it alone */
+        const esp_err_t err = rssi_cal_send(lf, RSSI_CAL_HF_2G4);
+        printf("lrrssical: %s, sent: %s\n", argv[2], esp_err_to_name(err));
+        return err == ESP_OK ? 0 : 1;
+    }
+    if (argc != 2) { puts("usage: lora lrrssical [auto|490|868]"); return 1; }
+    const int top = RSSI_CAL_STEPS - 1;
+    const rssi_cal_step_t *now = s_rssi_cal_hold ? s_rssi_cal_hold :
+        s_rssi_cal_lf == RSSI_CAL_NONE ? NULL : rssi_cal_lf_est(s_rssi_cal_lf);
+    if (now)
+        printf("lrrssical: %s, LF table %s%.0f MHz: top step %.2f dB gain, %.2f dB NF; last send %s\n",
+               s_rssi_cal_hold ? "held" : "auto",
+               s_rssi_cal_hold ? "as measured near " : "estimated for ",
+               s_rssi_cal_hold == RSSI_CAL_LF_490 ? 490.0 : s_rssi_cal_hold ? 890.0 :
+               s_rssi_cal_lf ? s_rssi_cal_lf * (RSSI_CAL_BUCKET_HZ / 1e6) : 890.0,
+               now[top].gain_q2 / 4.0, now[top].nf_q2 / 4.0, esp_err_to_name(s_rssi_cal_err));
+    else printf("lrrssical: the part's own table; last send %s\n", esp_err_to_name(s_rssi_cal_err));
+    return 0;
+}
+
 int lr20xx_clock_command(int argc, char **argv)
 {
+    if (argc > 1 && !strcmp(argv[1], "lrrssical")) return lrrssical_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrroute")) return lrroute_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrreads")) return lrreads_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrspi")) {
@@ -5504,6 +5828,7 @@ int lr20xx_clock_command(int argc, char **argv)
     }
     if (argc > 1 && !strcmp(argv[1], "lrfcorr")) return fcorr_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrrx")) return rxstat_command(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "lrirq")) return irq_gate_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrtx-upload")) return lrtx_upload_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrtx-send")) return lrtx_send_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrfifo-size")) {
@@ -5546,7 +5871,7 @@ int lr20xx_clock_command(int argc, char **argv)
     if (argc > 1 && !strcmp(argv[1], "lrscan")) return lrscan_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrchipddc")) return lrddc_command(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "lrcap")) return capture_probe_command(argc);
-#if LS_TX_UNLOCKED
+#if LS_TX_UNLOCKED_BUILD
     if (argc > 1 && !strcmp(argv[1], "lrx")) return lrx_command(argc, argv);
 #endif
     return clock_reg_command(argc, argv);

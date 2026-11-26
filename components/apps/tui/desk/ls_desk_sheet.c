@@ -273,30 +273,34 @@ static void tabs(tui_surface *sf, tui_rect c, tui_rect clip)
     }
 }
 
+/* An etched group box, the way a Delphi TGroupBox is: the groove's dark
+   side top and left, its light side bottom and right. */
 static void group_edge(tui_surface *sf, tui_rect clip, int x, int y, int w, const char *title)
 {
     const uint8_t hi = dk_attr(R_HILITE), lo = dk_attr(R_SHADOW);
     if (title) {
-        ls_box_put(sf, clip, x, y, LS_BOX_DR, hi);
-        dk_hline(sf, clip, x + 1, y, w - 2, LS_BOX_H, hi);
-        ls_box_put(sf, clip, x + w - 1, y, LS_BOX_DL, lo);
-        tui_put_char(sf, clip, x + 2, y, ' ', hi);
-        const int n = dk_text(sf, clip, x + 3, y, title, dk_hue(s_sh->hue ? s_sh->hue : TUI_CYAN));
-        tui_put_char(sf, clip, x + 3 + n, y, ' ', hi);
-    } else {
-        ls_box_put(sf, clip, x, y, LS_BOX_UR, hi);
+        ls_box_put(sf, clip, x, y, LS_BOX_DR, lo);
         dk_hline(sf, clip, x + 1, y, w - 2, LS_BOX_H, lo);
-        ls_box_put(sf, clip, x + w - 1, y, LS_BOX_UL, lo);
+        ls_box_put(sf, clip, x + w - 1, y, LS_BOX_DL, lo);
+        tui_put_char(sf, clip, x + 2, y, ' ', dk_attr(R_FACE));
+        const int n = dk_text(sf, clip, x + 3, y, title, dk_hue(s_sh->hue ? s_sh->hue : TUI_CYAN));
+        tui_put_char(sf, clip, x + 3 + n, y, ' ', dk_attr(R_FACE));
+    } else {
+        ls_box_put(sf, clip, x, y, LS_BOX_UR, lo);
+        dk_hline(sf, clip, x + 1, y, w - 2, LS_BOX_H, hi);
+        ls_box_put(sf, clip, x + w - 1, y, LS_BOX_UL, hi);
     }
 }
 
 /* A field's value between its brackets; lit when the focus or the pointer is on it. */
 static void field(tui_surface *sf, tui_rect clip, int x, int y, int w, const char *v, bool foc, bool hov, bool off, int chip)
 {
-    const uint8_t a = off ? dk_attr(R_DISABLED) : foc ? dk_attr(R_SELECT) : hov ? dk_attr(R_TASKHOVER) : dk_attr(R_STRONG);
-    const tui_rect in = tui_rect_intersect(clip, tui_rect_make(x + 1, y, w, 1));
-    tui_put_char(sf, clip, x, y, '[', off ? dk_attr(R_DISABLED) : dk_attr(R_SHADOW));
-    if (foc || hov) dk_fill(sf, in, a);
+    /* A sunken field on the well's ground; the focus selects its words, the
+       way a focused combo box shows its text selected. */
+    (void)hov;
+    const uint8_t a = off ? dk_attr(R_WELL_DIM) : foc ? dk_attr(R_SELECT) : dk_attr(R_WELL);
+    const tui_rect in = tui_rect_intersect(clip, dk_well_field(sf, clip, x, y, w + 2));
+    if (foc) dk_fill(sf, in, a);
     int tx = x + 2;
     if (chip >= 0) {
         tui_put_char(sf, in, tx, y, ' ', TUI_ATTR(chip, chip));
@@ -304,17 +308,17 @@ static void field(tui_surface *sf, tui_rect clip, int x, int y, int w, const cha
         tx += 3;
     }
     dk_text(sf, in, tx, y, v, a);
-    tui_put_char(sf, clip, x + 1 + w, y, ']', off ? dk_attr(R_DISABLED) : dk_attr(R_HILITE));
 }
 
 static void arrow_key(tui_surface *sf, tui_rect clip, tui_rect r, int cp, bool off)
 {
     const tui_rect in = tui_rect_intersect(clip, r);
     const uint8_t a = off ? dk_attr(R_DISABLED) : dk_pressed(r) ? dk_attr(R_SELECT) : dk_hover(r) ? dk_attr(R_TASKHOVER) : dk_attr(R_KEY);
-    if (!off) dk_fill(sf, in, a);
-    tui_put_char(sf, in, r.x, r.y, '[', a);
+    const bool down = !off && dk_pressed(r);
+    dk_fill(sf, in, off ? dk_attr(R_FACE) : a);
+    ls_box_put(sf, in, r.x, r.y, LS_EDGE_L, (uint8_t)((a & 0xF0) | (dk_attr(down ? R_SHADOW : R_HILITE) & 0x0F)));
     ls_box_put(sf, in, r.x + 1, r.y, cp, a);
-    tui_put_char(sf, in, r.x + 2, r.y, ']', a);
+    ls_box_put(sf, in, r.x + 2, r.y, LS_EDGE_R, (uint8_t)((a & 0xF0) | (dk_attr(down ? R_HILITE : R_SHADOW) & 0x0F)));
 }
 
 static void ctl_text(const dk_sh_ctl_t *c, int v, char *b, size_t n)
@@ -353,10 +357,9 @@ static void row_draw(tui_surface *sf, tui_rect clip, int ci, const dk_sh_ctl_t *
     case SH_CHECK: {
         const bool on = value(ci) != 0;
         const int n = dk_label_len(c->label);
-        tui_put_char(sf, rc, x, y, '[', off ? dk_attr(R_DISABLED) : dk_attr(R_SHADOW));
-        if (off) tui_put_char(sf, rc, x + 1, y, on ? 'x' : '-', dk_attr(R_DISABLED));
-        else if (on) tui_put_char(sf, rc, x + 1, y, 'x', (c->flags & SHF_WARN) ? dk_attr(R_BAD) : dk_attr(R_STRONG));
-        tui_put_char(sf, rc, x + 2, y, ']', off ? dk_attr(R_DISABLED) : dk_attr(R_HILITE));
+        dk_well_field(sf, rc, x, y, 3);
+        if (off) tui_put_char(sf, rc, x + 1, y, on ? 'x' : ' ', dk_attr(R_WELL_DIM));
+        else if (on) ls_box_put(sf, rc, x + 1, y, LS_SHAPE_CHECK, (c->flags & SHF_WARN) ? dk_well_hue(TUI_RED) : dk_attr(R_WELL));
         const uint8_t a = foc ? dk_attr(R_SELECT) : la;
         if (foc) dk_fill(sf, tui_rect_intersect(rc, tui_rect_make(x + 3, y, n + 2, 1)), a);
         dk_label(sf, rc, x + 4, y, c->label, a, !off && !foc);
@@ -426,10 +429,9 @@ static void row_draw(tui_surface *sf, tui_rect clip, int ci, const dk_sh_ctl_t *
         int val = c->get ? c->get() - c->min : 0;
         val = val < 0 ? 0 : val > span ? span : val;
         const int on = (val * tw + span / 2) / span;
-        tui_put_char(sf, rc, fx, y, '[', dk_attr(R_SHADOW));
+        dk_well_field(sf, rc, fx, y, tw + 2);
         for (int i = 0; i < tw; i++)
-            tui_put_char(sf, rc, fx + 1 + i, y, i < on ? '=' : '-', i < on ? dk_art(TUI_ATTR_FG(dk_attr(R_INFO))) : dk_attr(R_SHADOW));
-        tui_put_char(sf, rc, fx + 1 + tw, y, ']', dk_attr(R_HILITE));
+            tui_put_char(sf, rc, fx + 1 + i, y, i < on ? '=' : '-', i < on ? dk_well_hue(TUI_ATTR_FG(dk_attr(R_INFO))) : dk_attr(R_WELL_DIM));
         if (c->show) c->show(v, sizeof(v));
         dk_text(sf, rc, fx + 3 + tw, y, v, dk_attr(R_STRONG));
         break;
@@ -494,8 +496,8 @@ static void page_draw(tui_surface *sf, tui_rect clip)
         const int rows = c->kind == SH_CUSTOM ? c->rows : 1;
         if (in)
             for (int k = 0; k < rows; k++) {
-                ls_box_put(sf, clip, x0, sy + k, LS_BOX_V, dk_attr(R_HILITE));
-                ls_box_put(sf, clip, x0 + w0 - 1, sy + k, LS_BOX_V, dk_attr(R_SHADOW));
+                ls_box_put(sf, clip, x0, sy + k, LS_BOX_V, dk_attr(R_SHADOW));
+                ls_box_put(sf, clip, x0 + w0 - 1, sy + k, LS_BOX_V, dk_attr(R_HILITE));
             }
         sh_slot_t scratch, *s = sy >= body.y && sy + rows <= body.y + body.h && s_ns < SH_PAGE ? &s_slot[s_ns++] : &scratch;
         row_draw(sf, clip, i, c, in ? x0 + 2 : x0, sy, in ? w0 - 4 : w0, lw, s);

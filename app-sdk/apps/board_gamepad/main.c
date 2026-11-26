@@ -90,6 +90,12 @@ static void draw(void) {
     lap_put_str(0, 5, "Pair on PC/phone. Arrows move; space button. Release clears.",
                 LAP_ATTR(LAP_WHITE, LAP_BLACK));
 }
+LAP_ICON_PX("........cccc........", ".......c....c.......", "........cccc........", "....................",
+            "....................", "....................", "..fffffffffffffffff.", "..7777777777777777..",
+            "..777f777777779777..", ".77fffff7777c777a77.", ".7777f77777777b7777.", ".777777777777777777.",
+            ".777777......777777.", ".77777........77777.", ".7777..........7777.", "...7............7...",
+            "....................", "....................");
+
 LAP_APP(.id = "board_gamepad", .name = "BOARD GAMEPAD", .sub = "BLE keyboard/mouse/gamepad",
         .version = "1.0", .author = "LakeShark", .flags = LAP_CAP_RADIO_TX | LAP_CAP_HID_DEVICE,
         .color = LAP_CYAN, .enter = enter, .leave = leave, .draw = draw, .key = key);

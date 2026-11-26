@@ -122,7 +122,17 @@ static void iq_consume(void *ctx,const uint8_t *data,size_t bytes,bool spare)
             }
             if((s_iq_warm-2500)%125)continue;
             double floor=s_iq_floor>1?s_iq_floor:1;
-            s_iq_rise=s_iq_power/125>=10*floor?s_iq_rise+1:0;
+            const double window=s_iq_power/125;
+            s_iq_rise=window>=10*floor?s_iq_rise+1:0;
+            /* The floor keeps learning after the first 20 ms: armed while a
+               remote, or the AGC settling, was on the air, the first look
+               took the signal for the floor and nothing 10 dB over it ever
+               came. The quietest window wins at once; a louder quiet creeps
+               the floor up slowly, so a burst is not learned as air. */
+            if(!s_iq_rise) {
+                if(window<s_iq_floor)s_iq_floor=window;
+                else if(window<4*s_iq_floor)s_iq_floor+=(window-s_iq_floor)/64;
+            }
             s_iq_power=0;
             if(s_iq_rise<3)continue;
             s_iq_triggered=true;
@@ -238,8 +248,32 @@ static void iq_replay_rate(const char *path,int dbm,uint32_t rate,char *result,s
         report.tone_share[0],report.tone_share[1],report.mid_burst_switches,load_ms,convert_ms);
 }
 
+/* A recording that holds a 2-FSK packet the decoder proves (sync and CRC)
+   goes out as a clean packet: the I/Q path re-sends whatever the recording
+   heard, clipping and all, and a CC1101 receiver acting on the packet wants
+   it bit-exact. Anything else is the I/Q, as recorded. */
 static void iq_replay(const char *path,int dbm,char *result,size_t len)
-{ iq_replay_rate(path,dbm,REC_LR_IQ_TX_RATE,result,len); }
+{
+    uint32_t hz;size_t bytes;
+    if(rec_lr_iq_load(path,&hz,s_iq_data,sizeof(s_iq_data),&bytes)) {
+        replay_stage("Decoding the recording");
+        fsk_pkt_rf_t rf={0};
+        const size_t n=fsk_pkt_iq16_edges((const int16_t *)s_iq_data,bytes/4,REC_LR_IQ_RATE,s_iq_pkt_edges,IQ_PKT_EDGES,&rf);
+        const int found=n?clean_fsk_packets(s_iq_pkts,fsk_pkt_from_edges(s_iq_pkt_edges,n,s_iq_pkts,4)):0;
+        /* Not a packet: the I/Q goes out as recorded, and the screen draws
+           the tones the discriminator found in it. */
+        if(!found && n) {
+            replay_stage("Sending the I/Q recording");
+            air_edges(true,REC_AIR_FSK,hz,dbm,(uint32_t)(rf.deviation_hz+0.5f),s_iq_pkt_edges,(int)n,"I/Q recording");
+        }
+        if(found>0) {
+            const char *slash=strrchr(path,'/');
+            send_fsk_packets(slash?slash+1:path,hz,(uint32_t)(rf.deviation_hz+0.5f),s_iq_pkts,found,dbm,result,len);
+            return;
+        }
+    }
+    iq_replay_rate(path,dbm,REC_LR_IQ_TX_RATE,result,len);
+}
 
 /* Runs on the REC worker, never the UI/console command task. Yield each line
    so USB/UART backpressure does not monopolize the CPU; stop cancels promptly. */

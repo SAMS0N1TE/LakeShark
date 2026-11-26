@@ -66,6 +66,9 @@ struct endpoint_slot {
     SemaphoreHandle_t quiesced;
     ls_radio_session_t session;
     uint32_t fe_ctls;
+    int64_t idle_since_us;   /* last time anything streamed or called in   */
+    bool standby_busy;       /* the idle tick is inside the driver         */
+    uint32_t standbys;
 };
 
 static EXT_RAM_BSS_ATTR endpoint_slot_t s_endpoints[LS_RADIO_MAX_ENDPOINTS];
@@ -286,6 +289,7 @@ static ls_radio_err_t session_leave(endpoint_slot_t *slot,
     if (slot->in_flight > 0) --slot->in_flight;
     if (!read_call && slot->diagnostic_controls > 0)
         --slot->diagnostic_controls;
+    slot->idle_since_us = esp_timer_get_time();
     note_quiesced_locked(slot);
     xSemaphoreGive(s_registry_lock);
     return error;
@@ -352,6 +356,17 @@ LS_COLD static void fill_info(const endpoint_slot_t *slot,
     out->last_error = slot->last_error;
     out->control_io_errors = slot->control_io_errors;
     out->fe_ctls = slot->fe_ctls;
+    out->standby_capable = slot->present && slot->ops.standby && slot->ops.in_standby;
+    out->standby = out->standby_capable && slot->ops.in_standby(slot->driver_ctx);
+    out->standbys = slot->standbys;
+    if (slot->present && !slot->streaming) {
+        const int64_t idle = esp_timer_get_time() - slot->idle_since_us;
+        const int64_t limit = 1000LL * (slot->leased ? LS_RADIO_STANDBY_HELD_MS
+                                                     : LS_RADIO_STANDBY_FREE_MS);
+        out->idle_ms = idle > 0 ? (uint32_t)(idle / 1000) : 0;
+        if (out->standby_capable && !out->standby)
+            out->standby_in_ms = idle < limit ? (uint32_t)((limit - idle + 999) / 1000) : 1;
+    }
 }
 
 LS_COLD static void publish_endpoint_event(ls_radio_endpoint_event_kind_t kind,
@@ -372,6 +387,66 @@ LS_COLD static void publish_endpoint_event(ls_radio_endpoint_event_kind_t kind,
     for (size_t i = 0; i < LS_RADIO_MAX_SUBSCRIBERS; ++i)
         if (subscribers[i].callback)
             subscribers[i].callback(&event, subscribers[i].user);
+}
+
+/* The SDR watchdog. An endpoint nothing streams from is put in standby
+   once it has been idle for its limit: a few seconds with no holder, so
+   switching between apps does not power-cycle the tuner each time, and
+   longer with a holder that stopped streaming but kept its lease. The
+   checks run twice: once to decide, and again with the control lock held,
+   since an app may have taken the lease and started a call in between - its
+   call then waits on the lock and wakes the device itself. The tick's own
+   in-flight count keeps an unplug from freeing the driver under it. */
+static bool standby_due_locked(const endpoint_slot_t *slot, int64_t now,
+                               unsigned others_in_flight)
+{
+    if (!slot->used || !slot->present || slot->removing || slot->stopping ||
+        slot->pause_pending || slot->streaming ||
+        slot->in_flight != others_in_flight ||
+        !slot->ops.standby || !slot->ops.in_standby)
+        return false;
+    if (slot->ops.in_standby(slot->driver_ctx)) return false;
+    const int64_t limit = 1000LL * (slot->leased ? LS_RADIO_STANDBY_HELD_MS
+                                                 : LS_RADIO_STANDBY_FREE_MS);
+    return now - slot->idle_since_us >= limit;
+}
+
+LS_COLD void ls_radio_endpoint_idle_tick(void)
+{
+    if (__atomic_load_n(&s_registry_init, __ATOMIC_ACQUIRE) != 2) return;
+    for (size_t i = 0; i < LS_RADIO_MAX_ENDPOINTS; ++i) {
+        endpoint_slot_t *slot = &s_endpoints[i];
+        const int64_t now = esp_timer_get_time();
+        xSemaphoreTake(s_registry_lock, portMAX_DELAY);
+        if (slot->used && slot->present && slot->streaming)
+            slot->idle_since_us = now;
+        const bool due = !slot->standby_busy && standby_due_locked(slot, now, 0);
+        ls_radio_err_t (*standby)(void *) = slot->ops.standby;
+        void *driver_ctx = slot->driver_ctx;
+        if (due) {
+            ++slot->in_flight;
+            slot->standby_busy = true;
+        }
+        xSemaphoreGive(s_registry_lock);
+        if (!due) continue;
+
+        xSemaphoreTake(slot->control_lock, portMAX_DELAY);
+        xSemaphoreTake(s_registry_lock, portMAX_DELAY);
+        const bool still = standby_due_locked(slot, esp_timer_get_time(), 1);
+        xSemaphoreGive(s_registry_lock);
+        const ls_radio_err_t error = still ? standby(driver_ctx) : LS_RADIO_OK;
+        xSemaphoreGive(slot->control_lock);
+
+        xSemaphoreTake(s_registry_lock, portMAX_DELAY);
+        if (still && error == LS_RADIO_OK) ++slot->standbys;
+        /* A refusal (a transmit in progress) or a failure waits out another
+           idle limit rather than retrying every tick. */
+        if (still && error != LS_RADIO_OK) slot->idle_since_us = esp_timer_get_time();
+        slot->standby_busy = false;
+        if (slot->in_flight > 0) --slot->in_flight;
+        note_quiesced_locked(slot);
+        xSemaphoreGive(s_registry_lock);
+    }
 }
 
 LS_COLD ls_radio_err_t ls_radio_endpoint_register(const ls_radio_endpoint_t *endpoint)
@@ -454,6 +529,9 @@ LS_COLD ls_radio_err_t ls_radio_endpoint_register(const ls_radio_endpoint_t *end
     slot->diagnostic_counter_overflow = false;
     slot->last_error = LS_RADIO_OK;
     slot->control_io_errors = 0;
+    slot->idle_since_us = esp_timer_get_time();
+    slot->standby_busy = false;
+    slot->standbys = 0;
     __atomic_add_fetch(&s_generation, 1, __ATOMIC_RELEASE);
     slot->capabilities = endpoint->capabilities;
     slot->duplex = endpoint->duplex;
@@ -829,6 +907,7 @@ LS_COLD void ls_radio_release(ls_radio_session_t *session)
     slot->stopping = false;
     slot->stream_kind = 0;
     slot->owner[0] = '\0';
+    slot->idle_since_us = esp_timer_get_time();
     session->active = false;
     session->closing = false;
     session->endpoint = NULL;

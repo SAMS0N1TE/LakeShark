@@ -1170,11 +1170,14 @@ static void layout(tui_rect a)
     s_r_menu = tui_rect_make(a.x, y++, a.w, 1);
     s_r_tools = none;
     if (a.h >= 20) s_r_tools = tui_rect_make(a.x, y++, a.w, 1);
-    s_r_filter = tui_rect_make(a.x, y++, a.w, 1);
+    /* On the desk the filters are the list's own first row, inside its
+       group box: one toolbar under the menu bar, not a second one. */
+    const bool in_list = ls_dui_desk();
+    s_r_filter = in_list ? none : tui_rect_make(a.x, y++, a.w, 1);
     s_r_ruler = none;
     if (s_show_ruler && a.h >= 24) { s_r_ruler = tui_rect_make(a.x + 1, y, a.w - 2, 3); y += 3; }
-    s_r_status = tui_rect_make(a.x, a.y + a.h - 1, a.w, 1);
-    const tui_rect body = tui_rect_make(a.x, y, a.w, a.y + a.h - 1 - y);
+    s_r_status = none;              /* its words go to the window's status bar */
+    const tui_rect body = tui_rect_make(a.x, y, a.w, a.y + a.h - y);
     const int bw = s_show_banks && a.w >= 84 ? (a.w >= 140 ? 26 : 22) : 0;
     int dw = 0, dh = 0;
     if (s_show_detail || s_form) {
@@ -1189,7 +1192,9 @@ static void layout(tui_rect a)
                : dh ? tui_rect_make(tx, body.y + body.h - dh, body.x + body.w - tx, dh) : none;
     uint32_t shown = s_shown | 0xF;                       /* star, MHz, name and mode always */
     if (ls_freqs_which() != LS_FREQS_ALL) shown &= ~(1u << LS_FC_BANK);
-    ls_dui_table_layout(&s_t, tui_rect_make(s_r_table.x + 1, s_r_table.y + 1, s_r_table.w - 2, s_r_table.h - 2),
+    const int fh = in_list ? 1 : 0;
+    if (in_list) s_r_filter = tui_rect_make(s_r_table.x + 1, s_r_table.y + 1, s_r_table.w - 2, 1);
+    ls_dui_table_layout(&s_t, tui_rect_make(s_r_table.x + 1, s_r_table.y + 1 + fh, s_r_table.w - 2, s_r_table.h - 2 - fh),
                         COLS, LS_FC__COUNT, shown);
 }
 
@@ -1240,11 +1245,59 @@ static void draw_tools(tui_surface *sf)
     x += tool(sf, r, x, "Export", C_EXP_CSV, false, !s_n, TUI_GREEN);
 }
 
+/* The filter row as a form, not a second toolbar: a caption and a sunken
+   drop-down field, or a check box and its words. Each takes its cmd's hit. */
+static int combo(tui_surface *sf, tui_rect row, int x, const char *caption, const char *value, int cmd, bool on)
+{
+    const int cw = (int)strlen(caption), vw = (int)strlen(value);
+    const int w = cw + 1 + vw + 4;
+    if (x + w > row.x + row.w) return 0;
+    tui_put_str(sf, row, x, row.y, caption, LS_ATTR_DIM);
+    const tui_rect in = ls_dui_field(sf, row, x + cw + 1, row.y, vw + 4);
+    tui_put_str(sf, row, in.x, row.y, value, on ? AMBER : TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    tui_put_char(sf, row, in.x + in.w - 1, row.y, 'v', TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    hit(tui_rect_make(x, row.y, w, 1), cmd);
+    return w + 2;
+}
+
+static int check(tui_surface *sf, tui_rect row, int x, const char *label, int cmd, bool on)
+{
+    const int w = 4 + (int)strlen(label);
+    if (x + w > row.x + row.w) return 0;
+    const tui_rect in = ls_dui_field(sf, row, x, row.y, 3);
+    tui_put_char(sf, row, in.x, row.y, on ? 'x' : ' ', TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    tui_put_str(sf, row, x + 4, row.y, label, on ? AMBER : TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    hit(tui_rect_make(x, row.y, w, 1), cmd);
+    return w + 2;
+}
+
 static void draw_filter(tui_surface *sf)
 {
     const tui_rect r = s_r_filter;
     char text[48];
     int x = r.x + 1;
+    if (ls_dui_desk()) {
+        tui_put_str(sf, r, x, r.y, "Find", s_focus == F_FIND ? AMBER : LS_ATTR_DIM);
+        x += 5;
+        const int fw = r.w >= 110 ? 24 : 16;
+        s_r_find = tui_rect_make(x, r.y, fw, 1);
+        if (s_focus == F_FIND) ls_dui_edit_draw(sf, r, x, r.y, fw, &s_find, true, HUE);
+        else {
+            ls_dui_edit_t shown;
+            ls_dui_edit_set(&shown, s_f.find, (int)sizeof(s_f.find) - 1);
+            ls_dui_edit_draw(sf, r, x, r.y, fw, &shown, false, s_f.find[0] ? HUE : TUI_WHITE);
+        }
+        x += fw + 2;
+        x += combo(sf, r, x, "Band", ls_freq_band_name(s_f.band), C_BAND, s_f.band != LS_FB_ALL);
+        x += combo(sf, r, x, "Group", s_f.group[0] ? s_f.group : "ALL", C_GROUP, s_f.group[0] != 0);
+        x += check(sf, r, x, !s_f.near || s_fix ? "Near" : "Near: no fix", C_NEAR, s_f.near);
+        x += check(sf, r, x, "Starred", C_ONLY_STAR, s_only_star);
+        snprintf(text, sizeof(text), s_ndup && !s_only_dup ? "Dups %d" : "Dups", s_ndup);
+        x += check(sf, r, x, text, C_ONLY_DUP, s_only_dup);
+        if (s_f.band != LS_FB_ALL || s_f.group[0] || s_f.find[0] || s_f.near || s_only_star || s_only_dup)
+            x += tool(sf, r, x, "Clear", C_CLEAR, false, false, TUI_WHITE);
+        return;
+    }
     tui_put_str(sf, r, x, r.y, "Find", s_focus == F_FIND ? AMBER : LS_ATTR_DIM);
     x += 5;
     const int fw = r.w >= 110 ? 24 : 16;
@@ -1402,6 +1455,7 @@ static void draw_banks(tui_surface *sf)
     s_ntree = 0;
     if (!r.w) return;
     ls_panel_box(sf, r, "BANKS", s_focus == F_BANKS ? HUE | TUI_BRIGHT : HUE);
+    ls_ink_well(tui_rect_make(r.x + 1, r.y + 1, r.w - 2, r.h - 2));
     const tui_rect in = tui_rect_make(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
     memset(s_tree, 0, sizeof(s_tree));
     s_tree_y = in.y;
@@ -1439,6 +1493,8 @@ static void draw_table(tui_surface *sf)
                                   t->skipped == 1 ? "" : "s", t->first_bad);
     else snprintf(title, sizeof(title), "%d of %d", s_n, ls_freqs_count());
     ls_panel_box(sf, r, title, s_focus == F_TABLE && !s_form ? HUE | TUI_BRIGHT : HUE);
+    const int fh = s_r_filter.y == r.y + 1 ? 1 : 0;                  /* the filters' row, on the face */
+    ls_ink_well(tui_rect_make(r.x + 1, r.y + 1 + fh, r.w - 2, r.h - 2 - fh));   /* a list view on the contrast ground */
     const int sort = s_only_dup && s_sort == LS_FC_LISTED ? LS_FC_FREQ : s_sort;
     ls_dui_table_head(sf, &s_t, COLS, LS_FC__COUNT, sort, s_desc, HUE);
     if (!s_n) {
@@ -1534,7 +1590,12 @@ static void draw_detail(tui_surface *sf, tui_rect r)
     tui_put_str(sf, left, in.x, y++, e->name, WHITE);
     ls_freq_mhz_text(e->hz, mhz, sizeof(mhz));
     snprintf(text, sizeof(text), "%s MHz", mhz);
-    tui_put_str(sf, left, in.x, y++, text, AMBER);
+    if (ls_dui_desk()) {
+        /* The frequency on VFD glass. */
+        int vw = (int)strlen(text) + 2;
+        if (vw > left.w) vw = left.w;
+        ls_dui_vfd(sf, tui_rect_make(in.x, y++, vw, 1), text, LS_DUI_VFD_AMBER | LS_DUI_VFD_LEFT | LS_DUI_VFD_SMALL);
+    } else tui_put_str(sf, left, in.x, y++, text, AMBER);
     int x = in.x;
     x = ls_radio_chip(sf, left, x, y, ls_freq_mode_name(e->mode), true, TUI_CYAN);
     if (ls_freqd_starred(e)) x = ls_radio_chip(sf, left, x, y, "STAR", true, HUE);
@@ -1594,10 +1655,23 @@ static void draw_status(tui_surface *sf)
     if (s_npick && k < sizeof(text)) k += (size_t)snprintf(text + k, sizeof(text) - k, "  %d selected", s_npick);
     if (ls_freqs_undo_count() && k < sizeof(text)) k += (size_t)snprintf(text + k, sizeof(text) - k, "  undo %d", ls_freqs_undo_count());
     if (k >= sizeof(text)) k = sizeof(text) - 1;
-    tui_put_str(sf, r, r.x, r.y, text, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
-    const int x = r.x + (int)k + 2;
     const bool fresh = s_say[0] && esp_timer_get_time() - s_said_us < 8000000;
     const ls_freq_t *e = selected();
+    if (r.h <= 0) {
+        /* The window's status bar: the counts, or what was just done, or
+           what the field in hand wants. Keys are under Help > Keys. */
+        const char *now = s_drag.on && s_drag.drop >= 0 ? "Let go to move them into this bank"
+                        : fresh ? s_say
+                        : s_form ? "Tab moves between fields; Enter saves"
+                        : s_focus == F_FIND ? "Type to filter; Enter keeps it, Esc clears"
+                        : e && ls_freq_route(e->mode, e->hz).note ? ls_freq_route(e->mode, e->hz).note : NULL;
+        if (now) snprintf(text + k, sizeof(text) - k, "  %s", now);
+        ls_tui_status_set(text + 1, NULL);
+        (void)sf;
+        return;
+    }
+    tui_put_str(sf, r, r.x, r.y, text, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    const int x = r.x + (int)k + 2;
     const char *idle = s_drag.on && s_drag.drop >= 0 ? "Let go to move them into this bank"
                      : s_form ? "Tab or the arrows move between fields; Enter saves, Esc leaves"
                      : s_focus == F_FIND ? "Type to filter: name, tag, group, mode or MHz; Enter keeps it, Esc clears"

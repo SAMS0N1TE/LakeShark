@@ -65,5 +65,11 @@ static void leave(void) {
     if(session>0) lap_rx_close(session);
     worker=channel=session=0;
 }
+LAP_ICON_PX("....................", "....................", "...............bbb..", ".......777777..bbb..",
+            ".......788887.......", ".......78aa87.......", ".ee....78aa87..333..", ".e.e...788887..3.3..",
+            "e..e...78aa87..333..", "e..ee..78aa87.......", "....e.e788887..bbb..", "....e.e78aa87..bbb..",
+            "....eee78aa87.......", ".......788887.......", ".......777777..bbb..", "...............bbb..",
+            "....................", "....................");
+
 LAP_APP(.id="custom_decoder",.name="CUSTOM DSP",.sub="app-owned worker protocol",.version="1.0",.author="LakeShark",
     .icon=LAP_ICON_WAVE,.color=LAP_CYAN,.flags=LAP_CAP_RADIO_RX,.enter=enter,.draw=draw,.leave=leave);

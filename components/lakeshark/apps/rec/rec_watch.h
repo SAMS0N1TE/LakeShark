@@ -214,6 +214,42 @@ bool rec_watch_iq_status(char *out,size_t len);
    false (and "") when it had none. */
 bool rec_watch_iq_packet(char *out,size_t len);
 bool rec_watch_set_lr_fsk(bool fsk);
+/* LR2021 FSK: true keeps every burst as raw edges (no sync needed), false
+   only packets whose sync matches. Refused while WATCH runs. */
+/* WHAT IS ON THE AIR, for the screen to draw: the packet or burst SEND is
+   putting out (tx), or the last burst READ heard (rx). A packet the decoder
+   proved carries its fields - preamble, sync word, the bytes as on the air,
+   the CRC last - so each can be drawn in its own colour; anything else
+   carries its edges (signed us, + upper tone or carrier on). `start_us` is
+   when its first bit went out (tx) or when it was filed (rx); `dur_us` its
+   airtime. `seq` changes with every new one. */
+#define REC_AIR_EDGES 512
+#define REC_AIR_BYTES 68
+enum { REC_AIR_NONE, REC_AIR_PACKET, REC_AIR_FSK, REC_AIR_OOK };
+typedef struct {
+    uint32_t seq;
+    uint8_t  kind;
+    bool     tx;
+    bool     crc;           /* packet: its last two bytes are the CRC       */
+    bool     length_byte;   /* packet: its first byte counts the rest       */
+    int8_t   dbm;
+    uint32_t freq_hz, baud, dev_hz;
+    int64_t  start_us;
+    uint32_t dur_us;
+    uint16_t pre_bits;
+    uint8_t  sync_bits;
+    uint32_t sync;          /* top sync_bits, first bit sent in the top     */
+    uint8_t  nbytes;
+    uint8_t  bytes[REC_AIR_BYTES];
+    uint16_t nedges;
+    int32_t  edge[REC_AIR_EDGES];
+    char     what[40];
+} rec_air_t;
+bool rec_watch_air(bool tx, rec_air_t *out);
+/* STOP without waiting for the radio to be released (the READ key). */
+bool rec_watch_stop_nowait(void);
+bool rec_watch_lr_raw(void);
+bool rec_watch_set_lr_raw(bool raw);
 bool rec_watch_enabled(void);
 void rec_watch_snapshot(rec_watch_status_t *out);
 /* The copy rec_watch_snapshot makes while it holds the lock, on its own so it

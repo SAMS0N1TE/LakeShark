@@ -37,6 +37,7 @@ typedef enum {
 #define LS_LORA_CAP_FSK_STREAM  (1u << 8)  /* ls_fsk_cfg_t.stream and its reads        */
 #define LS_LORA_CAP_FSK_DETECT  (1u << 9)  /* ls_fsk_cfg_t.preamble_detect_bits        */
 #define LS_LORA_CAP_RX_EXT      (1u << 10) /* LR2021: measured receive 104-2740 MHz    */
+#define LS_LORA_CAP_FLRC        (1u << 11) /* LR2021: ls_fsk_cfg_t.flrc sessions        */
 
 /* Where a receive-only sweep or an FSK listener may sit. Without
    LS_LORA_CAP_RX_WIDE that is 150-960 MHz, the range every sweep has always
@@ -215,7 +216,50 @@ typedef struct {
        after a session that held a step sends the AGC setting again. Other
        parts return NOT_SUPPORTED for a nonzero value. */
     uint8_t rx_gain_step;
+    /* FLRC instead of GFSK (needs LS_LORA_CAP_FLRC; NOT_SUPPORTED without):
+       the LR2021's bitrate_bw code plus one, LS_LORA_FLRC_*; 0 is GFSK and
+       what a zeroed struct means. The session is otherwise the same: fixed
+       length payload_bytes, the 32-bit sync_word, preamble_bits (4..32),
+       power_dbm, poll/send/receive/end. bitrate, deviation_hz and
+       bandwidth_hz are not used; the code sets both. No hardware CRC. */
+    uint8_t flrc;
+    uint8_t flrc_cr;          /* LS_LORA_FLRC_CR_*: 0 is 1/2 */
 } ls_fsk_cfg_t;
+
+/* FLRC rate codes for ls_fsk_cfg_t.flrc (datasheet Table 18-1, plus one). */
+#define LS_LORA_FLRC_2600 1   /* 2.6 Mbps, 2.666 MHz */
+#define LS_LORA_FLRC_2080 2
+#define LS_LORA_FLRC_1300 3   /* 1.3 Mbps, 1.333 MHz */
+#define LS_LORA_FLRC_1040 4
+#define LS_LORA_FLRC_650  5   /* 650 kbps, 740 kHz   */
+#define LS_LORA_FLRC_520  6
+#define LS_LORA_FLRC_325  7
+#define LS_LORA_FLRC_260  8   /* 260 kbps, 307 kHz   */
+#define LS_LORA_FLRC_CR_1_2  0
+#define LS_LORA_FLRC_CR_3_4  1
+#define LS_LORA_FLRC_CR_NONE 2
+#define LS_LORA_FLRC_CR_2_3  3
+
+/* The raw bit rate of an ls_fsk_cfg_t.flrc code in kbps, 0 for none. */
+static inline uint32_t ls_lora_flrc_kbps(uint8_t flrc)
+{
+    static const uint16_t k[8] = { 2600, 2080, 1300, 1040, 650, 520, 325, 260 };
+    return flrc >= 1 && flrc <= 8 ? k[flrc - 1] : 0;
+}
+
+/* Air time of one fixed-length FLRC frame in microseconds, datasheet 18.3:
+   the preamble, the 21-bit timing preamble and a 32-bit sync word uncoded,
+   then payload and the 6-bit tail through the coding rate. */
+static inline uint32_t ls_lora_flrc_airtime_us(uint8_t flrc, uint8_t cr, uint16_t preamble_bits, size_t len)
+{
+    const uint32_t kbps = ls_lora_flrc_kbps(flrc);
+    static const uint8_t num[4] = { 6, 9, 12, 8 };   /* CR as n/12 */
+    if (!kbps || cr > 3) return 0;
+    const uint32_t tail = cr == LS_LORA_FLRC_CR_NONE ? 0 : 6;
+    const uint32_t coded = (uint32_t)((12u * (len * 8u + tail) + num[cr] - 1) / num[cr]);
+    const uint32_t bits = (preamble_bits ? preamble_bits : 32) + 21u + 32u + coded;
+    return (bits * 1000u + kbps - 1) / kbps;
+}
 
 /* The nearest receive bandwidth the part actually has, at or above `hz`.
 

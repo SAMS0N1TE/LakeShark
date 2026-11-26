@@ -59,7 +59,8 @@ class TxDesktop26(unittest.TestCase):
         for app in ('hackrf_signal','desktop_export'):
             file=lap.build(SDK/'apps'/app,BUILD/(app+'-api26.lap'),log=[])
             elf=lap.Elf(file.read_bytes())
-            self.assertEqual((elf.manifest['api_major'],elf.manifest['api_minor']),(2,6))
+            # Built against today's header: the SDK's current version, still the 228-byte descriptor.
+            self.assertEqual((elf.manifest['api_major'],elf.manifest['api_minor']),lap.sdk_api_version(SDK))
 
 
 if __name__=='__main__':unittest.main()

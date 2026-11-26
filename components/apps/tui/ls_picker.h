@@ -51,6 +51,8 @@ void ls_picker_note(const char *text);
 /* Put the cursor on the row added at `index`, so a list reopened in place
    keeps it where it was. */
 void ls_picker_select(int index);
+/* The index (as added) of the row the cursor is on, -1 when none shows. */
+int  ls_picker_current(void);
 
 /* Say something else beside the row added at `index`, for a list whose
    values change while it is up. */
@@ -83,6 +85,17 @@ void ls_picker_draw(tui_surface *sf, tui_rect area);
 /* Optional read-only context art beside/below the rows; reset by open.
  * Never receives a touch target and must not perform I/O or allocate. */
 void ls_picker_preview(void (*draw)(tui_surface *, tui_rect));
+
+/* The list's owner may show it as a form of its own while the desk draws
+   it in a window (OPTIONS as a standard dialog): the form draws and takes
+   the keys and the taps instead of the list. Set after ls_picker_open;
+   ls_picker_open and ls_picker_close forget it. NULL: the list. */
+typedef struct {
+    void (*draw)(tui_surface *sf, tui_rect area);
+    bool (*key)(ls_tk_t key, char ch);
+    bool (*touch)(int col, int row);
+} ls_picker_form_t;
+void ls_picker_form(const ls_picker_form_t *form);
 
 #ifdef __cplusplus
 }

@@ -14,6 +14,7 @@
 #include "ls_icons.h"
 #include "desk/ls_desk.h"
 #include "desk/ls_desk_priv.h"
+#include "desk/ls_desk_host.h"
 
 #include <string.h>
 
@@ -102,6 +103,7 @@ void ls_tui_set_origin(const tui_surface *sf, int dx, int dy)
 {
     if (sf) { s_org_sf = sf; s_org_x = dx; s_org_y = dy; s_org_calls++; }
 }
+void ls_tui_follow_copy(const tui_surface *app, tui_rect at, tui_rect clip) { (void)app; (void)at; (void)clip; }
 
 /* ---------------------------------------------------------- test apps -- */
 
@@ -193,16 +195,17 @@ LS_CASE(the_router_lays_out_in_a_window_and_its_hit_rects_move_with_it)
     frame(160, 45);
     ls_desk_win_info_t w;
     LS_CHECK(info(id, &w));
-    LS_EQ_INT(115, w.cw); LS_EQ_INT(27, w.ch);
-    /* The app was laid out in its 115x27 surface, not the 160x45 grid, and
+    LS_EQ_INT(100, w.cw); LS_EQ_INT(30, w.ch);          /* Medium: an app that names no minimum */
+    LS_EQ_INT(LS_DESK_SIZE_MEDIUM, ls_desk_size(id));
+    /* The app was laid out in its 100x30 surface, not the 160x45 grid, and
        told so by is_wide; its pixels are offset to the client's place. */
     LS_EQ_INT(0, s_win_area.x); LS_EQ_INT(0, s_win_area.y);
-    LS_EQ_INT(115, s_win_area.w); LS_EQ_INT(27, s_win_area.h);
+    LS_EQ_INT(100, s_win_area.w); LS_EQ_INT(30, s_win_area.h);
     LS_CHECK(s_win_wide);
     LS_EQ_INT(w.cx, s_org_x); LS_EQ_INT(w.cy, s_org_y);
     int bx, by, bw, bh;
     LS_CHECK(ls_btn_rect_slot(LS_BTN_SLOT_SCREEN, 1, &bx, &by, &bw, &bh));
-    LS_CHECK_MSG(by >= 24 && by + bh <= 27, "button rows %d..%d are not the window's bottom", by, by + bh);
+    LS_CHECK_MSG(by >= 27 && by + bh <= 30, "button rows %d..%d are not the window's bottom", by, by + bh);
     /* The same button at two places: a tap in grid cells reaches it. */
     const int old_x = w.cx + bx + bw / 2, old_y = w.cy + by + bh / 2;
     s_win_hit = -2;
@@ -270,14 +273,20 @@ LS_CASE(open_raise_move_minimize_maximize_close_and_nothing_leaks)
         frame(160, 45);
         LS_CHECK(info(a, &still));
         LS_EQ_INT(wa.x + 10, still.x); LS_EQ_INT(wa.y + 3, still.y);
-        /* Resize at the grip, held to the minimum. */
-        ptr(LS_IEV_PTR_DOWN, LS_IBTN_LEFT, still.x + still.w - 1, still.y + still.h - 1);
+        /* No free size: a drag from the corner does nothing but the click on
+           the grip (the corner cell itself) steps to the next preset, Large. */
+        ptr(LS_IEV_PTR_DOWN, LS_IBTN_LEFT, still.x + still.w - 2, still.y + still.h - 1);
         ptr(LS_IEV_PTR_MOVE, LS_IBTN_LEFT, still.x + 20, still.y + 5);
         ptr(LS_IEV_PTR_UP, LS_IBTN_LEFT, still.x + 20, still.y + 5);
         frame(160, 45);
         LS_CHECK(info(a, &wa));
-        LS_EQ_INT(62, wa.w); LS_EQ_INT(24, wa.h);      /* title, menu bar, 20 rows, status, frame */
-        LS_EQ_INT(60, wa.cw); LS_EQ_INT(20, wa.ch);
+        LS_EQ_INT(102, wa.w); LS_EQ_INT(34, wa.h);
+        click(wa.x + wa.w - 1, wa.y + wa.h - 1);
+        frame(160, 45);
+        LS_CHECK(info(a, &wa));
+        LS_EQ_INT(122, wa.w); LS_EQ_INT(42, wa.h);     /* title, menu bar, 38 rows, status, frame */
+        LS_EQ_INT(120, wa.cw); LS_EQ_INT(38, wa.ch);
+        LS_CHECK(wa.x >= 0 && wa.x + wa.w <= 160 && wa.y >= 0 && wa.y + wa.h <= 43);
         /* Minimize with its title key: the other comes to the front. */
         click(wa.x + wa.w - 8, wa.y);
         frame(160, 45);
@@ -703,11 +712,16 @@ LS_CASE(a_window_opens_where_it_was_left_and_the_ninth_says_why)
     setup();
     const int id = ls_desk_open_app("p25"); frame(160, 45);
     ls_desk_move(id, 30, 5);
-    ls_desk_resize(id, 100, 30);
+    ls_desk_resize(id, 100, 30);                      /* no free size: the smallest preset that big, Medium */
+    ls_desk_set_size(id, LS_DESK_SIZE_LARGE);
     ls_desk_close(id);
     const int back = ls_desk_open_app("p25"); frame(160, 45);
     ls_desk_win_info_t w; LS_CHECK(info(back, &w));
-    LS_EQ_INT(30, w.x); LS_EQ_INT(5, w.y); LS_EQ_INT(100, w.w); LS_EQ_INT(30, w.h);
+    LS_EQ_INT(30, w.x); LS_EQ_INT(1, w.y); LS_EQ_INT(122, w.w); LS_EQ_INT(42, w.h);   /* Large, kept on the work area */
+    LS_EQ_INT(LS_DESK_SIZE_LARGE, ls_desk_size(back));
+    ls_desk_set_size(back, LS_DESK_SIZE_SMALL);
+    ls_desk_move(back, 30, 5);
+    LS_CHECK(info(back, &w)); LS_EQ_INT(82, w.w); LS_EQ_INT(28, w.h);
     /* Move by the keys from the window menu: arrows step, Esc puts it back. */
     dk_do(A_WIN_MOVE, back);
     key(LS_TK_RIGHT); key(LS_TK_DOWN);
@@ -965,4 +979,53 @@ LS_CASE(icons_select_together_and_move_as_a_group)
     LS_EQ_INT(r1.x + 10, dk_items_rect(1).x);
     LS_EQ_INT(r2.x, dk_items_rect(2).x);
     dk_items_arrange(DK_ARR_RESET);
+}
+
+/* Windows have sizes, not free edges: an app's own minimum picks the first
+   preset at least that big, the corner cell steps them, and the desktop's
+   resolution is held for a viewer's 'term size'. */
+LS_CASE(size_presets_app_minimum_and_desktop_resolution)
+{
+    setup();
+    frame(160, 45);
+    static ls_app_t big;
+    big = APP_PLAIN;
+    big.desk_cols = 90; big.desk_rows = 26;            /* more than Small's 80x24: Medium */
+    const ls_app_t *was = ls_app_by_id("fm");
+    LS_CHECK(was != NULL);
+    int id = ls_desk_open_app("fm");
+    dk_win(id)->app = &big;
+    ls_desk_close(id);
+    id = dk_open_app_win(&big);
+    frame(160, 45);
+    LS_EQ_INT(LS_DESK_SIZE_MEDIUM, ls_desk_size(id));
+    big.desk_cols = 130;                                 /* wider than Large: maximized */
+    ls_desk_close(id);
+    id = dk_open_app_win(&big);
+    frame(160, 45);
+    LS_EQ_INT(LS_DESK_SIZE_MAX, ls_desk_size(id));
+    ls_desk_close_all();
+    /* No window is ever placed off the grid, not even before the first frame. */
+    id = ls_desk_open_app("p25");
+    ls_desk_move(id, -8, 0);
+    ls_desk_win_info_t w;
+    LS_CHECK(info(id, &w));
+    LS_CHECK(w.x >= 0 && w.y >= 0 && w.x + w.w <= 160);
+    /* The Size list under the title's size key. */
+    dk_menu_open(M_WINSIZE, id, w.x, w.y + 1);
+    LABEL_IS(0, 0, "Small"); LABEL_IS(0, 3, "Maximized");
+    dk_menu_close_all();
+    ls_desk_close_all();
+    /* Resolution: held while the desk is on, never under 100x30, let go by 0x0. */
+    int c = 0, r = 0;
+    LS_CHECK(!ls_desk_res_set(80, 30));
+    LS_CHECK(ls_desk_res_set(120, 45));
+    LS_CHECK(ls_desk_res_get(&c, &r)); LS_EQ_INT(120, c); LS_EQ_INT(45, r);
+    c = 200; r = 60;
+    LS_CHECK(ls_desk_grid_hold(&c, &r)); LS_EQ_INT(120, c); LS_EQ_INT(45, r);
+    LS_EQ_INT(2, dk_res_row());
+    dk_res_pick(0);
+    LS_CHECK(!ls_desk_res_get(&c, &r));
+    LS_CHECK(!ls_desk_grid_hold(&c, &r));
+    frame(160, 45);
 }

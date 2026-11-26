@@ -2,6 +2,7 @@
    tile picture, then loading, the question, or the reason it did not open. */
 #include "ls_lap_ui.h"
 #include "ls_tui_ui.h"
+#include "ls_deskui.h"
 #include "ls_icons.h"
 #include "ls_lap_grants.h"
 #include <stdio.h>
@@ -18,7 +19,8 @@ static int card(tui_surface *sf, tui_rect a, const ls_lap_info_t *app, uint8_t f
 {
     const int h = LS_ICON_ROWS + 4;
     tui_rect r = tui_rect_make(a.x + 1, a.y + 1, a.w - 2, h);
-    tui_box(sf, r, NULL, frame);
+    if (ls_tui_compact()) ls_dui_group(sf, r, "App");   /* a desk window: a group box */
+    else tui_box(sf, r, NULL, frame);
     if (!app) return r.y + r.h;
     const uint8_t hue = HUE[app->manifest.color & 7] | TUI_BRIGHT;
     bool art = false;
@@ -170,11 +172,15 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
             };
             lines(sf, body, y + 6, why, 4, TUI_ATTR(TUI_WHITE, TUI_BLACK));
         }
-        const int bh = 4, by = area.y + area.h - bh - 1;
+        const int bh = ls_tui_compact() ? 1 : 4, by = area.y + area.h - bh - 1;
         ls_btn_t b[2] = {
             { app && (app->manifest.flags & LAP_CAP_NETWORK) ? "ALLOW & OPEN" : crashed ? "OPEN AGAIN" : "OPEN ANYWAY", "ENTER", '\r', false, false, false },
             { "BACK", "ESC", 0, false, false, false },
         };
+        if (ls_tui_compact()) {      /* a desk dialog's buttons: bottom right */
+            const int w = ls_btn_bar_width(b, 2) + 2;
+            ls_btn_bar_raised_slot(sf, tui_rect_make(area.x + area.w - w - 1, by, w, 1), b, 2, 0, LS_BTN_SLOT_SCREEN);
+        } else
         ls_btn_bar_raised_slot(sf, tui_rect_make(area.x + 1, by, area.w - 2, bh), b, 2, -1, LS_BTN_SLOT_SCREEN);
         s_asking = true;
         return;
@@ -199,8 +205,14 @@ void ls_lap_ui_draw(tui_surface *sf, tui_rect area, const ls_lap_info_t *app,
         const char *const two[] = { a, b2 };
         lines(sf, body, y + 5, two, 2, TUI_ATTR(TUI_WHITE, TUI_BLACK));
     }
-    const int bh = 4, by = area.y + area.h - bh - 1;
+    const int bh = ls_tui_compact() ? 1 : 4, by = area.y + area.h - bh - 1;
     ls_btn_t b[1] = { { "BACK TO HOME", "ESC", 0, false, false, false } };
+    if (ls_tui_compact()) {
+        /* a desk window: one key, bottom right, the way a dialog has it */
+        b[0].label = "BACK";
+        const int w = ls_btn_bar_width(b, 1) + 2;
+        ls_btn_bar_raised_slot(sf, tui_rect_make(area.x + area.w - w - 1, by, w, 1), b, 1, 0, LS_BTN_SLOT_SCREEN);
+    } else
     ls_btn_bar_raised_slot(sf, tui_rect_make(area.x + 1, by, area.w - 2, bh), b, 1, -1, LS_BTN_SLOT_SCREEN);
 }
 

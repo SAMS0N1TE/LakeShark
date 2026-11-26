@@ -4,6 +4,7 @@ bool ls_scr_map_download_view(void);
 /* TILES: a region library and live transfers, with no I/O in draw. */
 #include "../../ls_tiles.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 #include "../../ls_radio_panel.h"
 #include "../../ls_options.h"
 #include "../../ls_picker.h"
@@ -795,8 +796,15 @@ static int hero_draw(tui_surface *sf, tui_rect body, int y) {
             snprintf(text, sizeof(text), "%d", (int)(j.frac * 100.0f));
             pw = ls_calls_big_width(text) + 2;
             const int px = x + inner - pw;
+            if (ls_tui_compact()) {      /* a desk window: the percentage on a VFD */
+                char v[12];
+                snprintf(v, sizeof(v), "%s%%", text);
+                pw = 16;
+                ls_dui_vfd(sf, tui_rect_make(x + inner - pw, box.y + 1, pw, 3), v, hue == TUI_GREEN ? LS_DUI_VFD_GREEN : LS_DUI_VFD_AMBER);
+            } else {
             ls_calls_big_text(sf, box, px, box.y + 1, text, bright);
             tui_put_char(sf, box, px + pw - 1, box.y + 3, '%', bright);
+            }
         }
         char up[32]; int n = 0;
         for (const char *p = j.name; *p && n < 31; p++) up[n++] = (char)toupper((unsigned char)*p);
@@ -892,6 +900,13 @@ static void card_draw(tui_surface *sf,tui_rect body) {
     line(sf,body,y++,text,TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
     tui_rect storage=tui_rect_make(body.x,body.y+body.h-3,body.w,3);
     card_area=tui_rect_make(body.x,y,body.w,storage.y-y-1);
+    if(ls_tui_compact()) {
+        /* A desk window: the regions in a white well, the card in a group box. */
+        const tui_rect g=ls_dui_group(sf,tui_rect_make(body.x,body.y+body.h-4,body.w,4),"Storage");
+        storage=tui_rect_make(g.x+1,g.y,g.w-2,2);
+        const tui_rect w=ls_dui_well(sf,tui_rect_make(body.x,y,body.w,body.y+body.h-4-y),NULL);
+        card_area=tui_rect_make(w.x+1,w.y,w.w-2,w.h);
+    }
     card_visible=card_area.h/2; if(card_visible<1) card_visible=1;
     if(card_sel<card_first) card_first=card_sel;
     if(card_sel>=card_first+card_visible) card_first=card_sel-card_visible+1;
@@ -905,30 +920,33 @@ static void card_draw(tui_surface *sf,tui_rect body) {
     for(int i=card_first;i<card_n && i<card_first+card_visible;i++) {
         const card_row_t r=card[i]; const int ry=card_area.y+(i-card_first)*2;
         tui_rect row=tui_rect_make(card_area.x,ry,card_area.w,2);
-        if(i==card_sel) ls_fill_dither(sf,row,LS_DITHER_LIGHT,TUI_CYAN);
+        const bool band=i==card_sel && ls_tui_compact();
+        const uint8_t bd=ls_ink(LS_INK_SELECT,TUI_ATTR(TUI_WHITE,TUI_BLUE));
+        if(band) tui_fill(sf,row,' ',bd);
+        else if(i==card_sel) ls_fill_dither(sf,row,LS_DITHER_LIGHT,TUI_CYAN);
         const char *mark=i==card_sel?"> ":"  ";
         if(r.kind=='s') {
             const us_state_t *s=&us_state[r.index]; const bool all=s->cells && s->have>=s->cells;
             if(s->outdated) {
-                snprintf(text,sizeof(text),"%s%s  %s",mark,US_TILES[r.index].st,s->name); line(sf,row,ry,text,INK);
+                snprintf(text,sizeof(text),"%s%s  %s",mark,US_TILES[r.index].st,s->name); line(sf,row,ry,text,band?bd:(INK));
                 snprintf(text,sizeof(text),"    UPDATE  %u/%u cells older than server",s->outdated,s->cells);
-                line(sf,row,ry+1,text,ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)));
+                line(sf,row,ry+1,text,band?bd:(ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK))));
                 continue;
             }
-            snprintf(text,sizeof(text),"%s%s  %s",mark,US_TILES[r.index].st,s->name); line(sf,row,ry,text,INK);
+            snprintf(text,sizeof(text),"%s%s  %s",mark,US_TILES[r.index].st,s->name); line(sf,row,ry,text,band?bd:(INK));
             snprintf(text,sizeof(text),"    MAPS z0-%d%s%s  %.0f MB  %u/%u cells",us_free_z,all?"":" PART",s->detail?" + DETAIL":"",
                      (s->base+(s->detail?s->extra:0))/1e6,s->have,s->cells);
-            line(sf,row,ry+1,text,all?(s->detail?TUI_ATTR(TUI_MAGENTA|TUI_BRIGHT,TUI_BLACK):GOOD):ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)));
+            line(sf,row,ry+1,text,band?bd:(all?(s->detail?TUI_ATTR(TUI_MAGENTA|TUI_BRIGHT,TUI_BLACK):GOOD):ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK))));
         } else if(r.kind=='p') {
             const char *name=card_places.library[r.index]; const bool queued=!strncmp(name,"[queued] ",9);
-            snprintf(text,sizeof(text),"%sPLACE  %s",mark,queued?name+9:name); line(sf,row,ry,text,INK);
-            line(sf,row,ry+1,queued?"    waiting in the download queue":"    the area around a searched place",queued?ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)):GOOD);
+            snprintf(text,sizeof(text),"%sPLACE  %s",mark,queued?name+9:name); line(sf,row,ry,text,band?bd:(INK));
+            line(sf,row,ry+1,queued?"    waiting in the download queue":"    the area around a searched place",band?bd:(queued?ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)):GOOD));
         } else {
             const ls_tile_region *g=&catalog.region[r.index];
-            snprintf(text,sizeof(text),"%sFILE  %s%s",mark,g->name,!strcmp(g->file,active_file)?"  [IN MAP]":""); line(sf,row,ry,text,INK);
+            snprintf(text,sizeof(text),"%sFILE  %s%s",mark,g->name,!strcmp(g->file,active_file)?"  [IN MAP]":""); line(sf,row,ry,text,band?bd:(INK));
             static const char *const SHORT[]={"NOT ON CARD","ON CARD","PARTIAL","UPDATE"};
             snprintf(text,sizeof(text),"    region file  %.1f MB  z%d-%d  %s",g->local_bytes/1e6,g->zmin,g->zmax,SHORT[g->status&3]);
-            line(sf,row,ry+1,text,g->status==1?GOOD:LS_ATTR_DIM);
+            line(sf,row,ry+1,text,band?bd:(g->status==1?GOOD:LS_ATTR_DIM));
         }
     }
     if(card_n>card_visible) {
@@ -938,6 +956,11 @@ static void card_draw(tui_surface *sf,tui_rect body) {
     snprintf(text,sizeof(text),"SD %.2f GB free / %.2f GB used",catalog.free/1e9,(catalog.total-catalog.free)/1e9);
     line(sf,storage,storage.y,catalog.sd?text:"SD unavailable",LS_ATTR_DIM);
     ls_bar(sf,storage,1,storage.x+1,storage.w-2,catalog.total?(float)(catalog.total-catalog.free)/catalog.total:0);
+}
+
+/* The page's name, for the window's status bar. */
+static const char *page_name(void) {
+    return page==1?"Region info":page==2?transfer.verifying?"Verify":transfer.receiving?"Receive":"Transfer":page==3?"Confirm":page==4?"Get maps":page==5?"Region files":"On this card";
 }
 
 static void draw(tui_surface *sf,tui_rect a) {
@@ -956,6 +979,9 @@ static void draw(tui_surface *sf,tui_rect a) {
         for(int i=0;i<catalog.count;i++) if(!strcmp(catalog.region[i].file,transfer.file)) selected=i;
     }
     if(page==2 && transfer.state==0 && !catalog.busy) page=0;
+    const bool desk=ls_tui_compact();
+    if(desk) tui_fill(sf,a,' ',TUI_ATTR(TUI_WHITE,TUI_BLACK));
+    else
     ls_panel_box(sf,a,page==1?"TILES / REGION INFO":page==2?transfer.verifying?"TILES / VERIFY":transfer.receiving?"TILES / RECEIVE":"TILES / TRANSFER":page==3?"TILES / CONFIRM":page==4?"TILES / GET MAPS":page==5?"TILES / REGION FILES":"TILES / ON THIS CARD",TUI_CYAN);
     ls_btn_t btn[5]={{.label="BACK",.key='b'},{.label="OPTIONS",.value=page==5?"REGIONS":"TILES",.key='o'},
         {.label="OPEN",.value=page==0?"IN MAP":"SELECTED MAP",.key='a',.dim=page==0?card_sel>=card_n:catalog.busy || !catalog.count || !catalog.region[selected].local_bytes},{.label="SEARCH",.value="PLACES",.key='s'}};
@@ -976,6 +1002,16 @@ static void draw(tui_surface *sf,tui_rect a) {
     if(page==3) { btn[1]=(ls_btn_t){.label="CONFIRM",.value=confirm==1?"CANCEL":"DELETE",.key='y'}; nb=2; }
     int bh=ls_btn_raised_height(a,nb); tui_rect bar=tui_rect_make(a.x+1,a.y+a.h-bh-1,a.w-2,bh);
     tui_rect body=tui_rect_make(a.x+1,a.y+2,a.w-2,a.h-bh-4);
+    if(desk) {
+        /* A desk window: the keys are the toolbar on top (no BACK on the
+           first page: the title bar closes the window), the chips under
+           it, the page's name and news in the status bar. */
+        bar=tui_rect_make(a.x,a.y,a.w,1);
+        body=tui_rect_make(a.x+1,a.y+2,a.w-2,a.h-2);
+        char st[96];
+        snprintf(st,sizeof(st),"%s%s%s",page_name(),catalog.message[0]&&page==5?": ":"",page==5?catalog.message:"");
+        ls_tui_status_set(st,NULL);
+    }
     /* Chips under the title: the card, how many regions, which map is
        open, and a transfer while one runs - the state before the page. */
     {
@@ -998,7 +1034,13 @@ static void draw(tui_surface *sf,tui_rect a) {
         tui_rect storage=tui_rect_make(body.x,body.y+body.h-5,body.w,5);
         list_area=tui_rect_make(body.x,body.y+2,body.w,body.h-8); visible=list_area.h/4;
         if(body.w>90) list_area.w=body.w/2;
-        if(body.w<=90 && catalog.count*4+10<list_area.h) list_area.h=catalog.count?catalog.count*4:4;   /* room for the empty-library line */
+        if(desk) {
+            const tui_rect g=ls_dui_group(sf,tui_rect_make(body.x,body.y+body.h-6,body.w,6),"Storage");
+            storage=tui_rect_make(g.x+1,g.y,g.w-2,4);
+            const tui_rect w=ls_dui_well(sf,tui_rect_make(list_area.x,list_area.y,list_area.w,body.h-8),NULL);
+            list_area=tui_rect_make(w.x+1,w.y,w.w-2,w.h);
+        }
+        if(!desk && body.w<=90 && catalog.count*4+10<list_area.h) list_area.h=catalog.count?catalog.count*4:4;   /* room for the empty-library line */
         visible=list_area.h/4;
         if(visible<1) visible=1;
         if(selected<first) first=selected;
@@ -1051,13 +1093,19 @@ static void draw(tui_surface *sf,tui_rect a) {
         tui_rect art=body,details=body;
         if(body.w>90) { art.w=body.w/2; art.y+=2; art.h-=3; details.x+=art.w; details.w-=art.w; details.y+=3; details.h-=3; }
         else { art.y+=2; art.h=body.h-16; if(art.h>25) art.h=25; details.y=art.y+art.h+1; details.h=body.y+body.h-details.y; }
+        if(desk) art=ls_dui_glass(sf,art);
         globe(sf,art,progress);
         char percent[8];
         if(transfer.total) snprintf(percent,sizeof(percent),"%d",(int)(progress*100));
         else snprintf(percent,sizeof(percent),"%s",transfer.state==3?"ERROR":transfer.receiving?"READY":"START");
         int len=strlen(percent),gx=details.x+(details.w-(len*6+3))/2,gy=details.y;
+        if(desk) {     /* the percentage on a VFD */
+            char v[12]; snprintf(v,sizeof(v),transfer.total?"%s %%":"%s",percent);
+            ls_dui_vfd(sf,tui_rect_make(details.x+1,gy,details.w-2,7),v,transfer.state==3?LS_DUI_VFD_AMBER:LS_DUI_VFD_GREEN);
+        } else {
         for(int i=0;i<len;i++) ls_glyph_draw(sf,tui_rect_make(gx+i*6,gy,5,7),percent[i],transfer.state==3?ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED|TUI_BRIGHT,TUI_BLACK)):GOOD);
         if(transfer.total) tui_put_char(sf,details,gx+len*6,gy+5,'%',GOOD);
+        }
         int y=gy+8; double seconds=(esp_timer_get_time()-transfer.start_us)/1e6;
         double rate=seconds>0?transfer.bytes/seconds:0; char text[160];
         if(transfer.total) snprintf(text,sizeof(text),"%.2f / %.2f MB",transfer.bytes/1e6,transfer.total/1e6);
@@ -1087,7 +1135,8 @@ static void draw(tui_surface *sf,tui_rect a) {
         line(sf,body,body.y+5,confirm==1?"Cancelled transfers remove their partial file.":"This removes the files from the SD card.",LS_ATTR_DIM);
         if(catalog.count) line(sf,body,body.y+7,catalog.region[selected].name,LS_ATTR_DIM);
     }
-    ls_btn_bar_raised(sf,bar,btn,nb,focus);
+    if(desk && page==0) ls_btn_bar_raised(sf,bar,btn+1,nb-1,focus>0?focus-1:-1);
+    else ls_btn_bar_raised(sf,bar,btn,nb,focus);
 }
 static bool key(ls_tk_t k,char ch) {
     if(ls_place_search_active())return ls_place_search_key(k,ch);
@@ -1162,6 +1211,7 @@ static bool key(ls_tk_t k,char ch) {
 static bool touch(int col,int row) {
     if(ls_place_search_active())return ls_place_search_touch(col,row);
     int b=ls_btn_hit(col,row);
+    if(b>=0 && page==0 && ls_tui_compact()) b++;          /* the desk's first page has no BACK */
     if(b>=0) { const char *keys=page==0||page==5?"boasm":page==1?"bao":page==3?"by":page==4?"bgwr":"ba"; if(b<(int)strlen(keys)) key(LS_TK_CHAR,keys[b]); return true; }
     if(page==0 && card_server_row>=0 && row==card_server_row) { card_use_live_server(); return true; }
     if(page==0 && card_update_row>=0 && row==card_update_row) { card_update_all(); return true; }

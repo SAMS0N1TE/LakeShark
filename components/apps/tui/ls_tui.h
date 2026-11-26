@@ -117,6 +117,15 @@ const uint8_t *ls_tui_glass_now(size_t *bytes);
 /* Exact glass coverage, including shape masks and crisp text, for a cell-feed
    viewer. UI task only, after present; packed as one 0..15 byte per pixel. */
 bool ls_tui_glass_mask(uint16_t glyph, uint8_t *mask, bool *halo);
+/* The desk copied a window's own surface `app` into the grid at `at` (grid
+   cells, limited to `clip`) and changed its colours to the scheme's on the
+   way. The glass marks and basemap cells the app recorded follow the copy:
+   a glass cell is taken as copied (its ink and halo as the window shows
+   them), and a basemap cell, drawn in the map's own colours, goes back to
+   what the app drew. A cell the app drew over since recording is left as
+   it is, so it stays solid. Without this every ring dot and name over a
+   map in a light-faced window drew as an opaque block of the face. */
+void ls_tui_follow_copy(const tui_surface *app, tui_rect at, tui_rect clip);
 
 #define LS_TUI_TRACE(eighths) ((char)(0xA0 + (((eighths) < 1 ? 1 :                                               (eighths) > 8 ? 8 : (eighths)) - 1)))
 
@@ -146,6 +155,10 @@ void ls_tui_set_cutout(int cx, int cy, int radius);
 bool ls_tui_cutout(tui_rect *cells);
 /* Landscape handedness, default clockwise. Apply before begin for safe insets. */
 void ls_tui_set_rotation_cw(bool clockwise);
+/* How the grid sits on the native portrait framebuffer now: 0 portrait,
+   1 landscape turned clockwise, -1 counter-clockwise. A viewer of the raw
+   framebuffer turns its picture the same way to see the screen upright. */
+int ls_tui_native_turn(void);
 /* Told at every begin which board edge the content's top now faces, in
    screen axes (x right, y top): (0,1) portrait, (-1,0) clockwise landscape,
    (1,0) counter-clockwise. Instruments that point somewhere (the compass)

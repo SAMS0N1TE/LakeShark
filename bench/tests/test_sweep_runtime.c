@@ -75,6 +75,18 @@ LS_CASE(logging_is_opt_in_and_rules_reload_retains_previous_on_error) {
     ls_sweep_start(false);
 }
 
+/* An old rules.json on the card: its rows join the shared table (compat reader). */
+LS_CASE(old_rules_json_on_the_card_folds_into_the_shared_table) {
+    ls_sweep_defaults();ls_test_mkdir(LS_SWEEP_DIR);
+    FILE *f=fopen(LS_SWEEP_DIR "/rules.json","wb");LS_CHECK(f);
+    if(f) {fputs("[{\"category\":\"CAMERA\",\"label\":\"Card cam\",\"vendor\":\"Shop\",\"ssid\":\"camnet\"}]",f);fclose(f);}
+    const uint8_t ap[6]={0x10,0x20,0x30,1,2,3};ls_sweep_match_t m;
+    LS_CHECK(!ls_sweep_parse_wifi(ap,"my CAMNET 5",&m));
+    LS_CHECK(ls_sweep_rules_reload());
+    LS_CHECK(ls_sweep_parse_wifi(ap,"my CAMNET 5",&m) && m.category==SW_CAMERA && !strcmp(m.label,"Card cam") && !strcmp(m.vendor,"Shop"));
+    remove(LS_SWEEP_DIR "/rules.json");ls_sweep_defaults();LS_CHECK(!ls_sweep_parse_wifi(ap,"my CAMNET 5",&m));
+}
+
 LS_CASE(sweep_mute_preserves_system_volume_and_receive_runtime) {
     ls_sweep_clear();ls_sweep_defaults();external_wifi=external_ble=true;muted=false;busy=false;volume=23;
     ls_sweep_settings_t s={.version=2,.enabled=15,.muted=2,.receive_only=true};LS_CHECK(ls_sweep_settings_set(&s));

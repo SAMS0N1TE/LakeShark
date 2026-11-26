@@ -76,6 +76,8 @@ def main():
                 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest(), 'signed': True,
                 'file': 'apps/files/' + name, 'min_firmware': a.min_firmware,
             })
+            if m.get('icon_px'):                 # LAP_ICON_PX: the store shows the tile in colour
+                entries[-1]['icon_px'] = m['icon_px']
             if meta.get('status') == 'wip':      # the store badges it EARLY ACCESS
                 entries[-1]['status'] = 'wip'
             for k in ('thumb', 'screens', 'clip'):  # the app page's pictures, paths in the site

@@ -1078,17 +1078,32 @@ uint32_t ls_lora_airtime_ms(int len) { return s_ops->airtime_ms(len); }
 
 static ls_fsk_cfg_t tx_fsk_cfg;
 esp_err_t ls_lora_fsk_begin(const ls_fsk_cfg_t *cfg)
-{ ls_lora_hw_lock();esp_err_t e=bound_locked()?s_ops->fsk_begin(cfg):ESP_ERR_NOT_SUPPORTED;if(e==ESP_OK)tx_fsk_cfg=*cfg;ls_lora_hw_unlock();return e; }
+{
+    ls_lora_hw_lock();
+    esp_err_t e = !bound_locked() ? ESP_ERR_NOT_SUPPORTED
+                  /* FLRC is the LR2021's alone: every other part is told no here. */
+                  : cfg && cfg->flrc && !(s_ops->caps() & LS_LORA_CAP_FLRC) ? ESP_ERR_NOT_SUPPORTED
+                  : s_ops->fsk_begin(cfg);
+    if (e == ESP_OK) tx_fsk_cfg = *cfg;
+    ls_lora_hw_unlock();
+    return e;
+}
+/* What one frame of the running session costs the transmitter protection. */
+static uint64_t fsk_tx_us(size_t len)
+{
+    if (tx_fsk_cfg.flrc)
+        return (uint64_t)ls_lora_flrc_airtime_us(tx_fsk_cfg.flrc, tx_fsk_cfg.flrc_cr, tx_fsk_cfg.preamble_bits, len) + 1;
+    return ((uint64_t)len * 8 + (tx_fsk_cfg.preamble_bits ? tx_fsk_cfg.preamble_bits : 32) +
+            (tx_fsk_cfg.sync_bits ? tx_fsk_cfg.sync_bits : 32)) * 1000000 /
+           (tx_fsk_cfg.bitrate ? tx_fsk_cfg.bitrate : 1) + 1;
+}
 int ls_lora_fsk_poll(uint8_t *buf, size_t size, float *rssi_dbm)
 { LOCKED_RET(int, s_ops->fsk_poll(buf, size, rssi_dbm)); }
 esp_err_t ls_lora_fsk_send(const uint8_t *data, size_t len)
 {
     if(!data||!len)return ESP_ERR_INVALID_ARG;
     if(len>255)return ESP_ERR_INVALID_SIZE;
-    TX_ROUTED(s_ops->fsk_send(data,len),
-        tx_duration(((uint64_t)len*8+(tx_fsk_cfg.preamble_bits?tx_fsk_cfg.preamble_bits:32)+
-                     (tx_fsk_cfg.sync_bits?tx_fsk_cfg.sync_bits:32))*1000000/
-                    (tx_fsk_cfg.bitrate?tx_fsk_cfg.bitrate:1)+1),tx_fsk_cfg.power_dbm);
+    TX_ROUTED(s_ops->fsk_send(data,len), tx_duration(fsk_tx_us(len)), tx_fsk_cfg.power_dbm);
 }
 esp_err_t ls_lora_ook_send(const uint8_t *chips, size_t len, uint32_t chip_bps)
 {

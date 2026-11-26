@@ -236,8 +236,14 @@ int  settings_get_subghz_style(void);        /* spectrum grain             */
 void settings_set_subghz_style(int style);
 bool settings_get_subghz_lr_fsk(void);       /* LR2021 WATCH: FSK, not OOK */
 void settings_set_subghz_lr_fsk(bool fsk);
+bool settings_get_subghz_lr_raw(void);       /* LR2021 FSK: raw, not packet */
+void settings_set_subghz_lr_raw(bool raw);
 int  settings_get_subghz_expert(void);       /* SUB-GHZ SETTINGS, packed   */
 void settings_set_subghz_expert(int packed);
+/* SUB-GHZ SETTINGS > TX limits: true lifts the software transmit limits at
+   run time (ls_tx_unlock.h). Loaded into ls_tx_unlock_runtime at init. */
+bool settings_get_tx_unlocked(void);
+void settings_set_tx_unlocked(bool on);
 int  settings_get_subghz_colour(void);       /* spectrum palette           */
 void settings_set_subghz_colour(int colour);
 /* The FSK receive parameters, which are the ones that take real effort to
@@ -296,6 +302,13 @@ bool settings_set_music_eq(uint64_t packed);
    ls_i18n.h. RAM after settings_init, so the UI may read it any time. */
 int settings_get_ui_lang(void);
 void settings_set_ui_lang(int lang);
+
+/* Settings > SYSTEM > Time zone (an index into ls_tz's list, 0 AUTO, the
+   default) and Clock (12 h, the default, or 24 h). RAM after settings_init. */
+int  settings_get_tz_zone(void);
+void settings_set_tz_zone(int zone);
+bool settings_get_clock_24h(void);
+void settings_set_clock_24h(bool on);
 
 /**/
 bool settings_get_nav_autohide(void);

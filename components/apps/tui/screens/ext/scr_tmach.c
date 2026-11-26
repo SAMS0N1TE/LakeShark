@@ -314,6 +314,11 @@ static int draw_tape(tui_surface *sf, tui_rect a, int y, int rows)
     char note[48];
     snprintf(note, sizeof(note), "last %d s", span / 10);
     panel(sf, a, box, " TAPE ", note, NOTE);
+    if (ls_tui_compact()) {     /* a desk window: the tape is a scope, on black glass */
+        const tui_rect in = tui_rect_make(box.x + 1, box.y + 1, box.w - 2, h - 2);
+        tui_fill(sf, in, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        ls_ink_keep(in);
+    }
     const int sx = box.x + 6, gw = box.w - 8, gy = box.y + 1;      /* scale 5 wide, then the graph */
     if (gw < 8) return h;
     const int dots = gw * 2, H = rows * 4;
@@ -626,7 +631,17 @@ static void draw(tui_surface *sf, tui_rect a)
     const int nb = bar_buttons(b);
     const ls_btn_t key = big_key();
     int bottom;
-    if (wide) {
+    const bool desk = ls_tui_compact();
+    if (desk) {
+        /* A desk window: the keys and WHAT WAS THAT? on one toolbar under
+           the menu bar; the news goes to the window's status bar. */
+        tui_fill(sf, a, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        const int kw = ls_key1_width(&key) + 1;
+        ls_btn_bar_raised_slot(sf, tui_rect_make(a.x, a.y, a.w - kw, 1), b, nb, -1, LS_BTN_SLOT_SCREEN);
+        ls_btn_bar_transport_slot(sf, tui_rect_make(a.x + a.w - kw, a.y, kw, 1), &key, 1, -1, LS_BTN_SLOT_WATERFALL);
+        a = tui_rect_make(a.x + 1, a.y + 1, a.w - 2, a.h - 1);
+        bottom = a.y + a.h - 1;
+    } else if (wide) {
         const int kw = a.w * 2 / 5;
         const int bh = ls_btn_raised_height(tui_rect_make(a.x, a.y, a.w - kw, a.h), nb);
         ls_btn_bar_raised_slot(sf, tui_rect_make(a.x, a.y + a.h - bh, a.w - kw, bh), b, nb, -1, LS_BTN_SLOT_SCREEN);
@@ -641,7 +656,8 @@ static void draw(tui_surface *sf, tui_rect a)
     header(sf, a);
     int y = a.y + 4;
     const int64_t now = esp_timer_get_time();
-    if (s_flash[0] && now < s_flash_until) {
+    if (desk) ls_tui_status_set(s_flash[0] && now < s_flash_until ? s_flash : s_have_st && s_st.enabled ? "Keeping what the receiver hears" : "Off: OPTIONS > RECORDING turns it on", NULL);
+    else if (s_flash[0] && now < s_flash_until) {
         str(sf, a, a.x + 1, bottom, a.w - 2, s_flash, VALUE);
         bottom--;
     }

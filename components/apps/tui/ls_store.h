@@ -42,6 +42,7 @@ typedef struct {
     char credits[112];      /* third_party: "name (licence); ..." */
     char file[80];
     char art[6][11];        /* the app's own tile picture */
+    char px[18][20];        /* its colour icon (icon_px): '0'-'f' a colour, '.' clear; px[0][0] 0 without */
     uint8_t sha[32];
     uint32_t size;
     uint8_t group;          /* LS_APP_GROUP_*: declared, else by caps/category */

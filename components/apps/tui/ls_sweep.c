@@ -3,6 +3,8 @@
 #include "ls_rid.h"
 #include "ls_seen.h"
 #include "ls_textpack.h"
+#include "ls_sigs.h"
+#include "ls_tail.h"
 #pragma weak ls_seen_wanted
 #pragma weak ls_seen_observe
 /* A detector app watches SWEEP's categories: it raises the alerts. */
@@ -33,10 +35,15 @@ static bool detector(void) {return ls_seen_wanted && (ls_seen_wanted()&(LS_SEEN_
 #ifndef LS_SWEEP_DIR
 #define LS_SWEEP_DIR "/sdcard/sweep"
 #endif
+/* SWEEP classifies through the shared signature table (ls_sigs.h). Its old
+ * rules.json survives as a compat reader: the strict parser below reads it
+ * and folds each row into the table's extra layer as sweep-1, sweep-2... */
 typedef struct { uint8_t kind, category, bytes[16]; char value[64], label[48], vendor[24]; } rule_t;
 enum { R_OUI, R_COMPANY, R_NAME, R_UUID16, R_UUID128, R_SSID };
-static EXT_RAM_BSS_ATTR rule_t rules[LS_SWEEP_RULES], staging[LS_SWEEP_RULES];
+static EXT_RAM_BSS_ATTR rule_t staging[LS_SWEEP_RULES];
 static EXT_RAM_BSS_ATTR char rule_text[LS_SWEEP_RULE_BYTES+1];
+#define FOLD_ROW_BYTES 320
+static EXT_RAM_BSS_ATTR char fold_text[LS_SWEEP_RULES*FOLD_ROW_BYTES];
 static EXT_RAM_BSS_ATTR ls_sweep_device_t table[LS_SWEEP_CAP];
 static EXT_RAM_BSS_ATTR ls_sweep_device_t log_queue[8];
 static unsigned log_count;
@@ -45,7 +52,7 @@ typedef struct { uint8_t mac[6], type; int64_t at; } recent_t;
 static EXT_RAM_BSS_ATTR recent_t recent[16];
 static StaticSemaphore_t lock_mem;
 static SemaphoreHandle_t mutex;
-static unsigned once, init_once, rule_count;
+static unsigned once, init_once, rule_count; /* rule_count: rows folded from rules.json */
 static uint32_t serial;
 _Static_assert(sizeof(ls_sweep_settings_t)==20 && offsetof(ls_sweep_settings_t,on)==19,
                "SWEEP v3 must preserve the stored v1/v2 blob layout");
@@ -63,12 +70,15 @@ static void advert(int64_t now) {
     if(rate_second[i]!=sec) {rate_second[i]=sec;rate_count[i]=0;}
     rate_count[i]++;if(now>status.last_advert_us) status.last_advert_us=now;
 }
+/* "With you" is the shared rule (ls_tail.h): its minutes and metres, here
+ * for a separated tracker only. */
+static uint32_t span_ms(int64_t a,int64_t b) {int64_t d=(b-a)/1000;return d<=0?0:d>=(int64_t)UINT32_MAX?UINT32_MAX:(uint32_t)d;}
 ls_sweep_section_t ls_sweep_section(const ls_sweep_device_t *d,int64_t now,bool gps) {
     if(d->match.category==SW_TRACKER && d->match.state==SW_STATE_SEPARATED &&
-       ((d->with_you || d->seen_us-d->separated_us>=600000000) && (!gps || d->moved_m>=500 || d->places>=3))) return SW_WITH_YOU;
+       ((d->with_you || ls_tail_time_ok(span_ms(d->separated_us,d->seen_us))) && (!gps || ls_tail_moved_ok(d->moved_m,d->places)))) return SW_WITH_YOU;
     return now-d->first_us<120000000?SW_NEW:SW_PASSING;
 }
-bool ls_sweep_alarm(const ls_sweep_device_t *d,bool gps) {return gps && d->with_you && (d->moved_m>=500 || d->places>=3);}
+bool ls_sweep_alarm(const ls_sweep_device_t *d,bool gps) {return gps && d->with_you && ls_tail_moved_ok(d->moved_m,d->places);}
 int ls_sweep_bucket(const ls_sweep_device_t *d,int64_t now,unsigned age) {
     if(age>=24) return -128;
     int64_t b=now/2500000-(int64_t)age;if(b<0) return -128;
@@ -215,32 +225,96 @@ static bool parse_rules(const char *text,size_t len,unsigned *count) {
     if(!take(&j,']')) return false;
     ws(&j); return j.p==j.end;
 }
+/* ---- the compat reader: rules.json rows folded into the shared table ---- */
+/* The eight rows SWEEP used to seed into a new rules.json. The shared table's
+ * built-in rows cover them (axis, tile, bodycam-name, flipper, pwnagotchi),
+ * so a seeded file's untouched copies are not folded twice; any row a user
+ * added or edited is. */
+static const char *const seeded[]={
+    "{\"category\":\"CAMERA\",\"label\":\"Axis vendor hint\",\"vendor\":\"Axis\",\"oui\":\"00408C\"}",
+    "{\"category\":\"CAMERA\",\"label\":\"Axis vendor hint\",\"vendor\":\"Axis\",\"oui\":\"ACCC8E\"}",
+    "{\"category\":\"TRACKER\",\"label\":\"Tile vendor advert\",\"vendor\":\"Tile\",\"company\":\"067C\"}",
+    "{\"category\":\"TRACKER\",\"label\":\"Tile service\",\"vendor\":\"Tile\",\"uuid\":\"FEED\"}",
+    "{\"category\":\"TRACKER\",\"label\":\"Tile service\",\"vendor\":\"Tile\",\"uuid\":\"FEEC\"}",
+    "{\"category\":\"BODYCAM\",\"label\":\"Bodycam name hint\",\"vendor\":\"Unverified\",\"name\":\"bodycam\"}",
+    "{\"category\":\"ATTACK\",\"label\":\"Flipper name hint\",\"vendor\":\"Unverified\",\"name\":\"Flipper\"}",
+    "{\"category\":\"ATTACK\",\"label\":\"Pwnagotchi SSID hint\",\"vendor\":\"Unverified\",\"ssid\":\"pwnagotchi\"}"};
+static const char *rule_key(const rule_t *r) {
+    static const char *const k[]={"oui","company","name","uuid","uuid","ssid"};return r->kind<=R_SSID?k[r->kind]:"";
+}
+static bool was_seeded(const rule_t *r) {
+    char row[256];
+    snprintf(row,sizeof(row),"{\"category\":\"%s\",\"label\":\"%s\",\"vendor\":\"%s\",\"%s\":\"%s\"}",ls_sweep_category(r->category),r->label,r->vendor,rule_key(r),r->value);
+    for(unsigned i=0;i<sizeof(seeded)/sizeof(*seeded);i++) if(!strcmp(row,seeded[i])) return true;
+    return false;
+}
+/* A field of the card format: no '|', no line breaks (the parser refuses
+ * control characters already). */
+static size_t put_plain(char *o,size_t cap,const char *s) {
+    size_t n=0;for(;*s && n+1<cap;s++) o[n++]=*s=='|'?'/':*s;o[n]=0;return n;
+}
+/* "contains v" as a whole-string glob: *v* with the glob's own characters and
+ * the pattern list's comma escaped; '|' cannot be escaped there and becomes ?. */
+static size_t put_contains(char *o,size_t cap,const char *v) {
+    size_t n=0;if(cap<3) return 0;o[n++]='*';
+    for(;*v && n+3<cap;v++) {
+        char c=*v;
+        if(c=='|') c='?';
+        else if(c=='*' || c=='?' || c=='#' || c=='%' || c=='\\' || c==',') o[n++]='\\';
+        o[n++]=c;
+    }
+    o[n++]='*';o[n]=0;return n;
+}
+static const char *const fold_tag[SW_CATS]={"CAMERA","BODYCAM","DRONE","TRACKER","HACKTOOL"};
+/* Rows staging[0..n) as card lines in fold_text; the bytes written. */
+static size_t fold_rows(unsigned n,unsigned *rows) {
+    size_t used=0;*rows=0;
+    for(unsigned i=0;i<n;i++) {
+        const rule_t *r=&staging[i];
+        if(was_seeded(r)) continue;
+        char pat[160],label[48],vendor[24];
+        const char *kinds="BLE";
+        switch(r->kind) {
+        case R_OUI: kinds="WIFI";snprintf(pat,sizeof(pat),"oui:%02X%02X%02X",r->bytes[0],r->bytes[1],r->bytes[2]);break;
+        case R_COMPANY: snprintf(pat,sizeof(pat),"co:%02X%02X",r->bytes[0],r->bytes[1]);break;
+        case R_UUID16: snprintf(pat,sizeof(pat),"uuid:%02X%02X",r->bytes[0],r->bytes[1]);break;
+        case R_UUID128: {size_t k=(size_t)snprintf(pat,sizeof(pat),"uuid:");for(int b=0;b<16;b++) k+=(size_t)snprintf(pat+k,sizeof(pat)-k,"%02X",r->bytes[b]);break;}
+        case R_SSID: kinds="WIFI";memcpy(pat,"name:",5);put_contains(pat+5,sizeof(pat)-5,r->value);break;
+        default: memcpy(pat,"name:",5);put_contains(pat+5,sizeof(pat)-5,r->value);break;
+        }
+        put_plain(label,sizeof(label),r->label);put_plain(vendor,sizeof(vendor),r->vendor);
+        int k=snprintf(fold_text+used,sizeof(fold_text)-used,"sweep-%u|%s|%s|1|%s|%s|sweep:%s\n",i+1,fold_tag[r->category],kinds,label,pat,vendor);
+        if(k<0 || (size_t)k>=sizeof(fold_text)-used) break;
+        used+=(size_t)k;(*rows)++;
+    }
+    fold_text[used]=0;return used;
+}
+/* Under lock(): staging holds n parsed rows; replace SWEEP's layer of the table. */
+static void fold(unsigned n) {
+    unsigned rows=0;size_t len=fold_rows(n,&rows);
+    if(rows || rule_count) wd_sig_set_extra(rows?fold_text:NULL,len,"SWEEP");
+    else wd_sig_ensure();
+    rule_count=rows;
+}
 bool ls_sweep_rules_parse(const char *json,size_t len) {
     if(!json || len>LS_SWEEP_RULE_BYTES) return false;
     lock(); unsigned n=0; bool ok=parse_rules(json,len,&n);
-    if(ok) {memcpy(rules,staging,n*sizeof(*rules));rule_count=n;}
+    if(ok) fold(n);
     unlock();return ok;
 }
-static const char defaults[]=
-    "[{\"category\":\"CAMERA\",\"label\":\"Axis vendor hint\",\"vendor\":\"Axis\",\"oui\":\"00408C\"},"
-    "{\"category\":\"CAMERA\",\"label\":\"Axis vendor hint\",\"vendor\":\"Axis\",\"oui\":\"ACCC8E\"},"
-    "{\"category\":\"TRACKER\",\"label\":\"Tile vendor advert\",\"vendor\":\"Tile\",\"company\":\"067C\"},"
-    "{\"category\":\"TRACKER\",\"label\":\"Tile service\",\"vendor\":\"Tile\",\"uuid\":\"FEED\"},"
-    "{\"category\":\"TRACKER\",\"label\":\"Tile service\",\"vendor\":\"Tile\",\"uuid\":\"FEEC\"},"
-    "{\"category\":\"BODYCAM\",\"label\":\"Bodycam name hint\",\"vendor\":\"Unverified\",\"name\":\"bodycam\"},"
-    "{\"category\":\"ATTACK\",\"label\":\"Flipper name hint\",\"vendor\":\"Unverified\",\"name\":\"Flipper\"},"
-    "{\"category\":\"ATTACK\",\"label\":\"Pwnagotchi SSID hint\",\"vendor\":\"Unverified\",\"ssid\":\"pwnagotchi\"}]";
-void ls_sweep_defaults(void) {ls_sweep_rules_parse(defaults,strlen(defaults));}
+/* No folded rows: the shared table as built in (plus the card's sigs.txt). */
+void ls_sweep_defaults(void) {lock();fold(0);unlock();}
 void ls_sweep_init(void) {
     unsigned e=0;
     if(__atomic_compare_exchange_n(&init_once,&e,1,false,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED)) {
         ls_sweep_defaults();ls_sweep_settings_load();__atomic_store_n(&init_once,2,__ATOMIC_RELEASE);
     } else while(__atomic_load_n(&init_once,__ATOMIC_ACQUIRE)!=2) vTaskDelay(1);
 }
+/* The folder for alerts.csv. A missing rules.json is no longer created: the
+ * shared table holds what it used to seed. */
 void ls_sweep_rules_seed(void) {
-    struct stat st;if(!stat(LS_SWEEP_DIR "/rules.json",&st)) return;
-    if(sweep_mkdir(LS_SWEEP_DIR) && stat(LS_SWEEP_DIR,&st)) return;
-    FILE *f=fopen(LS_SWEEP_DIR "/rules.json","wb");if(f) {fwrite(defaults,1,strlen(defaults),f);fclose(f);}
+    struct stat st;if(!stat(LS_SWEEP_DIR,&st)) return;
+    (void)sweep_mkdir(LS_SWEEP_DIR);
 }
 void ls_sweep_reload_request(void) {lock();reload_requested=true;unlock();ls_sweep_wake();}
 bool ls_sweep_reload_pending(void) {lock();bool b=reload_requested;reload_requested=false;unlock();return b;}
@@ -256,23 +330,46 @@ bool ls_sweep_rules_reload(void) {
     if(!f) {unlock();return false;}
     size_t n=fread(rule_text,1,LS_SWEEP_RULE_BYTES+1,f); bool ok=!ferror(f) && n<=LS_SWEEP_RULE_BYTES; fclose(f);
     unsigned count=0; if(ok) ok=parse_rules(rule_text,n,&count);
-    if(ok) {memcpy(rules,staging,count*sizeof(*rules));rule_count=count;}
+    if(ok) fold(count);
     unlock();return ok;
 }
-static bool rule_ad(const rule_t *r,unsigned t,const uint8_t *p,size_t n,const char *name) {
-    if(r->kind==R_NAME) return contains(name,r->value);
-    if(r->kind==R_COMPANY) return t==0xff && n>=2 && p[0]==r->bytes[1] && p[1]==r->bytes[0];
-    if(r->kind==R_UUID16) {
-        if(t==0x16) return n>=2 && p[0]==r->bytes[1] && p[1]==r->bytes[0];
-        if(t==2 || t==3) for(size_t i=0;i+1<n;i+=2) if(p[i]==r->bytes[1] && p[i+1]==r->bytes[0]) return true;
-    }
-    if(r->kind==R_UUID128 && (t==6 || t==7 || t==0x21)) {
-        for(size_t i=0;i+15<n;i+=16) {bool hit=true;for(int k=0;k<16;k++) if(p[i+k]!=r->bytes[15-k]) hit=false;if(hit) return true;if(t==0x21) break;}
-    } return false;
+/* ---- classifying through the shared table ---- */
+/* The table's tags as SWEEP's five categories, -1: not one SWEEP shows. */
+static int tag_category(uint16_t t) {
+    if(t&WD_T_TRACKER) return SW_TRACKER;
+    if(t&WD_T_DRONE) return SW_DRONE;
+    if(t&(WD_T_BODYCAM|WD_T_POLICE)) return SW_BODYCAM;
+    if(t&(WD_T_HACKTOOL|WD_T_SKIMMER)) return SW_ATTACK;
+    if(t&(WD_T_CAMERA|WD_T_ALPR|WD_T_WEARABLE|WD_T_INFRA)) return SW_CAMERA;
+    return -1;
 }
-bool ls_sweep_parse_ble(const uint8_t *ad,size_t len,ls_sweep_match_t *out) {
+typedef struct { int row,cat,alert; } pick_t;
+/* The table rows for the four tags SWEEP checks byte for byte above. A hit on
+ * one of these here means the advert failed SWEEP's exact check (an Apple
+ * company ID alone, a SmartTag name without Samsung's company...), so it is
+ * not taken. */
+static bool exact_only(const char *id) {
+    return !strcmp(id,"findmy") || !strcmp(id,"smarttag") || !strcmp(id,"findhub") || !strcmp(id,"dult");
+}
+static void consider(pick_t *p,uint16_t sig) {
+    const wd_sig_info_t *i=sig?wd_sig_at(sig-1):NULL;if(!i || exact_only(i->id)) return;
+    /* a log-only row (alert 0: doorbells, generic leads) stays WARDRIVE's;
+       SWEEP takes it only when it was one of SWEEP's own (its source says so) */
+    if(!i->alert && !(i->source && (strstr(i->source,"SWEEP") || !strncmp(i->source,"sweep:",6)))) return;
+    int c=tag_category(i->tags);if(c<0) return;
+    if(p->row<0 || i->alert>p->alert) {p->row=sig-1;p->cat=c;p->alert=i->alert;}
+}
+static bool picked(const pick_t *p,ls_sweep_match_t *out) {
+    const wd_sig_info_t *i=p->row>=0?wd_sig_at(p->row):NULL;if(!i) return false;
+    const char *vendor=!strncmp(i->source,"sweep:",6)?i->source+6:i->id;
+    match(out,(unsigned)p->cat,i->label,vendor);return true;
+}
+bool ls_sweep_parse_ble(const uint8_t *ad,size_t len,ls_sweep_match_t *out) {return ls_sweep_parse_ble_from(NULL,0,ad,len,out);}
+bool ls_sweep_parse_ble_from(const uint8_t mac[6],uint8_t type,const uint8_t *ad,size_t len,ls_sweep_match_t *out) {
     if(!ad || !out || len>LS_BLE_AD_MAX) return false;
-    memset(out,0,sizeof(*out)); char name[64]=""; bool samsung=false,found=false;int dult_state=-1;
+    if(!wd_sig_count()) wd_sig_ensure();
+    memset(out,0,sizeof(out[0])); char name[64]=""; bool samsung=false,found=false;int dult_state=-1;
+    uint16_t company=0,u16[8];int16_t mfg0=-1,svc0=-1;unsigned n16=0,n128=0;uint8_t u128[4*16];int svc_at=-1;
     /* Validate the complete envelope before trusting any field. */
     if(!ls_ble_ad_valid(ad,len)) return false;
     size_t off=0; ls_ble_ad_field_t field;
@@ -285,6 +382,12 @@ bool ls_sweep_parse_ble(const uint8_t *ad,size_t len,ls_sweep_match_t *out) {
         if(t==0xff && n>=2 && le16(p)==0x75) samsung=true;
         if(t==0x16 && n>=4 && le16(p)==0xfcb2) dult_state=(p[3]&1)?SW_STATE_NEAR:SW_STATE_SEPARATED;
         if((t==2 || t==3 || t==0x16) && n>=2) for(size_t a=0;a+1<n;a+=2) {if(le16(p+a)==0x1802) out->immediate_alert=true;if(t==0x16) break;}
+        /* what the shared table matches on */
+        if(t==0xff && n>=2 && !company) {company=(uint16_t)le16(p);mfg0=n>=3?p[2]:-1;}
+        if(t==0x16 && n>=2 && svc_at<0 && n16<8) {svc_at=(int)n16;svc0=n>=3?p[2]:-1;u16[n16++]=(uint16_t)le16(p);}
+        if(t==2 || t==3) for(size_t a=0;a+1<n && n16<8;a+=2) u16[n16++]=(uint16_t)le16(p+a);
+        if(t==6 || t==7) for(size_t a=0;a+15<n && n128<4;a+=16) memcpy(u128+16*n128++,p+a,16);
+        if(t==0x21 && n>=16 && n128<4) memcpy(u128+16*n128++,p,16);
     }
     off=0;
     while(ls_ble_ad_next(ad,len,&off,&field)>0) {
@@ -302,20 +405,30 @@ bool ls_sweep_parse_ble(const uint8_t *ad,size_t len,ls_sweep_match_t *out) {
     }
     if(!found && samsung && contains(name,"SmartTag")) {match(out,SW_TRACKER,LS_TEXT(t_ls_sweep_smarttag_name_company, "SmartTag name + company"),"Samsung");found=true;}
     if(found) {if(dult_state>=0) out->state=dult_state;out->immediate_alert=false;return true;} /* Never ring network tags. */
-    lock();
-    for(unsigned r=0;r<rule_count && !found;r++) {
-        off=0;
-        while(ls_ble_ad_next(ad,len,&off,&field)>0)
-            if(rule_ad(&rules[r],field.type,field.data,field.len,name)) {match(out,rules[r].category,rules[r].label,rules[r].vendor);found=true;break;}
+    /* Everything else: the shared table, once per service UUID the advert
+     * lists. The exact payload checks above stay SWEEP's own: they carry the
+     * separated/near state the table has no column for (exact_only). */
+    wd_obs_t o;memset(&o,0,sizeof(o));o.kind=WD_BLE;
+    if(mac) for(int i=0;i<6;i++) o.addr[i]=mac[5-i];   /* SWEEP keeps BLE addresses as on air, least significant first */
+    {size_t k=strlen(name);if(k>sizeof(o.name)-1) k=sizeof(o.name)-1;memcpy(o.name,name,k);o.name[k]=0;}
+    wd_sig_ble_t b={.company=company,.mfg0=mfg0,.svc0=-1,.uuid128=n128?u128:NULL,.n128=(uint8_t)n128,.no_oui=!mac || (type&1)};
+    pick_t pk={-1,-1,-1};
+    unsigned passes=n16?n16:1;
+    for(unsigned u=0;u<passes;u++) {
+        b.uuid16=n16?u16[u]:0;b.svc0=(int)u==svc_at?svc0:-1;
+        consider(&pk,wd_sig_match_ble(&o,&b,NULL));
     }
-    unlock();return found;
+    return picked(&pk,out);
 }
 bool ls_sweep_parse_wifi(const uint8_t mac[6],const char *ssid,ls_sweep_match_t *out) {
     if(!mac || !ssid || !out || strlen(ssid)>32) return false;
-    memset(out,0,sizeof(*out));bool found=false;lock();
-    for(unsigned r=0;r<rule_count;r++) if((rules[r].kind==R_OUI && !(mac[0]&2) && !memcmp(mac,rules[r].bytes,3)) ||
-        (rules[r].kind==R_SSID && contains(ssid,rules[r].value))) {match(out,rules[r].category,rules[r].label,rules[r].vendor);found=true;break;}
-    unlock();return found;
+    if(!wd_sig_count()) wd_sig_ensure();
+    memset(out,0,sizeof(*out));
+    wd_obs_t o;memset(&o,0,sizeof(o));o.kind=WD_WIFI;memcpy(o.addr,mac,6);snprintf(o.name,sizeof(o.name),"%s",ssid);
+    /* A locally administered address has no vendor prefix. */
+    const wd_sig_ble_t b={.mfg0=-1,.svc0=-1,.no_oui=(mac[0]&2)!=0};
+    pick_t pk={-1,-1,-1};consider(&pk,wd_sig_match_ble(&o,&b,NULL));
+    return picked(&pk,out);
 }
 void ls_sweep_settings_get(ls_sweep_settings_t *o) {if(o) {lock();*o=settings;unlock();}}
 #ifdef ESP_PLATFORM
@@ -409,7 +522,7 @@ void ls_sweep_status(ls_sweep_status_t *out,int64_t now) {
         for(unsigned i=0;i<LS_SWEEP_CAP;i++) status.owner_nearby+=nearby[i].at && now-nearby[i].at<60000000;
         unsigned n=0;for(unsigned i=0;i<60;i++) if(rate_count[i] && rate_second[i]>now/1000000-10 && rate_second[i]<=now/1000000) n+=rate_count[i];
         status.adverts_s=n/10.0f;
-        *out=status;out->flood=storm;out->rules=rule_count;unlock();
+        *out=status;out->flood=storm;out->rules=(unsigned)wd_sig_count();unlock();
     }
 }
 static bool novel(const uint8_t *mac,unsigned type,int64_t now) {
@@ -515,7 +628,7 @@ void ls_sweep_ble(const uint8_t mac[6],uint8_t type,int rssi,const uint8_t *ad,s
          * emitting a drone classification (malformed envelopes stay silent). */
         if(ls_rid_advert(mac,type,rssi,ad,len,now)) {memset(&m,0,sizeof(m));match(&m,SW_DRONE,"ASTM Remote ID","Unverified");ls_sweep_observe(mac,0,type,rssi,&m,now);}return;
     }
-    bool hit=ls_sweep_parse_ble(ad,len,&m);
+    bool hit=ls_sweep_parse_ble_from(mac,type,ad,len,&m);
     if(hit && m.state==SW_STATE_NEAR) {ls_sweep_observe(mac,0,type,rssi,&m,now);return;}
     ls_sweep_settings_t o;ls_sweep_settings_get(&o);
     if(o.enabled&(1<<SW_ATTACK)) {
@@ -622,6 +735,17 @@ int ls_sweep_command(int argc,char **argv) {
         return ls_sweep_settings_set(&o)?0:1;
     }
     if(argc==3 && !strcmp(argv[1],"rules") && !strcmp(argv[2],"reload")) return ls_sweep_rules_reload()?0:1;
+    if(argc==2 && !strcmp(argv[1],"rules")) {printf("signatures: %s (%u folded from %s/rules.json)\n",wd_sig_note(),rule_count,LS_SWEEP_DIR);return 0;}
+    /* The one "with you" setting, shared with WARDRIVE's FOLLOW (ls_tail.h). */
+    if(argc==2 && !strcmp(argv[1],"withyou")) {ls_tail_load();ls_tail_rule_t r;ls_tail_get(&r);printf("with you: %u min, %u m\n",r.minutes,r.metres);return 0;}
+    if(argc==4 && !strcmp(argv[1],"withyou")) {
+        char *e1,*e2;long mi=strtol(argv[2],&e1,10),me=strtol(argv[3],&e2,10);
+        if(*e1 || *e2 || mi<LS_TAIL_MINUTES_MIN || mi>LS_TAIL_MINUTES_MAX || me<LS_TAIL_METRES_MIN || me>LS_TAIL_METRES_MAX) {
+            printf("withyou <%d-%d minutes> <%d-%d metres>\n",LS_TAIL_MINUTES_MIN,LS_TAIL_MINUTES_MAX,LS_TAIL_METRES_MIN,LS_TAIL_METRES_MAX);return 1;
+        }
+        ls_tail_load();ls_tail_rule_t r={(uint16_t)mi,(uint16_t)me};bool saved=ls_tail_set(&r);
+        printf("with you: %u min, %u m%s\n",r.minutes,r.metres,saved?"":" (not saved)");return saved?0:1;
+    }
     if(argc==3 && !strcmp(argv[1],"hunt")) {
         if(!strcmp(argv[2],"off")) return ls_sweep_hunt(NULL,0,0)?0:1;
         uint8_t mac[6];if(!hexbytes(argv[2],mac,6)) return 1;
@@ -657,5 +781,5 @@ int ls_sweep_command(int argc,char **argv) {
         size_t n=ls_sweep_snapshot(v,LS_SWEEP_CAP,esp_timer_get_time());
         for(size_t i=0;i<n;i++) {char s[18];ls_sweep_mac_text(s,&v[i]);printf("%s %s %s %s %d dBm\n",s,ls_sweep_category(v[i].match.category),v[i].match.label,v[i].match.vendor,v[i].rssi);}free(v);return 0;
     }
-    LS_PUTS(t_ls_sweep_sweep_on_off_status, "sweep on|off|status|stats|list|hunt <mac|off>|mute on|off|mute CAMERA|BODYCAM|DRONE|TRACKER|ATTACK|rules reload");return 1;
+    LS_PUTS(t_ls_sweep_sweep_on_off_status, "sweep on|off|status|stats|list|hunt <mac|off>|mute on|off|mute CAMERA|BODYCAM|DRONE|TRACKER|ATTACK|rules [reload]|withyou [min m]");return 1;
 }

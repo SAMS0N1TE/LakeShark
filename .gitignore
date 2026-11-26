@@ -73,6 +73,9 @@ serial*.txt
 !/tools/test_cell_archive.py
 !/tools/gen_cell_font.py
 !/tools/ota_github_assets.py
+!/tools/ls_crash_decode.py
+!/tools/release_elfs.py
+!/tools/test_release_elfs.py
 !/tools/p25_profile.example
 !/tools/p25_profile_franklin_nh_to_west_dennis_ma.example
 !/tools/scanlist_nh_ma.lscan

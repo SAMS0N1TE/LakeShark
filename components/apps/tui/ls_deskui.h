@@ -19,6 +19,93 @@
 
 #include "ls_tui_ui.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ================================================================ THE KIT ==
+
+   Sections for a window's body, the way a Delphi or WinForms 1.x form is
+   made: etched group boxes on the face, sunken wells on the contrast ground
+   for lists, text and fields, sunken black glass for scopes and maps, VFD
+   readouts for frequencies and big numbers, one status bar of sunken panes.
+
+   In a desk window each one names its rect to the desk (ls_ink_well,
+   ls_ink_bevel, ls_ink_keep), which gives it the scheme's grounds and real
+   light and dark bevel lines in every scheme: white wells and white/grey
+   lines on Classic's silver, black wells on a dark face. Without a desk (a
+   touch build, or the handheld view of the same board) they draw plain
+   boxes in the house style and keep nothing: no RAM, no state. Every one
+   clips to `r`, and none allocates. They are built in ls_tui_ui.c, beside
+   the shared widgets that use them, so every build that draws has them. */
+
+/* An etched group box with its caption on the top line; answers the inside
+   (r less its frame). The inside is not cleared: it is the face. */
+tui_rect ls_dui_group(tui_surface *sf, tui_rect r, const char *caption);
+/* The same with the caption in `cap` (app colours), drawn etched even
+   without a desk: ls_panel_box's desk form. */
+tui_rect ls_dui_group_ink(tui_surface *sf, tui_rect r, const char *caption, uint8_t cap);
+/* A sunken well: thin dark line top and left, light line bottom and right,
+   hugging an inside on the contrast ground (white on silver). For lists,
+   text and fields. `caption` (may be NULL) sits on its top edge like a
+   label. Answers the inside, cleared. */
+tui_rect ls_dui_well(tui_surface *sf, tui_rect r, const char *caption);
+/* Sunken black glass for a scope, waterfall or map: the well's frame, the
+   inside kept black in every scheme (ls_ink_keep). Answers the inside, cleared. */
+tui_rect ls_dui_glass(tui_surface *sf, tui_rect r);
+
+/* A VFD readout on its own black glass, filling `r`: big seven-segment
+   figures when r.h >= 3 and they fit (5 rows tall from r.h >= 5), else one
+   row of lit text. Unlit segments of every figure show faintly behind the
+   lit ones (ghost 8s, in the dimmest shade of the hue). Figures, '-', '.',
+   ':' and blanks are segments; any other letter ("MHz") is lit text on the
+   bottom row. Nothing moves unless `text` does. */
+enum {
+    LS_DUI_VFD_CYAN = 0, LS_DUI_VFD_GREEN = 1, LS_DUI_VFD_AMBER = 2,  /* the lit hue */
+    LS_DUI_VFD_LEFT = 4,       /* from the left edge instead of centred */
+    LS_DUI_VFD_SMALL = 8,      /* one row even when r is tall */
+};
+void ls_dui_vfd(tui_surface *sf, tui_rect r, const char *text, int flags);
+/* The two inks of a VFD hue: lit and ghost (app colour space). */
+void ls_dui_vfd_inks(int flags, uint8_t *lit, uint8_t *ghost);
+/* One seven-segment figure `c` in a w x h box (w >= 3, h 3 or 5) at x, y:
+   lit strokes in `lit`, the rest of an 8 in `ghost` (0: none). Answers false
+   for a character that has no segments. The caller grounds it. */
+bool ls_dui_seg(tui_surface *sf, tui_rect clip, int x, int y, int w, int h, char c, uint8_t lit, uint8_t ghost);
+/* Whether `c` is drawn as segments (figures, '-', blank). */
+bool ls_dui_seg_has(char c);
+
+/* One status bar on `row`: n sunken panes, pane i `w[i]` cells wide (0: it
+   takes what is left), its text cut to fit. NULL panes are left blank. */
+void ls_dui_status(tui_surface *sf, tui_rect row, const char *const *panes, const int *w, int n);
+
+/* A Win98 tab control filling `r`: the n tabs on its first two rows (the
+   chosen one, `sel`, a row taller and open into its page), the page a raised
+   frame from the third row down. tx/tw (may be NULL, n long) get where each
+   tab was drawn (x -1 when it did not fit); a tab takes clicks on r's first
+   two rows. Answers the page's inside, not cleared (it is the face). */
+tui_rect ls_dui_tabs(tui_surface *sf, tui_rect r, const char *const *names, int n, int sel,
+                     int16_t *tx, int16_t *tw);
+
+/* The frame the well and the glass have, alone: thin lines hugging the
+   inside of r, sunken (dark top/left) or raised (light top/left). */
+void ls_dui_edge(tui_surface *sf, tui_rect r, bool sunken);
+/* A one-row sunken field `w` cells wide at x, y: a thin dark line at its
+   left, a light one at its right, the w - 2 cells between on the contrast
+   ground and cleared. Answers those cells. Without a desk: "[        ]". */
+tui_rect ls_dui_field(tui_surface *sf, tui_rect clip, int x, int y, int w);
+/* The one-row cap of a raised (or, `down`, pressed) key over x..x+w-1:
+   light line left, dark right. The caller has drawn the cap's face and
+   words between; this puts the two ends on and names them. */
+void ls_dui_cap_ends(tui_surface *sf, tui_rect clip, int x, int y, int w, bool down);
+/* The desk is drawing this frame in a window with its colour roles on:
+   the kit's sections are the desk's. */
+bool ls_dui_desk(void);
+
+#ifdef __cplusplus
+}
+#endif
+
 #if LS_TUI_HAS_COMPACT
 
 #ifdef __cplusplus

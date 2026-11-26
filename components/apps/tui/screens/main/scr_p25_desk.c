@@ -60,7 +60,9 @@ static EXT_RAM_BSS_ATTR ls_dui_edit_t s_find;
 static EXT_RAM_BSS_ATTR ls_dui_table_t s_t;
 static EXT_RAM_BSS_ATTR ls_dui_menu_t s_menu;
 static EXT_RAM_BSS_ATTR ls_dui_hits_t s_hits;
-static EXT_RAM_BSS_ATTR tui_rect s_area, s_r_menu, s_r_tools, s_r_table, s_r_card, s_r_health, s_r_status, s_r_find;
+static EXT_RAM_BSS_ATTR tui_rect s_area, s_r_menu, s_r_tools, s_r_table, s_r_card, s_r_health, s_r_status, s_r_find, s_r_tabs;
+tui_rect ls_p25_desk_tabs(void) { return s_r_tabs; }
+static bool s_drawn;            /* the last draw laid the table out */
 static EXT_RAM_BSS_ATTR int16_t s_bar_x[6];
 static EXT_RAM_BSS_ATTR char s_say[96], s_dir[96];
 
@@ -79,6 +81,7 @@ static const ls_dui_col_t COLS[LS_PT__COUNT] = {
 enum {
     C_FOLLOW, C_HOLD, C_LOCK, C_ALLOW, C_ALLOW_ONLY, C_SKIP_ENC, C_FIND, C_EXPORT, C_CLEAR_TABLE, C_ONLY_HEARD,
     C_RADIO, C_OPTIONS, C_CALLS, C_PROFILE, C_CLASSIC, C_PANE_CARD, C_PANE_HEALTH, C_COPY_TG, C_COPY_CHAN, C_COPY_ROW,
+    C_VIEW_WF, C_VIEW_SCAN, C_VIEW_DMR, C_HERE,
     C_COL = 100, C_SORT = 120,
 };
 
@@ -209,6 +212,11 @@ static void build_menu(int which)
         ls_dui_menu_item(&s_menu, "Receiver health", NULL, C_PANE_HEALTH, s_show_health ? LS_DUI_CHECK : 0);
         ls_dui_menu_rule(&s_menu);
         ls_dui_menu_item(&s_menu, "Receiver view (the dial)", "Ctrl+L", C_CLASSIC, 0);
+        ls_dui_menu_item(&s_menu, "Waterfall", "2", C_VIEW_WF, 0);
+        ls_dui_menu_item(&s_menu, "Scanner", "3", C_VIEW_SCAN, 0);
+        ls_dui_menu_item(&s_menu, "DMR calls", "6", C_VIEW_DMR, 0);
+        ls_dui_menu_rule(&s_menu);
+        ls_dui_menu_item(&s_menu, "Here: packs nearby...", "7", C_HERE, 0);
         break;
     default: {
         const uint16_t tg = target();
@@ -339,6 +347,10 @@ static void run(int cmd)
     case C_OPTIONS: handheld('o'); break;
     case C_CALLS: handheld('5'); break;
     case C_PROFILE: handheld('l'); break;
+    case C_VIEW_WF: handheld('2'); break;
+    case C_VIEW_SCAN: handheld('3'); break;
+    case C_VIEW_DMR: handheld('6'); break;
+    case C_HERE: handheld('7'); break;
     case C_CLASSIC: s_classic = true; s_menu.pop.open = false; break;
     case C_PANE_CARD: s_show_card = !s_show_card; break;
     case C_PANE_HEALTH: s_show_health = !s_show_health; break;
@@ -357,8 +369,11 @@ static void layout(tui_rect a)
     int y = a.y;
     s_r_menu = tui_rect_make(a.x, y++, a.w, 1);
     s_r_tools = tui_rect_make(a.x, y++, a.w, 1);
-    s_r_status = tui_rect_make(a.x, a.y + a.h - 1, a.w, 1);
-    const tui_rect body = tui_rect_make(a.x, y, a.w, a.y + a.h - 1 - y);
+    /* The view tabs (scr_p25.c draws them) sit on the page under the
+       toolbar; the counts and the last word go to the window's status bar. */
+    s_r_tabs = a.h >= 14 ? tui_rect_make(a.x, y++, a.w, 1) : tui_rect_make(0, -1, 0, 0);
+    s_r_status = tui_rect_make(0, -1, 0, 0);
+    const tui_rect body = tui_rect_make(a.x, y, a.w, a.y + a.h - y);
     int rw = 0;
     if ((s_show_card || s_show_health) && a.w >= 100) { rw = a.w * 2 / 5; if (rw > 72) rw = 72; if (rw < 44) rw = 44; }
     s_r_card = s_r_health = none;
@@ -387,9 +402,10 @@ static void draw_menu(tui_surface *sf)
     ls_dui_bar_draw(sf, s_r_menu, MENUS, NMENUS, s_menu.pop.open ? s_menu.pop.bar : -1, HUE, s_bar_x);
     char text[80];
     snprintf(text, sizeof(text), "%.4f MHz", s_tune_freq_hz / 1e6);
-    int x = s_r_menu.x + s_r_menu.w - (int)strlen(text) - 1;
+    /* The control channel on a small VFD in the bar's corner. */
+    int x = s_r_menu.x + s_r_menu.w - (int)strlen(text) - 3;
     if (x <= s_bar_x[NMENUS] + 2) return;
-    tui_put_str(sf, s_r_menu, x, s_r_menu.y, text, INK(TUI_YELLOW));
+    ls_dui_vfd(sf, tui_rect_make(x, s_r_menu.y, (int)strlen(text) + 2, 1), text, LS_DUI_VFD_CYAN | LS_DUI_VFD_SMALL);
     const char *label = ls_scr_p25_receive_label();
     x -= (int)strlen(label) + 2;
     if (x > s_bar_x[NMENUS] + 2)
@@ -427,7 +443,7 @@ static void draw_table(tui_surface *sf)
 {
     char title[40], text[32];
     snprintf(title, sizeof(title), "TALKGROUPS %d", s_n);
-    ls_dui_pane(sf, s_r_table, title, "H held  L locked out  A allowed  E encrypted", HUE, !s_find_focus);
+    ls_ink_well(ls_dui_pane(sf, s_r_table, title, "H held  L locked out  A allowed  E encrypted", HUE, !s_find_focus));
     ls_dui_table_head(sf, &s_t, COLS, LS_PT__COUNT, s_sort, s_desc, HUE);
     const tui_rect b = s_t.body;
     if (!s_n) {
@@ -506,6 +522,15 @@ static void draw_status(tui_surface *sf)
     if (P25.hold_tg) k += snprintf(text + k, sizeof(text) - (size_t)k, "  holding %u", P25.hold_tg);
     if (P25.lockout_count) k += snprintf(text + k, sizeof(text) - (size_t)k, "  %u locked out", P25.lockout_count);
     if (P25.list_mode == 1) k += snprintf(text + k, sizeof(text) - (size_t)k, "  allow list only (%u)", P25.allow_count);
+    if (r.h <= 0) {
+        /* No row of its own: the window's status bar says it. The key
+           hints are under Help > Keys. */
+        const bool said = s_say[0] && esp_timer_get_time() - s_said_us < 8000000;
+        if (said) snprintf(text, sizeof(text), "%s", s_say);
+        else if (s_find_focus) snprintf(text, sizeof(text), "Type a talkgroup number or name; Enter keeps it");
+        ls_tui_status_set(text + (text[0] == ' '), NULL);
+        return;
+    }
     tui_put_str(sf, r, r.x, r.y, text, P25.hold_tg ? INK(TUI_YELLOW) : INK(HUE));
     const int x = r.x + k + 2;
     const bool mine = s_say[0] && esp_timer_get_time() - s_said_us < 8000000;
@@ -520,11 +545,13 @@ void ls_p25_desk_draw(tui_surface *sf, tui_rect a)
 {
     s_area = a;
     s_hits.n = 0;
+    s_drawn = false;
     ls_dui_context_claim(context);
     if (a.w < 50 || a.h < 9) {
         ls_panel_notice(sf, a, NULL, "Enlarge the window", "the table keeps its place");
         return;
     }
+    s_drawn = true;
     refresh();
     layout(a);
     draw_menu(sf);
@@ -536,7 +563,11 @@ void ls_p25_desk_draw(tui_surface *sf, tui_rect a)
     }
     if (s_r_health.h) ls_scr_p25_health(sf, s_r_health);
     draw_status(sf);
-    ls_dui_popup_draw(sf, a, &s_menu.pop);
+}
+
+void ls_p25_desk_draw_popup(tui_surface *sf)
+{
+    if (s_drawn) ls_dui_popup_draw(sf, s_area, &s_menu.pop);
 }
 
 /* ----------------------------------------------------------------- input -- */
@@ -630,6 +661,7 @@ bool ls_p25_desk_touch(int col, int row)
         return true;
     }
     if (!tui_rect_contains(s_area, col, row)) { s_find_focus = false; return false; }
+    if (s_r_tabs.h > 0 && row == s_r_tabs.y) return false;    /* the view tabs: scr_p25.c's */
     if (row == s_r_menu.y) {
         const int i = ls_dui_bar_hit(s_bar_x, NMENUS, col);
         if (i >= 0) open_menu(i);

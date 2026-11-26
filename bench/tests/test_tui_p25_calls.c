@@ -52,6 +52,8 @@ bool ls_tui_is_wide(void) { return wide; }
 bool ls_tui_keyboard_mode(void) { return false; }
 const char *ls_tui_radio_claimed(void) { return "P25"; }
 void ls_tui_radio_want(const char *mode) { (void)mode; }
+/* The desk window's status bar: CALLS feeds it in compact mode only. */
+void ls_tui_status_set(const char *left, const char *right) { (void)left; (void)right; }
 void call_archive_init(void) {}
 void call_archive_refresh(void) {}
 bool call_archive_protect(const char *path, bool protect) { (void)path; (void)protect; return true; }

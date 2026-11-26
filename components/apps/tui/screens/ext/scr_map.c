@@ -46,6 +46,7 @@ static int s_carto_audit_bad,s_carto_low_masked;
 #include "../../ls_tui.h"
 #include "../../ls_tui_touch.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_rid.h"
 #include "ls_cold.h"
 #include "../../ls_stroke.h"
 #include "carto/style.h"
@@ -126,6 +127,7 @@ enum {
        they existed: RF SURVEY's heat and the FOX HUNT bearings. */
     L_RF_HIDE  = 1u << 15,
     L_FOX_HIDE = 1u << 16,
+    L_DRONE_HIDE = 1u << 17,   /* DRONES' Remote ID positions */
 };
 #define LAYERS_DEFAULT (L_AIR | L_TRAILS | L_MESH | L_MARKS | L_RINGS | \
                         L_PLACES | L_LINKS | L_VECTORS | L_APRS | L_ROUTE | L_AIS | L_SONDE)
@@ -135,7 +137,7 @@ static bool     s_layers_loaded;
 
 static bool layer(uint32_t bit) { return (s_layers & bit) != 0; }
 /* What a LAYERS row shows: on, for the two that are stored as off bits. */
-static bool layer_shown(uint32_t bit) { return layer(bit) != ((bit & (L_RF_HIDE | L_FOX_HIDE)) != 0); }
+static bool layer_shown(uint32_t bit) { return layer(bit) != ((bit & (L_RF_HIDE | L_FOX_HIDE | L_DRONE_HIDE)) != 0); }
 
 #define LAYER_BITS 0x001FFFFFu
 /* Above the layers: where the map comes from (SOURCE) and how it is drawn
@@ -2875,6 +2877,65 @@ static void sonde_text(tui_surface *sf, tui_rect a, int pw, int ph, int64_t now)
     }
 }
 
+/* DRONES' Remote ID (ls_rid.h), heard while the DRONES watch runs, in front
+   or in a window behind: each drone with a position as a diamond, a dotted
+   line back to its operator when the operator says where it is, and its id
+   with its height. Fresh positions bright, a minute old dim, two gone. */
+static EXT_RAM_BSS_ATTR ls_rid_drone_t s_map_rid[LS_RID_MAX];
+static int s_map_rid_n;
+static uint8_t drone_hue(const ls_rid_drone_t *d, int64_t now)
+{
+    const int64_t age = now - d->location_us;
+    return age < 10000000 ? (TUI_RED | TUI_BRIGHT) : age < 60000000 ? TUI_RED : LS_DIM_FG;
+}
+static void drone_canvas(tui_rect a, int pw, int ph, int64_t now)
+{
+    s_map_rid_n = 0;
+    if (layer(L_DRONE_HIDE)) return;
+    const int n = (int)ls_rid_snapshot(s_map_rid, LS_RID_MAX, now);
+    for (int i = 0; i < n; i++) {
+        const ls_rid_drone_t *d = &s_map_rid[i];
+        if (!d->position_valid || now < d->location_us || now - d->location_us > 120000000) continue;
+        s_map_rid[s_map_rid_n++] = *d;
+    }
+    for (int i = 0; i < s_map_rid_n; i++) {
+        const ls_rid_drone_t *d = &s_map_rid[i];
+        double fx, fy;
+        if (!frame_px(d->lat, d->lon, pw, ph, &fx, &fy) || fx < 0 || fy < 0 || fx >= pw || fy >= ph) continue;
+        int dx, dy; px_dot(fx, fy, &dx, &dy);
+        const uint8_t attr = TUI_ATTR(drone_hue(d, now), TUI_BLACK);
+        double ox, oy;
+        if (d->operator_valid && frame_px(d->operator_lat, d->operator_lon, pw, ph, &ox, &oy)) {
+            int odx, ody; px_dot(ox, oy, &odx, &ody);
+            ls_ink_line(dx, dy, odx, ody, TUI_ATTR(TUI_MAGENTA, TUI_BLACK), 1, -3);
+            ls_ink_ellipse(odx, ody, 1, 1, TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, TUI_BLACK), 2, 0);
+        }
+        ls_ink_line(dx - 2, dy, dx, dy - 3, attr, 5, 0);
+        ls_ink_line(dx, dy - 3, dx + 2, dy, attr, 5, 0);
+        ls_ink_line(dx + 2, dy, dx, dy + 3, attr, 5, 0);
+        ls_ink_line(dx, dy + 3, dx - 2, dy, attr, 5, 0);
+        if (now - d->location_us < 2500000) ping_ring(dx, dy, attr, 2000);
+        claim_dots(dx, dy, 3, a.w, a.h);
+    }
+}
+static void drone_text(tui_surface *sf, tui_rect a, int pw, int ph, int64_t now)
+{
+    if (layer(L_NOLABEL)) return;
+    for (int i = 0; i < s_map_rid_n; i++) {
+        const ls_rid_drone_t *d = &s_map_rid[i];
+        double fx, fy;
+        if (!frame_px(d->lat, d->lon, pw, ph, &fx, &fy) || fx < 0 || fy < 0 || fx >= pw || fy >= ph) continue;
+        int dx, dy; px_dot(fx, fy, &dx, &dy);
+        const char *id = d->uas_id[0] ? d->uas_id : d->self_id[0] ? d->self_id : "DRONE";
+        char name[16], high[16];
+        snprintf(name, sizeof(name), "%.12s", id);
+        if (d->height_m > -999.0f && d->height_m < 9999.0f) snprintf(high, sizeof(high), "%dm", (int)lroundf(d->height_m));
+        else snprintf(high, sizeof(high), "DRONE");
+        place_label_key(sf, a, dx / 2, dy / 3, 3, name, high, TUI_ATTR(drone_hue(d, now), TUI_BLACK), false,
+                        map_object_key(9, map_label_key(id, 0)), MAP_LABEL_RIGHT);
+    }
+}
+
 /* Vessel positions expire independently of static identity reports. */
 static EXT_RAM_BSS_ATTR ais_vessel_t s_ais_points[AIS_VESSELS];
 static int s_ais_count;
@@ -4160,6 +4221,7 @@ static const struct { uint32_t bit; const char *name; const char *what; } LAYER_
     { L_COVER,   "Coverage",       "furthest aircraft by bearing" },
     { L_RF_HIDE, "RF survey heat", "levels where RF SURVEY walked" },
     { L_FOX_HIDE,"Fox hunt",       "bearings, fix and its ellipse" },
+    { L_DRONE_HIDE,"Drones",       "Remote ID positions, operators" },
     { L_PLACES,  "Place names",    "from the map" },
 };
 #define N_LAYER_ROWS ((int)(sizeof(LAYER_ROWS) / sizeof(LAYER_ROWS[0])))
@@ -4716,6 +4778,7 @@ static void preview_draw(tui_surface *sf, tui_rect area, double lat, double lon)
 void ls_map_preview(tui_surface *sf, tui_rect area, double lat, double lon)
 {
     if (area.w<1 || area.h<1) return;
+    ls_ink_keep(area);                   /* the mini map stays on the map's ground in a desk window */
     if (!s_pv_live) {
         s_pv_live = true;
         if (s_pv_back && s_pv_zoom >= 0) ls_map_zoom_by(s_pv_zoom - ls_map_zoom());
@@ -5430,7 +5493,12 @@ static void draw(tui_surface *sf, tui_rect area)
     int nq = 0;
     const ls_quick_t *quick = quick_table(&nq);
     const int want = ls_quick_rows(quick, nq, area.w, ls_tui_is_wide());
-    const int ctl_h = (!s_controls_hidden && area.h > want + 10) ? want : 0;
+    /* Desk: the keys are one toolbar row at the top, [HIDE KEYS] at its
+       right; the counts, the centre and a key's answer go to the window's
+       status bar, and the key hints to Help > Keys. */
+    const bool desk = ls_tui_compact() && area.h >= 12;
+    const int ctl_h = desk ? (s_controls_hidden ? 0 : 1)
+                    : (!s_controls_hidden && area.h > want + 10) ? want : 0;
     const bool guidance=ls_route_live()->valid;
     /* What is downloading, from TILES or a search: said here too, so a
        half-drawn map is explained and the download can be found. */
@@ -5439,11 +5507,12 @@ static void draw(tui_surface *sf, tui_rect area)
     /* The download strip lies over the map's top row rather than taking a
        header row of its own: a row coming and going resized the map, which
        threw the picture away and blinked it. */
-    s_header_h = (ls_tui_is_wide() ? 3 : 4)+(guidance ? 1 : 0);
-    tui_rect body = tui_rect_make(area.x, area.y + s_header_h, area.w, area.h - ctl_h - s_header_h);
+    s_header_h = (desk ? 1 : ls_tui_is_wide() ? 3 : 4)+(guidance ? 1 : 0);
+    tui_rect body = tui_rect_make(area.x, area.y + s_header_h, area.w, area.h - (desk ? 0 : ctl_h) - s_header_h);
 
     s_quick_rect = ctl_h
-        ? tui_rect_make(area.x, body.y + body.h, area.w, ctl_h)
+        ? desk ? tui_rect_make(area.x, area.y, area.w - 14, 1)
+               : tui_rect_make(area.x, body.y + body.h, area.w, ctl_h)
         : tui_rect_make(0, -1, 0, 0);
 
     /* The tile shrinks with the buffer, or the same rectangle covers
@@ -5525,7 +5594,7 @@ static void draw(tui_surface *sf, tui_rect area)
     const uint8_t head = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
     /* The button's own rows only: the download and route strips under it
        take their own taps. */
-    s_controls_hit = tui_rect_make(area.x + area.w - 13, area.y, 13, ls_tui_is_wide() ? 3 : 4);
+    s_controls_hit = tui_rect_make(area.x + area.w - 13, area.y, 13, desk ? 1 : ls_tui_is_wide() ? 3 : 4);
     tui_rect heading = area;
     heading.w -= 14;
     const char *gps = s_track ? "TRACK" : !s_receiver_fresh ? "WAIT" : ls_map_following() ? "FOLLOW" : "LIVE";
@@ -5534,7 +5603,9 @@ static void draw(tui_surface *sf, tui_rect area)
     for (int i = 0; i < s_npeers; i++) if (s_map_peers[i].has_loc) nmesh++;
     char rings[16] = "";
     if (s_ring_nm > 0) snprintf(rings, sizeof(rings), "  rings %gnm", s_ring_nm);
-    if (ls_tui_is_wide()) {
+    if (desk) {
+        /* the toolbar has the row; the counts are in the status bar */
+    } else if (ls_tui_is_wide()) {
         LS_SNPRINTF(t_scr_map_s_s_s_air, title, sizeof(title), "[%s %s/S]  AIR %d  MESH %d  MARK %d%s  vec %ds  GPS %s",
                  palette()->name, source_word(), count_air_positions(), nmesh, ls_marks_count(),
                  rings, s_vector_s, gps);
@@ -5567,6 +5638,7 @@ static void draw(tui_surface *sf, tui_rect area)
     bool noted = false;                 /* the map's top row carries a notice */
     const bool opening = cc ? why && !strncmp(why, "opening", 7) : ls_map_render_busy();
     if (flat_ok && ((!px && !cc_ok) || (why && !ls_map_render_busy())) && map_flat(sf, body, opening)) {
+        ls_ink_keep(body);               /* the map stays on its own ground in a desk window */
         ls_tui_basemap(NULL,tui_rect_make(0,0,0,0),NULL);
         ls_tui_image(tui_rect_make(0,0,0,0),NULL,0,0,0);
         s_pad_rect = s_controls_hidden ? tui_rect_make(0, -1, 0, 0) : pad_rect_for(body);
@@ -5602,6 +5674,10 @@ static void draw(tui_surface *sf, tui_rect area)
     } else if(!cc || cc_picture() || ls_carto_map_fresh() || cc_moved) {
         /* cc_moved: the last text frame moved to this view (held_moved) is a
            map the markers and names belong on, not a frame to skip them in. */
+        /* In a desk window the map, and the rings, names and symbols over it,
+           keep the map's ground: the scheme's face behind them turned every
+           ring dot and name into a block of the face over the picture. */
+        ls_ink_keep(body);
         s_pad_rect = s_controls_hidden ? tui_rect_make(0, -1, 0, 0) : pad_rect_for(body);
         s_card_rect = card_rect_for(body);
         if(!cc) draw_cells(sf, body, px, pw, ph);
@@ -5646,6 +5722,7 @@ static void draw(tui_surface *sf, tui_rect area)
         aprs_canvas(body, pw, ph, now);
         ais_canvas(body, pw, ph, now);
         sonde_canvas(body, pw, ph, now);
+        drone_canvas(body, pw, ph, now);
         mc_mark(MC_ROUTE_SONDE);
         receiver_canvas(body, pw, ph);
         air_canvas(body, pw, ph, now);
@@ -5664,6 +5741,7 @@ static void draw(tui_surface *sf, tui_rect area)
         aprs_text(sf, body, pw, ph, now);
         ais_text(sf, body, pw, ph, now);
         sonde_text(sf, body, pw, ph, now);
+        drone_text(sf, body, pw, ph, now);
         marks_text(sf, body, pw, ph);
         edges_text(sf, body, pw, ph);
         map_sticky_end(s_live_history);
@@ -5711,8 +5789,15 @@ static void draw(tui_surface *sf, tui_rect area)
     snprintf(s_note,sizeof(s_note),"MARK HERE %.5f,%.5f",lat,lon);
     if(open) snprintf(s_note+strlen(s_note),sizeof(s_note)-strlen(s_note),"  %d POINTS",open->n);
     const bool toast = s_toast[0] && now-s_toast_us<4000000;
-    ls_tui_status_set(toast ? s_toast : s_note, NULL);
+    if (desk) {
+        char line[64];
+        int nm = 0;
+        for (int i = 0; i < s_npeers; i++) if (s_map_peers[i].has_loc) nm++;
+        snprintf(line, sizeof(line), "%s  AIR %d  MESH %d", s_note, count_air_positions(), nm);
+        ls_tui_status_set(toast ? s_toast : line, NULL);
+    } else ls_tui_status_set(toast ? s_toast : s_note, NULL);
     int coord_row=area.y+(ls_tui_is_wide() ? 1 : 2);
+    if (!desk) {
     tui_put_str(sf,area,area.x,coord_row,s_note,ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)));
     const char *hint=ls_sketch_drawing() ? "A ADD  U UNDO  O FINISH  C CANCEL  +/- ZOOM" :
         selected_received() ? "W SAVE  V DELETE  Q DONE" :
@@ -5725,6 +5810,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if (toast && !ls_sketch_drawing() && s_sel == SEL_NONE)
         tui_put_str(sf,area,area.x,coord_row+1,s_toast,ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK)));
     else tui_put_str(sf,area,area.x,coord_row+1,hint,LS_ATTR_DIM);
+    }
 
 
     s_dl_row = -1;

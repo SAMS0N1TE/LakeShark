@@ -32,6 +32,47 @@ static bool lock(void)
 }
 static void unlock(void) { xSemaphoreGive(s_lock); }
 
+void ls_ble_heard_note_ad(const uint8_t addr[6], const uint8_t *ad, int len)
+{
+    if (!addr || !ad || len <= 0) return;
+    uint8_t have = 0;
+    uint16_t company = 0, uuid = 0;
+    int16_t mfg0 = -1, svc0 = -1;
+    bool svc_data = false;
+    for (int i = 0; i + 1 < len;) {
+        const int l = ad[i];
+        if (l == 0 || i + 1 + l > len) break;
+        const uint8_t t = ad[i + 1];
+        const uint8_t *v = ad + i + 2;
+        const int n = l - 1;
+        if (t == 0xFF && n >= 2 && !(have & 1)) {
+            company = (uint16_t)(v[0] | v[1] << 8);
+            mfg0 = n >= 3 ? v[2] : -1;
+            have |= 1;
+        } else if (t == 0x16 && n >= 2 && !svc_data) {     /* service data, 16-bit UUID: wins over a list */
+            uuid = (uint16_t)(v[0] | v[1] << 8);
+            svc0 = n >= 3 ? v[2] : -1;
+            svc_data = true;
+            have |= 2;
+        } else if ((t == 0x02 || t == 0x03) && n >= 2 && !(have & 2)) {
+            uuid = (uint16_t)(v[0] | v[1] << 8);
+            svc0 = -1;
+            have |= 2;
+        }
+        i += 1 + l;
+    }
+    if (!have || !lock()) return;
+    for (int i = 0; i < s_count; i++) {
+        if (memcmp(s_heard[i].addr, addr, 6)) continue;
+        ls_ble_heard_t *d = &s_heard[i];
+        if (have & 1) { d->company = company; d->mfg0 = mfg0; }
+        if (have & 2) { d->uuid16 = uuid; d->svc0 = svc0; }
+        d->ad_have |= have;
+        break;
+    }
+    unlock();
+}
+
 void ls_ble_heard_note(const uint8_t addr[6], const char *name, int name_len,
                        int rssi, int64_t now_us)
 {

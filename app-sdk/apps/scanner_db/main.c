@@ -176,6 +176,12 @@ static bool key(lap_key_t key, char ch) {
     }
     return false;
 }
+LAP_ICON_PX(".ffffffffffffffffff.", ".777777777777777777.", ".777777777777777777.", ".77aa778aaaaaa88877.",
+            ".77aa77888888888877.", "....................", ".ffffffffffffffffff.", ".777777777777777777.",
+            ".777777777777777777.", ".778877888888888877.", ".778877888888888877.", "....................",
+            ".ffffffffffffffffff.", ".777777777777777777.", ".777777777777777777.", ".778877888888888877.",
+            ".778877888888888877.", "....................");
+
 LAP_APP(.id = "scanner_db", .name = "SCANNER DB", .sub = "channel banks / squelch",
         .version = "1.0", .author = "LakeShark", .icon = LAP_ICON_TOWER, .color = LAP_GREEN,
         .flags = LAP_CAP_RADIO_RX, .enter = enter, .leave = leave, .draw = draw, .key = key);

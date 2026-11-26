@@ -1,5 +1,5 @@
 {
   "category": "radio",
   "group": "field",
-  "description": "One app for trackers and bugs. TAGS names AirTags, Find My, Tile, SmartTag and Google tags, follows their changing addresses, warns when one stays with you and logs to the card. A sweep steps the LoRa radio over the bands GPS trackers and bugs use and spots Wi-Fi cameras. HUNT finds one with a meter, ticks or a tone. Receive only."
+  "description": "One app for trackers and bugs. TAGS names AirTags, Find My, Tile, SmartTag and Google tags, follows their changing addresses, warns when one stays with you or one of yours is left behind, and logs to the card. A sweep steps the LoRa radio over the bands GPS trackers and bugs use and spots Wi-Fi cameras. HUNT finds one with a gauge, a heading-up dial, distance, ticks or a tone, on the LoRa radio, an SDR or both. Receive only."
 }

@@ -49,12 +49,15 @@ c = run('open', OPEN)
 bar = row_of(c, ' Tools  View ')
 assert 'Desk' in c[bar] and 'Window' in c[bar] and 'Help' in c[bar], c[bar]
 assert not has(c, ' File  View  Window  Help'), 'the desk drew a second bar'
-assert has(c, 'SECTIONS') and has(c, '1 of 7')
+assert has(c, '| Section ') and has(c, '1 of 7')            # the list view's header (11-20 desk pass)
+assert 'Diagnostics: Overview' in c[44]                       # the open section, in the window's status bar
 assert chosen(c) == 'Overview', chosen(c)
 for name in ('Endpoint', 'Memory', 'Alerts', 'Radios and sensors', 'Error log', 'Receiver trial'):
     assert has(c, name), name
 assert has(c, 'P25 CHAIN') and has(c, 'STORAGE AND FIRMWARE'), 'the page lost a block'
-assert has(c, '[ TEST ALERT ]'), 'the page lost its keys'
+for box in ('+ Radio -', '+ Memory -', '+ Alerts -', '+ Radios and sensors -'):     # the overview's group boxes
+    assert has(c, box), box
+assert has(c, '| TEST ALERT |') and has(c, '| CHECK SD |'), 'the page lost its keys'
 
 # Arrow keys walk the sections; the page follows.
 c = run('down2', OPEN + ',@down,@down,~2')
@@ -119,9 +122,10 @@ assert len(bgs) == 1, 'holes in the selection bar: %s' % sorted(bgs)
 face = struct.unpack_from('<hB', d, ((y + 1) * W + x0 + 3) * 4)[1] >> 4
 assert bgs != {face}, 'the open section has no bar'
 
-# A narrow window keeps the handheld page whole (no list, no bar of its own).
+# A smaller window keeps the menu bar and the section list beside the
+# handheld page (11-20 desk pass: DIAG keeps them at Small too).
 c = run('narrow', '!diag,~3', grid='120x40')
-if not has(c, 'SECTIONS'):
-    assert has(c, 'RADIO') or has(c, 'MEMORY')
+assert has(c, ' Tools  View ') and has(c, '| Section ') and chosen(c) == 'Overview', chosen(c)
+assert has(c, '+ Radio -') and has(c, 'P25 CHAIN')
 
 print('PASS: DIAG desk layout')

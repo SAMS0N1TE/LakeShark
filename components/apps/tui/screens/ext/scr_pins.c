@@ -4,6 +4,7 @@
    the real part state: nothing here animates on its own. */
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -187,9 +188,16 @@ static void pin_text(int g, char *out, size_t n)
 
 static void draw_list(tui_surface *sf, tui_rect r)
 {
+    uint8_t head = TUI_ATTR(TUI_WHITE, TUI_BLACK);
+    if (ls_tui_compact()) {
+        /* A desk window: the wiring is a property list in a white well, its
+           header on the button face. */
+        const tui_rect in = ls_dui_well(sf, r, NULL);
+        head = ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, TUI_WHITE));
+        tui_fill(sf, tui_rect_make(in.x, in.y, in.w, 1), ' ', head);
+    } else
     ls_panel_box(sf, r, "01 / WIRING", TUI_CYAN | TUI_BRIGHT);
     const int x = r.x + 2;
-    const uint8_t head = TUI_ATTR(TUI_WHITE, TUI_BLACK);
     tui_put_str(sf, r, x, r.y + 1, "PART  LINE              NOW  NEXT", head);
     s_list = tui_rect_make(r.x + 1, r.y + 2, r.w - 2, r.h - 3);
     s_list_x_val = x + 24;
@@ -249,7 +257,8 @@ static void draw_list(tui_surface *sf, tui_rect r)
    the parts see it. The selected line's pin is bracketed. */
 static void draw_map(tui_surface *sf, tui_rect r)
 {
-    ls_panel_box(sf, r, "02 / GPIO 0-54", TUI_BLUE | TUI_BRIGHT);
+    if (ls_tui_compact()) ls_dui_group(sf, r, "GPIO 0-54");
+    else ls_panel_box(sf, r, "02 / GPIO 0-54", TUI_BLUE | TUI_BRIGHT);
     const int cols = (r.w - 4) / 5 >= 11 ? 11 : ((r.w - 4) / 5 > 0 ? (r.w - 4) / 5 : 1);
     const int sel_pin = s_sel < LS_PIN_COUNT ? s_stage[s_sel] : -1;
     for (int g = 0; g <= GPIO_TOP; g++) {
@@ -312,6 +321,14 @@ static void draw(tui_surface *sf, tui_rect area)
     tui_rect bar = tui_rect_make(area.x, area.y + area.h - bar_h, area.w, bar_h);
     tui_rect msg = tui_rect_make(area.x, bar.y - 1, area.w, 1);
     tui_rect body = tui_rect_make(area.x, area.y, area.w, area.h - bar_h - 1);
+    const bool desk = ls_tui_compact();
+    if (desk) {
+        /* A desk window: the keys on the toolbar, the word in the status bar. */
+        tui_fill(sf, area, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        bar = tui_rect_make(area.x, area.y, area.w, 1);
+        body = tui_rect_make(area.x + 1, area.y + 1, area.w - 2, area.h - 1);
+        ls_tui_status_set(s_msg[0] ? s_msg : "Wiring of the add-on parts; SAVE, then reboot", NULL);
+    }
     const bool wide = body.w >= 80;
     tui_rect list = body, map = body;
     if (wide) {
@@ -323,6 +340,7 @@ static void draw(tui_surface *sf, tui_rect area)
     }
     draw_list(sf, list);
     draw_map(sf, map);
+    if (desk) { ls_btn_bar_raised_row(sf, bar, BUTTONS, N_BUTTONS, -1); return; }
     tui_fill(sf, msg, ' ', LS_ATTR_DIM);
     ls_safe_line(sf, msg, msg.y, s_msg, s_msg_attr ? s_msg_attr : LS_ATTR_DIM);
     ls_btn_bar_raised_row(sf, bar, BUTTONS, N_BUTTONS, -1);

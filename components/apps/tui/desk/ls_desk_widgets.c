@@ -48,10 +48,10 @@ typedef struct {
 
 static const scheme_t SCHEMES[] = {
     {"Bay 95", K, W, W, K, WB, WB, KB, WB, B, W, KB, WB, B, WB, KB, YB, K, Y, GB, YB, RB, CB, MB, CB, B, W, "Terminal Bay"},
-    {"Classic 95", C, WB, K, W, K, WB, KB, WB, B, W, KB, WB, B, K, WB, TUI_RED, K, YB,
+    {"Classic 95", C, WB, K, W, K, WB, KB, WB, B, W, KB, WB, B, K, W, TUI_RED, K, YB,
      TUI_GREEN, TUI_YELLOW, TUI_RED, TUI_BLUE, TUI_MAGENTA, CB, B, KB, "Classic"},
     {"High Contrast", K, WB, WB, K, YB, WB, WB, K, CB, WB, B, K, CB, K, WB, YB, K, YB, GB, YB, RB, CB, MB, K, CB, W, "Terminal Bay"},
-    {"Teal", B, WB, K, W, K, WB, KB, WB, C, W, KB, WB, C, K, WB, TUI_RED, K, CB,
+    {"Teal", B, WB, K, W, K, WB, KB, WB, C, W, KB, WB, C, K, W, TUI_RED, K, CB,
      TUI_GREEN, TUI_YELLOW, TUI_RED, TUI_BLUE, TUI_MAGENTA, WB, C, KB, "Classic"},
     {"Amber phosphor", K, Y, Y, K, YB, YB, Y, K, YB, YB, K, K, Y, K, Y, WB, K, YB, YB, YB, RB, YB, YB, K, Y, Y, "Amber"},
     {"Night", B, WB, W, K, WB, CB, B, WB, TUI_MAGENTA, W, B, WB, TUI_MAGENTA, WB, B, CB, K, CB, GB, YB, RB, CB, MB,
@@ -125,6 +125,15 @@ static void fill_roles(uint8_t r[R_COUNT][2], const dk_prefs_t *p)
     SET(R_TASKKEY, s->key_fg, s->key_bg);
     SET(R_TASKHOVER, light(s->key_bg) ? WB : K, light(s->key_bg) ? KB : W);
     SET(R_TRAY, face_fg, face_bg);               SET(R_MENU, face_fg, face_bg);
+    /* The contrast ground: Window white on a light face (the face itself
+       when that is white already), black on a dark one; its words the
+       face's ink where that reads, else black or white (fit_roles). */
+    {
+        const uint8_t well = light(face_bg) ? WB : K;
+        SET(R_WELL, face_fg, well);
+        SET(R_WELL_DIM, s->dis == face_fg ? KB : s->dis, well);
+        SET(R_GLASS, CB, K);
+    }
     /* The owner's own colours for each item, over the scheme. */
     if (p->mask & (1u << DK_IT_DESKTOP)) {
         r[R_DESK][1] = r[R_DESK_TEXT][1] = p->bg[DK_IT_DESKTOP];
@@ -214,6 +223,7 @@ static void fit_roles(void)
         [R_SELECT] = 45, [R_SELECT_DIM] = 45, [R_KEY] = 45, [R_KEY_DOWN] = 45, [R_ACCEL] = 45, [R_CLOSE] = 30,
         [R_TIP] = 45, [R_GOOD] = 45, [R_WARN] = 45, [R_BAD] = 45, [R_INFO] = 45, [R_MESH] = 45, [R_STRIPE] = 45,
         [R_TASKKEY] = 45, [R_TASKHOVER] = 45, [R_TRAY] = 45, [R_MENU] = 45,
+        [R_WELL] = 45, [R_WELL_DIM] = 25, [R_GLASS] = 45,
     };
     for (int r = 0; r < R_COUNT; r++)
         s_ink[r] = NEED[r] ? dk_fit(s_roles[r][0], s_roles[r][1], NEED[r]) : TUI_ATTR(s_roles[r][0], s_roles[r][1]);
@@ -453,6 +463,84 @@ void dk_frame(tui_surface *sf, tui_rect clip, tui_rect r, bool raised)
 
 tui_rect dk_inner(tui_rect r) { return tui_rect_make(r.x + 1, r.y + 1, r.w - 2, r.h - 2); }
 
+void dk_sunken(tui_surface *sf, tui_rect clip, tui_rect r)
+{
+    if (r.w < 2 || r.h < 2) return;
+    const int x1 = r.x + r.w - 1, y1 = r.y + r.h - 1;
+    for (int i = 1; i < r.w - 1; i++) {
+        dk_edge_put(sf, clip, r.x + i, r.y, LS_EDGE_B, R_SHADOW);
+        dk_edge_put(sf, clip, r.x + i, y1, LS_EDGE_T, R_HILITE);
+    }
+    for (int i = 1; i < r.h - 1; i++) {
+        dk_edge_put(sf, clip, r.x, r.y + i, LS_EDGE_R, R_SHADOW);
+        dk_edge_put(sf, clip, x1, r.y + i, LS_EDGE_L, R_HILITE);
+    }
+    dk_edge_put(sf, clip, r.x, r.y, LS_EDGE_DOT_BR, R_SHADOW);
+    dk_edge_put(sf, clip, x1, r.y, LS_EDGE_DOT_BL, R_SHADOW);
+    dk_edge_put(sf, clip, r.x, y1, LS_EDGE_DOT_TR, R_SHADOW);
+    dk_edge_put(sf, clip, x1, y1, LS_EDGE_DOT_TL, R_HILITE);
+}
+
+void dk_group(tui_surface *sf, tui_rect clip, tui_rect r, const char *title, uint8_t cap)
+{
+    if (r.w < 2 || r.h < 2) return;
+    const uint8_t hi = dk_attr(R_HILITE), lo = dk_attr(R_SHADOW);
+    const int x1 = r.x + r.w - 1, y1 = r.y + r.h - 1;
+    dk_hline(sf, clip, r.x + 1, r.y, r.w - 2, LS_BOX_H, lo);
+    dk_hline(sf, clip, r.x + 1, y1, r.w - 2, LS_BOX_H, hi);
+    dk_vline(sf, clip, r.x, r.y + 1, r.h - 2, LS_BOX_V, lo);
+    dk_vline(sf, clip, x1, r.y + 1, r.h - 2, LS_BOX_V, hi);
+    ls_box_put(sf, clip, r.x, r.y, LS_BOX_DR, lo);
+    ls_box_put(sf, clip, x1, r.y, LS_BOX_DL, lo);
+    ls_box_put(sf, clip, r.x, y1, LS_BOX_UR, lo);
+    ls_box_put(sf, clip, x1, y1, LS_BOX_UL, hi);
+    if (title && *title && r.w > 6) {
+        const tui_rect top = tui_rect_intersect(clip, tui_rect_make(r.x + 1, r.y, r.w - 3, 1));
+        tui_put_char(sf, top, r.x + 1, r.y, ' ', dk_attr(R_FACE));
+        const int n = dk_label(sf, top, r.x + 2, r.y, title, cap ? cap : dk_attr(R_INFO), false);
+        tui_put_char(sf, top, r.x + 2 + n, r.y, ' ', dk_attr(R_FACE));
+    }
+}
+
+uint8_t dk_well_hue(uint8_t hue)
+{
+    const uint8_t bg = TUI_ATTR_BG(dk_attr(R_WELL)), fg = hue & 7;
+    if (fg == TUI_BLACK || fg == TUI_WHITE) return dk_attr(R_WELL);
+    return dk_fit(light(bg) ? fg : (uint8_t)(fg | TUI_BRIGHT), bg, 45);
+}
+
+tui_rect dk_well_field(tui_surface *sf, tui_rect clip, int x, int y, int w)
+{
+    if (w < 3) return tui_rect_make(x, y, 0, 0);
+    const tui_rect in = tui_rect_make(x + 1, y, w - 2, 1);
+    dk_edge_put(sf, clip, x, y, LS_EDGE_R, R_SHADOW);
+    dk_edge_put(sf, clip, x + w - 1, y, LS_EDGE_L, R_HILITE);
+    dk_fill(sf, tui_rect_intersect(clip, in), dk_attr(R_WELL));
+    return in;
+}
+
+void dk_status_panes(tui_surface *sf, tui_rect clip, tui_rect row, const char *const *text, const int *w, int n)
+{
+    row.h = 1;
+    dk_fill(sf, tui_rect_intersect(clip, row), dk_attr(R_FACE));
+    int fixed = 0, flex = 0;
+    for (int i = 0; i < n; i++) { if (w && w[i] > 0) fixed += w[i]; else flex++; }
+    int rest = row.w - fixed - (n - 1);
+    if (rest < 0) rest = 0;
+    int x = row.x;
+    for (int i = 0; i < n && x < row.x + row.w; i++) {
+        int pw = w && w[i] > 0 ? w[i] : (flex ? rest / flex : 0);
+        if (x + pw > row.x + row.w) pw = row.x + row.w - x;
+        if (pw >= 3) {
+            dk_edge_put(sf, clip, x, row.y, LS_EDGE_R, R_SHADOW);
+            dk_edge_put(sf, clip, x + pw - 1, row.y, LS_EDGE_L, R_HILITE);
+            if (text && text[i])
+                dk_text(sf, tui_rect_intersect(clip, tui_rect_make(x + 1, row.y, pw - 2, 1)), x + 2, row.y, text[i], dk_attr(R_FACE));
+        }
+        x += pw + 1;
+    }
+}
+
 void dk_frame_double(tui_surface *sf, tui_rect clip, tui_rect r, uint8_t attr)
 {
     if (r.w < 2 || r.h < 2) return;
@@ -651,19 +739,19 @@ static void field_ends(tui_surface *sf, tui_rect clip, int x, int y, int w, bool
 void dk_field(tui_surface *sf, tui_rect clip, int x, int y, int w, const char *text, int caret, bool focus)
 {
     if (w < 3) return;
-    field_ends(sf, clip, x, y, w, focus);
-    const tui_rect in = tui_rect_intersect(tui_rect_intersect(clip, tui_surface_rect(sf)), tui_rect_make(x + 1, y, w - 2, 1));
-    dk_fill(sf, in, dk_attr(R_FACE));
+    (void)field_ends;
+    /* A sunken edit: its words on the well's ground between thin bevel lines. */
+    const tui_rect in = tui_rect_intersect(tui_rect_intersect(clip, tui_surface_rect(sf)), dk_well_field(sf, clip, x, y, w));
     const int n = dk_text_len(text), room = w - 3;
     const int skip = caret >= 0 && n > room ? n - room : 0;         /* the tail stays in view while typing */
     const char *s = text ? text : "";
     for (int k = 0; k < skip && *s; k++) s++;
-    dk_text(sf, in, x + 1, y, s, dk_attr(R_STRONG));
+    dk_text(sf, in, x + 1, y, s, dk_attr(R_WELL));
     if (focus && caret >= 0) {
         const int cx = x + 1 + (caret > n ? n : caret) - skip;
         if (tui_rect_contains(in, cx, y)) {
             tui_cell *c = &sf->back[(size_t)y * sf->w + cx];
-            if (c->ch == ' ' || c->ch == 0) { c->ch = (int16_t)LS_EDGE_B; c->attr = dk_attr(R_ACCEL); }
+            if (c->ch == ' ' || c->ch == 0) { c->ch = (int16_t)LS_EDGE_B; c->attr = dk_attr(R_WELL); }
             else c->attr = dk_attr(R_SELECT);
         }
     }
@@ -772,8 +860,9 @@ void dk_listview(tui_surface *sf, tui_rect clip, tui_rect r, const dk_col_t *col
                  int sel, bool focus, dk_cell_fn cell, void *ctx)
 {
     if (r.w < 8 || r.h < 4) return;
-    dk_frame(sf, clip, r, false);
+    dk_sunken(sf, clip, r);
     const tui_rect in = tui_rect_intersect(clip, dk_inner(r));
+    dk_fill(sf, in, dk_attr(R_WELL));            /* a list box: the well's ground */
     const int rows = dk_listview_rows(r);
     const bool bar = n > rows;
     const int x0 = r.x + 1, room = r.w - 2 - (bar ? 1 : 0);
@@ -796,7 +885,7 @@ void dk_listview(tui_surface *sf, tui_rect clip, tui_rect r, const dk_col_t *col
     for (int k = 0; k < rows && top + k < n; k++) {
         const int i = top + k, y = r.y + 2 + k;
         const bool s = i == sel, hot = !s && hov && ptr_row == y;
-        const uint8_t face = s ? (focus ? dk_attr(R_SELECT) : dk_attr(R_SELECT_DIM)) : hot ? dk_attr(R_TASKHOVER) : dk_attr(R_FACE);
+        const uint8_t face = s ? (focus ? dk_attr(R_SELECT) : dk_attr(R_SELECT_DIM)) : hot ? dk_attr(R_TASKHOVER) : dk_attr(R_WELL);
         const tui_rect rr = tui_rect_intersect(in, tui_rect_make(x0, y, room, 1));
         if (s || hot) dk_fill(sf, rr, face);
         cx = x0;
@@ -808,11 +897,11 @@ void dk_listview(tui_surface *sf, tui_rect clip, tui_rect r, const dk_col_t *col
             buf[0] = 0;
             cell(i, c, buf, sizeof(buf), &hue, &glyph, ctx);
             const tui_rect cc = tui_rect_intersect(rr, tui_rect_make(cx, y, cw - (c + 1 < ncols ? 1 : 0), 1));
-            const uint8_t plain = c ? dk_attr(R_FACE) : dk_attr(R_STRONG);
+            const uint8_t plain = dk_attr(R_WELL);
             int tx = cx + 1;
-            if (glyph) { put_cp(sf, cc, tx, y, glyph, s || hot ? face : dk_art(hue ? hue : TUI_WHITE)); tx += 2; }
+            if (glyph) { put_cp(sf, cc, tx, y, glyph, s || hot ? face : dk_well_hue(hue ? hue : TUI_WHITE)); tx += 2; }
             if (cols[c].right) tx = cx + cw - 1 - dk_text_len(buf);
-            dk_text(sf, cc, tx, y, buf, s || hot ? face : glyph || !hue ? plain : dk_hue(hue));
+            dk_text(sf, cc, tx, y, buf, s || hot ? face : glyph || !hue ? plain : dk_well_hue(hue));
             cx += cw;
         }
     }

@@ -21,5 +21,9 @@ int rtlsdr_read_array(rtlsdr_dev_t *dev, uint8_t block, uint16_t addr,
                       uint8_t *array, uint8_t len);
 int rtlsdr_write_reg(rtlsdr_dev_t *dev, uint8_t block, uint16_t addr,
                      uint16_t val, uint8_t len);
+/* Tuner standby and the RTL2832's demod and ADCs powered off (upstream's
+   close), and back as rtlsdr_open leaves them. 0 or a negative error. */
+int rtlsdr_standby(rtlsdr_dev_t *dev);
+int rtlsdr_wake(rtlsdr_dev_t *dev);
 
 #endif

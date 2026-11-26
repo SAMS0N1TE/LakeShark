@@ -1,0 +1,20 @@
+#pragma once
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+#include <ffconf.h>
+#ifdef __cplusplus
+}
+#endif
+
+#undef FF_FS_EXFAT
+#define FF_FS_EXFAT 1
+
+/* The exFAT directory parser also uses this option in C expressions. */
+#ifndef CONFIG_FATFS_USE_LABEL
+#undef FF_USE_LABEL
+#define FF_USE_LABEL 0
+#endif
+
+#include "@fatfs_dir@/src/ff.h"

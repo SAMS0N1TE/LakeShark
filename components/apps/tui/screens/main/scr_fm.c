@@ -10,6 +10,9 @@
 #include "../../ls_tui_screen.h"
 #include "../../ls_i18n.h"
 #include "../../ls_radio_panel.h"
+#include "../../ls_deskui.h"
+#include "../../ls_tui_touch.h"
+#include "../../ls_input_ev.h"
 #include "../../ls_slider_drag.h"
 #include "../../ls_numpad.h"
 #include "../../ls_box.h"
@@ -775,7 +778,8 @@ static void draw_vfo(tui_surface *sf, tui_rect r)
     const uint8_t warn  = TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK);
     char buf[24];
 
-    tui_box(sf, r, ls_tr("RECEIVER / SIGNAL"), TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    if (ls_dui_desk()) ls_radio_bezel(sf, r, "RECEIVER / SIGNAL");   /* black glass, sunk */
+    else tui_box(sf, r, ls_tr("RECEIVER / SIGNAL"), TUI_ATTR(TUI_CYAN, TUI_BLACK));
     const int inner = r.h - 2;
     const int iw = r.w - 4;
     if (inner < 1 || iw < 16) return;
@@ -2525,20 +2529,14 @@ static int build_tabs(ls_btn_t *b)
         if (i == 1 && FM.mode == FM_MODE_SAME) b[nb].label = "ALERTS";
         if (i == 1 && FM.mode == FM_MODE_APRS) b[nb].label = "STATIONS";
         if (i == 1 && FM.mode == FM_MODE_AIS) b[nb].label = "VESSELS";
-        b[nb].on = (i == s_page);
+        b[nb].on = s_details ? (i == s_page) : (i == 3);
         s_tab_page[nb] = i;
         nb++;
     }
     return nb;
 }
 
-static int tab_bar_width(void)
-{
-    ls_btn_t b[N_PAGES];
-    return ls_btn_bar_width(b, build_tabs(b));
-}
-
-static void draw(tui_surface *sf, tui_rect area)
+static void draw_body(tui_surface *sf, tui_rect area)
 {
     /* Every frame, whatever is shown, so a drag always sees its finger lift;
        then the bars are forgotten until the deck draws them again, so a
@@ -2573,6 +2571,19 @@ static void draw(tui_surface *sf, tui_rect area)
     if (ls_rsel_saved(LS_RSEL_FM) == LS_RSEL_LORA &&
         !ls_lora_rx_range_ok(ls_lora_caps(), FM.freq_hz, FM.freq_hz))
         LS_SNPUTS(t_scr_fm_lr2021_104_2740_mhz, s_hint, sizeof(s_hint), "LR2021: 104-2740 MHz; below 104 MHz needs an SDR");
+    if (!s_details && ls_tui_compact() && area.h >= 12) {
+        /* Desk: the scanner keeps the window's toolbar and view tabs. */
+        radio_view();
+        (void)draw_controls(sf, tui_rect_make(area.x, area.y, area.w, 1), true);
+        ls_btn_t b[N_PAGES];
+        const int nb = build_tabs(b);
+        s_tab_count = nb;
+        s_bar = tui_rect_make(area.x, area.y + 1, area.w, 1);
+        ls_btn_tabs_slot(sf, s_bar, b, nb, -1, LS_BTN_SLOT_QUICK);
+        ls_radio_panel_draw(&s_radio, &s_view, sf,
+                            tui_rect_make(area.x, area.y + 2, area.w, area.h - 2));
+        return;
+    }
     if (!s_details) { radio_view(); ls_radio_panel_draw(&s_radio,&s_view,sf,area); return; }
     s_blink++;
     if (s_last_mode != (int)FM.mode) {
@@ -2619,19 +2630,13 @@ static void draw(tui_surface *sf, tui_rect area)
     if (wide && control_rows > 3) control_rows = 3;
     /* Desk: the view tabs and the controls share one toolbar row when the
        window is wide enough for both, else the controls take the next. */
-    int tabs_w = 0;
     tui_rect ctl_rect = tui_rect_make(area.x, wide ? area.y + bar_h : area.y, area.w, control_rows);
     if (compact) {
-        tabs_w = tab_bar_width();
-        if (area.w - tabs_w - 3 >= 100) {
-            control_rows = 0;
-            s_bar.w = tabs_w;
-            ctl_rect = tui_rect_make(area.x + tabs_w + 3, area.y, area.w - tabs_w - 3, 1);
-            ls_box_put(sf, area, area.x + tabs_w + 1, area.y, LS_BOX_V, TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
-        } else {
-            control_rows = 1;
-            ctl_rect = tui_rect_make(area.x, area.y + 1, area.w, 1);
-        }
+        /* Desk: the controls are the one toolbar under the menu bar; the
+           view tabs are a tab strip on the body's top edge under it. */
+        control_rows = 1;
+        ctl_rect = tui_rect_make(area.x, area.y, area.w, 1);
+        s_bar = tui_rect_make(area.x, area.y + 1, area.w, 1);
     }
     body.y += control_rows;
     body.h -= control_rows;
@@ -2647,12 +2652,13 @@ static void draw(tui_surface *sf, tui_rect area)
        posture where nothing is lost by it. */
     memset(s_step_box, 0, sizeof(s_step_box));
     s_kbd_btn = tui_rect_make(0, -1, 0, 0);
+    tui_rect deck_frame = tui_rect_make(0, -1, 0, 0);
     if (vfo) {
         /* Short landscape panes still need the deck: seven glass rows
            suffice when the meter stays in the frequency column. */
         const int lcd_min  = compact ? 5 : wide ? 7 : 12;
         /* Desk: a tune row and a slider row, or the frequency field. */
-        const int deck_min = compact ? 2 : wide ? 11 : 23;
+        const int deck_min = compact ? 4 : wide ? 11 : 23;   /* desk: two rows in a group box */
         int lcd_h = compact ? body.h - deck_min
                   : wide ? (body.h < 19 ? 7 : 8)
                          : (s_freq_keyboard ? 14 : body.h * 7 / 20);
@@ -2684,6 +2690,10 @@ static void draw(tui_surface *sf, tui_rect area)
                the actual bottom of the screen, so the toggle's corner comes
                out of the deck instead of the tab strip. */
             if (compact) {
+                /* The deck sits in an etched group box on the face. */
+                deck_frame = s_quick_rect;
+                s_quick_rect = tui_rect_make(deck_frame.x + 1, deck_frame.y + 1,
+                                             deck_frame.w - 2, deck_frame.h - 2);
                 /* The toggle is a key at the right end of the tune row. */
                 const int kw = 14;
                 if (s_quick_rect.w - kw >= 60)
@@ -2713,6 +2723,8 @@ static void draw(tui_surface *sf, tui_rect area)
     /* The picture's colours belong to its own cells: off its page the grid
        has the theme's back. */
     if (!(s_page == 1 && sstv_page())) fm_sstv_view_idle();
+    if (deck_frame.h > 0)
+        ls_dui_group(sf, deck_frame, s_freq_keyboard ? "Frequency" : "Tuning and audio");
     if (s_quick_rect.h > 0) draw_quick_controls(sf, s_quick_rect);
     if (wide && s_kbd_btn.h > 0) draw_kbd_toggle(sf, s_kbd_btn);
 
@@ -2735,7 +2747,8 @@ static void draw(tui_surface *sf, tui_rect area)
                                       kw, tabs_bar.h);
         }
     }
-    ls_btn_bar_slot(sf, tabs_bar, b, nb, -1, LS_BTN_SLOT_QUICK);
+    if (compact) ls_btn_tabs_slot(sf, tabs_bar, b, nb, -1, LS_BTN_SLOT_QUICK);
+    else ls_btn_bar_slot(sf, tabs_bar, b, nb, -1, LS_BTN_SLOT_QUICK);
     if (!wide && s_kbd_btn.h > 0) draw_kbd_toggle(sf, s_kbd_btn);
     (void)draw_controls(sf, ctl_rect, vfo);
 }
@@ -2882,6 +2895,16 @@ static bool key_in(ls_tk_t k, char ch)
 static bool touch_in(int col, int row)
 {
     if (ls_calls_active()) return ls_calls_touch(col, row);
+    if (!s_details && ls_tui_compact()) {
+        /* Desk: the toolbar and the view tabs drawn over the scanner. */
+        if (tui_rect_contains(s_controls, col, row))
+            return control_action(ls_btn_hit_slot(col, row, LS_BTN_SLOT_SCREEN));
+        if (tui_rect_contains(s_bar, col, row)) {
+            const int slot = ls_btn_hit_slot(col, row, LS_BTN_SLOT_QUICK);
+            if (slot >= 0 && slot < s_tab_count) { s_details = true; show_page(s_tab_page[slot]); }
+            return true;
+        }
+    }
     if (!s_details) { radio_view(); radio_action(ls_radio_panel_touch(&s_radio,&s_view,col,row)); return true; }
     /* Checked first: it shares a row band with s_bar in portrait and with
        s_quick_rect in landscape, and both of those claim their whole band
@@ -2920,7 +2943,141 @@ static bool touch_in(int col, int row)
 
 /* The selection is re-found before a key or tap acts on it and noted again
    after, whichever of the many places in them moved it. */
+
+/* ------------------------------------------------------------ desk menu -- */
+
+/* A desk window: FM's own menu bar (Radio, View, Tune) at the top, the
+   desk's Desk / Window / Help hung after it. Every key the toolbar drops at
+   Small (HERE, MUTE, CALLS ...) has a row here; a row runs the same key the
+   keyboard would, so the menus and the keys never disagree. */
+static bool key(ls_tk_t k, char ch);
+static bool key_main(ls_tk_t k, char ch);
+#if LS_TUI_HAS_COMPACT
+static const char *const FM_MENUS[] = { "Radio", "View", "Tune" };
+#define FM_NMENUS 3
+EXT_RAM_BSS_ATTR static ls_dui_menu_t s_fm_menu;
+static int16_t s_fm_bar_x[FM_NMENUS + 1];
+static tui_rect s_fm_bar_row = { 0, -1, 0, 0 };
+/* A row's id: a character key, or 256 + a named key. */
+#define FM_MK(k) (256 + (int)(k))
+
+static void fm_menu_build(int which)
+{
+    ls_dui_menu_t *m = &s_fm_menu;
+    ls_dui_menu_begin(m);
+    if (which == 0) {
+        ls_dui_menu_item(m, "Mode...", "E", 'e', 0);
+        ls_dui_menu_item(m, "Band...", "N", 'n', 0);
+        ls_dui_menu_item(m, "Radio...", "R", 'r', 0);
+        ls_dui_menu_rule(m);
+        ls_dui_menu_item(m, "Lock the frequency", "K", 'k', lakeshark_fm_frequency_locked() ? LS_DUI_CHECK : 0);
+        ls_dui_menu_item(m, "Mute", "B", 'b', audio_is_muted() ? LS_DUI_CHECK : 0);
+        ls_dui_menu_item(m, "Volume...", "V", 'v', 0);
+        ls_dui_menu_item(m, "Squelch...", "Q", 'q', 0);
+        ls_dui_menu_rule(m);
+        ls_dui_menu_item(m, "Recorded calls", "5", '5', 0);
+        ls_dui_menu_item(m, "Here: packs nearby...", "7", '7', 0);
+        ls_dui_menu_item(m, "Options...", "O", 'o', ls_opt_count(fm_options()) ? 0 : LS_DUI_OFF);
+    } else if (which == 1) {
+        ls_dui_menu_item(m, "Receiver (VFO)", "1", '1', s_details && s_page == 0 ? LS_DUI_CHECK : 0);
+        if (pager_mode() || own_page())
+            ls_dui_menu_item(m, "Decoded pages", "2", '2', s_details && s_page == 1 ? LS_DUI_CHECK : 0);
+        ls_dui_menu_item(m, "Spectrum", "3", '3', s_details && s_page == 2 ? LS_DUI_CHECK : 0);
+        ls_dui_menu_item(m, "Scanner", "0", '0', !s_details ? LS_DUI_CHECK : 0);
+    } else {
+        ls_dui_menu_item(m, "Type a frequency...", "T", 't', 0);
+        ls_dui_menu_rule(m);
+        ls_dui_menu_item(m, "Step down", "[", '[', 0);
+        ls_dui_menu_item(m, "Step up", "]", ']', 0);
+        ls_dui_menu_item(m, "Seek down", ",", ',', 0);
+        ls_dui_menu_item(m, "Seek up", ".", '.', 0);
+        ls_dui_menu_item(m, "Step size", "/", '/', 0);
+        ls_dui_menu_rule(m);
+        ls_dui_menu_item(m, "Sweep the band", "W", 'w', 0);
+    }
+}
+
+static void fm_menu_open(int which)
+{
+    if (which < 0) which = FM_NMENUS - 1;
+    if (which >= FM_NMENUS) which = 0;
+    fm_menu_build(which);
+    ls_dui_menu_open(&s_fm_menu, s_fm_bar_x[which], s_fm_bar_row.y + 1, which, TUI_CYAN);
+}
+
+static void fm_menu_result(int r)
+{
+    if (r == LS_DUI_PREV) fm_menu_open(s_fm_menu.pop.bar - 1);
+    else if (r == LS_DUI_NEXT) fm_menu_open(s_fm_menu.pop.bar + 1);
+    else if (r >= FM_MK(0)) key((ls_tk_t)(r - FM_MK(0)), 0);
+    else if (r > 0) key(LS_TK_CHAR, (char)r);
+}
+
+static void draw(tui_surface *sf, tui_rect area)
+{
+    if (!ls_tui_compact() || area.h < 12) {
+        s_fm_bar_row = tui_rect_make(0, -1, 0, 0);
+        s_fm_menu.pop.open = false;
+        draw_body(sf, area);
+        return;
+    }
+    s_fm_bar_row = tui_rect_make(area.x, area.y, area.w, 1);
+    draw_body(sf, tui_rect_make(area.x, area.y + 1, area.w, area.h - 1));
+    ls_dui_bar_draw(sf, s_fm_bar_row, FM_MENUS, FM_NMENUS, s_fm_menu.pop.open ? s_fm_menu.pop.bar : -1,
+                    TUI_CYAN, s_fm_bar_x);
+    /* The tuned frequency on a small VFD in the bar's corner. */
+    char text[24];
+    snprintf(text, sizeof(text), "%.4f MHz", FM.freq_hz / 1e6);
+    const int x = area.x + area.w - (int)strlen(text) - 3;
+    if (x > s_fm_bar_x[FM_NMENUS] + 22)
+        ls_dui_vfd(sf, tui_rect_make(x, area.y, (int)strlen(text) + 2, 1), text, LS_DUI_VFD_CYAN | LS_DUI_VFD_SMALL);
+    ls_dui_popup_draw(sf, area, &s_fm_menu.pop);
+}
+
+static bool fm_menu_key(ls_tk_t k, char ch)
+{
+    if (s_fm_bar_row.y < 0) return false;
+    if (s_fm_menu.pop.open) { fm_menu_result(ls_dui_popup_key(&s_fm_menu.pop, k, ch)); return true; }
+    if (k == LS_TK_CHAR && (ls_tui_input_mods() & LS_IMOD_ALT)) {
+        const char low = (char)(ch >= 'A' && ch <= 'Z' ? ch + 32 : ch);
+        const char *p = low ? strchr("rvt", low) : NULL;
+        if (p) { fm_menu_open((int)(p - "rvt")); return true; }
+    }
+    return false;
+}
+
+static bool fm_menu_touch(int col, int row)
+{
+    if (s_fm_bar_row.y < 0) return false;
+    if (s_fm_menu.pop.open) {
+        const int bar = s_fm_menu.pop.bar;
+        const int r = ls_dui_popup_tap(&s_fm_menu.pop, col, row);
+        if (r == LS_DUI_CLOSED && row == s_fm_bar_row.y) {
+            const int i = ls_dui_bar_hit(s_fm_bar_x, FM_NMENUS, col);
+            if (i >= 0 && i != bar) fm_menu_open(i);
+        } else fm_menu_result(r);
+        return true;
+    }
+    if (row == s_fm_bar_row.y) {
+        const int i = ls_dui_bar_hit(s_fm_bar_x, FM_NMENUS, col);
+        if (i >= 0) fm_menu_open(i);
+        return true;
+    }
+    return false;
+}
+#else   /* no desk in this build: no menu bar */
+static void draw(tui_surface *sf, tui_rect area) { draw_body(sf, area); }
+static bool fm_menu_key(ls_tk_t k, char ch) { (void)k; (void)ch; return false; }
+static bool fm_menu_touch(int col, int row) { (void)col; (void)row; return false; }
+#endif
+
 static bool key(ls_tk_t k, char ch)
+{
+    if (fm_menu_key(k, ch)) return true;
+    return key_main(k, ch);
+}
+
+static bool key_main(ls_tk_t k, char ch)
 {
     if (ls_here_up(&HERE)) return ls_here_key(k, ch);
     if (k == LS_TK_CHAR && ch == '7' && s_details && !s_freq_keyboard && !ls_calls_active()) { here_open(); return true; }
@@ -2932,6 +3089,7 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int col, int row)
 {
+    if (fm_menu_touch(col, row)) return true;
     if (ls_here_up(&HERE)) return ls_here_touch(col, row);
     rx_pages_refind(&s_pv, &FM_PAGES);
     const bool handled = touch_in(col, row);

@@ -320,6 +320,10 @@ bool ls_radio_tx_policy_latest_audit(ls_radio_tx_audit_t *out)
  */
 #include "tx_protection.h"
 #include "ls_tx_unlock.h"
+
+/* The operator's TX limits switch (ls_tx_unlock.h). settings_init loads it
+   from NVS; SUB-GHZ SETTINGS > TX limits sets it. */
+volatile bool ls_tx_unlock_runtime;
 #if defined(ESP_PLATFORM) && !defined(LS_LAP_HOST_TEST)
 #include "esp_attr.h"
 #elif !defined(EXT_RAM_BSS_ATTR)

@@ -101,9 +101,9 @@ static int s_sel = -1;                       /* device index, -1 none */
 static uint8_t s_sel_addr[6], s_sel_kind;
 
 /* SHOW: what the pillars are. */
-enum { SH_ALL, SH_WIFI, SH_OPEN, SH_BT, SH_OTHER, SH_N };
+enum { SH_ALL, SH_WIFI, SH_OPEN, SH_BT, SH_OTHER, SH_RADIO, SH_TARGET, SH_N };
 static int s_show;
-static const char *const SHOW_N[SH_N] = { "ALL", "WI-FI", "OPEN", "BT", "CELL+UAS" };
+static const char *const SHOW_N[SH_N] = { "ALL", "WI-FI", "OPEN", "BT", "CELL+UAS", "RF+AIR+LORA", "TARGETS" };
 
 static tui_rect s_view;                      /* the image cells */
 
@@ -136,8 +136,18 @@ static uint16_t kind_rgb(int kind, int sec)
         const uint32_t c = W[sec >= 0 && sec < WD_SECS ? sec : 3];
         return rgb(c >> 16, (c >> 8) & 255, c & 255);
     }
-    return kind == WD_BLE ? rgb(230, 90, 240) : kind == WD_CELL ? rgb(235, 235, 235) : rgb(255, 70, 60);
+    switch (kind) {
+    case WD_BLE: return rgb(230, 90, 240);
+    case WD_CELL: return rgb(235, 235, 235);
+    case WD_RF: return rgb(255, 170, 40);      /* sub-GHz: TPMS, sensors */
+    case WD_AIR: return rgb(90, 200, 255);     /* aircraft */
+    case WD_LORA: return rgb(90, 255, 150);    /* LoRa nodes */
+    default: return rgb(255, 70, 60);          /* drones */
+    }
 }
+/* a target (wd_sig / wd_track said what it is): red, whatever its kind.
+   PEER only says who reported it, as in HUNT and wd_track. */
+#define ALERT_TAGS ((uint16_t)~(WD_T_REGULAR | WD_T_NEWHERE | WD_T_PEER))
 
 /* finds a minute along the route: dim blue none, then cyan, yellow, red */
 static uint16_t rate_rgb(float per_min)
@@ -378,6 +388,8 @@ static bool shown(const wd_dev_t *e)
     case SH_OPEN: return e->kind == WD_WIFI && wd_sec_class(e->auth) == WD_SEC_OPEN;
     case SH_BT: return e->kind == WD_BLE;
     case SH_OTHER: return e->kind == WD_CELL || e->kind == WD_DRONE;
+    case SH_RADIO: return e->kind == WD_RF || e->kind == WD_AIR || e->kind == WD_LORA;
+    case SH_TARGET: return (e->tags & ALERT_TAGS) != 0;
     default: return true;
     }
 }
@@ -607,6 +619,21 @@ static void head(int x, int y, int kind, int r, uint16_t c, uint16_t rim)
     case WD_DRONE:
         for (int k = -r - 1; k <= r + 1; k++) { box(x + k, y + k, 0, c); box(x + k, y - k, 0, c); px(x + k, y + k + 1, rim); }
         break;
+    case WD_RF:                     /* a ring: a tyre's sensor, a remote */
+        for (int j = -r - 1; j <= r + 1; j++) for (int i = -r - 1; i <= r + 1; i++) {
+            const int d2 = i * i + j * j, o = (r + 1) * (r + 1), n = (r - 1) * (r - 1);
+            if (d2 <= o && d2 >= n) px(x + i, y + j, d2 > r * r ? rim : c);
+        }
+        break;
+    case WD_AIR:                    /* wings and a body */
+        for (int k = -r - 1; k <= r + 1; k++) { px(x + k, y, c); px(x + k, y + 1, rim); }
+        for (int k = -r; k <= r; k++) { px(x, y + k, c); px(x + 1, y + k, rim); }
+        for (int k = -r / 2; k <= r / 2; k++) px(x + k, y + r, c);
+        break;
+    case WD_LORA:                   /* a mast with two bars */
+        for (int k = -r - 1; k <= r + 1; k++) { px(x, y + k, c); px(x + 1, y + k, rim); }
+        for (int k = -r; k <= r; k++) { px(x + k, y - r, c); px(x + k / 2, y, c); }
+        break;
     default:
         for (int j = -r - 1; j <= r + 1; j++) for (int i = -r - 1; i <= r + 1; i++)
             px(x + i, y + j, abs(i) == r + 1 || abs(j) == r + 1 ? rim : c);
@@ -619,18 +646,65 @@ typedef struct { int16_t sx, sy; uint8_t kind, sec; int8_t rssi; char text[22]; 
 static EXT_RAM_BSS_ATTR tag_t s_tag[TAGS];
 static int s_ntag;
 
+/* Where each marker is drawn. A network stands where it was heard strongest,
+   so while the car closes on it every stronger reading moves it to the car:
+   drawn there at once, the markers near the car hopped forward with it and
+   new ones popped up whole. The drawn place glides to the heard one (about a
+   third of a second) and a new marker grows out of the ground (half a
+   second). Only the drawing moves; the drive's data is unchanged. */
+typedef struct { float x, z; uint32_t born, key; } disp_t;
+static EXT_RAM_BSS_ATTR disp_t s_disp[MAX_PILLARS];
+static uint32_t s_disp_session, s_disp_real;
+static float s_disp_k;
+
+static void disp_frame(void)
+{
+    const uint32_t real = (uint32_t)(esp_timer_get_time() / 1000);
+    const uint32_t session = wd_stats()->start_ms;
+    if (session != s_disp_session) { memset(s_disp, 0, sizeof(s_disp)); s_disp_session = session; }
+    const float dt = s_disp_real ? (float)(real - s_disp_real) / 1000.0f : 1.0f;
+    s_disp_real = real;
+    s_disp_k = dt >= 1.0f ? 1.0f : 1.0f - expf(-dt / 0.12f);
+}
+static void disp_at(int i, const wd_dev_t *e, float *x, float *z, float *grow)
+{
+    float tx, tz;
+    stand(e, &tx, &tz);
+    *grow = 1.0f;
+    if (i < 0 || i >= MAX_PILLARS) { *x = tx; *z = tz; return; }
+    disp_t *d = &s_disp[i];
+    const uint32_t key = ((uint32_t)e->addr[2] << 24 | (uint32_t)e->addr[3] << 16 | (uint32_t)e->addr[4] << 8 | e->addr[5]) | 1u;
+    if (d->key != key) { d->key = key; d->x = tx; d->z = tz; d->born = s_disp_real; }
+    else {
+        const float dx = tx - d->x, dz = tz - d->z;
+        if (dx * dx + dz * dz > 4.0e6f) { d->x = tx; d->z = tz; }       /* over 2 km: a seek, not a glide */
+        else { d->x += dx * s_disp_k; d->z += dz * s_disp_k; }
+    }
+    const uint32_t age = s_disp_real - d->born;
+    if (age < 500) *grow = 0.15f + 0.85f * (float)age / 500.0f;
+    *x = d->x; *z = d->z;
+}
+static float disp_grow(int i)
+{
+    if (i < 0 || i >= MAX_PILLARS) return 1.0f;
+    const uint32_t age = s_disp_real - s_disp[i].born;
+    return age < 500 ? 0.15f + 0.85f * (float)age / 500.0f : 1.0f;
+}
+
 static void pillars_draw(void)
 {
     s_ntag = 0;
     s_agg_on = c_dist > 1400;
     if (s_agg_on) { s_nhits = 0; columns_draw(); return; }
+    disp_frame();
     const int n = wd_dev_count();
     int m = 0;
     for (int i = 0; i < n && m < MAX_PILLARS; i++) {
         const wd_dev_t *e = wd_dev_at(i);
         if (!(e->flags & WD_F_PLACED) || (!shown(e) && i != s_sel)) continue;
-        float x, z;
-        stand(e, &x, &z);
+        float x, z, grow;
+        disp_at(i, e, &x, &z, &grow);
+        (void)grow;
         const v3 d = { x - c_pos.x, -c_pos.y, z - c_pos.z };
         const float zc = vdot(d, c_f);
         if (zc < 1) continue;
@@ -648,13 +722,16 @@ static void pillars_draw(void)
     for (int k = 0; k < m; k++) {
         const wd_dev_t *e = wd_dev_at(s_order[k].i);
         float x, z, bx, by, tx, ty;
-        stand(e, &x, &z);
+        const int di = s_order[k].i;
+        if (di < MAX_PILLARS && s_disp[di].key) { x = s_disp[di].x; z = s_disp[di].z; }
+        else stand(e, &x, &z);
         const float s = fmaxf(0, fminf(1, (e->rssi + 100) / 60.0f));
-        const float h = unit * (0.12f + 0.88f * s);
+        const float h = unit * (0.12f + 0.88f * s) * disp_grow(di);
         if (!project(x, 0, z, &bx, &by, NULL) || !project(x, h, z, &tx, &ty, NULL)) continue;
         const bool sel = s_order[k].i == s_sel, near = s_order[k].d < c_dist * 1.2f;
         const int sec = e->kind == WD_WIFI ? wd_sec_class(e->auth) : 0;
-        const uint16_t c = sel ? rgb(255, 255, 255) : kind_rgb(e->kind, sec);
+        const bool target = (e->tags & ALERT_TAGS) != 0;
+        const uint16_t c = sel ? rgb(255, 255, 255) : target ? rgb(255, 40, 40) : kind_rgb(e->kind, sec);
         /* where it stands: a flat ring on the ground, wider the stronger */
         {
             float rx, ry;
@@ -665,6 +742,12 @@ static void pillars_draw(void)
                     const float a = t * 0.2618f;
                     px((int)(bx + cosf(a) * R), (int)(by + sinf(a) * Ry), mix(c, black, 110));
                 }
+                /* a target wears a second, wider ring in full red */
+                if (target)
+                    for (int t = 0; t < 32; t++) {
+                        const float a = t * 0.19635f;
+                        px((int)(bx + cosf(a) * R * 2), (int)(by + sinf(a) * Ry * 2), rgb(255, 40, 40));
+                    }
             }
         }
         /* the stem, outlined so it reads against any ground */
@@ -683,7 +766,8 @@ static void pillars_draw(void)
             char nm[16];
             if (e->name[0]) snprintf(nm, sizeof(nm), "%.13s", e->name);
             else snprintf(nm, sizeof(nm), "%s%02x:%02x", e->kind == WD_WIFI ? "hidden " : "", e->addr[4], e->addr[5]);
-            snprintf(t->text, sizeof(t->text), "%c %s %d", "WBCD"[e->kind & 3], nm, e->rssi);
+            if (target) snprintf(t->text, sizeof(t->text), "! %s %s", wd_tag_word(e->tags & ALERT_TAGS), nm);
+            else snprintf(t->text, sizeof(t->text), "%c %s %d", e->kind < WD_KINDS ? "WBCDRAL"[e->kind] : '?', nm, e->rssi);
         }
     }
     st_dots = (unsigned)m;
@@ -884,7 +968,7 @@ static void names(tui_surface *sf, tui_rect a)
     static EXT_RAM_BSS_ATTR uint8_t used[96][48];
     memset(used, 0, sizeof(used));
     /* the markers' tags first: they are what the view is for */
-    static const uint8_t TAG_HUE[WD_KINDS] = { TUI_GREEN, TUI_MAGENTA, TUI_WHITE, TUI_RED };
+    static const uint8_t TAG_HUE[WD_KINDS] = { TUI_GREEN, TUI_MAGENTA, TUI_WHITE, TUI_RED, TUI_YELLOW, TUI_CYAN, TUI_GREEN };
     for (int i = s_ntag - 1; i >= 0; i--) {
         const tag_t *t = &s_tag[i];
         const int len = (int)strlen(t->text);
@@ -896,8 +980,9 @@ static void names(tui_surface *sf, tui_rect a)
         for (int k = -1; k <= len && !clash; k++) if (cc + k >= 0 && cc + k < 96 && used[cc + k][rr]) clash = true;
         if (clash) continue;
         for (int k = 0; k < len; k++) used[cc + k][rr] = 1;
-        uint8_t hue = TAG_HUE[t->kind & 3];
-        if (t->kind == WD_WIFI) hue = t->sec == WD_SEC_OPEN ? TUI_GREEN : t->sec <= WD_SEC_WPA ? TUI_YELLOW : t->sec == WD_SEC_WPA3 ? TUI_BLUE : TUI_CYAN;
+        uint8_t hue = TAG_HUE[t->kind < WD_KINDS ? t->kind : 0];
+        if (t->text[0] == '!') hue = TUI_RED;          /* a target */
+        else if (t->kind == WD_WIFI) hue = t->sec == WD_SEC_OPEN ? TUI_GREEN : t->sec <= WD_SEC_WPA ? TUI_YELLOW : t->sec == WD_SEC_WPA3 ? TUI_BLUE : TUI_CYAN;
         ls_tui_put_glass(sf, a, col, row, t->text[0], TUI_ATTR(TUI_BLACK, hue | TUI_BRIGHT));
         for (int k = 1; k < len; k++) ls_tui_put_glass(sf, a, col + k, row, t->text[k], TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK));
     }

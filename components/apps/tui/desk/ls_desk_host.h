@@ -17,4 +17,11 @@ void ls_desk_host_cancel(int id);
 void ls_desk_host_reply(int id, int result);
 /* One bounded text record; called by the terminal worker, never an app. */
 int ls_desk_host_line(char *line, size_t cap);
+/* The desk's resolution (Control Panel > Display, 'desk res'): while the
+   desk is on and holds one, a viewer's 'term size' gets this grid instead of
+   its window's and the page scales the cells to fit. True and the grid when
+   it holds one. Defined by the desk (ls_desk.c); a build without the desk
+   has none, so its callers take it weak. */
+#include <stdbool.h>
+bool ls_desk_grid_hold(int *cols, int *rows);
 #endif

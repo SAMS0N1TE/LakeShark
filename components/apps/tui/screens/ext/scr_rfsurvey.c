@@ -520,7 +520,8 @@ static void stats(tui_surface *sf, tui_rect a, int y)
                   s_v.cells, (unsigned long)(s_v.elapsed_s / 60), (unsigned long)(s_v.elapsed_s % 60));
     put(sf, a, a.x, y, t, WHITE);
     if (s_v.status[0]) put(sf, a, a.x, y + 1, s_v.status, s_v.running ? GREEN : YELLOW);
-    else put(sf, a, a.x, y + 1, s_v.file[0] ? s_v.file : "tap the heat or a bar to pick a channel", LS_ATTR_DIM);
+    else if (s_v.file[0]) put(sf, a, a.x, y + 1, s_v.file, LS_ATTR_DIM);
+    else if (!ls_tui_compact()) put(sf, a, a.x, y + 1, "tap the heat or a bar to pick a channel", LS_ATTR_DIM);
 }
 
 static void options_preview(tui_surface *sf, tui_rect a)
@@ -543,7 +544,13 @@ static void draw(tui_surface *sf, tui_rect area)
     settings_ready();
     ls_rfs_view(&s_v);
     const bool wide = ls_tui_is_wide();
-    const int bar_h = ls_btn_raised_height(area, 5);
+    int bar_h = ls_btn_raised_height(area, 5);
+    tui_rect tool = tui_rect_make(0, -1, 0, 0);
+    if (ls_tui_compact() && area.h >= 12) {
+        /* Desk: the keys are the window's one toolbar, under its menu bar. */
+        tool = tui_rect_make(area.x, area.y, area.w, 1);
+        area.y++; area.h--; bar_h = 0;
+    }
     const int head_h = 4;
     const int body_y = area.y + head_h, body_h = area.h - head_h - bar_h - 3;
     header(sf, tui_rect_make(area.x, area.y, area.w, head_h));
@@ -557,7 +564,7 @@ static void draw(tui_surface *sf, tui_rect area)
         channel_strip(sf, tui_rect_make(area.x, body_y + body_h - strip_h, area.w, strip_h));
     }
     stats(sf, area, area.y + area.h - bar_h - 3);
-    if (!wide) ls_safe_line(sf, area, area.y + area.h - bar_h - 1, s_hint, LS_ATTR_DIM);
+    if (!wide && !ls_tui_compact()) ls_safe_line(sf, area, area.y + area.h - bar_h - 1, s_hint, LS_ATTR_DIM);   /* desk: Help > Keys */
     char src[24], plan[24];
     snprintf(src, sizeof(src), "%.12s", live() ? s_v.src_name : ls_rfs_src_name(s_set.src));
     snprintf(plan, sizeof(plan), "%.12s", live() ? s_v.plan : s_set.plan.name);
@@ -568,7 +575,7 @@ static void draw(tui_surface *sf, tui_rect area)
         { "MAP", s_v.cells ? "heat" : NULL, 'm', false, false, s_v.cells > 0 },
         ls_opt_button(&C_ROOT),
     };
-    ls_btn_bar_raised(sf, tui_rect_make(area.x, area.y + area.h - bar_h, area.w, bar_h), b, 5, -1);
+    ls_btn_bar_raised(sf, tool.h > 0 ? tool : tui_rect_make(area.x, area.y + area.h - bar_h, area.w, bar_h), b, 5, -1);
 }
 
 /* ---------------------------------------------------------------- input -- */

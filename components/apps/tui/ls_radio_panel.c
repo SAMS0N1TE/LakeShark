@@ -1,4 +1,6 @@
 #include "ls_radio_panel.h"
+#include "ls_deskui.h"
+#include "ls_box.h"
 #include "ls_slider_drag.h"
 #include "ls_numpad.h"
 #include "ls_radio_select.h"
@@ -36,6 +38,21 @@ void ls_radio_digits_draw(tui_surface *sf, tui_rect a, int row, const char *text
         return;
     }
     int x = a.x + (a.w - width) / 2;
+    if (ls_dui_desk()) {
+        /* A desk window: the figures are a VFD's, lit segments over the
+           ghosts of every 8, on their own black glass. Same cells as below. */
+        uint8_t lit, ghost;
+        ls_dui_vfd_inks(attr == LS_ATTR_FAINT ? LS_DUI_VFD_CYAN : LS_DUI_VFD_CYAN, &lit, &ghost);
+        if (attr == LS_ATTR_FAINT) lit = ghost;           /* nothing tuned: only the ghosts */
+        const tui_rect glass = tui_rect_intersect(a, tui_rect_make(x - 1, a.y + row, width + 2, 5));
+        tui_fill(sf, glass, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        ls_ink_mark(glass, LS_INK_K_VFD);
+        for (const char *p = text; *p; ++p) {
+            if (*p == '.') { ls_box_put(sf, a, x, a.y + row + 4, LS_SHAPE_DOT, lit); x += 2; }
+            else { ls_dui_seg(sf, a, x, a.y + row, 3, 5, *p, lit, ghost); x += 4; }
+        }
+        return;
+    }
     for (const char *p = text; *p; ++p) {
         if (*p == '.') {
             tui_put_char(sf, a, x, a.y + row + 4, LS_TUI_BLOCK_FULL, attr);
@@ -194,8 +211,20 @@ void ls_radio_filament(tui_surface *sf, tui_rect box, int x, int y, int rows, ui
    not read as one more card in a stack of cards. */
 void ls_radio_bezel(tui_surface *sf, tui_rect r, const char *title)
 {
-    ls_ink_keep(r);              /* a scope stays on black in any scheme */
     title = ls_tr(title);
+    if (ls_dui_desk() && r.w >= 4 && r.h >= 3) {
+        /* A desk window: the glass is sunk into the face, its caption on
+           the top edge in the scheme's words. Nothing inside is cleared. */
+        ls_ink_keep(tui_rect_make(r.x + 1, r.y + 1, r.w - 2, r.h - 2));
+        ls_dui_edge(sf, r, true);
+        if (title && r.w > (int)strlen(title) + 8) {
+            char cap[40];
+            snprintf(cap, sizeof(cap), " %s ", title);
+            tui_put_str(sf, r, r.x + 2, r.y, cap, ls_ink(LS_INK_TEXT, TUI_ATTR(TUI_WHITE, TUI_BLACK)));
+        }
+        return;
+    }
+    ls_ink_keep(r);              /* a scope stays on black in any scheme */
     const uint8_t edge = TUI_ATTR(TUI_CYAN, TUI_BLACK);
     for (int x = 0; x < r.w; ++x) {
         tui_put_char(sf, r, r.x + x, r.y, '=', edge);
@@ -1386,14 +1415,19 @@ void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
     char text[96];
     status_text(p, v, text, sizeof(text), false);
     tui_rect status = tui_rect_make(a.x, a.y + 1, a.w, 3);
-    tui_box(sf, status, NULL, cyan);
+    /* A desk window: the state line sits in a sunken well, the keys in an
+       etched group at the foot (the app's toolbar is above). */
+    const bool desk = ls_tui_compact() && ls_dui_desk();
+    if (desk) ls_dui_well(sf, status, NULL);
+    else tui_box(sf, status, NULL, cyan);
     line(sf, status, 1, text, amber);
     buttons(p, v, true);
     if (!p->lists && !start_deck_rows(tui_rect_make(a.x, a.y + 5, a.w, a.h - 11), wide))
         buttons(p, v, false);
-    const int bh = ls_tui_compact() ? 1 : p->nbuttons > 4 ? (wide ? 5 : 10) : 5;
+    const int bh = desk ? 3 : ls_tui_compact() ? 1 : p->nbuttons > 4 ? (wide ? 5 : 10) : 5;
     tui_rect controls = tui_rect_make(a.x, a.y + a.h - bh, a.w, bh);
     tui_rect body = tui_rect_make(a.x, a.y + 5, a.w, controls.y - a.y - 6);
+    if (desk) controls = ls_dui_group(sf, controls, "Scanner");
     if (p->lists) {
         uint32_t lo, hi, step;
         scan_engine_get_band(&lo, &hi, &step);
@@ -1402,6 +1436,11 @@ void ls_radio_panel_draw(ls_radio_panel_t *p, const ls_radio_view_t *v, tui_surf
                  scan_engine_get_zone(), scan_engine_get_hang_ms() / 1000.0);
         line(sf, body, 0, text, amber);
         LS_SNPRINTF(t_ls_radio_panel_4f_4f_mhz_1fk, text, sizeof(text), "%.4f - %.4f MHz / %.1fk", lo / 1e6, hi / 1e6, step / 1000.0);
+        if (ls_tui_compact() && (int)strlen(text) + 4 <= body.w)
+            /* A desk window: the band being scanned is a readout, on a VFD. */
+            ls_dui_vfd(sf, tui_rect_make(body.x + 1, body.y + (wide ? 1 : 2), (int)strlen(text) + 2, 1), text,
+                       LS_DUI_VFD_CYAN | LS_DUI_VFD_SMALL);
+        else
         line(sf, body, wide ? 1 : 2, text, white);
         line(sf, body, wide ? 2 : 4,
              p->notice[0] ? p->notice : "Zone -1 = all / changes stop scanning", LS_ATTR_DIM);
@@ -1866,10 +1905,44 @@ static void lcd_char(tui_surface *sf, tui_rect box, int x, int y, char c,
    a frequency entered and is how you can see how many are left. */
 #define LCD_PAD "8888.8888"
 
+/* The desk form: a VFD. Every figure is segments, lit over the ghost of an
+   8, on black glass in any scheme; the cells and the widths are the LCD's. */
+static void lcd_number_vfd(tui_surface *sf, tui_rect box, int x, int y,
+                           const char *now, const char *settled, int xs, const char *pad)
+{
+    uint8_t lit, ghost;
+    ls_dui_vfd_inks(LS_DUI_VFD_CYAN, &lit, &ghost);
+    const uint8_t moving = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
+    const char *field = pad && (int)strlen(pad) > (int)strlen(now) ? pad : now;
+    const tui_rect glass = tui_rect_intersect(box, tui_rect_make(x - 1, y, lcd_text_w(field, xs) + 2, LCD_FIG_H));
+    tui_fill(sf, glass, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    ls_ink_mark(glass, LS_INK_K_VFD);
+    int cx = x, n = 0;
+    const int settled_n = settled ? (int)strlen(settled) : 0;
+    for (const char *p = now; *p; ++p) {
+        const int cw = lcd_char_w(*p, xs);
+        if (!cw) continue;
+        const bool diff = n < settled_n && settled[n] != *p;
+        if (*p == '.') ls_box_put(sf, box, cx + xs - 1, y + LCD_FIG_H - 1, LS_SHAPE_DOT, diff ? moving : lit);
+        else ls_dui_seg(sf, box, cx, y, cw, LCD_FIG_H, *p, diff ? moving : lit, ghost);
+        cx += cw + 1;
+        n++;
+    }
+    if (!pad) return;
+    const int pad_n = (int)strlen(pad);
+    for (int i = n; i < pad_n; ++i) {
+        const int cw = lcd_char_w(pad[i], xs);
+        if (!cw) continue;
+        if (pad[i] != '.') ls_dui_seg(sf, box, cx, y, cw, LCD_FIG_H, '8', ghost, 0);
+        cx += cw + 1;
+    }
+}
+
 static void lcd_number(tui_surface *sf, tui_rect box, int x, int y,
                        const char *now, const char *settled, int xs,
                        uint8_t lit, uint8_t moving, const char *pad)
 {
+    if (ls_dui_desk()) { lcd_number_vfd(sf, box, x, y, now, settled, xs, pad); return; }
     const uint8_t ghost = TUI_ATTR(TUI_BLACK | TUI_BRIGHT, TUI_BLACK);
     int cx = x, n = 0;
     const int settled_n = settled ? (int)strlen(settled) : 0;
@@ -2155,6 +2228,7 @@ void ls_radio_glass_bezel(tui_surface *sf, tui_rect r, const char *title)
     title = ls_tr(title);
     char cap[32];
     snprintf(cap, sizeof(cap), " %s ", title ? title : "");
+    if (ls_dui_desk()) { ls_radio_bezel(sf, r, title); return; }
     ls_radio_bezel(sf, r, NULL);
     if (title && r.w > (int)strlen(title) + 8)
         tui_put_str(sf, r, r.x + 3, r.y, cap,

@@ -17,6 +17,7 @@
 #include "ls_det_signal.h"
 #pragma weak ls_seen_signal
 #include "rec_ism.h"
+#include "fsk_packet.h"
 #include "esp_timer.h"
 #include "esp_attr.h"
 #include "esp_random.h"
@@ -59,6 +60,9 @@ static void replay(uint32_t id,int dbm,char *result,size_t len);
 /* A file to send instead of a catalog entry, for the FILES app. */
 static char s_replay_path[160];
 static void replay_file(const char *path,int dbm,char *result,size_t len);
+static int clean_fsk_packets(fsk_pkt_t *pkt,int found);
+static void send_fsk_packets(const char *what,uint32_t freq_hz,uint32_t deviation_hz,
+                             const fsk_pkt_t *pkt,int n,int dbm,char *result,size_t len);
 static uint32_t s_scan_min,s_scan_max,s_scan_secs;
 static int s_scan_bins=REC_SCAN_BINS;
 static TaskHandle_t s_worker_task;
@@ -66,6 +70,8 @@ static bool s_watch_pending, s_watch_waiting, s_watch_on, s_watch_result;
 /* Set while the worker is acting on a request: it then finishes, and the
    caller waits for it rather than withdrawing a request already underway. */
 static bool s_watch_taken;
+/* An OFF the caller did not wait for: the worker ends the waiting itself. */
+static bool s_watch_detached;
 static bool rec_watch_enable_owned(bool on);
 static volatile bool s_scan_busy;
 static rec_source_t s_scan_source;
@@ -248,8 +254,10 @@ static void publish(void)
     portEXIT_CRITICAL(&s_lock);
 }
 typedef struct { uint64_t last_alert; bool attempted_alert; } capture_flow_t;
+static void air_heard(const capture_t *cap);
 static void consume_capture(capture_t *cap, capture_flow_t *flow)
 {
+    air_heard(cap);
     bool novel=false;
     int slot=rec_watch_observe_mod(s_catalog,cap->source,cap->hz,cap->pulse,cap->edges,
         s_boot,cap->ms,cap->peak,cap->reason,cap->has_mod?&cap->mod:NULL,&novel);
@@ -315,6 +323,112 @@ static void pump_capture(void *context)
 }
 static void sync_cc_watch(void);
 static void watch_lend(void);
+/* ---------------------------------------------------- what is on the air */
+static EXT_RAM_BSS_ATTR rec_air_t s_air[2];        /* [0] rx, [1] tx          */
+static EXT_RAM_BSS_ATTR rec_air_t s_air_build;     /* the worker's scratch    */
+static uint32_t s_air_seq;
+bool rec_watch_air(bool tx, rec_air_t *out)
+{
+    portENTER_CRITICAL(&s_lock);
+    const bool have=s_air[tx?1:0].kind!=REC_AIR_NONE;
+    if(have && out)memcpy(out,&s_air[tx?1:0],sizeof(*out));
+    portEXIT_CRITICAL(&s_lock);
+    return have;
+}
+static void air_publish(const rec_air_t *v)
+{
+    portENTER_CRITICAL(&s_lock);
+    memcpy(&s_air[v->tx?1:0],v,sizeof(*v));
+    s_air[v->tx?1:0].seq=++s_air_seq;
+    portEXIT_CRITICAL(&s_lock);
+}
+static uint32_t air_span_us(const int32_t *edge,int n)
+{
+    uint64_t t=0;
+    for(int i=0;i<n;i++)t+=(uint64_t)(edge[i]<0?-(int64_t)edge[i]:edge[i]);
+    return t>UINT32_MAX?UINT32_MAX:(uint32_t)t;
+}
+/* A burst as edges: raw 2-FSK, or OOK. */
+static void air_edges(bool tx,uint8_t kind,uint32_t hz,int dbm,uint32_t dev_hz,
+                      const int32_t *edge,int n,const char *what)
+{
+    rec_air_t *v=&s_air_build;
+    memset(v,0,offsetof(rec_air_t,edge));
+    v->kind=kind;v->tx=tx;v->dbm=(int8_t)dbm;v->freq_hz=hz;v->dev_hz=dev_hz;
+    v->dur_us=air_span_us(edge,n);
+    v->nedges=(uint16_t)(n>REC_AIR_EDGES?REC_AIR_EDGES:(n<0?0:n));
+    if(v->nedges)memcpy(v->edge,edge,(size_t)v->nedges*sizeof(edge[0]));
+    snprintf(v->what,sizeof(v->what),"%s",what?what:"");
+    v->start_us=esp_timer_get_time();
+    air_publish(v);
+}
+/* A proven packet, as its bytes go on the air. `body` is what is sent after
+   the sync word. */
+static void air_packet(bool tx,uint32_t hz,int dbm,uint32_t baud,uint32_t dev_hz,
+                       unsigned pre_bits,uint32_t sync,uint8_t sync_bits,
+                       const uint8_t *body,size_t nb,bool crc,bool length_byte,const char *what)
+{
+    rec_air_t *v=&s_air_build;
+    memset(v,0,offsetof(rec_air_t,edge));
+    v->kind=REC_AIR_PACKET;v->tx=tx;v->dbm=(int8_t)dbm;v->freq_hz=hz;v->baud=baud;v->dev_hz=dev_hz;
+    v->pre_bits=(uint16_t)pre_bits;v->sync=sync;v->sync_bits=sync_bits;
+    v->nbytes=(uint8_t)(nb>REC_AIR_BYTES?REC_AIR_BYTES:nb);
+    memcpy(v->bytes,body,v->nbytes);
+    v->crc=crc;v->length_byte=length_byte;
+    v->dur_us=baud?(uint32_t)(((uint64_t)pre_bits+sync_bits+8u*v->nbytes)*1000000u/baud):0;
+    snprintf(v->what,sizeof(v->what),"%s",what?what:"");
+    v->start_us=esp_timer_get_time();
+    air_publish(v);
+}
+/* The on-air bytes and sync of a decoded packet: payload, CRC as sent,
+   PN9 and inversion put back. Returns the body length. */
+static size_t air_pkt_body(const fsk_pkt_t *p,uint8_t *body,uint32_t *sync,uint8_t *sync_bits)
+{
+    size_t nb=p->len>FSK_PKT_MAX_BYTES?FSK_PKT_MAX_BYTES:p->len;
+    memcpy(body,p->data,nb);
+    if(p->crc_kind!=FSK_CRC_NONE){body[nb++]=(uint8_t)(p->crc>>8);body[nb++]=(uint8_t)p->crc;}
+    if(p->whitened)fsk_pkt_pn9(body,nb);
+    uint32_t w=p->sync&0xFFFFu;
+    uint8_t bits=16;
+    if(p->sync_repeats>=2){w=(w<<16)|w;bits=32;}
+    else w<<=16;
+    if(p->inverted) {
+        for(size_t k=0;k<nb;k++)body[k]^=0xFF;
+        w^=bits==32?0xFFFFFFFFu:0xFFFF0000u;
+    }
+    *sync=w;*sync_bits=bits;
+    return nb;
+}
+/* Progress of a replay, in the words the screen shows while it waits. */
+static void replay_stage(const char *text)
+{
+    portENTER_CRITICAL(&s_lock);
+    snprintf(s_replay_result,sizeof(s_replay_result),"%s",text);
+    portEXIT_CRITICAL(&s_lock);
+}
+/* READ heard a burst: a packet if the decoder proves one, else its edges. */
+static void air_heard(const capture_t *cap)
+{
+    if(!cap || cap->edges<6)return;
+    if(cap->has_mod) {
+        static EXT_RAM_BSS_ATTR fsk_pkt_t pk[2];
+        const int found=fsk_pkt_from_edges(cap->pulse,(size_t)cap->edges,pk,2);
+        for(int i=0;i<found;i++) {
+            if(pk[i].crc_kind==FSK_CRC_NONE || !pk[i].len)continue;
+            uint8_t body[FSK_PKT_MAX_BYTES+2];uint32_t sync;uint8_t sb;
+            const size_t nb=air_pkt_body(&pk[i],body,&sync,&sb);
+            const uint32_t baud=pk[i].baud_std?pk[i].baud_std:pk[i].baud;
+            unsigned pre=pk[i].preamble_bits>0?(unsigned)pk[i].preamble_bits:32u;
+            air_packet(false,cap->hz,0,baud,cap->mod.deviation_hz,pre,sync,sb,body,nb,true,
+                       pk[i].length_byte,"heard: packet, CRC ok");
+            return;
+        }
+        air_edges(false,REC_AIR_FSK,cap->hz,0,cap->mod.deviation_hz,cap->pulse,cap->edges,"heard: 2-FSK");
+        return;
+    }
+    air_edges(false,REC_AIR_OOK,cap->hz,0,0,cap->pulse,cap->edges,"heard: OOK");
+}
+
 #include "rec_lr_iq_runtime.inc"
 
 static void worker(void *arg)
@@ -352,6 +466,7 @@ static void worker(void *arg)
             bool ok=rec_watch_enable_owned(watch_on);
             portENTER_CRITICAL(&s_lock);
             s_watch_result=ok;s_watch_pending=false;s_watch_taken=false;
+            if(s_watch_detached){s_watch_detached=false;s_watch_waiting=false;}
             portEXIT_CRITICAL(&s_lock);
         }
         sync_cc_watch();
@@ -751,6 +866,22 @@ bool rec_watch_set_lr_fsk(bool fsk)
     settings_set_subghz_lr_fsk(fsk);
     return true;
 }
+/* Within FSK, RAW keeps every burst the discriminator hears as edges, the
+   way a Flipper's FM preset does; PACKET keeps only a packet whose sync word
+   matches the capture setup. RAW needs no rate or sync to be known first. */
+static bool s_lr_raw, s_lr_raw_loaded;
+bool rec_watch_lr_raw(void)
+{
+    if(!s_lr_raw_loaded){s_lr_raw=settings_get_subghz_lr_raw();s_lr_raw_loaded=true;}
+    return s_lr_raw;
+}
+bool rec_watch_set_lr_raw(bool raw)
+{
+    if(rec_watch_enabled())return false;
+    s_lr_raw=raw;s_lr_raw_loaded=true;
+    settings_set_subghz_lr_raw(raw);
+    return true;
+}
 static void lr_ook_emit(void *ctx,const int32_t *edge,int edges,int peak)
 {
     (void)ctx;
@@ -944,6 +1075,25 @@ static void lr_fsk_decode(const int16_t *iq,size_t pairs,int peak,int32_t air,bo
         return;
     }
     const rec_fsk_mod_t m=s_fsk;
+    if(rec_watch_lr_raw()) {
+        /* RAW: the burst as the discriminator heard it, upper tone high.
+           The rate is the packet's where one decoded, else one bit per
+           shortest run; the deviation is the one measured. */
+        if(ne<6)return;
+        rec_fsk_mod_t got=m;
+        uint32_t shortest=UINT32_MAX;
+        for(size_t k=0;k<ne;k++) {
+            const uint32_t d=(uint32_t)(s_lrf_edges[k]<0?-s_lrf_edges[k]:s_lrf_edges[k]);
+            if(d && d<shortest)shortest=d;
+        }
+        uint32_t baud=found && s_lrf_pkts[0].baud?(s_lrf_pkts[0].baud_std?s_lrf_pkts[0].baud_std:s_lrf_pkts[0].baud):
+                      shortest!=UINT32_MAX?1000000u/shortest:0;
+        if(baud>=600 && baud<=100000)got.bitrate=baud;
+        if(rf.deviation_hz>=600.0f && rf.deviation_hz<=200000.0f)got.deviation_hz=(uint32_t)(rf.deviation_hz+0.5f);
+        const int n=ne>REC_WATCH_EDGES?REC_WATCH_EDGES:(int)ne;
+        rec_watch_submit_mod(REC_SOURCE_SX1262,rec_get_freq(),s_lrf_edges,n,peak,REC_END_GAP,&got);
+        return;
+    }
     for(int i=0;i<found;i++) {
         const fsk_pkt_t *p=&s_lrf_pkts[i];
         if(!p->len || !lr_fsk_sync_ok(p,m.sync_word))continue;
@@ -1053,7 +1203,7 @@ static bool lr_fsk_iq_wanted(void)
     const uint32_t hz=rec_get_freq();
     rec_fsk_mod_t m;rec_watch_fsk_get(&m);
     return rec_watch_lr_fsk() && ls_lora_chip()==LS_LORA_CHIP_LR20XX &&
-           ls_lora_rx_range_ok(ls_lora_caps(),hz,hz) && lr_fsk_iq_fits(&m);
+           ls_lora_rx_range_ok(ls_lora_caps(),hz,hz) && (rec_watch_lr_raw() || lr_fsk_iq_fits(&m));
 }
 static bool lr_fsk_iq_session(bool on)
 {
@@ -1181,11 +1331,29 @@ bool rec_watch_enable(bool on)
     if(rec_watch_source()!=REC_SOURCE_SX1262 || xTaskGetCurrentTaskHandle()==s_worker_task)
         return rec_watch_enable_owned(on);
     portENTER_CRITICAL(&s_lock);
+    const bool stopping=s_watch_waiting && s_watch_detached;
     bool ok=s_status.ready && !s_watch_waiting &&
         (!on || (!s_scan_busy && !s_learn_busy && !s_iq_busy && !s_replay_busy && !s_replay_id && !s_replay_path[0]));
     if(ok){s_watch_on=on;s_watch_waiting=true;s_watch_pending=true;}
     portEXIT_CRITICAL(&s_lock);
-    if(!ok)return false;
+    if(!ok) {
+        if(stopping && !on) {
+            /* A STOP from the READ key is already taking the radio down. An
+               OFF is that same request: wait for it as an OFF waits for its
+               own (RECORD and SEND start on the radio straight after), and
+               like an OFF the worker has not taken in time, report it done. */
+            const int64_t until=esp_timer_get_time()+1500000;
+            for(;;) {
+                portENTER_CRITICAL(&s_lock);
+                const bool still=s_watch_waiting && s_watch_detached;
+                portEXIT_CRITICAL(&s_lock);
+                if(!still || esp_timer_get_time()>until) return true;
+                vTaskDelay(pdMS_TO_TICKS(5));
+            }
+        }
+        if(stopping)snprintf(s_fsk_error,sizeof(s_fsk_error),"Still stopping - try again");
+        return false;
+    }
     /* The worker answers between jobs, and a sweep can hold it for minutes.
        Never wait that long on the caller's task (the UI): an OFF is left
        queued for the worker and reported done, an ON is withdrawn. Once the
@@ -1210,6 +1378,31 @@ bool rec_watch_enable(bool on)
         }
         vTaskDelay(pdMS_TO_TICKS(5));
     }
+}
+/* STOP from the READ key: never waits on the worker. WATCH reads as off
+   at once - nothing more is kept, a capture being kept only while it is
+   enabled - and the worker takes the radio down behind it and ends the wait
+   itself. Waiting froze the screen for as long as the worker was busy
+   storing what the receiver had just heard. Callers that start something
+   on the radio straight after (RECORD, SEND) use rec_watch_enable(false),
+   which returns once the radio is free. */
+bool rec_watch_stop_nowait(void)
+{
+    if(rec_watch_source()!=REC_SOURCE_SX1262 || xTaskGetCurrentTaskHandle()==s_worker_task)
+        return rec_watch_enable(false);
+    portENTER_CRITICAL(&s_lock);
+    if(s_watch_waiting && s_watch_detached && !s_watch_on) {   /* already stopping */
+        s_status.enabled=false;
+        portEXIT_CRITICAL(&s_lock);
+        return true;
+    }
+    const bool ok=s_status.ready && !s_watch_waiting;
+    if(ok) {
+        s_watch_on=false;s_watch_waiting=true;s_watch_pending=true;
+        s_watch_detached=true;s_status.enabled=false;
+    }
+    portEXIT_CRITICAL(&s_lock);
+    return ok ? true : rec_watch_enable(false);
 }
 /* Synchronize a stopped hardware request before reporting or using WATCH state. */
 static void sync_cc_watch(void)
@@ -1316,6 +1509,8 @@ static void send_fsk(const char *what,uint32_t freq_hz,uint32_t bitrate,
                      int dbm,char *result,size_t len);
 static void send_ook(const char *what,uint32_t freq_hz,const int32_t *pulse,int edges,
                      int dbm,char *result,size_t len);
+static void send_fsk_raw(const char *what,uint32_t freq_hz,uint32_t deviation_hz,
+                         const int32_t *pulse,int edges,int dbm,char *result,size_t len);
 static bool ook_on_lr(void);
 /* Every replay, CC1101 or LoRa chip, passes subghz_tx_refusal here before
    either radio is touched, so a refusal reads as a reason on screen. */
@@ -1334,7 +1529,9 @@ static void replay(uint32_t id,int dbm,char *result,size_t len)
     if(!r){LS_SNPRINTF(t_rec_watch_runtime_replay_no_capture_lu, result,len,"Replay: no capture #%lu",(unsigned long)id);return;}
     /* An OOK pattern is timings, so any radio's capture can be sent by a
        radio that keys OOK; only an FSK one needs the LoRa chip that made it. */
-    if(r->event.bitrate && !rec_source_can_replay((rec_source_t)r->event.source)) {
+    /* An LR2021 sends any 2-FSK capture, raw if it cannot cut a packet. */
+    if(r->event.bitrate && !rec_source_can_replay((rec_source_t)r->event.source) &&
+       ls_lora_chip()!=LS_LORA_CHIP_LR20XX) {
         LS_SNPRINTF(t_rec_watch_runtime_replay_s_cannot_transmit, result,len,"Replay: %s cannot transmit",
                  rec_source_name((rec_source_t)r->event.source));
         return;
@@ -1369,10 +1566,32 @@ static void send_fsk(const char *what,uint32_t freq_hz,uint32_t bitrate,
                      uint16_t preamble_bits,const int32_t *pulse,int edges,
                      int dbm,char *result,size_t len)
 {
+    /* A packet the decoder can prove - its sync word found and its CRC
+       checking - goes out as a clean copy of itself. A receiver that acts
+       on it (a CC1101 relay board) wants every bit and the CRC right. */
+    if(ls_lora_chip()==LS_LORA_CHIP_LR20XX) {
+        replay_stage("Decoding the capture");
+        static EXT_RAM_BSS_ATTR fsk_pkt_t pkts[4];
+        const int found=clean_fsk_packets(pkts,fsk_pkt_from_edges(pulse,(size_t)edges,pkts,4));
+        if(found>0) {
+            send_fsk_packets(what,freq_hz,deviation_hz,pkts,found,dbm,result,len);
+            return;
+        }
+    }
     static EXT_RAM_BSS_ATTR uint8_t payload[LS_FSK_CAPTURE_BYTES];
     const size_t n=ls_fsk_payload_from_raw(pulse,(size_t)edges,
         bitrate,preamble_bits,payload,sizeof(payload));
-    if(!n){LS_SNPUTS(t_rec_watch_runtime_replay_could_not_rebuild, result, len, "Replay: could not rebuild the frame");return;}
+    if(!n) {
+        /* No preamble and sync in it to cut a packet from: a raw 2-FSK burst
+           (the LR2021's 2-FSK RAW, an SDR's FM slicer, a burst shorter than
+           its own preamble). The LR2021 sends those as they were heard. */
+        if(ls_lora_chip()==LS_LORA_CHIP_LR20XX) {
+            send_fsk_raw(what,freq_hz,deviation_hz,pulse,edges,dbm,result,len);
+            return;
+        }
+        LS_SNPUTS(t_rec_watch_runtime_replay_could_not_rebuild, result, len, "Replay: could not rebuild the frame");
+        return;
+    }
 
     const int64_t deadline=esp_timer_get_time()+1000000;
     while(!ls_mesh_radio_hold(true) && esp_timer_get_time()<deadline)
@@ -1391,8 +1610,11 @@ static void send_fsk(const char *what,uint32_t freq_hz,uint32_t bitrate,
     cfg.preamble_bits=preamble_bits;
     cfg.payload_bytes=(uint8_t)n;
     cfg.power_dbm=(int8_t)dbm;
+    replay_stage("Sending the packet");
     esp_err_t err=ls_lora_fsk_begin(&cfg);
     if(err==ESP_OK) {
+        air_packet(true,freq_hz,dbm,bitrate,deviation_hz,preamble_bits?preamble_bits:32u,
+                   sync_word,32,payload,n,false,false,"packet");
         err=ls_lora_fsk_send(payload,n);
         if(err==ESP_OK) {
             const int64_t end=esp_timer_get_time()+2000000;
@@ -1468,8 +1690,10 @@ static void send_ook(const char *what,uint32_t freq_hz,const int32_t *pulse,int 
     cfg.preamble_bits=16;
     cfg.payload_bytes=8;
     cfg.power_dbm=(int8_t)dbm;
+    replay_stage("Sending OOK");
     esp_err_t err=ls_lora_fsk_begin(&cfg);
     if(err==ESP_OK) {
+        air_edges(true,REC_AIR_OOK,freq_hz,dbm,0,pulse,edges,"OOK");
         err=lr_ook_edges(pulse,edges);
         const esp_err_t ended=ls_lora_fsk_end();
         if(err==ESP_OK)err=ended;
@@ -1481,9 +1705,164 @@ static void send_ook(const char *what,uint32_t freq_hz,const int32_t *pulse,int 
         "Replay timed out; check radio connection":"Replay on LR2021 failed");
 }
 
+/* Keep only the packets the decoder proved: a CRC that checks. Returns how
+   many are left, in order, at the front. */
+static int clean_fsk_packets(fsk_pkt_t *pkt,int found)
+{
+    int n=0;
+    for(int i=0;i<found;i++)
+        if(pkt[i].crc_kind!=FSK_CRC_NONE && pkt[i].len && (pkt[i].baud_std || pkt[i].baud))
+            pkt[n++]=pkt[i];
+    return n;
+}
+/* 2-FSK packets sent as new on the LR2021, one session each: the rate the
+   preamble measured, the capture's deviation, the sync word as sent (twice
+   if it was, D391 D391 as a CC1101 does), then the bytes as they were on
+   the air - length byte, payload and the CRC as sent, PN9-whitened again
+   if they were - behind a preamble at least as long as the one heard and
+   never under 32 bits. The part's own CRC and whitening are off, so
+   nothing is added. Inverted tones are sent inverted. */
+static void send_fsk_packets(const char *what,uint32_t freq_hz,uint32_t deviation_hz,
+                             const fsk_pkt_t *pkt,int n,int dbm,char *result,size_t len)
+{
+    if(deviation_hz<600 || deviation_hz>100000)deviation_hz=20000;
+    const int64_t deadline=esp_timer_get_time()+1000000;
+    while(!ls_mesh_radio_hold(true) && esp_timer_get_time()<deadline)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    if(!ls_mesh_radio_held()) {
+        ls_mesh_radio_hold(false);
+        LS_SNPUTS(t_rec_watch_runtime_replay_mesh_would_not, result, len, "Replay: mesh would not release the radio");
+        return;
+    }
+    esp_err_t err=ESP_OK;
+    int sent=0;
+    uint32_t baud=0;
+    for(int i=0;i<n && err==ESP_OK;i++) {
+        const fsk_pkt_t *p=&pkt[i];
+        uint8_t body[FSK_PKT_MAX_BYTES+2];
+        uint32_t sync;uint8_t sync_bits;
+        const size_t nb=air_pkt_body(p,body,&sync,&sync_bits);
+        baud=p->baud_std?p->baud_std:p->baud;
+        char stage[48];
+        snprintf(stage,sizeof(stage),"Sending clean packet %d of %d",i+1,n);
+        replay_stage(stage);
+        unsigned pre=p->preamble_bits>32?((unsigned)p->preamble_bits+7u)/8u*8u:32u;
+        if(pre>256)pre=256;
+        ls_fsk_cfg_t cfg={0};
+        cfg.freq_hz=freq_hz;
+        cfg.bitrate=baud;
+        cfg.deviation_hz=deviation_hz;
+        cfg.bandwidth_hz=ls_lora_fsk_bw_snap(baud+2u*deviation_hz);
+        cfg.sync_word=sync;
+        cfg.sync_bits=sync_bits;
+        cfg.preamble_bits=(uint16_t)pre;
+        cfg.payload_bytes=(uint8_t)nb;
+        cfg.power_dbm=(int8_t)dbm;
+        err=ls_lora_fsk_begin(&cfg);
+        if(err!=ESP_OK)break;
+        {
+            char what[40];
+            snprintf(what,sizeof(what),"clean packet %d/%d",i+1,n);
+            air_packet(true,freq_hz,dbm,baud,deviation_hz,pre,sync,sync_bits,body,nb,
+                       p->crc_kind!=FSK_CRC_NONE,p->length_byte,what);
+        }
+        err=ls_lora_fsk_send(body,nb);
+        if(err==ESP_OK) {
+            /* The packet's own airtime, and a second to spare. */
+            const uint64_t air_us=((uint64_t)pre+sync_bits+8u*nb)*1000000u/(baud?baud:1);
+            const int64_t end=esp_timer_get_time()+(int64_t)air_us+1000000;
+            while(!ls_lora_send_done() && esp_timer_get_time()<end) vTaskDelay(pdMS_TO_TICKS(2));
+            if(!ls_lora_send_done())err=ESP_ERR_TIMEOUT;
+            else sent++;
+        }
+        const esp_err_t ended=ls_lora_fsk_end();
+        if(err==ESP_OK)err=ended;
+        if(err==ESP_OK && i+1<n)vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    ls_mesh_radio_hold(false);
+    if(err==ESP_OK) {
+        char d[48];
+        fsk_pkt_describe_short(&pkt[0],d,sizeof(d));
+        snprintf(result,len,"Sent %s: %d clean 2-FSK packet%s, %lu bd %.1f kHz dev, %s at %d dBm",
+                 what,sent,sent==1?"":"s",(unsigned long)baud,deviation_hz/1000.0,d,dbm);
+    } else snprintf(result,len,"%s",err==ESP_ERR_INVALID_STATE?
+        "Replay: LoRa session busy; stop its receiver first":err==ESP_ERR_TIMEOUT?
+        "Replay timed out; check radio connection":err==ESP_ERR_INVALID_ARG?
+        "Replay: packet settings refused by the LR2021":"Replay of the packet on LR2021 failed");
+}
+
+/* 2-FSK as it was heard, on the LR2021: the edges become 20 us chips, as
+   for OOK (rec_ook_packet), and each chip keys a tone rather than the
+   carrier - high the upper tone, low the lower - at the deviation the
+   capture measured. The packet engine needs a preamble and a sync word of
+   at least 8 bits each; both are kept to that, 320 us of lead-in before
+   each packet. A quiet stretch of 4 ms or more is waited out with the
+   transmitter off, so frame repeats keep their spacing; a burst longer than
+   one packet (2040 chips, about 41 ms) runs on into the next. */
+#define FSK_RAW_CHIP_BPS 50000u
+static void send_fsk_raw(const char *what,uint32_t freq_hz,uint32_t deviation_hz,
+                         const int32_t *pulse,int edges,int dbm,char *result,size_t len)
+{
+    if(deviation_hz<600 || deviation_hz>100000)deviation_hz=25000;
+    const int64_t deadline=esp_timer_get_time()+1000000;
+    while(!ls_mesh_radio_hold(true) && esp_timer_get_time()<deadline)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    if(!ls_mesh_radio_held()) {
+        ls_mesh_radio_hold(false);
+        LS_SNPUTS(t_rec_watch_runtime_replay_mesh_would_not, result, len, "Replay: mesh would not release the radio");
+        return;
+    }
+    ls_fsk_cfg_t cfg={0};
+    cfg.freq_hz=freq_hz;
+    cfg.bitrate=FSK_RAW_CHIP_BPS;
+    cfg.deviation_hz=deviation_hz;
+    cfg.bandwidth_hz=ls_lora_fsk_bw_snap(FSK_RAW_CHIP_BPS+2u*deviation_hz);
+    cfg.sync_word=0x00;
+    cfg.sync_bits=8;
+    cfg.preamble_bits=8;
+    cfg.payload_bytes=255;
+    cfg.power_dbm=(int8_t)dbm;
+    replay_stage("Sending raw 2-FSK");
+    esp_err_t err=ls_lora_fsk_begin(&cfg);
+    unsigned packets=0;
+    if(err==ESP_OK) {
+        air_edges(true,REC_AIR_FSK,freq_hz,dbm,deviation_hz,pulse,edges,"raw 2-FSK");
+        static EXT_RAM_BSS_ATTR uint8_t chips[255];
+        rec_ook_packet_t packet={0};
+        while(err==ESP_OK && packet.edge<(size_t)edges) {
+            uint32_t gap_us=0;
+            const size_t bit=rec_ook_packet(&packet,pulse,(size_t)edges,chips,sizeof(chips),&gap_us);
+            if(bit) {
+                err=ls_lora_fsk_send(chips,(bit+7)/8);
+                if(err!=ESP_OK)break;
+                packets++;
+                const int64_t end=esp_timer_get_time()+1000000;
+                while(!ls_lora_send_done() && esp_timer_get_time()<end) vTaskDelay(1);
+                if(!ls_lora_send_done()){err=ESP_ERR_TIMEOUT;break;}
+            }
+            if(gap_us) {
+                const int64_t until=esp_timer_get_time()+gap_us;
+                while(esp_timer_get_time()+1000<until) vTaskDelay(1);
+                while(esp_timer_get_time()<until) { }
+            }
+        }
+        const esp_err_t ended=ls_lora_fsk_end();
+        if(err==ESP_OK)err=ended;
+    }
+    ls_mesh_radio_hold(false);
+    if(err==ESP_OK)
+        snprintf(result,len,"Sent %s once on LR2021 2-FSK raw, %.1f kHz dev, %u packet%s at %d dBm",
+                 what,deviation_hz/1000.0,packets,packets==1?"":"s",dbm);
+    else snprintf(result,len,"%s",err==ESP_ERR_INVALID_STATE?
+        "Replay: LoRa session busy; stop its receiver first":err==ESP_ERR_TIMEOUT?
+        "Replay timed out; check radio connection":err==ESP_ERR_INVALID_ARG?
+        "Replay: 2-FSK raw settings refused by the LR2021":"Replay 2-FSK raw on LR2021 failed");
+}
+
 static void replay_file(const char *path,int dbm,char *result,size_t len)
 {
-    static EXT_RAM_BSS_ATTR int32_t edges[LS_TX_UNLOCKED?65536:REC_WATCH_EDGES];
+    replay_stage("Reading the file");
+    static EXT_RAM_BSS_ATTR int32_t edges[LS_TX_UNLOCKED_BUILD?65536:REC_WATCH_EDGES];
     static EXT_RAM_BSS_ATTR char line[SUBGHZ_FILE_LINE_BYTES];
     static EXT_RAM_BSS_ATTR subghz_file_t f;
     if(!subghz_file_load(path,&f,edges,(int)(sizeof(edges)/sizeof(edges[0])),line,sizeof(line))) {

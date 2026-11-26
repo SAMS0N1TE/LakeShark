@@ -5,6 +5,7 @@
    readings in at the cursor. The notes are Markdown files; see ls_notes.h. */
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 #include "../../ls_notes.h"
 #include "../../ls_note_blocks.h"
 #include "../../ls_textbuf.h"
@@ -461,21 +462,43 @@ static int list_header(tui_surface *sf, tui_rect a, int total)
     return wide ? 4 : 6;
 }
 
+/* A desk window: panels are white wells (text, lists, the edit), the
+   foot line is the window's status bar, a map sits on black glass. */
+static void panel_frame(tui_surface *sf, tui_rect r, const char *title, uint8_t hue)
+{
+    if (ls_tui_compact()) ls_dui_well(sf, r, title);
+    else ls_panel_box(sf, r, title, hue);
+}
+static void foot_line(tui_surface *sf, tui_rect a, const char *text)
+{
+    if (ls_tui_compact()) ls_tui_status_set(text, NULL);
+    else ls_safe_line(sf, a, a.y + a.h - 1, text, LS_ATTR_DIM);
+}
+static int foot_h(void) { return ls_tui_compact() ? 0 : 1; }
+
 static void draw_list(tui_surface *sf, tui_rect a)
 {
     const int total = visible_count();
     if (s_sel >= total) s_sel = total ? total - 1 : 0;
-    const int head_h = list_header(sf, a, total);
-    a = tui_rect_make(a.x, a.y + head_h, a.w, a.h - head_h);
     char find[48]; snprintf(find, sizeof(find), "%s", s_filter[0] ? s_filter : "ALL");
     /* COMPASS APP was the fourth key here; it is on HOME and still on C. */
     ls_btn_t buttons[] = {{"NEW", "NOTE", 'n', false, false}, {"FIND", find, 'f', s_filter[0] != 0, false},
                           {"OPEN", total ? "READ" : NULL, 'o', false, !total}};
-    const int bar_h = ls_btn_raised_height(a, 3);
+    int bar_h;
+    if (ls_tui_compact()) {      /* the keys first, under the menu bar */
+        bar_h = 0;
+        ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, 1), buttons, 3, button_focus);
+        a = tui_rect_make(a.x + 1, a.y + 1, a.w - 2, a.h - 1);
+    }
+    const int head_h = list_header(sf, a, total);
+    a = tui_rect_make(a.x, a.y + head_h, a.w, a.h - head_h);
+    if (!ls_tui_compact()) {
+    bar_h = ls_btn_raised_height(a, 3);
     ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 3, button_focus);
-    tui_rect panel = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - 1);
+    }
+    tui_rect panel = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - foot_h());
     char title[40]; snprintf(title, sizeof(title), "%d SAVED", ls_notes_count());
-    ls_panel_box(sf, panel, title, TUI_CYAN);
+    panel_frame(sf, panel, title, TUI_CYAN);
     s_list_area = tui_rect_make(panel.x + 2, panel.y + 2, panel.w - 8, panel.h - 3);
     const int per = 3, rows = s_list_area.h / per;
     s_row_count = 0;
@@ -499,8 +522,11 @@ static void draw_list(tui_surface *sf, tui_rect a)
         if (idx < 0 || !ls_notes_at(idx, &n)) break;
         const int y = s_list_area.y + r * per;
         if (s_row_count < (int)(sizeof(s_row_index) / sizeof(s_row_index[0]))) s_row_index[s_row_count++] = k;
-        if (k == s_sel) ls_fill_dither(sf, tui_rect_make(s_list_area.x, y, s_list_area.w, 2), LS_DITHER_LIGHT, TUI_CYAN);
-        tui_put_str(sf, panel, s_list_area.x + 1, y, n.title, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+        const bool band = k == s_sel && ls_tui_compact();
+        const uint8_t bd = ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_WHITE, TUI_BLUE));
+        if (band) tui_fill(sf, tui_rect_make(s_list_area.x, y, s_list_area.w, 2), ' ', bd);
+        else if (k == s_sel) ls_fill_dither(sf, tui_rect_make(s_list_area.x, y, s_list_area.w, 2), LS_DITHER_LIGHT, TUI_CYAN);
+        tui_put_str(sf, panel, s_list_area.x + 1, y, n.title, band ? bd : TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
         char sub[120], when[24];
         if (n.when[0]) snprintf(when, sizeof(when), "%s", n.when);
         else stamp_of(n.stem, when, sizeof(when));
@@ -508,7 +534,7 @@ static void draw_list(tui_surface *sf, tui_rect a)
                  n.badges & LS_NOTE_HAS_GPS ? "  GPS" : "", n.badges & LS_NOTE_HAS_MAP ? "  MAP" : "",
                  n.badges & LS_NOTE_HAS_RADIO ? "  RADIO" : "", n.badges & LS_NOTE_HAS_BEARING ? "  BEARING" : "",
                  n.badges & LS_NOTE_HAS_SENSORS ? "  SENSORS" : "");
-        tui_put_str(sf, panel, s_list_area.x + 1, y + 1, sub, LS_ATTR_DIM);
+        tui_put_str(sf, panel, s_list_area.x + 1, y + 1, sub, band ? bd : LS_ATTR_DIM);
         if (n.checks_open + n.checks_done) {
             char c[24]; snprintf(c, sizeof(c), "[%u/%u]", n.checks_done, n.checks_open + n.checks_done);
             const int cx = s_list_area.x + s_list_area.w - (int)strlen(c) - 1;
@@ -517,7 +543,7 @@ static void draw_list(tui_surface *sf, tui_rect a)
     }
     tui_put_char(sf, panel, s_list_area.x + s_list_area.w + 2, s_list_area.y, '^', LS_ATTR_DIM);
     tui_put_char(sf, panel, s_list_area.x + s_list_area.w + 2, s_list_area.y + s_list_area.h - 1, 'v', LS_ATTR_DIM);
-    ls_safe_line(sf, a, a.y + a.h - 1, s_feedback[0] ? s_feedback : ls_notes_status(), LS_ATTR_DIM);
+    foot_line(sf, a, s_feedback[0] ? s_feedback : ls_notes_status());
 }
 
 static void draw_read(tui_surface *sf, tui_rect a)
@@ -529,8 +555,8 @@ static void draw_read(tui_surface *sf, tui_rect a)
                           {"BACK", "LIST", 'b', false, false}};
     const int bar_h = ls_btn_raised_height(a, 5);
     ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 5, button_focus);
-    tui_rect panel = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - 1);
-    ls_panel_box(sf, panel, NULL, TUI_CYAN);
+    tui_rect panel = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - foot_h());
+    panel_frame(sf, panel, NULL, TUI_CYAN);
     s_read_area = tui_rect_make(panel.x + 2, panel.y + 1, panel.w - 4, panel.h - 2);
     for (unsigned i = 0; i < sizeof(s_read_line_at) / sizeof(s_read_line_at[0]); i++) s_read_line_at[i] = -1;
     ls_drag_scroll(&s_read_drag, s_read_area, 1, &s_read_scroll, s_read_rows, s_read_area.h);
@@ -567,8 +593,8 @@ static void draw_read(tui_surface *sf, tui_rect a)
     if (!map_shown) ls_map_preview_leave();
     char foot[160];
     const char *hint = s_info.checks_open + s_info.checks_done ? "Tap pages; SPACE next, ENTER tick" : "Tap top/bottom to page";
-    snprintf(foot, sizeof(foot), "%s", s_feedback[0] ? s_feedback : hint);
-    ls_safe_line(sf, a, a.y + a.h - 1, foot, LS_ATTR_DIM);
+    snprintf(foot, sizeof(foot), "%s", s_feedback[0] ? s_feedback : ls_tui_compact() ? s_info.title : hint);
+    foot_line(sf, a, foot);
 }
 
 static void draw_edit(tui_surface *sf, tui_rect a)
@@ -579,11 +605,11 @@ static void draw_edit(tui_surface *sf, tui_rect a)
                            dock_shown(), ls_keypad_present()}};
     const int bar_h = ls_btn_raised_height(a, 3);
     ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 3, button_focus);
-    tui_rect body = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - 1);
+    tui_rect body = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - foot_h());
     int dock_h = dock_shown() ? ls_keydock_height(body) : 0;
     s_dock_area = tui_rect_make(body.x, body.y + body.h - dock_h, body.w, dock_h);
     tui_rect panel = tui_rect_make(body.x, body.y, body.w, body.h - dock_h);
-    ls_panel_box(sf, panel, s_new ? "NEW NOTE" : "EDIT", TUI_GREEN);
+    panel_frame(sf, panel, s_new ? "NEW NOTE" : "EDIT", TUI_GREEN);
     s_text_area = tui_rect_make(panel.x + 2, panel.y + 1, panel.w - 4, panel.h - 2);
     const int w = s_text_area.w, rows = s_text_area.h;
     if (w < 4 || rows < 1) return;
@@ -614,7 +640,7 @@ static void draw_edit(tui_surface *sf, tui_rect a)
     char foot[100];
     snprintf(foot, sizeof(foot), "%s  %d/%d", s_feedback[0] ? s_feedback : (s_tb.dirty ? "unsaved changes" : ls_notes_status()),
              s_tb.len, LS_NOTE_TEXT_MAX - 1);
-    ls_safe_line(sf, a, a.y + a.h - 1, foot, LS_ATTR_DIM);
+    foot_line(sf, a, foot);
 }
 
 static void draw_map(tui_surface *sf, tui_rect a)
@@ -625,6 +651,7 @@ static void draw_map(tui_surface *sf, tui_rect a)
     const int bar_h = ls_btn_raised_height(a, 5);
     ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, bar_h), buttons, 5, button_focus);
     tui_rect box = tui_rect_make(a.x + 1, a.y + bar_h + 1, a.w - 2, a.h - bar_h - 3);
+    if (ls_tui_compact()) box = ls_dui_glass(sf, tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h));
     s_map_area = box;
     double lat, lon; ls_map_get_center(&lat, &lon);
     ls_map_preview(sf, box, lat, lon);
@@ -637,7 +664,7 @@ static void draw_map(tui_surface *sf, tui_rect a)
     const char *why = ls_map_status();
     snprintf(line, sizeof(line), "%.5f, %.5f  z%d  %s", lat, lon, ls_map_zoom(),
              ls_map_render_busy() ? "drawing..." : why ? why : "ready");
-    ls_safe_line(sf, a, a.y + a.h - 1, s_feedback[0] ? s_feedback : line, LS_ATTR_DIM);
+    foot_line(sf, a, s_feedback[0] ? s_feedback : line);
 }
 
 static void draw(tui_surface *sf, tui_rect a)

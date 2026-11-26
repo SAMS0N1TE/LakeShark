@@ -93,6 +93,11 @@ typedef struct {
     /* A card app's HOME group, LS_APP_GROUP_*; 0 is USER. Built-ins are
        placed by HOME's own layout. Last, so positional tables stay valid. */
     uint8_t group;
+    /* The smallest client area, in cells, the app works at in a desk window
+       (columns, rows). The desk opens it at the smallest size preset that is
+       at least this, maximized when none is. 0: no minimum of its own (the
+       desk's default preset). Additive, after group, for the same reason. */
+    uint8_t desk_cols, desk_rows;
 } ls_app_t;
 
 /* The HOME groups an app from the card can ask for (LAP_GROUP_* and the

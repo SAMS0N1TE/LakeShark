@@ -19,6 +19,8 @@
 #include "lap_scroll.h"
 #include "bh_core.h"
 #include "bh_watch.h"
+#include "bh_hunt.h"
+#include "bh_lookup.h"
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -33,10 +35,20 @@ typedef struct {
     /* 1.1, from BLE WATCH (it kept none on the card): the following alert's
        minutes, possible trackers alert too, the card log, HUNT's sound */
     uint8_t follow_min, possible, log, tone;
+    /* 1.2: the finder and tracking. dmode PEAK or BODY; autorange the meter
+       steps 20 dB as you close in; rx LORA, SDR or DUAL; sdr_dir the SDR has
+       the directional antenna (else the LoRa radio has); watch_min how long a
+       WATCH tag may go unheard; kind_off kinds that never alert */
+    uint8_t dmode, autorange, rx, sdr_dir, watch_min, spare;
+    uint16_t kind_off;
 } cfg_t;
 #define CFG_MAGIC 0xB6u
 #define CFG_V10 6                       /* bytes BUGHUNT 1.0 saved */
+#define CFG_V11 10                      /* bytes BUGHUNT 1.1 saved */
 enum { TONE_AUTO, TONE_TICKS, TONE_TONE };
+enum { RX_LORA, RX_SDR, RX_DUAL };
+static const char *const RX_NAMES[] = { "LORA", "SDR", "DUAL" };
+static const uint8_t WATCH_MIN[] = { 1, 2, 5, 10, 15, 30 };
 static cfg_t cfg;
 static const uint8_t ROOM_MIN[] = { 2, 4, 8 };
 static const uint8_t CAR_MIN[] = { 10, 15, 30 };
@@ -95,13 +107,22 @@ static void cfg_load(void)
     cfg_t c;
     memset(&c, 0, sizeof(c));
     const int n = lap_load("cfg", &c, sizeof(c));
-    if ((n == (int)sizeof(c) || n == CFG_V10) && c.magic == CFG_MAGIC && c.region >= 1 && c.region <= 3 && c.room_i < 3 &&
-        c.car_i < 3) {
+    if ((n == (int)sizeof(c) || n == CFG_V10 || n == CFG_V11) && c.magic == CFG_MAGIC && c.region >= 1 && c.region <= 3 &&
+        c.room_i < 3 && c.car_i < 3) {
         cfg = c;
         if (n == CFG_V10) { cfg.follow_min = 10; cfg.possible = 0; cfg.log = 1; cfg.tone = TONE_AUTO; }   /* 1.0's: add 1.1's */
-    } else cfg = (cfg_t){ CFG_MAGIC, region_guess(), 1, 1, 1, 0, 10, 0, 1, TONE_AUTO };
+        if (n != (int)sizeof(c)) { cfg.dmode = BH_DM_PEAK; cfg.autorange = 1; cfg.rx = RX_LORA; cfg.sdr_dir = 1; cfg.watch_min = 2; cfg.kind_off = 0; }
+    } else {
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.magic = CFG_MAGIC; cfg.region = region_guess(); cfg.room_i = 1; cfg.car_i = 1; cfg.sound = 1;
+        cfg.follow_min = 10; cfg.log = 1; cfg.tone = TONE_AUTO;
+        cfg.autorange = 1; cfg.sdr_dir = 1; cfg.watch_min = 2;
+    }
     if (cfg.follow_min < 2 || cfg.follow_min > 60) cfg.follow_min = 10;
     if (cfg.tone > TONE_TONE) cfg.tone = TONE_AUTO;
+    if (cfg.dmode > BH_DM_BODY) cfg.dmode = BH_DM_PEAK;
+    if (cfg.rx > RX_DUAL) cfg.rx = RX_LORA;
+    if (cfg.watch_min < 1 || cfg.watch_min > 30) cfg.watch_min = 2;
 }
 
 /* ---- state ---- */
@@ -150,16 +171,39 @@ static uint32_t ble_seen_ms, wifi_seen_ms;
 static bh_find_t tgt;
 static bool hunting;
 static int hunt_from = 1;               /* the tab HUNT goes back to (TAB_FIND) */
-static float lv_fast = -1200, lv_slow = -1200;
-static int lv_peak = BH_NONE, lv_last = BH_NONE, hunt_floor = -1000;
-static uint32_t lv_ms, tick_next, tick_ms;
-static bh_dir_t dir;
+static bh_lvl_t lv;                     /* the level shown: the main receiver's */
+static bh_range_t rng;                  /* the meter's range */
+static bh_dir2_t dir2;                  /* turn-in-a-circle */
+static bh_bursts_t bursts;              /* a frequency's bursts */
+static bh_pair_t pair;                  /* DUAL: directional against reference */
+static int hunt_floor = -1000;          /* the main receiver's quiet level (tenths) */
+static uint32_t tick_next, tick_ms;
 static bool hunt_scan;                  /* HUNT on a one-frequency version 2 scan */
 static float heading = -1;
 static bool have_compass;
 #define HHIST 64
 static float hhist[HHIST];
 static int hhist_n;
+/* which receivers a frequency HUNT runs on: 1 the LoRa radio, 2 the SDR */
+enum { HR_LORA = 1, HR_SDR = 2 };
+static int hunt_rx;
+static char rx_note[64];
+/* a tag's 1 m level from CAL (0 none), for the tag it was taken on */
+static int cal_ref;
+static uint32_t cal_uid;
+
+/* The SDR on USB (RTL-SDR, HackRF): spectrum lines around the target */
+static int sdr = -1;
+static char sdr_name[16];
+static uint64_t sdr_min, sdr_max;
+static int sdr_h;
+static uint32_t sdr_seq;
+#define SPEC_N 256
+static float spec[SPEC_N];
+static int spec_n;
+static uint64_t spec_center;
+static uint32_t spec_rate;
+static float sdr_floor = 1.0f;          /* dBFS, the spectrum's median; 1 = not yet */
 
 /* dialogs */
 static int dlg = 0, dlg_kind;
@@ -306,10 +350,6 @@ static uint8_t level_hue(int db_over)
     return db_over >= 25 ? (LAP_RED | LAP_BRIGHT) : db_over >= 15 ? (LAP_YELLOW | LAP_BRIGHT) : db_over >= 8 ? (LAP_GREEN | LAP_BRIGHT)
          : db_over >= 3 ? LAP_GREEN : LAP_BLUE;
 }
-static int16_t shade(int db_over)
-{
-    return db_over >= 25 ? LAP_BLOCK : db_over >= 15 ? LAP_SHADE_75 : db_over >= 8 ? LAP_SHADE_50 : LAP_SHADE_25;
-}
 static int ref_or(int dflt) { return h && h->ref != BH_NONE ? h->ref : dflt; }
 /* Under this a reading is noise: drawn quiet, coloured only above it. */
 static int qtop(void) { return h && h->qtop != BH_NONE ? h->qtop : ref_or(-1100) + 100; }
@@ -338,6 +378,24 @@ static void find_radio(void)
         return;
     }
 }
+/* An SDR on USB that gives spectrum lines: HUNT can listen on it alone, or
+   beside the LoRa radio (DUAL) with a directional antenna on one of them. */
+static void find_sdr(void)
+{
+    lap_radio_info_t r[LAP_RADIOS_MAX];
+    const int n = lap_radio_list(r, LAP_RADIOS_MAX);
+    sdr = -1;
+    for (int i = 0; i < n; i++) {
+        if (r[i].kind != LAP_RADIO_KIND_RTL && r[i].kind != LAP_RADIO_KIND_HACKRF) continue;
+        if (!r[i].present || !(r[i].features & LAP_RXF_SPECTRUM)) continue;
+        sdr = i;
+        snprintf(sdr_name, sizeof(sdr_name), "%s", r[i].name);
+        sdr_min = r[i].min_hz;
+        sdr_max = r[i].max_hz;
+        return;
+    }
+}
+static bool sdr_tunes(uint64_t hz) { return sdr >= 0 && hz >= sdr_min && hz <= sdr_max; }
 static lap_packet_config_t rx_cfg(uint64_t hz)
 {
     lap_packet_config_t c;
@@ -589,41 +647,180 @@ static void sweep_end(void)
     if (cfg.sound) lap_say(t);
     to_tab(TAB_FIND);
 }
-/* HUNT on one target: a frequency, a Bluetooth tag (followed through its
-   address changes by the tag watch) or a Wi-Fi station. */
+/* ---- HUNT: the receivers ---- */
+static void sdr_stop(void)
+{
+    if (sdr_h > 0) lap_rx_close(sdr_h);
+    sdr_h = 0;
+    spec_n = 0;
+}
+/* The SDR tuned a little off the target, so its own centre spike (DC) is
+   not read as the signal; spectrum lines only, no I/Q to carry. */
+static int sdr_open(uint64_t hz)
+{
+    lap_rx_config_t c;
+    memset(&c, 0, sizeof(c));
+    lap_radio_info_t r[LAP_RADIOS_MAX];
+    const int n = lap_radio_list(r, LAP_RADIOS_MAX);
+    const uint32_t rate = sdr >= 0 && sdr < n && r[sdr].min_rate ? r[sdr].min_rate : 1000000u;
+    c.rate_hz = 0;                          /* the radio's lowest rate */
+    c.center_hz = hz + (rate >= 400000u ? rate / 4u : 100000u);
+    c.gain_tenths_db = LAP_GAIN_AUTO;
+    c.flags = LAP_RX_SPECTRUM_ONLY;
+    const int h2 = lap_rx_open(sdr, &c);
+    if (h2 > 0) { sdr_h = h2; sdr_seq = 0; sdr_floor = 1.0f; spec_n = 0; }
+    return h2;
+}
+static int fcmp(const void *a, const void *b)
+{
+    const float x = *(const float *)a, y = *(const float *)b;
+    return x < y ? -1 : x > y;
+}
+/* The strongest bin within the LoRa radio's 500 kHz of the target (or the
+   span the rate allows), and the quiet level: the line's median. */
+static bool sdr_read(int *tenths)
+{
+    if (sdr_h <= 0) return false;
+    uint32_t seq = 0;
+    const int n = lap_rx_spectrum(sdr_h, spec, SPEC_N, &seq);
+    if (n <= 0 || seq == sdr_seq) return false;
+    sdr_seq = seq;
+    spec_n = n;
+    lap_rx_status_t st;
+    memset(&st, 0, sizeof(st));
+    if (lap_rx_status(sdr_h, &st) || !st.rate_hz) return false;
+    spec_center = st.center_hz;
+    spec_rate = st.rate_hz;
+    const float bin_hz = (float)st.rate_hz / (float)n;
+    const int32_t off_hz = (int32_t)((int64_t)((uint64_t)tgt.khz * 1000u) - (int64_t)st.center_hz);   /* small: in 32 bits, no 64-bit float maths */
+    const float off = (float)off_hz;
+    const int at = n / 2 + (int)(off / bin_hz);
+    float half_hz = (float)st.rate_hz / 8.0f;
+    if (half_hz > 250000.0f) half_hz = 250000.0f;
+    int half = (int)(half_hz / bin_hz);
+    if (half < 1) half = 1;
+    float best = -200.0f;
+    for (int i = at - half; i <= at + half; i++)
+        if (i >= 0 && i < n && spec[i] > best) best = spec[i];
+    if (best <= -199.0f) return false;
+    static float tmp[SPEC_N];
+    memcpy(tmp, spec, sizeof(float) * (size_t)n);
+    qsort(tmp, (size_t)n, sizeof(float), fcmp);
+    const float med = tmp[n / 2];
+    sdr_floor = sdr_floor > 0.5f ? med : sdr_floor + (med - sdr_floor) * 0.1f;
+    *tenths = (int)(best * 10.0f);
+    return true;
+}
+
+/* ---- HUNT ---- */
+static uint32_t lvl_window(void) { return tgt.target == BH_T_BLE ? 2500u : tgt.target == BH_T_WIFI ? 1500u : 400u; }
+static bool lv_fresh(void) { return lv.last_ms && now_ms - lv.last_ms < fresh_ms(); }
+static int sdr_floor_t(void) { return sdr_floor > 0.5f ? -1000 : (int)(sdr_floor * 10.0f); }
+static bool dual_on(void) { return (hunt_rx & HR_LORA) && (hunt_rx & HR_SDR); }
+/* the main receiver: what the meter, the dial and the sound follow */
+static bool main_is_sdr(void) { return (hunt_rx & HR_SDR) && (!(hunt_rx & HR_LORA) || cfg.sdr_dir); }
+static void range_reset(void)
+{
+    const bool rf = tgt.target == BH_T_FREQ;
+    bh_range_init(&rng, hunt_floor, rf ? 600 : 700, !cfg.autorange ? 0 : rf ? 3 : tgt.target == BH_T_WIFI ? 1 : 0);
+}
+
+/* One reading. src 0: the LoRa radio, Bluetooth or Wi-Fi; 1: the SDR. */
+static void hunt_level_src(int src, int tenths)
+{
+    if (tgt.target == BH_T_FREQ && dual_on()) {
+        /* DUAL: the pair is told which is the directional; the meter shows that one */
+        const int dir_src = cfg.sdr_dir ? 1 : 0;
+        bh_pair_floor(&pair, dir_src ? sdr_floor_t() : ref_or(-1080), dir_src ? ref_or(-1080) : sdr_floor_t());
+        bh_pair_add(&pair, src == dir_src ? 0 : 1, tenths, now_ms);
+        if (src != dir_src) return;
+    }
+    if (src == 1 && sdr_floor <= 0.5f && main_is_sdr() && !lv.started) {
+        /* the SDR's quiet level is known now: the meter and the bursts start from it */
+        hunt_floor = sdr_floor_t();
+        range_reset();
+        bursts.thr = (int16_t)(hunt_floor + 100);
+    }
+    bh_lvl_add(&lv, tenths, now_ms);
+    if (cfg.autorange) bh_range_feed(&rng, bh_lvl_now(&lv, now_ms), now_ms);
+    if (hhist_n == HHIST) { memmove(hhist, hhist + 1, sizeof(hhist[0]) * (HHIST - 1)); hhist_n--; }
+    hhist[hhist_n++] = (float)tenths / 10.0f;
+    if (tgt.target == BH_T_FREQ) bh_bursts_add(&bursts, tenths, heading >= 0 ? (int)heading : -1, now_ms);
+    if (heading >= 0) {
+        /* DUAL turns on the difference, so the transmitter's own level drops out */
+        const int pt = dual_on() ? bh_pair_point(&pair, now_ms) : BH_HNONE;
+        bh_dir2_add(&dir2, heading, pt != BH_HNONE ? pt - 1000 : tenths);
+    }
+}
+static void hunt_level(int tenths) { hunt_level_src(0, tenths); }
+
+/* A frequency: the LoRa radio, the SDR, or both (DUAL). */
+static void hunt_rf_open(void)
+{
+    const uint64_t hz = (uint64_t)tgt.khz * 1000u;
+    const bool lora_ok = radio >= 0, sdr_ok = sdr_tunes(hz);
+    int want = 0;
+    if (cfg.rx == RX_DUAL && lora_ok && sdr_ok) want = HR_LORA | HR_SDR;
+    else if (cfg.rx != RX_LORA && sdr_ok) want = HR_SDR;
+    else if (lora_ok) want = HR_LORA;
+    else if (sdr_ok) want = HR_SDR;
+    hunt_rx = 0;
+    rx_note[0] = 0;
+    if (cfg.rx != RX_LORA && sdr < 0) snprintf(rx_note, sizeof(rx_note), "no SDR on USB: LoRa radio only");
+    else if (cfg.rx != RX_LORA && !sdr_ok) snprintf(rx_note, sizeof(rx_note), "%s cannot tune here: LoRa only", sdr_name);
+    else if (cfg.rx == RX_DUAL && !lora_ok) snprintf(rx_note, sizeof(rx_note), "DUAL: no LoRa radio, %s only", sdr_name);
+    if (want & HR_SDR) {
+        const int r = sdr_open(hz);
+        if (r > 0) hunt_rx |= HR_SDR;
+        else {
+            snprintf(rx_note, sizeof(rx_note), "%s refused (%d)%s", sdr_name, r, lora_ok ? ": LoRa only" : "");
+            if (lora_ok) want |= HR_LORA;
+        }
+    }
+    if (want & HR_LORA) {
+        /* version 2: the peak of every 8 ms of listening (one report a
+           worker pass, ~45 a second on the board), so a burst between
+           frames still moves the meter; else one reading a frame */
+        int r = scan_ver == 2 ? scan_open(&hz, 1, 8) : -1;
+        if (r > 0 && scan_ver == 2) { rf_h = r; rf_pk = false; hunt_scan = true; hunt_rx |= HR_LORA; }
+        else if (r == LAP_RX_EBUSY && (hunt_rx & HR_SDR)) {
+            snprintf(rx_note, sizeof(rx_note), "DUAL needs newer firmware: %s only", sdr_name);
+        } else {
+            lap_packet_config_t c = rx_cfg(hz);
+            r = lap_packet_open(radio, &c);
+            if (r > 0) { rf_h = r; rf_pk = true; hunt_rx |= HR_LORA; }
+            else if (r == LAP_RX_EBUSY && (hunt_rx & HR_SDR)) snprintf(rx_note, sizeof(rx_note), "DUAL needs newer firmware: %s only", sdr_name);
+            else if (!(hunt_rx & HR_SDR)) snprintf(rf_why, sizeof(rf_why), "radio refused (%d)", r);
+        }
+    }
+    hunt_floor = main_is_sdr() ? sdr_floor_t() : ref_or(-1080);
+}
 static void hunt_begin(const bh_find_t *f, int from)
 {
     tgt = *f;
     hunt_from = from;
     if (state == ST_SWEEP) { rf_stop(); state = ST_DONE; ended_ms = now_ms; }
     if (hunting && (rf_pk || hunt_scan)) rf_stop();
+    sdr_stop();
     lap_tone_stop();
     hunting = true;
-    lv_fast = lv_slow = -1200; lv_peak = BH_NONE; lv_last = BH_NONE; lv_ms = 0; hhist_n = 0; tick_next = 0;
-    bh_dir_reset(&dir);
+    hunt_rx = 0;
+    rx_note[0] = 0;
+    bh_lvl_init(&lv, lvl_window());
+    bh_pair_init(&pair, 400);
+    hhist_n = 0;
+    tick_next = 0;
+    bh_dir2_reset(&dir2);
     hunt_floor = tgt.target == BH_T_FREQ ? ref_or(-1080) : -1000;
+    if (tgt.target == BH_T_FREQ) { rf_stop(); hunt_rf_open(); }
+    else if (!wifi_h && !ble_cap && !ble_scan) sources_start();
+    range_reset();
+    bh_bursts_init(&bursts, hunt_floor);
     if (tgt.target == BH_T_BLE) {
-        /* start from what the tag watch last heard, so the bar moves at once */
+        /* start from what the tag watch last heard, so the meter moves at once */
         const bw_dev_t *d = tgt.uid ? bhw_dev(tgt.uid) : NULL;
         if (d && bhw_now() - d->last_ms < 10000u) hunt_level((int)(d->smooth * 10.0f));
     }
-    if (tgt.target == BH_T_FREQ) {
-        rf_stop();
-        if (radio >= 0) {
-            /* version 2: the peak of every 8 ms of listening (one report a
-               worker pass, ~45 a second on the board), so a burst between
-               frames still moves the bar; else one reading a frame */
-            const uint64_t hz = (uint64_t)tgt.khz * 1000u;
-            int r = scan_ver == 2 ? scan_open(&hz, 1, 8) : -1;
-            if (r > 0 && scan_ver == 2) { rf_h = r; rf_pk = false; hunt_scan = true; }
-            else {
-                lap_packet_config_t c = rx_cfg(hz);
-                r = lap_packet_open(radio, &c);
-                if (r > 0) { rf_h = r; rf_pk = true; }
-                else snprintf(rf_why, sizeof(rf_why), "radio refused (%d)", r);
-            }
-        }
-    } else if (!wifi_h && !ble_cap && !ble_scan) sources_start();
     to_tab(TAB_HUNT);
 }
 static void hunt_start(int i)
@@ -649,12 +846,26 @@ static void hunt_tag(uint32_t uid)
     f.level = (int16_t)(d->rssi * 10);
     f.count = (uint16_t)(d->rotations + 1);
     char label[32];
-    bw_label(d, label, sizeof(label));
+    bhw_label(d, label, sizeof(label));
     snprintf(f.title, sizeof(f.title), "%s%s  %s", d->alert ? "! " : "", label, bw_class_tag(d->ad.cls));
     snprintf(f.detail, sizeof(f.detail), "%s", bw_class_note(d->ad.cls));
     bhw_pick_set(d->uid);
     if (alert_uid && bhw_dev(alert_uid) == d) alert_uid = 0;      /* hunting it answers the alert: the banner goes */
     hunt_begin(&f, TAB_TAGS);
+}
+/* HUNT a frequency named from the list or typed in: no sweep needed. */
+static void hunt_freq(uint32_t khz, const char *what)
+{
+    bh_find_t f;
+    memset(&f, 0, sizeof(f));
+    f.target = BH_T_FREQ;
+    f.kind = BH_F_CARRIER;
+    f.khz = khz;
+    char m[16];
+    mhz(khz, m, sizeof(m));
+    snprintf(f.title, sizeof(f.title), "%s MHz  %s", m, what && what[0] ? what : "YOUR PICK");
+    snprintf(f.detail, sizeof(f.detail), "A frequency you named.");
+    hunt_begin(&f, TAB_HUNT);
 }
 static void hunt_stop(void)
 {
@@ -662,6 +873,8 @@ static void hunt_stop(void)
     hunting = false;
     if (rf_pk || hunt_scan) rf_stop();
     hunt_scan = false;
+    sdr_stop();
+    hunt_rx = 0;
     lap_tone_stop();
     to_tab(hunt_from);
 }
@@ -674,73 +887,78 @@ static void hunt_step(int by)
         if (u && u != tgt.uid) hunt_tag(u);
         return;
     }
-    if (nf < 2) return;
+    if (nf < 2 || hunt_from != TAB_FIND) return;
     sel = (sel + by + nf) % nf;
     hunt_start(sel);
 }
-/* The bar: dB over the floor it spans. A tag reads -100 (cold) to -30 dBm
-   (hot, in your hand) as BLE WATCH's meter did; a frequency 60 dB over its
-   floor. */
-static int hunt_span(void) { return tgt.target == BH_T_BLE ? 700 : 600; }
-static float hunt_frac(float tenths)
-{
-    const float f = (tenths - (float)hunt_floor) / (float)hunt_span();
-    return f < 0 ? 0 : f > 1 ? 1 : f;
-}
+/* 0..1 across the meter's range now */
+static float hunt_frac(float tenths) { return bh_range_frac(&rng, tenths); }
 /* Ticks or a tone: AUTO is BLE WATCH's rising tone for a tag (an advert
    comes every second or two, a pitch says how strong at once) and the
    Geiger tick for a frequency or a station (readings many times a second). */
 static bool hunt_tone(void) { return cfg.tone == TONE_TONE || (cfg.tone == TONE_AUTO && tgt.target == BH_T_BLE); }
-static void hunt_level(int tenths)
-{
-    lv_last = tenths;
-    lv_ms = now_ms;
-    if (lv_fast < -1150) lv_fast = lv_slow = (float)tenths;
-    lv_fast += ((float)tenths - lv_fast) * 0.35f;
-    lv_slow += ((float)tenths - lv_slow) * 0.04f;
-    if (lv_peak == BH_NONE || tenths > lv_peak) lv_peak = tenths;
-    if (hhist_n == HHIST) { memmove(hhist, hhist + 1, sizeof(hhist[0]) * (HHIST - 1)); hhist_n--; }
-    hhist[hhist_n++] = (float)tenths / 10.0f;
-    if (heading >= 0) bh_dir_add(&dir, heading, tenths);
-}
 static void hunt_poll(void)
 {
     lap_motion_t m;
-    heading = lap_motion(&m) && m.heading >= 0 ? m.heading : -1;
+    const bool mo = lap_motion(&m);
+    if (mo) have_compass = true;
+    heading = mo && m.heading >= 0 ? m.heading : -1;
     if (hunt_scan && rf_h > 0) {
         lap_packet_meta_t pm;
         while (lap_scan_next(rf_h, &pm) > 0)
-            if (pm.rssi_tenths_dbm != INT16_MIN) hunt_level(pm.rssi_tenths_dbm);
+            if (pm.rssi_tenths_dbm != INT16_MIN) hunt_level_src(0, pm.rssi_tenths_dbm);
     } else if (rf_pk && rf_h > 0) {
         lap_packet_meta_t pm = { .size = sizeof(pm), .version = 1 };
         if (!lap_radio_rssi(rf_h, &pm) && pm.timestamp_us != last_ts && pm.rssi_tenths_dbm != INT16_MIN) {
             last_ts = pm.timestamp_us;
-            hunt_level(pm.rssi_tenths_dbm);
+            hunt_level_src(0, pm.rssi_tenths_dbm);
         }
     }
+    int st;
+    if (sdr_h > 0 && sdr_read(&st)) hunt_level_src(1, st);
+    if (tgt.target == BH_T_FREQ) bh_bursts_tick(&bursts, now_ms);
+    if (cfg.autorange && bh_lvl_now(&lv, now_ms) == BH_HNONE) bh_range_feed(&rng, BH_HNONE, now_ms);
     if (hunt_tone()) {
         /* the tone: pitch and rate follow the smoothed signal, quiet once
            the target has not been heard for 3 s */
-        const float q = hunt_frac(lv_fast);
-        if (cfg.sound && lv_ms && now_ms - lv_ms < 3000u && !lap_tone_busy() && now_ms >= tick_next) {
+        const float q = hunt_frac(lv.fast);
+        if (cfg.sound && lv.last_ms && now_ms - lv.last_ms < 3000u && !lap_tone_busy() && now_ms >= tick_next) {
             lap_tone(300 + (int)(q * 1700.0f), 50, 70, LAP_WAVE_SINE);
             tick_next = now_ms + 900u - (uint32_t)(q * 780.0f);
             tick_ms = now_ms;
         }
         return;
     }
-    /* Geiger: faster and higher as it gets stronger; silent with no signal */
-    const bool fresh = lv_ms && now_ms - lv_ms < fresh_ms();
-    if (cfg.sound && fresh && now_ms >= tick_next) {
-        const int over = (int)lv_fast - hunt_floor;
+    /* Geiger: faster and higher as it gets stronger within the meter's
+       range, so it does not sit at its fastest beside the thing */
+    if (cfg.sound && lv_fresh() && now_ms >= tick_next) {
+        const int over = (int)lv.fast - bh_range_lo(&rng);
         const int hz = 500 + (over > 0 ? over : 0) * 3;
         lap_tone(hz > 3200 ? 3200 : hz, 14, 60, LAP_WAVE_SQUARE);
-        tick_next = now_ms + bh_geiger_ms((int)lv_fast, hunt_floor);
+        tick_next = now_ms + bh_geiger_ms((int)lv.fast, bh_range_lo(&rng));
         tick_ms = now_ms;
     }
 }
+/* CAL: the tag is held 1 m away now; its level is the reference */
+static void hunt_cal(void)
+{
+    if (!hunting || tgt.target != BH_T_BLE) { say("CAL: hunt a tag and hold it 1 m away"); return; }
+    const int w = bh_lvl_now(&lv, now_ms);
+    if (w == BH_HNONE) { say("CAL: the tag is not heard just now"); return; }
+    cal_ref = w / 10;
+    cal_uid = tgt.uid;
+    say("CAL: %d dBm is 1 m for this tag", cal_ref);
+}
+static int tag_ref(const bw_dev_t *d)
+{
+    if (cal_ref && d && cal_uid && bhw_dev(cal_uid) == d) return cal_ref;
+    return d ? bh_dist_ref(d->ad.cls, d->ad.has_tx, d->ad.tx_power) : -60;
+}
 
 /* ---- the screen ---- */
+static uint8_t zone_hue(float q);
+static const char *zone_word(float q);
+static const char *unit(void);
 static void layout(void)
 {
     W = lap_cols(); H = lap_rows();
@@ -769,10 +987,7 @@ static void emblem(int x, int y, bool big)
     const uint8_t rim = A(LAP_CYAN | LAP_BRIGHT), glass = A(LAP_CYAN);
     uint8_t bug = A(LAP_GREEN | LAP_BRIGHT);
     if (state == ST_DONE && nf && F[0].conf >= 60) bug = A(blink(400) ? (LAP_RED | LAP_BRIGHT) : LAP_RED);
-    if (hunting) {
-        const int over = (int)lv_fast - hunt_floor;
-        bug = A(level_hue(over / 10));
-    }
+    if (hunting) bug = lv.started && lv.last_ms && now_ms - lv.last_ms < 10000u ? A(zone_hue(hunt_frac(lv.fast))) : A(LAP_BLUE);
     static const char *const lens[7] = {
         "  .-'''-.   ",
         " / .   . \\  ",
@@ -913,15 +1128,17 @@ static void header(void)
     const char *under = "";
     static char under_t[40];
     if (hunting) {
-        const int v = lv_ms ? (int)(lv_fast / 10.0f) : 0;
-        if (lv_ms) snprintf(big, sizeof(big), "%d", v); else snprintf(big, sizeof(big), "--");
-        bat = A(lv_ms ? level_hue(((int)lv_fast - hunt_floor) / 10) : LAP_BLUE);
-        under = "dBm  strength now";
-        if (tgt.target == BH_T_BLE) {
-            /* a tag: how near, in words, from -100 dBm (far) to -30 (in your hand) */
-            snprintf(under_t, sizeof(under_t), "dBm  %s", bhw_distance_word(hunt_frac(lv_fast), lv_ms && now_ms - lv_ms < 10000u));
-            under = under_t;
-        }
+        const bool fr = lv.started && lv.last_ms && now_ms - lv.last_ms < 10000u;
+        if (fr) snprintf(big, sizeof(big), "%d", (int)(lv.fast / 10.0f)); else snprintf(big, sizeof(big), "--");
+        bat = A(fr ? zone_hue(hunt_frac(lv.fast)) : LAP_BLUE);
+        const bw_dev_t *td = tgt.target == BH_T_BLE && tgt.uid ? bhw_dev(tgt.uid) : NULL;
+        if (td && fr) {
+            /* a tag: how far, from its level and what its kind reads at 1 m */
+            char dt[24];
+            bh_dist_text((int)lv.fast / 10, tag_ref(td), dt, sizeof(dt));
+            snprintf(under_t, sizeof(under_t), "dBm  %s", dt);
+        } else snprintf(under_t, sizeof(under_t), "%s  %s", unit(), fr ? zone_word(hunt_frac(lv.fast)) : "not heard");
+        under = under_t;
     } else if (state == ST_SWEEP) {
         const uint32_t left = h->dur_ms > now_ms - h->t0_ms ? (h->dur_ms - (now_ms - h->t0_ms)) / 1000u : 0;
         snprintf(big, sizeof(big), "%u:%02u", (unsigned)(left / 60), (unsigned)(left % 60));
@@ -939,9 +1156,9 @@ static void header(void)
     put(ix, iy + 5, iw, LAP_UI_DIM, "%s", under);
     /* progress, or the level bar */
     float frac = 0, peak = -1;
-    if (hunting && lv_ms) {
-        frac = hunt_frac(lv_fast);
-        peak = lv_peak == BH_NONE ? -1 : hunt_frac((float)lv_peak);
+    if (hunting && lv.started) {
+        frac = hunt_frac(lv.fast);
+        peak = lv.peak == BH_HNONE ? -1 : hunt_frac((float)lv.peak);
     } else if (state == ST_SWEEP) frac = (float)(now_ms - h->t0_ms) / (float)h->dur_ms;
     else if (state == ST_DONE) frac = 1;
     frac = frac < 0 ? 0 : frac > 1 ? 1 : frac;
@@ -1328,174 +1545,413 @@ static void draw_find(int x, int y, int w, int hgt)
 }
 
 /* ---- HUNT ---- */
-static void dir_plot(int x, int y, int w, int hgt)
-{
-    cv_begin(x, y, w, hgt);
-    const float cx = (float)cv.w - 0.5f, cy = (float)cv.h * 2.0f - 0.5f;
-    float R = cx - 1.0f;
-    if (R > (cy - 1.0f) * cv.ax) R = (cy - 1.0f) * cv.ax;
-    if (R < 4) return;
-    cv_ring(cx, cy, R, 0, A(LAP_GREEN));
-    cv_ring(cx, cy, R * 0.5f, 3, A(LAP_BLUE));
-    /* level per heading: a petal out from the middle, strongest longest */
-    const int lo = dir.peak == BH_NONE ? hunt_floor : (dir.peak - 300 > hunt_floor ? dir.peak - 300 : hunt_floor);
-    for (int b = 0; b < BH_DIRS; b++) {
-        if (dir.best[b] == BH_NONE) continue;
-        float f = (float)(dir.best[b] - lo) / (float)((dir.peak > lo ? dir.peak : lo + 1) - lo);
-        f = f < 0.08f ? 0.08f : f > 1 ? 1 : f;
-        const float a = (float)b * 6.2831853f / BH_DIRS - 1.5707963f;      /* 0 = north, up */
-        const int below = (dir.peak - dir.best[b]) / 10;
-        const uint8_t at = b == dir.peak_bin ? A(LAP_RED | LAP_BRIGHT)
-                         : A(below <= 3 ? LAP_RED : below <= 8 ? (LAP_YELLOW | LAP_BRIGHT) : below <= 15 ? LAP_GREEN : LAP_BLUE);
-        cv_line(rnd(cx), rnd(cy), rnd(cx + R * f * cosf(a)), rnd(cy + R * f * sinf(a) / cv.ax), at);
-    }
-    /* where the board points now */
-    if (heading >= 0) {
-        const float a = heading * 0.0174533f - 1.5707963f;
-        for (float r = R * 0.2f; r <= R + 1.5f; r += 0.7f)
-            cv_dot(rnd(cx + r * cosf(a)), rnd(cy + r * sinf(a) / cv.ax), A(LAP_WHITE | LAP_BRIGHT));
-    }
-    cv_flush();
-    cell(x + cv.w - 1, y, 'N', A(LAP_CYAN | LAP_BRIGHT));
-    if (dir.peak_bin >= 0) {
-        const float a = (float)dir.peak_bin * 6.2831853f / BH_DIRS - 1.5707963f;
-        const int mx = x + (int)((cx + (R + 2) * cosf(a)) / 2.0f), my = y + (int)((cy + (R + 2) * sinf(a) / cv.ax) / 4.0f);
-        if (blink(300)) cell(mx < x ? x : mx, my < y ? y : my, '*', A(LAP_RED | LAP_BRIGHT));
-    }
-}
 static const char *compass_word(int deg)
 {
     static const char *const n[] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
-    return n[((deg + 22) / 45) % 8];
+    return n[(((deg % 360) + 360) % 360 + 22) / 45 % 8];
 }
-static void draw_hunt(int x, int y, int w, int hgt)
+/* the meter's zones, cold to hot: the same four everywhere on the screen */
+static uint8_t zone_hue(float q)
 {
-    if (!hunting) {
-        clip0 = y; clip1 = y + hgt;
-        emblem(x + w / 2 - 6, y + 2, false);
-        put(x + 1, y + 11, w - 2, LAP_UI_TEXT, "Pick a finding or a tag, then HUNT.");
-        wrap(x + 1, y + 13, w - 2, 4, LAP_UI_DIM, "The radio parks on it: frequency, Bluetooth address (followed through its changes) or Wi-Fi station. The bar, the ticks or the tone rise as you get closer.");
-        return;
+    return q >= 0.64f ? (LAP_RED | LAP_BRIGHT) : q >= 0.45f ? (LAP_YELLOW | LAP_BRIGHT) : q >= 0.25f ? (LAP_GREEN | LAP_BRIGHT) : (LAP_BLUE | LAP_BRIGHT);
+}
+static uint8_t zone_dim(float q) { return q >= 0.64f ? LAP_RED : q >= 0.45f ? LAP_YELLOW : q >= 0.25f ? LAP_GREEN : LAP_BLUE; }
+static const char *zone_word(float q)
+{
+    if (tgt.target == BH_T_BLE) return q >= 0.64f ? "HERE" : q >= 0.45f ? "CLOSE" : q >= 0.25f ? "NEARBY" : "FAR";
+    return q >= 0.64f ? "HOT" : q >= 0.45f ? "STRONG" : q >= 0.25f ? "FAIR" : "WEAK";
+}
+static const char *unit(void) { return tgt.target == BH_T_FREQ && main_is_sdr() ? "dBFS" : "dBm"; }
+
+/* The proximity gauge: half a dial, cold on the left and hot on the right.
+   The scale lights up to the level, the needle shows it, the red tick the
+   most it has been; under it the range's ends and the zone in words. */
+static void gauge(int x, int y, int w, int hgt, float q, float pk, bool fresh)
+{
+    cv_begin(x, y, w, hgt);
+    const float cx = (float)cv.w - 0.5f, cy = (float)cv.h * 4.0f - 1.0f;
+    float R = cx - 1.0f;
+    if (R > (cy - 1.0f) * cv.ax) R = (cy - 1.0f) * cv.ax;
+    if (R < 6) return;
+    const int n = (int)(R * 4.0f);
+    for (int i = 0; i <= n; i++) {
+        const float t = (float)i / (float)n, a = 3.1415926f * (1.0f - t);
+        const bool lit = fresh && t <= q;
+        /* a gap between zones, so the four read as four */
+        if (fabsf(t - 0.25f) < 0.012f || fabsf(t - 0.45f) < 0.012f || fabsf(t - 0.64f) < 0.012f) continue;
+        const uint8_t at = lit ? A(zone_hue(t)) : A(zone_dim(t));
+        for (float rr = R; rr >= R - (lit ? 2.0f : 1.0f); rr -= 1.0f) {
+            if (!lit && rr < R && i % 2) continue;      /* the unlit scale is thinner */
+            cv_dot(rnd(cx + rr * cosf(a)), rnd(cy - rr * sinf(a) / cv.ax), at);
+        }
     }
-    /* landscape: the direction plot takes the right side */
-    const int full_w = w;
-    int plot_x = x, plot_y = 0, plot_w = 0, plot_h = 0;
-    if (wide && w >= 60) {
-        plot_w = 30;
-        plot_h = hgt;
-        plot_x = x + w - plot_w;
-        plot_y = y;
-        w -= plot_w + 2;
+    /* ticks every tenth, inside the scale */
+    for (int k = 0; k <= 10; k++) {
+        const float a = 3.1415926f * (1.0f - (float)k / 10.0f), r0 = R - 4.0f, r1 = R - (k % 5 ? 5.0f : 7.0f);
+        cv_line(rnd(cx + r0 * cosf(a)), rnd(cy - r0 * sinf(a) / cv.ax), rnd(cx + r1 * cosf(a)), rnd(cy - r1 * sinf(a) / cv.ax), LAP_UI_FAINT);
     }
-    int yy = y;
-    put(x, yy, w, LAP_UI_TEXT, "%s", tgt.title);
-    yy++;
-    char tt[40];
-    target_text(&tgt, tt, sizeof(tt));
-    put(x, yy, w, A(LAP_UI_VALUE), "%s", tt);
-    if (tgt.target == BH_T_FREQ && radio < 0) put(x + 22, yy, w - 22, A(LAP_UI_ALARM), "no LoRa radio");
+    if (pk >= 0) {
+        const float a = 3.1415926f * (1.0f - pk);
+        cv_line(rnd(cx + (R - 4) * cosf(a)), rnd(cy - (R - 4) * sinf(a) / cv.ax), rnd(cx + (R - 9) * cosf(a)), rnd(cy - (R - 9) * sinf(a) / cv.ax),
+                A(LAP_RED | LAP_BRIGHT));
+    }
+    if (fresh) {
+        const float a = 3.1415926f * (1.0f - q);
+        const uint8_t na = A(LAP_WHITE | LAP_BRIGHT);
+        cv_line(rnd(cx), rnd(cy), rnd(cx + (R - 6) * cosf(a)), rnd(cy - (R - 6) * sinf(a) / cv.ax), na);
+        cv_line(rnd(cx) + 1, rnd(cy), rnd(cx + (R - 6) * cosf(a)) + 1, rnd(cy - (R - 6) * sinf(a) / cv.ax), na);
+    }
+    for (int dx = -2; dx <= 2; dx++) cv_dot(rnd(cx) + dx, rnd(cy), A(LAP_WHITE | LAP_BRIGHT));    /* the hub */
+    cv_dot(rnd(cx), rnd(cy) - 1, A(LAP_WHITE | LAP_BRIGHT));
+    cv_flush();
+}
+
+/* The dial: the circle you turned through, heading up (the top is where the
+   board points, so the letters turn as you turn). Each 10 degrees is lit by
+   how loud it was there; faint dots are the part not turned through yet. The
+   arrow is the answer: where the thing is from where you face. */
+static void dial(int x, int y, int dc, int dr, const bh_dir_fix_t *fx, float hd)
+{
+    if (dc < 10 || dr < 6) return;
+    cv_begin(x + 1, y + 1, dc - 2, dr - 2);
+    const float cx = (float)cv.w - 0.5f, cy = (float)cv.h * 2.0f - 0.5f;
+    float R = cx - 1.0f;
+    if (R > (cy - 1.0f) * cv.ax) R = (cy - 1.0f) * cv.ax;
+    if (R < 6) return;
+    const float face = hd >= 0 ? hd : 0;
+    const int lo = dir2.lo, hi = dir2.hi;
+    const int n = (int)(R * 7.0f);
+    for (int i = 0; i < n; i++) {
+        const float sa = 360.0f * (float)i / (float)n;          /* clockwise from the top */
+        const int b = ((int)((face + sa) / 10.0f + 0.5f)) % BH_DIR2;
+        const int v = bh_dir2_bin(&dir2, b);
+        const float a = sa * 0.0174533f;
+        const float px2 = cx + R * sinf(a), py2 = cy - R * cosf(a) / cv.ax;
+        if (v == BH_HNONE) {
+            if (i % 3 == 0) cv_dot(rnd(px2), rnd(py2), LAP_UI_FAINT);
+            continue;
+        }
+        const bool flat = hi - lo < 20;                         /* all alike so far: no colour means anything */
+        const float q = flat ? 0.0f : (float)(v - lo) / (float)(hi - lo);
+        const uint8_t at = flat ? A(LAP_GREEN) : A(q >= 0.75f ? (LAP_RED | LAP_BRIGHT) : q >= 0.5f ? (LAP_YELLOW | LAP_BRIGHT) : q >= 0.25f ? (LAP_GREEN | LAP_BRIGHT) : LAP_BLUE);
+        const float thick = 1.0f + q * 2.0f;                    /* the loud part is bolder */
+        for (float rr = R; rr >= R - thick; rr -= 1.0f) cv_dot(rnd(cx + rr * sinf(a)), rnd(cy - rr * cosf(a) / cv.ax), at);
+    }
+    /* where you face: a short white tick at the top */
+    cv_line(rnd(cx), rnd(cy - (R - 4) / cv.ax), rnd(cx), rnd(cy - (R - 8) / cv.ax), A(LAP_WHITE | LAP_BRIGHT));
+    /* the answer, once one way stands out */
+    if (fx->bearing >= 0 && fx->contrast >= 20) {
+        const float a = (float)bh_turn((int)face, fx->bearing) * 0.0174533f;
+        const uint8_t at = A(fx->quality >= 3 ? (LAP_RED | LAP_BRIGHT) : fx->quality == 2 ? (LAP_YELLOW | LAP_BRIGHT) : LAP_WHITE);
+        const float tip = R - 5.0f, sx2 = sinf(a), sy2 = -cosf(a) / cv.ax, nx = cosf(a), ny = sinf(a) / cv.ax;
+        for (int k = -1; k <= 1; k++)
+            cv_line(rnd(cx + 3 * sx2 + k * nx), rnd(cy + 3 * sy2 + k * ny), rnd(cx + (tip - 3) * sx2 + k * nx), rnd(cy + (tip - 3) * sy2 + k * ny), at);
+        for (int side = -1; side <= 1; side += 2) {
+            const float b2 = a + (float)side * 2.7f;            /* the head's barbs, back from the tip */
+            cv_line(rnd(cx + tip * sx2), rnd(cy + tip * sy2), rnd(cx + tip * sx2 + 7 * sinf(b2)), rnd(cy + tip * sy2 - 7 * cosf(b2) / cv.ax), at);
+        }
+    }
+    cv_ring(cx, cy, 2.0f, 0, A(LAP_WHITE | LAP_BRIGHT));
+    cv_flush();
+    /* the compass letters, just outside the ring, turning with you */
+    static const char *const L[4] = { "N", "E", "S", "W" };
+    for (int k = 0; k < 4; k++) {
+        const float a = (float)(k * 90 - (int)face) * 0.0174533f;
+        int col = x + 1 + (int)((cx + (R + 3.0f) * sinf(a)) / 2.0f), row = y + 1 + (int)((cy - (R + 3.0f) * cosf(a) / cv.ax) / 4.0f);
+        col = col < x ? x : col > x + dc - 1 ? x + dc - 1 : col;
+        row = row < y ? y : row > y + dr - 1 ? y + dr - 1 : row;
+        cell(col, row, (int16_t)L[k][0], A(k == 0 ? (LAP_RED | LAP_BRIGHT) : LAP_CYAN));
+    }
+    if (hd < 0) put(x + 1, y + dr - 1, dc - 2, LAP_UI_FAINT, "north up");
+}
+
+/* The strip under the gauge: a tag's last two minutes; a frequency's
+   bursts and when the next is due; DUAL's pointing difference. Rows used. */
+static int hunt_strip(int x, int y, int w, int rows_left)
+{
     const bw_dev_t *tag = tgt.target == BH_T_BLE && tgt.uid ? bhw_dev(tgt.uid) : NULL;
-    if (tag) {
-        /* what the tag watch knows: its address changes, its owner, how long it has been about */
-        char ex[48];
-        int n = 0;
-        if (tag->rotations) n += snprintf(ex + n, sizeof(ex) - (size_t)n, "rot %u ", tag->rotations);
-        if (tag->ad.separated == 1) n += snprintf(ex + n, sizeof(ex) - (size_t)n, "AWAY ");
-        if (tag->ad.separated == 0) n += snprintf(ex + n, sizeof(ex) - (size_t)n, "owner near ");
-        snprintf(ex + n, sizeof(ex) - (size_t)n, "here %um", (unsigned)(bw_span_ms(tag) / 60000u));
-        const int tl = (int)strlen(tt) + 2;
-        put(x + tl, yy, w - tl, A(tag->alert ? (LAP_RED | LAP_BRIGHT) : (LAP_MAGENTA | LAP_BRIGHT)), "%s", ex);
+    int yy = y;
+    if (dual_on() && rows_left >= 3) {
+        const int pt = bh_pair_point(&pair, now_ms);
+        const char *dn = cfg.sdr_dir ? sdr_name : radio_name, *rn = cfg.sdr_dir ? radio_name : sdr_name;
+        put(x, yy, 6, LAP_UI_FAINT, "POINT");
+        if (pt == BH_HNONE) put(x + 6, yy, w - 6, LAP_UI_DIM, "waiting for both to hear it");
+        else put(x + 6, yy, w - 6, A(pt >= 60 ? (LAP_RED | LAP_BRIGHT) : pt >= 20 ? (LAP_YELLOW | LAP_BRIGHT) : pt > -20 ? LAP_WHITE : (LAP_CYAN | LAP_BRIGHT)),
+                 "%+.1f dB  %s", (double)pt / 10.0, pt >= 60 ? "ON IT" : pt >= 20 ? "TOWARD IT" : pt > -20 ? "SIDE ON" : "AWAY");
+        /* -20 .. +20 dB, the middle is the two hearing it alike */
+        const int mw = w - 2, mid = x + 1 + mw / 2;
+        put(x, yy + 1, 1, LAP_UI_FAINT, "[");
+        put(x + w - 1, yy + 1, 1, LAP_UI_FAINT, "]");
+        for (int i = 0; i < mw; i++) cell(x + 1 + i, yy + 1, i == mw / 2 ? '|' : (i % 5 ? '-' : '+'), LAP_UI_FAINT);
+        if (pt != BH_HNONE) {
+            int at = mid + (int)((float)pt / 200.0f * (float)(mw / 2));
+            at = at < x + 1 ? x + 1 : at > x + mw ? x + mw : at;
+            for (int c = at < mid ? at : mid; c <= (at < mid ? mid : at); c++) cell(c, yy + 1, '=', A(pt >= 20 ? LAP_YELLOW | LAP_BRIGHT : LAP_CYAN));
+            cell(at, yy + 1, 'O', A(LAP_WHITE | LAP_BRIGHT));
+        }
+        put(x, yy + 2, w, LAP_UI_FAINT, "DIR %.12s  REF %.12s  -20 dB   +20 dB", dn, rn);
+        yy += 3;
+        rows_left -= 3;
     }
-    yy += 2;
-    /* the big bar, with its scale under it: cold on the left, hot on the right */
-    const bool fresh = lv_ms && now_ms - lv_ms < fresh_ms();
-    const float frac = fresh ? hunt_frac(lv_fast) : 0;
-    const float pk = lv_peak == BH_NONE ? -1 : hunt_frac((float)lv_peak);
-    lap_ui_bargraph(x, yy, w, 3, frac, pk);
-    {
-        const int lo = hunt_floor / 10, hi = lo + hunt_span() / 10, steps = hunt_span() / 100;
-        for (int i = 1; i < steps; i++) cell(x + w * i / steps, yy + 3, '\'', LAP_UI_FAINT);   /* every 10 dB */
-        char l[16], r[16];
-        snprintf(l, sizeof(l), "%d cold", lo);
-        snprintf(r, sizeof(r), "hot %d", hi);
-        put(x, yy + 3, (int)strlen(l), A(LAP_BLUE | LAP_BRIGHT), "%s", l);
-        put(x + w - (int)strlen(r), yy + 3, (int)strlen(r), A(LAP_RED | LAP_BRIGHT), "%s", r);
-    }
-    yy += 5;
-    /* hotter / colder and the Geiger click */
-    const float d = lv_fast - lv_slow;
-    const bool hot = fresh && d > 25, cold = fresh && d < -25;
-    const char *word = !fresh ? (lv_ms ? "LOST IT" : "LISTEN") : hot ? "HOTTER" : cold ? "COLDER" : "STEADY";
-    const uint8_t wa = A(!fresh ? LAP_BLUE : hot ? (LAP_RED | LAP_BRIGHT) : cold ? (LAP_CYAN | LAP_BRIGHT) : LAP_WHITE);
-    const int bw2 = big_text(x, yy, w - 8, word, wa);
-    if (hot || cold) {
-        const int ph2 = (int)((now_ms / 150u) % 3u);
-        for (int k = 0; k < 3; k++)
-            cell(x + bw2 + 1 + k, yy + (hot ? 4 - ph2 : ph2), hot ? '^' : 'v', A(k == ph2 ? (LAP_WHITE | LAP_BRIGHT) : (hot ? LAP_RED : LAP_CYAN)));
-    }
-    /* the speaker throws a ring per tick */
-    const uint32_t since = tick_ms ? now_ms - tick_ms : 9999u;
-    const int ring = since < 80u ? 3 : since < 160u ? 2 : since < 240u ? 1 : 0;
-    put(x + w - 6, yy + 1, 2, A(LAP_WHITE | LAP_BRIGHT), "<|");
-    for (int k = 0; k < 3; k++) cell(x + w - 4 + k, yy + 1, ')', A(k < ring ? (LAP_YELLOW | LAP_BRIGHT) : LAP_BLUE));
-    if (!cfg.sound) put(x + w - 6, yy + 2, 6, LAP_UI_FAINT, "muted");
-    else if (hunt_tone()) put(x + w - 6, yy + 2, 6, LAP_UI_FAINT, "%4dHz", 300 + (int)(hunt_frac(lv_fast) * 1700.0f));
-    else if (fresh) put(x + w - 6, yy + 2, 6, LAP_UI_FAINT, "%4u/s", (unsigned)(1000u / bh_geiger_ms((int)lv_fast, hunt_floor)));
-    yy += 6;
-    /* history: a tag's last two minutes from the tag watch (it was listening
-       before HUNT began); else the readings since HUNT began */
-    if (tag) {
+    if (tag && rows_left >= 3) {
         int cells = w - 5 - 6;
         if (cells > BW_HIST / 2) cells = BW_HIST / 2;
         put(x, yy, 5, LAP_UI_FAINT, "LAST");
         put(x, yy + 1, 5, LAP_UI_FAINT, "%ds", cells * 2 * BW_HIST_MS / 1000);
         bhw_graph(x + 5, yy, cells, 3, tag);
-        if (lv_peak != BH_NONE) put(x + w - 5, yy, 5, A(LAP_RED | LAP_BRIGHT), "%4d", lv_peak / 10);
-        put(x + w - 5, yy + 1, 5, LAP_UI_FAINT, " peak");
-        yy += 4;
-    } else if (hhist_n > 1) {
+        return yy + 3 - y;
+    }
+    if (tgt.target == BH_T_FREQ && rows_left >= 3) {
+        /* bursts: when a tracker checks in rarely, compare one burst with the last */
+        char due[24] = "", per[24] = "";
+        const int32_t d = bh_bursts_due(&bursts, now_ms);
+        if (bursts.period_ms) snprintf(per, sizeof(per), "every ~%us", (unsigned)((bursts.period_ms + 500u) / 1000u));
+        if (d > 0) snprintf(due, sizeof(due), "next %u:%02u", (unsigned)(d / 60000), (unsigned)(d / 1000 % 60));
+        else if (d == 0) snprintf(due, sizeof(due), "due now");
+        const bool steady = bursts.in && now_ms - bursts.cur.t_ms > 5000u;
+        if (steady) {
+            put(x, yy, w, A(LAP_MAGENTA | LAP_BRIGHT), "STEADY CARRIER");
+            put(x + 15, yy, w - 15, LAP_UI_DIM, "on %us: walk with the meter", (unsigned)((now_ms - bursts.cur.t_ms) / 1000u));
+        } else {
+            put(x, yy, w, LAP_UI_FAINT, "BURSTS");
+            put(x + 7, yy, w - 7, bursts.in ? A(LAP_RED | LAP_BRIGHT) : A(LAP_UI_VALUE), "%s%u  %s  %s", bursts.in ? "ON AIR " : "", (unsigned)bursts.total, per, due);
+        }
+        if (bursts.n >= 2 && !steady) {
+            const int dl = bh_bursts_delta(&bursts);
+            const char *wd = dl >= 30 ? "HOTTER" : dl <= -30 ? "COLDER" : "SAME";
+            put(x + w - 14, yy, 14, A(dl >= 30 ? (LAP_RED | LAP_BRIGHT) : dl <= -30 ? (LAP_CYAN | LAP_BRIGHT) : LAP_WHITE), "%+5.1f %s", (double)dl / 10.0, wd);
+        }
+        /* the readings, with each burst's peak marked over them */
+        if (hhist_n > 1) lap_ui_history(x, yy + 1, w - 6, 2, hhist, hhist_n, (float)bh_range_lo(&rng) / 10.0f, (float)bh_range_hi(&rng) / 10.0f, LAP_GREEN | LAP_BRIGHT);
+        else put(x, yy + 1, w - 6, LAP_UI_FAINT, "listening on %s", hunt_rx == HR_SDR ? sdr_name : radio_name);
+        if (lv.peak != BH_HNONE) put(x + w - 5, yy + 1, 5, A(LAP_RED | LAP_BRIGHT), "%4d", lv.peak / 10);
+        put(x + w - 5, yy + 2, 5, LAP_UI_FAINT, " peak");
+        return yy + 3 - y;
+    }
+    if (hhist_n > 1 && rows_left >= 2) {
         put(x, yy, 5, LAP_UI_FAINT, "LAST");
-        lap_ui_history(x + 5, yy, w - 5 - 6, 2, hhist, hhist_n, (float)hunt_floor / 10.0f, (float)hunt_floor / 10.0f + 60.0f, LAP_GREEN | LAP_BRIGHT);
-        if (lv_peak != BH_NONE) put(x + w - 5, yy, 5, A(LAP_RED | LAP_BRIGHT), "%4d", lv_peak / 10);
-        put(x + w - 5, yy + 1, 5, LAP_UI_FAINT, " peak");
-        yy += 3;
+        lap_ui_history(x + 5, yy, w - 5 - 6, 2, hhist, hhist_n, (float)bh_range_lo(&rng) / 10.0f, (float)bh_range_hi(&rng) / 10.0f, LAP_GREEN | LAP_BRIGHT);
+        if (lv.peak != BH_HNONE) put(x + w - 5, yy, 5, A(LAP_RED | LAP_BRIGHT), "%4d", lv.peak / 10);
+        return yy + 2 - y;
     }
-    /* the turn-in-a-circle plot: under it in portrait, beside it in landscape */
-    if (!plot_w) {
-        const int left = y + hgt - yy;
-        if (left < 6) return;
-        plot_y = yy;
-        plot_h = left;
-        plot_w = full_w;
-    }
-    const int pr0 = plot_w == full_w ? plot_h - 1 : plot_h - 6;
-    const int pr = pr0 > 20 ? 20 : pr0;
-    int pwid = plot_w == full_w ? pr * 2 + 2 : plot_w;
-    if (plot_w == full_w && pwid > full_w - 19) pwid = full_w - 19;
-    if (!have_compass || pwid < 8 || pr < 4) {
-        wrap(plot_x, plot_y, plot_w, plot_h, LAP_UI_DIM, "No compass: walk and watch the bar. Your body blocks signal, so turn slowly where you stand first.");
+    return yy - y;
+}
+
+static int dial_x0, dial_y0, dial_x1, dial_y1;  /* where the dial was drawn: a tap there starts it over */
+static void draw_hunt(int x, int y, int w, int hgt)
+{
+    dial_x0 = dial_x1 = -1;
+    if (!hunting) {
+        clip0 = y; clip1 = y + hgt;
+        emblem(x + w / 2 - 6, y + 1, false);
+        put(x + 1, y + 10, w - 2, LAP_UI_TEXT, "Pick a finding or a tag, then HUNT.");
+        put(x + 1, y + 11, w - 2, LAP_UI_DIM, "Or HUNT FREQ: a frequency from a list or typed.");
+        int yy = y + 13;
+        put(x + 1, yy++, w - 2, LAP_UI_FAINT, "RECEIVERS");
+        put(x + 2, yy++, w - 3, A(radio >= 0 ? (LAP_GREEN | LAP_BRIGHT) : LAP_BLUE), "%-8s %s", "LORA", radio >= 0 ? radio_name : "none in the socket");
+        put(x + 2, yy++, w - 3, A(sdr >= 0 ? (LAP_MAGENTA | LAP_BRIGHT) : LAP_BLUE), "%-8s %s", "SDR", sdr >= 0 ? sdr_name : "none on USB (RTL-SDR, HackRF)");
+        put(x + 2, yy++, w - 3, A(LAP_UI_VALUE), "%-8s %s", "USING", cfg.rx == RX_DUAL ? "DUAL: both on one frequency" : cfg.rx == RX_SDR ? "the SDR when it tunes there" : "the LoRa radio");
+        yy++;
+        put(x + 1, yy++, w - 2, LAP_UI_FAINT, "DIRECTION");
+        wrap(x + 2, yy, w - 3, 3, LAP_UI_DIM, cfg.dmode == BH_DM_BODY
+             ? "BODY: hold the board flat against your chest and turn. Your body blocks the signal; the quietest way is your back to it."
+             : "PEAK: hold the board flat in front of you and turn. The loudest way is toward it.");
+        yy += 4;
+        if (yy + 4 < y + hgt) {
+            put(x + 1, yy++, w - 2, LAP_UI_FAINT, "DUAL");
+            wrap(x + 2, yy, w - 3, 4, LAP_UI_DIM,
+                 "A directional antenna on one receiver, the other as the reference: their difference shows where the directional one points, "
+                 "even while a tracker's bursts come and go.");
+        }
         return;
     }
-    dir_plot(plot_x, plot_y, pwid, pr);
-    const int cov = bh_dir_covered(&dir);
-    int tx = plot_x + pwid + 2, ty2 = plot_y, tw = full_w - (tx - x);
-    if (plot_w != full_w) { tx = plot_x; ty2 = plot_y + pr; tw = plot_w; }
-    put(tx, ty2, tw, LAP_UI_FAINT, "DIRECTION");
-    if (heading >= 0) put(tx, ty2 + 1, tw, LAP_UI_TEXT, "facing %3d %s", (int)heading, compass_word((int)heading));
-    else put(tx, ty2 + 1, tw, LAP_UI_FAINT, "compass settling");
-    if (dir.peak_bin >= 0) put(tx, ty2 + 2, tw, A(LAP_RED | LAP_BRIGHT), "peak   %3d %s", dir.peak_bin * 360 / BH_DIRS, compass_word(dir.peak_bin * 360 / BH_DIRS));
-    put(tx, ty2 + 3, tw, LAP_UI_DIM, "%d%% round%s", cov * 100 / BH_DIRS, cov >= BH_DIRS * 2 / 3 ? "" : "...");
-    if (plot_w == full_w)
-        wrap(tx, ty2 + 5, tw, pr - 5 > 1 ? pr - 5 : 1, LAP_UI_DIM,
-             cov < BH_DIRS * 2 / 3 ? "Hold it flat, turn slowly all the way round, then walk toward the red peak." : "Walk toward the peak and turn again: the peak sharpens as you close in.");
-    else
-        put(tx, ty2 + 4, tw, LAP_UI_DIM, "%s", cov < BH_DIRS * 2 / 3 ? "turn slowly all the way round" : "walk to the peak, turn again");
+    const bool fresh = lv_fresh();
+    const float q = fresh ? hunt_frac(lv.fast) : 0;
+    const float pk = lv.peak == BH_HNONE ? -1 : hunt_frac((float)lv.peak);
+    const bw_dev_t *tag = tgt.target == BH_T_BLE && tgt.uid ? bhw_dev(tgt.uid) : NULL;
+    /* landscape: the dial takes the right side */
+    int dx = x, dyy = 0, dcw = 0, drh = 0;
+    const int full_w = w;
+    if (wide && w >= 64) { dcw = 46; w -= dcw + 2; dx = x + w + 2; dyy = y; drh = hgt; }
+    int yy = y;
+    /* the target */
+    put(x, yy, w, LAP_UI_TEXT, "%s", tgt.title);
+    yy++;
+    char tt[40];
+    target_text(&tgt, tt, sizeof(tt));
+    int tl = put(x, yy, w, A(LAP_UI_VALUE), "%s", tt) + 1;
+    if (tag) {
+        if (tag->mark) tl += put(x + tl, yy, w - tl, A(tag->mark == BW_MARK_MINE ? (LAP_GREEN | LAP_BRIGHT) : (LAP_CYAN | LAP_BRIGHT)), "%s ",
+                                 tag->mark == BW_MARK_MINE ? "MINE" : "WATCH");
+        if (tag->ad.separated == 1) tl += put(x + tl, yy, w - tl, A(LAP_MAGENTA | LAP_BRIGHT), "AWAY ");
+        if (tag->rotations) tl += put(x + tl, yy, w - tl, A(LAP_MAGENTA), "rot %u ", tag->rotations);
+        put(x + tl, yy, w - tl, LAP_UI_FAINT, "here %um", (unsigned)(bw_span_ms(tag) / 60000u));
+    } else if (tgt.target == BH_T_FREQ) {
+        const char *rx = dual_on() ? "DUAL" : hunt_rx == HR_SDR ? sdr_name : hunt_rx == HR_LORA ? radio_name : "no receiver";
+        put(x + tl, yy, w - tl, A(dual_on() ? (LAP_MAGENTA | LAP_BRIGHT) : LAP_GREEN), "%s", rx);
+    }
+    yy++;
+    if (rx_note[0]) put(x, yy, w, A(LAP_UI_WARN), "%s", rx_note);
+    yy++;
+    /* the gauge, and what it says beside it */
+    const int gw = w >= 26 ? 26 : w, gh = 8;
+    gauge(x, yy, gw, gh, q, pk, fresh);
+    put(x, yy + gh, 4, A(LAP_BLUE | LAP_BRIGHT), "%d", bh_range_lo(&rng) / 10);
+    char hi_t[8];
+    const int hl = snprintf(hi_t, sizeof(hi_t), "%d", bh_range_hi(&rng) / 10);
+    put(x + gw - hl, yy + gh, hl, A(LAP_RED | LAP_BRIGHT), "%s", hi_t);
+    {
+        const char *zw = fresh ? zone_word(q) : lv.started ? "LOST IT" : "LISTEN";
+        const int zl = (int)strlen(zw);
+        put(x + (gw - zl) / 2, yy + gh, zl, A(fresh ? zone_hue(q) : LAP_BLUE), "%s", zw);
+    }
+    const int ix = x + gw + 2, iw = w - gw - 2;
+    int iy = yy;
+    if (iw >= 14) {
+        const int now_lv = fresh ? (int)lv.fast / 10 : 0;
+        put(ix, iy, 6, LAP_UI_FAINT, "LEVEL");
+        if (fresh) put(ix + 6, iy, iw - 6, A(zone_hue(q)), "%d %s", now_lv, unit());
+        else put(ix + 6, iy, iw - 6, A(LAP_BLUE), "-- %s", unit());
+        iy++;
+        put(ix, iy, 6, LAP_UI_FAINT, "PEAK");
+        if (lv.peak != BH_HNONE) put(ix + 6, iy, iw - 6, A(LAP_RED | LAP_BRIGHT), "%d", lv.peak / 10);
+        iy++;
+        put(ix, iy, 6, LAP_UI_FAINT, "RANGE");
+        put(ix + 6, iy, iw - 6, rng.step ? A(LAP_MAGENTA | LAP_BRIGHT) : LAP_UI_DIM, "%s%s", rng.step ? "+" : "", cfg.autorange ? (rng.step ? "" : "AUTO") : "FIXED");
+        if (rng.step) put(ix + 7, iy, iw - 7, A(LAP_MAGENTA | LAP_BRIGHT), "%d dB up", rng.step * 20);
+        iy++;
+        if (tag) {
+            put(ix, iy, 6, LAP_UI_FAINT, "AWAY");
+            char dt[24];
+            if (fresh) { bh_dist_text((int)lv.fast / 10, tag_ref(tag), dt, sizeof(dt)); put(ix + 6, iy, iw - 6, A(LAP_CYAN | LAP_BRIGHT), "%s", dt); }
+            else put(ix + 6, iy, iw - 6, A(LAP_BLUE), "?");
+            iy++;
+            put(ix + 6, iy, iw - 6, cal_ref && cal_uid && bhw_dev(cal_uid) == tag ? A(LAP_GREEN | LAP_BRIGHT) : LAP_UI_FAINT, "%s",
+                cal_ref && cal_uid && bhw_dev(cal_uid) == tag ? "CAL at 1 m" : "K: CAL at 1 m");
+        } else {
+            put(ix, iy, 6, LAP_UI_FAINT, "OVER");
+            if (fresh) put(ix + 6, iy, iw - 6, A(LAP_CYAN | LAP_BRIGHT), "+%d dB quiet", ((int)lv.fast - hunt_floor) / 10 > 0 ? ((int)lv.fast - hunt_floor) / 10 : 0);
+            iy++;
+        }
+        iy++;
+        /* hotter / colder, with the arrows stepping the way it goes */
+        const int tr = fresh ? bh_lvl_trend(&lv, 3) : 0;
+        const char *word = !fresh ? (lv.started ? "LOST IT" : "LISTEN") : tr > 0 ? "HOTTER" : tr < 0 ? "COLDER" : "STEADY";
+        const uint8_t wa = A(!fresh ? LAP_BLUE : tr > 0 ? (LAP_RED | LAP_BRIGHT) : tr < 0 ? (LAP_CYAN | LAP_BRIGHT) : LAP_WHITE);
+        const int wl = put(ix, iy, iw, wa, "%s", word);
+        if (tr) {
+            const int ph2 = (int)((now_ms / 150u) % 3u);
+            for (int k = 0; k < 3; k++) cell(ix + wl + 1 + k, iy, tr > 0 ? '^' : 'v', A(k == ph2 ? (LAP_WHITE | LAP_BRIGHT) : (tr > 0 ? LAP_RED : LAP_CYAN)));
+        }
+        iy++;
+        /* the speaker throws a ring per tick */
+        const uint32_t since = tick_ms ? now_ms - tick_ms : 9999u;
+        const int ring = since < 80u ? 3 : since < 160u ? 2 : since < 240u ? 1 : 0;
+        put(ix, iy, 2, A(LAP_WHITE | LAP_BRIGHT), "<|");
+        for (int k = 0; k < 3; k++) cell(ix + 2 + k, iy, ')', A(k < ring ? (LAP_YELLOW | LAP_BRIGHT) : LAP_BLUE));
+        if (!cfg.sound) put(ix + 6, iy, iw - 6, LAP_UI_FAINT, "muted");
+        else if (hunt_tone()) put(ix + 6, iy, iw - 6, LAP_UI_FAINT, "%dHz tone", 300 + (int)(hunt_frac(lv.fast) * 1700.0f));
+        else if (fresh) put(ix + 6, iy, iw - 6, LAP_UI_FAINT, "%u ticks/s", (unsigned)(1000u / bh_geiger_ms((int)lv.fast, bh_range_lo(&rng))));
+    }
+    yy += gh + 1;
+    if (iw < 14) {
+        /* no room beside the gauge: the readout in two lines under it */
+        const int tr = fresh ? bh_lvl_trend(&lv, 3) : 0;
+        int k = 0;
+        if (fresh) k = put(x, yy, w, A(zone_hue(q)), "%d %s ", (int)lv.fast / 10, unit());
+        if (lv.peak != BH_HNONE) put(x + k, yy, w - k, A(LAP_RED | LAP_BRIGHT), "peak %d", lv.peak / 10);
+        yy++;
+        if (tag && fresh) {
+            char dt[24];
+            bh_dist_text((int)lv.fast / 10, tag_ref(tag), dt, sizeof(dt));
+            k = put(x, yy, w, A(LAP_CYAN | LAP_BRIGHT), "%s ", dt);
+        } else k = 0;
+        put(x + k, yy, w - k, A(!fresh ? LAP_BLUE : tr > 0 ? (LAP_RED | LAP_BRIGHT) : tr < 0 ? (LAP_CYAN | LAP_BRIGHT) : LAP_WHITE), "%s",
+            !fresh ? "" : tr > 0 ? "HOTTER ^" : tr < 0 ? "COLDER v" : "STEADY");
+        yy++;
+    }
+    yy++;
+    /* the strip: history, bursts, DUAL */
+    yy += hunt_strip(x, yy, w, y + hgt - yy);
+    yy++;
+    /* the dial: under it in portrait, beside it in landscape */
+    if (!dcw) { dx = x; dyy = yy; drh = y + hgt - yy; dcw = 0; }
+    const bh_dir_fix_t fx = bh_dir2_fix(&dir2, cfg.dmode);
+    const int dial_room0 = full_w - (dx - x) - 20;      /* the words beside it take 20 */
+    int rows;
+    {
+        int cw = 0, ch = 0;
+        lap_cell_px(&cw, &ch);
+        const float ax = cw > 0 && ch > 0 ? ((float)ch / 4.0f) / ((float)cw / 2.0f) : 0.85f;
+        const int fit = (int)(((float)(dial_room0 - 3) / ax + 1.0f) / 2.0f) + 2;   /* rows a round dial of that width takes */
+        rows = drh < fit ? drh : fit;
+    }
+    int dc;
+    {
+        int cw = 0, ch = 0;
+        lap_cell_px(&cw, &ch);
+        const float ax = cw > 0 && ch > 0 ? ((float)ch / 4.0f) / ((float)cw / 2.0f) : 0.85f;
+        dc = (int)(((float)(rows - 2) * 2.0f - 1.0f) * ax) + 3;     /* round on the glass */
+    }
+    if (dc > dial_room0) dc = dial_room0;
+    if (rows < 7 || dc < 12) {
+        if (rows > 1) wrap(dx, dyy, wide && dx != x ? full_w - (dx - x) : full_w, rows, LAP_UI_DIM, "No room for the dial: walk and watch the meter.");
+        return;
+    }
+    if (!have_compass) {
+        wrap(dx, dyy, wide && dx != x ? full_w - (dx - x) : full_w, rows, LAP_UI_DIM,
+             "No compass: walk and watch the meter. Your body blocks the signal, so turn slowly where you stand first.");
+        return;
+    }
+    dial(dx, dyy, dc, rows, &fx, heading);
+    dial_x0 = dx; dial_y0 = dyy; dial_x1 = dx + dc; dial_y1 = dyy + rows;
+    /* what the dial says, in words, beside it */
+    const int tx = dx + dc + 1, tw = full_w - (tx - x), tb = y + hgt;
+    int ty2 = dyy;
+    put(tx, ty2++, tw, LAP_UI_FAINT, "%s", cfg.dmode == BH_DM_BODY ? "BODY SHIELD" : "LOUDEST WAY");
+    if (fx.bearing >= 0 && heading >= 0 && fx.contrast >= 20) {
+        const int t = bh_turn((int)heading, fx.bearing);
+        const uint8_t qa = A(fx.quality >= 3 ? (LAP_RED | LAP_BRIGHT) : fx.quality == 2 ? (LAP_YELLOW | LAP_BRIGHT) : LAP_WHITE);
+        if (t >= -15 && t <= 15) put(tx, ty2++, tw, qa, "AHEAD");
+        else if (t >= 160 || t <= -160) put(tx, ty2++, tw, qa, "BEHIND YOU");
+        else put(tx, ty2++, tw, qa, "TURN %s %d deg", t > 0 ? "RIGHT" : "LEFT", t > 0 ? t : -t);
+        put(tx, ty2++, tw, qa, "%s %+.1f dB", fx.quality >= 3 ? "SHARP" : fx.quality == 2 ? "BROAD" : "UNCLEAR", (double)fx.contrast / 10.0);
+        put(tx, ty2++, tw, A(LAP_RED | LAP_BRIGHT), "it is %3d %s", fx.bearing, compass_word(fx.bearing));
+    } else if (fx.covered >= BH_DIR2 * 2 / 3) {
+        put(tx, ty2++, tw, A(LAP_WHITE), "NO CLEAR WAY");
+        put(tx, ty2++, tw, LAP_UI_DIM, "all round alike");
+        put(tx, ty2++, tw, LAP_UI_DIM, "(%+.1f dB)", (double)fx.contrast / 10.0);
+    } else {
+        put(tx, ty2++, tw, A(LAP_WHITE), "TURN ROUND");
+        put(tx, ty2++, tw, LAP_UI_DIM, "to find out");
+        ty2++;
+    }
+    if (heading >= 0) put(tx, ty2++, tw, LAP_UI_TEXT, "face %3d %s", (int)heading, compass_word((int)heading));
+    {
+        /* how much of the circle is done: a dot per 30 degrees */
+        const int cov = fx.covered * 100 / BH_DIR2;
+        const int k = put(tx, ty2, tw, LAP_UI_DIM, "ring %3d%% ", cov);
+        for (int i = 0; i < 12 && k + i < tw; i++) {
+            int seen = 0;
+            for (int b = i * 3; b < i * 3 + 3; b++) seen += dir2.val[b] != BH_HNONE;
+            cell(tx + k + i, ty2, seen ? '*' : '.', A(seen ? (LAP_GREEN | LAP_BRIGHT) : LAP_BLUE));
+        }
+        ty2++;
+    }
+    ty2++;
+    const char *hint = fx.covered >= BH_DIR2 * 2 / 3 && fx.contrast < 20
+        ? (cfg.dmode == BH_DM_PEAK ? "Try BODY: board on your chest, your body as the shield. Or walk 5 m and turn again." : "Walk 5 m and turn again, slower.")
+        : fx.covered < BH_DIR2 * 2 / 3
+        ? (cfg.dmode == BH_DM_BODY ? "Board flat on your chest, turn slowly all the way round." : "Hold it flat, turn slowly all the way round.")
+        : tag && fresh && q >= 0.64f ? "Very close: sweep it slowly over bags, seats and shelves."
+        : "Walk that way, tap the dial and turn again: it sharpens as you close in.";
+    if (ty2 < tb) wrap(tx, ty2, tw, tb - ty2, LAP_UI_DIM, hint);
 }
 
 /* ---- keys ---- */
 static void set_keys(void)
 {
-    static char v0[24], v1[24], v2[24];
+    static char v0[24], v1[24];
     switch (tab) {
     case TAB_SWEEP:
         if (state == ST_SWEEP) {
@@ -1530,56 +1986,195 @@ static void set_keys(void)
             keys[0] = (lap_btn_t){ "ALERT AFTER", v0, 'a', false, false, false };
             keys[2] = (lap_btn_t){ "POSSIBLE", pos ? "ALERT" : "LIST", 'p', pos, false, false };
         } else {
-            keys[0] = (lap_btn_t){ "HUNT", bhw_pick() ? "THIS TAG" : NULL, 'h', false, !bhw_pick(), false };
-            keys[2] = (lap_btn_t){ "LOG", bhw_log_on() ? "ON" : "OFF", 'g', bhw_log_on(), false, false };
+            const bw_dev_t *d = bhw_pick() ? bhw_dev(bhw_pick()) : NULL;
+            keys[0] = (lap_btn_t){ "HUNT", d ? "THIS TAG" : NULL, 'h', false, !d, false };
+            /* MINE never alerts; WATCH says when it is left behind */
+            keys[2] = (lap_btn_t){ "MARK", !d ? NULL : d->mark == BW_MARK_MINE ? "MINE" : d->mark == BW_MARK_WATCH ? "WATCH" : "NONE", 'k',
+                                   d && d->mark != 0, !d, false };
         }
         keys[1] = (lap_btn_t){ "VIEW", bhw_view_name(bhw_view()), 'v', false, false, false };
         break;
     default:
-        keys[0] = (lap_btn_t){ "SOUND", !cfg.sound ? "OFF" : hunt_tone() ? "TONE" : "TICKS", 't', cfg.sound != 0, false, false };
-        snprintf(v2, sizeof(v2), "%d%%", bh_dir_covered(&dir) * 100 / BH_DIRS);
-        keys[1] = (lap_btn_t){ "RESET", hunting ? v2 : NULL, 'd', false, !hunting, false };
-        keys[2] = (lap_btn_t){ "STOP", "HUNT", 'x', hunting, !hunting, false };
+        if (hunting) {
+            keys[0] = (lap_btn_t){ "SOUND", !cfg.sound ? "OFF" : hunt_tone() ? "TONE" : "TICKS", 't', cfg.sound != 0, false, false };
+            keys[1] = (lap_btn_t){ "DIRECTION", cfg.dmode == BH_DM_BODY ? "BODY" : "PEAK", 'b', cfg.dmode == BH_DM_BODY, false, false };
+            keys[2] = (lap_btn_t){ "STOP", "HUNT", 'x', true, false, false };
+        } else {
+            keys[0] = (lap_btn_t){ "HUNT FREQ", "PICK", 'q', false, radio < 0 && sdr < 0, false };
+            keys[1] = (lap_btn_t){ "RECEIVER", RX_NAMES[cfg.rx], 'e', cfg.rx != RX_LORA, false, false };
+            keys[2] = (lap_btn_t){ "DIRECTION", cfg.dmode == BH_DM_BODY ? "BODY" : "PEAK", 'b', cfg.dmode == BH_DM_BODY, false, false };
+        }
         break;
     }
-    keys[3] = (lap_btn_t){ "MORE", NULL, 'm', false, false, false };
+    keys[3] = (lap_btn_t){ "OPTIONS", NULL, 'm', false, false, false };
 }
 
-/* ---- MORE ---- */
-enum { M_REGION, M_ROOM, M_CAR, M_HOP, M_SOUND, M_TONE, M_FOLLOW, M_POSSIBLE, M_LOG, M_CLEAR, M_HELP, M_N };
-static char mlabel[M_N][32];
-static void more(void)
+/* ---- OPTIONS: one tree, a level at a time, BACK at the top of each ---- */
+enum { MT_TOP, MT_SWEEP, MT_TAGS, MT_KINDS, MT_HUNT, MT_RX };
+enum {
+    MA_NONE, MA_BACK, MA_GO_SWEEP, MA_GO_TAGS, MA_GO_KINDS, MA_GO_HUNT, MA_GO_RX, MA_HELP,
+    MA_REGION, MA_ROOM, MA_CAR, MA_HOP, MA_SOUND,
+    MA_FOLLOW, MA_POSSIBLE, MA_WATCH, MA_MARKS, MA_LOG, MA_CLEAR,
+    MA_TONE, MA_DMODE, MA_RANGE, MA_CAL, MA_FREQ,
+    MA_RX, MA_SDRDIR, MA_FOUND,
+    MA_KIND0,                           /* + index into KINDS */
+};
+static const struct { uint8_t cls; const char *name; } KINDS[] = {
+    { BW_C_FINDMY, "FIND MY/AIRTAG" }, { BW_C_TILE, "TILE" }, { BW_C_SMARTTAG, "SMARTTAG" },
+    { BW_C_FMDN, "GOOGLE FIND HUB" }, { BW_C_DULT, "DULT ANY BRAND" }, { BW_C_CHIPOLO, "CHIPOLO" },
+};
+#define MROWS 12
+static int mlevel;
+static char mlabel[MROWS][32];
+static int mact[MROWS], mrows;
+static void mrow(int act, const char *fmt, ...)
+{
+    if (mrows >= MROWS) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(mlabel[mrows], sizeof(mlabel[0]), fmt, ap);
+    va_end(ap);
+    mact[mrows++] = act;
+}
+static void menu_open(int level)
 {
     if (dlg) return;
+    mlevel = level;
+    mrows = 0;
     uint32_t fm = 0;
     bool pos = false, lg = false;
     bhw_get_config(&fm, &pos, &lg);
-    snprintf(mlabel[M_REGION], 32, "REGION: %s", REGION_NAMES[cfg.region]);
-    snprintf(mlabel[M_ROOM], 32, "ROOM SWEEP: %u MIN", ROOM_MIN[cfg.room_i]);
-    snprintf(mlabel[M_CAR], 32, "CAR SWEEP: %u MIN", CAR_MIN[cfg.car_i]);
-    snprintf(mlabel[M_HOP], 32, "WI-FI HOP, DROP LINK: %s", cfg.hop ? "YES" : "NO");
-    snprintf(mlabel[M_SOUND], 32, "SOUND: %s", cfg.sound ? "ON" : "OFF");
-    snprintf(mlabel[M_TONE], 32, "HUNT SOUND: %s", TONE_NAMES[cfg.tone]);
-    snprintf(mlabel[M_FOLLOW], 32, "FOLLOWING ALERT: %u MIN", (unsigned)(fm / 60000u));
-    snprintf(mlabel[M_POSSIBLE], 32, "POSSIBLE TAGS: %s", pos ? "ALERT" : "LIST ONLY");
-    snprintf(mlabel[M_LOG], 32, "TAG LOG TO CARD: %s", bhw_log_on() ? "ON" : "OFF");
-    snprintf(mlabel[M_CLEAR], 32, "CLEAR THE TAG LIST");
-    snprintf(mlabel[M_HELP], 32, "HOW IT WORKS");
-    const char *l[M_N];
-    for (int i = 0; i < M_N; i++) l[i] = mlabel[i];
-    dlg = lap_choose(l, M_N);
+    switch (level) {
+    case MT_SWEEP:
+        mrow(MA_BACK, "< BACK");
+        mrow(MA_REGION, "REGION: %s", REGION_NAMES[cfg.region]);
+        mrow(MA_ROOM, "ROOM SWEEP: %u MIN", ROOM_MIN[cfg.room_i]);
+        mrow(MA_CAR, "CAR SWEEP: %u MIN", CAR_MIN[cfg.car_i]);
+        mrow(MA_HOP, "WI-FI HOP, DROP LINK: %s", cfg.hop ? "YES" : "NO");
+        mrow(MA_SOUND, "SOUND: %s", cfg.sound ? "ON" : "OFF");
+        break;
+    case MT_TAGS: {
+        int mine = 0, watching = 0, off = 0;
+        bhw_marked(&mine, &watching);
+        for (int i = 0; i < ROWS(KINDS); i++) off += (cfg.kind_off & bw_kind_bit(KINDS[i].cls)) != 0;
+        mrow(MA_BACK, "< BACK");
+        mrow(MA_FOLLOW, "FOLLOWING ALERT: %u MIN", (unsigned)(fm / 60000u));
+        mrow(MA_POSSIBLE, "POSSIBLE TAGS: %s", pos ? "ALERT" : "LIST ONLY");
+        mrow(MA_GO_KINDS, "TRACK KINDS: %s >", off ? "SOME" : "ALL");
+        mrow(MA_WATCH, "WATCH: GONE AFTER %u MIN", cfg.watch_min);
+        mrow(MA_MARKS, "MARKED: %d MINE %d WATCH", mine, watching);
+        mrow(MA_LOG, "TAG LOG TO CARD: %s", bhw_log_on() ? "ON" : "OFF");
+        mrow(MA_CLEAR, "CLEAR THE TAG LIST");
+        break;
+    }
+    case MT_KINDS:
+        mrow(MA_BACK, "< BACK");
+        for (int i = 0; i < ROWS(KINDS); i++)
+            mrow(MA_KIND0 + i, "%s: %s", KINDS[i].name, cfg.kind_off & bw_kind_bit(KINDS[i].cls) ? "LIST ONLY" : "ALERT");
+        break;
+    case MT_HUNT:
+        mrow(MA_BACK, "< BACK");
+        mrow(MA_FREQ, "HUNT A FREQUENCY...");
+        mrow(MA_DMODE, "DIRECTION: %s", cfg.dmode == BH_DM_BODY ? "BODY SHIELD" : "PEAK");
+        mrow(MA_RANGE, "METER RANGE: %s", cfg.autorange ? "AUTO" : "FIXED");
+        mrow(MA_TONE, "HUNT SOUND: %s", TONE_NAMES[cfg.tone]);
+        mrow(MA_CAL, "CAL: TAG IS 1 M AWAY NOW");
+        break;
+    case MT_RX:
+        mrow(MA_BACK, "< BACK");
+        mrow(MA_RX, "RECEIVER: %s", RX_NAMES[cfg.rx]);
+        mrow(MA_SDRDIR, "DIRECTIONAL ON: %s", cfg.sdr_dir ? "SDR" : "LORA");
+        mrow(MA_FOUND, "LORA %.10s  SDR %.10s", radio >= 0 ? radio_name : "NONE", sdr >= 0 ? sdr_name : "NONE");
+        break;
+    default:
+        mrow(MA_GO_SWEEP, "SWEEP >");
+        mrow(MA_GO_TAGS, "TAGS AND ALERTS >");
+        mrow(MA_GO_HUNT, "HUNT >");
+        mrow(MA_GO_RX, "RECEIVERS >");
+        mrow(MA_HELP, "HOW IT WORKS");
+        break;
+    }
+    const char *l[MROWS];
+    for (int i = 0; i < mrows; i++) l[i] = mlabel[i];
+    dlg = lap_choose(l, mrows);
     dlg_kind = 1;
 }
+static void more(void) { menu_open(MT_TOP); }
+
+/* HUNT FREQ: a frequency from the list, or typed */
+static const struct { uint32_t khz; const char *name; } PRESETS[] = {
+    { 433920, "REMOTES, SENSORS" }, { 315000, "US CAR REMOTES" }, { 868300, "EU ISM" }, { 915000, "US ISM" }, { 446000, "PMR WALKIES" },
+};
+static char plabel[ROWS(PRESETS) + 2][32];
+static uint32_t last_khz;
+static void freq_pick(void)
+{
+    if (dlg) return;
+    const char *l[ROWS(PRESETS) + 2];
+    int n = 0;
+    snprintf(plabel[n], 32, "TYPE A FREQUENCY (MHZ)"); l[n] = plabel[n]; n++;
+    for (int i = 0; i < ROWS(PRESETS); i++) {
+        char m[16];
+        mhz(PRESETS[i].khz, m, sizeof(m));
+        snprintf(plabel[n], 32, "%s  %s", m, PRESETS[i].name);
+        l[n] = plabel[n]; n++;
+    }
+    if (last_khz) {
+        char m[16];
+        mhz(last_khz, m, sizeof(m));
+        snprintf(plabel[n], 32, "%s  LAST TYPED", m);
+        l[n] = plabel[n]; n++;
+    }
+    dlg = lap_choose(l, n);
+    dlg_kind = 4;
+}
+static bool tunable(uint64_t hz)
+{
+    if (sdr_tunes(hz)) return true;
+    if (radio < 0) return false;
+    lap_radio_info_t r[LAP_RADIOS_MAX];
+    const int n = lap_radio_list(r, LAP_RADIOS_MAX);
+    return radio < n && (!r[radio].max_hz || (hz >= r[radio].min_hz && hz <= r[radio].max_hz));
+}
+/* "433.92", "433,92" or "915" (MHz) to kHz; false when it is not a number */
+static bool parse_mhz(const char *t, uint32_t *khz)
+{
+    while (*t == ' ') t++;
+    uint32_t whole = 0, frac = 0, scale = 1000;
+    int digits = 0;
+    for (; *t >= '0' && *t <= '9'; t++, digits++) { whole = whole * 10u + (uint32_t)(*t - '0'); if (whole > 100000u) return false; }
+    if (*t == '.' || *t == ',') {
+        t++;
+        for (; *t >= '0' && *t <= '9'; t++, digits++) if (scale > 1) { scale /= 10u; frac += (uint32_t)(*t - '0') * scale; }
+    }
+    while (*t == ' ') t++;
+    if ((*t == 'M' || *t == 'm') && (t[1] == 'H' || t[1] == 'h') && (t[2] == 'Z' || t[2] == 'z')) t += 3;
+    while (*t == ' ') t++;
+    if (!digits || *t) return false;
+    *khz = whole * 1000u + frac;
+    return true;
+}
+static void freq_go(uint32_t khz, const char *what)
+{
+    char m[16];
+    mhz(khz, m, sizeof(m));
+    if (!tunable((uint64_t)khz * 1000u)) { say("No receiver here tunes %s MHz", m); return; }
+    hunt_freq(khz, what);
+}
+
 static void dialogs(void)
 {
     if (dlg <= 0) { dlg = 0; return; }
-    char none[4];
+    char text[24] = "";
     int v = -1;
-    const int r = lap_dialog_poll(dlg, none, sizeof(none), &v);
+    const int r = lap_dialog_poll(dlg, text, sizeof(text), &v);
     if (!r) return;
     const int kind = dlg_kind;
     dlg = 0;
-    if (r != 1) return;
+    if (r != 1) {
+        if (kind == 1 && mlevel != MT_TOP) menu_open(mlevel == MT_KINDS ? MT_TAGS : MT_TOP);   /* cancel goes up a level */
+        return;
+    }
     if (kind == 2) {                        /* the link-drop question */
         cfg.hop = v == 1;
         cfg_save();
@@ -1589,42 +2184,94 @@ static void dialogs(void)
         say(cfg.hop ? "Wi-Fi hops 1-13 (link dropped)" : "Wi-Fi stays on the link's channel");
         return;
     }
-    if (kind == 3) return;                  /* help: nothing to do */
-    switch (v) {
-    case M_REGION:
+    if (kind == 3) { menu_open(MT_TOP); return; }   /* help read: back to OPTIONS */
+    if (kind == 4) {                        /* HUNT FREQ: the list */
+        if (v == 0) { dlg = lap_text_input("Frequency in MHz, e.g. 433.92", "", 12, 0); dlg_kind = 5; return; }
+        if (v >= 1 && v <= ROWS(PRESETS)) freq_go(PRESETS[v - 1].khz, PRESETS[v - 1].name);
+        else if (v == ROWS(PRESETS) + 1 && last_khz) freq_go(last_khz, "LAST TYPED");
+        return;
+    }
+    if (kind == 5) {                        /* HUNT FREQ: typed */
+        uint32_t k = 0;
+        if (!parse_mhz(text, &k) || k < 1000u || k > 6000000u) { say("Not a frequency: \"%s\" (MHz, e.g. 433.92)", text); return; }
+        last_khz = k;
+        freq_go(last_khz, "TYPED");
+        return;
+    }
+    if (v < 0 || v >= mrows) return;
+    const int a = mact[v];
+    int stay = mlevel;                      /* re-open the same level, showing the change */
+    switch (a) {
+    case MA_BACK: stay = mlevel == MT_KINDS ? MT_TAGS : MT_TOP; break;
+    case MA_GO_SWEEP: stay = MT_SWEEP; break;
+    case MA_GO_TAGS: stay = MT_TAGS; break;
+    case MA_GO_KINDS: stay = MT_KINDS; break;
+    case MA_GO_HUNT: stay = MT_HUNT; break;
+    case MA_GO_RX: stay = MT_RX; break;
+    case MA_HELP:
+        dlg = lap_confirm("Sweeps tracker and bug bands, names Bluetooth tags and warns when one follows you or one of yours is left behind. "
+                          "HUNT finds one: meter, dial, ticks. Receive only.");
+        dlg_kind = 3;
+        return;
+    case MA_REGION:
         cfg.region = (uint8_t)(cfg.region % 3 + 1);
         if (state == ST_IDLE) bh_init(h, BH_ROOM, cfg.region, has24, 240000, now_ms);
-        say("Region %s: next sweep", REGION_NAMES[cfg.region]);
         break;
-    case M_ROOM: cfg.room_i = (uint8_t)((cfg.room_i + 1) % 3); say("Room sweep %u min", ROOM_MIN[cfg.room_i]); break;
-    case M_CAR: cfg.car_i = (uint8_t)((cfg.car_i + 1) % 3); say("Car sweep %u min", CAR_MIN[cfg.car_i]); break;
-    case M_HOP:
+    case MA_ROOM: cfg.room_i = (uint8_t)((cfg.room_i + 1) % 3); break;
+    case MA_CAR: cfg.car_i = (uint8_t)((cfg.car_i + 1) % 3); break;
+    case MA_HOP:
         if (cfg.hop) { cfg.hop = 0; cfg_save(); sources_stop(); sources_start(); say("Wi-Fi stays on the link's channel"); }
-        else { dlg = lap_confirm("Hopping Wi-Fi channels drops the board's Wi-Fi link (LINK, remote screens, network apps) while BUGHUNT runs. Allow it?"); dlg_kind = 2; }
+        else {
+            dlg = lap_confirm("Hopping Wi-Fi channels drops the board's Wi-Fi link (LINK, remote screens, network apps) while BUGHUNT runs. Allow it?");
+            dlg_kind = 2;
+            return;
+        }
         break;
-    case M_SOUND: cfg.sound = !cfg.sound; if (!cfg.sound) lap_tone_stop(); break;
-    case M_TONE:
-        cfg.tone = (uint8_t)((cfg.tone + 1) % 3);
-        lap_tone_stop();
-        say("HUNT sound: %s", cfg.tone == TONE_AUTO ? "tone on a tag, ticks on a frequency" : cfg.tone == TONE_TICKS ? "ticks" : "a rising tone");
-        break;
-    case M_FOLLOW: {
+    case MA_SOUND: cfg.sound = !cfg.sound; if (!cfg.sound) lap_tone_stop(); break;
+    case MA_FOLLOW: {
         uint32_t fm = 0;
         bool pos = false, lg = false;
         bhw_get_config(&fm, &pos, &lg);
         if (fm >= 60u * 60000u) bhw_follow_step(-7); else bhw_follow_step(1);   /* up, then round to 2 min */
         break;
     }
-    case M_POSSIBLE: bhw_possible_toggle(); break;
-    case M_LOG: bhw_log_toggle(); break;
-    case M_CLEAR: bhw_clear(); alert_uid = 0; break;
-    case M_HELP:
-        dlg = lap_confirm("Sweeps tracker uplink and ISM bands, names Bluetooth tags and warns when one follows you, watches Wi-Fi for cameras. HUNT finds one. Receive only.");
-        dlg_kind = 3;
+    case MA_POSSIBLE: bhw_possible_toggle(); break;
+    case MA_WATCH: {
+        int i = 0;
+        while (i < ROWS(WATCH_MIN) && WATCH_MIN[i] != cfg.watch_min) i++;
+        cfg.watch_min = WATCH_MIN[(i + 1) % ROWS(WATCH_MIN)];
+        bhw_tracking(cfg.kind_off, (uint32_t)cfg.watch_min * 60000u);
+        break;
+    }
+    case MA_MARKS: say("Mark a tag on TAGS: MARK (or K) steps NONE, MINE, WATCH"); break;
+    case MA_LOG: bhw_log_toggle(); break;
+    case MA_CLEAR: bhw_clear(); alert_uid = 0; break;
+    case MA_TONE:
+        cfg.tone = (uint8_t)((cfg.tone + 1) % 3);
+        lap_tone_stop();
+        say("HUNT sound: %s", cfg.tone == TONE_AUTO ? "tone on a tag, ticks on a frequency" : cfg.tone == TONE_TICKS ? "ticks" : "a rising tone");
+        break;
+    case MA_DMODE: cfg.dmode = cfg.dmode == BH_DM_BODY ? BH_DM_PEAK : BH_DM_BODY; break;
+    case MA_RANGE: cfg.autorange = !cfg.autorange; if (hunting) range_reset(); break;
+    case MA_CAL: hunt_cal(); break;
+    case MA_FREQ: freq_pick(); cfg_save(); return;
+    case MA_RX:
+        cfg.rx = (uint8_t)((cfg.rx + 1) % 3);
+        if (cfg.rx != RX_LORA && sdr < 0) say("No SDR on USB yet: plug in an RTL-SDR or HackRF");
+        if (hunting && tgt.target == BH_T_FREQ) hunt_begin(&tgt, hunt_from);
+        break;
+    case MA_SDRDIR: cfg.sdr_dir = !cfg.sdr_dir; break;
+    case MA_FOUND: find_radio(); find_sdr(); break;
+    default:
+        if (a >= MA_KIND0 && a < MA_KIND0 + ROWS(KINDS)) {
+            cfg.kind_off ^= bw_kind_bit(KINDS[a - MA_KIND0].cls);
+            bhw_tracking(cfg.kind_off, (uint32_t)cfg.watch_min * 60000u);
+        }
         break;
     }
     cfg_save();
     cfg_sync();
+    menu_open(stay);
 }
 
 /* ---- callbacks ---- */
@@ -1637,8 +2284,14 @@ static void enter(void)
     h = (bh_t *)calloc(1, sizeof(bh_t));
     buf = (uint8_t *)malloc(BUF_CAP);
     watch_ok = bhw_open();
+    bhl_open();                              /* device names off the card, when the file is there */
     bhw_config((uint32_t)cfg.follow_min * 60000u, cfg.possible != 0, cfg.log != 0);
     find_radio();
+    find_sdr();
+    bhw_tracking(cfg.kind_off, (uint32_t)cfg.watch_min * 60000u);
+    sdr_h = 0;
+    cal_ref = 0; cal_uid = 0;
+    mlevel = MT_TOP;
     state = ST_IDLE;
     tab = TAB_SWEEP;
     hunting = false;
@@ -1647,7 +2300,7 @@ static void enter(void)
     rf_h = ble_cap = ble_scan = wifi_h = 0;
     nf = sel = 0;
     dlg = 0;
-    bh_dir_reset(&dir);
+    bh_dir2_reset(&dir2);
     if (h) bh_init(h, BH_ROOM, cfg.region, has24, 240000, lap_millis());
     sources_start();                         /* BT and Wi-Fi run from the start: the tag watch listens from now */
 }
@@ -1655,11 +2308,13 @@ static void leave(void)
 {
     if (cfg_dirty && cfg_job < 0) lap_save("cfg", &cfg, sizeof(cfg));     /* a change made just before closing */
     rf_stop();
+    sdr_stop();
     sources_stop();
     lap_tone_stop();
     if (dlg > 0) lap_dialog_cancel(dlg);
     dlg = 0;
     bhw_close();
+    bhl_close();
     free(h); free(buf);
     h = NULL; buf = NULL;
 }
@@ -1678,6 +2333,21 @@ static void following_alert(int i)
     alert_at = lap_millis();
     say("%s", alert_text);
 }
+/* A WATCH tag went quiet (left behind, or taken) or came back. */
+static void watch_event(int i, int ev)
+{
+    const bw_t *t = bhw_table();
+    if (!t || i < 0 || i >= t->n) return;
+    char label[32];
+    bhw_label(&t->dev[i], label, sizeof(label));
+    if (ev == BW_EV_GONE) {
+        snprintf(alert_text, sizeof(alert_text), "%s not heard for %u min: left behind?", label, cfg.watch_min);
+        lap_alert("Tag left behind", alert_text, LAP_ALERT_WARN);
+        lap_haptic(LAP_HAPTIC_ALERT);
+        alert_uid = t->dev[i].uid;
+        alert_at = lap_millis();
+    } else say("%s is back in range", label);
+}
 static bool alert_live(void) { return alert_uid && lap_millis() - alert_at < ALERT_SHOW_MS && bhw_dev(alert_uid); }
 
 static void draw(void)
@@ -1685,8 +2355,18 @@ static void draw(void)
     now_ms = lap_millis();
     if (!h || !buf || !watch_ok) { lap_clear(LAP_ATTR(LAP_WHITE, LAP_BLACK)); lap_put_str(1, 1, "out of memory", LAP_ATTR(LAP_RED | LAP_BRIGHT, LAP_BLACK)); return; }
     if (radio < 0 && !(lap_frame() % 25)) find_radio();
+    if (!hunting && !(lap_frame() % 50)) find_sdr();      /* an SDR plugged in while the app is open */
     dialogs();
     cfg_pump();
+    bhl_pump();
+    if (h && !(lap_frame() % 8)) {
+        /* Wi-Fi stations: their makers from the name file; a camera maker counts as one */
+        for (int i = 0; i < h->nsta; i++) {
+            if (h->sta[i].maker[0]) continue;
+            const char *mk = bhl_maker(h->sta[i].mac);
+            if (mk) bh_sta_maker(h, i, mk, bhid_camera_maker(mk));
+        }
+    }
     if (state == ST_SWEEP) {
         rf_poll_sweep();
         if (now_ms - rate_ms >= 2000u) {
@@ -1700,6 +2380,9 @@ static void draw(void)
     {
         const int a = bhw_poll();           /* the tag watch: rotations, the following alert, the log */
         if (a >= 0) following_alert(a);
+        int ev = 0;
+        const int wi = bhw_watch_poll(&ev);
+        if (wi >= 0) watch_event(wi, ev);
         char t[96];
         if (bhw_note(t, sizeof(t))) say("%s", t);
     }
@@ -1786,7 +2469,20 @@ static void act(char c)
     case 't': cfg.sound = !cfg.sound; if (!cfg.sound) lap_tone_stop(); cfg_save(); break;
     case 'h': if (tab == TAB_TAGS) hunt_tag(bhw_pick()); else hunt_start(sel); break;
     case 'n': if (nf) { sel = (sel + 1) % nf; sel_moved = true; } break;
-    case 'd': bh_dir_reset(&dir); lv_peak = BH_NONE; break;
+    case 'd': bh_dir2_reset(&dir2); lv.peak = BH_HNONE; say("dial cleared: turn round again"); break;
+    case 'b': cfg.dmode = cfg.dmode == BH_DM_BODY ? BH_DM_PEAK : BH_DM_BODY; cfg_save();
+              say(cfg.dmode == BH_DM_BODY ? "BODY: board on your chest, the quiet way is your back to it" : "PEAK: the loud way is toward it"); break;
+    case 'e':
+        cfg.rx = (uint8_t)((cfg.rx + 1) % 3);
+        cfg_save();
+        if (cfg.rx != RX_LORA && sdr < 0) say("No SDR on USB yet: plug in an RTL-SDR or HackRF");
+        else say("Receiver: %s", cfg.rx == RX_DUAL ? "DUAL, directional against reference" : cfg.rx == RX_SDR ? "the SDR" : "the LoRa radio");
+        break;
+    case 'q': freq_pick(); break;
+    case 'k':
+        if (tab == TAB_TAGS) { if (bhw_pick()) bhw_mark_cycle(bhw_pick()); }
+        else hunt_cal();
+        break;
     case 'x': hunt_stop(); break;
     case 'm': more(); break;
     case 'v': bhw_view_set(bhw_view() + 1); break;
@@ -1864,6 +2560,10 @@ static bool touch(int col, int row)
                 return true;
             }
     }
+    if (tab == TAB_HUNT && hunting && dial_x0 >= 0 && col >= dial_x0 && col < dial_x1 && row >= dial_y0 && row < dial_y1) {
+        act('d');                                       /* the dial: turn round again from here */
+        return true;
+    }
     if (tab == TAB_SWEEP && state == ST_IDLE && row >= py && row < py + 9) {
         act(col < px + pw / 2 ? 'r' : 'c');              /* the room or the car picture */
         return true;
@@ -1871,7 +2571,13 @@ static bool touch(int col, int row)
     return true;
 }
 
-LAP_APP(.id = "bughunt", .name = "BUGHUNT", .sub = "trackers, tags and bugs", .version = "1.1",
+LAP_ICON_PX(".........99.........", "......99999999......", "....99....9...99....", "...99....22....99...",
+            "...9....2f2f....9...", "..9..888.22..88..9..", "..9.....aa2a8....9..", "..9..88aaa2aa88..9..",
+            ".99..88aaa2aa88..99.", ".99...aaaa2aaa...999", "..9..8aaaa2aaa8..9..", "..9..88aaa2aa88..9..",
+            "..9....aaa2aa....9..", "...9.888aa2a.88.9...", "...99....a2....99...", "....99........99....",
+            "......99999999......", ".........99.........");
+
+LAP_APP(.id = "bughunt", .name = "BUGHUNT", .sub = "trackers, tags and bugs", .version = "1.2",
         .author = "LakeShark", .color = LAP_GREEN,
         .icon_art = { " .-'''-.  ", "/  \\ /  \\ ", "| -(@)- | ", "\\  / \\  / ", " '-...-'\\ ", "         \\" },
         .flags = LAP_CAP_RADIO_RX,

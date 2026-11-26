@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 #include "../../ls_braille.h"
 #include "../../ls_glyph.h"
 #include "../../ls_options.h"
@@ -205,8 +206,14 @@ static void str(tui_surface *sf, tui_rect clip, int x, int y, int w, const char 
 static void panel(tui_surface *sf, tui_rect r, const char *chip, uint8_t chip_hue, const char *note, uint8_t note_at)
 {
     if (r.w < 8 || r.h < 2) return;
+    if (ls_tui_compact()) {
+        /* A desk window: an etched group box, the chip is its caption. */
+        ls_dui_group(sf, r, NULL);
+        if (chip) str(sf, r, r.x + 1, r.y, r.w - 4, chip, ls_ink(LS_INK_TEXT, VALUE));
+    } else {
     tui_box(sf, r, NULL, CHROME);
     if (chip) str(sf, r, r.x + 2, r.y, r.w - 4, chip, TUI_ATTR(TUI_BLACK, chip_hue));
+    }
     if (note && *note) {
         char t[64];
         snprintf(t, sizeof(t), " %s ", note);
@@ -304,7 +311,10 @@ static void header(tui_surface *sf, tui_rect r, int64_t now_us)
         snprintf(where, sizeof(where), "%s", ls_rsel_name(radio()));
         snprintf(state, sizeof(state), "%s", s_why[0] ? s_why : "paused");
     }
-    panel(sf, r, " READINGS ", TUI_YELLOW | TUI_BRIGHT, where, NOTE);
+    /* On the desk the frequency is a VFD (below); the caption names the radio. */
+    const char *mhz_end = strstr(where, "MHz ");
+    const bool vfd = ls_tui_compact() && mhz_end && r.h >= 4 && r.w >= 70;
+    panel(sf, r, " READINGS ", TUI_YELLOW | TUI_BRIGHT, vfd ? mhz_end + 4 : where, NOTE);
     if (r.h < 3) return;
     /* The LoRa chip's start can fail after it was asked (an SX1262 has no
        OOK or FSK receiver for ERT): then it is not listening, whatever was asked. */
@@ -317,6 +327,14 @@ static void header(tui_surface *sf, tui_rect r, int64_t now_us)
              s_n == 1 ? "" : "s", (unsigned long)readings, readings == 1 ? "" : "s");
     str(sf, r, r.x + 6, r.y + 1, r.w - 8, line, on ? VALUE : NOTE);
     if (r.h >= 4) str(sf, r, r.x + 6, r.y + 2, r.w - 8, state, NOTE);
+    if (vfd) {
+        /* A desk window: where it listens is a readout, not a caption note. */
+        char mhz[16];
+        snprintf(mhz, sizeof(mhz), "%.12s", where);
+        char *sp = strchr(mhz, ' ');
+        if (sp) snprintf(sp, sizeof(mhz) - (size_t)(sp - mhz), " MHz");
+        ls_dui_vfd(sf, tui_rect_make(r.x + r.w - 16, r.y + 1, 14, 2), mhz, LS_DUI_VFD_CYAN | LS_DUI_VFD_SMALL);
+    }
 }
 
 /* The selected meter at size: register, facts, use. */
@@ -335,7 +353,11 @@ static void detail(tui_surface *sf, tui_rect r, const lsm_meter_t *m, int64_t no
     else snprintf(d, sizeof(d), "%07lld", (long long)m->value);
     const int len = (int)strlen(d), gw = len * 4 - 1;
     const bool fresh = now_us < s_lamp_until && m->last_s == s_last_heard;
-    if (gw + 4 <= in.w && in.h >= 14) {
+    if (ls_tui_compact() && in.w >= 40 && in.h >= 14) {
+        /* A desk window: the register is a VFD, its figures lit amber. */
+        ls_dui_vfd(sf, tui_rect_make(in.x + (in.w - 40) / 2, y, 40, 7), d, LS_DUI_VFD_AMBER);
+        y += 8;
+    } else if (gw + 4 <= in.w && in.h >= 14) {
         const int gx = in.x + (in.w - gw) / 2, fx = gx - 2, fw = gw + 4;
         tui_put_char(sf, in, fx, y, '.', CHROME);
         tui_hline(sf, in, fx + 1, y, fw - 2, '-', CHROME);
@@ -379,12 +401,15 @@ static void detail(tui_surface *sf, tui_rect r, const lsm_meter_t *m, int64_t no
         str(sf, in, in.x + 1, y++, in.w - 2, t, NOTE);
     }
     /* Use over the history: a scale line, the bars, the time axis. */
-    int rows = in.y + in.h - y - 3;
+    const bool desk = ls_tui_compact();
+    int rows = in.y + in.h - y - 3 - (desk ? 2 : 0);
     if (rows > 8) rows = 8;
     if (rows >= 2) {
         y++;
         int64_t span = 0;
-        usage_bars(sf, in, in.x + 1, y + 1, in.w - 2, rows, m, hue, &span);
+        tui_rect bars = tui_rect_make(in.x + 1, y + 1, in.w - 2, rows);
+        if (desk) bars = ls_dui_glass(sf, tui_rect_make(in.x, y + 1, in.w, rows + 2));
+        usage_bars(sf, in, bars.x, bars.y, bars.w, rows, m, hue, &span);
         if (span) {
             float top = 0;
             const int buckets = (in.w - 2) * 2 < 256 ? (in.w - 2) * 2 : 256;
@@ -395,7 +420,7 @@ static void detail(tui_surface *sf, tui_rect r, const lsm_meter_t *m, int64_t no
             str(sf, in, in.x + 1, y, 16, t, INK(hue));
             snprintf(t, sizeof(t), "peak %.0f", (double)top);
             str(sf, in, in.x + in.w - 1 - (int)strlen(t), y, (int)strlen(t), t, NOTE);
-            y += rows + 1;
+            y += rows + 1 + (desk ? 2 : 0);
             char left[16];
             fmt_ago(left, sizeof(left), span * (int64_t)buckets);
             snprintf(t, sizeof(t), "%s ago", left);
@@ -415,7 +440,9 @@ static void list(tui_surface *sf, tui_rect r, const lsm_meter_t *sel, int64_t no
 {
     s_list = r;
     memset(s_row_slot, -1, sizeof(s_row_slot));
-    panel(sf, r, " HEARD ", TUI_CYAN, s_show ? "pinned" : NULL, NOTE);
+    const bool desk = ls_tui_compact();
+    if (desk) ls_dui_well(sf, r, s_show ? " Heard (pinned) " : " Heard ");
+    else panel(sf, r, " HEARD ", TUI_CYAN, s_show ? "pinned" : NULL, NOTE);
     tui_rect in = tui_rect_make(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
     const int per = 2, fit = in.h / per;
     int first = 0;
@@ -426,17 +453,24 @@ static void list(tui_surface *sf, tui_rect r, const lsm_meter_t *sel, int64_t no
         const int y = in.y + k * per;
         const uint8_t hue = proto_hue(m->proto);
         const bool fresh = now_us < s_lamp_until && m->last_s == s_last_heard;
-        if (m == sel) ls_fill_dither(sf, tui_rect_make(in.x, y, in.w, per), LS_DITHER_LIGHT, hue);
+        /* On the desk the selected meter's first row is a selection bar,
+           its words in the bar's colours. */
+#if LS_TUI_HAS_COMPACT
+        const uint8_t band = m == sel && desk ? ls_dui_line(sf, tui_rect_make(in.x, y, in.w, 1), true, true) : 0;
+#else
+        const uint8_t band = 0;     /* no desk in this build */
+#endif
+        if (m == sel && !desk) ls_fill_dither(sf, tui_rect_make(in.x, y, in.w, per), LS_DITHER_LIGHT, hue);
         for (int j = 0; j < per; j++) if (y - r.y + j < (int)sizeof(s_row_slot)) s_row_slot[y - r.y + j] = (int8_t)s_order[first + k];
         /* row one: marker, name, protocol, ID, age */
-        tui_put_char(sf, in, in.x, y, m == sel ? '>' : ' ', INK(hue | TUI_BRIGHT));
-        tui_put_char(sf, in, in.x + 1, y, m->pinned ? '*' : ' ', WHEEL);
-        str(sf, in, in.x + 3, y, 12, title_of(m), m->name[0] ? VALUE : NOTE);
-        str(sf, in, in.x + 16, y, 9, lr433_proto_label(m->proto), INK(hue | (fresh ? TUI_BRIGHT : 0)));
-        str(sf, in, in.x + 26, y, in.w - 32, m->id, VALUE);
+        tui_put_char(sf, in, in.x, y, m == sel ? '>' : ' ', band ? band : INK(hue | TUI_BRIGHT));
+        tui_put_char(sf, in, in.x + 1, y, m->pinned ? '*' : ' ', band ? band : WHEEL);
+        str(sf, in, in.x + 3, y, 12, title_of(m), band ? band : m->name[0] ? VALUE : NOTE);
+        str(sf, in, in.x + 16, y, 9, lr433_proto_label(m->proto), band ? band : INK(hue | (fresh ? TUI_BRIGHT : 0)));
+        str(sf, in, in.x + 26, y, in.w - 32, m->id, band ? band : VALUE);
         char ago[12];
         fmt_ago(ago, sizeof(ago), m->last_s ? now_s - m->last_s : -1);
-        str(sf, in, in.x + in.w - 5, y, 5, ago, fresh ? WHEEL : NOTE);
+        str(sf, in, in.x + in.w - 5, y, 5, ago, band ? band : fresh ? WHEEL : NOTE);
         /* row two: the counter, a short use strip, the rate */
         const int cw = counter(sf, in, in.x + 3, y + 1, m->value, m->value > 9999999 ? 10 : 7, fresh);
         char rate[16];

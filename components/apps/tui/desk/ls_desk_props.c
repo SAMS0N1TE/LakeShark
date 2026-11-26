@@ -336,6 +336,8 @@ static const dk_sh_ctl_t SET_CTL[] = {
     {.kind = SH_SPIN, .label = "Dim a&fter", .get = dimt_get, .set = dimt_set, .text = dimt_text, .min = 0, .max = COUNT(DIM_STEPS) - 1, .step = 1},
     {.kind = SH_CHECK, .label = "Da&ylight colours, for sun on the panel", .get = day_get, .set = day_set},
     {.kind = SH_GROUP, .label = "This screen"},
+    /* the desk's resolution (shell presets); the page scales it to its window */
+    {.kind = SH_DROP, .label = "Screen &area", .get = dk_res_row, .set = dk_res_pick, .count = dk_res_rows, .text = dk_res_row_text},
     {.kind = SH_TEXT, .label = "Desktop", .show = grid_show},
     {.kind = SH_TEXT, .label = "Characters", .show = cell_show},
     {.kind = SH_TEXT, .label = "Pixels", .show = pixels_show},

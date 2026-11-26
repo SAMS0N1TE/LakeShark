@@ -4,11 +4,13 @@
    bytes do. State is in PSRAM; the backend is ls_store.c. */
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 #include "../../ls_drag_scroll.h"
 #include "../../ls_text.h"
 #include "../../ls_app.h"
 #include "../../ls_store.h"
 #include "../../ls_lap.h"
+#include "../../ls_icons.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -323,6 +325,23 @@ static void draw_list(tui_surface *sf, tui_rect r, const ls_store_status_t *st)
     }
 }
 
+/* The app's tile picture: its colour icon when the catalog carries one, else its character art. */
+static void draw_art(tui_surface *sf, tui_rect in, const ls_store_app_t *a)
+{
+    const uint8_t hue = a->color & 7 ? a->color : TUI_CYAN;
+    if (a->px[0][0]) {
+        static EXT_RAM_BSS_ATTR uint8_t px[LS_ICON_ROWS * 3][LS_ICON_COLS * 2];
+        for (int y = 0; y < LS_ICON_ROWS * 3; y++)
+            for (int x = 0; x < LS_ICON_COLS * 2; x++) {
+                const char c = a->px[y][x];
+                px[y][x] = c >= '0' && c <= '9' ? (uint8_t)(c - '0') : c >= 'a' && c <= 'f' ? (uint8_t)(c - 'a' + 10) : 0xFF;
+            }
+        ls_icon_draw_px(sf, tui_rect_make(in.x, in.y, in.w, in.h < LS_ICON_ROWS ? in.h : LS_ICON_ROWS), in.x + 1, in.y, px, A(hue));
+        return;
+    }
+    for (int y = 0; y < 6 && y < in.h; y++) tui_put_str(sf, in, in.x + 1, in.y + y, a->art[y], A(hue));
+}
+
 static void draw_card(tui_surface *sf, tui_rect r, const ls_store_status_t *st)
 {
     int i;
@@ -335,26 +354,26 @@ static void draw_card(tui_surface *sf, tui_rect r, const ls_store_status_t *st)
     const tui_rect in = tui_rect_make(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
     int x0 = in.x;
     if (in.w >= 40) {      /* the app's own tile picture */
-        for (int y = 0; y < 6 && y < in.h; y++) tui_put_str(sf, in, in.x + 1, in.y + y, a->art[y], A(a->color & 7 ? a->color : TUI_CYAN));
+        draw_art(sf, in, a);
         x0 = in.x + 13;
     }
     const tui_rect kv = tui_rect_make(x0, in.y, in.x + in.w - x0, in.h);
     int y = 0;
     snprintf(t, sizeof(t), have[0] ? "%s  (have %s)" : "%s", a->ver, have);
-    ls_kv(sf, kv, y++, "VERSION", t, s == LS_ST_UPDATE ? ls_ink_hue(A(TUI_YELLOW | TUI_BRIGHT)) : A(TUI_WHITE | TUI_BRIGHT));
+    ls_kv_col(sf, kv, y++, "VERSION", t, s == LS_ST_UPDATE ? ls_ink_hue(A(TUI_YELLOW | TUI_BRIGHT)) : A(TUI_WHITE | TUI_BRIGHT), 10);
     snprintf(t, sizeof(t), "%lu KB  %s", (unsigned long)((a->size + 1023) / 1024), a->cat);
-    ls_kv(sf, kv, y++, "SIZE", t, A(TUI_WHITE));
+    ls_kv_col(sf, kv, y++, "SIZE", t, A(TUI_WHITE), 10);
     if (a->src && a->publisher[0]) snprintf(t, sizeof(t), "%s (community)", a->publisher);
     else snprintf(t, sizeof(t), "%s", a->author[0] ? a->author : "LakeShark");
-    ls_kv(sf, kv, y++, "BY", t, a->src ? A(TUI_MAGENTA | TUI_BRIGHT) : A(TUI_CYAN));
+    ls_kv_col(sf, kv, y++, "BY", t, a->src ? A(TUI_MAGENTA | TUI_BRIGHT) : A(TUI_CYAN), 10);
     uint8_t cb = a->caps;
     const ls_lap_info_t *l = cb == 0xFF ? ls_lap_by_id(a->id) : NULL;
     if (l && l->installed) cb = l->manifest.flags;     /* an older catalog: the copy on the card says */
     ls_store_caps_text(cb, caps, sizeof(caps));
-    ls_kv(sf, kv, y++, "USES", caps, cb != 0xFF && (cb & LAP_CAP_RADIO_TX) ? ls_ink_hue(A(TUI_RED | TUI_BRIGHT)) : A(TUI_GREEN));
+    ls_kv_col(sf, kv, y++, "USES", caps, cb != 0xFF && (cb & LAP_CAP_RADIO_TX) ? ls_ink_hue(A(TUI_RED | TUI_BRIGHT)) : A(TUI_GREEN), 10);
     snprintf(t, sizeof(t), "%s%s", a->minfw[0] ? a->minfw : "any", s == LS_ST_NEEDS_FW ? "  NEWER THAN THIS" : "");
-    ls_kv(sf, kv, y++, "FIRMWARE", t, s == LS_ST_NEEDS_FW ? ls_ink_hue(A(TUI_RED | TUI_BRIGHT)) : A(TUI_GREEN));
-    if (a->license[0]) ls_kv(sf, kv, y++, "LICENSE", a->license, LS_ATTR_DIM);
+    ls_kv_col(sf, kv, y++, "FIRMWARE", t, s == LS_ST_NEEDS_FW ? ls_ink_hue(A(TUI_RED | TUI_BRIGHT)) : A(TUI_GREEN), 10);
+    if (a->license[0]) ls_kv_col(sf, kv, y++, "LICENSE", a->license, LS_ATTR_DIM, 10);
     y = y < 6 && in.w >= 40 ? 6 : y;
     char (*lines)[72] = S.lines;
     const int ww = in.w - 2 < 71 ? in.w - 2 : 71;
@@ -391,6 +410,60 @@ static void focus_apply(const ls_store_status_t *st)
     S.focus[0] = 0;
 }
 
+/* The line under everything: what is going on, else what the store is. */
+static const char *message(const ls_store_status_t *st, uint8_t *at)
+{
+    const ls_store_app_t *a = picked(NULL);
+    if (a && S.rm_until > esp_timer_get_time() && !strcmp(S.rm_id, a->id)) {
+        *at = ls_ink_hue(A(TUI_YELLOW | TUI_BRIGHT));
+        return ls_tui_compact() ? "Click REMOVE again to delete. Saved data stays." : "Tap REMOVE again to delete. Saved data stays.";
+    }
+    if (st->msg[0]) { *at = ls_ink_hue(A(st->msg_bad ? TUI_YELLOW | TUI_BRIGHT : TUI_GREEN | TUI_BRIGHT)); return st->msg; }
+    if (!st->online) { *at = ls_ink_hue(A(TUI_YELLOW)); return "No Wi-Fi: connect in Settings, or use the desktop."; }
+    *at = A(TUI_CYAN);
+    return "Signed apps from terminalbay.com, checked before install.";
+}
+
+/* A desk window: the keys as the one toolbar, the shelves as tabs over a
+   page holding the list (a white well) and the picked app's card (a group
+   box); the line under it all goes to the window's status bar. */
+static void draw_desk(tui_surface *sf, tui_rect area, const ls_store_status_t *st, const ls_btn_t *btn, int nb)
+{
+    static const char *const LONG[C_N] = {"ALL", "UPDATES", "INSTALLED", "RADIO", "FIELD", "SYSTEM", "USER"};
+    static const char *const SHORT[C_N] = {"ALL", "UPD", "MINE", "RADIO", "FIELD", "SYS", "USER"};
+    tui_fill(sf, area, ' ', TUI_DEFAULT_ATTR);
+    ls_btn_bar_raised_row(sf, tui_rect_make(area.x, area.y, area.w, 1), btn, nb, -1);
+    char names[C_N][16];
+    const char *np[C_N];
+    int need = 0;
+    for (int c = 0; c < C_N; c++) need += (int)strlen(LONG[c]) + 4;
+    for (int c = 0; c < C_N; c++) {
+        const char *nm = need + 3 <= area.w ? LONG[c] : SHORT[c];
+        if (c == C_UPD && st->updates) snprintf(names[c], sizeof(names[c]), "%s %d", nm, st->updates);
+        else snprintf(names[c], sizeof(names[c]), "%s", nm);
+        np[c] = names[c];
+    }
+    int16_t tx[C_N], tw[C_N];
+    const tui_rect tabs = tui_rect_make(area.x, area.y + 1, area.w, area.h - 1);
+    tui_rect page = ls_dui_tabs(sf, tabs, np, C_N, S.cat, tx, tw);
+    S.tab_y = tabs.y;
+    for (int c = 0; c < C_N; c++) { S.tab_x[c] = tx[c] >= 0 ? tx[c] : -100; S.tab_w[c] = tw[c]; }
+    if (page.w < 20 || page.h < 6) return;
+    page = tui_rect_make(page.x + 1, page.y, page.w - 2, page.h);
+    if (page.h >= 30) {     /* tall: the shop front across the top */
+        const tui_rect g = ls_dui_group(sf, tui_rect_make(page.x, page.y, page.w, 9), "Catalog");
+        draw_head(sf, tui_rect_make(g.x + 1, g.y, g.w - 2, g.h), st);
+        page.y += 9;
+        page.h -= 9;
+    }
+    const int lw = page.w >= 90 ? page.w / 2 : page.w * 11 / 20;
+    const tui_rect list = ls_dui_well(sf, tui_rect_make(page.x, page.y, lw, page.h), NULL);
+    draw_list(sf, list, st);
+    draw_card(sf, tui_rect_make(page.x + lw + 1, page.y, page.w - lw - 1, page.h), st);
+    uint8_t at;
+    ls_tui_status_set(message(st, &at), NULL);
+}
+
 static void draw(tui_surface *sf, tui_rect area)
 {
     ls_store_status_t st;
@@ -400,6 +473,11 @@ static void draw(tui_surface *sf, tui_rect area)
     focus_apply(&st);
     ls_btn_t btn[4];
     const int nb = buttons(btn, st.updates);
+    if (ls_tui_compact()) {
+        draw_desk(sf, area, &st, btn, nb);
+        ls_store_unlock();
+        return;
+    }
     const int bar_h = ls_btn_raised_height(area, nb);
     const tui_rect bar = tui_rect_make(area.x, area.y + area.h - bar_h, area.w, bar_h);
     const tui_rect msg = tui_rect_make(area.x, bar.y - 1, area.w, 1);
@@ -428,15 +506,9 @@ static void draw(tui_surface *sf, tui_rect area)
     ls_store_unlock();
 
     tui_fill(sf, msg, ' ', LS_ATTR_DIM);
-    const ls_store_app_t *a = picked(NULL);
-    if (a && S.rm_until > esp_timer_get_time() && !strcmp(S.rm_id, a->id))
-        ls_safe_line(sf, msg, msg.y, "Tap REMOVE again to delete. Saved data stays.", ls_ink_hue(A(TUI_YELLOW | TUI_BRIGHT)));
-    else if (st.msg[0])
-        ls_safe_line(sf, msg, msg.y, st.msg, ls_ink_hue(A(st.msg_bad ? TUI_YELLOW | TUI_BRIGHT : TUI_GREEN | TUI_BRIGHT)));
-    else if (!st.online)
-        ls_safe_line(sf, msg, msg.y, "No Wi-Fi: connect in Settings, or use the desktop.", ls_ink_hue(A(TUI_YELLOW)));
-    else
-        ls_safe_line(sf, msg, msg.y, "Signed apps from terminalbay.com, checked before install.", A(TUI_CYAN));
+    uint8_t mat;
+    const char *m = message(&st, &mat);
+    ls_safe_line(sf, msg, msg.y, m, mat);
     ls_btn_bar_raised_row(sf, bar, btn, nb, -1);
 }
 

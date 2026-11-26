@@ -213,7 +213,7 @@ int subghz_tx_step_dbm(int step, bool cc1101)
 
 const char *subghz_tx_step_name(int step)
 {
-    static const char *const NAME[SUBGHZ_TX_STEPS_MAX] =
+    const char *const NAME[SUBGHZ_TX_STEPS_MAX] =
         {"BENCH", "ROOM", "NORMAL", LS_TX_UNLOCKED ? "+10" : "MAX", "+14", "+17", "FULL"};
     if (step < 0) step = 0;
     if (step >= SUBGHZ_TX_STEPS) step = SUBGHZ_TX_STEPS - 1;

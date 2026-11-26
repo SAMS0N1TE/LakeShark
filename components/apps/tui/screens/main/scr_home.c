@@ -44,7 +44,7 @@ static const char *const GROUPS[] = {"RADIO", "FIELD", "SYSTEM", "USER"};
    the end of RADIO, so a new app is never lost for want of a line here. */
 static const char *const LAYOUT[] = {
     "p25", "fm", "adsb", "freqs", "falls", "mesh", "subghz", "tmach", "digi", "labs", "radio", NULL,
-    "wardrive", "map", "gps", "compass", "notes", NULL,   /* SWEEP, DRONES, CELL WATCH: in WARDRIVE's folder */
+    "wardrive", "party", "map", "gps", "compass", "notes", NULL,   /* SWEEP, DRONES, CELL WATCH: in WARDRIVE's folder */
     "set", "link", "radios", "update", "store", "packs", "locker", "chat", "diag", "files", "music", "bootlog", NULL,
 };
 

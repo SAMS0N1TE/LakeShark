@@ -76,5 +76,11 @@ static void draw(void) {
 }
 static bool key(lap_key_t k,char ch) { if(k==LAP_KEY_CHAR&&ch=='r') { s.yaw=s.pitch=0; return true; } return false; }
 static void leave(void) { l3_destroy(s.scene); s.scene=NULL; }
+LAP_ICON_PX("....................", ".........f7.........", ".........f7.........", ".........c7.........",
+            ".......fff7ff.......", ".....fffff7ffff.....", "..ffffffff7fffffff..", ".........f7.........",
+            ".........f7.........", "....................", "....................", "22222222222222222222",
+            "......2222.2222.....", "...222..2...2..222..", "22222222222222222222", ".....2........2.....",
+            "....2..........2....", "22222222222222222222");
+
 LAP_APP(.id="@ID@",.name="@NAME@",.sub="@SUB@",.version="0.1",.author="@AUTHOR@",
         .color=LAP_BLUE,.enter=enter,.draw=draw,.key=key,.leave=leave);

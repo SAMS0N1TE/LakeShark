@@ -25,6 +25,7 @@
 #include "ls_app.h"
 #include "ls_icons.h"
 #include "ls_lap_ui.h"
+#include "ls_tui_ui.h"                 /* ls_tui_compact: in a desk window */
 #include "mbedtls/sha256.h"
 #include "sdkconfig.h"
 #include <errno.h>
@@ -612,8 +613,9 @@ void ls_lap_reserve_link_memory(bool early) {
     if (early) return;
     if (!s_rsv_stack) s_rsv_stack = reloc_stack();
     if (!s_rsv_tcb) s_rsv_tcb = heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    ESP_LOGI("lap", "app link memory %s (%u B stack)", s_rsv_stack && s_rsv_tcb ? "set aside" : "not set aside, found per load",
-             (unsigned)RELOC_STACK);
+    /* The address names the link task in a crash record (its SP). */
+    ESP_LOGI("lap", "app link memory %s (%u B stack at %p)", s_rsv_stack && s_rsv_tcb ? "set aside" : "not set aside, found per load",
+             (unsigned)RELOC_STACK, (void *)s_rsv_stack);
 }
 /* Failures are written to why (the app's or the module's status line). */
 static int relocate_internal(esp_elf_t *elf, const uint8_t *data, char *why, size_t cap) {
@@ -1104,6 +1106,8 @@ static void draw_paused(tui_surface *sf) {
     const char *who = s_radio_held;
     char line[96];
     LS_SNPRINTF(t_ls_lap_s_paused_until_this, line, sizeof(line), " %s PAUSED UNTIL THIS APP CLOSES ", who);
+    /* A desk window says it in its status bar, not over the app's top row. */
+    if (ls_tui_compact()) { ls_tui_status_set(line + 1, NULL); return; }
     const tui_rect r = tui_rect_make(lap_state.area.x, lap_state.area.y, lap_state.area.w - CLOSE_W - 1, 1);
     if (r.w < 8)
         return;
@@ -1120,7 +1124,7 @@ static void draw(tui_surface *sf, tui_rect area) {
         lap_state.app->draw();
         after();
         ls_lap_api_draw_end();
-        if (ls_tui_screen_is_bare() && !ls_lap_sys_immersive())
+        if (ls_tui_screen_is_bare() && !ls_lap_sys_immersive() && !ls_tui_compact())   /* a desk window: its title bar closes it */
             draw_close(sf);
         draw_paused(sf);
         if (ls_lap_api_exit_requested())
@@ -1176,7 +1180,7 @@ static bool touch(int col, int row) {
         /* Router supplies absolute cells. area from last draw owns the origin. */
         if (!tui_rect_contains(lap_state.area, col, row))
             return false;
-        if (ls_tui_screen_is_bare() && !ls_lap_sys_immersive() && tui_rect_contains(close_hit(), col, row)) {
+        if (ls_tui_screen_is_bare() && !ls_lap_sys_immersive() && !ls_tui_compact() && tui_rect_contains(close_hit(), col, row)) {
             ls_tui_screen_show(0);
             return true;
         }

@@ -12,6 +12,19 @@ const FILE_TTL = 14 * 86400;
 const CODE_TTL = 600;
 const MSG_MAX = 280;
 const KEEP_MSGS = 200;
+// Abuse and bill caps. Device ids are self-chosen, so every per-device limit has a global one
+// behind it: the global ones are what bound the bill.
+const CHAT_PER_HOUR = 600;        // accepted chat messages, all rooms together (env.CHAT_PER_HOUR)
+const POLL_HOLD_S = 10;           // ?wait= long polls are held by the Worker, never by the room
+const WS_MAX = 200;               // WebSockets per room
+const BODY_MAX = 4096;            // chat POST body
+const REPORTS_PER_HOUR = 60;      // all boards together
+const NTFY_PER_HOUR = 20;
+const PAIR_PER_HOUR = 200;        // /locker/pair, all boards together
+const PAIR_PER_LID = 20;          // per locker per hour
+const UP_GB_DAY = 5;              // locker upload bytes per day, all lockers (env.LOCKER_GB_PER_DAY)
+const UP_PER_LID_DAY = 100;
+const DL_PER_LID_DAY = 200;       // a locker is not a download site
 
 const enc = new TextEncoder();
 const hexOf = (u8) => [...u8].map((x) => x.toString(16).padStart(2, "0")).join("");
@@ -31,8 +44,30 @@ const CORS = {
   "access-control-allow-headers": "authorization,content-type,x-dev,x-secret,x-note,x-board,x-ver,x-lakeshark-token",
   "access-control-max-age": "86400",
 };
-const J = (o, s = 200) => new Response(JSON.stringify(o), { status: s, headers: { ...CORS, "content-type": "application/json", "cache-control": "no-store" } });
-const T = (t, s = 200) => new Response(t, { status: s, headers: { ...CORS, "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+const NS = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
+const J = (o, s = 200) => new Response(JSON.stringify(o), { status: s, headers: { ...CORS, ...NS, "content-type": "application/json" } });
+const T = (t, s = 200) => new Response(t, { status: s, headers: { ...CORS, ...NS, "content-type": "text/plain; charset=utf-8" } });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const envNum = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : d; };
+// A request body, never holding more than max bytes (null when longer).
+async function readCapped(req, max) {
+  const len = parseInt(req.headers.get("content-length") || "-1", 10);
+  if (len > max) return null;
+  if (!req.body) return new Uint8Array(0);
+  const rd = req.body.getReader(), parts = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await rd.read();
+    if (done) break;
+    n += value.byteLength;
+    if (n > max) { try { await rd.cancel(); } catch {} return null; }
+    parts.push(value);
+  }
+  const out = new Uint8Array(n);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.byteLength; }
+  return out;
+}
 const ERR = (s, m) => J({ error: m }, s);
 
 // ---- handles --------------------------------------------------------------------------------
@@ -86,8 +121,10 @@ export default {
 };
 
 const reg = (env) => env.REGISTRY.get(env.REGISTRY.idFromName("r"));
-async function rate(env, key, limit, win) {
-  const r = await reg(env).fetch("https://r/rl", { method: "POST", body: JSON.stringify({ key, limit, win }) });
+// cost: units this call uses (bytes for upload budgets). mem: count in the Registry's memory only
+// (no SQLite row written per call; the count restarts if the Registry is evicted).
+async function rate(env, key, limit, win, cost = 1, mem = false) {
+  const r = await reg(env).fetch("https://r/" + (mem ? "rlm" : "rl"), { method: "POST", body: JSON.stringify({ key, limit, win, cost }) });
   return (await r.json()).ok;
 }
 function isMod(req, env) {
@@ -104,7 +141,7 @@ async function report(req, env, ctx) {
   if (len < 0) return ERR(411, "length required");
   if (len > REPORT_MAX) return ERR(413, "over 512 KB");
   if (len < 2) return ERR(400, "empty");
-  if (!(await rate(env, "rep:" + dev, 5, 3600)) || !(await rate(env, "rep:*", 400, 3600))) return ERR(429, "too many reports, try later");
+  if (!(await rate(env, "rep:" + dev, 5, 3600)) || !(await rate(env, "rep:*", REPORTS_PER_HOUR, 3600))) return ERR(429, "too many reports, try later");
   const body = await req.arrayBuffer();
   if (body.byteLength > REPORT_MAX) return ERR(413, "over 512 KB");
   let board = (req.headers.get("x-board") || "").slice(0, 32), ver = (req.headers.get("x-ver") || "").slice(0, 32);
@@ -126,7 +163,7 @@ async function report(req, env, ctx) {
     httpMetadata: { contentType: req.headers.get("content-type") || "application/json" },
     customMetadata: { board, ver, note, dev: dh, ts: String(ts), size: String(body.byteLength) },
   });
-  if (env.NTFY_TOPIC) {
+  if (env.NTFY_TOPIC && (await rate(env, "ntfy:*", NTFY_PER_HOUR, 3600, 1, true))) {
     const line = `report ${id} ${board || "?"} ${ver || "?"} ${(body.byteLength / 1024).toFixed(0)}K${note ? " - " + note.slice(0, 60) : ""}`;
     ctx.waitUntil(fetch("https://ntfy.sh/" + encodeURIComponent(env.NTFY_TOPIC), {
       method: "POST", body: line, headers: { Title: "LakeShark report", Tags: "bug" },
@@ -150,7 +187,9 @@ async function reportsAdmin(req, env, p, u) {
   if (req.method === "DELETE") { await env.REPORTS.delete("r/" + id); return J({ ok: true }); }
   const o = await env.REPORTS.get("r/" + id);
   if (!o) return ERR(404, "no such report");
-  return new Response(o.body, { headers: { ...CORS, "content-type": o.httpMetadata?.contentType || "application/json", "cache-control": "no-store" } });
+  // The stored type came from the sender: never hand it back as anything a browser would render.
+  const ct = /json/i.test(o.httpMetadata?.contentType || "json") ? "application/json" : "text/plain; charset=utf-8";
+  return new Response(o.body, { headers: { ...CORS, ...NS, "content-type": ct, "content-disposition": "attachment" } });
 }
 
 // ---- locker ---------------------------------------------------------------------------------
@@ -164,7 +203,7 @@ function tokenOf(req) {
 }
 const lk = (env, lid) => env.LOCKER_DO.get(env.LOCKER_DO.idFromName(lid));
 async function lcall(env, lid, op, body) {
-  const r = await lk(env, lid).fetch("https://l/" + op, { method: "POST", body: JSON.stringify(body || {}) });
+  const r = await lk(env, lid).fetch("https://l/" + op, { method: "POST", body: JSON.stringify({ ...(body || {}), lid }) });
   return { s: r.status, j: await r.json() };
 }
 
@@ -174,6 +213,9 @@ async function locker(req, env, p, u) {
   if (sub === "/pair" && req.method === "POST") {
     const a = tokenOf(req);
     if (!a) return ERR(401, "device id and secret required");
+    // Anyone can mint a device id, so new lockers are capped for everyone together.
+    if (!(await rate(env, "pair:" + a.lid, PAIR_PER_LID, 3600, 1, true)) || !(await rate(env, "pair:*", PAIR_PER_HOUR, 3600, 1, true)))
+      return ERR(429, "too many pairings, try later");
     const r = await lcall(env, a.lid, "init", { sh: await sha("s:" + a.tok) });
     if (r.s !== 200) return J(r.j, r.s);
     const c = await (await reg(env).fetch("https://r/code", { method: "POST", body: JSON.stringify({ lid: a.lid, ttl: CODE_TTL }) })).json();
@@ -214,6 +256,9 @@ async function locker(req, env, p, u) {
       const len = parseInt(req.headers.get("content-length") || "-1", 10);
       if (len < 0) return ERR(411, "length required");
       if (len > FILE_MAX) return ERR(413, "over 25 MB");
+      const dayBytes = envNum(env.LOCKER_GB_PER_DAY, UP_GB_DAY) * 1024 * MB;
+      if (!(await rate(env, "upn:" + a.lid, UP_PER_LID_DAY, 86400)) || !(await rate(env, "upb:*", dayBytes, 86400, Math.max(1, len))))
+        return ERR(429, "too many uploads today, try tomorrow");
       const r = await lcall(env, a.lid, "reserve", { name, size: len, src: role, ttl: FILE_TTL });
       if (r.s !== 200) return J(r.j, r.s);
       try {
@@ -227,6 +272,7 @@ async function locker(req, env, p, u) {
     if (req.method === "GET") {
       const m = await lcall(env, a.lid, "meta", { name });
       if (m.s !== 200) return ERR(404, "no such file");
+      if (!(await rate(env, "dl:" + a.lid, DL_PER_LID_DAY, 86400))) return ERR(429, "too many downloads today, try tomorrow");
       const o = await env.LOCKER.get(key);
       if (!o) return ERR(404, "no such file");
       return new Response(o.body, { headers: { ...CORS, "content-type": "application/octet-stream", "content-length": String(o.size), "content-disposition": `attachment; filename="${name.replace(/"/g, "")}"`, "cache-control": "no-store" } });
@@ -250,7 +296,23 @@ async function chat(req, env, p, u) {
   const op = parts[3] || "";
   const stub = env.CHAT.get(env.CHAT.idFromName(ch));
   const fwd = (path, init) => stub.fetch("https://c/" + path + u.search, init);
-  if (op === "" && req.method === "GET") return fwd("poll", { headers: { "x-fmt": u.searchParams.get("fmt") || "" } });
+  if (op === "" && req.method === "GET") {
+    // A long poll (?since=N&wait=S) waits here in the Worker, not in the room: a room held open
+    // bills Durable Object time for every second, a sleeping Worker does not. Two room calls at most.
+    const fmt = u.searchParams.get("fmt") || "";
+    const wait = Math.min(50, Math.max(0, parseInt(u.searchParams.get("wait") || "0", 10) || 0));
+    const q = new URLSearchParams(u.search);
+    q.delete("wait");
+    const poll = () => stub.fetch("https://c/poll?" + q.toString(), { headers: { "x-fmt": fmt } });
+    const r = await poll();
+    if (!wait || !q.has("since") || r.status !== 200) return r;
+    const body = await r.text();
+    let rows = 0;
+    try { rows = fmt === "t" ? body.split("\n").filter(Boolean).length - 1 : (JSON.parse(body).m || []).length; } catch {}
+    if (rows > 0) return new Response(body, r);
+    await sleep(Math.min(wait, POLL_HOLD_S) * 1000);
+    return poll();
+  }
   if (op === "ws") {
     if (req.headers.get("upgrade") !== "websocket") return ERR(426, "websocket required");
     const d = u.searchParams.get("did") || "";
@@ -265,7 +327,9 @@ async function chat(req, env, p, u) {
     const d = req.headers.get("x-dev") || "";
     if (!DID.test(d)) return ERR(400, "bad device id");
     const ct = req.headers.get("content-type") || "";
-    let raw = (await req.text()).slice(0, 2000);
+    const bytes = await readCapped(req, BODY_MAX);
+    if (!bytes) return ERR(413, "too long");
+    let raw = new TextDecoder().decode(bytes).slice(0, 2000);
     if (ct.includes("json")) { try { raw = JSON.parse(raw).text; } catch { return ERR(400, "bad json"); } }
     const f = filterText(raw);
     if (f.err) return ERR(422, f.err);
@@ -278,11 +342,14 @@ export class ChatRoom extends DurableObject {
   constructor(state, env) {
     super(state, env);
     this.sql = state.storage.sql;
-    this.waiters = new Set();
     this.bucket = new Map(); // handle -> {n, t}
     this.recent = [];        // room-wide send times
     this.sql.exec("CREATE TABLE IF NOT EXISTS msgs(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, h TEXT, x TEXT)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS bans(h TEXT PRIMARY KEY)");
+    this.sql.exec("CREATE TABLE IF NOT EXISTS cfg(k TEXT PRIMARY KEY, v TEXT)");
+    // lock: only a moderator's lift lets anyone post again (handles cost nothing to change, so a
+    // raid is stopped by locking the room, not by banning handles one by one).
+    this.locked = this.sql.exec("SELECT 1 FROM cfg WHERE k='lock'").toArray().length > 0;
   }
   rows(since, n) {
     return since < 0
@@ -308,21 +375,12 @@ export class ChatRoom extends DurableObject {
       const sp = u.searchParams.get("since");
       const since = sp === null ? -1 : parseInt(sp, 10);
       const n = Math.min(KEEP_MSGS, Math.max(1, parseInt(u.searchParams.get("n") || "30", 10) || 30));
-      const wait = Math.min(50, Math.max(0, parseInt(u.searchParams.get("wait") || "0", 10) || 0));
-      let rows = this.rows(since, n);
-      if (!rows.length && wait && since >= 0 && this.waiters.size < 300) {
-        await new Promise((res) => {
-          const w = { res };
-          this.waiters.add(w);
-          setTimeout(() => { this.waiters.delete(w); res(); }, wait * 1000);
-        });
-        rows = this.rows(since, n);
-      }
+      const rows = this.rows(Number.isFinite(since) ? since : -1, n);   // never waits: see chat()
       return this.out(rows, fmt, since >= 0 ? since : this.last());
     }
     if (op === "send") {
       const { h, t } = await req.json();
-      const r = this.add(h, t);
+      const r = await this.add(h, t);
       if (r.err) return ERR(r.code, r.err);
       return fmt === "t" ? T(`ok\t${r.id}\t${h}\n`) : J({ ok: true, id: r.id, handle: h });
     }
@@ -332,6 +390,8 @@ export class ChatRoom extends DurableObject {
         this.sql.exec("DELETE FROM msgs WHERE id=?", j.delete);
         this.bcast({ t: "del", i: j.delete });
       }
+      if (j.lock === true) { this.sql.exec("INSERT OR REPLACE INTO cfg VALUES('lock','1')"); this.locked = true; }
+      if (j.lock === false) { this.sql.exec("DELETE FROM cfg WHERE k='lock'"); this.locked = false; }
       if (j.ban) this.sql.exec("INSERT OR IGNORE INTO bans(h) VALUES(?)", String(j.ban));
       if (j.unban) this.sql.exec("DELETE FROM bans WHERE h=?", String(j.unban));
       if (j.delete_by) { // wipe every message of a handle
@@ -339,9 +399,10 @@ export class ChatRoom extends DurableObject {
         this.sql.exec("DELETE FROM msgs WHERE h=?", String(j.delete_by));
         for (const r of ids) this.bcast({ t: "del", i: r.id });
       }
-      return J({ ok: true, bans: this.sql.exec("SELECT h FROM bans").toArray().map((x) => x.h) });
+      return J({ ok: true, locked: this.locked, bans: this.sql.exec("SELECT h FROM bans").toArray().map((x) => x.h) });
     }
     if (op === "ws") {
+      if (this.ctx.getWebSockets().length >= WS_MAX) return ERR(503, "room is full, try later");
       const pair = new WebSocketPair();
       this.ctx.acceptWebSocket(pair[1]);
       pair[1].serializeAttachment({ h: u.searchParams.get("h") });
@@ -351,7 +412,8 @@ export class ChatRoom extends DurableObject {
     }
     return ERR(404, "not found");
   }
-  add(h, t) {
+  async add(h, t) {
+    if (this.locked) return { err: "room is locked", code: 403 };
     if (this.sql.exec("SELECT 1 FROM bans WHERE h=?", h).toArray().length) return { err: "banned", code: 403 };
     const nowMs = Date.now();
     const b = this.bucket.get(h) || { n: 5, t: nowMs };
@@ -361,12 +423,13 @@ export class ChatRoom extends DurableObject {
     if (this.recent.length >= 25) return { err: "room is busy", code: 429 };
     b.n -= 1; this.bucket.set(h, b); this.recent.push(nowMs);
     if (this.bucket.size > 2000) this.bucket.clear();
+    // Every stored message is SQLite rows written; this budget, shared by all rooms, is what
+    // bounds them when handles are rotated to dodge the per-handle and per-room limits.
+    if (!(await rate(this.env, "chat:*", envNum(this.env.CHAT_PER_HOUR, CHAT_PER_HOUR), 3600, 1, true))) return { err: "chat is busy, try later", code: 429 };
     const c = this.sql.exec("INSERT INTO msgs(ts,h,x) VALUES(?,?,?) RETURNING id", now(), h, t).one();
     this.sql.exec("DELETE FROM msgs WHERE id<=?", c.id - KEEP_MSGS);
     const m = { t: "msg", i: c.id, ts: now(), h, x: t };
     this.bcast(m);
-    for (const w of this.waiters) w.res();
-    this.waiters.clear();
     return { id: c.id };
   }
   bcast(m) {
@@ -375,11 +438,12 @@ export class ChatRoom extends DurableObject {
   }
   async webSocketMessage(ws, msg) {
     const at = ws.deserializeAttachment() || {};
+    if (typeof msg !== "string" || msg.length > BODY_MAX) return;
     let t = "";
-    try { const j = JSON.parse(String(msg)); t = j.text; } catch { return; }
+    try { const j = JSON.parse(msg); t = j.text; } catch { return; }
     const f = filterText(t);
     if (f.err) { ws.send(JSON.stringify({ t: "err", e: f.err })); return; }
-    const r = this.add(at.h, f.text);
+    const r = await this.add(at.h, f.text);
     if (r.err) ws.send(JSON.stringify({ t: "err", e: r.err }));
   }
   webSocketClose(ws) { try { ws.close(); } catch {} }
@@ -400,6 +464,9 @@ export class Locker extends DurableObject {
     const op = new URL(req.url).pathname.slice(1);
     const b = await req.json().catch(() => ({}));
     const t = now();
+    // The alarm deletes R2 keys "<lid>/<name>", so the locker keeps its own id (lockers made
+    // before this learn it on their next call).
+    if (typeof b.lid === "string" && DID.test(b.lid) && this.get("lid") === null) this.sql.exec("INSERT OR REPLACE INTO meta VALUES('lid',?)", b.lid);
     if (op === "init") {
       const have = this.get("dev");
       if (have && !same(have, b.sh)) return J({ error: "this locker belongs to another device secret" }, 403);
@@ -432,6 +499,9 @@ export class Locker extends DurableObject {
       const old = this.sql.exec("SELECT size FROM files WHERE name=? AND exp>?", b.name, t).toArray();
       if (this.used() - (old.length ? old[0].size : 0) + b.size > LOCKER_MAX) return J({ error: "locker full (200 MB)" }, 413);
       this.sql.exec("INSERT OR REPLACE INTO files VALUES(?,?,?,?,?)", b.name, b.size, t, t + b.ttl, b.src);
+      // The expiry sweep must be armed whenever a file exists: an alarm that found no files
+      // does not re-arm, and without one an upload would stay in R2 for ever.
+      if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + 86400000);
       return J({ ok: true });
     }
     if (op === "meta") {
@@ -446,7 +516,8 @@ export class Locker extends DurableObject {
     return J({ error: "?" }, 404);
   }
   async alarm() {
-    const lid = this.ctx.id.name;
+    const lid = this.get("lid") || this.ctx.id.name;
+    if (!lid) { await this.ctx.storage.setAlarm(Date.now() + 86400000); return; }   // learns it on the next call
     const old = this.sql.exec("SELECT name FROM files WHERE exp<=?", now()).toArray();
     for (const f of old) { try { await this.env.LOCKER.delete(lid + "/" + f.name); } catch {} }
     this.sql.exec("DELETE FROM files WHERE exp<=?", now());
@@ -462,17 +533,33 @@ export class Registry extends DurableObject {
     this.sql.exec("CREATE TABLE IF NOT EXISTS codes(code TEXT PRIMARY KEY, lid TEXT, exp INTEGER)");
     this.sql.exec("CREATE TABLE IF NOT EXISTS rl(k TEXT PRIMARY KEY, n INTEGER, reset INTEGER)");
     this.fails = [];
+    this.mem = new Map();   // rlm: key -> {n, reset}, no rows written
   }
   async fetch(req) {
     const op = new URL(req.url).pathname.slice(1);
     const b = await req.json().catch(() => ({}));
     const t = now();
     if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + 3600000);
+    const cost = Math.max(1, Number(b.cost) || 1);
     if (op === "rl") {
+      if (cost > b.limit) return J({ ok: false });
       const r = this.sql.exec("SELECT n,reset FROM rl WHERE k=?", b.key).toArray()[0];
-      if (!r || r.reset <= t) { this.sql.exec("INSERT OR REPLACE INTO rl VALUES(?,1,?)", b.key, t + b.win); return J({ ok: true }); }
-      if (r.n >= b.limit) return J({ ok: false });
-      this.sql.exec("UPDATE rl SET n=n+1 WHERE k=?", b.key);
+      if (!r || r.reset <= t) { this.sql.exec("INSERT OR REPLACE INTO rl VALUES(?,?,?)", b.key, cost, t + b.win); return J({ ok: true }); }
+      if (r.n + cost > b.limit) return J({ ok: false });
+      this.sql.exec("UPDATE rl SET n=n+? WHERE k=?", cost, b.key);
+      return J({ ok: true });
+    }
+    if (op === "rlm") {
+      if (cost > b.limit) return J({ ok: false });
+      let r = this.mem.get(b.key);
+      if (!r || r.reset <= t) {
+        if (this.mem.size > 20000) for (const [k, v] of this.mem) if (v.reset <= t) this.mem.delete(k);
+        if (this.mem.size > 20000) for (const k of this.mem.keys()) if (!k.endsWith(":*")) this.mem.delete(k);   // globals stay
+        r = { n: 0, reset: t + b.win };
+        this.mem.set(b.key, r);
+      }
+      if (r.n + cost > b.limit) return J({ ok: false });
+      r.n += cost;
       return J({ ok: true });
     }
     if (op === "code") {

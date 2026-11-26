@@ -73,3 +73,32 @@ LS_CASE(a_long_reading_fills_every_column_it_covers)
     LS_EQ_INT(n, 3);
     for (int i = 0; i < 3; i++) LS_CHECK(after[i] & REC_SCOPE_HOT);
 }
+
+/* The SX1262's READ trace is its instantaneous RSSI, one reading a poll:
+   -114 dBm of noise that dips to -125 now and then. Following every dip
+   parked the floor at the bottom of the noise, so the noise itself drew as
+   an 11 dB bar and its peaks lit SIGNAL with nothing on the air. */
+LS_CASE(rssi_noise_with_dips_is_not_signal_and_a_burst_still_is)
+{
+    rec_scope_reset();
+    rec_scope_set_dbm(true);
+    uint32_t seed = 12345;
+    for (int i = 0; i < 4000; i++) {                     /* 8 s, a reading every 2 ms */
+        seed = seed * 1103515245u + 12345u;
+        const int r = (int)((seed >> 16) % 15);          /* 0..14 */
+        const float db = -114.0f + (r < 2 ? -11.0f + (float)r : (float)(r - 8) * 0.5f);
+        rec_scope_level(db, 2000);
+    }
+    uint8_t col[REC_SCOPE_N];
+    int n = rec_scope_read(col, 250);
+    LS_EQ_INT(n, 250);
+    int hot = 0, sum = 0;
+    for (int i = 0; i < n; i++) { if (col[i] & REC_SCOPE_HOT) hot++; sum += col[i] & REC_SCOPE_DB; }
+    LS_EQ_INT(hot, 0);
+    LS_CHECK(sum / n <= 4);                              /* noise sits near the floor */
+    LS_CHECK(rec_scope_floor_db() > -118.0f && rec_scope_floor_db() < -110.0f);
+    for (int i = 0; i < 50; i++) rec_scope_level(-80.0f, 2000);   /* a remote, 100 ms */
+    n = rec_scope_read(col, 20);
+    for (int i = 0; i < n; i++) LS_CHECK(col[i] & REC_SCOPE_HOT);
+    rec_scope_set_dbm(false);
+}

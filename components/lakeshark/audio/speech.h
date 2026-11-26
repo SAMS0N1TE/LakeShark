@@ -37,6 +37,8 @@ typedef struct {
     uint32_t max_first_ms, max_synth_ms;
     size_t   arena_bytes, arena_peak;
     unsigned stack_bytes, stack_unused;
+    uint32_t raised;              /* times synthesis fell behind the speaker and ran at the UI's priority */
+    uint32_t last_underruns;      /* speaker gaps while the last sentence was being made */
 } speech_stats_t;
 
 /* Allocates the arena and starts the worker. On any failure speech stays

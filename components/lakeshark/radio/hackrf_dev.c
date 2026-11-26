@@ -64,6 +64,9 @@ typedef struct {
     uint64_t dropped_at_start;
     volatile bool read_cancelled;
     bool streaming;
+    /* Transceiver mode OFF sent by the idle tick and nothing started since:
+       RF path and amp down, RX/TX LEDs dark. */
+    volatile bool standby;
     uint16_t usb_api;
     /* A rate below the radio's own is served by decimating: the radio runs at
        out_rate_hz * decim and reads pass through the CIC. decim 1 is direct. */
@@ -412,6 +415,7 @@ static ls_radio_err_t hackrf_iq_start(void *ctx)
     /* Firmware may drop antenna power on a mode change; say it again. */
     if (dev->bias) (void)control_out(dev, HACKRF_REQ_ANTENNA_ENABLE, 1, 0, NULL, 0);
     dev->streaming = true;
+    dev->standby = false;
     return LS_RADIO_OK;
 }
 
@@ -521,6 +525,38 @@ static ls_radio_err_t hackrf_iq_stop(void *ctx)
     return error;
 }
 
+/* The idle tick's call (radio_endpoint.h). The HackRF needs no wake: the
+   next start sets RECEIVE again. Sent whatever mode the radio is believed
+   to be in, so a HackRF left receiving by a board reset (VBUS never drops
+   on a T-Display-P4) is turned off too. Never during a transmit. */
+LS_COLD static ls_radio_err_t hackrf_standby_op(void *ctx)
+{
+    hackrf_dev_t *dev = (hackrf_dev_t *)ctx;
+    if (!dev) return LS_RADIO_ERR_INVALID;
+    if (dev == s_tx_dev) return LS_RADIO_ERR_BUSY;
+    if (dev->standby) return LS_RADIO_OK;
+    if (dev->streaming) {
+        __atomic_store_n(&dev->read_cancelled, true, __ATOMIC_RELEASE);
+        esp_libusb_stream_stop_for(&dev->usb);
+        dev->streaming = false;
+    }
+    ls_radio_err_t error = control_out(dev, HACKRF_REQ_SET_TRANSCEIVER_MODE,
+                                       HACKRF_MODE_OFF, 0, NULL, 0);
+    if (error != LS_RADIO_OK) {
+        ESP_LOGW(TAG, "standby: transceiver mode OFF failed: %s", ls_radio_err_name(error));
+        return error;
+    }
+    dev->standby = true;
+    ESP_LOGI(TAG, "standby: transceiver off, nothing is using the HackRF");
+    return LS_RADIO_OK;
+}
+
+static bool hackrf_in_standby(void *ctx)
+{
+    const hackrf_dev_t *dev = (const hackrf_dev_t *)ctx;
+    return dev && dev->standby;
+}
+
 static ls_radio_err_t hackrf_iq_get_health(void *ctx, ls_radio_iq_health_t *out)
 {
     hackrf_dev_t *dev = ctx;
@@ -612,6 +648,8 @@ static const ls_radio_driver_ops_t s_hackrf_ops = {
     .recover = hackrf_recover,
     .iq_get_health = hackrf_iq_get_health,
     .fe_ctl = hackrf_fe_ctl,
+    .standby = hackrf_standby_op,
+    .in_standby = hackrf_in_standby,
 };
 
 static ls_radio_err_t register_endpoint(hackrf_dev_t *dev)
@@ -835,7 +873,7 @@ LS_COLD void ls_hackrf_print_status(void)
             printf("m0: no answer (%d)\n", n);
     }
     LS_PRINTF(t_hackrf_dev_hackrf_s_radio_lu, "hackrf: %s  radio %lu S/s  out %lu S/s  decim %u  shift %lu Hz  centre %llu Hz\n",
-           dev->streaming ? "streaming" : "idle", (unsigned long)dev->sample_rate_hz,
+           dev->streaming ? "streaming" : dev->standby ? "standby (transceiver off)" : "idle", (unsigned long)dev->sample_rate_hz,
            (unsigned long)dev->out_rate_hz, dev->decim, (unsigned long)dev->shift_hz,
            (unsigned long long)dev->center_hz);
     LS_PRINTF(t_hackrf_dev_ppm_d_ring_overflows, "ppm: %d  ring overflows %lu\n", dev->ppm, (unsigned long)s_stats.overflows);
@@ -1019,6 +1057,7 @@ int ls_hackrf_tx_start(uint64_t hz,uint32_t rate,unsigned vga,bool amp,
         (void)control_out(dev,HACKRF_REQ_SET_AMP_ENABLE,0,0,NULL,0);
         int result=tx_release(); atomic_store(&s_tx_result,result); return result;
     }
+    dev->standby=false; /* transmitting; the idle tick turns it off again later */
     e=control_out(dev,HACKRF_REQ_SET_TRANSCEIVER_MODE,HACKRF_MODE_TRANSMIT,0,NULL,0);
     if(e==LS_RADIO_OK) {
         s_tx.deadline=esp_timer_get_time()+s_tx.duration+200000;

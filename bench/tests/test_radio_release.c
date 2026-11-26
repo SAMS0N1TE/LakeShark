@@ -91,6 +91,8 @@ int settings_get_subghz_on_hit(void) { return 0; }
 void settings_set_subghz_on_hit(int mode) { (void)mode; }
 bool settings_get_subghz_lr_fsk(void) { return lr_fsk; }
 void settings_set_subghz_lr_fsk(bool fsk) { (void)fsk; }
+bool settings_get_subghz_lr_raw(void){return false;}
+void settings_set_subghz_lr_raw(bool raw){(void)raw;}
 void settings_get_subghz_fsk(uint32_t *rate, uint32_t *dev, uint32_t *sync, int *pre, int *bw)
 { *rate = 2400; *dev = 10000; *sync = 0; *pre = 32; *bw = 59; }
 void settings_set_subghz_fsk(uint32_t rate, uint32_t dev, uint32_t sync, int pre, int bw)

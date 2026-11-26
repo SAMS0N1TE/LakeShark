@@ -1,0 +1,7 @@
+version: "1.0.0"
+description: "e3d - a software 3D engine for the ESP32-P4: two cores, PIE SIMD, Gouraud/flat/wire, shadows and fog"
+url: "https://github.com/giltal/ESP32_P4_3D_Engine"
+targets:
+  - esp32p4
+dependencies:
+  idf: ">=5.3"

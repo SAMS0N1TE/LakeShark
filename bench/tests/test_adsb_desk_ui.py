@@ -39,7 +39,7 @@ OPEN = '!adsb,^,~10'
 c = run('open', OPEN)
 assert ' Receiver  View  Aircraft' in c[1] and '7 aircraft' in c[1]
 assert '[Radio]' in c[2] and '[Follow ' in c[2] and '[Save CSV]' in c[2]
-assert 'Find [' in c[3] and '[Emergencies first]' in c[3] and 'as tracked' in c[3]
+assert 'Find [' in c[3] and '|x| Emergencies first' in c[3] and '| | Positions only' in c[3] and 'as tracked' in c[3]   # check boxes (11-20)
 top = row_of(c, 'AIRCRAFT 7 of 7')
 assert '! N55EM EMERGENCY' in c[top] and 'MINI MAP' in c[top]
 head = top + 1
@@ -83,7 +83,7 @@ assert 'Copied A4C5D6' in c[44]
 
 # The table goes to the card as CSV, in the order shown.
 c = run('save', OPEN + ',M4,+e,M0,~2')
-assert 'Saved 7 aircraft to aircraft-' in c[44]
+assert 'Saved 7 aircraft to aircraft-' in c[44] and '.csv' in c[44]   # the whole name, after the counts
 csv = sorted((work / 'build' / 'lssim_adsb').glob('aircraft-*.csv'))[-1].read_text(encoding='utf-8').splitlines()
 assert csv[0].startswith('icao,callsign,altitude_ft') and len(csv) == 8
 assert csv[1].startswith('A77000,N55EM,3500,-900,120,140,') and ',7700,EMERGENCY,' in csv[1]
@@ -95,7 +95,7 @@ assert 'A1B2C3' in c[3] and 'CALLSIGN' in c[4] and 'RX CRC' in c[row_of(c, 'RX C
 c = run('pageback', OPEN + ',@enter,~2,@esc,~2')
 assert ' Receiver  View  Aircraft' in c[1]
 c = run('maponly', OPEN + ',+v,~3')
-assert ' File  View  Window  Help' in c[1] and 'MAP ONLY' not in c[2] and '[ LIST ]' in c[2]
+assert ' File  View  Window  Help' in c[1] and 'MAP ONLY' not in c[2] and '| LIST |' in c[2]
 c = run('maponly2', OPEN + ',+v,~2,+v,~2')
 assert ' Receiver  View  Aircraft' in c[1]
 c = run('classic', OPEN + ',M4,+l,M0,~3')
@@ -104,6 +104,7 @@ c = run('classic2', OPEN + ',M4,+l,+l,M0,~3')
 assert ' Receiver  View  Aircraft' in c[1]
 
 # A narrower window drops the map and puts the details in a strip under the table.
-c = run('narrow', OPEN, grid='100x34')
+c = run('narrow', '!adsb,~10', grid='100x34')   # opens maximized at this size (11-20 presets); no ^
+assert 'Maximized 98x28' in c[30]
 assert 'MINI MAP' not in c[4] and has(c, 'THIS ONE') and has(c, 'from here')
 print('ADS-B desk: ok')

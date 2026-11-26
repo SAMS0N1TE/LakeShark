@@ -55,6 +55,9 @@ void ls_rterm_set_serial(void (*write)(const char *bytes, size_t n), void (*wait
    screen that is only a terminal can; real glass keeps its own). True when
    the grid will change. Called from the console's or the network's task. */
 void ls_rterm_set_resize(bool (*resize)(int cols, int rows, const char *font));
+/* The desk's resolution preset: regrid to it now (UI task). False where the
+   screen keeps its own grid. */
+bool ls_rterm_request_grid(int cols, int rows);
 
 /* Start the network listener when it was left on (reads NVS: call from a
    task with an internal-RAM stack). Call after the TUI is running. */

@@ -17,6 +17,7 @@
    gives. OFFSET moves every session off its catalogue frequency, for a
    transmitter that is not quite where its band says. Receive only:
    nothing here transmits or replays. */
+#include "lr433_plan.h"
 #include "../ls_experiments.h"
 #include "lr433_dec.h"
 #include "lr433_history.h"
@@ -82,17 +83,17 @@ typedef struct {
    recovery follows a few percent. */
 static const plan_t PLAN[] = {
     { "315o", "315 OOK", "TPMS: Schrader, GM, Subaru", BAND_315, LR433_IN_OOK,
-      315000000u, 40000, 200000, 0, 0x000E, 4, 0x7, 4, 252 },
+      315000000u, LR433_P_OOK_TPMS },
     { "315f", "315 FSK", "TPMS: Ford, Toyota, Hyundai/Kia", BAND_315, LR433_IN_FSK,
-      315000000u, 76800, 250000, 38000, 0x0F0F, 16, 0x0F0F, 16, 128 },
+      315000000u, LR433_P_FSK_TPMS },
     { "315p", "315 PMV", "TPMS: Toyota/Lexus PMV-107J", BAND_315, LR433_IN_FSK,
-      315000000u, 40000, 166667, 25000, 0xFFF0, 16, 0xFFFFFF0, 28, 72 },
+      315000000u, LR433_P_FSK_PMV },
     { "433o", "433 OOK", "Acurite, LaCrosse, Ambient F007", BAND_433, LR433_IN_OOK,
-      433920000u, 16000, 250000, 0, 0x000E, 4, 0x7, 4, 252 },
+      433920000u, LR433_P_OOK_WX },
     { "433f", "433 FSK", "TPMS: Citroen/VDO, Ford, Toyota", BAND_433, LR433_IN_FSK,
-      433920000u, 76800, 250000, 38000, 0x0F0F, 16, 0x0F0F, 16, 128 },
+      433920000u, LR433_P_FSK_TPMS },
     { "915f", "915 FSK", "Ambient/Ecowitt WH31, WH24/65", BAND_915, LR433_IN_FSK,
-      915000000u, 68966, 250000, 35000, 0x0F0F, 16, 0x0F0F, 16, 112 },
+      915000000u, LR433_P_FSK_WX },
     { "ert", "ERT", "Itron meters: SCM, SCM+, IDM", BAND_ERT, LR433_IN_ERT,
       912600000u, 32768, 2222222, 0, 0x2999, 14, 0x2665, 14, 252 },
     { "433p", "433 PKT", "FSK packets: CC1101, RFM69, Si443x", BAND_433, KIND_IQ,

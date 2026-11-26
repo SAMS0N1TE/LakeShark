@@ -2,6 +2,8 @@
 #include "ls_sweep_app.h"
 #include "ls_sweep_scope.h"
 #include "ls_rid.h"
+#include "ls_sigs.h"
+#include "ls_tail.h"
 #include <stdio.h>
 #include <string.h>
 #include <pthread.h>
@@ -114,7 +116,7 @@ LS_CASE(smarttag_requires_company_and_name_tile_uses_registry) {
     uint8_t ad[]={3,0xff,0x75,0,9,9,'S','m','a','r','t','T','a','g'};
     LS_CHECK(ls_sweep_parse_ble(ad,sizeof(ad),&m) && m.category==SW_TRACKER && strstr(m.label,"SmartTag"));
     LS_CHECK(!ls_sweep_parse_ble(ad,4,&m));ad[2]=0x76;LS_CHECK(!ls_sweep_parse_ble(ad,sizeof(ad),&m));
-    uint8_t tile[]={5,3,0xed,0xfe,2,0x18};LS_CHECK(ls_sweep_parse_ble(tile,sizeof(tile),&m) && m.immediate_alert && strstr(m.label,"Tile"));
+    uint8_t tile[]={5,3,0xed,0xfe,2,0x18};LS_CHECK(ls_sweep_parse_ble(tile,sizeof(tile),&m) && m.immediate_alert && strstr(m.label,"TILE"));
     uint8_t tc[]={3,0xff,0x7c,6};LS_CHECK(ls_sweep_parse_ble(tc,4,&m) && m.category==SW_TRACKER);
     tile[0]=4;LS_CHECK(!ls_sweep_parse_ble(tile,5,&m));
 }
@@ -133,8 +135,11 @@ LS_CASE(rules_are_atomic_strict_and_match_each_selector) {
     LS_CHECK(ls_sweep_rules_parse(json,strlen(json)));uint8_t uuid[]={17,7,0xbc,0x9a,0x78,0x56,0x34,0x12,0xbc,0x9a,0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12};
     LS_CHECK(ls_sweep_parse_ble(uuid,sizeof(uuid),&m) && !strcmp(m.label,"Custom camera"));
     uint8_t name[]={8,9,'G','L','A','S','S','E','S'};LS_CHECK(ls_sweep_parse_ble(name,sizeof(name),&m));
-    LS_CHECK(ls_sweep_parse_wifi(wifi,"MyCAMera",&m));
-    LS_CHECK(ls_sweep_rules_parse("[]",2));LS_CHECK(!ls_sweep_parse_wifi(wifi,"MyCAMera",&m));
+    /* rules.json now adds rows on top of the shared table: "[]" drops the
+       folded rows, the built-in Axis prefix stays */
+    uint8_t other[]={0x10,0x20,0x30,1,2,3};LS_CHECK(ls_sweep_parse_wifi(other,"MyCAMera",&m) && !strcmp(m.label,"Test SSID"));
+    LS_CHECK(ls_sweep_rules_parse("[]",2));LS_CHECK(!ls_sweep_parse_wifi(other,"MyCAMera",&m));
+    LS_CHECK(ls_sweep_parse_wifi(wifi,"MyCAMera",&m) && m.category==SW_CAMERA);
 }
 LS_CASE(flood_is_distinct_quiets_audio_preserves_contacts_and_recovers) {
     reset();ls_sweep_match_t m={.category=SW_TRACKER,.label="Test tracker"};uint8_t a[6]={0};
@@ -379,4 +384,61 @@ LS_CASE(tracker_alert_still_fires_while_a_hunt_target_is_saved_and_sweep_is_clos
     uint8_t tag4[6]={0x45,1,2,3,4,5};ls_sweep_observe(tag4,0,1,-55,&trk,7000000);
     click=true;LS_EQ_INT(ls_sweep_alert_scoped(7000000,&click),SW_TRACKER);LS_CHECK(!click);
     LS_CHECK(ls_sweep_hunt(NULL,0,0));
+}
+LS_CASE(rules_json_rows_fold_into_the_shared_table) {
+    reset();ls_sweep_match_t m;
+    const int base=wd_sig_count();
+    /* the rows SWEEP used to seed are built in: a seeded file adds nothing */
+    const char *seeded="[{\"category\":\"CAMERA\",\"label\":\"Axis vendor hint\",\"vendor\":\"Axis\",\"oui\":\"00408C\"},"
+        "{\"category\":\"TRACKER\",\"label\":\"Tile service\",\"vendor\":\"Tile\",\"uuid\":\"FEED\"}]";
+    LS_CHECK(ls_sweep_rules_parse(seeded,strlen(seeded)));LS_EQ_INT(wd_sig_extra_rows(),0);LS_EQ_INT(wd_sig_count(),base);
+    /* a user's rows: kept, labels and vendors as written, in the table WARDRIVE reads too */
+    const char *mine="[{\"category\":\"TRACKER\",\"label\":\"My tag\",\"vendor\":\"Me\",\"company\":\"ABCD\"},"
+        "{\"category\":\"ATTACK\",\"label\":\"Odd|name\",\"vendor\":\"x\",\"name\":\"a*b,c\"},"
+        "{\"category\":\"TRACKER\",\"label\":\"Tile service\",\"vendor\":\"Tile\",\"uuid\":\"FEEC\"}]";
+    LS_CHECK(ls_sweep_rules_parse(mine,strlen(mine)));LS_EQ_INT(wd_sig_extra_rows(),2);LS_EQ_INT(wd_sig_count(),base+2);
+    LS_CHECK(strstr(wd_sig_note(),"2 from SWEEP")!=NULL);
+    uint8_t co[]={4,0xff,0xcd,0xab,7};
+    LS_CHECK(ls_sweep_parse_ble(co,sizeof(co),&m) && m.category==SW_TRACKER && !strcmp(m.label,"My tag") && !strcmp(m.vendor,"Me"));
+    uint8_t nm[]={10,9,'x','A','*','B',',','C','y','y','y'};
+    LS_CHECK(ls_sweep_parse_ble(nm,sizeof(nm),&m) && m.category==SW_ATTACK && !strcmp(m.label,"Odd/name"));
+    uint8_t nm2[]={6,9,'a','X','b',',','c'};LS_CHECK(!ls_sweep_parse_ble(nm2,sizeof(nm2),&m));
+    wd_obs_t o;memset(&o,0,sizeof(o));o.kind=WD_BLE;
+    const wd_sig_ble_t b={.company=0xABCD,.mfg0=-1,.svc0=-1};uint16_t tags=0;
+    const uint16_t s=wd_sig_match_ble(&o,&b,&tags);
+    LS_CHECK(s && !strcmp(wd_sig_at(s-1)->id,"sweep-1") && (tags&WD_T_TRACKER));
+    /* a bad file changes nothing; "no rows" drops them */
+    LS_CHECK(!ls_sweep_rules_parse("[{",2));LS_EQ_INT(wd_sig_extra_rows(),2);
+    ls_sweep_defaults();LS_EQ_INT(wd_sig_extra_rows(),0);LS_CHECK(!ls_sweep_parse_ble(co,sizeof(co),&m));
+}
+LS_CASE(shared_table_adds_rows_sweep_lacked_and_keeps_its_exact_tracker_checks) {
+    reset();ls_sweep_match_t m;
+    /* a Flock camera's Wi-Fi name (not in SWEEP's old rules) */
+    uint8_t ap[6]={0x10,0x20,0x30,4,5,6};
+    LS_CHECK(ls_sweep_parse_wifi(ap,"Flock-0A1B2C",&m) && m.category==SW_CAMERA && !strcmp(m.vendor,"flock-cam"));
+    /* a vendor prefix only on a public BLE address (stored least significant byte first) */
+    uint8_t ad[]={2,1,6},axon[6]={3,2,1,0xDF,0x25,0x00};
+    LS_CHECK(ls_sweep_parse_ble_from(axon,0,ad,sizeof(ad),&m) && m.category==SW_BODYCAM);
+    LS_CHECK(!ls_sweep_parse_ble_from(axon,1,ad,sizeof(ad),&m));
+    /* the table's looser Find My row is not taken: SWEEP's exact payload is */
+    uint8_t apple[]={4,0xff,0x4c,0,0x12};LS_CHECK(!ls_sweep_parse_ble(apple,sizeof(apple),&m));
+}
+LS_CASE(one_with_you_setting_for_sweep_and_wardrive) {
+    ls_tail_defaults();
+    ls_sweep_device_t d;memset(&d,0,sizeof(d));
+    d.match.category=SW_TRACKER;d.match.state=SW_STATE_SEPARATED;d.first_us=d.separated_us=1000000;d.seen_us=601000000;d.moved_m=600;
+    LS_CHECK(ls_sweep_section(&d,d.seen_us,true)==SW_WITH_YOU);
+    ls_tail_rule_t r={20,1000};LS_CHECK(ls_tail_set(&r));
+    LS_CHECK(ls_sweep_section(&d,d.seen_us,true)!=SW_WITH_YOU);
+    d.seen_us=1201000000;LS_CHECK(ls_sweep_section(&d,d.seen_us,true)!=SW_WITH_YOU);
+    d.moved_m=1000;LS_CHECK(ls_sweep_section(&d,d.seen_us,true)==SW_WITH_YOU);
+    d.with_you=true;LS_CHECK(ls_sweep_alarm(&d,true));d.moved_m=999;LS_CHECK(!ls_sweep_alarm(&d,true));
+    /* WARDRIVE's span: the setting, never under the kind's range */
+    LS_CHECK(ls_tail_need_m(900)==1000 && ls_tail_need_m(1500)==1500 && ls_tail_ms()==1200000u);
+    ls_tail_rule_t bad={0,1000};LS_CHECK(!ls_tail_set(&bad));
+    char *show[]={"sweep","withyou"};LS_CHECK(ls_sweep_command(2,show)==0);
+    char *set[]={"sweep","withyou","15","700"};LS_CHECK(ls_sweep_command(4,set)==0);
+    ls_tail_get(&r);LS_CHECK(r.minutes==15 && r.metres==700);
+    char *badset[]={"sweep","withyou","15","7"};LS_CHECK(ls_sweep_command(4,badset)==1);
+    ls_tail_defaults();
 }

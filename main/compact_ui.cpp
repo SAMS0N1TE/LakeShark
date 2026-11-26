@@ -18,6 +18,7 @@
 #include "ls_panel.h"
 #include "ls_panel_ws.h"
 #include "tui/ls_rterm.h"
+#include "ls_cast.h"
 #include "tui/ls_input_ev.h"
 #if defined(CONFIG_LS_PANEL_RUNTIME) && CONFIG_LS_PANEL_RUNTIME
 #include "tui/desk/ls_desk.h"
@@ -67,6 +68,7 @@ extern "C" {
 #include "ls_vitals.h"
 /* Whether the wall clock is real yet, for the status row's clock. */
 #include "ls_time.h"
+#include "ls_tz.h"
 #include "ls_haptic.h"
 #include "ls_mesh.h"
 #include "tui/ls_tui.h"
@@ -90,8 +92,11 @@ extern "C" void ls_freqs_tick(void);
 /* MUSIC: a close that had to wait keeps the speaker until it is retried. */
 extern "C" void ls_music_service(int64_t now_us);
 extern "C" void ls_freqs_console_register(void);
+/* LSX, the LakeShark link: home base and field unit sync (ls_lsx_svc.h). */
+extern "C" void ls_lsx_console_register(void);
 /* WARDRIVE (a module): its session runs on after the app is left. */
 extern "C" bool ls_wardrive_running(void);
+extern "C" bool ls_party_running(void);
 extern "C" void ls_rterm_picture_tx(uint32_t *bytes, uint32_t *lines, uint32_t *captures) __attribute__((weak));
 extern "C" void ls_carto_boot_reads_done(void) __attribute__((weak));
 extern "C" bool cell_report_transport_known(const char *peer)
@@ -1603,7 +1608,7 @@ static bool tui_session(void)
             { "sweep", "SWEEP", "passive nearby signals", LS_ICON_SWEEP, TUI_GREEN,
               LS_APP_EXTRA, &ls_scr_sweep, tui_live_sweep, &ls_doc_sweep },
             { "tmach", "TIME MACHINE", "rewind the air", LS_ICON_TMACH, TUI_MAGENTA,
-              LS_APP_EXTRA, &ls_scr_tmach, tui_live_tmach, &ls_doc_tmach },
+              LS_APP_EXTRA, &ls_scr_tmach, tui_live_tmach, &ls_doc_tmach, NULL, 0, 84, 0 },  /* desk: opens where its toolbar labels fit */
 #if defined(CONFIG_LS_RX_HEAD) && CONFIG_LS_RX_HEAD
             { "radio", "RADIO", "receiver + decoders", LS_ICON_RADIO, TUI_GREEN,
               LS_APP_EXTRA, &ls_scr_radio, nullptr, &ls_doc_radio },
@@ -1625,28 +1630,21 @@ static bool tui_session(void)
                 ESP_LOGE("tdp_ui", "could not register app %s: %s",
                          APPS[i].id, ls_app_register_why(rc));
         }
-        /* METERS draws its own tile, a register over a dial, in the last
-           character-art slot (user apps fill from the first). */
+        /* METERS: its tile is a meter's register over its dial. */
         if (!cell_performance_active()) {
-            static const char METER_ART[LS_ICON_ROWS][LS_ICON_COLS + 1] = {
-                " .------. ", "| [0562] |", "|  .--.  |", "| ( /  ) |", "|  '--'  |", " '------' ",
-            };
             const ls_app_t meters = { "meters", "METERS", "utility meters",
-                ls_icon_art(LS_ICON_SLOT_METER, METER_ART, LS_ICON_SUBGHZ), TUI_YELLOW,
+                LS_ICON_METER, TUI_YELLOW,
                 LS_APP_EXTRA, &ls_scr_meters, nullptr, &ls_doc_meters };
             const int rc = ls_app_register(&meters);
             if (rc < 0) ESP_LOGE("tdp_ui", "could not register app meters: %s", ls_app_register_why(rc));
         }
-        /* PINS: add-on wiring (boards with runtime pins: the Nano). Its own
-           tile, a header strip, in the slot beside METERS. */
+        /* PINS: add-on wiring (boards with runtime pins: the Nano). Its
+           tile is a pin header and its jumper wires. */
 #if defined(LS_BOARD_PINS_RUNTIME) && LS_BOARD_PINS_RUNTIME
         if (!cell_performance_active()) {
             extern const ls_tui_screen_t ls_scr_pins;
-            static const char PINS_ART[LS_ICON_ROWS][LS_ICON_COLS + 1] = {
-                " .------. ", " |oooooo| ", " |oooooo| ", " '------' ", "  ||||||  ", "  ''''''  ",
-            };
             const ls_app_t pins = { "pins", "PINS", "add-on wiring",
-                ls_icon_art(LS_ICON_SLOT_PINS, PINS_ART, LS_ICON_CHIP), TUI_GREEN,
+                LS_ICON_PINS, TUI_GREEN,
                 LS_APP_EXTRA, &ls_scr_pins, nullptr, &ls_doc_pins };
             const int rc = ls_app_register(&pins);
             if (rc < 0) ESP_LOGE("tdp_ui", "could not register app pins: %s", ls_app_register_why(rc));
@@ -1656,11 +1654,8 @@ static bool tui_session(void)
            Its own tile, a page of lines with one flagged. */
         if (!cell_performance_active()) {
             extern const ls_tui_screen_t ls_scr_bootlog;
-            static const char BOOTLOG_ART[LS_ICON_ROWS][LS_ICON_COLS + 1] = {
-                " .------. ", "|I ----  |", "|W --    |", "|E ---!  |", "|I --    |", " '------' ",
-            };
             const ls_app_t bootlog = { "bootlog", "BOOT LOG", "startup log",
-                ls_icon_art(LS_ICON_SLOT_BOOTLOG, BOOTLOG_ART, LS_ICON_JOURNAL), TUI_YELLOW,
+                LS_ICON_BOOTLOG, TUI_YELLOW,
                 LS_APP_EXTRA, &ls_scr_bootlog, nullptr, &ls_doc_bootlog };
             const int rc = ls_app_register(&bootlog);
             if (rc < 0) ESP_LOGE("tdp_ui", "could not register app bootlog: %s", ls_app_register_why(rc));
@@ -1668,11 +1663,8 @@ static bool tui_session(void)
         /* STORE: signed apps from terminalbay.com. Its tile is a crate. */
         if (!cell_performance_active()) {
             extern const ls_tui_screen_t ls_scr_store;
-            static const char STORE_ART[LS_ICON_ROWS][LS_ICON_COLS + 1] = {
-                " .------. ", " |\\    /| ", " | \\  / | ", " | APPS | ", " |/    \\| ", " '------' ",
-            };
             const ls_app_t store = { "store", "STORE", "apps",
-                ls_icon_art(LS_ICON_SLOT_STORE, STORE_ART, LS_ICON_UPDATE), TUI_CYAN,
+                LS_ICON_STORE, TUI_CYAN,
                 LS_APP_EXTRA, &ls_scr_store, nullptr, &ls_doc_store };
             const int rc = ls_app_register(&store);
             if (rc < 0) ESP_LOGE("tdp_ui", "could not register app store: %s", ls_app_register_why(rc));
@@ -1681,11 +1673,8 @@ static bool tui_session(void)
         /* PACKS: the frequency data packs on the card. A globe over a list. */
         if (!cell_performance_active()) {
             extern const ls_tui_screen_t ls_scr_packs;
-            static const char PACKS_ART[LS_ICON_ROWS][LS_ICON_COLS + 1] = {
-                "  .-~~-.  ", " /|-+-+|\\ ", "|-+-+-+-+|", " \\|-+-+|/ ", "  '-..-'  ", " [PDNFAW] ",
-            };
             const ls_app_t packs = { "packs", "PACKS", "frequency data",
-                ls_icon_art(LS_ICON_SLOT_PACKS, PACKS_ART, LS_ICON_TILES), TUI_CYAN,
+                LS_ICON_PACKS, TUI_CYAN,
                 LS_APP_EXTRA, &ls_scr_packs, nullptr, &ls_doc_packs };
             const int rc = ls_app_register(&packs);
             if (rc < 0) ESP_LOGE("tdp_ui", "could not register app packs: %s", ls_app_register_why(rc));
@@ -1694,14 +1683,21 @@ static bool tui_session(void)
            car with its aerial; the app itself is a module (modules.json). */
         if (!cell_performance_active()) {
             extern const ls_tui_screen_t ls_scr_wardrive;
-            static const char WARDRIVE_ART[LS_ICON_ROWS][LS_ICON_COLS + 1] = {
-                "    | ))) ", "  __|___  ", " /_|__|_\\_", "|  .  .  |", "'-(o)-(o)'", " :  .  :  ",
-            };
             const ls_app_t wardrive = { "wardrive", "WARDRIVE", "wifi bt cell gps",
-                ls_icon_art(LS_ICON_SLOT_WARDRIVE, WARDRIVE_ART, LS_ICON_WIRELESS), TUI_YELLOW,
-                LS_APP_EXTRA, &ls_scr_wardrive, ls_wardrive_running, &ls_doc_wardrive };
+                LS_ICON_WARDRIVE, TUI_YELLOW,
+                LS_APP_EXTRA, &ls_scr_wardrive, ls_wardrive_running, &ls_doc_wardrive, NULL, 0, 88, 0 };  /* desk: opens where its toolbar labels fit */
             const int rc = ls_app_register(&wardrive);
             if (rc < 0) ESP_LOGE("tdp_ui", "could not register app wardrive: %s", ls_app_register_why(rc));
+        }
+        /* PARTY: LakeShark users together, finds pinged between them. A
+           campfire with two of them by it; the app is a module. */
+        if (!cell_performance_active()) {
+            extern const ls_tui_screen_t ls_scr_party;
+            const ls_app_t party = { "party", "PARTY", "sync finds + map",
+                LS_ICON_PARTY, TUI_MAGENTA,
+                LS_APP_EXTRA, &ls_scr_party, ls_party_running, &ls_doc_party };
+            const int rc = ls_app_register(&party);
+            if (rc < 0) ESP_LOGE("tdp_ui", "could not register app party: %s", ls_app_register_why(rc));
         }
 
         {
@@ -2157,13 +2153,11 @@ static bool tui_session(void)
         ls_tui_status_set(NULL, right);
 
         {
-            char clk[12] = "--:--";
-            if (ls_time_is_synced()) {
-                const time_t now = time(nullptr);
-                struct tm tmv;
-                gmtime_r(&now, &tmv);
-                snprintf(clk, sizeof(clk), "%02d:%02dZ", tmv.tm_hour, tmv.tm_min);
-            }
+            /* Local time in the zone SET picked (AUTO: from the last fix),
+               "--:--" until something has set the clock. */
+            char clk[12];
+            ls_tz_tick();
+            ls_tz_status_clock(clk, sizeof(clk));
             ls_tui_status_set_clock(clk);
         }
 
@@ -2204,6 +2198,8 @@ static bool tui_session(void)
            result goes out this frame and not after the next sleep. */
         const int64_t ph_capture = esp_timer_get_time();
         ls_rterm_capture();
+        /* 'tui cast': the frame just presented is whole in the framebuffer. */
+        ls_cast_presented(frame_clean);
         const int64_t ph_sleep = esp_timer_get_time();
         s_ph_capture_us = ph_avg(s_ph_capture_us, ph_sleep - ph_capture);
         /* 'carto trace': a frame phase long enough to hold up a click's answer. */
@@ -3297,6 +3293,7 @@ static int tui_cmd(int argc, char **argv)
        task landing in the middle cannot be mistaken for part of the image,
        and the end line carries the size and CRC-32 for the receiver. */
     if (argc >= 2 && !strcmp(argv[1], "rec")) return tui_rec_cmd(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "cast")) return ls_cast_cmd(argc, argv);
     if (argc >= 2 && !strcmp(argv[1], "png")) {
         if (!s_tui_task) { fputs(LS_TEXT(msg_compact_ui_tui_not_running_nothing_2, "tui: not running - nothing on the glass\n"), stdout); return 1; }
         ls_panel_fb_t fb;
@@ -3742,7 +3739,7 @@ static int lora_cmd(int argc, char **argv)
     }
     /* lrx own takes the part for raw probes: the mesh lets go first, as
        for the FSK receive commands, and gets it back when the probes end. */
-    if (LS_TX_UNLOCKED && argc == 4 && !strcmp(argv[1], "lrx") && !strcmp(argv[2], "own") &&
+    if (LS_TX_UNLOCKED_BUILD && argc == 4 && !strcmp(argv[1], "lrx") && !strcmp(argv[2], "own") &&
         (!strcmp(argv[3], "on") || !strcmp(argv[3], "off"))) {
         const bool on = !strcmp(argv[3], "on");
         if (on) {
@@ -3919,9 +3916,21 @@ static int lora_cmd(int argc, char **argv)
         int64_t end = esp_timer_get_time() + (int64_t)secs * 1000000;
         unsigned got = 0, bad = 0;
         uint8_t buf[256];
+        /* Floor: median of up to 64 RSSI reads spread over the window, taken
+           between packets, not one read at the end. */
+        float fl[64];
+        unsigned nfl = 0;
+        int64_t fl_every = (int64_t)secs * 1000000 / 64;
+        if (fl_every < 250000) fl_every = 250000;
+        int64_t fl_next = esp_timer_get_time() + fl_every;
         while (esp_timer_get_time() < end) {
             float rssi = 0, snr = 0;
             int n = ls_lora_poll(buf, sizeof(buf), &rssi, &snr);
+            if (n == 0 && nfl < 64 && esp_timer_get_time() >= fl_next) {
+                float v = 0;
+                if (ls_lora_rssi_inst(&v) == ESP_OK) fl[nfl++] = v;
+                fl_next += fl_every;
+            }
             if (n > 0) {
                 got++;
                 printf("lora: rx %d bytes rssi=%.1f dBm snr=%.1f dB\n", n, rssi, snr);
@@ -3935,7 +3944,14 @@ static int lora_cmd(int argc, char **argv)
             vTaskDelay(pdMS_TO_TICKS(5));
         }
         float floor_dbm = 0;
-        ls_lora_rssi_inst(&floor_dbm);
+        if (nfl) {
+            for (unsigned i = 1; i < nfl; i++)
+                for (unsigned j = i; j > 0 && fl[j - 1] > fl[j]; j--) { float t = fl[j]; fl[j] = fl[j - 1]; fl[j - 1] = t; }
+            floor_dbm = fl[nfl / 2];
+            printf("lora: floor reads %u, min %.1f median %.1f max %.1f dBm\n", nfl, fl[0], floor_dbm, fl[nfl - 1]);
+        } else {
+            ls_lora_rssi_inst(&floor_dbm);
+        }
         LS_PRINTF(fmt_compact_ui_lora_packet_crc_header, "lora: %u packet%s, %u crc/header error%s, floor %.1f dBm\n",
                got, got == 1 ? "" : "s", bad, bad == 1 ? "" : "s", floor_dbm);
         return 0;
@@ -4791,6 +4807,7 @@ esp_err_t compact_ui_start(void (*mode_changed)(const char *))
     ls_store_console_register();
     ls_power_console_register();
     ls_freqs_console_register();
+    ls_lsx_console_register();
     static const esp_console_cmd_t cmd={.command="display",.help=LS_TXT(con_compact_ui_display_help, "Display: rotate | 0 | 90 | 180 | 270 | on | off | brightness 5..100 | timeout 5..240 | autodim on|off"),.hint=nullptr,.func=display_cmd,.argtable=nullptr};
     esp_console_cmd_register(&cmd);
 

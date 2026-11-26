@@ -1156,3 +1156,22 @@ LS_CASE(lr_fm_marker_reports_range_and_relocks_manual_tune)
     LS_CHECK(test_tuner(LS_WF_OWNER_LORA,433920000));
     LS_EQ_UINT(lakeshark_fm_frequency_lock_hz(),433920000);
 }
+
+/* `wf` on a board whose waterfall has not run this boot: no pump has set an
+   idle reason, so it is NULL. The console printed it with %s and the P4's
+   newlib strlen()ed the NULL - a Load access fault right after the WFSRC
+   stops line. The status reads "-" instead. */
+LS_CASE(wf_status_without_an_idle_reason_reads_a_dash)
+{
+    char line[256];
+    size_t n = ls_wf_source_format_status(line, sizeof(line), 2, 31, 5, 1, 1, NULL);
+    LS_EQ_UINT(strlen(line), n);
+    LS_EQ_STR(line, "WFSRC stops=2 last_sweep_row_ms=31\n"
+                    "WFSRC pumps=5 mesh_asks=1 granted=1 reason=\"-\"\n");
+    ls_wf_source_format_status(line, sizeof(line), 0, 0, 0, 0, 0, "Waiting for LR chip");
+    LS_CHECK(strstr(line, "reason=\"Waiting for LR chip\"\n") != NULL);
+    /* The live one never hands the console a NULL either. */
+    ls_wf_source_status(line, sizeof(line));
+    LS_CHECK(strstr(line, "(null)") == NULL);
+    LS_CHECK(strstr(line, "reason=\"") != NULL);
+}

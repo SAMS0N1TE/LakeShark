@@ -171,7 +171,11 @@ static int tab_screen(int slot)
     return slot;
 }
 static int  s_current;
-static char s_status_left[64];
+/* A desk window's status bar shows up to 99 characters of the left text
+   (an app's counts and its last word, a saved file's name); the handheld's
+   own status row keeps its old 63-character cut. */
+#define STATUS_GRID_MAX 63
+static EXT_RAM_BSS_ATTR char s_status_left[100];
 static char s_status_right[48];
 
 /* Help is a router concern, not a screen. */
@@ -279,6 +283,20 @@ void ls_tui_transition_present(uint32_t present_us, int cells, uint32_t sync_us)
     TRANS_UNLOCK();
 }
 
+#if LS_TUI_HAS_COMPACT
+/* The desk's answer (desk/ls_desk.c); a build without a desk has none open. */
+__attribute__((weak)) bool ls_desk_radio_app_open(void) { return false; }
+#endif
+/* A radio app has a desk window, in front or behind. */
+static bool ls_tui_radio_window_open(void)
+{
+#if LS_TUI_HAS_COMPACT
+    return ls_desk_radio_app_open();
+#else
+    return false;
+#endif
+}
+
 LS_COLD void ls_tui_screen_show(int index)
 {
     if (index < 0 || index >= s_count) return;
@@ -306,8 +324,10 @@ LS_COLD void ls_tui_screen_show(int index)
 
     const ls_tui_screen_t *now = s_screens[s_current];
     if (now && now->radio) ls_tui_radio_want(now->radio);
-    /* Only a radio app on screen may keep the LoRa chip in the background. */
-    ls_tui_radio_screen(now && now->radio);
+    /* Only a radio app on screen may keep the LoRa chip in the background.
+       On the desk a radio app behind the front window is still open: MAP in
+       front shows what it hears, so its receiver keeps the chip. */
+    ls_tui_radio_screen((now && now->radio) || ls_tui_radio_window_open());
     /* Keep the pixel baseline between screens that render through cells.
        Clearing unchanged background cells is a large part of a full switch
        repaint, especially while P25 still consumes core/cache bandwidth. */
@@ -384,22 +404,13 @@ static void draw_battery(tui_surface *sf, tui_rect all, int x, uint8_t bar)
     ls_gauge_t g;
     if (!ls_gauge_get(&g) || !g.present) return;
 
-    /* The shown percent follows the pack with a one-point dead band: a
-       reading that wanders +-1 under load does not redraw the status row.
-       It moves down while discharging, up while charging, and on a plug. */
-    static uint8_t shown = 255;
-    static bool shown_chg;
-    if (shown > 100 || shown_chg != g.charging ||
-        (g.charging ? g.percent > shown : g.percent < shown) ||
-        (g.percent > shown ? g.percent - shown : shown - g.percent) >= 3) {
-        shown = g.percent;
-        shown_chg = g.charging;
-    }
-    g.percent = shown;
+    /* The percent is already filtered (ls_gauge_soc.h): down only on the
+       cell, up only charging, so it is drawn as it comes. */
 
     /* Partial blocks used to expose black rectangular grounds in the cyan
-       status band, just like the inverted help control beside the clock. */
-    const uint8_t hue = g.charging ? (TUI_CYAN | TUI_BRIGHT) :
+       status band, just like the inverted help control beside the clock.
+       On USB the blocks are blue: the colour says where the power is from. */
+    const uint8_t hue = g.plugged ? (TUI_BLUE | TUI_BRIGHT) :
                         g.percent > 40 ? (TUI_GREEN | TUI_BRIGHT) :
                         g.percent > 15 ? (TUI_YELLOW | TUI_BRIGHT) :
                                          (TUI_RED | TUI_BRIGHT);
@@ -420,9 +431,14 @@ static void draw_battery(tui_surface *sf, tui_rect all, int x, uint8_t bar)
     }
     tui_put_char(sf, all, x + 3, 0, ']', bar);
 
+    /* On the cell, the percent. Plugged in, what the charger is doing: a
+       charging cell's voltage says little about its charge, so the blocks
+       give the level and the words the state, never a 100 that is not. */
     char pct[8];
-    snprintf(pct, sizeof(pct), "%2u%%%s", (unsigned)g.percent,
-             g.charging ? "+" : "");
+    if (g.full)          snprintf(pct, sizeof(pct), "FULL");
+    else if (g.charging) snprintf(pct, sizeof(pct), "CHG");
+    else if (g.plugged)  snprintf(pct, sizeof(pct), "USB");
+    else                 snprintf(pct, sizeof(pct), "%u%%", (unsigned)g.percent);
     tui_put_str(sf, all, x + 4, 0, pct, bar);
 }
 
@@ -487,7 +503,9 @@ static ls_tui_status_layout_t status_place(int cols, int *x0, int *x1,
     const ls_tui_screen_t *s = s_screens[s_current];
     const char *name = s_locked ? ls_tr("LOCKED") : (s && s->name) ? ls_tr(s->name) : "";
     const int brand = BRAND_LEN, nl = (int)strlen(name);
-    const int ll = (int)strlen(s_status_left), rl = (int)strlen(s_status_right);
+    int ll = (int)strlen(s_status_left);
+    if (ll > STATUS_GRID_MAX) ll = STATUS_GRID_MAX;
+    const int rl = (int)strlen(s_status_right);
 
     /* Around the camera: clock to its left, the rest to its right,
        the way a phone lays its status bar around a punch hole. */
@@ -526,7 +544,7 @@ static void draw_status(tui_surface *sf, int cols)
     if (l.brand_x >= 0) tui_put_str(sf, all, l.brand_x, 0, BRAND, bar);
     if (l.name_x  >= 0) tui_put_str(sf, all, l.name_x,  0, name, bar);
     if (l.left_x  >= 0)
-        tui_put_str(sf, tui_rect_make(l.left_x, 0, l.left_n ? l.left_n : cols, 1),
+        tui_put_str(sf, tui_rect_make(l.left_x, 0, l.left_n ? l.left_n : STATUS_GRID_MAX, 1),
                     l.left_x, 0, s_status_left, bar);
     if (l.right_x >= 0) tui_put_str(sf, all, l.right_x, 0, s_status_right, bar);
 
@@ -906,6 +924,8 @@ static void draw_help(tui_surface *sf, int cols, int rows)
                     text);
 }
 
+static void pocket_draw(tui_surface *sf, int cols, tui_rect area);
+
 void ls_tui_router_draw(tui_surface *sf)
 {
     if (!sf || !s_count) return;
@@ -1008,6 +1028,7 @@ void ls_tui_router_draw(tui_surface *sf)
        that arrives while somebody is typing one is still a message, and the
        overlays are the screens people spend the longest on. */
     if (area.h > 0) ls_notify_draw(sf, area);
+    pocket_draw(sf, cols, area);
     TRANS_LOCK();
     s_trans_body = true;
     TRANS_UNLOCK();
@@ -1032,8 +1053,137 @@ void ls_tui_set_tap_cb(void (*cb)(void)) { s_tap_cb = cb; }
 
 static bool router_touch_dispatch(int col, int row);
 
+/* ------------------------------------------------------------ pocket lock */
+
+/* The finger as it is, lock or no lock (ls_tui_touch.c); weak: some bench
+   programs have no touch layer. */
+extern bool ls_tui_touch_held_raw(int *sc, int *sr, int *c, int *r) __attribute__((weak));
+#define PK_ARM_MS  4000u        /* how long the UNLOCK key waits */
+#define PK_HOLD_MS 900u         /* holding the status row this long locks */
+static bool s_pocket, s_pk_eat_tap;
+static uint32_t s_pk_arm, s_pk_miss, s_pk_hold0, s_pk_last, s_pk_auto, s_pk_since;
+static uint8_t s_pk_spot;
+static tui_rect s_pk_key, s_pk_area;
+
+static uint32_t pk_now(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+bool ls_tui_pocket_locked(void) { return s_pocket; }
+void ls_tui_pocket_set(bool on)
+{
+    if (on == s_pocket) return;
+    s_pocket = on;
+    s_pk_arm = 0;
+    s_pk_last = pk_now();
+    s_pk_since = on ? (s_pk_last ? s_pk_last : 1) : 0;
+}
+void ls_tui_pocket_auto(uint32_t ms) { s_pk_auto = ms; s_pk_last = pk_now(); }
+
+/* A tap while locked: the first shows the key in another quarter of the
+   screen than the finger is on; a tap on the key unlocks; a miss hides it,
+   and a pocket's next bump within a second shows nothing. */
+static void pocket_tap(int col, int row)
+{
+    const uint32_t now = pk_now();
+    if (s_pk_eat_tap) { s_pk_eat_tap = false; return; }    /* the lift of the hold that locked */
+    const bool armed = s_pk_arm && now - s_pk_arm < PK_ARM_MS;
+    if (armed) {
+        const tui_rect k = s_pk_key;
+        if (k.h > 0 && col >= k.x && col < k.x + k.w && row >= k.y && row < k.y + k.h) ls_tui_pocket_set(false);
+        else { s_pk_arm = 0; s_pk_miss = now; }
+        return;
+    }
+    if (s_pk_miss && now - s_pk_miss < 1000) return;
+    const tui_rect a = s_pk_area;
+    const int q = (col >= a.x + a.w / 2 ? 1 : 0) | (row >= a.y + a.h / 2 ? 2 : 0);
+    s_pk_spot = (uint8_t)((q + 1 + now % 3) % 4);
+    s_pk_arm = now ? now : 1;
+}
+
+static void pocket_draw(tui_surface *sf, int cols, tui_rect area)
+{
+    const uint32_t now = pk_now();
+    tui_rect all = tui_surface_rect(sf);
+    s_pk_area = area;
+    /* Row 0: the status row, or a full-screen app's own title row. Away
+       from the rounded corners either way. */
+    int x0 = cols / 8, x1 = cols - cols / 8;
+    if (status_rows()) status_span(cols, &x0, &x1);
+    /* Holding the status row locks: the row fills as the finger stays. */
+    if (!s_pocket && !s_locked && ls_tui_touch_held_raw) {
+        int sc, sr, c, r;
+        if (ls_tui_touch_held_raw(&sc, &sr, &c, &r) && sr == 0 && r == 0) {
+            if (!s_pk_hold0) s_pk_hold0 = now ? now : 1;
+            const uint32_t held = now - s_pk_hold0;
+            if (held < 250) return;         /* a quick tap on row 0 shows nothing */
+            const int span = x1 - x0;
+            int w = (int)((uint64_t)span * held / PK_HOLD_MS);
+            if (w > span) w = span;
+            static const char say[] = " HOLD TO LOCK ";
+            const int sl = (int)sizeof(say) - 1;
+            for (int i = 0; i < span; i++) {
+                const int si = i - (span - sl) / 2;
+                const char ch = si >= 0 && si < sl ? say[si] : i < w ? '=' : '-';
+                tui_put_char(sf, all, x0 + i, 0, ch,
+                             i < w ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED) : TUI_ATTR(TUI_BLACK, TUI_CYAN));
+            }
+            if (held >= PK_HOLD_MS) { ls_tui_pocket_set(true); s_pk_eat_tap = true; }
+        } else s_pk_hold0 = 0;
+    }
+    if (!s_pocket && !s_locked && s_pk_auto && now - s_pk_last > s_pk_auto) ls_tui_pocket_set(true);
+    if (!s_pocket) return;
+
+    /* The status row says it, over the app's name: the app stays in view. */
+    {
+        static const char badge[] = " )( POCKET LOCK )( ";
+        const int bl = (int)sizeof(badge) - 1;
+        const int bx = x0 + ((x1 - x0) - bl) / 2;
+        /* the whole row in the lock's red, the words in the middle */
+        /* the clock and the battery stay readable either side */
+        int fw = bl + 16;
+        if (fw > x1 - x0) fw = x1 - x0;
+        tui_fill(sf, tui_rect_make(x0 + ((x1 - x0) - fw) / 2, 0, fw, 1), '-', TUI_ATTR(TUI_RED, TUI_RED));
+        if (bx >= x0) tui_put_str(sf, all, bx, 0, badge, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED));
+    }
+    const bool armed = s_pk_arm && now - s_pk_arm < PK_ARM_MS;
+    /* Just locked: say how to get out, for a moment. */
+    if (s_pk_since && now - s_pk_since < 1600 && !armed && area.w >= 26 && area.h >= 7) {
+        const int w = 26, h = 5, x = area.x + (area.w - w) / 2, y = area.y + (area.h - h) / 2;
+        tui_fill(sf, tui_rect_make(x, y, w, h), ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        ls_rframe(sf, all, tui_rect_make(x, y, w, h), '-', TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, all, x + (w - 12) / 2, y + 1, "TOUCH LOCKED", TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, all, x + (w - 20) / 2, y + 3, "tap, then tap UNLOCK", TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    }
+    /* Armed: the key, with the time it has left as a shrinking fuse. */
+    s_pk_key = tui_rect_make(0, 0, 0, 0);
+    if (!armed) return;
+    int kw = area.w / 2 - 2, kh = area.h / 5;
+    if (kw > 22) kw = 22;
+    if (kh > 7) kh = 7;
+    if (kw < 12 || kh < 3) { kw = area.w - 2; kh = 3; }
+    const int qx = (s_pk_spot & 1) ? area.x + area.w * 3 / 4 : area.x + area.w / 4;
+    const int qy = (s_pk_spot & 2) ? area.y + area.h * 3 / 4 : area.y + area.h / 4;
+    int kx = qx - kw / 2, ky = qy - kh / 2;
+    if (kx < area.x) kx = area.x;
+    if (kx + kw > area.x + area.w) kx = area.x + area.w - kw;
+    if (ky < area.y) ky = area.y;
+    if (ky + kh > area.y + area.h) ky = area.y + area.h - kh;
+    const tui_rect k = tui_rect_make(kx, ky, kw, kh);
+    s_pk_key = k;
+    tui_fill(sf, k, ' ', TUI_ATTR(TUI_BLACK, TUI_GREEN));
+    ls_rframe(sf, all, k, '=', TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_GREEN));
+    tui_put_str(sf, all, kx + (kw - 6) / 2, ky + (kh - 1) / 2, "UNLOCK", TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_GREEN));
+    /* the fuse: what is left of the four seconds */
+    if (kh >= 5) {
+        const int fw = kw - 4;
+        const int left = (int)((uint64_t)fw * (PK_ARM_MS - (now - s_pk_arm)) / PK_ARM_MS);
+        for (int i = 0; i < fw; i++)
+            tui_put_char(sf, all, kx + 2 + i, ky + kh - 2, i < left ? '-' : ' ', TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_GREEN));
+    }
+}
+
 LS_COLD bool ls_tui_router_touch(int col, int row)
 {
+    s_pk_last = pk_now();
+    if (s_pocket && !s_locked) { pocket_tap(col, row); return true; }
     if (s_touch_hook && !s_in_hook) {
         s_in_hook = true;
         const bool took = s_touch_hook(col, row);
@@ -1120,6 +1270,14 @@ LS_COLD static bool router_touch_dispatch(int col, int row)
 
 LS_COLD bool ls_tui_router_key(ls_tk_t key, char ch)
 {
+    s_pk_last = pk_now();
+    /* Ctrl+L: one chord on a USB or BLE keyboard (ch 12); on the T-Display's
+       own keyboard CTRL is a key of its own, so CTRL then L within 1.5 s. */
+    static uint32_t ctrl_ms;
+    if (key == LS_TK_CTRL) ctrl_ms = s_pk_last ? s_pk_last : 1;
+    const bool ctrl_l = ch == 12 || ((ch == 'l' || ch == 'L') && ctrl_ms && s_pk_last - ctrl_ms < 1500);
+    if (key != LS_TK_CTRL && ch) ctrl_ms = 0;
+    if (ctrl_l && !s_locked) { ls_tui_pocket_set(!s_pocket); return true; }
     if (s_key_hook && !s_in_hook) {
         s_in_hook = true;
         const bool took = s_key_hook(key, ch);

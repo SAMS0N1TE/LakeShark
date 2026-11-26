@@ -13,6 +13,7 @@
 #include "esp_attr.h"
 
 #include "ls_tui_ui.h"
+#include "ls_deskui.h"
 /* ls_tui_daylight: which way round the ground is. */
 #include "ls_theme.h"
 #include "ls_pixel_wf.h"
@@ -1564,11 +1565,17 @@ static void layout_and_draw(tui_surface *sf, tui_rect area, bool chrome)
         const bool wide = ls_tui_is_wide();
         /* Three portrait rows keep the marker control touchable. */
         int bar_h = wide ? 2 : 12;
-        if (bar_h > area.h / 3) bar_h = area.h / 3;
+        /* A desk window: the keys are a group of controls under the scope,
+           in an etched box, not a second toolbar. */
+        const bool group = ls_tui_compact() && ls_dui_desk() && area.h >= 14;
+        if (group) bar_h = 4;
+        if (bar_h > area.h / 3 && !group) bar_h = area.h / 3;
         if (bar_h < 1) bar_h = 1;
 
         s_bar_rect = tui_rect_make(area.x, area.y + area.h - bar_h,
                                    area.w, bar_h);
+        const int chrome_y = s_bar_rect.y;
+        if (group) s_bar_rect = ls_dui_group(sf, s_bar_rect, "Waterfall");
         body = tui_rect_make(area.x, area.y, area.w, area.h - bar_h - 2);
 
         ls_btn_t b[LS_WF_BTNS];
@@ -1577,9 +1584,9 @@ static void layout_and_draw(tui_surface *sf, tui_rect area, bool chrome)
         if(wide) ls_btn_bar_slot(sf,s_bar_rect,b,LS_WF_BTNS,s_focus,LS_BTN_SLOT_WATERFALL);
         else ls_btn_bar_raised_slot(sf,s_bar_rect,b,LS_WF_BTNS,s_focus,LS_BTN_SLOT_WATERFALL);
 
-        draw_scale(sf, tui_rect_make(area.x + 1, s_bar_rect.y - 2,
+        draw_scale(sf, tui_rect_make(area.x + 1, chrome_y - 2,
                                      area.w - 2, 1));
-        draw_readout(sf, tui_rect_make(area.x + 1, s_bar_rect.y - 1,
+        draw_readout(sf, tui_rect_make(area.x + 1, chrome_y - 1,
                                        area.w - 2, 1));
     } else {
         s_bar_rect = tui_rect_make(0, -1, 0, 0);

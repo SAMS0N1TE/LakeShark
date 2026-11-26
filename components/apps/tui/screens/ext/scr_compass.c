@@ -365,6 +365,15 @@ static tui_rect art_and_side(tui_rect body, tui_rect *side, int side_rows)
     return art;
 }
 
+/* Desk: the window's one toolbar row, where each page puts its keys; the
+   page then keeps every row of its body. Height 0 everywhere else. */
+static tui_rect s_tool;
+static int page_bar_h(tui_rect body, int n) { return s_tool.h > 0 ? 0 : ls_btn_raised_height(body, n); }
+static void page_bar(tui_surface *sf, tui_rect r, const ls_btn_t *b, int n, int focus)
+{
+    ls_btn_bar_raised(sf, s_tool.h > 0 ? s_tool : r, b, n, focus);
+}
+
 __attribute__((noinline)) static void draw_dial(tui_surface *sf, tui_rect body)
 {
     ls_compass_scene_t sc; scene(&sc, false);
@@ -372,18 +381,18 @@ __attribute__((noinline)) static void draw_dial(tui_surface *sf, tui_rect body)
                            { "MARK", "NOTE", 'm', false, false },
                            { s_r.quality == LS_COMPASS_GOOD ? "CAL" : "RECALIBRATE", "K SETUP", 'k', s_r.quality != LS_COMPASS_GOOD, false } };
     tui_rect side;
-    const int bar_h = ls_btn_raised_height(body, 3);
+    const int bar_h = page_bar_h(body, 3);
     if (s_simple) {
         ls_scr_labs_classic_compass(sf, tui_rect_make(body.x, body.y, body.w, body.h - bar_h));
         mag_caution(sf, tui_rect_make(body.x, body.y, body.w, body.h - bar_h));
-        ls_btn_bar_raised(sf, tui_rect_make(body.x, body.y + body.h - bar_h, body.w, bar_h), buttons, 3, button_focus);
+        page_bar(sf, tui_rect_make(body.x, body.y + body.h - bar_h, body.w, bar_h), buttons, 3, button_focus);
         return;
     }
     tui_rect art = art_and_side(tui_rect_make(body.x, body.y, body.w, body.h - bar_h), &side, 15);
     ls_compass_art_draw(sf, art, &sc);
     readout(sf, side, side.y + 1);
     info_lines(sf, side, side.y + 7, side.h - 7);
-    ls_btn_bar_raised(sf, tui_rect_make(body.x, body.y + body.h - bar_h, body.w, bar_h), buttons, 3, button_focus);
+    page_bar(sf, tui_rect_make(body.x, body.y + body.h - bar_h, body.w, bar_h), buttons, 3, button_focus);
 }
 
 /* ---------------------------------------------------------------- FIND -- */
@@ -1202,8 +1211,8 @@ __attribute__((noinline)) static void draw_find(tui_surface *sf, tui_rect body)
                                      { "SAVE", "NOTE", 's', false, !ls_df_log_count(&s_log) },
                                      { "CLEAR", "LOG", 'c', false, !ls_df_log_count(&s_log) },
                                      { "VIEW", VIEW_NAMES[s_view], 'v', false, false } };
-        bar_h = 3;
-        ls_btn_bar_raised(sf, tui_rect_make(body.x, body.y, body.w, bar_h), buttons, 4, button_focus);
+        bar_h = s_tool.h > 0 ? 0 : 3;
+        page_bar(sf, tui_rect_make(body.x, body.y, body.w, bar_h), buttons, 4, button_focus);
         tui_rect side;
         const tui_rect rest = tui_rect_make(body.x, body.y + bar_h, body.w, body.h - bar_h);
         const tui_rect art = art_and_side(rest, &side, rest.h * 11 / 20);
@@ -1233,8 +1242,8 @@ __attribute__((noinline)) static void draw_find(tui_surface *sf, tui_rect body)
         { "VIEW", VIEW_NAMES[s_view], 'v', s_view != V_DIAL, cal },
         { "LOG", "HITS", 'g', false, cal } };
     const int nb = (int)(sizeof(buttons) / sizeof(buttons[0]));
-    bar_h = ls_btn_raised_height(body, nb);
-    ls_btn_bar_raised(sf, tui_rect_make(body.x, body.y, body.w, bar_h), buttons, nb, button_focus);
+    bar_h = page_bar_h(body, nb);
+    page_bar(sf, tui_rect_make(body.x, body.y, body.w, bar_h), buttons, nb, button_focus);
     tui_rect side;
     const tui_rect art = art_and_side(tui_rect_make(body.x, body.y + bar_h, body.w, body.h - bar_h), &side, 15);
     draw_find_view(sf, art);
@@ -1335,8 +1344,8 @@ __attribute__((noinline)) static void draw_goto(tui_surface *sf, tui_rect body)
     const bool set = route->valid || ls_compass_target(NULL, NULL, NULL, 0);
     ls_btn_t buttons[] = { { route->valid ? "OPTIONS" : "SET", route->valid ? "ROUTE" : "TARGET", 't', false, false }, { "MAP", "SHOW", 'm', false, !set },
                            { "CLEAR", NULL, 'c', false, !set } };
-    const int bar_h = ls_btn_raised_height(body, 3);
-    ls_btn_bar_raised(sf, tui_rect_make(body.x, body.y, body.w, bar_h), buttons, 3, button_focus);
+    const int bar_h = page_bar_h(body, 3);
+    page_bar(sf, tui_rect_make(body.x, body.y, body.w, bar_h), buttons, 3, button_focus);
     ls_compass_scene_t sc; scene(&sc, false);
     tui_rect side;
     tui_rect art = art_and_side(tui_rect_make(body.x, body.y + bar_h, body.w, body.h - bar_h), &side, 13);
@@ -1458,8 +1467,16 @@ static void draw(tui_surface *sf, tui_rect a)
     /* The six tabs take the room five did, in two short rows if need be,
        so LOOKS costs the dial none of its height. */
     const int bar_h = ls_btn_raised_height(a, P_COUNT + 1);
-    ls_btn_bar_raised_slot(sf, tui_rect_make(a.x, a.y, a.w, bar_h), tabs, P_COUNT + 2, -1, LS_BTN_SLOT_QUICK);
     tui_rect body = tui_rect_make(a.x, a.y + bar_h, a.w, a.h - bar_h - 1);
+    s_tool = tui_rect_make(0, -1, 0, 0);
+    if (ls_tui_compact() && a.h >= 14) {
+        /* Desk: the page's keys are the one toolbar, the pages a tab strip
+           on the page under it (LOOKS is y, OPTIONS is o and View). */
+        s_tool = tui_rect_make(a.x, a.y, a.w, 1);
+        ls_btn_tabs_slot(sf, tui_rect_make(a.x, a.y + 1, a.w, 1), tabs, P_COUNT, -1, LS_BTN_SLOT_QUICK);
+        body = tui_rect_make(a.x, a.y + 2, a.w, a.h - 3);
+    } else
+    ls_btn_bar_raised_slot(sf, tui_rect_make(a.x, a.y, a.w, bar_h), tabs, P_COUNT + 2, -1, LS_BTN_SLOT_QUICK);
     find_requests();
     if (s_page == P_DIAL) draw_dial(sf, body);
     else if (s_page == P_FIND) draw_find(sf, body);

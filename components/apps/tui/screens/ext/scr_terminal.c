@@ -4,6 +4,7 @@
 
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 #include "../../ls_keyboard.h"
 #include "../../ls_drag_scroll.h"
 #include "../../ls_motion.h"
@@ -229,10 +230,24 @@ static void draw(tui_surface *sf, tui_rect a)
         { "HEAP", "memory", 0, false, busy },
         { "CLEAR", "screen", 0, false, false },
     };
+    const bool desk = ls_tui_compact();
+    tui_rect body;
+    if (desk) {
+        /* A desk window: the keys on one toolbar without BACK (the title
+           bar closes, Esc goes home), the console on black glass the whole
+           way down, the news line in the window's status bar. */
+        tui_fill(sf, a, ' ', A(TUI_WHITE, TUI_BLACK));
+        ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, 1), btn + 1, 4, -1);
+        s_bar_n = 4;
+        a = tui_rect_make(a.x, a.y + 1, a.w, a.h - 1);
+        body = tui_rect_make(a.x, a.y, a.w, a.h);
+        ls_dui_glass(sf, body);
+    } else {
     bar(sf, &a, btn, 5);
 
-    tui_rect body = tui_rect_make(a.x, a.y, a.w, a.h - 1);
+    body = tui_rect_make(a.x, a.y, a.w, a.h - 1);
     ls_panel_box(sf, body, NULL, TUI_GREEN);
+    }
     ls_motion_busy(sf, body, busy);
     tui_rect in = tui_rect_make(body.x + 2, body.y + 1, body.w - 4, body.h - 2);
     if (in.w < 8 || in.h < 2) return;
@@ -284,6 +299,8 @@ static void draw(tui_surface *sf, tui_rect a)
                      : !s_runner ? "no command runner: not enough internal memory"
                      : ls_tui_keyboard_mode() ? ""
                      : "KEYS to type; drag the text to scroll";
+    if (desk) ls_tui_status_set(s_note[0] || !s_runner ? foot : "Enter runs a command; 'help' lists them.", NULL);
+    else
     ls_safe_line(sf, a, a.y + a.h - 1, foot, s_note[0] || !s_runner ? A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
 }
 
@@ -317,8 +334,8 @@ static bool key(ls_tk_t k, char ch)
 
 static bool touch(int x, int y)
 {
-    const int i = ls_btn_hit(x, y);
-    if (i >= 0 && i < s_bar_n) { action(i); return true; }
+    int i = ls_btn_hit(x, y);
+    if (i >= 0 && i < s_bar_n) { action(ls_tui_compact() ? i + 1 : i); return true; }   /* the desk's bar has no BACK */
     if (s_in_hit.w > 0 && tui_rect_contains(s_in_hit, x, y)) { open_keys(); return true; }
     if (s_out_hit.w > 0 && tui_rect_contains(s_out_hit, x, y)) {
         if (ls_drag_scroll_tap_is_lift(&s_drag)) return true;   /* the end of a drag */

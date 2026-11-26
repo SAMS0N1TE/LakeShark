@@ -49,6 +49,27 @@ int ls_time_source(void) { return s_synced ? s_source : 0; }
 
 void ls_time_test_set_synced(bool synced) { s_synced = synced; }
 
+void ls_time_offer_gps(time_t utc, uint32_t age_ms)
+{
+    if (s_synced && s_source == 2) return;
+    if ((long long)utc < LS_TIME_MIN_REAL || (long long)utc > LS_TIME_MAX_REAL) return;
+    const long long at = (long long)utc + age_ms / 1000;
+    const long long off = (long long)time(NULL) - at;
+    if (s_synced && off > -2 && off < 2) {
+        /* already right: the GPS vouches for it now */
+        if (s_source != 3) { s_source = 3; note_sync_time(); }
+        return;
+    }
+#if !LS_TIME_HOST
+    struct timeval tv = { .tv_sec = (time_t)at, .tv_usec = (long)(age_ms % 1000) * 1000 };
+    settimeofday(&tv, NULL);
+    ESP_LOGI(TAG, "wall clock set from GPS");
+#endif
+    s_synced = true;
+    s_source = 3;
+    note_sync_time();
+}
+
 size_t ls_time_render_stamp_at(char *out, size_t cap,
                                time_t real_time, int64_t uptime_us)
 {

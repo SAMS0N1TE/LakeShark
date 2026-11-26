@@ -692,6 +692,9 @@ void ls_panel_fb_present_rows(int y0, int y1)
     if (y1 > s_model->h) y1 = s_model->h;
     if (y1 <= y0) return;
     esp_lcd_panel_draw_bitmap(s_panel, 0, y0, s_model->w, y1, s_frames[s_back]);
+    /* 'tui cast' sends the rows a frame changed (main/ls_cast.c). */
+    extern void ls_cast_rows(int y0, int y1) __attribute__((weak));
+    if (ls_cast_rows) ls_cast_rows(y0, y1);
 }
 
 uint32_t ls_panel_refresh_count(void)

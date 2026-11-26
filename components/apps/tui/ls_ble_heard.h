@@ -21,6 +21,11 @@ typedef struct {
     float smooth;          /* the same, averaged over a few adverts */
     uint32_t adverts;
     int64_t last_us;
+    /* What the advert said beyond its name, kept once seen (ad_have bit 0:
+       company + mfg0; bit 1: uuid16 + svc0). mfg0/svc0 -1: no byte. */
+    uint8_t ad_have;
+    uint16_t company, uuid16;
+    int16_t mfg0, svc0;
 } ls_ble_heard_t;
 
 /* Scan callback context: cheap, bounded, no allocation. */
@@ -29,6 +34,9 @@ void ls_ble_heard_note(const uint8_t addr[6], const char *name, int name_len,
 /* Strongest first, among devices heard within max_age_us. */
 int  ls_ble_heard_list(ls_ble_heard_t *out, int cap, int64_t now_us, int64_t max_age_us);
 bool ls_ble_heard_find(const uint8_t addr[6], ls_ble_heard_t *out);
+/* The advert's company ID and 16-bit service UUID, for a device already
+   noted. Parses the raw AD bytes; bounded, no allocation. */
+void ls_ble_heard_note_ad(const uint8_t addr[6], const uint8_t *ad, int len);
 void ls_ble_heard_clear(void);
 
 #ifdef __cplusplus

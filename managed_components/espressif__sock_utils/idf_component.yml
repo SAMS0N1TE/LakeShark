@@ -5,7 +5,7 @@ description: The component provides helper implementation of common system/socke
   utilities
 repository: git://github.com/espressif/esp-protocols.git
 repository_info:
-  commit_sha: f3f3e23becab01b8d95b02f1920bc53438ff4462
+  commit_sha: bb58bd1586eb2392473836cc2b66c89314ea5767
   path: components/sock_utils
 url: https://github.com/espressif/esp-protocols/tree/master/components/sock_utils
-version: 0.2.2
+version: 0.3.0

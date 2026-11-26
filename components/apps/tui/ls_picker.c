@@ -14,6 +14,8 @@
 #define DIM_FG LS_DIM_FG
 
 static bool s_open;
+static const ls_picker_form_t *s_form;     /* ls_picker_form: the owner's own desk form */
+void ls_picker_form(const ls_picker_form_t *form) { s_form = form; }
 static void (*s_header)(tui_surface *, tui_rect);
 void ls_picker_header(void (*draw)(tui_surface *, tui_rect)) {s_header=draw;}
 static void (*s_preview)(tui_surface *, tui_rect);
@@ -97,6 +99,7 @@ static void refilter(void)
 
 void ls_picker_open(const char *title, ls_picker_done_t on_done)
 {
+    s_form = NULL;
     snprintf(s_title, sizeof(s_title), "%s", title ? title : "CHOOSE");
     s_why[0] = 0;
     s_note[0] = 0;
@@ -145,6 +148,11 @@ void ls_picker_note(const char *text)
     snprintf(s_note, sizeof(s_note), "%s", text ? text : "");
 }
 
+int ls_picker_current(void)
+{
+    return s_cur >= 0 && s_cur < s_shown ? s_order[s_cur] : -1;
+}
+
 void ls_picker_select(int index)
 {
     for (int i = 0; i < s_shown; i++)
@@ -168,7 +176,7 @@ void ls_picker_stepper(int index, void (*on_step)(int index, int dir))
 
 void ls_picker_navigation(void (*navigate)(int index, int dir)) { s_navigate=navigate; }
 
-void ls_picker_close(void) { s_navigate=NULL; s_open = false; s_done = NULL; s_on_back = NULL; s_on_step = NULL; }
+void ls_picker_close(void) { s_form = NULL; s_navigate=NULL; s_open = false; s_done = NULL; s_on_back = NULL; s_on_step = NULL; }
 void ls_picker_keep_open(void) { s_keep_open=true; }
 
 static void go_back(void)
@@ -403,6 +411,8 @@ static void draw_compact(tui_surface *sf, tui_rect area)
     }
 
     s_nvis = rows;
+    /* The rows are a list box's: on the well's ground in a desk window. */
+    ls_ink_well(tui_rect_make(in.x, y, in.w, rows));
     if (s_cur < s_top) s_top = s_cur;
     if (s_cur >= s_top + rows) s_top = s_cur - rows + 1;
     if (s_top > s_shown - rows) s_top = s_shown - rows;
@@ -482,6 +492,7 @@ static void draw_compact(tui_surface *sf, tui_rect area)
 void ls_picker_draw(tui_surface *sf, tui_rect area)
 {
     if (!s_open || area.w < 16 || area.h < 12) return;
+    if (s_form && ls_tui_compact()) { s_form->draw(sf, area); return; }
     if (ls_tui_compact()) {
         s_hit_rows = 0;
         s_hit_prev.w = s_hit_next.w = s_hit_close.w = s_hit_back.w = 0;
@@ -663,6 +674,7 @@ static void page(int dir)
 
 bool ls_picker_key(ls_tk_t key, char ch)
 {
+    if (s_open && s_form && ls_tui_compact()) return s_form->key(key, ch);
     if (!s_open) return false;
 
     if (key == LS_TK_CHAR) {
@@ -702,6 +714,7 @@ static bool in(tui_rect r, int col, int row)
 
 bool ls_picker_touch(int col, int row)
 {
+    if (s_open && s_form && ls_tui_compact()) return s_form->touch(col, row);
     if (!s_open) return false;
 
     if (in(s_hit_close, col, row)) { ls_picker_close(); return true; }

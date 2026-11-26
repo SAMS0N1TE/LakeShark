@@ -6,6 +6,7 @@
 #include "../../ls_motion.h"
 #include "../../ls_tui.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 
 #include "esp_attr.h"
 #include "esp_timer.h"
@@ -236,6 +237,15 @@ static void band(tui_surface *sf, tui_rect r, int y, const char *title,
 {
     int x0, x1;
     row_span(r, y, &x0, &x1);
+    if (ls_tui_compact()) {
+        /* A desk window: the row is a well's top edge; the title is its caption. */
+        if (title) {
+            char cap[40];
+            snprintf(cap, sizeof(cap), " %s ", title);
+            tui_put_str(sf, r, x0, y, cap, ls_ink(LS_INK_TEXT, TUI_ATTR(TUI_WHITE, TUI_BLACK)));
+        }
+        return;
+    }
     for (int x = x0; x < x1; x++)
         tui_put_char(sf, r, x, y, '=', TUI_ATTR(hue, TUI_BLACK));
     if (title && x1 - x0 > (int)strlen(title) + 6) {
@@ -248,6 +258,8 @@ static void band(tui_surface *sf, tui_rect r, int y, const char *title,
 /* ---------------------------------------------------------- the card --- */
 
 #define CARD_ROWS 10
+/* Drawn inside someone else's frame (p25_calls_live_card): no group box. */
+static bool s_card_inset;
 
 static int card_rows(int w) { return w >= 30 ? CARD_ROWS : 0; }
 
@@ -296,6 +308,18 @@ static void card_draw(tui_surface *sf, tui_rect r)
     const uint8_t pulse = on ? ls_fresh_level(&s_arrival, 1200) : 0;
     const char *title = on ? (c->emergency ? "EMERGENCY" : "ON AIR")
                       : any ? "LAST CALL" : "LISTENING";
+    const bool desk = ls_tui_compact();
+    if (desk) {
+        /* A desk window: the card is a group box, its state the caption;
+           inside a pane that is its frame already (P25's NOW PLAYING), the
+           state is the first row's words. */
+        if (!s_card_inset) ls_dui_group(sf, r, NULL);
+        char cap[24];
+        snprintf(cap, sizeof(cap), s_card_inset ? "%s" : " %s ", title);
+        tui_put_str(sf, r, s_card_inset ? r.x + 2 : r.x + 1, r.y, cap,
+                    on ? ls_ink(LS_INK_STRONG, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK))
+                       : ls_ink(LS_INK_TEXT, TUI_ATTR(TUI_WHITE, TUI_BLACK)));
+    } else
     band(sf, r, r.y, title, hue,
          TUI_ATTR(pulse >= 128 ? (TUI_WHITE | TUI_BRIGHT) : (hue | TUI_BRIGHT),
                   pulse >= 128 ? hue : TUI_BLACK));
@@ -416,8 +440,8 @@ static void card_draw(tui_surface *sf, tui_rect r)
     }
 
     /* The foot: where the call is carried, and the site. */
-    const int fy = r.y + r.h - 1;
-    band(sf, r, fy, NULL, hue, 0);
+    const int fy = desk ? r.y + 1 : r.y + r.h - 1;
+    if (!desk) band(sf, r, fy, NULL, hue, 0);
     if (any || P25.dsd_has_sync) {
         const uint64_t hz = any ? c->hz : s_tune_freq_hz;
         if (p25_nac_valid(&P25))
@@ -429,7 +453,12 @@ static void card_draw(tui_surface *sf, tui_rect r)
                      c->algid, c->kid);
         int x0, x1;
         row_span(r, fy, &x0, &x1);
-        if (x1 - x0 > (int)strlen(text) + 4)
+        if (desk) {
+            /* On the desk the frequency is a readout on its own glass. */
+            const int n = (int)strlen(text);
+            if (x1 - x0 > n + 4)
+                ls_dui_vfd(sf, tui_rect_make(x1 - n - 2, fy, n, 1), text, LS_DUI_VFD_CYAN | LS_DUI_VFD_SMALL);
+        } else if (x1 - x0 > (int)strlen(text) + 4)
             tui_put_str(sf, r, x1 - (int)strlen(text) - 2, fy, text,
                         TUI_ATTR(TUI_WHITE, TUI_BLACK));
     }
@@ -441,7 +470,7 @@ static uint16_t card_tg(void) { return s_now.on ? s_now.tg : s_last.tg; }
 
 #if LS_TUI_HAS_COMPACT
 /* The same card, for P25's desk layout (scr_p25_desk.h). */
-void p25_calls_live_card(tui_surface *sf, tui_rect r) { card_draw(sf, r); }
+void p25_calls_live_card(tui_surface *sf, tui_rect r) { s_card_inset = true; card_draw(sf, r); s_card_inset = false; }
 #endif
 
 static int live_keys(ls_calls_live_key_t out[2])
@@ -557,7 +586,7 @@ static void strip_draw(tui_surface *sf, tui_rect r)
         int x0, x1;
         row_span(r, r.y, &x0, &x1);
         if (x1 - x0 >= 46)
-            tui_put_str(sf, r, x1 - 17, r.y, " HITS  AGE ", TUI_ATTR(TUI_CYAN, TUI_BLACK));
+            tui_put_str(sf, r, x1 - 17, r.y, " HITS  AGE ", ls_tui_compact() ? ls_ink(LS_INK_TEXT, TUI_ATTR(TUI_CYAN, TUI_BLACK)) : TUI_ATTR(TUI_CYAN, TUI_BLACK));
     }
     if (!s_strip_n) {
         ls_safe_line(sf, r, r.y + 1,

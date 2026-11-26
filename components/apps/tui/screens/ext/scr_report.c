@@ -356,18 +356,12 @@ void ls_netui_register(void)
 {
     extern const ls_tui_screen_t ls_scr_locker, ls_scr_chat;
     extern const char *ls_chat_tile_line(void);
-    static const char LOCKER_ART[LS_ICON_ROWS][LS_ICON_COLS + 1] = {
-        ".---.---. ", "|=- |=- | ", "|  o|o  | ", "|## |   | ", "|## |## | ", "'---'---' ",
-    };
-    static const char CHAT_ART[LS_ICON_ROWS][LS_ICON_COLS + 1] = {
-        " .----.   ", "( hi! )   ", " '-.-'.--.", "   ' (...)", "      '-' ", "  #global ",
-    };
     static ls_app_t apps[2];
     apps[0] = (ls_app_t){ .id = "locker", .name = "LOCKER", .sub = "files", .hue = TUI_CYAN, .cat = LS_APP_EXTRA,
-                          .icon = ls_icon_art(LS_ICON_SLOT_LOCKER, LOCKER_ART, LS_ICON_UPDATE),
+                          .icon = LS_ICON_LOCKER,
                           .screen = &ls_scr_locker, .doc = &ls_doc_locker };
     apps[1] = (ls_app_t){ .id = "chat", .name = "CHAT", .sub = ls_chat_tile_line(), .hue = TUI_MAGENTA, .cat = LS_APP_EXTRA,
-                          .icon = ls_icon_art(LS_ICON_SLOT_CHAT, CHAT_ART, LS_ICON_WIRELESS),
+                          .icon = LS_ICON_CHAT,
                           .screen = &ls_scr_chat, .doc = &ls_doc_chat };
     for (int i = 0; i < 2; i++) ls_app_register(&apps[i]);
     ls_notify_add_probe(netui_probe);

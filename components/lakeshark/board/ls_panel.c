@@ -110,6 +110,9 @@ void ls_panel_fb_present_rows(int y0, int y1)
     esp_lcd_panel_draw_bitmap(s_panel, 0, y0,
                               s_pd->w, y1,
                               s_frames[s_back]);
+    /* 'tui cast' sends the rows a frame changed (main/ls_cast.c). */
+    extern void ls_cast_rows(int y0, int y1) __attribute__((weak));
+    if (ls_cast_rows) ls_cast_rows(y0, y1);
     static uint32_t reported, last_report_ms;
     uint32_t late = __atomic_load_n(&s_late_frames, __ATOMIC_RELAXED);
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);

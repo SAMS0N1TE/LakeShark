@@ -13,6 +13,7 @@
 #include "ls_rid_ui.h"
 #include "ls_rid.h"
 #include "ls_options.h"
+#include "ls_tui_ui.h"
 #include "ls_compass_art.h"
 #include "ls_i18n.h"
 #include "esp_timer.h"
@@ -449,8 +450,14 @@ static void draw(tui_surface *sf, tui_rect a)
         {"FIND", s_count ? "LINK" : "--", '4', s_page == PG_FIND, false, false},
         ls_opt_button(&CTX),
     };
-    ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y + a.h - bar_h, a.w, bar_h), b, 5, -1);
-    a.h -= bar_h;
+    if (ls_tui_compact()) {
+        /* Desk: the pages and OPTIONS are the one toolbar under the menu bar. */
+        ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y, a.w, 1), b, 5, -1);
+        a.y++; a.h--;
+    } else {
+        ls_btn_bar_raised(sf, tui_rect_make(a.x, a.y + a.h - bar_h, a.w, bar_h), b, 5, -1);
+        a.h -= bar_h;
+    }
     const int top = header(sf, a, now);
     tui_rect body = tui_rect_make(a.x, a.y + top, a.w, a.h - top);
     switch (s_page) {
@@ -532,10 +539,19 @@ static void enter(void)
     /* Opening the app listens; leaving stops it unless asked to keep going. */
     if (!s_status.enabled) { (void)ls_drone_watch_enable(true); s_status.enabled = true; s_session_on = !s_background; }
 }
+#if LS_TUI_HAS_COMPACT
+/* The desk's answer (desk/ls_desk.c); a build without a desk has none open. */
+__attribute__((weak)) bool ls_desk_app_open(const char *id) { (void)id; return false; }
+#endif
 static void leave(void)
 {
     ls_rid_leave();
     ls_drone_watch_foreground(false);
+#if LS_TUI_HAS_COMPACT
+    /* A desk window behind another is still open: the watch goes on feeding
+       MAP's drone markers until the window closes. */
+    if (ls_desk_app_open("drones")) return;
+#endif
     if (s_session_on && !s_background) { (void)ls_drone_watch_enable(false); s_session_on = false; }
 }
 

@@ -85,12 +85,23 @@ void ls_sweep_motion(bool fix, float moved_m, unsigned new_places, int64_t now);
 void ls_sweep_stats(ls_sweep_stats_t *out, int64_t now);
 void ls_sweep_transport_stats(ls_sweep_transport_stats_t *out);
 const char *ls_sweep_category(unsigned cat);
+/* Classification goes through the shared signature table (ls_sigs.h): its
+ * tags map onto SWEEP's five categories. Find My, DULT, Find Hub and
+ * SmartTag keep SWEEP's exact payload checks, which also give the
+ * separated/near state. The _from form also matches the address (vendor
+ * prefixes only for a public address); mac as stored, least significant
+ * byte first. */
 bool ls_sweep_parse_ble(const uint8_t *ad, size_t len, ls_sweep_match_t *out);
+bool ls_sweep_parse_ble_from(const uint8_t mac[6], uint8_t type, const uint8_t *ad, size_t len, ls_sweep_match_t *out);
 bool ls_sweep_parse_wifi(const uint8_t bssid[6], const char *ssid, ls_sweep_match_t *out);
-/* Strict bounded JSON: array of objects with category,label,vendor and exactly
- * one selector (oui/company/name/uuid/ssid). Atomic replacement on success. */
+/* The compat reader for an old rules.json. Strict bounded JSON: array of
+ * objects with category,label,vendor and exactly one selector
+ * (oui/company/name/uuid/ssid). On success its rows replace SWEEP's layer of
+ * the shared table (ids sweep-1...; rows equal to the ones SWEEP used to
+ * seed are already built in and skipped); on failure nothing changes. */
 bool ls_sweep_rules_parse(const char *json, size_t len);
 bool ls_sweep_rules_reload(void);
+/* Drops SWEEP's folded rows: the shared table as built in. */
 void ls_sweep_defaults(void);
 void ls_sweep_init(void);
 void ls_sweep_rules_seed(void);

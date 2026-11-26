@@ -65,4 +65,13 @@ void bhw_follow_step(int by);           /* the alert's minutes, a step up or dow
 void bhw_possible_toggle(void);
 void bhw_log_toggle(void);
 bool bhw_log_on(void);
+/* bw_label, with the name file's company, service, appearance or maker
+   where the tag engine's own short table has none */
+const char *bhw_label(const bw_dev_t *d, char *buf, size_t cap);
+/* Tracking: MINE / WATCH a tag (NONE -> MINE -> WATCH -> NONE, kept on the
+   card by address), which kinds alert, how long a WATCH tag may go quiet. */
+uint8_t bhw_mark_cycle(uint32_t uid);
+int bhw_watch_poll(int *event);         /* bw_watch on the table */
+void bhw_tracking(uint16_t kind_off, uint32_t watch_ms);
+int bhw_marked(int *mine, int *watching);   /* returns addresses kept on the card */
 #endif

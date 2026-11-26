@@ -44,7 +44,7 @@ assert '[Chats 1]' in c[2] and '[Nodes 6]' in c[2] and '[Arm]' in c[2]
 top = row_of(c, 'CHATS')
 assert '1 unread' in c[top] and '# public' in c[top] and 'ON THIS CHANNEL' in c[top]
 kb = row_of(c, '@ KB1QWE')
-assert c[kb].split('|')[1].rstrip().endswith(' 1')                      # the DM that has not been read
+assert next(s for s in c[kb].split('|') if 'KB1QWE' in s).rstrip().endswith(' 1')   # the DM that has not been read
 assert '^ NORTHFIELD' in c[kb + 1] and has(c, '~ WEIR TEMP')
 send = row_of(c, 'To # public')
 assert '[Send]' in c[send] and 'testing the new firmware now' in c[send - 2] and 'sending' in c[send - 2]
@@ -105,10 +105,15 @@ assert not has(c, 'net at 1900')
 c, _ = run('findesc', OPEN + ',M4,+f,M0,+DAM,@esc,~2')
 assert '6 messages' in c[top] and has(c, 'net at 1900')
 
+# On a desktop this small the window opens maximized already (11-20 size
+# presets: none fits), so these runs leave out the ^ that would restore it.
+SMALL = '!mesh,~10'
+
 # A long message wraps and loses nothing; the wheel reads back.
-c, _ = run('long', OPEN, grid='100x34', LSSIM_MESH_LAST='long')
+c, _ = run('long', SMALL, grid='100x34', LSSIM_MESH_LAST='long')
 assert has(c, 'FINALTAIL')
-c, _ = run('fill', OPEN + ',W60:12:-2,~2', grid='100x30', LSSIM_MESH_FILL='1')
+c, _ = run('fill', SMALL + ',W60:12:-2,~2', grid='100x30', LSSIM_MESH_FILL='1')
+assert 'Maximized' in c[26]
 assert has(c, 'more below: End') and has(c, 'earlier message 01')
 
 # The chat goes to the card as a text file.
@@ -121,7 +126,7 @@ assert saved[2].split('\t')[2:] == ['SHARK', 'copy, hearing you at -74', 'relaye
 # The handheld layout and a node's INSPECT page are still there; Ctrl+L and Esc come back.
 c, _ = run('classic', OPEN + ',M4,+l,M0,~3')
 assert ' File  View  Window  Help' in c[1]          # the desk's bar, where the app's own was
-assert 'PUBLIC CHANNEL' in c[3] and 'HEARD' in c[3] and 'Ctrl+L brings the desktop one back' in c[44]
+assert 'PUBLIC CHANNEL' in c[3] and 'HEARD' in c[3] and 'Ctrl+L brings the desktop one back' in c[43]   # the handheld's own foot row, over the window's status bar
 c, _ = run('back', OPEN + ',M4,+l,+l,M0,~3')
 assert ' Mesh  Chat  View  Node' in c[1]
 c, _ = run('menu', OPEN + ',R%d:%d,~2' % (kb_x, kb + 1))
@@ -133,6 +138,6 @@ c, _ = run('inspectback', OPEN + ',R%d:%d,~2,C%d:%d,~3,@esc,@esc,~2' % (kb_x, kb
 assert ' Mesh  Chat  View  Node' in c[1]
 
 # A narrower window drops the detail pane and keeps the rest.
-c, _ = run('narrow', OPEN, grid='100x34')
-assert 'CHATS' in c[3] and 'ON THIS CHANNEL' not in c[3] and '[Send]' in c[28]
+c, _ = run('narrow', SMALL, grid='100x34')
+assert 'Maximized 98x28' in c[30] and 'CHATS' in c[3] and 'ON THIS CHANNEL' not in c[3] and '[Send]' in c[28]
 print('MESH desk: ok')

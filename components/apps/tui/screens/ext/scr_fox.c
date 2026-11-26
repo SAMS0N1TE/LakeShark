@@ -41,6 +41,7 @@
 #include "../../ls_rfs_run.h"
 #include "../../ls_rfsim.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 #include "ls_textpack.h"
 
 #define WHITE   TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK)
@@ -303,6 +304,14 @@ static void header(tui_surface *sf, tui_rect a, const ls_fox_hunt_t *h)
     ls_radio_chip(sf, a, x, a.y + 1, t, h->n > 0, TUI_YELLOW);
     snprintf(t, sizeof(t), "%.10s", src_name());
     char line[64];
+    if (ls_tui_compact() && a.w >= 40) {
+        /* A desk window: the radio's name, then its frequency on a VFD. */
+        put(sf, a, a.x + 2, a.y + 2, t, CYAN);
+        snprintf(line, sizeof(line), "%.4f MHz", s_hz / 1e6);
+        const int x = a.x + 2 + (int)strlen(t) + 2;
+        ls_dui_vfd(sf, tui_rect_make(x, a.y + 2, (int)strlen(line) + 2, 1), line, LS_DUI_VFD_CYAN | LS_DUI_VFD_SMALL);
+        return;
+    }
     snprintf(line, sizeof(line), "%s  %.4f MHz", t, s_hz / 1e6);
     put(sf, a, a.x + 2, a.y + 2, line, CYAN);
 }
@@ -536,7 +545,13 @@ static void draw(tui_surface *sf, tui_rect area)
     EXT_RAM_BSS_ATTR static ls_fox_hunt_t h;
     ls_fox_get(&h);
     const bool wide = ls_tui_is_wide();
-    const int bar_h = ls_btn_raised_height(area, 5);
+    int bar_h = ls_btn_raised_height(area, 5);
+    tui_rect tool = tui_rect_make(0, -1, 0, 0);
+    if (ls_tui_compact() && area.h >= 12) {
+        /* Desk: the keys are the window's one toolbar, under its menu bar. */
+        tool = tui_rect_make(area.x, area.y, area.w, 1);
+        area.y++; area.h--; bar_h = 0;
+    }
     const int head_h = 4;
     header(sf, tui_rect_make(area.x, area.y, area.w, head_h), &h);
     const int body_y = area.y + head_h, body_h = area.h - head_h - bar_h - 1;
@@ -558,7 +573,7 @@ static void draw(tui_surface *sf, tui_rect area)
         ls_panel_box(sf, tui_rect_make(area.x, body_y + body_h - rh, area.w, rh), "READOUT", TUI_RED);
         readout(sf, tui_rect_make(area.x + 2, body_y + body_h - rh + 1, area.w - 4, rh - 2), &h);
     }
-    if (!wide) ls_safe_line(sf, area, area.y + area.h - bar_h - 1, s_hint, LS_ATTR_DIM);
+    if (!wide && !ls_tui_compact()) ls_safe_line(sf, area, area.y + area.h - bar_h - 1, s_hint, LS_ATTR_DIM);   /* desk: Help > Keys */
     char freq[16]; snprintf(freq, sizeof(freq), "%.3f", s_hz / 1e6);
     char src[16]; snprintf(src, sizeof(src), "%.10s", src_name());
     const bool aimed = s_fit.valid || s_est.valid;
@@ -569,7 +584,7 @@ static void draw(tui_surface *sf, tui_rect area)
         { "MAP", h.n ? "bearings" : NULL, 'm', false, false, h.n > 1 },
         ls_opt_button(&C_ROOT),
     };
-    ls_btn_bar_raised(sf, tui_rect_make(area.x, area.y + area.h - bar_h, area.w, bar_h), b, 5, -1);
+    ls_btn_bar_raised(sf, tool.h > 0 ? tool : tui_rect_make(area.x, area.y + area.h - bar_h, area.w, bar_h), b, 5, -1);
 }
 
 static bool key(ls_tk_t k, char ch)

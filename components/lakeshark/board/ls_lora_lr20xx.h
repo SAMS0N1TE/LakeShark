@@ -629,6 +629,29 @@ typedef struct {
 } lr20xx_gfsk_rx_stats_t;
 esp_err_t lr20xx_get_gfsk_rx_stats(lr20xx_gfsk_rx_stats_t *out);
 
+/* ---- FLRC (LR2021 only; datasheet Rev 2.2 section 18, Semtech lr20xx driver
+   2.1.0 lr20xx_radio_flrc.c for the byte layout) ---------------------------- */
+#define LR20XX_PKT_TYPE_FLRC        0x05    /* 8.1.1 */
+#define LR20XX_OP_SET_FLRC_MOD      0x0248  /* 18.4.1 */
+#define LR20XX_OP_SET_FLRC_PKT      0x0249  /* 18.4.2 */
+#define LR20XX_OP_GET_FLRC_PKT_ST   0x024B  /* 18.4.4 */
+#define LR20XX_OP_SET_FLRC_SYNC     0x024C  /* 18.4.5 */
+/* SetFlrcModulationParams: bitrate_bw code 0..7, coding rate code (0 1/2,
+   1 3/4, 2 none, 3 2/3), pulse shape (0 off, 4 BT 0.3, 5 BT 0.5, 7 BT 1). */
+esp_err_t lr20xx_flrc_set_modulation(uint8_t rate_code, uint8_t cr, uint8_t pulse_shape);
+/* SetFlrcPacketParams, fixed length: the preamble code (0..7 for 4..32 bits),
+   a 4-byte sync word sent from slot 1 and matched in slot 1, no CRC. */
+esp_err_t lr20xx_flrc_set_packet_fixed(uint8_t preamble_code, uint16_t payload_len);
+/* SetFlrcSyncword: slot 1..3, the four bytes of `sync_word` MSB first. */
+esp_err_t lr20xx_flrc_set_syncword(uint8_t slot, uint32_t sync_word);
+typedef struct {
+    uint16_t pkt_len;
+    float    rssi_avg_dbm;
+    float    rssi_sync_dbm;
+    int32_t  freq_offset_hz;
+} lr20xx_flrc_pkt_status_t;
+esp_err_t lr20xx_get_flrc_packet_status(lr20xx_flrc_pkt_status_t *out);
+
 /* Receive-only packet engines; command bytes follow Semtech usp headers and
    RadioLib LR2021_commands.h. Side detectors share the main frequency/BW,
    have distinct larger SFs, and span at most four SF steps. */

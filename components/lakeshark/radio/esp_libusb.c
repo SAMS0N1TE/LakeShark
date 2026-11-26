@@ -15,6 +15,7 @@
 #include "freertos/semphr.h"
 #include <string.h>
 #include "ls_cold.h"
+#include "ls_usb_string.h"
 
 static class_adsb_dev *adsbdev;
 
@@ -872,15 +873,18 @@ bool esp_libusb_ctrl_pending(usb_device_handle_t device)
     return pending;
 }
 
+/* bLength counts the descriptor's two header bytes. Copying bLength / 2 code
+   units ran one past the end and appended whatever followed in memory, so
+   "Blog V4" could come out as "Blog V4" plus a stray character, and the V4
+   check that unlocks HF failed. Callers pass 256-byte buffers; a descriptor
+   holds at most 126 characters. */
 void esp_libusb_get_string_descriptor_ascii(const usb_str_desc_t *str_desc, char *str)
 {
     if (str_desc == NULL) {
         return;
     }
 
-    for (int i = 0; i < str_desc->bLength / 2; i++) {
-        str[i] = (char)str_desc->wData[i];
-    }
+    ls_usb_string_ascii((const uint8_t *)str_desc, str, 256);
 }
 
 int esp_libusb_control_transfer(class_driver_t *driver_obj, uint8_t bm_req_type,

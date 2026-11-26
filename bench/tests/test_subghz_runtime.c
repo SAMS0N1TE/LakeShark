@@ -210,6 +210,8 @@ void settings_set_subghz_gate_db(int db){(void)db;}
 void settings_set_subghz_on_hit(int mode){(void)mode;}
 bool settings_get_subghz_lr_fsk(void){return false;}
 void settings_set_subghz_lr_fsk(bool fsk){(void)fsk;}
+bool settings_get_subghz_lr_raw(void){return false;}
+void settings_set_subghz_lr_raw(bool raw){(void)raw;}
 void settings_set_subghz_fsk(uint32_t rate,uint32_t dev,uint32_t sync,int pre,int bw)
 {(void)rate;(void)dev;(void)sync;(void)pre;(void)bw;}
 ls_rsel_radio_t ls_rsel_saved(ls_rsel_job_t job){(void)job;return LS_RSEL_LORA;}

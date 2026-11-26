@@ -5661,6 +5661,12 @@ static bool touch(int col, int row)
     return true;
 }
 
+LAP_ICON_PX("....................", "....................", "....................", ".......aa2..aaa2....",
+            ".......aa2..aaa2....", "......aa2..aa.aa2...", "......aa2..aa.aa2...", ".....aa2..aa...aa2..",
+            ".....aa2..aa...aa2..", "....aa2..aa.....aa2.", "....aa2..aa.....aa2.", "...aa2..aa.......aa2",
+            "...aa2..aa.......aa2", "..aa2..aa.........aa", "..aa2..aa.........aa", ".aa2..aa...........a",
+            "....................", "....................");
+
 LAP_APP(.id = "meshtastic", .name = "MESHTASTIC", .sub = "be a Meshtastic node", .version = "1.4",
         .author = "LakeShark", .color = LAP_GREEN,
         .icon_art = { "   /\\     ", "  /  \\ ((o", " / /\\ \\/  ", "/_/  \\_/\\_", "  ~ ~ ~ ~ ", "          " },

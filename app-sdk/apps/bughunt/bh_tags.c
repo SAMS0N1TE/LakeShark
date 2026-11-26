@@ -204,6 +204,7 @@ void bw_init(bw_t *w)
     memset(w, 0, sizeof(*w));
     w->next_uid = 1;
     w->follow_ms = 10u * 60u * 1000u;
+    w->watch_ms = 120000u;
     w->follow_m = 250.0f;
     w->gap_ms = 5u * 60u * 1000u;
 }
@@ -386,11 +387,49 @@ static void link_rotation(bw_t *w, bw_dev_t *d)
     d->count += c->count;
     if (c->peak > d->peak) d->peak = c->peak;
     if (c->alert) { d->alert = c->alert; d->alert_ms = c->alert_ms; }
+    if (c->mark && !d->mark) d->mark = c->mark;
 }
 
+uint16_t bw_kind_bit(int cls)
+{
+    if (cls == BW_C_APPLE_PP) cls = BW_C_FINDMY;
+    return cls > 0 && cls < 16 ? (uint16_t)(1u << cls) : 0;
+}
 bool bw_alertable(const bw_t *w, const bw_dev_t *d)
 {
+    if (d->mark == BW_MARK_MINE || (w->kind_off & bw_kind_bit(d->ad.cls))) return false;
     return d->ad.level >= 2 || (d->ad.level == 1 && w->alert_possible);
+}
+void bw_mark(bw_t *w, int i, uint8_t mark)
+{
+    if (i < 0 || i >= w->n) return;
+    /* the newest address of the chain, and every older one so a late link agrees */
+    bw_dev_t *d = &w->dev[i];
+    for (int guard = 0; d->succ && guard < BW_MAX_DEV; guard++) {
+        const int k = bw_find_uid(w, d->succ);
+        if (k < 0) break;
+        d = &w->dev[k];
+    }
+    for (int guard = 0; d && guard < BW_MAX_DEV; guard++) {
+        d->mark = mark;
+        d->gone = 0;
+        if (mark == BW_MARK_MINE && d->alert) d->alert = 0;
+        const int k = d->pred ? bw_find_uid(w, d->pred) : -1;
+        d = k >= 0 ? &w->dev[k] : NULL;
+    }
+}
+int bw_watch(bw_t *w, uint32_t now, int *event)
+{
+    const uint32_t gone_ms = w->watch_ms ? w->watch_ms : 120000u;
+    for (int i = 0; i < w->n; i++) {
+        bw_dev_t *d = &w->dev[i];
+        if (d->mark != BW_MARK_WATCH || d->succ) continue;
+        /* a rotation's new address may not be linked yet: wait out the
+           15 s check before calling a rotating tag gone */
+        if (!d->gone && now - d->last_ms > gone_ms + 15000u) { d->gone = 1; if (event) *event = BW_EV_GONE; return i; }
+        if (d->gone && now - d->last_ms < 3000u) { d->gone = 0; if (event) *event = BW_EV_BACK; return i; }
+    }
+    return -1;
 }
 
 int bw_tick(bw_t *w, uint32_t now)

@@ -119,8 +119,9 @@ void dk_list_keep(int n, int rows, int sel, int *top)
 void dk_list_draw(tui_surface *sf, tui_rect clip, tui_rect r, int n, int top, int sel,
                   void (*row)(int i, dk_row_t *out, void *ctx), void *ctx)
 {
-    dk_frame(sf, clip, r, false);
+    dk_sunken(sf, clip, r);
     const tui_rect in = tui_rect_intersect(clip, dk_inner(r));
+    dk_fill(sf, in, dk_attr(R_WELL));            /* a list box: the well's ground */
     const int rows = r.h - 2, x = r.x + 1, w = r.w - 2;
     const bool bar = n > rows;
     const int tw = bar ? w - 1 : w;
@@ -130,18 +131,18 @@ void dk_list_draw(tui_surface *sf, tui_rect clip, tui_rect r, int n, int top, in
         dk_row_t d = {0};
         row(i, &d, ctx);
         const bool s = i == sel;
-        const uint8_t face = s ? dk_attr(R_SELECT) : dk_attr(R_FACE);
+        const uint8_t face = s ? dk_attr(R_SELECT) : dk_attr(R_WELL);
         const tui_rect rr = tui_rect_intersect(in, tui_rect_make(x, y, tw, 1));
         if (s) dk_fill(sf, rr, face);
         if (d.glyph) {
-            const uint8_t ga = s ? face : hue_on_face(d.hue);
+            const uint8_t ga = s ? face : dk_well_hue(d.hue);
             if (d.glyph < 0x80) tui_put_char(sf, rr, x + 1, y, (char)d.glyph, ga);
             else ls_box_put(sf, rr, x + 1, y, d.glyph, ga);
         }
         int rx = x + tw - 1;
         if (d.right && d.right[0]) {
             const int len = dk_text_len(d.right);
-            dk_text(sf, rr, rx - len, y, d.right, s ? face : dk_attr(R_STRONG));
+            dk_text(sf, rr, rx - len, y, d.right, s ? face : dk_attr(R_WELL));
             rx -= len + 1;
         }
         dk_text(sf, tui_rect_intersect(rr, tui_rect_make(x, y, rx - x, 1)), x + 3, y, d.text ? d.text : "", face);
@@ -351,19 +352,21 @@ static void prompt_draw(tui_surface *sf, tui_rect c, tui_rect clip)
 {
     dk_text(sf, clip, c.x + 2, c.y + 1, s_p.label, dk_attr(R_FACE));
     const tui_rect f = prompt_field(c);
-    dk_frame(sf, clip, f, false);
+    dk_sunken(sf, clip, f);
     const tui_rect in = tui_rect_intersect(clip, dk_inner(f));
-    const int n = dk_text(sf, in, f.x + 2, f.y + 1, s_p.text, dk_attr(R_STRONG));
-    ls_box_put(sf, in, f.x + 2 + n, f.y + 1, LS_EDGE_B, dk_attr(R_ACCEL));       /* where the next letter goes */
+    dk_fill(sf, in, dk_attr(R_WELL));            /* an edit: the well's ground */
+    const int n = dk_text(sf, in, f.x + 2, f.y + 1, s_p.text, dk_attr(R_WELL));
+    ls_box_put(sf, in, f.x + 2 + n, f.y + 1, LS_EDGE_B, dk_attr(R_WELL));        /* where the next letter goes */
     if (s_p.run) {
         run_hit_t hits[RUN_MAX];
         const int hn = run_hits(hits);
         if (s_p.sel >= hn) s_p.sel = hn - 1;
         if (hn) dk_list_draw(sf, clip, run_list(c), hn, 0, s_p.sel, run_row, hits);
         else {
-            dk_frame(sf, clip, run_list(c), false);
-            dk_text(sf, clip, c.x + 5, c.y + 7, "fm   map   control   taskmgr   folder", dk_attr(R_DISABLED));
-            dk_text(sf, clip, c.x + 5, c.y + 8, "or any console word: it runs in TERMINAL", dk_attr(R_DISABLED));
+            dk_sunken(sf, clip, run_list(c));
+            dk_fill(sf, tui_rect_intersect(clip, dk_inner(run_list(c))), dk_attr(R_WELL));
+            dk_text(sf, clip, c.x + 5, c.y + 7, "fm   map   control   taskmgr   folder", dk_attr(R_WELL_DIM));
+            dk_text(sf, clip, c.x + 5, c.y + 8, "or any console word: it runs in TERMINAL", dk_attr(R_WELL_DIM));
         }
     }
 }
@@ -645,18 +648,19 @@ static void fold_draw(tui_surface *sf, dk_win_t *w, tui_rect c, tui_rect clip)
     /* the address: the card, then each folder down to this one */
     char addr[64];
     snprintf(addr, sizeof(addr), "SD card:%s", s_f.path[0] ? s_f.path : "/");
-    dk_text(sf, clip, c.x + 2, c.y, "Address", dk_attr(R_FACE));
+    dk_text(sf, clip, c.x + 2, c.y, "Address:", dk_attr(R_FACE));
     dk_field(sf, clip, c.x + 10, c.y, c.w - 12, addr, -1, false);
     const tui_rect l = fold_list(c);
     if (!s_f.ok) {
-        dk_frame(sf, clip, l, false);
-        dk_pic(sf, clip, l.x + 3, l.y + 2, DK_PIC_CARD, on_face(TUI_CYAN));
-        dk_text(sf, clip, l.x + 16, l.y + 3, "No card, or no such folder.", dk_attr(R_WARN));
-        dk_text(sf, clip, l.x + 16, l.y + 4, "Put a card in and open this again.", dk_attr(R_FACE));
+        dk_sunken(sf, clip, l);
+        dk_fill(sf, tui_rect_intersect(clip, dk_inner(l)), dk_attr(R_WELL));
+        dk_pic(sf, clip, l.x + 3, l.y + 2, DK_PIC_CARD, dk_well_hue(TUI_CYAN));
+        dk_text(sf, clip, l.x + 16, l.y + 3, "No card, or no such folder.", dk_well_hue(TUI_ATTR_FG(dk_attr(R_WARN))));
+        dk_text(sf, clip, l.x + 16, l.y + 4, "Put a card in and open this again.", dk_attr(R_WELL));
     } else {
         lv_follow(w, l, s_f.n, &s_f.top);
         dk_listview(sf, clip, l, FOLD_COLS, 3, s_f.n, s_f.top, s_f.sel, w == dk_front_win() && !*focus_of(w), fold_cell, NULL);
-        if (!s_f.n) dk_text(sf, clip, l.x + 3, l.y + 3, "This folder is empty.", dk_attr(R_DISABLED));
+        if (!s_f.n) dk_text(sf, clip, l.x + 3, l.y + 3, "This folder is empty.", dk_attr(R_WELL_DIM));
     }
     /* the status line: how many, and what the selection is */
     char st[80];
@@ -799,8 +803,7 @@ static void tasks_draw(tui_surface *sf, dk_win_t *win, tui_rect c, tui_rect clip
         s_t.psram[s_t.hn++] = (int)p.psram_kb;
     }
     const int py = l.y + l.h;
-    dk_hline(sf, clip, c.x + 2, py, c.w - 4, LS_BOX_H, dk_attr(R_SHADOW));
-    dk_text(sf, clip, c.x + 4, py, " Memory ", dk_attr(R_STRONG));
+    dk_group(sf, clip, tui_rect_make(c.x + 1, py, c.w - 2, 6), "Memory", 0);
     const int vx = c.x + 20, tx = c.x + c.w - 2 - PERF_N / 2 - 1;
     static const char *const NAME[2] = {"Internal RAM", "PSRAM"};
     for (int k = 0; k < 2; k++) {

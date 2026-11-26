@@ -22,6 +22,7 @@
 #include "ls_board.h"
 #include "ls_nvs_safe.h"
 #include "ls_flash_task.h"
+#include "ls_tx_unlock.h"
 #include "esp_attr.h"
 #include "lr_wf_session.h"
 
@@ -47,6 +48,9 @@ static bool         s_update_check = true;
 static bool         s_gps_on = true, s_auto_data = true;
 /* Settings > DEVICE > Language, loaded once in settings_init. */
 static int          s_ui_lang;
+/* Settings > SYSTEM > Time zone and Clock (ls_tz.h), loaded once. */
+static int          s_tz_zone;
+static bool         s_clock_24h;
 /* Accepted choices must be visible before the delayed write reaches NVS. */
 static int s_boot_sound = 1;
 static int s_notification_sound = SETTINGS_NOTIFY_ALERT;
@@ -384,6 +388,8 @@ bool settings_init(void)
     __atomic_store_n(&s_update_check,true,__ATOMIC_RELEASE);
     s_gps_on = s_auto_data = true;
     __atomic_store_n(&s_ui_lang,0,__ATOMIC_RELEASE);
+    __atomic_store_n(&s_tz_zone,0,__ATOMIC_RELEASE);
+    __atomic_store_n(&s_clock_24h,false,__ATOMIC_RELEASE);
     home_widget_pref_init(false, 0);
     s_home_write_ready = false;
     esp_err_t err = nvs_flash_init();
@@ -400,6 +406,9 @@ bool settings_init(void)
         return false;
     }
     s_nvs_ok = true;
+#ifdef ESP_PLATFORM
+    ls_tx_unlock_runtime = settings_get_tx_unlocked();   /* the host bench keeps the build constant */
+#endif
     uint8_t key_light=1;
     nvs_get_u8(s_nvs,"key_light",&key_light);
     s_keyboard_light=key_light!=0;
@@ -453,6 +462,11 @@ bool settings_init(void)
     uint8_t ui_lang = 0;
     if(nvs_get_u8(s_nvs,"ui_lang",&ui_lang)==ESP_OK && settings_ui_lang_valid(ui_lang))
         __atomic_store_n(&s_ui_lang,(int)ui_lang,__ATOMIC_RELEASE);
+    uint8_t tz_zone = 0, clock24 = 0;
+    if(nvs_get_u8(s_nvs,"tz_zone",&tz_zone)==ESP_OK)
+        __atomic_store_n(&s_tz_zone,(int)tz_zone,__ATOMIC_RELEASE);
+    if(nvs_get_u8(s_nvs,"clock24",&clock24)==ESP_OK)
+        __atomic_store_n(&s_clock_24h,clock24!=0,__ATOMIC_RELEASE);
 
     uint8_t desk_theme = 0;
     uint32_t desk_wp = 0;
@@ -1521,6 +1535,17 @@ void settings_set_subghz_lr_fsk(bool fsk)
     if (!s_nvs_ok) return;
     sput_u8("sg_lrfsk", fsk ? 1 : 0);
 }
+bool settings_get_subghz_lr_raw(void)
+{
+    uint8_t v = 0;
+    if (!s_nvs_ok || nvs_get_u8(s_nvs, "sg_lrraw", &v) != ESP_OK) return false;
+    return v != 0;
+}
+void settings_set_subghz_lr_raw(bool raw)
+{
+    if (!s_nvs_ok) return;
+    sput_u8("sg_lrraw", raw ? 1 : 0);
+}
 /* SUB-GHZ's own expert settings in one word - TX power step, pulse
    inspector, after-a-send, LEARN window, analyzer band - laid out by
    scr_subghz.c. Zero is every default. */
@@ -1534,6 +1559,21 @@ void settings_set_subghz_expert(int packed)
 {
     if (!s_nvs_ok || packed < 0 || packed > 0xffff) return;
     sput_u32("sg_expert", (uint32_t)packed);
+}
+/* TX limits: off by default, on only when the operator says so. */
+bool settings_get_tx_unlocked(void)
+{
+    uint8_t v = 0;
+    if (!s_nvs_ok || nvs_get_u8(s_nvs, "tx_unlock", &v) != ESP_OK) return false;
+    return v != 0;
+}
+void settings_set_tx_unlocked(bool on)
+{
+#ifdef ESP_PLATFORM
+    ls_tx_unlock_runtime = on;
+#endif
+    if (!s_nvs_ok) return;
+    sput_u8("tx_unlock", on ? 1 : 0);
 }
 int settings_get_subghz_colour(void)
 {
@@ -1766,6 +1806,20 @@ void settings_set_ui_lang(int lang)
     if (!settings_ui_lang_valid(lang)) lang = 0;
     if (s_nvs_ok && sput_u8("ui_lang", (uint8_t)lang))
         __atomic_store_n(&s_ui_lang,lang,__ATOMIC_RELEASE);
+}
+
+int settings_get_tz_zone(void) { return __atomic_load_n(&s_tz_zone, __ATOMIC_ACQUIRE); }
+void settings_set_tz_zone(int zone)
+{
+    if (zone < 0 || zone > 255) zone = 0;
+    if (s_nvs_ok && sput_u8("tz_zone", (uint8_t)zone))
+        __atomic_store_n(&s_tz_zone, zone, __ATOMIC_RELEASE);
+}
+bool settings_get_clock_24h(void) { return __atomic_load_n(&s_clock_24h, __ATOMIC_ACQUIRE); }
+void settings_set_clock_24h(bool on)
+{
+    if (s_nvs_ok && sput_u8("clock24", on ? 1 : 0))
+        __atomic_store_n(&s_clock_24h, on, __ATOMIC_RELEASE);
 }
 
 bool settings_get_auto_rotate(void)

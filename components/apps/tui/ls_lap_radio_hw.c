@@ -11,6 +11,7 @@
 #if defined(ESP_PLATFORM) && !defined(LS_LAP_HOST_TEST)
 #include "ls_lap_radio.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "iq_app_control.h"
@@ -30,6 +31,7 @@
 #define LR_RATE 125000u              /* narrow and wide both hand over 125k IQ16 */
 #define READ_BYTES 16384u            /* one SDR read: 8192 u8 pairs */
 #define OWNER "lap"
+#define YIELD_US 10000                /* the capture task's longest run without a wait */
 
 typedef enum { K_NONE, K_RTL, K_HACKRF, K_LORA } kind_t;
 static kind_t kinds[LAP_RADIOS_MAX];     /* worker: index -> radio, from the last list */
@@ -170,6 +172,13 @@ static void capture(void *arg) {
     if (atomic_load(&c->stop)) goto out;
     atomic_store(&c->phase, PH_RUNNING);
     uint64_t center = c->want.center_hz;
+    /* A read only waits when the USB ring is empty. A HackRF decimating in
+       the read kept the ring from ever emptying, so this task (priority 5,
+       core 0) ran for good: IDLE0 tripped the task watchdog seven seconds
+       into RF LAB and the console starved. After YIELD_US of reads that
+       found data at once it gives core 0 a tick; the 256 KiB ring covers
+       tens of milliseconds, so nothing is lost while it waits. */
+    int64_t ran_from = esp_timer_get_time();
     while (!atomic_load(&c->stop)) {
         ls_iq_control_request_t r;
         if (ls_iq_control_take(&c->control, &r)) {
@@ -234,6 +243,9 @@ static void capture(void *arg) {
         /* Offset binary u8 (both dongles hand it over so) to signed full scale. */
         for (size_t i = 0; i < got; i++) c->iq[i] = (int16_t)(((int)c->raw[i] * 2 - 255) * 128);
         if (got) ls_lap_rx_push_token(c->token,c->iq, got / 2);
+        const int64_t now = esp_timer_get_time();
+        if (!got) ran_from = now;               /* it waited inside the read */
+        else if (now - ran_from >= YIELD_US) { vTaskDelay(1); ran_from = esp_timer_get_time(); }
     }
 out:
     if (session) {

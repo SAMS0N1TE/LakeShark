@@ -167,6 +167,13 @@ bool snd_alert_start(void) { return true; }
 void settings_set_alert_ring(bool v) { s_alert_ring = v; }
 static bool s_auto_rotate = true;
 bool settings_get_auto_rotate(void) { return s_auto_rotate; }
+
+uint32_t settings_get_rec(const char *name, uint32_t deflt);
+void settings_set_rec(const char *name, uint32_t value);
+static uint32_t s_rec_wd_units = 2;   /* host: only WARDRIVE's units are kept */
+uint32_t settings_get_rec(const char *name, uint32_t deflt)
+{ return name && !strcmp(name, "wd_units") && s_rec_wd_units != 2 ? s_rec_wd_units : deflt; }
+void settings_set_rec(const char *name, uint32_t value) { if (name && !strcmp(name, "wd_units")) s_rec_wd_units = value; }
 void settings_set_auto_rotate(bool v) { s_auto_rotate = v; }
 bool settings_get_alert_vibe(void) { return s_alert_vibe; }
 /* Sub-GHz display preferences. Real state, because the screen reads them
@@ -201,6 +208,8 @@ void settings_set_subghz_colour(int v) { s_sg_colour = v; }
 static int s_sg_expert;
 int  settings_get_subghz_expert(void) { return s_sg_expert; }
 void settings_set_subghz_expert(int v) { s_sg_expert = v; }
+bool settings_get_tx_unlocked(void) { return false; }
+void settings_set_tx_unlocked(bool on) { (void)on; }
 void settings_set_alert_vibe(bool v) { s_alert_vibe = v; }
 void settings_set_haptics(bool on) { (void)on; }
 
@@ -4867,9 +4876,11 @@ static bool find_word(const char *text)
         }
     return false;
 }
-/* SETTINGS is one list, the same from every page, in this order. CATCH's
-   own rows follow where the build has CATCH. */
-static const char *const SG_SETTING[]={"Radio","Frequency","TX power","After a send","LR2021 receive",
+/* Every row the menu's SETTINGS card lists, in this order; a page's own
+   SETTINGS key lists the ones for that page. CATCH's own rows follow where
+   the build has CATCH. */
+int ls_scr_subghz_option_row(const char *label);
+static const char *const SG_SETTING[]={"Radio","Frequency","TX power","TX limits","After a send","Modulation",
     "Capture setup","LEARN a remote","LEARN window","Undo LEARN","Apply last LEARN","Pulse inspector",
     "List legend","Detect threshold","On detection","Analyzer chart","Chart colour","Mesh alerts",
     "Recorder view","Save to FREQS"};
@@ -4880,13 +4891,11 @@ static bool subghz_setting(const char *label,tui_rect pane,int *x,int *y)
 {
     if(!ls_picker_active())ls_scr_subghz.key(LS_TK_CHAR,'o');
     if(!ls_picker_active())return false;
-    for(int i=0;i<SG_SETTINGS;i++)
-        if(!strcmp(SG_SETTING[i],label)) {
-            ls_picker_select(i);
-            fresh();ls_picker_draw(&g_sf,pane);
-            return find_text(label,x,y);
-        }
-    return false;
+    const int i=ls_scr_subghz_option_row(label);
+    if(i<0)return false;
+    ls_picker_select(i);
+    fresh();ls_picker_draw(&g_sf,pane);
+    return find_text(label,x,y);
 }
 
 void rec_watch_sim_hits(int n);
@@ -5184,10 +5193,10 @@ LS_CASE(subghz_read_has_back_the_frequency_and_one_primary_key)
     int x,y;
     LS_EQ_INT(ls_scr_subghz_page(),1);
     LS_CHECK(find_text("READ /",&x,&y));
-    static const char *const KEY[]={"BACK","FREQUENCY","START"};
+    static const char *const KEY[]={"BACK","FREQUENCY","SETTINGS","START"};
     for(unsigned i=0;i<sizeof(KEY)/sizeof(KEY[0]);i++)
         LS_CHECK_MSG(find_text(KEY[i],&x,&y),"READ has no %s",KEY[i]);
-    LS_EQ_INT(ls_scr_subghz_controls(),2);
+    LS_EQ_INT(ls_scr_subghz_controls(),3);
     /* The old compartments and the old bar are not keys here, and neither
        are the other places. */
     static const char *const GONE[]={"SCAN","LEARN","CATCH","RADIO","OPTIONS","POWER","RECORD","SAVED"};
@@ -5291,7 +5300,7 @@ LS_CASE(subghz_read_is_point_run_act)
     for(unsigned i=0;i<sizeof(KEY)/sizeof(KEY[0]);i++)
         LS_CHECK_MSG(find_text(KEY[i],&x,&y),"a capture has no %s",KEY[i]);
     LS_CHECK(find_text("PULSE INSPECTOR",&x,&y));
-    LS_EQ_INT(ls_scr_subghz_controls(),3);
+    LS_EQ_INT(ls_scr_subghz_controls(),4);
     /* BACK is READ again, and one tap on another capture opens that one. */
     LS_CHECK(find_text("BACK",&x,&y));
     LS_CHECK(ls_scr_subghz.touch(x,y));
@@ -5793,7 +5802,7 @@ LS_CASE(subghz_catch_lives_on_the_analyzer)
     LS_CHECK(!find_text("Waiting for real bursts",&x,&y));
     /* And the sweep's SETTINGS lead to CATCH's under its name, last. */
     LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'o'));
-    ls_picker_select(SG_SETTINGS+1);
+    ls_picker_select(ls_scr_subghz_option_row("Catch"));
     fresh();ls_picker_draw(&g_sf,pane);
     LS_CHECK(find_text("CATCH bursts",&x,&y));
     LS_CHECK(find_text("Catch",&x,&y));
@@ -5808,28 +5817,41 @@ LS_CASE(subghz_settings_lists_every_row_from_every_page)
 {
     tui_rect pane={1,2,46,63};
     int x,y;
-    static const char FROM[]={'5','1','2','3','4'};
-    for(unsigned f=0;f<sizeof(FROM);f++) {
+    /* The menu's SETTINGS card: every row. Each page's own SETTINGS key: that
+       page's rows, under its name, and not another page's. */
+    static const struct { char from; const char *title,*has,*hasnt; } FROM[]={
+        {'5',"SUB-GHZ OPTIONS",NULL,NULL},
+        {'1',"READ OPTIONS","Modulation","Detect threshold"},
+        {'2',"RECORD RAW OPTIONS","TX power","LEARN a remote"},
+        {'3',"SEND OPTIONS","TX limits","Analyzer chart"},
+        {'4',"ANALYZER OPTIONS","Analyzer chart","Modulation"}};
+    for(unsigned f=0;f<sizeof(FROM)/sizeof(FROM[0]);f++) {
         subghz_menu();
         rec_set_freq(433920000);
         subghz_draw(pane);
-        LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,FROM[f]));
+        LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,FROM[f].from));
         subghz_draw(pane);
-        if(FROM[f]!='5')LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'o'));
+        if(FROM[f].from!='5') {
+            LS_CHECK_MSG(find_text("SETTINGS",&x,&y),"page %c has no SETTINGS key",FROM[f].from);
+            LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'o'));
+        }
         LS_CHECK(ls_picker_active());
         fresh();ls_picker_draw(&g_sf,pane);
-        LS_CHECK(find_text("SUB-GHZ OPTIONS",&x,&y));
-        /* The list scrolls; put the cursor on each row in turn. */
-        for(int i=0;i<SG_SETTINGS;i++)
-            LS_CHECK_MSG(subghz_setting(SG_SETTING[i],pane,&x,&y),"from %c: SETTINGS has no %s row",
-                         FROM[f],SG_SETTING[i]);
-        /* Each with its value beside it. */
-        LS_CHECK(subghz_setting("Frequency",pane,&x,&y));
-        LS_CHECK(find_text("433.9200 MHz",&x,&y));
-        LS_CHECK(subghz_setting("Analyzer chart",pane,&x,&y));
-        LS_CHECK(find_text("BARS",&x,&y));
-        /* The names the chart rows had are gone with the old list. */
-        LS_CHECK(!find_text("Spectrum",&x,&y));
+        LS_CHECK_MSG(find_text(FROM[f].title,&x,&y),"page %c: no %s",FROM[f].from,FROM[f].title);
+        if(FROM[f].from=='5') {
+            /* The list scrolls; put the cursor on each row in turn. */
+            for(int i=0;i<SG_SETTINGS;i++)
+                LS_CHECK_MSG(subghz_setting(SG_SETTING[i],pane,&x,&y),"SETTINGS has no %s row",SG_SETTING[i]);
+            LS_CHECK(subghz_setting("Frequency",pane,&x,&y));
+            LS_CHECK(find_text("433.9200 MHz",&x,&y));
+            LS_CHECK(subghz_setting("Analyzer chart",pane,&x,&y));
+            LS_CHECK(find_text("BARS",&x,&y));
+            /* The names the chart rows had are gone with the old list. */
+            LS_CHECK(!find_text("Spectrum",&x,&y));
+        } else {
+            LS_CHECK_MSG(subghz_setting(FROM[f].has,pane,&x,&y),"page %c lists no %s",FROM[f].from,FROM[f].has);
+            LS_CHECK_MSG(ls_scr_subghz_option_row(FROM[f].hasnt)<0,"page %c lists %s",FROM[f].from,FROM[f].hasnt);
+        }
         ls_opt_close();ls_picker_close();
         ls_scr_subghz.leave();
     }
@@ -5999,20 +6021,24 @@ LS_CASE(subghz_lr2021_learns_from_settings_and_records_iq_on_record_raw)
         for(unsigned i=0;i<sizeof(READ_KEY)/sizeof(READ_KEY[0]);i++)
             LS_CHECK_MSG(find_text(READ_KEY[i],&x,&y),"%dx%d READ has no %s",panes[p].w,panes[p].h,READ_KEY[i]);
         LS_EQ_INT(escaped(panes[p]),0);
+        /* READ's SETTINGS has LEARN, live on this radio. */
+        LS_CHECK(subghz_setting("LEARN a remote",panes[p],&x,&y));
+        LS_CHECK(find_text("measure a 2-FSK remote",&x,&y));
+        ls_opt_close();ls_picker_close();
         LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'2'));
         subghz_settle(panes[p]);
         for(unsigned i=0;i<sizeof(RAW_KEY)/sizeof(RAW_KEY[0]);i++)
             LS_CHECK_MSG(find_text(RAW_KEY[i],&x,&y),"%dx%d RECORD RAW has no %s",panes[p].w,panes[p].h,RAW_KEY[i]);
         LS_CHECK(!find_text("RECORD needs the",&x,&y));
         LS_EQ_INT(escaped(panes[p]),0);
-        /* Both rows of SETTINGS are live on this radio. */
-        LS_CHECK(subghz_setting("LEARN a remote",panes[p],&x,&y));
-        LS_CHECK(find_text("measure a 2-FSK remote",&x,&y));
+        /* RECORD RAW's SETTINGS has the recorder view, live on this radio. */
         LS_CHECK(subghz_setting("Recorder view",panes[p],&x,&y));
         LS_CHECK(find_text("level, trigger",&x,&y));
         ls_opt_close();ls_picker_close();
     }
-    /* LEARN from its row. */
+    /* LEARN from its row, on READ's SETTINGS. */
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'1'));
+    subghz_settle(panes[0]);
     rec_watch_sim_learn_pending(true);
     LS_CHECK(subghz_setting("LEARN a remote",panes[0],&x,&y));
     LS_CHECK(ls_picker_touch(x,y));
@@ -6152,6 +6178,59 @@ LS_CASE(subghz_send_pauses_watch_and_resumes_it)
 /* A capture's page sends now, with SEND; MORE holds the rest - SEND AT,
    which asks for a power first, PIN and JOURNAL - and not a second copy of
    the two keys beside it. */
+void rec_watch_sim_air(const rec_air_t *v);
+/* What is on the air is drawn from the thing itself. A packet SEND puts out
+   shows its fields by name and in hex (the CC1101 frame from the bench:
+   2400 bd, sync D391 D391, 04 04 00 01, CRC D071) under ON THE AIR, and READ
+   shows a burst it just heard, as RX, over its live trace. */
+static void air_seed(bool tx)
+{
+    static rec_air_t v;
+    memset(&v,0,sizeof(v));
+    v.kind=REC_AIR_PACKET;v.tx=tx;v.dbm=5;v.freq_hz=433794342;v.baud=2400;v.dev_hz=20000;
+    v.pre_bits=32;v.sync_bits=32;v.sync=0xD391D391u;
+    static const uint8_t B[]={0x04,0x04,0x00,0x01,0xD0,0x71};
+    memcpy(v.bytes,B,sizeof(B));v.nbytes=sizeof(B);v.crc=true;v.length_byte=true;
+    v.start_us=esp_timer_get_time();
+    v.dur_us=(uint32_t)((32u+32u+8u*sizeof(B))*1000000u/2400u);
+    snprintf(v.what,sizeof(v.what),tx?"clean packet 1/1":"heard: packet, CRC ok");
+    rec_watch_sim_air(&v);
+}
+LS_CASE(subghz_on_the_air_draws_the_packet_it_sends_and_hears)
+{
+    rec_watch_enable(false);rec_watch_select_source(REC_SOURCE_SX1262);
+    ls_scr_subghz.enter();
+    tui_rect pane={1,2,46,63};subghz_draw(pane);
+    int x,y;
+    /* RX: READ, listening, a burst lands. */
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'1'));
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'w'));
+    air_seed(false);
+    subghz_draw(pane);
+    LS_CHECK_MSG(find_text("RX 433.7943 MHz",&x,&y),"READ does not show what it heard");
+    LS_CHECK(find_text("2400 bd",&x,&y));
+    LS_EQ_INT(escaped(pane),0);
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'w'));
+    /* TX: a capture, SEND, and the packet going out. */
+    for(int i=0;i<SUBGHZ_TX_STEPS;i++){ls_scr_subghz.key(LS_TK_CHAR,'-');subghz_draw(pane);}
+    LS_CHECK(ls_scr_subghz.key(LS_TK_DOWN,0));
+    subghz_draw(pane);
+    LS_CHECK(ls_scr_subghz.key(LS_TK_CHAR,'c'));
+    subghz_settle(pane);
+    LS_EQ_INT(ls_scr_subghz_page(),5);
+    LS_CHECK(find_text_last("SEND",&x,&y));
+    LS_CHECK(ls_scr_subghz.touch(x,y));
+    air_seed(true);
+    subghz_draw(pane);
+    LS_CHECK_MSG(find_text("ON THE AIR",&x,&y),"SEND shows nothing of what goes out");
+    LS_CHECK(find_text("TX 433.7943 MHz",&x,&y));
+    static const char *const FIELD[]={"PRE","SYNC","LEN","DATA","CRC","[D391 D391]","[04]","[040001]","[D071]"};
+    for(unsigned i=0;i<sizeof(FIELD)/sizeof(FIELD[0]);i++)
+        LS_CHECK_MSG(find_text(FIELD[i],&x,&y),"the packet has no %s",FIELD[i]);
+    LS_EQ_INT(escaped(pane),0);
+    ls_scr_subghz.leave();
+}
+
 LS_CASE(subghz_capture_page_sends_now_and_more_asks_for_a_power)
 {
     rec_watch_enable(false);rec_watch_select_source(REC_SOURCE_SX1262);
@@ -6237,7 +6316,7 @@ LS_CASE(subghz_landscape_spends_its_rows_on_the_signal)
     LS_EQ_INT(find_row_text("BACK"),bar);
     LS_EQ_INT(find_row_text("START"),bar);
     LS_EQ_INT(ls_btn_count_slot(LS_BTN_SLOT_WATERFALL),0);
-    LS_EQ_INT(ls_btn_count_slot(LS_BTN_SLOT_SCREEN),3);
+    LS_EQ_INT(ls_btn_count_slot(LS_BTN_SLOT_SCREEN),4);
     LS_CHECK_MSG((pane.y+pane.h-body)*2>pane.h,"only %d of %d rows left for the captures",
                  pane.y+pane.h-body,pane.h);
     /* Without a keyboard on the full landscape pane the keys may take one
@@ -6260,7 +6339,7 @@ LS_CASE(subghz_gives_up_the_short_bar_rather_than_cut_a_label_in_half)
 {
     subghz_home();
     rec_set_freq(433920000);
-    const tui_rect split={1,2,56,24},tight={1,2,50,24};
+    const tui_rect split={1,2,72,24},tight={1,2,56,24};
     int x,y,vy;
     subghz_settle(split);
     LS_CHECK(find_text("BACK MENU",&x,&y));
@@ -6302,7 +6381,7 @@ LS_CASE(subghz_portrait_puts_one_fat_primary_key_along_the_bottom)
     LS_CHECK_MSG(body-bar>=4,"portrait bar collapsed to %d rows",body-bar);
     /* START is the one key in the bottom bar, under everything else. */
     LS_EQ_INT(ls_btn_count_slot(LS_BTN_SLOT_WATERFALL),1);
-    LS_EQ_INT(ls_btn_count_slot(LS_BTN_SLOT_SCREEN),2);
+    LS_EQ_INT(ls_btn_count_slot(LS_BTN_SLOT_SCREEN),3);
     LS_CHECK(find_text("START",&x,&y));
     LS_CHECK_MSG(y>body && y>=pane.y+pane.h-7,"START is on row %d of a pane ending at %d",y,pane.y+pane.h);
     LS_EQ_INT(ls_btn_hit_slot(x,y,LS_BTN_SLOT_WATERFALL),0);
@@ -6660,7 +6739,7 @@ LS_CASE(subghz_saved_file_opens_to_send_rename_delete)
     LS_CHECK(find_text("DELETE",&x,&y));
     LS_CHECK(find_text("BACK",&x,&y));
     LS_CHECK(!find_text("PLAY ONCE",&x,&y));          /* the player's own bar is not under them */
-    LS_CHECK_MSG(subghz_keys_drawn()==3,"%d keys beside BACK on a file",subghz_keys_drawn());
+    LS_CHECK_MSG(subghz_keys_drawn()==4,"%d keys beside BACK on a file",subghz_keys_drawn());
     /* RENAME types a new name; the file moves and stays open. */
     LS_CHECK(find_text("RENAME",&x,&y));
     LS_CHECK(ls_scr_subghz.touch(x,y));

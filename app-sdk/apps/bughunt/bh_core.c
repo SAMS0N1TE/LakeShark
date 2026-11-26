@@ -326,6 +326,13 @@ const char *bh_cam_vendor(const uint8_t mac[6])
     return v && v != V_ESP ? VENDORS[v - 1] : NULL;
 }
 
+void bh_sta_maker(bh_t *h, int i, const char *name, bool camera)
+{
+    if (i < 0 || i >= h->nsta || !name) return;
+    snprintf(h->sta[i].maker, sizeof(h->sta[i].maker), "%s", name);
+    h->sta[i].cam_maker = camera;
+}
+
 #define BUCKET_MS 10000u
 #define STEADY_BYTES 50000u             /* in a 10 s bucket: 5 kB/s */
 static void close_buckets(bh_sta_t *s, uint32_t b)
@@ -627,7 +634,7 @@ static void wifi_findings(bh_t *h, uint32_t now, bh_find_t *out, int *n, int max
     for (int i = 0; i < h->nsta; i++) {
         const bh_sta_t *s = &h->sta[i];
         const bool steady = sta_steady(s, now);
-        const bool cam = s->vendor && s->vendor != V_ESP;
+        const bool cam = (s->vendor && s->vendor != V_ESP) || s->cam_maker;
         if (!steady && !cam) continue;
         int conf = cam && steady ? 85 : cam ? 50 : s->vendor == V_ESP ? 60 : 45;
         if (s->peak >= -50) conf += 5;
@@ -638,9 +645,9 @@ static void wifi_findings(bh_t *h, uint32_t now, bh_find_t *out, int *n, int max
         lap_dot11_mac(mac, sizeof(mac), s->mac);
         const uint32_t secs = (s->last_ms - s->first_ms) / 1000u;
         const unsigned kbs = (unsigned)(s->up_bytes / 1000u / (secs ? secs : 1));
-        const char *v = s->vendor ? VENDORS[s->vendor - 1] : NULL;
+        const char *v = s->vendor && s->vendor != V_ESP ? VENDORS[s->vendor - 1] : s->maker[0] ? s->maker : s->vendor ? VENDORS[s->vendor - 1] : NULL;
         if (steady) {
-            snprintf(f->title, sizeof(f->title), "%s uploading steadily", cam ? v : s->vendor == V_ESP ? "IoT Wi-Fi chip" : "Wi-Fi device");
+            snprintf(f->title, sizeof(f->title), "%s uploading steadily", cam ? v : s->vendor == V_ESP ? "IoT Wi-Fi chip" : v ? v : "Wi-Fi device");
             snprintf(f->detail, sizeof(f->detail), "%s sends about %u kB/s without a break, %d dBm: like a camera streaming video.%s", mac, kbs, s->rssi,
                      s->vendor == V_ESP ? " Espressif chips are in many cheap Wi-Fi cameras (and smart plugs)." : cam ? " A camera maker's device." : "");
         } else {

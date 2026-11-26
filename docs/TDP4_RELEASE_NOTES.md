@@ -1,5 +1,69 @@
 # LakeShark release notes
 
+## 3.2.0
+
+Update over Wi-Fi from UPDATE, or install `lakeshark-tdp4-3.2.0.zip` with the web flasher on terminalbay.com. LakeShark Desktop, Studio and the ESP32-P4-NANO stay on 2.22.0.
+
+New:
+
+- WARDRIVE knows what it hears: Flock and other plate readers, Raven gunshot sensors, body cameras, police routers, trackers, drones, card skimmers, hack tools and camera glasses, from public sources. Add your own in /sdcard/wardrive/sigs.txt.
+- WARDRIVE HUNT: every target by kind, where it was loudest, devices that move with you, and cars recognised from their hotspot, phone key and tyre sensors together. Each kind can alert with a banner, a buzz only, sound, or not at all.
+- WARDRIVE RADIO: the LoRa chip and a USB SDR (RTL-SDR or HackRF) log tyre sensors, weather stations, aircraft and mesh nodes beside Wi-Fi and Bluetooth. They pick their job from where you are, how fast you are going and what they are finding, or pin one yourself.
+- WARDRIVE ATLAS: every drive adds to one map of what you have heard. A route you drive again is recognised, with what is new, missing or moved since last time, and coverage for each radio along the road. Old drives can be imported.
+- WARDRIVE: when the GPS is weak or gone, access points from earlier drives place you.
+- WARDRIVE: each drive is saved in its own folder, and the drive list shows the day, time, length, distance, finds and size of each one.
+- PARTY: a new app for LakeShark users together. Share where you are and what you find, ping a place, send small files, and get alerts as a buzz only for a pocket. Set up once with a party code everyone types.
+- Pocket lock in every app: hold the top row, or CTRL then L, and the app keeps running while touch is ignored. Tap, then tap UNLOCK.
+- HOME base sync: WARDRIVE units share drives over LoRa with a home base board. The Desktop side comes with the next Desktop release.
+- Every app has a colour icon.
+- Time zone setting with AUTO from GPS, and a 12 or 24 hour clock.
+- SUB-GHZ: every page has its own SETTINGS key. READ, RECORD RAW, SEND and ANALYZER each open only their own options.
+- SUB-GHZ: ON THE AIR draws the packet as it goes out and as it comes in: preamble, sync word, length, data and CRC in their own colours, filling at the packet's real airtime.
+- SUB-GHZ: choose how READ and RECORD listen. An RTL-SDR takes OOK or 2-FSK; an LR2021 takes OOK, 2-FSK RAW or 2-FSK PACKET.
+- SUB-GHZ: TX limits in SETTINGS. PROTECTED keeps the +10 dBm limit; UNLOCKED allows up to +22 dBm on the LoRa chip and is kept across a restart.
+- Crash reports say where: after a crash, a report now carries the task, the code address and the panic reason.
+
+Better:
+
+- Battery: one steady figure everywhere, and USB, CHG or FULL when plugged in instead of a wrong percentage.
+- The clock shows local time, keeps time across a reboot, and GPS sets it when there is no network.
+- An idle RTL-SDR or HackRF goes to standby when no app is using it, so it stays cool.
+- MUSIC: mic recordings are louder, with a limiter so loud sounds do not clip.
+- WARDRIVE: a GPS that is still settling no longer draws false jumps across the map.
+- WARDRIVE 3D: nothing sits over the view when a drive ends.
+- SWEEP, WARDRIVE and DETECTOR share one list of what devices are, and one "with you" setting.
+- RTL-SDR Blog V4 is recognised again, so its HF range works (thanks to jdmills-edu).
+- BUGHUNT 1.2: the finder's gauge and dial, AUTO RANGE, distance and direction, SDR and DUAL receivers, and device names.
+- PARTY sits in FIELD beside WARDRIVE.
+- LR2021 boards read LoRa status only when the radio signals it.
+- SUB-GHZ opens at once, and SAVED and RECORD RAW no longer pause while the card is read.
+- SUB-GHZ: a 2-FSK recording replays as the decoded packet, bit for bit, so a receiver that checks the CRC acts on it. A raw 2-FSK capture replays on the LR2021.
+- SUB-GHZ: STOP stops listening at once, including while a send has paused READ, and the screen no longer freezes when it does.
+- SUB-GHZ: READ opens on a radio the board has, and SEND says what it is doing.
+- SUB-GHZ: READ's live trace on the SX1262 sits on the noise instead of drawing it as a constant signal.
+- SUB-GHZ: RECORD RAW on the LR2021 keeps listening when it is armed during a burst.
+- WARDRIVE keeps your KM/H or MPH choice across a restart. Until you pick one, a fix in the US or the UK shows mph.
+- WARDRIVE 3D: markers glide to a stronger reading's place and grow in when first heard, and a drive that will not replay says why.
+- DETECTOR: in portrait its five keys are two rows of big keys.
+
+Better on LR2021 boards:
+
+- Signal levels use Semtech's measured RSSI calibration, estimated across 104 MHz to 2.74 GHz.
+
+Fixed:
+
+- A rare restart when an app opened for the first time while an SDR was streaming.
+- RF LAB no longer freezes the board with a HackRF, and TIME MACHINE gives its memory back a minute after the last receiver stops.
+- Many fixes across WARDRIVE, PARTY, the LoRa link and the atlas found in review, including a long-uptime link stall and an atlas that could reset itself after a card hiccup.
+- The `wf` console command no longer restarts the board before the waterfall has run.
+
+For developers:
+
+- Native ESP32-P4 game SDK in `app-sdk/native`: the e3d RGB565 3D renderer (MIT, from giltal's ESP32-P4 3D Engine) with textures and lightmaps, a BSP v30 map loader, the TK21 controller and Waveshare P4 audio, microSD and touch drivers, and the `game-firmware` example.
+- The app simulator and every SDK test build and pass on Windows.
+- `tui cast` sends the screen over Wi-Fi to a PC for recording.
+- Each release keeps the ELF of every image it ships (`lakeshark-3.2.0-elf.zip`), and `tools/ls_crash_decode.py` turns a report's crash into functions and lines.
+
 ## 3.1.0
 
 Update over Wi-Fi from UPDATE, or install `lakeshark-tdp4-3.1.0.zip` with the web flasher on terminalbay.com. LakeShark Desktop, Studio and the ESP32-P4-NANO stay on 2.22.0.
@@ -933,7 +997,7 @@ existing install.
 
 Supersedes 2.2.0.
 
-## 2.2.0-rc1 — experimental T-Display P4 candidate
+## 2.2.0-rc1: experimental T-Display P4 candidate
 
 - FM/P25 waterfalls show a cursor: left/right selects a frequency; Space tunes to it. Radio panels retain direct arrow tuning and lists retain navigation.
 - ADS-B map access and home selection from GPS or the map center.
@@ -950,13 +1014,13 @@ reports, GPS drive recording and other tracked hardware checks remain unresolved
 This candidate is experimental and is not cleared as a stable replacement for 2.1.1.
 
 
-## 2.1.1 — T-Display P4 hotfix
+## 2.1.1: T-Display P4 hotfix
 
 - Corrects ESP-Hosted transport-pool alignment for the P4's 128-byte external-RAM cache line.
 - Prevents short Wi-Fi packets from failing SDMMC DMA validation and taking down the shared Wi-Fi/Bluetooth SDIO transport while the LakeShark Flipper app is connected.
 - Hardware-tested with Wi-Fi connected, continuous Flipper BLE telemetry, RTL-SDR streaming and repeated FM/P25 transitions beyond the previous deterministic failure interval.
 
-## 2.1.0 — T-Display P4
+## 2.1.0: T-Display P4
 
 - GPS coverage filtering for saved scan channels.
 - Mixed conventional Phase I P25 and analog FM scan lists.
@@ -988,7 +1052,7 @@ Phase II grant/slot recognition is present. Experimental voice reception require
 a manually selected traffic channel and slot; automatic Phase II call following
 and live RF validation remain pending. See [Phase II testing](P25_PHASE2.md).
 
-## 2.1.0-rc1 — T-Display P4
+## 2.1.0-rc1: T-Display P4
 
 - LoRa Labs with direct radio controls and live plots.
 - Rotating compass with an expanded view and large heading display.

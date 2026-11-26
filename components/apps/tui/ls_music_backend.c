@@ -10,6 +10,7 @@
 #include "audio/audio_out.h"
 #include "audio/call_store.h"
 #include "ls_audio_hw.h"
+#include "ls_mic_level.h"
 #include "lakeshark_backend.h"
 #include <stdio.h>
 #include <stdatomic.h>
@@ -598,7 +599,12 @@ static esp_err_t write_pcm(void *data,size_t len,size_t *written,uint32_t timeou
    rest of the app is short of. */
 #define MIC_RATE 44100u
 #define MIC_FRAMES 1024
-#define MIC_GAIN_DB 30.0f
+/* The ES8311's analog PGA is already at its 30 dB top (register 0x14); this is
+   the ADC gain scale after it (register 0x16, 0..42 dB in 6 dB steps). 36 dB
+   is one step more than before and keeps room for a shout before the codec
+   itself clips; ls_mic_level.h adds the rest after the read. */
+#define MIC_GAIN_DB 36.0f
+EXT_RAM_BSS_ATTR static ls_mic_level_t s_mic_level;
 static atomic_bool s_mic_run, s_mic_busy;
 static _Atomic(FILE *) s_mic_file;
 static atomic_bool s_save_failed;
@@ -697,6 +703,9 @@ bool ls_music_mic_step(void)
         return false;
     }
     size_t frames=got/(2*sizeof(*buf));
+    /* Meters, plots and the file all get the levelled signal: what the
+       screen shows is what was saved. */
+    ls_mic_level_run(&s_mic_level,buf,frames,2);
     ls_audio_analysis_append(s_analysis,buf,frames,2,MIC_RATE);
     unsigned peaks[2]={0,0};
     for(size_t i=0;i<frames;i++) {
@@ -747,7 +756,7 @@ static bool capture_start(bool record,bool synth)
     }
     if(!synth && !ls_audio_hw_has_mic()){s_error="No microphone on this board";return false;}
     if(ls_audio_hw_set_fs(MIC_RATE,16,I2S_SLOT_MODE_STEREO)!=ESP_OK){s_error="Microphone clock failed";return false;}
-    if(!synth)ls_audio_hw_in_gain(MIC_GAIN_DB);
+    if(!synth){ls_audio_hw_in_gain(MIC_GAIN_DB);ls_mic_level_reset(&s_mic_level,MIC_RATE);}
     else ls_audio_hw_mute(audio_is_muted());
     analysis_reset();
     atomic_store(&s_source_rate,MIC_RATE);

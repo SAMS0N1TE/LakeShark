@@ -1,0 +1,4 @@
+config LS_GAME_DPI_CLOCK_MHZ
+    int "4.3-inch LCD pixel clock (MHz)"
+    default 30
+    range 20 30

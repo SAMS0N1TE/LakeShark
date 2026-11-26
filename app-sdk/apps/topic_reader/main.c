@@ -19,5 +19,11 @@ static bool key(lap_key_t k,char ch) {
     if(ch=='u'||ch=='U') { lap_ipc_unsubscribe("demo.greeting"); subscribed=false; return true; }
     if(ch=='s'||ch=='S') { enter(); return true; } return false;
 }
+LAP_ICON_PX("....................", "77eeee77eeee77eeee77", "77eeee77eeee77eeee77", "....................",
+            "....................", "...44444444444444...", "...44444444444444...", "...ffffffffffffff...",
+            "...ffffffffffffff...", "...ff7777777777ff...", "...ffffffffffffff...", "...ffffffffffffff...",
+            "...ff7777777fffff...", "...ffffffffffffff...", "...ffffffffffffff...", "...ff777777777fff...",
+            "...ffffffffffffff...", "....................");
+
 LAP_APP(.id="topic_reader",.name="TOPIC READER",.sub="Bounded typed messages",.version="1.0",.author="LakeShark",
         .icon=LAP_ICON_CHIP,.color=LAP_CYAN,.enter=enter,.draw=draw,.key=key);

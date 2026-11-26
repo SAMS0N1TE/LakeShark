@@ -18,6 +18,10 @@ The files are copied byte for byte: the board checks the manifest's
 signature and the image's SHA-256 exactly as it does on the hosts. Each
 image is checked against its manifest here too, so a stale copy is caught
 before it is uploaded.
+
+Then attach the ELF of every image to the same release with
+tools/release_elfs.py (bench/docs/RELEASE_ELFS.md): a crash in a field report
+decodes only with the exact ELF of the image that crashed.
 """
 import argparse, hashlib, posixpath, shutil, subprocess, sys
 from pathlib import Path

@@ -67,7 +67,7 @@ class Peripheral(unittest.TestCase):
   sizes=[('lap_ble_advert_config_t',80),('lap_gatt_attribute_t',162),('lap_gatt_server_event_t',20),('lap_ble_peripheral_status_t',24)]
   (folder/'main.c').write_text(base+'\n'.join('_Static_assert(sizeof(%s)==%d,"wire ABI");'%pair for pair in sizes)+'\nLAP_APP(.id="periph26",.name="PERIPHERAL",.version="1.0",.flags=LAP_CAP_RADIO_TX|LAP_CAP_HID_DEVICE);\n')
   output=lap.build(folder,folder/'peripheral26.lap',log=[]);elf=lap.Elf(output.read_bytes())
-  self.assertEqual(elf.manifest['api_minor'],6)
+  self.assertEqual(elf.manifest['api_minor'],lap.sdk_api_version(SDK)[1])
   self.assertEqual(elf.sections[elf.names.index('.lap_app')][5],228)
 
 if __name__=='__main__':unittest.main()

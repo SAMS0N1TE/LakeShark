@@ -1128,6 +1128,16 @@ static void draw_list(tui_surface *sf, tui_rect left)
     char buf[48], b2[24];
 
     /* ---- radio endpoint ------------------------------------------------ */
+    /* A desk window: the four bands are etched group boxes, one under the
+       other, each band's heading its caption (the rows inside do not move). */
+    const bool desk = ls_tui_compact();
+    if (desk) {
+        const bool sensors = left.y + 23 + 5 <= left.y + left.h - 1;
+        ls_dui_group(sf, tui_rect_make(left.x, left.y, left.w, 9), "Radio");
+        if (left.h >= 12) ls_dui_group(sf, tui_rect_make(left.x, left.y + 9, left.w, left.h >= 14 ? 5 : left.h - 9), "Memory");
+        if (left.h >= 18) ls_dui_group(sf, tui_rect_make(left.x, left.y + 14, left.w, sensors ? 9 : left.h - 14), "Alerts");
+        if (sensors) ls_dui_group(sf, tui_rect_make(left.x, left.y + 23, left.w, left.h - 23), "Radios and sensors");
+    } else
     tui_box(sf, left, "RADIO", frame);
 
     EXT_RAM_BSS_ATTR static radio_health_snapshot_t rh;
@@ -1199,6 +1209,7 @@ static void draw_list(tui_surface *sf, tui_rect left)
         (void)cx;
     }
 
+    if (!desk)
     tui_put_str(sf, left, left.x + 2, left.y + 9, "MEMORY",
                 TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
 
@@ -1255,6 +1266,7 @@ static void draw_list(tui_surface *sf, tui_rect left)
     row(sf, left, 12, "psram", buf, heap_ps ? good : dim);
     trend_row(sf, left, 12, ls_vitals_psram(), tx0, tx1);
 
+    if (!desk)
     tui_put_str(sf, left, left.x + 2, left.y + 14, "ALERTS",
                 TUI_ATTR(TUI_CYAN, TUI_BLACK));
 
@@ -1345,6 +1357,7 @@ static void draw_list(tui_surface *sf, tui_rect left)
 
         const int y0 = left.y + 23;
         if (y0 + 5 <= left.y + left.h - 1) {
+            if (!desk)
             tui_put_str(sf, left, left.x + 2, y0, "RADIOS AND SENSORS",
                         TUI_ATTR(TUI_CYAN, TUI_BLACK));
 
@@ -1819,10 +1832,19 @@ static tui_rect dk_draw(tui_surface *sf, tui_rect area)
     s_dk_bar = tui_rect_make(area.x, area.y, area.w, 1);
     ls_dui_bar_draw(sf, s_dk_bar, DK_MENUS, DK_NMENUS, s_dk_menu.pop.open ? s_dk_menu.pop.bar : -1, DK_HUE, s_dk_bar_x);
     s_dk_nav = tui_rect_make(area.x, area.y + 1, DK_NAV_W, area.h - 1);
-    char note[24];
-    snprintf(note, sizeof(note), "%d of %d", dk_section() + 1, DK_NSECTION);
-    const tui_rect in = ls_dui_pane(sf, s_dk_nav, "SECTIONS", note, DK_HUE, true);
+    char note[48];
     const int sel = dk_section();
+    /* The sections are a list: a white well with the list's header on the
+       button face; where the keyboard is goes to the status bar. */
+    const tui_rect well = ls_dui_well(sf, s_dk_nav, NULL);
+    const uint8_t head = ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, TUI_WHITE));
+    tui_fill(sf, tui_rect_make(well.x, well.y, well.w, 1), ' ', head);
+    tui_put_str(sf, well, well.x + 1, well.y, "Section", head);
+    snprintf(note, sizeof(note), "%d of %d", sel + 1, DK_NSECTION);
+    tui_put_str(sf, well, well.x + well.w - (int)strlen(note) - 1, well.y, note, head);
+    const tui_rect in = tui_rect_make(well.x, well.y + 1, well.w, well.h - 1);
+    snprintf(note, sizeof(note), "Diagnostics: %s", DK_SECTION[sel].name);
+    ls_tui_status_set(note, NULL);
     for (int i = 0; i < DK_NSECTION; i++) {
         const tui_rect line = tui_rect_make(in.x, in.y + i, in.w, i < in.h ? 1 : 0);
         s_dk_item[i] = line;
@@ -1839,7 +1861,7 @@ static tui_rect dk_draw(tui_surface *sf, tui_rect area)
     /* Under the list: what the keys do here, and the probe that is DIAG's own mark. */
     static const char *const HOW[] = {"Up/Down  section", "Alt+T    tools", "Alt+V    view", "Esc      overview"};
     int y = in.y + DK_NSECTION + 1;
-    if (y + 5 < in.y + in.h) {
+    if (y + 5 < in.y + in.h && !ls_tui_compact()) {   /* the keys are under Help > Keys on the desk */
         for (int x = in.x; x < in.x + in.w; x++)
             tui_put_char(sf, in, x, y, '-', ls_ink(LS_INK_RULE, LS_ATTR_FAINT));
         y++;
@@ -1869,7 +1891,7 @@ static void draw(tui_surface *sf, tui_rect area)
     hint_follow();
     if (ls_report_sheet_active()) { ls_report_sheet_draw(sf, area); return; }
 #if LS_TUI_HAS_COMPACT
-    s_dk_on =ls_tui_compact() && area.w >= 100 && area.h >= 20;
+    s_dk_on =ls_tui_compact() && area.w >= 78 && area.h >= 20;
     if (s_dk_on) {
         ls_dui_context_claim(dk_context);
         draw_page(sf, dk_draw(sf, area));

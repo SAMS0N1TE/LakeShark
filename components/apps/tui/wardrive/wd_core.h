@@ -23,7 +23,33 @@
 extern "C" {
 #endif
 
-enum { WD_WIFI, WD_BLE, WD_CELL, WD_DRONE, WD_KINDS };
+/* What was heard. RF: a sub-GHz device by its own ID (TPMS sensor, weather
+   station, remote); AIR: an aircraft by ICAO address; LORA: a LoRa node
+   (Meshtastic, MeshCore, LoRaWAN) by node ID. New kinds go at the end: saved
+   drives store the number. */
+enum { WD_WIFI, WD_BLE, WD_CELL, WD_DRONE, WD_RF, WD_AIR, WD_LORA, WD_KINDS };
+/* Which radio heard it. */
+enum { WD_RADIO_C6, WD_RADIO_LORA, WD_RADIO_SDR, WD_RADIO_PEER, WD_RADIOS };
+/* What the signature table (wd_sig.h) and the tracker (wd_track.h) say a
+   device is; any number at once. */
+enum {
+    WD_T_CAMERA   = 1u << 0,    /* a camera: doorbell, CCTV, dashcam */
+    WD_T_ALPR     = 1u << 1,    /* a plate reader (Flock and the like) */
+    WD_T_BODYCAM  = 1u << 2,
+    WD_T_POLICE   = 1u << 3,    /* police or fleet vehicle gear */
+    WD_T_TRACKER  = 1u << 4,    /* AirTag, Tile, SmartTag... */
+    WD_T_DRONE    = 1u << 5,
+    WD_T_VEHICLE  = 1u << 6,    /* a car's own radio: hotspot, TPMS, phone key */
+    WD_T_SKIMMER  = 1u << 7,
+    WD_T_HACKTOOL = 1u << 8,    /* Flipper, Pineapple, deauther... */
+    WD_T_WEARABLE = 1u << 9,    /* camera glasses and the like */
+    WD_T_INFRA    = 1u << 10,   /* gunshot sensors, traffic, utility */
+    WD_T_WATCH    = 1u << 11,   /* on the user's own watch list */
+    WD_T_FOLLOW   = 1u << 12,   /* moving with the board (wd_track.h) */
+    WD_T_REGULAR  = 1u << 13,   /* seen on earlier drives here (wd_atlas.h) */
+    WD_T_NEWHERE  = 1u << 14,   /* never seen on this route before */
+    WD_T_PEER     = 1u << 15,   /* reported by a party member or home base */
+};
 /* Wi-Fi security as the scan reports it. */
 enum {
     WD_AUTH_OPEN, WD_AUTH_WEP, WD_AUTH_WPA, WD_AUTH_WPA_WPA2, WD_AUTH_WPA2, WD_AUTH_WPA2_EAP,
@@ -56,6 +82,15 @@ typedef struct {
     bool own_pos;               /* a drone that reports where it is */
     double lat, lon;
     char name[33];
+    uint8_t radio;              /* WD_RADIO_* (0: the C6, as before) */
+    uint8_t sub;                /* the kind's own subtype: TPMS model, mesh flavour... */
+    uint16_t tags;              /* WD_T_* the source already knows; the table adds more */
+    uint32_t freq_khz;          /* 0: not known or not meaningful */
+    /* Bluetooth advert IDs for the signature table: ad_have bit 0 company +
+       mfg0, bit 1 uuid16 + svc0 (a flag: feeds zero the struct). */
+    uint8_t ad_have;
+    uint16_t company, uuid16;
+    int16_t mfg0, svc0;
 } wd_obs_t;
 
 #define WD_F_PLACED 1           /* lat/lon hold where it was strongest */
@@ -70,6 +105,11 @@ typedef struct {
     double lat, lon, row_lat, row_lon;
     float x, z, alt;            /* session metres: east, south */
     uint16_t next;              /* hash chain, index + 1 */
+    uint16_t tags;              /* WD_T_* */
+    uint16_t sig;               /* the matching signature + 1 (wd_sig.h), 0 none */
+    uint8_t radio, sub;
+    uint32_t freq_khz;
+    uint8_t posted;             /* what went to ls_seen: 1 the find, 2 that it follows */
 } wd_dev_t;
 
 typedef struct { double lat, lon; float x, z, alt, speed; uint32_t ms; } wd_pt_t;
@@ -80,6 +120,7 @@ typedef struct {
     uint8_t lane;
     uint32_t ms;
     char name[24];
+    uint16_t tags;
 } wd_drop_t;
 
 typedef struct {
@@ -91,6 +132,14 @@ typedef struct {
     float m_lon, m_lat;         /* metres in a degree at the origin */
     wd_fix_t fix;
     uint32_t fix_ms;            /* when the last good fix arrived, 0 none */
+    bool fix_weak;              /* the GPS has a position but not one to trust (HDOP, satellites, settling) */
+    uint8_t settle;             /* good fixes in a row that agree, since start or a loss */
+    unsigned fixes_dropped;     /* fixes the gate kept out of the track (weak, settling, impossible jumps) */
+    bool wifi_fix;              /* the position now is from known access points (wd_atlas_locate), not the GPS */
+    uint8_t wifi_used;          /* how many it used */
+    float wifi_err_m;
+    uint32_t wifi_ms;
+    float wifi_m;               /* distance driven on Wi-Fi fixes this drive */
     float x, z;                 /* where the board is, session metres */
     float speed, heading;       /* m/s; degrees true, < 0 unknown */
     float dist_m;
@@ -103,7 +152,7 @@ typedef struct {
     uint32_t min_stamp[30];
     long utc_base;              /* utc - ms/1000, 0 until a clock was seen */
     char stamp[24];             /* the session's file name stem */
-    char csv[96], gpx[96];      /* the files written, "" none */
+    char csv[128], gpx[128];    /* the files written, "" none */
     char note[72];              /* the last thing the worker has to say */
     int card;                   /* 1 card ok, 0 no card, -1 write failed */
 } wd_stats_t;
@@ -132,6 +181,44 @@ const char *wd_auth_name(unsigned auth);
 const char *wd_auth_short(unsigned auth);
 /* Session metres of a place. */
 void wd_local(double lat, double lon, float *x, float *z);
+/* A kind's name ("WI-FI", "BLUETOOTH", "CELL", "DRONES", "SUB-GHZ",
+   "AIRCRAFT", "LORA"), its short word ("WI-FI", "BT", "CELL", "DRONE", "RF",
+   "AIR", "LORA") and its three-letter tag for lists ("BT", "LTE", "UAS",
+   "RF", "AIR", "LRA"; Wi-Fi lists show the security instead). */
+const char *wd_kind_name(int kind);
+const char *wd_kind_short(int kind);
+const char *wd_kind_tag(int kind);
+/* The highest-priority WD_T_* bit's word ("ALPR", "BODYCAM", ...), "" none. */
+const char *wd_tag_word(uint16_t tags);
+
+/* ---- the drives on the card ----
+   Each drive in its own folder: <dir>/<stem>/<stem>.csv, <stem>.gpx and
+   drive.txt (its summary). Older drives were loose files in <dir>; the
+   readers still find them, and wd_drives_tidy moves them in. */
+#define WD_STEM 28
+typedef struct {
+    uint32_t start_utc, secs;   /* 0: not known */
+    float km;
+    unsigned finds, targets;    /* 0 for a drive summarised from its track */
+    long bytes;
+    bool track, log, summary;
+    double lat, lon;            /* where it began, 0 not known */
+} wd_drive_info_t;
+/* A drive's file (ext "csv", "gpx", "txt"): the old loose one while it is
+   there, else in the drive's folder; make creates the folder (to write). */
+bool wd_drive_path(char *out, size_t cap, const char *stem, const char *ext, bool make);
+/* The drives on the card, newest first. */
+int  wd_drives(char (*stem)[WD_STEM], int max);
+/* A drive's summary as far as it is known without reading its files:
+   drive.txt, sizes, the date in its stem (summary false: no drive.txt yet). */
+bool wd_drive_info(const char *stem, wd_drive_info_t *out);
+/* Build an old drive's drive.txt from its log and track, reading at most
+   budget bytes a call (the screen calls it a slice a frame). 1 done (out
+   filled), 0 more to read. One drive at a time. A NULL stem drops the
+   one half done and closes its file. */
+int  wd_drive_summarize(const char *stem, size_t budget, wd_drive_info_t *out);
+/* Move loose old drives into their folders; returns how many files moved. */
+int  wd_drives_tidy(void);
 
 /* ---- what the worker and the screen ask each other ---- */
 

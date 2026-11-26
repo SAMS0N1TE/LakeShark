@@ -604,6 +604,13 @@ static void calibration_action(int i)
     else if (i == 1) { result(ls_field_calibrate(0)); s_guide_visible=true; }
 }
 
+/* The words a page keeps on its last row: on the desk they are the window's
+   status bar instead (its keys are under Help > Keys). */
+static void hint_line(tui_surface *sf, tui_rect a, const char *text, uint8_t attr)
+{
+    if (ls_tui_compact()) { ls_tui_status_set(text ? text : "", NULL); return; }
+    ls_safe_line(sf, a, a.y + a.h - 1, text, attr);
+}
 static void calibration_draw(tui_surface *sf, tui_rect a, int64_t now)
 {
     const bool done=!s.calibrating && s.calibration_step==LS_COMPASS_STEPS && !s.calibration_failed;
@@ -667,7 +674,7 @@ static void calibration_draw(tui_surface *sf, tui_rect a, int64_t now)
         }
     }
     ls_safe_line(sf,a,a.y+a.h-2,s.direct?"Mesh paused: DIRECT is still on":"Mesh stays active during calibration",LS_ATTR_DIM);
-    ls_safe_line(sf,a,a.y+a.h-1,"Q / ESC cancel    R restart",LS_ATTR_DIM);
+    hint_line(sf, a, "Q / ESC cancel    R restart",LS_ATTR_DIM);
 }
 static void graph(tui_surface *sf, tui_rect r, const float *values)
 {
@@ -964,7 +971,7 @@ static void draw(tui_surface *sf, tui_rect a)
         panel_note(sf, panel, panel.y + panel.h - 3, line);
     }
     ls_safe_line(sf, a, a.y + a.h - 2, s.status, LS_ATTR_DIM);
-    ls_safe_line(sf, a, a.y + a.h - 1, s.calibrating && s.compass_status[0] ? s.compass_status : s_feedback[0] ? s_feedback : "Leaving Labs returns the radio to Mesh", LS_ATTR_DIM);
+    hint_line(sf, a, s.calibrating && s.compass_status[0] ? s.compass_status : s_feedback[0] ? s_feedback : "Leaving Labs returns the radio to Mesh", LS_ATTR_DIM);
     if (s.mode == LS_LAB_BEARING) {
         s_expand_hit=tui_rect_make(a.x+3,a.y+a.h-6,a.w-6,4);
         ls_btn_t expand={"EXPAND","COMPASS",'v',false,false};

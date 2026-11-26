@@ -1,6 +1,7 @@
 /* Runs on the existing wireless worker. Never takes another app's radio. */
 #include "tui/ls_sweep_app.h"
 #include "tui/ls_seen.h"
+#include "tui/ls_tail.h"
 #include "ls_wifi.h"
 #include "ls_gps.h"
 #include <math.h>
@@ -22,6 +23,7 @@ static EXT_RAM_BSS_ATTR ls_wifi_scan_ap_t aps[64];
 static EXT_RAM_BSS_ATTR ls_sweep_device_t event;
 void ls_sweep_wake(void) {ls_wireless_wake();}
 void ls_sweep_tick(void) {
+    ls_tail_load(); /* the shared "with you" setting, once (NVS on this worker) */
     ls_sweep_status_t s;int64_t now=esp_timer_get_time();ls_sweep_status(&s,now);
     /* A detector app watching Remote ID or SWEEP's categories keeps the scan up. */
     const uint32_t seen=ls_seen_wanted();

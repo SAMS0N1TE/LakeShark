@@ -1,3 +1,4 @@
+#include "ls_deskui.h"
 #include "ls_skyview.h"
 #include "ls_skyplot.h"
 #include "ls_tui_ui.h"
@@ -32,18 +33,28 @@ void ls_skyview_draw(tui_surface *sf, tui_rect a, const ls_gps_state_t *g, int s
     const uint8_t amber=TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK);
     int64_t now=esp_timer_get_time();
     bool fresh=ls_gps_recent(g->last_gsv_us,now);
-    LS_SNPRINTF(t_ls_skyview_sky_gsv_rx_age, text,sizeof(text),"SKY / GSV  RX age %s",fresh?"<3s":g->last_gsv_us?"STALE":"MISSING");
+LS_SNPRINTF(t_ls_skyview_sky_gsv_rx_age, text,sizeof(text),"SKY / GSV  RX age %s",fresh?"<3s":g->last_gsv_us?"STALE":"MISSING");
+    /* A desk window: no lines over the panes; the plot on black glass, the
+       satellites in a white well, the chosen one in a group box. */
+    const bool desk=ls_tui_compact();
+    const int hdr=desk?0:2;
+    if(!desk) {
     tui_put_str(sf,a,a.x,a.y,text,fresh?cyan:amber);
     tui_put_str(sf,a,a.x,a.y+1,LS_TEXT(t_ls_skyview_n_true_north_rim, "N=true north; rim=0 mid=45 +=90 deg"),LS_ATTR_DIM);
+    }
     int count=g->sat_count<LS_GPS_MAX_SATS?g->sat_count:LS_GPS_MAX_SATS;
     if(selected<0 || selected>=count) selected=0;
     int located=0;
     for(int i=0;i<count;i++) if(g->sats[i].prn && g->sats[i].azimuth<360 && g->sats[i].elevation<=90 && ls_sky_located(g->sats[i].azimuth,g->sats[i].elevation)) located++;
-    const bool framed=a.w>=85 && a.h>=18;
-    tui_rect plot_frame=tui_rect_make(a.x,a.y+2,a.w/2-1,a.h-2);
-    tui_rect table_frame=tui_rect_make(a.x+a.w/2,a.y+2,a.w-a.w/2,a.h-9);
+    const bool framed=desk?(a.w>=70 && a.h>=16):(a.w>=85 && a.h>=18);
+    tui_rect plot_frame=tui_rect_make(a.x,a.y+hdr,a.w/2-1,a.h-hdr);
+    tui_rect table_frame=tui_rect_make(a.x+a.w/2,a.y+hdr,a.w-a.w/2,a.h-hdr-7);
     tui_rect detail_frame=tui_rect_make(table_frame.x,table_frame.y+table_frame.h,table_frame.w,7);
-    if(framed) {
+    if(framed && desk) {
+        ls_dui_glass(sf,plot_frame);
+        ls_dui_well(sf,table_frame,NULL);
+        ls_dui_group(sf,detail_frame,"Selected");
+    } else if(framed) {
         ls_panel_box(sf,plot_frame,"SKY / NORTH UP",TUI_CYAN);
         ls_panel_box(sf,table_frame,"SATELLITES",TUI_CYAN);
         ls_panel_box(sf,detail_frame,"SELECTED",TUI_CYAN);
@@ -87,7 +98,7 @@ void ls_skyview_draw(tui_surface *sf, tui_rect a, const ls_gps_state_t *g, int s
         if(count && rows[selected]>=0)
             tui_put_char(sf,p,p.x+cols[selected],p.y+rows[selected],'@',TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK));
     } else plot_h=0;
-    if(a.w>=85 && plot_h>=5) {
+    if((a.w>=85 || (desk && framed)) && plot_h>=5) {
         tui_rect table=tui_rect_make(a.x+a.w/2,a.y+2,a.w-a.w/2,plot_h);
         if(framed) table=tui_rect_make(table_frame.x+2,table_frame.y+1,table_frame.w-4,table_frame.h-2);
         tui_put_str(sf,table,table.x,table.y,LS_TEXT(t_ls_skyview_north_up_local_sky, "NORTH-UP / local sky, not orbit"),cyan);
@@ -106,16 +117,26 @@ void ls_skyview_draw(tui_surface *sf, tui_rect a, const ls_gps_state_t *g, int s
             tui_put_str(sf,table,table.x,table.y+2+i-first,text,i==selected?cyan:sat->used?green:amber);
         }
         tui_put_str(sf,table,table.x,table.y+table.h-2,LS_TEXT(t_ls_skyview_green_used_amber_seen, "Green USED / amber seen / cyan selected"),LS_ATTR_DIM);
-        tui_put_str(sf,table,table.x,table.y+table.h-1,LS_TEXT(t_ls_skyview_unreported_j_k_pages, "-- unreported; J/K pages through all"),LS_ATTR_DIM);
+        if(!desk) tui_put_str(sf,table,table.x,table.y+table.h-1,LS_TEXT(t_ls_skyview_unreported_j_k_pages, "-- unreported; J/K pages through all"),LS_ATTR_DIM);
     }
     int y=plot_h?plot_h+2:3;
     if(framed) {
         a=tui_rect_make(detail_frame.x+2,detail_frame.y+1,detail_frame.w-4,detail_frame.h-2);
         y=0;
     }
+    if(desk && framed) {
+        /* PREV and NEXT as buttons */
+        const ls_btn_t pv={"PREV","",'k',false,false,false},nx={"NEXT","",'j',false,false,false};
+        const int w1=ls_key1_draw(sf,a,a.x,a.y+y,&pv,false);
+        const int w2=ls_key1_draw(sf,a,a.x+w1+1,a.y+y,&nx,false);
+        hit(tui_rect_make(a.x,a.y+y,w1,1),-2);
+        hit(tui_rect_make(a.x+w1+1,a.y+y,w2,1),-3);
+        tui_put_str(sf,a,a.x+w1+w2+3,a.y+y,"@ selected * overlap",LS_ATTR_DIM);
+    } else {
     tui_put_str(sf,a,a.x,a.y+y,LS_TEXT(t_ls_skyview_prev_next_selected_overlap, "[ PREV ] [ NEXT ]  @ selected * overlap"),LS_ATTR_DIM);
     hit(tui_rect_make(a.x,a.y+y,8,1),-2);
     hit(tui_rect_make(a.x+9,a.y+y,8,1),-3);
+    }
     if(!count) { tui_put_str(sf,a,a.x,a.y+y+1,LS_TEXT(t_ls_skyview_gsv_reports_an_empty, "GSV reports an empty sky"),LS_ATTR_DIM);return; }
     const ls_gps_sat_t *s=&g->sats[selected];
     snprintf(text,sizeof(text),"%c ID %u  %d/%d  %s",selected<26?'A'+selected:'a'+selected-26,s->prn,selected+1,count,s->used?"USED in fix":"NOT used in fix");

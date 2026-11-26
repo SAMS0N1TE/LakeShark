@@ -13,6 +13,7 @@
 
 #include "../../ls_tui.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 #include "../../ls_box.h"
 #include "../../ls_i18n.h"
 #include "../../ls_quick.h"
@@ -141,8 +142,18 @@ static radio_state_t sdr_endpoint_read(const char *id)
 static radio_state_t rtl_read(void) { return sdr_endpoint_read(LS_RADIO_ENDPOINT_RTL_USB); }
 static radio_state_t hackrf_read(void) { return sdr_endpoint_read(LS_RADIO_ENDPOINT_HACKRF_USB); }
 static const char *sdr_word(radio_state_t st);
-static const char *rtl_state(void) { return sdr_word(rtl_read()); }
-static const char *hackrf_state(void) { return sdr_word(hackrf_read()); }
+/* An idle SDR the watchdog has powered down reads "standby", not "parked":
+   the USB-A port's 5 V cannot be switched, so this is the dongle's off. */
+static const char *sdr_state(const char *id, radio_state_t st)
+{
+    ls_radio_endpoint_info_t info;
+    if (st == RS_OFF && ls_radio_endpoint_get(id, &info) == LS_RADIO_OK &&
+        info.present && info.standby)
+        return "standby";
+    return sdr_word(st);
+}
+static const char *rtl_state(void) { return sdr_state(LS_RADIO_ENDPOINT_RTL_USB, rtl_read()); }
+static const char *hackrf_state(void) { return sdr_state(LS_RADIO_ENDPOINT_HACKRF_USB, hackrf_read()); }
 
 /* STOP turns off the app using the radio. It used to pause the receiver
    (SDR) or block the chip (LoRa) under an app that kept wanting it, so the
@@ -550,9 +561,20 @@ static bool row_detail(int i, char *what, size_t n)
     if (ROWS[i].set == rtl_set || ROWS[i].set == hackrf_set) {
         ls_radio_endpoint_info_t info;
         if (ls_radio_endpoint_get(ROWS[i].set == rtl_set ? LS_RADIO_ENDPOINT_RTL_USB :
-                                  LS_RADIO_ENDPOINT_HACKRF_USB, &info) == LS_RADIO_OK && info.leased) {
-            snprintf(what, n, ls_tr("Owner: %s"), info.owner);
-            return true;
+                                  LS_RADIO_ENDPOINT_HACKRF_USB, &info) == LS_RADIO_OK) {
+            if (info.leased && !info.standby) {
+                snprintf(what, n, ls_tr("Owner: %s"), info.owner);
+                return true;
+            }
+            if (info.present && info.standby) {
+                snprintf(what, n, "%s", ls_tr("Standby: tuner off, wakes for the next app"));
+                return true;
+            }
+            if (info.present && !info.streaming && info.standby_in_ms) {
+                snprintf(what, n, ls_tr("Idle, powered: standby in %lu s"),
+                         (unsigned long)((info.standby_in_ms + 999) / 1000));
+                return true;
+            }
         }
     }
     return false;
@@ -638,92 +660,113 @@ static void draw_one(tui_surface *sf, tui_rect a, int i, int bh)
    click on the key does it; a click on the row selects it. */
 static tui_rect s_row_hit[12];
 
+static tui_rect s_tool_act;      /* the toolbar's key for the selected row (desk) */
+
+/* A desk window: one toolbar (the selected radio's action, OPTIONS, the
+   pages), the radios as a list view in a white well with a header row and a
+   selection bar (the action column is words: click it, or the toolbar key,
+   to act), the selected radio in a group box under it. */
 static void draw_compact(tui_surface *sf, tui_rect area)
 {
-    const uint8_t dim = A(DIM_FG, TUI_BLACK);
-    const uint8_t head = A(TUI_CYAN, TUI_BLACK);
-    const int x = area.x + 2, right = area.x + area.w - 2;
-    const int act_x = right - 18;
-    tui_put_str(sf, area, x + 2, area.y + 3, ls_tr("RADIO"), head);
-    tui_put_str(sf, area, x + 16, area.y + 3, ls_tr("STATE"), head);
-    tui_put_str(sf, area, x + 32, area.y + 3, ls_tr("FOR"), head);
-    tui_put_str(sf, area, act_x, area.y + 3, ls_tr("ACTION"), head);
-    for (int c = x; c < right; c++)
-        ls_box_put(sf, area, c, area.y + 4, LS_BOX_H, A(LS_FAINT_FG, TUI_BLACK));
-    const int first_y = area.y + 5;
-    const int rows = area.y + area.h - 3 - first_y;
-    s_page_size = rows < N_ROWS ? (rows > 0 ? rows : 1) : N_ROWS;
+    const uint8_t text = ls_ink(LS_INK_TEXT, A(TUI_WHITE, TUI_BLACK));
+    const uint8_t dim = ls_ink(LS_INK_DIM, A(DIM_FG, TUI_BLACK));
+    tui_fill(sf, area, ' ', A(TUI_WHITE, TUI_BLACK));
+    /* The toolbar. */
+    int tx = area.x;
+    s_tool_act = tui_rect_make(0, 0, 0, 0);
+    if (s_sel < N_ROWS) {
+        const radio_state_t st = ROWS[s_sel].read();
+        const bool can = ROWS[s_sel].set && (st != RS_ABSENT || ROWS[s_sel].set == open_link);
+        const ls_btn_t key = { .label = ROWS[s_sel].action_text ? ROWS[s_sel].action_text() : action_word(st, can),
+                               .dim = !can };
+        const int kw = ls_key1_draw(sf, area, tx, area.y, &key, false);
+        s_tool_act = tui_rect_make(tx, area.y, kw, 1);
+        tx += kw + 1;
+    }
+    const ls_btn_t opt = ls_opt_button(&RADIO_CONTEXT);
+    const int ow = ls_key1_draw(sf, area, tx, area.y, &opt, s_sel == N_ROWS);
+    s_options_hit = tui_rect_make(tx, area.y, ow, 1);
+    tx += ow + 2;
+
+    /* The list view: a sunken frame, a header of buttons, rows on the well. */
+    const int x0 = area.x, right = area.x + area.w;
+    const int avail = area.h - 1 - 3 - 7;              /* toolbar, frame + header, the group under it */
+    s_page_size = avail >= N_ROWS ? N_ROWS : avail >= 4 ? avail : area.h - 4 < N_ROWS ? (area.h - 4 > 0 ? area.h - 4 : 1) : N_ROWS;
     if (s_sel < N_ROWS) s_page_first = (s_sel / s_page_size) * s_page_size;
-    for (int slot = 0; slot < s_page_size && s_page_first + slot < N_ROWS; slot++) {
-        const int i = s_page_first + slot, y = first_y + slot;
+    const int shown = N_ROWS - s_page_first < s_page_size ? N_ROWS - s_page_first : s_page_size;
+    const int fh = area.h - 1 - 7 > s_page_size + 3 ? area.h - 1 - 7 : s_page_size + 3;   /* the list fills down to the group */
+    const tui_rect frame = tui_rect_make(x0, area.y + 1, area.w, fh);
+    ls_dui_edge(sf, frame, true);
+    const tui_rect head = tui_rect_make(frame.x + 1, frame.y + 1, frame.w - 2, 1);
+    const tui_rect body = tui_rect_make(frame.x + 1, frame.y + 2, frame.w - 2, frame.h - 3);
+    const uint8_t cap = ls_ink(LS_INK_KEY, A(TUI_CYAN, TUI_BLACK));
+    tui_fill(sf, head, ' ', cap);
+    tui_fill(sf, body, ' ', A(TUI_WHITE, TUI_BLACK));
+    ls_ink_well(body);
+    const int x = body.x + 1, act_x = right - 18;
+    tui_put_str(sf, head, x + 2, head.y, ls_tr("Radio"), cap);
+    tui_put_str(sf, head, x + 16, head.y, ls_tr("State"), cap);
+    tui_put_str(sf, head, x + 32, head.y, ls_tr("For"), cap);
+    tui_put_str(sf, head, act_x, head.y, ls_tr("Action"), cap);
+    for (int slot = 0; slot < shown; slot++) {
+        const int i = s_page_first + slot, y = body.y + slot;
         const radio_state_t st = ROWS[i].read();
         const bool can = ROWS[i].set && (st != RS_ABSENT || ROWS[i].set == open_link);
         const bool sel = i == s_sel;
-        const tui_rect row = tui_rect_make(x, y, right - x, 1);
-        if (sel) tui_fill(sf, tui_rect_make(x, y, act_x - 1 - x, 1), ' ', A(TUI_WHITE | TUI_BRIGHT, TUI_BLUE));
-        const uint8_t bg = sel ? TUI_BLUE : TUI_BLACK;
+        const tui_rect row = tui_rect_make(body.x, y, body.w, 1);
+        const uint8_t band = ls_ink(LS_INK_SELECT, A(TUI_WHITE | TUI_BRIGHT, TUI_BLUE));
+        if (sel) tui_fill(sf, row, ' ', band);
+        const uint8_t bg = sel ? TUI_ATTR_BG(band) : TUI_BLACK;
         const uint8_t lamp = !can ? LS_FAINT_FG : st == RS_BUSY ? (TUI_GREEN | TUI_BRIGHT)
                            : st == RS_ON ? (TUI_YELLOW | TUI_BRIGHT)
                            : st == RS_FAILED ? (TUI_RED | TUI_BRIGHT) : LS_DIM_FG;
-        ls_box_put(sf, row, x, y, LS_SHAPE_DOT, A(lamp, bg));
-        tui_put_str(sf, row, x + 2, y, ls_tr(ROWS[i].name), A(can ? (TUI_WHITE | TUI_BRIGHT) : DIM_FG, bg));
+        ls_box_put(sf, row, x, y, LS_SHAPE_DOT, sel ? band : A(lamp, TUI_BLACK));
+        tui_put_str(sf, row, x + 2, y, ls_tr(ROWS[i].name), sel ? band : can ? text : dim);
         char w[24];
         snprintf(w, sizeof(w), "%.15s", ls_tr(ROWS[i].state_text ? ROWS[i].state_text() : state_word(st)));
-        tui_put_str(sf, row, x + 16, y, w, A(lamp == LS_FAINT_FG ? DIM_FG : lamp, bg));
+        tui_put_str(sf, row, x + 16, y, w, sel ? band : lamp == LS_FAINT_FG || lamp == LS_DIM_FG ? dim : ls_ink_hue(A(lamp, bg)));
         char what[72];
         const int room = act_x - 2 - (x + 32);
         snprintf(what, sizeof(what), "%.*s", room < 0 ? 0 : room > 70 ? 70 : room, ls_tr(ROWS[i].what));
-        tui_put_str(sf, row, x + 32, y, what, sel ? A(TUI_WHITE, TUI_BLUE) : dim);
-        const ls_btn_t key = { .label = ROWS[i].action_text ? ROWS[i].action_text() : action_word(st, can),
-                               .dim = !can };
-        const int kw = ls_key1_draw(sf, area, act_x, y, &key, false);
+        tui_put_str(sf, row, x + 32, y, what, sel ? band : dim);
+        const char *act = ROWS[i].action_text ? ROWS[i].action_text() : action_word(st, can);
+        tui_put_str(sf, row, act_x, y, ls_tr(act), sel ? band : can ? ls_ink(LS_INK_ACCENT, A(TUI_CYAN, TUI_BLACK)) : dim);
         if (s_hit_n < (int)(sizeof(s_hit) / sizeof(s_hit[0]))) {
             s_hit_row[s_hit_n] = i;
-            s_row_hit[s_hit_n] = tui_rect_make(x, y, act_x - 1 - x, 1);
-            s_hit[s_hit_n++] = tui_rect_make(act_x, y, kw, 1);
+            s_row_hit[s_hit_n] = tui_rect_make(body.x, y, act_x - 1 - body.x, 1);
+            s_hit[s_hit_n++] = tui_rect_make(act_x, y, right - 1 - act_x, 1);
         }
     }
-    const int by = area.y + area.h - 2;
-    /* The selected radio in full, under the list, while there is room. */
-    const int dy = first_y + (s_page_size < N_ROWS ? s_page_size : N_ROWS) + 1;
-    if (s_sel < N_ROWS && by - 1 - dy >= 5) {
-        const int i = s_sel;
-        const radio_state_t st = ROWS[i].read();
-        const tui_rect b = tui_rect_make(x, dy, right - x, by - 1 - dy > 7 ? 7 : by - 1 - dy);
-        tui_box(sf, b, ls_tr("SELECTED"), A(TUI_CYAN, TUI_BLACK));
-        const char *nm = ls_tr(ROWS[i].name);
-        tui_put_str(sf, b, b.x + 2, b.y + 1, nm, A(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
-        tui_put_str(sf, b, b.x + 4 + (int)strlen(nm), b.y + 1,
-                    ls_tr(ROWS[i].state_text ? ROWS[i].state_text() : state_word(st)),
-                    A(st == RS_BUSY ? TUI_GREEN | TUI_BRIGHT : st == RS_ON ? TUI_YELLOW | TUI_BRIGHT
-                      : st == RS_FAILED ? TUI_RED | TUI_BRIGHT : DIM_FG, TUI_BLACK));
-        char line[96];
-        snprintf(line, sizeof(line), "%.*s", b.w - 4 < 95 ? b.w - 4 : 95, ls_tr(ROWS[i].what));
-        tui_put_str(sf, b, b.x + 2, b.y + 2, line, A(TUI_WHITE, TUI_BLACK));
-        char what[72];
-        if (row_detail(i, what, sizeof(what)) && b.h >= 5)
-            tui_put_str(sf, b, b.x + 2, b.y + 3, what, A(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
-        if (b.h >= 6) {
-            snprintf(line, sizeof(line), ls_tr("ENTER or the key: %s"),
-                     ls_tr(ROWS[i].action_text ? ROWS[i].action_text() : action_word(st, ROWS[i].set && (st != RS_ABSENT || ROWS[i].set == open_link))));
-            tui_put_str(sf, b, b.x + 2, b.y + b.h - 2, line, A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
-        }
-    }
+    /* More radios than rows: the pages on the toolbar's right. */
     char buf[24];
     if (s_page_size < N_ROWS) {
         const ls_btn_t prev = { .label = "< PREV" }, next = { .label = "NEXT >" };
-        const int pw = ls_key1_draw(sf, area, x, by, &prev, false);
-        s_page_prev = tui_rect_make(x, by, pw, 1);
+        const int pw = ls_key1_draw(sf, area, tx, area.y, &prev, false);
+        s_page_prev = tui_rect_make(tx, area.y, pw, 1);
         snprintf(buf, sizeof(buf), "%d/%d", s_page_first / s_page_size + 1,
                  (N_ROWS + s_page_size - 1) / s_page_size);
-        tui_put_str(sf, area, x + pw + 1, by, buf, head);
-        const int nx = x + pw + 2 + (int)strlen(buf);
-        s_page_next = tui_rect_make(nx, by, ls_key1_draw(sf, area, nx, by, &next, false), 1);
+        tui_put_str(sf, area, tx + pw + 1, area.y, buf, text);
+        const int nx = tx + pw + 2 + (int)strlen(buf);
+        s_page_next = tui_rect_make(nx, area.y, ls_key1_draw(sf, area, nx, area.y, &next, false), 1);
     }
-    const ls_btn_t opt = ls_opt_button(&RADIO_CONTEXT);
-    const int ow = ls_key1_width(&opt);
-    ls_key1_draw(sf, area, right - ow, by, &opt, s_sel == N_ROWS);
-    s_options_hit = tui_rect_make(right - ow, by, ow, 1);
+    /* The selected radio in full, in a group box under the list. */
+    const int dy = frame.y + frame.h;
+    const int bh = area.y + area.h - dy;
+    if (s_sel < N_ROWS && bh >= 5) {
+        const int i = s_sel;
+        const radio_state_t st = ROWS[i].read();
+        const tui_rect b = tui_rect_make(area.x, dy, area.w, bh > 7 ? 7 : bh);
+        const tui_rect in = ls_dui_group(sf, b, ls_tr(ROWS[i].name));
+        tui_put_str(sf, in, in.x + 1, in.y, ls_tr(ROWS[i].state_text ? ROWS[i].state_text() : state_word(st)),
+                    ls_ink_hue(A(st == RS_BUSY ? TUI_GREEN | TUI_BRIGHT : st == RS_ON ? TUI_YELLOW | TUI_BRIGHT
+                      : st == RS_FAILED ? TUI_RED | TUI_BRIGHT : DIM_FG, TUI_BLACK)));
+        char line[96];
+        snprintf(line, sizeof(line), "%.*s", in.w - 2 < 95 ? in.w - 2 : 95, ls_tr(ROWS[i].what));
+        tui_put_str(sf, in, in.x + 1, in.y + 1, line, text);
+        char what[72];
+        if (row_detail(i, what, sizeof(what)) && in.h >= 3)
+            tui_put_str(sf, in, in.x + 1, in.y + 2, what, ls_ink(LS_INK_ACCENT, A(TUI_CYAN | TUI_BRIGHT, TUI_BLACK)));
+    }
 }
 
 static void draw(tui_surface *sf, tui_rect area)
@@ -733,20 +776,21 @@ static void draw(tui_surface *sf, tui_rect area)
 
     s_hit_n = 0;
     s_options_hit = s_page_prev = s_page_next = tui_rect_make(0, 0, 0, 0);
-    ls_panel_box(sf, area, NULL, TUI_CYAN);
-    if (area.h < 8 || area.w < 20) return;
     if (ls_tui_compact() && area.w >= 72 && area.h >= 12) {
+        /* A desk window: the count and any refusal go to the status bar. */
         const int live = count_live();
         int loads = 0;
         for (int i = 0; i < N_ROWS; i++)
             if (!ROWS[i].no_power && !ROWS[i].at_boot) loads++;
+        char st[160];
         snprintf(buf, sizeof(buf), ls_tr("%d of %d powered"), live, loads);
-        tui_put_str(sf, area, area.x + 2, area.y + 1, buf,
-                    live ? A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : dim);
-        if (s_error) tui_put_str(sf, area, area.x + 24, area.y + 1, ls_tr(s_error), A(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        snprintf(st, sizeof(st), "%s%s%s", buf, s_error ? ".  " : "", s_error ? ls_tr(s_error) : "");
+        ls_tui_status_set(st, NULL);
         draw_compact(sf, area);
         return;
     }
+    ls_panel_box(sf, area, NULL, TUI_CYAN);
+    if (area.h < 8 || area.w < 20) return;
 
     const int live = count_live();
     int loads = 0;
@@ -846,7 +890,11 @@ static bool touch(int col, int row)
         options_open(); return true;
     }
     if (ls_tui_compact()) {
-        /* The desk list: the key acts, the row selects. */
+        /* The desk list: the toolbar key or the action column acts, the row selects. */
+        if (tui_rect_contains(s_tool_act, col, row) && s_tool_act.w > 0 && s_sel < N_ROWS) {
+            toggle(s_sel);
+            return true;
+        }
         if (tui_rect_contains(s_page_prev, col, row) && s_page_prev.w > 0) {
             s_sel = s_page_first >= s_page_size ? s_page_first - s_page_size : 0;
             return true;

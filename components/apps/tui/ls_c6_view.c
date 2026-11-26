@@ -1,5 +1,6 @@
 /* SYSTEM > UPDATE > C6 FIRMWARE. All file/RPC work belongs to the backend. */
 #include "ls_c6_view.h"
+#include "ls_deskui.h"
 #include "ls_action.h"
 #include "esp_attr.h"
 #include "ls_options.h"
@@ -184,9 +185,11 @@ void ls_c6_view_draw(tui_surface *sf, tui_rect a)
         {"CHECK SD", "R", 'r', false, off || s_confirm, false},
         {"OPTIONS", "O", 'o', false, off || s_confirm, false}};
     /* One-row keys in a window; the body takes the rows the raised bar would. */
-    const int bh = ls_tui_compact() ? 2 : 5;
+    const bool desk = ls_tui_compact();
+    const int bh = desk ? 1 : 5;
     ls_btn_bar_raised_row(sf,tui_rect_make(a.x,a.y,a.w,bh == 2 ? 1 : bh),buttons,4,-1);
     tui_rect body = tui_rect_make(a.x,a.y+bh,a.w,a.h-bh);
+    if (desk) tui_fill(sf,body,' ',TUI_ATTR(TUI_WHITE,TUI_BLACK));
     ls_panel_box(sf,body,s_confirm ? "CONFIRM C6 INSTALL" : "C6 FIRMWARE / SD UPDATE",hue);
     tui_rect in = tui_rect_make(body.x+2,body.y+1,body.w-4,body.h-2);
     /* Side by side also when the page is short: stacked, the text would
@@ -203,6 +206,13 @@ void ls_c6_view_draw(tui_surface *sf, tui_rect a)
     } else {
         art.h = 26;
         detail.y += 27; detail.h -= 27;
+    }
+    if (desk && wide) {
+        /* A desk window: the chip on black glass, the words in a white well. */
+        const tui_rect g = ls_dui_glass(sf,tui_rect_make(in.x-1,in.y,40,in.h));
+        art = tui_rect_make(g.x,g.y+1,g.w,g.h-1);
+        const tui_rect w = ls_dui_well(sf,tui_rect_make(in.x+40,in.y,in.w-39,in.h),NULL);
+        detail = tui_rect_make(w.x+1,w.y,w.w-1,w.h);
     }
     int x = art.x+1;
     x = ls_radio_chip(sf,art,x,art.y,"SD",size>0,TUI_CYAN);
@@ -223,6 +233,7 @@ void ls_c6_view_draw(tui_surface *sf, tui_rect a)
     text_value("c6.old",old,sizeof(old)); text_value("c6.image",image,sizeof(image));
     text_value("c6.new",current,sizeof(current)); text_value("c6.state",status,sizeof(status));
     if (unavailable) LS_SNPUTS(t_ls_c6_view_c6_updater_unavailable_in, status, sizeof(status), "C6 updater unavailable in this build.");
+    if (desk) ls_tui_status_set(status,NULL);
     int y = detail.y;
     y=paragraph(sf,detail,y,done ? "VERIFIED VERSION CHANGE" : "VERSION / PREFLIGHT",TUI_CYAN|TUI_BRIGHT);
     snprintf(line,sizeof(line),done ? "%s -> %s" : "Running C6   %s",old,current);

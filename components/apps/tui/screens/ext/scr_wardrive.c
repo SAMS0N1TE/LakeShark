@@ -22,10 +22,18 @@
 #include "../../wardrive/wd_feed.h"
 #include "../../wardrive/wd_view3d.h"
 #include "../../wardrive/wd_replay.h"
+#include "../../wardrive/wd_page.h"
+#include "../../ls_plate.h"
+#include "../../ls_calls.h"
+#include "../../wardrive/wd_sig.h"
+#include "../../wardrive/wd_radio.h"
+#include "../../wardrive/wd_atlas.h"
+#include "../../ls_lsx_svc.h"
 #include "../../ls_drag_scroll.h"
 #include "../../ls_picker.h"
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 #include "../../ls_text.h"
 #include "../../ls_options.h"
 #include "../../ls_app.h"
@@ -34,6 +42,8 @@
 #include "../../ls_map_ink.h"
 #include "../../ls_map.h"
 #include "ls_location.h"
+#include "core/settings.h"
+#include "core/ls_tz.h"
 #include "esp_timer.h"
 #include <dirent.h>
 #include <math.h>
@@ -46,15 +56,22 @@
 #define EXT_RAM_BSS_ATTR
 #endif
 
-#define INK(c)  ls_ink_hue(TUI_ATTR((c), TUI_BLACK))
+/* everything sits on the plates' slate ground (ls_plate.h) */
+#define G       LS_PLATE_GROUND
+#define INK(c)  ls_ink_hue(TUI_ATTR((c), G))
 #define LIT(c)  INK((c) | TUI_BRIGHT)
 #define FALL_MS 1600u
 
-enum { PG_LIVE, PG_3D, PG_LIST, PG_N };
-enum { F_ALL, F_WIFI, F_OPEN, F_BLE, F_CELL, F_DRONE, F_N };
+enum { PG_LIVE, PG_3D, PG_LIST, PG_HUNT, PG_RADIO, PG_ATLAS, PG_N };
+/* the pages that live in their own files (wd_page.h), by PG_ - PG_HUNT */
+static const wd_page_t *const XPAGE[PG_N - PG_HUNT] = { &wd_page_hunt, &wd_page_radio, &wd_page_atlas };
+static const wd_page_t *xpage(int p) { return p >= PG_HUNT && p < PG_N ? XPAGE[p - PG_HUNT] : NULL; }
+enum { F_ALL, F_WIFI, F_OPEN, F_BLE, F_CELL, F_DRONE, F_RF, F_AIR, F_LORA, F_HITS, F_N };
+/* tags that make a device a target (what HUNT lists), not just a note */
+#define WD_HIT_TAGS ((uint16_t)~(WD_T_REGULAR | WD_T_NEWHERE))
 
 static int s_page;
-static bool s_src[WD_KINDS] = { true, true, true, true };
+static bool s_src[WD_KINDS] = { true, true, true, true, true, true, true };
 static int s_pace = WD_PACE_NORMAL, s_units, s_only_fix;
 static int s_filter, s_sort, s_sel, s_top, s_rows_shown;
 static int s_sel_dev = -1;           /* the device the selection is on, kept across re-sorts */
@@ -114,15 +131,40 @@ static uint8_t kind_hue(int kind, int sec)
         static const uint8_t H[WD_SECS] = { TUI_GREEN, TUI_YELLOW, TUI_YELLOW, TUI_CYAN, TUI_BLUE };
         return H[sec >= 0 && sec < WD_SECS ? sec : 3];
     }
-    return kind == WD_BLE ? TUI_MAGENTA : kind == WD_CELL ? TUI_WHITE : TUI_RED;
+    static const uint8_t K[WD_KINDS] = { TUI_GREEN, TUI_MAGENTA, TUI_WHITE, TUI_RED, TUI_YELLOW, TUI_CYAN, TUI_GREEN };
+    return kind >= 0 && kind < WD_KINDS ? K[kind] : TUI_WHITE;
 }
-static char kind_glyph(int kind) { return "WBCD"[kind & 3]; }
+static char kind_glyph(int kind) { return kind >= 0 && kind < WD_KINDS ? "WBCDRAL"[kind] : '?'; }
 static const char *sec_word(int sec) { static const char *const W[] = { "OPEN", "WEP", "WPA", "WPA2", "WPA3" }; return W[sec % WD_SECS]; }
 
 static void clock_text(char *out, size_t n, uint32_t ms)
 {
     const unsigned s = ms / 1000;
     snprintf(out, n, "%u:%02u:%02u", s / 3600, s / 60 % 60, s % 60);
+}
+
+/* Units are kept across a restart. Until someone picks them, a board whose
+   GPS puts it in the US or the UK shows mph and miles, any other km/h. */
+#define UNITS_UNSET 2u
+static bool s_units_chosen;
+static bool imperial_place(double lat, double lon)
+{
+    return (lat > 24 && lat < 50 && lon > -125 && lon < -66) ||      /* lower 48 */
+           (lat > 51 && lat < 72 && lon > -170 && lon < -129) ||     /* Alaska */
+           (lat > 18 && lat < 23 && lon > -161 && lon < -154) ||     /* Hawaii */
+           (lat > 49.8 && lat < 61 && lon > -8.7 && lon < 1.9);      /* UK */
+}
+static void units_settle(void)
+{
+    static bool read;
+    if (s_units_chosen) return;
+    if (!read) {
+        read = true;
+        const uint32_t v = settings_get_rec("wd_units", UNITS_UNSET);
+        if (v != UNITS_UNSET) { s_units = v ? 1 : 0; s_units_chosen = true; return; }
+    }
+    const wd_stats_t *st = wd_stats();
+    if (st->fix.fix) s_units = imperial_place(st->fix.lat, st->fix.lon);
 }
 
 static float speed_shown(float mps) { return s_units ? mps * 2.23694f : mps * 3.6f; }
@@ -149,6 +191,7 @@ static void meter(tui_surface *sf, tui_rect clip, int x, int y, int cells, int r
 /* ------------------------------------------------------------ session */
 
 static void say_now(const char *t) { snprintf(s_say, sizeof(s_say), "%s", t); s_say_ms = real_ms(); }
+static void map_layer(const ls_rfmap_frame_t *f);
 
 static void session_start(void)
 {
@@ -162,7 +205,9 @@ static void session_start(void)
     if (!ok) return;
     wd_feed_start(src, s_pace);
     (void)wd_feed_spawn();
-    ls_rfmap_set_extra(NULL);
+    /* The drive goes on MAP as it is driven, with or without M: MAP in a
+       desk window beside this one shows it live. */
+    ls_rfmap_set_extra(map_layer);
     s_sel = s_top = 0;
     s_order_ms = 0;
 }
@@ -204,14 +249,143 @@ static void replay_picked(int i)
     s_sel = s_top = 0; s_sel_dev = -1; s_order_ms = 0;
     page(PG_3D);
 }
+/* The drives as a table: when (local time, in the zone SET > Time zone
+   has, with its daylight time on the day), how long, how far, how many
+   finds, how big. Newest first, as the stems sort. */
+static wd_drive_info_t s_drive[WD_REPLAY_LIST];
+
+/* "TUE NOV 24  8:57 PM", or "TUE NOV 24 20:57" on a 24 h clock: the time
+   always from column 11. */
+static void when_text(char *out, size_t n, uint32_t utc)
+{
+    static const char *const DAY[7] = { "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT" };
+    static const char *const MON[12] = { "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC" };
+    if (!utc) { snprintf(out, n, "no clock"); return; }
+    struct tm tm;
+    if (!ls_tz_local((time_t)utc, &tm)) { snprintf(out, n, "?"); return; }
+    if (ls_tz_24h()) {
+        snprintf(out, n, "%s %s %2d %02d:%02d", DAY[tm.tm_wday % 7], MON[tm.tm_mon % 12], tm.tm_mday, tm.tm_hour, tm.tm_min);
+        return;
+    }
+    const int h = tm.tm_hour % 12 ? tm.tm_hour % 12 : 12;
+    snprintf(out, n, "%s %s %2d %2d:%02d %s", DAY[tm.tm_wday % 7], MON[tm.tm_mon % 12], tm.tm_mday, h, tm.tm_min,
+             tm.tm_hour >= 12 ? "PM" : "AM");
+}
+
+/* The zone's abbreviation at `utc` ("EST", "EDT", "UTC"). */
+static void when_zone(char *out, size_t n, uint32_t utc)
+{
+    struct tm tm;
+    if (!ls_tz_local((time_t)utc, &tm)) { snprintf(out, n, "UTC"); return; }
+    ls_tz_abbr(&tm, out, n);
+}
+
+/* Over the list: the drive under the cursor in full (its date big, from
+   and to, how long and far, what was found, its folder), and the column
+   names at the bottom, over the rows they name. */
+static void replay_header(tui_surface *sf, tui_rect a)
+{
+    char t[72];
+    const int cy = a.y + a.h - 1;
+    static const char cols[] = "LONG     KM FINDS SIZE";
+    if (ls_tui_is_wide()) {
+        /* the card sits beside the list: name the columns in words */
+        tui_put_str(sf, a, a.x + 2, cy, "rows: when, length, km, finds, size", LS_ATTR_FAINT);
+    } else {
+        char zone[12], head[24];
+        when_zone(zone, sizeof(zone), s_nlogs > 0 && s_drive[0].start_utc ? s_drive[0].start_utc : 0);
+        snprintf(head, sizeof(head), "WHEN (%s)", zone);
+        tui_put_str(sf, a, a.x + 2, cy, head, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, a, a.x + a.w - 2 - (int)sizeof(cols) + 1, cy, cols, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    }
+    const int i = ls_picker_current();
+    if (i < 0 || i >= s_nlogs || a.h < 9) return;
+    const wd_drive_info_t *d = &s_drive[i];
+    int y = a.y + 1;
+    if (d->start_utc) {
+        /* the day, big: "NOV 24" */
+        char w[32];
+        when_text(w, sizeof(w), d->start_utc);              /* "TUE NOV 24  8:57 PM" */
+        snprintf(t, sizeof(t), "%.3s %.2s", w + 4, w + 8);
+        if (t[4] == ' ') memmove(t + 4, t + 5, strlen(t + 5) + 1);
+        ls_calls_big_text(sf, a, a.x + 2, y, t, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        char w2[32] = "";
+        if (d->secs) when_text(w2, sizeof(w2), d->start_utc + d->secs);
+        snprintf(t, sizeof(t), "%.3s %s%s%s", w, w + 11, w2[0] ? "  to " : "", w2[0] ? w2 + 11 : "");
+        tui_put_str(sf, a, a.x + 2, y + 4, t, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+        when_zone(t, sizeof(t), d->start_utc);
+        tui_put_str(sf, a, a.x + a.w - 2 - (int)strlen(t), y + 4, t, LS_ATTR_FAINT);
+    }
+    y += 6;
+    if (y + 2 >= cy) return;
+    snprintf(t, sizeof(t), "%s%s", d->secs ? "" : "length unknown", "");
+    if (d->secs) {
+        if (d->secs < 3600) snprintf(t, sizeof(t), "%u min", (unsigned)((d->secs + 30) / 60));
+        else snprintf(t, sizeof(t), "%u h %02u min", (unsigned)(d->secs / 3600), (unsigned)(d->secs / 60 % 60));
+    }
+    char k[24] = "";
+    if (d->km > 0) snprintf(k, sizeof(k), "   %.1f km", (double)d->km);
+    char f[40] = "";
+    if (d->finds) snprintf(f, sizeof(f), "   %u found%s", d->finds, d->targets ? "" : "");
+    char line[96];
+    snprintf(line, sizeof(line), "%s%s%s", t, k, f);
+    tui_put_str(sf, a, a.x + 2, y, line, TUI_ATTR(TUI_GREEN | TUI_BRIGHT, TUI_BLACK));
+    if (d->targets) {
+        snprintf(t, sizeof(t), " %u TARGETS ", d->targets);
+        tui_put_str(sf, a, a.x + a.w - 2 - (int)strlen(t), y, t, TUI_ATTR(TUI_BLACK, TUI_RED | TUI_BRIGHT));
+    }
+    snprintf(line, sizeof(line), "%s/  %s%s", s_logs[i], d->track ? "track" : "no track", d->log ? " + log" : "");
+    tui_put_str(sf, a, a.x + 2, y + 1, line, LS_ATTR_FAINT);
+}
+
+static void drive_detail(const wd_drive_info_t *d, char *det, size_t n)
+{
+    char len[8], km[8], fd[8], sz[8];
+    if (!d->summary && !d->secs) snprintf(len, sizeof(len), "..");
+    else if (!d->secs) snprintf(len, sizeof(len), "--");
+    else if (d->secs < 3600) snprintf(len, sizeof(len), "%um", (unsigned)((d->secs + 30) / 60));
+    else snprintf(len, sizeof(len), "%uh%02u", (unsigned)(d->secs / 3600), (unsigned)(d->secs / 60 % 60));
+    if (d->km <= 0) snprintf(km, sizeof(km), d->summary ? "--" : "..");
+    else snprintf(km, sizeof(km), d->km < 10 ? "%.1f" : "%.0f", (double)d->km);
+    if (d->finds) snprintf(fd, sizeof(fd), "%u", d->finds);
+    else snprintf(fd, sizeof(fd), d->summary ? "--" : "..");
+    if (d->bytes < 1024 * 1024) snprintf(sz, sizeof(sz), "%ldK", (d->bytes + 1023) / 1024);
+    else snprintf(sz, sizeof(sz), "%.1fM", (double)d->bytes / (1024.0 * 1024.0));
+    snprintf(det, n, "%4s %6s %5s %4s", len, km, fd, sz);
+}
+
+/* Old drives without a drive.txt: summed a slice a frame while the list is
+   open ("..." until then), so a 4 MB log never stalls the screen. */
+static int s_sum_at = -1;
+static void replay_summarize_step(void)
+{
+    if (s_sum_at < 0) return;
+    if (!ls_picker_is(replay_picked)) { s_sum_at = -1; wd_drive_summarize(NULL, 0, NULL); return; }   /* its file closes */
+    while (s_sum_at < s_nlogs && s_drive[s_sum_at].summary) s_sum_at++;
+    if (s_sum_at >= s_nlogs) { s_sum_at = -1; return; }
+    wd_drive_info_t d;
+    if (wd_drive_summarize(s_logs[s_sum_at], 48 * 1024, &d) != 1) return;
+    s_drive[s_sum_at] = d;
+    char det[LS_PICKER_DETAIL];
+    drive_detail(&d, det, sizeof(det));
+    ls_picker_set_detail(s_sum_at, det);
+    s_sum_at++;
+}
+
 static void replay_pick(void)
 {
     if (wd_stats()->running && !wd_stats()->replay) { say_now("STOP the drive first, then replay"); return; }
-    static char detail[WD_REPLAY_LIST][40];
-    s_nlogs = wd_replay_list(s_logs, detail, WD_REPLAY_LIST);
+    s_nlogs = wd_replay_list(s_logs, s_drive, WD_REPLAY_LIST);
     ls_picker_open("REPLAY A DRIVE", replay_picked);
+    ls_picker_header(replay_header);
     if (!s_nlogs) ls_picker_empty_reason(wd_feed_card() ? "No saved drives in /sdcard/wardrive yet" : "No card in the board");
-    for (int i = 0; i < s_nlogs; i++) ls_picker_add(s_logs[i], detail[i]);
+    for (int i = 0; i < s_nlogs; i++) {
+        char when[32], det[LS_PICKER_DETAIL];
+        when_text(when, sizeof(when), s_drive[i].start_utc);
+        drive_detail(&s_drive[i], det, sizeof(det));
+        ls_picker_add(when, det);
+    }
+    s_sum_at = 0;
 }
 
 /* ------------------------------------------------------------ MAP layer */
@@ -329,19 +503,17 @@ static void card_scan(void)
     memset(&s_card, 0, sizeof(s_card));
     s_card.known = true;
     s_card.stop_ms = st.stop_ms;
-    DIR *d = opendir("/sdcard/wardrive");
-    if (!d) return;
-    for (struct dirent *e; (e = readdir(d)) != NULL;) {
-        const size_t n = strlen(e->d_name);
-        if (n < 5) continue;
-        const char *ext = e->d_name + n - 4;
-        if (!strcmp(ext, ".csv")) s_card.logs++;
-        else if (!strcmp(ext, ".gpx")) s_card.tracks++;
-        else continue;
-        if (strncmp(e->d_name, s_card.newest, sizeof(s_card.newest) - 1) > 0)
-            snprintf(s_card.newest, sizeof(s_card.newest), "%.*s", (int)(n - 4), e->d_name);
+    /* drives, each in its folder (old loose ones moved in); the newest by when */
+    (void)wd_drives_tidy();
+    static char stems[WD_REPLAY_LIST][WD_STEM];
+    const int n = wd_drives(stems, WD_REPLAY_LIST);
+    s_card.logs = n;
+    if (n) {
+        wd_drive_info_t d;
+        wd_drive_info(stems[0], &d);
+        s_card.tracks = d.track;
+        when_text(s_card.newest, sizeof(s_card.newest), d.start_utc);
     }
-    closedir(d);
 }
 
 /* The empty middle of the idle page: what the GPS has right now (its own
@@ -373,15 +545,15 @@ static void idle_extras(tui_surface *sf, tui_rect a, int *py)
     if (wd_feed_card() && y + 2 <= bottom) {
         if (!s_card.known || s_card.stop_ms != st.stop_ms) card_scan();
         char t[48];
-        snprintf(t, sizeof(t), "%d logs  %d tracks", s_card.logs, s_card.tracks);
+        snprintf(t, sizeof(t), "%d drive%s, each in its folder", s_card.logs, s_card.logs == 1 ? "" : "s");
         put(sf, a, a.x + 2, y, "FILES", a_strong());
         put(sf, a, a.x + 18, y++, t, a_text());
         if (s_card.newest[0] && y <= bottom) {
             put(sf, a, a.x + 2, y, "NEWEST", a_strong());
             put(sf, a, a.x + 18, y++, s_card.newest, a_accent());
         }
-        if (s_card.logs + s_card.tracks > 0 && y <= bottom) {
-            static const char chip[] = " REPLAY A DRIVE IN 3D (R) ";
+        if (s_card.logs > 0 && y <= bottom) {
+            static const char chip[] = " REPLAY A DRIVE IN 3D (D) ";
             put(sf, a, a.x + 18, y, chip, ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, TUI_CYAN)));
             s_replay_chip = tui_rect_make(a.x + 18, y, (int)sizeof(chip) - 1, 1);
             y++;
@@ -393,7 +565,6 @@ static void idle_extras(tui_surface *sf, tui_rect a, int *py)
 /* The last drive's counts as bars against its biggest one. */
 static void last_bars(tui_surface *sf, tui_rect a, int *py)
 {
-    static const char *const NAME[WD_KINDS] = { "WI-FI", "BT", "CELL", "DRONE" };
     unsigned top = 1;
     for (int k = 0; k < WD_KINDS; k++) if (st.total[k] > top) top = st.total[k];
     const int w = a.w - 24 > 20 ? 20 : a.w - 24;
@@ -402,7 +573,7 @@ static void last_bars(tui_surface *sf, tui_rect a, int *py)
         if (!st.total[k]) continue;
         char t[16];
         const int n = (int)((unsigned long long)st.total[k] * w / top);
-        put(sf, a, a.x + 2, *py, NAME[k], a_dim());
+        put(sf, a, a.x + 2, *py, wd_kind_short(k), a_dim());
         for (int i = 0; i < w; i++)
             tui_put_char(sf, a, a.x + 9 + i, *py, i < n ? '=' : '.', i < n ? LIT(kind_hue(k, 3)) : a_rule());
         snprintf(t, sizeof(t), "%u", st.total[k]);
@@ -448,20 +619,28 @@ static void idle_page(tui_surface *sf, tui_rect a)
 {
     int y = a.y + 1;
     const bool wide = a.w >= 92;
+    if (ls_tui_compact()) {
+        /* A desk window: the car on black glass, the particulars in a white well. */
+        const tui_rect g = ls_dui_glass(sf, wide ? tui_rect_make(a.x, a.y, 36, a.h) : tui_rect_make(a.x + (a.w - 36) / 2, a.y, 36, 10));
+        car_art(sf, g, g.x + 2, g.y + (wide ? g.h / 3 - 3 : 1), 3, false);
+        a = ls_dui_well(sf, wide ? tui_rect_make(a.x + 37, a.y, a.w - 37, a.h) : tui_rect_make(a.x, a.y + 10, a.w, a.h - 10), NULL);
+        y = a.y;
+    } else {
     const int ax = wide ? a.x + 3 : a.x + (a.w - 30) / 2;
     car_art(sf, a, ax > a.x ? ax : a.x, wide ? a.y + 3 : y, 3, false);
     if (wide) a = tui_rect_make(a.x + 38, a.y, a.w - 38, a.h);
     else y += 8;
+    }
     put(sf, a, a.x + 2, y++, "Wi-Fi, Bluetooth, cells and drones, each", a_text());
     put(sf, a, a.x + 2, y++, "logged with where you were. One START.", a_text());
     y++;
-    static const char *const SRC[WD_KINDS] = { "WI-FI", "BLUETOOTH", "CELL", "DRONES" };
     static const char *const WHAT[WD_KINDS] = { "networks, BSSID, security", "devices advertising",
-                                               "LTE cells (CELL WATCH search)", "Remote ID + DRONES watch" };
+                                               "LTE cells (CELL WATCH search)", "Remote ID + DRONES watch",
+                                               "TPMS, sensors, remotes", "aircraft, ADS-B", "Meshtastic, MeshCore nodes" };
     for (int k = 0; k < WD_KINDS; k++) {
         const bool has = wd_feed_has(k), on = s_src[k] && has;
         char line[80];
-        snprintf(line, sizeof(line), "[%c] %-10s", on ? 'x' : ' ', SRC[k]);
+        snprintf(line, sizeof(line), "[%c] %-10s", on ? 'x' : ' ', wd_kind_name(k));
         put(sf, a, a.x + 2, y, line, on ? LIT(kind_hue(k, 3)) : a_dim());
         put(sf, a, a.x + 18, y++, has ? WHAT[k] : "not on this board", on ? a_text() : a_dim());
     }
@@ -471,6 +650,24 @@ static void idle_page(tui_surface *sf, tui_rect a)
     put(sf, a, a.x + 18, y++, key, ls == LS_LOC_FIX ? LIT(TUI_GREEN) : ls == LS_LOC_NO_FIX ? LIT(TUI_YELLOW) : LIT(TUI_RED));
     put(sf, a, a.x + 2, y, "CARD", a_strong());
     put(sf, a, a.x + 18, y++, wd_feed_card() ? "/sdcard/wardrive" : "no card: nothing is saved", wd_feed_card() ? a_text() : LIT(TUI_YELLOW));
+    {
+        /* HOME: the home base's link (ls_lsx), when the field role runs */
+        ls_lsx_home_status_t h;
+        ls_lsx_home_status(&h);
+        char t[64];
+        uint8_t at = a_dim();
+        if (!h.on) snprintf(t, sizeof(t), "home sync off ('lsx field on')");
+        else if (h.syncing) { snprintf(t, sizeof(t), "%.12s syncing %d%%  %s", h.home, h.progress_pct, h.mode ? h.mode : ""); at = LIT(TUI_CYAN); }
+        else if (h.in_range) { snprintf(t, sizeof(t), "%.12s in range %d dBm", h.home, h.rssi); at = LIT(TUI_GREEN); }
+        else if (h.last_sync_ago_s != UINT32_MAX) {
+            const uint32_t m = h.last_sync_ago_s / 60;
+            if (m < 120) snprintf(t, sizeof(t), "last sync %lu min ago", (unsigned long)m);
+            else snprintf(t, sizeof(t), "last sync %lu h ago", (unsigned long)(m / 60));
+            at = a_text();
+        } else snprintf(t, sizeof(t), "out of range, never synced");
+        put(sf, a, a.x + 2, y, "HOME", a_strong());
+        put(sf, a, a.x + 18, y++, t, at);
+    }
     idle_extras(sf, a, &y);
     if (st.ever) {
         char t[16], line[96];
@@ -499,6 +696,7 @@ static void band(tui_surface *sf, tui_rect a, int y)
 {
     char t[16], key[32];
     int x = a.x + 1;
+    tui_fill(sf, tui_rect_make(a.x, y, a.w, 1), ' ', TUI_ATTR(TUI_WHITE, G));
     if (st.replay) { put(sf, a, x, y, " REPLAY ", ls_ink(LS_INK_KEY_ON, TUI_ATTR(TUI_BLACK, TUI_CYAN | TUI_BRIGHT))); x += 9; }
     else { put(sf, a, x, y, " REC ", ls_ink(LS_INK_KEY_ON, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED))); x += 6; }
     clock_text(t, sizeof(t), now_ms() - st.start_ms);
@@ -507,7 +705,15 @@ static void band(tui_surface *sf, tui_rect a, int y)
     for (unsigned k = 0; k < 3; k++) tui_put_char(sf, a, x + (int)k, y, ')', k < 1 + st.scans % 3 ? LIT(TUI_CYAN) : a_dim());
     x += 5;
     const ls_loc_state_t ls = ls_location_key(key, sizeof(key));
-    put(sf, a, x, y, key, ls == LS_LOC_FIX ? LIT(TUI_GREEN) : ls == LS_LOC_NO_FIX ? LIT(TUI_YELLOW) : LIT(TUI_RED));
+    if (st.wifi_fix) {
+        /* the known access points are steering, the GPS is not */
+        snprintf(key, sizeof(key), "WIFI FIX +-%.0fm (%u)", (double)st.wifi_err_m, (unsigned)st.wifi_used);
+        put(sf, a, x, y, key, LIT(TUI_CYAN));
+    } else if (ls == LS_LOC_FIX && st.fix_weak) {
+        /* a position, not trusted yet: the track and the finds wait for it */
+        snprintf(key, sizeof(key), st.settle ? "GPS SETTLING %u/3" : "GPS WEAK", (unsigned)st.settle);
+        put(sf, a, x, y, key, LIT(TUI_YELLOW));
+    } else put(sf, a, x, y, key, ls == LS_LOC_FIX ? LIT(TUI_GREEN) : ls == LS_LOC_NO_FIX ? LIT(TUI_YELLOW) : LIT(TUI_RED));
     x += (int)strlen(key) + 2;
     const char *card = st.card > 0 ? (st.csv[0] ? "LOG" : "CARD") : st.card == 0 ? "NO CARD" : "CARD ERR";
     if (x + (int)strlen(card) < a.x + a.w) put(sf, a, a.x + a.w - 1 - (int)strlen(card), y, card, st.card > 0 ? a_dim() : LIT(TUI_YELLOW));
@@ -546,6 +752,10 @@ static int speed_block(tui_surface *sf, tui_rect a, int x, int y, bool big)
     else snprintf(s, sizeof(s), " --");
     const int k = big ? 4 : 2, gw = k + 4, gh = 2 * k + 1;
     int cx = x;
+    if (ls_tui_compact()) {     /* a desk window: the speed on a VFD */
+        ls_dui_vfd(sf, tui_rect_make(x, y, 3 * gw, gh), s, LS_DUI_VFD_GREEN);
+        cx += 3 * gw;
+    } else
     for (const char *c = s; *c; c++, cx += gw)
         segments(sf, a, cx, y, k, *c, fix ? LIT(TUI_WHITE) : a_dim());
     put(sf, a, cx, y + gh - 1, speed_unit(), a_dim());
@@ -640,9 +850,10 @@ static void counters(tui_surface *sf, tui_rect a, int x, int y, int w, uint32_t 
     }
     int cx = x;
     const int yy = y + 1 + WD_SECS;
-    static const char *const K[3] = { "BT", "CELL", "DRONE" };
     for (int k = WD_BLE; k < WD_KINDS; k++) {
-        snprintf(s, sizeof(s), "%s %u", K[k - 1], st.total[k]);
+        if (k > WD_DRONE && !st.total[k] && !st.src[k]) continue;
+        snprintf(s, sizeof(s), "%s %u", wd_kind_short(k), st.total[k]);
+        if (cx + (int)strlen(s) > x + w) break;        /* stay inside the plate */
         put(sf, a, cx, yy, s, st.src[k] ? LIT(kind_hue(k, 0)) : a_dim());
         cx += (int)strlen(s) + 3;
     }
@@ -654,7 +865,7 @@ static void rain(tui_surface *sf, tui_rect r, uint32_t now)
 {
     if (r.w < 4 || r.h < 4) return;
     ls_ink_keep(r);
-    tui_fill(sf, r, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    tui_fill(sf, r, ' ', TUI_ATTR(TUI_WHITE, G));
     for (int x = 0; x < r.w; x++) tui_put_char(sf, r, r.x + x, r.y + r.h - 1, x % 4 ? '_' : '.', a_rule());
     int falling = 0;
     for (int i = ndrops - 1; i >= 0; i--) {             /* oldest first: newer ones draw on top */
@@ -663,7 +874,7 @@ static void rain(tui_surface *sf, tui_rect r, uint32_t now)
         if (age >= FALL_MS + 400) continue;
         const int lane = (int)((d->lane * 37u + (unsigned)d->ms / 7u) % (unsigned)r.w);
         const int bottom = r.h - 2;
-        const uint8_t hue = kind_hue(d->kind, d->sec);
+        const uint8_t hue = (d->tags & WD_HIT_TAGS) ? TUI_RED : kind_hue(d->kind, d->sec);   /* a target in red */
         if (age >= FALL_MS) {                          /* landed: a splash, then nothing */
             tui_put_char(sf, r, r.x + lane, r.y + r.h - 1, age < FALL_MS + 200 ? '*' : 'o', LIT(hue));
             if (lane > 0) tui_put_char(sf, r, r.x + lane - 1, r.y + r.h - 1, '\\', INK(hue));
@@ -703,7 +914,7 @@ static void latest(tui_surface *sf, tui_rect r, uint32_t now)
     for (int i = 0; i < ndrops && i < r.h; i++) {
         const wd_drop_t *d = &drops[i];
         const int y = r.y + i;
-        const uint8_t hue = kind_hue(d->kind, d->sec);
+        const uint8_t hue = (d->tags & WD_HIT_TAGS) ? TUI_RED : kind_hue(d->kind, d->sec);   /* a target in red */
         const bool fresh = now - d->ms < FALL_MS;
         tui_put_char(sf, r, r.x, y, fresh ? '+' : ' ', LIT(TUI_GREEN));
         tui_put_char(sf, r, r.x + 1, y, kind_glyph(d->kind), LIT(hue));
@@ -711,7 +922,7 @@ static void latest(tui_surface *sf, tui_rect r, uint32_t now)
         snprintf(s, sizeof(s), "%4d", d->rssi);
         put(sf, r, r.x + 3, y, s, a_text());
         meter(sf, r, r.x + 8, y, 2, d->rssi, INK(hue));
-        put(sf, r, r.x + 11, y, d->kind == WD_WIFI ? sec_word(d->sec) : d->kind == WD_BLE ? "BT" : d->kind == WD_CELL ? "LTE" : "UAS", INK(hue));
+        put(sf, r, r.x + 11, y, d->kind == WD_WIFI ? sec_word(d->sec) : wd_kind_tag(d->kind), INK(hue));
         const char *name = d->name[0] ? d->name : d->kind == WD_WIFI ? "<hidden>" : "(no name)";
         snprintf(s, sizeof(s), "%.*s", r.w - 17 > 0 ? (r.w - 17 < 40 ? r.w - 17 : 40) : 0, name);
         put(sf, r, r.x + 16, y, s, fresh ? a_strong() : a_text());
@@ -724,7 +935,11 @@ static void latest(tui_surface *sf, tui_rect r, uint32_t now)
 
 static void live_page(tui_surface *sf, tui_rect a, uint32_t now)
 {
-    if (!st.running) { idle_page(sf, a); return; }
+    if (!st.running) {
+        const tui_rect in = ls_plate(sf, a, a, TUI_YELLOW, "WARDRIVE", st.ever ? "LAST DRIVE" : "READY", st.ever ? TUI_CYAN : TUI_GREEN);
+        idle_page(sf, tui_rect_make(in.x - 1, in.y, in.w + 2, in.h));
+        return;
+    }
     const bool wide = a.w >= 92 && a.h < 40;
     tui_rect left = a, right = a;
     if (wide) { left.w = 52; right.x = a.x + 53; right.w = a.w - 53; }
@@ -737,13 +952,13 @@ static void live_page(tui_surface *sf, tui_rect a, uint32_t now)
     const bool big = !wide && a.h >= 52;
     const int gh = big ? 10 : 5;
     const tui_rect drive = tui_rect_make(left.x, y, left.w, gh + 5);
-    ls_panel_box(sf, drive, "DRIVE", TUI_YELLOW);
+    ls_plate(sf, a, drive, TUI_YELLOW, "DRIVE", NULL, 0);
     speed_block(sf, drive, drive.x + 2, drive.y + 1, big);
     tape(sf, drive, drive.x + 2, drive.y + gh + 2, drive.w - 4);
     y += drive.h;
     /* FOUND: the counters. */
     const tui_rect found = tui_rect_make(left.x, y, left.w, WD_SECS + 4);
-    ls_panel_box(sf, found, "FOUND", TUI_GREEN);
+    ls_plate(sf, a, found, TUI_GREEN, "FOUND", NULL, 0);
     counters(sf, found, found.x + 2, found.y + 1, found.w - 4, now);
     y += found.h;
     if (st.card <= 0 && st.note[0]) put(sf, left, left.x + 2, y++, st.note, LIT(TUI_YELLOW));
@@ -752,9 +967,13 @@ static void live_page(tui_surface *sf, tui_rect a, uint32_t now)
     snprintf(cap, sizeof(cap), "NEW  %u/min", wd_new_last_minute(now));
     const tui_rect np = wide ? tui_rect_make(right.x, right.y + 1, right.w, right.h - 1)
                              : tui_rect_make(a.x, y, a.w, a.y + a.h - y);
-    ls_panel_box(sf, np, cap, TUI_CYAN);
+    ls_plate(sf, a, np, TUI_CYAN, cap, NULL, 0);
     const int inner = np.h - 2, lh = inner / 2 < 12 ? inner / 2 : 12;
     rain(sf, tui_rect_make(np.x + 1, np.y + 1, np.w - 2, inner - lh), now);
+    if (ls_tui_compact()) {
+        const tui_rect w = ls_dui_well(sf, tui_rect_make(np.x + 1, np.y + 1 + inner - lh, np.w - 2, lh), NULL);
+        latest(sf, tui_rect_make(w.x + 1, w.y, w.w - 2, w.h), now);
+    } else
     latest(sf, tui_rect_make(np.x + 2, np.y + 1 + inner - lh, np.w - 4, lh), now);
 }
 
@@ -762,6 +981,7 @@ static void live_page(tui_surface *sf, tui_rect a, uint32_t now)
 
 static void page_3d(tui_surface *sf, tui_rect a, uint32_t now)
 {
+    if (ls_tui_compact()) a = ls_dui_glass(sf, a);   /* a desk window: the view on black glass */
     s_3d = a;
     {
         wd_replay_info_t ri;
@@ -784,7 +1004,7 @@ static void page_3d(tui_surface *sf, tui_rect a, uint32_t now)
         return;
     }
     char s[96];
-    tui_fill(sf, tui_rect_make(a.x, a.y, a.w, 1), ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    tui_fill(sf, tui_rect_make(a.x, a.y, a.w, 1), ' ', TUI_ATTR(TUI_WHITE, G));
     int x = a.x;
     if (ri.on) {
         snprintf(s, sizeof(s), " REPLAY %.14s ", ri.name);
@@ -794,15 +1014,15 @@ static void page_3d(tui_surface *sf, tui_rect a, uint32_t now)
     /* the speed, live or as the replay drove it */
     if (st.fix.fix && st.fix_ms && st.speed >= 0) {
         snprintf(s, sizeof(s), "%.0f %s", (double)speed_shown(st.speed), speed_unit());
-        put(sf, a, x, a.y, s, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        put(sf, a, x, a.y, s, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, G));
         x += (int)strlen(s) + 2;
         if (st.heading >= 0) {
             snprintf(s, sizeof(s), "%03.0f", (double)st.heading);
-            put(sf, a, x, a.y, s, TUI_ATTR(TUI_WHITE, TUI_BLACK));
+            put(sf, a, x, a.y, s, TUI_ATTR(TUI_WHITE, G));
             x += (int)strlen(s) + 2;
         }
     } else {
-        put(sf, a, x, a.y, "NO FIX", TUI_ATTR(TUI_YELLOW, TUI_BLACK));
+        put(sf, a, x, a.y, "NO FIX", TUI_ATTR(TUI_YELLOW, G));
         x += 8;
     }
     /* SHOW: what the pillars are, a tap steps it */
@@ -813,17 +1033,58 @@ static void page_3d(tui_surface *sf, tui_rect a, uint32_t now)
     put(sf, a, cx, a.y, s, ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, wd3d_lit(WD3D_SHOW) ? TUI_CYAN | TUI_BRIGHT : TUI_WHITE)));
     s_show_chip = tui_rect_make(cx, a.y, cw, 1);
     snprintf(s, sizeof(s), "W%u B%u ", st.total[WD_WIFI], st.total[WD_BLE]);
-    if (x + (int)strlen(s) <= cx) put(sf, a, cx - (int)strlen(s), a.y, s, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    int right = cx;             /* where the top row's right-hand items begin */
+    if (x + (int)strlen(s) <= cx) {
+        right = cx - (int)strlen(s);
+        put(sf, a, right, a.y, s, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, G));
+    }
     if (!st.running) {
-        const char *m = st.ever ? " the last drive, at its end " : " START a drive to see it here ";
-        put(sf, a, a.x + (a.w - (int)strlen(m)) / 2, a.y + a.h / 2 - 1, m, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
-        static const char chip[] = " REPLAY A SAVED DRIVE (R) ";
-        const int cx = a.x + (a.w - (int)sizeof(chip) + 1) / 2;
-        put(sf, a, cx, a.y + a.h / 2 + 1, chip, ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, TUI_CYAN)));
-        s_replay_chip = tui_rect_make(cx, a.y + a.h / 2 + 1, (int)sizeof(chip) - 1, 1);
+        /* A drive that would not open says why in the middle for a few
+           seconds; after that, and whenever there is a scene to look at, the
+           note and the REPLAY key live on the top row so nothing sits on the
+           view. The middle is only used when the view is empty. */
+        static char err_seen[48];
+        static uint32_t err_ms;
+        const char *err = wd_replay_error();
+        if (!err || !*err) err_seen[0] = 0;
+        else if (strncmp(err, err_seen, sizeof(err_seen) - 1) != 0) {
+            snprintf(err_seen, sizeof(err_seen), "%s", err);
+            err_ms = now;
+        }
+        const bool fresh_err = err_seen[0] && now - err_ms < 5000;
+        const bool scene = st.ever || wd_trail_count() > 0;
+        if (!scene || fresh_err) {
+            char m[72];
+            if (err_seen[0]) snprintf(m, sizeof(m), " %.20s: %.26s ", ri.name, err_seen);   /* fits the 50-cell view */
+            else snprintf(m, sizeof(m), "%s", " START a drive to see it here ");
+            put(sf, a, a.x + (a.w - (int)strlen(m)) / 2, a.y + a.h / 2 - 1, m, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, G));
+            static const char chip[] = " REPLAY A SAVED DRIVE (D) ";
+            const int ccx = a.x + (a.w - (int)sizeof(chip) + 1) / 2;
+            put(sf, a, ccx, a.y + a.h / 2 + 1, chip, ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, TUI_CYAN)));
+            s_replay_chip = tui_rect_make(ccx, a.y + a.h / 2 + 1, (int)sizeof(chip) - 1, 1);
+        } else {
+            /* top row: [D REPLAY] then ENDED or the reason, as room allows */
+            static const char chip[] = " D REPLAY ";
+            const int cl = (int)sizeof(chip) - 1;
+            int room = right - x;
+            if (room >= cl) {
+                put(sf, a, x, a.y, chip, ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, TUI_CYAN)));
+                s_replay_chip = tui_rect_make(x, a.y, cl, 1);
+                x += cl + 1;
+                room = right - x - 1;
+                char m[40];
+                snprintf(m, sizeof(m), "%s", err_seen[0] ? err_seen : "ENDED");
+                if (room > 2) {
+                    if ((int)strlen(m) > room) m[room] = 0;
+                    put(sf, a, x, a.y, m, TUI_ATTR(err_seen[0] ? TUI_RED | TUI_BRIGHT : TUI_YELLOW, G));
+                }
+            } else {
+                s_replay_chip = tui_rect_make(0, 0, 0, 0);
+            }
+        }
     } else if (!st.origin) {
         const char *m = " waiting for a GPS fix ";
-        put(sf, a, a.x + (a.w - (int)strlen(m)) / 2, a.y + a.h / 2, m, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK));
+        put(sf, a, a.x + (a.w - (int)strlen(m)) / 2, a.y + a.h / 2, m, TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, G));
     }
 }
 
@@ -837,6 +1098,10 @@ static bool wanted(const wd_dev_t *e)
     case F_BLE: return e->kind == WD_BLE;
     case F_CELL: return e->kind == WD_CELL;
     case F_DRONE: return e->kind == WD_DRONE;
+    case F_RF: return e->kind == WD_RF;
+    case F_AIR: return e->kind == WD_AIR;
+    case F_LORA: return e->kind == WD_LORA;
+    case F_HITS: return (e->tags & WD_HIT_TAGS) != 0;
     default: return true;
     }
 }
@@ -879,28 +1144,56 @@ static void sel_set(int i)
     s_sel_dev = s_norder ? s_order[s_sel] : -1;
 }
 
+static void list_rows(tui_surface *sf, tui_rect lr, uint32_t now, tui_rect dr);
+
 static void list_page(tui_surface *sf, tui_rect a, uint32_t now)
 {
     order(now);
-    static const char *const CH[F_N] = { "ALL", "WI-FI", "OPEN", "BT", "CELL", "DRONE" };
-    int x = a.x + 1;
+    static const char *const CH[F_N] = { "ALL", "WI-FI", "OPEN", "BT", "CELL", "DRONE", "RF", "AIR", "LORA", "TARGETS" };
+    int x = a.x + 1, cy = a.y;
+    if (ls_tui_compact()) {
+        /* A desk window: the kinds as tabs, the sort as a key beside them,
+           the list in a white well and the picked one in a group box. */
+        int16_t tx[F_N], tw[F_N];
+        const tui_rect page = ls_dui_tabs(sf, a, CH, F_N, s_filter, tx, tw);
+        for (int f = 0; f < F_N; f++) s_chip[f] = tui_rect_make(tx[f], a.y + 1, tx[f] >= 0 ? tw[f] : 0, 1);
+        const ls_btn_t sk = {"SORT", s_sort ? "NEWEST" : "STRONGEST", 'n', false, false, false};
+        const int kw = ls_key1_width(&sk);
+        ls_key1_draw(sf, a, a.x + a.w - kw - 1, a.y + 1, &sk, false);
+        s_chip[F_N] = tui_rect_make(a.x + a.w - kw - 1, a.y + 1, kw, 1);
+        const tui_rect in = tui_rect_make(page.x + 1, page.y, page.w - 2, page.h);
+        const tui_rect lw = ls_dui_well(sf, tui_rect_make(in.x, in.y, in.w, in.h - 5), NULL);
+        const tui_rect dg = ls_dui_group(sf, tui_rect_make(in.x, in.y + in.h - 5, in.w, 5), "Selected");
+        list_rows(sf, lw, now, tui_rect_make(dg.x + 1, dg.y, dg.w - 2, 3));
+        return;
+    }
     for (int f = 0; f < F_N; f++) {
         char s[16];
         snprintf(s, sizeof(s), " %s ", CH[f]);
         const int w = (int)strlen(s);
-        put(sf, a, x, a.y, s, f == s_filter ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_CYAN)) : a_text());
-        s_chip[f] = tui_rect_make(x, a.y, w, 1);
+        if (x + w > a.x + a.w - 1) { x = a.x + 1; cy++; }       /* the chips wrap onto a second row */
+        const uint8_t idle = f == F_HITS ? LIT(TUI_RED) : a_text();
+        put(sf, a, x, cy, s, f == s_filter ? ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, f == F_HITS ? TUI_RED : TUI_CYAN)) : idle);
+        s_chip[f] = tui_rect_make(x, cy, w, 1);
         x += w + 1;
     }
     const char *srt = s_sort ? " NEWEST " : " STRONGEST ";
     const int sw = (int)strlen(srt);
     const int sx = x + sw < a.x + a.w ? a.x + a.w - sw - 1 : x;
-    const int sy = x + sw < a.x + a.w ? a.y : a.y + 1;
+    const int sy = x + sw < a.x + a.w ? cy : cy + 1;
     put(sf, a, sx, sy, srt, ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, TUI_WHITE)));
     s_chip[F_N] = tui_rect_make(sx, sy, sw, 1);
     const int top = sy + 2;
     const int detail = 3;
-    s_list = tui_rect_make(a.x, top, a.w, a.y + a.h - top - detail - 1);
+    list_rows(sf, tui_rect_make(a.x, top, a.w, a.y + a.h - top - detail - 1), now, tui_rect_make(a.x, a.y + a.h - detail, a.w, detail));
+}
+
+/* The rows in `lr`, the picked one's particulars in the three rows of `dr`. */
+static void list_rows(tui_surface *sf, tui_rect lr, uint32_t now, tui_rect dr)
+{
+    const tui_rect a = tui_rect_make(lr.x, lr.y, lr.w, dr.y + dr.h - lr.y);
+    const int top = lr.y;
+    s_list = lr;
     s_rows_shown = s_list.h > 0 ? s_list.h : 0;
     if (!s_norder) {
         put(sf, a, a.x + 2, top + 1, st.ever ? "nothing of this kind heard" : "START a drive and what it hears is listed here", a_dim());
@@ -944,15 +1237,22 @@ static void list_page(tui_surface *sf, tui_rect a, uint32_t now)
         const int sec = e->kind == WD_WIFI ? wd_sec_class(e->auth) : 0;
         const uint8_t hue = kind_hue(e->kind, sec);
         if (sel) tui_fill(sf, tui_rect_make(a.x, y, a.w, 1), ' ', ls_ink(LS_INK_SELECT_DIM, TUI_ATTR(TUI_WHITE, TUI_BLUE)));
-        const uint8_t bg = sel ? TUI_BLUE : TUI_BLACK;
+        const uint8_t bg = sel ? TUI_BLUE : G;
         tui_put_char(sf, a, a.x + 1, y, kind_glyph(e->kind), TUI_ATTR(hue | TUI_BRIGHT, bg));
         char s[64];
         snprintf(s, sizeof(s), "%-*.*s", namew > 0 ? namew : 0, namew > 0 ? namew : 0,
                  e->name[0] ? e->name : e->kind == WD_WIFI ? "<hidden>" : "(no name)");
         put(sf, a, a.x + 3, y, s, sel ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, bg) : a_text());
         int cx = a.x + 3 + (namew > 0 ? namew : 0) + 1;
-        put(sf, a, cx, y, e->kind == WD_WIFI ? wd_auth_short(e->auth) : e->kind == WD_BLE ? "BT" : e->kind == WD_CELL ? "LTE" : "UAS",
-            TUI_ATTR(hue | TUI_BRIGHT, bg));
+        /* a target says what it is where the security would be */
+        const uint16_t hit = e->tags & WD_HIT_TAGS;
+        if (hit) {
+            char tw[8];
+            snprintf(tw, sizeof(tw), "%.6s", wd_tag_word(hit));
+            put(sf, a, cx, y, tw, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, sel ? TUI_BLUE : TUI_RED));
+        } else
+            put(sf, a, cx, y, e->kind == WD_WIFI ? wd_auth_short(e->auth) : wd_kind_tag(e->kind),
+                TUI_ATTR(hue | TUI_BRIGHT, bg));
         cx += 7;
         if (wide) {
             snprintf(s, sizeof(s), "%02x:%02x:%02x:%02x:%02x:%02x", e->addr[0], e->addr[1], e->addr[2], e->addr[3], e->addr[4], e->addr[5]);
@@ -973,15 +1273,25 @@ static void list_page(tui_surface *sf, tui_rect a, uint32_t now)
     }
     /* The selected one, in full. */
     const wd_dev_t *e = s_sel < s_norder ? wd_dev_at(s_order[s_sel]) : NULL;
-    const int dy = a.y + a.h - detail;
-    tui_hline(sf, a, a.x, dy - 1, a.w, '-', a_rule());
+    const int dy = dr.y;
+    if (!ls_tui_compact()) tui_hline(sf, a, a.x, dy - 1, a.w, '-', a_rule());
     if (e) {
         char s[120];
         snprintf(s, sizeof(s), "%02x:%02x:%02x:%02x:%02x:%02x  %s  heard %lux",
                  e->addr[0], e->addr[1], e->addr[2], e->addr[3], e->addr[4], e->addr[5],
-                 e->kind == WD_WIFI ? wd_auth_name(e->auth) : e->kind == WD_BLE ? "Bluetooth LE" : e->kind == WD_CELL ? "LTE cell" : "drone link",
+                 e->kind == WD_WIFI ? wd_auth_name(e->auth) : e->kind == WD_BLE ? "Bluetooth LE" : e->kind == WD_CELL ? "LTE cell" : e->kind == WD_DRONE ? "drone link" : wd_kind_name(e->kind),
                  (unsigned long)e->seen);
         put(sf, a, a.x + 1, dy, s, a_text());
+        if (e->sig) {
+            /* what the signature table says it is, over the line's end */
+            const wd_sig_info_t *si = wd_sig_at(e->sig - 1);
+            if (si && si->label) {
+                char lb[28];
+                snprintf(lb, sizeof(lb), " %.24s ", si->label);
+                const int lx = a.x + a.w - 1 - (int)strlen(lb);
+                if (lx > a.x) put(sf, a, lx, dy - 1, lb, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED));
+            }
+        }
         char f[16], l[16];
         clock_text(f, sizeof(f), e->first_ms - st.start_ms);
         clock_text(l, sizeof(l), e->last_ms - st.start_ms);
@@ -998,6 +1308,19 @@ static void list_page(tui_surface *sf, tui_rect a, uint32_t now)
 
 static const char *const PACE_N[] = { "FAST", "NORMAL", "SAVER" };
 static const char *const UNIT_N[] = { "KM/H", "MPH" };
+static const char *const POCKET_N[] = { "OFF", "30 S", "1 MIN", "2 MIN" };
+static const uint32_t POCKET_MS[] = { 0, 30000, 60000, 120000 };
+static int s_pocket_auto;
+/* RADIO's SWAP in OPTIONS: AUTO, then the jobs each radio can pin */
+static const char *const PIN_LORA_N[] = { "AUTO", "TPMS", "ISM", "MESH" };
+static const int PIN_LORA_J[] = { -1, WD_JOB_TPMS, WD_JOB_ISM, WD_JOB_MESH };
+static const char *const PIN_SDR_N[] = { "AUTO", "TPMS", "ISM", "ADS-B" };
+static const int PIN_SDR_J[] = { -1, WD_JOB_TPMS, WD_JOB_ISM, WD_JOB_AIR };
+static int pin_index(const int *J, int job)
+{
+    for (int i = 0; i < 4; i++) if (J[i] == job) return i;
+    return 0;
+}
 
 static void apply_sources(void)
 {
@@ -1014,16 +1337,31 @@ static void apply_sources(void)
 static int opt_get(const ls_opt_t *o)
 {
     if (o->arg < WD_KINDS) return s_src[o->arg] && wd_feed_has(o->arg);
+    if (o->arg == 13) return s_pocket_auto;
+    if (o->arg == 20) return pin_index(PIN_LORA_J, wd_radio_pinned(WD_RJ_LORA));
+    if (o->arg == 21) return pin_index(PIN_SDR_J, wd_radio_pinned(WD_RJ_SDR));
     return o->arg == 10 ? s_pace : o->arg == 11 ? s_units : s_only_fix;
 }
 static void opt_set(const ls_opt_t *o, int v)
 {
     if (o->arg < WD_KINDS) { s_src[o->arg] = v; apply_sources(); return; }
+    if (o->arg == 20 || o->arg == 21) {
+        const int i = v >= 0 && v < 4 ? v : 0;
+        wd_radio_pin(o->arg == 20 ? WD_RJ_LORA : WD_RJ_SDR, (o->arg == 20 ? PIN_LORA_J : PIN_SDR_J)[i]);
+        return;
+    }
+    if (o->arg == 13) {
+        s_pocket_auto = v >= 0 && v < 4 ? v : 0;
+        settings_set_rec("wd_pocket", (uint32_t)s_pocket_auto);
+        ls_tui_pocket_auto(POCKET_MS[s_pocket_auto]);
+        return;
+    }
     if (o->arg == 10) { s_pace = v; wd_feed_pace(v); }
-    else if (o->arg == 11) s_units = v;
+    else if (o->arg == 11) { s_units = v; s_units_chosen = true; settings_set_rec("wd_units", v ? 1u : 0u); }
     else { s_only_fix = v; apply_sources(); }
 }
 static const char *why_source(const ls_opt_t *o) { return wd_feed_has(o->arg) ? NULL : "not on this board"; }
+static void act_pocket(const ls_opt_t *o) { (void)o; ls_tui_pocket_set(true); }
 static void act_export(const ls_opt_t *o)
 {
     (void)o;
@@ -1061,14 +1399,25 @@ static const ls_opt_t SOURCES[] = {
     {.label = "BLUETOOTH", .kind = LS_OPT_TOGGLE, .arg = WD_BLE,   .get = opt_get, .set = opt_set, .why_not = why_source},
     {.label = "CELL",      .kind = LS_OPT_TOGGLE, .arg = WD_CELL,  .get = opt_get, .set = opt_set, .why_not = why_source},
     {.label = "DRONES",    .kind = LS_OPT_TOGGLE, .arg = WD_DRONE, .get = opt_get, .set = opt_set, .why_not = why_source},
+    {.label = "SUB-GHZ",   .kind = LS_OPT_TOGGLE, .arg = WD_RF,    .get = opt_get, .set = opt_set, .why_not = why_source},
+    {.label = "AIRCRAFT",  .kind = LS_OPT_TOGGLE, .arg = WD_AIR,   .get = opt_get, .set = opt_set, .why_not = why_source},
+    {.label = "LORA",      .kind = LS_OPT_TOGGLE, .arg = WD_LORA,  .get = opt_get, .set = opt_set, .why_not = why_source},
 };
+static const ls_opt_t RADIOS[] = {
+    {.label = "LORA CHIP", .kind = LS_OPT_CYCLE, .arg = 20, .names = PIN_LORA_N, .n = 4, .get = opt_get, .set = opt_set},
+    {.label = "SDR",       .kind = LS_OPT_CYCLE, .arg = 21, .names = PIN_SDR_N, .n = 4, .get = opt_get, .set = opt_set},
+};
+static const ls_opt_ctx_t RADIOS_CTX = {.name = "RADIO JOBS", .job = -1, .radio = LS_RSEL_NONE, LS_OPT_ROWS(RADIOS)};
 static const ls_opt_ctx_t SOURCES_CTX = {.name = "SOURCES", .job = -1, .radio = LS_RSEL_NONE, LS_OPT_ROWS(SOURCES)};
 static const ls_opt_t OPTIONS[] = {
     {.label = "REPLAY A DRIVE",   .kind = LS_OPT_ACTION, .act = act_replay, .why_not = why_replay},
     {.label = "SOURCES",          .kind = LS_OPT_MENU, .sub = &SOURCES_CTX},
+    {.label = "RADIO JOBS",       .kind = LS_OPT_MENU, .sub = &RADIOS_CTX},
     {.label = "SCAN PACE",        .kind = LS_OPT_CYCLE, .arg = 10, .names = PACE_N, .n = 3, .get = opt_get, .set = opt_set},
     {.label = "UNITS",            .kind = LS_OPT_CYCLE, .arg = 11, .names = UNIT_N, .n = 2, .get = opt_get, .set = opt_set},
     {.label = "ONLY WITH A FIX",  .kind = LS_OPT_TOGGLE, .arg = 12, .get = opt_get, .set = opt_set},
+    {.label = "POCKET LOCK",      .kind = LS_OPT_ACTION, .act = act_pocket},
+    {.label = "AUTO POCKET LOCK", .kind = LS_OPT_CYCLE, .arg = 13, .names = POCKET_N, .n = 4, .get = opt_get, .set = opt_set},
     {.label = "SAVE CSV + GPX",   .kind = LS_OPT_ACTION, .act = act_export, .show = show_files, .why_not = why_saved},
     {.label = "SEND TO LOCKER",   .kind = LS_OPT_ACTION, .act = act_locker, .show = show_locker, .why_not = why_saved},
 };
@@ -1124,17 +1473,17 @@ static void keys_3d(tui_surface *sf, tui_rect *ap, bool wide)
         ap->h -= rb;
         /* the seek bar over them, with where and how fast */
         const int by = ap->y + ap->h - 1, bw = ap->w - 18 > 8 ? ap->w - 18 : ap->w - 2;
-        tui_fill(sf, tui_rect_make(ap->x, by, ap->w, 1), ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        tui_fill(sf, tui_rect_make(ap->x, by, ap->w, 1), ' ', TUI_ATTR(TUI_WHITE, G));
         const int lit = ri.len_s ? (int)((uint64_t)ri.pos_s * (unsigned)bw / ri.len_s) : bw;
         for (int i = 0; i < bw; i++)
-            tui_put_char(sf, *ap, ap->x + 1 + i, by, i < lit ? '=' : '-', i < lit ? TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK) : TUI_ATTR(TUI_BLUE, TUI_BLACK));
-        if (lit < bw) tui_put_char(sf, *ap, ap->x + 1 + lit, by, '>', TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+            tui_put_char(sf, *ap, ap->x + 1 + i, by, i < lit ? '=' : '-', i < lit ? TUI_ATTR(TUI_CYAN | TUI_BRIGHT, G) : TUI_ATTR(TUI_BLUE, G));
+        if (lit < bw) tui_put_char(sf, *ap, ap->x + 1 + lit, by, '>', TUI_ATTR(TUI_WHITE | TUI_BRIGHT, G));
         s_rp_bar = tui_rect_make(ap->x + 1, by, bw, 1);
         char t1[16], t2[16], t[40];
         clock_text(t1, sizeof(t1), ri.pos_s * 1000u);
         clock_text(t2, sizeof(t2), ri.len_s * 1000u);
         snprintf(t, sizeof(t), "%dx %s", ri.speed, t1);
-        if (bw + 3 + (int)strlen(t) <= ap->w) tui_put_str(sf, *ap, ap->x + bw + 2, by, t, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        if (bw + 3 + (int)strlen(t) <= ap->w) tui_put_str(sf, *ap, ap->x + bw + 2, by, t, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, G));
         (void)t2;
         ap->h -= 1;
     } else s_rp_bar = tui_rect_make(0, -1, 0, 0);
@@ -1142,6 +1491,7 @@ static void keys_3d(tui_surface *sf, tui_rect *ap, bool wide)
 
 static void draw(tui_surface *sf, tui_rect a)
 {
+    units_settle();                 /* the first fix decides, until someone picks */
     {
         static bool was;
         wd_replay_tick(real_ms());
@@ -1162,9 +1512,12 @@ static void draw(tui_surface *sf, tui_rect a)
     wd_unlock();
     if (a.w < 30 || a.h < 16) { ls_panel_notice(sf, a, NULL, "More screen space needed", "Use a smaller font"); return; }
     const bool wide = ls_tui_is_wide();
-    const int bar_h = ls_tui_compact() ? 1 : wide ? 3 : 8;
+    /* nine keys: three rows of three in portrait, one row on a wide screen */
+    const int bar_rows = ls_tui_compact() || wide ? 1 : 3;
+    const int bar_h = ls_tui_compact() ? 1 : wide ? 3 : 9;
     char list_count[12];
-    const unsigned all = st.total[WD_WIFI] + st.total[WD_BLE] + st.total[WD_CELL] + st.total[WD_DRONE];
+    unsigned all = 0;
+    for (int k = 0; k < WD_KINDS; k++) all += st.total[k];
     if (all) snprintf(list_count, sizeof(list_count), "%u", all);
     else snprintf(list_count, sizeof(list_count), "--");
     ls_btn_t b[] = {
@@ -1172,17 +1525,47 @@ static void draw(tui_surface *sf, tui_rect a)
         {"LIVE", "DASH", '1', s_page == PG_LIVE, false, false},
         {"3D", "VIEW", '2', s_page == PG_3D, false, false},
         {"LIST", list_count, '3', s_page == PG_LIST, false, false},
+        {"HUNT", "TARGETS", '4', s_page == PG_HUNT, false, false},
+        {"RADIO", "JOBS", '5', s_page == PG_RADIO, false, false},
+        {"ATLAS", "ROUTES", '6', s_page == PG_ATLAS, false, false},
         {"MAP", "LAYER", 'm', false, !st.origin && !st.ever, false},
         ls_opt_button(&CTX),
     };
-    static const uint8_t hues[6] = { TUI_RED, 0, 0, 0, 0, 0 };
+    static const uint8_t hues[9] = { TUI_RED, 0, 0, 0, TUI_YELLOW, 0, 0, 0, 0 };
+    const bool say_on = s_say[0] && real_ms() - s_say_ms < 4000;
+    if (ls_tui_compact()) {
+        /* A desk window: the keys are the toolbar under the menu bar, the
+           pages draw under it, the state goes to the status bar. The 3D
+           page keeps its own keys (they take the toolbar's place, as on the
+           handheld), at the bottom of the window. */
+        tui_fill(sf, a, ' ', a_text());
+        if (s_page == PG_3D) {
+            keys_3d(sf, &a, wide);
+        } else {
+            /* nine keys on one row: the one-word names (the LIST count
+               stays), so all of them fit a Medium window */
+            ls_btn_t bt[9];
+            for (int i = 0; i < 9; i++) { bt[i] = b[i]; if (i != 3) bt[i].value = NULL; }
+            ls_btn_bar_raised_hued(sf, tui_rect_make(a.x, a.y, a.w, 1), bt, 9, -1, hues);
+            a = tui_rect_make(a.x + 1, a.y + 1, a.w - 2, a.h - 1);
+        }
+        char t[72], c[16];
+        clock_text(c, sizeof(c), st.running ? now - st.start_ms : st.stop_ms - st.start_ms);
+        if (say_on) snprintf(t, sizeof(t), "%s", s_say);
+        else if (st.replay) snprintf(t, sizeof(t), "Replaying a drive, %u found", all);
+        else if (st.running) snprintf(t, sizeof(t), "Recording %s  %u found  %u rows", c, all, st.rows);
+        else if (st.ever) snprintf(t, sizeof(t), "Stopped; last drive %s, %u found", c, all);
+        else snprintf(t, sizeof(t), "Ready: START logs what is heard, and where");
+        ls_tui_status_set(t, NULL);
+        if (!say_on) s_say[0] = 0;
+    } else {
     if (s_page == PG_3D) {
         keys_3d(sf, &a, wide);
     } else {
-        ls_btn_bar_raised_hued(sf, tui_rect_make(a.x, a.y + a.h - bar_h, a.w, bar_h), b, 6, -1, hues);
+        ls_btn_bar_grid_slot(sf, tui_rect_make(a.x, a.y + a.h - bar_h, a.w, bar_h), b, 9, -1, LS_BTN_SLOT_SCREEN, bar_rows, hues);
         a.h -= bar_h + 1;
     }
-    if (s_say[0] && real_ms() - s_say_ms < 4000) {
+    if (say_on) {
         /* the answer to the last key, on the bottom row of the page */
         char t[70];
         snprintf(t, sizeof(t), " %s ", s_say);
@@ -1190,10 +1573,19 @@ static void draw(tui_surface *sf, tui_rect a)
                     TUI_ATTR(TUI_BLACK, TUI_YELLOW | TUI_BRIGHT));
         a.h--;
     } else s_say[0] = 0;
+    }
     if (s_page != PG_3D) wd3d_leave();
+    replay_summarize_step();
     switch (s_page) {
     case PG_3D: page_3d(sf, a, now); break;
-    case PG_LIST: list_page(sf, a, now); break;
+    case PG_LIST: {
+        char lt[24];
+        snprintf(lt, sizeof(lt), "LIST  %d", s_norder);
+        const tui_rect in = ls_plate(sf, a, a, TUI_CYAN, lt, NULL, 0);
+        list_page(sf, tui_rect_make(in.x - 1, in.y, in.w + 2, in.h), now);
+        break;
+    }
+    case PG_HUNT: case PG_RADIO: case PG_ATLAS: xpage(s_page)->draw(sf, a, now); break;
     default: live_page(sf, a, now); break;
     }
 }
@@ -1201,6 +1593,8 @@ static void draw(tui_surface *sf, tui_rect a)
 static void page(int p)
 {
     if (p != s_page && p != PG_3D) wd3d_leave();
+    const wd_page_t *old = xpage(s_page);
+    if (p != s_page && old && old->leave) old->leave();
     s_page = p;
 }
 
@@ -1212,8 +1606,15 @@ static bool key(ls_tk_t k, char ch)
     if (ch == '1') { page(PG_LIVE); return true; }
     if (ch == '2') { page(PG_3D); return true; }
     if (ch == '3') { page(PG_LIST); return true; }
+    if (ch == '4') { page(PG_HUNT); return true; }
+    if (ch == '5') { page(PG_RADIO); return true; }
+    if (ch == '6') { page(PG_ATLAS); return true; }
+    if (xpage(s_page) && xpage(s_page)->key(k, ch, now)) return true;
     if (ch == 'm' || ch == 'M') { open_map(); return true; }
-    if (ch == 'r' || ch == 'R') { replay_pick(); return true; }
+    /* r is RADIO in every app (the shared rule): here the RADIO page, where
+       each radio's job is chosen; saved drives moved to d */
+    if (ch == 'r' || ch == 'R') { page(PG_RADIO); return true; }
+    if (ch == 'd' || ch == 'D') { replay_pick(); return true; }
     if (wd_replay_on()) {
         const uint32_t r = real_ms();
         if (ch == ' ' || (k == LS_TK_ENTER && s_page != PG_LIST)) { wd_replay_pause(r); return true; }
@@ -1284,8 +1685,12 @@ static bool touch(int x, int y)
     if (hit == 1) { page(PG_LIVE); return true; }
     if (hit == 2) { page(PG_3D); return true; }
     if (hit == 3) { page(PG_LIST); return true; }
-    if (hit == 4) { open_map(); return true; }
-    if (hit == 5) { ls_opt_open(&CTX); return true; }
+    if (hit == 4) { page(PG_HUNT); return true; }
+    if (hit == 5) { page(PG_RADIO); return true; }
+    if (hit == 6) { page(PG_ATLAS); return true; }
+    if (hit == 7) { open_map(); return true; }
+    if (hit == 8) { ls_opt_open(&CTX); return true; }
+    if (xpage(s_page) && xpage(s_page)->touch(x, y, now)) return true;
     if (s_replay_chip.h > 0 && y == s_replay_chip.y && x >= s_replay_chip.x && x < s_replay_chip.x + s_replay_chip.w) { replay_pick(); return true; }
     if (s_page == PG_3D && wd_replay_on()) {
         const uint32_t r = real_ms();
@@ -1328,20 +1733,52 @@ static bool touch(int x, int y)
     return false;
 }
 
+/* The home base's link reads and merges WARDRIVE's atlas (ls_lsx_svc.h);
+   its calls come from the link's task with no wardrive lock held. */
+static uint32_t lsx_seq(void *c) { (void)c; return wd_atlas_seq(); }
+static size_t lsx_delta(void *c, uint32_t since, uint8_t *o, size_t n, uint32_t *next)
+{
+    (void)c;
+    return wd_atlas_delta(since, o, n, next);
+}
+static int lsx_apply(void *c, const uint8_t *b, size_t n, uint32_t origin)
+{
+    (void)c;
+    return wd_atlas_apply(b, n, origin);
+}
+static const ls_lsx_store_t WD_LSX = { NULL, lsx_seq, lsx_delta, lsx_apply };
+
 static void enter(void)
 {
+    static bool attached;
+    if (!attached) { attached = true; ls_lsx_set_store(&WD_LSX); wd_hunt_attach(); }
     ls_location_want();
+    units_settle();
+    wd_sig_init();
+    const uint32_t pa = settings_get_rec("wd_pocket", 0);
+    s_pocket_auto = pa < 4 ? (int)pa : 0;
+    ls_tui_pocket_auto(POCKET_MS[s_pocket_auto]);
     s_order_ms = 0;
     s_card.known = false;
+    if (wd_stats()->ever) ls_rfmap_set_extra(map_layer);   /* the last drive, on MAP too */
 }
 
 /* A replay only plays while WARDRIVE draws, and its events hold up to ~4 MB
    of PSRAM that MAP needs: leaving ends it (the drive's devices and track
    stay in the session, so MAP's layer still shows them). */
-static void leave(void) { wd3d_leave(); wd_replay_close(); }
+static void leave(void)
+{
+    const wd_page_t *xp = xpage(s_page);
+    if (xp && xp->leave) xp->leave();
+    ls_tui_pocket_auto(0);              /* auto lock is WARDRIVE's; the lock itself stays until unlocked */
+    wd3d_leave();
+    wd_replay_close();
+    s_sum_at = -1;
+    wd_drive_summarize(NULL, 0, NULL);  /* an old drive's summary left half read lets go of its file */
+}
 
 const ls_tui_screen_t ls_scr_wardrive = {
     .name = "WARDRIVE",
-    .hint = "S start/stop  1 live  2 3D  3 list  M map  R replay  O options",
+    .hint = "S start/stop  1 live  2 3D  3 list  4 hunt  5 radio  6 atlas  R radio  D drives  M map  O options",
     .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch,
 };

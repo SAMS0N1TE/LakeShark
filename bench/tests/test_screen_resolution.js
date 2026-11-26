@@ -125,8 +125,12 @@ run(fs.readFileSync(path.join(root, 'components/apps/tui/web/screen.js'), 'utf8'
     assert.equal(run('cm.g.length'),n); assert.equal(run('cm.g[cm.g.length-1]'),0x97);
     assert.equal(run('cm.face === fonts[4]'),true);
     assert.equal(canvas.width,384*7); assert.equal(canvas.height,112*13);
-    assert.equal(canvas.style.width,384*7/1.5+'px');
-    assert.equal(canvas.style.height,112*13/1.5+'px');
+    // 2688x1456 bitmap pixels are more than the 1680x910 stage holds at DPR
+    // 1.5: since the 11-20 desk pass (b40e54cff) the page scales it down to
+    // fit, letterboxed, smoothly, instead of spilling past the window.
+    assert.equal(canvas.style.width,'1680px');
+    assert.equal(canvas.style.height,'910px');
+    assert.equal(canvas.style.imageRendering,'auto');
   }
   // A noisy full X update must inflate across dozens of 4000-byte frames.
   const xraw=Buffer.alloc(5+n*8); xraw[0]=88;
@@ -149,6 +153,27 @@ run(fs.readFileSync(path.join(root, 'components/apps/tui/web/screen.js'), 'utf8'
   push(bad);push(frame(Buffer.alloc(0)));
   assert(sent.includes('term redraw'));
   while(frames.length) frames.shift()();
+  // A grid that fits the stage (the 360x105 fitGrid chose) still shows pixel
+  // for pixel at DPR 1.5: 1/dpr, nearest neighbour.
+  {
+    const fc=360, fr=105, fn=fc*fr;
+    const fraw=Buffer.alloc(8+33+5+fn*3+5); let p=0;
+    fraw[p++]=71;fraw.writeUInt16LE(fc,p);p+=2;fraw.writeUInt16LE(fr,p);p+=2;
+    fraw[p++]=4;fraw[p++]=7;fraw[p++]=13;
+    fraw[p++]=80;for(let i=0;i<16;i++){fraw.writeUInt16LE(i?65535:0,p);p+=2;}
+    fraw[p++]=67;fraw.writeUInt16LE(0,p);p+=2;fraw.writeUInt16LE(fn,p);p+=2;
+    for(let i=0;i<fn;i++){fraw.writeUInt16LE(65,p);p+=2;fraw[p++]=15;}
+    fraw[p++]=76;fraw.writeUInt32LE(124,p);p+=4;assert.equal(p,fraw.length);
+    const fz=zlib.deflateRawSync(fraw);
+    for(let i=0;i<fz.length;i+=4000) push(frame(fz.subarray(i,i+4000),true));
+    push(frame(Buffer.alloc(0)));await run('live.chain');
+    while(frames.length) frames.shift()();
+    assert.equal(run('cm.g.length'),fn);
+    assert.equal(canvas.width,fc*7); assert.equal(canvas.height,fr*13);
+    assert.equal(canvas.style.width,fc*7/1.5+'px');
+    assert.equal(canvas.style.height,fr*13/1.5+'px');
+    assert.equal(canvas.style.imageRendering,'pixelated');
+  }
   // The font row is in the board's settings, which a viewer the board called local sees.
   run('local=true; drawPanel()');
   const labels=document.getElementById('panel').children.flatMap(x=>x.children||[]).flatMap(x=>x.children||[]);

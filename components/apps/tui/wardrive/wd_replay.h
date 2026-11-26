@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "wd_core.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,7 +33,8 @@ typedef struct {
 } wd_replay_info_t;
 
 /* The drives on the card, newest first: stem names and a line about each. */
-int  wd_replay_list(char name[][WD_REPLAY_NAME], char detail[][40], int max);
+/* The drives on the card, newest first, with each one's summary. */
+int  wd_replay_list(char name[][WD_REPLAY_NAME], wd_drive_info_t *info, int max);
 /* Reads the drive `stem` and starts playing it; false with a reason. */
 bool wd_replay_open(const char *stem, uint32_t real_ms, char *why, size_t n);
 /* Moves the playback clock and feeds what it reached. Once a frame. */

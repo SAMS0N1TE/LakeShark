@@ -69,5 +69,11 @@ static bool key(lap_key_t k,char ch) {
     }
     return false;
 }
+LAP_ICON_PX("....................", ".fffffffffff........", ".fffffffffff........", ".fffffffffff........",
+            ".ff7777777ff........", ".fffffffffff........", ".fffffffffff........", ".ff7777777ffbbbb....",
+            ".ffffffffffbbbbbb...", ".ffffffffffbb00bb...", ".ff7777777fbb00bb...", ".ffffffffffbbbbbb...",
+            ".fffffffffffbbbb....", ".fffffffffff.bb.....", ".fffffffffff.bb.....", ".fffffffffff.bbbb...",
+            ".............bb.....", ".............bbbb...");
+
 LAP_APP(.id="scoped_files",.name="SCOPED FILES",.sub="Paged storage and file grants",.version="1.0",.author="LakeShark",
         .icon=LAP_ICON_FILES,.color=LAP_CYAN,.enter=enter,.draw=draw,.key=key);

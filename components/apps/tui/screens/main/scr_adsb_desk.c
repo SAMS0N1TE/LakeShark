@@ -337,8 +337,8 @@ static void layout(tui_rect a)
     s_r_menu = tui_rect_make(a.x, y++, a.w, 1);
     s_r_tools = a.h >= 18 ? tui_rect_make(a.x, y++, a.w, 1) : none;
     s_r_filter = tui_rect_make(a.x, y++, a.w, 1);
-    s_r_status = tui_rect_make(a.x, a.y + a.h - 1, a.w, 1);
-    const tui_rect body = tui_rect_make(a.x, y, a.w, a.y + a.h - 1 - y);
+    s_r_status = none;              /* its words go to the window's status bar */
+    const tui_rect body = tui_rect_make(a.x, y, a.w, a.y + a.h - y);
     /* The right-hand column: the map over the details, when there is room
        for either beside a table that can still be read. */
     int rw = 0;
@@ -405,8 +405,24 @@ static void draw_filter(tui_surface *sf)
     s_r_find = tui_rect_make(x, r.y, 18, 1);
     ls_dui_edit_draw(sf, r, x, r.y, 18, &s_find, s_find_focus, TUI_YELLOW);
     x += 20;
-    x += ls_dui_tool(sf, r, x, "Emergencies first", C_ALARMS, s_alarms_first, false, TUI_RED, &s_hits);
-    x += ls_dui_tool(sf, r, x, "Positions only", C_ONLY_POS, s_only_pos, false, TUI_YELLOW, &s_hits);
+    if (ls_dui_desk()) {
+        /* A form row, not a second toolbar: the two filters are check boxes. */
+        static const char *const LAB[2] = { "Emergencies first", "Positions only" };
+        const bool on[2] = { s_alarms_first, s_only_pos };
+        const int cmd[2] = { C_ALARMS, C_ONLY_POS };
+        for (int i = 0; i < 2; i++) {
+            const int w = 4 + (int)strlen(LAB[i]);
+            if (x + w > r.x + r.w) break;
+            const tui_rect in = ls_dui_field(sf, r, x, r.y, 3);
+            tui_put_char(sf, r, in.x, r.y, on[i] ? 'x' : ' ', TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+            tui_put_str(sf, r, x + 4, r.y, LAB[i], on[i] ? INK(i ? TUI_YELLOW : TUI_RED) : TUI_ATTR(TUI_WHITE, TUI_BLACK));
+            if (s_hits.n < LS_DUI_HITS) { s_hits.r[s_hits.n] = tui_rect_make(x, r.y, w, 1); s_hits.cmd[s_hits.n] = (int16_t)cmd[i]; s_hits.n++; }
+            x += w + 2;
+        }
+    } else {
+        x += ls_dui_tool(sf, r, x, "Emergencies first", C_ALARMS, s_alarms_first, false, TUI_RED, &s_hits);
+        x += ls_dui_tool(sf, r, x, "Positions only", C_ONLY_POS, s_only_pos, false, TUI_YELLOW, &s_hits);
+    }
     if (s_find.len || s_only_pos) x += ls_dui_tool(sf, r, x, "Clear", C_CLEAR, false, false, TUI_WHITE, &s_hits);
     /* How the table is ordered, said in words at the right. */
     char text[48];
@@ -422,7 +438,8 @@ static void draw_table(tui_surface *sf)
 {
     char title[40], text[32];
     snprintf(title, sizeof(title), "AIRCRAFT %d of %d", s_n, s_nrow);
-    ls_dui_pane(sf, s_r_table, title, "* not heard lately", HUE, !s_find_focus);
+    const tui_rect well = ls_dui_pane(sf, s_r_table, title, "* not heard lately", HUE, !s_find_focus);
+    ls_ink_well(well);                  /* the list on the contrast ground, a Win98 list view */
     /* An emergency is said on the frame itself, whatever the table shows. */
     for (int i = 0; i < s_nrow; i++) {
         const ls_adsbd_row_t *r = &s_row[s_order[i]];
@@ -572,9 +589,17 @@ static void draw_status(tui_surface *sf)
     int alarms = 0, placed = 0;
     for (int i = 0; i < s_nrow; i++) { alarms += s_row[i].alarm != NULL; placed += (s_row[i].have & LS_AF_POS) != 0; }
     const int k = snprintf(text, sizeof(text), " %d aircraft  %d placed  %d emergenc%s", s_nrow, placed, alarms, alarms == 1 ? "y" : "ies");
+    const bool mine = s_say[0] && esp_timer_get_time() - s_said_us < 8000000;
+    if (r.h <= 0) {
+        /* The window's status bar says it; keys are under Help > Keys. */
+        if (mine) snprintf(text + k, sizeof(text) - (size_t)k, "  %s", s_say);
+        else if (s_find_focus) snprintf(text + k, sizeof(text) - (size_t)k, "  Type a callsign, address or squawk");
+        ls_tui_status_set(text + 1, NULL);
+        (void)sf;
+        return;
+    }
     tui_put_str(sf, r, r.x, r.y, text, alarms ? INK(TUI_RED) : INK(HUE));
     const int x = r.x + k + 2;
-    const bool mine = s_say[0] && esp_timer_get_time() - s_said_us < 8000000;
     const char *idle = s_find_focus ? "Type a callsign, an address, a squawk or EMERGENCY; Enter keeps it, Esc clears"
                      : "Enter opens its page  click a header to sort  F follow  R radio  O options  right button for more";
     tui_put_str(sf, tui_rect_make(x, r.y, r.x + r.w - x, 1), x, r.y, mine ? s_say : idle, mine ? INK(TUI_YELLOW) : LS_ATTR_DIM);

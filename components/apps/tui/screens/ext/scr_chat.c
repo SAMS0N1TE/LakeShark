@@ -6,6 +6,7 @@
    LISTEN keeps a light once-a-minute poll after you leave. Network: core/ls_hub.h. */
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 #include "../../ls_keyboard.h"
 #include "../../ls_app.h"
 #include "../../ls_text.h"
@@ -272,6 +273,79 @@ static void draw_compose(tui_surface *sf, tui_rect r)
     if (!C.sending && cl / w < rows) tui_put_char(sf, in, in.x + cl % w, in.y + cl / w, '_', A(TUI_CYAN | TUI_BRIGHT));
 }
 
+/* The line under it all: why the last one did not go, else the house rule. */
+static const char *message(const ls_hub_status_t *st, char *t, size_t n, uint8_t *at)
+{
+    *at = ls_ink_hue(A(TUI_YELLOW | TUI_BRIGHT));
+    if (C.why[0]) { snprintf(t, n, "Not sent: %s", C.why); return t; }
+    if (!strcmp(st->what, "chat") && st->state == LS_HUB_FAIL) return st->text;
+    *at = A(TUI_CYAN);
+    return "Be kind. One message every 3 seconds.";
+}
+
+/* A desk window: the rooms are tabs over a page with the talk in a white
+   well and the line being typed in a sunken edit under it. */
+static void draw_desk(tui_surface *sf, tui_rect area, const ls_hub_status_t *st, const ls_btn_t *btn, int nb)
+{
+    tui_fill(sf, area, ' ', TUI_DEFAULT_ATTR);
+    ls_btn_bar_raised_row(sf, tui_rect_make(area.x, area.y, area.w, 1), btn, nb, -1);
+    char names[CH_N][24];
+    const char *np[CH_N];
+    for (int c = 0; c < CH_N; c++) {
+        const int u = unread(c);
+        const char *nm = c == CH_AREA ? "area" : room(c);
+        if (!room(c)[0]) snprintf(names[c], sizeof(names[c]), "#%s", c == CH_CC ? "country" : "area");
+        else if (u) snprintf(names[c], sizeof(names[c]), "#%s %d", nm, u > 99 ? 99 : u);
+        else snprintf(names[c], sizeof(names[c]), "#%s", nm);
+        np[c] = names[c];
+    }
+    int16_t tx[CH_N], tw[CH_N];
+    const tui_rect tabs = tui_rect_make(area.x, area.y + 1, area.w, area.h - 1);
+    tui_rect page = ls_dui_tabs(sf, tabs, np, CH_N, C.ch, tx, tw);
+    C.tab_y = tabs.y;
+    for (int c = 0; c < CH_N; c++) { C.tab_x[c] = tx[c] >= 0 ? tx[c] : -100; C.tab_w[c] = tw[c]; }
+    const char *h = ls_chat_handle();
+    if (h[0] && area.w >= 60) {          /* who you are, beside the tabs */
+        tui_put_str(sf, tabs, tabs.x + tabs.w - (int)strlen(h) - 1, tabs.y + 1, h, A(handle_hue(h) | TUI_BRIGHT));
+        tui_put_str(sf, tabs, tabs.x + tabs.w - (int)strlen(h) - 9, tabs.y + 1, "you are", ls_ink(LS_INK_TEXT, LS_ATTR_DIM));
+    }
+    if (page.w < 20 || page.h < 8) return;
+    page = tui_rect_make(page.x + 1, page.y, page.w - 2, page.h);
+    if (page.h >= 30) {                 /* tall: the bubbles and the room's particulars */
+        const tui_rect g = ls_dui_group(sf, tui_rect_make(page.x, page.y, page.w, 6), "Room");
+        draw_head(sf, tui_rect_make(g.x + 1, g.y, g.w - 1, g.h));
+        page.y += 6;
+        page.h -= 6;
+    }
+    const tui_rect comp = tui_rect_make(page.x, page.y + page.h - 4, page.w, 4);
+    const tui_rect mr = ls_dui_well(sf, tui_rect_make(page.x, page.y, page.w, page.h - 4), NULL);
+    draw_msgs(sf, tui_rect_make(mr.x + 1, mr.y, mr.w - 1, mr.h));
+    char t[40], lines[2][96];
+    snprintf(t, sizeof(t), "Say in #%.12s", room(C.ch)[0] ? (C.ch == CH_AREA ? "area" : room(C.ch)) : "global");
+    const tui_rect in0 = ls_dui_well(sf, comp, t);
+    const tui_rect in = tui_rect_make(in0.x + 1, in0.y, in0.w - 2, in0.h);
+    C.compose = comp;
+    const int len = (int)strlen(C.draft);
+    snprintf(t, sizeof(t), " %d/280 ", len);
+    tui_put_str(sf, comp, comp.x + comp.w - 1 - (int)strlen(t), comp.y, t, ls_ink_hue(A(len > 260 ? TUI_YELLOW | TUI_BRIGHT : TUI_WHITE)));
+    if (!len) tui_put_str(sf, in, in.x, in.y, "Type, ENTER sends.", LS_ATTR_DIM);
+    else {
+        const int w = in.w, rows = in.h < 2 ? in.h : 2;
+        const char *s = C.draft;
+        if (len > w * rows - 1) s += len - (w * rows - 1);
+        for (int i = 0; i < rows; i++) {
+            snprintf(lines[i], sizeof(lines[i]), "%.*s", w, (int)strlen(s) > i * w ? s + i * w : "");
+            tui_put_str(sf, in, in.x, in.y + i, lines[i], C.sending ? LS_ATTR_DIM : ls_ink(LS_INK_TEXT, A(TUI_WHITE | TUI_BRIGHT)));
+        }
+        const int cl = (int)strlen(s);
+        if (!C.sending && cl / w < rows) tui_put_char(sf, in, in.x + cl % w, in.y + cl / w, ' ', ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_CYAN)));
+    }
+    uint8_t at;
+    char mt[96];
+    const char *m = message(st, mt, sizeof(mt), &at);
+    ls_tui_status_set(m, NULL);
+}
+
 static int buttons(ls_btn_t *b)
 {
     int n = 0;
@@ -296,6 +370,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if ((!C.cc[0] || !C.area[0]) && esp_timer_get_time() - C.here_at > 5000000) here();
     ls_btn_t btn[4];
     const int nb = buttons(btn);
+    if (ls_tui_compact()) { draw_desk(sf, area, &st, btn, nb); return; }
     const int bar_h = ls_btn_raised_height(area, nb);
     const tui_rect bar = tui_rect_make(area.x, area.y + area.h - bar_h, area.w, bar_h);
     const tui_rect msg = tui_rect_make(area.x, bar.y - 1, area.w, 1);

@@ -596,6 +596,138 @@ def radio():                       # RADIO: a handheld receiver, not FM's bare w
     return i
 
 
+def freqs():                       # FREQS: a dial over the list it tunes from
+    return art([
+        "....................",
+        ".AAAAAAAAAAAAAAAAAA.",
+        ".A.a..a..a.7.a..a.A.",
+        ".A.a..a..a.7.a..a.A.",
+        ".A.aaaaaaaa7aaaaa.A.",
+        ".AAAAAAAAAAAAAAAAAA.",
+        "....................",
+        ".AA.77777777777777..",
+        "....................",
+        ".AA.7777777777......",
+        "....................",
+        ".AA.777777777777....",
+        "....................",
+        ".AA.77777777........",
+        "....................",
+        ".AA.77777777777.....",
+        "....................",
+        "....................",
+    ])
+
+
+# These nine were character art in one colour (ls_icon_art) until 11-25.
+
+def meter():                       # METERS: a utility meter, its register and dial
+    i = Ic()
+    i.ball(10, 9, 8.8, METAL)                         # the glass and its ring
+    i.disc(10, 9, 7.2, '0')
+    i.rect(4, 3, 12, 3, 'f')                          # the register
+    for x in (5, 7, 9, 11, 13): i.set(x, 4, '8')
+    i.ring(10, 11.5, 3.2, A, 1.2)                     # the dial
+    i.line(10, 11.5, 12.6, 9.2, '9')                  # its needle
+    i.set(10, 11.5, 'f')
+    return i
+
+
+def pins():                        # PINS: a pin header and its jumper wires
+    i = Ic()
+    for x in range(2, 18, 2): i.rect(x, 0, 1, 3, 'b')  # the pins
+    i.rect(1, 3, 18, 3, '8'); i.line(1, 3, 18, 3, '7')  # the plastic
+    for x0, c, dx in ((2, '9', -1.0), (6, A, -.4), (12, 'e', .4), (16, 'f', 1.0)):
+        i.rect(x0, 6, 2, 3, '7')                      # each wire's housing
+        for y in range(9, 18):
+            x = x0 + dx * max(0, y - 9) ** 1.25 / 2
+            i.set(x, y, c); i.set(x + 1, y, c)
+    return i
+
+
+def bootlog():                     # BOOT LOG: a page of the log, one line an error
+    i = Ic()
+    i.frame(0, 0, 20, 18, '7')
+    i.rect(1, 1, 18, 2, A)                            # the title bar
+    for y, c, n in ((4, 'g', 12), (7, 'g', 8), (10, 'b', 10), (13, '9', 8)):
+        i.rect(2, y, 2, 2, c)                         # the level: I, I, W, E
+        i.rect(6, y, n, 2, 'f' if c == '9' else '7')
+    i.rect(16, 13, 2, 2, '9')                         # and the error's mark
+    return i
+
+
+def store():                       # STORE: an open crate, apps in it
+    i = Ic()
+    i.rect(2, 3, 4, 6, '9'); i.rect(8, 0, 4, 9, 'b'); i.rect(14, 3, 4, 6, 'g')
+    i.rect(2, 3, 4, 1, 'f'); i.rect(8, 0, 4, 1, 'f'); i.rect(14, 3, 4, 1, 'f')
+    i.rect(0, 9, 20, 9, '3')                          # the crate
+    i.line(0, 9, 19, 9, 'b')
+    for y in (12, 15): i.line(0, y, 19, y, '8')
+    i.rect(6, 12, 8, 3, A)                            # its label, in the tile's colour
+    return i
+
+
+def packs():                       # PACKS: the world's frequency data, a globe over its packs
+    i = Ic()
+    i.disc(10, 7.5, 7.2, '4')                         # the sea
+    i.ring(10, 7.5, 6.7, 'c', 1, a0=95, a1=215)       # lit from the upper left
+    i.poly([(5, 2.5), (8, 2), (8, 4.5), (6.5, 6.5), (7.5, 8.5), (7, 12.5), (6, 12.5), (5.5, 9), (4, 5.5)], 'g')
+    i.poly([(11.5, 2), (14.5, 2), (14.5, 3.5), (13, 4.5), (15.5, 6.5), (15.5, 9), (14, 12.5), (13, 11.5), (12.5, 8), (11.5, 6.5)], 'g')
+    for k, c in enumerate(('9', 'b', 'g', 'e', 'd', 'f', A)):   # one pack per service
+        i.rect(3 + 2 * k, 15, 1, 2, c)
+    return i
+
+
+def wardrive():                    # WARDRIVE: a car with its aerial, listening as it drives
+    i = Ic()
+    i.ring(13, 3, 2.4, 'e', 1, a0=-10, a1=100)        # what it hears
+    i.ring(13, 3, 4.6, 'e', 1, a0=0, a1=90)
+    i.line(13, 3, 13, 6, '7')                         # the aerial
+    i.poly([(4, 11), (6.5, 6), (14.5, 6), (17, 11)], A)   # the cabin
+    i.poly([(6, 10.5), (7.5, 7), (10, 7), (10, 10.5)], 'c')
+    i.poly([(11, 10.5), (11, 7), (14, 7), (15.5, 10.5)], 'c')
+    i.rect(1, 10, 18, 4, A); i.rect(1, 13, 18, 1, a)  # the body
+    i.set(18, 11, 'f'); i.set(1, 11, '9')             # its lights
+    for cx in (5, 15):
+        i.disc(cx, 14.5, 2.6, '8'); i.disc(cx, 14.5, 1.1, '7')
+    return i
+
+
+def party():                       # PARTY: two of us at a fire
+    i = Ic()
+    i.line(4, 17, 16, 14, '3'); i.line(4, 14, 16, 17, '3')  # the logs
+    i.poly([(6.5, 15), (10, 3), (13.5, 15)], '9')     # the fire
+    i.poly([(8.5, 15), (10, 8), (11.5, 15)], 'b')
+    i.set(13, 2, 'b'); i.set(7, 1, 'b')               # its sparks
+    for cx, c in ((2, 'e'), (18, A)):                 # and the two of us
+        i.disc(cx, 5, 1.6, c)
+        i.rect(cx - 1, 7, 3, 6, c); i.rect(cx - 1, 13, 1, 4, c); i.rect(cx + 1, 13, 1, 4, c)
+    return i
+
+
+def locker():                      # LOCKER: two doors, vents, a padlock
+    i = Ic()
+    for x0 in (1, 10):
+        i.rect(x0, 0, 9, 18, '7'); i.frame(x0, 0, 9, 18, '8')
+        i.rect(x0 + 2, 1, 5, 2, A)                    # the name plate
+        for y in (4, 6): i.rect(x0 + 2, y, 5, 1, '8')  # the vents
+        i.rect(x0 + 6, 9, 1, 4, 'f')                  # the handle
+    i.rect(13, 12, 5, 4, 'b'); i.frame(14, 9, 3, 4, '3')   # the padlock
+    i.set(15, 13, '3')
+    return i
+
+
+def chat():                        # CHAT: two speech bubbles, one typing
+    i = Ic()
+    i.rect(1, 1, 12, 7, A); i.set(1, 1, None)
+    i.poly([(3, 7), (6, 7), (2.5, 11)], A)            # yours, with its tail
+    i.rect(3, 3, 8, 1, 'f'); i.rect(3, 5, 5, 1, 'f')
+    i.rect(8, 9, 11, 7, 'f')                          # theirs
+    i.poly([(14, 15), (17, 15), (17.5, 18)], 'f')
+    for x in (10, 13, 16): i.rect(x, 12, 2, 1, '8')   # typing
+    return i
+
+
 ICONS = [  # (enum name, function, sample hue for the preview)
     ('SHARK', shark, 6), ('TOWER', tower, 2), ('WAVE', wave, 3), ('PLANE', plane, 5),
     ('RECORD', record, 1), ('FALLS', falls, 4), ('MAP', map_, 2), ('FILES', files, 3),
@@ -605,7 +737,10 @@ ICONS = [  # (enum name, function, sample hue for the preview)
     ('EXPERIMENT', experiment, 5), ('TERMINAL', terminal, 2), ('UPDATE', update, 6), ('TILES', tiles, 6),
     ('DRONE', drone, 6), ('SWEEP', sweep, 2), ('DETECTOR', detector, 3), ('CELL', cell, 6), ('SUBGHZ', subghz, 2),
     ('HEAT', heat, 5), ('FOX', fox, 3),
-    ('DIGI', digi, 2), ('TMACH', tmach, 5), ('RADIO', radio, 3),
+    ('DIGI', digi, 2), ('TMACH', tmach, 5), ('RADIO', radio, 3), ('FREQS', freqs, 3),
+    ('METER', meter, 3), ('PINS', pins, 2), ('BOOTLOG', bootlog, 3), ('STORE', store, 6),
+    ('PACKS', packs, 6), ('WARDRIVE', wardrive, 3), ('PARTY', party, 5), ('LOCKER', locker, 6),
+    ('CHAT', chat, 5),
 ]
 
 

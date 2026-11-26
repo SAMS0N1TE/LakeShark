@@ -9,6 +9,7 @@
 #include "lakeshark_ui.h"
 #include "lap_scroll.h"
 #include "lap_art.h"
+#include "bh_lookup.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,6 +56,16 @@ static char old_newest[64];
 /* a message for main.c's title line */
 static char note[96];
 static bool note_new;
+/* MINE and WATCH, kept on the card by address (slot "marks"): a tag that
+   keeps one address (Tile, many cheap tags) is known again next time; a
+   rotating one for as long as it keeps that address. Saved one job at a
+   time and polled, as main.c saves its settings. */
+#define MARKS 24
+typedef struct { uint8_t addr[6], type, mark; } mark_t;
+static mark_t marks[MARKS];
+static int nmarks, marks_job = -1;
+static bool marks_dirty;
+static uint32_t marks_at;
 
 static void say(const char *fmt, ...)
 {
@@ -223,10 +234,104 @@ bool bhw_open(void)
     if (gps_fitted) gps_lease = lap_gps_acquire(0);
     logs_mine = logs_old = -1; old_newest[0] = 0; ls_job = -1; ls_stage = 2;
     if (sd_fitted && (ents = calloc(ENTS, sizeof(*ents))) != NULL) ls_stage = 0;
+    nmarks = 0; marks_job = -1; marks_dirty = false; marks_at = 0;
+    const int got = lap_load("marks", marks, sizeof(marks));
+    if (got > 0) nmarks = got / (int)sizeof(marks[0]);
+    for (int i = 0; i < nmarks; i++) if (marks[i].mark > BW_MARK_WATCH) marks[i].mark = 0;
     return true;
+}
+static void marks_pump(void)
+{
+    if (marks_job >= 0) {
+        const int r = lap_sd_poll(marks_job);
+        if (r == LAP_SD_PENDING) return;
+        if (r < 0) marks_dirty = true;
+        marks_job = -1;
+    }
+    if (!marks_dirty || lap_millis() - marks_at < 500u) return;
+    marks_at = lap_millis();
+    const int id = lap_save("marks", marks, sizeof(marks[0]) * (size_t)nmarks);
+    if (id >= 0) { marks_dirty = false; marks_job = id; }
+}
+static int mark_find(const uint8_t addr[6], uint8_t type)
+{
+    for (int i = 0; i < nmarks; i++)
+        if (!memcmp(marks[i].addr, addr, 6) && marks[i].type == (type & 1)) return i;
+    return -1;
+}
+static void mark_keep(const bw_dev_t *d, uint8_t mark)
+{
+    int i = mark_find(d->addr, d->addr_type);
+    if (!mark) {
+        if (i >= 0) { marks[i] = marks[--nmarks]; marks_dirty = true; }
+        return;
+    }
+    if (i < 0) {
+        if (nmarks == MARKS) { memmove(marks, marks + 1, sizeof(marks[0]) * (MARKS - 1)); nmarks--; }   /* the oldest goes */
+        i = nmarks++;
+        memcpy(marks[i].addr, d->addr, 6);
+        marks[i].type = d->addr_type & 1;
+    }
+    marks[i].mark = mark;
+    marks_dirty = true;
+}
+uint8_t bhw_mark_cycle(uint32_t uid)
+{
+    bw_dev_t *d = bhw_dev(uid);
+    if (!w || !d) return 0;
+    const uint8_t m = (uint8_t)((d->mark + 1) % 3);
+    bw_mark(w, (int)(d - w->dev), m);
+    mark_keep(d, m);
+    say(m == BW_MARK_MINE ? "MINE: this tag never alerts" : m == BW_MARK_WATCH ? "WATCH: says when this tag is left behind" : "mark cleared");
+    return m;
+}
+int bhw_watch_poll(int *event)
+{
+    return w ? bw_watch(w, bhw_now(), event) : -1;
+}
+void bhw_tracking(uint16_t kind_off, uint32_t watch_ms)
+{
+    if (!w) return;
+    w->kind_off = kind_off;
+    w->watch_ms = watch_ms;
+}
+int bhw_marked(int *mine, int *watching)
+{
+    int m = 0, k = 0;
+    for (int i = 0; w && i < w->n; i++) {
+        if (w->dev[i].succ) continue;
+        m += w->dev[i].mark == BW_MARK_MINE;
+        k += w->dev[i].mark == BW_MARK_WATCH;
+    }
+    if (mine) *mine = m;
+    if (watching) *watching = k;
+    return nmarks;
+}
+const char *bhw_label(const bw_dev_t *d, char *buf, size_t cap)
+{
+    bw_label(d, buf, cap);
+    const bw_ad_t *a = &d->ad;
+    if (a->name[0] || a->level) return buf;             /* its own name, or a tracker's kind */
+    const char *n = NULL;
+    if (!strncmp(buf, "co 0x", 5)) n = bhl_get(BHID_COMPANY, a->company);
+    else if (!strncmp(buf, "svc ", 4)) n = bhl_get(BHID_UUID, a->uuid16[0]);
+    else if (!strcmp(buf, "(no name)") && !(d->addr_type & 1)) {
+        uint8_t be[6];
+        for (int i = 0; i < 6; i++) be[i] = d->addr[5 - i];     /* the radio gives it little endian */
+        n = bhl_maker(be);
+    }
+    if (n) snprintf(buf, cap, "%s", n);
+    /* what it says it is: "Samsung Watch" */
+    const char *ap = a->appearance ? bhl_get(BHID_APPEARANCE, a->appearance) : NULL;
+    if (ap && strcmp(ap, "Unknown") && strlen(buf) + strlen(ap) + 2 < cap) {
+        if (!strcmp(buf, "(no name)")) snprintf(buf, cap, "%s", ap);
+        else { strcat(buf, " "); strcat(buf, ap); }
+    }
+    return buf;
 }
 void bhw_close(void)
 {
+    if (marks_dirty && marks_job < 0) lap_save("marks", marks, sizeof(marks[0]) * (size_t)nmarks);
     if (log_on && loglen && log_job < 0 && log_stage == 2)
         lap_sd_write(log_path, log_bytes ? LAP_SD_APPEND : 0, logbuf, (uint32_t)loglen);
     loglen = 0;
@@ -282,8 +387,11 @@ void bhw_clear(void)
     const float fm = w->follow_m;
     const bool fix = w->fix;
     const double lat = w->lat, lon = w->lon;
+    const uint16_t ko = w->kind_off;
+    const uint32_t wm = w->watch_ms;
     bw_init(w);
     w->alert_possible = lp; w->follow_ms = f; w->follow_m = fm;
+    w->kind_off = ko; w->watch_ms = wm;
     bw_position(w, fix, lat, lon);
     memset(logged_uid_mark, 0, sizeof(logged_uid_mark));
     sel_uid = 0; nidx = 0;
@@ -298,6 +406,8 @@ void bhw_advert(const uint8_t addr[6], uint8_t type, uint8_t pdu, int rssi, cons
     if (logged_uid_mark[i] != d->uid) {
         logged_uid_mark[i] = d->uid;
         log_dev(d, d->ad.level ? "new-tracker" : "new");
+        const int m = nmarks && !d->mark ? mark_find(d->addr, d->addr_type) : -1;   /* known from before */
+        if (m >= 0) bw_mark(w, i, marks[m].mark);
     }
 }
 
@@ -342,6 +452,7 @@ static int by_tracker(const void *a, const void *b)
     const bw_dev_t *x = &w->dev[*(const int *)a], *y = &w->dev[*(const int *)b];
     const int fx = sort_now - x->last_ms < 60000u, fy = sort_now - y->last_ms < 60000u;
     if (x->alert != y->alert) return y->alert - x->alert;
+    if ((x->mark == BW_MARK_MINE) != (y->mark == BW_MARK_MINE)) return x->mark == BW_MARK_MINE ? 1 : -1;  /* your own sink */
     if (fx != fy) return fy - fx;
     if (x->ad.level != y->ad.level) return y->ad.level - x->ad.level;
     return bw_span_ms(y) > bw_span_ms(x) ? 1 : bw_span_ms(y) < bw_span_ms(x) ? -1 : (int)(x->uid - y->uid);
@@ -419,6 +530,7 @@ int bhw_poll(void)
 {
     if (!w) return -1;
     poll_gps();
+    marks_pump();
     const int a = bw_tick(w, bhw_now());
     if (a >= 0) log_dev(&w->dev[a], "alert");
     if (bhw_now() - last_summary >= 60000u) {          /* a line a minute per tracker still about */
@@ -446,7 +558,7 @@ void bhw_alert_text(int i, char *out, size_t cap)
     if (!w || i < 0 || i >= w->n) { snprintf(out, cap, "a tag is following you"); return; }
     const bw_dev_t *d = &w->dev[i];
     char label[32];
-    bw_label(d, label, sizeof(label));
+    bhw_label(d, label, sizeof(label));
     snprintf(out, cap, "%s with you for %lu min%s", label, (unsigned long)(bw_span_ms(d) / 60000u), d->has_pos0 ? ", moving" : "");
 }
 
@@ -454,6 +566,8 @@ void bhw_alert_text(int i, char *out, size_t cap)
 uint8_t bhw_colour(const bw_dev_t *d)
 {
     if (d->alert) return LAP_RED | LAP_BRIGHT;
+    if (d->mark == BW_MARK_MINE) return LAP_GREEN;
+    if (d->mark == BW_MARK_WATCH) return LAP_CYAN | LAP_BRIGHT;
     if (d->ad.level == 2) return LAP_YELLOW | LAP_BRIGHT;
     if (d->ad.level == 1) return LAP_MAGENTA | LAP_BRIGHT;
     if (d->ad.cls == BW_C_IBEACON || d->ad.cls == BW_C_EDDYSTONE) return LAP_BLUE | LAP_BRIGHT;
@@ -559,7 +673,7 @@ void bhw_draw_head(int x, int y, int wd, int hgt)
     }
     if (loud) {
         char label[32];
-        bw_label(loud, label, sizeof(label));
+        bhw_label(loud, label, sizeof(label));
         const int lw = fw - 9 < 14 ? (fw - 9 > 4 ? fw - 9 : 4) : 14;
         put(fx, y + 2, fw, LAP_ATTR(bhw_colour(loud), LAP_BLACK), "%.*s %d dBm", lw, label, loud->rssi);
         const int mw = fw > 30 ? 30 : fw;
@@ -651,12 +765,15 @@ static void list_pane(int x, int y, int wd, int h)
         const uint8_t kind = on ? LAP_ATTR(LAP_BLACK, LAP_WHITE) : LAP_ATTR(bhw_colour(d), LAP_BLACK);
         const uint8_t dim = on ? base : LAP_ATTR(LAP_CYAN, LAP_BLACK);
         char label[32], age[12], here[12];
-        bw_label(d, label, sizeof(label));
+        bhw_label(d, label, sizeof(label));
         age_text(now - d->last_ms, age, sizeof(age));
         age_text(bw_span_ms(d), here, sizeof(here));
         lap_fill(x, yy, wd, row_h, ' ', base);
-        put(x, yy, 1, d->alert && (lap_millis() / 300u) % 2u ? LAP_ATTR(LAP_WHITE | LAP_BRIGHT, LAP_RED) : on ? base : LAP_ATTR(LAP_RED | LAP_BRIGHT, LAP_BLACK),
-            d->alert ? "!" : " ");
+        if (d->alert)
+            put(x, yy, 1, (lap_millis() / 300u) % 2u ? LAP_ATTR(LAP_WHITE | LAP_BRIGHT, LAP_RED) : on ? base : LAP_ATTR(LAP_RED | LAP_BRIGHT, LAP_BLACK), "!");
+        else if (d->mark)
+            put(x, yy, 1, on ? base : LAP_ATTR(d->mark == BW_MARK_MINE ? LAP_GREEN | LAP_BRIGHT : d->gone ? LAP_RED | LAP_BRIGHT : LAP_CYAN | LAP_BRIGHT, LAP_BLACK),
+                d->mark == BW_MARK_MINE ? "M" : "W");
         put(x + 1, yy, 6, kind, "%s", bw_class_tag(d->ad.cls));
         put(x + 8, yy, lw, base, "%s", label);
         if (!tracker_tab) {
@@ -674,8 +791,9 @@ static void list_pane(int x, int y, int wd, int h)
             char moved[16] = "";
             if (d->has_pos0) snprintf(moved, sizeof(moved), "  moved %dm", (int)d->moved_m);
             put(x + 8, yy + 1, wd - 8, dim, "5m %d  15m %d  here %s%s", bw_window(d, now, 5), bw_window(d, now, 15), here, moved);
-            char extra[24] = "";
-            if (d->rotations) snprintf(extra, sizeof(extra), "rot %u", d->rotations);
+            char extra[32] = "";
+            if (d->mark) snprintf(extra, sizeof(extra), "%s ", d->mark == BW_MARK_MINE ? "MINE" : d->gone ? "WATCH:GONE" : "WATCH");
+            if (d->rotations) snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "rot %u", d->rotations);
             if (d->ad.separated == 1) snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "%sAWAY", extra[0] ? " " : "");
             if (d->ad.separated == 0) snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "%sowner near", extra[0] ? " " : "");
             if (extra[0])
@@ -721,7 +839,7 @@ static void detail_pane(int x, int y, int wd, int h, const bw_dev_t *d)
     if (!d) { put(x + 1, y + 1, wd - 2, dim, "Pick a tag in the list."); return; }
     const uint32_t now = bhw_now();
     char label[32], a[18], t1[12], t2[12], t3[12];
-    bw_label(d, label, sizeof(label));
+    bhw_label(d, label, sizeof(label));
     bw_addr_text(d->addr, a);
     put(x, y++, wd, LAP_ATTR(bhw_colour(d), LAP_BLACK), "%s%s", d->alert ? "! " : "", label);
     put(x, y++, wd, LAP_ATTR(bhw_colour(d) & 7, LAP_BLACK), "%s", bw_class_name(d->ad.cls));
@@ -730,7 +848,18 @@ static void detail_pane(int x, int y, int wd, int h, const bw_dev_t *d)
     if (wd >= 10 + 18 + (int)strlen(ak)) y = kv(x, y, wd, "address", v, "%s %s", a, ak);
     else { y = kv(x, y, wd, "address", v, "%s", a); y = kv(x, y, wd, "", v, "%s", ak); }    /* narrow: the kind under it */
     const char *co = d->ad.company != 0xFFFF ? bw_company(d->ad.company) : NULL;
+    if (!co && d->ad.company != 0xFFFF) co = bhl_get(BHID_COMPANY, d->ad.company);
     if (d->ad.company != 0xFFFF) y = kv(x, y, wd, "company", v, "%s 0x%04x", co ? co : "unlisted", d->ad.company);
+    if (!(d->addr_type & 1)) {
+        uint8_t be[6];
+        for (int i = 0; i < 6; i++) be[i] = d->addr[5 - i];
+        const char *mk = bhl_maker(be);
+        y = kv(x, y, wd, "maker", v, "%s", mk ? mk : "not in the name file");
+    }
+    if (d->ad.appearance) {
+        const char *ap = bhl_get(BHID_APPEARANCE, d->ad.appearance);
+        y = kv(x, y, wd, "looks like", v, "%s 0x%04x", ap ? ap : "?", d->ad.appearance);
+    }
     y = kv(x, y, wd, "advert", v, "%s", bw_pdu_name(d->pdu));
     if (d->ad.has_flags)
         y = kv(x, y, wd, "flags", v, "0x%02x%s%s%s", d->ad.flags, d->ad.flags & 1 ? " limited" : "", d->ad.flags & 2 ? " general" : "",
@@ -740,6 +869,10 @@ static void detail_pane(int x, int y, int wd, int h, const bw_dev_t *d)
         char u[64] = "";
         for (int i = 0, p = 0; i < d->ad.n_uuid && p < 58; i++) p += snprintf(u + p, sizeof(u) - (size_t)p, "%04X ", d->ad.uuid16[i]);
         y = kv(x, y, wd, "services", v, "%s", u);
+        for (int i = 0; i < d->ad.n_uuid && i < 3; i++) {
+            const char *un = bhl_get(BHID_UUID, d->ad.uuid16[i]);
+            if (un) y = kv(x, y, wd, "", v, "%04X %s", d->ad.uuid16[i], un);
+        }
     }
     if (d->ad.level) {
         y = kv(x, y, wd, "owner", d->ad.separated == 1 ? LAP_ATTR(LAP_RED | LAP_BRIGHT, LAP_BLACK) : v, "%s",
@@ -799,6 +932,11 @@ static void info_pane(int x, int y, int wd, int bottom)
     y = kv(x, y, wd, "source", v, "%s", src_kind == 1 ? "advert capture (API 2.7)" : src_kind == 2 ? "BLE scan" : "none");
     if (src_why[0] && src_kind != 1) put(x + 10, y++, wd - 10, dim, "%s", src_why);
     y = kv(x, y, wd, "adverts", v, "%lu, %d devices, %lu let go", (unsigned long)w->adverts, w->n, (unsigned long)w->evicted);
+    {
+        char ns[72];
+        const int st = bhl_state(ns, sizeof(ns));
+        y = kv(x, y, wd, "names", st == 2 ? v : dim, "%s", ns);
+    }
     y = kv(x, y, wd, "GPS", v, "%s", !gps_fitted ? "none: alerts go by time" : w->fix ? "fix: alerts need you to move" :
                                         "no fix: alerts go by time");
     if (w->fix) y = kv(x, y, wd, "", dim, "%.5f %.5f", w->lat, w->lon);
@@ -888,6 +1026,7 @@ int bhw_key(lap_key_t k, char ch)
     case '-': bhw_follow_step(-1); return 1;
     case 'p': bhw_possible_toggle(); return 1;
     case 'g': bhw_log_toggle(); return 1;
+    case 'k': { const bw_dev_t *d = selected(); if (d) bhw_mark_cycle(d->uid); return 1; }
     default: return 0;
     }
 }

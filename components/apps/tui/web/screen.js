@@ -979,10 +979,16 @@ function paintCells() {
   const layout = `${w} ${h} ${sw} ${sh} ${dpr} ${dense}`;
   if (layout !== cm.layout) {
     cm.layout = layout;
-    const fit = dense ? 1 / dpr : Math.max(0.05, Math.min(sw / w, sh / h));
+    // A grid that fills the window shows pixel for pixel. One the board
+    // holds (the desk's resolution) is scaled to fit, letterboxed: by whole
+    // device pixels when it can grow, smoothly when it must shrink.
+    const room = Math.max(0.05, Math.min(sw / w, sh / h));
+    let fit = dense ? Math.min(1 / dpr, room) : room;
+    if (dense && gridFixed) fit = room * dpr >= 1 ? Math.floor(room * dpr) / dpr : room;
+    const whole = Math.abs(fit * dpr - Math.round(fit * dpr)) < 1e-6;
     canvas.style.width = w * fit + 'px';
     canvas.style.height = h * fit + 'px';
-    canvas.style.imageRendering = dense || fit >= 1 ? 'pixelated' : 'auto';
+    canvas.style.imageRendering = (dense && whole) || (!dense && fit >= 1) ? 'pixelated' : 'auto';
     // Flex centring may land on half a device pixel. Align the image's origin
     // as well as its size so a DPR of 1.5 still maps every bitmap pixel exactly.
     canvas.style.transform = '';
@@ -1797,9 +1803,13 @@ function requestSize(cols, rows, font = '') {
   requestedSize = [cols, rows, font];
   say(`term size ${cols} ${rows}${font ? ' ' + font : ''}`);
 }
+// The board holds its own grid (the desk's resolution): the page scales it.
+let gridFixed = false;
 function sizeReply(message) {
-  const m = message.match(/^(?:console )?term: size (\d+)x(\d+) (nomem|kept|regrid)$/);
+  const m = message.match(/^(?:console )?term: size (\d+)x(\d+) (nomem|kept|regrid|fixed)$/);
   if (!m) return false;
+  if (gridFixed !== (m[3] === 'fixed') && cm) { gridFixed = m[3] === 'fixed'; cm.layout = ''; schedulePaint(); }
+  gridFixed = m[3] === 'fixed';
   if (m[3] === 'nomem' && requestedSize &&
       +m[1] === requestedSize[0] && +m[2] === requestedSize[1]) {
     const [c, r, font] = requestedSize;

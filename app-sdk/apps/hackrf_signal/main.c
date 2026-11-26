@@ -50,5 +50,11 @@ static void draw(void) {
     lap_put_str(1,7,"+/- VGA   A amplifier   F centre +1 MHz",LAP_ATTR(LAP_WHITE,LAP_BLACK));
     snprintf(line,sizeof(line),"Job %d   result %d",job,error); lap_put_str(1,9,line,LAP_ATTR(LAP_WHITE,LAP_BLACK));
 }
+LAP_ICON_PX(".............9....9.", "............9..99..9", "..............9..9..", "....................",
+            "....................", "...............77...", "...............77...", "...............77...",
+            ".7777777777777.77...", ".7888888888887.77...", ".78aa88e8e8e87.77...", ".78aa8e8e8e8e7.77...",
+            ".7888888888887.77...", ".78998d8d8d8d7.77...", ".789988d8d8d87.bbb..", ".7888888888887.bbb..",
+            ".7777777777777.bbb..", "....................");
+
 LAP_APP(.id="hackrf_signal",.name="HACKRF SIGNAL",.sub="Bounded I/Q TX",.version="1.0",.author="LakeShark",
     .icon=LAP_ICON_GEAR,.color=LAP_CYAN,.flags=LAP_CAP_RADIO_RX|LAP_CAP_RADIO_TX,.enter=enter,.leave=leave,.draw=draw,.key=key);

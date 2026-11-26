@@ -1,0 +1,135 @@
+# WARDRIVE signatures: what a heard device is.
+#
+# Copy this file to /sdcard/wardrive/sigs.txt to change or add signatures.
+# The firmware carries the same rows built in; a row here with the same id
+# replaces the built-in one, a new id adds one, and "id|off" turns one off.
+# WARDRIVE reads the file each time its screen opens.
+# SWEEP and WARDRIVE share this table; SWEEP folds the rows of an old
+# /sdcard/sweep/rules.json in as ids sweep-1, sweep-2... ("sweep-2|off" here
+# turns one off).
+#
+# One signature per line, seven fields split by '|':
+#
+#   id | tags | kinds | alert | label | patterns | source
+#
+#   id        short and stable, letters, digits and '-'
+#   tags      what it is, joined by '+': ALPR CAMERA BODYCAM POLICE TRACKER
+#             DRONE VEHICLE SKIMMER HACKTOOL GLASSES SENSOR WATCH
+#   kinds     which radios it applies to, joined by '+': WIFI BLE CELL DRONE
+#             RF AIR LORA, or * for all
+#   alert     0 log only (a lead, never alerts), 1 alert, 2 alert, high
+#             confidence (listed first)
+#   label     what the screen calls it, up to 23 characters
+#   patterns  any one of these matches, split by ',':
+#               name:GLOB   the Wi-Fi network or Bluetooth name, whole, any
+#                           case. * any run, ? one character, # one hex
+#                           digit, % one decimal digit, \ takes the next
+#                           character as it is (\, for a comma)
+#               oui:AABBCC  the first three bytes of the address
+#               mac:AABBCCDDEEFF  one exact address (your own watch list)
+#               co:NNNN     Bluetooth company ID (hex); co:NNNN/BB also wants
+#                           BB as the first byte after the ID
+#               uuid:NNNN   16-bit Bluetooth service UUID (hex); uuid:NNNN/BB
+#                           also wants BB as the first byte of its data
+#               uuid:12345678-1234-5678-9abc-123456789abc
+#                           a 128-bit Bluetooth service UUID
+#               any         every device of the row's kinds
+#   source    where the pattern comes from, shown on the HUNT detail page
+#
+# Company IDs and service UUIDs need the Bluetooth feed to report them; until
+# it does, BLE rows match by name and address only.
+#
+# Sources. Only identifiers published by these are listed; each row names its
+# own. LakeShark is GPL-3; the projects below are MIT, Apache-2.0, GPL-3 or
+# AGPL-3 (identifiers only, which are facts, not code), credited here.
+#   flock-you        github.com/colonelpanichacks/flock-you (MIT): main.cpp,
+#                    datasets/firmware_derived_signatures.md
+#   flock-you-esp32  github.com/simeononsecurity/flock-you-esp32 (Apache-2.0)
+#   ESP32Marauder    github.com/justcallmekoko/ESP32Marauder (MIT): WiFiScan.cpp
+#   ouispy           github.com/colonelpanichacks/ouispy-detector (MIT):
+#                    BLEOUIs.md, WiFiOUIs.md
+#   lookout.py       github.com/judcrandall/lookout.py
+#   BT SIG           Bluetooth SIG assigned numbers (company identifiers,
+#                    member and SDO UUIDs), bitbucket.org/bluetooth-SIG/public
+#   vehicle-command  github.com/teslamotors/vehicle-command (Apache-2.0):
+#                    pkg/connector/ble/ble.go
+#   trifinite        trifinite.org, "TEMPA" CanSecWest 2022 slides (Tesla)
+#   carscanner       carscanner.info/wifi (ELM327 Wi-Fi adapters)
+#   flipper fw       github.com/flipperdevices/flipperzero-firmware (GPL-3)
+#   deauther         github.com/SpacehuhnTech/esp8266_deauther (MIT): A_config.h
+#   pwngrid          github.com/evilsocket/pwngrid (GPL-3): wifi/defines.go
+#   Hak5 docs        docs.hak5.org, WiFi Pineapple setup
+#   O.MG             o.mg.lol/setup/OMGCable
+#   nearby-glasses   github.com/yjeanrenaud/yj_nearbyglasses (AGPL-3)
+#   Skimmer Scanner  github.com/sparkfunX/Skimmer_Scanner (SparkFun)
+#   USENIX Sec 19    Bhaskar et al., "Please Pay Inside" (skimmers), slides
+#   Cradlepoint      IBR600 and MBR1400 user manuals (default SSID)
+#   Ring             ring.com support, Video Doorbell setup mode
+#   Tello SDK        DJI/Ryze Tello SDK 3.0 user guide
+#   ASTM F3411       Remote ID; BT SIG SDO UUID 0xFFFA
+#   Google FMDN      developers.google.com/nearby/fast-pair (Find Hub)
+#   IETF DULT        draft-detecting-unwanted-location-trackers
+#   LakeShark        SWEEP data/sweep/rules.json, BUGHUNT bh_tags.c, DETECTOR
+#
+# Left out on purpose: the community "Flock OUI" list (about 30 prefixes) is
+# mostly Liteon, USI, Espressif and Silicon Labs radios, Flock-style names in
+# about 2% of sightings (simeononsecurity.com flock-finder OUI audit, 2026);
+# listing them would call every smart plug a plate reader. Only Flock's own
+# IEEE prefix is here.
+
+# ---- plate readers and gunshot sensors
+flock-cam|ALPR|WIFI|2|FLOCK CAMERA|name:Flock-######,name:Flock,name:Flock Camera net.|flock-you, flock-you-esp32
+flock-oui|ALPR|WIFI+BLE|2|FLOCK SAFETY|oui:B41E52|IEEE via flock-you, ouispy
+flock-penguin|ALPR|WIFI+BLE|2|FLOCK PENGUIN BATTERY|name:Penguin-%%%%%%%%%%,co:09C8|flock-you, ESP32Marauder, BT SIG
+flock-battery|ALPR|WIFI+BLE|2|FLOCK EXT BATTERY|name:FS Ext Battery|flock-you, ESP32Marauder
+flock-pigvision|ALPR|WIFI|1|PIGVISION (FLOCK)|name:Pigvision*|ESP32Marauder, flock-you-esp32
+raven|SENSOR|BLE|2|RAVEN GUNSHOT SENSOR|uuid:3100,uuid:3200,uuid:3300,uuid:3400,uuid:3500|flock-you
+
+# ---- body cameras
+axon|BODYCAM|WIFI+BLE|2|AXON BODY CAM / TASER|oui:0025DF,co:034D,uuid:FC81,uuid:FE6B,uuid:FE6C|lookout.py, ouispy, BT SIG
+ipro-cam|BODYCAM|WIFI+BLE|1|I-PRO BODY CAM|oui:D42DC5|ouispy
+bodycam-name|BODYCAM|BLE|1|BODYCAM (BY NAME)|name:*bodycam*|LakeShark SWEEP
+
+# ---- police and fleet vehicles
+cradlepoint|POLICE|WIFI|1|CRADLEPOINT ROUTER|oui:003044,oui:00E01C,name:IBR600-###,name:MBR1400-###|ouispy, Cradlepoint
+
+# ---- trackers
+findmy|TRACKER|BLE|2|APPLE FIND MY|co:004C/12,uuid:FD44|LakeShark SWEEP+BUGHUNT, ESP32Marauder, BT SIG
+tile|TRACKER|BLE|2|TILE|co:067C,uuid:FEED,uuid:FEEC,uuid:FD84|LakeShark SWEEP, BT SIG
+smarttag|TRACKER|BLE|2|SAMSUNG SMARTTAG|uuid:FD5A,name:*SmartTag*|LakeShark BUGHUNT+SWEEP, BT SIG
+findhub|TRACKER|BLE|2|GOOGLE FIND HUB TAG|uuid:FEAA/40,uuid:FEAA/41|Google FMDN, LakeShark SWEEP
+dult|TRACKER|BLE|2|TRACKER (DULT)|uuid:FCB2|IETF DULT, LakeShark SWEEP
+chipolo|TRACKER|BLE|2|CHIPOLO|uuid:FE33|BT SIG, LakeShark BUGHUNT
+
+# ---- drones
+remote-id|DRONE|DRONE|1|REMOTE ID DRONE|any|ASTM F3411, LakeShark DRONES
+remote-id-ble|DRONE|BLE|1|REMOTE ID (BLE)|uuid:FFFA|ASTM F3411, BT SIG
+dji|DRONE|WIFI+BLE+DRONE|1|DJI|oui:0C9AE6,oui:8C5823,oui:04A85A,oui:58B858,oui:E47A2C,oui:60601F,oui:481CB9,oui:34D262,co:08AA|ouispy, BT SIG
+tello|DRONE|WIFI|1|DJI TELLO|name:TELLO-*,name:RMTT-*|Tello SDK
+parrot|DRONE|WIFI|1|PARROT|oui:00121C,oui:00267E,oui:9003B7,oui:903AE6,oui:A0143D|ouispy
+skydio|DRONE|WIFI|1|SKYDIO|oui:381D14|ouispy
+
+# ---- card skimmers (Bluetooth serial modules; also used honestly)
+skimmer-hc|SKIMMER|BLE|1|BT SERIAL (SKIMMER?)|name:HC-05,name:HC-06,name:HC-03|Skimmer Scanner, ESP32Marauder
+skimmer-rn|SKIMMER|BLE|1|RN41/42 (SKIMMER?)|name:RNBT-????,oui:000666|USENIX Sec 19
+
+# ---- hacking tools
+flipper|HACKTOOL|BLE|1|FLIPPER ZERO|name:*Flipper*,uuid:3081,uuid:3082,uuid:3083,oui:80E126,oui:80E127|flipper fw, ouispy, LakeShark SWEEP
+pineapple|HACKTOOL|WIFI|1|WIFI PINEAPPLE|oui:001337,name:Pineapple_####|ouispy, Hak5 docs
+deauther|HACKTOOL|WIFI|1|ESP8266 DEAUTHER|name:pwned|deauther
+pwnagotchi|HACKTOOL|WIFI|1|PWNAGOTCHI|mac:DEADBEEFDEAD,name:*pwnagotchi*|pwngrid, LakeShark SWEEP
+omg-cable|HACKTOOL|WIFI|1|O.MG CABLE|name:O.MG|O.MG
+
+# ---- camera glasses (Meta IDs also cover Quest headsets)
+meta-glasses|GLASSES|BLE|1|META / RAY-BAN GLASSES|co:01AB,co:058E,co:0D53,uuid:FD5F,name:*Ray-Ban*,name:*rayban*,name:*Wayfarer*,name:*Oakley Meta*,oui:7C2A9E,oui:CC660A,oui:F40343,oui:5CE91E,oui:985949,oui:80AA1C,oui:384712|nearby-glasses, ESP32Marauder, ouispy, BT SIG
+heycyan|GLASSES|BLE|1|HEYCYAN GLASSES|name:*HeyCyan*|nearby-glasses
+spectacles|GLASSES|BLE|1|SNAP SPECTACLES|co:03C2|nearby-glasses
+
+# ---- cars
+tesla-key|VEHICLE|BLE|1|TESLA|name:S################C,name:S################D,name:S################P,name:S################R|vehicle-command, trifinite
+obd-dongle|VEHICLE|WIFI|0|OBD-II DONGLE|name:OBDII,name:OBD2,name:WIFI_OBDII,name:*VLINK*|carscanner
+
+# ---- cameras
+ring|CAMERA|WIFI|0|RING CAMERA|name:Ring-######,name:Ring Setup*,oui:187F88,oui:242BD6,oui:343EA4,oui:54E019,oui:5C475E,oui:649A63,oui:90486C,oui:9C7613,oui:AC9FC3,oui:C4DBAD,oui:CC3BFB|Ring, ouispy
+verkada|CAMERA|WIFI|1|VERKADA CAMERA|oui:E0A700|ouispy
+axis|CAMERA|WIFI|0|AXIS CAMERA|oui:00408C,oui:ACCC8E|LakeShark SWEEP

@@ -38,6 +38,15 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <time.h>
+#include <stdatomic.h>
+#ifdef ESP_PLATFORM
+#include "ff.h"
+#include "ls_sdcard.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/idf_additions.h"
+#endif
 #include "../../ls_keyboard.h"
 #include "ls_textpack.h"
 
@@ -49,6 +58,13 @@ static bool hit_flash_on(void);
 static EXT_RAM_BSS_ATTR rec_watch_status_t s;
 static int selected;
 static char feedback[80], peers[LS_MESH_MAX_PEERS][17];
+/* The words a page keeps on its last row: on the desk they are the window's
+   status bar instead (its keys are under Help > Keys). */
+static void hint_line(tui_surface *sf, tui_rect a, const char *text, uint8_t attr)
+{
+    if (ls_tui_compact()) { ls_tui_status_set(text ? text : "", NULL); return; }
+    ls_safe_line(sf, a, a.y + a.h - 1, text, attr);
+}
 static tui_rect list;
 static bool touch_nav;
 static tui_rect pulse_hit;
@@ -104,6 +120,27 @@ static bool lr_ook(void)
            !rec_watch_lr_fsk();
 }
 static const char *source_name(void) { return ls_rsel_name(source_radio()); }
+/* How READ and RECORD listen on the radio in use, as a choice a person can
+   make: the SDR slices OOK or 2-FSK (REC's own FM discriminator), the
+   LR2021 reads OOK or 2-FSK from its I/Q stream, raw or as sync-matched
+   packets; the SX1262 receives 2-FSK packets and the CC1101 OOK, each with
+   no other way to listen. */
+enum { MOD_OOK, MOD_FSK_RAW, MOD_FSK_PACKET };
+static int mod_now(void)
+{
+    switch(rec_watch_source()) {
+    case REC_SOURCE_RTL:    return rec_get_mod()==REC_MOD_FSK?MOD_FSK_RAW:MOD_OOK;
+    case REC_SOURCE_CC1101: return MOD_OOK;
+    default:
+        if(ls_lora_chip()!=LS_LORA_CHIP_LR20XX)return MOD_FSK_PACKET;
+        return !rec_watch_lr_fsk()?MOD_OOK:rec_watch_lr_raw()?MOD_FSK_RAW:MOD_FSK_PACKET;
+    }
+}
+static const char *mod_name(void)
+{
+    static const char *const N[]={"OOK","2-FSK","2-FSK PKT"};
+    return N[mod_now()];
+}
 
 /* When WATCH last started, so the banner can show a session running rather
    than a flag that is merely set. Reset on every transition, which is also
@@ -547,7 +584,7 @@ static void setup_done(int i)
     if(rec_watch_enabled()) {LS_SNPUTS(t_scr_subghz_stop_watch_before_changing, feedback, sizeof(feedback), "Stop WATCH before changing capture setup");return;}
     if(i==5) {
         rec_disarm();rec_set_thresh(0);rec_set_gap_ms(30);rec_set_min_pulse(40);
-        rec_set_max_span(8000000);rec_set_min_edges(6);
+        rec_set_max_span(8000000);rec_set_min_edges(6);rec_set_bw(0);
         LS_SNPUTS(t_scr_subghz_capture_defaults_restored, feedback, sizeof(feedback), "Capture defaults restored");return;
     }
     if(i<0 || i>4)return;
@@ -734,10 +771,15 @@ static void tx_pump(void)
     }
     if (tx_waiting && !rec_watch_replay_status(NULL, 0)) { tx_waiting = false; tx_finish(); }
 }
+static uint32_t air_tx_press;
 static bool tx_take_radio(void)
 {
     const char *no = tx_blocked();
     if (no) { snprintf(feedback, sizeof(feedback), "%s", no); return false; }
+    {   /* What is on the air from here on is this press's. */
+        static EXT_RAM_BSS_ATTR rec_air_t was;
+        air_tx_press = rec_watch_air(true, &was) ? was.seq : 0;
+    }
     if (rec_watch_enabled()) {
         if (!watch_set(false)) { snprintf(feedback, sizeof(feedback), "Could not pause WATCH to send"); return false; }
         tx_paused_watch = true;
@@ -748,7 +790,7 @@ static bool tx_take_radio(void)
 static void tx_capture(const rec_watch_event_t *e)
 {
     if (!e) { LS_SNPUTS(t_scr_subghz_nothing_captured_yet, feedback, sizeof(feedback), "Nothing captured yet"); return; }
-    if (e->bitrate && !rec_source_can_replay((rec_source_t)e->source)) {
+    if (e->bitrate && !(rec_source_can_replay((rec_source_t)e->source) || ls_lora_chip()==LS_LORA_CHIP_LR20XX)) {
         snprintf(feedback, sizeof(feedback), "%s cannot transmit this capture",
                  ls_rsel_name(rec_source_radio((rec_source_t)e->source)));
         return;
@@ -779,7 +821,7 @@ static void replay_power_done(int index)
 }
 static void replay_power_open(void)
 {
-    static const char *const WHY[SUBGHZ_TX_STEPS_MAX] = {
+    const char *const WHY[SUBGHZ_TX_STEPS_MAX] = {
         "Bench test, a few feet",
         "Same room",
         "Normal range",
@@ -2287,49 +2329,175 @@ static int saved_cmp(const void *a,const void *b)
     if(x->mtime!=y->mtime)return x->mtime<y->mtime?1:-1;
     return strcmp(y->name,x->name);
 }
-static void saved_scan_dir(const char *dir)
+/* One list of files, filled by a scan: the screen's own (saved_file), or the
+   one the background scan builds (saved_next) and the screen takes whole. */
+typedef struct { saved_file_t *f; int n; bool truncated; } saved_list_t;
+static void saved_keep(saved_list_t *l,const saved_file_t *c)
+{
+    /* Full: the newest 48 across every folder, not the first 48 the card
+       happens to return. Stopping at the first 48 hid a whole folder, and
+       the file just copied on with it. */
+    if(l->n<SAVED_FILES_MAX){l->f[l->n++]=*c;return;}
+    l->truncated=true;
+    int old=0;
+    for(int i=1;i<l->n;i++)if(saved_cmp(&l->f[i],&l->f[old])>0)old=i;
+    if(saved_cmp(c,&l->f[old])<0)l->f[old]=*c;
+}
+/* A path that does not fit could not be opened again; skip it rather than
+   list a name that leads nowhere. */
+static bool saved_entry(saved_file_t *c,const char *dir,const char *name)
+{
+    if(name[0]=='.' || !is_sub(name))return false;
+    const size_t dl=strlen(dir);
+    if(dl+1+strlen(name)>=sizeof(c->path))return false;
+    memcpy(c->path,dir,dl);c->path[dl]='/';
+    strcpy(c->path+dl+1,name);
+    snprintf(c->name,sizeof(c->name),"%.47s",name);
+    return true;
+}
+#ifdef ESP_PLATFORM
+/* The card in one f_readdir pass: each entry carries its size and date.
+   stat() is a search of the whole folder per file, so the old walk cost
+   n^2 directory reads - on the LR board's 71 recordings, 0.15 s to 3 s of
+   the UI task every time SUB-GHZ opened (call_store.c walks the same way).
+   The date is turned into a time_t as the VFS's own stat does, so a folder
+   off the card (stat below) sorts against it. False: not on the card. */
+static long saved_fat_mtime(WORD fdate,WORD ftime)
+{
+    struct tm tm={0};
+    tm.tm_mday=fdate&0x1f;tm.tm_mon=((fdate>>5)&0xf)-1;tm.tm_year=(fdate>>9)+80;
+    tm.tm_sec=(ftime&0x1f)*2;tm.tm_min=(ftime>>5)&0x3f;tm.tm_hour=(ftime>>11)&0x1f;
+    tm.tm_isdst=-1;
+    return (long)mktime(&tm);
+}
+static bool saved_scan_ff(saved_list_t *l,const char *dir)
+{
+    char base[sizeof(((saved_file_t *)0)->path)];
+    if(!ls_sdcard_ff_path(dir,base,sizeof(base)))return false;
+    FF_DIR d;
+    FILINFO fi;
+    if(f_opendir(&d,base)!=FR_OK)return true;   /* no folder: nothing in it */
+    saved_file_t c;
+    while(f_readdir(&d,&fi)==FR_OK && fi.fname[0]) {
+        if((fi.fattrib&AM_DIR) || !saved_entry(&c,dir,fi.fname))continue;
+        c.size=(uint32_t)fi.fsize;c.mtime=saved_fat_mtime(fi.fdate,fi.ftime);
+        saved_keep(l,&c);
+    }
+    f_closedir(&d);
+    return true;
+}
+#endif
+static void saved_scan_dir(saved_list_t *l,const char *dir)
 {
     if(!dir || !*dir)return;
+#ifdef ESP_PLATFORM
+    if(saved_scan_ff(l,dir))return;
+#endif
     DIR *d=opendir(dir);
     if(!d)return;
     struct dirent *e;
+    saved_file_t c;
     while((e=readdir(d))!=NULL) {
-        if(e->d_name[0]=='.' || !is_sub(e->d_name))continue;
-        /* A path that does not fit could not be opened again; skip it
-           rather than list a name that leads nowhere. */
-        static saved_file_t c;
-        if(strlen(dir)+1+strlen(e->d_name)>=sizeof(c.path))continue;
-        memcpy(c.path,dir,strlen(dir));c.path[strlen(dir)]='/';
-        strcpy(c.path+strlen(dir)+1,e->d_name);
-        snprintf(c.name,sizeof(c.name),"%.47s",e->d_name);
+        if(!saved_entry(&c,dir,e->d_name))continue;
         struct stat st;
         if(stat(c.path,&st)==0){c.size=(uint32_t)st.st_size;c.mtime=(long)st.st_mtime;}
         else {c.size=0;c.mtime=0;}
-        /* Full: the newest 48 across every folder, not the first 48 the
-           card happens to return. Stopping at the first 48 hid a whole
-           folder, and the file just copied on with it. */
-        if(saved_files<SAVED_FILES_MAX){saved_file[saved_files++]=c;continue;}
-        saved_truncated=true;
-        int old=0;
-        for(int i=1;i<saved_files;i++)if(saved_cmp(&saved_file[i],&saved_file[old])>0)old=i;
-        if(saved_cmp(&c,&saved_file[old])<0)saved_file[old]=c;
+        saved_keep(l,&c);
     }
     closedir(d);
 }
 /* Newest first, from where REC saves and where WATCH exports. */
+static void saved_scan_all(saved_list_t *l)
+{
+    l->n=0;l->truncated=false;
+    const char *rec=rec_dir();
+    saved_scan_dir(l,rec);
+    if(!rec || strcmp(rec,"/sdcard/subghz"))saved_scan_dir(l,"/sdcard/subghz");
+    qsort(l->f,(size_t)l->n,sizeof(l->f[0]),saved_cmp);
+}
+/* Bumped whenever the screen's list is replaced, so a background scan that
+   started before a rename, a delete or a new recording is not taken over
+   the list read after it. */
+static unsigned saved_gen;
+/* Read the card now, on this task: for a key that acts on the list at once
+   (SEND the newest recording, RENAME, DELETE, refresh). */
 static void saved_reload(void)
 {
-    saved_files=0;saved_truncated=false;
-    const char *rec=rec_dir();
-    saved_scan_dir(rec);
-    if(!rec || strcmp(rec,"/sdcard/subghz"))saved_scan_dir("/sdcard/subghz");
-    qsort(saved_file,(size_t)saved_files,sizeof(saved_file[0]),saved_cmp);
+    saved_list_t l={saved_file,0,false};
+    saved_scan_all(&l);
+    saved_files=l.n;saved_truncated=l.truncated;
+    saved_gen++;
+}
+
+/* Opening the app, SAVED or RECORD RAW only needs the list soon, not before
+   the next frame. The card is shared - the field log, maps and the app
+   store read it too - and FAT makes a reader wait its turn: a 4 ms folder
+   took 1.5 s once, and the old scan ran on the UI task, so the app opened
+   seconds late or not at all. The scan runs on its own task (PSRAM stack,
+   as ls_globe's loader) and the screen takes the finished list in
+   saved_poll() at the top of a frame. */
+static EXT_RAM_BSS_ATTR saved_file_t saved_next[SAVED_FILES_MAX];
+static saved_list_t saved_next_list={saved_next,0,false};
+static unsigned saved_next_gen;
+static _Atomic int saved_next_state;   /* 0 idle, -1 scanning, 1 ready */
+static bool saved_again;               /* asked again while one was scanning */
+#ifdef ESP_PLATFORM
+static void saved_scan_task(void *arg)
+{
+    (void)arg;
+    saved_scan_all(&saved_next_list);
+    atomic_store(&saved_next_state,1);
+    vTaskDeleteWithCaps(NULL);
+}
+#endif
+static void saved_refresh(void)
+{
+    if(atomic_load(&saved_next_state)!=0){saved_again=true;return;}
+#ifdef ESP_PLATFORM
+    saved_next_gen=saved_gen;
+    atomic_store(&saved_next_state,-1);
+    if(xTaskCreatePinnedToCoreWithCaps(saved_scan_task,"sg_files",6144,NULL,2,NULL,tskNO_AFFINITY,
+                                       MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)==pdPASS)return;
+    atomic_store(&saved_next_state,0);
+#endif
+    saved_reload();   /* the host, or no memory for the task: as before */
+}
+static int player_file=-1;
+static int raw_sel;
+/* Indexes into the list follow the file they pointed at, not the slot. */
+static int saved_find(const char *path)
+{
+    for(int i=0;i<saved_files;i++)if(!strcmp(saved_file[i].path,path))return i;
+    return -1;
+}
+static void saved_poll(void)
+{
+    if(atomic_load(&saved_next_state)!=1)return;
+    /* The player holds a file of this list open; its page keeps it. */
+    if(page==PG_PLAYER)return;
+    if(saved_next_gen==saved_gen) {
+        char sel_path[sizeof(saved_file[0].path)]="",raw_path[sizeof(sel_path)]="",player_path[sizeof(sel_path)]="";
+        if(saved_sel>=s.count && saved_sel-s.count<saved_files)
+            snprintf(sel_path,sizeof(sel_path),"%s",saved_file[saved_sel-s.count].path);
+        if(raw_sel>=0 && raw_sel<saved_files)snprintf(raw_path,sizeof(raw_path),"%s",saved_file[raw_sel].path);
+        if(player_file>=0 && player_file<saved_files)
+            snprintf(player_path,sizeof(player_path),"%s",saved_file[player_file].path);
+        memcpy(saved_file,saved_next,(size_t)saved_next_list.n*sizeof(saved_file[0]));
+        saved_files=saved_next_list.n;saved_truncated=saved_next_list.truncated;
+        saved_gen++;
+        int i;
+        if(sel_path[0] && (i=saved_find(sel_path))>=0)saved_sel=s.count+i;
+        if(raw_path[0] && (i=saved_find(raw_path))>=0)raw_sel=i;
+        if(player_path[0])player_file=saved_find(player_path);
+    }
+    atomic_store(&saved_next_state,0);
+    if(saved_again){saved_again=false;saved_refresh();}
 }
 static int saved_total(void){return s.count+saved_files;}
 
 /* A .sub from the card, into the player. The buffers are this screen's;
    the player keeps its own bounded preview. */
-#define PLAYER_EDGES (LS_TX_UNLOCKED ? 65536 : 8192)
+#define PLAYER_EDGES (LS_TX_UNLOCKED_BUILD ? 65536 : 8192)
 static EXT_RAM_BSS_ATTR subghz_file_t player_sub;
 static EXT_RAM_BSS_ATTR int32_t player_edges[PLAYER_EDGES];
 static EXT_RAM_BSS_ATTR char player_line[SUBGHZ_FILE_LINE_BYTES];
@@ -2357,8 +2525,7 @@ static bool saved_load(int i)
     ls_rec_player_set_power(tx_step);
     return true;
 }
-/* Which file the player holds, for RENAME and DELETE. */
-static int player_file=-1;
+/* Which file the player holds, for RENAME and DELETE: player_file, above. */
 static void file_open(int i)
 {
     if(!saved_load(i))return;
@@ -2611,8 +2778,22 @@ static void action(char c)
     if(c=='b') {
         go(page_parent(page));
     } else if(c=='w') {
+        /* PAUSED reads STOP: READ is off for a send or LEARN and set to come
+           back by itself. Pressing it means off - it used to read "not
+           listening" here and start it, and then the resume started it too. */
+        if(!rec_watch_enabled() && (tx_paused_watch || (rec_watch_learn_busy() && learn_resume))) {
+            tx_paused_watch=false;learn_resume=false;watch_mine=false;
+            snprintf(feedback,sizeof(feedback),"Stopped - it will not come back after the %s",
+                     rec_watch_learn_busy()?"LEARN":"send");
+            return;
+        }
         bool on=!rec_watch_enabled();
-        if(watch_set(on)) {
+        /* The key's STOP does not wait for the radio to come free. */
+        if(!on && rec_watch_stop_nowait()) {
+            rec_disarm();watch_mine=false;tx_paused_watch=false;
+        } else if(!on) {
+            const char *why=rec_watch_error();snprintf(feedback,sizeof(feedback),"%s",why && *why?why:"Could not stop - try again");
+        } else if(watch_set(on)) {
             tx_paused_watch=false;
             if(on && page!=PG_READ)go(PG_READ);
         } else {
@@ -2641,7 +2822,7 @@ static void action(char c)
         /* Offered only when it can actually be done. A capture from a
            receiver that cannot transmit, or one with no modulation recorded,
            has nothing to send it under. */
-        if(!e->bitrate || rec_source_can_replay((rec_source_t)e->source)) {
+        if(!e->bitrate || (rec_source_can_replay((rec_source_t)e->source) || ls_lora_chip()==LS_LORA_CHIP_LR20XX)) {
             menu_add('Q',"SEND AT...",LS_TEXT(t_scr_subghz_send_it_again_pick, "Send it again - pick the power"));
         }
         menu_add('P',e->pinned?"UNPIN":"PIN",e->pinned?"Allow eviction":"Keep it");
@@ -2783,7 +2964,7 @@ static void action(char c)
         ls_picker_add("Minimum pulse","Glitch filter");
         ls_picker_add("Maximum capture","4096 edges max");
         ls_picker_add("Minimum edges","Reject fragments");
-        ls_picker_add("Restore defaults","Auto / 30ms gap");
+        ls_picker_add("Restore defaults","Auto / 30ms gap / auto bw");
     }
 }
 
@@ -2839,8 +3020,8 @@ static void go(sg_page_t p)
         feedback[0]=0;feedback_undo=false;
     }
     button_focus=-1;button_slot=0;
-    if(p==PG_SAVED && page!=PG_PLAYER && page!=PG_DETAIL){saved_reload();saved_sel=0;saved_free=false;saved_new=false;}
-    if(p==PG_RAW && page!=PG_PLAYER)saved_reload();
+    if(p==PG_SAVED && page!=PG_PLAYER && page!=PG_DETAIL){saved_refresh();saved_sel=0;saved_free=false;saved_new=false;}
+    if(p==PG_RAW && page!=PG_PLAYER)saved_refresh();
     if(p==PG_RECORD)ls_rec_tools_enter();
     page=p;
     if(p==PG_BAND && !rec_watch_scan_busy() && s.scan_result[0])
@@ -2869,6 +3050,29 @@ bool ls_scr_subghz_listen(uint32_t hz, const char *mode)
 static int open_pending;
 void ls_scr_subghz_show(int which);
 extern const ls_tui_screen_t ls_scr_subghz;
+/* SUB-GHZ opens on a radio that is there. A saved CC1101 the keyboard
+   turned out not to have, or an SDR since unplugged, left READ asking for
+   hardware the board lacks while the LoRa chip, which receives 2-FSK on
+   every T-Display, sat idle. Nothing running is ever switched under. */
+static void source_fallback(void)
+{
+    if(rec_watch_enabled() || rec_watch_scan_busy() || rec_watch_learn_busy() || rec_mine || listen_in)return;
+    bool gone=ls_rsel_absent(source_radio())!=NULL;
+    if(!gone && rec_watch_source()==REC_SOURCE_CC1101) {
+        ls_mixrf_status_t cc;ls_mixrf_snapshot(&cc);
+        gone=cc.ready && !cc.busy && !cc.cc;
+    }
+    if(!gone)return;
+    ls_rsel_radio_t want=ls_rsel_resolved(LS_RSEL_SUBGHZ_READ);
+    if(want==source_radio() || ls_rsel_absent(want)) {
+        want=LS_RSEL_NONE;
+        static const ls_rsel_radio_t TRY[]={LS_RSEL_SDR_RTL,LS_RSEL_LORA};
+        for(unsigned i=0;i<sizeof(TRY)/sizeof(TRY[0]) && want==LS_RSEL_NONE;i++)
+            if(!ls_rsel_absent(TRY[i]) && rec_source_of_radio(TRY[i])<REC_SOURCE_COUNT)want=TRY[i];
+    }
+    if(want!=LS_RSEL_NONE && rec_source_of_radio(want)<REC_SOURCE_COUNT)
+        (void)ls_scr_subghz_choose_source(want);
+}
 static void enter(void)
 {
     button_focus=-1;button_slot=0;rec_watch_screen_front(true);rec_watch_start();ls_field_start();ls_field_watch(true);ls_catch_enter();
@@ -2876,8 +3080,9 @@ static void enter(void)
     ls_rsel_track(LS_RSEL_SUBGHZ_READ,source_radio);
     feedback[0]=0;page=PG_MENU;menu_sel=0;menu_cursor=false;pick_follow=true;
     /* The menu's cards say how many recordings and files there are. */
-    saved_reload();
+    saved_refresh();
     expert_load();
+    source_fallback();
     if(open_pending>=0){const int w=open_pending;open_pending=-1;ls_scr_subghz_show(w);}
     if(listen_in)listen_in_since=esp_timer_get_time();
 }
@@ -3014,6 +3219,13 @@ static void banner(tui_surface *sf,tui_rect *a,const rec_hub_status_t *rx,uint8_
     a->y+=2;a->h-=2;
 }
 
+/* SETTINGS, on every page: that page's own list (subghz_options), so the
+   radio, how it listens and how hard it sends are changed where they are
+   used, not from a card on the menu. */
+static ls_btn_t settings_key(const char *what)
+{
+    return (ls_btn_t){"SETTINGS",what,'o',false,false};
+}
 /* The frequency as a key: what it is tuned to and how it listens, and a tap
    opens the presets. */
 static ls_btn_t freq_key(void)
@@ -3147,7 +3359,260 @@ static void draw_menu(tui_surface *sf,tui_rect a)
         menu_item(sf,menu_hit[i],i,state[i],on[i],i==menu_sel && menu_cursor);
     }
     controls_drawn=0;
-    ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:"Tap one, or press 1 to 5",LS_ATTR_DIM);
+    if(ls_tui_compact()) ls_tui_status_set(feedback[0]?feedback:"Pick one, or press 1 to 5",NULL);   /* desk: the status bar */
+    else ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:"Tap one, or press 1 to 5",LS_ATTR_DIM);
+}
+
+/* ------------------------------------------------------------ ON THE AIR */
+
+/* THE PACKET AS IT GOES OUT, OR AS IT CAME IN.
+
+   What SEND is putting on the air (or READ just heard), drawn from the
+   thing itself (rec_watch_air): a proven packet as its fields - preamble,
+   sync word, length, data, CRC, each in its own colour - with the bar
+   filling field by field at the packet's real airtime, and the last bits
+   under it as the two tones they are sent on. A burst that is not a packet
+   is its edges, the same trace, coloured along its length. Nothing here is
+   decoration: every block is a bit or a microsecond that went out. */
+enum { AIR_PRE, AIR_SYNC, AIR_LEN, AIR_DATA, AIR_CRC };
+static const uint8_t AIR_HUE[]={TUI_YELLOW,TUI_MAGENTA,TUI_BLUE,TUI_GREEN,TUI_CYAN};
+static const char *const AIR_NAME[]={"PRE","SYNC","LEN","DATA","CRC"};
+static const uint8_t AIR_RAINBOW[]={TUI_RED,TUI_YELLOW,TUI_GREEN,TUI_CYAN,TUI_BLUE,TUI_MAGENTA};
+static uint32_t air_bits(const rec_air_t *v)
+{
+    return (uint32_t)v->pre_bits+v->sync_bits+8u*v->nbytes;
+}
+static int air_field(const rec_air_t *v,uint32_t b)
+{
+    if(b<v->pre_bits)return AIR_PRE;
+    b-=v->pre_bits;
+    if(b<v->sync_bits)return AIR_SYNC;
+    const uint32_t k=(b-v->sync_bits)/8u;
+    if(v->crc && v->nbytes>=2 && k+2>=v->nbytes)return AIR_CRC;
+    if(v->length_byte && k==0)return AIR_LEN;
+    return AIR_DATA;
+}
+static int air_bit(const rec_air_t *v,uint32_t b)
+{
+    if(b<v->pre_bits)return !(b&1u);                 /* 1010..., as 0xAA */
+    b-=v->pre_bits;
+    if(b<v->sync_bits)return (int)((v->sync>>(31u-b))&1u);
+    b-=v->sync_bits;
+    const uint32_t k=b/8u;
+    if(k>=v->nbytes)return 0;
+    return (v->bytes[k]>>(7u-(b%8u)))&1;
+}
+/* The level of an edge burst `t` us in: +1 upper tone / carrier, -1 lower
+   tone / off, 0 past its end. */
+static int air_level(const rec_air_t *v,uint64_t t)
+{
+    uint64_t at=0;
+    for(int i=0;i<v->nedges;i++) {
+        const int32_t e=v->edge[i];
+        at+=(uint64_t)(e<0?-(int64_t)e:e);
+        if(t<at)return e>0?1:-1;
+    }
+    return 0;
+}
+static uint32_t air_unit_us(const rec_air_t *v)
+{
+    uint32_t u=UINT32_MAX;
+    for(int i=0;i<v->nedges && i<96;i++) {
+        const uint32_t d=(uint32_t)(v->edge[i]<0?-(int64_t)v->edge[i]:v->edge[i]);
+        if(d>=8 && d<u)u=d;
+    }
+    if(u==UINT32_MAX)u=100;
+    if(u<20)u=20;
+    if(u>5000)u=5000;
+    return u;
+}
+/* Draws into `r`; `prep` is the stage text while nothing is on the air yet. */
+static void air_ribbon(tui_surface *sf,tui_rect r,const rec_air_t *v,int64_t now,const char *prep)
+{
+    if(r.w<24 || r.h<3)return;
+    tui_fill(sf,r,' ',TUI_ATTR(TUI_WHITE,TUI_BLACK));
+    char line[120];
+    const bool tx=v?v->tx:true;
+    const uint8_t head=tx?TUI_RED:TUI_GREEN;
+    int y=r.y;
+    if(prep || !v) {
+        /* Before the first bit: say what it is doing, and keep moving. */
+        static const char SPIN[]="|/-\\";
+        snprintf(line,sizeof(line)," TX  %c  %s",SPIN[(now/150000)%4],prep&&*prep?prep:"Preparing");
+        tui_put_str(sf,r,r.x,y,line,TUI_ATTR(TUI_BLACK,head|TUI_BRIGHT));
+        if(r.h>=3) {
+            const int cells=r.w;
+            const int lit=(int)((now/60000)%(cells*2));
+            for(int x=0;x<cells;x++) {
+                const int d=lit>=cells?2*cells-lit:lit;
+                const int k=x-d<0?d-x:x-d;
+                tui_put_char(sf,r,r.x+x,y+2,k<2?LS_TUI_SHADE_75:k<5?LS_TUI_SHADE_50:LS_TUI_SHADE_25,
+                             TUI_ATTR(AIR_RAINBOW[(x/3)%6]|(k<5?TUI_BRIGHT:0),TUI_BLACK));
+            }
+        }
+        return;
+    }
+    const bool packet=v->kind==REC_AIR_PACKET && v->baud;
+    const uint32_t dur=v->dur_us?v->dur_us:1;
+    int64_t el=now-v->start_us;
+    if(el<0)el=0;
+    const bool done=el>=(int64_t)dur;
+    const double f=done?1.0:(double)el/(double)dur;
+
+    /* Header: where, how hard, how fast. */
+    char pw[12]="";
+    if(tx)snprintf(pw,sizeof(pw),"  %+d dBm",(int)v->dbm);
+    if(packet)
+        snprintf(line,sizeof(line)," %s %.4f MHz%s  %lu bd  +/-%.0f kHz ",tx?"TX":"RX",v->freq_hz/1e6,pw,
+                 (unsigned long)v->baud,v->dev_hz/1000.0);
+    else
+        snprintf(line,sizeof(line)," %s %.4f MHz%s  %s  %.1f ms ",tx?"TX":"RX",v->freq_hz/1e6,pw,
+                 v->kind==REC_AIR_OOK?"OOK":"2-FSK",dur/1000.0);
+    tui_put_str(sf,r,r.x,y,line,TUI_ATTR(TUI_BLACK,head|TUI_BRIGHT));
+    if(v->what[0] && (int)(strlen(line)+strlen(v->what)+2)<=r.w)
+        tui_put_str(sf,r,r.x+r.w-(int)strlen(v->what),y,v->what,TUI_ATTR(head|TUI_BRIGHT,TUI_BLACK));
+    y++;
+    const int left=r.y+r.h-y;
+    const bool roomy=left>=8;
+
+    /* The fields, named and in hex, each in its colour. */
+    if(packet && left>=6) {
+        int x=r.x+1;
+        const int fend=r.x+r.w-1;
+        struct { int f; char hex[48]; } seg[5];int ns=0;
+        seg[ns].f=AIR_PRE;{int nb=v->pre_bits/8;snprintf(seg[ns].hex,sizeof(seg[ns].hex),nb>4?"AAAAAAAA+":"%.*s",nb>4?0:nb*2,"AAAAAAAA");}ns++;
+        seg[ns].f=AIR_SYNC;
+        if(v->sync_bits==32)snprintf(seg[ns].hex,sizeof(seg[ns].hex),"%04lX %04lX",(unsigned long)(v->sync>>16),(unsigned long)(v->sync&0xFFFFu));
+        else snprintf(seg[ns].hex,sizeof(seg[ns].hex),"%0*lX",v->sync_bits/4,(unsigned long)(v->sync>>(32u-v->sync_bits)));
+        ns++;
+        int k0=0,k1=v->nbytes-(v->crc&&v->nbytes>=2?2:0);
+        if(v->length_byte && v->nbytes>0){seg[ns].f=AIR_LEN;snprintf(seg[ns].hex,sizeof(seg[ns].hex),"%02X",v->bytes[0]);ns++;k0=1;}
+        seg[ns].f=AIR_DATA;seg[ns].hex[0]=0;
+        for(int k=k0;k<k1 && (int)strlen(seg[ns].hex)+3<(int)sizeof(seg[ns].hex);k++) {
+            const size_t u=strlen(seg[ns].hex);
+            snprintf(seg[ns].hex+u,sizeof(seg[ns].hex)-u,"%02X",v->bytes[k]);
+        }
+        if(seg[ns].hex[0])ns++;
+        if(v->crc && v->nbytes>=2){seg[ns].f=AIR_CRC;snprintf(seg[ns].hex,sizeof(seg[ns].hex),"%02X%02X",v->bytes[v->nbytes-2],v->bytes[v->nbytes-1]);ns++;}
+        for(int i=0;i<ns && x<fend;i++) {
+            const int w=(int)strlen(seg[i].hex)+2;
+            int room=fend-x;
+            if(room<5)break;
+            if(w>room) {   /* data that does not fit ends in '+' */
+                seg[i].hex[room-3>0?room-3:0]='+';seg[i].hex[room-2>0?room-2:0]=0;
+            }
+            const uint8_t hue=AIR_HUE[seg[i].f];
+            /* Lit once the cursor has reached it. */
+            uint32_t b0=0;for(uint32_t b=0;b<air_bits(v);b++)if(air_field(v,b)==seg[i].f){b0=b;break;}
+            const bool lit=f*air_bits(v)>=b0;
+            tui_put_str(sf,r,x,y,AIR_NAME[seg[i].f],TUI_ATTR(hue|(lit?TUI_BRIGHT:0),TUI_BLACK));
+            snprintf(line,sizeof(line),"[%s]",seg[i].hex);
+            tui_put_str(sf,r,x,y+1,line,lit?TUI_ATTR(TUI_BLACK,hue|TUI_BRIGHT):TUI_ATTR(hue,TUI_BLACK));
+            x+=(int)strlen(line);
+        }
+        y+=2;
+    }
+
+    /* The bar: the whole packet, filled at its airtime, field by field. */
+    if(y<r.y+r.h) {
+        const uint32_t T=packet?air_bits(v):0;
+        for(int x=0;x<r.w;x++) {
+            const double c0=(double)x/r.w,c1=(double)(x+1)/r.w;
+            uint8_t hue=packet?AIR_HUE[air_field(v,(uint32_t)(c0*T))]:AIR_RAINBOW[(x*6)/r.w];
+            if(!packet && v->kind==REC_AIR_OOK && air_level(v,(uint64_t)(c0*dur))<0)hue=TUI_BLUE;
+            const bool full=f>=c1,part=f>c0;
+            tui_put_char(sf,r,r.x+x,y,full?LS_TUI_SHADE_75:part?LS_TUI_SHADE_50:LS_TUI_SHADE_25,
+                         TUI_ATTR(hue|(full||part?TUI_BRIGHT:0),TUI_BLACK));
+        }
+        y++;
+    }
+    /* Where it is up to. */
+    if(y<r.y+r.h && (roomy || left>=5)) {
+        const int cx=r.x+(int)(f*(r.w-1));
+        if(done)snprintf(line,sizeof(line),"%s %.1f ms",tx?"sent":"heard",dur/1000.0);
+        else snprintf(line,sizeof(line),"%.1f / %.1f ms",el/1000.0,dur/1000.0);
+        tui_put_char(sf,r,cx,y,'^',TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
+        const int lx=cx+2+(int)strlen(line)<=r.x+r.w?cx+2:cx-1-(int)strlen(line);
+        if(lx>=r.x)tui_put_str(sf,r,lx,y,line,TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
+        y++;
+    }
+    if(roomy && y<r.y+r.h)y++;
+
+    /* The tones: the last stretch sent, newest at the right, two bits (or
+       two time steps) a cell. Upper tone on top, lower below. */
+    if(y+2<r.y+r.h+0 && r.w>=16) {
+        const int lab=6,cw=r.w-lab;
+        char hi[8],lo[8];
+        if(v->kind==REC_AIR_OOK){snprintf(hi,sizeof(hi),"ON");snprintf(lo,sizeof(lo),"OFF");}
+        else {snprintf(hi,sizeof(hi),"+%.0fk",v->dev_hz/1000.0);snprintf(lo,sizeof(lo),"-%.0fk",v->dev_hz/1000.0);}
+        tui_put_str(sf,r,r.x,y,hi,LS_ATTR_DIM);
+        tui_put_str(sf,r,r.x+1,y+1,"0",LS_ATTR_DIM);
+        tui_put_str(sf,r,r.x,y+2,lo,LS_ATTR_DIM);
+        for(int c=0;c<cw;c++) {
+            int lv[2]={0,0};uint8_t hue=TUI_WHITE;
+            for(int h=0;h<2;h++) {
+                if(packet) {
+                    const double T=air_bits(v);
+                    const int64_t cur=(int64_t)(f*T);
+                    const int64_t b=cur-2*(int64_t)cw+2*c+h;
+                    if(b<0 || b>=cur)continue;
+                    lv[h]=air_bit(v,(uint32_t)b)?1:-1;
+                    if(h==0)hue=AIR_HUE[air_field(v,(uint32_t)b)];
+                } else {
+                    const uint32_t u=air_unit_us(v);
+                    const int64_t now_t=(int64_t)(f*dur);
+                    const int64_t t=now_t-(int64_t)(2*cw-2*c-h)*u;
+                    if(t<0)continue;
+                    lv[h]=air_level(v,(uint64_t)t);
+                    if(h==0)hue=AIR_RAINBOW[(int)((t/(int64_t)u/4)%6)];
+                }
+            }
+            const uint8_t at=TUI_ATTR(hue|TUI_BRIGHT,TUI_BLACK);
+            if(v->kind==REC_AIR_OOK) {
+                /* Carrier on is a column of light the full height. */
+                const char g=LS_TUI_QUAD(lv[0]>0,lv[1]>0,lv[0]>0,lv[1]>0);
+                if(lv[0]>0||lv[1]>0)for(int k=0;k<3;k++)tui_put_char(sf,r,r.x+lab+c,y+k,g,at);
+                else tui_put_char(sf,r,r.x+lab+c,y+1,'.',LS_ATTR_DIM);
+            } else {
+                if(lv[0]>0||lv[1]>0)tui_put_char(sf,r,r.x+lab+c,y,LS_TUI_QUAD(lv[0]>0,lv[1]>0,lv[0]>0,lv[1]>0),at);
+                tui_put_char(sf,r,r.x+lab+c,y+1,lv[0]||lv[1]?'-':'.',LS_ATTR_DIM);
+                if(lv[0]<0||lv[1]<0)tui_put_char(sf,r,r.x+lab+c,y+2,LS_TUI_QUAD(lv[0]<0,lv[1]<0,lv[0]<0,lv[1]<0),at);
+            }
+        }
+    }
+}
+/* What SEND is doing, for the pages that send: the air view once the first
+   bit is out, the stage before that, nothing once it has been over a while. */
+static EXT_RAM_BSS_ATTR rec_air_t air_tx_v,air_rx_v;
+#define AIR_LINGER_US 2500000
+static bool air_tx_panel(tui_surface *sf,tui_rect r)
+{
+    const int64_t now=esp_timer_get_time();
+    const bool have=rec_watch_air(true,&air_tx_v);
+    const bool fresh=have && air_tx_v.seq!=air_tx_press;
+    const bool busy=tx_busy();
+    if(!busy && !(fresh && now<air_tx_v.start_us+(int64_t)air_tx_v.dur_us+AIR_LINGER_US))return false;
+    if(r.w<26 || r.h<5)return false;
+    ls_panel_box(sf,r,"ON THE AIR",TUI_RED);
+    const tui_rect in=tui_rect_make(r.x+1,r.y+1,r.w-2,r.h-2);
+    if(!fresh) {
+        char stage[112]="";
+        rec_watch_replay_status(stage,sizeof(stage));
+        if(!strcmp(stage,"Replay queued"))snprintf(stage,sizeof(stage),"Waiting for the radio");
+        air_ribbon(sf,in,NULL,now,stage);
+    } else air_ribbon(sf,in,&air_tx_v,now,NULL);
+    return true;
+}
+/* What READ just heard: for a few seconds after it lands, while listening. */
+#define AIR_RX_SHOW_US 6000000
+static bool air_rx_panel(tui_surface *sf,tui_rect r)
+{
+    const int64_t now=esp_timer_get_time();
+    if(!rec_watch_air(false,&air_rx_v))return false;
+    if(now>air_rx_v.start_us+(int64_t)air_rx_v.dur_us+AIR_RX_SHOW_US)return false;
+    if(r.w<26 || r.h<4)return false;
+    air_ribbon(sf,r,&air_rx_v,now,NULL);
+    return true;
 }
 
 /* ------------------------------------------------------------------ READ */
@@ -3248,17 +3713,16 @@ static void draw_read(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,
     /* The key reads PAUSED for as long as something that will hand the
        receiver back holds the radio: a send, LEARN, or an app the LoRa chip is lent to. */
     const bool paused=tx_paused_watch || (learning && learn_resume) || (s.enabled && rec_watch_lent());
-    const ls_btn_t side[1]={freq_key()};
+    const ls_btn_t side[2]={freq_key(),settings_key(NULL)};
     const ls_btn_t primary=learning?(ls_btn_t){"STOP","LEARNING",'l',true,false}:
         (ls_btn_t){s.enabled || paused?"STOP":"START",paused?"PAUSED":s.enabled?"LISTENING":"LISTEN",'w',
                    s.enabled || paused,disabled_reason('w')!=NULL};
-    page_keys(sf,&a,"MENU",side,1,&primary,true);
+    page_keys(sf,&a,"MENU",side,2,&primary,true);
     tui_rect body=tui_rect_make(a.x,a.y,a.w,a.h-1);
     page_body=body;
     tui_rect content=tui_rect_make(body.x+1,body.y+1,body.w-2,body.h-2);
     char panel_title[48];
-    snprintf(panel_title,sizeof(panel_title),"READ / %s %s",source_name(),
-             rec_watch_source()==REC_SOURCE_SX1262 && !lr_ook()?"2-FSK":"OOK");
+    snprintf(panel_title,sizeof(panel_title),"READ / %s %s",source_name(),mod_name());
     /* The frame flashes green when LEARN has just set the receiver: the
        change is to the whole of READ, not to one number on it. */
     const uint8_t learned=ls_fresh_level(&learned_flash,1500);
@@ -3274,7 +3738,8 @@ static void draw_read(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,
     int trace_h=0;
     if((s.enabled || paused) && !notes) {
         trace_h=trace_rows(body.h);
-        live_trace(sf,tui_rect_make(body.x+2,body.y+1,body.w-4,trace_h),s.enabled && !paused);
+        const tui_rect tr=tui_rect_make(body.x+2,body.y+1,body.w-4,trace_h);
+        if(!air_rx_panel(sf,tr))live_trace(sf,tr,s.enabled && !paused);
         trace_h++;
     }
     list=tui_rect_make(body.x+2,body.y+2+trace_h,body.w-4,body.h-4-trace_h);
@@ -3346,7 +3811,7 @@ static void draw_read(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,
     const uint8_t fb_at=!feedback[0]?LS_ATTR_DIM:
                         heat>=128?ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK)):
                         feedback_undo?TUI_ATTR(TUI_CYAN|TUI_BRIGHT,TUI_BLACK):LS_ATTR_DIM;
-    ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:s.export_status[0]?s.export_status:
+    hint_line(sf,a,feedback[0]?feedback:s.export_status[0]?s.export_status:
                  s.count?"Tap a capture to open it":"",fb_at);
     feedback_hit=feedback_undo?tui_rect_make(a.x,a.y+a.h-1,a.w,1):tui_rect_make(0,0,0,0);
 }
@@ -3357,15 +3822,15 @@ static void draw_read(tui_surface *sf,tui_rect a,const rec_hub_status_t *rx,
    .sub and is listed here, newest first, to open and SEND. The trigger and
    the level meter at full size are REC's view, on SETTINGS. */
 static tui_rect raw_list;
-static int raw_sel,raw_first;
+static int raw_first;   /* raw_sel is with the saved list */
 static void draw_raw(tui_surface *sf,tui_rect a)
 {
     const char *no=can_record()?NULL:disabled_reason('d');
-    const ls_btn_t side[1]={freq_key()};
+    const ls_btn_t side[2]={freq_key(),settings_key(NULL)};
     const ls_btn_t primary={rec_mine?"STOP":"RECORD",rec_mine?"ARMED":"NEXT BURST",'d',rec_mine,
                             !rec_mine && disabled_reason('d')!=NULL};
     /* The banner while the tape is armed: its level against the trigger. */
-    page_keys(sf,&a,"MENU",side,1,&primary,rec_mine);
+    page_keys(sf,&a,"MENU",side,2,&primary,rec_mine);
     tui_rect body=tui_rect_make(a.x,a.y,a.w,a.h-1);
     page_body=body;
     char title[48];
@@ -3414,7 +3879,7 @@ static void draw_raw(tui_surface *sf,tui_rect a)
             tui_put_str(sf,raw_list,raw_list.x,ry+1,line,LS_ATTR_DIM);
         }
     }
-    ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:saved_files?"Tap a recording to open it":"",
+    hint_line(sf,a,feedback[0]?feedback:saved_files?"Tap a recording to open it":"",
                  recorded>=128?ls_ink(LS_INK_GOOD, TUI_ATTR(TUI_GREEN|TUI_BRIGHT,TUI_BLACK)):LS_ATTR_DIM);
 }
 
@@ -3498,7 +3963,7 @@ static void draw_band(tui_surface *sf,tui_rect a)
     const int found=rec_watch_scan_result(NULL,0);
     const bool small=!band_both(tui_rect_make(a.x,a.y,a.w-4,a.h-20));
     chart_drawn=-1;
-    ls_btn_t side[2];int ns=0;
+    ls_btn_t side[3];int ns=0;
     ls_btn_t primary;
 #if !LS_LR_EDITION_BUILD
     if(band_catch) {
@@ -3518,6 +3983,7 @@ static void draw_band(tui_surface *sf,tui_rect a)
     }
     /* The banner once there is a sweep to report: its state, and the count
        of detections, which is a key on a pane too small for both views. */
+    side[ns++]=settings_key(band_catch?"CATCH":"SWEEP");
     page_keys(sf,&a,band_catch?"SWEEP":"MENU",side,ns,&primary,
               !band_catch && (sweeping || rec_watch_scan_events()>0));
     tui_rect body=tui_rect_make(a.x,a.y,a.w,a.h-1);
@@ -3526,7 +3992,7 @@ static void draw_band(tui_surface *sf,tui_rect a)
 #if !LS_LR_EDITION_BUILD
     if(band_catch) {
         ls_catch_body_draw(sf,body);
-        ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:"ENTER on a burst: LISTEN HERE",LS_ATTR_DIM);
+        hint_line(sf,a,feedback[0]?feedback:"ENTER on a burst: LISTEN HERE",LS_ATTR_DIM);
         return;
     }
 #endif
@@ -3537,7 +4003,7 @@ static void draw_band(tui_surface *sf,tui_rect a)
     const tui_rect inner=tui_rect_make(body.x+2,body.y+1,body.w-4,body.h-2);
     if(iq_live) {
         analyzer_chart(sf,inner);
-        ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:
+        hint_line(sf,a,feedback[0]?feedback:
                      "LR IQ / 125 kHz around READ's frequency",LS_ATTR_DIM);
         return;
     }
@@ -3554,7 +4020,7 @@ static void draw_band(tui_surface *sf,tui_rect a)
         LS_SNPRINTF(t_scr_subghz_sweeps_on_the_s, where,sizeof(where),"Sweeps on the %s; mesh pauses meanwhile.",ls_rsel_name(LS_RSEL_LORA));
         tui_put_str(sf,w,w.x,w.y+6,where,LS_ATTR_DIM);
         tui_put_str(sf,w,w.x,w.y+7,"Not on this band? Tap BAND.",LS_ATTR_DIM);
-        ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:"",LS_ATTR_DIM);
+        hint_line(sf,a,feedback[0]?feedback:"",LS_ATTR_DIM);
         gate_hit=tui_rect_make(0,0,0,0);chart_n=0;
         return;
     }
@@ -3582,7 +4048,7 @@ static void draw_band(tui_surface *sf,tui_rect a)
     }
     if(chart.w>0)analyzer_chart(sf,chart);
     else {gate_hit=tui_rect_make(0,0,0,0);chart_n=0;}
-    ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:
+    hint_line(sf,a,feedback[0]?feedback:
                  sweeping?"Tap a peak or a detection: LISTEN HERE":"Tap a detection: LISTEN HERE",
                  LS_ATTR_DIM);
 }
@@ -3594,8 +4060,10 @@ static void draw_saved(tui_surface *sf,tui_rect a)
     const int total=saved_total();
     if(saved_sel>=total)saved_sel=total?total-1:0;
     const bool on_file=saved_sel>=s.count;
-    const ls_btn_t side[1]={{"FILES","BROWSE",'g',false,false}};
-    page_keys(sf,&a,"MENU",side,host_files?1:0,NULL,false);
+    ls_btn_t side[2];int ns=0;
+    if(host_files)side[ns++]=(ls_btn_t){"FILES","BROWSE",'g',false,false};
+    side[ns++]=settings_key(TX_STEP_NAME(tx_step));
+    page_keys(sf,&a,"MENU",side,ns,NULL,false);
     tui_rect body=tui_rect_make(a.x,a.y,a.w,a.h-1);
     page_body=body;
     ls_panel_box(sf,body,"SAVED",TUI_YELLOW);
@@ -3605,7 +4073,7 @@ static void draw_saved(tui_surface *sf,tui_rect a)
         tui_put_str(sf,saved_list,saved_list.x,saved_list.y,"Nothing yet.",TUI_ATTR(TUI_WHITE|TUI_BRIGHT,TUI_BLACK));
         tui_put_str(sf,saved_list,saved_list.x,saved_list.y+2,"Captures from READ, recordings from RECORD",LS_ATTR_DIM);
         tui_put_str(sf,saved_list,saved_list.x,saved_list.y+3,"RAW and .sub files on the card show up here.",LS_ATTR_DIM);
-        ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:"",LS_ATTR_DIM);
+        hint_line(sf,a,feedback[0]?feedback:"",LS_ATTR_DIM);
         return;
     }
     /* Two lines a row, a heading where the kind changes. */
@@ -3645,7 +4113,7 @@ static void draw_saved(tui_surface *sf,tui_rect a)
         }
         y+=2;
     }
-    ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:
+    hint_line(sf,a,feedback[0]?feedback:
                  on_file?"Tap a file: SEND, RENAME, DELETE":"Tap a capture: SEND, SAVE",LS_ATTR_DIM);
 }
 
@@ -3672,12 +4140,13 @@ static void draw_detail(tui_surface *sf,tui_rect a)
     const rec_watch_event_t *e=s.count?picked():NULL;
     const bool sending=tx_busy();
     char txv[16];snprintf(txv,sizeof(txv),"%+d dBm",tx_face_dbm());
-    const bool can_send=e && (!e->bitrate || rec_source_can_replay((rec_source_t)e->source));
-    const ls_btn_t side[2]={
+    const bool can_send=e && (!e->bitrate || (rec_source_can_replay((rec_source_t)e->source) || ls_lora_chip()==LS_LORA_CHIP_LR20XX));
+    const ls_btn_t side[3]={
         {"SAVE",".SUB",'e',false,!e || s.exporting},
-        {"MORE",e && e->pinned?"PINNED":"PIN...",'q',false,!e}};
+        {"MORE",e && e->pinned?"PINNED":"PIN...",'q',false,!e},
+        settings_key(LS_TX_UNLOCKED?"TX UNLOCKED":"TX")};
     const ls_btn_t primary={"SEND",sending?"BUSY":txv,'t',sending,!can_send || (!sending && tx_blocked()!=NULL)};
-    page_keys(sf,&a,detail_from==PG_SAVED?"SAVED":"READ",side,2,&primary,false);
+    page_keys(sf,&a,detail_from==PG_SAVED?"SAVED":"READ",side,3,&primary,false);
     tui_rect body=tui_rect_make(a.x,a.y,a.w,a.h-1);
     page_body=body;
     pulse_hit=tui_rect_make(0,0,0,0);pulse_total=0;
@@ -3702,15 +4171,17 @@ static void draw_detail(tui_surface *sf,tui_rect a)
         snprintf(line,sizeof(line),"%s cannot transmit this one",ls_rsel_name(rec_source_radio((rec_source_t)e->source)));
         tui_put_str(sf,in,in.x,in.y+4,line,ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)));
     }
-    if(inspector) {
-        if(body.w>90 && body.h>=11)
-            waveform(sf,tui_rect_make(body.x+body.w/2,body.y+1,body.w-body.w/2-1,body.h-2));
-        else if(body.h>=20) {
+    {
+        tui_rect wr=tui_rect_make(0,0,0,0);
+        if(body.w>90 && body.h>=11)wr=tui_rect_make(body.x+body.w/2,body.y+1,body.w-body.w/2-1,body.h-2);
+        else if(body.h>=16) {
             int h=body.h-8;if(h>14)h=14;
-            waveform(sf,tui_rect_make(body.x+1,body.y+6,body.w-2,h));
+            wr=tui_rect_make(body.x+1,body.y+6,body.w-2,h);
         }
+        /* Sending, the inspector gives way to what is going out. */
+        if(wr.w && !air_tx_panel(sf,wr) && inspector && (body.w>90 || body.h>=20))waveform(sf,wr);
     }
-    ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:s.export_status[0]?s.export_status:
+    hint_line(sf,a,feedback[0]?feedback:s.export_status[0]?s.export_status:
                  can_send?"SEND transmits it once":"SAVE keeps it as a .sub file",LS_ATTR_DIM);
 }
 
@@ -3724,19 +4195,24 @@ static void draw_player(tui_surface *sf,tui_rect a)
     const bool sending=tx_busy();
     const bool mine=player_file>=0 && player_file<saved_files;
     char txv[16];snprintf(txv,sizeof(txv),"%s",TX_STEP_NAME(tx_step));
-    const ls_btn_t side[2]={
+    const ls_btn_t side[3]={
         {"RENAME","FILE",'N',false,!mine || sending},
-        {"DELETE","FILE",'X',false,!mine || sending}};
+        {"DELETE","FILE",'X',false,!mine || sending},
+        settings_key(LS_TX_UNLOCKED?"TX UNLOCKED":"TX")};
     const ls_btn_t primary={"SEND",sending?"BUSY":txv,'t',sending,!sending && tx_blocked()!=NULL};
-    page_keys(sf,&a,detail_from==PG_RAW?"RECORD":"SAVED",side,2,&primary,false);
+    page_keys(sf,&a,detail_from==PG_RAW?"RECORD":"SAVED",side,3,&primary,false);
     page_body=a;
     if(a.h>12) {
-        ls_safe_line(sf,a,a.y+a.h-1,feedback[0]?feedback:mine?saved_file[player_file].name:"",LS_ATTR_DIM);
+        hint_line(sf,a,feedback[0]?feedback:mine?saved_file[player_file].name:"",LS_ATTR_DIM);
         a.h--;
     }
     ls_rec_player_bare(true);
     ls_rec_player_draw(sf,a);
     ls_rec_player_bare(false);
+    if(a.h>=9) {
+        int h=a.h-2;if(h>14)h=14;
+        (void)air_tx_panel(sf,tui_rect_make(a.x+1,a.y+a.h-h,a.w-2,h));
+    }
 }
 
 /* ---------------------------------------------------------- RECORDER VIEW */
@@ -3751,7 +4227,7 @@ static void draw_record(tui_surface *sf,tui_rect a)
     controls_drawn=1;                  /* REC's own ARM, below */
     page_body=a;
     if(feedback[0] && a.h>12) {
-        ls_safe_line(sf,a,a.y+a.h-1,feedback,ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)));
+        hint_line(sf,a,feedback,ls_ink(LS_INK_WARN, TUI_ATTR(TUI_YELLOW|TUI_BRIGHT,TUI_BLACK)));
         a.h--;
     }
     const char *no=can_record()?NULL:disabled_reason('d');
@@ -3824,16 +4300,79 @@ static double o_gate(const ls_opt_t *o) { (void)o;return rec_watch_scan_threshol
 static void o_gate_set(const ls_opt_t *o,double v) { (void)o;scan_threshold_set(v); }
 #define SG_ROW(name,row) { .label=(name), .kind=LS_OPT_ACTION, .arg=(row), .act=o_row, \
                            .show=o_row_show, .why_not=o_row_why }
-/* The LR2021 reads OOK from its I/Q stream by default; FSK packets once
-   LEARN has measured a rate and sync. */
-static const char *const LR_RX_NAMES[]={"OOK (I/Q)","FSK packet"};
-static int o_lr_rx(const ls_opt_t *o){(void)o;return rec_watch_lr_fsk()?1:0;}
-static void o_lr_rx_set(const ls_opt_t *o,int v){(void)o;(void)rec_watch_set_lr_fsk(v!=0);}
-static const char *o_lr_rx_why(const ls_opt_t *o)
+/* How READ and RECORD listen, for the radio in use (mod_now). The list is
+   that radio's: subghz_options swaps the names in when it opens. */
+static const char *const MOD_SDR_NAMES[]={"OOK (AM)","2-FSK (FM)"};
+static const char *const MOD_LR_NAMES[]={"OOK (I/Q)","2-FSK RAW (I/Q)","2-FSK PACKET (sync)"};
+static const char *const MOD_SX_NAMES[]={"2-FSK PACKET (sync)"};
+static const char *const MOD_CC_NAMES[]={"OOK"};
+static bool mod_lr(void){return rec_watch_source()==REC_SOURCE_SX1262 && ls_lora_chip()==LS_LORA_CHIP_LR20XX;}
+/* The names are the radio in use's, and RADIO can change it while this list
+   is open: the row takes them again each time it is read. */
+static void mod_names_for(const char *const **names,int *n)
+{
+    if(rec_watch_source()==REC_SOURCE_RTL){*names=MOD_SDR_NAMES;*n=2;}
+    else if(mod_lr()){*names=MOD_LR_NAMES;*n=3;}
+    else if(rec_watch_source()==REC_SOURCE_SX1262){*names=MOD_SX_NAMES;*n=1;}
+    else {*names=MOD_CC_NAMES;*n=1;}
+}
+#define OPT_ROWS_MAX 32
+EXT_RAM_BSS_ATTR static ls_opt_t page_options[OPT_ROWS_MAX];
+static int o_mod(const ls_opt_t *o)
+{
+    if(o>=page_options && o<page_options+OPT_ROWS_MAX) {
+        ls_opt_t *w=&page_options[o-page_options];
+        mod_names_for(&w->names,&w->n);
+    }
+    const int m=mod_now();
+    if(rec_watch_source()==REC_SOURCE_RTL)return m==MOD_OOK?0:1;
+    if(mod_lr())return m;
+    return 0;
+}
+static void o_mod_set(const ls_opt_t *o,int v)
 {
     (void)o;
-    if(ls_lora_chip()!=LS_LORA_CHIP_LR20XX)return "LR2021 only";
-    return rec_watch_enabled()?"Stop listening first":NULL;
+    if(rec_watch_source()==REC_SOURCE_RTL) {
+        rec_disarm();
+        rec_set_mod(v==1?REC_MOD_FSK:REC_MOD_OOK);
+    } else if(mod_lr()) {
+        if(!rec_watch_set_lr_fsk(v!=MOD_OOK))return;
+        if(v!=MOD_OOK)(void)rec_watch_set_lr_raw(v==MOD_FSK_RAW);
+    } else return;
+    snprintf(feedback,sizeof(feedback),"Listening as %s",mod_name());
+}
+static const char *o_mod_why(const ls_opt_t *o)
+{
+    (void)o;
+    if(rec_watch_source()==REC_SOURCE_CC1101)return "The CC1101 captures OOK";
+    if(rec_watch_source()==REC_SOURCE_SX1262 && !mod_lr())
+        return "SX1262: 2-FSK packets; rate + sync in Capture setup";
+    if(rec_watch_enabled())return "Stop listening first";
+    if(rec_mine)return "Stop RECORD first";
+    return NULL;
+}
+/* TX limits: PROTECTED keeps the power steps to +10 dBm and the CC1101's
+   bands; UNLOCKED is the lab build's set (+22 dBm on the LoRa chip, no duty
+   budget), chosen here and kept across a reboot. The hardware's own
+   ceilings stay either way. */
+static void tx_opt_refresh(void);
+static const char *const TXLIM_NAMES[]={"PROTECTED","UNLOCKED"};
+static int o_txlim(const ls_opt_t *o){(void)o;return LS_TX_UNLOCKED?1:0;}
+static void o_txlim_set(const ls_opt_t *o,int v)
+{
+    (void)o;
+    if(LS_TX_UNLOCKED_BUILD || tx_busy())return;
+    settings_set_tx_unlocked(v!=0);
+    if(tx_step>=TX_STEPS){tx_step=TX_STEPS-1;ls_rec_player_set_power(tx_step);expert_save();}
+    tx_opt_refresh();
+    snprintf(feedback,sizeof(feedback),v?"TX unlocked: up to %+d dBm":"TX protected: up to %+d dBm",
+             subghz_tx_step_dbm(TX_STEPS-1,false));
+}
+static const char *o_txlim_why(const ls_opt_t *o)
+{
+    (void)o;
+    if(LS_TX_UNLOCKED_BUILD)return "Lab build: always unlocked";
+    return tx_busy()?"Wait for the send to finish":NULL;
 }
 static char tx_opt_text[SUBGHZ_TX_STEPS_MAX][24];
 static const char *tx_opt_names[SUBGHZ_TX_STEPS_MAX];
@@ -3847,7 +4386,16 @@ static void tx_opt_refresh(void)
         tx_opt_names[i]=tx_opt_text[i];
     }
 }
-static int o_tx(const ls_opt_t *o){(void)o;return tx_step;}
+/* TX limits can change the number of steps while this list is open. */
+static int o_tx(const ls_opt_t *o)
+{
+    if(o>=page_options && o<page_options+OPT_ROWS_MAX) {
+        ls_opt_t *w=&page_options[o-page_options];
+        if(w->n!=TX_STEPS)tx_opt_refresh();
+        w->n=TX_STEPS;w->label=LS_TX_UNLOCKED?"TX power (UNLOCKED)":"TX power";
+    }
+    return tx_step;
+}
 static void o_tx_set(const ls_opt_t *o,int v){(void)o;if(v>=0 && v<TX_STEPS && !tx_busy()){tx_step=v;ls_rec_player_set_power(v);expert_save();}}
 static const char *o_tx_why(const ls_opt_t *o){(void)o;return tx_busy()?"Wait for the send to finish":NULL;}
 static const char *const RESUME_NAMES[]={"STAY STOPPED","KEEP LISTENING"};
@@ -3905,21 +4453,22 @@ static const char *o_catch_why(const ls_opt_t *o){(void)o;return LS_LR_EDITION?"
    2-FSK; the rest slice OOK. */
 static const char *read_mode(void)
 {
-    if(rec_watch_source()!=REC_SOURCE_SX1262)return "OOK";
-    return ls_lora_chip()!=LS_LORA_CHIP_LR20XX || rec_watch_lr_fsk()?"FSK":"OOK";
+    return mod_now()==MOD_OOK?"OOK":"FSK";
 }
 static void o_freqs(const ls_opt_t *o){(void)o;ls_freqs_offer(rec_get_freq(),read_mode(),NULL,"subghz",feedback,sizeof(feedback));}
 static void o_freqs_show(const ls_opt_t *o,char *out,size_t n){(void)o;snprintf(out,n,"%.4f MHz %s",rec_get_freq()/1e6,read_mode());}
 static const ls_opt_t OPT_SUBGHZ[]={
     /* The radio and how it sends. */
     SG_ROW("Radio",1),SG_ROW("Frequency",0),
-    {.label=LS_TX_UNLOCKED?"TX power (UNLOCKED)":"TX power",.kind=LS_OPT_CYCLE,.names=tx_opt_names,.n=TX_STEPS,.get=o_tx,
+    {.label="TX power",.kind=LS_OPT_CYCLE,.names=tx_opt_names,.n=SUBGHZ_TX_STEPS_MAX,.get=o_tx,
      .set=o_tx_set,.why_not=o_tx_why},
+    {.label="TX limits",.kind=LS_OPT_CYCLE,.names=TXLIM_NAMES,.n=2,.get=o_txlim,
+     .set=o_txlim_set,.why_not=o_txlim_why},
     {.label="After a send",.kind=LS_OPT_CYCLE,.names=RESUME_NAMES,.n=2,.get=o_resume,
      .set=o_resume_set},
     /* READ: how it listens, and LEARN, which sets that from a transmitter. */
-    {.label="LR2021 receive",.kind=LS_OPT_CYCLE,.names=LR_RX_NAMES,.n=2,.get=o_lr_rx,
-     .set=o_lr_rx_set,.why_not=o_lr_rx_why},
+    {.label="Modulation",.kind=LS_OPT_CYCLE,.names=MOD_SDR_NAMES,.n=2,.get=o_mod,
+     .set=o_mod_set,.why_not=o_mod_why},
     SG_ROW("Capture setup",2),
     {.label="LEARN a remote",.kind=LS_OPT_ACTION,.act=o_learn,.leaves=true,.show=o_learn_show,.why_not=o_learn_why},
     {.label="LEARN window",.kind=LS_OPT_CYCLE,.names=WINDOW_NAMES,.n=3,.get=o_window,
@@ -3949,7 +4498,50 @@ static const ls_opt_t OPT_SUBGHZ[]={
 #undef SG_ROW
 #define OPT_ROWS ((int)(sizeof(OPT_SUBGHZ)/sizeof(OPT_SUBGHZ[0])))
 #define OPT_CATCH (OPT_ROWS-1)
-EXT_RAM_BSS_ATTR static ls_opt_t page_options[OPT_ROWS];
+/* Which pages show each row, in OPT_SUBGHZ's order. A page's SETTINGS key
+   lists its own rows; the menu's SETTINGS card lists them all. */
+enum { OP_READ=1, OP_RAW=2, OP_BAND=4, OP_SEND=8 };
+static const uint8_t OPT_PAGES[]={
+    OP_READ|OP_RAW|OP_BAND|OP_SEND,  /* Radio            */
+    OP_READ|OP_RAW|OP_BAND,          /* Frequency        */
+    OP_RAW|OP_SEND,                  /* TX power         */
+    OP_RAW|OP_SEND,                  /* TX limits        */
+    OP_SEND,                         /* After a send     */
+    OP_READ|OP_RAW,                  /* Modulation       */
+    OP_READ|OP_RAW,                  /* Capture setup    */
+    OP_READ,OP_READ,OP_READ,OP_READ, /* LEARN rows       */
+    OP_READ|OP_SEND,                 /* Pulse inspector  */
+    OP_READ,                         /* List legend      */
+    OP_BAND,OP_BAND,OP_BAND,OP_BAND, /* analyzer rows    */
+    OP_READ|OP_BAND,                 /* Mesh alerts      */
+    OP_RAW,                          /* Recorder view    */
+    OP_READ|OP_BAND,                 /* Save to FREQS    */
+#if !LS_LR_EDITION_BUILD
+    OP_BAND,                         /* CATCH bursts     */
+#endif
+    OP_BAND};                        /* Catch            */
+_Static_assert(sizeof(OPT_PAGES)==sizeof(OPT_SUBGHZ)/sizeof(OPT_SUBGHZ[0]),"OPT_PAGES follows OPT_SUBGHZ");
+static uint8_t page_opt_mask(void)
+{
+    switch(page) {
+    case PG_READ:   return OP_READ;
+    case PG_RAW: case PG_RECORD: return OP_RAW;
+    case PG_BAND:   return OP_BAND;
+    case PG_SAVED: case PG_DETAIL: case PG_PLAYER: return OP_SEND;
+    default:        return 0xFF;
+    }
+}
+static const char *page_opt_name(void)
+{
+    switch(page) {
+    case PG_READ:   return "READ";
+    case PG_RAW: case PG_RECORD: return "RECORD RAW";
+    case PG_BAND:   return "ANALYZER";
+    case PG_SAVED: case PG_DETAIL: case PG_PLAYER: return "SEND";
+    default:        return "SUB-GHZ";
+    }
+}
+_Static_assert(OPT_ROWS<=OPT_ROWS_MAX,"page_options holds every row");
 static ls_opt_ctx_t option_ctx={.name="SUB-GHZ",.radio=LS_RSEL_NONE};
 static const ls_opt_ctx_t *subghz_options(void)
 {
@@ -3959,14 +4551,31 @@ static const ls_opt_ctx_t *subghz_options(void)
     tx_opt_refresh();
     option_ctx.job=LS_RSEL_SUBGHZ_READ;option_ctx.tag=NULL;
     if(page==PG_BAND){option_ctx.job=LS_RSEL_SUBGHZ_SWEEP;option_ctx.tag="SWEEP";}
+    option_ctx.name=page_opt_name();
+    const uint8_t mask=page_opt_mask();
     option_ctx.opt=page_options;option_ctx.n=0;
     for(int i=0;i<OPT_ROWS;i++) {
         if(i==OPT_CATCH && !ls_catch_options())continue;
-        page_options[option_ctx.n]=OPT_SUBGHZ[i];
-        if(i==OPT_CATCH)page_options[option_ctx.n].sub=ls_catch_options();
+        if(!(OPT_PAGES[i]&mask))continue;
+        ls_opt_t *o=&page_options[option_ctx.n];
+        *o=OPT_SUBGHZ[i];
+        if(i==OPT_CATCH)o->sub=ls_catch_options();
+        /* What changes at run time: the power steps follow TX limits, and
+           the modulation list is the radio in use's. */
+        if(o->get==o_tx){o->n=TX_STEPS;o->label=LS_TX_UNLOCKED?"TX power (UNLOCKED)":"TX power";}
+        if(o->get==o_mod)mod_names_for(&o->names,&o->n);
         option_ctx.n++;
     }
     return &option_ctx;
+}
+/* For the bench: where a row sits in the list SETTINGS opens on this page,
+   -1 when the page does not list it. */
+int ls_scr_subghz_option_row(const char *label)
+{
+    const ls_opt_ctx_t *c=subghz_options();
+    for(int i=0;c && i<c->n;i++)
+        if(c->opt[i].label && !strcmp(c->opt[i].label,label))return i;
+    return -1;
 }
 /* ------------------------------------------------------------------ draw */
 
@@ -4008,7 +4617,9 @@ bool ls_scr_subghz_holds_radio(void)
 static void draw(tui_surface *sf,tui_rect a)
 {
     if(a.w<24 || a.h<17) {ls_panel_notice(sf,a,NULL,"Enlarge the pane","");return;}
+    if(ls_tui_compact()) ls_tui_status_set("",NULL);   /* a page that has words for it says them below */
     rec_watch_snapshot(&s);
+    saved_poll();
     static uint32_t scan_generation,learn_generation;
     static bool was_sweeping;
     const bool sweeping=rec_watch_scan_busy();

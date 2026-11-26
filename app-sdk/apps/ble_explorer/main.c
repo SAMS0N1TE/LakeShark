@@ -971,6 +971,12 @@ static void leave(void)
     free(save.buf);
     save.buf = NULL;
 }
+LAP_ICON_PX("....................", "....77777777........", "...7744444477.......", "..77e44ff44477......",
+            "..7e444f4f4447......", ".7744f4f44f4477.....", ".74444fff4f4447.....", ".744444ff444447.....",
+            ".74444fff4f4447.....", ".7744f4f44f4477.....", "..74444f4f4447......", "..77444ff44477......",
+            "...77444444773b.....", "....77777777.33b....", "..............33b...", "...............33b..",
+            "................33b.", ".................33b");
+
 LAP_APP(.id = "ble_explorer", .name = "BLE EXPLORER", .sub = "scan and GATT", .version = "2.1",
         .author = "LakeShark", .icon = LAP_ICON_TOWER, .color = LAP_CYAN, .enter = enter, .leave = leave,
         .draw = draw, .key = key, .touch = touch);

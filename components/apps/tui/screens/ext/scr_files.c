@@ -40,7 +40,7 @@
 
 #define ROOT "/sdcard"
 #define MAX_ENTRIES 256
-#define MAX_EDGES (LS_TX_UNLOCKED ? 65536 : 8192)
+#define MAX_EDGES (LS_TX_UNLOCKED_BUILD ? 65536 : 8192)
 #define TEXT_MAX 8192
 #define PATH_MAX_LEN 416
 

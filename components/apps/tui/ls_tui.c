@@ -88,6 +88,8 @@ static tui_rect s_base_rect;
 static tui_cell *s_base_rec;
 static uint8_t *s_base_front;
 static bool s_base_dirty;
+/* Recorded since the desk last copied a window (ls_tui_follow_copy). */
+static bool s_base_fresh, s_glass_fresh;
 #define CELL_PALETTE (s_cell_palette ? s_cell_palette : PALETTE)
 /* Ramp bank: 0 theme, 1 basemap, 2 theme ink on basemap ground. */
 #define RAMP_BANK (s_cell_palette ? 1 : s_cell_bg_palette ? 2 : 0)
@@ -417,7 +419,7 @@ void ls_tui_basemap(tui_surface *sf,tui_rect area,const uint16_t palette[16])
         memset(s_ramp_valid[1],0,sizeof(s_ramp_valid[1]));
         memset(s_ramp_valid[2],0,sizeof(s_ramp_valid[2]));s_base_dirty=true;
     }
-    s_base_rect=area;
+    s_base_rect=area;s_base_fresh=true;
     for(int y=area.y;y<area.y+area.h;y++) for(int x=area.x;x<area.x+area.w;x++) {
         const int lx=x-s_org_x, ly=y-s_org_y;
         if(x>=0 && y>=0 && x<s_cols && y<s_rows && lx>=0 && ly>=0 && lx<sf->w && ly<sf->h)
@@ -546,6 +548,7 @@ void ls_tui_glass(int col, int row)
     if (!s_glass_back || !s_back || col < 0 || row < 0 || col >= s_cols || row >= s_rows) return;
     const size_t i = (size_t)row * s_cols + col;
     glass_set(s_glass_back, i, true);
+    s_glass_fresh = true;
     /* The cell as it will be in the grid: from the surface being drawn. */
     if (s_org_sf && lx >= 0 && ly >= 0 && lx < s_org_sf->w && ly < s_org_sf->h)
         s_glass_rec[i] = s_org_sf->back[(size_t)ly * s_org_sf->w + lx];
@@ -565,6 +568,32 @@ void ls_tui_put_glass(tui_surface *sf, tui_rect clip, int x, int y, int16_t ch, 
     if(!image_cell(x+s_org_x,y+s_org_y)) attr=TUI_ATTR(TUI_ATTR_FG(attr),TUI_ATTR_BG(cell->attr));
     *cell=(tui_cell){ch,attr};
     ls_tui_glass(x, y);
+}
+
+void ls_tui_follow_copy(const tui_surface *app, tui_rect at, tui_rect clip)
+{
+    if (!app || !app->back || !s_back || !s_glass_rec || (!s_base_fresh && !s_glass_fresh)) return;
+    const bool base_on = s_base_fresh, glass_on = s_glass_fresh;
+    s_base_fresh = s_glass_fresh = false;
+    const tui_rect r = tui_rect_intersect(tui_rect_intersect(at, clip), tui_rect_make(0, 0, s_cols, s_rows));
+    for (int y = r.y; y < r.y + r.h; y++) {
+        const int ly = y - at.y;
+        if (ly < 0 || ly >= app->h) continue;
+        const bool base_row = base_on && s_base_rec && s_base_rect.w > 0 && y >= s_base_rect.y && y < s_base_rect.y + s_base_rect.h;
+        for (int x = r.x; x < r.x + r.w; x++) {
+            const int lx = x - at.x;
+            if (lx < 0 || lx >= app->w) continue;
+            const tui_cell a = app->back[(size_t)ly * app->w + lx];
+            const size_t i = (size_t)y * s_cols + x;
+            if (base_row && x >= s_base_rect.x && x < s_base_rect.x + s_base_rect.w &&
+                s_base_rec[i].ch == a.ch && s_base_rec[i].attr == a.attr) {
+                s_back[i] = a;
+                continue;
+            }
+            if (glass_on && glass_bit(s_glass_back, i) && s_glass_rec[i].ch == a.ch && s_glass_rec[i].attr == a.attr)
+                s_glass_rec[i] = s_back[i];
+        }
+    }
 }
 
 static bool glass_live(int col, int row, size_t i)
@@ -1284,6 +1313,11 @@ bool ls_tui_cutout(tui_rect *cells)
 void ls_tui_set_rotation_cw(bool clockwise)
 {
     s_cw_rotation = clockwise;
+}
+
+int ls_tui_native_turn(void)
+{
+    return s_landscape ? (s_cw_rotation ? 1 : -1) : 0;
 }
 
 static void (*s_orientation_fn)(int ux, int uy);

@@ -31,5 +31,11 @@ static void draw(void) {
     char line[100]; snprintf(line,sizeof(line),"CSV %s  request %d  result %d  scale %u/1000",ready?"ready":"unavailable",request,result,info.scale_milli);
     lap_put_str(1,5,line,LAP_ATTR(LAP_WHITE,LAP_BLACK));
 }
+LAP_ICON_PX("......77777777777777", "......74444444444447", "......74ffff44444447", "......7b444444444447",
+            "...bbbbbbcccccc44447", "......7b444444444447", "......74444444444447", "88888.74444444444447",
+            "8aaa8.74444444444447", "8aaa8.74444444444447", "8aaa8.77777777777777", "8aaa8......8888.....",
+            "8aaa8......8888.....", "88888...7777777777..", "88888...............", "88888...............",
+            "88888...............", "....................");
+
 LAP_APP(.id="desktop_export",.name="EXPORT TO PC",.sub="Desktop export and DPI",.version="1.0",.author="LakeShark",
     .icon=LAP_ICON_GEAR,.color=LAP_CYAN,.enter=enter,.leave=leave,.draw=draw,.key=key);

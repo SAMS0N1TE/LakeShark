@@ -11,6 +11,7 @@
 #include "esp_heap_caps.h"
 #include "esp_libusb_private.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "event_bus.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -110,6 +111,14 @@ static bool rtl_is_blog_v4(rtlsdr_dev_t *dev)
 
 static ls_radio_err_t rtl_iq_set_gain(void *ctx, ls_radio_gain_mode_t mode,
                                       int tenths_db, int *actual_tenths_db);
+
+/* Standby (radio_endpoint.h): the tuner and the RTL2832's demod and ADCs
+   powered down while the device stays open. s_last is the configuration
+   the last configure asked for, so a holder that went idle and then calls
+   start, gain or retune gets the dongle back as it left it. */
+static volatile bool s_standby;
+static bool s_have_last;
+static ls_radio_iq_config_t s_last;
 
 /* Put the dongle on the path `hz` needs. Only a crossing of the 24 MHz line
    on a plain R820T dongle does anything; a V4 and everything above 24 MHz
@@ -268,6 +277,67 @@ LS_COLD static ls_radio_err_t rtl_iq_set_gain(void *ctx, ls_radio_gain_mode_t mo
     return LS_RADIO_OK;
 }
 
+static ls_radio_err_t rtl_configure_awake(rtlsdr_dev_t *dev,
+                                          const ls_radio_iq_config_t *requested,
+                                          ls_radio_iq_config_t *actual);
+
+/* Out of standby, before any call that talks to the tuner or demod. With
+   `restore`, the last configuration goes back on as well (configure itself
+   passes false: it is about to set everything). The PPM is applied here
+   because a front-end change made during standby was only remembered. */
+LS_COLD static ls_radio_err_t rtl_wake(rtlsdr_dev_t *dev, bool restore)
+{
+    if (!__atomic_load_n(&s_standby, __ATOMIC_ACQUIRE)) return LS_RADIO_OK;
+    const int64_t t0 = esp_timer_get_time();
+    if (rtlsdr_wake(dev) != 0) {
+        ESP_LOGW(TAG, "wake from standby failed");
+        return LS_RADIO_ERR_IO;
+    }
+    __atomic_store_n(&s_standby, false, __ATOMIC_RELEASE);
+    s_path = LS_RTL_PATH_NONE;
+    (void)rtl_apply_ppm(dev);
+    if (s_fe.offset) (void)rtlsdr_set_offset_tuning(dev, 1);
+    ls_radio_err_t error = LS_RADIO_OK;
+    if (restore && s_have_last) {
+        ls_radio_iq_config_t actual;
+        error = rtl_configure_awake(dev, &s_last, &actual);
+    }
+    ESP_LOGI(TAG, "awake from standby in %lld ms%s", (long long)((esp_timer_get_time() - t0) / 1000),
+             restore && s_have_last ? ", last tune restored" : "");
+    return error;
+}
+
+/* The idle tick's call: stop the transfers if any are still running, then
+   tuner standby and demod power-down, as upstream librtlsdr's close does.
+   Marked in standby even when a write failed - the next call then runs the
+   full wake, which is right whichever half did go down. */
+LS_COLD static ls_radio_err_t rtl_standby_op(void *ctx)
+{
+    rtlsdr_dev_t *dev = (rtlsdr_dev_t *)ctx;
+    if (!dev) return LS_RADIO_ERR_INVALID;
+    if (__atomic_load_n(&s_standby, __ATOMIC_ACQUIRE)) return LS_RADIO_OK;
+    if (__atomic_load_n(&s_adapter_streaming, __ATOMIC_ACQUIRE)) {
+        __atomic_store_n(&s_read_cancelled, true, __ATOMIC_RELEASE);
+        rtlsdr_stream_stop_for(dev);
+        __atomic_store_n(&s_adapter_streaming, false, __ATOMIC_RELEASE);
+    }
+    const int error = rtlsdr_standby(dev);
+    __atomic_store_n(&s_standby, true, __ATOMIC_RELEASE);
+    s_path = LS_RTL_PATH_NONE;
+    if (error != 0) {
+        ESP_LOGW(TAG, "standby: a register write failed (%d)", error);
+        return LS_RADIO_ERR_IO;
+    }
+    ESP_LOGI(TAG, "standby: tuner and demod powered down, nothing is using the RTL");
+    return LS_RADIO_OK;
+}
+
+static bool rtl_in_standby(void *ctx)
+{
+    (void)ctx;
+    return __atomic_load_n(&s_standby, __ATOMIC_ACQUIRE);
+}
+
 LS_COLD static ls_radio_err_t rtl_iq_configure(void *ctx,
                                        const ls_radio_iq_config_t *requested,
                                        ls_radio_iq_config_t *actual)
@@ -275,6 +345,17 @@ LS_COLD static ls_radio_err_t rtl_iq_configure(void *ctx,
     rtlsdr_dev_t *dev = (rtlsdr_dev_t *)ctx;
     if (!dev || requested->center_hz == 0 || requested->sample_rate_hz == 0)
         return LS_RADIO_ERR_INVALID;
+    ls_radio_err_t woke = rtl_wake(dev, false);
+    if (woke != LS_RADIO_OK) return woke;
+    ls_radio_err_t result = rtl_configure_awake(dev, requested, actual);
+    if (result == LS_RADIO_OK) { s_last = *requested; s_have_last = true; }
+    return result;
+}
+
+LS_COLD static ls_radio_err_t rtl_configure_awake(rtlsdr_dev_t *dev,
+                                          const ls_radio_iq_config_t *requested,
+                                          ls_radio_iq_config_t *actual)
+{
     int error = rtlsdr_set_sample_rate(dev, requested->sample_rate_hz);
     if (error != 0) return rtl_error(error);
     s_bw_hz = requested->bandwidth_hz;
@@ -419,21 +500,24 @@ LS_COLD static ls_radio_err_t rtl_fe_ctl(void *ctx, ls_radio_fe_ctl_t ctl, bool 
             *value = rtl_bias_is_on(gpo, gpoe, gpd);
         }
         return LS_RADIO_OK;
+    /* In standby these are remembered and go on at the wake (PPM and
+       offset) or the next configure (AGC): the demod they live in is
+       powered down, and a settings change is no reason to power it up. */
     case LS_RADIO_FE_PPM:
         if (!write) { *value = s_fe.base_ppm; return LS_RADIO_OK; }
         s_fe.base_ppm = *value;
-        error = rtl_apply_ppm(dev);
+        if (!rtl_in_standby(dev)) error = rtl_apply_ppm(dev);
         break;
     case LS_RADIO_FE_DIGITAL_AGC:
         if (!write) { *value = s_fe.dagc; return LS_RADIO_OK; }
         s_fe.dagc = *value;
-        error = rtl_apply_dagc(dev);
+        if (!rtl_in_standby(dev)) error = rtl_apply_dagc(dev);
         break;
     case LS_RADIO_FE_OFFSET_TUNING:
-        if (!write) { *value = rtlsdr_get_offset_tuning(dev); return LS_RADIO_OK; }
+        if (!write) { *value = rtl_in_standby(dev) ? s_fe.offset : rtlsdr_get_offset_tuning(dev); return LS_RADIO_OK; }
         if (!rtl_offset_capable(dev)) return LS_RADIO_ERR_UNSUPPORTED;
         s_fe.offset = *value != 0;
-        error = rtlsdr_set_offset_tuning(dev, s_fe.offset);
+        if (!rtl_in_standby(dev)) error = rtlsdr_set_offset_tuning(dev, s_fe.offset);
         break;
     default:
         /* LS_RADIO_FE_DIRECT_SAMPLING: the HF work answers it here. */
@@ -488,19 +572,55 @@ static ls_radio_err_t rtl_recover(void *ctx)
                ? LS_RADIO_OK : LS_RADIO_ERR_IO;
 }
 
+/* The registry's entry points for the calls that touch the tuner or demod:
+   each wakes the dongle first, with the last tune, if the idle tick put it
+   in standby while its holder sat idle. rtl_route and configure call the
+   inner functions, already awake. */
+LS_COLD static ls_radio_err_t rtl_op_set_gain(void *ctx, ls_radio_gain_mode_t mode,
+                                      int tenths_db, int *actual_tenths_db)
+{
+    ls_radio_err_t error = rtl_wake((rtlsdr_dev_t *)ctx, true);
+    if (error == LS_RADIO_OK) error = rtl_iq_set_gain(ctx, mode, tenths_db, actual_tenths_db);
+    if (error == LS_RADIO_OK) { s_last.gain_mode = mode; s_last.gain_tenths_db = tenths_db; }
+    return error;
+}
+
+LS_COLD static ls_radio_err_t rtl_op_start(void *ctx)
+{
+    ls_radio_err_t error = rtl_wake((rtlsdr_dev_t *)ctx, true);
+    return error == LS_RADIO_OK ? rtl_iq_start(ctx) : error;
+}
+
+LS_COLD static ls_radio_err_t rtl_op_retune(void *ctx, uint64_t center_hz, bool fast,
+                                    uint64_t *actual_hz)
+{
+    ls_radio_err_t error = rtl_wake((rtlsdr_dev_t *)ctx, true);
+    if (error == LS_RADIO_OK) error = rtl_iq_retune(ctx, center_hz, fast, actual_hz);
+    if (error == LS_RADIO_OK) s_last.center_hz = center_hz;
+    return error;
+}
+
+LS_COLD static ls_radio_err_t rtl_op_set_ppm(void *ctx, int ppm)
+{
+    ls_radio_err_t error = rtl_wake((rtlsdr_dev_t *)ctx, true);
+    return error == LS_RADIO_OK ? rtl_iq_set_ppm(ctx, ppm) : error;
+}
+
 static const ls_radio_driver_ops_t s_rtl_ops = {
     .iq_configure = rtl_iq_configure,
-    .iq_set_gain = rtl_iq_set_gain,
-    .iq_start = rtl_iq_start,
+    .iq_set_gain = rtl_op_set_gain,
+    .iq_start = rtl_op_start,
     .iq_read = rtl_iq_read,
-    .iq_retune = rtl_iq_retune,
+    .iq_retune = rtl_op_retune,
     .iq_stop = rtl_iq_stop,
     .cancel_read = rtl_cancel_read,
     .recover = rtl_recover,
-    .iq_set_ppm = rtl_iq_set_ppm,
+    .iq_set_ppm = rtl_op_set_ppm,
     .iq_transport_status=rtl_transport_status,
     .fe_ctl = rtl_fe_ctl,
     .fe_gains = rtl_fe_gains,
+    .standby = rtl_standby_op,
+    .in_standby = rtl_in_standby,
 };
 
 static ls_radio_err_t rtl_register_endpoint(rtlsdr_dev_t *dev)
@@ -697,6 +817,11 @@ LS_COLD static void rtlsdr_setup_task(void *arg)
     bool registered = false;
     int error = rtlsdr_open(&dev, setup->dev_addr, setup->client);
     if (error < 0) goto done;
+    /* rtlsdr_open leaves the tuner initialised and the demod powered: awake,
+       with nothing tuned yet. The idle tick takes it to standby if no app
+       claims it within LS_RADIO_STANDBY_FREE_MS. */
+    __atomic_store_n(&s_standby, false, __ATOMIC_RELEASE);
+    s_have_last = false;
     rtl_fe_attach(dev);
     rtlsdr_reset_buffer(dev);
     for (int attempt = 0; attempt < 200; ++attempt) {

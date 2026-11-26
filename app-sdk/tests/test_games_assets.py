@@ -121,7 +121,7 @@ class GamesAssets(unittest.TestCase):
         calls=apidoc.entries();helpers=[e for e in calls if e.get('sdk_since')=='2.5' and e['kind']=='function']
         self.assertGreater(len(helpers),20)
         self.assertTrue(all(e['simulator']['status']=='real' and not e.get('exported') for e in helpers))
-        self.assertEqual(api_registry.version(SDK),(2,6))
+        self.assertEqual(api_registry.version(SDK),lap.sdk_api_version(SDK))
         for target in ('arcade2d','flight3d'):
             p=BUILD/'sdk-contracts'/('template_'+target+'.lap');elf=lap.Elf(p.read_bytes())
             self.assertEqual(elf.manifest['api_minor'],lap.sdk_api_version(SDK)[1]);self.assertLess(len(elf.data),512*1024)

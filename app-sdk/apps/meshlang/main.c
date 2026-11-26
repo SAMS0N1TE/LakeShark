@@ -706,6 +706,12 @@ static bool touch(int col, int row_)
     return false;
 }
 
+LAP_ICON_PX("....................", "444444444...........", "4444f4444b..........", "4444ff444.bb........",
+            "4444ff444...b.......", "444f44f44...........", "444ffff44..999999999", "444f44f44..9999f9999",
+            "44f4444f4..9fffffff9", "44f4444f4..9999f9999", "444444444..9999f9999", "..44.......99fffff99",
+            "..4........999fff999", "........b..999fff999", ".........b.99f9f9f99", "..........b999999999",
+            "...........b.....9..", "....................");
+
 LAP_APP(.id = "meshlang", .name = "MESH LANGUAGES", .sub = "translator languages", .version = "1.0",
         .author = "LakeShark", .color = LAP_MAGENTA,
         .icon_art = { " .------. ", "( Ola Hoi)", "( Privet )", " '-.----' ", "   \\ ((o ", "  pt..uk  " },

@@ -122,9 +122,9 @@ static void draw_icons(tui_surface *sf, tui_rect clip)
         const tui_rect r = icon_rect(p), rc = tui_rect_intersect(clip, r);
         if (r.y + r.h <= s_r_list.y || r.y >= s_r_list.y + s_r_list.h) continue;
         const bool sel = s_order[p] == s_sel, hov = dk_hover(rc);
-        for (int k = 0; k < 3; k++) if (a->art[k]) dk_text(sf, rc, r.x + (ICON_W - 6) / 2, r.y + k, a->art[k], dk_art(a->hue));
+        for (int k = 0; k < 3; k++) if (a->art[k]) dk_text(sf, rc, r.x + (ICON_W - 6) / 2, r.y + k, a->art[k], dk_well_hue(a->hue));
         const int n = dk_text_len(a->name), x = r.x + (ICON_W - n) / 2;
-        const uint8_t la = sel ? dk_attr(s_focus == FOC_LIST ? R_SELECT : R_TASKHOVER) : hov ? dk_attr(R_TASKHOVER) : dk_attr(R_FACE);
+        const uint8_t la = sel ? dk_attr(s_focus == FOC_LIST ? R_SELECT : R_TASKHOVER) : hov ? dk_attr(R_TASKHOVER) : dk_attr(R_WELL);
         if (sel || hov) dk_fill(sf, tui_rect_intersect(rc, tui_rect_make(x - 1, r.y + 3, n + 2, 1)), la);
         dk_text(sf, rc, x, r.y + 3, a->name, la);
     }
@@ -155,10 +155,10 @@ static void draw_details(tui_surface *sf, tui_rect clip, bool bar)
         const bool lit = sel || hov;
         char now[64];
         now_line(i, now, sizeof(now));
-        ls_box_put(sf, rr, x[0] + 1, y, LS_SHAPE_DOT, lit ? band : dk_art(a->hue));
-        dk_text(sf, tui_rect_intersect(rr, tui_rect_make(x[0], y, w0 - 1, 1)), x[0] + 3, y, a->name, lit ? band : dk_attr(R_STRONG));
-        dk_text(sf, tui_rect_intersect(rr, tui_rect_make(x[1], y, w1 - 1, 1)), x[1] + 1, y, a->what, lit ? band : dk_attr(R_FACE));
-        dk_text(sf, tui_rect_intersect(rr, tui_rect_make(x[2], y, x[3] - x[2], 1)), x[2] + 1, y, now, lit ? band : dk_attr(R_INFO));
+        ls_box_put(sf, rr, x[0] + 1, y, LS_SHAPE_DOT, lit ? band : dk_well_hue(a->hue));
+        dk_text(sf, tui_rect_intersect(rr, tui_rect_make(x[0], y, w0 - 1, 1)), x[0] + 3, y, a->name, lit ? band : dk_attr(R_WELL));
+        dk_text(sf, tui_rect_intersect(rr, tui_rect_make(x[1], y, w1 - 1, 1)), x[1] + 1, y, a->what, lit ? band : dk_attr(R_WELL));
+        dk_text(sf, tui_rect_intersect(rr, tui_rect_make(x[2], y, x[3] - x[2], 1)), x[2] + 1, y, now, lit ? band : dk_well_hue(TUI_ATTR_FG(dk_attr(R_INFO))));
     }
 }
 
@@ -178,10 +178,11 @@ void dk_cpl_draw(tui_surface *sf, tui_rect c, tui_rect clip)
     char line[96];
     snprintf(line, sizeof(line), "%d items", s_n);
     dk_text(sf, clip, c.x + c.w - 1 - dk_text_len(line), c.y, line, dk_attr(R_FACE));
-    dk_hline(sf, clip, c.x, c.y + 1, c.w, LS_BOX_H, dk_attr(R_SHADOW));
-    /* the list */
+    /* the list: a sunken view on the well's ground, as a folder window's is */
     s_r_list = tui_rect_make(c.x + 1, c.y + 2, c.w - 2, c.h - 4);
     if (s_r_list.h < 1) return;
+    dk_fill(sf, tui_rect_intersect(clip, s_r_list), dk_attr(R_WELL));
+    dk_sunken(sf, clip, tui_rect_make(c.x, c.y + 1, c.w, c.h - 2));
     s_cols = s_view == VIEW_ICONS && s_r_list.w / ICON_W > 0 ? s_r_list.w / ICON_W : 1;
     if (s_cols > s_n) s_cols = s_n;
     s_fit = s_view == VIEW_ICONS ? (s_r_list.h + 1) / ICON_H : s_r_list.h - 1;
@@ -207,13 +208,18 @@ void dk_cpl_draw(tui_surface *sf, tui_rect c, tui_rect clip)
     /* the foot: what the chosen one is, and how to open it */
     const int fy = c.y + c.h - 1;
     const dk_cpl_applet_t *a = dk_cpl_at(s_sel);
-    dk_hline(sf, clip, c.x, fy - 1, c.w, LS_BOX_H, dk_attr(R_SHADOW));
-    ls_box_put(sf, clip, c.x + 1, fy, LS_SHAPE_DOT, dk_art(a->hue));
-    int fx = c.x + 3 + dk_text(sf, clip, c.x + 3, fy, a->name, dk_attr(R_STRONG));
-    snprintf(line, sizeof(line), ": %s", a->what);
-    fx += dk_text(sf, clip, fx, fy, line, dk_attr(R_FACE));
+    /* the foot: a status bar of two sunken panes */
     static const char HINT[] = "Double-click or Enter opens";
-    if (fx + 2 + (int)sizeof(HINT) < c.x + c.w) dk_text(sf, clip, c.x + c.w - (int)sizeof(HINT), fy, HINT, dk_attr(R_FACE));
+    {
+        const char *const pane[2] = {NULL, HINT};
+        const int pw[2] = {0, (int)sizeof(HINT) + 2};
+        dk_status_panes(sf, clip, tui_rect_make(c.x, fy, c.w, 1), pane, pw, c.w > (int)sizeof(HINT) + 30 ? 2 : 1);
+    }
+    ls_box_put(sf, clip, c.x + 2, fy, LS_SHAPE_DOT, dk_art(a->hue));
+    int fx = c.x + 4 + dk_text(sf, clip, c.x + 4, fy, a->name, dk_attr(R_STRONG));
+    snprintf(line, sizeof(line), ": %s", a->what);
+    const tui_rect p0 = tui_rect_intersect(clip, tui_rect_make(c.x + 1, fy, c.w - (c.w > (int)sizeof(HINT) + 30 ? (int)sizeof(HINT) + 5 : 2), 1));
+    fx += dk_text(sf, p0, fx, fy, line, dk_attr(R_FACE));
 }
 
 /* --------------------------------------------------------------- input -- */

@@ -214,7 +214,7 @@ static esp_err_t lrtx_send(const uint8_t *data, uint32_t size, uint32_t rate,
 #define REFUSE(code, message) do { if (reason) *reason = (message); puts("lrtx-send: " message); return (code); } while (0)
     if (!lrtx_rate_supported(rate)) REFUSE(ESP_ERR_INVALID_ARG, "unsupported sample rate");
     if (!repeats || repeats>(LS_TX_UNLOCKED ? LRTX_MAX_SAMPLES : 16u)) REFUSE(ESP_ERR_INVALID_ARG, "repeat count outside 1..16");
-    if (LS_TX_UNLOCKED ? (hz<LR20XX_FREQ_MIN_HZ || hz>LR20XX_FREQ_MAX_HZ) : (hz<150000000u || hz>960000000u)) REFUSE(ESP_ERR_INVALID_ARG, "frequency outside LF TX band");
+    if (LS_TX_UNLOCKED_BUILD ? (hz<LR20XX_FREQ_MIN_HZ || hz>LR20XX_FREQ_MAX_HZ) : (hz<(LS_TX_UNLOCKED ? LR20XX_FREQ_MIN_HZ : 150000000u) || hz>960000000u)) REFUSE(ESP_ERR_INVALID_ARG, "frequency outside LF TX band");
     if (dbm<-9 || dbm>(LS_TX_UNLOCKED ? LR20XX_TX_POWER_MAX_DBM : 10)) REFUSE(ESP_ERR_INVALID_ARG, "power outside -9..10 dBm");
     const bool leased = data && ls_mesh_radio_held && ls_mesh_radio_held();
     const uint32_t cancel_generation = __atomic_load_n(&s_lrtx_cancel_generation,

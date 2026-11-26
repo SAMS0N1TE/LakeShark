@@ -1,6 +1,15 @@
 #include "ls_test.h"
 #include "../../components/apps/tui/screens/ext/scr_radios.c"
 
+/* The desk's window look (ls_tui_ui.c, ls_tui_screen.c): RADIOS draws its
+   desk layout only when the desk ink is on, which it never is here. */
+uint8_t ls_ink_tab[LS_INK_COUNT];
+bool ls_ink_on;
+void ls_ink_mark(tui_rect r, int kind) { (void)r; (void)kind; }
+void ls_dui_edge(tui_surface *sf, tui_rect r, bool sunken) { (void)sf; (void)r; (void)sunken; }
+tui_rect ls_dui_group(tui_surface *sf, tui_rect r, const char *caption) { (void)sf; (void)caption; return r; }
+void ls_tui_status_set(const char *left, const char *right) { (void)left; (void)right; }
+
 static ls_radio_endpoint_info_t rtl, hackrf;
 static ls_mixrf_status_t mix;
 static bool external, acknowledged, running;

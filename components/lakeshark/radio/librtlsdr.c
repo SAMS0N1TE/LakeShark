@@ -715,6 +715,42 @@ int rtlsdr_deinit_baseband(rtlsdr_dev_t *dev)
     return r;
 }
 
+/* LakeShark: the dongle stays open from plug-in to unplug, so upstream's
+   close (deinit_baseband) never ran and an idle R820T sat with its PLL,
+   LNA and the RTL2832's ADCs all running. Standby is that deinit; wake is
+   the part of rtlsdr_open after the tuner probe, against a tuner already
+   known. Frequency, rate and gain are the caller's to set again. */
+int rtlsdr_standby(rtlsdr_dev_t *dev)
+{
+    if (!dev) return -1;
+    int r = rtlsdr_deinit_baseband(dev);
+    dev->freq = 0;
+    return r;
+}
+
+int rtlsdr_wake(rtlsdr_dev_t *dev)
+{
+    int r = 0;
+    if (!dev || !dev->tuner) return -1;
+    rtlsdr_init_baseband(dev);
+    rtlsdr_set_i2c_repeater(dev, 1);
+    if (dev->tuner_type == RTLSDR_TUNER_R820T ||
+        dev->tuner_type == RTLSDR_TUNER_R828D) {
+        /* as rtlsdr_open: no Zero-IF, I ADC only, the 3.57 MHz IF, inverted */
+        r |= rtlsdr_demod_write_reg(dev, 1, 0xb1, 0x1a, 1);
+        r |= rtlsdr_demod_write_reg(dev, 0, 0x08, 0x4d, 1);
+        r |= rtlsdr_set_if_freq(dev, R82XX_IF_FREQ);
+        r |= rtlsdr_demod_write_reg(dev, 1, 0x15, 0x01, 1);
+    }
+    if (dev->tuner->init) r |= dev->tuner->init(dev);
+    rtlsdr_set_i2c_repeater(dev, 0);
+    dev->direct_sampling = 0;
+    dev->freq = 0;
+    /* The demod's sample correction went with the soft reset; the next
+       sample-rate set writes it again from dev->corr. */
+    return r;
+}
+
 static int rtlsdr_set_if_freq(rtlsdr_dev_t *dev, uint32_t freq)
 {
     uint32_t rtl_xtal;

@@ -110,9 +110,26 @@
                "components/apps/tui/wardrive/wd_core.c",
                "components/apps/tui/wardrive/wd_view3d.c",
                "components/apps/tui/wardrive/wd_replay.c",
-               "components/apps/tui/wardrive/wd_feed_board.c"],
+               "components/apps/tui/wardrive/wd_feed_board.c",
+               "components/apps/tui/wardrive/wd_track.c",
+               "components/apps/tui/wardrive/wd_atlas.c",
+               "components/apps/tui/wardrive/wd_radio.c",
+               "components/apps/tui/wardrive/wd_page_hunt.c",
+               "components/apps/tui/wardrive/wd_page_radio.c",
+               "components/apps/tui/wardrive/wd_page_atlas.c"],
       "screens": ["ls_scr_wardrive"],
-      "syms": ["ls_wardrive_running"]
+      "syms": ["ls_wardrive_running", "wd_lock", "wd_unlock", "wd_stats", "wd_dev_count", "wd_dev_at"]
+    },
+    {
+      "id": "party",
+      "srcs": ["components/apps/tui/screens/ext/scr_party.c",
+               "components/apps/tui/party/party_core.c",
+               "components/apps/tui/party/party_proto.c",
+               "components/apps/tui/party/party_wd.c",
+               "components/apps/tui/party/party_io_board.c",
+               "components/apps/tui/party/party_link_board.c"],
+      "screens": ["ls_scr_party"],
+      "syms": ["ls_party_running", "party_peer_since"]
     },
     {
       "id": "tools",

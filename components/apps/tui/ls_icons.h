@@ -58,6 +58,16 @@ typedef enum {
     LS_ICON_TMACH,      /* TIME MACHINE: a dial turning back over a burst */
     LS_ICON_RADIO,      /* RADIO: a handheld receiver, not FM's wave        */
     LS_ICON_FREQS,      /* FREQS: a dial over the list it tunes from       */
+    /* These nine were one-colour character art until 11-25. */
+    LS_ICON_METER,      /* METERS: a utility meter's register and dial     */
+    LS_ICON_PINS,       /* PINS: a pin header and its jumper wires         */
+    LS_ICON_BOOTLOG,    /* BOOT LOG: a page of the log, one line an error  */
+    LS_ICON_STORE,      /* STORE: an open crate, apps in it                */
+    LS_ICON_PACKS,      /* PACKS: a globe over its data packs              */
+    LS_ICON_WARDRIVE,   /* WARDRIVE: a car with its aerial, listening      */
+    LS_ICON_PARTY,      /* PARTY: two of us at a fire                      */
+    LS_ICON_LOCKER,     /* LOCKER: two doors and a padlock                 */
+    LS_ICON_CHAT,       /* CHAT: two speech bubbles, one typing            */
     LS_ICON__COUNT
 } ls_icon_t;
 
@@ -74,19 +84,9 @@ void ls_icon_draw(tui_surface *sf, tui_rect clip, int x, int y,
    Returns an icon number ls_icon_draw takes, or `fallback` when the slot is
    out of range or the art is empty. The art is copied. */
 #define LS_ICON_ART_FIRST 64
-#define LS_ICON_ART_MAX   64   /* 0..47 card apps (LS_LAP_MAX_APPS), the top slots built-in art */
-/* Built-in apps with their own character art take these slots, from the top down, so they never
-   meet a card app (0..LS_LAP_MAX_APPS-1). Add new ones HERE, never as a bare LS_ICON_ART_MAX - n. */
-enum {
-    LS_ICON_SLOT_METER    = LS_ICON_ART_MAX - 1,
-    LS_ICON_SLOT_PINS     = LS_ICON_ART_MAX - 2,
-    LS_ICON_SLOT_BOOTLOG  = LS_ICON_ART_MAX - 3,
-    LS_ICON_SLOT_STORE    = LS_ICON_ART_MAX - 4,
-    LS_ICON_SLOT_PACKS    = LS_ICON_ART_MAX - 5,
-    LS_ICON_SLOT_LOCKER   = LS_ICON_ART_MAX - 6,
-    LS_ICON_SLOT_CHAT     = LS_ICON_ART_MAX - 7,
-    LS_ICON_SLOT_WARDRIVE = LS_ICON_ART_MAX - 8,
-};
+#define LS_ICON_ART_MAX   64   /* 0..47 card apps (LS_LAP_MAX_APPS) */
+/* Built-in apps draw colour icons (the enum above), not character art: the
+   slots are all the card's. */
 int ls_icon_art(int slot, const char art[LS_ICON_ROWS][LS_ICON_COLS + 1], int fallback);
 /* The same for a colour icon in dots, 20 x 18, colours 0-15, 0xFF clear. */
 int ls_icon_px(int slot, const uint8_t px[LS_ICON_ROWS * 3][LS_ICON_COLS * 2], int fallback);

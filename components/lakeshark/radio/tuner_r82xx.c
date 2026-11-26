@@ -1388,6 +1388,11 @@ int r82xx_init(struct r82xx_priv *priv)
 
     priv->bw = R82XX_DEFAULT_IF_BW;
     priv->int_freq = R82XX_DEFAULT_IF_FREQ;
+    /* The init array just rewrote the input switches (regs 5 and 6), so the
+       remembered input is stale: forget it, or the first set_freq after a
+       re-init (standby wake, leaving direct sampling) skips selecting the
+       V4 band or the R828D cable/air input and listens on the wrong one. */
+    priv->input = 0xff;
     /* r82xx_set_bw will always be called by rtlsdr_set_sample_rate,
        so there's no need to call r82xx_set_if_filter here */
 

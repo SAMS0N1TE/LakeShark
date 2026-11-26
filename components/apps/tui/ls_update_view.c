@@ -30,6 +30,7 @@
 #include "ls_action.h"
 #include "ls_glyph.h"
 #include "ls_tui_ui.h"
+#include "ls_deskui.h"
 #include "ls_value.h"
 #include "ls_ota_core.h"
 #include "ls_textpack.h"
@@ -938,26 +939,48 @@ void ls_update_view_draw(tui_surface *sf, tui_rect a)
         { "CHANNEL", chan[0] ? chan : "?", 'h', false, busy || ready, !strcmp(chan, "STABLE") },
         { "C6", "RADIO FW", 'c', false, false, false },
     };
-    ls_btn_bar_raised_row(sf, tui_rect_make(a.x, a.y, a.w, 5), btn, 4, -1);
+    /* A desk window: one toolbar row, and no BACK (the title bar closes
+       the window, Esc goes back); the keys keep their numbers. */
+    const bool desk = ls_tui_compact();
+    if (desk) ls_btn_bar_raised_row(sf, tui_rect_make(a.x, a.y, a.w, 1), btn + 1, 3, -1);
+    else ls_btn_bar_raised_row(sf, tui_rect_make(a.x, a.y, a.w, 5), btn, 4, -1);
 
-    const tui_rect body = tui_rect_make(a.x, a.y + 5, a.w, a.h - 5);
+    const int top = desk ? 1 : 5;
+    const tui_rect body = tui_rect_make(a.x, a.y + top, a.w, a.h - top);
     const uint8_t hue = hue_of(st);
+    if (desk) tui_fill(sf, body, ' ', A(TUI_WHITE, TUI_BLACK));
     ls_panel_box(sf, body, "SYSTEM UPDATE", hue);
     /* No synthetic busy sweep; stage and received bytes are the feedback. */
-    const tui_rect in = tui_rect_make(body.x + 1, body.y + 1, body.w - 2, body.h - 2);
+    tui_rect in = tui_rect_make(body.x + 1, body.y + 1, body.w - 2, body.h - 2);
     const int pct = size > 0 ? (int)((int64_t)got * 100 / size) : 0;
+    /* On the desk the state line is the window's status bar. */
+    if (desk) {
+        ls_tui_status_set(state, NULL);
+        in = tui_rect_make(in.x + 1, in.y, in.w - 2, in.h + 1);
+    }
 
     if (in.w >= 90 && in.h >= 17) {
         /* Landscape: the scene, steps and bar on the left; the figures and
            the details on the right. */
         const int lw = in.w * 55 / 100;
-        const tui_rect L = tui_rect_make(in.x + 1, in.y, lw - 2, in.h - 1);
+        tui_rect L = tui_rect_make(in.x + 1, in.y, lw - 2, in.h - 1);
         tui_rect R = tui_rect_make(in.x + lw + 1, in.y, in.w - lw - 2, in.h - 1);
+        tui_rect scene_r = in;
+        tui_rect detail_r = tui_rect_make(R.x, R.y + HERO_H + 1, R.w, R.h - HERO_H - 1);
+        if (desk) {
+            /* the scene and the big word on black glass, the details in a white well */
+            scene_r = ls_dui_glass(sf, tui_rect_make(in.x, in.y, lw, in.h - 1));
+            L = tui_rect_make(scene_r.x + 1, scene_r.y, scene_r.w - 2, scene_r.h);
+            const tui_rect hg = ls_dui_glass(sf, tui_rect_make(in.x + lw + 1, in.y, in.w - lw - 1, HERO_H + 2));
+            R = tui_rect_make(hg.x + 1, hg.y, hg.w - 2, hg.h);
+            const tui_rect dw = ls_dui_well(sf, tui_rect_make(in.x + lw + 1, in.y + HERO_H + 2, in.w - lw - 1, in.h - HERO_H - 3), NULL);
+            detail_r = tui_rect_make(dw.x + 1, dw.y, dw.w - 2, dw.h);
+        }
         tui_rect hole;
         if (ls_tui_cutout(&hole) && hole.x > R.x && hole.x < R.x + R.w)
             R.w = hole.x - R.x - 2; /* Only this pane skirts the camera. */
         const int bx = L.x + 1, by = L.y + 1, cx = L.x + L.w - CLOUD_W - 1, cy = L.y + 1;
-        background(sf, in, vis, bx + BOARD_W / 2, by + 3, cx + CLOUD_W / 2, cy + 2, t);
+        background(sf, scene_r, vis, bx + BOARD_W / 2, by + 3, cx + CLOUD_W / 2, cy + 2, t);
         board(sf, L, bx, by, vis, pct, run, t);
         cloud(sf, L, cx, cy, vis, offer, t);
         pipe(sf, L, cx - 1, by + 3, -1, 0, cx - 1 - (bx + BOARD_W), vis, t, s_frame);
@@ -971,9 +994,9 @@ void ls_update_view_draw(tui_surface *sf, tui_rect a)
         }
         s_hero = hero(sf, R, R.y, st, got, size, retry, t);
         s_hero_on = tappable && s_hero.w > 0;
-        details(sf, tui_rect_make(R.x, R.y + HERO_H + 1, R.w, R.h - HERO_H - 1), st, trial, run, offer,
-                failed, t);
+        details(sf, detail_r, st, trial, run, offer, failed, t);
     } else {
+        if (desk) in = ls_dui_glass(sf, tui_rect_make(in.x, in.y, in.w, in.h - 1));
         /* Portrait: the server on top, the pipe pouring down into the board,
            then the figures, the steps and the bar. A shorter pane drops the
            figures, then the scene, and keeps the bar and the words. */
@@ -1017,10 +1040,14 @@ void ls_update_view_draw(tui_surface *sf, tui_rect a)
                 progress(sf, tui_rect_make(in.x + 2, in.y, in.w - 4, last - in.y), y, rows, st, got, size, t);
             y += rows + 2;
         }
-        if (y < last)
+        if (y < last && desk) {
+            const tui_rect dw = ls_dui_well(sf, tui_rect_make(in.x + 1, y - 1, in.w - 2, last - y + 2), NULL);
+            details(sf, tui_rect_make(dw.x + 1, dw.y, dw.w - 2, dw.h), st, trial, run, offer, failed, t);
+        } else if (y < last)
             details(sf, tui_rect_make(in.x + 2, y, in.w - 4, last - y), st, trial, run, offer, failed, t);
     }
 
+    if (desk) return;
     /* the one line that says it all, at the bottom, on its own black */
     fill(sf, in, tui_rect_make(in.x, in.y + in.h - 1, in.w, 1), ' ', A(TUI_WHITE, TUI_BLACK));
     ls_safe_line(sf, in, in.y + in.h - 1, state, A(hue, TUI_BLACK));
@@ -1053,7 +1080,8 @@ bool ls_update_view_touch(int col, int row)
         if (ls_c6_view_touch(col, row)) s_c6_page = false;
         return false;
     }
-    const int i = ls_btn_hit(col, row);
+    int i = ls_btn_hit(col, row);
+    if (i >= 0 && ls_tui_compact()) i++;     /* the desk's bar has no BACK */
     if (i == 3) { s_c6_page = true; ls_c6_view_enter(); return false; }
     if (i == 2) { channel(); return false; }
     if (i == 0) return true;

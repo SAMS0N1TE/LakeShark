@@ -498,6 +498,10 @@ void ls_lap_sim_tile(ls_app_t *tile)
         tile->name = a->name;
         tile->sub = a->sub;
         tile->hue = a->color;
+        /* As ls_lap.c picks it: the colour dots, else the character art, else the built-in. */
+        if (a->icon > 0 && a->icon < LS_ICON__COUNT) tile->icon = a->icon;
+        else tile->icon = LS_ICON_STAR;
+        if (!lapsim_apps[i].icon) tile->icon = ls_icon_art(0, (const char (*)[LS_ICON_COLS + 1])a->icon_art, tile->icon);
         if (lapsim_apps[i].icon) {
             static uint8_t px[LAP_PX_H][LAP_PX_W];
             for (int y = 0; y < LAP_PX_H; y++)

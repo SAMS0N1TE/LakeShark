@@ -145,7 +145,12 @@ static ssize_t carto_read(int fd,void *p,size_t n) {
     if(got>0)carto_host_read_bytes+=got;return got;
 }
 static int64_t carto_wall_us(void) {
-    struct timespec ts;timespec_get(&ts,TIME_UTC);
+    struct timespec ts;
+#ifdef TIME_UTC
+    timespec_get(&ts,TIME_UTC);
+#else
+    clock_gettime(CLOCK_REALTIME,&ts);   /* MinGW has no C11 timespec_get */
+#endif
     return (int64_t)ts.tv_sec*1000000+ts.tv_nsec/1000;
 }
 static int carto_close(int fd) { CARTO_IO_ASSERT();return close(fd); }

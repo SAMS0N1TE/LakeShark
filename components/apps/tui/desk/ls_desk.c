@@ -7,6 +7,7 @@ extern _Bool ls_lap_mic_active(void) __attribute__((weak));
    changes because a sample came in. */
 
 #include "ls_desk_priv.h"
+#include "ls_desk_host.h"
 #include "../ls_deskui.h"
 
 #include <stdio.h>
@@ -22,7 +23,9 @@ extern _Bool ls_lap_mic_active(void) __attribute__((weak));
 #include "../ls_tui_touch.h"
 #include "../ls_icons.h"
 #include "../ls_rterm.h"
+extern bool ls_rterm_request_grid(int cols, int rows) __attribute__((weak));   /* a desk build without the feed */
 #include "ls_gps.h"
+#include "../../../lakeshark/core/ls_tz.h"
 #include "../ls_braille.h"
 #include "../ls_theme.h"
 
@@ -49,8 +52,8 @@ __attribute__((weak)) bool ls_input_latency(int *p50_ms, int *p95_ms)
 #define DK_BOARD "lssim"
 #endif
 
-enum { DRAG_NONE, DRAG_MOVE, DRAG_SIZE, DRAG_KEY, DRAG_CLIENT, DRAG_ICON, DRAG_BAND };
-enum { KEY_MENU = 1, KEY_MIN, KEY_MAX, KEY_CLOSE };
+enum { DRAG_NONE, DRAG_MOVE, DRAG_KEY, DRAG_CLIENT, DRAG_ICON, DRAG_BAND };
+enum { KEY_MENU = 1, KEY_MIN, KEY_MAX, KEY_CLOSE, KEY_SIZE };
 #define DESK_MIN_COLS 100
 #define DESK_MIN_ROWS 30
 
@@ -59,6 +62,7 @@ EXT_RAM_BSS_ATTR static ls_gps_state_t s_gps;
 static int s_z[DK_WIN_SLOTS], s_nz;
 static int s_next_id = 1;
 static bool s_on, s_full, s_focus;
+static bool s_res_pending;                /* the desk came on: its saved resolution at the next frame */
 static int64_t s_focus_banner_us;
 static int s_cols, s_rows;              /* the grid as last drawn */
 static int s_last_front = -1;
@@ -100,10 +104,10 @@ static int s_drag_icon = -1;
 static int s_icon_hover = -1;
 static bool s_desk_keys;                  /* the desktop has the keys: its ground was clicked last */
 static int s_ctx_col = -1, s_ctx_row = -1;   /* where the desktop's menu was asked for */
-static bool s_size_w, s_size_h, s_size_l; /* which sides a resize drag moves: right, bottom, left */
 /* Move and Size from the window menu, by the arrow keys. */
 static int s_kbd_mode, s_kbd_win;         /* 0, 1 move, 2 size */
 static tui_rect s_kbd_was;
+static uint8_t s_kbd_size;
 /* The window switcher (Ctrl+Tab, Alt+Tab, F6): front first, as the windows were. */
 static bool s_sw_on, s_sw_sticky;
 EXT_RAM_BSS_ATTR static int s_sw_ids[DK_WIN_SLOTS];
@@ -179,6 +183,14 @@ dk_win_t *dk_front_win(void)
 
 tui_rect dk_work(void)
 {
+    if (s_cols <= 0 || s_rows <= 0) {
+        /* Before the desk's first frame (a window opened as the desk comes
+           on): the grid as it is. A work area of nothing put every new window
+           at x=-8 at its smallest size. */
+        int c = 0, r = 0;
+        ls_tui_geometry(&c, &r, NULL, NULL);
+        return tui_rect_make(0, 0, c > 0 ? c : 0, r > 2 ? r - 2 : 0);
+    }
     const int rows = s_rows > 2 ? s_rows - 2 : 0;
     return tui_rect_make(0, 0, s_cols, rows);
 }
@@ -200,8 +212,8 @@ void dk_win_rects(const dk_win_t *w, tui_rect *outer, tui_rect *client)
     const tui_rect o = w->state == LS_DESK_WIN_MAX ? dk_work() : tui_rect_make(w->x, w->y, w->w, w->h);
     if (outer) *outer = o;
     if (client) {
-        if (w->state == LS_DESK_WIN_MAX) *client = tui_rect_make(o.x, o.y + 1, o.w, o.h - 2);
-        else *client = tui_rect_make(o.x + 1, o.y + 1, o.w - 2, o.h - 3);
+        /* maximized keeps its frame too: both side lines, the status bar, the foot */
+        *client = tui_rect_make(o.x + 1, o.y + 1, o.w - 2, o.h - 3);
         if (has_bar(w) && client->h > 4) { client->y++; client->h--; }
     }
 }
@@ -378,19 +390,106 @@ const char *ls_desk_theme_name(int t)
 static int min_w(const dk_win_t *w) { return w->kind == DK_APP ? 60 + 2 : 24; }
 static int min_h(const dk_win_t *w) { return w->kind == DK_APP ? 20 + 4 : has_bar(w) ? 10 : 6; }
 
-/* Keep a window on the grid: its title row and 8 title cells at least,
-   shrunk when bigger than the work area (never below its minimum). */
+/* ------------------------------------------------------- size presets -- */
+
+/* An app window is not dragged to any size: free sizes broke apps (a MAP
+   cannot run in a sliver). It has one of three sizes, like a monitor's
+   resolutions, or it is maximized. Outer sizes; the client of each under
+   the desk's menu bar is 80x24, 100x30 and 120x38 (a row more where the app
+   draws its own bar). A preset larger than the work area is offered only
+   when it fits; one that no longer fits (a smaller desktop) is clamped. */
+static const struct { const char *name; int w, h; } SIZES[DK_SIZE_N] = {
+    {"Small", 82, 28}, {"Medium", 102, 34}, {"Large", 122, 42},
+};
+#define DK_SIZE_DEFAULT DK_SIZE_MEDIUM       /* an app that names no minimum of its own */
+
+const char *dk_size_name(int p) { return p >= 0 && p < DK_SIZE_N ? SIZES[p].name : "Maximized"; }
+bool dk_size_fits(int p)
+{
+    const tui_rect work = dk_work();
+    return p >= 0 && p < DK_SIZE_N && SIZES[p].w <= work.w && SIZES[p].h <= work.h;
+}
+
+/* The smallest preset the app works at (its desk_cols x desk_rows client,
+   with the desk's bar), or DK_SIZE_N: maximized, nothing smaller fits. */
+static int size_wanted(const dk_win_t *w)
+{
+    const int mc = w->app ? w->app->desk_cols : 0, mr = w->app ? w->app->desk_rows : 0;
+    const int from = mc || mr ? DK_SIZE_SMALL : DK_SIZE_DEFAULT;
+    for (int p = from; p < DK_SIZE_N; p++)
+        if (SIZES[p].w - 2 >= mc && SIZES[p].h - 4 >= mr) return dk_size_fits(p) ? p : DK_SIZE_N;
+    return DK_SIZE_N;
+}
+
+/* Keep a window on the grid, all of it: an app window at its preset's size,
+   shrunk when the work area is smaller; a shell window never below its
+   minimum. Nothing opens or is dragged off the edge (a window at x=-8 had
+   lost its left border and the start of its title). */
 static void clamp(dk_win_t *w)
 {
     const tui_rect work = dk_work();
+    if (w->kind == DK_APP) {
+        if (w->size >= DK_SIZE_N) w->size = DK_SIZE_DEFAULT;
+        w->w = SIZES[w->size].w;
+        w->h = SIZES[w->size].h;
+    }
     if (w->w > work.w) w->w = work.w;
     if (w->h > work.h) w->h = work.h;
-    if (w->w < min_w(w)) w->w = min_w(w);
-    if (w->h < min_h(w)) w->h = min_h(w);
+    if (w->kind != DK_APP) {
+        if (w->w < min_w(w)) w->w = min_w(w);
+        if (w->h < min_h(w)) w->h = min_h(w);
+    }
+    if (w->x + w->w > work.w) w->x = work.w - w->w;
+    if (w->y + w->h > work.h) w->y = work.h - w->h;
+    if (w->x < 0) w->x = 0;
     if (w->y < 0) w->y = 0;
-    if (w->y > work.h - 1) w->y = work.h - 1;
-    if (w->x > work.w - 8) w->x = work.w - 8;
-    if (w->x + w->w < 8) w->x = 8 - w->w;
+}
+
+/* A window to a preset (DK_SIZE_N: maximized). Its snapshot of another
+   size is dropped; where it was left is kept for next time. */
+static void remember_place(const dk_win_t *w);
+static void set_size(dk_win_t *w, int p)
+{
+    if (!w || w->kind != DK_APP) return;
+    tui_rect a, b;
+    dk_win_rects(w, &a, NULL);
+    if (p >= DK_SIZE_N) w->state = LS_DESK_WIN_MAX;
+    else {
+        w->state = LS_DESK_WIN_NORMAL;
+        w->size = (uint8_t)p;
+        /* grow from where it is, kept on the grid */
+        clamp(w);
+    }
+    dk_win_rects(w, &b, NULL);
+    if (a.w != b.w || a.h != b.h) {
+        if (w->snap) dk_compat_forget(w);
+        dk_anim_zoom(a, b);
+    }
+    remember_place(w);
+}
+
+/* The next preset up that fits, Small again after the largest. */
+static int size_next(const dk_win_t *w)
+{
+    for (int k = 1; k <= DK_SIZE_N; k++) {
+        const int p = (w->size + k) % DK_SIZE_N;
+        if (dk_size_fits(p) || p == DK_SIZE_SMALL) return p;
+    }
+    return DK_SIZE_SMALL;
+}
+
+int ls_desk_size(int id)
+{
+    const dk_win_t *w = dk_win(id);
+    if (!w || w->kind != DK_APP) return -1;
+    return w->state == LS_DESK_WIN_MAX ? DK_SIZE_N : w->size;
+}
+void ls_desk_set_size(int id, int preset)
+{
+    dk_win_t *w = dk_win(id);
+    if (!w || preset < 0 || preset > DK_SIZE_N) return;
+    if (preset < DK_SIZE_N && !dk_size_fits(preset) && preset != DK_SIZE_SMALL) return;
+    set_size(w, preset);
 }
 
 /* --------------------------------------------------------- z and focus -- */
@@ -491,6 +590,14 @@ static void place_new(dk_win_t *w, int cw, int ch)
     for (int i = 0; i < DK_WIN_SLOTS; i++) if (s_w[i].used && &s_w[i] != w) n++;
     w->w = cw + 2;
     w->h = ch + 3 + (has_bar(w) ? 1 : 0);
+    if (w->kind == DK_APP) {
+        /* the smallest preset the app works at; maximized when none fits */
+        const int p = size_wanted(w);
+        w->size = (uint8_t)(p < DK_SIZE_N ? p : DK_SIZE_SMALL);
+        if (p >= DK_SIZE_N) w->state = LS_DESK_WIN_MAX;
+        w->w = SIZES[w->size].w;
+        w->h = SIZES[w->size].h;
+    }
     if (w->w > work.w) w->w = work.w;
     if (w->h > work.h) w->h = work.h;
     /* Cascade from the top left, a step right and down for each window,
@@ -529,10 +636,16 @@ static int open_app(const ls_app_t *a)
     snprintf(w->title, sizeof(w->title), "%s", a->name ? a->name : a->id);
     snprintf(w->label, sizeof(w->label), "%s", a->name ? a->name : a->id);
     place_new(w, 115, 27);
-    /* Where the owner left this app's window last time, and how big. */
+    /* Where the owner left this app's window last time, and at which size:
+       a preset at least as big as the app needs, or maximized. A size from
+       before the presets (any w x h) keeps its place, not its size. */
     int px, py, pw, ph, pstate;
     if (dk_place_get(a->id, &px, &py, &pw, &ph, &pstate)) {
-        w->x = px; w->y = py; w->w = pw; w->h = ph;
+        const int need = size_wanted(w);
+        w->x = px; w->y = py;
+        for (int p = 0; p < DK_SIZE_N; p++)
+            if (SIZES[p].w == pw && SIZES[p].h == ph && dk_size_fits(p) && (need >= DK_SIZE_N || p >= need)) w->size = (uint8_t)p;
+        (void)pstate;                     /* it opens normal, as before: Maximize is a click away */
         clamp(w);
     }
     ls_desk_raise(w->id);
@@ -553,6 +666,7 @@ static void remember_place(const dk_win_t *w)
 int ls_desk_open_app(const char *id)
 {
     if (id && !strcmp(id, "studio")) return dk_open_studio();     /* desk open studio */
+    if (id && !strcmp(id, "homebase")) return dk_open_home();     /* desk open homebase */
     return id ? open_app(ls_app_by_id(id)) : -1;
 }
 
@@ -659,6 +773,13 @@ void ls_desk_resize(int id, int ww, int hh)
 {
     dk_win_t *w = dk_win(id);
     if (!w) return;
+    if (w->kind == DK_APP) {
+        /* no free sizes: the smallest preset at least that big, else the largest */
+        int p = DK_SIZE_N - 1;
+        for (int k = DK_SIZE_N - 1; k >= 0; k--) if (SIZES[k].w >= ww && SIZES[k].h >= hh) p = k;
+        set_size(w, p);
+        return;
+    }
     w->w = ww;
     w->h = hh;
     clamp(w);
@@ -682,6 +803,11 @@ void ls_desk_close(int id)
         dk_anim_zoom(o, tui_rect_make(o.x + o.w / 2 - 1, o.y + o.h / 2 - 1, 2, 2));   /* folds to its middle */
     }
     dk_compat_forget(w);
+    /* A card app runs while its screen is the router's: closing its window
+       ends it (its leave runs), as its own close button did on the glass.
+       Built-in apps keep their screen as before (a receiver keeps going and
+       the tray can resume it). */
+    if (native_window(w) && dk_compat_live_id() == id && ls_tui_screen_current() == w->screen) ls_tui_screen_show(0);
     if (dk_compat_live_id() == id) dk_compat_release();
     z_remove(id);
     if (s_last_front == id) s_last_front = -1;
@@ -717,6 +843,26 @@ bool ls_desk_window_at(int z, ls_desk_win_info_t *o)
 }
 
 int ls_desk_alloc_blocks(void) { return dk_compat_blocks(); }
+
+/* Open on the desk, in front or behind (minimized too): an app's services
+   keep running for the windows that show what they hear (MAP). */
+bool ls_desk_app_open(const char *id)
+{
+    if (!id || !s_on) return false;
+    for (int i = 0; i < DK_WIN_SLOTS; i++)
+        if (s_w[i].used && s_w[i].kind == DK_APP && s_w[i].app && s_w[i].app->id && !strcmp(s_w[i].app->id, id))
+            return true;
+    return false;
+}
+
+bool ls_desk_radio_app_open(void)
+{
+    if (!s_on) return false;
+    for (int i = 0; i < DK_WIN_SLOTS; i++)
+        if (s_w[i].used && s_w[i].kind == DK_APP && s_w[i].app && s_w[i].app->screen && s_w[i].app->screen->radio)
+            return true;
+    return false;
+}
 
 void ls_desk_fullscreen(bool on)
 {
@@ -823,6 +969,7 @@ void dk_do(int act, int arg)
         break;
     case A_SHUTDOWN: dk_open_shutdown(); break;
     case A_STUDIO: dk_open_studio(); break;
+    case A_HOMEBASE: dk_open_home(); break;
     case A_DESK_OFF: ls_desk_set_enabled(false); break;
     case A_ARRANGE: case A_ARRANGE_HOW:
         /* back to the columns (forgetting where they were dragged), by name, or lined up */
@@ -900,6 +1047,36 @@ void dk_do(int act, int arg)
     case A_DLG: dk_dialogs_cmd(arg); break;
     case A_WIN_MOVE: kbd_drag_begin(arg, false); break;
     case A_WIN_SIZE: kbd_drag_begin(arg, true); break;
+    case A_WIN_PRESET: {
+        /* arg: window * 4 + preset, 3 maximized */
+        dk_win_t *pw = dk_win(arg / 4);
+        if (pw) { set_size(pw, arg % 4 >= DK_SIZE_N ? DK_SIZE_N : arg % 4); ls_desk_raise(pw->id); }
+        break;
+    }
+    case A_KEYS: {
+        /* The app's keys, which used to fill the status bar: in a box, split
+           at the gap nearest the middle. */
+        const char *hint = w && w->kind == DK_APP && w->app && w->app->screen ? w->app->screen->hint : NULL;
+        char a[96] = "", b[96] = "";
+        if (!hint || !hint[0]) snprintf(a, sizeof(a), "This window has no keys of its own.");
+        else {
+            const int len = (int)strlen(hint);
+            int cut = -1;
+            for (int i = 0; i + 1 < len; i++)
+                if (hint[i] == ' ' && hint[i + 1] == ' ' && (cut < 0 || abs(i - len / 2) < abs(cut - len / 2))) cut = i;
+            if (len <= 40 || cut < 0) snprintf(a, sizeof(a), "%s", hint);
+            else {
+                snprintf(a, sizeof(a), "%.*s", cut, hint);
+                const char *rest = hint + cut;
+                while (*rest == ' ') rest++;
+                snprintf(b, sizeof(b), "%s", rest);
+            }
+        }
+        char title[48];
+        snprintf(title, sizeof(title), "%s Keys", w ? w->title : "");
+        dk_msg(title, a, b);
+        break;
+    }
     default: break;
     }
 }
@@ -943,15 +1120,21 @@ static void layout_windows(int how)
         const int ow = w->w, oh = w->h;
         w->state = LS_DESK_WIN_NORMAL;
         if (!how) {
-            if (w->kind == DK_APP) { w->w = 117; w->h = 30; }
             w->x = 2 + (k % 8) * 4;
             w->y = (k % 8) * 2;
         } else {
-            w->w = work.w / cols;
-            w->h = work.h / rows;
-            w->x = (k % cols) * w->w;
-            w->y = (k / cols) * w->h;
-            if (k == n - 1 && how == 1 && rows > 1) w->w = work.w - w->x;      /* the last takes what is left of its row */
+            const int tw = work.w / cols, th = work.h / rows;
+            w->x = (k % cols) * tw;
+            w->y = (k / cols) * th;
+            if (w->kind == DK_APP) {
+                /* app windows keep to the presets: the largest that fits its tile */
+                w->size = DK_SIZE_SMALL;
+                for (int p = 0; p < DK_SIZE_N; p++) if (SIZES[p].w <= tw && SIZES[p].h <= th) w->size = (uint8_t)p;
+            } else {
+                w->w = tw;
+                w->h = th;
+                if (k == n - 1 && how == 1 && rows > 1) w->w = work.w - w->x;      /* the last takes what is left of its row */
+            }
         }
         clamp(w);
         if (w->w != ow || w->h != oh) dk_compat_forget(w);
@@ -970,6 +1153,7 @@ static void kbd_drag_begin(int id, bool size)
     s_kbd_mode = size ? 2 : 1;
     s_kbd_win = id;
     s_kbd_was = tui_rect_make(w->x, w->y, w->w, w->h);
+    s_kbd_size = w->size;
 }
 
 static bool kbd_drag_key(ls_tk_t k)
@@ -980,7 +1164,12 @@ static bool kbd_drag_key(ls_tk_t k)
     if (dx || dy) {
         const int ow = w->w, oh = w->h;
         if (s_kbd_mode == 1) { w->x += dx; w->y += dy; }
-        else { w->w += dx; w->h += dy; }
+        else if (w->kind == DK_APP) {
+            /* no free size: Right or Down the next preset up, Left or Up the next down */
+            int p = w->size + (dx > 0 || dy > 0 ? 1 : -1);
+            while (p > 0 && p < DK_SIZE_N && !dk_size_fits(p)) p += dx > 0 || dy > 0 ? 1 : -1;
+            if (p >= 0 && p < DK_SIZE_N && (dk_size_fits(p) || p == DK_SIZE_SMALL)) w->size = (uint8_t)p;
+        } else { w->w += dx; w->h += dy; }
         clamp(w);
         const tui_rect work = dk_work();
         if (w->x + w->w > work.w && s_kbd_mode == 2) w->w = work.w - w->x;
@@ -992,6 +1181,7 @@ static bool kbd_drag_key(ls_tk_t k)
     if (k == LS_TK_ESC) {
         if (w->w != s_kbd_was.w || w->h != s_kbd_was.h) dk_compat_forget(w);
         w->x = s_kbd_was.x; w->y = s_kbd_was.y; w->w = s_kbd_was.w; w->h = s_kbd_was.h;
+        if (w->kind == DK_APP) w->size = s_kbd_size;
         s_kbd_mode = 0;
     } else if (k == LS_TK_ENTER) {
         s_kbd_mode = 0;
@@ -1137,6 +1327,29 @@ static void title_keys(const dk_win_t *w, tui_rect o, int *kmin, int *kmax, int 
     *kmin = *kmax >= 0 ? o.x + o.w - 9 : o.x + o.w - 6;
 }
 
+/* An app window's size key, left of minimize: its preset's letter, the
+   presets in a list under it. -1 for a shell window. */
+static int title_size_key(const dk_win_t *w, tui_rect o)
+{
+    int kmin, kmax, kclose;
+    title_keys(w, o, &kmin, &kmax, &kclose);
+    return w->kind == DK_APP && kmin - 4 > o.x + 12 ? kmin - 4 : -1;
+}
+static int title_key_at(const dk_win_t *w, tui_rect o, int col)
+{
+    int kmin, kmax, kclose;
+    title_keys(w, o, &kmin, &kmax, &kclose);
+    const int ks = title_size_key(w, o);
+    return col >= kclose && col <= kclose + 2 ? KEY_CLOSE : kmax >= 0 && col >= kmax && col <= kmax + 2 ? KEY_MAX
+         : col >= kmin && col <= kmin + 2 ? KEY_MIN : ks >= 0 && col >= ks && col <= ks + 2 ? KEY_SIZE : 0;
+}
+/* The grip: the window's bottom right corner cell exactly, on an app window
+   while it is not maximized. A click there steps the size presets. */
+static bool on_grip(const dk_win_t *w, tui_rect o, int col, int row)
+{
+    return w->kind == DK_APP && w->state != LS_DESK_WIN_MAX && col == o.x + o.w - 1 && row == o.y + o.h - 1;
+}
+
 /* Each app's mark in its title, in its hue. */
 static int app_glyph(const ls_app_t *a)
 {
@@ -1193,6 +1406,78 @@ static const char *status_text(const dk_win_t *w, bool front, char *buf, size_t 
     return "paused - click to resume";
 }
 
+/* Which window's app holds the receiver now (its screen's radio is the
+   claimed mode), or NULL. */
+static const dk_win_t *radio_owner(const char *claimed)
+{
+    if (!claimed) return NULL;
+    for (int i = 0; i < DK_WIN_SLOTS; i++) {
+        const dk_win_t *u = &s_w[i];
+        if (u->used && u->kind == DK_APP && u->app && u->app->screen && u->app->screen->radio &&
+            !strcmp(u->app->screen->radio, claimed)) return u;
+    }
+    return NULL;
+}
+
+/* One status bar of panes, as a Windows 98 program has: what the app says
+   (or that it is paused), who holds the receiver, the window's size. The
+   app's key hint is no longer here: it is under Help > Keys. */
+static void draw_status(tui_surface *sf, const dk_win_t *w, bool front, tui_rect clip, tui_rect row, tui_rect c)
+{
+    const tui_rect srow = tui_rect_intersect(clip, row);
+    const int sy = row.y;
+    dk_fill(sf, srow, dk_attr(R_FACE));
+    char buf[100], pane[3][100];
+    uint8_t ink[3];
+    int n = 0;
+    const char *st = status_text(w, front, buf, sizeof(buf));
+    if (w->kind == DK_APP && front) {
+        /* what the app says of itself: its status line, else its live line (a frequency, a count) */
+        const char *left = ls_tui_status_left();
+        char live[24];
+        const char *lv = w->app ? dk_live_line(w->app, live, sizeof(live)) : NULL;
+        if (left && left[0]) st = left;
+        else if (lv && lv[0]) { snprintf(buf, sizeof(buf), "%.20s %.24s", w->title, lv); st = buf; }
+        else st = "Ready";
+    }
+    snprintf(pane[n], sizeof(pane[n]), "%.99s", st);
+    ink[n++] = dk_attr(R_FACE);
+    if (w->kind == DK_APP) {
+        /* the receiver: this window has it, another window has it, or it is parked */
+        const char *claimed = ls_tui_radio_claimed();
+        const char *mine = w->app && w->app->screen ? w->app->screen->radio : NULL;
+        const dk_win_t *own = radio_owner(claimed);
+        if (claimed && own == w) {
+            snprintf(pane[n], sizeof(pane[n]), "Radio: %s here", claimed);
+            ink[n++] = dk_attr(R_GOOD);
+        } else if (claimed) {
+            if (own && strcmp(own->title, claimed)) snprintf(pane[n], sizeof(pane[n]), "Radio: %.12s in %.20s", claimed, own->title);
+            else snprintf(pane[n], sizeof(pane[n]), "Radio: %s", claimed);
+            ink[n++] = mine ? dk_attr(R_WARN) : dk_attr(R_INFO);
+        } else if (mine) {
+            snprintf(pane[n], sizeof(pane[n]), "Radio: parked");
+            ink[n++] = dk_attr(R_FACE);
+        }
+        /* The app's area under the menu bar, whoever draws the bar (an app
+           with its own bar has it inside its client: P25 said 100x31). */
+        const int ah = c.h - (w->kind == DK_APP && w->own_bar ? 1 : 0);
+        if (w->state == LS_DESK_WIN_MAX) snprintf(pane[n], sizeof(pane[n]), "Maximized %dx%d", c.w, ah);
+        else snprintf(pane[n], sizeof(pane[n]), "%s %dx%d", SIZES[w->size < DK_SIZE_N ? w->size : 0].name, c.w, ah);
+        ink[n++] = dk_attr(R_STRONG);
+    }
+    /* the right-hand panes from the right edge in; the first takes what is left */
+    int right = srow.x + srow.w - 1;
+    for (int i = n - 1; i >= 1; i--) {
+        const int len = dk_text_len(pane[i]);
+        if (right - len - 3 < srow.x + 12) break;
+        dk_text(sf, srow, right - len, sy, pane[i], ink[i]);
+        right -= len + 2;
+        ls_box_put(sf, srow, right, sy, LS_BOX_V, dk_attr(R_SHADOW));
+        right -= 1;
+    }
+    dk_text(sf, tui_rect_intersect(srow, tui_rect_make(srow.x, sy, right - srow.x, 1)), srow.x + 1, sy, pane[0], ink[0]);
+}
+
 static void draw_window(tui_surface *sf, dk_win_t *w, bool front)
 {
     tui_rect o, c;
@@ -1219,9 +1504,17 @@ static void draw_window(tui_surface *sf, dk_win_t *w, bool front)
     title_keys(w, o, &kmin, &kmax, &kclose);
     char title[64];
     snprintf(title, sizeof(title), "%s", w->title);      /* the size is in the status bar */
-    const tui_rect tclip = tui_rect_intersect(clip, tui_rect_make(o.x + 6, o.y, kmin - o.x - 7, 1));
+    const int ksize = title_size_key(w, o);
+    const tui_rect tclip = tui_rect_intersect(clip, tui_rect_make(o.x + 6, o.y, (ksize >= 0 ? ksize : kmin) - o.x - 7, 1));
     dk_text(sf, tclip, o.x + 6, o.y, title, ta);
     const bool pressing = s_drag == DRAG_KEY && s_drag_win == w->id;
+    if (ksize >= 0) {
+        /* S, M or L: the preset; the list of them comes down from it */
+        const dk_menu_t *m0 = dk_menu_at(0);
+        const bool down = m0 && m0->id == M_WINSIZE && m0->arg == w->id;
+        title_key(sf, clip, w, ksize, o.y, max ? '#' : SIZES[w->size < DK_SIZE_N ? w->size : 0].name[0], KEY_SIZE, front,
+                  quiet, down);
+    }
     title_key(sf, clip, w, kmin, o.y, 0x2501, KEY_MIN, front, quiet, pressing && s_drag_key == KEY_MIN);
     if (kmax >= 0)
         title_key(sf, clip, w, kmax, o.y, max ? LS_SHAPE_RESTORE : LS_SHAPE_SQUARE, KEY_MAX, front, quiet,
@@ -1229,8 +1522,8 @@ static void draw_window(tui_surface *sf, dk_win_t *w, bool front)
     title_key(sf, clip, w, kclose, o.y, LS_SHAPE_TIMES, KEY_CLOSE, front, quiet, pressing && s_drag_key == KEY_CLOSE);
     /* Sides and bottom: the face out to the window's outer edge, the line
        on it: left HILITE, right and bottom SHADOW. A solid frame. */
-    const int sy = max ? o.y + o.h - 1 : o.y + o.h - 2;
-    if (!max) {
+    const int sy = o.y + o.h - 2;
+    {
         const uint8_t face = dk_attr(R_FACE);
         dk_fill(sf, tui_rect_intersect(tui_rect_make(o.x, o.y + 1, 1, o.h - 1), clip), face);
         dk_fill(sf, tui_rect_intersect(tui_rect_make(o.x + o.w - 1, o.y + 1, 1, o.h - 1), clip), face);
@@ -1243,46 +1536,16 @@ static void draw_window(tui_surface *sf, dk_win_t *w, bool front)
         dk_edge_put(sf, clip, o.x, o.y + o.h - 1, LS_EDGE_BL, R_HILITE);
         dk_edge_put(sf, clip, o.x + o.w - 1, o.y + o.h - 1, LS_EDGE_BR, R_SHADOW);
     }
-    if (!max && front && (s_drag == DRAG_SIZE || (s_drag == DRAG_NONE && !dk_menu_depth())) &&
-        tui_rect_contains(o, s_ptr_col, s_ptr_row) && s_ptr_row > o.y) {
-        /* the edge the pointer is on (or is sizing by) lights: it can be dragged */
-        const bool l = s_drag == DRAG_SIZE ? s_size_l : s_ptr_col == o.x;
-        const bool r = s_drag == DRAG_SIZE ? s_size_w : s_ptr_col == o.x + o.w - 1;
-        const bool b = s_drag == DRAG_SIZE ? s_size_h : s_ptr_row == o.y + o.h - 1;
-        for (int i = 1; i < o.h - 1; i++) {
-            if (l) dk_edge_put(sf, clip, o.x, o.y + i, LS_EDGE_L, R_ACCEL);
-            if (r) dk_edge_put(sf, clip, o.x + o.w - 1, o.y + i, LS_EDGE_R, R_ACCEL);
-        }
-        if (b) for (int i = 1; i < o.w - 1; i++) dk_edge_put(sf, clip, o.x + i, o.y + o.h - 1, LS_EDGE_B, R_ACCEL);
-        if (l || b) dk_edge_put(sf, clip, o.x, o.y + o.h - 1, LS_EDGE_BL, R_ACCEL);
-        if (r || b) dk_edge_put(sf, clip, o.x + o.w - 1, o.y + o.h - 1, LS_EDGE_BR, R_ACCEL);
+    if (on_grip(w, o, o.x + o.w - 1, o.y + o.h - 1)) {
+        /* The grip, on the corner cell itself (the edges do not size: the
+           presets do). It lights under the pointer: a click steps the size. */
+        const bool lit = front && s_drag == DRAG_NONE && !dk_menu_depth() && on_grip(w, o, s_ptr_col, s_ptr_row);
+        ls_braille_put(sf, clip, o.x + o.w - 1, o.y + o.h - 1, (int16_t)0x28F8, lit ? dk_attr(R_SELECT) : dk_attr(R_SHADOW));
     }
     if (has_bar(w))
         dk_menubar(sf, tui_rect_intersect(clip, tui_rect_make(c.x, c.y - 1, c.w, 1)), c.x, c.y - 1, c.w, BAR_NAMES, BAR_N,
                    bar_open(w), front && !s_desk_keys);
     /* Status bar. */
-    const int sx = max ? o.x : o.x + 1, sw = max ? o.w : o.w - 2;
-    const tui_rect srow = tui_rect_intersect(clip, tui_rect_make(sx, sy, sw, 1));
-    dk_fill(sf, srow, dk_attr(R_FACE));
-    char buf[64];
-    const char *st = status_text(w, front, buf, sizeof(buf));
-    int x = sx + 1;
-    x += dk_text(sf, srow, x, sy, st, front && w->kind == DK_APP ? dk_attr(R_FACE) : dk_attr(R_FACE));
-    if (w->kind == DK_APP) {
-        ls_box_put(sf, srow, x + 1, sy, LS_BOX_V, dk_attr(R_SHADOW));
-        snprintf(buf, sizeof(buf), "%dx%d", c.w, c.h);
-        dk_text(sf, srow, x + 3, sy, buf, dk_attr(R_STRONG));
-        if (w->app && w->app->screen && w->app->screen->radio) {
-            const int bx = x + 3 + dk_text_len(buf) + 1;
-            ls_box_put(sf, srow, bx, sy, LS_BOX_V, dk_attr(R_SHADOW));
-            dk_text(sf, srow, bx + 2, sy, w->app->screen->radio, dk_attr(R_INFO));
-        }
-    }
-    if (!max) {
-        /* the grip: dots stepping up to the corner, light over dark */
-        ls_braille_put(sf, srow, sx + sw - 2, sy, (int16_t)0x28C0, dk_attr(R_HILITE));
-        ls_braille_put(sf, srow, sx + sw - 1, sy, (int16_t)0x28F8, dk_attr(R_SHADOW));
-    }
     /* The client. */
     const tui_rect cclip = tui_rect_intersect(c, work);
     if (w->kind == DK_SHELL) {
@@ -1314,6 +1577,8 @@ static void draw_window(tui_surface *sf, dk_win_t *w, bool front)
     } else {
         dk_compat_draw_snapshot(sf, w, c, cclip);
     }
+    /* the status bar last: it shows what the app said in this very frame */
+    draw_status(sf, w, front, clip, tui_rect_make(o.x + 1, sy, o.w - 2, 1), c);
 }
 
 /* --------------------------------------------------------------- taskbar -- */
@@ -1719,12 +1984,23 @@ void ls_desk_draw(tui_surface *sf)
             if (a && a->screen && ls_tui_screen_index_of(a->screen) == later) { ls_desk_open_app(a->id); break; }
         }
     }
+    if (s_res_pending) {
+        /* the desk came on: the resolution the owner chose, once */
+        int c, r;
+        s_res_pending = false;
+        if (ls_desk_res_get(&c, &r) && (c != sf->w || r != sf->h) && ls_rterm_request_grid) ls_rterm_request_grid(c, r);
+    }
     if (sf->w != s_cols || sf->h != s_rows) relayout(sf->w, sf->h);
     palette_follow();
     dk_roles_sync();
     poll_finger();
     dk_store_tick();
 
+    /* A card app that quit itself (its own Exit) closes its window. */
+    {
+        dk_win_t *f = dk_front_win();
+        if (f && dk_compat_quit(f)) ls_desk_close(f->id);
+    }
     /* The window that just left the front keeps its last frame. */
     dk_win_t *front = dk_front_win();
     const int fid = front ? front->id : -1;
@@ -1789,7 +2065,7 @@ void ls_desk_draw(tui_surface *sf)
     if (front && front->kind == DK_APP) dk_win_rects(front, NULL, &keep);
     dk_wall_after_windows(sf, tui_rect_make(0, 0, s_cols, s_rows - 1), keep);
     t1 = dc_now(); dc_add(DC_AFTER, t1 - t0); t0 = t1;
-    if ((s_drag == DRAG_MOVE || s_drag == DRAG_SIZE) && s_drag_moved && !dk_prefs()->live_drag)
+    if (s_drag == DRAG_MOVE && s_drag_moved && !dk_prefs()->live_drag)
         dk_frame_march(sf, dk_work(), s_outline, dk_attr(R_STRONG), s_outline_step);
     if (s_kbd_mode && dk_win(s_kbd_win)) {
         /* a window in hand: its outline marches as the arrows step it */
@@ -1797,7 +2073,7 @@ void ls_desk_draw(tui_surface *sf)
         dk_win_rects(dk_win(s_kbd_win), &o, NULL);
         dk_frame_march(sf, dk_work(), o, dk_attr(R_STRONG), s_outline_step);
         const char *how = s_kbd_mode == 1 ? " Arrows move it   Enter keeps   Esc puts it back "
-                                          : " Arrows size it   Enter keeps   Esc puts it back ";
+                                          : " Arrows step Small, Medium, Large   Enter keeps   Esc puts it back ";
         dk_text(sf, dk_work(), o.x + 2, o.y + 1, how, dk_attr(R_TIP));
     }
     char carried[40];
@@ -1870,10 +2146,7 @@ static void hover_at(int col, int row)
         tui_rect o;
         dk_win_rects(f, &o, NULL);
         if (row == o.y) {
-            int kmin, kmax, kclose;
-            title_keys(f, o, &kmin, &kmax, &kclose);
-            key = col >= kclose && col <= kclose + 2 ? KEY_CLOSE : kmax >= 0 && col >= kmax && col <= kmax + 2 ? KEY_MAX
-                : col >= kmin && col <= kmin + 2 ? KEY_MIN : 0;
+            key = title_key_at(f, o, col);
             if (key) win = f->id;
         }
     }
@@ -1890,8 +2163,23 @@ static bool tip_text(int col, int row, char *buf, size_t n)
         dk_items_what(it, what, sizeof(what));
         return it && snprintf(buf, n, "%s - %s", dk_items_label(it), what) > 0;
     }
-    if (s_hover_win >= 0 && s_hover_key)
-        return snprintf(buf, n, "%s", s_hover_key == KEY_CLOSE ? "Close" : s_hover_key == KEY_MAX ? "Maximize" : "Minimize") > 0;
+    if (s_hover_win >= 0 && s_hover_key == KEY_SIZE) {
+        const dk_win_t *w = dk_win(s_hover_win);
+        return w && snprintf(buf, n, "Size: %s - click for the sizes",
+                             dk_size_name(w->state == LS_DESK_WIN_MAX ? DK_SIZE_N : w->size)) > 0;
+    }
+    if (s_hover_win >= 0 && s_hover_key) {
+        const dk_win_t *w = dk_win(s_hover_win);
+        const bool max = w && w->state == LS_DESK_WIN_MAX;
+        return snprintf(buf, n, "%s", s_hover_key == KEY_CLOSE ? "Close" : s_hover_key == KEY_MAX ? (max ? "Restore" : "Maximize")
+                                                                                                   : "Minimize") > 0;
+    }
+    {
+        const dk_win_t *f = dk_front_win();
+        tui_rect o;
+        if (f && (dk_win_rects(f, &o, NULL), on_grip(f, o, col, row)))
+            return snprintf(buf, n, "Size: %s - click for %s", dk_size_name(f->size), dk_size_name(size_next(f))) > 0;
+    }
     if (row != s_rows - 1) return false;
     if (col < TB_START_W) return snprintf(buf, n, "Click here to begin.") > 0;
     if (col >= s_tray_x) {
@@ -1899,7 +2187,7 @@ static bool tip_text(int col, int row, char *buf, size_t n)
         case TR_SPK: return snprintf(buf, n, dk_sys_muted() ? "Sound off" : "Volume %d%%", dk_sys_volume()) > 0;
         case TR_CLOCK: {
             const char *c = ls_tui_status_clock();
-            return snprintf(buf, n, "UTC %s - click for the date", c && c[0] ? c : "--:--") > 0;
+            return snprintf(buf, n, "%s %s - click for the date", c && c[0] ? c : "--:--", ls_tz_current_label()) > 0;
         }
         case TR_GPS: return snprintf(buf, n, s_gps.fix ? "GPS fix, %d satellites" : "GPS: no fix yet", s_gps.sats_used) > 0;
         case TR_RX: { const char *r = ls_tui_radio_claimed(); return snprintf(buf, n, r ? "Receiving: %s" : "Receiver parked", r) > 0; }
@@ -2113,10 +2401,14 @@ static void title_press(dk_win_t *w, tui_rect o, int col, bool dbl)
         else dk_menu_open(M_WINDOW, w->id, o.x, o.y + 1);
         return;
     }
-    int key = 0;
-    if (col >= kclose && col <= kclose + 2) key = KEY_CLOSE;
-    else if (kmax >= 0 && col >= kmax && col <= kmax + 2) key = KEY_MAX;
-    else if (col >= kmin && col <= kmin + 2) key = KEY_MIN;
+    const int key = title_key_at(w, o, col);
+    if (key == KEY_SIZE) {
+        /* the presets drop down from the size key, as a menu bar's would */
+        const dk_menu_t *m0 = dk_menu_at(0);
+        if (m0 && m0->id == M_WINSIZE && m0->arg == w->id) dk_menu_close_all();
+        else dk_menu_open(M_WINSIZE, w->id, title_size_key(w, o), o.y + 1);
+        return;
+    }
     if (key) { s_drag = DRAG_KEY; s_drag_key = key; s_drag_win = w->id; return; }
     if (dbl) { ls_desk_maximize(w->id); return; }
     if (w->state == LS_DESK_WIN_MAX) return;
@@ -2193,6 +2485,11 @@ static bool desk_pointer(const ls_input_ev_t *ev)
             if (y > work.h - 1) y = work.h - 1;
             if (x < 1 && x > -2) x = 0;                               /* snap to the edges within a cell */
             if (x + s_outline.w > work.w - 1 && x + s_outline.w < work.w + 2) x = work.w - s_outline.w;
+            /* all of it stays on the desktop: no window is left half off an edge */
+            if (x + s_outline.w > work.w) x = work.w - s_outline.w;
+            if (y + s_outline.h > work.h) y = work.h - s_outline.h;
+            if (x < 0) x = 0;
+            if (y < 0) y = 0;
             s_outline.x = x;
             s_outline.y = y;
             s_drag_moved = true;
@@ -2236,30 +2533,6 @@ static bool desk_pointer(const ls_input_ev_t *ev)
                 if (!(m & icon_bit(s_icon_sel))) s_icon_sel = last;
                 if (s_icon_sel < 0 && m) for (int i = 0; i < 32; i++) if (m & icon_bit(i)) { s_icon_sel = i; break; }
                 if (!m) s_icon_sel = -1;
-            }
-        } else if (s_drag == DRAG_SIZE) {
-            dk_win_t *w = dk_win(s_drag_win);
-            if (w) {
-                int ww = s_size_w ? col - s_outline.x + 1 : s_outline.w, hh = s_size_h ? row - s_outline.y + 1 : s_outline.h;
-                int nx = s_outline.x;
-                if (s_size_l) {
-                    /* the left edge follows the pointer; the right edge stays where it is */
-                    const int rx = s_outline.x + s_outline.w;
-                    nx = col < 0 ? 0 : col;
-                    if (rx - nx < min_w(w)) nx = rx - min_w(w);
-                    ww = rx - nx;
-                }
-                if (ww < min_w(w)) ww = min_w(w);
-                if (hh < min_h(w)) hh = min_h(w);
-                const tui_rect work = dk_work();
-                if (nx + ww > work.w) ww = work.w - nx;
-                if (s_outline.y + hh > work.h) hh = work.h - s_outline.y;
-                if (ww != s_outline.w || hh != s_outline.h) s_outline_step++;
-                s_outline.x = nx;
-                s_outline.w = ww;
-                s_outline.h = hh;
-                s_drag_moved = true;
-                if (dk_prefs()->live_drag) { w->x = nx; w->w = ww; w->h = hh; clamp(w); }
             }
         } else if (s_drag == DRAG_CLIENT) {
             if (col != s_down_col || row != s_down_row) s_drag_moved = true;
@@ -2326,9 +2599,11 @@ static bool desk_pointer(const ls_input_ev_t *ev)
         dk_win_t *w = dk_win(s_drag_win);
         if (drag == DRAG_MOVE && w) {
             const tui_rect work = dk_work();
-            if (col <= 0 && s_drag_moved) {                          /* to the left edge: the left half */
+            /* A shell window let go on the left or right edge takes that half;
+               an app window keeps its preset size wherever it is put. */
+            if (col <= 0 && s_drag_moved && w->kind != DK_APP) {          /* to the left edge: the left half */
                 w->x = 0; w->y = 0; w->w = work.w / 2; w->h = work.h;
-            } else if (col >= work.w - 1 && s_drag_moved) {
+            } else if (col >= work.w - 1 && s_drag_moved && w->kind != DK_APP) {
                 w->x = work.w - work.w / 2; w->y = 0; w->w = work.w / 2; w->h = work.h;
             } else {
                 w->x = s_outline.x;
@@ -2336,21 +2611,10 @@ static bool desk_pointer(const ls_input_ev_t *ev)
             }
             clamp(w);
             remember_place(w);
-        } else if (drag == DRAG_SIZE && w) {
-            w->x = s_outline.x;
-            w->w = s_outline.w;
-            w->h = s_outline.h;
-            clamp(w);
-            if (w->snap) dk_compat_forget(w);
-            remember_place(w);
         } else if (drag == DRAG_KEY && w) {
             tui_rect o;
             dk_win_rects(w, &o, NULL);
-            int kmin, kmax, kclose;
-            title_keys(w, o, &kmin, &kmax, &kclose);
-            const int at = row != o.y ? 0 : col >= kclose && col <= kclose + 2 ? KEY_CLOSE
-                         : kmax >= 0 && col >= kmax && col <= kmax + 2 ? KEY_MAX
-                         : col >= kmin && col <= kmin + 2 ? KEY_MIN : 0;
+            const int at = row != o.y ? 0 : title_key_at(w, o, col);
             if (at == s_drag_key) {
                 dk_anim_key(w->id, at);
                 if (at == KEY_CLOSE) ls_desk_close(w->id);
@@ -2497,23 +2761,13 @@ static bool desk_pointer(const ls_input_ev_t *ev)
     }
     if (ev->button != LS_IBTN_LEFT) return true;
     if (row == o.y) { title_press(w, o, col, dbl); return true; }
-    /* The grip sizes both ways; the right edge the width, the bottom edge the height. */
-    const bool corner = (col == o.x + o.w - 1 && row == o.y + o.h - 1) || (col == o.x + o.w - 2 && row == o.y + o.h - 2);
-    const bool right = col == o.x + o.w - 1, bottom = row == o.y + o.h - 1;
-    const bool left = col == o.x;                 /* with the bottom row: the bottom-left corner */
-    const bool grip = w->state != LS_DESK_WIN_MAX && (corner || right || bottom || left);
-    if (has_bar(w) && row == c.y - 1 && !(grip && (left || right))) {
+    /* No edge or corner drags a size: the grip on the corner cell steps the
+       presets (Small, Medium, Large), and nothing else does anything. */
+    if (on_grip(w, o, col, row)) { set_size(w, size_next(w)); return true; }
+    if (col == o.x || col == o.x + o.w - 1 || row == o.y + o.h - 1) return true;    /* the frame */
+    if (has_bar(w) && row == c.y - 1) {
         const int j = dk_menubar_hit(c.x, c.y - 1, BAR_NAMES, BAR_N, col, row);
         if (j >= 0) bar_show(w, j, false);
-        return true;
-    }
-    if (grip) {
-        s_size_l = left && !right;
-        s_size_w = corner || right;
-        s_size_h = corner || bottom;
-        s_drag = DRAG_SIZE;
-        s_drag_win = w->id;
-        s_outline = o;
         return true;
     }
     if (w->kind == DK_APP && was_front && tui_rect_contains(c, col, row)) {
@@ -2692,6 +2946,81 @@ void ls_desk_attach(bool on)
     else ls_tui_router_set_hooks(NULL, NULL);
 }
 
+/* ------------------------------------------------- desktop resolution -- */
+
+/* The desk's grid no longer follows the PC window: free sizes broke apps (a
+   MAP cannot run at every size). The owner picks a resolution, kept in the
+   desk word W_RES like the other desk choices, and the page scales its cells
+   to fit the window, letterboxed. Never chosen: 120x45. "Fit the PC window"
+   follows the window as before. 80x30 is not offered: below 100x30 the desk
+   shows the front app alone, with no windows. The MAP runs at all three
+   (160 columns at most); 120x45 is the largest it redraws in pieces. */
+enum { W_RES = 21 };
+static const struct { uint16_t c, r; } RES[] = { {100, 37}, {120, 45}, {148, 50} };
+#define RES_N ((int)(sizeof(RES) / sizeof(RES[0])))
+
+int ls_desk_res_count(void) { return RES_N; }
+bool ls_desk_res_at(int i, int *cols, int *rows)
+{
+    if (i < 0 || i >= RES_N) return false;
+    if (cols) *cols = RES[i].c;
+    if (rows) *rows = RES[i].r;
+    return true;
+}
+bool ls_desk_res_get(int *cols, int *rows)
+{
+    const uint32_t v = dk_sys_saved_word(W_RES);
+    int c = (int)(v & 0x3FF), r = (int)(v >> 10 & 0x3FF);
+    /* Never chosen: 120 x 45, the largest the MAP redraws in pieces. "Fit the
+       PC window" is saved as a valid word with no size. */
+    if (!(v & W_VALID)) { c = RES[1].c; r = RES[1].r; }
+    if (c < DESK_MIN_COLS || r < DESK_MIN_ROWS) return false;
+    if (cols) *cols = c;
+    if (rows) *rows = r;
+    return true;
+}
+/* Hold the desk at cols x rows (0, 0: follow the PC window again); saved,
+   and the grid changes now where the screen is a terminal. False for a size
+   the desk cannot use, or where the screen keeps its own grid. */
+bool ls_desk_res_set(int cols, int rows)
+{
+    if (!cols && !rows) { dk_sys_save_word(W_RES, W_VALID); return true; }
+    if (cols < DESK_MIN_COLS || rows < DESK_MIN_ROWS || cols > 384 || rows > 112) return false;
+    dk_sys_save_word(W_RES, W_VALID | (uint32_t)cols | (uint32_t)rows << 10);
+    return !s_on || !ls_rterm_request_grid || ls_rterm_request_grid(cols, rows);
+}
+/* Control Panel > Display, "Desktop area" (a drop-down, SH_DROP): row 0
+   follows the PC window, rows 1.. are the presets. */
+int dk_res_rows(void) { return RES_N + 1; }
+int dk_res_row(void)
+{
+    int c, r;
+    if (!ls_desk_res_get(&c, &r)) return 0;
+    for (int i = 0; i < RES_N; i++) if (RES[i].c == c && RES[i].r == r) return i + 1;
+    return 0;
+}
+void dk_res_pick(int v)
+{
+    int c = 0, r = 0;
+    if (v > 0 && !ls_desk_res_at(v - 1, &c, &r)) return;
+    ls_desk_res_set(c, r);
+}
+void dk_res_row_text(int v, char *b, size_t n)
+{
+    int c, r;
+    if (v > 0 && ls_desk_res_at(v - 1, &c, &r)) snprintf(b, n, "%d by %d cells", c, r);
+    else snprintf(b, n, "Fit the PC window");
+}
+
+bool ls_desk_grid_hold(int *cols, int *rows)
+{
+    int c, r;
+    if (!s_on || !ls_desk_res_get(&c, &r)) return false;
+    *cols = c;
+    *rows = r;
+    return true;
+}
+
 void ls_desk_set_enabled(bool on)
 {
     if (on == s_on) return;
@@ -2723,6 +3052,7 @@ void ls_desk_set_enabled(bool on)
         dk_wall_set(p.wall);
         palette_apply();
         dk_items_load();
+        s_res_pending = true;                 /* the saved resolution, at the first frame */
     }
     s_cols = s_rows = 0;
     ls_tui_invalidate();
@@ -2743,7 +3073,12 @@ static void apply_console(void)
     if (!n) return;
     const char *verb = s_req[0], *arg = n > 1 ? s_req[1] : "";
     if (!strcmp(verb, "on") || !strcmp(verb, "off")) ls_desk_set_enabled(verb[1] == 'n');
-    else if (!strcmp(verb, "theme")) {
+    else if (!strcmp(verb, "res")) {
+        /* 'desk res 120x45', or 'desk res auto' to follow the PC window again */
+        int c = 0, r = 0;
+        if (strcmp(arg, "auto") && sscanf(arg, "%dx%d", &c, &r) != 2) printf("desk: res WxH or auto\n");
+        else if (!ls_desk_res_set(c, r)) printf("desk: res %s not taken (100x30 at least; a screen with glass keeps its grid)\n", arg);
+    } else if (!strcmp(verb, "theme")) {
         /* Any scheme by the start of its name: bay, classic, synth, vfd... */
         int t = -1;
         for (int i = 0; i < dk_scheme_count() && t < 0; i++)
@@ -2775,11 +3110,12 @@ int ls_desk_console(int argc, char **argv)
                ls_desk_theme_name(ls_desk_theme()), s_nz, s_nz == 1 ? "" : "s",
                dk_compat_blocks(), dk_compat_blocks() == 1 ? "" : "s");
         printf("desk on|off, desk theme <scheme>, desk open <app|control|run|tasks|bin|folder>,\n"
-               "desk focus [app|off], desk close, desk list, desk icons\n");
+               "desk focus [app|off], desk close, desk list, desk icons,\n"
+               "desk res [WxH|auto]\n");
         return 0;
     }
     if (!strcmp(argv[1], "on") || !strcmp(argv[1], "off") || !strcmp(argv[1], "close") || !strcmp(argv[1], "focus") ||
-        ((!strcmp(argv[1], "theme") || !strcmp(argv[1], "open")) && argc >= 3)) {
+        ((!strcmp(argv[1], "theme") || !strcmp(argv[1], "open") || !strcmp(argv[1], "res")) && argc >= 3)) {
         if (__atomic_load_n(&s_req_n, __ATOMIC_ACQUIRE)) { printf("desk: busy, try again\n"); return 1; }
         snprintf(s_req[0], sizeof(s_req[0]), "%s", argv[1]);
         snprintf(s_req[1], sizeof(s_req[1]), "%s", argc >= 3 ? argv[2] : "");
@@ -2801,6 +3137,16 @@ int ls_desk_console(int argc, char **argv)
             s_dc_sum[k] = 0;
         }
         s_dc_frames = 0;
+        return 0;
+    }
+    if (!strcmp(argv[1], "res")) {
+        /* the resolution the desk holds, and the ones it offers */
+        int c, r;
+        if (ls_desk_res_get(&c, &r)) printf("desk: res %dx%d (held; the page scales it)\n", c, r);
+        else printf("desk: res auto (the grid follows the PC window)\n");
+        printf("desk: res");
+        for (int i = 0; ls_desk_res_at(i, &c, &r); i++) printf(" %dx%d", c, r);
+        printf(" auto\n");
         return 0;
     }
     if (!strcmp(argv[1], "icons")) {

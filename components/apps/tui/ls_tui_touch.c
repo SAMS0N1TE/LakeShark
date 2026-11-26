@@ -140,8 +140,22 @@ void ls_tui_touch_client(int col, int row, int gx, int gy, bool down)
     s_client.col=col; s_client.row=row; s_client.x=gx; s_client.y=gy;
 }
 void ls_tui_touch_client_clear(void) { s_client.active=s_client.down=false; }
+/* Pocket lock (ls_tui_screen.c): apps see no finger while it is on. */
+extern bool ls_tui_pocket_locked(void) __attribute__((weak));
+static bool pocket(void) { return ls_tui_pocket_locked && ls_tui_pocket_locked(); }
+bool ls_tui_touch_held_raw(int *sc, int *sr, int *c, int *r)
+{
+    if (!s_client.active) return ls_tui_touch_input_held(sc,sr,c,r);
+    if (!s_client.down) return false;
+    if (sc) *sc=s_client.col0;
+    if (sr) *sr=s_client.row0;
+    if (c) *c=s_client.col;
+    if (r) *r=s_client.row;
+    return true;
+}
 bool ls_tui_touch_held(int *sc, int *sr, int *c, int *r)
 {
+    if (pocket()) return false;
     if (!s_client.active) return ls_tui_touch_input_held(sc,sr,c,r);
     if (!s_client.down) return false;
     if (sc) *sc=s_client.col0;
@@ -152,6 +166,7 @@ bool ls_tui_touch_held(int *sc, int *sr, int *c, int *r)
 }
 bool ls_tui_touch_px(int *x, int *y, int *x0, int *y0, int64_t *since)
 {
+    if (pocket()) return false;
     if (!s_client.active) return ls_tui_touch_input_px(x,y,x0,y0,since);
     if (!s_client.down) return false;
     if (x) *x=s_client.x;
@@ -259,7 +274,7 @@ bool ls_tui_touch_poll(ls_tui_touch_t *out)
         const int dy = y > s_start_y ? y - s_start_y : s_start_y - y;
         const bool tap = s_start_col >= 0 && dx <= TAP_SLOP_PX && dy <= TAP_SLOP_PX;
         log_touch(x, y, tap);
-        if (!tap) {
+        if (!tap && !pocket()) {
             ls_tui_pixel_to_grid(s_start_x, s_start_y, &s_drag[0], &s_drag[1]);
             ls_tui_pixel_to_grid(x, y, &s_drag[2], &s_drag[3]);
             s_drags++;

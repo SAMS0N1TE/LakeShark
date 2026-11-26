@@ -134,6 +134,7 @@ static void heard_advert(const ble_link_advert_t *a, void *ctx)
     const uint8_t *name = ls_ble_ad_name(a->data, a->len, &name_len);
     ls_lap_ble_advert_push(a->addr,a->addr_type,a->rssi,a->scan_response,a->data,a->len,a->seen_us/1000);
     ls_ble_heard_note(a->addr, (const char *)name, name_len, a->rssi, a->seen_us);
+    ls_ble_heard_note_ad(a->addr, a->data, a->len);
 }
 
 static void advert_task(void *arg)

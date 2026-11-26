@@ -61,8 +61,13 @@ size_t ls_time_render_filename_at(char *out, size_t cap, const char *label,
 void ls_time_note_set(void);
 
 /* What set the wall clock: 0 nothing yet, 1 the RTC at boot (or another
-   local source through ls_time_note_set), 2 SNTP. */
+   local source through ls_time_note_set), 2 SNTP, 3 GPS. */
 int ls_time_source(void);
+
+/* A GPS fix's UTC (RMC with status A), `age_ms` after it arrived. Sets the
+   clock when nothing better has: no clock yet, or only the RTC or RDS, and
+   then only when it is two seconds or more out. Network time is kept. */
+void ls_time_offer_gps(time_t utc, uint32_t age_ms);
 /* Monotonic time of last successful clock update, UINT32_MAX if unknown. */
 uint32_t ls_time_last_sync_ms(void);
 

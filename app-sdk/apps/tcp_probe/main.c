@@ -188,6 +188,12 @@ static void draw(void) {
     lap_put_str(1, 9, "H HTTPS U loopback S scan W join K saved", LAP_ATTR(LAP_YELLOW, LAP_BLACK));
     lap_put_str(1, 10, "D disconnect A/X AP T time M/N multicast V advert", LAP_ATTR(LAP_YELLOW, LAP_BLACK));
 }
+LAP_ICON_PX("....................", "..........ffff......", "........ffffffff....", ".......ffffffffff...",
+            ".......ffffffffff...", "...ffffffffffffff...", "..ffffffff3fffffff..", "..ffffff33333ffffff.",
+            "..ffffff3fff3ffffff.", "..ffffffbbbbbbfffff.", "..ffffffbb33bbfffff.", "..ffffffbb33bbfffff.",
+            "...fffffbbbbbbfffff.", ".....fffbbbbbbfff...", "....................", "....................",
+            "..e.......e.......e.", "..e.......e.......e.");
+
 LAP_APP(.id = "tcp_probe", .name = "HTTPS UDP", .sub = "network services", .version = "2.0",
         .author = "LakeShark", .icon = LAP_ICON_TOWER, .color = LAP_CYAN, .flags = LAP_CAP_NETWORK,
         .enter = enter, .leave = leave, .draw = draw, .key = key);

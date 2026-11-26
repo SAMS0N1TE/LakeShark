@@ -209,6 +209,17 @@ typedef struct {
     /* Optional: the tuner's own gain steps in tenths of a dB, ascending, at
      * most max of them; answers how many, 0 when it has no table. */
     int (*fe_gains)(void *driver_ctx, int *tenths, int max);
+    /* Optional: the device's lowest-power state with the device still
+     * attached - stream stopped, tuner and converters powered down (a
+     * T-Display-P4 cannot switch the USB-A port's 5 V, so this is the only
+     * "off" an idle dongle has). Called by ls_radio_endpoint_idle_tick only
+     * while nothing streams from it and no other call is in flight. The
+     * driver wakes itself inside the next control call (configure, gain,
+     * start, retune, ppm) and restores what was configured, so a holder that
+     * sat idle never sees the difference. in_standby answers without
+     * touching the device (it may be called under the registry lock). */
+    ls_radio_err_t (*standby)(void *driver_ctx);
+    bool (*in_standby)(void *driver_ctx);
 } ls_radio_driver_ops_t;
 
 typedef struct {
@@ -264,7 +275,24 @@ typedef struct {
        whether the device answers requests, not whether samples arrive. */
     uint32_t control_io_errors;
     uint32_t fe_ctls;              /* LS_RADIO_FE_BIT()s the driver answers */
+    bool standby_capable;          /* the driver has a standby to go to     */
+    bool standby;                  /* it is there now                       */
+    uint32_t idle_ms;              /* how long nothing has streamed from it */
+    uint32_t standby_in_ms;        /* until the idle tick puts it there; 0
+                                      when it is there, streaming or unable */
+    uint32_t standbys;             /* times the idle tick put it there      */
 } ls_radio_endpoint_info_t;
+
+/* How long an endpoint may sit idle, powered, before the idle tick puts it
+   in standby: with no holder at all, and with a holder that has stopped
+   streaming (an app that kept its lease, or a dashboard STOP). */
+#define LS_RADIO_STANDBY_FREE_MS 5000u
+#define LS_RADIO_STANDBY_HELD_MS 30000u
+
+/* The SDR watchdog: every endpoint with a standby that has sat idle past the
+   limit above goes there. Blocks for the driver's USB control transfers, so
+   it runs on a service task (radio_health_tick calls it), never the UI. */
+void ls_radio_endpoint_idle_tick(void);
 
 ls_radio_err_t ls_radio_endpoint_register(const ls_radio_endpoint_t *endpoint);
 ls_radio_err_t ls_radio_endpoint_unregister(const char *endpoint_id);

@@ -18,6 +18,7 @@
 #include "ls_gauge.h"
 #include "ls_i18n.h"
 #include "ls_textpack.h"
+#include "../../lakeshark/core/ls_tz.h"
 
 #ifdef ESP_PLATFORM
 #include "core/settings.h"
@@ -237,11 +238,15 @@ static void draw_info(tui_surface *sf, tui_rect a)
     const char *clk = ls_tui_status_clock();
     const bool synced = clk && clk[0] >= '0' && clk[0] <= '9';
     const time_t now = time(NULL);
-    const struct tm *tm = synced ? gmtime(&now) : NULL;   /* newlib's is per task */
+    struct tm local;
+    const struct tm *tm = synced && ls_tz_local(now, &local) ? &local : NULL;   /* the status bar's zone */
+    const bool h12 = !ls_tz_24h();
     const int cx = a.x + (a.w - 25) / 2, cy = a.y + 1;
-    const int hm[2] = { tm ? tm->tm_hour : -1, tm ? tm->tm_min : -1 };
+    const int hm[2] = { tm ? (h12 ? (tm->tm_hour % 12 ? tm->tm_hour % 12 : 12) : tm->tm_hour) : -1,
+                        tm ? tm->tm_min : -1 };
     for (int i = 0; i < 4; i++) {
         const int v = hm[i / 2];
+        if (i == 0 && h12 && v >= 0 && v < 10) continue;   /* " 4:34", as a clock reads */
         big_digit(sf, a, cx + i * 6 + (i / 2) * 2, cy, v < 0 ? -1 : i & 1 ? v % 10 : v / 10,
                   ls_ink(LS_INK_STRONG, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK)));
     }
@@ -249,8 +254,11 @@ static void draw_info(tui_surface *sf, tui_rect a)
     tui_put_str(sf, a, cx + 12, cy + 4, "o", ls_ink(LS_INK_ACCENT, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK)));
 
     char line[48];
-    if (!tm || !strftime(line, sizeof(line), "%a %d %b %Y  UTC", tm))
+    char zone[12];
+    if (tm) ls_tz_abbr(tm, zone, sizeof(zone));
+    if (!tm || !strftime(line, sizeof(line), h12 ? "%a %d %b %Y  %p" : "%a %d %b %Y", tm))
         snprintf(line, sizeof(line), "%s", ls_tr(LS_TEXT(t_ls_lock_no_time, "time not set yet")));
+    else snprintf(line + strlen(line), sizeof(line) - strlen(line), " %s", zone);
     centre(sf, a, cy + 6, line, LS_ATTR_DIM);
     tui_hline(sf, a, a.x + 2, cy + 7, a.w - 4, '-', rule);
 
@@ -259,8 +267,10 @@ static void draw_info(tui_surface *sf, tui_rect a)
     uint8_t at[3] = { LS_ATTR_DIM, LS_ATTR_DIM, LS_ATTR_DIM };
     ls_gauge_t gg;
     if (ls_gauge_present() && ls_gauge_get(&gg)) {
-        snprintf(t[0], sizeof(t[0]), "BAT %u%%%s", (unsigned)gg.percent, gg.charging ? "+" : "");
-        at[0] = gg.charging || gg.percent > 40 ? good : gg.percent > 15 ? warn
+        if (gg.full) snprintf(t[0], sizeof(t[0]), "BAT FULL");
+        else snprintf(t[0], sizeof(t[0]), "BAT %u%%%s", (unsigned)gg.percent,
+                      gg.charging ? " CHG" : gg.plugged ? " USB" : "");
+        at[0] = gg.plugged || gg.percent > 40 ? good : gg.percent > 15 ? warn
               : ls_ink(LS_INK_BAD, TUI_ATTR(TUI_RED | TUI_BRIGHT, TUI_BLACK));
     } else snprintf(t[0], sizeof(t[0]), "%s", ls_tr("USB POWER"));
     ls_val_t v;

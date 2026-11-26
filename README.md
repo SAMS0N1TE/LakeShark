@@ -21,6 +21,12 @@
   <strong><a href="https://terminalbay.com/?m=wiki">Documentation</a></strong>
 </p>
 
+<h3 align="center">Join our Discord</h3>
+
+<p align="center">
+  Questions, bench results, builds and ideas: <strong><a href="https://discord.gg/R9sUumpwa">discord.gg/R9sUumpwa</a></strong>
+</p>
+
 <h2 align="center">No dongle needed</h2>
 
 <p align="center">On LR2021 boards the LoRa chip is the radio. P25 voice, aircraft, FM and pagers with nothing plugged in, plus live waterfalls, raw I/Q capture and programs that run on the chip's own CPU.</p>
@@ -35,9 +41,9 @@
     <tr><th>Hardware</th><th>Use</th><th>Firmware</th></tr>
   </thead>
   <tbody>
-    <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>3.1.0 stable</td></tr>
-    <tr><td><strong>LILYGO T-Display P4 TFT</strong> (SX1262 or LR2021)</td><td>Handheld</td><td>3.1.0 stable</td></tr>
-    <tr><td><strong>LILYGO T-Display P4, LR and NET editions</strong></td><td>Handheld</td><td>3.1.0 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>3.2.0 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4 TFT</strong> (SX1262 or LR2021)</td><td>Handheld</td><td>3.2.0 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4, LR and NET editions</strong></td><td>Handheld</td><td>3.2.0 stable</td></tr>
     <tr><td><strong>Waveshare ESP32-P4-NANO-DB</strong> (P4 rev 3, ESP32-C5)</td><td>LakeShark Desktop</td><td>2.22.0 stable</td></tr>
     <tr><td><strong>Waveshare ESP32-P4-NANO</strong></td><td>Headless (serial, Flipper)</td><td>2.0.2 in the installer, newer from source</td></tr>
     <tr><td><strong>Waveshare Touch-LCD-4.3, Touch-LCD-4B, Smart 86 Box</strong></td><td>Touch screen</td><td>Up to 2.16.4, no longer updated</td></tr>
@@ -98,6 +104,7 @@ screen, mouse and keyboard over one USB cable.</p>
 
 <h2 align="center">What's New</h2>
 
+<p align="center"><strong>3.2:</strong> WARDRIVE logs every radio and knows plate readers, trackers and drones · PARTY shares where you are and what you find over LoRa · Colour icons · Pocket lock in every app · SUB-GHZ opens at once · Crash reports say where</p>
 <p align="center"><strong>3.1:</strong> WARDRIVE replays your drives in 3D over the real map · MAP always opens and draws far out faster · LR2021 hears off-frequency LoRa nodes</p>
 <p align="center"><strong>3.0:</strong> One firmware for every T-Display P4 · FREQS by location · World maps · <a href="https://terminalbay.com/?m=lakeshark-apps">App store</a> on the board · LOCKER and CHAT · Lock screen</p>
 <p align="center"><strong>2.20:</strong> LR2021 on-chip programs · LakeShark Desktop · App SDK and Studio</p>
@@ -108,7 +115,7 @@ screen, mouse and keyboard over one USB cable.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v3.1.0">3.1.0 release notes</a>
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v3.2.0">3.2.0 release notes</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/SAMS0N1TE/LakeShark/releases">All releases</a>
 </p>
@@ -160,7 +167,7 @@ screen, mouse and keyboard over one USB cable.</p>
 
 ## Applications
 
-About thirty built in: P25 voice and trunking, FM with pagers, ADS-B, waterfalls, MeshCore, Sub-GHz capture and replay, FT8, wardriving, world maps, compass, GPS and music. More in the [app store](https://terminalbay.com/?m=lakeshark-apps), including community apps. Each one has a guide in the [wiki](https://terminalbay.com/?m=wiki#tdp4/APPS).
+About thirty built in: P25 voice and trunking, FM with pagers, ADS-B, waterfalls, MeshCore, Sub-GHz capture and replay, FT8, wardriving with target HUNT and a route ATLAS, PARTY for groups, world maps, compass, GPS and music. More in the [app store](https://terminalbay.com/?m=lakeshark-apps), including community apps. Each one has a guide in the [wiki](https://terminalbay.com/?m=wiki#tdp4/APPS).
 
 The [web tools](https://terminalbay.com/?m=lakeshark) make P25 profiles, GPS scan lists, channel memories and map tiles. See also [replay and aircraft details](docs/REPLAY_AND_AIRCRAFT.md).
 

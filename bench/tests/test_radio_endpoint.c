@@ -3,6 +3,7 @@
 #include "radio_endpoint.h"
 #include "fm_receive.h"
 
+#include "esp_timer.h"
 #include <pthread.h>
 #include <string.h>
 
@@ -850,4 +851,188 @@ LS_CASE(ui_metadata_never_waits_for_registry_and_retains_snapshot)
     LS_CHECK(!memcmp(&info, &before, sizeof(info)));
     LS_EQ_INT(ls_radio_endpoint_try_get("no.such.endpoint", &info), LS_RADIO_ERR_UNAVAILABLE);
     LS_CHECK(!info.present);
+}
+
+/* ---- SDR standby: the idle tick powers down what nothing is using -------- */
+
+/* A dongle as the drivers model it: standby is a state the device is in,
+   and every control call that needs the tuner wakes it first. */
+typedef struct {
+    bool standby;
+    unsigned standbys, wakes, starts;
+    ls_radio_err_t standby_error;
+} sleepy_radio_t;
+
+static void sleepy_wake(sleepy_radio_t *r) { if (r->standby) { r->standby = false; ++r->wakes; } }
+static ls_radio_err_t sleepy_configure(void *ctx, const ls_radio_iq_config_t *req,
+                                       ls_radio_iq_config_t *actual)
+{ sleepy_wake(ctx); *actual = *req; if (!actual->bandwidth_hz) actual->bandwidth_hz = req->sample_rate_hz; return LS_RADIO_OK; }
+static ls_radio_err_t sleepy_gain(void *ctx, ls_radio_gain_mode_t mode, int want, int *actual)
+{ (void)mode; sleepy_wake(ctx); *actual = want; return LS_RADIO_OK; }
+static ls_radio_err_t sleepy_start(void *ctx) { sleepy_wake(ctx); ++((sleepy_radio_t *)ctx)->starts; return LS_RADIO_OK; }
+static ls_radio_err_t sleepy_read(void *ctx, void *dst, size_t bytes, uint32_t t, size_t *got)
+{ (void)ctx; (void)t; memset(dst, 0x80, bytes < 4 ? bytes : 4); *got = bytes < 4 ? bytes : 4; return LS_RADIO_OK; }
+static ls_radio_err_t sleepy_retune(void *ctx, uint64_t hz, bool fast, uint64_t *actual)
+{ (void)fast; sleepy_wake(ctx); *actual = hz; return LS_RADIO_OK; }
+static ls_radio_err_t sleepy_stop(void *ctx) { (void)ctx; return LS_RADIO_OK; }
+static void sleepy_cancel(void *ctx) { (void)ctx; }
+static ls_radio_err_t sleepy_standby(void *ctx)
+{
+    sleepy_radio_t *r = ctx;
+    if (r->standby_error != LS_RADIO_OK) return r->standby_error;
+    r->standby = true;
+    ++r->standbys;
+    return LS_RADIO_OK;
+}
+static bool sleepy_in_standby(void *ctx) { return ((sleepy_radio_t *)ctx)->standby; }
+
+static const ls_radio_driver_ops_t s_sleepy_ops = {
+    .iq_configure = sleepy_configure, .iq_set_gain = sleepy_gain,
+    .iq_start = sleepy_start, .iq_read = sleepy_read, .iq_retune = sleepy_retune,
+    .iq_stop = sleepy_stop, .cancel_read = sleepy_cancel,
+    .standby = sleepy_standby, .in_standby = sleepy_in_standby,
+};
+
+static ls_radio_err_t register_sleepy(const char *id, sleepy_radio_t *r, bool with_standby)
+{
+    static ls_radio_driver_ops_t plain;
+    plain = s_sleepy_ops;
+    plain.standby = NULL;
+    plain.in_standby = NULL;
+    ls_radio_endpoint_t endpoint = {
+        .endpoint_id = id, .name = "Sleepy IQ radio",
+        .capabilities = LS_RADIO_RX_IQ_U8, .duplex = LS_RADIO_DUPLEX_HALF,
+        .iq_formats = LS_RADIO_IQ_FORMAT_U8_INTERLEAVED,
+        .frequency_ranges = s_iq_freq, .frequency_range_count = 1,
+        .sample_rate_ranges = s_iq_rates, .sample_rate_range_count = 2,
+        .ops = with_standby ? &s_sleepy_ops : &plain, .driver_ctx = r,
+    };
+    return ls_radio_endpoint_register(&endpoint);
+}
+
+static void sleepy_ticks(int64_t ms, int64_t step_ms)
+{
+    for (int64_t t = 0; t < ms; t += step_ms) {
+        ls_shim_time_advance(step_ms * 1000);
+        ls_radio_endpoint_idle_tick();
+    }
+}
+
+static ls_radio_endpoint_info_t sleepy_info(const char *id)
+{
+    ls_radio_endpoint_info_t info;
+    LS_EQ_INT(ls_radio_endpoint_get(id, &info), LS_RADIO_OK);
+    return info;
+}
+
+LS_CASE(idle_sdr_with_no_holder_goes_to_standby_after_the_free_limit_once)
+{
+    ls_shim_time_set(1000000);
+    sleepy_radio_t r = {0};
+    LS_EQ_INT(register_sleepy("test.sleepy.free", &r, true), LS_RADIO_OK);
+    ls_radio_endpoint_info_t info = sleepy_info("test.sleepy.free");
+    LS_CHECK(info.standby_capable && !info.standby);
+    LS_EQ_UINT(info.standby_in_ms, LS_RADIO_STANDBY_FREE_MS);
+
+    /* Just short of the limit: still powered, and it says how long is left. */
+    sleepy_ticks(LS_RADIO_STANDBY_FREE_MS - 250, 250);
+    LS_EQ_UINT(r.standbys, 0);
+    info = sleepy_info("test.sleepy.free");
+    LS_CHECK(!info.standby && info.standby_in_ms > 0 && info.standby_in_ms <= 250);
+
+    sleepy_ticks(250, 250);
+    LS_EQ_UINT(r.standbys, 1);
+    info = sleepy_info("test.sleepy.free");
+    LS_CHECK(info.standby);
+    LS_EQ_UINT(info.standby_in_ms, 0);
+    LS_EQ_UINT(info.standbys, 1);
+
+    /* Already there: the tick leaves it alone. */
+    sleepy_ticks(60000, 1000);
+    LS_EQ_UINT(r.standbys, 1);
+    LS_EQ_INT(ls_radio_endpoint_unregister("test.sleepy.free"), LS_RADIO_OK);
+}
+
+LS_CASE(streaming_holder_is_never_put_in_standby_and_release_starts_the_clock)
+{
+    ls_shim_time_set(1000000);
+    sleepy_radio_t r = {0};
+    LS_EQ_INT(register_sleepy("test.sleepy.stream", &r, true), LS_RADIO_OK);
+    ls_radio_requirements_t req = iq_requirements(240000);
+    req.preferred_endpoint_id = "test.sleepy.stream";
+    ls_radio_session_t *s = NULL;
+    LS_EQ_INT(ls_radio_acquire("fm", &req, &s), LS_RADIO_OK);
+    configure_and_start(s);
+    sleepy_ticks(10 * 60 * 1000, 1000);          /* ten minutes of streaming */
+    LS_EQ_UINT(r.standbys, 0);
+    LS_CHECK(!sleepy_info("test.sleepy.stream").standby);
+    LS_EQ_UINT(sleepy_info("test.sleepy.stream").standby_in_ms, 0);
+
+    ls_radio_release(s);
+    sleepy_ticks(LS_RADIO_STANDBY_FREE_MS - 500, 250);
+    LS_EQ_UINT(r.standbys, 0);                   /* an app switch keeps it warm */
+    sleepy_ticks(500, 250);
+    LS_EQ_UINT(r.standbys, 1);
+
+    /* The next app wakes it through its own configure, and the registry
+       reports it powered again. */
+    LS_EQ_INT(ls_radio_acquire("p25", &req, &s), LS_RADIO_OK);
+    configure_and_start(s);
+    LS_EQ_UINT(r.wakes, 1);
+    LS_CHECK(!sleepy_info("test.sleepy.stream").standby);
+    ls_radio_release(s);
+    LS_EQ_INT(ls_radio_endpoint_unregister("test.sleepy.stream"), LS_RADIO_OK);
+}
+
+LS_CASE(idle_holder_goes_to_standby_after_the_held_limit_and_start_wakes_it)
+{
+    ls_shim_time_set(1000000);
+    sleepy_radio_t r = {0};
+    LS_EQ_INT(register_sleepy("test.sleepy.held", &r, true), LS_RADIO_OK);
+    ls_radio_requirements_t req = iq_requirements(240000);
+    req.preferred_endpoint_id = "test.sleepy.held";
+    ls_radio_session_t *s = NULL;
+    LS_EQ_INT(ls_radio_acquire("rec", &req, &s), LS_RADIO_OK);
+    configure_and_start(s);
+    /* The app stops its stream but keeps the lease (a dashboard STOP). */
+    LS_EQ_INT(ls_radio_endpoint_pause("test.sleepy.held", "rec", true), LS_RADIO_OK);
+    sleepy_ticks(LS_RADIO_STANDBY_FREE_MS * 2, 250);
+    LS_EQ_UINT(r.standbys, 0);                   /* held: the longer limit */
+    sleepy_ticks(LS_RADIO_STANDBY_HELD_MS, 250);
+    LS_EQ_UINT(r.standbys, 1);
+    LS_CHECK(sleepy_info("test.sleepy.held").standby);
+
+    /* ALLOW, and the app's start wakes it without a configure first. */
+    LS_EQ_INT(ls_radio_endpoint_pause("test.sleepy.held", "rec", false), LS_RADIO_OK);
+    const unsigned starts = r.starts;
+    LS_EQ_INT(ls_radio_iq_start(s), LS_RADIO_OK);
+    LS_EQ_UINT(r.starts, starts + 1);
+    LS_EQ_UINT(r.wakes, 1);
+    LS_CHECK(!sleepy_info("test.sleepy.held").standby);
+    ls_radio_release(s);
+    LS_EQ_INT(ls_radio_endpoint_unregister("test.sleepy.held"), LS_RADIO_OK);
+}
+
+LS_CASE(a_refused_standby_waits_out_another_limit_and_a_driver_without_one_is_left_alone)
+{
+    ls_shim_time_set(1000000);
+    sleepy_radio_t r = {0}, plain = {0};
+    r.standby_error = LS_RADIO_ERR_BUSY;         /* a HackRF mid-transmit */
+    LS_EQ_INT(register_sleepy("test.sleepy.busy", &r, true), LS_RADIO_OK);
+    LS_EQ_INT(register_sleepy("test.sleepy.plain", &plain, false), LS_RADIO_OK);
+    sleepy_ticks(LS_RADIO_STANDBY_FREE_MS, 250);
+    LS_EQ_UINT(r.standbys, 0);
+    r.standby_error = LS_RADIO_OK;
+    sleepy_ticks(LS_RADIO_STANDBY_FREE_MS - 500, 250);
+    LS_EQ_UINT(r.standbys, 0);                   /* no retry every tick */
+    sleepy_ticks(500, 250);
+    LS_EQ_UINT(r.standbys, 1);
+    /* A refusal is not a fault the RADIOS screen should show. */
+    LS_EQ_INT(sleepy_info("test.sleepy.busy").last_error, LS_RADIO_OK);
+
+    ls_radio_endpoint_info_t info = sleepy_info("test.sleepy.plain");
+    LS_CHECK(!info.standby_capable && !info.standby);
+    LS_EQ_UINT(info.standby_in_ms, 0);
+    LS_EQ_INT(ls_radio_endpoint_unregister("test.sleepy.busy"), LS_RADIO_OK);
+    LS_EQ_INT(ls_radio_endpoint_unregister("test.sleepy.plain"), LS_RADIO_OK);
 }

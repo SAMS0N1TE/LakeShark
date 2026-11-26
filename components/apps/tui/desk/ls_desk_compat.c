@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "../ls_tui_screen.h"
+#include "../ls_tui.h"
 #include "../ls_tui_touch.h"
 #include "../ls_theme.h"
 #include "../ls_tui_ui.h"
@@ -86,7 +87,11 @@ int dk_compat_shell_at(const dk_win_t *w, int i, int *x, int *y)
 
 EXT_RAM_BSS_ATTR static ls_ink_keep_t s_live_keep;            /* what the live frame asked to keep black */
 static uint8_t s_map[256];
-static struct { uint8_t face, strong, dis; const void *theme; bool ok, same; } s_map_key;
+EXT_RAM_BSS_ATTR static uint8_t s_wmap[256];   /* inside a well (ls_ink_well): onto the contrast ground */
+EXT_RAM_BSS_ATTR static uint8_t s_cls[512];    /* one row's grounds, while blit copies it */
+static uint8_t s_hi, s_lo;                     /* the bevel's lines (LS_INK_HILITE / _SHADOW) in a bevel rect */
+static uint8_t s_ghost[8];                     /* a VFD's quiet hue: itself, or dark grey where the palette has it bright */
+static struct { uint8_t face, strong, dis, well; const void *theme; bool ok, same, wsame; } s_map_key;
 
 static int lum(const ls_tui_theme_t *t, uint8_t idx)
 {
@@ -115,16 +120,10 @@ static uint8_t readable(const ls_tui_theme_t *t, uint8_t want, uint8_t bg, uint8
     return fallback;
 }
 
-static void map_build(void)
+/* Every app colour onto a ground `fbg` whose words are `ffg`: the face, or
+   inside a well the contrast ground. */
+static void map_fill(uint8_t *m, const ls_tui_theme_t *t, uint8_t fbg, uint8_t ffg, uint8_t strong, uint8_t dis)
 {
-    const ls_tui_theme_t *t = ls_tui_active_theme();
-    const uint8_t face = dk_attr(R_FACE), strong = TUI_ATTR_FG(dk_attr(R_STRONG)), dis = TUI_ATTR_FG(dk_attr(R_DISABLED));
-    if (s_map_key.ok && s_map_key.face == face && s_map_key.strong == strong && s_map_key.dis == dis && s_map_key.theme == t) return;
-    s_map_key.face = face; s_map_key.strong = strong; s_map_key.dis = dis; s_map_key.theme = t;
-    s_map_key.ok = true;
-    const uint8_t fbg = TUI_ATTR_BG(face), ffg = TUI_ATTR_FG(face);
-    s_map_key.same = fbg == TUI_BLACK || !t;
-    if (s_map_key.same) return;
     const uint8_t band = apart(t, TUI_BLACK | TUI_BRIGHT, fbg) >= MAP_NEED ? (TUI_BLACK | TUI_BRIGHT) : TUI_BLACK;
     for (int a = 0; a < 256; a++) {
         const uint8_t fg = TUI_ATTR_FG(a), bg = TUI_ATTR_BG(a);
@@ -141,8 +140,37 @@ static void map_build(void)
             nb = band;
             nf = readable(t, fg == TUI_BLACK || fg == (TUI_BLACK | TUI_BRIGHT) ? (TUI_WHITE | TUI_BRIGHT) : fg, nb, TUI_WHITE | TUI_BRIGHT);
         }
-        s_map[a] = TUI_ATTR(nf, nb);
+        m[a] = TUI_ATTR(nf, nb);
     }
+}
+
+static void map_build(void)
+{
+    const ls_tui_theme_t *t = ls_tui_active_theme();
+    const uint8_t face = dk_attr(R_FACE), strong = TUI_ATTR_FG(dk_attr(R_STRONG)), dis = TUI_ATTR_FG(dk_attr(R_DISABLED));
+    const uint8_t well = dk_attr(R_WELL);
+    if (s_map_key.ok && s_map_key.face == face && s_map_key.strong == strong && s_map_key.dis == dis
+        && s_map_key.well == well && s_map_key.theme == t) return;
+    s_map_key.face = face; s_map_key.strong = strong; s_map_key.dis = dis; s_map_key.well = well; s_map_key.theme = t;
+    s_map_key.ok = true;
+    const uint8_t fbg = TUI_ATTR_BG(face), ffg = TUI_ATTR_FG(face);
+    /* The bevel's lines keep their meaning on any face, black included. */
+    s_hi = TUI_ATTR(TUI_ATTR_FG(dk_attr(R_HILITE)), fbg);
+    s_lo = TUI_ATTR(TUI_ATTR_FG(dk_attr(R_SHADOW)), fbg);
+    s_map_key.same = fbg == TUI_BLACK || !t;
+    for (int h = 0; h < 8; h++)
+        s_ghost[h] = (uint8_t)(t && h > 0 && h < 7 && (lum(t, (uint8_t)h) * 100 >= lum(t, (uint8_t)(h | TUI_BRIGHT)) * 45
+                                                        || lum(t, (uint8_t)h) < 12) ? (TUI_BLACK | TUI_BRIGHT) : h);
+    const uint8_t wbg = TUI_ATTR_BG(well), wfg = TUI_ATTR_FG(well);
+    s_map_key.wsame = wbg == TUI_BLACK || !t;
+    if (!s_map_key.wsame) {
+        /* In a well: the window's words, its values the strong ink where that
+           reads on the contrast ground, its greyed words the well's own. */
+        const uint8_t ws = apart(t, strong, wbg) >= MAP_NEED ? strong : wfg;
+        map_fill(s_wmap, t, wbg, wfg, ws, TUI_ATTR_FG(dk_attr(R_WELL_DIM)));
+    }
+    if (s_map_key.same) return;
+    map_fill(s_map, t, fbg, ffg, strong, dis);
 }
 
 /* The app's colour roles (ls_ink, ls_tui_ui.h), from the scheme. A role is
@@ -162,6 +190,7 @@ static void ink_build(void)
         [LS_INK_TEXT] = R_FACE, [LS_INK_STRONG] = R_STRONG, [LS_INK_DIM] = R_DISABLED,
         [LS_INK_ACCENT] = R_INFO, [LS_INK_GOOD] = R_GOOD, [LS_INK_WARN] = R_WARN, [LS_INK_BAD] = R_BAD,
         [LS_INK_RULE] = R_SHADOW, [LS_INK_ACCEL] = R_ACCEL, [LS_INK_CAPTION] = R_TITLE_OFF,
+        [LS_INK_HILITE] = R_HILITE, [LS_INK_SHADOW] = R_SHADOW,
     };
     uint8_t fin[LS_INK_COUNT];
     for (int i = 0; i < LS_INK_COUNT; i++) fin[i] = dk_attr(ROLE[i]);
@@ -206,15 +235,44 @@ static void ink_build(void)
         s_ink_app[i] = TUI_ATTR(fg, bg);
         s_map[s_ink_app[i]] = s_ink_app[i];
     }
+    /* A band is itself in a well too: the selection bar of a list. */
+    if (!s_map_key.wsame)
+        for (int i = 0; i < LS_INK_COUNT; i++)
+            if (TUI_ATTR_BG(s_ink_app[i]) != TUI_BLACK) s_wmap[s_ink_app[i]] = s_ink_app[i];
+    /* The bevel's lines are the app's white and grey: blit makes them the
+       scheme's light and dark line where a frame named a bevel rect. */
+    s_ink_app[LS_INK_HILITE] = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
+    s_ink_app[LS_INK_SHADOW] = TUI_ATTR(TUI_BLACK | TUI_BRIGHT, TUI_BLACK);
 }
 
-/* Rects the app asked to keep on its own black ground (ls_ink_keep): a
-   waterfall reads on black, not on silver. */
-static bool kept(const ls_ink_keep_t *k, int x, int y)
+/* The grounds a frame named (ls_ink_keep, ls_ink_well, ls_ink_bevel; see
+   ls_tui_ui.h) for one row of the app's surface: later rects win. A scope
+   keeps its black (a waterfall reads on black, not on silver), a well takes
+   the contrast ground, a bevel rect's white and grey lines take the
+   scheme's light and dark line, everything else the face. */
+enum { G_FACE, G_WELL, G_BEVEL, G_GLASS, G_VFD };
+static bool kept(const ls_ink_keep_t *k, int y, int w)
 {
-    for (int i = 0; i < k->n; i++)
-        if (x >= k->r[i].x && y >= k->r[i].y && x < k->r[i].x + k->r[i].w && y < k->r[i].y + k->r[i].h) return true;
-    return false;
+    if (w > (int)sizeof(s_cls)) w = (int)sizeof(s_cls);
+    bool any = false;
+    for (int i = 0; k && i < k->n; i++) {
+        const int ry = k->r[i].y, rh = k->r[i].h;
+        if (y < ry || y >= ry + rh) continue;
+        if (!any) { memset(s_cls, G_FACE, (size_t)w); any = true; }
+        const int kind = k->kind[i];
+        const uint8_t g = kind == LS_INK_K_WELL ? G_WELL : kind == LS_INK_K_VFD ? G_VFD
+                        : kind == LS_INK_K_GLASS ? G_GLASS : G_BEVEL;
+        int x0 = k->r[i].x, x1 = x0 + k->r[i].w;
+        if (kind == LS_INK_K_RING && y != ry && y != ry + rh - 1) {   /* a ring's sides only */
+            if (x0 >= 0 && x0 < w) s_cls[x0] = g;
+            if (x1 - 1 >= 0 && x1 - 1 < w) s_cls[x1 - 1] = g;
+            continue;
+        }
+        if (x0 < 0) x0 = 0;
+        if (x1 > w) x1 = w;
+        for (int x = x0; x < x1; x++) s_cls[x] = g;
+    }
+    return any;
 }
 
 static void blit(tui_surface *sf, const tui_cell *src, int w, int h, tui_rect at, tui_rect clip, bool still,
@@ -222,16 +280,16 @@ static void blit(tui_surface *sf, const tui_cell *src, int w, int h, tui_rect at
 {
     clip = tui_rect_intersect(clip, tui_surface_rect(sf));
     ink_build();
-    const bool same = s_map_key.same;
-    if (same || (keep && !keep->n)) keep = NULL;
+    const bool same = s_map_key.same, wsame = s_map_key.wsame;
+    if (keep && !keep->n) keep = NULL;
     /* The light schemes' palette has dark plain hues, for text on silver: on
        black glass they take their bright twins. */
     const bool glass_fix = keep && dk_theme_own(ls_tui_get_theme());
+    const uint8_t HI = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK), LO = TUI_ATTR(TUI_BLACK | TUI_BRIGHT, TUI_BLACK);
     for (int y = 0; y < h && y < at.h; y++) {
         const int gy = at.y + y;
         if (gy < clip.y || gy >= clip.y + clip.h) continue;
-        bool row_kept = false;
-        for (int i = 0; keep && i < keep->n; i++) if (y >= keep->r[i].y && y < keep->r[i].y + keep->r[i].h) row_kept = true;
+        const bool row_kept = keep && kept(keep, y, w);
         for (int x = 0; x < w && x < at.w; x++) {
             const int gx = at.x + x;
             if (gx < clip.x || gx >= clip.x + clip.w) continue;
@@ -240,11 +298,29 @@ static void blit(tui_surface *sf, const tui_cell *src, int w, int h, tui_rect at
                picture is the live app's. Keep the ground. */
             const bool image = c.ch < 0x100 && (uint8_t)c.ch == (uint8_t)LS_TUI_IMAGE_CELL;
             if (still && image) c.ch = ' ';
-            const bool glass = row_kept && kept(keep, x, y);
-            if (!same && (!image || still) && !glass) c.attr = s_map[c.attr];
-            else if (glass && glass_fix) {
-                const uint8_t fg = TUI_ATTR_FG(c.attr), bg = TUI_ATTR_BG(c.attr);
-                if (fg >= TUI_RED && fg <= TUI_CYAN && dk_contrast(fg, bg) < 30) c.attr = TUI_ATTR(fg | TUI_BRIGHT, bg);
+            const bool map = !image || still;
+            const uint8_t g = row_kept && x < (int)sizeof(s_cls) ? s_cls[x] : G_FACE;
+            switch (g) {
+            case G_WELL:
+                if (map && !wsame) c.attr = s_wmap[c.attr];
+                break;
+            case G_BEVEL:
+                if (c.attr == HI) c.attr = s_hi;
+                else if (c.attr == LO) c.attr = s_lo;
+                else if (map && !same) c.attr = s_map[c.attr];
+                break;
+            case G_GLASS:
+                if (glass_fix) {
+                    const uint8_t fg = TUI_ATTR_FG(c.attr), bg = TUI_ATTR_BG(c.attr);
+                    if (fg >= TUI_RED && fg <= TUI_CYAN && dk_contrast(fg, bg) < 30) c.attr = TUI_ATTR(fg | TUI_BRIGHT, bg);
+                }
+                break;
+            case G_VFD:                      /* its own black; its ghosts as dim as the palette goes */
+                if (TUI_ATTR_FG(c.attr) < 8) c.attr = TUI_ATTR(s_ghost[TUI_ATTR_FG(c.attr)], TUI_ATTR_BG(c.attr));
+                break;
+            default:
+                if (map && !same) c.attr = s_map[c.attr];
+                break;
             }
             sf->back[(size_t)gy * sf->w + gx] = c;
         }
@@ -278,6 +354,16 @@ bool dk_compat_select(dk_win_t *w)
        already on show stays as it is (a hand-off above must not restart it). */
     if (now != w->screen || (app_changed && w->app && w->app->select)) ls_tui_screen_show(w->screen);
     return false;
+}
+
+/* A card app (the shared "APP" screen) that asked to quit went HOME by
+   itself: on the touch build that is its close button. In a window it
+   means the window closes; showing the app again would restart it. */
+bool dk_compat_quit(const dk_win_t *w)
+{
+    return w && w->kind == DK_APP && w->app && w->app->screen && w->app->screen->name &&
+           !strcmp(w->app->screen->name, "APP") && w->id == s_selected_id && s_selected == w->app &&
+           w->screen != 0 && ls_tui_screen_current() == 0;
 }
 
 /* A press can raise an app before its first front frame. Prepare its own
@@ -327,6 +413,7 @@ void dk_compat_draw_live(tui_surface *sf, dk_win_t *w, tui_rect client, tui_rect
     s_live_id = w->id;
     pending_tap(w);
     blit(sf, s_live.back, s_live_w, s_live_h, client, clip, false, &s_live_keep);
+    ls_tui_follow_copy(&s_live, client, clip);   /* glass over the map stays glass in the scheme's colours */
 }
 
 /* F11 full screen and focused mode: the app draws straight to the grid, on

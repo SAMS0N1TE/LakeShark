@@ -16,6 +16,7 @@
 #include "../ls_tui_screen.h"
 #include "esp_attr.h"
 #include "ls_gps.h"
+#include "../../../lakeshark/core/ls_tz.h"
 #include <time.h>
 
 extern void ls_gps_get(ls_gps_state_t *out) __attribute__((weak));
@@ -26,11 +27,18 @@ EXT_RAM_BSS_ATTR static ls_gps_state_t s_menu_gps;
 EXT_RAM_BSS_ATTR static dk_menu_t s_m[DK_MENU_MAX];   /* PSRAM: 3.6 KB */
 static int s_n;
 static int s_down_level = -1, s_down_row = -1;
+/* Hover: the row each open submenu hangs from, and a switch or an open the
+   pointer has asked for by resting on a row (it happens at s_pend_us). */
+#define HOVER_OPEN_US   220000
+#define HOVER_SWITCH_US 400000
+static int s_from[DK_MENU_MAX];
+static int s_pend_level = -1, s_pend_row, s_last_col = -1;
+static int64_t s_pend_us;
 
 int dk_menu_depth(void) { return s_n; }
 int dk_menu_top_id(void) { return s_n ? s_m[s_n - 1].id : 0; }
 const dk_menu_t *dk_menu_at(int level) { return level >= 0 && level < s_n ? &s_m[level] : NULL; }
-void dk_menu_close_all(void) { s_n = 0; s_down_level = -1; }
+void dk_menu_close_all(void) { s_n = 0; s_down_level = -1; s_pend_level = -1; }
 
 int ls_desk_menu_depth(void) { return s_n; }
 const char *ls_desk_menu_label(int level, int row)
@@ -98,20 +106,45 @@ static void build(dk_menu_t *m)
     dk_item_t *it;
     switch (m->id) {
     case M_START:
+        /* Windows 98's: a banner down the left, tall rows (the label, and
+           under it what the row is for: the `text` line), so a row is an
+           easy thing to hit. */
         m->stripe = true;
-        add(m, "Programs", MI_SUB, A_SUBMENU, M_PROGRAMS);
-        add(m, "Documents", MI_SUB, A_SUBMENU, M_DOCS);
-        add(m, "Settings", MI_SUB, A_SUBMENU, M_SETTINGS);
-        add(m, "Find", MI_SUB, A_SUBMENU, M_FIND);
-        right(add(m, "Help", MI_ITEM, A_ABOUT, 0), "F1");
-        add(m, "Run...", MI_ITEM, A_RUN, 0);
+        it = add(m, "Programs", MI_SUB, A_SUBMENU, M_PROGRAMS);
+        if (it) snprintf(it->text, sizeof(it->text), "Every app, by group");
+        it = add(m, "Documents", MI_SUB, A_SUBMENU, M_DOCS);
+        if (it) snprintf(it->text, sizeof(it->text), "The card, recordings, notes");
+        it = add(m, "Settings", MI_SUB, A_SUBMENU, M_SETTINGS);
+        if (it) snprintf(it->text, sizeof(it->text), "Control Panel, display, themes");
+        it = add(m, "Find", MI_SUB, A_SUBMENU, M_FIND);
+        if (it) snprintf(it->text, sizeof(it->text), "An app, a signal, a place");
+        it = add(m, "Help", MI_ITEM, A_ABOUT, 0);
+        right(it, "F1");
+        if (it) snprintf(it->text, sizeof(it->text), "About this desktop");
+        it = add(m, "Run...", MI_ITEM, A_RUN, 0);
+        if (it) snprintf(it->text, sizeof(it->text), "Open an app or a console word");
         sep(m);
-        add(m, "Lock screen", MI_ITEM, A_LOCK, 0);
+        it = add(m, "Lock screen", MI_ITEM, A_LOCK, 0);
+        if (it) snprintf(it->text, sizeof(it->text), "The board asks for its code");
         /* a browser or a network terminal watching: send it away */
         it = add(m, "Disconnect viewer", MI_ITEM, A_KICK, 0);
-        if (it) it->off = !dk_net_viewer();
-        add(m, "Shut down...", MI_ITEM, A_SHUTDOWN, 0);
+        if (it) { it->off = !dk_net_viewer(); snprintf(it->text, sizeof(it->text), it->off ? "No one else is watching" : "Send the other viewer away"); }
+        it = add(m, "Shut down...", MI_ITEM, A_SHUTDOWN, 0);
+        if (it) snprintf(it->text, sizeof(it->text), "Park, close or leave");
         break;
+    case M_WINSIZE: {
+        /* a window's size presets; Maximized is the state */
+        const dk_win_t *w = dk_win(m->arg);
+        for (int p = 0; p <= DK_SIZE_N; p++) {
+            it = add(m, dk_size_name(p), MI_RADIO, A_WIN_PRESET, m->arg * 4 + p);
+            if (!it || !w) continue;
+            it->on = p == DK_SIZE_N ? w->state == LS_DESK_WIN_MAX : w->state == LS_DESK_WIN_NORMAL && w->size == p;
+            it->off = w->kind != DK_APP || (p < DK_SIZE_N && p != DK_SIZE_SMALL && !dk_size_fits(p));
+            static const char *const CLIENT[DK_SIZE_N] = {"80x24", "100x30", "120x38"};
+            right(it, p < DK_SIZE_N ? CLIENT[p] : "");
+        }
+        break;
+    }
     case M_PROGRAMS:
         for (int g = 0; g < 4; g++) add(m, dk_group_name(g), MI_SUB, A_SUBMENU, M_GROUP + 100 * (g + 1));
         add(m, "Development", MI_SUB, A_SUBMENU, M_DEV);
@@ -120,6 +153,7 @@ static void build(dk_menu_t *m)
         break;
     case M_DEV:
         add(m, "LakeShark Studio", MI_ITEM, A_STUDIO, 0);
+        add(m, "Home Base", MI_ITEM, A_HOMEBASE, 0);
         open_app_item(m, "Terminal", "terminal");
         open_app_item(m, "Diagnostics", "diag");
         break;
@@ -137,6 +171,7 @@ static void build(dk_menu_t *m)
         add(m, "Control Panel", MI_SUB, A_SUBMENU, M_CPL);
         open_app_item(m, "Settings app", "set");
         add(m, "Display...", MI_ITEM, A_DISPLAY, 0);
+        add(m, "Taskbar & windows", MI_SUB, A_SUBMENU, M_TASKBAR);
         add(m, "Theme", MI_SUB, A_SUBMENU, M_THEME);
         add(m, "Task Manager", MI_ITEM, A_TASKS, 0);
         sep(m);
@@ -280,14 +315,15 @@ static void build(dk_menu_t *m)
     case M_CLOCK: {
         const time_t now = time(NULL);
         struct tm g;
-        const struct tm *gp = gmtime(&now);          /* UI task only */
-        if (gp) g = *gp; else memset(&g, 0, sizeof(g));
+        if (!ls_tz_local(now, &g)) memset(&g, 0, sizeof(g));   /* the zone SET picked */
+        char zone[12];
+        ls_tz_abbr(&g, zone, sizeof(zone));
         static const char *const DAY[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
         static const char *const MON[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
         const int src = dk_sys_time_source();
         if (src > 0 || g.tm_year > 120) {
             info(m, "%s %d %s %d", DAY[g.tm_wday % 7], g.tm_mday, MON[g.tm_mon % 12], 1900 + g.tm_year);
-            info(m, "%02d:%02d:%02d UTC", g.tm_hour, g.tm_min, g.tm_sec);
+            info(m, "%02d:%02d:%02d %s", g.tm_hour, g.tm_min, g.tm_sec, zone);
         } else {
             info(m, "The clock is not set");
         }
@@ -399,8 +435,8 @@ static void build(dk_menu_t *m)
         if (it && w && w->state == LS_DESK_WIN_NORMAL) it->off = true;
         it = add(m, "Move", MI_ITEM, A_WIN_MOVE, m->arg);
         if (it && w && w->state == LS_DESK_WIN_MAX) it->off = true;
-        it = add(m, "Size", MI_ITEM, A_WIN_SIZE, m->arg);
-        if (it && w && w->state == LS_DESK_WIN_MAX) it->off = true;
+        it = add(m, "Size", MI_SUB, A_SUBMENU, M_WINSIZE);       /* Small, Medium, Large, Maximized */
+        if (it && w && w->kind != DK_APP) it->off = true;
         add(m, "Minimize", MI_ITEM, A_WIN_MIN, m->arg);
         it = add(m, "Maximize", MI_ITEM, A_WIN_MAX, m->arg);
         if (it && w && w->state == LS_DESK_WIN_MAX) it->off = true;
@@ -430,8 +466,9 @@ static void build(dk_menu_t *m)
         if (m->id == M_WINDOW) {
             /* by the arrow keys: Enter keeps, Esc puts back */
             add(m, "Move", MI_ITEM, A_WIN_MOVE, m->arg);
-            add(m, "Size", MI_ITEM, A_WIN_SIZE, m->arg);
         }
+        it = add(m, "Size", MI_SUB, A_SUBMENU, M_WINSIZE);       /* Small, Medium, Large, Maximized */
+        if (it && w && w->kind != DK_APP) it->off = true;
         add(m, "Minimize", MI_ITEM, A_WIN_MIN, m->arg);
         it = add(m, "Maximize", MI_ITEM, A_WIN_MAX, m->arg);
         if (it && w && w->state == LS_DESK_WIN_MAX) it->off = true;
@@ -511,12 +548,25 @@ static char accel_of(const dk_item_t *it)
     return 0;
 }
 
+/* Rows: the Start menu's are two cells high (the label, and what the row is
+   for under it), its separators one; every other menu's are one. */
+static bool tall(const dk_menu_t *m) { return m->stripe; }
+static int row_h(const dk_menu_t *m, int i) { return tall(m) && m->it[i].kind != MI_SEP ? 2 : 1; }
+static int row_y(const dk_menu_t *m, int i)
+{
+    int y = m->y + 1;
+    for (int k = 0; k < i && k < m->n; k++) y += row_h(m, k);
+    return y;
+}
+
 static void place(dk_menu_t *m, int x, int y)
 {
     int lw = 0, rw = 0;
     bool sub = false;
     for (int i = 0; i < m->n; i++) {
-        const int l = dk_text_len(m->it[i].label), r = dk_text_len(m->it[i].right);
+        int l = dk_text_len(m->it[i].label);
+        const int r = dk_text_len(m->it[i].right);
+        if (tall(m) && m->it[i].label != m->it[i].text && dk_text_len(m->it[i].text) > l) l = dk_text_len(m->it[i].text);
         if (l > lw) lw = l;
         if (r > rw) rw = r;
         if (m->it[i].kind == MI_SUB) sub = true;
@@ -525,7 +575,8 @@ static void place(dk_menu_t *m, int x, int y)
     m->w = 1 + 3 + lw + 2 + rw + (sub ? 2 : 0) + 1 + 1 + (m->stripe ? 2 : 0);
     if (m->w < 18) m->w = 18;
     if (live_menu(m->id) && m->w < 34) m->w = 34;
-    m->h = m->n + 2;
+    if (tall(m)) m->w += 2;                       /* the Start menu: its icons' column */
+    m->h = row_y(m, m->n) - m->y + 1;
     const tui_rect work = dk_work();
     if (x + m->w > work.x + work.w) x = work.x + work.w - m->w;
     /* down to the row the taskbar's top line is drawn in: a menu meets the bar */
@@ -577,7 +628,10 @@ static void open_sub(int level, int row, bool select_first)
     const dk_item_t *it = &p->it[row];
     if (it->kind != MI_SUB || it->off) return;
     if (s_n > level + 1 && s_m[level + 1].id == it->arg) return;   /* already open */
-    open_level(level + 1, it->arg, 0, p->x + p->w, p->y + row, select_first);
+    /* a window's Size list is that window's: it takes the window menu's arg */
+    open_level(level + 1, it->arg, it->arg == M_WINSIZE ? p->arg : 0, p->x + p->w, row_y(p, row) - 1, select_first);
+    s_from[level + 1] = row;
+    s_pend_level = -1;
     dk_menu_t *m = &s_m[level + 1];
     if (m->x < p->x + p->w) {                     /* no room on the right: the left */
         int x = p->x - m->w;
@@ -619,18 +673,59 @@ static void draw_one(tui_surface *sf, const dk_menu_t *m)
         }
         ls_box_put(sf, all, m->x + 1, m->y + 1, LS_BOX_DIAG_R, st);
         ls_box_put(sf, all, m->x + 2, m->y + 1, LS_BOX_V, st);
-        static const char WORD[] = "LAKESHARK";
+        /* the banner's name down its foot, as Windows 98 had its own: the
+           product in the stripe's bright ink, "Desktop" in its plain one */
+        static const char WORD[] = "LAKESHARK DESKTOP";
         const int letters = (int)sizeof(WORD) - 1;
         const int top = m->y + m->h - 1 - letters;
+        const uint8_t bright = (uint8_t)((st & 0xF0) | ((st & 0x0F) | TUI_BRIGHT));
         for (int i = 0; i < letters; i++)
-            if (top + i > m->y + 1) tui_put_char(sf, all, m->x + 1, top + i, WORD[i], st);
+            if (top + i > m->y + 2 && WORD[i] != ' ') tui_put_char(sf, all, m->x + 1, top + i, WORD[i], i < 9 ? bright : st);
         ix = m->x + 3;
     }
     dk_frame(sf, all, r, true);
     const int iw = m->x + m->w - 1 - ix;
     for (int i = 0; i < m->n; i++) {
         const dk_item_t *it = &m->it[i];
-        const int y = m->y + 1 + i;
+        const int y = row_y(m, i);
+        if (tall(m) && it->kind != MI_SEP) {
+            /* A Start row: an icon in its hue, the label (its letter lit),
+               and under it what the row is for, two cells high to hit. */
+            const bool sel = i == m->sel;
+            const uint8_t face = sel ? dk_attr(R_SELECT) : it->off ? MENU_ON(R_DISABLED) : mf;
+            const tui_rect band = tui_rect_make(ix, y, iw, 2);
+            if (sel) dk_fill(sf, band, face);
+            int cp = LS_SHAPE_DOT;
+            uint8_t hue = TUI_BLUE;
+            switch (it->act == A_SUBMENU ? it->arg : -it->act) {
+            case M_PROGRAMS: cp = LS_SHAPE_SQUARE; hue = TUI_BLUE; break;
+            case M_DOCS:     cp = LS_BOX_DBL_H;    hue = TUI_YELLOW; break;
+            case M_SETTINGS: cp = '*';             hue = TUI_MAGENTA; break;
+            case M_FIND:     cp = '?';             hue = TUI_CYAN; break;
+            case -A_ABOUT:   cp = 'i';             hue = TUI_GREEN; break;
+            case -A_RUN:     cp = '>';             hue = TUI_BLUE; break;
+            case -A_LOCK:    cp = LS_SHAPE_SQUARE; hue = TUI_YELLOW; break;
+            case -A_KICK:    cp = LS_SHAPE_TIMES;  hue = TUI_RED; break;
+            case -A_SHUTDOWN: cp = LS_SHAPE_DOT;   hue = TUI_RED; break;
+            default: break;
+            }
+            const uint8_t ia = sel ? face : it->off ? face : dk_fit((uint8_t)(hue | (dk_light_face() ? 0 : TUI_BRIGHT)), TUI_ATTR_BG(mf), 30);
+            if (cp < 0x80) tui_put_char(sf, band, ix + 1, y, (char)cp, ia);
+            else ls_box_put(sf, band, ix + 1, y, cp, ia);
+            const int lx = ix + 4;
+            dk_text(sf, band, lx, y, it->label, face);
+            if (!it->off && !sel && accel_of(it)) {
+                const int ax = lx + it->acc;
+                if (tui_rect_contains(tui_rect_intersect(band, all), ax, y)) sf->back[(size_t)y * sf->w + ax].attr = MENU_ON(R_ACCEL);
+            }
+            if (it->label != it->text && it->text[0])
+                dk_text(sf, band, lx, y + 1, it->text,
+                        sel ? face : it->off ? MENU_ON(R_DISABLED) : dk_fit(TUI_ATTR_FG(dk_attr(R_INFO)), TUI_ATTR_BG(mf), 45));
+            int rx = ix + iw - 2;
+            if (it->kind == MI_SUB) { ls_box_put(sf, band, rx, y, LS_SHAPE_RIGHT, face); rx -= 2; }
+            if (it->right[0]) dk_text(sf, band, rx - dk_text_len(it->right) + 1, y, it->right, face);
+            continue;
+        }
         if (it->kind == MI_SEP) {
             const uint8_t sh = MENU_ON(R_SHADOW);
             /* Across the face only: it meets the frame's edge lines. */
@@ -708,8 +803,23 @@ static void draw_unfolding(tui_surface *sf, const dk_menu_t *m)
     free(keep);
 }
 
+/* A row the pointer rested on long enough: its submenu opens, or the open
+   one beside it gives way. */
+static void hover_tick(void)
+{
+    if (s_pend_level < 0) return;
+    if (s_pend_level >= s_n) { s_pend_level = -1; return; }
+    if (esp_timer_get_time() < s_pend_us) return;
+    const int level = s_pend_level, row = s_pend_row;
+    s_pend_level = -1;
+    if (row < 0 || row >= s_m[level].n || s_m[level].sel != row) return;
+    s_n = level + 1;
+    if (s_m[level].it[row].kind == MI_SUB) open_sub(level, row, false);
+}
+
 void dk_menu_draw(tui_surface *sf)
 {
+    hover_tick();
     for (int i = 0; i < s_n; i++)
         if (live_menu(s_m[i].id)) {
             const int sel = s_m[i].sel;
@@ -745,6 +855,7 @@ static void step(dk_menu_t *m, int d)
 bool dk_menu_key(ls_tk_t k, char ch)
 {
     if (!s_n) return false;
+    s_pend_level = -1;                        /* the keys lead now, not where the pointer rests */
     const int level = s_n - 1;
     dk_menu_t *m = &s_m[level];
     switch (k) {
@@ -797,8 +908,14 @@ static int hit(int col, int row, int *out_row)
     for (int l = s_n - 1; l >= 0; l--) {
         const dk_menu_t *m = &s_m[l];
         if (!tui_rect_contains(tui_rect_make(m->x, m->y, m->w, m->h), col, row)) continue;
-        const int r = row - m->y - 1;
-        *out_row = r >= 0 && r < m->n && col > m->x && col < m->x + m->w - 1 ? r : -1;
+        int r = -1;
+        for (int i = 0; i < m->n; i++) {
+            const int y = row_y(m, i);
+            if (row >= y && row < y + row_h(m, i)) { r = i; break; }
+        }
+        /* the Start banner and the frame are the menu's, not a row's */
+        const int left = m->x + (m->stripe ? 3 : 1);
+        *out_row = r >= 0 && col >= left && col < m->x + m->w - 1 ? r : -1;
         return l;
     }
     return -1;
@@ -810,15 +927,36 @@ bool dk_menu_pointer(const ls_input_ev_t *ev)
     int row = -1;
     const int level = hit(ev->col, ev->row, &row);
     switch (ev->kind) {
-    case LS_IEV_PTR_MOVE:
+    case LS_IEV_PTR_MOVE: {
+        /* Windows 98's way: a submenu opens after the pointer rests on its
+           row a moment, and one that is open stays open while the pointer
+           travels toward it, even across other rows; only resting on
+           another row a while longer switches. Nothing closes on a move. */
+        const int64_t now = esp_timer_get_time();
+        const int was_col = s_last_col;
+        s_last_col = ev->col;
         if (level < 0) return false;
-        if (row >= 0 && pickable(&s_m[level].it[row])) {
-            s_m[level].sel = row;
-            if (s_n > level + 1 && !(s_m[level].it[row].kind == MI_SUB && s_m[level + 1].id == s_m[level].it[row].arg))
-                s_n = level + 1;
-            if (s_m[level].it[row].kind == MI_SUB) open_sub(level, row, false);
-        }
+        for (int k = 0; k < level; k++) s_m[k].sel = s_from[k + 1];     /* the path to here stays lit */
+        if (s_pend_level >= 0 && s_pend_level < level) s_pend_level = -1;   /* it got there */
+        if (row < 0 || !pickable(&s_m[level].it[row])) return true;
+        dk_menu_t *m = &s_m[level];
+        const bool deeper = s_n > level + 1;
+        m->sel = row;
+        if (deeper && row == s_from[level + 1]) { s_pend_level = -1; return true; }   /* back on its own row */
+        if (deeper) {
+            /* heading for the open submenu: the switch waits while it keeps coming */
+            const dk_menu_t *sub = &s_m[level + 1];
+            const bool toward = was_col >= 0 && (sub->x > m->x ? ev->col > was_col : ev->col < was_col);
+            if (s_pend_level != level || s_pend_row != row || toward) s_pend_us = now + (toward ? 2 : 1) * HOVER_SWITCH_US;
+            s_pend_level = level;
+            s_pend_row = row;
+        } else if (m->it[row].kind == MI_SUB) {
+            if (s_pend_level != level || s_pend_row != row) s_pend_us = now + HOVER_OPEN_US;
+            s_pend_level = level;
+            s_pend_row = row;
+        } else s_pend_level = -1;
         return true;
+    }
     case LS_IEV_PTR_DOWN:
         if (level < 0) {
             dk_menu_close_all();
@@ -833,6 +971,7 @@ bool dk_menu_pointer(const ls_input_ev_t *ev)
         }
         s_down_level = level;
         s_down_row = row;
+        s_pend_level = -1;                    /* a press opens a submenu at once */
         if (row >= 0) {
             s_m[level].sel = row;
             if (s_n > level + 1) s_n = level + 1;

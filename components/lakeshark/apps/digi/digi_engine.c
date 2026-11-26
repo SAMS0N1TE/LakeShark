@@ -273,7 +273,7 @@ static void time_refresh(void)
         us = now;
         utc = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
         int ls = ls_time_source();
-        src = !ls_time_is_synced() ? DIGI_TIME_NONE : ls == 2 ? DIGI_TIME_NTP : DIGI_TIME_RTC;
+        src = !ls_time_is_synced() ? DIGI_TIME_NONE : ls == 2 ? DIGI_TIME_NTP : ls == 3 ? DIGI_TIME_GPS : DIGI_TIME_RTC;
     }
     bool pos = g.fix;
     TLOCK();

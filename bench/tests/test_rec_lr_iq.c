@@ -68,6 +68,21 @@ static void iq_delay(TickType_t ticks);
 #ifdef _WIN32
 #define mkdir(path,mode) mkdir(path)
 #endif
+/* The clean-packet replay lives in rec_watch_runtime.c; here no packet is
+   ever proven, so replay stays on the I/Q path these cases measure. */
+#include "fsk_packet.h"
+static int clean_fsk_packets(fsk_pkt_t *pkt,int found){(void)pkt;(void)found;return 0;}
+/* The runtime's stage text and air view; only the I/Q path is measured here. */
+#ifndef REC_AIR_FSK
+#define REC_AIR_FSK 2
+#endif
+static void replay_stage(const char *text){(void)text;}
+static void air_edges(bool tx,uint8_t kind,uint32_t hz,int dbm,uint32_t dev_hz,
+                      const int32_t *edge,int n,const char *what)
+{(void)tx;(void)kind;(void)hz;(void)dbm;(void)dev_hz;(void)edge;(void)n;(void)what;}
+static void send_fsk_packets(const char *what,uint32_t freq_hz,uint32_t deviation_hz,
+                             const fsk_pkt_t *pkt,int n,int dbm,char *result,size_t len)
+{(void)what;(void)freq_hz;(void)deviation_hz;(void)pkt;(void)n;(void)dbm;if(len)result[0]=0;}
 #include "../../components/lakeshark/apps/rec/rec_lr_iq_runtime.inc"
 #undef lr20xx_stream_source2_active
 #undef vTaskDelay

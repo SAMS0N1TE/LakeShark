@@ -2,6 +2,7 @@
 
 #include "ls_rterm.h"
 #include "desk/ls_desk_host.h"
+extern bool ls_desk_grid_hold(int *cols, int *rows) __attribute__((weak));   /* the desk is not in every build */
 #include "ls_input_ev.h"
 #include "ls_rterm_ssh.h"
 
@@ -252,6 +253,17 @@ void ls_rterm_set_input(void (*key)(int k, char ch), void (*tap)(int col, int ro
 }
 
 void ls_rterm_set_resize(bool (*resize)(int cols, int rows, const char *font)) { s_resize = resize; }
+/* The desk's resolution preset, chosen on the board: a regrid as a viewer's
+   'term size' would make it. UI task. False where the screen is not a
+   terminal (a board with glass keeps its grid) or there is no room. */
+bool ls_rterm_request_grid(int cols, int rows)
+{
+    if (!s_resize) return false;
+    if (s_mu) xSemaphoreTakeRecursive(s_mu, portMAX_DELAY);
+    const bool ok = s_resize(cols, rows, "");
+    if (s_mu) xSemaphoreGiveRecursive(s_mu);
+    return ok;
+}
 
 void ls_rterm_set_serial(void (*write)(const char *, size_t), void (*wait_tx)(void), void (*set_baud)(int))
 {
@@ -1350,10 +1362,17 @@ static void session_word(session_t *s, const char *verb, const char *arg, void (
         char font[12] = "";
         if (sscanf(arg, "%d %d %11s", &c, &r, font) >= 2 && s_resize) {
             s_grid_oom = false;
-            const bool ok = s_resize(c, r, font);
+            /* The desk holds a resolution of its own: the window's size is
+               not the grid's, the page scales. Only a font change regrids. */
+            const bool held = ls_desk_grid_hold && ls_desk_grid_hold(&c, &r);
+            int now_c = 0, now_r = 0;
+            ls_tui_geometry(&now_c, &now_r, NULL, NULL);
+            const bool same = held && c == now_c && r == now_r &&
+                              (!font[0] || !strcmp(font, ls_tui_font_label(ls_tui_font_index())));
+            const bool ok = !same && s_resize(c, r, font);
             char reply[64];
             snprintf(reply, sizeof(reply), "term: size %dx%d %s", c, r,
-                     ok ? "regrid" : s_grid_oom ? "nomem" : "kept");
+                     held ? "fixed" : ok ? "regrid" : s_grid_oom ? "nomem" : "kept");
             if (s == &s_web) ws_say(s_web_viewer, reply);
             else printf("%s\n", reply);
         }

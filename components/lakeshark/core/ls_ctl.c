@@ -402,12 +402,10 @@ static int cmd_fmlr(int argc, char **argv)
 /* The TUI's switch for the LR waterfall the radio computes (ls_wf_source.h). */
 #pragma weak ls_wf_source_lr_chip
 #pragma weak ls_wf_source_lr_chip_get
-#pragma weak ls_wf_source_counters
-#pragma weak ls_wf_source_idle_reason
+#pragma weak ls_wf_source_status
 void ls_wf_source_lr_chip(bool on);
 bool ls_wf_source_lr_chip_get(void);
-void ls_wf_source_counters(uint32_t *pumps, uint32_t *asks, uint32_t *granted);
-const char *ls_wf_source_idle_reason(void);
+size_t ls_wf_source_status(char *buf, size_t n);
 
 /* `wf` - the LR waterfall's feeds; `wf chip on|off` picks the radio's own FFT
    or the I/Q session for the standalone LR view. */
@@ -445,11 +443,12 @@ static int cmd_wf(int argc, char **argv)
     printf("LRCHIP use=%d active=%d center=%lu rows=%lu frames=%lu per_row=%lu error=%s\n",
            ls_wf_source_lr_chip_get ? ls_wf_source_lr_chip_get() : 0, c.active, (unsigned long)c.hz,
            (unsigned long)c.rows, (unsigned long)c.frames, (unsigned long)c.frames_per_row, esp_err_to_name(c.error));
-    if (ls_wf_source_counters && ls_wf_source_idle_reason) {
-        uint32_t pumps, asks, granted;
-        ls_wf_source_counters(&pumps, &asks, &granted);
-        printf("WFSRC pumps=%lu mesh_asks=%lu granted=%lu reason=\"%s\"\n", (unsigned long)pumps,
-               (unsigned long)asks, (unsigned long)granted, ls_wf_source_idle_reason());
+    if (ls_wf_source_status) {
+        /* The idle reason is NULL until the waterfall first runs; the
+           formatter prints "-" for it (a NULL %s faulted the P4). */
+        char wfsrc[256];
+        ls_wf_source_status(wfsrc, sizeof(wfsrc));
+        fputs(wfsrc, stdout);
     }
     return 0;
 }
@@ -1123,6 +1122,8 @@ static int cmd_say(int argc, char **argv)
                (unsigned)st.max_first_ms, (unsigned)st.max_synth_ms);
         LS_PRINTF(t_ls_ctl_audio_drops_u_underruns, "  audio drops=%u underruns=%u\n",
                (unsigned)audio_drops_get(), (unsigned)audio_underruns_get());
+        printf("  behind=%u (synthesis raised to keep up)  last gaps=%u\n",
+               (unsigned)st.raised, (unsigned)st.last_underruns);
         LS_PRINTF(t_ls_ctl_heap_internal_u_largest, "  heap internal=%u largest=%u psram=%u\n",
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),

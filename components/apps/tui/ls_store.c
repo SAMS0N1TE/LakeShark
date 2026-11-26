@@ -306,6 +306,18 @@ static void parse_one(const cells_jparser *p, int o, int src)
     if (at >= 0 && p->t[at].type == '[')
         for (unsigned k = 0, e = (unsigned)at + 1; k < p->t[at].count && k < 6; k++, e = p->t[e].next)
             jstr(p, (int)e, a->art[k], sizeof(a->art[k]));
+    at = cells_jget(p, o, "icon_px");      /* catalogs from 11-25 on: the tile in colour */
+    if (at >= 0 && p->t[at].type == '[' && p->t[at].count == 18) {
+        bool ok = true;
+        unsigned k = 0;
+        for (unsigned e = (unsigned)at + 1; k < 18 && ok; k++, e = p->t[e].next) {
+            char row[24];
+            jstr(p, (int)e, row, sizeof(row));
+            ok = strlen(row) == 20 && strspn(row, ".0123456789abcdef") == 20;
+            if (ok) memcpy(a->px[k], row, 20);
+        }
+        if (!ok) a->px[0][0] = 0;
+    }
     at = cells_jget(p, o, "third_party");
     if (at >= 0 && p->t[at].type == '[') {
         size_t n = 0;

@@ -33,6 +33,8 @@ permissions, pointer ownership, worker lifecycle and the executable examples.
 
 ## Start
 
+For ESP-IDF game firmware, see the [native P4 game SDK](native/README.md) for RGB565 3D and TK21 controls.
+
 You need Python 3.9+ and Espressif's RISC-V toolchain (an ESP-IDF install has it).
 
 ```
@@ -145,6 +147,26 @@ LAP_APP(.id = "hello", .name = "HELLO", .sub = "my first app", .version = "1.0",
         .icon_art = { "  _____   ", " | o o |  ", " |  >  |  ", " | \\_/ |  ", "  '---'   ", "  HELLO   " },
         .draw = draw);
 ```
+
+### The tile icon
+
+Give the app a colour icon: HOME draws the built-in apps that way, and a tile
+in one colour of character art looks unfinished beside them.
+
+```c
+LAP_ICON_PX("....................", "......ffffffff......", /* ... 18 rows of 20 ... */);
+```
+
+- 18 rows of 20 dots: the tile's 10 x 6 cells, 2 x 3 dots to a cell.
+- A dot is `'0'`-`'9'` or `'a'`-`'f'`, theme colour 0-15 (`LAP_*`, `| LAP_BRIGHT`
+  is +8), or `'.'` for clear (black, or the tile's colour when it is picked).
+- A cell shows its two commonest colours, so keep each 2 x 3 block to two.
+- Draw what the app does, in a few colours that mean something; don't rely on
+  the tile's own colour, which fills the ground when the tile is picked.
+- Keep `icon_art` (10 x 6 ASCII) too: boards before API 1.1 show that.
+  `lap.py info` and the store catalog (`icon_px`) carry both; the STORE
+  card shows the colour one.
+- Every app in `apps/` has one to copy from; `lsdk sim` shows it on the USER tab.
 
 `include/lakeshark_app.h` is the whole interface, with a comment on every call.
 Callbacks run on the screen task about 25 times a second; return quickly and

@@ -6,7 +6,7 @@ one.
 
 | | |
 |---|---|
-| HOME group | FIELD |
+| HOME group | FIELD, in the WARDRIVE folder |
 | Radio | Bluetooth and Wi-Fi (the co-processor on the board) |
 
 <img src="../screenshots/tdp4/motion/sweep.gif" width="300" alt="SWEEP listing nearby trackers">
@@ -50,8 +50,8 @@ OPTIONS holds:
   uptime, address, category and signal to `/sdcard/sweep/alerts.csv`, with no
   location and no broadcast payload. RECEIVE ONLY is always on.
 - **DISPLAY / FILTER**: show ALL or one category.
-- **RELOAD SD RULES**: read `/sdcard/sweep/rules.json` again. The board writes
-  the default rules there the first time.
+- **RELOAD SD RULES**: read `/sdcard/sweep/rules.json` again, if you have one.
+  Its rows are added to the shared list below.
 
 In a list, Esc or BACK goes up one level.
 
@@ -64,8 +64,9 @@ FLOOD appears during an advert flood.
 **LIST** groups contacts:
 
 - **WITH YOU**: a tracker reported as separated from its owner that stays
-  with you for ten minutes. With a GPS fix it must also move with you at least
-  500 m or across three places. A GPS-backed WITH YOU is the one red alarm.
+  with you for the "with you" time (ten minutes at first). With a GPS fix it
+  must also move with you the "with you" distance (500 m at first) or across
+  three places. A GPS-backed WITH YOU is the one red alarm.
 - **NEW**: first heard in the last two minutes.
 - **PASSING**: everything else.
 
@@ -80,16 +81,28 @@ seconds with high, low and gaps. TARGET lists vendor, address, owner state,
 advert count and when it was last heard. For a drone with a GPS fix, it also
 shows range and bearing to the aircraft and operator positions it reports.
 
+## Shared with WARDRIVE and DETECTOR
+
+SWEEP, WARDRIVE and DETECTOR use one list of what devices are. It is built
+into the firmware, and `/sdcard/wardrive/sigs.txt` changes or adds to it.
+See [WARDRIVE](WARDRIVE.md) for the format. DETECTOR's SWEEP sources follow
+the same list.
+
+There is also one "with you" setting: SWEEP's WITH YOU and WARDRIVE's
+FOLLOWING both use it. Set it from TERMINAL with `sweep withyou <minutes>
+<metres>` (1 to 240 minutes, 50 to 20000 m). `sweep withyou` shows it.
+
 ## Tips and limits
 
 - Names and signatures are hints, not proof of what a device is.
 - Signal strength guides you closer. It is not a distance or a bearing.
 - GPS is used for movement counts only. SWEEP keeps no coordinates.
-- From TERMINAL: `sweep on|off|status|stats|list|hunt MAC|mute on|off|rules reload`.
+- From TERMINAL: `sweep on|off|status|stats|list|hunt MAC|mute on|off|rules reload|withyou`.
 
 ## More guides
 
 - [SWEEP guide](../SWEEP.md)
+- [WARDRIVE](WARDRIVE.md)
 - [DRONES](../DRONES.md)
 - [Controls and navigation](../UI_CONTROLS.md)
 - [All apps](README.md)

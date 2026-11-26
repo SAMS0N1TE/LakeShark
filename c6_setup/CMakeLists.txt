@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 3.22)
+# esp-serial-flasher v2.1.0 (Apache-2.0), commit 24997fe693ff17e6598d7eb1d37af312752100aa.
+# build.ps1 clones it; or pass -DFLASHER_SOURCE=<checkout>.
+if(NOT DEFINED FLASHER_SOURCE)
+    message(FATAL_ERROR "Set FLASHER_SOURCE to an esp-serial-flasher v2.1.0 checkout (build.ps1 does this)")
+endif()
+get_filename_component(FLASHER_SOURCE "${FLASHER_SOURCE}" ABSOLUTE)
+get_filename_component(flasher_parent "${FLASHER_SOURCE}" DIRECTORY)
+get_filename_component(flasher_name "${FLASHER_SOURCE}" NAME)
+if(NOT flasher_name STREQUAL "esp-serial-flasher")
+    message(FATAL_ERROR "The checkout directory must be named esp-serial-flasher")
+endif()
+set(EXTRA_COMPONENT_DIRS "${FLASHER_SOURCE}")
+set(COMPONENTS main)
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(c6_setup)

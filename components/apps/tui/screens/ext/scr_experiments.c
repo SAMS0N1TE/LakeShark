@@ -308,6 +308,13 @@ static int exp_icon(const ls_experiment_t *e)
 
 /* The trials as tiles, the way HOME shows its apps: a glyph, the name, the
    one line under it, lit while it runs. A tap opens one; arrows walk them. */
+/* The words a page keeps on its last row: on the desk they are the window's
+   status bar instead (its keys are under Help > Keys). */
+static void hint_line(tui_surface *sf, tui_rect a, const char *text, uint8_t attr)
+{
+    if (ls_tui_compact()) { ls_tui_status_set(text ? text : "", NULL); return; }
+    ls_safe_line(sf, a, a.y + a.h - 1, text, attr);
+}
 static void draw_list(tui_surface *sf, tui_rect a)
 {
     const ls_experiment_t *run = ls_exp_running();
@@ -343,7 +350,7 @@ static void draw_list(tui_surface *sf, tui_rect a)
     const ls_experiment_t *sel = ls_exp_at(s_sel);
     char foot[LS_EXP_LINE + 24];
     snprintf(foot, sizeof(foot), "%s%s", s_feedback[0] ? s_feedback : sel && sel->sub ? sel->sub : "", s_feedback[0] || !sel ? "" : "");
-    ls_safe_line(sf, a, a.y + a.h - 1, foot[0] ? foot : "Tap a trial to open it", LS_ATTR_DIM);
+    hint_line(sf, a, foot[0] ? foot : "Tap a trial to open it", LS_ATTR_DIM);
 }
 
 /* ------------------------------------------------------------------ page */
@@ -450,7 +457,7 @@ static void draw_history(tui_surface *sf, tui_rect a)
             lr433_history_fahrenheit() ? 'F' : 'C', s_sensor.alarm ? " / ACTIVE" : "");
         if (in.h > 3) tui_put_str(sf, in, in.x, in.y + 3, line, LS_ATTR_DIM);
     }
-    ls_safe_line(sf, a, a.y + a.h - 1, lr433_history_status(), LS_ATTR_DIM);
+    hint_line(sf, a, lr433_history_status(), LS_ATTR_DIM);
 }
 
 /* Retained flights share the experiment panels, selection dither and glyphs. */
@@ -626,7 +633,7 @@ static void draw_sondes(tui_surface *sf, tui_rect a)
             if ((int)strlen(line)+8 < in.w) tui_put_str(sf,in,in.x+in.w-(int)strlen(line),in.y+in.h-1,line,LS_ATTR_DIM);
         }
     }
-    ls_safe_line(sf,a,a.y+a.h-1,s_feedback[0] ? s_feedback : detail ? "G recover in COMPASS / ESC list" : "ENTER detail / ESC back",LS_ATTR_DIM);
+    hint_line(sf, a, s_feedback[0] ? s_feedback : detail ? "G recover in COMPASS / ESC list" : "ENTER detail / ESC back",LS_ATTR_DIM);
 }
 
 static void draw_page(tui_surface *sf, tui_rect a, const ls_experiment_t *e)
@@ -686,7 +693,7 @@ static void draw_page(tui_surface *sf, tui_rect a, const ls_experiment_t *e)
     tui_put_str(sf, in, in.x, last, status, sattr);
 
     const char *keys = e->no_radio ? "S start/stop  O options  N note  ESC back" : "S start/stop  R radio  O options  N note  ESC back";
-    ls_safe_line(sf, a, a.y + a.h - 1, s_feedback[0] ? s_feedback : ls_tui_keyboard_mode() ? keys : "", LS_ATTR_DIM);
+    hint_line(sf, a, s_feedback[0] ? s_feedback : ls_tui_keyboard_mode() ? keys : "", LS_ATTR_DIM);
 }
 
 /* ------------------------------------------------------------ the screen */

@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #endif
 /* See ls_lap_api.h. API calls have no effect outside a host callback. */
+#include "ls_deskui.h"
 #include "ls_lap_api.h"
 #include "ls_lap_ble_peripheral.h"
 #include "../../../app-sdk/include/lap3d.h"
@@ -675,7 +676,11 @@ void lap_box(int x, int y, int w, int h, const char *title, uint8_t a) {
         return;
     /* tui_box has no caller clip; use it only when wholly inside the app. */
     if (x >= 0 && y >= 0 && w <= runtime_state.area.w - x && h <= runtime_state.area.h - y) {
-        tui_box(runtime_state.surface, tui_rect_make(runtime_state.area.x + x, runtime_state.area.y + y, w, h), title, a);
+        const tui_rect r = tui_rect_make(runtime_state.area.x + x, runtime_state.area.y + y, w, h);
+        /* In a desk window every app's box is an etched group box with its
+           caption on the top line, the way the desk's own programs are. */
+        if (ls_tui_compact()) ls_dui_group_ink(runtime_state.surface, r, title, a);
+        else tui_box(runtime_state.surface, r, title, a);
         return;
     }
     lap_hline(x, y, w, '-', a);

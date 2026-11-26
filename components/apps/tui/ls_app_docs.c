@@ -317,6 +317,16 @@ const ls_app_doc_t ls_doc_wardrive = {
     .gps_note = "Each find is placed where it was strongest; your position is in both files.",
 };
 
+const ls_app_doc_t ls_doc_party = {
+    .purpose = "A few LakeShark users on one party code: who is where, what each of them finds "
+               "(Flock cameras, drones, police gear, trackers, the same car twice) with a rough place, "
+               "small files passed round, and a buzz per class for discretion.",
+    .records = LS_APP_RECORDS_AUTOMATIC,
+    .record_note = "Profiles in /sdcard/party/profiles.bin; files members send land in /sdcard/party.",
+    .gps     = LS_APP_GPS_NAVIGATES,
+    .gps_note = "Your position goes to the party as you choose: exact, a 1 km square, or not at all.",
+};
+
 const ls_app_doc_t ls_doc_bootlog = {
     .purpose = "Everything this boot logged from its first line, and the boot "
                "before, with errors in red and warnings in yellow. Save it to "

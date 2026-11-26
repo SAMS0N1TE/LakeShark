@@ -21,6 +21,11 @@ bool ls_p25_desk_touch(int col, int row);
 bool ls_p25_desk_classic(void);
 bool ls_p25_desk_classic_key(ls_tk_t k, char ch);
 void ls_p25_desk_export_dir(const char *dir);
+/* The row it left for the view tabs under its toolbar (h 0: none). */
+tui_rect ls_p25_desk_tabs(void);
+/* The open menu, drawn after scr_p25.c's view tabs and deck so they never
+   paint over it. */
+void ls_p25_desk_draw_popup(tui_surface *sf);
 
 /* scr_p25.c and p25_calls_live.c: the handheld's own pieces. */
 void ls_scr_p25_health(tui_surface *sf, tui_rect r);        /* RECEIVER HEALTH / TOTALS */

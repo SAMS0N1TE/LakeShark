@@ -68,7 +68,7 @@ void ls_lora_port_board(ls_lora_port_t *out)
         out->rfsw[i].config = rfsw[i].config;
         out->rfsw_n = (uint8_t)(i + 1);
     }
-#if LS_TX_UNLOCKED && defined(LS_BOARD_LR20XX_RFSW_TX_HF)
+#if LS_TX_UNLOCKED_BUILD && defined(LS_BOARD_LR20XX_RFSW_TX_HF)
     static const struct { uint8_t dio, config; } tx_hf[] = { LS_BOARD_LR20XX_RFSW_TX_HF };
     for (size_t k = 0; k < sizeof(tx_hf) / sizeof(tx_hf[0]); k++)
         for (int i = 0; i < out->rfsw_n; i++)
@@ -80,7 +80,7 @@ void ls_lora_port_board(ls_lora_port_t *out)
 static void tlr2021_port(ls_lora_port_t *out)
 {
     static const struct { uint8_t dio, config; } t[] = {
-        { 6, 0x08 }, { 7, LS_TX_UNLOCKED ? 0x10 : 0x00 }, { 8, 0x06 }, { 10, LS_TX_UNLOCKED ? 0x18 : 0x08 } };
+        { 6, 0x08 }, { 7, LS_TX_UNLOCKED_BUILD ? 0x10 : 0x00 }, { 8, 0x06 }, { 10, LS_TX_UNLOCKED_BUILD ? 0x18 : 0x08 } };
     out->rfsw_n = 0;
     for (size_t i = 0; i < sizeof(t) / sizeof(t[0]) && i < LS_LORA_PORT_RFSW_MAX; i++) {
         out->rfsw[i].dio = t[i].dio;
@@ -240,7 +240,7 @@ bool ls_lora_port_check(const ls_lora_port_t *p, char *why, size_t n)
         if (d == p->irq_dio) { LS_SNPRINTF(t_ls_lora_port_rfsw_dio_d_is, why, n, "rfsw: DIO%d is the interrupt", d); return false; }
         if (p->rfsw[i].config & ~0x1Fu) { LS_SNPUTS(t_ls_lora_port_rfsw_config_is_5, why, n, "rfsw: config is 5 bits (00-1F)"); return false; }
         /* the driver never transmits on the HF path */
-        if (!LS_TX_UNLOCKED && (p->rfsw[i].config & RFSW_TX_HF)) { LS_SNPRINTF(fmt_ls_lora_port_rfsw_dio_sets_the, why, n, "rfsw: DIO%d sets the HF transmit state, which is refused", d); return false; }
+        if (!LS_TX_UNLOCKED_BUILD && (p->rfsw[i].config & RFSW_TX_HF)) { LS_SNPRINTF(fmt_ls_lora_port_rfsw_dio_sets_the, why, n, "rfsw: DIO%d sets the HF transmit state, which is refused", d); return false; }
         for (int j = 0; j < i; j++)
             if (p->rfsw[j].dio == d) { snprintf(why, n, "rfsw: DIO%d twice", d); return false; }
     }

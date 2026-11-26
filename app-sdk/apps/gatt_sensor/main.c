@@ -118,6 +118,12 @@ static void draw(void) {
     lap_put_str(0, 4, "Battery + Location/Speed. GPS absent: no position flag.",
                 LAP_ATTR(LAP_WHITE, LAP_BLACK));
 }
+LAP_ICON_PX("....................", "................9...", "..............99999.", "..............99f99.",
+            ".............99fff99", ".777777777777.99f99.", ".700000000007.99999.", ".70aaaaaa0007..999..",
+            ".70aaaaaa000777.9...", ".70aaaaaa000777.9...", ".70aaaaaa000777.....", ".70aaaaaa000777.....",
+            ".70aaaaaa0007.......", ".700000000007.......", ".777777777777.......", "....................",
+            "....................", "....................");
+
 LAP_APP(.id = "gatt_sensor", .name = "GATT SENSOR", .sub = "Battery and GPS peripheral",
         .version = "1.0", .author = "LakeShark", .flags = LAP_CAP_RADIO_TX, .color = LAP_CYAN,
         .enter = enter, .leave = leave, .draw = draw);

@@ -384,3 +384,59 @@ LS_CASE(bughunt_tags_names_and_notes_cover_every_kind) {
     }
     LS_EQ_STR(bw_class_tag(BW_C_COUNT), "?");
 }
+
+LS_CASE(bughunt_tags_mine_and_kind_switches_never_alert) {
+    /* MINE: the same separated AirTag that alerts at 10 min stays quiet */
+    fresh();
+    w->follow_ms = 10u * 60000u;
+    ad_t a = findmy(0x10, 0x31, true);
+    const int i = bw_add(w, A1, 1, 3, -60, a.b, a.n, 0);
+    bw_mark(w, i, BW_MARK_MINE);
+    for (uint32_t t = 0; t <= 20u * 60000u; t += 2000) { bw_add(w, A1, 1, 3, -60, a.b, a.n, t); LS_CHECK(bw_tick(w, t) < 0); }
+    /* a kind switched off is listed but never alerts; the others still do */
+    fresh();
+    w->follow_ms = 10u * 60000u;
+    w->kind_off = bw_kind_bit(BW_C_FINDMY);
+    LS_EQ_UINT(bw_kind_bit(BW_C_APPLE_PP), bw_kind_bit(BW_C_FINDMY));
+    const uint8_t tile[] = {1, 2, 3, 4};
+    ad_t t1 = svc_data(0xFEED, tile, 4);
+    int fired = -1;
+    for (uint32_t t = 0; t <= 12u * 60000u; t += 2000) {
+        bw_add(w, A1, 1, 3, -60, a.b, a.n, t);
+        bw_add(w, A2, 0, 0, -60, t1.b, t1.n, t);
+        const int k = bw_tick(w, t);
+        if (k >= 0) { LS_EQ_INT(w->dev[k].ad.cls, BW_C_TILE); fired = k; }
+    }
+    LS_CHECK(fired >= 0);
+}
+
+LS_CASE(bughunt_tags_watch_says_gone_and_back_through_a_rotation) {
+    fresh();
+    w->watch_ms = 60000u;
+    ad_t a = findmy(0x10, 0x31, true);
+    const int i = bw_add(w, A1, 1, 3, -60, a.b, a.n, 0);
+    bw_mark(w, i, BW_MARK_WATCH);
+    int ev = 0;
+    for (uint32_t t = 0; t <= 60000u; t += 2000) { bw_add(w, A1, 1, 3, -60, a.b, a.n, t); LS_CHECK(bw_watch(w, t, &ev) < 0); }
+    /* it rotates: the new address carries the mark and nothing fires */
+    ad_t b = findmy(0x10, 0x77, true);
+    for (uint32_t t = 61000u; t <= 120000u; t += 2000) { bw_add(w, A2, 1, 3, -61, b.b, b.n, t); bw_tick(w, t); LS_CHECK(bw_watch(w, t, &ev) < 0); }
+    const int n2 = bw_find_uid(w, w->dev[i].succ);
+    LS_CHECK(n2 >= 0);
+    LS_EQ_INT(w->dev[n2].mark, BW_MARK_WATCH);
+    /* quiet for the watch time and the rotation check: gone, once */
+    int k = -1;
+    uint32_t at = 0;
+    for (uint32_t t = 122000u; t <= 300000u; t += 1000) {
+        bw_tick(w, t);
+        const int r = bw_watch(w, t, &ev);
+        if (r >= 0) { LS_CHECK(k < 0); k = r; at = t; LS_EQ_INT(ev, BW_EV_GONE); }
+    }
+    LS_EQ_INT(k, n2);
+    LS_CHECK(at >= 120000u + 60000u + 15000u && at <= 120000u + 60000u + 17000u);
+    /* heard again: back */
+    bw_add(w, A2, 1, 3, -70, b.b, b.n, 301000u);
+    LS_EQ_INT(bw_watch(w, 301500u, &ev), n2);
+    LS_EQ_INT(ev, BW_EV_BACK);
+    LS_CHECK(bw_watch(w, 302000u, &ev) < 0);
+}

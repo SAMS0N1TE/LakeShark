@@ -95,8 +95,13 @@ static void draw_dmr(tui_surface *sf, tui_rect area)
     int bar_h = ls_tui_is_wide() ? 3 : 6;
     if (bar_h > area.h) bar_h = area.h;
     s_dmr_bar = tui_rect_make(area.x, area.y + area.h - bar_h, area.w, bar_h);
-    ls_btn_bar_raised_slot(sf, s_dmr_bar, buttons, 5, -1, LS_BTN_SLOT_QUICK);
     tui_rect body = tui_rect_make(area.x, area.y, area.w, area.h - bar_h);
+    if (ls_tui_compact() && area.h >= 8) {
+        /* Desk: the keys are the window's one toolbar, at the top. */
+        s_dmr_bar = tui_rect_make(area.x, area.y, area.w, 1);
+        body = tui_rect_make(area.x, area.y + 1, area.w, area.h - 1);
+    }
+    ls_btn_bar_raised_slot(sf, s_dmr_bar, buttons, 5, -1, LS_BTN_SLOT_QUICK);
     ls_safe_line(sf, body, body.y, "DMR TIER II / RECEIVE ONLY", cyan);
     ls_safe_line(sf, body, body.y + 1, "Voice unavailable / AMBE+2 required", LS_ATTR_DIM);
     unsigned selected = dmr_listen_select(&s_dmr_filter, &s_dmr_snapshot, now);

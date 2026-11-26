@@ -119,6 +119,7 @@ static struct {
     char key_text[2][16];
     lap_chip_t chips[4];
     int kh, list_x, list_w, list_y, list_rows;
+    int key_rows, key_w, key_top;      /* portrait: two rows of big keys (3 + 2) */
     uint32_t test_at;
     /* what each source has done, for its tile: real counts and times only */
     struct { uint32_t seen, hits, seen_ms, hit_ms; bool emerg; } src[NSRC];
@@ -1084,7 +1085,21 @@ static void draw(void) {
     const int W = lap_cols(), H = lap_rows();
     const det_t *d = s.d;
     lap_clear(LAP_UI_DIM);
-    s.kh = lap_ui_keys_rows(5);
+    /* Portrait: five keys in one row came out thin and narrow, so they go in
+       two full-width rows (RUN VIEW TEST, RELOAD OPTIONS), each as tall as
+       the board's own big keys. Landscape keeps the one row. */
+    if (W < H) {
+        int rh = lap_ui_keys_rows(3);
+        if (rh < 6) rh = 6;
+        if (rh * 2 > H / 3) rh = H / 6;
+        s.key_rows = 2;
+        s.kh = rh * 2;
+    } else {
+        s.key_rows = 1;
+        s.kh = lap_ui_keys_rows(5);
+    }
+    s.key_w = W;
+    s.key_top = H - s.kh;
     const bool quiet = det_quiet(d) && d->prefs.quiet_on;
     s.chips[0] = (lap_chip_t){s.running ? (lap_service_running() ? "WATCHING" : "ON SCREEN") : "STOPPED", s.running,
                               s.running ? LAP_UI_LIVE : LAP_UI_WARN};
@@ -1129,7 +1144,22 @@ static void draw(void) {
     s.keys[2] = (lap_btn_t){s.view == VIEW_RULES ? "TOGGLE" : "TEST", NULL, 't', false, false, false};
     s.keys[3] = (lap_btn_t){"RELOAD", NULL, 'l', s.rules_job >= 0, false, false};
     s.keys[4] = (lap_btn_t)LAP_BTN_OPTIONS;
-    lap_ui_keys(0, H - s.kh, W, s.kh, s.keys, 5, -1);
+    if (s.key_rows == 2) {
+        const int rh = s.kh / 2;
+        lap_ui_keys(0, H - s.kh, W, rh, s.keys, 3, -1);
+        lap_ui_keys(0, H - s.kh + rh, W, s.kh - rh, s.keys + 3, 2, -1);
+    } else
+        lap_ui_keys(0, H - s.kh, W, s.kh, s.keys, 5, -1);
+}
+
+/* Which key a tap landed on: the SDK remembers only the last row drawn, so
+   two rows are worked out here. */
+static int key_at(int col, int row) {
+    if (s.key_rows != 2) return lap_ui_key_hit(col, row);
+    if (row < s.key_top || row >= s.key_top + s.kh || col < 0 || col >= s.key_w) return -1;
+    const int rh = s.kh / 2;
+    if (row < s.key_top + rh) return col * 3 / s.key_w;
+    return 3 + col * 2 / s.key_w;
 }
 
 /* ---- input ---------------------------------------------------------------- */
@@ -1159,7 +1189,7 @@ static bool key(lap_key_t k, char ch) {
     }
 }
 static bool touch(int col, int row) {
-    const int i = lap_ui_key_hit(col, row);
+    const int i = key_at(col, row);
     if (i >= 0) return key(LAP_KEY_CHAR, s.keys[i].key);
     if (row >= s.list_y && row < s.list_y + s.list_rows && col >= s.list_x && col < s.list_x + s.list_w) {
         const int at = s.first + row - s.list_y;
@@ -1194,7 +1224,7 @@ static void leave(void) {
     s.ready = false;
 }
 
-LAP_APP(.id = "detector", .name = "DETECTOR", .sub = "rule matches", .version = "3.1",
+LAP_APP(.id = "detector", .name = "DETECTOR", .sub = "rule matches", .version = "3.2",
         .author = "LakeShark", .icon = LAP_ICON_TOWER, .color = LAP_CYAN,
         .flags = LAP_CAP_RADIO_RX | LAP_CAP_RADIO_TX | LAP_CAP_SERVICE,
         .icon_art = {"  .----.  ", " / .--. \\ ", "| ( () ) |", " \\ '--' / ", "  '----'  ", " DETECTOR "},

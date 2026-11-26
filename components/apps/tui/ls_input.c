@@ -77,12 +77,17 @@ bool ls_input_post(const ls_input_ev_t *ev)
 }
 
 extern void ls_lap_input_board(const ls_input_ev_t *) __attribute__((weak));
+extern bool ls_tui_pocket_locked(void) __attribute__((weak));
 extern bool ls_lap_input_active(void) __attribute__((weak));
 static void fallback(const ls_input_ev_t *e, bool native)
 {
     static bool down, moved;
     static int col0, row0, col, row, px, py;
-    if (native && ls_lap_input_board) ls_lap_input_board(e);
+    /* Pocket lock: a store app gets keys, never a finger. */
+    const bool finger = e->kind == LS_IEV_PTR_MOVE || e->kind == LS_IEV_PTR_DOWN || e->kind == LS_IEV_PTR_UP ||
+                        e->kind == LS_IEV_CONTACT_DOWN || e->kind == LS_IEV_CONTACT_MOVE || e->kind == LS_IEV_CONTACT_UP;
+    const bool pocket = ls_tui_pocket_locked && ls_tui_pocket_locked();
+    if (native && ls_lap_input_board && !(finger && pocket)) ls_lap_input_board(e);
     switch (e->kind) {
     case LS_IEV_KEY_DOWN: ls_tui_router_key((ls_tk_t)e->key, e->ch); break;
     /* The native runtime has already received the release above. */

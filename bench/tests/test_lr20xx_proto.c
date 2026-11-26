@@ -36,6 +36,8 @@ static bool known_lr_opcode(uint16_t op)
         /* the LF transmitter: Tx FIFO, SelPa, SetPaConfig, SetTxParams, SetTx */
         0x0002, 0x011F, 0x020F, 0x0202, 0x0203, 0x020D,
         0x012D,
+        /* SetRssiCalibration: Semtech's measured gain tables */
+        0x0205,
     };
     for (size_t i = 0; i < sizeof(ok) / sizeof(ok[0]); i++) if (ok[i] == op) return true;
     return false;
@@ -85,7 +87,7 @@ LS_CASE(an_lr2021_is_identified_with_exactly_these_frames)
     FK_FRAME(2, 0x00, 0x00, 0x00, 0x00);                      /* GetVersion, 2  */
     LS_CHECK(fk.frames[2].read2);
     FK_FRAME(3, 0x01, 0x16, 0xFF, 0xFF, 0xFF, 0xFF);          /* ClearIrq, all  */
-    LS_EQ_INT(fk.nframes, 22);
+    LS_EQ_INT(fk.nframes, 24);          /* and the RSSI tables with their status read */
     LS_EQ_INT(fk.violations, 0);
     LS_EQ_INT(unknown_frames(), 0);
 }
@@ -134,10 +136,19 @@ LS_CASE(capabilities_say_what_is_implemented_not_what_the_silicon_could_do)
     LS_CHECK(c & LS_LORA_CAP_MODES_RX);      /* the receive-only Mode S session exists */
 }
 
+/* The RSSI table follows the band (rssi_calibration_goes_out_at_init_...);
+   a case about other frames holds it still, and lets it go at the end. */
+static void rssi_cal_hold(bool hold)
+{
+    char *av[] = { "lora", "lrrssical", hold ? "868" : "auto" };
+    LS_EQ_INT(lr20xx_clock_command(3, av), 0);
+}
+
 LS_CASE(set_rf_frequency_is_a_32_bit_value_in_hertz)
 {
     lr_up();
     LS_EQ_INT(ls_lora_start(), ESP_OK);
+    rssi_cal_hold(true);
     fk.nframes = 0;
     LS_EQ_INT(lr20xx_set_rf_frequency(1090000000u), ESP_OK);
     FK_FRAME(0, 0x02, 0x00, 0x40, 0xF8, 0x14, 0x80);
@@ -149,6 +160,7 @@ LS_CASE(set_rf_frequency_is_a_32_bit_value_in_hertz)
     LS_EQ_INT(lr20xx_set_rf_frequency(103999999u), ESP_ERR_INVALID_ARG);
     LS_EQ_INT(lr20xx_set_rf_frequency(2740000001u), ESP_ERR_INVALID_ARG);
     LS_EQ_INT(fk.nframes, 2);
+    rssi_cal_hold(false);
 }
 
 LS_CASE(frequency_correction_scales_every_programmed_frequency)
@@ -235,6 +247,7 @@ LS_CASE(tuning_for_receive_calibrates_then_tunes_then_picks_the_path_and_checks_
 {
     lr_up();
     LS_EQ_INT(ls_lora_start(), ESP_OK);
+    rssi_cal_hold(true);
     fk.nframes = 0;
     /* 1090 MHz is below the 1.5 GHz hand-over, so it goes on the LF input. */
     LS_EQ_INT(lr20xx_tune_rx(1090000000u, -1), ESP_OK);
@@ -256,6 +269,7 @@ LS_CASE(tuning_for_receive_calibrates_then_tunes_then_picks_the_path_and_checks_
     FK_FRAME(4, 0x02, 0x01, 0x00, 0x07);
     LS_EQ_INT(fk.violations, 0);
     LS_EQ_INT(unknown_frames(), 0);
+    rssi_cal_hold(false);
 }
 
 LS_CASE(a_command_the_chip_rejects_is_reported_by_the_next_status)
@@ -554,6 +568,59 @@ LS_CASE(rx_retune_moves_lora_receive_without_reprogramming_it)
     ls_lora_stop();
 }
 
+/* Semtech's measured RSSI tables go to the part at bring-up, LF and HF; a
+   retune into another 10 MHz step of the LF estimate sends the LF table
+   again, alone, and a step inside the same one sends nothing. At 433.92 the
+   estimate carries the 490 MHz table's trend a little further down. */
+static int last_op_frame(uint16_t op)
+{
+    for (int i = fk.nframes - 1; i >= 0; i--)
+        if (!fk.frames[i].read2 && ((fk.frames[i].b[0] << 8) | fk.frames[i].b[1]) == op) return i;
+    return -1;
+}
+LS_CASE(rssi_calibration_goes_out_at_init_and_follows_the_lf_band)
+{
+    fk_install(FK_LR);
+    { char *av[] = { "lora", "lrrssical", "auto" }; (void)lr20xx_clock_command(3, av); }
+    LS_EQ_INT(ls_lora_start(), ESP_OK);
+    int i = last_op_frame(0x0205);
+    LS_CHECK(i >= 0);
+    if (i >= 0) {
+        LS_EQ_INT(fk.frames[i].b[2], 3);                 /* LF and HF */
+        LS_EQ_INT((int)fk.frames[i].full, 2 + 1 + 2 * 81);
+    }
+    ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg);
+    cfg.freq_hz = 433920000;
+    fk.nframes = 0;
+    LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+    i = last_op_frame(0x0205);
+    LS_CHECK(i >= 0);
+    if (i >= 0) {
+        /* LF alone on a retune; LF and HF if the session reset the part,
+           which sends the table for the frequency it was asked for. */
+        LS_CHECK(fk.frames[i].b[2] == 1 || fk.frames[i].b[2] == 3);
+        /* G1 at 430 MHz: -46 + (430-490)/400 * 14 = -48.1 -> -48 (8.2), NF 221 */
+        LS_EQ_INT((int16_t)((fk.frames[i].b[3] << 8) | fk.frames[i].b[4]), -48);
+        LS_EQ_INT(fk.frames[i].b[5], 221);
+    }
+    LS_EQ_INT(ls_lora_receive(), ESP_OK);
+    fk.nframes = 0;
+    LS_EQ_INT(ls_lora_rx_retune(434000000), ESP_OK);    /* the same 10 MHz step */
+    LS_EQ_INT(count_op(0x0205), 0);
+    LS_EQ_INT(ls_lora_rx_retune(907000000), ESP_OK);    /* the 868/915 table's step */
+    i = last_op_frame(0x0205);
+    LS_CHECK(i >= 0);
+    if (i >= 0) {   /* G1 at 910 MHz: -46 + 1.05 * 14 = -31.3 -> -31 */
+        LS_EQ_INT(fk.frames[i].b[2], 1);
+        LS_EQ_INT((int)fk.frames[i].full, 2 + 1 + 81);
+        LS_EQ_INT((int16_t)((fk.frames[i].b[3] << 8) | fk.frames[i].b[4]), -31);
+    }
+    LS_EQ_INT(fk.bad_mode, 0);
+    LS_EQ_INT(fk.bad_args, 0);
+    LS_EQ_INT(unknown_frames(), 0);
+    ls_lora_stop();
+}
+
 LS_CASE(mesh_startup_on_an_lr2021_configures_and_listens)
 {
     /* The sequence ls_mesh_start follows: default config, configure, and on
@@ -590,14 +657,16 @@ LS_CASE(mesh_startup_on_an_lr2021_configures_and_listens)
 /* The Mode S receive session and the RF switch DIOs                  */
 /* ================================================================== */
 
-/* Command frames only: not the GetStatus polls the driver interleaves, and
-   not the second frame of a read. */
+/* Command frames only: not the GetStatus polls the driver interleaves, not
+   the second frame of a read, and not the RSSI tables, which follow the band
+   rather than the session (rssi_calibration_goes_out_at_init_...). */
 static int cmds(int *ix, int max)
 {
     int n = 0;
     for (int i = 0; i < fk.nframes && n < max; i++) {
         if (fk.frames[i].read2) continue;
         if (fk.frames[i].full == 6 && fk.frames[i].b[0] == 0x01 && fk.frames[i].b[1] == 0x00) continue;
+        if (fk.frames[i].b[0] == 0x02 && fk.frames[i].b[1] == 0x05) continue;
         ix[n++] = i;
     }
     return n;

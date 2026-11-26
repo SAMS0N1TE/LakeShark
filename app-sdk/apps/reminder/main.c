@@ -42,5 +42,11 @@ static bool key(lap_key_t k,char ch) {
     if (ch=='p'||ch=='P') { int r=lap_desktop_save_file(0,"reminder.txt","reminder.txt"); desktop_request=r>0?r:0; snprintf(status,sizeof(status),"PC save request: %d",r); return true; }
     return false;
 }
+LAP_ICON_PX("....................", "........bbbb..9999..", ".......bbbbbb.9999..", ".......bbbbbb.99f9..",
+            ".......bbbbbb.9999..", ".......fbbbbb.......", "......bfbbbbbb......", "......bfbbbbbb......",
+            "......fbbbbbbb......", "......fbbbbbbb......", "......fbbbbbbb......", ".....bfbbbbbbbb.....",
+            ".....bbbbbbbbbb.....", "...33333333333333...", "...33333333333333...", ".........33.........",
+            ".........33.........", "....................");
+
 LAP_APP(.id="reminder",.name="REMINDER",.sub="Actionable background notices",.version="1.0",.author="LakeShark",
         .icon=LAP_ICON_GEAR,.color=LAP_CYAN,.flags=LAP_CAP_SERVICE,.enter=enter,.draw=draw,.key=key);

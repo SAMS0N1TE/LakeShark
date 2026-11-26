@@ -5,6 +5,7 @@
 #include "ls_board.h"
 #include "ls_gps.h"
 #include "settings.h"
+#include "ls_time.h"
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -145,6 +146,10 @@ static void tick(void *arg)
         }
         portEXIT_CRITICAL(&s_mux);
         if (!fix) continue;
+        /* The fix's own time sets the clock when nothing better has: a
+           board in the field with no Wi-Fi had no clock until it found one. */
+        if (g.utc_s)
+            ls_time_offer_gps((time_t)g.utc_s, (uint32_t)(esp_timer_get_time() / 1000) - g.utc_ms);
         const double lat = g.lat_deg, lon = g.lon_deg;
         if (!named || ls_location_km(named_lat, named_lon, lat, lon) > REGION_KM) {
             char region[8];

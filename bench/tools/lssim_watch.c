@@ -48,10 +48,30 @@ uint32_t rec_get_max_span(void){return max_span;}
 void rec_set_max_span(uint32_t n){max_span=n;}
 int rec_get_min_edges(void){return minimum_edges;}
 void rec_set_min_edges(int n){minimum_edges=n;}
+static int sim_mod;static uint32_t sim_bw;
+int rec_get_mod(void){return sim_mod;}
+void rec_set_mod(int m){sim_mod=m==1?1:0;}
+void rec_set_bw(uint32_t hz){sim_bw=hz;}
+uint32_t rec_get_bw(void){return sim_bw;}
 uint32_t rec_get_freq(void){return frequency;}
 bool rec_set_freq(uint32_t hz){if(state.enabled)return false;frequency=hz;return true;}
 const char *rec_end_reason_name(int reason){return reason==1?"gap":"limit";}
 void rec_watch_sim_hits(int n);
+/* What is on the air, as the runtime would publish it: a test seeds it. */
+static rec_air_t sim_air[2];
+static uint32_t sim_air_seq;
+bool rec_watch_air(bool tx,rec_air_t *out)
+{
+    const rec_air_t *v=&sim_air[tx?1:0];
+    if(v->kind==REC_AIR_NONE)return false;
+    if(out)*out=*v;
+    return true;
+}
+void rec_watch_sim_air(const rec_air_t *v)
+{
+    sim_air[v->tx?1:0]=*v;
+    sim_air[v->tx?1:0].seq=++sim_air_seq;
+}
 bool rec_watch_start(void)
 {
     state.ready=true;
@@ -119,6 +139,10 @@ static bool sim_lr_fsk;
 bool rec_watch_lr_fsk(void){return sim_lr_fsk;}
 /* Refused under a running WATCH, as the runtime does. */
 bool rec_watch_set_lr_fsk(bool fsk){if(state.enabled)return false;sim_lr_fsk=fsk;return true;}
+static bool sim_lr_raw;
+bool rec_watch_lr_raw(void){return sim_lr_raw;}
+bool rec_watch_stop_nowait(void){return rec_watch_enable(false);}
+bool rec_watch_set_lr_raw(bool raw){if(state.enabled)return false;sim_lr_raw=raw;return true;}
 /* No radio to sweep, but the sweep is a state machine as far as the screen
    is concerned - busy or not, with or without findings - and every control
    that acts on a running sweep was unreachable from the bench while this

@@ -20,6 +20,9 @@ bool ls_mesh_radio_wanted(void){return false;}
 #include "ls_lora.h"
 #include "lr_wf_session.h"
 ls_lora_chip_t ls_lora_chip(void) { return LS_LORA_CHIP_SX126X; }
+/* Clean-packet replay sends through these; the SX126x fake never reaches them. */
+esp_err_t ls_lora_fsk_send(const uint8_t *data, size_t len) { (void)data; (void)len; return ESP_OK; }
+bool ls_lora_send_done(void) { return true; }
 bool lr20xx_stream_source2_active(void) { return false; }
 extern int subghz_lr_stream;   /* a case that feeds the consumer itself */
 esp_err_t lr_wf_start_consumer(uint32_t hz, lr_wf_consumer_t consume, void *ctx)

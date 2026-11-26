@@ -237,6 +237,12 @@ static bool key(lap_key_t key, char ch) {
     }
     return false;
 }
+LAP_ICON_PX("....................", ".................e..", "..9997777777.....e..", "..9997777777.....e..",
+            "..9997777777.....e..", ".................e..", ".................e..", ".................e..",
+            "......bbb7777777eee.", "......bbb7777777.e..", "......bbb7777777.d..", "................ddd.",
+            ".................d..", ".................d..", "..aaa7777777.....d..", "..aaa7777777.....d..",
+            "..aaa7777777.....d..", "....................");
+
 LAP_APP(.id = "packet_io", .name = "PACKET I/O", .sub = "sniff / record / send", .version = "1.0",
         .author = "LakeShark", .icon = LAP_ICON_WAVE, .color = LAP_CYAN,
         .flags = LAP_CAP_RADIO_RX | LAP_CAP_RADIO_TX, .enter = enter, .leave = leave, .draw = draw,

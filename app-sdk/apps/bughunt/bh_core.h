@@ -75,6 +75,8 @@ typedef struct {
     uint32_t frames, up_frames, up_bytes;
     uint16_t buckets, buckets_on;   /* 10 s buckets seen, and those with a steady upload */
     uint32_t bucket_at, bucket_bytes;
+    char maker[24];             /* from the name file (bh_lookup), "" not known */
+    bool cam_maker;             /* that maker makes cameras first */
 } bh_sta_t;
 
 typedef struct {
@@ -140,6 +142,8 @@ int bh_slot_now(const bh_t *h, uint32_t now_ms);
 bool bh_step_carrier(const bh_t *h, int step);
 int bh_hot_threshold(const bh_t *h, int step);  /* tenths of a dBm */
 const char *bh_cam_vendor(const uint8_t mac[6]);    /* NULL when not a camera maker */
+/* The name file named station i's maker; camera: a camera maker. */
+void bh_sta_maker(bh_t *h, int i, const char *name, bool camera);
 /* A steady interval in event times t[0..n-1] (rising), allowing missed events
    and `jitter_ms` of timing error. Returns the period in ms, 0 none; *matched
    gets how many intervals fit it. */

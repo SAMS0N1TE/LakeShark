@@ -159,6 +159,7 @@ void dk_shell_draw(tui_surface *sf, dk_win_t *w, tui_rect client, tui_rect clip,
     else if (w->shell == DK_SHELL_DISPLAY) dk_props_draw(sf, client, clip);
     else if (w->shell == DK_SHELL_SHUTDOWN) shutdown(sf, client, clip);
     else if (w->shell == DK_SHELL_STUDIO) dk_studio_draw(sf, client, clip);
+    else if (w->shell == DK_SHELL_HOME) dk_home_draw(sf, client, clip);
     else if (w->shell == DK_SHELL_CPL) dk_cpl_draw(sf, client, clip);
     else dk_dialogs_draw(sf, w, client, clip);
 }
@@ -167,6 +168,7 @@ bool dk_shell_tap(dk_win_t *w, tui_rect c, int col, int row)
 {
     if (w->shell == DK_SHELL_DISPLAY) return dk_props_tap(c, col, row);
     if (w->shell == DK_SHELL_STUDIO) return dk_studio_tap(w, c, col, row);
+    if (w->shell == DK_SHELL_HOME) return dk_home_tap(w, c, col, row);
     if (w->shell == DK_SHELL_CPL) return dk_cpl_tap(w, c, col, row);
     if (w->shell >= DK_SHELL_PROMPT && w->shell != DK_SHELL_CPL) return dk_dialogs_tap(w, c, col, row);
     if (w->shell == DK_SHELL_SHUTDOWN) {
@@ -189,6 +191,7 @@ bool dk_shell_key(dk_win_t *w, ls_tk_t k, char ch)
 {
     if (w->shell == DK_SHELL_DISPLAY) return dk_props_key(k, ch);
     if (w->shell == DK_SHELL_STUDIO) return dk_studio_key(w, k, ch);
+    if (w->shell == DK_SHELL_HOME) return dk_home_key(w, k, ch);
     if (w->shell == DK_SHELL_CPL) return dk_cpl_key(w, k, ch);
     if (w->shell >= DK_SHELL_PROMPT && w->shell != DK_SHELL_CPL) return dk_dialogs_key(w, k, ch);
     if (w->shell == DK_SHELL_SHUTDOWN) {

@@ -607,8 +607,16 @@ static void draw(tui_surface *sf,tui_rect a) {
         {screen_view==VIEW_HUNT?"FIND":"SELECT",screen_view==VIEW_HUNT?"TURN FOR BEARING":"DEVICE",screen_view==VIEW_HUNT?'f':'h',false,!count && !st.owner_nearby,false},
         {s.alerts_muted?"MUTED":"MUTE","SOUND",'m',s.alerts_muted,false,false},
         {"VIEW",view_names[screen_view],'v',false,false,false},ls_opt_button(&ctx)};
-    ls_btn_bar_raised_row(sf,tui_rect_make(a.x,a.y+a.h-bh,a.w,bh),b,5,-1);
-    str(sf,a,a.x+1,a.y+a.h-bh-1,a.w-2,now<note_until?note:st.status[0]?st.status:"Wi-Fi cached / no scan",VALUE);a.h-=bh+1;
+    if(ls_tui_compact()) {
+        /* Desk: the keys are the one toolbar under the menu bar, and the
+           state line is the window's status bar. */
+        ls_btn_bar_raised_row(sf,tui_rect_make(a.x,a.y,a.w,1),b,5,-1);
+        ls_tui_status_set(now<note_until?note:st.status[0]?st.status:"Wi-Fi cached / no scan",NULL);
+        a.y++;a.h--;
+    } else {
+        ls_btn_bar_raised_row(sf,tui_rect_make(a.x,a.y+a.h-bh,a.w,bh),b,5,-1);
+        str(sf,a,a.x+1,a.y+a.h-bh-1,a.w-2,now<note_until?note:st.status[0]?st.status:"Wi-Fi cached / no scan",VALUE);a.h-=bh+1;
+    }
     ls_gps_state_t gps;ls_gps_get(&gps);bool fix=gps.fix && now-gps.last_fix_us<5000000;
     cols_t c=layout(a);
     list_area=a;list_shown=0;mode_row=-1;for(unsigned i=0;i<128;i++) row_device[i]=-1;

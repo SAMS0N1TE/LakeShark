@@ -33,14 +33,14 @@ EXCLUDE = ["PySide6", "PyQt5", "PyQt6", "qtpy", "webview.platforms.qt", "webview
 
 
 def stage_sdk():
-    """Allowlist runtime SDK assets; never ship apps, tests or Python caches."""
+    """Allowlist SDK assets for Studio and native development."""
     dest = os.path.join(OUT, "app-sdk")
     shutil.rmtree(dest, ignore_errors=True)
     os.makedirs(dest)
     for name in ("lsdk.py", "lap.py", "lapboard.py", "lsstore.py", "apidoc.py", "api_registry.py", "toolchain.py",
                  "host_toolchain.py", "frozen_sim.py", "exports.txt", "README.md"):
         shutil.copy2(os.path.join(SDK, name), dest)
-    for name in ("include", "templates", "studio", "lib", "docs"):
+    for name in ("include", "templates", "studio", "lib", "docs", "native"):
         shutil.copytree(os.path.join(SDK, name), os.path.join(dest, name),
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests", "test_*"))
     os.makedirs(os.path.join(dest, "tools"), exist_ok=True)

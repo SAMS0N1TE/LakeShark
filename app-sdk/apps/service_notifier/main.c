@@ -27,5 +27,11 @@ static void draw(void) {
     lap_put_str(1,2,row,LAP_ATTR(LAP_GREEN,LAP_BLACK));
     lap_put_str(1,4,"Both services keep running when another app opens.",LAP_ATTR(LAP_WHITE,LAP_BLACK));
 }
+LAP_ICON_PX("....................", "..............aaaa..", ".............aaafaa.", ".............aaafaa.",
+            ".............aaafaa.", ".7fffffffffffaaaaaa.", ".f77ffffffffffaafa..", ".fff7ffffffff7ff....",
+            ".ffff7fffff77fff....", ".fffff7fff7fffff....", ".ffffff777ffffff....", ".fffffff7fffffff....",
+            ".fffffffffffffff....", ".fffffffffffffff....", ".fffffffffffffff....", ".fffffffffffffff....",
+            "....................", "....................");
+
 LAP_APP(.id="service_notifier",.name="NOTIFIER",.sub="resident IPC notifications",.version="1.0",.author="LakeShark",
     .icon=LAP_ICON_STAR,.color=LAP_GREEN,.flags=LAP_CAP_SERVICE,.enter=enter,.draw=draw);

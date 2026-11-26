@@ -8,6 +8,8 @@
 #include "ls_motion.h"
 #include "ls_music_backend.h"
 #include "ls_picker.h"
+#include "ls_deskui.h"
+#include "ls_tui_screen.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
@@ -558,6 +560,18 @@ int ls_calls_chip(tui_surface *sf, tui_rect clip, int x, int y,
    read as the content and the frame as the furniture. */
 static void rule(tui_surface *sf, tui_rect r, int y, const char *title,
                  uint8_t hue, bool bright) {
+  if (ls_tui_compact()) {
+    /* A desk window: the row is a group box's or a well's top edge, drawn
+       already; the title is its caption. */
+    if (title && r.w > (int)strlen(title) + 6) {
+      char cap[48];
+      snprintf(cap, sizeof(cap), " %s ", title);
+      tui_put_str(sf, r, r.x + 1, y, cap,
+                  bright ? ls_ink(LS_INK_STRONG, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK))
+                         : ls_ink(LS_INK_TEXT, TUI_ATTR(TUI_WHITE, TUI_BLACK)));
+    }
+    return;
+  }
   const uint8_t line = ls_ink_hue(TUI_ATTR(hue, TUI_BLACK));
   for (int x = r.x; x < r.x + r.w; x++)
     tui_put_char(sf, r, x, y, '=', line);
@@ -597,6 +611,18 @@ static int clear_x(tui_rect r, int y, int rows) {
 static void button(tui_surface *sf, void *ctx, int id, tui_rect r,
                    const char *label, bool on, bool can) {
   (void)ctx;
+  if (ls_tui_compact()) {
+    /* A desk window: a one-row key, centred in the room it was given. */
+    const ls_btn_t b = {label, NULL, 0, on, !can, false};
+    int kw = ls_key1_width(&b);
+    if (kw > r.w)
+      kw = r.w;
+    const int x = r.x + (r.w - kw) / 2, y = r.y + (r.h - 1) / 2;
+    ls_key1_draw(sf, tui_rect_make(x, y, kw, 1), x, y, &b, focus == id);
+    hits[id] = tui_rect_make(x, y, kw, 1);
+    enabled[id] = can;
+    return;
+  }
   hits[id] = r;
   enabled[id] = can;
   tui_box(sf, r, NULL, ls_ink_hue(TUI_ATTR(can ? TUI_CYAN : LS_FAINT_FG, TUI_BLACK)));
@@ -804,6 +830,8 @@ static void draw_stage(tui_surface *sf, tui_rect r, bool replaying,
     ls_safe_line(sf, r, y + 1,
                  filter ? "Nothing matches this filter" : "No recordings yet",
                  LS_ATTR_DIM);
+    if (ls_tui_compact())
+      y += 3; /* a desk window: the progress bar goes under the words */
   } else {
     call_name(&e->meta, name, sizeof(name));
     const char *alias = is_p25(&e->meta) ? tg_alias(e->meta.talkgroup) : NULL;
@@ -1055,12 +1083,158 @@ static void draw_list(tui_surface *sf, tui_rect r) {
 
 /* ---------------------------------------------------------------- draw -- */
 
+/* One toolbar key at x on row y; answers the next free column. */
+static int tool_key(tui_surface *sf, tui_rect clip, int x, int y, int id,
+                    const char *label, bool on, bool can) {
+  const ls_btn_t b = {label, NULL, 0, on, !can, false};
+  const int kw = ls_key1_width(&b);
+  if (x + kw > clip.x + clip.w)
+    return x;
+  ls_key1_draw(sf, clip, x, y, &b, focus == id);
+  hits[id] = tui_rect_make(x, y, kw, 1);
+  enabled[id] = can;
+  return x + kw + 1;
+}
+
+/* A desk window (compact): one toolbar of the actions under the menu bar,
+   the call on the left in a group box (the live card, or the recording with
+   its transport), the busiest talkgroups in a well under it, and on the
+   right the filters as tabs over the recordings in a white well. The card
+   and archive figures go to the window's status bar. No BACK key: the
+   window's own close, or Esc, leaves. */
+static void draw_compact(tui_surface *sf, tui_rect area) {
+  call_archive_storage_t card;
+  call_archive_storage(&card);
+  char stats[160];
+  snprintf(stats, sizeof(stats), "%d calls, %.1f MB, %s. %s", call_archive_count(),
+           card.archive / 1e6, card.paused ? "paused" : "ready",
+           note[0] ? note : !card.valid ? "No card: not recording" : "");
+  if (card.valid && !note[0])
+    snprintf(stats + strlen(stats), sizeof(stats) - strlen(stats), "Card %.2f GB free%s",
+             card.free / 1e9, card.paused ? " (space guard)" : "");
+  ls_tui_status_set(stats, NULL);
+
+  tui_fill(sf, area, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+  const call_entry_t *shown = row_count ? &rows[selected] : NULL;
+  if (replay && playing_index >= 0)
+    shown = &rows[playing_index];
+
+  /* The toolbar. */
+  const tui_rect bar = tui_rect_make(area.x, area.y, area.w, 1);
+  int x = area.x;
+  x = tool_key(sf, bar, x, area.y, STOP, "STOP", false, replay);
+  x = tool_key(sf, bar, x, area.y, KEEP, row_count && rows[selected].kept ? "UNKEEP" : "KEEP",
+               false, row_count > 0);
+  x = tool_key(sf, bar, x, area.y, DELETE, "DELETE", false, row_count > 0);
+  x = tool_key(sf, bar, x, area.y, FILES, "FILES", false, row_count > 0);
+  x = tool_key(sf, bar, x, area.y, OPTIONS, "OPTIONS", false, true);
+  char sort[24];
+  snprintf(sort, sizeof(sort), "SORT %s", sorts[order]);
+  tool_key(sf, bar, x + 1, area.y, SORT, sort, false, true);
+
+  const tui_rect body = tui_rect_make(area.x, area.y + 1, area.w, area.h - 1);
+  if (body.h < 6)
+    return;
+  int lw = body.w * 46 / 100;
+  if (lw < 34)
+    lw = 34;
+  if (lw > 60)
+    lw = 60;
+  const bool wide = body.w - lw >= 30;
+  if (!wide)
+    lw = body.w;
+  const tui_rect stage = tui_rect_make(body.x, body.y, lw, body.h);
+  const tui_rect side = wide ? tui_rect_make(body.x + lw + 1, body.y, body.w - lw - 1, body.h)
+                             : tui_rect_make(body.x, body.y + body.h, body.w, 0);
+
+  /* Left: the call. */
+  bool live_stage = live && live->card_draw && !replay;
+  const int live_card = live_stage && live->card_rows ? live->card_rows(stage.w) : 0;
+  if (live_card <= 0)
+    live_stage = false;
+  expand_selected = live_stage;
+  int y = stage.y;
+  if (live_stage) {
+    live->card_draw(sf, tui_rect_make(stage.x, y, stage.w, live_card));
+    y += live_card;
+    ls_calls_live_key_t lk[2];
+    int n = live->keys ? live->keys(lk) : 0;
+    if (n > 2)
+      n = 2;
+    int kx = stage.x + 1;
+    for (int i = 0; i < n; i++)
+      kx = tool_key(sf, tui_rect_make(stage.x, y, stage.w, 1), kx, y, LIVE0 + i, lk[i].label,
+                    lk[i].on, lk[i].can);
+    tool_key(sf, tui_rect_make(stage.x, y, stage.w, 1), kx, y, PLAY, "PLAY", false, row_count > 0);
+    y += 2;
+  } else {
+    bool big = true;
+    int audio = 0;
+    int stage_h = stage_rows(true, 0, 1) + 1;
+    if (stage_h > stage.h) {
+      big = false;
+      stage_h = stage_rows(false, 0, 1) + 1;
+    }
+    if (replay) {
+      audio = stage.h - stage_h - 6;
+      if (audio > 10)
+        audio = 10;
+      if (audio < 4)
+        audio = 0;
+      stage_h += audio;
+    }
+    if (stage_h > stage.h)
+      stage_h = stage.h;
+    ls_dui_group(sf, tui_rect_make(stage.x, y, stage.w, stage_h), NULL);
+    draw_stage(sf, tui_rect_make(stage.x + 1, y, stage.w - 2, stage_h - 1), replay, shown, big,
+               audio, 1);
+    y += stage_h;
+  }
+  /* The busiest talkgroups, in a well under the call. */
+  if (live && live->strip_draw && live->strip_rows && !replay && wide) {
+    const int room = stage.y + stage.h - y;
+    const int rows = room >= 5 ? live->strip_rows(stage.w - 2, room - 2) : 0;
+    if (rows > 0) {
+      /* Its title row lands on the well's top edge, as the list's does. */
+      const tui_rect in = ls_dui_well(sf, tui_rect_make(stage.x, y, stage.w, room), NULL);
+      strip_area = tui_rect_make(in.x, in.y - 1, in.w, in.h + 1);
+      live->strip_draw(sf, strip_area);
+    }
+  }
+
+  /* Right: the filters as tabs, the recordings in a well on the page. */
+  if (side.h < 6 || side.w < 24)
+    return;
+  char tg_label[16];
+  if (filter_tg)
+    snprintf(tg_label, sizeof(tg_label), "TG %lu", (unsigned long)filter_tg);
+  else
+    snprintf(tg_label, sizeof(tg_label), "TG");
+  const char *const names[5] = {"ALL", "P25", "FM", "TODAY", tg_label};
+  int16_t tx[5], tw[5];
+  const tui_rect page = ls_dui_tabs(sf, side, names, 5, filter, tx, tw);
+  for (int i = 0; i < 5; i++)
+    if (tx[i] >= 0) {
+      hits[ALL + i] = tui_rect_make(tx[i], side.y, tw[i], 2);
+      enabled[ALL + i] = i < 4 || filter_tg || (row_count && rows[selected].meta.talkgroup);
+    }
+  const tui_rect well = tui_rect_make(page.x, page.y, page.w, page.h);
+  if (well.h < 4)
+    return;
+  ls_dui_well(sf, well, NULL);
+  draw_list(sf, tui_rect_make(well.x + 1, well.y, well.w - 2, well.h - 1));
+}
+
 void ls_calls_draw(tui_surface *sf, tui_rect area) {
   memset(hits, 0, sizeof(hits));
   memset(enabled, 0, sizeof(enabled));
   strip_area = tui_rect_make(0, -1, 0, 0);
   list_area = progress_area = tui_rect_make(0, -1, 0, 0);
   load_rows();
+  if (ls_tui_compact()) {
+    draw_compact(sf, area);
+    return;
+  }
   const bool wide = area.w > area.h * 2;
   const char *title = live && live->title ? live->title : "CALLS";
   const uint8_t hue = live ? live->hue : TUI_CYAN;

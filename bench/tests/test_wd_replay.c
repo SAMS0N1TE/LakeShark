@@ -88,9 +88,32 @@ int main(void)
           "aa:bb:cc:00:00:03,Tag,Misc [LE],2026-11-22 10:02:30,0,-80,43.1012000,-71.2000000,,,BLE\n");
     put_file("2026-11-21_090000.csv", "WigleWifi-1.4\n");
 
-    char names[WD_REPLAY_LIST][WD_REPLAY_NAME], det[WD_REPLAY_LIST][40];
+    char names[WD_REPLAY_LIST][WD_REPLAY_NAME];
+    wd_drive_info_t det[WD_REPLAY_LIST];
     const int n = wd_replay_list(names, det, WD_REPLAY_LIST);
-    assert(n == 2 && !strcmp(names[0], "2026-11-22_100000") && strstr(det[0], "track + log"));
+    assert(n == 2 && !strcmp(names[0], "2026-11-22_100000") && det[0].track && det[0].log);
+    /* the list moved the loose files into the drive's own folder and summed its track */
+    /* an old drive's summary is read a slice at a time (no drive.txt yet) */
+    wd_drive_info_t sum;
+    int r, calls = 0;
+    /* a summary left half way (the list closed) lets go of its file: on
+       the card every open file is one of a handful the board has */
+    {
+        assert(wd_drive_summarize(names[0], 64, &sum) == 0);
+        wd_drive_summarize(NULL, 0, NULL);
+        char csv[160], away[170];
+        assert(wd_drive_path(csv, sizeof(csv), names[0], "csv", false));
+        snprintf(away, sizeof(away), "%s.x", csv);
+        assert(rename(csv, away) == 0);          /* Windows refuses while it is open */
+        assert(rename(away, csv) == 0);
+    }
+    while ((r = wd_drive_summarize(names[0], 64, &sum)) == 0) calls++;
+    assert(r == 1 && calls > 3);
+    assert(sum.secs == 180 && sum.km > 0.15f && sum.km < 0.2f && sum.start_utc && sum.finds == 3 && sum.summary);
+    wd_drive_info(names[0], &det[0]);
+    assert(det[0].summary && det[0].secs == 180);           /* kept in drive.txt */
+    char moved[160];
+    assert(wd_drive_path(moved, sizeof(moved), "2026-11-22_100000", "gpx", false) && strstr(moved, "2026-11-22_100000/2026-11-22_100000.gpx"));
 
     char why[64];
     assert(!wd_replay_open("nope", 1000, why, sizeof(why)));

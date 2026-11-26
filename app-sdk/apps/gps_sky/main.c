@@ -59,6 +59,12 @@ static void draw(void) {
   snprintf(text, sizeof(text), "%d sats; green=used yellow=tracked", n);
   lap_put_str(0, lap_rows() - 1, text, LAP_ATTR(LAP_GREEN, LAP_BLACK));
 }
+LAP_ICON_PX(".......777777.......", ".....777..8.777.....", "....77....8...77....", "...7......8....aa...",
+            "..77..aa8888...aa7..", "..7...aa..8.88...7..", ".77...8...8..8aa.77.", ".7...8....8...aa..7.",
+            ".7...8....8...8...7.", ".788888888888888888.", ".7...8....8...8...7.", ".77.998...8..8...77.",
+            "..7.9988..8.88...7..", "..77....8888bb..77..", "...7......8.bb..7...", "....77....8...77....",
+            ".....777..8.777.....", ".......777877.......");
+
 LAP_APP(.id = "gps-sky", .name = "GPS SKY",
         .sub = "Acquisition, freshness and sky", .version = "1.0",
         .author = "LakeShark", .icon = LAP_ICON_STAR, .color = LAP_CYAN,

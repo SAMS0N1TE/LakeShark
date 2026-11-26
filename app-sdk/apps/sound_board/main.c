@@ -85,6 +85,12 @@ static void draw(void) {
     lap_put_str(1, 7, "1 music 2 effects 3 voice (ducks music)", LAP_ATTR(LAP_YELLOW, LAP_BLACK));
     lap_put_str(1, 8, "M mic R record 5s S stop P play recording", LAP_ATTR(LAP_YELLOW, LAP_BLACK));
 }
+LAP_ICON_PX(".................9..", "...8...8...8...8999.", "...8...8...8...8999.", "...8...8..aaa..8.9..",
+            "...8...8..aaa..8....", "..aaa..8...8...8....", "..aaa..8...8...8....", "...8...8...8...8....",
+            "...8...8...8...8....", "...8..bbb..8...8....", "...8..bbb..8...8....", "...8...8...8..eee...",
+            "...8...8...8..eee...", "...8...8...8...8....", "...8...8...8...8....", "...8...8...8...8....",
+            "...8...8...8...8....", "....................");
+
 LAP_APP(.id = "sound_board", .name = "SOUND BOARD", .sub = "mixer and WAV recorder", .version = "1.0",
         .author = "LakeShark", .flags = LAP_CAP_MIC, .icon = LAP_ICON_TOWER, .color = LAP_CYAN,
         .enter = enter, .leave = leave, .draw = draw, .key = key);

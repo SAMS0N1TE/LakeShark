@@ -2954,8 +2954,40 @@ static int cmd_memory(int argc, char **argv)
     return 0;
 }
 
+/* 'heap big [internal] [bytes]': the used blocks at least that big, with
+   their first bytes, so two listings either side of an app say what it
+   left behind. Collected under the heap lock, printed after it. */
+typedef struct { void *p; uint32_t n; } heap_big_t;
+typedef struct { heap_big_t *rows; int count, cap; uint32_t min; } heap_big_walk_t;
+static bool heap_big_cb(walker_heap_into_t heap, walker_block_info_t b, void *user)
+{
+    (void)heap;
+    heap_big_walk_t *w = user;
+    if (b.used && b.size >= w->min && w->count < w->cap) w->rows[w->count++] = (heap_big_t){b.ptr, (uint32_t)b.size};
+    return true;
+}
+static int heap_big(int argc, char **argv)
+{
+    const bool internal = argc >= 3 && !strcmp(argv[2], "internal");
+    const char *num = argc >= 4 ? argv[3] : argc >= 3 && !internal ? argv[2] : NULL;
+    heap_big_walk_t w = {.cap = 128, .min = num ? (uint32_t)strtoul(num, NULL, 0) : internal ? 1024u : 65536u};
+    w.rows = heap_caps_calloc((size_t)w.cap, sizeof(*w.rows), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!w.rows) { printf("heap: no memory for the list\n"); return 0; }
+    heap_caps_walk(internal ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM, heap_big_cb, &w);
+    printf("heap big: %d used %s blocks of %lu B or more\n", w.count, internal ? "internal" : "psram", (unsigned long)w.min);
+    for (int i = 0; i < w.count; i++) {
+        const uint8_t *d = w.rows[i].p;
+        printf("  %p %8lu ", w.rows[i].p, (unsigned long)w.rows[i].n);
+        for (int k = 0; k < 16; k++) printf("%02x", d[k]);
+        printf("\n");
+    }
+    heap_caps_free(w.rows);
+    return 0;
+}
+
 static int cmd_heap(int argc, char **argv)
 {
+    if (argc >= 2 && !strcmp(argv[1], "big")) return heap_big(argc, argv);
     /* 'heap dma' dumps the DMA-capable regions one at a time. */
 
     /* 'heap stages' says WHERE the memory went during boot. */

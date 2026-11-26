@@ -454,7 +454,9 @@ void ls_dui_table_layout(ls_dui_table_t *t, tui_rect r, const ls_dui_col_t *cols
 void ls_dui_table_head(tui_surface *sf, const ls_dui_table_t *t, const ls_dui_col_t *cols, int n,
                        int sort_col, bool desc, uint8_t hue)
 {
-    /* A header is a row of buttons: the scheme's Button face, the one under the pointer lit. */
+    /* A header is a row of buttons: the scheme's Button face, the one under the pointer lit.
+       The rows under it are a list view's: on the well's ground (white on silver). */
+    ls_ink_well(t->body);
     const uint8_t cap = ls_ink(LS_INK_KEY, TUI_ATTR(TUI_CYAN, TUI_BLACK));
     const bool band = TUI_ATTR_BG(cap) != TUI_BLACK;
     if (band) tui_fill(sf, tui_rect_make(t->head.x, t->head.y, t->head.w + t->strip.w, 1), ' ', cap);

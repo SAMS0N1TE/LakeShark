@@ -664,8 +664,8 @@ static void layout(tui_rect a)
     int y = a.y;
     s_r_menu = tui_rect_make(a.x, y++, a.w, 1);
     s_r_tools = a.h >= 16 ? tui_rect_make(a.x, y++, a.w, 1) : none;
-    s_r_status = tui_rect_make(a.x, a.y + a.h - 1, a.w, 1);
-    const tui_rect body = tui_rect_make(a.x, y, a.w, a.y + a.h - 1 - y);
+    s_r_status = none;              /* its words go to the window's status bar */
+    const tui_rect body = tui_rect_make(a.x, y, a.w, a.y + a.h - y);
     const int lw = s_show_list && a.w >= 72 ? (a.w >= 120 ? 26 : 22) : 0;
     const int iw = s_show_info && a.w - lw >= 92 ? (a.w >= 150 ? 38 : 32) : 0;
     const int mx = lw ? body.x + lw - 1 : body.x;
@@ -943,6 +943,7 @@ static void draw_chat(tui_surface *sf)
     if (s_find_on && s_find.len) snprintf(note, sizeof(note), "%d of %d match", s_shown, c->total);
     else snprintf(note, sizeof(note), "%d message%s", c->total, c->total == 1 ? "" : "s");
     tui_rect in = ls_dui_pane(sf, s_r_main, title, note, HUE, s_focus == F_COMPOSE || s_focus == F_FIND);
+    ls_ink_well(in);                     /* the conversation on the contrast ground */
     s_r_find = tui_rect_make(0, 0, 0, 0);
     if (s_find_on && in.h > 5) {
         tui_put_str(sf, in, in.x + 1, in.y, "Find", s_focus == F_FIND ? INK(TUI_YELLOW) : LS_ATTR_DIM);
@@ -1142,7 +1143,7 @@ static void draw_nodes(tui_surface *sf)
 {
     char note[32];
     snprintf(note, sizeof(note), "%d heard", s_npeer);
-    ls_dui_pane(sf, s_r_main, "NODES", note, TUI_MAGENTA, s_focus == F_TABLE);
+    ls_ink_well(ls_dui_pane(sf, s_r_main, "NODES", note, TUI_MAGENTA, s_focus == F_TABLE));   /* a list view on the contrast ground */
     ls_dui_table_head(sf, &s_t, NCOLS, LS_MN__COUNT, s_nsort, s_ndesc, TUI_MAGENTA);
     if (!s_npeer) {
         tui_put_str(sf, s_t.body, s_t.body.x + 2, s_t.body.y + 1, s_st.running ? "Listening..." : "The mesh radio is off: Start.", LS_ATTR_DIM);
@@ -1192,10 +1193,21 @@ static void draw_status(tui_surface *sf)
     const int unread = unread_total();
     int k = snprintf(text, sizeof(text), " %d chat%s  %d unread  %d node%s", s_nconv, s_nconv == 1 ? "" : "s", unread,
                      s_npeer, s_npeer == 1 ? "" : "s");
-    tui_put_str(sf, r, r.x, r.y, text, unread ? INK(TUI_YELLOW) : INK(HUE));
-    const int x = r.x + k + 2;
     const char *said = ls_scr_mesh_said();
     const bool mine = s_say[0] && esp_timer_get_time() - s_said_us < 8000000;
+    if (r.h <= 0) {
+        /* The window's status bar: the counts, then what was just done or
+           what stands in the way of sending. Keys are under Help > Keys. */
+        const char *now = mine ? s_say : said ? said
+                        : !s_st.running ? "Mesh radio off: Start"
+                        : !s_st.tx_enabled ? "Disarmed: Arm first" : NULL;
+        if (now) snprintf(text + k, sizeof(text) - (size_t)k, "  %s", now);
+        ls_tui_status_set(text + 1, NULL);
+        (void)sf;
+        return;
+    }
+    tui_put_str(sf, r, r.x, r.y, text, unread ? INK(TUI_YELLOW) : INK(HUE));
+    const int x = r.x + k + 2;
     const char *idle = s_focus == F_FIND ? "Type to filter this chat; Enter keeps it, Esc clears"
                      : s_focus == F_LIST ? "Up and Down, Enter opens; Tab to the message line"
                      : s_tab == TAB_NODES ? "Enter messages the node  M map  I inspect  click a header to sort  right button for more"

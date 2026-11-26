@@ -30,5 +30,11 @@ static void draw(void) {
     lap_put_str(1,4,"Close screen, launch NOTIFIER, then another app.",LAP_ATTR(LAP_WHITE,LAP_BLACK));
     lap_put_str(1,6,"Stop individually in SETTINGS > SERVICES.",LAP_ATTR(LAP_WHITE,LAP_BLACK));
 }
+LAP_ICON_PX("....................", ".8eeee7eeeee7eeeeee.", ".8eeee7eeeee7eeeeee.", ".8eeee7eeeee7eeeeee.",
+            ".777777777777777777.", ".888887888887888888.", ".888887888887888888.", ".888887888887888888.",
+            ".777777777777777777.", ".888887888887888888.", ".888887888887888888.", ".888887888887888888.",
+            ".777777777777799977.", ".888887888887899988.", ".888887888887899988.", ".888887888887899988.",
+            ".888887888887888888.", "....................");
+
 LAP_APP(.id="service_logger",.name="LOGGER",.sub="resident CSV and IPC logger",.version="1.0",.author="LakeShark",
     .icon=LAP_ICON_STAR,.color=LAP_CYAN,.flags=LAP_CAP_SERVICE,.enter=enter,.draw=draw);

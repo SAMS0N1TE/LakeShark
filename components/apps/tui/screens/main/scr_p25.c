@@ -49,6 +49,7 @@ static ls_radio_view_t s_view;
 #include "../../ls_p25_settings.h"
 #include "../../ls_dmr_view.h"
 #include "scr_p25_desk.h"
+#include "../../ls_deskui.h"
 
 static int s_page;   /* 0 decode, 1 signal, 2 scanner */
 
@@ -280,12 +281,15 @@ static void draw_iq_gauge(tui_surface *sf, tui_rect r, float level);
 
 static void draw_receiver_health(tui_surface *sf, tui_rect r)
 {
-    tui_box(sf, r, ls_tr("RECEIVER HEALTH / TOTALS"), TUI_ATTR(TUI_CYAN, TUI_BLACK));
+    /* A desk window: an etched group box, the counters one to a row. */
+    const bool desk = ls_tui_compact();
+    if (desk) ls_dui_group(sf, r, "Receiver health / totals");
+    else tui_box(sf, r, ls_tr("RECEIVER HEALTH / TOTALS"), TUI_ATTR(TUI_CYAN, TUI_BLACK));
     const uint8_t ink = TUI_ATTR(TUI_WHITE, TUI_BLACK);
     /* Pair counters whenever the pane is wide enough: spaced single
        columns left most of a desk window's pane black. */
     const bool compact = r.h >= 5 && r.w >= 50;
-    const int step = !compact && r.h >= 11 ? 2 : 1;
+    const int step = !compact && r.h >= 11 && !desk ? 2 : 1;
     int sync_end, bch_end;
     char line[80];
     uint8_t first = ink;
@@ -322,14 +326,17 @@ static void draw_receiver_health(tui_surface *sf, tui_rect r)
     /* How many frames pass their check, as a bar: the one figure here that
        says at a glance whether the decode is healthy. */
     const int total = P25.dsd_bch_ok_count + P25.dsd_bch_fail_count;
-    if (compact && r.h >= 6) {
+    const int fy = compact ? r.y + 4 : r.y + 7;       /* under DECODE on a narrow desk pane */
+    if ((compact && r.h >= 6) || (desk && r.h >= 9)) {
         const float ok = total ? (float)P25.dsd_bch_ok_count / (float)total : 0.0f;
-        tui_put_str(sf, r, r.x + 2, r.y + 4, ls_tr("FRAMES OK"), TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        tui_put_str(sf, r, r.x + 2, fy, ls_tr("FRAMES OK"),
+                    desk ? ls_ink(LS_INK_STRONG, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK))
+                         : TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
         snprintf(line, sizeof(line), total ? "%3d%%" : " --", (int)(ok * 100.0f + 0.5f));
-        tui_put_str(sf, r, r.x + r.w - 6, r.y + 4, line,
+        tui_put_str(sf, r, r.x + r.w - 6, fy, line,
                     ls_ink_hue(TUI_ATTR(!total ? LS_DIM_FG : ok >= 0.8f ? TUI_GREEN | TUI_BRIGHT
                              : ok >= 0.4f ? TUI_YELLOW | TUI_BRIGHT : TUI_RED | TUI_BRIGHT, TUI_BLACK)));
-        ls_radio_bargraph(sf, r, r.x + 12, r.y + 4, r.w - 20, 1, ok, ok);
+        ls_radio_bargraph(sf, r, r.x + 12, fy, r.w - 20, 1, ok, ok);
     }
 }
 
@@ -337,6 +344,12 @@ static void draw_receiver_health(tui_surface *sf, tui_rect r)
    in a wide pane: the same trace the glass keeps, given the room. */
 static void draw_signal_history(tui_surface *sf, tui_rect r)
 {
+    if (ls_tui_compact()) {
+        /* A desk window: a group box, the trace on black glass in it. */
+        const tui_rect in = ls_dui_group(sf, r, "Signal / last seconds");
+        tui_fill(sf, in, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        ls_ink_keep(in);
+    } else
     tui_box(sf, r, ls_tr("SIGNAL / LAST SECONDS"), TUI_ATTR(TUI_CYAN, TUI_BLACK));
     if (r.w < 16 || r.h < 3) return;
     /* In decibels, -60 to 0: on a straight scale the few percent a channel
@@ -1204,6 +1217,7 @@ static void set_page(int page)
 static tui_rect s_bar;          /* the view tabs                         */
 static tui_rect s_ctl_rect;     /* CALLS DMR RADIO OPTIONS, portrait     */
 static tui_rect s_quick_rect;   /* the deck, or the keypad in its place  */
+static tui_rect s_deck_frame;   /* desk: the group box round the deck    */
 
 /* The controls a thumb reaches for while watching a decode.
 
@@ -1638,10 +1652,13 @@ static void draw(tui_surface *sf, tui_rect area)
         ls_here_draw(sf, area);
         return;
     }
+    if (ls_tui_compact()) ls_tui_status_set("", NULL);
     if (ls_calls_active()) {
         LS_SNPUTS(t_scr_p25_up_down_calls_p, s_hint, sizeof(s_hint), "UP/DOWN calls  P play  H hold  L lockout  D delete  ESC back");
         ls_wf_source_release(); ls_calls_draw(sf, area); return;
     }
+    /* Desk: the talkgroup view says its counts in the window's status bar;
+       any other view leaves it to the live line (the frequency). */
     if (s_page == 5) {
         LS_SNPUTS(t_scr_p25_s_slot_h_hold, s_hint, sizeof(s_hint), "S slot  H hold  O options  1 P25  R radio");
         draw_dmr(sf, area);
@@ -1671,7 +1688,7 @@ static void draw(tui_surface *sf, tui_rect area)
     }
     if (!(s_page == PV_VFO)) s_keypad = false;
 
-    s_ctl_rect = s_quick_rect = s_kbd_btn = tui_rect_make(0, -1, 0, 0);
+    s_ctl_rect = s_quick_rect = s_kbd_btn = s_deck_frame = tui_rect_make(0, -1, 0, 0);
     memset(s_tune.keys, 0, sizeof(s_tune.keys));
     tui_rect body;
     int ntabs = N_VIEWS;
@@ -1687,10 +1704,29 @@ static void draw(tui_surface *sf, tui_rect area)
                         : (ls_tui_keyboard_mode() && fits) || area.h < 24 || s_page == PV_VFO ? 3 : 4;
         s_bar = tui_rect_make(area.x, area.y, area.w, bar_h);
         body = tui_rect_make(area.x, area.y + bar_h, area.w, area.h - bar_h);
-        if (compact && s_page == PV_VFO && area.w >= 56 && body.h >= 12) {
-            /* Desk deck: a tune row and a slider row, KEYBOARD at its end. */
-            s_quick_rect = tui_rect_make(body.x, body.y + body.h - 2, body.w, 2);
-            body.h -= 2;
+#if LS_TUI_HAS_COMPACT
+        if (compact && area.h >= 12) {
+            /* Desk: the controls are the one toolbar and the views a tab
+               strip on the page under it. The talkgroup view brings its
+               own menu bar and toolbar: it starts at the top, the controls
+               are in its menus and the tabs go on its page. */
+            ntabs = N_VIEWS;
+            if (desk_body()) {
+                s_bar = tui_rect_make(0, -1, 0, 0);
+                body = area;
+            } else {
+                s_ctl_rect = tui_rect_make(area.x, area.y, area.w, 1);
+                s_bar = tui_rect_make(area.x, area.y + 1, area.w, 1);
+                body = tui_rect_make(area.x, area.y + 2, area.w, area.h - 2);
+            }
+        }
+#endif
+        if (compact && s_page == PV_VFO && area.w >= 56 && body.h >= 14) {
+            /* Desk deck: a tune row and a slider row, KEYBOARD at its end,
+               in an etched group box on the face. */
+            s_deck_frame = tui_rect_make(body.x, body.y + body.h - 4, body.w, 4);
+            s_quick_rect = tui_rect_make(body.x + 1, body.y + body.h - 3, body.w - 2, 2);
+            body.h -= 4;
             s_kbd_btn = tui_rect_make(s_quick_rect.x + s_quick_rect.w - 14, s_quick_rect.y, 14, 1);
         } else if (s_page == PV_VFO && area.w >= 56 && !compact) {
             int deck_h = s_keypad ? body.h - 11 : body.h >= 25 ? 13 : body.h >= 24 ? 12 : 10;
@@ -1760,6 +1796,9 @@ static void draw(tui_surface *sf, tui_rect area)
     s_deck_n = 0;
     memset(s_key, 0, sizeof(s_key));
     memset(s_key_act, 0, sizeof(s_key_act));
+#if LS_TUI_HAS_COMPACT
+    if (s_deck_frame.h > 0) ls_dui_group(sf, s_deck_frame, s_keypad ? "Frequency" : "Tuning and audio");
+#endif
     if (s_quick_rect.h > 0) {
         if (s_keypad)
             ls_freq_pad_draw(sf, s_quick_rect, s_entry, s_entry_bad, s_blink,
@@ -1774,9 +1813,19 @@ static void draw(tui_surface *sf, tui_rect area)
        panel clears every slot when it is too small to draw. */
     if (s_ctl_rect.h > 0)
         ls_btn_bar_raised_slot(sf, s_ctl_rect, ctl, N_CTLS, -1, LS_BTN_SLOT_SCREEN);
+#if LS_TUI_HAS_COMPACT
+    if (compact && desk_body()) s_bar = ls_p25_desk_tabs();
+    if (compact && ntabs == N_VIEWS) {
+        if (s_bar.h > 0) ls_btn_tabs_slot(sf, s_bar, tabs, ntabs, -1, LS_BTN_SLOT_QUICK);
+    } else
+#endif
     if (wide) ls_btn_bar_raised_slot(sf, s_bar, tabs, ntabs, -1, LS_BTN_SLOT_QUICK);
     else ls_btn_bar_slot(sf, s_bar, tabs, ntabs, -1, LS_BTN_SLOT_QUICK);
     if (s_kbd_btn.h > 0) kbd_toggle_draw(sf, s_kbd_btn);
+#if LS_TUI_HAS_COMPACT
+    /* The talkgroup view's open menu goes over the tabs and the deck. */
+    if (desk_body()) ls_p25_desk_draw_popup(sf);
+#endif
 }
 
 /* The feed follows the page, and leaving the app releases it whichever page

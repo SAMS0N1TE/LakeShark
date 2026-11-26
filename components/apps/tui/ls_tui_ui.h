@@ -129,6 +129,10 @@ int  ls_key1_draw(tui_surface *sf, tui_rect clip, int x, int y,
                   const ls_btn_t *b, bool focus);
 /* Columns a row of these keys takes, one blank between keys. */
 int  ls_btn_bar_width(const ls_btn_t *btn, int n);
+/* View tabs on the body's top edge, one row (Win98 tab control): the tab
+   with .on is the chosen one. Hits in `slot` as ls_btn_bar_slot; off the
+   desk it is ls_btn_bar_slot. */
+void ls_btn_tabs_slot(tui_surface *sf, tui_rect row, const ls_btn_t *btn, int n, int focus, int slot);
 /* A one-row text field "[162.5500_     ]": sunken ends, text on black. */
 void ls_field1_draw(tui_surface *sf, tui_rect clip, int x, int y, int w,
                     const char *text, bool caret, uint8_t ink);
@@ -214,6 +218,12 @@ enum {
     LS_INK_RULE,        /* separators and quiet lines */
     LS_INK_ACCEL,       /* the letter a key answers to */
     LS_INK_CAPTION,     /* a panel's caption: a band (the inactive title bar's colours) */
+    /* The bevel's two lines. They are only lines: drawn with a box or edge
+       glyph inside a rect the frame names with ls_ink_bevel, where the desk
+       turns them into the scheme's light and dark lines (white and grey on
+       silver). Elsewhere they are the strong and the faint ink. */
+    LS_INK_HILITE,
+    LS_INK_SHADOW,
     LS_INK_COUNT
 };
 #if LS_TUI_HAS_COMPACT
@@ -223,10 +233,29 @@ static inline uint8_t ls_ink(int role, uint8_t fallback) { return ls_ink_on ? ls
 /* The desk: the roles for the frame about to be drawn; NULL ends it. */
 void ls_ink_set(const uint8_t *tab);
 /* A scope, waterfall or spectrum keeps its black ground in any scheme: the
-   screen names the rect (surface cells) each frame it draws one. */
-#define LS_INK_KEEP_MAX 12
-typedef struct { uint8_t n; struct { int16_t x, y, w, h; } r[LS_INK_KEEP_MAX]; } ls_ink_keep_t;
+   screen names the rect (surface cells) each frame it draws one.
+
+   The same list carries the other grounds a frame names: a WELL (lists,
+   text, fields) takes the scheme's contrast ground, white on silver and
+   black on a dark face, with its words made to read there; a BEVEL rect's
+   LS_INK_HILITE / LS_INK_SHADOW lines become the scheme's light and dark
+   lines (RING: only its border cells, FILL: every cell); a VFD keeps its
+   black like a scope but its dim ghost segments stay dim. The kit in
+   ls_deskui.h names these; a screen rarely needs to. Later rects win:
+   a well inside a group, glass inside a well. */
+enum { LS_INK_K_GLASS, LS_INK_K_WELL, LS_INK_K_RING, LS_INK_K_FILL, LS_INK_K_VFD };
+#define LS_INK_KEEP_MAX 32
+typedef struct {
+    uint8_t n;
+    struct { int16_t x, y, w, h; } r[LS_INK_KEEP_MAX];
+    uint8_t kind[LS_INK_KEEP_MAX];
+} ls_ink_keep_t;
 void ls_ink_keep(tui_rect r);
+/* Any of the kinds above; a rect right beside or under the last one of its
+   kind, the same size across, joins it. */
+void ls_ink_mark(tui_rect r, int kind);
+static inline void ls_ink_well(tui_rect r) { ls_ink_mark(r, LS_INK_K_WELL); }
+static inline void ls_ink_bevel(tui_rect r) { ls_ink_mark(r, LS_INK_K_RING); }
 ls_ink_keep_t *ls_ink_kept(void);
 /* A popup drawn over a scope takes its rect back out: it is the scheme's, not the scope's. */
 void ls_ink_unkeep(tui_rect r);
@@ -252,6 +281,9 @@ static inline uint8_t ls_ink_hue(uint8_t lit)
 enum { ls_ink_on = 0 };
 #define ls_ink_keep(r) ((void)0)
 #define ls_ink_unkeep(r) ((void)0)
+#define ls_ink_mark(r, k) ((void)0)
+#define ls_ink_well(r) ((void)0)
+#define ls_ink_bevel(r) ((void)0)
 #endif
 
 void ls_fill_dither(tui_surface *sf, tui_rect r, int density, uint8_t hue);
@@ -273,6 +305,13 @@ void ls_panel_notice(tui_surface *sf, tui_rect area, const char *title,
 /* label on the left, value on the right, one row, aligned to the panel. */
 void ls_kv(tui_surface *sf, tui_rect r, int row, const char *label,
            const char *value, uint8_t vattr);
+/* The same as a form's row on the desk with one value column: the field
+   starts `label_w` cells after the label's column and runs to the panel's
+   right edge, so every field of a panel has one x and one width; the value
+   is left aligned in it. Answers the field's inside (w 0: none). Off the
+   desk it is ls_kv. */
+tui_rect ls_kv_col(tui_surface *sf, tui_rect r, int row, const char *label,
+                   const char *value, uint8_t vattr, int label_w);
 
 /* A horizontal bar meter, 0..1, coloured green through red. Height 1. */
 void ls_bar(tui_surface *sf, tui_rect r, int row, int x, int w, float v);

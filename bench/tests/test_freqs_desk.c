@@ -565,3 +565,4 @@ int ls_tui_screen_current(void) { return 0; }
 uint8_t ls_ink_tab[LS_INK_COUNT];
 bool ls_ink_on;
 void ls_ink_unkeep(tui_rect r) { (void)r; }
+void ls_ink_mark(tui_rect r, int kind) { (void)r; (void)kind; }

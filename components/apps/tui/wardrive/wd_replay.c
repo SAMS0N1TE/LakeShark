@@ -295,7 +295,7 @@ static int by_time(const void *pa, const void *pb)
 static bool open_part(const char *ext)
 {
     char path[160];
-    snprintf(path, sizeof(path), "%s/%s.%s", l_dir, l_stem, ext);
+    wd_drive_path(path, sizeof(path), l_stem, ext, false);
     lf = fopen(path, "r");
     /* reads in 16 KB pieces, not the stream's default few hundred bytes:
        the card is shared with map downloads and every read waits its turn */
@@ -319,40 +319,11 @@ static void gpx_done(void)
 
 /* ------------------------------------------------------------ the list */
 
-int wd_replay_list(char name[][WD_REPLAY_NAME], char detail[][40], int max)
+int wd_replay_list(char name[][WD_REPLAY_NAME], wd_drive_info_t *info, int max)
 {
-    const char *dir = wd_feed_dir();
-    if (!*dir) return 0;
-    DIR *d = opendir(dir);
-    if (!d) return 0;
-    int n = 0;
-    for (struct dirent *e; (e = readdir(d)) != NULL;) {
-        const size_t l = strlen(e->d_name);
-        if (l < 5 || l - 4 >= WD_REPLAY_NAME) continue;
-        const char *ext = e->d_name + l - 4;
-        if (strcmp(ext, ".csv") && strcmp(ext, ".gpx")) continue;
-        char stem[WD_REPLAY_NAME];
-        snprintf(stem, sizeof(stem), "%.*s", (int)(l - 4), e->d_name);
-        int i = 0;
-        while (i < n && strcmp(name[i], stem)) i++;
-        if (i < n) continue;
-        /* newest first: the stems are dates */
-        if (n == max && strcmp(stem, name[n - 1]) < 0) continue;
-        int at = n < max ? n++ : max - 1;
-        while (at > 0 && strcmp(name[at - 1], stem) < 0) { memcpy(name[at], name[at - 1], WD_REPLAY_NAME); at--; }
-        snprintf(name[at], WD_REPLAY_NAME, "%s", stem);
-    }
-    closedir(d);
-    for (int i = 0; i < n; i++) {
-        char p[128];
-        struct stat st;
-        long csv = 0, gpx = 0;
-        snprintf(p, sizeof(p), "%s/%s.csv", dir, name[i]);
-        if (!stat(p, &st)) csv = (long)st.st_size;
-        snprintf(p, sizeof(p), "%s/%s.gpx", dir, name[i]);
-        if (!stat(p, &st)) gpx = (long)st.st_size;
-        snprintf(detail[i], 40, "%s%s  %ld KB", gpx ? "track" : "no track", csv ? " + log" : "", (csv + gpx + 1023) / 1024);
-    }
+    (void)wd_drives_tidy();             /* old loose drives into their folders, once */
+    const int n = wd_drives((char (*)[WD_STEM])name, max);
+    for (int i = 0; i < n; i++) wd_drive_info(name[i], &info[i]);
     return n;
 }
 
@@ -549,7 +520,7 @@ bool wd_replay_open(const char *stem, uint32_t real, char *why, size_t n)
     for (int k = 0; k < 2; k++) {
         char path[160];
         struct stat st;
-        snprintf(path, sizeof(path), "%s/%s.%s", dir, stem, k ? "csv" : "gpx");
+        wd_drive_path(path, sizeof(path), stem, k ? "csv" : "gpx", false);
         if (!stat(path, &st)) size[k] = (long)st.st_size;
     }
     if (!size[0] && !size[1]) { snprintf(why, n, "nothing to replay in %s", stem); return false; }

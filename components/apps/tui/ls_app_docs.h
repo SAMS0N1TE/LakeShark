@@ -52,6 +52,7 @@ extern const ls_app_doc_t ls_doc_store;
 extern const ls_app_doc_t ls_doc_locker;
 extern const ls_app_doc_t ls_doc_chat;
 extern const ls_app_doc_t ls_doc_wardrive;
+extern const ls_app_doc_t ls_doc_party;
 extern const ls_app_doc_t ls_doc_map;
 extern const ls_app_doc_t ls_doc_tiles;
 extern const ls_app_doc_t ls_doc_gps;

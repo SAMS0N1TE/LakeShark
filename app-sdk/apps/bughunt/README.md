@@ -7,6 +7,11 @@ only see Bluetooth tags, and cheap RF detectors beep at any burst without
 saying what it was. BUGHUNT listens three ways at once and says what it
 thinks each thing is.
 
+BUGHUNT 1.2 adds the finder's gauge and dial, AUTO RANGE, distance, BODY
+direction, burst timing, HUNT FREQ, the SDR and DUAL receivers, MINE and
+WATCH marks, TRACK KINDS, the OPTIONS tree and device names from a card
+file (see HUNT, Tracking and Device names).
+
 BUGHUNT 1.1 took in the BLE WATCH app: its tag list, rotating-address
 following, "a tag is following you" alert, meter and tone, card log and
 settings are all here (TAGS, HUNT and MORE). BLE WATCH is retired.
@@ -24,7 +29,7 @@ drops the board's Wi-Fi link.
 ## Tabs
 
 SWEEP, FINDINGS, TAGS and HUNT: `<` `>` on the strip, a swipe, or LEFT /
-RIGHT. The keys along the bottom change with the tab; MORE has the settings.
+RIGHT. The keys along the bottom change with the tab; OPTIONS has the settings.
 
 ## Sweep
 
@@ -142,34 +147,138 @@ VIEW INFO counts them and names the newest.
 ## HUNT
 
 The finder for all three: a card from FINDINGS, a tag from TAGS or the
-following alert. The radio parks on a frequency; a tag is followed through
-its address changes; a Wi-Fi station by its address.
+following alert, or a frequency you name (HUNT FREQ: a list of common ones,
+or type it in MHz, no sweep needed). The radio parks on a frequency; a tag is
+followed through its address changes; a Wi-Fi station by its address.
 
-- The big level and a VFD bar with the peak held, its scale under it: a tag
-  from -100 dBm (cold) to -30 (hot, in your hand) as BLE WATCH's meter was,
-  with how near in words (far, nearby, close, very close); a frequency
-  60 dB over its floor.
-- HOTTER / COLDER in big letters.
-- Sound (MORE > HUNT SOUND): AUTO plays BLE WATCH's rising tone on a tag
-  (pitch and rate follow the signal, quiet after 3 s unheard) and the Geiger
-  tick on a frequency or a station; TICKS or TONE pick one for all.
-- History: a tag's last two minutes from the tag watch (it was listening
-  before HUNT began); else the readings since HUNT began.
-- A direction plot: hold the board flat and turn slowly in a circle; the
-  strongest heading is marked in red.
+- **The gauge**: half a dial, cold on the left and hot on the right, in four
+  zones (a tag: FAR, NEARBY, CLOSE, HERE; a frequency: WEAK, FAIR, STRONG,
+  HOT). The scale lights up to the level, the needle shows it, a red tick
+  holds the most it has been. Beside it: the level, the peak, the range, how
+  far a tag is (`~3 m (2-6)`) or how far a frequency is over its quiet level,
+  HOTTER / COLDER with arrows, and the sound.
+- **The level** is the strongest reading of the last moment (2.5 s for a tag,
+  0.4 s for a frequency), not the latest one: Bluetooth fades 10-20 dB from
+  one advert to the next as you move, and a fade read as "colder" sends you
+  the wrong way.
+- **AUTO RANGE**: next to a strong transmitter the meter steps up 20 dB at a
+  time (up to 60 dB on a frequency) so it never sits pinned at the top, and
+  back down after 3 s low. The Geiger ticks follow the range too.
+- **Distance** for a tag: from its level and what a tag of its kind reads at
+  1 m (its advertised TX power when it sends one). The span in brackets is a
+  6 dB fade either way. **CAL** (K, or OPTIONS > HUNT): hold the tag 1 m away
+  and press it; that tag's distances use the level you measured.
+- **The dial**: the circle you turned through, heading up (the top is where
+  the board points; N E S W turn as you turn). Each 10 degrees is coloured
+  by how loud it was there, the loud part drawn bolder; faint dots are the
+  part not turned through yet. Each heading keeps a smoothed level (a peak
+  pulls it more than a dip) and its neighbours count half, so one lucky
+  reading does not win. The arrow is the answer, and beside it in words:
+  AHEAD, TURN RIGHT 40 deg, BEHIND YOU, how sharp it is (SHARP, BROAD,
+  UNCLEAR, with how many dB it stands out), and how much of the circle is
+  done. No arrow until one way stands out by 2 dB. Tap the dial (or D) to
+  start the circle again after you move.
+- **DIRECTION: PEAK or BODY**. PEAK: hold the board flat in front of you;
+  the loudest way is toward it. BODY: hold it flat against your chest and
+  turn; your body blocks 10-20 dB at 2.4 GHz, so the quietest way is your
+  back to it and the thing is behind you. BODY works better for a tag close
+  by, where PEAK's lobe is broad.
+- **Bursts** on a frequency: a tracker that checks in every minute or two is
+  silent between bursts, so each burst is kept with its peak and the heading
+  it came from. The strip says how many, the spacing ("every ~75s"), when the
+  next is due, and the last burst against the one before (+6.0 HOTTER).
+  Stand still between bursts, then compare. A carrier that never stops says
+  STEADY CARRIER instead.
+- Sound (OPTIONS > HUNT > HUNT SOUND): AUTO plays BLE WATCH's rising tone on
+  a tag and the Geiger tick on a frequency or a station; TICKS or TONE pick
+  one for all.
+- History: a tag's last two minutes from the tag watch; else the readings
+  since HUNT began.
 - UP / DOWN: the next or previous tag (from TAGS) or finding.
 
-## Settings (MORE)
+### Receivers: LORA, SDR, DUAL
 
-REGION, ROOM and CAR sweep length, WI-FI HOP (asked each time), SOUND,
-HUNT SOUND, FOLLOWING ALERT minutes, POSSIBLE TAGS, TAG LOG TO CARD, CLEAR
-THE TAG LIST and HOW IT WORKS. They are kept on the card (`lap_save` slot
-`cfg`); BUGHUNT 1.0's saved region, lengths and sound carry over. BLE WATCH
-kept no settings on the card, so it had none to bring. Saves go one at a
-time and each is polled to the end: an app has four card jobs, shared with
-the tag log (1.0 never polled its saves, and a few changes used them all).
-The log setting saved is your choice: a card that fails stops the log for
-the session without turning it off for next time.
+A frequency HUNT can use the LoRa radio in the socket, an SDR on USB
+(RTL-SDR or HackRF, from its spectrum lines: the strongest bin within
+250 kHz of the target, tuned a quarter of its rate off so its centre spike
+is not read as the signal), or both (RECEIVER on the HUNT tab, or OPTIONS >
+RECEIVERS). The SDR's level is dBFS, relative to its own quiet level.
+
+**DUAL** puts both on one frequency: a directional antenna on one (OPTIONS >
+RECEIVERS > DIRECTIONAL ON: SDR or LORA) and the other as the reference.
+The POINT meter shows the directional one over its quiet level minus the
+reference over its own (-20 to +20 dB): it moves only when the directional
+antenna turns toward or away, not when a tracker's bursts come and go, and
+the dial turns on it too. DUAL needs firmware that lets a USB SDR receive
+beside the LoRa radio (after 3.0.3); older firmware says so and uses the
+SDR alone.
+
+## Tracking: MINE and WATCH
+
+MARK on TAGS (or K) steps the pick NONE, MINE, WATCH:
+
+- **MINE**: your own tag. It never raises the following alert, sinks to the
+  bottom of the list and shows `M`.
+- **WATCH**: a tag you carry (keys, a bag). When it goes unheard for the set
+  time (OPTIONS > TAGS AND ALERTS > WATCH: 1 to 30 minutes, 2 by default,
+  plus 15 s for a rotation to link), a board alert says it was left behind;
+  when it is heard again, "is back in range". Shows `W`, red while gone.
+
+Marks follow a tag through its address changes and are kept on the card by
+address (slot `marks`, 24 at most, the oldest goes): a tag that keeps one
+address (Tile, many cheap tags) is known again next time; a rotating one
+for as long as it keeps that address.
+
+**TRACK KINDS** (OPTIONS > TAGS AND ALERTS): each kind (Find My/AirTag,
+Tile, SmartTag, Google Find Hub, DULT, Chipolo) ALERT or LIST ONLY. A kind
+on LIST ONLY is still listed and logged; it just never alerts.
+
+## Device names (ids.bin)
+
+The tag engine names trackers itself. For everything else BUGHUNT can read
+a name file off the card, built from the public registries by
+`tools/build_ids.py`:
+
+| Table | From | Names |
+|---|---|---|
+| Bluetooth company IDs | Bluetooth SIG assigned numbers | 4082 |
+| 16-bit service UUIDs | Bluetooth SIG (SIG and member UUIDs) | 807 |
+| Appearance | Bluetooth SIG | 342 |
+| MAC makers (MA-L) | IEEE registry | 40535 |
+
+About 640 KB. It goes at `/sdcard/lakeshark/packs/bughunt-ids.bin` (from
+PACKS) or `/sdcard/bughunt/ids.bin`. Each name is a block read and a name
+read through a small index loaded at start, one card job at a time, and the
+answers are kept (96). With it:
+
+- a device with company data the engine's short table lacks gets the
+  company's name, one with only a service UUID the service's owner, and one
+  with a public address and nothing else its maker; "Samsung Watch" when it
+  states its appearance;
+- the detail view adds the maker of a public address, the appearance and
+  the names of its first three services;
+- a Wi-Fi station gets its maker's name, and a maker that makes cameras
+  first (Hikvision, Dahua, Wyze, Reolink, Amcrest, Arlo, Ring, Blink, Lorex,
+  Swann, Uniview, Hanwha Vision, Vivotek, Ezviz, Zmodo, Mobotix, Avigilon,
+  Verkada, GeoVision, Tiandy, Sunell, Raysharp, Milesight, Axis) counts as a
+  camera like the built-in list does. Random addresses (most phones, most
+  Wi-Fi probes) have no maker.
+
+INFO says what is loaded. Without the file everything works as before.
+
+## OPTIONS
+
+One tree, a level at a time, BACK at the top of each (cancel goes up):
+SWEEP (region, room and car length, Wi-Fi hop, sound), TAGS AND ALERTS
+(following alert, possible tags, TRACK KINDS, WATCH time, marks, the log,
+clear the list), HUNT (hunt a frequency, direction mode, meter range, hunt
+sound, CAL), RECEIVERS (LORA / SDR / DUAL, which has the directional
+antenna, what was found) and HOW IT WORKS. Kept on the card (`lap_save` slot
+`cfg`); 1.0's and 1.1's settings carry over. Saves go one at a time and each
+is polled to the end: an app has four card jobs, shared with the tag log,
+the marks and the name file. The log setting saved is your choice: a card
+that fails stops the log for the session without turning it off for next
+time.
 
 ## Keys
 
@@ -180,6 +289,11 @@ the session without turning it off for next time.
 | ENTER | HUNT the pick |
 | BACK | HUNT back to where it came from; INFO or ALL back to TAGS; then HOME |
 | L | HUNT the tag in the alert |
+| K | MARK the pick (TAGS); CAL at 1 m (HUNT on a tag) |
+| Q | HUNT FREQ |
+| E | RECEIVER: LORA, SDR, DUAL |
+| B | DIRECTION: PEAK or BODY |
+| D | start the dial again |
 | + / - | the following alert's minutes (TAGS) |
 | P | possible trackers alert too (TAGS) |
 | G | the card log on/off (TAGS) |
@@ -276,3 +390,9 @@ HUNT, the alert on any tab, the log, wide screen, scan fallback).
 * Scanner version 2 and in-place retuning on either board: the step rate,
   that readings right after a retune are settled (300 us wait at 500 kHz),
   and that MeshCore still gets the radio between passes.
+* DUAL with both receivers at once: needs the firmware change after 3.0.3
+  (a USB SDR may receive beside a packet or scan session); on 3.0.3 the LR
+  board with an RTL-SDR showed the fallback.
+* The distance's 1 m references are typical phone-class readings, not
+  measured on the board's antenna; CAL replaces them for one tag.
+* BODY mode and the dial's answers against a real hidden tag.

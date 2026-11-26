@@ -26,7 +26,11 @@ static const char *TAG = "ls_gauge";
 #define REG_FULL         0x12
 #define REG_SOC          0x2C
 
-/* A low-priority worker owns cache refresh; drawing never touches I2C. */
+/* A low-priority worker owns cache refresh; drawing never touches I2C.
+   Voltage and current every FAST_MS feed the filter, so one loaded sample
+   is a fraction of a point and not the number on the screen; the slow
+   registers (temperature, the gauge's own estimate, capacity) every SAMPLE_MS. */
+#define FAST_MS   5000
 #define SAMPLE_MS 30000
 static i2c_master_dev_handle_t s_dev;
 static bool s_present;
@@ -34,22 +38,57 @@ static ls_gauge_t s_cache;
 static int64_t s_cache_us;
 static TaskHandle_t s_sampler;
 static portMUX_TYPE s_cache_mux = portMUX_INITIALIZER_UNLOCKED;
+static ls_batt_filter_t s_filter;       /* the sampler's alone */
+
+static bool rd16(uint8_t reg, uint16_t *out);
+
+/* The filter's view of one sample, into what every screen reads. */
+static void publish(ls_gauge_t *g, int64_t now, int64_t last)
+{
+    const float dt = last ? (float)(now - last) / 1e6f : 0.0f;
+    g->percent = (uint8_t)ls_batt_filter_step(&s_filter, g->millivolts, g->milliamps, dt);
+    g->state = s_filter.state;
+    g->charging = s_filter.state == LS_BATT_CHARGING;
+    g->full = s_filter.state == LS_BATT_FULL;
+    g->plugged = g->charging || g->full || s_filter.state == LS_BATT_PLUGGED;
+    portENTER_CRITICAL(&s_cache_mux);
+    s_cache = *g;
+    s_cache_us = now;
+    portEXIT_CRITICAL(&s_cache_mux);
+}
 
 static void gauge_sampler(void *arg)
 {
     (void)arg;
+    ls_batt_filter_init(&s_filter);
+    ls_gauge_t g;
+    memset(&g, 0, sizeof(g));
+    int64_t last = 0;
+    int slow = 0;
     for (;;) {
-        ls_gauge_t next;
-        if (ls_gauge_read(&next) == ESP_OK) {
-            portENTER_CRITICAL(&s_cache_mux);
-            s_cache = next;
-            s_cache_us = esp_timer_get_time();
-            portEXIT_CRITICAL(&s_cache_mux);
+        bool ok;
+        if (slow == 0) {
+            ls_gauge_t full;
+            ok = ls_gauge_read(&full) == ESP_OK;
+            if (ok) g = full;
+        } else {
+            /* Keep the slow fields from the last full read. */
+            uint16_t v = 0;
+            ok = rd16(REG_VOLTAGE, &v) && v;
+            if (ok) {
+                g.millivolts = v;
+                g.present = true;
+                if (rd16(REG_CURRENT, &v)) g.milliamps = (int16_t)v;
+            }
         }
-        /* Keep the last good sample on a transient bus error. A 30 s
-           sample already suppresses rapid load flicker; do not add the old
-           per-frame EMA, which would now take minutes to follow discharge. */
-        vTaskDelay(pdMS_TO_TICKS(SAMPLE_MS));
+        if (ok) {
+            const int64_t now = esp_timer_get_time();
+            publish(&g, now, last);
+            last = now;
+        }
+        /* Keep the last good sample on a transient bus error. */
+        slow = (slow + 1) % (SAMPLE_MS / FAST_MS);
+        vTaskDelay(pdMS_TO_TICKS(FAST_MS));
     }
 }
 
@@ -116,10 +155,12 @@ esp_err_t ls_gauge_read(ls_gauge_t *out)
         out->temp_c10 = (int16_t)((int32_t)v - 2731);
     }
 
-    out->charging = out->milliamps > 0;
     out->present  = true;
-    out->percent  = (uint8_t)ls_gauge_soc_from_rest_mv(
-                        ls_gauge_rest_mv(out->millivolts, out->milliamps));
+    out->percent  = (uint8_t)ls_batt_instant(out->millivolts, out->milliamps);
+    out->state    = (uint8_t)ls_batt_classify(out->millivolts, out->milliamps);
+    out->charging = out->state == LS_BATT_CHARGING;
+    out->full     = out->state == LS_BATT_FULL;
+    out->plugged  = out->state != LS_BATT_DISCHARGING;
     return ESP_OK;
 }
 
@@ -158,16 +199,20 @@ void ls_gauge_diagnostics(void)
                LS_BOARD_GAUGE_I2C_ADDR, esp_err_to_name(err));
         return;
     }
-    LS_PRINTF(t_ls_gauge_gauge_u_mv_d, "gauge: %u mV  %d mA  %u%% from voltage (gauge learned %u%%)  "
-           "%d.%d C  %u/%u mAh  %s\n",
-           (unsigned)g.millivolts, (int)g.milliamps, (unsigned)g.percent,
+    static const char *const STATE[] = { "?", "on battery", "charging", "on USB, not charging", "on USB, full" };
+    ls_gauge_t shown;
+    const bool have = ls_gauge_get(&shown);
+    LS_PRINTF(t_ls_gauge_gauge_u_mv_d, "gauge: %u mV  %d mA  %s  shown %u%%  this sample %u%%  (gauge learned %u%%)  "
+           "%d.%d C  %u/%u mAh\n",
+           (unsigned)g.millivolts, (int)g.milliamps, STATE[g.state < 5 ? g.state : 0],
+           (unsigned)(have ? shown.percent : g.percent), (unsigned)g.percent,
            (unsigned)g.learned_percent,
            g.temp_c10 / 10, (g.temp_c10 < 0 ? -g.temp_c10 : g.temp_c10) % 10,
-           (unsigned)g.remaining_mah, (unsigned)g.full_mah,
-           g.charging ? "charging" : "discharging");
-    LS_PRINTF(t_ls_gauge_gauge_the_percentage_is, "gauge: the percentage is the rest voltage (%d mV after %d mOhm) "
-           "on a Li-ion curve; the gauge was never configured for this cell.\n",
-           ls_gauge_rest_mv(g.millivolts, g.milliamps), LS_GAUGE_PACK_MOHM);
+           (unsigned)g.remaining_mah, (unsigned)g.full_mah);
+    LS_PRINTF(t_ls_gauge_gauge_the_percentage_is, "gauge: the percentage is the rest voltage (%d mV) on an NMC curve, "
+           "smoothed: down only on battery, up only charging, 100 when the charger is done\n",
+           g.milliamps > 0 ? g.millivolts - g.milliamps * LS_GAUGE_CHARGE_MOHM / 1000
+                           : ls_gauge_rest_mv(g.millivolts, g.milliamps));
 }
 
 #else  /* board declares no gauge */

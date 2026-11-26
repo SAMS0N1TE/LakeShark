@@ -91,6 +91,13 @@ bool settings_get_alert_ring(void) { return s_alert_ring; }
 void settings_set_alert_ring(bool v) { s_alert_ring = v; }
 static bool s_auto_rotate = true;
 bool settings_get_auto_rotate(void) { return s_auto_rotate; }
+
+uint32_t settings_get_rec(const char *name, uint32_t deflt);
+void settings_set_rec(const char *name, uint32_t value);
+static uint32_t s_rec_wd_units = 2;   /* host: only WARDRIVE's units are kept */
+uint32_t settings_get_rec(const char *name, uint32_t deflt)
+{ return name && !strcmp(name, "wd_units") && s_rec_wd_units != 2 ? s_rec_wd_units : deflt; }
+void settings_set_rec(const char *name, uint32_t value) { if (name && !strcmp(name, "wd_units")) s_rec_wd_units = value; }
 void settings_set_auto_rotate(bool v) { s_auto_rotate = v; }
 bool settings_get_alert_vibe(void) { return s_alert_vibe; }
 /* Sub-GHz display preferences. Real state, because the screen reads them
@@ -120,6 +127,8 @@ void settings_set_subghz_colour(int v) { s_sg_colour = v; }
 static int s_sg_expert;
 int  settings_get_subghz_expert(void) { return s_sg_expert; }
 void settings_set_subghz_expert(int v) { s_sg_expert = v; }
+bool settings_get_tx_unlocked(void) { return false; }
+void settings_set_tx_unlocked(bool on) { (void)on; }
 void settings_set_alert_vibe(bool v) { s_alert_vibe = v; }
 void settings_set_haptics(bool on) { (void)on; }
 int  settings_get_theme(void) { return 0; }

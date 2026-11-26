@@ -51,10 +51,15 @@ static ls_wf_owner_t s_live_owner;
 static bool s_chip_owned, s_chip_off;
 /* `wf` console counters: pumps, asks for the mesh's radio, asks it granted. */
 static uint32_t s_dbg_pumps, s_dbg_hold_asks, s_dbg_hold_ok, s_dbg_stops, s_dbg_row_ms;
-void ls_wf_source_counters(uint32_t *pumps, uint32_t *asks, uint32_t *granted)
+size_t ls_wf_source_format_status(char *buf, size_t n, uint32_t stops, uint32_t row_ms,
+                                  uint32_t pumps, uint32_t asks, uint32_t granted,
+                                  const char *reason)
 {
-    *pumps = s_dbg_pumps; *asks = s_dbg_hold_asks; *granted = s_dbg_hold_ok;
-    printf("WFSRC stops=%lu last_sweep_row_ms=%lu\n", (unsigned long)s_dbg_stops, (unsigned long)s_dbg_row_ms);
+    int len = snprintf(buf, n, "WFSRC stops=%lu last_sweep_row_ms=%lu\n"
+                               "WFSRC pumps=%lu mesh_asks=%lu granted=%lu reason=\"%s\"\n",
+                       (unsigned long)stops, (unsigned long)row_ms, (unsigned long)pumps,
+                       (unsigned long)asks, (unsigned long)granted, reason ? reason : "-");
+    return len < 0 ? 0 : (size_t)len;
 }
 void ls_wf_source_lr_chip(bool on) { s_chip_off = !on; }
 bool ls_wf_source_lr_chip_get(void) { return lr_chip_wf_start && !s_chip_off; }
@@ -70,6 +75,11 @@ static ls_wf_idle_t s_idle;
 static const char *s_idle_reason;
 ls_wf_idle_t ls_wf_source_idle(void) { return s_idle; }
 const char *ls_wf_source_idle_reason(void) { return s_idle_reason; }
+size_t ls_wf_source_status(char *buf, size_t n)
+{
+    return ls_wf_source_format_status(buf, n, s_dbg_stops, s_dbg_row_ms, s_dbg_pumps,
+                                      s_dbg_hold_asks, s_dbg_hold_ok, s_idle_reason);
+}
 static bool idle(ls_wf_idle_t status, const char *reason)
 {
     s_idle = status; s_idle_reason = reason;

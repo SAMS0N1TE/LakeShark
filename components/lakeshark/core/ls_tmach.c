@@ -394,6 +394,11 @@ static bool allocate(void)
     s_primary = -1;
     unlock();
     atomic_store(&s_live, true);
+    /* Taps that came while the ring was being cleared asked for one again.
+       Left set, that stale ask made the idle release below allocate a fresh
+       ring the moment it freed this one, so 4.5 MB stayed for two minutes
+       after the receiver stopped instead of one. */
+    atomic_store(&s_want, false);
     return true;
 }
 

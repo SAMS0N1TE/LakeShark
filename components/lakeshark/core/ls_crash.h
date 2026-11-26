@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-#define LS_CRASH_MAX_BT       16
+#define LS_CRASH_MAX_BT       40   /* a stack scan passes stale frames first */
 #define LS_CRASH_ELF_HEX_LEN  16   /* first N hex chars of app_elf_sha256[] */
 #define LS_CRASH_REASON_MAX   128
 #define LS_CRASH_TASK_MAX     16
@@ -39,6 +39,8 @@ typedef struct {
     uint32_t partition_address, partition_size;
     uint32_t declared_size; /* untrusted; never used as a read length */
     bool header_bounds_ok; /* size only, NOT ELF/checksum validation */
+    bool bt_scanned;       /* bt[] is a stack scan (ls_crash_parse_elf), not an unwind */
+    const char *parse_why; /* why a stored dump was not parsed; NULL if it was */
 } ls_crash_summary_t;
 
 typedef enum {
@@ -53,6 +55,27 @@ typedef enum {
    Caller supplies partition_address/size. No pointer chasing or writes. */
 ls_crash_read_result_t ls_crash_inspect_header(const uint8_t *header,
                                              size_t len, ls_crash_summary_t *out);
+
+/* A bounded read of the stored image: false on any error or out of range. */
+typedef bool (*ls_crash_read_at_fn)(void *ctx, uint32_t offset, void *buf, uint32_t len);
+/* Addresses [lo, hi) that can hold code in the crashed image. */
+typedef struct { uint32_t lo, hi; } ls_crash_range_t;
+
+/* Read the crash itself out of an IDF ELF core dump with a CRC32 checksum
+   (version 0x....0102): the faulting task, its pc/ra, the panic reason, the
+   crashed image's ELF sha, and the code addresses found on the crashed task's
+   stack (bt[], bt_scanned) - enough to decode offline with addr2line and the
+   matching ELF. Never the IDF parser (it faulted once and overwrote the dump):
+   every read is bounded by the header's size, which must fit the partition,
+   and the checksum is checked over the whole image before anything is
+   believed. Only addresses leave the dump - no memory contents, so nothing a
+   task held (keys, Wi-Fi credentials) can reach a report.
+   *out must hold ls_crash_inspect_header's metadata. Returns LS_CRASH_READ_OK
+   with the summary filled, or LS_CRASH_READ_METADATA with parse_why set and
+   the metadata kept. Allocates two small buffers for the duration. */
+ls_crash_read_result_t ls_crash_parse_elf(ls_crash_read_at_fn read_at, void *ctx,
+                                          const ls_crash_range_t *code, size_t n_code,
+                                          ls_crash_summary_t *out);
 
 /* Source of coredump data. The device wires these to esp_core_dump_*; the
    bench supplies its own so the formatter is tested, not the SDK. */

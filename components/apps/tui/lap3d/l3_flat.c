@@ -54,14 +54,13 @@ static int disc(l3_scene *s, const l3_cmd *c) {
     }
     return segments*3;
 }
-static __attribute__((noinline)) void emit(l3_scene *s, int command, int i) {
+static __attribute__((noinline)) void emit(l3_scene *s, int command, int i, bool box, bool show_exit) {
     const l3_cmd *c = &s->cmd[command];
-    bool box = c->kind == S_BOX || c->kind == S_RBOX;
     for (int j = 0; j < 3; j++) {
         int id = s->shape_idx[i+j];
         l3_corner *v = &s->clip_a[j];
-        v->p = box ? l3_transform(&c->t, s->shape_v[id]) : s->shape_v[id];
-        v->n = box ? l3_normal(&c->inv, s->shape_n[id]) : s->shape_n[id];
+        v->p = s->shape_v[id];
+        v->n = s->shape_n[id];
         v->z = l3_dot(l3_sub(v->p, s->view.eye), s->view.forward);
     }
     l3_vec n = l3_cross(l3_sub(s->clip_a[1].p, s->clip_a[0].p),
@@ -76,8 +75,7 @@ static __attribute__((noinline)) void emit(l3_scene *s, int command, int i) {
         if (box) {
             /* Closed shapes also expose their exit surface when the eye or
              * near plane cuts the object, matching analytic slab tracing. */
-            float front = l3_dot(l3_sub(c->center,s->view.eye),s->view.forward)-c->bound;
-            if (front >= s->view.near_z) return;
+            if (!show_exit) return;
         } else {
             if (c->kind == S_QUAD && !(c->flags & L3_TWO_SIDED)) return;
             for (int j = 0; j < 3; j++) s->clip_a[j].n = l3_scale(s->clip_a[j].n, -1);
@@ -89,14 +87,25 @@ void l3_flat_prepare(l3_scene *s, int command) {
     l3_cmd *c = &s->cmd[command];
     int n;
     c->first = s->ntri;
-    if (c->kind == S_BOX || c->kind == S_RBOX) n = boxes(s, c);
-    else if (c->kind == S_DISC) n = disc(s, c);
+    bool box = c->kind == S_BOX || c->kind == S_RBOX;
+    bool show_exit = false;
+    if (box) {
+        n = boxes(s, c);
+        /* The generated triangles share 24 corners. Transform each corner
+         * once before submission, as with an indexed mesh. */
+        for (int k = 0; k < 24; ++k) {
+            s->shape_v[k] = l3_transform(&c->t, s->shape_v[k]);
+            s->shape_n[k] = l3_normal(&c->inv, s->shape_n[k]);
+        }
+        float front = l3_dot(l3_sub(c->center, s->view.eye), s->view.forward) - c->bound;
+        show_exit = !(front >= s->view.near_z);
+    } else if (c->kind == S_DISC) n = disc(s, c);
     else {
         s->shape_v[0] = c->a; s->shape_v[1] = c->b;
         s->shape_v[2] = c->c; s->shape_v[3] = c->d;
         for (int j = 0; j < 4; j++) s->shape_n[j] = c->half;
         n = 0; patch(s, &n, 0, 1, 2, 3);
     }
-    for (int i = 0; i < n; i += 3) emit(s, command, i);
+    for (int i = 0; i < n; i += 3) emit(s, command, i, box, show_exit);
     c->count = s->ntri - c->first;
 }

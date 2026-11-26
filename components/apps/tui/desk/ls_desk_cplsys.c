@@ -19,6 +19,7 @@
 #include "core/settings.h"
 #include "core/display_ctl.h"
 #include "core/ls_time.h"
+#include "core/ls_tz.h"
 #include "core/ls_version.h"
 #include "core/ls_safe_mode.h"
 #include "audio/audio_out.h"
@@ -451,9 +452,7 @@ static const ls_gps_state_t *gps(void) { ls_gps_get(&s_g); return &s_g; }
 static bool clock_set(struct tm *g)
 {
     const time_t now = time(NULL);
-    const struct tm *gp = gmtime(&now);               /* UI task only */
-    if (!gp) return false;
-    *g = *gp;
+    if (!ls_tz_local(now, g)) return false;           /* the zone SET picked */
     return ls_time_source() > 0 || g->tm_year > 120;
 }
 static void date_show(char *b, size_t n)
@@ -467,7 +466,8 @@ static void date_show(char *b, size_t n)
 static void time_show(char *b, size_t n)
 {
     struct tm g;
-    if (clock_set(&g)) snprintf(b, n, "%02d:%02d:%02d UTC", g.tm_hour, g.tm_min, g.tm_sec);
+    char zone[12];
+    if (clock_set(&g)) { ls_tz_abbr(&g, zone, sizeof(zone)); snprintf(b, n, "%02d:%02d:%02d %s", g.tm_hour, g.tm_min, g.tm_sec, zone); }
     else snprintf(b, n, "--:--:--");
 }
 static void tsrc_show(char *b, size_t n)
@@ -475,7 +475,7 @@ static void tsrc_show(char *b, size_t n)
     const ls_gps_state_t *g = gps();
     const int src = ls_time_source();
     if (g->alive && g->year >= 2024) snprintf(b, n, "GPS, %d satellites", g->sats_used);
-    else snprintf(b, n, "%s", src == 2 ? "network time" : src == 1 ? "board clock (RTC)" : "none yet");
+    else snprintf(b, n, "%s", src == 2 ? "network time" : src == 3 ? "GPS" : src == 1 ? "board clock (RTC)" : "none yet");
 }
 static int gpson_get(void) { return ls_gps_running(); }
 static void gpson_set(int v)

@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "../../ls_app.h"
+#include "../../ls_deskui.h"
 #include "../../ls_drag_scroll.h"
 #include "../../ls_braille.h"
 #include "../../ls_glyph.h"
@@ -229,8 +230,15 @@ static void head(tui_surface *sf, tui_rect r)
     int tx = gx + 4 * (int)strlen(mn) + 1;
     char line[48];
     snprintf(line, sizeof(line), "%.6f", s_v.dial_hz / 1e6);
+    if (ls_tui_compact() && tx + 16 <= r.x + r.w - 1) {
+        /* A desk window: the dial on a VFD. */
+        snprintf(line, sizeof(line), "%.6f MHz", s_v.dial_hz / 1e6);
+        ls_dui_vfd(sf, tui_rect_make(tx - 1, y, (int)strlen(line) + 2, 1), line, LS_DUI_VFD_GREEN | LS_DUI_VFD_SMALL);
+        tui_put_str(sf, r, tx, y + 1, "USB dial", LS_ATTR_DIM);
+    } else {
     tui_put_str(sf, r, tx, y, line, ATTR(TUI_WHITE | TUI_BRIGHT));
     tui_put_str(sf, r, tx, y + 1, "MHz USB dial", LS_ATTR_DIM);
+    }
     uint8_t ink;
     const char *src = source_text(&ink);
     tui_put_str(sf, r, tx, y + 3, src, ink);
@@ -366,6 +374,7 @@ static void list(tui_surface *sf, tui_rect r)
     char title[40];
     snprintf(title, sizeof(title), "HEARD %u", (unsigned)s_v.total);
     ls_panel_box(sf, r, title, TUI_GREEN);
+    if (ls_dui_desk()) ls_ink_well(tui_rect_make(r.x + 1, r.y + 1, r.w - 2, r.h - 2));   /* the decodes on the contrast ground */
     /* Decodes per recent slot, as a line along the top edge. */
     {
         int hx = r.x + r.w - 2 - DIGI_SLOT_HIST;
@@ -534,6 +543,12 @@ static void draw(tui_surface *sf, tui_rect area)
     if (bar_h < 5) bar_h = 5;
     tui_rect bar = tui_rect_make(area.x, area.y + area.h - bar_h, area.w, bar_h);
     tui_rect body = tui_rect_make(area.x, area.y, area.w - (wide ? 8 : 0), area.h - bar_h);
+    if (ls_tui_compact()) {
+        /* Desk: the keys are the one toolbar under the menu bar, and the
+           panes take the whole width and height under it. */
+        bar = tui_rect_make(area.x, area.y, area.w, 1);
+        body = tui_rect_make(area.x, area.y + 1, area.w, area.h - 1);
+    }
     tui_rect h, b, l;
     if (wide) {
         int lw = body.w * 2 / 5;

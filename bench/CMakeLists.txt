@@ -60,7 +60,10 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/screens/ext/scr_chat.c
     ${FW}/bench/shims/ls_hub_host.c
     ${FW}/components/apps/tui/ls_lock.c
+    ${FW}/components/lakeshark/core/ls_tz.c
     ${FW}/components/apps/tui/ls_sweep.c
+    ${FW}/components/apps/tui/ls_sigs.c
+    ${FW}/components/apps/tui/ls_tail.c
     ${FW}/components/apps/tui/ls_sweep_ui.c
     ${FW}/components/apps/tui/ls_rid.c
     ${FW}/components/apps/tui/ls_rid_ui.c
@@ -298,6 +301,12 @@ function(ls_add_test name)
     target_link_libraries(${name} ls_harness m)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
+
+# LSX, the LakeShark link: two engines over the loopback channel.
+set(LS_LSX_SRCS ${FW}/components/apps/tui/ls_lsx.c ${FW}/components/apps/tui/ls_lsx_crypto.c
+    ${FW}/components/apps/tui/ls_lsx_loop.c ${FW}/components/apps/tui/ls_lsx_sync.c)
+ls_add_test(test_lsx ${LS_LSX_SRCS})
+target_include_directories(test_lsx PRIVATE ${FW}/components/apps/tui)
 
 ls_add_test(test_radios_status ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c
     shims/lap_service_none.c shims/ls_compact_none.c)
@@ -585,6 +594,7 @@ ls_add_test(test_tui_router
     ${LS_TUI_APP_SRCS}
     ${FW}/components/apps/tui/ls_tui_screen.c
     ${FW}/components/apps/tui/ls_tui_chrome.c
+    ${FW}/components/apps/tui/ls_deskui.c   # OPTIONS opens as a desk popup (desk pass)
     ${FW}/components/apps/tui/ls_theme.c
     ${FW}/components/apps/tui/tuilib/tui_core.c ${FW}/components/apps/tui/ls_i18n.c)
 target_include_directories(test_tui_router PRIVATE
@@ -723,6 +733,8 @@ target_compile_options(test_hf_demod PRIVATE -O2)
 # HF band plan, settings word and the RTL HF path choice.
 ls_add_test(test_fm_hf ${APP}/fm/fm_hf.c)
 target_include_directories(test_fm_hf PRIVATE ${APP}/fm ${FW}/components/lakeshark/radio)
+ls_add_test(test_usb_string)
+target_include_directories(test_usb_string PRIVATE ${FW}/components/lakeshark/radio)
 ls_add_test(test_wf_source ${FW}/components/apps/tui/ls_wf_source.c
     ${FW}/components/lakeshark/dsp/lr_iq_spectrum.c
     ${FW}/components/lakeshark/dsp/ls_floor.c
@@ -770,6 +782,7 @@ target_include_directories(test_radio_select PRIVATE ${LS_TUI_APP_INCLUDES})
 
 ls_add_test(test_options
     ${FW}/components/apps/tui/ls_options.c
+    ${FW}/components/apps/tui/ls_deskui.c
     ${FW}/components/apps/tui/ls_radio_select.c
     ${FW}/components/lakeshark/core/radio_choice.c
     ${FW}/components/apps/tui/ls_picker.c
@@ -787,6 +800,7 @@ ls_add_test(test_scan_shell
     ${FW}/components/apps/tui/ls_scan_view.c
     ${FW}/components/apps/tui/ls_scan_options.c
     ${FW}/components/apps/tui/ls_options.c
+    ${FW}/components/apps/tui/ls_deskui.c
     ${FW}/components/apps/tui/ls_radio_select.c
     ${FW}/components/lakeshark/core/radio_choice.c
     ${FW}/components/apps/tui/ls_picker.c
@@ -952,9 +966,23 @@ add_executable(lssim
     tools/lssim_rfs.c
     ${FW}/components/apps/tui/screens/ext/scr_wardrive.c
     ${FW}/components/apps/tui/wardrive/wd_core.c
+    ${FW}/components/apps/tui/wardrive/wd_track.c
+    ${FW}/components/apps/tui/wardrive/wd_atlas.c
+    ${FW}/components/apps/tui/wardrive/wd_radio.c
+    ${FW}/components/apps/tui/wardrive/wd_page_hunt.c
+    ${FW}/components/apps/tui/wardrive/wd_page_radio.c
+    ${FW}/components/apps/tui/wardrive/wd_page_atlas.c
     ${FW}/components/apps/tui/wardrive/wd_view3d.c
     ${FW}/components/apps/tui/wardrive/wd_replay.c
     tools/lssim_wardrive.c
+    tools/lssim_wd_hunt_seed.c
+    tools/lssim_wd_atlas_seed.c
+    ${FW}/components/apps/tui/screens/ext/scr_party.c
+    ${FW}/components/apps/tui/party/party_core.c
+    ${FW}/components/apps/tui/party/party_proto.c
+    ${FW}/components/apps/tui/party/party_wd.c
+    ${FW}/components/apps/tui/party/party_link_loop.c
+    tools/lssim_party.c
     ${FW}/components/apps/tui/ls_map.c ${FW}/components/apps/tui/ls_maptiles.c
     ${FW}/components/apps/tui/ls_map_ink.c
     ${FW}/components/apps/tui/ls_map_marks.c
@@ -1043,7 +1071,9 @@ set(LS_DESK_SRCS
     ${FW}/components/apps/tui/desk/ls_desk_dialogs.c
     ${FW}/components/apps/tui/desk/ls_desk_cpl.c
     ${FW}/components/apps/tui/desk/ls_desk_sheet.c
-    ${FW}/components/apps/tui/desk/ls_desk_gadgets.c)
+    ${FW}/components/apps/tui/desk/ls_desk_gadgets.c
+    ${FW}/components/apps/tui/desk/ls_desk_home.c
+    ${LS_LSX_SRCS} ${FW}/components/apps/tui/ls_lsx_svc.c)
 target_sources(lssim PRIVATE ${FW}/components/apps/tui/desk/ls_desk_live.c
     ${FW}/components/apps/tui/desk/ls_desk_cplsys.c)
 target_sources(lssim PRIVATE ${LS_DESK_SRCS})
@@ -1396,6 +1426,18 @@ target_include_directories(test_haptic PRIVATE
     ${FW}/bench/shims)
 target_compile_definitions(test_haptic PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
 
+# PARTY's wire format: round trips, refusals, the party code's key, files over a lossy air.
+add_executable(test_party_proto tests/test_party_proto.c ${FW}/components/apps/tui/party/party_proto.c)
+target_include_directories(test_party_proto PRIVATE ${FW}/components/apps/tui)
+target_link_libraries(test_party_proto PRIVATE m)
+add_test(NAME test_party_proto COMMAND test_party_proto)
+# PARTY's core over the loopback link: roster, pings, merges, filters, own finds, files to the card.
+add_executable(test_party_core tests/test_party_core.c ${FW}/components/apps/tui/party/party_core.c
+    ${FW}/components/apps/tui/party/party_proto.c ${FW}/components/apps/tui/party/party_link_loop.c)
+target_include_directories(test_party_core PRIVATE ${FW}/components/apps/tui)
+target_link_libraries(test_party_core PRIVATE m)
+add_test(NAME test_party_core COMMAND test_party_core)
+
 ls_add_test(test_gps_nmea ${FW}/components/lakeshark/board/ls_gps.c
     ${FW}/components/lakeshark/core/ls_uart_claim.c)
 target_include_directories(test_gps_nmea PRIVATE
@@ -1582,8 +1624,11 @@ ls_add_test(test_df_beacon ${FW}/components/apps/tui/ls_df_beacon.c)
 target_include_directories(test_df_beacon PRIVATE ${LS_TUI_APP_INCLUDES})
 ls_add_test(test_gauge_soc)
 target_include_directories(test_gauge_soc PRIVATE ${FW}/components/lakeshark/board)
+ls_add_test(test_tz ${FW}/components/lakeshark/core/ls_tz.c)
 ls_add_test(test_tdp4_power ${FW}/components/lakeshark/board/ls_board_hw.c)
 target_compile_definitions(test_tdp4_power PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
+ls_add_test(test_cache_wb_policy)
+target_include_directories(test_cache_wb_policy PRIVATE ${FW}/main)
 ls_add_test(test_hosted_board ${FW}/main/ls_hosted_board.c)
 target_compile_definitions(test_hosted_board PRIVATE CONFIG_LS_BOARD_T_DISPLAY_P4=1)
 target_include_directories(test_hosted_board PRIVATE
@@ -2666,6 +2711,33 @@ target_compile_definitions(test_lssim_rs41 PRIVATE
 target_sources(lssim PRIVATE ${FW}/components/apps/tui/screens/ext/scr_packs.c tools/lssim_tiles.c ${FW}/components/apps/tui/screens/ext/scr_tiles.c ${FW}/components/apps/tui/ls_place_search.c ${FW}/components/apps/tui/ls_globe.c)
 target_compile_definitions(lssim PRIVATE LS_TILES_HOST=1)
 
+# WARDRIVE's radio jobs: the scheduler and the decoders' sightings (wd_radio.c).
+# WARDRIVE's GPS gate: weak fixes, settling, impossible jumps (wd_core.c).
+add_executable(test_wd_gps tests/test_wd_gps.c ${FW}/components/apps/tui/wardrive/wd_core.c
+    ${FW}/components/apps/tui/ls_sigs.c ${FW}/components/apps/tui/ls_tail.c ${FW}/components/apps/tui/wardrive/wd_track.c
+    ${FW}/components/apps/tui/wardrive/wd_atlas.c ${FW}/components/apps/tui/wardrive/wd_replay.c)
+target_include_directories(test_wd_gps PRIVATE "${FW}/components/apps/tui")
+target_compile_options(test_wd_gps PRIVATE -UNDEBUG)
+target_link_libraries(test_wd_gps PRIVATE m)
+add_test(NAME test_wd_gps COMMAND test_wd_gps)
+add_executable(test_wd_radio tests/test_wd_radio.c ${FW}/components/apps/tui/wardrive/wd_radio.c
+    ${FW}/components/apps/tui/experiments/lr433_dec.c)
+target_include_directories(test_wd_radio PRIVATE "${FW}/components/apps/tui")
+target_link_libraries(test_wd_radio PRIVATE m)
+add_test(NAME test_wd_radio COMMAND test_wd_radio)
+# WARDRIVE HUNT: signatures and the tracker.
+add_executable(test_wd_sig tests/test_wd_sig.c ${FW}/components/apps/tui/ls_sigs.c ${FW}/components/apps/tui/ls_tail.c ${FW}/components/apps/tui/wardrive/wd_core.c
+    ${FW}/components/apps/tui/wardrive/wd_track.c ${FW}/components/apps/tui/wardrive/wd_atlas.c ${FW}/components/apps/tui/wardrive/wd_replay.c)
+target_include_directories(test_wd_sig PRIVATE "${FW}/components/apps/tui")
+target_compile_definitions(test_wd_sig PRIVATE WD_SIGS_TXT="${FW}/data/wardrive/sigs.txt")
+target_link_libraries(test_wd_sig PRIVATE m)
+add_test(NAME test_wd_sig COMMAND test_wd_sig)
+add_executable(test_wd_track tests/test_wd_track.c ${FW}/components/apps/tui/wardrive/wd_track.c ${FW}/components/apps/tui/wardrive/wd_core.c
+    ${FW}/components/apps/tui/ls_sigs.c ${FW}/components/apps/tui/ls_tail.c ${FW}/components/apps/tui/wardrive/wd_atlas.c ${FW}/components/apps/tui/wardrive/wd_replay.c)
+target_include_directories(test_wd_track PRIVATE "${FW}/components/apps/tui")
+target_link_libraries(test_wd_track PRIVATE m)
+add_test(NAME test_wd_track COMMAND test_wd_track)
+
 # Real CartoCore MAP renderer, pinned in-tree unless overridden for development.
 set(CARTOCORE_DIR "$ENV{CARTOCORE_DIR}" CACHE PATH "CartoCore engine checkout for host MAP (defaults to vendored snapshot)")
 if(NOT CARTOCORE_DIR)
@@ -2680,10 +2752,17 @@ if(CARTOCORE_DIR)
     add_library(cartocore_host STATIC ${CC_CORE_SRCS} ${CC_OUT_SRCS})
     target_include_directories(cartocore_host PUBLIC ${CC_PUBLIC_INCLUDE_DIRS})
     add_executable(test_wd_replay tests/test_wd_replay.c
-        ${FW}/components/apps/tui/wardrive/wd_replay.c ${FW}/components/apps/tui/wardrive/wd_core.c)
+        ${FW}/components/apps/tui/wardrive/wd_replay.c ${FW}/components/apps/tui/wardrive/wd_core.c
+        ${FW}/components/apps/tui/ls_sigs.c ${FW}/components/apps/tui/ls_tail.c ${FW}/components/apps/tui/wardrive/wd_track.c ${FW}/components/apps/tui/wardrive/wd_atlas.c)
     target_include_directories(test_wd_replay PRIVATE "${FW}/components/apps/tui")
     target_link_libraries(test_wd_replay PRIVATE m)
     add_test(NAME test_wd_replay COMMAND test_wd_replay)
+    add_executable(test_wd_atlas tests/test_wd_atlas.c
+        ${FW}/components/apps/tui/wardrive/wd_atlas.c ${FW}/components/apps/tui/wardrive/wd_core.c
+        ${FW}/components/apps/tui/ls_sigs.c ${FW}/components/apps/tui/ls_tail.c ${FW}/components/apps/tui/wardrive/wd_track.c ${FW}/components/apps/tui/wardrive/wd_replay.c)
+    target_include_directories(test_wd_atlas PRIVATE "${FW}/components/apps/tui")
+    target_link_libraries(test_wd_atlas PRIVATE m)
+    add_test(NAME test_wd_atlas COMMAND test_wd_atlas)
     add_executable(test_carto_budget tests/test_carto_budget.c)
     target_include_directories(test_carto_budget PRIVATE "${FW}/components/apps/tui")
     add_test(NAME test_carto_budget COMMAND test_carto_budget)
@@ -2777,13 +2856,13 @@ target_include_directories(test_map_marks_async PRIVATE ${FW}/components/apps/tu
 ls_add_test(test_rid ${FW}/components/apps/tui/ls_rid.c)
 target_include_directories(test_rid PRIVATE ${FW}/components/apps/tui)
 
-ls_add_test(test_sweep ${FW}/components/apps/tui/ls_sweep.c ${FW}/components/apps/tui/ls_rid.c)
+ls_add_test(test_sweep ${FW}/components/apps/tui/ls_sweep.c ${FW}/components/apps/tui/ls_rid.c ${FW}/components/apps/tui/ls_sigs.c ${FW}/components/apps/tui/ls_tail.c)
 target_include_directories(test_sweep PRIVATE ${LS_TUI_APP_INCLUDES})
 
 target_sources(lssim PRIVATE tools/lssim_sweep.c)
 target_sources(lssim PRIVATE tools/lssim_meters.c ${FW}/components/apps/tui/ls_meters.c
     ${FW}/components/apps/tui/ls_meters_rt.c ${FW}/components/apps/tui/screens/ext/scr_meters.c)
-ls_add_test(test_sweep_runtime ${FW}/main/ls_sweep_runtime.c ${FW}/components/apps/tui/ls_sweep.c ${FW}/components/apps/tui/ls_rid.c
+ls_add_test(test_sweep_runtime ${FW}/main/ls_sweep_runtime.c ${FW}/components/apps/tui/ls_sweep.c ${FW}/components/apps/tui/ls_rid.c ${FW}/components/apps/tui/ls_sigs.c ${FW}/components/apps/tui/ls_tail.c
     ${FW}/components/apps/tui/ls_seen.c)
 ls_add_test(test_sdio_rx_watchdog)
 ls_add_test(test_ble_link_observer ${FW}/main/ble_link_observer.c ${FW}/components/apps/tui/ls_rid.c)
@@ -2792,7 +2871,7 @@ target_include_directories(test_sweep_runtime PRIVATE ${LS_TUI_APP_INCLUDES})
 
 target_compile_definitions(test_sweep_runtime PRIVATE LS_SWEEP_DIR="${CMAKE_CURRENT_BINARY_DIR}/sweep-runtime")
 
-ls_add_test(test_sweep_nvs ${FW}/components/apps/tui/ls_sweep.c ${FW}/components/apps/tui/ls_rid.c)
+ls_add_test(test_sweep_nvs ${FW}/components/apps/tui/ls_sweep.c ${FW}/components/apps/tui/ls_rid.c ${FW}/components/apps/tui/ls_sigs.c ${FW}/components/apps/tui/ls_tail.c)
 target_include_directories(test_sweep_nvs BEFORE PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sweep_platform)
 target_include_directories(test_sweep_nvs PRIVATE ${LS_TUI_APP_INCLUDES})
 target_compile_definitions(test_sweep_nvs PRIVATE ESP_PLATFORM=1)
@@ -3164,6 +3243,9 @@ target_include_directories(test_detector_app PRIVATE ${FW}/app-sdk/apps/detector
 # app itself in lssim over a synthetic capture.
 ls_add_test(test_bughunt_tags ${FW}/app-sdk/apps/bughunt/bh_tags.c)
 target_include_directories(test_bughunt_tags PRIVATE ${FW}/app-sdk/apps/bughunt)
+# BUGHUNT's ids.bin reader: header, tables, the block search.
+ls_add_test(test_bughunt_ids ${FW}/app-sdk/apps/bughunt/bh_ids.c)
+target_include_directories(test_bughunt_ids PRIVATE ${FW}/app-sdk/apps/bughunt)
 # BLE EXPLORER (app-sdk/apps/ble_explorer): its GATT walk, decoders and JSON.
 ls_add_test(test_ble_explorer_app ${FW}/app-sdk/apps/ble_explorer/bx_core.c)
 target_include_directories(test_ble_explorer_app PRIVATE ${FW}/app-sdk/apps/ble_explorer ${FW}/app-sdk/include)

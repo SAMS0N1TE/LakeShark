@@ -3,6 +3,8 @@
 #include "media_playlist.h"
 #include "audio_player.h"
 #include "ls_audio_hw.h"
+#include "ls_mic_level.h"
+#include <stdlib.h>
 #include "audio/audio_out.h"
 #include <string.h>
 #include <math.h>
@@ -315,13 +317,45 @@ LS_CASE(microphone_feeds_meters_and_spectrum_at_its_own_rate){
     ls_music_format_t f;LS_CHECK(ls_music_format(&f));
     LS_EQ_INT(f.rate_hz,44100);LS_EQ_INT(f.channels,1);
     mic_feed(4);
-    unsigned peak=ls_music_peak(0);LS_CHECK(peak>7700 && peak<=8000);
+    /* +8 dB make-up after the codec: 8000 reads about 20095. */
+    unsigned peak=ls_music_peak(0);LS_CHECK(peak>19400 && peak<=20100);
     float db[BANDS];LS_EQ_INT(ls_music_spectrum(LO,HI,BANDS,db),BANDS);
     LS_EQ_INT(loudest(db,BANDS),8);
     ls_music_mic_stop();LS_EQ_INT(ls_music_mic_state(),LS_MIC_OFF);LS_CHECK(!ls_music_live());
     LS_EQ_INT(ls_music_peak(0),0);
     LS_EQ_INT(ls_music_spectrum(LO,HI,BANDS,db),0);
     reset();
+}
+/* A shout at the codec's full scale is held under -1 dBFS, not clipped. */
+LS_CASE(microphone_limiter_holds_loud_input_under_full_scale){
+    reset();LS_CHECK(ls_music_open());
+    mic_hz=1000;mic_amp=32767;
+    LS_CHECK(ls_music_mic_start(false));
+    LS_CHECK(mic_gain_db>=36.0f && mic_gain_db<42.0f);
+    mic_feed(6);
+    unsigned peak=ls_music_peak(0);
+    LS_CHECK(peak>=28000 && peak<=(unsigned)LS_MIC_CEILING+1);
+    ls_music_mic_stop();
+    reset();
+}
+LS_CASE(mic_level_is_linear_when_quiet_and_recovers_after_a_peak){
+    ls_mic_level_t m;ls_mic_level_reset(&m,44100);
+    static int16_t pcm[2*4410];
+    /* Quiet: exactly +8 dB, nothing limited. */
+    for(int i=0;i<4410;i++)pcm[2*i]=pcm[2*i+1]=(int16_t)(1000*sin(6.28318530718*440*i/44100));
+    int16_t want=(int16_t)lrintf(pcm[2*100]*LS_MIC_MAKEUP);
+    LS_EQ_INT((int)ls_mic_level_run(&m,pcm,4410,2),0);
+    LS_CHECK(abs(pcm[2*100]-want)<=1);LS_EQ_INT(pcm[2*100],pcm[2*100+1]);
+    /* One full-scale click: turned down to the ceiling, never past it. */
+    pcm[0]=pcm[1]=32767;pcm[2]=pcm[3]=-32768;
+    LS_CHECK(ls_mic_level_run(&m,pcm,2,2)>0);
+    LS_CHECK(pcm[0]<=(int)LS_MIC_CEILING+1 && pcm[2]>=-(int)LS_MIC_CEILING-1);
+    /* A second of quiet afterwards: the gain is back to +8 dB. */
+    for(int k=0;k<10;k++){
+        for(int i=0;i<4410;i++)pcm[2*i]=pcm[2*i+1]=1000;
+        ls_mic_level_run(&m,pcm,4410,2);
+    }
+    LS_CHECK(abs(pcm[2*4409]-2512)<=2);
 }
 LS_CASE(recording_writes_a_playable_mono_wav){
     reset();LS_CHECK(ls_music_open());mic_hz=1000;mic_amp=12000;

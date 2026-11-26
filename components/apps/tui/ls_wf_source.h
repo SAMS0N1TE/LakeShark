@@ -4,6 +4,7 @@
 #define LS_WF_SOURCE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -76,6 +77,15 @@ typedef enum {
 } ls_wf_idle_t;
 ls_wf_idle_t ls_wf_source_idle(void);
 const char *ls_wf_source_idle_reason(void);
+
+/* The `wf` console's two WFSRC lines into buf (snprintf rules; returns the
+   length it wanted). A NULL reason - no pump has set one, the waterfall has
+   not run this boot - reads "-": %s of a NULL faults on the P4's newlib. */
+size_t ls_wf_source_format_status(char *buf, size_t n, uint32_t stops, uint32_t row_ms,
+                                  uint32_t pumps, uint32_t asks, uint32_t granted,
+                                  const char *reason);
+/* The same with this boot's counters and idle reason. */
+size_t ls_wf_source_status(char *buf, size_t n);
 
 /* Name of the source actually feeding right now, which under AUTO is not
    necessarily the one that was selected. "none" when nothing is. */

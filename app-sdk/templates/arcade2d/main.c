@@ -145,5 +145,11 @@ static void leave(void) {
     if(s.audio) { lap_music_stop(&s.music); lap_mixer_clear(LAP_MIX_EFFECTS); }
     lap_canvas_free(&s.cv);
 }
+LAP_ICON_PX("....................", "....a..........a....", ".....a........a.....", "....aaaaaaaaaaaa....",
+            "...aaa.aaaaaa.aaa...", "..aaaaaaaaaaaaaaaa..", "..a.aaaaaaaaaaaa.a..", "..a.a..........a.a..",
+            ".....aa......aa.....", "....................", ".........bb.........", ".........bb.........",
+            "....................", ".........bb.........", "....................", "........7777........",
+            "......77777777......", "....888888888888....");
+
 LAP_APP(.id="@ID@",.name="@NAME@",.sub="@SUB@",.version="0.1",.author="@AUTHOR@",
         .color=LAP_CYAN,.enter=enter,.draw=draw,.key=key,.leave=leave);

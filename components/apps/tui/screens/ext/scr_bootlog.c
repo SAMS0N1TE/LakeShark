@@ -6,6 +6,7 @@
    grew. All of this screen's state is in PSRAM. */
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 #include "../../ls_drag_scroll.h"
 #include "../../desk/ls_desk_host.h"
 
@@ -277,18 +278,38 @@ static void draw(tui_surface *sf, tui_rect area)
 
     ls_btn_t btn[4];
     const int nb = buttons(btn);
+    const bool desk = ls_tui_compact();
     const int bar_h = ls_btn_raised_height(area, nb);
-    const tui_rect bar = tui_rect_make(area.x, area.y + area.h - bar_h, area.w, bar_h);
+    tui_rect bar = tui_rect_make(area.x, area.y + area.h - bar_h, area.w, bar_h);
     const tui_rect msg = tui_rect_make(area.x, bar.y - 1, area.w, 1);
     const tui_rect head = tui_rect_make(area.x, area.y, area.w, 1);
-    const tui_rect body = tui_rect_make(area.x, area.y + 1, area.w - 1, area.h - bar_h - 2);
-    const tui_rect strip = tui_rect_make(area.x + area.w - 1, body.y, 1, body.h);
+    tui_rect body = tui_rect_make(area.x, area.y + 1, area.w - 1, area.h - bar_h - 2);
+    tui_rect strip = tui_rect_make(area.x + area.w - 1, body.y, 1, body.h);
+    if (desk) {
+        /* A desk window: the keys on the toolbar, the two boots as tabs
+           over a page with the log in a white well, the word in the status bar. */
+        tui_fill(sf, area, ' ', TUI_DEFAULT_ATTR);
+        bar = tui_rect_make(area.x, area.y, area.w, 1);
+        static const char *const NAME[2] = {"This boot", "The boot before"};
+        int16_t tx[2], tw[2];
+        const tui_rect tabs = tui_rect_make(area.x, area.y + 1, area.w, area.h - 1);
+        const tui_rect page = ls_dui_tabs(sf, tabs, NAME, 2, S.tab, tx, tw);
+        S.tab_y = tabs.y + 1;
+        for (int t = 0; t < 2; t++) { S.tab_x[t] = tx[t]; S.tab_w[t] = tw[t]; }
+        char t[64];
+        const int k = snprintf(t, sizeof(t), "E %d  W %d  %d line%s", S.n_err, S.n_warn, S.n, S.n == 1 ? "" : "s");
+        tui_put_str(sf, tabs, tabs.x + tabs.w - k - 1, tabs.y + 1, t, S.n_err ? line_attr('E') : ls_ink(LS_INK_TEXT, LS_ATTR_DIM));
+        const tui_rect w = ls_dui_well(sf, tui_rect_make(page.x + 1, page.y, page.w - 2, page.h), NULL);
+        body = tui_rect_make(w.x, w.y, w.w - 1, w.h);
+        strip = tui_rect_make(w.x + w.w - 1, w.y, 1, w.h);
+        ls_tui_status_set(S.msg[0] ? S.msg : "Send: SAVE, then attach bootlog.txt to an issue", NULL);
+    }
     S.body = body;
     S.rows = body.h > 0 ? body.h : 1;
     ls_drag_scroll(&S.drag, body, 1, &S.top, S.n, S.rows);
     clamp();
 
-    draw_head(sf, head);
+    if (!desk) draw_head(sf, head);
     tui_fill(sf, body, ' ', TUI_DEFAULT_ATTR);
     if (!S.n) {
         if (S.tab)
@@ -316,6 +337,7 @@ static void draw(tui_surface *sf, tui_rect area)
     }
     draw_strip(sf, strip);
 
+    if (desk) { ls_btn_bar_raised_row(sf, bar, btn, nb, -1); return; }
     tui_fill(sf, msg, ' ', LS_ATTR_DIM);
     if (S.msg[0]) ls_safe_line(sf, msg, msg.y, S.msg, S.msg_attr);
     else ls_safe_line(sf, msg, msg.y, "Send: SAVE, attach bootlog.txt to a GitHub issue.",

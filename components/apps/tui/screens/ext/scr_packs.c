@@ -18,6 +18,7 @@
 #include "../../ls_drag_scroll.h"
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 #include "ls_location.h"
 #include "ls_textpack.h"
 #include "esp_attr.h"
@@ -357,6 +358,68 @@ static void tree(tui_surface *sf, tui_rect r, const ls_packs_status_t *st)
     }
 }
 
+/* The words status() puts on its second line, for the window's status bar. */
+static const char *say(const ls_packs_status_t *st, char *t, size_t n)
+{
+    if (st->state == LS_PACKS_FETCHING || (!s_say[0] && st->state != LS_PACKS_NO_WIFI && st->state != LS_PACKS_FAILED)) {
+        ls_packs_status_text(t, n);
+        return t;
+    }
+    if (st->state == LS_PACKS_NO_WIFI) return LS_TEXT(t_packs_nowifi, "No Wi-Fi: connect Wi-Fi in Settings or copy packs from the desktop");
+    if (st->state == LS_PACKS_FAILED) return LS_TEXT(t_packs_failed, "A download failed; it tries again in 10 min");
+    return s_say;
+}
+
+static void globe_in(tui_surface *sf, tui_rect r)
+{
+    s_globe = r;
+    if (ls_globe_load(OUTLINES) == LS_GLOBE_READY || ls_globe_has_shapes()) {
+        char code[8] = "";
+        if (s_cur < s_nvis && !s_vis[s_cur].head) code_of(&s_u[s_vis[s_cur].u], code);
+        ls_globe_draw(sf, s_globe, fill, NULL, code[0] ? code : NULL);
+    } else wire_globe(sf, s_globe);
+}
+
+/* A desk window: both rows of keys on the one toolbar (BACK is the title
+   bar's close and Esc), the globe on black glass, what is on the card in a
+   group box, the packs in a white well, the news in the status bar. */
+static void draw_desk(tui_surface *sf, tui_rect a, const ls_packs_status_t *st, const ls_btn_t *bar, const char *km, bool wide)
+{
+    tui_fill(sf, a, ' ', A(TUI_WHITE, TUI_BLACK));
+    const ls_btn_t mine[2] = {
+        { "INSTALL MY AREA", LS_TEXT(t_packs_around, "by GPS"), 'a', false, st->state == LS_PACKS_FETCHING, false },
+        { "RADIUS", km, 'k', false, false, false },
+    };
+    const int w1 = ls_btn_bar_width(bar, 4) + 2;
+    ls_btn_bar_raised_slot(sf, tui_rect_make(a.x, a.y, w1 < a.w ? w1 : a.w, 1), bar, 4, -1, LS_BTN_SLOT_SCREEN);
+    /* MY AREA and RADIUS on the toolbar when they fit, else in the card's group */
+    const bool quick_top = w1 + ls_btn_bar_width(mine, 2) + 2 <= a.w;
+    if (quick_top) ls_btn_bar_raised_slot(sf, tui_rect_make(a.x + w1, a.y, a.w - w1, 1), mine, 2, -1, LS_BTN_SLOT_QUICK);
+    const tui_rect body = tui_rect_make(a.x + 1, a.y + 1, a.w - 2, a.h - 1);
+    char t[80];
+    ls_tui_status_set(say(st, t, sizeof(t)), NULL);
+    tui_rect list = body;
+    if (wide) {
+        const int lw = body.w * 2 / 5;
+        const int gh = quick_top ? 4 : 5;
+        const tui_rect g = ls_dui_glass(sf, tui_rect_make(body.x, body.y, lw, body.h - gh));
+        globe_in(sf, g);
+        const tui_rect c = ls_dui_group(sf, tui_rect_make(body.x, body.y + body.h - gh, lw, gh), "On card");
+        status(sf, tui_rect_make(c.x + 1, c.y, c.w - 2, 2), st);
+        if (!quick_top) ls_btn_bar_raised_slot(sf, tui_rect_make(c.x + 1, c.y + 2, c.w - 2, 1), mine, 2, -1, LS_BTN_SLOT_QUICK);
+        list = tui_rect_make(body.x + lw + 1, body.y, body.w - lw - 1, body.h);
+    } else {
+        s_globe = tui_rect_make(body.x, body.y, 0, 0);
+        const int gh = quick_top ? 4 : 5;
+        const tui_rect c = ls_dui_group(sf, tui_rect_make(body.x, body.y, body.w, gh), "On card");
+        status(sf, tui_rect_make(c.x + 1, c.y, c.w - 2, 2), st);
+        if (!quick_top) ls_btn_bar_raised_slot(sf, tui_rect_make(c.x + 1, c.y + 2, c.w - 2, 1), mine, 2, -1, LS_BTN_SLOT_QUICK);
+        list = tui_rect_make(body.x, body.y + gh, body.w, body.h - gh);
+    }
+    const tui_rect in = ls_dui_well(sf, list, NULL);
+    tree(sf, tui_rect_make(in.x + 1, in.y, in.w - 2, in.h), st);
+}
+
 static void draw(tui_surface *sf, tui_rect a)
 {
     ls_packs_status_t st;
@@ -393,6 +456,7 @@ static void draw(tui_surface *sf, tui_rect a)
         { "REFRESH", NULL, 'r', false, false, false },
         { "BACK", NULL, 'b', false, false, false },
     };
+    if (compact) { draw_desk(sf, a, &st, bar, km, wide); return; }
     const int bh = compact ? 1 : ls_btn_raised_height(a, 5);
     ls_btn_bar_raised_slot(sf, tui_rect_make(a.x, a.y + a.h - bh, a.w, bh), bar, 5, -1, LS_BTN_SLOT_SCREEN);
     const tui_rect body = tui_rect_make(a.x, a.y, a.w, a.h - bh - 1);

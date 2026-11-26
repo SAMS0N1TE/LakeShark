@@ -126,6 +126,16 @@ class Elf:
             g=d[s[4]:s[4]+8] if s[1]==1 and s[5]==8 else b''
             if g[:4]==b'LGP1' and 1<=g[4]<=len(GROUPS): group=GROUPS[g[4]-1]
         self.manifest['group']=group
+        # LAP_ICON_PX: the colour icon as 18 rows of 20 ('0'-'9', 'a'-'f' a colour, '.' clear), read as the
+        # board reads it (ls_lap_icon_read); [] without one, or when a row holds anything else.
+        icon_px=[]
+        if '.lap_icon' in self.names:
+            s=self.sections[self.names.index('.lap_icon')]
+            g=d[s[4]:s[4]+4+18*21] if s[1]==1 and s[5]>=4+18*21 else b''
+            if g[:4]==b'LIC1':
+                rows=[g[4+y*21:4+y*21+20].decode('latin1').lower().replace(' ','.').replace(chr(0),'.') for y in range(18)]
+                if all(re.fullmatch(r'[0-9a-f.]{20}',r) for r in rows): icon_px=rows
+        self.manifest['icon_px']=icon_px
 
     def mapped(self,a,n,flags=0):
         return any(p[6]&flags==flags and p[2]<=a and a+n<=p[2]+p[5] for p in self.segments)

@@ -15,6 +15,7 @@
 #include "esp_attr.h"
 #include "esp_timer.h"
 #include "ls_gps.h"
+#include "../../../lakeshark/core/ls_tz.h"
 #include "../ls_tui_screen.h"
 #include "../ls_value.h"
 
@@ -74,12 +75,14 @@ static void clock_gadget(tui_surface *sf, tui_rect work, int *y)
     static const char *const DAY[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
     static const char *const MON[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
     const time_t now = time(NULL);
-    const struct tm *gp = gmtime(&now);                 /* UI task only */
-    char line[48];
+    struct tm local;
+    const struct tm *gp = ls_tz_local(now, &local) ? &local : NULL;   /* the zone SET picked */
+    char line[48], zone[12];
     if (gp && (dk_sys_time_source() > 0 || gp->tm_year > 120)) {
         snprintf(line, sizeof(line), "%02d:%02d:%02d", gp->tm_hour, gp->tm_min, gp->tm_sec);
         int x = in.x + dk_text(sf, in, in.x, in.y, line, ground(TUI_ATTR_FG(dk_attr(R_DESK_TEXT)) | TUI_BRIGHT));
-        dk_text(sf, in, x + 1, in.y, "UTC", tint(TUI_CYAN));
+        ls_tz_abbr(gp, zone, sizeof(zone));
+        dk_text(sf, in, x + 1, in.y, zone, tint(TUI_CYAN));
         snprintf(line, sizeof(line), "%s %d %s", DAY[gp->tm_wday % 7], gp->tm_mday, MON[gp->tm_mon % 12]);
         dk_text(sf, in, in.x + in.w - dk_text_len(line), in.y, line, dk_attr(R_DESK_TEXT));
     } else {

@@ -9,6 +9,7 @@
 #include "esp_timer.h"
 #include "esp_attr.h"
 #include "ls_box.h"
+#include "ls_deskui.h"
 
 /* Shared out of line: avoid duplicating corner clipping at every label. */
 void ls_safe_line(tui_surface *sf, tui_rect area, int row,
@@ -156,42 +157,78 @@ void ls_ink_set(const uint8_t *tab)
     if (tab) memcpy(ls_ink_tab, tab, sizeof(ls_ink_tab));
     s_ink_keep.n = 0;
 }
-void ls_ink_keep(tui_rect r)
+void ls_ink_mark(tui_rect r, int kind)
 {
-    if (!ls_ink_on || r.w < 1 || r.h < 1 || s_ink_keep.n >= LS_INK_KEEP_MAX) return;
+    if (!ls_ink_on || r.w < 1 || r.h < 1) return;
+    /* The last rect of this kind, right beside it or right under it with the
+       same span: one rect (a column of fields, a row of keys). */
+    for (int i = s_ink_keep.n - 1; i >= 0 && i >= s_ink_keep.n - 2; i--) {
+        if (s_ink_keep.kind[i] != kind) continue;
+        int16_t *q = &s_ink_keep.r[i].x;
+        if (q[0] == r.x && q[1] == r.y && q[2] == r.w && q[3] == r.h && i == s_ink_keep.n - 1) return;
+        if (kind == LS_INK_K_RING) continue;              /* two rings are two frames */
+        if (i < s_ink_keep.n - 1) {                       /* joining past a later rect must not put r under it */
+            const int16_t *l = &s_ink_keep.r[s_ink_keep.n - 1].x;
+            if (r.x < l[0] + l[2] && l[0] < r.x + r.w && r.y < l[1] + l[3] && l[1] < r.y + r.h) continue;
+        }
+        if (q[0] == r.x && q[2] == r.w && q[1] + q[3] == r.y) { q[3] = (int16_t)(q[3] + r.h); return; }
+        if (q[1] == r.y && q[3] == r.h && q[0] + q[2] == r.x) { q[2] = (int16_t)(q[2] + r.w); return; }
+    }
+    if (s_ink_keep.n >= LS_INK_KEEP_MAX) return;
     const int i = s_ink_keep.n++;
     s_ink_keep.r[i].x = (int16_t)r.x; s_ink_keep.r[i].y = (int16_t)r.y;
     s_ink_keep.r[i].w = (int16_t)r.w; s_ink_keep.r[i].h = (int16_t)r.h;
+    s_ink_keep.kind[i] = (uint8_t)kind;
 }
+void ls_ink_keep(tui_rect r) { ls_ink_mark(r, LS_INK_K_GLASS); }
 ls_ink_keep_t *ls_ink_kept(void) { return &s_ink_keep; }
+/* What is left of x0..x1, y0..y1 outside h, as up to four rects. */
+static void unkeep_piece(int x0, int y0, int x1, int y1, int k, tui_rect h)
+{
+    if (h.x >= x1 || h.y >= y1 || h.x + h.w <= x0 || h.y + h.h <= y0) {
+        ls_ink_mark(tui_rect_make(x0, y0, x1 - x0, y1 - y0), k);
+        return;
+    }
+    const int cx0 = h.x > x0 ? h.x : x0, cy0 = h.y > y0 ? h.y : y0;
+    const int cx1 = h.x + h.w < x1 ? h.x + h.w : x1, cy1 = h.y + h.h < y1 ? h.y + h.h : y1;
+    if (cy0 > y0) ls_ink_mark(tui_rect_make(x0, y0, x1 - x0, cy0 - y0), k);
+    if (y1 > cy1) ls_ink_mark(tui_rect_make(x0, cy1, x1 - x0, y1 - cy1), k);
+    if (cx0 > x0) ls_ink_mark(tui_rect_make(x0, cy0, cx0 - x0, cy1 - cy0), k);
+    if (x1 > cx1) ls_ink_mark(tui_rect_make(cx1, cy0, x1 - cx1, cy1 - cy0), k);
+}
 /* A popup over a scope is not scope: its rect is cut out of what the frame
-   keeps black, each kept rect it crosses becoming the strips around it. */
+   keeps black (and of every other ground it named), each rect it crosses
+   becoming the strips around it. In place: no second list on the stack. */
 void ls_ink_unkeep(tui_rect h)
 {
     if (!ls_ink_on || h.w < 1 || h.h < 1 || !s_ink_keep.n) return;
-    ls_ink_keep_t out;
-    out.n = 0;
-    for (int i = 0; i < s_ink_keep.n; i++) {
+    const int was = s_ink_keep.n;
+    int keep = 0;
+    int16_t cut[LS_INK_KEEP_MAX][5];     /* the rects crossed, cut later */
+    int ncut = 0;
+    for (int i = 0; i < was; i++) {
         const int x0 = s_ink_keep.r[i].x, y0 = s_ink_keep.r[i].y;
         const int x1 = x0 + s_ink_keep.r[i].w, y1 = y0 + s_ink_keep.r[i].h;
-        const int cx0 = h.x > x0 ? h.x : x0, cy0 = h.y > y0 ? h.y : y0;
-        const int cx1 = h.x + h.w < x1 ? h.x + h.w : x1, cy1 = h.y + h.h < y1 ? h.y + h.h : y1;
-        int16_t p[4][4];
-        int n = 0;
-        if (cx0 >= cx1 || cy0 >= cy1) {
-            p[n][0] = (int16_t)x0; p[n][1] = (int16_t)y0; p[n][2] = (int16_t)(x1 - x0); p[n][3] = (int16_t)(y1 - y0); n++;
-        } else {
-            if (cy0 > y0) { p[n][0] = (int16_t)x0; p[n][1] = (int16_t)y0; p[n][2] = (int16_t)(x1 - x0); p[n][3] = (int16_t)(cy0 - y0); n++; }
-            if (y1 > cy1) { p[n][0] = (int16_t)x0; p[n][1] = (int16_t)cy1; p[n][2] = (int16_t)(x1 - x0); p[n][3] = (int16_t)(y1 - cy1); n++; }
-            if (cx0 > x0) { p[n][0] = (int16_t)x0; p[n][1] = (int16_t)cy0; p[n][2] = (int16_t)(cx0 - x0); p[n][3] = (int16_t)(cy1 - cy0); n++; }
-            if (x1 > cx1) { p[n][0] = (int16_t)cx1; p[n][1] = (int16_t)cy0; p[n][2] = (int16_t)(x1 - cx1); p[n][3] = (int16_t)(cy1 - cy0); n++; }
+        if (h.x >= x1 || h.y >= y1 || h.x + h.w <= x0 || h.y + h.h <= y0) {
+            s_ink_keep.r[keep] = s_ink_keep.r[i];
+            s_ink_keep.kind[keep++] = s_ink_keep.kind[i];
+            continue;
         }
-        for (int k = 0; k < n && out.n < LS_INK_KEEP_MAX; k++) {
-            out.r[out.n].x = p[k][0]; out.r[out.n].y = p[k][1]; out.r[out.n].w = p[k][2]; out.r[out.n].h = p[k][3];
-            out.n++;
+        cut[ncut][0] = (int16_t)x0; cut[ncut][1] = (int16_t)y0; cut[ncut][2] = (int16_t)x1; cut[ncut][3] = (int16_t)y1;
+        cut[ncut++][4] = s_ink_keep.kind[i];
+    }
+    s_ink_keep.n = (uint8_t)keep;
+    for (int i = 0; i < ncut; i++) {
+        const int x0 = cut[i][0], y0 = cut[i][1], x1 = cut[i][2], y1 = cut[i][3], kind = cut[i][4];
+        if (kind != LS_INK_K_RING) { unkeep_piece(x0, y0, x1, y1, kind, h); continue; }
+        /* A ring cut by a popup is its four sides, each cut. */
+        unkeep_piece(x0, y0, x1, y0 + 1, LS_INK_K_FILL, h);
+        if (y1 - 1 > y0) unkeep_piece(x0, y1 - 1, x1, y1, LS_INK_K_FILL, h);
+        if (y1 - 1 > y0 + 1) {
+            unkeep_piece(x0, y0 + 1, x0 + 1, y1 - 1, LS_INK_K_FILL, h);
+            if (x1 - 1 > x0) unkeep_piece(x1 - 1, y0 + 1, x1, y1 - 1, LS_INK_K_FILL, h);
         }
     }
-    s_ink_keep = out;
 }
 
 #else
@@ -235,6 +272,9 @@ int ls_btn_bar_width(const ls_btn_t *btn, int n)
     return w;
 }
 
+/* Each key names its own bevel rect, unless a bar named the whole row. */
+static bool s_key1_mark = true;
+
 /* The cap colours: KEY (black on white) at rest, green when engaged, the
    selection blue when focused or just changed, and no cap at all when the
    control is unavailable - its word stays readable in the one grey that may
@@ -258,8 +298,13 @@ static int key1_paint(tui_surface *sf, tui_rect clip, int x, int y,
         accel = lit || b->on || cap_bg != TUI_BLACK ? ink : TUI_ATTR_FG(ls_ink(LS_INK_ACCEL, 0));
     }
     const uint8_t cap = TUI_ATTR(ink, cap_bg);
+    /* In a desk window the cap is a toolbar button: a light line at its
+       left end and a dark one at its right (the reverse while latched on,
+       pressed in), the brackets' cells, so it is just as wide. */
+    const bool desk = ls_dui_desk();
     int cx = x;
-    tui_put_char(sf, clip, cx++, y, '[', TUI_ATTR(b->dim ? LS_FAINT_FG : (TUI_WHITE | TUI_BRIGHT), TUI_BLACK));
+    if (desk) cx++;
+    else tui_put_char(sf, clip, cx++, y, '[', TUI_ATTR(b->dim ? LS_FAINT_FG : (TUI_WHITE | TUI_BRIGHT), TUI_BLACK));
     tui_put_char(sf, clip, cx++, y, ' ', cap);
     /* The shortcut, picked out in the label the way an accelerator was. */
     int hot = -1;
@@ -279,7 +324,12 @@ static int key1_paint(tui_surface *sf, tui_rect clip, int x, int y,
     /* Something new inside: the drip takes the cap's closing space. */
     tui_put_char(sf, clip, cx++, y, b->badge ? drip_glyph() : ' ',
                  b->badge ? TUI_ATTR(TUI_MAGENTA | TUI_BRIGHT, cap_bg) : cap);
-    tui_put_char(sf, clip, cx++, y, ']', TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
+    if (desk) {
+        cx++;
+        ls_box_put(sf, clip, x, y, LS_EDGE_L, ls_ink(b->on && !b->dim ? LS_INK_SHADOW : LS_INK_HILITE, 0));
+        ls_box_put(sf, clip, cx - 1, y, LS_EDGE_R, ls_ink(b->on && !b->dim ? LS_INK_HILITE : LS_INK_SHADOW, 0));
+        if (s_key1_mark) ls_ink_mark(tui_rect_make(x, y, cx - x, 1), LS_INK_K_FILL);
+    } else tui_put_char(sf, clip, cx++, y, ']', TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
     return cx - x;
 }
 
@@ -314,6 +364,9 @@ static void compact_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int 
     int fit = 0;
     while (fit < 2 && key1_rows(btn, n, bar.w, fit) > bar.h) fit++;
     int x = bar.x, y = bar.y;
+    /* One bevel rect for the bar's rows, not one a key. */
+    if (ls_dui_desk()) ls_ink_mark(tui_rect_make(bar.x, bar.y, bar.w, key1_rows(btn, n, bar.w, fit) < bar.h ? key1_rows(btn, n, bar.w, fit) : bar.h), LS_INK_K_FILL);
+    s_key1_mark = false;
     const int64_t now = esp_timer_get_time();
     for (int i = 0; i < n && s_btn_n[slot] < MAX_HITS; i++) {
         const int kw = key1_width_fit(&btn[i], fit);
@@ -333,6 +386,7 @@ static void compact_bar(tui_surface *sf, tui_rect bar, const ls_btn_t *btn, int 
         s_btn_n[slot]++;
         x += used + 1;
     }
+    s_key1_mark = true;
 }
 
 void ls_field1_draw(tui_surface *sf, tui_rect clip, int x, int y, int w,
@@ -340,8 +394,12 @@ void ls_field1_draw(tui_surface *sf, tui_rect clip, int x, int y, int w,
 {
     if (!sf || w < 3) return;
     const uint8_t well = TUI_ATTR(ink, TUI_BLACK);
-    tui_put_char(sf, clip, x, y, '[', TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
-    tui_put_char(sf, clip, x + w - 1, y, ']', TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    /* A desk window: a sunken edit on the contrast ground. */
+    if (ls_dui_desk()) ls_dui_field(sf, clip, x, y, w);
+    else {
+        tui_put_char(sf, clip, x, y, '[', TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
+        tui_put_char(sf, clip, x + w - 1, y, ']', TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    }
     const int room = w - 2;
     const char *t = text ? text : "";
     int n = (int)strlen(t);
@@ -359,6 +417,30 @@ void ls_dialog1_frame(tui_surface *sf, tui_rect r, const char *title, uint8_t hu
 {
     ls_ink_unkeep(r);                    /* over a scope a dialog is still the scheme's */
     if (!sf || r.w < 4 || r.h < 3) return;
+    if (ls_dui_desk()) {
+        /* A desk dialog: the face inside a raised frame, its title in the
+           active title bar's colours across the top row. */
+        tui_fill(sf, r, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        const uint8_t hi = ls_ink(LS_INK_HILITE, 0), lo = ls_ink(LS_INK_SHADOW, 0);
+        const int x1 = r.x + r.w - 1, y1 = r.y + r.h - 1;
+        for (int y = r.y + 1; y < y1; y++) {
+            ls_box_put(sf, r, r.x, y, LS_BOX_V, hi);
+            ls_box_put(sf, r, x1, y, LS_BOX_V, lo);
+        }
+        for (int x = r.x + 1; x < x1; x++) ls_box_put(sf, r, x, y1, LS_BOX_H, lo);
+        ls_box_put(sf, r, r.x, y1, LS_BOX_UR, hi);
+        ls_box_put(sf, r, x1, y1, LS_BOX_UL, lo);
+        const uint8_t bar = ls_ink(LS_INK_TITLE, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLUE));
+        tui_fill(sf, tui_rect_make(r.x, r.y, r.w, 1), ' ', bar);
+        if (title && title[0]) {
+            char t[64];
+            snprintf(t, sizeof(t), "%s", ls_tr(title));
+            if ((int)strlen(t) > r.w - 3) t[r.w - 3 > 0 ? r.w - 3 : 0] = 0;
+            tui_put_str(sf, r, r.x + 1, r.y, t, bar);
+        }
+        ls_ink_bevel(r);
+        return;
+    }
     const uint8_t hi = TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK);
     const uint8_t lo = TUI_ATTR(LS_FAINT_FG, TUI_BLACK);
     tui_fill(sf, r, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
@@ -403,6 +485,14 @@ void ls_slider1_draw(tui_surface *sf, tui_rect r, const char *label,
     char v[20];
     snprintf(v, sizeof(v), "[%s]", value ? value : "");
     const int vw = (int)strlen(v);
+    const bool desk = ls_dui_desk();
+    if (desk) {
+        /* A desk window: the value in a sunken field, the keys raised caps,
+           the travel a groove with its lit part heavy and a thumb. */
+        const tui_rect in = ls_dui_field(sf, r, x, y, vw);
+        tui_put_str(sf, tui_rect_intersect(r, in), in.x, y, value ? value : "",
+                    live ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
+    } else
     tui_put_str(sf, r, x, y, v, live ? TUI_ATTR(TUI_YELLOW | TUI_BRIGHT, TUI_BLACK) : LS_ATTR_DIM);
     if (value_rect) *value_rect = tui_rect_make(x, y, vw, 1);
     x += vw + 1;
@@ -412,6 +502,11 @@ void ls_slider1_draw(tui_surface *sf, tui_rect r, const char *label,
     const uint8_t kcap = live ? ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, TUI_WHITE)) : LS_ATTR_DIM;
     for (int k = 0; k < 2; k++) {
         const tui_rect key = k ? ku : kd;
+        if (desk) {
+            tui_put_char(sf, r, key.x + 1, y, k ? '+' : '-', kcap);
+            ls_dui_cap_ends(sf, r, key.x, y, 3, false);
+            continue;
+        }
         tui_put_char(sf, r, key.x, y, '[', TUI_ATTR(live ? (TUI_WHITE | TUI_BRIGHT) : LS_FAINT_FG, TUI_BLACK));
         tui_put_char(sf, r, key.x + 1, y, k ? '+' : '-', kcap);
         tui_put_char(sf, r, key.x + 2, y, ']', TUI_ATTR(LS_FAINT_FG, TUI_BLACK));
@@ -430,6 +525,17 @@ void ls_slider1_draw(tui_surface *sf, tui_rect r, const char *label,
     const int pos = (int)(frac * (float)(inner - 1) + 0.5f);
     const uint8_t track = TUI_ATTR(LS_FAINT_FG, TUI_BLACK);
     const uint8_t lit = TUI_ATTR(live ? (hue | TUI_BRIGHT) : LS_DIM_FG, TUI_BLACK);
+    if (desk) {
+        const uint8_t groove = ls_ink(LS_INK_RULE, track);
+        tui_put_char(sf, r, x, y, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        for (int i = 0; i < inner; i++) {
+            if (live && i == pos) tui_put_char(sf, r, x + 1 + i, y, ' ', ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_BLACK, TUI_WHITE)));
+            else ls_box_put(sf, r, x + 1 + i, y, i < pos ? 0x2501 : LS_BOX_H, i < pos ? lit : groove);
+        }
+        tui_put_char(sf, r, x + tw - 1, y, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+        if (bar && live) *bar = tui_rect_make(x + 1, y, inner, 1);
+        return;
+    }
     ls_box_put(sf, r, x, y, LS_BOX_VR, track);
     for (int i = 0; i < inner; i++) {
         if (live && i == pos) tui_put_char(sf, r, x + 1 + i, y, LS_TUI_BLOCK_FULL, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
@@ -1203,6 +1309,9 @@ __attribute__((noinline, optimize("Os"))) void ls_rframe(tui_surface *sf, tui_re
 
 void ls_panel_box(tui_surface *sf, tui_rect r, const char *title, uint8_t hue)
 {
+    /* In a desk window a panel is an etched group box, its caption in the
+       panel's own hue on the face. */
+    if (ls_dui_desk()) { ls_dui_group_ink(sf, r, title, TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK)); return; }
     tui_box(sf, r, NULL, TUI_ATTR(hue, TUI_BLACK));
     title = ls_tr(title);
     if (title && r.w > 6)
@@ -1252,6 +1361,28 @@ void ls_kv(tui_surface *sf, tui_rect r, int row, const char *label,
 {
     label = ls_tr(label);
     value = ls_tr(value);
+    if (ls_dui_desk() && label) {
+        /* A form's row: "Label:" in the label column, the value right
+           aligned in a sunken field at the right, all the panel's fields one
+           column wide so they line up (and the desk joins them). */
+        const int y = r.y + row, lx = r.x + 2;
+        const int ln = (int)strlen(label);
+        tui_put_str(sf, r, lx, y, label, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        tui_put_char(sf, r, lx + ln, y, ':', TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+        if (!value) return;
+        const int vw = (int)strlen(value);
+        const int right = r.x + r.w - 1;              /* the field's last cell sits inside the border */
+        int fw = (r.w - 4) * 2 / 5;
+        if (fw < vw + 3) fw = vw + 3;
+        int fx = right - fw;
+        if (fx < lx + ln + 2) { fx = lx + ln + 2; fw = right - fx; }
+        if (fw < 3) return;
+        const tui_rect in = ls_dui_field(sf, r, fx, y, fw);
+        int tx = in.x + in.w - 1 - vw;
+        if (tx < in.x) tx = in.x;
+        tui_put_str(sf, tui_rect_intersect(r, in), tx, y, value, vattr);
+        return;
+    }
     tui_put_str(sf, r, r.x + 2, r.y + row, label,
                 TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
     if (!value) return;
@@ -1263,6 +1394,27 @@ void ls_kv(tui_surface *sf, tui_rect r, int row, const char *label,
     int min_x = r.x + 2 + (int)strlen(label) + 1;
     if (x < min_x) x = min_x;
     tui_put_str(sf, r, x, r.y + row, value, vattr);
+}
+
+tui_rect ls_kv_col(tui_surface *sf, tui_rect r, int row, const char *label,
+                   const char *value, uint8_t vattr, int label_w)
+{
+    if (!ls_dui_desk() || !label) {
+        ls_kv(sf, r, row, label, value, vattr);
+        return tui_rect_make(0, 0, 0, 0);
+    }
+    label = ls_tr(label);
+    const int y = r.y + row, lx = r.x + 2, ln = (int)strlen(label);
+    const uint8_t cap = TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK);
+    tui_put_str(sf, r, lx, y, label, cap);
+    tui_put_char(sf, r, lx + ln, y, ':', cap);
+    int fx = lx + label_w;
+    if (fx < lx + ln + 2) fx = lx + ln + 2;
+    const int fw = r.x + r.w - 1 - fx;     /* to the cell inside the border */
+    if (fw < 3) return tui_rect_make(0, 0, 0, 0);
+    const tui_rect in = ls_dui_field(sf, r, fx, y, fw);
+    if (value) tui_put_str(sf, tui_rect_intersect(r, in), in.x, y, ls_tr(value), vattr);
+    return in;
 }
 
 void ls_meter_ascii(tui_surface *sf, tui_rect clip, int x, int y, int w,
@@ -1297,5 +1449,409 @@ void ls_bar(tui_surface *sf, tui_rect r, int row, int x, int w, float v)
         tui_put_char(sf, r, x + i, r.y + row,
                      i < lit ? LS_TUI_SHADE_FULL : LS_TUI_SHADE_25,
                      TUI_ATTR(c, TUI_BLACK));
+    }
+}
+
+/* ------------------------------------------------- the desk kit's parts -- */
+
+/* The primitives of ls_deskui.h's kit that the shared widgets above use
+   themselves (a field, a cap's ends, a group box, the well's frame, the
+   VFD's segments). Here, beside the widgets, so everything that draws a
+   widget has them; the rest of the kit is in ls_deskui.c. */
+
+bool ls_dui_desk(void) { return ls_tui_compact() && ls_ink_on; }
+
+#define KIT_TEXT  TUI_ATTR(TUI_WHITE, TUI_BLACK)
+static uint8_t kit_hi(void) { return ls_ink(LS_INK_HILITE, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK)); }
+static uint8_t kit_lo(void) { return ls_ink(LS_INK_SHADOW, TUI_ATTR(TUI_BLACK | TUI_BRIGHT, TUI_BLACK)); }
+
+void ls_dui_edge(tui_surface *sf, tui_rect r, bool sunken)
+{
+    if (!sf || r.w < 2 || r.h < 2) return;
+    const uint8_t tl = sunken ? kit_lo() : kit_hi(), br = sunken ? kit_hi() : kit_lo();
+    const int x1 = r.x + r.w - 1, y1 = r.y + r.h - 1;
+    for (int x = r.x + 1; x < x1; x++) {
+        ls_box_put(sf, r, x, r.y, LS_EDGE_B, tl);
+        ls_box_put(sf, r, x, y1, LS_EDGE_T, br);
+    }
+    for (int y = r.y + 1; y < y1; y++) {
+        ls_box_put(sf, r, r.x, y, LS_EDGE_R, tl);
+        ls_box_put(sf, r, x1, y, LS_EDGE_L, br);
+    }
+    ls_box_put(sf, r, r.x, r.y, LS_EDGE_DOT_BR, tl);
+    ls_box_put(sf, r, x1, r.y, LS_EDGE_DOT_BL, tl);
+    ls_box_put(sf, r, r.x, y1, LS_EDGE_DOT_TR, tl);
+    ls_box_put(sf, r, x1, y1, LS_EDGE_DOT_TL, br);
+    ls_ink_bevel(r);
+}
+
+tui_rect ls_dui_group_ink(tui_surface *sf, tui_rect r, const char *caption, uint8_t cap)
+{
+    if (!sf || r.w < 2 || r.h < 2) return tui_rect_make(r.x, r.y, 0, 0);
+    caption = ls_tr(caption);
+    if (cap == kit_hi() || cap == kit_lo()) cap = ls_ink(LS_INK_TEXT, KIT_TEXT);
+    /* Etched: the groove's dark side top and left, its light side bottom and right. */
+    const uint8_t lo = kit_lo(), hi = kit_hi();
+    const int x1 = r.x + r.w - 1, y1 = r.y + r.h - 1;
+    for (int x = r.x + 1; x < x1; x++) {
+        ls_box_put(sf, r, x, r.y, LS_BOX_H, lo);
+        ls_box_put(sf, r, x, y1, LS_BOX_H, hi);
+    }
+    for (int y = r.y + 1; y < y1; y++) {
+        ls_box_put(sf, r, r.x, y, LS_BOX_V, lo);
+        ls_box_put(sf, r, x1, y, LS_BOX_V, hi);
+    }
+    ls_box_put(sf, r, r.x, r.y, LS_BOX_DR, lo);
+    ls_box_put(sf, r, x1, r.y, LS_BOX_DL, lo);
+    ls_box_put(sf, r, r.x, y1, LS_BOX_UR, lo);
+    ls_box_put(sf, r, x1, y1, LS_BOX_UL, hi);
+    if (caption && caption[0] && r.w > 6) {
+        const tui_rect top = tui_rect_make(r.x + 1, r.y, r.w - 3, 1);
+        const int n = (int)strlen(caption);
+        tui_put_char(sf, top, r.x + 1, r.y, ' ', KIT_TEXT);
+        tui_put_str(sf, top, r.x + 2, r.y, caption, cap);
+        tui_put_char(sf, top, r.x + 2 + n, r.y, ' ', KIT_TEXT);
+    }
+    ls_ink_bevel(r);
+    return tui_rect_make(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+}
+
+tui_rect ls_dui_field(tui_surface *sf, tui_rect clip, int x, int y, int w)
+{
+    if (!sf || w < 3) return tui_rect_make(x, y, 0, 0);
+    const tui_rect in = tui_rect_make(x + 1, y, w - 2, 1);
+    tui_fill(sf, tui_rect_intersect(clip, in), ' ', KIT_TEXT);
+    if (!ls_dui_desk()) {
+        tui_put_char(sf, clip, x, y, '[', LS_ATTR_FAINT);
+        tui_put_char(sf, clip, x + w - 1, y, ']', TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+        return in;
+    }
+    ls_box_put(sf, clip, x, y, LS_EDGE_R, kit_lo());
+    ls_box_put(sf, clip, x + w - 1, y, LS_EDGE_L, kit_hi());
+    ls_ink_mark(tui_rect_make(x, y, w, 1), LS_INK_K_FILL);
+    ls_ink_well(in);
+    return in;
+}
+
+void ls_dui_cap_ends(tui_surface *sf, tui_rect clip, int x, int y, int w, bool down)
+{
+    if (!sf || w < 2) return;
+    ls_box_put(sf, clip, x, y, LS_EDGE_L, down ? kit_lo() : kit_hi());
+    ls_box_put(sf, clip, x + w - 1, y, LS_EDGE_R, down ? kit_hi() : kit_lo());
+    ls_ink_mark(tui_rect_make(x, y, w, 1), LS_INK_K_FILL);
+}
+
+/* Segments a b c d e f g as bits 0..6, the way a seven-segment part numbers them. */
+static uint8_t seg_mask(char c)
+{
+    static const uint8_t DIG[10] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F};
+    if (c >= '0' && c <= '9') return DIG[c - '0'];
+    if (c == '-') return 0x40;
+    if (c == ' ') return 0;
+    return 0xFF;                            /* not a figure */
+}
+bool ls_dui_seg_has(char c) { return seg_mask(c) != 0xFF; }
+
+/* Heavy box glyph for arms up, right, down, left (bits 3..0). */
+static int seg_glyph(unsigned arms)
+{
+    static const uint16_t G[16] = {
+        ' ',    0x2578, 0x257B, 0x2513, 0x257A, 0x2501, 0x250F, 0x2533,
+        0x2579, 0x251B, 0x2503, 0x252B, 0x2517, 0x253B, 0x2523, 0x254B,
+    };
+    return G[arms & 15];
+}
+
+/* The arms of cell (cx, cy) of a w x h figure whose lit segments are m. */
+static unsigned seg_arms(uint8_t m, int cx, int cy, int w, int h)
+{
+    const int mid = h / 2, last = h - 1, right = w - 1;
+    unsigned a = 0;                         /* U R D L = 8 4 2 1 */
+    const bool row_a = cy == 0 && (m & 0x01), row_g = cy == mid && (m & 0x40), row_d = cy == last && (m & 0x08);
+    if (row_a || row_g || row_d) {
+        if (cx > 0) a |= 1;
+        if (cx < right) a |= 4;
+    }
+    if (cx == 0 || cx == right) {
+        const uint8_t up = cx == 0 ? 0x20 : 0x02, dn = cx == 0 ? 0x10 : 0x04;   /* f/b above the middle, e/c below */
+        if ((m & up) && cy > 0 && cy <= mid) a |= 8;
+        if ((m & up) && cy < mid) a |= 2;
+        if ((m & dn) && cy > mid) a |= 8;
+        if ((m & dn) && cy >= mid && cy < last) a |= 2;
+    }
+    return a;
+}
+
+bool ls_dui_seg(tui_surface *sf, tui_rect clip, int x, int y, int w, int h, char c, uint8_t lit, uint8_t ghost)
+{
+    const uint8_t m = seg_mask(c);
+    if (m == 0xFF || !sf || w < 3 || (h != 3 && h != 5)) return false;
+    for (int cy = 0; cy < h; cy++)
+        for (int cx = 0; cx < w; cx++) {
+            const unsigned on = seg_arms(m, cx, cy, w, h);
+            if (on) { ls_box_put(sf, clip, x + cx, y + cy, seg_glyph(on), lit); continue; }
+            const unsigned off = ghost ? seg_arms(0x7F, cx, cy, w, h) : 0;
+            if (off) ls_box_put(sf, clip, x + cx, y + cy, seg_glyph(off), ghost);
+        }
+    return true;
+}
+
+/* Lit: the hue, bright. Ghost: the hue's quiet weight; in a desk window the
+   desk keeps it as dim as the palette allows (a palette whose quiet cyan is
+   nearly as bright as its lit one gets dark grey ghosts). */
+void ls_dui_vfd_inks(int flags, uint8_t *lit, uint8_t *ghost)
+{
+    const int k = flags & 3;
+    const uint8_t hue = k == LS_DUI_VFD_GREEN ? TUI_GREEN : k == LS_DUI_VFD_AMBER ? TUI_YELLOW : TUI_CYAN;
+    if (lit) *lit = TUI_ATTR(hue | TUI_BRIGHT, TUI_BLACK);
+    if (ghost) *ghost = TUI_ATTR(hue, TUI_BLACK);
+}
+
+/* The rest of the kit: sections, the VFD readout, the status bar. */
+
+static int kit_len(const char *s) { int n = 0; while (s && s[n]) n++; return n; }
+
+tui_rect ls_dui_group(tui_surface *sf, tui_rect r, const char *caption)
+{
+    if (!sf || r.w < 2 || r.h < 2) return tui_rect_make(r.x, r.y, 0, 0);
+    if (!ls_dui_desk()) {
+        ls_panel_box(sf, r, caption, TUI_CYAN);
+        return tui_rect_make(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+    }
+    /* The caption in the scheme's information hue; never one of the bevel's inks. */
+    uint8_t cap = ls_ink(LS_INK_ACCENT, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    if (cap == kit_hi() || cap == kit_lo()) cap = ls_ink(LS_INK_TEXT, KIT_TEXT);
+    return ls_dui_group_ink(sf, r, caption, cap);
+}
+
+static tui_rect kit_sunk(tui_surface *sf, tui_rect r, const char *caption, bool glass)
+{
+    if (!sf || r.w < 3 || r.h < 3) return tui_rect_make(r.x, r.y, 0, 0);
+    caption = ls_tr(caption);
+    const tui_rect in = tui_rect_make(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+    if (!ls_dui_desk()) {
+        tui_box(sf, r, NULL, glass ? TUI_ATTR(TUI_CYAN, TUI_BLACK) : LS_ATTR_FAINT);
+        tui_fill(sf, in, ' ', KIT_TEXT);
+    } else {
+        tui_fill(sf, in, ' ', KIT_TEXT);
+        ls_dui_edge(sf, r, true);
+        if (glass) ls_ink_keep(in);
+        else ls_ink_well(in);
+    }
+    if (caption && caption[0] && r.w > 6)
+        tui_put_str(sf, tui_rect_make(r.x + 1, r.y, r.w - 2, 1), r.x + 1, r.y, caption,
+                    ls_dui_desk() ? ls_ink(LS_INK_TEXT, KIT_TEXT) : TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK));
+    return in;
+}
+
+tui_rect ls_dui_well(tui_surface *sf, tui_rect r, const char *caption) { return kit_sunk(sf, r, caption, false); }
+tui_rect ls_dui_glass(tui_surface *sf, tui_rect r) { return kit_sunk(sf, r, NULL, true); }
+
+/* A tab strip on the body's top edge: ls_dui_tabs' Win98 tab control in one
+   row. Every tab is a raised cap on the face (light edge left, dark right);
+   the chosen one (btn.on) has its words strong and opens into the page (no
+   line under it), the others are quieter and stand on the base line, which
+   runs on under the rest of the row as the page's top edge. No selection
+   band: a tab is not a list row. Hits as ls_btn_bar_slot records them. Off
+   the desk it is ls_btn_bar_slot. */
+void ls_btn_tabs_slot(tui_surface *sf, tui_rect row, const ls_btn_t *btn, int n, int focus, int slot)
+{
+    if (!ls_tui_compact() || !ls_dui_desk()) { ls_btn_bar_slot(sf, row, btn, n, focus, slot); return; }
+    ls_btn_t tr_copy[TR_BTN_MAX];
+    btn = tr_buttons(btn, n, tr_copy);
+    if (slot < 0 || slot >= BTN_SLOTS) slot = 0;
+    hit_clear(s_btn_hit[slot], &s_btn_n[slot]);
+    if (!sf || n <= 0 || row.w < 6 || row.h < 1) return;
+    row.h = 1;
+    int fit = 0;
+    while (fit < 2 && key1_rows(btn, n, row.w - 2, fit) > 1) fit++;
+    const uint8_t hi = kit_hi(), lo = kit_lo();
+    const uint8_t strong = ls_ink(LS_INK_STRONG, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    const uint8_t text = ls_ink(LS_INK_TEXT, KIT_TEXT);
+    const uint8_t quiet = ls_ink(LS_INK_DIM, LS_ATTR_DIM);
+    tui_fill(sf, row, ' ', KIT_TEXT);
+    int x = row.x + 1;
+    ls_box_put(sf, row, row.x, row.y, LS_EDGE_B, hi);
+    for (int i = 0; i < n && s_btn_n[slot] < MAX_HITS; i++) {
+        char lab[32], val[24];
+        key1_text(&btn[i], fit, lab, sizeof(lab), val, sizeof(val));
+        const int lw = (int)strlen(lab), vw = (int)strlen(val);
+        const int w = 4 + lw + (vw ? vw + 1 : 0);
+        if (x + w > row.x + row.w) break;
+        const bool on = btn[i].on;
+        /* The chosen tab's words strong; the keyboard's tab in the scheme's
+           information hue; a tab that cannot be had greyed; the rest plain. */
+        const uint8_t ink = btn[i].dim ? quiet : on ? strong
+                          : i == focus ? ls_ink(LS_INK_ACCENT, TUI_ATTR(TUI_CYAN | TUI_BRIGHT, TUI_BLACK)) : text;
+        /* The chosen tab stands raised (light edge left); the others sit
+           behind it on the base line, a dark divider between them. */
+        if (on) ls_box_put(sf, row, x, row.y, LS_EDGE_L, hi);
+        else ls_box_put(sf, row, x, row.y, LS_EDGE_B, hi);
+        int cx = x + 1;
+        /* Its padding: open into the page when chosen, else the base line. */
+        if (on) tui_put_char(sf, row, cx, row.y, ' ', KIT_TEXT);
+        else ls_box_put(sf, row, cx, row.y, LS_EDGE_B, hi);
+        cx++;
+        int hot = -1;
+        if (btn[i].key && !btn[i].dim) {
+            const char k = (char)(btn[i].key >= 'a' && btn[i].key <= 'z' ? btn[i].key - 32 : btn[i].key);
+            for (int j = 0; lab[j]; j++) {
+                const char c = (char)(lab[j] >= 'a' && lab[j] <= 'z' ? lab[j] - 32 : lab[j]);
+                if (c == k) { hot = j; break; }
+            }
+        }
+        const uint8_t accel = ls_ink(LS_INK_ACCEL, TUI_ATTR(TUI_RED, TUI_BLACK));
+        for (int j = 0; lab[j]; j++) tui_put_char(sf, row, cx++, row.y, lab[j], j == hot && !on ? accel : ink);
+        if (vw) {
+            tui_put_char(sf, row, cx++, row.y, ' ', ink);
+            for (int j = 0; val[j]; j++) tui_put_char(sf, row, cx++, row.y, val[j], on ? strong : quiet);
+        }
+        if (on) tui_put_char(sf, row, cx, row.y, ' ', KIT_TEXT);
+        else ls_box_put(sf, row, cx, row.y, LS_EDGE_B, hi);
+        cx++;
+        ls_box_put(sf, row, cx, row.y, LS_EDGE_R, lo);
+        const int k = s_btn_n[slot];
+        s_btn_enabled[slot][k] = !btn[i].dim;
+        s_btn_keys[slot][k] = btn[i].key;
+        s_btn_hit[slot][k] = (hit_t){(int16_t)x, (int16_t)row.y, (int16_t)(x + w - 1), (int16_t)row.y};
+        s_btn_n[slot]++;
+        x += w;
+    }
+    /* The page's top edge runs on under the rest of the row. */
+    for (; x < row.x + row.w; x++) ls_box_put(sf, row, x, row.y, LS_EDGE_B, hi);
+    ls_ink_mark(row, LS_INK_K_FILL);
+}
+
+void ls_dui_status(tui_surface *sf, tui_rect row, const char *const *panes, const int *w, int n)
+{
+    if (!sf || row.w < 4 || n < 1) return;
+    row.h = 1;
+    const bool desk = ls_dui_desk();
+    const uint8_t text = ls_ink(LS_INK_TEXT, KIT_TEXT);
+    tui_fill(sf, row, ' ', KIT_TEXT);
+    int fixed = 0, flex = 0;
+    for (int i = 0; i < n; i++) { if (w && w[i] > 0) fixed += w[i]; else flex++; }
+    const int gaps = n - 1;
+    int rest = row.w - fixed - gaps;
+    if (rest < 0) rest = 0;
+    int x = row.x;
+    for (int i = 0; i < n && x < row.x + row.w; i++) {
+        int pw = w && w[i] > 0 ? w[i] : (flex ? rest / flex + (i == n - 1 ? rest % flex : 0) : 0);
+        if (x + pw > row.x + row.w) pw = row.x + row.w - x;
+        if (pw < 3) { x += pw + 1; continue; }
+        const tui_rect in = tui_rect_make(x + 1, row.y, pw - 2, 1);
+        if (desk) {
+            ls_box_put(sf, row, x, row.y, LS_EDGE_R, kit_lo());
+            ls_box_put(sf, row, x + pw - 1, row.y, LS_EDGE_L, kit_hi());
+        } else if (i) tui_put_char(sf, row, x - 1, row.y, '|', LS_ATTR_FAINT);
+        const char *t = panes ? ls_tr(panes[i]) : NULL;
+        if (t) tui_put_str(sf, tui_rect_intersect(row, in), in.x + 1, row.y, t, text);
+        x += pw + 1;
+    }
+    if (desk) ls_ink_mark(row, LS_INK_K_FILL);
+}
+
+/* A tab control: the tabs on r's first two rows, the page under them. */
+tui_rect ls_dui_tabs(tui_surface *sf, tui_rect r, const char *const *names, int n, int sel,
+                     int16_t *tx, int16_t *tw)
+{
+    for (int t = 0; t < n; t++) { if (tx) tx[t] = -1; if (tw) tw[t] = 0; }
+    if (!sf || r.w < 8 || r.h < 4 || n < 1) return tui_rect_make(r.x, r.y, 0, 0);
+    const uint8_t hi = kit_hi(), lo = kit_lo();
+    const uint8_t text = ls_ink(LS_INK_TEXT, KIT_TEXT), strong = ls_ink(LS_INK_STRONG, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
+    const int base = r.y + 2, x1 = r.x + r.w - 1, y1 = r.y + r.h - 1;
+    tui_fill(sf, tui_rect_make(r.x, r.y, r.w, 2), ' ', KIT_TEXT);
+    /* The page: raised, its top edge the tabs' base line. */
+    for (int x = r.x + 1; x < x1; x++) {
+        ls_box_put(sf, r, x, base, LS_BOX_H, hi);
+        ls_box_put(sf, r, x, y1, LS_BOX_H, lo);
+    }
+    for (int y = base + 1; y < y1; y++) {
+        ls_box_put(sf, r, r.x, y, LS_BOX_V, hi);
+        ls_box_put(sf, r, x1, y, LS_BOX_V, lo);
+    }
+    ls_box_put(sf, r, r.x, base, LS_BOX_DR, hi);
+    ls_box_put(sf, r, x1, base, LS_BOX_DL, lo);
+    ls_box_put(sf, r, r.x, y1, LS_BOX_UR, hi);
+    ls_box_put(sf, r, x1, y1, LS_BOX_UL, lo);
+    int x = r.x, right = r.x;
+    for (int t = 0; t < n; t++) {
+        const char *name = ls_tr(names[t] ? names[t] : "");
+        const int w = kit_len(name) + 4;
+        if (x + w > x1) break;
+        const bool on = t == sel;
+        const int top = on ? r.y : r.y + 1;
+        ls_box_put(sf, r, x, top, LS_BOX_ARC_DR, hi);
+        for (int i = 1; i < w - 1; i++) ls_box_put(sf, r, x + i, top, LS_BOX_H, hi);
+        ls_box_put(sf, r, x + w - 1, top, LS_BOX_ARC_DL, lo);
+        if (on) {
+            ls_box_put(sf, r, x, r.y + 1, LS_BOX_V, hi);
+            ls_box_put(sf, r, x + w - 1, r.y + 1, LS_BOX_V, lo);
+            /* the chosen tab opens into its page */
+            for (int i = 1; i < w - 1; i++) tui_put_char(sf, r, x + i, base, ' ', KIT_TEXT);
+            ls_box_put(sf, r, x, base, x == r.x ? LS_BOX_V : LS_BOX_UL, hi);
+            ls_box_put(sf, r, x + w - 1, base, LS_BOX_UR, hi);
+        }
+        tui_put_str(sf, r, x + 2, r.y + 1, name, on ? strong : text);
+        if (tx) tx[t] = (int16_t)x;
+        if (tw) tw[t] = (int16_t)w;
+        x += w;
+        right = x;
+    }
+    if (ls_dui_desk()) {
+        ls_ink_mark(tui_rect_make(r.x, r.y, right - r.x, 3), LS_INK_K_FILL);
+        ls_ink_bevel(tui_rect_make(r.x, base, r.w, r.h - 2));
+    }
+    return tui_rect_make(r.x + 1, base + 1, r.w - 2, r.h - 4);
+}
+
+/* ------------------------------------------------------------------ VFD -- */
+
+/* Columns the text takes as figures cw wide, one blank after each. */
+static int vfd_width(const char *s, int cw)
+{
+    int w = 0;
+    for (; *s; s++) w += (*s == '.' || *s == ':') ? 2 : ls_dui_seg_has(*s) ? cw + 1 : 1;
+    return w > 0 ? w - 1 : 0;
+}
+
+void ls_dui_vfd(tui_surface *sf, tui_rect r, const char *text, int flags)
+{
+    if (!sf || r.w < 1 || r.h < 1) return;
+    if (!text) text = "";
+    uint8_t lit, ghost;
+    ls_dui_vfd_inks(flags, &lit, &ghost);
+    tui_fill(sf, r, ' ', KIT_TEXT);
+    ls_ink_mark(r, LS_INK_K_VFD);
+    int h = !(flags & LS_DUI_VFD_SMALL) && r.h >= 5 ? 5 : !(flags & LS_DUI_VFD_SMALL) && r.h >= 3 ? 3 : 1;
+    int cw = h == 5 ? 4 : 3;
+    while (h > 1 && vfd_width(text, cw) + 2 > r.w) {
+        if (cw > 3) cw--;
+        else if (h == 5) h = 3;
+        else h = 1;
+    }
+    if (h == 1) {
+        const int n = kit_len(text);
+        const int x = flags & LS_DUI_VFD_LEFT ? r.x + 1 : r.x + (r.w - n) / 2;
+        tui_put_str(sf, r, x, r.y + (r.h - 1) / 2, text, lit);
+        return;
+    }
+    const int tw = vfd_width(text, cw);
+    int x = flags & LS_DUI_VFD_LEFT ? r.x + 1 : r.x + (r.w - tw) / 2;
+    const int y = r.y + (r.h - h) / 2;
+    for (const char *p = text; *p; p++) {
+        if (*p == '.') {
+            ls_box_put(sf, r, x, y + h - 1, LS_SHAPE_DOT, lit);
+            x += 2;
+        } else if (*p == ':') {
+            ls_box_put(sf, r, x, y + h / 2 - (h == 5 ? 1 : 0), LS_SHAPE_DOT, lit);
+            ls_box_put(sf, r, x, y + h - 1 - (h == 5 ? 1 : 0), LS_SHAPE_DOT, lit);
+            x += 2;
+        } else if (ls_dui_seg(sf, r, x, y, cw, h, *p, lit, ghost)) {
+            x += cw + 1;
+        } else {
+            tui_put_char(sf, r, x, y + h - 1, *p, lit);
+            x += 1;
+        }
     }
 }

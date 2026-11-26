@@ -14,6 +14,7 @@
 #include "../../ls_map.h"
 #include "../../ls_quick.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 
 #include "ls_gps.h"
 #include "ls_track.h"
@@ -368,12 +369,50 @@ static void draw(tui_surface *sf, tui_rect area)
         s_pulse++;
     }
 
+    const bool desk = ls_tui_compact();
     const int want = ls_quick_rows(QUICK, N_QUICK, area.w, ls_tui_is_wide());
-    const int ctl_h = (area.h > want + 12) ? want : 0;
+    const int ctl_h = desk ? 0 : (area.h > want + 12) ? want : 0;
     tui_rect body = tui_rect_make(area.x, area.y, area.w, area.h - ctl_h);
     s_quick_rect = ctl_h
         ? tui_rect_make(area.x, area.y + body.h, area.w, ctl_h)
         : tui_rect_make(0, -1, 0, 0);
+    if (desk) {
+        /* A desk window: the receiver keys, VIEW and OPTIONS on one toolbar;
+           the receiver and the track log in group boxes; the state line in
+           the window's status bar. */
+        tui_fill(sf, area, ' ', A(TUI_WHITE, TUI_BLACK));
+        const ls_btn_t vb = {"VIEW", s_sky_mode ? "SKY" : "DETAILS", 'v', false, false, false};
+        const ls_btn_t ob = {"OPTIONS", "GPS", 'o', false, false, false};
+        const int wv = ls_key1_width(&vb), wo = ls_key1_width(&ob);
+        const int qx = area.w - wv - wo - 2;
+        s_quick_rect = tui_rect_make(area.x, area.y, qx > 10 ? qx : area.w, 1);
+        ls_quick_draw_posture(sf, s_quick_rect, true, QUICK, N_QUICK);
+        if (qx > 10) {
+            s_view_hit = tui_rect_make(area.x + qx, area.y, wv, 1);
+            ls_key1_draw(sf, area, s_view_hit.x, area.y, &vb, false);
+            s_options_hit = tui_rect_make(area.x + qx + wv + 1, area.y, wo, 1);
+            ls_key1_draw(sf, area, s_options_hit.x, area.y, &ob, false);
+        } else s_view_hit = s_options_hit = tui_rect_make(0, -1, 0, 0);
+        body = tui_rect_make(area.x + 1, area.y + 1, area.w - 2, area.h - 1);
+        char state[60], health[80];
+        state_line(state, sizeof(state), &g);
+        ls_tui_status_set(state, NULL);
+        const int half = body.w / 2;
+        const tui_rect rg = ls_dui_group(sf, tui_rect_make(body.x, body.y, half - 1, 4), "Receiver");
+        tui_put_str(sf, rg, rg.x + 1, rg.y, state, A(state_hue(&g), TUI_BLACK));
+        const char *dx = diagnosis(&g);
+        tui_put_str(sf, rg, rg.x + 1, rg.y + 1, dx ? dx : "position good", LS_ATTR_DIM);
+        const tui_rect tg = ls_dui_group(sf, tui_rect_make(body.x + half, body.y, body.w - half, 4), "Track log");
+        const esp_err_t te = ls_track_rec_error();
+        if (te != ESP_OK)
+            LS_SNPRINTF(t_scr_gps_track_failed_s_resume, health, sizeof(health), "TRACK FAILED: %s / resume %s", te == ESP_ERR_NOT_FOUND ? "no SD card" : esp_err_to_name(te), ls_track_rec_requested() ? "ON" : "OFF");
+        else LS_SNPRINTF(t_scr_gps_track_s_d_points, health, sizeof(health), "TRACK %s / %d points", ls_track_rec_running() ? (ls_gps_fix_current(&g, esp_timer_get_time()) ? "RECORDING" : "WAIT FIX") : "STOPPED", ls_track_points());
+        tui_put_str(sf, tg, tg.x + 1, tg.y, health, A(ls_track_rec_running() ? TUI_GREEN : TUI_YELLOW, TUI_BLACK));
+        tui_put_str(sf, tg, tg.x + 1, tg.y + 1, s_busy ? "Working on SD card" : s_result[0] ? s_result : "", LS_ATTR_DIM);
+        body.y += 4;
+        body.h -= 4;
+        if (s_sky_mode) { draw_skyview(sf, body, &g); return; }
+    } else {
     const bool framed=ls_tui_is_wide() && body.w>=85 && body.h>=22;
     tui_rect summary=body;
     if(framed) {
@@ -425,6 +464,7 @@ static void draw(tui_surface *sf, tui_rect area)
         if(ctl_h)ls_quick_draw_posture(sf,s_quick_rect,ls_tui_is_wide(),QUICK,N_QUICK);
         return;
     }
+    }
 
     /* State, as the biggest thing on the screen. */
     {
@@ -434,6 +474,10 @@ static void draw(tui_surface *sf, tui_rect area)
         else
             snprintf(w, sizeof(w), "%s", state_word(&g));
         tui_rect band = tui_rect_make(body.x, body.y, body.w, 3);
+        if (desk) {    /* a desk window: the state lit on a VFD */
+            const uint8_t h = state_hue(&g) & 7;
+            ls_dui_vfd(sf, band, w, LS_DUI_VFD_SMALL | (h == TUI_GREEN ? LS_DUI_VFD_GREEN : h == TUI_CYAN ? LS_DUI_VFD_CYAN : LS_DUI_VFD_AMBER));
+        } else {
         tui_fill(sf, band, LS_TUI_SHADE_25, A(state_hue(&g), TUI_BLACK));
         tui_put_str(sf, body, body.x + (body.w - (int)strlen(w)) / 2,
                     body.y + 1, w, A(state_hue(&g) | TUI_BRIGHT, TUI_BLACK));
@@ -441,6 +485,7 @@ static void draw(tui_surface *sf, tui_rect area)
             tui_put_char(sf, body, body.x + body.w - 3, body.y + 1,
                          (char)(LS_TUI_SHADE_25 + (s_pulse & 3)),
                          A(state_hue(&g) | TUI_BRIGHT, TUI_BLACK));
+        }
     }
 
     tui_rect rest = tui_rect_make(body.x, body.y + 4, body.w, body.h - 4);

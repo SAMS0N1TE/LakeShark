@@ -39,6 +39,8 @@ extern const ls_tui_screen_t ls_scr_meters;
 #include "ls_tui_idle.h"
 #include "ls_tui_touch.h"
 #include "ls_tui_screen.h"
+#include "ls_gauge.h"
+#include "ls_gauge_soc.h"
 #include "ls_lock.h"
 #include "ls_vt.h"
 #include "ls_box.h"
@@ -250,6 +252,8 @@ extern const ls_tui_screen_t ls_scr_tmach;
 extern const ls_tui_screen_t ls_scr_freqs;
 extern const ls_tui_screen_t ls_scr_wardrive;
 bool ls_wardrive_running(void);
+extern const ls_tui_screen_t ls_scr_party;
+bool ls_party_running(void);
 #include "ls_freqs.h"
 /* The two design previews exist only in the simulator, so they carry a
    simulator doc rather than one of the real ones. */
@@ -275,17 +279,17 @@ static const ls_app_t APPS[] = {
       LS_APP_EXTRA, &ls_scr_diag, NULL, &ls_doc_diag },
     { "terminal", "TERMINAL", "console", LS_ICON_TERMINAL, TUI_GREEN,
       LS_APP_EXTRA, &ls_scr_terminal, NULL, &ls_doc_terminal },
-    { "bootlog", "BOOT LOG", "startup log", LS_ICON_JOURNAL, TUI_YELLOW,
+    { "bootlog", "BOOT LOG", "startup log", LS_ICON_BOOTLOG, TUI_YELLOW,
       LS_APP_EXTRA, &ls_scr_bootlog, NULL, &ls_doc_bootlog },
-    { "store", "STORE", "apps", LS_ICON_UPDATE, TUI_CYAN,
+    { "store", "STORE", "apps", LS_ICON_STORE, TUI_CYAN,
       LS_APP_EXTRA, &ls_scr_store, NULL, &ls_doc_store },
-    { "locker", "LOCKER", "files", LS_ICON_UPDATE, TUI_CYAN,
+    { "locker", "LOCKER", "files", LS_ICON_LOCKER, TUI_CYAN,
       LS_APP_EXTRA, &ls_scr_locker, NULL, &ls_doc_locker },
-    { "chat", "CHAT", "talk", LS_ICON_WIRELESS, TUI_MAGENTA,
+    { "chat", "CHAT", "talk", LS_ICON_CHAT, TUI_MAGENTA,
       LS_APP_EXTRA, &ls_scr_chat, NULL, &ls_doc_chat },
     { "update", "UPDATE", "firmware", LS_ICON_UPDATE, TUI_CYAN,
       LS_APP_EXTRA, &ls_scr_update, NULL, &ls_doc_update },
-    { "packs", "PACKS", "frequency data", LS_ICON_TILES, TUI_CYAN,
+    { "packs", "PACKS", "frequency data", LS_ICON_PACKS, TUI_CYAN,
       LS_APP_EXTRA, &ls_scr_packs, NULL, &ls_doc_packs },
     { "set",  "SET",  "display",   LS_ICON_GEAR,  TUI_BLUE,
       LS_APP_EXTRA, &ls_scr_settings, NULL, &ls_doc_settings },
@@ -320,16 +324,18 @@ static const ls_app_t APPS[] = {
 
     { "drones", "DRONES", "BLE Remote ID", LS_ICON_DRONE, TUI_CYAN,
       LS_APP_EXTRA, &ls_scr_drones, NULL, &ls_doc_drones },
-    { "wardrive", "WARDRIVE", "wifi bt cell gps", LS_ICON_WIRELESS, TUI_YELLOW,
-      LS_APP_EXTRA, &ls_scr_wardrive, ls_wardrive_running, &ls_doc_wardrive },
-    { "meters", "METERS", "utility meters", LS_ICON_SUBGHZ, TUI_YELLOW,
+    { "wardrive", "WARDRIVE", "wifi bt cell gps", LS_ICON_WARDRIVE, TUI_YELLOW,
+      LS_APP_EXTRA, &ls_scr_wardrive, ls_wardrive_running, &ls_doc_wardrive, NULL, 0, 88, 0 },   /* its toolbar spelled out */
+    { "party", "PARTY", "sync finds + map", LS_ICON_PARTY, TUI_MAGENTA,
+      LS_APP_EXTRA, &ls_scr_party, ls_party_running, &ls_doc_party },
+    { "meters", "METERS", "utility meters", LS_ICON_METER, TUI_YELLOW,
       LS_APP_EXTRA, &ls_scr_meters, NULL, &ls_doc_meters },
     { "sweep", "SWEEP", "passive nearby signals", LS_ICON_SWEEP, TUI_GREEN,
       LS_APP_EXTRA, &ls_scr_sweep, NULL, &ls_doc_sweep },
     { "digi", "DIGI", "FT8 FT4 WSPR", LS_ICON_DIGI, TUI_GREEN,
       LS_APP_EXTRA, &ls_scr_digi, NULL, &ls_doc_digi },
     { "tmach", "TIME MACHINE", "rewind the air", LS_ICON_TMACH, TUI_MAGENTA,
-      LS_APP_EXTRA, &ls_scr_tmach, NULL, &ls_doc_tmach },
+      LS_APP_EXTRA, &ls_scr_tmach, NULL, &ls_doc_tmach, NULL, 0, 84, 0 },   /* its toolbar spelled out */
 #if defined(CONFIG_LS_RX_HEAD) && CONFIG_LS_RX_HEAD
     { "radio", "RADIO", "receiver + decoders", LS_ICON_WAVE, TUI_GREEN,
       LS_APP_EXTRA, &ls_scr_radio, NULL, &ls_doc_radio },
@@ -1169,7 +1175,13 @@ static bool s_perf_on, s_rows_audit;
 static int64_t perf_now_us(void)
 {
     struct timespec ts;
+#ifdef TIME_UTC
     timespec_get(&ts, TIME_UTC);
+#else
+    /* MinGW's C library has no C11 timespec_get: without this lssim did not
+       build on Windows, and every SDK test that runs an app in it failed. */
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
     return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 static void perf_label(const char *name)
@@ -2015,6 +2027,8 @@ int main(int argc, char **argv)
     { void lssim_rfs_seed(void); lssim_rfs_seed(); }
     /* WARDRIVE: five minutes of a drive before the first frame (LSSIM_WD=idle: none). */
     if (!strcmp(want, "wardrive")) { void lssim_wardrive_seed(void); lssim_wardrive_seed(); }
+    /* PARTY: six minutes of a party with three others (LSSIM_PARTY=new|lobby: none). */
+    if (!strcmp(want, "party")) { void lssim_party_seed(void); lssim_party_seed(); }
     /* LSSIM_LANG=uk draws the interface in Ukrainian, as Settings > Device
        > Language does on the board. */
     if (getenv("LSSIM_LANG") && !strcmp(getenv("LSSIM_LANG"), "uk")) ls_i18n_load(LS_LANG_UK);
@@ -2305,6 +2319,21 @@ int main(int argc, char **argv)
     }
     lssim_cartocore_pump();
     ls_tui_screen_show(ls_tui_screen_index_of(APPS[idx].screen));
+    /* LSSIM_BATT=<pct>[c|u|f]: a battery gauge, discharging, or charging,
+       on USB idle, or on USB full. LSSIM_CLOCK=<text>: the status clock. */
+    if (getenv("LSSIM_BATT")) {
+        extern void ls_shim_gauge(const ls_gauge_t *g);
+        const char *b = getenv("LSSIM_BATT");
+        const char st = b[strspn(b, "0123456789")];
+        ls_gauge_t g = { .present = true, .percent = (uint8_t)atoi(b), .millivolts = 3900 };
+        g.charging = st == 'c';
+        g.full = st == 'f';
+        g.plugged = st == 'c' || st == 'u' || st == 'f';
+        g.state = g.full ? LS_BATT_FULL : g.charging ? LS_BATT_CHARGING : g.plugged ? LS_BATT_PLUGGED : LS_BATT_DISCHARGING;
+        g.milliamps = g.charging ? 450 : g.plugged ? 0 : -380;
+        ls_shim_gauge(&g);
+    }
+    if (getenv("LSSIM_CLOCK")) ls_tui_status_set_clock(getenv("LSSIM_CLOCK"));
     /* lssim lock: the lock page with a PIN of 1234 set through its own pad;
        lock0: with no PIN; lockset: setting a new PIN. */
     if (!strncmp(want, "lock", 4) && strcmp(want, "locker")) {
@@ -2362,16 +2391,20 @@ int main(int argc, char **argv)
             ls_desk_set_theme(!strcmp(t, "classic") ? LS_DESK_THEME_CLASSIC95 : atoi(t));
         }
         /* LSSIM_DESK_OPEN=id: that app in a window; LSSIM_DESK_MAX=1 maximizes it,
-           LSSIM_DESK_SIZE=WxH sizes it instead. */
+           LSSIM_DESK_SIZE=WxH sizes it instead (an app window: the smallest preset
+           at least that big), LSSIM_DESK_PRESET=0..3 Small, Medium, Large, Maximized. */
         if (getenv("LSSIM_DESK_OPEN")) {
             const int id = ls_desk_open_app(getenv("LSSIM_DESK_OPEN"));
             int ww = 0, wh = 0;
-            frame(8);                                   /* the opening zoom ends first (with -A) */
+            ls_shim_time_advance(1000000);              /* the opening zoom has ended by the shot */
+            frame(8);
             if (id >= 0 && getenv("LSSIM_DESK_MAX")) ls_desk_maximize(id);
+            else if (id >= 0 && getenv("LSSIM_DESK_PRESET")) ls_desk_set_size(id, atoi(getenv("LSSIM_DESK_PRESET")));
             else if (id >= 0 && getenv("LSSIM_DESK_SIZE") && sscanf(getenv("LSSIM_DESK_SIZE"), "%dx%d", &ww, &wh) == 2) {
                 ls_desk_resize(id, ww, wh);
                 ls_desk_move(id, 2, 1);
             }
+            ls_shim_time_advance(1000000);              /* and so has the zoom of a size change */
             frame(1);
             ls_desk_win_info_t wi;
             for (int z = 0; z < ls_desk_window_count(); z++)

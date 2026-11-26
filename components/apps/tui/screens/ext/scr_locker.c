@@ -5,6 +5,7 @@
    from the card through a folder picker; downloads land in /sdcard/inbox. Network: core/ls_hub.h. */
 #include "../../ls_tui_screen.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 #include "../../ls_drag_scroll.h"
 #include "../../ls_picker.h"
 #include "../../ls_glyph.h"
@@ -276,6 +277,11 @@ static int draw_code(tui_surface *sf, tui_rect r, const char *code, uint32_t lef
     tui_put_str(sf, in, in.x + 19, in.y, LOCKER_WEB, ls_ink(LS_INK_ACCENT, A(TUI_CYAN | TUI_BRIGHT)));
     tui_put_str(sf, in, in.x, in.y + 1, "and type this code:", LS_ATTR_DIM);
     const int dw = 7, w = 6 * dw + 1, x0 = in.x + (in.w - w) / 2;
+    if (ls_tui_compact()) {     /* a desk window: the code on a VFD */
+        char v[8];
+        snprintf(v, sizeof(v), "%.3s %.3s", code, strlen(code) > 3 ? code + 3 : "");
+        ls_dui_vfd(sf, tui_rect_make(in.x, in.y + 2, in.w, 7), v, LS_DUI_VFD_AMBER);
+    } else
     for (int i = 0; i < 6 && code[i]; i++)
         big_digit(sf, in, x0 + i * dw + (i >= 3 ? 2 : 0), in.y + 3, code[i], ls_ink(LS_INK_STRONG, A(TUI_YELLOW | TUI_BRIGHT)));
     /* a fuse that burns down with the real seconds left */
@@ -365,7 +371,7 @@ static void draw_list(tui_surface *sf, tui_rect r)
                     have ? ls_ink_hue(A(TUI_GREEN)) : f.from_web ? ls_ink_hue(A(TUI_YELLOW | TUI_BRIGHT)) : LS_ATTR_FAINT);
     }
     char code[8];
-    if (r.h - n * 2 >= 7 && !ls_locker_code(code, NULL)) {   /* room under a short list: how the other end works */
+    if (r.h - n * 2 >= 7 && !ls_locker_code(code, NULL) && !(ls_tui_compact() && r.w >= 90)) {   /* room under a short list: how the other end works */
         const int y = r.y + r.h - 4;
         tui_hline(sf, r, r.x + 2, y - 1, r.w - 4, '.', LS_ATTR_FAINT);
         tui_put_str(sf, r, r.x + 2, y, "On a computer: " LOCKER_WEB, A(TUI_CYAN));
@@ -378,6 +384,76 @@ static void draw_list(tui_surface *sf, tui_rect r)
             tui_put_char(sf, r, r.x + r.w - 1, r.y + y, y >= y0 && y <= y1 ? '|' : ':',
                          y >= y0 && y <= y1 ? A(TUI_CYAN | TUI_BRIGHT) : LS_ATTR_FAINT);
     }
+}
+
+/* The hub's word on the last job; `frac` gets the share done while bytes move, else -1. */
+static const char *message(const ls_hub_status_t *st, int64_t now, char *t, size_t n, uint8_t *at, float *frac)
+{
+    ls_locker_file_t f;
+    *frac = -1.0f;
+    if (picked(&f) && L.del_until > now && !strcmp(L.del_name, f.name)) {
+        *at = ls_ink_hue(A(TUI_YELLOW | TUI_BRIGHT));
+        return ls_tui_compact() ? "Click DELETE again: gone from the locker for good." : "Tap DELETE again: gone from the locker for good.";
+    }
+    if (is_lock_op(st->what) && st->state == LS_HUB_BUSY && st->total) {
+        char a[16], b[16];
+        size_str(a, sizeof(a), st->done);
+        size_str(b, sizeof(b), st->total);
+        snprintf(t, n, "%s %s / %s", !strcmp(st->what, "upload") ? "up" : "down", a, b);
+        *at = ls_ink_hue(A(TUI_GREEN | TUI_BRIGHT));
+        *frac = (float)st->done / (float)st->total;
+        return t;
+    }
+    if (is_lock_op(st->what) && st->state != LS_HUB_IDLE && !(st->state == LS_HUB_OK && !strcmp(st->what, "list"))) {
+        snprintf(t, n, "%s: %s", st->what, st->text);
+        *at = ls_ink_hue(A(st->state == LS_HUB_FAIL ? TUI_YELLOW | TUI_BRIGHT : st->state == LS_HUB_OK ? TUI_GREEN | TUI_BRIGHT : TUI_CYAN));
+        return t;
+    }
+    *at = A(TUI_CYAN);
+    return "Files stay 14 days. Downloads go to /sdcard/inbox.";
+}
+
+/* A desk window: the keys are the one toolbar; the locker's doors and
+   numbers and the link code in group boxes; the files in a white well; the
+   hub's word in the window's status bar, a meter under the list while
+   bytes move. */
+static void draw_desk(tui_surface *sf, tui_rect area, const ls_hub_status_t *st, int64_t now, const ls_btn_t *btn, int nb,
+                      uint32_t dev, uint32_t web, int ndev, int nweb)
+{
+    tui_fill(sf, area, ' ', TUI_DEFAULT_ATTR);
+    ls_btn_bar_raised_row(sf, tui_rect_make(area.x, area.y, area.w, 1), btn, nb, -1);
+    tui_rect body = tui_rect_make(area.x + 1, area.y + 1, area.w - 2, area.h - 1);
+    char code[8], t[96];
+    uint32_t left = 0;
+    const bool linking = ls_locker_code(code, &left);
+    const bool wide = body.w >= 96;
+    if (body.h >= 22 || linking) {
+        const int hh = linking ? 12 : 10;
+        const int hw = wide || !linking ? (wide ? body.w / 2 : body.w) : 0;
+        if (hw && body.h >= 22) {
+            const tui_rect g = ls_dui_group(sf, tui_rect_make(body.x, body.y, hw, hh), "Locker");
+            draw_head(sf, tui_rect_make(g.x + 1, g.y, g.w - 1, g.h), dev, web, ndev, nweb);
+        }
+        if (linking) draw_code(sf, tui_rect_make(hw && body.h >= 22 ? body.x + hw + 1 : body.x, body.y,
+                                                 hw && body.h >= 22 ? body.w - hw - 1 : body.w, 12), code, left);
+        else if (wide && body.h >= 22) {      /* how the other end works */
+            const tui_rect g = ls_dui_group(sf, tui_rect_make(body.x + hw + 1, body.y, body.w - hw - 1, hh), "On a computer");
+            tui_put_str(sf, g, g.x + 1, g.y + 1, LOCKER_WEB, ls_ink(LS_INK_ACCENT, A(TUI_CYAN | TUI_BRIGHT)));
+            tui_put_str(sf, g, g.x + 1, g.y + 3, "LINK here, type the code there, drop", LS_ATTR_DIM);
+            tui_put_str(sf, g, g.x + 1, g.y + 4, "files in; GET brings them to", LS_ATTR_DIM);
+            tui_put_str(sf, g, g.x + 1, g.y + 5, "/sdcard/inbox. Files stay 14 days.", LS_ATTR_DIM);
+        }
+        if (body.h >= 22 || linking) { body.y += hh; body.h -= hh; }
+    }
+    float frac;
+    uint8_t at;
+    const char *m = message(st, now, t, sizeof(t), &at, &frac);
+    ls_tui_status_set(m, NULL);
+    if (frac >= 0.0f && body.h > 4) {
+        ls_meter_ascii(sf, body, body.x + 1, body.y + body.h - 1, body.w - 2, frac, TUI_GREEN);
+        body.h--;
+    }
+    if (body.h > 3) draw_list(sf, ls_dui_well(sf, body, NULL));
 }
 
 static void draw(tui_surface *sf, tui_rect area)
@@ -400,6 +476,7 @@ static void draw(tui_surface *sf, tui_rect area)
     }
     ls_btn_t btn[4];
     const int nb = buttons(btn);
+    if (ls_tui_compact()) { draw_desk(sf, area, &st, now, btn, nb, dev, web, ndev, nweb); return; }
     const int bar_h = ls_btn_raised_height(area, nb);
     const tui_rect bar = tui_rect_make(area.x, area.y + area.h - bar_h, area.w, bar_h);
     const tui_rect msg = tui_rect_make(area.x, bar.y - 2, area.w, 2);
@@ -422,21 +499,12 @@ static void draw(tui_surface *sf, tui_rect area)
 
     /* the hub's word on the last job, with the bytes while one runs */
     tui_fill(sf, msg, ' ', TUI_DEFAULT_ATTR);
-    ls_locker_file_t f;
     char t[96];
-    if (picked(&f) && L.del_until > now && !strcmp(L.del_name, f.name))
-        ls_safe_line(sf, msg, msg.y, "Tap DELETE again: gone from the locker for good.", ls_ink_hue(A(TUI_YELLOW | TUI_BRIGHT)));
-    else if (is_lock_op(st.what) && st.state == LS_HUB_BUSY && st.total) {
-        char a[16], b[16];
-        size_str(a, sizeof(a), st.done);
-        size_str(b, sizeof(b), st.total);
-        snprintf(t, sizeof(t), "%s %s / %s", !strcmp(st.what, "upload") ? "up" : "down", a, b);
-        ls_safe_line(sf, msg, msg.y, t, ls_ink_hue(A(TUI_GREEN | TUI_BRIGHT)));
-        ls_meter_ascii(sf, msg, msg.x + 1, msg.y + 1, msg.w - 2, (float)st.done / (float)st.total, TUI_GREEN);
-    } else if (is_lock_op(st.what) && st.state != LS_HUB_IDLE && !(st.state == LS_HUB_OK && !strcmp(st.what, "list"))) {
-        snprintf(t, sizeof(t), "%s: %s", st.what, st.text);
-        ls_safe_line(sf, msg, msg.y, t, ls_ink_hue(A(st.state == LS_HUB_FAIL ? TUI_YELLOW | TUI_BRIGHT : st.state == LS_HUB_OK ? TUI_GREEN | TUI_BRIGHT : TUI_CYAN)));
-    } else ls_safe_line(sf, msg, msg.y, "Files stay 14 days. Downloads go to /sdcard/inbox.", A(TUI_CYAN));
+    uint8_t mat;
+    float frac;
+    const char *m = message(&st, now, t, sizeof(t), &mat, &frac);
+    ls_safe_line(sf, msg, msg.y, m, mat);
+    if (frac >= 0.0f) ls_meter_ascii(sf, msg, msg.x + 1, msg.y + 1, msg.w - 2, frac, TUI_GREEN);
     ls_btn_bar_raised_row(sf, bar, btn, nb, -1);
 }
 

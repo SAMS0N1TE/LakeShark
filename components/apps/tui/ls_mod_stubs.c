@@ -156,4 +156,12 @@ bool ls_wardrive_running(void) {
 }
 #endif
 
+#ifdef LS_MOD_HAS_PARTY
+/* HOME's lamp: a party can only be running once the app has been opened. */
+bool ls_party_running(void) {
+    bool (*f)(void) = MOD_FN("party", ls_party_running, false);
+    return f && f();
+}
+#endif
+
 #endif

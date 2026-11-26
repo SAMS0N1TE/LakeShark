@@ -1,0 +1,2 @@
+dependencies:
+  espressif/esp_lcd_st7701: "==1.1.4"

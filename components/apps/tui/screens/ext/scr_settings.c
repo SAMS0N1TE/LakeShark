@@ -8,6 +8,7 @@
 
 #include "../../ls_theme.h"
 #include "../../ls_tui_ui.h"
+#include "../../ls_deskui.h"
 #include "../../ls_box.h"
 #include "../../ls_icons.h"
 #include "core/settings.h"
@@ -34,6 +35,7 @@
 #include "../../ls_lap_service.h"
 #include "../../ls_power.h"
 #include "ls_gauge.h"
+#include "core/ls_tz.h"
 #include "../../ls_braille.h"
 #include "../../ls_tui_touch.h"
 #include "../../ls_slider_drag.h"
@@ -554,8 +556,21 @@ static const item_t NETWORK_ITEMS[] = {
 };
 /* SEND REPORT, the sheet DIAG has too: what goes, a note, to the team. */
 static void report_show(char *b, size_t n) { snprintf(b, n, "%s", ls_report_offer_pending() ? "crash waiting" : "send"); }
+/* Time zone: AUTO (from the last fix), UTC, then the named zones, stepped
+   with < > or ENTER; Clock: 12 or 24 hours. Both apply at once. */
+static void tz_show(char *b, size_t n) { ls_tz_show(b, n); }
+static void tz_step(int dir)
+{
+    const int n = ls_tz_count();
+    ls_tz_set_choice((ls_tz_choice() + dir + n) % n);
+}
+static void tz_next(void) { tz_step(+1); }
+static void clk_show(char *b, size_t n) { snprintf(b, n, "%s", ls_tz_24h() ? "24 h" : "12 h"); }
+static void clk_next(void) { ls_tz_set_24h(!ls_tz_24h()); }
 static const item_t SYSTEM_ITEMS[] = {
     { .label = "Language",       .show = lang_show, .next = lang_next },
+    { .label = "Time zone",      .show = tz_show,   .next = tz_next, .step = tz_step },
+    { .label = "Clock",          .show = clk_show,  .next = clk_next },
     { .label = "USB autoreboot", .show = usb_show,  .next = usb_next, .on = usb_on },
     { .label = "Bug report",     .show = report_show, .next = ls_report_sheet_open, .go = true },
 };
@@ -580,7 +595,7 @@ static const set_page_t SET_PAGES[SETP_COUNT] = {
                        RADIO_ITEMS, COUNT(RADIO_ITEMS), panel_radio, 8 },
     [SETP_NETWORK] = { "NETWORK", "hotspot, updates", TUI_BLUE, LS_ICON_WIRELESS,
                        NETWORK_ITEMS, COUNT(NETWORK_ITEMS), panel_network, 8 },
-    [SETP_SYSTEM]  = { "SYSTEM", "language, USB, board", TUI_WHITE, LS_ICON_CHIP,
+    [SETP_SYSTEM]  = { "SYSTEM", "language, clock, USB", TUI_WHITE, LS_ICON_CHIP,
                        SYSTEM_ITEMS, COUNT(SYSTEM_ITEMS), panel_system, 8 },
 };
 #define N_CARDS (SETP_COUNT - 1)
@@ -849,10 +864,12 @@ static void panel_power(tui_surface *sf, tui_rect r, uint8_t hue)
         snprintf(v, sizeof(v), "%u%%", (unsigned)g.percent);
         tui_put_str(sf, r, r.x + bw + 2, r.y + 1, v, TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_BLACK));
         const int ma = g.milliamps;
-        if (ma < -5 && g.remaining_mah)
-            snprintf(v, sizeof(v), "%d mA  ~%.1f h", ma, (double)g.remaining_mah / (double)(-ma));
+        /* Hours from the shown percent of the gauge's capacity, so the two
+           figures agree; the gauge's own remaining count is not trusted. */
+        if (!g.plugged && ma < -5 && g.full_mah)
+            snprintf(v, sizeof(v), "%d mA  ~%.1f h", ma, (double)g.full_mah * g.percent / 100.0 / (double)(-ma));
         else
-            snprintf(v, sizeof(v), "%+d mA %s", ma, ls_tr(g.charging ? "charging" : ""));
+            snprintf(v, sizeof(v), "%+d mA %s", ma, ls_tr(g.charging ? "charging" : g.full ? "on USB, full" : g.plugged ? "on USB" : ""));
         tui_put_str(sf, r, r.x + bw + 7, r.y + 1, v, ls_ink_hue(TUI_ATTR(ma < 0 ? HUE_HI(hue) : (TUI_CYAN | TUI_BRIGHT), TUI_BLACK)));
     } else {
         tui_put_str(sf, r, r.x, r.y, ls_tr("no battery gauge on this board"), LS_ATTR_DIM);
@@ -954,7 +971,9 @@ static void status_line(tui_surface *sf, tui_rect r, int y)
     int x = r.x + 1;
     if (ls_gauge_get(&g) && g.present) {
         const uint8_t c = g.percent > 50 ? (TUI_GREEN | TUI_BRIGHT) : g.percent > 20 ? (TUI_YELLOW | TUI_BRIGHT) : (TUI_RED | TUI_BRIGHT);
-        snprintf(v, sizeof(v), "%s %u%%", ls_tr(g.charging ? "CHARGING" : "BATTERY"), (unsigned)g.percent);
+        if (g.full) snprintf(v, sizeof(v), "%s", ls_tr("ON USB, FULL"));
+        else snprintf(v, sizeof(v), "%s %u%%", ls_tr(g.charging ? "CHARGING" : g.plugged ? "ON USB" : "BATTERY"),
+                      (unsigned)g.percent);
         tui_put_str(sf, r, x, y, v, ls_ink_hue(TUI_ATTR(c, TUI_BLACK)));
         x += (int)strlen(v) + 2;
         snprintf(v, sizeof(v), "%+d mA", g.milliamps);
@@ -1236,6 +1255,53 @@ static void draw_compact(tui_surface *sf, tui_rect body, const set_page_t *pg)
     }
 }
 
+/* A desk window: the settings as a property list in a white well, a
+   header like a list view's, the page's live panel in a group box beside
+   it, and what the chosen row does in the window's status bar. */
+static void draw_desk(tui_surface *sf, tui_rect body, const set_page_t *pg)
+{
+    tui_fill(sf, body, ' ', TUI_ATTR(TUI_WHITE, TUI_BLACK));
+    const bool side = body.w >= 78 + 30 && s_page != SETP_ROOT && pg->panel && body.h >= 10;
+    const int w = side ? 78 : body.w;
+    const tui_rect in = ls_dui_well(sf, tui_rect_make(body.x, body.y, w, body.h), NULL);
+    /* the header: two columns on the button face */
+    const uint8_t head = ls_ink(LS_INK_KEY, TUI_ATTR(TUI_BLACK, TUI_WHITE));
+    tui_fill(sf, tui_rect_make(in.x, in.y, in.w, 1), ' ', head);
+    tui_put_str(sf, in, in.x + 1, in.y, ls_tr(s_page == SETP_ROOT ? "Setting" : pg->title), head);
+    tui_put_str(sf, in, in.x + 20, in.y, ls_tr("Value"), head);
+    tui_put_char(sf, in, in.x + 19, in.y, '|', head);
+    const int x = in.x, rw = in.w;
+    int y = in.y + 1;
+    if (s_page != SETP_ROOT) {
+        s_back = tui_rect_make(x, y, rw, 1);
+        tui_put_str(sf, in, x + 1, y++, ls_tr("< SETTINGS"), ls_ink_hue(TUI_ATTR(HUE_HI(pg->hue), TUI_BLACK)));
+    }
+    for (int k = 0; k < s_vis_n && y < in.y + in.h; k++, y++) {
+        const tui_rect row = tui_rect_make(x, y, rw, 1);
+        line_draw(sf, row, &pg->items[s_vis[k]], s_vis[k], pg->hue, s_sel == k);
+        hit_add(row, s_vis[k], -1);
+    }
+    if (s_page == SETP_ROOT)
+        for (int c = 0; c < N_CARDS && y < in.y + in.h; c++, y++) {
+            const set_page_t *cp = &SET_PAGES[c + 1];
+            const tui_rect row = tui_rect_make(x, y, rw, 1);
+            const bool sel = s_sel == s_vis_n + c;
+            const uint8_t bar = ls_ink(LS_INK_SELECT, TUI_ATTR(TUI_WHITE, TUI_BLUE));
+            if (sel) tui_fill(sf, row, ' ', bar);
+            tui_put_str(sf, row, row.x + 1, y, ls_tr(cp->title), sel ? bar : TUI_ATTR(HUE_HI(cp->hue), TUI_BLACK));
+            tui_put_str(sf, row, row.x + 20, y, ls_tr(cp->what), sel ? bar : TUI_ATTR(TUI_WHITE, TUI_BLACK));
+            tui_put_char(sf, row, row.x + row.w - 2, y, '>', sel ? bar : TUI_ATTR(HUE_HI(cp->hue), TUI_BLACK));
+            hit_add(row, -1, c + 1);
+        }
+    if (side) {
+        const tui_rect g = ls_dui_group(sf, tui_rect_make(body.x + w + 1, body.y, body.w - w - 1, 9), ls_tr(pg->title));
+        pg->panel(sf, tui_rect_make(g.x + 1, g.y, g.w - 2, g.h), pg->hue);
+    }
+    /* what the chosen row does */
+    if (s_sel < s_vis_n) ls_tui_status_set(ls_tr(help_for(pg->items[s_vis[s_sel]].label)), NULL);
+    else if (s_page == SETP_ROOT && s_sel - s_vis_n < N_CARDS) ls_tui_status_set(ls_tr(SET_PAGES[s_sel - s_vis_n + 1].what), NULL);
+}
+
 /* The hint row: SETTINGS' keys, or the report sheet's while it is up. */
 #define SET_HINT "TAP to change  UP DOWN ENTER  < > step  ESC back"
 EXT_RAM_BSS_ATTR static char s_hint[64];
@@ -1257,6 +1323,7 @@ static void draw(tui_surface *sf, tui_rect area)
     if (s_page == SETP_POWER) services_refresh();
     visible_refresh();
     if (s_sel >= entries()) s_sel = entries() ? entries() - 1 : 0;
+    if (ls_tui_compact() && area.w >= 40 && area.h >= 8) { draw_desk(sf, tui_rect_make(area.x + 1, area.y, area.w - 2, area.h), pg); return; }
     ls_panel_box(sf, area, NULL, pg->hue);
     if (area.h < 6 || area.w < 18) return;
     const tui_rect body = tui_rect_make(area.x + 1, area.y + 1, area.w - 2, area.h - 2);

@@ -34,6 +34,9 @@ typedef enum {
     R_TASKHOVER,   /* a taskbar key under the pointer */
     R_TRAY,        /* the tray's sunken panel */
     R_MENU,        /* menu faces */
+    R_WELL,        /* lists, edits and fields: words on the contrast ground (white on silver, black on a dark face) */
+    R_WELL_DIM,    /* greyed words in a well */
+    R_GLASS,       /* a VFD or scope's black glass and its lit words */
     R_COUNT
 } dk_role_t;
 
@@ -93,6 +96,19 @@ void dk_vline(tui_surface *sf, tui_rect clip, int x, int y, int len, int cp, uin
 /* Frames sit on the outer edges of r's border cells: fill all of r with the
    face, then frame it; the border cells keep that ground. */
 void dk_frame(tui_surface *sf, tui_rect clip, tui_rect r, bool raised);
+/* The well's frame: thin lines hugging the inside of r (dark top and left,
+   light bottom and right), the border cells keeping their ground. */
+void dk_sunken(tui_surface *sf, tui_rect clip, tui_rect r);
+/* An etched group box (dark line top/left, light bottom/right), its title on
+   the top line in `cap` (0: the info hue). */
+void dk_group(tui_surface *sf, tui_rect clip, tui_rect r, const char *title, uint8_t cap);
+/* A TUI hue as words on the well's ground (R_WELL), made to read. */
+uint8_t dk_well_hue(uint8_t hue);
+/* A one-row sunken field w cells wide: its two ends and the w - 2 cells on
+   the well's ground, answered. */
+tui_rect dk_well_field(tui_surface *sf, tui_rect clip, int x, int y, int w);
+/* A status bar of n sunken panes across `row` (w[i] 0: takes the rest). */
+void dk_status_panes(tui_surface *sf, tui_rect clip, tui_rect row, const char *const *text, const int *w, int n);
 tui_rect dk_inner(tui_rect r);
 void dk_edge_put(tui_surface *sf, tui_rect clip, int x, int y, int cp, int role);
 void dk_frame_double(tui_surface *sf, tui_rect clip, tui_rect r, uint8_t attr);
@@ -196,7 +212,7 @@ int  dk_menubar_x(int x, const char *const *names, int i);
 enum { DK_APP = 1, DK_SHELL = 2 };
 enum { DK_SHELL_ABOUT = 1, DK_SHELL_DISPLAY = 2, DK_SHELL_SHUTDOWN = 3, DK_SHELL_STUDIO = 4,
        DK_SHELL_PROMPT, DK_SHELL_MSG, DK_SHELL_PICK, DK_SHELL_FOLDER, DK_SHELL_BIN, DK_SHELL_TASKS,
-       DK_SHELL_CPL, DK_SHELL_ITEM };
+       DK_SHELL_CPL, DK_SHELL_ITEM, DK_SHELL_HOME };
 
 typedef struct dk_win {
     bool used;
@@ -212,7 +228,20 @@ typedef struct dk_win {
     char title[40];
     char label[28];         /* the taskbar line, as last seen live */
     bool own_bar;           /* DK_APP: its app drew a menu bar of its own in its last frame */
+    uint8_t size;           /* DK_SIZE_*: the size preset it has while normal (additive, shell) */
 } dk_win_t;
+
+/* Window size presets (shell): fixed outer sizes in cells, clamped to the
+   work area; Maximized is the window state, not a preset. */
+enum { DK_SIZE_SMALL, DK_SIZE_MEDIUM, DK_SIZE_LARGE, DK_SIZE_N };
+const char *dk_size_name(int preset);
+bool dk_size_fits(int preset);                 /* fits the work area as it is now */
+/* The desktop's resolution for Display's "Desktop area" drop-down (shell):
+   row 0 fits the PC window, rows 1.. the presets (ls_desk_res_*). */
+int  dk_res_rows(void);
+int  dk_res_row(void);
+void dk_res_pick(int v);
+void dk_res_row_text(int v, char *b, size_t n);
 
 /* Geometry the frame decides: outer and client in grid cells, as drawn. */
 void dk_win_rects(const dk_win_t *w, tui_rect *outer, tui_rect *client);
@@ -223,6 +252,7 @@ tui_rect dk_work(void);               /* rows above the taskbar */
 /* Draw the front app window's client through the router into the live
    surface and copy it to the grid at `client`. */
 bool dk_compat_select(dk_win_t *w);   /* true: handed to another app's window */
+bool dk_compat_quit(const dk_win_t *w);   /* additive (shell): its card app asked to quit; close the window */
 bool dk_compat_prepare(dk_win_t *w, tui_rect client);
 void dk_compat_finger(int col, int row, int px, int py, bool down);
 void dk_compat_tap_later(dk_win_t *w, int col, int row);
@@ -258,6 +288,9 @@ enum {
     A_ARRANGE_HOW, A_GADGET, A_CPL, A_RUN, A_TASKS, A_BIN, A_FOLDER, A_CASCADE, A_TILE, A_MIN_ALL,
     A_WIN_MOVE, A_WIN_SIZE, A_KICK,
     A_DLG,                  /* a command for the shell window in front: arg is a DKC_* */
+    A_HOMEBASE,             /* the Home Base window (ls_desk_home.c) */
+    /* additive (shell): a size preset for a window; arg is id * 4 + DK_SIZE_* (3: maximized) */
+    A_WIN_PRESET,
 };
 /* What the folder, bin and task windows' menus ask of them (dk_dialogs_cmd). */
 enum { DKC_FOLD_OPEN = 1, DKC_FOLD_UP, DKC_FOLD_SHORTCUT, DKC_FOLD_REFRESH, DKC_BIN_RESTORE, DKC_BIN_DELETE,
@@ -273,6 +306,7 @@ enum {
     M_ICON, M_NEW, M_ARRANGE, M_GADGETS, M_TASKBAR, M_CPL, M_PIN,
     /* a window's menu bar; arg is the window */
     M_BAR_FILE, M_BAR_VIEW, M_BAR_WINDOW, M_BAR_HELP,
+    M_WINSIZE,              /* additive (shell): a window's size presets; arg is the window */
 };
 
 #define DK_MENU_ITEMS 20
@@ -338,6 +372,12 @@ int  dk_open_studio(void);
 void dk_studio_draw(tui_surface *sf, tui_rect client, tui_rect clip);
 bool dk_studio_tap(dk_win_t *w, tui_rect client, int col, int row);
 bool dk_studio_key(dk_win_t *w, ls_tk_t k, char ch);
+/* The Home Base window (ls_desk_home.c): this desk as the home database the
+   field units sync to over LSX. */
+int  dk_open_home(void);
+void dk_home_draw(tui_surface *sf, tui_rect client, tui_rect clip);
+bool dk_home_tap(dk_win_t *w, tui_rect client, int col, int row);
+bool dk_home_key(dk_win_t *w, ls_tk_t k, char ch);
 
 /* The board around the desk (ls_desk_live.c; stubbed in the host test):
    sound, the Bluetooth keyboards, the clock's source, what persists. */

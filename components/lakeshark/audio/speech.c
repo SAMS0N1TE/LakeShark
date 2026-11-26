@@ -29,6 +29,17 @@ static const char *TAG = "speech";
 #define SPEECH_CORE        tskNO_AFFINITY   /* takes whichever core has room */
 /* Synthesis gives the core away at least this often. */
 #define SPEECH_YIELD_US    10000
+/* Lowest priority is right while the speaker has plenty queued. It is not
+   when the cores are busy with something it cannot outrank: a desk window
+   drawing MAP (prio 4, core 1), the bridge sending it to the PC (prio 2,
+   core 0) and the map's own renderers (prio 1, round robin with this) left
+   synthesis slower than real time, so ADS-B call-outs started late and
+   broke up into gaps. Under BEHIND ms of audio queued, synthesis runs at the
+   UI's priority, still yielding every SPEECH_YIELD_US and still under every
+   receiver (ADS-B rx is 5), until it is AHEAD again. */
+#define SPEECH_PRIO_BEHIND 4
+#define SPEECH_BEHIND_MS   300
+#define SPEECH_AHEAD_MS    700
 
 typedef struct {
     char     text[SPEECH_TEXT_MAX];
@@ -41,6 +52,7 @@ typedef struct {
     int64_t sink_us;
     int64_t yield_us;
     bool    stopped;
+    bool    raised;
     uint32_t gen;
 } speech_job_t;
 
@@ -71,6 +83,16 @@ static bool speech_sink(const int16_t *pcm, int n, void *ctx)
     j->sink_us += t1 - t0;
     if (!ok) { j->stopped = true; return false; }
     if (!j->first_us) j->first_us = t1;
+    /* How far ahead of the speaker this is, and the priority that keeps it so. */
+    const uint32_t queued_ms = audio_out_ring_avail() / (AUDIO_RATE_HZ / 1000 * (uint32_t)sizeof(int16_t));
+    if (!j->raised && queued_ms < SPEECH_BEHIND_MS) {
+        vTaskPrioritySet(NULL, SPEECH_PRIO_BEHIND);
+        j->raised = true;
+        s_stats.raised++;
+    } else if (j->raised && queued_ms >= SPEECH_AHEAD_MS) {
+        vTaskPrioritySet(NULL, SPEECH_PRIO);
+        j->raised = false;
+    }
     /* The engine only stops here, between chunks; a full ring already
        sleeps in audio_write_speech, an empty one never does. */
     if (!j->yield_us) j->yield_us = t1;
@@ -91,10 +113,15 @@ static speech_result_t speak_one(const speech_req_t *r)
     audio_out_speech_begin();
     speech_job_t job = { .gen = r->gen };
     speech_engine_stats_t st;
+    const uint32_t under0 = audio_underruns_get();
     const int64_t t0 = esp_timer_get_time();
     const int rc = speech_engine_say(s_voice, r->text, s_arena, SPEECH_ARENA_BYTES,
                                      speech_sink, &job, &st);
     const int64_t total = esp_timer_get_time() - t0;
+    if (job.raised) vTaskPrioritySet(NULL, SPEECH_PRIO);
+    /* Gaps in this sentence that the speaker filled with silence, counted up
+       to the end of synthesis (the tail still playing is not in it). */
+    s_stats.last_underruns = audio_underruns_get() - under0;
 
     const uint32_t first_ms = job.first_us ? (uint32_t)((job.first_us - t0) / 1000) : 0;
     const uint32_t synth_ms = (uint32_t)((total - job.sink_us) / 1000);

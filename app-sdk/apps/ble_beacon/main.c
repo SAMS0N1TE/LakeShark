@@ -62,6 +62,12 @@ static void draw(void) {
     lap_put_str(0, 4, "A advertise / S stop. LINK/HID host must release BLE.",
                 LAP_ATTR(LAP_WHITE, LAP_BLACK));
 }
+LAP_ICON_PX("....................", "....................", "...ee.ffffffff.ee...", "...e..fffccfff..e...",
+            "..ee..fffcfcff..ee..", "..e..efcfcffcfe..e..", "..e..effcccfcfe..e..", "..e..efffccfff......",
+            "..e..effcccfcf......", "..ee..fcfcffcf......", "...e..fffcfcff......", "...ee.fffccfff......",
+            "......ffffffff......", "....................", "....777777777777....", "....777777777777....",
+            "....888888888888....", "....................");
+
 LAP_APP(.id = "ble_beacon", .name = "BLE BEACON", .sub = "Advertisement publisher",
         .version = "1.0", .author = "LakeShark", .flags = LAP_CAP_RADIO_TX, .color = LAP_CYAN,
         .enter = enter, .leave = leave, .draw = draw, .key = key);

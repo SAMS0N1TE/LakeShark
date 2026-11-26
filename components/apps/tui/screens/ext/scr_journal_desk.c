@@ -301,8 +301,9 @@ static void layout(tui_rect a)
     int y = a.y;
     s_r_menu = tui_rect_make(a.x, y++, a.w, 1);
     s_r_tools = tui_rect_make(a.x, y++, a.w, 1);
-    s_r_status = tui_rect_make(a.x, a.y + a.h - 1, a.w, 1);
-    const tui_rect body = tui_rect_make(a.x, y, a.w, a.y + a.h - 1 - y);
+    /* the CSV line is the window's status bar now: no row of its own */
+    s_r_status = tui_rect_make(a.x, a.y + a.h, a.w, 0);
+    const tui_rect body = tui_rect_make(a.x, y, a.w, a.y + a.h - y);
     s_r_read = none;
     int rw = 0, rh = 0;
     if (s_show_read) {
@@ -360,7 +361,7 @@ static void draw_table(tui_surface *sf)
 {
     char title[40], text[40];
     snprintf(title, sizeof(title), "ENTRIES %d of %d", s_n, s_nrow);
-    ls_dui_pane(sf, s_r_table, title, "", s_st.recording ? TUI_GREEN : HUE, !s_find_focus);
+    ls_dui_well(sf, s_r_table, title);     /* a list: a white well */
     ls_dui_table_head(sf, &s_t, COLS, LS_JC__COUNT, s_sort, s_desc, HUE);
     const tui_rect b = s_t.body;
     if (!s_n) {
@@ -407,12 +408,17 @@ static void draw_read(tui_surface *sf)
     const ls_jrnd_row_t *row = selected();
     char text[96], line[128];
     if (!row || !s_have) {
-        const tui_rect in = ls_dui_pane(sf, r, "NO ENTRY", "", HUE, false);
+        const tui_rect in = ls_dui_well(sf, r, "NO ENTRY");
         tui_put_str(sf, in, in.x + 1, in.y, s_nrow ? "Click a row, or Up and Down." : "Nothing written yet.", LS_ATTR_DIM);
         return;
     }
     snprintf(text, sizeof(text), "%.40s", s_e.title[0] ? s_e.title : "(no title)");
-    const tui_rect in = ls_dui_pane(sf, r, text, row->saved ? "on the card" : "in RAM, not saved yet", HUE, false);
+    const tui_rect in = ls_dui_well(sf, r, text);
+    {   /* where it is, on the well's top edge at the right */
+        const char *where = row->saved ? "on the card" : "in RAM, not saved yet";
+        const int wx = r.x + r.w - (int)strlen(where) - 2;
+        if (wx > r.x + (int)strlen(text) + 3) tui_put_str(sf, r, wx, r.y, where, LS_ATTR_DIM);
+    }
     int y = in.y;
     tui_put_str(sf, in, in.x + 1, y++, row->when, row->clock ? WHITE : LS_ATTR_DIM);
     /* What was attached when it was written, a chip each. */
@@ -441,7 +447,9 @@ static void draw_read(tui_surface *sf)
         int k = 0;
         if (row->freq) k += snprintf(text + k, sizeof(text) - (size_t)k, "%.4f MHz  ", row->freq / 1e6);
         if (row->signal) k += snprintf(text + k, sizeof(text) - (size_t)k, "%.1f dBm", (double)row->rssi);
-        tui_put_str(sf, in, in.x + 1, y++, text, INK(TUI_YELLOW));
+        /* the frequency on a VFD strip, the way a receiver shows it */
+        const int vw = k + 2 < in.w ? k + 2 : in.w;
+        ls_dui_vfd(sf, tui_rect_make(in.x, y++, vw, 1), text, LS_DUI_VFD_GREEN | LS_DUI_VFD_LEFT | LS_DUI_VFD_SMALL);
     }
     for (int cx = in.x; cx < in.x + in.w; cx++) ls_box_put(sf, in, cx, y, 0x2500, LS_ATTR_FAINT);
     y++;
@@ -463,20 +471,18 @@ static void draw_read(tui_surface *sf)
     }
 }
 
+/* The CSV state and the last word, for the window's status bar (the keys
+   are under Help > Keys). */
 static void draw_status(tui_surface *sf)
 {
-    const tui_rect r = s_r_status;
-    char text[120];
-    const int k = snprintf(text, sizeof(text), " CSV %s  %lu rows  %lu errors", s_st.record_errors ? "WRITE FAILED" : s_st.recording ? "SAVING" : "STOPPED",
-                           (unsigned long)s_st.record_rows, (unsigned long)s_st.record_errors);
-    tui_put_str(sf, r, r.x, r.y, text, s_st.record_errors ? INK(TUI_RED) : s_st.recording ? INK(TUI_GREEN) : INK(HUE));
-    const int x = r.x + k + 2;
+    (void)sf;
+    char text[160];
     const bool mine = s_say[0] && esp_timer_get_time() - s_said_us < 8000000;
     const char *fb = ls_scr_journal_feedback();
-    const char *idle = s_find_focus ? "Type part of a title, a note, a radio or a date; Enter keeps it, Esc clears"
-                     : s_st.storage[0] ? s_st.storage : "N new  E edit  C record  G map  click a header to sort  right button for more";
-    tui_put_str(sf, tui_rect_make(x, r.y, r.x + r.w - x, 1), x, r.y, mine ? s_say : fb[0] ? fb : idle,
-                mine || fb[0] ? INK(TUI_YELLOW) : LS_ATTR_DIM);
+    const char *idle = s_find_focus ? "Type part of a title, a note, a radio or a date; Enter keeps it" : s_st.storage;
+    snprintf(text, sizeof(text), "CSV %s  %lu rows  %lu errors  %s", s_st.record_errors ? "WRITE FAILED" : s_st.recording ? "SAVING" : "STOPPED",
+             (unsigned long)s_st.record_rows, (unsigned long)s_st.record_errors, mine ? s_say : fb[0] ? fb : idle);
+    ls_tui_status_set(text, NULL);
 }
 
 static bool context(int col, int row);

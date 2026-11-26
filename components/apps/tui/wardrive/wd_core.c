@@ -2,15 +2,26 @@
    the board's worker task and in the simulator's frame. */
 #include "wd_core.h"
 #include "wd_feed.h"
+#include "wd_sig.h"
+#include "wd_track.h"
+#include "wd_atlas.h"
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 #ifdef ESP_PLATFORM
 #include <unistd.h>
 #endif
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
+#include "esp_timer.h"
+#include "../ls_seen.h"
+#include "../ls_sweep_app.h"
 #else
 #define EXT_RAM_BSS_ATTR
 #endif
@@ -19,6 +30,17 @@
 #define RELOG_M 50.0
 #define BUCKETS 1024u
 #define FRESH_MS 10000u
+/* The GPS gate. A fix is weak when its HDOP is over WD_HDOP_MAX (about 15 m:
+   the CSV's accuracy is HDOP x 5) or it has fewer than 4 satellites; a weak
+   fix shows on screen but moves nothing. After the start or a loss, the
+   position has to hold for SETTLE good fixes (each within SETTLE_M of the
+   last) before it counts: a cold GPS walks off a couple of hundred metres
+   in its first minute (WD_20261125_015737: 170 m north across the river at
+   HDOP 4.5, then back). A jump faster than JUMP_MPS is never a car. */
+#define WD_HDOP_MAX 3.0f
+#define SETTLE      3
+#define SETTLE_M    25.0f
+#define JUMP_MPS    70.0f
 #define UTC_MIN 1577836800L         /* 2020-01-01: older is a clock never set */
 
 static EXT_RAM_BSS_ATTR wd_stats_t S;
@@ -46,6 +68,17 @@ static unsigned bucket(uint8_t kind, const uint8_t *a)
     unsigned h = 2166136261u ^ kind;
     for (int i = 0; i < 6; i++) h = (h ^ a[i]) * 16777619u;
     return (h ^ h >> 15) & (BUCKETS - 1);
+}
+
+/* The signature table with the advert's IDs when the feed had them. */
+static uint16_t sig_match(const wd_obs_t *o, uint16_t *t)
+{
+    if (!o->ad_have) return wd_sig_match(o, t);
+    const wd_sig_ble_t b = {
+        .company = (o->ad_have & 1) ? o->company : 0, .mfg0 = (o->ad_have & 1) ? o->mfg0 : -1,
+        .uuid16 = (o->ad_have & 2) ? o->uuid16 : 0, .svc0 = (o->ad_have & 2) ? o->svc0 : -1,
+    };
+    return wd_sig_match_ble(o, &b, t);
 }
 
 static void say(const char *fmt, ...)
@@ -108,6 +141,37 @@ const char *wd_auth_short(unsigned a)
     return a <= WD_AUTH_UNKNOWN ? N[a] : "?";
 }
 
+const char *wd_kind_name(int k)
+{
+    static const char *const N[WD_KINDS] = { "WI-FI", "BLUETOOTH", "CELL", "DRONES", "SUB-GHZ", "AIRCRAFT", "LORA" };
+    return k >= 0 && k < WD_KINDS ? N[k] : "?";
+}
+
+const char *wd_kind_short(int k)
+{
+    static const char *const N[WD_KINDS] = { "WI-FI", "BT", "CELL", "DRONE", "RF", "AIR", "LORA" };
+    return k >= 0 && k < WD_KINDS ? N[k] : "?";
+}
+
+const char *wd_kind_tag(int k)
+{
+    static const char *const N[WD_KINDS] = { "WIFI", "BT", "LTE", "UAS", "RF", "AIR", "LRA" };
+    return k >= 0 && k < WD_KINDS ? N[k] : "?";
+}
+
+const char *wd_tag_word(uint16_t t)
+{
+    /* most telling first */
+    static const struct { uint16_t bit; const char *w; } W[] = {
+        { WD_T_ALPR, "ALPR" }, { WD_T_BODYCAM, "BODYCAM" }, { WD_T_POLICE, "POLICE" }, { WD_T_SKIMMER, "SKIMMER" },
+        { WD_T_FOLLOW, "FOLLOWING" }, { WD_T_TRACKER, "TRACKER" }, { WD_T_DRONE, "DRONE" }, { WD_T_WATCH, "WATCHED" },
+        { WD_T_CAMERA, "CAMERA" }, { WD_T_WEARABLE, "GLASSES" }, { WD_T_HACKTOOL, "HACKTOOL" }, { WD_T_INFRA, "SENSOR" },
+        { WD_T_VEHICLE, "VEHICLE" }, { WD_T_PEER, "PARTY" }, { WD_T_NEWHERE, "NEW HERE" }, { WD_T_REGULAR, "REGULAR" },
+    };
+    for (size_t i = 0; i < sizeof(W) / sizeof(W[0]); i++) if (t & W[i].bit) return W[i].w;
+    return "";
+}
+
 void wd_local(double lat, double lon, float *x, float *z)
 {
     double dl = lon - S.lon0;
@@ -115,6 +179,301 @@ void wd_local(double lat, double lon, float *x, float *z)
     else if (dl < -180) dl += 360;
     *x = (float)(dl * S.m_lon);
     *z = (float)(-(lat - S.lat0) * S.m_lat);
+}
+
+
+/* ------------------------------------------------------------ drives on the card */
+
+static void mkdir_one(const char *p)
+{
+#ifdef _WIN32
+    _mkdir(p);
+#else
+    mkdir(p, 0775);
+#endif
+}
+
+static bool exists(const char *p)
+{
+    struct stat st;
+    return stat(p, &st) == 0;
+}
+
+bool wd_drive_path(char *out, size_t cap, const char *stem, const char *ext, bool make)
+{
+    const char *dir = wd_feed_dir();
+    if (!dir || !*dir || !stem || !*stem) { if (cap) out[0] = 0; return false; }
+    char folder[112];
+    snprintf(folder, sizeof(folder), "%s/%s", dir, stem);
+    if (!make) {
+        /* an old drive still loose on the card */
+        snprintf(out, cap, "%s/%s.%s", dir, stem, ext);
+        if (exists(out)) return true;
+    } else mkdir_one(folder);
+    snprintf(out, cap, "%s/%s.%s", folder, stem, ext);
+    return true;
+}
+
+/* A folder is a drive when it holds its own <name>.csv or <name>.gpx. */
+static bool drive_folder(const char *dir, const char *s)
+{
+    if (strlen(s) >= WD_STEM || strchr(s, '.') || !strcmp(s, "atlas")) return false;
+    char p[160];
+    snprintf(p, sizeof(p), "%s/%s/%s.gpx", dir, s, s);
+    if (exists(p)) return true;
+    snprintf(p, sizeof(p), "%s/%s/%s.csv", dir, s, s);
+    return exists(p);
+}
+
+int wd_drives(char (*stem)[WD_STEM], int max)
+{
+    const char *dir = wd_feed_dir();
+    if (!dir || !*dir || max <= 0) return 0;
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    int n = 0;
+    for (struct dirent *e; (e = readdir(d)) != NULL;) {
+        char s[WD_STEM];
+        const size_t l = strlen(e->d_name);
+        if (drive_folder(dir, e->d_name)) snprintf(s, sizeof(s), "%s", e->d_name);    /* a drive's folder */
+        else if (l > 4 && l - 4 < WD_STEM &&
+                 (!strcmp(e->d_name + l - 4, ".csv") || !strcmp(e->d_name + l - 4, ".gpx")))
+            snprintf(s, sizeof(s), "%.*s", (int)(l - 4), e->d_name);                  /* an old loose file */
+        else continue;
+        int i = 0;
+        while (i < n && strcmp(stem[i], s)) i++;
+        if (i < n) continue;
+        /* newest first: the stems are dates */
+        if (n == max && strcmp(s, stem[n - 1]) < 0) continue;
+        int at = n < max ? n++ : max - 1;
+        while (at > 0 && strcmp(stem[at - 1], s) < 0) { memcpy(stem[at], stem[at - 1], WD_STEM); at--; }
+        snprintf(stem[at], WD_STEM, "%s", s);
+    }
+    closedir(d);
+    return n;
+}
+
+int wd_drives_tidy(void)
+{
+    const char *dir = wd_feed_dir();
+    if (!dir || !*dir) return 0;
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    int moved = 0;
+    for (struct dirent *e; (e = readdir(d)) != NULL;) {
+        const size_t l = strlen(e->d_name);
+        if (l <= 4 || l - 4 >= WD_STEM) continue;
+        const char *ext = e->d_name + l - 4;
+        if (strcmp(ext, ".csv") && strcmp(ext, ".gpx")) continue;
+        char stem[WD_STEM], from[160], to[160];
+        snprintf(stem, sizeof(stem), "%.*s", (int)(l - 4), e->d_name);
+        if (S.running && !strcmp(stem, S.stamp)) continue;          /* the drive being written stays put */
+        snprintf(from, sizeof(from), "%s/%s", dir, e->d_name);
+        wd_drive_path(to, sizeof(to), stem, ext + 1, true);
+        struct stat sf, st2;
+        if (!stat(to, &st2) && !stat(from, &sf) && sf.st_mtime >= st2.st_mtime) remove(to);   /* the newer copy wins */
+        if (!exists(to) && rename(from, to) == 0) moved++;
+    }
+    closedir(d);
+    return moved;
+}
+
+/* drive.txt: key=value lines, written when a drive stops. */
+static void summary_write(void)
+{
+    if (!S.stamp[0] || S.replay) return;
+    char p[160];
+    wd_drive_path(p, sizeof(p), S.stamp, "txt", true);
+    char *slash = strrchr(p, '/');
+    if (slash) snprintf(slash + 1, sizeof(p) - (size_t)(slash + 1 - p), "drive.txt");
+    FILE *f = fopen(p, "w");
+    if (!f) return;
+    unsigned finds = 0, targets = 0;
+    for (int k = 0; k < WD_KINDS; k++) finds += S.total[k];
+    for (int i = 0; i < nd; i++) targets += (D[i].tags & (uint16_t)~(WD_T_REGULAR | WD_T_NEWHERE)) != 0;
+    const long start = S.utc_base >= UTC_MIN / 2 ? S.utc_base + (long)(S.start_ms / 1000) : 0;
+    fprintf(f, "start_utc=%ld\nsecs=%lu\nkm=%.2f\nfinds=%u\nwifi=%u\nble=%u\ntargets=%u\nrows=%u\ndropped=%u\nlat=%.5f\nlon=%.5f\nboard=%s\n",
+            start, (unsigned long)((S.stop_ms - S.start_ms) / 1000), (double)S.dist_m / 1000.0, finds,
+            S.total[WD_WIFI], S.total[WD_BLE], targets, S.rows, S.fixes_dropped, S.lat0, S.lon0, wd_feed_board());
+    fclose(f);
+}
+
+/* UTC seconds of a civil date and time (H. Hinnant's days from civil). */
+static uint32_t utc_of(unsigned y, unsigned mo, unsigned dd, unsigned h, unsigned mi, unsigned s)
+{
+    const int yy = (int)y - (mo <= 2);
+    const int era = (yy >= 0 ? yy : yy - 399) / 400;
+    const unsigned yoe = (unsigned)(yy - era * 400);
+    const unsigned doy = (153 * (mo + (mo > 2 ? -3 : 9)) + 2) / 5 + dd - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return (uint32_t)(((long)era * 146097 + (long)doe - 719468) * 86400 + h * 3600 + mi * 60 + s);
+}
+
+static void txt_path(char *p, size_t n, const char *stem, bool make)
+{
+    wd_drive_path(p, n, stem, "txt", make);
+    char *slash = strrchr(p, '/');
+    if (slash) snprintf(slash + 1, n - (size_t)(slash + 1 - p), "drive.txt");
+}
+
+/* Cheap: drive.txt if there is one, the files' sizes, the date from the
+   stem. Reads no log or track (an old drive's summary is built a slice at
+   a time by wd_drive_summarize). */
+bool wd_drive_info(const char *stem, wd_drive_info_t *o)
+{
+    memset(o, 0, sizeof(*o));
+    char p[160];
+    struct stat st;
+    if (wd_drive_path(p, sizeof(p), stem, "csv", false) && !stat(p, &st)) { o->log = true; o->bytes += (long)st.st_size; }
+    if (wd_drive_path(p, sizeof(p), stem, "gpx", false) && !stat(p, &st)) { o->track = true; o->bytes += (long)st.st_size; }
+    txt_path(p, sizeof(p), stem, false);
+    FILE *f = fopen(p, "r");
+    if (f) {
+        char line[96];
+        while (fgets(line, sizeof(line), f)) {
+            long v; double dv;
+            if (sscanf(line, "start_utc=%ld", &v) == 1) o->start_utc = (uint32_t)v;
+            else if (sscanf(line, "secs=%ld", &v) == 1) o->secs = (uint32_t)v;
+            else if (sscanf(line, "km=%lf", &dv) == 1) o->km = (float)dv;
+            else if (sscanf(line, "finds=%ld", &v) == 1) o->finds = (unsigned)v;
+            else if (sscanf(line, "targets=%ld", &v) == 1) o->targets = (unsigned)v;
+            else if (sscanf(line, "lat=%lf", &dv) == 1) o->lat = dv;
+            else if (sscanf(line, "lon=%lf", &dv) == 1) o->lon = dv;
+        }
+        fclose(f);
+        o->summary = true;
+    }
+    if (!o->start_utc && !strncmp(stem, "WD_", 3)) {
+        unsigned y, mo, dd, h, mi, s;
+        if (sscanf(stem, "WD_%4u%2u%2u_%2u%2u%2u", &y, &mo, &dd, &h, &mi, &s) == 6) o->start_utc = utc_of(y, mo, dd, h, mi, s);
+    }
+    return o->track || o->log;
+}
+
+/* One old drive's summary, read a slice at a time: its log's distinct
+   addresses (a 64 K-bit sketch), then its track's times, length and start;
+   kept in drive.txt when done. */
+static struct {
+    char stem[WD_STEM];
+    int phase;                  /* 0 open log, 1 log, 2 open track, 3 track, 4 write */
+    FILE *f;
+    wd_drive_info_t o;
+    double plat, plon;
+    uint32_t pt;                /* the last point's time, 0 none */
+    bool have;
+    int ln;
+} SM;
+static EXT_RAM_BSS_ATTR uint8_t sm_seen[8192];
+
+int wd_drive_summarize(const char *stem, size_t budget, wd_drive_info_t *out)
+{
+    if (!stem || !*stem) {
+        /* left half way: let go of the file (the card has only a few) */
+        if (SM.f) fclose(SM.f);
+        memset(&SM, 0, sizeof(SM));
+        return -1;
+    }
+    if (strcmp(SM.stem, stem)) {
+        if (SM.f) fclose(SM.f);
+        memset(&SM, 0, sizeof(SM));
+        snprintf(SM.stem, sizeof(SM.stem), "%s", stem);
+    }
+    char p[160], line[256];
+    size_t used = 0;
+    while (used < budget) {
+        switch (SM.phase) {
+        case 0:
+            memset(sm_seen, 0, sizeof(sm_seen));
+            SM.f = wd_drive_path(p, sizeof(p), stem, "csv", false) ? fopen(p, "r") : NULL;
+            SM.phase = SM.f ? 1 : 2;
+            break;
+        case 1:
+            if (!fgets(line, sizeof(line), SM.f)) { fclose(SM.f); SM.f = NULL; SM.phase = 2; break; }
+            used += strlen(line);
+            if (++SM.ln <= 2 || strlen(line) < 17) break;
+            {
+                uint32_t h = 2166136261u;
+                for (int i = 0; i < 17; i++) h = (h ^ (uint8_t)line[i]) * 16777619u;
+                h = (h ^ h >> 16) & 0xFFFF;
+                if (!(sm_seen[h >> 3] & (1u << (h & 7)))) { sm_seen[h >> 3] |= (uint8_t)(1u << (h & 7)); SM.o.finds++; }
+            }
+            break;
+        case 2:
+            SM.f = wd_drive_path(p, sizeof(p), stem, "gpx", false) ? fopen(p, "r") : NULL;
+            SM.phase = SM.f ? 3 : 4;
+            break;
+        case 3: {
+            if (!fgets(line, sizeof(line), SM.f)) { fclose(SM.f); SM.f = NULL; SM.phase = 4; break; }
+            used += strlen(line);
+            const char *t = strstr(line, "<trkpt lat=\"");
+            double la, lo;
+            if (!t || sscanf(t, "<trkpt lat=\"%lf\" lon=\"%lf\"", &la, &lo) != 2) break;
+            const char *tm = strstr(line, "<time>");
+            unsigned y, mo, dd, h, mi, s;
+            uint32_t utc = 0;
+            if (tm && sscanf(tm, "<time>%4u-%2u-%2uT%2u:%2u:%2u", &y, &mo, &dd, &h, &mi, &s) == 6) {
+                utc = utc_of(y, mo, dd, h, mi, s);
+                if (!SM.o.start_utc) SM.o.start_utc = utc;
+                if (utc > SM.o.start_utc) SM.o.secs = utc - SM.o.start_utc;
+            }
+            if (!SM.have) { SM.o.lat = la; SM.o.lon = lo; }
+            else {
+                const double dx = (lo - SM.plon) * M_PER_DEG * cos(la * M_PI / 180), dz = (la - SM.plat) * M_PER_DEG;
+                const double d = sqrt(dx * dx + dz * dz);
+                /* a jump no car makes (the live gate's rule): the step is not
+                   driven, the point still becomes the next anchor */
+                const uint32_t dt = utc && SM.pt && utc > SM.pt ? utc - SM.pt : 1;
+                if (d / (double)dt <= JUMP_MPS) SM.o.km += (float)(d / 1000.0);
+            }
+            SM.plat = la; SM.plon = lo; SM.pt = utc; SM.have = true;
+            break;
+        }
+        default: {
+            txt_path(p, sizeof(p), stem, true);
+            FILE *f = exists(p) ? NULL : fopen(p, "w");
+            if (f) {
+                fprintf(f, "start_utc=%lu\nsecs=%lu\nkm=%.2f\nfinds=%u\nlat=%.5f\nlon=%.5f\nfrom=old drive\n",
+                        (unsigned long)SM.o.start_utc, (unsigned long)SM.o.secs, (double)SM.o.km, SM.o.finds, SM.o.lat, SM.o.lon);
+                fclose(f);
+            }
+            wd_drive_info(stem, out);           /* sizes, and the summary just kept */
+            if (!out->summary) {                /* no card write: hand the figures over anyway */
+                out->secs = SM.o.secs; out->km = SM.o.km; out->finds = SM.o.finds;
+                out->lat = SM.o.lat; out->lon = SM.o.lon;
+                if (SM.o.start_utc) out->start_utc = SM.o.start_utc;
+                out->summary = true;
+            }
+            SM.stem[0] = 0;
+            return 1;
+        }
+        }
+    }
+    return 0;
+}
+
+/* A position from the atlas's access points while the GPS is weak or gone
+   (wd_atlas_locate): it moves the board and the track, never places a find
+   (a find placed from the atlas would feed the atlas its own guesses). */
+static void trail_add(double lat, double lon, float x, float z, float alt, uint32_t now);
+static void wifi_fix(double lat, double lon, float err, int used, uint32_t now)
+{
+    if (!S.origin) return;
+    float x, z;
+    wd_local(lat, lon, &x, &z);
+    S.wifi_fix = true;
+    S.wifi_used = (uint8_t)used;
+    S.wifi_err_m = err;
+    S.wifi_ms = now ? now : 1;
+    if (nt) {
+        const wd_pt_t *l = &T[nt - 1];
+        const float d = hypotf(x - l->x, z - l->z);
+        if (now > l->ms && d * 1000.0f / (float)(now - l->ms) > JUMP_MPS) return;
+        if (d < (t_step > err * 0.5f ? t_step : err * 0.5f)) { S.x = x; S.z = z; return; }  /* inside its own error: no step */
+        S.dist_m += d;
+        S.wifi_m += d;
+    }
+    trail_add(lat, lon, x, z, S.fix.alt_m, now);
+    S.x = x; S.z = z;
 }
 
 /* ------------------------------------------------------------ session */
@@ -154,18 +513,21 @@ bool wd_begin(uint32_t now, const bool src[WD_KINDS], bool only_fix)
     S.start_ms = now;
     S.card = 1;
     for (int k = 0; k < WD_KINDS; k++) S.src[k] = src[k];
+    wd_track_reset();
     if (fix.fix && fix_ms) {
         S.origin = true;
         S.lat0 = fix.lat; S.lon0 = fix.lon;
         S.m_lat = (float)M_PER_DEG;
         S.m_lon = (float)(M_PER_DEG * cos(fix.lat * M_PI / 180));
     }
+    wd_atlas_session(true, false, now);
     return true;
 }
 
 bool wd_begin_replay(uint32_t now)
 {
-    const bool all[WD_KINDS] = { true, true, true, true };
+    bool all[WD_KINDS];
+    for (int k = 0; k < WD_KINDS; k++) all[k] = true;
     const wd_fix_t keep = S.fix;
     const uint32_t keep_ms = S.fix_ms;
     S.fix.fix = false;                 /* the drive's first fix sets the origin, not where the board is now */
@@ -173,6 +535,8 @@ bool wd_begin_replay(uint32_t now)
     if (!wd_begin(now, all, false)) { S.fix = keep; S.fix_ms = keep_ms; return false; }
     S.replay = true;
     S.utc_base = 0;
+    wd_atlas_session(false, false, now);    /* wd_begin opened a live one: say it was a replay */
+    wd_atlas_session(true, true, now);
     return true;
 }
 
@@ -187,6 +551,7 @@ void wd_end(uint32_t now)
     if (!S.running) return;
     S.running = false;
     S.stop_ms = now;
+    wd_atlas_session(false, S.replay, now);
 }
 
 const wd_stats_t *wd_stats(void) { return &S; }
@@ -242,10 +607,33 @@ void wd_fix_note(const wd_fix_t *f, uint32_t now)
     S.fix.compass_deg = f->compass_deg;
     if (!f->fix || !isfinite(f->lat) || !isfinite(f->lon)) {
         S.fix.fix = false;
+        S.fix_weak = false;
+        S.settle = 0;                       /* a loss: the next position settles again */
         if (f->compass_deg >= 0 && S.speed < 1.0f) S.heading = f->compass_deg;
         return;
     }
-    S.fix = *f;
+    /* the gate (see WD_HDOP_MAX) */
+    static double c_lat, c_lon;             /* the last good fix seen, settled or not */
+    static uint32_t c_ms;
+    /* a replay feeds points its drive already kept: only the jump check below applies */
+    const bool weak = !S.replay && ((isfinite(f->hdop) && f->hdop > WD_HDOP_MAX) || (f->sats > 0 && f->sats < 4));
+    S.fix = *f;                             /* the screen shows whatever the GPS says */
+    if (weak) { S.fix_weak = true; S.settle = 0; S.fixes_dropped++; return; }
+    if (!S.replay && S.settle < SETTLE) {
+        float ax = 0, az = 0;
+        if (c_ms && now - c_ms < 10000) {
+            const float dl = (float)((f->lat - c_lat) * M_PER_DEG);
+            const float dn = (float)((f->lon - c_lon) * M_PER_DEG * cos(f->lat * M_PI / 180));
+            ax = dl; az = dn;
+        }
+        const bool agrees = c_ms && now - c_ms < 10000 && hypotf(ax, az) <= SETTLE_M + (f->speed_mps > 0 ? f->speed_mps * (float)(now - c_ms) / 1000.0f : 0);
+        S.settle = agrees ? (uint8_t)(S.settle + 1) : 1;
+        c_lat = f->lat; c_lon = f->lon; c_ms = now ? now : 1;
+        if (S.settle < SETTLE) { S.fix_weak = true; S.fixes_dropped++; return; }
+    }
+    c_lat = f->lat; c_lon = f->lon; c_ms = now ? now : 1;
+    S.fix_weak = false;
+    S.wifi_fix = false;                     /* the GPS is back */
     S.fix_ms = now ? now : 1;
     if (!S.origin) {
         S.origin = true;
@@ -265,7 +653,10 @@ void wd_fix_note(const wd_fix_t *f, uint32_t now)
             const float d = hypotf(x - l->x, z - l->z);
             /* Standing still the fix wanders a few metres: that is not driving. */
             if (d >= t_step && (S.speed > 0.4f || d >= 15.0f)) {
-                if (d > 300.0f && now - l->ms < 3000) return;   /* a jump no car makes: a bad fix */
+                if (now > l->ms && d * 1000.0f / (float)(now - l->ms) > JUMP_MPS) {
+                    S.fixes_dropped++;              /* a jump no car makes: a bad fix */
+                    return;
+                }
                 S.dist_m += d;
                 trail_add(f->lat, f->lon, x, z, f->alt_m, now);
                 if (f->speed_mps < 0 && now > l->ms) S.speed = d * 1000.0f / (float)(now - l->ms);
@@ -387,10 +778,36 @@ static int fresh_slot(void)
     return old;
 }
 
+/* A target goes where the board's other watchers' finds go (ls_seen), so
+   DETECTOR's rules, the HOME lamp and the Flipper summary see what WARDRIVE
+   matched, as SWEEP's categories: once when found, once more when it is
+   found to follow. Live Wi-Fi and Bluetooth only (the queue speaks those). */
+static void seen_post(wd_dev_t *e)
+{
+#ifdef ESP_PLATFORM
+    if (S.replay || e->radio == WD_RADIO_PEER || (e->kind != WD_WIFI && e->kind != WD_BLE)) return;
+    const uint16_t t = e->tags;
+    int cat = -1;
+    if (t & (WD_T_HACKTOOL | WD_T_SKIMMER)) cat = SW_ATTACK;
+    else if (t & (WD_T_BODYCAM | WD_T_POLICE)) cat = SW_BODYCAM;
+    else if (t & WD_T_DRONE) cat = SW_DRONE;
+    else if (t & (WD_T_ALPR | WD_T_CAMERA | WD_T_WEARABLE)) cat = SW_CAMERA;
+    else if (t & (WD_T_TRACKER | WD_T_FOLLOW)) cat = SW_TRACKER;
+    if (cat < 0) return;
+    const uint8_t want = (uint8_t)(1 | ((t & WD_T_FOLLOW) ? 2 : 0));
+    if ((e->posted & want) == want) return;
+    e->posted |= want;
+    ls_seen_observe(e->addr, 0, e->kind == WD_WIFI ? LS_SEEN_WIFI : LS_SEEN_BLE, (uint8_t)cat, e->rssi, true, false,
+                    (t & WD_T_FOLLOW) ? SW_WITH_YOU : SW_NEW, esp_timer_get_time());
+#else
+    (void)e;
+#endif
+}
+
 int wd_note(const wd_obs_t *o, uint32_t now)
 {
     if (!S.running || !D || o->kind >= WD_KINDS || !S.src[o->kind]) return -1;
-    const bool fresh = S.fix_ms && S.fix.fix && now - S.fix_ms <= FRESH_MS;
+    const bool fresh = S.fix_ms && S.fix.fix && !S.fix_weak && now - S.fix_ms <= FRESH_MS;   /* never place a find at a weak fix */
     if (S.only_fix && !fresh) return -1;
     int i = find(o->kind, o->addr);
     bool added = false;
@@ -405,7 +822,13 @@ int wd_note(const wd_obs_t *o, uint32_t now)
         e->rssi = e->row_rssi = o->rssi;
         e->auth = o->auth;
         e->channel = o->channel;
+        e->radio = o->radio;
+        e->sub = o->sub;
+        e->freq_khz = o->freq_khz;
         snprintf(e->name, sizeof(e->name), "%s", o->name);
+        uint16_t t = o->tags;
+        e->sig = sig_match(o, &t);
+        e->tags = t;
         const unsigned b = bucket(e->kind, e->addr);
         e->next = H[b];
         H[b] = (uint16_t)(i + 1);
@@ -419,13 +842,21 @@ int wd_note(const wd_obs_t *o, uint32_t now)
         d->lane = (uint8_t)(bucket(o->kind, o->addr) * 7u);
         d->ms = now;
         snprintf(d->name, sizeof(d->name), "%s", o->name);
+        d->tags = e->tags;
         r_head = (r_head + 1) % WD_DROPS;
         if (r_count < WD_DROPS) r_count++;
         added = true;
     } else {
         e = &D[i];
         if (now - e->sample_ms < 1000 && o->rssi <= e->last_rssi) return 0;   /* once a second is plenty */
-        if (!e->name[0] && o->name[0]) snprintf(e->name, sizeof(e->name), "%s", o->name);
+        if (!e->name[0] && o->name[0]) {
+            /* a name said late may be the one the table knows */
+            snprintf(e->name, sizeof(e->name), "%s", o->name);
+            uint16_t t = e->tags | o->tags;
+            const uint16_t sg = sig_match(o, &t);
+            if (sg && !e->sig) e->sig = sg;
+            e->tags = t;
+        } else e->tags |= o->tags;
         if (o->kind == WD_WIFI && o->auth != WD_AUTH_UNKNOWN) e->auth = o->auth;
         if (o->channel) e->channel = o->channel;
     }
@@ -443,7 +874,8 @@ int wd_note(const wd_obs_t *o, uint32_t now)
         e->flags |= WD_F_PLACED;
     }
     if (stronger) e->rssi = o->rssi;
-    if ((o->kind == WD_WIFI || o->kind == WD_BLE) && fresh && S.utc_base && !S.replay) {
+    /* WiGLE rows are what this board heard: a party member's report is not one */
+    if ((o->kind == WD_WIFI || o->kind == WD_BLE) && o->radio != WD_RADIO_PEER && fresh && S.utc_base && !S.replay) {
         bool want = !(e->flags & WD_F_ROW) || o->rssi >= e->row_rssi + 6;
         if (!want) {
             float ax, az, bx, bz;
@@ -453,6 +885,9 @@ int wd_note(const wd_obs_t *o, uint32_t now)
         }
         if (want) row_queue(e, o->rssi);
     }
+    wd_track_note(i, e, added, now);
+    wd_atlas_note(i, e, added, now);
+    seen_post(e);
     return added ? 1 : 0;
 }
 
@@ -476,8 +911,8 @@ static bool csv_open(void)
     const char *dir = wd_feed_dir();
     if (!*dir) { S.card = -1; say("cannot make the wardrive folder"); return false; }
     stamp_make();
-    char path[96];
-    snprintf(path, sizeof(path), "%s/%s.csv", dir, S.stamp);
+    char path[160];
+    wd_drive_path(path, sizeof(path), S.stamp, "csv", true);       /* the drive's own folder */
     /* New for a new session; after a failed write it is carried on. */
     csv_f = fopen(path, S.csv[0] ? "a" : "w");
     if (!csv_f) { S.card = -1; say("cannot write %s", path); return false; }
@@ -528,7 +963,7 @@ static void csv_complete(uint32_t now)
         const int count = nd;
         for (int i = base; i < count && i < base + 32; i++) {
             wd_dev_t *e = &D[i];
-            if ((e->kind != WD_WIFI && e->kind != WD_BLE) || !(e->flags & WD_F_PLACED) || (e->flags & WD_F_ROW)) continue;
+            if ((e->kind != WD_WIFI && e->kind != WD_BLE) || e->radio == WD_RADIO_PEER || !(e->flags & WD_F_PLACED) || (e->flags & WD_F_ROW)) continue;
             const int w = row(buf + n, sizeof(buf) - n, e, e->rssi, e->lat, e->lon, e->alt, NAN);
             if (w <= 0) continue;
             n += (size_t)w;
@@ -567,8 +1002,8 @@ static bool gpx_write(void)
     const char *dir = wd_feed_dir();
     if (!*dir) return false;
     stamp_make();
-    char path[96], when[24];
-    snprintf(path, sizeof(path), "%s/%s.gpx", dir, S.stamp);
+    char path[160], when[24];
+    wd_drive_path(path, sizeof(path), S.stamp, "gpx", true);
     FILE *f = fopen(path, "w");
     if (!f) return false;
     fputs("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -621,6 +1056,7 @@ static void do_export(uint32_t now)
     csv_complete(now);
     const bool g = gpx_write();
     wd_lock();
+    if (wd_feed_card()) summary_write();       /* drive.txt: what the replay list shows */
     if (!wd_feed_card()) say("no card: nothing written");
     else if (S.card < 0) say("card write failed");
     else say("saved %u rows%s", S.rows, g ? " + GPX track" : ", GPX failed");
@@ -629,7 +1065,7 @@ static void do_export(uint32_t now)
 
 static void do_locker(void)
 {
-    char csv[96];
+    char csv[128];
     wd_lock();
     snprintf(csv, sizeof(csv), "%s", S.csv);
     wd_unlock();
@@ -648,7 +1084,7 @@ static void locker_next(void)
     char text[72];
     bool busy = true;
     if (!wd_feed_hub(text, sizeof(text), &busy) || busy) return;
-    char gpx[96];
+    char gpx[128];
     wd_lock();
     snprintf(gpx, sizeof(gpx), "%s", S.gpx);
     wd_unlock();
@@ -683,7 +1119,16 @@ void wd_step(uint32_t now)
     if (S.running && !S.replay) {
         for (int i = 0; i < n; i++) wd_note(&obs[i], now);
         if (scans) { S.scans += scans; S.scan_ms = now ? now : 1; }
+        /* no GPS worth having: where the known access points say we are */
+        if ((S.fix_weak || !S.fix.fix || now - S.fix_ms > FRESH_MS) && scans) {
+            double la, lo;
+            float err;
+            int used;
+            if (wd_atlas_locate(obs, n, &la, &lo, &err, &used)) wifi_fix(la, lo, err, used, now);
+        }
+        if (S.wifi_fix && now - S.wifi_ms > 30000) S.wifi_fix = false;
     }
+    if (S.running) wd_track_tick(now);
     const size_t len = rows ? wd_take_rows(out, sizeof(out)) : 0;
     const int r = req;
     req = 0;
@@ -696,6 +1141,7 @@ void wd_step(uint32_t now)
     else if (stopped && csv_f) csv_flush(now, true);
     if (r & WD_REQ_LOCKER) do_locker();
     locker_next();
+    wd_atlas_step(now);
 }
 
-bool wd_busy(void) { return (S.running && !S.replay) || req || gpx_pending || csv_f; }
+bool wd_busy(void) { return (S.running && !S.replay) || req || gpx_pending || csv_f || wd_atlas_pending(); }   /* the atlas compacts right after a drive */

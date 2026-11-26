@@ -1,7 +1,7 @@
 # SUB-GHZ
 
 Read a remote, record it raw, replay it, and find the frequency of one you
-do not know - a Flipper's Sub-GHz app on a large touch screen.
+do not know: a Flipper's Sub-GHz app on a large touch screen.
 
 | | |
 |---|---|
@@ -20,7 +20,7 @@ and what was heard:
 | RECORD RAW | 2 | Keep the next burst as a `.sub` file, whatever it is, and replay it |
 | SAVED | 3 | Caught patterns, and `.sub` files on the SD card: SEND, SAVE, RENAME, DELETE |
 | FREQUENCY ANALYZER | 4 | Find the frequency of a remote you do not know. LISTEN HERE hands it to READ |
-| SETTINGS | 5 | Everything else: radio, TX power, LEARN, detection threshold, chart, and the rest |
+| SETTINGS | 5 | Every setting in one list. Each page also has a SETTINGS key with only its own |
 
 A beginner needs only the first four and never has to open SETTINGS: every
 setting has a default that works.
@@ -30,6 +30,9 @@ disarms it, leaving the analyzer stops the sweep, and leaving SUB-GHZ stops
 whichever was running. The menu shows what is running beside each item
 (LISTENING, ARMED, SWEEPING) and NEW on SAVED when a recording has landed.
 
+SUB-GHZ opens at once and reads its capture history from the card while you
+use it. READ shows LOADING until that is done.
+
 READ groups repeats of the same pattern and counts how often it was heard.
 Known pulse-width and run-length OOK families are decoded, and a repeated
 24-bit pattern shows as OOK24. Captures are kept on the card across reboots.
@@ -37,12 +40,15 @@ Known pulse-width and run-length OOK families are decoded, and a repeated
 ## Radio
 
 SETTINGS > Radio (or R) picks the receiver. It is shared with REC, and each
-receiver keeps its own frequency.
+receiver keeps its own frequency. SETTINGS > Modulation chooses how READ and
+RECORD RAW listen, from what that radio can do:
 
-- **RTL-SDR or HackRF**: raw OOK pulse capture with adjustable capture setup. RECORD keeps one raw capture as a `.sub`.
-- **CC1101** on the keyboard board: raw OOK with a fixed profile (650 kHz, 40 us filter, 30 ms end gap). It tunes 300 to 348, 387 to 464 and 779 to 928 MHz.
-- **LoRa chip**: 2-FSK receive with your bit rate, deviation, bandwidth, preamble and sync word. LEARN measures them. MESH pauses while READ listens or LEARN runs, and the banner shows MESH PAUSED.
-- **LR2021**: as the LoRa chip, and RECORD keeps up to 262 ms of raw I/Q.
+- **RTL-SDR or HackRF**: OOK (AM) or 2-FSK (FM), with adjustable capture setup. RECORD keeps one raw capture as a `.sub`.
+- **CC1101** on the keyboard board: OOK with a fixed profile (650 kHz, 40 us filter, 30 ms end gap). It tunes 300 to 348, 387 to 464 and 779 to 928 MHz.
+- **SX1262**: 2-FSK PACKET, with your bit rate, deviation, bandwidth, preamble and sync word. LEARN measures them. MESH pauses while READ listens or LEARN runs, and the banner shows MESH PAUSED.
+- **LR2021**: OOK from its I/Q stream, 2-FSK RAW from its I/Q stream, or 2-FSK PACKET by sync word. RECORD keeps up to 262 ms of raw I/Q.
+
+Modulation waits until READ and RECORD have stopped.
 
 The FREQUENCY ANALYZER's sweep always uses the LoRa chip.
 
@@ -66,6 +72,7 @@ keys.
 - SEND (T, or ENTER) transmits it once, at the power set in SETTINGS; + and - change the power.
 - SAVE (E) writes it to the card as a Flipper `.sub` file.
 - MORE (Q): SEND AT... (pick the power for this send), PIN or UNPIN, and JOURNAL (a note with GPS and time).
+- ON THE AIR draws the packet as it goes out: preamble, sync word, length, data and CRC, each in its own colour, filling at the packet's real airtime. A burst that is not a packet shows as its edges. While READ listens, the packet it just heard shows the same way for a few seconds.
 - The PULSE INSPECTOR shows its first 48 edges; tap the trace to read one pulse. SETTINGS > Pulse inspector turns it off.
 - BACK returns to the list it was opened from. A capture opened from READ goes on listening.
 
@@ -95,10 +102,21 @@ Nothing is received until you press START.
 - The frame's title names the chart being drawn: ANALYZER / BARS, ASCII, WATERFALL or LIVE I/Q. SETTINGS > Analyzer chart picks it (U swaps bars and waterfall). LIVE I/Q is the LR2021's own 125 kHz around READ's frequency, on a board with an LR2021 and no SDR; START starts it and STOP stops it like the sweep. Where it is not available the chart is BARS, and says BARS.
 - The bottom edge of the chart says what a hit does. With On detection set to BUZZ + LISTEN it reads ARMED: 1ST HIT > READ while the sweep runs, and on the first hit SUB-GHZ goes to READ listening there.
 
-**SETTINGS** (5, or O from any page)
+**SETTINGS**
+
+Each page has its own SETTINGS key (O), which lists only the rows for that
+page. 5 on the menu lists them all.
+
+| Page | Its SETTINGS |
+|---|---|
+| READ | Radio, Frequency, Modulation, Capture setup, the LEARN rows, Pulse inspector, List legend, Mesh alerts, Save to FREQS |
+| RECORD RAW | Radio, Frequency, TX power, TX limits, Modulation, Capture setup, Recorder view |
+| SEND (SAVED, a capture, a file) | Radio, TX power, TX limits, After a send, Pulse inspector |
+| ANALYZER | Radio, Frequency, the analyzer rows, Mesh alerts, Save to FREQS, and with an RTL-SDR the CATCH rows |
 
 - **Radio**, **Frequency**, **TX power** (kept across a reboot), **After a send** (keep listening, or stay stopped).
-- **LR2021 receive**: OOK from its I/Q stream, or FSK packets.
+- **TX limits**: PROTECTED keeps the power at +10 dBm or less. UNLOCKED adds +14, +17 and +22 dBm on the LoRa chip; the CC1101 stays at +10 dBm. The choice is kept across a restart. It cannot change while a send is going out.
+- **Modulation**: how READ and RECORD RAW listen, as under Radio above.
 - **Capture setup**, RTL-SDR or HackRF: Threshold (0 is automatic), End gap, Minimum pulse, Maximum capture, Minimum edges, and Restore defaults.
 - **Capture setup**, LoRa chip: Bit rate, Deviation, Bandwidth, Preamble, Sync word, and Restore defaults (4800 / 25k / 2DD42DD4). The CC1101 profile is fixed.
 - **LEARN a remote**, **LEARN window** (30, 15 or 60 seconds), **Undo LEARN**, **Apply last LEARN**: below.
@@ -115,8 +133,8 @@ window and says "Press the remote", with what it is trying and how far it has
 got.
 
 - On the LR2021 one press is usually enough: LEARN listens through the
-  chip's I/Q stream and takes a packet whole - the bit rate from its
-  preamble, the deviation from its two tones, the sync word read - and stops
+  chip's I/Q stream and takes a packet whole (the bit rate from its
+  preamble, the deviation from its two tones, the sync word read) and stops
   as soon as it has it. A packet with a CRC that checks, or a radio chip's
   default sync word, is taken from the one burst (95%). One with neither
   could as well be a voice set keying up, so the banner asks for a second
@@ -184,7 +202,7 @@ R stays RADIO, as in every app, so RECORD is D, the key READ RAW had.
 ## Tips and limits
 
 - A pattern match is not a device identity. List legend (i) explains the list.
-- SEND appears for CC1101 and LoRa chip captures. Power is -9 to +10 dBm (-10 to +10 dBm on the CC1101). Replay works in 300 to 348, 387 to 464 and 779 to 928 MHz, for 6 to 4096 edges up to 10 seconds.
+- SEND appears for CC1101 and LoRa chip captures. Power is -9 to +10 dBm (-10 to +10 dBm on the CC1101), or up to +22 dBm on the LoRa chip with TX limits on UNLOCKED. Replay works in 300 to 348, 387 to 464 and 779 to 928 MHz, for 6 to 4096 edges up to 10 seconds.
 - A JOURNAL note carries the GPS fix from when you kept it, not from when the pattern was first heard.
 - SAVED shows the newest 48 `.sub` files.
 - Check your local rules before transmitting.

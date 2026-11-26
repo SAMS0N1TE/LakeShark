@@ -217,6 +217,7 @@ static const ls_opt_ctx_t BT_CTX = {.name="BLUETOOTH", .job=-1, .radio=LS_RSEL_N
 /* ---- REMOTE: the board from a phone or a PC ------------------------------ */
 
 static bool s_show_pass;
+static bool s_desk_tabs;      /* the desk drew the pages as a tab strip (LS_BTN_SLOT_QUICK) */
 
 static void pass_done(const char *p)
 {
@@ -840,14 +841,29 @@ static void draw(tui_surface *sf, tui_rect area)
     ls_rterm_status_t st;
     ls_rterm_status(&st);
     int y = area.y;
-    y += header(sf, area, &st, wide);
+    /* Desk: the keys are the one toolbar under the menu bar, and the three
+       pages a tab strip on the page; the finger-sized tabs are the handheld's. */
+    const bool desk = ls_tui_compact();
+    tui_rect tool = tui_rect_make(0, -1, 0, 0);
+    if (desk) tool = tui_rect_make(area.x, y++, area.w, 1);
+    y += header(sf, tui_rect_make(area.x, y, area.w, area.y + area.h - y), &st, wide);
 
+    s_desk_tabs = desk;
+    if (desk) {
+        const ls_btn_t tabs[3] = {
+            { "WI-FI", NULL, 'W', s_tab == TAB_WIFI, false, false },
+            { "BLUETOOTH", NULL, 'B', s_tab == TAB_BT, false, false },
+            { "REMOTE", NULL, 'E', s_tab == TAB_REMOTE, false, false },
+        };
+        ls_btn_tabs_slot(sf, tui_rect_make(area.x, y++, area.w, 1), tabs, 3, -1, LS_BTN_SLOT_QUICK);
+    } else {
     const int tab_h = wide ? 3 : 4, tab_w = area.w / 3;
     button(sf, tui_rect_make(area.x, y, tab_w, tab_h), "WI-FI", 'W', s_tab == TAB_WIFI, false, -1);
     button(sf, tui_rect_make(area.x + tab_w, y, tab_w, tab_h),
            tab_w >= 13 ? "BLUETOOTH" : "BT", 'B', s_tab == TAB_BT, false, -1);
     button(sf, tui_rect_make(area.x + tab_w * 2, y, area.w - tab_w * 2, tab_h), "REMOTE", 'E', s_tab == TAB_REMOTE, false, -1);
     y += tab_h;
+    }
     tui_rect body = tui_rect_make(area.x, y, area.w, area.y + area.h - y);
 
     /* The big keys, under the thumb: what is done on the move. */
@@ -877,12 +893,12 @@ static void draw(tui_surface *sf, tui_rect area)
     }
     for (int i = 0; i < n; i++) s_bar_keys[i] = bar[i].key;
     s_bar_n = n;
-    const int bar_h = ls_btn_raised_height(body, n);
-    tui_rect content = tui_rect_make(body.x, body.y, body.w, body.h - bar_h - 1);
+    const int bar_h = desk ? 0 : ls_btn_raised_height(body, n);
+    tui_rect content = tui_rect_make(body.x, body.y, body.w, body.h - bar_h - (desk ? 0 : 1));
     if (s_tab == TAB_REMOTE) remote_panels(sf, content, &st, wide);
     else if (s_tab == TAB_BT) bt_page(sf, content, wide);
     else wifi_page(sf, content);
-    ls_btn_bar_raised(sf, tui_rect_make(body.x, body.y + body.h - bar_h, body.w, bar_h), bar, n, s_focus);
+    ls_btn_bar_raised(sf, desk ? tool : tui_rect_make(body.x, body.y + body.h - bar_h, body.w, bar_h), bar, n, s_focus);
 }
 
 static bool key(ls_tk_t k, char ch)
@@ -916,6 +932,10 @@ static bool touch(int x, int y)
 {
     const int b = ls_btn_hit(x, y);
     if (b >= 0 && b < s_bar_n) { act(s_bar_keys[b]); return true; }
+    if (s_desk_tabs) {
+        const int t = ls_btn_hit_slot(x, y, LS_BTN_SLOT_QUICK);
+        if (t >= 0 && t < 3) { act("WBE"[t]); return true; }
+    }
     for (int i = 0; i < s_hit_count; i++) {
         hit_t hit = s_hits[i];
         if (x < hit.rect.x || x >= hit.rect.x + hit.rect.w || y < hit.rect.y || y >= hit.rect.y + hit.rect.h) continue;
