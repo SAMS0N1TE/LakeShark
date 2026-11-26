@@ -23,6 +23,7 @@
 #include "lap_scroll.h"
 #include "mt_pki.h"
 #include "mt_proto.h"
+#include "mt_scan.h"
 #include "mt_xlate.h"
 #include "qrcodegen.h"
 #include <math.h>
@@ -359,9 +360,18 @@ static int gps_lease;
 static uint32_t ch_busy[6], tx_busy[6], ch_epoch, tx_epoch;
 static uint32_t trace_id, trace_to, trace_ms;
 static char trace_fwd[72], trace_back[72];
+/* SCAN (mt_scan.c): which presets are in use nearby. While it runs the radio
+   sits on the preset being scanned, so the node neither sends nor hears its
+   own mesh; STOP (or leaving the app) puts it back. */
+static mt_scan_t scan;
+static bool scan_on;
+static int scan_sel;                    /* the row UP/DOWN chose; PIN pins it */
+static uint8_t scan_dwell = 1;          /* SCAN_DWELL_S index */
+static const uint16_t SCAN_DWELL_S[] = { 5, 10, 20, 30, 60 };
+static const char *const SCAN_DWELL_NAMES[] = { "5 S", "10 S", "20 S", "30 S", "60 S" };
 
 /* ---- screen ------------------------------------------------------------ */
-enum { TAB_CHAT, TAB_NODES, TAB_RADAR, TAB_AIR, TAB_LANG, TABS };
+enum { TAB_CHAT, TAB_NODES, TAB_RADAR, TAB_AIR, TAB_SCAN, TAB_LANG, TABS };
 static int tab, scroll, sel;
 static bool chat_new;               /* a message came: CHAT follows it down */
 static bool node_open;              /* NODES: one node's page */
@@ -808,11 +818,23 @@ static bool duty_ok(int len)
     return (uint64_t)(sum + airtime_ms(len)) * 100u <= (uint64_t)d * 3600000u;
 }
 
+/* SCAN: the preset being scanned, receive only. */
+static lap_packet_config_t scan_cfg(void)
+{
+    const mt_scan_entry_t *e = &scan.e[scan.cur];
+    return (lap_packet_config_t){ .size = sizeof(lap_packet_config_t), .version = 1,
+        .frequency_hz = e->freq_hz, .bandwidth_hz = e->bw_hz, .sync_word = MT_SYNC_WORD,
+        .preamble = e->preamble, .modulation = LAP_MOD_LORA, .sf = e->sf, .coding_rate = e->cr,
+        .crc = 1, .payload_bytes = 0, .power_dbm = 0 };
+}
+static bool scanning(void) { return scan_on && scan.cur >= 0 && scan.cur < scan.n; }
+
 static void rx_close(void) { if (rxh > 0) lap_packet_close(rxh); rxh = 0; }
 static void rx_open(void)
 {
-    if (radio < 0 || rxh > 0 || txh > 0 || region_state) return;
-    lap_packet_config_t c = lora_cfg();
+    if (radio < 0 || rxh > 0 || txh > 0) return;
+    if (scanning() ? region_state == 1 : region_state != 0) return;
+    lap_packet_config_t c = scanning() ? scan_cfg() : lora_cfg();
     rxh = lap_packet_open(radio, &c);
     static int last_err;
     if (rxh < 0) {
@@ -821,6 +843,52 @@ static void rx_open(void)
     } else { rx_error = last_err = 0; }
 }
 static void retune(void) { apply_channel(); rx_close(); rx_open(); }
+
+/* SCAN: the plan for the node's region (made again when the region changes). */
+static void scan_plan(void)
+{
+    if (scan.n && scan.region == cfg.region) return;
+    const bool was = scan_on;
+    mt_scan_init(&scan, cfg.region, SCAN_DWELL_S[scan_dwell % 5] * 1000u);
+    scan_sel = 0;
+    if (was && mt_scan_start(&scan, lap_millis()) < 0) scan_on = false;
+}
+static void scan_go(bool on)
+{
+    if (on == scan_on) return;
+    const uint32_t now = lap_millis();
+    if (on) {
+        if (radio < 0 || region_state == 1) { say("no LoRa radio for %s", MT_REGIONS[cfg.region].name); return; }
+        scan_plan();
+        if (mt_scan_start(&scan, now) < 0) { say("no preset fits %s", MT_REGIONS[cfg.region].name); return; }
+        scan_on = true;
+        say("scanning %d presets on %s", scan.n, MT_REGIONS[cfg.region].name);
+    } else {
+        mt_scan_stop(&scan, now);
+        scan_on = false;
+        say("scan stopped, back on %s", preset_name());
+    }
+    if (txh <= 0) { rx_close(); rx_open(); }   /* a send in flight reopens when it ends */
+}
+static void scan_pin(int entry)
+{
+    scan_plan();
+    if (entry >= 0 && entry < scan.n && scan.pin == entry) entry = -1;   /* again: cycle */
+    const int t = mt_scan_pin(&scan, entry, lap_millis());
+    if (t >= 0 && txh <= 0) { rx_close(); rx_open(); }
+    if (entry >= 0) say("listening on %s only", MT_SCAN_PRESETS[scan.e[entry].preset].name);
+    else say("cycling all presets again");
+}
+/* poll(): the dwell clock, and a new preset when it is time. */
+static void scan_service(void)
+{
+    if (scan.region != cfg.region) {            /* LORA > REGION changed under the scan */
+        scan_plan();
+        if (txh <= 0) { rx_close(); rx_open(); }
+        return;
+    }
+    if (mt_scan_tick(&scan, lap_millis()) >= 0 && txh <= 0) { rx_close(); rx_open(); }
+}
 
 static void find_radio(void)
 {
@@ -1993,6 +2061,7 @@ static void tx_service(void)
         }
         return;
     }
+    if (scan_on) return;                        /* receive only while SCAN runs: sends wait */
     const uint32_t now = lap_millis();
     const bool quiet = role_quiet();
     if (nodeinfo_due) { nodeinfo_due = false; reply_delay = 900u + lap_random() % 1200u; send_nodeinfo(false); }
@@ -2149,7 +2218,9 @@ static void poll(void)
             meta.size = sizeof(meta);
             const int n = lap_packet_read(rxh, buf, sizeof(buf), &meta);
             if (n <= 0) break;
-            on_packet(buf, n, &meta);
+            if (!scan_on) on_packet(buf, n, &meta);
+            else if (mt_scan_heard(&scan, buf, n, meta.rssi_tenths_dbm, meta.snr_tenths_db, lap_millis()))
+                last_rx_ms = lap_millis();          /* the header's figures flicker for it too */
         }
         /* A receive session can end under us (the boot start hands the app
            from its screen to the background, another app takes the chip):
@@ -2177,6 +2248,7 @@ static void poll(void)
     } else if (txh <= 0) {
         rx_open();
     }
+    if (scan_on) scan_service();
     tx_service();
     if (lap_millis() - nodes_saved_ms > 300000u && node_n) nodes_dirty();
 }
@@ -2220,6 +2292,7 @@ enum {
     OPT_POS = 300, OPT_POSEVERY, OPT_SMART, OPT_SMART_M, OPT_SMART_S, OPT_FIXED,
     OPT_CH = 400, OPT_CH_NAME, OPT_CH_ROLE, OPT_CH_KEY, OPT_CH_MUTE, OPT_CH_PREC, OPT_SHARE, OPT_IMPORT,
     OPT_NOTIFY = 500, OPT_TELE, OPT_RANGE, OPT_NBR, OPT_XL_AUTO, OPT_QUICK, OPT_SPEAK,
+    OPT_SCAN_ON = 600, OPT_SCAN_DWELL, OPT_SCAN_PIN, OPT_SCAN_CLEAR, OPT_SCAN_PRESETS, OPT_SCAN_P0 = 620,
 };
 #define ROWS(a) ((int)(sizeof(a) / sizeof((a)[0])))
 enum { SUB_NODE, SUB_LORA, SUB_POS, SUB_CH, SUB_MOD, SUBS };
@@ -2326,7 +2399,12 @@ static double opt_get(int id)
     case OPT_XL_AUTO: return ui.xl_auto;
     case OPT_QUICK: return quick_lang() == MT_LANG_EN ? 0 : quick_lang() - MT_LANG_ES + 1;
     case OPT_SPEAK: return ui.speak % 3;
-    default: return 0;
+    case OPT_SCAN_ON: return scan_on;
+    case OPT_SCAN_DWELL: return scan_dwell % 5;
+    case OPT_SCAN_PIN: return scan.pin + 1;
+    default:
+        if (id >= OPT_SCAN_P0 && id < OPT_SCAN_P0 + scan.n) return scan.e[id - OPT_SCAN_P0].on;
+        return 0;
     }
 }
 
@@ -2370,7 +2448,18 @@ static void opt_set_row(int id, double v)
 {
     char t[64];
     const int iv = (int)v;
+    if (id >= OPT_SCAN_P0 && id < OPT_SCAN_P0 + scan.n) {        /* SCAN > PRESETS: in the cycle or out */
+        if (!mt_scan_enable(&scan, id - OPT_SCAN_P0, v != 0)) say("one preset stays in the scan");
+        return;
+    }
     switch (id) {
+    case OPT_SCAN_ON: scan_go(v != 0); return;
+    case OPT_SCAN_DWELL:
+        scan_dwell = (uint8_t)(iv < 0 ? 0 : iv % 5);
+        mt_scan_set_dwell(&scan, SCAN_DWELL_S[scan_dwell] * 1000u);
+        return;
+    case OPT_SCAN_PIN: if (iv - 1 != scan.pin) scan_pin(iv - 1); return;
+    case OPT_SCAN_CLEAR: mt_scan_clear(&scan); say("scan table cleared"); return;
     case OPT_TX: cfg.tx_on = v != 0; if (cfg.tx_on) send_nodeinfo(true); break;
     case OPT_BACK: opt_want = -1; return;
     case OPT_BACKUP: dirty |= SV_BACKUP; say("saving settings to the card"); return;
@@ -2608,7 +2697,37 @@ static void open_options_at(int at)
     else root_list = (lap_opt_list_t){ SUB_NAME[at], sub_rows[at], sub_n[at] + 1, opt_get, opt_set };
     if (!lap_options_open(&root_list)) say("OPTIONS could not open");
 }
-static void open_options(void) { open_options_at(-1); }
+/* On the SCAN tab OPTIONS opens SCAN's own level (the whole tree is full),
+   with "< ALL SETTINGS" on top: SCAN, DWELL, PIN, PRESETS (each in the cycle
+   or out), CLEAR TABLE. */
+static lap_opt_t scan_rows[6], scan_preset_rows[MT_SCAN_MAX];
+static lap_opt_list_t scan_list, scan_preset_list;
+static char scan_pin_unit[24];
+static void open_scan_options(void)
+{
+    scan_plan();
+    opt_build();                                         /* back_row: "< ALL SETTINGS" */
+    snprintf(scan_pin_unit, sizeof(scan_pin_unit), "of %d, 0 cycles", scan.n);   /* the board shows 8 names at most */
+    for (int i = 0; i < scan.n; i++) {
+        scan_preset_rows[i] = R(MT_SCAN_PRESETS[scan.e[i].preset].name, LAP_OPT_TOGGLE, OPT_SCAN_P0 + i, NULL, 0, 0, 0, 0, NULL);
+    }
+    scan_preset_list = (lap_opt_list_t){ "PRESETS", scan_preset_rows, scan.n, NULL, NULL };
+    int k = 0;
+    scan_rows[k++] = back_row;
+    scan_rows[k++] = R("SCAN", LAP_OPT_TOGGLE, OPT_SCAN_ON, NULL, 0, 0, 0, 0, NULL);
+    scan_rows[k++] = R("DWELL", LAP_OPT_CYCLE, OPT_SCAN_DWELL, SCAN_DWELL_NAMES, 5, 0, 0, 0, NULL);
+    scan_rows[k++] = R("PIN (ROW)", LAP_OPT_LEVEL, OPT_SCAN_PIN, NULL, 0, 0, scan.n, 1, scan_pin_unit);
+    scan_rows[k] = R("PRESETS", LAP_OPT_MENU, OPT_SCAN_PRESETS, NULL, 0, 0, 0, 0, NULL);
+    scan_rows[k++].sub = &scan_preset_list;
+    scan_rows[k++] = R("CLEAR TABLE", LAP_OPT_ACTION, OPT_SCAN_CLEAR, NULL, 0, 0, 0, 0, NULL);
+    root_list = (lap_opt_list_t){ "SCAN", scan_rows, k, opt_get, opt_set };
+    if (!lap_options_open(&root_list)) say("OPTIONS could not open");
+}
+static void open_options(void)
+{
+    if (tab == TAB_SCAN && !share_open && !langs_open) open_scan_options();
+    else open_options_at(-1);
+}
 
 /* Licensed (ham) operation: no encryption on any channel and no PKI, the
    long name a callsign; turning it on asks for one. */
@@ -2642,6 +2761,7 @@ static void enter(void)
     if (cfg.pki) pki_make();
     radio = -1; rxh = txh = 0; tx_slot = -1; dialog = -1; gps_lease = 0;
     menu_h = 0; pending_quick = pending_phrase = -1; node_open = false; opt_want = -2; opt_from = -2;
+    scan_on = false; scan.n = 0;
     memset(txq, 0, sizeof(txq));
     memset(shared, 0, sizeof(shared));
     memset(reacts, 0, sizeof(reacts));
@@ -2661,6 +2781,7 @@ static void enter(void)
 
 static void leave(void)
 {
+    scan_go(false);                     /* the node gets its own preset back */
     nodes_dirty();
     save_pump();
     if (lap_service_running()) return;     /* keeps the radio for the tick */
@@ -2718,7 +2839,7 @@ static bool calm(void) { return ui.anim != 0; }
 
 /* What a tap on the panel lands on, noted while the panel is drawn. */
 enum { HIT_MSG = 1, HIT_NODE, HIT_PHRASE, HIT_BLIP, HIT_XL_AUTO, HIT_XL_SHOW, HIT_TRY, HIT_AIR, HIT_HIST, HIT_HIST_CLEAR,
-       HIT_CONV, HIT_WPT, HIT_SHARE_ALL, HIT_XL_LANG, HIT_QUICK_LANG, HIT_XL_MORE };
+       HIT_CONV, HIT_WPT, HIT_SHARE_ALL, HIT_XL_LANG, HIT_QUICK_LANG, HIT_XL_MORE, HIT_SCAN };
 typedef struct { int16_t x0, y0, x1, y1; uint8_t kind; int16_t idx; } hit_t;
 #define HITS 96
 static hit_t hits[HITS];
@@ -3288,10 +3409,31 @@ static void chips_row(int x, int y, int w)
 
 /* 906.875 in 3x5 block figures, MHz beside; the last figure flickers
    while a packet comes in. */
+/* What the radio is on: the scanned preset while SCAN runs. */
+static uint64_t shown_hz(void) { return scanning() ? scan.e[scan.cur].freq_hz : freq_hz; }
+static void settings_line(int x, int y, int w, const char *more)
+{
+    if (scanning()) {
+        const mt_scan_entry_t *e = &scan.e[scan.cur];
+        put(x, y, w, A(LAP_YELLOW | LAP_BRIGHT), "%s SCAN %s  SF%u  s%d/%d", MT_REGIONS[cfg.region].name,
+            MT_SCAN_PRESETS[e->preset].name, e->sf, e->slot, e->slots);
+        return;
+    }
+    put(x, y, w, A(LAP_UI_VALUE), "%s %s  %s%s  s%d/%d", MT_REGIONS[cfg.region].name, preset_name(), channel_name(), more,
+        slot, slots);
+}
+static void tx_chip(int x, int y, int w)
+{
+    if (scan_on) { lap_ui_chip(x + w - 9, y, "SCAN RX", true, LAP_YELLOW); return; }
+    lap_ui_chip(x + w - (cfg.tx_on ? (duty_wait ? 11 : 10) : 9), y, cfg.tx_on ? (duty_wait ? "DUTY WAIT" : "TX ARMED") : "RX ONLY",
+                cfg.tx_on, cfg.tx_on ? (duty_wait ? LAP_YELLOW : LAP_RED) : LAP_GREEN);
+}
+
 static void big_freq(int x, int y, int w)
 {
     char f[16];
-    snprintf(f, sizeof(f), "%u.%03u", (unsigned)(freq_hz / 1000000u), (unsigned)(freq_hz / 1000u % 1000u));
+    const uint64_t hz = shown_hz();
+    snprintf(f, sizeof(f), "%u.%03u", (unsigned)(hz / 1000000u), (unsigned)(hz / 1000u % 1000u));
     const uint8_t on = A(LAP_YELLOW | LAP_BRIGHT);
     const bool hot = last_rx_ms && now_ms - last_rx_ms < 400u && !calm();
     int cx = x;
@@ -3309,12 +3451,10 @@ static void header(void)
     if (compact) {                      /* who, the frequency and settings, the channel, the chips */
         const int cw = lap_ui_chip(x, y, cfg.short_name, true, LAP_CYAN) - x;
         put(x + cw + 1, y, hw - cw - 12, LAP_UI_TEXT, "%s", cfg.long_name);
-        lap_ui_chip(x + hw - (cfg.tx_on ? (duty_wait ? 11 : 10) : 9), y, cfg.tx_on ? (duty_wait ? "DUTY WAIT" : "TX ARMED") : "RX ONLY",
-                    cfg.tx_on, cfg.tx_on ? (duty_wait ? LAP_YELLOW : LAP_RED) : LAP_GREEN);
-        const int fw = put(x, y + 1, 12, A(LAP_YELLOW | LAP_BRIGHT), "%u.%03u MHz", (unsigned)(freq_hz / 1000000u),
-                           (unsigned)(freq_hz / 1000u % 1000u));
-        put(x + fw + 1, y + 1, hw - fw - 1, A(LAP_UI_VALUE), "%s %s  %s  s%d/%d", MT_REGIONS[cfg.region].name, preset_name(),
-            channel_name(), slot, slots);
+        tx_chip(x, y, hw);
+        const int fw = put(x, y + 1, 12, A(LAP_YELLOW | LAP_BRIGHT), "%u.%03u MHz", (unsigned)(shown_hz() / 1000000u),
+                           (unsigned)(shown_hz() / 1000u % 1000u));
+        settings_line(x + fw + 1, y + 1, hw - fw - 1, "");
         const float cu = ch_util();
         put(x, y + 2, 3, LAP_UI_DIM, "CH");
         const int bw = hw - 15 > 4 ? hw - 15 : 4;
@@ -3336,7 +3476,7 @@ static void header(void)
     /* who this is, and whether it may transmit */
     const int cw = lap_ui_chip(ix, iy, cfg.short_name, true, LAP_CYAN) - ix;
     put(ix + cw + 1, iy, iw - cw - 12, LAP_UI_TEXT, "%s", cfg.long_name);
-    lap_ui_chip(ix + iw - (cfg.tx_on ? (duty_wait ? 11 : 10) : 9), iy, cfg.tx_on ? (duty_wait ? "DUTY WAIT" : "TX ARMED") : "RX ONLY", cfg.tx_on, cfg.tx_on ? (duty_wait ? LAP_YELLOW : LAP_RED) : LAP_GREEN);
+    tx_chip(ix, iy, iw);
     /* the frequency, big: block figures, as the board's glass has them */
     big_freq(ix, iy + 1, iw);
     const int fy = iy + 6;
@@ -3345,8 +3485,7 @@ static void header(void)
     const int more = ch_count() - 1;
     char mc[8] = "";
     if (more) snprintf(mc, sizeof(mc), " +%d", more);
-    put(ix, fy, iw, A(LAP_UI_VALUE), "%s %s  %s%s  s%d/%d", MT_REGIONS[cfg.region].name, preset_name(), channel_name(),
-        mc, slot, slots);
+    settings_line(ix, fy, iw, mc);
     /* the channel: how busy, and this node's share */
     const float cu = ch_util(), au = air_util();
     put(ix, fy + 1, 3, LAP_UI_DIM, "CH");
@@ -4308,6 +4447,205 @@ static void draw_air(int x, int y, int w, int h)
     smax = total > h ? total - h : 0;
 }
 
+/* ---- SCAN: the presets in use nearby ---- */
+/* One colour a preset: long greens and cyans, medium yellows and red, short magentas and blue. */
+static uint8_t scan_hue(int preset)
+{
+    static const uint8_t H[] = { LAP_GREEN | LAP_BRIGHT, LAP_GREEN, LAP_CYAN, LAP_CYAN | LAP_BRIGHT, LAP_YELLOW | LAP_BRIGHT,
+                                 LAP_YELLOW, LAP_RED | LAP_BRIGHT, LAP_MAGENTA | LAP_BRIGHT, LAP_MAGENTA, LAP_BLUE | LAP_BRIGHT };
+    return H[(unsigned)preset % sizeof(H)];
+}
+static char scan_digit(int i) { return (char)(i < 9 ? '1' + i : i == 9 ? '0' : '+'); }
+/* =====----- in the row's colour; the rest grey. */
+static void scan_bar(int x, int y, int w, float f, uint8_t hue, uint8_t bg)
+{
+    if (w <= 0) return;
+    int lit = (int)(f * (float)w + 0.5f);
+    if (f > 0 && lit == 0) lit = 1;
+    for (int k = 0; k < w; k++) cell(x + k, y, k < lit ? '=' : '-', LAP_ATTR(k < lit ? hue : LAP_BLACK | LAP_BRIGHT, bg));
+}
+static void draw_scan(int x, int y, int w, int h)
+{
+    clip0 = y; clip1 = y + h;
+    scan_plan();
+    int yy = y - scroll;
+    const mt_region_t *rg = &MT_REGIONS[scan.region];
+    /* the band as a ruler: each preset's default slot where it sits, by its row number */
+    {
+        char lo[8], hi[8];
+        snprintf(lo, sizeof(lo), "%u", (unsigned)(rg->lo_khz / 1000u));
+        snprintf(hi, sizeof(hi), "%u", (unsigned)((rg->hi_khz + 999u) / 1000u));
+        const int rx = x + 2 + (int)strlen(lo), rw = w - 4 - (int)strlen(lo) - (int)strlen(hi);
+        put(x + 1, yy + 1, 4, LAP_UI_DIM, "%s", lo);
+        put(rx + rw + 1, yy + 1, 4, LAP_UI_DIM, "%s", hi);
+        for (int k = 0; k < rw; k++) {
+            cell(rx + k, yy, k % 4 ? ' ' : '.', LAP_UI_FAINT);
+            cell(rx + k, yy + 1, '-', A(LAP_CYAN));
+        }
+        const uint64_t lo_hz = (uint64_t)rg->lo_khz * 1000u, band = (uint64_t)(rg->hi_khz - rg->lo_khz) * 1000u;
+        for (int i = 0; i < scan.n && rw > 2 && band; i++) {
+            const mt_scan_entry_t *e = &scan.e[i];
+            const int at = (int)((e->freq_hz - lo_hz) * (uint64_t)(rw - 1) / band);
+            const bool tuned = scan_on && i == scan.cur;
+            const uint8_t hue = scan_hue(e->preset);
+            if (tuned) {
+                if (yy + 1 >= clip0 && yy + 1 < clip1) lap_put_cell(rx + at, yy + 1, scan_digit(i), LAP_ATTR(LAP_WHITE | LAP_BRIGHT, LAP_BLUE));
+                cell(rx + at, yy, 'v', A(LAP_WHITE | LAP_BRIGHT));
+                cell(rx + at, yy + 2, '^', A(LAP_WHITE | LAP_BRIGHT));
+            } else cell(rx + at, yy + 1, scan_digit(i), !e->on ? LAP_UI_FAINT : e->packets ? A(hue) : A(dim(hue)));
+            if (e->packets && !tuned) cell(rx + at, yy, '\'', A(hue));   /* heard here */
+        }
+        yy += 3;
+    }
+    /* where the radio is, and how long it stays */
+    if (scan_on && scan.cur >= 0) {
+        const mt_scan_entry_t *e = &scan.e[scan.cur];
+        const uint32_t el = now_ms - scan.step_at;
+        const bool hold = scan.rx_step && now_ms - scan.last_rx_at < e->hang_ms;
+        int cx = x + 1;
+        if (yy >= clip0 && yy < clip1)
+            cx = lap_ui_chip(cx, yy, scan.pin >= 0 ? "PINNED" : hold ? "HOLD" : "LISTEN", true,
+                             scan.pin >= 0 ? LAP_YELLOW : hold ? LAP_MAGENTA : LAP_GREEN) + 1;
+        cx += put(cx, yy, w - (cx - x), A(scan_hue(e->preset)), "%s ", MT_SCAN_PRESETS[e->preset].name);
+        put(cx, yy, w - (cx - x), LAP_UI_TEXT, "%u.%03u SF%u BW%u 4/%u", (unsigned)((e->freq_hz + 500u) / 1000000u),
+            (unsigned)((e->freq_hz + 500u) / 1000u % 1000u), e->sf, (unsigned)(e->bw_hz / 1000u), e->cr);
+        /* the dwell: how far into it, by the scanner's own clock */
+        const int mw = w - 13;
+        if (scan.pin >= 0) put(x + 1, yy + 1, w - 2, LAP_UI_DIM, "stays here until UNPIN");
+        else if (mw >= 4) {
+            const float f = el >= e->dwell_ms ? 1.0f : (float)el / (float)e->dwell_ms;
+            cell(x + 1, yy + 1, '[', A(LAP_CYAN));
+            scan_bar(x + 2, yy + 1, mw, f, LAP_CYAN | LAP_BRIGHT, LAP_BLACK);
+            cell(x + 2 + mw, yy + 1, ']', A(LAP_CYAN));
+            put(x + mw + 4, yy + 1, 7, A(LAP_UI_VALUE), "%2u/%us", (unsigned)(el / 1000u), (unsigned)(e->dwell_ms / 1000u));
+        }
+    } else {
+        put(x + 1, yy, w - 2, A(LAP_UI_DIM), "STOPPED. GO steps through %d presets", scan.n);
+        put(x + 1, yy + 1, w - 2, A(LAP_UI_DIM), "on %s, each on its default slot.", rg->name);
+    }
+    yy += 3;
+    /* the table */
+    /* narrow: 5-letter tags and SNR in whole dB; wide: full names, SNR to 0.1 dB */
+    const bool long_names = w >= 64;
+    const int nw = long_names ? 11 : 5, sw = long_names ? 6 : 4;
+    const int cM = x + 4 + nw + 1, cP = cM + 7, cN = cP + 4, cR = cN + 4, cS = cR + 5, cA = cS + sw - 1,
+              cH = cA + 5, cB = cH + 4;
+    const int bw = x + w - 1 - cB;
+    put(x + 1, yy, 3, LAP_UI_FAINT, " #");
+    put(x + 4, yy, nw + 1, LAP_UI_FAINT, "PRESET");
+    put(cM, yy, 7, LAP_UI_FAINT, "    MHz");
+    put(cP, yy, 4, LAP_UI_FAINT, " PKT");
+    put(cN, yy, 4, LAP_UI_FAINT, " NOD");
+    put(cR, yy, 4, LAP_UI_FAINT, " dBm");
+    put(cS, yy, sw - 1, LAP_UI_FAINT, long_names ? "  SNR" : "SNR");
+    put(cA, yy, 4, LAP_UI_FAINT, " AGO");
+    put(cH, yy, 3, LAP_UI_FAINT, "CH");
+    if (bw >= 4) put(cB, yy, bw, LAP_UI_FAINT, "SHARE");
+    yy++;
+    if (scan_sel >= scan.n) scan_sel = scan.n ? scan.n - 1 : 0;
+    for (int i = 0; i < scan.n; i++, yy++) {
+        const mt_scan_entry_t *e = &scan.e[i];
+        if (yy < clip0 || yy >= clip1) continue;
+        const bool tuned = scan_on && i == scan.cur, chosen = i == scan_sel;
+        const uint8_t bg = chosen ? LAP_BLUE : LAP_BLACK, hue = scan_hue(e->preset);
+        if (chosen) lap_fill(x, yy, w, 1, ' ', LAP_ATTR(LAP_WHITE, LAP_BLUE));
+        const uint8_t num = e->packets ? LAP_ATTR(LAP_WHITE | LAP_BRIGHT, bg) : LAP_ATTR(LAP_BLACK | LAP_BRIGHT, bg);
+        if (scan.pin == i) put(x + 1, yy, 1, LAP_ATTR(LAP_YELLOW | LAP_BRIGHT, bg), "*");
+        else if (tuned) put(x + 1, yy, 1, LAP_ATTR(LAP_WHITE | LAP_BRIGHT, bg), ">");
+        put(x + 2, yy, 1, LAP_ATTR(hue, bg), "%c", scan_digit(i));
+        put(x + 4, yy, nw, LAP_ATTR(e->on ? hue : (uint8_t)(LAP_BLACK | LAP_BRIGHT), bg), "%s",
+            long_names ? MT_SCAN_PRESETS[e->preset].name : MT_SCAN_PRESETS[e->preset].tag);
+        put(cM, yy, 7, LAP_ATTR(e->on ? LAP_YELLOW : (uint8_t)(LAP_BLACK | LAP_BRIGHT), bg), "%3u.%03u",
+            (unsigned)((e->freq_hz + 500u) / 1000000u), (unsigned)((e->freq_hz + 500u) / 1000u % 1000u));
+        if (!e->on) { put(cP, yy, 12, LAP_ATTR(LAP_BLACK | LAP_BRIGHT, bg), " off"); continue; }
+        put(cP, yy, 4, num, "%4u", (unsigned)e->packets);
+        put(cN, yy, 4, num, e->node_more ? "%3u+" : "%3u", (unsigned)e->node_n);
+        if (e->packets) {
+            char t[8];
+            ago(e->last_ms, t, sizeof(t));
+            const int l = sig_level(e->rssi, e->snr);
+            put(cR, yy, 4, LAP_ATTR(level_hue(l), bg), "%4d", e->rssi == INT16_MIN ? 0 : e->rssi / 10);
+            const double sn = e->snr == INT16_MIN ? 0.0 : e->snr / 10.0;
+            if (long_names) put(cS, yy, 5, LAP_ATTR(level_hue(l), bg), "%5.1f", sn);
+            else put(cS, yy, 3, LAP_ATTR(level_hue(l), bg), "%3d", (int)(sn < 0 ? sn - 0.5 : sn + 0.5));
+            put(cA, yy, 4, LAP_ATTR(LAP_WHITE, bg), "%4s", t);
+            const int th = mt_scan_top_hash(e);
+            put(cH, yy, 3, LAP_ATTR(th == e->def_hash ? (LAP_GREEN | LAP_BRIGHT) : (LAP_YELLOW | LAP_BRIGHT), bg), "%02X%s", th & 0xFF,
+                e->hash_n > 1 ? "+" : "");
+        } else {
+            put(cR, yy, 4, LAP_ATTR(LAP_BLACK | LAP_BRIGHT, bg), "   .");
+            /* how long it has listened there: seconds, then minutes, then hours, in four cells */
+            const unsigned ls = (unsigned)(e->listen_ms / 1000u);
+            if (!e->listen_ms) put(cA, yy, 4, LAP_ATTR(LAP_BLACK | LAP_BRIGHT, bg), "   .");
+            else put(cA, yy, 4, LAP_ATTR(LAP_BLACK | LAP_BRIGHT, bg), ls < 600u ? "%3us" : ls < 6000u ? "%3um" : "%3uh",
+                     ls < 600u ? ls : ls < 6000u ? ls / 60u : (ls / 3600u > 999u ? 999u : ls / 3600u));
+        }
+        if (bw >= 4) {
+            const float f = mt_scan_share(&scan, i);
+            const int pw = bw >= 10 ? 4 : 0;
+            scan_bar(cB, yy, bw - pw, f, hue, bg);
+            if (pw && e->packets) put(cB + bw - pw + 1, yy, 3, LAP_ATTR(LAP_WHITE, bg), "%2d%%", (int)(f * 100.0f + 0.5f));
+        }
+        hit(x, yy, x + w, yy + 1, HIT_SCAN, i);
+    }
+    yy++;
+    /* totals */
+    if (yy >= clip0 && yy < clip1) {
+        uint32_t other = 0;
+        for (int i = 0; i < scan.n; i++)
+            for (int k = 0; k < scan.e[i].hash_n; k++)
+                if (scan.e[i].hash[k] != scan.e[i].def_hash) other += scan.e[i].hash_count[k];
+        char t[24];
+        int cx = x + 1;
+        const struct { const char *l; uint32_t v; uint8_t hue; } C[] = {
+            { "HEARD", scan.total, LAP_GREEN }, { "NODES", (uint32_t)scan.seen_n, LAP_CYAN }, { "READ", scan.readable, LAP_GREEN },
+            { "OTHER CH", other, LAP_YELLOW }, { "SWEEPS", scan.sweeps, LAP_MAGENTA },
+        };
+        for (int i = 0; i < (int)(sizeof(C) / sizeof(C[0])); i++) {
+            snprintf(t, sizeof(t), "%s %u", C[i].l, (unsigned)C[i].v);
+            if (cx + (int)strlen(t) + 2 > x + w) break;
+            cx = lap_ui_chip(cx, yy, t, C[i].v > 0, C[i].hue) + 1;
+        }
+    }
+    yy += 2;
+    /* packets as they come */
+    if (!scan.log_n) {
+        put(x + 2, yy++, w - 4, LAP_UI_TEXT, "Each preset on its default slot, %u s or more.", (unsigned)SCAN_DWELL_S[scan_dwell % 5]);
+        put(x + 2, yy++, w - 4, LAP_UI_DIM, "CH is the channel hash: green the default.");
+        put(x + 2, yy++, w - 4, LAP_UI_DIM, "ENTER or a second tap: listen on that row only.");
+        put(x + 2, yy++, w - 4, A(LAP_UI_WARN), "While SCAN runs this node sends nothing.");
+    } else {
+        put(x + 1, yy++, w - 2, LAP_UI_FAINT, "# FROM TO   HOP CH ID       WHAT");
+        const int cw = x + w - 9;                        /* dBm and AGO at the right */
+        put(cw, yy - 1, 8, LAP_UI_FAINT, " dBm AGO");
+        for (int k = 0; k < scan.log_n; k++, yy++) {
+            const mt_scan_pkt_t *p = mt_scan_log_at(&scan, k);
+            if (!p || yy < clip0 || yy >= clip1) continue;
+            const bool fresh = now_ms - p->at_ms < 1500u && !calm();
+            const uint8_t bg = fresh ? LAP_BLUE : LAP_BLACK;
+            if (fresh) lap_fill(x, yy, w, 1, ' ', LAP_ATTR(LAP_WHITE, LAP_BLUE));
+            char t[8], to[6], what[48];
+            ago(p->at_ms, t, sizeof(t));
+            snprintf(to, sizeof(to), "%s", p->to == MT_BROADCAST ? "all" : who(p->to));
+            if (p->readable && p->portnum == MT_PORT_TEXT && p->text[0]) snprintf(what, sizeof(what), "\"%s\"", p->text);
+            else if (p->readable) snprintf(what, sizeof(what), "%s", mt_port_name(p->portnum));
+            else snprintf(what, sizeof(what), "%s%s", p->is_default ? "UNREAD" : !p->hash && p->to != MT_BROADCAST ? "PKI DM" : "PRIVATE", p->via_mqtt ? " MQTT" : "");
+            const int pr = p->entry < scan.n ? scan.e[p->entry].preset : 0;
+            put(x + 1, yy, 1, LAP_ATTR(scan_hue(pr), bg), "%c", scan_digit(p->entry));
+            put(x + 3, yy, 4, LAP_ATTR(hue_of(p->from), bg), "%s", who(p->from));
+            put(x + 8, yy, 4, LAP_ATTR(LAP_WHITE, bg), "%s", to);
+            put(x + 13, yy, 3, LAP_ATTR(LAP_CYAN | LAP_BRIGHT, bg), "%u/%u", p->hop_limit, p->hop_start);
+            put(x + 17, yy, 2, LAP_ATTR(p->is_default ? (LAP_GREEN | LAP_BRIGHT) : (LAP_YELLOW | LAP_BRIGHT), bg), "%02X", p->hash);
+            put(x + 20, yy, 8, LAP_ATTR(LAP_BLACK | LAP_BRIGHT, bg), "%08x", (unsigned)p->id);
+            put(x + 29, yy, cw - x - 29, LAP_ATTR(p->readable ? (LAP_GREEN | LAP_BRIGHT) : (LAP_YELLOW), bg), "%s", what);
+            put(cw, yy, 4, LAP_ATTR(level_hue(sig_level(p->rssi, p->snr)), bg), "%4d", p->rssi == INT16_MIN ? 0 : p->rssi / 10);
+            put(cw + 5, yy, 3, LAP_ATTR(LAP_WHITE, bg), "%3s", t);
+        }
+    }
+    const int total = yy + scroll - y;
+    smax = total > h ? total - h : 0;
+}
+
 /* ---- SHARE: the channel set as a meshtastic.org link and a QR code ---- */
 static char share_url[URL_MAX];
 static uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(25)], qr_tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(25)];
@@ -4632,7 +4970,7 @@ static void layout(void)
 
 static void set_keys(void)
 {
-    const bool can = cfg.tx_on && radio >= 0;
+    const bool can = cfg.tx_on && radio >= 0 && !scan_on;
     static char v0[16], v2[16];
     if (share_open) {
         keys[0] = (lap_btn_t){ "BACK", NULL, 'b', false, false, false };
@@ -4692,6 +5030,14 @@ static void set_keys(void)
         keys[0] = (lap_btn_t){ "SEND", NULL, 's', false, !can, false };
         keys[1] = (lap_btn_t){ "HELLO", NULL, 'n', false, !can, false };
         keys[2] = (lap_btn_t){ "CLEAR", NULL, 'k', false, !air_n, false };
+        break;
+    case TAB_SCAN:
+        snprintf(v0, sizeof(v0), "%d PRESETS", scan.n);
+        keys[0] = (lap_btn_t){ scan_on ? "STOP" : "GO", scan_on ? NULL : v0, 'g', scan_on, radio < 0, false };
+        if (scan.n && scan_sel < scan.n) snprintf(v2, sizeof(v2), "%s", MT_SCAN_PRESETS[scan.e[scan_sel].preset].tag);
+        else v2[0] = 0;
+        keys[1] = (lap_btn_t){ scan.pin >= 0 ? "UNPIN" : "PIN", scan.pin >= 0 ? NULL : v2, 'p', scan.pin >= 0, !scan.n, false };
+        keys[2] = (lap_btn_t){ "DWELL", SCAN_DWELL_NAMES[scan_dwell % 5], 'w', false, false, false };
         break;
     default:
         keys[0] = (lap_btn_t){ "TYPE", xl_chip(), 'y', false, false, false };
@@ -5299,6 +5645,7 @@ static void to_tab(int t)
     if (tab == TAB_CHAT) chat_new = true;               /* open at the newest */
     langs_open = false;
     if (tab == TAB_LANG) { lang_retry(); lf_list_due = true; }   /* a file copied to the card since */
+    if (tab == TAB_SCAN) scan_plan();
 }
 static void open_node(int i)
 {
@@ -5369,7 +5716,7 @@ static void draw(void)
     char sv[24];
     if (un && tab != TAB_CHAT) snprintf(sv, sizeof(sv), "%d/%d  %d NEW", tab + 1, TABS, un);
     else snprintf(sv, sizeof(sv), "%d/%d", tab + 1, TABS);
-    static const char *const TAB_NAME[TABS] = { "CHAT", "NODES", "MESH MAP", "AIR", "TRANSLATE" };
+    static const char *const TAB_NAME[TABS] = { "CHAT", "NODES", "MESH MAP", "AIR", "SCAN", "TRANSLATE" };
     const char *label = share_open ? "SHARE" : tab == TAB_NODES && node_open ? "NODE" : tab == TAB_CHAT && conv_list ? "CHATS"
                       : tab == TAB_RADAR && wpt_list ? "WAYPOINTS" : TAB_NAME[tab];
     strip(sx, ty, sw, tr, label, sv, un && tab != TAB_CHAT);
@@ -5391,6 +5738,10 @@ static void draw(void)
         else snprintf(bt, sizeof(bt), " MESH MAP  %d nodes ", node_n);
         break;
     case TAB_AIR: snprintf(bt, sizeof(bt), " AIR  %u heard ", (unsigned)heard); break;
+    case TAB_SCAN:
+        snprintf(bt, sizeof(bt), " SCAN %s  %u heard ", !scan_on ? "STOPPED" : scan.pin >= 0 ? "PINNED" : "RUNNING",
+                 (unsigned)scan.total);
+        break;
     default:
         if (xl_count() <= 1) snprintf(bt, sizeof(bt), " %s > ENGLISH ", mt_lang_name((mt_lang_t)xl_first()));
         else snprintf(bt, sizeof(bt), " %d LANGUAGES > ENGLISH ", xl_count());
@@ -5412,6 +5763,7 @@ static void draw(void)
         case TAB_NODES: draw_nodes(ix, iy, iw, ih); break;
         case TAB_RADAR: draw_radar(ix, iy, iw, ih); break;
         case TAB_AIR: draw_air(ix, iy, iw, ih); break;
+        case TAB_SCAN: draw_scan(ix, iy, iw, ih); break;
         default: draw_lang(ix, iy, iw, ih); break;
         }
     }
@@ -5436,8 +5788,26 @@ static bool back(void)
     return false;
 }
 
+/* SCAN's own keys: G go/stop, P pin the chosen row, W dwell, K clear. */
+static bool scan_act(char c)
+{
+    if (tab != TAB_SCAN || share_open || langs_open) return false;
+    switch (c) {
+    case 'g': scan_go(!scan_on); return true;
+    case 'p': scan_pin(scan.pin >= 0 ? -1 : scan_sel); return true;
+    case 'w':
+        scan_dwell = (uint8_t)((scan_dwell + 1) % 5);
+        mt_scan_set_dwell(&scan, SCAN_DWELL_S[scan_dwell] * 1000u);
+        say("%u s a preset (long presets get more)", (unsigned)SCAN_DWELL_S[scan_dwell]);
+        return true;
+    case 'k': mt_scan_clear(&scan); scroll = 0; say("scan table cleared"); return true;
+    default: return false;
+    }
+}
+
 static void act(char c)
 {
+    if (scan_act(c)) return;
     switch (c) {
     case 's': open_send(NULL); break;
     case 'q': open_quick(); break;
@@ -5525,6 +5895,7 @@ static bool key(lap_key_t k, char ch)
     case LAP_KEY_UP: case LAP_KEY_WHEEL_UP:
         if (list) { kbd_used = true; if (conv_sel) conv_sel--; if (conv_sel * 3 < scroll) scroll = conv_sel * 3; }
         else if (tab == TAB_NODES && !node_open && !share_open) { kbd_used = true; if (sel) sel--; if (sel * CARD < scroll) scroll = sel * CARD; }
+        else if (tab == TAB_SCAN && !share_open && scan_sel > 0) scan_sel--;
         else step(-2);
         return true;
     case LAP_KEY_DOWN: case LAP_KEY_WHEEL_DOWN:
@@ -5536,7 +5907,8 @@ static bool key(lap_key_t k, char ch)
             kbd_used = true;
             if (sel < node_n - 1) sel++;
             if ((sel + 1) * CARD > scroll + ph - 2) scroll = (sel + 1) * CARD - (ph - 2);
-        } else step(2);
+        } else if (tab == TAB_SCAN && !share_open && scan_sel < scan.n - 1) scan_sel++;
+        else step(2);
         return true;
     case LAP_KEY_PGUP: step(-page); return true;
     case LAP_KEY_PGDN: step(page); return true;
@@ -5550,6 +5922,7 @@ static bool key(lap_key_t k, char ch)
         else if (tab == TAB_NODES && !node_open && node_n) { sort_nodes(); open_node(node_order[sel]); }
         else if (tab == TAB_NODES && node_open) act('d');
         else if (tab == TAB_LANG) act('y');
+        else if (tab == TAB_SCAN) scan_pin(scan_sel);
         else if (tab == TAB_CHAT && pick_id) act('r');
         else act('s');
         return true;
@@ -5622,6 +5995,10 @@ static bool touch(int col, int row)
             } else { wpt_arm = h->idx; wpt_arm_ms = now_ms; say("tap again to remove %s", h->idx < wpt_n ? wpts[h->idx].name : ""); }
             return true;
         case HIT_SHARE_ALL: act('h'); return true;
+        case HIT_SCAN:                                   /* a row: choose it; again: pin it (or let go) */
+            if (scan_sel == h->idx) scan_pin(h->idx);
+            else scan_sel = h->idx;
+            return true;
         case HIT_NODE: kbd_used = false; open_node(h->idx); return true;
         case HIT_BLIP: open_node(h->idx); return true;
         case HIT_AIR: {
@@ -5667,7 +6044,7 @@ LAP_ICON_PX("....................", "....................", "...................
             "...aa2..aa.......aa2", "..aa2..aa.........aa", "..aa2..aa.........aa", ".aa2..aa...........a",
             "....................", "....................");
 
-LAP_APP(.id = "meshtastic", .name = "MESHTASTIC", .sub = "be a Meshtastic node", .version = "1.4",
+LAP_APP(.id = "meshtastic", .name = "MESHTASTIC", .sub = "be a Meshtastic node", .version = "1.5",
         .author = "LakeShark", .color = LAP_GREEN,
         .icon_art = { "   /\\     ", "  /  \\ ((o", " / /\\ \\/  ", "/_/  \\_/\\_", "  ~ ~ ~ ~ ", "          " },
         .flags = LAP_CAP_RADIO_RX | LAP_CAP_RADIO_TX | LAP_CAP_SERVICE,

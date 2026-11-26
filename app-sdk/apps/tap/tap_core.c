@@ -481,16 +481,18 @@ static void lora(const tap_pkt_t *p, const uint8_t *d, tap_dis_t *o)
         static const char *const rt[4] = {"transport flood", "flood", "direct", "transport direct"};
         const unsigned route = d[0] & 3, type = (d[0] >> 2) & 15;
         int at = 1 + ((route == 0 || route == 3) ? 4 : 0);
-        if (at < n && d[at] <= 64 && at + 1 + d[at] <= n) {
-            const int plen = d[at], pay = at + 1 + plen, pn = n - pay;
+        /* path byte: hop count in the low 6 bits, hash size (top 2 bits, +1) */
+        const int hops = at < n ? (d[at] & 63) : 0, hsize = at < n ? (d[at] >> 6) + 1 : 1;
+        if (at < n && hsize != 4 && hops * hsize <= 64 && at + 1 + hops * hsize <= n) {
+            const int plen = hops * hsize, pay = at + 1 + plen, pn = n - pay;
             o->tags |= T_MESHCORE; o->leaf = L_MESHCORE; o->rule = CR_MESHCORE;
             snprintf(o->proto, sizeof(o->proto), "MeshCore");
             line(o, 0, 0, n, "MeshCore packet, %d bytes", n);
             line(o, 1, 0, 1, "Header: %s, %s, version %u", rt[route], pt[type], d[0] >> 6);
             if (at > 1) line(o, 1, 1, 4, "Transport codes: %04x %04x", le16(d + 1), le16(d + 3));
-            line(o, 1, at, 1 + plen, "Path: %d hop%s", plen, plen == 1 ? "" : "s");
+            line(o, 1, at, 1 + plen, "Path: %d hop%s, %d-byte hashes", hops, hops == 1 ? "" : "s", hsize);
             snprintf(o->dst, sizeof(o->dst), "Broadcast");
-            snprintf(o->info, sizeof(o->info), "%s (%s), path %d, %d bytes", pt[type], rt[route], plen, pn);
+            snprintf(o->info, sizeof(o->info), "%s (%s), path %d, %d bytes", pt[type], rt[route], hops, pn);
             const uint8_t *v = d + pay;
             if (type == 4 && pn >= 100) {
                 snprintf(o->src, sizeof(o->src), "%02x%02x%02x%02x", v[0], v[1], v[2], v[3]);

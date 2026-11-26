@@ -39,6 +39,10 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION AND (CONFIG_LS_BOARD_T_DISPLAY_P4 OR CONFIG_L
     list(FILTER APPS_C_SRCS EXCLUDE REGEX "/ls_font_(mono_11|mono_13|mono_14|mono_16|mono_24|cyr)\\.c$")
 endif()
 
+# The pure half of app-sdk/lib/lap_ids (file format, UUIDs, name lines): the
+# firmware's Bluetooth names (tui/ls_ble_names.c) read the files the apps do.
+list(APPEND APPS_C_SRCS ${CMAKE_CURRENT_LIST_DIR}/../../app-sdk/lib/lap_ids_fmt.c)
+
 idf_component_register(
     SRCS ${APPS_C_SRCS} ${APPS_CPP_SRCS}
     INCLUDE_DIRS ${APPS_DIR}

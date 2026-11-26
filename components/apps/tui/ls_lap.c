@@ -1176,14 +1176,17 @@ static bool touch(int col, int row) {
     bool used = false;
     if (lap_state.status.state != LS_LAP_RUNNING)
         return frame_act(ls_lap_ui_touch(col, row));
+    /* The board's close key works for every running app, also one that reads
+       touch itself through lap_touch() and has no .touch callback. */
+    if (lap_state.entered && lap_state.status.state == LS_LAP_RUNNING && lap_state.app &&
+        ls_tui_screen_is_bare() && !ls_lap_sys_immersive() && !ls_tui_compact() && tui_rect_contains(close_hit(), col, row)) {
+        ls_tui_screen_show(0);
+        return true;
+    }
     if (lap_state.entered && lap_state.status.state == LS_LAP_RUNNING && lap_state.app && lap_state.app->touch) {
         /* Router supplies absolute cells. area from last draw owns the origin. */
         if (!tui_rect_contains(lap_state.area, col, row))
             return false;
-        if (ls_tui_screen_is_bare() && !ls_lap_sys_immersive() && !ls_tui_compact() && tui_rect_contains(close_hit(), col, row)) {
-            ls_tui_screen_show(0);
-            return true;
-        }
         before();
         used = lap_state.app->touch(col - lap_state.area.x, row - lap_state.area.y);
         after();

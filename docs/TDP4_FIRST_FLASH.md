@@ -53,15 +53,13 @@ See [Updates and calls](TDP4_UPDATES_AND_CALLS.md) for the update steps and SD c
 
 ## The C6 radio firmware
 
-The P4 reaches Wi-Fi and Bluetooth through the on-board ESP32-C6. The C6 should run **ESP-Hosted 2.12.9**, the `network_adapter` firmware in `c6_firmware/`. The P4 writes it to the C6 over the board's own link, so you need no cable and no adapter.
+The P4 reaches Wi-Fi and Bluetooth through the on-board ESP32-C6. LakeShark puts its own C6 firmware on it: **ESP-Hosted 2.12.9 with the Wi-Fi monitor forwarder** (`c6_firmware/net/`), which WIFI WATCH, TAP and WIFI SURVEY need for frame capture. The P4 writes it to the C6 over the board's own link, so you need no cable and no adapter.
 
-1. Flash the P4 in the browser at [terminalbay.com](https://terminalbay.com/?m=lakeshark&board=tdp4) (or with `idf.py flash`).
-2. Download [network_adapter.bin](https://data.terminalbay.com/c6/network_adapter.bin) (1,185,312 bytes) and copy it to the SD card as `/lakeshark/c6/network_adapter.bin` (on the device: `/sdcard/lakeshark/c6/network_adapter.bin`). The same file is in `c6_firmware/`.
-3. On the board open HOME > SYSTEM > UPDATE > C6 (the C6 FIRMWARE page). Press INSTALL, then CONFIRM.
+It installs itself. A minute after the board starts on Wi-Fi, it checks the C6. If the C6 runs anything else (the factory firmware, or the stock ESP-Hosted image), a C6 RADIO banner appears, the board downloads the signed image from `data.terminalbay.com/c6/` to the card, writes it and restarts. Keep power connected while it runs. It tries at most twice per board.
 
-Keep power connected, with the battery above 20%. The board checks the image (size, SHA-256 and the C6 target), writes the C6's spare slot, restarts the C6 and confirms the new version. Wi-Fi and Bluetooth stay off until you reboot the board. A failed check or write leaves the old C6 image active, and you can run it again. The console does the same with `c6 update`.
+To run it yourself: HOME > SYSTEM > UPDATE > C6 RADIO FW > UPDATE, or `c6 update auto` in TERMINAL. Without Wi-Fi, copy [ls_c6_net.bin](https://data.terminalbay.com/c6/ls_c6_net.bin) (1,212,672 bytes, also `c6_firmware/net/network_adapter.bin`) to the card as `/lakeshark/c6/ls_c6_net.bin` first.
 
-From the next release the board downloads it by itself over Wi-Fi.
+The board checks the image (size, SHA-256 and the C6 target), writes the C6's spare slot, restarts the C6 and confirms the new version. A failed check or write leaves the old C6 image active. `c6 mon 8` counts the frames the C6 forwards.
 
 If the co-processor link fails, current builds keep running with wireless features unavailable. Older builds may report a transport timeout:
 

@@ -1,5 +1,5 @@
 {
   "category": "tools",
   "group": "system",
-  "description": "Bluetooth LE explorer: advertisements, then a GATT client on up to three devices (as many as the board grants), with the whole table walked, every readable value and descriptor read, SIG services decoded, a notification log, and the table saved to the card as JSON."
+  "description": "Bluetooth LE explorer: advertisements, then a GATT client on up to three devices (as many as the board grants), with the whole table walked, every readable value and descriptor read, names from the shared name library and your own, pairing, a notification log, flows (short scripted GATT sequences for printers, sensors, lights and serial bridges), and the table saved to the card as JSON."
 }

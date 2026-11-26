@@ -1,5 +1,6 @@
 /**/
 
+#include "ls_static_task.h"
 #include "rec_scope.h"
 #include <math.h>
 #include <stdio.h>
@@ -71,6 +72,7 @@ static volatile bool s_active  = false;
 static volatile bool s_running = false;
 static EXT_RAM_BSS_ATTR StackType_t s_rx_stack[REC_RX_STACK_WORDS];
 static StaticTask_t s_rx_tcb;
+static TaskHandle_t s_rx_handle;   /* the last rec_rx, parked when it ended: reaped before the next */
 
 static int32_t *s_edge;
 static int      s_edges;
@@ -470,7 +472,7 @@ static void rec_rx_task(void *arg)
         rec_receiver_lost(LS_RADIO_ERR_NO_MEMORY);
         s_active = false;
         s_running = false;
-        vTaskDelete(NULL);
+        ls_static_task_park();   /* never vTaskDelete(NULL): ls_static_task.h */
         return;
     }
 
@@ -620,7 +622,7 @@ static void rec_rx_task(void *arg)
     }
     heap_caps_free(iq);
     s_running = false;
-    vTaskDelete(NULL);
+    ls_static_task_park();   /* never vTaskDelete(NULL): ls_static_task.h */
 }
 
 /* LS-1243: REC's settings persist in NVS. They are read once at
@@ -698,9 +700,13 @@ static void rec_on_enter(void)
     rec_receiver_lost(LS_RADIO_ERR_UNAVAILABLE);
 
     s_active = true;
-    if (!xTaskCreateStaticPinnedToCore(rec_rx_task, "rec_rx",
-                                       REC_RX_STACK_WORDS, NULL, 6,
-                                       s_rx_stack, &s_rx_tcb, 1)) {
+    /* The last rec_rx parked itself: delete it before its storage is reused. */
+    TaskHandle_t rx_task = ls_static_task_reap(&s_rx_handle, 500)
+        ? xTaskCreateStaticPinnedToCore(rec_rx_task, "rec_rx", REC_RX_STACK_WORDS, NULL, 6,
+                                        s_rx_stack, &s_rx_tcb, 1)
+        : NULL;
+    if (rx_task) s_rx_handle = rx_task;
+    if (!rx_task) {
         ESP_LOGE(TAG, "RX task allocation failed");
         rec_receiver_lost(LS_RADIO_ERR_NO_MEMORY);
         s_active = false;

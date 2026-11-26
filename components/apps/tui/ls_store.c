@@ -456,6 +456,12 @@ static void do_install(const char *id)
         say(true, "%s comes with the firmware: it updates with the firmware.", a.name, 0);
         return;
     }
+    /* An app that is open, or running in the background, cannot be replaced:
+       say so before the download, not after it. */
+    if (ls_lap_is_open(a.id)) {
+        say(true, "%s is running: close it or STOP it in RADIOS, then update.", a.name, 0);
+        return;
+    }
 #endif
     S.phase = LS_SJ_DOWNLOAD;
     S.got = 0;

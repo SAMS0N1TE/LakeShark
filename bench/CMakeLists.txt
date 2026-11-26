@@ -65,6 +65,8 @@ set(LS_TUI_APP_SRCS
     ${FW}/components/apps/tui/ls_sigs.c
     ${FW}/components/apps/tui/ls_tail.c
     ${FW}/components/apps/tui/ls_sweep_ui.c
+    ${FW}/components/apps/tui/ls_ble_names.c
+    ${FW}/app-sdk/lib/lap_ids_fmt.c
     ${FW}/components/apps/tui/ls_rid.c
     ${FW}/components/apps/tui/ls_rid_ui.c
     ${FW}/components/apps/tui/ls_drone_ui.c
@@ -540,8 +542,9 @@ target_include_directories(test_wifi_watch_core PRIVATE ${FW}/app-sdk/apps/wifi_
 ls_add_test(test_wifi_survey_rec ${FW}/app-sdk/apps/wifi_survey/survey_rec.c ${FW}/app-sdk/lib/lap_dot11.c)
 target_include_directories(test_wifi_survey_rec PRIVATE ${FW}/app-sdk/apps/wifi_survey ${FW}/app-sdk/lib ${FW}/app-sdk/include)
 # BUGHUNT (app-sdk/apps/bughunt): its detection core on synthetic RSSI
-# timelines, Bluetooth adverts (its tag engine, bh_tags.c) and 802.11 frames.
-ls_add_test(test_bughunt_core ${FW}/app-sdk/apps/bughunt/bh_core.c ${FW}/app-sdk/apps/bughunt/bh_tags.c ${FW}/app-sdk/lib/lap_dot11.c)
+# timelines, Bluetooth adverts (its tag engine, bh_tags.c) and 802.11 frames;
+# HUNT's burst timing and SDR spectrum helpers (bh_hunt.c).
+ls_add_test(test_bughunt_core ${FW}/app-sdk/apps/bughunt/bh_core.c ${FW}/app-sdk/apps/bughunt/bh_tags.c ${FW}/app-sdk/apps/bughunt/bh_hunt.c ${FW}/app-sdk/lib/lap_dot11.c)
 target_include_directories(test_bughunt_core PRIVATE ${FW}/app-sdk/apps/bughunt ${FW}/app-sdk/lib ${FW}/app-sdk/include)
 ls_add_test(test_carrier_app ${FW}/app-sdk/apps/level/meter.c)
 target_include_directories(test_carrier_app PRIVATE ${FW}/app-sdk/apps/level)
@@ -560,6 +563,10 @@ target_compile_definitions(test_mt_xlate_lang PRIVATE MT_LANG_DIR="${FW}/app-sdk
 ls_add_test(test_mt_proto ${FW}/app-sdk/apps/meshtastic/mt_proto.c ${FW}/app-sdk/apps/meshtastic/mt_aes.c
     ${FW}/app-sdk/apps/meshtastic/mt_pki.c)
 target_include_directories(test_mt_proto PRIVATE ${FW}/app-sdk/apps/meshtastic)
+# SCAN: the preset table, default slots, dwell scheduler and stats table.
+ls_add_test(test_mt_scan ${FW}/app-sdk/apps/meshtastic/mt_scan.c ${FW}/app-sdk/apps/meshtastic/mt_proto.c
+    ${FW}/app-sdk/apps/meshtastic/mt_aes.c ${FW}/app-sdk/apps/meshtastic/mt_pki.c)
+target_include_directories(test_mt_scan PRIVATE ${FW}/app-sdk/apps/meshtastic)
 
 ls_add_test(test_exp_lr433
     ${LS_EXP_SRCS}
@@ -3244,11 +3251,25 @@ target_include_directories(test_detector_app PRIVATE ${FW}/app-sdk/apps/detector
 ls_add_test(test_bughunt_tags ${FW}/app-sdk/apps/bughunt/bh_tags.c)
 target_include_directories(test_bughunt_tags PRIVATE ${FW}/app-sdk/apps/bughunt)
 # BUGHUNT's ids.bin reader: header, tables, the block search.
-ls_add_test(test_bughunt_ids ${FW}/app-sdk/apps/bughunt/bh_ids.c)
-target_include_directories(test_bughunt_ids PRIVATE ${FW}/app-sdk/apps/bughunt)
+ls_add_test(test_bughunt_ids ${FW}/app-sdk/apps/bughunt/bh_ids.c ${FW}/app-sdk/lib/lap_ids.c ${FW}/app-sdk/lib/lap_ids_fmt.c)
+target_include_directories(test_bughunt_ids PRIVATE ${FW}/app-sdk/apps/bughunt ${FW}/app-sdk/lib ${FW}/app-sdk/include)
+# lap_ids (app-sdk/lib): the shared Bluetooth name file, owner names, remembered devices.
+ls_add_test(test_lap_ids ${FW}/app-sdk/lib/lap_ids.c ${FW}/app-sdk/lib/lap_ids_fmt.c)
+target_include_directories(test_lap_ids PRIVATE ${FW}/app-sdk/lib ${FW}/app-sdk/include)
+# ls_ble_names (components/apps/tui): the firmware's Bluetooth names over lap_ids_fmt: cache, worker pass, reloads, learning.
+ls_add_test(test_ls_ble_names ${FW}/components/apps/tui/ls_ble_names.c ${FW}/app-sdk/lib/lap_ids_fmt.c)
+target_include_directories(test_ls_ble_names PRIVATE ${FW}/components/apps/tui ${FW}/app-sdk/lib)
 # BLE EXPLORER (app-sdk/apps/ble_explorer): its GATT walk, decoders and JSON.
 ls_add_test(test_ble_explorer_app ${FW}/app-sdk/apps/ble_explorer/bx_core.c)
 target_include_directories(test_ble_explorer_app PRIVATE ${FW}/app-sdk/apps/ble_explorer ${FW}/app-sdk/include)
+# BLE EXPLORER flows: parser, built-in list, runs a step a frame, AirSync decode.
+ls_add_test(test_ble_explorer_flow ${FW}/app-sdk/apps/ble_explorer/bx_flow.c ${FW}/app-sdk/apps/ble_explorer/bx_core.c
+    ${FW}/app-sdk/apps/ble_explorer/bx_flows_builtin.c)
+target_include_directories(test_ble_explorer_flow PRIVATE ${FW}/app-sdk/apps/ble_explorer ${FW}/app-sdk/include)
+target_compile_definitions(test_ble_explorer_flow PRIVATE BX_FLOWS_TXT="${FW}/app-sdk/apps/ble_explorer/flows/ble-flows.txt")
+# BLE EXPLORER names: card names before built-in ones, NAME saving, learned device names (lap_ids on a fake card).
+ls_add_test(test_ble_explorer_names ${FW}/app-sdk/apps/ble_explorer/bx_core.c ${FW}/app-sdk/lib/lap_ids.c ${FW}/app-sdk/lib/lap_ids_fmt.c)
+target_include_directories(test_ble_explorer_names PRIVATE ${FW}/app-sdk/apps/ble_explorer ${FW}/app-sdk/lib ${FW}/app-sdk/include)
 set_tests_properties(test_detector_app PROPERTIES WORKING_DIRECTORY ${FW})
 # What the board hands a detector app (SDK 2.2 lap_seen_*): the queue, the
 # pseudonyms and drone watch's own alert when no app takes it.
@@ -4172,6 +4193,20 @@ target_include_directories(test_lap_net_audio PRIVATE ${LAP_TUI})
 target_link_libraries(test_lap_net_audio $<$<BOOL:${WIN32}>:ws2_32>)
 add_test(NAME test_lap_net_audio COMMAND test_lap_net_audio)
 
+# API 2.9 GATT client: simulator contracts, and main/ble_lap_client.c over a NimBLE fake.
+add_executable(test_lap_ble_gatt29 tests/test_lap_ble_gatt29.c
+  ${LAP_TUI}/ls_lap_net_audio.c ${LAP_TUI}/ls_lap_wifi_http.c
+  ${LAP_TUI}/ls_lap_udp.c ${LAP_TUI}/ls_lap_mdns.c ${LAP_TUI}/ls_lap_netdiag.c
+  ${LAP_TUI}/ls_lap_ble_client.c ${LAP_TUI}/ls_lap_sound.c)
+target_include_directories(test_lap_ble_gatt29 PRIVATE ${LAP_TUI})
+target_link_libraries(test_lap_ble_gatt29 $<$<BOOL:${WIN32}>:ws2_32>)
+add_test(NAME test_lap_ble_gatt29 COMMAND test_lap_ble_gatt29)
+add_executable(test_lap_ble_client_host tests/test_lap_ble_client_host.c
+  ${LAP_TUI}/ls_lap_ble_client.c ${FW}/main/ble_lap_client.c)
+target_include_directories(test_lap_ble_client_host PRIVATE ${LAP_TUI} ${FW}/bench/shims)
+target_compile_definitions(test_lap_ble_client_host PRIVATE LS_LAP_CLIENT_HOST_TEST=1 LS_LAP_BLE_NO_SIM=1)
+add_test(NAME test_lap_ble_client_host COMMAND test_lap_ble_client_host)
+
 # API 2.8 network diagnostics over the simulator's fixed LAN.
 add_executable(test_lap_netdiag tests/test_lap_netdiag.c
   ${LAP_TUI}/ls_lap_net_audio.c ${LAP_TUI}/ls_lap_wifi_http.c
@@ -4266,3 +4301,6 @@ foreach(t IN LISTS _pins_targets)
     target_sources(${t} PRIVATE ${FW}/components/lakeshark/board/ls_pins.c)
   endif()
 endforeach()
+
+# The two packs suites share the lf_packs_root scratch folder: never run them at once.
+set_tests_properties(test_fault_packs test_fault_packs_old PROPERTIES RESOURCE_LOCK lf_packs_root)

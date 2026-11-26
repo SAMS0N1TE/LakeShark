@@ -21,6 +21,7 @@
    on real data: a cell driven, a number changing, an import reading. */
 #include "wd_page.h"
 #include "wd_atlas.h"
+#include "wd_names.h"
 #include "wd_feed.h"
 #include "../ls_tui.h"
 #include "../ls_tui_ui.h"
@@ -466,7 +467,9 @@ static void lists_plate(tui_surface *sf, tui_rect r)
         else if (s_list == WD_ATLAS_L_NEW) snprintf(right, sizeof(right), "%d dBm", it->rssi);
         else snprintf(right, sizeof(right), "%u drives", it->drives);
         put(sf, c, c.x, y, tag, LIT(SRC_HUE[wd_atlas_src(it->kind)]));
-        if (it->name[0]) snprintf(nm, sizeof(nm), "%s", it->name);
+        char lb[LS_BLE_NAMES_LEN];
+        const char *own = wd_label(it->kind, it->name, it->addr, 0, 0, 0, 0, lb, sizeof(lb), NULL);   /* a name it gave before */
+        if (own) snprintf(nm, sizeof(nm), "%s", own);
         else snprintf(nm, sizeof(nm), "%02X:%02X:%02X:%02X:%02X:%02X", it->addr[0], it->addr[1], it->addr[2], it->addr[3], it->addr[4],
                       it->addr[5]);
         const int nw = c.w - 6 - (int)strlen(right) - 1;

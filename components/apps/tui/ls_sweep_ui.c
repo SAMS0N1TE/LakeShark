@@ -1,6 +1,7 @@
 #include "ls_sweep_ui.h"
 #include "ls_braille.h"
 #include "ls_sweep_app.h"
+#include "ls_ble_names.h"
 #include "ls_rid.h"
 #include "ls_options.h"
 #include "ls_gps.h"
@@ -303,6 +304,20 @@ static int header(tui_surface *sf,tui_rect a,const cols_t *c,const ls_sweep_sett
 
 /* --------------------------------------------------------------- LIST -- */
 
+/* The names the card has for a contact (ls_ble_names.h, cache reads only):
+   the name a Bluetooth device gave before, and its maker when the address
+   is public. Addresses as shown, a Bluetooth one turned from air order. */
+static void shown_mac(const ls_sweep_device_t *d,uint8_t be[6]) {for(int i=0;i<6;i++) be[i]=d->mac[d->radio?i:5-i];}
+static bool own_name(const ls_sweep_device_t *d,char *out,size_t n) {
+    if(d->radio) return false;
+    uint8_t be[6];shown_mac(d,be);
+    return ls_ble_names_device(be,d->address_type,out,n);
+}
+static bool maker(const ls_sweep_device_t *d,char *out,size_t n) {
+    if(!d->radio && (d->address_type&1)) return false;     /* random: no maker */
+    uint8_t be[6];shown_mac(d,be);
+    return ls_ble_names_maker(be,out,n);
+}
 static void sub_text(char *t,size_t n,const ls_sweep_device_t *d,unsigned section,int64_t now,bool fix,bool *badge) {
     int64_t age=now-d->seen_us;*badge=false;
     if(section==SW_WITH_YOU) {
@@ -317,8 +332,13 @@ static void sub_text(char *t,size_t n,const ls_sweep_device_t *d,unsigned sectio
         else LS_SNPRINTF(t_ls_sweep_ui_with_you_ldm_time, t,n,"with you %ldm (time only)",m);
         return;
     }
-    if(d->places) snprintf(t,n,"%s  %u places",d->match.vendor,d->places);
-    else snprintf(t,n,"%s",d->match.vendor);
+    char own[LS_BLE_NAMES_LEN],mk[LS_BLE_NAMES_LEN];
+    const char *v=*d->match.vendor?d->match.vendor:maker(d,mk,sizeof(mk))?mk:"";
+    char who[80];
+    if(own_name(d,own,sizeof(own))) snprintf(who,sizeof(who),"\"%s\"%s%s",own,*v?"  ":"",v);
+    else snprintf(who,sizeof(who),"%s",v);
+    if(d->places) snprintf(t,n,"%s  %u places",who,d->places);
+    else snprintf(t,n,"%s",who);
 }
 static int draw_row(tui_surface *sf,tui_rect a,const cols_t *c,const ls_sweep_device_t *d,int y,int64_t now,bool fix,unsigned section,bool sel) {
     int64_t age=now-d->seen_us;uint8_t hue=category_ink(d->match.category,age);
@@ -563,8 +583,12 @@ static void draw_hunt(tui_surface *sf,tui_rect a,const cols_t *c,int y,const ls_
     if(facts.h<4) return;
     panel(sf,a,facts," TARGET ",NULL,0);
     int fx=facts.x+3,fw=facts.w-5,fy=facts.y+2,fb=facts.y+facts.h-1;
-    const char *v=*d->match.vendor?d->match.vendor:ls_sweep_category(d->match.category);
+    char own[LS_BLE_NAMES_LEN],mk[LS_BLE_NAMES_LEN];
+    const bool has_mk=maker(d,mk,sizeof(mk));
+    const char *v=*d->match.vendor?d->match.vendor:has_mk?mk:ls_sweep_category(d->match.category);
+    if(own_name(d,own,sizeof(own)) && fy<fb) fact(sf,a,fx,fw,fy++,"NAME",own);
     if(fy<fb) fact(sf,a,fx,fw,fy++,"VENDOR",v);
+    if(has_mk && v!=mk && fy<fb) fact(sf,a,fx,fw,fy++,"MAKER",mk);
     char address[18];ls_sweep_mac_text(address,d);
     snprintf(t,sizeof(t),"%s  %s",address,d->radio?"Wi-Fi":d->address_type&1?"BLE random":"BLE public");
     if(fy<fb) fact(sf,a,fx,fw,fy++,d->radio?"BSSID":"ADDRESS",t);

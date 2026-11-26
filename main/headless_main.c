@@ -121,6 +121,7 @@
 #include "tui/ls_compass_live.h"
 #include "tui/ls_df_sources.h"
 #include "ls_textpack.h"
+#include "ls_static_task.h"
 
 static const char *TAG = "headless";
 
@@ -1168,7 +1169,9 @@ static StaticTask_t s_sdrpwr_tcb;
    still running. So the port worker parks itself suspended when it is done
    (FINISHED) instead of deleting itself, and the next caller that wins the
    compare-exchange deletes it from outside before creating the next one.
-   The VBUS worker is unchanged: it goes straight back to IDLE. */
+   The VBUS worker does the same when it ends without a restart: it once
+   stored IDLE and deleted itself, and a caller could create it again in the
+   same TCB while the kernel still had the old one listed (ls_static_task.h). */
 enum { SDRPWR_IDLE = 0, SDRPWR_RUNNING, SDRPWR_FINISHED };
 static int s_sdrpwr_state = SDRPWR_IDLE;
 static TaskHandle_t s_sdrpwr_task;
@@ -1181,12 +1184,7 @@ static bool hl_sdr_power_cycle_running(void)
 /* Called only by the caller that moved FINISHED to RUNNING. */
 static bool sdrpwr_reclaim_finished_worker(void)
 {
-    for (int i = 0; i < 40 && eTaskGetState(s_sdrpwr_task) != eSuspended; i++)
-        vTaskDelay(pdMS_TO_TICKS(5));
-    if (eTaskGetState(s_sdrpwr_task) != eSuspended) return false;
-    vTaskDelete(s_sdrpwr_task);
-    s_sdrpwr_task = NULL;
-    return true;
+    return ls_static_task_reap(&s_sdrpwr_task, 200);
 }
 
 static void sdr_power_task(void *arg)
@@ -1210,8 +1208,9 @@ static void sdr_power_task(void *arg)
         if (lakeshark_radio_endpoint_ready(LS_RADIO_ENDPOINT_RTL_USB)) {
             ESP_LOGW(TAG, "SDR power cycle: re-enumerated after %d ms, no restart needed",
                      (i + 1) * 100);
-            __atomic_store_n(&s_sdrpwr_state, SDRPWR_IDLE, __ATOMIC_RELEASE);
-            vTaskDelete(NULL);
+            /* Parked, not deleted: see SDRPWR_FINISHED. The next caller reclaims it. */
+            __atomic_store_n(&s_sdrpwr_state, SDRPWR_FINISHED, __ATOMIC_RELEASE);
+            ls_static_task_park();
             return;
         }
     }
@@ -1275,7 +1274,7 @@ static void sdr_port_task(void *arg)
              (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
     /* Parked, not deleted: see SDRPWR_FINISHED. The next caller reclaims it. */
     __atomic_store_n(&s_sdrpwr_state, SDRPWR_FINISHED, __ATOMIC_RELEASE);
-    vTaskSuspend(NULL);
+    ls_static_task_park();
 }
 
 /**/
@@ -1316,8 +1315,8 @@ static sdrpwr_result_t hl_sdr_power_cycle_try(void)
             s_sdrpwr_stack, &s_sdrpwr_tcb, 1);
         return SDRPWR_STARTED;
     }
-    xTaskCreateStatic(sdr_power_task, "sdr_pwr", SDRPWR_STACK_WORDS, NULL, 5,
-                      s_sdrpwr_stack, &s_sdrpwr_tcb);
+    s_sdrpwr_task = xTaskCreateStatic(sdr_power_task, "sdr_pwr", SDRPWR_STACK_WORDS, NULL, 5,
+                                      s_sdrpwr_stack, &s_sdrpwr_tcb);
     return SDRPWR_STARTED;
 }
 
@@ -3065,6 +3064,14 @@ static int cmd_heap(int argc, char **argv)
     LS_PRINTF(fmt_headless_main_nvs_writes_in_commits, "nvs      : %lu writes in %lu commits, %lu dropped\n",
            (unsigned long)done, (unsigned long)commits, (unsigned long)dropped);
 
+    /* The task table only on 'heap tasks'. uxTaskGetSystemState scans every
+       stack with the SMP kernel locked: about 11 ms on the SX board, longer
+       with more tasks, and the panel's frame restart waits behind it, so the
+       screen flashed blue each time TERMINAL's HEAP key ran it (11-25, LR). */
+    if (argc < 2 || strcmp(argv[1], "tasks")) {
+        printf("tasks    : 'heap tasks' lists every task's stack (the screen may skip a frame)\n");
+        return 0;
+    }
     UBaseType_t n = uxTaskGetNumberOfTasks();
     TaskStatus_t *ts = calloc(n, sizeof(TaskStatus_t));
     if (ts && ls_lora_diagnostic_try_begin()) {
@@ -3366,7 +3373,7 @@ static bool console_start(bool full)
         { .command = "trail",  .help = LS_TXT(con_headless_main_trail_help, "Where each busy task last was: this run, and the run a watchdog reset ended"),
           .func = &cmd_trail },
         { .command = "memory", .help = LS_TXT(con_headless_main_memory_help, "Allocator headroom without task/stack enumeration"), .func = &cmd_memory },
-        { .command = "heap",   .help = LS_TXT(con_headless_main_heap_help, "Internal/DMA/PSRAM free, USB IQ slots, NVS write stats. 'heap dma' dumps the regions, 'heap stages' the boot profile"),
+        { .command = "heap",   .help = LS_TXT(con_headless_main_heap_help, "Internal/DMA/PSRAM free, USB IQ slots, NVS write stats. 'heap dma' dumps the regions, 'heap stages' the boot profile, 'heap tasks' every task's stack"),
           .func = &cmd_heap },
         /**/
 #if CONFIG_LS_DEV_CONSOLE

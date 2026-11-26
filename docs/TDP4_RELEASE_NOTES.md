@@ -1,5 +1,29 @@
 # LakeShark release notes
 
+## 3.2.1
+
+Update over Wi-Fi from UPDATE, or install `lakeshark-tdp4-3.2.1.zip` with the web flasher on terminalbay.com.
+
+New:
+
+- The C6 Wi-Fi chip updates itself. A minute after the board starts on Wi-Fi it checks the C6 and installs LakeShark's C6 firmware when it is missing, so WIFI WATCH, TAP and WIFI SURVEY capture frames on every board. A banner shows while it runs and the board restarts when done.
+- One shared Bluetooth name file for every app: companies, services, characteristics, MAC makers and vendor UUIDs, over 46,000 names. Add your own, and devices are remembered by name once heard. It updates as a data pack from PACKS.
+- WARDRIVE, SWEEP and FIND show those names.
+- BLE EXPLORER 2.2: pairing with passkey or number check, link info, your own names, and FLOWS: 34 scripted read and write sequences for lights, printers, sensors and more.
+- MESHTASTIC 1.5: a SCAN tab steps through every modem preset and shows which ones people use nearby.
+- BUGHUNT 1.4: SDR spectrum strip, TUNE and SNAP, burst timing, and the shared names.
+- PACKS: app data packs, installed and refreshed like language packs.
+
+Better:
+
+- MESH no longer freezes the screen when the radio is busy.
+- BLE EXPLORER no longer gets stuck on "one GATT request at a time".
+- WARDRIVE shows Bluetooth addresses in the right order and keeps MeshCore adverts over longer paths.
+- LR2021 live I/Q, RF SURVEY and the waterfall share the chip cleanly; a stalled capture ends on its own.
+- Holding the top-right corner for 1.5 s always goes HOME, even in a full-screen app.
+- The store waits for a running app to close before updating it.
+- WIFI WATCH, TAP and WIFI SURVEY say where to update the C6 when it lacks capture support.
+
 ## 3.2.0
 
 Update over Wi-Fi from UPDATE, or install `lakeshark-tdp4-3.2.0.zip` with the web flasher on terminalbay.com. LakeShark Desktop, Studio and the ESP32-P4-NANO stay on 2.22.0.

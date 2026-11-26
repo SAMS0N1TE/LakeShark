@@ -36,7 +36,7 @@ void ls_ble_heard_note_ad(const uint8_t addr[6], const uint8_t *ad, int len)
 {
     if (!addr || !ad || len <= 0) return;
     uint8_t have = 0;
-    uint16_t company = 0, uuid = 0;
+    uint16_t company = 0, uuid = 0, appearance = 0;
     int16_t mfg0 = -1, svc0 = -1;
     bool svc_data = false;
     for (int i = 0; i + 1 < len;) {
@@ -54,6 +54,9 @@ void ls_ble_heard_note_ad(const uint8_t addr[6], const uint8_t *ad, int len)
             svc0 = n >= 3 ? v[2] : -1;
             svc_data = true;
             have |= 2;
+        } else if (t == 0x19 && n >= 2 && !(have & 4)) {
+            appearance = (uint16_t)(v[0] | v[1] << 8);
+            have |= 4;
         } else if ((t == 0x02 || t == 0x03) && n >= 2 && !(have & 2)) {
             uuid = (uint16_t)(v[0] | v[1] << 8);
             svc0 = -1;
@@ -67,6 +70,7 @@ void ls_ble_heard_note_ad(const uint8_t addr[6], const uint8_t *ad, int len)
         ls_ble_heard_t *d = &s_heard[i];
         if (have & 1) { d->company = company; d->mfg0 = mfg0; }
         if (have & 2) { d->uuid16 = uuid; d->svc0 = svc0; }
+        if (have & 4) d->appearance = appearance;
         d->ad_have |= have;
         break;
     }
@@ -88,6 +92,7 @@ void ls_ble_heard_note(const uint8_t addr[6], const char *name, int name_len,
         memset(&s_heard[slot], 0, sizeof(s_heard[slot]));
         memcpy(s_heard[slot].addr, addr, 6);
         s_heard[slot].smooth = (float)rssi;
+        s_heard[slot].addr_type = LS_BLE_HEARD_TYPE_UNKNOWN;
     }
     ls_ble_heard_t *d = &s_heard[slot];
     /* Adverts come and go; a device keeps the name it once gave. */
@@ -99,6 +104,14 @@ void ls_ble_heard_note(const uint8_t addr[6], const char *name, int name_len,
     d->smooth += 0.35f * ((float)rssi - d->smooth);
     d->adverts++;
     d->last_us = now_us;
+    unlock();
+}
+
+void ls_ble_heard_note_type(const uint8_t addr[6], uint8_t addr_type)
+{
+    if (!addr || !lock()) return;
+    for (int i = 0; i < s_count; i++)
+        if (!memcmp(s_heard[i].addr, addr, 6)) { s_heard[i].addr_type = addr_type; break; }
     unlock();
 }
 

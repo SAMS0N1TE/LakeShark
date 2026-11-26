@@ -34,6 +34,11 @@ short of the camera hole (firmware with `ui.cutout`).
 - AIR: packets a minute, the last minute as LoRa chirps, channel and airtime
   meters, every packet heard. The RANGE TEST box: what goes out, each `seq`
   heard with its SNR, RSSI and distance, and how many were missed
+- SCAN: which presets people use nearby. The radio steps through the
+  presets, each on its default slot, and keeps a table: packets, nodes,
+  last signal, when, the channel hash heard (green: the default channel)
+  and each one's share. Packets show as they come, read when they use the
+  default key. Receive only (see below)
 - TRANSLATE: Spanish, Portuguese, French, German, Italian, Dutch, Polish,
   Russian and Ukrainian to English on the board, no Internet; FROM picks the
   languages read, and the phrasebook sends in any of them (see below)
@@ -61,13 +66,15 @@ short of the camera hole (firmware with `ui.cutout`).
   waypoints and its settings between runs
 
 ## Keys
-LEFT/RIGHT or 1-5 tabs, UP/DOWN scroll (NODES and CHATS: choose, ENTER
+LEFT/RIGHT or 1-6 tabs, UP/DOWN scroll (NODES and CHATS: choose, ENTER
 opens), B back (closes whatever is open), M more, O options.
 CHAT: S send, Q quick reply, C conversations, P choose a message (again: an
 older one), R reply, E react, K (in CHATS) mark all read.
 NODES: G sort, N say hello (on a page: ask who it is), D direct message,
 R traceroute, F favourite, V mesh map.
 MESH MAP: Z zoom, L names, J waypoints. AIR: K clear.
+SCAN: G go or stop, UP/DOWN choose a row, ENTER or P pin it (again: cycle),
+W dwell, K clear, O its settings.
 SHARE: H all channels or the primary, I add a link.
 TRANSLATE: Y try a translation, A auto translate, W what to show, F the
 languages to read, L the language the phrasebook and QUICK send in.
@@ -123,6 +130,43 @@ s to 5 min; any node with RANGE TEST on writes a line a packet to
 `meshtastic/rangetest-<date>-<time>.csv` on the card, in upstream's columns
 (time, from, sender name, sender lat/long, rx lat/long/elevation, rx snr,
 distance, hop limit, payload, rx rssi).
+
+## Preset scan
+The presets of the node's region, each on the slot its default channel
+name hashes to. US: all ten (EU_868: the seven upstream allows there).
+
+| Row | Preset | US MHz | Slot | BW kHz | SF | CR |
+|---|---|---|---|---|---|---|
+| 1 | LongFast | 906.875 | 20/104 | 250 | 11 | 4/5 |
+| 2 | LongMod | 902.6875 | 6/208 | 125 | 11 | 4/8 |
+| 3 | LongSlow | 905.3125 | 27/208 | 125 | 12 | 4/8 |
+| 4 | LongTurbo | 908.75 | 14/52 | 500 | 11 | 4/8 |
+| 5 | MediumFast | 913.125 | 45/104 | 250 | 9 | 4/5 |
+| 6 | MediumSlow | 914.875 | 52/104 | 250 | 10 | 4/5 |
+| 7 | MediumTurbo | 925.25 | 47/52 | 500 | 9 | 4/5 |
+| 8 | ShortFast | 918.875 | 68/104 | 250 | 7 | 4/5 |
+| 9 | ShortSlow | 920.625 | 75/104 | 250 | 8 | 4/5 |
+| 0 | ShortTurbo | 926.75 | 50/52 | 500 | 7 | 4/5 |
+
+Sync word 0x2B, preamble 16 (12 on LORA_24).
+
+- Dwell: 10 s a preset by default (W or OPTIONS: 5 to 60 s). LongSlow gets
+  three 64-byte packets' time (13 s). After a packet it stays one packet's
+  time plus 1 s for a reply or a relay, never more than two dwells
+- SHARE: each preset's packets a minute of listening against all of them,
+  so a preset that held the radio longer does not look bigger
+- PIN: one preset only, until unpinned
+- The band ruler shows each preset where it sits; a tick over it once heard
+- CH: the most heard channel hash. Green is the preset's default channel; `+`
+  means more than one was heard (a private channel shares the slot)
+- The live list: from, to, hop limit/start, hash, packet id, and what it was
+  when it reads with the default key (AQ==)
+- OPTIONS on SCAN: SCAN, DWELL, PIN, PRESETS (each in the cycle or out),
+  CLEAR TABLE, and `< ALL SETTINGS`
+- While it runs the node sends nothing and does not hear its own mesh;
+  sends wait. STOP or leaving the app puts the node back
+- Both radios: one preset at a time. The SX1262 and the LR2021 both retune
+  per step
 
 ## Store and forward
 A router announces itself (S&F on its card). MORE on its page asks it for
@@ -270,6 +314,13 @@ headers. Checked by `test_mt_proto` (bench) byte for byte against those field
 numbers and against the default channel link the official apps print
 (`meshtastic.org/e/#CgMSAQESCAgBOAFAA0gB`). The QR code is Project Nayuki's
 QR Code generator library (MIT), unchanged but for asserts compiled out.
+
+1.5's SCAN (`mt_scan.c`) is source-derived from the same firmware: the
+preset parameters of `modemPresetToParams` (MeshRadio.h), the display names
+of DisplayFormatters.cpp (the default channel names), and from
+RadioInterface.cpp the region profiles (PRESETS_STD, PRESETS_EU_868), the
+16 and 12 symbol preambles and the slot rule, `round(band / width)` slots
+and `djb2(name) % slots`. Checked by `test_mt_scan` (bench).
 
 Against Meshtastic 2.7.26 on a Heltec V4 (ANZ MediumFast, 2026-11-07): node info
 both ways (the Heltec stored this node's key), channel text both ways, PKI DMs both

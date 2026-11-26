@@ -19,6 +19,12 @@ typedef struct { uint32_t lost_pairs, gaps; bool done; esp_err_t error; } lr_wf_
 void lr_wf_get_stats(lr_wf_stats *out);
 void lr_wf_stop_stats(lr_wf_stats *out);
 void lr_wf_stop(void);
+/* Stops the session only when it is the one started with this consumer and
+ * ctx; true when it stopped it. lr_wf_stop ends whatever session exists, so
+ * an owner cleaning up after itself could end FM's or another app's.
+ * Consumer-less owners (the waterfall, RF SURVEY) start with
+ * lr_wf_start_consumer(hz, NULL, &their_tag) to be told apart. */
+bool lr_wf_stop_if(lr_wf_consumer_t consume, void *ctx);
 
 /* Wide mode, off by default. The LO sits offset_hz below the channel, the
  * 576k IQ8 route streams, and a down-converter in the owner task hands the

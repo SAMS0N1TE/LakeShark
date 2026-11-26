@@ -135,6 +135,7 @@ static void heard_advert(const ble_link_advert_t *a, void *ctx)
     ls_lap_ble_advert_push(a->addr,a->addr_type,a->rssi,a->scan_response,a->data,a->len,a->seen_us/1000);
     ls_ble_heard_note(a->addr, (const char *)name, name_len, a->rssi, a->seen_us);
     ls_ble_heard_note_ad(a->addr, a->data, a->len);
+    ls_ble_heard_note_type(a->addr, a->addr_type);
 }
 
 static void advert_task(void *arg)
@@ -1824,6 +1825,18 @@ static void c6_host_stopped(int status, void *arg)
     __atomic_store_n(&s_c6_stopped, true, __ATOMIC_RELEASE);
 }
 
+/* The host is stopped, so nothing on the P4 uses the controller any more. Some
+   C6 images answer the disable RPC with -1 (FeatureControl, seen on ESP-Hosted
+   2.12.9 with the monitor forwarder); the C6 restarts after its update anyway,
+   so a refused disable must not stop the update. */
+static esp_err_t c6_controller_off(void)
+{
+    esp_err_t e = esp_hosted_bt_controller_disable();
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE)
+        ESP_LOGW(TAG, "C6 BT controller disable refused (%s); host stopped, going on", esp_err_to_name(e));
+    return ESP_OK;
+}
+
 esp_err_t ble_link_c6_quiesce(void)
 {
     portENTER_CRITICAL(&s_start_mux);
@@ -1839,10 +1852,7 @@ esp_err_t ble_link_c6_quiesce(void)
         if (esp_timer_get_time() >= until) return ESP_ERR_TIMEOUT;
         vTaskDelay(pdMS_TO_TICKS(20));
     }
-    if (!s_stack_up) {
-        esp_err_t e = esp_hosted_bt_controller_disable();
-        return e == ESP_ERR_INVALID_STATE ? ESP_OK : e;
-    }
+    if (!s_stack_up) return c6_controller_off();
     stop_mode(0);
     /* Unlike just cancelling discovery, this also prevents NimBLE from
      * resynchronizing itself while Hosted's SDIO/RPC transport is rebuilt. */
@@ -1854,8 +1864,7 @@ esp_err_t ble_link_c6_quiesce(void)
         if (__atomic_load_n(&s_c6_stopped, __ATOMIC_ACQUIRE)) {
             if (s_c6_stop_error) return ESP_FAIL;
             s_scanning = false;
-            esp_err_t e = esp_hosted_bt_controller_disable();
-            return e == ESP_ERR_INVALID_STATE ? ESP_OK : e;
+            return c6_controller_off();
         }
         vTaskDelay(pdMS_TO_TICKS(50));
     } while (esp_timer_get_time() < until);

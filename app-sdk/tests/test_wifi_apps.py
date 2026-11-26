@@ -162,8 +162,8 @@ class WifiApps(unittest.TestCase):
     def test_watch_without_transport_says_how(self):
         text, logs = self.run_app('wifi_watch', '', watch_capture(), frames=40, LAPSIM_CAPTURE_NO_TRANSPORT='1')
         self.assertIn('NOT LISTENING', text)
-        self.assertIn('C6 forwarder', text)
-        self.assertIn('c6 flash /sdcard/lakeshark/c6/ls_c6_net.bin', text)
+        self.assertIn('C6 monitor firmware', text)
+        self.assertIn('SYSTEM > UPDATE > C6 RADIO FW', text)
         self.assertEqual(logs, {})
 
     def test_watch_on_a_network_falls_back_to_its_channel(self):
@@ -320,7 +320,7 @@ class WifiApps(unittest.TestCase):
 
     def test_survey_without_capture_still_scans(self):
         text, _ = self.run_app('wifi_survey', '5:wifi=8;100:key=3', survey_capture(), frames=110, LAPSIM_CAPTURE_NO_TRANSPORT='1')
-        self.assertIn('c6 flash /sdcard/lakeshark/c6/ls_c6_net.bin', text)
+        self.assertIn('SYSTEM > UPDATE > C6 RADIO FW', text)
         text, _ = self.run_app('wifi_survey', '5:wifi=8', survey_capture(), frames=60, LAPSIM_CAPTURE_NO_TRANSPORT='1')
         self.assertIn('TEST-LakeNet', text)
 

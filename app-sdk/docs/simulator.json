@@ -470,6 +470,11 @@
     "reason": "Replays the pcapng named by LAPSIM_CAPTURE (LINKTYPE 127 to Wi-Fi, 256 to Bluetooth) at the file pace; LAPSIM_CAPTURE_PACE=0 delivers as fast as polled, LAPSIM_CAPTURE_JOINED=1 models a joined network. No file: NO_FILE. Never synthesises frames. Board Wi-Fi capture needs coprocessor firmware that forwards monitor frames. See CAPTURE.md."
   },
   {
+    "name": "lap_ble_conn_info",
+    "status": "limited",
+    "reason": "Shared per-app queue with the synthetic peer: MTU 247 for apps that read with buffers over 20 bytes, long reads and notifications, pairing with a number check (code 123456), write without response. LAPSIM_SCRIPT bleauth=1, blepasskey=2|4|0, blesecreq=AUTHREQ, blereadlen=N, blenotifylen=N. Real pairing, bond storage and MTU/PHY values need a peer on the board."
+  },
+  {
     "name": "lap_ble_connect",
     "status": "limited",
     "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
@@ -488,6 +493,21 @@
     "name": "lap_ble_event_next",
     "status": "limited",
     "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
+  },
+  {
+    "name": "lap_ble_forget",
+    "status": "limited",
+    "reason": "Shared per-app queue with the synthetic peer: MTU 247 for apps that read with buffers over 20 bytes, long reads and notifications, pairing with a number check (code 123456), write without response. LAPSIM_SCRIPT bleauth=1, blepasskey=2|4|0, blesecreq=AUTHREQ, blereadlen=N, blenotifylen=N. Real pairing, bond storage and MTU/PHY values need a peer on the board."
+  },
+  {
+    "name": "lap_ble_pair",
+    "status": "limited",
+    "reason": "Shared per-app queue with the synthetic peer: MTU 247 for apps that read with buffers over 20 bytes, long reads and notifications, pairing with a number check (code 123456), write without response. LAPSIM_SCRIPT bleauth=1, blepasskey=2|4|0, blesecreq=AUTHREQ, blereadlen=N, blenotifylen=N. Real pairing, bond storage and MTU/PHY values need a peer on the board."
+  },
+  {
+    "name": "lap_ble_passkey",
+    "status": "limited",
+    "reason": "Shared per-app queue with the synthetic peer: MTU 247 for apps that read with buffers over 20 bytes, long reads and notifications, pairing with a number check (code 123456), write without response. LAPSIM_SCRIPT bleauth=1, blepasskey=2|4|0, blesecreq=AUTHREQ, blereadlen=N, blenotifylen=N. Real pairing, bond storage and MTU/PHY values need a peer on the board."
   },
   {
     "name": "lap_ble_peripheral_status",
@@ -808,6 +828,11 @@
     "name": "lap_gatt_write",
     "status": "limited",
     "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
+  },
+  {
+    "name": "lap_gatt_write_cmd",
+    "status": "limited",
+    "reason": "Shared per-app queue with the synthetic peer: MTU 247 for apps that read with buffers over 20 bytes, long reads and notifications, pairing with a number check (code 123456), write without response. LAPSIM_SCRIPT bleauth=1, blepasskey=2|4|0, blesecreq=AUTHREQ, blereadlen=N, blenotifylen=N. Real pairing, bond storage and MTU/PHY values need a peer on the board."
   },
   {
     "name": "lap_gps",

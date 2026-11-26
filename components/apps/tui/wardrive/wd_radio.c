@@ -695,9 +695,11 @@ bool wd_radio_obs_lora(wd_obs_t *o, const uint8_t *p, int n, int flavour, float 
         if (h >> 6) return false;
         int i = 1 + ((route == 0 || route == 3) ? 4 : 0);
         if (i >= n) return false;
-        const int path = p[i++];
-        if (path > 64) return false;
-        i += path;
+        /* The path byte packs the hash size (top 2 bits, +1) and the hop count
+           (low 6), as MeshCore's Packet.h; size 4 is not valid. */
+        const int pb = p[i++], hops = pb & 63, hsize = (pb >> 6) + 1;
+        if (hsize == 4 || hops * hsize > 64) return false;
+        i += hops * hsize;
         if (type != 4 || n < i + 32 + 4 + 64 + 1) return false;        /* only an advert names a node */
         const uint8_t *key = p + i;
         memcpy(o->addr, key, 6);

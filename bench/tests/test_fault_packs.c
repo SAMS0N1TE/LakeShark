@@ -37,7 +37,8 @@ void ls_location_get(ls_location_t *o) { memset(o, 0, sizeof(*o)); }
 ls_loc_state_t ls_location_key(char *o, size_t c) { snprintf(o, c, "fix"); return LS_LOC_FIX; }
 void ls_location_key_tap(void) {}
 void ls_location_set_enabled(bool on) { (void)on; }
-bool settings_get_auto_data(void) { return false; }
+static bool s_auto;                                         /* Settings > Auto data */
+bool settings_get_auto_data(void) { return s_auto; }
 void settings_set_auto_data(bool on) { (void)on; }
 bool settings_get_gps_on(void) { return true; }
 esp_err_t ls_wifi_sta_ensure(void) { return ESP_OK; }
@@ -92,6 +93,7 @@ static void sign_cat(const char *lines, bool final_nl)
 static char g_pack[4][4096];
 static size_t g_pack_len[4];
 static const char *g_pack_id[4];
+static bool g_pack_bin[4];                                  /* served as .bin: LANG or DATA */
 static int g_npack;
 static void hex(const uint8_t *h, char *o) { for (int i = 0; i < 32; i++) sprintf(o + i * 2, "%02x", h[i]); }
 /* a catalog line for a pack body; returns it in out */
@@ -118,7 +120,7 @@ static bool route(const char *url, const uint8_t **b, size_t *n)
     for (int i = 0; i < g_npack; i++) {
         char want[160];
         snprintf(want, sizeof(want), "https://data.terminalbay.com/v1/packs/%s%s", g_pack_id[i],
-                 strncmp(g_pack_id[i], "lang-", 5) ? ".txt" : ".bin");
+                 g_pack_bin[i] ? ".bin" : ".txt");
         if (!strcmp(url, want)) { *b = (const uint8_t *)g_pack[i]; *n = g_pack_len[i]; return true; }
     }
     return false;
@@ -126,8 +128,15 @@ static bool route(const char *url, const uint8_t **b, size_t *n)
 static void add_pack(const char *id, const char *body)
 {
     g_pack_id[g_npack] = id;
+    g_pack_bin[g_npack] = !strncmp(id, "lang-", 5);
     g_pack_len[g_npack] = strlen(body);
     memcpy(g_pack[g_npack++], body, strlen(body) + 1);
+}
+/* a DATA pack on the server: packs/<id>.bin */
+static void add_bin(const char *id, const char *body)
+{
+    add_pack(id, body);
+    g_pack_bin[g_npack - 1] = true;
 }
 
 static const char GOOD_BODY[] =
@@ -154,6 +163,7 @@ static void fresh(void)
     rm_tree(lf_root);
     _mkdir(lf_root);
     g_npack = 0;
+    s_auto = false;
     lf_srv.route = route;
     s_have_pos = true; s_lat = 28.5; s_lon = -81.4;
     memset(s_ncat, 0, sizeof(s_ncat));
@@ -521,6 +531,80 @@ LS_CASE(packs_catalog_lang_rows_skipped_by_old_parsers_read_by_new)
 #endif
 }
 
+/* ---- DATA packs: any app's raw file, <id>.bin, installed or not, never by position ---- */
+
+/* An app's bytes, with a system line at the board's position too. */
+static const char DATA_BODY[] =
+    "LAPI\x01\x02 ble names\n"
+    "S|evil|P25|Not a site|28.5|-81.4|10|\n"
+    "F|evil|851000000|ctl|P25|Not a channel\n";
+static const char DATA_BODY2[] = "LAPI\x01\x03 ble names, a newer list\n";
+
+LS_CASE(packs_catalog_data_rows_skipped_by_old_parsers_read_by_new)
+{
+    char a[400], m[400], l[400], all[4000] = "";
+    fresh();
+    cat_line(a, sizeof(a), "lm-us-fl", "P25,AIR", BOX_ORL, GOOD_BODY, "20260101");
+    cat_line(m, sizeof(m), "mar-all", "MAR", "-180,-90,180,90", GOOD_BODY, "20260101");
+    strcat(all, a);
+    lang_line(l, sizeof(l), "ble-ids", "DATA", DATA_BODY, ".bin");
+    strcat(all, l);
+    lang_line(l, sizeof(l), "lang-pt", "LANG", LANG_BODY, ".bin");
+    strcat(all, l);
+    lang_line(l, sizeof(l), "ble-flows", "DATA", DATA_BODY2, ".bin");
+    strcat(all, l);
+    lang_line(l, sizeof(l), "bughunt-ids", "DATA", DATA_BODY, ".bin");
+    strcat(all, l);
+    strcat(all, m);
+    static const char *const bad[][3] = {
+        { "ble-x", "DATA", ".txt" },            /* app data as a text pack */
+        { "ble-y", "DATA,P25", ".bin" },        /* DATA mixed with a kind of system */
+        { "ble-z", "P25,DATA", ".txt" },
+        { "ble-v", "DATA,LANG", ".bin" },       /* two raw kinds */
+        { "lang-es", "DATA", ".bin" },          /* a lang- id is LANG only */
+        { "ble-w", "P25", ".bin" },             /* a frequency pack in a .bin */
+    };
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        lang_line(l, sizeof(l), bad[i][0], bad[i][1], DATA_BODY, bad[i][2]);
+        strcat(all, l);
+    }
+    const int n = load_with(all, true);
+    for (int i = 0; i < n; i++) ls_note("row %s kinds 0x%x", s_cat[s_cl][i].id, (unsigned)s_cat[s_cl][i].kinds);
+#ifdef LS_PACKS_OLD_SRC
+    /* a build from before LANG and DATA keeps its packs and never takes a DATA
+       row (ble-z, P25 in a .txt, it reads as a P25 pack: a row no generator writes) */
+    int good = 0;
+    for (int i = 0; i < n; i++) {
+        const char *id = s_cat[s_cl][i].id;
+        good += !strcmp(id, "lm-us-fl") || !strcmp(id, "mar-all");
+        LS_CHECK(strcmp(id, "ble-ids") && strcmp(id, "ble-flows") && strcmp(id, "bughunt-ids") && strncmp(id, "lang-", 5));
+    }
+    LS_EQ_INT(good, 2);
+#else
+    LS_EQ_INT(n, 6);
+    ls_pack_region_t r[8];
+    LS_EQ_INT(ls_packs_catalog_regions(r, 0, 8), 6);
+    /* the global row, LANGUAGES, APP DATA (by id), then the countries */
+    LS_EQ_STR(r[0].id, "mar-all");
+    LS_EQ_STR(r[1].id, "lang-pt");
+    LS_EQ_STR(r[2].id, "ble-flows");
+    LS_EQ_STR(r[3].id, "ble-ids");
+    LS_EQ_STR(r[4].id, "bughunt-ids");
+    LS_EQ_STR(r[5].id, "lm-us-fl");
+    LS_EQ_STR(r[1].cc, LS_PACK_LANG_CC);
+    LS_EQ_STR(r[1].sub, "PT");
+    LS_EQ_INT(r[1].kinds, LS_PK_LANG);
+    for (int i = 2; i <= 4; i++) {
+        LS_EQ_STR(r[i].cc, LS_PACK_DATA_CC);
+        LS_EQ_STR(r[i].sub, "");
+        LS_EQ_INT(r[i].kinds, LS_PK_DATA);
+        LS_CHECK(!(r[i].kinds & LS_PK_ALL));
+    }
+    LS_EQ_INT(r[3].bytes, (int)strlen(DATA_BODY));
+    LS_EQ_STR(r[5].cc, "US");
+#endif
+}
+
 #ifndef LS_PACKS_OLD_SRC
 static int s_evil;
 static bool evil_cb(const ls_pack_sys_t *s, void *ctx)
@@ -669,5 +753,150 @@ LS_CASE(packs_install_counts_when_its_fetch_slot_is_reused)
     ls_packs_status_t st;
     ls_packs_status(&st);
     LS_EQ_INT(st.installed, 1);
+}
+
+/* ---- DATA packs end to end ---- */
+
+/* The file on the card is exactly body. */
+static bool same_file(const char *p, const char *body)
+{
+    char b[400], got[4096];
+    FILE *f = fopen(lf_real(p, b, sizeof(b)), "rb");
+    if (!f) return false;
+    const size_t n = fread(got, 1, sizeof(got), f);
+    fclose(f);
+    return n == strlen(body) && !memcmp(got, body, n);
+}
+
+static bool data_evil_cb(const ls_pack_sys_t *s, void *ctx)
+{
+    (void)ctx;
+    s_seen++;
+    s_evil += !strcmp(s->id, "evil") || !strcmp(s->pack, "ble-ids");
+    return true;
+}
+
+LS_CASE(packs_data_installs_by_id_never_by_area_never_as_frequencies)
+{
+    char a[400], l[400], all[1000];
+    fresh();
+    cat_line(a, sizeof(a), "lm-us-fl", "P25,AIR", BOX_ORL, GOOD_BODY, "20260101");
+    lang_line(l, sizeof(l), "ble-ids", "DATA", DATA_BODY, ".bin");
+    snprintf(all, sizeof(all), "%s%s", l, a);
+    sign_cat(all, true);
+    add_pack("lm-us-fl", GOOD_BODY);
+    add_bin("ble-ids", DATA_BODY);
+    ls_services_start();
+    /* the whole world around here, every kind: Florida comes, the app data does not */
+    LS_CHECK(ls_packs_install_around(s_lat, s_lon, 20000.0f, 0));
+    LS_EQ_INT(round_(), LS_PACKS_READY);
+    LS_CHECK(exists("/sdcard/lakeshark/packs/lm-us-fl.txt"));
+    LS_CHECK(!exists("/sdcard/lakeshark/packs/ble-ids.bin"));
+    LS_CHECK(ls_packs_install_around(s_lat, s_lon, 20000.0f, 0xffff));
+    (void)round_();
+    LS_CHECK(ls_packs_get_here(0));
+    (void)round_();
+    LS_CHECK(!exists("/sdcard/lakeshark/packs/ble-ids.bin"));
+    /* by name: it comes as <id>.bin, the catalog's bytes */
+    const char *ids[] = { "ble-ids" };
+    LS_EQ_INT(ls_packs_install(ids, 1), 1);
+    LS_EQ_INT(round_(), LS_PACKS_READY);
+    LS_CHECK(same_file("/sdcard/lakeshark/packs/ble-ids.bin", DATA_BODY));
+    LS_CHECK(!exists("/sdcard/lakeshark/packs/ble-ids.txt"));
+    ls_packs_status_t st;
+    ls_packs_status(&st);
+    LS_EQ_INT(st.installed, 2);
+    LS_EQ_INT(st.here, 1);                                  /* installed, never "here" */
+    /* the frequency side never reads it, anywhere on the globe */
+    static const double at[][2] = { { 28.5, -81.4 }, { 0, 0 }, { 48.85, 2.35 }, { -89.9, -180 } };
+    for (unsigned i = 0; i < sizeof(at) / sizeof(at[0]); i++) {
+        const int n = choose(at[i][0], at[i][1]);
+        for (int j = 0; j < n; j++) LS_CHECK(strcmp(s_here[j].id, "ble-ids"));
+    }
+    s_nhere = choose(s_lat, s_lon);
+    s_seen = s_evil = 0;
+    ls_packs_scan(0xffff, 1e9f, data_evil_cb, NULL);
+    LS_EQ_INT(s_evil, 0);
+    LS_EQ_INT(s_seen, 2);                                   /* ORL1 and AIR1 */
+    s_live = 0;
+    near_build();
+    ls_pack_sys_t sys[16];
+    const int n = ls_packs_nearest(0xffff, 1e9f, sys, 16);
+    LS_EQ_INT(n, 2);
+    for (int i = 0; i < n; i++) LS_CHECK(strcmp(sys[i].pack, "ble-ids"));
+    LS_CHECK(same_file("/sdcard/lakeshark/packs/ble-ids.bin", DATA_BODY));    /* untouched */
+    /* a reload trusts it again from the verified index */
+    LS_EQ_INT(cat_load(), 2);
+    LS_EQ_INT(s_ninst, 2);
+    /* removed by name: the .bin goes, the frequency pack stays */
+    LS_EQ_INT(ls_packs_remove(ids, 1), 1);
+    (void)round_();
+    LS_CHECK(!exists("/sdcard/lakeshark/packs/ble-ids.bin"));
+    LS_CHECK(exists("/sdcard/lakeshark/packs/lm-us-fl.txt"));
+    ls_packs_status(&st);
+    LS_EQ_INT(st.installed, 1);
+}
+
+LS_CASE(packs_data_copied_in_by_hand_is_checked_against_the_catalog)
+{
+    char l[400];
+    fresh();
+    lang_line(l, sizeof(l), "ble-flows", "DATA", DATA_BODY2, ".bin");
+    put("/sdcard/lakeshark/packs/ble-flows.bin", DATA_BODY2, strlen(DATA_BODY2));
+    LS_EQ_INT(load_with(l, true), 1);
+    LS_CHECK(s_cat[s_cl][0].flags & F_INST);
+    /* the same file under the wrong name, or changed, is not installed */
+    fresh();
+    put("/sdcard/lakeshark/packs/ble-flows.txt", DATA_BODY2, strlen(DATA_BODY2));
+    char other[sizeof(DATA_BODY2)];
+    memcpy(other, DATA_BODY2, sizeof(DATA_BODY2));
+    other[0] = 'X';
+    put("/sdcard/lakeshark/packs/ble-flows.bin", other, strlen(other));
+    LS_EQ_INT(load_with(l, true), 1);
+    LS_CHECK(!(s_cat[s_cl][0].flags & F_INST));
+    LS_EQ_INT(s_ninst, 0);
+}
+
+LS_CASE(packs_data_and_lang_refresh_on_wifi_when_the_catalog_is_newer)
+{
+    char d[400], l[400], all[1000];
+    fresh();
+    lang_line(d, sizeof(d), "ble-ids", "DATA", DATA_BODY, ".bin");
+    lang_line(l, sizeof(l), "lang-pt", "LANG", LANG_BODY, ".bin");
+    snprintf(all, sizeof(all), "%s%s", d, l);
+    sign_cat(all, true);
+    add_bin("ble-ids", DATA_BODY);
+    add_pack("lang-pt", LANG_BODY);
+    ls_services_start();
+    const char *ids[] = { "ble-ids", "lang-pt" };
+    LS_EQ_INT(ls_packs_install(ids, 2), 2);
+    (void)round_();
+    LS_CHECK(same_file("/sdcard/lakeshark/packs/ble-ids.bin", DATA_BODY));
+    LS_CHECK(same_file("/sdcard/lakeshark/packs/lang-pt.bin", LANG_BODY));
+    /* a newer ble-ids (new bytes, later date); the language is unchanged */
+    char d2[400];
+    lang_line(d2, sizeof(d2), "ble-ids", "DATA", DATA_BODY2, ".bin");
+    memcpy(strstr(d2, " 20261119"), " 20261201", 9);
+    snprintf(all, sizeof(all), "%s%s", d2, l);
+    sign_cat(all, true);
+    g_pack_len[0] = strlen(DATA_BODY2);
+    memcpy(g_pack[0], DATA_BODY2, sizeof(DATA_BODY2));
+    /* Auto data off: nothing moves, however long */
+    ls_shim_time_set(esp_timer_get_time() + 2 * CATALOG_US);
+    (void)round_();
+    LS_CHECK(same_file("/sdcard/lakeshark/packs/ble-ids.bin", DATA_BODY));
+    /* on: the next look fetches the list and refreshes only what changed */
+    s_auto = true;
+    ls_shim_time_set(esp_timer_get_time() + 2 * CATALOG_US);
+    (void)round_();
+    s_auto = false;
+    LS_CHECK(same_file("/sdcard/lakeshark/packs/ble-ids.bin", DATA_BODY2));
+    LS_CHECK(same_file("/sdcard/lakeshark/packs/lang-pt.bin", LANG_BODY));
+    ls_packs_status_t st;
+    ls_packs_status(&st);
+    LS_EQ_INT(st.installed, 2);
+    LS_EQ_INT(st.updatable, 0);
+    const int k = cat_find("ble-ids");
+    LS_CHECK(k >= 0 && !strcmp(s_cat[s_cl][k].idate, "20261201"));
 }
 #endif

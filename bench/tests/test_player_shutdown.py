@@ -104,6 +104,8 @@ static bool overview_busy;
 static void mic_close_file(){++closes;}
 static void vTaskDelay(int){if(++delays==finish_after){mic_close_file();s_mic_busy=false;}}
 static void vTaskDelete(void*){if(s_mic_busy)abort();++deletes;}
+enum eTaskState{eRunning,eReady,eBlocked};
+static eTaskState eTaskGetState(void*){return s_mic_busy?eRunning:eBlocked;}   /* not busy = parked in its wait */
 static void heap_caps_free(void *p){if(p)++frees;}
 static int audio_player_delete(){++decoder_deletes;return decoder_result;}
 static void audio_out_media_release(){++releases;}

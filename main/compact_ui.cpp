@@ -14,6 +14,7 @@
 #include "ls_board.h"
 #include "ls_profile.h"
 #include "ls_textpack.h"
+#include "ls_errlog.h"
 #if LS_HAS_COMPACT_UI
 #include "ls_panel.h"
 #include "ls_panel_ws.h"
@@ -2434,6 +2435,10 @@ static void tui_stall_where(const char *name, char state, const uint32_t *top, c
             found++;
         }
     esp_rom_printf("%s\n", at);
+    /* The UI task's and the timer task's places go into the last words too,
+       so a report after the abort names them (11-25: a report from the LR's
+       FM-to-LR2021 freeze had only the abort, the dump went to USB only). */
+    if (!strncmp(name, "ls_tui/", 7) || !strncmp(name, "esp_timer/", 10)) ls_errlog_note(at);
 }
 
 /* Every task that is not running, with where it is parked: a stall is one
@@ -2482,9 +2487,11 @@ static void tui_stall_task(void *arg)
         if (ui_due) {
             static const char *const STATE[] = { "running", "ready", "blocked", "suspended", "deleted", "invalid" };
             const eTaskState st = s_tui_worker ? eTaskGetState(s_tui_worker) : eInvalid;
-            esp_rom_printf("E tui: UI stalled: no frame for %d s on %s; ls_tui %s\n",
-                           ui_still, ls_tui_screen_name(ls_tui_screen_current()),
-                           STATE[st <= eInvalid ? st : eInvalid]);
+            char line[96];
+            snprintf(line, sizeof(line), "E tui: UI stalled: no frame for %d s on %s; ls_tui %s",
+                     ui_still, ls_tui_screen_name(ls_tui_screen_current()), STATE[st <= eInvalid ? st : eInvalid]);
+            esp_rom_printf("%s\n", line);
+            ls_errlog_note(line);
         }
         if (timer_due)
             esp_rom_printf("E tui: esp_timer stalled: no timer callback for %d s\n", timer_still);

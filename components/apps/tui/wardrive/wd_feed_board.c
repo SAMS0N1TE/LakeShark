@@ -14,6 +14,7 @@
 #include "../ls_wireless.h"
 #include "../../../../main/ls_wifi.h"
 #include "../ls_ble_heard.h"
+#include "../ls_ble_names.h"
 #include "../ls_rid.h"
 #include "../ls_drone_watch.h"
 #include "../ls_tui_screen.h"
@@ -234,11 +235,20 @@ static void ble_poll(wd_obs_t *out, int cap, int *n, uint32_t now)
         wd_obs_t *o = &out[(*n)++];
         memset(o, 0, sizeof(*o));
         o->kind = WD_BLE;
-        memcpy(o->addr, s_ble[i].addr, 6);
+        /* wd_obs_t keeps addresses as shown (the WiGLE MAC, the signature
+           table's prefixes); the radio hears them least significant first */
+        for (int b = 0; b < 6; b++) o->addr[b] = s_ble[i].addr[5 - b];
         snprintf(o->name, sizeof(o->name), "%.*s", (int)sizeof(s_ble[i].name), s_ble[i].name);
+        /* a name heard is remembered for the board and every BLE app
+           (ble-devices.txt); a device advertising without one gets the
+           name it gave before, if it gave one */
+        if (o->name[0]) ls_ble_names_learn(o->addr, s_ble[i].addr_type, o->name);
+        else ls_ble_names_device(o->addr, s_ble[i].addr_type, o->name, sizeof(o->name));
         o->ad_have = s_ble[i].ad_have;
         o->company = s_ble[i].company; o->mfg0 = s_ble[i].mfg0;
         o->uuid16 = s_ble[i].uuid16; o->svc0 = s_ble[i].svc0;
+        o->appearance = s_ble[i].appearance;
+        if (s_ble[i].addr_type != LS_BLE_HEARD_TYPE_UNKNOWN) o->ble_type = (uint8_t)(s_ble[i].addr_type + 1);
         o->rssi = s_ble[i].rssi;
     }
     s_ble_seen_us = newest;

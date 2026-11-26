@@ -484,3 +484,10 @@ lap_dns_resolve
 lap_dns_result
 lap_arp_probe
 lap_arp_table
+
+# API 2.9 GATT client pairing, long values, connection info
+lap_ble_pair
+lap_ble_passkey
+lap_ble_forget
+lap_ble_conn_info
+lap_gatt_write_cmd

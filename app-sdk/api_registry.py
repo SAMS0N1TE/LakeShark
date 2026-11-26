@@ -23,7 +23,7 @@ def since(entry, sdk):
     for line in before.splitlines():
         if re.match(r'\s*#\s*if', line): guards.append(line)
         elif re.match(r'\s*#\s*endif', line) and guards: guards.pop()
-    for minor in (8, 7, 6, 5, 4, 3, 2, 1):
+    for minor in (9, 8, 7, 6, 5, 4, 3, 2, 1):
         if any('LAP_API_2' + str(minor) in g for g in guards): return '2.' + str(minor)
     n = entry['name']
     if entry['header'] == 'lakeshark_ui.h': return '2.1'
@@ -86,6 +86,10 @@ def policy(n):
     if n.startswith(('lap_ble_scan_', 'lap_ble_advert_', 'lap_ble_connect', 'lap_ble_disconnect', 'lap_ble_event_', 'lap_gatt_')):
         cap = None
         status, reason = 'limited', 'Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests.'
+    # API 2.9: GATT client pairing, long values, connection info.
+    if n in ('lap_ble_pair', 'lap_ble_passkey', 'lap_ble_forget', 'lap_ble_conn_info', 'lap_gatt_write_cmd'):
+        cap = None
+        status, reason = 'limited', 'Shared per-app queue with the synthetic peer: MTU 247 for apps that read with buffers over 20 bytes, long reads and notifications, pairing with a number check (code 123456), write without response. LAPSIM_SCRIPT bleauth=1, blepasskey=2|4|0, blesecreq=AUTHREQ, blereadlen=N, blenotifylen=N. Real pairing, bond storage and MTU/PHY values need a peer on the board.'
     if n.startswith(('lap_mixer_', 'lap_mic_', 'lap_sample_', 'lap_audio_record_', 'lap_audio_operation', 'lap_audio_close')):
         cap = 'LAP_CAP_MIC' if n.startswith(('lap_mic_', 'lap_audio_record_')) else None
         status, reason = 'limited', 'Shared mixer, PCM queues and WAV file parsing/recording; synthetic microphone; no host speaker. Hardware codec arbitration, mic indicator and real-time timing require board tests.'

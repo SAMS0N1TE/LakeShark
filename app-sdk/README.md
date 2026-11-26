@@ -1,7 +1,7 @@
 # LakeShark apps
 
 <!-- generated-api:start -->
-Current default target: **API 2.8**. Exported SDK calls: **397**.
+Current default target: **API 2.9**. Exported SDK calls: **402**.
 See the [generated API registry](docs/api.json) and [simulator coverage](docs/SIMULATOR.md).
 <!-- generated-api:end -->
 

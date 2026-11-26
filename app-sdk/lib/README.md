@@ -20,6 +20,13 @@ its value), randomised addresses, channel/MHz conversion and airtime. Read
 only: nothing builds a frame. Used by `apps/wifi_watch` and
 `apps/wifi_survey`.
 
+`lap_ids.h` names Bluetooth devices from the card: companies, services,
+characteristics, appearances, MAC makers, the owner's names and remembered
+device names. `lap_ids_fmt.c` is its pure half (file format, UUIDs, name
+lines; no lap calls), which the firmware also builds for its own screens
+(WARDRIVE, SWEEP, FIND), so both read the same files by the same rules;
+`lap_ids.c` is the app engine over `lap_sd_*`.
+
 `lap_loop_init(&loop, 60, 8, lap_millis())` sets 60 updates/second and at most
 eight catch-up updates per draw. `lap_loop_advance(&loop, lap_millis(), &alpha)`
 returns how many fixed updates to run (each with `dt = 1.0f / loop.hz`); draw

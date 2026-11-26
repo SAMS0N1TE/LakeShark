@@ -19,6 +19,7 @@
 #include "wd_feed.h"
 #include "wd_sig.h"
 #include "wd_track.h"
+#include "wd_names.h"
 #include "../ls_tui_ui.h"
 #include "../ls_braille.h"
 #include "../ls_notify.h"
@@ -234,7 +235,10 @@ static void poll(void)
         wd_unlock();
         if (!got) break;
         if (!what[0]) {
+            char lb[LS_BLE_NAMES_LEN];
             if (a.name[0]) snprintf(what, sizeof(what), "%s", a.name);
+            else if (a.kind == WD_BLE && ls_ble_names_device(a.addr, LS_BLE_NAMES_TYPE_UNKNOWN, lb, sizeof(lb)))
+                snprintf(what, sizeof(what), "%s", lb);                 /* the name it gave before */
             else snprintf(what, sizeof(what), "%02X:%02X:%02X:%02X", a.addr[2], a.addr[3], a.addr[4], a.addr[5]);
         }
         const int c = class_of(a.tags, a.why);
@@ -278,6 +282,8 @@ typedef struct {
     bool placed;
     float x, z;
     char name[33], label[24];
+    uint8_t ad_have, ble_type;          /* Bluetooth: the advert's IDs, for names */
+    uint16_t company, uuid16, appearance;
 } tgt_t;
 
 typedef struct {
@@ -304,11 +310,24 @@ static uint8_t d_alert;
 static char s_signote[80];
 static int s_nsig;
 
+/* The names a detail shows, collected (wd_names_detail). */
+typedef struct { int n; const char *k[5]; char v[5][LS_BLE_NAMES_LEN]; } dnames_t;
+static void dn_add(void *ctx, const char *key, const char *value)
+{
+    dnames_t *d = ctx;
+    if (d->n >= 5) return;
+    d->k[d->n] = key;
+    snprintf(d->v[d->n], sizeof(d->v[0]), "%s", value);
+    d->n++;
+}
+
 static void label_for(const wd_dev_t *e, char *out, size_t n)
 {
     const wd_sig_info_t *s = e->sig ? wd_sig_at(e->sig - 1) : NULL;
+    char lb[LS_BLE_NAMES_LEN];
+    const char *nm = s ? NULL : WD_DEV_LABEL(e, lb, NULL);     /* its name, else who made it */
     if (s) snprintf(out, n, "%s", s->label);
-    else if (e->name[0]) snprintf(out, n, "%.*s", (int)n - 1, e->name);
+    else if (nm) snprintf(out, n, "%.*s", (int)n - 1, nm);
     else snprintf(out, n, "%02X:%02X:%02X:%02X:%02X:%02X", e->addr[0], e->addr[1], e->addr[2], e->addr[3], e->addr[4], e->addr[5]);
 }
 
@@ -328,6 +347,11 @@ static void fill(tgt_t *t, int i, const wd_dev_t *e)
     t->x = e->x;
     t->z = e->z;
     memcpy(t->name, e->name, sizeof(t->name));
+    t->ad_have = e->ad_have;
+    t->ble_type = e->ble_type;
+    t->company = e->company;
+    t->uuid16 = e->uuid16;
+    t->appearance = e->appearance;
     label_for(e, t->label, sizeof(t->label));
     wd_trk_t k;
     t->veh = wd_track_info(i, &k) ? k.veh : 0;
@@ -901,7 +925,19 @@ static void detail(tui_surface *sf, tui_rect r, uint32_t now)
     /* the plate only as tall as the record: the art's eight rows, the record
        under them (beside them when wide), a blank between its groups if room */
     const bool two = r.w - 4 >= 70, air = (two ? r.h - 3 : r.h - 11) >= 16;
-    const int nkv = (d_sig_id[0] ? 1 : 0) + 3 + (D.name[0] ? 1 : 0) + 1 + (D.placed ? 1 + (board_placed() ? 1 : 0) : 0) +
+    /* Bluetooth: what the names say of it (its name before, company, service, looks, maker) */
+    dnames_t dn = {0};
+    if (D.kind == WD_BLE) {
+        wd_dev_t e;
+        memset(&e, 0, sizeof(e));
+        e.kind = D.kind;
+        memcpy(e.addr, D.addr, 6);
+        memcpy(e.name, D.name, sizeof(e.name));
+        e.ad_have = D.ad_have; e.ble_type = D.ble_type;
+        e.company = D.company; e.uuid16 = D.uuid16; e.appearance = D.appearance;
+        wd_names_detail(&e, dn_add, &dn);
+    }
+    const int nkv = (d_sig_id[0] ? 1 : 0) + 3 + (D.name[0] ? 1 : 0) + dn.n + 1 + (D.placed ? 1 + (board_placed() ? 1 : 0) : 0) +
                     (DT.placed ? 1 : 0) + (D.veh ? 1 : 0) + (DT.steps ? 1 : 0) + (air ? 2 : 0);
     const int need = (two ? (1 + nkv > 9 ? 1 + nkv : 9) : 9 + nkv) + 3;
     if (need < r.h) r.h = need;
@@ -941,6 +977,7 @@ static void detail(tui_surface *sf, tui_rect r, uint32_t now)
     snprintf(t, sizeof(t), "%02X:%02X:%02X:%02X:%02X:%02X", D.addr[0], D.addr[1], D.addr[2], D.addr[3], D.addr[4], D.addr[5]);
     kv(sf, kr, &y, "ADDRESS", t, TEXT);
     if (D.name[0]) kv(sf, kr, &y, "NAME", D.name, TEXT);
+    for (int i = 0; i < dn.n; i++) kv(sf, kr, &y, dn.k[i], dn.v[i], LIT(TUI_CYAN));
     if (air) y++;
     span_text(u, sizeof(u), D.first_ms - st.start_ms);
     ago_text(t, sizeof(t), now - D.first_ms);

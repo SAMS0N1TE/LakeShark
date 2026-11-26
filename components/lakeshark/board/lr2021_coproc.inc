@@ -639,6 +639,7 @@ esp_err_t lr20xx_chip_ddc_live(const lr20xx_chip_ddc_cfg_t *cfg, lr20xx_chip_ddc
         if (out) { *out = res; out->error = ESP_ERR_INVALID_STATE; }
         return ESP_ERR_INVALID_STATE;
     }
+    atomic_store(&s_iq_live_cancel, false);   /* a cancel meant for an earlier run */
     const lr20xx_iq_config_t c = {.route = cfg->code ? LR20XX_IQ_SOURCE1 : LR20XX_IQ_SOURCE0_576,
                                   .code = cfg->code, .frequency_hz = cfg->lo_hz, .gain = cfg->gain,
                                   .path = lr20xx_path_for_hz(cfg->lo_hz)};
@@ -678,7 +679,11 @@ esp_err_t lr20xx_chip_ddc_live(const lr20xx_chip_ddc_cfg_t *cfg, lr20xx_chip_ddc
     int64_t due = esp_timer_get_time();
     bool more = true;
     unsigned tmo_run = 0;
+    int64_t last_block = due;
     while (err == ESP_OK && more) {
+        /* A stop from outside, checked on every pass: the sink, the other
+           way to stop, runs only when a block arrives. */
+        if (atomic_load(&s_iq_live_cancel)) break;
         int64_t now = esp_timer_get_time();
         if (now < due) { vTaskDelay(1); continue; }
         const int64_t r0 = now;
@@ -699,6 +704,7 @@ esp_err_t lr20xx_chip_ddc_live(const lr20xx_chip_ddc_cfg_t *cfg, lr20xx_chip_ddc
             more = sink(ctx, buf, COP_DDC_BLK_DATA, first);
             first += COP_DDC_BLK_PAIRS; res.out_pairs += COP_DDC_BLK_PAIRS;
             blk++;
+            last_block = now;
             due += period_us;
             if (due < now - 8 * period_us) due = now;   /* far behind: read straight on */
         } else if (seq > blk && seq - blk < 0x10000000u) {
@@ -707,10 +713,15 @@ esp_err_t lr20xx_chip_ddc_live(const lr20xx_chip_ddc_cfg_t *cfg, lr20xx_chip_ddc
             res.lapped_bytes += (seq + 1 - blk) * COP_DDC_BLK_DATA;
             first += (uint64_t)(seq + 1 - blk) * COP_DDC_BLK_PAIRS;
             blk = seq + 1;
+            last_block = now;
             due = now;
         } else {
             res.early++;                       /* not written yet */
             due = now + period_us / 4;
+            /* A program that writes nothing would spin here for good with
+               the radio held (blank FM, then the 11-25 UI freeze). End it:
+               the session then takes the ordinary route. */
+            if (now - last_block >= LR20XX_LIVE_IDLE_US) err = ESP_ERR_TIMEOUT;
         }
     }
     if (touched) {

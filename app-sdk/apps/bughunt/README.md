@@ -7,6 +7,10 @@ only see Bluetooth tags, and cheap RF detectors beep at any burst without
 saying what it was. BUGHUNT listens three ways at once and says what it
 thinks each thing is.
 
+BUGHUNT 1.3 adds SDR tools to a frequency HUNT: a live spectrum around the
+target with a peak hold, the peak's frequency, TUNE and SNAP, the SDR's gain
+and span, and burst timing (see SDR tools).
+
 BUGHUNT 1.2 adds the finder's gauge and dial, AUTO RANGE, distance, BODY
 direction, burst timing, HUNT FREQ, the SDR and DUAL receivers, MINE and
 WATCH marks, TRACK KINDS, the OPTIONS tree and device names from a card
@@ -213,6 +217,42 @@ the dial turns on it too. DUAL needs firmware that lets a USB SDR receive
 beside the LoRa radio (after 3.0.3); older firmware says so and uses the
 SDR alone.
 
+### SDR tools
+
+When the SDR listens on a frequency HUNT (SDR or DUAL), a panel sits under
+the bursts strip (portrait) or over the dial (landscape):
+
+- **PEAK**: where the strongest signal in the window actually is (314.982
+  MHz), how far from the hunt frequency (-18k) and its level, bright while
+  it is on; once it stops, the last one and how long ago. GAIN at the end.
+- **The strip**: the window around the target in braille, coloured by how
+  far over the quiet level each part stands; a magenta peak hold that falls
+  about 6 dB a second as lines come; the burst threshold dotted in yellow;
+  the target as a dotted white upright. Under it the span (-125k +125k),
+  `^` the target and `*` the strongest bin. It moves only on new lines.
+- **Burst timing**: ON AIR while one lasts, else the LAST burst's length,
+  and the GAP from one burst's start to the next (the median of the last
+  five, with the shortest and longest). A burst is the level 10 dB over the
+  quiet level. In landscape the line starts with the count.
+- **TUNE** (U): +1, -1, +10, -10 kHz, SNAP, a typed frequency, the gain and
+  the span; it opens again after a step. On the keyboard + and - step 1 kHz,
+  < and > (or , and .) 10 kHz.
+- **SNAP** (P): the hunt onto the peak (the last one over the quiet level by
+  6 dB, so a burst that has ended still counts).
+- **GAIN** (G, or OPTIONS > RECEIVERS > SDR GAIN): AUTO, then a quarter, a
+  half, three quarters and all of the radio's range (RTL-SDR 12, 25, 37,
+  49 dB). Kept for next time. The meter, its history and the dial start
+  again at a new gain, the old readings being another scale.
+- **SPAN** (OPTIONS > RECEIVERS > SDR SPAN): WIDE, an eighth of the SDR's
+  rate either side (at most 250 kHz); NARROW, a quarter of that. The meter
+  reads the same window, so NARROW keeps a neighbour out of it.
+
+The SDR keeps its offset: it is retuned only once the target has moved a
+sixteenth of its rate, so its centre spike never comes into the window; the
+LoRa radio in DUAL is retuned once the target has moved 25 kHz. During an
+SDR hunt the bar is TUNE, SNAP, STOP; SOUND (T) and DIRECTION (B) work on
+the keyboard and in OPTIONS > HUNT.
+
 ## Tracking: MINE and WATCH
 
 MARK on TAGS (or K) steps the pick NONE, MINE, WATCH:
@@ -290,13 +330,15 @@ time.
 | BACK | HUNT back to where it came from; INFO or ALL back to TAGS; then HOME |
 | L | HUNT the tag in the alert |
 | K | MARK the pick (TAGS); CAL at 1 m (HUNT on a tag) |
+| U | TUNE (HUNT on the SDR) |
+| P | SNAP to the peak (HUNT on the SDR); possible trackers alert too (TAGS) |
+| + / - | the hunt frequency 1 kHz (HUNT on the SDR); the following alert's minutes (TAGS) |
+| < / > or , / . | the hunt frequency 10 kHz (HUNT on the SDR) |
 | Q | HUNT FREQ |
 | E | RECEIVER: LORA, SDR, DUAL |
 | B | DIRECTION: PEAK or BODY |
 | D | start the dial again |
-| + / - | the following alert's minutes (TAGS) |
-| P | possible trackers alert too (TAGS) |
-| G | the card log on/off (TAGS) |
+| G | the card log on/off (TAGS); SDR GAIN (HUNT on the SDR) |
 
 ## How the sweep decides (bh_core.c)
 
@@ -396,3 +438,8 @@ HUNT, the alert on any tab, the log, wide screen, scan fallback).
 * The distance's 1 m references are typical phone-class readings, not
   measured on the board's antenna; CAL replaces them for one tag.
 * BODY mode and the dial's answers against a real hidden tag.
+* The SDR tools on a board: the peak's frequency against a known signal, the
+  gain steps, retuning in place, and burst timing at the SDR's line rate
+  (about 10 lines a second, so lengths are to about 0.1 s). The simulator's
+  SDR has no line at its 48 kHz lowest rate around an offset target; its
+  pictures were made with a 1 MHz rate.

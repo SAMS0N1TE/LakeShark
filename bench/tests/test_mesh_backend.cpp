@@ -10,6 +10,7 @@ extern "C" {
 #include <sys/stat.h>
 #include <thread>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 extern "C" UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t);
 static int mesh_test_mkdir(const char *, int) { return 0; }
@@ -141,6 +142,43 @@ LS_CASE(owner_commands_and_snapshots_are_serialized)
     });
     while (!finished) { mesh_calls_service(); vTaskDelay(1); }
     caller.join(); s_task = nullptr;
+}
+
+/* The status bar reads mesh stats every frame. An owner stuck in a radio
+   call used to hold that read, and every queued call, until the UI stall
+   watchdog rebooted the board on RADIOS. */
+LS_CASE(stuck_owner_never_blocks_other_tasks)
+{
+    reset_port(); LsRadio radio; s_radio = &radio; owner_here();
+    radio.setTxEnabled(true);
+    mesh_stats_publish();                 /* published once, then stuck */
+    std::atomic<int> stage(0);
+    bool running = false, armed = false;
+    int result = 0;
+    std::thread caller([&]() {
+        ls_mesh_stats_t st; ls_mesh_get_stats(&st);
+        running = st.running; armed = st.tx_enabled;
+        stage = 1;
+        result = mesh_call([&]() -> int { return 7; });
+        stage = 2;
+    });
+    const auto t0 = std::chrono::steady_clock::now();
+    while (stage < 2 && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3)) {
+        ls_shim_time_advance(100000);      /* the bench clock moves only when told */
+        vTaskDelay(1);
+    }
+    LS_EQ_INT(stage.load(), 2);
+    while (stage < 2) { mesh_calls_service(); vTaskDelay(1); }   /* let a failed run finish */
+    caller.join();
+    LS_CHECK(running && armed);
+    LS_EQ_INT(result, ESP_ERR_INVALID_STATE);
+    for (auto &c : s_calls) LS_CHECK(!c.busy);
+    /* A call the owner picks up is still answered. */
+    std::thread again([&]() { result = mesh_call([&]() -> int { return 7; }); stage = 3; });
+    while (stage < 3) { mesh_calls_service(); vTaskDelay(1); }
+    again.join();
+    LS_EQ_INT(result, 7);
+    s_task = nullptr; s_radio = nullptr;
 }
 
 LS_CASE(incoming_sequence_ignores_delivery_and_history_reload)

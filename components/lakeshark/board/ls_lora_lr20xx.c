@@ -4591,6 +4591,10 @@ static esp_err_t LORA_HOT iq_read_fifo(uint8_t *frame_data, size_t n)
     return err;
 }
 
+/* lr20xx_stream_live_cancel: read on every poll of a live run. */
+static atomic_bool s_iq_live_cancel;
+void lr20xx_stream_live_cancel(void) { atomic_store(&s_iq_live_cancel, true); }
+
 static esp_err_t LORA_HOT iq_stream_loop(unsigned duration_ms, const iq_delivery_t *sink,
         lr20xx_stream_result_t *out, bool checked, bool live,
         unsigned capacity, uint8_t *data, uint8_t *pending, size_t *tail_bytes,
@@ -4607,8 +4611,13 @@ static esp_err_t LORA_HOT iq_stream_loop(unsigned duration_ms, const iq_delivery
     bool woke = false;
     size_t pending_bytes = *tail_bytes;
     esp_err_t err = ESP_OK;
+    int64_t last_data = started;
     while (err == ESP_OK && !out->stopped_by_sink &&
            (live || esp_timer_get_time() - started < (int64_t)duration_ms * 1000)) {
+        /* A stop asked from outside ends a live run here, samples or not:
+           the sink, the other way to stop, runs only when a batch arrives. */
+        if (live && atomic_load(&s_iq_live_cancel)) { out->stopped_by_sink = true; break; }
+        const uint64_t bytes_before = out->bytes;
         int64_t now = esp_timer_get_time(), gap = now - previous_poll;
         if (gap > out->max_service_gap_us) out->max_service_gap_us = gap;
         previous_poll = now;
@@ -4689,6 +4698,15 @@ static esp_err_t LORA_HOT iq_stream_loop(unsigned duration_ms, const iq_delivery
             out->worst_drain_spi_bytes = spi_bytes;
         }
         if (spi_bytes > out->max_drain_spi_bytes) out->max_drain_spi_bytes = spi_bytes;
+        /* A live run that reads nothing for LR20XX_LIVE_IDLE_US ends: its
+           owner waits for it while it holds the radio, and with no samples
+           the sink never runs to stop it (blank FM spectrum, then a UI
+           freeze). Checked after a read, so a host stall the FIFO rode out
+           is not taken for silence. */
+        if (out->bytes != bytes_before) last_data = esp_timer_get_time();
+        else if (live && err == ESP_OK && !out->stopped_by_sink &&
+                 esp_timer_get_time() - last_data >= LR20XX_LIVE_IDLE_US)
+            err = ESP_ERR_TIMEOUT;
         /* Re-measure after SPI and sink work: the pre-drain level says nothing
            about the remaining headroom. At 500 bytes/ms, 256 bytes leaves
            1536 us before full, well over the 400 us sleep and wake-to-read.
@@ -4975,6 +4993,7 @@ esp_err_t lr20xx_stream_source2_live(lr20xx_iq_sink_t sink, void *context,
         if (out) { memset(out, 0, sizeof(*out)); out->capture_error = ESP_ERR_INVALID_STATE; }
         return ESP_ERR_INVALID_STATE;
     }
+    atomic_store(&s_iq_live_cancel, false);   /* a cancel meant for an earlier run */
     const iq_delivery_t delivery = {.legacy = sink, .context = context};
     esp_err_t err = stream_start(NULL, 0, &delivery, out, true, true);
     atomic_store(&s_iq_live_active, false);
@@ -4993,6 +5012,7 @@ esp_err_t lr20xx_stream_live(const lr20xx_iq_config_t *config, lr20xx_iq_block_s
         memset(out, 0, sizeof(*out)); out->capture_error = ESP_ERR_INVALID_STATE;
         return ESP_ERR_INVALID_STATE;
     }
+    atomic_store(&s_iq_live_cancel, false);   /* a cancel meant for an earlier run */
     const iq_delivery_t delivery = {.block = sink, .context = context};
     const esp_err_t err = stream_start(config, 0, &delivery, out, true, true);
     atomic_store(&s_iq_live_active, false);
@@ -5961,6 +5981,7 @@ esp_err_t lr20xx_stream(const lr20xx_iq_config_t *config, unsigned duration_ms,
     return ESP_ERR_NOT_SUPPORTED;
 }
 bool lr20xx_stream_source2_active(void) { return false; }
+void lr20xx_stream_live_cancel(void) {}
 esp_err_t lr20xx_chip_spectrum(const lr20xx_chip_spec_cfg_t *cfg, lr20xx_chip_spec_sink_t sink,
                                void *ctx, lr20xx_chip_result_t *out)
 {

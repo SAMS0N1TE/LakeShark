@@ -249,6 +249,45 @@ LS_CASE(ble_explorer_timeout_and_refusals) {
     LS_EQ_STR(bx_error_text(conn->error), "busy");
 }
 
+/* A device flooding notifications could cost the board a reply; the app
+   then said "Busy: one GATT request at a time" forever. */
+LS_CASE(ble_explorer_lost_reply_is_given_up) {
+    timeout_at = -1;
+    connect_and_walk();
+    const bx_chr_t *hr = chr_uuid(0x2A37);
+    LS_CHECK(hr != NULL);
+    bx_op_t op = {.kind = BX_OP_WRITE, .a = hr->value, .manual = true};
+    bx_started(conn, &op);                               /* its WRITTEN never comes */
+    LS_CHECK(!bx_overdue(conn, 1000));
+    LS_CHECK(!bx_overdue(conn, 1000 + BX_REPLY_MS - 1));
+    LS_CHECK(conn->busy);
+    const uint32_t errs = conn->errors;
+    LS_CHECK(bx_overdue(conn, 1000 + BX_REPLY_MS));
+    LS_CHECK(!conn->busy);
+    LS_EQ_UINT(conn->errors, errs + 1);
+    LS_EQ_INT(conn->state, BX_READY);                    /* still connected, free for the next */
+    /* a late reply changes nothing */
+    lap_ble_event_t e = ev(LAP_GATT_WRITTEN, hr->value);
+    bx_event(conn, &e, NULL, 0);
+    LS_CHECK(!conn->busy);
+    /* in a walk, the step is skipped and the walk goes on */
+    bx_rewalk(conn);
+    op = bx_next(conn);
+    LS_EQ_INT(op.kind, BX_OP_DISCOVER);
+    bx_started(conn, &op);
+    LS_CHECK(!bx_overdue(conn, 50000));
+    LS_CHECK(bx_overdue(conn, 50000 + BX_REPLY_MS));
+    LS_EQ_INT(conn->phase, BX_P_CHARS);
+    /* a reply in time resets the clock for the next request */
+    op = bx_next(conn);
+    bx_started(conn, &op);
+    LS_CHECK(!bx_overdue(conn, 60000));
+    answer(conn, &op);
+    op = bx_next(conn);
+    bx_started(conn, &op);
+    LS_CHECK(!bx_overdue(conn, 60000 + BX_REPLY_MS));    /* this one's clock starts now */
+}
+
 LS_CASE(ble_explorer_full_tables_are_marked) {
     static const uint8_t addr[6] = {1, 2, 3, 4, 5, 6};
     if (!conn) conn = malloc(sizeof(*conn));
@@ -371,4 +410,29 @@ LS_CASE(ble_explorer_json) {
     bx_json(conn, NULL, 0, 0, buf, need + 1);
     LS_CHECK(strstr(buf, "\"name\": \"a\\\"b\\\\c\"") != NULL);
     free(buf);
+}
+
+LS_CASE(ble_explorer_reads_again_after_pairing) {
+    timeout_at = -1;
+    connect_and_walk();
+    LS_EQ_INT(chr_uuid(0x2A50)->error, LAP_IO_EIO);
+    chrs[6].err = 0;                                    /* paired: the peer lets it be read now */
+    LS_CHECK(bx_reread(conn));
+    procedures = 0;
+    for (int guard = 0; guard < 50; guard++) {
+        const bx_op_t op = bx_next(conn);
+        if (op.kind == BX_OP_NONE) break;
+        LS_EQ_INT(op.kind, BX_OP_READ);                 /* the table stays: only reads */
+        bx_started(conn, &op);
+        answer(conn, &op);
+    }
+    LS_EQ_INT(procedures, 6 + 3);
+    LS_EQ_INT(conn->nchr, 9);
+    LS_EQ_INT(chr_uuid(0x2A50)->error, 0);
+    LS_CHECK(chr_uuid(0x2A50)->has_value);
+    LS_EQ_UINT(conn->errors, 0u);
+    chrs[6].err = LAP_IO_EIO;
+    /* mid-walk it does nothing */
+    conn->phase = BX_P_DESCS;
+    LS_CHECK(!bx_reread(conn));
 }

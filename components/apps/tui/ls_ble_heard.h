@@ -22,11 +22,16 @@ typedef struct {
     uint32_t adverts;
     int64_t last_us;
     /* What the advert said beyond its name, kept once seen (ad_have bit 0:
-       company + mfg0; bit 1: uuid16 + svc0). mfg0/svc0 -1: no byte. */
+       company + mfg0; bit 1: uuid16 + svc0; bit 2: appearance). mfg0/svc0
+       -1: no byte. */
     uint8_t ad_have;
-    uint16_t company, uuid16;
+    uint16_t company, uuid16, appearance;
     int16_t mfg0, svc0;
+    /* The address type as the radio reported it (0 public, 1 random, 2/3
+       their identity forms); LS_BLE_HEARD_TYPE_UNKNOWN until noted. */
+    uint8_t addr_type;
 } ls_ble_heard_t;
+#define LS_BLE_HEARD_TYPE_UNKNOWN 0xFF
 
 /* Scan callback context: cheap, bounded, no allocation. */
 void ls_ble_heard_note(const uint8_t addr[6], const char *name, int name_len,
@@ -37,6 +42,8 @@ bool ls_ble_heard_find(const uint8_t addr[6], ls_ble_heard_t *out);
 /* The advert's company ID and 16-bit service UUID, for a device already
    noted. Parses the raw AD bytes; bounded, no allocation. */
 void ls_ble_heard_note_ad(const uint8_t addr[6], const uint8_t *ad, int len);
+/* The address type for a device already noted (ls_ble_heard_t.addr_type). */
+void ls_ble_heard_note_type(const uint8_t addr[6], uint8_t addr_type);
 void ls_ble_heard_clear(void);
 
 #ifdef __cplusplus

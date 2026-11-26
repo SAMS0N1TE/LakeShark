@@ -277,6 +277,67 @@ bool bh_bursts_bursty(const bh_bursts_t *b, uint32_t now)
     /* two bursts at least, and the last one was short */
     return b->n >= 2 && !b->in && b->b[b->n - 1].dur_ms < 5000u && now - b->quiet_ms < 5000u;
 }
+uint32_t bh_bursts_gap(const bh_bursts_t *b, int k, uint32_t *lo, uint32_t *hi)
+{
+    uint32_t g[BH_BURSTS];
+    int n = 0;
+    if (k > BH_BURSTS - 1) k = BH_BURSTS - 1;
+    for (int i = b->n - 1; i >= 1 && n < k; i--) g[n++] = b->b[i].t_ms - b->b[i - 1].t_ms;
+    if (lo) *lo = 0;
+    if (hi) *hi = 0;
+    if (!n) return 0;
+    for (int i = 1; i < n; i++)                 /* a handful: insertion sort */
+        for (int j = i; j > 0 && g[j] < g[j - 1]; j--) { const uint32_t t = g[j]; g[j] = g[j - 1]; g[j - 1] = t; }
+    if (lo) *lo = g[0];
+    if (hi) *hi = g[n - 1];
+    return n % 2 ? g[n / 2] : (g[n / 2 - 1] + g[n / 2]) / 2u;
+}
+
+/* ---- an SDR's spectrum line ----------------------------------------------------- */
+
+bool bh_spec_window(int n, uint32_t rate_hz, int32_t off_hz, int32_t half_hz, int *lo, int *hi)
+{
+    if (n <= 0 || !rate_hz) return false;
+    /* integer maths: off_hz * n can pass 32 bits */
+    const int at = n / 2 + (int)((int64_t)off_hz * n / (int64_t)rate_hz);
+    int half = (int)((int64_t)half_hz * n / (int64_t)rate_hz);
+    if (half < 1) half = 1;
+    int a = at - half, z = at + half;
+    if (z < 0 || a >= n) return false;
+    if (a < 0) a = 0;
+    if (z > n - 1) z = n - 1;
+    *lo = a;
+    *hi = z;
+    return true;
+}
+int bh_spec_peak(const float *db, int n, int lo, int hi, uint32_t rate_hz, int32_t *off_hz)
+{
+    if (lo < 0) lo = 0;
+    if (hi > n - 1) hi = n - 1;
+    int best = -1;
+    for (int i = lo; i <= hi; i++)
+        if (best < 0 || db[i] > db[best]) best = i;
+    if (best < 0) return -1;
+    if (off_hz) {
+        float frac = 0.0f;
+        if (best > 0 && best < n - 1) {
+            const float a = db[best - 1], b = db[best], c = db[best + 1], d = a - 2.0f * b + c;
+            if (d < -1e-6f) frac = 0.5f * (a - c) / d;
+            if (frac > 0.5f) frac = 0.5f;
+            if (frac < -0.5f) frac = -0.5f;
+        }
+        const float bin_hz = (float)rate_hz / (float)n;
+        *off_hz = (int32_t)((float)(best - n / 2) * bin_hz + frac * bin_hz);
+    }
+    return best;
+}
+void bh_spec_hold(float *hold, const float *db, int n, float decay_db)
+{
+    for (int i = 0; i < n; i++) {
+        const float f = hold[i] - decay_db;
+        hold[i] = db[i] > f ? db[i] : f;
+    }
+}
 
 /* ---- two receivers -------------------------------------------------------------- */
 

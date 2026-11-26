@@ -309,6 +309,7 @@ static struct {
     bool hold_asked, started;
     lr_wf_wide_status saved;             /* the wide setting before the app, restored on close */
     uint64_t hz;
+    void *ctx;                           /* the token our session was started with */
 } lr;
 
 static void lr_consume(void *ctx, const uint8_t *data, size_t bytes, bool spare) {
@@ -318,7 +319,8 @@ static void lr_consume(void *ctx, const uint8_t *data, size_t bytes, bool spare)
 }
 static void lr_close(void) {
     if (lr.started) {
-        lr_wf_stop();
+        /* Ours only: lr_wf_stop would also end FM's or another app's. */
+        lr_wf_stop_if(lr_consume, lr.ctx);
         lr_wf_set_wide(lr.saved.on, lr.saved.offset_hz);
         lr.started = false;
     }
@@ -326,8 +328,9 @@ static void lr_close(void) {
 }
 static int lr_start(uint64_t hz) {
     ls_lap_rx_mark(hz, LR_RATE, LAP_IQ_GAP | LAP_IQ_RETUNED);
-    const esp_err_t e = lr_wf_start_consumer((uint32_t)hz,lr_consume,(void *)(uintptr_t)ls_lap_rx_token());
-    if (e == ESP_OK) { lr.hz = hz; return 0; }
+    void *ctx = (void *)(uintptr_t)ls_lap_rx_token();
+    const esp_err_t e = lr_wf_start_consumer((uint32_t)hz,lr_consume,ctx);
+    if (e == ESP_OK) { lr.hz = hz; lr.ctx = ctx; return 0; }
     return e == ESP_ERR_INVALID_ARG ? LAP_RX_ERANGE : e == ESP_ERR_NO_MEM ? LAP_RX_ENOMEM
          : e == ESP_ERR_NOT_SUPPORTED ? LAP_RX_EUNSUPPORTED : LAP_RX_EBUSY;
 }
@@ -353,9 +356,11 @@ static int lr_open(const lap_rx_config_t *cfg, ls_lap_rx_actual_t *actual) {
         lr_close();
         return LAP_RX_EINVAL;
     }
-    lr.started = true;
+    /* started only once the session is ours: a start refused because FM
+       or another app holds the radio must not have lr_close stop theirs. */
     const int rc = lr_start(cfg->center_hz);
-    if (rc < 0) { lr_close(); return rc; }
+    if (rc < 0) { lr_wf_set_wide(lr.saved.on, lr.saved.offset_hz); lr_close(); return rc; }
+    lr.started = true;
     *actual = (ls_lap_rx_actual_t){cfg->center_hz, LR_RATE, LAP_GAIN_AUTO};
     return 0;
 }
@@ -371,7 +376,7 @@ static int hw_open(int radio, const lap_rx_config_t *cfg, ls_lap_rx_actual_t *ac
 static int hw_tune(uint64_t hz, ls_lap_rx_actual_t *actual) {
     if (open_kind == K_LORA) {
         if (!ls_lora_packet_rx_hz_ok(ls_lora_caps(), (uint32_t)hz)) return LAP_RX_ERANGE;
-        lr_wf_stop();                    /* no old block may be tagged with the new centre */
+        lr_wf_stop_if(lr_consume, lr.ctx);   /* no old block may be tagged with the new centre */
         const int rc = lr_start(hz);
         if (rc == 0) actual->center_hz = hz;
         return rc;

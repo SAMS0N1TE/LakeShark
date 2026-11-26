@@ -100,6 +100,9 @@ void ls_errlog_early(void);
 void ls_errlog_boot(bool panicked, const char *crumb);
 /* This run's last words so far (DIAG shows them live). */
 size_t ls_errlog_live(char *out, size_t n);
+/* One line straight into the last words, past the log and stdout: for a
+   watchdog whose stalled task may hold the console lock. */
+void ls_errlog_note(const char *line);
 /* `crumb log` and `crumb clear` print through this. */
 void ls_errlog_print_all(void);
 

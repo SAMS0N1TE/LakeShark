@@ -1,7 +1,7 @@
 /* ls_packs: frequency data for where the board is (main/ls_packs.c).
 
    Packs are text files on the card (/sdcard/lakeshark/packs/<id>.txt; a LANG
-   pack is <id>.bin, see LS_PK_LANG) listed
+   or DATA pack is <id>.bin, see LS_PK_LANG and LS_PK_DATA) listed
    in the signed catalog https://data.terminalbay.com/v1/catalog.txt (format:
    overhaul PACK_SPEC.md). THE USER INSTALLS packs, when and as many as they
    want; the position (GPS or manual) only picks among the INSTALLED ones, so
@@ -52,6 +52,14 @@ extern "C" {
    in capitals ("PT"), sorted after the global rows, before the countries. */
 #define LS_PK_LANG 0x200u
 #define LS_PACK_LANG_CC "@@"
+/* App data (catalog kind DATA, any id but lang-, file packs/<id>.bin): a raw
+   file an app reads, e.g. ble-ids, ble-flows, bughunt-ids. Like LANG: no
+   region, not in LS_PK_ALL, never read as frequencies, installed, updated and
+   removed by id. Its region row: cc LS_PACK_DATA_CC, sub empty, sorted after
+   the LANG rows, before the countries. */
+#define LS_PK_DATA 0x400u
+#define LS_PACK_DATA_CC "@D"
+#define LS_PK_RAW (LS_PK_LANG | LS_PK_DATA)    /* kinds whose pack is a .bin */
 const char *ls_pack_kind_name(unsigned index);
 
 typedef enum {
@@ -93,7 +101,8 @@ typedef struct {
 /* One catalog row for a region picker. cc/sub: country ("US"), US state ("FL");
    "--" for global packs; sub is empty outside the US; LS_PACK_LANG_CC and the
    language for LS_PK_LANG rows. Rows come sorted by cc, sub, id, so a UI
-   groups country -> state by watching those change. */
+   groups country -> state by watching those change. LS_PACK_DATA_CC and an
+   empty sub for LS_PK_DATA rows. */
 typedef struct {
     char     id[32];
     char     cc[3], sub[4];
@@ -113,7 +122,7 @@ int  ls_packs_catalog_regions(ls_pack_region_t *out, int skip, int cap);
 int  ls_packs_install(const char *const *ids, int n);
 int  ls_packs_remove(const char *const *ids, int n);
 /* Install every pack of the kinds (0: all) covering lat/lon within km. lat NaN:
-   the current position (and the GPS is asked to start). LANG packs never. */
+   the current position (and the GPS is asked to start). LANG and DATA packs never. */
 bool ls_packs_install_around(double lat, double lon, float km, uint16_t kinds);
 bool ls_packs_refresh_catalog(void);
 /* The GET DATA FOR HERE button: ls_packs_install_around(here, 50 km, kinds). */

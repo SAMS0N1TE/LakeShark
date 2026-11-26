@@ -29,6 +29,15 @@ void bx_rewalk(bx_conn_t *c)
     c->phase = BX_P_SERVICES;
 }
 
+bool bx_reread(bx_conn_t *c)
+{
+    if (c->phase != BX_P_DONE) return false;
+    c->phase = BX_P_READ_CHARS;
+    c->cur = 0;
+    c->errors = 0;
+    return true;
+}
+
 static void uuid_in(bx_uuid_t *o, const lap_uuid_t *u)
 {
     memset(o, 0, sizeof(*o));
@@ -101,6 +110,7 @@ void bx_started(bx_conn_t *c, const bx_op_t *op)
 {
     c->busy = true;
     c->inflight = *op;
+    c->sent_ms = 0;
 }
 
 void bx_refused(bx_conn_t *c, const bx_op_t *op, int error)
@@ -129,12 +139,35 @@ static void ended(bx_conn_t *c, int32_t error)
     const bx_op_t op = c->inflight;
     c->busy = false;
     c->inflight.kind = BX_OP_NONE;
+    c->sent_ms = 0;
+    c->done_n++;
+    c->done_err = error;
+    c->done_kind = op.kind;
     if (error) {
         c->error = error;
         if (error == LAP_IO_ETIMEOUT) { c->state = BX_GONE; return; }     /* the board drops the link on a timeout */
         c->errors++;
     }
     if (!op.manual && op.kind != BX_OP_NONE) advance(c);
+}
+
+bool bx_overdue(bx_conn_t *c, uint32_t now_ms)
+{
+    if (!c->busy || c->state != BX_READY) { c->sent_ms = 0; return false; }
+    if (!c->sent_ms) { c->sent_ms = now_ms ? now_ms : 1; return false; }
+    if (now_ms - c->sent_ms < BX_REPLY_MS) return false;
+    /* No reply: lost, not refused. A late one finds nothing in flight and
+       only updates the value it carries. */
+    const bx_op_t op = c->inflight;
+    c->busy = false;
+    c->inflight.kind = BX_OP_NONE;
+    c->sent_ms = 0;
+    c->errors++;
+    c->done_n++;
+    c->done_err = BX_NOREPLY;
+    c->done_kind = op.kind;
+    if (!op.manual && op.kind != BX_OP_NONE) advance(c);
+    return true;
 }
 
 bool bx_event(bx_conn_t *c, const lap_ble_event_t *e, const uint8_t *data, size_t n)
@@ -255,6 +288,83 @@ void bx_uuid_text(const bx_uuid_t *u, char *out, size_t cap)
              b[10], b[9], b[8], b[7], b[6], b[5], b[4], b[3], b[2], b[1], b[0]);
 }
 
+void bx_uuid_be(const bx_uuid_t *u, uint8_t be[16])
+{
+    if (u->len == 16) { for (int i = 0; i < 16; i++) be[i] = u->b[15 - i]; return; }
+    for (int i = 0; i < 12; i++) be[4 + i] = sig_base[11 - i];
+    be[0] = u->len == 4 ? u->b[3] : 0;
+    be[1] = u->len == 4 ? u->b[2] : 0;
+    be[2] = u->b[1];
+    be[3] = u->b[0];
+}
+
+bool bx_uuid_same(const bx_uuid_t *a, const bx_uuid_t *b)
+{
+    uint8_t x[16], y[16];
+    bx_uuid_be(a, x);
+    bx_uuid_be(b, y);
+    return !memcmp(x, y, 16);
+}
+
+static int hexv(char ch)
+{
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+}
+
+bool bx_uuid_parse(const char *s, size_t n, bx_uuid_t *out)
+{
+    uint8_t d[32];
+    size_t k = 0;
+    if (n >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { s += 2; n -= 2; }
+    for (size_t i = 0; i < n; i++) {
+        if (s[i] == '-') continue;
+        const int v = hexv(s[i]);
+        if (v < 0 || k == 32) return false;
+        d[k++] = (uint8_t)v;
+    }
+    memset(out, 0, sizeof(*out));
+    if (k == 4 || k == 8) {
+        out->len = (uint8_t)(k / 2);
+        for (size_t i = 0; i < k / 2; i++) out->b[k / 2 - 1 - i] = (uint8_t)(d[2 * i] << 4 | d[2 * i + 1]);
+        if (k == 8 && !out->b[2] && !out->b[3]) out->len = 2;
+        return true;
+    }
+    if (k != 32) return false;
+    out->len = 16;
+    for (int i = 0; i < 16; i++) out->b[15 - i] = (uint8_t)(d[2 * i] << 4 | d[2 * i + 1]);
+    const uint16_t s16 = bx_uuid16(out);
+    if (s16) { out->b[0] = (uint8_t)s16; out->b[1] = (uint8_t)(s16 >> 8); memset(out->b + 2, 0, 14); out->len = 2; }
+    return true;
+}
+
+void bx_uuid_key(const bx_uuid_t *u, char *out, size_t cap)
+{
+    const uint16_t s = bx_uuid16(u);
+    if (s || u->len == 2) { snprintf(out, cap, "%04x", s); return; }
+    uint8_t be[16];
+    bx_uuid_be(u, be);
+    const bx_uuid_t full = {{be[15], be[14], be[13], be[12], be[11], be[10], be[9], be[8], be[7], be[6], be[5], be[4], be[3], be[2], be[1], be[0]}, 16};
+    char t[40];
+    const uint8_t *b = full.b;
+    snprintf(t, sizeof(t), "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", b[15], b[14], b[13], b[12], b[11],
+             b[10], b[9], b[8], b[7], b[6], b[5], b[4], b[3], b[2], b[1], b[0]);
+    snprintf(out, cap, "%s", t);
+}
+
+static bx_namer_t namer;
+void bx_set_namer(bx_namer_t f) { namer = f; }
+static const char *named(int kind, const bx_uuid_t *u)
+{
+    if (!namer) return NULL;
+    uint8_t be[16];
+    bx_uuid_be(u, be);
+    const char *n = namer(kind, be);
+    return n && n[0] ? n : NULL;
+}
+
 typedef struct { uint16_t id; const char *name; } name_t;
 static const name_t services[] = {
     {0x1800, "Generic Access"}, {0x1801, "Generic Attribute"}, {0x1802, "Immediate Alert"}, {0x1803, "Link Loss"},
@@ -297,12 +407,16 @@ static int nus(const bx_uuid_t *u)
 }
 const char *bx_service_name(const bx_uuid_t *u)
 {
+    const char *n = named(BX_NAME_SVC, u);
+    if (n) return n;
     if (nus(u) == 1) return "Nordic UART";
     const uint16_t s = bx_uuid16(u);
     return s ? lookup(services, sizeof(services) / sizeof(services[0]), s) : NULL;
 }
 const char *bx_char_name(const bx_uuid_t *u)
 {
+    const char *n = named(BX_NAME_CHR, u);
+    if (n) return n;
     if (nus(u) == 2) return "UART RX (write)";
     if (nus(u) == 3) return "UART TX (notify)";
     const uint16_t s = bx_uuid16(u);
@@ -310,8 +424,66 @@ const char *bx_char_name(const bx_uuid_t *u)
 }
 const char *bx_desc_name(const bx_uuid_t *u)
 {
+    const char *n = named(BX_NAME_DSC, u);
+    if (n) return n;
     const uint16_t s = bx_uuid16(u);
     return s ? lookup(descs, sizeof(descs) / sizeof(descs[0]), s) : NULL;
+}
+
+/* ---- WeChat AirSync ------------------------------------------------------------------------ */
+static const char *airsync_cmd(unsigned c)
+{
+    switch (c) {
+    case 10001: return "auth request";
+    case 10002: return "data request";
+    case 10003: return "init request";
+    case 20001: return "auth response";
+    case 20002: return "data response";
+    case 20003: return "init response";
+    case 30001: return "data push";
+    case 30002: return "view push";
+    case 30003: return "background push";
+    case 29999: return "error";
+    default: return NULL;
+    }
+}
+static void airsync_line(const bx_airsync_t *a, bool whole, char *out, size_t cap)
+{
+    const char *w = airsync_cmd(a->cmd);
+    char cmd[24];
+    if (w) snprintf(cmd, sizeof(cmd), "%s", w);
+    else snprintf(cmd, sizeof(cmd), "command %u", a->cmd);
+    if (!whole) snprintf(out, cap, "WeChat %s, %u of %u bytes", cmd, a->have, a->need);
+    else if (a->parts > 1) snprintf(out, cap, "WeChat %s, %u bytes in %u parts", cmd, a->need, a->parts);
+    else snprintf(out, cap, "WeChat %s, %u bytes", cmd, a->need);
+}
+bool bx_airsync(bx_airsync_t *a, uint16_t handle, bool wechat, const uint8_t *v, size_t n, char *out, size_t cap)
+{
+    if (n >= 8 && v[0] == 0xFE && v[1] == 0x01) {
+        const unsigned len = (unsigned)(v[2] << 8 | v[3]), cmd = (unsigned)(v[4] << 8 | v[5]);
+        if (len >= 8 && (wechat || airsync_cmd(cmd))) {
+            a->handle = handle;
+            a->need = (uint16_t)len;
+            a->have = (uint16_t)(n < len ? n : len);
+            a->cmd = (uint16_t)cmd;
+            a->seq = (uint16_t)(v[6] << 8 | v[7]);
+            a->parts = 1;
+            const bool whole = a->have >= a->need;
+            airsync_line(a, whole, out, cap);
+            if (whole) a->need = 0;
+            return true;
+        }
+    }
+    if (a->need && a->handle == handle) {
+        const unsigned have = a->have + (unsigned)n;
+        a->have = (uint16_t)(have < a->need ? have : a->need);
+        a->parts++;
+        const bool whole = a->have >= a->need;
+        airsync_line(a, whole, out, cap);
+        if (whole) a->need = 0;
+        return true;
+    }
+    return false;
 }
 
 void bx_props_text(uint8_t p, char *out, size_t cap)
@@ -332,15 +504,38 @@ const char *bx_error_text(int32_t e)
     switch (e) {
     case 0: return "ok";
     case LAP_IO_EIO: return "refused (may need pairing)";
-    case LAP_IO_ELIMIT: return "longer than 20 bytes";
+    case LAP_IO_ELIMIT: return "too long";
+    case LAP_IO_EAUTH: return "needs pairing (P pairs)";
     case LAP_IO_ETIMEOUT: return "timed out";
     case LAP_IO_EBUSY: return "busy";
     case LAP_IO_ECLOSED: return "closed";
     case LAP_IO_ENOTSUP: return "not supported here";
     case LAP_IO_EACCES: return "not allowed";
     case LAP_IO_EINVAL: return "bad request";
+    case BX_NOREPLY: return "no reply in 5 s";
     default: return "error";
     }
+}
+
+int bx_ad_name(const uint8_t *p, size_t n, char *out, size_t cap)
+{
+    int got = 0;
+    if (!cap) return 0;
+    out[0] = 0;
+    for (size_t j = 0; j + 1 < n;) {
+        const size_t len = p[j];
+        if (!len || j + 1 + len > n) break;
+        const uint8_t type = p[j + 1], *v = p + j + 2;
+        if ((type == 0x09 || (type == 0x08 && !got)) && len > 1) {
+            size_t m = len - 1 < cap - 1 ? len - 1 : cap - 1;
+            for (size_t k = 0; k < m; k++) out[k] = v[k] >= 32 && v[k] < 127 ? (char)v[k] : '.';
+            out[m] = 0;
+            got = type;
+            if (type == 0x09) break;
+        }
+        j += len + 1;
+    }
+    return got;
 }
 
 /* ---- decoders ----------------------------------------------------------------------------- */
@@ -573,8 +768,10 @@ size_t bx_json(const bx_conn_t *c, const bx_note_t *notes, int nnotes, int64_t u
     for (int i = 0; i < nnotes; i++) {
         char hex[3 * BX_VAL + 1];
         bx_hex(notes[i].val, notes[i].vlen, hex, sizeof(hex));
-        jw(&j, "%s\n    {\"ms\": %lu, \"handle\": %u, \"value_hex\": \"%s\"}", nf ? "" : ",", (unsigned long)notes[i].at_ms,
+        jw(&j, "%s\n    {\"ms\": %lu, \"handle\": %u, \"value_hex\": \"%s\"", nf ? "" : ",", (unsigned long)notes[i].at_ms,
            notes[i].handle, hex);
+        if (notes[i].text[0]) { jw(&j, ", \"decoded\": "); jstr(&j, notes[i].text); }
+        jw(&j, "}");
         nf = 0;
     }
     jw(&j, "\n  ]\n}\n");

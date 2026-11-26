@@ -1,3 +1,4 @@
+#include "ls_static_task.h"
 #include "call_archive.h"
 #include <stdlib.h>
 #include <string.h>
@@ -1066,6 +1067,7 @@ extern void audio_write_p25_voice(const int16_t *src8k, int n);
 #define P25RX_STACK_WORDS (16384u / sizeof(StackType_t))
 static EXT_RAM_BSS_ATTR StackType_t s_p25rx_stack[P25RX_STACK_WORDS];
 static StaticTask_t s_p25rx_tcb;
+static TaskHandle_t s_p25rx_handle;   /* the last p25_rx, parked when it ended: reaped before the next */
 
 static void dsd_decoder_task(void *arg)
 {
@@ -1867,7 +1869,7 @@ static void p25_rx_task(void *arg)
         p25_health_set_running(false);
 
         s_app_active = false;
-        vTaskDelete(NULL);
+        ls_static_task_park();   /* never vTaskDelete(NULL): ls_static_task.h */
         return;
     }
     sys_log(1, "RX buf OK %d bytes heap=%lu",
@@ -1929,7 +1931,7 @@ static void p25_rx_task(void *arg)
         s_iq_buf = NULL;
         s_rx_running = false;
         p25_health_set_running(false);
-        vTaskDelete(NULL);
+        ls_static_task_park();   /* never vTaskDelete(NULL): ls_static_task.h */
         return;
     }
     sys_log(1, "IQ read loop starting");
@@ -2402,7 +2404,7 @@ static void p25_rx_task(void *arg)
     p25_p2_enable(false);
     s_rx_running = false;
     p25_health_set_running(false);
-    vTaskDelete(NULL);
+    ls_static_task_park();   /* never vTaskDelete(NULL): ls_static_task.h */
 }
 
 LS_COLD static void p25_on_enter(void)
@@ -2619,9 +2621,13 @@ LS_COLD static void p25_on_enter(void)
      * create-to-task-entry window that FM's checked lifecycle closes. */
     s_rx_running = true;
     p25_health_set_running(true);
-    TaskHandle_t rx_task = xTaskCreateStaticPinnedToCore(
-        p25_rx_task, "p25_rx", P25RX_STACK_WORDS, NULL, 10,
-        s_p25rx_stack, &s_p25rx_tcb, 1);
+    /* The last p25_rx parked itself (s_rx_running went false just before);
+       delete it now, so its TCB is unlinked before the same storage is reused. */
+    TaskHandle_t rx_task = ls_static_task_reap(&s_p25rx_handle, 500)
+        ? xTaskCreateStaticPinnedToCore(p25_rx_task, "p25_rx", P25RX_STACK_WORDS, NULL, 10,
+                                        s_p25rx_stack, &s_p25rx_tcb, 1)
+        : NULL;
+    if (rx_task) s_p25rx_handle = rx_task;   /* a failed reap keeps the old handle for the next try */
     if (!rx_task) {
 
         s_app_active = false;

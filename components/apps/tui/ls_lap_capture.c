@@ -458,7 +458,7 @@ static const char *why(int reason)
     switch (reason) {
     case LAP_CAPTURE_RUNNING: return "capturing";
     case LAP_CAPTURE_NO_RADIO: return "this radio is absent or switched off";
-    case LAP_CAPTURE_NO_TRANSPORT: return "the Wi-Fi coprocessor firmware does not forward monitor frames";
+    case LAP_CAPTURE_NO_TRANSPORT: return "the C6 needs its monitor firmware: SYSTEM > UPDATE > C6";
     case LAP_CAPTURE_LINK_IN_USE: return "the board is on a Wi-Fi network; hopping would drop it";
     case LAP_CAPTURE_BUSY: return "another app is capturing";
     case LAP_CAPTURE_NO_MEMORY: return "no memory for the capture ring";

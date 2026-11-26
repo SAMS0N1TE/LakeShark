@@ -288,7 +288,7 @@ static void ble(void) {
     tick(40);
     CHECK(lap_ble_event_next(&ev, NULL, 0) == LAP_IO_ELIMIT);
     CHECK(lap_ble_event_next(&ev, value, sizeof(value)) == 1 && ev.kind == LAP_GATT_VALUE && value[0] == 87);
-    CHECK(lap_gatt_write(h, 3, payload, 21) == LAP_IO_ELIMIT);
+    CHECK(lap_gatt_write(h, 3, payload, LAP_GATT_VALUE_MAX + 1) == LAP_IO_ELIMIT); /* 2.9: up to 512 */
     CHECK(lap_gatt_write(h, 3, payload, 20) > 0);
     tick(40);
     CHECK(lap_ble_event_next(&ev, value, sizeof(value)) == 1 && ev.kind == LAP_GATT_WRITTEN);
@@ -303,6 +303,17 @@ static void ble(void) {
     tick(40);
     CHECK(lap_ble_event_next(&ev, value, sizeof(value)) == 1 && ev.error == LAP_IO_EIO);
     ls_lap_av_script("gatterror=0");
+    /* A flood of notifications behind a reply: the full queue drops
+       notifications, never the reply (BLE EXPLORER waited forever on one). */
+    CHECK(lap_gatt_read(h, 3) > 0);
+    tick(40);
+    for (int i = 0; i < 24; i++) ls_lap_av_script("blenotify=1234");
+    int got_value = 0, got_notes = 0;
+    while (lap_ble_event_next(&ev, value, sizeof(value)) == 1) {
+        if (ev.kind == LAP_GATT_VALUE) got_value++;
+        if (ev.kind == LAP_GATT_NOTIFY) got_notes++;
+    }
+    CHECK(got_value == 1 && got_notes == 15);
     lap_ble_disconnect(INT_MAX);
     lap_ble_disconnect(h);
     tick(1);

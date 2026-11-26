@@ -102,6 +102,14 @@ size_t ls_errlog_live(char *out, size_t n)
     return k;
 }
 
+void ls_errlog_note(const char *line)
+{
+    if (!line) return;
+    portENTER_CRITICAL_SAFE(&s_tail_lock);
+    ls_errlog_tail_add(&s_rtc_tail, line);
+    portEXIT_CRITICAL_SAFE(&s_tail_lock);
+}
+
 /* ------------------------------------------------------------- NVS store */
 
 typedef struct { int slot; ls_errlog_rec_t *rec; const ls_errlog_rec_t *crec; uint32_t seq; bool ok; } job_t;

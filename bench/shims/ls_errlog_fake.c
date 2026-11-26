@@ -67,3 +67,5 @@ size_t ls_errlog_live(char *out, size_t n)
 }
 
 void ls_errlog_print_all(void) {}
+
+void ls_errlog_note(const char *line) { (void)line; }

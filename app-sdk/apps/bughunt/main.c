@@ -41,10 +41,16 @@ typedef struct {
        WATCH tag may go unheard; kind_off kinds that never alert */
     uint8_t dmode, autorange, rx, sdr_dir, watch_min, spare;
     uint16_t kind_off;
+    /* 1.3: the SDR on a frequency HUNT. sdr_gain 0 AUTO or a step of the
+       radio's range (SDR_GAINS); sdr_span 0 WIDE, 1 NARROW (a quarter) */
+    uint8_t sdr_gain, sdr_span;
 } cfg_t;
 #define CFG_MAGIC 0xB6u
 #define CFG_V10 6                       /* bytes BUGHUNT 1.0 saved */
 #define CFG_V11 10                      /* bytes BUGHUNT 1.1 saved */
+#define CFG_V12 18                      /* bytes BUGHUNT 1.2 saved */
+#define SDR_GAINS 5                     /* AUTO, then 1/4, 1/2, 3/4 and all of the radio's range */
+_Static_assert(sizeof(cfg_t) == CFG_V12 + 2, "1.3 adds two bytes after 1.2's");
 enum { TONE_AUTO, TONE_TICKS, TONE_TONE };
 enum { RX_LORA, RX_SDR, RX_DUAL };
 static const char *const RX_NAMES[] = { "LORA", "SDR", "DUAL" };
@@ -107,11 +113,11 @@ static void cfg_load(void)
     cfg_t c;
     memset(&c, 0, sizeof(c));
     const int n = lap_load("cfg", &c, sizeof(c));
-    if ((n == (int)sizeof(c) || n == CFG_V10 || n == CFG_V11) && c.magic == CFG_MAGIC && c.region >= 1 && c.region <= 3 &&
+    if ((n == (int)sizeof(c) || n == CFG_V10 || n == CFG_V11 || n == CFG_V12) && c.magic == CFG_MAGIC && c.region >= 1 && c.region <= 3 &&
         c.room_i < 3 && c.car_i < 3) {
         cfg = c;
         if (n == CFG_V10) { cfg.follow_min = 10; cfg.possible = 0; cfg.log = 1; cfg.tone = TONE_AUTO; }   /* 1.0's: add 1.1's */
-        if (n != (int)sizeof(c)) { cfg.dmode = BH_DM_PEAK; cfg.autorange = 1; cfg.rx = RX_LORA; cfg.sdr_dir = 1; cfg.watch_min = 2; cfg.kind_off = 0; }
+        if (n == CFG_V10 || n == CFG_V11) { cfg.dmode = BH_DM_PEAK; cfg.autorange = 1; cfg.rx = RX_LORA; cfg.sdr_dir = 1; cfg.watch_min = 2; cfg.kind_off = 0; }
     } else {
         memset(&cfg, 0, sizeof(cfg));
         cfg.magic = CFG_MAGIC; cfg.region = region_guess(); cfg.room_i = 1; cfg.car_i = 1; cfg.sound = 1;
@@ -123,6 +129,9 @@ static void cfg_load(void)
     if (cfg.dmode > BH_DM_BODY) cfg.dmode = BH_DM_PEAK;
     if (cfg.rx > RX_DUAL) cfg.rx = RX_LORA;
     if (cfg.watch_min < 1 || cfg.watch_min > 30) cfg.watch_min = 2;
+    if (n != (int)sizeof(c)) { cfg.sdr_gain = 0; cfg.sdr_span = 0; }  /* 1.2's and older: add 1.3's */
+    if (cfg.sdr_gain >= SDR_GAINS) cfg.sdr_gain = 0;
+    if (cfg.sdr_span > 1) cfg.sdr_span = 0;
 }
 
 /* ---- state ---- */
@@ -204,6 +213,22 @@ static int spec_n;
 static uint64_t spec_center;
 static uint32_t spec_rate;
 static float sdr_floor = 1.0f;          /* dBFS, the spectrum's median; 1 = not yet */
+static int16_t sdr_gmin, sdr_gmax;      /* tenths of a dB: the radio's gain range */
+static bool sdr_has_gain;
+static uint64_t sdr_center;             /* where the SDR is tuned: the target plus sdr_off */
+static uint32_t sdr_off;
+static uint32_t sdr_quiet_until;        /* lines still averaging the old tuning or gain: skipped */
+static bool sdr_rebase;                 /* the gain changed: the meter starts from the new quiet level */
+/* the strip: the window's bins on the line, the peak-hold trace, its top,
+   and where the strongest signal last stood out over the quiet level */
+static float spec_hold[SPEC_N];
+static bool hold_ok;
+static int sp_lo, sp_hi, sp_pk = -1;
+static float sp_top;
+static uint32_t pk_khz, pk_ms;          /* pk_khz 0: nothing yet */
+static float pk_db;
+static uint32_t lora_khz;               /* where the LoRa radio listens in a frequency hunt */
+#define PK_OVER 6.0f                    /* dB over the quiet level that counts as a signal */
 
 /* dialogs */
 static int dlg = 0, dlg_kind;
@@ -392,6 +417,9 @@ static void find_sdr(void)
         snprintf(sdr_name, sizeof(sdr_name), "%s", r[i].name);
         sdr_min = r[i].min_hz;
         sdr_max = r[i].max_hz;
+        sdr_has_gain = (r[i].features & LAP_RXF_GAIN) && r[i].gain_max > r[i].gain_min;
+        sdr_gmin = r[i].gain_min;
+        sdr_gmax = r[i].gain_max;
         return;
     }
 }
@@ -654,6 +682,38 @@ static void sdr_stop(void)
     sdr_h = 0;
     spec_n = 0;
 }
+/* After a retune or a gain change the next lines still average the old
+   setting: skip them, and start the strip and its hold afresh. */
+static void sdr_settle(void)
+{
+    spec_n = 0;
+    hold_ok = false;
+    sp_pk = -1;
+    sp_top = 0;
+    sdr_quiet_until = lap_millis() + 500u;
+}
+/* AUTO, or a step of the radio's own range in whole dB */
+static int sdr_gain_tenths(void)
+{
+    if (!cfg.sdr_gain || !sdr_has_gain) return LAP_GAIN_AUTO;
+    const int g = sdr_gmin + (sdr_gmax - sdr_gmin) * cfg.sdr_gain / (SDR_GAINS - 1);
+    const int r = (g + 5) / 10 * 10;
+    return r > sdr_gmax ? g / 10 * 10 : r;           /* never over the top (49.6 dB on an RTL-SDR) */
+}
+static void sdr_gain_text(char *out, size_t cap)
+{
+    const int g = sdr_gain_tenths();
+    if (g == LAP_GAIN_AUTO) snprintf(out, cap, "AUTO");
+    else snprintf(out, cap, "%d dB", g / 10);
+}
+/* The window either side of the target the meter and the strip use: an
+   eighth of the line (at most 250 kHz), a quarter of that NARROW. */
+static int32_t sdr_half_hz(uint32_t rate)
+{
+    int32_t half = (int32_t)(rate / 8u);
+    if (half > 250000) half = 250000;
+    return cfg.sdr_span ? half / 4 : half;
+}
 /* The SDR tuned a little off the target, so its own centre spike (DC) is
    not read as the signal; spectrum lines only, no I/Q to carry. */
 static int sdr_open(uint64_t hz)
@@ -664,11 +724,18 @@ static int sdr_open(uint64_t hz)
     const int n = lap_radio_list(r, LAP_RADIOS_MAX);
     const uint32_t rate = sdr >= 0 && sdr < n && r[sdr].min_rate ? r[sdr].min_rate : 1000000u;
     c.rate_hz = 0;                          /* the radio's lowest rate */
-    c.center_hz = hz + (rate >= 400000u ? rate / 4u : 100000u);
-    c.gain_tenths_db = LAP_GAIN_AUTO;
+    sdr_off = rate >= 400000u ? rate / 4u : 100000u;
+    c.center_hz = hz + sdr_off;
+    c.gain_tenths_db = sdr_gain_tenths();
     c.flags = LAP_RX_SPECTRUM_ONLY;
     const int h2 = lap_rx_open(sdr, &c);
-    if (h2 > 0) { sdr_h = h2; sdr_seq = 0; sdr_floor = 1.0f; spec_n = 0; }
+    if (h2 > 0) {
+        sdr_h = h2; sdr_seq = 0; sdr_floor = 1.0f; spec_n = 0;
+        sdr_center = c.center_hz;
+        hold_ok = false; sp_pk = -1; sp_top = 0;
+        pk_khz = 0; pk_ms = 0;
+        sdr_quiet_until = lap_millis(); sdr_rebase = false;
+    }
     return h2;
 }
 static int fcmp(const void *a, const void *b)
@@ -676,8 +743,9 @@ static int fcmp(const void *a, const void *b)
     const float x = *(const float *)a, y = *(const float *)b;
     return x < y ? -1 : x > y;
 }
-/* The strongest bin within the LoRa radio's 500 kHz of the target (or the
-   span the rate allows), and the quiet level: the line's median. */
+/* The strongest bin within the window either side of the target (the
+   LoRa radio's 500 kHz, or the span the rate allows), and the quiet level:
+   the line's median. Keeps the peak-hold trace and where the peak is. */
 static bool sdr_read(int *tenths)
 {
     if (sdr_h <= 0) return false;
@@ -685,29 +753,40 @@ static bool sdr_read(int *tenths)
     const int n = lap_rx_spectrum(sdr_h, spec, SPEC_N, &seq);
     if (n <= 0 || seq == sdr_seq) return false;
     sdr_seq = seq;
+    if ((int32_t)(now_ms - sdr_quiet_until) < 0) return false;
     spec_n = n;
     lap_rx_status_t st;
     memset(&st, 0, sizeof(st));
     if (lap_rx_status(sdr_h, &st) || !st.rate_hz) return false;
     spec_center = st.center_hz;
     spec_rate = st.rate_hz;
-    const float bin_hz = (float)st.rate_hz / (float)n;
     const int32_t off_hz = (int32_t)((int64_t)((uint64_t)tgt.khz * 1000u) - (int64_t)st.center_hz);   /* small: in 32 bits, no 64-bit float maths */
-    const float off = (float)off_hz;
-    const int at = n / 2 + (int)(off / bin_hz);
-    float half_hz = (float)st.rate_hz / 8.0f;
-    if (half_hz > 250000.0f) half_hz = 250000.0f;
-    int half = (int)(half_hz / bin_hz);
-    if (half < 1) half = 1;
-    float best = -200.0f;
-    for (int i = at - half; i <= at + half; i++)
-        if (i >= 0 && i < n && spec[i] > best) best = spec[i];
-    if (best <= -199.0f) return false;
+    int lo = 0, hi = 0;
+    if (!bh_spec_window(n, st.rate_hz, off_hz, sdr_half_hz(st.rate_hz), &lo, &hi)) return false;
+    int32_t pk_off = 0;
+    const int pk = bh_spec_peak(spec, n, lo, hi, st.rate_hz, &pk_off);
+    if (pk < 0 || spec[pk] <= -199.0f) return false;
+    const float best = spec[pk];
     static float tmp[SPEC_N];
     memcpy(tmp, spec, sizeof(float) * (size_t)n);
     qsort(tmp, (size_t)n, sizeof(float), fcmp);
     const float med = tmp[n / 2];
     sdr_floor = sdr_floor > 0.5f ? med : sdr_floor + (med - sdr_floor) * 0.1f;
+    /* the hold falls ~6 dB a second, and only as lines come */
+    if (!hold_ok) memcpy(spec_hold, spec, sizeof(float) * (size_t)n);
+    else bh_spec_hold(spec_hold, spec, n, 0.6f);
+    hold_ok = true;
+    sp_lo = lo; sp_hi = hi; sp_pk = pk;
+    /* the strip's top: over the held peak, falling slowly, 30 dB at least */
+    float top = sdr_floor + 30.0f;
+    for (int i = lo; i <= hi; i++) if (spec_hold[i] + 3.0f > top) top = spec_hold[i] + 3.0f;
+    sp_top = sp_top == 0 || top > sp_top ? top : sp_top - 0.3f;
+    if (best >= sdr_floor + PK_OVER) {
+        const int64_t at = (int64_t)st.center_hz + pk_off;
+        pk_khz = at > 0 ? (uint32_t)((at + 500) / 1000) : 0;
+        pk_db = best;
+        pk_ms = now_ms;
+    }
     *tenths = (int)(best * 10.0f);
     return true;
 }
@@ -735,12 +814,16 @@ static void hunt_level_src(int src, int tenths)
         bh_pair_add(&pair, src == dir_src ? 0 : 1, tenths, now_ms);
         if (src != dir_src) return;
     }
-    if (src == 1 && sdr_floor <= 0.5f && main_is_sdr() && !lv.started) {
-        /* the SDR's quiet level is known now: the meter and the bursts start from it */
+    if (src == 1 && sdr_floor <= 0.5f && main_is_sdr() && (!lv.started || sdr_rebase)) {
+        /* the SDR's quiet level is known now: the meter and the bursts start
+           from it. After a gain change the old readings are another scale:
+           the level, its history and the dial start again too. */
+        if (sdr_rebase) { bh_lvl_init(&lv, lvl_window()); hhist_n = 0; bh_dir2_reset(&dir2); }
         hunt_floor = sdr_floor_t();
         range_reset();
         bursts.thr = (int16_t)(hunt_floor + 100);
     }
+    if (src == 1 && sdr_floor <= 0.5f) sdr_rebase = false;
     bh_lvl_add(&lv, tenths, now_ms);
     if (cfg.autorange) bh_range_feed(&rng, bh_lvl_now(&lv, now_ms), now_ms);
     if (hhist_n == HHIST) { memmove(hhist, hhist + 1, sizeof(hhist[0]) * (HHIST - 1)); hhist_n--; }
@@ -754,6 +837,25 @@ static void hunt_level_src(int src, int tenths)
 }
 static void hunt_level(int tenths) { hunt_level_src(0, tenths); }
 
+/* The LoRa radio on a hunt frequency (alone, or beside the SDR in DUAL). */
+static void hunt_lora_open(uint64_t hz)
+{
+    /* version 2: the peak of every 8 ms of listening (one report a
+       worker pass, ~45 a second on the board), so a burst between
+       frames still moves the meter; else one reading a frame */
+    int r = scan_ver == 2 ? scan_open(&hz, 1, 8) : -1;
+    if (r > 0 && scan_ver == 2) { rf_h = r; rf_pk = false; hunt_scan = true; hunt_rx |= HR_LORA; }
+    else if (r == LAP_RX_EBUSY && (hunt_rx & HR_SDR)) {
+        snprintf(rx_note, sizeof(rx_note), "DUAL needs newer firmware: %s only", sdr_name);
+    } else {
+        lap_packet_config_t c = rx_cfg(hz);
+        r = lap_packet_open(radio, &c);
+        if (r > 0) { rf_h = r; rf_pk = true; hunt_rx |= HR_LORA; }
+        else if (r == LAP_RX_EBUSY && (hunt_rx & HR_SDR)) snprintf(rx_note, sizeof(rx_note), "DUAL needs newer firmware: %s only", sdr_name);
+        else if (!(hunt_rx & HR_SDR)) snprintf(rf_why, sizeof(rf_why), "radio refused (%d)", r);
+    }
+    lora_khz = (uint32_t)(hz / 1000u);
+}
 /* A frequency: the LoRa radio, the SDR, or both (DUAL). */
 static void hunt_rf_open(void)
 {
@@ -777,23 +879,91 @@ static void hunt_rf_open(void)
             if (lora_ok) want |= HR_LORA;
         }
     }
-    if (want & HR_LORA) {
-        /* version 2: the peak of every 8 ms of listening (one report a
-           worker pass, ~45 a second on the board), so a burst between
-           frames still moves the meter; else one reading a frame */
-        int r = scan_ver == 2 ? scan_open(&hz, 1, 8) : -1;
-        if (r > 0 && scan_ver == 2) { rf_h = r; rf_pk = false; hunt_scan = true; hunt_rx |= HR_LORA; }
-        else if (r == LAP_RX_EBUSY && (hunt_rx & HR_SDR)) {
-            snprintf(rx_note, sizeof(rx_note), "DUAL needs newer firmware: %s only", sdr_name);
-        } else {
-            lap_packet_config_t c = rx_cfg(hz);
-            r = lap_packet_open(radio, &c);
-            if (r > 0) { rf_h = r; rf_pk = true; hunt_rx |= HR_LORA; }
-            else if (r == LAP_RX_EBUSY && (hunt_rx & HR_SDR)) snprintf(rx_note, sizeof(rx_note), "DUAL needs newer firmware: %s only", sdr_name);
-            else if (!(hunt_rx & HR_SDR)) snprintf(rf_why, sizeof(rf_why), "radio refused (%d)", r);
-        }
-    }
+    if (want & HR_LORA) hunt_lora_open(hz);
     hunt_floor = main_is_sdr() ? sdr_floor_t() : ref_or(-1080);
+}
+/* The SDR tools run on a frequency HUNT the SDR listens to (SDR or DUAL). */
+static bool sdr_hunt(void) { return hunting && tgt.target == BH_T_FREQ && (hunt_rx & HR_SDR) && sdr_h > 0; }
+/* A new hunt frequency (TUNE, SNAP). The SDR keeps its offset but only
+   moves when the target has left the middle of its line, and the LoRa
+   radio (500 kHz wide) when it moved over 25 kHz; the level, the dial and
+   the bursts carry on, it being the same signal a little off. */
+static void hunt_retune(uint32_t khz)
+{
+    if (!sdr_hunt() || !khz || khz == tgt.khz) return;
+    const uint64_t hz = (uint64_t)khz * 1000u;
+    char was[16], m[16];
+    mhz(tgt.khz, was, sizeof(was));
+    mhz(khz, m, sizeof(m));
+    if (!sdr_tunes(hz)) { say("%s does not tune %s MHz", sdr_name, m); return; }
+    /* the title names the frequency first ("315.000 MHz  US CAR REMOTES") */
+    const size_t wl = strlen(was);
+    if (!strncmp(tgt.title, was, wl)) {
+        char t[sizeof(tgt.title) + sizeof(m)];
+        snprintf(t, sizeof(t), "%s%s", m, tgt.title + wl);
+        snprintf(tgt.title, sizeof(tgt.title), "%.*s", (int)sizeof(tgt.title) - 1, t);
+    }
+    tgt.khz = khz;
+    const uint64_t want = hz + sdr_off;
+    const uint64_t d = want > sdr_center ? want - sdr_center : sdr_center - want;
+    const uint32_t rate = spec_rate ? spec_rate : sdr_off * 4u;
+    if (d > rate / 16u) {
+        const int r = lap_rx_tune(sdr_h, want);
+        if (r) say("%s refused the retune (%d)", sdr_name, r);
+        else { sdr_center = want; sdr_settle(); }
+    }
+    if ((hunt_rx & HR_LORA) && (khz > lora_khz ? khz - lora_khz : lora_khz - khz) > 25u) {
+        rf_stop();
+        hunt_rx &= ~HR_LORA;
+        hunt_lora_open(hz);
+    }
+}
+static void hunt_tune_by(int khz)
+{
+    if (!sdr_hunt()) return;
+    const int64_t k = (int64_t)tgt.khz + khz;
+    if (k < 1000) return;
+    hunt_retune((uint32_t)k);
+}
+/* SNAP: the hunt onto the strongest signal in the window (the last time
+   one stood over the quiet level, so a burst that has ended still counts). */
+static void hunt_snap(void)
+{
+    if (!sdr_hunt()) return;
+    char m[16];
+    if (!pk_khz) { say("SNAP: nothing over the quiet level yet"); return; }
+    mhz(pk_khz, m, sizeof(m));
+    if (pk_khz == tgt.khz) { say("SNAP: already on %s MHz", m); return; }
+    const uint32_t ago = (now_ms - pk_ms) / 1000u;
+    hunt_retune(pk_khz);
+    if (tgt.khz == pk_khz) {
+        if (ago) say("SNAP: %s MHz, the peak %us ago", m, (unsigned)ago);
+        else say("SNAP: %s MHz", m);
+    }
+}
+/* GAIN: AUTO and four steps of the radio's range, kept for next time. */
+static void sdr_gain_step(void)
+{
+    if (sdr < 0) { say("No SDR on USB"); return; }
+    if (!sdr_has_gain) { say("%s: gain is automatic only", sdr_name); return; }
+    cfg.sdr_gain = (uint8_t)((cfg.sdr_gain + 1) % SDR_GAINS);
+    cfg_save();
+    char g[16];
+    sdr_gain_text(g, sizeof(g));
+    if (sdr_hunt()) {
+        const int r = lap_rx_gain(sdr_h, sdr_gain_tenths());
+        if (r) { say("%s refused gain %s (%d)", sdr_name, g, r); return; }
+        sdr_settle();
+        sdr_floor = 1.0f;                   /* a new quiet level at this gain */
+        sdr_rebase = true;
+    }
+    say("SDR gain %s", g);
+}
+static void sdr_span_toggle(void)
+{
+    cfg.sdr_span = !cfg.sdr_span;
+    cfg_save();
+    say(cfg.sdr_span ? "SDR span NARROW: the meter hears only near the target" : "SDR span WIDE");
 }
 static void hunt_begin(const bh_find_t *f, int from)
 {
@@ -1737,6 +1907,155 @@ static int hunt_strip(int x, int y, int w, int rows_left)
     return yy - y;
 }
 
+/* ---- the SDR panel: a frequency HUNT on the SDR (SDR or DUAL) ---- */
+static void secs_text(uint32_t ms, char *out, size_t cap)
+{
+    if (ms < 100u) snprintf(out, cap, "<0.1s");
+    else if (ms < 100000u) snprintf(out, cap, "%u.%us", (unsigned)(ms / 1000u), (unsigned)(ms / 100u % 10u));
+    else snprintf(out, cap, "%um%02us", (unsigned)(ms / 60000u), (unsigned)(ms / 1000u % 60u));
+}
+/* where a frequency falls on the strip, in dots; -1 off it */
+static int sdr_dot_of(int64_t hz, int dots)
+{
+    if (!spec_rate || !spec_n || sp_hi <= sp_lo) return -1;
+    const float bin = (float)(int32_t)(hz - (int64_t)spec_center) * (float)spec_n / (float)spec_rate + (float)(spec_n / 2);
+    const float at = (bin - (float)sp_lo + 0.5f) * (float)dots / (float)(sp_hi - sp_lo + 1);
+    return at < 0 || at >= (float)dots ? -1 : (int)at;
+}
+/* The peak's frequency, read out like a radio's display: bright while the
+   signal is on, plain with its age once it has gone; the gain at the end. */
+static void sdr_readout(int x, int y, int w)
+{
+    int k = put(x, y, w, LAP_UI_FAINT, "PEAK ");
+    if (pk_khz) {
+        const bool live = now_ms - pk_ms < 600u;
+        char m[16];
+        mhz(pk_khz, m, sizeof(m));
+        for (const char *c = m; *c && k < w; c++, k++)
+            cell(x + k, y, *c, A(*c == '.' ? LAP_WHITE : live ? (LAP_GREEN | LAP_BRIGHT) : LAP_GREEN));
+        k += put(x + k, y, w - k, A(LAP_GREEN), " MHz ");
+        const int d = (int)pk_khz - (int)tgt.khz;
+        if (d) k += put(x + k, y, w - k, A(LAP_YELLOW | LAP_BRIGHT), "%+dk ", d);
+        else k += put(x + k, y, w - k, A(LAP_CYAN | LAP_BRIGHT), "ON IT ");
+        if (live) k += put(x + k, y, w - k, A(level_hue((int)(pk_db - sdr_floor))), "%d dBFS", (int)pk_db);
+        else {
+            char a[16];
+            secs_text(now_ms - pk_ms, a, sizeof(a));
+            k += put(x + k, y, w - k, LAP_UI_DIM, "%s ago", a);
+        }
+    } else k += put(x + k, y, w - k, A(LAP_BLUE), "---.--- MHz  quiet");
+    char g[16], t[24];
+    sdr_gain_text(g, sizeof(g));
+    const int gl = snprintf(t, sizeof(t), "GAIN %s", g);
+    if (k + gl + 1 <= w) {
+        put(x + w - gl, y, 5, LAP_UI_FAINT, "GAIN ");
+        put(x + w - gl + 5, y, gl - 5, A(cfg.sdr_gain ? (LAP_MAGENTA | LAP_BRIGHT) : LAP_UI_VALUE), "%s", g);
+    }
+}
+static int ydot(float v, float lo_db, float sc, int dh)
+{
+    const int y = dh - 1 - (int)((v - lo_db) * sc + 0.5f);
+    return y < 0 ? 0 : y > dh - 1 ? dh - 1 : y;
+}
+/* The spectrum around the target in braille: the live line coloured by how
+   far over the quiet level it stands, the peak hold over it in magenta, the
+   burst threshold dotted in yellow and the target a dotted white upright. */
+static void sdr_strip(int x, int y, int w, int rows)
+{
+    if (!spec_n || !hold_ok || sp_hi <= sp_lo || sdr_floor > 0.5f) {
+        put(x, y + rows / 2, w, LAP_UI_FAINT, "  %s: waiting for a spectrum line", sdr_name);
+        return;
+    }
+    cv_begin(x, y, w, rows);
+    const int dw = cv.w * 2, dh = cv.h * 4, nb = sp_hi - sp_lo + 1;
+    const float lo_db = sdr_floor - 4.0f, hi_db = sp_top > lo_db + 10.0f ? sp_top : lo_db + 10.0f;
+    const float sc = (float)(dh - 1) / (hi_db - lo_db);
+    const int thr = ydot((float)bursts.thr / 10.0f, lo_db, sc, dh);
+    const bool thr_on = main_is_sdr() && (float)bursts.thr / 10.0f > lo_db && (float)bursts.thr / 10.0f < hi_db;
+    const int tc = sdr_dot_of((int64_t)tgt.khz * 1000, dw);
+    for (int c = 0; c < dw; c++) {
+        if (thr_on && c % 3 == 0) cv_dot(c, thr, A(LAP_YELLOW));
+        if (c == tc) for (int r = 0; r < dh; r += 2) cv_dot(c, r, A(LAP_WHITE | LAP_BRIGHT));
+    }
+    int py = -1;
+    for (int c = 0; c < dw; c++) {
+        int b0 = sp_lo + c * nb / dw, b1 = sp_lo + (c + 1) * nb / dw - 1;
+        if (b1 < b0) b1 = b0;
+        float v = -200.0f, hv = -200.0f;
+        for (int b = b0; b <= b1 && b < spec_n; b++) {
+            if (spec[b] > v) v = spec[b];
+            if (spec_hold[b] > hv) hv = spec_hold[b];
+        }
+        const int yv = ydot(v, lo_db, sc, dh), yh = ydot(hv, lo_db, sc, dh);
+        if (yh < yv - 1) cv_dot(c, yh, A(LAP_MAGENTA | LAP_BRIGHT));
+        const uint8_t at = A(level_hue((int)(v - sdr_floor)));
+        if (py < 0) cv_dot(c, yv, at);
+        else cv_line(c - 1, py, c, yv, at);
+        py = yv;
+    }
+    cv_flush();
+}
+/* Under the strip: its span, the target (^) and the strongest bin (*). */
+static void sdr_axis(int x, int y, int w)
+{
+    for (int i = 0; i < w; i++) cell(x + i, y, i % 5 ? '-' : '+', LAP_UI_FAINT);
+    if (spec_rate && spec_n) {
+        const int32_t half = (int32_t)((int64_t)(sp_hi - sp_lo + 1) * spec_rate / spec_n / 2);
+        char l[12];
+        const int ll = snprintf(l, sizeof(l), "-%dk", (int)(half / 1000));
+        put(x, y, ll, A(LAP_CYAN), "%s", l);
+        put(x + w - ll, y, ll, A(LAP_CYAN), "+%dk", (int)(half / 1000));
+    }
+    const int tc = sdr_dot_of((int64_t)tgt.khz * 1000, w * 2);
+    if (tc >= 0) cell(x + tc / 2, y, '^', A(LAP_WHITE | LAP_BRIGHT));
+    if (sp_pk >= 0 && spec_n && spec[sp_pk] >= sdr_floor + PK_OVER && sp_hi > sp_lo) {
+        const int pc = (int)((float)(sp_pk - sp_lo) * (float)w / (float)(sp_hi - sp_lo + 1));
+        if (pc >= 0 && pc < w) cell(x + pc, y, '*', A(LAP_RED | LAP_BRIGHT));
+    }
+}
+/* The burst timing: how long the last one was and how far apart they come
+   (the median start to start of the last five), the clue to what it is. */
+static void sdr_timing(int x, int y, int w, bool count)
+{
+    int k = 0;
+    char a[16], b[16], c[16];
+    if (count) {
+        k += put(x + k, y, w - k, LAP_UI_FAINT, "BURSTS ");
+        k += put(x + k, y, w - k, A(LAP_UI_VALUE), "%u  ", (unsigned)bursts.total);
+    }
+    if (bursts.in) {
+        secs_text(now_ms - bursts.cur.t_ms, a, sizeof(a));
+        k += put(x + k, y, w - k, A(LAP_RED | LAP_BRIGHT), "ON AIR %s  ", a);
+    } else {
+        k += put(x + k, y, w - k, LAP_UI_FAINT, "LAST ");
+        if (bursts.n) { secs_text(bursts.b[bursts.n - 1].dur_ms, a, sizeof(a)); k += put(x + k, y, w - k, A(LAP_YELLOW | LAP_BRIGHT), "%s  ", a); }
+        else k += put(x + k, y, w - k, A(LAP_BLUE), "--  ");
+    }
+    k += put(x + k, y, w - k, LAP_UI_FAINT, "GAP ");
+    uint32_t lo = 0, hi = 0;
+    const uint32_t g = bh_bursts_gap(&bursts, 5, &lo, &hi);
+    if (!g) { put(x + k, y, w - k, A(LAP_BLUE), "--"); return; }
+    secs_text(g, a, sizeof(a));
+    k += put(x + k, y, w - k, A(LAP_CYAN | LAP_BRIGHT), "%s ", a);
+    if (hi > lo) {
+        secs_text(lo, b, sizeof(b));
+        secs_text(hi, c, sizeof(c));
+        put(x + k, y, w - k, LAP_UI_DIM, "%s-%s", b, c);
+    }
+}
+/* Readout, strip, axis, timing: rows used (0 when it does not fit). */
+static int sdr_panel(int x, int y, int w, int rows, bool count)
+{
+    if (!sdr_hunt() || rows < 5 || w < 24) return 0;
+    int sr = rows - 3;
+    if (sr > 4) sr = 4;
+    sdr_readout(x, y, w);
+    sdr_strip(x, y + 1, w, sr);
+    sdr_axis(x, y + 1 + sr, w);
+    sdr_timing(x, y + 2 + sr, w, count);
+    return sr + 3;
+}
+
 static int dial_x0, dial_y0, dial_x1, dial_y1;  /* where the dial was drawn: a tap there starts it over */
 static void draw_hunt(int x, int y, int w, int hgt)
 {
@@ -1874,6 +2193,21 @@ static void draw_hunt(int x, int y, int w, int hgt)
     /* the strip: history, bursts, DUAL */
     yy += hunt_strip(x, yy, w, y + hgt - yy);
     yy++;
+    /* the SDR panel: under the strip in portrait, over the dial in
+       landscape, leaving the dial 9 or 10 rows */
+    if (sdr_hunt()) {
+        if (!dcw) {
+            int r = y + hgt - yy - 9;
+            if (r > 7) r = 7;
+            const int got = sdr_panel(x, yy, w, r, false);
+            if (got) yy += got + 1;
+        } else {
+            int r = drh - 10;
+            if (r > 6) r = 6;
+            const int got = sdr_panel(dx, dyy, full_w - (dx - x), r, true);
+            if (got) { dyy += got + 1; drh -= got + 1; }
+        }
+    }
     /* the dial: under it in portrait, beside it in landscape */
     if (!dcw) { dx = x; dyy = yy; drh = y + hgt - yy; dcw = 0; }
     const bh_dir_fix_t fx = bh_dir2_fix(&dir2, cfg.dmode);
@@ -1995,7 +2329,14 @@ static void set_keys(void)
         keys[1] = (lap_btn_t){ "VIEW", bhw_view_name(bhw_view()), 'v', false, false, false };
         break;
     default:
-        if (hunting) {
+        if (sdr_hunt()) {
+            /* the SDR's tools; SOUND (T) and DIRECTION (B) stay on the keyboard and in OPTIONS */
+            mhz(tgt.khz, v0, sizeof(v0));
+            keys[0] = (lap_btn_t){ "TUNE", v0, 'u', false, false, false };
+            if (pk_khz) mhz(pk_khz, v1, sizeof(v1));
+            keys[1] = (lap_btn_t){ "SNAP", pk_khz ? v1 : "NO PEAK", 'p', pk_khz && now_ms - pk_ms < 600u, !pk_khz || pk_khz == tgt.khz, false };
+            keys[2] = (lap_btn_t){ "STOP", "HUNT", 'x', true, false, false };
+        } else if (hunting) {
             keys[0] = (lap_btn_t){ "SOUND", !cfg.sound ? "OFF" : hunt_tone() ? "TONE" : "TICKS", 't', cfg.sound != 0, false, false };
             keys[1] = (lap_btn_t){ "DIRECTION", cfg.dmode == BH_DM_BODY ? "BODY" : "PEAK", 'b', cfg.dmode == BH_DM_BODY, false, false };
             keys[2] = (lap_btn_t){ "STOP", "HUNT", 'x', true, false, false };
@@ -2017,6 +2358,7 @@ enum {
     MA_FOLLOW, MA_POSSIBLE, MA_WATCH, MA_MARKS, MA_LOG, MA_CLEAR,
     MA_TONE, MA_DMODE, MA_RANGE, MA_CAL, MA_FREQ,
     MA_RX, MA_SDRDIR, MA_FOUND,
+    MA_SDRGAIN, MA_SDRSPAN, MA_TUNE, MA_HSOUND,
     MA_KIND0,                           /* + index into KINDS */
 };
 static const struct { uint8_t cls; const char *name; } KINDS[] = {
@@ -2077,14 +2419,22 @@ static void menu_open(int level)
         mrow(MA_FREQ, "HUNT A FREQUENCY...");
         mrow(MA_DMODE, "DIRECTION: %s", cfg.dmode == BH_DM_BODY ? "BODY SHIELD" : "PEAK");
         mrow(MA_RANGE, "METER RANGE: %s", cfg.autorange ? "AUTO" : "FIXED");
+        mrow(MA_HSOUND, "SOUND: %s", cfg.sound ? "ON" : "OFF");
         mrow(MA_TONE, "HUNT SOUND: %s", TONE_NAMES[cfg.tone]);
         mrow(MA_CAL, "CAL: TAG IS 1 M AWAY NOW");
+        if (sdr_hunt()) mrow(MA_TUNE, "TUNE, SNAP, GAIN (SDR)...");
         break;
     case MT_RX:
         mrow(MA_BACK, "< BACK");
         mrow(MA_RX, "RECEIVER: %s", RX_NAMES[cfg.rx]);
         mrow(MA_SDRDIR, "DIRECTIONAL ON: %s", cfg.sdr_dir ? "SDR" : "LORA");
         mrow(MA_FOUND, "LORA %.10s  SDR %.10s", radio >= 0 ? radio_name : "NONE", sdr >= 0 ? sdr_name : "NONE");
+        {
+            char g[16];
+            sdr_gain_text(g, sizeof(g));
+            mrow(MA_SDRGAIN, "SDR GAIN: %s", g);
+        }
+        mrow(MA_SDRSPAN, "SDR SPAN: %s", cfg.sdr_span ? "NARROW" : "WIDE");
         break;
     default:
         mrow(MA_GO_SWEEP, "SWEEP >");
@@ -2127,6 +2477,31 @@ static void freq_pick(void)
     }
     dlg = lap_choose(l, n);
     dlg_kind = 4;
+}
+/* TUNE (an SDR hunt): SNAP, steps of 1 and 10 kHz, a typed frequency, the
+   gain and the span. It opens again after a step, showing where it is. */
+static char tlabel[9][32];
+static void tune_pick(void)
+{
+    if (dlg || !sdr_hunt()) return;
+    const char *l[9];
+    char m[16], g[16];
+    int n = 0;
+    mhz(tgt.khz, m, sizeof(m));
+    if (pk_khz && pk_khz != tgt.khz) { char p[16]; mhz(pk_khz, p, sizeof(p)); snprintf(tlabel[n], 32, "SNAP TO PEAK %s", p); }
+    else snprintf(tlabel[n], 32, pk_khz ? "SNAP: ON THE PEAK" : "SNAP: NO PEAK YET");
+    n++;
+    snprintf(tlabel[n++], 32, "+1 KHZ   (NOW %s)", m);
+    snprintf(tlabel[n++], 32, "-1 KHZ");
+    snprintf(tlabel[n++], 32, "+10 KHZ");
+    snprintf(tlabel[n++], 32, "-10 KHZ");
+    snprintf(tlabel[n++], 32, "TYPE A FREQUENCY (MHZ)");
+    sdr_gain_text(g, sizeof(g));
+    snprintf(tlabel[n++], 32, "SDR GAIN: %s", g);
+    snprintf(tlabel[n++], 32, "SDR SPAN: %s", cfg.sdr_span ? "NARROW" : "WIDE");
+    for (int i = 0; i < n; i++) l[i] = tlabel[i];
+    dlg = lap_choose(l, n);
+    dlg_kind = 6;
 }
 static bool tunable(uint64_t hz)
 {
@@ -2189,6 +2564,27 @@ static void dialogs(void)
         if (v == 0) { dlg = lap_text_input("Frequency in MHz, e.g. 433.92", "", 12, 0); dlg_kind = 5; return; }
         if (v >= 1 && v <= ROWS(PRESETS)) freq_go(PRESETS[v - 1].khz, PRESETS[v - 1].name);
         else if (v == ROWS(PRESETS) + 1 && last_khz) freq_go(last_khz, "LAST TYPED");
+        return;
+    }
+    if (kind == 6) {                        /* TUNE */
+        static const int16_t STEP[] = { 0, 1, -1, 10, -10 };
+        if (v == 0) { hunt_snap(); return; }
+        if (v >= 1 && v <= 4) hunt_tune_by(STEP[v]);
+        else if (v == 5) {
+            char m[16];
+            mhz(tgt.khz, m, sizeof(m));
+            dlg = lap_text_input("Hunt frequency in MHz", m, 12, 0);
+            dlg_kind = 7;
+            return;
+        } else if (v == 6) sdr_gain_step();
+        else if (v == 7) sdr_span_toggle();
+        tune_pick();
+        return;
+    }
+    if (kind == 7) {                        /* TUNE: typed */
+        uint32_t k = 0;
+        if (!parse_mhz(text, &k) || k < 1000u || k > 6000000u) { say("Not a frequency: \"%s\" (MHz, e.g. 314.98)", text); return; }
+        hunt_retune(k);
         return;
     }
     if (kind == 5) {                        /* HUNT FREQ: typed */
@@ -2262,6 +2658,10 @@ static void dialogs(void)
         break;
     case MA_SDRDIR: cfg.sdr_dir = !cfg.sdr_dir; break;
     case MA_FOUND: find_radio(); find_sdr(); break;
+    case MA_SDRGAIN: sdr_gain_step(); break;
+    case MA_SDRSPAN: sdr_span_toggle(); break;
+    case MA_HSOUND: cfg.sound = !cfg.sound; if (!cfg.sound) lap_tone_stop(); break;
+    case MA_TUNE: tune_pick(); return;
     default:
         if (a >= MA_KIND0 && a < MA_KIND0 + ROWS(KINDS)) {
             cfg.kind_off ^= bw_kind_bit(KINDS[a - MA_KIND0].cls);
@@ -2461,6 +2861,7 @@ static void act(char c)
     case 'f': to_tab(TAB_FIND); break;
     case 'g':
         if (tab == TAB_TAGS) { bhw_log_toggle(); break; }
+        if (tab == TAB_HUNT && sdr_hunt()) { sdr_gain_step(); break; }
         cfg.region = (uint8_t)(cfg.region % 3 + 1);
         cfg_save();
         if (state == ST_IDLE) bh_init(h, BH_ROOM, cfg.region, has24, 240000, now_ms);     /* the plan shown */
@@ -2493,7 +2894,8 @@ static void act(char c)
         if (fm >= 60u * 60000u) bhw_follow_step(-7); else bhw_follow_step(1);
         break;
     }
-    case 'p': bhw_possible_toggle(); break;
+    case 'p': if (tab == TAB_HUNT && sdr_hunt()) hunt_snap(); else bhw_possible_toggle(); break;
+    case 'u': tune_pick(); break;
     default: break;
     }
     cfg_sync();
@@ -2512,6 +2914,14 @@ static bool key(lap_key_t k, char ch)
     if (tab == TAB_FIND && k == LAP_KEY_DOWN) { if (sel + 1 < nf) sel++; sel_moved = true; return true; }
     if (tab == TAB_FIND && k == LAP_KEY_ENTER) { hunt_start(sel); return true; }
     if (tab == TAB_HUNT && hunting && (k == LAP_KEY_UP || k == LAP_KEY_DOWN)) { hunt_step(k == LAP_KEY_UP ? -1 : 1); return true; }
+    if (tab == TAB_HUNT && sdr_hunt() && ch) {
+        /* the SDR's keys: + - a kHz, < > (or , .) ten, G the gain */
+        const int st = ch == '+' || ch == '=' ? 1 : ch == '-' || ch == '_' ? -1 : ch == '>' || ch == '.' ? 10 : ch == '<' || ch == ',' ? -10 : 0;
+        if (st) { hunt_tune_by(st); return true; }
+        if (ch == 'g' || ch == 'G') { act('g'); return true; }
+    }
+    /* off the bar during an SDR hunt, still on the keyboard */
+    if (tab == TAB_HUNT && hunting && (ch == 't' || ch == 'b')) { act(ch); return true; }
     if (k == LAP_KEY_BACK && hunting) { hunt_stop(); return true; }
     if (k == LAP_KEY_CHAR && (ch == 'l' || ch == 'L') && alert_live()) { hunt_tag(alert_uid); return true; }   /* BLE WATCH's LOCATE key */
     if (ch) {
@@ -2577,7 +2987,7 @@ LAP_ICON_PX(".........99.........", "......99999999......", "....99....9...99...
             "..9....aaa2aa....9..", "...9.888aa2a.88.9...", "...99....a2....99...", "....99........99....",
             "......99999999......", ".........99.........");
 
-LAP_APP(.id = "bughunt", .name = "BUGHUNT", .sub = "trackers, tags and bugs", .version = "1.2",
+LAP_APP(.id = "bughunt", .name = "BUGHUNT", .sub = "trackers, tags and bugs", .version = "1.4",
         .author = "LakeShark", .color = LAP_GREEN,
         .icon_art = { " .-'''-.  ", "/  \\ /  \\ ", "| -(@)- | ", "\\  / \\  / ", " '-...-'\\ ", "         \\" },
         .flags = LAP_CAP_RADIO_RX,

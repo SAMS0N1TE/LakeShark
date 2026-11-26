@@ -1062,6 +1062,14 @@ extern bool ls_tui_touch_held_raw(int *sc, int *sr, int *c, int *r) __attribute_
 #define PK_HOLD_MS 900u         /* holding the status row this long locks */
 static bool s_pocket, s_pk_eat_tap;
 static uint32_t s_pk_arm, s_pk_miss, s_pk_hold0, s_pk_last, s_pk_auto, s_pk_since;
+/* A full-screen (immersive) app hides the status row and the board's close
+   key, so a card app with no way out of a page traps the board (11-25:
+   FISHNOID's "rotate to landscape" page takes no touch). Holding the
+   top-right corner this long always goes HOME. Pocket lock keeps row 0's
+   middle; the corners are outside it. */
+#define EX_HOLD_MS 1500u
+static uint32_t s_ex_hold0;
+static bool s_ex_eat_tap;   /* the lift of the hold that went HOME: not a tap on HOME (SET sits under it) */
 static uint8_t s_pk_spot;
 static tui_rect s_pk_key, s_pk_area;
 
@@ -1107,8 +1115,31 @@ static void pocket_draw(tui_surface *sf, int cols, tui_rect area)
        from the rounded corners either way. */
     int x0 = cols / 8, x1 = cols - cols / 8;
     if (status_rows()) status_span(cols, &x0, &x1);
-    /* Holding the status row locks: the row fills as the finger stays. */
-    if (!s_pocket && !s_locked && ls_tui_touch_held_raw) {
+    if (s_full && !s_pocket && !s_locked && ls_tui_touch_held_raw) {
+        int sc, sr, c, r;
+        /* rows 0-2: row 0 alone is a thin target under the rounded corner */
+        if (ls_tui_touch_held_raw(&sc, &sr, &c, &r) && sr <= 2 && c >= x1) {
+            if (!s_ex_hold0) s_ex_hold0 = now ? now : 1;
+            const uint32_t held = now - s_ex_hold0;
+            if (held >= 300) {              /* a tap is the app's own */
+                static const char say[] = "HOME";
+                const int w = cols - x1, lit = (int)((uint64_t)w * held / EX_HOLD_MS);
+                for (int i = 0; i < w; i++) {
+                    const int si = i - (w - 4) / 2;
+                    const char ch = si >= 0 && si < 4 ? say[si] : '=';
+                    tui_put_char(sf, all, x1 + i, 0, ch,
+                                 i < lit ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, TUI_RED) : TUI_ATTR(TUI_BLACK, TUI_CYAN));
+                }
+            }
+            if (held >= EX_HOLD_MS) { s_ex_hold0 = 0; s_ex_eat_tap = true; ls_tui_screen_show_later(0); }
+            return;
+        }
+        s_ex_hold0 = 0;
+    }
+    /* Holding the status row locks: the row fills as the finger stays. Not in
+       a full-screen app: its row 0 is the app's (a game's play area); CTRL+L
+       still locks there. */
+    if (!s_full && !s_pocket && !s_locked && ls_tui_touch_held_raw) {
         int sc, sr, c, r;
         if (ls_tui_touch_held_raw(&sc, &sr, &c, &r) && sr == 0 && r == 0) {
             if (!s_pk_hold0) s_pk_hold0 = now ? now : 1;
@@ -1183,6 +1214,7 @@ static void pocket_draw(tui_surface *sf, int cols, tui_rect area)
 LS_COLD bool ls_tui_router_touch(int col, int row)
 {
     s_pk_last = pk_now();
+    if (s_ex_eat_tap) { s_ex_eat_tap = false; return true; }
     if (s_pocket && !s_locked) { pocket_tap(col, row); return true; }
     if (s_touch_hook && !s_in_hook) {
         s_in_hook = true;

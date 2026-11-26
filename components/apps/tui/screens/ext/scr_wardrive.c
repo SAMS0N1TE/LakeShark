@@ -28,6 +28,7 @@
 #include "../../wardrive/wd_sig.h"
 #include "../../wardrive/wd_radio.h"
 #include "../../wardrive/wd_atlas.h"
+#include "../../wardrive/wd_names.h"
 #include "../../ls_lsx_svc.h"
 #include "../../ls_drag_scroll.h"
 #include "../../ls_picker.h"
@@ -882,7 +883,9 @@ static void rain(tui_surface *sf, tui_rect r, uint32_t now)
             continue;
         }
         falling++;
-        const char *name = d->name[0] ? d->name : d->kind == WD_WIFI ? "<hidden>" : d->kind == WD_BLE ? "BT" : "?";
+        char lb[LS_BLE_NAMES_LEN];
+        const char *name = wd_label(d->kind, d->name, d->addr, d->ad_have, d->ble_type, d->company, d->uuid16, lb, sizeof(lb), NULL);
+        if (!name) name = d->kind == WD_WIFI ? "<hidden>" : d->kind == WD_BLE ? "BT" : "?";
         int len = (int)strlen(name);
         if (len > bottom) len = bottom;
         const float t = (float)age / FALL_MS;
@@ -923,9 +926,13 @@ static void latest(tui_surface *sf, tui_rect r, uint32_t now)
         put(sf, r, r.x + 3, y, s, a_text());
         meter(sf, r, r.x + 8, y, 2, d->rssi, INK(hue));
         put(sf, r, r.x + 11, y, d->kind == WD_WIFI ? sec_word(d->sec) : wd_kind_tag(d->kind), INK(hue));
-        const char *name = d->name[0] ? d->name : d->kind == WD_WIFI ? "<hidden>" : "(no name)";
+        char lb[LS_BLE_NAMES_LEN];
+        bool guess;
+        const char *name = wd_label(d->kind, d->name, d->addr, d->ad_have, d->ble_type, d->company, d->uuid16, lb, sizeof(lb), &guess);
+        if (!name) name = d->kind == WD_WIFI ? "<hidden>" : "(no name)";
         snprintf(s, sizeof(s), "%.*s", r.w - 17 > 0 ? (r.w - 17 < 40 ? r.w - 17 : 40) : 0, name);
-        put(sf, r, r.x + 16, y, s, fresh ? a_strong() : a_text());
+        /* a maker or company in its own ink: who made it, not what it calls itself */
+        put(sf, r, r.x + 16, y, s, guess ? INK(TUI_CYAN) : fresh ? a_strong() : a_text());
         const unsigned age = (now - d->ms) / 1000;
         if (age < 60) snprintf(s, sizeof(s), "%us", age);
         else snprintf(s, sizeof(s), "%um", age / 60);
@@ -1188,6 +1195,18 @@ static void list_page(tui_surface *sf, tui_rect a, uint32_t now)
     list_rows(sf, tui_rect_make(a.x, top, a.w, a.y + a.h - top - detail - 1), now, tui_rect_make(a.x, a.y + a.h - detail, a.w, detail));
 }
 
+/* The detail line's names, joined. */
+typedef struct { char t[96]; int n; } names_t;
+static void names_add(void *ctx, const char *key, const char *value)
+{
+    names_t *nl = ctx;
+    const size_t at = strlen(nl->t);
+    if (at + 4 >= sizeof(nl->t)) return;
+    snprintf(nl->t + at, sizeof(nl->t) - at, "%s%s%s", nl->n ? " / " : "", strcmp(key, "NAME") ? "" : "\"", value);
+    if (!strcmp(key, "NAME")) { const size_t e = strlen(nl->t); if (e + 1 < sizeof(nl->t)) { nl->t[e] = '"'; nl->t[e + 1] = 0; } }
+    nl->n++;
+}
+
 /* The rows in `lr`, the picked one's particulars in the three rows of `dr`. */
 static void list_rows(tui_surface *sf, tui_rect lr, uint32_t now, tui_rect dr)
 {
@@ -1239,10 +1258,12 @@ static void list_rows(tui_surface *sf, tui_rect lr, uint32_t now, tui_rect dr)
         if (sel) tui_fill(sf, tui_rect_make(a.x, y, a.w, 1), ' ', ls_ink(LS_INK_SELECT_DIM, TUI_ATTR(TUI_WHITE, TUI_BLUE)));
         const uint8_t bg = sel ? TUI_BLUE : G;
         tui_put_char(sf, a, a.x + 1, y, kind_glyph(e->kind), TUI_ATTR(hue | TUI_BRIGHT, bg));
-        char s[64];
+        char s[64], lb[LS_BLE_NAMES_LEN];
+        bool guess;
+        const char *nm = WD_DEV_LABEL(e, lb, &guess);
         snprintf(s, sizeof(s), "%-*.*s", namew > 0 ? namew : 0, namew > 0 ? namew : 0,
-                 e->name[0] ? e->name : e->kind == WD_WIFI ? "<hidden>" : "(no name)");
-        put(sf, a, a.x + 3, y, s, sel ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, bg) : a_text());
+                 nm ? nm : e->kind == WD_WIFI ? "<hidden>" : "(no name)");
+        put(sf, a, a.x + 3, y, s, sel ? TUI_ATTR(TUI_WHITE | TUI_BRIGHT, bg) : guess ? TUI_ATTR(TUI_CYAN, bg) : a_text());
         int cx = a.x + 3 + (namew > 0 ? namew : 0) + 1;
         /* a target says what it is where the security would be */
         const uint16_t hit = e->tags & WD_HIT_TAGS;
@@ -1277,11 +1298,22 @@ static void list_rows(tui_surface *sf, tui_rect lr, uint32_t now, tui_rect dr)
     if (!ls_tui_compact()) tui_hline(sf, a, a.x, dy - 1, a.w, '-', a_rule());
     if (e) {
         char s[120];
+        /* Bluetooth: what the names say, after the address, in their own ink */
+        names_t nl = { "", 0 };
+        wd_names_detail(e, names_add, &nl);
         snprintf(s, sizeof(s), "%02x:%02x:%02x:%02x:%02x:%02x  %s  heard %lux",
                  e->addr[0], e->addr[1], e->addr[2], e->addr[3], e->addr[4], e->addr[5],
-                 e->kind == WD_WIFI ? wd_auth_name(e->auth) : e->kind == WD_BLE ? "Bluetooth LE" : e->kind == WD_CELL ? "LTE cell" : e->kind == WD_DRONE ? "drone link" : wd_kind_name(e->kind),
+                 e->kind == WD_WIFI ? wd_auth_name(e->auth) : e->kind == WD_BLE ? (nl.n ? "BLE" : "Bluetooth LE") : e->kind == WD_CELL ? "LTE cell" : e->kind == WD_DRONE ? "drone link" : wd_kind_name(e->kind),
                  (unsigned long)e->seen);
         put(sf, a, a.x + 1, dy, s, a_text());
+        if (nl.n) {
+            const int nx = a.x + 1 + (int)strlen(s) + 2, room = a.x + a.w - 1 - nx;
+            if (room > 4) {
+                char t[96];
+                snprintf(t, sizeof(t), "%.*s", room < 95 ? room : 95, nl.t);
+                put(sf, a, nx, dy, t, LIT(TUI_CYAN));
+            }
+        }
         if (e->sig) {
             /* what the signature table says it is, over the line's end */
             const wd_sig_info_t *si = wd_sig_at(e->sig - 1);

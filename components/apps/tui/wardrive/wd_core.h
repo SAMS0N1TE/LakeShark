@@ -87,10 +87,13 @@ typedef struct {
     uint16_t tags;              /* WD_T_* the source already knows; the table adds more */
     uint32_t freq_khz;          /* 0: not known or not meaningful */
     /* Bluetooth advert IDs for the signature table: ad_have bit 0 company +
-       mfg0, bit 1 uuid16 + svc0 (a flag: feeds zero the struct). */
+       mfg0, bit 1 uuid16 + svc0, bit 2 appearance (a flag: feeds zero the
+       struct). */
     uint8_t ad_have;
     uint16_t company, uuid16;
     int16_t mfg0, svc0;
+    uint16_t appearance;
+    uint8_t ble_type;           /* Bluetooth address type + 1 (1 public, 2 random...); 0 not known */
 } wd_obs_t;
 
 #define WD_F_PLACED 1           /* lat/lon hold where it was strongest */
@@ -110,6 +113,10 @@ typedef struct {
     uint8_t radio, sub;
     uint32_t freq_khz;
     uint8_t posted;             /* what went to ls_seen: 1 the find, 2 that it follows */
+    /* Bluetooth: the advert's IDs, for names (ls_ble_names.h); ad_have as
+       in wd_obs_t. */
+    uint8_t ad_have, ble_type;  /* ble_type as in wd_obs_t */
+    uint16_t company, uuid16, appearance;
 } wd_dev_t;
 
 typedef struct { double lat, lon; float x, z, alt, speed; uint32_t ms; } wd_pt_t;
@@ -121,6 +128,9 @@ typedef struct {
     uint32_t ms;
     char name[24];
     uint16_t tags;
+    /* Bluetooth: who it is when it has no name (ls_ble_names_label) */
+    uint8_t addr[6], ad_have, ble_type;
+    uint16_t company, uuid16;
 } wd_drop_t;
 
 typedef struct {

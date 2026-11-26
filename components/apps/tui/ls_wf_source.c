@@ -6,6 +6,7 @@
 #include "ls_floor.h"
 #include "lr_wf_session.h"
 #include "lr_chip_wf.h"
+#include "ls_lora_lr20xx.h"
 #include "scan_engine.h"
 
 #include <string.h>
@@ -819,6 +820,12 @@ static bool pump_chip_line(void)
     };
     return push_live(LS_WF_OWNER_LORA, snap.sequence, &f);
 }
+/* The waterfall's LR session has no consumer: this tag tells it apart from
+   RF SURVEY's, and lora_stop ends only its own (lr_wf_stop_if), never FM's,
+   P25's or an app's after a refused restart. */
+static const char s_wf_lr_tag;
+#define WF_LR_TAG ((void *)&s_wf_lr_tag)
+
 static void chip_stop(void)
 {
     if (s_chip_owned) { lr_chip_wf_stop(); s_chip_owned = false; }
@@ -842,7 +849,7 @@ static bool pump_lora_iq(uint32_t hz)
        would wait on this very stream forever. Same frequency is a no-op;
        a new one restarts the session without touching the chip first. */
     if (s_lr_owned) {
-        if (lr_wf_start(hz) != ESP_OK) { lora_stop(); return idle(LS_WF_IDLE_FAILED, LS_TEXT(t_ls_wf_source_lr_iq_session_failed, "LR IQ session failed")); }
+        if (lr_wf_start_consumer(hz, NULL, WF_LR_TAG) != ESP_OK) { lora_stop(); return idle(LS_WF_IDLE_FAILED, LS_TEXT(t_ls_wf_source_lr_iq_session_failed, "LR IQ session failed")); }
         return pump_lr_line();
     }
     if ((P25.lr_iq_active || FM.lr_iq_active) && !s_lr_owned)
@@ -857,7 +864,7 @@ static bool pump_lora_iq(uint32_t hz)
         if (lr_chip_wf_start(hz) == ESP_OK) { s_chip_owned = true; return pump_chip_line(); }
         s_chip_off = true;
     }
-    if (lr_wf_start(hz) != ESP_OK) return idle(LS_WF_IDLE_FAILED, LS_TEXT(t_ls_wf_source_lr_iq_session_failed, "LR IQ session failed"));
+    if (lr_wf_start_consumer(hz, NULL, WF_LR_TAG) != ESP_OK) return idle(LS_WF_IDLE_FAILED, LS_TEXT(t_ls_wf_source_lr_iq_session_failed, "LR IQ session failed"));
     s_lr_owned = true;
     return pump_lr_line();
 }
@@ -886,6 +893,11 @@ static bool pump_lora(void)
     s_lr_mode = false; lr_spec_enable(false); lr_span_enable(false);
     if (hw.lora_lr20xx && !ls_lora_rx_range_ok(ls_lora_caps(), s_lora_min_hz, s_lora_max_hz))
         return idle(LS_WF_IDLE_FAILED, LS_TEXT(t_ls_wf_source_lr_sweeps_104_1500, "LR sweeps 104-1500 or 1500-2740 MHz"));
+    /* A live I/Q capture (FM, P25, an app) holds the chip's SPI lock for its
+       whole run, and the sweep start below would wait on it on the UI task
+       for as long as it lasts. Wait for it to end instead. */
+    if (hw.lora_lr20xx && lr20xx_stream_source2_active())
+        return idle(LS_WF_IDLE_BUSY, "LoRa busy: I/Q stream");
     if (!lora_hold()) return false;
     if (ls_lora_scan_begin(s_lora_min_hz, s_lora_max_hz) != ESP_OK)
         return idle(ls_lora_scanning() ? LS_WF_IDLE_BUSY : LS_WF_IDLE_FAILED,
@@ -963,7 +975,7 @@ static void lora_stop(void)
 {
     if (s_lora_held) s_dbg_stops++;
     chip_stop();
-    if (s_lr_owned) { lr_wf_stop(); s_lr_owned = false; }
+    if (s_lr_owned) { lr_wf_stop_if(NULL, WF_LR_TAG); s_lr_owned = false; }
     if (s_live_owner == LS_WF_OWNER_LORA) s_live_owner = LS_WF_OWNER_NONE;
     if (s_lora_owned && ls_lora_scanning()) ls_lora_scan_end();
     if (s_lora_held) {

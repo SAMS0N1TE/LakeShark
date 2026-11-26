@@ -45,6 +45,7 @@ extern "C" {
    LAP_TARGET_API_25 builds for 2.5 firmware: the 2.6 calls are not declared.
    LAP_TARGET_API_26 builds for 2.6 firmware: the 2.7 calls are not declared.
    LAP_TARGET_API_27 builds for 2.7 firmware: the 2.8 calls are not declared.
+   LAP_TARGET_API_28 builds for 2.8 firmware: the 2.9 calls are not declared.
    API 2.5 games/assets: include lib/lap_assets.h, lap_game.h, lap_music.h.
    These helpers compile into the app and add no firmware imports. PNG assets
    use caller-owned bounded arenas; SD reads and PCM use existing services. */
@@ -107,13 +108,8 @@ extern "C" {
 #define LAP_API_25 1
 #define LAP_API_26 1
 #define LAP_API_27 1
-#else
-/* API 2.8: network diagnostics (lap_ping_start, lap_dns_resolve, lap_arp_*, lap_net_info).
-   API 2.7: raw Wi-Fi and Bluetooth capture (lap_wifi_capture_start ...).
-   API 2.6: HackRF TX / desktop host and Bluetooth peripheral roles.
-   API 2.5: system services, games/assets, input devices and sensors.
-   Helpers compile into apps; descriptor stays 228 bytes. */
-/* API 2.6 services: concurrent residents and budgeted custom DSP. */
+#elif defined(LAP_TARGET_API_28)
+/* API 2.8: network diagnostics (lap_ping_start, lap_dns_resolve, lap_arp_*, lap_net_info). */
 #define LAP_API_MAJOR 2
 #define LAP_API_MINOR 8
 #define LAP_API_21 1
@@ -124,6 +120,25 @@ extern "C" {
 #define LAP_API_26 1
 #define LAP_API_27 1
 #define LAP_API_28 1
+#else
+/* API 2.9: GATT client pairing, long values, connection info (lap_ble_pair ...).
+   API 2.8: network diagnostics (lap_ping_start, lap_dns_resolve, lap_arp_*, lap_net_info).
+   API 2.7: raw Wi-Fi and Bluetooth capture (lap_wifi_capture_start ...).
+   API 2.6: HackRF TX / desktop host and Bluetooth peripheral roles.
+   API 2.5: system services, games/assets, input devices and sensors.
+   Helpers compile into apps; descriptor stays 228 bytes. */
+/* API 2.6 services: concurrent residents and budgeted custom DSP. */
+#define LAP_API_MAJOR 2
+#define LAP_API_MINOR 9
+#define LAP_API_21 1
+#define LAP_API_22 1
+#define LAP_API_23 1
+#define LAP_API_24 1
+#define LAP_API_25 1
+#define LAP_API_26 1
+#define LAP_API_27 1
+#define LAP_API_28 1
+#define LAP_API_29 1
 #endif
 #define LAP_MAGIC     0x3150414Cu   /* "LAP1" */
 
@@ -1609,7 +1624,10 @@ typedef struct {
 } lap_ble_event_t;
 /* One additional GATT client; never borrows HID/head connections. 20-byte
    values (default MTU=23), 16 events, one procedure in flight. No new NimBLE
-   host or task. Pairing-required errors are returned; bond keys stay private. */
+   host or task. Pairing-required errors are returned; bond keys stay private.
+   API 2.9 adds pairing, longer values and connection info: see the end of
+   this header. A read the peer refuses for missing pairing or encryption
+   ends with error LAP_IO_EAUTH (2.8 firmware said LAP_IO_EIO). */
 int lap_ble_connect(const uint8_t addr[6], uint8_t addr_type);
 /* Services when start=end=0; otherwise characteristics in the given range. */
 int lap_gatt_discover(int connection, uint16_t start, uint16_t end);
@@ -2288,6 +2306,89 @@ typedef struct {
 int lap_arp_probe(const char *ip);
 int lap_arp_table(lap_arp_entry_t *out, int max);
 #endif /* API 2.8: network diagnostics */
+
+/* ---- API 2.9: GATT client pairing, long values, connection info --------- */
+#if defined(LAP_API_29)
+/* Longer values. An app that ever passes lap_ble_event_next a buffer larger
+   than LAP_GATT_VALUE_LEGACY bytes gets the 2.9 behaviour on its next
+   lap_ble_connect: the board asks for a bigger ATT MTU (up to 256) before it
+   reports LAP_BLE_CONNECTED, so notifications carry up to mtu - 3 bytes.
+   Reads use long reads for every app, so a value up to LAP_GATT_VALUE_MAX
+   arrives whole in one LAP_GATT_VALUE event; a longer one ends with
+   LAP_IO_ELIMIT. lap_gatt_write sends up to LAP_GATT_VALUE_MAX bytes (a
+   long write once it passes mtu - 3).
+   lap_ble_event_next with a buffer of LAP_GATT_VALUE_LEGACY bytes or fewer
+   sees a longer value as before: the event with error LAP_IO_ELIMIT and no
+   payload. A bigger buffer that is still too small returns LAP_IO_ELIMIT
+   and keeps the event for a retry with a bigger one.
+   Each queued event holds up to LAP_GATT_VALUE_MAX bytes in the app's
+   share of PSRAM (16 events). */
+#define LAP_GATT_VALUE_MAX 512
+#define LAP_GATT_VALUE_LEGACY 20
+/* New lap_ble_event_t kinds. Each carries a lap_ble_security_t payload. */
+enum {
+    LAP_BLE_SECURITY = 9,       /* lap_ble_pair finished; error 0 or LAP_IO_EAUTH, ETIMEOUT */
+    LAP_BLE_PASSKEY,            /* pairing needs the user: see action */
+    LAP_BLE_SECURITY_REQUEST    /* the peer asked to pair; nothing happens unless the app calls lap_ble_pair */
+};
+/* lap_ble_pair flags. The same bits report a peer's request (authreq). */
+enum { LAP_BLE_PAIR_BOND = 0x01,    /* keep the keys (written to flash); off: forgotten at disconnect */
+       LAP_BLE_PAIR_MITM = 0x04,    /* passkey or number check, so the link is authenticated */
+       LAP_BLE_PAIR_SC = 0x08 };    /* reported only: Secure Connections, always offered */
+/* Passkey actions, in LAP_BLE_PASSKEY events and lap_ble_passkey. */
+enum { LAP_BLE_PASSKEY_INPUT = 2,   /* type the code the peer shows: lap_ble_passkey(c, INPUT, code) */
+       LAP_BLE_PASSKEY_DISPLAY = 3, /* show passkey for the user to type on the peer; no answer */
+       LAP_BLE_PASSKEY_NUMCMP = 4 };/* show passkey, ask if it matches the peer: answer 1 or 0 */
+typedef struct {
+    uint16_t size, version;     /* sizeof, 1 */
+    uint8_t encrypted, authenticated, bonded, key_size; /* the link now; key_size in bytes, 7..16 */
+    uint8_t action;             /* LAP_BLE_PASSKEY: LAP_BLE_PASSKEY_* */
+    uint8_t authreq;            /* LAP_BLE_SECURITY_REQUEST: what the peer asks, LAP_BLE_PAIR_* bits */
+    uint8_t reserved[2];
+    uint32_t passkey;           /* DISPLAY and NUMCMP: the six digits to show; 0 otherwise */
+} lap_ble_security_t;
+/* Pair or encrypt this connection. The board is keyboard plus display, so
+   with LAP_BLE_PAIR_MITM the peer chooses passkey entry or a number check.
+   Returns an operation id; LAP_BLE_PASSKEY events may follow, then one
+   LAP_BLE_SECURITY event with that operation. A peer already bonded is
+   encrypted with its stored keys. Only this connection is affected and the
+   board never pairs on its own: a peer's own request arrives as
+   LAP_BLE_SECURITY_REQUEST and is ignored unless the app calls this. After
+   LAP_BLE_SECURITY with error 0, retry a read that failed with LAP_IO_EAUTH.
+   Pairing may take up to 40 s while the user types. LAP_IO_EINVAL for
+   unknown flags, EBUSY while another procedure runs, ECLOSED. */
+int lap_ble_pair(int connection, unsigned flags);
+/* Answer a LAP_BLE_PASSKEY event. INPUT: value is the six-digit code.
+   NUMCMP: value 1 accepts, 0 rejects. 0 when queued, LAP_IO_EINVAL,
+   ECLOSED, EBUSY. */
+int lap_ble_passkey(int connection, int action, uint32_t value);
+/* Delete the stored bond (keys) of this connection's peer. Returns an
+   operation id; LAP_GATT_COMPLETE follows with error 0, or LAP_IO_EACCES
+   when the peer is a saved board accessory (BLE HID). The link stays up. */
+int lap_ble_forget(int connection);
+typedef struct {
+    uint16_t size, version;     /* sizeof, 1 */
+    uint16_t mtu;               /* ATT MTU; one packet carries mtu - 3 value bytes */
+    int8_t rssi;                /* dBm, refreshed about once a second; 127 before the first */
+    uint8_t phy_tx, phy_rx;     /* 1 = 1M, 2 = 2M, 3 = coded */
+    uint8_t our_addr_type, peer_addr_type; /* 0 public, 1 random (identity addresses) */
+    uint8_t encrypted, authenticated, bonded, key_size;
+    uint8_t reserved;
+    uint16_t interval;          /* connection interval, 1.25 ms units */
+    uint16_t latency;           /* connection events the peer may skip */
+    uint16_t timeout;           /* supervision timeout, 10 ms units */
+    uint8_t peer_addr[6];       /* identity address, as lap_ble_connect takes it */
+    uint8_t reserved2[4];
+} lap_ble_conn_info_t;
+/* Snapshot of a connected link: 0 and *out filled, LAP_IO_EAGAIN until
+   LAP_BLE_CONNECTED, LAP_IO_ECLOSED, LAP_IO_EINVAL. */
+int lap_ble_conn_info(int connection, lap_ble_conn_info_t *out);
+/* Write without response (ATT write command), for serial-style
+   characteristics. len <= mtu - 3. Returns an operation id; LAP_GATT_WRITTEN
+   follows at once (the peer never confirms), with error LAP_IO_ELIMIT when
+   len is over the MTU or LAP_IO_EBUSY when the radio has no buffer free. */
+int lap_gatt_write_cmd(int connection, uint16_t attribute, const void *data, size_t len);
+#endif /* API 2.9: GATT client pairing, long values, connection info */
 #ifdef __cplusplus
 }
 #endif

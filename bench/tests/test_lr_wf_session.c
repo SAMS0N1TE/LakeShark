@@ -9,6 +9,8 @@ static void (*owner_task)(void *);
 static void *owner_arg;
 static uint64_t first;
 static uint32_t confirmed_hz;
+static unsigned capture_stuck;
+static bool done_while_stuck;
 const ls_lora_cfg_t *ls_lora_cfg(void) { return &cfg; }
 void ls_lora_cfg_default(ls_lora_cfg_t *out) { *out = cfg; }
 static uint32_t test_caps;
@@ -49,6 +51,12 @@ void vTaskDelay(TickType_t ticks)
         TaskFunction_t task = owner_task; owner_task = NULL; task(owner_arg); return;
     }
     ++delays; ls_shim_time_advance(3000);
+    if (atomic_load(&session->capture_stop) && capture_stuck) {
+        /* A capture stuck in the driver: it returns only after this many ticks. */
+        --capture_stuck;
+        if (atomic_load(&session->done)) done_while_stuck = true;
+        return;
+    }
     if (atomic_load(&session->capture_stop)) { capture(session); return; }
     if (no_samples) return;
     if (delays > 70 || stop_requested) { atomic_store(&session->stop, true); return; }
@@ -64,6 +72,7 @@ static void fresh(void)
     configured = starts = delays = confirmed_hz = 0;
     fail_config = fail_receive = fail_task = fail_capture = no_samples = bad_pair = stop_requested = false;
     first = 0; owner_task = NULL; ls_shim_time_set(1000000);
+    capture_stuck = 0; done_while_stuck = false;
     frees_seen = ls_shim_heap_outstanding();
 }
 static void run_owner(void)
@@ -173,4 +182,59 @@ LS_CASE(lriq_subghz_lf_receive_above_tx_band)
     LS_EQ_UINT(990000000,confirmed_hz);lr_wf_stop();
     LS_EQ_INT(ESP_ERR_INVALID_ARG,lr_wf_start(1000000000));
     test_caps=0;
+}
+
+/* No samples and a capture that does not return (the 11-25 FM freeze): the
+   owner stops waiting after CAPTURE_WAIT_US and reports the session done
+   with a timeout while the capture is still out, so a stop does not wait on
+   it; it frees nothing until the capture returns, then restores the setup. */
+LS_CASE(stuck_capture_is_reported_done_with_timeout_and_freed_after_it_returns)
+{
+    fresh(); no_samples = true; consumed = reset_seen = 0;
+    capture_stuck = (CAPTURE_WAIT_US + 1500000) / 3000;
+    LS_EQ_INT(ESP_OK, lr_wf_start_consumer(162550000, consume_checked, &consumed));
+    run_owner();
+    LS_CHECK(done_while_stuck);
+    LS_EQ_UINT(0, capture_stuck);
+    LS_EQ_INT(ESP_ERR_TIMEOUT, session->error);
+    LS_EQ_UINT(1, reset_seen);
+    LS_EQ_UINT(0, consumed);
+    lr_wf_stats st; lr_wf_stop_stats(&st);
+    LS_CHECK(st.done); LS_EQ_INT(ESP_ERR_TIMEOUT, st.error);
+    LS_CHECK(session == NULL);
+    LS_EQ_UINT(frees_seen, ls_shim_heap_outstanding());
+    LS_EQ_UINT(0, atomic_load(&s_orphans));
+    /* Nothing is left holding the radio: the next session starts. */
+    no_samples = false;
+    LS_EQ_INT(ESP_OK, lr_wf_start(433920000)); run_owner(); lr_wf_stop();
+    LS_EQ_UINT(frees_seen, ls_shim_heap_outstanding());
+}
+
+static void other_consumer(void *ctx, const uint8_t *data, size_t bytes, bool spare)
+{
+    (void)ctx; (void)data; (void)bytes; (void)spare; LS_CHECK(false);
+}
+LS_CASE(owner_checked_stop_leaves_another_owners_session_alone)
+{
+    static const char wf_tag = 0;
+    fresh(); consumed = reset_seen = 0;
+    LS_EQ_INT(ESP_OK, lr_wf_start_consumer(162550000, consume_checked, &consumed));
+    session_t *s = session;
+    LS_CHECK(!lr_wf_stop_if(other_consumer, &consumed));
+    LS_CHECK(!lr_wf_stop_if(consume_checked, NULL));
+    LS_CHECK(!lr_wf_stop_if(NULL, NULL));
+    LS_CHECK(!lr_wf_stop_if(NULL, (void *)&wf_tag));
+    LS_CHECK(session == s && !atomic_load(&s->stop));
+    LS_CHECK(lr_wf_stop_if(consume_checked, &consumed));
+    LS_CHECK(session == NULL);
+    LS_EQ_UINT(frees_seen, ls_shim_heap_outstanding());
+    /* Consumer-less owners are told apart by their tag. */
+    LS_EQ_INT(ESP_OK, lr_wf_start_consumer(433920000, NULL, (void *)&wf_tag));
+    LS_CHECK(!lr_wf_stop_if(NULL, NULL));
+    LS_EQ_INT(ESP_ERR_INVALID_STATE, lr_wf_start(433920000));
+    LS_CHECK(session != NULL);
+    LS_CHECK(lr_wf_stop_if(NULL, (void *)&wf_tag));
+    LS_CHECK(session == NULL);
+    LS_CHECK(!lr_wf_stop_if(NULL, (void *)&wf_tag));
+    LS_EQ_UINT(frees_seen, ls_shim_heap_outstanding());
 }

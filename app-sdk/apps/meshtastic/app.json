@@ -1,8 +1,8 @@
 {
   "category": "radio",
   "group": "radio",
-  "version": "1.4",
-  "description": "Be a Meshtastic node on the board LoRa radio in any of the 26 Meshtastic regions: conversations with replies and reactions, eight channels shared as a link and QR code, nodes with favourites and requests, waypoints, neighbour links, range test, store and forward, the settings laid out as the official apps have them, and an offline translator for Spanish, Portuguese, French, German, Italian, Dutch, Polish, Russian and Ukrainian chat (the eight after Spanish come from STORE > MESH LANGUAGES, or PACKS > LANGUAGES where the board has it).",
+  "version": "1.5",
+  "description": "Be a Meshtastic node on the board LoRa radio in any of the 26 Meshtastic regions: conversations with replies and reactions, eight channels shared as a link and QR code, nodes with favourites and requests, waypoints, neighbour links, range test, store and forward, a preset scan that shows which presets and channels are in use nearby, the settings laid out as the official apps have them, and an offline translator for Spanish, Portuguese, French, German, Italian, Dutch, Polish, Russian and Ukrainian chat (the eight after Spanish come from STORE > MESH LANGUAGES, or PACKS > LANGUAGES where the board has it).",
   "third_party": [
     {
       "name": "Meshtastic protobufs (mesh.proto, portnums.proto, config.proto, channel.proto, apponly.proto, storeforward.proto): field numbers, enum values and the hardware-model and role names, ported into mt_proto.c / mt_proto.h and main.c",
@@ -11,7 +11,7 @@
       "use": "code"
     },
     {
-      "name": "Meshtastic firmware (RadioInterface.cpp, MeshRadio.h, Channels.cpp, DisplayFormatters.cpp, StoreForwardModule.cpp, NeighborInfoModule.cpp, RangeTestModule.cpp): the slot rule, preset names, role and rebroadcast behaviour, the range-test CSV columns, how neighbour info and store and forward work",
+      "name": "Meshtastic firmware (RadioInterface.cpp, MeshRadio.h, Channels.cpp, DisplayFormatters.cpp, StoreForwardModule.cpp, NeighborInfoModule.cpp, RangeTestModule.cpp): the slot rule, preset names and parameters and the region profiles (ported into mt_scan.c for SCAN), role and rebroadcast behaviour, the range-test CSV columns, how neighbour info and store and forward work",
       "license": "GPL-3.0-only",
       "url": "https://github.com/meshtastic/firmware",
       "use": "reference"

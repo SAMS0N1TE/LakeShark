@@ -39,13 +39,21 @@ void ls_lap_av_script(const char *command);
 void ls_lap_ble_advert_push(const uint8_t *addr, uint8_t type, int rssi, bool response, const void *data,
                             size_t n, uint32_t at_ms);
 /* Only main's existing NimBLE host consumes commands and produces events. */
+enum { LS_BLE_CMD_CONNECT = 1, LS_BLE_CMD_DISCOVER, LS_BLE_CMD_READ, LS_BLE_CMD_WRITE,
+       LS_BLE_CMD_CLOSE, LS_BLE_CMD_DESCRIPTORS, LS_BLE_CMD_WRITE_CMD, LS_BLE_CMD_PASSKEY,
+       LS_BLE_CMD_PAIR, LS_BLE_CMD_FORGET };
+#define LS_BLE_CONNECT_WIDE 1u /* connect flag: exchange the MTU first (2.9 app) */
 typedef struct {
     int kind, handle, operation;
-    uint16_t attribute, end;
-    uint8_t addr[6], addr_type, len, data[20];
+    uint16_t attribute, end, len;
+    uint8_t addr[6], addr_type, flags; /* CONNECT: LS_BLE_CONNECT_*; PAIR: LAP_BLE_PAIR_*; PASSKEY: action */
+    uint32_t value;                     /* PASSKEY: code or accept */
+    uint8_t data[LAP_GATT_VALUE_MAX];
 } ls_lap_ble_command_t;
 bool ls_lap_ble_command(ls_lap_ble_command_t *out);
 void ls_lap_ble_event(const lap_ble_event_t *event, const void *data, size_t n);
+/* Host snapshot for lap_ble_conn_info; ignored unless handle is the app's live link. */
+void ls_lap_ble_info(int handle, const lap_ble_conn_info_t *info);
 void ls_lap_ble_host_pump(void);
 int ls_lap_ble_lease(bool on);
 bool ls_lap_api_data_path(char *out, size_t cap, const char *name);

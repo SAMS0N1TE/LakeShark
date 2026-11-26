@@ -15,6 +15,7 @@
    view is not redrawn. */
 #include "wd_view3d.h"
 #include "wd_core.h"
+#include "wd_names.h"
 #include "wd_feed.h"
 #include "wd_replay.h"
 #include "../ls_tui.h"
@@ -763,8 +764,9 @@ static void pillars_draw(void)
             tag_t *t = s_ntag < TAGS ? &s_tag[s_ntag++] : &s_tag[k % TAGS];
             t->sx = (int16_t)tx; t->sy = (int16_t)ty; t->kind = e->kind; t->sec = (uint8_t)sec; t->rssi = e->rssi;
             /* no name: the end of its address, so two of them tell apart */
-            char nm[16];
-            if (e->name[0]) snprintf(nm, sizeof(nm), "%.13s", e->name);
+            char nm[16], lb[LS_BLE_NAMES_LEN];
+            const char *own = WD_DEV_LABEL(e, lb, NULL);       /* its name, else who made it */
+            if (own) snprintf(nm, sizeof(nm), "%.13s", own);
             else snprintf(nm, sizeof(nm), "%s%02x:%02x", e->kind == WD_WIFI ? "hidden " : "", e->addr[4], e->addr[5]);
             if (target) snprintf(t->text, sizeof(t->text), "! %s %s", wd_tag_word(e->tags & ALERT_TAGS), nm);
             else snprintf(t->text, sizeof(t->text), "%c %s %d", e->kind < WD_KINDS ? "WBCDRAL"[e->kind] : '?', nm, e->rssi);
@@ -948,8 +950,9 @@ static void card(tui_surface *sf, tui_rect a, int sightings)
     if (s_sel < 0 || s_sel >= wd_dev_count()) return;
     const wd_dev_t *e = wd_dev_at(s_sel);
     if (memcmp(e->addr, s_sel_addr, 6) || e->kind != s_sel_kind) { s_sel = -1; return; }
-    char l[4][56];
-    snprintf(l[0], sizeof(l[0]), " %.30s ", e->name[0] ? e->name : e->kind == WD_WIFI ? "<hidden>" : "(no name)");
+    char l[4][56], lb[LS_BLE_NAMES_LEN];
+    const char *own = WD_DEV_LABEL(e, lb, NULL);
+    snprintf(l[0], sizeof(l[0]), " %.30s ", own ? own : e->kind == WD_WIFI ? "<hidden>" : "(no name)");
     snprintf(l[1], sizeof(l[1]), " %02x:%02x:%02x:%02x:%02x:%02x  %s ", e->addr[0], e->addr[1], e->addr[2], e->addr[3],
              e->addr[4], e->addr[5], e->kind == WD_WIFI ? wd_auth_short(e->auth) : e->kind == WD_BLE ? "BT" : e->kind == WD_CELL ? "LTE" : "UAS");
     snprintf(l[2], sizeof(l[2]), " best %d dBm  heard %lux%s ", e->rssi, (unsigned long)e->seen,

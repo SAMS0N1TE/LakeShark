@@ -196,6 +196,13 @@ int ls_hosted_promisc_test(int secs)
     return 0;
 }
 
+/* Whether the coprocessor runs LakeShark's forwarder: it acks a ping, stock
+   ESP-Hosted never answers (ACK_WAIT_MS). Used by the C6 auto update. */
+bool ls_hosted_promisc_present(void)
+{
+    return ctrl(OP_PING, false, 0) == ESP_OK;
+}
+
 /* Called once at boot so this file is linked and its calls replace the weak stubs. */
 void ls_hosted_promisc_link(void) {}
 

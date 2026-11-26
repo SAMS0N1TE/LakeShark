@@ -507,6 +507,82 @@ LS_CASE(live_stream_subtick_wait_drains_continuous_fifo_despite_scheduling_delay
     }
 }
 
+/* No samples at all (blank FM, 11-25): the sink never runs, so before the
+   idle limit the live run never ended and its owner waited forever. */
+static unsigned silent_sink_calls, silent_waits, silent_cancel_at;
+static bool silent_sink(void *context, const uint8_t *bytes, size_t n, uint64_t first)
+{
+    (void)context; (void)bytes; (void)n; (void)first;
+    ++silent_sink_calls;
+    return true;
+}
+static void silent_wait(void)
+{
+    if (++silent_waits == silent_cancel_at) lr20xx_stream_live_cancel();
+}
+static void silent_radio(void)
+{
+    fk_install(FK_LR); fk.model_reset = true;
+    LS_EQ_INT(ls_lora_start(), ESP_OK);
+    ls_lora_cfg_t cfg; ls_lora_cfg_default(&cfg); cfg.bw_hz = 31250;
+    LS_EQ_INT(ls_lora_configure(&cfg), ESP_OK);
+    LS_EQ_INT(ls_lora_receive(), ESP_OK);
+    fk.capture_timeout = true;           /* the FIFO stays empty */
+    silent_sink_calls = silent_waits = 0;
+}
+LS_CASE(live_stream_with_no_samples_ends_with_a_timeout_and_frees_the_radio)
+{
+    silent_radio();
+    silent_cancel_at = 0;
+    ls_shim_timer_wait_hook(silent_wait, 0);
+    lr20xx_stream_result_t r;
+    const int64_t t0 = esp_timer_get_time();
+    const esp_err_t err = lr20xx_stream_source2_live(silent_sink, NULL, &r);
+    const int64_t took = esp_timer_get_time() - t0;
+    ls_shim_timer_wait_hook(NULL, 0);
+    fk.capture_timeout = false;
+    LS_EQ_INT(err, ESP_ERR_TIMEOUT);
+    LS_EQ_INT(r.capture_error, ESP_ERR_TIMEOUT);
+    LS_EQ_UINT(silent_sink_calls, 0); LS_EQ_UINT(r.bytes, 0);
+    LS_CHECK_MSG(took >= LR20XX_LIVE_IDLE_US && took < 2 * LR20XX_LIVE_IDLE_US, "took %lld us", (long long)took);
+    LS_CHECK(silent_waits > 0);          /* it slept between polls, it did not spin */
+    LS_CHECK(!lr20xx_stream_source2_active());
+    LS_CHECK(!ls_lora_hw_locked_by_me());
+    LS_EQ_UINT(ls_shim_timer_count(), 0);
+    LS_EQ_INT(r.recovery_error, ESP_OK);
+    LS_EQ_INT(fk.tx_starts, 0);
+}
+LS_CASE(live_stream_cancel_ends_a_silent_run_at_the_next_poll)
+{
+    silent_radio();
+    silent_cancel_at = 5;
+    ls_shim_timer_wait_hook(silent_wait, 0);
+    lr20xx_stream_result_t r;
+    const int64_t t0 = esp_timer_get_time();
+    const esp_err_t err = lr20xx_stream_source2_live(silent_sink, NULL, &r);
+    const int64_t took = esp_timer_get_time() - t0;
+    ls_shim_timer_wait_hook(NULL, 0);
+    fk.capture_timeout = false;
+    /* Asked to stop, it stops: no samples is still reported as such. */
+    LS_EQ_INT(err, ESP_ERR_TIMEOUT);
+    LS_CHECK(r.stopped_by_sink);
+    LS_EQ_UINT(silent_waits, 5);
+    /* took includes the stream setup on the fake clock (~130 ms). */
+    LS_CHECK_MSG(took < LR20XX_LIVE_IDLE_US, "took %lld us", (long long)took);
+    LS_CHECK(!lr20xx_stream_source2_active());
+    LS_CHECK(!ls_lora_hw_locked_by_me());
+    /* A cancel left over from that run does not end the next one. */
+    lr20xx_stream_live_cancel();
+    silent_radio();
+    silent_cancel_at = 0;
+    ls_shim_timer_wait_hook(silent_wait, 0);
+    LS_EQ_INT(lr20xx_stream_source2_live(silent_sink, NULL, &r), ESP_ERR_TIMEOUT);
+    ls_shim_timer_wait_hook(NULL, 0);
+    fk.capture_timeout = false;
+    LS_CHECK(!r.stopped_by_sink);
+    LS_CHECK(silent_waits > 5);
+}
+
 LS_CASE(capture_fifo_chunks_preserve_bytes_and_wire_counters_then_restore_packets)
 {
     fk_install(FK_LR); LS_EQ_INT(ls_lora_start(), ESP_OK);

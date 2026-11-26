@@ -41,9 +41,9 @@
     <tr><th>Hardware</th><th>Use</th><th>Firmware</th></tr>
   </thead>
   <tbody>
-    <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>3.2.0 stable</td></tr>
-    <tr><td><strong>LILYGO T-Display P4 TFT</strong> (SX1262 or LR2021)</td><td>Handheld</td><td>3.2.0 stable</td></tr>
-    <tr><td><strong>LILYGO T-Display P4, LR and NET editions</strong></td><td>Handheld</td><td>3.2.0 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4</strong> (AMOLED, SX1262 or LR2021)</td><td>Handheld</td><td>3.2.1 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4 TFT</strong> (SX1262 or LR2021)</td><td>Handheld</td><td>3.2.1 stable</td></tr>
+    <tr><td><strong>LILYGO T-Display P4, LR and NET editions</strong></td><td>Handheld</td><td>3.2.1 stable</td></tr>
     <tr><td><strong>Waveshare ESP32-P4-NANO-DB</strong> (P4 rev 3, ESP32-C5)</td><td>LakeShark Desktop</td><td>2.22.0 stable</td></tr>
     <tr><td><strong>Waveshare ESP32-P4-NANO</strong></td><td>Headless (serial, Flipper)</td><td>2.0.2 in the installer, newer from source</td></tr>
     <tr><td><strong>Waveshare Touch-LCD-4.3, Touch-LCD-4B, Smart 86 Box</strong></td><td>Touch screen</td><td>Up to 2.16.4, no longer updated</td></tr>
@@ -104,7 +104,7 @@ screen, mouse and keyboard over one USB cable.</p>
 
 <h2 align="center">What's New</h2>
 
-<p align="center"><strong>3.2:</strong> WARDRIVE logs every radio and knows plate readers, trackers and drones · PARTY shares where you are and what you find over LoRa · Colour icons · Pocket lock in every app · SUB-GHZ opens at once · Crash reports say where</p>
+<p align="center"><strong>3.2:</strong> WARDRIVE logs every radio and knows plate readers, trackers and drones · PARTY shares where you are and what you find over LoRa · Colour icons · Pocket lock in every app · SUB-GHZ opens at once · Crash reports say where · 3.2.1: the Wi-Fi chip updates itself for capture, Bluetooth names in every app</p>
 <p align="center"><strong>3.1:</strong> WARDRIVE replays your drives in 3D over the real map · MAP always opens and draws far out faster · LR2021 hears off-frequency LoRa nodes</p>
 <p align="center"><strong>3.0:</strong> One firmware for every T-Display P4 · FREQS by location · World maps · <a href="https://terminalbay.com/?m=lakeshark-apps">App store</a> on the board · LOCKER and CHAT · Lock screen</p>
 <p align="center"><strong>2.20:</strong> LR2021 on-chip programs · LakeShark Desktop · App SDK and Studio</p>
@@ -115,7 +115,7 @@ screen, mouse and keyboard over one USB cable.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v3.2.0">3.2.0 release notes</a>
+  <a href="https://github.com/SAMS0N1TE/LakeShark/releases/tag/v3.2.1">3.2.1 release notes</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/SAMS0N1TE/LakeShark/releases">All releases</a>
 </p>

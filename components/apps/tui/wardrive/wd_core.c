@@ -81,6 +81,16 @@ static uint16_t sig_match(const wd_obs_t *o, uint16_t *t)
     return wd_sig_match_ble(o, &b, t);
 }
 
+/* The advert's IDs, kept once heard: names for a device without one. */
+static void ad_note(wd_dev_t *e, const wd_obs_t *o)
+{
+    if (o->ad_have & 1) e->company = o->company;
+    if (o->ad_have & 2) e->uuid16 = o->uuid16;
+    if (o->ad_have & 4) e->appearance = o->appearance;
+    e->ad_have |= (uint8_t)(o->ad_have & 7);
+    if (o->ble_type) e->ble_type = o->ble_type;
+}
+
 static void say(const char *fmt, ...)
 {
     va_list ap;
@@ -797,7 +807,10 @@ static void seen_post(wd_dev_t *e)
     const uint8_t want = (uint8_t)(1 | ((t & WD_T_FOLLOW) ? 2 : 0));
     if ((e->posted & want) == want) return;
     e->posted |= want;
-    ls_seen_observe(e->addr, 0, e->kind == WD_WIFI ? LS_SEEN_WIFI : LS_SEEN_BLE, (uint8_t)cat, e->rssi, true, false,
+    /* ls_seen takes a Bluetooth address as heard, least significant first (as SWEEP posts it) */
+    uint8_t mac[6];
+    for (int b = 0; b < 6; b++) mac[b] = e->kind == WD_BLE ? e->addr[5 - b] : e->addr[b];
+    ls_seen_observe(mac, 0, e->kind == WD_WIFI ? LS_SEEN_WIFI : LS_SEEN_BLE, (uint8_t)cat, e->rssi, true, false,
                     (t & WD_T_FOLLOW) ? SW_WITH_YOU : SW_NEW, esp_timer_get_time());
 #else
     (void)e;
@@ -826,6 +839,7 @@ int wd_note(const wd_obs_t *o, uint32_t now)
         e->sub = o->sub;
         e->freq_khz = o->freq_khz;
         snprintf(e->name, sizeof(e->name), "%s", o->name);
+        ad_note(e, o);
         uint16_t t = o->tags;
         e->sig = sig_match(o, &t);
         e->tags = t;
@@ -843,6 +857,11 @@ int wd_note(const wd_obs_t *o, uint32_t now)
         d->ms = now;
         snprintf(d->name, sizeof(d->name), "%s", o->name);
         d->tags = e->tags;
+        memcpy(d->addr, o->addr, 6);
+        d->ad_have = e->ad_have;
+        d->ble_type = e->ble_type;
+        d->company = e->company;
+        d->uuid16 = e->uuid16;
         r_head = (r_head + 1) % WD_DROPS;
         if (r_count < WD_DROPS) r_count++;
         added = true;
@@ -857,6 +876,7 @@ int wd_note(const wd_obs_t *o, uint32_t now)
             if (sg && !e->sig) e->sig = sg;
             e->tags = t;
         } else e->tags |= o->tags;
+        ad_note(e, o);
         if (o->kind == WD_WIFI && o->auth != WD_AUTH_UNKNOWN) e->auth = o->auth;
         if (o->channel) e->channel = o->channel;
     }

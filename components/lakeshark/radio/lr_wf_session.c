@@ -53,6 +53,12 @@ typedef struct {
 typedef struct {
     lr2021_iq_queue queue;
     atomic_bool stop, done, capture_stop, capture_done;
+    /* Set once whoever waits on this session stopped waiting (a bounded
+       wait ran out): its holder may be gone, so no more consumer calls. */
+    atomic_bool orphaned;
+    /* The session pointer and the owner task each hold one; the last to let
+       go frees it, so a session given up on is freed by its owner later. */
+    atomic_int refs;
     lr20xx_stream_result_t result;
     esp_err_t error, capture_error;
     uint32_t hz;
@@ -102,6 +108,41 @@ static inline bool wide_want(void) { return atomic_load(&wide_on) || atomic_load
 #define CHIP_SHIFT     6u         /* CIC gain 64: int8 in, int8 out */
 /* Weak: host tests link the session against a fake stream with no chip path. */
 #pragma weak lr20xx_chip_ddc_live
+#pragma weak lr20xx_stream_live_cancel
+/* Bounded waits. A capture asked to stop ends within a poll, or within
+   LR20XX_LIVE_IDLE_US when no samples come; these only run out when the
+   radio driver itself is stuck. Then the session is given up instead of
+   freezing whoever stops it: on 11-25 a UI-owned stop waited forever and the
+   UI stall watchdog aborted. The owner's is the shorter, so a stop normally
+   finds it done. */
+#define CAPTURE_WAIT_US 1500000
+#define STOP_WAIT_US    2000000
+static bool wait_flag(atomic_bool *flag, int64_t us)
+{
+    const int64_t until = esp_timer_get_time() + us;
+    while (!atomic_load_explicit(flag, memory_order_acquire)) {
+        if (esp_timer_get_time() >= until) return false;
+        vTaskDelay(1);
+    }
+    return true;
+}
+/* Sessions given up on whose owner task still runs. A new session would
+   fight it for the radio, and its late restore of the LoRa setup would
+   undo the new one's, so starts are refused until it ends. */
+static atomic_uint s_orphans;
+static void set_orphaned(session_t *s)
+{
+    if (!atomic_exchange(&s->orphaned, true)) atomic_fetch_add(&s_orphans, 1);
+}
+static void session_put(session_t *s)
+{
+    if (atomic_fetch_sub_explicit(&s->refs, 1, memory_order_acq_rel) != 1) return;
+    const bool orphan = atomic_load(&s->orphaned);
+    heap_caps_free(s->wide);
+    heap_caps_free(s->dsp);
+    heap_caps_free(s);
+    if (orphan) atomic_fetch_sub(&s_orphans, 1);
+}
 void lr_wf_set_wide_chip(bool on) { atomic_store(&wide_chip, on); if (on) atomic_store(&chip_failed, false); }
 bool lr_wf_wide_chip_on(void) { return atomic_load(&wide_chip); }
 static inline bool chip_usable(void)
@@ -515,7 +556,24 @@ static void owner(void *arg)
         /* Chip wide arrives as narrow-shaped 125k blocks. */
         const int why = s->run_wide && !s->run_chip ? pump_wide(s, &confirmed) : pump_narrow(s, &confirmed);
         atomic_store(&s->capture_stop, true);
-        while (!atomic_load_explicit(&s->capture_done, memory_order_acquire)) vTaskDelay(1);
+        /* The sink alone cannot stop a capture that gets no samples. */
+        if (lr20xx_stream_live_cancel) lr20xx_stream_live_cancel();
+        if (!wait_flag(&s->capture_done, CAPTURE_WAIT_US)) {
+            /* The capture is stuck in the driver. Report the session as
+               failed now, so a stop does not wait on it, but keep s (the
+               capture still writes into it) until the capture returns. */
+            atomic_store(&st.active, false);
+            if (s->run_wide) lr_span_end();
+            if (!atomic_load(&s->orphaned) && s->consume) s->consume(s->ctx, NULL, 0, false);
+            tap_out(s->hz, NULL, 0);
+            if (confirmed) { lr_spec_end(); confirmed = false; }
+            s->error = ESP_ERR_TIMEOUT;
+            set_orphaned(s);
+            atomic_store_explicit(&s->done, true, memory_order_release);
+            ESP_LOGW("lr_wf", "capture did not stop in %d ms: session given up", CAPTURE_WAIT_US / 1000);
+            while (!atomic_load_explicit(&s->capture_done, memory_order_acquire)) vTaskDelay(pdMS_TO_TICKS(10) ? pdMS_TO_TICKS(10) : 1);
+            goto restore;
+        }
         atomic_store(&st.active, false);
         if (s->result.overflows) atomic_fetch_add(&st.fifo_overflows, s->result.overflows);
         if (s->capture_error == ESP_ERR_INVALID_SIZE) atomic_fetch_add(&st.fifo_full, 1);
@@ -546,7 +604,8 @@ static void owner(void *arg)
                 atomic_fetch_add(&s->lost_pairs, s->wide->meta[i & (WIDE_SLOTS - 1)].bytes / 2);
         }
         if (s->run_wide) lr_span_end();
-        if (s->consume) s->consume(s->ctx, NULL, 0, false);
+        /* Not to a holder that gave this session up: its ctx may be gone. */
+        if (!atomic_load(&s->orphaned) && s->consume) s->consume(s->ctx, NULL, 0, false);
         tap_out(s->hz, NULL, 0);
         const esp_err_t recovery = s->run_chip ? s->chip_result.recovery_error : s->result.recovery_error;
         /* Chip wide that never delivered a pair (the radio refused the
@@ -577,8 +636,10 @@ static void owner(void *arg)
 restore:
     if (confirmed) lr_spec_end();
     esp_err_t restored = ls_lora_configure(&saved);
-    if (restored != ESP_OK) s->error = restored;
+    /* Once given up, the reported result is final. */
+    if (restored != ESP_OK && !atomic_load(&s->orphaned)) s->error = restored;
     atomic_store_explicit(&s->done, true, memory_order_release);
+    session_put(s);
     vTaskDelete(NULL);
 }
 /* start, stop and the stats readers run on different tasks (RF LAB, the
@@ -586,7 +647,8 @@ restore:
    while another task reads or replaces it. A flag and a 1-tick sleep, not a
    FreeRTOS mutex, so the host tests' task shims still stand in. Never taken
    by the owner or capture tasks, so a stop waiting on done under it cannot
-   deadlock. */
+   deadlock; and that wait is bounded (STOP_WAIT_US), so a stuck driver
+   cannot hold every caller behind it. */
 static atomic_bool s_session_busy;
 static void session_lock(void)
 {
@@ -624,15 +686,32 @@ static void get_stats_locked(lr_wf_stats *out)
 static void stop_locked(lr_wf_stats *out)
 {
     if (out) *out = (lr_wf_stats){0};
-    if (!session) return;
-    atomic_store(&session->stop, true);
-    while (!atomic_load_explicit(&session->done, memory_order_acquire)) vTaskDelay(1);
-    if (out) get_stats_locked(out);
-    heap_caps_free(session->wide);
-    heap_caps_free(session->dsp);
-    heap_caps_free(session); session = NULL;
+    session_t *s = session;
+    if (!s) return;
+    atomic_store(&s->stop, true);
+    if (wait_flag(&s->done, STOP_WAIT_US)) {
+        if (out) get_stats_locked(out);
+    } else {
+        /* The owner is stuck in the radio driver. Give the session up
+           rather than hold s_session_busy (and every caller behind it)
+           forever: no more consumer calls, the owner frees it when it ends,
+           and new starts are refused until then. */
+        set_orphaned(s);
+        if (out) { get_stats_locked(out); out->done = true; out->error = ESP_ERR_TIMEOUT; }
+        ESP_LOGW("lr_wf", "stop: owner did not finish in %d ms: session given up", STOP_WAIT_US / 1000);
+    }
+    session = NULL;
+    session_put(s);
 }
 void lr_wf_stop(void) { lr_wf_stop_stats(NULL); }
+bool lr_wf_stop_if(lr_wf_consumer_t consume, void *ctx)
+{
+    session_lock();
+    const bool mine = session && session->consume == consume && session->ctx == ctx;
+    if (mine) stop_locked(NULL);
+    session_unlock();
+    return mine;
+}
 void lr_wf_stop_stats(lr_wf_stats *out)
 {
     session_lock();
@@ -666,12 +745,14 @@ static esp_err_t start_locked(uint32_t hz, lr_wf_consumer_t consume, void *ctx)
         !ls_lora_packet_rx_hz_ok(ls_lora_caps(), hz - (uint32_t)atomic_load(&wide_offset)))
         return ESP_ERR_INVALID_ARG;
     if (ls_lora_chip() != LS_LORA_CHIP_LR20XX) return ESP_ERR_NOT_SUPPORTED;
-    if (lr20xx_stream_source2_active() || ls_lora_fsk_active() || ls_lora_scanning())
+    if (lr20xx_stream_source2_active() || ls_lora_fsk_active() || ls_lora_scanning() ||
+        atomic_load(&s_orphans))
         return ESP_ERR_INVALID_STATE;
     session_t *s = heap_caps_calloc(1, sizeof(*s), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s) return ESP_ERR_NO_MEM;
     atomic_init(&s->stop, false); atomic_init(&s->done, false);
     atomic_init(&s->capture_stop, false); atomic_init(&s->capture_done, true);
+    atomic_init(&s->orphaned, false); atomic_init(&s->refs, 2);
     s->hz = hz; s->consume = consume; s->ctx = ctx;
     atomic_init(&s->lost_pairs, 0); atomic_init(&s->gaps, 0); atomic_init(&s->retune_hz, 0);
     if (!lr2021_iq_queue_init(&s->queue) ||

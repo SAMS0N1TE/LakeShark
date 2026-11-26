@@ -799,7 +799,11 @@ static void mic_release(void)
 {
     ls_music_mic_stop();
 #ifdef ESP_PLATFORM
-    if(s_mic_task && !atomic_load(&s_mic_busy)) {
+    /* Not busy is not enough: the worker clears s_mic_busy and then still runs
+       back to its notify wait, maybe on the other core. Only Blocked (parked
+       in that wait; eTaskGetState says Running while any core runs it) is safe
+       to delete and free; otherwise it stays for the next close. */
+    if(s_mic_task && !atomic_load(&s_mic_busy) && eTaskGetState(s_mic_task)==eBlocked) {
         vTaskDelete(s_mic_task);
         s_mic_task=NULL;
         heap_caps_free(s_mic_stack);heap_caps_free(s_mic_tcb);

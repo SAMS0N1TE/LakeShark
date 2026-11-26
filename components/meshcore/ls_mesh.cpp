@@ -1276,13 +1276,23 @@ static void mesh_objects_free()
     psram_delete(s_rtc); psram_delete(s_ms);
 }
 
-/* Callers wait with small argument captures; only the owner touches packets. */
+/* Callers wait with small argument captures; only the owner touches packets.
+   A call the owner has not picked up within MESH_CALL_WAIT_US is withdrawn
+   and refused: the owner can sit in a radio call for as long as another
+   radio holds the chip, and a UI caller waiting on it without limit froze
+   the screen until the stall watchdog rebooted the board. A call the owner
+   has started is always waited out, because it writes into the caller's
+   stack. */
+#define MESH_CALL_WAIT_US 500000
 static portMUX_TYPE s_call_lock = portMUX_INITIALIZER_UNLOCKED;
 static struct MeshCall {
     void (*run)(void *);
     void *arg;
-    bool busy, done;
+    bool busy, done, started;
 } s_calls[4];
+
+static void mesh_stats_publish();
+static void mesh_stats_clear();
 
 template <class F> static int mesh_call(F fn, int refused = ESP_ERR_INVALID_STATE)
 {
@@ -1294,19 +1304,29 @@ template <class F> static int mesh_call(F fn, int refused = ESP_ERR_INVALID_STAT
         slot = i;
         s_calls[i] = { [](void *arg) {
             auto *r = static_cast<Request *>(arg); r->result = (*r->fn)();
-        }, &req, true, false };
+        }, &req, true, false, false };
         break;
     }
     portEXIT_CRITICAL(&s_call_lock);
     if (slot < 0) return refused;
     xTaskNotifyGive(s_task);
+    const int64_t give_up = esp_timer_get_time() + MESH_CALL_WAIT_US;
     for (;;) {
+        bool withdrawn = false;
         portENTER_CRITICAL(&s_call_lock);
-        bool done = s_calls[slot].done;
+        const bool done = s_calls[slot].done;
         if (done) s_calls[slot].busy = false;
+        else if (!s_calls[slot].started && (s_stop || esp_timer_get_time() >= give_up)) {
+            s_calls[slot].busy = false;
+            withdrawn = true;
+        }
         portEXIT_CRITICAL(&s_call_lock);
         if (done) return req.result;
-        vTaskDelay(pdMS_TO_TICKS(1));
+        if (withdrawn) {
+            ESP_LOGW(TAG, "mesh task busy: call withdrawn");
+            return refused;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1) ? pdMS_TO_TICKS(1) : 1);
     }
 }
 
@@ -1314,10 +1334,13 @@ static void mesh_calls_service()
 {
     for (auto &call : s_calls) {
         portENTER_CRITICAL(&s_call_lock);
-        bool pending = call.busy && !call.done;
+        const bool pending = call.busy && !call.done && !call.started;
+        if (pending) call.started = true;
         portEXIT_CRITICAL(&s_call_lock);
         if (!pending) continue;
         call.run(call.arg);
+        /* Before done: a caller that changed state reads it back at once. */
+        mesh_stats_publish();
         portENTER_CRITICAL(&s_call_lock);
         call.done = true;
         portEXIT_CRITICAL(&s_call_lock);
@@ -1968,6 +1991,7 @@ static void mesh_task(void *arg)
             s_was_held = true;
             msglog_service();
             peerlog_service();
+            mesh_stats_publish();
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10) ? pdMS_TO_TICKS(10) : 1);
             continue;
         }
@@ -2027,6 +2051,7 @@ static void mesh_task(void *arg)
 
         /* Neither backend has a direct P4 IRQ wake path. Block until work
            arrives or the configuration-derived RX polling budget expires. */
+        mesh_stats_publish();
         ulTaskNotifyTake(pdTRUE, mesh_wait_ticks());
     }
     s_mesh->inspect_cancel();
@@ -2132,6 +2157,7 @@ extern "C" esp_err_t ls_mesh_start(void)
                      SIGHT_MAX))
         ls_track_set_waypoint_source(sight_waypoints);
 
+    mesh_stats_clear();
     s_stop = false;
     s_task = xTaskCreateStaticPinnedToCore(mesh_task, "meshcore", MESH_TASK_STACK,
         nullptr, 4, s_mesh_stack, &s_mesh_tcb, 0);
@@ -2187,6 +2213,7 @@ extern "C" esp_err_t ls_mesh_stop(void)
     mesh_objects_free();
     memset(s_delivery, 0, sizeof(s_delivery));
     s_task = nullptr;
+    mesh_stats_clear();
     const int64_t t4 = esp_timer_get_time();
     /* TURN OFF in RADIOS read as laggy: say where a slow stop went. */
     if (t4 - t0 > 300000)
@@ -2394,15 +2421,48 @@ extern "C" bool ls_mesh_tx_enabled(void)
     return s_radio && s_radio->txEnabled();
 }
 
+static portMUX_TYPE s_stats_lock = portMUX_INITIALIZER_UNLOCKED;
+static ls_mesh_stats_t s_stats_pub;
+
+static void mesh_stats_fill(ls_mesh_stats_t *out);
+
+/* Owner only: what other tasks read. */
+static void mesh_stats_publish()
+{
+    ls_mesh_stats_t st;
+    mesh_stats_fill(&st);
+    portENTER_CRITICAL(&s_stats_lock);
+    s_stats_pub = st;
+    portEXIT_CRITICAL(&s_stats_lock);
+}
+
+static void mesh_stats_clear()
+{
+    portENTER_CRITICAL(&s_stats_lock);
+    memset(&s_stats_pub, 0, sizeof(s_stats_pub));
+    portEXIT_CRITICAL(&s_stats_lock);
+}
+
 extern "C" void ls_mesh_get_stats(ls_mesh_stats_t *out)
 {
-    if (out) memset(out, 0, sizeof(*out));
-    if (s_stop && s_task && xTaskGetCurrentTaskHandle() != s_task) return;
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
     if (s_task && xTaskGetCurrentTaskHandle() != s_task) {
-        mesh_call([&]() -> int { ls_mesh_get_stats(out); return 0; });
+        /* Other tasks copy what the owner last published and never wait on
+           it. The status bar asks every frame; it used to queue a call and
+           wait for the owner, and an owner held up on the radio froze the
+           UI on RADIOS until the stall watchdog rebooted the board. */
+        if (s_stop) return;
+        portENTER_CRITICAL(&s_stats_lock);
+        *out = s_stats_pub;
+        portEXIT_CRITICAL(&s_stats_lock);
         return;
     }
-    if (!out) return;
+    mesh_stats_fill(out);
+}
+
+static void mesh_stats_fill(ls_mesh_stats_t *out)
+{
     memset(out, 0, sizeof(*out));
     out->running     = s_task != nullptr && !s_stop;
     out->held        = s_radio_hold || s_radio_held;

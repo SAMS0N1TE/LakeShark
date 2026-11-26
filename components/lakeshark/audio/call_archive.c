@@ -477,6 +477,18 @@ unsigned call_archive_test_wakes(void) { return test_wakes; }
 LS_COLD void call_archive_init(void)
 {
     if (atomic_load(&ready)) return;
+    /* One initialiser: CALLS (UI task) and FM/P25 enter (app task) can both
+       arrive first after boot, and two would create call_sd in the one static
+       TCB. The loser waits a little for the winner instead. */
+    static atomic_int starting;
+    int idle = 0;
+    if (!atomic_compare_exchange_strong(&starting, &idle, 1)) {
+#ifdef ESP_PLATFORM
+        for (int i = 0; i < 100 && !atomic_load(&ready) && atomic_load(&starting); i++) vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+        return;
+    }
+    if (atomic_load(&ready)) { atomic_store(&starting, 0); return; }
     writers = allocate(sizeof(*writers) * CALL_INPUTS);
     recent = allocate(sizeof(*recent) * CALL_RECENT_MAX);
     scanning = allocate(sizeof(*scanning) * CALL_RECENT_MAX);
@@ -509,7 +521,9 @@ LS_COLD void call_archive_init(void)
         RELEASE(writers); RELEASE(recent); RELEASE(scanning);
         writers = NULL; recent = NULL; scanning = NULL;
         for (unsigned i = 0; i < CALL_INPUTS; ++i) { RELEASE(recorders[i].blocks); recorders[i].blocks = NULL; }
-        atomic_fetch_add(&errors, 1); return;
+        atomic_fetch_add(&errors, 1);
+        atomic_store(&starting, 0);         /* nothing was created: a later call may try again */
+        return;
     }
     /* Inventory/retention is independent of a potentially cold FAT space
        scan. Neither an empty archive nor quiet decoder gates need it. */

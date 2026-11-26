@@ -447,8 +447,8 @@ static void not_listening(int *y)
     row(y, 1, warn, "NOT LISTENING");
     wrap(1, y, W - 2, LAP_ATTR(LAP_WHITE, LAP_BLACK), why[0] ? why : "Wi-Fi capture did not start");
     if (reason == LAP_CAPTURE_NO_TRANSPORT) {
-        wrap(1, y, W - 2, tip, "Wi-Fi capture needs the C6 forwarder firmware on the coprocessor. Install it once from the console:");
-        row(y, 3, LAP_ATTR(LAP_WHITE | LAP_BRIGHT, LAP_BLACK), "c6 flash /sdcard/lakeshark/c6/ls_c6_net.bin");
+        wrap(1, y, W - 2, tip, "Wi-Fi capture needs the C6 monitor firmware. The board installs it by itself a minute after it boots on Wi-Fi, or now from:");
+        row(y, 3, LAP_ATTR(LAP_WHITE | LAP_BRIGHT, LAP_BLACK), "SYSTEM > UPDATE > C6 RADIO FW > UPDATE");
     } else if (reason == LAP_CAPTURE_LINK_IN_USE) {
         wrap(1, y, W - 2, tip, "The board is on a Wi-Fi network and hopping would drop it. MORE > ALLOW LINK DROP, or stay on its channel.");
     } else if (reason == LAP_CAPTURE_BUSY) {
@@ -1172,7 +1172,7 @@ static void enter(void)
     pick_wanted = picking = reopen = false; pick_n = 0; marks_x = 1 << 14;
     lap_time(&t_open);
     start();
-    if (h <= 0 && reason == LAP_CAPTURE_NO_TRANSPORT) say(true, "Wi-Fi capture needs the C6 forwarder firmware");
+    if (h <= 0 && reason == LAP_CAPTURE_NO_TRANSPORT) say(true, "Wi-Fi capture needs the C6 monitor firmware: SYSTEM > UPDATE > C6");
 }
 static void leave(void)
 {
@@ -1185,6 +1185,6 @@ static void leave(void)
 /* RADIO_TX is for the LoRa mesh notice only (lap_mesh_send / lap_mesh_dm need
    it); nothing is ever transmitted on Wi-Fi, and nothing on LoRa until the
    owner chooses SEND TO in OPTIONS. */
-LAP_APP(.id = "wifi_watch", .name = "WIFI WATCH", .sub = "Wi-Fi alarms", .version = "1.2.0", .author = "LakeShark",
+LAP_APP(.id = "wifi_watch", .name = "WIFI WATCH", .sub = "Wi-Fi alarms", .version = "1.2.1", .author = "LakeShark",
         .icon = LAP_ICON_WAVE, .color = LAP_RED, .flags = LAP_CAP_RADIO_RX | LAP_CAP_RADIO_TX,
         .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch);

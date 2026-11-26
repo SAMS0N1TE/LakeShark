@@ -310,6 +310,17 @@ static void test_lora_mapping(void)
     CHECK(wd_radio_obs_lora(&o, p, j, WD_MESH_MESHCORE, -88, 910525000u, WD_RADIO_LORA));
     CHECK(!strcmp(o.name, "Ridge") && o.own_pos && fabs(o.lat - 43.4445) < 1e-6 && fabs(o.lon + 71.6473) < 1e-6);
     CHECK(o.addr[0] == 0x10 && o.addr[5] == 0x15 && !(o.tags & WD_T_INFRA));   /* a repeater is logged, not a target */
+    /* The same advert over one hop with 2-byte path hashes (path byte 0x41):
+       the path byte is size and count, not a byte length. */
+    {
+        uint8_t q[sizeof(p)];
+        q[0] = p[0]; q[1] = 0x41; q[2] = 0xAB; q[3] = 0xCD;
+        memcpy(q + 4, p + 3, (size_t)(j - 3));
+        CHECK(wd_radio_obs_lora(&o, q, j + 1, WD_MESH_MESHCORE, -88, 910525000u, WD_RADIO_LORA));
+        CHECK(!strcmp(o.name, "Ridge") && o.addr[0] == 0x10);
+        q[1] = 0xC1;                                    /* hash size 4 is not valid */
+        CHECK(!wd_radio_obs_lora(&o, q, j + 1, WD_MESH_MESHCORE, -88, 910525000u, WD_RADIO_LORA));
+    }
     p[0] = 1 | 2 << 2;                                  /* a text message: no identity */
     CHECK(!wd_radio_obs_lora(&o, p, j, WD_MESH_MESHCORE, -88, 910525000u, WD_RADIO_LORA));
     /* LoRaWAN unconfirmed uplink from 26011BDA */

@@ -125,6 +125,22 @@ int32_t bh_bursts_due(const bh_bursts_t *b, uint32_t now_ms);
 int bh_bursts_delta(const bh_bursts_t *b);
 /* True when bursts come and go (not one steady carrier). */
 bool bh_bursts_bursty(const bh_bursts_t *b, uint32_t now_ms);
+/* The gap from one burst's start to the next over the last k gaps: the
+   median, and the shortest and longest in *lo / *hi (either may be NULL).
+   0 before two bursts. */
+uint32_t bh_bursts_gap(const bh_bursts_t *b, int k, uint32_t *lo, uint32_t *hi);
+
+/* ---- an SDR's spectrum line ---- */
+/* A line is n bins across rate_hz, the centre at bin n/2 (as lap_rx_spectrum
+   gives it). The bins within half_hz either side of a frequency off_hz from
+   the centre go in *lo..*hi; false when none of them are on the line. */
+bool bh_spec_window(int n, uint32_t rate_hz, int32_t off_hz, int32_t half_hz, int *lo, int *hi);
+/* The strongest bin in lo..hi, -1 none. *off_hz (may be NULL) is where it
+   is from the centre, placed between bins by a parabola through it and its
+   neighbours. */
+int bh_spec_peak(const float *db, int n, int lo, int hi, uint32_t rate_hz, int32_t *off_hz);
+/* The peak-hold trace: each bin falls decay_db a line, never under the line. */
+void bh_spec_hold(float *hold, const float *db, int n, float decay_db);
 
 /* ---- two receivers ---- */
 typedef struct {

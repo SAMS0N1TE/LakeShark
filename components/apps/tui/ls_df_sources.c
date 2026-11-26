@@ -20,6 +20,7 @@
 #include "ls_df.h"
 #include "ls_field.h"
 #include "ls_ble_heard.h"
+#include "ls_ble_names.h"
 #include "ls_wireless.h"
 #include "../../../main/ls_wifi.h"
 #include "ls_value.h"
@@ -433,8 +434,20 @@ bool ls_dfs_target_label(int i, char *label, size_t lcap, char *detail, size_t d
     lock(); const ls_dfs_t src = s.slot[0].source; unlock();
     if (src == LS_DFS_BLE && i >= 0 && i < LS_BLE_HEARD_MAX) {
         char a[20]; addr_text(s_ble[i].addr, a, sizeof(a));
-        snprintf(label, lcap, "%s", s_ble[i].name[0] ? s_ble[i].name : a);
-        snprintf(detail, dcap, "%s  %d dBm", a, s_ble[i].rssi);
+        /* no name in this advert: the one it gave before, else who made it
+           (ls_ble_names: cache reads; the address turned to shown order) */
+        const ls_ble_heard_t *h = &s_ble[i];
+        uint8_t be[6];
+        for (int k = 0; k < 6; k++) be[k] = h->addr[5 - k];
+        char nm[LS_BLE_NAMES_LEN] = "";
+        const int got = h->name[0] ? LS_BLE_LABEL_NONE
+                      : ls_ble_names_label(be, h->addr_type, (h->ad_have & 1) ? h->company : -1,
+                                           (h->ad_have & 2) ? h->uuid16 : -1, nm, sizeof(nm));
+        if (h->name[0]) snprintf(label, lcap, "%s", h->name);
+        else if (got == LS_BLE_LABEL_NAME) snprintf(label, lcap, "%s", nm);
+        else if (got == LS_BLE_LABEL_GUESS) snprintf(label, lcap, "%s %s", nm, a + 9);   /* "Apple, Inc. DD:EE:FF": two tell apart */
+        else snprintf(label, lcap, "%s", a);
+        snprintf(detail, dcap, "%s  %d dBm", a, h->rssi);
         return true;
     }
     if (src == LS_DFS_WIFI && i >= 0 && i < s_wsnap.ap_count) {

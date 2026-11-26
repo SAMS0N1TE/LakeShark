@@ -360,6 +360,14 @@ esp_err_t lr20xx_stream_live(const lr20xx_iq_config_t *config, lr20xx_iq_block_s
                              void *context, lr20xx_stream_result_t *result);
 /* Advisory ownership flag: direct diagnostics must not wait on a live owner. */
 bool lr20xx_stream_source2_active(void);
+/* Ends the live run in progress (either live stream or lr20xx_chip_ddc_live)
+   at its next poll. The sink alone cannot stop a run that gets no samples: it
+   is only called when a batch arrives. A run that has not started yet clears
+   this when it starts, so a late cancel never ends someone else's run. */
+void lr20xx_stream_live_cancel(void);
+/* A live run that reads no samples for this long ends with ESP_ERR_TIMEOUT,
+   so its owner's wait for it always ends (the 11-25 blank-FM freeze). */
+#define LR20XX_LIVE_IDLE_US 250000
 
 /* Programs on the LR2021's own CPU (lr2021-re by Alex Beal, lr2021_pram_image.h).
  * Both calls hold the radio for their whole run, upload the program, and end

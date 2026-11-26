@@ -4,6 +4,7 @@
 #include "ls_field.h"
 #include "ls_radio_select.h"
 #include "lr_iq_spectrum.h"
+#include "lr_wf_session.h"
 
 #include <string.h>
 
@@ -212,7 +213,8 @@ bool p25_program_request_reload_path(const char *path)
    fakes - in that order, because leaving is what gives a held radio back. */
 p25_state_t P25;
 uint32_t s_tune_freq_hz;
-static bool g_lr, g_rtl;
+static bool g_lr, g_rtl, g_stream_active;
+bool lr20xx_stream_source2_active(void) { return g_stream_active; }
 static ls_rsel_radio_t g_p25_radio, g_fm_radio;
 ls_rsel_radio_t ls_rsel_effective(ls_rsel_job_t job)
 { return job == LS_RSEL_P25 ? g_p25_radio : g_fm_radio; }
@@ -227,17 +229,27 @@ const ls_lora_cfg_t *ls_lora_cfg(void)
 {
     static const ls_lora_cfg_t cfg = {.freq_hz = 433920000}; return &cfg;
 }
-esp_err_t lr_wf_start(uint32_t hz)
+/* The waterfall starts its consumer-less session under its own tag and
+   stops only that one (lr_wf_stop_if). */
+static void *g_iq_ctx;
+esp_err_t lr_wf_start_consumer(uint32_t hz, lr_wf_consumer_t consume, void *ctx)
 {
     ++g_radio_calls;
-    if (g_iq_hz != hz) { ++g_iq_starts; g_iq_hz = hz; lr_spec_begin(hz); }
+    LS_CHECK(!consume && ctx);
+    if (g_iq_hz != hz) { ++g_iq_starts; g_iq_hz = hz; g_iq_ctx = ctx; lr_spec_begin(hz); }
     return ESP_OK;
 }
-void lr_wf_stop(void) { ++g_radio_calls; ++g_iq_stops; g_iq_hz = 0; lr_spec_end(); }
+bool lr_wf_stop_if(lr_wf_consumer_t consume, void *ctx)
+{
+    ++g_radio_calls;
+    if (consume || !g_iq_hz || ctx != g_iq_ctx) return false;
+    ++g_iq_stops; g_iq_hz = 0; g_iq_ctx = NULL; lr_spec_end();
+    return true;
+}
 static void fresh(void)
 {
     ls_wf_source_release();
-    lr_spec_end(); g_lr = g_rtl = false; g_iq_starts = g_iq_stops = 0; g_iq_hz = 0;
+    lr_spec_end(); g_lr = g_rtl = g_stream_active = false; g_iq_starts = g_iq_stops = 0; g_iq_hz = 0;
     P25.lr_iq_active = false;
     g_p25_radio = g_fm_radio = LS_RSEL_SDR_RTL;
     ls_wf_source_select(LS_WF_SRC_AUTO);
@@ -881,6 +893,17 @@ LS_CASE(lr_narrow_band_is_iq_wide_band_is_sweep)
     ls_wf_source_lora_band(433000000, 434000000); ls_wf_source_pump();
     LS_EQ_INT(1, g_iq_stops); LS_EQ_INT(1, g_begins);
     LS_EQ_STR("LR SWEEP", ls_wf_source_name());
+}
+/* A live I/Q capture holds the LR2021's SPI lock for its whole run: a band
+   sweep started then would block the UI task on it. It waits instead. */
+LS_CASE(lr_band_sweep_waits_while_a_live_iq_capture_holds_the_chip)
+{
+    fresh(); g_lr = true; g_stream_active = true;
+    ls_wf_source_lora_band(433000000, 434000000); ls_wf_source_pump();
+    LS_EQ_INT(0, g_begins); LS_CHECK(!g_hold_asked);
+    LS_EQ_INT(LS_WF_IDLE_BUSY, ls_wf_source_idle());
+    g_stream_active = false; ls_wf_source_pump();
+    LS_EQ_INT(1, g_begins);
 }
 LS_CASE(lr_session_tap_never_starts_or_stops_decoder_capture)
 {

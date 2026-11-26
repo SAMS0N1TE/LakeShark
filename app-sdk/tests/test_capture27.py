@@ -144,8 +144,8 @@ class Capture27(unittest.TestCase):
     def test_handheld_without_transport_says_how(self):
         text,_=self.run_tap('',landscape=False,LAPSIM_CAPTURE_NO_TRANSPORT='1')
         self.assertIn('WIFI n/a 0',text)
-        self.assertIn('C6 forwarder',text)
-        self.assertIn('c6 flash /sdcard/lakeshark/c6/ls_c6_net.bin',text)
+        self.assertIn('C6 monitor firmware',text)
+        self.assertIn('SYSTEM > UPDATE > C6 RADIO FW',text)
         text,_=self.run_tap('60:key=i',landscape=False,LAPSIM_CAPTURE_NO_TRANSPORT='1')
         self.assertIn('WI-FI 802.11   NOT AVAILABLE',text)
         self.assertIn('BLUETOOTH LE   RUNNING',text)

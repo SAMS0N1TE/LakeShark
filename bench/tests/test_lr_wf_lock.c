@@ -72,3 +72,43 @@ LS_CASE(reader_and_starter_wait_for_a_stop_in_progress)
     lr_wf_stop();
     LS_CHECK(session == NULL);
 }
+
+static lr_wf_stats stop_stats;
+static void *stopper_stats(void *arg) { (void)arg; lr_wf_stop_stats(&stop_stats); atomic_store(&stop_done, true); return NULL; }
+
+/* An owner that never finishes (stuck in the radio driver): the stop gives
+   up after STOP_WAIT_US instead of holding the lock, and every caller behind
+   it, forever. The session is not freed under the owner; starts are refused
+   until that owner ends, and it frees the session then. */
+LS_CASE(stop_gives_up_on_a_stuck_owner_and_the_owner_frees_it_later)
+{
+    LS_EQ_INT(ESP_OK, lr_wf_start(915000000));
+    session_t *s = session;
+    LS_CHECK(s != NULL);
+    atomic_store(&stop_done, false); atomic_store(&read_done, false);
+    pthread_t a, b;
+    pthread_create(&a, NULL, stopper_stats, NULL);
+    nap_ms(20);
+    LS_CHECK(!atomic_load(&stop_done));
+    ls_shim_time_advance(STOP_WAIT_US + 1000);   /* the host clock moves only when told */
+    pthread_join(a, NULL);
+    LS_CHECK(atomic_load(&stop_done));
+    LS_CHECK(stop_stats.done); LS_EQ_INT(ESP_ERR_TIMEOUT, stop_stats.error);
+    LS_CHECK(session == NULL);
+    LS_CHECK(atomic_load(&s->orphaned));
+    LS_CHECK(atomic_load(&s->stop));
+    /* The lock is free again: readers return at once. */
+    pthread_create(&b, NULL, reader, NULL);
+    pthread_join(b, NULL);
+    LS_CHECK(atomic_load(&read_done));
+    /* The stuck owner still holds the radio: no new session over it. */
+    LS_EQ_INT(ESP_ERR_INVALID_STATE, lr_wf_start(916000000));
+    /* It ends at last (owner's exit: done, then its reference). */
+    atomic_store_explicit(&s->done, true, memory_order_release);
+    session_put(s);
+    LS_EQ_UINT(0, atomic_load(&s_orphans));
+    LS_EQ_INT(ESP_OK, lr_wf_start(916000000));
+    atomic_store_explicit(&session->done, true, memory_order_release);
+    lr_wf_stop();
+    LS_CHECK(session == NULL);
+}

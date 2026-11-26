@@ -6,6 +6,7 @@
 
 #include "ls_test.h"
 #include "bh_core.h"
+#include "bh_hunt.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -437,4 +438,63 @@ LS_CASE(the_boards_own_wifi_is_not_a_strong_signal)
     const int n = bh_findings(&H, 120000, F, BH_MAX_FIND);
     dump(n);
     for (int i = 0; i < n; i++) LS_CHECK_MSG(!(F[i].khz >= 2402000 && F[i].kind == BH_F_STRONG), "%s", F[i].title);
+}
+
+/* HUNT on a frequency: a remote keyed every 2 s for 300 ms, read ten times a
+   second (an SDR's spectrum lines). The burst timing gives count, length and
+   the median gap, and one missed burst does not move the median. */
+LS_CASE(hunt_burst_timing_median_gap)
+{
+    bh_bursts_t b;
+    bh_bursts_init(&b, -700);
+    uint32_t t = 0;
+    for (int k = 0; k < 8; k++) {
+        const bool missed = k == 5;
+        for (int r = 0; r < 20; r++, t += 100) {
+            const bool on = !missed && r < 4;
+            bh_bursts_add(&b, on ? -400 : -700, -1, t);
+        }
+    }
+    LS_CHECK_MSG(b.total == 7, "%u bursts", (unsigned)b.total);
+    LS_CHECK_MSG(b.b[b.n - 1].dur_ms == 300, "last %u ms", (unsigned)b.b[b.n - 1].dur_ms);
+    uint32_t lo = 0, hi = 0;
+    const uint32_t med = bh_bursts_gap(&b, 5, &lo, &hi);
+    LS_CHECK_MSG(med == 2000 && lo == 2000 && hi == 4000, "median %u (%u-%u)", (unsigned)med, (unsigned)lo, (unsigned)hi);
+    bh_bursts_t one;
+    bh_bursts_init(&one, -700);
+    bh_bursts_add(&one, -400, -1, 0);
+    bh_bursts_add(&one, -700, -1, 100);
+    LS_CHECK(bh_bursts_gap(&one, 5, NULL, NULL) == 0);
+}
+
+/* The SDR sits 250 kHz above the target (its centre spike out of the way):
+   the window around the target never reaches the centre bin, the peak is
+   found between bins, and the hold trace falls only when lines come. */
+LS_CASE(hunt_spectrum_window_peak_hold)
+{
+    enum { N = 256 };
+    const uint32_t rate = 1000000;
+    float db[N], hold[N];
+    for (int i = 0; i < N; i++) db[i] = -80.0f;
+    db[N / 2] = -10.0f;                         /* the DC spike */
+    int lo = 0, hi = 0;
+    LS_CHECK(bh_spec_window(N, rate, -250000, 125000, &lo, &hi));
+    LS_CHECK_MSG(lo == 32 && hi == 96, "window %d..%d", lo, hi);
+    LS_CHECK(hi < N / 2);
+    /* a signal 18 kHz under the target: bins 59 and 60 nearly level */
+    const int32_t sig = -250000 - 18000;
+    const float bin = (float)rate / N;
+    const float pos = (float)N / 2 + (float)sig / bin;  /* 59.39 */
+    db[59] = -40.0f; db[60] = -41.5f; db[58] = -55.0f; db[61] = -60.0f;
+    int32_t off = 0;
+    const int pk = bh_spec_peak(db, N, lo, hi, rate, &off);
+    LS_CHECK_MSG(pk == 59, "peak bin %d (%.2f)", pk, (double)pos);
+    LS_CHECK_MSG(off > sig - 3000 && off < sig + 3000, "peak at %d Hz, signal %d", (int)off, (int)sig);
+    LS_CHECK(!bh_spec_window(N, rate, -900000, 10000, &lo, &hi));
+    for (int i = 0; i < N; i++) hold[i] = db[i];
+    db[59] = -80.0f;
+    bh_spec_hold(hold, db, N, 0.5f);
+    LS_CHECK(hold[59] == -40.5f);
+    bh_spec_hold(hold, db, N, 0.5f);
+    LS_CHECK(hold[59] == -41.0f && hold[0] == -80.0f);
 }

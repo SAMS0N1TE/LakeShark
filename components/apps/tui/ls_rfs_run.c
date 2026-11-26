@@ -403,6 +403,11 @@ static void reset_heat(float cell_m, int nch)
 
 /* --------------------------------------------------------------- start -- */
 
+/* RF SURVEY's LR session has no consumer: this tag tells it apart from the
+   waterfall's, so the release below stops only its own (lr_wf_stop_if). */
+static const char s_rfs_lr_tag;
+#define RFS_LR_TAG ((void *)&s_rfs_lr_tag)
+
 static void source_release(void)
 {
     if (w.dfs != LS_DFS_COUNT) { ls_dfs_stop_slot(0); w.dfs = LS_DFS_COUNT; }
@@ -412,7 +417,7 @@ static void source_release(void)
         ls_field_direct(false);
         w.field = false;
     }
-    if (w.lr) { lr_wf_stop(); w.lr = false; }
+    if (w.lr) { lr_wf_stop_if(NULL, RFS_LR_TAG); w.lr = false; }
     if (w.spec_on) { lr_spec_enable(false); w.spec_on = false; }
     if (w.wide_set) {
         lr_wf_set_wide(w.wide_saved.on, w.wide_saved.offset_hz);
@@ -668,7 +673,7 @@ static void take_lr(void)
     if (!w.lr || !w.lr_tuned) {
         const uint32_t hz = lr_centre_for(&w.set.plan.ch[next]);
         if (!w.spec_on) { if (!lr_spec_enable(true)) { finish(LS_TEXT(t_ls_rfs_run_lr_iq_memory_unavailable, "LR IQ memory unavailable")); return; } w.spec_on = true; }
-        if (lr_wf_start(hz) != ESP_OK) { finish(LS_TEXT(t_ls_rfs_run_lr_iq_session_failed, "LR IQ session failed")); return; }
+        if (lr_wf_start_consumer(hz, NULL, RFS_LR_TAG) != ESP_OK) { finish(LS_TEXT(t_ls_rfs_run_lr_iq_session_failed, "LR IQ session failed")); return; }
         w.lr = true; w.lr_tuned = hz; w.lr_seq = 0; w.lr_settle = 2;
         return;
     }
@@ -699,7 +704,7 @@ static void take_lr(void)
     for (int i = 0; i < w.set.plan.n; i++)
         if (!(w.got & (1u << i))) {
             const uint32_t hz = lr_centre_for(&w.set.plan.ch[i]);
-            if (lr_wf_start(hz) != ESP_OK) { finish("LR IQ retune failed"); return; }
+            if (lr_wf_start_consumer(hz, NULL, RFS_LR_TAG) != ESP_OK) { finish("LR IQ retune failed"); return; }
             w.lr_tuned = hz; w.lr_settle = 1;
             return;
         }

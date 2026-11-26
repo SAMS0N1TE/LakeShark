@@ -423,6 +423,22 @@ esp_err_t lr_wf_start(uint32_t hz)
     return ESP_OK;
 }
 void lr_wf_stop(void) { if (s_sim_iq_hz) { s_sim_iq_hz = 0; lr_spec_end(); } }
+/* The waterfall and RF SURVEY start tagged, consumer-less sessions. */
+#include "lr_wf_session.h"
+esp_err_t lr_wf_start_consumer(uint32_t hz, lr_wf_consumer_t consume, void *ctx)
+{
+    (void)ctx;
+    return consume ? ESP_ERR_NOT_SUPPORTED : lr_wf_start(hz);
+}
+bool lr_wf_stop_if(lr_wf_consumer_t consume, void *ctx)
+{
+    (void)ctx;
+    if (consume || !s_sim_iq_hz) return false;
+    lr_wf_stop();
+    return true;
+}
+/* No live I/Q capture holds a simulated LR2021. */
+bool lr20xx_stream_source2_active(void) { return false; }
 esp_err_t lr_wf_set_wide(bool on, int32_t offset_hz) { (void)on; (void)offset_hz; return ESP_OK; }
 void lr_wf_set_wide_chip(bool on) { (void)on; }
 #include "lr_wf_session.h"

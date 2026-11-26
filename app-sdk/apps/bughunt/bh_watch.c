@@ -311,8 +311,11 @@ const char *bhw_label(const bw_dev_t *d, char *buf, size_t cap)
 {
     bw_label(d, buf, cap);
     const bw_ad_t *a = &d->ad;
+    /* a name it gave once is kept by address (shared with every BLE app) */
+    if (a->name[0]) lap_ids_device_learn(d->addr, d->addr_type, a->name);
     if (a->name[0] || a->level) return buf;             /* its own name, or a tracker's kind */
-    const char *n = NULL;
+    const char *n = lap_ids_device(d->addr, d->addr_type);
+    if (n) { snprintf(buf, cap, "%s", n); return buf; }
     if (!strncmp(buf, "co 0x", 5)) n = bhl_get(BHID_COMPANY, a->company);
     else if (!strncmp(buf, "svc ", 4)) n = bhl_get(BHID_UUID, a->uuid16[0]);
     else if (!strcmp(buf, "(no name)") && !(d->addr_type & 1)) {

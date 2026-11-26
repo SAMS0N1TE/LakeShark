@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "api_version": "2.8",
+  "api_version": "2.9",
   "calls": [
     {
       "name": "l3_apply",
@@ -1413,10 +1413,25 @@
       "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
     },
     {
+      "name": "lap_ble_conn_info",
+      "kind": "function",
+      "signature": "int lap_ble_conn_info(int connection, lap_ble_conn_info_t *out)",
+      "doc": "Snapshot of a connected link: 0 and *out filled, LAP_IO_EAGAIN until LAP_BLE_CONNECTED, LAP_IO_ECLOSED, LAP_IO_EINVAL. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.9. Capability: none. Simulator: limited \u2014 Shared per-app queue with the synthetic peer: MTU 247 for apps that read with buffers over 20 bytes, long reads and notifications, pairing with a number check (code 123456), write without response. LAPSIM_SCRIPT bleauth=1, blepasskey=2|4|0, blesecreq=AUTHREQ, blereadlen=N, blenotifylen=N. Real pairing, bond storage and MTU/PHY values need a peer on the board.",
+      "header": "lakeshark_app.h",
+      "since": "2.9",
+      "capability": null,
+      "simulator": {
+        "status": "limited",
+        "reason": "Shared per-app queue with the synthetic peer: MTU 247 for apps that read with buffers over 20 bytes, long reads and notifications, pairing with a number check (code 123456), write without response. LAPSIM_SCRIPT bleauth=1, blepasskey=2|4|0, blesecreq=AUTHREQ, blereadlen=N, blenotifylen=N. Real pairing, bond storage and MTU/PHY values need a peer on the board."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
       "name": "lap_ble_connect",
       "kind": "function",
       "signature": "int lap_ble_connect(const uint8_t addr[6], uint8_t addr_type)",
-      "doc": "One additional GATT client; never borrows HID/head connections. 20-byte values (default MTU=23), 16 events, one procedure in flight. No new NimBLE host or task. Pairing-required errors are returned; bond keys stay private. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.4. Capability: none. Simulator: limited \u2014 Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests.",
+      "doc": "One additional GATT client; never borrows HID/head connections. 20-byte values (default MTU=23), 16 events, one procedure in flight. No new NimBLE host or task. Pairing-required errors are returned; bond keys stay private. API 2.9 adds pairing, longer values and connection info: see the end of this header. A read the peer refuses for missing pairing or encryption ends with error LAP_IO_EAUTH (2.8 firmware said LAP_IO_EIO). Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.4. Capability: none. Simulator: limited \u2014 Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests.",
       "header": "lakeshark_app.h",
       "since": "2.4",
       "capability": null,
@@ -1468,6 +1483,51 @@
       "simulator": {
         "status": "limited",
         "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
+      "name": "lap_ble_forget",
+      "kind": "function",
+      "signature": "int lap_ble_forget(int connection)",
+      "doc": "Delete the stored bond (keys) of this connection's peer. Returns an operation id; LAP_GATT_COMPLETE follows with error 0, or LAP_IO_EACCES when the peer is a saved board accessory (BLE HID). The link stays up. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.9. Capability: none. Simulator: limited \u2014 Shared per-app queue with the synthetic peer: MTU 247 for apps that read with buffers over 20 bytes, long reads and notifications, pairing with a number check (code 123456), write without response. LAPSIM_SCRIPT bleauth=1, blepasskey=2|4|0, blesecreq=AUTHREQ, blereadlen=N, blenotifylen=N. Real pairing, bond storage and MTU/PHY values need a peer on the board.",
+      "header": "lakeshark_app.h",
+      "since": "2.9",
+      "capability": null,
+      "simulator": {
+        "status": "limited",
+        "reason": "Shared per-app queue with the synthetic peer: MTU 247 for apps that read with buffers over 20 bytes, long reads and notifications, pairing with a number check (code 123456), write without response. LAPSIM_SCRIPT bleauth=1, blepasskey=2|4|0, blesecreq=AUTHREQ, blereadlen=N, blenotifylen=N. Real pairing, bond storage and MTU/PHY values need a peer on the board."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
+      "name": "lap_ble_pair",
+      "kind": "function",
+      "signature": "int lap_ble_pair(int connection, unsigned flags)",
+      "doc": "Pair or encrypt this connection. The board is keyboard plus display, so with LAP_BLE_PAIR_MITM the peer chooses passkey entry or a number check. Returns an operation id; LAP_BLE_PASSKEY events may follow, then one LAP_BLE_SECURITY event with that operation. A peer already bonded is encrypted with its stored keys. Only this connection is affected and the board never pairs on its own: a peer's own request arrives as LAP_BLE_SECURITY_REQUEST and is ignored unless the app calls this. After LAP_BLE_SECURITY with error 0, retry a read that failed with LAP_IO_EAUTH. Pairing may take up to 40 s while the user types. LAP_IO_EINVAL for unknown flags, EBUSY while another procedure runs, ECLOSED. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.9. Capability: none. Simulator: limited \u2014 Shared per-app queue with the synthetic peer: MTU 247 for apps that read with buffers over 20 bytes, long reads and notifications, pairing with a number check (code 123456), write without response. LAPSIM_SCRIPT bleauth=1, blepasskey=2|4|0, blesecreq=AUTHREQ, blereadlen=N, blenotifylen=N. Real pairing, bond storage and MTU/PHY values need a peer on the board.",
+      "header": "lakeshark_app.h",
+      "since": "2.9",
+      "capability": null,
+      "simulator": {
+        "status": "limited",
+        "reason": "Shared per-app queue with the synthetic peer: MTU 247 for apps that read with buffers over 20 bytes, long reads and notifications, pairing with a number check (code 123456), write without response. LAPSIM_SCRIPT bleauth=1, blepasskey=2|4|0, blesecreq=AUTHREQ, blereadlen=N, blenotifylen=N. Real pairing, bond storage and MTU/PHY values need a peer on the board."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
+      "name": "lap_ble_passkey",
+      "kind": "function",
+      "signature": "int lap_ble_passkey(int connection, int action, uint32_t value)",
+      "doc": "Answer a LAP_BLE_PASSKEY event. INPUT: value is the six-digit code. NUMCMP: value 1 accepts, 0 rejects. 0 when queued, LAP_IO_EINVAL, ECLOSED, EBUSY. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.9. Capability: none. Simulator: limited \u2014 Shared per-app queue with the synthetic peer: MTU 247 for apps that read with buffers over 20 bytes, long reads and notifications, pairing with a number check (code 123456), write without response. LAPSIM_SCRIPT bleauth=1, blepasskey=2|4|0, blesecreq=AUTHREQ, blereadlen=N, blenotifylen=N. Real pairing, bond storage and MTU/PHY values need a peer on the board.",
+      "header": "lakeshark_app.h",
+      "since": "2.9",
+      "capability": null,
+      "simulator": {
+        "status": "limited",
+        "reason": "Shared per-app queue with the synthetic peer: MTU 247 for apps that read with buffers over 20 bytes, long reads and notifications, pairing with a number check (code 123456), write without response. LAPSIM_SCRIPT bleauth=1, blepasskey=2|4|0, blesecreq=AUTHREQ, blereadlen=N, blenotifylen=N. Real pairing, bond storage and MTU/PHY values need a peer on the board."
       },
       "exported": true,
       "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
@@ -2428,6 +2488,21 @@
       "simulator": {
         "status": "limited",
         "reason": "Shared lease, copied advertisement and GATT queues with a synthetic peripheral. Board uses existing NimBLE host; pairing, coexistence and controller RAM need hardware tests."
+      },
+      "exported": true,
+      "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."
+    },
+    {
+      "name": "lap_gatt_write_cmd",
+      "kind": "function",
+      "signature": "int lap_gatt_write_cmd(int connection, uint16_t attribute, const void *data, size_t len)",
+      "doc": "Write without response (ATT write command), for serial-style characteristics. len <= mtu - 3. Returns an operation id; LAP_GATT_WRITTEN follows at once (the peer never confirms), with error LAP_IO_ELIMIT when len is over the MTU or LAP_IO_EBUSY when the radio has no buffer free. Pointer contract: Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer. Since API 2.9. Capability: none. Simulator: limited \u2014 Shared per-app queue with the synthetic peer: MTU 247 for apps that read with buffers over 20 bytes, long reads and notifications, pairing with a number check (code 123456), write without response. LAPSIM_SCRIPT bleauth=1, blepasskey=2|4|0, blesecreq=AUTHREQ, blereadlen=N, blenotifylen=N. Real pairing, bond storage and MTU/PHY values need a peer on the board.",
+      "header": "lakeshark_app.h",
+      "since": "2.9",
+      "capability": null,
+      "simulator": {
+        "status": "limited",
+        "reason": "Shared per-app queue with the synthetic peer: MTU 247 for apps that read with buffers over 20 bytes, long reads and notifications, pairing with a number check (code 123456), write without response. LAPSIM_SCRIPT bleauth=1, blepasskey=2|4|0, blesecreq=AUTHREQ, blereadlen=N, blenotifylen=N. Real pairing, bond storage and MTU/PHY values need a peer on the board."
       },
       "exported": true,
       "pointer_contract": "Synchronous input/output buffers may use the active callback stack; runtime retains no caller data buffer."

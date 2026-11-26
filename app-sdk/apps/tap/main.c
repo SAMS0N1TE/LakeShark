@@ -1215,7 +1215,7 @@ static const char *hint(int r)
     if (s->on && s->h <= 0 && s->reason == LAP_CAPTURE_BUSY) return "Another app holds this capture. Close it, then switch the source off and on.";
     if (r == R_WIFI && s->on && s->h <= 0) {
         if (s->reason == LAP_CAPTURE_NO_TRANSPORT)
-            return "Wi-Fi capture needs the C6 forwarder firmware on the coprocessor. Install it once from the console:";
+            return "Wi-Fi capture needs the C6 monitor firmware. The board installs it by itself a minute after it boots on Wi-Fi, or now from:";
         if (s->reason == LAP_CAPTURE_LINK_IN_USE)
             return "The board is on a Wi-Fi network and hopping would drop it. Allow that under CAPTURE > ALLOW LINK DROP, or stay on the link channel.";
     }
@@ -1225,7 +1225,7 @@ static const char *hint(int r)
 /* A console command that goes with the hint, on a line of its own. */
 static const char *hint_cmd(int r)
 {
-    return r == R_WIFI && src[r].on && src[r].h <= 0 && src[r].reason == LAP_CAPTURE_NO_TRANSPORT ? "c6 flash /sdcard/lakeshark/c6/ls_c6_net.bin" : NULL;
+    return r == R_WIFI && src[r].on && src[r].h <= 0 && src[r].reason == LAP_CAPTURE_NO_TRANSPORT ? "SYSTEM > UPDATE > C6 RADIO FW > UPDATE" : NULL;
 }
 /* Words of t across w columns from x at row *y, drawn between clip0 and
    clip1 (rows outside are counted, not drawn); *y moves past them. */
@@ -1785,7 +1785,7 @@ static void help_screen(void)
         "CAPTURE > CAPTURE TO CARD writes every frame to /sdcard/captures as it arrives, in files of the size chosen, keeping the newest few: a long capture is on the card even after the store has aged it out. W saves what is in the store: all, the displayed or the marked packets.", "",
         "FILE > OPEN A CAPTURE reads a pcapng or pcap file from /sdcard/captures. The radios stop while it is open and the title says FILE; LIVE goes back. A file larger than the store is shown a part at a time; its statistics cover all of it.", "",
         "Files are pcapng for Wireshark: 802.11 with radiotap, Bluetooth LE LL with PHDR and LoRaTap. Board decodes are text and are not written. Encrypted payloads are saved exactly as received. To a PC: lsterm's FILES panel (Ctrl-F, captures, G), or the console's sd get, or the card itself.", "",
-        "Wi-Fi capture on the T-Display needs the C6 forwarder firmware, installed once from the console:", " c6 flash /sdcard/lakeshark/c6/ls_c6_net.bin", "",
+        "Wi-Fi capture on the T-Display needs the C6 monitor firmware. The board installs it by itself after boot on Wi-Fi, or from:", " SYSTEM > UPDATE > C6 RADIO FW > UPDATE", "",
         "Bluetooth: advertising channels only. The controller reports no channel or CRC; files use advertising channel 37 and a zero CRC marked 'not checked'.", "",
         "The store keeps the newest 4096 packets or 1.5 MB, whichever fills first; older ones age out and are counted under SOURCES AND DROPS.", "",
         "Colouring rules, the first that matches (VIEW > COLOUR RULES):"};
@@ -2378,7 +2378,7 @@ static void enter(void)
     tz_us = now.unix > 0 ? (int64_t)((off + (off < 0 ? -30 : 30)) / 60 * 60) * 1000000 : 0;
     settings_load();
     for (int r = 0; r < R_COUNT; r++) { src[r].on = true; start(r); }
-    if (src[R_WIFI].h <= 0 && src[R_WIFI].reason == LAP_CAPTURE_NO_TRANSPORT) say(true, "Wi-Fi capture needs the C6 forwarder: tap WIFI");
+    if (src[R_WIFI].h <= 0 && src[R_WIFI].reason == LAP_CAPTURE_NO_TRANSPORT) say(true, "Wi-Fi capture needs the C6 monitor firmware: tap WIFI");
 }
 static void leave(void)
 {
@@ -2392,6 +2392,6 @@ static void leave(void)
     pk = NULL; arena = chunk = marks = sbuf = fbuf = NULL; view = NULL; lines = NULL; stats = NULL; arrive = NULL; fl.ent = NULL;
 }
 
-LAP_APP(.id = "tap", .name = "TAP", .sub = "packet sniffer", .version = "1.2.0", .author = "LakeShark",
+LAP_APP(.id = "tap", .name = "TAP", .sub = "packet sniffer", .version = "1.2.2", .author = "LakeShark",
         .icon = LAP_ICON_WAVE, .color = LAP_CYAN, .flags = LAP_CAP_RADIO_RX,
         .enter = enter, .leave = leave, .draw = draw, .key = key, .touch = touch);

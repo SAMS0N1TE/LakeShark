@@ -10,7 +10,7 @@
 #define LS_C6_SLOT_SIZE 0x1e0000u
 /* Match Hosted's host_performs_slave_ota example (fits one transport frame). */
 #define LS_C6_CHUNK 1400u
-#define LS_C6_DEFAULT_PATH "/sdcard/lakeshark/c6/network_adapter.bin"
+#define LS_C6_DEFAULT_PATH "/sdcard/lakeshark/c6/ls_c6_net.bin"
 
 typedef struct { char project[32], version[32]; } ls_c6_image_t;
 typedef int (*ls_c6_hash_fn)(const uint8_t *, size_t, uint8_t digest[32]);

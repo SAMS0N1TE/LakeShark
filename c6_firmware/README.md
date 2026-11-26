@@ -14,7 +14,7 @@ Bluetooth. This folder holds the firmware it needs: ESP-Hosted 2.12.9.
 
 ## First install
 
-No cable needed. After the P4 is flashed, the board updates its C6 by itself: SYSTEM > UPDATE > C6 RADIO FW > UPDATE, or `c6 update auto`. See [The C6 radio firmware](../docs/TDP4_FIRST_FLASH.md#the-c6-radio-firmware). A UART adapter is only for a C6 that no longer boots.
+No cable needed. The board installs the monitor image from `net/` by itself a minute after it starts on Wi-Fi; SYSTEM > UPDATE > C6 RADIO FW > UPDATE or `c6 update auto` runs it now. This folder's stock image is kept for recovery. See [The C6 radio firmware](../docs/TDP4_FIRST_FLASH.md#the-c6-radio-firmware). A UART adapter is only for a C6 that no longer boots.
 
 ## Update from the SD card
 

@@ -323,7 +323,7 @@ static void save_step(void)
 #define REC_SBUF 16384
 #define REC_LIST 256
 #define REC_FLUSH_MS 5000u
-#define REC_VERSION "1.3.0"
+#define REC_VERSION "1.3.1"
 enum { R_OFF, R_STARTING, R_ON, R_STOPPING, R_RETAIN };
 enum { J_NONE, J_MKDIR1, J_MKDIR2, J_LIST, J_HEAD, J_SHEAD, J_ROWS, J_SUM, J_RLIST, J_REMOVE };
 typedef struct { uint8_t magic, wifi, ble, only_fix, scan_s, keep, sort, pad; } rec_opt_t;
@@ -916,8 +916,8 @@ static void capture_note(int *y)
     wrap(0, y, IW, warn, "No frame capture: the list comes from scans, without BSSIDs or traffic.");
     wrap(0, y, IW, DIM, why[0] ? why : "Wi-Fi capture did not start");
     if (reason == LAP_CAPTURE_NO_TRANSPORT) {
-        wrap(0, y, IW, tip, "Wi-Fi capture needs the C6 forwarder firmware on the coprocessor. Install it once from the console:");
-        row(y, 2, TEXT, "c6 flash /sdcard/lakeshark/c6/ls_c6_net.bin");
+        wrap(0, y, IW, tip, "Wi-Fi capture needs the C6 monitor firmware. The board installs it by itself a minute after it boots on Wi-Fi, or now from:");
+        row(y, 2, TEXT, "SYSTEM > UPDATE > C6 RADIO FW > UPDATE");
     } else if (reason == LAP_CAPTURE_LINK_IN_USE) wrap(0, y, IW, tip, "The board is on a Wi-Fi network and hopping would drop it. MORE > ALLOW LINK DROP.");
     else if (reason == LAP_CAPTURE_BUSY) wrap(0, y, IW, tip, "Another app holds the Wi-Fi capture. Close it, then MORE > RESTART CAPTURE.");
 }
@@ -1609,7 +1609,7 @@ static void rec_tab(int y)
         if (ropt.only_fix && !sr_fix_fresh(&rec.fix, lap_millis())) wrap(0, &y, IW, fg(LAP_UI_WARN), "ONLY GPS FIX: waiting for a fix; nothing is taken in until then.");
         if (ropt.wifi && h <= 0) {
             wrap(0, &y, IW, fg(LAP_UI_WARN), "No frame capture: Wi-Fi rows need the BSSIDs beacons carry, so no access point is written.");
-            if (reason == LAP_CAPTURE_NO_TRANSPORT) row(&y, 2, TEXT, "c6 flash /sdcard/lakeshark/c6/ls_c6_net.bin");
+            if (reason == LAP_CAPTURE_NO_TRANSPORT) row(&y, 2, TEXT, "SYSTEM > UPDATE > C6 RADIO FW > UPDATE");
         }
         if (rec.ble_wait) wrap(0, &y, IW, fg(LAP_UI_WARN), "Bluetooth is busy elsewhere: waiting for the scanner.");
         wrap(0, &y, IW, FAINT, rec.svc ? "Keeps recording behind HOME. STOP here, or in SETTINGS > SERVICES."
@@ -2065,7 +2065,7 @@ static void enter(void)
     chan = 0;
     plan = PLAN_HOP13;
     start();
-    if (h <= 0 && reason == LAP_CAPTURE_NO_TRANSPORT) say(true, "scan only: frame capture needs the C6 forwarder");
+    if (h <= 0 && reason == LAP_CAPTURE_NO_TRANSPORT) say(true, "scan only: frame capture needs the C6 monitor firmware");
 }
 static void leave(void)
 {

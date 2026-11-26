@@ -11,6 +11,13 @@
 #include "ls_task_reap.h"
 #include "tui/ls_action.h"
 #include "tui/ls_value.h"
+#include "tui/ls_tui.h"
+#include "tui/ls_app.h"
+#include "tui/ls_notify.h"
+#include "tui/ls_tui_screen.h"
+#include "ls_nvs_safe.h"
+#include "nvs.h"
+#include "esp_log.h"
 #include "esp_console.h"
 #include "esp_heap_caps.h"
 #include "esp_hosted.h"
@@ -282,9 +289,13 @@ static ls_act_status_t start(const char *path, bool force, bool probe, bool rest
    Image from the card if one is there, else downloaded (Wi-Fi) to the card
    from the signed manifest at data.terminalbay.com/c6/. The whole file is
    on the card, sha256-checked against the signed manifest, before the first
-   byte goes to the C6; the install itself is start() above, unchanged. */
-#define C6_MANIFEST "https://data.terminalbay.com/c6/manifest.txt"
-#define C6_BIN_URL  "https://data.terminalbay.com/c6/network_adapter.bin"
+   byte goes to the C6; the install itself is start() above, unchanged.
+   The image is ESP-Hosted 2.12.9 with LakeShark's Wi-Fi monitor forwarder
+   (c6_firmware/net), so a C6 already on the stock 2.12.9 still counts as
+   out of date: it answers no forwarder ping, and WATCH and TAP need one. */
+#define C6_MANIFEST "https://data.terminalbay.com/c6/net.txt"
+#define C6_BIN_URL  "https://data.terminalbay.com/c6/ls_c6_net.bin"
+extern bool ls_hosted_promisc_present(void);
 
 static void auto_say(ls_c6_stage_t st, size_t sent, size_t size, const char *msg)
 {
@@ -364,7 +375,7 @@ static void auto_worker(void *arg)
     bool have_sd = target[0] != 0;
     if (!have_sd) {
         if (!ls_fetch_online()) {
-            auto_say(LS_C6_FAILED, 0, 0, "No Wi-Fi and no image on the SD card. Join Wi-Fi in SETTINGS, or copy network_adapter.bin to /sdcard/lakeshark/c6/. Nothing changed.");
+            auto_say(LS_C6_FAILED, 0, 0, "No Wi-Fi and no image on the SD card. Join Wi-Fi in SETTINGS, or copy ls_c6_net.bin to /sdcard/lakeshark/c6/. Nothing changed.");
             goto out;
         }
         man = heap_caps_calloc(1, 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -378,8 +389,10 @@ static void auto_worker(void *arg)
             goto out;
         }
     }
-    if (!strcmp(run, target)) { auto_say(LS_C6_IDLE, 0, 0, "C6 radio firmware is up to date"); goto out; }
-    if (!ls_c6_version_allowed(target, run, false)) {
+    if (!strcmp(run, target)) {
+        if (ls_hosted_promisc_present()) { auto_say(LS_C6_IDLE, 0, 0, "C6 radio firmware is up to date"); goto out; }
+        force = true; /* same version without the monitor forwarder: the LakeShark image replaces it */
+    } else if (!ls_c6_version_allowed(target, run, false)) {
         if (plain_version(run)) { auto_say(LS_C6_IDLE, 0, 0, "C6 radio firmware is newer than the bundled image; left alone"); goto out; }
         force = true; /* factory or unnumbered build: the bundled image replaces it */
     }
@@ -425,6 +438,84 @@ static ls_act_status_t auto_action(const ls_args_t *in, ls_val_t *out)
     (void)in; (void)out;
     return auto_start();
 }
+
+/* ---- At boot the C6 checks itself -----------------------------------------
+   A minute after boot, a C6 that does not answer the forwarder ping (factory
+   firmware, or the stock 2.12.9) gets the automatic update above, after a
+   banner. At most C6_AUTO_TRIES installs per board (NVS ls_c6/auto_n,
+   cleared once the forwarder answers), so a C6 that will not take the image
+   is not rewritten at every boot. Offline with no image on the card, it
+   waits for Wi-Fi and counts nothing. */
+#if LS_HAS_C6_OTA
+#define C6_BOOT_DELAY_S  60
+#define C6_ONLINE_WAIT_S 900
+#define C6_AUTO_TRIES    2
+static volatile bool s_note_pending;
+typedef struct { int8_t tries; bool write; } tries_io_t;
+static esp_err_t tries_nvs(void *ctx)
+{
+    tries_io_t *t = ctx;
+    nvs_handle_t h;
+    esp_err_t e = nvs_open("ls_c6", t->write ? NVS_READWRITE : NVS_READONLY, &h);
+    if (e != ESP_OK) { if (!t->write) t->tries = 0; return t->write ? e : ESP_OK; }
+    if (t->write) {
+        e = nvs_set_i8(h, "auto_n", t->tries);
+        if (e == ESP_OK) e = nvs_commit(h);
+    } else if (nvs_get_i8(h, "auto_n", &t->tries) != ESP_OK) t->tries = 0;
+    nvs_close(h);
+    return e;
+}
+static bool c6_notice(ls_notice_t *out)
+{
+    if (!__atomic_exchange_n(&s_note_pending, false, __ATOMIC_ACQ_REL)) return false;
+    snprintf(out->title, sizeof(out->title), "C6 RADIO");
+    snprintf(out->body, sizeof(out->body),
+             "Updating the Wi-Fi chip so WATCH and TAP work. Keep power on; the board restarts when done.");
+    out->hue = TUI_YELLOW;
+    out->accent = TUI_YELLOW;
+    out->steady = true;
+    out->notify_visible = true;
+    const ls_app_t *a = ls_app_by_id("update");
+    out->screen = a && a->screen ? ls_tui_screen_index_of(a->screen) : -1;
+    return true;
+}
+static void boot_worker(void *arg)
+{
+    (void)arg;
+    char run[32] = "", sd[32];
+    vTaskDelay(pdMS_TO_TICKS(C6_BOOT_DELAY_S * 1000));
+    if (version(NULL, run)) { ESP_LOGW("c6", "boot check: C6 version unreadable; left alone"); goto out; }
+    tries_io_t t = {0};
+    ls_nvs_run(tries_nvs, &t, 3072);
+    if (ls_hosted_promisc_present()) {
+        if (t.tries) { t.tries = 0; t.write = true; ls_nvs_run(tries_nvs, &t, 3072); }
+        goto out;
+    }
+    if (t.tries >= C6_AUTO_TRIES) {
+        ESP_LOGW("c6", "boot check: C6 %s has no monitor forwarder; %d automatic tries used, update by hand", run, t.tries);
+        goto out;
+    }
+    sd_image_version(sd);
+    for (int s = 0; !sd[0] && !ls_fetch_online(); s += 5) {
+        if (s >= C6_ONLINE_WAIT_S) goto out;
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+    ESP_LOGW("c6", "boot check: C6 %s has no monitor forwarder; updating it (try %d of %d)", run, t.tries + 1, C6_AUTO_TRIES);
+    __atomic_store_n(&s_note_pending, true, __ATOMIC_RELEASE);
+    vTaskDelay(pdMS_TO_TICKS(6000));            /* the banner first */
+    if (auto_start() == LS_ACT_OK) { t.tries++; t.write = true; ls_nvs_run(tries_nvs, &t, 3072); }
+    else ESP_LOGW("c6", "boot check: update did not start (busy); next boot tries again");
+out:
+    ls_task_retire_self();
+}
+static void boot_check_start(void)
+{
+    ls_notify_add_probe(c6_notice);
+    if (xTaskCreateWithCaps(boot_worker, "c6_boot", 6144, NULL, 2, NULL,
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS)
+        ESP_LOGW("c6", "boot check: no memory for its task");
+}
+#endif
 
 static bool state(ls_val_t *out)
 {
@@ -482,6 +573,9 @@ static ls_act_status_t inspect(const ls_args_t *in, ls_val_t *out)
 }
 void ls_c6_publish(void)
 {
+#if LS_HAS_C6_OTA
+    boot_check_start();
+#endif
     ls_value_publish("c6.stage", NULL, stage_value);
     ls_value_publish("c6.sent", "B", sent_value);
     ls_value_publish("c6.size", "B", size_value);

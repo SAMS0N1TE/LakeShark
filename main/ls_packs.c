@@ -3,9 +3,9 @@
    Packs are installed by the user (ls_packs_install / _install_around); the
    position only picks among the INSTALLED ones. Nothing is removed or fetched
    for a new region by itself; Auto data only refreshes what is installed.
-   LANG packs (lang-<code>.bin, an app's translator data) are installed,
-   updated and removed the same way but have no place: choose() and
-   install_around() pass them by. */
+   LANG packs (lang-<code>.bin, an app's translator data) and DATA packs
+   (<id>.bin, any app's raw data) are installed, updated and removed the same
+   way but have no place: choose() and install_around() pass them by. */
 #include "ls_packs.h"
 #include "ls_fetch.h"
 #include "ls_hub.h"
@@ -98,11 +98,13 @@ static int kind_of(const char *s, size_t n)
     return -1;
 }
 
-/* A catalog kind as its bit; LANG is not a kind of system in a pack. */
+/* A catalog kind as its bit; LANG and DATA are not kinds of system in a pack. */
 static uint16_t kind_bit(const char *s, size_t n)
 {
     const int i = kind_of(s, n);
-    return i >= 0 ? (uint16_t)(1u << i) : n == 4 && !strncmp(s, "LANG", 4) ? (uint16_t)LS_PK_LANG : 0;
+    if (i >= 0) return (uint16_t)(1u << i);
+    if (n == 4 && !strncmp(s, "LANG", 4)) return LS_PK_LANG;
+    return n == 4 && !strncmp(s, "DATA", 4) ? (uint16_t)LS_PK_DATA : 0;
 }
 
 /* lang-<code> is a translator language: the app's own bytes, in a .bin. */
@@ -149,8 +151,12 @@ ls_packs_state_t ls_packs_status_text(char *out, size_t cap)
 
 /* --------------------------------------------------------------- catalog */
 
-static const char *ext_of(const char *id) { return is_lang(id) ? ".bin" : ".txt"; }
-static void pack_path(const char *id, char *out, size_t cap) { snprintf(out, cap, PDIR "/%s%s", id, ext_of(id)); }
+/* A LANG or DATA pack is the app's bytes in a .bin; a frequency pack a .txt. */
+static const char *ext_of(uint16_t kinds) { return kinds & LS_PK_RAW ? ".bin" : ".txt"; }
+static void pack_path(const char *id, uint16_t kinds, char *out, size_t cap)
+{
+    snprintf(out, cap, PDIR "/%s%s", id, ext_of(kinds));
+}
 
 /* A finite decimal number that is the whole field. */
 static bool num(const char *s, float *out)
@@ -212,10 +218,12 @@ static bool sha_ok(const char *path, const uint8_t *want)
 }
 
 /* "lm-us-fl-2" -> country US, state FL; "air-au-2" -> AU; "mar-all" -> "--";
-   "lang-pt" -> LS_PACK_LANG_CC, PT. */
-static void group_of(const char *id, char cc[3], char sub[4])
+   "lang-pt" -> LS_PACK_LANG_CC, PT; any DATA pack -> LS_PACK_DATA_CC. */
+static void group_of(const cat_t *c, char cc[3], char sub[4])
 {
+    const char *id = c->id;
     cc[0] = sub[0] = 0;
+    if (c->kinds == LS_PK_DATA) { strcpy(cc, LS_PACK_DATA_CC); return; }
     const char *p = strchr(id, '-');
     if (!p) return;
     p++;
@@ -237,7 +245,7 @@ static int cmp_ord(const void *a, const void *b)
 {
     const cat_t *x = &s_sorting[*(const uint16_t *)a], *y = &s_sorting[*(const uint16_t *)b];
     char cx[3], sx[4], cy[3], sy[4];
-    group_of(x->id, cx, sx); group_of(y->id, cy, sy);
+    group_of(x, cx, sx); group_of(y, cy, sy);
     int d = strcmp(cx, cy);
     if (!d) d = strcmp(sx, sy);
     return d ? d : strcmp(x->id, y->id);
@@ -279,10 +287,12 @@ static int cat_load(void)
         }
         char want[48];
         const size_t idn = strspn(v[0], "abcdefghijklmnopqrstuvwxyz0123456789-");
-        snprintf(want, sizeof(want), "packs/%s%s", v[0], ext_of(v[0]));    /* the one place a pack may live */
-        /* a language is LANG alone and lang-<code>; nothing else may be either */
+        snprintf(want, sizeof(want), "packs/%s%s", v[0], ext_of(h->kinds));    /* the one place a pack may live */
+        /* a language is LANG alone and lang-<code>; nothing else may be either.
+           DATA is alone too, never mixed with a kind of system. */
         bool ok = idn && !v[0][idn] && idn < sizeof(h->id) && strlen(v[4]) == 64 && strlen(v[6]) == 8 && !strcmp(want, v[5]) &&
-                  (h->kinds == LS_PK_LANG) == is_lang(v[0]) && (!is_lang(v[0]) || idn > 5);
+                  (h->kinds == LS_PK_LANG) == is_lang(v[0]) && (!is_lang(v[0]) || idn > 5) &&
+                  (!(h->kinds & LS_PK_RAW) || h->kinds == LS_PK_LANG || h->kinds == LS_PK_DATA);
         for (int i = 0; ok && i < 32; i++) {
             unsigned byte;
             char two[3] = { v[4][i * 2], v[4][i * 2 + 1], 0 };
@@ -298,7 +308,7 @@ static int cat_load(void)
         strcpy(h->id, v[0]); strcpy(h->date, v[6]);
         char p[80];
         struct stat st;
-        pack_path(h->id, p, sizeof(p));
+        pack_path(h->id, h->kinds, p, sizeof(p));
         if (vb && !stat(p, &st)) {
             if (vlookup(vb, h->id, (uint32_t)st.st_size, h->idate)) h->flags = F_INST;
             else if ((uint32_t)st.st_size == h->bytes && sha_ok(p, h->sha)) {
@@ -316,7 +326,7 @@ static int cat_load(void)
     for (int i = 0; w && i < n; i++) {
         char p[80];
         struct stat st;
-        pack_path(c[i].id, p, sizeof(p));
+        pack_path(c[i].id, c[i].kinds, p, sizeof(p));
         if ((c[i].flags & F_INST) && !stat(p, &st)) fprintf(w, "%s %u %s\n", c[i].id, (unsigned)st.st_size, c[i].idate);
     }
     if (w) fclose(w);
@@ -338,8 +348,8 @@ static int choose(double lat, double lon)
     int n = 0;
     for (int pass = 0; pass < 2; pass++)
         for (int i = 0; i < nc && n < HERE_MAX; i++) {
-            /* a language has no place: installed or not, never "here" */
-            if (!(c[i].flags & F_INST) || (c[i].kinds & LS_PK_LANG) || !box_hit(c[i].box, lat, lon, pass ? MARGIN_DEG : 0)) continue;
+            /* a language or app data has no place: installed or not, never "here" */
+            if (!(c[i].flags & F_INST) || (c[i].kinds & LS_PK_RAW) || !box_hit(c[i].box, lat, lon, pass ? MARGIN_DEG : 0)) continue;
             bool dup = false;
             for (int j = 0; j < n; j++) dup = dup || !strcmp(s_here[j].id, c[i].id);
             if (dup) continue;
@@ -366,7 +376,7 @@ int ls_packs_catalog_regions(ls_pack_region_t *out, int skip, int cap)
         ls_pack_region_t *r = &out[k];
         memset(r, 0, sizeof(*r));
         strcpy(r->id, c->id);
-        group_of(c->id, r->cc, r->sub);
+        group_of(c, r->cc, r->sub);
         r->kinds = c->kinds; r->bytes = c->bytes;
         memcpy(r->box, c->box, sizeof(r->box));
         r->installed = (c->flags & F_INST) != 0; r->updatable = (c->flags & F_UPD) != 0;
@@ -423,7 +433,7 @@ void ls_packs_scan(uint16_t kinds, float within_km, ls_packs_scan_fn fn, void *c
         const here_t *h = &s_here[p];
         char path[80];
         if (!(h->kinds & kinds)) continue;
-        pack_path(h->id, path, sizeof(path));
+        pack_path(h->id, h->kinds, path, sizeof(path));
         FILE *f = fopen(path, "r");
         if (!f) continue;
         for (uint32_t off = 0, len; fgets(line, 256, f); off += len) {
@@ -502,7 +512,7 @@ int ls_packs_freqs(const ls_pack_sys_t *sys, ls_pack_freq_t *out, int cap)
 {
     char path[80], line[256];
     int n = 0;
-    pack_path(sys->pack, path, sizeof(path));
+    pack_path(sys->pack, 0, path, sizeof(path));
     FILE *f = fopen(path, "r");
     if (!f) return 0;
     /* First from the system's own line, where its F lines follow; if that
@@ -605,8 +615,8 @@ static bool grab(int idx, uint8_t bg)
 {
     cat_t *h = &s_cat[s_cl][idx];
     char url[160], dest[80];
-    snprintf(url, sizeof(url), BASE "packs/%s%s", h->id, ext_of(h->id));
-    pack_path(h->id, dest, sizeof(dest));
+    snprintf(url, sizeof(url), BASE "packs/%s%s", h->id, ext_of(h->kinds));
+    pack_path(h->id, h->kinds, dest, sizeof(dest));
     if (get(url, dest, h->bytes, h->sha, LS_FETCH_RESUME | bg) != LS_FETCH_OK) return false;
     vappend(h->id, h->bytes, h->date);
     strcpy(h->idate, h->date);
@@ -647,8 +657,11 @@ static void task(void *arg)
         for (int i = 0; i < nwr; i++) {
             char p[80];
             if (!id_ok(s_wr[i])) continue;
-            pack_path(s_wr[i], p, sizeof(p));
-            remove(p);
+            /* its file by the catalog's kind; an id not listed: either one */
+            const int k = cat_find(s_wr[i]);
+            const uint16_t kinds = k >= 0 ? s_cat[s_cl][k].kinds : 0;
+            if (k < 0 || !(kinds & LS_PK_RAW)) { pack_path(s_wr[i], 0, p, sizeof(p)); remove(p); }
+            if (k < 0 || (kinds & LS_PK_RAW)) { pack_path(s_wr[i], LS_PK_RAW, p, sizeof(p)); remove(p); }
             rescan = true;
         }
         const int nf = count_files();
@@ -691,7 +704,7 @@ static void task(void *arg)
             for (int i = 0; i < nc; i++) {
                 bool dup = false;
                 for (int j = 0; j < nj; j++) dup = dup || s_job[j] == i;
-                if (!dup && (c[i].kinds & akinds & LS_PK_ALL) && !(c[i].kinds & LS_PK_LANG) &&
+                if (!dup && (c[i].kinds & akinds & LS_PK_ALL) && !(c[i].kinds & LS_PK_RAW) &&
                     (!(c[i].flags & F_INST) || (c[i].flags & F_UPD)) &&
                     box_hit(c[i].box, la, lo, akm / 111.0f)) s_job[nj++] = (uint16_t)i;
             }

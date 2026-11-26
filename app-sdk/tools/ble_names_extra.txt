@@ -1,0 +1,72 @@
+# LakeShark's own Bluetooth names, merged into ble-ids.bin by
+# build_ble_ids.py ahead of the public registries.
+# Same format as the owner's /sdcard/lakeshark/ble-names.txt:
+#   kind key name        kind: company service char desc maker appearance
+# Only well known, publicly documented IDs go here. Say where each comes
+# from when it is not obvious.
+
+# Serial-over-BLE modules (vendor 16-bit UUIDs, not SIG assigned)
+service ffe0 HM-10 serial
+char    ffe1 HM-10 serial data
+char    ffe2 HM-10 serial write
+service fff0 Vendor serial FFF0
+char    fff1 Vendor serial FFF1
+char    fff2 Vendor serial FFF2
+char    fff3 Vendor serial FFF3
+char    fff4 Vendor serial FFF4
+char    fff5 Vendor serial FFF5
+service ffb0 Vendor serial FFB0
+service ff00 Vendor service FF00
+service ff10 Vendor service FF10
+service ff80 Vendor service FF80
+char    ff81 Vendor notify FF81
+char    ff82 Vendor write FF82
+
+# Microchip (ISSC) BM70/BM71/RN4870 transparent UART
+service 49535343-fe7d-4ae5-8fa9-9fafd205e455 Microchip transparent UART
+char    49535343-1e4d-4bd9-ba61-23c647249616 Microchip UART TX (notify)
+char    49535343-8841-43f4-a8d4-ecbe34729bb3 Microchip UART RX (write)
+char    49535343-aca3-481c-91ec-d85e28a60318 Microchip UART control
+char    49535343-6daa-4d02-abf6-19569aca69fe Microchip UART extra
+
+# Nordic UART Service
+service 6e400001-b5a3-f393-e0a9-e50e24dcca9e Nordic UART
+char    6e400002-b5a3-f393-e0a9-e50e24dcca9e Nordic UART RX (write)
+char    6e400003-b5a3-f393-e0a9-e50e24dcca9e Nordic UART TX (notify)
+
+# Thermal and label printers (common Chinese BLE printer firmware)
+service 18f0 Thermal printer
+char    2af1 Printer data / Elec Cur Stats
+char    2af0 Printer status / Elec Cur Spec
+service ae30 Cat printer
+char    ae01 Cat printer data
+char    ae02 Cat printer status
+service e7810a71-73ae-499d-8c15-faa9aef0c3f2 Printer service
+char    bef8d6c9-9c21-4c9e-b632-bd58c1009f9f Printer data
+
+# WeChat AirSync (Tencent), found in many Chinese devices
+char    fec7 WeChat write
+char    fec8 WeChat indicate
+char    fec9 WeChat MAC (read)
+
+# Apple
+service 7905f431-b5ce-4e99-a40f-4b1e122d00d0 Apple Notification Center
+char    9fbf120d-6301-42d9-8c58-25e699a21dbd ANCS notification source
+char    69d1d8f3-45e1-49a8-9821-9bbdfdaad9d9 ANCS control point
+char    22eac6e9-24d6-4bb5-be44-b36ace7c7bfb ANCS data source
+service 89d3502b-0f36-433a-8ef4-c502ad55f8dc Apple Media Service
+char    9b3c81d8-57b1-4a8a-b8df-0e56f7ca51c2 AMS remote command
+char    2f7cabce-808d-411f-9a0c-bb92ba96c102 AMS entity update
+char    c6b2f38c-23ab-46d8-a6ab-a3a870bbd5d7 AMS entity attribute
+service d0611e78-bbb4-4591-a5f8-487910ae4366 Apple Continuity
+char    8667556c-9a37-4c91-84ed-54ee27d90049 Apple Continuity data
+service 9fa480e0-4967-4542-9390-d343dc5d04ae Apple Nearby
+char    af0badb1-5b99-43cd-917a-a77bc549e3cc Apple Nearby data
+
+# Silicon Labs
+service 1d14d6ee-fd63-4fa1-bfa4-8f47b42119f0 Silabs OTA
+char    f7bf3564-fb6d-4e53-88a4-5e37e0326063 Silabs OTA control
+char    984227f3-34fc-4045-a5d0-2c581f81a153 Silabs OTA data
+
+# Espressif
+service ffff Espressif BluFi

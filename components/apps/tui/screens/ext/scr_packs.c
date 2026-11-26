@@ -10,7 +10,8 @@
    them, then INSTALL or REMOVE; UPDATE ALL refreshes what has a newer date.
    Installing is the user's choice; the position only picks among what is
    installed. LANGUAGES, above the countries, holds the translator languages
-   (MESHTASTIC's), which belong to no place. P25, FM and FREQS open this from
+   (MESHTASTIC's), which belong to no place; APP DATA, after it, the raw
+   files apps read (ble-ids, ble-flows, ...), one row each. P25, FM and FREQS open this from
    their HERE lists, and BACK returns there. */
 #include "../../ls_app.h"
 #include "../../ls_here.h"
@@ -74,20 +75,24 @@ static void build(void)
 {
     const int n = ls_packs_catalog_regions(NULL, 0, 0);
     const int old = s_nu;
-    int nu = 0;
+    int nu = 0, ndata = 0;
     s_used = 0;
     for (int skip = 0; skip < n;) {
         const int got = ls_packs_catalog_regions(s_row, skip, RMAX);
         if (got <= 0) break;
         for (int i = 0; i < got; i++) {
             const ls_pack_region_t *r = &s_row[i];
+            /* each app data pack is a unit of its own under APP DATA: number it */
+            char sub[4];
+            if (!strcmp(r->cc, LS_PACK_DATA_CC)) snprintf(sub, sizeof(sub), "%u", (unsigned)(++ndata % 1000));
+            else snprintf(sub, sizeof(sub), "%s", r->sub);
             unit_t *u = nu ? &s_u[nu - 1] : NULL;
-            if (!u || strcmp(u->cc, r->cc) || strcmp(u->sub, r->sub)) {
+            if (!u || strcmp(u->cc, r->cc) || strcmp(u->sub, sub)) {
                 if (nu >= UMAX) break;
                 u = &s_u[nu++];
-                const uint8_t keep = nu <= old && !strcmp(u->cc, r->cc) && !strcmp(u->sub, r->sub) ? u->sel : 0;
+                const uint8_t keep = nu <= old && !strcmp(u->cc, r->cc) && !strcmp(u->sub, sub) ? u->sel : 0;
                 memset(u, 0, sizeof(*u));
-                strcpy(u->cc, r->cc); strcpy(u->sub, r->sub);
+                strcpy(u->cc, r->cc); strcpy(u->sub, sub);
                 u->first = (uint16_t)(skip + i);
                 u->sel = keep;
             }
@@ -105,9 +110,19 @@ static void build(void)
 }
 
 /* A country whose units carry states is a header with its states under it;
-   so is LANGUAGES, with a language a unit. */
+   so is LANGUAGES, with a language a unit, and APP DATA, a pack a unit. */
 static bool has_subs(int u) { return s_u[u].sub[0] != 0; }
 static bool is_lang(const unit_t *u) { return !strcmp(u->cc, LS_PACK_LANG_CC); }
+static bool is_data(const unit_t *u) { return !strcmp(u->cc, LS_PACK_DATA_CC); }
+
+/* What an app data pack is for; an id missing here shows "app data". */
+static const char *data_for(const char *id)
+{
+    if (!strcmp(id, "ble-ids")) return LS_TEXT(t_packs_data_bleids, "Bluetooth names for every BLE app");
+    if (!strcmp(id, "ble-flows")) return LS_TEXT(t_packs_data_bleflows, "BLE EXPLORER flows");
+    if (!strcmp(id, "bughunt-ids")) return LS_TEXT(t_packs_data_bughunt, "BUGHUNT names");
+    return LS_TEXT(t_packs_data_any, "app data");
+}
 
 /* "PT" -> "Portuguese". LANGUAGES lists whatever LANG rows the catalog has;
    a code missing here shows as the code alone. */
@@ -292,27 +307,32 @@ static void row(tui_surface *sf, tui_rect r, int y, int v, bool cur)
     uint8_t at = cur ? ls_ink(LS_INK_SELECT, A(TUI_BLACK, HUE)) : ls_ink(LS_INK_STRONG, A(BR(TUI_WHITE), TUI_BLACK));
     if (cur) tui_fill(sf, tui_rect_make(r.x, y, r.w, 1), ' ', at);
     char code[8], name[24] = "";
-    const bool lang = is_lang(u);
+    const bool lang = is_lang(u), data = is_data(u);
+    ls_pack_region_t one;
+    memset(&one, 0, sizeof(one));
+    if (data && !head) (void)ls_packs_catalog_regions(&one, u->first, 1);
     code_of(u, code);
     if (head) code[2] = 0;
     if (lang) snprintf(name, sizeof(name), "%s", head ? "" : lang_name(u->sub));
-    else ls_globe_region(code, name, sizeof(name), NULL, NULL);
+    else if (!data) ls_globe_region(code, name, sizeof(name), NULL, NULL);
     if (head) {
         int states = 0, on = 0, k = 0;
         for (int i = s_vis[v].u; i < s_nu && !strcmp(s_u[i].cc, u->cc); i++) { states++; on += s_u[i].inst > 0; k |= s_u[i].kinds; }
-        if (lang) snprintf(t, sizeof(t), "%s %-17s", strcmp(s_open, u->cc) ? "+" : "-", "LANGUAGES");
+        if (lang || data) snprintf(t, sizeof(t), "%s %-17s", strcmp(s_open, u->cc) ? "+" : "-", lang ? "LANGUAGES" : "APP DATA");
         else snprintf(t, sizeof(t), "%s %s %-14.14s", strcmp(s_open, u->cc) ? "+" : "-", u->cc, name[0] ? name : "");
         tui_put_str(sf, r, r.x, y, t, at);
-        snprintf(t, sizeof(t), "%d %s, %d on card", states, lang ? "languages" : "regions", on);
+        snprintf(t, sizeof(t), "%d %s, %d on card", states, lang ? "languages" : data ? "packs" : "regions", on);
         tui_put_str(sf, r, r.x + 21, y, t, cur ? at : A(HUE, TUI_BLACK));
         return;
     }
     const int ind = has_subs(s_vis[v].u) ? 2 : 0;
-    snprintf(t, sizeof(t), "%*s[%c] %s %-15.15s", ind, "", u->sel ? 'x' : ' ', u->sub[0] ? u->sub : strcmp(u->cc, "--") ? u->cc : "**",
-             name[0] ? name : !strcmp(u->cc, "--") ? "everywhere" : "");
+    if (data) snprintf(t, sizeof(t), "%*s[%c] %-18.18s", ind, "", u->sel ? 'x' : ' ', one.id);
+    else snprintf(t, sizeof(t), "%*s[%c] %s %-15.15s", ind, "", u->sel ? 'x' : ' ', u->sub[0] ? u->sub : strcmp(u->cc, "--") ? u->cc : "**",
+                  name[0] ? name : !strcmp(u->cc, "--") ? "everywhere" : "");
     tui_put_str(sf, r, r.x, y, t, u->sel && !cur ? A(BR(TUI_CYAN), TUI_BLACK) : at);
     const int kx = r.x + r.w - 23;
     if (kx > r.x + 20 && lang) tui_put_str(sf, r, kx, y, "LANG", cur ? at : A(BR(TUI_MAGENTA), TUI_BLACK));
+    else if (kx > r.x + 20 && data) tui_put_str(sf, r, kx, y, "DATA", cur ? at : A(BR(TUI_BLUE), TUI_BLACK));
     else if (kx > r.x + 20) kinds_col(sf, r, kx, y, u->kinds);
     size_text(u->bytes, sz, sizeof(sz));
     snprintf(t, sizeof(t), "%5s", sz);
@@ -320,6 +340,7 @@ static void row(tui_surface *sf, tui_rect r, int y, int v, bool cur)
     const char *mark = u->upd ? "UPDATE" : u->inst == u->count ? "ON CARD" : u->inst ? "PART" : "";
     tui_put_str(sf, r, r.x + r.w - 8, y, mark, cur ? at : A(u->upd ? BR(TUI_YELLOW) : BR(TUI_GREEN), TUI_BLACK));
     if (s_per < 2) return;
+    if (data) { tui_put_str(sf, r, r.x + ind + 4, y + 1, data_for(one.id), LS_ATTR_FAINT); return; }
     const int got = ls_packs_catalog_regions(s_row, u->first, u->count < 4 ? u->count : 4);
     t[0] = 0;
     for (int i = 0; i < got; i++) snprintf(t + strlen(t), sizeof(t) - strlen(t), "%s%s", s_row[i].id, s_row[i].installed ? "* " : "  ");

@@ -4,8 +4,15 @@
    of being kept with a buffer far smaller than the search reads. */
 #include "ls_test.h"
 #include "bh_ids.h"
+#include "lakeshark_app.h"
 #include <stdint.h>
 #include <string.h>
+
+/* The shared reader's card engine links in; no card here. */
+int lap_sd_read(const char *p, uint32_t o, void *b, uint32_t n) { (void)p; (void)o; (void)b; (void)n; return LAP_SD_ENOENT; }
+int lap_sd_write(const char *p, uint32_t o, const void *d, uint32_t n) { (void)p; (void)o; (void)d; (void)n; return LAP_SD_ENOENT; }
+int lap_sd_size(const char *p) { (void)p; return LAP_SD_ENOENT; }
+int lap_sd_poll(int j) { (void)j; return LAP_SD_ENOENT; }
 
 static void put(uint8_t *p, uint32_t v, int n) { for (int i = 0; i < n; i++) p[i] = (uint8_t)(v >> (8 * i)); }
 
